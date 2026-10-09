@@ -49,6 +49,8 @@ enum Mode {
     Ai,
     Broken(f32),
     Dead(f32),
+    /// Has not noticed Wolf (stealth): the awareness meter 0..1.
+    Unaware(f32),
 }
 
 /// ChrActionFlag 69 "ThrowType5": on ThrowDef reactions, where a killed defender switches to
@@ -96,6 +98,20 @@ impl Enemy {
         matches!(self.mode, Mode::Dead(_))
     }
 
+    /// Has not noticed Wolf: open to the stealth deathblows (ThrowParam 0020 behind, 0030 plunge).
+    pub fn is_unaware(&self) -> bool {
+        matches!(self.mode, Mode::Unaware(_))
+    }
+
+    /// Back to not having noticed Wolf: the default (non-battle) idle a000_000000.
+    pub fn make_unaware(&mut self, a: &mut Actor) {
+        self.mode = Mode::Unaware(0.0);
+        self.cur_ez = None;
+        self.fallback = None;
+        a.play("IdleDefault", "a000_000000");
+        a.move_vel = Vec3::ZERO;
+    }
+
     /// Killed by a deathblow: the ThrowParam defender anim ThrowDef<def> plays out the pair with
     /// Wolf (its root motion: the General slides 2 m back), then, with HP at 0, its ChrActionFlag
     /// 69 (ThrowType5) switches to ThrowDefDeath<def + 1> (c9997 HKS: env(276) ->
@@ -126,7 +142,8 @@ impl Enemy {
             return;
         }
         let d = &combat.enemy;
-        if !a.state.starts_with("AttackBoundEmptyStamina") && !a.state.starts_with("GuardBreak") {
+        // A break throw pose (ThrowDef12100 / 13100, player.rs) is the break reaction itself.
+        if !a.state.starts_with("AttackBoundEmptyStamina") && !a.state.starts_with("GuardBreak") && !a.state.starts_with("ThrowDef") {
             let s = if from_behind && d.anim_key("TrunkCollapseBack").is_some() { "TrunkCollapseBack" } else { "TrunkCollapseFront" };
             if !a.play_state(d, s) {
                 a.procedural("PostureBroken");
@@ -144,7 +161,12 @@ impl Enemy {
                 .reduce(f32::max)
         });
         let ai_flag = anim.and_then(|an| an.events.iter().filter(|e| e.kind == 0 && e.flag_type() == Some(86)).map(|e| e.start).reduce(f32::min));
-        let window = collapse_end.or(ai_flag).map(|t| (t - a.t).max(0.5)).unwrap_or(fallback);
+        let window = if a.state.starts_with("ThrowDef") {
+            // The break pose pair: open while the pose plays.
+            (d.length(&a.anim) - a.t).max(0.5)
+        } else {
+            collapse_end.or(ai_flag).map(|t| (t - a.t).max(0.5)).unwrap_or(fallback)
+        };
         self.mode = Mode::Broken(window);
         a.move_vel = Vec3::ZERO;
         self.cur_ez = None;
@@ -155,6 +177,10 @@ impl Enemy {
     pub fn react(&mut self, a: &mut Actor, combat: &Combat, state: &str) {
         if matches!(self.mode, Mode::Dead(_) | Mode::Broken(_)) {
             return;
+        }
+        // Hit (or blocking) while unaware: it knows now.
+        if self.is_unaware() {
+            self.mode = Mode::Ai;
         }
         if a.play_state(&combat.enemy, state) {
             self.interrupt();
@@ -227,7 +253,7 @@ fn ez_of(anim: &str) -> Option<i64> {
     anim.get(5..).and_then(|s| s.parse().ok())
 }
 
-/// Lua brains per enemy (mlua states are not Send, so this is a non-send resource).
+/// Lua brains per enemy (the Lua VM is not Send, so this is a non-send resource).
 #[derive(Default)]
 struct Brains {
     map: HashMap<Entity, Brain>,
@@ -244,6 +270,8 @@ pub enum AiMode {
     Passive,
     /// Only perilous (red kanji) attacks: sweeps, thrusts, grabs, picked at random.
     Perilous,
+    /// Only perilous thrusts (warning judge 982): Mikiri Counter practice.
+    Thrust,
     /// One chosen attack, again and again.
     Repeat,
     /// Stands still.
@@ -477,6 +505,41 @@ fn parry_interrupt(
     }
 }
 
+/// Stealth perception from NpcThinkParam (the enemy's think row): Wolf in the normal sight cone
+/// (eye_dist_normal, eye_ang_left/right/upper/bottom_normal around the enemy's facing) raises the
+/// awareness meter; a Wolf TAE CreateAISound (237) whose AiSoundParam radius reaches the enemy
+/// is noticed at once. Returns (noticed, meter).
+/// gap: the exe's meter fill rate is not traced; here it fills in 0.5 s at eye_BeginDist_normal
+/// growing to 3 s at eye_dist_normal, and drains at 0.5 /s out of sight.
+fn perceive(combat: &Combat, pa: &Actor, wolf: Vec3, a: &Actor, pos: Vec3, m: f32, dt: f32) -> (bool, f32) {
+    let think = combat.param("NpcThinkParam", combat.foe.think_id);
+    let f = |k: &str, d: f32| think[k].as_f64().map_or(d, |v| v as f32);
+    let to = wolf - pos;
+    let flat = to.with_y(0.0);
+    let dist = flat.length();
+    let fwd = a.forward();
+    let side = flat.dot(fwd.cross(Vec3::Y));
+    let yaw = side.atan2(flat.dot(fwd)).to_degrees();
+    let pitch = to.y.atan2(dist.max(1e-3)).to_degrees();
+    let in_cone = yaw >= -f("eye_ang_left_normal", 30.0)
+        && yaw <= f("eye_ang_right_normal", 30.0)
+        && pitch <= f("eye_ang_upper_normal", 10.0)
+        && pitch >= -f("eye_ang_bottom_normal", 15.0);
+    let (begin, far) = (f("eye_BeginDist_normal", 4.0), f("eye_dist_normal", 20.0));
+    let seen = in_cone && dist <= far;
+    // Sounds Wolf's TAE made this step (CreateAISound2, AiSoundParam radius).
+    let heard = !pa.anim.is_empty()
+        && combat.player.anim(&pa.anim).is_some_and(|an| {
+            an.events.iter().filter(|e| e.kind == 237 && e.start > pa.prev_t && e.start <= pa.t).any(|e| {
+                let row = combat.param("AiSoundParam", e.arg_i64("AISoundID").unwrap_or(-1));
+                row["radius"].as_f64().is_some_and(|r| (to.length() as f64) <= r)
+            })
+        });
+    let fill = 0.5 + 2.5 * ((dist - begin) / (far - begin).max(0.1)).clamp(0.0, 1.0);
+    let m = if seen { m + dt / fill } else { (m - 0.5 * dt).max(0.0) };
+    (heard || m >= 1.0, m)
+}
+
 /// Idle / locomotion states: any AI action may start.
 fn is_free_state(state: &str) -> bool {
     matches!(
@@ -548,6 +611,29 @@ fn think(
                 }
                 continue;
             }
+            Mode::Unaware(m) => {
+                if a.state == "IdleDefault" && a.t >= d.length(&a.anim) {
+                    a.t = 0.0;
+                    a.prev_t = 0.0;
+                }
+                let (notice, m) = perceive(&combat, pa, ptf.translation, &a, tf.translation, m, dt);
+                if notice {
+                    // Noticed: TransToBattleFromDefault (a000_001040; live, before the Ochimusha's
+                    // first attack), then the battle AI.
+                    if !a.play_state(d, "TransToBattleFromDefault") {
+                        a.procedural("IdleBattle");
+                    }
+                    e.mode = Mode::Ai;
+                    e.cooldown = 0.5;
+                    e.interrupt();
+                    if let Some(log) = log.as_mut() {
+                        log.push("enemy noticed you", Color::srgb(1.0, 0.6, 0.2));
+                    }
+                } else {
+                    e.mode = Mode::Unaware(m);
+                }
+                continue;
+            }
             Mode::Ai => {}
         }
 
@@ -581,7 +667,7 @@ fn think(
 
         // Debug-menu drills: perilous-only / one repeated attack / standing still.
         if let Some(dbg) = debug.as_deref_mut() {
-            if matches!(dbg.mode, AiMode::Perilous | AiMode::Repeat | AiMode::Idle) {
+            if matches!(dbg.mode, AiMode::Perilous | AiMode::Thrust | AiMode::Repeat | AiMode::Idle) {
                 drill(&mut e, &mut a, d, &config, dbg, dist, want_yaw, dt, free, ended);
                 continue;
             }
@@ -593,7 +679,7 @@ fn think(
         }
 
         if !brains.map.contains_key(&entity) {
-            let dir = crate::paths::root().join("extracted/ai_src");
+            let dir = crate::paths::root().join("extracted/script");
             let radius = npc["hitRadius"].as_f64().unwrap_or(0.5) as f32;
             match Brain::load(&dir, combat.foe.battle_goal, combat.foe.think_id, radius, e.rng) {
                 Ok(b) => {
@@ -724,7 +810,11 @@ fn drill(e: &mut Enemy, a: &mut Actor, d: &crate::data::CharData, config: &GameC
     let key = if dbg.mode == AiMode::Repeat && d.anim(&dbg.attack).is_some() {
         dbg.attack.clone()
     } else {
-        let red: Vec<String> = attack_list(d).into_iter().filter(|(_, p)| p.is_some()).map(|(k, _)| k).collect();
+        // Mikiri practice: the perilous attacks whose hit is an undeflectable-by-guard thrust
+        // (AtkParam atkType 2 + disableGuard), the ones combat.rs turns into a Mikiri.
+        let thrust_only = dbg.mode == AiMode::Thrust;
+        let is_thrust = |k: &str| d.attack_windows(k).iter().any(|(_, atk, _)| atk.atk_type == 2 && atk.disable_guard == 1);
+        let red: Vec<String> = attack_list(d).into_iter().filter(|(k, p)| p.is_some() && (!thrust_only || is_thrust(k))).map(|(k, _)| k).collect();
         if red.is_empty() {
             return;
         }

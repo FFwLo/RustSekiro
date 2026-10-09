@@ -51,6 +51,9 @@ pub struct Fmod {
     event_volume: unsafe extern "system" fn(Ptr, f32) -> i32,
 }
 
+/// Master category volume at the default options: SoundMan Master 1.0 * 0.7 (exe command 10).
+const MASTER_VOLUME: f32 = 0.7;
+
 /// FMOD Ex FMOD_OUTPUTTYPE_NOSOUND: everything runs, nothing is heard (sound map).
 const OUTPUT_NOSOUND: i32 = 2;
 
@@ -123,6 +126,19 @@ impl Fmod {
                     r => warn!("FMOD: {f}.fev not loaded (error {r})"),
                 }
             }
+            // The game's mix (SoundMan update FUN_14092f??? -> command 10, FUN_141c7b760): the master
+            // category plays at the Master volume * 0.7; the SE / Music / Voice categories at their
+            // option slider / 10 (GameDataMan options +0x50, bytes 4 / 5 / 6, default 10 each:
+            // FUN_1407bc470) = 1.0. Without the 0.7 everything was ~3 dB louder than the game.
+            if let (Ok(top), Ok(set_vol)) = (
+                ev.get::<unsafe extern "system" fn(Ptr, i32, *mut Ptr) -> i32>(b"FMOD_EventSystem_GetCategoryByIndex"),
+                ev.get::<unsafe extern "system" fn(Ptr, f32) -> i32>(b"FMOD_EventCategory_SetVolume"),
+            ) {
+                let mut master: Ptr = std::ptr::null_mut();
+                if top(es, -1, &mut master) == 0 && !master.is_null() {
+                    set_vol(master, MASTER_VOLUME);
+                }
+            }
             Ok(Fmod {
                 _ex: ex,
                 _ev: ev,
@@ -178,6 +194,42 @@ impl Fmod {
         }
         self.missing.insert(key.to_string());
         false
+    }
+
+    /// Category tree (name, volume, depth) of the loaded projects, for the mixing checks.
+    pub fn categories(&self) -> Vec<(String, f32, usize)> {
+        let mut out = Vec::new();
+        unsafe {
+            let l = &self._ev;
+            let (Ok(top), Ok(info), Ok(vol), Ok(num), Ok(sub)) = (
+                l.get::<unsafe extern "system" fn(Ptr, i32, *mut Ptr) -> i32>(b"FMOD_EventSystem_GetCategoryByIndex"),
+                l.get::<unsafe extern "system" fn(Ptr, *mut i32, *mut *const c_char) -> i32>(b"FMOD_EventCategory_GetInfo"),
+                l.get::<unsafe extern "system" fn(Ptr, *mut f32) -> i32>(b"FMOD_EventCategory_GetVolume"),
+                l.get::<unsafe extern "system" fn(Ptr, *mut i32) -> i32>(b"FMOD_EventCategory_GetNumCategories"),
+                l.get::<unsafe extern "system" fn(Ptr, i32, *mut Ptr) -> i32>(b"FMOD_EventCategory_GetCategoryByIndex"),
+            ) else {
+                return out;
+            };
+            fn walk(c: Ptr, depth: usize, out: &mut Vec<(String, f32, usize)>, info: &dyn Fn(Ptr, *mut i32, *mut *const c_char) -> i32, vol: &dyn Fn(Ptr, *mut f32) -> i32, num: &dyn Fn(Ptr, *mut i32) -> i32, sub: &dyn Fn(Ptr, i32, *mut Ptr) -> i32) {
+                let (mut idx, mut name, mut v, mut n) = (0, std::ptr::null(), 0.0f32, 0);
+                info(c, &mut idx, &mut name);
+                vol(c, &mut v);
+                let name = if name.is_null() { String::new() } else { unsafe { std::ffi::CStr::from_ptr(name) }.to_string_lossy().into_owned() };
+                out.push((name, v, depth));
+                num(c, &mut n);
+                for i in 0..n {
+                    let mut s: Ptr = std::ptr::null_mut();
+                    if sub(c, i, &mut s) == 0 && !s.is_null() {
+                        walk(s, depth + 1, out, info, vol, num, sub);
+                    }
+                }
+            }
+            let mut master: Ptr = std::ptr::null_mut();
+            if top(self.es, -1, &mut master) == 0 && !master.is_null() {
+                walk(master, 0, &mut out, &|a, b, c| info(a, b, c), &|a, b| vol(a, b), &|a, b| num(a, b), &|a, b, c| sub(a, b, c));
+            }
+        }
+        out
     }
 
     /// Event parameters (name, min, max, default value) of event `key`, for debugging which layer a
@@ -308,6 +360,20 @@ fn update_fmod(mut fmod: NonSendMut<Fmod>, camera: Query<&GlobalTransform, With<
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
+
+    /// cargo test --release fmod_categories -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn fmod_categories() {
+        let root = crate::paths::root();
+        let f = Fmod::open(std::path::Path::new(&crate::paths::sekiro_dir()), &root.join("extracted/sound"), &["main", "smain", "c1020"], true).expect("fmod");
+        for (n, v, d) in f.categories() {
+            println!("{}{} {:.3}", "  ".repeat(d), n, v);
+        }
+        for k in ["c000004010", "c000004011", "c000006510", "s000003010", "c000001004", "c000001113", "z199999980", "z100000103", "c102004001"] {
+            println!("{k}: {:?}", f.params_of(k));
+        }
+    }
 
     /// Sound map (auto debug): every TAE PlaySound event of every exported anim, keyed the way
     /// sound.rs keys it, played through the game's FMOD (silent) to list the samples it uses.

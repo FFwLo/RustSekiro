@@ -28,6 +28,7 @@ mod prosthetic;
 #[cfg(test)]
 mod sim_tests;
 mod sound;
+mod throw_trace;
 mod trace;
 mod world;
 
@@ -45,6 +46,7 @@ fn main() {
         .add_plugins(interp::InterpPlugin)
         .add_plugins(debug_menu::DebugMenuPlugin)
         .add_plugins(trace::TracePlugin)
+        .add_plugins(throw_trace::ThrowTracePlugin)
         .add_plugins((
             config::ConfigPlugin,
             data::DataPlugin,

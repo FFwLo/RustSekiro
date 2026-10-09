@@ -259,12 +259,17 @@ fn orbit_with_mouse(
     if cursor.grab_mode == CursorGrabMode::None {
         return;
     }
+    // Locked on, the lock camera owns both angles (in the game the right stick then switches
+    // targets). Mouse pitch on top fought the lock chase every frame: the camera shook whenever
+    // the mouse moved, most of all on head kicks where the chase is fastest.
+    // gap: CameraParam lockCamAdjustRot_MaxX/Y (6 / 8 deg) small manual offsets not ported.
+    if lock.target.is_some() {
+        return;
+    }
     let cam = &config.camera;
     let sensitivity = cam.mouse_sensitivity.to_radians();
-    if lock.target.is_none() {
-        camera.yaw -= motion.delta.x * sensitivity;
-    }
-    let (lo, hi) = pitch_range(&combat, lock.target.is_some());
+    camera.yaw -= motion.delta.x * sensitivity;
+    let (lo, hi) = pitch_range(&combat, false);
     camera.pitch = (camera.pitch + motion.delta.y * sensitivity).clamp(lo, hi);
 }
 
@@ -274,7 +279,7 @@ fn follow_player(
     lock: Res<LockOn>,
     player_q: Single<(&Transform, &Actor, Option<&crate::model::Dummies>), (With<Player>, Without<OrbitCamera>)>,
     dummy_tf: Query<&GlobalTransform>,
-    enemies: Query<&Transform, (With<Enemy>, Without<OrbitCamera>)>,
+    enemies: Query<(&Transform, Option<&crate::model::Dummies>), (With<Enemy>, Without<OrbitCamera>)>,
     mut camera: Single<(&mut Transform, &mut OrbitCamera, &mut Projection)>,
 ) {
     let (player, actor, dummies) = *player_q;
@@ -297,7 +302,6 @@ fn follow_player(
     // Lock-on chase (FUN_14073c260): each frame the angle moves diff * rate * (dt / (1/30)),
     // yaw at lockRotChaseRateY (0.3), pitch at lockRotChaseRateX (0.6).
     let step = |rate: f32| (rate * dt * 30.0).min(1.0);
-    let lc = lock_cam(&combat);
     update_cam_distance(&combat, actor, &mut orbit.cam, lf("camDistTarget", 4.5), cf("lockCamParamLerpRate", 0.05), dt);
     // +0x50 FOV and +0x204 focus height chase the LockCamParam row at lockCamParamLerpRate.
     let lerp = 1.0 - (1.0 - cf("lockCamParamLerpRate", 0.05).clamp(0.0, 1.0)).powf(dt * 30.0);
@@ -307,28 +311,53 @@ fn follow_player(
         pp.fov = orbit.cam.fov;
     }
     let mut range = pitch_range(&combat, lock.target.is_some());
-    if let Some(target) = lock.target.and_then(|e| enemies.get(e).ok()) {
+    if let Some((target, tdummies)) = lock.target.and_then(|e| enemies.get(e).ok()) {
         let dir = (target.translation - player.translation).with_y(0.0);
-        if dir.length_squared() > 0.01 {
+        // Right over the target (head kick, vault, plunge) the direction to it flips within a few
+        // centimetres: hold the yaw chase while the bodies overlap horizontally (Wolf's radius +
+        // NpcParam hitRadius) instead of whipping the camera around.
+        let npc_radius = combat.param("NpcParam", combat.foe.npc_row)["hitRadius"].as_f64().unwrap_or(0.5) as f32;
+        let overhead = dir.length() < crate::actor::PLAYER_BODY_RADIUS + npc_radius;
+        if !overhead && dir.length_squared() > 0.01 {
             let want = f32::atan2(-dir.x, -dir.z);
             let diff = (want - orbit.yaw + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI;
             orbit.yaw += diff * step(cf("lockRotChaseRateY", 0.3));
         }
-        // Pitch: limits widen from rotRangeXAtLock toward the free range as the height gap goes
-        // rotRangeLerpBeginHeight -> EndHeight; the target pitch is the elevation to the target
-        // plus FOV * 0.5 * lockRotXShiftRatio (the target sits above centre). Our pitch is
-        // positive looking down.
-        let dy = target.translation.y - player.translation.y;
+        // Pitch, as the exe's lock camera (FUN_14073c260 at 0x14073d6xx-0x14073dd0e):
+        // - the framed point P = focus + lockTgtPosRate (0.7) * (lock point - focus); the lock
+        //   point is the target's DummyPoly 220;
+        // - half = FOV * lockRotXShiftRatio * 0.5; r = camera-to-focus distance; the law of sines
+        //   gives the angle at P that puts P half off the screen centre: a = asin(r sin(half) / |FP|)
+        //   (pi/2 when |FP| <= r sin(half));
+        // - target pitch = a + half - elevation(P - focus) (positive = camera above, looking down);
+        // - limits rotRangeXAtLock widen toward the free range as |P.y - focus.y| goes
+        //   rotRangeLerpBeginHeight -> EndHeight;
+        // - chased at lockRotChaseRateX * dt / (1/30), outside lockRotChasePlayAngX (0 here).
+        let lock_point = tdummies
+            .and_then(|d| d.0.get(&220))
+            .and_then(|&m| dummy_tf.get(m).ok())
+            .map(|g| g.translation())
+            .unwrap_or(target.translation + Vec3::Y * (lf("chrOrgOffset_Y", 1.5) - crate::player::CAPSULE_HALF_HEIGHT));
+        let focus = orbit.focus;
+        let fp = (lock_point - focus) * cf("lockTgtPosRate", 0.7);
         let (b, e) = (cf("rotRangeLerpBeginHeight", 0.5), cf("rotRangeLerpEndHeight", 3.0));
-        let t = ((dy.abs() - b) / (e - b).max(1e-3)).clamp(0.0, 1.0);
+        let t = ((fp.y.abs() - b) / (e - b).max(1e-3)).clamp(0.0, 1.0);
         let free = pitch_range(&combat, false);
         range = (range.0 + (free.0 - range.0) * t, range.1 + (free.1 - range.1) * t);
-        let shift = lf("lockRotXShiftRatio", 0.45);
-        let elev = f32::atan2(dy, dir.length().max(0.1));
-        let want_pitch = (lc.fov_y.to_radians() * 0.5 * shift - elev).clamp(range.0, range.1);
-        orbit.pitch += (want_pitch - orbit.pitch) * step(cf("lockRotChaseRateX", 0.6));
+        let half = orbit.cam.fov * lf("lockRotXShiftRatio", 0.45) * 0.5;
+        let r = orbit.cam.dist;
+        let reach = half.sin() * r;
+        let a = if fp.length() <= reach { std::f32::consts::FRAC_PI_2 } else { (reach / fp.length()).asin() };
+        let elev = f32::atan2(fp.y, fp.with_y(0.0).length());
+        let want_pitch = (a + half - elev).clamp(range.0, range.1);
+        let diff = want_pitch - orbit.pitch;
+        let play = cf("lockRotChasePlayAngX", 0.0);
+        if diff.abs() >= play {
+            orbit.pitch += (diff - play * diff.signum()) * step(cf("lockRotChaseRateX", 0.6));
+        }
+    } else {
+        orbit.pitch = orbit.pitch.clamp(range.0, range.1);
     }
-    orbit.pitch = orbit.pitch.clamp(range.0, range.1);
     // chrOrgOffset_Y is measured from the feet; the capsule's origin is its middle.
     let feet = player.translation - Vec3::Y * crate::player::CAPSULE_HALF_HEIGHT;
     let target_focus = feet + Vec3::Y * orbit.cam.focus_y;
@@ -371,7 +400,18 @@ fn follow_player(
     orbit.focus.z += (target_focus.z - orbit.focus.z) * bxz;
     orbit.focus.y += (target_focus.y - orbit.focus.y) * by;
     let rotation = Quat::from_euler(EulerRot::YXZ, orbit.yaw, -orbit.pitch, 0.0);
-    transform.translation = orbit.focus + rotation * Vec3::new(0.0, 0.0, orbit.cam.dist);
+    // Camera collision (the game sphere-casts from the focus with CameraParam camCastSphereRadius):
+    // the arena floor (y = 0) cuts the arm short, so a camera looking up from below the focus
+    // stays above ground instead of going under it (the floor is one-sided: everything then
+    // looked to float).
+    let arm = rotation * Vec3::Z;
+    let radius = cf("camCastSphereRadius", 0.05);
+    let mut dist = orbit.cam.dist;
+    if arm.y < -1e-3 {
+        let room = (orbit.focus.y - radius) / -arm.y;
+        dist = dist.min(room.max(0.3));
+    }
+    transform.translation = orbit.focus + arm * dist;
     transform.look_at(orbit.focus, Vec3::Y);
 }
 

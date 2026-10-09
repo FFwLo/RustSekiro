@@ -15,6 +15,10 @@ use crate::hud::CombatLog;
 use crate::player::{Action, PadInput, Player, PlayerPlugin, CAPSULE_HALF_HEIGHT};
 
 fn app() -> App {
+    sim_tests_app()
+}
+
+fn sim_tests_app() -> App {
     app_with("c1020")
 }
 
@@ -216,7 +220,7 @@ fn vertical_jump_follows_the_exe_arc() {
 
 #[test]
 fn aggressive_enemy_runs_its_real_ai() {
-    if !std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/extracted/ai_src")).exists() {
+    if !std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/extracted/script/aicommon.luabnd.d")).exists() {
         return;
     }
     let mut app = app();
@@ -243,7 +247,11 @@ fn aggressive_enemy_runs_its_real_ai() {
 /// Plays one enemy attack anim and performs `act` (with `stick`) `lead` seconds
 /// before its first damaging hit. Returns the log plus both states.
 fn defend_against(anim: &str, lead: f32, act: Action, stick: Vec2) -> String {
-    let mut app = app();
+    defend_against_with("c1020", anim, lead, act, stick)
+}
+
+fn defend_against_with(chr: &str, anim: &str, lead: f32, act: Action, stick: Vec2) -> String {
+    let mut app = app_with(chr);
     {
         let world = app.world_mut();
         let mut q = world.query::<(&mut Enemy, &mut Actor)>();
@@ -513,7 +521,8 @@ fn kicking_off_the_enemy_relaunches() {
         if airborne && launch.is_none() {
             launch = Some(i);
         }
-        if state == "AirKickEnemyJumpStart_F" {
+        // Unlocked, no stick: HKS SELECTOR_GROUND_JUMP_TYPE_VERTICAL -> _N (live a000_213114).
+        if state == "AirKickEnemyJumpStart_N" {
             kicked = true;
         }
         if kicked {
@@ -605,7 +614,7 @@ fn low_hp_slows_player_posture_regen() {
 /// `cargo test duel_trace -- --nocapture` prints the outcome.
 #[test]
 fn duel_trace() {
-    if !std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/extracted/ai_src")).exists() {
+    if !std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/extracted/script/aicommon.luabnd.d")).exists() {
         return;
     }
     let mut app = app();
@@ -1440,8 +1449,14 @@ fn deathblow_from_behind_uses_the_back_throw() {
         });
     }
     app.world_mut().resource_mut::<PadInput>().press(Action::Attack);
-    for _ in 0..5 {
+    // Start throw 崩し背後始動 (11020110: a201_501200 = a200_500200's clip, judge 640 at frame 7).
+    app.update();
+    assert_eq!(player_state(&mut app).1, "a201_501200");
+    for _ in 0..30 {
         app.update();
+        if player_state(&mut app).0 == "Deathblow" {
+            break;
+        }
     }
     let (es, ea, _) = enemy_state(&mut app);
     let (ps, pa, _, _) = player_state(&mut app);
@@ -2209,3 +2224,353 @@ fn locked_on_diagonal_walk_twists_the_legs() {
     assert!(want.abs() > 20.0, "not diagonal: move {angle:.1} deg, clip {clip}");
     assert!((a.twist.to_degrees() - want).abs() < 3.0, "twist {:.1} deg, want {want:.1}", a.twist.to_degrees());
 }
+
+/// Breaks the enemy and puts it `z` metres in front of Wolf (who faces +Z).
+fn break_enemy_at(app: &mut App, z: f32) {
+    let world = app.world_mut();
+    world.resource_scope(|world, combat: Mut<Combat>| {
+        let mut q = world.query::<(&mut Enemy, &mut Actor, &mut Transform)>();
+        let (mut e, mut a, mut t) = q.single_mut(world).unwrap();
+        a.posture = a.posture_max;
+        e.on_posture_break(&mut a, &combat, false, 8.0);
+        t.translation.z = z;
+    });
+}
+
+#[test]
+fn general_deathblow_goes_on_to_the_kill_anim_as_he_dies() {
+    // Live (rec_c1020_d_20261009): a201_500000 0.40 s -> 510000 1.85 s -> 510001 (4.18 s); the
+    // General goes 12000 -> 12001 on that same frame (HKS BEH_R_THROW_KILL).
+    let mut app = app();
+    break_enemy_at(&mut app, 1.8);
+    app.world_mut().resource_mut::<PadInput>().press(Action::Attack);
+    let (mut main, mut kill) = (None, None);
+    for i in 0..400u32 {
+        app.update();
+        let (_, pa, _, _) = player_state(&mut app);
+        if main.is_none() && pa == "a201_510000" {
+            main = Some(i);
+        }
+        if pa == "a201_510001" {
+            kill = Some(i);
+            break;
+        }
+    }
+    let (main, kill) = (main.expect("main throw"), kill.unwrap_or_else(|| panic!("no kill anim
+{}", log_text(&app))));
+    assert!((kill - main).abs_diff(111) <= 3, "kill {} frames after the main throw (live 111)", kill - main);
+    assert_eq!(enemy_state(&mut app).0, "ThrowDefDeath12001");
+}
+
+#[test]
+fn ochimusha_close_deathblow_uses_the_near_rows() {
+    if !std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/extracted/anim_c1010.bin")).exists() {
+        return;
+    }
+    // ThrowParam 11010005 崩し始動（近）(Dist 1.2) -> 11010006: a200_502500 -> 512500, ThrowDef14500.
+    // Live (rec_c1010_20261009): 0.30 s + 1.83 s, 3 of the 4 front deathblows.
+    let mut app = app_with("c1010");
+    break_enemy_at(&mut app, 1.0);
+    app.world_mut().resource_mut::<PadInput>().press(Action::Attack);
+    let mut seen = Vec::new();
+    for _ in 0..120 {
+        app.update();
+        let (_, pa, _, _) = player_state(&mut app);
+        if seen.last() != Some(&pa) {
+            seen.push(pa.clone());
+        }
+        if pa == "a200_512500" {
+            break;
+        }
+    }
+    assert!(seen.contains(&"a200_502500".to_string()) && seen.contains(&"a200_512500".to_string()), "{seen:?}");
+    assert!(enemy_state(&mut app).0.starts_with("ThrowDef14500"), "{}", enemy_state(&mut app).0);
+}
+
+#[test]
+fn breaking_deflect_plays_the_pose_and_attack_finishes_it() {
+    // Live (rec_c1020_c_20261009): the deflect that empties the General's posture goes straight
+    // into Wolf a201_510100 / ThrowDef12100; attack 0.61 s later: 510110 / 12110, then the kill
+    // 510111 / ThrowDefDeath12111.
+    let mut app = app();
+    {
+        let world = app.world_mut();
+        let mut q = world.query_filtered::<&mut Actor, With<Enemy>>();
+        let mut a = q.single_mut(world).unwrap();
+        a.posture = a.posture_max - 1.0;
+    }
+    start_enemy_combo(&mut app, 0);
+    let mut pressed = false;
+    let mut pose = None;
+    for i in 0..300u32 {
+        if !pressed {
+            if let Some(dt) = time_to_enemy_hit(&mut app) {
+                if dt <= 3.0 / TAE_FPS {
+                    let mut pad = app.world_mut().resource_mut::<PadInput>();
+                    pad.press(Action::Guard);
+                    pressed = true;
+                }
+            }
+        }
+        app.update();
+        let (ps, pa, pt, _) = player_state(&mut app);
+        if pose.is_some() && std::env::var("DBG").is_ok() {
+            let (es, ea, et) = enemy_state(&mut app);
+            println!("{i} {ps} {pa} {pt:.2} | {es} {ea} {et:.2}");
+        }
+        if ps == "ThrowBreak" && pose.is_none() {
+            assert_eq!(pa, "a201_510100");
+            assert_eq!(enemy_state(&mut app).0, "ThrowDef12100");
+            pose = Some(i);
+        }
+        if pose.is_some_and(|p| i == p + 36) { // 0.6 s, as live
+            app.world_mut().resource_mut::<PadInput>().guard_held = false;
+            app.world_mut().resource_mut::<PadInput>().press(Action::Attack);
+        }
+        if pa == "a201_510111" {
+            assert_eq!(enemy_state(&mut app).0, "ThrowDefDeath12111");
+            return;
+        }
+    }
+    let (ps, pa, _, _) = player_state(&mut app);
+    panic!("pose {pose:?}, player {ps} {pa}, enemy {}
+{}", enemy_state(&mut app).0, log_text(&app));
+}
+
+#[test]
+fn air_attack_out_of_a_head_kick_on_a_broken_enemy_is_the_kick_down() {
+    // Live (rec_c1020_c_20261009): the kick breaks the General (TrunkCollapseFront); an air attack
+    // 0.33 s into AirKickEnemyJumpStart_F_Lock -> a201_511500 / ThrowDef13500, landing
+    // 511510 / 13510, kill 511511 / ThrowDefDeath13511.
+    let mut app = app();
+    break_enemy_at(&mut app, 0.8);
+    {
+        let world = app.world_mut();
+        world.resource_scope(|world, combat: Mut<Combat>| {
+            let mut q = world.query_filtered::<(&mut Actor, &mut Transform), With<Player>>();
+            let (mut a, mut t) = q.single_mut(world).unwrap();
+            a.play_state(&combat.player, "AirKickEnemyJumpStart_N");
+            a.airborne = true;
+            a.vel_y = 3.0;
+            t.translation.y += 1.5;
+        });
+    }
+    let mut seen = Vec::new();
+    let mut started = None;
+    for i in 0..300 {
+        if i == 15 {
+            app.world_mut().resource_mut::<PadInput>().press(Action::Attack);
+        }
+        app.update();
+        let (_, pa, _, _) = player_state(&mut app);
+        if seen.last() != Some(&pa) {
+            seen.push(pa.clone());
+        }
+        if pa == "a201_511500" && started.is_none() {
+            started = Some(i);
+        }
+        if pa == "a201_511511" {
+            break;
+        }
+    }
+    // Buffer flag 87 opens at frame 9 of the kick jump (0.30 s); live 0.33 s.
+    let started = started.expect("kick-down");
+    assert!((18..=22).contains(&started), "kick-down at frame {started}");
+    for k in ["a201_511500", "a201_511510", "a201_511511"] {
+        assert!(seen.iter().any(|s| s == k), "{k} missing: {seen:?}
+{}", log_text(&app));
+    }
+}
+
+#[test]
+fn mikiri_on_the_ochimusha_breaks_him_into_the_mikiri_deathblow() {
+    if !std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/extracted/anim_c1010.bin")).exists() {
+        return;
+    }
+    // Live (rec_c1010_20261009, 3 of 3): GroundStep_F into the thrust Attack3013 -> 見切り崩し
+    // (ThrowParam 11010120): Wolf a200_511100, ThrowDef13100 (the thrust's parry posture damage
+    // empties his posture), then attack -> 511110 / ThrowDef13110.
+    let outs: Vec<String> = (2..10).map(|f| defend_against_with("c1010", "a000_003013", f as f32 / TAE_FPS, Action::Step, Vec2::new(0.0, -1.0))).collect();
+    assert!(outs.iter().any(|o| o.contains("enemy=ThrowDef13100") && o.contains("player=ThrowBreak")), "{outs:#?}");
+}
+
+#[test]
+fn landing_mid_air_deflect_continues_in_its_land_anim() {
+    // Live (rec_c1010_b_20261009): AirDeflectHardSmall_R (a050_132102) 0.32 s, then on landing
+    // LandAirDeflectHardSmall_B (132112) from the same time (HKS StartTime_00 = env(3063)).
+    let mut app = app();
+    move_enemy_far(&mut app);
+    {
+        let world = app.world_mut();
+        world.resource_scope(|world, combat: Mut<Combat>| {
+            let mut q = world.query_filtered::<(&mut Actor, &mut Transform), With<Player>>();
+            let (mut a, mut t) = q.single_mut(world).unwrap();
+            a.play_state(&combat.player, "AirDeflectHardSmall_R");
+            a.airborne = true;
+            a.vel_y = -2.0;
+            t.translation.y += 0.5;
+        });
+    }
+    let mut land = None;
+    for _ in 0..60 {
+        let before = player_state(&mut app);
+        app.update();
+        let (ps, pa, pt, _) = player_state(&mut app);
+        if ps != before.0 {
+            land = Some((ps, pa, before.2, pt));
+            break;
+        }
+    }
+    let (ps, pa, t_air, t_land) = land.expect("landed");
+    assert_eq!((ps.as_str(), pa.as_str()), ("LandAirDeflectHardSmall_B", "a050_132112"));
+    assert!((t_land - t_air).abs() < 0.05, "air t {t_air:.2} -> land t {t_land:.2}");
+}
+
+#[test]
+fn jumping_at_a_broken_enemy_vaults_over_him() {
+    // Live (rec_c1020_b_20261009, rec_c1010_20261009): 崩し蹴りジャンプ a200_501900 (0.30 s) ->
+    // 511900 (ThrowDef13900); the General then took the behind deathblow.
+    let mut app = app();
+    break_enemy_at(&mut app, 1.5);
+    app.world_mut().resource_mut::<PadInput>().press(Action::Jump);
+    let (mut start, mut main) = (None, None);
+    for i in 0..120u32 {
+        app.update();
+        let (ps, pa, _, _) = player_state(&mut app);
+        if start.is_none() && pa == "a200_501900" {
+            start = Some(i);
+        }
+        if ps == "BreakKickJump" {
+            main = Some(i);
+            assert_eq!(pa, "a200_511900");
+            break;
+        }
+    }
+    let (start, main) = (start.expect("start"), main.unwrap_or_else(|| panic!("no vault\n{}", log_text(&app))));
+    // CommonBehavior 740 at TAE frame 8 (live 0.30 s ~ 18 frames).
+    assert!((main - start).abs_diff(17) <= 2, "start {} frames", main - start);
+    assert_eq!(enemy_state(&mut app).0, "ThrowDef13900");
+}
+
+#[test]
+fn debug_menu_plunge_setup_reaches_the_plunge_deathblow() {
+    // The debug menu's "plunge deathblow now": Wolf falling from 3 m, 0.6 m short of the broken
+    // enemy, attack pressed at once.
+    let mut app = app();
+    break_enemy_at(&mut app, 1.2);
+    {
+        let world = app.world_mut();
+        world.resource_scope(|world, combat: Mut<Combat>| {
+            let mut q = world.query_filtered::<(&mut Actor, &mut Transform), With<Player>>();
+            let (mut a, mut t) = q.single_mut(world).unwrap();
+            a.play_state(&combat.player, "VerticalGroundJumpStart");
+            a.t = 0.5;
+            a.prev_t = 0.5;
+            a.airborne = true;
+            a.vel_y = -1.0;
+            t.translation.y += 3.0;
+            t.translation.z += 0.6;
+        });
+    }
+    app.world_mut().resource_mut::<PadInput>().press(Action::Attack);
+    let mut seen = Vec::new();
+    for _ in 0..200 {
+        app.update();
+        let (ps, _, _, _) = player_state(&mut app);
+        if seen.last() != Some(&ps) {
+            seen.push(ps.clone());
+        }
+    }
+    assert!(seen.iter().any(|s| s == "PlungeDeathblow") && seen.iter().any(|s| s == "Deathblow"), "{seen:?}");
+}
+
+fn make_enemy_unaware(app: &mut App, z: f32, back_turned: bool) {
+    let world = app.world_mut();
+    let mut q = world.query::<(&mut Enemy, &mut Actor, &mut Transform)>();
+    let (mut e, mut a, mut t) = q.single_mut(world).unwrap();
+    t.translation.z = z;
+    // Wolf faces +Z (yaw PI): back turned = facing +Z too.
+    a.yaw = if back_turned { std::f32::consts::PI } else { 0.0 };
+    e.make_unaware(&mut a);
+}
+
+#[test]
+fn attacking_an_unaware_enemy_from_behind_is_the_stealth_deathblow() {
+    // Live (rec_c1020_b_20261009): a201_500200 0.28 s -> 510200 1.52 s -> 510201, the General
+    // ThrowDef12200 -> ThrowDefDeath12201.
+    let mut app = app();
+    make_enemy_unaware(&mut app, 1.5, true);
+    app.world_mut().resource_mut::<PadInput>().press(Action::Attack);
+    let mut seen = Vec::new();
+    for _ in 0..200 {
+        app.update();
+        let (_, pa, _, _) = player_state(&mut app);
+        if seen.last() != Some(&pa) {
+            seen.push(pa.clone());
+        }
+        if pa == "a201_510201" {
+            break;
+        }
+    }
+    for k in ["a201_500200", "a201_510200", "a201_510201"] {
+        assert!(seen.iter().any(|s| s == k), "{k}: {seen:?}
+{}", log_text(&app));
+    }
+    assert_eq!(enemy_state(&mut app).0, "ThrowDefDeath12201");
+}
+
+#[test]
+fn an_unaware_enemy_notices_wolf_in_front_but_not_behind() {
+    // Facing Wolf 3 m away (inside eye_BeginDist_normal 4 m): noticed within 0.5 s.
+    let mut app = app();
+    make_enemy_unaware(&mut app, 3.0, false);
+    for _ in 0..40 {
+        app.update();
+    }
+    assert_eq!(enemy_state(&mut app).0, "TransToBattleFromDefault", "{}", log_text(&app));
+    // Back turned: still unaware after 3 s.
+    let mut app2 = sim_tests_app();
+    make_enemy_unaware(&mut app2, 3.0, true);
+    for _ in 0..180 {
+        app2.update();
+    }
+    assert_eq!(enemy_state(&mut app2).0, "IdleDefault");
+}
+
+#[test]
+fn plunging_onto_an_unaware_enemy_is_the_stealth_plunge() {
+    // Live (rec_c1020_b_20261009): a201_510300 -> 510310 -> 510311, ThrowDef12300 -> 12310 -> 12311.
+    let mut app = app();
+    make_enemy_unaware(&mut app, 1.2, true);
+    {
+        let world = app.world_mut();
+        world.resource_scope(|world, combat: Mut<Combat>| {
+            let mut q = world.query_filtered::<(&mut Actor, &mut Transform), With<Player>>();
+            let (mut a, mut t) = q.single_mut(world).unwrap();
+            a.play_state(&combat.player, "VerticalGroundJumpStart");
+            a.t = 0.5;
+            a.prev_t = 0.5;
+            a.airborne = true;
+            a.vel_y = -1.0;
+            t.translation.y += 3.0;
+            t.translation.z += 0.6;
+        });
+    }
+    app.world_mut().resource_mut::<PadInput>().press(Action::Attack);
+    let mut seen = Vec::new();
+    for _ in 0..300 {
+        app.update();
+        let (_, pa, _, _) = player_state(&mut app);
+        if seen.last() != Some(&pa) {
+            seen.push(pa.clone());
+        }
+        if pa == "a201_510311" {
+            break;
+        }
+    }
+    for k in ["a201_510300", "a201_510310", "a201_510311"] {
+        assert!(seen.iter().any(|s| s == k), "{k}: {seen:?}
+{}", log_text(&app));
+    }
+}
+

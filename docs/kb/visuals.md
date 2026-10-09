@@ -185,3 +185,15 @@ Dated findings, oldest first. Append new entries at the end.
   metallic from _m. Cloth display meshes regenerate tangents each frame (world-space vertices).
 - Alpha: character albedos are cutouts (BC1 punch-through / 0-255 BC7: Wolf's tops are 42 % holes), except the SSS
   skin and eye shaders, whose alpha is not opacity (Wolf's head albedo is 86 % alpha 0).
+- 2026-10-09 cloth from the exe's Havok solver:
+  * hclBendStiffnessConstraintSetMx (vtable 0x142c81a68, apply FUN_141526450; singles FUN_14152b490): per link
+    v = sum w_i p_i; with useRestPoseConfig add unit(nA/|nA| + nB/|nB|) * hA hB restCurvature (e = D - C,
+    nA = e x (A - C), nB = (B - C) x e, hA hB = |nA||nB|/|e|^2); clamp: (hA hB rc)^2 > maxRestPoseHeightSq ->
+    stiffness 0; p_i += w_i invMass_i bendStiffness v. Solver stiffness factor 1.0 (FUN_14156d230 table:
+    modes 0/1 constant 1.0, mode 2 pow(substeps * scale, -1.725)). All of Wolf's cloths use rest pose + clamp.
+    Was unsolved: the coat skirt folded freely and flipped up to the hips on jumps.
+  * Fixed particles reach their reference over the substeps (Simulate lerps by (substep + 1) / substeps).
+  * Damping = pow(1 - globalDampingPerSecond, h) (+0x54, "Update Effective Damping") and the time-step change
+    rescale (prev = x - (x - prev) * h/h_old) match ours.
+  * Coat alpha (P_BD_M_9040_Court, g_AlphaRef 128, g_BlendMode 0) is a real cutout: torn hem and collar edge.
+    The 2026-10-09 "AN_Blend is a blend mask" change was wrong (holes became solid dark flaps) and is reverted.

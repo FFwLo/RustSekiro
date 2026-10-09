@@ -20,8 +20,9 @@ use crate::hud::CombatLog;
 
 #[derive(Component)]
 pub struct Player {
-    /// Plunge deathblow in flight: the posture-broken enemy Wolf is falling onto.
-    plunge: Option<Entity>,
+    /// Plunge deathblow in flight: the posture-broken enemy Wolf is falling onto and the
+    /// ThrowParam suffix of the landing (151 崩し落下1, 161 蹴り崩し1 out of a head-kick jump).
+    plunge: Option<(Entity, i64)>,
     /// HKS MoveSpeedLevel: 0 idle, 1 walk, 2 run (converges at 3/s).
     speed_level: f32,
     requests: HashMap<Action, f32>,
@@ -44,6 +45,8 @@ pub struct Player {
     step_tilt: f32,
     /// Deathblow start throw in progress: the enemy and the main ThrowParam row suffix.
     throw_start: Option<(Entity, i64)>,
+    /// The enemy of the running deathblow, until it dies (the kill follow-up anim).
+    throw_target: Option<Entity>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -69,6 +72,8 @@ pub const FLAG_ACCEPT_GUARD: i64 = 117;
 pub const FLAG_ACCEPT_STEP: i64 = 26;
 pub const FLAG_ACCEPT_STEP_ALT: i64 = 25;
 pub const FLAG_ACCEPT_JUMP: i64 = 119;
+/// ChrActionFlag 67 "ThrowStart2" on a defender's break pose (ThrowDef12100 frames 0-45).
+const FLAG_THROW_START2: i64 = 67;
 /// ChrActionFlag 31 "AnimCancelEnd_UseItem" / 90 "Limit Move Speed To Walk".
 const FLAG_ACCEPT_ITEM: i64 = 31;
 /// ChrActionFlag 137 "AnimCancelEnd_R2_Prosthetic".
@@ -156,7 +161,7 @@ fn art_kind(combat: &Combat, config: &GameConfig) -> Option<(i64, i64)> {
 }
 
 /// ChrActionFlag 27 "SetNoGravity".
-const FLAG_NO_GRAVITY: i64 = 27;
+pub(crate) const FLAG_NO_GRAVITY: i64 = 27;
 pub const FLAG_ACCEPT_MOVE: i64 = 11;
 pub const FLAG_SHIELD_BLOCK: i64 = 3;
 pub const FLAG_DISABLE_TURN: i64 = 7;
@@ -253,6 +258,30 @@ impl ThrowHold {
     }
 }
 
+/// HKS land events of the air deflect reactions (W_LandAirDeflect*): the state whose anim is the
+/// air anim's id + 10 (AirDeflectHardSmall_L 132101 -> LandAirDeflectHardSmall_F 132111).
+fn land_air_deflect(state: &str) -> Option<&'static str> {
+    Some(match state {
+        "AirDeflectHard" | "AirDeflectHardSmall_L" => "LandAirDeflectHardSmall_F",
+        "AirDeflectHardSmall_R" => "LandAirDeflectHardSmall_B",
+        "AirDeflectHardLarge_L" => "LandAirDeflectHardLarge_L",
+        "AirDeflectHardLarge_R" => "LandAirDeflectHardLarge_R",
+        "AirDeflectHardExLarge" => "LandAirDeflectHardExLarge",
+        "AirDeflectEasy" | "AirDeflectEasySmall_L" => "LandAirDeflectEasySmall_L",
+        "AirDeflectEasySmall_R" => "LandAirDeflectEasySmall_R",
+        "AirDeflectEasyLarge_L" => "LandAirDeflectEasyLarge_L",
+        "AirDeflectEasyLarge_R" => "LandAirDeflectEasyLarge_R",
+        "AirDeflectEasyExLarge" => "LandAirDeflectEasyExLarge",
+        _ => return None,
+    })
+}
+
+/// The kill follow-up of a throw anim: "a201_510000" -> "a201_510001".
+fn kill_anim(anim: &str) -> Option<String> {
+    let (group, id) = anim.split_once('_')?;
+    Some(format!("{group}_{:06}", id.parse::<u32>().ok()? + 1))
+}
+
 /// HKS _SetJumpDirection sectors (PRM_GROUND_JUMP_*_STICK_RANGE, degrees from the facing, + right):
 /// (ready state, raw anim for the side jumps, landing state).
 fn directional_jump(angle: f32) -> (&'static str, Option<&'static str>, &'static str) {
@@ -305,6 +334,7 @@ fn main_deathblow(
 /// root motion moves them (1.50 -> 0.85 -> 2.35 m), so it is applied once, not held.
 #[allow(clippy::type_complexity)]
 fn follow_throw(
+    combat: Res<Combat>,
     mut throw: ResMut<ActiveThrow>,
     mut player: Single<(&mut Actor, &mut Transform, Option<&crate::model::Dummies>, &GlobalTransform), (With<Player>, Without<Enemy>)>,
     mut enemies: Query<(&mut Actor, &mut Transform, Option<&crate::model::Dummies>, &GlobalTransform), (With<Enemy>, Without<Player>)>,
@@ -357,7 +387,17 @@ fn follow_throw(
             throw.0 = None;
             return;
         };
-        let owner = **ptf;
+        // The defender is placed on Wolf as he stands at the throw anim's first frame. This runs a
+        // step into the anim, after its root motion already moved / turned Wolf (the vault 511900
+        // turns him 180 deg in ~10 frames: absorbed on the turned Wolf, the enemy ended ~10 deg
+        // off; live the two line up straight, the enemy turning 3 deg).
+        let mut owner = **ptf;
+        if let (Some((p0, y0)), Some((p1, y1))) = (combat.player.root_at(&pa.anim, 0.0), combat.player.root_at(&pa.anim, pa.t)) {
+            let yaw0 = pa.yaw - (y1 - y0);
+            let moved = Quat::from_rotation_y(yaw0 - y0 + pa.root_yaw) * Vec3::new(p1.x - p0.x, 0.0, p1.y - p0.y) * pa.root_scale;
+            owner.translation -= moved;
+            owner.rotation = Quat::from_rotation_y(yaw0);
+        }
         absorb(&mut etf, &mut ea, &owner, l);
     }
     throw.0 = None;
@@ -395,7 +435,7 @@ fn spawn_player(mut commands: Commands, combat: Res<Combat>, config: Res<GameCon
         }
     }
     commands.spawn((
-        Player { plunge: None, speed_level: 0.0, requests: HashMap::new(), last_state: String::new(), gourd: config.player.gourd_charges, emblems: config.player.spirit_emblems, auto_aim: false, auto_aim_fresh: false, resurrections: config.player.resurrections, jump_forward: false, jump_land: None, step_tilt: 0.0, throw_start: None },
+        Player { plunge: None, speed_level: 0.0, requests: HashMap::new(), last_state: String::new(), gourd: config.player.gourd_charges, emblems: config.player.spirit_emblems, auto_aim: false, auto_aim_fresh: false, resurrections: config.player.resurrections, jump_forward: false, jump_land: None, step_tilt: 0.0, throw_start: None, throw_target: None },
         actor,
         Name::new("Player"),
         Transform::from_xyz(0.0, CAPSULE_HALF_HEIGHT, 4.0),
@@ -506,6 +546,10 @@ fn sp_ref_active(d: &CharData, a: &Actor, behavior_ref: i64) -> bool {
 /// 3 m above / lowerYRange 15 m below, normalFallOrbitCheck: the unsteered fall passes within
 /// range 1.5 m of the defender, at most heightLimit 3 m above it, within timeLimit 2000 ms).
 /// Plays the throw's attacker anim (a20x_511400 = 510300's clip) and the defender's ThrowDef13400.
+/// Out of a head-kick jump (AirKickEnemyJumpStart*) it is 蹴り崩し0 (suffix 160: a20x_511500,
+/// ThrowDef13500; heightLimit -10000 = no height check), landing on 蹴り崩し1 (161). Live
+/// (rec_c1020_c_20261009): the kick broke the General, an air attack 0.33 s into 213115 started
+/// a201_511500 (0.72 s) -> 511510 (1.68 s) -> 511511 with ThrowDef13500 -> 13510 -> 13511.
 fn start_plunge(
     p: &mut Player,
     a: &mut Actor,
@@ -514,10 +558,21 @@ fn start_plunge(
     enemies: &mut Query<(Entity, &mut Actor, &mut Enemy, &Transform), Without<Player>>,
     log: &mut CombatLog,
 ) -> bool {
-    if a.vel_y >= 0.0 {
+    let kick = a.state.starts_with("AirKickEnemyJumpStart");
+    if a.vel_y >= 0.0 && !kick {
         return false;
     }
-    let row_id = combat.foe.throw_row(150);
+    // An enemy that has not noticed Wolf takes the stealth plunge 落下0 / 落下1 (0030 / 0031:
+    // a20x_510300 -> 510310, ThrowDef12300 -> 12310): live (General) 0.54 s + 1.69 s + 1.83 s.
+    let stealth = enemies.iter().any(|(_, _, en, _)| en.is_unaware()) && !enemies.iter().any(|(_, _, en, _)| en.is_broken());
+    let (start, land) = if kick {
+        (160, 161)
+    } else if stealth {
+        (30, 31)
+    } else {
+        (150, 151)
+    };
+    let row_id = combat.foe.throw_row(start);
     let row = combat.param("ThrowParam", row_id);
     let Some(th) = combat.throw(row_id) else { return false };
     let f = |k: &str| row[k].as_f64().unwrap_or(0.0) as f32;
@@ -525,7 +580,7 @@ fn start_plunge(
     let (range, height, time_limit) = (f("normalFallOrbitCheck_range"), f("normalFallOrbitCheck_heightLimit"), f("normalFallOrbitCheck_timeLimit") / 1000.0);
     let ft = FALL_TYPES[(a.fall_type as usize).min(FALL_TYPES.len() - 1)];
     for (e, mut ea, mut enemy, etf) in enemies.iter_mut() {
-        if !enemy.is_broken() || etf.translation.distance(pos) > th.dist {
+        if !(enemy.is_broken() || (stealth && enemy.is_unaware())) || etf.translation.distance(pos) > th.dist {
             continue;
         }
         let dy = etf.translation.y - pos.y;
@@ -538,7 +593,7 @@ fn start_plunge(
         for _ in 0..((time_limit * 60.0) as usize).max(1) {
             vy += ft.gravity() / 60.0;
             q += a.air_base / 60.0 + Vec3::Y * vy / 60.0;
-            if (q - etf.translation).with_y(0.0).length() <= range && q.y - etf.translation.y <= height {
+            if (q - etf.translation).with_y(0.0).length() <= range && (height < 0.0 || q.y - etf.translation.y <= height) {
                 hit = true;
                 break;
             }
@@ -550,8 +605,12 @@ fn start_plunge(
             continue;
         }
         a.play("PlungeDeathblow", &th.atk_anim);
-        p.plunge = Some(e);
+        p.plunge = Some((e, land));
         enemy.react(&mut ea, combat, &format!("ThrowDef{}", th.def_anim));
+        if stealth {
+            // Held in its ThrowDef reaction (no AI) until the landing throw.
+            enemy.on_posture_break(&mut ea, combat, false, 4.0);
+        }
         log.push("plunge", Color::srgb(1.0, 0.5, 0.3));
         return true;
     }
@@ -678,6 +737,10 @@ fn buffer_flags(action: Action) -> &'static [i64] {
 /// Is a press latched right now? (pending |= pressed & acceptMask in FUN_140b2c190.) A
 /// press outside every accept window is dropped, not queued.
 fn buffers(d: &CharData, a: &Actor, action: Action) -> bool {
+    // A break pose reads attack / jump for its throw directly (decide, "ThrowBreak").
+    if a.state == "ThrowBreak" && matches!(action, Action::Attack | Action::Jump) {
+        return true;
+    }
     if a.airborne || is_free(&a.state) || a.anim.is_empty() || sprint_window(d, a) {
         return true;
     }
@@ -961,6 +1024,15 @@ fn decide(
         return;
     }
 
+    // Left above the floor by a clip's vertical root motion (the vault 511900) once its
+    // SetNoGravity ends: fall and land (live: FreeFall 200010 -> LandFreeFall 200020).
+    if !a.airborne && tf.translation.y > CAPSULE_HALF_HEIGHT + 0.05 && !(!a.anim.is_empty() && d.flag(&a.anim, a.t, FLAG_NO_GRAVITY)) {
+        a.airborne = true;
+        a.vel_y = 0.0;
+        a.air_base = Vec3::ZERO;
+        a.play_state(d, "FreeFall");
+    }
+
     let cam_yaw = camera.map_or(0.0, |c| c.yaw);
     let stick = stick_world(pad.stick, cam_yaw);
     // Attack auto-homing (CSChrAutoHomingModule): while not locked on, an attack's first 1/6 s
@@ -979,6 +1051,24 @@ fn decide(
     let len = d.length(&a.anim);
     let ended = !a.anim.is_empty() && a.t >= len;
 
+    // Kill follow-up (HKS BEH_R_THROW_KILL -> W_ThrowKill<env(273)>): when the thrown enemy dies
+    // (its ThrowDef -> ThrowDefDeath switch, flag 69) Wolf goes on with the throw anim's id + 1 if
+    // the set has one (only the a201 set: 510001, 510111, 510201, 511201, 511411, 511511).
+    // Live (rec_c1020_d_20261009): a201_510000 for 1.85 s, then 510001 on the frame the General
+    // goes 12000 -> 12001.
+    if let Some(ee) = p.throw_target {
+        let dead = enemies.get(ee).map(|(_, ea, _, _)| ea.state.starts_with("ThrowDefDeath"));
+        if a.state != "Deathblow" || dead.is_err() {
+            p.throw_target = None;
+        } else if dead == Ok(true) {
+            p.throw_target = None;
+            if let Some(kill) = kill_anim(&a.anim).filter(|k| d.anim(k).is_some()) {
+                a.play("Deathblow", &kill);
+                a.move_vel = Vec3::ZERO;
+            }
+        }
+    }
+
     // Deathblow start throw (ThrowParam 0000 崩し始動 a201_500000 / 0110 崩し背後始動): Wolf steps
     // in; the start anim's CommonBehavior (judge 600 at TAE frame 11; behind: 640 at 7) runs the main throw. Live
     // (rec_20261008_054259): 0.4 s of start, then the main anims begin together.
@@ -988,48 +1078,132 @@ fn decide(
             if judged || ended {
                 p.throw_start = None;
                 if let (Ok((_, mut ea, mut enemy, etf)), Some(th)) = (enemies.get_mut(ee), combat.throw(combat.foe.throw_row(suffix))) {
-                    main_deathblow(a, tf.translation, &mut ea, &mut enemy, etf.translation, ee, &combat, &th, suffix == 111, &mut throw, &mut log);
+                    if suffix == 201 {
+                        // The vault itself is no kill: the enemy plays ThrowDef13900 and stays
+                        // open to the deathblow while it lasts.
+                        if d.anim(&th.atk_anim).is_some() {
+                            a.play("BreakKickJump", &th.atk_anim);
+                            a.move_vel = Vec3::ZERO;
+                        }
+                        if ea.play_state(&combat.enemy, &format!("ThrowDef{}", th.def_anim)) {
+                            enemy.on_posture_break(&mut ea, &combat, false, 4.0);
+                        }
+                        throw.0 = Some(ThrowHold::new(ee, &th, "BreakKickJump"));
+                        log.push("kick jump over", Color::srgb(0.8, 0.9, 1.0));
+                    } else {
+                        main_deathblow(a, tf.translation, &mut ea, &mut enemy, etf.translation, ee, &combat, &th, suffix == 111 || suffix == 21, &mut throw, &mut log);
+                        p.throw_target = Some(ee);
+                    }
                 }
             }
         }
         return;
     }
 
-    // Deathblow: attack near a posture-broken enemy. ThrowParam 11020010 ("弾き",
-    // broken by a deflect, reach 4 m) or 11020001 ("崩し", reach 2.1 m) give the
-    // player's throw anim (a201_...) and the enemy's ThrowDef(Death) anim.
+    // Break throws: a deflect (弾き0, suffix 0010: a20x_510100 / ThrowDef12100) or a Mikiri (見切り崩し,
+    // 0120: a20x_511100 / ThrowDef13100) that empties the enemy's posture plays a pose pair
+    // (combat.rs). While the defender's anim has ChrActionFlag 67 ThrowStart2 (0-45 of
+    // ThrowDef12100), attack takes it to the deathblow (弾き1 0011 / 見切り崩し攻撃 0121) and jump
+    // to the jumping variant (0012 / 0122) - before Wolf's own cancel flags (frame 30): live
+    // c1020 510100 0.61 s -> 510110 -> 510111 (ThrowDef12100 -> 12110 -> 12111); c1010 510100
+    // 0.61-0.79 s -> 510110, 0.47-0.59 s -> 510120; 511100 0.55-0.61 s -> 511110.
+    if a.state == "ThrowBreak" {
+        let (atk_sfx, jump_sfx) = match a.anim.get(5..) {
+            Some("510100") => (11, 12),
+            Some("511100") => (121, 122),
+            _ => (0, 0),
+        };
+        let target = enemies
+            .iter()
+            .find(|(_, ea, en, _)| en.is_broken() && !ea.anim.is_empty() && combat.enemy.flag(&ea.anim, ea.t, FLAG_THROW_START2))
+            .map(|(e, ..)| e);
+        let pick = if target.is_some() && p.requests.remove(&Action::Attack).is_some() {
+            Some(atk_sfx)
+        } else if target.is_some() && p.requests.remove(&Action::Jump).is_some() {
+            Some(jump_sfx)
+        } else {
+            None
+        };
+        if let (Some(sfx), Some(ee)) = (pick, target) {
+            if let (Ok((_, mut ea, mut enemy, etf)), Some(th)) = (enemies.get_mut(ee), combat.throw(combat.foe.throw_row(sfx))) {
+                if d.anim(&th.atk_anim).is_some() {
+                    main_deathblow(a, tf.translation, &mut ea, &mut enemy, etf.translation, ee, &combat, &th, false, &mut throw, &mut log);
+                    p.throw_target = Some(ee);
+                    return;
+                }
+            }
+        }
+    }
+
+    // 崩し蹴りジャンプ (ThrowParam 0200 -> 0201, both enemies on the a200 set): jump in front of a
+    // broken enemy (Dist 3.0 / 3.1, DiffAng 90-180 = it faces Wolf) vaults over it: a200_501900
+    // (CommonBehavior 740 at frame 8 runs the main throw) -> 511900 (no gravity frames 0-27),
+    // enemy ThrowDef13900. Live: c1010 0.30 s + 1.07 s, then a free-fall landing behind him; the
+    // General 501900 -> 511900 -> attack -> the behind deathblow.
+    if p.requests.contains_key(&Action::Jump) && accepts(d, a, Action::Jump) {
+        let start = combat.throw(combat.foe.throw_row(200)).filter(|st| d.anim(&st.atk_anim).is_some());
+        let over = start.and_then(|st| {
+            enemies.iter().find_map(|(ee, ea, en, etf)| {
+                let to_wolf = (tf.translation - etf.translation).with_y(0.0).normalize_or_zero();
+                let facing = ea.forward().angle_between(to_wolf).to_degrees() < 90.0;
+                (en.is_broken() && facing && etf.translation.distance(tf.translation) <= st.dist).then(|| (ee, etf.translation, st.atk_anim.clone()))
+            })
+        });
+        if let Some((ee, epos, anim)) = over {
+            p.requests.remove(&Action::Jump);
+            a.yaw = yaw_of((epos - tf.translation).with_y(0.0));
+            a.move_vel = Vec3::ZERO;
+            a.play("DeathblowStart", &anim);
+            p.throw_start = Some((ee, 201));
+            return;
+        }
+    }
+
+    // Deathblow: attack near a posture-broken enemy. Start rows ("崩し始動" 0000, DiffAng 90-180 =
+    // facing the enemy; "崩し背後始動" 0110, DiffAng 0-90 = behind it) carry the reach (Dist) and
+    // lead to the main throws ("崩し本体" 0001; "崩し背後本体" 0111, a20x_511200 = 510200's clip,
+    // isTurnAtker). The Ochimusha also has 崩し始動（近）0005 (Dist 1.2) -> 崩し本体（近）0006
+    // (a200_502500 -> 512500), taken first when that close. Live (rec_c1010_20261009): near 3x
+    // (0.30 s + 1.83 s), far 1x (0.30 s + 2.00 s).
     if p.requests.contains_key(&Action::Attack) && accepts(d, a, Action::Attack) {
         for (ee, mut ea, mut enemy, etf) in &mut enemies {
-            if !enemy.is_broken() {
+            let unaware = enemy.is_unaware();
+            if !enemy.is_broken() && !unaware {
                 continue;
             }
-            // ThrowParam start rows pick the side: "崩し始動" (0000) DiffAng 90-180 = facing the enemy,
-            // "崩し背後始動" (0110) DiffAng 0-90 = behind it (Wolf and the enemy face the same way).
-            // Behind -> "崩し背後本体" (0111, a20x_511200 = imports 510200's clip; isTurnAtker);
-            // in front: "弾き0" (0010) after a deflect break, else "崩し本体" (0001).
             let to_enemy = (etf.translation - tf.translation).with_y(0.0).normalize_or_zero();
             let behind = ea.forward().angle_between(to_enemy).to_degrees() < 90.0;
-            let suffix = if behind {
-                111
-            } else if ea.state.starts_with("AttackBoundEmptyStamina") {
-                10
+            // Stealth deathblow (背後始動 0020 -> 背後本体 0021: a20x_500200 -> 510200 [-> 510201],
+            // ThrowDef12200) on an enemy that has not noticed Wolf, only from behind (DiffAng 0-90).
+            // Live: c1010 0.29 s + 2.0 s; the General 0.28 s + 1.52 s + 1.82 s.
+            if unaware && !behind {
+                continue;
+            }
+            let dist = etf.translation.distance(tf.translation);
+            let near = combat.throw(combat.foe.throw_row(5)).filter(|st| !behind && dist <= st.dist && d.anim(&st.atk_anim).is_some());
+            let (start_sfx, suffix) = if unaware {
+                (20, 21)
+            } else if behind {
+                (110, 111)
+            } else if near.is_some() {
+                (5, 6)
             } else {
-                1
+                (0, 1)
             };
-            let row = combat.foe.throw_row(suffix);
-            let Some(th) = combat.throw(row) else { continue };
-            if etf.translation.distance(tf.translation) <= th.dist {
+            let Some(th) = combat.throw(combat.foe.throw_row(suffix)) else { continue };
+            let start = combat.throw(combat.foe.throw_row(start_sfx)).filter(|st| d.anim(&st.atk_anim).is_some());
+            if dist <= start.as_ref().map_or(th.dist, |st| st.dist) {
                 p.requests.remove(&Action::Attack);
                 // isTurnAtker: Wolf turns to the enemy at once (live: exactly).
                 a.yaw = yaw_of((etf.translation - tf.translation).with_y(0.0));
                 a.move_vel = Vec3::ZERO;
-                let start = if suffix == 10 { None } else { combat.throw(combat.foe.throw_row(suffix - 1)) };
-                if let Some(st) = start.filter(|st| d.anim(&st.atk_anim).is_some()) {
+                if let Some(st) = start {
                     a.play("DeathblowStart", &st.atk_anim);
                     p.throw_start = Some((ee, suffix));
                     return;
                 }
                 main_deathblow(a, tf.translation, &mut ea, &mut enemy, etf.translation, ee, &combat, &th, behind, &mut throw, &mut log);
+                p.throw_target = Some(ee);
                 return;
             }
         }
@@ -1475,7 +1649,12 @@ fn decide(
             if air_ok(a, FLAG_ACCEPT_JUMP) && !sp_ref_active(d, a, SP_REF_DISABLE_AIR_KICK) {
                 a.play_state(d, "AirKick");
             }
-        } else if p.requests.contains_key(&Action::Attack) && air_ok(a, FLAG_ACCEPT_ATTACK) && start_plunge(p, a, &combat, tf.translation, &mut enemies, &mut log) {
+        } else if p.requests.contains_key(&Action::Attack)
+            && (air_ok(a, FLAG_ACCEPT_ATTACK) || (a.state.starts_with("AirKickEnemyJumpStart") && air_ok(a, FLAG_BUFFER_ALL)))
+            && start_plunge(p, a, &combat, tf.translation, &mut enemies, &mut log)
+        {
+            // Out of a head-kick jump the kick-down throw is checked from its buffer flag 87
+            // (frame 9), not the air attack's 115 (frame 21): live 0.33 s into 213115.
             p.requests.remove(&Action::Attack);
         } else if p.requests.contains_key(&Action::Attack) && air_ok(a, FLAG_ACCEPT_ATTACK) {
             p.requests.remove(&Action::Attack);
@@ -1496,7 +1675,26 @@ fn decide(
         // 0-6, then TAE 920 row 2101 relaunches). Also how sweeps are jumped (AirKick has
         // sweep i-frames).
         if a.state == "AirKick" && a.attack_hit && sp_ref_active(d, a, SP_REF_KICK_ENEMY_JUMP) {
-            a.play_state(d, "AirKickEnemyJumpStart_F");
+            // HKS _set4DirJumpDir on the stick (vs facing, + right): within +-45 deg forward (or no
+            // stick: vertical), -135..-45 left, 45..135 right, else back; locked on, forward and
+            // vertical become FORWARD_LOCKON. Live: locked kicks play _F_Lock (a000_213115),
+            // unlocked neutral ones _N (213114).
+            let local = Quat::from_rotation_y(-a.yaw) * stick;
+            let angle = local.x.atan2(-local.z).to_degrees();
+            let dir = if stick == Vec3::ZERO || angle.abs() < 45.0 {
+                match (lock.target.is_some(), stick == Vec3::ZERO) {
+                    (true, _) => "F_Lock",
+                    (false, true) => "N",
+                    (false, false) => "F",
+                }
+            } else if (-135.0..-45.0).contains(&angle) {
+                "L"
+            } else if (45.0..135.0).contains(&angle) {
+                "R"
+            } else {
+                "B"
+            };
+            a.play_state(d, &format!("AirKickEnemyJumpStart_{dir}"));
             a.air_base = Vec3::ZERO;
             a.vel_y = 0.0;
             log.push("kick jump", Color::srgb(0.8, 0.9, 1.0));
@@ -1541,10 +1739,10 @@ fn decide(
         // Target: the defender's targetBaseDmyPolyId 233 (on its model root) + targetOffset
         // (0, 0, -0.3) in that dummy's space; the enemy's position without a model (tests).
         if a.state == "PlungeDeathblow" {
-            let dmy = p.plunge.and_then(|e| enemy_dummies.get(e).ok()).and_then(|dm| dm.0.get(&233)).and_then(|&de| globals.get(de).ok());
+            let dmy = p.plunge.and_then(|(e, _)| enemy_dummies.get(e).ok()).and_then(|dm| dm.0.get(&233)).and_then(|&de| globals.get(de).ok());
             let tp = match dmy {
                 Some(g) => Some(g.transform_point(Vec3::new(0.0, 0.0, -0.3))),
-                None => p.plunge.and_then(|e| enemies.get(e).ok()).map(|(_, _, _, t)| t.translation),
+                None => p.plunge.and_then(|(e, _)| enemies.get(e).ok()).map(|(_, _, _, t)| t.translation),
             };
             if let Some(tp) = tp {
                 let g = ft.gravity();
@@ -1569,9 +1767,10 @@ fn decide(
             a.move_vel = Vec3::ZERO;
             a.air_base = Vec3::ZERO;
             // Plunge lands: ThrowParam 崩し落下1 (suffix 151): Wolf a20x_511410 (510310's clip),
-            // the enemy ThrowDefDeath13411.
+            // the enemy ThrowDefDeath13411; 蹴り崩し1 (161): a20x_511510, ThrowDef13510.
             if a.state == "PlungeDeathblow" {
-                if let (Some(target), Some(th)) = (p.plunge.take(), combat.throw(combat.foe.throw_row(151))) {
+                let plunge = p.plunge.take();
+                if let Some((target, th)) = plunge.and_then(|(t, s)| Some((t, combat.throw(combat.foe.throw_row(s))?))) {
                     if let Ok((_, mut ea, mut enemy, etf)) = enemies.get_mut(target) {
                         if d.anim(&th.atk_anim).is_some() {
                             a.play("Deathblow", &th.atk_anim);
@@ -1579,6 +1778,7 @@ fn decide(
                         ea.yaw = yaw_of((tf.translation - etf.translation).with_y(0.0));
                         enemy.deathblow(&mut ea, &combat, th.def_anim);
                         throw.0 = Some(ThrowHold::new(target, &th, "Deathblow"));
+                        p.throw_target = Some(target);
                         log.push("DEATHBLOW (plunge)", Color::srgb(1.0, 0.2, 0.2));
                         return;
                     }
@@ -1596,6 +1796,16 @@ fn decide(
             if a.state.starts_with("AirComboAttack") && !a.anim.is_empty() && d.has_ref(&a.anim, a.t, REF_ORIGINAL_LAND_ACTION) {
                 let land = format!("Land{}", a.state);
                 if a.continue_state(d, &land) {
+                    return;
+                }
+            }
+            // Air deflect reactions likewise (HKS W_LandAirDeflect{Easy,Hard}{Small,Large,ExLarge},
+            // StartTime = the air anim's time): the land anim is the air one's id + 10. Live
+            // (rec_c1010_b_20261009): AirDeflectHardLarge_L -> LandAirDeflectHardLarge_L (132311),
+            // AirDeflectHardSmall_R -> LandAirDeflectHardSmall_B (132112); landing after ref 201
+            // ended (AirDeflectHard at 0.74 s) is a plain landing.
+            if let Some(land) = land_air_deflect(&a.state) {
+                if !a.anim.is_empty() && d.has_ref(&a.anim, a.t, REF_ORIGINAL_LAND_ACTION) && a.continue_state(d, land) {
                     return;
                 }
             }
@@ -1617,6 +1827,7 @@ fn decide(
                 // (LandVerticalGroundJump a000_201040 / LandForwardGroundJump a000_201045).
                 // GroundJumpLandReady (a000_201050) is the pose just before touchdown, not a landing.
                 // Directional jumps: W_LandGroundPositioningJump comes before moving on.
+                _ if a.state == "FreeFall" && a.play_state(d, "LandFreeFall") => {}
                 _ if p.jump_land.is_some() && a.state.contains("GroundJump") => {
                     let land = p.jump_land.take().unwrap_or("LandGroundPositioningJump_F");
                     a.play_state(d, land);
@@ -1637,7 +1848,7 @@ fn decide(
                 if !a.play_state(d, &fall) {
                     a.t = len;
                 }
-            } else if a.state.ends_with("GroundJumpFall") {
+            } else if a.state.ends_with("GroundJumpFall") || a.state == "FreeFall" {
                 a.t %= len.max(1e-3); // loop
             } else if a.state.contains("BlowStart") || a.state.contains("UpperStart") || (a.state.starts_with("AirDamage") && a.state.contains("Start")) {
                 let fall = a.state.replace("Start", "FallLoop");

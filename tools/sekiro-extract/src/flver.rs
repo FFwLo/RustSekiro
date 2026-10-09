@@ -410,5 +410,7 @@ pub fn mtd_shader(d: &[u8]) -> String {
 /// shaders (SSS: faces, hands, mouths) and eyes use the alpha for something else (Wolf's head
 /// albedo is 86 % alpha 0) and draw opaque.
 pub fn alpha_tested(_mtd: &str, shader: &str) -> bool {
+    // The AN_Blend shaders cut too: Wolf's coat (P_BD_M_9040_Court, g_AlphaRef 128) keeps its torn
+    // hem and ragged collar edge in the albedo alpha.
     !(shader.contains("SSS") || shader.contains("Eye"))
 }

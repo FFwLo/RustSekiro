@@ -88,11 +88,11 @@ Two of them, picked in `config.toml` or the debug menu:
 | Ashina Samurai General | katana, two-handed | its own battle script |
 | Ochimusha | katana, one-handed | its own battle script |
 
-Each runs **its real AI**: the game's battle scripts, decompiled, on a small
-runtime that answers their questions about distance, angle, timers and
-effects the way the game does. They space, attack, combo, guard, deflect and
-counter by those scripts, with their own stats, attacks and reactions.
-Without the scripts they fall back to fixed combos.
+Each runs **its real AI**: the game's own compiled battle scripts, run as they
+ship in a small Lua 5.0 interpreter, on a runtime that answers their questions
+about distance, angle, timers and effects the way the game does. They space,
+attack, combo, guard, deflect and counter by those scripts, with their own
+stats, attacks and reactions.
 
 ### The arena
 
@@ -141,7 +141,7 @@ Read from the game's files:
   params, and the reactions they cause.
 - Deathblow geometry: distances, attachment points and timing.
 - Wolf's behaviour rules, from the decompiled character script, and the
-  enemies' AI, from their decompiled battle scripts.
+  enemies' AI, from their compiled battle scripts.
 - Camera distances, angles and chase rates.
 - The skeletons, animations, models, materials and cloth.
 - Which sounds each animation plays and on which frame.
@@ -240,12 +240,7 @@ until you generate it from your own copy. That is one command.
    `extracted/`. The sound step decodes through the game's own FMOD and takes
    the longest.
 
-3. **Optional, for the enemies' real AI.** Decompile the AI scripts
-   (`script/aicommon.luabnd` and the map `script/m1*.luabnd` files) with
-   [DSLuaDecompiler](https://github.com/katalash/DSLuaDecompiler) into
-   `extracted/ai_src/`.
-
-4. **Run it** from the project folder:
+3. **Run it** from the project folder:
 
    ```bash
    cargo run --release
@@ -281,7 +276,7 @@ from. `F5` reloads it while playing.
 |---|---|
 | `src/player.rs` | Wolf: the input buffer, the state machine from the character script, movement, guard and deflect, jumps, deathblows. |
 | `src/enemy.rs` | The enemies: their actions, reactions, guarding and deflecting, and their side of a deathblow. |
-| `src/ai.rs`, `src/ai/runtime.lua` | The Lua host and goal runtime that run the enemies' real battle scripts. |
+| `src/ai.rs`, `src/ai/lua50.rs` | The Lua 5.0 interpreter and goal runtime that run the enemies' real battle scripts. |
 | `src/combat.rs`, `src/actor.rs` | Hits, posture, damage, reactions, knockback, root motion. |
 | `src/anim.rs` | Animation playback: crossfades, layers, loops, leg twist, head and torso turns. |
 | `src/model.rs`, `src/sekiro_material.wgsl` | Models, weapons and where they sit, and the material shader. |
@@ -310,6 +305,10 @@ ones the community already distributes with its unpacking tools.
 ## License
 
 The code is under the [MIT License](LICENSE.md).
+
+`src/ai/lua50.rs` is adapted from [sekiro-rs](https://github.com/AKJama/sekiro-rs)
+(Copyright (c) 2026 AKJama), used under its MIT license; the notice is in
+[THIRD_PARTY.md](THIRD_PARTY.md).
 
 The licence covers this project's code only. It grants nothing over SEKIRO:
 SHADOWS DIE TWICE or anything generated from its files, which remain

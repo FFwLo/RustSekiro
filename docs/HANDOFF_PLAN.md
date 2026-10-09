@@ -35,7 +35,7 @@ feel when the game has the real value.
 | Pipeline script | `tools/extract.ps1` |
 | Wolf behaviour scripts (decompiled HKS) | `extracted/hks_src/c0000_transition.lua` (all decisions), `c0000_define.lua` (constants, SP_EF_REF_* ids), `c0000_cmsg.lua` |
 | Enemy reaction script | `extracted/hks_src/c9997.lua` |
-| Enemy AI (decompiled Lua) | `extracted/ai_src/` |
+| Enemy AI (compiled Lua 5.0, run as-is by `src/ai.rs`) | `extracted/script/aicommon.luabnd.d/`, `extracted/script/m*.luabnd.d/` (decompiled copies for reading: `extracted/ai_src/`) |
 | Unpacked game files | `extracted/chr/` (chrbnd/anibnd/behbnd), `extracted/parts/` (Wolf equipment), `extracted/tex/` (DDS), `extracted/json/params/*.json` (every param table) |
 | Exe decompile (Ghidra, every function) | `extracted/decomp/*.c` (`// @ <addr>` before each function); vtable/class map `extracted/rtti_vtables.txt` |
 | TAE event layouts | `tools/sekiro-extract/defs/TAE.Template.SDT.xml` |

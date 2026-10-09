@@ -57,3 +57,8 @@ Dated findings, oldest first. Append new entries at the end.
 - 2026-10-07 enemy hit without a reaction (mid-swing / minimum level): c9997 ExecNoSyncAddDamage -> PartBlend_Add0N
   by env(1120) damage part when the chr has anim 9xxx part clips (c1020/c1010 have none), else SABlend_Add_<dir>
   (combat.rs, additive layer). Wolf's slashes into a swinging General now visibly jolt him.
+- 2026-10-09: the AI now runs the game's COMPILED scripts directly (no DSLuaDecompiler step): src/ai/lua50.rs (Lua 5.0
+  VM adapted from sekiro-rs, MIT) loads extracted/script/aicommon.luabnd.d (ai_define, goal_list, logic_list, event_list,
+  table_ai_common first, then the rest sorted) + <battle>_battle.lua from the first m*.luabnd.d. src/ai/runtime.lua was
+  ported to Rust in src/ai.rs (same goal tree, native goals, ai methods; mlua dropped). Parity: 90 s duel_trace gives
+  52 vs 53 enemy actions with the same act mix; ai_stubs reports no stubs. ai::fix_decompiled is gone (bytecode has real breaks).

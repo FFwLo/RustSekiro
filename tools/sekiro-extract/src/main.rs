@@ -61,6 +61,8 @@ fn main() {
         Some("params") if args.len() == 4 => dump_params(Path::new(&args[2]), Path::new(&args[3])),
         Some("tae") if args.len() == 4 => dump_tae(Path::new(&args[2]), Path::new(&args[3])),
         Some("model") if args.len() == 6 => export_model(Path::new(&args[2]), Path::new(&args[3]), Path::new(&args[4]), Path::new(&args[5])),
+        // DDS (first mip) -> PNG; "alpha" writes the alpha channel as grey.
+        Some("dds2png") if args.len() >= 4 => dds2png(Path::new(&args[2]), Path::new(&args[3]), args.get(4).is_some_and(|a| a == "alpha")),
         Some("hkxdump") if args.len() == 3 => hkx::dump(&std::fs::read(&args[2]).unwrap()),
         // Dummy poly frames (id, attach bone, model-space position / forward / upward) as JSON:
         // the sidecar model_<chr>.dummies.json (throw absorb directions).
@@ -305,6 +307,20 @@ fn export_model(flver_path: &Path, tpf_path: &Path, out: &Path, tex_dir: &Path) 
         if let Ok(d) = std::fs::read(&common) {
             textures.extend(flver::tpf(&d));
         }
+        // A character family's shared texture pack: chr/cXXX9.texbnd (c1010's skin is
+        // c1019_body_merge_a, c1020's head c1029_head02_a).
+        let stem = flver_path.file_stem().unwrap_or_default().to_string_lossy().to_lowercase();
+        if stem.len() == 5 && stem.starts_with('c') {
+            let family = format!("{}9", &stem[..4]);
+            let dir = tex_dir.parent().unwrap_or(Path::new(".")).join(format!("chr/{family}.texbnd.d"));
+            for e in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+                if e.path().extension().is_some_and(|x| x == "tpf") {
+                    if let Ok(d) = std::fs::read(e.path()) {
+                        textures.extend(flver::tpf(&d));
+                    }
+                }
+            }
+        }
     }
     let albedos: Vec<String> = textures.iter().map(|(n, _)| n.clone()).filter(|n| n.ends_with("_a")).collect();
     let normals: Vec<String> = textures.iter().map(|(n, _)| n.clone()).filter(|n| n.ends_with("_n")).collect();
@@ -408,4 +424,59 @@ fn export_model(flver_path: &Path, tpf_path: &Path, out: &Path, tex_dir: &Path) 
             write(&tex_dir.join(format!("{name}.dds")), dds);
         }
     }
+}
+
+
+/// DDS (first mip, BC1-BC7 or DX10 header) to an RGBA PNG; `alpha_only` writes the alpha as grey.
+fn dds2png(src: &Path, dst: &Path, alpha_only: bool) {
+    let d = std::fs::read(src).expect("read dds");
+    let u32_at = |o: usize| u32::from_le_bytes(d[o..o + 4].try_into().unwrap());
+    let (h, w) = (u32_at(12) as usize, u32_at(16) as usize);
+    let four = &d[84..88];
+    let (fmt, data_off) = if four == b"DX10" { (u32_at(128), 148) } else { (0, 128) };
+    let src_data = &d[data_off..];
+    let mut px = vec![0u32; w * h];
+    let r = match (four, fmt) {
+        (b"DXT1", _) | (_, 71 | 72) => texture2ddecoder::decode_bc1a(src_data, w, h, &mut px),
+        (b"DXT3", _) | (_, 74 | 75) => texture2ddecoder::decode_bc2(src_data, w, h, &mut px),
+        (b"DXT5", _) | (_, 77 | 78) => texture2ddecoder::decode_bc3(src_data, w, h, &mut px),
+        (b"ATI1" | b"BC4U", _) | (_, 80 | 81) => texture2ddecoder::decode_bc4(src_data, w, h, &mut px),
+        (b"ATI2" | b"BC5U", _) | (_, 83 | 84) => texture2ddecoder::decode_bc5(src_data, w, h, &mut px),
+        (_, 98 | 99) => texture2ddecoder::decode_bc7(src_data, w, h, &mut px),
+        _ => panic!("unsupported dds format {four:?} / {fmt}"),
+    };
+    r.expect("decode");
+    // Normal-map check: share of texels whose RG (x2-1) reach the unit circle.
+    if std::env::var("DDS_NORMAL_STATS").is_ok() {
+        let (mut out, mut sum) = (0usize, 0.0f64);
+        for &p in &px {
+            let (g, r) = ((p >> 8 & 0xff) as f64 / 255.0 * 2.0 - 1.0, (p >> 16 & 0xff) as f64 / 255.0 * 2.0 - 1.0);
+            let l = (r * r + g * g).sqrt();
+            sum += l;
+            if l >= 0.99 {
+                out += 1;
+            }
+        }
+        let mut hist = [0usize; 5];
+        for &p in &px {
+            hist[((p & 0xff) as usize * 5 / 256).min(4)] += 1;
+        }
+        let pct: Vec<String> = hist.iter().map(|&c| format!("{:.0}", 100.0 * c as f64 / px.len() as f64)).collect();
+        println!("{}: mean |xy| {:.3}, |xy|>=0.99 {:.2} %, B quintiles % {}", src.display(), sum / px.len() as f64, 100.0 * out as f64 / px.len() as f64, pct.join("/"));
+    }
+    // texture2ddecoder packs BGRA little-endian.
+    let mut rgba = Vec::with_capacity(w * h * 4);
+    for p in px {
+        let (b, g, r, a) = ((p & 0xff) as u8, (p >> 8 & 0xff) as u8, (p >> 16 & 0xff) as u8, (p >> 24) as u8);
+        if alpha_only {
+            rgba.extend_from_slice(&[a, a, a, 255]);
+        } else {
+            rgba.extend_from_slice(&[r, g, b, a]);
+        }
+    }
+    let f = std::fs::File::create(dst).expect("create png");
+    let mut enc = png::Encoder::new(std::io::BufWriter::new(f), w as u32, h as u32);
+    enc.set_color(png::ColorType::Rgba);
+    enc.set_depth(png::BitDepth::Eight);
+    enc.write_header().expect("png header").write_image_data(&rgba).expect("png data");
 }

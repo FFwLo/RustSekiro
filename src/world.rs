@@ -101,5 +101,10 @@ fn spawn_world(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mat
         DirectionalLight { illuminance: 2_000.0, color: Color::srgb(0.75, 0.82, 1.0), shadow_maps_enabled: false, ..default() },
         Transform::from_xyz(-6.0, 6.0, -8.0).looking_at(Vec3::ZERO, Vec3::Y),
     ));
-    commands.insert_resource(GlobalAmbientLight { color: Color::srgb(0.8, 0.85, 1.0), brightness: 300.0, ..default() });
+    // Hand-picked (no map lighting yet). 1200 rather than 300: with the shade that dark, the
+    // normal maps of the matte cloth turned into hard light/dark pixels near the light's edge
+    // (Wolf's coat looked speckled and shimmered); the game's ambient keeps that side soft.
+    // SHINOBI_AMBIENT overrides it for checks.
+    let ambient = std::env::var("SHINOBI_AMBIENT").ok().and_then(|v| v.parse().ok()).unwrap_or(1200.0);
+    commands.insert_resource(GlobalAmbientLight { color: Color::srgb(0.8, 0.85, 1.0), brightness: ambient, ..default() });
 }

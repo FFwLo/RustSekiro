@@ -160,7 +160,13 @@ fn resolve<'a>(taes: &'a HashMap<String, Value>, key: &str) -> Option<(&'a Value
     for _ in 0..8 {
         let a = taes.get(&k)?;
         match a.get("importFrom").and_then(Value::as_i64) {
-            Some(src) => k = format!("{}_{:06}", &k[..4], src % 1_000_000),
+            // importFrom is group * 1e6 + anim id. Wolf's TAEs are split per group, where it can
+            // cross groups (a201_500200 imports 200500200 = a200_500200); an NPC's single TAE
+            // keeps its own group.
+            Some(src) => {
+                let other = format!("a{:03}_{:06}", src / 1_000_000, src % 1_000_000);
+                k = if taes.contains_key(&other) { other } else { format!("{}_{:06}", &k[..4], src % 1_000_000) };
+            }
             None => return Some((a, k)),
         }
     }
@@ -554,7 +560,18 @@ pub fn export(root: &Path, list_file: &Path, defs: &Path) {
             "CameraParam": all_rows(&params, "CameraParam"),
             "CameraSetParam": all_rows(&params, "CameraSetParam"),
             "KnockBackParam": all_rows(&params, "KnockBackParam"),
-            "ThrowParam": rows(&params, "ThrowParam", &[11020000, 11020001, 11020010, 11020011, 11020110, 11020111, 11020150, 11020151, 11020190, 21020000, 11010000, 11010001, 11010010, 11010011, 11010110, 11010111, 11010150, 11010151, 11010190]),
+            "ThrowParam": rows(&params, "ThrowParam", &{
+                // PC -> c1010 (11010xxx) / c1020 (11020xxx) suffixes: 0000/0001 front, 0005/0006 front near,
+                // 0010-0012 deflect break, 0110/0111 behind, 0120-0122 mikiri break, 0150/0151 plunge,
+                // 0160/0161 kick-down, 0190 mikiri, 0200/0201 kick-jump over; 21020000 the General's grab.
+                let mut ids = vec![21020000];
+                for base in [11010000, 11020000] {
+                    for s in [0, 1, 5, 6, 10, 11, 12, 20, 21, 30, 31, 110, 111, 120, 121, 122, 150, 151, 160, 161, 190, 200, 201] {
+                        ids.push(base + s);
+                    }
+                }
+                ids
+            }),
             "ChrPhysicsVelocityChangeParam": all_rows(&params, "ChrPhysicsVelocityChangeParam"),
         },
     });

@@ -39,6 +39,10 @@ enum Set {
     /// hclBendLinkConstraintSet: (a, b, bendMinLength, stretchMaxLength, bendStiffness,
     /// stretchStiffness) - pushed apart below the min length, pulled in above the max.
     Bend(Vec<(usize, usize, f32, f32, f32, f32)>),
+    /// hclBendStiffnessConstraintSet: links (weights A..D, bendStiffness, restCurvature, particles
+    /// A..D; C-D is the hinge edge, A and B the opposite corners), maxRestPoseHeightSq, clamp,
+    /// useRestPoseConfig. Solved as the exe's hclBendStiffnessConstraintSetMx (FUN_141526450).
+    BendStiffness { links: Vec<([f32; 4], f32, f32, [usize; 4])>, max_height_sq: f32, clamp: bool, rest_pose: bool },
     Unsolved,
 }
 
@@ -144,6 +148,15 @@ pub fn load(model_file: &std::path::Path) -> Vec<ClothDef> {
                         "bend" => Set::Bend(
                             arr(&s["links"]).iter().map(|l| (us(&l[0]), us(&l[1]), fl(&l[2]), fl(&l[3]), fl(&l[4]), fl(&l[5]))).collect(),
                         ),
+                        "bend_stiffness" => Set::BendStiffness {
+                            links: arr(&s["links"])
+                                .iter()
+                                .map(|l| ([fl(&l[0]), fl(&l[1]), fl(&l[2]), fl(&l[3])], fl(&l[4]), fl(&l[5]), [us(&l[6]), us(&l[7]), us(&l[8]), us(&l[9])]))
+                                .collect(),
+                            max_height_sq: fl(&s["maxRestPoseHeightSq"]),
+                            clamp: s["clamp"].as_u64().unwrap_or(0) != 0,
+                            rest_pose: s["useRestPoseConfig"].as_u64().unwrap_or(0) != 0,
+                        },
                         "local_range" => Set::LocalRange {
                             items: arr(&s["items"]).iter().map(|i| (us(&i[0]), us(&i[1]), fl(&i[2]), fl(&i[3]), fl(&i[4]))).collect(),
                             stiffness: fl(&s["stiffness"]),
@@ -196,6 +209,8 @@ pub struct DisplayMesh {
     pub mesh: usize,
     pub pos: Vec<[f32; 3]>,
     pub normal: Vec<[f32; 3]>,
+    /// Bind-pose tangents (xyz, handedness w); empty without a normal map.
+    pub tangent: Vec<[f32; 4]>,
     pub joints: Vec<Entity>,
     pub inv: Vec<Mat4>,
     pub idx: Vec<[u16; 4]>,
@@ -230,7 +245,10 @@ pub struct ClothPlugin;
 
 impl Plugin for ClothPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(PostUpdate, simulate.after(bevy::transform::TransformSystems::Propagate));
+        // SHINOBI_NO_CLOTH=1: no simulation (visual checks of the skinned meshes underneath).
+        if std::env::var("SHINOBI_NO_CLOTH").is_err() {
+            app.add_systems(PostUpdate, simulate.after(bevy::transform::TransformSystems::Propagate));
+        }
     }
 }
 
@@ -251,6 +269,42 @@ fn tri_frame(x: &[Vec3], t: [usize; 3]) -> Mat4 {
     let c = (v0 + v1 + v2) / 3.0;
     let (a, b) = (v0 - c, v1 - c);
     Mat4::from_cols(a.extend(0.0), b.extend(0.0), a.cross(b).extend(0.0), c.extend(1.0))
+}
+
+/// One bend-stiffness link, as the exe (FUN_14152b490 single links; the batched SIMD path is the
+/// same math): v = sum w_i p_i, plus with the rest-pose config the rest bend: the unit bisector of
+/// the two triangle normals (e x (A - C), (B - C) x e; e = D - C) times hA hB restCurvature (hA, hB
+/// the corners' heights over the hinge). Each particle moves by w_i invMass_i bendStiffness v
+/// (bendStiffness is negative: it pulls v back to zero). With clamp, a link whose rest bend height
+/// squared exceeds maxRestPoseHeightSq is skipped (stiffness 0). The stiffness factor the solver
+/// passes in is 1.0 (strategy table FUN_14156d230 -> constant 1.0 in modes 0 / 1).
+fn solve_bend_stiffness(x: &mut [Vec3], w: &[f32], l: &([f32; 4], f32, f32, [usize; 4]), max_height_sq: f32, clamp: bool, rest_pose: bool) {
+    let (wt, stiff, rest_curv, ix) = (l.0, l.1, l.2, l.3);
+    if ix.iter().any(|&i| i >= x.len()) {
+        return;
+    }
+    let (a, b, c, d) = (x[ix[0]], x[ix[1]], x[ix[2]], x[ix[3]]);
+    let mut v = a * wt[0] + b * wt[1] + c * wt[2] + d * wt[3];
+    let mut k = stiff;
+    if rest_pose {
+        let e = d - c;
+        let na = e.cross(a - c);
+        let nb = (b - c).cross(e);
+        let (la, lb, le2) = (na.length(), nb.length(), e.length_squared());
+        let h = if le2 > 0.0 { la * lb / le2 } else { 0.0 };
+        let height = h * rest_curv;
+        if clamp && max_height_sq < height * height {
+            k = 0.0;
+        }
+        let unit = |n: Vec3, l: f32| if l > 0.0 { n / l } else { Vec3::ZERO };
+        v += (unit(na, la) + unit(nb, lb)).normalize_or_zero() * height;
+    }
+    if k == 0.0 {
+        return;
+    }
+    for i in 0..4 {
+        x[ix[i]] += v * (wt[i] * k * w[ix[i]]);
+    }
 }
 
 fn solve_link(x: &mut [Vec3], w: &[f32], l: &Link, stretch_only: bool) {
@@ -313,12 +367,24 @@ fn simulate(
                 let root = globals.get(c.root).map(|g| havok(g.to_matrix()).w_axis.truncate()).unwrap_or_default();
                 let far = c.x.iter().map(|p| p.distance(root)).fold(0.0, f32::max);
                 let rf = refs.iter().flatten().map(|(q, _)| q.distance(root)).fold(0.0, f32::max);
+                // How far simulated particles sit from their skinned reference (LocalRange pairs).
+                let gaps: Vec<f32> = def
+                    .sets
+                    .iter()
+                    .filter_map(|st| if let Set::LocalRange { items, .. } = st { Some(items) } else { None })
+                    .flatten()
+                    .filter_map(|&(p, r, ..)| refs.get(r).and_then(|v| *v).map(|(q, _)| c.x.get(p).map_or(0.0, |x| x.distance(q))))
+                    .collect();
+                let mean = gaps.iter().sum::<f32>() / gaps.len().max(1) as f32;
+                let max = gaps.iter().copied().fold(0.0, f32::max);
+                info!("cloth {}: ref gap mean {mean:.3} max {max:.3} ({} pairs)", def.name, gaps.len());
                 info!("cloth {}: refs {}/{} bones {}/{} far {far:.2} ref-far {rf:.2}", def.name, refs.iter().flatten().count(), refs.len(), bone_mats.len(), def.refs.iter().flatten().map(|r| &r.0).collect::<std::collections::HashSet<_>>().len());
             }
             // First frame or a teleport (a fixed particle jumped > 1 m): restart from the bind pose
             // placed on the model root.
             let jumped = c.started && def.moves.iter().any(|&(v, p)| refs.get(v).and_then(|r| *r).is_some_and(|(q, _)| q.distance(c.x[p]) > 1.0));
-            if !c.started || jumped {
+            let restarted = !c.started || jumped;
+            if restarted {
                 if jumped {
                     info!("cloth {}: restart (fixed particle jumped)", def.name);
                 }
@@ -328,13 +394,18 @@ fn simulate(
                 c.prev = c.x.clone();
                 c.started = true;
             }
-            // 2. Move fixed particles.
-            for &(v, p) in &def.moves {
-                if let Some(Some((q, _))) = refs.get(v) {
-                    if p < c.x.len() {
-                        c.x[p] = *q;
-                        c.prev[p] = *q;
-                    }
+            // 2. Move fixed particles: from where they were to their reference vertex, reached in
+            // even parts over the substeps (the exe's Simulate lerps each fixed particle by
+            // (substep + 1) / substeps before integrating that substep).
+            let fixed: Vec<(usize, Vec3, Vec3)> = def
+                .moves
+                .iter()
+                .filter_map(|&(v, p)| refs.get(v).and_then(|r| *r).filter(|_| p < c.x.len()).map(|(q, _)| (p, if restarted { q } else { c.x[p] }, q)))
+                .collect();
+            if dt <= 0.0 {
+                for &(p, _, to) in &fixed {
+                    c.x[p] = to;
+                    c.prev[p] = to;
                 }
             }
             // 3. Simulate.
@@ -346,6 +417,11 @@ fn simulate(
                 let ratio = if c.last_h > 0.0 { (h / c.last_h).clamp(0.25, 4.0) } else { 1.0 };
                 c.last_h = h;
                 for step in 0..def.substeps {
+                    let f = (step + 1) as f32 / def.substeps as f32;
+                    for &(p, from, to) in &fixed {
+                        c.x[p] = from.lerp(to, f);
+                        c.prev[p] = c.x[p];
+                    }
                     let r = if step == 0 { ratio } else { 1.0 };
                     for i in 0..c.x.len() {
                         if w[i] <= 0.0 {
@@ -387,6 +463,9 @@ fn simulate(
                                         solve_link(&mut c.x, w, &Link { a: pa, b: pb, rest, stiffness: k }, false);
                                     }
                                 }
+                                Set::BendStiffness { links, max_height_sq, clamp, rest_pose } => {
+                                    links.iter().for_each(|l| solve_bend_stiffness(&mut c.x, w, l, *max_height_sq, *clamp, *rest_pose))
+                                }
                                 Set::Unsolved => {}
                             }
                         }
@@ -418,8 +497,10 @@ fn simulate(
                 let joint_m: Vec<Mat4> = dm.joints.iter().zip(&dm.inv).map(|(&j, inv)| globals.get(j).map(|g| g.to_matrix() * *inv).unwrap_or(Mat4::IDENTITY)).collect();
                 let mut pos: Vec<[f32; 3]> = Vec::with_capacity(dm.pos.len());
                 let mut nrm: Vec<[f32; 3]> = Vec::with_capacity(dm.pos.len());
+                let mut tan: Vec<Vec3> = Vec::with_capacity(dm.pos.len());
                 for (i, (p, n)) in dm.pos.iter().zip(&dm.normal).enumerate() {
-                    let (mut sp, mut sn) = (Vec3::ZERO, Vec3::ZERO);
+                    let (mut sp, mut sn, mut st) = (Vec3::ZERO, Vec3::ZERO, Vec3::ZERO);
+                    let bt = dm.tangent.get(i).map_or(Vec3::ZERO, |t| Vec3::new(t[0], t[1], t[2]));
                     for k in 0..4 {
                         let wt = dm.weights[i][k];
                         if wt <= 0.0 && k > 0 {
@@ -428,9 +509,11 @@ fn simulate(
                         let m = joint_m.get(dm.idx[i][k] as usize).copied().unwrap_or(Mat4::IDENTITY);
                         sp += m.transform_point3(Vec3::from(*p)) * wt;
                         sn += m.transform_vector3(Vec3::from(*n)) * wt;
+                        st += m.transform_vector3(bt) * wt;
                     }
                     pos.push(sp.into());
                     nrm.push(sn.normalize_or_zero().into());
+                    tan.push(st);
                 }
                 for (v, slots) in &disp.verts {
                     let (mut p, mut n) = (Vec4::ZERO, Vec4::ZERO);
@@ -442,7 +525,7 @@ fn simulate(
                     }
                     if let (Some(dp), Some(dn)) = (pos.get_mut(*v), nrm.get_mut(*v)) {
                         *dp = mirror(p.truncate()).into();
-                        *dn = mirror(n.truncate()).normalize_or_zero().into();
+                        *dn = (mirror(n.truncate()).normalize_or_zero() * if std::env::var("SHINOBI_CLOTH_FLIP_N").is_ok() { -1.0 } else { 1.0 }).into();
                     }
                 }
                 if debug_now(&time) {
@@ -452,13 +535,31 @@ fn simulate(
                     let skin_ix: Vec<usize> = (0..pos.len()).filter(|i| !def_ix.contains(i)).collect();
                     info!("  display mesh {}: cloth verts far {:.2}, skinned far {:.2}", dm.mesh, far(&def_ix), far(&skin_ix));
                 }
+                // Tangents: the bind tangent carried by the vertex's skin (it turns with the body),
+                // made perpendicular to the deformed normal. Regenerating them every frame
+                // (mikktspace on the moving cloth) flipped them across UV seams: the coat's normal
+                // map then lit scattered pixels dark, changing frame to frame (the flicker).
+                let tangents: Vec<[f32; 4]> = (!dm.tangent.is_empty())
+                    .then(|| {
+                        tan.iter()
+                            .zip(&nrm)
+                            .zip(&dm.tangent)
+                            .map(|((t, n), bt)| {
+                                let n = Vec3::from(*n);
+                                let mut t = (*t - n * n.dot(*t)).normalize_or_zero();
+                                if t == Vec3::ZERO {
+                                    t = n.any_orthonormal_vector();
+                                }
+                                [t.x, t.y, t.z, bt[3]]
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
                 if let Some(mut mesh) = meshes.get_mut(&dm.handle) {
                     mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, pos);
                     mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, nrm);
-                    // The vertices are world space now: tangents from the bind pose would twist
-                    // the normal map (sekiro_material.wgsl) once the character turns.
-                    if mesh.contains_attribute(Mesh::ATTRIBUTE_TANGENT) {
-                        let _ = mesh.generate_tangents();
+                    if !tangents.is_empty() {
+                        mesh.insert_attribute(Mesh::ATTRIBUTE_TANGENT, tangents);
                     }
                 }
             }

@@ -52,3 +52,11 @@ Dated findings, oldest first. Append new entries at the end.
   over Slash/Blow/Thrust; the value is a sound of type 12 = 'z'. Wolf's sword on the General:
   z100000103 + z000000108. sound.rs hit_sounds.
 - FMOD init flag fix: 0x2 = 3D right-handed; 0x4 (SOFTWARE_DISABLE) had made every event fail (error 16).
+- 2026-10-09 mix from the exe: SoundMan (NS_SPRJ, DAT_143d6ce08) volume slots Master, InGameMaster, Bgm, Se,
+  Voice, Menu, OtherMenu (+0x148 + i*0xc: cur/target/remaining). Bgm/Se/Voice = GameDataMan options (+0x50)
+  bytes 4/5/6 / 10, defaults 10/10/10 (FUN_1407bc470). FMOD categories (master > music, Menu, SE, Voice,
+  Default) get slot * menu * InGameMaster (command 6, FUN_141c7b1d0); the master category gets Master * 0.7
+  (command 10, FUN_141c7b760). fmod.rs sets master 0.7 (was 1.0, ~3 dB too loud). Event parameters of the
+  common events are only the automatic "(distance)" (0-29 m swings, 60 m deflect clang).
+  With FMOD running, events its projects lack no longer fall back to raw PCM samples (the game is silent there).
+  gap: sounds play at the actor root, not the TAE event's DummyPoly; no map reverb (setReverbProperties).
