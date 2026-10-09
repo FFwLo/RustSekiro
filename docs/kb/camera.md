@@ -43,3 +43,11 @@ Dated findings, oldest first. Append new entries at the end.
 - 2026-10-07 helper S2 integrated: TAE 151 look limits (camera singleton +0x4c..+0x58 -> FUN_140742230 absolute limits
   +0x230..+0x23c chased at lockCamParamLerpRate; +0x230/+0x234 clamp pitch, +0x238/+0x23c yaw) in camera.rs
   apply_look_limits. Gaps: cone centre from the dummy's basis, no lerp back to the default cone after the event.
+- 2026-10-09 lock-on pitch ported from the exe (FUN_14073c260 0x14073d6xx-0x14073dd0e; camera +0xd0 = focus,
+  +0xe0 = camera, written as focus - dir * dist): P = focus + CameraParam lockTgtPosRate (0.7) * (target
+  DummyPoly 220 - focus); half = FOV (+0x50, LockCamParam camFovY in rad) * lockRotXShiftRatio (+0x278) * 0.5;
+  a = asin(dist * sin(half) / |P - focus|) (pi/2 when not reachable; law of sines: P sits half above the
+  screen centre); target pitch = a + half - elevation(P - focus) (pitch helper FUN_140733e50 =
+  -atan2(y, xz)); limits rotRangeXAtLock lerped to the free range by |P.y - focus.y| over
+  rotRangeLerpBegin/EndHeight; chase lockRotChaseRateX * dt / (1/30) outside lockRotChasePlayAngX (0).
+  Result: ~20-30 deg looking down in melee (was ~8, a guess), steep over the target on head kicks.

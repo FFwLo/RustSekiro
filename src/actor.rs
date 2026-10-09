@@ -63,6 +63,8 @@ pub struct Actor {
     /// the fall type's horizontal acceleration) and the stick-driven part on top.
     pub fall_type: u8,
     pub air_base: Vec3,
+    /// Height where a SetNoGravity root lift began (enemies; actor.rs advance puts them back).
+    pub lift_ground: Option<f32>,
     /// Root-motion scale from TAE 760 BoostRootMotionToReachTarget (1.0 outside it).
     pub root_scale: f32,
     /// Root-motion direction offset (radians): guard walk moves along the stick, between its
@@ -145,6 +147,7 @@ impl Actor {
             airborne: false,
             fall_type: 0,
             air_base: Vec3::ZERO,
+            lift_ground: None,
             root_scale: 1.0,
             root_yaw: 0.0,
             move_index: 0,
@@ -336,9 +339,39 @@ pub fn advance(time: Res<Time>, combat: Res<Combat>, mut q: Query<(&mut Actor, &
         }
         if !a.anim.is_empty() {
             if let (Some((p0, y0)), Some((p1, y1))) = (data.root_at(&a.anim, a.prev_t), data.root_at(&a.anim, a.t)) {
-                let delta = Quat::from_rotation_y(a.yaw + a.root_yaw) * Vec3::new(p1.x - p0.x, 0.0, p1.y - p0.y) * a.root_scale;
+                // The root track is in the clip's start frame: the step turns with the facing the
+                // clip started from (current yaw minus the clip's own turn so far), not the current
+                // facing. Live (rec_c1010_20261009, behind deathblow a200_511200 / ThrowDef13200, both
+                // spin 180 deg): the enemy ends 0.6 m in front of Wolf; turning the steps with the
+                // current yaw slid him 1 m sideways.
+                let delta = Quat::from_rotation_y(a.yaw - y0 + a.root_yaw) * Vec3::new(p1.x - p0.x, 0.0, p1.y - p0.y) * a.root_scale;
                 tf.translation += delta;
                 a.yaw += y1 - y0;
+                // While ChrActionFlag 27 SetNoGravity holds a grounded character, the clip's own
+                // vertical root motion lifts it (the vault 511900 goes 1.5 m up; live: Wolf's
+                // height +1.53 m, landing 1.4 s in).
+                if a.side != Side::Enemy && !a.airborne && data.flag(&a.anim, a.t, crate::player::FLAG_NO_GRAVITY) {
+                    tf.translation.y += data.root_y_at(&a.anim, a.t) - data.root_y_at(&a.anim, a.prev_t);
+                }
+            }
+        }
+        // Enemies have no fall of their own: lifted (SetNoGravity), the height is the clip's vertical
+        // root above where the lift began; after it (or an interrupted leap) they are put back there
+        // instead of left hanging.
+        if a.side == Side::Enemy && !a.airborne {
+            let lifted = !a.anim.is_empty() && data.flag(&a.anim, a.t, crate::player::FLAG_NO_GRAVITY);
+            let rise = if lifted { data.root_y_at(&a.anim, a.t).max(0.0) } else { 0.0 };
+            match (lifted, a.lift_ground) {
+                (true, None) => {
+                    a.lift_ground = Some(tf.translation.y);
+                    tf.translation.y += rise;
+                }
+                (true, Some(g)) => tf.translation.y = g + rise,
+                (false, Some(g)) => {
+                    tf.translation.y = g;
+                    a.lift_ground = None;
+                }
+                (false, None) => {}
             }
         }
         let v = a.move_vel;
@@ -420,6 +453,13 @@ impl Plugin for ActorPlugin {
 /// extracted); 0.4 m stands in.
 pub const PLAYER_BODY_RADIUS: f32 = 0.4;
 
+/// Wolf's paired-throw states and the enemy's throw reactions (not the start throws: live, Wolf's
+/// start anim stops against the enemy - the c1010 vault start moved 0.18 m with him 0.95 m away).
+fn in_throw(a: &Actor) -> bool {
+    a.state.starts_with("ThrowDef")
+        || matches!(a.state.as_str(), "Deathblow" | "ThrowBreak" | "BreakKickJump" | "Mikiri" | "PlungeDeathblow")
+}
+
 /// Characters don't overlap: pairs closer than the sum of their radii are pushed
 /// apart horizontally, half each (both weigh in like the game's char proxies).
 fn separate(combat: Res<Combat>, mut q: Query<(&Actor, &mut Transform)>) {
@@ -431,7 +471,8 @@ fn separate(combat: Res<Combat>, mut q: Query<(&Actor, &mut Transform)>) {
             let (l, r) = items.split_at_mut(j);
             let (a, ta) = &mut l[i];
             let (b, tb) = &mut r[0];
-            if a.hp <= 0.0 || b.hp <= 0.0 {
+            // Throw pairs pass through each other (the game's throws drop the character proxies).
+            if a.hp <= 0.0 || b.hp <= 0.0 || in_throw(a) || in_throw(b) {
                 continue;
             }
             let min = radius(a) + radius(b);
@@ -439,9 +480,16 @@ fn separate(combat: Res<Combat>, mut q: Query<(&Actor, &mut Transform)>) {
             let len = d.length();
             if len < min {
                 let n = if len > 1e-4 { d / len } else { Vec3::X };
-                let push = n * (min - len) * 0.5;
-                ta.translation -= push;
-                tb.translation += push;
+                // A start throw walks into its target without moving it (live: the broken
+                // enemy stays put while Wolf's 501900 stops against him).
+                let (wa, wb) = match (a.state == "DeathblowStart", b.state == "DeathblowStart") {
+                    (true, false) => (1.0, 0.0),
+                    (false, true) => (0.0, 1.0),
+                    _ => (0.5, 0.5),
+                };
+                let push = n * (min - len);
+                ta.translation -= push * wa;
+                tb.translation += push * wb;
             }
         }
     }

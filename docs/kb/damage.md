@@ -119,3 +119,53 @@ Dated findings, oldest first. Append new entries at the end.
 - The guard posture factor (0.785 slash / 0.74 strike) is latent skill **Flowing Water**
   (SkillParam 280 -> SpEffect 150420 deflect / 150421 guard, def<Attr>StaminaDmgRate by AtkParam
   staminaPhysicsAttribute). Implemented (combat.rs guard_skill_rate, config player.skills).
+- 2026-10-09 LIVE (memscope-data/logs/rec_c1010_*, rec_c1020_*_20261009; chr id at chr_head +0x6C, NpcParam
+  row at +0x68): deathblows checked against both enemies and fixed:
+  * Kill follow-up (HKS BEH_R_THROW_KILL -> W_ThrowKill<id+1>): when the enemy switches ThrowDef ->
+    ThrowDefDeath, Wolf goes on with anim id + 1 if it exists (only the a201 set: 510001, 510111, 510201,
+    511201, 511411, 511511). General front: 510000 1.85 s -> 510001 on the frame of 12000 -> 12001.
+  * Deflect break = a pose pair, not the deathblow: the breaking ground deflect plays Wolf a20x_510100 /
+    enemy ThrowDef12100 (ThrowParam 0010). While the enemy anim has flag 67 ThrowStart2 (frames 0-45),
+    attack -> 0011 (510110 / 12110, kill 510111), jump -> 0012 (510120). Live presses 0.47-0.79 s, before
+    Wolf's own cancel flags (frame 30). An AIR deflect break keeps AttackBoundEmptyStamina.
+  * Mikiri that empties posture (c1010, 3 of 3): 見切り崩し 0120 (511100 / ThrowDef13100) pose, attack ->
+    0121 (511110). The General's mikiri stays 0190 (511800).
+  * c1010 front: 崩し始動（近）0005 (Dist 1.2) -> 0006 (a200_502500 -> 512500, ThrowDef14500) when that close
+    (3 of 4 live), else 0000 -> 0001. Reach = the start row's Dist.
+  * Air attack out of a head-kick jump on a broken enemy: 蹴り崩し 0160/0161 (511500 -> 511510 [-> 511511],
+    ThrowDef13500 -> 13510), checked from the kick jump's buffer flag 87 (frame 9; live 0.33 s).
+  * 崩し蹴りジャンプ 0200/0201 (a200 set for both): jump in front of a broken enemy vaults over him
+    (501900 0.30 s -> 511900, ThrowDef13900, still deathblow-able).
+  * Head-kick jump variant by HKS _set4DirJumpDir: locked -> _F_Lock (213115), unlocked no stick -> _N
+    (213114), else F/L/R/B.
+  * Landing mid air deflect (ref 201 up) continues in LandAirDeflect* (air anim id + 10) from the same time.
+  * Not modelled: stealth deathblows (0020/0021, 0030/0031) need an unaware enemy.
+- 2026-10-09 (later) deathblows vs live, round 2:
+  * ROOT MOTION FRAME (actor.rs advance): a clip's root track is in the clip's START frame - each step turns
+    with (current yaw - the clip's own root yaw so far), not the current yaw. Matters for clips that spin
+    (behind deathblow 511200 / ThrowDef13200 both turn 180 deg): live c1010 ends with the enemy 0.59 m in front
+    of Wolf, same facing; the old rule slid him 1 m sideways, the new one 0.58 m in front.
+  * Exporter resolve(): importFrom = group*1e6 + id; Wolf's per-group TAEs import ACROSS groups (a201_500200
+    -> a200_500200, a201_501200 -> a201_500200). Before the fix both were "no TAE": the General's behind
+    deathblow had no start throw. NPC single-TAE imports keep their own group.
+  * Vault (0200/0201): throw pairs skip body push-apart (in_throw), a start throw pushes only Wolf; while
+    SetNoGravity (flag 27) holds a grounded character the clip's vertical root lifts it (511900: +1.49 m;
+    live +1.53 m), then FreeFall -> LandFreeFall (live 200010 -> 200020 ~1.4 s in). Live end: Wolf where the
+    enemy stood, enemy stumbled 1.2-1.6 m forward under him, same facing.
+  * Stealth: Enemy Mode::Unaware (IdleDefault a000_000000). Notice by NpcThinkParam sight cone
+    (eye_dist_normal / eye_ang_*_normal) or a Wolf TAE CreateAISound (237, AiSoundParam radius) ->
+    TransToBattleFromDefault (a000_001040, live). gap: meter fill rate not traced (0.5 s at
+    eye_BeginDist_normal .. 3 s at eye_dist_normal). Stealth deathblow 0020/0021 from behind, stealth plunge
+    0030/0031.
+  * Head-kick camera: the lock-on chase holds while Wolf is horizontally within body radii of the target
+    (the direction flips there). Live kick jump height 3.36 m (Sv1 3.45 m). gap: real lock-on pitch formula
+    (exe FUN_14073c260 ~2090: asin-based framing around the camera fulcrum, CameraParam fulcrumDistRate 0.5 /
+    fulcrumDistMin 2.0) not ported; camera not in the live recordings.
+  * Neutral step (no stick) = GroundStep_N a000_213300, the same clip as GroundStep_F (4 m forward); HKS
+    _set4DirStepDir gives VERTICAL for no stick, locked or not.
+- 2026-10-09 vault, enemy side: the throw absorb (follow_throw, ThrowParam atkSorbDmyId 267 on 0201) ran
+  one fixed step into a200_511900, after the clip's root yaw had already turned Wolf ~10 deg (511900 turns
+  him 180 deg in ~10 frames), so the enemy was snapped facing ~10 deg off and stayed crooked. The absorb
+  now places the defender on Wolf's pose at the throw anim's frame 0 (root motion undone). Live c1020
+  (rec_c1020_b_20261009 tick 13131): enemy yaw -3.3 deg at the ThrowDef13900 start, ~0.4 m back, then
+  ~1.1 m net forward; Sv1 now 0.2-0.4 deg, net ~1.1-1.3 m forward, final dyaw 0 (was 9.4).

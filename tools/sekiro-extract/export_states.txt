@@ -179,7 +179,26 @@ HardDeflectStagger_F
 a201_500000
 a201_501200   # behind deathblow start throw (ThrowParam 0110)
 a201_510000
-a201_510100
+a201_510001   # kill follow-up (HKS BEH_R_THROW_KILL -> W_ThrowKill<id+1>), a201 set only
+a201_510100   # deflect break (弾き0, plays on the breaking deflect)
+a201_510110   # 弾き1: attack out of 510100
+a201_510111
+a201_510120   # 弾き1B_ジャンプ: jump out of 510100
+a201_510201
+a201_500200   # stealth deathblow 背後始動 / 背後本体 (0020 / 0021) and stealth plunge 落下0 / 落下1 (0030 / 0031)
+a201_510200
+a201_510300
+a201_510310
+a201_510311
+a201_511201
+a201_511411
+a201_511500   # 蹴り崩し0/1: plunge out of a head-kick jump (510300/510310 clips)
+a201_511510
+a201_511511
+a201_511100   # 見切り崩し: mikiri that breaks posture; attack -> 511110, jump -> 511120
+a201_511110
+a201_511111
+a201_511120
 a201_511800
 # Deathblows on human-sized NPCs (c1010 ThrowParam atkAnimOffset 200)
 a200_500000
@@ -187,6 +206,22 @@ a200_501200   # behind deathblow start throw (ThrowParam 0110)
 a200_510000
 a200_510100
 a200_510110
+a200_510120
+a200_502500   # 崩し始動（近）/ 崩し本体（近）: c1010 front deathblow within 1.2 m
+a200_512500
+a200_511500
+a200_511510
+a200_511100
+a200_511110
+a200_511120
+FreeFall
+LandFreeFall
+a200_500200
+a200_510200
+a200_510300
+a200_510310
+a200_501900   # 崩し蹴りジャンプ始動 / 崩し蹴りジャンプ: jump over a broken enemy (both enemies, a200)
+a200_511900
 a200_511800
 a210_600000
 
@@ -207,6 +242,16 @@ AirDeflectHardSmall_R
 AirDeflectHardLarge_L
 AirDeflectHardLarge_R
 AirDeflectHardExLarge
+LandAirDeflectHardSmall_F
+LandAirDeflectHardSmall_B
+LandAirDeflectHardLarge_L
+LandAirDeflectHardLarge_R
+LandAirDeflectHardExLarge
+LandAirDeflectEasySmall_L
+LandAirDeflectEasySmall_R
+LandAirDeflectEasyLarge_L
+LandAirDeflectEasyLarge_R
+LandAirDeflectEasyExLarge
 AirDeflectEasy
 AirDeflectEasySmall_L
 AirDeflectEasySmall_R
@@ -217,6 +262,10 @@ AirDamageSmall_F
 AirKick
 AirKickEnemyJumpStart_F
 AirKickEnemyJumpStart_N
+AirKickEnemyJumpStart_F_Lock
+AirKickEnemyJumpStart_B
+AirKickEnemyJumpStart_L
+AirKickEnemyJumpStart_R
 AirComboAttack1
 AirComboAttack2
 AirComboAttack3

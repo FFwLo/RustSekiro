@@ -388,7 +388,10 @@ fn attach_models(
             md.material.strip_prefix('#')?.split('#').next()?.parse::<u32>().ok()
         };
         // Group meshes are always spawned (hidden when off) so TAE draw masks can toggle them.
-        for (mi, md) in model.meshes.iter().enumerate().filter(|(_, md)| md.albedo != "-" && (visible(md) || group_of(md).is_some())) {
+        // SHINOBI_HIDE_MESH=<substring>[,...]: skip meshes whose material or albedo name matches (visual checks).
+        let hide: Vec<String> = std::env::var("SHINOBI_HIDE_MESH").map(|v| v.to_lowercase().split(',').map(str::to_string).collect()).unwrap_or_default();
+        let hidden = |md: &MeshData| hide.iter().any(|h| md.material.to_lowercase().contains(h) || md.albedo.contains(h));
+        for (mi, md) in model.meshes.iter().enumerate().filter(|(_, md)| md.albedo != "-" && !hidden(md) && (visible(md) || group_of(md).is_some())) {
             let cloth = cloth_insts.iter().position(|c| c.def.display_meshes().any(|m| m == mi));
             // Compact joint list for this mesh.
             let mut remap: HashMap<u16, u16> = HashMap::new();
@@ -432,6 +435,11 @@ fn attach_models(
             if !md.normal_map.is_empty() {
                 let _ = mesh.generate_tangents();
             }
+            // Bind-pose tangents for cloth meshes (cloth.rs carries them with the deformation).
+            let bind_tangents: Vec<[f32; 4]> = match mesh.attribute(Mesh::ATTRIBUTE_TANGENT) {
+                Some(VertexAttributeValues::Float32x4(t)) => t.clone(),
+                _ => Vec::new(),
+            };
             let texture = (!md.albedo.is_empty()).then(|| assets.load(format!("tex/{}.dds", md.albedo)));
             // Normal maps and metallic masks are data, not colour: read linear.
             let linear = |stem: &str| {
@@ -439,12 +447,16 @@ fn attach_models(
                     assets.load_builder().with_settings(|s: &mut bevy::image::ImageLoaderSettings| s.is_srgb = false).load(format!("tex/{stem}.dds"))
                 })
             };
-            let (normal, metallic) = (linear(&md.normal_map), linear(&md.metallic));
+            // SHINOBI_NO_NORMALS=1: flat normals (visual checks of the normal-map decode).
+            let normal = if std::env::var("SHINOBI_NO_NORMALS").is_ok() { None } else { linear(&md.normal_map) };
+            let metallic = linear(&md.metallic);
             let material = materials.add(SekiroMaterial {
                 base: StandardMaterial {
                     base_color_texture: texture,
                     perceptual_roughness: 0.8,
-                    alpha_mode: if md.alpha_test { AlphaMode::Mask(0.5) } else { AlphaMode::Opaque },
+                    // Cutouts as alpha-to-coverage (with the camera's 4x MSAA): a hard 0.5 mask made
+                    // the torn edges of Wolf's coat shimmer frame to frame whenever it moved a little.
+                    alpha_mode: if md.alpha_test { AlphaMode::AlphaToCoverage } else { AlphaMode::Opaque },
                     double_sided: true,
                     cull_mode: None,
                     ..default()
@@ -471,6 +483,7 @@ fn attach_models(
                         mesh: mi,
                         pos: md.pos.clone(),
                         normal: md.normal.clone(),
+                        tangent: bind_tangents,
                         joints: mesh_joints,
                         inv,
                         idx,

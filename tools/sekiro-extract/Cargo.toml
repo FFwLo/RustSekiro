@@ -16,6 +16,9 @@ roxmltree = "0.20"
 regex = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# dds2png: BC1-7 decode (as AKJama/sekiro-rs does) and PNG out, for texture checks.
+texture2ddecoder = "0.1"
+png = "0.17"
 
 [profile.dev]
 opt-level = 3

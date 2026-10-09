@@ -629,19 +629,27 @@ fn resolve(
                     && defending
                     && dd.flag(&da.anim, da.t, FLAG_MIKIRI)
                 {
-                    if let Some(th) = combat.throw(combat.foe.throw_row(190)) {
+                    // When that empties the attacker's posture it is 見切り崩し instead (0120: Wolf
+                    // a20x_511100, ThrowDef13100), the break pose player.rs takes on to the deathblow
+                    // (live c1010: 511100 0.55-0.61 s -> 511110).
+                    aa.add_posture(atk.stamina_damage_attack_hit_parry);
+                    let broken_row = aa.posture_broken().then(|| combat.throw(combat.foe.throw_row(120))).flatten().filter(|th| dd.anim(&th.atk_anim).is_some());
+                    let (row, state) = match broken_row {
+                        Some(th) => (Some(th), "ThrowBreak"),
+                        None => (combat.throw(combat.foe.throw_row(190)), "Mikiri"),
+                    };
+                    if let Some(th) = row {
                         if dd.anim(&th.atk_anim).is_some() {
-                            da.play("Mikiri", &th.atk_anim);
+                            da.play(state, &th.atk_anim);
                             da.move_vel = Vec3::ZERO;
                             da.yaw = yaw_to(dtf.translation, atf.translation);
                             aa.yaw = yaw_to(atf.translation, dtf.translation);
-                            aa.add_posture(atk.stamina_damage_attack_hit_parry);
                             if let Some(e) = ae.as_deref_mut() {
                                 e.react(aa, &combat, &format!("ThrowDef{}", th.def_anim));
                             }
                             // ThrowParam 190: the enemy is held on Wolf's dummy 523 (follow_throw).
                             if let Some(t) = throw.as_deref_mut() {
-                                t.0 = Some(crate::player::ThrowHold::new(att_e, &th, "Mikiri"));
+                                t.0 = Some(crate::player::ThrowHold::new(att_e, &th, state));
                             }
                             log.push("MIKIRI COUNTER", Color::srgb(0.6, 0.9, 1.0));
                             continue;
@@ -751,7 +759,26 @@ fn resolve(
                         match aa.side {
                             Side::Enemy => {
                                 if let Some(e) = ae.as_deref_mut() {
-                                    if attacker_broken {
+                                    // A deflect that empties the enemy's posture plays the break pose
+                                    // pair 弾き0 (ThrowParam 0010: Wolf a20x_510100, enemy ThrowDef12100,
+                                    // held on Wolf's dummy atkSorbDmyId); player.rs takes it on to the
+                                    // deathblow. Live: the deflect frame goes straight into both. An air
+                                    // deflect break keeps AttackBoundEmptyStamina (rec_c1010_b: Wolf
+                                    // AirDeflectHardLarge_L, enemy 8650, front deathblow after landing).
+                                    let pose = (da.side == Side::Player && !da.airborne)
+                                        .then(|| combat.throw(combat.foe.throw_row(10)))
+                                        .flatten()
+                                        .filter(|th| dd.anim(&th.atk_anim).is_some());
+                                    if let (true, Some(th)) = (attacker_broken, pose) {
+                                        da.play("ThrowBreak", &th.atk_anim);
+                                        da.move_vel = Vec3::ZERO;
+                                        da.yaw = yaw_to(dtf.translation, atf.translation);
+                                        aa.yaw = yaw_to(atf.translation, dtf.translation);
+                                        e.react(aa, &combat, &format!("ThrowDef{}", th.def_anim));
+                                        if let Some(t) = throw.as_deref_mut() {
+                                            t.0 = Some(crate::player::ThrowHold::new(att_e, &th, "ThrowBreak"));
+                                        }
+                                    } else if attacker_broken {
                                         let s = if jd == 2 { "AttackBoundEmptyStaminaEnemy_Left" } else { "AttackBoundEmptyStaminaEnemy_Right" };
                                         e.react(aa, &combat, s);
                                     } else if jd == 1 || jd == 2 {

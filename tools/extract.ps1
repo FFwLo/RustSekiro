@@ -16,7 +16,7 @@ if (-not (Test-Path (Join-Path $Sekiro "sekiro.exe"))) { throw "Sekiro not found
 New-Item -ItemType Directory -Force $out | Out-Null
 # The game's FMOD runtime is loaded from the install at play time (src/paths.rs sekiro_dir).
 Set-Content -Path (Join-Path $out "sekiro_dir.txt") -Value $Sekiro -Encoding ascii
-& $exe unpack $Sekiro $out '^/(action/|param/gameparam/|chr/c0000(\.|_a|_c1020\.)|chr/c10[12]0\.|sound/(s?main|c1020|c1010)\.|script/(aicommon|m1\d_\d\d_00_00)\.luabnd|other/default\.rumblebnd)'
+& $exe unpack $Sekiro $out '^/(action/|param/gameparam/|chr/c0000(\.|_a|_c1020\.)|chr/c10[12][09]\.|sound/(s?main|c1020|c1010)\.|script/(aicommon|m1\d_\d\d_00_00)\.luabnd|other/default\.rumblebnd)'
 & $exe params (Join-Path $out "param\gameparam\gameparam.parambnd.d") (Join-Path $out "json\params")
 & $exe export $out
 # Wolf's body dummy polys (no meshes) live in the base chrbnd FLVER (camera look-at dmy 142,

@@ -22,10 +22,11 @@ const ENEMIES: [(&str, &str, &[(i64, &str)]); 2] = [
     ("c1010", "Ochimusha", &[(10100000, "one-handed sword")]),
 ];
 const SPEEDS: [f32; 4] = [1.0, 0.5, 0.25, 0.1];
-const AI_MODES: [(AiMode, &str); 5] = [
+const AI_MODES: [(AiMode, &str); 6] = [
     (AiMode::Real, "real AI"),
     (AiMode::Passive, "passive (walks up, never attacks)"),
     (AiMode::Perilous, "perilous attacks only"),
+    (AiMode::Thrust, "perilous thrusts only (Mikiri: step toward it)"),
     (AiMode::Repeat, "repeat one attack"),
     (AiMode::Idle, "stand still"),
 ];
@@ -41,6 +42,10 @@ enum Item {
     BreakPosture,
     DeathblowNow,
     DeathblowBehind,
+    PlungeNow,
+    KickDownNow,
+    VaultNow,
+    StealthSetup,
     God,
     NoPosture,
     Refill,
@@ -53,7 +58,7 @@ enum Item {
 
 const SECTIONS: [(&str, &[Item]); 4] = [
     ("ENEMY", &[Item::AiMode, Item::Attack, Item::Interval, Item::EnemyType, Item::Outfit, Item::EnemyHeal]),
-    ("DEATHBLOW", &[Item::BreakPosture, Item::DeathblowNow, Item::DeathblowBehind]),
+    ("DEATHBLOW", &[Item::BreakPosture, Item::DeathblowNow, Item::DeathblowBehind, Item::PlungeNow, Item::KickDownNow, Item::VaultNow, Item::StealthSetup]),
     ("PLAYER", &[Item::God, Item::NoPosture, Item::Refill, Item::FlowingWater, Item::Sheathe]),
     ("SIMULATION", &[Item::Speed, Item::Hitboxes, Item::Reset]),
 ];
@@ -120,7 +125,7 @@ fn menu_input(
     mut time: ResMut<Time<Virtual>>,
     mut pad: ResMut<PadInput>,
     mut hurtboxes: ResMut<crate::combat::ShowHurtboxes>,
-    mut player: Query<(&mut Player, &mut Actor, &Transform), Without<Enemy>>,
+    mut player: Query<(&mut Player, &mut Actor, &mut Transform), Without<Enemy>>,
     mut enemies: Query<(&mut Enemy, &mut Actor, &mut Transform), Without<Player>>,
     mut exit: MessageWriter<AppExit>,
 ) {
@@ -223,6 +228,58 @@ fn menu_input(
                 }
                 pad.press(Action::Attack);
                 menu.message = if behind { "deathblow from behind" } else { "deathblow" }.into();
+            }
+        }
+        Item::PlungeNow | Item::KickDownNow | Item::VaultNow if enter => {
+            // Break the posture with the enemy 1.2 m in front of Wolf, facing him. Plunge: Wolf
+            // falls from 3 m above, just short of him, attacking (崩し落下). Kick-down: Wolf in the
+            // head-kick jump above him, attacking (蹴り崩し). Vault: jump (崩し蹴りジャンプ).
+            let it = list[menu.cursor];
+            if let Ok((_, mut pa, mut ptf)) = player.single_mut() {
+                let fwd = pa.forward();
+                for (mut e, mut a, mut tf) in &mut enemies {
+                    tf.translation = ptf.translation + fwd * 1.2;
+                    a.yaw = pa.yaw + std::f32::consts::PI;
+                    a.posture = a.posture_max;
+                    e.on_posture_break(&mut a, &combat, false, 6.0);
+                }
+                match it {
+                    Item::VaultNow => {
+                        pad.press(Action::Jump);
+                        menu.message = "vault over (jump at a broken enemy)".into();
+                    }
+                    _ => {
+                        let kick = it == Item::KickDownNow;
+                        pa.play_state(&combat.player, if kick { "AirKickEnemyJumpStart_N" } else { "VerticalGroundJumpStart" });
+                        if !kick {
+                            // Past the jump's attack accept flag 115 (frame 3); the fall loop has none.
+                            pa.t = 0.5;
+                            pa.prev_t = 0.5;
+                        }
+                        pa.airborne = true;
+                        pa.vel_y = if kick { 3.0 } else { -1.0 };
+                        pa.air_base = Vec3::ZERO;
+                        ptf.translation.y += if kick { 1.5 } else { 3.0 };
+                        ptf.translation += fwd * 0.6;
+                        pad.press(Action::Attack);
+                        menu.message = if kick { "kick-down deathblow" } else { "plunge deathblow" }.into();
+                    }
+                }
+            }
+        }
+        Item::StealthSetup if enter => {
+            // The enemy 5 m in front of Wolf with its back turned, not having noticed him: sneak
+            // up and attack from behind (stealth deathblow), or jump and plunge onto it.
+            if let Ok((_, pa, ptf)) = player.single() {
+                let fwd = pa.forward();
+                for (mut e, mut a, mut tf) in &mut enemies {
+                    tf.translation = ptf.translation + fwd * 5.0;
+                    a.yaw = pa.yaw;
+                    a.hp = a.hp_max;
+                    a.posture = 0.0;
+                    e.make_unaware(&mut a);
+                }
+                menu.message = "enemy unaware, back turned - sneak up and attack".into();
             }
         }
         Item::God => menu.god = !menu.god,
@@ -392,6 +449,10 @@ fn draw_menu(
             Item::BreakPosture => "break enemy posture".into(),
             Item::DeathblowNow => "deathblow now (front)".into(),
             Item::DeathblowBehind => "deathblow now (from behind)".into(),
+            Item::PlungeNow => "plunge deathblow now (from above)".into(),
+            Item::KickDownNow => "kick-down deathblow now (after a head kick)".into(),
+            Item::VaultNow => "vault over a broken enemy now (jump)".into(),
+            Item::StealthSetup => "stealth: enemy unaware, back turned".into(),
             Item::God => format!("god mode (no HP loss): {}", on(menu.god)),
             Item::NoPosture => format!("no posture damage: {}", on(menu.no_posture)),
             Item::Refill => "refill gourds / emblems / resurrections".into(),

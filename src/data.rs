@@ -644,6 +644,19 @@ impl CharData {
         Some((Vec2::new(lerp(p[0], q[0]), lerp(p[2], q[2])), lerp(p[3], q[3])))
     }
 
+    /// Root motion height at time t (the clip's vertical root track, e.g. the vault 511900).
+    pub fn root_y_at(&self, key: &str, t: f32) -> f32 {
+        let Some(a) = self.anim(key) else { return 0.0 };
+        let (Some(rate), n) = (a.root_rate, a.root.len()) else { return 0.0 };
+        if n == 0 {
+            return 0.0;
+        }
+        let f = (t.max(0.0) * rate).min((n - 1) as f32);
+        let i = f.floor() as usize;
+        let j = (i + 1).min(n - 1);
+        a.root[i][1] + (a.root[j][1] - a.root[i][1]) * (f - i as f32)
+    }
+
     /// Root-motion velocity (m/s, local direction) of a clip at time t: the slope of the sampled
     /// root track there (loops wrap t over the clip length).
     pub fn root_velocity_at(&self, key: &str, t: f32, looping: bool) -> Vec2 {

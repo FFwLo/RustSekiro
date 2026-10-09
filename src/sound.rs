@@ -301,10 +301,11 @@ fn play_tae_sounds(
                 }
                 _ => format!("{letter}{id:09}"),
             };
+            // With the game's sound system running, an event its projects lack is silent in the game
+            // too: no raw-sample stand-in (those were sounds the game never plays here).
             if let Some(f) = fmod.as_mut() {
-                if f.play(&event, tf.translation) {
-                    continue;
-                }
+                f.play(&event, tf.translation);
+                continue;
             }
             let file = if letter == 'b' {
                 // Armour rustle: FEV events c0000xx113 (Wolf, EquipParamProtector defenseMaterial 113)
@@ -365,9 +366,8 @@ fn play_queued(
 ) {
     for (key, pos) in std::mem::take(&mut queue.0) {
         if let Some(f) = fmod.as_mut() {
-            if f.play(&key, pos) {
-                continue;
-            }
+            f.play(&key, pos);
+            continue;
         }
         if let Some(file) = pick(&mut index, &key) {
             commands.spawn((
