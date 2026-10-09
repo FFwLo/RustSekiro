@@ -1,0 +1,17 @@
+[package]
+name = "sekiro-dearxan"
+version = "0.1.0"
+edition = "2024"
+description = "Makes a Ghidra-friendly copy of sekiro.exe: SteamStub unwrapped, Arxan neutered with tremwil/dearxan"
+
+[dependencies]
+dearxan = { path = "../dearxan", default-features = false, features = ["rayon"] }
+pelite = { version = "0.10", default-features = false }
+aes = "0.8"
+cbc = "0.1"
+iced-x86 = "1.21"
+log = "0.4"
+env_logger = "0.11"
+
+[profile.dev]
+opt-level = 3

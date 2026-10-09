@@ -1,0 +1,81 @@
+# ============================================================
+#  Sv1 - tuning file
+#  Edit, save, then press F5 in the game to reload. No rebuild needed.
+#  Distances are in meters, times in seconds, angles in degrees.
+#
+#  Everything that comes from Sekiro's own data (deflect windows, attack
+#  frames, cancel windows, root motion, posture numbers, regen ratios) is read
+#  from extracted/combat_data.json and is NOT in this file. The values below
+#  are the gaps: things the data files don't contain. Each one says where the
+#  real value lives so it can be replaced once found (mostly: the exe, via Ghidra).
+# ============================================================
+
+[camera]
+# Distance, focus height, FOV and lock-on range: LockCamParam row 0; pitch limits and follow /
+# lock-on chase rates: CameraParam row 0 (data + exe).
+mouse_sensitivity = 0.15  # degrees of turn per pixel of mouse movement
+
+
+[movement]
+# Walk/run/sprint SPEEDS come from the animations' root motion (data).
+# The HKS converges the speed level at 3 per second (data: c0000.hks GetMoveSpeed).
+turn_speed = 720.0      # free-movement turn rate (deg/s): exe default 720 (FUN_1407da540). TAE SetTurnSpeed overrides it.
+
+[input]
+# exe: a press is latched only inside the anim's TAE accept window (flag 87 etc.), then
+# waits with no timer for its execute window; any state change drops it.
+# 0 = exe behaviour. > 0 = also expire a latched press after this many seconds.
+buffer = 0.0
+
+[posture]
+# The StaminaControlParam ratio type when no TAE event 960 sets one.
+# -1 = none (100%). Confirmed by the exe's posture debug menu, which shows
+# "current stamina control type: none" in that case.
+default_ratio_type = -1
+# Seconds without posture damage before recovery starts. The exe's regen code
+# (FUN_140a04850) has no timer: it runs every frame unless a character flag
+# (+0x88 bit 21, setter not identified) is set. 0 = exe behaviour.
+regen_delay = 0.0
+# Experimental: scale recovery by HP with CalcCorrectGraph 51. The exe's regen code
+# (FUN_140a04850) has NO direct HP curve, so this stays off. (Its 0.8 / 0.7 level
+# multiplier is the DS equip-load class; Sekiro gear weighs 0, so it is always 1.0.)
+hp_scales_regen = false
+# Player level for graphs 500/501/504, all confirmed in the exe: 500 = max HP and
+# 501 = max posture (FUN_140a368f0 writes PlayerGameData +0x20 / +0x3c and pushes them to
+# the data module), 504 = base posture regen. 1 = a fresh game (320 HP / 120 posture).
+player_level = 1
+
+[combat]
+# Hitboxes use the model's dummy polys (AtkParam hit0 DmyPoly ids); these reach
+# values are only a fallback when a model has no dummies.
+player_reach = 2.1
+enemy_reach = 2.6
+attack_arc = 120.0      # degrees in front of the attacker that can be hit
+
+[enemy]
+# Which enemy: "c1020" Ashina Samurai General, "c1010" Ochimusha (one-handed sword). Restart to apply.
+chr = "c1020"
+attack_range = 2.8
+cooldown_min = 0.8
+cooldown_max = 2.0
+broken_time = 4.0       # how long the deathblow window stays open (gap: enemy break anim length)
+# Area scaling SpEffect ("Growth Doping") applied to the enemy: 7010 = Ashina Outskirts
+# first visit (base NpcParam values); 7011 / 7012 / 7013 / 7014 = later visits (x1.25 / 1.5 / 2 / 3
+# HP, posture, damage, posture damage and posture regen).
+area_doping = 7010
+
+[player]
+# Healing Gourd uses (E). Goods 3000 holds up to 10; the game starts lower and adds one
+# per Gourd Seed. Each sip heals SpEffect 3000's 40 % of max HP at the drink's
+# ConsumeCurrentGoods frame.
+gourd_charges = 3
+# Spirit Emblems for the prosthetic (F: Loaded Shuriken, 1 per throw).
+spirit_emblems = 15
+# Resurrection nodes: after death, LMB resurrects at half HP (GroundRevival + SpEffect 110015).
+resurrections = 1
+# Equipped combat art (attack + guard): 5100 Whirlwind Slash, 5300 Ichimonji, 5200 Leaping Slash?,
+# 5400 / 5500 Iai variants, 5600 rush, 5700 Mortal Draw-like, 5800 kick, 5900 fist (EquipParamWeapon
+# virtual weapons; names from the param's Japanese row names). Press F5 after changing it.
+combat_art = 5100
+# Learned latent skills (SkillParam ids): 280 = Flowing Water (posture damage when guarding: slash x0.8, others x0.75).
+skills = [280]

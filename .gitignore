@@ -1,0 +1,9 @@
+/target
+/extracted/
+/tools/sekiro-extract/target/
+/tools/DSLuaDecompiler/
+/tools/dearxan/
+/tools/sekiro-dearxan/target/
+/docs/ACTIVE_SESSION.txt
+/memscope-data/
+/dist/
