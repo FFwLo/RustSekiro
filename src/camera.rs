@@ -162,17 +162,51 @@ fn capture_mouse(
     }
 }
 
+/// Lock-on target switch by mouse (exe LockTgtManImp, FUN_1409ca120, called every frame from
+/// the update FUN_1409c5fe0): a frame's mouse movement above 50 (@0x1432892f0) switches, below
+/// 25 (@0x1432892d0) re-arms (cooldown 0). A switch sets the cooldown to 0.5 s, so a held
+/// movement repeats every 0.5 s. gap: the units (taken as pixels a frame) and whether the exe
+/// accumulates the mouse delta.
+const LOCK_SWITCH_FIRE: f32 = 50.0;
+const LOCK_SWITCH_REARM: f32 = 25.0;
+const LOCK_SWITCH_COOLDOWN: f32 = 0.5;
+
+/// Who can be switched to while locked (FUN_1409c5fe0 with the player's lock flag):
+/// CamFront{Near,Far}RangeLockChangeHalfAng — within 8 m 60 deg sideways, else 45 deg (up to
+/// 200 m), and 30 deg up / down from the camera's front.
+fn switchable(cam: &GlobalTransform, p: Vec3) -> bool {
+    let to = p - cam.translation();
+    let flat = to.with_y(0.0);
+    let fwd = cam.forward().as_vec3().with_y(0.0);
+    if flat.length_squared() < 1e-6 || fwd.length_squared() < 1e-6 {
+        return true;
+    }
+    let yaw = fwd.angle_between(flat).to_degrees();
+    let pitch = to.y.atan2(flat.length()).to_degrees().abs();
+    let (half, radius) = if to.length() <= 8.0 { (60.0, 8.0) } else { (45.0, 200.0) };
+    yaw <= half && pitch <= 30.0 && to.length() <= radius
+}
+
+#[allow(clippy::too_many_arguments)]
 fn toggle_lock(
     keys: Res<ButtonInput<KeyCode>>,
     mouse: Res<ButtonInput<MouseButton>>,
+    motion: Res<AccumulatedMouseMotion>,
     combat: Res<Combat>,
+    time: Res<Time>,
     mut lock: ResMut<LockOn>,
+    mut cooldown: Local<f32>,
     player: Single<&Transform, With<Player>>,
-    enemies: Query<(Entity, &Transform), With<Enemy>>,
+    enemies: Query<(Entity, &Transform, &Enemy)>,
+    cams: Query<(&Camera, &GlobalTransform), With<OrbitCamera>>,
 ) {
+    let range = lock_cam(&combat).lock_range;
+    let wolf = player.translation;
+    // Lockable: alive and within chrLockRangeMaxRadius.
+    let lockable = |tf: &Transform, e: &Enemy| !e.is_dead() && tf.translation.distance(wolf) < range;
     if let Some(t) = lock.target {
-        let still_valid = enemies.get(t).is_ok_and(|(_, tf)| tf.translation.distance(player.translation) < lock_cam(&combat).lock_range);
-        if !still_valid {
+        // A dead target drops the lock (gap: whether the exe moves it to the next enemy).
+        if !enemies.get(t).is_ok_and(|(_, tf, e)| lockable(tf, e)) {
             lock.target = None;
         }
     }
@@ -181,10 +215,44 @@ fn toggle_lock(
             Some(_) => None,
             None => enemies
                 .iter()
-                .filter(|(_, tf)| tf.translation.distance(player.translation) < lock_cam(&combat).lock_range)
-                .min_by(|a, b| a.1.translation.distance(player.translation).total_cmp(&b.1.translation.distance(player.translation)))
-                .map(|(e, _)| e),
+                .filter(|(_, tf, e)| lockable(tf, e))
+                .min_by(|a, b| a.1.translation.distance(wolf).total_cmp(&b.1.translation.distance(wolf)))
+                .map(|(e, ..)| e),
         };
+    }
+    // Several enemies: the mouse switch (see LOCK_SWITCH_FIRE).
+    let Some(cur) = lock.target else { return };
+    let flick = motion.delta;
+    let mag = flick.length();
+    if mag < LOCK_SWITCH_REARM {
+        *cooldown = 0.0;
+    } else {
+        *cooldown = (*cooldown - time.delta_secs()).max(0.0);
+    }
+    if *cooldown > 0.0 || mag <= LOCK_SWITCH_FIRE {
+        return;
+    }
+    let Ok((_, ctf, _)) = enemies.get(cur) else { return };
+    let Some((camera, cam_tf)) = cams.iter().next() else { return };
+    // FUN_1409ca480: the targets on screen; d = candidate - current, score = cos(angle between
+    // d and the movement) / |d| (asm 0x1409ca82e-0x1409ca85c); the best above cos(90 deg)
+    // (+0x2854 = pi/2) wins: the nearest on screen within 90 deg of the flick.
+    let Ok(at) = camera.world_to_viewport(cam_tf, ctf.translation) else { return };
+    let dir = flick / mag;
+    let next = enemies
+        .iter()
+        .filter(|(e, tf, en)| *e != cur && lockable(tf, en) && switchable(cam_tf, tf.translation))
+        .filter_map(|(e, tf, _)| {
+            let d = camera.world_to_viewport(cam_tf, tf.translation).ok()? - at;
+            let len2 = d.length_squared();
+            (len2 > 1e-6).then(|| (e, d.dot(dir) / len2))
+        })
+        .filter(|(_, score)| *score > 0.0)
+        .max_by(|a, b| a.1.total_cmp(&b.1))
+        .map(|(e, _)| e);
+    if let Some(n) = next {
+        lock.target = Some(n);
+        *cooldown = LOCK_SWITCH_COOLDOWN;
     }
 }
 
@@ -286,7 +354,7 @@ fn follow_player(
     lock: Res<LockOn>,
     player_q: Single<(&Transform, &Actor, Option<&crate::model::Dummies>), (With<Player>, Without<OrbitCamera>)>,
     dummy_tf: Query<&GlobalTransform>,
-    enemies: Query<(&Transform, Option<&crate::model::Dummies>), (With<Enemy>, Without<OrbitCamera>)>,
+    enemies: Query<(&Transform, Option<&crate::model::Dummies>, &Actor), (With<Enemy>, Without<OrbitCamera>)>,
     mut camera: Single<(&mut Transform, &mut OrbitCamera, &mut Projection)>,
 ) {
     let (player, actor, dummies) = *player_q;
@@ -318,12 +386,12 @@ fn follow_player(
         pp.fov = orbit.cam.fov;
     }
     let mut range = pitch_range(&combat, lock.target.is_some());
-    if let Some((target, tdummies)) = lock.target.and_then(|e| enemies.get(e).ok()) {
+    if let Some((target, tdummies, ta)) = lock.target.and_then(|e| enemies.get(e).ok()) {
         let dir = (target.translation - player.translation).with_y(0.0);
         // Right over the target (head kick, vault, plunge) the direction to it flips within a few
         // centimetres: hold the yaw chase while the bodies overlap horizontally (Wolf's radius +
         // NpcParam hitRadius) instead of whipping the camera around.
-        let npc_radius = combat.param("NpcParam", combat.foe.npc_row)["hitRadius"].as_f64().unwrap_or(0.5) as f32;
+        let npc_radius = combat.npc(ta)["hitRadius"].as_f64().unwrap_or(0.5) as f32;
         let overhead = dir.length() < crate::actor::PLAYER_BODY_RADIUS + npc_radius;
         if !overhead && dir.length_squared() > 0.01 {
             let want = f32::atan2(-dir.x, -dir.z);
@@ -512,7 +580,7 @@ fn start_shakes(
         if a.anim.is_empty() || a.t == a.prev_t {
             continue;
         }
-        let d = crate::actor::data_for(&combat, a.side);
+        let d = crate::actor::data_for(&combat, &a);
         let Some(anim) = d.anim(&a.anim) else { continue };
         for e in anim.events.iter().filter(|e| matches!(e.kind, 144..=147)) {
             if !(e.start > a.prev_t && e.start <= a.t) && !(a.prev_t == 0.0 && e.start == 0.0) {

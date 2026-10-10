@@ -75,7 +75,7 @@ fn run_duel(
     if let Ok((mut e, a, tf, dummies)) = enemy.single_mut() {
         e.aggressive = true;
         // Each active attack window: how close its capsule comes to Wolf.
-        let d = &combat.enemy;
+        let d = combat.data_of(&a);
         for (ev, atk, judge) in d.attack_windows(&a.anim) {
             if !ev.in_time(a.t) {
                 continue;

@@ -15,6 +15,8 @@ pub struct Part {
     /// Euler degrees, applied X then Z then Y (as FLVER nodes).
     pub rot: [f32; 3],
     pub scale: [f32; 3],
+    /// EntityID (entity data +0x00; the event scripts' character ids, e.g. 1700800).
+    pub entity: i32,
     /// Enemies: NpcThinkParam / NpcParam ids (EnemyBase type data +0x08 / +0x0C).
     pub think: i32,
     pub npc: i32,
@@ -120,6 +122,7 @@ pub fn read(d: &[u8]) -> Msb {
             let model_index = r.i32(o + 16);
             let unk1 = r.u64(o + 0x50) as usize;
             let td = o + r.u64(o + 0x68) as usize;
+            let ed = r.u64(o + 0x60) as usize;
             let gp = r.u64(o + 0x70) as usize;
             let words = |at: usize, n: usize| (0..n).map(|i| r.u32(at + i * 4)).collect::<Vec<u32>>();
             let (think, npc) = if kind == 2 || kind == 10 { (r.i32(td + 8), r.i32(td + 12)) } else { (0, 0) };
@@ -130,6 +133,7 @@ pub fn read(d: &[u8]) -> Msb {
                 pos: v3(o + 0x20),
                 rot: v3(o + 0x2C),
                 scale: v3(o + 0x38),
+                entity: if ed != 0 { r.i32(o + ed) } else { -1 },
                 think,
                 npc,
                 hit_filter: if kind == 5 { r.u8(td) } else { 0 },

@@ -920,4 +920,63 @@ a110_316260
 a110_316270
 a110_316740
 a110_316770
+# The arts' no-Spirit-Emblem air / jump clips (offsetType 13 *NoResource states, behavior
+# c0000.hkx): own TAE events on the art's clip (TAE ImportsHKX: 316201 -> 316200, 316711 -> 316710).
+a103_316201
+a103_316211
+a110_316201
+a110_316211
+a110_316261
+a110_316271
+a110_316711
+a110_316721
 LandGroundSpecialAttackJumpAfterJumpStart
+
+# Boss final deathblow endings: the map event's EzState request to Wolf 7102xx (c0000.hks
+# GetCommandIDFromEvent -> RequestThrowAnimInterrupt, W_Event7102xx), e.g. the Corrupted Monk
+# m25 12505963 -> 710200 (src/enemy.rs phase rules "player"). Only 710205-710207 have a state
+# (Event7102xx_CMSG) in c0000.hkx: the others' W_Event fires into nothing in the game too.
+Event710205
+Event710206
+Event710207
+# Lightning Reversal (c0000_transition.lua: a lightning hit in the air charges Wolf,
+# W_AirDamageElectroCharge*; an attack then releases it, W_AirElectroReceiveAttack; landing
+# charged shocks him, W_LandAirDamageElectroCharge; a deflect in the air charges too).
+AirDamageElectroChargeStart
+AirDamageElectroChargeLoop
+AirDamageElectroChargeWeakStart
+AirDamageElectroChargeWeakLoop
+AirDamageElectroReceiveExplosionStart
+AirDamageElectroReceiveExplosionFallLoop
+AirDamageElectroReceiveExplosionLand
+AirElectroChargeDeflectEasy
+AirElectroChargeDeflectEasyFallLoop
+AirElectroChargeDeflectHard
+AirElectroChargeDeflectHardFallLoop
+AirWeakElectroChargeDeflectEasy
+AirWeakElectroChargeDeflectEasyFallLoop
+AirWeakElectroChargeDeflectHard
+AirWeakElectroChargeDeflectHardFallLoop
+AirElectroReceiveAttack
+AirWeakElectroReceiveAttack
+LandAirElectroReceiveAttack
+LandAirWeakElectroReceiveAttack
+LandAirDamageElectroCharge
+LandAirDamageElectroChargeWeak
+FallDeathElectroChargeStart
+FallDeathElectroChargeLoop
+LandFallDeathElectroCharge
+# Storm Jump (the Divine Dragon's updrafts, c0000_transition.lua 2779-2783 / 2855-2862): a jump
+# inside an updraft (SpEffect ref 110003 / 110004) is W_GroundStormJump(Weak)Ready, a jump in
+# the air there W_AirStormJump(Weak)Start; landing from them W_LandStormJumpFall.
+GroundStormJumpReady
+GroundStormJumpStart
+GroundStormJumpWeakReady
+GroundStormJumpWeakStart
+GroundStormJumpBackReady
+GroundStormJumpBackStart
+AirStormJumpStart
+AirStormJumpWeakStart
+AirStormJumpBackStart
+StormJumpFall
+LandStormJumpFall

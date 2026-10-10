@@ -157,12 +157,13 @@ fn looks(ffx: i64) -> &'static [Layer] {
 
 /// A dummy id as the TAE writes it -> the dummies to try: 1xxxx = Wolf's right weapon (the blade;
 /// 12200 / 12220 are the Mortal Blade's, which is not modelled: the sword stands in), 2xxxx the
-/// prosthetic arm's model (not modelled: the left hand / arm dummies stand in).
+/// prosthetic tool's parts (model/tool.rs: 2<model><dummy>; without the part, the left hand / arm
+/// dummies stand in).
 fn dummy_candidates(id: i64) -> Vec<i16> {
     match id {
         // 1<model><dummy>: Model2's are kept under their full id (model.rs), Model0's under the bare one.
         10000..=19999 => vec![id as i16, (id % 10000) as i16, 300, 301, 311, 121, 100, 20],
-        20000..=29999 => vec![(id % 10000) as i16, 145, 153, 144, 2],
+        20000..=29999 => vec![id as i16, (id % 10000) as i16, 145, 153, 144, 2],
         _ => vec![id as i16, 220],
     }
 }
@@ -303,7 +304,7 @@ fn emit(
     for mut f in &mut playing {
         if let Some((owner, anim, idx)) = f.key.clone() {
             let alive = actors.iter().zip(actor_e.iter()).find(|(_, e)| *e == owner).is_some_and(|((a, _, _), _)| {
-                a.anim == anim && data_for(&combat, a.side).anim(&a.anim).and_then(|an| an.events.get(idx)).is_some_and(|ev| a.t < ev.end)
+                a.anim == anim && data_for(&combat, &a).anim(&a.anim).and_then(|an| an.events.get(idx)).is_some_and(|ev| a.t < ev.end)
             });
             if !alive {
                 f.stop = true;
@@ -333,7 +334,7 @@ fn emit(
         if a.anim.is_empty() || a.t < a.prev_t {
             continue;
         }
-        let d = data_for(&combat, a.side);
+        let d = data_for(&combat, &a);
         let Some(anim) = d.anim(&a.anim) else { continue };
         let mut states: Option<Vec<i64>> = None;
         for (idx, e) in anim.events.iter().enumerate().filter(|(_, e)| matches!(e.kind, 96 | 118)) {
@@ -356,8 +357,14 @@ fn emit(
                     continue;
                 }
             }
-            // SpawnFFX_Blade (118) has no dummy: the blade.
-            let dmy = e.arg_i64("DummyPolyID").unwrap_or(10301);
+            // SpawnFFX_Blade (118): DummyPolyBladeBaseID (DSAnimStudio TAE.Template.SDT: FFXID,
+            // DummyPolySource, DummyPolyBladeBaseID, DummyPolyBladeTipID; Wolf's are the axe's /
+            // spear's 21300 with tip -1), else the sword's blade.
+            let dmy = if e.kind == 118 {
+                e.arg_i64("DummyPolyBladeBaseID").filter(|d| *d >= 0).unwrap_or(10301)
+            } else {
+                e.arg_i64("DummyPolyID").unwrap_or(10301)
+            };
             let Some(g) = dummy_candidates(dmy).iter().find_map(|k| dm.0.get(k)).and_then(|e| globals.get(*e).ok()) else { continue };
             let (mut pos, fwd) = (g.translation(), (g.rotation() * Vec3::Z).normalize_or(Vec3::Y));
             // A weapon effect on a weapon dummy that is not loaded: along Kusabimaru's blade instead,

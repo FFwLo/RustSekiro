@@ -100,7 +100,8 @@ fn run_photo(
         let to_wolf = (wtf.translation - at).with_y(0.0);
         ea.yaw = f32::atan2(-to_wolf.x, -to_wolf.z);
         // Held in its battle idle so nothing swings during the shots.
-        hold(&mut ea, &combat.enemy, "IdleBattle", 0.0);
+        let d = combat.data_of(&ea);
+        hold(&mut ea, d, "IdleBattle", 0.0);
     }
     // Wolf holds the shot's pose (re-applied every frame), else his standing idle.
     match &pose {

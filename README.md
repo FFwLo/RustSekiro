@@ -81,23 +81,28 @@ The Loaded Shuriken costs Spirit Emblems, and the Healing Gourd heals.
 
 ### The enemies
 
-Two of them, picked in `config.toml` or the debug menu:
-
-| Enemy | Weapon | Brain |
-|---|---|---|
-| Ashina Samurai General | katana, two-handed | its own battle script |
-| Ochimusha | katana, one-handed | its own battle script |
+Every enemy and boss the game places (102 kinds), picked in `config.toml` or
+the debug menu: from the Ashina Samurai General and the Chained Ogre to
+Genichiro, Lady Butterfly, the Corrupted Monk, the Guardian Ape, Owl and
+Isshin. Several at once with `[enemy] group`. Bosses have their deathblow
+counts, their phases and their map events (Genichiro's Tomoe form, the Monk's
+phantoms, the bullets, summons and warps of their map scripts).
 
 Each runs **its real AI**: the game's own compiled battle scripts, run as they
 ship in a small Lua 5.0 interpreter, on a runtime that answers their questions
 about distance, angle, timers and effects the way the game does. They space,
 attack, combo, guard, deflect and counter by those scripts, with their own
-stats, attacks and reactions.
+stats, attacks and reactions. Unaware enemies run the game's stealth rules:
+sight cones, hearing, caution and search, and stealth deathblows from behind.
 
 ### The arena
 
-A flat, tiled floor ringed by eight pillars, so the camera always has
-something to frame.
+The game's own map: the Ashina Outskirts gate where the General stands, with
+its pieces, collision and lighting from the game's draw params (colour grading,
+auto exposure, the hour with `[` and `]`). Every boss fights in its own arena
+when the extraction built them. `[world] map = "sandbox"` is a walled test
+arena with every material of the gate on a panel and any enemy line-up
+(`SHINOBI_SANDBOX_ENEMIES=all:0`).
 
 ### The debug menu
 
@@ -189,14 +194,17 @@ floor, the sandbox uses cobblestone (`FLOOR_MATERIAL` in `src/sound.rs`).
 | Step (hold to sprint) | Shift |
 | Jump, kick in the air | Space |
 | Lock on | Q |
-| Shuriken | F |
+| Prosthetic tool | F |
+| Switch prosthetic tool | Z |
 | Healing Gourd | E |
+| Crouch | C |
 | Sheathe / draw | X |
 | Resurrect (when dead) | Left click |
 
-Sandbox keys: `F1` opens the debug menu, `T` turns the enemy's AI on or off,
-`H` shows hurtboxes, `R` resets, `F5` reloads `config.toml`, `Esc` releases
-the mouse. Click the window to capture the mouse.
+Sandbox keys: `F1` opens the debug menu (enemy, AI mode, skills, tools,
+cheats), `T` turns the enemy's AI on or off, `H` shows hurtboxes, `R` resets,
+`[` / `]` change the hour, `F5` reloads `config.toml`, `Esc` releases the
+mouse. Click the window to capture the mouse.
 
 ## Setup
 
@@ -208,16 +216,22 @@ anywhere, and in that folder:
 
 1. Run `extract.bat`, or `extract.bat -Sekiro "D:\path\to\Sekiro"` for a
    non-default install. It builds the `extracted` folder from your copy of the
-   game; the sound step takes the longest.
+   game. The sounds and the boss arenas take the longest (the arenas unpack
+   and delete about 2 GB per map; `extract.bat -SkipArenas` leaves every boss
+   on the gate map).
 2. Run `sv1.exe`.
 
-You need Windows and SEKIRO: SHADOWS DIE TWICE from Steam (patch 1.06).
-Nothing else.
+You need Windows, SEKIRO: SHADOWS DIE TWICE from Steam (patch 1.06) and
+[Python 3](https://www.python.org/downloads/) on the PATH (it runs the boss
+script, boss arena and prosthetic tool exports). [Node.js](https://nodejs.org)
+is optional: with it, the game's own effect definitions are exported; without
+it the effects are hand-made stand-ins.
 
 ### From source
 
-You need Rust and Windows, and SEKIRO: SHADOWS DIE TWICE from Steam (patch
-1.06). Python 3 is only needed for the analysis tools.
+You need Rust and Windows, SEKIRO: SHADOWS DIE TWICE from Steam (patch
+1.06), Python 3 (the boss, arena and tool exports) and optionally Node.js (the
+effect definitions).
 
 Generated files are deliberately not in the repository, because they are
 derived from the game: everything in `extracted/`. The project will not run

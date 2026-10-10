@@ -29,6 +29,8 @@ struct Batch {
     pos: Vec<[f32; 3]>,
     normal: Vec<[f32; 3]>,
     uv: Vec<[f32; 2]>,
+    uv2: Vec<[f32; 2]>,
+    blend: Vec<[u8; 4]>,
     indices: Vec<u32>,
 }
 
@@ -69,7 +71,7 @@ const ENV_HOURS: [f32; 6] = [0.0, 6.0, 12.0, 18.0, 22.0, 2.0];
 /// for every LutSourceId `n` the draw params (ColorGrading[Yebis]) select over the day: a
 /// 16x256 RGBA8 strip of 16 slices of 16x16 (x = red, row = blue * 16 + green), the display
 /// colour in, the graded one out. Written as `map_<id>_lut_<n>.dds`; returns the ids found.
-fn export_luts(root: &Path, map_id: &str) -> Vec<u32> {
+fn export_luts(root: &Path, map_id: &str, stem: &str) -> Vec<u32> {
     let area = &map_id[..3];
     let path = root.join(format!("map/{area}/{area}_cgrading.tpf"));
     let Ok(tpf) = std::fs::read(&path) else {
@@ -80,7 +82,7 @@ fn export_luts(root: &Path, map_id: &str) -> Vec<u32> {
     let mut ids = Vec::new();
     for (name, dds) in flver::tpf(&tpf) {
         if let Some(id) = name.to_lowercase().strip_prefix(&prefix).and_then(|n| n.parse::<u32>().ok()) {
-            std::fs::write(root.join(format!("map_{map_id}_lut_{id:04}.dds")), &dds).unwrap();
+            std::fs::write(root.join(format!("map_{stem}_lut_{id:04}.dds")), &dds).unwrap();
             ids.push(id);
         }
     }
@@ -89,7 +91,7 @@ fn export_luts(root: &Path, map_id: &str) -> Vec<u32> {
     ids
 }
 
-fn export_env(root: &Path, map_id: &str, msb: &msb::Msb, arena: &Arena) -> Option<u32> {
+fn export_env(root: &Path, map_id: &str, name: &str, msb: &msb::Msb, arena: &Arena) -> Option<u32> {
     let origin = arena.origin;
     let probe = msb
         .regions
@@ -124,8 +126,8 @@ fn export_env(root: &Path, map_id: &str, msb: &msb::Msb, arena: &Arena) -> Optio
         let src = |d: [f32; 3]| arena.undir([-d[0], d[1], d[2]]);
         let spec = cube.resample(cube.size, src);
         let diff = spec.irradiance(16, 1.0);
-        std::fs::write(root.join(format!("map_{map_id}_env_{v:02}.dds")), cubemap::write_rgba16f(&cubemap::mip_chain(spec))).unwrap();
-        std::fs::write(root.join(format!("map_{map_id}_envd_{v:02}.dds")), cubemap::write_rgba16f(&[diff])).unwrap();
+        std::fs::write(root.join(format!("map_{name}_env_{v:02}.dds")), cubemap::write_rgba16f(&cubemap::mip_chain(spec))).unwrap();
+        std::fs::write(root.join(format!("map_{name}_envd_{v:02}.dds")), cubemap::write_rgba16f(&[diff])).unwrap();
     }
     Some(id)
 }
@@ -143,10 +145,32 @@ fn skip_material(mtd_name: &str) -> bool {
 /// surface; later slots are moss / snow overlays); a slot named `<material>_a` wins. The normal
 /// map is the one named like the albedo (`x_a` -> `x_n`), else the one named after the
 /// material, else the first with a path. (sekiro-rs maps/pieces.rs choose_material.)
-fn choose(m: &flver::Mesh, mtd: Option<&mtd::Mtd>) -> (String, String, u8, bool) {
+/// A map material's texture layers (docs/kb/map.md "Layers"): the base albedo / normal, the
+/// overlay (M[Multiple] slots 5 / 4: moss, a second stone...) and the snow (slots 12 / 10;
+/// M[MultipleGround] 11 / 7), blended in the game by the vertex blend bytes.
+#[derive(Clone, Default, PartialEq, Eq, PartialOrd, Ord)]
+struct Layers {
+    albedo: String,
+    normal: String,
+    over_albedo: String,
+    over_normal: String,
+    snow_albedo: String,
+    snow_normal: String,
+    /// Layer C (M[Multiple] slots 7 / 0), blended by byte 2.
+    c_albedo: String,
+    c_normal: String,
+    /// The base layer's `_3m` mask (slot 9): R is read as height for the layer blends.
+    mask: String,
+    alpha: u8,
+    two_sided: bool,
+}
+
+fn choose(m: &flver::Mesh, mtd: Option<&mtd::Mtd>) -> Layers {
     let stem = |p: &str| p.rsplit(['\\', '/']).next().unwrap_or("").split('.').next().unwrap_or("").to_lowercase();
     let mut albedo: Vec<String> = Vec::new();
     let mut normal: Vec<String> = Vec::new();
+    // Slot name -> path, for the layer slots of the sat shaders.
+    let mut by_slot: Vec<(String, String)> = Vec::new();
     for (param, tex) in &m.textures {
         let path = if tex.is_empty() {
             mtd.and_then(|d| d.textures.iter().find(|t| &t.kind == param)).map(|t| stem(&t.path)).unwrap_or_default()
@@ -157,12 +181,23 @@ fn choose(m: &flver::Mesh, mtd: Option<&mtd::Mtd>) -> (String, String, u8, bool)
             continue;
         }
         let p = param.to_lowercase();
+        by_slot.push((p.clone(), path.clone()));
         if p.contains("albedomap") || p.contains("diffuse") {
             albedo.push(path);
         } else if p.contains("normalmap") || p.contains("bumpmap") {
             normal.push(path);
         }
     }
+    let slot = |suffix: &str| by_slot.iter().find(|(p, _)| p.ends_with(suffix)).map(|(_, t)| t.clone()).unwrap_or_default();
+    let ground = m.mtd.to_lowercase().contains("ground") || mtd.is_some_and(|d| d.shader.to_lowercase().contains("multipleground"));
+    let (over_albedo, over_normal) = (slot("texture2d_5_albedomap_0"), slot("texture2d_4_normalmap_0"));
+    let (c_albedo, c_normal) = if ground { (String::new(), String::new()) } else { (slot("texture2d_7_albedomap_0"), slot("texture2d_0_normalmap_0")) };
+    let mask = slot("texture2d_9_mask3map_0");
+    let (snow_albedo, snow_normal) = if ground {
+        (slot("texture2d_11_albedomap_0"), slot("texture2d_7_normalmap"))
+    } else {
+        (slot("texture2d_12_albedomap_0"), slot("texture2d_10_normalmap_0"))
+    };
     let own = format!("{}_a", m.material.to_lowercase());
     let a = albedo.iter().position(|t| *t == own).or(if albedo.is_empty() { None } else { Some(0) });
     let n = a
@@ -181,7 +216,24 @@ fn choose(m: &flver::Mesh, mtd: Option<&mtd::Mtd>) -> (String, String, u8, bool)
         }
         two_sided = d.int("g_DoubleSided").unwrap_or(0) != 0 || alpha != 0;
     }
-    (a.map(|i| albedo[i].clone()).unwrap_or_default(), n.map(|i| normal[i].clone()).unwrap_or_default(), alpha, two_sided)
+    let albedo = a.map(|i| albedo[i].clone()).unwrap_or_default();
+    // An overlay that is the base again (stonewall_block_edge: the same albedo with another
+    // normal) carries nothing worth a second sample.
+    let (over_albedo, over_normal) = if over_albedo == albedo { (String::new(), String::new()) } else { (over_albedo, over_normal) };
+    let (c_albedo, c_normal) = if c_albedo == albedo || c_albedo.is_empty() { (String::new(), String::new()) } else { (c_albedo, c_normal) };
+    Layers {
+        albedo,
+        normal: n.map(|i| normal[i].clone()).unwrap_or_default(),
+        over_albedo,
+        over_normal,
+        snow_albedo,
+        snow_normal,
+        c_albedo,
+        c_normal,
+        mask,
+        alpha,
+        two_sided,
+    }
 }
 
 fn height_on(x: f32, z: f32, a: [f32; 3], b: [f32; 3], c: [f32; 3]) -> Option<f32> {
@@ -196,9 +248,14 @@ fn height_on(x: f32, z: f32, a: [f32; 3], b: [f32; 3], c: [f32; 3]) -> Option<f3
 }
 
 /// `map <extracted> <map id> <centre part name> <radius m>`.
+/// `centre`: a part name, or an entity id (a boss script's character, e.g. 1700800). The files
+/// are named after `MAP_NAME` when set (one arena per boss: `boss_<NpcParam row>`), else the map.
 pub fn export(root: &Path, map_id: &str, centre: &str, radius: f32) {
     let msb = msb::read(&std::fs::read(root.join(format!("map/mapstudio/{map_id}.msb"))).expect("read msb"));
-    let c = msb.parts.iter().find(|p| p.name == centre).unwrap_or_else(|| panic!("no part {centre}"));
+    let entity: Option<i32> = centre.parse().ok();
+    let c = msb.parts.iter().find(|p| p.name == centre || (entity.is_some() && Some(p.entity) == entity)).unwrap_or_else(|| panic!("no part {centre}"));
+    let name = std::env::var("MAP_NAME").unwrap_or_else(|_| map_id.to_string());
+    let name = name.as_str();
     // The enemy faces +Z in its own space; the origin is 4 m in front of him and the arena is
     // turned so he keeps facing +Z: the game spawns the enemy at (0, y, -4), his real spot, and
     // the player at (0, y, 4), in front of him where the player walks up in the game.
@@ -232,8 +289,10 @@ pub fn export(root: &Path, map_id: &str, centre: &str, radius: f32) {
             let (a, b, cc) = (mesh.indices[t * 3] as usize, mesh.indices[t * 3 + 1] as usize, mesh.indices[t * 3 + 2] as usize);
             if let Some(h) = height_on(c.pos[0], c.pos[2], world[a], world[b], world[cc]) {
                 let below = c.pos[1] + 0.5 - h;
-                // The nearest floor under the centre part's feet.
-                if below >= 0.0 && under.is_none_or(|(d, _)| below < d) {
+                // The nearest floor under the centre part's feet that draws anything (the
+                // Guardian Ape's 1700850 stands on h900707, a helper collision with no draw
+                // groups, over the cave floor that has them).
+                if below >= 0.0 && under.is_none_or(|(d, _)| below < d) && p.draw_groups.iter().any(|g| *g != 0) {
                     under = Some((below, pi));
                 }
             }
@@ -254,19 +313,68 @@ pub fn export(root: &Path, map_id: &str, centre: &str, radius: f32) {
     let mtd_dir = root.join("mtd/allmaterialbnd.mtdbnd.d");
     let mut mtds: HashMap<String, Option<mtd::Mtd>> = HashMap::new();
 
-    let mut batches: BTreeMap<(String, String, u8, bool), Batch> = BTreeMap::new();
+    let lod_dist: [f32; 2] = std::env::var("MAP_LOD")
+        .ok()
+        .and_then(|v| {
+            let d: Vec<f32> = v.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+            (d.len() == 2).then(|| [d[0], d[1]])
+        })
+        .unwrap_or([30.0, 55.0]);
+    // Pieces within `MAP_SHADOW` m (default 45) of the arena cast the sun's shadows; the rest
+    // are tagged not to (the shadow passes over the whole map cost half the frame rate).
+    let shadow_m: f32 = std::env::var("MAP_SHADOW").ok().and_then(|v| v.parse().ok()).unwrap_or(45.0);
+    // `MAP_CELL=<m>` splits the batches by cells of the piece's centre so that the camera and
+    // the shadow cascades can cull them; off by default: 20 m cells (1016 meshes) cost more
+    // per entity than the culling saved (39 fps against 56, kb/map.md).
+    let cell_m: f32 = std::env::var("MAP_CELL").ok().and_then(|v| v.parse().ok()).unwrap_or(0.0);
+    let mut batches: BTreeMap<(Layers, bool, i32, i32), Batch> = BTreeMap::new();
     let mut pieces = 0;
     let mut tris = 0usize;
     let mut skipped_groups = 0;
-    for p in msb.parts.iter().filter(|p| p.kind == 0) {
+    // Map pieces (part type 0, the map's mapbnds) and objects (type 1: trees, fences, the
+    // Divine Dragon's arena; `obj/<model>.objbnd`, whose rigid meshes are in their bone's space,
+    // flver.rs SEKIRO_FLVER_REF_POSE). An object not unpacked yet is listed for `unpack`.
+    // gap: objects' own collision (the objbnd's hkx) is not added to the .hit.
+    let obj_dir = root.join("obj");
+    let mut objects_missing: std::collections::BTreeSet<String> = Default::default();
+    let mut objects = 0;
+    let mut objects_used: std::collections::BTreeSet<String> = Default::default();
+    for p in msb.parts.iter().filter(|p| p.kind == 0 || p.kind == 1) {
         if !groups.is_empty() && !p.draws_with(&groups) {
             skipped_groups += 1;
+            if std::env::var("MAP_LOG").is_ok() && (p.pos[0] - origin[0]).hypot(p.pos[2] - origin[2]) <= radius {
+                println!("  not drawn there: {} ({}) draw groups {:08x?}", p.name, p.model, p.draw_groups);
+            }
             continue;
         }
-        let id = p.model.trim_start_matches('m');
-        let path = dir.join(format!("{map_id}_{id}.mapbnd.d/{map_id}_{id}.flver"));
-        let Ok(data) = std::fs::read(&path) else { continue };
-        let mut f = flver::read(&data);
+        let object = p.kind == 1;
+        let path = if object {
+            if (p.pos[0] - origin[0]).hypot(p.pos[2] - origin[2]) > radius + 60.0 {
+                continue;
+            }
+            let m = p.model.to_lowercase();
+            obj_dir.join(format!("{m}.objbnd.d/{m}.flver"))
+        } else {
+            let id = p.model.trim_start_matches('m');
+            dir.join(format!("{map_id}_{id}.mapbnd.d/{map_id}_{id}.flver"))
+        };
+        let Ok(data) = std::fs::read(&path) else {
+            if object {
+                objects_missing.insert(p.model.to_lowercase());
+            }
+            continue;
+        };
+        let read = |lod: u32| {
+            if object {
+                unsafe { std::env::set_var("SEKIRO_FLVER_REF_POSE", "1") };
+            }
+            let f = flver::read_lod(&data, lod);
+            if object {
+                unsafe { std::env::remove_var("SEKIRO_FLVER_REF_POSE") };
+            }
+            f
+        };
+        let mut f = read(0);
         let (mut lo, mut hi) = ([f32::MAX; 2], [f32::MIN; 2]);
         for v in f.meshes.iter().flat_map(|m| m.vertices.iter()) {
             let w = p.transform(v.pos);
@@ -283,12 +391,17 @@ pub fn export(root: &Path, map_id: &str, centre: &str, radius: f32) {
         }
         // Level of detail by distance, as the engine swaps them: full within 30 m, LodLevel1
         // to 55 m, LodLevel2 beyond (pieces without a level keep the next lower one).
+        // `MAP_LOD=<full m>,<lod1 m>` overrides (docs/kb/map.md, frame-rate tuning).
         let dist = dx.hypot(dz);
-        let lod = if dist <= 30.0 { 0 } else if dist <= 55.0 { 1 } else { 2 };
+        let lod = if dist <= lod_dist[0] { 0 } else if dist <= lod_dist[1] { 1 } else { 2 };
         if lod > 0 {
-            f = flver::read_lod(&data, lod);
+            f = read(lod);
         }
         pieces += 1;
+        objects += object as usize;
+        if object {
+            objects_used.insert(p.model.to_lowercase());
+        }
         let piece_tris: usize = f.meshes.iter().map(|m| m.indices.len() / 3).sum();
         if std::env::var("MAP_LOG").is_ok() {
             println!("piece {} {} tris {} dist {:.0}", p.name, p.model, piece_tris, dx.hypot(dz));
@@ -299,11 +412,13 @@ pub fn export(root: &Path, map_id: &str, centre: &str, radius: f32) {
             }
             let key = m.mtd.to_lowercase();
             let mtd = mtds.entry(key.clone()).or_insert_with(|| std::fs::read(mtd_dir.join(format!("{key}.mtd"))).ok().and_then(|d| mtd::read(&d))).as_ref();
-            let (albedo, normal, alpha, two_sided) = choose(m, mtd);
-            if albedo.is_empty() && std::env::var("MAP_LOG").is_ok() {
+            let layers = choose(m, mtd);
+            if layers.albedo.is_empty() && std::env::var("MAP_LOG").is_ok() {
                 println!("noalbedo {} [{}] shader {} slots {:?} mtd slots {:?}", m.material, m.mtd, mtd.map_or("?", |d| d.shader.as_str()), m.textures, mtd.map(|d| d.textures.iter().map(|t| (t.kind.clone(), t.path.clone())).collect::<Vec<_>>()));
             }
-            let b = batches.entry((albedo, normal, alpha, two_sided)).or_default();
+            let centre = [(lo[0] + hi[0]) * 0.5, (lo[1] + hi[1]) * 0.5];
+            let cell = |v: f32| if cell_m > 0.0 { (v / cell_m).floor() as i32 } else { 0 };
+            let b = batches.entry((layers, dist <= shadow_m, cell(centre[0]), cell(centre[1]))).or_default();
             let base = b.pos.len() as u32;
             for v in &m.vertices {
                 b.pos.push(arena.point(p.transform(v.pos)));
@@ -311,12 +426,20 @@ pub fn export(root: &Path, map_id: &str, centre: &str, radius: f32) {
                 let l = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt().max(1e-6);
                 b.normal.push([n[0] / l, n[1] / l, n[2] / l]);
                 b.uv.push(v.uv);
+                b.uv2.push(v.uv2);
+                // Blend weights: overlay (byte 0), layer C (byte 1), snow (byte 4), byte 2
+                // (kb/map.md "Layers": read off the vertex data, not the shader).
+                b.blend.push([v.blend[0][0], v.blend[1][0], v.blend[4][0], v.blend[2][0]]);
             }
             b.indices.extend(m.indices.iter().map(|i| base + i));
             tris += m.indices.len() / 3;
         }
     }
-    println!("{pieces} pieces ({skipped_groups} outside the draw groups), {} batches, {tris} triangles", batches.len());
+    println!("{pieces} pieces ({objects} objects; {skipped_groups} outside the draw groups), {} batches, {tris} triangles", batches.len());
+    if !objects_missing.is_empty() {
+        let list: Vec<String> = objects_missing.iter().cloned().collect();
+        println!("objects to unpack: ^/obj/({})\\.objbnd", list.join("|"));
+    }
 
     let put_str = |b: &mut Vec<u8>, s: &str| {
         b.extend_from_slice(&(s.len() as u16).to_le_bytes());
@@ -324,30 +447,34 @@ pub fn export(root: &Path, map_id: &str, centre: &str, radius: f32) {
     };
     let put_f = |b: &mut Vec<u8>, v: &[f32]| v.iter().for_each(|x| b.extend_from_slice(&x.to_le_bytes()));
     let mut b: Vec<u8> = Vec::new();
+    // Version 4: nine texture names per batch (base, overlay, snow, layer C albedo / normal,
+    // the base mask), a caster byte, and 44-byte vertices (pos, normal, uv, uv2, 4 blend bytes).
     b.extend_from_slice(b"SHMP");
-    b.extend_from_slice(&1u32.to_le_bytes());
+    b.extend_from_slice(&4u32.to_le_bytes());
     b.extend_from_slice(&(batches.len() as u32).to_le_bytes());
     let mut wanted: HashSet<String> = HashSet::new();
-    for ((albedo, normal, alpha, two_sided), m) in &batches {
-        for t in [albedo, normal] {
+    for ((l, casts, _, _), m) in &batches {
+        for t in [&l.albedo, &l.normal, &l.over_albedo, &l.over_normal, &l.snow_albedo, &l.snow_normal, &l.c_albedo, &l.c_normal, &l.mask] {
             if !t.is_empty() {
                 wanted.insert(t.clone());
             }
+            put_str(&mut b, t);
         }
-        put_str(&mut b, albedo);
-        put_str(&mut b, normal);
-        b.push(*alpha);
-        b.push(*two_sided as u8);
+        b.push(l.alpha);
+        b.push(l.two_sided as u8);
+        b.push(*casts as u8);
         b.extend_from_slice(&(m.pos.len() as u32).to_le_bytes());
         for i in 0..m.pos.len() {
             put_f(&mut b, &m.pos[i]);
             put_f(&mut b, &m.normal[i]);
             put_f(&mut b, &m.uv[i]);
+            put_f(&mut b, &m.uv2[i]);
+            b.extend_from_slice(&m.blend[i]);
         }
         b.extend_from_slice(&(m.indices.len() as u32).to_le_bytes());
         m.indices.iter().for_each(|x| b.extend_from_slice(&x.to_le_bytes()));
     }
-    let out = root.join(format!("map_{map_id}.bin"));
+    let out = root.join(format!("map_{name}.bin"));
     std::fs::write(&out, &b).unwrap();
     println!("{} ({} MB)", out.display(), b.len() / 1_000_000);
 
@@ -358,7 +485,7 @@ pub fn export(root: &Path, map_id: &str, centre: &str, radius: f32) {
     hit_verts.iter().for_each(|v| put_f(&mut h, v));
     h.extend_from_slice(&(hit_tris.len() as u32).to_le_bytes());
     hit_tris.iter().flatten().for_each(|x| h.extend_from_slice(&x.to_le_bytes()));
-    std::fs::write(root.join(format!("map_{map_id}.hit")), &h).unwrap();
+    std::fs::write(root.join(format!("map_{name}.hit")), &h).unwrap();
 
     // Draw params of the area (the base file; the light set id picks the variant).
     let gparam_path = root.join(format!("param/drawparam/{}_0000.gparam", &map_id[..6]));
@@ -366,8 +493,8 @@ pub fn export(root: &Path, map_id: &str, centre: &str, radius: f32) {
     if draw.is_none() {
         println!("no {} (unpack 'param/drawparam/{}')", gparam_path.display(), &map_id[..6]);
     }
-    let env_probe = export_env(root, map_id, &msb, &arena);
-    let luts = export_luts(root, map_id);
+    let env_probe = export_env(root, map_id, name, &msb, &arena);
+    let luts = export_luts(root, map_id, name);
     let json = serde_json::json!({
         "env_probe": env_probe,
         "env_hours": ENV_HOURS,
@@ -382,7 +509,7 @@ pub fn export(root: &Path, map_id: &str, centre: &str, radius: f32) {
         "draw_groups": groups,
         "drawparam": draw,
     });
-    std::fs::write(root.join(format!("map_{map_id}.json")), serde_json::to_string_pretty(&json).unwrap()).unwrap();
+    std::fs::write(root.join(format!("map_{name}.json")), serde_json::to_string_pretty(&json).unwrap()).unwrap();
 
     // Textures: every BXF4 pack of the area (map/m11/m11_0000..0003.tpfbhd, one TPF per
     // texture) and the shared other/maptex.tpf.
@@ -404,6 +531,18 @@ pub fn export(root: &Path, map_id: &str, centre: &str, radius: f32) {
             if f.data.starts_with(b"TPF\0") {
                 for (name, dds) in flver::tpf(&f.data) {
                     take(name, &dds);
+                }
+            }
+        }
+    }
+    // Objects carry their textures in the objbnd (`<model>.tpf`).
+    for m in &objects_used {
+        for e in std::fs::read_dir(obj_dir.join(format!("{m}.objbnd.d"))).into_iter().flatten().flatten() {
+            if e.path().extension().is_some_and(|x| x == "tpf") {
+                if let Ok(d) = std::fs::read(e.path()) {
+                    for (name, dds) in flver::tpf(&d) {
+                        take(name, &dds);
+                    }
                 }
             }
         }

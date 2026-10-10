@@ -56,6 +56,27 @@ enum Outcome {
 }
 
 /// Starts an additive flinch (anim/actor add layer) by state name, if it has an anim.
+/// c9997 ExecNoSyncAddDamage (lines 2899-2935): a hit with no reaction flinches additively,
+/// unless the chr lacks the "no additive" anim 9999: PartBlend_Add<part> (anim 9510 + part - 1)
+/// for a hit on a part group (env(1120): the hit capsule's, `part`), else SABlend_Add_<dir>.
+/// The Divine Dragon's PartBlend anims put 3520080 (hand / body) or 3520081 (head) on it, which
+/// its map script reads. gap: env(336) IsPartDamageAdditiveBlendInvalid is not traced.
+pub(crate) fn no_sync_add_damage(d: &crate::data::CharData, a: &mut Actor, part: u8, from: Vec3, at: Vec3) {
+    let exists = |id: i64| d.anim(&format!("a000_{id:06}")).is_some() || (a.anim_group > 0 && d.anim(&format!("a{:03}_{id:06}", a.anim_group * 100)).is_some());
+    if !exists(9999) {
+        return;
+    }
+    if part > 0 && exists(9510 + part as i64 - 1) {
+        start_additive(d, a, &format!("PartBlend_Add{part:02}"));
+        return;
+    }
+    let fwd = a.forward();
+    let to = (from - at).with_y(0.0).normalize_or_zero();
+    let (f, r) = (to.dot(fwd), to.dot(fwd.cross(Vec3::Y)));
+    let dir = if f.abs() >= r.abs() { if f >= 0.0 { "Front" } else { "Back" } } else if r > 0.0 { "Right" } else { "Left" };
+    start_additive(d, a, &format!("SABlend_Add_{dir}"));
+}
+
 fn start_additive(d: &crate::data::CharData, a: &mut Actor, state: &str) {
     if let Some(k) = d.anim_key(state) {
         a.add_anim = k.to_string();
@@ -138,7 +159,7 @@ fn guard_size(level: i64) -> &'static str {
 /// knockBackCutRate_* are 0).
 pub(crate) fn apply_knockback(combat: &Combat, da: &mut Actor, from: Vec3, at: Vec3, dist: f32, kind: &str, cut_field: &str) {
     let row_id = match da.side {
-        Side::Enemy => combat.param("NpcParam", combat.foe.npc_row)["knockbackParamId"].as_i64().unwrap_or(0),
+        Side::Enemy => combat.npc(da)["knockbackParamId"].as_i64().unwrap_or(0),
         Side::Player => combat
             .params
             .get("EquipParamProtector")
@@ -154,14 +175,14 @@ pub(crate) fn apply_knockback(combat: &Combat, da: &mut Actor, from: Vec3, at: V
     let percent = if da.anim.is_empty() {
         1.0
     } else {
-        data_for(combat, da.side)
+        data_for(combat, &da)
             .events_at(&da.anim, da.t)
             .find(|e| e.kind == 226)
             .and_then(|e| e.arg_i64("KnockbackPercent"))
             .map_or(1.0, |p| p as f32 / 100.0)
     };
     let cut = if da.side == Side::Enemy {
-        combat.param("NpcParam", combat.foe.npc_row)[cut_field].as_f64().unwrap_or(0.0) as f32
+        combat.npc(da)[cut_field].as_f64().unwrap_or(0.0) as f32
     } else {
         0.0
     };
@@ -236,8 +257,8 @@ fn dodged(combat: &Combat, def: &Actor, att: &Actor, atk: &Attack) -> bool {
     if def.anim.is_empty() {
         return false;
     }
-    let dd = data_for(combat, def.side);
-    let ad = data_for(combat, att.side);
+    let dd = data_for(combat, &def);
+    let ad = data_for(combat, &att);
     // Mikiri takes precedence: a perilous thrust into the step's MikiriCounter window.
     if atk.atk_type == 2 && atk.disable_guard == 1 && dd.flag(&def.anim, def.t, FLAG_MIKIRI) {
         return false;
@@ -271,9 +292,9 @@ fn dmy_key(id: i64) -> i16 {
 /// corrections [%], each scaled by the NPC's NpcParam <element>DamageCutRate (c1020: dark
 /// 0.6, others 1.0; NpcParam def_* are 0). Combat arts deal "dark" (Whirlwind Slash
 /// atkDarkCorrection 125 on attackBaseDark 40).
-fn player_attack_damage(combat: &Combat, atk: &Attack, weapon: i64) -> f32 {
+fn player_attack_damage(combat: &Combat, atk: &Attack, weapon: i64, def: &Actor) -> f32 {
     let w = combat.param("EquipParamWeapon", weapon);
-    let npc = combat.param("NpcParam", combat.foe.npc_row);
+    let npc = combat.npc(def);
     let base = |k: &str| w[k].as_f64().unwrap_or(0.0) as f32;
     let cut = |k: &str| npc[k].as_f64().unwrap_or(1.0) as f32;
     base("attackBasePhysics") * atk.atk_phys_correction / 100.0
@@ -447,7 +468,7 @@ fn draw_hitboxes(
         }
         // The active hit capsules in red: with the overlay too (they read as stray circles in play).
         let (Some(d), false, true) = (dummies, a.anim.is_empty(), show.0) else { continue };
-        for (e, atk, _) in data_for(&combat, a.side).attack_windows(&a.anim) {
+        for (e, atk, _) in data_for(&combat, &a).attack_windows(&a.anim) {
             if !e.in_time(a.t) || (atk.atk_stam <= 0.0 && atk.atk_phys <= 0.0) {
                 continue;
             }
@@ -578,6 +599,37 @@ pub(crate) fn guard_skill_rate(combat: &Combat, config: &GameConfig, attribute: 
     rate
 }
 
+/// ACTION_UNLOCK_TYPE_* (c0000_define.lua) the HKS asks env(3033) about.
+pub(crate) const UNLOCK_AIR_DEFLECT_GUARD: u32 = 15;
+pub(crate) const UNLOCK_AIR_SUB_ATTACK: u32 = 16;
+pub(crate) const UNLOCK_SUB_ATTACK_DIRAVE_ATTACK_1: u32 = 20;
+pub(crate) const UNLOCK_SUB_ATTACK_SHOT_ATTACK: u32 = 21;
+pub(crate) const UNLOCK_SUB_ATTACK_DIRAVE_ATTACK_2: u32 = 22;
+pub(crate) const UNLOCK_SUB_ATTACK_ENCHANT: u32 = 23;
+pub(crate) const UNLOCK_AIR_SP_ATTACK: u32 = 25;
+pub(crate) const UNLOCK_SPRINT_TO_CROUCH: u32 = 26;
+
+/// env(3033, ACTION_UNLOCK_TYPE_n): the exe (140b3 env case 0xbd9 -> FUN_1407a7fe0) answers yes
+/// when the player holds at least one item whose ActionUnlockParam row has action<n> set (a count
+/// per type at PlayerGameData +0x168 +0x90) or a flag bit is set. A skill counts through the
+/// virtual weapon it grants: SkillParam.virtualWeaponId -> EquipParamWeapon.actionUnlockParamId ->
+/// ActionUnlockParam (Mid-Air Combat Arts: skill 6 -> 200500 -> action25). Wolf always holds the
+/// Kusabimaru (goods 2300: action05) and the prosthetic (2310: action04) here. gap: the flag bits'
+/// writer is not traced; the other goods (Diving 2420, Night Eyes 2390, ...) are not held.
+/// `player.unlock_all_moves` (default) opens every type, and so does data without the
+/// ActionUnlockParam table.
+pub(crate) fn action_unlocked(combat: &Combat, config: &GameConfig, ty: u32) -> bool {
+    if config.player.unlock_all_moves || combat.params.get("ActionUnlockParam").is_none() || matches!(ty, 4 | 5) {
+        return true;
+    }
+    let key = format!("action{ty:02}");
+    config.player.skills.iter().any(|&s| {
+        let weapon = combat.param("SkillParam", s)["virtualWeaponId"].as_i64().unwrap_or(-1);
+        let row = combat.param("EquipParamWeapon", weapon)["actionUnlockParamId"].as_i64().unwrap_or(-1);
+        combat.param("ActionUnlockParam", row)[&key].as_i64() == Some(1)
+    })
+}
+
 /// The SpEffects of Wolf's learned latent skills (SkillParam spEffect1-3, config player.skills).
 pub(crate) fn skill_sp_effects<'a>(combat: &'a Combat, config: &'a GameConfig) -> impl Iterator<Item = &'a serde_json::Value> + 'a {
     config.player.skills.iter().flat_map(move |&skill| {
@@ -598,6 +650,26 @@ pub(crate) fn skill_sp_effect_rows(combat: &Combat, config: &GameConfig) -> Vec<
 /// defStaminaAttackRate 1.25).
 pub(crate) fn skill_rate(combat: &Combat, config: &GameConfig, field: &str) -> f32 {
     skill_sp_effects(combat, config).map(|se| se[field].as_f64().unwrap_or(1.0) as f32).product()
+}
+
+/// NpcParam teamType hostility between two NPCs (both can hurt and target each other). Team 24
+/// ("Enemy 2", Paramdex TEAM_TYPE) holds the invaders, and their rows say whom they are for:
+/// 11502001 / 14701003 "hostile to the Ashina forces" (葦名勢敵対用), 11502100 "to the monkeys"
+/// (猿敵対用), 17000110 "to the fallen samurai" (落武者敵対) - all team 6 ("Enemy") - while
+/// 11007200 "does not fight the Lone Shadows" (孤影衆と敵対しない) shares their team 24. Team 29's
+/// one row is the Red Ogre "indiscriminate" (50200010 無差別). gap: the exe's team table is not
+/// traced; the rule is these names. Disabled (0), friendly NPCs (26) and objects (30) fight none.
+pub fn teams_hostile(a: i64, b: i64) -> bool {
+    match (a, b) {
+        (29, x) | (x, 29) => !matches!(x, 0 | 26 | 30),
+        (6, 24) | (24, 6) => true,
+        _ => false,
+    }
+}
+
+/// An NPC's team (NpcParam teamType; 6 "Enemy" without one).
+pub fn team_of(combat: &Combat, a: &Actor) -> i64 {
+    combat.npc(a)["teamType"].as_i64().unwrap_or(6)
 }
 
 fn resolve(
@@ -625,10 +697,15 @@ fn resolve(
             let (att_e, ref mut aa, atf, ref mut ae, adummies, _) = *att;
             let (def_e, ref mut da, dtf, ref mut de, _, dhurt) = *def;
             let defender_dead = de.as_ref().is_some_and(|e| e.is_dead());
+            // Enemies are on one side, unless their teams are hostile (teams_hostile: the
+            // invaders against Ashina). AtkParam friendlyTarget rows are for objects.
+            if aa.side == da.side && !(aa.side == Side::Enemy && teams_hostile(team_of(&combat, aa), team_of(&combat, da))) {
+                continue;
+            }
             if aa.hp <= 0.0 || (da.hp <= 0.0 && da.side == Side::Player) || defender_dead || (aa.anim.is_empty() && aa.bullet_hits.is_empty()) {
                 continue;
             }
-            let ad = data_for(&combat, aa.side);
+            let ad = data_for(&combat, &aa);
             let mut windows: Vec<(i32, i64, Attack, bool)> = ad
                 .attack_windows(&aa.anim)
                 .into_iter()
@@ -658,11 +735,19 @@ fn resolve(
                         (q1.lerp(p1, k), q2.lerp(p2, k))
                     }))
                 });
+                // The part group of the capsule it touched (env(1120)).
+                let mut part = 0u8;
                 let connects = bullet || match capsule {
                     Some(sweep) => sweep.iter().any(|&(p1, p2)| match dhurt {
                         // Ragdoll hurtbox capsules (follow the animation).
-                        Some(h) => h.0.iter().any(|&(ma, mb, r)| match (dummy_tf.get(ma), dummy_tf.get(mb)) {
-                            (Ok(a), Ok(b)) => segment_distance(p1, p2, a.translation(), b.translation()) <= atk.hit0_radius + r,
+                        Some(h) => h.0.iter().enumerate().any(|(i, &(ma, mb, r))| match (dummy_tf.get(ma), dummy_tf.get(mb)) {
+                            (Ok(a), Ok(b)) => {
+                                let touch = segment_distance(p1, p2, a.translation(), b.translation()) <= atk.hit0_radius + r;
+                                if touch {
+                                    part = h.1.get(i).copied().unwrap_or(0);
+                                }
+                                touch
+                            }
                             _ => false,
                         }),
                         None => {
@@ -691,7 +776,7 @@ fn resolve(
                 aa.hits_done.push((judge, start));
                 aa.attack_hit = true;
 
-                let dd = data_for(&combat, da.side);
+                let dd = data_for(&combat, &da);
                 let defending = !da.anim.is_empty();
 
                 // The Mist Raven's atemi (HKS line 1152): a hit inside its SP_EF_REF_TAE_ENABLE_ATEMI_KAWARIMI
@@ -729,10 +814,10 @@ fn resolve(
                     // a20x_511100, ThrowDef13100), the break pose player.rs takes on to the deathblow
                     // (live c1010: 511100 0.55-0.61 s -> 511110).
                     aa.add_posture(atk.stamina_damage_attack_hit_parry * skill_rate(&combat, &config, "attackHitParryStaminaAttackRate"));
-                    let broken_row = aa.posture_broken().then(|| combat.throw(combat.foe.throw_row(120))).flatten().filter(|th| dd.anim(&th.atk_anim).is_some());
+                    let broken_row = aa.posture_broken().then(|| combat.throw(combat.foe_of(&aa).throw_row(120))).flatten().filter(|th| dd.anim(&th.atk_anim).is_some());
                     let (row, state) = match broken_row {
                         Some(th) => (Some(th), "ThrowBreak"),
-                        None => (combat.throw(combat.foe.throw_row(190)), "Mikiri"),
+                        None => (combat.throw(combat.foe_of(&aa).throw_row(190)), "Mikiri"),
                     };
                     if let Some(th) = row {
                         if dd.anim(&th.atk_anim).is_some() {
@@ -760,11 +845,12 @@ fn resolve(
                 // (a210_600000; clips in chr/c0000_c<chr>.anibnd, Wolf's per-enemy anims).
                 // A grab that is already holding him (its ThrowAtk anim has the hook's own
                 // throwFlag 1 hit, e.g. the valley sniper's a100_004100) does not start again.
-                if aa.side == Side::Enemy && atk.throw_flag == 1 && (da.state == "Grabbed" || aa.state.starts_with("ThrowAtk")) {
+                if aa.side == Side::Enemy && atk.throw_flag == 1 && (da.state == "Grabbed" || aa.state.starts_with("ThrowAtk") || da.side == Side::Enemy) {
+                    // (Grabs are Wolf's: their ThrowParam rows hold him in his a2xx anims.)
                     continue;
                 }
                 if aa.side == Side::Enemy && atk.throw_flag == 1 && !da.airborne {
-                    let row = combat.enemy_grab(atk.throw_type_id);
+                    let row = combat.enemy_grab(combat.foe_of(&aa), atk.throw_type_id);
                     if let Some(e) = ae.as_deref_mut() {
                         e.react(aa, &combat, &format!("ThrowAtk{}", row.as_ref().map_or(4100, |t| t.atk_anim_id)));
                     }
@@ -820,6 +906,28 @@ fn resolve(
                     Outcome::Hit
                 };
 
+                // Lightning Reversal: an enemy's lightning (spAttribute 6 / 10) catching Wolf in the
+                // air charges him instead of hurting him (c0000_transition.lua: free / wire fall +
+                // DAMAGE_ELEMENT_LIGHTNING -> W_AirDamageElectroChargeStart, BLUE_LIGHTNING ->
+                // ...WeakStart; guarded in the air -> g_AddElectroCharge, W_Air(Weak)ElectroCharge-
+                // Deflect{Hard,Easy}). gap: that the charging hit takes no HP or posture is the
+                // engine's (not traced in the exe); from the game, where it does not.
+                if aa.side == Side::Enemy && da.side == Side::Player && da.airborne && matches!(atk.sp_attribute, 6 | 10) {
+                    let strong = atk.sp_attribute == 6;
+                    let w = if strong { "" } else { "Weak" };
+                    let state = match outcome {
+                        Outcome::Deflect { .. } => format!("Air{w}ElectroChargeDeflectHard"),
+                        Outcome::Block => format!("Air{w}ElectroChargeDeflectEasy"),
+                        Outcome::Hit => format!("AirDamageElectroCharge{w}Start"),
+                    };
+                    if da.play_state(dd, &state) {
+                        // 9495 / 9490: the charge SpEffect, effectEndurance 30 s.
+                        da.electro = Some((if strong { 9495 } else { 9490 }, 30.0));
+                        da.move_vel = Vec3::ZERO;
+                        log.push("LIGHTNING CAUGHT - attack before landing", Color::srgb(0.6, 0.8, 1.0));
+                        continue;
+                    }
+                }
                 let level = atk.level(da.side == Side::Player);
                 let mid = (atf.translation + dtf.translation) / 2.0 + Vec3::Y * 0.4;
                 match outcome {
@@ -874,7 +982,7 @@ fn resolve(
                                     // deflect break keeps AttackBoundEmptyStamina (rec_c1010_b: Wolf
                                     // AirDeflectHardLarge_L, enemy 8650, front deathblow after landing).
                                     let pose = (da.side == Side::Player && !da.airborne)
-                                        .then(|| combat.throw(combat.foe.throw_row(10)))
+                                        .then(|| combat.throw(combat.foe_of(&aa).throw_row(10)))
                                         .flatten()
                                         .filter(|th| dd.anim(&th.atk_anim).is_some());
                                     if let (true, Some(th)) = (attacker_broken, pose) {
@@ -931,7 +1039,7 @@ fn resolve(
                             }
                         }
                         if aa.side == Side::Player && da.side == Side::Enemy {
-                            let lines = statuses.hit(&combat, def_e, &atk.sp_effects(), true);
+                            let lines = statuses.hit(&combat, def_e, da, &atk.sp_effects(), true);
                             // Catching fire flails him through his guard (gap: as prosthetic.rs fly_bullets).
                             if lines.iter().any(|l| l == "BURNING") && dd.states.contains_key("FireReaction") && !da.posture_broken() {
                                 if let Some(e) = de.as_deref_mut() {
@@ -984,7 +1092,7 @@ fn resolve(
                                         e.react(da, &combat, if atk.deflect_action == 2 { "GuardBreakLeft" } else { "GuardBreakRight" });
                                     } else {
                                         // guard_damage_table[damage level][NpcParam guardLevel] (c9997.lua).
-                                        let glv = combat.param("NpcParam", combat.foe.npc_row)["guardLevel"].as_i64().unwrap_or(4);
+                                        let glv = combat.npc(&da)["guardLevel"].as_i64().unwrap_or(4);
                                         match enemy_guard_reaction(level, glv) {
                                             Some(size) => e.react(da, &combat, &format!("GuardDamage{size}_{side}")),
                                             // GUARD_LEVEL_ADD: W_SABlend_Add_{Front,Left,Right,Back} (anim 9500+),
@@ -1025,7 +1133,7 @@ fn resolve(
                     Outcome::Hit => {
                         apply_knockback(&combat, da, atf.translation, dtf.translation, atk.knockback_hit, damage_kb(level), "knockbackRate_vsPlayer_DirectHit");
                         if aa.side == Side::Player && da.side == Side::Enemy {
-                            for m in statuses.hit(&combat, def_e, &atk.sp_effects(), false) {
+                            for m in statuses.hit(&combat, def_e, da, &atk.sp_effects(), false) {
                                 log.push(m, Color::srgb(0.7, 0.55, 0.9));
                             }
                         }
@@ -1034,7 +1142,7 @@ fn resolve(
                         let burning = da.side == Side::Enemy && statuses.has_ref(&combat, def_e, crate::status::REF_BURNING) && dd.states.contains_key("FireReaction");
                         // NpcParam def_* = 0 and *DamageCutRate = 1.0 for c1020: no reduction.
                         let dmg = match aa.side {
-                            Side::Player => player_attack_damage(&combat, &atk, if crate::player::is_tool_anim(&aa.anim) { tool_weapon.unwrap_or(5000) } else { 5000 }),
+                            Side::Player => player_attack_damage(&combat, &atk, if crate::player::is_tool_anim(&aa.anim) { tool_weapon.unwrap_or(5000) } else { 5000 }, &da),
                             Side::Enemy => atk.npc_damage() * aa.atk_rate,
                         };
                         da.hp = (da.hp - dmg).max(0.0);
@@ -1078,7 +1186,16 @@ fn resolve(
                                 // and is off through every attack's active part.
                                 if let Some(e) = de.as_deref_mut() {
                                     let can_flinch = !e.is_attacking() || dd.flag(&da.anim, da.t, FLAG_DAMAGE_MOTION);
-                                    let reaction = if burning && !da.posture_broken() {
+                                    // c9997 GetSpDamage: Wolf's lightning (the weak Lightning Reversal's
+                                    // 105000281, spAttribute 6) on one with ref 1000041 (NpcParam 6021) and
+                                    // not 1000260 -> W_DamageLightningStart, rank 3 (also mid-swing).
+                                    let lightning = aa.side == Side::Player && atk.sp_attribute == 6 && {
+                                        let refs = crate::prosthetic::enemy_refs(&combat, da, e);
+                                        refs.contains(&1000041) && !refs.contains(&1000260)
+                                    } && crate::prosthetic::rank_allows(crate::prosthetic::transition_rank(&da.state), 3);
+                                    let reaction = if lightning && !da.posture_broken() {
+                                        Some("DamageLightningStart".to_string())
+                                    } else if burning && !da.posture_broken() {
                                         Some("FireReaction".to_string())
                                     } else {
                                         (can_flinch && !da.posture_broken()).then(|| enemy_damage_state(level, da, atf.translation, dtf.translation)).flatten()
@@ -1086,15 +1203,8 @@ fn resolve(
                                     match reaction {
                                         Some(state) => e.react(da, &combat, &state),
                                         // c9997 ExecNoSyncAddDamage: a hit with no reaction (rejected by the swing,
-                                        // or minimum level) flinches additively - PartBlend_Add by body part when
-                                        // the chr has those anims (c1020 / c1010 don't), else SABlend_Add_<dir>.
-                                        None if !da.posture_broken() => {
-                                            let fwd = da.forward();
-                                            let to = (atf.translation - dtf.translation).with_y(0.0).normalize_or_zero();
-                                            let (f, r) = (to.dot(fwd), to.dot(fwd.cross(Vec3::Y)));
-                                            let dir = if f.abs() >= r.abs() { if f >= 0.0 { "Front" } else { "Back" } } else if r > 0.0 { "Right" } else { "Left" };
-                                            start_additive(dd, da, &format!("SABlend_Add_{dir}"));
-                                        }
+                                        // or minimum level) flinches additively.
+                                        None if !da.posture_broken() => no_sync_add_damage(dd, da, part, atf.translation, dtf.translation),
                                         None => {}
                                     }
                                 }
@@ -1106,10 +1216,10 @@ fn resolve(
                             format!("{} hit: -{dmg:.0} HP, +{pd:.0} posture", if aa.side == Side::Player { "you" } else { "enemy" }),
                             Color::srgb(1.0, 0.45, 0.4),
                         );
-                        let sfx = crate::vfx::hit_sfx(&combat, &atk, crate::vfx::Kind::Hit, crate::vfx::defender_sfx_materials(&combat, da.side));
+                        let sfx = crate::vfx::hit_sfx(&combat, &atk, crate::vfx::Kind::Hit, crate::vfx::defender_sfx_materials(&combat, da));
                         commands.spawn(crate::vfx::Clash::bundle_fx(mid, (atf.translation - dtf.translation).with_y(0.0), crate::vfx::Kind::Hit, sfx));
                         if let Some(q) = sounds.as_mut() {
-                            for se in crate::sound::hit_sounds(&combat, &atk, crate::sound::defender_materials(&combat, da.side)) {
+                            for se in crate::sound::hit_sounds(&combat, &atk, crate::sound::defender_materials(&combat, da)) {
                                 q.0.push((se, mid));
                             }
                         }
@@ -1154,8 +1264,7 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
         Combat {
             player: serde_json::from_value(v["player"].clone()).unwrap(),
-            enemy: serde_json::from_value(v["enemy"].clone()).unwrap(),
-            foe: crate::data::Foe::for_chr("c1020"),
+            kinds: vec![crate::data::EnemyKind { foe: crate::data::Foe::for_chr("c1020"), data: serde_json::from_value(v["enemy"].clone()).unwrap() }],
             params: v["params"].clone(),
             rumble: Default::default(),
             twists: Default::default(),
@@ -1179,7 +1288,7 @@ mod tests {
             "GuardDamageLarge_RighttoLeft", "AttackBoundEnemy1_Right", "AttackBoundEnemy1_Left",
             "AttackNoBoundEnemy1_Right", "AttackNoBoundEnemy1_Left", "DamageSmall_Front", "WalkFrontBattle",
         ] {
-            assert!(c.enemy.anim_key(s).is_some(), "missing enemy state {s}");
+            assert!(c.enemy0().anim_key(s).is_some(), "missing enemy state {s}");
         }
         for s in ["HardDeflectedR", "HardDeflectedL", "EasyDeflectedR", "EasyDeflectedL", "HardDeflectStagger_L"] {
             assert!(c.player.anim_key(s).is_some(), "missing player state {s}");
@@ -1192,8 +1301,9 @@ mod tests {
 /// player is released when the thrower is knocked out of its throw anim before that anim's end
 /// (staggered, posture-broken; a zombie's bite loop); after a throw that played out, his own
 /// clip (the fall and getting up) plays out.
-fn resolve_throws(combat: Res<Combat>, mut log: Option<ResMut<CombatLog>>, mut q: Query<&mut Actor>, mut was: Local<Option<(String, f32)>>) {
-    let mut lands: Option<i64> = None;
+fn resolve_throws(combat: Res<Combat>, mut log: Option<ResMut<CombatLog>>, mut q: Query<&mut Actor>, mut was: Local<Option<(String, f32, usize)>>) {
+    // (judge, thrower kind) of a throw landing this frame.
+    let mut lands: Option<(i64, usize)> = None;
     let mut throwing = false;
     let mut now = None;
     for a in &q {
@@ -1201,24 +1311,29 @@ fn resolve_throws(combat: Res<Combat>, mut log: Option<ResMut<CombatLog>>, mut q
             continue;
         }
         throwing = true;
-        now = Some((a.anim.clone(), a.t));
-        if let Some(anim) = combat.enemy.anim(&a.anim) {
+        now = Some((a.anim.clone(), a.t, a.kind));
+        if let Some(anim) = combat.data_of(a).anim(&a.anim) {
             lands = anim
                 .events
                 .iter()
                 .find(|e| e.kind == 304 && e.start > a.prev_t && e.start <= a.t)
                 .and_then(|e| e.arg_i64("BehaviorJudgeID"))
+                .map(|j| (j, a.kind))
                 .or(lands);
         }
     }
     // Left the throw anim more than a few frames before its end: knocked out of it.
-    let cut = !throwing && was.as_ref().is_some_and(|(anim, t)| combat.enemy.anim(anim).is_some() && *t + 0.1 < combat.enemy.length(anim));
+    let cut = !throwing
+        && was.as_ref().is_some_and(|(anim, t, kind)| {
+            let d = &combat.kind(*kind).data;
+            d.anim(anim).is_some() && *t + 0.1 < d.length(anim)
+        });
     *was = now;
     for mut a in &mut q {
         if a.side != Side::Player || a.state != "Grabbed" {
             continue;
         }
-        if let Some(atk) = lands.and_then(|j| combat.enemy.attacks.get(&j.to_string())) {
+        if let Some(atk) = lands.and_then(|(j, kind)| combat.kind(kind).data.attacks.get(&j.to_string())) {
             let pd = if atk.direct_atk_stam_damage > 0.0 { atk.direct_atk_stam_damage } else { atk.atk_stam };
             a.hp = (a.hp - atk.atk_phys).max(0.0);
             a.add_posture(pd);

@@ -1,7 +1,10 @@
-//! Prosthetic tool models: the equipped tool's two parts from the game's parts/wp_a_0<model>.partsbnd
+//! Prosthetic tool models: the equipped tool's parts from the game's parts/wp_a_0<model>.partsbnd
 //! (EquipParamWeapon equipModelId, e.g. the Loaded Umbrella 76000 -> 760 -> wp_a_0760), exported by
-//! tools/sekiro-extract to extracted/tool/model_wp_a_0<model>.bin (Model0, WP_A_07xx.flver) and
-//! model_wp_a_0<model>_1.bin (Model1, WP_A_07xx_1.flver).
+//! tools/tool_export.py to extracted/tool/model_wp_a_0<model>.bin (Model0, WP_A_07xx.flver) and
+//! model_wp_a_0<model>_1.bin (Model1, WP_A_07xx_1.flver), and for the Sabimaru (750) and Divine
+//! Abduction (770) model_wp_a_0<model>_2.bin (Model2; the fan's 715 a077_400000 puts it on 20, Sabimaru's
+//! a075_400000 on 117); extracted/tool/tools.json holds each
+//! tool row's equipModelId and its WepAbsorpPosParam left_N dummies.
 //! - Place: Model0 rests on WepAbsorpPosParam[absorpParamId] left_0 (the tool's dummy on the arm:
 //!   112 shuriken .. 124 whistle); Model1 has no rest place (left_1 0 in every tool row) and shows
 //!   only while a TAE 715 OverrideWeaponModelLocation of WeaponModelType 1 (Left Weapon) places it
@@ -11,7 +14,13 @@
 //! - Pose: WP_A_07xx_1.anibnd's clips are named after Wolf's anims plus "_1" (a076_405010_1 ...);
 //!   exported keyed by Wolf's anim (extracted/tool/anim_wp_a_0<model>[_1].bin), so the part plays
 //!   the clip of Wolf's current anim at Wolf's clock; with none, a999_000000, else the bind pose.
-//! gap: wepInvisibleType, the parts' own TAE (WP_A_07xx[_1].tae), their dummies' effects, cloth.
+//! - Dummies: a part's dummy polys join Wolf's Dummies as 2<model><dummy> (the TAE's left weapon
+//!   ids, as 1<model><dummy> for the right weapon: the axe's / spear's blade 21300 / 21301 = Model1
+//!   300 / 301, Sabimaru's 21130 / 21301, the umbrella's 21140), so ffx.rs spawns the tool's
+//!   effects on the tool itself.
+//! The parts' own TAE (WP_A_07xx[_N].tae) hold no events (only empty anim entries).
+//! Sekiro's EquipParamWeapon has no wepInvisibleType (only invisibleOnRemo, for cutscenes) and the
+//! part bundles hold no cloth (flver, tpf, anibnd only).
 
 use super::*;
 
@@ -24,7 +33,7 @@ pub struct ToolModel {
 }
 
 struct ToolPart {
-    /// Model number (0 / 1): which ModelNDummyPolyID places it.
+    /// Model number (0 / 1 / 2): which ModelNDummyPolyID places it.
     num: usize,
     pivot: Entity,
     /// Rest dummy (left_0), -1 = hidden unless an event places it.
@@ -32,6 +41,8 @@ struct ToolPart {
     /// Joint entity per anim bone (by FLVER node name), and the bind pose of the rest.
     joints: Vec<Option<Entity>>,
     lib: crate::anim::Lib,
+    /// Its entries in Wolf's Dummies (2<model><dummy>).
+    dummy_ids: Vec<i16>,
 }
 
 pub(super) fn plugin(app: &mut App) {
@@ -52,9 +63,13 @@ fn equip_tool_models(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<SekiroMaterial>>,
     mut bindposes: ResMut<Assets<SkinnedMeshInverseBindposes>>,
-    mut wolf: Query<(Entity, &crate::player::Player, Option<&mut ToolModel>), With<WeaponParts>>,
+    mut wolf: Query<(Entity, &crate::player::Player, Option<&mut ToolModel>, Option<&mut Dummies>), With<WeaponParts>>,
+    mut rows: Local<Option<serde_json::Value>>,
 ) {
-    for (e, p, tm) in &mut wolf {
+    let rows = rows.get_or_insert_with(|| {
+        std::fs::read_to_string(tool_dir().join("tools.json")).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
+    });
+    for (e, p, tm, mut dummies) in &mut wolf {
         let id = crate::player::equipped_tool(&combat, &config, p.tool_slot).map(|t| t.id).unwrap_or(0);
         let Some(mut tm) = tm else {
             commands.entity(e).insert(ToolModel::default());
@@ -64,27 +79,49 @@ fn equip_tool_models(
             continue;
         }
         for part in tm.parts.drain(..) {
+            if let Some(d) = dummies.as_mut() {
+                for k in &part.dummy_ids {
+                    d.0.remove(k);
+                }
+            }
             commands.entity(part.pivot).despawn();
         }
         tm.tool = id;
-        let row = combat.param("EquipParamWeapon", id);
+        let row = &rows[id.to_string()];
         let Some(model) = row["equipModelId"].as_i64().filter(|m| *m > 0) else { continue };
-        let absorp = combat.param("WepAbsorpPosParam", row["absorpParamId"].as_i64().unwrap_or(-1));
-        for (num, suffix) in [(0, ""), (1, "_1")] {
+        for (num, suffix) in [(0, ""), (1, "_1"), (2, "_2"), (3, "_3")] {
             let stem = format!("wp_a_{model:04}{suffix}");
             let Some(m) = load(&tool_dir().join(format!("model_{stem}.bin"))) else { continue };
-            let rest = absorp[format!("left_{num}")].as_i64().filter(|d| *d > 0).unwrap_or(-1) as i16;
+            let rest = row[format!("left_{num}")].as_i64().filter(|d| *d > 0).unwrap_or(-1) as i16;
             let pivot = commands.spawn((Transform::default(), Visibility::Hidden, Name::new(format!("tool {stem}")))).id();
-            let by_name = spawn_part(&mut commands, &assets, &mut meshes, &mut materials, &mut bindposes, &m, pivot);
+            let (by_name, dummy_es) = spawn_part(&mut commands, &assets, &mut meshes, &mut materials, &mut bindposes, &m, pivot);
+            let mut dummy_ids = Vec::new();
+            for (dm, de) in dummy_es.into_iter().filter(|(dm, _)| (0..1000).contains(dm)) {
+                let k = 20000 + num as i16 * 1000 + dm;
+                if let Some(d) = dummies.as_mut() {
+                    d.0.insert(k, de);
+                    dummy_ids.push(k);
+                }
+            }
             let lib = crate::anim::load_lib(&tool_dir().join(format!("anim_{stem}.bin")));
-            let joints = lib.bones.iter().map(|b| by_name.get(&b.name).copied()).collect();
-            tm.parts.push(ToolPart { num, pivot, rest, joints, lib });
+            let joints: Vec<Option<Entity>> = lib.bones.iter().map(|b| by_name.get(&b.name).copied()).collect();
+            if std::env::var("SHINOBI_TOOL_LOG").is_ok() {
+                info!(
+                    "tool {id} {stem}: rest {rest}, {} meshes, {} clips, {}/{} bones matched, dummies {dummy_ids:?}",
+                    m.meshes.len(),
+                    lib.clips.len(),
+                    joints.iter().flatten().count(),
+                    joints.len()
+                );
+            }
+            tm.parts.push(ToolPart { num, pivot, rest, joints, lib, dummy_ids });
         }
     }
 }
 
-/// The part's FLVER nodes as joint entities under `pivot` (bind pose) and its skinned meshes;
-/// returns the joints by node name.
+/// The part's FLVER nodes as joint entities under `pivot` (bind pose), its skinned meshes and its
+/// dummy polys (on their attach joints, as model.rs does for Wolf's); returns the joints by node
+/// name and the dummies by id.
 fn spawn_part(
     commands: &mut Commands,
     assets: &AssetServer,
@@ -93,7 +130,7 @@ fn spawn_part(
     bindposes: &mut Assets<SkinnedMeshInverseBindposes>,
     model: &Model,
     pivot: Entity,
-) -> HashMap<String, Entity> {
+) -> (HashMap<String, Entity>, Vec<(i16, Entity)>) {
     let mut joints: Vec<Entity> = Vec::with_capacity(model.nodes.len());
     let mut world: Vec<Mat4> = Vec::with_capacity(model.nodes.len());
     for (i, node) in model.nodes.iter().enumerate() {
@@ -124,6 +161,10 @@ fn spawn_part(
         }
         if mesh_joints.len() > 256 {
             continue;
+        }
+        if std::env::var("SHINOBI_TOOL_LOG").is_ok() {
+            let (mn, mx) = md.pos.iter().fold((Vec3::MAX, Vec3::MIN), |(a, b), p| (a.min(Vec3::from(*p)), b.max(Vec3::from(*p))));
+            info!("tool mesh {} albedo {} verts {} joints {} box {mn:.2} {mx:.2}", md.material, md.albedo, md.pos.len(), mesh_joints.len());
         }
         let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::RENDER_WORLD);
         mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, md.pos.clone());
@@ -159,14 +200,27 @@ fn spawn_part(
             .id();
         commands.entity(pivot).add_child(e);
     }
-    model.nodes.iter().zip(joints).map(|(n, e)| (n.name.clone(), e)).collect()
+    let mut dummies = Vec::with_capacity(model.dummies.len());
+    for dm in &model.dummies {
+        let (joint, bind) = match usize::try_from(dm.attach).ok().filter(|&i| i < joints.len()) {
+            Some(i) => (joints[i], world[i]),
+            None => (pivot, Mat4::IDENTITY),
+        };
+        let local = bind.inverse().transform_point3(dm.pos);
+        // Local +Z = the dummy's forward.
+        let rot = dm.fwd.map_or(Quat::IDENTITY, |f| Quat::from_rotation_arc(Vec3::Z, bind.inverse().transform_vector3(f).normalize()));
+        let e = commands.spawn((DummyPoly { id: dm.id }, Transform::from_translation(local).with_rotation(rot), Visibility::default())).id();
+        commands.entity(joint).add_child(e);
+        dummies.push((dm.id, e));
+    }
+    (model.nodes.iter().zip(joints).map(|(n, e)| (n.name.clone(), e)).collect(), dummies)
 }
 
 /// The part's clip for Wolf's current anim at Wolf's clock (else a999_000000 at 0), sampled
 /// like pose_skeletons (linear between frames).
 fn pose_tool_models(combat: Res<crate::data::Combat>, wolf: Query<(&Actor, &ToolModel)>, mut tfs: Query<&mut Transform>) {
     for (a, tm) in &wolf {
-        let d = crate::actor::data_for(&combat, a.side);
+        let d = crate::actor::data_for(&combat, a);
         for part in &tm.parts {
             let (clip, t) = match part.lib.clips.get(&a.anim).or_else(|| part.lib.clips.get(d.clip_key(&a.anim))) {
                 Some(c) => (c, a.t),
@@ -204,7 +258,7 @@ fn place_tool_models(
     mut vis: Query<&mut Visibility>,
 ) {
     for (a, wp, tm) in &wolf {
-        let d = crate::actor::data_for(&combat, a.side);
+        let d = crate::actor::data_for(&combat, a);
         let ev = d
             .events_at(&a.anim, a.t)
             .find(|e| e.kind == 715 && e.args.get("WeaponModelType").and_then(|v| v.as_str()).is_some_and(|s| s.starts_with('1')));
@@ -219,6 +273,9 @@ fn place_tool_models(
                 if *v != want {
                     *v = want;
                 }
+            }
+            if std::env::var("SHINOBI_TOOL_LOG").is_ok() {
+                info!("tool part {} on {:?} at {:?}", part.num, id, place.map(|m| m.w_axis.truncate()));
             }
             if let Some(m) = place {
                 set_global(part.pivot, GlobalTransform::from(bevy::math::Affine3A::from_mat4(m)), &mut globals, &transforms, &children);

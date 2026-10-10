@@ -239,7 +239,7 @@ fn menu_input(
         return;
     }
     let cycle = |i: usize, n: usize| ((i as i32 + step).rem_euclid(n as i32)) as usize;
-    let attacks = attack_list(&combat.enemy);
+    let attacks = attack_list(combat.enemy0());
     match list[menu.cursor] {
         Item::AiMode => {
             let i = AI_MODES.iter().position(|m| m.0 == dbg.mode).unwrap_or(0);
@@ -426,12 +426,8 @@ fn menu_input(
         }
         Item::Hitboxes => hurtboxes.0 = !hurtboxes.0,
         Item::Reset if enter => {
+            // Wolf's reset also brings back the starting enemies (enemy::FightReset).
             pad.reset = true;
-            for (_, mut a, mut tf) in &mut enemies {
-                a.hp = a.hp_max;
-                a.posture = 0.0;
-                tf.translation = Vec3::new(0.0, tf.translation.y, -6.0);
-            }
             menu.message = "reset".into();
         }
         _ => {}
@@ -542,7 +538,7 @@ fn draw_menu(
     if !menu.open {
         return;
     }
-    let attacks = attack_list(&combat.enemy);
+    let attacks = attack_list(combat.enemy0());
     let on = |b: bool| if b { "ON" } else { "off" };
     let kind = |p: Option<i64>| match p {
         Some(980) => " [perilous sweep]",
@@ -553,7 +549,7 @@ fn draw_menu(
     };
     let e = &enemy_choices()[menu.enemy_type];
     let (chr, name, outfits) = (e.chr.as_str(), e.name.as_str(), &e.outfits);
-    let pending = chr != config.enemy.chr || Some(outfits[menu.outfit].0) != config.enemy.npc_row.or(Some(combat.foe.npc_row));
+    let pending = chr != config.enemy.chr || Some(outfits[menu.outfit].0) != config.enemy.npc_row.or(Some(combat.foe0().npc_row));
     let value = |it: Item| -> String {
         match it {
             Item::AiMode => format!("AI: {}", AI_MODES.iter().find(|m| m.0 == dbg.mode).map_or("?", |m| m.1)),

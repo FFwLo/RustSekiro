@@ -84,6 +84,8 @@ const SP_EFFECT_FIELDS: &[&str] = &[
     "name", "behaviorRefId", "stateInfo", "defStaminaAttackRate", "defFlickPower", "staminaAttackRate",
     "staminaRecoverChangeSpeed", "staminaRecoverSpeedRate", "guardDefFlickPowerRate", "flickDamageCutRate",
     "guardStaminaCutRate", "toughnessDamageCutRate", "effectEndurance", "conditionHp", "spCategory",
+    // Within one spCategory the lower categoryPriority wins (Paramdex SpEffectParam meta).
+    "categoryPriority",
     "changeHpRate", "changeHpPoint", "changeHpEstusFlaskRate",
     // Stealth: how a chr wearing the effect is seen and heard by NPCs (the exe's
     // SprjTargetingSystem, FUN_140bfe8a0 / FUN_140bfc050 / FUN_140bfea80...).
@@ -347,6 +349,14 @@ fn export_character(
                             tool_judges.insert((var, j));
                         }
                     }
+                }
+            }
+            // Wolf's sword bullets (TAE 2 / 4 BulletBehavior(_Midair) outside the tool groups: the
+            // Lightning Reversal's bolt, a050_308900 judge 184 -> BehaviorParam_PC 105000184 ->
+            // Bullet 500184), keyed "v5000:<judge>" at the sword's variation.
+            if tool_group.is_none() && chr.npc_row.is_none() && (e["type"] == 2 || e["type"] == 4) {
+                if let Some(j) = e["args"].get("BehaviorJudgeID").and_then(Value::as_i64) {
+                    bullet_judges.insert(((chr.behavior_base - 100_000_000) / 1000, j));
                 }
             }
             if e["type"] == 307 && chr.npc_row.is_none() && e["args"].get("GetWeaponData").and_then(Value::as_i64) == Some(0) {
@@ -646,6 +656,10 @@ fn export_character(
         }
         // Divine Abduction follow-ups and tool-state SpEffects the HKS / TAE check by id.
         extra_sp.extend([107715, 107716, 107717, 107718, 100260, 100277, 100290]);
+        // Given by enemy bullets / held by the engine: the storm jump openings 106100 / 106101
+        // (refs 110003 / 110004, the Divine Dragon's updraft bullets 52000660 / 53100640) and the
+        // Lightning Reversal charges 9490 / 9495.
+        extra_sp.extend([106100, 106101, 9490, 9495]);
     }
     // Every exported attack's on-hit SpEffects (Sabimaru AtkParam_Pc 7500100 -> 9004 poison).
     for a in attacks.values().chain(bullet_rows.values().filter_map(|b| b.get("attack"))) {
@@ -693,6 +707,26 @@ fn export_character(
         .into_iter()
         .map(|c| json!({ "bone": ragdoll_bone(&c.name), "a": c.a, "b": c.b, "r": c.radius }))
         .collect();
+    // Their NPC part groups (HKS env(1120) GetPartGroup -> W_PartBlend_Add0N, the Divine
+    // Dragon's 1 right arm / 2 head / 3 body / 4-5 neck): chrbnd/<id>.hkxpwv, one 16-byte entry
+    // per ragdoll body after the bone map (4 bytes each) and the anim bones (8): RagdollParam id
+    // (i32), then the part group (u8) (SoulsFormats HKXPWV RagdollBoneEntry, whose DS3 layout
+    // reads an i16 there; Sekiro's groups 0-5 sit in the first byte, matching the PartBlend anims).
+    let mut hurtboxes = hurtboxes;
+    if let Ok(d) = std::fs::read(chr_dir.join(format!("{0}.chrbnd.d/{0}.hkxpwv", chr.id))) {
+        let u16_at = |o: usize| d.get(o..o + 2).map(|b| u16::from_le_bytes([b[0], b[1]]) as usize);
+        if let (Some(maps), Some(anims), Some(rags)) = (u16_at(6), u16_at(8), u16_at(10)) {
+            let base = 0x20 + maps * 4 + anims * 8;
+            if rags == hurtboxes.len() && d.len() == base + rags * 16 {
+                for (i, h) in hurtboxes.iter_mut().enumerate() {
+                    let part = d[base + i * 16 + 4];
+                    if part > 0 {
+                        h["part"] = json!(part);
+                    }
+                }
+            }
+        }
+    }
     // NPC TAE 700 twists: the shared graph's modifiers bound to this character's properties.
     let mut twists = Map::new();
     if chr.id != "c0000" {
@@ -861,6 +895,13 @@ pub fn export(root: &Path, list_file: &Path, defs: &Path) {
         v.dedup();
         v
     };
+    // The virtual weapons the skills point at (SkillParam.virtualWeaponId: 200000-200600,
+    // 301000-301300): their actionUnlockParamId -> ActionUnlockParam action<n>, which the exe's
+    // env(3033, ACTION_UNLOCK_TYPE_n) counts (FUN_1407a7fe0).
+    let mut weapon_ids = vec![5000, 5100, 5200, 5300, 5400, 5500, 5600, 5700, 5800, 5900, 6000, 6100, 7000, 7100, 7200, 7300, 7400, 7500, 7600, 7700, 70000];
+    weapon_ids.extend(skills.as_object().into_iter().flat_map(|m| m.values()).filter_map(|r| r["virtualWeaponId"].as_i64()).filter(|v| *v > 0));
+    weapon_ids.sort();
+    weapon_ids.dedup();
     let out = json!({
         "names": { "weapon": weapon_names },
         "rumble": rumble,
@@ -878,7 +919,9 @@ pub fn export(root: &Path, list_file: &Path, defs: &Path) {
             "GameSystemParam": rows(&params, "GameSystemParam", &[0]),
             // Combat arts: base (5100-6000) and upgraded (6100, 7000-7700) virtual weapons; their
             // resident SpEffects carry the SP_EF_REF_WEP_SP_ATK_UNLOCK_* refs (280-287).
-            "EquipParamWeapon": rows(&params, "EquipParamWeapon", &[5000, 5100, 5200, 5300, 5400, 5500, 5600, 5700, 5800, 5900, 6000, 6100, 7000, 7100, 7200, 7300, 7400, 7500, 7600, 7700, 70000]),
+            // ...and the skills' virtual weapons (above).
+            "EquipParamWeapon": rows(&params, "EquipParamWeapon", &weapon_ids),
+            "ActionUnlockParam": all_rows(&params, "ActionUnlockParam"),
             // Where the sword parts hang: EquipParamWeapon 5000 absorpParamId -> right_0 (blade, body
             // dummy 20) / right_1 (scabbard, 147); right_2 149 is the TAE 715 override target.
             "WepAbsorpPosParam": rows(&params, "WepAbsorpPosParam", &[5000]),

@@ -74,7 +74,7 @@ pub fn hit_sfx(combat: &crate::data::Combat, atk: &crate::data::Attack, kind: Ki
         }
         out
     };
-    let guard = [atk.def_sfx_material1, atk.def_sfx_material2];
+    let guard = guard_materials(combat, [atk.def_sfx_material1, atk.def_sfx_material2], false);
     match kind {
         Kind::Deflect => {
             let jg = look("HitEffectSfxConceptJustGuardParam", guard);
@@ -85,11 +85,25 @@ pub fn hit_sfx(combat: &crate::data::Combat, atk: &crate::data::Attack, kind: Ki
     }
 }
 
+/// An attack's two guard materials (defSfxMaterial1/2, or with `se` defSeMaterial1/2) as the exe
+/// resolves them: 255 = the attacker's weapon's (FUN_140ba8a50 SFX / FUN_140ba8840 SE: AtkParam
+/// +0x188 / +0x18c (SE +0x82 / +0x18a) == 0xff -> the attacker's EquipParamWeapon
+/// defSfxMaterial1/2 +0x106 / +0x16c (SE defSeMaterial1/2 +0xe6 / +0x16e), 100 without a weapon
+/// row; a chr without weapons (vfunc +0x1a8 false) takes its own default instead). Only Wolf's
+/// AtkParam_Pc rows hold 255 (281 rows; no AtkParam_Npc row does), and every Wolf weapon row
+/// (5000, 70000-79000) holds 101 / 139, so his sword row stands for "the weapon".
+/// gap: which weapon the exe picks for a tool attack (vfunc +0x348); the values are the same.
+pub fn guard_materials(combat: &crate::data::Combat, mats: [i64; 2], se: bool) -> [i64; 2] {
+    let weapon = combat.param("EquipParamWeapon", 5000);
+    let names = if se { ["defSeMaterial1", "defSeMaterial2"] } else { ["defSfxMaterial1", "defSfxMaterial2"] };
+    std::array::from_fn(|i| if mats[i] == 255 { weapon[names[i]].as_i64().unwrap_or(100) } else { mats[i] })
+}
+
 /// The defender's two hit-effect materials: the enemy's NpcParam materialSfx1/2, Wolf's body
 /// protector defenseMaterialSfx1/2 (146 / 106).
-pub fn defender_sfx_materials(combat: &crate::data::Combat, side: crate::actor::Side) -> [i64; 2] {
-    let (r, a, b) = match side {
-        crate::actor::Side::Enemy => (combat.param("NpcParam", combat.foe.npc_row), "materialSfx1", "materialSfx2"),
+pub fn defender_sfx_materials(combat: &crate::data::Combat, def: &crate::actor::Actor) -> [i64; 2] {
+    let (r, a, b) = match def.side {
+        crate::actor::Side::Enemy => (combat.npc(def), "materialSfx1", "materialSfx2"),
         crate::actor::Side::Player => (combat.param("EquipParamProtector", 100000), "defenseMaterialSfx1", "defenseMaterialSfx2"),
     };
     [r[a].as_i64().unwrap_or(-1), r[b].as_i64().unwrap_or(-1)]

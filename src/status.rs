@@ -51,8 +51,8 @@ impl Statuses {
 
     /// Wolf's hit on an enemy: each of its SpEffects adds its build-up; a full gauge applies the
     /// effect. `guarded`: the NpcParam *GuardResist % of it is kept off. Returns the log lines.
-    pub fn hit(&mut self, combat: &Combat, target: Entity, sps: &[i64], guarded: bool) -> Vec<String> {
-        let npc = combat.param("NpcParam", combat.foe.npc_row);
+    pub fn hit(&mut self, combat: &Combat, target: Entity, def: &crate::actor::Actor, sps: &[i64], guarded: bool) -> Vec<String> {
+        let npc = combat.npc(def);
         let num = |k: &str| npc[k].as_f64().unwrap_or(0.0) as f32;
         let status = self.0.entry(target).or_default();
         let mut out = Vec::new();

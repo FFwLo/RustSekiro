@@ -51,3 +51,11 @@ Dated findings, oldest first. Append new entries at the end.
   -atan2(y, xz)); limits rotRangeXAtLock lerped to the free range by |P.y - focus.y| over
   rotRangeLerpBegin/EndHeight; chase lockRotChaseRateX * dt / (1/30) outside lockRotChasePlayAngX (0).
   Result: ~20-30 deg looking down in melee (was ~8, a guess), steep over the target on head kicks.
+- 2026-10-10 lock-on target switch (static, LockTgtManImp): update FUN_1409c5fe0 (decomp/1409c.c:11171-11185) calls
+  the stick switch FUN_1409ca2d0 (+0x29c0 flick mode off by default; FUN_1409c9d40 flick variant is debug only) and the
+  mouse switch FUN_1409ca120 every frame. Stick: |axis| < 0.5 (@0x143289124) re-arms, > 0.95 (@0x14328918c) fires.
+  Mouse: delta * -1 (@0x143289434), < 25 (@0x1432892d0) re-arms, > 50 (@0x1432892f0) fires. Each switch sets both
+  cooldowns (+0x2844 / +0x2848) to 0.5 s. Pick FUN_1409ca480 (1409c.c:6345): screen-space d = cand - cur, score =
+  cos(angle(d, input)) / |d|, best above cos(+0x2854 = pi/2). Candidates while locked: CamFront{Near,Far}Range
+  LockChangeHalfAng yaw 60 / 45 deg, pitch 30 / 30, radius 8 / 200 (+0x2968..+0x2984). LockCamParam is not involved.
+  camera.rs toggle_lock. gap: mouse units, and the input y sign (exe uses d.x*in.x - d.y*in.y).

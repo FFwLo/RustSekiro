@@ -13,11 +13,13 @@
 //   squared). The textures are sRGB-decoded on load (~x^2.2); their square root stands in for the
 //   game's raw values. Layers wrap (fract: the game's wrap sampler; they scroll).
 // gap: g_ps_ColorBlendType (unk_ds3_f2_13) 1 / 2 (all extracted 604s: 0), the alpha offset (v3.z),
-// the motion-vector UV bend (cb0[11].w == 1), soft particles, fog, shadow volume, lighting.
+// the motion-vector UV bend (cb0[11].w == 1), fog, shadow volume, lighting.
+// Soft (GXFfxtessellateSoftMultiTexture.ppo): alpha x saturate(min(scene depth - own depth, soft) /
+// soft), soft = the per-vertex distance (location 8; 0 = off), as fx_soft.wgsl.
 
 #import bevy_pbr::{
     mesh_functions::get_world_from_local,
-    view_transformations::position_world_to_clip,
+    view_transformations::{position_world_to_clip, depth_ndc_to_view_z},
 }
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(0) var t0: texture_2d<f32>;
@@ -30,6 +32,8 @@
 @group(#{MATERIAL_BIND_GROUP}) @binding(6) var<uniform> modes: vec4<u32>;
 // x: premultiply each layer by its alpha, y: additive (premultiplied output with alpha 0), z: has layer 3.
 @group(#{MATERIAL_BIND_GROUP}) @binding(7) var<uniform> flags: vec4<u32>;
+// The scene depth after the opaque pass (fxr.rs FxDepth; 0 = far when not copied).
+@group(#{MATERIAL_BIND_GROUP}) @binding(8) var fx_depth: texture_depth_multisampled_2d;
 
 struct Vertex {
     @builtin(instance_index) instance_index: u32,
@@ -43,6 +47,7 @@ struct Vertex {
     @location(5) c1: vec4<f32>,
     @location(6) c2: vec4<f32>,
     @location(7) c3: vec4<f32>,
+    @location(8) soft: f32,
 };
 
 struct VOut {
@@ -54,6 +59,7 @@ struct VOut {
     @location(4) c1: vec4<f32>,
     @location(5) c2: vec4<f32>,
     @location(6) c3: vec4<f32>,
+    @location(7) soft: f32,
 };
 
 @vertex
@@ -68,6 +74,7 @@ fn vertex(v: Vertex) -> VOut {
     o.c1 = v.c1;
     o.c2 = v.c2;
     o.c3 = v.c3;
+    o.soft = v.soft;
     return o;
 }
 
@@ -130,7 +137,12 @@ fn fragment(in: VOut) -> @location(0) vec4<f32> {
         }
     }
     a = clamp(a, 0.0, 1.0);
-    let out_a = clamp(in.color.a * a, 0.0, 1.0);
+    var out_a = clamp(in.color.a * a, 0.0, 1.0);
+    if in.soft > 0.0001 {
+        let scene = -depth_ndc_to_view_z(textureLoad(fx_depth, vec2<i32>(in.position.xy), 0));
+        let me = -depth_ndc_to_view_z(in.position.z);
+        out_a *= clamp(min(scene - me, in.soft) / in.soft, 0.0, 1.0);
+    }
     let out_rgb = in.color.rgb * rgb * rgb;
     return vec4(max(out_rgb, vec3(0.0)) * out_a, select(out_a, 0.0, flags.y != 0u));
 }

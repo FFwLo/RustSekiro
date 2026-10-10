@@ -1,6 +1,6 @@
 [package]
 name = "sekiro-extract"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 description = "Reads combat data (params, TAE, HKS) out of the user's own Sekiro install"
 

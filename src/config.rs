@@ -69,6 +69,15 @@ pub struct PlayerConfig {
     /// Empty = level-1 Wolf.
     #[serde(default)]
     pub skills: Vec<i64>,
+    /// Every move the game locks behind a skill (`combat::action_unlocked`: mid-air deflect / tools
+    /// / arts, the sprint slide, the Prosthetic Arts follow-ups) is open, as for a Wolf with the
+    /// whole tree. false = only those the `skills` list unlocks.
+    #[serde(default = "default_true")]
+    pub unlock_all_moves: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 fn default_combat_art() -> i64 {
@@ -93,7 +102,7 @@ fn default_emblems() -> u32 {
 
 impl Default for PlayerConfig {
     fn default() -> Self {
-        Self { gourd_charges: 3, spirit_emblems: default_emblems(), resurrections: default_resurrections(), combat_art: default_combat_art(), prosthetics: default_prosthetics(), skills: Vec::new() }
+        Self { gourd_charges: 3, spirit_emblems: default_emblems(), resurrections: default_resurrections(), combat_art: default_combat_art(), prosthetics: default_prosthetics(), skills: Vec::new(), unlock_all_moves: true }
     }
 }
 
@@ -132,6 +141,22 @@ pub struct EnemyConfig {
     /// Unset: the default row of `chr`.
     #[serde(default)]
     pub npc_row: Option<i64>,
+    /// More enemies fought at the same time, e.g.
+    /// `group = [{ chr = "c1010", at = [3.0, -6.0] }, { chr = "c1020", npc_row = 10200010 }]`.
+    /// Empty: only `chr`.
+    #[serde(default)]
+    pub group: Vec<GroupEnemy>,
+}
+
+/// One more enemy (config enemy.group): its chr, NpcParam row (unset: its default) and where it
+/// stands (x, z; unset: in a row beside the first).
+#[derive(Deserialize, Clone, Debug)]
+pub struct GroupEnemy {
+    pub chr: String,
+    #[serde(default)]
+    pub npc_row: Option<i64>,
+    #[serde(default)]
+    pub at: Option<[f32; 2]>,
 }
 
 impl GameConfig {

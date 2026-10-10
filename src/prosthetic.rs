@@ -26,8 +26,9 @@ use crate::player::{FLAG_SHIELD_BLOCK, Player};
 #[derive(Component)]
 pub struct Projectile {
     spec: BulletSpec,
-    /// Base damage of the tool level that fired it (EquipParamWeapon attackBasePhysics / Fire).
-    base: (f32, f32),
+    /// Base damage of the weapon that fired it (EquipParamWeapon attackBasePhysics / Fire /
+    /// Thunder: the tool level's, or Kusabimaru 5000's for the Lightning Reversal bolt).
+    base: (f32, f32, f32),
     vel: Vec3,
     travelled: f32,
     age: f32,
@@ -88,13 +89,15 @@ fn spawn_bullets(
         if a.anim.is_empty() || a.t == a.prev_t {
             continue;
         }
-        let d = data_for(&combat, a.side);
+        let d = data_for(&combat, &a);
         let Some(anim) = d.anim(&a.anim) else { continue };
         // Upgrade-gated throws (StateInfo 905-946: the tool level's resident) fire for their level.
         // An event fires when the anim time crosses its start (frame 0 on the anim's first step:
         // the Umbrella's consumption dummy 999).
         let crosses = |e: &crate::data::Event| ((e.start > a.prev_t && e.start <= a.t) || (a.prev_t == 0.0 && e.start == 0.0)) && d.fires(e);
-        let crossing = |e: &&crate::data::Event| e.kind == 2 && crosses(e);
+        // (And the sword's: the Lightning Reversal's TAE 4 BulletBehavior_Midair in a050_308900.)
+        let tool_anim = crate::player::is_tool_anim(&a.anim);
+        let crossing = |e: &&crate::data::Event| (e.kind == 2 || (e.kind == 4 && !tool_anim)) && crosses(e);
         // The equipped tool level's bullets: "v<variation>:<judge>" (BehaviorParam_PC 100000000 +
         // variation * 1000 + judge), else the Shuriken LV1's bare judge.
         let tool = crate::player::equipped_tool(&combat, &config, p.tool_slot);
@@ -104,7 +107,6 @@ fn spawn_bullets(
         // Only the tool anims (a070..a079) resolve their judges through the tool's variation; the
         // combat art anims (a100..a110) through the art's, paying the art's resourceItemA (Dragon Flash's
         // 105004220, Ashina Cross's 105005200, Mortal Draw's consumption dummy 105007999).
-        let tool_anim = crate::player::is_tool_anim(&a.anim);
         let art_anim = a.anim.get(1..4).and_then(|g| g.parse::<i64>().ok()).is_some_and(|g| (100..=110).contains(&g));
         let art_cost = crate::player::art_cost(&combat, &config);
         let (var, cost) = if art_anim {
@@ -133,7 +135,8 @@ fn spawn_bullets(
                     log.push(format!("{payer} ({} emblems)", p.emblems), Color::srgb(0.8, 0.85, 1.0));
                 }
             }
-            // gap: effectEndurance 0 / -1 (while applied / forever) rows are not timed here.
+            // All nine refType-2 rows Wolf's TAE reaches have an effectEndurance > 0 (3 s, 30 s,
+            // 0.1 s); a 0 / -1 one (while applied / forever) would be skipped here.
             let endurance = d.sp_effects.get(&b.ref_id.to_string()).map_or(0.0, |s| s.effect_endurance);
             if b.ref_type == 2 && endurance > 0.0 {
                 p.timed.retain(|(id, _)| *id != b.ref_id);
@@ -152,8 +155,18 @@ fn spawn_bullets(
                     log.push(format!("{payer} ({} emblems)", p.emblems), Color::srgb(0.8, 0.85, 1.0));
                 }
             }
-            let spec = tool.and_then(|t| d.bullets.get(&format!("v{}:{judge}", t.variation))).or_else(|| d.bullets.get(&judge.to_string()));
+            // The sword's bullets (outside the tool groups): Kusabimaru's variation 5000
+            // (BehaviorParam_PC 105000184 -> Bullet 500184) and its attackBase*.
+            let sword = (!tool_anim).then(|| d.bullets.get(&format!("v5000:{judge}"))).flatten();
+            let spec = sword.or_else(|| tool.and_then(|t| d.bullets.get(&format!("v{}:{judge}", t.variation)))).or_else(|| d.bullets.get(&judge.to_string()));
             let Some(spec) = spec else { continue };
+            let base = if sword.is_some() {
+                let w = combat.param("EquipParamWeapon", 5000);
+                let f = |k: &str| w[k].as_f64().unwrap_or(0.0) as f32;
+                (f("attackBasePhysics"), f("attackBaseFire"), f("attackBaseThunder"))
+            } else {
+                tool.map_or((20.0, 0.0, 0.0), |t| (t.attack_base_physics, t.attack_base_fire, 0.0))
+            };
             // From the event's DummyPoly (2: the throwing hand); without a model (headless),
             // chest height in front of Wolf.
             let dmy = e.arg_i64("DummyPolyID").unwrap_or(-1) as i16;
@@ -186,14 +199,14 @@ fn spawn_bullets(
                 }
             }
             *chain += 1;
-            spawn_row(&mut commands, spec, from, dir, *chain, tool.map_or((20.0, 0.0), |t| (t.attack_base_physics, t.attack_base_fire)), -1);
+            spawn_row(&mut commands, spec, from, dir, *chain, base, -1);
         }
     }
 }
 
 /// Spawns one Bullet row at `pos`: numShoot bullets fanned from `dir` by shootAngle +
 /// i * shootAngleInterval (yaw, degrees) and tilted by shootAngleXZ (-90 = straight down).
-fn spawn_row(commands: &mut Commands, spec: &BulletSpec, pos: Vec3, dir: Vec3, chain: u32, base: (f32, f32), inherited: i64) {
+fn spawn_row(commands: &mut Commands, spec: &BulletSpec, pos: Vec3, dir: Vec3, chain: u32, base: (f32, f32, f32), inherited: i64) {
     let flat = dir.with_y(0.0).normalize_or(Vec3::NEG_Z);
     let sfx = if spec.sfx_id_bullet > 0 { spec.sfx_id_bullet } else { inherited };
     let inherit_sfx = if spec.is_inherit_sfx_to_child != 0 { sfx } else { -1 };
@@ -303,9 +316,17 @@ fn fly_bullets(
                     continue;
                 }
                 let r = b.spec.hit_radius;
+                // The part group of the capsule it touched (env(1120)).
+                let mut part = 0u8;
                 let hit = match hurt {
-                    Some(h) => h.0.iter().any(|&(ma, mb, hr)| match (markers.get(ma), markers.get(mb)) {
-                        (Ok(pa), Ok(pb)) => segment_distance(from, to, pa.translation(), pb.translation()) <= r + hr,
+                    Some(h) => h.0.iter().enumerate().any(|(i, &(ma, mb, hr))| match (markers.get(ma), markers.get(mb)) {
+                        (Ok(pa), Ok(pb)) => {
+                            let touch = segment_distance(from, to, pa.translation(), pb.translation()) <= r + hr;
+                            if touch {
+                                part = h.1.get(i).copied().unwrap_or(0);
+                            }
+                            touch
+                        }
                         _ => false,
                     }),
                     None => {
@@ -323,7 +344,7 @@ fn fly_bullets(
                 if b.spec.is_penetrate == 0 {
                     ended = true;
                 }
-                let msg = hit_enemy(&combat, &b, from, to, &mut da, dtf, &mut e, time.elapsed_secs(), sounds.as_deref_mut());
+                let msg = hit_enemy(&combat, &b, from, to, part, &mut da, dtf, &mut e, time.elapsed_secs(), sounds.as_deref_mut());
                 // sfxId_Flick where it was deflected, sfxId_Hit where it landed or was blocked.
                 match msg.as_deref() {
                     Some(m) if m.contains("deflect") => spawn_fx_at(&mut commands, b.spec.sfx_id_flick, to, -dir),
@@ -335,11 +356,13 @@ fn fly_bullets(
                 }
                 // The burn / poison build-up of a bullet that landed or was blocked (Bullet and
                 // AtkParam spEffectId0-4, e.g. the Flame Vent's 720000 -> 9109), and c9997's
-                // SP_DAMAGE_BURNING -> W_FireReaction once it burns (gap: rank 3 not checked).
+                // SP_DAMAGE_BURNING -> W_FireReaction once it burns, unless the state's transition
+                // rank forbids rank 3 (ExecDebuffReaction 2961: not out of a large blow or a
+                // posture break).
                 if let Some(m) = msg.filter(|m| m.starts_with("hit") || m.contains("blocks")) {
                     let mut sps: Vec<i64> = [b.spec.sp_effect_id0, b.spec.sp_effect_id1, b.spec.sp_effect_id2, b.spec.sp_effect_id3, b.spec.sp_effect_id4].to_vec();
                     sps.extend(b.spec.attack.as_ref().map(|a| a.sp_effects()).unwrap_or_default());
-                    let lines = statuses.hit(&combat, ee, &sps, m.contains("blocks"));
+                    let lines = statuses.hit(&combat, ee, &da, &sps, m.contains("blocks"));
                     // gap: catching fire flails him even through his guard (as seen in the game); the
                     // exe's damage call that sets STATUS_BURNING is not traced.
                     let ignited = lines.iter().any(|l| l == "BURNING");
@@ -348,8 +371,8 @@ fn fly_bullets(
                             log.push(line, Color::srgb(0.7, 0.55, 0.9));
                         }
                     }
-                    let burning = statuses.has_ref(&combat, ee, crate::status::REF_BURNING) && combat.enemy.states.contains_key("FireReaction");
-                    if (m.starts_with("hit") || ignited) && burning && !da.posture_broken() && !e.is_broken() {
+                    let burning = statuses.has_ref(&combat, ee, crate::status::REF_BURNING) && combat.data_of(&da).states.contains_key("FireReaction");
+                    if (m.starts_with("hit") || ignited) && burning && !da.posture_broken() && !e.is_broken() && rank_allows(transition_rank(&da.state), 3) {
                         e.react(&mut da, &combat, "FireReaction");
                     }
                 }
@@ -378,6 +401,41 @@ fn fly_bullets(
     shared.0.retain(|c, _| live.contains(c));
 }
 
+/// c9997.lua: the damage transition rank an enemy state passes to DamageCommonFunction /
+/// LandCommonFunction in its _onUpdate (DAMAGE_TRANSITION_RANK__0..4); every other state passes
+/// DAMAGE_TRANSITION_RANK__NONE (-1).
+pub(crate) fn transition_rank(state: &str) -> i32 {
+    match state {
+        "DamageLargeBlow" | "DamageFling" | "DamageUpper" | "DamageAerialBlow" => 0,
+        "TrunkCollapseLarge" | "TrunkCollapseBurst" | "TrunkCollapseLightningStart" | "TrunkCollapseLightningLoop" | "TrunkCollapseLightningEnd" => 1,
+        "TrunkCollapseFront" | "TrunkCollapseBack" | "TrunkCollapseAerial" | "GuardBreakRight" | "GuardBreakLeft" | "LandTrunk" => 2,
+        s if s.starts_with("AttackBoundEmptyStaminaEnemy") => 2,
+        "FireFearReaction" | "DamageWeak" | "DamageFire" | "DamageLightningStart" | "DamageLightningLoop" | "DamageLightningEnd" | "FireReaction" => 3,
+        "JumpMoveEnd" | "ThrowNearReaction" | "ThrowFarReaction" | "AssassinationBloodReaction" | "HideReaction" | "BackRealityReaction" | "SpecialPoisonReaction"
+        | "FingerWhistleReaction" | "LandDefault" | "LandHeavy" | "LandUpward" | "LandDownward" | "LandThrowDefFront" | "LandThrowDefBack" | "LandThrowDefAntiAir"
+        | "LadderFallLand" => 4,
+        s if ["DamageBlow", "DamagePush", "DamageWire", "DamageAerialFront", "DamageAerialBack", "GuardDamage", "JustGuardDamage", "GuardKick", "AttackBoundEnemy", "AttackNoBoundEnemy"]
+            .iter()
+            .any(|p| s.starts_with(p)) =>
+        {
+            4
+        }
+        _ => -1,
+    }
+}
+
+/// c9997.lua IsEnabledTransitionRank (913): may a reaction of rank `dest` interrupt a state of
+/// rank `cur`.
+pub(crate) fn rank_allows(cur: i32, dest: i32) -> bool {
+    match dest {
+        0 => true,
+        1 => cur != 0,
+        2 | 3 => !(0..=2).contains(&cur),
+        4 => !(0..=3).contains(&cur),
+        _ => false,
+    }
+}
+
 /// One bullet hitting the enemy: its SpEffects (the firecracker's burst reaction and cool time),
 /// then its AtkParam (deflect / block / damage). Returns the log line.
 #[allow(clippy::too_many_arguments)]
@@ -386,6 +444,7 @@ fn hit_enemy(
     b: &Projectile,
     from: Vec3,
     to: Vec3,
+    part: u8,
     da: &mut Actor,
     dtf: &Transform,
     e: &mut Enemy,
@@ -396,10 +455,10 @@ fn hit_enemy(
     let sp_of = |id: i64| combat.player.sp_effects.get(&id.to_string());
     let refs: Vec<i64> = sps.iter().filter(|v| **v > 0).filter_map(|id| sp_of(*id)).map(|s| s.behavior_ref_id).collect();
     if refs.contains(&REF_BURST_NONCRITICAL) || refs.contains(&REF_BURST_CRITICAL) {
-        let npc = combat.param("NpcParam", combat.foe.npc_row);
+        let npc = combat.npc(da);
         let special = (0..32)
             .filter_map(|i| npc[format!("spEffectID{i}")].as_i64().filter(|v| *v > 0))
-            .any(|id| combat.enemy.sp_effects.get(&id.to_string()).is_some_and(|s| s.behavior_ref_id == REF_BURST_ENABLE));
+            .any(|id| combat.data_of(da).sp_effects.get(&id.to_string()).is_some_and(|s| s.behavior_ref_id == REF_BURST_ENABLE));
         let wanted = if special { REF_BURST_CRITICAL } else { REF_BURST_NONCRITICAL };
         if !refs.contains(&wanted) {
             return None;
@@ -411,19 +470,27 @@ fn hit_enemy(
         }
         let cool = sps.iter().filter_map(|id| sp_of(*id)).filter(|s| s.state_info == 976).map(|s| s.effect_endurance).fold(0.0, f32::max);
         e.burst_until = now + cool;
-        // c9997.lua GetSpDamage -> SP_DAMAGE_BURST -> W_AssassinationBloodReaction (a000_020110).
-        // gap: the damage transition rank check (rank 4) is not modelled; it interrupts anything.
-        if !e.is_broken() {
+        // c9997.lua GetSpDamage -> SP_DAMAGE_BURST -> W_AssassinationBloodReaction (a000_020110),
+        // a rank 4 reaction (line 3091): not out of a rank 0-3 state (large blows, posture
+        // breaks, burning / lightning reactions).
+        if !e.is_broken() && rank_allows(transition_rank(&da.state), 4) {
             e.react(da, combat, "AssassinationBloodReaction");
             return Some("firecracker: enemy staggered".into());
         }
         return None;
     }
     let atk = b.spec.attack.as_ref()?;
-    if !(atk.atk_phys_correction > 0.0 || atk.atk_fire_correction > 0.0 || atk.atk_stam > 0.0 || atk.direct_atk_stam_damage > 0.0) {
+    // The bullet's SpEffects on the enemy for their effectEndurance (the reversal bolt's
+    // 3520085 "Divine Dragon: Lightning Reversal hit", 1 s, which the dragon's map script
+    // waits for).
+    for id in sps.iter().filter(|v| **v > 0) {
+        let secs = crate::data::sp_effect_endurance(combat, *id);
+        e.add_timed(*id, secs.max(0.1));
+    }
+    if !(atk.atk_phys_correction > 0.0 || atk.atk_fire_correction > 0.0 || atk.atk_thun_correction > 0.0 || atk.atk_stam > 0.0 || atk.direct_atk_stam_damage > 0.0) {
         return None;
     }
-    let dd = &combat.enemy;
+    let dd = combat.data_of(da);
     let facing = da.forward().dot((from - dtf.translation).with_y(0.0).normalize_or_zero()) > 0.0;
     if facing && !da.anim.is_empty() && dd.has_state_info(&da.anim, da.t, STATE_INFO_JUST_GUARD) {
         if let Some(q) = sounds.as_mut() {
@@ -440,23 +507,48 @@ fn hit_enemy(
     }
     // The tool's attackBasePhysics / attackBaseFire times the AtkParam corrections; fire scaled by
     // the NPC's fireDamageCutRate.
-    let fire_cut = combat.param("NpcParam", combat.foe.npc_row)["fireDamageCutRate"].as_f64().unwrap_or(1.0) as f32;
-    let dmg = b.base.0 * atk.atk_phys_correction / 100.0 + b.base.1 * atk.atk_fire_correction / 100.0 * fire_cut;
+    let fire_cut = combat.npc(da)["fireDamageCutRate"].as_f64().unwrap_or(1.0) as f32;
+    let thun_cut = combat.npc(da)["thunderDamageCutRate"].as_f64().unwrap_or(1.0) as f32;
+    let dmg = b.base.0 * atk.atk_phys_correction / 100.0 + b.base.1 * atk.atk_fire_correction / 100.0 * fire_cut + b.base.2 * atk.atk_thun_correction / 100.0 * thun_cut;
     let pd = if atk.direct_atk_stam_damage > 0.0 { atk.direct_atk_stam_damage } else { atk.atk_stam };
     da.hp = (da.hp - dmg).max(0.0);
     da.add_posture(pd);
     apply_knockback(combat, da, from, dtf.translation, atk.knockback_hit, damage_kb(atk.dmg_level), "knockbackRate_vsPlayer_DirectHit");
-    if !e.is_attacking() && !da.posture_broken() && !e.is_broken() {
-        if let Some(s) = enemy_damage_state(atk.dmg_level, da, from, dtf.translation) {
-            e.react(da, combat, &s);
+    // c9997 GetSpDamage: a lightning hit (DAMAGE_ELEMENT_LIGHTNING 6) on one with
+    // SP_EFFECT_REF_LIGHTNING_DAMAGE_ENABLE (1000041: its NpcParam's 6021) and without
+    // NO_LIGHTNING_DAMAGE (1000260) is SP_DAMAGE_LIGHTNING -> W_DamageLightningStart, a rank 3
+    // reaction (line 2995) even mid-swing.
+    let lightning = atk.sp_attribute == 6 && {
+        let refs = enemy_refs(combat, da, e);
+        refs.contains(&1000041) && !refs.contains(&1000260)
+    };
+    if lightning && !da.posture_broken() && !e.is_broken() && rank_allows(transition_rank(&da.state), 3) {
+        e.react(da, combat, "DamageLightningStart");
+    } else if !da.posture_broken() && !e.is_broken() {
+        match enemy_damage_state(atk.dmg_level, da, from, dtf.translation).filter(|_| !e.is_attacking()) {
+            Some(s) => e.react(da, combat, &s),
+            // No reaction (mid-swing, or none for that level: the Divine Dragon has none):
+            // c9997 ExecNoSyncAddDamage, the part's additive flinch.
+            None => crate::combat::no_sync_add_damage(dd, da, part, from, dtf.translation),
         }
     }
     if let Some(q) = sounds.as_mut() {
-        for se in crate::sound::hit_sounds(combat, atk, crate::sound::defender_materials(combat, crate::actor::Side::Enemy)) {
+        for se in crate::sound::hit_sounds(combat, atk, crate::sound::defender_materials(combat, da)) {
             q.0.push((se, to));
         }
     }
     Some(format!("hit: -{dmg:.0} HP, +{pd:.0} posture"))
+}
+
+/// The behaviorRefIds of an enemy's SpEffects now: its residents, its anim's and the timed ones.
+pub(crate) fn enemy_refs(combat: &Combat, a: &Actor, e: &Enemy) -> Vec<i64> {
+    let d = combat.data_of(a);
+    let mut ids: Vec<i64> = a.resident.clone();
+    if !a.anim.is_empty() {
+        ids.extend(d.sp_effects_at(&a.anim, a.t).iter().map(|(id, _)| *id));
+    }
+    ids.extend(e.clash.iter().map(|c| c.0));
+    ids.iter().filter_map(|id| d.sp_effects.get(&id.to_string())).map(|s| s.behavior_ref_id).collect()
 }
 
 /// Debug (H, with the hitboxes): bullets as lines, area bursts as their hit spheres.
@@ -528,8 +620,7 @@ pub mod hks {
     /// attack button inside SP_EF_REF_TAE_ENABLE_SUB_ATTACK_DERIVE_ATTACK (301) follows up with the
     /// tool. `step` = the stick for the Sabimaru's directed cut (_SetStepAngle: None = neutral, else
     /// degrees, + = right). None: an ordinary attack.
-    /// gap: env(3033) ACTION_UNLOCK_TYPE_SUB_ATTACK_DIRAVE_ATTACK_1 / _2 / SHOT_ATTACK / ENCHANT (the
-    /// Prosthetic Arts skills, mapped to skills inside the exe) are taken as learned.
+    /// The Prosthetic Arts skill each follow-up asks for is `derive_unlock`.
     pub fn derive_attack(cat: i64, state: &str, crouch: bool, enable_combo: bool, refs: &dyn Fn(i64) -> bool, step: Option<f32>) -> Option<&'static str> {
         const REF_DERIVE_ATTACK: i64 = 301;
         const REF_GIMMICK_AXE_DERIVE_ATTACK_HORIZONTAL: i64 = 308;
@@ -840,7 +931,7 @@ pub mod hks {
     /// BEH_A_AIR_SUB_ATTACK (line 3007): the prosthetic pressed in the air. `count` = the uses so far
     /// this jump. Returns the state and whether it counts as a use; None = the press is dropped
     /// (W_AddActionInputSubAttack, the input blend).
-    /// gap: ACTION_UNLOCK_TYPE_AIR_SUB_ATTACK (env 3033, mapped in the exe) is taken as learned.
+    /// ACTION_UNLOCK_TYPE_AIR_SUB_ATTACK (lines 2992 / 3026) is checked by the caller.
     pub fn air_press(cat: i64, enable_action: bool, count: u32, locked: bool, refs: &dyn Fn(i64) -> bool) -> Option<(&'static str, bool)> {
         let counted = matches!(cat, 71 | 72 | 74 | 75 | 77 | 78 | 79);
         if counted && count >= AIR_SUB_ATTACK_COUNT_MAX {
@@ -867,15 +958,38 @@ pub mod hks {
         Some((state, counted))
     }
 
+    /// The ACTION_UNLOCK_TYPE a ground follow-up needs (lines 3257 / 3274 / 3308 / 3320): Chasing
+    /// Slice (070 / 071 / 078 but after Combo2), Fang and Blade (073 / 074 / 078 Combo2), Projected
+    /// Force (076 / 079), Living Force (072 / 077). None: the crouch ones and the Sabimaru (075)
+    /// check none.
+    pub fn derive_unlock(cat: i64, state: &str, crouch: bool) -> Option<u32> {
+        use crate::combat::*;
+        if crouch {
+            return None;
+        }
+        Some(match cat {
+            70 | 71 => UNLOCK_SUB_ATTACK_DIRAVE_ATTACK_1,
+            78 if state != "GroundSubAttackCombo2" => UNLOCK_SUB_ATTACK_DIRAVE_ATTACK_1,
+            73 | 74 | 78 => UNLOCK_SUB_ATTACK_DIRAVE_ATTACK_2,
+            76 | 79 => UNLOCK_SUB_ATTACK_SHOT_ATTACK,
+            72 | 77 => UNLOCK_SUB_ATTACK_ENCHANT,
+            _ => return None,
+        })
+    }
+
     /// BEH_R_LAND for the air tool states (lines 1888-1970): while SP_EF_REF_TAE_ENABLE_ORIGINAL_LAND_ACTION
     /// (201) is up the state goes on as its Land version from the same time (`true`); the loops land
     /// from their start (`false`). None: the plain landing.
-    /// gap: W_LandAirSubAttackStart (the Firecracker's) is not in the exported state table, so it
-    /// takes the no-ref-201 landing W_LandAirSubAttackLoop.
-    pub fn air_land(cat: i64, state: &str, ref_201: bool) -> Option<(&'static str, bool)> {
+    /// W_LandAirSubAttackStart's state is LandAirSubAttackStart, whose CMSG the game spells
+    /// "LandAirSubAttacStart_CMSG" (c0000.hkx; anim 403050), so that is its exported name.
+    /// Without ref 201 the start and the loop land as W_LandAirSubAttackLoop (lines 1892 / 1932).
+    /// gap: for the tools but the Firecracker (73) the HKS checks a fall of 20 m or more
+    /// (FALL_HEIGHT_LONG_STIFF_LAND, the free-fall landing) first; fall height is not tracked.
+    pub fn air_land(_cat: i64, state: &str, ref_201: bool) -> Option<(&'static str, bool)> {
         Some(match state {
             "AirSubAttackDeflectEasySmall" | "AirSubAttackGuardLoop" => ("LandAirSubAttackGuardLoop", false),
-            "AirSubAttackStart" | "AirSubAttackLoop" if cat == 73 => ("LandAirSubAttackLoop", false),
+            "AirSubAttackStart" if ref_201 => ("LandAirSubAttacStart", true),
+            "AirSubAttackStart" | "AirSubAttackLoop" => ("LandAirSubAttackLoop", false),
             "AirSubAttackDeriveAttack" if ref_201 => ("LandAirSubAttackDeriveAttack", true),
             "AirSubAttackDeriveAttackLoop" if ref_201 => ("LandAirSubAttackDeriveAttackLoop", false),
             "AirSubAttackMoveReady" if ref_201 => ("LandAirSubAttackMoveReady", true),
@@ -944,18 +1058,29 @@ pub mod hks {
 
     /// SubAttackJumpReady's end (FireStateEndEvent, line 536): SubAttackJumpStart_<dir> from the
     /// stick's angle to the facing (degrees, + = right, as player::directional_jump); no stick = V.
-    /// gap: _SetJumpDirection is not in the decompiled scripts; eight 45-degree sectors stand in.
+    /// _SetJumpDirection (c0000_transition.lua 4975, PRM_GROUND_JUMP_*_STICK_RANGE in
+    /// c0000_define.lua): F within +-18.75 (ends included), the others strictly inside their
+    /// ranges (FR 18.75-67.5, R -112.5, BR -157.5, mirrored for the left), anything else
+    /// (also an exact border such as 67.5) B.
     pub fn jump_start(stick_angle: Option<f32>) -> &'static str {
         let Some(a) = stick_angle else { return "SubAttackJumpStart_V" };
-        match (((a + 360.0 + 22.5) % 360.0) / 45.0) as i32 {
-            0 => "SubAttackJumpStart_F",
-            1 => "SubAttackJumpStart_FR",
-            2 => "SubAttackJumpStart_R",
-            3 => "SubAttackJumpStart_BR",
-            4 => "SubAttackJumpStart_B",
-            5 => "SubAttackJumpStart_BL",
-            6 => "SubAttackJumpStart_L",
-            _ => "SubAttackJumpStart_FL",
+        let inside = |lo: f32, hi: f32| a > lo && a < hi;
+        if (-18.75..=18.75).contains(&a) {
+            "SubAttackJumpStart_F"
+        } else if inside(18.75, 67.5) {
+            "SubAttackJumpStart_FR"
+        } else if inside(67.5, 112.5) {
+            "SubAttackJumpStart_R"
+        } else if inside(112.5, 157.5) {
+            "SubAttackJumpStart_BR"
+        } else if inside(-157.5, -112.5) {
+            "SubAttackJumpStart_BL"
+        } else if inside(-112.5, -67.5) {
+            "SubAttackJumpStart_L"
+        } else if inside(-67.5, -18.75) {
+            "SubAttackJumpStart_FL"
+        } else {
+            "SubAttackJumpStart_B"
         }
     }
 
@@ -973,5 +1098,21 @@ pub mod hks {
             "SubAttackJumpStart_FL" => "AirSubAttackMoveStart_FL",
             _ => "AirSubAttackMoveStart_V",
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// c9997's transition ranks: burning (3) may not cut a posture break or a large blow, the
+    /// Firecracker's stagger (4) not a burning reaction either; both cut ordinary states.
+    #[test]
+    fn reactions_respect_the_transition_rank() {
+        use super::{rank_allows, transition_rank};
+        assert!(rank_allows(transition_rank("Idle"), 3) && rank_allows(transition_rank("Idle"), 4));
+        assert!(!rank_allows(transition_rank("TrunkCollapseFront"), 3));
+        assert!(!rank_allows(transition_rank("DamageLargeBlow"), 4));
+        assert!(rank_allows(transition_rank("FireReaction"), 3) && !rank_allows(transition_rank("FireReaction"), 4));
+        assert!(rank_allows(transition_rank("GuardDamageSmall_RighttoLeft"), 4));
+        assert_eq!(transition_rank("AttackBoundEmptyStaminaEnemy_Left"), 2);
     }
 }

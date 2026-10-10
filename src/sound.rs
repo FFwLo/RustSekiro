@@ -141,7 +141,7 @@ fn lookup(combat: &Combat, table: &str, atk: &crate::data::Attack, def_materials
 /// attack's defSeMaterial1/2. The General's sword attacks (100 / 139, Iron group): deflect
 /// z199999980, block z200000101.
 pub fn guard_sounds(combat: &Combat, atk: &crate::data::Attack, deflect: bool) -> Vec<String> {
-    let mats = [atk.def_se_material1, atk.def_se_material2];
+    let mats = crate::vfx::guard_materials(combat, [atk.def_se_material1, atk.def_se_material2], true);
     if deflect {
         let jg = lookup(combat, "HitEffectSeJustGuardParam", atk, mats);
         if !jg.is_empty() {
@@ -153,9 +153,9 @@ pub fn guard_sounds(combat: &Combat, atk: &crate::data::Attack, deflect: bool) -
 
 /// The defender's two hit-sound materials: the enemy's NpcParam materialSe1/2, Wolf's body
 /// protector defenseMaterial1/2.
-pub fn defender_materials(combat: &Combat, side: crate::actor::Side) -> [i64; 2] {
-    let (r, a, b) = match side {
-        crate::actor::Side::Enemy => (combat.param("NpcParam", combat.foe.npc_row), "materialSe1", "materialSe2"),
+pub fn defender_materials(combat: &Combat, def: &crate::actor::Actor) -> [i64; 2] {
+    let (r, a, b) = match def.side {
+        crate::actor::Side::Enemy => (combat.npc(def), "materialSe1", "materialSe2"),
         crate::actor::Side::Player => (combat.param("EquipParamProtector", 100000), "defenseMaterial1", "defenseMaterial2"),
     };
     [r[a].as_i64().unwrap_or(-1), r[b].as_i64().unwrap_or(-1)]
@@ -218,7 +218,7 @@ fn type_letter(t: &str) -> Option<char> {
 /// events (PlaySound / SpawnFFX StateInfo) run only when one matches.
 pub fn active_state_infos(combat: &Combat, a: &Actor, config: Option<&crate::config::GameConfig>, tool: Option<i64>) -> Vec<i64> {
     const NO_ENCHANTMENT: i64 = 914;
-    let d = data_for(combat, a.side);
+    let d = data_for(combat, &a);
     let mut v: Vec<i64> = if a.anim.is_empty() { Vec::new() } else { d.sp_effects_at(&a.anim, a.t).iter().map(|(_, s)| s.state_info).collect() };
     if a.side == crate::actor::Side::Player {
         v.push(NO_ENCHANTMENT);
@@ -284,7 +284,7 @@ fn play_tae_sounds(
             continue;
         }
         seen.insert(entity, step);
-        let d = data_for(&combat, a.side);
+        let d = data_for(&combat, &a);
         let Some(anim) = d.anim(&a.anim) else { continue };
         let mut states: Option<Vec<i64>> = None;
         for e in &anim.events {
@@ -332,7 +332,7 @@ fn play_tae_sounds(
                 // defenseMaterial1/2, NpcParam materialSe1/2) the banks have an event for
                 // (Wolf 113; the General 114 has none, 108 has).
                 'b' => {
-                    let mats = defender_materials(&combat, a.side);
+                    let mats = defender_materials(&combat, &a);
                     let keys: Vec<String> = mats.iter().filter(|m| **m > 0).map(|m| format!("c{:09}", id + m)).collect();
                     let found = fmod.as_ref().and_then(|f| keys.iter().find(|k| f.has(k)).cloned());
                     found.or_else(|| keys.first().cloned()).unwrap_or_default()

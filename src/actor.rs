@@ -8,7 +8,7 @@ use bevy::prelude::*;
 use crate::config::GameConfig;
 use crate::data::{CharData, Combat, calc_correct};
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Side {
     Player,
     Enemy,
@@ -17,6 +17,8 @@ pub enum Side {
 #[derive(Component)]
 pub struct Actor {
     pub side: Side,
+    /// Enemy: its kind in `Combat::kinds` (0 for the player).
+    pub kind: usize,
     /// Behavior state name (player) or a label (enemy). Shown in the debug HUD.
     pub state: String,
     /// Anim key into combat_data ("a050_300000"), or "" for procedural states.
@@ -62,6 +64,13 @@ pub struct Actor {
     /// game's per-frame heights match the analytic arc).
     pub grav_y: f32,
     pub airborne: bool,
+    /// Wolf's Lightning Reversal charge: the SpEffect a lightning hit in the air put on him
+    /// (9490 "charged enchantment [weak lightning]" stateInfo 356 / 9495 "[strong thunder]" 151,
+    /// effectEndurance 30 s) and its time left. gap: the exe applies it (no param references
+    /// 9490-9495); the weak one's strength 1-5 is not traced (9490 here).
+    pub electro: Option<(i64, f32)>,
+    /// Its opacity: the last TAE 193 keyframe value (CharData::opacity_key), 1 at spawn.
+    pub opacity: f32,
     /// Fall control: ChrPhysicsVelocityChangeParam.fallType, launch velocity (decays by
     /// the fall type's horizontal acceleration) and the stick-driven part on top.
     pub fall_type: u8,
@@ -134,6 +143,7 @@ impl Actor {
     pub fn new(side: Side, hp: f32, posture_max: f32, posture_regen: f32, stamina_ctrl_row: i64) -> Self {
         Self {
             side,
+            kind: 0,
             state: "StandIdle".into(),
             anim: String::new(),
             t: 0.0,
@@ -160,6 +170,8 @@ impl Actor {
             vel_y: 0.0,
             grav_y: 0.0,
             airborne: false,
+            electro: None,
+            opacity: 1.0,
             fall_type: 0,
             air_base: Vec3::ZERO,
             lift_ground: None,
@@ -221,7 +233,12 @@ impl Actor {
                 true
             }
             None => {
-                warn!("state {state} has no exported anim");
+                // Once per state and character kind (the callers retry every frame).
+                static SEEN: std::sync::Mutex<Option<std::collections::HashSet<(Side, usize, String)>>> = std::sync::Mutex::new(None);
+                let first = SEEN.lock().map_or(true, |mut s| s.get_or_insert_with(Default::default).insert((self.side, self.kind, state.to_string())));
+                if first {
+                    warn!("state {state} has no exported anim (kind {}; logged once)", self.kind);
+                }
                 false
             }
         }
@@ -320,11 +337,9 @@ impl Actor {
     }
 }
 
-pub fn data_for<'a>(combat: &'a Combat, side: Side) -> &'a CharData {
-    match side {
-        Side::Player => &combat.player,
-        Side::Enemy => &combat.enemy,
-    }
+/// An actor's character data: Wolf's, or its enemy kind's.
+pub fn data_for<'a>(combat: &'a Combat, a: &Actor) -> &'a CharData {
+    combat.data_of(a)
 }
 
 /// TAE 760 BoostRootMotionToReachTarget (exe: the TAE handler FUN_140b293a0 stores its args,
@@ -341,7 +356,7 @@ fn boost_root_motion(
 ) {
     let positions: Vec<(Entity, Side, Vec3)> = q.iter().map(|(e, a, t)| (e, a.side, t.translation)).collect();
     for (_, mut a, tf) in &mut q {
-        let d = data_for(&combat, a.side);
+        let d = data_for(&combat, &a);
         let ev = if a.anim.is_empty() { None } else { d.events_at(&a.anim, a.t).find(|e| e.kind == 760) };
         let Some(ev) = ev.filter(|e| e.args.get("IsEnable").and_then(|v| v.as_bool()).unwrap_or(false)) else {
             a.root_scale = 1.0;
@@ -391,7 +406,10 @@ pub fn advance(time: Res<Time>, combat: Res<Combat>, mut q: Query<(&mut Actor, &
         }
         a.t += dt;
         a.since_posture_damage += dt;
-        let data = data_for(&combat, a.side);
+        let data = data_for(&combat, &a);
+        if let Some(o) = data.opacity_key(&a.anim, a.t) {
+            a.opacity = o;
+        }
         // Additive layer clock: it ends after max(clip length, last TAE event).
         if !a.add_anim.is_empty() {
             a.add_t += dt;
@@ -470,7 +488,7 @@ pub fn regen_posture(time: Res<Time>, combat: Res<Combat>, config: Res<GameConfi
             a.regen_carry = 0.0;
             continue;
         }
-        let data = data_for(&combat, a.side);
+        let data = data_for(&combat, &a);
         let ty = if a.anim.is_empty() { None } else { data.stamina_ratio_type(&a.anim, a.t) };
         let ty = ty.unwrap_or(config.posture.default_ratio_type);
         let row = combat.param("StaminaControlParam", a.stamina_ctrl_row);
@@ -523,11 +541,27 @@ fn in_throw(a: &Actor) -> bool {
         || matches!(a.state.as_str(), "Deathblow" | "ThrowBreak" | "BreakKickJump" | "Mikiri" | "PlungeDeathblow")
 }
 
+/// ChrActionFlag 39 (TAE name "Set_0x78_7"): on Wolf's throw and plunge anims (a2xx_510300,
+/// 511400, 511500, ...) where the pair passes through each other, and on the hidden ground
+/// zombie's crawl (c1500 a100_020010-12) that has to get under Wolf (150000_battle.lua Act16:
+/// GetDist < 0.2). Read as "character proxy off". gap: the exe's use of chr+0x78 bit 7 is not
+/// traced; this is the data pattern.
+const FLAG_PROXY_OFF: i64 = 39;
+
+fn proxy_off(combat: &Combat, a: &Actor) -> bool {
+    !a.anim.is_empty() && combat.data_of(a).flag(&a.anim, a.t, FLAG_PROXY_OFF)
+}
+
 /// Characters don't overlap: pairs closer than the sum of their radii are pushed
 /// apart horizontally, half each (both weigh in like the game's char proxies).
 fn separate(combat: Res<Combat>, mut q: Query<(&Actor, &mut Transform)>) {
-    let npc_radius = combat.param("NpcParam", combat.foe.npc_row)["hitRadius"].as_f64().unwrap_or(0.5) as f32;
-    let radius = |a: &Actor| if a.side == Side::Player { PLAYER_BODY_RADIUS } else { npc_radius };
+    let radius = |a: &Actor| {
+        if a.side == Side::Player {
+            PLAYER_BODY_RADIUS
+        } else {
+            combat.param("NpcParam", combat.foe_of(a).npc_row)["hitRadius"].as_f64().unwrap_or(0.5) as f32
+        }
+    };
     let mut items: Vec<_> = q.iter_mut().collect();
     for i in 0..items.len() {
         for j in i + 1..items.len() {
@@ -535,7 +569,7 @@ fn separate(combat: Res<Combat>, mut q: Query<(&Actor, &mut Transform)>) {
             let (a, ta) = &mut l[i];
             let (b, tb) = &mut r[0];
             // Throw pairs pass through each other (the game's throws drop the character proxies).
-            if a.hp <= 0.0 || b.hp <= 0.0 || in_throw(a) || in_throw(b) {
+            if a.hp <= 0.0 || b.hp <= 0.0 || in_throw(a) || in_throw(b) || proxy_off(&combat, a) || proxy_off(&combat, b) {
                 continue;
             }
             let min = radius(a) + radius(b);
