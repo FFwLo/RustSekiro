@@ -306,10 +306,6 @@ ones the community already distributes with its unpacking tools.
 
 The code is under the [MIT License](LICENSE.md).
 
-`src/ai/lua50.rs` is adapted from [sekiro-rs](https://github.com/AKJama/sekiro-rs)
-(Copyright (c) 2026 AKJama), used under its MIT license; the notice is in
-[THIRD_PARTY.md](THIRD_PARTY.md).
-
 The licence covers this project's code only. It grants nothing over SEKIRO:
 SHADOWS DIE TWICE or anything generated from its files, which remain
 FromSoftware's and Activision's.
