@@ -16,6 +16,23 @@ pub struct GameConfig {
     pub posture: PostureConfig,
     pub combat: CombatConfig,
     pub enemy: EnemyConfig,
+    #[serde(default)]
+    pub world: WorldConfig,
+}
+
+/// The arena: the game's own map (`sekiro-extract map` output) or the flat test floor.
+#[derive(Deserialize, Clone, Debug, Default)]
+pub struct WorldConfig {
+    /// Map id of `extracted/map_<id>.bin` (e.g. "m11_01_00_00"); unset = flat arena.
+    #[serde(default)]
+    pub map: Option<String>,
+    /// Time of day for the draw params (hours). gap: the game's clock for the area.
+    #[serde(default = "default_hour")]
+    pub hour: f32,
+}
+
+fn default_hour() -> f32 {
+    18.0
 }
 
 #[derive(Deserialize, Clone, Debug)]

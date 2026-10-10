@@ -382,7 +382,10 @@ fn simulate(
             }
             // First frame or a teleport (a fixed particle jumped > 1 m): restart from the bind pose
             // placed on the model root.
-            let jumped = c.started && def.moves.iter().any(|&(v, p)| refs.get(v).and_then(|r| *r).is_some_and(|(q, _)| q.distance(c.x[p]) > 1.0));
+            // A particle count that no longer matches the definition (another cloth def took this slot)
+            // restarts too.
+            let jumped = c.started
+                && (c.x.len() != def.rest.len() || def.moves.iter().any(|&(v, p)| refs.get(v).and_then(|r| *r).is_some_and(|(q, _)| c.x.get(p).is_none_or(|x| q.distance(*x) > 1.0))));
             let restarted = !c.started || jumped;
             if restarted {
                 if jumped {

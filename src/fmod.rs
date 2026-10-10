@@ -30,6 +30,15 @@ impl From<Vec3> for FVec {
 /// off the software mixer so no event can be created - every getEvent failed with error 16).
 const INIT_3D_RIGHTHANDED: u32 = 0x2;
 
+/// A started FMOD event instance (see `Fmod::play_tracked`).
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct EventHandle(Ptr);
+
+// The handle is only an id: it is dereferenced by FMOD calls on the thread that owns the
+// (NonSend) Fmod, so storing it in a Local is safe.
+unsafe impl Send for EventHandle {}
+unsafe impl Sync for EventHandle {}
+
 pub struct Fmod {
     _ex: libloading::Library,
     _ev: libloading::Library,
@@ -168,6 +177,34 @@ impl Fmod {
             let mut ev: Ptr = std::ptr::null_mut();
             unsafe { (self.get_event)(self.es, path.as_ptr(), 4, &mut ev) == 0 && !ev.is_null() }
         })
+    }
+
+    /// Starts event `key` and returns its instance, to stop it later (a looping event tied to an
+    /// FFX slot: it ends with the effect). None when nothing started.
+    pub fn play_tracked(&mut self, key: &str, pos: Vec3) -> Option<EventHandle> {
+        if self.missing.contains(key) {
+            return None;
+        }
+        for p in &self.projects {
+            let path = CString::new(format!("{p}/{p}/{key}")).unwrap();
+            let mut ev: Ptr = std::ptr::null_mut();
+            unsafe {
+                if (self.get_event)(self.es, path.as_ptr(), 0, &mut ev) == 0 && !ev.is_null() {
+                    let (pos, vel) = (FVec::from(pos), FVec::from(Vec3::ZERO));
+                    (self.set_3d)(ev, &pos, &vel, std::ptr::null());
+                    (self.start)(ev);
+                    return Some(EventHandle(ev));
+                }
+            }
+        }
+        None
+    }
+
+    /// Stops an event started by `play_tracked` (FMOD_Event_Stop, letting its fade-out play).
+    pub fn stop(&mut self, ev: EventHandle) {
+        unsafe {
+            (self.event_stop)(ev.0, 0);
+        }
     }
 
     /// Starts event `key` (e.g. "c000004010") at `pos`; false when no loaded project has it.
@@ -360,6 +397,38 @@ fn update_fmod(mut fmod: NonSendMut<Fmod>, camera: Query<&GlobalTransform, With<
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
+
+    /// Which of the Mortal Draw (a106) sounds keep playing: starts each (silent output), waits
+    /// 6 s, prints whether FMOD still reports it playing (a loop).
+    /// cargo test --release fmod_loops -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn fmod_loops() {
+        let root = crate::paths::root();
+        let mut f = Fmod::open(std::path::Path::new(&crate::paths::sekiro_dir()), &root.join("extracted/sound"), &["main", "smain"], false).expect("fmod");
+        let get_state = unsafe { *f._ev.get::<unsafe extern "system" fn(Ptr, *mut u32) -> i32>(b"FMOD_Event_GetState").unwrap() };
+        let keys: Vec<String> = (440000..=440009)
+            .map(|i| format!("s{i:09}"))
+            .chain(["c000004320", "c000004103", "c000007550", "c000007551", "c000007552", "c000006501", "c000006503", "c000004003"].iter().map(|s| s.to_string()))
+            .collect();
+        let mut started = Vec::new();
+        for k in &keys {
+            if let Some(ev) = f.play_tracked(k, Vec3::ZERO) {
+                started.push((k.clone(), ev));
+            } else {
+                println!("{k}: no event");
+            }
+        }
+        for _ in 0..60 {
+            unsafe { (f.update)(f.es) };
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        for (k, ev) in &started {
+            let mut st = 0u32;
+            unsafe { get_state(ev.0, &mut st) };
+            println!("{k}: state {st:#x} {}", if st & 0x8 != 0 { "STILL PLAYING after 6 s (loop)" } else { "done" });
+        }
+    }
 
     /// cargo test --release fmod_categories -- --ignored --nocapture
     #[test]

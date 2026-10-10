@@ -13,6 +13,8 @@ pub struct Types {
     pub names: Vec<String>,
     pub parents: HashMap<usize, usize>,
     pub members: HashMap<usize, Vec<(String, usize)>>,
+    /// Byte size of each type (TBDY flag 0x08: size, alignment), when the file states it.
+    pub sizes: HashMap<usize, usize>,
 }
 
 impl Types {
@@ -146,7 +148,11 @@ pub fn read_types(d: &[u8]) -> Types {
         if flags & 0x01 != 0 { varint(d, &mut o); }
         if flags & 0x02 != 0 { varint(d, &mut o); }
         if flags & 0x04 != 0 { varint(d, &mut o); }
-        if flags & 0x08 != 0 { varint(d, &mut o); varint(d, &mut o); }
+        if flags & 0x08 != 0 {
+            let size = varint(d, &mut o);
+            varint(d, &mut o); // alignment
+            t.sizes.insert(ti, size);
+        }
         if flags & 0x10 != 0 { varint(d, &mut o); }
         if flags & 0x20 != 0 {
             let count = varint(d, &mut o);
@@ -378,7 +384,11 @@ pub fn selectors(d: &[u8]) -> Vec<String> {
 /// Every object of `type_name`: its members (parents first) with the raw value read as
 /// i32 / f32, and the string when the member is a string item.
 pub fn objects(d: &[u8], type_name: &str) -> Vec<String> {
-    let tf = Tagfile::new(d, None);
+    objects_with(d, None, type_name)
+}
+
+pub fn objects_with(d: &[u8], compendium: Option<&Types>, type_name: &str) -> Vec<String> {
+    let tf = Tagfile::new(d, compendium);
     let r = Reader::new(d);
     let Some(ty) = tf.types.index_of(type_name) else { return Vec::new() };
     let mut chain = vec![ty];
@@ -635,8 +645,8 @@ pub fn clip(d: &[u8], compendium: &Types) -> Option<Clip> {
 }
 
 /// Debug: every type that has items, with item counts and member offsets.
-pub fn dump(d: &[u8]) {
-    let tf = Tagfile::new(d, None);
+pub fn dump(d: &[u8], compendium: Option<&Types>) {
+    let tf = Tagfile::new(d, compendium);
     let mut counts: HashMap<usize, usize> = HashMap::new();
     for it in &tf.items {
         *counts.entry(it.ty).or_default() += it.count.max(1);
@@ -831,4 +841,166 @@ pub fn twist_mods(d: &[u8]) -> Vec<String> {
         out.push(line);
     }
     out
+}
+
+/// Map hit collision (`map/<id>/h<id>.hkxbhd` files, types from the binder's .compendium):
+/// every `fsnpCustomParamCompressedMeshShape` body of the `hknpPhysicsSystemData`, decoded to a
+/// triangle list in the file's own space (body transforms applied) with one FromSoftware hit
+/// material id per triangle (u32::MAX when unknown). Layout as in sekiro-rs
+/// `crates/formats/src/hknp.rs` (from DSMapStudio's HavokCollisionResource):
+/// - sections own a run of primitives (`primitives.data`: start >> 8, count & 0xFF) and packed
+///   vertices from `firstPackedVertex`; `sharedVertices.data & 0xFF` = packed count, `>> 8` =
+///   first entry in `sharedVerticesIndex`;
+/// - a primitive index below the packed count is a packed vertex (x 11, y 11, z 10 bits scaled
+///   by the section's codecParms: offset xyz, scale xyz), else a shared vertex through
+///   `sharedVerticesIndex` (x 21, y 21, z 22 bits over the tree's domain AABB);
+/// - (a, b, c, d) with c != d is a quad: (a, b, c) + (a, c, d); DE AD DE AD = a convex shape;
+/// - the material: `triangleIndexToShapeKey[i] >> (32 - numShapeKeyBits)` keyed as
+///   `(section << 8) | (primitive << 1) | second_triangle`, `pParam.triangleDataArray[i]
+///   .primitiveDataIndex` -> `primitiveDataArray[..].materialNameData`.
+pub struct CollisionMesh {
+    pub vertices: Vec<[f32; 3]>,
+    pub indices: Vec<u32>,
+    pub materials: Vec<u32>,
+}
+
+pub fn collision_mesh(d: &[u8], compendium: &Types) -> CollisionMesh {
+    let tf = Tagfile::new(d, Some(compendium));
+    let r = Reader::new(d);
+    let mut mesh = CollisionMesh { vertices: Vec::new(), indices: Vec::new(), materials: Vec::new() };
+    let f = |t: &str, m: &str| tf.field(t, m);
+    for sys in tf.objects_of("hknpPhysicsSystemData") {
+        let Some((bodies, nb, stride)) = tf.array(sys + f("hknpPhysicsSystemData", "bodyCinfos")) else { continue };
+        for bi in 0..nb {
+            let body = bodies + bi * stride;
+            let Some((shape_ty, shape)) = tf.deref_obj(body + f("hknpPhysicsSystemData::bodyCinfoWithAttachment", "shape")) else { continue };
+            if !shape_ty.contains("CompressedMeshShape") {
+                continue;
+            }
+            let pos = [r.f32(body + 48), r.f32(body + 52), r.f32(body + 56)];
+            let q = [r.f32(body + 64), r.f32(body + 68), r.f32(body + 72), r.f32(body + 76)];
+            let ql = (q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]).sqrt().max(1e-6);
+            let q = [q[0] / ql, q[1] / ql, q[2] / ql, q[3] / ql];
+            let part = decode_shape(&tf, &shape_ty, shape);
+            let base = mesh.vertices.len() as u32;
+            mesh.vertices.extend(part.vertices.iter().map(|v| {
+                let w = quat_rotate(q, *v);
+                [w[0] + pos[0], w[1] + pos[1], w[2] + pos[2]]
+            }));
+            mesh.indices.extend(part.indices.iter().map(|i| i + base));
+            mesh.materials.extend_from_slice(&part.materials);
+        }
+    }
+    mesh
+}
+
+fn decode_shape(tf: &Tagfile, shape_ty: &str, shape: usize) -> CollisionMesh {
+    let r = Reader::new(tf.d);
+    let mut mesh = CollisionMesh { vertices: Vec::new(), indices: Vec::new(), materials: Vec::new() };
+    let Some((_, data)) = tf.deref_obj(shape + tf.field("hknpCompressedMeshShape", "data")) else { return mesh };
+    // Material by shape key.
+    let mut materials: HashMap<u32, u32> = HashMap::new();
+    if let (Some(pparam_f), Some(keys_f)) = (tf.try_field(shape_ty, "pParam"), tf.try_field(shape_ty, "triangleIndexToShapeKey")) {
+        let bits = r.u8(shape + tf.field("hknpShape", "numShapeKeyBits")) as u32;
+        if let (Some((_, param)), Some((keys, nk, _)), true) = (tf.deref_obj(shape + pparam_f), tf.array(shape + keys_f), (1..=32).contains(&bits)) {
+            let prim_mats: Vec<u32> = tf
+                .array(param + tf.field("fsnpCustomMeshParameter", "primitiveDataArray"))
+                .map(|(o, n, s)| (0..n).map(|i| r.u32(o + i * s + tf.field("fsnpCustomMeshParameter::PrimitiveData", "materialNameData"))).collect())
+                .unwrap_or_default();
+            if let Some((tris, nt, ts)) = tf.array(param + tf.field("fsnpCustomMeshParameter", "triangleDataArray")) {
+                let pdi = tf.field("fsnpCustomMeshParameter::TriangleData", "primitiveDataIndex");
+                for i in 0..nt.min(nk) {
+                    let key = r.u32(keys + i * 4) >> (32 - bits);
+                    if let Some(&m) = prim_mats.get(r.u32(tris + i * ts + pdi) as usize) {
+                        materials.entry(key).or_insert(m);
+                    }
+                }
+            }
+        }
+    }
+    let tree = data + tf.field("hknpCompressedMeshShapeData", "meshTree");
+    let tree_f = |m: &str| tree + tf.field("hknpCompressedMeshShapeTree", m);
+    let domain = tree_f("domain");
+    let dmin = [r.f32(domain), r.f32(domain + 4), r.f32(domain + 8)];
+    let dmax = [r.f32(domain + 16), r.f32(domain + 20), r.f32(domain + 24)];
+    let shared_scale = [
+        (dmax[0] - dmin[0]) / ((1u32 << 21) - 1) as f32,
+        (dmax[1] - dmin[1]) / ((1u32 << 21) - 1) as f32,
+        (dmax[2] - dmin[2]) / ((1u32 << 22) - 1) as f32,
+    ];
+    let Some((prims, nprims, _)) = tf.array(tree_f("primitives")) else { return mesh };
+    let Some((packed, npacked, _)) = tf.array(tree_f("packedVertices")) else { return mesh };
+    let (shared, nshared) = tf.array(tree_f("sharedVertices")).map(|(o, n, _)| (o, n)).unwrap_or((0, 0));
+    let (shared_index, nshared_index) = tf.array(tree_f("sharedVerticesIndex")).map(|(o, n, _)| (o, n)).unwrap_or((0, 0));
+    let Some((sections, nsections, sstride)) = tf.array(tree_f("sections")) else { return mesh };
+    let sf = |m: &str| tf.field("hkcdStaticMeshTreeBase::Section", m);
+    for si in 0..nsections {
+        let sec = sections + si * sstride;
+        let codec: Vec<f32> = (0..6).map(|k| r.f32(sec + sf("codecParms") + k * 4)).collect();
+        let first_packed = r.u32(sec + sf("firstPackedVertex")) as usize;
+        let sv = r.u32(sec + sf("sharedVertices"));
+        let packed_count = (sv & 0xFF) as usize;
+        let shared_start = (sv >> 8) as usize;
+        let pr = r.u32(sec + sf("primitives"));
+        let prim_start = (pr >> 8) as usize;
+        let prim_count = (pr & 0xFF) as usize;
+        let vertex = |i: u8| -> Option<[f32; 3]> {
+            let i = i as usize;
+            if i < packed_count {
+                let k = first_packed + i;
+                if k >= npacked {
+                    return None;
+                }
+                let v = r.u32(packed + k * 4);
+                Some([
+                    (v & 0x7FF) as f32 * codec[3] + codec[0],
+                    ((v >> 11) & 0x7FF) as f32 * codec[4] + codec[1],
+                    ((v >> 22) & 0x3FF) as f32 * codec[5] + codec[2],
+                ])
+            } else {
+                let k = shared_start + i - packed_count;
+                if k >= nshared_index {
+                    return None;
+                }
+                let s = r.u16(shared_index + k * 2) as usize;
+                if s >= nshared {
+                    return None;
+                }
+                let v = r.u64(shared + s * 8);
+                Some([
+                    (v & 0x1F_FFFF) as f32 * shared_scale[0] + dmin[0],
+                    ((v >> 21) & 0x1F_FFFF) as f32 * shared_scale[1] + dmin[1],
+                    ((v >> 42) & 0x3F_FFFF) as f32 * shared_scale[2] + dmin[2],
+                ])
+            }
+        };
+        let mut welded = [u32::MAX; 256];
+        for p in 0..prim_count {
+            let k = prim_start + p;
+            if k >= nprims {
+                break;
+            }
+            let ix = &tf.d[prims + k * 4..prims + k * 4 + 4];
+            if ix == [0xDE, 0xAD, 0xDE, 0xAD] {
+                continue;
+            }
+            let mut index_of = |i: u8, mesh: &mut CollisionMesh| -> Option<u32> {
+                if welded[i as usize] == u32::MAX {
+                    welded[i as usize] = mesh.vertices.len() as u32;
+                    mesh.vertices.push(vertex(i)?);
+                }
+                Some(welded[i as usize])
+            };
+            let key = ((si as u32) << 8) | ((p as u32) << 1);
+            let (Some(a), Some(b), Some(c)) = (index_of(ix[0], &mut mesh), index_of(ix[1], &mut mesh), index_of(ix[2], &mut mesh)) else { continue };
+            mesh.indices.extend([a, b, c]);
+            mesh.materials.push(materials.get(&key).copied().unwrap_or(u32::MAX));
+            if ix[2] != ix[3] {
+                let Some(dd) = index_of(ix[3], &mut mesh) else { continue };
+                mesh.indices.extend([a, c, dd]);
+                mesh.materials.push(materials.get(&(key | 1)).copied().unwrap_or(u32::MAX));
+            }
+        }
+    }
+    mesh
 }

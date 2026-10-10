@@ -63,6 +63,43 @@ fn start_additive(d: &crate::data::CharData, a: &mut Actor, state: &str) {
     }
 }
 
+/// A hit on the open umbrella: the additive flinch (minimum levels, `additive_guard`) or the
+/// umbrella's guard reaction, in the umbrella's anims (a076).
+fn umbrella_reaction(d: &crate::data::CharData, a: &mut Actor, level: i64, just: bool, attacker_broken: bool, from: Vec3, at: Vec3) {
+    use crate::prosthetic::hks;
+    // In the air (HKS 657-664 / 1276): W_AirSubAttackDeflect{Hard,Easy}Add for the additive
+    // levels, else W_AirSubAttackDeflectEasySmall.
+    if a.airborne {
+        let (state, add) = if additive_guard(d, a, level) {
+            (if just { "AirSubAttackDeflectHardAdd" } else { "AirSubAttackDeflectEasyAdd" }, true)
+        } else {
+            ("AirSubAttackDeflectEasySmall", false)
+        };
+        if let Some(k) = crate::player::sub_anim(d, state, 76) {
+            if add {
+                a.add_anim = k;
+                a.add_t = 0.0;
+            } else {
+                a.play(state, &k);
+            }
+        }
+        return;
+    }
+    if additive_guard(d, a, level) {
+        if let Some(k) = crate::player::sub_anim(d, hks::umbrella_add(just, attacker_broken), 76) {
+            a.add_anim = k;
+            a.add_t = 0.0;
+        }
+        return;
+    }
+    let behind = a.forward().dot((from - at).with_y(0.0).normalize_or_zero()) < 0.0;
+    if let Some(s) = hks::umbrella_guard(level, behind) {
+        if let Some(k) = crate::player::sub_anim(d, s, 76) {
+            a.play(s, &k);
+        }
+    }
+}
+
 /// HKS BEH_ADD_R_GUARD_DAMAGE: a DAMAGE_LEVEL_MINIMUM (8) guard or deflect, or Small / Middle /
 /// Large / Push (1, 2, 3, 5) while ref 202 SP_EF_REF_TAE_GUARD_LEVEL_EXCHANGE_MINIMUM is up
 /// (SprintToDeflectGuard frames 0-12), is an additive flinch (StandDeflect{Easy,Hard}Minimum,
@@ -229,12 +266,13 @@ fn dmy_key(id: i64) -> i16 {
     (if id >= 10000 { id % 10000 } else { id }) as i16
 }
 
-/// Player damage: the weapon's attackBase* per element times the AtkParam element
+/// Player damage: the weapon's attackBase* per element (Kusabimaru 5000; a prosthetic's own
+/// EquipParamWeapon row for its a070..a079 swings, e.g. the Loaded Axe 73000 attackBasePhysics 45) times the AtkParam element
 /// corrections [%], each scaled by the NPC's NpcParam <element>DamageCutRate (c1020: dark
 /// 0.6, others 1.0; NpcParam def_* are 0). Combat arts deal "dark" (Whirlwind Slash
 /// atkDarkCorrection 125 on attackBaseDark 40).
-fn player_attack_damage(combat: &Combat, atk: &Attack) -> f32 {
-    let w = combat.param("EquipParamWeapon", 5000);
+fn player_attack_damage(combat: &Combat, atk: &Attack, weapon: i64) -> f32 {
+    let w = combat.param("EquipParamWeapon", weapon);
     let npc = combat.param("NpcParam", combat.foe.npc_row);
     let base = |k: &str| w[k].as_f64().unwrap_or(0.0) as f32;
     let cut = |k: &str| npc[k].as_f64().unwrap_or(1.0) as f32;
@@ -374,7 +412,8 @@ pub(crate) fn enemy_damage_state(level: i64, defender: &Actor, from: Vec3, at: V
 #[derive(Resource, Default)]
 pub struct ShowHurtboxes(pub bool);
 
-/// Debug: active hit capsules (dummy to dummy, hit0_Radius) in red, body capsules in grey.
+/// Debug (H / the debug menu): active hit capsules (dummy to dummy, hit0_Radius) in red, body
+/// capsules in grey.
 fn draw_hitboxes(
     combat: Res<Combat>,
     actors: Query<(&Actor, &Transform, Option<&Dummies>, Option<&Hurtboxes>)>,
@@ -406,9 +445,10 @@ fn draw_hitboxes(
                 }
             }
         }
-        let (Some(d), false) = (dummies, a.anim.is_empty()) else { continue };
+        // The active hit capsules in red: with the overlay too (they read as stray circles in play).
+        let (Some(d), false, true) = (dummies, a.anim.is_empty(), show.0) else { continue };
         for (e, atk, _) in data_for(&combat, a.side).attack_windows(&a.anim) {
-            if !e.active(a.t) || (atk.atk_stam <= 0.0 && atk.atk_phys <= 0.0) {
+            if !e.in_time(a.t) || (atk.atk_stam <= 0.0 && atk.atk_phys <= 0.0) {
                 continue;
             }
             let get = |id: i64| d.0.get(&dmy_key(id)).and_then(|e| tfs.get(*e).ok()).map(|g| g.translation());
@@ -538,6 +578,28 @@ pub(crate) fn guard_skill_rate(combat: &Combat, config: &GameConfig, attribute: 
     rate
 }
 
+/// The SpEffects of Wolf's learned latent skills (SkillParam spEffect1-3, config player.skills).
+pub(crate) fn skill_sp_effects<'a>(combat: &'a Combat, config: &'a GameConfig) -> impl Iterator<Item = &'a serde_json::Value> + 'a {
+    config.player.skills.iter().flat_map(move |&skill| {
+        let row = combat.param("SkillParam", skill);
+        ["spEffect1", "spEffect2", "spEffect3"].into_iter().filter_map(move |f| row[f].as_i64().filter(|&i| i > 0)).map(move |id| combat.param("SpEffectParam", id))
+    })
+}
+
+/// The latent skills' SpEffects as typed rows, for code that takes `SpEffect`s (the stealth sight /
+/// hearing cuts: Covert A 60 -> 150000 sightSearchEnemyCut 20, aroundSightPointAddRate 0.5;
+/// Covert B 61 -> 150010 hearingSearchEnemyRate 0.5).
+pub(crate) fn skill_sp_effect_rows(combat: &Combat, config: &GameConfig) -> Vec<crate::data::SpEffect> {
+    skill_sp_effects(combat, config).filter_map(|se| serde_json::from_value(se.clone()).ok()).collect()
+}
+
+/// Product of one SpEffectParam rate over the learned latent skills, e.g. Mikiri Counter posture
+/// UP (70: 150400 attackHitParryStaminaAttackRate 1.25), deflect posture UP (270: 150410
+/// defStaminaAttackRate 1.25).
+pub(crate) fn skill_rate(combat: &Combat, config: &GameConfig, field: &str) -> f32 {
+    skill_sp_effects(combat, config).map(|se| se[field].as_f64().unwrap_or(1.0) as f32).product()
+}
+
 fn resolve(
     combat: Res<Combat>,
     config: Res<GameConfig>,
@@ -548,26 +610,38 @@ fn resolve(
     mut sounds: Option<ResMut<crate::sound::SoundQueue>>,
     mut prev_dmy: Local<std::collections::HashMap<Entity, Vec3>>,
     mut throw: Option<ResMut<crate::player::ActiveThrow>>,
+    players: Query<&crate::player::Player>,
+    mut statuses: ResMut<crate::status::Statuses>,
 ) {
+    // The equipped prosthetic (group, enough Spirit Emblems for a use): the umbrella's guard
+    // reactions and the Mist Raven's atemi.
+    let equipped = players.iter().next().and_then(|p| crate::player::equipped_tool(&combat, &config, p.tool_slot).map(|t| (t, p.emblems)));
+    let tool = equipped.map(|(t, emblems)| (t.group, emblems >= t.emblems.max(1)));
+    let tool_weapon = equipped.map(|(t, _)| t.id);
     let mut pairs = q.iter_combinations_mut();
     while let Some([mut x, mut y]) = pairs.fetch_next() {
         for flip in [false, true] {
             let (att, def) = if flip { (&mut y, &mut x) } else { (&mut x, &mut y) };
             let (att_e, ref mut aa, atf, ref mut ae, adummies, _) = *att;
-            let (_, ref mut da, dtf, ref mut de, _, dhurt) = *def;
+            let (def_e, ref mut da, dtf, ref mut de, _, dhurt) = *def;
             let defender_dead = de.as_ref().is_some_and(|e| e.is_dead());
-            if aa.hp <= 0.0 || (da.hp <= 0.0 && da.side == Side::Player) || defender_dead || aa.anim.is_empty() {
+            if aa.hp <= 0.0 || (da.hp <= 0.0 && da.side == Side::Player) || defender_dead || (aa.anim.is_empty() && aa.bullet_hits.is_empty()) {
                 continue;
             }
             let ad = data_for(&combat, aa.side);
-            let windows: Vec<(i32, i64, Attack)> = ad
+            let mut windows: Vec<(i32, i64, Attack, bool)> = ad
                 .attack_windows(&aa.anim)
                 .into_iter()
-                .filter(|(e, atk, _)| e.active(aa.t) && (atk.atk_stam > 0.0 || atk.atk_phys > 0.0 || atk.direct_atk_stam_damage > 0.0))
-                .map(|(e, atk, j)| ((e.start * TAE_FPS).round() as i32, j, atk.clone()))
+                .filter(|(e, atk, _)| e.in_time(aa.t) && atk.oppose_target != 0 && (atk.atk_stam > 0.0 || atk.npc_damage() > 0.0 || atk.direct_atk_stam_damage > 0.0))
+                .map(|(e, atk, j)| ((e.start * TAE_FPS).round() as i32, j, atk.clone(), false))
                 .collect();
-            for (start, judge, atk) in windows {
-                if aa.hits_done.contains(&(judge, start)) {
+            // The attacker's bullets that reached this defender (enemy_bullet.rs): already
+            // connected, so only the dodge check and the outcome below apply.
+            let (mine, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut aa.bullet_hits).into_iter().partition(|(t, _)| *t == def_e);
+            aa.bullet_hits = rest;
+            windows.extend(mine.into_iter().map(|(_, atk)| (i32::MIN, -1, atk, true)));
+            for (start, judge, atk, bullet) in windows {
+                if !bullet && aa.hits_done.contains(&(judge, start)) {
                     continue;
                 }
                 let to_def = (dtf.translation - atf.translation).with_y(0.0);
@@ -584,7 +658,7 @@ fn resolve(
                         (q1.lerp(p1, k), q2.lerp(p2, k))
                     }))
                 });
-                let connects = match capsule {
+                let connects = bullet || match capsule {
                     Some(sweep) => sweep.iter().any(|&(p1, p2)| match dhurt {
                         // Ragdoll hurtbox capsules (follow the animation).
                         Some(h) => h.0.iter().any(|&(ma, mb, r)| match (dummy_tf.get(ma), dummy_tf.get(mb)) {
@@ -620,6 +694,28 @@ fn resolve(
                 let dd = data_for(&combat, da.side);
                 let defending = !da.anim.is_empty();
 
+                // The Mist Raven's atemi (HKS line 1152): a hit inside its SP_EF_REF_TAE_ENABLE_ATEMI_KAWARIMI
+                // window (SubAttackJumpAtemiReady f0-21) becomes W_SubAttackJumpReady: the feathers and the
+                // leap away instead of the damage.
+                if da.side == Side::Player && defending {
+                    if let Some((cat, enable)) = tool {
+                        let refs = |r: i64| dd.has_ref(&da.anim, da.t, r);
+                        if crate::prosthetic::hks::mist_raven_atemi(cat, enable, &refs) {
+                            // In the air (line 1095): W_AirSubAttackMoveReady.
+                            let ready = if da.airborne { "AirSubAttackMoveReady" } else { "SubAttackJumpReady" };
+                            if let Some(k) = crate::player::sub_anim(dd, ready, cat) {
+                                da.play(ready, &k);
+                                da.move_vel = Vec3::ZERO;
+                                log.push("Mist Raven", Color::srgb(0.85, 0.5, 0.5));
+                                continue;
+                            }
+                        }
+                    }
+                }
+                // The open Loaded Umbrella (STATE_TYPE_*_SUB_GUARD): its own guard reactions (HKS
+                // 1371-1386, additive 676-690), played in the umbrella's group a076.
+                let umbrella = da.side == Side::Player && crate::prosthetic::hks::sub_guard(&da.state);
+
                 // Mikiri counter: a perilous thrust meeting the forward step's MikiriCounter
                 // window becomes the mikiri throw (ThrowParam 11020190). The attacker loses
                 // staminaDamageAttackHitParry posture.
@@ -632,7 +728,7 @@ fn resolve(
                     // When that empties the attacker's posture it is 見切り崩し instead (0120: Wolf
                     // a20x_511100, ThrowDef13100), the break pose player.rs takes on to the deathblow
                     // (live c1010: 511100 0.55-0.61 s -> 511110).
-                    aa.add_posture(atk.stamina_damage_attack_hit_parry);
+                    aa.add_posture(atk.stamina_damage_attack_hit_parry * skill_rate(&combat, &config, "attackHitParryStaminaAttackRate"));
                     let broken_row = aa.posture_broken().then(|| combat.throw(combat.foe.throw_row(120))).flatten().filter(|th| dd.anim(&th.atk_anim).is_some());
                     let (row, state) = match broken_row {
                         Some(th) => (Some(th), "ThrowBreak"),
@@ -658,16 +754,23 @@ fn resolve(
                 }
 
                 // Grab (AtkParam throwFlag 1, unblockable and undeflectable): contact starts the
-                // throw (ThrowParam 21020000: enemy ThrowAtk4100) holding the player until its
-                // ThrowAttackBehavior lands (resolve_throws). The player plays ThrowParam's defAnimId
-                // 600000 in group a210 (clip in chr/c0000_c1020.anibnd, Wolf's per-enemy anims).
+                // throw (its ThrowParam row, Combat::enemy_grab: the General's 21020000 -> enemy
+                // ThrowAtk4100) holding the player until its ThrowAttackBehavior lands
+                // (resolve_throws). The player plays the row's defAnimId in group defAnimOffset
+                // (a210_600000; clips in chr/c0000_c<chr>.anibnd, Wolf's per-enemy anims).
+                // A grab that is already holding him (its ThrowAtk anim has the hook's own
+                // throwFlag 1 hit, e.g. the valley sniper's a100_004100) does not start again.
+                if aa.side == Side::Enemy && atk.throw_flag == 1 && (da.state == "Grabbed" || aa.state.starts_with("ThrowAtk")) {
+                    continue;
+                }
                 if aa.side == Side::Enemy && atk.throw_flag == 1 && !da.airborne {
+                    let row = combat.enemy_grab(atk.throw_type_id);
                     if let Some(e) = ae.as_deref_mut() {
-                        e.react(aa, &combat, "ThrowAtk4100");
+                        e.react(aa, &combat, &format!("ThrowAtk{}", row.as_ref().map_or(4100, |t| t.atk_anim_id)));
                     }
                     aa.yaw = yaw_to(atf.translation, dtf.translation);
                     da.yaw = yaw_to(dtf.translation, atf.translation);
-                    let grabbed = combat.throw(21020000).map(|t| format!("a210_{:06}", t.def_anim)).filter(|k| dd.anim(k).is_some_and(|a| a.duration.is_some()));
+                    let grabbed = row.map(|t| format!("a{:03}_{:06}", t.def_group, t.def_anim)).filter(|k| dd.anim(k).is_some_and(|a| a.duration.is_some()));
                     match grabbed {
                         Some(k) => da.play("Grabbed", &k),
                         None => da.procedural("Grabbed"),
@@ -728,10 +831,15 @@ fn resolve(
                         // A deflect never breaks the defender (HKS: GUARDATTACKER_STAMZERO -> stagger instead).
                         da.posture = (da.posture + pd).min(da.posture_max - 1.0);
                         da.since_posture_damage = 0.0;
-                        aa.add_posture(atk.repel_lost_stam_damage_attacker * rate);
+                        // Wolf's deflect: his latent skills' defStaminaAttackRate (270: x1.25).
+                        let skill_atk = if da.side == Side::Player { skill_rate(&combat, &config, "defStaminaAttackRate") } else { 1.0 };
+                        aa.add_posture(atk.repel_lost_stam_damage_attacker * rate * skill_atk);
                         let attacker_broken = aa.posture_broken();
                         // Defender reaction.
                         match da.side {
+                            Side::Player if umbrella => {
+                                umbrella_reaction(dd, da, level, true, aa.posture_broken(), atf.translation, dtf.translation);
+                            }
                             Side::Player => {
                                 let dir = lr(atk.just_deflect_action);
                                 if full {
@@ -808,7 +916,8 @@ fn resolve(
                             ),
                             Color::srgb(1.0, 0.85, 0.3),
                         );
-                        commands.spawn(crate::vfx::Clash::bundle(mid, (atf.translation - dtf.translation).with_y(0.0), crate::vfx::Kind::Deflect));
+                        let sfx = crate::vfx::hit_sfx(&combat, &atk, crate::vfx::Kind::Deflect, [-1, -1]);
+                        commands.spawn(crate::vfx::Clash::bundle_fx(mid, (atf.translation - dtf.translation).with_y(0.0), crate::vfx::Kind::Deflect, sfx));
                         if let Some(q) = sounds.as_mut() {
                             for se in crate::sound::guard_sounds(&combat, &atk, true) {
                                 q.0.push((se, mid));
@@ -819,6 +928,18 @@ fn resolve(
                         if let Some(q) = sounds.as_mut() {
                             for se in crate::sound::guard_sounds(&combat, &atk, false) {
                                 q.0.push((se, mid));
+                            }
+                        }
+                        if aa.side == Side::Player && da.side == Side::Enemy {
+                            let lines = statuses.hit(&combat, def_e, &atk.sp_effects(), true);
+                            // Catching fire flails him through his guard (gap: as prosthetic.rs fly_bullets).
+                            if lines.iter().any(|l| l == "BURNING") && dd.states.contains_key("FireReaction") && !da.posture_broken() {
+                                if let Some(e) = de.as_deref_mut() {
+                                    e.react(da, &combat, "FireReaction");
+                                }
+                            }
+                            for m in lines {
+                                log.push(m, Color::srgb(0.7, 0.55, 0.9));
                             }
                         }
                         apply_knockback(&combat, da, atf.translation, dtf.translation, atk.knockback_guard, guard_kb(level), "knockbackRate_vsPlayer_Guard");
@@ -840,6 +961,9 @@ fn resolve(
                                     da.play_state(dd, gb);
                                     da.posture = 0.0;
                                     log.push("GUARD BROKEN", Color::srgb(1.0, 0.3, 0.2));
+                                } else if umbrella {
+                                    umbrella_reaction(dd, da, level, false, false, atf.translation, dtf.translation);
+                                    log.push(format!("umbrella  (+{:.0} posture)", atk.repel_lost_stam_damage), Color::srgb(0.7, 0.7, 0.8));
                                 } else {
                                     // HKS: Selector_DeflectVariation = math.random() > 0.5.
                                     let variant = coin_flip();
@@ -895,14 +1019,23 @@ fn resolve(
                                 }
                             }
                         }
-                        commands.spawn(crate::vfx::Clash::bundle(mid, (atf.translation - dtf.translation).with_y(0.0), crate::vfx::Kind::Guard));
+                        let sfx = crate::vfx::hit_sfx(&combat, &atk, crate::vfx::Kind::Guard, [-1, -1]);
+                        commands.spawn(crate::vfx::Clash::bundle_fx(mid, (atf.translation - dtf.translation).with_y(0.0), crate::vfx::Kind::Guard, sfx));
                     }
                     Outcome::Hit => {
                         apply_knockback(&combat, da, atf.translation, dtf.translation, atk.knockback_hit, damage_kb(level), "knockbackRate_vsPlayer_DirectHit");
+                        if aa.side == Side::Player && da.side == Side::Enemy {
+                            for m in statuses.hit(&combat, def_e, &atk.sp_effects(), false) {
+                                log.push(m, Color::srgb(0.7, 0.55, 0.9));
+                            }
+                        }
+                        // c9997 GetSpDamage: a hit on a burning enemy (STATUS_BURNING) with anim 8900 is
+                        // SP_DAMAGE_BURNING -> ExecDebuffReaction -> W_FireReaction (gap: rank 3 not checked).
+                        let burning = da.side == Side::Enemy && statuses.has_ref(&combat, def_e, crate::status::REF_BURNING) && dd.states.contains_key("FireReaction");
                         // NpcParam def_* = 0 and *DamageCutRate = 1.0 for c1020: no reduction.
                         let dmg = match aa.side {
-                            Side::Player => player_attack_damage(&combat, &atk),
-                            Side::Enemy => atk.atk_phys * aa.atk_rate,
+                            Side::Player => player_attack_damage(&combat, &atk, if crate::player::is_tool_anim(&aa.anim) { tool_weapon.unwrap_or(5000) } else { 5000 }),
+                            Side::Enemy => atk.npc_damage() * aa.atk_rate,
                         };
                         da.hp = (da.hp - dmg).max(0.0);
                         let pd = aa.stam_atk_rate * if atk.direct_atk_stam_damage > 0.0 { atk.direct_atk_stam_damage } else { atk.atk_stam };
@@ -945,7 +1078,11 @@ fn resolve(
                                 // and is off through every attack's active part.
                                 if let Some(e) = de.as_deref_mut() {
                                     let can_flinch = !e.is_attacking() || dd.flag(&da.anim, da.t, FLAG_DAMAGE_MOTION);
-                                    let reaction = (can_flinch && !da.posture_broken()).then(|| enemy_damage_state(level, da, atf.translation, dtf.translation)).flatten();
+                                    let reaction = if burning && !da.posture_broken() {
+                                        Some("FireReaction".to_string())
+                                    } else {
+                                        (can_flinch && !da.posture_broken()).then(|| enemy_damage_state(level, da, atf.translation, dtf.translation)).flatten()
+                                    };
                                     match reaction {
                                         Some(state) => e.react(da, &combat, &state),
                                         // c9997 ExecNoSyncAddDamage: a hit with no reaction (rejected by the swing,
@@ -969,7 +1106,8 @@ fn resolve(
                             format!("{} hit: -{dmg:.0} HP, +{pd:.0} posture", if aa.side == Side::Player { "you" } else { "enemy" }),
                             Color::srgb(1.0, 0.45, 0.4),
                         );
-                        commands.spawn(crate::vfx::Clash::bundle(mid, (atf.translation - dtf.translation).with_y(0.0), crate::vfx::Kind::Hit));
+                        let sfx = crate::vfx::hit_sfx(&combat, &atk, crate::vfx::Kind::Hit, crate::vfx::defender_sfx_materials(&combat, da.side));
+                        commands.spawn(crate::vfx::Clash::bundle_fx(mid, (atf.translation - dtf.translation).with_y(0.0), crate::vfx::Kind::Hit, sfx));
                         if let Some(q) = sounds.as_mut() {
                             for se in crate::sound::hit_sounds(&combat, &atk, crate::sound::defender_materials(&combat, da.side)) {
                                 q.0.push((se, mid));
@@ -1051,15 +1189,19 @@ mod tests {
 
 /// Throw damage: a ThrowAttackBehavior (TAE 304) in the thrower's anim lands on the
 /// grabbed player (AtkParam throwFlag 2, e.g. judge 230: 192 physical). A grabbed
-/// player is released if the thrower leaves its throw anim.
-fn resolve_throws(combat: Res<Combat>, mut log: Option<ResMut<CombatLog>>, mut q: Query<&mut Actor>) {
+/// player is released when the thrower is knocked out of its throw anim before that anim's end
+/// (staggered, posture-broken; a zombie's bite loop); after a throw that played out, his own
+/// clip (the fall and getting up) plays out.
+fn resolve_throws(combat: Res<Combat>, mut log: Option<ResMut<CombatLog>>, mut q: Query<&mut Actor>, mut was: Local<Option<(String, f32)>>) {
     let mut lands: Option<i64> = None;
     let mut throwing = false;
+    let mut now = None;
     for a in &q {
         if a.side != Side::Enemy || !a.state.starts_with("ThrowAtk") {
             continue;
         }
         throwing = true;
+        now = Some((a.anim.clone(), a.t));
         if let Some(anim) = combat.enemy.anim(&a.anim) {
             lands = anim
                 .events
@@ -1069,6 +1211,9 @@ fn resolve_throws(combat: Res<Combat>, mut log: Option<ResMut<CombatLog>>, mut q
                 .or(lands);
         }
     }
+    // Left the throw anim more than a few frames before its end: knocked out of it.
+    let cut = !throwing && was.as_ref().is_some_and(|(anim, t)| combat.enemy.anim(anim).is_some() && *t + 0.1 < combat.enemy.length(anim));
+    *was = now;
     for mut a in &mut q {
         if a.side != Side::Player || a.state != "Grabbed" {
             continue;
@@ -1084,7 +1229,7 @@ fn resolve_throws(combat: Res<Combat>, mut log: Option<ResMut<CombatLog>>, mut q
             if let Some(log) = log.as_mut() {
                 log.push(format!("thrown: -{:.0} HP, +{pd:.0} posture", atk.atk_phys), Color::srgb(1.0, 0.45, 0.4));
             }
-        } else if (a.anim.is_empty() && !throwing) || (!a.anim.is_empty() && a.t >= combat.player.length(&a.anim)) {
+        } else if cut || (a.anim.is_empty() && !throwing) || (!a.anim.is_empty() && a.t >= combat.player.length(&a.anim)) {
             a.play("StandIdle", "");
         }
     }

@@ -47,6 +47,9 @@ enum Mode {
     /// Driven by the AI (or the passive / fallback behaviour).
     Ai,
     Broken(f32),
+    /// A boss's non-final deathblow: its ThrowDef reaction plays through, then it gets up
+    /// (c9997 HKS ThrowDef: not env(276) IsThrowSelfDeath -> IdleTransition at env(339) anim end).
+    Rising(f32),
     Dead(f32),
 }
 
@@ -57,8 +60,20 @@ const FLAG_THROW_TYPE5: i64 = 69;
 #[derive(Component)]
 pub struct Enemy {
     mode: Mode,
-    /// Deathblow kill pending: the ThrowDefDeath anim id that follows the ThrowDef reaction.
-    throw_death: Option<i64>,
+    /// Deathblow kill pending: the death state that follows the ThrowDef reaction
+    /// (ThrowDefDeath<def + 1>, or a boss's Event20200).
+    throw_death: Option<String>,
+    /// Deathblows left and in all (NpcParam ninsatuNum, the boss's red dots; 0 on regular
+    /// enemies, which one deathblow kills). The AI reads the first (GetNinsatsuNum).
+    pub ninsatsu: (u32, u32),
+    /// Boss phase events (`phase_events`): the ones done, the event flags they turned on, the AI
+    /// command per slot (GetEventRequest), a pending AI re-plan, and the NpcParam residents to
+    /// restore on respawn (the events set / clear residents).
+    phase_done: HashSet<i64>,
+    phase_flags: HashSet<i64>,
+    event_req: Vec<(i64, i64)>,
+    phase_replan: bool,
+    resident0: Vec<i64>,
     /// Passive enemies walk up but never attack (toggle with T) - for practising timing at your own pace.
     pub aggressive: bool,
     /// Game time until which a prosthetic cool-time SpEffect holds (the firecracker's 107100,
@@ -75,9 +90,9 @@ pub struct Enemy {
     pub clash: Vec<(i64, f32)>,
     last_notify: f32,
     /// EzState id of the AI-requested anim (attack, step) that is playing.
-    cur_ez: Option<i64>,
+    pub(crate) cur_ez: Option<i64>,
     ez_started: Option<i64>,
-    ez_failed: Option<i64>,
+    pub(crate) ez_failed: Option<i64>,
     /// An anim the AI did not request replaced its action since the last AI tick.
     interrupted: bool,
     /// Player attack notify seen; the Lua brain runs Goal.Parry on its next tick.
@@ -97,6 +112,59 @@ pub struct Enemy {
     /// Home (POINT_INITIAL) and its facing yaw (POINT_INIT_POSE), taken where it stands when it
     /// starts (re)thinking.
     home: Option<(Vec3, f32)>,
+}
+
+/// SpEffect stateInfo 270-274: "Anime ID offset [0]-[4]" (SpEffect 200030-200034, effectEndurance -1).
+const STATE_INFO_ANIM_OFFSET: std::ops::RangeInclusive<i64> = 270..=274;
+
+/// The anim set (0-4 = a000-a400) the last of these SpEffects picks, if any is an offset one.
+fn anim_group_of(combat: &Combat, ids: impl Iterator<Item = i64>) -> Option<u32> {
+    ids.filter_map(|id| combat.enemy.sp_effects.get(&id.to_string()))
+        .map(|s| s.state_info)
+        .filter(|si| STATE_INFO_ANIM_OFFSET.contains(si))
+        .last()
+        .map(|si| (si - 270) as u32)
+}
+
+/// A boss phase rule from its map's event script (tools/boss_events.py ->
+/// extracted/enemies/boss_events.json): `IF Number of Character Health Bars` <cmp> `bars` on the
+/// boss, plus its `IF Character Has SpEffect` / `IF Event Flag` conditions, then the actions on
+/// the boss: ["sp", id] / ["clear", id] (SetSpEffect / ClearSpEffect), ["anim", id]
+/// (ForceAnimationPlayback), ["ezstate", id] (EzState Instruction Request), ["ai", command,
+/// slot] (Request Character AI Command) and ["replan"].
+#[derive(serde::Deserialize, Clone, Debug)]
+pub struct PhaseEvent {
+    pub bars: u32,
+    /// EMEDF comparison: 0 ==, 1 !=, 2 >, 3 <, 4 >=, 5 <=.
+    pub cmp: u8,
+    pub event: i64,
+    #[serde(default)]
+    pub needs_sp: Vec<(i64, bool)>,
+    #[serde(default)]
+    pub needs_flags: Vec<i64>,
+    #[serde(default)]
+    pub sets_flags: Vec<i64>,
+    pub actions: Vec<serde_json::Value>,
+    /// Conditions of other kinds in the same wait (player event messages, regions, ...).
+    pub other: u32,
+}
+
+/// The phase rules of one NpcParam row (empty for most).
+pub fn phase_events(npc_row: i64) -> &'static [PhaseEvent] {
+    static ALL: std::sync::OnceLock<HashMap<i64, Vec<PhaseEvent>>> = std::sync::OnceLock::new();
+    ALL.get_or_init(|| {
+        let path = crate::paths::root().join("extracted/enemies/boss_events.json");
+        let Ok(text) = std::fs::read_to_string(&path) else { return HashMap::new() };
+        match serde_json::from_str::<HashMap<String, Vec<PhaseEvent>>>(&text) {
+            Ok(m) => m.into_iter().filter_map(|(k, v)| Some((k.parse().ok()?, v))).collect(),
+            Err(e) => {
+                warn!("{}: {e}", path.display());
+                HashMap::new()
+            }
+        }
+    })
+    .get(&npc_row)
+    .map_or(&[], |v| v.as_slice())
 }
 
 /// The AI-state SpEffects (c9997 SP_EFFECT_REF_AI_* refs 1000000-1000003).
@@ -137,14 +205,34 @@ impl Enemy {
     /// W_ThrowDefDeath). Live (rec_20261008_054259): 12000 for 111 frames (flag at TAE 55), then
     /// 12001. Without a ThrowDef anim: ThrowDefDeath directly, else a procedural death.
     pub fn deathblow(&mut self, a: &mut Actor, combat: &Combat, def_anim: i64) {
-        a.hp = 0.0;
         self.cur_ez = None;
         a.move_vel = Vec3::ZERO;
+        // A boss with deathblows left: the ThrowDef reaction alone (no ThrowDefDeath, which the
+        // boss characters c5000 / c7100 do not even have), then it gets up for the next phase.
+        if self.ninsatsu.0 > 1 {
+            self.ninsatsu.0 -= 1;
+            // gap: the exe's refill on a non-final deathblow is not traced; the game shows the
+            // boss back at full vitality and an empty posture bar.
+            a.hp = a.hp_max;
+            a.posture = 0.0;
+            if !a.play_state(&combat.enemy, &format!("ThrowDef{def_anim}")) {
+                a.procedural("PostureBroken");
+            }
+            self.throw_death = None;
+            self.mode = Mode::Rising(combat.enemy.length(&a.anim).max(1.0));
+            return;
+        }
+        a.hp = 0.0;
         let (react, death) = (format!("ThrowDef{def_anim}"), format!("ThrowDefDeath{}", def_anim + 1));
         let has = |s: &str| combat.enemy.anim_key(s).is_some();
         self.throw_death = None;
         if has(&react) && has(&death) && a.play_state(&combat.enemy, &react) {
-            self.throw_death = Some(def_anim + 1);
+            self.throw_death = Some(death);
+        } else if !has(&death) && has("Event20200") && a.play_state(&combat.enemy, &react) {
+            // A major boss has no ThrowDefDeath: its last deathblow (the Todome, ThrowDef13700) plays
+            // out, then the map event at 0 health bars requests EzState 20200, its death (e.g.
+            // m11_02 11125874 Isshin: IF Number of Character Health Bars == 0 -> EzState 20200).
+            self.throw_death = Some("Event20200".into());
         } else if !([death, react].iter().any(|s| has(s) && a.play_state(&combat.enemy, s))) {
             a.procedural("Dead");
         }
@@ -152,12 +240,91 @@ impl Enemy {
         self.mode = Mode::Dead(len + 2.0);
     }
 
+    /// The map-event AI commands by slot (tests).
+    #[cfg(test)]
+    pub fn event_req(&self) -> &[(i64, i64)] {
+        &self.event_req
+    }
+
+    /// The boss's phase rules for its health bars left (the deathblows left): set / clear
+    /// SpEffects, AI commands, a re-plan and a forced anim (which it then plays out like a
+    /// rising). Each rule runs once. Returns whether an anim was forced.
+    /// Only rules with bars > 0: the last deathblow's death (EzState 20200) is `deathblow`'s.
+    /// gap: rules with other conditions (Wolf's event message, regions) are skipped, and an event
+    /// flag no phase rule turns on (set by the arena's own events) counts as on.
+    fn run_phase_events(&mut self, a: &mut Actor, combat: &Combat, sp_now: &HashSet<i64>) -> bool {
+        let rules = phase_events(combat.foe.npc_row);
+        let bars = self.ninsatsu.0;
+        let mut forced = false;
+        for r in rules {
+            let cmp = match r.cmp {
+                0 => bars == r.bars,
+                1 => bars != r.bars,
+                2 => bars > r.bars,
+                3 => bars < r.bars,
+                4 => bars >= r.bars,
+                _ => bars <= r.bars,
+            };
+            let flag_on = |f: &i64| self.phase_flags.contains(f) || !rules.iter().any(|o| o.sets_flags.contains(f));
+            if r.bars == 0
+                || r.other > 0
+                || self.phase_done.contains(&r.event)
+                || !cmp
+                || !r.needs_sp.iter().all(|(id, has)| sp_now.contains(id) == *has)
+                || !r.needs_flags.iter().all(flag_on)
+            {
+                continue;
+            }
+            self.phase_done.insert(r.event);
+            self.phase_flags.extend(r.sets_flags.iter().copied());
+            let d = &combat.enemy;
+            for act in &r.actions {
+                let n = |i: usize| act.get(i).and_then(|v| v.as_i64()).unwrap_or(0);
+                match act.get(0).and_then(|v| v.as_str()).unwrap_or("") {
+                    "sp" => {
+                        if !a.resident.contains(&n(1)) {
+                            a.resident.push(n(1));
+                        }
+                        if let Some(g) = anim_group_of(combat, std::iter::once(n(1))) {
+                            a.anim_group = g;
+                        }
+                    }
+                    "clear" => a.resident.retain(|&id| id != n(1)),
+                    "ai" => {
+                        self.event_req.retain(|&(slot, _)| slot != n(2));
+                        self.event_req.push((n(2), n(1)));
+                    }
+                    "replan" => self.phase_replan = true,
+                    // ForceAnimationPlayback 20010 = a000_020010 (state Event20010); the EzState
+                    // request of the same id right after it asks for the same state.
+                    "anim" | "ezstate" if !forced => {
+                        let state = format!("Event{}", n(1));
+                        let key = format!("a000_{:06}", n(1));
+                        if a.play_state(d, &state) {
+                            forced = true;
+                        } else if d.anim(&a.grouped(&key)).is_some() {
+                            a.play(&state, &key);
+                            forced = true;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        if forced {
+            self.cur_ez = None;
+            a.move_vel = Vec3::ZERO;
+            self.mode = Mode::Rising(combat.enemy.length(&a.anim).max(0.5));
+        }
+        forced
+    }
+
     /// Posture broken: a deflect/guard break keeps its AttackBoundEmptyStamina /
     /// GuardBreak anim, a hit break plays TrunkCollapseFront (Back from behind) as in
     /// c9997 HKS ExecDamageBreak. The deathblow window lasts until the break anim
     /// shows the collapsed posture (stateInfo 352: frames 0-75 of 90); `fallback` if none.
     pub fn on_posture_break(&mut self, a: &mut Actor, combat: &Combat, from_behind: bool, fallback: f32) {
-        if matches!(self.mode, Mode::Dead(_)) {
+        if matches!(self.mode, Mode::Dead(_) | Mode::Rising(_)) {
             return;
         }
         let d = &combat.enemy;
@@ -194,7 +361,7 @@ impl Enemy {
     /// Plays a reaction state; the AI replans (Kengeki) and acts again at the
     /// reaction's AI cancel flags.
     pub fn react(&mut self, a: &mut Actor, combat: &Combat, state: &str) {
-        if matches!(self.mode, Mode::Dead(_) | Mode::Broken(_)) {
+        if matches!(self.mode, Mode::Dead(_) | Mode::Broken(_) | Mode::Rising(_)) {
             return;
         }
         // Hurt (or made to block) by Wolf: he is a battle target now (target reason 4).
@@ -272,9 +439,9 @@ fn ez_of(anim: &str) -> Option<i64> {
 
 /// Lua brains per enemy (the Lua VM is not Send, so this is a non-send resource).
 #[derive(Default)]
-struct Brains {
-    map: HashMap<Entity, Brain>,
-    failed: bool,
+pub(crate) struct Brains {
+    pub(crate) map: HashMap<Entity, Brain>,
+    pub(crate) failed: bool,
 }
 
 /// Debug-menu control of the enemy's behaviour (debug_menu.rs).
@@ -378,6 +545,10 @@ fn spawn_enemy(mut commands: Commands, combat: Res<Combat>, config: Res<GameConf
     actor.resident = (0..32).filter_map(|i| npc[format!("spEffectID{i}")].as_i64()).filter(|&v| v > 0).collect();
     actor.posture_debt = -(npc["maxDebtStamina"].as_f64().unwrap_or(0.0) as f32).min(0.0);
     actor.guard_angle = npc["guardAngle"].as_f64().unwrap_or(0.0) as f32;
+    // Its anim set: the resident "Anime ID offset" SpEffect (c1021 spear General 200031 = a100).
+    // (Only anims with a clip: the a000 placeholders fall through to their set, Actor::grouped.)
+    actor.anim_keys = Some(std::sync::Arc::new(combat.enemy.anims.iter().filter(|(_, a)| a.duration.is_some()).map(|(k, _)| k.clone()).collect()));
+    actor.anim_group = anim_group_of(&combat, actor.resident.iter().copied()).unwrap_or(0);
     // Area scaling: HP / posture now, posture regen through the resident product,
     // damage and posture damage in combat.
     if let Some(dope) = combat.enemy.sp_effects.get(&config.enemy.area_doping.to_string()) {
@@ -402,6 +573,15 @@ fn spawn_enemy(mut commands: Commands, combat: Res<Combat>, config: Res<GameConf
             last_notify: -1.0,
             cur_ez: None,
             throw_death: None,
+            ninsatsu: {
+                let n = npc["ninsatuNum"].as_i64().unwrap_or(0).max(1) as u32;
+                (n, n)
+            },
+            phase_done: HashSet::new(),
+            phase_flags: HashSet::new(),
+            event_req: Vec::new(),
+            phase_replan: false,
+            resident0: actor.resident.clone(),
             ez_started: None,
             ez_failed: None,
             interrupted: false,
@@ -471,7 +651,7 @@ fn parry_interrupt(
             c.1 -= dt;
             c.1 > 0.0
         });
-        if pa.anim.is_empty() || matches!(e.mode, Mode::Dead(_) | Mode::Broken(_)) || a.hp <= 0.0 {
+        if pa.anim.is_empty() || matches!(e.mode, Mode::Dead(_) | Mode::Broken(_) | Mode::Rising(_)) || a.hp <= 0.0 {
             continue;
         }
         // Rising edge of the notify flag on the player's current anim.
@@ -501,11 +681,11 @@ fn parry_interrupt(
         let r = e.rand100();
         let facing = in_front(&a, tf.translation, ptf.translation, 90.0) && in_front(pa, ptf.translation, tf.translation, 90.0);
         // Common_Parry (common_common_func_NTC.lua) for enemies whose script uses it.
-        if let Some((guard_mult, step_prob, step_type, rush_anim)) = combat.foe.common_parry {
+        if let Some((guard_mult, step_prob, step_type, rush_anim)) = combat.foe.common_parry.clone() {
             let step = if step_type == 1 { "a000_005201" } else { "a000_005211" };
             let choice = if facing && dist <= PC_ATTACK_DIST_STAND {
                 if player_refs.contains(&109990) {
-                    Some(rush_anim) // rush attack: EndureAttack(rushAnim)
+                    Some(rush_anim.as_str()) // rush attack: EndureAttack(rushAnim)
                 } else if thrust {
                     match rank {
                         0 => Some("a000_003101"),
@@ -561,12 +741,14 @@ fn parry_interrupt(
 }
 
 /// Wolf as the enemies see him (stealth.rs): his feet, capsule radius and the sight factors of
-/// his active SpEffects (crouch 109200 cuts sight distances 20 %).
-fn wolf_seen(combat: &Combat, pa: &Actor, pos: Vec3) -> stealth::Seen {
+/// his active SpEffects (crouch 109200 cuts sight distances 20 %) and learned skills (`skills`:
+/// Covert A 150000 sightSearchEnemyCut 20, aroundSightPointAddRate 0.5).
+fn wolf_seen(combat: &Combat, pa: &Actor, pos: Vec3, skills: &[crate::data::SpEffect]) -> stealth::Seen {
     // The TAE of the clip on screen: crouch idle / moves are procedural states whose clips
     // carry the stealth SpEffect 109200.
     let (key, t) = pa.shown_clip(&combat.player);
-    let sp: Vec<&crate::data::SpEffect> = combat.player.sp_effects_at(&key, t).into_iter().map(|(_, e)| e).collect();
+    let mut sp: Vec<&crate::data::SpEffect> = combat.player.sp_effects_at(&key, t).into_iter().map(|(_, e)| e).collect();
+    sp.extend(skills.iter());
     let feet = pos - Vec3::Y * (crate::player::CAPSULE_HALF_HEIGHT + 0.05);
     stealth::Seen::new(feet, crate::player::CAPSULE_RADIUS, &sp)
 }
@@ -576,13 +758,13 @@ fn wolf_seen(combat: &Combat, pa: &Actor, pos: Vec3) -> stealth::Seen {
 /// SpEffects' hearingSearchEnemyRate (Covert B 150010: 0.5). gap: that scaling is read from the
 /// field names, not traced in the exe; the listener's ear_dist / ear_soundcut_dist are not
 /// applied.
-fn wolf_sounds(combat: &Combat, pa: &Actor, wolf: Vec3, listener: Vec3) -> Vec<(i64, i64)> {
+fn wolf_sounds(combat: &Combat, pa: &Actor, wolf: Vec3, listener: Vec3, skills: &[crate::data::SpEffect]) -> Vec<(i64, i64)> {
     // The clip on screen: walk / run loops are procedural states whose clips emit for their whole
     // length (walk a000_000200: 1000 r 0.5 m, run 000500: 1010 r 2 m, crouch walk 005200: 1001
     // r 0.25 m, crouch run 005500: 1011 r 0.5 m), refreshed while the event is active.
     let (key, t) = pa.shown_clip(&combat.player);
     let Some(an) = combat.player.anim(&key) else { return Vec::new() };
-    let hearing: f64 = combat.player.sp_effects_at(&key, t).iter().map(|(_, e)| e.hearing_search_enemy_rate as f64).product();
+    let hearing: f64 = combat.player.sp_effects_at(&key, t).iter().map(|(_, e)| *e).chain(skills.iter()).map(|e| e.hearing_search_enemy_rate as f64).product();
     let started = |e: &&crate::data::Event| !pa.anim.is_empty() && e.start > pa.prev_t && e.start <= pa.t;
     an.events
         .iter()
@@ -645,20 +827,40 @@ fn think(
     let dt = time.delta_secs();
     let d = &combat.enemy;
     let (pa, ptf) = *player;
+    // Wolf's learned skills' SpEffects (Covert A / B) for the sight and hearing checks.
+    let skills = crate::combat::skill_sp_effect_rows(&combat, &config);
     let npc = combat.param("NpcParam", combat.foe.npc_row);
     let turn_rate = npc["turnVellocity"].as_f64().unwrap_or(135.0) as f32;
     for (entity, mut e, mut a, mut tf) in &mut q {
+        // An anim's TAE SpEffect can switch the anim set for good (Isshin's 3015 -> 200031 = a100;
+        // effectEndurance -1): the next state plays from it.
+        if !a.anim.is_empty() {
+            if let Some(g) = anim_group_of(&combat, d.sp_effects_at(&a.anim, a.t).iter().map(|(id, _)| *id)) {
+                a.anim_group = g;
+            }
+        }
+        // Boss phase rules (map events on the health bars left), while it fights or gets up.
+        if matches!(e.mode, Mode::Ai | Mode::Rising(_)) && !phase_events(combat.foe.npc_row).is_empty() {
+            let mut sp_now: HashSet<i64> = a.resident.iter().copied().collect();
+            if !a.anim.is_empty() {
+                sp_now.extend(d.sp_effects_at(&a.anim, a.t).iter().map(|(id, _)| *id));
+            }
+            sp_now.extend(e.clash.iter().map(|c| c.0));
+            if e.run_phase_events(&mut a, &combat, &sp_now) {
+                continue;
+            }
+        }
         let to_player = (ptf.translation - tf.translation).with_y(0.0);
         let dist = to_player.length();
         let want_yaw = f32::atan2(-to_player.x, -to_player.z);
         match e.mode {
             Mode::Dead(t) => {
                 // ThrowDef reaction -> its death anim on flag 69 (or when it ends).
-                if let Some(death) = e.throw_death {
+                if let Some(death) = e.throw_death.clone() {
                     let ended = a.t >= d.length(&a.anim);
                     if (!a.anim.is_empty() && d.flag(&a.anim, a.t, FLAG_THROW_TYPE5)) || ended {
                         e.throw_death = None;
-                        a.play_state(d, &format!("ThrowDefDeath{death}"));
+                        a.play_state(d, &death);
                         e.mode = Mode::Dead(d.length(&a.anim) + 2.0);
                     }
                     continue;
@@ -667,6 +869,13 @@ fn think(
                     let (hp, _, _, _) = npc_stats(&combat);
                     a.hp = hp;
                     a.posture = 0.0;
+                    e.ninsatsu.0 = e.ninsatsu.1;
+                    a.resident = e.resident0.clone();
+                    e.phase_done.clear();
+                    e.phase_flags.clear();
+                    e.event_req.clear();
+                    e.phase_replan = false;
+                    a.anim_group = anim_group_of(&combat, a.resident.clone().into_iter()).unwrap_or(0);
                     tf.translation = Vec3::new(0.0, tf.translation.y, -6.0);
                     e.mode = Mode::Ai;
                     e.cooldown = 2.0;
@@ -674,6 +883,16 @@ fn think(
                     a.procedural("Approach");
                 } else {
                     e.mode = Mode::Dead(t - dt);
+                }
+                continue;
+            }
+            Mode::Rising(t) => {
+                if t - dt <= 0.0 {
+                    e.mode = Mode::Ai;
+                    e.cooldown = 0.5;
+                    e.interrupt();
+                } else {
+                    e.mode = Mode::Rising(t - dt);
                 }
                 continue;
             }
@@ -699,9 +918,9 @@ fn think(
         // What it knows of Wolf (stealth.rs), every frame: sounds, then sight and the state.
         let think_row = combat.param("NpcThinkParam", combat.foe.think_id);
         let (home, home_yaw) = *e.home.get_or_insert((tf.translation, a.yaw));
-        let seen = wolf_seen(&combat, pa, ptf.translation);
+        let seen = wolf_seen(&combat, pa, ptf.translation, &skills);
         let feet = tf.translation - Vec3::Y * (crate::player::CAPSULE_HALF_HEIGHT + 0.05);
-        for (id, rank) in wolf_sounds(&combat, pa, ptf.translation, tf.translation) {
+        for (id, rank) in wolf_sounds(&combat, pa, ptf.translation, tf.translation, &skills) {
             e.targeting.hear(think_row, seen.pos, id, rank);
         }
         e.targeting.update(think_row, feet, a.forward(), &seen, dt);
@@ -806,10 +1025,16 @@ fn think(
         sp_self.extend(d.sp_effects_at(&a.anim, a.t).iter().map(|(id, _)| *id));
         sp_self.extend(e.clash.iter().map(|c| c.0));
         sp_self.insert(e.ai_sp);
+        // The anim-set SpEffect lasts (effectEndurance -1): Corrupted Monk / Isshin read 200031 as
+        // their second phase ("IsHU2", 500000_battle.lua).
+        if a.anim_group > 0 {
+            sp_self.insert(200030 + a.anim_group as i64);
+        }
         let sp_target: HashSet<i64> = combat.player.sp_effects_at(&pa.anim, pa.t).iter().map(|(id, _)| *id).collect();
         let sp_new: Vec<i64> = sp_self.iter().chain(sp_target.iter()).filter(|id| !e.prev_sp.contains(*id)).copied().collect();
         e.prev_sp = sp_self.iter().chain(sp_target.iter()).copied().collect();
-        let playing_ez = e.cur_ez.filter(|ez| format!("a000_{ez:06}") == a.anim);
+        // (In any anim set: a100_003000 is EzState 3000 too.)
+        let playing_ez = e.cur_ez.filter(|ez| ez_of(&a.anim) == Some(*ez));
         let tg = e.targeting.clone();
         let snap = Snapshot {
             dist: to_t.length(),
@@ -846,7 +1071,10 @@ fn think(
             forgetting: tg.forgetting_time(think_row),
             sound_id: tg.sound.map_or(0, |s| s.id),
             sound_rank: tg.sound.map_or(0, |s| s.rank),
-            t_replan: tg.replan,
+            t_replan: tg.replan || std::mem::take(&mut e.phase_replan),
+            event_req: e.event_req.clone(),
+            ninsatsu: e.ninsatsu.0,
+            ninsatsu_max: e.ninsatsu.1,
         };
         let brain = brains.map.get_mut(&entity).unwrap();
         let cmd = brain.tick(&snap, dt);
@@ -878,7 +1106,9 @@ fn think(
         // Carry out the request.
         let move_ok = free || d.flag(&a.anim, a.t, FLAG_AI_MOVE);
         if let Some(ez) = cmd.anim {
-            let key = format!("a000_{ez:06}");
+            // In its anim set, or the set that has the clip (the ground-grab zombie's 20011 is
+            // a100 only: Actor::grouped).
+            let key = a.grouped(&format!("a000_{ez:06}"));
             if d.anim(&key).is_some() {
                 a.play(&format!("Ez{ez}"), &key);
                 a.move_vel = Vec3::ZERO;

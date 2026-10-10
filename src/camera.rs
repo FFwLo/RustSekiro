@@ -414,7 +414,10 @@ fn follow_player(
     let arm = rotation * Vec3::Z;
     let radius = cf("camCastSphereRadius", 0.05);
     let mut dist = orbit.cam.dist;
-    if arm.y < -1e-3 {
+    if let Some(hit) = crate::map::raycast(orbit.focus, arm, dist + radius) {
+        // The map's walls and floors (camCastSphereRadius stand-in: the ray stops short by it).
+        dist = dist.min((hit - radius).max(0.3));
+    } else if arm.y < -1e-3 && crate::map::terrain().is_none() {
         let room = (orbit.focus.y - radius) / -arm.y;
         dist = dist.min(room.max(0.3));
     }

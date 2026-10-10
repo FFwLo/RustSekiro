@@ -15,6 +15,8 @@ use std::collections::HashMap;
 use crate::actor::{Actor, Side};
 use crate::anim::{AnimLib, HasModel, Skeleton};
 
+mod tool;
+
 struct Node {
     name: String,
     parent: i16,
@@ -56,6 +58,28 @@ struct Model {
     dummies: Vec<Dummy>,
 }
 
+/// An effect model (FXR Model appearance 605: the leaves s04010, the shuriken s08050 ...): its
+/// triangles (game space mirrored like the characters) and albedo, all meshes merged.
+pub(crate) struct FxModel {
+    pub albedo: String,
+    pub pos: Vec<Vec3>,
+    pub uv: Vec<[f32; 2]>,
+    pub indices: Vec<u32>,
+}
+
+/// Loads extracted/fxr_model/model_<id>.bin (sekiro-extract model s<id:05>.flver <its tpf>).
+pub(crate) fn load_fx_model(id: i64) -> Option<FxModel> {
+    let m = load(&crate::paths::extracted().join(format!("fxr_model/model_{id}.bin")))?;
+    let mut out = FxModel { albedo: m.meshes.first()?.albedo.clone(), pos: Vec::new(), uv: Vec::new(), indices: Vec::new() };
+    for md in &m.meshes {
+        let base = out.pos.len() as u32;
+        out.pos.extend(md.pos.iter().map(|p| Vec3::from_array(*p)));
+        out.uv.extend_from_slice(&md.uv);
+        out.indices.extend(md.indices.iter().map(|i| base + i));
+    }
+    Some(out)
+}
+
 /// A dummy poly (hitbox / effect anchor) following its attach bone.
 #[derive(Component)]
 pub struct DummyPoly {
@@ -74,11 +98,19 @@ pub struct Dummies(pub HashMap<i16, Entity>);
 pub struct WeaponParts {
     blade: Option<Entity>,
     sheath: Option<Entity>,
+    /// Right weapon Model2 (WP_A_0300_2): no meshes, only the Mortal Draw effect dummies (TAE
+    /// 12200.. = this model's 200..; 240-280 reach out to 6 m). Placed by Model2DummyPolyID.
+    model2: Option<Entity>,
+    /// WeaponModelType 2 "Mortal Blade": WP_A_0310 (Model0) and its scabbard WP_A_0310_1 (Model1).
+    /// Shown only while a TAE 715 of that type places them (Mortal Draw).
+    mortal: [Option<Entity>; 2],
     /// Body dummy -> (attach joint, frame in that joint's space).
     dummies: HashMap<i16, (Entity, Mat4)>,
     /// Sheathed (weapon style None): WepAbsorpPosParam rightHang_0 / rightHang_1 (blade into the
     /// scabbard, both on 147).
     hang: (i16, i16),
+    /// rightHang_2 (149): Model2 while sheathed.
+    hang2: i16,
 }
 
 /// Wolf's sword (EquipParamWeapon 5000): its absorpParamId row of WepAbsorpPosParam says which body
@@ -242,6 +274,7 @@ impl Plugin for ModelPlugin {
         app.add_systems(PostStartup, attach_models.after(crate::anim::AnimSet))
             .add_systems(Update, (hide_placeholder_blades, update_draw_masks))
             .add_systems(PostUpdate, override_weapon_location.after(bevy::transform::TransformSystems::Propagate));
+        tool::plugin(app);
     }
 }
 
@@ -293,7 +326,27 @@ fn attach_models(
         // Scabbards (the weapon part's WP_A_xxxx_1.flver, exported as *_sheath_*) hang off the
         // Sheath bone at the left hip.
         let is_sheath = file.file_name().unwrap_or_default().to_string_lossy().contains("_sheath_");
-        let root = if is_weapon || is_sheath {
+        let fname = file.file_name().unwrap_or_default().to_string_lossy().to_string();
+        // Right weapon Model2 (the effect dummies) and the Mortal Blade's two models.
+        let part2 = fname.contains("_mortal_");
+        let mortal = if fname.contains("_mbsheath_") { Some(1) } else if fname.contains("_mblade_") { Some(0) } else { None };
+        let root = if part2 || mortal.is_some() {
+            let absorp = combat.param("WepAbsorpPosParam", combat.param("EquipParamWeapon", SWORD_WEAPON)["absorpParamId"].as_i64().unwrap_or(-1));
+            // Model2 rests on right_2 (149); the Mortal Blade has no rest place (hidden until TAE 715).
+            let id = if part2 { absorp["right_2"].as_i64().unwrap_or(-1) } else if mortal == Some(0) { 20 } else { 149 } as i16;
+            weapon_parts.hang2 = absorp["rightHang_2"].as_i64().unwrap_or(-1) as i16;
+            let Some(&(joint, local)) = weapon_parts.dummies.get(&id) else {
+                warn!("{chr}: no body dummy {id} for {}", file.display());
+                continue;
+            };
+            let pivot = commands.spawn((Transform::from_matrix(local), if mortal.is_some() { Visibility::Hidden } else { Visibility::default() })).id();
+            commands.entity(joint).add_child(pivot);
+            match mortal {
+                Some(i) => weapon_parts.mortal[i] = Some(pivot),
+                None => weapon_parts.model2 = Some(pivot),
+            }
+            pivot
+        } else if is_weapon || is_sheath {
             // The part sits on its WepAbsorpPosParam body dummy (the body model loads first).
             let absorp = combat.param("WepAbsorpPosParam", combat.param("EquipParamWeapon", SWORD_WEAPON)["absorpParamId"].as_i64().unwrap_or(-1));
             let id = absorp[if is_sheath { "right_1" } else { "right_0" }].as_i64().unwrap_or(-1) as i16;
@@ -509,7 +562,12 @@ fn attach_models(
             let rot = dm.fwd.map_or(Quat::IDENTITY, |f| Quat::from_rotation_arc(Vec3::Z, bind.inverse().transform_vector3(f).normalize()));
             let e = commands.spawn((DummyPoly { id: dm.id }, Transform::from_translation(local).with_rotation(rot), Visibility::default())).id();
             commands.entity(joint).add_child(e);
-            if is_weapon || !dummies.0.contains_key(&dm.id) {
+            if part2 {
+                // TAE ids 1<model><dummy>: right weapon Model2's 200 is 12200.
+                dummies.0.insert(12000 + dm.id, e);
+            } else if mortal.is_some() {
+                // Its 300 / 301 would shadow Kusabimaru's; no TAE event names them.
+            } else if is_weapon || !dummies.0.contains_key(&dm.id) {
                 dummies.0.insert(dm.id, e);
             }
         }
@@ -525,7 +583,7 @@ fn attach_models(
         }
         if attached > 0 {
             commands.entity(actor_e).insert((HasModel, dummies, DrawMask::default(), cloths));
-            if weapon_parts.blade.is_some() || weapon_parts.sheath.is_some() {
+            if weapon_parts.blade.is_some() || weapon_parts.sheath.is_some() || weapon_parts.model2.is_some() {
                 commands.entity(actor_e).insert(weapon_parts);
             }
             info!("{chr}: {attached} meshes attached");
@@ -683,13 +741,31 @@ fn override_weapon_location(
     mut globals: Query<&mut GlobalTransform>,
     transforms: Query<&Transform>,
     children: Query<&Children>,
+    mut vis: Query<&mut Visibility>,
 ) {
     for (a, wp) in &actors {
         let d = crate::actor::data_for(&combat, a.side);
-        let e = d.events_at(&a.anim, a.t).find(|e| {
-            e.kind == 715 && e.args.get("WeaponModelType").and_then(|v| v.as_str()).is_some_and(|s| s.starts_with('0'))
-        });
-        for (part, key, hang) in [(wp.blade, "Model0DummyPolyID", wp.hang.0), (wp.sheath, "Model1DummyPolyID", wp.hang.1)] {
+        let of_type = |t: char| {
+            d.events_at(&a.anim, a.t)
+                .find(|e| e.kind == 715 && e.args.get("WeaponModelType").and_then(|v| v.as_str()).is_some_and(|s| s.starts_with(t)))
+        };
+        let e = of_type('0');
+        // WeaponModelType 2 (the Mortal Blade): visible only while its event places it.
+        let m = of_type('2');
+        for (i, part) in wp.mortal.iter().enumerate() {
+            let Some(part) = *part else { continue };
+            let id = m.and_then(|e| e.arg_i64(if i == 0 { "Model0DummyPolyID" } else { "Model1DummyPolyID" }).filter(|id| *id >= 0));
+            if let Ok(mut v) = vis.get_mut(part) {
+                let want = if id.is_some() { Visibility::Inherited } else { Visibility::Hidden };
+                if *v != want {
+                    *v = want;
+                }
+            }
+            let Some(&(joint, local)) = id.and_then(|id| wp.dummies.get(&(id as i16))) else { continue };
+            let Ok(jg) = globals.get(joint).map(|g| g.to_matrix()) else { continue };
+            set_global(part, GlobalTransform::from(bevy::math::Affine3A::from_mat4(jg * local)), &mut globals, &transforms, &children);
+        }
+        for (part, key, hang) in [(wp.blade, "Model0DummyPolyID", wp.hang.0), (wp.sheath, "Model1DummyPolyID", wp.hang.1), (wp.model2, "Model2DummyPolyID", wp.hang2)] {
             // The event's dummy, else the sheathed (hang) position while the sword is put away.
             let id = e.and_then(|e| e.arg_i64(key).filter(|id| *id >= 0)).or_else(|| (a.sheathed && hang >= 0).then_some(hang as i64));
             let (Some(part), Some(id)) = (part, id) else { continue };

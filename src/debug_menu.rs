@@ -13,8 +13,9 @@ use crate::data::Combat;
 use crate::enemy::{AiMode, Enemy, EnemyDebug, attack_list};
 use crate::player::{Action, PadInput, Player};
 
-/// Enemy characters and their NpcParam outfit rows (all exported by sekiro-extract).
-const ENEMIES: [(&str, &str, &[(i64, &str)]); 2] = [
+/// Enemy characters and their NpcParam outfit rows when there is no roster (the two
+/// combat_data.json carries).
+const FALLBACK_ENEMIES: [(&str, &str, &[(i64, &str)]); 2] = [
     (
         "c1020",
         "Samurai General",
@@ -22,6 +23,51 @@ const ENEMIES: [(&str, &str, &[(i64, &str)]); 2] = [
     ),
     ("c1010", "Ochimusha", &[(10100000, "one-handed sword")]),
 ];
+
+/// One pickable enemy: chr id, name, and its NpcParam rows (row, label).
+struct EnemyChoice {
+    chr: String,
+    name: String,
+    outfits: Vec<(i64, String)>,
+}
+
+/// Every enemy and boss `sekiro-extract npcs` exported (extracted/enemies/roster.json: the chr
+/// models the maps place, with each placed NpcParam row), else the two built in.
+fn enemy_choices() -> &'static [EnemyChoice] {
+    static LIST: std::sync::OnceLock<Vec<EnemyChoice>> = std::sync::OnceLock::new();
+    LIST.get_or_init(|| {
+        let dir = crate::paths::root().join("extracted/enemies");
+        let roster: Vec<serde_json::Value> = std::fs::read_to_string(dir.join("roster.json")).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+        let mut list: Vec<EnemyChoice> = roster
+            .iter()
+            .filter_map(|e| {
+                let chr = e["chr"].as_str()?.to_string();
+                if !dir.join(format!("{chr}.json")).exists() {
+                    return None;
+                }
+                let blows = e["deathblows"].as_i64().unwrap_or(0);
+                let boss = if blows > 1 { format!(" [boss, {blows} deathblows]") } else { String::new() };
+                let outfits = e["placements"]
+                    .as_array()?
+                    .iter()
+                    .filter_map(|p| {
+                        let label = format!("{} (HP {}, posture {}, x{} in {})", p["name"].as_str().unwrap_or(""), p["hp"], p["posture"], p["count"], p["maps"].as_array().map(|m| m.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join(" ")).unwrap_or_default());
+                        Some((p["npc"].as_i64()?, label))
+                    })
+                    .collect::<Vec<_>>();
+                (!outfits.is_empty()).then(|| EnemyChoice { chr, name: format!("{}{boss}", e["name"].as_str().unwrap_or("")), outfits })
+            })
+            .collect();
+        if list.is_empty() {
+            list = FALLBACK_ENEMIES
+                .iter()
+                .map(|(c, n, o)| EnemyChoice { chr: c.to_string(), name: n.to_string(), outfits: o.iter().map(|(r, l)| (*r, l.to_string())).collect() })
+                .collect();
+        }
+        list
+    })
+}
+
 const SPEEDS: [f32; 4] = [1.0, 0.5, 0.25, 0.1];
 const AI_MODES: [(AiMode, &str); 6] = [
     (AiMode::Real, "real AI"),
@@ -126,8 +172,8 @@ impl Plugin for DebugMenuPlugin {
 }
 
 fn spawn_menu(mut commands: Commands, config: Res<GameConfig>, mut menu: ResMut<DebugMenu>) {
-    menu.enemy_type = ENEMIES.iter().position(|e| e.0 == config.enemy.chr).unwrap_or(0);
-    menu.outfit = config.enemy.npc_row.and_then(|r| ENEMIES[menu.enemy_type].2.iter().position(|o| o.0 == r)).unwrap_or(0);
+    menu.enemy_type = enemy_choices().iter().position(|e| e.chr == config.enemy.chr).unwrap_or(0);
+    menu.outfit = config.enemy.npc_row.and_then(|r| enemy_choices()[menu.enemy_type].outfits.iter().position(|o| o.0 == r)).unwrap_or(0);
     commands.spawn((
         Text::new(""),
         TextFont { font_size: bevy::text::FontSize::Px(15.0), ..default() },
@@ -214,7 +260,7 @@ fn menu_input(
         Item::Interval => dbg.interval = (dbg.interval + 0.25 * step as f32).clamp(0.25, 6.0),
         Item::EnemyType => {
             if step != 0 {
-                menu.enemy_type = cycle(menu.enemy_type, ENEMIES.len());
+                menu.enemy_type = cycle(menu.enemy_type, enemy_choices().len());
                 menu.outfit = 0;
             }
             if enter {
@@ -223,7 +269,7 @@ fn menu_input(
         }
         Item::Outfit => {
             if step != 0 {
-                menu.outfit = cycle(menu.outfit, ENEMIES[menu.enemy_type].2.len());
+                menu.outfit = cycle(menu.outfit, enemy_choices()[menu.enemy_type].outfits.len());
             }
             if enter {
                 restart_with(&mut menu, &mut config, &mut exit);
@@ -398,7 +444,8 @@ const FLOWING_WATER: i64 = 280;
 /// Writes enemy.chr / enemy.npc_row to config.toml and starts a fresh game process: the enemy's
 /// data, model and AI are loaded at startup.
 fn restart_with(menu: &mut DebugMenu, config: &mut GameConfig, exit: &mut MessageWriter<AppExit>) {
-    let (chr, _, outfits) = ENEMIES[menu.enemy_type];
+    let e = &enemy_choices()[menu.enemy_type];
+    let (chr, outfits) = (e.chr.as_str(), &e.outfits);
     let row = outfits[menu.outfit.min(outfits.len() - 1)].0;
     let path = crate::paths::root().join("config.toml");
     let Ok(text) = std::fs::read_to_string(&path) else {
@@ -504,7 +551,8 @@ fn draw_menu(
         Some(_) => " [perilous]",
         None => "",
     };
-    let (chr, name, outfits) = ENEMIES[menu.enemy_type];
+    let e = &enemy_choices()[menu.enemy_type];
+    let (chr, name, outfits) = (e.chr.as_str(), e.name.as_str(), &e.outfits);
     let pending = chr != config.enemy.chr || Some(outfits[menu.outfit].0) != config.enemy.npc_row.or(Some(combat.foe.npc_row));
     let value = |it: Item| -> String {
         match it {

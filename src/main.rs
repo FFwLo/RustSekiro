@@ -16,11 +16,17 @@ mod combat;
 mod config;
 mod data;
 mod debug_menu;
+mod duel;
 mod enemy;
+mod enemy_bullet;
+mod ffx;
+mod fxr;
 mod fmod;
 mod gore;
+mod grading;
 mod hud;
 mod interp;
+mod map;
 mod model;
 mod paths;
 mod photo;
@@ -29,6 +35,7 @@ mod prosthetic;
 #[cfg(test)]
 mod sim_tests;
 mod sound;
+mod status;
 mod stealth;
 mod throw_trace;
 mod trace;
@@ -52,6 +59,9 @@ fn main() {
         .add_plugins(throw_trace::ThrowTracePlugin)
         .add_plugins(vfx::VfxPlugin)
         .add_plugins(gore::GorePlugin)
+        .add_plugins(ffx::FfxPlugin)
+        .add_plugins(fxr::FxrPlugin)
+        .add_plugins(map::MapPlugin)
         .add_plugins((
             config::ConfigPlugin,
             data::DataPlugin,
@@ -67,7 +77,8 @@ fn main() {
             sound::SoundPlugin,
             fmod::FmodPlugin,
             prosthetic::ProstheticPlugin,
-            photo::PhotoPlugin,
         ))
+        // Bevy's plugin tuples hold at most 15.
+        .add_plugins((photo::PhotoPlugin, status::StatusPlugin, duel::DuelPlugin, enemy_bullet::EnemyBulletPlugin))
         .run();
 }

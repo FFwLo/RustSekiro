@@ -83,6 +83,11 @@ pub struct Snapshot {
     pub sound_rank: i64,
     /// The target state changed in a way that drops the plan (stealth.rs Targeting::replan).
     pub t_replan: bool,
+    /// Deathblows left (Enemy::ninsatsu, NpcParam ninsatuNum; at least 1).
+    pub ninsatsu: u32,
+    pub ninsatsu_max: u32,
+    /// Map-event AI commands by slot (EMEVD Request Character AI Command; enemy.rs phase rules).
+    pub event_req: Vec<(i64, i64)>,
 }
 
 #[cfg(test)]
@@ -539,7 +544,10 @@ impl AiState {
             "IsExistParam" => vec![Value::Bool(self.goal(id).p.get(n(0) as usize).is_some_and(|v| !v.is_nil()))],
             // GOAL_RESULT_Continue: the patrol-route branches that read it are not reached.
             "GetLastResult" => vec![Value::Num(0.0)],
-            "AddGoalScopedTeamRecord" | "SetFailedEndOption" | "SetLifeEndSuccess" | "SetManagementGoal" => vec![],
+            // The setters return the goal: scripts chain them, e.g. 500000_battle.lua Act27
+            // AddSubGoal(...):SetLifeEndSuccess(true):TimingSetNumber(3, 1, ...).
+            // (Life over is already a success for movement goals, tick_goal.)
+            "AddGoalScopedTeamRecord" | "SetFailedEndOption" | "SetLifeEndSuccess" | "SetManagementGoal" => vec![goal_obj(id)],
             "SetTargetRange" => vec![goal_obj(id)],
             "AddSubGoal" | "AddSubGoal_Front" => {
                 let combo = self.def(self.goal(id).kind).is_some_and(|d| d.combo);
@@ -602,15 +610,24 @@ impl AiState {
             "GetSp" => num(w.sp as f64),
             "GetSpRate" => num(w.sp_rate as f64),
             "GetHpRate" => num(if is(a.first(), self.k.target_self) { w.hp_rate } else { w.target_hp_rate } as f64),
-            "GetHp" | "GetNinsatsuNum" => num(1.0),
+            "GetHp" => num(1.0),
+            // The General (102000_battle.lua) goes all out on his last one (<= 1).
+            "GetNinsatsuNum" => num(w.ninsatsu.max(1) as f64),
+            // Bosses compare it with the left count: fewer left = a later phase (500000_battle.lua).
+            "GetNinsatsuMaxNum" => num(w.ninsatsu_max.max(1) as f64),
             "GetNpcThinkParamID" => num(self.think_id as f64),
             // NpcThinkParam fields by AI_EXCEL_THINK_PARAM_TYPE__<field name>.
             "GetExcelParam" => {
                 let field = self.excel.get(&key(a.first())).cloned().unwrap_or_default();
                 num(self.think[field.as_str()].as_f64().unwrap_or(0.0))
             }
-            // Event requests default to -1 (FUN_1405b2090 fills the slots with -1.0).
-            "GetEventRequest" => num(-1.0),
+            // Event requests default to -1 (FUN_1405b2090 fills the slots with -1.0); the map's
+            // Request Character AI Command sets one (the Demon of Hatred's battle reads 10 / 20).
+            // gap: whether the engine clears a slot once read is not traced; it stays set here.
+            "GetEventRequest" => {
+                let slot = a.first().and_then(|v| v.num()).unwrap_or(0.0) as i64;
+                num(w.event_req.iter().find(|r| r.0 == slot).map_or(-1.0, |r| r.1 as f64))
+            }
             "GetTeamOrder" | "GetOddsParam" | "GetOddsParamIdOffset" | "DbgGetForceActIdx" | "DbgGetForceKengekiActIdx"
             | "GetChangeBattleStateCount" | "GetMovePointWaitTime" | "GetSmallActPreWaitTime" | "GetSmallActPostWaitTime"
             | "GetMovePointType" => num(0.0),
@@ -1057,7 +1074,8 @@ fn tick_goal(vm: &mut Vm, st: &mut AiState, g: u32, dt: f64) -> LuaResult<i32> {
         st.apply_timing(g, st.k.timing_activate);
         if let Some(n) = nat {
             st.native_activate(g, n);
-        } else if st.def(kind).is_some() {
+        } else if st.def(kind).is_some_and(|d| d.tbl.is_some() || d.fns.is_some()) {
+            // (A def from REGISTER_GOAL_NO_INTERUPT etc. alone has no script: unknown goal.)
             call_def(vm, st, g, Cb::Activate, &[])?;
         } else {
             st.warn_once(format!("goal id {}", kind.map_or("nil".into(), |k| k.to_string())));
@@ -1429,7 +1447,13 @@ fn bind_goals(vm: &Vm, st: &mut AiState) {
         }
         let id = id as i64;
         let short = name.strip_prefix("GOAL_COMMON_").or(name.strip_prefix("GOAL_")).unwrap_or(name);
-        let f = |s: &str| vm.get_global(&format!("{short}_{s}"));
+        // Some ids drop the underscore in their functions: GOAL_COMMON_ComboTunable_SuccessAngle180
+        // (2253) runs ComboTunableSuccessAngle180_Activate.
+        let joined = short.replace('_', "");
+        let f = |s: &str| {
+            let v = vm.get_global(&format!("{short}_{s}"));
+            if v.is_nil() { vm.get_global(&format!("{joined}_{s}")) } else { v }
+        };
         let act = f("Activate");
         if !act.is_nil() || native(id).is_some() {
             let def = st.defs.entry(id).or_default();
@@ -1496,6 +1520,74 @@ mod tests {
         });
         let errors: Vec<_> = b.log.iter().filter(|l| !l.starts_with("stub:")).cloned().collect();
         assert!(errors.is_empty() && acted, "{errors:#?}; goals: {}", b.describe());
+    }
+
+    /// SHINOBI_THINK=51000000 cargo test think_trace -- --ignored --nocapture : one think row's
+    /// goals, requests and log (stubs too) over 3 s at 3 m, free.
+    #[test]
+    #[ignore]
+    fn think_trace() {
+        let id = std::env::var("SHINOBI_THINK").ok().and_then(|v| v.parse().ok()).unwrap_or(10200000);
+        let Some(mut b) = load(id, 0.5, 7) else { return };
+        let mut s = Snapshot { dist: 3.0, free: true, hp_rate: 1.0, target_hp_rate: 1.0, sp: 1000.0, sp_rate: 1.0, ..Snapshot::battle() };
+        s.sp_self.insert(200004);
+        // SHINOBI_NINSATSU=<left>,<max>: a boss phase (Enemy::ninsatsu).
+        if let Some((l, m)) = std::env::var("SHINOBI_NINSATSU").ok().and_then(|v| v.split_once(',').and_then(|(l, m)| Some((l.parse().ok()?, m.parse().ok()?)))) {
+            (s.ninsatsu, s.ninsatsu_max) = (l, m);
+        }
+        let mut last = String::new();
+        for i in 0..180 {
+            let c = b.tick(&s, 1.0 / 60.0);
+            let line = format!("{} | anim {:?} mv {:?}", b.describe(), c.anim, c.mv);
+            if line != last {
+                println!("{i:3} {line}");
+                last = line;
+            }
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        for l in b.log.iter().filter(|l| seen.insert((*l).clone())) {
+            println!("log: {l}");
+        }
+    }
+
+    /// cargo test think_sweep -- --ignored --nocapture : every placed think row (roster.json) at
+    /// a few distances; prints its script errors / unknown goals and whether it ever acted.
+    #[test]
+    #[ignore]
+    fn think_sweep() {
+        let Ok(text) = std::fs::read_to_string(crate::paths::root().join("extracted/enemies/roster.json")) else { return };
+        let roster: Json = serde_json::from_str(&text).unwrap();
+        let mut thinks = std::collections::BTreeMap::new();
+        for e in roster.as_array().unwrap() {
+            for p in e["placements"].as_array().into_iter().flatten() {
+                if let Some(t) = p["think"].as_i64().filter(|t| *t > 0) {
+                    thinks.entry(t).or_insert_with(|| e["chr"].as_str().unwrap_or("").to_string());
+                }
+            }
+        }
+        for (id, chr) in thinks {
+            let Some(row) = think(id) else { continue };
+            let dir = crate::paths::root().join("extracted/script");
+            let mut b = match Brain::load(&dir, id, &row, 0.5, 7) {
+                Ok(b) => b,
+                Err(e) => {
+                    println!("{chr} {id}: LOAD {e}");
+                    continue;
+                }
+            };
+            let (mut anim, mut mv) = (0, 0);
+            for i in 0..1200 {
+                let mut s = Snapshot { dist: [2.0, 5.0, 10.0][i / 400], free: true, hp_rate: 1.0, target_hp_rate: 1.0, sp: 1000.0, sp_rate: 1.0, ..Snapshot::battle() };
+                s.sp_self.insert(200004);
+                s.anim_done = i % 40 == 0;
+                let c = b.tick(&s, 1.0 / 60.0);
+                anim += c.anim.is_some() as u32;
+                mv += c.mv.is_some() as u32;
+            }
+            let mut seen = std::collections::BTreeSet::new();
+            let errs: Vec<_> = b.log.iter().filter(|l| !l.starts_with("stub:") && seen.insert((*l).clone())).take(4).cloned().collect();
+            println!("{chr} {id}: anims {anim} moves {mv} {errs:?}");
+        }
     }
 
     /// cargo test ai_stubs -- --ignored --nocapture : engine API the scripts reached that is stubbed.

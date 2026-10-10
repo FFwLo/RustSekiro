@@ -40,6 +40,8 @@ pub struct Mesh {
     pub node: i32,
     /// The material's texture slots: (MTD sampler name, texture stem; empty when unset).
     pub textures: Vec<(String, String)>,
+    /// Vertex layout members of each vertex buffer: (struct offset, type, semantic).
+    pub layouts: Vec<Vec<(u32, u32, u32)>>,
 }
 
 pub struct Dummy {
@@ -69,6 +71,12 @@ fn stem(path: &str) -> String {
 }
 
 pub fn read(d: &[u8]) -> Flver {
+    read_lod(d, 0)
+}
+
+/// `lod`: the face set level to take (FaceSet flags: 0 = full detail, 1 = LodLevel1, 2 =
+/// LodLevel2; a piece without that level falls back to the next lower one, then LOD0).
+pub fn read_lod(d: &[u8], lod: u32) -> Flver {
     let r = Reader::new(d);
     assert_eq!(&d[0..6], b"FLVER\0", "not a FLVER");
     let version = r.u32(0x08);
@@ -214,6 +222,7 @@ pub fn read(d: &[u8]) -> Flver {
             for &vb in &mh.vbs {
                 let (layout, vsize, count, start) = vbs[vb];
                 let mut first_uv = true;
+                let mut uv_byte = false;
                 for (i, v) in vertices.iter_mut().enumerate().take(count) {
                     let base = start + i * vsize;
                     for &(off, ty, sem) in &layouts[layout] {
@@ -228,18 +237,23 @@ pub fn read(d: &[u8]) -> Flver {
                             (3, 2) | (3, 3) => v.normal = [r.f32(p), r.f32(p + 4), r.f32(p + 8)],
                             (3, 16) | (3, 17) | (3, 19) | (3, 47) => v.normal = std::array::from_fn(|k| (d[p + k] as f32 - 127.0) / 127.0),
                             (3, 26) => v.normal = std::array::from_fn(|k| r.u16(p + k * 2) as i16 as f32 / 32767.0),
-                            (5, _) if first_uv => {
+                            // The first real UV channel. Map pieces list a UByte4Norm (19) "UV" that
+                            // carries blend data before the Short2 / Short4 texture UVs (sekiro-rs
+                            // docs/FORMATS.md), so a byte channel only stands until a short one comes.
+                            (5, _) if first_uv || (uv_byte && ty != 19) => {
                                 v.uv = match ty {
                                     1 => [r.f32(p), r.f32(p + 4)],
                                     19 => [d[p] as f32 / 255.0, d[p + 1] as f32 / 255.0],
                                     _ => [r.u16(p) as i16 as f32 / uv_factor, r.u16(p + 2) as i16 as f32 / uv_factor],
                                 };
                                 first_uv = false;
+                                uv_byte = ty == 19;
                             }
                             _ => {}
                         }
                     }
                     first_uv = true;
+                    uv_byte = false;
                 }
             }
             for v in vertices.iter_mut() {
@@ -259,8 +273,12 @@ pub fn read(d: &[u8]) -> Flver {
                     v.weights = v.weights.map(|w| w / sum);
                 }
             }
-            // LOD0, not motion-blur: flags == 0.
-            let fs = mh.facesets.iter().map(|&f| &facesets[f]).find(|f| f.flags == 0).or_else(|| mh.facesets.first().map(|&f| &facesets[f]))?;
+            // The wanted LOD (flags == lod), else the next lower level, else LOD0 (flags 0;
+            // 0x8000_0000 marks motion-blur sets).
+            let fs = (0..=lod)
+                .rev()
+                .find_map(|l| mh.facesets.iter().map(|&f| &facesets[f]).find(|f| f.flags == l))
+                .or_else(|| mh.facesets.first().map(|&f| &facesets[f]))?;
             let mut indices = Vec::new();
             if fs.strip {
                 for k in 0..fs.indices.len().saturating_sub(2) {
@@ -274,7 +292,8 @@ pub fn read(d: &[u8]) -> Flver {
                 indices = fs.indices.clone();
             }
             let slots = (tex_index..tex_index + tex_count).filter_map(|ti| textures.get(ti)).map(|(path, param)| (param.clone(), stem(path))).collect();
-            Some(Mesh { material: mat_name, mtd, albedo, normal_map: String::new(), metallic: String::new(), alpha_test: false, vertices, indices, node: mh.node, textures: slots })
+            let mesh_layouts = mh.vbs.iter().map(|&vb| layouts[vbs[vb].0].clone()).collect();
+            Some(Mesh { material: mat_name, mtd, albedo, normal_map: String::new(), metallic: String::new(), alpha_test: false, vertices, indices, node: mh.node, textures: slots, layouts: mesh_layouts })
         })
         .collect();
     Flver { nodes, meshes, dummies }

@@ -18,7 +18,7 @@ Dated findings, oldest first. Append new entries at the end.
   model.rs parents DummyPoly entities to the attach joints (offset = bind^-1 * pos), Dummies map per actor (weapon wins).
   combat.rs: capsule hit0_DmyPolyId1 -> 2 (radius hit0_Radius) vs body segment feet+0.3..1.5 (r 0.4); reach fallback.
   Player slash = weapon dmy 120 -> 100 r 0.4; c1020 = 11 -> 10. Verified in game (enemy combo hits via capsule).
-  Debug draw: active hit capsules in red (combat::draw_hitboxes).
+  Debug draw (H / debug menu): active hit capsules in red, body capsules in grey (combat::draw_hitboxes).
 - 2026-10-06: NEXT 6c done: the regen level multiplier chr.f[0x10d0] (set in FUN_1409e6xxx PlayerIns update) is the
   Dark Souls equip-load class: FUN_14084d0c0(ratio) -> 4 if ratio > 1.0 or SpEffect stateInfo 102 (row 500, poison
   DoT), 3 if > 0.7, 2 if > 0.3, else 1/0; multiplier 0.8 (3), 0.7 (4), else 1.0. Max load = SpEffect weight rates x
@@ -198,7 +198,8 @@ Dated findings, oldest first. Append new entries at the end.
   * Coat alpha (P_BD_M_9040_Court, g_AlphaRef 128, g_BlendMode 0) is a real cutout: torn hem and collar edge.
     The 2026-10-09 "AN_Blend is a blend mask" change was wrong (holes became solid dark flaps) and is reverted.
 - 2026-10-10 vfx.rs: clash effects (deflect burst + flash + light, guard sparks, hit blood) with camera bloom
-  (threshold 1.2: only HDR effect colours glow). gap: the game's FXR effects are not decoded.
+  (threshold 1.2: only HDR effect colours glow). Later 2026-10-10: the game's FXR effects play via src/fxr.rs
+  (HANDOFF section 9); vfx.rs / gore.rs looks are still hand-made until routed through it.
   hud.rs redone: Wolf vitality (damage trail), resurrection nodes, gourd / emblem counts bottom-left, posture
   bottom-centre (shown with damage); enemy bars over its head; debug text and combat log only with F1.
 - 2026-10-10 gore.rs: blood driven by each character's TAE. TAE 96 SpawnOneShotFFX with blood FFX (220505 /
@@ -209,7 +210,7 @@ Dated findings, oldest first. Append new entries at the end.
   nearSize 0.5 -> farSize 3.5 (read as the size at the floor's depth: ~1.6 m from a 1.7 m neck),
   randomSize 100-120 %, random roll, thin-out 2 within 1 m, lifeTimeSec 999 with bLifeEnable 0.
   Textures: other/decaltex.tpf (67 dp* textures); the export writes extracted/decal/<id>.png (RGB
-  diffuse, A mask). gap: FXR f000220505.fxr (sfx/sfxbnd_commoneffects.ffxbnd, 2349 FXRs) not decoded;
+  diffuse, A mask). gap: blood not yet drawn by the FXR player (src/fxr.rs can play f000220505.fxr: HANDOFF section 9);
   decal blend not traced (mask alpha^0.55 in game). Check: SHINOBI_THROW_TRACE=behind
   SHINOBI_THROW_CAM_YAW=90 SHINOBI_THROW_SHOTS=<dir> SHINOBI_THROW_SHOT_RANGE=130,250,8; SHINOBI_GORE_LOG=1.
 - 2026-10-10 deathblow mark (hud.rs): HUD sprites are Scaleform FE (menu/01_000_fe.gfx) over atlases in
@@ -218,3 +219,6 @@ Dated findings, oldest first. Append new entries at the end.
   (405 px red glow, white-hot core) + MENU_ninsatu_01 (128 px); also MENU_ninjyutu, MENU_Find_01/02,
   MENU_HP_bar*, MENU_Taikan_* (posture bar). Placed on dummy 220 (lock-on point, chest). Check:
   SHINOBI_STEALTH=close (unaware enemy 1.5 m ahead, back turned).
+- 2026-10-10 the game's own map around the fight (pieces, hit collision, draw-param lighting): see `docs/kb/map.md`.
+  One lesson for every tiled texture: load it with a repeat sampler (Bevy's default clamps to the edge, which smears
+  one texel over the whole mesh and looks like a missing texture).

@@ -16,7 +16,10 @@ use crate::{hkx, tae};
 
 struct Character {
     /// e.g. "c0000"
-    id: &'static str,
+    id: String,
+    /// Whose anibnd / behbnd the character uses: NpcParam normalChangeAnimChrId (c1021, the spear
+    /// General, plays c1020's; c5430 Isshin Ashina c5400's), else its own id.
+    anim_id: String,
     /// BehaviorParam row = base + variation * 1000 + judgeId.
     behavior_base: i64,
     behavior_param: &'static str,
@@ -28,43 +31,54 @@ struct Character {
     sub_behavior_base: i64,
     /// NpcParam row whose resident SpEffects are exported (NPCs only).
     npc_row: Option<i64>,
+    /// NPCs: every NpcParam row of the character (resident SpEffects of all of them) and the
+    /// behaviorVariationIds they use; attacks / bullets are also keyed "v<variation>:<judge>"
+    /// (BehaviorParam 200000000 + variation * 1000 + judge) so any row can be fought.
+    npc_rows: Vec<i64>,
+    variations: Vec<i64>,
 }
 
-const PLAYER: Character = Character {
-    id: "c0000",
-    behavior_base: 100_000_000 + 5000 * 1000,
-    behavior_param: "BehaviorParam_PC",
-    atk_param: "AtkParam_Pc",
-    weapon_category: 50,
-    sub_weapon_category: 70,
-    sub_behavior_base: 100_000_000 + 7000 * 1000,
-    npc_row: None,
-};
+fn player() -> Character {
+    Character {
+        id: "c0000".into(),
+        anim_id: "c0000".into(),
+        behavior_base: 100_000_000 + 5000 * 1000,
+        behavior_param: "BehaviorParam_PC",
+        atk_param: "AtkParam_Pc",
+        weapon_category: 50,
+        sub_weapon_category: 70,
+        sub_behavior_base: 100_000_000 + 7000 * 1000,
+        npc_row: None,
+        npc_rows: Vec::new(),
+        variations: Vec::new(),
+    }
+}
 
 /// Wolf's default outfit (head, body, arms, legs), as used for the model export.
 pub const PLAYER_PROTECTORS: &[i64] = &[100000, 101000, 102000, 103000];
 
-const SAMURAI_GENERAL: Character = Character {
-    id: "c1020",
-    behavior_base: 200_000_000 + 10200 * 1000,
-    behavior_param: "BehaviorParam",
-    atk_param: "AtkParam_Npc",
-    weapon_category: 0,
-    npc_row: Some(10203010),
-    sub_weapon_category: 0,
-    sub_behavior_base: 0,
-};
-
-const OCHIMUSHA: Character = Character {
-    id: "c1010",
-    behavior_base: 200_000_000 + 10100 * 1000,
-    behavior_param: "BehaviorParam",
-    atk_param: "AtkParam_Npc",
-    weapon_category: 0,
-    npc_row: Some(10100000),
-    sub_weapon_category: 0,
-    sub_behavior_base: 0,
-};
+/// An enemy: its main NpcParam row picks the behavior variation (NpcParam behaviorVariationId).
+fn npc(id: &str, npc_row: i64, npc_rows: &[i64], params: &Path) -> Character {
+    let npc = load_param(params, "NpcParam");
+    let var = |row: i64| npc.get(&row).and_then(|r| r.get("behaviorVariationId")).and_then(Value::as_i64).unwrap_or(0);
+    let mut variations: Vec<i64> = npc_rows.iter().map(|&r| var(r)).filter(|&v| v > 0).collect();
+    variations.sort();
+    variations.dedup();
+    let anim_chr = npc.get(&npc_row).and_then(|r| r.get("normalChangeAnimChrId")).and_then(Value::as_i64).filter(|&c| c > 0);
+    Character {
+        id: id.into(),
+        anim_id: anim_chr.map_or(id.to_string(), |c| format!("c{c:04}")),
+        behavior_base: 200_000_000 + var(npc_row) * 1000,
+        behavior_param: "BehaviorParam",
+        atk_param: "AtkParam_Npc",
+        weapon_category: 0,
+        npc_row: Some(npc_row),
+        sub_weapon_category: 0,
+        sub_behavior_base: 0,
+        npc_rows: npc_rows.to_vec(),
+        variations,
+    }
+}
 
 const SP_EFFECT_FIELDS: &[&str] = &[
     "name", "behaviorRefId", "stateInfo", "defStaminaAttackRate", "defFlickPower", "staminaAttackRate",
@@ -75,6 +89,13 @@ const SP_EFFECT_FIELDS: &[&str] = &[
     // SprjTargetingSystem, FUN_140bfe8a0 / FUN_140bfc050 / FUN_140bfea80...).
     "sightSearchEnemyCut", "aroundSightPointAddRate", "hearingSearchEnemyRate", "sightCutLimitType",
     "sightSearchLeftAngleCut", "sightSearchRightAngleCut", "sightSearchUpperAngleCut", "sightSearchBottomAngleCut",
+    // Status build-up (Paramdex SDT meta: poizonAttackPower = poison, stateInfo 2; registBlood =
+    // burn, stateInfo 6), its tick and the effects it turns into.
+    "motionInterval", "poizonAttackPower", "registBlood", "replaceSpEffectId", "cycleOccurrenceSpEffectId",
+    "vfxId", "vfxId1", "iconId", "registPoizonChangeRate", "registBloodChangeRate",
+    // Deathblow recovery skills (105050, 150301-150331): posture refill and the state-change trigger.
+    "changeStaminaRate", "changeStaminaPoint", "invocationConditionsStateChange1",
+    "invocationConditionsStateChange2", "invocationConditionsStateChange3",
 ];
 
 /// Every Bullet field a prosthetic tool's bullet (70xxxx-79xxxx) sets.
@@ -95,14 +116,16 @@ const BULLET_FIELDS: &[&str] = &[
 const ATK_FIELDS: &[&str] = &[
     "name", "atkPhys", "atkStam", "atkStamCorrection", "atkSuperArmor", "guardAtkRate", "guardBreakRate",
     "guardStaminaCutRate", "hit0_Radius", "hit1_Radius", "hit0_DmyPoly1", "hit0_DmyPoly2", "atkAttribute",
-    "spAttribute", "atkType", "guardAttribute", "staminaPhysicsAttribute", "atkMaterial_forSe", "atkPow_forSe", "defSeMaterial1", "defSeMaterial2", "deflectAction", "deflectedAction", "justDeflectAction",
+    "spAttribute", "atkType", "guardAttribute", "staminaPhysicsAttribute", "atkMaterial_forSe", "atkPow_forSe", "defSeMaterial1", "defSeMaterial2",
+    // Hit sparks (HitEffectSfxParam via the Concept / ConceptJustGuard tables), like the *_forSe fields.
+    "atkMaterial_forSfx", "atkPow_forSfx", "defSfxMaterial1", "defSfxMaterial2", "deflectAction", "deflectedAction", "justDeflectAction",
     "justDeflectedAction", "isDisableParry", "disableGuard_vsGuardAttribute0", "disableJustGuard_vsGuardAttribute0",
     "directAtkStamDamage", "directAtkStamDamage_Attacker", "repelLostStamDamage", "repelLostStamDamage_Attacker",
     "repelVictoryStamDamage_Attacker", "staminaDamageAttackHitParry", "knockbackDist_Guard", "knockbackDist_JustGuard",
     "atkFlickPower", "flickPower", "atkPhysCorrection", "atkStamCorrection", "directAtkStamCorrection",
     "guardAtkRateCorrection", "guardStaminaCutRate", "hitStopTime", "hitStopTime_Defencer", "dmgLevel", "dmgLevel_vsPlayer",
     "throwFlag", "knockbackDist_DirectHit", "atkMagCorrection", "atkFireCorrection", "atkThunCorrection",
-    "atkDarkCorrection",
+    "atkDarkCorrection", "spEffectId0", "spEffectId1", "spEffectId2", "spEffectId3", "spEffectId4", "opposeTarget", "friendlyTarget", "atkMag", "atkFire", "atkThun", "atkDark", "throwTypeId",
 ];
 
 fn load_param(json_dir: &Path, name: &str) -> HashMap<i64, Map<String, Value>> {
@@ -130,18 +153,23 @@ fn load_taes(dir: &Path, tmpl: &HashMap<i32, tae::EventTemplate>) -> HashMap<Str
             continue;
         }
         let t = tae::read_tae(&std::fs::read(&p).unwrap(), tmpl);
-        // Player TAEs are split per group ("a50.tae" = a050_*); an NPC has one "cXXXX.tae" for a000_*.
+        // Player TAEs are split per group ("a50.tae" = a050_*); an NPC has one "cXXXX.tae" whose
+        // ids carry the group: 100003001 = a100_003001 (the "Anime ID offset" sets, SpEffect
+        // 200030-200034 stateInfo 270-274 -> a000-a400).
         let stem = p.file_stem().unwrap().to_string_lossy();
-        let group: u32 = stem.strip_prefix('a').and_then(|n| n.parse().ok()).unwrap_or(0);
+        let group: i64 = stem.strip_prefix('a').and_then(|n| n.parse().ok()).unwrap_or(0);
         for a in t["anims"].as_array().unwrap() {
-            out.insert(format!("a{group:03}_{:06}", a["id"].as_i64().unwrap()), a.clone());
+            let id = a["id"].as_i64().unwrap();
+            let (g, n) = if id >= 1_000_000 { (id / 1_000_000, id % 1_000_000) } else { (group, id) };
+            out.insert(format!("a{g:03}_{n:06}"), a.clone());
         }
     }
     out
 }
 
 /// Finds "<key>.hkx" in any "<chr>_*.anibnd.d" folder, with that folder's compendium.
-fn find_hkx(chr_dir: &Path, chr: &str, key: &str, compendiums: &mut HashMap<PathBuf, hkx::Types>) -> Option<(Vec<u8>, hkx::Types)> {
+/// Also returns the binder folder name ("c0000_c1040.anibnd.d": Wolf's clips against one enemy).
+fn find_hkx(chr_dir: &Path, chr: &str, key: &str, compendiums: &mut HashMap<PathBuf, hkx::Types>) -> Option<(Vec<u8>, hkx::Types, String)> {
     for e in std::fs::read_dir(chr_dir).ok()?.flatten() {
         let dir = e.path();
         let name = dir.file_name()?.to_string_lossy().to_string();
@@ -163,7 +191,7 @@ fn find_hkx(chr_dir: &Path, chr: &str, key: &str, compendiums: &mut HashMap<Path
                     .unwrap_or_default()
             })
             .clone();
-        return Some((std::fs::read(file).ok()?, types));
+        return Some((std::fs::read(file).ok()?, types, name));
     }
     None
 }
@@ -196,11 +224,12 @@ fn export_character(
     params: &Path,
 ) -> Value {
     let chr_dir = root.join("chr");
-    let taes = load_taes(&chr_dir.join(format!("{}.anibnd.d", chr.id)), tmpl);
+    let chr_id = chr.anim_id.as_str();
+    let taes = load_taes(&chr_dir.join(format!("{chr_id}.anibnd.d")), tmpl);
     // The character's own behavior plus the shared NPC behavior (c9997.hkx) shipped in NPC behbnds.
     let mut cmsg = HashMap::new();
-    for file in ["c9997".to_string(), chr.id.to_string()] {
-        let path = chr_dir.join(format!("{}.behbnd.d/{file}.hkx", chr.id));
+    for file in ["c9997".to_string(), chr.anim_id.clone()] {
+        let path = chr_dir.join(format!("{chr_id}.behbnd.d/{file}.hkx"));
         if let Ok(d) = std::fs::read(&path) {
             cmsg.extend(hkx::cmsg_map(&d));
         }
@@ -213,7 +242,13 @@ fn export_character(
     // group for the equipped tool, like the combat arts' a100..a110.
     let mut state_names = state_names.to_vec();
     if chr.sub_weapon_category > 0 && !state_names.is_empty() {
-        let mut sub: Vec<String> = cmsg.iter().filter(|(_, (anim, ot))| *ot == 14 && *anim > 0).map(|(k, _)| k.clone()).collect();
+        // ...and the combat arts' no-Spirit-Emblem versions (offsetType 13 "*NoResource":
+        // GroundSpecialAttackCombo1NoResource 316001 -> a103_316001 / a104_316001).
+        let mut sub: Vec<String> = cmsg
+            .iter()
+            .filter(|(k, (anim, ot))| *anim > 0 && (*ot == 14 || (*ot == 13 && k.ends_with("NoResource"))))
+            .map(|(k, _)| k.clone())
+            .collect();
         sub.sort();
         for k in sub {
             if !state_names.contains(&k) {
@@ -260,7 +295,8 @@ fn export_character(
 
     let mut compendiums = HashMap::new();
     let mut anims = Map::new();
-    let mut clips: Vec<(String, hkx::Clip)> = Vec::new();
+    // (output file, anim key, clip): output "" = anim_<chr>.bin.
+    let mut clips: Vec<(String, String, hkx::Clip)> = Vec::new();
     let mut sp_ids = BTreeSet::new();
     let mut judge_ids = BTreeSet::new();
     // Combat-art judges by art anim group (a100..a110 = spAtkcategory), resolved through the
@@ -272,6 +308,7 @@ fn export_character(
     // Bullet judges (TAE 2) per anim group: prosthetic (a070) anims resolve at the
     // prosthetic's behavior base.
     let mut bullet_judges: BTreeSet<(i64, i64)> = BTreeSet::new();
+    let mut npc_bullet_judges: BTreeSet<i64> = BTreeSet::new();
     // Prosthetic tool melee (TAE 1 in a07x: the Axe, Sabimaru, Spear) per tool variation.
     let mut tool_judges: BTreeSet<(i64, i64)> = BTreeSet::new();
     // (weapon id, wepmotionCategory, behaviorVariationId) of every prosthetic tool level.
@@ -317,6 +354,12 @@ fn export_character(
                     pc_judges.insert(j);
                 }
             }
+            // NPC BulletBehavior (TAE 2): arrows, guns, shuriken, fire breath -> BehaviorParam refType 1.
+            if e["type"] == 2 && chr.npc_row.is_some() {
+                if let Some(j) = e["args"].get("BehaviorJudgeID").and_then(Value::as_i64) {
+                    npc_bullet_judges.insert(j);
+                }
+            }
             // AttackBehavior (1) and ThrowAttackBehavior (304) both resolve through BehaviorParam.
             if e["type"] == 1 || e["type"] == 304 {
                 if let Some(j) = e["args"].get("BehaviorJudgeID").and_then(Value::as_i64) {
@@ -334,18 +377,21 @@ fn export_character(
             .get(key)
             .and_then(|t| t.get("hkxFrom"))
             .and_then(Value::as_i64)
-            .map(|src| format!("{}_{:06}", &key[..4], src % 1_000_000));
+            .map(|src| if chr.npc_row.is_some() { format!("a{:03}_{:06}", src / 1_000_000, src % 1_000_000) } else { format!("{}_{:06}", &key[..4], src % 1_000_000) });
         // ImportOtherAnim (TAE mini header 1) brings the HKX along with the events: e.g. the
         // broken-enemy deathblows a201_511200 / 511400 play a201_510200 / 510300's clips.
-        let found = find_hkx(&chr_dir, chr.id, key, &mut compendiums)
-            .or_else(|| hkx_key.as_deref().and_then(|k| find_hkx(&chr_dir, chr.id, k, &mut compendiums)))
-            .or_else(|| if src != *key { find_hkx(&chr_dir, chr.id, &src, &mut compendiums) } else { None });
+        let found = find_hkx(&chr_dir, chr_id, key, &mut compendiums)
+            .or_else(|| hkx_key.as_deref().and_then(|k| find_hkx(&chr_dir, chr_id, k, &mut compendiums)))
+            .or_else(|| if src != *key { find_hkx(&chr_dir, chr_id, &src, &mut compendiums) } else { None });
         if let Some(k) = hkx_key.as_deref().filter(|_| found.is_some()) {
             a.insert("hkxFrom".into(), json!(k));
         }
-        if let Some((data, types)) = found {
+        if let Some((data, types, folder)) = found {
             if let Some(c) = hkx::clip(&data, &types) {
-                clips.push((key.clone(), c));
+                // Wolf's clips against one enemy (chr/c0000_c<chr>.anibnd, loaded by the exe per
+                // enemy) go to anim_c0000_c<chr>.bin; the General's stay in the main file.
+                let split = folder.strip_prefix("c0000_c").and_then(|f| f.strip_suffix(".anibnd.d")).filter(|n| *n != "1020").map(|n| format!("c0000_c{n}"));
+                clips.push((split.unwrap_or_default(), key.clone(), c));
             }
             let (dur, samples) = hkx::root_motion(&data, &types);
             if let Some(d) = dur {
@@ -389,9 +435,9 @@ fn export_character(
         sp_ids.insert(3000);
     }
     // Resident SpEffects (NpcParam spEffectID0..31) for NPCs, e.g. HP-conditional posture regen.
-    if let Some(npc_row) = chr.npc_row {
+    for npc_row in chr.npc_row.iter().chain(chr.npc_rows.iter()) {
         let npc = load_param(params, "NpcParam");
-        if let Some(r) = npc.get(&npc_row) {
+        if let Some(r) = npc.get(npc_row) {
             for i in 0..32 {
                 if let Some(id) = r.get(&format!("spEffectID{i}")).and_then(Value::as_i64).filter(|&v| v > 0) {
                     sp_ids.insert(id);
@@ -408,7 +454,7 @@ fn export_character(
     let beh = load_param(params, chr.behavior_param);
     let atk = load_param(params, chr.atk_param);
     let mut attacks = Map::new();
-    for j in judge_ids {
+    for &j in &judge_ids {
         // The weapon's own behavior variation first, then the equipped combat art's
         // (Whirlwind Slash = weapon 5100, behaviorVariationId 5001: +1000).
         let Some(b) = [chr.behavior_base + j, chr.behavior_base + 1000 + j].iter().find_map(|id| beh.get(id)) else { continue };
@@ -421,6 +467,22 @@ fn export_character(
             v["atkParamId"] = json!(atk_id);
             v["behaviorName"] = b["name"].clone();
             attacks.insert(j.to_string(), v);
+        }
+    }
+    // NPCs: the same judges in every behavior variation the character's rows use.
+    for &var in &chr.variations {
+        for &j in &judge_ids {
+            let Some(b) = beh.get(&(200_000_000 + var * 1000 + j)) else { continue };
+            if b.get("refType").and_then(Value::as_i64) != Some(0) {
+                continue;
+            }
+            let atk_id = b["refId"].as_i64().unwrap();
+            if let Some(a) = atk.get(&atk_id) {
+                let mut v = pick(a, ATK_FIELDS);
+                v["atkParamId"] = json!(atk_id);
+                v["behaviorName"] = b["name"].clone();
+                attacks.insert(format!("v{var}:{j}"), v);
+            }
         }
     }
     // Combat arts: "a<group>:<judge>" -> the AtkParam of the art's variation.
@@ -478,8 +540,20 @@ fn export_character(
     let mut bullets = Map::new();
     let mut bullet_rows: Map<String, Value> = Map::new();
     let mut extra_sp: BTreeSet<i64> = BTreeSet::new();
-    for (var, j) in &bullet_judges {
-        let Some(b) = beh.get(&(100_000_000 + var * 1000 + j)) else { continue };
+    // (BehaviorParam row, keys): the player's tool bullets per tool variation, an NPC's per
+    // behavior variation (bare judge = the main row's variation).
+    let mut bullet_sources: Vec<(i64, Vec<String>)> = bullet_judges
+        .iter()
+        .map(|&(var, j)| (100_000_000 + var * 1000 + j, if var == 7000 { vec![j.to_string(), format!("v{var}:{j}")] } else { vec![format!("v{var}:{j}")] }))
+        .collect();
+    for &j in &npc_bullet_judges {
+        bullet_sources.push((chr.behavior_base + j, vec![j.to_string()]));
+        for &var in &chr.variations {
+            bullet_sources.push((200_000_000 + var * 1000 + j, vec![format!("v{var}:{j}")]));
+        }
+    }
+    for (row, keys) in &bullet_sources {
+        let Some(b) = beh.get(row) else { continue };
         if b.get("refType").and_then(Value::as_i64) != Some(1) {
             continue;
         }
@@ -521,10 +595,9 @@ fn export_character(
             }
         }
         let Some(v) = bullet_rows.get(&first.to_string()).cloned() else { continue };
-        if *var == 7000 {
-            bullets.insert(j.to_string(), v.clone());
+        for k in keys {
+            bullets.insert(k.clone(), v.clone());
         }
-        bullets.insert(format!("v{var}:{j}"), v);
     }
     for (var, j) in &tool_judges {
         let Some(b) = beh.get(&(100_000_000 + var * 1000 + j)) else { continue };
@@ -558,17 +631,64 @@ fn export_character(
             })
         })
         .collect();
+    // Wolf's art and prosthetic behaviours (BehaviorParam_PC 105000000-107999999): wepCost (1 = the
+    // behaviour costs the tool's Spirit Emblems) and the ref; refType 2 rows are SpEffects TAE 940
+    // BehaviorParam_AddSpEffect puts on Wolf (Divine Abduction 107700: ref 309 USED_TEKIMAWASHI).
+    let mut behaviors = Map::new();
+    if chr.npc_row.is_none() {
+        for (id, b) in beh.iter().filter(|(id, _)| (105_000_000..=107_999_999).contains(*id)) {
+            let ref_type = b.get("refType").and_then(Value::as_i64).unwrap_or(-1);
+            let ref_id = b.get("refId").and_then(Value::as_i64).unwrap_or(-1);
+            behaviors.insert(id.to_string(), json!({ "wepCost": b.get("wepCost").cloned().unwrap_or(json!(0)), "refType": ref_type, "refId": ref_id }));
+            if ref_type == 2 && ref_id > 0 {
+                extra_sp.insert(ref_id);
+            }
+        }
+        // Divine Abduction follow-ups and tool-state SpEffects the HKS / TAE check by id.
+        extra_sp.extend([107715, 107716, 107717, 107718, 100260, 100277, 100290]);
+    }
+    // Every exported attack's on-hit SpEffects (Sabimaru AtkParam_Pc 7500100 -> 9004 poison).
+    for a in attacks.values().chain(bullet_rows.values().filter_map(|b| b.get("attack"))) {
+        let Some(row) = a.get("atkParamId").and_then(Value::as_i64).and_then(|id| atk.get(&id)) else { continue };
+        for k in ["spEffectId0", "spEffectId1", "spEffectId2", "spEffectId3", "spEffectId4"] {
+            if let Some(sid) = row.get(k).and_then(Value::as_i64).filter(|v| *v > 0) {
+                extra_sp.insert(sid);
+            }
+        }
+    }
+    // ...and what those turn into (replaceSpEffectId) or tick (cycleOccurrenceSpEffectId):
+    // 9004 -> 9045 poison damage.
+    let mut todo: Vec<i64> = extra_sp.iter().copied().chain(sp_effects.keys().filter_map(|k| k.parse().ok())).collect();
+    while let Some(id) = todo.pop() {
+        let Some(r) = sp.get(&id) else { continue };
+        for k in ["replaceSpEffectId", "cycleOccurrenceSpEffectId"] {
+            if let Some(n) = r.get(k).and_then(Value::as_i64).filter(|v| *v > 0) {
+                if extra_sp.insert(n) {
+                    todo.push(n);
+                }
+            }
+        }
+    }
     let mut sp_effects = sp_effects;
     for id in extra_sp {
         if let Some(r) = sp.get(&id) {
             sp_effects.insert(id.to_string(), pick(r, SP_EFFECT_FIELDS));
         }
     }
-    write_anim_bin(root, chr.id, &clips);
+    let mut files: BTreeMap<String, Vec<(String, hkx::Clip)>> = BTreeMap::new();
+    for (file, key, c) in clips {
+        files.entry(if file.is_empty() { chr_id.to_string() } else { file }).or_default().push((key, c));
+    }
+    for (file, clips) in &files {
+        write_anim_bin(root, chr_id, file, clips);
+    }
     println!("{}: {} states, {} anims, {} spEffects, {} attacks", chr.id, states.len(), anims.len(), sp_effects.len(), attacks.len());
     // Hurtboxes: ragdoll body capsules from chrbnd/<id>.HKX (Havok model space, bind pose).
     let hurtboxes: Vec<Value> = std::fs::read(chr_dir.join(format!("{0}.chrbnd.d/{0}.HKX", chr.id)))
-        .map(|d| hkx::ragdoll_capsules(&d))
+        // A ragdoll with shape types the reader lacks (c7021: hknpCapsuleShape outside the
+        // compendium) is skipped rather than ending the whole export.
+        .ok()
+        .and_then(|d| std::panic::catch_unwind(|| hkx::ragdoll_capsules(&d)).map_err(|_| eprintln!("{}: ragdoll not readable, no hurtboxes", chr.id)).ok())
         .unwrap_or_default()
         .into_iter()
         .map(|c| json!({ "bone": ragdoll_bone(&c.name), "a": c.a, "b": c.b, "r": c.radius }))
@@ -576,9 +696,9 @@ fn export_character(
     // NPC TAE 700 twists: the shared graph's modifiers bound to this character's properties.
     let mut twists = Map::new();
     if chr.id != "c0000" {
-        let (names, props) = std::fs::read(chr_dir.join(format!("{0}.behbnd.d/Characters_{0}.hkx", chr.id))).map(|d| hkx::character_properties(&d)).unwrap_or_default();
+        let (names, props) = std::fs::read(chr_dir.join(format!("{0}.behbnd.d/Characters_{0}.hkx", chr_id))).map(|d| hkx::character_properties(&d)).unwrap_or_default();
         let prop = |n: &str| names.iter().position(|x| x == n).and_then(|i| props.get(i)).copied().unwrap_or(0);
-        if let (Ok(d), false) = (std::fs::read(chr_dir.join(format!("{}.behbnd.d/c9997.hkx", chr.id))), props.is_empty()) {
+        if let (Ok(d), false) = (std::fs::read(chr_dir.join(format!("{chr_id}.behbnd.d/c9997.hkx"))), props.is_empty()) {
             // The graph picks the quadruped twists only when RefQuadrupedTwistEnable is set, the
             // humanoid ones when RefTwistEnable is (c1020 / c1010: 1 and 0).
             let mods = hkx::twist_modifiers_bound(&d, &props)
@@ -588,7 +708,7 @@ fn export_character(
             twists = twist_json(mods);
         }
     }
-    json!({ "states": states, "anims": anims, "spEffects": sp_effects, "attacks": attacks, "hurtboxes": hurtboxes, "bullets": bullets, "bulletRows": bullet_rows, "prosthetics": prosthetics, "twists": twists })
+    json!({ "states": states, "anims": anims, "spEffects": sp_effects, "attacks": attacks, "hurtboxes": hurtboxes, "bullets": bullets, "bulletRows": bullet_rows, "prosthetics": prosthetics, "twists": twists, "behaviors": behaviors })
 }
 
 fn twist_json(mods: Vec<(String, [f32; 4], Vec<(i16, i16, f32, f32, f32, f32)>)>) -> Map<String, Value> {
@@ -638,13 +758,38 @@ pub fn export(root: &Path, list_file: &Path, defs: &Path) {
             states.push(line.to_string());
         }
     }
-    let player = export_character(root, &PLAYER, &states, &extra, &tmpl, &params);
-    let enemy = export_character(root, &SAMURAI_GENERAL, &[], &[], &tmpl, &params);
+    // Wolf's side of every deathblow / throw (ThrowParam rows with AtkChrId 0): group
+    // atkAnimOffset (a200 generic, a201 the General, a215 the large Centipede, a242 Isshin...),
+    // clips in chr/c0000_c<chr>.anibnd (the exe loads "chranibnd:/c0000_c%04d.anibnd" per enemy).
+    let throw_rows = load_param(&params, "ThrowParam");
+    let mut throw_anims: BTreeSet<String> = throw_rows
+        .values()
+        .filter(|r| r.get("AtkChrId").and_then(Value::as_i64) == Some(0))
+        .filter_map(|r| Some((r.get("atkAnimOffset")?.as_i64()?, r.get("atkAnimId")?.as_i64()?)))
+        .filter(|&(g, a)| g > 0 && a > 0)
+        .map(|(g, a)| format!("a{g:03}_{a:06}"))
+        .collect();
+    // ... and Wolf's side of every enemy grab (DefChrId 0: defAnimOffset group, e.g. the General's
+    // 21020000 -> a210_600000).
+    throw_anims.extend(
+        throw_rows
+            .values()
+            .filter(|r| r.get("DefChrId").and_then(Value::as_i64) == Some(0) && r.get("AtkChrId").and_then(Value::as_i64).is_some_and(|c| c > 0))
+            .filter_map(|r| Some((r.get("defAnimOffset")?.as_i64()?, r.get("defAnimId")?.as_i64()?)))
+            .filter(|&(g, a)| g > 0 && a > 0)
+            .map(|(g, a)| format!("a{g:03}_{a:06}")),
+    );
+    throw_anims.retain(|k| !extra.contains(k));
+    extra.extend(throw_anims);
+    let player = export_character(root, &player(), &states, &extra, &tmpl, &params);
+    let general = npc("c1020", 10203010, &[10203010], &params);
+    let enemy = export_character(root, &general, &[], &[], &tmpl, &params);
     // Further enemies (select with config enemy.chr); "enemy" stays the Samurai General.
     let mut enemies = Map::new();
-    enemies.insert(SAMURAI_GENERAL.id.to_string(), enemy.clone());
+    enemies.insert(general.id.clone(), enemy.clone());
     if root.join("chr/c1010.anibnd.d").exists() {
-        enemies.insert(OCHIMUSHA.id.to_string(), export_character(root, &OCHIMUSHA, &[], &[], &tmpl, &params));
+        let ochimusha = npc("c1010", 10100000, &[10100000], &params);
+        enemies.insert(ochimusha.id.clone(), export_character(root, &ochimusha, &[], &[], &tmpl, &params));
     }
     // Camera shakes (TAE RumbleCam events): other/default.rumblebnd camera_NNN.hkx.
     let mut rumble = Map::new();
@@ -678,7 +823,44 @@ pub fn export(root: &Path, list_file: &Path, defs: &Path) {
         .flat_map(|r| ["spEffect1", "spEffect2", "spEffect3"].map(|k| r[k].as_i64().unwrap_or(-1)))
         .filter(|v| *v > 0)
         .collect();
-    export_hud(root);
+    // ...plus their accumuOverFireId chains (Knowledge of Medicine 150200 -> 150201 -> ... -> 150204).
+    let mut skill_sp = skill_sp;
+    {
+        let sp = load_param(&params, "SpEffectParam");
+        let mut i = 0;
+        while i < skill_sp.len() {
+            let next = sp.get(&skill_sp[i]).and_then(|r| r.get("accumuOverFireId")).and_then(Value::as_i64).filter(|v| *v > 0);
+            if let Some(n) = next.filter(|n| !skill_sp.contains(n)) {
+                skill_sp.push(n);
+            }
+            i += 1;
+        }
+    }
+    // HUD item icons (MENU_ItemIcon_<iconId:05>) of the combat arts (5000-7999) and prosthetic
+    // tools (70000-79999) for the equipped-item slots.
+    let icons: BTreeSet<String> = load_param(&params, "EquipParamWeapon")
+        .iter()
+        .filter(|(id, _)| (5000..8000).contains(*id) || (70000..80000).contains(*id))
+        .filter_map(|(_, r)| r.get("iconId").and_then(Value::as_i64).filter(|i| *i > 0))
+        .map(|i| format!("MENU_ItemIcon_{i:05}"))
+        .collect();
+    export_hud(root, &icons);
+    // The combat arts' "art has emblems" gates: resident R -> R / 100 * 100 + 10 when that row
+    // exists (140310 stateInfo 995, 140410 990, 140510 994, 140610 993; TAE events are gated by
+    // them). gap: the exe applies them; the link to the resident is inferred from ids and names.
+    let art_gates: Vec<i64> = {
+        let sp = load_param(&params, "SpEffectParam");
+        let mut v: Vec<i64> = load_param(&params, "EquipParamWeapon")
+            .iter()
+            .filter(|(id, _)| (5000..8000).contains(*id))
+            .filter_map(|(_, r)| r.get("residentSpEffectId").and_then(Value::as_i64).filter(|r| *r > 0))
+            .map(|r| r / 100 * 100 + 10)
+            .filter(|g| sp.contains_key(g))
+            .collect();
+        v.sort();
+        v.dedup();
+        v
+    };
     let out = json!({
         "names": { "weapon": weapon_names },
         "rumble": rumble,
@@ -707,7 +889,13 @@ pub fn export(root: &Path, list_file: &Path, defs: &Path) {
             // defenseMaterial1/2), column = the attack's atkMaterial_forSe group / type / power.
             "HitEffectSeParam": all_rows(&params, "HitEffectSeParam"),
             "HitEffectSeJustGuardParam": all_rows(&params, "HitEffectSeJustGuardParam"),
-            "SpEffectParam": rows(&params, "SpEffectParam", &[skill_sp.as_slice(), &[127000, 150420, 150421, 140000, 140100, 140101, 140200, 140201, 140300, 140400, 140500, 140501, 140600, 140601, 140700, 140701, 140800, 140801, 140900, 140901, 141000, 100286]].concat()),
+            // Hit / guard / deflect sparks: Concept(JustGuard) row = the defender's material
+            // (NpcParam materialSfx1/2, protector defenseMaterialSfx1/2), its column the attack's
+            // atkMaterial_forSfx -> HitEffectSfxParam row -> FXR per attack type and power.
+            "HitEffectSfxParam": all_rows(&params, "HitEffectSfxParam"),
+            "HitEffectSfxConceptParam": all_rows(&params, "HitEffectSfxConceptParam"),
+            "HitEffectSfxConceptJustGuardParam": all_rows(&params, "HitEffectSfxConceptJustGuardParam"),
+            "SpEffectParam": rows(&params, "SpEffectParam", &[skill_sp.as_slice(), &[127000, 150420, 150421, 140000, 140100, 140101, 140200, 140201, 140300, 140400, 140500, 140501, 140600, 140601, 140700, 140701, 140800, 140801, 140900, 140901, 141000, 100286], art_gates.as_slice()].concat()),
             "EquipParamProtector": rows(&params, "EquipParamProtector", PLAYER_PROTECTORS),
             "LockCamParam": all_rows(&params, "LockCamParam"),
             "CameraParam": all_rows(&params, "CameraParam"),
@@ -741,7 +929,7 @@ pub fn export(root: &Path, list_file: &Path, defs: &Path) {
 /// HUD sprites the game draws itself, cut from the menu atlases (menu/hi/01_common.tpf, sprite rects
 /// from menu/hi/01_common.sblytbnd <atlas>.layout) to extracted/hud/<name>.png: the deathblow mark
 /// (MENU_ninsatu_01 / _02 in SB_FE).
-fn export_hud(root: &Path) {
+fn export_hud(root: &Path, icons: &BTreeSet<String>) {
     const WANTED: [&str; 2] = ["MENU_ninsatu_01", "MENU_ninsatu_02"];
     let Ok(tpf) = std::fs::read(root.join("menu/hi/01_common.tpf")) else {
         eprintln!("no menu/hi/01_common.tpf (sekiro-extract unpack <dir> extracted 'menu/hi/01_common'): HUD sprites skipped");
@@ -760,7 +948,7 @@ fn export_hud(root: &Path) {
         let mut decoded = None;
         for line in text.lines() {
             let Some(name) = attr(line, "name").map(|n| n.trim_end_matches(".png").to_string()) else { continue };
-            if !WANTED.contains(&name.as_str()) {
+            if !WANTED.contains(&name.as_str()) && !icons.contains(&name) {
                 continue;
             }
             let Some(dds) = tex.get(&atlas) else { continue };
@@ -827,7 +1015,8 @@ fn export_decals(root: &Path, params: &Path, chars: &[&Value]) -> Value {
 ///   u32 bones; per bone: u16 name_len, name, i16 parent, f32 t[3] r[4] s[3]
 ///   u32 clips; per clip: u16 key_len, key, f32 frame_duration, u32 frames, u32 tracks,
 ///     i16 track_to_bone[tracks], then frames*tracks*(f32 t[3] r[4] s[3])
-fn write_anim_bin(root: &Path, chr: &str, clips: &[(String, hkx::Clip)]) {
+/// `chr` names the skeleton's anibnd, `file` the output (anim_<file>.bin).
+fn write_anim_bin(root: &Path, chr: &str, file: &str, clips: &[(String, hkx::Clip)]) {
     let anibnd = root.join("chr").join(format!("{chr}.anibnd.d"));
     let skel_path = ["skeleton.hkx", "Skeleton.HKX", "Skeleton.hkx"].iter().map(|n| anibnd.join(n)).find(|p| p.exists());
     let Some(skel_path) = skel_path else {
@@ -875,7 +1064,118 @@ fn write_anim_bin(root: &Path, chr: &str, clips: &[(String, hkx::Clip)]) {
             }
         }
     }
-    let path = root.join(format!("anim_{chr}.bin"));
+    let path = root.join(format!("anim_{file}.bin"));
     std::fs::write(&path, &out).unwrap();
     println!("{chr}: {} bones, {} clips -> {} ({} KB)", bones.len(), clips.len(), path.display(), out.len() / 1024);
+}
+
+/// Every enemy the game places (map/mapstudio/*.msb enemy parts, PartType 2 / 10 dummy enemies):
+/// chr id -> (NpcParam row, NpcThinkParam row) -> (placements, maps).
+fn roster(root: &Path) -> BTreeMap<String, BTreeMap<(i64, i64), (usize, BTreeSet<String>)>> {
+    let mut out: BTreeMap<String, BTreeMap<(i64, i64), (usize, BTreeSet<String>)>> = BTreeMap::new();
+    let dir = root.join("map/mapstudio");
+    for e in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+        let p = e.path();
+        if p.extension().is_none_or(|x| x != "msb") {
+            continue;
+        }
+        let map = p.file_stem().unwrap_or_default().to_string_lossy().to_string();
+        let Ok(d) = std::fs::read(&p) else { continue };
+        for part in crate::msb::read(&d).parts {
+            if !(part.kind == 2 || part.kind == 10) || !part.model.starts_with('c') || part.model == "c0000" || part.npc <= 0 {
+                continue;
+            }
+            let slot = out.entry(part.model.clone()).or_default().entry((part.npc as i64, part.think as i64)).or_default();
+            slot.0 += 1;
+            slot.1.insert(map.clone());
+        }
+    }
+    out
+}
+
+/// `sekiro-extract npcs <extracted> [chr ...]`: every placed enemy (or the listed ones) ->
+/// extracted/enemies/<chr>.json (the same character data as combat_data.json's "enemy", plus that
+/// character's param rows) and anim_<chr>.bin; extracted/enemies/roster.json lists them all.
+///   NpcParam rows: the character's own (id / 10000 = chr number) and every placed row;
+///   NpcThinkParam: the placed rows and the character's own; ThrowParam: rows whose
+///   AtkChrId / DefChrId is the chr number (PC deathblows 10000000 + chr * 1000 + suffix,
+///   the chr's grabs 20000000 + chr * 1000).
+pub fn export_npcs(root: &Path, defs: &Path, only: &[String]) {
+    let tmpl = tae::load_template(&defs.join("TAE.Template.SDT.xml"));
+    let params = root.join("json/params");
+    let npc_p = load_param(&params, "NpcParam");
+    let think_p = load_param(&params, "NpcThinkParam");
+    let throw_p = load_param(&params, "ThrowParam");
+    let names: BTreeMap<i64, String> = std::fs::read(root.join("msg/engus/item.msgbnd.d/NPC名.fmg")).map(|d| crate::fmg::read(&d)).unwrap_or_default();
+    let out_dir = root.join("enemies");
+    let _ = std::fs::create_dir_all(&out_dir);
+    let mut list = Vec::new();
+    let mut jobs = Vec::new();
+    for (chr, rows) in roster(root) {
+        let num: i64 = chr[1..].parse().unwrap_or(-1);
+        // Main row: the most placed one (ties: the lowest id).
+        let mut placed: Vec<(&(i64, i64), &(usize, BTreeSet<String>))> = rows.iter().collect();
+        placed.sort_by(|a, b| b.1.0.cmp(&a.1.0).then(a.0.cmp(b.0)));
+        let ((main_npc, main_think), _) = placed[0];
+        let anim_chr = npc_p.get(main_npc).and_then(|r| r.get("normalChangeAnimChrId")).and_then(Value::as_i64).filter(|&c| c > 0).map_or(chr.clone(), |c| format!("c{c:04}"));
+        let has_files = root.join(format!("chr/{chr}.chrbnd.d")).is_dir() && ["anibnd", "behbnd"].iter().all(|k| root.join(format!("chr/{anim_chr}.{k}.d")).is_dir());
+        // The official name (NPC名.fmg by nameId: bosses and named NPCs), else the param row's
+        // Paramdex name (English part before " -- ").
+        let npc_name = |row: i64| {
+            let r = npc_p.get(&row);
+            r.and_then(|r| r.get("nameId")).and_then(Value::as_i64).and_then(|n| names.get(&n)).cloned().unwrap_or_else(|| {
+                r.and_then(|r| r.get("name")).and_then(Value::as_str).map(|n| n.split(" -- ").next().unwrap_or("").trim().replace("&#39;", "'")).unwrap_or_default()
+            })
+        };
+        let mut npc_rows: Vec<i64> = npc_p.keys().copied().filter(|id| id / 10000 == num).collect();
+        npc_rows.extend(rows.keys().map(|k| k.0).filter(|id| npc_p.contains_key(id)));
+        npc_rows.sort();
+        npc_rows.dedup();
+        let mut think_rows: Vec<i64> = think_p.keys().copied().filter(|id| id / 10000 == num).collect();
+        think_rows.extend(rows.keys().map(|k| k.1).filter(|id| think_p.contains_key(id)));
+        think_rows.sort();
+        think_rows.dedup();
+        let deathblows = rows.keys().filter_map(|k| npc_p.get(&k.0)?.get("ninsatuNum")?.as_i64()).max().unwrap_or(0);
+        let placements: Vec<Value> = placed
+            .iter()
+            .map(|((npc, think), (count, maps))| {
+                let r = npc_p.get(npc);
+                let f = |k: &str| r.and_then(|r| r.get(k)).cloned().unwrap_or(Value::Null);
+                json!({ "npc": npc, "think": think, "count": count, "maps": maps, "name": npc_name(*npc),
+                        "hp": f("hp"), "posture": f("stamina"), "deathblows": f("ninsatuNum"), "variation": f("behaviorVariationId") })
+            })
+            .collect();
+        let entry = json!({ "chr": chr, "name": npc_name(*main_npc), "npc": main_npc, "think": main_think, "deathblows": deathblows,
+                            "animChr": anim_chr, "texChr": npc_p.get(main_npc).and_then(|r| r.get("normalChangeTexChrId")).cloned().unwrap_or(json!(-1)),
+                            "exported": has_files, "placements": placements });
+        list.push(entry.clone());
+        if !has_files || (!only.is_empty() && !only.contains(&chr)) {
+            continue;
+        }
+        jobs.push((chr.clone(), *main_npc, npc_rows, think_rows, entry, num, npc_name(*main_npc)));
+    }
+    let path = out_dir.join("roster.json");
+    std::fs::write(&path, serde_json::to_string_pretty(&list).unwrap()).unwrap();
+    println!("roster: {} characters -> {}", list.len(), path.display());
+    for (chr, main_npc, npc_rows, think_rows, entry, num, name) in jobs {
+        let c = npc(&chr, main_npc, &npc_rows, &params);
+        let mut data = export_character(root, &c, &[], &[], &tmpl, &params);
+        let pick_rows = |p: &HashMap<i64, Map<String, Value>>, ids: &[i64]| -> Value {
+            Value::Object(ids.iter().filter_map(|id| p.get(id).map(|r| (id.to_string(), Value::Object(r.clone())))).collect())
+        };
+        let throws: Vec<i64> = throw_p
+            .iter()
+            .filter(|(_, r)| [r.get("AtkChrId"), r.get("DefChrId")].iter().any(|v| v.and_then(|v| v.as_i64()) == Some(num)))
+            .map(|(id, _)| *id)
+            .collect();
+        data["params"] = json!({
+            "NpcParam": pick_rows(&npc_p, &npc_rows),
+            "NpcThinkParam": pick_rows(&think_p, &think_rows),
+            "ThrowParam": pick_rows(&throw_p, &throws),
+        });
+        data["roster"] = entry;
+        let path = out_dir.join(format!("{chr}.json"));
+        std::fs::write(&path, serde_json::to_string(&data).unwrap()).unwrap();
+        println!("{chr}: {name} -> {} KB", std::fs::metadata(&path).map(|m| m.len() / 1024).unwrap_or(0));
+    }
 }

@@ -49,8 +49,24 @@ pub struct Player {
     throw_target: Option<Entity>,
     /// Equipped prosthetic slot (index into config player.prosthetics; Z cycles it).
     pub tool_slot: usize,
+    /// TAE 922 ChrPhysicsVelosityScale in progress (`VelScale`).
+    vel_scale: Option<VelScale>,
     /// A switch is in progress: when its arm anim ends the new tool unfolds (SubWeaponExpand).
     expand_pending: bool,
+    /// The tool group of the last prosthetic use (HKS g_beforeSubAttackType): a combo follow-up
+    /// needs the same tool.
+    pub sub_cat_before: i64,
+    /// HKS g_airSubAttackCount: tool uses this jump (hks::AIR_SUB_ATTACK_COUNT_MAX), 0 on the ground.
+    pub air_sub_count: u32,
+    /// HKS g_airSpecialAttackCount: Sakura Dance (110) uses this jump (AIR_SP_ATTACK_COUNT_MAX 1),
+    /// also counted by its ground leap; 0 on the ground except in the jump readies (_LandReset).
+    pub air_art_count: u32,
+    /// HKS g_enableSpAttaclkJump: the art had its emblems when pressed (env(3035) at
+    /// BEH_A_GROUND_SP_ATTACK / BEH_A_AIR_SP_ATTACK); gates Shadowrush's hit jump.
+    pub art_enable_jump: bool,
+    /// SpEffects on Wolf with seconds left (TAE 940 BehaviorParam_AddSpEffect, e.g. Divine
+    /// Abduction's 107700: ref 309 USED_TEKIMAWASHI for 3 s); read as env(3036, ref).
+    pub timed: Vec<(i64, f32)>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -94,22 +110,58 @@ const GOURD_SPEFFECT: &str = "3000";
 const ART_WHIRLWIND: &str = "a100_316000";
 
 /// The equipped combat art's first anim: EquipParamWeapon[config player.combat_art]
-/// spAtkcategory -> group a<cat>, GroundSpecialAttackCombo1 = <group>_316000 (or 316001).
+/// spAtkcategory -> group a<cat>, GroundSpecialAttackCombo1 = <group>_316000 (or 316001); the jump
+/// arts (107 / 110) have none: their GroundSpecialAttackJumpReady 316700.
 fn art_anim(d: &CharData, combat: &Combat, config: &GameConfig) -> Option<String> {
     let cat = combat.param("EquipParamWeapon", config.player.combat_art)["spAtkcategory"].as_i64()?;
-    [316000, 316001].iter().map(|id| format!("a{cat:03}_{id}")).find(|k| d.anim(k).is_some_and(|a| a.duration.is_some()))
+    [316000, 316001, 316700].iter().map(|id| format!("a{cat:03}_{id}")).find(|k| d.anim(k).is_some_and(|a| a.duration.is_some()))
 }
+/// A state's anim id: the state table's, else for SprintSpecialAttackJumpReady (in c0000.hkx, but
+/// CMSG gives it no animId) its NoResource twin's 316770.
+fn art_state_id(d: &CharData, state: &str) -> Option<String> {
+    match d.states.get(state) {
+        Some(k) => k.rsplit('_').next().map(str::to_string),
+        None => match state {
+            "SprintSpecialAttackJumpReady" => Some("316770".to_string()),
+            _ => None,
+        },
+    }
+}
+
+/// A state's anim in the art's group: the state's id under a<cat> (a107_316710 ...).
+fn art_key(d: &CharData, cat: i64, state: &str) -> Option<String> {
+    let id = art_state_id(d, state)?;
+    let key = format!("a{cat:03}_{id}");
+    d.anim(&key).is_some_and(|an| an.duration.is_some()).then_some(key)
+}
+
 /// HKS _FireSpAttackCombo: the art state that follows `state` when the art is pressed again
 /// inside SP_EF_REF_TAE_ENABLE_SP_ATK_COMBO (223). `cat` = spAtkcategory (SP_ATK_TYPE_1xx);
 /// `unlocked(ref)` = the SP_EF_REF_WEP_SP_ATK_UNLOCK_* ref is up (the upgraded art's resident
 /// SpEffect, e.g. Ichimonji: Double 7100 -> 140201 -> ref 281).
-fn art_combo_next(state: &str, cat: i64, unlocked: impl Fn(i64) -> bool) -> Option<&'static str> {
+fn art_combo_next(state: &str, cat: i64, enable: bool, unlocked: impl Fn(i64) -> bool) -> Option<&'static str> {
     const UNLOCK_102_COMBO: i64 = 281;
     const UNLOCK_105_COMBO: i64 = 282;
     const UNLOCK_107_COMBO: i64 = 284;
     const UNLOCK_108_FINISH: i64 = 285;
     match state {
-        "GroundSpecialAttackCombo1" | "GroundSpecialAttackCombo1Release" | "SprintSpecialAttack" | "SprintSpecialAttackRelease" => match cat {
+        // Line 5379: One Mind's hold action -> its second cut (W_GroundSpacialAttackVariationCombo2,
+        // *NoResource without the emblems).
+        "GroundSpacialAttackHoldAction" | "GroundSpacialAttackHoldActionNoResource" if cat == 104 => {
+            Some(if enable { "GroundSpacialAttackVariationCombo2" } else { "GroundSpacialAttackVariationCombo2NoResource" })
+        }
+        // Line 5406: out of the hold's end, the draw.
+        "GroundSpacialAttackHoldEnd" => Some("GroundSpecialAttackCombo1"),
+        // Line 5386: also out of the jump arts' landings (High Monk's kicks go on).
+        "GroundSpecialAttackCombo1"
+        | "GroundSpecialAttackCombo1Release"
+        | "SprintSpecialAttack"
+        | "SprintSpecialAttackRelease"
+        | "LandAirSpecialAttack"
+        | "LandAirSpecialAttackStart"
+        | "LandAirSpecialAttackLoop"
+        | "LandGroundSpecialAttackJumpStart"
+        | "LandGroundSpecialAttackJumpFallLoop" => match cat {
             102 if !unlocked(UNLOCK_102_COMBO) => None,
             107 if !unlocked(UNLOCK_107_COMBO) => Some("GroundSpecialAttackCombo2Finish"),
             108 if !unlocked(UNLOCK_108_FINISH) => Some("GroundSpecialAttackCombo2Finish"),
@@ -127,14 +179,72 @@ fn art_combo_next(state: &str, cat: i64, unlocked: impl Fn(i64) -> bool) -> Opti
     }
 }
 
+/// HKS BEH_A_AIR_SP_ATTACK (2906-2940): the art pressed in the air -> (state, counted). `enable` =
+/// env(3035) (the emblems), `count` = g_airSpecialAttackCount, `ref_226` = the hit jump's derive
+/// window. Sakura Dance (110) once per jump (else W_AddActionInputSpacialAttack, an additive: none
+/// here). gap: ACTION_UNLOCK_TYPE_AIR_SP_ATTACK (25) is read as learned.
+pub(crate) fn air_art_state(cat: i64, unlock: i64, enable: bool, count: u32, ref_226: bool) -> Option<(&'static str, bool)> {
+    const AIR_SP_ATTACK_COUNT_MAX: u32 = 1;
+    Some(match cat {
+        110 if count >= AIR_SP_ATTACK_COUNT_MAX => return None,
+        101 | 107 | 108 => ("AirSpecialAttackStart", false),
+        110 => (if enable { "AirSpecialAttackStart" } else { "AirSpecialAttackStartNoResource" }, true),
+        109 if unlock == SP_REF_UNLOCK_109_FALL_ATTACK && ref_226 => ("GroundSpecialAttackHitJumpDeriveAction", false),
+        104 => ("AirSpecialAttackHoldStart", false),
+        103 if !enable => ("AirSpecialAttackNoResource", false),
+        _ => ("AirSpecialAttack", false),
+    })
+}
+
+/// HKS BEH_R_LAND (1971-2015) for the air art states -> (land state, keep the time). `ref_201` =
+/// SP_EF_REF_TAE_ENABLE_ORIGINAL_LAND_ACTION, `ref_288` = ..._SP_ATK_110 (Sakura Dance's bounce,
+/// a110_316200 f0-37). None = the plain _LandFreeFall.
+fn air_art_land(cat: i64, state: &str, ref_201: bool, ref_288: bool) -> Option<(&'static str, bool)> {
+    Some(match state {
+        "AirSpecialAttack" if ref_201 => ("LandAirSpecialAttack", true),
+        "AirSpecialAttackNoResource" if ref_201 => ("LandAirSpecialAttackNoResource", true),
+        "AirSpecialAttackStart" if cat == 110 && ref_288 => ("AirSpecialAttackLandingJumpReady", true),
+        "AirSpecialAttackLandingJumpStart" if cat == 110 && ref_201 => ("LandGroundSpecialAttackJumpAfterJumpStart", true),
+        "AirSpecialAttackStart" if cat == 110 && ref_201 => ("LandGroundSpecialAttackJumpFallLoop", true),
+        "AirSpecialAttackStartNoResource" if cat == 110 && ref_288 => ("AirSpecialAttackLandingJumpReadyNoResource", true),
+        "AirSpecialAttackLandingJumpStartNoResource" if cat == 110 && ref_201 => ("LandGroundSpecialAttackJumpAfterJumpStartNoResource", true),
+        "AirSpecialAttackStartNoResource" if cat == 110 && ref_201 => ("LandGroundSpecialAttackJumpFallLoopNoResource", true),
+        "AirSpecialAttackStart" if ref_201 => ("LandAirSpecialAttackStart", true),
+        "AirSpecialAttackLoop" => ("LandAirSpecialAttackLoop", false),
+        "AirSpecialAttackLoopNoResource" => ("LandAirSpecialAttackLoopNoResource", false),
+        "AirSpacialAttackEnd" if ref_201 => ("LandAirSpacialAttackEnd", true),
+        "AirSpecialAttackHoldStart" if ref_201 => ("LandAirSpecialAttackHoldStart", true),
+        "AirSpecialAttackHoldLoop" => ("LandAirSpecialAttackHoldLoop", false),
+        "AirSpacialAttackHoldEnd" if ref_201 => ("LandAirSpacialAttackHoldEnd", true),
+        _ => return None,
+    })
+}
+
 /// HKS BEH_A_GROUND_SP_ATTACK: the art's opening state by type. Out of a sprint (ref 1) the
 /// Sprint* variant; 101 steps (_set2DirStepDir: stick within +-90 deg of the facing -> F, no
 /// stick -> N, else B; without SP_EF_REF_WEP_SP_ATK_UNLOCK_101_BACK_ATTACK (280) always F);
 /// otherwise GroundSpecialAttackCombo1. Candidates in order; the first whose anim exists in the
-/// art's group wins; 104 opens its hold (GroundSpacialAttackHoldStart). gap: 107 / 110 jump starts.
-fn art_start_states(cat: i64, unlock: i64, sprint: bool, stick: Vec3, fwd: Vec3) -> Vec<String> {
+/// art's group wins; 104 opens its hold (GroundSpacialAttackHoldStart). `enable` = env(3035,
+/// ACTION_ARM_SPECIAL_ATTACK), read as "enough Spirit Emblems" (`art_cost`): without, Dragon Flash (103)
+/// plays its *NoResource opening (a103_316001 / 316301). gap: 107 / 110 jump starts.
+fn art_start_states(cat: i64, unlock: i64, sprint: bool, stick: Vec3, fwd: Vec3, enable: bool) -> Vec<String> {
     let mut out = Vec::new();
     let pre = if sprint { "Sprint" } else { "Ground" };
+    // 107 (Senpou Leaping Kicks / High Monk) and 110 (Sakura Dance) leap first (HKS 3437-3453):
+    // W_GroundSpecialAttackJumpReady (Sprint* out of a sprint; 110 without the emblems
+    // *NoResource; the sprint one plays 316770, `art_state_id`).
+    if cat == 107 || cat == 110 {
+        let nr = if cat == 110 && !enable { "NoResource" } else { "" };
+        if sprint {
+            out.push(format!("SprintSpecialAttackJumpReady{nr}"));
+        }
+        out.push(format!("GroundSpecialAttackJumpReady{nr}"));
+        out.push("GroundSpecialAttackJumpReady".to_string());
+        return out;
+    }
+    if cat == 103 && !enable {
+        out.push(if sprint { "SprintSpecialAttackNoResource" } else { "GroundSpecialAttackCombo1NoResource" }.to_string());
+    }
     if cat == 101 {
         let dir = if unlock != 280 || (stick != Vec3::ZERO && stick.dot(fwd) > 0.0) {
             "F"
@@ -153,6 +263,31 @@ fn art_start_states(cat: i64, unlock: i64, sprint: bool, stick: Vec3, fwd: Vec3)
     }
     out.push("GroundSpecialAttackCombo1".to_string());
     out
+}
+
+/// Knowledge of Medicine (SkillParam 170 / 171 / 600-602, each 150200 + 150210): every learned one
+/// adds 150210's accumuVal 1; the stacks climb 150200's accumuOverFireId chain (LV2 150201 at
+/// accumuOverVal 2, LV3 150202 at 3, ...) and the level's changeHpEstusFlaskCorrectRate (1.1 - 1.5)
+/// scales the gourd's heal (sim test `latent_skill_rates`: 1.1, 1.2).
+pub fn medicine_rate(combat: &Combat, config: &GameConfig) -> f32 {
+    let effects: Vec<&serde_json::Value> = crate::combat::skill_sp_effects(combat, config).collect();
+    let stacks: i64 = effects.iter().filter_map(|se| se["accumuVal"].as_i64()).filter(|v| *v > 0).sum();
+    let Some(mut row) = effects.into_iter().find(|se| se["changeHpEstusFlaskCorrectRate"].as_f64().is_some_and(|r| r != 1.0)) else { return 1.0 };
+    for _ in 0..8 {
+        let (next, need) = (row["accumuOverFireId"].as_i64().unwrap_or(-1), row["accumuOverVal"].as_i64().unwrap_or(0));
+        let up = combat.param("SpEffectParam", next);
+        if next <= 0 || need <= 0 || stacks < need || up.is_null() {
+            break;
+        }
+        row = up;
+    }
+    row["changeHpEstusFlaskCorrectRate"].as_f64().unwrap_or(1.0) as f32
+}
+
+/// The equipped art's Spirit Emblem cost (EquipParamWeapon resourceItemA: Dragon Flash 5400 2,
+/// Ashina Cross 5500 2, Mortal Draw 5700 3, ...), paid by its wepCost behaviours (prosthetic.rs).
+pub fn art_cost(combat: &Combat, config: &GameConfig) -> u32 {
+    combat.param("EquipParamWeapon", config.player.combat_art)["resourceItemA"].as_u64().unwrap_or(0) as u32
 }
 
 /// The equipped art's spAtkcategory and the unlock ref of its resident SpEffect (0 = none).
@@ -206,6 +341,8 @@ pub const REF_ADD_INPUT_GUARD: i64 = 411;
 pub const REF_HIT_DEFLECT_CANCEL: i64 = 503;
 /// SP_EF_REF_TAE_ENABLE_ORIGINAL_LAND_ACTION: landing keeps the attack going (LandAir* anims).
 pub const REF_ORIGINAL_LAND_ACTION: i64 = 201;
+/// SP_EF_REF_TAE_ENABLE_SUB_ATTACK_DERIVE_ATTACK (c0000_define 666).
+pub const REF_SUB_ATTACK_DERIVE_ATTACK: i64 = 301;
 /// SP_EF_REF_TAE_ENABLE_DEFLECT_GUARD_ATTACK / _TRANSITION_STEP_ATTACK.
 pub const REF_DEFLECT_GUARD_ATTACK: i64 = 213;
 pub const REF_STEP_ATTACK: i64 = 224;
@@ -342,6 +479,15 @@ pub fn deathblow_check(combat: &Combat, wolf: Vec3, ea: &Actor, enemy: &Enemy, a
     } else {
         (0, 1)
     };
+    // A major boss's last deathblow is its Todome (トドメ始動 / 本体, ThrowParam 0180 / 0181: Wolf
+    // a2xx_501700 -> 511700, the boss ThrowDef13700); only the bosses with several deathblows have
+    // these rows (c5000, c5060, c5100, c5400, c5430, c7020, c7110). gap: the exe's choice of the
+    // Todome rows is not traced (by the rows' names and ninsatuNum).
+    let todome = !unaware && enemy.ninsatsu.0 <= 1 && enemy.ninsatsu.1 > 1;
+    let (start_sfx, suffix) = match (todome, combat.throw(combat.foe.throw_row(181))) {
+        (true, Some(t)) if d.anim(&t.atk_anim).is_some() => (180, 181),
+        _ => (start_sfx, suffix),
+    };
     let main = combat.throw(combat.foe.throw_row(suffix))?;
     let start = combat.throw(combat.foe.throw_row(start_sfx)).filter(|st| d.anim(&st.atk_anim).is_some());
     let in_reach = dist <= start.as_ref().map_or(main.dist, |st| st.dist);
@@ -454,14 +600,39 @@ fn follow_throw(
     throw.0 = None;
 }
 
-/// Keeps CharData.art_variation on the equipped art (config player.combat_art, also after F5).
-fn sync_art_variation(config: Res<GameConfig>, mut combat: ResMut<Combat>) {
-    if !config.is_changed() && combat.player.art_variation.is_some() {
-        return;
-    }
+/// The equipped art's "has emblems" StateInfo: the SpEffect 10 after its resident family
+/// (resident 140501 Spiral Cloud Passage -> 140510 stateInfo 994; Mortal Draw 140600 -> 140610 993;
+/// Dragon Flash 140300 -> 140310 995; Ashina Cross 140400 -> 140410 990). gap: no param or TAE puts
+/// these on (the exe does); the resident -> +10 link is read from the ids and names (形代あり =
+/// "has emblems"), and they are taken as on while Wolf holds the art's resourceItemA.
+fn art_emblem_gate(combat: &Combat, config: &GameConfig) -> Option<i64> {
+    let resident = combat.param("EquipParamWeapon", config.player.combat_art)["residentSpEffectId"].as_i64().filter(|&r| r > 0)?;
+    combat.param("SpEffectParam", resident / 100 * 100 + 10)["stateInfo"].as_i64().filter(|&s| s > 0)
+}
+
+/// Keeps CharData.art_variation on the equipped art (config player.combat_art, also after F5),
+/// and tool_variation / resident_gates on the equipped prosthetic tool level (Z switches it).
+fn sync_art_variation(config: Res<GameConfig>, player: Query<&Player>, mut combat: ResMut<Combat>) {
+    let slot = player.iter().next().map_or(0, |p| p.tool_slot);
+    let tool = equipped_tool(&combat, &config, slot).map(|t| (t.id, t.variation));
     let var = combat.param("EquipParamWeapon", config.player.combat_art)["behaviorVariationId"].as_i64();
-    if combat.player.art_variation != var {
+    // The resident SpEffects' StateInfos (sound::active_state_infos without the TAE SpEffects).
+    let probe = Actor::new(crate::actor::Side::Player, 1.0, 1.0, 0.0, 0);
+    let mut gates = crate::sound::active_state_infos(&combat, &probe, Some(&config), tool.map(|t| t.0));
+    // The art's "has emblems" StateInfo (`art_emblem_gate`): Mortal Draw's emblem slash (judges
+    // 220-231) and consumption dummy 999 (993), Spiral Cloud Passage's cost 999 (994) fire only with it.
+    let emblems = player.iter().next().map_or(0, |p| p.emblems);
+    let cost = art_cost(&combat, &config);
+    if cost > 0 && emblems >= cost {
+        if let Some(gate) = art_emblem_gate(&combat, &config) {
+            gates.push(gate);
+        }
+    }
+    let tool_var = tool.map(|t| t.1);
+    if combat.player.art_variation != var || combat.player.tool_variation != tool_var || combat.player.resident_gates != gates {
         combat.player.art_variation = var;
+        combat.player.tool_variation = tool_var;
+        combat.player.resident_gates = gates;
     }
 }
 
@@ -486,7 +657,7 @@ fn spawn_player(mut commands: Commands, combat: Res<Combat>, config: Res<GameCon
         }
     }
     commands.spawn((
-        Player { plunge: None, speed_level: 0.0, requests: HashMap::new(), last_state: String::new(), gourd: config.player.gourd_charges, emblems: config.player.spirit_emblems, auto_aim: false, auto_aim_fresh: false, resurrections: config.player.resurrections, jump_forward: false, jump_land: None, step_tilt: 0.0, throw_start: None, throw_target: None, tool_slot: 0, expand_pending: false },
+        Player { plunge: None, speed_level: 0.0, requests: HashMap::new(), last_state: String::new(), gourd: config.player.gourd_charges, emblems: config.player.spirit_emblems, auto_aim: false, auto_aim_fresh: false, resurrections: config.player.resurrections, jump_forward: false, jump_land: None, step_tilt: 0.0, throw_start: None, throw_target: None, tool_slot: 0, vel_scale: None, expand_pending: false, sub_cat_before: 0, air_sub_count: 0, air_art_count: 0, art_enable_jump: false, timed: Vec::new() },
         actor,
         Name::new("Player"),
         Transform::from_xyz(0.0, CAPSULE_HALF_HEIGHT, 4.0),
@@ -574,6 +745,11 @@ pub fn equipped_tool<'a>(combat: &'a Combat, config: &GameConfig, slot: usize) -
     combat.player.prosthetics.iter().find(|t| t.id == id)
 }
 
+/// A prosthetic tool's own clip (groups a070..a079).
+pub fn is_tool_anim(anim: &str) -> bool {
+    anim.get(1..4).and_then(|g| g.parse::<i64>().ok()).is_some_and(|g| (70..=79).contains(&g))
+}
+
 /// A prosthetic state's anim in a tool's own group: the state map holds the Shuriken's
 /// (a070_<id>); the tool plays a0<group>_<id> (HKS: offsetType 14 = the left-hand weapon's
 /// wepmotionCategory). None when that tool has no such anim.
@@ -581,6 +757,29 @@ pub fn tool_anim(d: &CharData, state: &str, group: i64) -> Option<String> {
     let key = d.anim_key(state)?;
     let k = format!("a{group:03}{}", key.get(4..)?);
     d.anim(&k).is_some_and(|a| a.duration.is_some()).then_some(k)
+}
+
+/// A prosthetic state's anim for the equipped tool group: `tool_anim`, else the state's own anim
+/// (the shared a070 clips, e.g. AddSubAttackFailed), else W_SubAttackFailed's clip: its CMSG is
+/// animId 400900 offsetType 11 and only a070_400900 ships it.
+pub fn sub_anim(d: &CharData, state: &str, group: i64) -> Option<String> {
+    if state == "SubAttackFailed" {
+        return d.anim("a070_400900").is_some_and(|a| a.duration.is_some()).then(|| "a070_400900".to_string());
+    }
+    // W_SubAttackFailedAir likewise ships only as a070_403900.
+    if state == "SubAttackFailedAir" {
+        return d.anim("a070_403900").is_some_and(|a| a.duration.is_some()).then(|| "a070_403900".to_string());
+    }
+    // The flame's hold loop shares its clip with HoldMove (CMSG animId 400300 for both).
+    let state = if state == "GroundSubAttackHoldLoop" { "GroundSubAttackHoldMove" } else { state };
+    // The whistle's walking W_GroundSubAttackCombo1Move / LockOnMove have no clip of their own (CMSG
+    // animId 0): the standing *Moveable clip on the upper body over the walk (HKS 3731: StartTime_02).
+    let moveable = format!("{state}able");
+    let state = if state.ends_with("SubAttackCombo1Move") || state.ends_with("SubAttackLockOnMove") { moveable.as_str() } else { state };
+    tool_anim(d, state, group).or_else(|| {
+        let k = d.anim_key(state)?;
+        (group == 70 && d.anim(k).is_some_and(|a| a.duration.is_some())).then(|| k.to_string())
+    })
 }
 
 /// States that keep Wolf crouched: crouch idle / locomotion and its own starts, stops and turns.
@@ -611,9 +810,18 @@ fn is_guard_idle(state: &str) -> bool {
 const WALK_TWIST_RATE: f32 = 0.1 * 30.0;
 
 /// HKS STATE_TYPE_UPPER_ACTION states Wolf uses (c0000.hkx StandMoveUpper_SM): drawn over the
-/// walk/run by anim.rs, moved by lower_body_move.
+/// walk/run by anim.rs, moved by lower_body_move. Also STATE_TYPE_UPPER_ACTION_ATK (c0000_cmsg
+/// g_paramHkbState): the Finger Whistle's standing *Moveable / walking *Move states.
+/// gap: the crouched ones (CrouchSubAttack*Moveable) keep still legs.
 pub(crate) fn is_upper_action(state: &str) -> bool {
     state.starts_with("DeflectGuardToStandMove")
+        || matches!(
+            state,
+            "GroundSubAttackCombo1Moveable" | "GroundSubAttackCombo1Move" | "GroundSubAttackCombo1ReleaseMoveable" | "GroundSubAttackLockOnMoveable" | "GroundSubAttackLockOnMove" | "GroundSubAttackLockOnReleaseMoveable"
+        )
+        // The crouched whistle (CROUCH_SUB_ATTACK_*_MOVEABLE / _MOVE: STATE_TYPE_UPPER_ACTION_ATK);
+        // the legs take the crouch walk (Actor::move_clip).
+        || (state.starts_with("CrouchSubAttack") && (state.ends_with("Moveable") || state.ends_with("Move")))
 }
 
 fn is_air_guard(state: &str) -> bool {
@@ -623,6 +831,11 @@ fn is_air_guard(state: &str) -> bool {
 /// SpEffect behaviorRefIds the HKS reads with env(3036, ...) (c0000_define.lua SP_EF_REF_*).
 const SP_REF_DISABLE_AIR_KICK: i64 = 108;
 const SP_REF_KICK_ENEMY_JUMP: i64 = 204;
+const SP_REF_SP_ATK_HIT_JUMP: i64 = 225;
+const SP_REF_SP_ATK_HIT_JUMP_DERIVE_ACTION: i64 = 226;
+/// SP_EF_REF_WEP_SP_ATK_UNLOCK_109_FALL_ATTACK: Shadowfall 7600's resident SpEffect 140901.
+const SP_REF_UNLOCK_109_FALL_ATTACK: i64 = 286;
+const SP_REF_ORIGINAL_LAND_ACTION_SP_ATK_110: i64 = 288;
 
 /// env(3036, ref): is an SpEffect with this behaviorRefId applied by the current anim's TAE?
 fn sp_ref_active(d: &CharData, a: &Actor, behavior_ref: i64) -> bool {
@@ -956,6 +1169,42 @@ pub(crate) fn stick_world(stick: Vec2, cam_yaw: f32) -> Vec3 {
     (rot * Vec3::NEG_Z * stick.y + rot * Vec3::X * stick.x).normalize_or_zero()
 }
 
+/// TAE 922 ChrPhysicsVelosityScale, exe FUN_140b537a0 -> FUN_140bb1980 (args: s32 row, then u8
+/// horizontal curve, u8 its exponent, u8 vertical curve, u8 its exponent; the template's
+/// unk1..unk4, a missing one read as 0): two CSEasingValue interpolators 0 -> 1 over the event
+/// (end - start), started at the time since its start; each tick (FUN_140ba.. velocity pass,
+/// "+0xd9 active") velocity = start + (target - start) * ease, horizontal on the first curve, vertical
+/// on the second, until both reach 1. Target: the tick's own velocity times the
+/// ChrPhysicsVelocityChangeParam row's horizontal / vertical scale. gap: where the exe applies
+/// the row's scales to the target is not traced (the target read is the tick's velocity,
+/// +0x140); scaling it is the reading that uses the row.
+struct VelScale {
+    v0: Vec3,
+    vy0: f32,
+    /// What last tick's blend took off the free velocity (horizontal, vertical).
+    delta: (Vec3, f32),
+    scale: (f32, f32),
+    curves: [(u8, u8); 2],
+    elapsed: f32,
+    duration: f32,
+}
+
+/// CSEasingValue curves (exe table 0x142bccfa0, three functions per type, names at 0x143b1d4b0):
+/// 0 Linear (FUN_1411a0b90: x), 1 EaseIn (0bd0: x^n), 2 EaseOut (0d70: 1 - (1 - x)^n), 3 EaseInOut
+/// (0fb0: EaseIn on the first half, EaseOut on the second, each squeezed to half), n = the exponent.
+fn ease((kind, n): (u8, u8), x: f32) -> f32 {
+    let n = n as f32;
+    let ease_in = |x: f32| x.powf(n);
+    let ease_out = |x: f32| 1.0 - (1.0 - x).powf(n);
+    match kind {
+        1 => ease_in(x),
+        2 => ease_out(x),
+        3 if x < 0.5 => ease_in(2.0 * x) * 0.5,
+        3 => ease_out(2.0 * x - 1.0) * 0.5 + 0.5,
+        _ => x,
+    }
+}
+
 fn yaw_of(dir: Vec3) -> f32 {
     f32::atan2(-dir.x, -dir.z)
 }
@@ -1032,21 +1281,41 @@ fn decide(
         a.play("StandIdle", "");
         tf.translation = Vec3::new(0.0, CAPSULE_HALF_HEIGHT, 4.0);
     }
-    // Resurrection: GroundRevival's TAE applies SpEffect 110015 "Resurrection Technique_HP
-    // Half Recovery" (changeHpRate -50 -> +50 % of max HP) at frame 0.
-    if a.state.starts_with("GroundRevival_") {
-        let heal = d.anim(&a.anim).map_or(0.0, |an| {
-            an.events
+    // One-shot recoveries from the TAE's AddSpEffect (motionInterval 999: applied once): the
+    // resurrection's 110015 "HP Half Recovery" (changeHpRate -50 -> +50 % of max HP, frame 0) and
+    // the deathblow's (a20x_510xxx at the kill frame): 105050 posture 34 % for everyone, and the
+    // skills' 150301 / 150311 HP 10 % and 150321 / 150331 posture 34 %, which work only while the
+    // skill's permit stateInfo (986 / 987 / 984 / 985, invocationConditionsStateChange1) is on Wolf.
+    // gap: the "recovery prohibited" 105051 / 150302 (event scripts) are never applied.
+    if a.prev_t < a.t {
+        let states: Vec<i64> = crate::combat::skill_sp_effects(&combat, &config).filter_map(|se| se["stateInfo"].as_i64()).filter(|&s| s > 0).collect();
+        let (mut heal, mut posture) = (0.0f32, 0.0f32);
+        if let Some(an) = d.anim(&a.anim) {
+            for s in an
+                .events
                 .iter()
-                .filter(|e| matches!(e.kind, 67 | 401) && e.start > a.prev_t - 1e-4 && e.start <= a.t && a.prev_t < a.t)
+                .filter(|e| matches!(e.kind, 67 | 401) && e.start > a.prev_t - 1e-4 && e.start <= a.t)
                 .filter_map(|e| d.sp_effects.get(&e.arg_i64("SpEffectID").unwrap_or(0).to_string()))
-                .map(|s| -s.change_hp_rate)
-                .filter(|r| *r > 0.0)
-                .sum::<f32>()
-        });
+                .filter(|s| s.motion_interval >= 999.0)
+            {
+                let conds = [s.invocation_conditions_state_change1, s.invocation_conditions_state_change2, s.invocation_conditions_state_change3];
+                if conds.iter().any(|&c| c > 0) && !conds.iter().any(|c| *c > 0 && states.contains(c)) {
+                    continue;
+                }
+                heal += (-s.change_hp_rate).max(0.0);
+                posture += s.change_stamina_rate.max(0.0);
+            }
+        }
         if heal > 0.0 {
-            a.hp = (a.hp + a.hp_max * heal / 100.0).min(a.hp_max);
-            log.push(format!("resurrected: +{:.0} HP", a.hp_max * heal / 100.0), Color::srgb(1.0, 0.5, 0.5));
+            let gain = (a.hp_max * heal / 100.0).min(a.hp_max - a.hp);
+            a.hp += gain;
+            let what = if a.state.starts_with("GroundRevival_") { "resurrected" } else { "deathblow" };
+            log.push(format!("{what}: +{:.0} HP", a.hp_max * heal / 100.0), Color::srgb(1.0, 0.5, 0.5));
+        }
+        if posture > 0.0 && a.posture > 0.0 {
+            let back = (a.posture_max * posture / 100.0).min(a.posture);
+            a.posture -= back;
+            log.push(format!("deathblow: -{back:.0} posture"), Color::srgb(0.9, 0.8, 0.4));
         }
     }
     // Weapon style (TAE 32 SetWeaponStyle): "0: None" = sheathed (the blade rests in the scabbard,
@@ -1124,8 +1393,9 @@ fn decide(
             a.grav_y = g;
             a.vel_y += g * dt;
             a.air_base = Vec3::ZERO;
-            if tf.translation.y <= CAPSULE_HALF_HEIGHT && a.vel_y < 0.0 {
-                tf.translation.y = CAPSULE_HALF_HEIGHT;
+            let floor = crate::map::ground_y(tf.translation) + CAPSULE_HALF_HEIGHT;
+            if tf.translation.y <= floor && a.vel_y < 0.0 {
+                tf.translation.y = floor;
                 a.airborne = false;
                 a.vel_y = 0.0;
             }
@@ -1145,9 +1415,17 @@ fn decide(
         return;
     }
 
+    // HKS _LandReset: the air tool uses count again once on the ground.
+    if !a.airborne {
+        p.air_sub_count = 0;
+        if !a.state.contains("JumpReady") {
+            p.air_art_count = 0;
+        }
+    }
+
     // Left above the floor by a clip's vertical root motion (the vault 511900) once its
     // SetNoGravity ends: fall and land (live: FreeFall 200010 -> LandFreeFall 200020).
-    if !a.airborne && tf.translation.y > CAPSULE_HALF_HEIGHT + 0.05 && !(!a.anim.is_empty() && d.flag(&a.anim, a.t, FLAG_NO_GRAVITY)) {
+    if !a.airborne && tf.translation.y > crate::map::ground_y(tf.translation) + CAPSULE_HALF_HEIGHT + 0.05 && !(!a.anim.is_empty() && d.flag(&a.anim, a.t, FLAG_NO_GRAVITY)) {
         a.airborne = true;
         a.vel_y = 0.0;
         a.air_base = Vec3::ZERO;
@@ -1340,7 +1618,7 @@ fn decide(
         // Pressed again inside the art's combo window: its next state, in the art's anim group.
         if d.has_ref(&a.anim, a.t, REF_ENABLE_SP_ATK_COMBO) {
             let next = art_kind(&combat, &config).and_then(|(cat, unlock)| {
-                let state = art_combo_next(&a.state, cat, |r| r == unlock)?;
+                let state = art_combo_next(&a.state, cat, p.emblems >= art_cost(&combat, &config), |r| r == unlock)?;
                 let id = d.states.get(state)?.rsplit('_').next()?.to_string();
                 let key = format!("a{cat:03}_{id}");
                 d.anim(&key).is_some_and(|an| an.duration.is_some()).then_some((state, key))
@@ -1350,10 +1628,11 @@ fn decide(
                 return;
             }
         }
+        p.art_enable_jump = p.emblems >= art_cost(&combat, &config);
         // Opening state by art type (sprint / step variants), in the art's anim group.
         let start = art_kind(&combat, &config).and_then(|(cat, unlock)| {
-            art_start_states(cat, unlock, sprint_window(d, a), stick, facing).into_iter().find_map(|state| {
-                let id = d.states.get(&state)?.rsplit('_').next()?.to_string();
+            art_start_states(cat, unlock, sprint_window(d, a), stick, facing, p.emblems >= art_cost(&combat, &config)).into_iter().find_map(|state| {
+                let id = art_state_id(d, &state)?;
                 let key = format!("a{cat:03}_{id}");
                 d.anim(&key).is_some_and(|an| an.duration.is_some()).then_some((state, key))
             })
@@ -1371,8 +1650,15 @@ fn decide(
     // slash); letting go of guard = BEH_A_GROUND_SP_ATTACK_GUARD_RELEASE: HoldEnd.
     if matches!(a.state.as_str(), "GroundSpacialAttackHoldStart" | "GroundSpacialAttackHoldLoop" | "SprintSpecialAttackHoldStart") {
         if let Some((cat, unlock)) = art_kind(&combat, &config) {
+            // HKS 3476-3485: without the emblems (env 3035) the *NoResource draw.
+            let enable = p.emblems >= art_cost(&combat, &config);
             let next = if !pad.attack_held {
-                Some(if unlock == 287 { "GroundSpacialAttackHoldAction" } else { "GroundSpecialAttackCombo1" })
+                Some(match (unlock == 287, enable) {
+                    (true, true) => "GroundSpacialAttackHoldAction",
+                    (true, false) => "GroundSpacialAttackHoldActionNoResource",
+                    (false, true) => "GroundSpecialAttackCombo1",
+                    (false, false) => "GroundSpecialAttackCombo1NoResource",
+                })
             } else if !pad.guard_held {
                 Some("GroundSpacialAttackHoldEnd")
             } else if ended {
@@ -1389,6 +1675,43 @@ fn decide(
                 }
             }
             return;
+        }
+    }
+
+    // Shadowrush / Shadowfall (109): BEH_R_GROUND_SP_ATTACK_HIT_JUMP (HKS 5750) - the thrust
+    // connected (env 2004) while SP_EF_REF_TAE_ENABLE_SP_ATK_HIT_JUMP (225: 100266, a109_316000
+    // f44-55) is up and the art had its emblems at the start (g_enableSpAttaclkJump = env(3035)) ->
+    // W_GroundSpecialAttackHitJump (a109_316600: no gravity f0-12, TAE 920 row 10000 at f12;
+    // judge 215 = BehaviorParam_PC 105010215 wepCost 1 pays the art's 2 emblems).
+    if a.attack_hit && sp_ref_active(d, a, SP_REF_SP_ATK_HIT_JUMP) && p.art_enable_jump {
+        if let Some(k) = art_kind(&combat, &config).filter(|(c, _)| *c == 109).and_then(|(c, _)| art_key(d, c, "GroundSpecialAttackHitJump")) {
+            a.play("GroundSpecialAttackHitJump", &k);
+            log.push("hit jump", Color::srgb(0.8, 0.9, 1.0));
+            return;
+        }
+    }
+
+    // Sakura Dance's bounce: the landing ready (a110_316210) ends into the next leap
+    // (AirSpecialAttackLandingJumpStart, a110_316260: TAE 920 row 10030 at f0).
+    if ended && a.state.starts_with("AirSpecialAttackLandingJumpReady") {
+        let nr = if a.state.ends_with("NoResource") { "NoResource" } else { "" };
+        let want = format!("AirSpecialAttackLandingJumpStart{nr}");
+        if let Some(k) = art_kind(&combat, &config).and_then(|(c, _)| art_key(d, c, &want)) {
+            a.play(&want, &k);
+            return;
+        }
+    }
+
+    // Jump arts: the ready ends into the leap (TAE 920 launches it; the air branch takes it on).
+    // gap: GroundSpecialAttackJumpStartNoResource (a1xx_316711) ships in no art group: the leap.
+    if ended && (a.state.starts_with("GroundSpecialAttackJumpReady") || a.state.starts_with("SprintSpecialAttackJumpReady")) {
+        if let Some((cat, _)) = art_kind(&combat, &config) {
+            let nr = if a.state.ends_with("NoResource") { "NoResource" } else { "" };
+            let want = format!("GroundSpecialAttackJumpStart{nr}");
+            if let Some((state, k)) = [want.as_str(), "GroundSpecialAttackJumpStart"].into_iter().find_map(|s| art_key(d, cat, s).map(|k| (s, k))) {
+                a.play(state, &k);
+                return;
+            }
         }
     }
 
@@ -1415,36 +1738,130 @@ fn decide(
         }
     }
 
-    // Shinobi Prosthetic: the shuriken throw (the bullet itself spawns from its TAE).
-    if p.requests.contains_key(&Action::Prosthetic) && accepts(d, a, Action::Prosthetic) {
-        p.requests.remove(&Action::Prosthetic);
-        if p.emblems == 0 {
-            log.push("no spirit emblems", Color::srgb(0.7, 0.7, 0.7));
-        } else {
-            aim(a);
-            a.move_vel = Vec3::ZERO;
-            let group = equipped_tool(&combat, &config, p.tool_slot).map_or(70, |t| t.group);
-            if let Some(k) = tool_anim(d, "GroundSubAttackCombo1", group) {
-                a.play("GroundSubAttackCombo1", &k);
-            } else {
-                a.play_state(d, "GroundSubAttackCombo1");
-            }
-            return;
-        }
-    }
-    // Let go before the full throw (frame 21): the quick Release throw.
-    // HKS (c0000_transition.lua 6227): inside SP_EF_REF_TAE_ENABLE_SUB_ATTACK_RELEASE (302, SpEffect
-    // 100343: Shuriken f9-18, Firecracker f6-15) the button let go - or a level-1 tool, whose
-    // resident SpEffect carries SP_EF_REF_WEP_FORCE_SUB_ATTACK_RELEASE (314: 127000, 127100, ...;
-    // the "can be stored" levels lack it) - plays W_GroundSubAttackCombo1Release.
-    const REF_SUB_ATTACK_RELEASE: i64 = 302;
-    const REF_FORCE_SUB_ATTACK_RELEASE: i64 = 314;
-    if a.state == "GroundSubAttackCombo1" && !a.anim.is_empty() && d.has_ref(&a.anim, a.t, REF_SUB_ATTACK_RELEASE) {
+    // Shinobi Prosthetic (prosthetic::hks, the HKS sub-attack branches): the press picks the equipped
+    // tool's state, the release window lets go, and the hold / guard / leap states chain at their
+    // ends. Bullets and the Spirit Emblem cost come from the anims' TAE (prosthetic.rs).
+    {
+        use crate::prosthetic::hks;
         let tool = equipped_tool(&combat, &config, p.tool_slot);
-        let forced = tool.and_then(|t| d.sp_effects.get(&t.resident.to_string())).is_some_and(|s| s.behavior_ref_id == REF_FORCE_SUB_ATTACK_RELEASE);
-        if !pad.prosthetic_held || forced {
-            if let Some(k) = tool_anim(d, "GroundSubAttackCombo1Release", tool.map_or(70, |t| t.group)) {
-                a.play("GroundSubAttackCombo1Release", &k);
+        let cat = tool.map_or(70, |t| t.group);
+        let resident_ref = tool.and_then(|t| d.sp_effects.get(&t.resident.to_string())).map_or(0, |s| s.behavior_ref_id);
+        let timed_refs: Vec<i64> = p.timed.iter().filter_map(|(id, _)| d.sp_effects.get(&id.to_string())).map(|s| s.behavior_ref_id).collect();
+        let refs = |r: i64| (resident_ref == r && r != 0) || sp_ref_active(d, a, r) || timed_refs.contains(&r);
+        // gap: env(3035, ACTION_ARM_SHINOBI_WEP_ACTION) read as "enough Spirit Emblems for one use".
+        let enable_action = p.emblems >= tool.map_or(1, |t| t.emblems.max(1));
+        let style = if a.state.starts_with("Sprint") || sprint_window(d, a) {
+            hks::Style::Sprint
+        } else if a.crouch {
+            hks::Style::Crouch
+        } else {
+            hks::Style::Stand
+        };
+        let held = pad.prosthetic_held;
+        let pressed = p.requests.contains_key(&Action::Prosthetic) && accepts(d, a, Action::Prosthetic);
+        let in_sub = d.anim_key(&a.state).is_some_and(|k| k.starts_with("a070")) || a.anim.get(..4).is_some_and(|g| g.starts_with("a07"));
+        let held_press = in_sub && hks::held_press(cat, held, enable_action, &refs);
+        if pressed || held_press {
+            p.requests.remove(&Action::Prosthetic);
+            let enable_combo = refs(hks::REF_SUB_ATTACK_COMBO) && p.sub_cat_before == cat;
+            p.sub_cat_before = cat;
+            let state = hks::press(&hks::Press {
+                cat,
+                state: &a.state,
+                style,
+                enable_action,
+                enable_combo,
+                refs: &refs,
+                locked: lock.target.is_some(),
+                moving: stick != Vec3::ZERO,
+            });
+            if !(held_press && !pressed && state == a.state) {
+                if state.ends_with("SubAttackFailed") {
+                    log.push("no spirit emblems", Color::srgb(0.7, 0.7, 0.7));
+                }
+                if let Some(k) = sub_anim(d, state, cat) {
+                    aim(a);
+                    a.move_vel = Vec3::ZERO;
+                    a.play(state, &k);
+                    return;
+                }
+            }
+        }
+        // The attack button out of a tool move (Fang and Blade etc.): the tool's follow-up.
+        if in_sub && !a.anim.is_empty() && p.requests.contains_key(&Action::Attack) {
+            let step = (stick != Vec3::ZERO).then(|| {
+                let f = a.forward();
+                stick.dot(f.cross(Vec3::Y)).atan2(stick.dot(f)).to_degrees()
+            });
+            let follow = hks::derive_attack(cat, &a.state, a.crouch, p.sub_cat_before == cat, &refs, step);
+            if let Some((state, k)) = follow.and_then(|s| sub_anim(d, s, cat).map(|k| (s, k))) {
+                p.requests.remove(&Action::Attack);
+                aim(a);
+                a.move_vel = Vec3::ZERO;
+                a.play(state, &k);
+                return;
+            }
+        }
+        // Let go inside SP_EF_REF_TAE_ENABLE_SUB_ATTACK_RELEASE (302, e.g. SpEffect 100343: Shuriken
+        // f9-18, Firecracker f6-15), or a level-1 tool (resident ref 314: always the quick use).
+        if in_sub && !a.anim.is_empty() && hks::releases(&refs, held) {
+            if let Some(state) = hks::release(cat, &a.state, a.crouch, stick != Vec3::ZERO, lock.target.is_some()) {
+                if let Some(k) = sub_anim(d, state, cat).filter(|_| state != a.state) {
+                    a.play(state, &k);
+                    return;
+                }
+            }
+        }
+        // State ends (HKS FireStateEndEvent and the graph's end transitions).
+        if ended && in_sub {
+            let next = match a.state.as_str() {
+                // Line 563: still held -> the flame keeps spewing, else it stops.
+                "GroundSubAttackHoldStart" => Some(if held { "GroundSubAttackHoldLoop" } else { "GroundSubAttackHoldEnd" }),
+                // The loops (flame, open umbrella) play on while held.
+                "GroundSubAttackHoldLoop" if held => Some("GroundSubAttackHoldLoop"),
+                // The umbrella open in the air stays open while held (AirSubAttackGuardLoop).
+                "AirSubAttackGuardStart" | "AirSubAttackGuardLoop" | "AirSubAttackDeflectEasySmall" => Some(if held { "AirSubAttackGuardLoop" } else { "AirSubAttackGuardEnd" }),
+                s if hks::sub_guard(s) && !s.starts_with("GroundSubAttackGuardMoveLoop") => Some(if held { "GroundSubAttackGuardLoop" } else { "GroundSubAttackGuardEnd" }),
+                // The Firecracker thrown in the air falls on in AirSubAttackLoop (403100).
+                "AirSubAttackStart" | "AirSubAttackLoop" if cat == 73 => Some("AirSubAttackLoop"),
+                // Line 536: the Mist Raven's leap goes the stick's way (in the air: line 552).
+                "SubAttackJumpReady" | "SubAttackJumpPronReady_F" | "SubAttackJumpPronReady_B" | "AirSubAttackMoveReady" => {
+                    let angle = (stick != Vec3::ZERO).then(|| {
+                        let f = a.forward();
+                        let right = f.cross(Vec3::Y);
+                        stick.dot(right).atan2(stick.dot(f)).to_degrees()
+                    });
+                    Some(if a.state == "AirSubAttackMoveReady" { hks::air_move_start(angle) } else { hks::jump_start(angle) })
+                }
+                // Line 557: on the floor (env 248) -> W_LandAirSubAttackMove, else
+                // W_AirSubAttackMoveStartToLoop. The flat leaps (404011-404017, 5 m along the
+                // floor) end on it; the upward one (V 404010: SetNoGravity f0-13, its root rises
+                // 3 m) ends in the air and falls.
+                s if s.starts_with("SubAttackJumpStart_") || s.starts_with("AirSubAttackMoveStart_") => {
+                    if tf.translation.y > crate::map::ground_y(tf.translation) + CAPSULE_HALF_HEIGHT + 0.05 {
+                        a.airborne = true;
+                        a.vel_y = 0.0;
+                        a.air_base = Vec3::ZERO;
+                        Some("AirSubAttackMoveStartToLoop")
+                    } else {
+                        Some("LandAirSubAttackMove")
+                    }
+                }
+                // The graph's end transition: the fall loop plays on until the landing. gap:
+                // 419030's TAE 922 ChrPhysicsVelosityScale (7401: scale 0.5, f1-5) is not run; its
+                // 920 (7400: +0.6 m/s up) is.
+                "AirSubAttackMoveStartToLoop" | "AirSubAttackMoveLoop" => Some("AirSubAttackMoveLoop"),
+                // The air follow-up's dive (413000) goes into its falling loop (413100).
+                "AirSubAttackDeriveAttack" | "AirSubAttackDeriveAttackLoop" => Some("AirSubAttackDeriveAttackLoop"),
+                _ => None,
+            };
+            if let Some(k) = next.and_then(|s| sub_anim(d, s, cat).map(|k| (s, k))) {
+                a.play(k.0, &k.1);
+                return;
+            }
+            // The other air tool moves ending in the air fall on (gap: the graph's end transition
+            // is not in the scripts; FreeFall 200010 as after the vault).
+            if next.is_none() && a.airborne && (a.state.starts_with("AirSubAttack") || a.state == "SubAttackFailedAir") && a.play_state(d, "FreeFall") {
                 return;
             }
         }
@@ -1470,7 +1887,7 @@ fn decide(
         if consumed && p.gourd > 0 {
             p.gourd -= 1;
             let rate = d.sp_effects.get(GOURD_SPEFFECT).map_or(40.0, |s| -s.change_hp_estus_flask_rate);
-            let heal = a.hp_max * rate / 100.0;
+            let heal = a.hp_max * rate / 100.0 * medicine_rate(&combat, &config);
             a.hp = (a.hp + heal).min(a.hp_max);
             log.push(format!("gourd: +{heal:.0} HP ({} left)", p.gourd), Color::srgb(0.5, 1.0, 0.6));
         }
@@ -1595,6 +2012,8 @@ fn decide(
             "GroundSpecialAttackCombo1" => Some("GroundSpecialAttackCombo1Release"),
             "GroundSpecialAttackCombo2" => Some("GroundSpecialAttackCombo2Release"),
             "SprintSpecialAttack" => Some("SprintSpecialAttackRelease"),
+            "GroundSpecialAttackCombo1NoResource" => Some("GroundSpecialAttackCombo1ReleaseNoResource"),
+            "SprintSpecialAttackNoResource" => Some("SprintSpecialAttackReleaseNoResource"),
             _ => None,
         };
         let next = rel.zip(art_kind(&combat, &config)).and_then(|(state, (cat, _))| {
@@ -1752,8 +2171,10 @@ fn decide(
         return;
     }
 
-    // TAE 920 ChrPhysicsVelocityChange: new velocity = current * scale + change.
-    if !a.vel_change_done {
+    // TAE 920 ChrPhysicsVelocityChange: new velocity = current * scale + change. Each event fires
+    // once as the clock crosses it (Spiral Cloud's 316710 has two: f0 and f27); the flag only keeps
+    // a frame-0 one from repeating while the clock stands at 0.
+    if a.prev_t > 0.0 || !a.vel_change_done {
         if let Some(vc) = d.velocity_change(&a.anim, a.prev_t, a.t).and_then(|id| combat.velocity_change_row(id)) {
             a.vel_change_done = true;
             // Facing = 0 deg; positive angles taken as to the right.
@@ -1764,6 +2185,40 @@ fn decide(
             a.airborne = true;
             a.move_vel = a.air_base;
         }
+    }
+
+    // TAE 922 ChrPhysicsVelosityScale (`VelScale`): over the event the air velocity blends from
+    // its value at the start to the scaled one along the event's ease curves.
+    if a.airborne {
+        if let Some((e, vc)) = d.velocity_scale(&a.anim, a.prev_t, a.t).and_then(|e| Some((e, combat.velocity_change_row(e.arg_i64("ChrPhysicsVelocityParam ID")?)?))) {
+            let arg = |k: &str| e.arg_i64(k).unwrap_or(0) as u8;
+            p.vel_scale = Some(VelScale {
+                v0: a.air_base,
+                vy0: a.vel_y,
+                delta: (Vec3::ZERO, 0.0),
+                scale: (vc.h_scale, vc.v_scale),
+                curves: [(arg("unk1"), arg("unk2")), (arg("unk3"), arg("unk4"))],
+                elapsed: 0.0,
+                duration: e.end - e.start,
+            });
+        }
+    }
+    if let Some(vs) = p.vel_scale.as_mut().filter(|_| a.airborne) {
+        vs.elapsed += dt;
+        let x = if vs.duration > 0.0 { (vs.elapsed / vs.duration).clamp(0.0, 1.0) } else { 1.0 };
+        // Undo last tick's blend to get the free velocity, then blend toward its scaled value.
+        let (free, free_y) = (a.air_base + vs.delta.0, a.vel_y + vs.delta.1);
+        let h = vs.v0.lerp(free * vs.scale.0, ease(vs.curves[0], x));
+        let y = vs.vy0 + (free_y * vs.scale.1 - vs.vy0) * ease(vs.curves[1], x);
+        vs.delta = (free - h, free_y - y);
+        a.air_base = h;
+        a.move_vel = h;
+        a.vel_y = y;
+        if x >= 1.0 {
+            p.vel_scale = None;
+        }
+    } else {
+        p.vel_scale = None;
     }
 
     // Jumps: Ready -> Start (TAE 920 launches) -> Fall loop -> land.
@@ -1780,11 +2235,50 @@ fn decide(
         return;
     }
     if a.airborne {
-        // Air actions open on the jump/air anims' own cancel flags.
-        let air_ok = |a: &Actor, f: i64| !a.anim.is_empty() && d.flag(&a.anim, a.t, f);
+        // Air actions open on the jump/air anims' own cancel flags. The fall loops (FreeFall,
+        // *GroundJumpFall: STATE_TYPE_STANDBY in g_paramHkbState) carry none and take every input,
+        // as the standby states on the ground (`is_free`).
+        let air_ok = |a: &Actor, f: i64| a.state == "FreeFall" || a.state.ends_with("GroundJumpFall") || (!a.anim.is_empty() && d.flag(&a.anim, a.t, f));
         if p.requests.remove(&Action::Guard).is_some() {
             if air_ok(a, FLAG_ACCEPT_GUARD) || is_air_guard(&a.state) {
                 a.play_state(d, "AirDeflectGuardStart");
+            }
+        } else if p.requests.contains_key(&Action::CombatArt) && air_ok(a, FLAG_ACCEPT_ATTACK) && art_equipped {
+            // BEH_A_AIR_SP_ATTACK (`air_art_state`), in the art's group (a1xx_3162xx).
+            p.requests.remove(&Action::CombatArt);
+            if let Some((cat, unlock)) = art_kind(&combat, &config) {
+                let enable = p.emblems >= art_cost(&combat, &config);
+                p.art_enable_jump = enable;
+                let picked = air_art_state(cat, unlock, enable, p.air_art_count, sp_ref_active(d, a, SP_REF_SP_ATK_HIT_JUMP_DERIVE_ACTION));
+                match picked.map(|(state, counted)| (state, counted, art_key(d, cat, state))) {
+                    Some((state, counted, Some(k))) => {
+                        p.air_art_count += counted as u32;
+                        start_auto_aim(p, a, &combat, tf.translation, stick, &enemies);
+                        a.play(state, &k);
+                    }
+                    // gap: the *NoResource air clips (a050_316201 / 316221) ship in no art group.
+                    Some((_, _, None)) if !enable => log.push("no spirit emblems", Color::srgb(0.7, 0.7, 0.7)),
+                    _ => {}
+                }
+            }
+        } else if p.requests.contains_key(&Action::Prosthetic) && air_ok(a, FLAG_ACCEPT_PROSTHETIC) {
+            // BEH_A_AIR_SUB_ATTACK (HKS 3007, `hks::air_press`): the tool's air move.
+            p.requests.remove(&Action::Prosthetic);
+            if let Some(tool) = equipped_tool(&combat, &config, p.tool_slot) {
+                let resident_ref = d.sp_effects.get(&tool.resident.to_string()).map_or(0, |s| s.behavior_ref_id);
+                let timed_refs: Vec<i64> = p.timed.iter().filter_map(|(id, _)| d.sp_effects.get(&id.to_string())).map(|s| s.behavior_ref_id).collect();
+                let picked = {
+                    let refs = |r: i64| (resident_ref == r && r != 0) || sp_ref_active(d, a, r) || timed_refs.contains(&r);
+                    crate::prosthetic::hks::air_press(tool.group, p.emblems >= tool.emblems.max(1), p.air_sub_count, lock.target.is_some(), &refs)
+                };
+                if let Some((state, k, counted)) = picked.and_then(|(s, c)| sub_anim(d, s, tool.group).map(|k| (s, k, c))) {
+                    if state == "SubAttackFailedAir" {
+                        log.push("no spirit emblems", Color::srgb(0.7, 0.7, 0.7));
+                    }
+                    p.air_sub_count += counted as u32;
+                    p.sub_cat_before = tool.group;
+                    a.play(state, &k);
+                }
             }
         } else if p.requests.remove(&Action::Jump).is_some() {
             // BEH_A_AIR_KICK: a jump press in the air always kicks (AirKick, a000_213100) unless
@@ -1799,6 +2293,34 @@ fn decide(
             // Out of a head-kick jump the kick-down throw is checked from its buffer flag 87
             // (frame 9), not the air attack's 115 (frame 21): live 0.33 s into 213115.
             p.requests.remove(&Action::Attack);
+        } else if let Some(k) = (p.requests.contains_key(&Action::Attack)
+            && air_ok(a, FLAG_ACCEPT_ATTACK)
+            && matches!(a.state.as_str(), "AirSubAttackMoveStart" | "AirSubAttackMoveStartToLoop" | "AirSubAttackMoveLoop")
+            && d.has_ref(&a.anim, a.t, REF_SUB_ATTACK_DERIVE_ATTACK))
+            .then(|| equipped_tool(&combat, &config, p.tool_slot).filter(|t| t.group == 74))
+            .flatten()
+            .and_then(|_| sub_anim(d, "AirSubAttackDeriveAttack", 74))
+        {
+            // HKS 2890: the attack button in the Mist Raven's fall while SP_EF_REF_TAE_ENABLE_
+            // SUB_ATTACK_DERIVE_ATTACK (301: 100342, 419030 f5-20, all of 419031) is up ->
+            // W_AirSubAttackDeriveAttack (a074_413000). gap: its ACTION_UNLOCK_TYPE_SUB_ATTACK_
+            // DIRAVE_ATTACK_2 is read as learned (env 3033 is mapped in the exe).
+            p.requests.remove(&Action::Attack);
+            a.play("AirSubAttackDeriveAttack", &k);
+        } else if let Some(k) = (p.requests.contains_key(&Action::Attack)
+            && air_ok(a, FLAG_ACCEPT_ATTACK)
+            && sp_ref_active(d, a, SP_REF_SP_ATK_HIT_JUMP_DERIVE_ACTION))
+            .then(|| art_kind(&combat, &config).filter(|&(c, unlock)| c == 109 && unlock == SP_REF_UNLOCK_109_FALL_ATTACK))
+            .flatten()
+            .and_then(|(c, _)| art_key(d, c, "GroundSpecialAttackHitJumpDeriveAction"))
+        {
+            // HKS 2893 (attack) / 2928 (the art): Shadowfall's spin-slash down out of the hit jump
+            // while SP_EF_REF_TAE_ENABLE_SP_ATK_HIT_JUMP_DERIVE_ACTION (226: 100267, a109_316600
+            // f24-39) and its unlock ref 286 are up -> W_GroundSpecialAttackHitJumpDeriveAction
+            // (a109_316650).
+            p.requests.remove(&Action::Attack);
+            p.requests.remove(&Action::Guard);
+            a.play("GroundSpecialAttackHitJumpDeriveAction", &k);
         } else if p.requests.contains_key(&Action::Attack) && air_ok(a, FLAG_ACCEPT_ATTACK) {
             p.requests.remove(&Action::Attack);
             // BEH_A_AIR_ATTACK: refs 214/215/216 pick AirComboAttack1/2/3 (1 -> 2 -> 3 -> 2 ...).
@@ -1841,6 +2363,13 @@ fn decide(
             a.air_base = Vec3::ZERO;
             a.vel_y = 0.0;
             log.push("kick jump", Color::srgb(0.8, 0.9, 1.0));
+        }
+        // BEH_A_AIR_SP_ATTACK_RELEASE / _GUARD_RELEASE (HKS 2941-2955): letting go of attack or
+        // guard in the air hold -> W_AirSpacialAttackHoldEnd (a104_316240).
+        if matches!(a.state.as_str(), "AirSpecialAttackHoldStart" | "AirSpecialAttackHoldLoop") && (!pad.attack_held || !pad.guard_held) {
+            if let Some(k) = art_kind(&combat, &config).and_then(|(c, _)| art_key(d, c, "AirSpacialAttackHoldEnd")) {
+                a.play("AirSpacialAttackHoldEnd", &k);
+            }
         }
         let in_air_guard = is_air_guard(&a.state);
         if a.state == "AirDeflectGuardLoop" && !pad.guard_held {
@@ -1889,7 +2418,7 @@ fn decide(
             };
             if let Some(tp) = tp {
                 let g = ft.gravity();
-                let h = tf.translation.y - CAPSULE_HALF_HEIGHT;
+                let h = tf.translation.y - CAPSULE_HALF_HEIGHT - crate::map::ground_y(tf.translation);
                 // Time to the floor: h + vy t + g t^2 / 2 = 0 (g < 0).
                 let disc = a.vel_y * a.vel_y - 2.0 * g * h;
                 let t_land = if g < 0.0 && disc >= 0.0 { (-a.vel_y - disc.sqrt()) / g } else { 0.0 };
@@ -1903,8 +2432,9 @@ fn decide(
             }
         }
         a.move_vel = a.air_base;
-        if tf.translation.y <= CAPSULE_HALF_HEIGHT && a.vel_y < 0.0 {
-            tf.translation.y = CAPSULE_HALF_HEIGHT;
+        let floor = crate::map::ground_y(tf.translation) + CAPSULE_HALF_HEIGHT;
+        if tf.translation.y <= floor && a.vel_y < 0.0 {
+            tf.translation.y = floor;
             a.airborne = false;
             a.vel_y = 0.0;
             a.move_vel = Vec3::ZERO;
@@ -1971,6 +2501,83 @@ fn decide(
                 // GroundJumpLandReady (a000_201050) is the pose just before touchdown, not a landing.
                 // Directional jumps: W_LandGroundPositioningJump comes before moving on.
                 _ if a.state == "FreeFall" && a.play_state(d, "LandFreeFall") => {}
+                // The air tool states land into their Land versions (`hks::air_land`, HKS 1888-1970):
+                // while ref 201 is up from the same time, the loops from their start.
+                _ if a.state.starts_with("AirSubAttack") && {
+                    let cat = equipped_tool(&combat, &config, p.tool_slot).map_or(70, |t| t.group);
+                    let ref_201 = !a.anim.is_empty() && d.has_ref(&a.anim, a.t, REF_ORIGINAL_LAND_ACTION);
+                    match crate::prosthetic::hks::air_land(cat, &a.state, ref_201).and_then(|(land, keep)| sub_anim(d, land, cat).map(|k| (land, k, keep))) {
+                        Some((land, k, keep)) => {
+                            let t = if keep { a.t } else { 0.0 };
+                            a.play(land, &k);
+                            (a.t, a.prev_t) = (t, t);
+                            true
+                        }
+                        None => false,
+                    }
+                } => {}
+                // The jump arts land (HKS 2016-2025): the leap while ref 201 is up into
+                // LandGroundSpecialAttackJumpStart from the same time, the fall loop into
+                // LandGroundSpecialAttackJumpFallLoop (a107 / a110 316740). gap: the *NoResource lands
+                // ship in no art group: the plain landing.
+                _ if a.state.starts_with("GroundSpecialAttackJumpStart") && !a.anim.is_empty() && d.has_ref(&a.anim, a.t, REF_ORIGINAL_LAND_ACTION) && {
+                    let land = format!("LandGroundSpecialAttackJumpStart{}", if a.state.ends_with("NoResource") { "NoResource" } else { "" });
+                    match art_kind(&combat, &config).and_then(|(c, _)| art_key(d, c, &land)) {
+                        Some(k) => {
+                            let t = a.t;
+                            a.play(&land, &k);
+                            (a.t, a.prev_t) = (t, t);
+                            true
+                        }
+                        None => false,
+                    }
+                } => {}
+                _ if a.state.starts_with("GroundSpecialAttackJump") && {
+                    let land = format!("LandGroundSpecialAttackJumpFallLoop{}", if a.state.ends_with("NoResource") { "NoResource" } else { "" });
+                    match art_kind(&combat, &config).and_then(|(c, _)| art_key(d, c, &land)) {
+                        Some(k) => {
+                            a.play(&land, &k);
+                            true
+                        }
+                        None => a.play_state(d, "LandFreeFall"),
+                    }
+                } => {}
+                // The air arts land (`air_art_land`).
+                _ if (a.state.starts_with("AirSpecialAttack") || a.state.starts_with("AirSpacialAttack")) && {
+                    let ref_201 = !a.anim.is_empty() && d.has_ref(&a.anim, a.t, REF_ORIGINAL_LAND_ACTION);
+                    let ref_288 = sp_ref_active(d, a, SP_REF_ORIGINAL_LAND_ACTION_SP_ATK_110);
+                    let land = art_kind(&combat, &config).and_then(|(c, _)| {
+                        let (land, keep) = air_art_land(c, &a.state, ref_201, ref_288)?;
+                        Some((land, keep, art_key(d, c, land)?))
+                    });
+                    match land {
+                        Some((land, keep, k)) => {
+                            let t = if keep { a.t } else { 0.0 };
+                            a.play(land, &k);
+                            (a.t, a.prev_t) = (t, t);
+                            true
+                        }
+                        None => a.play_state(d, "LandFreeFall"),
+                    }
+                } => {}
+                // HKS 2008: the spin-slash while ref 201 is up (100302, f0-45) lands into
+                // LandGroundSpecialAttackHitJumpDeriveAction (a109_316660) from the same time; the
+                // hit jump itself is not in BEH_R_LAND's list (the plain landing).
+                _ if a.state == "GroundSpecialAttackHitJumpDeriveAction" && !a.anim.is_empty() && d.has_ref(&a.anim, a.t, REF_ORIGINAL_LAND_ACTION) && {
+                    match art_kind(&combat, &config).and_then(|(c, _)| art_key(d, c, "LandGroundSpecialAttackHitJumpDeriveAction")) {
+                        Some(k) => {
+                            let t = a.t;
+                            a.play("LandGroundSpecialAttackHitJumpDeriveAction", &k);
+                            (a.t, a.prev_t) = (t, t);
+                            true
+                        }
+                        None => false,
+                    }
+                } => {}
+                _ if a.state.starts_with("GroundSpecialAttackHitJump") && a.play_state(d, "LandFreeFall") => {}
+                // The other air tool states (the Mist Raven's fall, the moves out of ref 201) are
+                // not in BEH_R_LAND's list: the plain _LandFreeFall.
+                _ if (a.state.starts_with("AirSubAttack") || a.state == "SubAttackFailedAir") && a.play_state(d, "LandFreeFall") => {}
                 _ if p.jump_land.is_some() && a.state.contains("GroundJump") => {
                     let land = p.jump_land.take().unwrap_or("LandGroundPositioningJump_F");
                     a.play_state(d, land);
@@ -1985,7 +2592,16 @@ fn decide(
             }
             return;
         }
-        if ended {
+        let art_cat = art_kind(&combat, &config).map(|(c, _)| c);
+        if ended && a.state.starts_with("GroundSpecialAttackJump") {
+            // The jump art's leap ends into its fall loop (316730), which loops until the landing.
+            let nr = if a.state.ends_with("NoResource") { "NoResource" } else { "" };
+            let fall = format!("GroundSpecialAttackJumpFallLoop{nr}");
+            match art_cat.and_then(|c| art_key(d, c, &fall)) {
+                Some(k) if a.state != fall => a.play(&fall, &k),
+                _ => a.t %= len.max(1e-3),
+            }
+        } else if ended {
             if a.state.ends_with("GroundJumpStart") {
                 let fall = a.state.replace("Start", "Fall");
                 if !a.play_state(d, &fall) {
@@ -1993,6 +2609,24 @@ fn decide(
                 }
             } else if a.state.ends_with("GroundJumpFall") || a.state == "FreeFall" {
                 a.t %= len.max(1e-3); // loop
+            } else if matches!(a.state.as_str(), "AirSpecialAttackStart" | "AirSpecialAttackHoldStart") {
+                // The air art's start into its loop (a101 / 107 / 108 / 110 316220, a104's hold).
+                let next = a.state.replace("Start", "Loop");
+                match art_cat.and_then(|c| art_key(d, c, &next)) {
+                    Some(k) => a.play(&next, &k),
+                    None => {
+                        if !a.play_state(d, "FreeFall") {
+                            a.t = len;
+                        }
+                    }
+                }
+            } else if matches!(a.state.as_str(), "AirSpecialAttackLoop" | "AirSpecialAttackHoldLoop") {
+                a.t %= len.max(1e-3);
+            } else if a.state.starts_with("AirSpecialAttack") || a.state.starts_with("AirSpacialAttack") || a.state.starts_with("GroundSpecialAttackHitJump") {
+                // STYLE_TYPE_FREE_FALL states: the fall goes on.
+                if !a.play_state(d, "FreeFall") {
+                    a.t = len;
+                }
             } else if a.state.contains("BlowStart") || a.state.contains("UpperStart") || (a.state.starts_with("AirDamage") && a.state.contains("Start")) {
                 let fall = a.state.replace("Start", "FallLoop");
                 if !a.play_state(d, &fall) {
@@ -2281,4 +2915,19 @@ fn move_velocity(p: &Player, a: &mut Actor, d: &CharData, config: &GameConfig, s
     let speed = if stick == Vec3::ZERO { clip_speed * p.speed_level.min(1.0) } else { clip_speed };
     let dir = if stick == Vec3::ZERO { a.forward() } else if target_dir.is_some() { stick } else { a.forward() };
     a.move_vel = dir * speed;
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn velosity_scale_ease_curves() {
+        // The args every 922 event carries: 3 / 3 (EaseInOut, cube).
+        let close = |a: f32, b: f32| (a - b).abs() < 1e-5;
+        assert!(close(super::ease((3, 3), 0.25), 0.0625));
+        assert!(close(super::ease((3, 3), 0.5), 0.5));
+        assert!(close(super::ease((3, 3), 0.75), 0.9375));
+        assert!(close(super::ease((2, 3), 0.5), 0.875));
+        assert!(close(super::ease((1, 3), 0.5), 0.125));
+        assert!(close(super::ease((0, 3), 0.3), 0.3));
+    }
 }
