@@ -48,6 +48,9 @@ pub struct Actor {
     pub resident: Vec<i64>,
     /// AttackBehavior windows already resolved in the current anim: (judge, start).
     pub hits_done: Vec<(i64, i32)>,
+    /// This character's bullets that touched someone (target, the bullet's AtkParam): combat.rs
+    /// resolves them like a connected AttackBehavior window (enemy_bullet.rs fires NPC bullets).
+    pub bullet_hits: Vec<(Entity, crate::data::Attack)>,
     /// Additive layer (HKS AddDeflectGuardBlend): an anim whose TAE runs on top of the base
     /// state without replacing it, e.g. AddHardDeflectGuard's deflect window. Empty = none.
     pub add_anim: String,
@@ -106,6 +109,12 @@ pub struct Actor {
     pub kb_dec_total: f32,
     /// Procedural horizontal velocity for locomotion and jumps (world space).
     pub move_vel: Vec3,
+    /// NPC anim set (the "Anime ID offset" SpEffects 200030-200034, stateInfo 270-274: a000-a400,
+    /// e.g. the spear General c1021 a100, Isshin's second phase a100) and the anims this character
+    /// has. A behavior state (CMSG offsetType 15 = AnimIdOffset) then plays a<group>00_<id>.
+    /// gap: when the set lacks the id the a000 anim plays (the exe's fallback is not traced).
+    pub anim_group: u32,
+    pub anim_keys: Option<std::sync::Arc<std::collections::HashSet<String>>>,
 }
 
 impl Actor {
@@ -143,6 +152,9 @@ impl Actor {
             hit_stop: 0.0,
             resident: Vec::new(),
             hits_done: Vec::new(),
+            bullet_hits: Vec::new(),
+            anim_group: 0,
+            anim_keys: None,
             add_anim: String::new(),
             add_t: 0.0,
             vel_y: 0.0,
@@ -175,11 +187,29 @@ impl Actor {
 
     pub fn play(&mut self, state: &str, anim: &str) {
         self.state = state.to_string();
-        self.anim = anim.to_string();
+        self.anim = self.grouped(anim);
         self.t = 0.0;
         self.prev_t = 0.0;
         self.hits_done.clear();
         self.vel_change_done = false;
+    }
+
+    /// `key` in this actor's anim set: a000_<id> -> a<group>00_<id> when the set has that clip.
+    /// An a000 entry without a clip (the Corrupted Monk's a000_013700 Todome / 020200 final death
+    /// are empty placeholders; the clips are a100_013700 / a100_020200) takes the first set that
+    /// has one. gap: the exe's lookup order is not traced.
+    pub fn grouped(&self, key: &str) -> String {
+        let Some(keys) = self.anim_keys.as_ref().filter(|_| key.starts_with("a000_")) else { return key.to_string() };
+        let alt = |g: u32| format!("a{g}00{}", &key[4..]);
+        if self.anim_group > 0 && keys.contains(&alt(self.anim_group)) {
+            return alt(self.anim_group);
+        }
+        if !keys.contains(key) {
+            if let Some(g) = (1..=4).find(|g| keys.contains(&alt(*g))) {
+                return alt(g);
+            }
+        }
+        key.to_string()
     }
 
     /// Plays a behavior state through the data's state -> anim table.
@@ -335,7 +365,16 @@ fn boost_root_motion(
             min
         } else {
             let dir = Quat::from_rotation_y(angle.to_radians()) * away.normalize_or_zero();
-            ((target + dir * arrive) - tf.translation).length().clamp(min, max)
+            // The exe's order (0x140842afd-b10: comiss min, then max), not f32::clamp: Gyoubu's
+            // (c5080) events have EnableRangeMin 6 > Max 4.
+            let d = ((target + dir * arrive) - tf.translation).length();
+            if d <= min {
+                min
+            } else if d >= max {
+                max
+            } else {
+                d
+            }
         };
         a.root_scale = dist / reference;
     }

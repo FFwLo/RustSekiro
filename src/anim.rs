@@ -53,6 +53,11 @@ fn convert(v: &[f32]) -> Transform {
     }
 }
 
+/// A part's clips (model/tool.rs: the prosthetic tools' anim bins); empty when the file is absent.
+pub(crate) fn load_lib(path: &std::path::Path) -> Lib {
+    if path.exists() { load(path) } else { Lib::default() }
+}
+
 fn load(path: &std::path::Path) -> Lib {
     let Ok(d) = std::fs::read(path) else {
         warn!("{} missing; characters will show as capsules", path.display());
@@ -145,8 +150,17 @@ pub struct AnimPlugin;
 impl Plugin for AnimPlugin {
     fn build(&self, app: &mut App) {
         let dir = crate::paths::root().join("extracted");
-        let chr = app.world().get_resource::<Combat>().map_or("c1020".to_string(), |c| c.foe.chr.clone());
-        app.insert_resource(AnimLib { player: load(&dir.join("anim_c0000.bin")), enemy: load(&dir.join(format!("anim_{chr}.bin"))) })
+        let (chr, own) = app.world().get_resource::<Combat>().map_or(("c1020".to_string(), "c1020".to_string()), |c| (c.foe.anim_chr.clone(), c.foe.chr.clone()));
+        let mut player = load(&dir.join("anim_c0000.bin"));
+        // Wolf's clips against this enemy (deathblows, grabs: chr/c0000_c<chr>.anibnd, which the exe
+        // loads per enemy as "chranibnd:/c0000_c%04d.anibnd"), exported to anim_c0000_<chr>.bin.
+        for c in [&chr, &own] {
+            let p = dir.join(format!("anim_c0000_{c}.bin"));
+            if p.exists() {
+                player.clips.extend(load(&p).clips);
+            }
+        }
+        app.insert_resource(AnimLib { player, enemy: load(&dir.join(format!("anim_{chr}.bin"))) })
             .add_systems(PostStartup, build_skeletons.in_set(AnimSet).after(crate::player::player_visuals).after(crate::enemy::enemy_visuals))
             .add_systems(Update, (pose_skeletons, apply_walk_twist, apply_twists, draw_skeletons).chain().before(TransformSystems::Propagate));
     }

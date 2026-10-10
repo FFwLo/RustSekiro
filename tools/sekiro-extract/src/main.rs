@@ -21,6 +21,7 @@
 mod bhd;
 mod bin;
 mod cloth;
+mod cubemap;
 mod cloth_export;
 mod container;
 mod export;
@@ -28,7 +29,11 @@ mod flver;
 mod fmg;
 mod fev;
 mod fsb;
+mod gparam;
 mod hkx;
+mod map;
+mod msb;
+mod mtd;
 mod param;
 mod spline;
 mod tae;
@@ -61,10 +66,68 @@ fn main() {
         Some("unpack") if args.len() == 5 => unpack(Path::new(&args[2]), Path::new(&args[3]), &args[4]),
         Some("params") if args.len() == 4 => dump_params(Path::new(&args[2]), Path::new(&args[3])),
         Some("tae") if args.len() == 4 => dump_tae(Path::new(&args[2]), Path::new(&args[3])),
-        Some("model") if args.len() == 6 => export_model(Path::new(&args[2]), Path::new(&args[3]), Path::new(&args[4]), Path::new(&args[5])),
+        // Optional further args: extra texture binder folders (NpcParam normalChangeTexChrId, e.g.
+        // c5430 -> chr/c5408.texbnd.d; materials may name a sibling pack, c5400 hair -> c5408).
+        Some("model") if args.len() >= 6 => {
+            let extra: Vec<&Path> = args[6..].iter().map(Path::new).collect();
+            export_model(Path::new(&args[2]), Path::new(&args[3]), Path::new(&args[4]), Path::new(&args[5]), &extra)
+        }
         // DDS (first mip) -> PNG; "alpha" writes the alpha channel as grey.
+        Some("tpf") if args.len() >= 3 => {
+            // List a TPF's textures (name, size, DDS header facts); with an out dir, write the DDS files.
+            for (name, dds) in flver::tpf(&std::fs::read(&args[2]).unwrap()) {
+                let u32_ = |o: usize| u32::from_le_bytes(dds[o..o + 4].try_into().unwrap());
+                let dx10 = dds.len() >= 148 && &dds[84..88] == b"DX10";
+                println!(
+                    "{name}: {} bytes, {}x{}, mips {}, {} {}",
+                    dds.len(),
+                    u32_(16),
+                    u32_(12),
+                    u32_(28),
+                    if dx10 { format!("dxgi {}", u32_(128)) } else { String::from_utf8_lossy(&dds[84..88]).into_owned() },
+                    if dx10 { format!("dim {} misc {:#x} arraysize {}", u32_(132), u32_(136), u32_(140)) } else { String::new() }
+                );
+                if let Some(out) = args.get(3) {
+                    std::fs::create_dir_all(out).unwrap();
+                    std::fs::write(Path::new(out).join(format!("{name}.dds")), &dds).unwrap();
+                }
+            }
+        }
+        Some("flverinfo") if args.len() == 3 => {
+            let f = flver::read(&std::fs::read(&args[2]).unwrap());
+            for m in &f.meshes {
+                println!("mesh {} [{}] verts {} tris {} layouts {:?}", m.material, m.mtd, m.vertices.len(), m.indices.len() / 3, m.layouts);
+                println!("  slots {:?}", m.textures);
+                let uv: Vec<[f32; 2]> = m.vertices.iter().step_by((m.vertices.len() / 6).max(1)).map(|v| v.uv).collect();
+                println!("  uv {:?}", uv);
+            }
+        }
         Some("dds2png") if args.len() >= 4 => dds2png(Path::new(&args[2]), Path::new(&args[3]), args.get(4).is_some_and(|a| a == "alpha")),
-        Some("hkxdump") if args.len() == 3 => hkx::dump(&std::fs::read(&args[2]).unwrap()),
+        // Map pieces around an MSB part (e.g. `map extracted m11_01_00_00 c1020_0004 60`).
+        Some("map") if args.len() == 6 => map::export(Path::new(&args[2]), &args[3], &args[4], args[5].parse().expect("radius")),
+        // Split binder (.tpfbhd / .hkxbhd + its .*bdt) -> <out>/<file name>.
+        Some("bxf") if args.len() == 4 => {
+            let bhd = std::fs::read(&args[2]).expect("read bhd");
+            let bdt = std::fs::read(args[2].replace("bhd", "bdt")).expect("read bdt");
+            for f in container::read_bxf4(&bhd, &bdt) {
+                let name = f.name.rsplit(['\\', '/']).next().unwrap_or("").trim_end_matches(".dcx").to_string();
+                write(&Path::new(&args[3]).join(&name), &f.data);
+            }
+        }
+        // Members of named types (parents included) from a tagfile / compendium.
+        Some("hktypes") if args.len() >= 4 => {
+            let t = hkx::read_types(&std::fs::read(&args[2]).unwrap());
+            for name in &args[3..] {
+                let Some(mut ty) = t.index_of(name) else { println!("{name}: none"); continue };
+                while ty != 0 {
+                    println!("{} (parent {}): {:?}", t.names[ty], t.parents.get(&ty).map(|p| t.names[*p].as_str()).unwrap_or(""), t.members.get(&ty));
+                    ty = *t.parents.get(&ty).unwrap_or(&0);
+                }
+            }
+        }
+        Some("hkxdump") if args.len() == 3 => hkx::dump(&std::fs::read(&args[2]).unwrap(), None),
+        // Map collision files keep their types in the binder's .compendium.
+        Some("hkxdump") if args.len() == 4 => hkx::dump(&std::fs::read(&args[2]).unwrap(), Some(&hkx::read_types(&std::fs::read(&args[3]).unwrap()))),
         // Dummy poly frames (id, attach bone, model-space position / forward / upward) as JSON:
         // the sidecar model_<chr>.dummies.json (throw absorb directions).
         Some("dummies") if args.len() == 4 => {
@@ -79,6 +142,12 @@ fn main() {
         Some("blenders") if args.len() == 3 => {
             for b in hkx::blenders(&std::fs::read(&args[2]).unwrap()) {
                 println!("{b}");
+            }
+        }
+        Some("objects") if args.len() == 5 => {
+            let t = hkx::read_types(&std::fs::read(&args[4]).unwrap());
+            for o in hkx::objects_with(&std::fs::read(&args[2]).unwrap(), Some(&t), &args[3]) {
+                println!("{o}");
             }
         }
         Some("objects") if args.len() == 4 => {
@@ -148,12 +217,17 @@ fn main() {
             Err(e) => eprintln!("{e}"),
         },
         Some("sounds-fmod") if args.len() == 4 => fsb::decode_with_fmod(Path::new(&args[2]), Path::new(&args[3])).unwrap_or_else(|e| eprintln!("{e}")),
+        Some("npcs") if args.len() >= 3 => export::export_npcs(Path::new(&args[2]), Path::new(&defs_dir()), &args[3..]),
         Some("export") if args.len() == 3 => export::export(
             Path::new(&args[2]),
             &tool_dir().join("export_states.txt"),
             Path::new(&defs_dir()),
         ),
-        _ => eprintln!("usage: sekiro-extract unpack <sekiro_dir> <out_dir> <regex> | params <dir> <out> | tae <dir> <out>"),
+        _ => eprintln!(
+            "usage: sekiro-extract unpack <sekiro_dir> <out_dir> <regex> | params <dir> <out> | tae <dir> <out>
+               map <extracted> <map id> <centre part> <radius m> | bxf <x.bhd> <out dir> | flverinfo <flver>
+               hkxdump <hkx> [compendium] | objects <hkx> <type> [compendium] | hktypes ..."
+        ),
     }
 }
 
@@ -299,7 +373,7 @@ fn quat_mul(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
 ///     u32 vertices; per vertex f32 pos[3] normal[3] uv[2], u16 bones[4], f32 weights[4]
 ///     u32 indices; u32 each
 ///   (v2) u32 dummies; per dummy: i16 id, i16 parent, i16 attach, f32 pos[3]
-fn export_model(flver_path: &Path, tpf_path: &Path, out: &Path, tex_dir: &Path) {
+fn export_model(flver_path: &Path, tpf_path: &Path, out: &Path, tex_dir: &Path, extra_tex: &[&Path]) {
     let mut f = flver::read(&std::fs::read(flver_path).expect("read flver"));
     let mut textures = if tpf_path.to_string_lossy() != "-" { flver::tpf(&std::fs::read(tpf_path).expect("read tpf")) } else { Vec::new() };
     // Shared character textures (hair, bandages, fabric detail blends): parts/common_body.tpf.
@@ -320,6 +394,13 @@ fn export_model(flver_path: &Path, tpf_path: &Path, out: &Path, tex_dir: &Path) 
                         textures.extend(flver::tpf(&d));
                     }
                 }
+            }
+        }
+    }
+    for e in extra_tex.iter().filter_map(|d| std::fs::read_dir(d).ok()).flatten().flatten() {
+        if e.path().extension().is_some_and(|x| x == "tpf") {
+            if let Ok(d) = std::fs::read(e.path()) {
+                textures.extend(flver::tpf(&d));
             }
         }
     }

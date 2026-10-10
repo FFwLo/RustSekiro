@@ -167,6 +167,15 @@ pub fn defender_materials(combat: &Combat, side: crate::actor::Side) -> [i64; 2]
 /// gap: real floors come from map collision.
 const FLOOR_MATERIAL: i64 = 1;
 
+/// The floor material under an actor: the map's hit collision triangle (HitMtrlParam id) when a
+/// map is loaded, else the flat arena's stone.
+fn floor_material(centre: Vec3) -> i64 {
+    match crate::map::floor_material(centre) {
+        Some(m) if m != u32::MAX => m as i64,
+        _ => FLOOR_MATERIAL,
+    }
+}
+
 pub struct SoundPlugin;
 
 impl Plugin for SoundPlugin {
@@ -203,22 +212,32 @@ fn type_letter(t: &str) -> Option<char> {
 }
 
 /// stateInfos of the SpEffects on an actor now: its anim's TAE SpEffects, plus (Wolf) the resident
-/// SpEffects of his equipment - the prosthetic (EquipParamWeapon 70000: 127000 "Shuriken LV1",
-/// stateInfo 905) and the combat art. Gated TAE sounds (PlaySound StateInfo) play only when one
-/// matches: 905 shuriken, 62 flame enchantment, 358 / 940 wind enchantments, ...
-fn active_state_infos(combat: &Combat, a: &Actor, config: Option<&crate::config::GameConfig>) -> Vec<i64> {
+/// SpEffects of his equipment - the equipped prosthetic tool level (e.g. 70000: 127000 "Shuriken
+/// LV1", stateInfo 905; 71000 Firecracker: 911) and the combat art - and 914 (SpEffect 106000
+/// "No enchantment": Wolf's sword carries no buff; gap: buff items are not modelled). Gated TAE
+/// events (PlaySound / SpawnFFX StateInfo) run only when one matches.
+pub fn active_state_infos(combat: &Combat, a: &Actor, config: Option<&crate::config::GameConfig>, tool: Option<i64>) -> Vec<i64> {
+    const NO_ENCHANTMENT: i64 = 914;
     let d = data_for(combat, a.side);
     let mut v: Vec<i64> = if a.anim.is_empty() { Vec::new() } else { d.sp_effects_at(&a.anim, a.t).iter().map(|(_, s)| s.state_info).collect() };
     if a.side == crate::actor::Side::Player {
-        let mut weapons = vec![PROSTHETIC_WEAPON];
+        v.push(NO_ENCHANTMENT);
+        let mut weapons: Vec<i64> = tool.into_iter().collect();
         if let Some(c) = config {
             weapons.push(c.player.combat_art);
         }
         for w in weapons {
             let row = combat.param("EquipParamWeapon", w);
-            for k in ["residentSpEffectId", "residentSpEffectId1", "residentSpEffectId2"] {
-                if let Some(id) = row[k].as_i64().filter(|id| *id > 0) {
-                    if let Some(si) = combat.param("SpEffectParam", id)["stateInfo"].as_i64() {
+            let mut ids: Vec<i64> = ["residentSpEffectId", "residentSpEffectId1", "residentSpEffectId2"].iter().filter_map(|k| row[*k].as_i64()).collect();
+            // The tools' rows are not in params.EquipParamWeapon: their Prosthetic.resident (the
+            // Flame Vent's 127200 "Ignition LV1" -> 915 turns on its flame FFX 300161 / 300164).
+            if let Some(t) = combat.player.prosthetics.iter().find(|t| t.id == w) {
+                ids.push(t.resident);
+            }
+            for id in ids.into_iter().filter(|id| *id > 0) {
+                let si = d.sp_effects.get(&id.to_string()).map(|s| s.state_info).or_else(|| combat.param("SpEffectParam", id)["stateInfo"].as_i64());
+                if let Some(si) = si.filter(|s| *s > 0) {
+                    if !v.contains(&si) {
                         v.push(si);
                     }
                 }
@@ -228,8 +247,6 @@ fn active_state_infos(combat: &Combat, a: &Actor, config: Option<&crate::config:
     v
 }
 
-/// The equipped prosthetic (Shuriken, prosthetic.rs).
-const PROSTHETIC_WEAPON: i64 = 70000;
 
 #[allow(clippy::too_many_arguments)]
 fn play_tae_sounds(
@@ -239,11 +256,25 @@ fn play_tae_sounds(
     assets: Res<AssetServer>,
     volume: Res<SoundVolume>,
     mut index: ResMut<SoundIndex>,
-    actors: Query<(Entity, &Actor, &Transform)>,
+    actors: Query<(Entity, &Actor, &Transform, Option<&crate::player::Player>)>,
     mut seen: Local<HashMap<Entity, (String, f32)>>,
     mut fmod: Option<NonSendMut<crate::fmod::Fmod>>,
+    mut slotted: Local<Vec<(Entity, String, f32, crate::fmod::EventHandle)>>,
 ) {
-    for (entity, a, tf) in &actors {
+    // Sounds of slotted FFX (SpawnOneShotFFX with a SlotID >= 0, e.g. the Mortal Blade's aura
+    // 440000 on slot 0, frames 5-100 of a106_316000): the effect lives while its TAE event runs and
+    // ends with it or when the anim changes - its (looping) sound with it. Before, the loop kept
+    // playing after Mortal Draw.
+    if let Some(f) = fmod.as_mut() {
+        slotted.retain(|(ent, anim, end, ev)| {
+            let alive = actors.get(*ent).is_ok_and(|(_, a, _, _)| a.anim == *anim && a.t < *end);
+            if !alive {
+                f.stop(*ev);
+            }
+            alive
+        });
+    }
+    for (entity, a, tf, player) in &actors {
         if a.anim.is_empty() {
             continue;
         }
@@ -262,7 +293,8 @@ fn play_tae_sounds(
             }
             if !e.ungated() {
                 let gate = e.arg_i64("StateInfo").unwrap_or(0);
-                let active = states.get_or_insert_with(|| active_state_infos(&combat, a, config.as_deref()));
+                let tool = player.zip(config.as_deref()).and_then(|(p, c)| crate::player::equipped_tool(&combat, c, p.tool_slot)).map(|t| t.id);
+                let active = states.get_or_insert_with(|| active_state_infos(&combat, a, config.as_deref(), tool));
                 if !active.contains(&gate) {
                     continue;
                 }
@@ -278,7 +310,13 @@ fn play_tae_sounds(
                 if let (Some(ffx), Some(f)) = (e.arg_i64("FFXID").filter(|v| *v > 0), fmod.as_mut()) {
                     let key = format!("s{ffx:09}");
                     if f.has(&key) {
-                        f.play(&key, tf.translation);
+                        if e.arg_i64("SlotID").is_some_and(|s| s >= 0) {
+                            if let Some(ev) = f.play_tracked(&key, tf.translation) {
+                                slotted.push((entity, a.anim.clone(), e.end, ev));
+                            }
+                        } else {
+                            f.play(&key, tf.translation);
+                        }
                     }
                 }
                 continue;
@@ -289,7 +327,7 @@ fn play_tae_sounds(
             // The game's own FMOD event when available: floor 'x' = id rounded to 1000 + floor
             // material, armour 'b' = id + defense material (Wolf's protector 113, c1020/c1010 108).
             let event = match letter {
-                'x' => format!("c{:09}", id / 1000 * 1000 + FLOOR_MATERIAL),
+                'x' => format!("c{:09}", id / 1000 * 1000 + floor_material(tf.translation)),
                 // Armour: id + the wearer's material - the first of its two (protector
                 // defenseMaterial1/2, NpcParam materialSe1/2) the banks have an event for
                 // (Wolf 113; the General 114 has none, 108 has).
@@ -317,7 +355,7 @@ fn play_tae_sounds(
                     None => continue,
                 }
             } else {
-                let key = if letter == 'x' { format!("c{:09}", id / 1000 * 1000 + FLOOR_MATERIAL) } else { format!("{letter}{id:09}") };
+                let key = if letter == 'x' { format!("c{:09}", id / 1000 * 1000 + floor_material(tf.translation)) } else { format!("{letter}{id:09}") };
                 let Some(file) = pick(&mut index, &key) else { continue };
                 file
             };

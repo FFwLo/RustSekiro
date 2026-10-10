@@ -1,8 +1,8 @@
 //! Clash effects: sword-on-sword sparks, the flash and light pulse of a deflect, and a blood spray
-//! on hits. combat.rs spawns a `Clash` request at the contact point; this module turns it into
-//! particles. gap: the game's own FXR effects (sfx/*.ffxbnd) are not decoded; these are made to
-//! read like them (deflect: a burst of hot orange sparks and a white flash; guard: fewer, paler
-//! sparks; hit: dark red droplets).
+//! on hits. combat.rs spawns a `Clash` request at the contact point with the game's effect ids for
+//! it (`hit_sfx`: HitEffectSfx* params); fxr.rs plays those. Without them (not exported, or no FXR
+//! extracted) the hand-made look stands in: deflect a burst of hot orange sparks and a white
+//! flash; guard fewer, paler sparks; hit dark red droplets.
 
 use bevy::prelude::*;
 
@@ -21,12 +21,78 @@ pub enum Kind {
 pub struct Clash {
     pub normal: Vec3,
     pub kind: Kind,
+    /// The game's effects for it (FFX ids, `hit_sfx`).
+    pub sfx: Vec<i64>,
 }
 
 impl Clash {
     pub fn bundle(pos: Vec3, normal: Vec3, kind: Kind) -> impl Bundle {
-        (Clash { normal: normal.normalize_or(Vec3::Y), kind }, Transform::from_translation(pos))
+        Self::bundle_fx(pos, normal, kind, Vec::new())
     }
+    pub fn bundle_fx(pos: Vec3, normal: Vec3, kind: Kind, sfx: Vec<i64>) -> impl Bundle {
+        (Clash { normal: normal.normalize_or(Vec3::Y), kind, sfx }, Transform::from_translation(pos))
+    }
+}
+
+/// HitEffectSfxConcept(JustGuard)Param column groups in paramdef order, picked by the attack's
+/// atkMaterial_forSfx (the same order as the sound tables' groups, sound::HIT_SE_GROUPS).
+const SFX_GROUPS: [&str; 15] =
+    ["Iron", "Fire", "Wood", "Body", "Eclipse", "Energy", "None", "Dmy1", "Dmy2", "Dmy3", "Maggot", "Wax", "FireFlame", "EclipseGas", "EnergyStrong"];
+
+/// The game's effects for a clash. For each material row (deflect / guard: the attack's
+/// defSfxMaterial1/2; hit: the defender's materialSfx1/2, Wolf's protector defenseMaterialSfx1/2)
+/// the concept table (deflect: HitEffectSfxConceptJustGuardParam, e.g. 100 "Weapon iron" ->
+/// atkIron_1 520 "Jasuga sparks"; guard / hit: HitEffectSfxConceptParam) gives up to two concepts
+/// (atk<group>_1 / _2), and HitEffectSfxParam[concept] at the attack's type (Slash / Blow / Thrust)
+/// and size (atkPow_forSfx: S M L LL LLL) the FFX id: the General's sword deflected -> 252001,
+/// guarded -> 201002, on his armour -> 201001 + 229001 ("meat under armour").
+/// gap: the exe's SFX path is not traced; a deflect falls back to HitEffectSfxConceptParam when the
+/// JustGuard table has nothing, as the traced sound path does (sound::guard_sounds).
+pub fn hit_sfx(combat: &crate::data::Combat, atk: &crate::data::Attack, kind: Kind, def_materials: [i64; 2]) -> Vec<i64> {
+    let Some(group) = usize::try_from(atk.atk_material_sfx).ok().and_then(|g| SFX_GROUPS.get(g)) else { return Vec::new() };
+    let col = format!(
+        "{}_{}",
+        match atk.atk_type {
+            1 => "Blow",
+            2 => "Thrust",
+            _ => "Slash",
+        },
+        ["S", "M", "L", "LL", "LLL"][atk.atk_pow_sfx.clamp(0, 4) as usize]
+    );
+    let look = |table: &str, mats: [i64; 2]| -> Vec<i64> {
+        let (Some(t), Some(sfx)) = (combat.params.get(table), combat.params.get("HitEffectSfxParam")) else { return Vec::new() };
+        let mut out = Vec::new();
+        for m in mats.into_iter().filter(|m| *m >= 0) {
+            for n in 1..=2 {
+                let concept = t.get(m.to_string()).and_then(|r| r[format!("atk{group}_{n}")].as_i64()).unwrap_or(0);
+                if let Some(id) = (concept > 0).then(|| sfx.get(concept.to_string()).and_then(|r| r[&col].as_i64())).flatten().filter(|id| *id > 0) {
+                    if !out.contains(&id) {
+                        out.push(id);
+                    }
+                }
+            }
+        }
+        out
+    };
+    let guard = [atk.def_sfx_material1, atk.def_sfx_material2];
+    match kind {
+        Kind::Deflect => {
+            let jg = look("HitEffectSfxConceptJustGuardParam", guard);
+            if jg.is_empty() { look("HitEffectSfxConceptParam", guard) } else { jg }
+        }
+        Kind::Guard => look("HitEffectSfxConceptParam", guard),
+        Kind::Hit => look("HitEffectSfxConceptParam", def_materials),
+    }
+}
+
+/// The defender's two hit-effect materials: the enemy's NpcParam materialSfx1/2, Wolf's body
+/// protector defenseMaterialSfx1/2 (146 / 106).
+pub fn defender_sfx_materials(combat: &crate::data::Combat, side: crate::actor::Side) -> [i64; 2] {
+    let (r, a, b) = match side {
+        crate::actor::Side::Enemy => (combat.param("NpcParam", combat.foe.npc_row), "materialSfx1", "materialSfx2"),
+        crate::actor::Side::Player => (combat.param("EquipParamProtector", 100000), "defenseMaterialSfx1", "defenseMaterialSfx2"),
+    };
+    [r[a].as_i64().unwrap_or(-1), r[b].as_i64().unwrap_or(-1)]
 }
 
 #[derive(Component)]
@@ -116,10 +182,21 @@ fn spawn_clashes(
     mut rng: ResMut<VfxRng>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     q: Query<(Entity, &Clash, &Transform)>,
+    mut lib: Option<ResMut<crate::fxr::FxrLib>>,
 ) {
     for (e, c, tf) in &q {
         commands.entity(e).despawn();
         let pos = tf.translation;
+        // The game's effects, +Z toward the attacker. gap: HitEffectSfxAngleParam's turn by the
+        // attack's direction (atkDir_forSfx) is not applied.
+        let game: Vec<i64> = c.sfx.iter().copied().filter(|id| lib.as_mut().is_some_and(|l| l.has(*id))).collect();
+        if !game.is_empty() {
+            let at = Transform::from_translation(pos).looking_to(-c.normal, Vec3::Y);
+            for id in game {
+                commands.spawn(crate::fxr::FxEffect::new(id, None, false, at));
+            }
+            continue;
+        }
         // Sparks fly off the blades: mostly sideways around the clash normal and a bit up.
         let n = (c.normal + Vec3::Y * 0.35).normalize_or(Vec3::Y);
         let (count, speed, life, spread) = match c.kind {

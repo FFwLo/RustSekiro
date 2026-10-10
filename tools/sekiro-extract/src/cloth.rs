@@ -5,7 +5,10 @@ use crate::bin::Reader;
 use crate::hkx::Tagfile;
 
 impl<'a> Tagfile<'a> {
-    /// (start, count, stride) of the array a field refers to; stride = item span / count.
+    /// (start, count, stride) of the array a field refers to. The stride is the element type's
+    /// stated size (TBDY), else the item span / count (items are 16-byte aligned, so that
+    /// fallback misreads structs whose size does not divide the padded span: the map collision's
+    /// 64-byte PrimitiveData x5 came out as 67).
     pub fn array(&self, at: usize) -> Option<(usize, usize, usize)> {
         let idx = Reader::new(self.d).u64(at) as usize;
         if idx == 0 || idx >= self.items.len() || self.items[idx].count == 0 {
@@ -13,7 +16,11 @@ impl<'a> Tagfile<'a> {
         }
         let it = &self.items[idx];
         let next = self.items.iter().skip(idx + 1).map(|n| n.offset).find(|&o| o > it.offset);
-        let stride = next.map(|n| (n - it.offset) / it.count).unwrap_or(0);
+        let span = next.map(|n| (n - it.offset) / it.count).unwrap_or(0);
+        let stride = match self.types.sizes.get(&it.ty) {
+            Some(&s) if s > 0 && (span == 0 || s <= span) => s,
+            _ => span,
+        };
         Some((self.data + it.offset, it.count, stride))
     }
 }
@@ -359,14 +366,19 @@ pub fn bone_space_deformer(tf: &Tagfile, op: usize, op_ty: &str, unpacked_overri
     let lists = ["oneBlendEntries", "twoBlendEntries", "threeBlendEntries", "fourBlendEntries"];
     let arrays: Vec<Option<(usize, usize, usize)>> = lists.iter().map(|l| tf.array(def + tf.field(dty, l))).collect();
     let ctrl: Vec<u8> = tf.array(def + tf.field(dty, "controlBytes")).map(|(a, n, _)| (0..n).map(|i| r.u8(a + i)).collect()).unwrap_or_default();
-    let packed = ["localPNs", "localPs"].iter().filter_map(|f| tf.try_field(op_ty, f)).next().and_then(|f| tf.array(op + f));
-    let unp = ["localUnpackedPNs", "localUnpackedPs"].iter().filter_map(|f| tf.try_field(op_ty, f)).next().and_then(|f| tf.array(op + f));
+    let packed = ["localPNs", "localPNTs", "localPNTBs", "localPs"].iter().filter_map(|f| tf.try_field(op_ty, f)).next().and_then(|f| tf.array(op + f));
+    let unp = ["localUnpackedPNs", "localUnpackedPNTs", "localUnpackedPNTBs", "localUnpackedPs"].iter().filter_map(|f| tf.try_field(op_ty, f)).next().and_then(|f| tf.array(op + f));
     let use_unpacked = unpacked_override.unwrap_or(unp.is_some());
     let mut next = [0usize; 4];
     let mut out = Vec::new();
     for (blk, &c) in ctrl.iter().enumerate() {
         let Some(k) = 3usize.checked_sub(c as usize) else { continue };
-        let Some((a, _, s)) = arrays[k] else { continue };
+        let Some((a, count, s)) = arrays[k] else { continue };
+        // More control bytes than entries of that kind (c1021, c1070, ... cloths): stop at the
+        // array's end rather than reading past it.
+        if next[k] >= count {
+            continue;
+        }
         let b = a + next[k] * s;
         next[k] += 1;
         let nb = k + 1;

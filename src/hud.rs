@@ -61,6 +61,11 @@ struct ResNode(u32);
 struct ItemText;
 #[derive(Component)]
 struct EnemyRoot;
+/// Bottom-right icon slots: the equipped prosthetic (`true`) and combat art (`false`), the game's
+/// menu icons (EquipParamWeapon iconId -> SB_Icon* atlas MENU_ItemIcon_<iconId>, cut to
+/// extracted/hud by sekiro-extract export_hud). Hidden while the icon is not extracted.
+#[derive(Component)]
+struct ItemIcon(bool);
 #[derive(Component)]
 struct EnemyHpFill;
 
@@ -76,8 +81,8 @@ impl Plugin for HudPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<CombatLog>()
             .init_resource::<Perilous>()
-            .add_systems(Startup, (spawn_hud, spawn_perilous, spawn_stealth, spawn_deathblow_mark))
-            .add_systems(Update, (update_player_hud, update_enemy_hud, update_debug, update_log, debug_only, update_perilous, update_stealth, update_deathblow_mark));
+            .add_systems(Startup, (spawn_hud, spawn_perilous, spawn_stealth, spawn_deathblow_mark, spawn_item_icons))
+            .add_systems(Update, (update_player_hud, update_enemy_hud, update_debug, update_log, debug_only, update_perilous, update_stealth, update_deathblow_mark, update_item_icons));
     }
 }
 
@@ -284,6 +289,54 @@ fn update_enemy_hud(
 #[derive(Component)]
 struct DeathblowMark;
 
+fn spawn_item_icons(mut commands: Commands) {
+    commands
+        .spawn(Node {
+            position_type: PositionType::Absolute,
+            right: Val::Px(56.0),
+            bottom: Val::Px(44.0),
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::FlexEnd,
+            column_gap: Val::Px(10.0),
+            ..default()
+        })
+        .with_children(|c| {
+            c.spawn((Node { width: Val::Px(64.0), height: Val::Px(64.0), ..default() }, ImageNode::default(), Visibility::Hidden, ItemIcon(false)));
+            c.spawn((Node { width: Val::Px(96.0), height: Val::Px(96.0), ..default() }, ImageNode::default(), Visibility::Hidden, ItemIcon(true)));
+        });
+}
+
+fn update_item_icons(
+    mut shown: Local<[i64; 2]>,
+    assets: Res<AssetServer>,
+    combat: Res<Combat>,
+    config: Res<crate::config::GameConfig>,
+    player: Query<&crate::player::Player>,
+    mut q: Query<(&ItemIcon, &mut ImageNode, &mut Visibility)>,
+) {
+    let slot = player.iter().next().map_or(0, |p| p.tool_slot);
+    for (icon, mut img, mut vis) in &mut q {
+        // The tool's iconId rides on its exported Prosthetic row; the art's on its EquipParamWeapon row.
+        let id = if icon.0 {
+            crate::player::equipped_tool(&combat, &config, slot).map_or(0, |t| t.icon)
+        } else {
+            combat.param("EquipParamWeapon", config.player.combat_art)["iconId"].as_i64().unwrap_or(0)
+        };
+        let i = icon.0 as usize;
+        if shown[i] == id {
+            continue;
+        }
+        shown[i] = id;
+        let file = format!("hud/MENU_ItemIcon_{id:05}.png");
+        if id > 0 && crate::paths::extracted().join(&file).exists() {
+            img.image = assets.load(file);
+            *vis = Visibility::Inherited;
+        } else {
+            *vis = Visibility::Hidden;
+        }
+    }
+}
+
 fn spawn_deathblow_mark(mut commands: Commands, assets: Res<AssetServer>) {
     commands
         .spawn((
@@ -370,7 +423,7 @@ fn update_debug(
             for (flag, name) in [(FLAG_ACCEPT_ATTACK, "atk"), (FLAG_ACCEPT_GUARD, "grd"), (FLAG_ACCEPT_STEP, "step"), (FLAG_ACCEPT_JUMP, "jump"), (FLAG_ACCEPT_MOVE, "move")] {
                 if d.flag(&a.anim, a.t, flag) { tags.push(name); }
             }
-            if !d.attack_windows(&a.anim).iter().all(|(e, _, _)| !e.active(a.t)) { tags.push("[HITBOX]"); }
+            if !d.attack_windows(&a.anim).iter().all(|(e, _, _)| !e.in_time(a.t)) { tags.push("[HITBOX]"); }
             if let Some(t) = d.stamina_ratio_type(&a.anim, a.t) { s += &format!("      posture regen type {t}  "); }
             s += &format!("      accepts: {}\n", tags.join(" "));
         }

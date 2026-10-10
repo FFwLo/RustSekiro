@@ -3,8 +3,9 @@
 //! - SpawnOneShotFFX (TAE 96) with a blood FFX: a spray from the event's dummy along the dummy's
 //!   forward for the event's length (c1010 behind deathblow a000_012200: FFX 220505 on dummy 802,
 //!   the side of the neck, frames 46-81; Wolf's blade 220502 / 220503 on sword dummies 121 / 100).
-//!   gap: the FXR effects (sfx/sfxbnd_commoneffects f000220505.fxr) are not decoded; the spray is
-//!   made to read like the game's (a long dark-red jet of fine drops that thins out, clip 1).
+//!   The game's own effect (extracted/fxr/<id>.json) plays through fxr.rs (ffx.rs spawns it); this
+//!   hand-made spray (made to read like clip 1: a long dark-red jet of fine drops that thins out)
+//!   only stands in when that FXR is not extracted.
 //! - DecalParamID_DummyPoly (TAE 138): a blood stain under the dummy, from DecalParam (710011: the
 //!   game's own splat mask dp000160000 and diffuse dp000100000, extracted/decal/<id>.png, tinted by
 //!   diffuseColorR/G/B, projected straight down (pitchAngle -90), randomSize 100-120 %, a random
@@ -97,6 +98,7 @@ fn bleed(
     actors: Query<(&Actor, &Dummies)>,
     dummies: Query<&GlobalTransform>,
     stains: Query<(Entity, &Stain, &Transform)>,
+    mut lib: Option<ResMut<crate::fxr::FxrLib>>,
 ) {
     let Some(vfx) = vfx else { return };
     let mut new_stains: Vec<(i64, Vec3)> = Vec::new();
@@ -109,7 +111,7 @@ fn bleed(
         for e in anim.events.iter().filter(|e| e.ungated()) {
             match e.kind {
                 96 => {
-                    let Some(rate) = e.arg_i64("FFXID").and_then(blood_rate) else { continue };
+                    let Some(rate) = e.arg_i64("FFXID").filter(|id| !lib.as_mut().is_some_and(|l| l.has(*id))).and_then(blood_rate) else { continue };
                     // The part of this frame inside the event.
                     let (from, to) = (a.prev_t.max(e.start), a.t.min(e.end));
                     if to <= from {

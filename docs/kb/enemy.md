@@ -102,3 +102,19 @@ Dated findings, oldest first. Append new entries at the end.
   * Footsteps: Wolf's walk / run clips carry CreateAISound (TAE 237) for their whole length - walk
     1000 (0.5 m), run 1010 (2 m), crouch walk 1001 (0.25 m), crouch run 1011 (0.5 m); read from the
     clip on screen (Actor::shown_clip), radius x hearingSearchEnemyRate when bSpEffectEnable. 103 tests.
+- All enemies (2026-10-10, docs/reports/enemies.md):
+  * NPC damage is atkPhys + atkMag + atkFire + atkThun + atkDark.
+  * opposeTarget 0 = hits objects only.
+  * NpcParam resident spEffectID0-31 open the 950/951 TAE StateInfo gates.
+  * NPC bullets: BehaviorParam 200000000 + variation*1000 + judge with refType 1.
+  * Enemy grab: ThrowParam AtkChrId = chr, throwKind = 1000000 + throwTypeId*10 (gap: pattern, not exe).
+  * ninsatuNum > 1: a non-final deathblow is ThrowDef only, then IdleTransition (HKS ThrowDef, not
+    env(276)). The boss characters (c5000, c7100) have no ThrowDefDeath anims at all. HP refill = gap.
+  * Bosses read GetNinsatsuNum < GetNinsatsuMaxNum as "a deathblow was taken" (500000_battle.lua), and
+    the General's last one (<= 1) as all-out (102000_battle.lua).
+  * Goal setters chain (AddSubGoal(...):SetLifeEndSuccess(true):TimingSetNumber(...)).
+  * Anim sets: SpEffect 200030-200034 (stateInfo 270-274, CMSG offsetType 15) = a000-a400; from
+    residents or TAE 66/67/401. NPC TAE ids carry the group (100003001 = a100_003001).
+  * Boss phases are map events: EMEVD 4[37] IF Number of Character Health Bars on the boss, then
+    SetSpEffect / ClearSpEffect / ForceAnimationPlayback / EzState request / AI command (2004[17],
+    read by GetEventRequest(slot)) / AI re-plan. At 0 bars: EzState 20200 + Wolf's 7102xx.
