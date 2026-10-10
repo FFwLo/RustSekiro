@@ -3,7 +3,7 @@
 //! actor's current anim and clock, drawn as bone lines.
 
 use bevy::prelude::*;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::actor::{Actor, Side, data_for};
 use crate::data::{CharData, Combat};
@@ -32,14 +32,15 @@ pub struct Lib {
 #[derive(Resource, Default)]
 pub struct AnimLib {
     pub player: Lib,
-    pub enemy: Lib,
+    /// Per enemy kind (`Combat::kinds`); kinds with the same anim chr share one.
+    pub enemies: Vec<std::sync::Arc<Lib>>,
 }
 
 impl AnimLib {
-    pub fn lib(&self, side: Side) -> &Lib {
-        match side {
+    pub fn lib(&self, a: &crate::actor::Actor) -> &Lib {
+        match a.side {
             Side::Player => &self.player,
-            Side::Enemy => &self.enemy,
+            Side::Enemy => self.enemies.get(a.kind).or(self.enemies.first()).map_or(&self.player, |l| l.as_ref()),
         }
     }
 }
@@ -115,9 +116,10 @@ pub struct AnimSet;
 pub struct HasModel;
 
 /// Hurtbox capsules: two marker entities (endpoints, parented to the bone) and the
-/// radius, from the ragdoll bodies in the character's physics HKX.
+/// radius, from the ragdoll bodies in the character's physics HKX; and each one's NPC part group
+/// (0 = none).
 #[derive(Component)]
-pub struct Hurtboxes(pub Vec<(Entity, Entity, f32)>);
+pub struct Hurtboxes(pub Vec<(Entity, Entity, f32)>, pub Vec<u8>);
 
 /// Bone entities of one character, indexed like the skeleton.
 #[derive(Component)]
@@ -150,17 +152,31 @@ pub struct AnimPlugin;
 impl Plugin for AnimPlugin {
     fn build(&self, app: &mut App) {
         let dir = crate::paths::root().join("extracted");
-        let (chr, own) = app.world().get_resource::<Combat>().map_or(("c1020".to_string(), "c1020".to_string()), |c| (c.foe.anim_chr.clone(), c.foe.chr.clone()));
+        // (anim chr, chr) of each enemy kind.
+        let kinds: Vec<(String, String)> = app
+            .world()
+            .get_resource::<Combat>()
+            .map(|c| c.kinds.iter().map(|k| (k.foe.anim_chr.clone(), k.foe.chr.clone())).collect())
+            .unwrap_or_else(|| vec![("c1020".to_string(), "c1020".to_string())]);
         let mut player = load(&dir.join("anim_c0000.bin"));
-        // Wolf's clips against this enemy (deathblows, grabs: chr/c0000_c<chr>.anibnd, which the exe
-        // loads per enemy as "chranibnd:/c0000_c%04d.anibnd"), exported to anim_c0000_<chr>.bin.
-        for c in [&chr, &own] {
-            let p = dir.join(format!("anim_c0000_{c}.bin"));
-            if p.exists() {
-                player.clips.extend(load(&p).clips);
+        // Wolf's clips against each enemy (deathblows, grabs: chr/c0000_c<chr>.anibnd, which the
+        // exe loads per enemy as "chranibnd:/c0000_c%04d.anibnd"), exported to
+        // anim_c0000_<chr>.bin. (Their anim groups differ per enemy, so they merge.)
+        let mut done = HashSet::new();
+        for (chr, own) in &kinds {
+            for c in [chr, own] {
+                let p = dir.join(format!("anim_c0000_{c}.bin"));
+                if done.insert(c.clone()) && p.exists() {
+                    player.clips.extend(load(&p).clips);
+                }
             }
         }
-        app.insert_resource(AnimLib { player, enemy: load(&dir.join(format!("anim_{chr}.bin"))) })
+        let mut by_chr: HashMap<String, std::sync::Arc<Lib>> = HashMap::new();
+        let enemies = kinds
+            .iter()
+            .map(|(chr, _)| by_chr.entry(chr.clone()).or_insert_with(|| std::sync::Arc::new(load(&dir.join(format!("anim_{chr}.bin"))))).clone())
+            .collect();
+        app.insert_resource(AnimLib { player, enemies })
             .add_systems(PostStartup, build_skeletons.in_set(AnimSet).after(crate::player::player_visuals).after(crate::enemy::enemy_visuals))
             .add_systems(Update, (pose_skeletons, apply_walk_twist, apply_twists, draw_skeletons).chain().before(TransformSystems::Propagate));
     }
@@ -174,7 +190,7 @@ fn build_skeletons(
     blades: Query<(), With<crate::world::Blade>>,
 ) {
     for (e, a, children) in &actors {
-        let l = lib.lib(a.side);
+        let l = lib.lib(&a);
         if l.bones.is_empty() {
             continue;
         }
@@ -214,8 +230,8 @@ fn build_skeletons(
             let parent = if b.parent >= 0 && (b.parent as usize) < i { bind[b.parent as usize] } else { Transform::IDENTITY };
             bind.push(parent.mul_transform(b.pose));
         }
-        let mut boxes = Vec::new();
-        for h in &data_for(&combat, a.side).hurtboxes {
+        let (mut boxes, mut parts) = (Vec::new(), Vec::new());
+        for h in &data_for(&combat, &a).hurtboxes {
             let Some(bi) = find(&h.bone) else { continue };
             let inv = bind[bi].compute_affine().inverse();
             let mut marker = |p: [f32; 3]| {
@@ -226,9 +242,10 @@ fn build_skeletons(
             };
             let (ma, mb) = (marker(h.a), marker(h.b));
             boxes.push((ma, mb, h.r));
+            parts.push(h.part);
         }
         if !boxes.is_empty() {
-            commands.entity(e).insert(Hurtboxes(boxes));
+            commands.entity(e).insert(Hurtboxes(boxes, parts));
         }
         // The skeleton replaces the placeholder capsule.
         commands.entity(e).insert(Skeleton { bones, shown: String::new(), from: Vec::new(), last: Vec::new(), blend: 1.0, blend_len: CROSSFADE, was_upper: false, upper_fade: false }).remove::<Mesh3d>();
@@ -300,8 +317,8 @@ fn pose_skeletons(
     mut tfs: Query<&mut Transform>,
 ) {
     for (a, mut skel) in &mut actors {
-        let l = lib.lib(a.side);
-        let d = data_for(&combat, a.side);
+        let l = lib.lib(&a);
+        let d = data_for(&combat, &a);
         let drawn = draw_time(a, alpha.as_deref().map(|k| k.0));
         let Some((clip, t)) = clip_for(l, d, a, drawn) else { continue };
         let tracks = clip.track_to_bone.len();
@@ -428,7 +445,7 @@ fn draw_skeletons(
     mut gizmos: Gizmos,
 ) {
     for (a, skel, actor_tf) in &actors {
-        let l = lib.lib(a.side);
+        let l = lib.lib(&a);
         let root = actor_tf.mul_transform(Transform::from_xyz(0.0, -CAPSULE_HALF_HEIGHT, 0.0));
         let mut world: Vec<Transform> = Vec::with_capacity(l.bones.len());
         for (i, b) in l.bones.iter().enumerate() {
@@ -461,7 +478,7 @@ fn apply_walk_twist(lib: Res<AnimLib>, actors: Query<(&Actor, &Skeleton)>, mut b
         if a.twist.abs() < 1e-4 {
             continue;
         }
-        let l = lib.lib(a.side);
+        let l = lib.lib(&a);
         let find = |n: &str| l.bones.iter().position(|b| b.name == n);
         let Some(master) = find("Master") else { continue };
         // + = legs turned right (toward model +X; forward is -Z).
@@ -512,9 +529,9 @@ fn apply_twists(
     let dt = time.delta_secs();
     let step = |gain: f32| 1.0 - (1.0 - gain.clamp(0.0, 1.0)).powf(dt * 30.0);
     for (e, a, tf, skel) in &actors {
-        let l = lib.lib(a.side);
+        let l = lib.lib(&a);
         // The active TAE 700 event and its modifiers.
-        let data = crate::actor::data_for(&combat, a.side);
+        let data = crate::actor::data_for(&combat, &a);
         let ev = if a.anim.is_empty() { None } else { data.events_at(&a.anim, a.t).find(|ev| ev.kind == 700) };
         // ModifierID "0: 0_Twist" -> modifier number 0; Wolf's graph names it "0_Twist", the NPC
         // graph (c9997) "00_Twist" (several modifiers may share a number: 02_Twist_Neck/_Spine).
@@ -522,7 +539,7 @@ fn apply_twists(
             .and_then(|ev| ev.args.get("ModifierID"))
             .and_then(|v| v.as_str().map(str::to_string).or_else(|| v.as_i64().map(|n| n.to_string())))
             .and_then(|s| s.split(':').next().and_then(|n| n.trim().parse::<i32>().ok()));
-        let table = if a.side == crate::actor::Side::Player { &combat.twists } else { &combat.enemy.twists };
+        let table = if a.side == crate::actor::Side::Player { &combat.twists } else { &combat.data_of(&a).twists };
         let mut mods: Vec<(&String, &crate::data::Twist)> = match id {
             Some(n) => table.iter().filter(|(k, _)| k.split('_').next().and_then(|p| p.parse::<i32>().ok()) == Some(n)).collect(),
             None => Vec::new(),

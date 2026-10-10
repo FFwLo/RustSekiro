@@ -103,7 +103,7 @@ fn bleed(
     let Some(vfx) = vfx else { return };
     let mut new_stains: Vec<(i64, Vec3)> = Vec::new();
     for (a, dm) in &actors {
-        let Some(anim) = data_for(&combat, a.side).anim(&a.anim) else { continue };
+        let Some(anim) = data_for(&combat, &a).anim(&a.anim) else { continue };
         if a.t < a.prev_t {
             continue;
         }

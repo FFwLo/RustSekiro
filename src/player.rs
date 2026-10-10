@@ -37,6 +37,10 @@ pub struct Player {
     auto_aim_fresh: bool,
     /// Spirit Emblems (prosthetic ammunition; config player.spirit_emblems).
     pub emblems: u32,
+    /// SpEffects a TAE AddSpEffect put on for good (effectEndurance -1, e.g. the Todome's
+    /// "recovery prohibited" 105051 / 150302-150332); they win their spCategory over a
+    /// higher-priority one-shot recovery. Cleared by the fight reset. gap: when the exe drops them.
+    pub(crate) held: Vec<i64>,
     /// Last ground jump was forward (HKS Selector_GroundJumpType): picks its land anim.
     jump_forward: bool,
     /// Landing of a directional (positioning) jump, which takes priority over moving on.
@@ -182,7 +186,7 @@ fn art_combo_next(state: &str, cat: i64, enable: bool, unlocked: impl Fn(i64) ->
 /// HKS BEH_A_AIR_SP_ATTACK (2906-2940): the art pressed in the air -> (state, counted). `enable` =
 /// env(3035) (the emblems), `count` = g_airSpecialAttackCount, `ref_226` = the hit jump's derive
 /// window. Sakura Dance (110) once per jump (else W_AddActionInputSpacialAttack, an additive: none
-/// here). gap: ACTION_UNLOCK_TYPE_AIR_SP_ATTACK (25) is read as learned.
+/// here). Without ACTION_UNLOCK_TYPE_AIR_SP_ATTACK (25, line 2915) the caller drops the press.
 pub(crate) fn air_art_state(cat: i64, unlock: i64, enable: bool, count: u32, ref_226: bool) -> Option<(&'static str, bool)> {
     const AIR_SP_ATTACK_COUNT_MAX: u32 = 1;
     Some(match cat {
@@ -225,8 +229,9 @@ fn air_art_land(cat: i64, state: &str, ref_201: bool, ref_288: bool) -> Option<(
 /// stick -> N, else B; without SP_EF_REF_WEP_SP_ATK_UNLOCK_101_BACK_ATTACK (280) always F);
 /// otherwise GroundSpecialAttackCombo1. Candidates in order; the first whose anim exists in the
 /// art's group wins; 104 opens its hold (GroundSpacialAttackHoldStart). `enable` = env(3035,
-/// ACTION_ARM_SPECIAL_ATTACK), read as "enough Spirit Emblems" (`art_cost`): without, Dragon Flash (103)
-/// plays its *NoResource opening (a103_316001 / 316301). gap: 107 / 110 jump starts.
+/// ACTION_ARM_SPECIAL_ATTACK): Spirit Emblems held >= the art's resourceItemA (`art_cost`; the exe's
+/// FUN_140a26010, as for the tools): without, Dragon Flash (103) plays its *NoResource opening
+/// (a103_316001 / 316301).
 fn art_start_states(cat: i64, unlock: i64, sprint: bool, stick: Vec3, fwd: Vec3, enable: bool) -> Vec<String> {
     let mut out = Vec::new();
     let pre = if sprint { "Sprint" } else { "Ground" };
@@ -457,8 +462,26 @@ pub struct DeathblowCheck {
     pub in_reach: bool,
 }
 
-pub fn deathblow_check(combat: &Combat, wolf: Vec3, ea: &Actor, enemy: &Enemy, at: Vec3) -> Option<DeathblowCheck> {
+pub fn deathblow_check(combat: &Combat, wolf: Vec3, ea: &Actor, enemy: &Enemy, at: Vec3, dmy: &dyn Fn(i16) -> Option<Vec3>) -> Option<DeathblowCheck> {
     let d = &combat.player;
+    let foe = combat.foe_of(ea);
+    // A boss in its finisher window (data.rs finisher_open): Wolf's last blow, within DiffAngMax
+    // of its facing (Isshin 45; the Divine Dragon 180: any side), Dist from its judge dummy
+    // (judgeRangeBasePosDmyId2) or root. gap: diffAngMyToDef and the Y range are not checked;
+    // from the dragon's dummy 230 (6 m up, by its head) only across the floor, its body not
+    // being ground here.
+    let finisher = combat.data_of(ea).finisher_open(&ea.anim, ea.t).then(|| combat.finisher(&foe)).flatten();
+    if let Some((id, main)) = finisher {
+        let judge = (main.judge_dmy > 0).then(|| dmy(main.judge_dmy)).flatten();
+        let base = judge.unwrap_or(at);
+        let to_wolf = (wolf - base).with_y(0.0).normalize_or_zero();
+        if (main.diff_ang_max < 180.0 && ea.forward().angle_between(to_wolf).to_degrees() > main.diff_ang_max) || d.anim(&main.atk_anim).is_none() {
+            return None;
+        }
+        let gap = if judge.is_some() { (base - wolf).with_y(0.0).length() } else { base.distance(wolf) };
+        let in_reach = gap <= main.dist;
+        return Some(DeathblowCheck { behind: false, suffix: id - foe.throw_row(0), main, start: None, in_reach });
+    }
     let unaware = enemy.is_unaware();
     if !enemy.is_broken() && !unaware {
         return None;
@@ -469,7 +492,7 @@ pub fn deathblow_check(combat: &Combat, wolf: Vec3, ea: &Actor, enemy: &Enemy, a
         return None;
     }
     let dist = at.distance(wolf);
-    let near = combat.throw(combat.foe.throw_row(5)).filter(|st| !behind && dist <= st.dist && d.anim(&st.atk_anim).is_some());
+    let near = combat.throw(foe.throw_row(5)).filter(|st| !behind && dist <= st.dist && d.anim(&st.atk_anim).is_some());
     let (start_sfx, suffix) = if unaware {
         (20, 21)
     } else if behind {
@@ -481,15 +504,29 @@ pub fn deathblow_check(combat: &Combat, wolf: Vec3, ea: &Actor, enemy: &Enemy, a
     };
     // A major boss's last deathblow is its Todome (トドメ始動 / 本体, ThrowParam 0180 / 0181: Wolf
     // a2xx_501700 -> 511700, the boss ThrowDef13700); only the bosses with several deathblows have
-    // these rows (c5000, c5060, c5100, c5400, c5430, c7020, c7110). gap: the exe's choice of the
-    // Todome rows is not traced (by the rows' names and ninsatuNum).
-    let todome = !unaware && enemy.ninsatsu.0 <= 1 && enemy.ninsatsu.1 > 1;
-    let (start_sfx, suffix) = match (todome, combat.throw(combat.foe.throw_row(181))) {
-        (true, Some(t)) if d.anim(&t.atk_anim).is_some() => (180, 181),
-        _ => (start_sfx, suffix),
-    };
-    let main = combat.throw(combat.foe.throw_row(suffix))?;
-    let start = combat.throw(combat.foe.throw_row(start_sfx)).filter(|st| d.anim(&st.atk_anim).is_some());
+    // these rows (c5000, c5060, c5100, c5400, c5430, c7020, c7110), the one-bar Guardian Ape and
+    // Way of Tomoe too (the Ape's a000_013700 is his 39.5 s fake death: m17 11705821 raises him
+    // on its message 20). gap: the exe's choice of the Todome rows is not traced (by the rows'
+    // names).
+    let todome = !unaware && enemy.ninsatsu.0 <= 1;
+    let usable = |sfx: i64| combat.throw(foe.throw_row(sfx)).is_some_and(|t| d.anim(&t.atk_anim).is_some());
+    // Its second form ("（HU）" rows, +500: Isshin's spear phase a243_*, the headless Guardian
+    // Ape's a235_*, Lady Butterfly's) while it plays its second anim set (a100). gap: the exe's
+    // pick of these rows is not traced (by the rows' names and the anim sets).
+    let hu = if ea.anim_group == 1 && usable(suffix + 500) { 500 } else { 0 };
+    let (mut start_sfx, mut suffix) = (start_sfx + hu, suffix + hu);
+    if todome {
+        if usable(181 + hu) {
+            (start_sfx, suffix) = (180 + hu, 181 + hu);
+        } else if usable(suffix + 8) {
+            // "崩しトドメ" / "崩し背後トドメ" (main + 8: Gyoubu 0009 / 0119, the headless Ape
+            // 0509 / 0619 -> ThrowDef12090 / 13290, whose message 30 at 9.5 s is his defeat,
+            // m17 11705800), after the usual start.
+            suffix += 8;
+        }
+    }
+    let main = combat.throw(foe.throw_row(suffix))?;
+    let start = combat.throw(foe.throw_row(start_sfx)).filter(|st| d.anim(&st.atk_anim).is_some());
     let in_reach = dist <= start.as_ref().map_or(main.dist, |st| st.dist);
     Some(DeathblowCheck { behind, suffix, main, start, in_reach })
 }
@@ -600,14 +637,25 @@ fn follow_throw(
     throw.0 = None;
 }
 
-/// The equipped art's "has emblems" StateInfo: the SpEffect 10 after its resident family
-/// (resident 140501 Spiral Cloud Passage -> 140510 stateInfo 994; Mortal Draw 140600 -> 140610 993;
-/// Dragon Flash 140300 -> 140310 995; Ashina Cross 140400 -> 140410 990). gap: no param or TAE puts
-/// these on (the exe does); the resident -> +10 link is read from the ids and names (形代あり =
-/// "has emblems"), and they are taken as on while Wolf holds the art's resourceItemA.
-fn art_emblem_gate(combat: &Combat, config: &GameConfig) -> Option<i64> {
+/// The equipped art's "has emblems" StateInfo, put on by common.emevd events 9930-9934
+/// (`emevd::art_gates`) while Wolf has the art's resident SpEffect and at least the event's
+/// emblem count: Dragon Flash 140300 -> 140310 stateInfo 995 (2), Spiral Cloud Passage 140501 ->
+/// 140510 994 (1), Mortal Draw 140600 / 140601 -> 140610 993 (3), 100286 (art 6100) -> 140410 990
+/// (3). Ashina Cross (5500, 140400) has none. Without the event file: the SpEffect 10 after the
+/// resident, at the art's resourceItemA (the old reading from ids and names).
+fn art_emblem_gate(combat: &Combat, config: &GameConfig, emblems: u32) -> Option<i64> {
     let resident = combat.param("EquipParamWeapon", config.player.combat_art)["residentSpEffectId"].as_i64().filter(|&r| r > 0)?;
-    combat.param("SpEffectParam", resident / 100 * 100 + 10)["stateInfo"].as_i64().filter(|&s| s > 0)
+    let gate = match crate::emevd::art_gates() {
+        Some(gates) => gates.iter().find(|g| g.residents.contains(&resident) && emblems >= g.emblems)?.gate,
+        None => {
+            let cost = art_cost(combat, config);
+            if cost == 0 || emblems < cost {
+                return None;
+            }
+            resident / 100 * 100 + 10
+        }
+    };
+    combat.param("SpEffectParam", gate)["stateInfo"].as_i64().filter(|&s| s > 0)
 }
 
 /// Keeps CharData.art_variation on the equipped art (config player.combat_art, also after F5),
@@ -622,11 +670,8 @@ fn sync_art_variation(config: Res<GameConfig>, player: Query<&Player>, mut comba
     // The art's "has emblems" StateInfo (`art_emblem_gate`): Mortal Draw's emblem slash (judges
     // 220-231) and consumption dummy 999 (993), Spiral Cloud Passage's cost 999 (994) fire only with it.
     let emblems = player.iter().next().map_or(0, |p| p.emblems);
-    let cost = art_cost(&combat, &config);
-    if cost > 0 && emblems >= cost {
-        if let Some(gate) = art_emblem_gate(&combat, &config) {
-            gates.push(gate);
-        }
+    if let Some(gate) = art_emblem_gate(&combat, &config, emblems) {
+        gates.push(gate);
     }
     let tool_var = tool.map(|t| t.1);
     if combat.player.art_variation != var || combat.player.tool_variation != tool_var || combat.player.resident_gates != gates {
@@ -657,7 +702,7 @@ fn spawn_player(mut commands: Commands, combat: Res<Combat>, config: Res<GameCon
         }
     }
     commands.spawn((
-        Player { plunge: None, speed_level: 0.0, requests: HashMap::new(), last_state: String::new(), gourd: config.player.gourd_charges, emblems: config.player.spirit_emblems, auto_aim: false, auto_aim_fresh: false, resurrections: config.player.resurrections, jump_forward: false, jump_land: None, step_tilt: 0.0, throw_start: None, throw_target: None, tool_slot: 0, vel_scale: None, expand_pending: false, sub_cat_before: 0, air_sub_count: 0, air_art_count: 0, art_enable_jump: false, timed: Vec::new() },
+        Player { plunge: None, speed_level: 0.0, requests: HashMap::new(), last_state: String::new(), gourd: config.player.gourd_charges, emblems: config.player.spirit_emblems, auto_aim: false, auto_aim_fresh: false, resurrections: config.player.resurrections, jump_forward: false, jump_land: None, step_tilt: 0.0, throw_start: None, throw_target: None, tool_slot: 0, vel_scale: None, expand_pending: false, sub_cat_before: 0, air_sub_count: 0, air_art_count: 0, art_enable_jump: false, timed: Vec::new(), held: Vec::new() },
         actor,
         Name::new("Player"),
         Transform::from_xyz(0.0, CAPSULE_HALF_HEIGHT, 4.0),
@@ -739,6 +784,22 @@ pub(crate) fn read_input(
 }
 
 /// The equipped prosthetic tool level: config player.prosthetics[slot] (EquipParamWeapon 7xxxx).
+/// Lightning Reversal air states: the loop each charge state runs into (c0000 behavior:
+/// AirDamageElectroCharge(Weak)Start -> ...Loop, Air(Weak)ElectroChargeDeflect{Easy,Hard} ->
+/// ...FallLoop); the loops themselves loop.
+fn electro_loop(state: &str) -> Option<String> {
+    if !state.contains("ElectroCharge") || !state.starts_with("Air") {
+        return None;
+    }
+    if state.ends_with("Loop") {
+        Some(state.to_string())
+    } else if state.starts_with("AirDamage") {
+        Some(state.replace("Start", "Loop"))
+    } else {
+        Some(format!("{state}FallLoop"))
+    }
+}
+
 pub fn equipped_tool<'a>(combat: &'a Combat, config: &GameConfig, slot: usize) -> Option<&'a crate::data::Prosthetic> {
     let tools = &config.player.prosthetics;
     let id = *tools.get(slot % tools.len().max(1))?;
@@ -830,6 +891,30 @@ fn is_air_guard(state: &str) -> bool {
 
 /// SpEffect behaviorRefIds the HKS reads with env(3036, ...) (c0000_define.lua SP_EF_REF_*).
 const SP_REF_DISABLE_AIR_KICK: i64 = 108;
+/// SP_EF_REF_IN_STORM_JUMP_AREA / _WEAK_AREA (c0000_define.lua 775-776): inside an updraft (the
+/// Divine Dragon's bullets 52000660 / 53100640 give 106100, ref 110003; 106101, ref 110004).
+pub const SP_REF_IN_STORM_JUMP_AREA: i64 = 110003;
+pub const SP_REF_IN_STORM_JUMP_WEAK_AREA: i64 = 110004;
+/// SP_EF_REF_TAE_ENABLE_STORM_JUMP (101: 100328 "PC: storm jump transition possible", in the storm
+/// jumps from 1.0 s and StormJumpFall).
+const SP_REF_ENABLE_STORM_JUMP: i64 = 101;
+
+/// A behaviorRefId on Wolf: his anim's SpEffects or a timed one (bullets, items).
+fn wolf_ref(d: &CharData, a: &Actor, p: &Player, behavior_ref: i64) -> bool {
+    sp_ref_active(d, a, behavior_ref) || p.timed.iter().any(|(id, _)| d.sp_effects.get(&id.to_string()).is_some_and(|s| s.behavior_ref_id == behavior_ref))
+}
+
+/// The storm jump inside an updraft (HKS 2779-2783 on the ground, 2855-2862 in the air): the
+/// full area first, then the weak one.
+fn storm_jump(d: &CharData, a: &Actor, p: &Player, ground: bool) -> Option<&'static str> {
+    if wolf_ref(d, a, p, SP_REF_IN_STORM_JUMP_AREA) {
+        Some(if ground { "GroundStormJumpReady" } else { "AirStormJumpStart" })
+    } else if wolf_ref(d, a, p, SP_REF_IN_STORM_JUMP_WEAK_AREA) {
+        Some(if ground { "GroundStormJumpWeakReady" } else { "AirStormJumpWeakStart" })
+    } else {
+        None
+    }
+}
 const SP_REF_KICK_ENEMY_JUMP: i64 = 204;
 const SP_REF_SP_ATK_HIT_JUMP: i64 = 225;
 const SP_REF_SP_ATK_HIT_JUMP_DERIVE_ACTION: i64 = 226;
@@ -872,14 +957,15 @@ fn start_plunge(
     } else {
         (150, 151)
     };
-    let row_id = combat.foe.throw_row(start);
-    let row = combat.param("ThrowParam", row_id);
-    let Some(th) = combat.throw(row_id) else { return false };
-    let f = |k: &str| row[k].as_f64().unwrap_or(0.0) as f32;
-    let (upper, lower) = (f("upperYRange"), f("lowerYRange"));
-    let (range, height, time_limit) = (f("normalFallOrbitCheck_range"), f("normalFallOrbitCheck_heightLimit"), f("normalFallOrbitCheck_timeLimit") / 1000.0);
     let ft = FALL_TYPES[(a.fall_type as usize).min(FALL_TYPES.len() - 1)];
     for (e, mut ea, mut enemy, etf) in enemies.iter_mut() {
+        // Each enemy kind's own ThrowParam rows.
+        let row_id = combat.foe_of(&ea).throw_row(start);
+        let row = combat.param("ThrowParam", row_id);
+        let Some(th) = combat.throw(row_id) else { continue };
+        let f = |k: &str| row[k].as_f64().unwrap_or(0.0) as f32;
+        let (upper, lower) = (f("upperYRange"), f("lowerYRange"));
+        let (range, height, time_limit) = (f("normalFallOrbitCheck_range"), f("normalFallOrbitCheck_heightLimit"), f("normalFallOrbitCheck_timeLimit") / 1000.0);
         if !(enemy.is_broken() || (stealth && enemy.is_unaware())) || etf.translation.distance(pos) > th.dist {
             continue;
         }
@@ -1179,6 +1265,11 @@ pub(crate) fn stick_world(stick: Vec2, cam_yaw: f32) -> Vec3 {
 /// the row's scales to the target is not traced (the target read is the tick's velocity,
 /// +0x140); scaling it is the reading that uses the row.
 struct VelScale {
+    /// The anim whose event this is: the scaling ends with it.
+    anim: String,
+    /// The row's change (horizontalVelocityChange along horizontalVelocityAngle,
+    /// verticalVelocityChange), added to the scaled target.
+    add: (Vec3, f32),
     v0: Vec3,
     vy0: f32,
     /// What last tick's blend took off the free velocity (horizontal, vertical).
@@ -1228,10 +1319,17 @@ fn decide(
     enemy_dummies: Query<&crate::model::Dummies, With<Enemy>>,
     globals: Query<&GlobalTransform>,
     mut throw: ResMut<ActiveThrow>,
+    fight: Option<ResMut<crate::enemy::FightReset>>,
 ) {
     let dt = time.delta_secs();
     let d = &combat.player;
     let (p, a, tf) = &mut *player;
+    // The Lightning Reversal charge wears off (effectEndurance 30 s), or the release's
+    // SpEffects 9505 / 9506 ("discharge parent", replaced by 9507 / 9508) discharge it.
+    if let Some((id, left)) = a.electro {
+        let discharged = !a.anim.is_empty() && d.sp_effects_at(&a.anim, a.t).iter().any(|(id, _)| matches!(id, 9505 | 9506));
+        a.electro = (left > dt && !discharged && a.hp > 0.0).then_some((id, left - dt));
+    }
     // Set again by the guard walk below when it applies; a locked-on step keeps its tilt.
     a.root_yaw = if a.state.starts_with("GroundStep_") { p.step_tilt } else { 0.0 };
     // WalkTwist (exe FUN_1407f6ff0): last tick's target eases in; locomotion / the guard walk set
@@ -1273,9 +1371,14 @@ fn decide(
 
     if pad.reset {
         pad.reset = false;
+        // The whole fight starts over (the enemies' starting line-up).
+        if let Some(mut f) = fight {
+            f.0 = true;
+        }
         p.gourd = config.player.gourd_charges;
         p.emblems = config.player.spirit_emblems;
         p.resurrections = config.player.resurrections;
+        p.held.clear();
         a.hp = a.hp_max;
         a.posture = 0.0;
         a.play("StandIdle", "");
@@ -1286,18 +1389,34 @@ fn decide(
     // the deathblow's (a20x_510xxx at the kill frame): 105050 posture 34 % for everyone, and the
     // skills' 150301 / 150311 HP 10 % and 150321 / 150331 posture 34 %, which work only while the
     // skill's permit stateInfo (986 / 987 / 984 / 985, invocationConditionsStateChange1) is on Wolf.
-    // gap: the "recovery prohibited" 105051 / 150302 (event scripts) are never applied.
+    // "Recovery prohibited by the Todome" (とどめスルーによる回復禁止: 105051, 150302 / 150312 /
+    // 150322 / 150332): Wolf's Todome anims a000_710205-7 add them (TAE 401, f0, effectEndurance
+    // -1, kept in `Player.held`); each shares its recovery's spCategory (179 / 175-178) at
+    // categoryPriority 2 vs 3, and the lower priority wins in a category, so after a Todome these
+    // recoveries do nothing.
     if a.prev_t < a.t {
         let states: Vec<i64> = crate::combat::skill_sp_effects(&combat, &config).filter_map(|se| se["stateInfo"].as_i64()).filter(|&s| s > 0).collect();
         let (mut heal, mut posture) = (0.0f32, 0.0f32);
         if let Some(an) = d.anim(&a.anim) {
-            for s in an
+            let fired: Vec<(i64, &crate::data::SpEffect)> = an
                 .events
                 .iter()
                 .filter(|e| matches!(e.kind, 67 | 401) && e.start > a.prev_t - 1e-4 && e.start <= a.t)
-                .filter_map(|e| d.sp_effects.get(&e.arg_i64("SpEffectID").unwrap_or(0).to_string()))
-                .filter(|s| s.motion_interval >= 999.0)
-            {
+                .filter_map(|e| {
+                    let id = e.arg_i64("SpEffectID").unwrap_or(0);
+                    Some((id, d.sp_effects.get(&id.to_string())?))
+                })
+                .collect();
+            for &(id, s) in &fired {
+                if s.effect_endurance < 0.0 && s.sp_category > 0 && !p.held.contains(&id) {
+                    p.held.push(id);
+                }
+            }
+            let blocked = |s: &crate::data::SpEffect| {
+                s.sp_category > 0
+                    && p.held.iter().filter_map(|h| d.sp_effects.get(&h.to_string())).any(|h| h.sp_category == s.sp_category && h.category_priority < s.category_priority)
+            };
+            for s in fired.iter().map(|f| f.1).filter(|s| s.motion_interval >= 999.0 && !blocked(s)) {
                 let conds = [s.invocation_conditions_state_change1, s.invocation_conditions_state_change2, s.invocation_conditions_state_change3];
                 if conds.iter().any(|&c| c > 0) && !conds.iter().any(|c| *c > 0 && states.contains(c)) {
                     continue;
@@ -1353,8 +1472,15 @@ fn decide(
     // less far).
     // Sprinting (ref 1 SP_EF_REF_ENABLE_SPRINT_ACTION) -> the slide W_SprintToCrouchReady
     // (a000_216010, its root motion slides), then SprintToCrouchLeft / Right (216020 / 216021).
-    // gap: ACTION_UNLOCK_TYPE_SPRINT_TO_CROUCH (26) is taken as unlocked.
-    if crouch_pressed && a.hp > 0.0 && !a.airborne && !a.crouch && sprint_window(d, a) && a.play_state(d, "SprintToCrouchReady") {
+    // Only with ACTION_UNLOCK_TYPE_SPRINT_TO_CROUCH (26, HKS 4498); else the plain crouch.
+    if crouch_pressed
+        && a.hp > 0.0
+        && !a.airborne
+        && !a.crouch
+        && sprint_window(d, a)
+        && crate::combat::action_unlocked(&combat, &config, crate::combat::UNLOCK_SPRINT_TO_CROUCH)
+        && a.play_state(d, "SprintToCrouchReady")
+    {
         a.crouch = true;
         p.requests.remove(&Action::Crouch);
         return;
@@ -1476,7 +1602,8 @@ fn decide(
             let judged = d.anim(&a.anim).is_some_and(|an| an.events.iter().any(|e| e.kind == 5 && e.start <= a.t));
             if judged || ended {
                 p.throw_start = None;
-                if let (Ok((_, mut ea, mut enemy, etf)), Some(th)) = (enemies.get_mut(ee), combat.throw(combat.foe.throw_row(suffix))) {
+                let ok = enemies.get_mut(ee).ok().and_then(|q| Some((combat.throw(combat.foe_of(&q.1).throw_row(suffix))?, q)));
+                if let Some((th, (_, mut ea, mut enemy, etf))) = ok {
                     if suffix == 201 {
                         // The vault itself is no kill: the enemy plays ThrowDef13900 and stays
                         // open to the deathblow while it lasts.
@@ -1484,7 +1611,8 @@ fn decide(
                             a.play("BreakKickJump", &th.atk_anim);
                             a.move_vel = Vec3::ZERO;
                         }
-                        if ea.play_state(&combat.enemy, &format!("ThrowDef{}", th.def_anim)) {
+                        let ed = combat.data_of(&ea);
+                        if ea.play_state(ed, &format!("ThrowDef{}", th.def_anim)) {
                             enemy.on_posture_break(&mut ea, &combat, false, 4.0);
                         }
                         throw.0 = Some(ThrowHold::new(ee, &th, "BreakKickJump"));
@@ -1514,7 +1642,7 @@ fn decide(
         };
         let target = enemies
             .iter()
-            .find(|(_, ea, en, _)| en.is_broken() && !ea.anim.is_empty() && combat.enemy.flag(&ea.anim, ea.t, FLAG_THROW_START2))
+            .find(|(_, ea, en, _)| en.is_broken() && !ea.anim.is_empty() && combat.data_of(ea).flag(&ea.anim, ea.t, FLAG_THROW_START2))
             .map(|(e, ..)| e);
         let pick = if target.is_some() && p.requests.remove(&Action::Attack).is_some() {
             Some(atk_sfx)
@@ -1524,7 +1652,8 @@ fn decide(
             None
         };
         if let (Some(sfx), Some(ee)) = (pick, target) {
-            if let (Ok((_, mut ea, mut enemy, etf)), Some(th)) = (enemies.get_mut(ee), combat.throw(combat.foe.throw_row(sfx))) {
+            let ok = enemies.get_mut(ee).ok().and_then(|q| Some((combat.throw(combat.foe_of(&q.1).throw_row(sfx))?, q)));
+            if let Some((th, (_, mut ea, mut enemy, etf))) = ok {
                 if d.anim(&th.atk_anim).is_some() {
                     main_deathblow(a, tf.translation, &mut ea, &mut enemy, etf.translation, ee, &combat, &th, false, &mut throw, &mut log);
                     p.throw_target = Some(ee);
@@ -1540,13 +1669,12 @@ fn decide(
     // enemy ThrowDef13900. Live: c1010 0.30 s + 1.07 s, then a free-fall landing behind him; the
     // General 501900 -> 511900 -> attack -> the behind deathblow.
     if p.requests.contains_key(&Action::Jump) && accepts(d, a, Action::Jump) {
-        let start = combat.throw(combat.foe.throw_row(200)).filter(|st| d.anim(&st.atk_anim).is_some());
-        let over = start.and_then(|st| {
-            enemies.iter().find_map(|(ee, ea, en, etf)| {
+        let over = enemies.iter().find_map(|(ee, ea, en, etf)| {
+                // Each enemy kind's own 0200 row.
+                let st = combat.throw(combat.foe_of(ea).throw_row(200)).filter(|st| d.anim(&st.atk_anim).is_some())?;
                 let to_wolf = (tf.translation - etf.translation).with_y(0.0).normalize_or_zero();
                 let facing = ea.forward().angle_between(to_wolf).to_degrees() < 90.0;
                 (en.is_broken() && facing && etf.translation.distance(tf.translation) <= st.dist).then(|| (ee, etf.translation, st.atk_anim.clone()))
-            })
         });
         if let Some((ee, epos, anim)) = over {
             p.requests.remove(&Action::Jump);
@@ -1565,10 +1693,21 @@ fn decide(
     // (a200_502500 -> 512500), taken first when that close. Live (rec_c1010_20261009): near 3x
     // (0.30 s + 1.83 s), far 1x (0.30 s + 2.00 s).
     if p.requests.contains_key(&Action::Attack) && accepts(d, a, Action::Attack) {
-        for (ee, mut ea, mut enemy, etf) in &mut enemies {
-            let Some(db) = deathblow_check(&combat, tf.translation, &ea, &enemy, etf.translation) else { continue };
-            let (behind, suffix, th, start) = (db.behind, db.suffix, db.main, db.start);
-            if db.in_reach {
+        let dmy_of = |ee: Entity| move |id: i16| enemy_dummies.get(ee).ok().and_then(|dm| dm.0.get(&id)).and_then(|m| globals.get(*m).ok()).map(|g| g.translation());
+        // Several enemies open at once: the locked-on one, else the nearest.
+        // gap: the exe's pick among several throw candidates is not traced.
+        let pick = enemies
+            .iter()
+            .filter(|(ee, ea, en, etf)| deathblow_check(&combat, tf.translation, ea, en, etf.translation, &dmy_of(*ee)).is_some_and(|db| db.in_reach))
+            .min_by(|x, y| {
+                let key = |q: &(Entity, &Actor, &Enemy, &Transform)| (Some(q.0) != lock.target, q.3.translation.distance(tf.translation));
+                let (kx, ky) = (key(x), key(y));
+                kx.0.cmp(&ky.0).then(kx.1.total_cmp(&ky.1))
+            })
+            .map(|(e, ..)| e);
+        if let Some((ee, mut ea, mut enemy, etf)) = pick.and_then(|e| enemies.get_mut(e).ok()) {
+            if let Some(db) = deathblow_check(&combat, tf.translation, &ea, &enemy, etf.translation, &dmy_of(ee)) {
+                let (behind, suffix, th, start) = (db.behind, db.suffix, db.main, db.start);
                 p.requests.remove(&Action::Attack);
                 // isTurnAtker: Wolf turns to the enemy at once (live: exactly).
                 a.yaw = yaw_of((etf.translation - tf.translation).with_y(0.0));
@@ -1703,7 +1842,8 @@ fn decide(
     }
 
     // Jump arts: the ready ends into the leap (TAE 920 launches it; the air branch takes it on).
-    // gap: GroundSpecialAttackJumpStartNoResource (a1xx_316711) ships in no art group: the leap.
+    // Without the emblems GroundSpecialAttackJumpStartNoResource: only Sakura Dance ships it
+    // (a110_316711, 316710's clip with its own TAE events); others fall back to the plain leap.
     if ended && (a.state.starts_with("GroundSpecialAttackJumpReady") || a.state.starts_with("SprintSpecialAttackJumpReady")) {
         if let Some((cat, _)) = art_kind(&combat, &config) {
             let nr = if a.state.ends_with("NoResource") { "NoResource" } else { "" };
@@ -1748,7 +1888,10 @@ fn decide(
         let resident_ref = tool.and_then(|t| d.sp_effects.get(&t.resident.to_string())).map_or(0, |s| s.behavior_ref_id);
         let timed_refs: Vec<i64> = p.timed.iter().filter_map(|(id, _)| d.sp_effects.get(&id.to_string())).map(|s| s.behavior_ref_id).collect();
         let refs = |r: i64| (resident_ref == r && r != 0) || sp_ref_active(d, a, r) || timed_refs.contains(&r);
-        // gap: env(3035, ACTION_ARM_SHINOBI_WEP_ACTION) read as "enough Spirit Emblems for one use".
+        // env(3035, ACTION_ARM_SHINOBI_WEP_ACTION): the exe (env case 0xbdb -> PlayerIns vtable
+        // +0x2b0 = FUN_140a26010 -> FUN_14084dd10) compares the tool's EquipParamWeapon
+        // resourceItemA / B / C (+0x248..0x24a) with the goods 1000 + 1001 (Spirit Emblems) held;
+        // B / C are 0 in every row. Every other ACTION_ARM is always enabled.
         let enable_action = p.emblems >= tool.map_or(1, |t| t.emblems.max(1));
         let style = if a.state.starts_with("Sprint") || sprint_window(d, a) {
             hks::Style::Sprint
@@ -1793,7 +1936,8 @@ fn decide(
                 let f = a.forward();
                 stick.dot(f.cross(Vec3::Y)).atan2(stick.dot(f)).to_degrees()
             });
-            let follow = hks::derive_attack(cat, &a.state, a.crouch, p.sub_cat_before == cat, &refs, step);
+            let follow = hks::derive_attack(cat, &a.state, a.crouch, p.sub_cat_before == cat, &refs, step)
+                .filter(|_| hks::derive_unlock(cat, &a.state, a.crouch).is_none_or(|u| crate::combat::action_unlocked(&combat, &config, u)));
             if let Some((state, k)) = follow.and_then(|s| sub_anim(d, s, cat).map(|k| (s, k))) {
                 p.requests.remove(&Action::Attack);
                 aim(a);
@@ -1903,6 +2047,11 @@ fn decide(
         p.requests.remove(&Action::Jump);
         p.jump_forward = stick != Vec3::ZERO;
         p.jump_land = None;
+        if let Some(state) = storm_jump(d, a, p, true).filter(|s| a.play_state(d, s)) {
+            log.push(format!("storm jump ({state})"), Color::srgb(0.7, 0.9, 1.0));
+            a.move_vel = Vec3::ZERO;
+            return;
+        }
         match (stick != Vec3::ZERO, lock.target.is_some()) {
             (false, _) => {
                 a.play_state(d, "VerticalGroundJumpReady");
@@ -2177,6 +2326,8 @@ fn decide(
     if a.prev_t > 0.0 || !a.vel_change_done {
         if let Some(vc) = d.velocity_change(&a.anim, a.prev_t, a.t).and_then(|id| combat.velocity_change_row(id)) {
             a.vel_change_done = true;
+            // A new launch replaces any scaling still running from the anim before.
+            p.vel_scale = None;
             // Facing = 0 deg; positive angles taken as to the right.
             let dir = Quat::from_rotation_y(-vc.h_angle.to_radians()) * a.forward();
             a.air_base = a.move_vel * vc.h_scale + dir * vc.h_change;
@@ -2188,11 +2339,26 @@ fn decide(
     }
 
     // TAE 922 ChrPhysicsVelosityScale (`VelScale`): over the event the air velocity blends from
-    // its value at the start to the scaled one along the event's ease curves.
+    // its value at the start to the scaled one plus the row's change, along the event's ease
+    // curves. A row with an upward change launches from the ground: the storm jumps (a000_2014x1,
+    // no 920) rise only by theirs (980: +25 m/s, fallType 1). gap: that 922 applies the change
+    // is read from those anims (nothing else lifts them), not traced in the exe.
+    let launch = !a.airborne && d.velocity_scale(&a.anim, a.prev_t, a.t).and_then(|e| combat.velocity_change_row(e.arg_i64("ChrPhysicsVelocityParam ID")?)).is_some_and(|vc| vc.v_change > 0.0);
+    if launch {
+        a.airborne = true;
+        a.vel_y = 0.0;
+        a.air_base = Vec3::ZERO;
+    }
     if a.airborne {
         if let Some((e, vc)) = d.velocity_scale(&a.anim, a.prev_t, a.t).and_then(|e| Some((e, combat.velocity_change_row(e.arg_i64("ChrPhysicsVelocityParam ID")?)?))) {
             let arg = |k: &str| e.arg_i64(k).unwrap_or(0) as u8;
+            let dir = Quat::from_rotation_y(-vc.h_angle.to_radians()) * a.forward();
+            if vc.v_change != 0.0 || vc.h_change != 0.0 {
+                a.fall_type = vc.fall_type;
+            }
             p.vel_scale = Some(VelScale {
+                anim: a.anim.clone(),
+                add: (dir * vc.h_change, vc.v_change),
                 v0: a.air_base,
                 vy0: a.vel_y,
                 delta: (Vec3::ZERO, 0.0),
@@ -2203,13 +2369,13 @@ fn decide(
             });
         }
     }
-    if let Some(vs) = p.vel_scale.as_mut().filter(|_| a.airborne) {
+    if let Some(vs) = p.vel_scale.as_mut().filter(|vs| a.airborne && vs.anim == a.anim) {
         vs.elapsed += dt;
         let x = if vs.duration > 0.0 { (vs.elapsed / vs.duration).clamp(0.0, 1.0) } else { 1.0 };
         // Undo last tick's blend to get the free velocity, then blend toward its scaled value.
         let (free, free_y) = (a.air_base + vs.delta.0, a.vel_y + vs.delta.1);
-        let h = vs.v0.lerp(free * vs.scale.0, ease(vs.curves[0], x));
-        let y = vs.vy0 + (free_y * vs.scale.1 - vs.vy0) * ease(vs.curves[1], x);
+        let h = vs.v0.lerp(free * vs.scale.0 + vs.add.0, ease(vs.curves[0], x));
+        let y = vs.vy0 + (free_y * vs.scale.1 + vs.add.1 - vs.vy0) * ease(vs.curves[1], x);
         vs.delta = (free - h, free_y - y);
         a.air_base = h;
         a.move_vel = h;
@@ -2221,7 +2387,14 @@ fn decide(
         p.vel_scale = None;
     }
 
-    // Jumps: Ready -> Start (TAE 920 launches) -> Fall loop -> land.
+    // Jumps: Ready -> Start (TAE 920 launches) -> Fall loop -> land. The storm jumps'
+    // GroundStormJump(Weak|Back)Ready likewise into their Start (TAE 922 row 980 / 981 / 982
+    // launches).
+    if ended && a.state.starts_with("GroundStormJump") && a.state.ends_with("Ready") {
+        let start = a.state.replace("Ready", "Start");
+        a.play_state(d, &start);
+        return;
+    }
     if ended && a.state.contains("GroundJumpReady") {
         // Side jumps have no behaviour-graph clip (CMSG anim 0): their raw anims a000_20111x.
         match a.state.as_str() {
@@ -2240,7 +2413,8 @@ fn decide(
         // as the standby states on the ground (`is_free`).
         let air_ok = |a: &Actor, f: i64| a.state == "FreeFall" || a.state.ends_with("GroundJumpFall") || (!a.anim.is_empty() && d.flag(&a.anim, a.t, f));
         if p.requests.remove(&Action::Guard).is_some() {
-            if air_ok(a, FLAG_ACCEPT_GUARD) || is_air_guard(&a.state) {
+            // BEH_A_AIR_DEFLECT_START (HKS 6061): ACTION_UNLOCK_TYPE_AIR_DEFLECT_GUARD.
+            if (air_ok(a, FLAG_ACCEPT_GUARD) || is_air_guard(&a.state)) && crate::combat::action_unlocked(&combat, &config, crate::combat::UNLOCK_AIR_DEFLECT_GUARD) {
                 a.play_state(d, "AirDeflectGuardStart");
             }
         } else if p.requests.contains_key(&Action::CombatArt) && air_ok(a, FLAG_ACCEPT_ATTACK) && art_equipped {
@@ -2249,14 +2423,16 @@ fn decide(
             if let Some((cat, unlock)) = art_kind(&combat, &config) {
                 let enable = p.emblems >= art_cost(&combat, &config);
                 p.art_enable_jump = enable;
-                let picked = air_art_state(cat, unlock, enable, p.air_art_count, sp_ref_active(d, a, SP_REF_SP_ATK_HIT_JUMP_DERIVE_ACTION));
+                let picked = air_art_state(cat, unlock, enable, p.air_art_count, sp_ref_active(d, a, SP_REF_SP_ATK_HIT_JUMP_DERIVE_ACTION))
+                    .filter(|_| crate::combat::action_unlocked(&combat, &config, crate::combat::UNLOCK_AIR_SP_ATTACK));
                 match picked.map(|(state, counted)| (state, counted, art_key(d, cat, state))) {
                     Some((state, counted, Some(k))) => {
                         p.air_art_count += counted as u32;
                         start_auto_aim(p, a, &combat, tf.translation, stick, &enemies);
                         a.play(state, &k);
                     }
-                    // gap: the *NoResource air clips (a050_316201 / 316221) ship in no art group.
+                    // The *NoResource air clips ship for 103 / 110 only (a103 / a110 316201, the
+                    // art's clip with its own TAE events); the other arts do nothing then.
                     Some((_, _, None)) if !enable => log.push("no spirit emblems", Color::srgb(0.7, 0.7, 0.7)),
                     _ => {}
                 }
@@ -2270,6 +2446,7 @@ fn decide(
                 let picked = {
                     let refs = |r: i64| (resident_ref == r && r != 0) || sp_ref_active(d, a, r) || timed_refs.contains(&r);
                     crate::prosthetic::hks::air_press(tool.group, p.emblems >= tool.emblems.max(1), p.air_sub_count, lock.target.is_some(), &refs)
+                        .filter(|_| crate::combat::action_unlocked(&combat, &config, crate::combat::UNLOCK_AIR_SUB_ATTACK))
                 };
                 if let Some((state, k, counted)) = picked.and_then(|(s, c)| sub_anim(d, s, tool.group).map(|k| (s, k, c))) {
                     if state == "SubAttackFailedAir" {
@@ -2281,9 +2458,13 @@ fn decide(
                 }
             }
         } else if p.requests.remove(&Action::Jump).is_some() {
+            // BEH_A_AIR_STORM_JUMP first (validated before the kick, HKS g_behaviorValidateOrder):
+            // ref 101 up and inside an updraft -> W_AirStormJump(Weak)Start.
             // BEH_A_AIR_KICK: a jump press in the air always kicks (AirKick, a000_213100) unless
             // an SpEffect with behaviorRefId 108 (SP_EF_REF_DISABLE_AIR_KICK) is active.
-            if air_ok(a, FLAG_ACCEPT_JUMP) && !sp_ref_active(d, a, SP_REF_DISABLE_AIR_KICK) {
+            if let Some(state) = storm_jump(d, a, p, false).filter(|_| wolf_ref(d, a, p, SP_REF_ENABLE_STORM_JUMP)).filter(|s| a.play_state(d, s)) {
+                log.push(format!("storm jump ({state})"), Color::srgb(0.7, 0.9, 1.0));
+            } else if air_ok(a, FLAG_ACCEPT_JUMP) && !sp_ref_active(d, a, SP_REF_DISABLE_AIR_KICK) {
                 a.play_state(d, "AirKick");
             }
         } else if p.requests.contains_key(&Action::Attack)
@@ -2296,15 +2477,16 @@ fn decide(
         } else if let Some(k) = (p.requests.contains_key(&Action::Attack)
             && air_ok(a, FLAG_ACCEPT_ATTACK)
             && matches!(a.state.as_str(), "AirSubAttackMoveStart" | "AirSubAttackMoveStartToLoop" | "AirSubAttackMoveLoop")
-            && d.has_ref(&a.anim, a.t, REF_SUB_ATTACK_DERIVE_ATTACK))
+            && d.has_ref(&a.anim, a.t, REF_SUB_ATTACK_DERIVE_ATTACK)
+            && crate::combat::action_unlocked(&combat, &config, crate::combat::UNLOCK_SUB_ATTACK_DIRAVE_ATTACK_2))
             .then(|| equipped_tool(&combat, &config, p.tool_slot).filter(|t| t.group == 74))
             .flatten()
             .and_then(|_| sub_anim(d, "AirSubAttackDeriveAttack", 74))
         {
             // HKS 2890: the attack button in the Mist Raven's fall while SP_EF_REF_TAE_ENABLE_
             // SUB_ATTACK_DERIVE_ATTACK (301: 100342, 419030 f5-20, all of 419031) is up ->
-            // W_AirSubAttackDeriveAttack (a074_413000). gap: its ACTION_UNLOCK_TYPE_SUB_ATTACK_
-            // DIRAVE_ATTACK_2 is read as learned (env 3033 is mapped in the exe).
+            // W_AirSubAttackDeriveAttack (a074_413000), with ACTION_UNLOCK_TYPE_SUB_ATTACK_
+            // DIRAVE_ATTACK_2 (Fang and Blade).
             p.requests.remove(&Action::Attack);
             a.play("AirSubAttackDeriveAttack", &k);
         } else if let Some(k) = (p.requests.contains_key(&Action::Attack)
@@ -2321,6 +2503,14 @@ fn decide(
             p.requests.remove(&Action::Attack);
             p.requests.remove(&Action::Guard);
             a.play("GroundSpecialAttackHitJumpDeriveAction", &k);
+        } else if let Some((id, _)) = a.electro.filter(|_| p.requests.contains_key(&Action::Attack) && air_ok(a, FLAG_ACCEPT_ATTACK)) {
+            // HKS 2884: charged (SP_EF_REF_ELECTRO_CHARGE 151 = 9495, SP_EF_REF_WEAK_ELECTRO_CHARGE
+            // 356 = 9490) the air attack throws the lightning back: W_AirElectroReceiveAttack
+            // (a050_308900: the bolt, BulletBehavior_Midair judge 184 -> Bullet 500184) /
+            // W_AirWeakElectroReceiveAttack (a050_308910: AttackBehavior 280 / 281). Their
+            // SpEffects 9505 / 9506 (f3-9) discharge him.
+            p.requests.remove(&Action::Attack);
+            a.play_state(d, if id == 9495 { "AirElectroReceiveAttack" } else { "AirWeakElectroReceiveAttack" });
         } else if p.requests.contains_key(&Action::Attack) && air_ok(a, FLAG_ACCEPT_ATTACK) {
             p.requests.remove(&Action::Attack);
             // BEH_A_AIR_ATTACK: refs 214/215/216 pick AirComboAttack1/2/3 (1 -> 2 -> 3 -> 2 ...).
@@ -2433,7 +2623,9 @@ fn decide(
         }
         a.move_vel = a.air_base;
         let floor = crate::map::ground_y(tf.translation) + CAPSULE_HALF_HEIGHT;
-        if tf.translation.y <= floor && a.vel_y < 0.0 {
+        // A TAE 922 launch still easing in (the storm jumps) is lifting off, not landing.
+        let lifting = p.vel_scale.as_ref().is_some_and(|vs| vs.add.1 > 0.0 && vs.anim == a.anim);
+        if tf.translation.y <= floor && a.vel_y < 0.0 && !lifting {
             tf.translation.y = floor;
             a.airborne = false;
             a.vel_y = 0.0;
@@ -2443,7 +2635,8 @@ fn decide(
             // the enemy ThrowDefDeath13411; 蹴り崩し1 (161): a20x_511510, ThrowDef13510.
             if a.state == "PlungeDeathblow" {
                 let plunge = p.plunge.take();
-                if let Some((target, th)) = plunge.and_then(|(t, s)| Some((t, combat.throw(combat.foe.throw_row(s))?))) {
+                let kind_foe = |t: Entity| enemies.get(t).ok().map(|q| combat.foe_of(q.1));
+                if let Some((target, th)) = plunge.and_then(|(t, s)| Some((t, combat.throw(kind_foe(t)?.throw_row(s))?))) {
                     if let Ok((_, mut ea, mut enemy, etf)) = enemies.get_mut(target) {
                         if d.anim(&th.atk_anim).is_some() {
                             a.play("Deathblow", &th.atk_anim);
@@ -2456,6 +2649,10 @@ fn decide(
                         return;
                     }
                 }
+            }
+            // HKS 1884: the storm jumps and their fall land in W_LandStormJumpFall.
+            if (a.state.contains("StormJump") && !a.state.ends_with("Ready")) && a.play_state(d, "LandStormJumpFall") {
+                return;
             }
             // Blown away: the matching Land anim (StandDamage*Blow*/Upper*).
             let falling_reaction = |st: &str| {
@@ -2479,6 +2676,29 @@ fn decide(
             // ended (AirDeflectHard at 0.74 s) is a plain landing.
             if let Some(land) = land_air_deflect(&a.state) {
                 if !a.anim.is_empty() && d.has_ref(&a.anim, a.t, REF_ORIGINAL_LAND_ACTION) && a.continue_state(d, land) {
+                    return;
+                }
+            }
+            // Charged (HKS 1870-1875, before the fall-height rule): landing in the charge states
+            // sets it off, W_LandAirDamageElectroCharge(Weak). The HKS goes by the state, so a
+            // release that lands before its discharge (9505 / 9506 from 0.1 s) is no shock: it
+            // lands into its Land version from the same time while ref 201 is up (HKS 1920-1925).
+            // gap: the charge SpEffect is dropped on landing (its own end is not traced).
+            let charged = a.electro.take().filter(|_| a.state.starts_with("AirDamageElectroCharge"));
+            if let Some((id, _)) = charged {
+                let weak = id != 9495;
+                // The shock (SpEffect 9430 "[enemy lightning strength 1]" / 9435 "[strong thunder]":
+                // changeHpPoint 160, changeHpRate 10 / 20 % of max HP). gap: how the exe sets it
+                // off on landing is not traced.
+                a.hp = (a.hp - 160.0 - a.hp_max * if weak { 0.10 } else { 0.20 }).max(0.0);
+                log.push("SHOCKED - landed charged", Color::srgb(0.6, 0.8, 1.0));
+                if a.play_state(d, if weak { "LandAirDamageElectroChargeWeak" } else { "LandAirDamageElectroCharge" }) {
+                    return;
+                }
+            }
+            if matches!(a.state.as_str(), "AirElectroReceiveAttack" | "AirWeakElectroReceiveAttack") && !a.anim.is_empty() && d.has_ref(&a.anim, a.t, REF_ORIGINAL_LAND_ACTION) {
+                let land = format!("Land{}", a.state);
+                if a.continue_state(d, &land) {
                     return;
                 }
             }
@@ -2518,8 +2738,8 @@ fn decide(
                 } => {}
                 // The jump arts land (HKS 2016-2025): the leap while ref 201 is up into
                 // LandGroundSpecialAttackJumpStart from the same time, the fall loop into
-                // LandGroundSpecialAttackJumpFallLoop (a107 / a110 316740). gap: the *NoResource lands
-                // ship in no art group: the plain landing.
+                // LandGroundSpecialAttackJumpFallLoop (a107 / a110 316740); the *NoResource lands
+                // where the art ships them (a110_316721), else the plain landing.
                 _ if a.state.starts_with("GroundSpecialAttackJumpStart") && !a.anim.is_empty() && d.has_ref(&a.anim, a.t, REF_ORIGINAL_LAND_ACTION) && {
                     let land = format!("LandGroundSpecialAttackJumpStart{}", if a.state.ends_with("NoResource") { "NoResource" } else { "" });
                     match art_kind(&combat, &config).and_then(|(c, _)| art_key(d, c, &land)) {
@@ -2625,6 +2845,21 @@ fn decide(
             } else if a.state.starts_with("AirSpecialAttack") || a.state.starts_with("AirSpacialAttack") || a.state.starts_with("GroundSpecialAttackHitJump") {
                 // STYLE_TYPE_FREE_FALL states: the fall goes on.
                 if !a.play_state(d, "FreeFall") {
+                    a.t = len;
+                }
+            } else if (a.state.starts_with("GroundStormJump") || a.state.starts_with("AirStormJump") || a.state == "StormJumpFall") && a.state != "StormJumpFall" {
+                // The storm jumps fall on in StormJumpFall (HKS 1884: they land as W_LandStormJumpFall).
+                if !a.play_state(d, "StormJumpFall") {
+                    a.t = len;
+                }
+            } else if a.state == "StormJumpFall" {
+                a.t %= len.max(1e-3);
+            } else if let Some(next) = electro_loop(&a.state) {
+                // The charge's start into its loop (W_AirDamageElectroCharge(Weak)Loop, the
+                // deflects' FallLoop), which loops until he lands or throws it.
+                if a.state == next {
+                    a.t %= len.max(1e-3);
+                } else if !a.play_state(d, &next) {
                     a.t = len;
                 }
             } else if a.state.contains("BlowStart") || a.state.contains("UpperStart") || (a.state.starts_with("AirDamage") && a.state.contains("Start")) {

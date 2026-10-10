@@ -1,7 +1,12 @@
 # Rebuilds extracted/ and extracted/combat_data.json from your own Sekiro install.
 # Usage: powershell -File tools\extract.ps1 [-Sekiro "C:\...\Sekiro"]
-param([string]$Sekiro = "C:\Program Files (x86)\Steam\steamapps\common\Sekiro")
+param([string]$Sekiro = "C:\Program Files (x86)\Steam\steamapps\common\Sekiro", [switch]$SkipArenas)
 $ErrorActionPreference = "Stop"
+# Python 3 runs the boss scripts, the boss arenas and the prosthetic tool export; Node (npm) the
+# game's effect definitions. Without them the game still runs: no boss map scripts / arenas,
+# no tool models, hand-made effects.
+$python = Get-Command python -ErrorAction SilentlyContinue
+if (-not $python) { Write-Warning "python not found: boss scripts, boss arenas and prosthetic tool models will be skipped (install Python 3 and rerun)" }
 $root = Split-Path $PSScriptRoot -Parent
 $out = Join-Path $root "extracted"
 # A release ships the extractor prebuilt next to its keys; a source checkout builds it.
@@ -21,6 +26,9 @@ Set-Content -Path (Join-Path $out "sekiro_dir.txt") -Value $Sekiro -Encoding asc
 # Every enemy and boss: their chr / anim / behaviour / texture binders, Wolf's per-enemy
 # deathblow and grab anims (chr/c0000_c<chr>.anibnd) and the map event scripts.
 & $exe unpack $Sekiro $out '^/(chr/c[1-7][0-9]{3}\.(chr|ani|beh|tex)bnd|chr/c0000_c[0-9]{4}\.anibnd|event/.*\.emevd)'
+# Blood stain decals (other/decaltex.tpf -> extracted/decal) and the HUD sprites
+# (menu/hi/01_common -> extracted/hud): the export cuts both.
+& $exe unpack $Sekiro $out '^/(other/decaltex|menu/hi/01_common)'
 & $exe export $out
 # extracted/enemies/roster.json (every placed chr, its MSB placements) and <chr>.json each.
 & $exe npcs $out
@@ -94,12 +102,33 @@ for ($i = 0; $i -lt 2000; $i++) {
 }
 # Map: the arena around the General (docs/kb/map.md). MSBs, the m11_01_00_00 pieces and hit
 # collision, the m11 texture binders, the area's draw params and the shared map textures; then
-# the export around c1020_0004 (80 m) into map_m11_01_00_00.{bin,hit,json} + extracted/tex.
+# the export around c1020_0004 (60 m, full detail to 20 m, LOD 1 to 40 m: 83 fps against 57 at
+# 80 m / 30 / 55, kb/map.md) into map_m11_01_00_00.{bin,hit,json} + extracted/tex.
 & $exe unpack $Sekiro $out 'map/mapstudio/|map/m11_01_00_00/|map/m11_01_00_00_envmap|map/m11/|param/drawparam/m11_01|other/maptex'
 & $exe bxf (Join-Path $out "map\m11_01_00_00\h11_01_00_00.hkxbhd") (Join-Path $out "map\m11_01_00_00\hit")
 $env:SEKIRO_DIR = $Sekiro
-& $exe map $out m11_01_00_00 c1020_0004 80
+$env:MAP_LOD = "20,40"
+& $exe map $out m11_01_00_00 c1020_0004 60 | Tee-Object -Variable mapLog
+# The map's objects (obj/*.objbnd, listed by the first pass) are unpacked, then exported too.
+$need = $mapLog | Where-Object { $_ -like "objects to unpack: *" } | Select-Object -First 1
+if ($need) {
+    & $exe unpack $Sekiro $out ($need -replace "^objects to unpack: ", "")
+    & $exe map $out m11_01_00_00 c1020_0004 60
+}
 
 # Boss phases: the map events on a boss's health bars (event/*.emevd + map/mapstudio/*.msb)
 # -> extracted/enemies/boss_events.json (src/enemy.rs phase_events).
-python (Join-Path $PSScriptRoot "boss_events.py")
+if ($python) {
+    $env:PYTHONIOENCODING = "utf-8"
+    python (Join-Path $PSScriptRoot "boss_events.py")
+    # Boss map scripts (bullets, summons, warps) -> extracted/enemies/boss_scripts.json (src/enemy/script.rs).
+    python (Join-Path $PSScriptRoot "boss_scripts.py")
+    # Prosthetic tool models and their anims (parts/wp_a_07xx) -> extracted/tool (src/model/tool.rs).
+    python (Join-Path $PSScriptRoot "tool_export.py") --sekiro $Sekiro --exe $exe
+    # Every boss in its own arena (kb/map.md): one map at a time, about 2 GB of raw files each,
+    # deleted after the export (30-40 min, 3.6 GB kept). -SkipArenas leaves every boss on the gate map.
+    if (-not $SkipArenas) {
+        $env:SEKIRO_EXTRACT = $exe
+        python (Join-Path $PSScriptRoot "boss_arenas.py") -Sekiro $Sekiro
+    }
+}

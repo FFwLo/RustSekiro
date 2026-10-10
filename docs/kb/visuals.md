@@ -127,6 +127,24 @@ Dated findings, oldest first. Append new entries at the end.
 - Sheaths (V3): Sheath01/02[omit] are tracked in all 260 c1020 clips (near bind pose), so their pose is
   the game's animation; no physics needed. They are not in the ragdoll (19 Ctrl bodies) or the cloth.
 - `SHINOBI_CLOTH_DEBUG=<sec>` logs each cloth (refs, bones, distances) once at that time.
+- 2026-10-10 CLOTH COST (the sandbox line-up of 20 enemies ran at 22 fps, cloth 41 ms a frame):
+  the cost was not the solver. (1) `std::env::var("SHINOBI_CLOTH_FLIP_N")` was read per display
+  vertex (50k+ on a fur mesh): now a OnceLock, like `debug_now`'s variable. (2) the blow-up
+  check (a particle > 3 m from the model root -> restart) restarted big characters' cloth every
+  frame (c1040's fixed particles sit 3.3 m out): the threshold is now the cloth's own reference
+  reach + 3 m, and a cloth that blows up `GIVE_UP` (5) frames running is carried rigidly from
+  then on (warned once). (3) `simulate` runs one task per character (`par_iter_mut`), writing
+  into each cloth's `ClothOut` (driven bones' GlobalTransforms, display mesh vertices); the
+  serial `apply` system (same PostUpdate chain after Propagate) puts them into the world. Inside
+  a character, later cloths skin from the bones earlier cloths drove through an `overrides`
+  map (`propagate`), as they did from the world before. Display mesh skinning (`skin`) runs in
+  4096-vertex chunks on the compute pool. (4) `SHINOBI_CLOTH_RANGE=<m>` (default 15, 0 = all):
+  cloth further than that from the camera is carried in its restart pose, not solved.
+  Result: 3.9 ms a frame for the 20, 48 fps (empty sandbox 69, gate map 59); the gate map's
+  cloth looks the same. The "cloth cost" log (once a minute, only when simulate exceeds 1 ms
+  a frame) names the top 3 cloths with a per-phase split: refs / restart / solve / bones /
+  skin / verts. Probes: `SHINOBI_CLOTH_NO_MESH=1` (no bone / mesh outputs),
+  `SHINOBI_CLOTH_NO_UPLOAD=1`. Still restarting every frame (small): c1060_mino1, c1100_sleeve.
 - 2026-10-08 ENEMY TWIST (TAE 700) done. The NPC graph c9997.hkx binds its CustomLookAtTwistModifiers to
   character properties (hkbVariableBindingSet bindings of type 1: "twistParam:0/startBoneIndex" ->
   property 0 ...). The values are in the behbnd's Characters\c1020.hkx (hkbCharacterData

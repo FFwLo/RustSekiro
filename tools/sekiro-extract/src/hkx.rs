@@ -262,6 +262,18 @@ pub fn cmsg_map(d: &[u8]) -> HashMap<String, (i32, i32)> {
         .collect()
 }
 
+/// Each CustomManualSelectorGenerator's anim end: (name, animeEndEventType, endEvent id).
+pub fn cmsg_ends(d: &[u8]) -> Vec<(String, i32, i32)> {
+    let tf = Tagfile::new(d, None);
+    let r = Reader::new(d);
+    let ty = "CustomManualSelectorGenerator";
+    if tf.types.index_of(ty).is_none() {
+        return Vec::new();
+    }
+    let (name, kind, end) = (tf.field(ty, "name"), tf.field(ty, "animeEndEventType"), tf.field(ty, "endEvent"));
+    tf.objects_of(ty).into_iter().map(|o| (tf.string(o + name), r.i32(o + kind), r.i32(o + end))).collect()
+}
+
 /// Transition effects: (type, name, duration, flags, endMode, blendCurve).
 pub fn transition_effects(d: &[u8]) -> Vec<(String, String, f32, u16, u8, u8)> {
     let tf = Tagfile::new(d, None);
@@ -539,8 +551,10 @@ pub fn character_properties(d: &[u8]) -> (Vec<String>, Vec<u32>) {
     (names, words)
 }
 
-/// Behavior clip generators: (animationName, playbackSpeed, cropStart, cropEnd, startTime, enforcedDuration).
-pub fn clip_generators(d: &[u8]) -> Vec<(String, f32, f32, f32, f32, f32)> {
+/// Behavior clip generators: (animationName, playbackSpeed, cropStart, cropEnd, startTime, enforcedDuration,
+/// mode). mode is hkbClipGenerator::PlaybackMode: 0 single play, 1 looping, 2 user controlled,
+/// 3 ping pong, 4 count.
+pub fn clip_generators(d: &[u8]) -> Vec<(String, f32, f32, f32, f32, f32, u8)> {
     let tf = Tagfile::new(d, None);
     let r = Reader::new(d);
     let ty = "hkbClipGenerator";
@@ -548,11 +562,18 @@ pub fn clip_generators(d: &[u8]) -> Vec<(String, f32, f32, f32, f32, f32)> {
         return Vec::new();
     }
     let f = |n: &str| tf.field(ty, n);
-    let (name, speed, cs, ce, st, ed) =
-        (f("animationName"), f("playbackSpeed"), f("cropStartAmountLocalTime"), f("cropEndAmountLocalTime"), f("startTime"), f("enforcedDuration"));
+    let (name, speed, cs, ce, st, ed, mode) = (
+        f("animationName"),
+        f("playbackSpeed"),
+        f("cropStartAmountLocalTime"),
+        f("cropEndAmountLocalTime"),
+        f("startTime"),
+        f("enforcedDuration"),
+        f("mode"),
+    );
     tf.objects_of(ty)
         .into_iter()
-        .map(|o| (tf.string(o + name), r.f32(o + speed), r.f32(o + cs), r.f32(o + ce), r.f32(o + st), r.f32(o + ed)))
+        .map(|o| (tf.string(o + name), r.f32(o + speed), r.f32(o + cs), r.f32(o + ce), r.f32(o + st), r.f32(o + ed), d[o + mode]))
         .collect()
 }
 
@@ -791,11 +812,26 @@ pub fn state_machines(d: &[u8]) -> Vec<String> {
                 let Some((sty, s)) = tf.deref_obj(a + i * 8) else { continue };
                 let g = tf.deref_obj(s + tf.field(&sty, "generator")).map(|(gt, g)| format!("{gt} {}", name_of(&gt, g))).unwrap_or_default();
                 line += &format!("\n  {} id={} -> {g}", name_of(&sty, s), r.i32(s + tf.field(&sty, "stateId")));
+                line += &transition_list(&tf, &r, s + tf.field(&sty, "transitions"));
+            }
+        }
+        if let Some(f) = tf.try_field(ty, "wildcardTransitions") {
+            let w = transition_list(&tf, &r, o + f);
+            if !w.is_empty() {
+                line += &format!("\n  wildcard:{w}");
             }
         }
         out.push(line);
     }
     out
+}
+
+/// A state's (or the machine's wildcard) transitions: " [ev <event id> -> <state id>]" (72-byte
+/// hkbStateMachine::TransitionInfo, eventId@48 toStateId@52).
+fn transition_list(tf: &Tagfile, r: &Reader, at: usize) -> String {
+    let Some((_, arr)) = tf.deref_obj(at) else { return String::new() };
+    let Some((a, n)) = tf.deref(arr + tf.field("hkbStateMachine::TransitionInfoArray", "transitions")) else { return String::new() };
+    (0..n).map(|i| format!(" [ev {} -> {}]", r.i32(a + i * 72 + 48), r.i32(a + i * 72 + 52))).collect()
 }
 
 /// hkbTwistModifier objects: name, members (axis, bones, angle method) and variable bindings.

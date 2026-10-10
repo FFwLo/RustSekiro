@@ -13,11 +13,15 @@
 //!   sekiro-extract model <x.flver> <x.tpf|-> <out.bin> <texture_dir>
 //!       Skinned mesh (bind-pose nodes, LOD0 triangles, weights) + albedo DDS textures.
 //!
+//!   sekiro-extract anims <x.anibnd.d> <out.bin> [suffix]
+//!       One anibnd's skeleton and clips as an anim bin (keys: file stems minus suffix).
+//!
 //!   sekiro-extract export <extracted_dir>
 //!       Writes <extracted_dir>/combat_data.json for the game (needs unpack + params first).
 //!
 //! Output is for local reference only: never commit or publish it.
 
+mod anims;
 mod bhd;
 mod bin;
 mod cloth;
@@ -93,6 +97,52 @@ fn main() {
                 }
             }
         }
+        Some("mtd") if args.len() == 3 => {
+            // An MTD's shader, params and texture slots (map material layers: kb/map.md).
+            let Some(m) = mtd::read(&std::fs::read(&args[2]).unwrap()) else {
+                println!("not an MTD");
+                return;
+            };
+            println!("shader {}", m.shader);
+            for (k, v) in &m.ints {
+                println!("  int {k} = {v:?}");
+            }
+            for (k, v) in &m.floats {
+                println!("  float {k} = {v:?}");
+            }
+            for t in &m.textures {
+                println!("  slot {} uv {} path {:?}", t.kind, t.uv_number, t.path);
+            }
+        }
+        Some("vblend") if args.len() == 3 => {
+            // Per mesh: range and mean of the six UByte4Norm "UV" members (layer blend weights)
+            // and the second UV set, to see which bytes a multi-layer material uses.
+            let f = flver::read(&std::fs::read(&args[2]).unwrap());
+            for m in &f.meshes {
+                let n = m.vertices.len().max(1) as f32;
+                let mut lo = [[255u8; 4]; 6];
+                let mut hi = [[0u8; 4]; 6];
+                let mut sum = [[0f32; 4]; 6];
+                let (mut u2lo, mut u2hi) = ([f32::MAX; 2], [f32::MIN; 2]);
+                for v in &m.vertices {
+                    for k in 0..6 {
+                        for c in 0..4 {
+                            lo[k][c] = lo[k][c].min(v.blend[k][c]);
+                            hi[k][c] = hi[k][c].max(v.blend[k][c]);
+                            sum[k][c] += v.blend[k][c] as f32;
+                        }
+                    }
+                    u2lo = [u2lo[0].min(v.uv2[0]), u2lo[1].min(v.uv2[1])];
+                    u2hi = [u2hi[0].max(v.uv2[0]), u2hi[1].max(v.uv2[1])];
+                }
+                println!("mesh {} [{}] verts {} uv2 {:?}..{:?}", m.material, m.mtd, m.vertices.len(), u2lo, u2hi);
+                for k in 0..6 {
+                    if hi[k] != [0; 4] {
+                        println!("  byte{k}: min {:?} max {:?} mean {:?}", lo[k], hi[k], sum[k].map(|x| (x / n) as u32));
+                    }
+                }
+            }
+        }
         Some("flverinfo") if args.len() == 3 => {
             let f = flver::read(&std::fs::read(&args[2]).unwrap());
             for m in &f.meshes {
@@ -130,6 +180,8 @@ fn main() {
         Some("hkxdump") if args.len() == 4 => hkx::dump(&std::fs::read(&args[2]).unwrap(), Some(&hkx::read_types(&std::fs::read(&args[3]).unwrap()))),
         // Dummy poly frames (id, attach bone, model-space position / forward / upward) as JSON:
         // the sidecar model_<chr>.dummies.json (throw absorb directions).
+        // One anibnd's skeleton + clips as an anim bin; keys = file stems minus [suffix].
+        Some("anims") if args.len() >= 4 => anims::export(Path::new(&args[2]), Path::new(&args[3]), args.get(4).map(String::as_str).unwrap_or("")),
         Some("dummies") if args.len() == 4 => {
             let f = flver::read(&std::fs::read(&args[2]).expect("read flver"));
             let v: Vec<serde_json::Value> = f
@@ -158,8 +210,10 @@ fn main() {
         Some("cmsgs") if args.len() == 3 => {
             let mut v: Vec<_> = hkx::cmsg_map(&std::fs::read(&args[2]).unwrap()).into_iter().collect();
             v.sort();
+            let ends: HashMap<String, (i32, i32)> = hkx::cmsg_ends(&std::fs::read(&args[2]).unwrap()).into_iter().map(|(n, k, e)| (n.trim_end_matches("_CMSG").to_string(), (k, e))).collect();
             for (n, (id, off)) in v {
-                println!("{n} animId={id} offsetType={off}");
+                let (k, e) = ends.get(&n).copied().unwrap_or((-1, -1));
+                println!("{n} animId={id} offsetType={off} animeEndEventType={k} endEvent={e}");
             }
         }
         Some("twistmods") if args.len() == 3 => {
@@ -191,9 +245,9 @@ fn main() {
             // Behavior clip generators that are not plain (speed 1, no crop/start/enforced duration).
             let all = hkx::clip_generators(&std::fs::read(&args[2]).unwrap());
             println!("{} clip generators", all.len());
-            for (n, sp, cs, ce, st, ed) in all {
-                if sp != 1.0 || cs != 0.0 || ce != 0.0 || st != 0.0 || ed != 0.0 {
-                    println!("{n} speed={sp} crop={cs}/{ce} start={st} enforced={ed}");
+            for (n, sp, cs, ce, st, ed, mode) in all {
+                if std::env::var("ALL_CLIPS").is_ok() || sp != 1.0 || cs != 0.0 || ce != 0.0 || st != 0.0 || ed != 0.0 || mode != 0 {
+                    println!("{n} speed={sp} crop={cs}/{ce} start={st} enforced={ed} mode={mode}");
                 }
             }
         }

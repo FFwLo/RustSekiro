@@ -3,8 +3,9 @@
 // (shader/gxffxshader.shaderbnd, disassembled with d3dcompiler_47):
 // - GXFfxdistortionBump.ppo: d = |2 (uv - 0.5)|, fall = max(1 - g_clampDistanceInverse * d, 0) * 0.01;
 //   the frame buffer is read at the pixel + (normal.rg * 2 - 1) * g_waveStrength * fall and tinted
-//   by g_color. gap: its depth test (a nearer surface at the bent spot keeps the straight read) is
-//   left out.
+//   by g_color; where the scene at the bent spot (g_depthTexture, linear) is not farther than the
+//   particle (v3.z >= scene), the straight read is kept, so a nearer object does not smear in.
+//   Tracer distortion (kind 2) is drawn the same way.
 // - GXFfxradialBlur.ppo: 16 reads from the pixel toward g_screenCenter, each step
 //   (center - pixel) * g_radialDistance / 16; the mean of their squares, square-rooted, tinted by
 //   g_color; alpha = the mask's alpha x the vertex alpha (discarded at 0).
@@ -14,10 +15,13 @@
     mesh_functions::get_world_from_local,
     view_transformations::position_world_to_clip,
     mesh_view_bindings::{view, view_transmission_texture, view_transmission_sampler},
+    view_transformations::depth_ndc_to_view_z,
 }
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(0) var fx_texture: texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(1) var fx_sampler: sampler;
+// The scene depth after the opaque pass (fxr.rs FxDepth; 0 = far when not copied).
+@group(#{MATERIAL_BIND_GROUP}) @binding(2) var fx_depth: texture_depth_multisampled_2d;
 
 struct Vertex {
     @builtin(instance_index) instance_index: u32,
@@ -91,7 +95,12 @@ fn fragment(in: VOut) -> @location(0) vec4<f32> {
         }
         let fall = max(1.0 - in.fx.z * d, 0.0) * 0.01;
         let n = textureSample(fx_texture, fx_sampler, in.tex_uv).rg * 2.0 - 1.0;
-        let q = clamp(p + n * in.fx.y * fall, vec2(0.0), vec2(1.0));
+        var q = clamp(p + n * in.fx.y * fall, vec2(0.0), vec2(1.0));
+        let px = vec2<i32>(min(q * view.viewport.zw + view.viewport.xy, view.viewport.xy + view.viewport.zw - 1.0));
+        let scene = -depth_ndc_to_view_z(textureLoad(fx_depth, px, 0));
+        if -depth_ndc_to_view_z(in.position.z) >= scene {
+            q = p;
+        }
         rgb = textureSampleLevel(view_transmission_texture, view_transmission_sampler, q, 0.0).rgb * in.color.rgb;
     }
     a = clamp(a, 0.0, 1.0);

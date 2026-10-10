@@ -229,11 +229,34 @@ pub struct ClothInst {
     started: bool,
     /// Last substep length (time-corrected Verlet).
     last_h: f32,
+    /// This frame's results from `simulate` (parallel over the characters), written to the
+    /// world by `apply`.
+    out: ClothOut,
+    /// Microseconds spent on this cloth since the last "cloth cost" log, and per phase
+    /// (references, restart, solve, bones, skinning, cloth vertices + tangents).
+    cost_us: u64,
+    phase_us: [u64; 6],
+    /// Frames in a row the sim blew up (a particle > 3 m from the root) and restarted; at
+    /// `GIVE_UP` the cloth is carried rigidly for good (one such cloth, c1040's fur, cost
+    /// 24 ms a frame restarting).
+    blowups: u32,
+    rigid: bool,
+}
+
+const GIVE_UP: u32 = 5;
+
+/// What a cloth hands from the parallel step to the serial one: its driven bones' world
+/// transforms and the display meshes' vertices (position, normal, tangent).
+#[derive(Default)]
+struct ClothOut {
+    bones: Vec<(Entity, GlobalTransform)>,
+    #[allow(clippy::type_complexity)]
+    meshes: Vec<(Handle<Mesh>, Vec<[f32; 3]>, Vec<[f32; 3]>, Vec<[f32; 4]>)>,
 }
 
 impl ClothInst {
     pub fn new(def: ClothDef, root: Entity, bones: HashMap<String, Entity>) -> Self {
-        ClothInst { def, root, bones, displays: Vec::new(), x: Vec::new(), prev: Vec::new(), started: false, last_h: 0.0 }
+        ClothInst { def, root, bones, displays: Vec::new(), x: Vec::new(), prev: Vec::new(), started: false, last_h: 0.0, out: ClothOut::default(), cost_us: 0, phase_us: [0; 6], blowups: 0, rigid: false }
     }
 }
 
@@ -247,7 +270,7 @@ impl Plugin for ClothPlugin {
     fn build(&self, app: &mut App) {
         // SHINOBI_NO_CLOTH=1: no simulation (visual checks of the skinned meshes underneath).
         if std::env::var("SHINOBI_NO_CLOTH").is_err() {
-            app.add_systems(PostUpdate, simulate.after(bevy::transform::TransformSystems::Propagate));
+            app.add_systems(PostUpdate, (simulate, apply).chain().after(bevy::transform::TransformSystems::Propagate));
         }
     }
 }
@@ -322,18 +345,52 @@ fn solve_link(x: &mut [Vec3], w: &[f32], l: &Link, stretch_only: bool) {
     x[l.b] -= corr * wb;
 }
 
+/// Cloth further than this from the camera is not simulated: it is carried rigidly in its
+/// bind pose on the model root (`SHINOBI_CLOTH_RANGE=<m>`, 0 = simulate everything). With a
+/// line-up of 20 enemies (127 cloth pieces) the simulation took the sandbox from 68 to 22 fps.
+fn cloth_range() -> f32 {
+    static RANGE: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
+    *RANGE.get_or_init(|| std::env::var("SHINOBI_CLOTH_RANGE").ok().and_then(|v| v.parse().ok()).unwrap_or(15.0))
+}
+
+/// The simulation, one task per character (Bevy's parallel query: with 20 enemies in the
+/// sandbox the serial loop took 68 -> 22 fps). Reads the skeletons, writes only into each
+/// cloth's `out`; `apply` puts the results into the world.
 #[allow(clippy::type_complexity)]
 fn simulate(
     time: Res<Time>,
     mut actors: Query<&mut Cloths>,
-    mut globals: Query<&mut GlobalTransform>,
+    globals: Query<&GlobalTransform>,
     transforms: Query<&Transform>,
     children: Query<&Children>,
-    mut meshes: ResMut<Assets<Mesh>>,
+    cameras: Query<Entity, With<Camera3d>>,
 ) {
+    let t0 = std::time::Instant::now();
     let dt = time.delta_secs().min(1.0 / 20.0);
-    for mut cloths in &mut actors {
+    let range = cloth_range();
+    // Cost probe: SHINOBI_CLOTH_NO_MESH=1 skips the bone and display mesh outputs (step 4).
+    let no_mesh = std::env::var("SHINOBI_CLOTH_NO_MESH").is_ok();
+    // SHINOBI_CLOTH_FLIP_N=1 flips the cloth vertex normals (a check). Read once: read per
+    // vertex, the environment lookup was most of the cloth's frame cost (6 ms a cloth).
+    static FLIP_N: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
+    let flip_n = *FLIP_N.get_or_init(|| if std::env::var("SHINOBI_CLOTH_FLIP_N").is_ok() { -1.0 } else { 1.0 });
+    let cam = cameras.iter().next().and_then(|e| transforms.get(e).ok()).map(|t| t.translation);
+    let time = &time;
+    let (globals, transforms, children) = (&globals, &transforms, &children);
+    actors.par_iter_mut().for_each(|mut cloths| {
+        // World transforms this character's cloth-driven bones (and their children) take
+        // this frame, ahead of `apply`: the display meshes skin from them.
+        let mut overrides: HashMap<Entity, GlobalTransform> = HashMap::new();
         for c in cloths.0.iter_mut() {
+            let tc = std::time::Instant::now();
+            c.out.bones.clear();
+            c.out.meshes.clear();
+            // Out of range: carried rigidly (the restart pose every frame), no simulation.
+            let culled = c.rigid
+                || match cam {
+                    Some(cam) if range > 0.0 => globals.get(c.root).is_ok_and(|g| g.translation().distance(cam) > range),
+                    _ => false,
+                };
             let bone_h = |name: &str| c.bones.get(name).and_then(|&e| globals.get(e).ok()).map(|g| havok(g.to_matrix()));
             let bone_mats: HashMap<&str, Mat4> = c.def.refs.iter().flatten().map(|r| r.0.as_str()).chain(c.def.collidables.iter().map(|k| k.bone.as_str())).filter_map(|n| Some((n, bone_h(n)?))).collect();
             // Capsules in Havok world space: (a, b, ra, rb).
@@ -361,9 +418,17 @@ fn simulate(
                     Some((p.truncate(), n.truncate().normalize_or_zero()))
                 })
                 .collect();
+            let mut tp = std::time::Instant::now();
+            let mut lap = |slot: usize, tp: &mut std::time::Instant, acc: &mut [u64; 6]| {
+                let now = std::time::Instant::now();
+                acc[slot] += (now - *tp).as_micros() as u64;
+                *tp = now;
+            };
+            let mut phase = c.phase_us;
+            lap(0, &mut tp, &mut phase);
             let def = &c.def;
             let w = &def.inv_mass;
-            if c.started && debug_now(&time) {
+            if c.started && debug_now(time) {
                 let root = globals.get(c.root).map(|g| havok(g.to_matrix()).w_axis.truncate()).unwrap_or_default();
                 let far = c.x.iter().map(|p| p.distance(root)).fold(0.0, f32::max);
                 let rf = refs.iter().flatten().map(|(q, _)| q.distance(root)).fold(0.0, f32::max);
@@ -385,8 +450,9 @@ fn simulate(
             // A particle count that no longer matches the definition (another cloth def took this slot)
             // restarts too.
             let jumped = c.started
+                && !culled
                 && (c.x.len() != def.rest.len() || def.moves.iter().any(|&(v, p)| refs.get(v).and_then(|r| *r).is_some_and(|(q, _)| c.x.get(p).is_none_or(|x| q.distance(*x) > 1.0))));
-            let restarted = !c.started || jumped;
+            let restarted = !c.started || jumped || culled;
             if restarted {
                 if jumped {
                     info!("cloth {}: restart (fixed particle jumped)", def.name);
@@ -411,8 +477,9 @@ fn simulate(
                     c.prev[p] = to;
                 }
             }
+            lap(1, &mut tp, &mut phase);
             // 3. Simulate.
-            if dt > 0.0 {
+            if dt > 0.0 && !culled {
                 let h = dt / def.substeps as f32;
                 let keep = (1.0 - def.damping).clamp(0.0, 1.0).powf(h);
                 // Time-corrected Verlet: the last step's displacement covered last_h; scale it to
@@ -475,49 +542,49 @@ fn simulate(
                     }
                 }
             }
-            // A particle more than 3 m from the model root means the sim blew up: log and restart.
+            // A particle more than 3 m further from the model root than the cloth's own
+            // reference vertices means the sim blew up: log and restart.
             if let Ok(root) = globals.get(c.root) {
                 let r = havok(root.to_matrix()).w_axis.truncate();
-                if let Some((i, far)) = c.x.iter().map(|p| p.distance(r)).enumerate().max_by(|a, b| a.1.total_cmp(&b.1)).filter(|(_, d)| !(*d < 3.0)) {
-                    warn!("cloth {}: particle {i} {far:.1} m from the root (inv mass {}, dt {dt:.3}); restarting", def.name, w[i]);
+                let reach = refs.iter().flatten().map(|(q, _)| q.distance(r)).fold(0.0, f32::max) + 3.0;
+                if let Some((i, far)) = c.x.iter().map(|p| p.distance(r)).enumerate().max_by(|a, b| a.1.total_cmp(&b.1)).filter(|(_, d)| !(*d < reach)) {
+                    c.blowups += 1;
+                    if c.blowups < GIVE_UP {
+                        warn!("cloth {}: particle {i} {far:.1} m from the root (inv mass {}, dt {dt:.3}); restarting", def.name, w[i]);
+                    } else if !c.rigid {
+                        warn!("cloth {}: blew up {GIVE_UP} frames running; carried rigidly from now on", def.name);
+                        c.rigid = true;
+                    }
                     c.started = false;
+                } else if !culled {
+                    c.blowups = 0;
                 }
+            }
+            lap(2, &mut tp, &mut phase);
+            if no_mesh {
+                c.phase_us = phase;
+                continue;
             }
             // 4a. Cloth-driven bones (and whatever hangs from them).
             for (name, t, local) in &def.bones {
                 let (Some(&e), Some(&tri)) = (c.bones.get(name), def.tris.get(*t)) else { continue };
                 let g = havok(tri_frame(&c.x, tri) * *local);
-                if debug_now(&time) {
+                if debug_now(time) {
                     let old = globals.get(e).map(|g| g.to_matrix()).unwrap_or_default();
                     info!("  bone {name}: cloth {:?} anim {:?} | x {:?} vs {:?}", g.w_axis.truncate(), old.w_axis.truncate(), g.x_axis.truncate(), old.x_axis.truncate());
                 }
-                set_global(e, GlobalTransform::from(bevy::math::Affine3A::from_mat4(g)), &mut globals, &transforms, &children);
+                let gt = GlobalTransform::from(bevy::math::Affine3A::from_mat4(g));
+                propagate(e, gt, transforms, children, &mut overrides);
+                c.out.bones.push((e, gt));
             }
+            lap(3, &mut tp, &mut phase);
             // 4b. Display meshes.
             let frames: Vec<Mat4> = def.tris.iter().map(|&t| tri_frame(&c.x, t)).collect();
             for dm in &c.displays {
                 let Some(disp) = def.displays.iter().find(|d| d.mesh == dm.mesh) else { continue };
-                let joint_m: Vec<Mat4> = dm.joints.iter().zip(&dm.inv).map(|(&j, inv)| globals.get(j).map(|g| g.to_matrix() * *inv).unwrap_or(Mat4::IDENTITY)).collect();
-                let mut pos: Vec<[f32; 3]> = Vec::with_capacity(dm.pos.len());
-                let mut nrm: Vec<[f32; 3]> = Vec::with_capacity(dm.pos.len());
-                let mut tan: Vec<Vec3> = Vec::with_capacity(dm.pos.len());
-                for (i, (p, n)) in dm.pos.iter().zip(&dm.normal).enumerate() {
-                    let (mut sp, mut sn, mut st) = (Vec3::ZERO, Vec3::ZERO, Vec3::ZERO);
-                    let bt = dm.tangent.get(i).map_or(Vec3::ZERO, |t| Vec3::new(t[0], t[1], t[2]));
-                    for k in 0..4 {
-                        let wt = dm.weights[i][k];
-                        if wt <= 0.0 && k > 0 {
-                            continue;
-                        }
-                        let m = joint_m.get(dm.idx[i][k] as usize).copied().unwrap_or(Mat4::IDENTITY);
-                        sp += m.transform_point3(Vec3::from(*p)) * wt;
-                        sn += m.transform_vector3(Vec3::from(*n)) * wt;
-                        st += m.transform_vector3(bt) * wt;
-                    }
-                    pos.push(sp.into());
-                    nrm.push(sn.normalize_or_zero().into());
-                    tan.push(st);
-                }
+                let joint_m: Vec<Mat4> = dm.joints.iter().zip(&dm.inv).map(|(&j, inv)| overrides.get(&j).copied().or_else(|| globals.get(j).ok().copied()).map(|g| g.to_matrix() * *inv).unwrap_or(Mat4::IDENTITY)).collect();
+                let (mut pos, mut nrm, mut tan) = skin(dm, &joint_m);
+                lap(4, &mut tp, &mut phase);
                 for (v, slots) in &disp.verts {
                     let (mut p, mut n) = (Vec4::ZERO, Vec4::ZERO);
                     for s in slots {
@@ -528,10 +595,10 @@ fn simulate(
                     }
                     if let (Some(dp), Some(dn)) = (pos.get_mut(*v), nrm.get_mut(*v)) {
                         *dp = mirror(p.truncate()).into();
-                        *dn = (mirror(n.truncate()).normalize_or_zero() * if std::env::var("SHINOBI_CLOTH_FLIP_N").is_ok() { -1.0 } else { 1.0 }).into();
+                        *dn = (mirror(n.truncate()).normalize_or_zero() * flip_n).into();
                     }
                 }
-                if debug_now(&time) {
+                if debug_now(time) {
                     let root = globals.get(c.root).map(|g| g.translation()).unwrap_or_default();
                     let far = |s: &[usize]| s.iter().map(|&i| Vec3::from(pos[i]).distance(root)).fold(0.0, f32::max);
                     let def_ix: Vec<usize> = disp.verts.iter().map(|v| v.0).filter(|&i| i < pos.len()).collect();
@@ -558,13 +625,128 @@ fn simulate(
                             .collect()
                     })
                     .unwrap_or_default();
-                if let Some(mut mesh) = meshes.get_mut(&dm.handle) {
+                c.out.meshes.push((dm.handle.clone(), pos, nrm, tangents));
+                lap(5, &mut tp, &mut phase);
+            }
+            c.phase_us = phase;
+            c.cost_us += tc.elapsed().as_micros() as u64;
+        }
+    });
+    COST[0].fetch_add(t0.elapsed().as_micros() as u64, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Microseconds spent in `simulate` / `apply`, and frames: logged every 600 frames
+/// ("cloth cost") so the simulation's share of a frame can be read off any run.
+static COST: [std::sync::atomic::AtomicU64; 3] = [std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0)];
+
+/// Skins a display mesh's vertices (position, normal, bind tangent) from its joints, in
+/// parallel chunks on the compute pool: the big meshes (fur, 50k+ vertices) are the cost of
+/// the cloth, not the solver.
+#[allow(clippy::type_complexity)]
+fn skin(dm: &DisplayMesh, joint_m: &[Mat4]) -> (Vec<[f32; 3]>, Vec<[f32; 3]>, Vec<Vec3>) {
+    const CHUNK: usize = 4096;
+    let n = dm.pos.len();
+    let one = |range: std::ops::Range<usize>| {
+        let mut pos: Vec<[f32; 3]> = Vec::with_capacity(range.len());
+        let mut nrm: Vec<[f32; 3]> = Vec::with_capacity(range.len());
+        let mut tan: Vec<Vec3> = Vec::with_capacity(range.len());
+        for i in range {
+            let (p, nn) = (&dm.pos[i], &dm.normal[i]);
+            let (mut sp, mut sn, mut st) = (Vec3::ZERO, Vec3::ZERO, Vec3::ZERO);
+            let bt = dm.tangent.get(i).map_or(Vec3::ZERO, |t| Vec3::new(t[0], t[1], t[2]));
+            for k in 0..4 {
+                let wt = dm.weights[i][k];
+                if wt <= 0.0 && k > 0 {
+                    continue;
+                }
+                let m = joint_m.get(dm.idx[i][k] as usize).copied().unwrap_or(Mat4::IDENTITY);
+                sp += m.transform_point3(Vec3::from(*p)) * wt;
+                sn += m.transform_vector3(Vec3::from(*nn)) * wt;
+                st += m.transform_vector3(bt) * wt;
+            }
+            pos.push(sp.into());
+            nrm.push(sn.normalize_or_zero().into());
+            tan.push(st);
+        }
+        (pos, nrm, tan)
+    };
+    if n <= CHUNK {
+        return one(0..n);
+    }
+    let parts = bevy::tasks::ComputeTaskPool::get().scope(|sc| {
+        for start in (0..n).step_by(CHUNK) {
+            let one = &one;
+            sc.spawn(async move { one(start..(start + CHUNK).min(n)) });
+        }
+    });
+    let (mut pos, mut nrm, mut tan) = (Vec::with_capacity(n), Vec::with_capacity(n), Vec::with_capacity(n));
+    for (p, nn, t) in parts {
+        pos.extend(p);
+        nrm.extend(nn);
+        tan.extend(t);
+    }
+    (pos, nrm, tan)
+}
+
+/// Writes the frame's cloth results: the driven bones' world transforms (propagated to what
+/// hangs from them) and the display meshes' vertices.
+fn apply(mut actors: Query<&mut Cloths>, mut globals: Query<&mut GlobalTransform>, transforms: Query<&Transform>, children: Query<&Children>, mut meshes: ResMut<Assets<Mesh>>) {
+    // Cost probe: SHINOBI_CLOTH_NO_UPLOAD=1 keeps the bones but leaves the meshes alone.
+    let no_upload = std::env::var("SHINOBI_CLOTH_NO_UPLOAD").is_ok();
+    let t0 = std::time::Instant::now();
+    let mut pieces = 0;
+    let mut costs: Vec<(u64, String)> = Vec::new();
+    for mut cloths in &mut actors {
+        for c in cloths.0.iter_mut() {
+            let ph: Vec<String> = c.phase_us.iter().map(|us| format!("{:.2}", *us as f64 / 300.0 / 1000.0)).collect();
+            costs.push((c.cost_us, format!("{} ({} particles, {} substeps x {} iterations{}; refs/restart/solve/bones/skin/verts {})", c.def.name, c.def.rest.len(), c.def.substeps, c.def.iterations, if c.rigid { ", rigid" } else { "" }, ph.join("/"))));
+            for (e, g) in c.out.bones.drain(..) {
+                set_global(e, g, &mut globals, &transforms, &children);
+            }
+            for (handle, pos, nrm, tangents) in c.out.meshes.drain(..) {
+                pieces += 1;
+                if no_upload {
+                    continue;
+                }
+                if let Some(mut mesh) = meshes.get_mut(&handle) {
                     mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, pos);
                     mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, nrm);
                     if !tangents.is_empty() {
                         mesh.insert_attribute(Mesh::ATTRIBUTE_TANGENT, tangents);
                     }
                 }
+            }
+        }
+    }
+    use std::sync::atomic::Ordering::Relaxed;
+    COST[1].fetch_add(t0.elapsed().as_micros() as u64, Relaxed);
+    let frames = COST[2].fetch_add(1, Relaxed) + 1;
+    if frames % 300 == 0 {
+        let (sim, app) = (COST[0].swap(0, Relaxed), COST[1].swap(0, Relaxed));
+        costs.sort_by(|a, b| b.0.cmp(&a.0));
+        let top: Vec<String> = costs.iter().take(3).map(|(us, n)| format!("{n} {:.2}", *us as f64 / 300.0 / 1000.0)).collect();
+        // Once a minute at 60 fps, more than a frame's worth only. Phases per cloth: references,
+        // restart, solve, bones, skinning, cloth vertices + tangents.
+        if sim as f64 / 300.0 > 1000.0 && frames % 3600 == 300 {
+            info!("cloth cost: simulate {:.2} ms, apply {:.2} ms per frame over 300 frames ({} cloths, {pieces} display meshes); top ms: {}", sim as f64 / 300.0 / 1000.0, app as f64 / 300.0 / 1000.0, costs.len(), top.join(", "));
+        }
+        for mut cloths in &mut actors {
+            for c in cloths.0.iter_mut() {
+                c.cost_us = 0;
+                c.phase_us = [0; 6];
+            }
+        }
+    }
+}
+
+/// A bone's world transform this frame and, from it, its children's (as set_global, into a
+/// map instead of the world).
+fn propagate(e: Entity, g: GlobalTransform, transforms: &Query<&Transform>, children: &Query<&Children>, out: &mut HashMap<Entity, GlobalTransform>) {
+    out.insert(e, g);
+    if let Ok(kids) = children.get(e) {
+        for &k in kids {
+            if let Ok(t) = transforms.get(k) {
+                propagate(k, g.mul_transform(*t), transforms, children, out);
             }
         }
     }
@@ -612,6 +794,7 @@ fn set_global(e: Entity, g: GlobalTransform, globals: &mut Query<&mut GlobalTran
 
 /// SHINOBI_CLOTH_DEBUG=<seconds>: logs the cloth state once, at that time.
 fn debug_now(time: &Time) -> bool {
-    let Some(at) = std::env::var("SHINOBI_CLOTH_DEBUG").ok().and_then(|v| v.parse::<f32>().ok()) else { return false };
+    static AT: std::sync::OnceLock<Option<f32>> = std::sync::OnceLock::new();
+    let Some(at) = *AT.get_or_init(|| std::env::var("SHINOBI_CLOTH_DEBUG").ok().and_then(|v| v.parse::<f32>().ok())) else { return false };
     time.elapsed_secs() > at && time.elapsed_secs() - time.delta_secs() <= at
 }

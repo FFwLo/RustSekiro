@@ -88,6 +88,12 @@ pub struct SpEffect {
     /// Duration in seconds (effectEndurance; 0 = while applied).
     #[serde(default)]
     pub effect_endurance: f32,
+    /// spCategory / categoryPriority: within one category the lower priority wins (Paramdex
+    /// SpEffectParam meta "lower one has priority").
+    #[serde(default)]
+    pub sp_category: i64,
+    #[serde(default)]
+    pub category_priority: i64,
     #[serde(default)]
     pub def_stamina_attack_rate: f32,
     #[serde(default = "one")]
@@ -254,6 +260,11 @@ pub struct Attack {
     /// 0 slash, 1 strike, 2 thrust.
     #[serde(default)]
     pub atk_type: i64,
+    /// spAttribute, the hit's element (HKS env 285 DAMAGE_ELEMENT_*): 6 lightning (the Divine
+    /// Dragon's, Wolf's reversal bolt Bullet 500184), 10 "blue" lightning (Genichiro 71100361,
+    /// Isshin 54000750).
+    #[serde(default)]
+    pub sp_attribute: i64,
     /// Hit sound: HitEffectSeParam column group (0 Iron, 3 Body, ...) and power (0 S, 1 L, 2 LL).
     #[serde(rename = "atkMaterial_forSe", default)]
     pub atk_material_se: i64,
@@ -532,6 +543,10 @@ pub struct BulletSpec {
     pub hit_radius: f32,
     #[serde(default)]
     pub lock_shoot_limit_ang: f32,
+    /// When HitBulletID comes (Paramdex BULLET_LAUNCH_CONDITION_TYPE): 254 only when its life
+    /// runs out (the Divine Dragon's updraft 52000661 renewing itself), else on a hit too.
+    #[serde(default)]
+    pub launch_condition_type: i64,
     #[serde(default)]
     pub attack: Option<Attack>,
 }
@@ -543,6 +558,9 @@ pub struct Hurtbox {
     pub a: [f32; 3],
     pub b: [f32; 3],
     pub r: f32,
+    /// Its NPC part group (chrbnd hkxpwv; HKS env(1120) GetPartGroup), 0 = none.
+    #[serde(default)]
+    pub part: u8,
 }
 
 #[derive(Deserialize)]
@@ -597,9 +615,10 @@ pub struct TwistChain {
 #[derive(Resource)]
 pub struct Combat {
     pub player: CharData,
-    pub enemy: CharData,
-    /// Which enemy `enemy` is (config enemy.chr) and its param rows.
-    pub foe: Foe,
+    /// The enemy kinds in play (a chr with one NpcParam row each): kind 0 is config enemy.chr,
+    /// then config enemy.group's and the ones the boss map events bring in. An enemy actor's
+    /// `Actor::kind` indexes it.
+    pub kinds: Vec<EnemyKind>,
     pub params: Value,
     /// Camera shakes by RumbleCam id (other/default.rumblebnd).
     pub rumble: HashMap<String, Rumble>,
@@ -609,7 +628,50 @@ pub struct Combat {
     pub names: Names,
 }
 
+/// One enemy kind: which chr / rows (`foe`) and its character data (anims, attacks, ...).
+pub struct EnemyKind {
+    pub foe: Foe,
+    pub data: CharData,
+}
+
 impl Combat {
+    /// Enemy kind `i` (kind 0 when out of range).
+    pub fn kind(&self, i: usize) -> &EnemyKind {
+        self.kinds.get(i).unwrap_or(&self.kinds[0])
+    }
+
+    /// An actor's character data: Wolf's, or its enemy kind's.
+    pub fn data_of(&self, a: &crate::actor::Actor) -> &CharData {
+        match a.side {
+            crate::actor::Side::Player => &self.player,
+            crate::actor::Side::Enemy => &self.kind(a.kind).data,
+        }
+    }
+
+    /// An enemy actor's chr and rows (kind 0's for the player).
+    pub fn foe_of(&self, a: &crate::actor::Actor) -> &Foe {
+        &self.kind(a.kind).foe
+    }
+
+    /// An enemy actor's NpcParam row.
+    pub fn npc(&self, a: &crate::actor::Actor) -> &Value {
+        self.param("NpcParam", self.foe_of(a).npc_row)
+    }
+
+    /// The first enemy kind's data and rows (single-enemy tools and tests).
+    pub fn enemy0(&self) -> &CharData {
+        &self.kinds[0].data
+    }
+
+    pub fn foe0(&self) -> &Foe {
+        &self.kinds[0].foe
+    }
+
+    /// The kind index of (chr, NpcParam row), if loaded.
+    pub fn kind_index(&self, chr: &str, npc_row: Option<i64>) -> Option<usize> {
+        self.kinds.iter().position(|k| k.foe.chr == chr && npc_row.is_none_or(|r| k.foe.npc_row == r))
+    }
+
     /// The official English name of a weapon row (art, tool, skill entry), else its id.
     pub fn weapon_name(&self, id: i64) -> String {
         self.names.weapon.get(&id.to_string()).cloned().unwrap_or_else(|| id.to_string())
@@ -795,6 +857,10 @@ pub struct Throw {
     pub atk_anim_id: i64,
     /// The defender's anim group (defAnimOffset: Wolf's a210 for the General, a223 for the zombies).
     pub def_group: i64,
+    /// Where the reach is measured on the defender (judgeRangeBasePosDmyId2: the Divine Dragon's
+    /// 230 by its head; -1 = its root) and the facing it allows (DiffAngMax, degrees).
+    pub judge_dmy: i16,
+    pub diff_ang_max: f32,
 }
 
 impl Combat {
@@ -809,7 +875,21 @@ impl Combat {
             def_dmy: i("defSorbDmyId") as i16,
             atk_anim_id: i("atkAnimId"),
             def_group: i("defAnimOffset"),
+            judge_dmy: r.get("judgeRangeBasePosDmyId2").and_then(|v| v.as_i64()).unwrap_or(-1) as i16,
+            diff_ang_max: r.get("DiffAngMax").and_then(|v| v.as_f64()).unwrap_or(180.0) as f32,
         })
+    }
+
+    /// Wolf's finisher on a kneeling boss: its ThrowParam row with throwKind 250000 ("敵特殊状態A",
+    /// DefChrId = the chr number; the lowest id when there are several), and that id.
+    pub fn finisher(&self, foe: &Foe) -> Option<(i64, Throw)> {
+        let rows = self.params.get("ThrowParam")?.as_object()?;
+        let id = rows
+            .iter()
+            .filter(|(_, r)| r["DefChrId"].as_i64() == Some(foe.chr_num) && r["throwKind"].as_i64() == Some(250_000))
+            .filter_map(|(k, _)| k.parse::<i64>().ok())
+            .min()?;
+        Some((id, self.throw(id)?))
     }
 
     /// The enemy's grab for a throwFlag-1 hit: its ThrowParam row (AtkChrId = the chr number)
@@ -817,12 +897,12 @@ impl Combat {
     /// 21500000 ThrowAtk4100, eye gouge 1 -> 21500100 4110, restraint 2 -> 21500200 4120; the
     /// General's 0 -> 21020000). gap: the exe's row match is not traced; this pattern holds for
     /// every enemy grab row.
-    pub fn enemy_grab(&self, throw_type: i64) -> Option<Throw> {
+    pub fn enemy_grab(&self, foe: &Foe, throw_type: i64) -> Option<Throw> {
         let rows = self.params.get("ThrowParam")?.as_object()?;
         let kind = 1_000_000 + throw_type * 10;
         let id = rows
             .iter()
-            .filter(|(_, r)| r["AtkChrId"].as_i64() == Some(self.foe.chr_num) && r["throwKind"].as_i64() == Some(kind))
+            .filter(|(_, r)| r["AtkChrId"].as_i64() == Some(foe.chr_num) && r["throwKind"].as_i64() == Some(kind))
             .filter_map(|(k, _)| k.parse::<i64>().ok())
             .min()?;
         self.throw(id)
@@ -873,6 +953,18 @@ impl Combat {
     }
 }
 
+/// A SpEffect's effectEndurance [s] (SpEffectParam: 0 = a moment, -1 = for good), from Wolf's
+/// exported SpEffects or the SpEffectParam rows in combat_data.
+pub fn sp_effect_endurance(combat: &Combat, id: i64) -> f32 {
+    combat
+        .player
+        .sp_effects
+        .get(&id.to_string())
+        .map(|s| s.effect_endurance)
+        .or_else(|| combat.param("SpEffectParam", id)["effectEndurance"].as_f64().map(|v| v as f32))
+        .unwrap_or(0.0)
+}
+
 impl CharData {
     pub fn anim_key(&self, state: &str) -> Option<&str> {
         self.states.get(state).map(String::as_str)
@@ -897,15 +989,46 @@ impl CharData {
         e.ungated() || self.resident_gates.contains(&e.arg_i64("StateInfo").unwrap_or(0))
     }
 
+    /// The character's opacity from TAE 193 SetOpacityKeyframe (OpacityAtEventStart -> End over
+    /// the event), None before the anim's first keyframe: the Corrupted Monk's phantoms (c5005)
+    /// fade in at the start of their a200 attacks and out at the end, and stand at 0 in their
+    /// a200 idle, which is how the game keeps them out of sight between calls. The value holds
+    /// until the next keyframe (Actor::opacity), also into anims without one (their a000 walk
+    /// fallback). gap: that hold, and the hold after a keyframe ends (a200_003001's last ends at
+    /// 5.0 s of 6.67), are assumed from the event's name, not traced in the exe.
+    pub fn opacity_key(&self, key: &str, t: f32) -> Option<f32> {
+        let a = self.anim(key)?;
+        let f = |e: &Event, n: &str| e.args.get(n).and_then(|v| v.as_f64()).unwrap_or(1.0) as f32;
+        let e = a.events.iter().filter(|e| e.kind == 193 && e.start <= t).max_by(|x, y| x.start.total_cmp(&y.start))?;
+        let (from, to) = (f(e, "OpacityAtEventStart"), f(e, "OpacityAtEventEnd"));
+        let k = if e.end > e.start { ((t - e.start) / (e.end - e.start)).clamp(0.0, 1.0) } else { 1.0 };
+        Some((from + (to - from) * k).clamp(0.0, 1.0))
+    }
+
+    /// The finisher window: TAE 932 with unk0 105 (in the major bosses' kneeling death, their
+    /// Event20200: Isshin 1-5 s, the Guardian Ape, Genichiro ...) or 104 (an alive collapse: the
+    /// Divine Dragon's Event21000 after m25 12505887's 20002, the headless Ape's a100_021000,
+    /// c1200's a000_010510), the time Wolf can deal the "enemy special state A" deathblow
+    /// (ThrowParam throwKind 250000; Isshin's 15400590 -> ThrowDef12900, whose message 30 at
+    /// 11.6 s ends the fight: m11_02 11125860; the dragon's 15200090). Its clip held at the end
+    /// counts too. gap: what 932 / 104-105 is in the exe is not traced; the match of such windows
+    /// to the characters with a 250000 row is the evidence (c1010 / c1140 have 104 and no row).
+    pub fn finisher_open(&self, key: &str, t: f32) -> bool {
+        let Some(a) = self.anim(key) else { return false };
+        let is = |e: &Event| e.kind == 932 && matches!(e.arg_i64("unk0"), Some(104 | 105));
+        a.events.iter().any(|e| is(e) && (e.in_time(t) || t >= self.length(key)))
+    }
+
     /// Is a ChrActionFlag (TAE type 0) of this FlagType active?
     pub fn flag(&self, key: &str, t: f32, flag_type: i64) -> bool {
         self.events_at(key, t).any(|e| e.kind == 0 && e.flag_type() == Some(flag_type))
     }
 
-    /// SpEffects applied by the anim's TAE (type 67, and 401) at time t.
+    /// SpEffects applied by the anim's TAE (type 67 AddSpEffect, 66 AddSpEffect_Multiplayer
+    /// (the online-synced one: the Corrupted Monk's 5031 in her 3032 / 3033), and 401) at time t.
     pub fn sp_effects_at(&self, key: &str, t: f32) -> Vec<(i64, &SpEffect)> {
         self.events_at(key, t)
-            .filter(|e| e.kind == 67 || e.kind == 401)
+            .filter(|e| e.kind == 67 || e.kind == 66 || e.kind == 401)
             .filter_map(|e| {
                 let id = e.arg_i64("SpEffectID")?;
                 self.sp_effects.get(&id.to_string()).map(|s| (id, s))
@@ -937,9 +1060,10 @@ impl CharData {
             .and_then(|e| e.arg_i64("ChrPhysicsVelocityParam ID"))
     }
 
-    /// TAE 922 ChrPhysicsVelosityScale starting in (t0, t1] (its row: arg ChrPhysicsVelocityParam ID).
+    /// TAE 922 ChrPhysicsVelosityScale starting in (t0, t1], or at 0 on the first tick (its row:
+    /// arg ChrPhysicsVelocityParam ID).
     pub fn velocity_scale(&self, key: &str, t0: f32, t1: f32) -> Option<&Event> {
-        self.anim(key)?.events.iter().find(|e| e.kind == 922 && e.start > t0 && e.start <= t1)
+        self.anim(key)?.events.iter().find(|e| e.kind == 922 && ((e.start > t0 && e.start <= t1) || (t0 == 0.0 && e.start == 0.0 && t1 > 0.0)))
     }
 
     /// Perilous-attack warning (the red kanji): a TAE BulletBehavior (type 2) with
@@ -1064,13 +1188,49 @@ impl Plugin for DataPlugin {
         let mut f: File = serde_json::from_str(&text).expect("combat_data.json is malformed; rerun tools/extract.ps1");
         // config enemy.chr picks the enemy (c1020 Samurai General by default): its own file from
         // `sekiro-extract npcs` (extracted/enemies/<chr>.json) when there is one, else the two
-        // enemies combat_data.json carries.
-        let (chr, npc_row) = app
-            .world()
-            .get_resource::<crate::config::GameConfig>()
-            .map_or(("c1020".to_string(), None), |c| (c.enemy.chr.clone(), c.enemy.npc_row));
-        let (mut enemy, foe) = if let Some(file) = EnemyFile::load(&chr) {
-            let foe = file.foe(&chr, npc_row);
+        // enemies combat_data.json carries. config enemy.group adds more kinds.
+        let config = app.world().get_resource::<crate::config::GameConfig>();
+        let (chr, npc_row) = config.map_or(("c1020".to_string(), None), |c| (c.enemy.chr.clone(), c.enemy.npc_row));
+        let mut wanted = vec![(chr, npc_row)];
+        for g in config.map(|c| c.enemy.group.clone()).unwrap_or_default() {
+            wanted.push((g.chr, g.npc_row));
+        }
+        // The sandbox map's enemy line-up (SHINOBI_SANDBOX_ENEMIES; sandbox.rs).
+        for chr in config.map(crate::sandbox::extra_kinds).unwrap_or_default() {
+            wanted.push((chr, None));
+        }
+        let mut kinds: Vec<EnemyKind> = Vec::new();
+        for (chr, npc_row) in wanted {
+            if kinds.iter().any(|k| k.foe.chr == chr && npc_row.is_none_or(|r| k.foe.npc_row == r)) {
+                continue;
+            }
+            let kind = load_kind(&mut f, &chr, npc_row);
+            // Boss map events bring in other kinds (Genichiro -> Tomoe c7110).
+            kinds.push(kind);
+        }
+        f.player.alias_missing_clips();
+        let mut combat = Combat { player: f.player, kinds, params: f.params, rumble: f.rumble, twists: f.twists, names: f.names };
+        // The kinds the first kind's boss map events enable (the Corrupted Monk's clones are her
+        // own rows; Genichiro's Way of Tomoe is c7110).
+        for (chr, row) in crate::enemy::event_kinds(&combat, combat.kinds[0].foe.npc_row) {
+            if combat.kind_index(&chr, Some(row)).is_none() {
+                let mut f2 = File { player: CharData::default(), enemy: CharData::default(), enemies: HashMap::new(), params: std::mem::take(&mut combat.params), rumble: HashMap::new(), twists: HashMap::new(), names: Names::default() };
+                let kind = load_kind(&mut f2, &chr, Some(row));
+                combat.params = f2.params;
+                if kind.foe.chr == chr {
+                    combat.kinds.push(kind);
+                }
+            }
+        }
+        app.insert_resource(combat);
+    }
+}
+
+/// Loads one enemy kind: extracted/enemies/<chr>.json (its rows merged into `f.params`), else
+/// one of the two enemies combat_data.json carries (else the Samurai General).
+fn load_kind(f: &mut File, chr: &str, npc_row: Option<i64>) -> EnemyKind {
+        let (mut enemy, foe) = if let Some(file) = EnemyFile::load(chr) {
+            let foe = file.foe(chr, npc_row);
             if let (Some(dst), Some(src)) = (f.params.as_object_mut(), file.params.as_object()) {
                 for (table, rows) in src {
                     let t = dst.entry(table.clone()).or_insert_with(|| Value::Object(Default::default()));
@@ -1081,7 +1241,7 @@ impl Plugin for DataPlugin {
             }
             (file.data, foe)
         } else {
-            let mut foe = Foe::for_chr(&chr);
+            let mut foe = Foe::for_chr(chr);
             // config enemy.npc_row: another NpcParam row of the same character (outfit variant).
             if let Some(row) = npc_row {
                 let family = foe.chr.get(1..4).and_then(|s| s.parse::<i64>().ok());
@@ -1091,6 +1251,8 @@ impl Plugin for DataPlugin {
                     None => warn!("enemy.npc_row {row} not exported; using {}", foe.npc_row),
                 }
             }
+            // (Taken, not copied: only the first kind can use these. Every placed enemy has its
+            // own extracted/enemies file, so this is the no-extract fallback only.)
             match f.enemies.remove(&foe.chr) {
                 Some(e) if foe.chr == chr => (e, foe),
                 _ => {
@@ -1098,7 +1260,7 @@ impl Plugin for DataPlugin {
                     if chr != "c1020" {
                         warn!("enemy {chr} not exported (sekiro-extract npcs), using c1020");
                     }
-                    (f.enemy, Foe::for_chr("c1020"))
+                    (std::mem::take(&mut f.enemy), Foe::for_chr("c1020"))
                 }
             }
         };
@@ -1110,10 +1272,8 @@ impl Plugin for DataPlugin {
             .filter_map(|id| enemy.sp_effects.get(&id.to_string()).map(|s| s.state_info))
             .filter(|si| *si != 0)
             .collect();
-        f.player.alias_missing_clips();
         enemy.alias_missing_clips();
-        app.insert_resource(Combat { player: f.player, enemy, foe, params: f.params, rumble: f.rumble, twists: f.twists, names: f.names });
-    }
+        EnemyKind { foe, data: enemy }
 }
 
 #[cfg(test)]

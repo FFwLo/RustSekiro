@@ -88,6 +88,8 @@ pub struct Snapshot {
     pub ninsatsu_max: u32,
     /// Map-event AI commands by slot (EMEVD Request Character AI Command; enemy.rs phase rules).
     pub event_req: Vec<(i64, i64)>,
+    /// The map's event flags that are on (the running boss script's, enemy/script.rs).
+    pub event_flags: Vec<i64>,
 }
 
 #[cfg(test)]
@@ -223,6 +225,10 @@ struct Def {
     name: Option<String>,
     no_update: bool,
     no_interrupt: bool,
+    /// REGISTER_GOAL_NO_SUB_GOAL: its Update runs while it has subgoals too (the scripts'
+    /// Update_Default_NoSubGoal returns Continue until they are done; ApproachSettingDirection
+    /// ends its MoveToSomewhere when its own life is out).
+    no_sub_goal: bool,
     combo: bool,
     tbl: Option<TableRef>,
     /// activate, update, terminate, interupt
@@ -531,7 +537,12 @@ impl AiState {
         let n = |i: usize| a.get(i).and_then(Value::num).unwrap_or(0.0);
         match name {
             "GetParam" => vec![self.goal(id).param(n(0) as usize)],
-            "GetLife" => vec![Value::Num(self.goal(id).life)],
+            // The life left (scripts end themselves on `GetLife() <= 0`; read at Activate it is
+            // the whole life). An endless one (-1) stays -1.
+            "GetLife" => {
+                let g = self.goal(id);
+                vec![Value::Num(if g.life >= 0.0 { g.life - g.t } else { g.life })]
+            }
             "GetLifeRemain" => vec![Value::Num(self.goal(id).life - self.goal(id).t)],
             "GetSubGoalNum" => vec![Value::Num(self.goal(id).subs.len() as f64)],
             "SetNumber" => {
@@ -582,12 +593,30 @@ impl AiState {
     }
 
     fn ai_method(&mut self, name: &str, a: &[Value]) -> Vec<Value> {
+        let r = self.ai_method_raw(name, a);
+        // Debug: SHINOBI_AI_CALLS=1 logs every `ai` call the scripts make (numbers / booleans).
+        static CALLS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        if *CALLS.get_or_init(|| std::env::var("SHINOBI_AI_CALLS").is_ok()) {
+            let show = |v: &[Value]| v.iter().map(|v| match v { Value::Num(x) => format!("{x}"), Value::Bool(b) => format!("{b}"), _ => "_".into() }).collect::<Vec<_>>().join(",");
+            eprintln!("ai {name}({}) -> {}", show(a), show(&r));
+        }
+        r
+    }
+
+    fn ai_method_raw(&mut self, name: &str, a: &[Value]) -> Vec<Value> {
         let n = |i: usize| a.get(i).and_then(Value::num).unwrap_or(0.0);
         let num = |v: f64| vec![Value::Num(v)];
         let boolean = |b: bool| vec![Value::Bool(b)];
         let w = &self.w;
         match name {
-            "GetDist" | "GetDist_Point" => num(self.dist_to(a.first())),
+            // GetDist / GetDist_Point (thunks 1405e2c10 / 1405e2fe0: `mov r8b,1; jmp FUN_1405f1540`):
+            // the 3D distance to the target minus the AI chr's own radius (vtable +0x68 of its chr,
+            // the radius FUN_1405bb920 also pushes its own probe out by). GetOriginDist (1405e3fb0,
+            // r8 = 0) is the plain distance. gap: the exe distance is 3D (horizontal here) and which
+            // radius field +0x68 reads is not traced;
+            // NpcParam.hitRadius here.
+            "GetDist" | "GetDist_Point" => num(self.dist_to(a.first()) - self.hit_radius as f64),
+            "GetOriginDist" => num(self.dist_to(a.first())),
             "GetDistYSigned" => num(0.0),
             "GetDistAtoB" => num(self.dist()),
             "GetMapHitRadius" => num(self.hit_radius as f64),
@@ -628,6 +657,10 @@ impl AiState {
                 let slot = a.first().and_then(|v| v.num()).unwrap_or(0.0) as i64;
                 num(w.event_req.iter().find(|r| r.0 == slot).map_or(-1.0, |r| r.1 as f64))
             }
+            // A boolean: the scripts test it bare (`if ai:IsEventFlag(12505901) then`, the Okami
+            // warriors' 530000_battle.lua) as well as `== true`. Flags the boss script does not
+            // run are off.
+            "IsEventFlag" => boolean(w.event_flags.contains(&key(a.first()))),
             "GetTeamOrder" | "GetOddsParam" | "GetOddsParamIdOffset" | "DbgGetForceActIdx" | "DbgGetForceKengekiActIdx"
             | "GetChangeBattleStateCount" | "GetMovePointWaitTime" | "GetSmallActPreWaitTime" | "GetSmallActPostWaitTime"
             | "GetMovePointType" => num(0.0),
@@ -867,7 +900,7 @@ impl AiState {
                 // MoveToSomewhere / LeaveTarget move relative to their first param (a target or a
                 // point such as POINT_INITIAL); the others to the current target.
                 let target = matches!(n, Native::Approach | Native::Leave).then(|| goal.param(0));
-                let at = self.pos_of(target.as_ref());
+                let mut at = self.pos_of(target.as_ref());
                 let d = self.dist_to(target.as_ref());
                 let (mv, walk) = match n {
                     Native::Approach => {
@@ -880,7 +913,20 @@ impl AiState {
                         if d >= goal.raw(1, 0.0) {
                             return SUCCESS;
                         }
-                        ('B', true)
+                        // Turned toward itself (turnTarget TARGET_SELF): it turns its back and
+                        // goes, walking or running by param 3 (Gyoubu's horse, 508000_battle.lua
+                        // Act25 / Kengeki08: LeaveTarget(.., 15, TARGET_SELF, false); c5080 has
+                        // no WalkBack state). gap: SprjGoalLeaveTarget's turn rule is not traced
+                        // in the exe; read from the parameter's name.
+                        if is(goal.p.get(2), self.k.target_self) {
+                            // (No point: the current target, from its bearing and distance.)
+                            let b = self.w.bearing.to_radians();
+                            let p = at.unwrap_or(self.w.me + Vec3::new(-b.sin(), 0.0, -b.cos()) * d as f32);
+                            at = Some(self.w.me * 2.0 - p);
+                            ('F', goal.p.get(3).is_some_and(|v| matches!(v, Value::Bool(true))))
+                        } else {
+                            ('B', true)
+                        }
                     }
                     Native::Sideway => {
                         let moved = ((self.w.bearing as f64 - goal.start_bearing + 540.0).rem_euclid(360.0) - 180.0).abs();
@@ -976,7 +1022,7 @@ impl Host for AiState {
             }
             "REGISTER_GOAL_NO_SUB_GOAL" => {
                 if let Some(k) = id() {
-                    self.defs.entry(k).or_default();
+                    self.defs.entry(k).or_default().no_sub_goal = truthy();
                 }
             }
             "REGISTER_LOGIC_FUNC" | "REGISTER_GOAL_UPDATE_TIME" | "REGISTER_DBG_GOAL_PARAM" | "REGISTER_GOAL_USE_AVOID_CHR"
@@ -1098,7 +1144,19 @@ fn tick_goal(vm: &mut Vm, st: &mut AiState, g: u32, dt: f64) -> LuaResult<i32> {
             return Ok(FAILED);
         }
         if !st.goal(g).subs.is_empty() {
-            return Ok(CONTINUE);
+            if nat.is_some() || !st.def(kind).is_some_and(|d| d.no_sub_goal && !d.no_update) {
+                return Ok(CONTINUE);
+            }
+            // Its Update decides while the subgoals run.
+            let r = match call_def(vm, st, g, Cb::Update, &[Value::Num(dt)])? {
+                None | Some(Value::Nil | Value::Bool(false)) => CONTINUE,
+                Some(Value::Num(n)) => n as i32,
+                Some(_) => OTHER,
+            };
+            if r == SUCCESS || r == FAILED {
+                clear_subs(vm, st, g)?;
+            }
+            return Ok(r);
         }
     }
     let goal = st.goal(g);
@@ -1381,21 +1439,30 @@ impl Brain {
         if std::mem::take(&mut st.replan) || s.t_replan {
             reset_root(vm, st)?;
         }
-        if st.root.is_none() {
-            plan(vm, st)?;
-        }
-        let Some(root) = st.root else { return Ok(()) };
-        let r = tick_goal(vm, st, root, dt)?;
-        // Top goals added while running (AddTopGoal from a goal) queue behind the plan.
-        let added = std::mem::take(&mut st.top_queue);
-        st.tops.extend(added);
-        if r != CONTINUE {
-            terminate(vm, st, root)?;
-            st.tops.retain(|&g| g != root);
-            st.root = st.tops.first().copied();
-        }
-        if std::mem::take(&mut st.replan) {
-            reset_root(vm, st)?;
+        // A plan that ends is followed by the next one in the same frame, on this frame's state:
+        // the hidden ground zombie (c1500 Act16 -> 20010) must see 20010's SpEffect 5030 (TAE
+        // 0-0.133 s) when its attack goal ends at the combo window, to pick Act15 (rise and
+        // grab 3015). (At most one follow-up plan per frame.)
+        for pass in 0..2 {
+            if st.root.is_none() {
+                plan(vm, st)?;
+            }
+            let Some(root) = st.root else { return Ok(()) };
+            let r = tick_goal(vm, st, root, if pass == 0 { dt } else { 0.0 })?;
+            // Top goals added while running (AddTopGoal from a goal) queue behind the plan.
+            let added = std::mem::take(&mut st.top_queue);
+            st.tops.extend(added);
+            if r != CONTINUE {
+                terminate(vm, st, root)?;
+                st.tops.retain(|&g| g != root);
+                st.root = st.tops.first().copied();
+            }
+            if std::mem::take(&mut st.replan) {
+                reset_root(vm, st)?;
+            }
+            if r == CONTINUE || st.cmd.anim.is_some() {
+                break;
+            }
         }
         Ok(())
     }

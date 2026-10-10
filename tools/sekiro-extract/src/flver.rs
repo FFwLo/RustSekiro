@@ -18,6 +18,11 @@ pub struct Vertex {
     pub pos: [f32; 3],
     pub normal: [f32; 3],
     pub uv: [f32; 2],
+    /// The second UV set of a UVPair (map pieces: layer UVs), else the first again.
+    pub uv2: [f32; 2],
+    /// The UByte4Norm "UV" members in layout order (map pieces: the M[Multiple] layer blend
+    /// weights, kb/map.md), raw bytes, unused slots zero.
+    pub blend: [[u8; 4]; 6],
     pub bones: [u16; 4],
     pub weights: [f32; 4],
 }
@@ -217,16 +222,29 @@ pub fn read_lod(d: &[u8], lod: u32) -> Flver {
                 .unwrap_or_default();
             let vcount = mh.vbs.first().map(|&v| vbs[v].2)?;
             let mut vertices: Vec<Vertex> = (0..vcount)
-                .map(|_| Vertex { pos: [0.0; 3], normal: [0.0, 1.0, 0.0], uv: [0.0; 2], bones: [0; 4], weights: [1.0, 0.0, 0.0, 0.0] })
+                .map(|_| Vertex { pos: [0.0; 3], normal: [0.0, 1.0, 0.0], uv: [0.0; 2], uv2: [0.0; 2], blend: [[0; 4]; 6], bones: [0; 4], weights: [1.0, 0.0, 0.0, 0.0] })
                 .collect();
+            // NormalW (the normal's 4th value): the bone of a vertex in a rigid mesh whose buffers
+            // carry no BoneIndices (SoulsFormats FLVER Vertex.NormalW; DSAnimStudio
+            // FlverSubmeshRenderer "Apply normal W channel bone index (for some weapons etc)").
+            let mut normal_w = vec![0i32; vcount];
+            let has_bones = mh.vbs.iter().any(|&vb| layouts[vbs[vb].0].iter().any(|&(_, _, sem)| sem == 2));
             for &vb in &mh.vbs {
                 let (layout, vsize, count, start) = vbs[vb];
                 let mut first_uv = true;
                 let mut uv_byte = false;
+                let mut byte_member = 0usize;
                 for (i, v) in vertices.iter_mut().enumerate().take(count) {
                     let base = start + i * vsize;
                     for &(off, ty, sem) in &layouts[layout] {
                         let p = base + off as usize;
+                        if sem == 5 && ty == 19 && byte_member < 6 {
+                            v.blend[byte_member] = [d[p], d[p + 1], d[p + 2], d[p + 3]];
+                            byte_member += 1;
+                        }
+                        if sem == 5 && ty == 22 {
+                            v.uv2 = [r.u16(p + 4) as i16 as f32 / uv_factor, r.u16(p + 6) as i16 as f32 / uv_factor];
+                        }
                         match (sem, ty) {
                             (0, 2) | (0, 3) => v.pos = [r.f32(p), r.f32(p + 4), r.f32(p + 8)],
                             (1, 16) => v.weights = std::array::from_fn(|k| d[p + k] as i8 as f32 / 127.0),
@@ -234,9 +252,19 @@ pub fn read_lod(d: &[u8], lod: u32) -> Flver {
                             (1, 26) => v.weights = std::array::from_fn(|k| r.u16(p + k * 2) as i16 as f32 / 32767.0),
                             (2, 17) | (2, 18) | (2, 47) => v.bones = std::array::from_fn(|k| d[p + k] as u16),
                             (2, 24) => v.bones = std::array::from_fn(|k| r.u16(p + k * 2)),
-                            (3, 2) | (3, 3) => v.normal = [r.f32(p), r.f32(p + 4), r.f32(p + 8)],
-                            (3, 16) | (3, 17) | (3, 19) | (3, 47) => v.normal = std::array::from_fn(|k| (d[p + k] as f32 - 127.0) / 127.0),
-                            (3, 26) => v.normal = std::array::from_fn(|k| r.u16(p + k * 2) as i16 as f32 / 32767.0),
+                            (3, 2) => v.normal = [r.f32(p), r.f32(p + 4), r.f32(p + 8)],
+                            (3, 3) => {
+                                v.normal = [r.f32(p), r.f32(p + 4), r.f32(p + 8)];
+                                normal_w[i] = r.f32(p + 12) as i32;
+                            }
+                            (3, 16) | (3, 17) | (3, 19) | (3, 47) => {
+                                v.normal = std::array::from_fn(|k| (d[p + k] as f32 - 127.0) / 127.0);
+                                normal_w[i] = d[p + 3] as i32;
+                            }
+                            (3, 26) => {
+                                v.normal = std::array::from_fn(|k| r.u16(p + k * 2) as i16 as f32 / 32767.0);
+                                normal_w[i] = r.u16(p + 6) as i16 as i32;
+                            }
                             // The first real UV channel. Map pieces list a UByte4Norm (19) "UV" that
                             // carries blend data before the Short2 / Short4 texture UVs (sekiro-rs
                             // docs/FORMATS.md), so a byte channel only stands until a short one comes.
@@ -254,9 +282,24 @@ pub fn read_lod(d: &[u8], lod: u32) -> Flver {
                     }
                     first_uv = true;
                     uv_byte = false;
+                    byte_member = 0;
+                    if v.uv2 == [0.0; 2] {
+                        v.uv2 = v.uv;
+                    }
                 }
             }
-            for v in vertices.iter_mut() {
+            // SEKIRO_FLVER_REF_POSE=1 (tools/tool_export.py, the prosthetic tools): a rigid
+            // (non-dynamic) mesh's vertices are in its bone's space (DSAnimStudio: UsesRefPose =
+            // mesh.Dynamic == 0) and, without BoneIndices, bound by NormalW; they are moved into
+            // model space by the bone's bind pose so the runtime skins them like any other mesh.
+            // Off by default so other exports stay byte-identical. gap: not checked on the
+            // characters and map pieces yet.
+            let ref_pose = !mh.use_weights && std::env::var("SEKIRO_FLVER_REF_POSE").is_ok();
+            let world = if ref_pose { node_worlds(&nodes) } else { Vec::new() };
+            for (i, v) in vertices.iter_mut().enumerate() {
+                if ref_pose && !has_bones {
+                    v.bones[0] = normal_w[i].max(0) as u16;
+                }
                 if !mh.use_weights {
                     // Rigid mesh: bound to its first bone index (or the mesh node).
                     let b = if mh.bone_indices.is_empty() { v.bones[0] } else { v.bones[0] };
@@ -271,6 +314,13 @@ pub fn read_lod(d: &[u8], lod: u32) -> Flver {
                 let sum: f32 = v.weights.iter().sum();
                 if sum > 0.0 {
                     v.weights = v.weights.map(|w| w / sum);
+                }
+                if let Some(m) = world.get(v.bones[0] as usize) {
+                    let (p, n) = (v.pos, v.normal);
+                    v.pos = std::array::from_fn(|k| m[k][0] * p[0] + m[k][1] * p[1] + m[k][2] * p[2] + m[k][3]);
+                    let nn: [f32; 3] = std::array::from_fn(|k| m[k][0] * n[0] + m[k][1] * n[1] + m[k][2] * n[2]);
+                    let len = (nn[0] * nn[0] + nn[1] * nn[1] + nn[2] * nn[2]).sqrt().max(1e-6);
+                    v.normal = nn.map(|x| x / len);
                 }
             }
             // The wanted LOD (flags == lod), else the next lower level, else LOD0 (flags 0;
@@ -297,6 +347,42 @@ pub fn read_lod(d: &[u8], lod: u32) -> Flver {
         })
         .collect();
     Flver { nodes, meshes, dummies }
+}
+
+/// Model-space bind matrices (row-major 3x4: [row][col], column 3 = translation) of the nodes:
+/// local = T * Ry * Rz * Rx * S (SoulsFormats Node.ComputeLocalTransform: X, then Z, then Y),
+/// world = parent world * local. FLVER space (not mirrored).
+fn node_worlds(nodes: &[Node]) -> Vec<[[f32; 4]; 3]> {
+    type M = [[f32; 4]; 3];
+    let mul = |a: &M, b: &M| -> M {
+        std::array::from_fn(|i| std::array::from_fn(|j| a[i][0] * b[0][j] + a[i][1] * b[1][j] + a[i][2] * b[2][j] + if j == 3 { a[i][3] } else { 0.0 }))
+    };
+    let rot = |axis: usize, a: f32| -> M {
+        let (s, c) = a.sin_cos();
+        let mut m: M = [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0]];
+        let (u, v) = match axis {
+            0 => (1, 2),
+            1 => (2, 0),
+            _ => (0, 1),
+        };
+        m[u][u] = c;
+        m[u][v] = -s;
+        m[v][u] = s;
+        m[v][v] = c;
+        m
+    };
+    let mut out: Vec<M> = Vec::with_capacity(nodes.len());
+    for (i, n) in nodes.iter().enumerate() {
+        let t: M = [[1.0, 0.0, 0.0, n.t[0]], [0.0, 1.0, 0.0, n.t[1]], [0.0, 0.0, 1.0, n.t[2]]];
+        let s: M = [[n.s[0], 0.0, 0.0, 0.0], [0.0, n.s[1], 0.0, 0.0], [0.0, 0.0, n.s[2], 0.0]];
+        let local = mul(&mul(&mul(&mul(&t, &rot(1, n.r[1])), &rot(2, n.r[2])), &rot(0, n.r[0])), &s);
+        let w = match usize::try_from(n.parent).ok().filter(|&p| p < i) {
+            Some(p) => mul(&out[p], &local),
+            None => local,
+        };
+        out.push(w);
+    }
+    out
 }
 
 /// TPF (PC): name -> DDS bytes.

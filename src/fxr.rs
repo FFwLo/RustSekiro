@@ -11,8 +11,11 @@
 //! QuadLine (602), Tracer / LegacyTracer (10012 / 606), PointLight (609), Model (605: the
 //! s<model>.flver meshes exported to extracted/fxr_model), and the screen effects Distortion (607),
 //! RadialBlur (608) and the tracers' distortionIntensity (`DistortMaterial`, fx_distort.wgsl).
-//! gap: WindForce (10300), normal maps, lighting / specular, node random turns, sounds (nodeAudio), and the
-//! Hermite curves are the library's approximation (the game's formula is not known).
+//! Soft particles: `soften` + `FxDepth`. WindForce (10300) is not applied: unk_ds3_f1_31 = 1 (plants
+//! only) in all but 400 / 401, whose particle force speed (732) is ~0.1.
+//! Hermite keyframes blend as the exe does (`game_hermite`); Bezier keyframes are the exe's
+//! Hermite basis with p1 / p2 as the tangents (FUN_141d94300 -> FUN_140433c00), the same curve.
+//! gap: normal maps, lighting / specular, node random turns, sounds (nodeAudio).
 
 use bevy::prelude::*;
 use serde_json::Value;
@@ -67,48 +70,24 @@ fn lerp4(a: [f32; 4], b: [f32; 4], k: [f32; 4]) -> [f32; 4] {
     [a[0] + (b[0] - a[0]) * k[0], a[1] + (b[1] - a[1]) * k[1], a[2] + (b[2] - a[2]) * k[2], a[3] + (b[3] - a[3]) * k[3]]
 }
 
-/// fxr.ts cssCubicBezier: y at x for the curve (0,0) (x1,y1) (x2,y2) (1,1).
-fn css_bezier(x1: f32, y1: f32, x2: f32, y2: f32, x: f32) -> f32 {
-    if x <= 0.0 || x >= 1.0 {
-        return x.clamp(0.0, 1.0);
-    }
-    let bez = |a: f32, b: f32, t: f32| t * ((t + 3.0 * (a - b) * t + (3.0 * b - 6.0 * a)) * t + 3.0 * a);
-    let slope = |a: f32, b: f32, t: f32| 3.0 * (t * (t + 3.0 * (a - b) * t + 2.0 * (b - 2.0 * a)) + a);
-    let mut t = x;
-    for _ in 0..8 {
-        let s = slope(x1, x2, t);
-        if s.abs() < 1e-5 {
-            break;
-        }
-        t -= (bez(x1, x2, t) - x) / s;
-        t = t.clamp(0.0, 1.0);
-    }
-    bez(y1, y2, t)
-}
-
-/// fxr.ts approxHermite (the library's approximation of the game's Curve2 interpolation).
-fn approx_hermite(t1: f32, t2: f32, x: f32) -> f32 {
-    let f = |i: usize, x: f32| -> f32 {
-        match i {
-            0 => css_bezier(0.3, 0.1, 0.7, 0.9, x),
-            1 => css_bezier(0.135, 0.135, 0.525, 1.0, x),
-            2 => css_bezier(0.015, 0.675, 0.33, 1.0, x),
-            3 => css_bezier(0.475, 0.0, 0.865, 0.865, x),
-            4 => x,
-            5 => css_bezier(0.015, 0.9, 0.5, 0.5, x),
-            6 => css_bezier(0.71, 0.0, 0.985, 0.37, x),
-            7 => css_bezier(0.525, 0.525, 0.965, 0.07, x),
-            _ => css_bezier(0.065, 1.4, 0.935, -0.4, x),
-        }
+/// The game's Hermite keyframe blend (FXR property function 6; the evaluators registered for
+/// ids 0x60-0x63 / 0x1060-0x1063 at 1400f FUN_141d98ff0, float body FUN_141d94960, vec4
+/// FUN_141d92a50): `x` is the 0..1 position between the two keyframes, `t1` / `t2` the earlier
+/// keyframe's two angles (radians). Two fixed Hermite curves h(0, m0, 1, m1, x)
+/// (FUN_141d9bfe0) bent into circle arcs, an ease-in `lo` and an ease-out `hi`; each angle blends
+/// from one of them (angle 0) through the straight line (pi/4) to the other (pi/2), and the two
+/// results are blended over x.
+fn game_hermite(t1: f32, t2: f32, x: f32) -> f32 {
+    const Q: f32 = std::f32::consts::FRAC_PI_4;
+    let h = |m0: f32, m1: f32| {
+        let (x2, x3) = (x * x, x * x * x);
+        (x3 - 2.0 * x2 + x) * m0 + (-2.0 * x3 + 3.0 * x2) + (x3 - x2) * m1
     };
-    let (t1x2, t2x2) = (t1 * 2.0, t2 * 2.0);
-    let ix = t1x2.floor().clamp(0.0, 1.0) as usize;
-    let iy = t2x2.floor().clamp(0.0, 1.0) as usize;
-    let i = ix + 3 * iy;
-    let fx = t1x2 - ix as f32;
-    let a = f(i, x) + (f(i + 1, x) - f(i, x)) * fx;
-    let b = f(i + 3, x) + (f(i + 4, x) - f(i + 3, x)) * fx;
-    a + (b - a) * (t2x2 - iy as f32)
+    let lo = 1.0 - (1.0 - h(0.7, 1.5).powi(2)).max(0.0).sqrt();
+    let hi = (1.0 - (h(1.5, 0.7) - 1.0).powi(2)).max(0.0).sqrt();
+    let s = if t1 <= Q { lo + t1 / Q * (x - lo) } else { x + (t1 - Q) / Q * (hi - x) };
+    let e = if t2 <= Q { hi + t2 / Q * (x - hi) } else { x + (t2 - Q) / Q * (lo - x) };
+    s + x * (e - s)
 }
 
 /// A property at argument `t`, with its modifiers drawn from `rnd`.
@@ -138,7 +117,7 @@ fn prop(v: Option<&Value>, t: f32, rnd: &mut Rnd, default: [f32; 4]) -> [f32; 4]
                             "Stepped" => va,
                             "Hermite" => {
                                 let (t1, t2) = (vec4(&a["t1"]), vec4(&a["t2"]));
-                                let k: [f32; 4] = std::array::from_fn(|c| approx_hermite(t1[c] / std::f32::consts::PI * 2.0, t2[c] / std::f32::consts::PI * 2.0, x));
+                                let k: [f32; 4] = std::array::from_fn(|c| game_hermite(t1[c], t2[c], x));
                                 lerp4(va, vb, k)
                             }
                             "Bezier" => {
@@ -746,6 +725,9 @@ pub struct DistortMaterial {
     #[texture(0)]
     #[sampler(1)]
     tex: Handle<Image>,
+    /// The scene depth (`FxDepth`): the bend's depth test.
+    #[texture(2, sample_type = "depth", multisampled = true)]
+    depth: Handle<Image>,
 }
 
 impl Material for DistortMaterial {
@@ -808,6 +790,7 @@ struct MultiBuf {
     c1: Vec<[f32; 4]>,
     c2: Vec<[f32; 4]>,
     c3: Vec<[f32; 4]>,
+    soft: Vec<f32>,
 }
 
 /// One multi-texture quad: per corner the layers' UVs (layer 1 with its next frame), the particle
@@ -822,6 +805,8 @@ struct MultiQuad {
     c1: [f32; 4],
     c2: [f32; 4],
     c3: [f32; 4],
+    /// Soft distance (`soften`; 0 = hard).
+    soft: f32,
 }
 
 impl MultiBuf {
@@ -835,6 +820,7 @@ impl MultiBuf {
             self.c1.push(q.c1);
             self.c2.push(q.c2);
             self.c3.push(q.c3);
+            self.soft.push(q.soft);
         }
     }
 }
@@ -847,6 +833,7 @@ const ATTR_UV3N: bevy::mesh::MeshVertexAttribute = bevy::mesh::MeshVertexAttribu
 const ATTR_C1: bevy::mesh::MeshVertexAttribute = bevy::mesh::MeshVertexAttribute::new("FxMultiColor1", 0x5ec1_0641, bevy::render::render_resource::VertexFormat::Float32x4);
 const ATTR_C2: bevy::mesh::MeshVertexAttribute = bevy::mesh::MeshVertexAttribute::new("FxMultiColor2", 0x5ec1_0642, bevy::render::render_resource::VertexFormat::Float32x4);
 const ATTR_C3: bevy::mesh::MeshVertexAttribute = bevy::mesh::MeshVertexAttribute::new("FxMultiColor3", 0x5ec1_0643, bevy::render::render_resource::VertexFormat::Float32x4);
+const ATTR_SOFT: bevy::mesh::MeshVertexAttribute = bevy::mesh::MeshVertexAttribute::new("FxSoft", 0x5ec1_0650, bevy::render::render_resource::VertexFormat::Float32);
 
 /// MultiTextureBillboardEx (604): its three layers blended as the game's
 /// GXFfxtessellateBlendMultiTexture shader does (fx_multi.wgsl). Output premultiplied, so one
@@ -866,6 +853,9 @@ pub struct MultiMaterial {
     modes: UVec4,
     #[uniform(7)]
     flags: UVec4,
+    /// The scene depth (`FxDepth`).
+    #[texture(8, sample_type = "depth", multisampled = true)]
+    depth: Handle<Image>,
 }
 
 impl Material for MultiMaterial {
@@ -899,9 +889,27 @@ impl Material for MultiMaterial {
             ATTR_C1.at_shader_location(5),
             ATTR_C2.at_shader_location(6),
             ATTR_C3.at_shader_location(7),
+            ATTR_SOFT.at_shader_location(8),
         ])?];
         descriptor.primitive.cull_mode = None;
         Ok(())
+    }
+}
+
+/// The sprite / tracer / model batches' material: unlit StandardMaterial plus the soft fade
+/// (fx_soft.wgsl).
+pub type SoftMaterial = bevy::pbr::ExtendedMaterial<StandardMaterial, SoftExt>;
+
+#[derive(Asset, TypePath, bevy::render::render_resource::AsBindGroup, Debug, Clone)]
+pub struct SoftExt {
+    /// The scene depth (`FxDepth`).
+    #[texture(100, sample_type = "depth", multisampled = true)]
+    depth: Handle<Image>,
+}
+
+impl bevy::pbr::MaterialExtension for SoftExt {
+    fn fragment_shader() -> bevy::shader::ShaderRef {
+        "embedded://sv1/fx_soft.wgsl".into()
     }
 }
 
@@ -913,6 +921,8 @@ struct Buf {
     pos: Vec<[f32; 3]>,
     uv: Vec<[f32; 2]>,
     col: Vec<[f32; 4]>,
+    /// x: the soft distance (`soften`; 0 = hard), read by fx_soft.wgsl as uv_b.
+    soft: Vec<[f32; 2]>,
 }
 
 impl Buf {
@@ -923,13 +933,15 @@ impl Buf {
             self.pos.push(tf.transform_point(m.pos[i]).to_array());
             self.uv.push(m.uv[i]);
             self.col.push(col);
+            self.soft.push([0.0; 2]);
         }
     }
-    fn quad(&mut self, c: [Vec3; 4], uv: [[f32; 2]; 4], col: [f32; 4]) {
+    fn quad(&mut self, c: [Vec3; 4], uv: [[f32; 2]; 4], col: [f32; 4], soft: f32) {
         for i in [0, 1, 2, 0, 2, 3] {
             self.pos.push(c[i].to_array());
             self.uv.push(uv[i]);
             self.col.push(col);
+            self.soft.push([soft, 0.0]);
         }
     }
 }
@@ -1088,7 +1100,7 @@ fn collect(
                     let (cr, sr) = (rz.cos(), rz.sin());
                     let (r2, u2) = (right * cr + up * sr, up * cr - right * sr);
                     let (hw, hh) = (r2 * w * 0.5, u2 * h * 0.5);
-                    let corners = [world - hw - hh, world + hw - hh, world + hw + hh, world - hw + hh];
+                    let (corners, soft) = soften(a, w.abs().max(h.abs()), cam, [world - hw - hh, world + hw - hh, world + hw + hh, world - hw + hh]);
                     let l2 = int(a, "layer2", 0);
                     if at == 604 && l2 > 0 {
                         // The layers (fx_multi.wgsl); unk_ds3_f2_10..13 are the shader's
@@ -1117,12 +1129,13 @@ fn collect(
                             c1: [c1[0], c1[1], c1[2], if interp { f_t } else { 0.0 }],
                             c2: lc("layer2Color", &mut rnd),
                             c3: lc("layer3Color", &mut rnd),
+                            soft,
                         };
                         multi.entry((tex, l2, l3, modes, blend)).or_default().quad(&q);
                         continue;
                     }
                     let uv = frame_uv(a, p.age, &mut rnd);
-                    out.entry((tex, blend)).or_default().quad(corners, uv, col);
+                    out.entry((tex, blend)).or_default().quad(corners, uv, col, soft);
                 }
                 // Model (605): sizeX/Y/Z scale the mesh, rotationX/Y/Z + angularSpeed* x
                 // angularSpeedMultiplier* x age turn it (degrees, game axes), in the node's frame.
@@ -1155,14 +1168,14 @@ fn collect(
                     let d = if p.attached { n.world.rotation * p.dir } else { p.dir };
                     let side = d.cross(cam_f).normalize_or(cam_r) * wl * 0.5;
                     let tail = world - d * len;
-                    out.entry((-1, blend)).or_default().quad([tail - side, world - side, world + side, tail + side], [[0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]], col);
+                    out.entry((-1, blend)).or_default().quad([tail - side, world - side, world + side, tail + side], [[0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]], col, 0.0);
                 }
                 // Distortion (607): a camera-facing (orientation as the billboards) quad, sizeX / Y;
                 // its normal map at UV x normalMapScale + normalMapOffset + normalMapSpeed x age,
                 // intensity = g_waveStrength, 1 / radius = g_clampDistanceInverse (radius 1: the
                 // ellipse inscribing the quad). RadialBlur (608): width / height, its mask, blurRadius =
-                // g_radialDistance, toward the particle's centre on screen. gap: 607's mode (all
-                // extracted ones: 1 NormalMap) and shape (1 Hemiellipsoid in one: drawn flat), 608's
+                // g_radialDistance, toward the particle's centre on screen. 607's mode is 1 NormalMap in
+                // all 45 extracted ones (the only one drawn). gap: 607's shape (1 Hemiellipsoid in one: drawn flat), 608's
                 // iterations (all 1), 607's blendMode (drawn over, not added); 608's blendMode 0 / 4 / 7
                 // add as the sprites' do.
                 607 | 608 => {
@@ -1241,10 +1254,10 @@ fn collect(
                             continue;
                         }
                         let b = out.entry((tex, blend)).or_default();
-                        b.quad([a0 - s0, a1 - s1, a1 + s1, a0 + s0], quv, c0);
+                        b.quad([a0 - s0, a1 - s1, a1 + s1, a0 + s0], quv, c0, 0.0);
                         if cross {
                             let (c0x, c1x) = (Vec3::X * w * 0.5, Vec3::X * w * 0.5);
-                            b.quad([a0 - c0x, a1 - c1x, a1 + c1x, a0 + c0x], [[u0, 1.0], [u1, 1.0], [u1, 0.0], [u0, 0.0]], c0);
+                            b.quad([a0 - c0x, a1 - c1x, a1 + c1x, a0 + c0x], [[u0, 1.0], [u1, 1.0], [u1, 0.0], [u0, 0.0]], c0, 0.0);
                         }
                     }
                 }
@@ -1261,6 +1274,40 @@ fn collect(
     for ch in &n.children {
         collect(ch, lib, cam, out, dist, multi, lights);
     }
+}
+
+/// Soft particles, as the game's soft shaders (GXFfxtessellateSoftTexture.gpo / GXFfxsoftTracer.vpo,
+/// cbuffer g_*_softSpriteScaleOffset = (scale, offset)): h = scale x size / 2; the particle's view
+/// depth w is pulled to w - (h + offset) (nearer than near + 1 m it goes back toward w by up to
+/// 1), drawn at the same place on screen, and fades over the soft distance 2 offset + h where it
+/// meets the scene (fx_soft.wgsl, fx_multi.wgsl). Only where the appearance's depthBlend is set
+/// (603 / 604; reference/fxr 603.yml: "display in front of the object if they are close enough,
+/// and fade out with distance from the object's surface"; 1102 of 1596 billboards). gap: scale /
+/// offset read as unkDepthBlend1 / unkDepthBlend2 (the one float pair of that shape: 1 / 0.5 /
+/// 0.25 and 0 / -0.5 / -1) and size as the particle's larger side; the other appearances have no
+/// depthBlend field and are drawn hard (what picks GXFfxsoftTracer for a trail is not traced).
+fn soften(a: &Value, size: f32, cam: &GlobalTransform, c: [Vec3; 4]) -> ([Vec3; 4], f32) {
+    if a["depthBlend"].as_bool() != Some(true) {
+        return (c, 0.0);
+    }
+    // Bevy's default perspective near plane (camera.rs sets none).
+    const NEAR: f32 = 0.1;
+    let scale = a.get("unkDepthBlend1").and_then(Value::as_f64).unwrap_or(1.0) as f32;
+    let off = a.get("unkDepthBlend2").and_then(Value::as_f64).unwrap_or(0.0) as f32;
+    let h = scale * size * 0.5;
+    let (eye, fwd) = (cam.translation(), cam.forward().as_vec3());
+    let pull = |p: Vec3| {
+        let w = (p - eye).dot(fwd);
+        if w <= 1e-3 {
+            return p;
+        }
+        let mut nw = w - (h + off);
+        if nw < NEAR + 1.0 {
+            nw += (NEAR + 1.0 - nw).min(1.0) * (w - nw);
+        }
+        eye + (p - eye) * (nw / w)
+    };
+    (c.map(pull), 2.0 * off + h)
 }
 
 /// segmentSubdivision (reference/fxr src/actions/10012.yml): each completed segment (all but the
@@ -1353,7 +1400,8 @@ fn draw(
     assets: Res<AssetServer>,
     mut batches: ResMut<Batches>,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut materials: ResMut<Assets<SoftMaterial>>,
+    fx_depth: Res<FxDepth>,
     mut dist_materials: ResMut<Assets<DistortMaterial>>,
     mut dist_batches: ResMut<DistortBatches>,
     mut multi_materials: ResMut<Assets<MultiMaterial>>,
@@ -1398,7 +1446,10 @@ fn draw(
                 3 => AlphaMode::Multiply,
                 _ => AlphaMode::Blend,
             };
-            let mat = materials.add(StandardMaterial { base_color: Color::WHITE, base_color_texture: image, unlit: true, alpha_mode, cull_mode: None, double_sided: true, ..default() });
+            let mat = materials.add(SoftMaterial {
+                base: StandardMaterial { base_color: Color::WHITE, base_color_texture: image, unlit: true, alpha_mode, cull_mode: None, double_sided: true, ..default() },
+                extension: SoftExt { depth: fx_depth.image.clone() },
+            });
             let mesh = meshes.add(Mesh::new(bevy::mesh::PrimitiveTopology::TriangleList, bevy::asset::RenderAssetUsages::default()));
             let e = commands.spawn((Mesh3d(mesh.clone()), MeshMaterial3d(mat), Transform::IDENTITY, bevy::light::NotShadowCaster, bevy::camera::visibility::NoFrustumCulling)).id();
             batches.map.insert(*key, (e, mesh));
@@ -1422,7 +1473,7 @@ fn draw(
                 ..bevy::image::ImageSamplerDescriptor::linear()
             });
         }).load(format!("fxr_tex/{tex}.png")) };
-        let mat = dist_materials.add(DistortMaterial { tex: image });
+        let mat = dist_materials.add(DistortMaterial { tex: image, depth: fx_depth.image.clone() });
         let mesh = meshes.add(Mesh::new(bevy::mesh::PrimitiveTopology::TriangleList, bevy::asset::RenderAssetUsages::default()));
         let e = commands.spawn((Mesh3d(mesh.clone()), MeshMaterial3d(mat), Transform::IDENTITY, bevy::light::NotShadowCaster, bevy::camera::visibility::NoFrustumCulling)).id();
         dist_batches.0.insert(*tex, (e, mesh));
@@ -1455,6 +1506,7 @@ fn draw(
             t2: tex(if l3 > 0 { l3 } else { l2 }),
             modes: UVec4::new((modes & 0xf) as u32, (modes >> 4 & 0xf) as u32, (modes >> 8 & 0xf) as u32, (modes >> 12 & 0xf) as u32),
             flags: UVec4::new((modes >> 16 & 1) as u32, matches!(blend, 0 | 4 | 7) as u32, (l3 > 0) as u32, 0),
+            depth: fx_depth.image.clone(),
         });
         let mesh = meshes.add(Mesh::new(bevy::mesh::PrimitiveTopology::TriangleList, bevy::asset::RenderAssetUsages::default()));
         let e = commands.spawn((Mesh3d(mesh.clone()), MeshMaterial3d(mat), Transform::IDENTITY, bevy::light::NotShadowCaster, bevy::camera::visibility::NoFrustumCulling)).id();
@@ -1473,19 +1525,22 @@ fn draw(
         m.insert_attribute(ATTR_C1, [vec![[0.0; 4]; 3], b.c1.clone()].concat());
         m.insert_attribute(ATTR_C2, [vec![[0.0; 4]; 3], b.c2.clone()].concat());
         m.insert_attribute(ATTR_C3, [vec![[0.0; 4]; 3], b.c3.clone()].concat());
+        m.insert_attribute(ATTR_SOFT, [vec![0.0; 3], b.soft.clone()].concat());
     }
     for (key, (_, mesh)) in batches.map.iter() {
         let Some(mut m) = meshes.get_mut(mesh) else { continue };
         let empty = Buf::default();
         let buf = bufs.get(key).unwrap_or(&empty);
         // Never empty (a degenerate triangle far below), see ffx.rs.
-        let (mut pos, mut uv, mut col) = (vec![[0.0, -50.0, 0.0]; 3], vec![[0.0, 0.0]; 3], vec![[0.0; 4]; 3]);
+        let (mut pos, mut uv, mut col, mut soft) = (vec![[0.0, -50.0, 0.0]; 3], vec![[0.0, 0.0]; 3], vec![[0.0; 4]; 3], vec![[0.0; 2]; 3]);
         pos.extend_from_slice(&buf.pos);
         uv.extend_from_slice(&buf.uv);
         col.extend_from_slice(&buf.col);
+        soft.extend_from_slice(&buf.soft);
         let n = pos.len();
         m.insert_attribute(Mesh::ATTRIBUTE_POSITION, pos);
         m.insert_attribute(Mesh::ATTRIBUTE_UV_0, uv);
+        m.insert_attribute(Mesh::ATTRIBUTE_UV_1, soft);
         m.insert_attribute(Mesh::ATTRIBUTE_COLOR, col);
         m.insert_attribute(Mesh::ATTRIBUTE_NORMAL, vec![[0.0, 1.0, 0.0]; n]);
     }
@@ -1506,15 +1561,125 @@ impl Plugin for FxrPlugin {
     fn build(&self, app: &mut App) {
         bevy::asset::embedded_asset!(app, "fx_distort.wgsl");
         bevy::asset::embedded_asset!(app, "fx_multi.wgsl");
-        app.add_plugins((MaterialPlugin::<DistortMaterial>::default(), MaterialPlugin::<MultiMaterial>::default()));
+        bevy::asset::embedded_asset!(app, "fx_soft.wgsl");
+        app.add_plugins((MaterialPlugin::<DistortMaterial>::default(), MaterialPlugin::<MultiMaterial>::default(), MaterialPlugin::<SoftMaterial>::default()));
         app.init_resource::<FxrLib>()
             .init_resource::<Batches>()
             .init_resource::<DistortBatches>()
             .init_resource::<MultiBatches>()
-            .add_systems(Update, (tick, draw).chain());
+            .add_systems(Update, (tick, draw).chain())
+            .add_systems(Startup, |mut commands: Commands, mut images: ResMut<Assets<Image>>| {
+                commands.insert_resource(FxDepth { image: images.add(depth_image(UVec2::ONE)) });
+            })
+            .add_systems(Update, soft_depth)
+            .add_plugins(bevy::render::extract_resource::ExtractResourcePlugin::<FxDepth>::default());
+        if std::env::var("SHINOBI_NO_SOFT").is_err()
+            && let Some(render_app) = app.get_sub_app_mut(bevy::render::RenderApp)
+        {
+            use bevy::core_pipeline::core_3d::{main_opaque_pass_3d, main_transparent_pass_3d};
+            // Before the transmissive pass too: the distortions (DistortMaterial) read it there.
+            render_app.add_systems(
+                bevy::core_pipeline::schedule::Core3d,
+                copy_fx_depth.after(main_opaque_pass_3d).before(bevy::pbr::main_transmissive_pass_3d).before(main_transparent_pass_3d),
+            );
+        }
+        if std::env::var("SHINOBI_FPS_LOG").is_ok() {
+            app.add_systems(Update, fps_log);
+        }
         if std::env::var("SHINOBI_FXR_TEST").is_ok() {
             app.add_systems(Update, test_shots);
         }
+    }
+}
+
+/// Soft particles read the scene depth (the game's g_depthTexture, t3 in GXFfxtessellateSoft*.ppo /
+/// GXFfxsoftTracer.ppo): `copy_fx_depth` copies the camera's depth buffer after the opaque pass
+/// into this image, which the effect materials bind. (Not Bevy's DepthPrepass: it draws every
+/// mesh twice, and with MSAA it writes the alpha-to-coverage hair / leaves as solid, so their
+/// edges showed the clear colour.) Never written (SHINOBI_NO_SOFT=1, or a size / MSAA mismatch),
+/// it stays 0 = infinitely far and the particles keep hard edges.
+#[derive(Resource, Clone, bevy::render::extract_resource::ExtractResource)]
+pub struct FxDepth {
+    image: Handle<Image>,
+}
+
+/// The copy target: the camera depth's format and sample count (Bevy's Depth32Float, MSAA 4; the
+/// camera sets no Msaa, so Bevy's default 4 holds).
+fn depth_image(size: UVec2) -> Image {
+    use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat, TextureUsages};
+    let mut img = Image::new_uninit(
+        Extent3d { width: size.x.max(1), height: size.y.max(1), depth_or_array_layers: 1 },
+        TextureDimension::D2,
+        TextureFormat::Depth32Float,
+        bevy::asset::RenderAssetUsages::RENDER_WORLD,
+    );
+    img.texture_descriptor.sample_count = 4;
+    // RENDER_ATTACHMENT: wgpu requires it of multisampled textures.
+    img.texture_descriptor.usage = TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST | TextureUsages::RENDER_ATTACHMENT;
+    img
+}
+
+/// Keeps `FxDepth` at the camera's size (re-binding the effect materials on a resize) and lets
+/// the camera's depth buffer be copied from.
+fn soft_depth(
+    fx: Option<Res<FxDepth>>,
+    mut images: ResMut<Assets<Image>>,
+    mut soft: ResMut<Assets<SoftMaterial>>,
+    mut multi: ResMut<Assets<MultiMaterial>>,
+    mut dist: ResMut<Assets<DistortMaterial>>,
+    mut cams: Query<(&Camera, &mut Camera3d)>,
+) {
+    let Some(fx) = fx else { return };
+    if std::env::var("SHINOBI_NO_SOFT").is_ok() {
+        return;
+    }
+    for (cam, mut c3) in &mut cams {
+        let usage = bevy::render::render_resource::TextureUsages::from(c3.depth_texture_usages);
+        if !usage.contains(bevy::render::render_resource::TextureUsages::COPY_SRC) {
+            c3.depth_texture_usages = (usage | bevy::render::render_resource::TextureUsages::COPY_SRC).into();
+        }
+        let Some(size) = cam.physical_target_size() else { continue };
+        let Some(img) = images.get(&fx.image) else { continue };
+        if img.size() == size {
+            continue;
+        }
+        let _ = images.insert(&fx.image, depth_image(size));
+        for _ in soft.iter_mut() {}
+        for _ in multi.iter_mut() {}
+        for _ in dist.iter_mut() {}
+    }
+}
+
+/// Render world: the camera's depth (opaque pass done) into `FxDepth`, when size and sample
+/// count match (Bevy's own prepass copies its depth the same way, prepass/node.rs).
+fn copy_fx_depth(
+    view: bevy::render::renderer::ViewQuery<&bevy::render::view::ViewDepthTexture>,
+    fx: Option<Res<FxDepth>>,
+    images: Res<bevy::render::render_asset::RenderAssets<bevy::render::texture::GpuImage>>,
+    mut ctx: bevy::render::renderer::RenderContext,
+) {
+    let depth = view.into_inner();
+    let Some(fx) = fx else { return };
+    let Some(dst) = images.get(&fx.image) else { return };
+    let (s, d) = (&depth.texture, &dst.texture);
+    if s.size() != d.size() || s.sample_count() != d.sample_count() || s.format() != d.format() {
+        return;
+    }
+    ctx.command_encoder().copy_texture_to_texture(s.as_image_copy(), d.as_image_copy(), s.size());
+}
+
+/// SHINOBI_FPS_LOG=1: vsync off and the mean frame time every 240 frames (for costing changes).
+fn fps_log(time: Res<Time>, mut acc: Local<(u32, f32)>, mut windows: Query<&mut Window>) {
+    for mut w in &mut windows {
+        if w.present_mode != bevy::window::PresentMode::AutoNoVsync {
+            w.present_mode = bevy::window::PresentMode::AutoNoVsync;
+        }
+    }
+    acc.0 += 1;
+    acc.1 += time.delta_secs();
+    if acc.0 == 240 {
+        info!("frame {:.2} ms ({:.0} fps)", acc.1 / 240.0 * 1000.0, 240.0 / acc.1);
+        *acc = (0, 0.0);
     }
 }
 
@@ -1582,5 +1747,21 @@ mod tests {
         assert_eq!(s[13].2, 1.0);
         assert!(s.windows(2).all(|w| w[1].0.x > w[0].0.x && w[1].2 > w[0].2));
         assert_eq!(subdivide(&pts, 0).len(), 4);
+    }
+
+    /// The exe's Hermite blend: both angles pi/4 is the straight line, the ends stay put, and
+    /// 0 / pi/2 bend it to the ease-in / ease-out arcs (FUN_141d94960).
+    #[test]
+    fn hermite_matches_the_exe_shape() {
+        use std::f32::consts::{FRAC_PI_2, FRAC_PI_4};
+        for x in [0.0, 0.25, 0.5, 0.75, 1.0] {
+            assert!((game_hermite(FRAC_PI_4, FRAC_PI_4, x) - x).abs() < 1e-6);
+        }
+        for (t1, t2) in [(0.0, 0.0), (FRAC_PI_2, FRAC_PI_2), (0.0, FRAC_PI_2), (FRAC_PI_2, 0.0)] {
+            assert!(game_hermite(t1, t2, 0.0).abs() < 1e-6);
+            assert!((game_hermite(t1, t2, 1.0) - 1.0).abs() < 1e-6);
+        }
+        assert!(game_hermite(0.0, FRAC_PI_2, 0.5) < 0.5);
+        assert!(game_hermite(FRAC_PI_2, 0.0, 0.5) > 0.5);
     }
 }

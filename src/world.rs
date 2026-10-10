@@ -39,7 +39,7 @@ pub fn spawn_blade(parent: &mut ChildSpawnerCommands, meshes: &mut Assets<Mesh>,
 /// until real animations play). Hitbox active: blade swept across the front.
 fn pose_blades(combat: Res<Combat>, actors: Query<(&Actor, &Children)>, mut blades: Query<&mut Transform, With<Blade>>) {
     for (a, children) in &actors {
-        let d = data_for(&combat, a.side);
+        let d = data_for(&combat, &a);
         let windows = d.attack_windows(&a.anim);
         let damaging = |atk: &crate::data::Attack| atk.atk_stam > 0.0 || atk.atk_phys > 0.0;
         let active = windows.iter().find(|(e, atk, _)| e.in_time(a.t) && damaging(atk));

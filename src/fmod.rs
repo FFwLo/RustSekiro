@@ -364,8 +364,18 @@ impl Plugin for FmodPlugin {
     fn build(&self, app: &mut App) {
         let sekiro = crate::paths::sekiro_dir();
         let sound_dir = crate::paths::root().join("extracted/sound");
-        let chr = app.world().get_resource::<crate::config::GameConfig>().map_or("c1020".to_string(), |c| c.enemy.chr.clone());
-        match Fmod::open(std::path::Path::new(&sekiro), &sound_dir, &["main", "smain", chr.as_str()], false) {
+        // Every enemy kind's bank (config enemy.chr and enemy.group, and the kinds the boss events
+        // bring in when Combat is already loaded).
+        let mut chrs: Vec<String> = match app.world().get_resource::<crate::data::Combat>() {
+            Some(c) => c.kinds.iter().map(|k| k.foe.chr.clone()).collect(),
+            None => app.world().get_resource::<crate::config::GameConfig>().map_or(vec!["c1020".to_string()], |c| {
+                std::iter::once(c.enemy.chr.clone()).chain(c.enemy.group.iter().map(|g| g.chr.clone())).collect()
+            }),
+        };
+        chrs.dedup();
+        let mut banks = vec!["main", "smain"];
+        banks.extend(chrs.iter().map(|c| c.as_str()));
+        match Fmod::open(std::path::Path::new(&sekiro), &sound_dir, &banks, false) {
             Ok(f) => {
                 // Swing, deflect, guard, flesh hit, armour, floor, enemy swing.
                 let probe = ["c000004010", "c000004011", "c000006510", "s000003010", "c000001113", "c000001004", "c102004001"];

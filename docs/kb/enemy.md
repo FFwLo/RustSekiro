@@ -118,3 +118,43 @@ Dated findings, oldest first. Append new entries at the end.
   * Boss phases are map events: EMEVD 4[37] IF Number of Character Health Bars on the boss, then
     SetSpEffect / ClearSpEffect / ForceAnimationPlayback / EzState request / AI command (2004[17],
     read by GetEventRequest(slot)) / AI re-plan. At 0 bars: EzState 20200 + Wolf's 7102xx.
+- Several enemies (2026-10-10):
+  * Combat.kinds and Actor.kind (data_of / foe_of / npc); config enemy.group.
+  * Same side = no hits.
+  * Lock-on flick switch (gap: the exe's rule); deathblow on the locked / nearest enemy.
+  * Per-enemy HUD bars and stealth marks.
+  * Boss events "enable" / "disable" / "warp_player" (MSB part / region positions relative to
+    the boss part: MSBS Part pos @0x20 / rot @0x2C; Region pos @0x14 / rot @0x20, entity id at
+    base data 3 + 4). Yaw convention: facing = (sin y, cos y) (msb::rotate).
+  * Genichiro c7100 71001000 -> Tomoe c7110 71100000 (11115820, after a 2 s wait for Wolf alive
+    and the cutscene 11010020 that warps Wolf to region 1112813).
+  * Monk phantoms c5005 (12505961 enables 2500851/3/4). Event 12505970, per phantom: AI command
+    (0, slot 1); IF the Monk has SpEffect 5031; wait 1 s (skipped on her message 50); wait
+    1 / 2 / 3.5 s; IF she still has 5031, short-warp to 2502860-5 (by Wolf's region
+    2502856-9 and a random flag 12505973-8); commands (10 / 20 / 30, slot 1) and (10, slot 0) +
+    re-plan; IF its message 70 OR she loses 5031: (0, slot 1) + re-plan; restart.
+  * Event messages on NPCs are TAE 231 (DSAnimStudio SDT template: SetEzStateRequestID; DS3
+    TAE3 SetEventMessageID). exe decomp/140b5.c case 0xe7 writes the id to the character
+    (module +0x508) and nothing clears it at the event end: sticky until the next 231 (attacks
+    send 2147483647 to clear). c5000 / c5005: a0/a100_003032 sends 50 at 1.733 s (with 5031),
+    the a200 attacks send 70. Wolf's Todome message is TAE 936 (unk0) instead.
+  * TAE 66 AddSpEffect_Multiplayer applies its SpEffect like 67 (5031 is only on 66).
+  * Region checks: 3[2] In/Outside Area (byte0 condition group, byte1 1 inside / 0 outside,
+    entity, region); MSBS Region shape @0x10 (5 = box), shape data @0x48 (box: width x, depth
+    z, height y). boss_events.py turns them into `areas` (OR of ANDs per GOTO label).
+- 2026-10-11 (bosses finished, HANDOFF 4.11):
+  * Corrections: c5200 = Divine Dragon; c5300 = Old Dragons of the Tree (Okina dragon group);
+    c1350 = the Headless; c7300 Divine Child = friendly NPC.
+  * AI `IsEventFlag` must return a boolean (Lua: 0 is true). It reads the boss script's flags.
+  * Anim-set SpEffects 200030-200034 share spCategory 100 (Paramdex SDT: "category that decides
+    overwriting"): a TAE-added one with effectEndurance -1 replaces the resident of that category.
+  * TAE 193 SetOpacityKeyframe (OpacityAtEventStart -> End): the Monk's phantoms fade in / out
+    in their a200 attacks and hold 0 in their a200 idle. gap: the hold between keyframes.
+  * Teams (Paramdex TEAM_TYPE; 0 disabled, 6 enemy, 24 enemy 2, 26 friendly NPC, 29
+    indiscriminate, 30 object). Evidence by NpcParam row names: 11502001 / 14701003
+    葦名勢敵対用, 11502100 猿敵対用, 17000110 落武者敵対, 11007200 孤影衆と敵対しない,
+    50200010 無差別. gap: the exe's table.
+  * Great Serpent c5010 (hp 9999): fall throws 15010030-32 (throwKind 70000/70100/70900,
+    Dist 57 from dummy 233), 15010150/151 (130000), 15010900 (120000, ThrowDef12900); AI
+    501010/501020/501030_battle.lua by IsInsideTargetRegion over MSB regions (1102861/62/65/
+    81/95/97/79). Not done: ai.rs answers region checks false.

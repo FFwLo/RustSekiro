@@ -237,6 +237,13 @@ pub struct MeshGroup {
     base: bool,
 }
 
+/// A character mesh: its actor and the material's own alpha mode (TAE 193 opacity blends it).
+#[derive(Component)]
+pub struct ModelMesh {
+    owner: Entity,
+    alpha: AlphaMode,
+}
+
 /// Groups switched by TAE 233 ChangeChrDrawMask (FUN_140b54330 -> FDPChrPrimDispMask): kept
 /// until changed again. TAE 711 HideModelMask / 713 ShowModelMask override only while they run.
 #[derive(Component, Default)]
@@ -272,7 +279,7 @@ impl Plugin for ModelPlugin {
         bevy::asset::embedded_asset!(app, "sekiro_material.wgsl");
         app.add_plugins(MaterialPlugin::<SekiroMaterial>::default());
         app.add_systems(PostStartup, attach_models.after(crate::anim::AnimSet))
-            .add_systems(Update, (hide_placeholder_blades, update_draw_masks))
+            .add_systems(Update, (hide_placeholder_blades, update_draw_masks, update_opacity))
             .add_systems(PostUpdate, override_weapon_location.after(bevy::transform::TransformSystems::Propagate));
         tool::plugin(app);
     }
@@ -283,10 +290,12 @@ fn attach_models(
     combat: Res<crate::data::Combat>,
     mut commands: Commands,
     lib: Res<AnimLib>,
-    assets: Res<AssetServer>,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<SekiroMaterial>>,
-    mut bindposes: ResMut<Assets<SkinnedMeshInverseBindposes>>,
+    // None headless (sim tests with real geometry): the joints, weapon pivots and dummy polys
+    // are built, the meshes and cloth are not.
+    assets: Option<Res<AssetServer>>,
+    mut meshes: Option<ResMut<Assets<Mesh>>>,
+    mut materials: Option<ResMut<Assets<SekiroMaterial>>>,
+    mut bindposes: Option<ResMut<Assets<SkinnedMeshInverseBindposes>>>,
     actors: Query<(Entity, &Actor, &Skeleton)>,
     roots: Query<(Entity, &ChildOf, &Name)>,
 ) {
@@ -294,7 +303,7 @@ fn attach_models(
     for (actor_e, a, skel) in &actors {
         let chr = match a.side {
             Side::Player => "c0000",
-            Side::Enemy => combat.foe.chr.as_str(),
+            Side::Enemy => combat.foe_of(a).chr.as_str(),
         };
         // Every model_<chr>*.bin: the whole character (NPCs) or equipment parts (player).
         let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(&dir)
@@ -308,7 +317,7 @@ fn attach_models(
             })
             .collect();
         files.sort();
-        let skel_lib = lib.lib(a.side);
+        let skel_lib = lib.lib(&a);
         let by_name: HashMap<&str, usize> = skel_lib.bones.iter().enumerate().map(|(i, b)| (b.name.as_str(), i)).collect();
         let Some(skel_root) = roots.iter().find(|(_, p, n)| p.parent() == actor_e && n.as_str() == "SkeletonRoot").map(|(e, _, _)| e) else {
             continue;
@@ -320,7 +329,8 @@ fn attach_models(
         for file in files {
         let Some(model) = load(&file) else { continue };
         // Havok cloth (model_<x>.cloth.json): its display meshes are drawn from CPU vertices.
-        let mut cloth_defs = crate::cloth::load(&file);
+        let headless = meshes.is_none() || materials.is_none() || bindposes.is_none() || assets.is_none();
+        let mut cloth_defs = if headless { Vec::new() } else { crate::cloth::load(&file) };
         // Weapon parts (wp_*) hang off the R_Weapon bone; everything else off the skeleton root.
         let is_weapon = file.file_name().unwrap_or_default().to_string_lossy().contains("_wp_");
         // Scabbards (the weapon part's WP_A_xxxx_1.flver, exported as *_sheath_*) hang off the
@@ -406,9 +416,9 @@ fn attach_models(
         // "with haori" rows add 12). (The Ashina Shitenno rows, 8/14/17/24, are another outfit.)
         // The enemy starts in battle, so TransToBattleFromDefault's TAE 233 ChangeChrDrawMask (draw
         // the sword: c1020 #04# on, #06# off; 255 = unchanged) applies from the start.
-        let npc = combat.param("NpcParam", combat.foe.npc_row);
+        let npc = combat.npc(a);
         let mut draw_mask: HashMap<u32, bool> = HashMap::new();
-        if let Some(an) = combat.enemy.anim_key("TransToBattleFromDefault").and_then(|k| combat.enemy.anim(k)) {
+        if let Some(an) = combat.data_of(a).anim_key("TransToBattleFromDefault").and_then(|k| combat.data_of(a).anim(k)) {
             for e in an.events.iter().filter(|e| e.kind == 233) {
                 for n in 0..32u32 {
                     match e.arg_i64(&format!("Mask{n}")) {
@@ -444,7 +454,8 @@ fn attach_models(
         // SHINOBI_HIDE_MESH=<substring>[,...]: skip meshes whose material or albedo name matches (visual checks).
         let hide: Vec<String> = std::env::var("SHINOBI_HIDE_MESH").map(|v| v.to_lowercase().split(',').map(str::to_string).collect()).unwrap_or_default();
         let hidden = |md: &MeshData| hide.iter().any(|h| md.material.to_lowercase().contains(h) || md.albedo.contains(h));
-        for (mi, md) in model.meshes.iter().enumerate().filter(|(_, md)| md.albedo != "-" && !hidden(md) && (visible(md) || group_of(md).is_some())) {
+        for (mi, md) in model.meshes.iter().enumerate().filter(|(_, md)| !headless && md.albedo != "-" && !hidden(md) && (visible(md) || group_of(md).is_some())) {
+            let (Some(assets), Some(meshes), Some(materials), Some(bindposes)) = (assets.as_deref(), meshes.as_deref_mut(), materials.as_deref_mut(), bindposes.as_deref_mut()) else { break };
             let cloth = cloth_insts.iter().position(|c| c.def.display_meshes().any(|m| m == mi));
             // Compact joint list for this mesh.
             let mut remap: HashMap<u16, u16> = HashMap::new();
@@ -503,13 +514,14 @@ fn attach_models(
             // SHINOBI_NO_NORMALS=1: flat normals (visual checks of the normal-map decode).
             let normal = if std::env::var("SHINOBI_NO_NORMALS").is_ok() { None } else { linear(&md.normal_map) };
             let metallic = linear(&md.metallic);
+            // Cutouts as alpha-to-coverage (with the camera's 4x MSAA): a hard 0.5 mask made
+            // the torn edges of Wolf's coat shimmer frame to frame whenever it moved a little.
+            let alpha_mode = if md.alpha_test { AlphaMode::AlphaToCoverage } else { AlphaMode::Opaque };
             let material = materials.add(SekiroMaterial {
                 base: StandardMaterial {
                     base_color_texture: texture,
                     perceptual_roughness: 0.8,
-                    // Cutouts as alpha-to-coverage (with the camera's 4x MSAA): a hard 0.5 mask made
-                    // the torn edges of Wolf's coat shimmer frame to frame whenever it moved a little.
-                    alpha_mode: if md.alpha_test { AlphaMode::AlphaToCoverage } else { AlphaMode::Opaque },
+                    alpha_mode,
                     double_sided: true,
                     cull_mode: None,
                     ..default()
@@ -523,7 +535,7 @@ fn attach_models(
             let base = visible(md);
             let vis = if base { Visibility::default() } else { Visibility::Hidden };
             let handle = meshes.add(mesh);
-            let e = commands.spawn((Mesh3d(handle.clone()), MeshMaterial3d(material), Transform::default(), vis)).id();
+            let e = commands.spawn((Mesh3d(handle.clone()), MeshMaterial3d(material), Transform::default(), vis, ModelMesh { owner: actor_e, alpha: alpha_mode })).id();
             if let Some(group) = group_of(md) {
                 commands.entity(e).insert(MeshGroup { owner: actor_e, group, base });
             }
@@ -633,7 +645,7 @@ fn update_draw_masks(
         if a.anim.is_empty() {
             continue;
         }
-        let Some(an) = crate::actor::data_for(&combat, a.side).anim(&a.anim) else { continue };
+        let Some(an) = crate::actor::data_for(&combat, &a).anim(&a.anim) else { continue };
         let started = |e: &crate::data::Event| (e.start > a.prev_t || (a.prev_t == 0.0 && e.start == 0.0)) && e.start <= a.t;
         for e in an.events.iter().filter(|e| e.kind == 233 && started(e)) {
             for n in 0..32u32 {
@@ -650,7 +662,7 @@ fn update_draw_masks(
         let mut on = dm.0.get(&g.group).copied().unwrap_or(g.base);
         if !a.anim.is_empty() {
             let key = format!("Mask{}", g.group);
-            for e in crate::actor::data_for(&combat, a.side).events_at(&a.anim, a.t) {
+            for e in crate::actor::data_for(&combat, &a).events_at(&a.anim, a.t) {
                 let set = e.args.get(&key).and_then(|v| v.as_bool()) == Some(true);
                 match e.kind {
                     711 if set => on = false,
@@ -663,6 +675,27 @@ fn update_draw_masks(
         if *vis != want {
             *vis = want;
         }
+    }
+}
+
+/// TAE 193 opacity (Actor::opacity) on the actor's materials: blended below 1, its own alpha
+/// mode again at 1.
+fn update_opacity(
+    actors: Query<&Actor>,
+    meshes: Query<(&ModelMesh, &MeshMaterial3d<SekiroMaterial>)>,
+    mut materials: ResMut<Assets<SekiroMaterial>>,
+) {
+    let mut seen: HashMap<Entity, f32> = HashMap::new();
+    for (m, mat) in &meshes {
+        let op = *seen.entry(m.owner).or_insert_with(|| actors.get(m.owner).map_or(1.0, |a| a.opacity));
+        let Some(cur) = materials.get(&mat.0) else { continue };
+        let mode = if op < 1.0 { AlphaMode::Blend } else { m.alpha };
+        if (cur.base.base_color.alpha() - op).abs() < 0.004 && cur.base.alpha_mode == mode {
+            continue;
+        }
+        let Some(mut w) = materials.get_mut(&mat.0) else { continue };
+        w.base.base_color.set_alpha(op);
+        w.base.alpha_mode = mode;
     }
 }
 
@@ -744,7 +777,7 @@ fn override_weapon_location(
     mut vis: Query<&mut Visibility>,
 ) {
     for (a, wp) in &actors {
-        let d = crate::actor::data_for(&combat, a.side);
+        let d = crate::actor::data_for(&combat, &a);
         let of_type = |t: char| {
             d.events_at(&a.anim, a.t)
                 .find(|e| e.kind == 715 && e.args.get("WeaponModelType").and_then(|v| v.as_str()).is_some_and(|s| s.starts_with(t)))

@@ -3,6 +3,7 @@
 //! be checked frame by frame against the real game.
 
 use bevy::prelude::*;
+use std::collections::HashSet;
 
 use crate::actor::{Actor, Side, data_for};
 use crate::data::Combat;
@@ -59,15 +60,18 @@ struct PostureFill(Side);
 struct ResNode(u32);
 #[derive(Component)]
 struct ItemText;
+/// One enemy's bars over its head (one per enemy, spawned when it appears).
 #[derive(Component)]
-struct EnemyRoot;
+struct EnemyRoot(Entity);
 /// Bottom-right icon slots: the equipped prosthetic (`true`) and combat art (`false`), the game's
 /// menu icons (EquipParamWeapon iconId -> SB_Icon* atlas MENU_ItemIcon_<iconId>, cut to
 /// extracted/hud by sekiro-extract export_hud). Hidden while the icon is not extracted.
 #[derive(Component)]
 struct ItemIcon(bool);
 #[derive(Component)]
-struct EnemyHpFill;
+struct EnemyHpFill(Entity);
+#[derive(Component)]
+struct EnemyPostureFill(Entity);
 
 #[derive(Component)]
 struct DebugText;
@@ -81,7 +85,7 @@ impl Plugin for HudPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<CombatLog>()
             .init_resource::<Perilous>()
-            .add_systems(Startup, (spawn_hud, spawn_perilous, spawn_stealth, spawn_deathblow_mark, spawn_item_icons))
+            .add_systems(Startup, (spawn_hud, spawn_perilous, spawn_deathblow_mark, spawn_item_icons))
             .add_systems(Update, (update_player_hud, update_enemy_hud, update_debug, update_log, debug_only, update_perilous, update_stealth, update_deathblow_mark, update_item_icons));
     }
 }
@@ -154,17 +158,6 @@ fn spawn_hud(mut commands: Commands, mut fonts: ResMut<Assets<Font>>) {
             PostureRoot(Side::Player),
         ))
         .with_children(|c| framed(c, 380.0, 9.0, true, (BackgroundColor(Color::srgb(1.0, 0.7, 0.15)), PostureFill(Side::Player)), None::<()>));
-    // The enemy's bars over its head: vitality (short, left) above posture (centred).
-    commands
-        .spawn((
-            Node { position_type: PositionType::Absolute, width: Val::Px(170.0), flex_direction: FlexDirection::Column, row_gap: Val::Px(3.0), ..default() },
-            Visibility::Hidden,
-            EnemyRoot,
-        ))
-        .with_children(|c| {
-            framed(c, 96.0, 5.0, false, (BackgroundColor(VITALITY), EnemyHpFill), None::<()>);
-            framed(c, 170.0, 7.0, true, (BackgroundColor(Color::srgb(1.0, 0.7, 0.15)), PostureFill(Side::Enemy)), None::<()>);
-        });
     commands.spawn((
         Text::new(""),
         TextFont { font_size: bevy::text::FontSize::Px(13.0), ..default() },
@@ -246,35 +239,62 @@ Healing Gourd  {}      Spirit Emblems  {}", combat.weapon_name(config.player.com
     }
 }
 
+/// Each enemy's bars over its head: vitality (short, left) above posture (centred).
+fn spawn_enemy_bars(commands: &mut Commands, enemy: Entity) {
+    commands
+        .spawn((
+            Node { position_type: PositionType::Absolute, width: Val::Px(170.0), flex_direction: FlexDirection::Column, row_gap: Val::Px(3.0), ..default() },
+            Visibility::Hidden,
+            EnemyRoot(enemy),
+        ))
+        .with_children(|c| {
+            framed(c, 96.0, 5.0, false, (BackgroundColor(VITALITY), EnemyHpFill(enemy)), None::<()>);
+            framed(c, 170.0, 7.0, true, (BackgroundColor(Color::srgb(1.0, 0.7, 0.15)), EnemyPostureFill(enemy)), None::<()>);
+        });
+}
+
 #[allow(clippy::type_complexity)]
 fn update_enemy_hud(
-    enemies: Query<(&Actor, &crate::enemy::Enemy, &GlobalTransform)>,
+    mut commands: Commands,
+    enemies: Query<(Entity, &Actor, &crate::enemy::Enemy, &GlobalTransform, Option<&crate::enemy::Phantom>)>,
     camera: Query<(&Camera, &GlobalTransform), With<crate::camera::OrbitCamera>>,
-    mut root: Query<(&mut Node, &mut Visibility), (With<EnemyRoot>, Without<EnemyHpFill>, Without<PostureFill>)>,
-    mut hp: Query<&mut Node, (With<EnemyHpFill>, Without<EnemyRoot>, Without<PostureFill>)>,
-    mut posture: Query<(&PostureFill, &mut Node, &mut BackgroundColor), (Without<EnemyRoot>, Without<EnemyHpFill>)>,
+    mut roots: Query<(Entity, &EnemyRoot, &mut Node, &mut Visibility), (Without<EnemyHpFill>, Without<EnemyPostureFill>)>,
+    mut hp: Query<(&EnemyHpFill, &mut Node), (Without<EnemyRoot>, Without<EnemyPostureFill>)>,
+    mut posture: Query<(&EnemyPostureFill, &mut Node, &mut BackgroundColor), (Without<EnemyRoot>, Without<EnemyHpFill>)>,
 ) {
-    let Ok((mut node, mut vis)) = root.single_mut() else { return };
-    let Some((a, e, g)) = enemies.iter().find(|(_, e, _)| !e.is_dead()) else {
-        *vis = Visibility::Hidden;
-        return;
-    };
-    // Shown once it is fighting or hurt, over its head.
-    let show = e.targeting.state >= crate::stealth::FIND || a.posture > 0.0 || a.hp < a.hp_max;
-    let at = camera.single().ok().and_then(|(cam, ct)| cam.world_to_viewport(ct, g.translation() + Vec3::Y * 0.85).ok());
-    let Some(p) = at.filter(|_| show) else {
-        *vis = Visibility::Hidden;
-        return;
-    };
-    *vis = Visibility::Inherited;
-    node.left = Val::Px(p.x - 85.0);
-    node.top = Val::Px(p.y - 20.0);
-    for mut n in &mut hp {
-        n.width = Val::Percent((a.hp / a.hp_max).clamp(0.0, 1.0) * 100.0);
+    // A set of bars per enemy: new enemies get theirs, removed ones lose them.
+    let have: HashSet<Entity> = roots.iter().map(|(_, r, ..)| r.0).collect();
+    for (e, ..) in &enemies {
+        if !have.contains(&e) {
+            spawn_enemy_bars(&mut commands, e);
+        }
     }
-    let pf = (a.posture / a.posture_max).clamp(0.0, 1.0);
-    for (pfl, mut n, mut bg) in &mut posture {
-        if pfl.0 == Side::Enemy {
+    let cam = camera.single().ok();
+    for (root_e, root, mut node, mut vis) in &mut roots {
+        let Ok((_, a, e, g, ph)) = enemies.get(root.0) else {
+            commands.entity(root_e).despawn();
+            continue;
+        };
+        // Shown once it is fighting or hurt, over its head; gone when it dies (and while a
+        // boss's phantom is out of the fight).
+        let show = !e.is_dead() && !e.is_disabled() && !ph.is_some_and(|p| p.parked()) && (e.targeting.state >= crate::stealth::FIND || a.posture > 0.0 || a.hp < a.hp_max);
+        let at = cam.and_then(|(cam, ct)| cam.world_to_viewport(ct, g.translation() + Vec3::Y * 0.85).ok());
+        let Some(p) = at.filter(|_| show) else {
+            *vis = Visibility::Hidden;
+            continue;
+        };
+        *vis = Visibility::Inherited;
+        node.left = Val::Px(p.x - 85.0);
+        node.top = Val::Px(p.y - 20.0);
+    }
+    for (f, mut n) in &mut hp {
+        if let Ok((_, a, ..)) = enemies.get(f.0) {
+            n.width = Val::Percent((a.hp / a.hp_max).clamp(0.0, 1.0) * 100.0);
+        }
+    }
+    for (f, mut n, mut bg) in &mut posture {
+        if let Ok((_, a, ..)) = enemies.get(f.0) {
+            let pf = (a.posture / a.posture_max).clamp(0.0, 1.0);
             n.width = Val::Percent(pf * 100.0);
             bg.0 = posture_color(pf);
         }
@@ -374,7 +394,8 @@ fn update_deathblow_mark(
         if e.is_dead() || ea.state.starts_with("ThrowDef") {
             continue;
         }
-        let Some(db) = crate::player::deathblow_check(&combat, wg.translation(), ea, e, eg.translation()) else { continue };
+        let dmy = |id: i16| dm.and_then(|dm| dm.0.get(&id)).and_then(|m| dummies.get(*m).ok()).map(|g| g.translation());
+        let Some(db) = crate::player::deathblow_check(&combat, wg.translation(), ea, e, eg.translation(), &dmy) else { continue };
         if !e.is_broken() && !db.in_reach {
             continue;
         }
@@ -409,7 +430,7 @@ fn update_debug(
         "LMB/J attack (hold = thrust)  RMB/K deflect  LMB+RMB art  Shift step (hold = sprint)  Space jump  Q lock-on  Alt walk  T enemy AI on/off  E gourd  F shuriken  X sheathe/draw  LMB (dead) resurrect  H hurtboxes  R reset  F5 reload config  F1 debug menu\n\n",
     );
     for (a, enemy) in &actors {
-        let d = data_for(&combat, a.side);
+        let d = data_for(&combat, &a);
         let who = if a.side == Side::Player { "YOU  " } else { "ENEMY" };
         s += &format!("{who} {:<28} {}  f{:>5.1}/{:.0}", a.state, if a.anim.is_empty() { "-" } else { &a.anim }, a.frame(), d.length(&a.anim) * crate::data::TAE_FPS);
         s += &format!("  HP {:.0}/{:.0}  posture {:.0}/{:.0}\n", a.hp, a.hp_max, a.posture, a.posture_max);
@@ -479,60 +500,78 @@ fn update_perilous(time: Res<Time>, mut p: ResMut<Perilous>, mut q: Query<(&mut 
 /// FUN_1408c5fb0: level 0 / 1 / 2 and the meter ratio): an amber bar that fills while it
 /// watches Wolf in its wide "around" sight, solid amber while it is alerted (caution), red when
 /// it has found him. gap: the real indicator art (menu textures) is not used.
+/// One enemy's stealth mark (`found_t`: seconds it has been fighting, for FOUND_SHOW).
 #[derive(Component)]
-struct StealthMark;
+struct StealthMark {
+    enemy: Entity,
+    found_t: f32,
+}
 #[derive(Component)]
-struct StealthFill;
+struct StealthFill(Entity);
 
 /// Seconds the red "found" mark stays once the fight starts.
 const FOUND_SHOW: f32 = 1.5;
 
-fn spawn_stealth(mut commands: Commands) {
+fn spawn_stealth(commands: &mut Commands, enemy: Entity) {
     commands
         .spawn((
             Node { position_type: PositionType::Absolute, width: Val::Px(54.0), height: Val::Px(7.0), border: UiRect::all(Val::Px(1.0)), ..default() },
             BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.5)),
             BorderColor::all(Color::srgba(0.0, 0.0, 0.0, 0.8)),
             Visibility::Hidden,
-            StealthMark,
+            StealthMark { enemy, found_t: 0.0 },
         ))
         .with_children(|c| {
-            c.spawn((Node { width: Val::Percent(0.0), height: Val::Percent(100.0), ..default() }, BackgroundColor(Color::NONE), StealthFill));
+            c.spawn((Node { width: Val::Percent(0.0), height: Val::Percent(100.0), ..default() }, BackgroundColor(Color::NONE), StealthFill(enemy)));
         });
 }
 
+#[allow(clippy::type_complexity)]
 fn update_stealth(
+    mut commands: Commands,
     time: Res<Time>,
-    mut found_t: Local<f32>,
-    enemies: Query<(&crate::enemy::Enemy, &GlobalTransform)>,
+    enemies: Query<(Entity, &crate::enemy::Enemy, &GlobalTransform, Option<&crate::enemy::Phantom>)>,
     camera: Query<(&Camera, &GlobalTransform), With<crate::camera::OrbitCamera>>,
-    mut mark: Single<(&mut Node, &mut Visibility), (With<StealthMark>, Without<StealthFill>)>,
-    mut fill: Single<(&mut Node, &mut BackgroundColor), With<StealthFill>>,
+    mut marks: Query<(Entity, &mut StealthMark, &mut Node, &mut Visibility), Without<StealthFill>>,
+    mut fills: Query<(&StealthFill, &mut Node, &mut BackgroundColor), Without<StealthMark>>,
 ) {
-    let Some((e, etf)) = enemies.iter().find(|(e, _)| !e.is_dead()) else {
-        *mark.1 = Visibility::Hidden;
-        return;
-    };
-    let (level, ratio) = e.targeting.hud();
-    if e.targeting.state == crate::stealth::BATTLE {
-        *found_t += time.delta_secs();
-    } else {
-        *found_t = 0.0;
+    let have: HashSet<Entity> = marks.iter().map(|(_, m, ..)| m.enemy).collect();
+    for (e, ..) in &enemies {
+        if !have.contains(&e) {
+            spawn_stealth(&mut commands, e);
+        }
     }
-    let show = (level > 0 || ratio > 0.0) && *found_t < FOUND_SHOW;
-    let pos = camera.single().ok().and_then(|(cam, ctf)| cam.world_to_viewport(ctf, etf.translation() + Vec3::Y * 1.0).ok());
-    let Some(p) = pos.filter(|_| show) else {
-        *mark.1 = Visibility::Hidden;
-        return;
-    };
-    *mark.1 = Visibility::Inherited;
-    mark.0.left = Val::Px(p.x - 27.0);
-    mark.0.top = Val::Px(p.y - 4.0);
-    let (w, color) = match level {
-        2 => (1.0, Color::srgb(0.9, 0.12, 0.08)),
-        1 => (1.0, Color::srgb(1.0, 0.72, 0.12)),
-        _ => (ratio, Color::srgb(1.0, 0.82, 0.3)),
-    };
-    fill.0.width = Val::Percent(w * 100.0);
-    fill.1.0 = color;
+    let cam = camera.single().ok();
+    for (me, mut m, mut node, mut vis) in &mut marks {
+        let Ok((_, e, etf, ph)) = enemies.get(m.enemy) else {
+            commands.entity(me).despawn();
+            continue;
+        };
+        let (level, ratio) = e.targeting.hud();
+        if e.targeting.state == crate::stealth::BATTLE {
+            m.found_t += time.delta_secs();
+        } else {
+            m.found_t = 0.0;
+        }
+        let show = !e.is_dead() && !e.is_disabled() && !ph.is_some_and(|p| p.parked()) && (level > 0 || ratio > 0.0) && m.found_t < FOUND_SHOW;
+        let pos = cam.and_then(|(cam, ctf)| cam.world_to_viewport(ctf, etf.translation() + Vec3::Y * 1.0).ok());
+        let Some(p) = pos.filter(|_| show) else {
+            *vis = Visibility::Hidden;
+            continue;
+        };
+        *vis = Visibility::Inherited;
+        node.left = Val::Px(p.x - 27.0);
+        node.top = Val::Px(p.y - 4.0);
+        let (w, color) = match level {
+            2 => (1.0, Color::srgb(0.9, 0.12, 0.08)),
+            1 => (1.0, Color::srgb(1.0, 0.72, 0.12)),
+            _ => (ratio, Color::srgb(1.0, 0.82, 0.3)),
+        };
+        for (f, mut fnode, mut bg) in &mut fills {
+            if f.0 == m.enemy {
+                fnode.width = Val::Percent(w * 100.0);
+                bg.0 = color;
+            }
+        }
+    }
 }
