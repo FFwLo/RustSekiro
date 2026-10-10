@@ -116,10 +116,31 @@ before.
   `SHINOBI_MAP_ENV` (probe scale), `SHINOBI_MAP_NO_ENV=1` (hemisphere ambient + clear colour
   instead of the probe), and the debug views `SHINOBI_MAP_NO_NORMALS=1`, `SHINOBI_MAP_UNLIT=1`,
   `SHINOBI_MAP_TEX=<stem>` (one texture on every piece: a UV check).
-- Not done: the colour-grading LUT (`map/m11/m11_cgrading.tpf`, `m11_01_cgrading0030` for
-  LutSourceId 30: 16x256 RGBA8 strip, 16 slices of 16x16 (x = red, row = blue*16 + green),
-  nearly identity) and the Yebis auto exposure (ToneMap group: middle grey -5.4, exposure 0.5
-  at 12 h). Both would need a Bevy post-process node / AutoExposure.
+- **Colour-grading LUT (2026-10-10, src/grading.rs + grading_lut.wgsl)**: the draw params'
+  `ColorGrading[Yebis]` "LutSourceId" picks a LUT per time of day (m11_01: 0 at 0/6/18 h, 20
+  at 2/22 h, 30 at 12 h; nearest key, `MapLighting::nearest`). The exporter writes every
+  `m11_01_cgrading00<n>` of `map/m11/m11_cgrading.tpf` as `map_<id>_lut_<n>.dds` (json
+  "luts"): a 16x256 RGBA8 strip, 16 slices of 16x16, x = red, row = blue * 16 + green, display
+  colour in, graded colour out. 0000 is a slight warm grade (blue down to -31/255), 0010 warmer,
+  0020 cool, 0030 near identity (blue +15). The game puts `ColorGradingLut` on the camera; the
+  pass is Bevy's custom post-process pattern (`ViewQuery`, skipped on views without the
+  component), after `tonemapping` in `Core3dSystems::PostProcess`, on the Rgba16Float HDR
+  target: sRGB-encode, look the slice pair up (blue by hand, red/green through the sampler),
+  decode. `SHINOBI_MAP_NO_LUT=1` turns it off.
+- **Auto exposure (same day, `map.rs auto_exposure`)**: Bevy's `AutoExposure` with a
+  compensation curve from the `Tone Map[Yebis]` group: target EV(L) = base + Exposure +
+  clamp(MiddleGray + METER - L, Adaption Min, Adaption Max), L = the metered average log2
+  luminance; the curve c(L) = target + L is a 4-point `LinearSpline` (points snapped to 1/64 EV:
+  Bevy rejects the spline when a segment's end sample is not bit-exactly the next point).
+  `METER_EV` 2.6 was measured: with it the 18 h gate meters at adaptation 0 (mean luminance
+  equal to the fixed-exposure reference within 0.03 EV; `scratchpad pngmean.py` on `myshot`
+  screenshots); `BASE_EV` -0.8 cancels the 18 h Exposure so dusk keeps the look. Noon is a
+  fixed exposure (adaption +-0.01, 0.3 EV under the old look). Knobs: `SHINOBI_MAP_METER`,
+  `SHINOBI_MAP_EV` (add EV), `SHINOBI_MAP_NO_AE=1`. Param names: match "ToneMap-Exposure", a
+  bare "Exposure" finds "AutoExposure Adaption Max" first.
+  **Open**: at 0 h the set's Adaption Max 8 read as +8 EV washed the gate out white, so the
+  brightening is capped at `ADAPT_CAP_EV` 2 (not yet looked at; the night probably wants the
+  cap by eye, or Yebis's Adaption Max is not an EV clamp). Adaptation speeds are Bevy's defaults.
 
 ### Open
 - Lighting is now the game's own light set + GI probe at 18 h (see above); left: the LUT and
