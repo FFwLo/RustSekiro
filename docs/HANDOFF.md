@@ -223,7 +223,12 @@ Everything below is in the code with citations; the kb files have the details.
   `EnvironmentMapLight` + `Skybox`, the light set's sun / fill turned by the arena yaw, hour 18
   (dusk, the first-visit look). New extractor files: `cubemap.rs` (BC6H via bcdec_rs, arena
   resample, irradiance, RGBA16F cube DDS), MSB regions in `msb.rs`, `tpf` command. Details and
-  the variant-hour mapping in kb/map.md. Left: the colour-grading LUT and auto exposure.
+  the variant-hour mapping in kb/map.md. Same day: the game's colour-grading LUT
+  (`src/grading.rs` + `grading_lut.wgsl`, a post-process after tonemapping; the exporter writes
+  `map_<id>_lut_<n>.dds`, the draw params pick the id per hour) and Yebis auto exposure
+  (`map.rs auto_exposure`: Bevy `AutoExposure` with a compensation curve from the Tone Map
+  group, metering offset measured at 18 h). Left: the night brightening cap (`ADAPT_CAP_EV` 2,
+  not judged by eye yet), a probe blend between hours. Knobs and details in kb/map.md.
 - Not yet verified in play: stairs, low ceilings vs the camera.
 
 ### 4.9 All enemies and bosses (2026-10-10; details in `docs/reports/enemies.md`)
