@@ -42,6 +42,12 @@ pub struct PlayerConfig {
     /// 5300 Ichimonji, 5200 / 5400-5900 the others (anim group a<spAtkcategory>).
     #[serde(default = "default_combat_art")]
     pub combat_art: i64,
+    /// Prosthetic tool slots (EquipParamWeapon 70000-79200, up to 3 like the game; Z switches):
+    /// 70000 Loaded Shuriken, 71000 Shinobi Firecracker, 72000 Flame Vent, 73000 Loaded Axe,
+    /// 74000 Mist Raven, 75000 Sabimaru, 76000 Loaded Umbrella, 77000 Divine Abduction,
+    /// 78000 Loaded Spear, 79000 Finger Whistle (+100 per upgrade level).
+    #[serde(default = "default_prosthetics")]
+    pub prosthetics: Vec<i64>,
     /// Learned latent skills (SkillParam ids), e.g. 280 Flowing Water (less posture damage when guarding).
     /// Empty = level-1 Wolf.
     #[serde(default)]
@@ -50,6 +56,10 @@ pub struct PlayerConfig {
 
 fn default_combat_art() -> i64 {
     5100
+}
+
+fn default_prosthetics() -> Vec<i64> {
+    vec![70000]
 }
 
 fn default_enemy_chr() -> String {
@@ -66,7 +76,7 @@ fn default_emblems() -> u32 {
 
 impl Default for PlayerConfig {
     fn default() -> Self {
-        Self { gourd_charges: 3, spirit_emblems: default_emblems(), resurrections: default_resurrections(), combat_art: default_combat_art(), skills: Vec::new() }
+        Self { gourd_charges: 3, spirit_emblems: default_emblems(), resurrections: default_resurrections(), combat_art: default_combat_art(), prosthetics: default_prosthetics(), skills: Vec::new() }
     }
 }
 

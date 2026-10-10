@@ -71,11 +71,25 @@ const SP_EFFECT_FIELDS: &[&str] = &[
     "staminaRecoverChangeSpeed", "staminaRecoverSpeedRate", "guardDefFlickPowerRate", "flickDamageCutRate",
     "guardStaminaCutRate", "toughnessDamageCutRate", "effectEndurance", "conditionHp", "spCategory",
     "changeHpRate", "changeHpPoint", "changeHpEstusFlaskRate",
+    // Stealth: how a chr wearing the effect is seen and heard by NPCs (the exe's
+    // SprjTargetingSystem, FUN_140bfe8a0 / FUN_140bfc050 / FUN_140bfea80...).
+    "sightSearchEnemyCut", "aroundSightPointAddRate", "hearingSearchEnemyRate", "sightCutLimitType",
+    "sightSearchLeftAngleCut", "sightSearchRightAngleCut", "sightSearchUpperAngleCut", "sightSearchBottomAngleCut",
 ];
 
+/// Every Bullet field a prosthetic tool's bullet (70xxxx-79xxxx) sets.
 const BULLET_FIELDS: &[&str] = &[
-    "initVellocity", "maxVellocity", "accelInRange", "accelOutRange", "gravityInRange", "gravityOutRange", "dist",
-    "life", "hitRadius", "hitRadiusMax", "lockShootLimitAng", "atkId_Bullet",
+    "initVellocity", "maxVellocity", "minVellocity", "accelInRange", "accelOutRange", "accelTime", "gravityInRange", "gravityOutRange", "dist",
+    "life", "lifeRandomRange", "hitRadius", "hitRadiusMax", "spreadTime", "lockShootLimitAng", "atkId_Bullet",
+    "numShoot", "shootInterval", "shootAngle", "shootAngleInterval", "shootAngleXZ", "shootAngleXInterval", "shootAngleXMaxRandom",
+    "shootAngleYMaxRandom", "shootYOffsetRange", "targetYOffsetRange", "EmittePosType", "FollowType", "attachEffectType",
+    "HitBulletID", "intervalCreateBulletId", "intervalCreateTimeMin", "intervalCreateTimeMax", "intervalCreateWaitTime",
+    "isPenetrate", "isPenetrateMap", "isUseSharedHitList", "dmgHitRecordLifeTime", "isCheckWall_byCenterRay", "launchConditionType",
+    "spEffectIDForShooter", "spEffectId0", "spEffectId1", "spEffectId2", "spEffectId3", "spEffectId4",
+    "isEnableAutoHoming", "homingAngle", "homingBeginDist", "hormingStopRange", "predictionShootObserveTime",
+    "isInheritSpeedToChild", "isInheritSfxToChild", "isHitForceMagic", "isHitOtherBulletForceEraseB", "isHitDarkForceMagic", "guardRangeType",
+    "atkAttribute", "spAttribute", "staminaPhysicsAttribute", "Material_AttackType", "Material_AttackMaterial_forSe",
+    "Material_AttackMaterial_forSfx", "sfxId_Bullet", "sfxId_Hit", "sfxId_Flick", "sfxId_ForceErase", "isAttackSFX", "isSendShootInterrupt",
 ];
 
 const ATK_FIELDS: &[&str] = &[
@@ -194,6 +208,21 @@ fn export_character(
 
     let mut states = BTreeMap::new();
     let mut keys: BTreeSet<String> = extra_anims.iter().cloned().collect();
+    // Prosthetic tools: every offsetType 14 state (W_GroundSubAttack*, W_SubAttackJump*, ...) and
+    // every anim of the ten tool groups a070..a079 (wepmotionCategory 70..79); the game swaps the
+    // group for the equipped tool, like the combat arts' a100..a110.
+    let mut state_names = state_names.to_vec();
+    if chr.sub_weapon_category > 0 && !state_names.is_empty() {
+        let mut sub: Vec<String> = cmsg.iter().filter(|(_, (anim, ot))| *ot == 14 && *anim > 0).map(|(k, _)| k.clone()).collect();
+        sub.sort();
+        for k in sub {
+            if !state_names.contains(&k) {
+                state_names.push(k);
+            }
+        }
+        keys.extend(taes.keys().filter(|k| k.get(1..4).and_then(|g| g.parse::<u32>().ok()).is_some_and(|g| (70..=79).contains(&g))).cloned());
+    }
+    let state_names = &state_names[..];
     let wanted: Vec<&String> = if state_names.is_empty() { cmsg.keys().collect() } else { state_names.iter().collect() };
     let quiet = state_names.is_empty();
     for s in wanted {
@@ -243,6 +272,20 @@ fn export_character(
     // Bullet judges (TAE 2) per anim group: prosthetic (a070) anims resolve at the
     // prosthetic's behavior base.
     let mut bullet_judges: BTreeSet<(i64, i64)> = BTreeSet::new();
+    // Prosthetic tool melee (TAE 1 in a07x: the Axe, Sabimaru, Spear) per tool variation.
+    let mut tool_judges: BTreeSet<(i64, i64)> = BTreeSet::new();
+    // (weapon id, wepmotionCategory, behaviorVariationId) of every prosthetic tool level.
+    let weapons = load_param(params, "EquipParamWeapon");
+    let mut tools: Vec<(i64, i64, i64)> = weapons
+        .iter()
+        .filter(|(id, _)| (70000..80000).contains(*id))
+        .filter_map(|(id, w)| Some((*id, w.get("wepmotionCategory")?.as_i64()?, w.get("behaviorVariationId")?.as_i64()?)))
+        .filter(|&(_, g, _)| (70..=79).contains(&g))
+        .collect();
+    tools.sort();
+    if chr.sub_behavior_base == 0 {
+        tools.clear();
+    }
     for key in &keys {
         let Some((tae, src)) = resolve(&taes, key) else {
             eprintln!("{}: no TAE for {key}", chr.id);
@@ -257,9 +300,16 @@ fn export_character(
             if let Some(id) = e["args"].get("SpEffectID").and_then(Value::as_i64) {
                 sp_ids.insert(id);
             }
-            if e["type"] == 2 && chr.sub_behavior_base > 0 && key.starts_with(&format!("a{:03}_", chr.sub_weapon_category)) {
+            let tool_group = key.get(1..4).and_then(|g| g.parse::<i64>().ok()).filter(|g| chr.sub_behavior_base > 0 && (70..=79).contains(g));
+            if let Some(g) = tool_group {
                 if let Some(j) = e["args"].get("BehaviorJudgeID").and_then(Value::as_i64) {
-                    bullet_judges.insert((chr.sub_behavior_base, j));
+                    for &(_, _, var) in tools.iter().filter(|t| t.1 == g) {
+                        if e["type"] == 2 {
+                            bullet_judges.insert((var, j));
+                        } else if e["type"] == 1 {
+                            tool_judges.insert((var, j));
+                        }
+                    }
                 }
             }
             if e["type"] == 307 && chr.npc_row.is_none() && e["args"].get("GetWeaponData").and_then(Value::as_i64) == Some(0) {
@@ -303,7 +353,11 @@ fn export_character(
                 if samples.len() > 1 {
                     a.insert("rootRate".into(), json!((samples.len() - 1) as f32 / d));
                     // Havok space -> game space: x is mirrored, forward stays -Z.
-                    let root: Vec<Value> = samples.iter().map(|s| json!([-s[0], s[1], s[2], s[3]])).collect();
+                    // Game space mirrors X, which also mirrors turns: yaw -> -yaw (live: the game's
+                    // physics yaw y maps to ours as pi - y). Kept raw, root turns went the wrong way;
+                    // where the skeleton counter-turns (c1020 ThrowDefDeath 13411 / 13511 / 12311:
+                    // body -180, root +180 in the game's space, net ~0) the two added up to a 360 spin.
+                    let root: Vec<Value> = samples.iter().map(|s| json!([-s[0], s[1], s[2], -s[3]])).collect();
                     a.insert("root".into(), Value::Array(root));
                 }
             }
@@ -416,21 +470,99 @@ fn export_character(
             attacks.insert(format!("pc{j}"), v);
         }
     }
-    // Bullets (prosthetic throws): BehaviorParam refType 1 -> Bullet -> atkId_Bullet.
+    // Bullets (prosthetic throws): BehaviorParam refType 1 -> Bullet -> atkId_Bullet, keyed
+    // "v<variation>:<judge>" (BehaviorParam_PC 100000000 + variation * 1000 + judge); the Shuriken
+    // LV1's (variation 7000) also by the bare judge. Each bullet's HitBulletID chain (the
+    // firecracker's sparks, the flame vent's fire) is kept in "bulletRows" by Bullet id.
     let bullet_param = load_param(params, "Bullet");
     let mut bullets = Map::new();
-    for (base, j) in bullet_judges {
-        let Some(b) = beh.get(&(base + j)) else { continue };
+    let mut bullet_rows: Map<String, Value> = Map::new();
+    let mut extra_sp: BTreeSet<i64> = BTreeSet::new();
+    for (var, j) in &bullet_judges {
+        let Some(b) = beh.get(&(100_000_000 + var * 1000 + j)) else { continue };
         if b.get("refType").and_then(Value::as_i64) != Some(1) {
             continue;
         }
-        let Some(bl) = bullet_param.get(&b["refId"].as_i64().unwrap_or(-1)) else { continue };
-        let mut v = pick(bl, BULLET_FIELDS);
-        v["bulletId"] = b["refId"].clone();
-        if let Some(a) = bl.get("atkId_Bullet").and_then(Value::as_i64).and_then(|id| atk.get(&id)) {
-            v["attack"] = pick(a, ATK_FIELDS);
+        let first = b["refId"].as_i64().unwrap_or(-1);
+        let mut next = Some(first);
+        let mut pending: Vec<i64> = Vec::new();
+        while let Some(bid) = next.take().filter(|id| *id > 0 && !bullet_rows.contains_key(&id.to_string())) {
+            let Some(bl) = bullet_param.get(&bid) else { break };
+            let mut v = pick(bl, BULLET_FIELDS);
+            v["bulletId"] = json!(bid);
+            if let Some(aid) = bl.get("atkId_Bullet").and_then(Value::as_i64) {
+                if let Some(a) = atk.get(&aid) {
+                    let mut av = pick(a, ATK_FIELDS);
+                    av["atkParamId"] = json!(aid);
+                    for k in ["spEffectId0", "spEffectId1", "spEffectId2", "spEffectId3", "spEffectId4"] {
+                        if let Some(sid) = a.get(k).and_then(Value::as_i64).filter(|v| *v > 0) {
+                            av[k] = json!(sid);
+                            extra_sp.insert(sid);
+                        }
+                    }
+                    v["attack"] = av;
+                }
+            }
+            for k in ["spEffectIDForShooter", "spEffectId0", "spEffectId1", "spEffectId2", "spEffectId3", "spEffectId4"] {
+                if let Some(sid) = bl.get(k).and_then(Value::as_i64).filter(|v| *v > 0) {
+                    extra_sp.insert(sid);
+                }
+            }
+            next = bl.get("HitBulletID").and_then(Value::as_i64).filter(|v| *v > 0);
+            let interval = bl.get("intervalCreateBulletId").and_then(Value::as_i64).filter(|v| *v > 0);
+            bullet_rows.insert(bid.to_string(), v);
+            if next.is_none() || next.is_some_and(|n| bullet_rows.contains_key(&n.to_string())) {
+                next = interval;
+            } else if let Some(i) = interval.filter(|i| !bullet_rows.contains_key(&i.to_string())) {
+                pending.push(i);
+            }
+            if next.is_none() {
+                next = pending.pop();
+            }
         }
-        bullets.insert(j.to_string(), v);
+        let Some(v) = bullet_rows.get(&first.to_string()).cloned() else { continue };
+        if *var == 7000 {
+            bullets.insert(j.to_string(), v.clone());
+        }
+        bullets.insert(format!("v{var}:{j}"), v);
+    }
+    for (var, j) in &tool_judges {
+        let Some(b) = beh.get(&(100_000_000 + var * 1000 + j)) else { continue };
+        if b.get("refType").and_then(Value::as_i64) != Some(0) {
+            continue;
+        }
+        let atk_id = b["refId"].as_i64().unwrap();
+        if let Some(a) = atk.get(&atk_id) {
+            let mut v = pick(a, ATK_FIELDS);
+            v["atkParamId"] = json!(atk_id);
+            v["behaviorName"] = b["name"].clone();
+            attacks.insert(format!("v{var}:{j}"), v);
+        }
+    }
+    // The tools themselves: every level, its anim group, variation, Spirit Emblem cost
+    // (resourceItemA), resident SpEffect, menu icon and model.
+    let prosthetics: Vec<Value> = tools
+        .iter()
+        .map(|&(id, g, var)| {
+            let w = &weapons[&id];
+            let resident = w.get("residentSpEffectId").and_then(Value::as_i64).unwrap_or(-1);
+            if resident > 0 {
+                extra_sp.insert(resident);
+            }
+            json!({
+                "id": id, "group": g, "variation": var, "name": w.get("name").cloned().unwrap_or_default(),
+                "emblems": w.get("resourceItemA").cloned().unwrap_or(json!(0)), "resident": resident,
+                "icon": w.get("iconId").cloned().unwrap_or(json!(-1)), "model": w.get("equipModelId").cloned().unwrap_or(json!(-1)),
+                "attackBasePhysics": w.get("attackBasePhysics").cloned().unwrap_or(json!(0)),
+                "attackBaseFire": w.get("attackBaseFire").cloned().unwrap_or(json!(0)),
+            })
+        })
+        .collect();
+    let mut sp_effects = sp_effects;
+    for id in extra_sp {
+        if let Some(r) = sp.get(&id) {
+            sp_effects.insert(id.to_string(), pick(r, SP_EFFECT_FIELDS));
+        }
     }
     write_anim_bin(root, chr.id, &clips);
     println!("{}: {} states, {} anims, {} spEffects, {} attacks", chr.id, states.len(), anims.len(), sp_effects.len(), attacks.len());
@@ -456,7 +588,7 @@ fn export_character(
             twists = twist_json(mods);
         }
     }
-    json!({ "states": states, "anims": anims, "spEffects": sp_effects, "attacks": attacks, "hurtboxes": hurtboxes, "bullets": bullets, "twists": twists })
+    json!({ "states": states, "anims": anims, "spEffects": sp_effects, "attacks": attacks, "hurtboxes": hurtboxes, "bullets": bullets, "bulletRows": bullet_rows, "prosthetics": prosthetics, "twists": twists })
 }
 
 fn twist_json(mods: Vec<(String, [f32; 4], Vec<(i16, i16, f32, f32, f32, f32)>)>) -> Map<String, Value> {
@@ -527,7 +659,28 @@ pub fn export(root: &Path, list_file: &Path, defs: &Path) {
     }
     // TAE 700 upper-body twist modifiers (Wolf's behaviour graph).
     let twists = std::fs::read(root.join("chr/c0000.behbnd.d/c0000.hkx")).map(|d| twist_json(hkx::twist_modifiers(&d))).unwrap_or_default();
+    let decals = export_decals(root, &params, &[&player, &Value::Object(enemies.clone())]);
+    // Official English names (msg/engus/item.msgbnd 武器名 = weapon names: the combat arts 5100-7700,
+    // the prosthetic tools 70000-79200 and the skill entries SkillParam.virtualWeaponId point at).
+    let weapon_names: Map<String, Value> = std::fs::read(root.join("msg/engus/item.msgbnd.d/武器名.fmg"))
+        .map(|d| crate::fmg::read(&d))
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|(id, _)| (5000..8000).contains(id) || (70000..80000).contains(id) || (200000..800000).contains(id))
+        .map(|(id, n)| (id.to_string(), json!(n)))
+        .collect();
+    // Every skill (SkillParam): its tree page, the art / tool it unlocks and its SpEffects.
+    let skills = all_rows(&params, "SkillParam");
+    let skill_sp: Vec<i64> = skills
+        .as_object()
+        .into_iter()
+        .flat_map(|m| m.values())
+        .flat_map(|r| ["spEffect1", "spEffect2", "spEffect3"].map(|k| r[k].as_i64().unwrap_or(-1)))
+        .filter(|v| *v > 0)
+        .collect();
+    export_hud(root);
     let out = json!({
+        "names": { "weapon": weapon_names },
         "rumble": rumble,
         "twists": twists,
         "source": "Generated from the local Sekiro install by sekiro-extract. Do not distribute.",
@@ -549,12 +702,12 @@ pub fn export(root: &Path, list_file: &Path, defs: &Path) {
             "WepAbsorpPosParam": rows(&params, "WepAbsorpPosParam", &[5000]),
             // Latent skills that change posture damage when guarding (SkillParam 280 "Flowing Water" ->
             // SpEffect 150420 deflect / 150421 guard: def<Attr>StaminaDmgRate).
-            "SkillParam": rows(&params, "SkillParam", &[280]),
+            "SkillParam": skills,
             // Hit sounds: row = the defender's material (NpcParam materialSe1/2, protector
             // defenseMaterial1/2), column = the attack's atkMaterial_forSe group / type / power.
             "HitEffectSeParam": all_rows(&params, "HitEffectSeParam"),
             "HitEffectSeJustGuardParam": all_rows(&params, "HitEffectSeJustGuardParam"),
-            "SpEffectParam": rows(&params, "SpEffectParam", &[127000, 150420, 150421, 140000, 140100, 140101, 140200, 140201, 140300, 140400, 140500, 140501, 140600, 140601, 140700, 140701, 140800, 140801, 140900, 140901, 141000, 100286]),
+            "SpEffectParam": rows(&params, "SpEffectParam", &[skill_sp.as_slice(), &[127000, 150420, 150421, 140000, 140100, 140101, 140200, 140201, 140300, 140400, 140500, 140501, 140600, 140601, 140700, 140701, 140800, 140801, 140900, 140901, 141000, 100286]].concat()),
             "EquipParamProtector": rows(&params, "EquipParamProtector", PLAYER_PROTECTORS),
             "LockCamParam": all_rows(&params, "LockCamParam"),
             "CameraParam": all_rows(&params, "CameraParam"),
@@ -573,11 +726,100 @@ pub fn export(root: &Path, list_file: &Path, defs: &Path) {
                 ids
             }),
             "ChrPhysicsVelocityChangeParam": all_rows(&params, "ChrPhysicsVelocityChangeParam"),
+            // Stealth: the enemies' sight / hearing / forget rules and the AI sounds Wolf's TAE makes.
+            "NpcThinkParam": rows(&params, "NpcThinkParam", &[10100000, 10200000]),
+            "AiSoundParam": all_rows(&params, "AiSoundParam"),
+            // Blood stains etc.: the rows the exported anims' TAE 137-139 DecalParamID events use.
+            "DecalParam": decals,
         },
     });
     let path = root.join("combat_data.json");
     std::fs::write(&path, serde_json::to_string(&out).unwrap()).unwrap();
     println!("wrote {} ({} KB)", path.display(), std::fs::metadata(&path).unwrap().len() / 1024);
+}
+
+/// HUD sprites the game draws itself, cut from the menu atlases (menu/hi/01_common.tpf, sprite rects
+/// from menu/hi/01_common.sblytbnd <atlas>.layout) to extracted/hud/<name>.png: the deathblow mark
+/// (MENU_ninsatu_01 / _02 in SB_FE).
+fn export_hud(root: &Path) {
+    const WANTED: [&str; 2] = ["MENU_ninsatu_01", "MENU_ninsatu_02"];
+    let Ok(tpf) = std::fs::read(root.join("menu/hi/01_common.tpf")) else {
+        eprintln!("no menu/hi/01_common.tpf (sekiro-extract unpack <dir> extracted 'menu/hi/01_common'): HUD sprites skipped");
+        return;
+    };
+    let tex: HashMap<String, Vec<u8>> = crate::flver::tpf(&tpf).into_iter().collect();
+    let _ = std::fs::create_dir_all(root.join("hud"));
+    let Ok(dir) = std::fs::read_dir(root.join("menu/hi/01_common.sblytbnd.d")) else { return };
+    let attr = |line: &str, k: &str| -> Option<String> {
+        let i = line.find(&format!(" {k}=\""))? + k.len() + 3;
+        Some(line[i..].split('"').next()?.to_string())
+    };
+    for f in dir.flatten() {
+        let Ok(text) = std::fs::read_to_string(f.path()) else { continue };
+        let Some(atlas) = text.lines().find_map(|l| attr(l, "imagePath")).map(|p| p.trim_end_matches(".png").to_lowercase()) else { continue };
+        let mut decoded = None;
+        for line in text.lines() {
+            let Some(name) = attr(line, "name").map(|n| n.trim_end_matches(".png").to_string()) else { continue };
+            if !WANTED.contains(&name.as_str()) {
+                continue;
+            }
+            let Some(dds) = tex.get(&atlas) else { continue };
+            let (w, _, px) = decoded.get_or_insert_with(|| crate::decode_dds(dds));
+            let n = |k: &str| attr(line, k).and_then(|v| v.parse::<usize>().ok()).unwrap_or(0);
+            let (x, y, sw, sh) = (n("x"), n("y"), n("width"), n("height"));
+            let mut rgba = Vec::with_capacity(sw * sh * 4);
+            for yy in y..y + sh {
+                for xx in x..x + sw {
+                    let p = px[yy * *w + xx];
+                    rgba.extend_from_slice(&[(p >> 16 & 0xff) as u8, (p >> 8 & 0xff) as u8, (p & 0xff) as u8, (p >> 24) as u8]);
+                }
+            }
+            crate::write_png(&root.join(format!("hud/{name}.png")), sw, sh, &rgba);
+        }
+    }
+}
+
+/// The DecalParam rows the exported anims' TAE 137 / 138 / 139 events name (blood pools under a
+/// deathblow: 710011), and per row extracted/decal/<id>.png from other/decaltex.tpf: RGB the
+/// diffuse texture dp<diffuseTextureId>_a, alpha the mask dp<maskTextureId>_m (its red channel,
+/// the splat shape). The colour tint (diffuseColorR/G/B) stays in the row for the game to apply.
+fn export_decals(root: &Path, params: &Path, chars: &[&Value]) -> Value {
+    fn collect(v: &Value, ids: &mut BTreeSet<i64>) {
+        match v {
+            Value::Object(m) => {
+                if matches!(m.get("type").and_then(Value::as_i64), Some(137..=139)) {
+                    if let Some(id) = m.get("args").and_then(|a| a.get("DecalParamID")).and_then(Value::as_i64) {
+                        ids.insert(id);
+                    }
+                }
+                m.values().for_each(|c| collect(c, ids));
+            }
+            Value::Array(a) => a.iter().for_each(|c| collect(c, ids)),
+            _ => {}
+        }
+    }
+    let mut ids = BTreeSet::new();
+    chars.iter().for_each(|c| collect(c, &mut ids));
+    let ids: Vec<i64> = ids.into_iter().collect();
+    let rows = rows(params, "DecalParam", &ids);
+    let Ok(tpf) = std::fs::read(root.join("other/decaltex.tpf")) else {
+        eprintln!("no other/decaltex.tpf (sekiro-extract unpack <dir> extracted decaltex): decal textures skipped");
+        return rows;
+    };
+    let tex: HashMap<String, Vec<u8>> = crate::flver::tpf(&tpf).into_iter().collect();
+    let _ = std::fs::create_dir_all(root.join("decal"));
+    for (id, row) in rows.as_object().into_iter().flatten() {
+        let get = |k: &str| row[k].as_i64().filter(|v| *v >= 0).and_then(|v| tex.get(&format!("dp{v:09}_{}", if k == "maskTextureId" { "m" } else { "a" })));
+        let (Some(diffuse), Some(mask)) = (get("diffuseTextureId"), get("maskTextureId")) else { continue };
+        let ((w, h, d), (mw, mh, m)) = (crate::decode_dds(diffuse), crate::decode_dds(mask));
+        if (w, h) != (mw, mh) {
+            eprintln!("decal {id}: diffuse {w}x{h} / mask {mw}x{mh} differ, skipped");
+            continue;
+        }
+        let rgba: Vec<u8> = d.iter().zip(&m).flat_map(|(p, q)| [(p >> 16 & 0xff) as u8, (p >> 8 & 0xff) as u8, (p & 0xff) as u8, (q >> 16 & 0xff) as u8]).collect();
+        crate::write_png(&root.join(format!("decal/{id}.png")), w, h, &rgba);
+    }
+    rows
 }
 
 /// extracted/anim_<chr>.bin, little endian:

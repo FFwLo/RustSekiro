@@ -817,3 +817,40 @@ a010_000100   # sheathed walk start F (c0000_a00x.anibnd)
 a010_000200   # sheathed walk loop F
 a010_000400   # sheathed run start F
 a010_000500   # sheathed run loop F
+
+# Crouch (stealth): c0000.hkx Crouch* CMSGs = the stand locomotion ids + 5000 (idle 5000, walk
+# start 510x, walk loop 520x, walk stop 530x, run start 540x, run loop 550x, run stop 560x).
+CrouchStart
+CrouchEnd
+CrouchIdle
+a000_005100   # crouch walk start F
+a000_005101
+a000_005102
+a000_005103
+a000_005200   # crouch walk loop F
+a000_005201
+a000_005202
+a000_005203
+a000_005400   # crouch run start F
+a000_005401
+a000_005402
+a000_005403
+a000_005500   # crouch run loop F
+a000_005501
+a000_005502
+a000_005503
+CrouchWalkStop_F
+CrouchWalkStop_B
+CrouchWalkStop_L
+CrouchWalkStop_R
+CrouchRunStop_F
+CrouchRunStop_B
+CrouchRunStop_L
+CrouchRunStop_R
+CrouchQuickTurnLeft90
+CrouchQuickTurnRight90
+CrouchQuickTurnLeft180
+CrouchQuickTurnRight180
+SprintToCrouchReady
+SprintToCrouchLeft
+SprintToCrouchRight

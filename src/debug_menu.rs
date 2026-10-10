@@ -2,7 +2,8 @@
 //!   Up / Down select, Left / Right change a value, Enter runs an action, F1 closes (the numpad
 //!   8 / 2 / 4 / 6 work as arrows too).
 //! Sections: Enemy (AI mode, drill attack and interval, type and outfit - those two restart the
-//! game with the choice written to config.toml), Deathblow, Player, Simulation.
+//! game with the choice written to config.toml), Deathblow, Skills (combat art and the three
+//! prosthetic slots, live; names from the game's own text), Player, Simulation.
 
 use bevy::prelude::*;
 
@@ -46,6 +47,11 @@ enum Item {
     KickDownNow,
     VaultNow,
     StealthSetup,
+    StealthFar,
+    Art,
+    Tool1,
+    Tool2,
+    Tool3,
     God,
     NoPosture,
     Refill,
@@ -56,12 +62,36 @@ enum Item {
     Reset,
 }
 
-const SECTIONS: [(&str, &[Item]); 4] = [
+const SECTIONS: [(&str, &[Item]); 5] = [
     ("ENEMY", &[Item::AiMode, Item::Attack, Item::Interval, Item::EnemyType, Item::Outfit, Item::EnemyHeal]),
-    ("DEATHBLOW", &[Item::BreakPosture, Item::DeathblowNow, Item::DeathblowBehind, Item::PlungeNow, Item::KickDownNow, Item::VaultNow, Item::StealthSetup]),
+    ("DEATHBLOW", &[Item::BreakPosture, Item::DeathblowNow, Item::DeathblowBehind, Item::PlungeNow, Item::KickDownNow, Item::VaultNow, Item::StealthSetup, Item::StealthFar]),
+    ("SKILLS", &[Item::Art, Item::Tool1, Item::Tool2, Item::Tool3]),
     ("PLAYER", &[Item::God, Item::NoPosture, Item::Refill, Item::FlowingWater, Item::Sheathe]),
     ("SIMULATION", &[Item::Speed, Item::Hitboxes, Item::Reset]),
 ];
+
+/// Every combat art (EquipParamWeapon 5100-7700 with an spAtkcategory), in id order.
+fn art_ids(combat: &Combat) -> Vec<i64> {
+    let mut ids: Vec<i64> = combat.params["EquipParamWeapon"]
+        .as_object()
+        .into_iter()
+        .flatten()
+        .filter_map(|(k, r)| Some((k.parse::<i64>().ok()?, r["spAtkcategory"].as_i64()?)))
+        .filter(|&(id, cat)| (5100..8000).contains(&id) && cat > 0)
+        .map(|(id, _)| id)
+        .collect();
+    ids.sort();
+    ids
+}
+
+/// The three prosthetic slots (0 = empty) from config player.prosthetics.
+fn slots(config: &GameConfig) -> [i64; 3] {
+    let mut out = [0; 3];
+    for (i, id) in config.player.prosthetics.iter().take(3).enumerate() {
+        out[i] = *id;
+    }
+    out
+}
 
 fn items() -> Vec<Item> {
     SECTIONS.iter().flat_map(|(_, it)| it.iter().copied()).collect()
@@ -282,6 +312,22 @@ fn menu_input(
                 menu.message = "enemy unaware, back turned - sneak up and attack".into();
             }
         }
+        Item::StealthFar if enter => {
+            // The enemy 22 m ahead, facing Wolf, not having noticed him: inside its wide "around"
+            // sight (the meter fills, then it comes to look) but outside its near sight.
+            if let Ok((_, pa, ptf)) = player.single() {
+                let fwd = pa.forward();
+                for (mut e, mut a, mut tf) in &mut enemies {
+                    tf.translation = ptf.translation + fwd * 22.0;
+                    a.yaw = pa.yaw + std::f32::consts::PI;
+                    a.hp = a.hp_max;
+                    a.posture = 0.0;
+                    e.make_unaware(&mut a);
+                    e.aggressive = true;
+                }
+                menu.message = "enemy 22 m away, unaware, watching - stay out of its sight".into();
+            }
+        }
         Item::God => menu.god = !menu.god,
         Item::NoPosture => menu.no_posture = !menu.no_posture,
         Item::Refill if enter => {
@@ -295,6 +341,31 @@ fn menu_input(
         Item::Sheathe if enter => {
             pad.sheathe = true;
             menu.message = "sheathe / draw (X)".into();
+        }
+        Item::Art if step != 0 => {
+            let arts = art_ids(&combat);
+            if !arts.is_empty() {
+                let i = arts.iter().position(|a| *a == config.player.combat_art).unwrap_or(0);
+                config.player.combat_art = arts[cycle(i, arts.len())];
+                menu.message = format!("combat art: {}", combat.weapon_name(config.player.combat_art));
+            }
+        }
+        Item::Tool1 | Item::Tool2 | Item::Tool3 if step != 0 => {
+            let n = match list[menu.cursor] {
+                Item::Tool1 => 0,
+                Item::Tool2 => 1,
+                _ => 2,
+            };
+            // Empty, then every tool level (EquipParamWeapon 70000-79200).
+            let choices: Vec<i64> = std::iter::once(0).chain(combat.player.prosthetics.iter().map(|t| t.id)).collect();
+            let mut sl = slots(&config);
+            let i = choices.iter().position(|c| *c == sl[n]).unwrap_or(0);
+            sl[n] = choices[cycle(i, choices.len())];
+            config.player.prosthetics = sl.iter().copied().filter(|id| *id != 0).collect();
+            if let Ok((mut p, _, _)) = player.single_mut() {
+                p.tool_slot = 0;
+            }
+            menu.message = if sl[n] == 0 { format!("slot {}: empty", n + 1) } else { format!("slot {}: {}", n + 1, combat.weapon_name(sl[n])) };
         }
         Item::FlowingWater => {
             if config.player.skills.contains(&FLOWING_WATER) {
@@ -453,6 +524,19 @@ fn draw_menu(
             Item::KickDownNow => "kick-down deathblow now (after a head kick)".into(),
             Item::VaultNow => "vault over a broken enemy now (jump)".into(),
             Item::StealthSetup => "stealth: enemy unaware, back turned".into(),
+            Item::StealthFar => "stealth: enemy 22 m away, unaware, facing you".into(),
+            Item::Art => format!("combat art: {} ({})", combat.weapon_name(config.player.combat_art), config.player.combat_art),
+            Item::Tool1 | Item::Tool2 | Item::Tool3 => {
+                let n = match it {
+                    Item::Tool1 => 0,
+                    Item::Tool2 => 1,
+                    _ => 2,
+                };
+                let id = slots(&config)[n];
+                // Tools whose HKS branch is ported so far: the Shuriken (070) and the Firecracker (071).
+                let todo = if id != 0 && !(70000..72000).contains(&id) { "  - not working yet" } else { "" };
+                format!("prosthetic slot {}: {}{todo}", n + 1, if id == 0 { "empty".to_string() } else { format!("{} ({id})", combat.weapon_name(id)) })
+            }
             Item::God => format!("god mode (no HP loss): {}", on(menu.god)),
             Item::NoPosture => format!("no posture damage: {}", on(menu.no_posture)),
             Item::Refill => "refill gourds / emblems / resurrections".into(),

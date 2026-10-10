@@ -197,3 +197,24 @@ Dated findings, oldest first. Append new entries at the end.
     rescale (prev = x - (x - prev) * h/h_old) match ours.
   * Coat alpha (P_BD_M_9040_Court, g_AlphaRef 128, g_BlendMode 0) is a real cutout: torn hem and collar edge.
     The 2026-10-09 "AN_Blend is a blend mask" change was wrong (holes became solid dark flaps) and is reverted.
+- 2026-10-10 vfx.rs: clash effects (deflect burst + flash + light, guard sparks, hit blood) with camera bloom
+  (threshold 1.2: only HDR effect colours glow). gap: the game's FXR effects are not decoded.
+  hud.rs redone: Wolf vitality (damage trail), resurrection nodes, gourd / emblem counts bottom-left, posture
+  bottom-centre (shown with damage); enemy bars over its head; debug text and combat log only with F1.
+- 2026-10-10 gore.rs: blood driven by each character's TAE. TAE 96 SpawnOneShotFFX with blood FFX (220505 /
+  220506 deathblow gush on the neck dummies 800-806, 220502 / 220503 on Wolf's sword dummies 121 / 100):
+  drops from the dummy along its +Z for [start, end), thinning out. TAE 138 DecalParamID_DummyPoly: a
+  DecalParam stain under the dummy. 710011: mask dp000160000_m (splat, BC4 red), diffuse dp000100000_a
+  (grey noise) tinted diffuseColor 191/54/19, pitchAngle -90 (straight down), near/far -0.25..5 m with
+  nearSize 0.5 -> farSize 3.5 (read as the size at the floor's depth: ~1.6 m from a 1.7 m neck),
+  randomSize 100-120 %, random roll, thin-out 2 within 1 m, lifeTimeSec 999 with bLifeEnable 0.
+  Textures: other/decaltex.tpf (67 dp* textures); the export writes extracted/decal/<id>.png (RGB
+  diffuse, A mask). gap: FXR f000220505.fxr (sfx/sfxbnd_commoneffects.ffxbnd, 2349 FXRs) not decoded;
+  decal blend not traced (mask alpha^0.55 in game). Check: SHINOBI_THROW_TRACE=behind
+  SHINOBI_THROW_CAM_YAW=90 SHINOBI_THROW_SHOTS=<dir> SHINOBI_THROW_SHOT_RANGE=130,250,8; SHINOBI_GORE_LOG=1.
+- 2026-10-10 deathblow mark (hud.rs): HUD sprites are Scaleform FE (menu/01_000_fe.gfx) over atlases in
+  menu/hi/01_common.tpf (46 textures: SB_FE 4096x1024, SB_FE_02, ...) with sprite rects in
+  menu/hi/01_common.sblytbnd <atlas>.layout (XML SubTexture name/x/y/width/height). 忍殺 = MENU_ninsatu_02
+  (405 px red glow, white-hot core) + MENU_ninsatu_01 (128 px); also MENU_ninjyutu, MENU_Find_01/02,
+  MENU_HP_bar*, MENU_Taikan_* (posture bar). Placed on dummy 220 (lock-on point, chest). Check:
+  SHINOBI_STEALTH=close (unaware enemy 1.5 m ahead, back turned).

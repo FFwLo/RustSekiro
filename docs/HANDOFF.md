@@ -1,7 +1,30 @@
-# Sv1 handoff: everything a new model needs to continue (2026-10-09)
+# Sv1 handoff: everything a new model needs to continue (updated 2026-10-10)
 
-Read this first, then `docs/HANDOFF_PLAN.md` (file map, commands, tools) and only the
-`docs/kb/<topic>.md` file for the topic you work on. `docs/PROGRESS.md` is the short overview.
+Read this first, then `docs/HANDOFF_PLAN.md` (file map, commands, tools, task packets) and only
+the `docs/kb/<topic>.md` file for the topic you work on. `docs/PROGRESS.md` is the short overview.
+
+**Where to start (2026-10-10):** section 0 (what the last session did), then section 7 (the
+user's open bug list: only the cape is left) and section 8 (the skills plan, in progress: next is
+the Flame Vent, then the other prosthetic tools, the combat-art audit and the latent skills).
+
+## 0. Session of 2026-10-09 / 10 in one page
+Everything below is in the code with citations; the kb files have the details.
+- **Stealth** (`src/stealth.rs`, kb/enemy.md): the exe's SprjTargetingSystem (sight cones, meter,
+  caution / find / battle, forgetting), the AI logic scripts as the planner, crouch (C), HUD bar.
+- **Root-motion yaw sign** (kb/damage.md): `export.rs` writes `-yaw` (X is mirrored, so turns are
+  too). Verified against the live recording: the c1010 behind deathblow matches tick for tick; the
+  c1020 360-degree spin after plunge / kick-down deathblows is gone.
+- **Gore** (`src/gore.rs`, kb/visuals.md): blood sprays from the TAE's blood FFX events on their
+  dummies, floor stains from TAE 138 DecalParam rows with the game's decal textures.
+- **Clash effects + bloom** (`src/vfx.rs`), **Sekiro-style HUD** (`src/hud.rs`: vitality, posture,
+  resurrection nodes, enemy bars, debug text only with F1), **deathblow mark** (the game's FE sprite).
+- **Fixes from the user's list:** crouch moves at once (CrouchStart is a standby state), the idle
+  twist follows only the lock-on target (Wolf's chest swung at an enemy behind him), the sprint
+  deflect faces the target and its 3 m slide stops against the enemy's body.
+- **Skills (section 8):** every tool / art / skill exported with official names; prosthetic
+  switching (Z), F1 SKILLS menu, the prosthetic core and the Firecracker work.
+- **Cape** (section 7 item 2): every cloth value checked against the game files and exe; still
+  moves too much. Needs a close real-game clip.
 
 ## 1. The project
 - **Sv1** is a 1:1 recreation of Sekiro's combat in Rust and Bevy 0.19, at
@@ -11,16 +34,17 @@ Read this first, then `docs/HANDOFF_PLAN.md` (file map, commands, tools) and onl
   static Ghidra decompile of the exe (`extracted/decomp/*.c`).
 - **Enemies:** c1010 is the Ochimusha (the spear/naginata enemy) and c1020 is the Samurai
   General. `config.toml` sets `[enemy] chr` and `npc_row`.
-- **The user's current config is `chr = "c1020"`, `npc_row = 10100000`.** It is the user's own
-  setting: never commit it. If you switch `chr` for a trace, switch it back afterwards.
-- **GitHub:** `FFwLo/RustSekiro` (public). The history is one root commit with an empty message.
+- **`config.toml` is the user's own file: never commit it** (it shows as modified in git). Their
+  setting on 2026-10-10: `chr = "c1020"`, `npc_row = 10203010`. To trace another enemy without
+  touching it, run with `SHINOBI_ROOT=<dir>` where `<dir>` holds a copied `config.toml` and a
+  junction `extracted` -> the real one (`cmd /c mklink /J <dir>\extracted <repo>\extracted`).
+- **GitHub:** `FFwLo/RustSekiro` (public), branch `main`.
 
 ## 2. The user's rules (follow exactly)
 **Git and publishing**
-- **"dont push anything to github".** Push only when the user says so. No commit this session;
-  ask before committing at all.
-- The user wants an empty commit message column on GitHub. Whether future commits should also
-  have empty messages is an open question: ask.
+- **Push only when the user says so** (2026-10-09: "dont push anything to github"; 2026-10-10 they
+  asked for one push of this session's work). Ask before every commit and every push.
+- The user's own commits on GitHub have empty messages; ask what message style they want.
 - **Never commit or publish anything under `extracted/`.** It is game data.
 
 **Research method**
@@ -53,24 +77,17 @@ Read this first, then `docs/HANDOFF_PLAN.md` (file map, commands, tools) and onl
 - Work only in the open chat: no background or scheduled sessions.
 
 ## 3. State at handoff
-- **Tests:** `cargo test --release` passes 96 tests (11 ignored).
-- **Working tree:** many uncommitted changes since the root commit (see `git status`). New files:
-  - `THIRD_PARTY.md`
-  - `src/ai/` (the vendored Lua 5.0 VM)
-  - `src/throw_trace.rs`
-  - `docs/HANDOFF.md`
-
-  `src/ai/runtime.lua` is deleted, and mlua was removed from `Cargo.toml`.
-- **The user's latest complaints:**
-  1. Head-kick camera / character shake (fixes in 4.2; the user hasn't confirmed them yet).
-  2. Cloth worse and flickering (fixed in 4.1, unconfirmed).
-  3. Sound too loud and different from the game (4.4, unconfirmed).
-  4. Vault: "the problem is the enemy, not Wolf" (fixed in 4.5, unconfirmed).
-
-  Earlier, still to check with the user: behind deathblow, Mikiri / air deathblow debug items,
-  Shift + deflect lunge (the data says GroundStep_N is a 4 m forward step; does the real game do
-  the same?).
-- **The user asked for "add all of the stealth system".** Not done yet; see 5.1.
+- **Tests:** `cargo test --release` passes 107 tests (16 ignored) on 2026-10-10.
+- **New files this session:** `src/stealth.rs`, `src/vfx.rs`, `src/gore.rs`,
+  `tools/sekiro-extract/src/fmg.rs`. After `sekiro-extract export extracted` you need these unpacks
+  too: `sekiro-extract unpack <Sekiro dir> extracted 'decaltex'` (blood stains) and
+  `'menu/hi/01_common'` (HUD sprites: the export cuts them to `extracted/hud/`). Regex note: a
+  leading `^/` does not match in Git Bash (path conversion) - leave it out.
+- **Working tree:** this session's work is committed (see `git log`); only `config.toml` (the
+  user's) stays modified. Older complaints from 2026-10-09 (head-kick shake, cloth flicker, sound
+  levels, vault) were fixed then and not raised again; the current list is section 7.
+- **The user asked for "add all of the stealth system".** Core done 2026-10-10 (see 4.7); the
+  rest is in 5.1.
 
 ## 4. What this session changed (and why)
 ### 4.1 Cloth (`src/cloth.rs`) and Wolf's coat
@@ -162,6 +179,19 @@ Read this first, then `docs/HANDOFF_PLAN.md` (file map, commands, tools) and onl
   behind ends 0.58 m in front, same yaw (live 0.59).
 - **Not changed:** ThrowDef13900's root carries the enemy 1.2 m forward over 3.3 s.
 
+### 4.7 Stealth (2026-10-10; details in `docs/kb/enemy.md`)
+- `src/stealth.rs`: the exe's NPC targeting system (sight cones from NpcThinkParam, the "around"
+  meter, NONE / CAUTION / FIND / BATTLE, forgetting, sound / indication / memory targets).
+- `src/ai.rs`: the logic script (`<logicId>_logic.lua`) now plans the top goals; new natives
+  Stay, BackToHome, ConfirmCautionTarget; targets can be spots and points (home).
+- `src/enemy.rs`: AI-state SpEffects from the alert anims' TAE pick the Idle / Walk variants;
+  `Mode::Unaware` is gone (`is_unaware` = state below FIND). The duel still starts in BATTLE.
+- Wolf crouch on C (`player.rs`, `actor.rs` crouch flag: clips + 5000, SpEffect 109200).
+- HUD bar over the enemy (`hud.rs`). Debug menu DEATHBLOW > "enemy 22 m away, facing you";
+  env `SHINOBI_STEALTH=far|behind` starts that way.
+- Exporter: NpcThinkParam / AiSoundParam rows and the stealth SpEffect fields; crouch states.
+- Trace: `cargo test --release stealth_trace -- --ignored --nocapture`.
+
 ### 4.6 Earlier in this session (already in the KB)
 - **Lua 5.0 AI VM** vendored from sekiro-rs (MIT, `THIRD_PARTY.md`); runs the real enemy AI
   scripts (`src/ai.rs`).
@@ -177,17 +207,9 @@ Read this first, then `docs/HANDOFF_PLAN.md` (file map, commands, tools) and onl
   (BC7 via texture2ddecoder).
 
 ## 5. Open work, in rough priority
-1. **Full stealth system** (user request). Build on `src/enemy.rs` `Mode::Unaware` / `perceive()`:
-   - awareness indicator HUD;
-   - caution/search states (IdleCautionNoBattle, SearchDefault600/610 anims);
-   - losing Wolf (NpcThinkParam forget times);
-   - crouch/sneak;
-   - noise from Wolf's movement;
-   - returning to unaware;
-   - patrols.
-
-   Check the HKS / AI scripts first: `extracted/ai_src`, `extracted/hks_src/c9997.lua`, and
-   the reference repos.
+1. **Stealth, the rest** (core done, 4.7): crouch attacks / steps / reactions (HKS Crouch*
+   states); grass / shadow hiding (109201 / 109203 need map regions); wall hug, hanging (limit
+   types); patrol routes (MSB); the listener's ear params; the real HUD art; the user's verdict.
 2. **Confirm with the user** (ask for clips if still wrong):
    - head-kick camera feel with the mouse fix;
    - cloth on jumps;
@@ -223,3 +245,119 @@ Read this first, then `docs/HANDOFF_PLAN.md` (file map, commands, tools) and onl
   - `extracted/rtti_vtables.txt` maps classes to vtables;
   - read exe bytes from `extracted/sekiro_steamless_dearxan.exe` (map VA via the PE sections);
   - capstone is installed for Python. Don't name a script `dis.py`: it shadows the stdlib.
+
+## 7. Open at 2026-10-10 (user's bug list; then section 8, the skills plan)
+Real-game reference clips (user's own, read with ffmpeg contact sheets; use forward-slash paths):
+`C:/Medal/Clips/Screen Recording/MedalTVScreenRecording20261010013052179.mp4` (behind deathblow + gore),
+`...013749267.mp4` (running, slides, cloth), `...013834205.mp4` (clashes, sparks, crouch moving).
+Done this session (see kb): slide from sprint, sprint-deflect no target snap, raw root yaw (c1010 behind
+deathblow), vfx.rs sparks/flash/blood + bloom, Sekiro-style HUD (debug text only with F1). 104 tests.
+User's open list:
+1. (done 2026-10-10) Crouch: "can't move when I crouch" = CrouchStart held Wolf 0.83 s. HKS g_paramHkbState
+   CROUCH_START is STATE_TYPE_STANDBY -> is_free (test moving_right_after_crouching_is_not_held).
+2. Cape moves too much on direction changes (2026-10-10: every value checked, still open). Verified
+   against the game: cloth.json (gravity, globalDampingPerSecond, substeps, iterations, constraint
+   order, local range max 0.24 / 0.74 m, normal min 0), transfer motion off in all 7 of Wolf's cloths,
+   transition sets all zero (only for forced to-anim), no BlendSomeVertices in Wolf's #01#Default
+   states, the exe's cloth dt = [frame dt, 1/30, 1/60][mode] (FUN_141045c40) with mode 0 = frame dt
+   by default (SprjClothImp ctor FUN_1410450c0: +0x40 = 0; also max 10 chars, update dist 300 m),
+   turn speed 720 deg/s (no TAE 224 on the run loops). Next: a close real-game clip of a run +
+   direction change to compare frame by frame; check our constraint solving order / BendStiffness.
+3. (done 2026-10-10, without a clip as asked) Sprint deflect: a050_203001 slides 3.0 m along its facing
+   (SetTurnSpeed 180 / 360 deg/s f3-9). Wolf faces the lock-on target at once, the slide follows the
+   facing and stops against the enemy's body (actor::separate weights it like DeathblowStart) instead
+   of shoving him. Player.slide_yaw removed.
+4. (done 2026-10-10) c1010 behind deathblow sync + c1020 360 spin after plunge / kick-down deathblows:
+   root yaw kept its raw sign while X was mirrored. export.rs now writes -yaw (live: game yaw y = ours
+   pi - y). c1020 ThrowDefDeath 13411 / 13511 / 12311: body -180 + root +180 in the game's space; raw
+   they added to 360. In game (SHINOBI_ROOT with a c1010 config, SHINOBI_THROW_TRACE=behind) the pair
+   now matches rec_c1010_20261009 tick for tick (dist within 0.01 m, angles within ~1 deg). Sim trace:
+   behind_throw_live_trace (no absorb in the sim: no models).
+5. (done 2026-10-10, src/gore.rs) Gore from the TAE: blood FFX 220502/3/5/6 (TAE 96) spray from their
+   dummy along its forward for the event's length; TAE 138 DecalParam stains (710011) on the floor with
+   the game's own textures (extracted/decal/<id>.png, written by `sekiro-extract export` from
+   other/decaltex.tpf - unpack 'decaltex' first). Open: FXR not decoded (spray look is made to match
+   clip 1), floor dust SpawnFFX_ByFloor 400/420 not done, hit-blood floor decals (AtkParam decalId) not done.
+7. (done 2026-10-10) Weird idle after the c1010 plunge (user clip): Wolf's upper body swung side to
+   side. The idle's TAE 700 twist (TargetType 3 Lockon) fell back to the auto-aim target, an enemy
+   right behind him flipped it between +-45 deg. Now TargetType 3 follows only the lock-on target.
+8. (done) "c1020 changed after the gore" = the 360 spin in item 4.
+6. (done 2026-10-10, hud.rs DeathblowMark) Deathblow mark: the game's FE sprites MENU_ninsatu_02 + _01
+   (menu/hi/01_common.tpf atlas SB_FE, rects from 01_common.sblytbnd SB_FE.layout; export writes
+   extracted/hud/) on dummy 220 while player::deathblow_check passes (broken, or in reach behind an
+   unaware enemy). gap: FE movie 01_000_fe.gfx (size / animation) not decoded. Unpack 'menu/hi/01_common'.
+
+## 8. Skills plan (2026-10-10; user: "do all the skills and their effects and way to change between them")
+Order: switching first, then combat arts, then prosthetic tools one by one, then latent skills. Ship
+each step to the user (relaunch the game), keep everything data-driven (cite rows / HKS lines /
+exe addresses, mark the rest `// gap:`), ask for a real-game clip per tool for the look.
+
+**Done so far (extractor only, exported 2026-10-10, game not yet using it):**
+- `export.rs`: every prosthetic state (cmsg offsetType 14: 183 states, W_GroundSubAttack*,
+  W_SubAttackJump*, W_*SubAttackGuard*, ...) and every anim of the ten tool groups a070..a079 (328).
+- `player.prosthetics`: all 40 tool levels (EquipParamWeapon 70000-79200): id, group
+  (`wepmotionCategory` 70..79), variation (`behaviorVariationId`), `emblems` (`resourceItemA`),
+  resident SpEffect, `icon` (iconId), `model` (equipModelId), attackBasePhysics / Fire.
+- `player.bullets` "v<variation>:<judge>" (BehaviorParam_PC 100000000 + var*1000 + judge; TAE 2 in
+  a07g anims; the old bare-judge keys stay for the Shuriken LV1, var 7000), `player.bulletRows` by
+  Bullet id with the HitBulletID / intervalCreateBulletId chains (firecracker sparks etc.),
+  BULLET_FIELDS now every field a 70xxxx-79xxxx bullet sets (numShoot, shootAngle*, intervalCreate*,
+  isPenetrate, spEffectId0-4, spEffectIDForShooter, homing, sfx ids...).
+- `player.attacks` "v<variation>:<judge>" for tool melee (TAE 1 in a07g: Axe, Sabimaru, Spear).
+- Their SpEffects (bullet / AtkParam spEffectId0-4, shooter, residents) are in `player.spEffects`.
+- Example (Firecracker): a071_401000 TAE 2 judges 100 + 110 at f36 on dummy 603 -> Bullet 710000
+  (numShoot 8 charged / 3 for 710050, shootAngle -45 step 45, life 0.15, intervalCreateBulletId
+  710001 every 0.1 s) and 710010 = the "vs. special-attack characters" twin (beasts) -> 710011.
+
+**Done in the game (2026-10-10, 107 tests):**
+- Names: `combat_data.names.weapon` from msg/engus item 武器名.fmg (new `tools/sekiro-extract/src/fmg.rs`);
+  `Combat::weapon_name`. All 89 SkillParam rows + their SpEffects exported (page, virtualWeaponId name,
+  acquireWeaponId art / tool, spEffect1-3).
+- Switching: config `[player] prosthetics` (default [70000]), Z = Action::SwitchTool -> additive
+  AddSubWeaponChange (a000_412090), then SubWeaponExpand in the tool's group (`tool_anim`; a071..a079
+  body clips fall back to a070's: only a070 ships 412xxx clips). F1 menu SKILLS: combat art (19, by
+  name) and 3 tool slots (every level). HUD bottom-left: tool and art names.
+- Prosthetic core: equipped tool's anims / bullets "v<var>:<judge>" / emblem cost (resourceItemA, once
+  per use) / base damage (attackBasePhysics + Fire x fireDamageCutRate). Release rule from HKS 6227:
+  ref 302 window + forced by the LV1 resident (ref 314) - so LV1 tools never charge (as in the game).
+- Bullets (`prosthetic.rs` spawn_row / fly_bullets): numShoot fans, shootAngleXZ, intervalCreate and
+  HitBulletID children, floor stop, area bursts, shared hit lists, bullet SpEffects.
+- Firecracker done: burst 710003 -> c9997 GetSpDamage SP_DAMAGE_BURST (refs 1000055/56/57: beasts by
+  resident 230100) -> AssassinationBloodReaction (a000_020110); cool time 107100 (stateInfo 976, 30 s)
+  read as "no new reaction" (Enemy.burst_until). Test `firecracker_staggers_the_general_once_per_cool_time`.
+- Still to do in this list: steps 2 (arts audit), 4 (tools 072-079), 5 (latent skills), HUD icons.
+
+**Next steps:**
+1. **Switching (S):** `config.toml` `[player]` gets `prosthetics = [70000, 71000, 72000]` (3 slots,
+   like the game) next to `combat_art`; a key cycles the slot (default PC binding from
+   `DefaultKeyAssignParam00..04` - find the "switch prosthetic" row; else a `// gap:` key) and an
+   in-game Skills page (debug menu style, `src/debug_menu.rs`) to pick the art, the 3 tools and
+   latent skills live. HUD: current tool + art icons (game icons: iconId -> menu atlas `SB_Icon*`,
+   rects in `extracted/menu/hi/01_common.sblytbnd.d/SB_Icon*.layout`, cut like `export_hud`).
+2. **Combat arts (M):** all 19 (EquipParamWeapon 5100-7700, groups a100-a110, anims already
+   exported) use `art_anim` / `art_start_states` / `art_combo_next` in `player.rs`. Test each art
+   (sim test per art: it starts, its judges hit, emblem cost) and fill the gaps: 107 / 110 jump
+   starts, Mortal Draw sheath stance, Shadowrush lunge to target, Ascending Carp counter, Dragon
+   Flash. Emblem cost of arts: find the field (not resourceItemA; check SkillParam / goods).
+3. **Prosthetic core (M):** generalise `src/prosthetic.rs` (today: Shuriken only, a070 + bare bullet
+   judges) to the equipped tool: anim key = state's anim id in group `a0<group>`, bullets
+   "v<var>:<judge>" from `bulletRows` (numShoot fan, child chains, intervalCreate, life, penetrate),
+   melee "v<var>:<judge>", emblem cost `emblems`, resident SpEffect while equipped.
+4. **Tools (port the HKS branch of each, `c0000_transition.lua` BEH_A_GROUND_SUB_ATTACK at
+   line 3523, plus the hold / jump / guard state updates near lines 536-570, 1275, 1371, 1865-1950):**
+   in this order - Firecracker 071 (stun: enemy reaction from the bullet's SpEffect / AI), Flame
+   Vent 072 (hold start/loop, burn SpEffect), Axe 073 (combo 1/2, shield break), Umbrella 076
+   (W_GroundSubAttackGuardStart: a guard state, FLAG_SHIELD_BLOCK exists), Spear 078 (variation,
+   pull), Sabimaru 075 (6-hit combo + derive chain, poison), Mist Raven 074 (W_SubAttackJumpAtemiReady:
+   counter-dodge, after-damage kawarimi), Divine Abduction 077 (SP_EF_REF_USED_TEKIMAWASHI), Finger
+   Whistle 079 (also usable while hanging). Sprint / crouch / air variants per branch.
+   Enemy reactions: what each SpEffect does to NPCs (stateInfo) + each NPC's resistances (NpcParam,
+   resident SpEffects) + AI script checks (`HasSpecialEffectId`) - via the Lua VM in `src/ai.rs`.
+5. **Latent skills (S each):** SkillParam rows -> SpEffects (Flowing Water 280 and Mikiri already
+   work). List every row, implement the ones whose systems exist, list the rest as gaps.
+6. **Visuals:** the FXR effects are not decoded; per tool ask the user for a real-game clip and match
+   it (like `vfx.rs` / `gore.rs`). Sounds already come from the FMOD banks via TAE.
+
+Verify with sim tests (`src/sim_tests.rs`) per tool and art, and screenshots via the throw-trace
+shot env vars or `tools/screenshot.ps1`. Nothing committed yet this session: ask the user before
+committing (never `extracted/`, never their `config.toml`), never push.

@@ -258,6 +258,7 @@ fn proc_clip(a: &Actor, t: f32) -> (String, f32) {
             let (key, t, _) = a.locomotion_clip_at(t);
             return (key, t);
         }
+        (Side::Player, _) if a.crouch => "a000_005000",
         (Side::Player, _) => "a000_000000",
         (Side::Enemy, "IdleBattle") | (Side::Enemy, "Approach") => "a000_400000",
         (Side::Enemy, "PostureBroken") => "a000_008550",
@@ -474,8 +475,8 @@ fn apply_walk_twist(lib: Res<AnimLib>, actors: Query<(&Actor, &Skeleton)>, mut b
 }
 
 /// TAE 700 CustomLookAtTwistModifier (c0000.hkx, combat_data "twists"): while the event runs,
-/// Wolf's upper body turns toward the target - the lock-on target, else the attack's auto-aim
-/// target - within the modifier's limits. ModifierID N uses the modifiers named "N_*"
+/// Wolf's upper body turns toward the target - the lock-on target (TargetType 3), for the Freeaim
+/// attack twists else the attack's auto-aim target - within the modifier's limits. ModifierID N uses the modifiers named "N_*"
 /// (0_Twist = 0_TwistUD + 0_TwistLR: +-25 deg up/down, +-45 deg left/right; 100-130_Attack:
 /// up 30-35 / down 25-35, no left/right). Each chain (TwistParam) gets `rate` of the angle,
 /// split evenly over the bones below `start` down to `end` (0_Twist: RootRotY..Spine2 30 %,
@@ -516,8 +517,13 @@ fn apply_twists(
         let mods: Vec<&crate::data::Twist> = mods.into_iter().map(|(_, t)| t).collect();
         // Desired yaw (positive = right) and pitch (positive = up) toward the target: Wolf's lock
         // target (else his homing target), an NPC's opponent - Wolf.
+        // TargetType "3: Lockon (PC)" (the idle / move twist) follows only the lock-on target: with
+        // none it stays straight (falling back to the auto-aim target made Wolf's chest swing side
+        // to side at an enemy behind him). Freeaim (the attack twists) also takes the auto-aim target.
+        let lock_only = ev.and_then(|ev| ev.args.get("TargetType")).and_then(|v| v.as_str()).is_some_and(|s| s.starts_with("3:"));
         let target = if a.side == crate::actor::Side::Player {
-            lock.as_ref().and_then(|l| l.target).or(a.homing).and_then(|t| targets.get(t).ok()).map(|(_, t, _)| t)
+            let lock_t = lock.as_ref().and_then(|l| l.target);
+            if lock_only { lock_t } else { lock_t.or(a.homing) }.and_then(|t| targets.get(t).ok()).map(|(_, t, _)| t)
         } else {
             targets.iter().find(|(te, _, is_player)| *is_player && *te != e).map(|(_, t, _)| t)
         };

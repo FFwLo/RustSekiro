@@ -169,3 +169,15 @@ Dated findings, oldest first. Append new entries at the end.
   now places the defender on Wolf's pose at the throw anim's frame 0 (root motion undone). Live c1020
   (rec_c1020_b_20261009 tick 13131): enemy yaw -3.3 deg at the ThrowDef13900 start, ~0.4 m back, then
   ~1.1 m net forward; Sv1 now 0.2-0.4 deg, net ~1.1-1.3 m forward, final dyaw 0 (was 9.4).
+- 2026-10-10 Ochimusha behind deathblow mid-throw drift: the exporter's yaw "unwrap" (hkx.rs unwrap_yaw_runs)
+  was wrong. Live (rec_c1010_20261009 tick 1990-2002) Wolf turns the stored way, +76 -> -189 deg, and with
+  the raw track Sv1's Wolf - enemy yaw difference matches live frame for frame. Removed. Gap: mid-throw the
+  enemy's lateral offset still differs from live by up to ~0.4 m (live Wolf drifts 0.23 m right during the
+  spin, his track holds still) - the exe's throw model-position interpolation (adsrobModelPosInterpolationTime
+  0.5, atkSorbDmyId 249) is not traced.
+- 2026-10-10 root yaw sign: the HKX reference-frame yaw is in the game's handedness; mirroring X for
+  Bevy also mirrors turns, so export.rs writes -yaw (TurnDefault_Right90 = +90 raw = right). Proof:
+  c1020 ThrowDefDeath 13411's Pelvis turns -182 deg in the clip while its root turns +180 (they cancel
+  in the game); with the raw sign the General spun 360. The in-game behind deathblow (c1010) then
+  matches the live recording frame for frame in tools/rec_throw.py's convention (x mirrored, yaw =
+  pi - ours).

@@ -18,6 +18,7 @@ mod data;
 mod debug_menu;
 mod enemy;
 mod fmod;
+mod gore;
 mod hud;
 mod interp;
 mod model;
@@ -28,8 +29,10 @@ mod prosthetic;
 #[cfg(test)]
 mod sim_tests;
 mod sound;
+mod stealth;
 mod throw_trace;
 mod trace;
+mod vfx;
 mod world;
 
 fn main() {
@@ -47,6 +50,8 @@ fn main() {
         .add_plugins(debug_menu::DebugMenuPlugin)
         .add_plugins(trace::TracePlugin)
         .add_plugins(throw_trace::ThrowTracePlugin)
+        .add_plugins(vfx::VfxPlugin)
+        .add_plugins(gore::GorePlugin)
         .add_plugins((
             config::ConfigPlugin,
             data::DataPlugin,

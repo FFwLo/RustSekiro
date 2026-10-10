@@ -25,6 +25,7 @@ mod cloth_export;
 mod container;
 mod export;
 mod flver;
+mod fmg;
 mod fev;
 mod fsb;
 mod hkx;
@@ -427,9 +428,9 @@ fn export_model(flver_path: &Path, tpf_path: &Path, out: &Path, tex_dir: &Path) 
 }
 
 
-/// DDS (first mip, BC1-BC7 or DX10 header) to an RGBA PNG; `alpha_only` writes the alpha as grey.
-fn dds2png(src: &Path, dst: &Path, alpha_only: bool) {
-    let d = std::fs::read(src).expect("read dds");
+/// DDS (first mip, BC1-BC7 or DX10 header) -> width, height, BGRA texels (texture2ddecoder's
+/// little-endian packing).
+pub fn decode_dds(d: &[u8]) -> (usize, usize, Vec<u32>) {
     let u32_at = |o: usize| u32::from_le_bytes(d[o..o + 4].try_into().unwrap());
     let (h, w) = (u32_at(12) as usize, u32_at(16) as usize);
     let four = &d[84..88];
@@ -446,6 +447,13 @@ fn dds2png(src: &Path, dst: &Path, alpha_only: bool) {
         _ => panic!("unsupported dds format {four:?} / {fmt}"),
     };
     r.expect("decode");
+    (w, h, px)
+}
+
+/// DDS (first mip, BC1-BC7 or DX10 header) to an RGBA PNG; `alpha_only` writes the alpha as grey.
+fn dds2png(src: &Path, dst: &Path, alpha_only: bool) {
+    let d = std::fs::read(src).expect("read dds");
+    let (w, h, px) = decode_dds(&d);
     // Normal-map check: share of texels whose RG (x2-1) reach the unit circle.
     if std::env::var("DDS_NORMAL_STATS").is_ok() {
         let (mut out, mut sum) = (0usize, 0.0f64);
@@ -474,9 +482,13 @@ fn dds2png(src: &Path, dst: &Path, alpha_only: bool) {
             rgba.extend_from_slice(&[r, g, b, a]);
         }
     }
+    write_png(dst, w, h, &rgba);
+}
+
+pub fn write_png(dst: &Path, w: usize, h: usize, rgba: &[u8]) {
     let f = std::fs::File::create(dst).expect("create png");
     let mut enc = png::Encoder::new(std::io::BufWriter::new(f), w as u32, h as u32);
     enc.set_color(png::ColorType::Rgba);
     enc.set_depth(png::BitDepth::Eight);
-    enc.write_header().expect("png header").write_image_data(&rgba).expect("png data");
+    enc.write_header().expect("png header").write_image_data(rgba).expect("png data");
 }

@@ -79,6 +79,9 @@ pub struct Actor {
     pub move_start: f32,
     /// Weapon style None (TAE 32 SetWeaponStyle): the sword is sheathed.
     pub sheathed: bool,
+    /// Crouching (HKS STYLE_TYPE_CROUCH): idle and locomotion use the Crouch* clips, the stand
+    /// ids + 5000 (c0000.hkx CMSGs: CrouchIdle 5000, CrouchWalkStart_F 5100, ...).
+    pub crouch: bool,
     /// Lower-body twist (exe WalkTwist -> behavior variable TwistMasterAngle, radians, + = legs
     /// turned right): the move direction's angle from the shown directional clip, so diagonal
     /// moves run along the stick instead of sliding; converges to `twist_target` at 0.1 rad per
@@ -154,6 +157,7 @@ impl Actor {
             move_dir: 0,
             move_start: 0.0,
             sheathed: false,
+            crouch: false,
             twist: 0.0,
             twist_target: 0.0,
             homing: None,
@@ -242,8 +246,28 @@ impl Actor {
             (_, true) => 400,
             (_, false) => 500,
         };
+        if self.crouch {
+            return format!("a000_{:06}", 5000 + base + self.move_dir.min(3) as u32);
+        }
         let group = if self.sheathed && self.move_dir == 0 { "a010" } else { "a000" };
         format!("{group}_{:06}", base + self.move_dir.min(3) as u32)
+    }
+
+    /// The clip a player shows and its time: the TAE anim, else the procedural idle (StandIdle
+    /// a000_000000 / CrouchIdle a000_005000) or locomotion clip. For reading the TAE of what is
+    /// on screen (crouch's stealth SpEffect 109200 rides on the crouch idle / move clips).
+    pub fn shown_clip(&self, d: &CharData) -> (String, f32) {
+        if !self.anim.is_empty() {
+            return (self.anim.clone(), self.t);
+        }
+        let (key, t) = if self.state == "Locomotion" {
+            let (key, t, _) = self.locomotion_clip_at(self.t);
+            (key, t)
+        } else {
+            ((if self.crouch { "a000_005000" } else { "a000_000000" }).to_string(), self.t)
+        };
+        let len = d.length(&key);
+        (key, if len > 0.0 { t.rem_euclid(len) } else { t })
     }
 
     pub fn frame(&self) -> f32 {
@@ -481,8 +505,10 @@ fn separate(combat: Res<Combat>, mut q: Query<(&Actor, &mut Transform)>) {
             if len < min {
                 let n = if len > 1e-4 { d / len } else { Vec3::X };
                 // A start throw walks into its target without moving it (live: the broken
-                // enemy stays put while Wolf's 501900 stops against him).
-                let (wa, wb) = match (a.state == "DeathblowStart", b.state == "DeathblowStart") {
+                // enemy stays put while Wolf's 501900 stops against him); the sprint deflect's
+                // slide likewise stops against the enemy (gap: proxy weights not traced).
+                let stops = |x: &Actor| x.state == "DeathblowStart" || x.state == "SprintToDeflectGuard";
+                let (wa, wb) = match (stops(a), stops(b)) {
                     (true, false) => (1.0, 0.0),
                     (false, true) => (0.0, 1.0),
                     _ => (0.5, 0.5),

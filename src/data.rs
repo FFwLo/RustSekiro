@@ -82,6 +82,9 @@ pub struct SpEffect {
     pub behavior_ref_id: i64,
     #[serde(default)]
     pub state_info: i64,
+    /// Duration in seconds (effectEndurance; 0 = while applied).
+    #[serde(default)]
+    pub effect_endurance: f32,
     #[serde(default)]
     pub def_stamina_attack_rate: f32,
     #[serde(default = "one")]
@@ -89,6 +92,27 @@ pub struct SpEffect {
     /// Active only while HP% <= this (resident HP-conditional effects); -1 or 0 = always.
     #[serde(default)]
     pub condition_hp: f32,
+    /// Stealth (NPC sight on the wearer): % cut of the sight distances (crouch 109200: 20).
+    #[serde(default)]
+    pub sight_search_enemy_cut: f32,
+    /// Factor on the "around" sight meter fill (wall hug 109210 / hanging 109220: 0).
+    #[serde(default = "one")]
+    pub around_sight_point_add_rate: f32,
+    /// Factor on the AI sounds the wearer makes (Covert B 150010: 0.5).
+    #[serde(default = "one")]
+    pub hearing_search_enemy_rate: f32,
+    /// 0 = always, 1 / 2 = only when the observer's geometry bit 0 / 1 holds (hanging, wall hug).
+    #[serde(default)]
+    pub sight_cut_limit_type: i64,
+    /// % cuts of the sight cone's angles.
+    #[serde(default)]
+    pub sight_search_left_angle_cut: f32,
+    #[serde(default)]
+    pub sight_search_right_angle_cut: f32,
+    #[serde(default)]
+    pub sight_search_upper_angle_cut: f32,
+    #[serde(default)]
+    pub sight_search_bottom_angle_cut: f32,
 }
 
 fn one() -> f32 {
@@ -213,9 +237,18 @@ pub struct CharData {
     pub sp_effects: HashMap<String, SpEffect>,
     #[serde(default)]
     pub attacks: HashMap<String, Attack>,
-    /// Prosthetic bullets by TAE BulletBehavior judge (Bullet param + its AtkParam).
+    /// Prosthetic bullets by TAE BulletBehavior judge (Bullet param + its AtkParam): "v<variation>:
+    /// <judge>" per tool level (BehaviorParam_PC 100000000 + variation * 1000 + judge), the bare
+    /// judge for the Shuriken LV1.
     #[serde(default)]
     pub bullets: HashMap<String, BulletSpec>,
+    /// Every bullet by Bullet id, with the child bullets they spawn (HitBulletID /
+    /// intervalCreateBulletId).
+    #[serde(default, rename = "bulletRows")]
+    pub bullet_rows: HashMap<String, BulletSpec>,
+    /// The prosthetic tools, every level (EquipParamWeapon 70000-79200).
+    #[serde(default)]
+    pub prosthetics: Vec<Prosthetic>,
     /// Ragdoll body capsules (chrbnd physics HKX), Havok model space, bind pose.
     #[serde(default)]
     pub hurtboxes: Vec<Hurtbox>,
@@ -247,6 +280,14 @@ impl CharData {
             let Some((group, id)) = key.split_once('_').and_then(|(g, i)| Some((g.to_string(), i.parse::<i64>().ok()?))) else {
                 continue;
             };
+            // Prosthetic tools: c0000_a07x.anibnd ships Wolf's shared moves (the SubWeaponExpand
+            // unfolds 412xxx, ...) only as a070 clips; the other tools' a071..a079 TAEs of the same
+            // id play that body motion with their own events.
+            let tool_base = group.get(1..).and_then(|g| g.parse::<i64>().ok()).filter(|g| (71..=79).contains(g)).map(|_| format!("a070_{id:06}"));
+            if let Some(src) = tool_base.filter(|k| self.anims.get(k).is_some_and(has_clip)) {
+                aliases.push((key.clone(), src));
+                continue;
+            }
             // Explicit: the neutral step (no stick) is Sekiro's backstep, not the forward one.
             let preferred: &[i64] = if key == "a000_213300" { &[2] } else { &[] };
             let offsets = [-1i64, 1, -2, 2, -3, 3, -100, -101, -99];
@@ -278,12 +319,73 @@ impl CharData {
     }
 }
 
+/// A prosthetic tool level: EquipParamWeapon row, its anim group a0<group> (wepmotionCategory),
+/// behaviorVariationId (judges "v<variation>:<judge>"), Spirit Emblem cost (resourceItemA),
+/// resident SpEffect and menu icon.
+#[derive(Deserialize, Clone, Debug)]
+pub struct Prosthetic {
+    pub id: i64,
+    pub group: i64,
+    pub variation: i64,
+    #[serde(default)]
+    pub emblems: u32,
+    #[serde(default)]
+    pub resident: i64,
+    #[serde(default)]
+    #[allow(dead_code)] // HUD icons (menu atlas) - not drawn yet
+    pub icon: i64,
+    #[serde(default, rename = "attackBasePhysics")]
+    pub attack_base_physics: f32,
+    #[serde(default, rename = "attackBaseFire")]
+    pub attack_base_fire: f32,
+}
+
 /// A Bullet param row (projectile) and its AtkParam.
 #[derive(Deserialize, Clone, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct BulletSpec {
     #[serde(default)]
+    pub bullet_id: i64,
+    #[serde(default)]
     pub init_vellocity: f32,
+    /// numShoot bullets in a fan: shootAngle (deg from the facing) + i * shootAngleInterval;
+    /// shootAngleXZ tilts them (-90 = straight down).
+    #[serde(default)]
+    pub num_shoot: i32,
+    #[serde(default)]
+    pub shoot_angle: f32,
+    #[serde(default)]
+    pub shoot_angle_interval: f32,
+    #[serde(default, rename = "shootAngleXZ")]
+    pub shoot_angle_xz: f32,
+    /// Child bullets: HitBulletID when it ends (hits or runs out), intervalCreateBulletId every
+    /// intervalCreateTimeMin..Max s after intervalCreateWaitTime while it flies.
+    #[serde(default = "minus_one", rename = "HitBulletID")]
+    pub hit_bullet_id: i64,
+    #[serde(default = "minus_one")]
+    pub interval_create_bullet_id: i64,
+    #[serde(default)]
+    pub interval_create_time_min: f32,
+    #[serde(default)]
+    pub interval_create_wait_time: f32,
+    /// Hits once per character for the whole chain (isUseSharedHitList); passes through
+    /// characters (isPenetrate).
+    #[serde(default)]
+    pub is_use_shared_hit_list: i32,
+    #[serde(default)]
+    pub is_penetrate: i32,
+    /// SpEffects the bullet puts on what it hits (e.g. the firecracker burst 710003: 230110 "vs.
+    /// non-special character", 107100 its 30 s cool time).
+    #[serde(default = "minus_one")]
+    pub sp_effect_id0: i64,
+    #[serde(default = "minus_one")]
+    pub sp_effect_id1: i64,
+    #[serde(default = "minus_one")]
+    pub sp_effect_id2: i64,
+    #[serde(default = "minus_one")]
+    pub sp_effect_id3: i64,
+    #[serde(default = "minus_one")]
+    pub sp_effect_id4: i64,
     #[serde(default)]
     #[allow(dead_code)] // kept for debugging / future use
     pub max_vellocity: f32,
@@ -324,6 +426,15 @@ struct File {
     rumble: HashMap<String, Rumble>,
     #[serde(default)]
     twists: HashMap<String, Twist>,
+    #[serde(default)]
+    names: Names,
+}
+
+/// Official English names (msg/engus item 武器名): weapon id -> name.
+#[derive(Deserialize, Default, Clone)]
+pub struct Names {
+    #[serde(default)]
+    pub weapon: HashMap<String, String>,
 }
 
 /// CustomLookAtTwistModifier from c0000.hkx (TAE 700): limits in degrees and the bone chains.
@@ -364,6 +475,15 @@ pub struct Combat {
     pub rumble: HashMap<String, Rumble>,
     /// Wolf's TAE 700 twist modifiers by name ("0_TwistUD", "100_Attack", ...).
     pub twists: HashMap<String, Twist>,
+    /// Official names (combat arts, prosthetic tools, skills).
+    pub names: Names,
+}
+
+impl Combat {
+    /// The official English name of a weapon row (art, tool, skill entry), else its id.
+    pub fn weapon_name(&self, id: i64) -> String {
+        self.names.weapon.get(&id.to_string()).cloned().unwrap_or_else(|| id.to_string())
+    }
 }
 
 /// The enemy in play: chr id plus the rows its data lives in.
@@ -372,9 +492,8 @@ pub struct Foe {
     pub chr: String,
     /// NpcParam row (stats, guard, knockback, cut rates).
     pub npc_row: i64,
-    /// NpcThinkParam row and its battleGoalID (the Lua battle script).
+    /// NpcThinkParam row: its battleGoalID / logicId pick the Lua battle and logic scripts.
     pub think_id: i64,
-    pub battle_goal: i64,
     /// ThrowParam rows "PC -> this enemy" are 11000000 + n * 1000 + suffix (0001 posture
     /// break, 0010 deflect break, 0190 mikiri); the enemy grab is 21000000 + n * 1000.
     pub throw_n: i64,
@@ -386,15 +505,15 @@ pub struct Foe {
 impl Foe {
     /// Known enemies (NpcParam / NpcThinkParam rows read from the params; see PROGRESS.md).
     pub fn for_chr(chr: &str) -> Foe {
-        let (npc_row, think_id, battle_goal, throw_n, common_parry) = match chr {
+        let (npc_row, think_id, throw_n, common_parry) = match chr {
             // 101000_battle.lua Goal.Interrupt: Common_Parry(ai, goal, 50, 25, 0, 3102).
-            "c1010" => (10100000, 10100000, 101000, 10, Some((50, 25, 0, "a000_003102"))),
+            "c1010" => (10100000, 10100000, 10, Some((50, 25, 0, "a000_003102"))),
             // NpcParam 10203010: the regular General (behaviorVariationId 10200, the variant whose
             // attacks the export uses) as fought live (rec_20261008_054259). 10219000 was an
             // Ashina Shitenno sample row (variation 10201, another outfit).
-            _ => (10203010, 10200000, 102000, 20, None),
+            _ => (10203010, 10200000, 20, None),
         };
-        Foe { chr: if chr == "c1010" { chr.to_string() } else { "c1020".to_string() }, npc_row, think_id, battle_goal, throw_n, common_parry }
+        Foe { chr: if chr == "c1010" { chr.to_string() } else { "c1020".to_string() }, npc_row, think_id, throw_n, common_parry }
     }
     pub fn throw_row(&self, suffix: i64) -> i64 {
         11_000_000 + self.throw_n * 1_000 + suffix
@@ -720,7 +839,7 @@ impl Plugin for DataPlugin {
         };
         f.player.alias_missing_clips();
         enemy.alias_missing_clips();
-        app.insert_resource(Combat { player: f.player, enemy, foe, params: f.params, rumble: f.rumble, twists: f.twists });
+        app.insert_resource(Combat { player: f.player, enemy, foe, params: f.params, rumble: f.rumble, twists: f.twists, names: f.names });
     }
 }
 

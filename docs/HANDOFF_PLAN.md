@@ -169,8 +169,40 @@ export the row in `export.rs`, read it in `data.rs`). Find how the exe evaluates
 - Owns: `tools/sekiro-extract/src/export.rs` (rows only), `src/data.rs` (new accessors); write the
   trigger logic as a proposed patch for `player.rs` in the report (lead applies it).
 
+### Skills track (2026-10-10; full plan in HANDOFF.md section 8)
+The extractor already exports every tool level (`player.prosthetics`), the a070..a079 anims, the
+prosthetic states, bullets "v<var>:<judge>" with their chains (`player.bulletRows`) and tool melee
+attacks "v<var>:<judge>". The lead owns `player.rs` / `combat.rs` / `prosthetic.rs`.
+
+Status 2026-10-10: K1 done (no icons yet), K4 done for the Shuriken + Firecracker, the rest open.
+
+**K1 - Skill switching (S).** config `[player] prosthetics = [3 ids]`, a cycle key (find the PC
+default in `DefaultKeyAssignParam00..04`), a Skills page in `src/debug_menu.rs` (art, 3 tools, latent
+skills), HUD icons cut from the menu atlases (`SB_Icon*` layouts, like `export.rs` `export_hud`).
+- Owns: `src/config.rs`, `src/debug_menu.rs`, `src/hud.rs`, `export.rs` (`export_hud` list only).
+
+**K2 - Combat art audit (M).** One sim test per art (19: EquipParamWeapon 5100-7700): it starts from
+idle / sprint, its follow-ups chain (`art_combo_next`), its judges resolve ("v<var>:<judge>"), it hits.
+Report which arts fail and why (HKS line / TAE / param), with proposed patches for `player.rs`.
+- Owns: `src/sim_tests.rs` (new tests only), `docs/reports/K2.md`.
+
+**K3 - Tool data survey (S).** Per tool group 071..079: the HKS branch (c0000_transition.lua 3523+
+and the state updates), its states -> anim ids, TAE bullet / attack judges per level, the bullet
+chain fields, the SpEffects and what they do (stateInfo, behaviorRefId), and which NPC fields /
+AI checks react to them. A table per tool in `docs/reports/K3.md`; no code.
+
+**K4 - Prosthetic core (M, lead).** Generalise `prosthetic.rs` to the equipped tool using K3.
+
+**K5.. - One tool each (M).** Firecracker, Flame Vent, Axe, Umbrella, Spear, Sabimaru, Mist Raven,
+Divine Abduction, Finger Whistle, in that order, each from its K3 table; a real-game clip per tool
+from the user for the look.
+
+**K6 - Latent skills (S).** SkillParam rows -> SpEffects: list all, implement the ones whose
+systems exist, list the rest as gaps.
+
 ## 5. Order and parallelism
-These can run at the same time (no shared files): **V1 ∥ V4 ∥ S1 ∥ S3 ∥ V5**.
+These can run at the same time (no shared files): **V1 ∥ V4 ∥ S1 ∥ S3 ∥ V5**, and **K1 ∥ K2 ∥ K3**
+(then K4, then the K5 tools one by one, K6 any time).
 Then V2 (after V1, both edit `flver.rs` / `model.rs`), V3 (after V1), S2, S4.
 The lead keeps `player.rs` / `combat.rs` and implements what S1 and V5 find.
 

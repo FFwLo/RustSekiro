@@ -556,43 +556,19 @@ pub fn root_motion(d: &[u8], compendium: &Types) -> (Option<f32>, Vec<[f32; 4]>)
         return (dur, Vec::new());
     };
     let dur = r.f32(o + tf.field(ty, "duration"));
-    let mut samples: Vec<[f32; 4]> = tf
+    let samples: Vec<[f32; 4]> = tf
         .deref(o + tf.field(ty, "referenceFrameSamples"))
         .map(|(a, n)| (0..n).map(|i| std::array::from_fn(|k| r.f32(a + i * 16 + k * 4))).collect())
         .unwrap_or_default();
-    unwrap_yaw_runs(&mut samples);
+    // The yaw (w) is kept as stored, seams included: a200_511200 (the Ochimusha's behind
+    // deathblow) goes +90 -> -180 deg in 5 frames, and live Wolf turns exactly so
+    // (rec_c1010_20261009 tick 1990-2002: +76 -> -189 deg), the Wolf - enemy yaw difference
+    // matching frame for frame (-4 -13 -16 -16 -12 -7 -2 +70 -173 -62 0). Taking the short way
+    // there left Wolf facing ~180 deg off mid-throw (the enemy "behind" him). (The sign is
+    // mirrored with X in export.rs.)
     (Some(dur), samples)
 }
 
-/// The reference frame's yaw (w) is stored in [-pi, pi] and resampled linearly between keys, so a
-/// key pair across the seam becomes a long turn the wrong way: a200_511200 (the Ochimusha's behind
-/// deathblow) goes +90 -> -180 deg in 5 frames (-270) while the enemy's ThrowDef13200 turns +180.
-/// A linear run between keys turning more than pi is rewritten the short way, and the samples after
-/// it shift with it so the track stays continuous.
-pub fn unwrap_yaw_runs(s: &mut [[f32; 4]]) {
-    use std::f32::consts::{PI, TAU};
-    if s.len() < 3 {
-        return;
-    }
-    let mut keys = vec![0];
-    for i in 1..s.len() - 1 {
-        if ((s[i + 1][3] - s[i][3]) - (s[i][3] - s[i - 1][3])).abs() > 1e-3 {
-            keys.push(i);
-        }
-    }
-    keys.push(s.len() - 1);
-    let orig: Vec<f32> = s.iter().map(|v| v[3]).collect();
-    let mut shift = 0.0;
-    for w in keys.windows(2) {
-        let (a, b) = (w[0], w[1]);
-        let d = orig[b] - orig[a];
-        let fix = if d.abs() > PI + 1e-3 { -d.signum() * TAU } else { 0.0 };
-        for i in a + 1..=b {
-            s[i][3] = orig[i] + shift + fix * (i - a) as f32 / (b - a) as f32;
-        }
-        shift += fix;
-    }
-}
 
 pub struct Bone {
     pub name: String,

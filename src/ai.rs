@@ -11,6 +11,12 @@
 //! (from the NPC TAEs): an action can start when the current anim is free or has its AI
 //! cancel flag active: 23 combo attack (goals with ENABLE_COMBO_ATK_CANCEL), 86 attack,
 //! 79 step, 78 move.
+//!
+//! The plan comes from the character's logic script (NpcThinkParam logicId, e.g.
+//! 102000_logic.lua) the way the engine runs it: with no top goal left, ExecTableLogic ->
+//! Logic.Main -> COMMON_EzSetup picks top goals from the target state (stealth.rs): the
+//! non-battle act at home, the caution search of a spot, the alert transitions, or the
+//! battle goal. A target-state change drops the plan (FUN_1405ab7d0 -> FUN_14061f500).
 
 mod lua50;
 
@@ -18,6 +24,9 @@ use lua50::{Host, LuaResult, Obj, TableRef, Value, Vm, load_chunk};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+
+use bevy::math::Vec3;
+use serde_json::Value as Json;
 
 /// What the brain sees this frame.
 #[derive(Default, Clone)]
@@ -54,7 +63,41 @@ pub struct Snapshot {
     pub guard_count: i32,
     /// The player just started using an item (INTERUPT_UseItem).
     pub target_use_item: bool,
+    /// World positions: the enemy and its facing, and its home (POINT_INITIAL) and home
+    /// facing (POINT_INIT_POSE).
+    pub me: Vec3,
+    pub fwd: Vec3,
+    pub home: Vec3,
+    pub home_fwd: Vec3,
+    /// The target system (stealth.rs): state, previous state, AI_TARGET_TYPE, whether the state
+    /// changed this frame, Wolf seen at the last search, seconds since he was last seen, and the
+    /// latest sound target's AiSoundParam id / rank. `dist` / `angle` / `bearing` are to the
+    /// current target (TARGET_ENE_0): Wolf, or the spot of a caution target.
+    pub t_state: u8,
+    pub t_prev: u8,
+    pub t_kind: u8,
+    pub t_changed: bool,
+    pub visible: bool,
+    pub forgetting: f32,
+    pub sound_id: i64,
+    pub sound_rank: i64,
+    /// The target state changed in a way that drops the plan (stealth.rs Targeting::replan).
+    pub t_replan: bool,
 }
+
+#[cfg(test)]
+impl Snapshot {
+    /// A snapshot already in battle with Wolf as the target (the duel; tests).
+    pub fn battle() -> Snapshot {
+        Snapshot { t_state: 3, t_prev: 3, t_kind: 3, visible: true, fwd: Vec3::Z, home_fwd: Vec3::Z, ..Default::default() }
+    }
+}
+
+/// Target slots the AI cleared this frame (ClearEnemyTarget, ClearSoundTarget, ...).
+pub const CLEAR_ENEMY: u8 = 1;
+pub const CLEAR_SOUND: u8 = 2;
+pub const CLEAR_INDICATION: u8 = 4;
+pub const CLEAR_MEMORY: u8 = 8;
 
 /// One action request.
 #[derive(Default, Debug, Clone, PartialEq)]
@@ -65,6 +108,11 @@ pub struct Command {
     pub walk: bool,
     pub face: bool,
     pub turn: bool,
+    /// The point a move / turn is relative to when it is not the current target: home
+    /// (POINT_INITIAL), the home facing (POINT_INIT_POSE).
+    pub at: Option<Vec3>,
+    /// CLEAR_* bits.
+    pub clear: u8,
 }
 
 const SUCCESS: i32 = 1;
@@ -108,6 +156,16 @@ enum Native {
     Wait,
     /// 2101 Guard(life, ezState, target, ...): hold the guard anim for the goal's life.
     Guard,
+    /// 2 Stay(life, ?, turnTarget): stand still, turned to turnTarget.
+    Stay,
+    /// 4 BackToHome(life, ...): walk back to POINT_INITIAL.
+    BackToHome,
+    /// 5100 ConfirmCautionTarget(life, ezState, target, time, waitTarget): CSGoalConfirmCautionTarget
+    /// (vtable 0x14294b048). Activate FUN_1405c35a0: CommonAttack(ezState, target, 9999, 180,
+    /// 1.5, 20) when ezState >= 0, then Wait(time, waitTarget). Terminate FUN_1405c3770: still in
+    /// CAUTION and no new sound / indication / corpse target (INTERUPT 46 / 53 / 55) -> the
+    /// caution targets are cleared, so the enemy gives up and goes home.
+    ConfirmCaution,
 }
 
 fn native(id: i64) -> Option<Native> {
@@ -120,6 +178,9 @@ fn native(id: i64) -> Option<Native> {
         2018 => Native::Keep,
         2000 => Native::Wait,
         2101 => Native::Guard,
+        2 => Native::Stay,
+        4 => Native::BackToHome,
+        5100 => Native::ConfirmCaution,
         _ => return None,
     })
 }
@@ -221,7 +282,12 @@ struct Consts {
     int_parry: f64,
     int_use_item: f64,
     int_sp: f64,
-    target_type_normal: f64,
+    point_initial: f64,
+    point_init_pose: f64,
+    point_move_point: f64,
+    point_back_to_home: f64,
+    point_event: f64,
+    team_formation: f64,
 }
 
 struct AiState {
@@ -246,6 +312,15 @@ struct AiState {
     observed: HashMap<i64, Value>,
     battle_goal: i64,
     think_id: i64,
+    /// NpcThinkParam logicId (the logic script) and the row itself (GetExcelParam).
+    logic_id: i64,
+    think: Json,
+    /// AI_EXCEL_THINK_PARAM_TYPE__<field> value -> NpcThinkParam field name.
+    excel: HashMap<i64, String>,
+    /// The top goals the logic added (AddTopGoal), run in order; the first is the root.
+    tops: Vec<u32>,
+    /// Target of the last ai:TurnTo (for IsLookToTarget).
+    turn_id: Option<Value>,
     hit_radius: f32,
     rng: u64,
     k: Consts,
@@ -348,6 +423,45 @@ impl AiState {
         self.w.angle as f64
     }
 
+    /// World position of a target / point id; None = the current target (TARGET_ENE_0), whose
+    /// distance and angle come with the snapshot.
+    fn pos_of(&self, id: Option<&Value>) -> Option<Vec3> {
+        let k = &self.k;
+        let w = &self.w;
+        let id = id.and_then(Value::num)?;
+        if id == k.target_self {
+            Some(w.me)
+        } else if [k.point_initial, k.point_move_point, k.point_back_to_home, k.point_event, k.team_formation].contains(&id) {
+            // No patrol route or event points without a map: they all mean home.
+            Some(w.home)
+        } else if id == k.point_init_pose {
+            // A pose: home, facing its initial direction.
+            Some(w.home + w.home_fwd * 10.0)
+        } else {
+            None
+        }
+    }
+
+    fn dist_to(&self, id: Option<&Value>) -> f64 {
+        match self.pos_of(id) {
+            Some(_) if is(id, self.k.point_init_pose) => (self.w.home - self.w.me).with_y(0.0).length() as f64,
+            Some(p) => (p - self.w.me).with_y(0.0).length() as f64,
+            None => self.dist(),
+        }
+    }
+
+    /// Signed angle (deg) from the enemy's facing to a target / point, positive to the right.
+    fn angle_to(&self, id: Option<&Value>) -> f64 {
+        match self.pos_of(id) {
+            Some(p) => {
+                let d = (p - self.w.me).with_y(0.0).normalize_or_zero();
+                let fwd = self.w.fwd.with_y(0.0).normalize_or_zero();
+                d.dot(fwd.cross(Vec3::Y)).atan2(d.dot(fwd)).to_degrees() as f64
+            }
+            None => self.angle(),
+        }
+    }
+
     fn dir_center(&self, dir: Option<&Value>) -> f64 {
         if is(dir, self.k.dir_b) {
             180.0
@@ -394,7 +508,7 @@ impl AiState {
     /// Drops the goals no longer reachable from the root.
     fn sweep(&mut self) {
         let mut keep = HashSet::new();
-        let mut stack: Vec<u32> = self.root.into_iter().chain(self.top_queue.iter().copied()).collect();
+        let mut stack: Vec<u32> = self.root.into_iter().chain(self.tops.iter().copied()).chain(self.top_queue.iter().copied()).collect();
         while let Some(g) = stack.pop() {
             if keep.insert(g) {
                 if let Some(goal) = self.goals.get(&g) {
@@ -422,6 +536,9 @@ impl AiState {
             }
             "GetNumber" => vec![self.goal(id).num.get(&(n(0) as i64)).cloned().unwrap_or(Value::Num(0.0))],
             "GetBattleGoalId" => vec![Value::Num(self.battle_goal as f64)],
+            "IsExistParam" => vec![Value::Bool(self.goal(id).p.get(n(0) as usize).is_some_and(|v| !v.is_nil()))],
+            // GOAL_RESULT_Continue: the patrol-route branches that read it are not reached.
+            "GetLastResult" => vec![Value::Num(0.0)],
             "AddGoalScopedTeamRecord" | "SetFailedEndOption" | "SetLifeEndSuccess" | "SetManagementGoal" => vec![],
             "SetTargetRange" => vec![goal_obj(id)],
             "AddSubGoal" | "AddSubGoal_Front" => {
@@ -462,7 +579,7 @@ impl AiState {
         let boolean = |b: bool| vec![Value::Bool(b)];
         let w = &self.w;
         match name {
-            "GetDist" => num(if is(a.first(), self.k.target_self) { 0.0 } else { self.dist() }),
+            "GetDist" | "GetDist_Point" => num(self.dist_to(a.first())),
             "GetDistYSigned" => num(0.0),
             "GetDistAtoB" => num(self.dist()),
             "GetMapHitRadius" => num(self.hit_radius as f64),
@@ -487,24 +604,76 @@ impl AiState {
             "GetHpRate" => num(if is(a.first(), self.k.target_self) { w.hp_rate } else { w.target_hp_rate } as f64),
             "GetHp" | "GetNinsatsuNum" => num(1.0),
             "GetNpcThinkParamID" => num(self.think_id as f64),
-            "GetExcelParam" | "GetTeamOrder" | "GetEventRequest" | "GetOddsParam" | "GetOddsParamIdOffset"
-            | "DbgGetForceActIdx" | "DbgGetForceKengekiActIdx" => num(0.0),
-            "GetToTargetAngle" => num(self.angle()),
-            "IsInsideTarget" => boolean(angle_in(self.dir_center(a.get(1)), n(2), self.angle())),
-            "IsInsideTargetEx" => boolean(angle_in(self.dir_center(a.get(2)), n(3), self.angle()) && self.dist() <= n(4)),
-            "IsInsideTargetRegion" | "IsLadderAct" | "IsFindState" | "IsCautionState"
-            | "GetAreaObserveSlot" | "IsInsideObserve" | "IsStartAttack" => boolean(false),
-            "IsVisibleCurrTarget" | "IsVisibleTarget" | "IsExistMeshOnLine" | "CheckDoesExistPathWithSetPoint"
-            | "IsBattleState" | "IsSearchTarget" | "IsFinishAttackCoolTime" => boolean(true),
+            // NpcThinkParam fields by AI_EXCEL_THINK_PARAM_TYPE__<field name>.
+            "GetExcelParam" => {
+                let field = self.excel.get(&key(a.first())).cloned().unwrap_or_default();
+                num(self.think[field.as_str()].as_f64().unwrap_or(0.0))
+            }
+            // Event requests default to -1 (FUN_1405b2090 fills the slots with -1.0).
+            "GetEventRequest" => num(-1.0),
+            "GetTeamOrder" | "GetOddsParam" | "GetOddsParamIdOffset" | "DbgGetForceActIdx" | "DbgGetForceKengekiActIdx"
+            | "GetChangeBattleStateCount" | "GetMovePointWaitTime" | "GetSmallActPreWaitTime" | "GetSmallActPostWaitTime"
+            | "GetMovePointType" => num(0.0),
+            // No patrol route (MSB) and no small acts: NonBattleAct stays at home.
+            "GetMovePointNumber" | "GetPrevMovePointNumber" | "GetMovePointAnimId" | "GetSmallActAnimId" => num(-1.0),
+            // gap: the engine's move-point effect range; here the distance from home, which is what
+            // NonBattleAct / _COMMON_SetBattleActLogic compare with the back-home distances.
+            "GetMovePointEffectRange" => num((w.home - w.me).with_y(0.0).length() as f64),
+            "GetActTypeOnNonBattleFailedPathEnd" => num(self.think["actTypeOnNonBtlFailedPath"].as_f64().unwrap_or(0.0)),
+            "GetToTargetAngle" => num(self.angle_to(a.first())),
+            "IsInsideTarget" => boolean(angle_in(self.dir_center(a.get(1)), n(2), self.angle_to(a.first()))),
+            "IsInsideTargetEx" => {
+                boolean(angle_in(self.dir_center(a.get(2)), n(3), self.angle_to(a.first())) && self.dist_to(a.first()) <= n(4))
+            }
+            // The target system (stealth.rs).
+            "IsBattleState" => boolean(w.t_state == 3),
+            "IsFindState" => boolean(w.t_state == 2),
+            "IsCautionState" => boolean(w.t_state == 1),
+            "IsChangeState" => boolean(w.t_changed),
+            "GetPrevTargetState" => num(w.t_prev as f64),
+            "GetCurrTargetType" => num(w.t_kind as f64),
+            "IsSearchTarget" => boolean(w.t_kind != 0),
+            "IsVisibleCurrTarget" | "IsVisibleTarget" => boolean(w.t_kind == 3 && w.visible),
+            "GetTopNormalEnemyForgettingTime" => num(w.forgetting as f64),
+            "GetLatestSoundTargetID" | "GetLatestSoundTargetInstanceID" => num(w.sound_id as f64),
+            "GetLatestSoundTargetRank" => num(w.sound_rank as f64),
+            "ClearEnemyTarget" => {
+                self.cmd.clear |= CLEAR_ENEMY;
+                vec![]
+            }
+            "ClearSoundTarget" => {
+                self.cmd.clear |= CLEAR_SOUND;
+                vec![]
+            }
+            "ClearIndicationPosTarget" => {
+                self.cmd.clear |= CLEAR_INDICATION;
+                vec![]
+            }
+            "ClearLastMemoryTargetPos" => {
+                self.cmd.clear |= CLEAR_MEMORY;
+                vec![]
+            }
+            "IsInsideTargetRegion" | "IsLadderAct" | "GetAreaObserveSlot" | "IsInsideObserve" | "IsStartAttack"
+            | "IsValidPlatoon" | "IsPlatoonLeader" | "TeamHelp_IsValidReply" | "IsForceBattleGoal" | "IsChangeInitialPosition"
+            | "IsLockOnTarget" => boolean(false),
+            "IsExistMeshOnLine" | "CheckDoesExistPathWithSetPoint" | "IsFinishAttackCoolTime" => boolean(true),
             "GetExistMeshOnLineDistSpecifyAngleEx" | "GetExistMeshOnLineDistSpecifyAngle" => {
                 vec![a.get(2).cloned().unwrap_or_default()]
             }
-            "GetCurrTargetType" => num(self.k.target_type_normal),
-            "IsLookToTarget" => boolean(angle_in(0.0, 20.0, self.angle())),
+            "IsLookToTarget" => {
+                let width = if n(0) > 0.0 { n(0) } else { 20.0 };
+                let id = self.turn_id.clone();
+                boolean(angle_in(0.0, width, self.angle_to(id.as_ref())))
+            }
             "TurnTo" => {
                 self.cmd.turn = true;
+                self.cmd.at = self.pos_of(a.first());
+                self.turn_id = a.first().cloned();
                 vec![]
             }
+            "TeamHelp_ValidateCall" | "TeamHelp_ValidateReply" | "ClearForceBattleGoal" | "ReqPlatoonState"
+            | "RegisterTriggerRegionObserver" | "RegisterTriggerRegion" | "SetEventMoveTarget" | "SetEnableEndureCancel_forGoal"
+            | "SetEventFlag" | "ClearCorpsePosTarget" => vec![],
             "RequestEmergencyQuickTurn" | "SetAIPredictionMoveTargetSpecifyTargetDir" | "PrintText"
             | "DbgSetLastActIdx" | "DbgSetLastKengekiActIdx" | "DeleteObserve" | "AddObserveArea"
             | "AddObserveRegion" | "AddObserveChrDmyArea" => vec![],
@@ -586,7 +755,32 @@ impl AiState {
             }
             Native::SpinStep | Native::Guard => goal.ez = goal.param(0).num(),
             Native::Approach | Native::Leave | Native::Sideway | Native::Keep => goal.start_bearing = bearing,
-            Native::Wait => {}
+            Native::Wait | Native::Stay | Native::BackToHome => {}
+            Native::ConfirmCaution => {
+                // FUN_1405c35a0: the look-around anim (CommonAttack 0x898, -1 life, turn 180 deg
+                // in 1.5 s, front 20 deg), then Wait for the time.
+                let (ez, target, time, wait_target) = (goal.param(0), goal.param(1), goal.param(2), goal.param(3));
+                let mut subs = Vec::new();
+                if ez.num().is_some_and(|e| e >= 0.0) {
+                    let p = vec![ez, target, Value::Num(9999.0), Value::Num(180.0), Value::Num(1.5), Value::Num(20.0)];
+                    subs.push(self.new_goal(Some(2200), -1.0, p));
+                }
+                let life = time.num().unwrap_or(0.0);
+                subs.push(self.new_goal(Some(2000), life, vec![wait_target]));
+                let goal = self.goal_mut(g);
+                goal.subs = subs;
+                goal.had_sub = true;
+            }
+        }
+    }
+
+    /// Native goals with an engine-side Terminate.
+    fn native_terminate(&mut self, g: u32, n: Native) {
+        if n == Native::ConfirmCaution && self.w.t_state == 1 {
+            // FUN_1405c3770: targeting vfuncs 0x28 / 0x30 / 0x38 / 0x40 (gap: taken as the sound,
+            // indication, memory and corpse slots).
+            let _ = g;
+            self.cmd.clear |= CLEAR_SOUND | CLEAR_INDICATION | CLEAR_MEMORY;
         }
     }
 
@@ -653,7 +847,11 @@ impl AiState {
             }
             Native::Approach | Native::Leave | Native::Sideway | Native::Keep => {
                 let goal = self.goal(g);
-                let d = self.dist();
+                // MoveToSomewhere / LeaveTarget move relative to their first param (a target or a
+                // point such as POINT_INITIAL); the others to the current target.
+                let target = matches!(n, Native::Approach | Native::Leave).then(|| goal.param(0));
+                let at = self.pos_of(target.as_ref());
+                let d = self.dist_to(target.as_ref());
                 let (mv, walk) = match n {
                     Native::Approach => {
                         if d <= goal.raw(2, 0.0) {
@@ -688,7 +886,32 @@ impl AiState {
                 self.cmd.mv = Some(mv);
                 self.cmd.walk = walk;
                 self.cmd.face = true;
+                self.cmd.at = at;
                 CONTINUE
+            }
+            Native::BackToHome => {
+                // gap: the engine's arrival radius; 1 m, the distance NonBattleAct accepts as home.
+                if (self.w.home - self.w.me).with_y(0.0).length() <= 1.0 {
+                    return SUCCESS;
+                }
+                if self.can_act(78) {
+                    self.cmd.mv = Some('F');
+                    self.cmd.walk = true;
+                    self.cmd.face = true;
+                    self.cmd.at = Some(self.w.home);
+                }
+                CONTINUE
+            }
+            Native::Stay => {
+                let t = self.goal(g).param(1);
+                if self.w.free && !is(Some(&t), self.k.target_self) && !angle_in(0.0, 20.0, self.angle_to(Some(&t))) {
+                    self.cmd.turn = true;
+                    self.cmd.at = self.pos_of(Some(&t));
+                }
+                CONTINUE
+            }
+            Native::ConfirmCaution => {
+                if self.goal(g).subs.is_empty() { SUCCESS } else { CONTINUE }
             }
             Native::Wait => {
                 if is(Some(&self.goal(g).param(0)), self.k.target_ene_0) && self.w.free {
@@ -809,8 +1032,11 @@ fn terminate(vm: &mut Vm, st: &mut AiState, g: u32) -> LuaResult<()> {
     for s in st.goal(g).subs.clone() {
         terminate(vm, st, s)?;
     }
-    if st.goal(g).kind.and_then(native).is_none() {
-        call_def(vm, st, g, Cb::Terminate, &[])?;
+    match st.goal(g).kind.and_then(native) {
+        Some(n) => st.native_terminate(g, n),
+        None => {
+            call_def(vm, st, g, Cb::Terminate, &[])?;
+        }
     }
     Ok(())
 }
@@ -889,24 +1115,42 @@ fn tick_goal(vm: &mut Vm, st: &mut AiState, g: u32, dt: f64) -> LuaResult<i32> {
     Ok(r)
 }
 
+/// Drops the plan: every top goal ends (Terminate), the logic runs again next.
 fn reset_root(vm: &mut Vm, st: &mut AiState) -> LuaResult<()> {
-    if let Some(r) = st.root {
+    for r in std::mem::take(&mut st.tops) {
         terminate(vm, st, r)?;
     }
     st.root = None;
     Ok(())
 }
 
-/// Offers an interrupt to the battle goal's Interrupt (Goal.Parry, Kengeki, ...).
-fn interrupt_goals(vm: &mut Vm, st: &mut AiState, kind: f64, sp: f64) -> LuaResult<bool> {
-    let root = match st.root {
-        Some(r) => r,
-        None => {
-            let r = st.new_goal(Some(st.battle_goal), -1.0, Vec::new());
-            st.root = Some(r);
-            r
-        }
+/// A new plan: the logic script's Main (ExecTableLogic -> Logic.Main) adds the top goals.
+/// Without a logic script the battle goal is the plan (the duel before stealth existed).
+fn plan(vm: &mut Vm, st: &mut AiState) -> LuaResult<()> {
+    st.top_queue.clear();
+    let exec = vm.get_global("ExecTableLogic");
+    let has_logic = match vm.get_global("g_LogicTable") {
+        Value::Table(t) => !t.borrow().get(&Value::Num(st.logic_id as f64)).is_nil(),
+        _ => false,
     };
+    if has_logic && !exec.is_nil() {
+        let logic = Value::Num(st.logic_id as f64);
+        vm.call(st, &exec, &[ai_obj(), logic])?;
+    } else {
+        let g = st.new_goal(Some(st.battle_goal), -1.0, Vec::new());
+        st.top_queue.push(g);
+    }
+    st.tops = std::mem::take(&mut st.top_queue);
+    st.root = st.tops.first().copied();
+    Ok(())
+}
+
+/// Offers an interrupt to the root goal's Interrupt (Goal.Parry, Kengeki, ...).
+fn interrupt_goals(vm: &mut Vm, st: &mut AiState, kind: f64, sp: f64) -> LuaResult<bool> {
+    if st.root.is_none() {
+        plan(vm, st)?;
+    }
+    let Some(root) = st.root else { return Ok(false) };
     st.interrupt = Some((kind, sp));
     let mut handled = Ok(false);
     if st.def(st.goal(root).kind).is_some_and(|d| !d.no_interrupt) {
@@ -932,7 +1176,7 @@ const FIRST: [&str; 5] = ["ai_define.lua", "goal_list.lua", "logic_list.lua", "e
 
 /// Script load order: aicommon.luabnd's files, then the character's battle goal from the
 /// first map luabnd that has it (the copies are byte-identical).
-fn script_order(dir: &Path, battle_goal: i64) -> Result<Vec<PathBuf>, String> {
+fn script_order(dir: &Path, battle_goal: i64, logic_id: i64) -> Result<Vec<PathBuf>, String> {
     let common = dir.join("aicommon.luabnd.d");
     let mut rest: Vec<PathBuf> = std::fs::read_dir(&common)
         .map_err(|e| format!("{}: {e}", common.display()))?
@@ -958,13 +1202,21 @@ fn script_order(dir: &Path, battle_goal: i64) -> Result<Vec<PathBuf>, String> {
         .find(|p| p.is_file())
         .ok_or_else(|| format!("{file} not in {}/m*.luabnd.d", dir.display()))?;
     out.push(battle);
+    // The logic script (NpcThinkParam logicId, e.g. 102000_logic.lua) if the maps have it.
+    let logic = format!("{logic_id:06}_logic.lua");
+    if let Some(p) = maps.iter().map(|m| m.join(&logic)).find(|p| p.is_file()) {
+        out.push(p);
+    }
     Ok(out)
 }
 
 impl Brain {
     /// `dir` is extracted/script (the unpacked luabnd folders).
-    pub fn load(dir: &Path, battle_goal: i64, think_id: i64, hit_radius: f32, seed: u32) -> Result<Self, String> {
-        let files = script_order(dir, battle_goal)?;
+    /// `think` is the NpcThinkParam row `think_id` (its battleGoalID / logicId pick the scripts).
+    pub fn load(dir: &Path, think_id: i64, think: &Json, hit_radius: f32, seed: u32) -> Result<Self, String> {
+        let battle_goal = think["battleGoalID"].as_i64().ok_or("NpcThinkParam row without battleGoalID")?;
+        let logic_id = think["logicId"].as_i64().unwrap_or(-1);
+        let files = script_order(dir, battle_goal, logic_id)?;
         let mut vm = Vm::new();
         for f in NATIVE_GLOBALS {
             vm.set_global(f, Value::Host(Rc::from(f)));
@@ -991,6 +1243,11 @@ impl Brain {
             observed: HashMap::new(),
             battle_goal,
             think_id,
+            logic_id,
+            think: think.clone(),
+            excel: HashMap::new(),
+            tops: Vec::new(),
+            turn_id: None,
             hit_radius,
             rng: rng | 1,
             k: Consts {
@@ -1004,7 +1261,12 @@ impl Brain {
                 int_parry: 24.0,
                 int_use_item: 12.0,
                 int_sp: 43.0,
-                target_type_normal: 3.0,
+                point_initial: 100.0,
+                point_init_pose: 111.0,
+                point_move_point: 103.0,
+                point_back_to_home: 125.0,
+                point_event: 102.0,
+                team_formation: 24.0,
             },
         };
         for path in &files {
@@ -1029,8 +1291,23 @@ impl Brain {
             int_parry: c("INTERUPT_ParryTiming", 24.0),
             int_use_item: c("INTERUPT_UseItem", 12.0),
             int_sp: c("INTERUPT_ActivateSpecialEffect", 43.0),
-            target_type_normal: c("AI_TARGET_TYPE__NORMAL_ENEMY", 3.0),
+            point_initial: c("POINT_INITIAL", 100.0),
+            point_init_pose: c("POINT_INIT_POSE", 111.0),
+            point_move_point: c("POINT_MOVE_POINT", 103.0),
+            point_back_to_home: c("POINT_BackToHome", 125.0),
+            point_event: c("POINT_EVENT", 102.0),
+            team_formation: c("TARGET_TEAM_FORMATION", 24.0),
         };
+        // GetExcelParam(AI_EXCEL_THINK_PARAM_TYPE__<field>) reads NpcThinkParam <field>.
+        let mut k = Value::Nil;
+        while let Some((name, v)) = vm.globals.borrow().next(&k) {
+            if let (Some(n), Some(id)) = (name.as_str(), v.num()) {
+                if let Some(field) = n.strip_prefix("AI_EXCEL_THINK_PARAM_TYPE__") {
+                    st.excel.insert(id as i64, field.to_owned());
+                }
+            }
+            k = name;
+        }
         let log = std::mem::take(&mut st.log);
         Ok(Brain { vm, st, log })
     }
@@ -1082,20 +1359,22 @@ impl Brain {
                 interrupt_goals(vm, st, int_sp, id as f64)?;
             }
         }
-        if std::mem::take(&mut st.replan) {
+        // A target-state change drops the plan (FUN_1405ab7d0 -> FUN_14061f500).
+        if std::mem::take(&mut st.replan) || s.t_replan {
             reset_root(vm, st)?;
         }
-        let root = match st.root {
-            Some(r) => r,
-            None => {
-                st.top_queue.clear();
-                let r = st.new_goal(Some(st.battle_goal), -1.0, Vec::new());
-                st.root = Some(r);
-                r
-            }
-        };
-        if tick_goal(vm, st, root, dt)? != CONTINUE {
-            reset_root(vm, st)?;
+        if st.root.is_none() {
+            plan(vm, st)?;
+        }
+        let Some(root) = st.root else { return Ok(()) };
+        let r = tick_goal(vm, st, root, dt)?;
+        // Top goals added while running (AddTopGoal from a goal) queue behind the plan.
+        let added = std::mem::take(&mut st.top_queue);
+        st.tops.extend(added);
+        if r != CONTINUE {
+            terminate(vm, st, root)?;
+            st.tops.retain(|&g| g != root);
+            st.root = st.tops.first().copied();
         }
         if std::mem::take(&mut st.replan) {
             reset_root(vm, st)?;
@@ -1166,12 +1445,23 @@ fn bind_goals(vm: &Vm, st: &mut AiState) {
 mod tests {
     use super::*;
 
-    fn brain() -> Option<Brain> {
+    /// NpcThinkParam row from the dumped params (extracted/json/params).
+    fn think(id: i64) -> Option<Json> {
+        let text = std::fs::read_to_string(crate::paths::root().join("extracted/json/params/NpcThinkParam.json")).ok()?;
+        let v: Json = serde_json::from_str(&text).ok()?;
+        v["rows"].as_array()?.iter().find(|r| r["id"].as_i64() == Some(id)).cloned()
+    }
+
+    fn load(think_id: i64, radius: f32, seed: u32) -> Option<Brain> {
         let dir = crate::paths::root().join("extracted/script");
         if !dir.join("aicommon.luabnd.d").exists() {
             return None;
         }
-        Some(Brain::load(&dir, 102000, 10200000, 0.5, 7).expect("load"))
+        Some(Brain::load(&dir, think_id, &think(think_id)?, radius, seed).expect("load"))
+    }
+
+    fn brain() -> Option<Brain> {
+        load(10200000, 0.5, 7)
     }
 
     #[test]
@@ -1180,7 +1470,7 @@ mod tests {
         let errors: Vec<_> = b.log.iter().filter(|l| !l.starts_with("stub:")).cloned().collect();
         assert!(errors.is_empty(), "{errors:#?}");
         // Far away and free: the battle goal must approach (move) or start an attack.
-        let mut s = Snapshot { dist: 8.0, free: true, hp_rate: 1.0, target_hp_rate: 1.0, sp: 1000.0, sp_rate: 1.0, ..Default::default() };
+        let mut s = Snapshot { dist: 8.0, free: true, hp_rate: 1.0, target_hp_rate: 1.0, sp: 1000.0, sp_rate: 1.0, ..Snapshot::battle() };
         s.sp_self.insert(200004); // battle state
         let mut acted = false;
         for _ in 0..30 {
@@ -1197,12 +1487,8 @@ mod tests {
 
     #[test]
     fn ochimusha_loads_and_acts() {
-        let dir = crate::paths::root().join("extracted/script");
-        if !dir.join("aicommon.luabnd.d").exists() {
-            return;
-        }
-        let mut b = Brain::load(&dir, 101000, 10100000, 0.4, 3).expect("load");
-        let mut s = Snapshot { dist: 2.0, free: true, hp_rate: 1.0, target_hp_rate: 1.0, sp: 600.0, sp_rate: 1.0, ..Default::default() };
+        let Some(mut b) = load(10100000, 0.4, 3) else { return };
+        let mut s = Snapshot { dist: 2.0, free: true, hp_rate: 1.0, target_hp_rate: 1.0, sp: 600.0, sp_rate: 1.0, ..Snapshot::battle() };
         s.sp_self.insert(200004);
         let acted = (0..60).any(|_| {
             let c = b.tick(&s, 1.0 / 60.0);
@@ -1218,7 +1504,7 @@ mod tests {
     fn ai_stubs() {
         let Some(mut b) = brain() else { return };
         for i in 0..2000 {
-            let mut s = Snapshot { dist: (i % 9) as f32, free: i % 3 == 0, hp_rate: 1.0, target_hp_rate: 1.0, sp: 1000.0, sp_rate: 1.0, ..Default::default() };
+            let mut s = Snapshot { dist: (i % 9) as f32, free: i % 3 == 0, hp_rate: 1.0, target_hp_rate: 1.0, sp: 1000.0, sp_rate: 1.0, ..Snapshot::battle() };
             s.sp_self.insert(200004);
             if i % 50 == 0 {
                 s.sp_self.insert([200200, 200201, 200205, 200206, 200210, 200211, 200215][(i / 50) % 7]);
@@ -1235,7 +1521,7 @@ mod tests {
     fn parry_timing_runs_goal_parry() {
         let Some(mut b) = brain() else { return };
         // Free, facing the player 2 m away, no clash history: Goal.Parry -> EndureAttack 3100 (guard).
-        let mut s = Snapshot { dist: 2.0, free: true, hp_rate: 1.0, target_hp_rate: 1.0, sp: 1000.0, sp_rate: 1.0, parry_timing: true, ..Default::default() };
+        let mut s = Snapshot { dist: 2.0, free: true, hp_rate: 1.0, target_hp_rate: 1.0, sp: 1000.0, sp_rate: 1.0, parry_timing: true, ..Snapshot::battle() };
         s.sp_self.insert(200004);
         s.sp_self.insert(221000); // parry rank 0 (c1020 resident)
         let c = b.tick(&s, 1.0 / 60.0);
@@ -1252,7 +1538,7 @@ mod tests {
         let Some(mut b) = brain() else { return };
         // Enemy got deflected (200200) while 1.5 m away: Kengeki picks a counter
         // (3060/3061/3063, ComboFinal) that may start at the bound anim's flag 23.
-        let mut s = Snapshot { dist: 1.5, hp_rate: 1.0, target_hp_rate: 1.0, sp: 1000.0, sp_rate: 1.0, interrupted: true, ..Default::default() };
+        let mut s = Snapshot { dist: 1.5, hp_rate: 1.0, target_hp_rate: 1.0, sp: 1000.0, sp_rate: 1.0, interrupted: true, ..Snapshot::battle() };
         s.sp_self.insert(200004);
         s.sp_self.insert(200200);
         let c = b.tick(&s, 1.0 / 60.0);
