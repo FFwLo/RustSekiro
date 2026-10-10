@@ -1,5 +1,5 @@
 //! Throw geometry trace, the game-side twin of tools/rec_throw.py. With
-//! SHINOBI_THROW_TRACE=<kind> (front, behind, vault) the game breaks the enemy, puts it in front
+//! SHINOBI_THROW_TRACE=<kind> (front, behind, stealth, plunge, vault) the game breaks the enemy, puts it in front
 //! of Wolf (facing him, or away from him for "behind"), presses the action and prints one line per
 //! fixed frame: both anims, the enemy's distance, its position in Wolf's frame (forward / right)
 //! and the yaw difference, then exits. SHINOBI_THROW_DIST sets the starting distance (m).
@@ -46,6 +46,8 @@ fn step(
     enemy_e: Query<Entity, With<Enemy>>,
     mut exit: MessageWriter<AppExit>,
     mut commands: Commands,
+    wolf_dmy: Query<(&crate::model::Dummies, &GlobalTransform), With<Player>>,
+    dmy_g: Query<&GlobalTransform, (Without<Player>, Without<Enemy>)>,
 ) {
     tr.frame += 1;
     // SHINOBI_THROW_SHOTS=<dir>: screenshots; SHINOBI_THROW_SHOT_RANGE="from,to,step" (frames after
@@ -70,12 +72,26 @@ fn step(
         pa.play("StandIdle", "");
         ptf.translation.x = 0.0;
         ptf.translation.z = 0.0;
-        let behind = tr.kind == "behind";
+        let behind = tr.kind == "behind" || tr.kind == "stealth";
         ea.yaw = if behind { std::f32::consts::PI } else { 0.0 };
         etf.translation.x = 0.0;
         etf.translation.z = tr.dist;
         if tr.kind == "idle" || tr.kind == "jump" {
             etf.translation.z = 30.0;
+        } else if tr.kind == "plunge" {
+            // Unaware, back turned, Wolf falling onto it from 3 m: the stealth plunge 0030 / 0031.
+            ea.yaw = std::f32::consts::PI;
+            e.make_unaware(&mut ea);
+            pa.play_state(&combat.player, "VerticalGroundJumpStart");
+            pa.t = 0.5;
+            pa.prev_t = 0.5;
+            pa.airborne = true;
+            pa.vel_y = -1.0;
+            ptf.translation.y += 3.0;
+            ptf.translation.z = tr.dist - 0.6;
+        } else if tr.kind == "stealth" {
+            // Not broken, never noticed Wolf, back turned: the stealth deathblow 0020 / 0021.
+            e.make_unaware(&mut ea);
         } else if tr.kind != "kick" && tr.kind != "runkick" {
             ea.posture = ea.posture_max;
             e.on_posture_break(&mut ea, &combat, behind, 8.0);
@@ -149,6 +165,15 @@ fn step(
         etf.translation.z,
         ea.yaw.to_degrees()
     );
+    // SHINOBI_THROW_DMY=<id>: that Wolf dummy in Wolf's frame (fwd / right), the last drawn pose.
+    if let (Some(id), Ok((dm, wg))) = (std::env::var("SHINOBI_THROW_DMY").ok().and_then(|v| v.parse::<i16>().ok()), wolf_dmy.single()) {
+        if let Some(g) = dm.0.get(&id).and_then(|e| dmy_g.get(*e).ok()) {
+            let dd = (g.translation() - wg.translation()).with_y(0.0);
+            let dfwd = dd.dot(fwd);
+            let dright = dd.dot(right);
+            println!("DMY {:4} {id} fwd {dfwd:+.2} right {dright:+.2}", tr.frame - s);
+        }
+    }
     if let Ok((oc, ct)) = cam.single() {
         let oc = &*oc;
         let (y, x, _) = ct.rotation.to_euler(EulerRot::YXZ);

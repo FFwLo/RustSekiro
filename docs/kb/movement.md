@@ -103,3 +103,9 @@ turn to the stick and ForwardGroundJump (row 101). Test locked_on_jumps_go_where
 - tools/trace_slide.py: planted-foot speed per trace step. Now 0.01-0.08 m/s for every walk, locked run, guard walk.
   Gap: forward run loops (a000_000500 / a010_000500) still slip ~0.9 m/s: the clip's planted foot moves back
   4.35 m/s against 5.55 root; Sekiro has foot IK with foot locking (hkbFootIkControlsModifier) - not done.
+- 2026-10-10 slide: crouch while ref 1 (sprint) is up -> W_SprintToCrouchReady (a000_216010, its root motion
+  slides), at its end TurnAngle > 0 -> SprintToCrouchLeft (216020) else Right (216021), crouched (HKS
+  c0000_transition.lua 4498 / 405). gap: ACTION_UNLOCK_TYPE_SPRINT_TO_CROUCH (26) taken as unlocked.
+- 2026-10-10 sprint deflect: SprintToDeflectGuard (a050_203001) slides 3.04 m on root motion and turns only
+  by TAE SetTurnSpeed (180 f3-6, 360 f6-9); Sv1 snapped Wolf to the target first, so the slide carried him
+  into the enemy (user: "I launch to the enemy"). HKS BEH_A_DEFLECT_GUARD_START sets no facing; now no snap.

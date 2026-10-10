@@ -19,6 +19,7 @@ use crate::ai::{Brain, Snapshot};
 use crate::config::GameConfig;
 use crate::data::Combat;
 use crate::player::Player;
+use crate::stealth::{self, Targeting};
 
 /// Fallback c1020 attack strings (Goal.Act01..07 of 102000_battle.lua: 3000-3002 combo, 3004-3005, 3006, 3010).
 const COMBOS: &[&[&str]] = &[
@@ -38,8 +39,6 @@ const AI_CANCEL_FLAGS: [i64; 4] = [23, 86, 79, 78];
 pub const FLAG_AI_NOTIFY: i64 = 63;
 /// PC_ATTACK_DIST_STAND (ai_define): standing player attack reach as the AI sees it.
 const PC_ATTACK_DIST_STAND: f32 = 3.4;
-/// Battle-state SpEffect the engine keeps on NPCs in combat (Goal.Interrupt checks it).
-const SP_BATTLE_STATE: i64 = 200004;
 /// SpEffect stateInfo 352: posture display "collapsed" (deathblow available).
 const STATE_INFO_COLLAPSED: i64 = 352;
 
@@ -49,8 +48,6 @@ enum Mode {
     Ai,
     Broken(f32),
     Dead(f32),
-    /// Has not noticed Wolf (stealth): the awareness meter 0..1.
-    Unaware(f32),
 }
 
 /// ChrActionFlag 69 "ThrowType5": on ThrowDef reactions, where a killed defender switches to
@@ -64,6 +61,9 @@ pub struct Enemy {
     throw_death: Option<i64>,
     /// Passive enemies walk up but never attack (toggle with T) - for practising timing at your own pace.
     pub aggressive: bool,
+    /// Game time until which a prosthetic cool-time SpEffect holds (the firecracker's 107100,
+    /// effectEndurance 30 s): no new burst reaction before it.
+    pub burst_until: f32,
     cooldown: f32,
     rng: u32,
     /// "ConsecutiveGuardCount" and AI timer 13 (1 s) from common_func_NTC.lua.
@@ -87,7 +87,20 @@ pub struct Enemy {
     pub ai_desc: String,
     /// Fallback combo when no AI scripts are available: (combo, step).
     fallback: Option<(usize, usize)>,
+    /// What it knows of Wolf (stealth.rs): NONE / CAUTION / FIND / BATTLE and the target slots.
+    pub targeting: Targeting,
+    /// AI-state SpEffect: 200000 default, 200001 caution (non-battle), 200002 caution (battle),
+    /// 200004 found / battle. The enemy's alert anims set it in their TAE (e.g. c1020 1000 /
+    /// 1010: TAE 66, 1040 / 401020: TAE 401) and it lasts (effectEndurance -1) until replaced;
+    /// c9997's HKS reads it (UpdateAIState) to pick the Idle / Walk / Turn variants.
+    ai_sp: i64,
+    /// Home (POINT_INITIAL) and its facing yaw (POINT_INIT_POSE), taken where it stands when it
+    /// starts (re)thinking.
+    home: Option<(Vec3, f32)>,
 }
+
+/// The AI-state SpEffects (c9997 SP_EFFECT_REF_AI_* refs 1000000-1000003).
+const AI_STATE_SP: [i64; 4] = [200000, 200001, 200002, 200004];
 
 impl Enemy {
     pub fn is_broken(&self) -> bool {
@@ -98,16 +111,22 @@ impl Enemy {
         matches!(self.mode, Mode::Dead(_))
     }
 
-    /// Has not noticed Wolf: open to the stealth deathblows (ThrowParam 0020 behind, 0030 plunge).
+    /// Has not found Wolf (target state NONE or CAUTION): open to the stealth deathblows
+    /// (ThrowParam 0020 behind, 0030 plunge).
     pub fn is_unaware(&self) -> bool {
-        matches!(self.mode, Mode::Unaware(_))
+        matches!(self.mode, Mode::Ai) && self.targeting.state < stealth::FIND
     }
 
-    /// Back to not having noticed Wolf: the default (non-battle) idle a000_000000.
+    /// Back to never having noticed Wolf: no targets, the default AI state (200000) and its
+    /// idle a000_000000; home is where it stands now.
     pub fn make_unaware(&mut self, a: &mut Actor) {
-        self.mode = Mode::Unaware(0.0);
+        self.mode = Mode::Ai;
+        self.targeting.reset();
+        self.ai_sp = AI_STATE_SP[0];
+        self.home = None;
         self.cur_ez = None;
         self.fallback = None;
+        self.interrupt();
         a.play("IdleDefault", "a000_000000");
         a.move_vel = Vec3::ZERO;
     }
@@ -178,10 +197,8 @@ impl Enemy {
         if matches!(self.mode, Mode::Dead(_) | Mode::Broken(_)) {
             return;
         }
-        // Hit (or blocking) while unaware: it knows now.
-        if self.is_unaware() {
-            self.mode = Mode::Ai;
-        }
+        // Hurt (or made to block) by Wolf: he is a battle target now (target reason 4).
+        self.targeting.damaged(combat.param("NpcThinkParam", combat.foe.think_id));
         if a.play_state(&combat.enemy, state) {
             self.interrupt();
             a.move_vel = Vec3::ZERO;
@@ -315,8 +332,36 @@ impl Plugin for EnemyPlugin {
         app.insert_non_send(Brains::default())
             .init_resource::<EnemyDebug>()
             .add_systems(Startup, spawn_enemy)
-            .add_systems(FixedUpdate, (parry_interrupt, think).chain().in_set(ActorSet::Decide))
+            .add_systems(FixedUpdate, (stealth_env_start, parry_interrupt, think).chain().in_set(ActorSet::Decide))
             .add_systems(Update, toggle_aggression.run_if(resource_exists::<ButtonInput<KeyCode>>));
+    }
+}
+
+/// SHINOBI_STEALTH=far | behind | close: start in a stealth setup instead of the duel (for checks):
+/// far = 22 m ahead facing Wolf (the debug menu's StealthFar), behind = 5 m ahead, back turned.
+/// close: like behind, 1.5 m away (in deathblow reach).
+fn stealth_env_start(
+    mut done: Local<bool>,
+    player: Single<(&Actor, &Transform), (With<Player>, Without<Enemy>)>,
+    mut q: Query<(&mut Enemy, &mut Actor, &mut Transform), Without<Player>>,
+) {
+    if *done {
+        return;
+    }
+    *done = true;
+    let Ok(mode) = std::env::var("SHINOBI_STEALTH") else { return };
+    let (pa, ptf) = *player;
+    for (mut e, mut a, mut tf) in &mut q {
+        let far = mode == "far";
+        let dist = match mode.as_str() {
+            "far" => 22.0,
+            "close" => 1.5,
+            _ => 5.0,
+        };
+        tf.translation = ptf.translation + pa.forward() * dist;
+        a.yaw = if far { pa.yaw + std::f32::consts::PI } else { pa.yaw };
+        e.make_unaware(&mut a);
+        e.aggressive = true;
     }
 }
 
@@ -347,6 +392,7 @@ fn spawn_enemy(mut commands: Commands, combat: Res<Combat>, config: Res<GameConf
         Enemy {
             mode: Mode::Ai,
             aggressive: false,
+            burst_until: 0.0,
             cooldown: 1.5,
             rng: 0x9E37_79B9,
             guard_count: 0,
@@ -363,6 +409,15 @@ fn spawn_enemy(mut commands: Commands, combat: Res<Combat>, config: Res<GameConf
             prev_sp: HashSet::new(),
             ai_desc: String::new(),
             fallback: None,
+            // The duel: it starts already fighting Wolf (a battle target, AI state 200004).
+            // The debug menu's stealth setup (make_unaware) starts it from nothing instead.
+            targeting: {
+                let mut t = Targeting::new(0x2545_F491);
+                t.damaged(combat.param("NpcThinkParam", combat.foe.think_id));
+                t
+            },
+            ai_sp: 200004,
+            home: None,
         },
         actor,
         Name::new("Samurai General"),
@@ -505,47 +560,74 @@ fn parry_interrupt(
     }
 }
 
-/// Stealth perception from NpcThinkParam (the enemy's think row): Wolf in the normal sight cone
-/// (eye_dist_normal, eye_ang_left/right/upper/bottom_normal around the enemy's facing) raises the
-/// awareness meter; a Wolf TAE CreateAISound (237) whose AiSoundParam radius reaches the enemy
-/// is noticed at once. Returns (noticed, meter).
-/// gap: the exe's meter fill rate is not traced; here it fills in 0.5 s at eye_BeginDist_normal
-/// growing to 3 s at eye_dist_normal, and drains at 0.5 /s out of sight.
-fn perceive(combat: &Combat, pa: &Actor, wolf: Vec3, a: &Actor, pos: Vec3, m: f32, dt: f32) -> (bool, f32) {
-    let think = combat.param("NpcThinkParam", combat.foe.think_id);
-    let f = |k: &str, d: f32| think[k].as_f64().map_or(d, |v| v as f32);
-    let to = wolf - pos;
-    let flat = to.with_y(0.0);
-    let dist = flat.length();
-    let fwd = a.forward();
-    let side = flat.dot(fwd.cross(Vec3::Y));
-    let yaw = side.atan2(flat.dot(fwd)).to_degrees();
-    let pitch = to.y.atan2(dist.max(1e-3)).to_degrees();
-    let in_cone = yaw >= -f("eye_ang_left_normal", 30.0)
-        && yaw <= f("eye_ang_right_normal", 30.0)
-        && pitch <= f("eye_ang_upper_normal", 10.0)
-        && pitch >= -f("eye_ang_bottom_normal", 15.0);
-    let (begin, far) = (f("eye_BeginDist_normal", 4.0), f("eye_dist_normal", 20.0));
-    let seen = in_cone && dist <= far;
-    // Sounds Wolf's TAE made this step (CreateAISound2, AiSoundParam radius).
-    let heard = !pa.anim.is_empty()
-        && combat.player.anim(&pa.anim).is_some_and(|an| {
-            an.events.iter().filter(|e| e.kind == 237 && e.start > pa.prev_t && e.start <= pa.t).any(|e| {
-                let row = combat.param("AiSoundParam", e.arg_i64("AISoundID").unwrap_or(-1));
-                row["radius"].as_f64().is_some_and(|r| (to.length() as f64) <= r)
-            })
-        });
-    let fill = 0.5 + 2.5 * ((dist - begin) / (far - begin).max(0.1)).clamp(0.0, 1.0);
-    let m = if seen { m + dt / fill } else { (m - 0.5 * dt).max(0.0) };
-    (heard || m >= 1.0, m)
+/// Wolf as the enemies see him (stealth.rs): his feet, capsule radius and the sight factors of
+/// his active SpEffects (crouch 109200 cuts sight distances 20 %).
+fn wolf_seen(combat: &Combat, pa: &Actor, pos: Vec3) -> stealth::Seen {
+    // The TAE of the clip on screen: crouch idle / moves are procedural states whose clips
+    // carry the stealth SpEffect 109200.
+    let (key, t) = pa.shown_clip(&combat.player);
+    let sp: Vec<&crate::data::SpEffect> = combat.player.sp_effects_at(&key, t).into_iter().map(|(_, e)| e).collect();
+    let feet = pos - Vec3::Y * (crate::player::CAPSULE_HALF_HEIGHT + 0.05);
+    stealth::Seen::new(feet, crate::player::CAPSULE_RADIUS, &sp)
+}
+
+/// The AI sounds Wolf's TAE made this step (CreateAISound, TAE 237): (AiSoundParam id, rank)
+/// of each whose radius reaches `listener`. Rows with bSpEffectEnable scale the radius by Wolf's
+/// SpEffects' hearingSearchEnemyRate (Covert B 150010: 0.5). gap: that scaling is read from the
+/// field names, not traced in the exe; the listener's ear_dist / ear_soundcut_dist are not
+/// applied.
+fn wolf_sounds(combat: &Combat, pa: &Actor, wolf: Vec3, listener: Vec3) -> Vec<(i64, i64)> {
+    // The clip on screen: walk / run loops are procedural states whose clips emit for their whole
+    // length (walk a000_000200: 1000 r 0.5 m, run 000500: 1010 r 2 m, crouch walk 005200: 1001
+    // r 0.25 m, crouch run 005500: 1011 r 0.5 m), refreshed while the event is active.
+    let (key, t) = pa.shown_clip(&combat.player);
+    let Some(an) = combat.player.anim(&key) else { return Vec::new() };
+    let hearing: f64 = combat.player.sp_effects_at(&key, t).iter().map(|(_, e)| e.hearing_search_enemy_rate as f64).product();
+    let started = |e: &&crate::data::Event| !pa.anim.is_empty() && e.start > pa.prev_t && e.start <= pa.t;
+    an.events
+        .iter()
+        .filter(|e| e.kind == 237 && (e.active(t) || started(e)))
+        .filter_map(|e| {
+            let id = e.arg_i64("AISoundID")?;
+            let row = combat.param("AiSoundParam", id);
+            let scale = if row["bSpEffectEnable"].as_i64() == Some(1) { hearing } else { 1.0 };
+            let r = row["radius"].as_f64()? * scale;
+            ((wolf.distance(listener) as f64) <= r).then(|| (id, row["rank"].as_i64().unwrap_or(0)))
+        })
+        .collect()
+}
+
+/// c9997's state-name suffix for the AI state (UpdateAIState -> IndexAiState).
+fn ai_suffix(ai_sp: i64) -> &'static str {
+    match ai_sp {
+        200000 => "Default",
+        200001 => "CautionNoBattle",
+        200002 => "CautionBattle",
+        _ => "Battle",
+    }
+}
+
+/// The locomotion state for a move request in this AI state (c9997 HKS move events: e.g.
+/// W_WalkFrontCautionNoBattle), falling back to walking, then to the battle variant when the
+/// character has no such anim (c1020 has no RunFrontCautionBattle or WalkLeftDefault).
+fn loco_state(d: &crate::data::CharData, ai_sp: i64, mv: char, walk: bool) -> String {
+    let base = match (mv, walk) {
+        ('F', false) => "RunFront",
+        ('F', true) => "WalkFront",
+        ('B', _) => "WalkBack",
+        ('L', _) => "WalkLeft",
+        _ => "WalkRight",
+    };
+    let sfx = ai_suffix(ai_sp);
+    [format!("{base}{sfx}"), if mv == 'F' { format!("WalkFront{sfx}") } else { String::new() }, format!("{base}Battle")]
+        .into_iter()
+        .find(|s| !s.is_empty() && d.anim_key(s).is_some())
+        .unwrap_or_else(|| format!("{base}Battle"))
 }
 
 /// Idle / locomotion states: any AI action may start.
 fn is_free_state(state: &str) -> bool {
-    matches!(
-        state,
-        "IdleBattle" | "WalkFrontBattle" | "WalkBackBattle" | "WalkLeftBattle" | "WalkRightBattle" | "RunFrontBattle" | "Approach" | "StandIdle"
-    )
+    state.starts_with("Idle") || state.starts_with("Walk") || state.starts_with("Run") || matches!(state, "Approach" | "StandIdle")
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -611,31 +693,49 @@ fn think(
                 }
                 continue;
             }
-            Mode::Unaware(m) => {
-                if a.state == "IdleDefault" && a.t >= d.length(&a.anim) {
-                    a.t = 0.0;
-                    a.prev_t = 0.0;
-                }
-                let (notice, m) = perceive(&combat, pa, ptf.translation, &a, tf.translation, m, dt);
-                if notice {
-                    // Noticed: TransToBattleFromDefault (a000_001040; live, before the Ochimusha's
-                    // first attack), then the battle AI.
-                    if !a.play_state(d, "TransToBattleFromDefault") {
-                        a.procedural("IdleBattle");
-                    }
-                    e.mode = Mode::Ai;
-                    e.cooldown = 0.5;
-                    e.interrupt();
-                    if let Some(log) = log.as_mut() {
-                        log.push("enemy noticed you", Color::srgb(1.0, 0.6, 0.2));
-                    }
-                } else {
-                    e.mode = Mode::Unaware(m);
-                }
-                continue;
-            }
             Mode::Ai => {}
         }
+
+        // What it knows of Wolf (stealth.rs), every frame: sounds, then sight and the state.
+        let think_row = combat.param("NpcThinkParam", combat.foe.think_id);
+        let (home, home_yaw) = *e.home.get_or_insert((tf.translation, a.yaw));
+        let seen = wolf_seen(&combat, pa, ptf.translation);
+        let feet = tf.translation - Vec3::Y * (crate::player::CAPSULE_HALF_HEIGHT + 0.05);
+        for (id, rank) in wolf_sounds(&combat, pa, ptf.translation, tf.translation) {
+            e.targeting.hear(think_row, seen.pos, id, rank);
+        }
+        e.targeting.update(think_row, feet, a.forward(), &seen, dt);
+        if e.targeting.changed() {
+            if let Some(log) = log.as_mut() {
+                let (text, color) = match e.targeting.state {
+                    stealth::NONE => ("enemy: lost you", Color::srgb(0.6, 0.8, 0.6)),
+                    stealth::CAUTION => ("enemy: alerted (searching)", Color::srgb(1.0, 0.85, 0.2)),
+                    stealth::FIND => ("enemy: found you", Color::srgb(1.0, 0.45, 0.15)),
+                    _ => ("enemy: fighting", Color::srgb(1.0, 0.25, 0.15)),
+                };
+                log.push(text, color);
+            }
+        }
+        // The AI-state SpEffect the playing anim's TAE sets (kept until replaced).
+        if !a.anim.is_empty() {
+            let set = d
+                .events_at(&a.anim, a.t)
+                .filter(|ev| matches!(ev.kind, 66 | 67 | 401))
+                .filter_map(|ev| ev.arg_i64("SpEffectID"))
+                .find(|id| AI_STATE_SP.contains(id));
+            if let Some(id) = set {
+                e.ai_sp = id;
+            }
+        }
+        // Idles loop.
+        if a.state.starts_with("Idle") && !a.anim.is_empty() && a.t >= d.length(&a.anim) {
+            a.t = 0.0;
+            a.prev_t = 0.0;
+        }
+        // The current target: Wolf, or the spot it is searching.
+        let t_pos = e.targeting.target_pos(ptf.translation).unwrap_or(ptf.translation);
+        let to_t = (t_pos - tf.translation).with_y(0.0);
+        let t_yaw = f32::atan2(-to_t.x, -to_t.z);
 
         let len = d.length(&a.anim);
         let ended = !a.anim.is_empty() && a.t >= len;
@@ -661,7 +761,7 @@ fn think(
             && d.events_at(&a.anim, a.t).any(|e| e.kind == 703 && e.args.get("IsEnable").and_then(|v| v.as_bool()).unwrap_or(false));
         if e.cur_ez.is_some() && !ended && !fixed {
             if let Some(speed) = d.turn_speed(&a.anim, a.t, true) {
-                a.yaw = turn_toward(a.yaw, want_yaw, speed.to_radians() * dt);
+                a.yaw = turn_toward(a.yaw, t_yaw, speed.to_radians() * dt);
             }
         }
 
@@ -672,8 +772,10 @@ fn think(
                 continue;
             }
         }
-        // Passive (deflect practice), or the fallback when the AI scripts are missing.
-        if !e.aggressive || brains.failed {
+        // Passive (deflect practice) once fighting, or the fallback when the AI scripts are
+        // missing. Before it has found Wolf the real AI runs either way (stealth).
+        // Passive waits for its alert anim to have set the battle AI state (200004).
+        if (!e.aggressive && e.targeting.state == stealth::BATTLE && e.ai_sp == 200004) || brains.failed {
             passive_or_fallback(&mut e, &mut a, d, &config, dist, want_yaw, dt, free, ended);
             continue;
         }
@@ -681,7 +783,7 @@ fn think(
         if !brains.map.contains_key(&entity) {
             let dir = crate::paths::root().join("extracted/script");
             let radius = npc["hitRadius"].as_f64().unwrap_or(0.5) as f32;
-            match Brain::load(&dir, combat.foe.battle_goal, combat.foe.think_id, radius, e.rng) {
+            match Brain::load(&dir, combat.foe.think_id, think_row, radius, e.rng) {
                 Ok(b) => {
                     for l in b.log.iter().filter(|l| !l.starts_with("stub:")) {
                         warn!("AI: {l}");
@@ -699,19 +801,20 @@ fn think(
         // World snapshot for the brain.
         let fwd = a.forward();
         let right = fwd.cross(Vec3::Y);
-        let dir = to_player.normalize_or_zero();
+        let dir = to_t.normalize_or_zero();
         let mut sp_self: HashSet<i64> = a.resident.iter().copied().collect();
         sp_self.extend(d.sp_effects_at(&a.anim, a.t).iter().map(|(id, _)| *id));
         sp_self.extend(e.clash.iter().map(|c| c.0));
-        sp_self.insert(SP_BATTLE_STATE);
+        sp_self.insert(e.ai_sp);
         let sp_target: HashSet<i64> = combat.player.sp_effects_at(&pa.anim, pa.t).iter().map(|(id, _)| *id).collect();
         let sp_new: Vec<i64> = sp_self.iter().chain(sp_target.iter()).filter(|id| !e.prev_sp.contains(*id)).copied().collect();
         e.prev_sp = sp_self.iter().chain(sp_target.iter()).copied().collect();
         let playing_ez = e.cur_ez.filter(|ez| format!("a000_{ez:06}") == a.anim);
+        let tg = e.targeting.clone();
         let snap = Snapshot {
-            dist,
+            dist: to_t.length(),
             angle: dir.dot(right).atan2(dir.dot(fwd)).to_degrees(),
-            bearing: (-to_player.x).atan2(-to_player.z).to_degrees(),
+            bearing: (-to_t.x).atan2(-to_t.z).to_degrees(),
             target_guard: pa.state.contains("Guard"),
             sp_self,
             sp_target,
@@ -731,6 +834,19 @@ fn think(
             parry_timing: std::mem::take(&mut e.parry_timing),
             guard_count: e.guard_count(),
             target_use_item: pa.state.starts_with("ItemGourd") && pa.prev_t == 0.0 && pa.t > 0.0,
+            me: tf.translation,
+            fwd,
+            home,
+            home_fwd: Vec3::new(-home_yaw.sin(), 0.0, -home_yaw.cos()),
+            t_state: tg.state,
+            t_prev: tg.prev_state,
+            t_kind: tg.kind,
+            t_changed: tg.changed(),
+            visible: tg.normal.is_some_and(|n| n.visible),
+            forgetting: tg.forgetting_time(think_row),
+            sound_id: tg.sound.map_or(0, |s| s.id),
+            sound_rank: tg.sound.map_or(0, |s| s.rank),
+            t_replan: tg.replan,
         };
         let brain = brains.map.get_mut(&entity).unwrap();
         let cmd = brain.tick(&snap, dt);
@@ -740,6 +856,24 @@ fn think(
             }
         }
         e.ai_desc = brain.describe();
+        let c = cmd.clear;
+        if c & crate::ai::CLEAR_ENEMY != 0 {
+            e.targeting.clear_enemy();
+        }
+        if c & crate::ai::CLEAR_SOUND != 0 {
+            e.targeting.clear_sound();
+        }
+        if c & crate::ai::CLEAR_INDICATION != 0 {
+            e.targeting.clear_indication();
+        }
+        if c & crate::ai::CLEAR_MEMORY != 0 {
+            e.targeting.clear_memory();
+        }
+        // Moves and turns are toward the request's point, else the current target.
+        let goal_yaw = cmd.at.map_or(t_yaw, |p| {
+            let v = (p - tf.translation).with_y(0.0);
+            f32::atan2(-v.x, -v.z)
+        });
 
         // Carry out the request.
         let move_ok = free || d.flag(&a.anim, a.t, FLAG_AI_MOVE);
@@ -757,24 +891,31 @@ fn think(
                 e.ez_failed = Some(ez);
             }
         } else if let (Some(mv), true) = (cmd.mv, move_ok) {
-            let state = match (mv, cmd.walk) {
-                ('F', false) => "RunFrontBattle",
-                ('F', true) => "WalkFrontBattle",
-                ('B', _) => "WalkBackBattle",
-                ('L', _) => "WalkLeftBattle",
-                _ => "WalkRightBattle",
-            };
+            let state = loco_state(d, e.ai_sp, mv, cmd.walk);
             if a.state != state || ended {
-                a.play_state(d, state);
+                a.play_state(d, &state);
             }
             e.cur_ez = None;
         } else if free && (ended || a.state.starts_with("Walk") || a.state.starts_with("Run")) {
-            a.procedural("IdleBattle");
+            // The idle of its AI state (c9997 IdleTransition -> ANIME_ID_IDLE_DEFAULT 0 /
+            // _CAUTION_NO_BATTLE 100000 / _CAUTION_BATTLE 200000 / _BATTLE 400000).
+            let idle = match e.ai_sp {
+                200000 => Some(0),
+                200001 => Some(100000),
+                200002 => Some(200000),
+                _ => None,
+            }
+            .map(|id| format!("a000_{id:06}"))
+            .filter(|k| d.anim(k).is_some());
+            match idle {
+                Some(k) => a.play(&format!("Idle{}", ai_suffix(e.ai_sp)), &k),
+                None => a.procedural("IdleBattle"),
+            }
             a.move_vel = Vec3::ZERO;
             e.cur_ez = None;
         }
         if (cmd.face || cmd.turn) && (free || cmd.mv.is_some()) {
-            a.yaw = turn_toward(a.yaw, want_yaw, turn_rate.to_radians() * dt);
+            a.yaw = turn_toward(a.yaw, goal_yaw, turn_rate.to_radians() * dt);
         }
     }
 }

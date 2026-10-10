@@ -803,12 +803,12 @@ fn quick_shuriken_throw_reaches_the_enemy() {
     for _ in 0..60 {
         app.update();
         out = log_text(&app);
-        if out.contains("shuriken hit") || out.contains("blocks the shuriken") || out.contains("deflects the shuriken") {
+        if out.contains("hit: -") || out.contains("blocks the shuriken") || out.contains("deflects the shuriken") {
             break;
         }
     }
-    assert!(out.contains("shuriken ("), "{out}");
-    assert!(out.contains("shuriken hit") || out.contains("blocks the shuriken") || out.contains("deflects the shuriken"), "{out}");
+    assert!(out.contains("Loaded Shuriken ("), "{out}");
+    assert!(out.contains("hit: -") || out.contains("blocks the shuriken") || out.contains("deflects the shuriken"), "{out}");
     let world = app.world_mut();
     let mut q = world.query::<&Player>();
     assert_eq!(q.single(world).unwrap().emblems, 14);
@@ -2137,17 +2137,20 @@ fn guard_release_while_moving_keeps_running() {
 }
 
 #[test]
-fn behind_deathblow_turns_with_the_enemy() {
-    // a200_511200's root yaw (Ochimusha behind deathblow) is keyed across the +-pi seam; exported
-    // the short way it turns +180 deg with the enemy's ThrowDef13200 instead of -270.
+fn behind_deathblow_root_yaw_is_played_as_stored() {
+    // a200_511200's root yaw (Ochimusha behind deathblow) is keyed across the +-pi seam: +90 deg at
+    // frame 10, then -180 by frame 15 (-270 deg) in the game's space; ours mirrors X, so -90 / +180.
+    // In game (SHINOBI_THROW_TRACE=behind, c1010) the pair then matches rec_c1010_20261009 tick for
+    // tick in the game's convention (tools/rec_throw.py: 0.47 m at 175 deg, dyaw -4.5 vs live 0.47 /
+    // 176 / -3.8; mid-spin 0.43 m at -24.5 vs -23.9, dyaw 147.6 vs 148.5).
     let app = app_with("c1010");
     let combat = app.world().resource::<Combat>();
     let yaws: Vec<f32> = (0..=20).filter_map(|f| combat.player.root_at("a200_511200", f as f32 / 30.0).map(|(_, y)| y)).collect();
     if yaws.is_empty() {
         return;
     }
-    assert!(yaws.windows(2).all(|w| w[1] >= w[0] - 1e-3), "not monotonic: {yaws:?}");
-    assert!((yaws[20] - std::f32::consts::PI).abs() < 0.05, "ends at {:.2}", yaws[20]);
+    assert!((yaws[10] + std::f32::consts::FRAC_PI_2).abs() < 0.05, "frame 10 at {:.2}", yaws[10]);
+    assert!((yaws[15] - std::f32::consts::PI).abs() < 0.05, "frame 15 at {:.2}", yaws[15]);
 }
 
 #[test]
@@ -2527,7 +2530,9 @@ fn an_unaware_enemy_notices_wolf_in_front_but_not_behind() {
     for _ in 0..40 {
         app.update();
     }
-    assert_eq!(enemy_state(&mut app).0, "TransToBattleFromDefault", "{}", log_text(&app));
+    // Its logic (_COMMON_AddStateTransitionGoal) plays the alert EzState 1040 =
+    // TransToBattleFromDefault (a000_001040), whose TAE sets the battle AI state 200004.
+    assert_eq!(enemy_state(&mut app).1, "a000_001040", "{}", log_text(&app));
     // Back turned: still unaware after 3 s.
     let mut app2 = sim_tests_app();
     make_enemy_unaware(&mut app2, 3.0, true);
@@ -2574,3 +2579,434 @@ fn plunging_onto_an_unaware_enemy_is_the_stealth_plunge() {
     }
 }
 
+
+/// Moves Wolf (feet height kept) without touching his state.
+fn put_wolf(app: &mut App, x: f32, z: f32) {
+    let world = app.world_mut();
+    let mut q = world.query_filtered::<&mut Transform, With<Player>>();
+    let mut t = q.single_mut(world).unwrap();
+    t.translation.x = x;
+    t.translation.z = z;
+}
+
+fn enemy_info(app: &mut App) -> (u8, u8, String, String, Vec3) {
+    let world = app.world_mut();
+    let mut q = world.query::<(&Enemy, &Actor, &Transform)>();
+    let (e, a, t) = q.single(world).unwrap();
+    (e.targeting.state, e.targeting.kind, a.anim.clone(), e.ai_desc.clone(), t.translation)
+}
+
+/// cargo test --release stealth_trace -- --ignored --nocapture : the stealth loop, logged.
+/// SHINOBI_STEALTH_TRACE = leave (default: Wolf leaves once it is alerted) | stay | lose
+/// (c1010 fights, then Wolf gets out of its sight and is forgotten after SightTargetForgetTime 15 s).
+#[test]
+#[ignore]
+fn stealth_trace() {
+    let mode = std::env::var("SHINOBI_STEALTH_TRACE").unwrap_or_else(|_| "leave".into());
+    let mut app = if mode == "lose" { app_with("c1010") } else { app() };
+    if mode == "lose" {
+        // Fighting at 3 m (as spawned in the duel), then Wolf 20 m behind it.
+        make_enemy_unaware(&mut app, 3.0, false);
+    } else {
+        // Enemy 22 m away facing Wolf: outside the normal cone (16 m ahead), inside around (26 m).
+        make_enemy_unaware(&mut app, 22.0, false);
+    }
+    {
+        let world = app.world_mut();
+        let mut q = world.query::<&mut Enemy>();
+        q.single_mut(world).unwrap().aggressive = true;
+    }
+    let mut last = String::new();
+    for f in 0..60 * 60 {
+        let (state, ..) = enemy_info(&mut app);
+        match mode.as_str() {
+            "leave" if state == crate::stealth::CAUTION => put_wolf(&mut app, 40.0, -40.0),
+            // Out of its 40 m perceive range from then on (no walls to hide behind here).
+            "lose" if f >= 120 => put_wolf(&mut app, 0.0, -70.0),
+            _ => {}
+        }
+        app.update();
+        let (state, kind, anim, desc, pos) = enemy_info(&mut app);
+        let line = format!("state {state} kind {kind} anim {anim} | {desc}");
+        if line != last {
+            println!("{:6.2}s pos ({:5.1} {:5.1})  {line}", f as f32 / 60.0, pos.x, pos.z);
+            last = line;
+        }
+    }
+}
+
+#[test]
+fn crouching_cuts_how_far_enemies_see_wolf() {
+    // C toggles crouch: CrouchStart (a000_216000), then the crouch idle a000_005000, whose TAE
+    // carries SpEffect 109200 (sightSearchEnemyCut 20) -> enemies' sight distances x 0.8.
+    let mut app = app();
+    app.world_mut().resource_mut::<PadInput>().press(Action::Crouch);
+    app.update();
+    assert_eq!(player_state(&mut app).0, "CrouchStart");
+    for _ in 0..120 {
+        app.update();
+    }
+    {
+        let mut q = app.world_mut().query_filtered::<&Actor, With<Player>>();
+        let world = app.world();
+        let a = q.single(world).unwrap();
+        let combat = world.resource::<crate::data::Combat>();
+        assert!(a.crouch && a.state == "StandIdle", "{} {}", a.state, a.crouch);
+        let (key, t) = a.shown_clip(&combat.player);
+        assert_eq!(key, "a000_005000");
+        let sp: Vec<_> = combat.player.sp_effects_at(&key, t).into_iter().map(|(_, e)| e).collect();
+        let seen = crate::stealth::Seen::new(Vec3::ZERO, 0.4, &sp);
+        assert!((seen.cut - 0.8).abs() < 1e-4, "{}", seen.cut);
+    }
+    // And C again stands up (CrouchEnd a000_216100).
+    app.world_mut().resource_mut::<PadInput>().press(Action::Crouch);
+    app.update();
+    assert_eq!(player_state(&mut app).0, "CrouchEnd");
+}
+
+#[test]
+fn running_near_an_unaware_enemy_is_heard_but_crouching_is_not() {
+    // Run loop a000_000500 emits AiSound 1010 (radius 2 m) for its whole length; the crouch
+    // walk 005200 only 1001 (0.25 m). Enemy 1.8 m ahead, back turned; Wolf moves sideways.
+    let mut app = app();
+    make_enemy_unaware(&mut app, 1.8, true);
+    app.world_mut().resource_mut::<PadInput>().stick = Vec2::new(1.0, 0.0);
+    for _ in 0..20 {
+        app.update();
+    }
+    let (state, kind, ..) = enemy_info(&mut app);
+    assert_eq!((state, kind), (crate::stealth::CAUTION, crate::stealth::TYPE_SOUND), "running 1.8 m away is heard");
+
+    let mut app = sim_tests_app();
+    make_enemy_unaware(&mut app, 1.8, true);
+    app.world_mut().resource_mut::<PadInput>().press(Action::Crouch);
+    for _ in 0..90 {
+        app.update();
+    }
+    {
+        let mut pad = app.world_mut().resource_mut::<PadInput>();
+        pad.stick = Vec2::new(1.0, 0.0);
+        pad.walk = true;
+    }
+    for _ in 0..40 {
+        app.update();
+    }
+    let (state, ..) = enemy_info(&mut app);
+    assert_eq!(state, crate::stealth::NONE, "crouch-walking is not heard at 1.8 m");
+}
+
+/// HKS g_paramHkbState: CROUCH_START is STATE_TYPE_STANDBY, so the stick moves Wolf out of the
+/// crouch-down at once (it used to hold him for its 0.83 s).
+#[test]
+fn moving_right_after_crouching_is_not_held() {
+    let mut app = app();
+    for _ in 0..30 {
+        app.update();
+    }
+    app.world_mut().resource_mut::<PadInput>().press(Action::Crouch);
+    for _ in 0..6 {
+        app.update();
+    }
+    assert_eq!(player_state(&mut app).0, "CrouchStart");
+    app.world_mut().resource_mut::<PadInput>().stick = Vec2::new(0.0, 1.0);
+    for _ in 0..6 {
+        app.update();
+    }
+    let mut q = app.world_mut().query_filtered::<&Actor, With<Player>>();
+    let a = q.single(app.world()).unwrap();
+    assert_eq!(a.state, "Locomotion");
+    assert!(a.crouch, "still crouched");
+}
+
+#[test]
+fn crouch_while_sprinting_is_the_slide() {
+    // HKS BEH_A_CROUCH_START with ref 1 up: W_SprintToCrouchReady (a000_216010), then
+    // SprintToCrouchLeft / Right (216020 / 216021), crouched.
+    let mut app = app();
+    force_player(&mut app, "SprintLoop", 3.0);
+    {
+        let mut pad = app.world_mut().resource_mut::<PadInput>();
+        pad.stick = Vec2::new(0.0, 1.0);
+        pad.dodge_held = true;
+        pad.press(Action::Crouch);
+    }
+    app.update();
+    assert_eq!(player_state(&mut app).0, "SprintToCrouchReady");
+    let mut seen = Vec::new();
+    for _ in 0..60 {
+        app.update();
+        let s = player_state(&mut app).0;
+        if seen.last() != Some(&s) {
+            seen.push(s);
+        }
+    }
+    assert!(seen.iter().any(|s| s.starts_with("SprintToCrouchLeft") || s.starts_with("SprintToCrouchRight")), "{seen:?}");
+}
+
+/// cargo test --release run_deflect_trace -- --ignored --nocapture : Wolf runs at the enemy,
+/// then deflects; prints his state and position per frame.
+#[test]
+#[ignore]
+fn run_deflect_trace() {
+    let mut app = app();
+    {
+        let world = app.world_mut();
+        let mut q = world.query::<(&mut Enemy, &mut Transform)>();
+        let (_, mut t) = q.single_mut(world).unwrap();
+        t.translation.z = -12.0;
+        // SHINOBI_SPRINT_SIDE: the enemy 3 m to the right of the run instead of ahead.
+        if std::env::var("SHINOBI_SPRINT_SIDE").is_ok() {
+            t.translation = Vec3::new(3.0, t.translation.y, -4.0);
+        }
+    }
+    let sprint = std::env::var("SHINOBI_SPRINT").is_ok();
+    // SHINOBI_SPRINT_LOCK: locked on to the enemy.
+    if std::env::var("SHINOBI_SPRINT_LOCK").is_ok() {
+        if !app.world().contains_resource::<crate::camera::LockOn>() {
+            app.world_mut().insert_resource(crate::camera::LockOn::default());
+        }
+        let world = app.world_mut();
+        let e = world.query_filtered::<Entity, With<Enemy>>().single(world).unwrap();
+        world.resource_mut::<crate::camera::LockOn>().target = Some(e);
+    }
+    {
+        let mut pad = app.world_mut().resource_mut::<PadInput>();
+        pad.stick = Vec2::new(0.0, 1.0);
+        if sprint {
+            pad.dodge_held = true;
+            pad.press(Action::Step);
+        }
+    }
+    for f in 0..90 {
+        if f == 40 {
+            let mut pad = app.world_mut().resource_mut::<PadInput>();
+            pad.press(Action::Guard);
+            pad.guard_held = true;
+        }
+        app.update();
+        let world = app.world_mut();
+        let mut q = world.query_filtered::<(&Actor, &Transform), With<Player>>();
+        let (a, t) = q.single(world).unwrap();
+        if f >= 30 {
+            println!("{f:3} {:28} {:12} t {:.2} x {:.3} z {:.3} vel {:.2} yaw {:.0}", a.state, a.anim, a.t, t.translation.x, t.translation.z, a.move_vel.length(), a.yaw.to_degrees());
+        }
+    }
+}
+
+/// cargo test --release plunge_idle_trace -- --ignored --nocapture : c1010 stealth plunge, then
+/// Wolf stands still; prints his state / clip / flags.
+#[test]
+#[ignore]
+fn plunge_idle_trace() {
+    // SHINOBI_PLUNGE_CHR: the enemy (default c1010).
+    let mut app = app_with(&std::env::var("SHINOBI_PLUNGE_CHR").unwrap_or_else(|_| "c1010".into()));
+    // SHINOBI_PLUNGE=broken: the debug menu's set-up (posture broken, enemy facing Wolf).
+    if std::env::var("SHINOBI_PLUNGE").as_deref() == Ok("broken") {
+        let world = app.world_mut();
+        world.resource_scope(|world, combat: Mut<Combat>| {
+            let wolf = world.query_filtered::<(&Actor, &Transform), With<Player>>().single(world).map(|(a, t)| (a.yaw, a.forward(), t.translation)).unwrap();
+            let mut q = world.query_filtered::<(&mut Enemy, &mut Actor, &mut Transform), Without<Player>>();
+            for (mut e, mut a, mut tf) in q.iter_mut(world) {
+                tf.translation = wolf.2 + wolf.1 * 1.2;
+                a.yaw = wolf.0 + std::f32::consts::PI;
+                a.posture = a.posture_max;
+                e.on_posture_break(&mut a, &combat, false, 6.0);
+            }
+        });
+    } else {
+        make_enemy_unaware(&mut app, 1.2, true);
+    }
+    {
+        let world = app.world_mut();
+        world.resource_scope(|world, combat: Mut<Combat>| {
+            let mut q = world.query_filtered::<(&mut Actor, &mut Transform), With<Player>>();
+            let (mut a, mut t) = q.single_mut(world).unwrap();
+            a.play_state(&combat.player, "VerticalGroundJumpStart");
+            a.t = 0.5;
+            a.prev_t = 0.5;
+            a.airborne = true;
+            a.vel_y = -1.0;
+            t.translation.y += 3.0;
+            t.translation.z += 0.6;
+        });
+    }
+    app.world_mut().resource_mut::<PadInput>().press(Action::Attack);
+    let mut last = String::new();
+    let mut last_e = String::new();
+    for f in 0..1200 {
+        app.update();
+        let (st, kind, anim, desc, pos) = enemy_info(&mut app);
+        let eyaw = {
+            let world = app.world_mut();
+            let mut q = world.query_filtered::<&Actor, With<Enemy>>();
+            q.single(world).map_or(0.0, |a| a.yaw.to_degrees())
+        };
+        let eline = format!("ENEMY state {st} kind {kind} anim {anim} | {desc} pos ({:.1},{:.1}) yaw {:.0}", pos.x, pos.z, eyaw);
+        if eline != last_e {
+            println!("{f:4} {eline}");
+            last_e = eline;
+        }
+        let mut q = app.world_mut().query_filtered::<(&Actor, &Transform), With<Player>>();
+        let world = app.world();
+        let (a, t) = q.single(world).unwrap();
+        let combat = world.resource::<Combat>();
+        let (clip, ct) = a.shown_clip(&combat.player);
+        let line = format!("{} anim {} clip {} sheathed {} crouch {} air {} y {:.2}", a.state, a.anim, clip, a.sheathed, a.crouch, a.airborne, t.translation.y);
+        if line != last {
+            println!("{f:4} t {ct:.2} {line}");
+            last = line;
+        }
+    }
+}
+
+/// cargo test --release crouch_drift_trace -- --ignored --nocapture
+#[test]
+#[ignore]
+fn crouch_drift_trace() {
+    let mut app = app();
+    for _ in 0..30 {
+        app.update();
+    }
+    app.world_mut().resource_mut::<PadInput>().press(Action::Crouch);
+    for f in 0..240 {
+        // The stick held forward from SHINOBI_CROUCH_MOVE_AT (frame, default 90 = after CrouchStart).
+        if f == std::env::var("SHINOBI_CROUCH_MOVE_AT").ok().and_then(|v| v.parse().ok()).unwrap_or(90) {
+            app.world_mut().resource_mut::<PadInput>().stick = Vec2::new(0.0, 1.0);
+        }
+        app.update();
+        let mut q = app.world_mut().query_filtered::<(&Actor, &Transform), With<Player>>();
+        let (a, t) = q.single(app.world()).unwrap();
+        if f % 6 == 0 {
+            println!("{f:3} {:14} {:12} pos ({:.3},{:.3}) vel {:.3} crouch {}", a.state, a.anim, t.translation.x, t.translation.z, a.move_vel.length(), a.crouch);
+        }
+    }
+}
+
+/// cargo test --release behind_throw_live_trace -- --ignored --nocapture : the c1010 behind
+/// deathblow (a200_511200 / ThrowDef13200) in the game's own conventions (x mirrored, yaw = pi -
+/// ours), one line per 1/30 s like tools/rec_throw.py on rec_c1010_20261009 (tick 1985...).
+#[test]
+#[ignore]
+fn behind_throw_live_trace() {
+    let mut app = app_with("c1010");
+    {
+        let world = app.world_mut();
+        world.resource_scope(|world, combat: Mut<Combat>| {
+            let mut q = world.query::<(&mut Enemy, &mut Actor, &mut Transform)>();
+            let (mut e, mut a, mut t) = q.single_mut(world).unwrap();
+            a.posture = a.posture_max;
+            e.on_posture_break(&mut a, &combat, true, 4.0);
+            t.translation.z = 1.8;
+            a.yaw = std::f32::consts::PI;
+        });
+    }
+    app.world_mut().resource_mut::<PadInput>().press(Action::Attack);
+    let mut n = None;
+    for f in 0..400 {
+        app.update();
+        let world = app.world_mut();
+        let w = world.query_filtered::<(&Actor, &Transform), With<Player>>().single(world).map(|(a, t)| (a.anim.clone(), a.yaw, t.translation)).unwrap();
+        let e = world.query_filtered::<(&Actor, &Transform), With<Enemy>>().single(world).map(|(a, t)| (a.anim.clone(), a.yaw, t.translation)).unwrap();
+        if n.is_none() && (w.0.ends_with("_511200") || std::env::var("SHINOBI_THROW_EVERY").is_ok() && w.0.ends_with("_501200")) {
+            n = Some(f);
+        }
+        let Some(s) = n else { continue };
+        let every = if std::env::var("SHINOBI_THROW_EVERY").is_ok() { 1 } else { 2 };
+        if (f - s) % every != 0 || f - s > 150 {
+            continue;
+        }
+        let native = |y: f32| std::f32::consts::PI - y;
+        let (dx, dz) = (-(e.2.x - w.2.x), e.2.z - w.2.z);
+        let wrap = |d: f32| (d + 180.0).rem_euclid(360.0) - 180.0;
+        let ang = wrap((dx.atan2(dz) - native(w.1)).to_degrees());
+        let dyaw = wrap((native(e.1) - native(w.1)).to_degrees());
+        println!("{:4} wolf {} enemy {} dist {:5.2} at {:7.1} deg  dyaw {:7.1}", (f - s) / 2, w.0, e.0, dx.hypot(dz), ang, dyaw);
+    }
+}
+
+/// Z cycles the prosthetic slots (HKS BEH_A_ADD_SUB_WEAPON_CHANGE: the additive a000_412090), and
+/// back in StandIdle the new tool unfolds in its own group (SubWeaponExpand: a071_412000 for the
+/// Shinobi Firecracker); the prosthetic button then plays that tool's anims.
+#[test]
+fn switching_prosthetics_plays_the_next_tool() {
+    let mut app = app();
+    {
+        let world = app.world_mut();
+        world.resource_mut::<crate::config::GameConfig>().player.prosthetics = vec![70000, 71000];
+        let mut q = world.query_filtered::<&mut Transform, With<Enemy>>();
+        q.single_mut(world).unwrap().translation.z = 30.0;
+    }
+    for _ in 0..30 {
+        app.update();
+    }
+    app.world_mut().resource_mut::<PadInput>().press(Action::SwitchTool);
+    app.update();
+    {
+        let world = app.world_mut();
+        let mut q = world.query::<(&Player, &Actor)>();
+        let (p, a) = q.single(world).unwrap();
+        assert_eq!(p.tool_slot, 1);
+        assert_eq!(a.add_anim, "a000_412090");
+    }
+    let mut expanded = false;
+    for _ in 0..240 {
+        app.update();
+        let (s, k, ..) = player_state(&mut app);
+        if s == "SubWeaponExpand" {
+            assert_eq!(k, "a071_412000");
+            expanded = true;
+            break;
+        }
+    }
+    assert!(expanded, "no SubWeaponExpand after the switch");
+    for _ in 0..240 {
+        app.update();
+        if player_state(&mut app).0 == "StandIdle" {
+            break;
+        }
+    }
+    app.world_mut().resource_mut::<PadInput>().press(Action::Prosthetic);
+    app.update();
+    let (s, k, ..) = player_state(&mut app);
+    assert_eq!(s, "GroundSubAttackCombo1");
+    assert!(k.starts_with("a071_"), "{k}");
+}
+
+/// Shinobi Firecracker LV1 (71000, forced release: SpEffect 127100 ref 314): a071_400100's TAE 2
+/// judges 150 / 160 fire Bullets 710050 / 710060 (3-way fans), whose sparks land as 2 m bursts
+/// (710003, SpEffect 230110 "vs. non-special character"); the General is no beast, so c9997's
+/// GetSpDamage gives SP_DAMAGE_BURST -> W_AssassinationBloodReaction. The 30 s cool time (107100)
+/// keeps a second firecracker from staggering him again.
+#[test]
+fn firecracker_staggers_the_general_once_per_cool_time() {
+    let mut app = app();
+    {
+        let world = app.world_mut();
+        world.resource_mut::<crate::config::GameConfig>().player.prosthetics = vec![71000];
+        let mut q = world.query_filtered::<&mut Transform, With<Enemy>>();
+        q.single_mut(world).unwrap().translation.z = 2.0;
+        world.resource_mut::<crate::enemy::EnemyDebug>().mode = crate::enemy::AiMode::Idle;
+    }
+    for _ in 0..10 {
+        app.update();
+    }
+    app.world_mut().resource_mut::<PadInput>().press(Action::Prosthetic);
+    let mut staggered = false;
+    for _ in 0..90 {
+        app.update();
+        if enemy_state(&mut app).0 == "AssassinationBloodReaction" {
+            staggered = true;
+            break;
+        }
+    }
+    assert!(staggered, "no burst reaction; enemy {:?}, player {:?}", enemy_state(&mut app), player_state(&mut app));
+    // Again once both are free: the cool time holds.
+    for _ in 0..400 {
+        app.update();
+    }
+    app.world_mut().resource_mut::<PadInput>().press(Action::Prosthetic);
+    for _ in 0..90 {
+        app.update();
+        assert_ne!(enemy_state(&mut app).0, "AssassinationBloodReaction", "staggered again inside the cool time");
+    }
+}

@@ -32,7 +32,7 @@ use crate::actor::{Actor, ActorSet, Side, data_for};
 use crate::config::GameConfig;
 use crate::data::{Attack, Combat, STATE_INFO_JUST_GUARD, TAE_FPS};
 use crate::enemy::Enemy;
-use crate::hud::{CombatLog, Spark};
+use crate::hud::CombatLog;
 use crate::anim::Hurtboxes;
 use crate::model::Dummies;
 use crate::player::FLAG_SHIELD_BLOCK;
@@ -808,7 +808,7 @@ fn resolve(
                             ),
                             Color::srgb(1.0, 0.85, 0.3),
                         );
-                        commands.spawn(Spark::bundle(mid, Color::srgb(1.0, 0.8, 0.3)));
+                        commands.spawn(crate::vfx::Clash::bundle(mid, (atf.translation - dtf.translation).with_y(0.0), crate::vfx::Kind::Deflect));
                         if let Some(q) = sounds.as_mut() {
                             for se in crate::sound::guard_sounds(&combat, &atk, true) {
                                 q.0.push((se, mid));
@@ -895,7 +895,7 @@ fn resolve(
                                 }
                             }
                         }
-                        commands.spawn(Spark::bundle(mid, Color::srgb(0.7, 0.75, 0.9)));
+                        commands.spawn(crate::vfx::Clash::bundle(mid, (atf.translation - dtf.translation).with_y(0.0), crate::vfx::Kind::Guard));
                     }
                     Outcome::Hit => {
                         apply_knockback(&combat, da, atf.translation, dtf.translation, atk.knockback_hit, damage_kb(level), "knockbackRate_vsPlayer_DirectHit");
@@ -969,7 +969,7 @@ fn resolve(
                             format!("{} hit: -{dmg:.0} HP, +{pd:.0} posture", if aa.side == Side::Player { "you" } else { "enemy" }),
                             Color::srgb(1.0, 0.45, 0.4),
                         );
-                        commands.spawn(Spark::bundle(mid, Color::srgb(0.9, 0.1, 0.1)));
+                        commands.spawn(crate::vfx::Clash::bundle(mid, (atf.translation - dtf.translation).with_y(0.0), crate::vfx::Kind::Hit));
                         if let Some(q) = sounds.as_mut() {
                             for se in crate::sound::hit_sounds(&combat, &atk, crate::sound::defender_materials(&combat, da.side)) {
                                 q.0.push((se, mid));
@@ -1021,6 +1021,7 @@ mod tests {
             params: v["params"].clone(),
             rumble: Default::default(),
             twists: Default::default(),
+            names: Default::default(),
         }
     }
 

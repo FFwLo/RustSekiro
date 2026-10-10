@@ -47,6 +47,10 @@ pub struct Player {
     throw_start: Option<(Entity, i64)>,
     /// The enemy of the running deathblow, until it dies (the kill follow-up anim).
     throw_target: Option<Entity>,
+    /// Equipped prosthetic slot (index into config player.prosthetics; Z cycles it).
+    pub tool_slot: usize,
+    /// A switch is in progress: when its arm anim ends the new tool unfolds (SubWeaponExpand).
+    expand_pending: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -60,9 +64,13 @@ pub enum Action {
     CombatArt,
     /// Shinobi Prosthetic (Sekiro's R2): Loaded Shuriken.
     Prosthetic,
+    /// Crouch toggle (ACTION_ARM_CROUCH, Sekiro's L3).
+    Crouch,
+    /// Next prosthetic tool (ACTION_ARM_CHANGE_WEAPON_L).
+    SwitchTool,
 }
 
-const CAPSULE_RADIUS: f32 = 0.4;
+pub const CAPSULE_RADIUS: f32 = 0.4;
 const CAPSULE_MIDDLE: f32 = 1.0;
 pub const CAPSULE_HALF_HEIGHT: f32 = CAPSULE_RADIUS + CAPSULE_MIDDLE / 2.0;
 
@@ -297,6 +305,49 @@ fn directional_jump(angle: f32) -> (&'static str, Option<&'static str>, &'static
     }
 }
 
+/// Can Wolf deathblow this enemy, and with which throw: a broken enemy (posture or vitality) from
+/// the front (崩し始動 0000 -> 本体 0001; the Ochimusha's 近 0005 -> 0006 when within its Dist) or
+/// from behind (崩し背後始動 0110 -> 0111, DiffAng 0-90); an enemy that has not noticed Wolf only
+/// from behind (背後始動 0020 -> 背後本体 0021: a20x_500200 -> 510200 [-> 510201], ThrowDef12200;
+/// live: c1010 0.29 s + 2.0 s, the General 0.28 s + 1.52 s + 1.82 s). `in_reach`: within the start
+/// throw's Dist (else the main throw's).
+pub struct DeathblowCheck {
+    pub behind: bool,
+    /// The main throw's ThrowParam suffix.
+    pub suffix: i64,
+    pub main: crate::data::Throw,
+    pub start: Option<crate::data::Throw>,
+    pub in_reach: bool,
+}
+
+pub fn deathblow_check(combat: &Combat, wolf: Vec3, ea: &Actor, enemy: &Enemy, at: Vec3) -> Option<DeathblowCheck> {
+    let d = &combat.player;
+    let unaware = enemy.is_unaware();
+    if !enemy.is_broken() && !unaware {
+        return None;
+    }
+    let to_enemy = (at - wolf).with_y(0.0).normalize_or_zero();
+    let behind = ea.forward().angle_between(to_enemy).to_degrees() < 90.0;
+    if unaware && !behind {
+        return None;
+    }
+    let dist = at.distance(wolf);
+    let near = combat.throw(combat.foe.throw_row(5)).filter(|st| !behind && dist <= st.dist && d.anim(&st.atk_anim).is_some());
+    let (start_sfx, suffix) = if unaware {
+        (20, 21)
+    } else if behind {
+        (110, 111)
+    } else if near.is_some() {
+        (5, 6)
+    } else {
+        (0, 1)
+    };
+    let main = combat.throw(combat.foe.throw_row(suffix))?;
+    let start = combat.throw(combat.foe.throw_row(start_sfx)).filter(|st| d.anim(&st.atk_anim).is_some());
+    let in_reach = dist <= start.as_ref().map_or(main.dist, |st| st.dist);
+    Some(DeathblowCheck { behind, suffix, main, start, in_reach })
+}
+
 /// The main deathblow throw: Wolf's ThrowParam anim, the enemy's ThrowDef(Death) anim, and the
 /// absorb onto the throw dummy (follow_throw). Facing here is the fallback without models.
 #[allow(clippy::too_many_arguments)]
@@ -435,7 +486,7 @@ fn spawn_player(mut commands: Commands, combat: Res<Combat>, config: Res<GameCon
         }
     }
     commands.spawn((
-        Player { plunge: None, speed_level: 0.0, requests: HashMap::new(), last_state: String::new(), gourd: config.player.gourd_charges, emblems: config.player.spirit_emblems, auto_aim: false, auto_aim_fresh: false, resurrections: config.player.resurrections, jump_forward: false, jump_land: None, step_tilt: 0.0, throw_start: None, throw_target: None },
+        Player { plunge: None, speed_level: 0.0, requests: HashMap::new(), last_state: String::new(), gourd: config.player.gourd_charges, emblems: config.player.spirit_emblems, auto_aim: false, auto_aim_fresh: false, resurrections: config.player.resurrections, jump_forward: false, jump_land: None, step_tilt: 0.0, throw_start: None, throw_target: None, tool_slot: 0, expand_pending: false },
         actor,
         Name::new("Player"),
         Transform::from_xyz(0.0, CAPSULE_HALF_HEIGHT, 4.0),
@@ -506,12 +557,48 @@ pub(crate) fn read_input(
     if keys.just_pressed(KeyCode::KeyX) {
         pad.sheathe = true;
     }
+    if keys.just_pressed(KeyCode::KeyC) {
+        pad.pressed.push(Action::Crouch);
+    }
+    // gap: the game's PC binding for ACTION_ARM_CHANGE_WEAPON_L (DefaultKeyAssignParam's key ids
+    // are not decoded); Z is free here.
+    if keys.just_pressed(KeyCode::KeyZ) {
+        pad.pressed.push(Action::SwitchTool);
+    }
+}
+
+/// The equipped prosthetic tool level: config player.prosthetics[slot] (EquipParamWeapon 7xxxx).
+pub fn equipped_tool<'a>(combat: &'a Combat, config: &GameConfig, slot: usize) -> Option<&'a crate::data::Prosthetic> {
+    let tools = &config.player.prosthetics;
+    let id = *tools.get(slot % tools.len().max(1))?;
+    combat.player.prosthetics.iter().find(|t| t.id == id)
+}
+
+/// A prosthetic state's anim in a tool's own group: the state map holds the Shuriken's
+/// (a070_<id>); the tool plays a0<group>_<id> (HKS: offsetType 14 = the left-hand weapon's
+/// wepmotionCategory). None when that tool has no such anim.
+pub fn tool_anim(d: &CharData, state: &str, group: i64) -> Option<String> {
+    let key = d.anim_key(state)?;
+    let k = format!("a{group:03}{}", key.get(4..)?);
+    d.anim(&k).is_some_and(|a| a.duration.is_some()).then_some(k)
+}
+
+/// States that keep Wolf crouched: crouch idle / locomotion and its own starts, stops and turns.
+fn crouch_ok(state: &str) -> bool {
+    matches!(state, "StandIdle" | "Locomotion") || state.starts_with("Crouch") || state.starts_with("SprintToCrouch")
 }
 
 /// Standby states: any action may start (the run/walk stops carry no cancel flags but are
 /// standby in the HKS, so input interrupts them).
 fn is_free(state: &str) -> bool {
-    matches!(state, "StandIdle" | "Locomotion") || state.starts_with("StandRunStop") || state.starts_with("StandWalkStop_") || is_guard_idle(state)
+    // CrouchStart too: HKS g_paramHkbState [HKB_STATE_CROUCH_START] = STATE_TYPE_STANDBY, like
+    // StandIdle (Wolf can move or act at once); CrouchEnd is STATE_TYPE_ACTION.
+    matches!(state, "StandIdle" | "Locomotion" | "CrouchStart")
+        || state.starts_with("StandRunStop")
+        || state.starts_with("StandWalkStop_")
+        || state.starts_with("CrouchRunStop_")
+        || state.starts_with("CrouchWalkStop_")
+        || is_guard_idle(state)
 }
 
 /// Guarding with no action: idle or guard walk (DeflectGuardMoveF/B/L/R).
@@ -731,6 +818,9 @@ fn buffer_flags(action: Action) -> &'static [i64] {
         Action::Jump => &[151],
         Action::UseItem => &[30],
         Action::Prosthetic => &[136],
+        // gap: the ChrActionFlags behind ACTION_ARM_CROUCH (bit 15) are not traced; the crouch
+        // toggle is only taken from standby (decide).
+        Action::Crouch | Action::SwitchTool => &[],
     }
 }
 
@@ -836,6 +926,7 @@ fn accept_flag(action: Action) -> &'static [i64] {
         Action::UseItem => &[FLAG_ACCEPT_ITEM],
         Action::CombatArt => &[FLAG_ACCEPT_ATTACK],
         Action::Prosthetic => &[FLAG_ACCEPT_PROSTHETIC],
+        Action::Crouch | Action::SwitchTool => &[],
     }
 }
 
@@ -914,6 +1005,12 @@ fn decide(
     }
     // Raw press (death screen choices are not TAE-buffered).
     let attack_pressed = pad.pressed.contains(&Action::Attack);
+    let crouch_pressed = pad.pressed.contains(&Action::Crouch);
+    // Any other action stands Wolf up. gap: the crouch variants of attacks (CrouchAttackToStand
+    // 301000), steps, items and reactions are not ported; they play standing.
+    if a.crouch && !crouch_ok(&a.state) {
+        a.crouch = false;
+    }
     for act in pad.pressed.drain(..) {
         if buffers(d, a, act) {
             p.requests.insert(act, 0.0);
@@ -979,6 +1076,30 @@ fn decide(
             p.requests.clear();
             return;
         }
+    }
+    // Crouch toggle (HKS BEH_A_CROUCH_START / BEH_A_CROUCH_END on ACTION_ARM_CROUCH): standing
+    // still -> W_CrouchStart (CrouchStart a000_216000) / W_CrouchEnd (CrouchEnd a000_216100);
+    // moving -> the move loop switches clips (W_CrouchMoveLoop / W_StandMoveLoop). The crouch
+    // clips carry SpEffect 109200 "Crouching stealth" (sightSearchEnemyCut 20: enemies see 20 %
+    // less far).
+    // Sprinting (ref 1 SP_EF_REF_ENABLE_SPRINT_ACTION) -> the slide W_SprintToCrouchReady
+    // (a000_216010, its root motion slides), then SprintToCrouchLeft / Right (216020 / 216021).
+    // gap: ACTION_UNLOCK_TYPE_SPRINT_TO_CROUCH (26) is taken as unlocked.
+    if crouch_pressed && a.hp > 0.0 && !a.airborne && !a.crouch && sprint_window(d, a) && a.play_state(d, "SprintToCrouchReady") {
+        a.crouch = true;
+        p.requests.remove(&Action::Crouch);
+        return;
+    }
+    if crouch_pressed && a.hp > 0.0 && !a.airborne && (is_free(&a.state) || matches!(a.state.as_str(), "CrouchStart" | "CrouchEnd")) {
+        a.crouch = !a.crouch;
+        if a.state != "Locomotion" {
+            let st = if a.crouch { "CrouchStart" } else { "CrouchEnd" };
+            if a.play_state(d, st) {
+                a.move_vel = Vec3::ZERO;
+            }
+        }
+        p.requests.remove(&Action::Crouch);
+        return;
     }
     if a.sheathed {
         for k in [Action::Attack, Action::Guard, Action::CombatArt, Action::Prosthetic] {
@@ -1167,32 +1288,9 @@ fn decide(
     // (0.30 s + 1.83 s), far 1x (0.30 s + 2.00 s).
     if p.requests.contains_key(&Action::Attack) && accepts(d, a, Action::Attack) {
         for (ee, mut ea, mut enemy, etf) in &mut enemies {
-            let unaware = enemy.is_unaware();
-            if !enemy.is_broken() && !unaware {
-                continue;
-            }
-            let to_enemy = (etf.translation - tf.translation).with_y(0.0).normalize_or_zero();
-            let behind = ea.forward().angle_between(to_enemy).to_degrees() < 90.0;
-            // Stealth deathblow (背後始動 0020 -> 背後本体 0021: a20x_500200 -> 510200 [-> 510201],
-            // ThrowDef12200) on an enemy that has not noticed Wolf, only from behind (DiffAng 0-90).
-            // Live: c1010 0.29 s + 2.0 s; the General 0.28 s + 1.52 s + 1.82 s.
-            if unaware && !behind {
-                continue;
-            }
-            let dist = etf.translation.distance(tf.translation);
-            let near = combat.throw(combat.foe.throw_row(5)).filter(|st| !behind && dist <= st.dist && d.anim(&st.atk_anim).is_some());
-            let (start_sfx, suffix) = if unaware {
-                (20, 21)
-            } else if behind {
-                (110, 111)
-            } else if near.is_some() {
-                (5, 6)
-            } else {
-                (0, 1)
-            };
-            let Some(th) = combat.throw(combat.foe.throw_row(suffix)) else { continue };
-            let start = combat.throw(combat.foe.throw_row(start_sfx)).filter(|st| d.anim(&st.atk_anim).is_some());
-            if dist <= start.as_ref().map_or(th.dist, |st| st.dist) {
+            let Some(db) = deathblow_check(&combat, tf.translation, &ea, &enemy, etf.translation) else { continue };
+            let (behind, suffix, th, start) = (db.behind, db.suffix, db.main, db.start);
+            if db.in_reach {
                 p.requests.remove(&Action::Attack);
                 // isTurnAtker: Wolf turns to the enemy at once (live: exactly).
                 a.yaw = yaw_of((etf.translation - tf.translation).with_y(0.0));
@@ -1294,6 +1392,29 @@ fn decide(
         }
     }
 
+    // Prosthetic switch (HKS BEH_A_ADD_SUB_WEAPON_CHANGE: the additive W_AddSubWeaponChange,
+    // a000_412090, over whatever Wolf does), then, back in StandIdle, BEH_ADD_R_SUB_WEAPON_EXPAND:
+    // the new tool unfolds (SubWeaponExpand, a0<group>_412000). gap: the expand's walk / run /
+    // crouch variants are not played.
+    if p.requests.remove(&Action::SwitchTool).is_some() && config.player.prosthetics.len() > 1 && !a.airborne {
+        p.tool_slot = (p.tool_slot + 1) % config.player.prosthetics.len();
+        if let Some(k) = d.anim_key("AddSubWeaponChange") {
+            a.add_anim = k.to_string();
+            a.add_t = 0.0;
+        }
+        p.expand_pending = true;
+        if let Some(t) = equipped_tool(&combat, &config, p.tool_slot) {
+            log.push(combat.weapon_name(t.id), Color::srgb(0.85, 0.85, 0.75));
+        }
+    }
+    if p.expand_pending && a.add_anim.is_empty() && a.state == "StandIdle" {
+        p.expand_pending = false;
+        if let Some(k) = equipped_tool(&combat, &config, p.tool_slot).and_then(|t| tool_anim(d, "SubWeaponExpand", t.group)) {
+            a.play("SubWeaponExpand", &k);
+            return;
+        }
+    }
+
     // Shinobi Prosthetic: the shuriken throw (the bullet itself spawns from its TAE).
     if p.requests.contains_key(&Action::Prosthetic) && accepts(d, a, Action::Prosthetic) {
         p.requests.remove(&Action::Prosthetic);
@@ -1302,14 +1423,31 @@ fn decide(
         } else {
             aim(a);
             a.move_vel = Vec3::ZERO;
-            a.play_state(d, "GroundSubAttackCombo1");
+            let group = equipped_tool(&combat, &config, p.tool_slot).map_or(70, |t| t.group);
+            if let Some(k) = tool_anim(d, "GroundSubAttackCombo1", group) {
+                a.play("GroundSubAttackCombo1", &k);
+            } else {
+                a.play_state(d, "GroundSubAttackCombo1");
+            }
             return;
         }
     }
     // Let go before the full throw (frame 21): the quick Release throw.
-    if a.state == "GroundSubAttackCombo1" && !pad.prosthetic_held && a.t < 20.0 / crate::data::TAE_FPS {
-        a.play_state(d, "GroundSubAttackCombo1Release");
-        return;
+    // HKS (c0000_transition.lua 6227): inside SP_EF_REF_TAE_ENABLE_SUB_ATTACK_RELEASE (302, SpEffect
+    // 100343: Shuriken f9-18, Firecracker f6-15) the button let go - or a level-1 tool, whose
+    // resident SpEffect carries SP_EF_REF_WEP_FORCE_SUB_ATTACK_RELEASE (314: 127000, 127100, ...;
+    // the "can be stored" levels lack it) - plays W_GroundSubAttackCombo1Release.
+    const REF_SUB_ATTACK_RELEASE: i64 = 302;
+    const REF_FORCE_SUB_ATTACK_RELEASE: i64 = 314;
+    if a.state == "GroundSubAttackCombo1" && !a.anim.is_empty() && d.has_ref(&a.anim, a.t, REF_SUB_ATTACK_RELEASE) {
+        let tool = equipped_tool(&combat, &config, p.tool_slot);
+        let forced = tool.and_then(|t| d.sp_effects.get(&t.resident.to_string())).is_some_and(|s| s.behavior_ref_id == REF_FORCE_SUB_ATTACK_RELEASE);
+        if !pad.prosthetic_held || forced {
+            if let Some(k) = tool_anim(d, "GroundSubAttackCombo1Release", tool.map_or(70, |t| t.group)) {
+                a.play("GroundSubAttackCombo1Release", &k);
+                return;
+            }
+        }
     }
 
     // Healing Gourd: drink (again from a drink: Repeat), or the empty-gourd shake.
@@ -1540,6 +1678,11 @@ fn decide(
         } else {
             "StandToDeflectGuard"
         };
+        // The sprint deflect slides 3.0 m along its facing (a050_203001 root; SetTurnSpeed 180 /
+        // 360 deg/s at frames 3-9). Wolf faces the lock-on target (user, from the real game: he
+        // deflects toward the enemy), and the slide stops against the enemy's body instead of
+        // shoving him (actor::separate). gap: the exe's facing at the guard start (HKS has no
+        // _StartAutoAim there) and its proxy push are not traced.
         aim(a);
         a.move_vel = Vec3::ZERO;
         a.play_state(d, state);
@@ -1902,6 +2045,14 @@ fn decide(
             }
         }
     }
+    // The slide's end (HKS state-end of HKB_STATE_SPRINT_TO_CROUCH_READY): TurnAngle > 0 ->
+    // W_SprintToCrouchLeft, else Right (the stick's angle from the facing, + = left).
+    if ended && a.state == "SprintToCrouchReady" {
+        let left = stick != Vec3::ZERO && stick.dot(a.forward().cross(Vec3::Y)) < 0.0;
+        if a.play_state(d, if left { "SprintToCrouchLeft" } else { "SprintToCrouchRight" }) {
+            return;
+        }
+    }
     if ended {
         let to_guard = (is_guard_start(&a.state) || is_guard_reaction(&a.state) || is_guard_idle(&a.state) || a.state == "LandAirDeflectGuard")
             && pad.guard_held;
@@ -1927,7 +2078,8 @@ fn decide(
             if ang > 60.0 {
                 let side = if td.dot(a.forward().cross(Vec3::Y)) > 0.0 { "Right" } else { "Left" };
                 let size = if ang > 120.0 { "180" } else { "90" };
-                if a.play_state(d, &format!("StandQuickTurn{side}{size}")) {
+                let style = if a.crouch { "Crouch" } else { "Stand" };
+                if a.play_state(d, &format!("{style}QuickTurn{side}{size}")) {
                     return;
                 }
             }
@@ -2020,8 +2172,15 @@ fn locomotion(
     // (HKS BEH_A_GROUND_MOVE_STOP: W_StandRunStop / W_StandWalkStop by MoveDirection).
     if stick == Vec3::ZERO && a.state == "Locomotion" && p.speed_level > 0.3 {
         let dir = ["F", "B", "L", "R"][a.move_dir.min(3) as usize];
-        let stop = if p.speed_level > 1.2 { format!("StandRunStop{dir}") } else { format!("StandWalkStop_{dir}") };
-        if a.play_state(d, &stop) || a.play_state(d, if p.speed_level > 1.2 { "StandRunStopF" } else { "StandWalkStop_F" }) {
+        let run = p.speed_level > 1.2;
+        // Crouched: W_CrouchRunStop / W_CrouchWalkStop (CrouchRunStop_F 5600, CrouchWalkStop_F 5300).
+        let (stop, fallback) = match (a.crouch, run) {
+            (true, true) => (format!("CrouchRunStop_{dir}"), "CrouchRunStop_F"),
+            (true, false) => (format!("CrouchWalkStop_{dir}"), "CrouchWalkStop_F"),
+            (false, true) => (format!("StandRunStop{dir}"), "StandRunStopF"),
+            (false, false) => (format!("StandWalkStop_{dir}"), "StandWalkStop_F"),
+        };
+        if a.play_state(d, &stop) || a.play_state(d, fallback) {
             a.move_vel = Vec3::ZERO;
             p.speed_level = 0.0;
             return;

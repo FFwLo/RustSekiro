@@ -131,6 +131,13 @@ fn spawn_camera(mut commands: Commands, combat: Res<Combat>) {
     let lc = lock_cam(&combat);
     commands.spawn((
         Camera3d::default(),
+        // Bloom (HDR) so the clash sparks and flashes glow (vfx.rs).
+        // Only over-bright (HDR > 1) colours bloom: the effects, not the lit scene.
+        bevy::post_process::bloom::Bloom {
+            intensity: 0.25,
+            prefilter: bevy::post_process::bloom::BloomPrefilter { threshold: 1.2, threshold_softness: 0.3 },
+            ..bevy::post_process::bloom::Bloom::OLD_SCHOOL
+        },
         Projection::Perspective(PerspectiveProjection { fov: lc.fov_y.to_radians(), ..default() }),
         OrbitCamera { yaw: 0.0, pitch: 15f32.to_radians(), focus: Vec3::ZERO, cam: CamState::new(&lc) },
         Transform::from_xyz(0.0, 3.0, 9.0).looking_at(Vec3::Y, Vec3::Y),

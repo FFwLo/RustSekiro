@@ -70,7 +70,7 @@ matching topic file, and one line to Recent below (keep the last 15).
 - [kb/damage.md](kb/damage.md) - Damage reactions, knockback, breaks, invulnerability, death and revival (8 entries)
 - [kb/movement.md](kb/movement.md) - Locomotion, turning, quick turns, sprint, step, jump, air control, kick (11 entries)
 - [kb/camera.md](kb/camera.md) - Camera: LockCamParam/CameraParam, lock-on, TAE 151/153/155 (7 entries)
-- [kb/enemy.md](kb/enemy.md) - Enemies: real Lua AI, NpcParam, c1020/c1010, enemy reactions (8 entries)
+- [kb/enemy.md](kb/enemy.md) - Enemies: real Lua AI, NpcParam, c1020/c1010, enemy reactions, stealth (9 entries)
 - [kb/visuals.md](kb/visuals.md) - Models, textures, animation playback, blending, behaviour graph, lighting (12 entries)
 - [kb/sound.md](kb/sound.md) - Sound: FSB/FMOD decoding, sound events (4 entries)
 - [kb/tools-exe.md](kb/tools-exe.md) - Extractor, Ghidra/decompile, gamedb, RTTI, exe unpacking (9 entries)
@@ -79,6 +79,9 @@ matching topic file, and one line to Recent below (keep the last 15).
 - [HANDOFF_PLAN.md](HANDOFF_PLAN.md) - task packets for helper models
 
 ## Recent
+- 2026-10-10 root yaw sign fixed (c1010 behind deathblow matches live, c1020 no 360 spin); crouch moves at once; idle twist lock-on only; sprint deflect stops at the enemy; 105 tests
+- 2026-10-10 gore: TAE-driven blood spray (FFX 2205xx on neck / sword dummies) + DecalParam floor stains with the game's decal textures; deathblow mark from the game's HUD atlas; vfx clashes, new HUD, sprint deflect fix; 104 tests
+- 2026-10-10 stealth: exe targeting system (sight cones, meter, caution/find/battle, forget) + logic scripts + crouch; 102 tests
 - 2026-10-07 helper reports S1/S2/S3/V1/V2 reviewed + integrated: additive deflect (ref 228), guard out of hit (503), sprint-loop attack (ref 1), normal maps, face textures, TAE 151 look limits; 57 tests
 - 2026-10-07 gap 7 closed: grabbed clip a210_600000 found in chr/c0000_c1020.anibnd (per-enemy player anims); TAE ImportHKX field parsed
 - 2026-10-07 clips: ImportOtherAnim brings the HKX too -> Wolf anims without a clip 58 -> 1, enemy 179 -> 104

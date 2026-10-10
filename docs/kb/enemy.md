@@ -62,3 +62,43 @@ Dated findings, oldest first. Append new entries at the end.
   table_ai_common first, then the rest sorted) + <battle>_battle.lua from the first m*.luabnd.d. src/ai/runtime.lua was
   ported to Rust in src/ai.rs (same goal tree, native goals, ai methods; mlua dropped). Parity: 90 s duel_trace gives
   52 vs 53 enemy actions with the same act mix; ai_stubs reports no stubs. ai::fix_decompiled is gone (bytecode has real breaks).
+- 2026-10-10 STEALTH (src/stealth.rs + ai.rs logic + enemy.rs): the exe's NPC targeting system
+  NS_SPRJ::SprjTargetingSystem (AiThink +0x7b30, update FUN_14061ff40) ported.
+  * Target state +0x158 (names at PTR_u_NONE_143afb540: NONE / CAUTION / FIND / BATTLE), prev +0x15c
+    (FUN_14062bc00). State from the slots in order (FUN_1406208c0): normal enemy -> its own state;
+    sound (4), corpse (7), indication pos (6), memory (5) -> CAUTION; else NONE.
+  * Sight cone (FUN_14061bb70 "normal" / "perceive" once flag 0x100000 = FIND/BATTLE is set;
+    FUN_14061c2a0 "around"): eye = feet - facing * eye_BackOffsetDist (FUN_14061af30, scale 1.0);
+    eye_BeginDist <= d < radius + eye_dist; yaw in [-left, right], elevation in [-bottom, upper];
+    far = radius + eye_dist * cut. Getters FUN_1410c6f90 (+0x30 eye_dist_normal) ... mapped by disasm.
+    Target point = chr feet (FUN_1409f0870); radius = physics +0xd4 (FUN_140bbf740); height +0xd0.
+    Light factors 1 / 0.5 / 0.3 (DAT_143afb490..8, NpcThinkParam disableDark).
+  * Wolf's SpEffects (FUN_140bd3e40): dist cut = prod(1 - sightSearchEnemyCut/100) (FUN_140bfe8a0,
+    skips stateInfo 7/53 unless the observer flag), angle cuts +0x26c..0x26f, gated by
+    sightCutLimitType (+0x107: 1/2 = geometry bits from FUN_140616f50, not traced).
+  * Normal cone hit -> normal target in FIND (FUN_14062bdb0); FIND -> BATTLE inside BattleStartDist
+    (FUN_14062be40) or platoon battle. Damage (reason 4, FUN_14061d140) -> BATTLE at once.
+  * Around cone, no normal target -> meter entry (FUN_140625340): += aroundTargetIncrementPoint (or
+    IndicationTargetIncrementPoint) * dt * prod(aroundSightPointAddRate) (FUN_140612400, FUN_140bfc050),
+    -20/s out of the cone; >= 100 -> IndicationPos slot (FUN_1406285c0, IndicationTargetForgetTime).
+    Search interval rand*0.2+0.2 s (DAT_143afb488/c); meter every frame. HUD: FUN_1408c5fb0(level 0/1/2,
+    max meter/100) - drawn as a bar over the enemy (hud.rs, gap: real art).
+  * Replan on a state change (FUN_1405ab7d0 -> FUN_14061f500) unless goalAction_ToCaution / ToFind is 0.
+  * ConfirmCautionTarget 5100 (CSGoalConfirmCautionTarget, FUN_1405c35a0 / FUN_1405c3770): look anim via
+    CommonAttack, Wait(time); terminate in CAUTION without a new sound/indication/corpse -> clear them.
+  * AI-state SpEffects 200000/1/2/4 come from the alert anims' TAE (c1020 1000/1010: TAE 66, 1040/401020:
+    TAE 401, effectEndurance -1); c9997 HKS UpdateAIState picks Idle/Walk/Turn Default/CautionNoBattle/...
+  * The logic script (NpcThinkParam logicId -> 102000_logic.lua / 101000_logic.lua) now runs:
+    ExecTableLogic -> Logic.Main -> COMMON_EzSetup picks NonBattleAct / caution search / transitions /
+    battle goal. GetEventRequest = -1 (slots filled with -1.0, FUN_1405b2090).
+  * Traces (sim_tests stealth_trace, SHINOBI_STEALTH_TRACE=leave|stay|lose): meter full at 4.0 s ->
+    700 + 1010 -> walk to the spot -> 600 look + 4 s -> NONE -> 101000 -> walk home -> Stay.
+    Found while searching at 15.9 m -> 101040 -> battle. c1010: leashed home at 48 m, forgets after 15 s.
+  * Wolf crouch (C): CrouchStart 216000 / CrouchEnd 216100 / crouch locomotion = stand ids + 5000;
+    the crouch clips carry 109200 (cut 20). Gaps: crouch attacks/steps/reactions, ACTION_ARM_CROUCH flags.
+  * Gaps: LastSightPos forget bookkeeping (forget runs on the normal target), listener ear_dist,
+    map raycasts (no walls), patrol routes (MSB), turn anims, the real HUD art, Wolf's physics radius
+    (CAPSULE_RADIUS 0.4 stands in).
+  * Footsteps: Wolf's walk / run clips carry CreateAISound (TAE 237) for their whole length - walk
+    1000 (0.5 m), run 1010 (2 m), crouch walk 1001 (0.25 m), crouch run 1011 (0.5 m); read from the
+    clip on screen (Actor::shown_clip), radius x hearingSearchEnemyRate when bSpEffectEnable. 103 tests.
