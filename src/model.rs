@@ -279,11 +279,30 @@ impl Plugin for ModelPlugin {
         bevy::asset::embedded_asset!(app, "sekiro_material.wgsl");
         app.add_plugins(MaterialPlugin::<SekiroMaterial>::default());
         app.add_systems(PostStartup, attach_models.after(crate::anim::AnimSet))
+            // Characters spawned later (a fight reset's line-up, the encounter picker).
+            .add_systems(Update, attach_models.after(crate::anim::AnimSet))
             .add_systems(Update, (hide_placeholder_blades, update_draw_masks, update_opacity))
             .add_systems(PostUpdate, override_weapon_location.after(bevy::transform::TransformSystems::Propagate));
         tool::plugin(app);
     }
 }
+
+/// The characters' real geometry without drawing it (sim tests): the FLVER joints, weapon
+/// pivots and dummy polys (`Dummies`) on the AnimPlugin skeletons, so the attack capsules
+/// between dummy polys and the ragdoll hurt capsules are the game's, headless.
+pub struct GeometryPlugin;
+
+impl Plugin for GeometryPlugin {
+    fn build(&self, app: &mut App) {
+        app.add_systems(PostStartup, attach_models.after(crate::anim::AnimSet))
+            .add_systems(Update, attach_models.after(crate::anim::AnimSet))
+            .add_systems(PostUpdate, override_weapon_location.after(bevy::transform::TransformSystems::Propagate));
+    }
+}
+
+/// An actor attach_models has handled (with or without a model found), so it runs once each.
+#[derive(Component)]
+pub struct ModelTried;
 
 #[allow(clippy::too_many_arguments)]
 fn attach_models(
@@ -296,7 +315,7 @@ fn attach_models(
     mut meshes: Option<ResMut<Assets<Mesh>>>,
     mut materials: Option<ResMut<Assets<SekiroMaterial>>>,
     mut bindposes: Option<ResMut<Assets<SkinnedMeshInverseBindposes>>>,
-    actors: Query<(Entity, &Actor, &Skeleton)>,
+    actors: Query<(Entity, &Actor, &Skeleton), Without<ModelTried>>,
     roots: Query<(Entity, &ChildOf, &Name)>,
 ) {
     let dir = crate::paths::root().join("extracted");
@@ -322,6 +341,7 @@ fn attach_models(
         let Some(skel_root) = roots.iter().find(|(_, p, n)| p.parent() == actor_e && n.as_str() == "SkeletonRoot").map(|(e, _, _)| e) else {
             continue;
         };
+        commands.entity(actor_e).insert(ModelTried);
         let mut attached = 0;
         let mut dummies = Dummies::default();
         let mut weapon_parts = WeaponParts::default();
@@ -454,7 +474,9 @@ fn attach_models(
         // SHINOBI_HIDE_MESH=<substring>[,...]: skip meshes whose material or albedo name matches (visual checks).
         let hide: Vec<String> = std::env::var("SHINOBI_HIDE_MESH").map(|v| v.to_lowercase().split(',').map(str::to_string).collect()).unwrap_or_default();
         let hidden = |md: &MeshData| hide.iter().any(|h| md.material.to_lowercase().contains(h) || md.albedo.contains(h));
-        for (mi, md) in model.meshes.iter().enumerate().filter(|(_, md)| !headless && md.albedo != "-" && !hidden(md) && (visible(md) || group_of(md).is_some())) {
+        // A mesh without vertices is skipped: Bevy's mesh allocator allocates nothing for it
+        // but still copies, logging "slab_allocator Use-after-free" at start.
+        for (mi, md) in model.meshes.iter().enumerate().filter(|(_, md)| !headless && md.albedo != "-" && !md.pos.is_empty() && !hidden(md) && (visible(md) || group_of(md).is_some())) {
             let (Some(assets), Some(meshes), Some(materials), Some(bindposes)) = (assets.as_deref(), meshes.as_deref_mut(), materials.as_deref_mut(), bindposes.as_deref_mut()) else { break };
             let cloth = cloth_insts.iter().position(|c| c.def.display_meshes().any(|m| m == mi));
             // Compact joint list for this mesh.

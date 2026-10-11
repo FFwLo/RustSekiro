@@ -612,9 +612,10 @@ impl AiState {
             // GetDist / GetDist_Point (thunks 1405e2c10 / 1405e2fe0: `mov r8b,1; jmp FUN_1405f1540`):
             // the 3D distance to the target minus the AI chr's own radius (vtable +0x68 of its chr,
             // the radius FUN_1405bb920 also pushes its own probe out by). GetOriginDist (1405e3fb0,
-            // r8 = 0) is the plain distance. gap: the exe distance is 3D (horizontal here) and which
-            // radius field +0x68 reads is not traced;
-            // NpcParam.hitRadius here.
+            // r8 = 0) is the plain distance. 3D for the target (Snapshot::dist); gap: points
+            // (dist_to with an id) are still horizontal, the radius field +0x68 reads is not
+            // traced (NpcParam.hitRadius here), and TARGET_LOCALPLAYER (21) reads 0.4 in one
+            // player state (== 2 at singleton +0x88) in the exe.
             "GetDist" | "GetDist_Point" => num(self.dist_to(a.first()) - self.hit_radius as f64),
             "GetOriginDist" => num(self.dist_to(a.first())),
             "GetDistYSigned" => num(0.0),

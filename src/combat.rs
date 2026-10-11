@@ -157,7 +157,9 @@ fn guard_size(level: i64) -> &'static str {
 /// NpcParam knockbackParamId for NPCs (0 for all 1279 rows), the armour's
 /// EquipParamProtector knockbackParamId for Wolf (1 on every outfit piece; its
 /// knockBackCutRate_* are 0).
-pub(crate) fn apply_knockback(combat: &Combat, da: &mut Actor, from: Vec3, at: Vec3, dist: f32, kind: &str, cut_field: &str) {
+/// Returns the distance the defender's knockback cut took off (FUN_140b6bfe0: knockback distance
+/// minus the defender's push), which `recoil` hands back to the attacker.
+pub(crate) fn apply_knockback(combat: &Combat, da: &mut Actor, from: Vec3, at: Vec3, dist: f32, kind: &str, cut_field: &str) -> f32 {
     let row_id = match da.side {
         Side::Enemy => combat.npc(da)["knockbackParamId"].as_i64().unwrap_or(0),
         Side::Player => combat
@@ -188,6 +190,29 @@ pub(crate) fn apply_knockback(combat: &Combat, da: &mut Actor, from: Vec3, at: V
     };
     let d = dist * (1.0 - cut / 100.0) * percent;
     da.knockback(at - from, d, f(&format!("{kind}_ContTime")), f(&format!("{kind}_DecTime")));
+    dist * cut / 100.0
+}
+
+/// The knockback the defender's cut refused goes to the attacker, pushed straight back, when the
+/// attacker's anim has ChrActionFlag 72 "KnockbackValue" on (FUN_140b6bfe0: attacker module
+/// +0x70 bit 9 and +0xc1c, set by the flag dispatcher case 0x48 from ArgA; then FUN_140ba3420
+/// with the reversed knockback direction and FUN_140ba3190(-1, leftover / ArgA, ArgA): the
+/// whole leftover over ArgA seconds). Only Wolf's sword attacks carry it (133 anims, ArgA 0.09);
+/// with NpcParam knockbackRate_vsPlayer_* 75 (c1180) or 100 (45 rows) Wolf bounces off.
+/// gap: the exe starts it one frame later (+0x45), and skips it for hits with the damage struct's
+/// +0x164 set (that path defers it through TAE 226) - neither is modelled.
+pub(crate) fn recoil(combat: &Combat, aa: &mut Actor, from: Vec3, at: Vec3, leftover: f32) {
+    if leftover <= 0.0 || aa.anim.is_empty() {
+        return;
+    }
+    let time = data_for(combat, aa)
+        .events_at(&aa.anim, aa.t)
+        .filter(|e| e.kind == 0 && e.flag_type() == Some(72))
+        .filter_map(|e| e.args.get("ArgA").and_then(|v| v.as_f64()).map(|v| v as f32))
+        .find(|t| *t > 0.0);
+    if let Some(time) = time {
+        aa.knockback(from - at, leftover, time, 0.0);
+    }
 }
 
 /// KnockBackParam columns for a guard reaction size.
@@ -473,11 +498,13 @@ fn draw_hitboxes(
                 continue;
             }
             let get = |id: i64| d.0.get(&dmy_key(id)).and_then(|e| tfs.get(*e).ok()).map(|g| g.translation());
-            if let (Some(p1), Some(p2)) = (get(atk.hit0_dmy1), get(atk.hit0_dmy2)) {
+            for (d1, d2, r) in atk.shapes() {
+                let Some(p1) = get(d1) else { continue };
+                let Some(p2) = (if d2 < 0 { Some(p1) } else { get(d2) }) else { continue };
                 let red = Color::srgb(1.0, 0.15, 0.1);
                 gizmos.line(p1, p2, red);
-                gizmos.sphere(Isometry3d::from_translation(p1), atk.hit0_radius, red);
-                gizmos.sphere(Isometry3d::from_translation(p2), atk.hit0_radius, red);
+                gizmos.sphere(Isometry3d::from_translation(p1), r, red);
+                gizmos.sphere(Isometry3d::from_translation(p2), r, red);
             }
         }
     }
@@ -516,7 +543,13 @@ pub(crate) fn segment_distance(p1: Vec3, q1: Vec3, p2: Vec3, q2: Vec3) -> f32 {
 /// Fallback hurtbox when a character has no ragdoll capsules (headless tests): a body
 /// capsule from feet + 0.3 m to feet + 1.5 m, radius 0.4.
 pub(crate) const BODY_RADIUS: f32 = 0.4;
-/// ChrActionFlag 73 ("SetBool32_0x7C_10"): NPC damage motion allowed (see the Hit branch).
+/// ChrActionFlag 73 ("SetBool32_0x7C_10"). In the exe it is the "deflectable now" mark other
+/// AIs read: flag dispatcher FUN_140b51b70 case 0x49 sets bit 0x400 of (ChrIns+0x50)+0x50 +0x8c;
+/// an AI that gets the sender's flag-63 message (FUN_1405a5ae0, message 7 -> FUN_1405a61f0 ->
+/// FUN_14061fad0) raises INTERUPT_ParryTiming only if the sender is in range and has this bit
+/// (or its vfunc +0x1a8 says so - Wolf has no flag-73 anims). Used here as the flinch gate
+/// (see the Hit branch) because it is on exactly outside the swings; gap: the engine's real
+/// super-armour rule.
 const FLAG_DAMAGE_MOTION: i64 = 73;
 /// ChrActionFlag 125 "MikiriCounter": on in the forward step (GroundStep_F, frames 0-12).
 const FLAG_MIKIRI: i64 = 125;
@@ -722,27 +755,39 @@ fn resolve(
                     continue;
                 }
                 let to_def = (dtf.translation - atf.translation).with_y(0.0);
-                // Hit capsule between the attack's two dummy polys (AtkParam hit0_DmyPoly1/2, hit0_Radius),
-                // swept from where they were on the previous tick so a fast slash cannot pass through a
-                // thin limb capsule between ticks.
-                let capsule = adummies.and_then(|d| {
-                    let (e1, e2) = (*d.0.get(&dmy_key(atk.hit0_dmy1))?, *d.0.get(&dmy_key(atk.hit0_dmy2))?);
-                    let p1 = dummy_tf.get(e1).ok()?.translation();
-                    let p2 = dummy_tf.get(e2).ok()?.translation();
-                    let (q1, q2) = (prev_dmy.get(&e1).copied().unwrap_or(p1), prev_dmy.get(&e2).copied().unwrap_or(p2));
-                    Some(std::array::from_fn::<_, SWEEP_STEPS, _>(|i| {
-                        let k = i as f32 / (SWEEP_STEPS - 1) as f32;
-                        (q1.lerp(p1, k), q2.lerp(p2, k))
-                    }))
-                });
+                // Hit shapes: every one the row uses (AtkParam hit0..hit15), a capsule between its
+                // two dummy polys or a sphere at the first (DmyPoly2 -1), swept from where they were
+                // on the previous tick so a fast slash cannot pass through a thin limb capsule
+                // between ticks. gap: hitSourceType (which model's dummy ids) and the priority of
+                // two shapes touching at once (hti*_Priority) are not read; any shape connects.
+                let shapes: Vec<([(Vec3, Vec3); SWEEP_STEPS], f32)> = adummies
+                    .map(|d| {
+                        atk.shapes()
+                            .into_iter()
+                            .filter_map(|(d1, d2, r)| {
+                                let e1 = *d.0.get(&dmy_key(d1))?;
+                                let e2 = if d2 < 0 { e1 } else { *d.0.get(&dmy_key(d2))? };
+                                let p1 = dummy_tf.get(e1).ok()?.translation();
+                                let p2 = dummy_tf.get(e2).ok()?.translation();
+                                let (q1, q2) = (prev_dmy.get(&e1).copied().unwrap_or(p1), prev_dmy.get(&e2).copied().unwrap_or(p2));
+                                let sweep = std::array::from_fn::<_, SWEEP_STEPS, _>(|i| {
+                                    let k = i as f32 / (SWEEP_STEPS - 1) as f32;
+                                    (q1.lerp(p1, k), q2.lerp(p2, k))
+                                });
+                                Some((sweep, r))
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let capsule = (!shapes.is_empty()).then_some(&shapes);
                 // The part group of the capsule it touched (env(1120)).
                 let mut part = 0u8;
                 let connects = bullet || match capsule {
-                    Some(sweep) => sweep.iter().any(|&(p1, p2)| match dhurt {
+                    Some(shapes) => shapes.iter().any(|(sweep, radius)| sweep.iter().any(|&(p1, p2)| match dhurt {
                         // Ragdoll hurtbox capsules (follow the animation).
                         Some(h) => h.0.iter().enumerate().any(|(i, &(ma, mb, r))| match (dummy_tf.get(ma), dummy_tf.get(mb)) {
                             (Ok(a), Ok(b)) => {
-                                let touch = segment_distance(p1, p2, a.translation(), b.translation()) <= atk.hit0_radius + r;
+                                let touch = segment_distance(p1, p2, a.translation(), b.translation()) <= radius + r;
                                 if touch {
                                     part = h.1.get(i).copied().unwrap_or(0);
                                 }
@@ -752,9 +797,9 @@ fn resolve(
                         }),
                         None => {
                             let feet = dtf.translation - Vec3::Y * crate::player::CAPSULE_HALF_HEIGHT;
-                            segment_distance(p1, p2, feet + Vec3::Y * 0.3, feet + Vec3::Y * 1.5) <= atk.hit0_radius + BODY_RADIUS
+                            segment_distance(p1, p2, feet + Vec3::Y * 0.3, feet + Vec3::Y * 1.5) <= radius + BODY_RADIUS
                         }
-                    }),
+                    })),
                     None => {
                         // No model loaded (headless tests): reach approximation.
                         let reach = match aa.side {
@@ -932,7 +977,8 @@ fn resolve(
                 let mid = (atf.translation + dtf.translation) / 2.0 + Vec3::Y * 0.4;
                 match outcome {
                     Outcome::Deflect { window, at, rate } => {
-                        apply_knockback(&combat, da, atf.translation, dtf.translation, atk.knockback_just_guard, guard_kb(level), "knockbackRate_vsPlayer_JustGuard");
+                        let left = apply_knockback(&combat, da, atf.translation, dtf.translation, atk.knockback_just_guard, guard_kb(level), "knockbackRate_vsPlayer_JustGuard");
+                        recoil(&combat, aa, atf.translation, dtf.translation, left);
                         let skill = if da.side == Side::Player { guard_skill_rate(&combat, &config, atk.stamina_physics_attribute, true) } else { 1.0 };
                         let pd = (atk.atk_stam * skill).floor();
                         let full = da.posture + pd >= da.posture_max;
@@ -1040,7 +1086,8 @@ fn resolve(
                         }
                         if aa.side == Side::Player && da.side == Side::Enemy {
                             let lines = statuses.hit(&combat, def_e, da, &atk.sp_effects(), true);
-                            // Catching fire flails him through his guard (gap: as prosthetic.rs fly_bullets).
+                            // Catching fire flails him through his guard (c9997 ExecDebuffReaction runs
+                            // before ExecGuardBlock; see prosthetic.rs fly_bullets).
                             if lines.iter().any(|l| l == "BURNING") && dd.states.contains_key("FireReaction") && !da.posture_broken() {
                                 if let Some(e) = de.as_deref_mut() {
                                     e.react(da, &combat, "FireReaction");
@@ -1050,7 +1097,8 @@ fn resolve(
                                 log.push(m, Color::srgb(0.7, 0.55, 0.9));
                             }
                         }
-                        apply_knockback(&combat, da, atf.translation, dtf.translation, atk.knockback_guard, guard_kb(level), "knockbackRate_vsPlayer_Guard");
+                        let left = apply_knockback(&combat, da, atf.translation, dtf.translation, atk.knockback_guard, guard_kb(level), "knockbackRate_vsPlayer_Guard");
+                        recoil(&combat, aa, atf.translation, dtf.translation, left);
                         let skill = if da.side == Side::Player { guard_skill_rate(&combat, &config, atk.stamina_physics_attribute, false) } else { 1.0 };
                         da.add_posture((atk.repel_lost_stam_damage * aa.stam_atk_rate * skill).floor());
                         aa.add_posture(atk.repel_victory_stam_damage_attacker);
@@ -1131,15 +1179,21 @@ fn resolve(
                         commands.spawn(crate::vfx::Clash::bundle_fx(mid, (atf.translation - dtf.translation).with_y(0.0), crate::vfx::Kind::Guard, sfx));
                     }
                     Outcome::Hit => {
-                        apply_knockback(&combat, da, atf.translation, dtf.translation, atk.knockback_hit, damage_kb(level), "knockbackRate_vsPlayer_DirectHit");
+                        let left = apply_knockback(&combat, da, atf.translation, dtf.translation, atk.knockback_hit, damage_kb(level), "knockbackRate_vsPlayer_DirectHit");
+                        recoil(&combat, aa, atf.translation, dtf.translation, left);
+                        let mut ignited = false;
                         if aa.side == Side::Player && da.side == Side::Enemy {
                             for m in statuses.hit(&combat, def_e, da, &atk.sp_effects(), false) {
+                                ignited |= m == "BURNING";
                                 log.push(m, Color::srgb(0.7, 0.55, 0.9));
                             }
                         }
-                        // c9997 GetSpDamage: a hit on a burning enemy (STATUS_BURNING) with anim 8900 is
-                        // SP_DAMAGE_BURNING -> ExecDebuffReaction -> W_FireReaction (gap: rank 3 not checked).
-                        let burning = da.side == Side::Enemy && statuses.has_ref(&combat, def_e, crate::status::REF_BURNING) && dd.states.contains_key("FireReaction");
+                        // c9997 GetSpDamage: env(3041) GetStatusActivation STATUS_BURNING (the burn gauge
+                        // broke on this hit: SprjChrResistModule +0x4c -> +0x50) with anim 8900 is
+                        // SP_DAMAGE_BURNING -> ExecDebuffReaction -> W_FireReaction, rank 3.
+                        let burning = ignited
+                            && dd.states.contains_key("FireReaction")
+                            && crate::prosthetic::rank_allows(crate::prosthetic::transition_rank(&da.state), 3);
                         // NpcParam def_* = 0 and *DamageCutRate = 1.0 for c1020: no reduction.
                         let dmg = match aa.side {
                             Side::Player => player_attack_damage(&combat, &atk, if crate::player::is_tool_anim(&aa.anim) { tool_weapon.unwrap_or(5000) } else { 5000 }, &da),
@@ -1181,9 +1235,9 @@ fn resolve(
                             Side::Enemy => {
                                 // Super armour: NpcParam toughness / superArmorDurability are 0 for c1020,
                                 // so the engine's damage level (HKS env 236) drops to an additive flinch
-                                // during swings. Inferred from the TAE: ChrActionFlag 73 marks the frames
-                                // where damage motion is allowed (idle, windup start, recovery, reactions)
-                                // and is off through every attack's active part.
+                                // during swings. Proxy (gap): ChrActionFlag 73 is on in idle, windup start,
+                                // recovery and reactions and off through every attack's active part; the exe
+                                // uses it for the opponents' ParryTiming (FLAG_DAMAGE_MOTION), not for this.
                                 if let Some(e) = de.as_deref_mut() {
                                     let can_flinch = !e.is_attacking() || dd.flag(&da.anim, da.t, FLAG_DAMAGE_MOTION);
                                     // c9997 GetSpDamage: Wolf's lightning (the weak Lightning Reversal's

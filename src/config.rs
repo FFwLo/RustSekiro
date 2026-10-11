@@ -18,6 +18,94 @@ pub struct GameConfig {
     pub enemy: EnemyConfig,
     #[serde(default)]
     pub world: WorldConfig,
+    #[serde(default)]
+    pub audio: AudioConfig,
+    #[serde(default)]
+    pub video: VideoConfig,
+}
+
+/// The Options screen's sound slider (menu.rs), 0-10 like the game's: the master category plays
+/// at volume / 10 on top of the game's own 0.7 (fmod.rs MASTER_VOLUME).
+/// gap: the game's separate SE / Music / Voice sliders (option bytes 4-6) are not split out here.
+#[derive(Deserialize, Clone, Debug)]
+pub struct AudioConfig {
+    #[serde(default = "default_volume")]
+    pub volume: f32,
+}
+
+impl Default for AudioConfig {
+    fn default() -> Self {
+        AudioConfig { volume: default_volume() }
+    }
+}
+
+/// The game's slider default (GameDataMan options bytes 4-6 = 10, FUN_1407bc470).
+fn default_volume() -> f32 {
+    10.0
+}
+
+/// The window (menu.rs apply_video): borderless fullscreen or a window, vsync on / off.
+#[derive(Deserialize, Clone, Debug)]
+pub struct VideoConfig {
+    #[serde(default)]
+    pub fullscreen: bool,
+    #[serde(default = "default_true")]
+    pub vsync: bool,
+}
+
+impl Default for VideoConfig {
+    fn default() -> Self {
+        VideoConfig { fullscreen: false, vsync: true }
+    }
+}
+
+/// Sets `key = value` in `[table]` of config.toml's text, keeping every other line and comment
+/// (adds the key under the table, or the table at the end, when missing).
+pub fn set_key(text: &str, table: &str, key: &str, value: &str) -> String {
+    let mut out: Vec<String> = Vec::new();
+    let (mut inside, mut seen, mut done) = (false, false, false);
+    let header = format!("[{table}]");
+    for line in text.lines() {
+        let t = line.trim_start();
+        if t.starts_with('[') {
+            if inside && !done {
+                // Before the next table (and the blank / comment lines that lead into it).
+                let at = out.iter().rposition(|l| !l.trim().is_empty() && !l.trim_start().starts_with('#')).map_or(out.len(), |i| i + 1);
+                out.insert(at, format!("{key} = {value}"));
+                done = true;
+            }
+            inside = t.starts_with(&header);
+            seen |= inside;
+        }
+        if inside && !done && t.starts_with(key) && t[key.len()..].trim_start().starts_with('=') {
+            // The trailing comment with the spaces before it.
+            let comment = t.find('#').map(|i| t[t[..i].trim_end().len()..].to_string()).unwrap_or_default();
+            out.push(format!("{key} = {value}{comment}"));
+            done = true;
+            continue;
+        }
+        out.push(line.to_string());
+    }
+    if !done {
+        if !seen {
+            out.push(String::new());
+            out.push(header);
+        }
+        out.push(format!("{key} = {value}"));
+    }
+    let mut s = out.join("\n");
+    s.push('\n');
+    s
+}
+
+/// Writes these `(table, key, value)` into config.toml (set_key each).
+pub fn save_keys(keys: &[(&str, &str, String)]) -> Result<(), String> {
+    let path = GameConfig::path();
+    let mut text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    for (table, key, value) in keys {
+        text = set_key(&text, table, key, value);
+    }
+    std::fs::write(&path, text).map_err(|e| format!("{}: {e}", path.display()))
 }
 
 /// The arena: the game's own map (`sekiro-extract map` output) or the flat test floor.
@@ -109,6 +197,22 @@ impl Default for PlayerConfig {
 #[derive(Deserialize, Clone, Debug)]
 pub struct InputConfig {
     pub buffer: f32,
+    /// A gamepad drives Wolf, the camera and the menus (plan C4).
+    #[serde(default = "default_true")]
+    pub gamepad: bool,
+    /// The game's camera speed option, 1-10: the right stick turns at CameraParam
+    /// rotSpeed_Min + (Max - Min) * (speed - 1) / 9.
+    #[serde(default = "default_camera_speed")]
+    pub camera_speed: f32,
+    /// Right stick / mouse up looks down.
+    #[serde(default)]
+    pub invert_y: bool,
+}
+
+/// gap: byte 0 of the game's option defaults is 5 (FUN_1407bc470, beside the volume bytes 4-6 =
+/// 10); that it is the camera speed is not traced.
+fn default_camera_speed() -> f32 {
+    5.0
 }
 
 #[derive(Deserialize, Clone, Debug)]
@@ -202,6 +306,20 @@ mod tests {
     #[test]
     fn config_toml_parses() {
         super::GameConfig::load().expect("config.toml must parse");
+    }
+
+    /// The Options writer keeps the comments, replaces in place and adds what is missing.
+    #[test]
+    fn set_key_keeps_the_file() {
+        let text = "# top\n[input]\n# the buffer\nbuffer = 0.0  # seconds\n\n[posture]\nx = 1\n";
+        let t = super::set_key(text, "input", "buffer", "0.5");
+        assert!(t.contains("buffer = 0.5  # seconds") && t.contains("# the buffer") && t.contains("# top"), "{t}");
+        let t = super::set_key(&t, "input", "invert_y", "true");
+        assert!(t.find("invert_y = true").unwrap() < t.find("[posture]").unwrap(), "{t}");
+        let t = super::set_key(&t, "video", "vsync", "false");
+        assert!(t.ends_with("[video]\nvsync = false\n"), "{t}");
+        let c: toml::Value = toml::from_str(&t).unwrap();
+        assert_eq!(c["input"]["buffer"].as_float(), Some(0.5));
     }
 }
 

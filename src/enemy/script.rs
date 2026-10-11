@@ -746,6 +746,7 @@ pub(super) fn run_scripts(
     config: Res<GameConfig>,
     mut bs: ResMut<BossScript>,
     mut fight: ResMut<super::FightReset>,
+    auto: Res<super::AutoRestart>,
     mut warp: ResMut<super::events::EventWarp>,
     mut player: Single<(&mut Actor, &Transform), (With<Player>, Without<Enemy>)>,
     wolf: Single<(Entity, &Player), Without<Enemy>>,
@@ -794,11 +795,11 @@ pub(super) fn run_scripts(
             }
         }
     }
-    // A defeated boss: the duel starts over a while later.
-    // gap: the game has no restart; 5 s after Handle Boss Defeat here.
+    // A defeated boss: the duel starts over a while later, unless the menu shows its Won screen
+    // (AutoRestart off). gap: the game has no restart; 5 s after Handle Boss Defeat here.
     if let Some(t) = run.defeated.as_mut() {
         *t += dt;
-        if *t >= 5.0 {
+        if *t >= 5.0 && auto.0 {
             fight.0 = true;
             return;
         }

@@ -24,6 +24,15 @@ use std::path::Path;
 
 use crate::{container, flver, gparam, hkx, msb, mtd, cubemap};
 
+/// (map, part, mesh index): meshes left out of the export. gap: the game does not show them
+/// near the centre, by a rule not found yet (not the draw / display groups, LOD sets, node
+/// binding, entity flags or events; kb/map.md "Far-view stand-in").
+const HIDDEN_MESHES: &[(&str, &str, usize)] = &[
+    // The Guardian Ape's arena: the giant Buddha pedestal asset carries a rough copy of the
+    // arena's floor and walls about a metre above the real ones (a far-view stand-in).
+    ("m17_00_00_00", "m700850_7000", 3),
+];
+
 #[derive(Default)]
 struct Batch {
     pos: Vec<[f32; 3]>,
@@ -299,10 +308,16 @@ pub fn export(root: &Path, map_id: &str, centre: &str, radius: f32) {
             hit_tris.push([base + a as u32, base + b as u32, base + cc as u32, mesh.materials[t]]);
         }
         hit_verts.extend(world.iter().map(|v| arena.point(*v)));
+        if std::env::var("MAP_LOG").is_ok() {
+            // Which part owns a triangle: a .hit triangle's vertex index falls in [base, base + n).
+            let mats: std::collections::BTreeSet<u32> = mesh.materials.iter().copied().collect();
+            let (lo, hi) = hit_verts[base as usize..].iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), v| (lo.min(v[1]), hi.max(v[1])));
+            println!("hit part {} {} verts {}..{} tris {} y {:.2}..{:.2} materials {:?} draw groups {:08x?}", p.name, p.model, base, hit_verts.len(), mesh.indices.len() / 3, lo, hi, mats, p.draw_groups);
+        }
     }
     let under_part = under.map(|(_, pi)| &msb.parts[pi]);
     match under_part {
-        Some(p) => println!("collision under the centre: {} ({}), {:.2} m below, draw groups {:08x?}, light set {}", p.name, p.model, under.unwrap().0, p.draw_groups, p.gparam[0]),
+        Some(p) => println!("collision under the centre: {} ({}), {:.2} m below, draw groups {:08x?}, display groups {:08x?}, light set {}", p.name, p.model, under.unwrap().0, p.draw_groups, p.display_groups, p.gparam[0]),
         None => println!("no collision under the centre: all pieces within the radius are kept"),
     }
     let groups: Vec<u32> = under_part.map(|p| p.draw_groups.clone()).unwrap_or_default();
@@ -336,6 +351,14 @@ pub fn export(root: &Path, map_id: &str, centre: &str, radius: f32) {
     // flver.rs SEKIRO_FLVER_REF_POSE). An object not unpacked yet is listed for `unpack`.
     // gap: objects' own collision (the objbnd's hkx) is not added to the .hit.
     let obj_dir = root.join("obj");
+    // Meshes the game does not show near the centre although their part passes the draw
+    // groups: `MAP_SKIP_MESH=<part>:<mesh index>[,...]` (an experiment) and HIDDEN_MESHES.
+    let hidden_meshes: Vec<(String, usize)> = std::env::var("MAP_SKIP_MESH")
+        .map(|v| v.split(',').filter_map(|s| s.split_once(':').and_then(|(p, i)| Some((p.to_string(), i.parse().ok()?)))).collect::<Vec<_>>())
+        .unwrap_or_default()
+        .into_iter()
+        .chain(HIDDEN_MESHES.iter().filter(|(m, _, _)| *m == map_id).map(|(_, p, i)| (p.to_string(), *i)))
+        .collect();
     let mut objects_missing: std::collections::BTreeSet<String> = Default::default();
     let mut objects = 0;
     let mut objects_used: std::collections::BTreeSet<String> = Default::default();
@@ -404,15 +427,19 @@ pub fn export(root: &Path, map_id: &str, centre: &str, radius: f32) {
         }
         let piece_tris: usize = f.meshes.iter().map(|m| m.indices.len() / 3).sum();
         if std::env::var("MAP_LOG").is_ok() {
-            println!("piece {} {} tris {} dist {:.0}", p.name, p.model, piece_tris, dx.hypot(dz));
+            let (a, b) = (arena.point([lo[0], 0.0, lo[1]]), arena.point([hi[0], 0.0, hi[1]]));
+            println!("piece {} {} tris {} dist {:.0} lod {lod} pos {:?} rot {:?} scale {:?} arena xz {:.0},{:.0}..{:.0},{:.0} draw {:08x?} display {:08x?}", p.name, p.model, piece_tris, dx.hypot(dz), p.pos, p.rot, p.scale, a[0].min(b[0]), a[2].min(b[2]), a[0].max(b[0]), a[2].max(b[2]), p.draw_groups, p.display_groups);
         }
-        for m in &f.meshes {
-            if skip_material(&m.mtd) {
+        for (mi, m) in f.meshes.iter().enumerate() {
+            if skip_material(&m.mtd) || hidden_meshes.iter().any(|(part, i)| *i == mi && *part == p.name) {
                 continue;
             }
             let key = m.mtd.to_lowercase();
             let mtd = mtds.entry(key.clone()).or_insert_with(|| std::fs::read(mtd_dir.join(format!("{key}.mtd"))).ok().and_then(|d| mtd::read(&d))).as_ref();
             let layers = choose(m, mtd);
+            if std::env::var("MAP_LOG").is_ok() {
+                println!("piece-mesh {} {} lod {} albedo {} [{}] tris {}", p.name, p.model, lod, layers.albedo, m.mtd, m.indices.len() / 3);
+            }
             if layers.albedo.is_empty() && std::env::var("MAP_LOG").is_ok() {
                 println!("noalbedo {} [{}] shader {} slots {:?} mtd slots {:?}", m.material, m.mtd, mtd.map_or("?", |d| d.shader.as_str()), m.textures, mtd.map(|d| d.textures.iter().map(|t| (t.kind.clone(), t.path.clone())).collect::<Vec<_>>()));
             }

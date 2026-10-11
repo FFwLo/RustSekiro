@@ -352,7 +352,15 @@ pub fn place_wolf(config: Res<GameConfig>, mut done: Local<bool>, mut wolf: Quer
 
 /// `SHINOBI_SANDBOX_WATCH=<sec>`: logs the debug AI mode and every enemy's state, anim,
 /// stealth state and position once at that time (why does the line-up move?).
-pub fn watch(time: Res<Time>, mut done: Local<bool>, ai_debug: Option<Res<crate::enemy::EnemyDebug>>, enemies: Query<(&crate::enemy::Enemy, &Actor, &Transform)>, wolf: Query<(&Actor, &Transform), With<Player>>) {
+pub fn watch(
+    time: Res<Time>,
+    mut done: Local<bool>,
+    ai_debug: Option<Res<crate::enemy::EnemyDebug>>,
+    enemies: Query<(&crate::enemy::Enemy, &Actor, &Transform)>,
+    wolf: Query<(&Actor, &Transform), With<Player>>,
+    meshes: Query<(Entity, &GlobalTransform, Option<&Name>, Option<&ChildOf>, Option<&bevy::camera::primitives::Aabb>), (With<Mesh3d>, Without<crate::map::MapPiece>)>,
+    names: Query<&Name>,
+) {
     if *done {
         return;
     }
@@ -370,6 +378,17 @@ pub fn watch(time: Res<Time>, mut done: Local<bool>, ai_debug: Option<Res<crate:
     }
     for (e, a, tf) in &enemies {
         info!("  kind {} state {} anim {} t {:.2} stealth {} aggressive {} at {:.1} {:.1}", a.kind, a.state, a.anim, a.t, e.targeting.state, e.aggressive, tf.translation.x, tf.translation.z);
+    }
+    // Every mesh (map pieces aside) within 6 m of Wolf: what is that thing at his feet?
+    if let Ok((_, wtf)) = wolf.single() {
+        for (entity, gtf, name, parent, aabb) in &meshes {
+            let p = gtf.translation();
+            if p.distance(wtf.translation) > 6.0 {
+                continue;
+            }
+            let parent_name = parent.and_then(|c| names.get(c.parent()).ok()).map_or("-", |n| n.as_str());
+            info!("  mesh {entity} {:?} under {parent_name} at {:.2} {:.2} {:.2} scale {:.2?} aabb {:?}", name.map(|n| n.as_str()).unwrap_or("-"), p.x, p.y, p.z, gtf.scale(), aabb.map(|a| (a.center, a.half_extents)));
+        }
     }
 }
 

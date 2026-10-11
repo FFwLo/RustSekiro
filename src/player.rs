@@ -39,7 +39,9 @@ pub struct Player {
     pub emblems: u32,
     /// SpEffects a TAE AddSpEffect put on for good (effectEndurance -1, e.g. the Todome's
     /// "recovery prohibited" 105051 / 150302-150332); they win their spCategory over a
-    /// higher-priority one-shot recovery. Cleared by the fight reset. gap: when the exe drops them.
+    /// higher-priority one-shot recovery. effectEndurance -1 and saveCategory -1 (not saved, no
+    /// event script clears them): they last until Wolf is rebuilt (death respawn, rest, load),
+    /// which the fight reset stands in for.
     pub(crate) held: Vec<i64>,
     /// Last ground jump was forward (HKS Selector_GroundJumpType): picks its land anim.
     jump_forward: bool,
@@ -400,11 +402,13 @@ pub struct ThrowHold {
     pub def_dmy: i16,
     /// Wolf's state while the throw lasts ("Deathblow", "Mikiri").
     pub state: &'static str,
+    /// ThrowParam adsrobModelPosInterpolationTime: the absorbed model's slide (anim.rs ModelLag).
+    pub model_interp: f32,
 }
 
 impl ThrowHold {
     pub fn new(target: Entity, th: &crate::data::Throw, state: &'static str) -> Self {
-        ThrowHold { target, atk_dmy: th.atk_dmy, def_dmy: th.def_dmy, state }
+        ThrowHold { target, atk_dmy: th.atk_dmy, def_dmy: th.def_dmy, state, model_interp: th.model_interp }
     }
 }
 
@@ -568,14 +572,15 @@ fn main_deathblow(
 /// root motion moves them (1.50 -> 0.85 -> 2.35 m), so it is applied once, not held.
 #[allow(clippy::type_complexity)]
 fn follow_throw(
+    mut commands: Commands,
     combat: Res<Combat>,
     mut throw: ResMut<ActiveThrow>,
-    mut player: Single<(&mut Actor, &mut Transform, Option<&crate::model::Dummies>, &GlobalTransform), (With<Player>, Without<Enemy>)>,
+    mut player: Single<(Entity, &mut Actor, &mut Transform, Option<&crate::model::Dummies>, &GlobalTransform), (With<Player>, Without<Enemy>)>,
     mut enemies: Query<(&mut Actor, &mut Transform, Option<&crate::model::Dummies>, &GlobalTransform), (With<Enemy>, Without<Player>)>,
     globals: Query<&GlobalTransform, (Without<Player>, Without<Enemy>)>,
 ) {
     let Some(h) = throw.0.as_mut() else { return };
-    let (pa, ptf, pdm, pg) = &mut *player;
+    let (pe, pa, ptf, pdm, pg) = &mut *player;
     let Ok((mut ea, mut etf, edm, eg)) = enemies.get_mut(h.target) else {
         throw.0 = None;
         return;
@@ -596,9 +601,15 @@ fn follow_throw(
     };
     // The absorbed character moves onto the dummy and faces along its forward (front deathblow:
     // 266 faces back at Wolf; behind: 229 faces the enemy's way; plunge: 233 faces the enemy).
-    let absorb = |tf: &mut Transform, a: &mut Actor, owner: &Transform, (l, f): (Vec3, Vec3)| {
+    // Its model slides there from where it stood (ModelLag, adsrobModelPosInterpolationTime).
+    let interp = h.model_interp;
+    let mut absorb = |e: Entity, tf: &mut Transform, a: &mut Actor, owner: &Transform, (l, f): (Vec3, Vec3)| {
         let goal = owner.transform_point(l);
-        tf.translation += (goal - tf.translation).with_y(0.0);
+        let jump = (goal - tf.translation).with_y(0.0);
+        tf.translation += jump;
+        if interp > 0.0 && jump.length_squared() > 1e-6 {
+            commands.entity(e).insert(crate::anim::ModelLag { offset: -jump, time: interp, left: interp });
+        }
         let dir = (owner.rotation * f).with_y(0.0);
         if dir.length_squared() > 1e-6 {
             let want = yaw_of(dir);
@@ -614,7 +625,7 @@ fn follow_throw(
             return;
         };
         let owner = *etf;
-        absorb(ptf, pa, &owner, l);
+        absorb(*pe, ptf, pa, &owner, l);
     } else {
         let Some(l) = local(*pdm, pg, h.atk_dmy) else {
             warn!("deathblow: Wolf has no dummy poly {} (throw follow off)", h.atk_dmy);
@@ -632,7 +643,7 @@ fn follow_throw(
             owner.translation -= moved;
             owner.rotation = Quat::from_rotation_y(yaw0);
         }
-        absorb(&mut etf, &mut ea, &owner, l);
+        absorb(h.target, &mut etf, &mut ea, &owner, l);
     }
     throw.0 = None;
 }
@@ -681,6 +692,13 @@ fn sync_art_variation(config: Res<GameConfig>, player: Query<&Player>, mut comba
     }
 }
 
+/// Wolf's facing at the start (and on a retry): toward the enemies' line-up (enemy.rs
+/// spawn_lineup: the first enemy at x 0, z -4), the way the game lets him walk into an arena
+/// facing the boss.
+fn start_yaw() -> f32 {
+    yaw_of((Vec3::new(0.0, 0.0, -4.0) - crate::map::player_start()).with_y(0.0))
+}
+
 fn spawn_player(mut commands: Commands, combat: Res<Combat>, config: Res<GameConfig>) {
     // Graphs 500 / 501 / 504 = max HP / max posture / posture regen by level (exe: FUN_140a368f0
     // stores 500 -> PlayerGameData +0x20 and 501 -> +0x3c; 504 in FUN_140850b10's regen caller).
@@ -689,7 +707,7 @@ fn spawn_player(mut commands: Commands, combat: Res<Combat>, config: Res<GameCon
     let posture = calc_correct(combat.param("CalcCorrectGraph", 501), lvl);
     let regen = calc_correct(combat.param("CalcCorrectGraph", 504), lvl);
     let mut actor = Actor::new(Side::Player, hp, posture, regen, 0);
-    actor.yaw = std::f32::consts::PI;
+    actor.yaw = start_yaw();
     // Resident SpEffects of the default outfit (EquipParamProtector residentSpEffectId1-3):
     // 5221-5223 cut posture regen to x0.75 / x0.5 / x0.25 at <= 75 / 50 / 25 % HP.
     if let Some(rows) = combat.params.get("EquipParamProtector").and_then(|v| v.as_object()) {
@@ -715,7 +733,8 @@ pub fn player_visuals(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
-    q: Query<Entity, (With<Player>, Without<Mesh3d>)>,
+    // Runs after the skeletons (world.rs): Wolf with one has his model, no capsule.
+    q: Query<Entity, (With<Player>, Without<Mesh3d>, Without<crate::anim::Skeleton>)>,
 ) {
     for e in &q {
         commands
@@ -728,11 +747,54 @@ pub fn player_visuals(
     }
 }
 
+/// The left stick's run level: below it Wolf walks (HKS c0000_define PRM_RUN_STICK_LEVEL 0.75;
+/// gap: its reader in the exe is not traced, the HKS itself only defines it).
+const RUN_STICK_LEVEL: f32 = 0.75;
+
+/// Sekiro's pad layout. From DefaultKeyAssignParam00 (pad key ids beside the PC keys of the same
+/// game action): attack 2008 = mouse 1, guard 2009 = mouse 2, lock-on 2011 = mouse 3 (middle),
+/// so 2008 / 2009 / 2011 are R1 / L1 / R3; the prosthetic (3001) and grapple (3000) are the
+/// analog R2 / L2. gap: the face buttons' and d-pad's ids (2000-2007, 2010) are not decoded to
+/// buttons (no names in Paramdex SDT); the game's default layout is used: cross jump, circle
+/// step / sprint, square item, triangle and d-pad up next tool, L3 crouch.
+pub(crate) fn read_pad(pads: &Query<&Gamepad>, enabled: bool, pad: &mut PadInput) {
+    if !enabled {
+        return;
+    }
+    for g in pads {
+        let stick = g.left_stick();
+        if stick.length() > pad.stick.length() {
+            pad.stick = stick.clamp_length_max(1.0);
+            pad.walk = stick.length() < RUN_STICK_LEVEL;
+        }
+        pad.attack_held |= g.pressed(GamepadButton::RightTrigger);
+        pad.guard_held |= g.pressed(GamepadButton::LeftTrigger);
+        pad.dodge_held |= g.pressed(GamepadButton::East);
+        pad.prosthetic_held |= g.pressed(GamepadButton::RightTrigger2);
+        let mut press = |b: GamepadButton, a: Action| {
+            if g.just_pressed(b) {
+                pad.pressed.push(a);
+            }
+        };
+        press(GamepadButton::RightTrigger, Action::Attack);
+        press(GamepadButton::LeftTrigger, Action::Guard);
+        press(GamepadButton::East, Action::Step);
+        press(GamepadButton::South, Action::Jump);
+        press(GamepadButton::West, Action::UseItem);
+        press(GamepadButton::RightTrigger2, Action::Prosthetic);
+        press(GamepadButton::LeftThumb, Action::Crouch);
+        press(GamepadButton::North, Action::SwitchTool);
+        press(GamepadButton::DPadUp, Action::SwitchTool);
+    }
+}
+
 pub(crate) fn read_input(
     keys: Res<ButtonInput<KeyCode>>,
     mouse: Res<ButtonInput<MouseButton>>,
     cursor: Single<&bevy::window::CursorOptions, With<bevy::window::PrimaryWindow>>,
     mut pad: ResMut<PadInput>,
+    pads: Query<&Gamepad>,
+    config: Res<GameConfig>,
 ) {
     let mut stick = Vec2::ZERO;
     if keys.pressed(KeyCode::KeyW) { stick.y += 1.0; }
@@ -781,6 +843,7 @@ pub(crate) fn read_input(
     if keys.just_pressed(KeyCode::KeyZ) {
         pad.pressed.push(Action::SwitchTool);
     }
+    read_pad(&pads, config.input.gamepad, &mut pad);
 }
 
 /// The equipped prosthetic tool level: config player.prosthetics[slot] (EquipParamWeapon 7xxxx).
@@ -1320,6 +1383,7 @@ fn decide(
     globals: Query<&GlobalTransform>,
     mut throw: ResMut<ActiveThrow>,
     fight: Option<ResMut<crate::enemy::FightReset>>,
+    snap: Option<ResMut<crate::camera::CameraSnap>>,
 ) {
     let dt = time.delta_secs();
     let d = &combat.player;
@@ -1382,7 +1446,11 @@ fn decide(
         a.hp = a.hp_max;
         a.posture = 0.0;
         a.play("StandIdle", "");
-        tf.translation = Vec3::new(0.0, CAPSULE_HALF_HEIGHT, 4.0);
+        tf.translation = crate::map::player_start();
+        a.yaw = start_yaw();
+        if let Some(mut s) = snap {
+            s.0 = true;
+        }
     }
     // One-shot recoveries from the TAE's AddSpEffect (motionInterval 999: applied once): the
     // resurrection's 110015 "HP Half Recovery" (changeHpRate -50 -> +50 % of max HP, frame 0) and
@@ -1966,8 +2034,10 @@ fn decide(
                 // The umbrella open in the air stays open while held (AirSubAttackGuardLoop).
                 "AirSubAttackGuardStart" | "AirSubAttackGuardLoop" | "AirSubAttackDeflectEasySmall" => Some(if held { "AirSubAttackGuardLoop" } else { "AirSubAttackGuardEnd" }),
                 s if hks::sub_guard(s) && !s.starts_with("GroundSubAttackGuardMoveLoop") => Some(if held { "GroundSubAttackGuardLoop" } else { "GroundSubAttackGuardEnd" }),
-                // The Firecracker thrown in the air falls on in AirSubAttackLoop (403100).
-                "AirSubAttackStart" | "AirSubAttackLoop" if cat == 73 => Some("AirSubAttackLoop"),
+                // AirSubAttackStart's graph end transition (SubAttack_SM ev 300) is
+                // AirSubAttackLoop: the Firecracker thrown in the air falls on in 403100. The loop
+                // (animeEndEventType 3, none) plays on until the landing.
+                "AirSubAttackStart" | "AirSubAttackLoop" => Some("AirSubAttackLoop"),
                 // Line 536: the Mist Raven's leap goes the stick's way (in the air: line 552).
                 "SubAttackJumpReady" | "SubAttackJumpPronReady_F" | "SubAttackJumpPronReady_B" | "AirSubAttackMoveReady" => {
                     let angle = (stick != Vec3::ZERO).then(|| {
@@ -2003,8 +2073,12 @@ fn decide(
                 a.play(k.0, &k.1);
                 return;
             }
-            // The other air tool moves ending in the air fall on (gap: the graph's end transition
-            // is not in the scripts; FreeFall 200010 as after the vault).
+            // The other air tool moves ending in the air fall: their CMSGs' animeEndEventType 0
+            // (FireNextStateEvent; exe FUN_1411e4f20, 1411e.c:6587, fires the event of the
+            // state's highest-priority TransitionInfo) leads Master_SM's AirSubAttackCombo1/2/3,
+            // Combo1Variation, SpecialEffect, GuardEnd, LockOn, MoveAtemiReady and
+            // SubAttackFailedAir to FreeFall (sekiro-extract sms). A tool with no 403100 anim
+            // falls the same way.
             if next.is_none() && a.airborne && (a.state.starts_with("AirSubAttack") || a.state == "SubAttackFailedAir") && a.play_state(d, "FreeFall") {
                 return;
             }
@@ -3164,5 +3238,28 @@ mod tests {
         assert!(close(super::ease((2, 3), 0.5), 0.875));
         assert!(close(super::ease((1, 3), 0.5), 0.125));
         assert!(close(super::ease((0, 3), 0.3), 0.3));
+    }
+
+    /// A pad drives PadInput: R1 attack, cross jump, a half-tilted left stick walks.
+    #[test]
+    fn gamepad_feeds_pad_input() {
+        use bevy::ecs::system::RunSystemOnce;
+        use bevy::prelude::*;
+        let mut world = World::new();
+        let mut g = Gamepad::default();
+        g.digital_mut().press(GamepadButton::RightTrigger);
+        g.digital_mut().press(GamepadButton::South);
+        g.analog_mut().set(GamepadAxis::LeftStickY, 0.5);
+        world.spawn(g);
+        let pad = world
+            .run_system_once(|pads: Query<&Gamepad>| {
+                let mut pad = super::PadInput::default();
+                super::read_pad(&pads, true, &mut pad);
+                pad
+            })
+            .unwrap();
+        assert!(pad.attack_held);
+        assert!(pad.pressed.contains(&super::Action::Attack) && pad.pressed.contains(&super::Action::Jump));
+        assert!((pad.stick.y - 0.5).abs() < 1e-4 && pad.walk, "{:?}", pad.stick);
     }
 }

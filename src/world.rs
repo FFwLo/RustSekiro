@@ -11,7 +11,10 @@ pub struct WorldPlugin;
 impl Plugin for WorldPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Startup, spawn_world)
-            .add_systems(PostStartup, (crate::player::player_visuals, crate::enemy::enemy_visuals))
+            // After the skeletons: an actor with a skeleton never gets the placeholder capsule
+            // (creating it and removing it in the same frame freed a mesh slot that the model's
+            // meshes reused at once: Bevy's "slab_allocator Use-after-free" error at start).
+            .add_systems(PostStartup, (crate::player::player_visuals, crate::enemy::enemy_visuals).after(crate::anim::AnimSet))
             .add_systems(Update, pose_blades);
     }
 }

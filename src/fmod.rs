@@ -58,6 +58,12 @@ pub struct Fmod {
     sound_name: unsafe extern "system" fn(Ptr, *mut c_char, i32) -> i32,
     event_stop: unsafe extern "system" fn(Ptr, i32) -> i32,
     event_volume: unsafe extern "system" fn(Ptr, f32) -> i32,
+    load: unsafe extern "system" fn(Ptr, *const c_char, Ptr, *mut Ptr) -> i32,
+    /// The master category and its volume call (the Options volume, set_volume).
+    master: Ptr,
+    set_category_volume: Option<unsafe extern "system" fn(Ptr, f32) -> i32>,
+    /// Projects tried and not loaded (no bank extracted), not tried again.
+    failed: HashSet<String>,
 }
 
 /// Master category volume at the default options: SoundMan Master 1.0 * 0.7 (exe command 10).
@@ -139,13 +145,15 @@ impl Fmod {
             // category plays at the Master volume * 0.7; the SE / Music / Voice categories at their
             // option slider / 10 (GameDataMan options +0x50, bytes 4 / 5 / 6, default 10 each:
             // FUN_1407bc470) = 1.0. Without the 0.7 everything was ~3 dB louder than the game.
+            let mut master: Ptr = std::ptr::null_mut();
+            let mut set_category_volume = None;
             if let (Ok(top), Ok(set_vol)) = (
                 ev.get::<unsafe extern "system" fn(Ptr, i32, *mut Ptr) -> i32>(b"FMOD_EventSystem_GetCategoryByIndex"),
                 ev.get::<unsafe extern "system" fn(Ptr, f32) -> i32>(b"FMOD_EventCategory_SetVolume"),
             ) {
-                let mut master: Ptr = std::ptr::null_mut();
                 if top(es, -1, &mut master) == 0 && !master.is_null() {
                     set_vol(master, MASTER_VOLUME);
+                    set_category_volume = Some(*set_vol);
                 }
             }
             Ok(Fmod {
@@ -166,7 +174,39 @@ impl Fmod {
                 sound_name,
                 event_stop,
                 event_volume,
+                load,
+                master,
+                set_category_volume,
+                failed: HashSet::new(),
             })
+        }
+    }
+
+    /// The Options volume slider (0-10): master category at MASTER_VOLUME * volume / 10.
+    pub fn set_volume(&mut self, volume: f32) {
+        if let Some(set) = self.set_category_volume.filter(|_| !self.master.is_null()) {
+            unsafe {
+                set(self.master, MASTER_VOLUME * (volume / 10.0).clamp(0.0, 1.0));
+            }
+        }
+    }
+
+    /// Loads project `<name>.fev` from the media path unless it is loaded (or failed before).
+    pub fn load_project(&mut self, name: &str) {
+        if self.projects.iter().any(|p| p == name) || self.failed.contains(name) {
+            return;
+        }
+        let file = CString::new(format!("{name}.fev")).unwrap();
+        let mut proj: Ptr = std::ptr::null_mut();
+        match unsafe { (self.load)(self.es, file.as_ptr(), std::ptr::null_mut(), &mut proj) } {
+            0 => {
+                info!("FMOD: {name}.fev loaded");
+                self.projects.push(name.to_string());
+            }
+            r => {
+                warn!("FMOD: {name}.fev not loaded (error {r})");
+                self.failed.insert(name.to_string());
+            }
         }
     }
 
@@ -381,10 +421,31 @@ impl Plugin for FmodPlugin {
                 let probe = ["c000004010", "c000004011", "c000006510", "s000003010", "c000001113", "c000001004", "c102004001"];
                 let found: Vec<&str> = probe.iter().copied().filter(|k| f.has(k)).collect();
                 info!("FMOD events: {:?}; probe {}/{} found {:?}", f.projects, found.len(), probe.len(), found);
-                app.insert_non_send(f).add_systems(PostUpdate, update_fmod);
+                app.insert_non_send(f).add_systems(PostUpdate, (load_new_kinds, apply_volume, update_fmod).chain());
             }
             Err(e) => warn!("FMOD event system unavailable ({e}); using the PCM samples"),
         }
+    }
+}
+
+/// An enemy kind brought in at runtime (the encounter picker, enemy.rs SpawnEncounter) gets its
+/// chr bank, as the startup kinds do.
+fn load_new_kinds(mut fmod: NonSendMut<Fmod>, combat: Option<Res<crate::data::Combat>>) {
+    let Some(combat) = combat else { return };
+    if !combat.is_changed() {
+        return;
+    }
+    for k in &combat.kinds {
+        fmod.load_project(&k.foe.chr);
+    }
+}
+
+/// The Options volume (config audio.volume) on the master category, when it changes.
+fn apply_volume(mut fmod: NonSendMut<Fmod>, config: Res<crate::config::GameConfig>, mut last: Local<Option<f32>>) {
+    let v = config.audio.volume;
+    if *last != Some(v) {
+        fmod.set_volume(v);
+        *last = Some(v);
     }
 }
 

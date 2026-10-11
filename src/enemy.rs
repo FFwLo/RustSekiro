@@ -39,7 +39,11 @@ const FLAG_AI_COMBO: i64 = 23;
 const FLAG_AI_MOVE: i64 = 78;
 /// NPC AI cancel flags: 23 combo attack, 86 attack, 79 step, 78 move.
 const AI_CANCEL_FLAGS: [i64; 4] = [23, 86, 79, 78];
-/// ChrActionFlag 63 on the attacker: the AI notification that fires INTERUPT_ParryTiming.
+/// ChrActionFlag 63 on the attacker: the AI notification that fires INTERUPT_ParryTiming (exe:
+/// dispatcher case 0x3f sets bit 8 of +0x8c; FUN_1407e14d0 sends AI message 7 with the sender
+/// (FUN_1405a5ae0); a hostile AI's handler FUN_1405a61f0 -> FUN_14061fad0 raises the interrupt
+/// when the sender is within the AI's +0x154 range and has flag 73 or vfunc +0x1a8 true.
+/// gap: that range and Wolf's vfunc +0x1a8 are not read; every notify counts here).
 pub const FLAG_AI_NOTIFY: i64 = 63;
 /// PC_ATTACK_DIST_STAND (ai_define): standing player attack reach as the AI sees it.
 const PC_ATTACK_DIST_STAND: f32 = 3.4;
@@ -65,6 +69,19 @@ enum Mode {
 /// 21000, both with 3520011 "collapsed" and 5026; also c1250 / c1260 / c1010 pairs).
 /// gap: what starts the loop in the game is not traced (no EMEVD, HKS or AI request for the
 /// dragon's 21000); by that data match.
+/// changeHpRate recovery (% of max HP) of the instant SpEffects (effectEndurance 0) the anim's
+/// TAE AddSpEffect (66 / 67) adds in (from, to] seconds.
+fn instant_hp_rate(d: &crate::data::CharData, key: &str, from: f32, to: f32) -> f32 {
+    let Some(an) = d.anim(key) else { return 0.0 };
+    an.events
+        .iter()
+        .filter(|ev| matches!(ev.kind, 66 | 67) && ev.start > from - 1e-4 && ev.start <= to)
+        .filter_map(|ev| d.sp_effects.get(&ev.arg_i64("SpEffectID").unwrap_or(0).to_string()))
+        .filter(|s| s.effect_endurance == 0.0 && s.change_hp_rate < 0.0)
+        .map(|s| -s.change_hp_rate)
+        .sum()
+}
+
 fn loop_after(d: &crate::data::CharData, a: &Actor) -> Option<String> {
     if !a.state.starts_with("Event200") {
         return None;
@@ -323,12 +340,15 @@ impl Enemy {
         // boss characters c5000 / c7100 do not even have), then it gets up for the next phase.
         if self.ninsatsu.0 > 1 {
             self.ninsatsu.0 -= 1;
-            // gap: the exe's refill on a non-final deathblow is not traced; the game shows the
-            // boss back at full vitality and an empty posture bar.
-            a.hp = a.hp_max;
+            // Its vitality comes back from the reaction's own TAE (300610 "HP reset", think:
+            // instant_hp_rate); a reaction without it is refilled at once. gap: the posture
+            // bar's reset (shown empty in the game) is not traced to an event.
             a.posture = 0.0;
             if !a.play_state(d, &format!("ThrowDef{def_anim}")) {
                 a.procedural("PostureBroken");
+            }
+            if instant_hp_rate(d, &a.anim, -1.0, f32::INFINITY) <= 0.0 {
+                a.hp = a.hp_max;
             }
             self.throw_death = None;
             self.mode = Mode::Rising(d.length(&a.anim).max(1.0));
@@ -688,11 +708,13 @@ impl Plugin for EnemyPlugin {
             .init_resource::<EnemyDebug>()
             .init_resource::<events::EventWarp>()
             .init_resource::<FightReset>()
+            .init_resource::<AutoRestart>()
+            .add_message::<SpawnEncounter>()
             .init_resource::<BossScript>()
             .add_systems(Startup, spawn_enemy)
             .add_systems(
                 FixedUpdate,
-                (reset_fight, stealth_env_start, parry_interrupt, think, todome_message, events::messages, script::run_scripts, events::apply_event_warp).chain().in_set(ActorSet::Decide),
+                (spawn_encounter, reset_fight, stealth_env_start, parry_interrupt, think, todome_message, events::messages, script::run_scripts, events::apply_event_warp).chain().in_set(ActorSet::Decide),
             )
             .add_systems(Update, toggle_aggression.run_if(resource_exists::<ButtonInput<KeyCode>>));
     }
@@ -788,18 +810,41 @@ fn npc_stats(combat: &Combat, kind: usize) -> (f32, f32, f32, i64) {
 }
 
 fn spawn_enemy(mut commands: Commands, combat: Res<Combat>, config: Res<GameConfig>) {
+    if let Ok(mut m) = LOADED_MAP.write() {
+        *m = crate::map::map_id(&config);
+    }
     spawn_lineup(&mut commands, &combat, &config, false);
 }
 
+/// The map loaded at startup (map.rs map_id: a boss's own arena is picked from the startup
+/// enemy). An encounter swap (SpawnEncounter) keeps it.
+static LOADED_MAP: std::sync::RwLock<Option<String>> = std::sync::RwLock::new(None);
+/// Whether the fight's boss is on its own arena (set with each line-up).
+static OWN_ARENA: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Is the fight on the current boss's own arena (map.rs boss_arena of config enemy.chr /
+/// npc_row is the loaded map)? After a swap to another boss the map is a stranger's: its MSB
+/// heights and spots do not hold.
+pub fn on_own_arena() -> bool {
+    OWN_ARENA.load(std::sync::atomic::Ordering::Relaxed) && crate::map::on_boss_arena()
+}
+
 /// The duel's enemies: config enemy.chr 4 m ahead of Wolf, then each config enemy.group entry
-/// at its `at` (x, z), else in a row beside the first (3 m apart).
+/// at its `at` (x, z), else in a row beside the first (3 m apart). On another boss's arena
+/// (after an encounter swap) the line-up keeps its 8 m from Wolf's start: that boss's spot can
+/// be in a cave (the Guardian Ape's grotto, map.rs player_start), out of sight.
 fn spawn_lineup(commands: &mut Commands, combat: &Combat, config: &GameConfig, aggressive: bool) {
+    let loaded = LOADED_MAP.read().ok().and_then(|m| m.clone());
+    let own = loaded.is_some_and(|m| crate::map::boss_arena(&config.enemy.chr, config.enemy.npc_row).as_deref() == Some(m.as_str()));
+    OWN_ARENA.store(own, std::sync::atomic::Ordering::Relaxed);
+    let dz = if crate::map::on_boss_arena() && !own { crate::map::player_start().z - 4.0 } else { 0.0 };
     let y = crate::player::CAPSULE_HALF_HEIGHT + 0.05;
-    spawn_one(commands, combat, config, 0, Vec3::new(0.0, y, -4.0), 0.0, aggressive, 0x9E37_79B9);
+    spawn_one(commands, combat, config, 0, Vec3::new(0.0, y, -4.0 + dz), 0.0, aggressive, 0x9E37_79B9);
     for (i, g) in config.enemy.group.iter().enumerate() {
         let Some(kind) = combat.kind_index(&g.chr, g.npc_row) else { continue };
         let side = if i % 2 == 0 { 1.0 } else { -1.0 } * (3.0 * (i / 2 + 1) as f32);
         let [x, z] = g.at.unwrap_or([side, -4.0]);
+        let z = z + dz;
         // A different seed each, so the group does not move in lockstep.
         spawn_one(commands, combat, config, kind, Vec3::new(x, y, z), 0.0, aggressive, 0x9E37_79B9 ^ 0x85EB_CA6B_u32.wrapping_mul(i as u32 + 1));
     }
@@ -810,6 +855,47 @@ fn spawn_lineup(commands: &mut Commands, combat: &Combat, config: &GameConfig, a
 /// the boss fight. Keeps the AI on/off setting.
 #[derive(Resource, Default)]
 pub struct FightReset(pub bool);
+
+/// Starts another fight without relaunching (the encounter picker; `data::encounter_list`):
+/// config enemy.chr / npc_row / group take its values, Combat loads the kinds
+/// (`Combat::load_encounter`), AnimLib follows, and FightReset brings in the new line-up.
+/// gap: the map stays (a boss's own arena, map.rs boss_arena, is picked at startup only).
+#[derive(Message, Clone, Debug, Default)]
+pub struct SpawnEncounter {
+    pub chr: String,
+    pub npc_row: Option<i64>,
+    pub group: Vec<crate::config::GroupEnemy>,
+}
+
+fn spawn_encounter(
+    mut msgs: MessageReader<SpawnEncounter>,
+    mut combat: ResMut<Combat>,
+    lib: Option<ResMut<crate::anim::AnimLib>>,
+    mut config: ResMut<GameConfig>,
+    mut reset: ResMut<FightReset>,
+) {
+    let Some(m) = msgs.read().last().cloned() else { return };
+    config.enemy.chr = m.chr.clone();
+    config.enemy.npc_row = m.npc_row;
+    config.enemy.group = m.group.clone();
+    combat.load_encounter(&m.chr, m.npc_row, &m.group);
+    if let Some(mut lib) = lib {
+        lib.sync_kinds(&combat);
+    }
+    info!("encounter: {} {:?} (+{} group) -> {} kinds", m.chr, m.npc_row, m.group.len(), combat.kinds.len());
+    reset.0 = true;
+}
+
+/// A won boss fight starts over by itself 5 s after the boss's defeat (BossScript run.defeated,
+/// set by the map event's Handle Boss Defeat). The menu turns it off to keep its Won screen up.
+#[derive(Resource)]
+pub struct AutoRestart(pub bool);
+
+impl Default for AutoRestart {
+    fn default() -> Self {
+        AutoRestart(true)
+    }
+}
 
 fn reset_fight(
     mut commands: Commands,
@@ -932,7 +1018,8 @@ pub fn enemy_visuals(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
-    q: Query<Entity, (With<Enemy>, Without<Mesh3d>)>,
+    // Runs after the skeletons (world.rs): an actor with one has its model, no capsule.
+    q: Query<Entity, (With<Enemy>, Without<Mesh3d>, Without<crate::anim::Skeleton>)>,
 ) {
     for e in &q {
         commands
@@ -1203,6 +1290,16 @@ fn think(
                     a.resident.retain(|r| d.sp_effects.get(&r.to_string()).map(|s| s.sp_category) != cat || anim_group_of(d, std::iter::once(*r)).is_none());
                     a.resident.push(id);
                 }
+            }
+        }
+        // Instant recoveries from the anim's TAE AddSpEffect (66 / 67): every ThrowDef reaction
+        // adds 300610 "HP reset" (HPリセット: changeHpRate -100, effectEndurance 0; Genichiro
+        // c7100 a000_012000 at frame 130, a000_013410 at 99), which is how a boss with deathblows
+        // left is back at full vitality, at that frame (the dead ones are not touched).
+        if !a.anim.is_empty() && !e.is_dead() && a.prev_t < a.t {
+            let heal = instant_hp_rate(d, &a.anim, a.prev_t, a.t);
+            if heal > 0.0 {
+                a.hp = (a.hp + a.hp_max * heal / 100.0).min(a.hp_max);
             }
         }
         // Boss phase rules (map events on the health bars left), while it fights or gets up;
@@ -1521,7 +1618,9 @@ fn think(
             tg.state = stealth::BATTLE;
         }
         let snap = Snapshot {
-            dist: to_t.length(),
+            // 3D, as the exe's GetDist (FUN_1405f1540: sqrt of dx^2 + dy^2 + dz^2 between the two
+            // characters' positions); angles stay horizontal.
+            dist: (t_pos - tf.translation).length(),
             angle: dir.dot(right).atan2(dir.dot(fwd)).to_degrees(),
             bearing: (-to_t.x).atan2(-to_t.z).to_degrees(),
             target_guard: rival.map_or(pa.state.contains("Guard"), |r| r.guard),

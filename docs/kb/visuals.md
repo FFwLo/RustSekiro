@@ -144,7 +144,16 @@ Dated findings, oldest first. Append new entries at the end.
   cloth looks the same. The "cloth cost" log (once a minute, only when simulate exceeds 1 ms
   a frame) names the top 3 cloths with a per-phase split: refs / restart / solve / bones /
   skin / verts. Probes: `SHINOBI_CLOTH_NO_MESH=1` (no bone / mesh outputs),
-  `SHINOBI_CLOTH_NO_UPLOAD=1`. Still restarting every frame (small): c1060_mino1, c1100_sleeve.
+  `SHINOBI_CLOTH_NO_UPLOAD=1`.
+- 2026-10-11 the every-frame restarts of c1060_mino1 and c1100_sleeve (c1110 / c1111 / c7520): their
+  cloth containers hold two sim cloths; the exporter exported the first but took the
+  hclMoveParticlesOperator pairs of the second (406 pairs for 59 particles), and a pair whose
+  particle does not exist counted as "fixed particle jumped" every frame. cloth_export.rs keeps
+  the operator with simClothIndex 0 and drops pairs beyond the particle count; cloth.rs drops
+  such pairs at load. gap: the second sim cloth (the left sleeve, the other mino part) is not
+  exported; its bones bind with err -1 and follow the animation. The teleport test for fixed
+  particles is now half the cloth's bind extent (1 m at least): the Guardian Ape's 4 m fur
+  restarted every few frames when it turned.
 - 2026-10-08 ENEMY TWIST (TAE 700) done. The NPC graph c9997.hkx binds its CustomLookAtTwistModifiers to
   character properties (hkbVariableBindingSet bindings of type 1: "twistParam:0/startBoneIndex" ->
   property 0 ...). The values are in the behbnd's Characters\c1020.hkx (hkbCharacterData

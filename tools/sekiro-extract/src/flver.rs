@@ -12,6 +12,8 @@ pub struct Node {
     /// Euler radians, applied X then Z then Y (Node.ComputeLocalTransform).
     pub r: [f32; 3],
     pub s: [f32; 3],
+    /// FLVER node flags (SoulsFormats NodeFlags: 1 disabled, 2 dummy owner, 4 mesh owner, ...).
+    pub flags: u32,
 }
 
 pub struct Vertex {
@@ -130,6 +132,7 @@ pub fn read_lod(d: &[u8], lod: u32) -> Flver {
                 r: [r.f32(b + 16), r.f32(b + 20), r.f32(b + 24)],
                 parent: r.u16(b + 28) as i16,
                 s: [r.f32(b + 32), r.f32(b + 36), r.f32(b + 40)],
+                flags: r.u32(b + 0x48),
             }
         })
         .collect();
@@ -323,12 +326,23 @@ pub fn read_lod(d: &[u8], lod: u32) -> Flver {
                     v.normal = nn.map(|x| x / len);
                 }
             }
-            // The wanted LOD (flags == lod), else the next lower level, else LOD0 (flags 0;
-            // 0x8000_0000 marks motion-blur sets).
+            if std::env::var("FLVER_LOG").is_ok() {
+                let node = nodes.get(mh.node.max(0) as usize);
+                println!("mesh material {} node {} {:?} flags {:#x} dynamic {} facesets {:08x?}", mat_name, mh.node, node.map(|n| n.name.as_str()), node.map_or(0, |n| n.flags), mh.use_weights, mh.facesets.iter().map(|&f| facesets[f].flags).collect::<Vec<_>>());
+            }
+            // The wanted LOD, else the next lower level, else LOD0. FaceSet flags (SoulsFormats
+            // FSFlags): 0 full detail, 0x0100_0000 LodLevel1, 0x0200_0000 LodLevel2,
+            // 0x8000_0000 motion blur. (Until 2026-10-11 the levels were matched as 1 / 2 and
+            // never found: every LOD export fell back to the first set.)
             let fs = (0..=lod)
                 .rev()
-                .find_map(|l| mh.facesets.iter().map(|&f| &facesets[f]).find(|f| f.flags == l))
-                .or_else(|| mh.facesets.first().map(|&f| &facesets[f]))?;
+                .find_map(|l| mh.facesets.iter().map(|&f| &facesets[f]).find(|f| f.flags == l << 24))
+                .or_else(|| {
+                    if std::env::var("FLVER_LOG").is_ok() {
+                        println!("faceset fallback: material {} wanted lod {lod}, has flags {:08x?}", mat_name, mh.facesets.iter().map(|&f| facesets[f].flags).collect::<Vec<_>>());
+                    }
+                    mh.facesets.first().map(|&f| &facesets[f])
+                })?;
             let mut indices = Vec::new();
             if fs.strip {
                 for k in 0..fs.indices.len().saturating_sub(2) {

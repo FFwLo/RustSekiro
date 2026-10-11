@@ -168,7 +168,9 @@ pub fn load(model_file: &std::path::Path) -> Vec<ClothDef> {
                 execution: arr(&c["execution"]).iter().map(|e| e.as_i64().unwrap_or(-1) as i32).collect(),
                 substeps: c["substeps"].as_u64().unwrap_or(1).max(1) as u32,
                 iterations: c["iterations"].as_u64().unwrap_or(1).max(1) as u32,
-                moves: arr(&c["move"]).iter().map(|m| (us(&m[0]), us(&m[1]))).collect(),
+                // Pairs beyond the particle count (an older export's second sim cloth) are
+                // dropped: as "jumped" fixed particles they restarted the cloth every frame.
+                moves: arr(&c["move"]).iter().map(|m| (us(&m[0]), us(&m[1]))).filter(|&(_, p)| p < arr(&c["particles"]).len()).collect(),
                 refs: arr(&c["ref"])
                     .iter()
                     .map(|r| arr(r).iter().map(|e| (e[0].as_str().unwrap_or("").to_string(), v4(&e[1]), v4(&e[2]))).collect())
@@ -443,15 +445,26 @@ fn simulate(
                 let mean = gaps.iter().sum::<f32>() / gaps.len().max(1) as f32;
                 let max = gaps.iter().copied().fold(0.0, f32::max);
                 info!("cloth {}: ref gap mean {mean:.3} max {max:.3} ({} pairs)", def.name, gaps.len());
+                // Where the particles and the references sit (a constant offset or a mirrored
+                // axis shows here as a centroid difference).
+                let cx = c.x.iter().copied().sum::<Vec3>() / c.x.len().max(1) as f32;
+                let (rs, rn) = refs.iter().flatten().fold((Vec3::ZERO, 0), |(s, n), (q, _)| (s + *q, n + 1));
+                let fixed_c = def.moves.iter().filter_map(|&(_, p)| c.x.get(p)).copied().sum::<Vec3>() / def.moves.len().max(1) as f32;
+                let fixed_r = def.moves.iter().filter_map(|&(v, _)| refs.get(v).and_then(|r| *r)).map(|(q, _)| q).sum::<Vec3>() / def.moves.len().max(1) as f32;
+                info!("cloth {}: centroid particles {:?} refs {:?} | fixed particles {:?} their refs {:?} (root {:?})", def.name, cx, rs / rn.max(1) as f32, fixed_c, fixed_r, root);
                 info!("cloth {}: refs {}/{} bones {}/{} far {far:.2} ref-far {rf:.2}", def.name, refs.iter().flatten().count(), refs.len(), bone_mats.len(), def.refs.iter().flatten().map(|r| &r.0).collect::<std::collections::HashSet<_>>().len());
             }
             // First frame or a teleport (a fixed particle jumped > 1 m): restart from the bind pose
             // placed on the model root.
             // A particle count that no longer matches the definition (another cloth def took this slot)
             // restarts too.
+            // The jump that counts as a teleport scales with the cloth (half its bind-pose
+            // extent, 1 m at least): the Guardian Ape's fur, 4 m across, moved its fixed
+            // particles more than 1 m in a frame just by turning and restarted every few frames.
+            let jump = (0.5 * def.rest.iter().map(|p| p.length()).fold(0.0, f32::max)).max(1.0);
             let jumped = c.started
                 && !culled
-                && (c.x.len() != def.rest.len() || def.moves.iter().any(|&(v, p)| refs.get(v).and_then(|r| *r).is_some_and(|(q, _)| c.x.get(p).is_none_or(|x| q.distance(*x) > 1.0))));
+                && (c.x.len() != def.rest.len() || def.moves.iter().any(|&(v, p)| refs.get(v).and_then(|r| *r).is_some_and(|(q, _)| c.x.get(p).is_none_or(|x| q.distance(*x) > jump))));
             let restarted = !c.started || jumped || culled;
             if restarted {
                 if jumped {

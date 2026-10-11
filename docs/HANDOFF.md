@@ -3,10 +3,11 @@
 Read this first, then `docs/HANDOFF_PLAN.md` (file map, commands, tools, task packets) and only
 the `docs/kb/<topic>.md` file for the topic you work on. `docs/PROGRESS.md` is the short overview.
 
-**Where to start (2026-10-10, late):** section 0 (what the last sessions did), then section 9
-(the game's own effects, FXR: in progress - the user wants every skill / tool effect 1:1 from the
-game files, not hand-made), section 7 (open bugs: only the cape) and section 8 (skills plan: next
-the Flame Vent, the other tools, the art audit, latent skills).
+**Where to start (2026-10-11):** `docs/PLAN.md`, the approved plan to finish the game (phases A
+stabilise, B fidelity, C playable game; one column per session), then section 0 (what the last
+sessions did). Section 9 (FXR effects), 8 (skills: all done, see its end) and 7 (open bugs: only
+the cape) are the detail behind the plan's B items. Released: v0.2.0 (2026-10-11, GitHub release
+with `dist/Sv1-v0.2.0-windows.zip` from `tools/package.ps1`).
 
 ## 0. Session of 2026-10-09 / 10 in one page
 Everything below is in the code with citations; the kb files have the details.
@@ -26,7 +27,7 @@ Everything below is in the code with citations; the kb files have the details.
   switching (Z), F1 SKILLS menu, the prosthetic core and the Firecracker work.
 - **Cape** (section 7 item 2): every cloth value checked against the game files and exe; still
   moves too much. Needs a close real-game clip.
-- **After push 60c08dd (not committed yet):** the game's own effects (FXR player `src/fxr.rs`,
+- **After push 60c08dd (committed and released as v0.2.0 on 2026-10-11):** the game's own effects (FXR player `src/fxr.rs`,
   section 9), Mortal Draw's sound no longer loops forever (slotted FFX sounds stop with their
   event), the Mortal Blade model + its effect dummies (TAE 715 WeaponModelType 2 / Model2).
 - **The game's own map** (section 4.8, kb/map.md): the Outskirts gate around the General from
@@ -47,7 +48,8 @@ Everything below is in the code with citations; the kb files have the details.
 - **GitHub:** `FFwLo/RustSekiro` (public), branch `main`.
 
 ## 3. State at handoff
-- **Tests:** `cargo test --release` passes 107 tests (16 ignored) on 2026-10-10.
+- **Tests:** `cargo test --release` passes 175 tests (27 ignored) on 2026-10-11 (older counts
+  below in this file are from their day).
 - **New files this session:** `src/stealth.rs`, `src/vfx.rs`, `src/gore.rs`,
   `tools/sekiro-extract/src/fmg.rs`. After `sekiro-extract export extracted` you need these unpacks
   too: `sekiro-extract unpack <Sekiro dir> extracted 'decaltex'` (blood stains) and
@@ -94,13 +96,22 @@ Everything below is in the code with citations; the kb files have the details.
   The user hasn't judged it yet.
 - **Mouse ignored while locked on** (`orbit_with_mouse`). Mouse pitch had fought the lock chase
   each frame; this is the likely "shake when I play but not in your test". Gap: the
-  `lockCamAdjustRot_MaxX/Y` small manual offsets are not ported.
+  `lockCamAdjustRot_MaxX/Y` small manual offsets: no reader found in the ChrCam update
+  (FUN_14073c260) or the other CameraParam getter callers.
 - **Earlier this session:**
   - floor clamp of the camera arm (the camera went under the one-sided floor, which made enemies
     look like they floated);
   - yaw chase held while Wolf is horizontally over the target.
-- **Still unchecked:** the exe's target point (+0x280) may be smoothed by the
-  targetChaseRateAtLock params. No writer was found; open.
+- **Camera position chase (2026-10-11, `camera::chase_position`):** the targetChaseRate*
+  params move the camera position (+0x100) toward the orbit point (+0xf0), not the target
+  point. Locked on 0.4 / 0.3 a frame; free 0.1 / 0.4 with a 10-20° dead zone
+  (targetChaseRateAngMin/Max); the distance chases at targetChaseDistRate 0.4. Mouse turning
+  snaps it for rotCtrlEndWaitTime 2 s, then releases over 1 s. Test
+  `camera_position_chases_as_the_exe`. Gaps: per-frame rates taken at 60 fps; the pitch-limit
+  check; the wall rates; the fulcrum yaw resync (isEnableChrChaseRotX) is not ported.
+- **TAE 151 look limits ease back** after the event (FUN_140742230: pitch limits chase the
+  default range at lockCamParamLerpRate) instead of clearing at once. Open: the exe centres
+  the cone on the dummy matrix's -row 2; we still use the Wolf -> dummy direction.
 - Details are in `docs/kb/camera.md`.
 
 ### 4.3 Throw trace tool (`src/throw_trace.rs`)
@@ -246,7 +257,8 @@ Everything below is in the code with citations; the kb files have the details.
     new target is the best on screen by cos(angle to the movement) / distance within 90 deg
     (FUN_1409ca480); candidates within the camera front 60 deg (8 m) / 45 deg (200 m),
     30 deg up / down. Stick: 0.95 fires, 0.5 re-arms (FUN_1409ca2d0; no pad here).
-    gap: mouse units (pixels a frame) and whether the exe accumulates the delta.
+    gap: mouse units (pixels a frame) and axis signs: the exe negates both mouse axes but
+    the mouse state's writer is not found (kb/camera.md 2026-10-11).
   * A deathblow takes the locked-on enemy, else the nearest. Throw rows, bullets, statuses and
     hit sounds are per kind.
 - **Boss events** (`tools/boss_events.py`, new actions; `src/enemy/events.rs`):
@@ -319,6 +331,132 @@ Everything below is in the code with citations; the kb files have the details.
 - Tests: 160 pass; all_enemies_full 94/110 (the 16: merchants, nuns, handmaidens, Hanbei,
   c1260, c1320, c1460, c1550, c5410, c7200, c7300, c1300 Aging, c5300:53000000).
 
+### 4.12 Plan phase A, Map session (2026-10-11; `docs/PLAN.md`)
+- **Startup `bevy_render slab_allocator Use-after-free` error: fixed** (was "not traced"). Bevy
+  0.19's mesh allocator allocates nothing for a mesh with no vertices but still copies into it
+  and logs that error. Two sources: the placeholder capsule of `player_visuals` /
+  `enemy_visuals` was created and removed by `build_skeletons` in the same frame (freed slots
+  reused by the model's meshes at once) and `ffx.rs` spawned the weapon trail mesh empty for one
+  frame. Now the visuals run after `AnimSet` with `Without<Skeleton>` (world.rs, enemy.rs,
+  player.rs; anim.rs lost its `.after(..._visuals)`), `attach_models` / tool meshes skip empty
+  meshes, the trail is born with its idle triangle. Rule: never let an empty mesh reach a frame.
+  `SHINOBI_MESH_EVENTS=1` (map.rs) logs mesh asset events of the first 600 frames.
+- **Cloth restart spam (c1060_mino1, c1100_sleeve every frame): fixed** in the exporter
+  (`cloth_export.rs`: the hclMoveParticlesOperator of the container's first sim cloth only, pairs
+  beyond the particle count dropped; the second sim cloth of such containers is still not
+  exported, gap) and guarded at load (`cloth.rs`). The teleport threshold for fixed particles
+  scales with the cloth's extent (the Guardian Ape's fur restarted every few frames at 1 m).
+  Re-export the models (extract.ps1 does) to get the fixed `.cloth.json`.
+- **Release pipeline:** `tools/extract.ps1` now runs every export a fresh install needs (decals,
+  HUD sprites, boss scripts, tool models, boss arenas with `-SkipArenas`, the two-pass map export
+  with objects); `tools/package.ps1` builds `dist/Sv1-v<version>/` and the zip. Python 3 is
+  required for a release install, Node optional (README).
+- Still noisy: the Chained Ogre's fur particle 8 blows up every ~2.5 s (restart warning; a sim
+  quality item for plan B2). `SHINOBI_SANDBOX_WATCH=<sec>` logs the AI mode and every actor once.
+- **Boss arena start (VXf's report, camera inside Wolf's face):** the config's c5100 loads the
+  Guardian Ape's arena, where the arena's player spot (0, 4) is under the grotto rock (1.5 m of
+  headroom) and a material-less helper plane (h900702, 0.4 m over the pond floor) was the floor.
+  `map::player_start()` walks +z to a spot with 2.8 m of headroom (used by the player.rs reset
+  and `settle_player_start`), level material-less helper triangles are dropped at load, and
+  `MAP_LOG=1` on the map export names every hit part with its vertex range (kb/map.md).
+
+### 4.13 Plan B3 / B6, VXf session (2026-10-11; `docs/PLAN.md`)
+- Camera (B3): position chase, TAE 151 look-limit ease-back, lock-switch notes: section 4.2 and
+  `docs/kb/camera.md`. Burn / poison exe model: section 8 (status.rs).
+- **Air prosthetic end** (player.rs): `AirSubAttackStart` / `AirSubAttackLoop` end into
+  `AirSubAttackLoop` for every tool (SubAttack_SM ev 300); the FreeFall fallback follows the
+  CMSG animeEndEventType (0 FireNextStateEvent = the state's highest-priority transition,
+  FUN_1411e4f20).
+- **Todome recovery SpEffects** last until reload (saveCategory -1 = not saved), as the game.
+- **Foot dust** (ffx.rs `FootSfx`): TAE 792 FootSfxParam_Entity plays FootSfxParam
+  [character row][FootSFXIndex] (FUN_140b54690 -> FUN_1409da4c0 -> FUN_1410be4e0; Wolf's row is
+  TentativePlayerParam PlayerFootEffect_bySFX 1, NPCs NpcParam footEffectSfxId): walk 101001,
+  run 101011, sprint 101021 ... at the foot dummy, turned as the character
+  (IsIgnoreDummyPolyAngle). `tools/fxr_extract.py` now pulls those FXRs (36 more). gap:
+  SpawnFFX_ByFloor (112) has no case in the TAE dispatcher FUN_140b59170 and its handler is not
+  found; its FFXIDs (0 / 1 / 11 / 111) are read as the same table's columns. gap: no floor
+  material part, no footEffectDecalBaseId footprints (FUN_140b9c340), a following 792 stays put.
+  Test `foot_dust_from_foot_sfx_param`.
+- **Enemy effects** (`tools/fxr_extract.py`): it read only Wolf + the two combat_data enemies; now
+  every extracted/enemies/c*.json, and the characters' own effects (6xxxxx) come from the area
+  archives sfxbnd_m10-m25 (extract.ps1 unpacks them): 501 -> 1160 effects, 6 ids left missing
+  (2 / 3 / 5, 615102, 654061, 2255505: in no archive). Effect models (605) are found by the script
+  (diffuse rule in its doc; matches the old hand list), 15 -> 66. gap: an id in several area
+  archives is taken from the first (the game loads the current map's).
+- **Stealth meter art** (hud.rs): the game's MENU_Find_02 frame + MENU_Find_01 brush triangle
+  (SB_FE; export.rs WANTED), filled from the tip up, amber -> solid amber -> red, over the head.
+  The HUD movie menu/01_000_fe.gfx (stage 1920 x 1080) builds these marks in ActionScript
+  (FindIcon0-7): sizes / fill shape not decoded (gap, as for the deathblow mark).
+- Not done (gaps written in code): hit-blood floor decals (AtkParam decalBaseId -> DecalParam
+  600xxx / 700xxx id formula not traced), the 609 light unit, effect sizes from the gfx ABC.
+- Check tool: `SHINOBI_HUD_SHOTS=<dir>[,<every s>[,<count>]]` saves the game's own frames (HUD
+  included) and quits; never screen-grab the desktop (tools/screenshot.ps1 catches whatever
+  window is in front when the game is not up yet).
+
+### 4.14 Plan B1, Bosses session (2026-10-11; `docs/PLAN.md`)
+- **Hit shapes:** every AtkParam hit shape is used (hit0..hit15; DmyPoly2 -1 = a sphere), from
+  `"hits"` in the export (`data.rs Attack::shapes`, combat.rs). Hurt capsules were already the
+  game's ragdoll bodies. `model.rs GeometryPlugin` gives headless tests the real dummies and
+  capsules (`sim_tests::app_geom`); reach table in `kb/damage.md`.
+- **Deathblows:** boss HP refill after a non-final deathblow comes from the ThrowDef's own TAE
+  (SpEffect 300610 at its frame). Enemy grabs read ThrowKindParam (exported in combat_data now).
+  The absorbed character's model slides into place over ThrowParam
+  adsrobModelPosInterpolationTime (`anim.rs ModelLag`); Ochimusha behind deathblow re-checked
+  against the live recording with real geometry (matches; `kb/damage.md`).
+- **Knockback:** Wolf bounces back off enemies with a knockback cut (TAE flag 72 KnockbackValue,
+  `combat.rs recoil`; c1180 75 %).
+- **Explained:** the "x2.9" hits are the normal ones; the armored club samurai 11807101 cuts
+  them (x0.35 HP / x0.5 posture; rule not found, `kb/damage.md`). TAE flag 73 is the
+  opponents' ParryTiming gate in the exe (flag 63 sends the notify); our flinch gate keeps it as
+  a proxy (`kb/guard-deflect.md`).
+- Open in B1: the clip comparison of the reach table (needs Medal clips), hitSourceType /
+  shape priority, the knockback facing factor, the armor cut.
+- **C2 encounter swap (data side):** `enemy::SpawnEncounter { chr, npc_row, group }` swaps the
+  fight without a relaunch (`Combat::load_encounter`, `AnimLib::sync_kinds`, then FightReset);
+  `data::encounter_list()` lists every exported chr + placed row (boss = has a boss script).
+  `enemy::AutoRestart` (default on) is the old 5 s restart after a boss defeat; the menu turns
+  it off. Fixed on the way: enemies respawned by a fight reset had no skeleton / model
+  (build_skeletons / attach_models now also run in Update, `model::ModelTried`). Gaps: the map
+  stays (boss arena chosen at startup: asked Map), FMOD banks / effects of a new chr (VXf).
+  Names: `Encounter.name` is the game's health-bar text (`tools/npc_names.py` ->
+  extracted/enemies/npc_names.json, bosses and mini-bosses; `Encounter.bar`). On another boss's
+  arena (`enemy::on_own_arena()` false) the line-up keeps 8 m in front of `map::player_start()`
+  (Map asked to make that spot open for both).
+- **B5 enemy bullets:** flight as the exe's bullet update (homing turn rate, in/out-of-range
+  acceleration and gravity, min / max speed; `enemy_bullet::steer` / `flight`) and the map
+  collision (isPenetrateMap). Details and gaps: `kb/enemy.md`. teamType: the exe's team table
+  is not found; the rule stays the row names' (`combat::teams_hostile`, gap).
+
+### 4.14 Plan C1 screens / C2 picker UI, VXf (2026-10-11)
+- **Screens** (`src/menu.rs`, Bevy `States` `Screen`): Title (Start / Fight / Quit), Playing,
+  Paused (Esc: Resume / Retry / Title / Quit), Dead (死: Retry / Title, when Wolf lies in
+  GroundDeathLoop_F with no resurrection left), Won (忍殺: Next / Retry / Title, WON_HOLD 4 s
+  after BossScript `run.defeated`, or every enemy dead in a fight without a boss script), Picker.
+  Outside Playing `Time<Virtual>` is paused (after a 1 s warm-up on the first title so the scene
+  settles) and the menu eats keys / mouse before the game reads them. The title and picker hide
+  every other UI layer (`hide_hud_on_title`, restores each layer's own visibility).
+- **Art:** the game's brush marks from menu/hi/01_common (`sekiro-extract` export_hud WANTED):
+  MENU_Death 死 and MENU_Ninsatsu 忍殺 (SB_TextEffect, tinted red), MENU_Title_SEKIRO 隻狼 (SB_Title,
+  white-on-black: its brightness is made the alpha at export) with MENU_Shadows / MENU_DieTwice.
+  Plain text stands in when they are not extracted. Gaps: sizes / places by eye (menu movies
+  not decoded), 死 / 忍殺 timings, WON_HOLD.
+- **Picker:** tabs Bosses (every boss-script row) / Enemies (one row per other chr; rows named
+  "dummy" left out), 10 rows around the cursor, red dots = deathblows. Enter / click writes
+  `SpawnEncounter` and resets Wolf; Won → Next takes the following row. Names are the roster's
+  (machine-translated; asked Bosses for the game's NpcName text).
+- **Sound of a swapped-in enemy:** `fmod.rs load_new_kinds` loads `<chr>.fev` when Combat
+  changes. extracted/sound now has every chr bank (`unpack ... 'sound/c[0-9]+\.'`, 173 MB;
+  asked Bosses to widen extract.ps1's sound pattern).
+- **Spawn facing:** Wolf faced away from the line-up (yaw π); `player.rs start_yaw()` faces the
+  first enemy spot at spawn and Retry. `camera.rs CameraSnap` puts the camera behind him then
+  (START_PITCH 15°, gap).
+- Checks: `SHINOBI_TITLE=1|paused|dead|won|picker` opens a screen, `SHINOBI_FIGHT=<chr>[:<row>]`
+  runs a swap at start, `SHINOBI_HUD_SHOTS=<dir>,<s>,<n>` saves the game's own frames (never
+  grab the desktop). Automated runs (other `SHINOBI_*`) start in Playing with AutoRestart on.
+- Open: a swapped boss is moved to his own arena spot off this map (Bosses / Map: runtime arena
+  swap). On the Ape arena a rock sheet the game hides (m700850_7000 rock_cliff_00) covers Wolf's
+  legs and the line-up enemy (Map; `SHINOBI_MAP_SKIP=rock_cliff` for shots meanwhile).
+
 ### 4.6 Earlier in this session (already in the KB)
 - **Lua 5.0 AI VM** vendored from sekiro-rs (MIT, `THIRD_PARTY.md`); runs the real enemy AI
   scripts (`src/ai.rs`).
@@ -353,7 +491,8 @@ Everything below is in the code with citations; the kb files have the details.
 4. **Sound gaps:** DummyPoly emitter positions, reverb, `sd_*` params.
 5. **Coat second texture layer** (AN_Blend: FC_A_0000_Fabric_blend05/01 detail at 25× tiling).
    The shader math isn't known; it is in the compiled SPX shaders.
-6. **Camera gaps:** lockCamAdjustRot manual offset; target-point smoothing.
+6. **Camera gaps:** lockCamAdjustRot manual offset (no reader found); the free camera's
+   fulcrum yaw resync (CameraParam isEnableChrChaseRotX, FUN_14073c260 ~0x14073e015).
 7. **Clean-up:** the `SHINOBI_CLOTH_FLIP_N` test env in `cloth.rs`, and the per-frame "ref gap"
    debug log.
 8. **c1010 spear cloth** `#04#_c1010_yarinuno` restarts at spawn (particle 3.2 m from root): one
@@ -408,7 +547,8 @@ User's open list:
 5. (done 2026-10-10, src/gore.rs) Gore from the TAE: blood FFX 220502/3/5/6 (TAE 96) spray from their
    dummy along its forward for the event's length; TAE 138 DecalParam stains (710011) on the floor with
    the game's own textures (extracted/decal/<id>.png, written by `sekiro-extract export` from
-   other/decaltex.tpf - unpack 'decaltex' first). Open: FXR not decoded (spray look is made to match
+   other/decaltex.tpf - unpack 'decaltex' first). Done later (section 9: the blood FFX play their
+   FXR, gore.rs is the fallback). Was: FXR not decoded (spray look is made to match
    clip 1), floor dust SpawnFFX_ByFloor 400/420 not done, hit-blood floor decals (AtkParam decalId) not done.
 7. (done 2026-10-10) Weird idle after the c1010 plunge (user clip): Wolf's upper body swung side to
    side. The idle's TAE 700 twist (TargetType 3 Lockon) fell back to the auto-aim target, an enemy
@@ -485,13 +625,19 @@ exe addresses, mark the rest `// gap:`), ask for a real-game clip per tool for t
   gauge to NpcParam resist_blood / resist_poison (x (1 - *GuardResist %) when guarded); full, the
   effect runs: changeHpRate % of max HP + changeHpPoint every motionInterval for effectEndurance,
   then replaceSpEffectId (Sabimaru 9004 -> 9045). General: Flame Vent LV1 125 / 200 per use,
-  Sabimaru 31 / 150 per cut. A hit while burning -> W_FireReaction (c9997 SP_DAMAGE_BURNING; gap:
-  catching fire through the guard also flails). Damage transition ranks (done 2026-10-10,
+  Sabimaru 31 / 150 per cut. The hit that breaks the burn gauge -> W_FireReaction, guarded or not
+  (c9997 SP_DAMAGE_BURNING = env(3041) GetStatusActivation; ExecDebuffReaction runs before
+  ExecGuardBlock; rank 3). Later hits while burning don't flail. Damage transition ranks (done 2026-10-10,
   prosthetic.rs `transition_rank` / `rank_allows`, c9997 IsEnabledTransitionRank and each state's
   DamageCommonFunction rank): the burn reaction (rank 3) does not cut large blows / posture
   breaks (ranks 0-2), the Firecracker stagger (rank 4) not those nor burning / lightning (3). Looks: SpEffect vfxId ->
   SpEffectVfxParam init / midst sfx (burn 3012 on dummy 850 + kanji 3013 on 280; poison 4011 /
-  4013), added to `tools/fxr_extract.py`. gap: gauges never drain; no build-up while afflicted.
+  4013), added to `tools/fxr_extract.py`. Exe model (2026-10-11, SprjChrResistModule vtable
+  0x142a8d178): gauges drain at TentativePlayerParam ResistRecoverPoint_*_Enemy / _Player (5 / s
+  poison and burn; FUN_140bda460, whole points, fraction carried); build-up is blocked only while
+  an active SpEffect has disablePoison / disableBlood (FUN_140bff7a0: poison 9045 yes, the burns
+  9100-9125 no), amounts are whole points. Tests `gauges_drain_in_whole_points`,
+  `resist_rules_from_the_params`. gap: only our tracked afflictions are checked for the flags.
 - Check tool: `SHINOBI_SKILL_EVERY=<frames>` repeats the press in `SHINOBI_SKILL` shots.
 - Combat art costs: the art's wepCost behaviours pay its EquipParamWeapon resourceItemA
   (`player::art_cost`: Dragon Flash 5400 2, Ashina Cross 5500 2, Mortal Draw 5700 3). Too few emblems ->
@@ -612,7 +758,8 @@ HKS branch, the latent skills that have a system):**
    150302-150332 (TAE 401, endurance -1, kept in `Player.held`, cleared by the fight reset),
    same spCategory as each recovery at categoryPriority 2 vs 3 (lower wins; categoryPriority
    exported 2026-10-10), so the deathblow recoveries do nothing after a Todome. Test
-   `todome_blocks_the_deathblow_recoveries`. gap: when the exe drops them. Event 9950-9961 in
+   `todome_blocks_the_deathblow_recoveries`. They end with Wolf's reload: effectEndurance -1,
+   saveCategory -1 (not saved), no event script names them. Event 9950-9961 in
    common.emevd is the skill reset (clears every skill SpEffect), unrelated.
 2. **Visuals:** the game's FXR effects now play (section 9). All 19 arts and 10 tools were
    shot (`SHINOBI_SKILL=<id>`; the log now prints Wolf's state, place and facing) and fixed where

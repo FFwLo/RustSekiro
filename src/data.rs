@@ -217,6 +217,10 @@ pub struct Attack {
     pub hit0_dmy1: i64,
     #[serde(rename = "hit0_DmyPoly2", default)]
     pub hit0_dmy2: i64,
+    /// Every hit shape (AtkParam hit0..hit15): (DmyPoly1, DmyPoly2 or -1 for a sphere, radius,
+    /// hitType, priority). Empty in older exports: `shapes` falls back to hit0.
+    #[serde(default)]
+    pub hits: Vec<(i64, i64, f32, i64, i64)>,
     #[serde(default)]
     pub direct_atk_stam_damage: f32,
     #[serde(default)]
@@ -311,6 +315,15 @@ pub struct Attack {
 }
 
 impl Attack {
+    /// The row's hit shapes (DmyPoly1, DmyPoly2 or -1 = a sphere, radius): all of hit0..hit15
+    /// it uses, else hit0 (exports before the shapes were carried).
+    pub fn shapes(&self) -> Vec<(i64, i64, f32)> {
+        if self.hits.is_empty() {
+            return vec![(self.hit0_dmy1, self.hit0_dmy2, self.hit0_radius)];
+        }
+        self.hits.iter().map(|h| (h.0, h.1, h.2)).collect()
+    }
+
     /// An NPC hit's damage before its NpcParam atk rate: atkPhys + atkMag + atkFire + atkThun +
     /// atkDark. gap: Wolf's per-element cut rates are not applied (all 1.0 assumed).
     pub fn npc_damage(&self) -> f32 {
@@ -527,14 +540,34 @@ pub struct BulletSpec {
     pub sfx_id_flick: i64,
     #[serde(default)]
     pub is_inherit_sfx_to_child: i32,
+    /// The speed stays within minVellocity..maxVellocity (enemy_bullet::flight).
     #[serde(default)]
-    #[allow(dead_code)] // kept for debugging / future use
     pub max_vellocity: f32,
-    /// Acceleration / gravity beyond `dist` metres.
+    #[serde(default)]
+    pub min_vellocity: f32,
+    /// Acceleration (along the flight) / gravity within `dist` metres and beyond.
+    #[serde(default)]
+    pub accel_in_range: f32,
+    #[serde(default)]
+    pub gravity_in_range: f32,
     #[serde(default)]
     pub accel_out_range: f32,
     #[serde(default)]
     pub gravity_out_range: f32,
+    /// Homing (enemy_bullet::steer): homingAngle deg/s (< 0 none) once past homingBeginDist m,
+    /// while the target is hormingStopRange m away or more; its point is raised
+    /// targetYOffsetRange m.
+    #[serde(default)]
+    pub homing_angle: f32,
+    #[serde(default)]
+    pub homing_begin_dist: f32,
+    #[serde(default)]
+    pub horming_stop_range: f32,
+    #[serde(default)]
+    pub target_y_offset_range: f32,
+    /// Flies through the map (else the collision stops it).
+    #[serde(default)]
+    pub is_penetrate_map: i32,
     #[serde(default)]
     pub dist: f32,
     #[serde(default)]
@@ -861,6 +894,9 @@ pub struct Throw {
     /// 230 by its head; -1 = its root) and the facing it allows (DiffAngMax, degrees).
     pub judge_dmy: i16,
     pub diff_ang_max: f32,
+    /// adsrobModelPosInterpolationTime (s): after the absorb snaps the capsule onto the dummy,
+    /// the model slides to the anim's position over this time (0 = no slide). anim.rs ModelLag.
+    pub model_interp: f32,
 }
 
 impl Combat {
@@ -877,6 +913,7 @@ impl Combat {
             def_group: i("defAnimOffset"),
             judge_dmy: r.get("judgeRangeBasePosDmyId2").and_then(|v| v.as_i64()).unwrap_or(-1) as i16,
             diff_ang_max: r.get("DiffAngMax").and_then(|v| v.as_f64()).unwrap_or(180.0) as f32,
+            model_interp: r.get("adsrobModelPosInterpolationTime").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32,
         })
     }
 
@@ -893,17 +930,26 @@ impl Combat {
     }
 
     /// The enemy's grab for a throwFlag-1 hit: its ThrowParam row (AtkChrId = the chr number)
-    /// whose throwKind is 1000000 + AtkParam throwTypeId * 10 (c1500 zombies: knife stab 0 ->
-    /// 21500000 ThrowAtk4100, eye gouge 1 -> 21500100 4110, restraint 2 -> 21500200 4120; the
-    /// General's 0 -> 21020000). gap: the exe's row match is not traced; this pattern holds for
-    /// every enemy grab row.
+    /// whose throwKind is a ThrowKindParam row checked on a grab hit (throwCheckSituation 4,
+    /// only the 10 "[Enemy] Throw n" rows 1000000-1000140) with the hit's AtkParam throwTypeId
+    /// (Paramdex SDT ThrowKindParam throwTypeId: "on a throw-transition damage hit, this kind
+    /// is checked only when it matches the attack param's throw type id"). c1500 zombies: knife
+    /// stab 0 -> 21500000 ThrowAtk4100, eye gouge 1 -> 21500100 4110, restraint 2 -> 21500200
+    /// 4120; the General's 0 -> 21020000. The underwater kinds (throwKindCategory 101, only
+    /// c1340's 21340000) are taken only when the chr has no other. gap: no water, so the
+    /// underwater check itself is not modelled.
     pub fn enemy_grab(&self, foe: &Foe, throw_type: i64) -> Option<Throw> {
+        let kinds = self.params.get("ThrowKindParam")?.as_object()?;
+        let kind_of = |k: i64| {
+            let r = kinds.get(&k.to_string())?;
+            (r["throwCheckSituation"].as_i64() == Some(4) && r["throwTypeId"].as_i64() == Some(throw_type))
+                .then(|| r["throwKindCategory"].as_i64() == Some(101))
+        };
         let rows = self.params.get("ThrowParam")?.as_object()?;
-        let kind = 1_000_000 + throw_type * 10;
-        let id = rows
+        let (_, id) = rows
             .iter()
-            .filter(|(_, r)| r["AtkChrId"].as_i64() == Some(foe.chr_num) && r["throwKind"].as_i64() == Some(kind))
-            .filter_map(|(k, _)| k.parse::<i64>().ok())
+            .filter(|(_, r)| r["AtkChrId"].as_i64() == Some(foe.chr_num))
+            .filter_map(|(k, r)| Some((kind_of(r["throwKind"].as_i64()?)?, k.parse::<i64>().ok()?)))
             .min()?;
         self.throw(id)
     }
@@ -1210,24 +1256,138 @@ impl Plugin for DataPlugin {
         }
         f.player.alias_missing_clips();
         let mut combat = Combat { player: f.player, kinds, params: f.params, rumble: f.rumble, twists: f.twists, names: f.names };
-        // The kinds the first kind's boss map events enable (the Corrupted Monk's clones are her
-        // own rows; Genichiro's Way of Tomoe is c7110).
-        for (chr, row) in crate::enemy::event_kinds(&combat, combat.kinds[0].foe.npc_row) {
-            if combat.kind_index(&chr, Some(row)).is_none() {
-                let mut f2 = File { player: CharData::default(), enemy: CharData::default(), enemies: HashMap::new(), params: std::mem::take(&mut combat.params), rumble: HashMap::new(), twists: HashMap::new(), names: Names::default() };
-                let kind = load_kind(&mut f2, &chr, Some(row));
-                combat.params = f2.params;
-                if kind.foe.chr == chr {
-                    combat.kinds.push(kind);
-                }
-            }
-        }
+        combat.add_event_kinds();
         app.insert_resource(combat);
     }
 }
 
 /// Loads one enemy kind: extracted/enemies/<chr>.json (its rows merged into `f.params`), else
 /// one of the two enemies combat_data.json carries (else the Samurai General).
+impl Combat {
+    /// The kinds the first kind's boss map events enable (the Corrupted Monk's clones are her
+    /// own rows; Genichiro's Way of Tomoe is c7110).
+    fn add_event_kinds(&mut self) {
+        for (chr, row) in crate::enemy::event_kinds(self, self.kinds[0].foe.npc_row) {
+            if self.kind_index(&chr, Some(row)).is_none() {
+                let kind = self.with_params_file(|f| load_kind(f, &chr, Some(row)));
+                if kind.foe.chr == chr {
+                    self.kinds.push(kind);
+                }
+            }
+        }
+    }
+
+    /// Runs `op` on a File holding this Combat's params (load_kind merges an enemy's rows in).
+    fn with_params_file<T>(&mut self, op: impl FnOnce(&mut File) -> T) -> T {
+        let mut f = File { player: CharData::default(), enemy: CharData::default(), enemies: HashMap::new(), params: std::mem::take(&mut self.params), rumble: HashMap::new(), twists: HashMap::new(), names: Names::default() };
+        let out = op(&mut f);
+        self.params = f.params;
+        out
+    }
+
+    /// Replaces the enemy kinds at runtime (the encounter picker, enemy.rs SpawnEncounter): the
+    /// main kind, the group's and the kinds its boss events bring in, as at startup. Kind
+    /// indices change, so every enemy must be respawned (SpawnEncounter does it through
+    /// FightReset) and AnimLib::sync_kinds must follow.
+    pub fn load_encounter(&mut self, chr: &str, npc_row: Option<i64>, group: &[crate::config::GroupEnemy]) {
+        let wanted: Vec<(String, Option<i64>)> = std::iter::once((chr.to_string(), npc_row)).chain(group.iter().map(|g| (g.chr.clone(), g.npc_row))).collect();
+        let mut kinds: Vec<EnemyKind> = Vec::new();
+        for (c, r) in wanted {
+            if kinds.iter().any(|k| k.foe.chr == c && r.is_none_or(|r| k.foe.npc_row == r)) {
+                continue;
+            }
+            kinds.push(self.with_params_file(|f| load_kind(f, &c, r)));
+        }
+        self.kinds = kinds;
+        self.add_event_kinds();
+    }
+}
+
+/// One fight the encounter picker can start: an exported enemy with one of its placed NpcParam
+/// rows (extracted/enemies/roster.json, `sekiro-extract npcs`). `boss`: the row has a boss
+/// script (boss_scripts.json: its arena, events and phases); `deathblows`: the red dots.
+#[derive(Clone, Debug)]
+pub struct Encounter {
+    pub chr: String,
+    pub npc_row: i64,
+    /// The chr's name and, after " - ", the placement's (when they differ).
+    pub name: String,
+    pub deathblows: i64,
+    pub boss: bool,
+    /// The game gives it a health bar (a boss or a mini-boss: its name is the bar's).
+    pub bar: bool,
+    /// The maps the row is placed in (m11_00_00_00 ...).
+    pub maps: Vec<String>,
+}
+
+/// Every encounter, in roster order (chr id), one per placed NpcParam row. A boss or mini-boss
+/// row is named by its health bar (extracted/enemies/npc_names.json, tools/npc_names.py: the
+/// game's English NPC名 text); rows sharing a name get their place's (地名, in brackets), and
+/// if that is shared too, a number (in row order: the Guardian Ape's headless row is "2").
+pub fn encounter_list() -> Vec<Encounter> {
+    let dir = crate::paths::root().join("extracted/enemies");
+    let read = |n: &str| std::fs::read_to_string(dir.join(n)).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok());
+    let official = read("npc_names.json").unwrap_or_default();
+    let bosses = read("boss_scripts.json").and_then(|v| v.as_object().map(|o| o.keys().cloned().collect::<std::collections::HashSet<_>>())).unwrap_or_default();
+    let mut out = Vec::new();
+    for e in read("roster.json").and_then(|v| v.as_array().cloned()).unwrap_or_default() {
+        let Some(chr) = e["chr"].as_str() else { continue };
+        if !dir.join(format!("{chr}.json")).exists() {
+            continue;
+        }
+        let chr_name = e["name"].as_str().unwrap_or(chr);
+        for p in e["placements"].as_array().into_iter().flatten() {
+            let Some(row) = p["npc"].as_i64() else { continue };
+            // (A row placed in two map setups is listed twice in the roster.)
+            if out.iter().any(|o: &Encounter| o.chr == chr && o.npc_row == row) {
+                continue;
+            }
+            let pname = p["name"].as_str().unwrap_or("");
+            let name = match official["rows"][row.to_string()].as_str() {
+                Some(n) => n.to_string(),
+                None if pname.is_empty() || pname == chr_name => chr_name.to_string(),
+                None => format!("{chr_name} - {pname}"),
+            };
+            out.push(Encounter {
+                chr: chr.to_string(),
+                npc_row: row,
+                name,
+                deathblows: p["deathblows"].as_i64().unwrap_or(0),
+                boss: bosses.contains(&row.to_string()),
+                bar: official["rows"].get(row.to_string()).is_some(),
+                maps: p["maps"].as_array().map(|m| m.iter().filter_map(|v| v.as_str().map(str::to_string)).collect()).unwrap_or_default(),
+            });
+        }
+    }
+    let count = |out: &[Encounter]| {
+        let mut n: HashMap<String, usize> = HashMap::new();
+        for e in out {
+            *n.entry(e.name.clone()).or_default() += 1;
+        }
+        n
+    };
+    let shared = count(&out);
+    for e in &mut out {
+        if shared[&e.name] > 1 {
+            if let Some(place) = e.maps.first().and_then(|m| official["places"][m].as_str()) {
+                e.name = format!("{} ({place})", e.name);
+            }
+        }
+    }
+    let shared = count(&out);
+    let mut seen: HashMap<String, usize> = HashMap::new();
+    for e in &mut out {
+        if shared[&e.name] > 1 {
+            let k = seen.entry(e.name.clone()).or_default();
+            *k += 1;
+            if *k > 1 {
+                e.name = format!("{} {k}", e.name);
+            }
+        }
+    }
+    out
+}
+
 fn load_kind(f: &mut File, chr: &str, npc_row: Option<i64>) -> EnemyKind {
         let (mut enemy, foe) = if let Some(file) = EnemyFile::load(chr) {
             let foe = file.foe(chr, npc_row);

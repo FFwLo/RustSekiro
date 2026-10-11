@@ -146,6 +146,30 @@ fn pick(row: &Map<String, Value>, fields: &[&str]) -> Value {
     Value::Object(fields.iter().filter_map(|f| row.get(*f).map(|v| (f.to_string(), v.clone()))).collect())
 }
 
+/// An AtkParam row's fields plus "hits": every hit shape the row uses, as [DmyPoly1, DmyPoly2,
+/// Radius, hitType, Priority] (hit0..hit15; Paramdex SDT AtkParam: DmyPoly2 -1 = a sphere at
+/// DmyPoly1; the unused slots are DmyPoly1 0 with radius 0). 788 NPC rows and 210 PC rows use
+/// more than one (the air kick 901: 612-613 and 612-614).
+fn pick_atk(row: &Map<String, Value>) -> Value {
+    let mut v = pick(row, ATK_FIELDS);
+    let i = |k: String| row.get(&k).and_then(Value::as_i64).unwrap_or(-1);
+    let hits: Vec<Value> = (0..16)
+        .filter(|n| i(format!("hit{n}_DmyPoly1")) > 0)
+        .map(|n| {
+            json!([
+                i(format!("hit{n}_DmyPoly1")),
+                i(format!("hit{n}_DmyPoly2")),
+                row.get(&format!("hit{n}_Radius")).and_then(Value::as_f64).unwrap_or(0.0),
+                i(format!("hit{n}_hitType")),
+                i(format!("hti{n}_Priority")),
+            ])
+        })
+        .collect();
+    v["hits"] = Value::Array(hits);
+    v["hitSourceType"] = row.get("hitSourceType").cloned().unwrap_or(Value::Null);
+    v
+}
+
 /// Every TAE in an anibnd, keyed "aXXX_YYYYYY".
 fn load_taes(dir: &Path, tmpl: &HashMap<i32, tae::EventTemplate>) -> HashMap<String, Value> {
     let mut out = HashMap::new();
@@ -473,7 +497,7 @@ fn export_character(
         }
         let atk_id = b["refId"].as_i64().unwrap();
         if let Some(a) = atk.get(&atk_id) {
-            let mut v = pick(a, ATK_FIELDS);
+            let mut v = pick_atk(a);
             v["atkParamId"] = json!(atk_id);
             v["behaviorName"] = b["name"].clone();
             attacks.insert(j.to_string(), v);
@@ -488,7 +512,7 @@ fn export_character(
             }
             let atk_id = b["refId"].as_i64().unwrap();
             if let Some(a) = atk.get(&atk_id) {
-                let mut v = pick(a, ATK_FIELDS);
+                let mut v = pick_atk(a);
                 v["atkParamId"] = json!(atk_id);
                 v["behaviorName"] = b["name"].clone();
                 attacks.insert(format!("v{var}:{j}"), v);
@@ -517,7 +541,7 @@ fn export_character(
                 }
                 let atk_id = b["refId"].as_i64().unwrap();
                 if let Some(a) = atk.get(&atk_id) {
-                    let mut v = pick(a, ATK_FIELDS);
+                    let mut v = pick_atk(a);
                     v["atkParamId"] = json!(atk_id);
                     v["behaviorName"] = b["name"].clone();
                     if !base_done {
@@ -536,7 +560,7 @@ fn export_character(
         }
         let atk_id = b["refId"].as_i64().unwrap();
         if let Some(a) = atk.get(&atk_id) {
-            let mut v = pick(a, ATK_FIELDS);
+            let mut v = pick_atk(a);
             v["atkParamId"] = json!(atk_id);
             v["behaviorName"] = b["name"].clone();
             attacks.insert(format!("pc{j}"), v);
@@ -576,7 +600,7 @@ fn export_character(
             v["bulletId"] = json!(bid);
             if let Some(aid) = bl.get("atkId_Bullet").and_then(Value::as_i64) {
                 if let Some(a) = atk.get(&aid) {
-                    let mut av = pick(a, ATK_FIELDS);
+                    let mut av = pick_atk(a);
                     av["atkParamId"] = json!(aid);
                     for k in ["spEffectId0", "spEffectId1", "spEffectId2", "spEffectId3", "spEffectId4"] {
                         if let Some(sid) = a.get(k).and_then(Value::as_i64).filter(|v| *v > 0) {
@@ -616,7 +640,7 @@ fn export_character(
         }
         let atk_id = b["refId"].as_i64().unwrap();
         if let Some(a) = atk.get(&atk_id) {
-            let mut v = pick(a, ATK_FIELDS);
+            let mut v = pick_atk(a);
             v["atkParamId"] = json!(atk_id);
             v["behaviorName"] = b["name"].clone();
             attacks.insert(format!("v{var}:{j}"), v);
@@ -957,6 +981,8 @@ pub fn export(root: &Path, list_file: &Path, defs: &Path) {
                 ids
             }),
             "ChrPhysicsVelocityChangeParam": all_rows(&params, "ChrPhysicsVelocityChangeParam"),
+            // Which ThrowParam kinds an enemy grab hit checks (Combat::enemy_grab).
+            "ThrowKindParam": all_rows(&params, "ThrowKindParam"),
             // Stealth: the enemies' sight / hearing / forget rules and the AI sounds Wolf's TAE makes.
             "NpcThinkParam": rows(&params, "NpcThinkParam", &[10100000, 10200000]),
             "AiSoundParam": all_rows(&params, "AiSoundParam"),
@@ -971,9 +997,11 @@ pub fn export(root: &Path, list_file: &Path, defs: &Path) {
 
 /// HUD sprites the game draws itself, cut from the menu atlases (menu/hi/01_common.tpf, sprite rects
 /// from menu/hi/01_common.sblytbnd <atlas>.layout) to extracted/hud/<name>.png: the deathblow mark
-/// (MENU_ninsatu_01 / _02 in SB_FE).
+/// (MENU_ninsatu_01 / _02 in SB_FE), the stealth meter (MENU_Find_01 / _02, SB_FE) and the
+/// screens' brush marks (src/menu.rs): 死 MENU_Death and 忍殺 MENU_Ninsatsu (SB_TextEffect), the
+/// title 隻狼 MENU_Title_SEKIRO with MENU_Shadows / MENU_DieTwice (SB_Title).
 fn export_hud(root: &Path, icons: &BTreeSet<String>) {
-    const WANTED: [&str; 2] = ["MENU_ninsatu_01", "MENU_ninsatu_02"];
+    const WANTED: [&str; 9] = ["MENU_ninsatu_01", "MENU_ninsatu_02", "MENU_Find_01", "MENU_Find_02", "MENU_Death", "MENU_Ninsatsu", "MENU_Title_SEKIRO", "MENU_Shadows", "MENU_DieTwice"];
     let Ok(tpf) = std::fs::read(root.join("menu/hi/01_common.tpf")) else {
         eprintln!("no menu/hi/01_common.tpf (sekiro-extract unpack <dir> extracted 'menu/hi/01_common'): HUD sprites skipped");
         return;
@@ -1003,6 +1031,15 @@ fn export_hud(root: &Path, icons: &BTreeSet<String>) {
                 for xx in x..x + sw {
                     let p = px[yy * *w + xx];
                     rgba.extend_from_slice(&[(p >> 16 & 0xff) as u8, (p >> 8 & 0xff) as u8, (p & 0xff) as u8, (p >> 24) as u8]);
+                }
+            }
+            // MENU_Title_SEKIRO is white brush on solid black (no alpha): its brightness becomes
+            // the alpha, so the black drops out over the scene. gap: the title movie's own blend
+            // of it is not read.
+            if name == "MENU_Title_SEKIRO" {
+                for p in rgba.chunks_mut(4) {
+                    p[3] = p[0].max(p[1]).max(p[2]);
+                    p[..3].fill(255);
                 }
             }
             crate::write_png(&root.join(format!("hud/{name}.png")), sw, sh, &rgba);

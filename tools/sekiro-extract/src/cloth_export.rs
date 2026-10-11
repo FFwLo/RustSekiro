@@ -227,8 +227,17 @@ pub fn export(flver: &crate::flver::Flver, d: &[u8]) -> Value {
             if ty.contains("Skin") && !ty.contains("MeshMesh") {
                 skin_ops.push((r.i32(p + tf.field(ty, "outputBufferIndex")), skin_entries(&tf, p, ty)));
             } else if ty == "hclMoveParticlesOperator" {
+                // The operator of this container's first sim cloth only (c1060's mino and the
+                // handmaidens' sleeve containers hold a second sim cloth whose operator came
+                // last and overwrote the pairs: 406 pairs for 59 particles restarted the cloth
+                // every frame). Pairs beyond the particle count are dropped either way.
+                let sim_index = tf.try_field(ty, "simClothIndex").map(|f| r.u32(p + f)).unwrap_or(0);
+                if sim_index != 0 || !c["move"].is_null() {
+                    continue;
+                }
+                let n_particles = particles.len() as u16;
                 ref_buf = r.i32(p + tf.field(ty, "refBufferIdx"));
-                let pairs: Vec<Value> = tf.array(p + tf.field(ty, "vertexParticlePairs")).map(|(a, n, s)| (0..n).map(|i| json!([r.u16(a + i * s), r.u16(a + i * s + 2)])).collect()).unwrap_or_default();
+                let pairs: Vec<Value> = tf.array(p + tf.field(ty, "vertexParticlePairs")).map(|(a, n, s)| (0..n).map(|i| (r.u16(a + i * s), r.u16(a + i * s + 2))).filter(|&(_, pi)| pi < n_particles).map(|(v, pi)| json!([v, pi])).collect()).unwrap_or_default();
                 c["move"] = json!(pairs);
             } else if ty == "hclSimulateOperator" {
                 if let Some((a, _, _)) = tf.array(p + tf.field(ty, "simulateOpConfigs")) {

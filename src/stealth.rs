@@ -108,7 +108,7 @@ impl Seen {
 }
 
 /// Is `wolf` inside `cone` seen from an enemy at `me` facing `fwd` (FUN_14061bb70 /
-/// FUN_14061c2a0 without the map raycast: the arena has no walls)?
+/// FUN_14061c2a0), with nothing of the map between them (`sight_clear`)?
 pub fn in_cone(cone: &Cone, me: Vec3, fwd: Vec3, wolf: &Seen) -> bool {
     let fwd = fwd.with_y(0.0).normalize_or_zero();
     // Eye: the enemy's feet pushed back along its facing (FUN_14061af30 / ae40 / b030).
@@ -135,7 +135,21 @@ pub fn in_cone(cone: &Cone, me: Vec3, fwd: Vec3, wolf: &Seen) -> bool {
         return false;
     }
     let far = wolf.radius + cone.dist * wolf.cut;
-    d2 < far * far
+    d2 < far * far && sight_clear(me, wolf.pos)
+}
+
+/// The sight ray (FUN_14061c8a0, last step of both checks): from the sight context's +0x30 to
+/// +0xa0 through the collision (FUN_14094e310, filter 0x32); a hit means not seen. The normal
+/// cone casts it unless ctx +0xc2 is set (FUN_140617280). gap: the two points - the target's is
+/// its position raised by its physics +0xd0 (FUN_1409f0890 / FUN_140bbf730) or a dummy poly
+/// when its ChrInfo +0x330 >= 0, the observer's is not traced - are taken as both capsule
+/// centres; which collision filter 0x32 skips is not known (our map has the hit collision only).
+fn sight_clear(me: Vec3, wolf: Vec3) -> bool {
+    let h = Vec3::Y * crate::player::CAPSULE_HALF_HEIGHT;
+    let (a, b) = (me + h, wolf + h);
+    let d = b - a;
+    let len = d.length();
+    len < 1e-4 || crate::map::raycast(a, d / len, len).is_none()
 }
 
 fn in_range(a: f32, lo: f32, hi: f32) -> bool {

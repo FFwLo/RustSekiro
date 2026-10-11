@@ -22,6 +22,14 @@ Dated findings, oldest first. Append new entries at the end.
   push = distance * (+0x40). Wolf: Combo1 0 % at frames 23-25 (not pushed when blocked at his hit frame), Combo2 50 %,
   Combo3-5 30 %. Applied in combat.rs apply_knockback. (Also seen: leftover push distance is handed to the other
   character when the knocked one is blocked, FUN_140ba34b0 - not modelled.)
+  2026-10-11 done: the hand-off is TAE ChrActionFlag 72 "KnockbackValue" on the ATTACKER (dispatcher FUN_140b51b70
+  case 0x48: chr module +0x70 bit 9, +0xc1c = ArgA). Knockback start FUN_140b6bfe0: dist = knockbackDist x max(cos^2
+  (knockback dir . attacker facing), 0.4); defender push = (1 - cut) x dist x rate; when the attacker has the flag, the
+  rest (dist - push) goes to the attacker along the reversed direction over ArgA seconds (FUN_140ba3420 +
+  FUN_140ba3190(-1, rest / ArgA, ArgA)). Only Wolf's sword attacks have it (133 anims, ArgA 0.09); NpcParam
+  knockbackRate_vsPlayer_* is 75 for c1180 (club samurai), 100 for 45 rows, 0 for most. combat.rs recoil; test
+  wolf_bounces_off_an_enemy_that_cuts_his_knockback (c1180: ~0.75 m back). Gaps: the cos^2 facing factor, the
+  one-frame start delay (+0x45) and the deferred path (damage +0x164, through TAE 226) are not modelled.
 - 2026-10-07 WOLF: damage reactions re-checked against HKS normal damage (c0000_transition.lua ~1162). Fixed: NONE (0)
   and MINIMUM (8) play no reaction (were Small); PUSH (5) = Middle 4-way (was LargeBlow); EXLARGE (4) = LargeBlow (was
   ExLargeBlow first); EX_BLAST (10) = ExLargeBlow, BREATH (11) = SpecialLargeBlow (both no clip -> LargeBlow; were
@@ -81,6 +89,15 @@ Dated findings, oldest first. Append new entries at the end.
   bonus on Wolf). Odd ones: during GroundStep_F x1.2 HP / x1.33 posture; GroundStep_N x0.73 HP; during his own
   StandDamage reactions x0.6-0.83 (no damage-rate SpEffects in those anims; gap: hit direction / repeat-hit cut?).
   Wolf->enemy x2.9 hits: not from NpcParam (rows identical but HP); temporary effect (gap).
+  2026-10-11 resolved the other way round: -348 / -130 is Wolf's NORMAL slash (direct 30 x 4.35 = 130;
+  every enemy in all 5 recordings); the reduced -121 / -65 hits (x0.35 HP / x0.5 posture) are all on NpcParam
+  11807101 "下男 金砕棒（鎧）" = the ARMORED variant (vs 11807100: hp, stamina, drops and modelDispMask
+  17/19/20/21 on - its armor pieces). 7 of 8 slashes on it were cut, 1 was full. So: an armor cut, not a
+  bonus. Leads (gap, not applied): c1180 hkxpwv ragdoll bodies PelvisArmor_00-02 have part group 2 and byte
+  0x30 (shield: 1, 0x30; all others 0); SpEffect 400250 "クリティカル_鎧ガードしたとき体幹ダメージ半減" (stateInfo
+  158, every rate 0.5 = the posture half) and 220062 "鎧ガード可能" (stateInfo 957, read by
+  common_common_func_NTC.lua:355) are applied by neither params nor TAE (HKS/exe). The HP x0.35 source is
+  unknown.
 - 2026-10-08 the "odd" live hits are explained, no hidden mechanic: -400 / -220 = HP capped at death (Wolf at 0);
   -360 / -89 = normal 300 / 67 + a second contact 60 / 22 in the same tick; -180 / -45 = a smaller attack
   (atkPhys 48 / atkStam 12 equivalent) seen in many states - rec_attacks.py took the first of two active attack
@@ -175,9 +192,48 @@ Dated findings, oldest first. Append new entries at the end.
   enemy's lateral offset still differs from live by up to ~0.4 m (live Wolf drifts 0.23 m right during the
   spin, his track holds still) - the exe's throw model-position interpolation (adsrobModelPosInterpolationTime
   0.5, atkSorbDmyId 249) is not traced.
+  2026-10-11 re-check with real geometry (sim_tests behind_throw_live_trace now on app_geom; live
+  rec tick 1985 = our frame 0): the hold (0.60 m straight behind, dyaw 0) and the end split (~0.9 m at
+  ~145 deg game convention) match; the live enemy was not killed (stays ThrowDef13200), ours dies into
+  13201 at ~1.6 s, so the hold length differs only by that. The rest is ThrowParam
+  adsrobModelPosInterpolationTime, which Paramdex says is a MODEL slide (the capsule snaps onto the
+  dummy, the model moves to the anim position over that time): done as anim.rs ModelLag (set by
+  player.rs follow_throw, linear; gap: the exe's curve). Test an_absorbed_enemy_model_slides_onto_the_throw_dummy.
+  throwFollowingType (0 for 2237 rows, 1 for 657) + "the following period is set by a TAE action":
+  gap, the TAE action is not identified; the one-shot absorb + both root motions reproduces the hold.
 - 2026-10-10 root yaw sign: the HKX reference-frame yaw is in the game's handedness; mirroring X for
   Bevy also mirrors turns, so export.rs writes -yaw (TurnDefault_Right90 = +90 raw = right). Proof:
   c1020 ThrowDefDeath 13411's Pelvis turns -182 deg in the clip while its root turns +180 (they cancel
   in the game); with the raw sign the General spun 360. The in-game behind deathblow (c1010) then
   matches the live recording frame for frame in tools/rec_throw.py's convention (x mirrored, yaw =
   pi - ours).
+- 2026-10-11 B1 (docs/PLAN.md) hit shapes and hurt capsules:
+  * Hurt capsules were already the game's in play: the ragdoll bodies of each chr's physics HKX
+    (`export.rs` hurtboxes, `anim.rs` Hurtboxes; Wolf 18, every fighter has them; only the dummy
+    / cutscene chrs c1000, c1001, c1013, c7021, c7210, c7401 have none). The 0.4 m body capsule
+    and the reach / arc approximation were only the headless tests' fallback.
+  * **AtkParam has 16 hit shapes** (hit0..hit15 DmyPoly1/2, Radius, hitType, hti*_Priority;
+    Paramdex SDT). 788 NPC rows and 210 PC rows use more than one (the air kick 901:
+    612-613 and 612-614); only hit0 was read. **DmyPoly2 -1 = a sphere** at DmyPoly1
+    ("-1だと球になる"): 398 NPC / 94 PC shapes; they found no second dummy and fell back to the
+    reach approximation in play (the dog c1150's bite "reached" 8 m; 4 m now). The exporter
+    writes `hits` = [[DmyPoly1, DmyPoly2, Radius, hitType, Priority]] and `hitSourceType`;
+    `Attack::shapes()`; combat.rs tests every shape (swept). gap: hitSourceType (which
+    model's dummy ids) and the priority of two shapes touching at once.
+  * Headless geometry: `model.rs GeometryPlugin` (attach_models without meshes) + AnimPlugin in
+    `sim_tests::app_geom`: the tests now hit with the real capsules.
+  * Table (sim, real geometry; first contact in TAE frames at 30 fps, reach = farthest start
+    distance between the two that still connects, step-ins included). `enemy_reach_table` /
+    `geometry_probe` (ignored) print it:
+
+    | attack | TAE window from | contact (1.5 m / Wolf 2.4 m) | reach |
+    |---|---|---|---|
+    | Wolf Combo1 a050_300100 vs c1020 | f7 | f7 | 4.8 m |
+    | General c1020 a000_003000 | f18 | f19-19.5 | 4.25 m |
+    | Ogre c1040 a000_003023 | f28 | f28.5-29 | 5.5 m |
+    | c1010 a000_003000 | f20 | f22.5-23 | 4.0 m |
+    | Dog c1150 a000_003000 (sphere) | f17 | f17 | 4.0 m |
+    | Genichiro c7100 a000_003000 | f20 | f22.5-23 | 4.25 m |
+    | Monk c5000 | - | her default row starts in the intro Event20006 | - |
+
+    Still to do: the same moments in the user's clips (contact frame and distance).

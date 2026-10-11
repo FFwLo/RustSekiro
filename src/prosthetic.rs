@@ -363,16 +363,18 @@ fn fly_bullets(
                     let mut sps: Vec<i64> = [b.spec.sp_effect_id0, b.spec.sp_effect_id1, b.spec.sp_effect_id2, b.spec.sp_effect_id3, b.spec.sp_effect_id4].to_vec();
                     sps.extend(b.spec.attack.as_ref().map(|a| a.sp_effects()).unwrap_or_default());
                     let lines = statuses.hit(&combat, ee, &da, &sps, m.contains("blocks"));
-                    // gap: catching fire flails him even through his guard (as seen in the game); the
-                    // exe's damage call that sets STATUS_BURNING is not traced.
+                    // c9997 ExecDamage runs ExecDebuffReaction before ExecGuardBlock, and
+                    // SP_DAMAGE_BURNING asks env(3041) GetStatusActivation STATUS_BURNING: the hit
+                    // whose build-up breaks the burn gauge (guarded or not) flails him, later hits
+                    // while he burns do not.
                     let ignited = lines.iter().any(|l| l == "BURNING");
                     for line in lines {
                         if let Some(log) = log.as_mut() {
                             log.push(line, Color::srgb(0.7, 0.55, 0.9));
                         }
                     }
-                    let burning = statuses.has_ref(&combat, ee, crate::status::REF_BURNING) && combat.data_of(&da).states.contains_key("FireReaction");
-                    if (m.starts_with("hit") || ignited) && burning && !da.posture_broken() && !e.is_broken() && rank_allows(transition_rank(&da.state), 3) {
+                    let fire_reaction = combat.data_of(&da).states.contains_key("FireReaction");
+                    if ignited && fire_reaction && !da.posture_broken() && !e.is_broken() && rank_allows(transition_rank(&da.state), 3) {
                         e.react(&mut da, &combat, "FireReaction");
                     }
                 }

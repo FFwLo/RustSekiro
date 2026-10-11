@@ -140,7 +140,7 @@ fn spawn_part(
         commands.entity(parent.map_or(pivot, |p| joints[p])).add_child(e);
         joints.push(e);
     }
-    for md in model.meshes.iter().filter(|md| md.albedo != "-") {
+    for md in model.meshes.iter().filter(|md| md.albedo != "-" && !md.pos.is_empty()) {
         let mut remap: HashMap<u16, u16> = HashMap::new();
         let (mut mesh_joints, mut inv, mut idx) = (Vec::new(), Vec::new(), Vec::with_capacity(md.bones.len()));
         for (b, w) in md.bones.iter().zip(&md.weights) {

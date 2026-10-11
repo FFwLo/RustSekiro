@@ -21,7 +21,7 @@ if (-not (Test-Path (Join-Path $Sekiro "sekiro.exe"))) { throw "Sekiro not found
 New-Item -ItemType Directory -Force $out | Out-Null
 # The game's FMOD runtime is loaded from the install at play time (src/paths.rs sekiro_dir).
 Set-Content -Path (Join-Path $out "sekiro_dir.txt") -Value $Sekiro -Encoding ascii
-& $exe unpack $Sekiro $out '^/(action/|param/gameparam/|chr/c0000(\.|_a|_c1020\.)|chr/c10[12][09]\.|sound/(s?main|c1020|c1010)\.|script/(aicommon|m\d\d_\d\d_00_00)\.luabnd|other/default\.rumblebnd)'
+& $exe unpack $Sekiro $out '^/(action/|param/gameparam/|chr/c0000(\.|_a|_c1020\.)|chr/c10[12][09]\.|sound/(s?main|c[0-9]+)\.|script/(aicommon|m\d\d_\d\d_00_00)\.luabnd|other/default\.rumblebnd|msg/engus/item\.msgbnd)'
 & $exe params (Join-Path $out "param\gameparam\gameparam.parambnd.d") (Join-Path $out "json\params")
 # Every enemy and boss: their chr / anim / behaviour / texture binders, Wolf's per-enemy
 # deathblow and grab anims (chr/c0000_c<chr>.anibnd) and the map event scripts.
@@ -72,24 +72,15 @@ $d = Join-Path $out "parts\wp_a_0300.partsbnd.d"
 $d = Join-Path $out "parts\wp_a_0310.partsbnd.d"
 & $exe model (Join-Path $d "WP_A_0310.flver") (Join-Path $d "WP_A_0310.tpf") (Join-Path $out "model_c0000_mblade_a_0310.bin") (Join-Path $out "tex")
 & $exe model (Join-Path $d "WP_A_0310_1.flver") (Join-Path $d "WP_A_0310.tpf") (Join-Path $out "model_c0000_mbsheath_a_0310.bin") (Join-Path $out "tex")
-# Game effects (docs/HANDOFF.md section 9): the common FXRs and their textures, then the FXR
-# definitions the exported characters use (tools/fxr_extract.py needs node + tools/fxr-dump npm i).
-& $exe unpack $Sekiro $out 'sfxbnd_commoneffects'
+# Game effects (docs/HANDOFF.md section 9): the common and the area effect archives (the
+# characters' own effects are in sfxbnd_m10-m25), then the FXR definitions, textures and effect
+# models (FXR Model 605 -> extracted/fxr_model) the exported characters use
+# (tools/fxr_extract.py needs node + tools/fxr-dump npm i).
+& $exe unpack $Sekiro $out 'sfxbnd_(commoneffects|m[0-9])'
 if (Get-Command npm -ErrorAction SilentlyContinue) {
     Push-Location (Join-Path $PSScriptRoot "fxr-dump"); npm i --silent; Pop-Location
     $env:SEKIRO_EXTRACT = $exe
     python (Join-Path $PSScriptRoot "fxr_extract.py")
-}
-# Effect models (FXR Model appearance 605: Divine Abduction's leaves, the shuriken's star...):
-# each model with its diffuse's texture pack from the same folder -> extracted/fxr_model.
-$sfx = Join-Path $out "sfx\sfxbnd_commoneffects.ffxbnd.d"
-New-Item -ItemType Directory -Force (Join-Path $out "fxr_model") | Out-Null
-$fxModels = [ordered]@{ 4010 = "s04009_a"; 4011 = "s04009_a"; 4017 = "s04017"; 4018 = "s04018_a"; 4070 = "s04070";
-    4100 = "s04114_a"; 4140 = "s04133_a"; 4141 = "s04133_a"; 8050 = "s08050_a"; 8060 = "s34030"; 8130 = "s08130_a";
-    8131 = "s08130_a"; 8180 = "s34010"; 11601 = "s34010"; 11602 = "s00001" }
-foreach ($m in $fxModels.GetEnumerator()) {
-    $id = $m.Key
-    & $exe model (Join-Path $sfx ("s{0:D5}.flver" -f $id)) (Join-Path $sfx "$($m.Value).tpf") (Join-Path $out "fxr_model\model_$id.bin") (Join-Path $out "tex")
 }
 # Dummy poly directions (throw absorb facing, player.rs follow_throw).
 foreach ($c in "c0000", "c1020", "c1010") { & $exe dummies (Join-Path $out "chr\$c.chrbnd.d\$c.flver") (Join-Path $out "model_$c.dummies.json") }
@@ -123,6 +114,8 @@ if ($python) {
     python (Join-Path $PSScriptRoot "boss_events.py")
     # Boss map scripts (bullets, summons, warps) -> extracted/enemies/boss_scripts.json (src/enemy/script.rs).
     python (Join-Path $PSScriptRoot "boss_scripts.py")
+    # The bosses' and mini-bosses' English names (their health bars) -> extracted/enemies/npc_names.json (src/data.rs encounter_list).
+    python (Join-Path $PSScriptRoot "npc_names.py")
     # Prosthetic tool models and their anims (parts/wp_a_07xx) -> extracted/tool (src/model/tool.rs).
     python (Join-Path $PSScriptRoot "tool_export.py") --sekiro $Sekiro --exe $exe
     # Every boss in its own arena (kb/map.md): one map at a time, about 2 GB of raw files each,

@@ -29,6 +29,17 @@ fn app_with(chr: &str) -> App {
 
 /// The sim with an enemy (NpcParam row) and more enemies at once (config enemy.group).
 fn app_cfg(chr: &str, npc_row: Option<i64>, group: Vec<crate::config::GroupEnemy>) -> App {
+    app_build(chr, npc_row, group, false)
+}
+
+/// The sim with the characters' real geometry (anim.rs skeletons, model.rs GeometryPlugin):
+/// hits test the AtkParam capsule between dummy polys against the ragdoll hurt capsules, as in
+/// the game, instead of the reach approximation.
+fn app_geom(chr: &str, npc_row: Option<i64>) -> App {
+    app_build(chr, npc_row, Vec::new(), true)
+}
+
+fn app_build(chr: &str, npc_row: Option<i64>, group: Vec<crate::config::GroupEnemy>, geometry: bool) -> App {
     let mut app = App::new();
     app.add_plugins(MinimalPlugins)
         .insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_secs_f64(1.0 / 60.0)))
@@ -41,6 +52,9 @@ fn app_cfg(chr: &str, npc_row: Option<i64>, group: Vec<crate::config::GroupEnemy
         config.enemy.group = group;
     }
     app.add_plugins((DataPlugin, ActorPlugin, CombatPlugin, PlayerPlugin, EnemyPlugin, crate::prosthetic::ProstheticPlugin, crate::status::StatusPlugin, crate::enemy_bullet::EnemyBulletPlugin));
+    if geometry {
+        app.add_plugins((bevy::transform::TransformPlugin, crate::anim::AnimPlugin, crate::model::GeometryPlugin));
+    }
     app.finish();
     app.cleanup();
     app.update();
@@ -793,6 +807,18 @@ fn kicking_off_the_enemy_relaunches() {
     assert!(max_vy_after > 5.0, "vy {max_vy_after}");
 }
 
+
+#[test]
+fn enemy_grabs_go_through_the_throw_kind_table() {
+    // ThrowKindParam "[Enemy] Throw n" (throwCheckSituation 4) matched on AtkParam throwTypeId:
+    // the zombies' knife stab 0, eye gouge 1, restraint 2 -> ThrowAtk4100 / 4110 / 4120.
+    let app = app_with("c1500");
+    let combat = app.world().resource::<Combat>();
+    let foe = &combat.kind(0).foe;
+    let ids: Vec<i64> = (0..3).filter_map(|t| combat.enemy_grab(foe, t)).map(|t| t.atk_anim_id).collect();
+    assert_eq!(ids, vec![4100, 4110, 4120]);
+    assert!(combat.enemy_grab(foe, 4).is_none());
+}
 
 #[test]
 fn neck_grab_holds_then_throws() {
@@ -3169,13 +3195,56 @@ fn crouch_drift_trace() {
     }
 }
 
+/// The behind deathblow's absorb (ThrowParam 11010111, atkSorbDmyId 249) snaps the enemy's
+/// capsule onto Wolf's dummy, and its model slides there over adsrobModelPosInterpolationTime
+/// (0.5 s) instead of jumping.
+#[test]
+fn an_absorbed_enemy_model_slides_onto_the_throw_dummy() {
+    let mut app = app_geom("c1010", None);
+    {
+        let world = app.world_mut();
+        world.resource_scope(|world, combat: Mut<Combat>| {
+            let mut q = world.query_filtered::<(&mut Enemy, &mut Actor, &mut Transform), Without<crate::enemy::Cast>>();
+            let (mut e, mut a, mut t) = q.single_mut(world).unwrap();
+            a.posture = a.posture_max;
+            e.on_posture_break(&mut a, &combat, true, 4.0);
+            t.translation.z = 1.8;
+            a.yaw = std::f32::consts::PI;
+        });
+    }
+    app.world_mut().resource_mut::<PadInput>().press(Action::Attack);
+    let (mut seen, mut mid) = (None, 0.0f32);
+    for f in 0..300 {
+        app.update();
+        let world = app.world_mut();
+        let lag = world.query_filtered::<&crate::anim::ModelLag, With<Enemy>>().iter(world).next().map(|l| (l.offset.length(), l.time));
+        let root = world.query_filtered::<&crate::anim::Skeleton, With<Enemy>>().iter(world).next().map(|s| s.root).unwrap();
+        let off = world.get::<Transform>(root).unwrap().translation.with_y(0.0).length();
+        if let (None, Some((jump, time))) = (seen, lag) {
+            assert!((time - 0.5).abs() < 1e-4 && jump > 0.05, "jump {jump} time {time}");
+            seen = Some(f);
+        }
+        if let Some(s) = seen {
+            if f - s > 32 {
+                assert!(off < 1e-4, "model still {off} m off the capsule after 0.53 s");
+                break;
+            }
+            if f - s == 15 {
+                mid = off;
+            }
+        }
+    }
+    assert!(seen.is_some(), "no absorb\n{}", log_text(&app));
+    assert!(mid > 0.02, "no slide halfway: {mid} m");
+}
+
 /// cargo test --release behind_throw_live_trace -- --ignored --nocapture : the c1010 behind
 /// deathblow (a200_511200 / ThrowDef13200) in the game's own conventions (x mirrored, yaw = pi -
 /// ours), one line per 1/30 s like tools/rec_throw.py on rec_c1010_20261009 (tick 1985...).
 #[test]
 #[ignore]
 fn behind_throw_live_trace() {
-    let mut app = app_with("c1010");
+    let mut app = app_geom("c1010", None);
     {
         let world = app.world_mut();
         world.resource_scope(|world, combat: Mut<Combat>| {
@@ -5303,4 +5372,279 @@ fn dragon_probe() {
         }
     }
     eprintln!("{}", log_text(&app));
+}
+
+/// Wolf's first slash with the real geometry against the General at `dist` m: the TAE frame of
+/// the first contact (his AtkParam capsule between the sword's dummy polys against the
+/// General's ragdoll capsules), None for a miss.
+fn geom_first_hit_frame(dist: f32) -> Option<(String, f32)> {
+    let mut app = app_geom("c1020", None);
+    {
+        let world = app.world_mut();
+        let mut q = world.query_filtered::<&mut Transform, With<Enemy>>();
+        for mut t in q.iter_mut(world) {
+            t.translation.z = dist;
+        }
+    }
+    app.update();
+    app.world_mut().resource_mut::<PadInput>().press(Action::Attack);
+    // (The hit can swap the state the same frame: a deflect.)
+    let mut last = (String::new(), 0.0);
+    for _ in 0..90 {
+        app.update();
+        let world = app.world_mut();
+        let a = world.query_filtered::<&Actor, With<Player>>().single(world).unwrap();
+        if a.attack_hit {
+            return Some(last);
+        }
+        last = (a.anim.clone(), a.t * TAE_FPS);
+    }
+    None
+}
+
+/// Wolf's push-back after his first slash connects on `chr` at 2 m: the knockback the enemy's
+/// NpcParam knockbackRate_vsPlayer_* cut refused (TAE flag 72 KnockbackValue, combat::recoil).
+fn wolf_recoil_on(chr: &str) -> Option<Vec3> {
+    let mut app = app_with(chr);
+    {
+        let world = app.world_mut();
+        let mut q = world.query_filtered::<&mut Transform, With<Enemy>>();
+        for mut t in q.iter_mut(world) {
+            t.translation.z = 2.0;
+        }
+    }
+    app.update();
+    app.world_mut().resource_mut::<PadInput>().press(Action::Attack);
+    for _ in 0..90 {
+        app.update();
+        let world = app.world_mut();
+        let a = world.query_filtered::<&Actor, With<Player>>().single(world).unwrap();
+        if a.attack_hit {
+            return Some(a.kb_vel);
+        }
+    }
+    None
+}
+
+#[test]
+fn wolf_bounces_off_an_enemy_that_cuts_his_knockback() {
+    // c1180 (club samurai, cut 75 %): pushed back (-Z, away from the enemy at +Z) over 0.09 s.
+    let v = wolf_recoil_on("c1180").expect("the slash connects");
+    assert!(v.z < -1.0 && v.x.abs() < v.z.abs() * 0.3, "recoil {v}");
+    // c1020 (cut 0): the General takes it all, Wolf stays.
+    let v = wolf_recoil_on("c1020").expect("the slash connects");
+    assert!(v.length() < 1e-4, "recoil {v}");
+}
+
+/// A fight reset (Wolf's death, Retry) respawns the line-up: the new enemies get their skeleton
+/// and model geometry (dummy polys) like the first ones.
+#[test]
+fn enemies_respawned_by_a_fight_reset_get_their_bodies() {
+    let mut app = app_geom("c1020", None);
+    let bodies = |app: &mut App| {
+        let world = app.world_mut();
+        let n = world.query_filtered::<Entity, With<Enemy>>().iter(world).count();
+        let skel = world.query_filtered::<Entity, (With<Enemy>, With<crate::anim::Skeleton>)>().iter(world).count();
+        let dmy = world.query_filtered::<Entity, (With<Enemy>, With<crate::model::Dummies>)>().iter(world).count();
+        (n, skel, dmy)
+    };
+    let first = bodies(&mut app);
+    assert!(first.0 > 0 && first.1 == first.0 && first.2 == first.0, "{first:?}");
+    app.world_mut().resource_mut::<crate::enemy::FightReset>().0 = true;
+    for _ in 0..5 {
+        app.update();
+    }
+    let again = bodies(&mut app);
+    assert_eq!(again, first, "(enemies, with skeleton, with dummies) after the reset");
+}
+
+/// The encounter picker (C2): SpawnEncounter swaps the fight without a relaunch - the General
+/// becomes the Ochimusha (own anims, model, AI), then Genichiro brings his boss events' Tomoe
+/// kind and his script; the list knows him as a boss.
+#[test]
+fn spawn_encounter_swaps_the_fight_in_place() {
+    let list = crate::data::encounter_list();
+    let genichiro = list.iter().find(|e| e.npc_row == 71001000 && e.boss).expect("Genichiro is a boss encounter");
+    let mut app = app_geom("c1020", None);
+    let enemy = |app: &mut App| {
+        let world = app.world_mut();
+        let combat = world.resource::<Combat>().kinds.iter().map(|k| k.foe.chr.clone()).collect::<Vec<_>>();
+        let mut q = world.query_filtered::<(&Actor, Has<crate::anim::Skeleton>, Has<crate::model::Dummies>), (With<Enemy>, Without<crate::enemy::Cast>)>();
+        let (a, skel, dmy) = q.iter(world).next().unwrap();
+        (combat[a.kind].clone(), skel && dmy, combat)
+    };
+    assert_eq!(enemy(&mut app).0, "c1020");
+    let wolf_clips = app.world().resource::<crate::anim::AnimLib>().player.clips.len();
+    app.world_mut().write_message(crate::enemy::SpawnEncounter { chr: "c1010".into(), ..Default::default() });
+    for _ in 0..5 {
+        app.update();
+    }
+    let (chr, body, kinds) = enemy(&mut app);
+    assert_eq!((chr.as_str(), body), ("c1010", true), "kinds {kinds:?}");
+    app.world_mut().write_message(crate::enemy::SpawnEncounter { chr: "c7100".into(), npc_row: Some(genichiro.npc_row), ..Default::default() });
+    for _ in 0..5 {
+        app.update();
+    }
+    let (chr, body, kinds) = enemy(&mut app);
+    assert_eq!((chr.as_str(), body), ("c7100", true));
+    assert!(kinds.iter().any(|k| k == "c7110"), "Tomoe's kind from his events: {kinds:?}");
+    // Wolf's clips against him (anim_c0000_c7100.bin: his deathblows) came in.
+    let lib = app.world().resource::<crate::anim::AnimLib>();
+    let wolf_vs = crate::paths::root().join("extracted/anim_c0000_c7100.bin");
+    assert!(!wolf_vs.exists() || lib.player.clips.len() > wolf_clips, "Wolf's clips against him");
+    assert!(app.world().resource::<crate::enemy::BossScript>().run.is_some(), "his boss script runs");
+}
+
+#[test]
+#[ignore]
+fn geometry_probe() {
+    let mut app = app_geom("c1020", None);
+    let world = app.world_mut();
+    let n_dmy: Vec<usize> = world.query::<&crate::model::Dummies>().iter(world).map(|d| d.0.len()).collect();
+    let n_hurt: Vec<usize> = world.query::<&crate::anim::Hurtboxes>().iter(world).map(|h| h.0.len()).collect();
+    println!("dummies {n_dmy:?} hurtboxes {n_hurt:?}");
+    for d in [1.0, 2.4, 3.6, 4.0, 4.4, 4.8, 5.2, 6.0] {
+        println!("dist {d}: first hit frame {:?}", geom_first_hit_frame(d));
+    }
+}
+
+/// An enemy's attack `key` at Wolf (idle) `dist` m away with the real geometry: the TAE frame
+/// of the first contact.
+fn geom_enemy_hit_frame(chr: &str, key: &str, dist: f32) -> Option<f32> {
+    let mut app = app_geom(chr, None);
+    {
+        let world = app.world_mut();
+        let mut q = world.query_filtered::<(&mut Transform, &mut Enemy, &mut Actor), Without<crate::enemy::Cast>>();
+        for (mut t, mut e, mut a) in q.iter_mut(world) {
+            t.translation.z = dist;
+            e.force_anim(&mut a, key);
+        }
+    }
+    let mut last = 0.0;
+    for _ in 0..240 {
+        app.update();
+        let world = app.world_mut();
+        let a = world.query_filtered::<&Actor, (With<Enemy>, Without<crate::enemy::Cast>)>().single(world).unwrap();
+        if a.attack_hit {
+            return Some(last);
+        }
+        if a.anim != key {
+            return None;
+        }
+        last = a.t * TAE_FPS;
+    }
+    None
+}
+
+/// B1 table (docs/kb/damage.md): the first attack of six common enemies with the real
+/// geometry: its TAE hit window, the frame it first touches Wolf at 1.5 m and its reach.
+#[test]
+#[ignore]
+fn enemy_reach_table() {
+    for chr in std::env::var("SHINOBI_ENEMIES").unwrap_or("c1020,c1040,c1010,c1150,c7100,c5000".into()).split(',') {
+        let app = app_geom(chr, None);
+        let combat = app.world().resource::<Combat>();
+        let d = combat.enemy0();
+        let mut keys: Vec<&String> = d.anims.keys().filter(|k| k.contains("_0030")).collect();
+        keys.sort();
+        let Some((key, start)) = keys.iter().find_map(|k| {
+            d.attack_windows(k).iter().filter(|(_, a, _)| a.atk_phys > 0.0).map(|(e, _, _)| e.start).reduce(f32::min).map(|s| ((*k).clone(), s))
+        }) else {
+            println!("{chr}: no attack");
+            continue;
+        };
+        drop(app);
+        let close = geom_enemy_hit_frame(chr, &key, 1.5);
+        let mut reach = None;
+        let mut dist = 1.0;
+        while dist <= 9.0 {
+            if geom_enemy_hit_frame(chr, &key, dist).is_some() {
+                reach = Some(dist);
+            } else if reach.is_some() {
+                break;
+            }
+            dist += 0.25;
+        }
+        println!("{chr} {key}: window from f{:.1}, contact at 1.5 m f{close:?}, reach {reach:?} m", start * TAE_FPS);
+    }
+}
+
+/// Wolf's first slash (a050_300100, AttackBehavior from TAE frame 7) with the game's geometry:
+/// it touches the General on its first hit frame up close, still reaches him at 4.8 m with its
+/// step-in and misses at 6 m.
+#[test]
+fn wolfs_first_slash_hits_on_its_tae_frame_with_the_game_geometry() {
+    let close = geom_first_hit_frame(2.4).expect("hits at 2.4 m");
+    assert_eq!(close.0, "a050_300100");
+    assert!((6.5..=7.5).contains(&close.1), "first contact at TAE frame {}", close.1);
+    assert!(geom_first_hit_frame(4.8).is_some(), "reaches 4.8 m");
+    assert!(geom_first_hit_frame(6.0).is_none(), "misses at 6 m");
+}
+
+/// The General's first attack (a000_003000, window from frame 18) touches Wolf 1-2 frames into
+/// it at 1.5 m (the sword still has to come down) and misses at 5 m.
+#[test]
+fn the_generals_slash_touches_wolf_inside_its_window() {
+    let f = geom_enemy_hit_frame("c1020", "a000_003000", 1.5).expect("hits at 1.5 m");
+    assert!((18.0..=20.5).contains(&f), "first contact at TAE frame {f}");
+    assert!(geom_enemy_hit_frame("c1020", "a000_003000", 5.0).is_none());
+}
+
+/// A one-dummy attack is a sphere (AtkParam DmyPoly2 -1, Paramdex SDT "-1だと球になる"): the
+/// dog's leaping bite (c1150 AtkParam 100: dummy 10, radius 0.4) bites at 1.5 m and misses at
+/// 5 m (it used to fall back to the reach approximation and reach 8 m).
+#[test]
+fn a_one_dummy_attack_is_a_sphere() {
+    assert!(geom_enemy_hit_frame("c1150", "a000_003000", 1.5).is_some());
+    assert!(geom_enemy_hit_frame("c1150", "a000_003000", 5.0).is_none());
+}
+
+/// A boss with deathblows left gets its vitality back from its ThrowDef reaction's own TAE
+/// (AddSpEffect 300610 "HP reset", changeHpRate -100): not at the deathblow, at that frame.
+#[test]
+fn a_boss_refills_at_its_reactions_hp_reset_frame() {
+    let mut app = app_with("c7100");
+    {
+        let world = app.world_mut();
+        let mut a = world.query_filtered::<&mut Actor, With<Enemy>>().single_mut(world).unwrap();
+        a.hp = a.hp_max * 0.3;
+    }
+    break_and_deathblow(&mut app, 1);
+    let mut low_in_throw_def = false;
+    for _ in 0..600 {
+        app.update();
+        let world = app.world_mut();
+        let a = world.query_filtered::<&Actor, With<Enemy>>().single(world).unwrap();
+        if a.state.starts_with("ThrowDef") && a.hp < a.hp_max {
+            low_in_throw_def = true;
+        }
+        if a.hp >= a.hp_max {
+            let combat = world.resource::<Combat>();
+            let ev = combat.data_of(a).anim(&a.anim).and_then(|an| an.events.iter().find(|e| e.kind == 67 && e.arg_i64("SpEffectID") == Some(300610)).map(|e| e.start));
+            let ev = ev.unwrap_or_else(|| panic!("refilled in {} without 300610", a.anim));
+            assert!(low_in_throw_def, "refilled before its reaction");
+            assert!((a.t - ev).abs() <= 1.0 / 60.0 + 1e-3, "refilled at {:.3} s, 300610 at {ev:.3} s ({})", a.t, a.anim);
+            return;
+        }
+    }
+    panic!("never refilled");
+}
+
+
+/// The picker's names are the game's own (the health bars' NPC名 text, tools/npc_names.py); a
+/// name two rows share gets the place.
+#[test]
+fn encounters_carry_the_health_bar_names() {
+    if !crate::paths::root().join("extracted/enemies/npc_names.json").exists() {
+        return;
+    }
+    let list = crate::data::encounter_list();
+    let name = |row: i64| list.iter().find(|e| e.npc_row == row).map(|e| e.name.clone()).unwrap_or_default();
+    assert_eq!(name(71001000), "Genichiro Ashina (Ashina Castle)");
+    assert!(name(51000000).starts_with("Guardian Ape"), "{}", name(51000000));
+    assert_ne!(name(51000000), name(51000100));
+    assert!(name(10201000).starts_with("Leader Shigenori Yamauchi"), "{}", name(10201000));
+    for e in list.iter().filter(|e| e.bar) {
+        println!("{} {} {}{}", e.chr, e.npc_row, e.name, if e.boss { " [boss]" } else { "" });
+    }
 }

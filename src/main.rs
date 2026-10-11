@@ -28,6 +28,7 @@ mod grading;
 mod hud;
 mod interp;
 mod map;
+mod menu;
 mod sandbox;
 mod model;
 mod paths;
@@ -73,6 +74,7 @@ fn main() {
             player::PlayerPlugin,
             enemy::EnemyPlugin,
             camera::CameraPlugin,
+            menu::MenuPlugin,
             hud::HudPlugin,
             anim::AnimPlugin,
             model::ModelPlugin,

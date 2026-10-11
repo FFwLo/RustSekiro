@@ -10,9 +10,12 @@
 //! him (the Divine Dragon's updraft 106100, its lightning signs 3531061-5), harmless or not, and
 //! one whose AtkParam is lightning (spAttribute 6 / 10, the dragon's 52000555) comes at him as an
 //! attack for the Lightning Reversal (combat.rs). A life of -1 lasts (the signs 53100681).
-//! gap: EmittePosType / FollowType (homing, attached bullets) and the map collision are not
-//! modelled; nor the force erase (isHitOtherBulletForceEraseA / B: which bullets erase is not in
-//! the params), so the signs stay until hit once.
+//! Flight as the exe's bullet update (FUN_140b0ded0): homing (`steer`, FUN_140b11270), then
+//! acceleration, gravity and the speed limits (`flight`, FUN_140b14650), then the move; the map
+//! collision stops a bullet unless isPenetrateMap.
+//! gap: EmittePosType and FollowType (attached bullets: FollowType odd or 2 takes
+//! FUN_140b14b20 instead) are not modelled; nor the force erase (isHitOtherBulletForceEraseA /
+//! B: which bullets erase is not in the params), so the signs stay until hit once.
 
 use std::sync::Arc;
 
@@ -34,6 +37,8 @@ pub struct EnemyBullet {
     /// The shooter's enemy kind (its Bullet rows).
     kind: usize,
     vel: Vec3,
+    /// The way it was fired (a bullet fired at speed 0 speeds up along it).
+    facing: Vec3,
     travelled: f32,
     age: f32,
     next_interval: f32,
@@ -158,6 +163,7 @@ fn spawn_row(commands: &mut Commands, spec: &BulletSpec, shooter: Entity, kind: 
                 shooter,
                 kind,
                 vel: d * spec.init_vellocity,
+                facing: d,
                 travelled: 0.0,
                 age: 0.0,
                 next_interval: spec.interval_create_wait_time,
@@ -188,16 +194,24 @@ fn fly(
         let rows = script.as_ref().map_or(&combat.kind(b.kind).data.bullet_rows, |s| &s.bullet_rows);
         let row = |id: i64| if id > 0 { rows.get(&id.to_string()) } else { None };
         b.age += dt;
-        if b.travelled > b.spec.dist && b.spec.dist > 0.0 {
-            let speed = b.vel.length();
-            let new_speed = (speed + b.spec.accel_out_range * dt).max(0.0);
-            b.vel = b.vel.normalize_or_zero() * new_speed - Vec3::Y * b.spec.gravity_out_range * dt;
-        }
         let from = btf.translation;
+        let aim = wolf.as_ref().map(|w| w.1.translation + Vec3::Y * 0.3);
+        b.vel = steer(&b.spec, b.vel, b.travelled, from, aim, dt);
+        b.vel = flight(&b.spec, b.vel, b.facing, b.travelled, dt);
         let mut to = from + b.vel * dt;
-        let landed = to.y <= b.floor + 0.02 && b.vel.y < 0.0;
-        if landed {
-            to.y = b.floor + 0.02;
+        // The map stops it (isPenetrateMap: not); without one, the floor it was fired over.
+        let mut landed = false;
+        let step = to - from;
+        if b.spec.is_penetrate_map == 0 && step.length() > 1e-5 {
+            if let Some(t) = crate::map::terrain() {
+                if let Some(d) = t.raycast(from, step.normalize(), step.length()) {
+                    to = from + step.normalize() * d;
+                    landed = true;
+                }
+            } else if to.y <= b.floor + 0.02 && b.vel.y < 0.0 {
+                to.y = b.floor + 0.02;
+                landed = true;
+            }
         }
         b.travelled += (to - from).length();
         btf.translation = to;
@@ -254,6 +268,45 @@ fn fly(
             commands.entity(be).despawn();
         }
     }
+}
+
+/// One frame of homing (exe FUN_140b11270): none for homingAngle < 0 or until the bullet has
+/// flown homingBeginDist; from then on, while the target point is hormingStopRange or more
+/// away, the flight turns toward it by at most homingAngle deg/s. The point is `aim` (Wolf's
+/// chest, where `fire` aims) raised targetYOffsetRange. gap: the exe takes the target's root or
+/// one of its dummy polys (FUN_140b0e680, the id at +0x34 is not traced); homingAngleX (a
+/// separate pitch limit when >= 0) is not modelled.
+pub fn steer(spec: &BulletSpec, vel: Vec3, travelled: f32, pos: Vec3, aim: Option<Vec3>, dt: f32) -> Vec3 {
+    let Some(aim) = aim else { return vel };
+    if spec.homing_angle < 0.0 || travelled <= spec.homing_begin_dist {
+        return vel;
+    }
+    let to = aim + Vec3::Y * spec.target_y_offset_range - pos;
+    let speed = vel.length();
+    if to.length() < spec.horming_stop_range || speed <= 1.2e-7 || to.length_squared() < 1e-8 {
+        return vel;
+    }
+    let (dir, want) = (vel / speed, to.normalize());
+    let turn = dir.angle_between(want).min(spec.homing_angle.to_radians() * dt);
+    let axis = dir.cross(want);
+    if turn <= 0.0 || axis.length_squared() < 1e-12 {
+        return vel;
+    }
+    Quat::from_axis_angle(axis.normalize(), turn) * vel
+}
+
+/// One frame of speed (exe FUN_140b14650): within `dist` metres flown accelInRange along the
+/// flight and gravityInRange down, beyond it the OutRange pair; then the speed is held within
+/// minVellocity..maxVellocity (below the min: the min, else at most the max). A bullet at rest
+/// speeds up along `facing`. gap: the range is assumed to be `dist` (the exe reads bullet
+/// +0xabc, its source is not traced); the water slow-down (FUN_140b123d0) and the accel pause
+/// at +0xb6c are not modelled.
+pub fn flight(spec: &BulletSpec, vel: Vec3, facing: Vec3, travelled: f32, dt: f32) -> Vec3 {
+    let (accel, gravity) = if travelled > spec.dist { (spec.accel_out_range, spec.gravity_out_range) } else { (spec.accel_in_range, spec.gravity_in_range) };
+    let v = vel + (vel.normalize_or(facing) * accel - Vec3::Y * gravity) * dt;
+    let speed = v.length();
+    let held = if speed < spec.min_vellocity { spec.min_vellocity } else { speed.min(spec.max_vellocity) };
+    v.normalize_or(facing) * held
 }
 
 /// Debug (H, with the hitboxes): enemy bullets as red lines / spheres.

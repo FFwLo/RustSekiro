@@ -270,6 +270,27 @@ before.
 - **Collision under the centre** must draw something: the Headless Ape 1700850 stands on
   h900707 (a helper collision, all draw groups 0) above the cave floor h005500; the nearest
   floor with any draw group is taken.
+- **Helper planes are not floors** (2026-10-11, `Terrain::from_tris`): the h9xxxxx helper
+  collisions without a hit material (u32::MAX) contribute level triangles that are not
+  walkable ground: the Guardian Ape's h900702 is a 66 m plane 0.4 m over the pond floor
+  (Wolf stood on it), the maps' kill planes sit 20-50 m below. Level material-less triangles
+  are dropped at load (logged with the triangle count); their walls (h900700, the arena's
+  bounds) stay. `MAP_LOG=1` on the export prints every hit part with its vertex range, so a
+  `.hit` triangle's first vertex index names its part.
+- **Water** (2026-10-11): the pond and stream of the Ape arena (batches with no albedo and
+  the `m99_water_n` normal; the gate's river at -20 m is the same) drew as an opaque grey
+  floor, so Wolf stood "knee-deep in the ground" (VXf's report): the hit floor is the pond bed
+  under it, as in the game (the water surface is only the h900702 helper plane). Stand-in in
+  `Materials::get`: water batches are dark (0.10, 0.15, 0.16) and 60 % translucent with the
+  ripple normal. gap: the game's water shader (reflection, refraction, flow), foam
+  (`m11_00_waterform_a`) is untouched.
+- **Wolf's start on a boss arena** (`map::player_start`, used by the reset in player.rs and
+  by `settle_player_start` at PostStartup): the arena's player spot (0, 4) is 8 m in front of
+  the boss's MSB placement, and the Guardian Ape sleeps in a grotto whose rock (h019400) is
+  1.5 m over that spot, so the camera had no room (VXf's report: the arm clamped to 0.3 m).
+  The start walks +z half a metre at a time to the first spot with a floor within 0.5 m of
+  the arena's and 2.8 m of headroom (the Ape: z 10.5). gap: the game starts the fight where
+  the boss script's warp or the fog gate puts Wolf.
 - **Objects** (MSB part type 1, model `o######` -> `obj/o######.objbnd.d/o######.flver`): drawn
   with the same draw-group rule, rigid meshes moved into model space (flver.rs
   SEKIRO_FLVER_REF_POSE), textures from the objbnd's `.tpf` or the area packs. The Divine

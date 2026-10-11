@@ -256,7 +256,8 @@ fn play_tae_sounds(
     assets: Res<AssetServer>,
     volume: Res<SoundVolume>,
     mut index: ResMut<SoundIndex>,
-    actors: Query<(Entity, &Actor, &Transform, Option<&crate::player::Player>)>,
+    actors: Query<(Entity, &Actor, &Transform, Option<&crate::player::Player>, Option<&crate::model::Dummies>)>,
+    globals: Query<&GlobalTransform>,
     mut seen: Local<HashMap<Entity, (String, f32)>>,
     mut fmod: Option<NonSendMut<crate::fmod::Fmod>>,
     mut slotted: Local<Vec<(Entity, String, f32, crate::fmod::EventHandle)>>,
@@ -267,17 +268,31 @@ fn play_tae_sounds(
     // playing after Mortal Draw.
     if let Some(f) = fmod.as_mut() {
         slotted.retain(|(ent, anim, end, ev)| {
-            let alive = actors.get(*ent).is_ok_and(|(_, a, _, _)| a.anim == *anim && a.t < *end);
+            let alive = actors.get(*ent).is_ok_and(|(_, a, ..)| a.anim == *anim && a.t < *end);
             if !alive {
                 f.stop(*ev);
             }
             alive
         });
     }
-    for (entity, a, tf, player) in &actors {
+    for (entity, a, tf, player, dm) in &actors {
         if a.anim.is_empty() {
             continue;
         }
+        // Where a sound plays: its event's DummyPolyID (PlaySound_BySlot 129 / 131,
+        // _ByDummyPoly_PlayerVoice 130; an FFX's sound on the FFX's dummy, SpawnFFX_Blade's on its
+        // DummyPolyBladeBaseID; DSAnimStudio TAE.Template.SDT), else the character (CenterBody 128,
+        // Weapon 132). A weapon / tool dummy that is not modelled falls back as the effects do
+        // (ffx::dummy_candidates); any other missing dummy -> the character.
+        let place = |e: &crate::data::Event| -> Vec3 {
+            let id = if e.kind == 118 { e.arg_i64("DummyPolyBladeBaseID") } else { e.arg_i64("DummyPolyID") };
+            id.filter(|d| *d >= 0)
+                .and_then(|d| {
+                    let cands = if d >= 10000 { crate::ffx::dummy_candidates(d) } else { vec![d as i16] };
+                    cands.iter().find_map(|k| dm?.0.get(k)).and_then(|m| globals.get(*m).ok()).map(|g| g.translation())
+                })
+                .unwrap_or(tf.translation)
+        };
         // Several render frames can share one fixed step: handle each step once.
         let step = (a.anim.clone(), a.t);
         if seen.get(&entity) == Some(&step) {
@@ -288,7 +303,7 @@ fn play_tae_sounds(
         let Some(anim) = d.anim(&a.anim) else { continue };
         let mut states: Option<Vec<i64>> = None;
         for e in &anim.events {
-            if !matches!(e.kind, 128..=132 | 96 | 112 | 118) {
+            if !matches!(e.kind, 128..=132 | 96 | 118) {
                 continue;
             }
             if !e.ungated() {
@@ -303,19 +318,21 @@ fn play_tae_sounds(
             if !started {
                 continue;
             }
-            // Effects with their own sound: SpawnOneShotFFX (96) / SpawnFFX_ByFloor (112) /
-            // SpawnFFX_Blade (118) play 's' + the FFX id when the banks have it (e.g. Wolf's third
-            // slash FFX 404000 -> s000404000, the General's 3020 FFX 4065 / 4066).
-            if matches!(e.kind, 96 | 112 | 118) {
+            let at = place(e);
+            // Effects with their own sound: SpawnOneShotFFX (96) / SpawnFFX_Blade (118) play 's' +
+            // the FFX id when the banks have it (e.g. Wolf's third slash FFX 404000 -> s000404000,
+            // the General's 3020 FFX 4065 / 4066). SpawnFFX_ByFloor (112) is left out: its FFXID
+            // is a FootSfxParam column (ffx.rs FootSfx), not an effect id.
+            if matches!(e.kind, 96 | 118) {
                 if let (Some(ffx), Some(f)) = (e.arg_i64("FFXID").filter(|v| *v > 0), fmod.as_mut()) {
                     let key = format!("s{ffx:09}");
                     if f.has(&key) {
                         if e.arg_i64("SlotID").is_some_and(|s| s >= 0) {
-                            if let Some(ev) = f.play_tracked(&key, tf.translation) {
+                            if let Some(ev) = f.play_tracked(&key, at) {
                                 slotted.push((entity, a.anim.clone(), e.end, ev));
                             }
                         } else {
-                            f.play(&key, tf.translation);
+                            f.play(&key, at);
                         }
                     }
                 }
@@ -327,7 +344,7 @@ fn play_tae_sounds(
             // The game's own FMOD event when available: floor 'x' = id rounded to 1000 + floor
             // material, armour 'b' = id + defense material (Wolf's protector 113, c1020/c1010 108).
             let event = match letter {
-                'x' => format!("c{:09}", id / 1000 * 1000 + floor_material(tf.translation)),
+                'x' => format!("c{:09}", id / 1000 * 1000 + floor_material(at.with_y(tf.translation.y))),
                 // Armour: id + the wearer's material - the first of its two (protector
                 // defenseMaterial1/2, NpcParam materialSe1/2) the banks have an event for
                 // (Wolf 113; the General 114 has none, 108 has).
@@ -342,7 +359,7 @@ fn play_tae_sounds(
             // With the game's sound system running, an event its projects lack is silent in the game
             // too: no raw-sample stand-in (those were sounds the game never plays here).
             if let Some(f) = fmod.as_mut() {
-                f.play(&event, tf.translation);
+                f.play(&event, at);
                 continue;
             }
             let file = if letter == 'b' {
@@ -355,14 +372,14 @@ fn play_tae_sounds(
                     None => continue,
                 }
             } else {
-                let key = if letter == 'x' { format!("c{:09}", id / 1000 * 1000 + floor_material(tf.translation)) } else { format!("{letter}{id:09}") };
+                let key = if letter == 'x' { format!("c{:09}", id / 1000 * 1000 + floor_material(at.with_y(tf.translation.y))) } else { format!("{letter}{id:09}") };
                 let Some(file) = pick(&mut index, &key) else { continue };
                 file
             };
             commands.spawn((
                 AudioPlayer::<PcmSound>(assets.load(format!("sound_pcm/{file}"))),
                 PlaybackSettings::DESPAWN.with_volume(Volume::Linear(volume.0)).with_spatial(true),
-                Transform::from_translation(tf.translation),
+                Transform::from_translation(at),
             ));
         }
     }

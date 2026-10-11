@@ -60,3 +60,19 @@ Dated findings, oldest first. Append new entries at the end.
   common events are only the automatic "(distance)" (0-29 m swings, 60 m deflect clang).
   With FMOD running, events its projects lack no longer fall back to raw PCM samples (the game is silent there).
   gap: sounds play at the actor root, not the TAE event's DummyPoly; no map reverb (setReverbProperties).
+
+## Sound placement and reverb (2026-10-11, plan B4)
+- Placement (sound.rs `place`): PlaySound_BySlot 129 / 131 and _ByDummyPoly_PlayerVoice 130 play at
+  their DummyPolyID, an FFX's sound (96) at the FFX's dummy, SpawnFFX_Blade's (118) at its
+  DummyPolyBladeBaseID (arg names: DSAnimStudio TAE.Template.SDT); CenterBody 128 / Weapon 132 at the
+  character. Unmodelled weapon / tool dummies fall back as the effects do (ffx::dummy_candidates);
+  floor sounds ('x') take the floor material under the dummy's x / z. SpawnFFX_ByFloor (112) no
+  longer plays 's' + FFXID (its FFXID is a FootSfxParam column).
+- Reverb, traced but not built: the space type 0-8 (sound_space_type_no_reverb, small / middle /
+  large / extralarge _reverb_a / _b; FUN_140c19810 names) eases to its target over a time
+  (FUN_14092fc30: +0x1f4 target char, +0x1f8 current, +0x1fc time left) and goes to the sound
+  thread as the parameter "sd_reverb_size" (FUN_1409312b0 -> SMOM command 0x14 by name,
+  FUN_141c7b610); mixer.fev holds the "SFX Reverb" DSP with that parameter. gap: where the type
+  comes from (the MSB collision part's SoundSpaceType is the likely source: needs the map export,
+  Map) and how the sound thread applies the parameter to mixer.fev are not traced; nothing is
+  reverbed here.

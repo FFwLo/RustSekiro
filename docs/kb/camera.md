@@ -59,3 +59,30 @@ Dated findings, oldest first. Append new entries at the end.
   cos(angle(d, input)) / |d|, best above cos(+0x2854 = pi/2). Candidates while locked: CamFront{Near,Far}Range
   LockChangeHalfAng yaw 60 / 45 deg, pitch 30 / 30, radius 8 / 200 (+0x2968..+0x2984). LockCamParam is not involved.
   camera.rs toggle_lock. gap: mouse units, and the input y sign (exe uses d.x*in.x - d.y*in.y).
+- 2026-10-11 camera position chase (static, FUN_14073c260 0x140740764-0x140740d40; camera.rs chase_position):
+  +0xf0 = orbit point (focus + dir * dist), +0x100 = chased position, +0xc0 / +0xd0 = focus, +0x110 / +0x40 = final.
+  X / Z rate = targetChaseRateAtLockXZ (0x88, 0.4) when locked (+0x2a0 / +0x2a3) else working rate +0x228 (eased
+  by dt toward targetChaseRateXZForNormal 0x6c, 0.1); Y = AtLockY (0x8c, 0.3) / targetChaseRateY (0x74, 0.4).
+  X / Z rate * k, k from cos(angle(+0xf0 - focus, +0x100 - focus)) against cos(AngMin) / cos(AngMax) (0x78 / 0x7c
+  10 / 20 deg; AtLock 0x90 / 0x94 = 0 -> k = 1): 0 inside Min, linear in cos to 1 at Max. Pitch of either vector
+  outside +0x230 / +0x234 (0.1 deg slack) forces X / Z to 1 (not ported). FUN_140831190 / 1408311b0 override (not
+  traced). Then r += (1 - r) * +0x150; new = r * (+0xf0 - +0x100) + +0x100, no dt factor (taken per 1/60 s).
+  Distance: |+0xf0 - focus| vs |+0x110 - focus| chased at +0x1e8 / +0x1ec = targetChaseDistRateXZ / Y (0x80 / 0x84,
+  0.4), or for +0x1e4 (= targetChaseDistRateTime 2 s, set after a wall hit) toward _ForHitWall (0x58 / 0x5c, 1.0)
+  by clamp(2 t / T); X / Z and Y parts rescaled separately. +0x150: set to 1 and +0x154 = rotCtrlEndWaitTime (0xa8,
+  2 s) by stick / mouse camera input (unlocked); +0x154 counts down, then +0x150 -= dt / rotCtrlEndReleaseTime (0xac,
+  1 s). lockCamAdjustRot_MaxX/Y / ChaseRate (0x128..0x130): no load off the param row in FUN_14073c260 (the
+  +0x128.. reads at 14073.c ~9140 are camera-object fields) nor the other getter callers.
+  Not ported: with isEnableChrChaseRotX (0x28, 1 in 136 / 142 rows) the free camera's yaw / pitch resync each frame
+  from the fulcrum +0xe0 -> focus direction (FUN_140734070 / FUN_140733e50, ~0x14073e015).
+- 2026-10-11 TAE 151 look limits, FUN_140742230 (called from FUN_14073c260; param_2 = LockCamParam row, param_3 =
+  CameraParam row): event (FUN_1408311c0 true): centre = view along -row 2 of the DummyPolyID world matrix
+  (FUN_14073a1e0 -> FUN_1409e6c90), pitch FUN_140733d70 = -atan2(y, xz), yaw FUN_140733fb0 = atan2(x, z); yaw unwrapped
+  toward +0x240 (seeded from +0x174); limits = centre + the four event angles; a full -180..180 yaw takes
+  rotRangeYMin / Max as is. No event: pitch limits chase LockCamParam rotRangeMinX (deg) / CameraParam rotRangeXMax at
+  lockCamParamLerpRate (per call, no dt), yaw = rotRangeYMin / Max (full circle in 136 / 142 rows; the 6 +-90 deg rows
+  centre on row 2 of Wolf's matrix + rotBaseY). camera.rs now lerps back (was: cleared at once). Open: whether the
+  dummy matrix row 2 is the FLVER forward (Wolf dmy 142 fwd = model -Z), so the centre still uses player -> dummy.
+- 2026-10-11 lock switch mouse: FUN_1409ca120 reads (-v.x, -v.y), v = pad object +0x38f8 -> +0x20 / +0x24
+  (FUN_14095fd40 / 50); the stick FUN_1409ca2d0 reads FUN_140960430 / 440 unnegated. The mouse state's writer is not
+  found statically (scan for int->float stores at +0x20 / +0x24: none matching), so units and signs stay open.

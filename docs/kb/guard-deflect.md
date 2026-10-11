@@ -48,7 +48,10 @@ Dated findings, oldest first. Append new entries at the end.
 - 2026-10-06: feel pass. Enemy super armour: NpcParam toughness/superArmorDurability are 0, AtkParam atkSuperArmor 0;
   NPC HKS ExecDamage passes rank NONE in attacks, so the engine's damage level gates flinching. TAE ChrActionFlag 73
   ("SetBool32_0x7C_10") is on in idle/reactions and only in the first ~9-13 windup frames + recovery of every attack,
-  never on hit frames -> used as "damage motion allowed" (inferred; test enemy_mid_swing_...). Posture break: hit breaks
+  never on hit frames -> used as "damage motion allowed" (inferred; test enemy_mid_swing_...). 2026-10-11 exe: flag 73 is the
+  opponents' ParryTiming gate, not a flinch rule (dispatcher FUN_140b51b70 case 0x49 -> bit 0x400 at (ChrIns+0x50)+0x50
+  +0x8c, read only by FUN_14061fad0: an AI handling the sender's flag-63 message 7 raises INTERUPT_ParryTiming (24) when
+  the sender is within its +0x154 range and has this bit or vfunc +0x1a8). Our flinch gate keeps it as a proxy (gap). Posture break: hit breaks
   play TrunkCollapseFront/Back (HKS ExecDamageBreak), deflect/guard breaks keep AttackBoundEmptyStamina / GuardBreak; the
   deathblow window = until the break anim opens AI flag 86 (frame 85-87 of 90, ~2.9 s) instead of config 4 s.
   Clip aliases: 57 enemy / 10 player anims ship TAE-only (mirrors, chain steps); data::alias_missing_clips borrows the

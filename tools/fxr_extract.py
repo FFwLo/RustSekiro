@@ -2,14 +2,20 @@
 
   python tools/fxr_extract.py
 
-1. Every FFX id the exported characters use (TAE FFXID args, bullet sfxId_*, the blood FFX) ->
-   extracted/fxr/<id>.json, converted from sfx/sfxbnd_commoneffects.ffxbnd's f<id>.fxr by
+1. Every FFX id the exported characters use (TAE FFXID args of Wolf and every exported enemy in
+   extracted/enemies, bullet sfxId_*, the blood FFX) -> extracted/fxr/<id>.json, converted from
+   f<id>.fxr of sfx/sfxbnd_commoneffects.ffxbnd, else of the area archives sfxbnd_m10-m25 (the
+   characters' own effects, 6xxxxx: the Ape's 651000, the Monk's 6535xx ...) by
    tools/fxr-dump/dump.mjs (@cccode/fxr, public domain: github.com/EvenTorset/fxr), following
    ReferenceNode (2001 "sfx") chains.
 2. Every texture those effects name (texture / mask / normalMap / layerN ids) -> extracted/fxr_tex/
    <id>.png from the archive's s<id:05>.tpf (one DDS each), via sekiro-extract dds2png.
+3. Every mesh a Model appearance (605) names -> extracted/fxr_model/model_<id>.bin via
+   `sekiro-extract model s<id:05>.flver <diffuse>.tpf`: the diffuse is the flver's first "_a"
+   texture, else its own s<id:05>, else its first texture that is not _n / _r / _m (this picks
+   every pair of the old hand list in tools/extract.ps1: 4010 -> s04009_a, 8060 -> s34030 ...).
 
-Needs: `sekiro-extract unpack <Sekiro dir> extracted 'sfxbnd_commoneffects'`, combat_data.json,
+Needs: `sekiro-extract unpack <Sekiro dir> extracted 'sfxbnd_(commoneffects|m[0-9])'`, combat_data.json,
 `npm i` in tools/fxr-dump, and the built extractor (tools/sekiro-extract).
 """
 import glob
@@ -22,6 +28,13 @@ import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SFX = os.path.join(ROOT, 'extracted/sfx/sfxbnd_commoneffects.ffxbnd.d')
+# Where an id is looked up: the common archive first, then the areas' (an id in several areas is
+# taken from the first; gap: the game loads the archive of the map it is on).
+SFX_DIRS = [SFX] + sorted(glob.glob(os.path.join(ROOT, 'extracted/sfx/sfxbnd_m*.ffxbnd.d')))
+
+
+def find(name):
+    return next((os.path.join(s, name) for s in SFX_DIRS if os.path.exists(os.path.join(s, name))), None)
 OUT = os.path.join(ROOT, 'extracted/fxr')
 TEX = os.path.join(ROOT, 'extracted/fxr_tex')
 # SEKIRO_EXTRACT (tools/extract.ps1 passes the one it used), else a source build: release, then debug.
@@ -35,14 +48,26 @@ EXTRA = [220502, 220503, 220505, 220506]
 def used_ids():
     d = json.load(open(os.path.join(ROOT, 'extracted/combat_data.json'), encoding='utf-8'))
     ids = set(EXTRA)
-    for c in [d['player']] + list(d['enemies'].values()):
+    chars = [d['player']] + list(d['enemies'].values())
+    for f in sorted(glob.glob(os.path.join(ROOT, 'extracted/enemies/c*.json'))):
+        try:
+            c = json.load(open(f, encoding='utf-8'))
+        except (OSError, ValueError):
+            continue
+        if isinstance(c.get('anims'), dict):
+            chars.append(c)
+    for c in chars:
         for a in c['anims'].values():
+            if not isinstance(a, dict):
+                continue
             for e in a.get('events', []):
                 args = e.get('args')
-                if isinstance(args, dict) and isinstance(args.get('FFXID'), int) and args['FFXID'] > 0:
+                # SpawnFFX_ByFloor (112): FFXID is a FootSfxParam column, added below.
+                if e.get('type') != 112 and isinstance(args, dict) and isinstance(args.get('FFXID'), int) and args['FFXID'] > 0:
                     ids.add(args['FFXID'])
         for coll in ('bulletRows', 'bullets'):
-            for b in (c.get(coll) or {}).values():
+            rows = c.get(coll) or {}
+            for b in (rows.values() if isinstance(rows, dict) else rows):
                 if isinstance(b, dict):
                     for k in ('sfxId_Bullet', 'sfxId_Hit', 'sfxId_Flick', 'sfxId_ForceErase'):
                         if isinstance(b.get(k), int) and b[k] > 0:
@@ -57,6 +82,19 @@ def used_ids():
             for f in ('initSfxId', 'midstSfxId'):
                 if r and r.get(f, -1) > 0:
                     ids.add(r[f])
+    # Foot dust (TAE 792 FootSfxParam_Entity / 112 SpawnFFX_ByFloor, src/ffx.rs): every
+    # FootSfxParam id of the rows the characters use (Wolf TentativePlayerParam
+    # PlayerFootEffect_bySFX, NPCs NpcParam footEffectSfxId).
+    def rows(name):
+        r = json.load(open(os.path.join(ROOT, f'extracted/json/params/{name}.json'), encoding='utf-8'))['rows']
+        return {x['id']: x for x in (r.values() if isinstance(r, dict) else r)}
+    foot = rows('FootSfxParam')
+    want = {r.get('PlayerFootEffect_bySFX', -1) for r in rows('TentativePlayerParam').values()}
+    want |= {r.get('footEffectSfxId', -1) for r in d['params'].get('NpcParam', {}).values()}
+    for w in want:
+        for k, v in foot.get(w, {}).items():
+            if k.startswith('sfxId_') and isinstance(v, int) and v > 0:
+                ids.add(v)
     # Hit / guard / deflect sparks: every FXR id in HitEffectSfxParam (vfx.rs, combat.rs).
     for r in d['params'].get('HitEffectSfxParam', {}).values():
         for k, v in r.items():
@@ -66,9 +104,14 @@ def used_ids():
 
 
 def dump(ids):
-    ids = [i for i in sorted(ids) if os.path.exists(os.path.join(SFX, f'f{i:09d}.fxr')) and not os.path.exists(os.path.join(OUT, f'{i}.json'))]
-    for k in range(0, len(ids), 60):
-        subprocess.run(['node', os.path.join(ROOT, 'tools/fxr-dump/dump.mjs'), SFX, OUT] + [str(i) for i in ids[k:k + 60]], check=True, stdout=subprocess.DEVNULL)
+    by_dir = {}
+    for i in sorted(ids):
+        src = find(f'f{i:09d}.fxr')
+        if src and not os.path.exists(os.path.join(OUT, f'{i}.json')):
+            by_dir.setdefault(os.path.dirname(src), []).append(i)
+    for sfx, ids in by_dir.items():
+        for k in range(0, len(ids), 60):
+            subprocess.run(['node', os.path.join(ROOT, 'tools/fxr-dump/dump.mjs'), sfx, OUT] + [str(i) for i in ids[k:k + 60]], check=True, stdout=subprocess.DEVNULL)
 
 
 def main():
@@ -81,7 +124,7 @@ def main():
         refs = set()
         for f in glob.glob(os.path.join(OUT, '*.json')):
             refs.update(int(x) for x in re.findall(r'"sfx": (\d+)', open(f).read()))
-        new = {r for r in refs - have if os.path.exists(os.path.join(SFX, f'f{r:09d}.fxr'))}
+        new = {r for r in refs - have if find(f'f{r:09d}.fxr')}
         if not new:
             break
         dump(new)
@@ -93,8 +136,8 @@ def main():
     done = 0
     for t in sorted(tex):
         png = os.path.join(TEX, f'{t}.png')
-        tpf = os.path.join(SFX, f's{t:05d}.tpf')
-        if os.path.exists(png) or not os.path.exists(tpf):
+        tpf = find(f's{t:05d}.tpf')
+        if os.path.exists(png) or not tpf:
             continue
         d = open(tpf, 'rb').read()
         doff, dsz = struct.unpack_from('<Ii', d, 0x10)
@@ -104,6 +147,40 @@ def main():
             done += 1
         os.remove(dds)
     print(f'{len(glob.glob(os.path.join(OUT, "*.json")))} effects, {len(tex)} textures ({done} new)')
+    models()
+
+
+def model_ids(v, out):
+    if isinstance(v, dict):
+        if v.get('type') == 605 and isinstance(v.get('model'), int) and v['model'] > 0:
+            out.add(v['model'])
+        for c in v.values():
+            model_ids(c, out)
+    elif isinstance(v, list):
+        for c in v:
+            model_ids(c, out)
+
+
+def models():
+    ids = set()
+    for f in glob.glob(os.path.join(OUT, '*.json')):
+        model_ids(json.load(open(f, encoding='utf-8')), ids)
+    dst = os.path.join(ROOT, 'extracted/fxr_model')
+    os.makedirs(dst, exist_ok=True)
+    made = 0
+    for mid in sorted(ids):
+        out = os.path.join(dst, f'model_{mid}.bin')
+        flver = find(f's{mid:05d}.flver')
+        if os.path.exists(out) or not flver:
+            continue
+        names = [m.decode('utf-16le') for m in re.findall(rb'\\\x00((?:[a-zA-Z0-9_]\x00)+)\.\x00[tT]\x00[iI]\x00[fF]\x00', open(flver, 'rb').read())]
+        diffuse = next((t for t in names if t.lower().endswith('_a')), None) or (f's{mid:05d}' if f's{mid:05d}' in names else None)             or next((t for t in names if not re.search(r'_[nrm]$', t.lower())), None)
+        tpf = diffuse and find(f'{diffuse}.tpf')
+        if not tpf:
+            continue
+        if subprocess.run([EXTRACT, 'model', flver, tpf, out, os.path.join(ROOT, 'extracted/tex')], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0:
+            made += 1
+    print(f'{len(ids)} effect models ({made} new)')
 
 
 if __name__ == '__main__':

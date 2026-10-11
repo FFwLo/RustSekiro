@@ -86,7 +86,29 @@ impl Plugin for HudPlugin {
         app.init_resource::<CombatLog>()
             .init_resource::<Perilous>()
             .add_systems(Startup, (spawn_hud, spawn_perilous, spawn_deathblow_mark, spawn_item_icons))
-            .add_systems(Update, (update_player_hud, update_enemy_hud, update_debug, update_log, debug_only, update_perilous, update_stealth, update_deathblow_mark, update_item_icons));
+            .add_systems(Update, (update_player_hud, update_enemy_hud, update_debug, update_log, debug_only, update_perilous, update_stealth, update_deathblow_mark, update_item_icons, hud_shots));
+    }
+}
+
+/// `SHINOBI_HUD_SHOTS=<dir>[,<every s>[,<count>]]`: saves the game's own frame (HUD included)
+/// every few seconds (default 2 s, 8 shots), then quits: a check of HUD art without a screen grab.
+fn hud_shots(mut commands: Commands, time: Res<Time<Real>>, mut taken: Local<u32>, mut exit: MessageWriter<AppExit>) {
+    let Ok(v) = std::env::var("SHINOBI_HUD_SHOTS") else { return };
+    let mut it = v.split(',');
+    let dir = it.next().unwrap_or(".").to_string();
+    let every = it.next().and_then(|s| s.parse::<f32>().ok()).unwrap_or(2.0);
+    let count = it.next().and_then(|s| s.parse::<u32>().ok()).unwrap_or(8);
+    if *taken >= count {
+        if time.elapsed_secs() > every * (count as f32 + 1.5) {
+            exit.write(AppExit::Success);
+        }
+        return;
+    }
+    if time.elapsed_secs() >= every * (*taken as f32 + 1.0) {
+        *taken += 1;
+        let _ = std::fs::create_dir_all(&dir);
+        let path = format!("{dir}/hud_{:02}.png", *taken);
+        commands.spawn(bevy::render::view::screenshot::Screenshot::primary_window()).observe(bevy::render::view::screenshot::save_to_disk(path));
     }
 }
 
@@ -499,51 +521,76 @@ fn update_perilous(time: Res<Time>, mut p: ResMut<Perilous>, mut q: Query<(&mut 
 /// The stealth indicator over the enemy's head, fed like the game's (FUN_14061ff40 ->
 /// FUN_1408c5fb0: level 0 / 1 / 2 and the meter ratio): an amber bar that fills while it
 /// watches Wolf in its wide "around" sight, solid amber while it is alerted (caution), red when
-/// it has found him. gap: the real indicator art (menu textures) is not used.
+/// it has found him. The art is the game's (SB_FE MENU_Find_02 the thin triangle frame,
+/// MENU_Find_01 the brush triangle, extracted/hud): the brush triangle shows from the bottom tip
+/// up as the meter fills. gap: the HUD movie (menu/01_000_fe.gfx, stage 1920 x 1080) builds the
+/// marks from ActionScript (FindIcon0-7, FindIconAreaIn / Out; the bitmaps are AS3 classes, no
+/// placed shapes), so the fill shape, colours and size are in its ABC bytecode, not decoded:
+/// tinted amber / red, the 128 px sprites drawn at half size at 1080p.
 /// One enemy's stealth mark (`found_t`: seconds it has been fighting, for FOUND_SHOW).
 #[derive(Component)]
 struct StealthMark {
     enemy: Entity,
     found_t: f32,
 }
+/// The clip box that reveals the brush triangle (height = the meter).
 #[derive(Component)]
 struct StealthFill(Entity);
+#[derive(Component)]
+struct StealthBrush(Entity);
+
+/// The mark's side at 1080p [px].
+const STEALTH_PX: f32 = 64.0;
 
 /// Seconds the red "found" mark stays once the fight starts.
 const FOUND_SHOW: f32 = 1.5;
 
-fn spawn_stealth(commands: &mut Commands, enemy: Entity) {
+fn spawn_stealth(commands: &mut Commands, assets: &AssetServer, enemy: Entity) {
     commands
         .spawn((
-            Node { position_type: PositionType::Absolute, width: Val::Px(54.0), height: Val::Px(7.0), border: UiRect::all(Val::Px(1.0)), ..default() },
-            BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.5)),
-            BorderColor::all(Color::srgba(0.0, 0.0, 0.0, 0.8)),
+            Node { position_type: PositionType::Absolute, width: Val::Px(STEALTH_PX), height: Val::Px(STEALTH_PX), ..default() },
+            ImageNode::new(assets.load("hud/MENU_Find_02.png")),
             Visibility::Hidden,
             StealthMark { enemy, found_t: 0.0 },
         ))
         .with_children(|c| {
-            c.spawn((Node { width: Val::Percent(0.0), height: Val::Percent(100.0), ..default() }, BackgroundColor(Color::NONE), StealthFill(enemy)));
+            c.spawn((
+                Node { position_type: PositionType::Absolute, left: Val::Px(0.0), bottom: Val::Px(0.0), width: Val::Percent(100.0), height: Val::Percent(0.0), overflow: Overflow::clip(), ..default() },
+                StealthFill(enemy),
+            ))
+            .with_children(|c| {
+                c.spawn((
+                    Node { position_type: PositionType::Absolute, left: Val::Px(0.0), bottom: Val::Px(0.0), width: Val::Px(STEALTH_PX), height: Val::Px(STEALTH_PX), ..default() },
+                    ImageNode::new(assets.load("hud/MENU_Find_01.png")),
+                    StealthBrush(enemy),
+                ));
+            });
         });
 }
 
 #[allow(clippy::type_complexity)]
 fn update_stealth(
     mut commands: Commands,
+    assets: Res<AssetServer>,
+    window: Query<&Window>,
     time: Res<Time>,
-    enemies: Query<(Entity, &crate::enemy::Enemy, &GlobalTransform, Option<&crate::enemy::Phantom>)>,
+    enemies: Query<(Entity, &crate::enemy::Enemy, &GlobalTransform, Option<&crate::enemy::Phantom>, Option<&crate::model::Dummies>)>,
+    dummies: Query<&GlobalTransform>,
     camera: Query<(&Camera, &GlobalTransform), With<crate::camera::OrbitCamera>>,
-    mut marks: Query<(Entity, &mut StealthMark, &mut Node, &mut Visibility), Without<StealthFill>>,
-    mut fills: Query<(&StealthFill, &mut Node, &mut BackgroundColor), Without<StealthMark>>,
+    mut marks: Query<(Entity, &mut StealthMark, &mut Node, &mut Visibility), (Without<StealthFill>, Without<StealthBrush>)>,
+    mut fills: Query<(&StealthFill, &mut Node), (Without<StealthMark>, Without<StealthBrush>)>,
+    mut brushes: Query<(&StealthBrush, &mut Node, &mut ImageNode), (Without<StealthMark>, Without<StealthFill>)>,
 ) {
     let have: HashSet<Entity> = marks.iter().map(|(_, m, ..)| m.enemy).collect();
     for (e, ..) in &enemies {
         if !have.contains(&e) {
-            spawn_stealth(&mut commands, e);
+            spawn_stealth(&mut commands, &assets, e);
         }
     }
+    let side = STEALTH_PX * window.single().map_or(720.0, |w| w.height()) / 1080.0;
     let cam = camera.single().ok();
     for (me, mut m, mut node, mut vis) in &mut marks {
-        let Ok((_, e, etf, ph)) = enemies.get(m.enemy) else {
+        let Ok((_, e, etf, ph, dm)) = enemies.get(m.enemy) else {
             commands.entity(me).despawn();
             continue;
         };
@@ -554,23 +601,34 @@ fn update_stealth(
             m.found_t = 0.0;
         }
         let show = !e.is_dead() && !e.is_disabled() && !ph.is_some_and(|p| p.parked()) && (level > 0 || ratio > 0.0) && m.found_t < FOUND_SHOW;
-        let pos = cam.and_then(|(cam, ctf)| cam.world_to_viewport(ctf, etf.translation() + Vec3::Y * 1.0).ok());
+        // Over the head: 0.5 m above the lock-on dummy 220 (as the deathblow mark; root + 1.4 m
+        // without it). gap: the game's anchor for this mark is not traced.
+        let head = dm.and_then(|d| d.0.get(&220)).and_then(|d| dummies.get(*d).ok()).map_or(etf.translation() + Vec3::Y * 1.4, |g| g.translation());
+        let pos = cam.and_then(|(cam, ctf)| cam.world_to_viewport(ctf, head + Vec3::Y * 0.5).ok());
         let Some(p) = pos.filter(|_| show) else {
             *vis = Visibility::Hidden;
             continue;
         };
         *vis = Visibility::Inherited;
-        node.left = Val::Px(p.x - 27.0);
-        node.top = Val::Px(p.y - 4.0);
+        node.width = Val::Px(side);
+        node.height = Val::Px(side);
+        node.left = Val::Px(p.x - side / 2.0);
+        node.top = Val::Px(p.y - side);
         let (w, color) = match level {
             2 => (1.0, Color::srgb(0.9, 0.12, 0.08)),
             1 => (1.0, Color::srgb(1.0, 0.72, 0.12)),
             _ => (ratio, Color::srgb(1.0, 0.82, 0.3)),
         };
-        for (f, mut fnode, mut bg) in &mut fills {
+        for (f, mut fnode) in &mut fills {
             if f.0 == m.enemy {
-                fnode.width = Val::Percent(w * 100.0);
-                bg.0 = color;
+                fnode.height = Val::Percent(w.clamp(0.0, 1.0) * 100.0);
+            }
+        }
+        for (b, mut bnode, mut img) in &mut brushes {
+            if b.0 == m.enemy {
+                bnode.width = Val::Px(side);
+                bnode.height = Val::Px(side);
+                img.color = color;
             }
         }
     }

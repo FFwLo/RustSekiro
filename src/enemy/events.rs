@@ -29,7 +29,7 @@ pub(super) fn place(start: Vec3, at: &serde_json::Value, yaw: &serde_json::Value
     let d = yaw.as_f64().unwrap_or(0.0) as f32;
     // The height difference counts on the boss's own arena (map.rs boss_arena: the ground
     // under it is the real one); on another floor it is dropped. gap: no navmesh either way.
-    let y = if crate::map::on_boss_arena() { start.y + n(1) } else { start.y };
+    let y = if super::on_own_arena() { start.y + n(1) } else { start.y };
     (Vec3::new(start.x - n(0), y, start.z + n(2)), std::f32::consts::PI - d.to_radians())
 }
 

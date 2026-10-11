@@ -34,9 +34,36 @@ pub struct AnimLib {
     pub player: Lib,
     /// Per enemy kind (`Combat::kinds`); kinds with the same anim chr share one.
     pub enemies: Vec<std::sync::Arc<Lib>>,
+    /// The anim chr of each `enemies` entry, and the chrs whose anim_c0000_<chr>.bin (Wolf's
+    /// clips against them) are in `player`.
+    enemy_chrs: Vec<String>,
+    player_vs: HashSet<String>,
 }
 
 impl AnimLib {
+    /// Follows `Combat::kinds` after an encounter swap (Combat::load_encounter): each kind's
+    /// clips (loaded once per anim chr, kept from before when the chr is the same) and Wolf's
+    /// clips against each new chr.
+    pub fn sync_kinds(&mut self, combat: &Combat) {
+        let dir = crate::paths::root().join("extracted");
+        for k in &combat.kinds {
+            for c in [&k.foe.anim_chr, &k.foe.chr] {
+                let p = dir.join(format!("anim_c0000_{c}.bin"));
+                if self.player_vs.insert(c.clone()) && p.exists() {
+                    self.player.clips.extend(load(&p).clips);
+                }
+            }
+        }
+        let old: HashMap<String, std::sync::Arc<Lib>> = self.enemy_chrs.drain(..).zip(self.enemies.drain(..)).collect();
+        let mut by_chr = old;
+        for k in &combat.kinds {
+            let chr = &k.foe.anim_chr;
+            let lib = by_chr.entry(chr.clone()).or_insert_with(|| std::sync::Arc::new(load(&dir.join(format!("anim_{chr}.bin"))))).clone();
+            self.enemies.push(lib);
+            self.enemy_chrs.push(chr.clone());
+        }
+    }
+
     pub fn lib(&self, a: &crate::actor::Actor) -> &Lib {
         match a.side {
             Side::Player => &self.player,
@@ -121,10 +148,24 @@ pub struct HasModel;
 #[derive(Component)]
 pub struct Hurtboxes(pub Vec<(Entity, Entity, f32)>, pub Vec<u8>);
 
+/// A throw absorb's model slide: ThrowParam adsrobModelPosInterpolationTime (Paramdex SDT:
+/// after the capsule is absorbed onto the dummy poly, the time the character model takes to
+/// move to the anim data's position; 0 = none). `offset` is where the model stood relative to
+/// the capsule's new spot (world, horizontal); it shrinks to zero over `time`. gap: the exe's
+/// curve is not traced (linear here).
+#[derive(Component)]
+pub struct ModelLag {
+    pub offset: Vec3,
+    pub time: f32,
+    pub left: f32,
+}
+
 /// Bone entities of one character, indexed like the skeleton.
 #[derive(Component)]
 pub struct Skeleton {
     pub bones: Vec<Entity>,
+    /// The "SkeletonRoot" entity (feet level under the actor; ModelLag moves it).
+    pub root: Entity,
     /// Clip shown last frame, and the pose to crossfade from after a clip change.
     pub(crate) shown: String,
     from: Vec<Transform>,
@@ -176,9 +217,18 @@ impl Plugin for AnimPlugin {
             .iter()
             .map(|(chr, _)| by_chr.entry(chr.clone()).or_insert_with(|| std::sync::Arc::new(load(&dir.join(format!("anim_{chr}.bin"))))).clone())
             .collect();
-        app.insert_resource(AnimLib { player, enemies })
-            .add_systems(PostStartup, build_skeletons.in_set(AnimSet).after(crate::player::player_visuals).after(crate::enemy::enemy_visuals))
-            .add_systems(Update, (pose_skeletons, apply_walk_twist, apply_twists, draw_skeletons).chain().before(TransformSystems::Propagate));
+        let enemy_chrs = kinds.iter().map(|(chr, _)| chr.clone()).collect();
+        app.insert_resource(AnimLib { player, enemies, enemy_chrs, player_vs: done })
+            .add_systems(PostStartup, build_skeletons.in_set(AnimSet))
+            // Characters spawned later (a fight reset's line-up, the encounter picker).
+            .add_systems(Update, build_skeletons.in_set(AnimSet).before(pose_skeletons))
+            .add_systems(
+                Update,
+                // (No gizmos headless: sim tests with the real geometry, model.rs GeometryPlugin.)
+                (pose_skeletons, apply_walk_twist, apply_twists, apply_model_lag, draw_skeletons.run_if(resource_exists::<bevy::gizmos::config::GizmoConfigStore>))
+                    .chain()
+                    .before(TransformSystems::Propagate),
+            );
     }
 }
 
@@ -248,7 +298,7 @@ fn build_skeletons(
             commands.entity(e).insert(Hurtboxes(boxes, parts));
         }
         // The skeleton replaces the placeholder capsule.
-        commands.entity(e).insert(Skeleton { bones, shown: String::new(), from: Vec::new(), last: Vec::new(), blend: 1.0, blend_len: CROSSFADE, was_upper: false, upper_fade: false }).remove::<Mesh3d>();
+        commands.entity(e).insert(Skeleton { bones, root, shown: String::new(), from: Vec::new(), last: Vec::new(), blend: 1.0, blend_len: CROSSFADE, was_upper: false, upper_fade: false }).remove::<Mesh3d>();
     }
 }
 
@@ -433,6 +483,25 @@ fn pose_skeletons(
                 skel.last = vec![Transform::default(); skel.bones.len()];
             }
             skel.last[bone] = out;
+        }
+    }
+}
+
+/// Slides an absorbed character's model onto its capsule (ModelLag).
+fn apply_model_lag(
+    mut commands: Commands,
+    time: Res<Time>,
+    mut actors: Query<(Entity, &Transform, &Skeleton, &mut ModelLag), With<Actor>>,
+    mut roots: Query<&mut Transform, Without<Actor>>,
+) {
+    for (e, tf, skel, mut lag) in &mut actors {
+        lag.left -= time.delta_secs();
+        let k = (lag.left / lag.time.max(1e-6)).max(0.0);
+        if let Ok(mut r) = roots.get_mut(skel.root) {
+            r.translation = Vec3::new(0.0, -CAPSULE_HALF_HEIGHT, 0.0) + tf.rotation.inverse() * (lag.offset * k);
+        }
+        if lag.left <= 0.0 {
+            commands.entity(e).remove::<ModelLag>();
         }
     }
 }

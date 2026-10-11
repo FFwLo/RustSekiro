@@ -97,7 +97,7 @@ Dated findings, oldest first. Append new entries at the end.
   * Wolf crouch (C): CrouchStart 216000 / CrouchEnd 216100 / crouch locomotion = stand ids + 5000;
     the crouch clips carry 109200 (cut 20). Gaps: crouch attacks/steps/reactions, ACTION_ARM_CROUCH flags.
   * Gaps: LastSightPos forget bookkeeping (forget runs on the normal target), listener ear_dist,
-    map raycasts (no walls), patrol routes (MSB), turn anims, the real HUD art, Wolf's physics radius
+    map raycasts (done 2026-10-11: stealth::sight_clear, FUN_14061c8a0; points gap), patrol routes (MSB), turn anims, the real HUD art, Wolf's physics radius
     (CAPSULE_RADIUS 0.4 stands in).
   * Footsteps: Wolf's walk / run clips carry CreateAISound (TAE 237) for their whole length - walk
     1000 (0.5 m), run 1010 (2 m), crouch walk 1001 (0.25 m), crouch run 1011 (0.5 m); read from the
@@ -107,9 +107,9 @@ Dated findings, oldest first. Append new entries at the end.
   * opposeTarget 0 = hits objects only.
   * NpcParam resident spEffectID0-31 open the 950/951 TAE StateInfo gates.
   * NPC bullets: BehaviorParam 200000000 + variation*1000 + judge with refType 1.
-  * Enemy grab: ThrowParam AtkChrId = chr, throwKind = 1000000 + throwTypeId*10 (gap: pattern, not exe).
+  * Enemy grab: ThrowParam AtkChrId = chr whose throwKind is a ThrowKindParam row with throwCheckSituation 4 and the hit's AtkParam throwTypeId (Paramdex SDT ThrowKindParam throwTypeId; data, 2026-10-11; test enemy_grabs_go_through_the_throw_kind_table). Underwater kinds (category 101, c1340 only) used only when the chr has no other (gap: no water).
   * ninsatuNum > 1: a non-final deathblow is ThrowDef only, then IdleTransition (HKS ThrowDef, not
-    env(276)). The boss characters (c5000, c7100) have no ThrowDefDeath anims at all. HP refill = gap.
+    env(276)). The boss characters (c5000, c7100) have no ThrowDefDeath anims at all. HP refill: done 2026-10-11 (below).
   * Bosses read GetNinsatsuNum < GetNinsatsuMaxNum as "a deathblow was taken" (500000_battle.lua), and
     the General's last one (<= 1) as all-out (102000_battle.lua).
   * Goal setters chain (AddSubGoal(...):SetLifeEndSuccess(true):TimingSetNumber(...)).
@@ -158,3 +158,41 @@ Dated findings, oldest first. Append new entries at the end.
     Dist 57 from dummy 233), 15010150/151 (130000), 15010900 (120000, ThrowDef12900); AI
     501010/501020/501030_battle.lua by IsInsideTargetRegion over MSB regions (1102861/62/65/
     81/95/97/79). Not done: ai.rs answers region checks false.
+- 2026-10-11 non-final deathblow HP refill (B1): every chr's ThrowDef reaction anims add SpEffect
+  300610 "HP reset" (HPリセット, changeHpRate -100, effectEndurance 0) by TAE 67 AddSpEffect
+  (c7100 a000_012000 f130, a000_013410 f99; also 401000 "enemy HP full recovery" in c5100's
+  a000_020000 revival). enemy.rs `instant_hp_rate` applies instant changeHpRate SpEffects on any
+  living enemy at their frame; the deathblow no longer refills at once (only when the reaction
+  has no such event). Test `a_boss_refills_at_its_reactions_hp_reset_frame`. Same rows also add
+  275080 (HP / posture total change) and 3710020 ("rival deathblowed: clash count 0"): not used.
+- 2026-10-11 C2 runtime encounter: `enemy::SpawnEncounter` -> `Combat::load_encounter` (same load as startup:
+  main + group + boss-event kinds; params merged) -> `AnimLib::sync_kinds` (per anim chr, Wolf's anim_c0000_<chr>
+  clips) -> FightReset. `data::encounter_list()` from roster.json + boss_scripts.json. Respawned actors get their
+  skeleton / model in Update now (were PostStartup only: after a reset the enemy had none). Tests
+  spawn_encounter_swaps_the_fight_in_place, enemies_respawned_by_a_fight_reset_get_their_bodies.
+- 2026-10-11 C2 names + foreign arena: `tools/npc_names.py` -> extracted/enemies/npc_names.json: every
+  2003[11] Display Boss Health Bar / 2003[87] Display Miniboss Health Bar (state 1, entity = MSB enemy part,
+  nameId -> msg/engus item NPC名.fmg; NpcParam nameId is 0 on these rows) keyed by the part's NpcParam row
+  (57 rows: 20 bosses, the mini-bosses), plus place names (地名.fmg; gap: id = area*100 + block*10, the 11
+  ids match the 11 blocks, lookup not traced). `Encounter.name` uses it (shared name: "(place)", then a
+  number), `Encounter.bar` = has a bar. Test encounters_carry_the_health_bar_names. After a swap the map stays:
+  `enemy::on_own_arena()` (loaded map == map::boss_arena of config enemy) - on another boss's arena the
+  line-up stands at map::player_start().z - 8 and events::place drops MSB heights (the Ape grotto hid
+  Genichiro under its roof). Map asked to make player_start find room for both on a foreign arena.
+- 2026-10-11 B5 enemy bullet flight (enemy_bullet.rs) from the exe bullet update FUN_140b0ded0 (bullet
+  0xd30 bytes, BulletParam at +8 of its slot): FollowType odd or 2 -> FUN_140b14b20 (attached; gap), else
+  FUN_140b11270 homing, FUN_140b14650 speed, then the move (decomp 140b1.c:5214 adds the step
+  length to +0xb60 = metres flown).
+  * Homing `steer`: none if homingAngle (0x82) < 0 or flown <= homingBeginDist (0x40); target point +
+    targetYOffsetRange (0xa0) in y; no turn while closer than hormingStopRange (0x24); else the flight turns
+    toward it by at most homingAngle*dt (acos of max(cos(limit), dot), about cross(dir, to)). homingAngleX
+    (0xda) >= 0 also lets a full aim through (gap: its pitch limit). Target = FUN_140b0e680: the target
+    chr's matrix * a local offset or one of its dummy polys (id at +0x34 not traced; we aim at Wolf's chest
+    like `fire`).
+  * Speed `flight`: flown <= +0xabc (taken as `dist`, source not traced): accelInRange (0x2c) along the
+    flight and gravityInRange (0x1c) down, else the OutRange pair (0x30 / 0x20); then speed = min if below
+    minVellocity (0x38), else at most maxVellocity (0x34) (rows with max 0 all have init 0). Gaps: water
+    slow-down FUN_140b123d0, the +0xb6c accel pause. Old code had no in-range accel/gravity or limits (the
+    bandit arrow 190: 22 m/s, 15 m/s2 gravity in its 10 m, 8 deg up).
+  * Map collision: isPenetrateMap 0 -> Terrain raycast along the step ends it (HitBulletID child as a
+    hit); no map: the old floor (Wolf's feet).

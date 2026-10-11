@@ -4,6 +4,16 @@
 //! "blood" slot). When a gauge reaches the NpcParam resist_poison / resist_blood the effect takes
 //! hold: it hurts every motionInterval s (changeHpRate % of max HP + changeHpPoint) for its
 //! effectEndurance, then its replaceSpEffectId follows (Sabimaru 9004 -> 9045 poison damage).
+//!
+//! The exe keeps this in SprjChrResistModule (vtable 0x142a8d178): per type (0 poison, 1
+//! disease, 2 blood / burn, 3 curse, 4 freeze) the resist left (+0x10) and its max (+0x24). A hit
+//! (FUN_140a00f60) takes the build-up off unless an active SpEffect has disablePoison /
+//! disableBlood (FUN_140bff7a0 -> FUN_140c05f20: SpEffect +0x16b bits 2 / 4); below 1 the effect
+//! fires, the type's "activation" bit is set for the next frame (+0x4c -> +0x50, read by HKS
+//! env(3041) GetStatusActivation) and the resist refills to max (FUN_140bd9d30). Every frame
+//! (FUN_140bda460) it recovers TentativePlayerParam ResistRecoverPoint_*_Enemy (_Player for
+//! Wolf; 5 a second for poison and burn) times dt, whole points only, the fraction carried
+//! (+0x38). Here the gauge counts the build-up up instead: gauge = max - left.
 
 use std::collections::HashMap;
 
@@ -37,6 +47,67 @@ pub struct Status {
     pub poison: f32,
     pub burn: f32,
     pub effects: Vec<Affliction>,
+    /// The fractions of a recovered point carried to the next frame (+0x38), poison and burn.
+    carry: [f32; 2],
+}
+
+/// TentativePlayerParam row 0 ResistRecoverPoint_Poision / _Blood (points a second) for enemies
+/// and for Wolf, and the SpEffectParam rows' disablePoison / disableBlood flags.
+#[derive(Default)]
+pub struct ResistRules {
+    pub recover_enemy: [f32; 2],
+    pub recover_player: [f32; 2],
+    disable: HashMap<i64, [bool; 2]>,
+}
+
+impl ResistRules {
+    /// Read once from extracted/json/params.
+    pub fn get() -> &'static Self {
+        static RULES: std::sync::OnceLock<ResistRules> = std::sync::OnceLock::new();
+        RULES.get_or_init(Self::load)
+    }
+
+    fn load() -> Self {
+        let read = |name: &str| -> Vec<serde_json::Value> {
+            let path = crate::paths::extracted().join(format!("json/params/{name}.json"));
+            let Some(v) = std::fs::read_to_string(path).ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()) else { return Vec::new() };
+            match &v["rows"] {
+                serde_json::Value::Array(a) => a.clone(),
+                serde_json::Value::Object(o) => o.values().cloned().collect(),
+                _ => Vec::new(),
+            }
+        };
+        let tent = read("TentativePlayerParam");
+        let row = tent.iter().find(|r| r["id"].as_i64() == Some(0));
+        let f = |k: &str| row.and_then(|r| r[k].as_f64()).unwrap_or(0.0) as f32;
+        let disable = read("SpEffectParam")
+            .iter()
+            .filter_map(|r| {
+                let on = |k: &str| r[k].as_i64() == Some(1);
+                let d = [on("disablePoison"), on("disableBlood")];
+                (d[0] || d[1]).then(|| (r["id"].as_i64().unwrap_or(-1), d))
+            })
+            .collect();
+        Self {
+            recover_enemy: [f("ResistRecoverPoint_Poision_Enemy"), f("ResistRecoverPoint_Blood_Enemy")],
+            recover_player: [f("ResistRecoverPoint_Poision_Player"), f("ResistRecoverPoint_Blood_Player")],
+            disable,
+        }
+    }
+
+    /// An active SpEffect of `status` stops this type's build-up (0 poison, 1 burn).
+    fn disabled(&self, status: &Status, ty: usize) -> bool {
+        status.effects.iter().any(|a| self.disable.get(&a.id).is_some_and(|d| d[ty]))
+    }
+}
+
+/// The resist recovery of one frame (FUN_140bda460): whole points of rate * dt + the carried
+/// fraction come off the gauge (not below 0), the rest is carried.
+pub fn recover(gauge: &mut f32, carry: &mut f32, rate: f32, dt: f32) {
+    let v = rate * dt + *carry;
+    let whole = v.trunc();
+    *carry = v - whole;
+    *gauge = (*gauge - whole).max(0.0);
 }
 
 /// Every character's build-up gauges and afflictions; `stop`: effects of ended afflictions.
@@ -44,7 +115,8 @@ pub struct Status {
 pub struct Statuses(pub HashMap<Entity, Status>, Vec<Entity>);
 
 impl Statuses {
-    /// An affliction with this behaviorRefId is on the character (HKS env(3036, ref) / env(3041)).
+    /// An affliction with this behaviorRefId is on the character (HKS env(3036, ref)).
+    #[allow(dead_code)]
     pub fn has_ref(&self, combat: &Combat, e: Entity, behavior_ref: i64) -> bool {
         self.0.get(&e).is_some_and(|s| s.effects.iter().any(|a| sp(combat, a.id).is_some_and(|x| x.behavior_ref_id == behavior_ref)))
     }
@@ -52,24 +124,34 @@ impl Statuses {
     /// Wolf's hit on an enemy: each of its SpEffects adds its build-up; a full gauge applies the
     /// effect. `guarded`: the NpcParam *GuardResist % of it is kept off. Returns the log lines.
     pub fn hit(&mut self, combat: &Combat, target: Entity, def: &crate::actor::Actor, sps: &[i64], guarded: bool) -> Vec<String> {
+        let rules = ResistRules::get();
         let npc = combat.npc(def);
         let num = |k: &str| npc[k].as_f64().unwrap_or(0.0) as f32;
         let status = self.0.entry(target).or_default();
         let mut out = Vec::new();
         for &id in sps.iter().filter(|id| **id > 0) {
             let Some(s) = sp(combat, id) else { continue };
-            let (gauge, power, resist, guard, name) = match s.state_info {
-                STATE_INFO_POISON if s.poizon_attack_power > 0.0 => (&mut status.poison, s.poizon_attack_power * s.regist_poizon_change_rate, num("resist_poison"), num("poisonGuardResist"), "poison"),
-                STATE_INFO_BURN if s.regist_blood > 0.0 => (&mut status.burn, s.regist_blood * s.regist_blood_change_rate, num("resist_blood"), num("bloodGuardResist"), "burn"),
+            let ty = match s.state_info {
+                STATE_INFO_POISON if s.poizon_attack_power > 0.0 => 0,
+                STATE_INFO_BURN if s.regist_blood > 0.0 => 1,
                 _ => continue,
             };
-            // gap: an affliction already running takes no more build-up, and the gauges never
-            // drain (the exe's decay rate is not traced).
-            let running = status.effects.iter().any(|a| sp(combat, a.id).is_some_and(|x| x.state_info == s.state_info || x.behavior_ref_id == s.behavior_ref_id));
-            if running {
+            // Poison's own 9045 (disablePoison) keeps more poison off; the burns (9100-9125)
+            // disable nothing, so a burning enemy keeps building up (9122 disableBlood aside).
+            if rules.disabled(status, ty) {
                 continue;
             }
-            *gauge += power * if guarded { 1.0 - guard / 100.0 } else { 1.0 };
+            let (gauge, power, resist, guard, name) = match ty {
+                0 => (&mut status.poison, s.poizon_attack_power * s.regist_poizon_change_rate, num("resist_poison"), num("poisonGuardResist"), "poison"),
+                _ => (&mut status.burn, s.regist_blood * s.regist_blood_change_rate, num("resist_blood"), num("bloodGuardResist"), "burn"),
+            };
+            // Whole points, as the exe's int build-up: (int)(power * rate), then
+            // (int)(x * (1 - guard resist %)) when guarded.
+            let mut amount = power.trunc();
+            if guarded && amount > 0.0 {
+                amount = (amount * (1.0 - guard / 100.0)).trunc().max(0.0);
+            }
+            *gauge += amount;
             if *gauge < resist.max(1.0) {
                 out.push(format!("{name} {:.0}/{resist:.0}", *gauge));
                 continue;
@@ -106,10 +188,14 @@ fn start(combat: &Combat, status: &mut Status, id: i64) {
 /// The afflictions' damage ticks and ends.
 fn tick(time: Res<Time>, combat: Res<Combat>, mut statuses: ResMut<Statuses>, mut actors: Query<(Entity, &mut Actor)>, mut log: Option<ResMut<CombatLog>>) {
     let dt = time.delta_secs();
+    let rules = ResistRules::get();
     statuses.0.retain(|e, _| actors.contains(*e));
     let Statuses(all, stop) = &mut *statuses;
     for (e, mut a) in &mut actors {
         let Some(status) = all.get_mut(&e) else { continue };
+        let rate = if a.side == crate::actor::Side::Player { rules.recover_player } else { rules.recover_enemy };
+        recover(&mut status.poison, &mut status.carry[0], rate[0], dt);
+        recover(&mut status.burn, &mut status.carry[1], rate[1], dt);
         let mut ended = Vec::new();
         for f in status.effects.iter_mut() {
             let Some(s) = sp(&combat, f.id) else { continue };
@@ -208,5 +294,35 @@ pub struct StatusPlugin;
 impl Plugin for StatusPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Statuses>().insert_resource(VfxRows::load()).add_systems(FixedUpdate, tick.after(ActorSet::Resolve)).add_systems(Update, show);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn gauges_drain_in_whole_points() {
+        // 5 a second at 60 fps: a point about every 12 frames (float sums), the fraction carried.
+        let (mut g, mut c) = (100.0f32, 0.0f32);
+        for _ in 0..15 {
+            super::recover(&mut g, &mut c, 5.0, 1.0 / 60.0);
+        }
+        assert_eq!(g, 99.0);
+        assert!(c > 0.1 && c < 0.3, "carry {c}");
+        for _ in 0..60 * 30 {
+            super::recover(&mut g, &mut c, 5.0, 1.0 / 60.0);
+        }
+        assert_eq!(g, 0.0);
+    }
+
+    #[test]
+    fn resist_rules_from_the_params() {
+        let r = super::ResistRules::get();
+        if r.disable.is_empty() {
+            return;
+        }
+        assert_eq!(r.recover_enemy, [5.0, 5.0]);
+        // Poison 9045 stops more poison; the Flame Vent burn 9100 stops nothing.
+        assert_eq!(r.disable.get(&9045), Some(&[true, false]));
+        assert!(!r.disable.contains_key(&9100));
     }
 }

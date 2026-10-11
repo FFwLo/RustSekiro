@@ -64,6 +64,8 @@ pub struct Terrain {
     materials: Vec<u32>,
     cells: HashMap<(i32, i32), Vec<u32>>,
     min_walk_ny: f32,
+    /// Level triangles without a hit material dropped at load (see `from_tris`).
+    helper_planes: usize,
 }
 
 static TERRAIN: OnceLock<RwLock<Option<Arc<Terrain>>>> = OnceLock::new();
@@ -145,6 +147,53 @@ pub fn raycast(origin: Vec3, dir: Vec3, max: f32) -> Option<f32> {
     terrain()?.raycast(origin, dir, max)
 }
 
+/// Wolf's start (his centre): 4 m in front of the enemy, the player's spot of every arena
+/// (tools/sekiro-extract map export). On a boss's own arena that spot can sit under the boss's
+/// cave roof (the Guardian Ape sleeps in a grotto: at (0, 4) the rock h019400 is 1.5 m over
+/// the floor and the camera has no room), so the start walks away from the boss along +z, half
+/// a metre at a time, to the first spot with a floor near the arena's and 2.8 m of headroom.
+/// gap: the game starts the fight where the boss script's warp or the fog gate puts Wolf.
+pub fn player_start() -> Vec3 {
+    const HEADROOM: f32 = 2.8;
+    let base = Vec3::new(0.0, CAPSULE_HALF_HEIGHT, 4.0);
+    let Some(t) = terrain().filter(|_| on_boss_arena()) else { return base };
+    // The arena's floor is at y 0 by construction (a ledge over it counts as a floor too, so
+    // the search tops out at 1 m).
+    let Some(h0) = t.floor(0.0, 4.0, 1.0) else { return base };
+    // Within half a metre of that floor: the top of the overhang itself is not the spot.
+    let floor_at = |z: f32| t.floor(0.0, z, h0 + 0.5);
+    let room = |z: f32, h: f32| t.raycast(Vec3::new(0.0, h + 0.1, z), Vec3::Y, HEADROOM).is_none();
+    if room(4.0, h0) {
+        return base;
+    }
+    let mut z = 4.5;
+    while z <= 16.0 {
+        if let Some(h) = floor_at(z).filter(|h| (h - h0).abs() <= 0.5) {
+            if room(z, h) {
+                info!("player start moved to z {z}: no headroom at the arena's spot (floor {h0:.2}, {h:.2} here)");
+                return Vec3::new(0.0, h + CAPSULE_HALF_HEIGHT, z);
+            }
+        }
+        z += 0.5;
+    }
+    warn!("player start: no spot with {HEADROOM} m of headroom within 12 m of (0, 4); kept");
+    base
+}
+
+/// Puts Wolf on [`player_start`] once the terrain is loaded (player.rs spawns him at the plain
+/// spot during Startup, before or after `load_map`).
+fn settle_player_start(mut wolf: Query<&mut Transform, With<crate::player::Player>>) {
+    if !on_boss_arena() {
+        return;
+    }
+    let start = player_start();
+    for mut tf in &mut wolf {
+        if tf.translation.distance(start) > 1e-3 {
+            tf.translation = start;
+        }
+    }
+}
+
 fn cell_of(x: f32, z: f32) -> (i32, i32) {
     ((x / CELL).floor() as i32, (z / CELL).floor() as i32)
 }
@@ -173,7 +222,7 @@ impl Terrain {
     /// files and the sandbox map's generated floor and walls.
     pub(crate) fn from_tris(verts: Vec<Vec3>, tris: impl Iterator<Item = ([u32; 3], u32)>) -> Self {
         let nv = verts.len();
-        let mut t = Terrain { verts, tris: Vec::new(), normals: Vec::new(), materials: Vec::new(), cells: HashMap::new(), min_walk_ny: MAX_SLOPE_DEGREES.to_radians().cos() };
+        let mut t = Terrain { verts, tris: Vec::new(), normals: Vec::new(), materials: Vec::new(), cells: HashMap::new(), min_walk_ny: MAX_SLOPE_DEGREES.to_radians().cos(), helper_planes: 0 };
         for (tri, material) in tris {
             if tri.iter().any(|&x| x as usize >= nv) {
                 continue;
@@ -181,6 +230,13 @@ impl Terrain {
             let [a, b, c] = tri.map(|x| t.verts[x as usize]);
             let n = (b - a).cross(c - a);
             if n.length_squared() < 1e-12 {
+                continue;
+            }
+            // The h9xxxxx helper collisions without a hit material: their level planes (the
+            // Guardian Ape's h900702, a 66 m plane 0.4 m over the pond floor; the maps' kill
+            // planes far below) are not floors. Their walls (h900700, the arena's bounds) stay.
+            if material == u32::MAX && n.y.abs() >= t.min_walk_ny * n.length() {
+                t.helper_planes += 1;
                 continue;
             }
             let id = t.tris.len() as u32;
@@ -838,7 +894,7 @@ fn load_map(
     if !sandbox {
         match std::fs::read(dir.join(format!("map_{id}.hit"))).ok().and_then(|d| Terrain::from_hit(&d)) {
             Some(t) => {
-                info!("map {id}: {} collision triangles", t.triangle_count());
+                info!("map {id}: {} collision triangles ({} material-less helper planes dropped)", t.triangle_count(), t.helper_planes);
                 t.install();
             }
             None => warn!("map {id}: no map_{id}.hit (run `sekiro-extract map`)"),
@@ -910,6 +966,10 @@ fn load_map(
         n += 1;
         tris += b.index_count / 3;
         let mut key = b.key();
+        // `#<index>` skips one batch by its position in the bin.
+        if key.0.iter().any(|n| options.skip.iter().any(|s| n.contains(s.as_str()))) || options.skip.iter().any(|s| s.strip_prefix('#').and_then(|x| x.parse::<usize>().ok()) == Some(n - 1)) {
+            return;
+        }
         if options.no_layers {
             key.0[2..].iter_mut().for_each(|l| l.clear());
         }
@@ -1077,6 +1137,9 @@ pub(crate) struct MaterialOptions {
     pub unlit: bool,
     /// `SHINOBI_MAP_TEX=<stem>`: one texture on every piece (a UV check).
     pub tex_override: Option<String>,
+    /// `SHINOBI_MAP_SKIP=<text>[,<text>]`: batches whose texture names contain one of them
+    /// are not drawn (which surface is that?).
+    pub skip: Vec<String>,
     /// `SHINOBI_MAP_NO_LAYERS=1`: the base layer only.
     pub no_layers: bool,
     /// `SHINOBI_MAP_SOFT`: the mask blend softness (default 0.25).
@@ -1107,6 +1170,7 @@ impl MaterialOptions {
             no_normals: std::env::var("SHINOBI_MAP_NO_NORMALS").is_ok(),
             unlit: std::env::var("SHINOBI_MAP_UNLIT").is_ok(),
             tex_override: std::env::var("SHINOBI_MAP_TEX").ok().filter(|s| !s.is_empty()),
+            skip: std::env::var("SHINOBI_MAP_SKIP").map(|v| v.split(',').filter(|s| !s.is_empty()).map(str::to_string).collect()).unwrap_or_default(),
             no_layers: std::env::var("SHINOBI_MAP_NO_LAYERS").is_ok(),
             softness: std::env::var("SHINOBI_MAP_SOFT").ok().and_then(|v| v.parse().ok()).unwrap_or(0.25),
             snow_up,
@@ -1161,13 +1225,25 @@ impl MaterialCache {
         let mask = (layered && !mask_t.is_empty()).then(|| tex(mask_t, false));
         let bits = |a: &Option<Handle<Image>>, n: &Option<Handle<Image>>| a.is_some() as u32 | ((n.is_some() as u32) << 1);
         let flags = UVec4::new(normal_h.is_some() as u32 | (bits(&c, &c_n) << 1), bits(&over, &over_n), bits(&snow, &snow_n), (!albedo.is_empty()) as u32 | o.w_flags);
+        // Water surfaces (the Guardian Ape's pond and stream, the gate's river): no albedo, the
+        // shared `m99_water_n` ripple normal, and the game's own water shader (reflection,
+        // refraction, flow). Stand-in: a dark translucent surface so a wader's legs show
+        // through instead of an opaque grey floor at knee height. gap: the water shader.
+        let water = albedo.is_empty() && normal.contains("water");
         let h = materials.add(MapMaterial {
             base: StandardMaterial {
                 base_color_texture: (!albedo.is_empty()).then(|| tex(albedo, true)),
-                base_color: if albedo.is_empty() { Color::srgb(0.45, 0.43, 0.40) } else { Color::WHITE },
+                base_color: if water {
+                    Color::srgba(0.10, 0.15, 0.16, 0.6)
+                } else if albedo.is_empty() {
+                    Color::srgb(0.45, 0.43, 0.40)
+                } else {
+                    Color::WHITE
+                },
                 perceptual_roughness: 0.85,
                 unlit: o.unlit,
                 alpha_mode: match alpha {
+                    _ if water => AlphaMode::Blend,
                     1 => AlphaMode::AlphaToCoverage,
                     2 => AlphaMode::Blend,
                     _ => AlphaMode::Opaque,
@@ -1238,9 +1314,10 @@ impl Plugin for MapPlugin {
         bevy::asset::embedded_asset!(app, "map_material.wgsl");
         app.add_plugins(MaterialPlugin::<MapMaterial>::default());
         app.add_systems(Startup, load_map)
+            .add_systems(PostStartup, settle_player_start)
             .add_systems(Update, ((hour_keys, apply_lighting).chain().run_if(resource_exists::<MapLighting>), frame_rate_log))
             .add_systems(Startup, crate::sandbox::spawn_enemies.after(load_map))
-            .add_systems(Update, (crate::sandbox::place_wolf, crate::sandbox::watch, crate::sandbox::catalog_shots.run_if(resource_exists::<crate::sandbox::Catalog>)))
+            .add_systems(Update, (crate::sandbox::place_wolf, crate::sandbox::watch, mesh_events,crate::sandbox::catalog_shots.run_if(resource_exists::<crate::sandbox::Catalog>)))
             .add_systems(FixedUpdate, bodies_on_terrain.after(ActorSet::Advance));
     }
 }
@@ -1256,6 +1333,41 @@ fn frame_rate_log(time: Res<Time>, mut acc: Local<(f32, u32, bool)>) {
     if t >= 15.0 {
         acc.2 = true;
         info!("map frame rate: {:.0} fps over {} frames ({})", acc.1 as f32 / acc.0, acc.1, if terrain().is_some() { "map" } else { "no map" });
+    }
+}
+
+/// `SHINOBI_MESH_EVENTS=1`: logs every mesh asset event of the first 600 frames with the frame
+/// number and, for a removed or modified mesh, which entities carry it (the startup
+/// `slab_allocator Use-after-free` error: a mesh copied for the GPU after its slab was freed).
+fn mesh_events(mut events: MessageReader<AssetEvent<Mesh>>, mut frame: Local<u32>, carriers: Query<(Entity, &Mesh3d, Option<&Name>, Option<&ChildOf>)>, names: Query<&Name>, meshes: Res<Assets<Mesh>>) {
+    *frame += 1;
+    if *frame > 600 || std::env::var("SHINOBI_MESH_EVENTS").is_err() {
+        events.clear();
+        return;
+    }
+    for ev in events.read() {
+        let (kind, id) = match ev {
+            AssetEvent::Added { id } => ("added", *id),
+            AssetEvent::Modified { id } => ("modified", *id),
+            AssetEvent::Removed { id } => ("removed", *id),
+            AssetEvent::Unused { id } => ("unused", *id),
+            AssetEvent::LoadedWithDependencies { id } => ("loaded", *id),
+        };
+        if kind == "added" {
+            // The first frames only: what each new mesh is (vertices, attributes), so a mesh
+            // removed before any entity carried it can be told apart.
+            if *frame <= 3 {
+                let what = meshes.get(id).map(|m| format!("{} vertices, attrs [{}]", m.count_vertices(), m.attributes().map(|(a, _)| a.name).collect::<Vec<_>>().join(" ")));
+                info!("mesh event frame {}: added {id:?}: {}", *frame, what.unwrap_or_default());
+            }
+            continue;
+        }
+        let who: Vec<String> = carriers
+            .iter()
+            .filter(|(_, m, _, _)| m.0.id() == id)
+            .map(|(e, _, n, p)| format!("{e} {} under {}", n.map_or("-", |n| n.as_str()), p.and_then(|p| names.get(p.parent()).ok()).map_or("-", |n| n.as_str())))
+            .collect();
+        info!("mesh event frame {}: {kind} {id:?} on [{}]", *frame, who.join(", "));
     }
 }
 

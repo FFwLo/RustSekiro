@@ -5,6 +5,8 @@
 //! The effects themselves are the game's FXRs, played by fxr.rs; only an FFX with no extracted FXR
 //! falls back to a hand-made look (`looks`, made to read like the game's: red mist on the Mortal
 //! Blade, wind for Whirlwind Slash, sparks, fire, feathers, poison mist, petals, dust).
+//! Foot dust: FootSfxParam_Entity (792) and SpawnFFX_ByFloor (112) pick the effect from
+//! FootSfxParam (see `FootSfx`).
 //! Also the default weapon trail on Wolf's sword while an AttackBehavior hit window runs (TAE 790
 //! DisableDefaultWeaponTrail turns it off).
 
@@ -159,7 +161,7 @@ fn looks(ffx: i64) -> &'static [Layer] {
 /// 12200 / 12220 are the Mortal Blade's, which is not modelled: the sword stands in), 2xxxx the
 /// prosthetic tool's parts (model/tool.rs: 2<model><dummy>; without the part, the left hand / arm
 /// dummies stand in).
-fn dummy_candidates(id: i64) -> Vec<i16> {
+pub(crate) fn dummy_candidates(id: i64) -> Vec<i16> {
     match id {
         // 1<model><dummy>: Model2's are kept under their full id (model.rs), Model0's under the bare one.
         10000..=19999 => vec![id as i16, (id % 10000) as i16, 300, 301, 311, 121, 100, 20],
@@ -199,12 +201,60 @@ struct Trail {
     mesh: Handle<Mesh>,
 }
 
+/// FootSfxParam: row = the character's foot effect (Wolf TentativePlayerParam
+/// PlayerFootEffect_bySFX 1, NPCs NpcParam footEffectSfxId), column 0-199 = the TAE index.
+/// TAE 792 FootSfxParam_Entity (FUN_140b54690 -> FUN_1409da4c0): its FootSFXIndex column of the
+/// row (FUN_1410be4e0 / FUN_1410be490: 0 or past 199 = none; the row comes from the character,
+/// chr+0x1ff8 -> +0xb0 -> +0x28), e.g. Wolf's walk 1 -> 101001, run 11 -> 101011.
+#[derive(Resource, Default)]
+pub struct FootSfx {
+    rows: HashMap<i64, Vec<i64>>,
+    player_row: Option<i64>,
+}
+
+impl FootSfx {
+    pub fn load() -> Self {
+        let read = |name: &str| -> Vec<serde_json::Value> {
+            let path = crate::paths::extracted().join(format!("json/params/{name}.json"));
+            let Some(v) = std::fs::read_to_string(path).ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()) else { return Vec::new() };
+            match &v["rows"] {
+                serde_json::Value::Array(a) => a.clone(),
+                serde_json::Value::Object(o) => o.values().cloned().collect(),
+                _ => Vec::new(),
+            }
+        };
+        let rows = read("FootSfxParam")
+            .iter()
+            .filter_map(|r| {
+                let mut cols = vec![0i64; 200];
+                for (k, v) in r.as_object()? {
+                    if let (Some(i), Some(v)) = (k.strip_prefix("sfxId_").and_then(|i| i.parse::<usize>().ok()), v.as_i64()) {
+                        if i < cols.len() {
+                            cols[i] = v;
+                        }
+                    }
+                }
+                Some((r["id"].as_i64()?, cols))
+            })
+            .collect();
+        let player_row = read("TentativePlayerParam").iter().find(|r| r["id"].as_i64() == Some(0)).and_then(|r| r["PlayerFootEffect_bySFX"].as_i64());
+        Self { rows, player_row }
+    }
+
+    /// The effect of one column of a row, if any.
+    pub fn id(&self, row: i64, col: i64) -> Option<i64> {
+        let v = *self.rows.get(&row)?.get(usize::try_from(col).ok()?)?;
+        (v > 0).then_some(v)
+    }
+}
+
 pub struct FfxPlugin;
 
 impl Plugin for FfxPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<FfxAssets>()
             .init_resource::<Ribbons>()
+            .insert_resource(FootSfx::load())
             .add_systems(Startup, setup)
             .add_systems(Update, (emit, animate_puffs, weapon_trail, skill_shots));
     }
@@ -299,6 +349,7 @@ fn emit(
     mut lib: ResMut<crate::fxr::FxrLib>,
     actor_e: Query<Entity, With<Actor>>,
     mut playing: Query<&mut crate::fxr::FxEffect>,
+    foot: Res<FootSfx>,
 ) {
     // Slotted / held effects end with their TAE event or when the anim changes.
     for mut f in &mut playing {
@@ -337,8 +388,18 @@ fn emit(
         let d = data_for(&combat, &a);
         let Some(anim) = d.anim(&a.anim) else { continue };
         let mut states: Option<Vec<i64>> = None;
-        for (idx, e) in anim.events.iter().enumerate().filter(|(_, e)| matches!(e.kind, 96 | 118)) {
-            let Some(ffx) = e.arg_i64("FFXID").filter(|v| *v > 0) else { continue };
+        let foot_row = if player.is_some() { foot.player_row } else { combat.npc(a)["footEffectSfxId"].as_i64() };
+        for (idx, e) in anim.events.iter().enumerate().filter(|(_, e)| matches!(e.kind, 96 | 112 | 118 | 792)) {
+            // gap: SpawnFFX_ByFloor (112) has no case in the TAE dispatcher (FUN_140b59170) and
+            // its handler is not found; its FFXIDs (Wolf: 0 / 1 / 11 / 111 on the feet 5 / 6)
+            // are FootSfxParam columns (column 0 = column 1 there), so it is read as 792 is.
+            // The floor material's part (if any) is not traced.
+            let ffx = match e.kind {
+                792 => foot_row.zip(e.arg_i64("FootSFXIndex")).and_then(|(r, c)| foot.id(r, c)),
+                112 => foot_row.zip(e.arg_i64("FFXID")).and_then(|(r, c)| foot.id(r, c)),
+                _ => e.arg_i64("FFXID").filter(|v| *v > 0),
+            };
+            let Some(ffx) = ffx else { continue };
             let game_fx = lib.has(ffx);
             let layers = if game_fx { &[][..] } else { looks(ffx) };
             if layers.is_empty() && !game_fx {
@@ -382,11 +443,21 @@ fn emit(
                         (true, (Some(h), Some(t))) => Some(crate::fxr::Anchor::Blade(h, t)),
                         _ => dummy_candidates(dmy).iter().find_map(|k| dm.0.get(k)).copied().map(crate::fxr::Anchor::Entity),
                     };
-                    let follow = e.args.get("IsFollowDummyPoly").and_then(|v| v.as_bool()).unwrap_or(true);
+                    let follow = e.args.get("IsFollowDummyPoly").and_then(|v| v.as_bool()).unwrap_or(e.kind != 112);
                     if std::env::var("SHINOBI_FFX_LOG").is_ok() {
                         info!("fxr {ffx} on {dmy} ({} {:.2}) at {:.2}", a.anim, a.t, pos);
                     }
-                    let mut fx = crate::fxr::FxEffect::new(ffx, anchor, follow, Transform::from_translation(pos));
+                    // Foot dust with IsIgnoreDummyPolyAngle (all of Wolf's 792s): at the foot,
+                    // turned as the character, not as the foot.
+                    // gap: 112 has no such flag (taken as set), and a following one (792
+                    // FootSFXIndex 31) stays where it started.
+                    let flat = matches!(e.kind, 112 | 792) && e.args.get("IsIgnoreDummyPolyAngle").and_then(|v| v.as_bool()).unwrap_or(true);
+                    let mut fx = if flat {
+                        let turn = globals.get(owner).map(|g| g.rotation()).unwrap_or_default();
+                        crate::fxr::FxEffect::new(ffx, None, false, Transform::from_translation(pos).with_rotation(turn))
+                    } else {
+                        crate::fxr::FxEffect::new(ffx, anchor, follow, Transform::from_translation(pos))
+                    };
                     if e.arg_i64("SlotID").is_some_and(|s| s >= 0) || e.kind == 118 {
                         fx.key = Some((owner, a.anim.clone(), idx));
                     }
@@ -565,7 +636,14 @@ fn weapon_trail(
     let (te, mut t, tm) = match trail {
         Some(x) => x,
         None => {
-            let mesh = meshes.add(Mesh::new(bevy::mesh::PrimitiveTopology::TriangleList, bevy::asset::RenderAssetUsages::default()));
+            // Born with the degenerate triangle it keeps when idle (see below): a mesh drawn
+            // with no vertices makes Bevy's mesh allocator log "slab_allocator Use-after-free"
+            // (it allocates nothing for an empty mesh, then copies into it).
+            let mut empty = Mesh::new(bevy::mesh::PrimitiveTopology::TriangleList, bevy::asset::RenderAssetUsages::default());
+            empty.insert_attribute(Mesh::ATTRIBUTE_POSITION, vec![[0.0, -10.0, 0.0]; 3]);
+            empty.insert_attribute(Mesh::ATTRIBUTE_NORMAL, vec![[0.0, 1.0, 0.0]; 3]);
+            empty.insert_attribute(Mesh::ATTRIBUTE_COLOR, vec![[0.0; 4]; 3]);
+            let mesh = meshes.add(empty);
             commands.spawn((Mesh3d(mesh.clone()), MeshMaterial3d(mat), Transform::IDENTITY, Trail { owner: we, samples: Vec::new(), mesh, color: [1.0; 4] }, bevy::light::NotShadowCaster));
             return;
         }
@@ -658,5 +736,23 @@ fn skill_shots(
     }
     if f > start + to + 10 {
         exit.write(AppExit::Success);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn foot_dust_from_foot_sfx_param() {
+        let f = super::FootSfx::load();
+        if f.rows.is_empty() {
+            return;
+        }
+        // Wolf's row 1: walk 1 (column 0 is the same), run 11, and nothing past the table.
+        assert_eq!(f.player_row, Some(1));
+        assert_eq!(f.id(1, 0), Some(101001));
+        assert_eq!(f.id(1, 1), Some(101001));
+        assert_eq!(f.id(1, 11), Some(101011));
+        assert_eq!(f.id(1, 5), None);
+        assert_eq!(f.id(1, 200), None);
     }
 }
