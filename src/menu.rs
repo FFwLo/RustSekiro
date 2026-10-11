@@ -79,12 +79,15 @@ enum Opt {
     InvertY,
     Gamepad,
     Volume,
+    Music,
+    Se,
+    Voice,
     Fullscreen,
     Vsync,
     Back,
 }
 
-const OPTS: [Opt; 7] = [Opt::CameraSpeed, Opt::InvertY, Opt::Gamepad, Opt::Volume, Opt::Fullscreen, Opt::Vsync, Opt::Back];
+const OPTS: [Opt; 10] = [Opt::CameraSpeed, Opt::InvertY, Opt::Gamepad, Opt::Volume, Opt::Music, Opt::Se, Opt::Voice, Opt::Fullscreen, Opt::Vsync, Opt::Back];
 
 impl Opt {
     fn label(self) -> &'static str {
@@ -93,6 +96,9 @@ impl Opt {
             Opt::InvertY => "Invert camera up / down",
             Opt::Gamepad => "Gamepad",
             Opt::Volume => "Volume",
+            Opt::Music => "Music volume",
+            Opt::Se => "Sound effects volume",
+            Opt::Voice => "Voice volume",
             Opt::Fullscreen => "Fullscreen",
             Opt::Vsync => "Vertical sync",
             Opt::Back => "Back",
@@ -106,6 +112,9 @@ impl Opt {
             Opt::InvertY => on(c.input.invert_y),
             Opt::Gamepad => on(c.input.gamepad),
             Opt::Volume => format!("{}", c.audio.volume.round()),
+            Opt::Music => format!("{}", c.audio.music.round()),
+            Opt::Se => format!("{}", c.audio.se.round()),
+            Opt::Voice => format!("{}", c.audio.voice.round()),
             Opt::Fullscreen => on(c.video.fullscreen),
             Opt::Vsync => on(c.video.vsync),
             Opt::Back => String::new(),
@@ -117,6 +126,9 @@ impl Opt {
         match self {
             Opt::CameraSpeed => c.input.camera_speed = (c.input.camera_speed.round() + dir).clamp(1.0, 10.0),
             Opt::Volume => c.audio.volume = (c.audio.volume.round() + dir).clamp(0.0, 10.0),
+            Opt::Music => c.audio.music = (c.audio.music.round() + dir).clamp(0.0, 10.0),
+            Opt::Se => c.audio.se = (c.audio.se.round() + dir).clamp(0.0, 10.0),
+            Opt::Voice => c.audio.voice = (c.audio.voice.round() + dir).clamp(0.0, 10.0),
             Opt::InvertY => c.input.invert_y = !c.input.invert_y,
             Opt::Gamepad => c.input.gamepad = !c.input.gamepad,
             Opt::Fullscreen => c.video.fullscreen = !c.video.fullscreen,
@@ -133,6 +145,9 @@ fn save_options(c: &crate::config::GameConfig) {
         ("input", "invert_y", c.input.invert_y.to_string()),
         ("input", "gamepad", c.input.gamepad.to_string()),
         ("audio", "volume", format!("{:.1}", c.audio.volume)),
+        ("audio", "music", format!("{:.1}", c.audio.music)),
+        ("audio", "se", format!("{:.1}", c.audio.se)),
+        ("audio", "voice", format!("{:.1}", c.audio.voice)),
         ("video", "fullscreen", c.video.fullscreen.to_string()),
         ("video", "vsync", c.video.vsync.to_string()),
     ];
@@ -644,11 +659,12 @@ fn run_menu(
 /// The Options window settings (config video): borderless fullscreen on the current monitor or
 /// the window; vsync on (AutoVsync) or off (AutoNoVsync). Applied when they change (not at
 /// startup unless config.toml asks for fullscreen / vsync off).
-fn apply_video(config: Res<crate::config::GameConfig>, mut window: Single<&mut Window, With<PrimaryWindow>>, mut last: Local<Option<(bool, bool)>>) {
+fn apply_video(config: Res<crate::config::GameConfig>, mut window: Single<&mut Window, With<PrimaryWindow>>, mut last: Local<Option<(bool, bool, Option<[u32; 2]>)>>) {
     use bevy::window::{MonitorSelection, PresentMode, WindowMode};
-    let want = (config.video.fullscreen, config.video.vsync);
+    let want = (config.video.fullscreen, config.video.vsync, config.video.resolution);
     let first = last.is_none();
-    if *last == Some(want) {
+    let before = *last;
+    if before == Some(want) {
         return;
     }
     *last = Some(want);
@@ -657,6 +673,11 @@ fn apply_video(config: Res<crate::config::GameConfig>, mut window: Single<&mut W
     }
     if !first || !want.1 {
         window.present_mode = if want.1 { PresentMode::AutoVsync } else { PresentMode::AutoNoVsync };
+    }
+    // The window size (config video.resolution, Map's C3 field); None = main.rs's 1024 x 560.
+    if before.map(|b| b.2) != Some(want.2) && (!first || want.2.is_some()) {
+        let [w, h] = want.2.unwrap_or([1024, 560]);
+        window.resolution.set(w as f32, h as f32);
     }
 }
 

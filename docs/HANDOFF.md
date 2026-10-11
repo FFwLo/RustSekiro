@@ -6,8 +6,9 @@ the `docs/kb/<topic>.md` file for the topic you work on. `docs/PROGRESS.md` is t
 **Where to start (2026-10-11):** `docs/PLAN.md`, the approved plan to finish the game (phases A
 stabilise, B fidelity, C playable game; one column per session), then section 0 (what the last
 sessions did). Section 9 (FXR effects), 8 (skills: all done, see its end) and 7 (open bugs: only
-the cape) are the detail behind the plan's B items. Released: v0.2.0 (2026-10-11, GitHub release
-with `dist/Sv1-v0.2.0-windows.zip` from `tools/package.ps1`).
+the cape) are the detail behind the plan's B items. Released: v0.2.0 and v0.2.1 (both
+2026-10-11, GitHub releases with `dist/Sv1-v<version>-windows.zip` from `tools/package.ps1`;
+v0.2.1 = the packaging fixes, the cloud sea, the cloth fixes and the three sessions' B work).
 
 ## 0. Session of 2026-10-09 / 10 in one page
 Everything below is in the code with citations; the kb files have the details.
@@ -48,7 +49,7 @@ Everything below is in the code with citations; the kb files have the details.
 - **GitHub:** `FFwLo/RustSekiro` (public), branch `main`.
 
 ## 3. State at handoff
-- **Tests:** `cargo test --release` passes 175 tests (27 ignored) on 2026-10-11 (older counts
+- **Tests:** `cargo test --release` passes 198 tests (33 ignored) on 2026-10-11 (older counts
   below in this file are from their day).
 - **New files this session:** `src/stealth.rs`, `src/vfx.rs`, `src/gore.rs`,
   `tools/sekiro-extract/src/fmg.rs`. After `sekiro-extract export extracted` you need these unpacks
@@ -144,9 +145,9 @@ Everything below is in the code with citations; the kb files have the details.
   - FMOD categories: master > music, Menu, SE, Voice, Default.
 - **No PCM fallback while FMOD runs:** a missing event is silent, as in the game.
 - **Gaps:**
-  - sounds play at the actor root, not at the TAE event's DummyPoly;
-  - no map reverb (`EventSystem::setReverbProperties`);
-  - the global params `sd_reverb_size` / `sd_dimension` are not set.
+  - sound placement at the TAE event's DummyPoly: done 2026-10-11 (kb/sound.md);
+  - map reverb: done 2026-10-11 (mixer.fev ntc_rev, section 4.14);
+  - the global param `sd_dimension` is not set.
 - **Test:** `cargo test --release fmod_categories -- --ignored --nocapture` dumps the categories
   and event parameters. The common events have only the automatic "(distance)" parameter.
 - Details are in `docs/kb/sound.md`.
@@ -288,7 +289,10 @@ Everything below is in the code with citations; the kb files have the details.
   * Monk at 0 bars without Wolf's Todome message (m25 12505964: flag 12505954 off, 3500010
     off): forced anim 20021 instead of 20200 (`Enemy::fallback_death`; rules now carry
     `needs_flags_off`).
-  * gaps: height offsets and region heights; how a phantom vanishes (its Lua command 0).
+  * Heights and region heights count on the boss's own arena (events::place, script.rs
+    shape_contains). A phantom vanishes by its a200 attacks' TAE 193 opacity keys (fade to 0 as
+    message 70 goes out; Actor::opacity); command 0 (slot 1) is only 500005 Act40, Wait 1 s.
+    No EMEVD display change (12505970 decoded).
 - Tests: `group_of_different_enemies_fights_together`, `genichiro_becomes_way_of_tomoe` (with
   the reset), `monk_phantoms_come_and_go` (both warp groups, message 50 / 70); the test helpers
   skip phantoms (`Without<Phantom>`), `the_corrupted_monk_without_the_todome_message_plays_20021`.
@@ -351,18 +355,59 @@ Everything below is in the code with citations; the kb files have the details.
   HUD sprites, boss scripts, tool models, boss arenas with `-SkipArenas`, the two-pass map export
   with objects); `tools/package.ps1` builds `dist/Sv1-v<version>/` and the zip. Python 3 is
   required for a release install, Node optional (README).
-- Still noisy: the Chained Ogre's fur particle 8 blows up every ~2.5 s (restart warning; a sim
-  quality item for plan B2). `SHINOBI_SANDBOX_WATCH=<sec>` logs the AI mode and every actor once.
+- The Chained Ogre's fur particle 8 blow-up (every ~2.5 s) was an empty constraint order in
+  the game data, fixed in 4.17. `SHINOBI_SANDBOX_WATCH=<sec>` logs the AI mode and every actor once.
 - **Boss arena start (VXf's report, camera inside Wolf's face):** the config's c5100 loads the
   Guardian Ape's arena, where the arena's player spot (0, 4) is under the grotto rock (1.5 m of
   headroom) and a material-less helper plane (h900702, 0.4 m over the pond floor) was the floor.
   `map::player_start()` walks +z to a spot with 2.8 m of headroom (used by the player.rs reset
   and `settle_player_start`), level material-less helper triangles are dropped at load, and
   `MAP_LOG=1` on the map export names every hit part with its vertex range (kb/map.md).
+- **Map surfaces were inside out (the "white sheet" under Wolf on the Ape arena): fixed.**
+  `BinBatch::indices` swapped the winding after the X mirror; FLVER triangles only need the
+  mirror. Open floors were back-face culled (the Ape's pond bed), closed pieces looked right
+  from their far walls. With it: LOD face sets never applied (flags matched as 1/2, now
+  0x01000000/0x02000000), strip triangulation restarts, CullBackfaces -> two-sided, mirroring
+  scales, a missing texture no longer blanks its batches, and the Guardian Ape pedestal's
+  far-view shell needs no special case (it is a correctly wound shell seen from inside). The
+  eight kept arenas (see the next bullet) are all re-exported with the fixed exporter (the old
+  bins had inverted strips, which lost floors such as the Fountainhead bridge deck once the
+  loader stopped swapping). Re-export one with `tools/boss_arenas.py <map>` after deleting the
+  bin. Knobs: kb/map.md "Debug knobs". `tools/boss_arenas.py` survives a cp1252 console.
+- **Arenas (the user, 2026-10-11):** own arenas only for the Corrupted Monk, Lady Butterfly,
+  the two Apes and the Divine Dragon fights; every other boss fights on Isshin the Sword
+  Saint's flower field (`boss_54000000`). `tools/boss_arenas.py` OWN_ROWS / SHARED_ROW,
+  `extracted/map_boss_arenas.json`, the other bins deleted (kb/map.md "Which bosses get an
+  arena"). `map::switch_map` changes the map on a SpawnEncounter without a relaunch
+  (`map::loaded_map()`), `player_start()` on a stranger's arena also checks the line-up spot
+  8 m ahead (Bosses' requests). Tests: 182 pass (29 ignored).
+- **Start spot on slopes (2026-10-11):** `player_start()` follows the floor from the enemy's
+  spot (0, -4) instead of reading it at a fixed 1 m: the Fountainhead bridge (boss_50001000)
+  rises 1.7 m by Wolf's spot and he stood under its deck. The Headless Ape's MSB pose faces
+  the pit's wall, so `tools/boss_arenas.py` OVERRIDES turns that arena (exporter
+  `MAP_CENTRE_YAW`); textures of another area are unpacked on the exporter's "missing"
+  report (m13_ground_900 there). `SHINOBI_START=x,z` is a probe knob. The Divine Dragon
+  arena (52000000/53000000) is the cloud floor h003100 (the only collision near y 0; the
+  palace is 280 m below) with 9 pieces: a white cloud plane (the cloud shader is a stand-in)
+  and the Dragon's tree object round its MSB spot, which drew as grey shards until 4.17
+  (its blossoms had no texture: a shader-variant slot-name mismatch). The fight stands 24 m ahead of
+  that spot on open cloud (exporter `MAP_CENTRE_DIST`); the Dragon is a scripted set piece
+  (plan: non-fighters only stand), so the shards wait (kb/map.md "Wolf's start on a boss
+  arena"). Tests: 185 pass (29 ignored).
 
 ### 4.13 Plan B3 / B6, VXf session (2026-10-11; `docs/PLAN.md`)
 - Camera (B3): position chase, TAE 151 look-limit ease-back, lock-switch notes: section 4.2 and
   `docs/kb/camera.md`. Burn / poison exe model: section 8 (status.rs).
+- **Grappling hook, player move (B7)**: key G / pad L2. Shoot, move start, launch with
+  guaranteed arrival, then land on the point. The HUD marker, rope line, enemy targets and WireHit
+  are in, and the Grappling Hook Attack (attack in the wire fall at a hooked Ogre / Gyoubu:
+  511600 -> landing 511610, a deathblow: one life bar off; Gyoubu's Todome 511690 on his last
+  bar). Details and gaps in `docs/kb/grapple.md` section 6. The rope is the game's wire model (WP_A_9500) stretched to the hook. Open: the 0.6 m perch
+  stays only as a fallback for the 29 of 113 gate spots still without object collision.
+- **Chain timing (user goal: fluid deflect / art / tool flow)**: deflect -> attack / art / tool,
+  tool -> art / guard, art -> attack / tool / guard and attack -> guard / art / tool all fire the
+  tick after the TAE execute flag opens (the game's own one-frame read lag). Test
+  `deflects_arts_and_tools_chain_on_the_cancel_frame`; table in `docs/kb/clips.md` (last section).
 - **Air prosthetic end** (player.rs): `AirSubAttackStart` / `AirSubAttackLoop` end into
   `AirSubAttackLoop` for every tool (SubAttack_SM ev 300); the FreeFall fallback follows the
   CMSG animeEndEventType (0 FireNextStateEvent = the state's highest-priority transition,
@@ -389,6 +434,17 @@ Everything below is in the code with citations; the kb files have the details.
   (FindIcon0-7): sizes / fill shape not decoded (gap, as for the deathblow mark).
 - Not done (gaps written in code): hit-blood floor decals (AtkParam decalBaseId -> DecalParam
   600xxx / 700xxx id formula not traced), the 609 light unit, effect sizes from the gfx ABC.
+- **Enemy effect audit** (fxr.rs): every enemy's TAE effects were checked against what the FXR
+  player draws. Added NodeTranslation 15 / NodeSpeed 120 / random turns 83 and the rectangle
+  emitter 402. Gaps: GPU particles 10000 (c7020 embers, carp, Serpent), Line 601, the camera
+  attach 46. List in `docs/kb/visuals.md` (last entry). Tests
+  `node_translation_and_node_speed_move_the_node`, `rectangle_emitter_stays_inside_its_size`.
+- **Deathblow sound mix** (`sound::DeathblowMix`, docs/kb/sound.md): deathblows muffle the
+  world sound (lowpass ntc_ninsatsu2, 445 Hz) and fade it back over 2 s, as the exe does.
+- **Wall hug / ledge hang: researched, parked** (`docs/kb/docking.md`). The button is the game's
+  E (DefaultKeyAssignParam row 20), and the HKS start rules, the c0000.hkx docking offsets and
+  every hug / hang anim are exported. Parked because bosses don't use it, the gate has one hang
+  edge, and most hug edges are on objects without loaded collision.
 - Check tool: `SHINOBI_HUD_SHOTS=<dir>[,<every s>[,<count>]]` saves the game's own frames (HUD
   included) and quits; never screen-grab the desktop (tools/screenshot.ps1 catches whatever
   window is in front when the game is not up yet).
@@ -426,8 +482,14 @@ Everything below is in the code with citations; the kb files have the details.
   acceleration and gravity, min / max speed; `enemy_bullet::steer` / `flight`) and the map
   collision (isPenetrateMap). Details and gaps: `kb/enemy.md`. teamType: the exe's team table
   is not found; the rule stays the row names' (`combat::teams_hostile`, gap).
+- **B5 hearing, sight, harness:** the listener side of hearing (ear_dist, ear_soundcut_dist,
+  the listener's hearingSearchEnemyCut; `enemy::hearing_rate`), the sight ray through the map
+  (`stealth::sight_clear`). c1550's roster row is now a fighting one (rows with resident 220600
+  "sight 0 hearing 0" are passed over; 15500202). `all_enemies_smoke` 102/102 with the
+  non-fighter "stands" rule (`NON_FIGHTERS`; Wolf walks in on an enemy that moved > 5 m, a grab
+  counts as a hit); `all_enemies_full` 95/110 (the 15 non-fighters).
 
-### 4.14 Plan C1 screens / C2 picker UI, VXf (2026-10-11)
+### 4.14 Plan C1 screens / C2 picker / C3 options / C4 gamepad, VXf (2026-10-11)
 - **Screens** (`src/menu.rs`, Bevy `States` `Screen`): Title (Start / Fight / Quit), Playing,
   Paused (Esc: Resume / Retry / Title / Quit), Dead (死: Retry / Title, when Wolf lies in
   GroundDeathLoop_F with no resurrection left), Won (忍殺: Next / Retry / Title, WON_HOLD 4 s
@@ -440,22 +502,131 @@ Everything below is in the code with citations; the kb files have the details.
   white-on-black: its brightness is made the alpha at export) with MENU_Shadows / MENU_DieTwice.
   Plain text stands in when they are not extracted. Gaps: sizes / places by eye (menu movies
   not decoded), 死 / 忍殺 timings, WON_HOLD.
-- **Picker:** tabs Bosses (every boss-script row) / Enemies (one row per other chr; rows named
-  "dummy" left out), 10 rows around the cursor, red dots = deathblows. Enter / click writes
-  `SpawnEncounter` and resets Wolf; Won → Next takes the following row. Names are the roster's
-  (machine-translated; asked Bosses for the game's NpcName text).
+- **Picker:** tabs Bosses (every row with a boss / mini-boss health bar, `Encounter.bar`: 57) /
+  Enemies (one row per other chr; rows named "dummy" left out), 10 rows around the cursor, red
+  dots = deathblows. Enter / click writes `SpawnEncounter` and resets Wolf; Won → Next takes the
+  following row. Names: the bars' own NPC名 text (Bosses' tools/npc_names.py).
 - **Sound of a swapped-in enemy:** `fmod.rs load_new_kinds` loads `<chr>.fev` when Combat
-  changes. extracted/sound now has every chr bank (`unpack ... 'sound/c[0-9]+\.'`, 173 MB;
-  asked Bosses to widen extract.ps1's sound pattern).
+  changes. extracted/sound has every chr bank (extract.ps1 unpacks `sound/(s?main|c[0-9]+)\.`,
+  173 MB).
 - **Spawn facing:** Wolf faced away from the line-up (yaw π); `player.rs start_yaw()` faces the
   first enemy spot at spawn and Retry. `camera.rs CameraSnap` puts the camera behind him then
   (START_PITCH 15°, gap).
 - Checks: `SHINOBI_TITLE=1|paused|dead|won|picker` opens a screen, `SHINOBI_FIGHT=<chr>[:<row>]`
   runs a swap at start, `SHINOBI_HUD_SHOTS=<dir>,<s>,<n>` saves the game's own frames (never
   grab the desktop). Automated runs (other `SHINOBI_*`) start in Playing with AutoRestart on.
-- Open: a swapped boss is moved to his own arena spot off this map (Bosses / Map: runtime arena
-  swap). On the Ape arena a rock sheet the game hides (m700850_7000 rock_cliff_00) covers Wolf's
-  legs and the line-up enemy (Map; `SHINOBI_MAP_SKIP=rock_cliff` for shots meanwhile).
+- **Options (C3 UI):** Title / Pause -> Options: camera speed 1-10, invert camera up / down,
+  gamepad on / off, volume 0-10 (fmod master category 0.7 * v / 10), fullscreen (borderless),
+  vsync. Live on change; written to config.toml on leaving (`config::save_keys` / `set_key`
+  keep comments). New tables `[audio] volume`, `[video] fullscreen / vsync` with serde defaults.
+  Gaps: (camera speed default 5 = exe option byte 0, traced 2026-10-11, see below).
+  Done 2026-10-11: Music / Sound effects / Voice volume rows (config [audio] music / se / voice,
+  fmod.rs set_mix: the exe's table at 0x14092d489 gives Default, Menu, SE <- Se slot 3, Music <-
+  Bgm slot 2, Voice <- Voice slot 4; gap: in-game master / menu slots 1 / 5 / 6 taken as 1.0);
+  window size: menu.rs apply_video reads Map's video.resolution (None = 1024 x 560).
+- **Gamepad (C4):** `player.rs read_pad` (R1 attack, L1 guard, circle step / sprint, cross jump,
+  square item, R2 prosthetic, L3 crouch, triangle / d-pad up next tool; left stick walks below
+  0.75 = HKS PRM_RUN_STICK_LEVEL). R1 / L1 / R3 from DefaultKeyAssignParam00 (pad ids beside
+  the mouse buttons); the face buttons are the game's default layout (gap: ids 2000-2007 not
+  decoded). Right stick: `camera.rs orbit_with_stick`, CameraParam rotSpeed_Min..Max (deg/s) by
+  the camera speed option, rising to rotHiSpeed over rotHiSpeedRateIncTime at full tilt (gap:
+  traced 2026-10-11, below); locked on it switches targets (FUN_1409ca2d0: re-arm < 0.5, fire > 0.95).
+  R3 locks on. Menus: `menu.rs pad_to_menu_keys` (d-pad / stick arrows, cross Enter, circle Esc,
+  Start pause) and clears the pad's buttons so a menu press never reaches Wolf. Test
+  `gamepad_feeds_pad_input`; not tried on a real pad yet.
+- **Wolf's bullets** (prosthetic.rs fly_bullets) now use Bosses' exe bullet update
+  (`enemy_bullet::steer` / `flight`: homing at the lock-on target, in / out of range accel and
+  gravity, min / max speed) and stop on the map collision unless isPenetrateMap.
+- **Hit-blood stains: done 2026-10-11** (`gore::HitStains`, `gore::hit_stain_id`). The hit
+  handler FUN_140888960 (hit record param_2, AtkParam row at +0x54) queues up to four DecalParam
+  ids: decalId1 / 2 and, per decalBaseId1 / 2, FUN_14088a7f0's id = 600000000 + the defender's
+  material (record +0x1dc = materialSfx1; Wolf 146) * 1000 + base / 10 * 10 + variant (record
+  +0x7e, read as atkPow_forSfx 0-4). Rows exist for materials 109 / 114 / 134 / 135 / 146 (700...
+  = the same in black, bloodTypeEnable 0, not used). appearDirType 2: projected from the hit along
+  the blow at pitchAngle (-30..-60, some +40 up), size nearSize -> farSize over the ray's length.
+  combat.rs spawns the marker on each hit. Export: export_decals takes every 600-799 million row,
+  ATK_FIELDS gains decalBaseId1/2 (re-run `export` and `npcs`). Gaps: the projection past the
+  queue (FUN_140866b10), delayAppearFrame 3, stains on walls (dropped), the old 600010 / 610010 /
+  620010 rows (not on this path).
+- Attack stains (2026-10-11): the 11 AtkParam rows with their own decalId1 / 2 (c1550 oil pot
+  50010 / 50011, c1210 vomit 803021-26, c1360 mucus 803040, c1500 dung 803030 / 31, Wolf's oil
+  3520, the "mud dirt" foot rows 800000-5) are exported (ATK_FIELDS, export_decals reads every
+  AtkParam row; a smaller diffuse is stretched to the mask's size). An enemy bullet that ends sends
+  `gore::PlaceStain` for both ids at its end point; gore.rs lays every stain (also TAE 138) on the
+  map's ground under it (map::raycast), not y 0. Gap: the rows' pitchAngle / putVertical (walls) are
+  laid flat on the floor. Re-export: `sekiro-extract export extracted` then
+  `sekiro-extract npcs extracted c1550 c1210 c1360 c1500`.
+- Enemy effects check: every FFX id the 102 exported enemies' TAE 96 / 118 name has its FXR except
+  615102 (c1550, c7420/30), 654061 (c5400/30), 2255505 (c1250/60): not in any sfxbnd of the game
+  either. TAE 110 "SpawnFFX_110" (ids 2 / 3 / 5, c1320 / c5000 / c7200) is not an FXR id and is not
+  played (gap: unnamed in DSAnimStudio's SDT template; its handler FUN_140b56900, dispatcher case
+  0x6e, hands a fresh struct to chr +0x1b40 and reads no id in the decompile).
+- Camera speed option traced (2026-10-11): options byte 0 (default 5) IS the camera speed:
+  FUN_140734790 stores clamp(byte / 10, 0, 1) at camera +0x270; FUN_14073c260 keeps
+  lerp(rotSpeed_Min, Max, s^2) / lerp(rotHiSpeed_Min, Max, s^2) at +0x250..+0x264 (CameraParam
+  0xd4..0xf0). The fast turn ramp (+0x160) runs only at |stick| > 0.998 with a sideways part,
+  +-dt / rotHiSpeedRateIncTime (0xb0) per side. camera.rs stick_rate / orbit_with_stick follow
+  it (was: linear over 1-10, > 0.95). Gap left: the menu slider's range.
+- Map reverb (B4 sound, 2026-10-11): fmod.rs set_reverb / apply_reverb, mixer.fev ntc_rev with
+  sd_reverb_size = the arena's MSB SoundSpaceType (kb/sound.md "Reverb, built"). The existing
+  map_*.json got "sound_space_type" from a one-off script reading the same MSB byte (no map
+  re-export); the extractor writes it from now on.
+- Arenas (user rule, via Map 2026-10-11): own arenas only for the Monk, Butterfly, the two Apes
+  and the Dragon; everyone else fights on Isshin's flower field (boss_54000000). The Ape arena's
+  white sheet / knee-deep floor was inside-out map triangles, fixed by Map (kb/map.md); no
+  SHINOBI_MAP_SKIP needed for it.
+
+### 4.15 Plan B7 grapple points, Map session (2026-10-11; user: "the grapple is needed for many bosses")
+- Research in `docs/kb/grapple.md` (sources, WirePointSearchParam / WireVariationParam, the
+  player's 24 wire states and flight physics, the enemy SpEffect targets, the three-way split).
+- Exporter: `export_grapple` writes json "grapple" (o000100 markers, object `.edge` grapple
+  records, map edge binders) for every map; all boss arenas re-exported (`boss_arenas.py
+  -force`). Game: `map::GrapplePoints`, `map::grapple_target` (search params cited, gaps
+  marked), green/yellow gizmos with H. Details in `docs/kb/map.md` "Grapple points".
+- The o000100 "markers" turned out to be item spots (MSB Treasure events; the one 3.7 m from
+  the General is entity 1111510, event 11115652): the exporter skips treasure parts and takes
+  `.edge` grapple records only. Open: the camera-plane rectangle semantics, the edges'
+  reference direction. VXf builds the move (src/wire.rs), Bosses the enemy targets.
+- Objects' own collision joins the `.hit` (objbnd hkx convex shapes + compressed meshes, hit
+  material from ObjectParam materialId): 84 of the gate map's 113 landing spots have a floor
+  now, so Wolf lands on the branch itself. `docs/kb/map.md` "Objects' own collision".
+
+### 4.16 Plan C5 release build, Map session (2026-10-11)
+- `main.rs`: `windows_subsystem = "windows"` for optimised builds (no console; `startup`
+  attaches the parent console so `sv1.exe > log` from a shell still prints), a second log
+  layer to `sv1.log` next to config.toml (`SHINOBI_NO_LOG_FILE=1` off; in .gitignore), a
+  panic hook that appends `PANIC ...` to sv1.log and, without a terminal, shows a "Sv1
+  stopped" dialog with the extract.bat hint (checked: a missing config.toml launched through
+  wscript shows it; through PowerShell/Bash it prints instead).
+- `Cargo.toml` `[profile.dist]` (inherits release, fat LTO, codegen-units 1, strip) for
+  `tools/package.ps1` only (`cargo build --profile dist`, copies target/dist/sv1.exe);
+  `windows-sys` dependency (Console + WindowsAndMessaging). README "From a release" / "From
+  source" updated.
+- `src/icon.rs` (IconPlugin): the window icon (title bar / task bar) is the HUD's red
+  resurrection dot drawn in code (no image file) and set on the winit window once it exists.
+  Bevy 0.19 keeps the winit windows in the `bevy::winit::WINIT_WINDOWS` thread-local, not a
+  `NonSend` resource (that panics "Non-send data not found"), and the system needs a
+  `NonSendMarker` parameter or it runs on a worker thread where the map is empty. `winit`
+  0.30 is a direct dependency for `winit::window::Icon` (already in Cargo.lock).
+- `build.rs`: the exe's own icon (Explorer, task bar) from the same `src/icon_dot.rs`,
+  written as a compiled resource file by hand (RT_ICON 16/24/32/48/64/256 as 32-bit DIBs with
+  AND masks + RT_GROUP_ICON, the 32-byte ordinal headers and the empty first entry) into
+  OUT_DIR and linked with `cargo:rustc-link-arg-bins` (MSVC link takes `.res` inputs; no
+  winres crate, no rc.exe, no .ico file). Checked with .NET `ExtractAssociatedIcon`: 32x32,
+  red centre, transparent corner. Non-MSVC targets get no exe icon.
+- Not done: a bundled font (hud.rs / menu.rs read C:/Windows/Fonts: VXf's files; Bevy's default font is
+  the fallback), `[debug] enabled` gating (the F1 menu is documented in the README and the
+  probe plugins do nothing without their SHINOBI_* knobs, so nothing is gated). map.rs
+  `walk_bin` / `Terrain::from_hit` refuse a truncated map file with a warning (test
+  `truncated_map_files_are_refused`); model.rs / anim.rs / sound.rs (other owners) still
+  slice-panic on one, which the dialog now reports.
+- Frame rate check 2026-10-11 12:35 (one instance; peers relaunch the game too, so count
+  `Get-Process sv1` before measuring): gate map 60 fps at the title, 53 fps in play with the
+  Guardian Ape as the opponent (its fur cloth 5.7 ms/frame; the General gave 83 on 10-10); the
+  Ape arena 60 at the title. Later that day the fur's reference-vertex pass was fixed (kb/visuals.md
+  "Cloth cost" 2026-10-11: bone names hashed per entry): Ape arena simulate 4.79 -> 1.27 ms,
+  60 fps in play. `frame_rate_log` now counts real time (the title pauses the
+  virtual clock). The object collision added 8 k triangles to the gate .hit (no cost seen).
 
 ### 4.6 Earlier in this session (already in the KB)
 - **Lua 5.0 AI VM** vendored from sekiro-rs (MIT, `THIRD_PARTY.md`); runs the real enemy AI
@@ -471,10 +642,84 @@ Everything below is in the code with citations; the kb files have the details.
 - **Enemy family textures** (`chr/c1019.texbnd`, `c1029.texbnd`); the extractor's `dds2png`
   (BC7 via texture2ddecoder).
 
+### 4.17 Map session, later on 2026-10-11 (the user away; "do as you see fit")
+- Cloth: the Guardian Ape's fur cost fixed (kb/visuals.md "Cloth cost" 2026-10-11): simulate
+  4.79 -> 1.27 ms a frame, the Ape arena 60 fps in play. `ClothDef::refs` now indexes a
+  `ref_bones` table.
+- Map: the missing-texture warning fires once per texture per load; `m17_rock_92_3m` is not
+  in the game's packs at all (kb/map.md "Missing textures").
+- Exporter: a FLVER whose slot names come from another variant of the shader than its MTD
+  (the Divine Dragon's tree blossoms) takes the MTD's first albedo / normal `_0` slot (kb/map.md
+  "Every boss in its own arena"); boss_52000000 / 53000000 re-exported, the grey "shard
+  cluster" is the blossoming tree now. Both m25 arenas only; the other arenas' bins are
+  unchanged (no other material in the earlier export logs lacked an albedo except the gate's
+  tessellation water, whose slot names match its MTD exactly, so the fallback leaves it alone).
+- Exporter `MAP_FAR=<m>` (kb/map.md "Far view"): distant-view m6 / m9 pieces beyond the radius
+  at their lowest LOD. Probed on the gate (19 pieces, no fps change); not used there, the
+  gatehouse hides the horizon. The old "far-view castle stand-ins" open item is this knob.
+- Hang / hug edges exported raw as the map json's `"ledges"` and loaded into `map::LedgeEdges`
+  with H gizmos (kb/grapple.md section 1): the gate map has 40 within its radius + 10 m (1
+  hang, 39 hug); the arenas get theirs on their next re-export. Data for B5's wall hug /
+  ledge hang (Bosses) and the player moves (VXf); nothing consumes it yet.
+- Packaged check: `cargo build --profile dist` (20 min, fat LTO; 75 MB exe) + `tools/package.ps1`
+  -> dist/Sv1-v0.2.0-windows.zip (28 MB, config.toml from HEAD). The packaged exe started from
+  a clean copy without `extracted/` (wscript, no console) shows the "Sv1 stopped" dialog with
+  the extract hint and writes sv1.log; its Explorer icon is the red dot. The full clean-folder
+  run (extract.ps1 in a copy of the package) found a real packaging bug: the sound stage hung
+  for ever on c1080.fsb subsound 0 (FMOD spinning, no crash, so the rerun loop never ran);
+  fixed with a 30 s watchdog in `sounds-fmod` (kb/sound.md: c1080 and four more banks hang on
+  most of their subsounds, missing Vorbis setup headers; after three hangs the rest of a bank is
+  skipped), repackaged. The restarted clean run then found three more packaging bugs, all
+  fixed: `package.ps1` did not copy `bgm_decrypt.py`, `boss_bgm.py` and `npc_names.py`;
+  `boss_scripts.py` needed the `reference/DarkScript3` clone (its emedf instruction table,
+  all rights reserved) so boss scripts and with them every arena failed -> the argument types
+  alone are now in `tools/emedf_types.json` (`boss_scripts.py --emedf-table` regenerates it,
+  THIRD_PARTY.md) and the clone is optional; `sound/mixer.fev` is a loose game file, not in the
+  archives, so the reverb mixer never loaded -> `extract.ps1` copies it. With those the clean
+  copy's extraction matches the repo's (arena bins byte for byte; the eight arena jsons gain
+  the ledges, one of them 7 hug edges, copied into the repo) and `clean_dist\sv1.exe` plays a
+  fight from the title at 60 fps with the mixer loaded. Not kept in the package: the sound
+  decode of every bank (the repo's `sound_pcm` is c1010 / c1020 / main only; a full run decodes
+  the rest, 8797 files, minus the five hanging banks).
+- **Cloud sea stand-in (Divine Dragon arena):** the M[Flow]_Smoke plane was white; the
+  exporter now keeps its height / blend mask and flow vector map (batch alpha 3) and
+  `map_material.wgsl` `smoke` scrolls the mask along the flow (two phases cross-faded), tinted
+  between the MTD's two colours (kb/map.md). Knobs `SHINOBI_MAP_SMOKE_SPEED` / `_TILE`. Both
+  m25 arenas re-exported. The shader's own math is not decoded (gap); the look is by eye, and
+  subtle: the MTD's two tints differ little.
+- **Far view on the Dragon arenas:** `boss_arenas.py` FAR exports m25 with `MAP_FAR=3000`
+  (snowy mountains and forest behind the cloud sea; 0.42 M more triangles, load 0.1 s). Open:
+  a small magenta rectangle on that horizon (kb/map.md "Far view").
+- The package was rebuilt after all of the above (`cargo build --profile dist`, 14 min;
+  `tools/package.ps1`): `dist/Sv1-v0.2.0-windows.zip` (28.2 MB) carries the cloud sea shader,
+  the fixed extraction (python tools, emedf table, mixer.fev) and `boss_arenas.py` FAR.
+- Chained Ogre cloth, fixed: the "particle 8" blow-up was an empty
+  `constraintExecution` list in the game data (15 cloths: the Ogre's four fur sims, c1070's
+  hair, c1190's, c5020/c5021 hair, c5050 beard2, c5060 coat). Havok runs every constraint set
+  in stored order when the list is empty; our loader ran none, so the constraints never held
+  the particle. `src/cloth.rs` now defaults an empty list to all sets plus the collision pass;
+  the 90 s line-up logs no blow-up (cloth 4.4 ms, the four fur sims now cost real time;
+  kb/visuals.md). A 1.4-2.2 m "ref gap" on its cloths was the 15 m cloth range: an instance
+  40 m away is carried rigidly in its bind pose while its skeleton sits. The cloth debug line
+  now names each reference bone with its position; `sekiro-extract cloth` prints each sim's
+  address and each Simulate op config. Logs of a default session: 65 lines, nothing per frame.
+  The package was rebuilt once more after this fix.
+- Cloths that drew nothing: the Guardian Ape's 12 fur cloths and 96 more on ~40 chrs (hair,
+  kimonos, bandages, Wolf's face hair) have no MeshMeshDeform display because the sim mesh is
+  the drawn mesh itself (gathered by a Copy or GatherAllVertices op). The exporter now emits
+  a direct display for them (cloth_export.rs); every character model was re-exported (the
+  extraction does it on its own next time). One miss, c1010's hatimaki. Line-up 109 display
+  meshes (was 78), cloth 4.0 ms. The blow-up threshold and the 15 m range cull now add the
+  cloth's rest reach (the Demon of Hatred's mane restarted every frame from the bind pose,
+  and its root 5 m behind the head got its cloth culled at 16 m). The sandbox catalog shot
+  leaves the simulate-time camera at the origin, so cloth in those shots needs
+  `SHINOBI_CLOTH_RANGE=0`. kb/visuals.md.
+- Not touched: the blossoms' bloom-to-withered gradient.
+
 ## 5. Open work, in rough priority
 0. **Map, the rest** (kb/map.md "Open"): check stairs / walls / low ceilings and the spawn
    height in play, compare the gate lighting with the real game (light set 100 at noon; sun
-   and ambient scales are by eye), the far-view castle stand-ins drawn next to the gate, the
+   and ambient scales are by eye), far view (exporter `MAP_FAR`, 4.17; unused on the gate), the
    layer blends use the base `_3m` mask as height (soft knob `SHINOBI_MAP_SOFT`); byte 1 of the
    blend data is unused; frame rate is settled at 72-80 fps (kb/map.md).
 1. **Stealth, the rest** (core done, 4.7): crouch attacks / steps / reactions (HKS Crouch*
@@ -485,18 +730,24 @@ Everything below is in the code with citations; the kb files have the details.
    - cloth on jumps;
    - sound volume;
    - vault.
-3. **Kick-launch slide:** about 0.3 m backward over 3 frames right after
-   AirKickEnemyJumpStart_F_Lock relaunches (`runkick` trace, frames 53-55). Check
-   a000_213115's root motion and VelocityChange row 2101.
-4. **Sound gaps:** DummyPoly emitter positions, reverb, `sd_*` params.
+3. **Kick-launch slide: done 2026-10-11.** It was the clip's own root (213111's hkx: 0.27 m
+   forward, back to 0 at frames 17-20). Live, 30 head kicks (rec_* recordings) never show the
+   step back: actor.rs advance now skips horizontal root motion while airborne unless flag 27
+   SetNoGravity holds. Test `the_head_kick_relaunch_goes_straight_up`. Also actor.rs separate
+   skips pairs whose heights don't meet (NpcParam hitHeight). Open: live moves only 0.040 m in
+   frames 0-6 (ours 0.27): weighting the root steps by a smoothstep over the TAE Blend event
+   (6 frames = 12 ticks) predicts 0.042, a probable blend-in rule for every clip, not ported
+   (would change all root motion; needs the exe's blend weight first). The `runkick` throw
+   trace no longer sets up (Wolf reaches the enemy before the jump); use the sim test instead.
+4. **Sound gaps:** the other mixer events (ntc_main, bgm); the per-event "Shahei" (occlusion) parameter (placement, reverb + its 2.6 s easing, deathblow mix and boss music done; room / deep / sd_dimension are read by no event).
 5. **Coat second texture layer** (AN_Blend: FC_A_0000_Fabric_blend05/01 detail at 25× tiling).
    The shader math isn't known; it is in the compiled SPX shaders.
 6. **Camera gaps:** lockCamAdjustRot manual offset (no reader found); the free camera's
    fulcrum yaw resync (CameraParam isEnableChrChaseRotX, FUN_14073c260 ~0x14073e015).
-7. **Clean-up:** the `SHINOBI_CLOTH_FLIP_N` test env in `cloth.rs`, and the per-frame "ref gap"
-   debug log.
-8. **c1010 spear cloth** `#04#_c1010_yarinuno` restarts at spawn (particle 3.2 m from root): one
-   warning, harmless so far.
+7. **Clean-up: done 2026-10-11.** `SHINOBI_CLOTH_FLIP_N` removed; the "ref gap" log only fires
+   at the `SHINOBI_CLOTH_DEBUG=<s>` second, not per frame.
+8. **c1010 spear cloth** `#04#_c1010_yarinuno`: no restart warning in the 2026-10-11 runs
+   (the jump threshold now scales with the cloth, 4.12); closed unless it comes back.
 
 ## 6. How to verify things
 - **Gameplay logic:** `cargo test --release`; add sim tests in `src/sim_tests.rs`.
@@ -638,6 +889,28 @@ exe addresses, mark the rest `// gap:`), ask for a real-game clip per tool for t
   an active SpEffect has disablePoison / disableBlood (FUN_140bff7a0: poison 9045 yes, the burns
   9100-9125 no), amounts are whole points. Tests `gauges_drain_in_whole_points`,
   `resist_rules_from_the_params`. gap: only our tracked afflictions are checked for the flags.
+- Boss music (2026-10-11, fmod.rs `boss_music`): the arena's EMEVD starts it through common_func
+  20005830 (one track) / 20005831 (two: switch at the phase flag, 2010[8] 257), the tracks being
+  MSB Sound regions (SoundType 6) whose SoundID is the FMOD event m<id> of sm<area>.fev.
+  tools/boss_bgm.py -> extracted/enemies/boss_bgm.json links each init to the boss whose
+  boss_scripts events set its flags (17 rows); the phase flags come from those events at
+  runtime (BossScript `flags_on`). The music FSBs are FMOD-encrypted: tools/bgm_decrypt.py finds
+  the key in the player's sekiro.exe and writes plain banks (extract.ps1 step, Bosses). Plays at
+  the camera (only "(distance)" 0-10 m), during Playing / Paused until the defeat; the first
+  track starts with the fight (the game waits for the intro's end flag). Tests
+  `boss_music_follows_the_phase_flags`, ignored `fmod_boss_bgm`. Gaps: ordinary battle music
+  (common 410), the crossfade time, the stealth "about to be found" tracks.
+- Wolf's side (2026-10-11): enemy melee (combat.rs resolve, Hit / Block / Deflect) and bullets
+  (enemy_bullet.rs: build-up SpEffects to Statuses, the rest stay timed on Wolf) fill Wolf's
+  gauges via `Statuses::hit_wolf`. His resist max is 200 for every type (exe PlayerIns vtable
+  +0x1d0 -> FUN_1408457f0: CalcCorrectGraph 110-114 of his stat sum, flat 200, + 120-124, 0).
+  The guard keeps his sword's EquipParamWeapon poison/bloodGuardResist % off, a deflect
+  *JustGuardResist % (burn 33 / 50, poison 0). HUD: hud.rs WolfBuildUp, the game's
+  MENU_Resist_Poison / _Fire sprites over the vitality bar, filled from the bottom, whole and
+  pulsing while afflicted. Test `the_bandits_torch_sets_wolf_on_fire`. Gaps: protector /
+  SpEffect resist additions; whether the guard cuts a bullet's own SpEffects; the HUD place,
+  size and animation (FE movie ActionScript, not decoded); c1300's Aging (9600, resist 999,
+  likely cut) is not done.
 - Check tool: `SHINOBI_SKILL_EVERY=<frames>` repeats the press in `SHINOBI_SKILL` shots.
 - Combat art costs: the art's wepCost behaviours pay its EquipParamWeapon resourceItemA
   (`player::art_cost`: Dragon Flash 5400 2, Ashina Cross 5500 2, Mortal Draw 5700 3). Too few emblems ->

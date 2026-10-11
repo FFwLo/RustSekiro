@@ -81,7 +81,10 @@ fn npc(id: &str, npc_row: i64, npc_rows: &[i64], params: &Path) -> Character {
 }
 
 const SP_EFFECT_FIELDS: &[&str] = &[
-    "name", "behaviorRefId", "stateInfo", "defStaminaAttackRate", "defFlickPower", "staminaAttackRate",
+    "name", "behaviorRefId", "stateInfo",
+    // Grapple target while worn (kb/grapple.md section 4): the wire variation (-1 none), the
+    // dummy poly the hook catches and the one Wolf lands at (260 = the model root).
+    "chrWireVariationNo", "chrWireTargetDmypolyId", "chrWireLandingPointDmypolyId", "defStaminaAttackRate", "defFlickPower", "staminaAttackRate",
     "staminaRecoverChangeSpeed", "staminaRecoverSpeedRate", "guardDefFlickPowerRate", "flickDamageCutRate",
     "guardStaminaCutRate", "toughnessDamageCutRate", "effectEndurance", "conditionHp", "spCategory",
     // Within one spCategory the lower categoryPriority wins (Paramdex SpEffectParam meta).
@@ -90,6 +93,8 @@ const SP_EFFECT_FIELDS: &[&str] = &[
     // Stealth: how a chr wearing the effect is seen and heard by NPCs (the exe's
     // SprjTargetingSystem, FUN_140bfe8a0 / FUN_140bfc050 / FUN_140bfea80...).
     "sightSearchEnemyCut", "aroundSightPointAddRate", "hearingSearchEnemyRate", "sightCutLimitType",
+    // On the listener: its hearing of others (FUN_140bfe590, SpEffect +0x190).
+    "hearingSearchEnemyCut",
     "sightSearchLeftAngleCut", "sightSearchRightAngleCut", "sightSearchUpperAngleCut", "sightSearchBottomAngleCut",
     // Status build-up (Paramdex SDT meta: poizonAttackPower = poison, stateInfo 2; registBlood =
     // burn, stateInfo 6), its tick and the effects it turns into.
@@ -128,6 +133,10 @@ const ATK_FIELDS: &[&str] = &[
     "guardAtkRateCorrection", "guardStaminaCutRate", "hitStopTime", "hitStopTime_Defencer", "dmgLevel", "dmgLevel_vsPlayer",
     "throwFlag", "knockbackDist_DirectHit", "atkMagCorrection", "atkFireCorrection", "atkThunCorrection",
     "atkDarkCorrection", "spEffectId0", "spEffectId1", "spEffectId2", "spEffectId3", "spEffectId4", "opposeTarget", "friendlyTarget", "atkMag", "atkFire", "atkThun", "atkDark", "throwTypeId",
+    // The stain the hit leaves (DecalParam; -1 / 0 none): the oil pot's 50010 / 50011, c1210's vomit.
+    "decalId1", "decalId2",
+    // The hit-blood stain bases (gore::hit_stain_id: 600000000 + material * 1000 + base + size).
+    "decalBaseId1", "decalBaseId2",
 ];
 
 fn load_param(json_dir: &Path, name: &str) -> HashMap<i64, Map<String, Value>> {
@@ -1001,7 +1010,9 @@ pub fn export(root: &Path, list_file: &Path, defs: &Path) {
 /// screens' brush marks (src/menu.rs): 死 MENU_Death and 忍殺 MENU_Ninsatsu (SB_TextEffect), the
 /// title 隻狼 MENU_Title_SEKIRO with MENU_Shadows / MENU_DieTwice (SB_Title).
 fn export_hud(root: &Path, icons: &BTreeSet<String>) {
-    const WANTED: [&str; 9] = ["MENU_ninsatu_01", "MENU_ninsatu_02", "MENU_Find_01", "MENU_Find_02", "MENU_Death", "MENU_Ninsatsu", "MENU_Title_SEKIRO", "MENU_Shadows", "MENU_DieTwice"];
+    // MENU_Resist_Poison / _Fire: the build-up icons that fill on Wolf's HUD (hud.rs WolfBuildUp).
+    // MENU_Wire_Marker / _NG / _Cursor / _Distance: the grapple point marks (hud.rs WireMark).
+    const WANTED: [&str; 15] = ["MENU_ninsatu_01", "MENU_ninsatu_02", "MENU_Find_01", "MENU_Find_02", "MENU_Death", "MENU_Ninsatsu", "MENU_Title_SEKIRO", "MENU_Shadows", "MENU_DieTwice", "MENU_Resist_Poison", "MENU_Resist_Fire", "MENU_Wire_Marker", "MENU_Wire_NG", "MENU_Wire_Cursor", "MENU_Wire_Distance"];
     let Ok(tpf) = std::fs::read(root.join("menu/hi/01_common.tpf")) else {
         eprintln!("no menu/hi/01_common.tpf (sekiro-extract unpack <dir> extracted 'menu/hi/01_common'): HUD sprites skipped");
         return;
@@ -1048,7 +1059,7 @@ fn export_hud(root: &Path, icons: &BTreeSet<String>) {
 }
 
 /// The DecalParam rows the exported anims' TAE 137 / 138 / 139 events name (blood pools under a
-/// deathblow: 710011), and per row extracted/decal/<id>.png from other/decaltex.tpf: RGB the
+/// deathblow: 710011) and every AtkParam row's decalId1 / 2 (the oil pot's 50010), and per row extracted/decal/<id>.png from other/decaltex.tpf: RGB the
 /// diffuse texture dp<diffuseTextureId>_a, alpha the mask dp<maskTextureId>_m (its red channel,
 /// the splat shape). The colour tint (diffuseColorR/G/B) stays in the row for the game to apply.
 fn export_decals(root: &Path, params: &Path, chars: &[&Value]) -> Value {
@@ -1060,6 +1071,11 @@ fn export_decals(root: &Path, params: &Path, chars: &[&Value]) -> Value {
                         ids.insert(id);
                     }
                 }
+                for k in ["decalId1", "decalId2"] {
+                    if let Some(id) = m.get(k).and_then(Value::as_i64).filter(|v| *v > 0) {
+                        ids.insert(id);
+                    }
+                }
                 m.values().for_each(|c| collect(c, ids));
             }
             Value::Array(a) => a.iter().for_each(|c| collect(c, ids)),
@@ -1068,6 +1084,15 @@ fn export_decals(root: &Path, params: &Path, chars: &[&Value]) -> Value {
     }
     let mut ids = BTreeSet::new();
     chars.iter().for_each(|c| collect(c, &mut ids));
+    // Every attack's own stain, also of the characters `npcs` exports (11 rows have one).
+    for name in ["AtkParam_Npc", "AtkParam_Pc"] {
+        for row in load_param(params, name).values() {
+            ids.extend(["decalId1", "decalId2"].iter().filter_map(|k| row.get(*k).and_then(Value::as_i64)).filter(|v| *v > 0));
+        }
+    }
+    // The hit-blood stains (exe FUN_14088a7f0: 600000000 + the defender's materialSfx1 * 1000 +
+    // AtkParam decalBaseId1 / 2 + atkPow_forSfx; the 700... rows are the black ones).
+    ids.extend(load_param(params, "DecalParam").into_keys().filter(|id| (600_000_000..800_000_000).contains(id)));
     let ids: Vec<i64> = ids.into_iter().collect();
     let rows = rows(params, "DecalParam", &ids);
     let Ok(tpf) = std::fs::read(root.join("other/decaltex.tpf")) else {
@@ -1080,12 +1105,17 @@ fn export_decals(root: &Path, params: &Path, chars: &[&Value]) -> Value {
         let get = |k: &str| row[k].as_i64().filter(|v| *v >= 0).and_then(|v| tex.get(&format!("dp{v:09}_{}", if k == "maskTextureId" { "m" } else { "a" })));
         let (Some(diffuse), Some(mask)) = (get("diffuseTextureId"), get("maskTextureId")) else { continue };
         let ((w, h, d), (mw, mh, m)) = (crate::decode_dds(diffuse), crate::decode_dds(mask));
-        if (w, h) != (mw, mh) {
-            eprintln!("decal {id}: diffuse {w}x{h} / mask {mw}x{mh} differ, skipped");
-            continue;
-        }
-        let rgba: Vec<u8> = d.iter().zip(&m).flat_map(|(p, q)| [(p >> 16 & 0xff) as u8, (p >> 8 & 0xff) as u8, (p & 0xff) as u8, (q >> 16 & 0xff) as u8]).collect();
-        crate::write_png(&root.join(format!("decal/{id}.png")), w, h, &rgba);
+        // At the mask's size; a diffuse of another size (the oil's and vomit's flat 16x16
+        // dp009900000_a under a 512 / 1024 mask) is stretched over it, nearest texel.
+        let rgba: Vec<u8> = (0..mw * mh)
+            .flat_map(|i| {
+                let (x, y) = (i % mw, i / mw);
+                let p = d[(y * h / mh * w + x * w / mw) as usize];
+                let q = m[i as usize];
+                [(p >> 16 & 0xff) as u8, (p >> 8 & 0xff) as u8, (p & 0xff) as u8, (q >> 16 & 0xff) as u8]
+            })
+            .collect();
+        crate::write_png(&root.join(format!("decal/{id}.png")), mw, mh, &rgba);
     }
     rows
 }
@@ -1193,9 +1223,12 @@ pub fn export_npcs(root: &Path, defs: &Path, only: &[String]) {
     let mut jobs = Vec::new();
     for (chr, rows) in roster(root) {
         let num: i64 = chr[1..].parse().unwrap_or(-1);
-        // Main row: the most placed one (ties: the lowest id).
+        // Main row: the most placed one (ties: the lowest id), passing over set-piece rows that
+        // can neither see nor hear (resident 220600 "General purpose_Visual 0 Hearing 0
+        // (Permanent)": c1550's most placed row 15501007 "hidden for directing, no audiovisual").
+        let deaf_blind = |npc: i64| npc_p.get(&npc).is_some_and(|r| (0..32).any(|i| r.get(&format!("spEffectID{i}")).and_then(Value::as_i64) == Some(220600)));
         let mut placed: Vec<(&(i64, i64), &(usize, BTreeSet<String>))> = rows.iter().collect();
-        placed.sort_by(|a, b| b.1.0.cmp(&a.1.0).then(a.0.cmp(b.0)));
+        placed.sort_by(|a, b| deaf_blind(a.0.0).cmp(&deaf_blind(b.0.0)).then(b.1.0.cmp(&a.1.0)).then(a.0.cmp(b.0)));
         let ((main_npc, main_think), _) = placed[0];
         let anim_chr = npc_p.get(main_npc).and_then(|r| r.get("normalChangeAnimChrId")).and_then(Value::as_i64).filter(|&c| c > 0).map_or(chr.clone(), |c| format!("c{c:04}"));
         let has_files = root.join(format!("chr/{chr}.chrbnd.d")).is_dir() && ["anibnd", "behbnd"].iter().all(|k| root.join(format!("chr/{anim_chr}.{k}.d")).is_dir());

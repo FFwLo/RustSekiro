@@ -95,9 +95,32 @@ Dated findings, oldest first. Append new entries at the end.
     700 + 1010 -> walk to the spot -> 600 look + 4 s -> NONE -> 101000 -> walk home -> Stay.
     Found while searching at 15.9 m -> 101040 -> battle. c1010: leashed home at 48 m, forgets after 15 s.
   * Wolf crouch (C): CrouchStart 216000 / CrouchEnd 216100 / crouch locomotion = stand ids + 5000;
-    the crouch clips carry 109200 (cut 20). Gaps: crouch attacks/steps/reactions, ACTION_ARM_CROUCH flags.
-  * Gaps: LastSightPos forget bookkeeping (forget runs on the normal target), listener ear_dist,
-    map raycasts (done 2026-10-11: stealth::sight_clear, FUN_14061c8a0; points gap), patrol routes (MSB), turn anims, the real HUD art, Wolf's physics radius
+    the crouch clips carry 109200 (cut 20). Attack from a crouch: CrouchAttackToStand a050_301000
+    (+ Release 301050), Wolf stands. Steps / guards / hit reactions from a crouch are the standing
+    ones in the HKS (Crouch{Damage,Death}*, CrouchAttackToCrouch only under a forced crouch,
+    g_forceCrouch = env 3037 false or SP_EF_REF_FORCE_CROUCH; not modelled: no such area on an
+    arena). SP_EF_REF_FORCE_CROUCH 110000 is SpEffect 100210 "in the forced crouching area", set
+    only by common_func 20004001(region) (Wolf inside -> set, else clear). The maps start it for
+    m10 1002400-02, m11_00 1102102, m11_02 1122400, m15 1502600, m17 1702150-52, m20 2002210/11.
+    The nearest to an arena is m15 1502600, an 18 x 9 x 2.4 m box 57 m from the Monk (50001000)
+    and 7.7 m below it; the others are 170 m or more away. gap: env 3037 (the ceiling check?) is
+    not traced. The gourd crouched:
+    CrouchItemGourdDrink / Repeat / Failed (a000_250010 / 250011 / 250015, HKS c0000_transition
+    STYLE_TYPE_CROUCH), Wolf stays crouched (done 2026-10-11). Gaps: the other crouched items (no
+    other item in the game yet), ACTION_ARM_CROUCH flags.
+  * Bush hiding (solved 2026-10-11): common.emevd event 701 (initialised by event 0, restarts):
+    IF player has 4200 "ステルス効果_茂み" AND 109200 (crouch), OR 4201 (water bushes) while
+    swimming, OR 100210 (forced-crouch area) AND 109200 -> Set SpEffect 109203 (sightSearchEnemyCut
+    80); once none holds -> Clear. common_func 20004000 does the same with 109012 (crouching).
+    4200 / 4201 are ObjectParam SpecialEffectId_InsideHit (0.5 s, renewed while inside) of the bush
+    objects o007001/2, o007280-7287, o007330, o007360, o007501/2. Placed only 2 x o007001 in m11_02
+    (~183 m from Isshin's field) and 1 x o007281 in m17 (200+ m from the Ape arenas): no arena has
+    a bush, so nothing to model there; a free map would need the objbnd's inside-hit shape.
+    109201 "しゃがみ物陰隠密" (cut 100): no EMEVD, param, TAE or exe immediate sets it (unused or built
+    in the exe); the MSB collision parts' MapVisibility (Good / Dark / Total Dark) is the likely
+    shadow input, not traced.
+  * Gaps: LastSightPos forget bookkeeping (forget runs on the normal target), listener ear_dist (done 2026-10-11: enemy.rs wolf_sounds / hearing_rate, FUN_140610a30: reach = rate x radius - ear_soundcut_dist, heard while dist - radii < reach + ear_dist; rate = prod(1 - hearingSearchEnemyCut/100) of the listener, FUN_140bfe590; exported hearingSearchEnemyCut; test a_deafened_enemy_hears_nothing),
+    map raycasts (done 2026-10-11: stealth::sight_clear, FUN_14061c8a0; points gap), patrol routes (MSB; blocked until enemies stand at their own MSB spots: MSBS Part.Enemy WalkRouteIndex i16 @type+0x20 -> the n-th PatrolInfo event (PatrolType i32, 32 x i16 walk region indices, 5 x {region i16, ArrivalAnimID i32, ArrivalWaitTime i32}; Smithbox SDT meta / SoulsFormats MSBS); the AI reads it by GetMovePointNumber / GetPrevMovePointNumber / GetMovePointWaitTime / GetMovePointAnimId and POINT_MOVE_POINT in common_non_battle_act.lua; how the engine steps the point is not traced), turn anims, the real HUD art, Wolf's physics radius
     (CAPSULE_RADIUS 0.4 stands in).
   * Footsteps: Wolf's walk / run clips carry CreateAISound (TAE 237) for their whole length - walk
     1000 (0.5 m), run 1010 (2 m), crouch walk 1001 (0.25 m), crouch run 1011 (0.5 m); read from the
@@ -146,6 +169,13 @@ Dated findings, oldest first. Append new entries at the end.
   * Corrections: c5200 = Divine Dragon; c5300 = Old Dragons of the Tree (Okina dragon group);
     c1350 = the Headless; c7300 Divine Child = friendly NPC.
   * AI `IsEventFlag` must return a boolean (Lua: 0 is true). It reads the boss script's flags.
+  * AI `SetEventFlag(flag, on)` writes the fight's flags (the boss script's, else `enemy::AiFlags`,
+    cleared on a fight reset); the setter sees it at once, others next frame. Users: 504000 (sets
+    19625680-93 every Update by Wolf's SpEffects / observe areas), Lady Butterfly 509000 (19952081/2,
+    read by her illusions 151010), 11005933, 11125650, 19625480-5, 19625862. None of these is set by
+    any EMEVD, so they start off. Map flags the AI reads (11100850, 117006xx, 12505855/57 = event
+    12505851 slots 4/6 done, 12505875-901, 62000705) come from the boss script run; with no run they
+    are off (gap: the world progress of a non-boss fight).
   * Anim-set SpEffects 200030-200034 share spCategory 100 (Paramdex SDT: "category that decides
     overwriting"): a TAE-added one with effectEndurance -1 replaces the resident of that category.
   * TAE 193 SetOpacityKeyframe (OpacityAtEventStart -> End): the Monk's phantoms fade in / out
@@ -196,3 +226,49 @@ Dated findings, oldest first. Append new entries at the end.
     bandit arrow 190: 22 m/s, 15 m/s2 gravity in its 10 m, 8 deg up).
   * Map collision: isPenetrateMap 0 -> Terrain raycast along the step ends it (HitBulletID child as a
     hit); no map: the old floor (Wolf's feet).
+- 2026-10-11 B5 AI command slots: Request Character AI Command (2004[17]) -> FUN_1405b4730 writes slot
+  0-3 at AI +0x743c and sets bit `1 << slot` at +0x10; FUN_1405b4f10 moves +0x10 to +0x14 each update (lua
+  IsEventRequestReceived, FUN_1405e51f0 / FUN_1405b4590; no AI script uses it). GetEventRequest
+  (FUN_1405b36b0) reads without clearing; only the AI reset FUN_140602020 -> FUN_1405b2520 refills -1.
+  Ours matches (slots kept; respawn = new Enemy). Not a gap any more.
+  * teamType (gap, 2026-10-11): no two-team relation function found. A switch over team values
+    0..0x20 in decomp (FUN_140c7dda0) takes one team only (multiplayer checks); combat.rs
+    teams_hostile stays name-based. A scan of the whole exe for a symmetric 25-40 square team matrix
+    (bit rows u32/u64, byte/short cells) with Enemy(6) x 24 hostile found none (only a generic mask
+    table @file 0x2f34a80): the relation is code, not a table.
+  * EMEVD 2004[2] Set Character Team Type (not run, no effect; 2026-10-11): in the boss scripts it
+    only flips the boss away from 6 and back. 71000000 11125810, 71101000 11125840 and 50600000
+    11115860 set 26 (Friendly NPC) before the cutscene, behind the event's start point (its last
+    Enable), and set 6 after it. Demon of Hatred 70200000 11105910 sets 28 (Co-op NPC) after the
+    start point, but Wolf starts inside region 1102910, so 11105901 -> 11105924 sets 6 within 30
+    frames (checked with a probe test).
+  * Bullet FollowType (done 2026-10-11): of the enemies' bullet rows only c5200 52000980 has one,
+    3 "follow target" (Paramdex BULLET_FOLLOW_TYPE), a warning: AtkParam 8 "[System] dummy bullet",
+    hitRadius 10, life 0.43, SpEffect 211000 "dangerous enemy attack VFX" (vfx 48100, 0.1 s).
+    enemy_bullet::fly keeps it on Wolf's chest. gap: its EmittePosType 6 "above and behind the
+    target" offset (it rides on Wolf anyway).
+  * Grapple targets (done 2026-10-11, kb/grapple.md section 4): the export keeps SpEffect
+    chrWireVariationNo / chrWireTargetDmypolyId / chrWireLandingPointDmypolyId (data::SpEffect
+    chr_wire_*). enemy/grapple.rs: wire_effect(actor) = the first TAE (66/67/401) SpEffect, else
+    resident, with a variation >= 0; EnemyGrapples (PostUpdate, after transform propagation) lists
+    each live enemy's hook / land dummy world positions, variation, homing row 300000000 +
+    variation. Combat::wire_throws(foe): ThrowParam throwKind 180000 / 180100 / 180900 (the
+    Ogre 15020170/71, Gyoubu 15080170/71/79); throwTypeId 3023/3123 alone also matches the falls
+    (70000), crush falls (130000) and kick-downs (160000). Test
+    the_ogres_grab_opens_the_grapple_in_its_window. The player move (VXf) and the search (Map)
+    use them.
+    The hook stuck in an enemy: message grapple::WireHit(entity) (Wolf's AtkParam 9500000 "wire
+    stabbed" gives SpEffect 510000, ref 1000410). With ENABLE_WIRE_DAMAGE0-4 (refs 1000400-04,
+    SpEffects 510010-14 from its TAE 66: Ogre grabs 510010, tackles 510011; Gyoubu drifts; the
+    Ape's sword) it plays DamageWire<n> (a000_008910 / 008911; c9997 GetSpDamage /
+    ExecSpReaction). Test the_hook_in_the_ogres_grab_staggers_him. gap: DAMAGE_TRANSITION_RANK__4.
+    The hook attack's kill is a deathblow (AtkParam_Pc 5000660 "deathblow body, fall", throwFlag 2,
+    x600; the Ogre's 13610 ends with 300610 "HP reset"): VXf calls Enemy::deathblow(13610/13690).
+  * Ledge-hang / wall-hug deathblows (2026-10-11): Combat::throws_of_kinds(foe, kinds), ThrowKind
+    110000/110010 hanging (12800; 13000), 90000/90010 left wall (12600), 100000/100010 right
+    (12700); 48 common kinds have them, no boss. Test the_ochimusha_has_his_hang_and_hug_deathblows.
+  * Own arena (2026-10-11): enemy::on_own_arena = map::loaded_map() is own_arena_of(fight row): the
+    row's map_boss_arenas.json stem whose map_<stem>.json "map" equals its boss_scripts.json "map"
+    (Monk, Butterfly, Apes, Dragons, and 54000000 / 71000000 / 71101000 on Isshin's field m11_02).
+    set_fight(chr, row) at startup and on SpawnEncounter; a swap's line-up waits one frame for
+    map.rs switch_map.

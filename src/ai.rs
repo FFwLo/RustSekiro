@@ -120,6 +120,8 @@ pub struct Command {
     pub at: Option<Vec3>,
     /// CLEAR_* bits.
     pub clear: u8,
+    /// Event flags the AI set this frame, in order (SetEventFlag(flag, on)).
+    pub flags: Vec<(i64, bool)>,
 }
 
 const SUCCESS: i32 = 1;
@@ -653,7 +655,10 @@ impl AiState {
             }
             // Event requests default to -1 (FUN_1405b2090 fills the slots with -1.0); the map's
             // Request Character AI Command sets one (the Demon of Hatred's battle reads 10 / 20).
-            // gap: whether the engine clears a slot once read is not traced; it stays set here.
+            // The 4 slots (AI +0x743c) are read as they are (FUN_1405b36b0) and written by the
+            // command (FUN_1405b4730, which also sets a received bit that FUN_1405b4f10 keeps for
+            // one update: IsEventRequestReceived, used by no script); only the whole AI reset
+            // (FUN_140602020 -> FUN_1405b2520, all -1) clears them - here a respawn's new Enemy.
             "GetEventRequest" => {
                 let slot = a.first().and_then(|v| v.num()).unwrap_or(0.0) as i64;
                 num(w.event_req.iter().find(|r| r.0 == slot).map_or(-1.0, |r| r.1 as f64))
@@ -662,6 +667,20 @@ impl AiState {
             // warriors' 530000_battle.lua) as well as `== true`. Flags the boss script does not
             // run are off.
             "IsEventFlag" => boolean(w.event_flags.contains(&key(a.first()))),
+            // The game's event flags are world-wide: the Okami's leader (504000_battle.lua
+            // 19625680-93) and Lady Butterfly (509000_battle.lua 19952081/2, read by her
+            // illusions' 151010_battle.lua) signal other characters with them. enemy.rs writes
+            // them to the fight (the boss script's flags, or AiFlags); this AI sees its own write
+            // at once.
+            "SetEventFlag" => {
+                let (id, on) = (key(a.first()), a.get(1).is_some_and(Value::truthy));
+                self.w.event_flags.retain(|f| *f != id);
+                if on {
+                    self.w.event_flags.push(id);
+                }
+                self.cmd.flags.push((id, on));
+                vec![]
+            }
             "GetTeamOrder" | "GetOddsParam" | "GetOddsParamIdOffset" | "DbgGetForceActIdx" | "DbgGetForceKengekiActIdx"
             | "GetChangeBattleStateCount" | "GetMovePointWaitTime" | "GetSmallActPreWaitTime" | "GetSmallActPostWaitTime"
             | "GetMovePointType" => num(0.0),
@@ -724,7 +743,7 @@ impl AiState {
             }
             "TeamHelp_ValidateCall" | "TeamHelp_ValidateReply" | "ClearForceBattleGoal" | "ReqPlatoonState"
             | "RegisterTriggerRegionObserver" | "RegisterTriggerRegion" | "SetEventMoveTarget" | "SetEnableEndureCancel_forGoal"
-            | "SetEventFlag" | "ClearCorpsePosTarget" => vec![],
+            | "ClearCorpsePosTarget" => vec![],
             "RequestEmergencyQuickTurn" | "SetAIPredictionMoveTargetSpecifyTargetDir" | "PrintText"
             | "DbgSetLastActIdx" | "DbgSetLastKengekiActIdx" | "DeleteObserve" | "AddObserveArea"
             | "AddObserveRegion" | "AddObserveChrDmyArea" => vec![],
@@ -1588,6 +1607,21 @@ mod tests {
         });
         let errors: Vec<_> = b.log.iter().filter(|l| !l.starts_with("stub:")).cloned().collect();
         assert!(errors.is_empty() && acted, "{errors:#?}; goals: {}", b.describe());
+    }
+
+    /// 504000_battle.lua Goal.Update: every frame all its flags off, then 19625680 on (no
+    /// observe area, Wolf without 3504001-4) - written for the fight and seen by IsEventFlag.
+    #[test]
+    fn the_ai_sets_event_flags() {
+        let Some(mut b) = load(50400000, 0.5, 3) else { return };
+        let mut s = Snapshot { dist: 4.0, free: true, hp_rate: 1.0, target_hp_rate: 1.0, sp: 600.0, sp_rate: 1.0, ..Snapshot::battle() };
+        s.sp_self.insert(200004);
+        let set = (0..30).find_map(|_| {
+            let c = b.tick(&s, 1.0 / 60.0);
+            c.flags.iter().rposition(|f| *f == (19625680, true)).map(|i| c.flags[..i].to_vec())
+        });
+        let before = set.unwrap_or_else(|| panic!("19625680 never set; goals: {}", b.describe()));
+        assert!(before.contains(&(19625685, false)) && before.contains(&(19625693, false)), "{before:?}");
     }
 
     /// SHINOBI_THINK=51000000 cargo test think_trace -- --ignored --nocapture : one think row's

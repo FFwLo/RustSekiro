@@ -304,6 +304,27 @@ pub fn decode_with_fmod(root: &Path, dll_path: &Path) -> Result<(), String> {
         const PCMBYTES: u32 = 4;
         let out_dir = root.join("sound_pcm");
         std::fs::create_dir_all(&out_dir).map_err(|e| e.to_string())?;
+        // FMOD can also hang inside a read (c1080.fsb subsound 0 spun for half an hour at
+        // full CPU): a watchdog ends the process when no subsound has started for 30 s, with
+        // the hung one already in the progress file, so the rerun loop skips it like a crash.
+        // A bank whose subsounds hang three times running is given up as a whole (its
+        // `.hangs_<stem>` file counts them; `.progress_<stem>` is set past its end).
+        let alive = std::sync::Arc::new(std::sync::Mutex::new((std::time::Instant::now(), None::<std::path::PathBuf>, String::new())));
+        {
+            let alive = alive.clone();
+            std::thread::spawn(move || loop {
+                std::thread::sleep(std::time::Duration::from_secs(5));
+                let hung = alive.lock().ok().filter(|g| g.0.elapsed().as_secs() > 30).map(|g| (g.1.clone(), g.2.clone()));
+                if let Some((hangs, what)) = hung {
+                    if let Some(hangs) = hangs {
+                        let n: u32 = std::fs::read_to_string(&hangs).ok().and_then(|s| s.trim().parse().ok()).unwrap_or(0);
+                        let _ = std::fs::write(&hangs, (n + 1).to_string());
+                    }
+                    eprintln!("sounds-fmod: {what} hung for 30 s; giving up on it (the rerun skips it)");
+                    std::process::exit(3);
+                }
+            });
+        }
         let mut files: Vec<_> = std::fs::read_dir(root.join("sound")).map_err(|e| e.to_string())?.flatten().map(|e| e.path()).collect();
         files.sort();
         for path in files.into_iter().filter(|p| p.extension().is_some_and(|e| e == "fsb")) {
@@ -320,18 +341,33 @@ pub fn decode_with_fmod(root: &Path, dll_path: &Path) -> Result<(), String> {
             }
             let mut n = 0;
             num_sub(snd, &mut n);
-            let (mut ok, mut failed) = (0, 0);
+            let (mut ok, mut failed, mut tiny) = (0, 0, 0);
             // FMOD can crash the process on a few subsounds: progress is recorded so a
             // rerun resumes after the one that crashed (tools/extract.ps1 loops).
             let stem = path.file_stem().unwrap().to_string_lossy().into_owned();
             let progress = out_dir.join(format!(".progress_{stem}"));
             let start: i32 = std::fs::read_to_string(&progress).ok().and_then(|s| s.trim().parse().ok()).map_or(0, |i: i32| i + 1);
-            if start >= n {
+            let hangs = out_dir.join(format!(".hangs_{stem}"));
+            let hung: u32 = std::fs::read_to_string(&hangs).ok().and_then(|s| s.trim().parse().ok()).unwrap_or(0);
+            if hung >= 3 && start < n {
+                eprintln!("{}: {hung} subsounds hung; the rest of the bank is skipped", path.display());
+                std::fs::write(&progress, n.to_string()).map_err(|e| e.to_string())?;
+            }
+            if start >= n || hung >= 3 {
                 release(snd);
                 continue;
             }
             for i in start..n {
                 std::fs::write(&progress, i.to_string()).map_err(|e| e.to_string())?;
+                if let Ok(mut g) = alive.lock() {
+                    *g = (std::time::Instant::now(), Some(hangs.clone()), format!("{stem} subsound {i} of {n}"));
+                }
+                let stage = |what: &str| {
+                    if let Ok(mut g) = alive.lock() {
+                        g.2 = format!("{stem} subsound {i} of {n} ({what})");
+                    }
+                };
+                stage("GetSubSound");
                 let mut sub: Ptr = std::ptr::null_mut();
                 if get_sub(snd, i, &mut sub) != 0 || sub.is_null() {
                     failed += 1;
@@ -344,11 +380,20 @@ pub fn decode_with_fmod(root: &Path, dll_path: &Path) -> Result<(), String> {
                 get_format(sub, &mut ty, &mut fmt, &mut ch, &mut bits);
                 let (mut freq, mut vol, mut pan, mut prio) = (0.0f32, 0.0f32, 0.0f32, 0);
                 get_defaults(sub, &mut freq, &mut vol, &mut pan, &mut prio);
+                stage("GetLength");
                 let mut len = 0u32;
                 get_length(sub, &mut len, PCMBYTES);
+                // FMOD never returns from ReadData on the 962-byte (481-sample) subsounds of
+                // c1080 and others (placeholder blips): under 1024 bytes of PCM is skipped.
+                if len < 1024 {
+                    tiny += 1;
+                    continue;
+                }
                 let mut buf = vec![0u8; len as usize];
+                stage("SeekData");
                 seek(sub, 0);
                 let mut got = 0u32;
+                stage(&format!("ReadData {len} bytes, fmt {fmt}, bits {bits}, {ch} ch"));
                 let r = read(sub, buf.as_mut_ptr() as Ptr, len, &mut got);
                 // FMOD_ERR_FILE_EOF (r == 0x13 in Ex 4.44) after a full read is fine.
                 if got == 0 || (r != 0 && got < len / 2) {
@@ -382,7 +427,7 @@ pub fn decode_with_fmod(root: &Path, dll_path: &Path) -> Result<(), String> {
                 ok += 1;
             }
             release(snd);
-            println!("{}: {ok} sounds decoded by FMOD, {failed} failed", path.display());
+            println!("{}: {ok} sounds decoded by FMOD, {failed} failed, {tiny} under 1024 bytes skipped", path.display());
         }
     }
     Ok(())

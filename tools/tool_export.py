@@ -47,15 +47,17 @@ def main():
     ap.add_argument("--exe")
     a = ap.parse_args()
     exe = find_exe(a.exe)
-    # Unpack the 26 tool parts (BND4 expanded into <name>.partsbnd.d, anibnds inside too).
-    run(exe, "unpack", a.sekiro, EXTRACTED, r"^/parts/wp_a_07[0-9]{2}\.")
+    # Unpack the 26 tool parts (BND4 expanded into <name>.partsbnd.d, anibnds inside too) and the
+    # grappling hook (EquipParamWeapon 9500000 equipModelId 9500: WP_A_9500, kunai + rope, its
+    # clips named after Wolf's wire anims; src/model/tool.rs ToolModel::wire).
+    run(exe, "unpack", a.sekiro, EXTRACTED, r"^/parts/wp_a_(07[0-9]{2}|9500)\.")
     parts = os.path.join(EXTRACTED, "parts")
     out = os.path.join(EXTRACTED, "tool")
     tex = os.path.join(EXTRACTED, "tex")
     os.makedirs(out, exist_ok=True)
     n = 0
     for d in sorted(os.listdir(parts)):
-        if not (d.startswith("wp_a_07") and d.endswith(".partsbnd.d")):
+        if not ((d.startswith("wp_a_07") or d.startswith("wp_a_9500")) and d.endswith(".partsbnd.d")):
             continue
         stem = d[: -len(".partsbnd.d")]  # wp_a_0760
         up = stem.upper()

@@ -148,8 +148,11 @@ User request: "Work on all bosses and enemies".
   * c1550 bandit row 15501007 ("hidden for directing") loops stance 3040.
 
 ## Gaps
-- The Monk's phantoms: region heights are not checked; they vanish by their TAE 193 fade
-  (2026-10-11) and are parked after their attack. (Messages 50 / 70 = TAE 231 and
-  the regions 2502856-9: done.)
+- (2026-10-11, done since: the Monk's phantom region heights (script.rs shape heights on the
+  own arena), bullet map collision (enemy_bullet raycast), FollowType 3 (the Divine Dragon's
+  warning rides on Wolf), c1550's fighting roster row, the boss team flips (no effect), the
+  grapple targets and the hook reaction (enemy/grapple.rs).)
 - Wolf's "recovery prohibited" SpEffects 105051 / 150302: nothing found that applies them.
-- Map collision for bullets; homing / attached bullets (EmittePosType, FollowType).
+- EmittePosType offsets and FollowType 1 / 2 (no enemy row uses 1 / 2).
+- See docs/kb/enemy.md and PLAN B5 for the rest: the team table (code), shadow 109201, patrol
+  routes (blocked), forced crouch (no area on an arena), Aging (VXf).

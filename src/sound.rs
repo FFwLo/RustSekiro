@@ -186,7 +186,7 @@ impl Plugin for SoundPlugin {
             .insert_resource(index_sounds())
             .init_resource::<SoundQueue>()
             // TAE sounds per simulation step (two steps in one frame would skip the first's events).
-            .add_systems(FixedUpdate, play_tae_sounds.after(crate::actor::ActorSet::Advance))
+            .add_systems(FixedUpdate, (play_tae_sounds, deathblow_mix).after(crate::actor::ActorSet::Advance))
             .add_systems(Update, play_queued);
     }
 }
@@ -431,5 +431,146 @@ fn play_queued(
                 Transform::from_translation(pos),
             ));
         }
+    }
+}
+
+/// One deathblow mix slot (exe, 5 floats each at the mix object's start; FUN_140ed7980):
+/// fade-in time and what is left of it, fade-out time and what is left, the value (0-1).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct MixSlot {
+    in_total: f32,
+    in_left: f32,
+    out_total: f32,
+    out_left: f32,
+    value: f32,
+}
+
+/// The deathblow mix (exe: the mix object at the sound manager's +600). Wolf's TAE event 970
+/// (DSAnimStudio "OldSoundDebug"; handler FUN_140b55260 -> FUN_140ed78f0, the player only) asks
+/// for it each frame it runs with its 28 bytes: a type byte, then three (fade-in, fade-out)
+/// pairs. A new request (another type; FUN_140ed7d20) picks the slot by type (1 -> slot 2,
+/// 2 -> 0, 3 -> 1, 0 -> 1 when the byte at GameMan +0x11fc is 3, else 0) and loads that slot's
+/// pair (tables 0x142b42c50 / 0x142b42c40: fade-in at +4 / +12 / +20, fade-out at +8 / +16 /
+/// +24). Each frame the requested slot eases its value to 1 over what is left of its fade-in,
+/// the others to 0 over theirs (FUN_140ed7980); a slot without a time jumps. The values go to
+/// the mixer events ntc_ninsatsu2 / 1 / 3 (Fmod::set_deathblow_mix).
+/// gap: the GameMan +0x11fc byte (copied from +0x11fd; looks like an online mode) is taken as
+/// not 3 offline, so type 0 = slot 0 (ntc_ninsatsu2, the 445 Hz muffle).
+#[derive(Default)]
+pub(crate) struct DeathblowMix {
+    slots: [MixSlot; 3],
+    active: Option<usize>,
+    /// The type of the request being served (the exe compares the requester and the type).
+    last: Option<u8>,
+}
+
+impl DeathblowMix {
+    /// One frame: `req` = the running 970 event's (type, its six times), if any. The values.
+    pub(crate) fn step(&mut self, req: Option<(u8, [f32; 6])>, dt: f32) -> [f32; 3] {
+        match req {
+            None => {
+                self.active = None;
+                self.last = None;
+            }
+            Some((ty, t)) if self.last != Some(ty) => {
+                let slot = match ty {
+                    1 => Some(2),
+                    0 | 2 => Some(0),
+                    3 => Some(1),
+                    _ => None,
+                };
+                self.active = slot;
+                if let Some(i) = slot {
+                    let (fin, fout) = (t[i * 2], t[i * 2 + 1]);
+                    let s = &mut self.slots[i];
+                    (s.in_total, s.in_left, s.out_total, s.out_left) = (fin, fin, fout, fout);
+                }
+                self.last = Some(ty);
+            }
+            _ => {}
+        }
+        for (i, s) in self.slots.iter_mut().enumerate() {
+            if self.active == Some(i) {
+                if s.in_total == 0.0 {
+                    s.out_left = s.out_total;
+                    s.in_left = 0.0;
+                    s.value = 1.0;
+                } else if dt < s.in_left {
+                    s.value += (1.0 - s.value) * dt / s.in_left;
+                    s.in_left -= dt;
+                } else {
+                    s.value = 1.0;
+                    s.in_left = 0.0;
+                }
+            } else if s.out_total == 0.0 {
+                s.out_left = 0.0;
+                s.value = 0.0;
+            } else if dt < s.out_left {
+                s.value += (0.0 - s.value) * dt / s.out_left;
+                s.out_left -= dt;
+            } else {
+                s.value = 0.0;
+                s.out_total = 0.0;
+            }
+        }
+        self.slots.map(|s| s.value)
+    }
+}
+
+/// Wolf's running TAE 970 (the deathblow mix request): the type byte (the first field's low
+/// byte; the export reads every field as f32, "unk0", missing when 0) and "unk1".."unk6".
+fn mix_request(combat: &Combat, a: &Actor) -> Option<(u8, [f32; 6])> {
+    let anim = data_for(combat, a).anim(&a.anim)?;
+    let e = anim.events.iter().find(|e| e.kind == 970 && e.in_time(a.t))?;
+    let f = |k: &str| e.args.get(k).and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
+    let ty = (f("unk0").to_bits() & 0xff) as u8;
+    Some((ty, [f("unk1"), f("unk2"), f("unk3"), f("unk4"), f("unk5"), f("unk6")]))
+}
+
+fn deathblow_mix(
+    time: Res<Time>,
+    combat: Res<Combat>,
+    wolf: Query<&Actor, With<crate::player::Player>>,
+    fmod: Option<NonSendMut<crate::fmod::Fmod>>,
+    mut mix: Local<DeathblowMix>,
+) {
+    let Some(mut fmod) = fmod else { return };
+    let req = wolf.single().ok().filter(|a| !a.anim.is_empty()).and_then(|a| mix_request(&combat, a));
+    let v = mix.step(req, time.delta_secs());
+    fmod.set_deathblow_mix(v);
+}
+
+#[cfg(test)]
+mod mix_tests {
+    use super::DeathblowMix;
+
+    /// A typical deathblow (type 0: in 0.3 s, out 2 s on slot 0): slot 0 rises to 1 in 0.3 s,
+    /// stays while the event runs and falls to 0 over 2 s after it; type 1 drives slot 2 only.
+    #[test]
+    fn deathblow_mix_fades() {
+        let t = [0.3, 2.0, 0.3, 1.0, 0.3, 3.0];
+        let dt = 1.0 / 60.0;
+        let mut m = DeathblowMix::default();
+        let mut v = [0.0; 3];
+        for _ in 0..9 {
+            v = m.step(Some((0, t)), dt);
+        }
+        assert!(v[0] > 0.2 && v[0] < 1.0, "{v:?}");
+        for _ in 0..30 {
+            v = m.step(Some((0, t)), dt);
+        }
+        assert_eq!(v, [1.0, 0.0, 0.0]);
+        for _ in 0..60 {
+            v = m.step(None, dt);
+        }
+        assert!(v[0] > 0.0 && v[0] < 1.0, "{v:?}");
+        for _ in 0..70 {
+            v = m.step(None, dt);
+        }
+        assert_eq!(v, [0.0; 3]);
+        for _ in 0..30 {
+            v = m.step(Some((1, t)), dt);
+        }
+        assert_eq!(v, [0.0, 0.0, 1.0]);
     }
 }

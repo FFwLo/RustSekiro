@@ -13,8 +13,9 @@
 //! Flight as the exe's bullet update (FUN_140b0ded0): homing (`steer`, FUN_140b11270), then
 //! acceleration, gravity and the speed limits (`flight`, FUN_140b14650), then the move; the map
 //! collision stops a bullet unless isPenetrateMap.
-//! gap: EmittePosType and FollowType (attached bullets: FollowType odd or 2 takes
-//! FUN_140b14b20 instead) are not modelled; nor the force erase (isHitOtherBulletForceEraseA /
+//! FollowType 3 (follow the target: the Divine Dragon's 52000980) rides on Wolf.
+//! gap: EmittePosType and FollowType 1 / 2 (the shooter; no enemy row; the exe takes
+//! FUN_140b14b20 for odd FollowTypes or 2) are not modelled; nor the force erase (isHitOtherBulletForceEraseA /
 //! B: which bullets erase is not in the params), so the signs stay until hit once.
 
 use std::sync::Arc;
@@ -67,6 +68,7 @@ pub struct EnemyBulletPlugin;
 impl Plugin for EnemyBulletPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<ScriptShots>()
+            .add_message::<crate::gore::PlaceStain>()
             .add_systems(FixedUpdate, (fire, fire_scripted, fly).chain().after(ActorSet::Advance).before(ActorSet::Resolve))
             .add_systems(Update, draw.run_if(resource_exists::<GizmoConfigStore>));
     }
@@ -148,7 +150,7 @@ fn fire_scripted(
 /// One Bullet row at `pos`: numShoot bullets fanned by shootAngle + i * shootAngleInterval (yaw)
 /// and tilted by shootAngleXZ, as prosthetic::spawn_row.
 #[allow(clippy::too_many_arguments)]
-fn spawn_row(commands: &mut Commands, spec: &BulletSpec, shooter: Entity, kind: usize, pos: Vec3, dir: Vec3, floor: f32, script: Option<Arc<ScriptDef>>) {
+pub(crate) fn spawn_row(commands: &mut Commands, spec: &BulletSpec, shooter: Entity, kind: usize, pos: Vec3, dir: Vec3, floor: f32, script: Option<Arc<ScriptDef>>) {
     let flat = dir.with_y(0.0).normalize_or(Vec3::NEG_Z);
     for i in 0..spec.num_shoot.max(1) {
         let yaw = (spec.shoot_angle + i as f32 * spec.shoot_angle_interval).to_radians();
@@ -186,6 +188,8 @@ fn fly(
     mut player: Query<(Entity, &Transform, Option<&Hurtboxes>, &mut Player)>,
     mut shooters: Query<&mut Actor, (With<Enemy>, Without<Player>)>,
     markers: Query<&GlobalTransform>,
+    mut stains: MessageWriter<crate::gore::PlaceStain>,
+    (mut statuses, config): (ResMut<crate::status::Statuses>, Res<crate::config::GameConfig>),
 ) {
     let dt = time.delta_secs();
     let mut wolf = player.single_mut().ok();
@@ -194,11 +198,17 @@ fn fly(
         let rows = script.as_ref().map_or(&combat.kind(b.kind).data.bullet_rows, |s| &s.bullet_rows);
         let row = |id: i64| if id > 0 { rows.get(&id.to_string()) } else { None };
         b.age += dt;
-        let from = btf.translation;
         let aim = wolf.as_ref().map(|w| w.1.translation + Vec3::Y * 0.3);
+        // FollowType 3 "follow target": it rides on Wolf (his chest, where `fire` aims).
+        // gap: EmittePosType 6 "above and behind the target" has no traced offset.
+        let follow = aim.filter(|_| b.spec.follow_type == 3);
+        if let Some(at) = follow {
+            btf.translation = at;
+        }
+        let from = btf.translation;
         b.vel = steer(&b.spec, b.vel, b.travelled, from, aim, dt);
         b.vel = flight(&b.spec, b.vel, b.facing, b.travelled, dt);
-        let mut to = from + b.vel * dt;
+        let mut to = if follow.is_some() { from } else { from + b.vel * dt };
         // The map stops it (isPenetrateMap: not); without one, the floor it was fired over.
         let mut landed = false;
         let step = to - from;
@@ -245,8 +255,12 @@ fn fly(
                             sa.bullet_hits.push((we, atk));
                         }
                     }
-                    // Its SpEffects for their effectEndurance (one with none: a frame).
-                    for id in sp_effects(&b.spec) {
+                    // Its poison / burn build-up goes onto Wolf's gauges (status.rs; gap: whether his
+                    // guard keeps some off a bullet's own SpEffects is not traced: all of it lands).
+                    let (build, own): (Vec<i64>, Vec<i64>) = sp_effects(&b.spec).partition(|id| crate::status::Statuses::is_build_up(&combat, *id));
+                    statuses.hit_wolf(&combat, we, config.player.combat_art, &build, crate::status::Guard::None);
+                    // Its other SpEffects for their effectEndurance (one with none: a frame).
+                    for id in own {
                         let key = id.to_string();
                         let row = script.as_ref().and_then(|s| s.sp_effects.get(&key)).or_else(|| combat.player.sp_effects.get(&key));
                         let left = row.map_or(0.0, |s| s.effect_endurance).max(dt);
@@ -260,6 +274,12 @@ fn fly(
             }
         }
         if ended {
+            // Its AtkParam's stains where it ends (decalId1 / 2: the oil pot's 50010 / 50011).
+            if let Some(atk) = &b.spec.attack {
+                for id in [atk.decal_id1, atk.decal_id2].into_iter().filter(|id| *id > 0) {
+                    stains.write(crate::gore::PlaceStain { id, at: to });
+                }
+            }
             // launchConditionType 254: the child only when its life ran out.
             let launch = b.spec.launch_condition_type != 254 || expired;
             if let Some(child) = row(b.spec.hit_bullet_id).filter(|_| launch) {

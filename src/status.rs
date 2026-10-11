@@ -1,4 +1,5 @@
-//! Status build-up on the enemy: burn (the Flame Vent) and poison (the Sabimaru). A hit's
+//! Status build-up: burn (the Flame Vent) and poison (the Sabimaru) on enemies, and the enemies'
+//! poison / burn on Wolf (Statuses::hit_wolf). A hit's
 //! SpEffects (AtkParam / Bullet spEffectId0-4) carry the build-up (Paramdex SDT SpEffect meta):
 //! poizonAttackPower with stateInfo 2 (poison), registBlood with stateInfo 6 (burn, Sekiro's
 //! "blood" slot). When a gauge reaches the NpcParam resist_poison / resist_blood the effect takes
@@ -26,6 +27,21 @@ use crate::data::{Combat, SpEffect};
 /// SpEffect stateInfos of the build-ups (SP_EFFECT_TYPE: 2 poison, 6 burn).
 const STATE_INFO_POISON: i64 = 2;
 const STATE_INFO_BURN: i64 = 6;
+/// Wolf's resist max, every type (exe PlayerIns vtable +0x1d0 FUN_140a289a0 -> FUN_140847a00 ->
+/// FUN_1408457f0: CalcCorrectGraph 110-114 of the sum of his nine stats, flat 200 from stat 1
+/// on, plus 120-124 of one stat, 0 everywhere). gap: the protectors' resist* (0 on all but two
+/// rows) and SpEffect resist rates / points (FUN_140bfdbc0 / FUN_140bfdb60) are not added.
+pub const WOLF_RESIST: f32 = 200.0;
+
+/// How the hit met the defender: the guard keeps EquipParamWeapon *GuardResist % of the build-up
+/// off, a deflect *JustGuardResist % (Wolf's sword rows 5000-7700: burn 33 / 50, poison 0).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Guard {
+    None,
+    Block,
+    Deflect,
+}
+
 /// HKS behaviorRefIds of the afflictions (c0000_define / c9997: SP_EF_REF_POISON 500,
 /// SP_EFFECT_REF_BURNING 1000130).
 pub const REF_POISON: i64 = 500;
@@ -49,6 +65,13 @@ pub struct Status {
     pub effects: Vec<Affliction>,
     /// The fractions of a recovered point carried to the next frame (+0x38), poison and burn.
     carry: [f32; 2],
+}
+
+impl Status {
+    /// Whether an applied effect has HKS behaviorRefId `behavior_ref` (REF_POISON / REF_BURNING).
+    pub fn afflicted(&self, combat: &Combat, behavior_ref: i64) -> bool {
+        self.effects.iter().any(|a| sp(combat, a.id).is_some_and(|s| s.behavior_ref_id == behavior_ref))
+    }
 }
 
 /// TentativePlayerParam row 0 ResistRecoverPoint_Poision / _Blood (points a second) for enemies
@@ -124,9 +147,34 @@ impl Statuses {
     /// Wolf's hit on an enemy: each of its SpEffects adds its build-up; a full gauge applies the
     /// effect. `guarded`: the NpcParam *GuardResist % of it is kept off. Returns the log lines.
     pub fn hit(&mut self, combat: &Combat, target: Entity, def: &crate::actor::Actor, sps: &[i64], guarded: bool) -> Vec<String> {
-        let rules = ResistRules::get();
         let npc = combat.npc(def);
         let num = |k: &str| npc[k].as_f64().unwrap_or(0.0) as f32;
+        let guard = if guarded { [num("poisonGuardResist"), num("bloodGuardResist")] } else { [0.0; 2] };
+        self.build_up(combat, target, sps, [num("resist_poison"), num("resist_blood")], guard)
+    }
+
+    /// An enemy's hit (or bullet) on Wolf: as `hit`, against WOLF_RESIST, the guard's share kept
+    /// off by his sword `weapon` (EquipParamWeapon, the equipped combat art's row).
+    pub fn hit_wolf(&mut self, combat: &Combat, wolf: Entity, weapon: i64, sps: &[i64], guard: Guard) -> Vec<String> {
+        let w = combat.param("EquipParamWeapon", weapon);
+        let num = |k: &str| w[k].as_f64().unwrap_or(0.0) as f32;
+        let kept = match guard {
+            Guard::None => [0.0; 2],
+            Guard::Block => [num("poisonGuardResist"), num("bloodGuardResist")],
+            Guard::Deflect => [num("poisonJustGuardResist"), num("bloodJustGuardResist")],
+        };
+        self.build_up(combat, wolf, sps, [WOLF_RESIST; 2], kept)
+    }
+
+    /// Whether SpEffect `id` is a build-up (poison / burn) rather than an effect of its own.
+    pub fn is_build_up(combat: &Combat, id: i64) -> bool {
+        sp(combat, id).is_some_and(|s| (s.state_info == STATE_INFO_POISON && s.poizon_attack_power > 0.0) || (s.state_info == STATE_INFO_BURN && s.regist_blood > 0.0))
+    }
+
+    /// The build-up of `sps` onto `target`'s gauges; `resist` and the guard's kept-off % per type
+    /// (0 poison, 1 burn).
+    fn build_up(&mut self, combat: &Combat, target: Entity, sps: &[i64], resist: [f32; 2], guard: [f32; 2]) -> Vec<String> {
+        let rules = ResistRules::get();
         let status = self.0.entry(target).or_default();
         let mut out = Vec::new();
         for &id in sps.iter().filter(|id| **id > 0) {
@@ -142,13 +190,13 @@ impl Statuses {
                 continue;
             }
             let (gauge, power, resist, guard, name) = match ty {
-                0 => (&mut status.poison, s.poizon_attack_power * s.regist_poizon_change_rate, num("resist_poison"), num("poisonGuardResist"), "poison"),
-                _ => (&mut status.burn, s.regist_blood * s.regist_blood_change_rate, num("resist_blood"), num("bloodGuardResist"), "burn"),
+                0 => (&mut status.poison, s.poizon_attack_power * s.regist_poizon_change_rate, resist[0], guard[0], "poison"),
+                _ => (&mut status.burn, s.regist_blood * s.regist_blood_change_rate, resist[1], guard[1], "burn"),
             };
             // Whole points, as the exe's int build-up: (int)(power * rate), then
             // (int)(x * (1 - guard resist %)) when guarded.
             let mut amount = power.trunc();
-            if guarded && amount > 0.0 {
+            if guard > 0.0 && amount > 0.0 {
                 amount = (amount * (1.0 - guard / 100.0)).trunc().max(0.0);
             }
             *gauge += amount;
@@ -164,8 +212,11 @@ impl Statuses {
     }
 }
 
+/// SpEffect `id` from Wolf's exported rows, else an enemy kind's (their poison / burn build-ups:
+/// 9015 Rappa blowgun, 9115 bandit torches ...).
 fn sp(combat: &Combat, id: i64) -> Option<&SpEffect> {
-    combat.player.sp_effects.get(&id.to_string())
+    let key = id.to_string();
+    combat.player.sp_effects.get(&key).or_else(|| combat.kinds.iter().find_map(|k| k.data.sp_effects.get(&key)))
 }
 
 /// Applies an SpEffect; one with no duration hands straight on to its replaceSpEffectId.

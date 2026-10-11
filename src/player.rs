@@ -73,6 +73,13 @@ pub struct Player {
     /// SpEffects on Wolf with seconds left (TAE 940 BehaviorParam_AddSpEffect, e.g. Divine
     /// Abduction's 107700: ref 309 USED_TEKIMAWASHI for 3 s); read as env(3036, ref).
     pub timed: Vec<(i64, f32)>,
+    /// Grappling Hook move in progress (wire.rs).
+    pub(crate) wire: Option<crate::wire::Wire>,
+    /// A ridden wire point Wolf landed on (its landing spot): stands as a floor while he is on
+    /// it. gap: the objects' own collision (branches, roofs) is not in the map terrain.
+    perch: Option<Vec3>,
+    /// Attack pressed during the Grappling Hook Attack's landing (the Todome input).
+    wire_todome: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -90,9 +97,14 @@ pub enum Action {
     Crouch,
     /// Next prosthetic tool (ACTION_ARM_CHANGE_WEAPON_L).
     SwitchTool,
+    /// Grappling Hook (ACTION_ARM_WIRE_SHOOT; wire.rs).
+    Grapple,
 }
 
 pub const CAPSULE_RADIUS: f32 = 0.4;
+/// How far from a wire perch's landing spot Wolf still stands on it (gap: the object's own
+/// collision is not loaded; about the branch / roof-tip's reach).
+const PERCH_RADIUS: f32 = 0.6;
 const CAPSULE_MIDDLE: f32 = 1.0;
 pub const CAPSULE_HALF_HEIGHT: f32 = CAPSULE_RADIUS + CAPSULE_MIDDLE / 2.0;
 
@@ -720,7 +732,7 @@ fn spawn_player(mut commands: Commands, combat: Res<Combat>, config: Res<GameCon
         }
     }
     commands.spawn((
-        Player { plunge: None, speed_level: 0.0, requests: HashMap::new(), last_state: String::new(), gourd: config.player.gourd_charges, emblems: config.player.spirit_emblems, auto_aim: false, auto_aim_fresh: false, resurrections: config.player.resurrections, jump_forward: false, jump_land: None, step_tilt: 0.0, throw_start: None, throw_target: None, tool_slot: 0, vel_scale: None, expand_pending: false, sub_cat_before: 0, air_sub_count: 0, air_art_count: 0, art_enable_jump: false, timed: Vec::new(), held: Vec::new() },
+        Player { plunge: None, speed_level: 0.0, requests: HashMap::new(), last_state: String::new(), gourd: config.player.gourd_charges, emblems: config.player.spirit_emblems, auto_aim: false, auto_aim_fresh: false, resurrections: config.player.resurrections, jump_forward: false, jump_land: None, step_tilt: 0.0, throw_start: None, throw_target: None, tool_slot: 0, vel_scale: None, expand_pending: false, sub_cat_before: 0, air_sub_count: 0, air_art_count: 0, art_enable_jump: false, timed: Vec::new(), held: Vec::new(), wire: None, perch: None, wire_todome: false },
         actor,
         Name::new("Player"),
         Transform::from_xyz(0.0, CAPSULE_HALF_HEIGHT, 4.0),
@@ -785,6 +797,7 @@ pub(crate) fn read_pad(pads: &Query<&Gamepad>, enabled: bool, pad: &mut PadInput
         press(GamepadButton::LeftThumb, Action::Crouch);
         press(GamepadButton::North, Action::SwitchTool);
         press(GamepadButton::DPadUp, Action::SwitchTool);
+        press(GamepadButton::LeftTrigger2, Action::Grapple);
     }
 }
 
@@ -842,6 +855,10 @@ pub(crate) fn read_input(
     // are not decoded); Z is free here.
     if keys.just_pressed(KeyCode::KeyZ) {
         pad.pressed.push(Action::SwitchTool);
+    }
+    // Grappling Hook: G (gap: the game's PC key, as above); the pad's L2 as in the game.
+    if keys.just_pressed(KeyCode::KeyG) {
+        pad.pressed.push(Action::Grapple);
     }
     read_pad(&pads, config.input.gamepad, &mut pad);
 }
@@ -908,12 +925,14 @@ pub fn sub_anim(d: &CharData, state: &str, group: i64) -> Option<String> {
 
 /// States that keep Wolf crouched: crouch idle / locomotion and its own starts, stops and turns.
 fn crouch_ok(state: &str) -> bool {
-    matches!(state, "StandIdle" | "Locomotion") || state.starts_with("Crouch") || state.starts_with("SprintToCrouch")
+    matches!(state, "StandIdle" | "Locomotion")
+        || (state.starts_with("Crouch") && !state.starts_with("CrouchAttackToStand"))
+        || state.starts_with("SprintToCrouch")
 }
 
 /// Standby states: any action may start (the run/walk stops carry no cancel flags but are
 /// standby in the HKS, so input interrupts them).
-fn is_free(state: &str) -> bool {
+pub(crate) fn is_free(state: &str) -> bool {
     // CrouchStart too: HKS g_paramHkbState [HKB_STATE_CROUCH_START] = STATE_TYPE_STANDBY, like
     // StandIdle (Wolf can move or act at once); CrouchEnd is STATE_TYPE_ACTION.
     matches!(state, "StandIdle" | "Locomotion" | "CrouchStart")
@@ -998,6 +1017,39 @@ fn sp_ref_active(d: &CharData, a: &Actor, behavior_ref: i64) -> bool {
 /// ThrowDef13500; heightLimit -10000 = no height check), landing on 蹴り崩し1 (161). Live
 /// (rec_c1020_c_20261009): the kick broke the General, an air attack 0.33 s into 213115 started
 /// a201_511500 (0.72 s) -> 511510 (1.68 s) -> 511511 with ThrowDef13500 -> 13510 -> 13511.
+/// The Grappling Hook Attack's air throw on the hooked enemy (ThrowParam <chr>0170): within the
+/// row's Dist and y range, and the normal fall orbit (no steering, 1/60 s steps) passing within
+/// normalFallOrbitCheck_range of it before its timeLimit, as `start_plunge` checks.
+fn wire_throw(
+    combat: &Combat,
+    a: &Actor,
+    pos: Vec3,
+    target: Entity,
+    enemies: &Query<(Entity, &mut Actor, &mut Enemy, &Transform), Without<Player>>,
+) -> Option<crate::data::Throw> {
+    let (_, ea, _, etf) = enemies.get(target).ok()?;
+    let row_id = combat.foe_of(ea).throw_row(170);
+    let th = combat.throw(row_id)?;
+    combat.player.anim(&th.atk_anim)?;
+    let row = combat.param("ThrowParam", row_id);
+    let f = |k: &str| row[k].as_f64().unwrap_or(0.0) as f32;
+    let dy = etf.translation.y - pos.y;
+    if etf.translation.distance(pos) > th.dist || dy > f("upperYRange") || dy < -f("lowerYRange") {
+        return None;
+    }
+    let (range, height, time_limit) = (f("normalFallOrbitCheck_range"), f("normalFallOrbitCheck_heightLimit"), f("normalFallOrbitCheck_timeLimit") / 1000.0);
+    let g = FALL_TYPES[(a.fall_type as usize).min(FALL_TYPES.len() - 1)].gravity();
+    let (mut q, mut vy) = (pos, a.vel_y);
+    for _ in 0..((time_limit * 60.0) as usize).max(1) {
+        vy += g / 60.0;
+        q += a.air_base / 60.0 + Vec3::Y * vy / 60.0;
+        if (q - etf.translation).with_y(0.0).length() <= range && (height < 0.0 || q.y - etf.translation.y <= height) {
+            return Some(th);
+        }
+    }
+    None
+}
+
 fn start_plunge(
     p: &mut Player,
     a: &mut Actor,
@@ -1183,6 +1235,9 @@ fn buffer_flags(action: Action) -> &'static [i64] {
         // gap: the ChrActionFlags behind ACTION_ARM_CROUCH (bit 15) are not traced; the crouch
         // toggle is only taken from standby (decide).
         Action::Crouch | Action::SwitchTool => &[],
+        // gap: the accept / execute bits of ACTION_ARM_WIRE_SHOOT are not traced; taken as the
+        // jump's (151 / 119): the wire moves open their cancels together with the jump's.
+        Action::Grapple => &[151],
     }
 }
 
@@ -1211,6 +1266,12 @@ fn attack_route(d: &CharData, a: &Actor, stick: Vec3, art_equipped: bool) -> Str
     if has(REF_STEP_ATTACK) {
         let dir = a.state.rsplit('_').next().filter(|d| matches!(*d, "N" | "F" | "B" | "L" | "R")).unwrap_or("N");
         return format!("GroundStepAttack_{dir}");
+    }
+    // STYLE_TYPE_CROUCH (HKS BEH_A_GROUND_ATTACK, after the combo / step refs): Wolf stands up
+    // attacking (CrouchAttackToStand a050_301000). gap: under a forced crouch (g_forceCrouch:
+    // env 3037 / SP_EF_REF_FORCE_CROUCH, low ceilings) it is CrouchAttackToCrouch; not modelled.
+    if a.crouch {
+        return "CrouchAttackToStand".into();
     }
     if has(REF_ENABLE_SPRINT_ACTION) {
         // Selector_GroundJumpType 0 = SprintAttack_L, 1 = _R (c0000.hkx "SprintAttack Selector").
@@ -1247,7 +1308,7 @@ fn attack_route(d: &CharData, a: &Actor, stick: Vec3, art_equipped: bool) -> Str
 fn release_of(state: &str) -> Option<String> {
     Some(match state {
         "GroundAttackCombo1" | "GroundAttackCombo2" | "GroundAttackCombo1Reverse" | "GroundAttackCombo2Reverse"
-        | "DeflectGuardAttack" => format!("{state}Release"),
+        | "DeflectGuardAttack" | "CrouchAttackToStand" => format!("{state}Release"),
         s if s.starts_with("HardDeflectAtk") => {
             // HardDeflectAtkSmallL -> HardDeflectAtkReleaseSmall_L
             let rest = &s["HardDeflectAtk".len()..];
@@ -1288,6 +1349,7 @@ fn accept_flag(action: Action) -> &'static [i64] {
         Action::UseItem => &[FLAG_ACCEPT_ITEM],
         Action::CombatArt => &[FLAG_ACCEPT_ATTACK],
         Action::Prosthetic => &[FLAG_ACCEPT_PROSTHETIC],
+        Action::Grapple => &[FLAG_ACCEPT_JUMP],
         Action::Crouch | Action::SwitchTool => &[],
     }
 }
@@ -1384,6 +1446,7 @@ fn decide(
     mut throw: ResMut<ActiveThrow>,
     fight: Option<ResMut<crate::enemy::FightReset>>,
     snap: Option<ResMut<crate::camera::CameraSnap>>,
+    wire_aim: Option<Res<crate::wire::WireAim>>,
 ) {
     let dt = time.delta_secs();
     let d = &combat.player;
@@ -1417,8 +1480,10 @@ fn decide(
     // Raw press (death screen choices are not TAE-buffered).
     let attack_pressed = pad.pressed.contains(&Action::Attack);
     let crouch_pressed = pad.pressed.contains(&Action::Crouch);
-    // Any other action stands Wolf up. gap: the crouch variants of attacks (CrouchAttackToStand
-    // 301000), steps, items and reactions are not ported; they play standing.
+    // Any other action stands Wolf up. Steps, guards and hit reactions from a crouch are the
+    // standing ones in the HKS too (_fireGroundStep -> W_GroundStep, W_StandToDeflectGuard; the
+    // Crouch{Damage,Death}* states only under a forced crouch, g_forceCrouch). The attack has
+    // its own (attack_route: CrouchAttackToStand), the gourd too (CrouchItemGourdDrink*).
     if a.crouch && !crouch_ok(&a.state) {
         a.crouch = false;
     }
@@ -1619,7 +1684,10 @@ fn decide(
 
     // Left above the floor by a clip's vertical root motion (the vault 511900) once its
     // SetNoGravity ends: fall and land (live: FreeFall 200010 -> LandFreeFall 200020).
-    if !a.airborne && tf.translation.y > crate::map::ground_y(tf.translation) + CAPSULE_HALF_HEIGHT + 0.05 && !(!a.anim.is_empty() && d.flag(&a.anim, a.t, FLAG_NO_GRAVITY)) {
+    // A wire perch holds him while he stays on it (`Player::perch`).
+    p.perch = p.perch.filter(|spot| !a.airborne && (tf.translation - *spot).with_y(0.0).length() < PERCH_RADIUS);
+    let perched = p.perch.is_some_and(|spot| tf.translation.y <= spot.y + CAPSULE_HALF_HEIGHT + 0.05);
+    if !a.airborne && !perched && tf.translation.y > crate::map::ground_y(tf.translation) + CAPSULE_HALF_HEIGHT + 0.05 && !(!a.anim.is_empty() && d.flag(&a.anim, a.t, FLAG_NO_GRAVITY)) {
         a.airborne = true;
         a.vel_y = 0.0;
         a.air_base = Vec3::ZERO;
@@ -1649,7 +1717,35 @@ fn decide(
     // the set has one (only the a201 set: 510001, 510111, 510201, 511201, 511411, 511511).
     // Live (rec_c1020_d_20261009): a201_510000 for 1.85 s, then 510001 on the frame the General
     // goes 12000 -> 12001.
-    if let Some(ee) = p.throw_target {
+    // The Grappling Hook Attack's Todome (ThrowKind 180900 "[PC] 崩しワイヤートドメ": derived from
+    // 180100, attack button, defAliveCheck 2; ThrowParam <chr>0179, only Gyoubu's 15080179 -
+    // a225_511690 / ThrowDef13690, Dist 5): when the landing's deathblow took the last bar (the
+    // defender's ThrowDef13610 -> ThrowDefDeath13611 switch on its flag 69, frame 55, after
+    // 511610's TAE 304 at 52). gap: the exe's input window for it - 511610 has no buffer flag,
+    // so an attack pressed anywhere in the landing counts.
+    if a.state == "WireThrowLand" && attack_pressed {
+        p.wire_todome = true;
+    }
+    if let (Some(ee), "WireThrowLand") = (p.throw_target, a.state.as_str()) {
+        // Gyoubu has no ThrowDefDeath (a major boss: Event20200 after the reaction), so the
+        // dead defender's flag 69 itself.
+        let dying = enemies.get(ee).map(|(_, ea, en, _)| {
+            ea.state.starts_with("ThrowDefDeath") || (en.is_dead() && !ea.anim.is_empty() && combat.data_of(ea).flag(&ea.anim, ea.t, 69))
+        });
+        if dying.is_err() {
+            p.throw_target = None;
+        } else if dying == Ok(true) {
+            p.throw_target = None;
+            let todome = enemies.get_mut(ee).ok().filter(|_| p.wire_todome).and_then(|q| Some((combat.throw(combat.foe_of(&q.1).throw_row(179))?, q)));
+            if let Some((th, (_, mut ea, mut enemy, _))) = todome.filter(|(th, q)| d.anim(&th.atk_anim).is_some() && q.3.translation.distance(tf.translation) <= th.dist) {
+                a.play("WireThrowTodome", &th.atk_anim);
+                a.move_vel = Vec3::ZERO;
+                enemy.deathblow(&mut ea, &combat, th.def_anim);
+                throw.0 = Some(ThrowHold::new(ee, &th, "WireThrowTodome"));
+                log.push("todome", Color::srgb(1.0, 0.3, 0.3));
+            }
+        }
+    } else if let Some(ee) = p.throw_target {
         let dead = enemies.get(ee).map(|(_, ea, _, _)| ea.state.starts_with("ThrowDefDeath"));
         if a.state != "Deathblow" || dead.is_err() {
             p.throw_target = None;
@@ -1800,6 +1896,57 @@ fn decide(
             a.yaw = yaw_of(stick);
         }
     };
+
+    // Grappling Hook (wire.rs; docs/kb/grapple.md). A reaction or anything else that takes Wolf
+    // out of the wire states ends the move.
+    if p.wire.is_some() && !crate::wire::is_wire_state(&a.state) {
+        p.wire = None;
+    }
+    if let Some(w) = p.wire.as_mut() {
+        w.turn(a, tf.translation, dt);
+        // 905 WireDisableFalling: the air shoots hang in the air.
+        if !a.anim.is_empty() && d.anim(&a.anim).is_some_and(|an| an.events.iter().any(|e| e.kind == 905 && e.in_time(a.t))) {
+            a.vel_y = 0.0;
+            a.air_base = Vec3::ZERO;
+            a.move_vel = Vec3::ZERO;
+        }
+        // The shoot ends into its move start (selector on WireMoveStartIndex).
+        if ended && crate::wire::is_shoot(&a.state) {
+            let next = crate::wire::move_start(&a.state, w.index);
+            a.move_vel = Vec3::ZERO;
+            if a.play_state(d, &next) {
+                return;
+            }
+        }
+    }
+    // BEH_A_GROUND_WIRE_SHOOT / BEH_A_AIR_WIRE_SHOOT (HKS 6251 / 6154): the press with a point in
+    // the action range (env IsWirePossible); ACTION_UNLOCK_TYPE_SUB_WEAPONE (4) is always on.
+    // Without one the request is dropped (ResetRequest). On the ground from standby or the jump's
+    // window (`accept_flag`), in the air from the falls, the wire move or the jump's window.
+    if p.requests.contains_key(&Action::Grapple) {
+        let in_wire = p.wire.is_some();
+        let ok = if a.airborne {
+            matches!(a.state.as_str(), "FreeFall" | "WireMove") || a.state.ends_with("GroundJumpFall") || (!a.anim.is_empty() && d.flag(&a.anim, a.t, FLAG_ACCEPT_JUMP))
+        } else {
+            is_free(&a.state) || accepts(d, a, Action::Grapple)
+        };
+        let target = wire_aim.as_ref().and_then(|w| w.target).filter(|t| t.in_action_range);
+        let enemy = wire_aim.as_ref().and_then(|w| w.enemy);
+        if ok || target.is_none() {
+            p.requests.remove(&Action::Grapple);
+        }
+        if let Some(t) = target.filter(|_| ok) {
+            let shoot = crate::wire::shoot_state(&a.state, a.airborne, in_wire);
+            let wire = crate::wire::Wire::new(&t, enemy, tf.translation);
+            if a.play_state(d, shoot) {
+                p.wire = Some(wire);
+                p.perch = None;
+                a.move_vel = Vec3::ZERO;
+                log.push("grapple", Color::srgb(0.6, 0.9, 0.6));
+                return;
+            }
+        }
+    }
 
     // --- HKS g_behaviorValidateOrder (subset), highest priority first ---
 
@@ -2085,22 +2232,25 @@ fn decide(
         }
     }
 
-    // Healing Gourd: drink (again from a drink: Repeat), or the empty-gourd shake.
+    // Healing Gourd: drink (again from a drink: Repeat), or the empty-gourd shake. Crouched, the
+    // Crouch ones (HKS STYLE_TYPE_CROUCH: W_CrouchItemGourdDrink / ...Repeat / ...Failed,
+    // a000_250010 / 250011 / 250015), and Wolf stays crouched (crouch_ok).
     if p.requests.contains_key(&Action::UseItem) && accepts(d, a, Action::UseItem) {
         p.requests.remove(&Action::UseItem);
         let state = if p.gourd == 0 {
             "ItemGourdDrinkFailed"
-        } else if a.state.starts_with("ItemGourdDrink") {
+        } else if a.state.trim_start_matches("Crouch").starts_with("ItemGourdDrink") {
             "ItemGourdDrinkRepeat"
         } else {
             "ItemGourdDrink"
         };
+        let state = if a.crouch { format!("Crouch{state}") } else { state.to_string() };
         a.move_vel = Vec3::ZERO;
-        a.play_state(d, state);
+        a.play_state(d, &state);
         return;
     }
     // ConsumeCurrentGoods (TAE 65, drink frame 21 / repeat frame 9): one charge, the heal.
-    if a.state == "ItemGourdDrink" || a.state == "ItemGourdDrinkRepeat" {
+    if matches!(a.state.trim_start_matches("Crouch"), "ItemGourdDrink" | "ItemGourdDrinkRepeat") {
         let consumed = d.anim(&a.anim).is_some_and(|an| an.events.iter().any(|e| e.kind == 65 && e.start > a.prev_t && e.start <= a.t));
         if consumed && p.gourd > 0 {
             p.gourd -= 1;
@@ -2111,7 +2261,7 @@ fn decide(
         }
         // Flag 90: may walk while drinking.
         if !a.anim.is_empty() && d.flag(&a.anim, a.t, FLAG_LIMIT_WALK) {
-            let walk = d.root_velocity("a000_000200").length();
+            let walk = d.root_velocity(if a.crouch { "a000_005200" } else { "a000_000200" }).length();
             a.move_vel = stick * walk;
         }
     }
@@ -2409,6 +2559,31 @@ fn decide(
             a.fall_type = vc.fall_type;
             a.airborne = true;
             a.move_vel = a.air_base;
+            // Row 1100's homing (ChrPhysicsHomingParam 300000000): the wire's guaranteed arrival.
+            if vc.homing_id == crate::wire::WIRE_HOMING {
+                if let Some(w) = p.wire.as_mut() {
+                    w.launch(d, a, tf.translation);
+                }
+            }
+        }
+    }
+    // TAE 904 WireSlideToStartPoint (wire.rs): the 922 blend with row 1101 and the exe's fixed
+    // curves (horizontal Linear 1, vertical EaseIn 10) over the event.
+    if let Some(e) = (!a.anim.is_empty()).then(|| d.anim(&a.anim)).flatten().and_then(|an| an.events.iter().find(|e| e.kind == 904 && e.start >= a.prev_t && e.start < a.t.max(a.prev_t + 1e-6))) {
+        if let Some(vc) = combat.velocity_change_row(1101) {
+            a.airborne = true;
+            a.fall_type = vc.fall_type;
+            p.vel_scale = Some(VelScale {
+                anim: a.anim.clone(),
+                add: (a.forward() * vc.h_change, vc.v_change),
+                v0: a.air_base,
+                vy0: a.vel_y,
+                delta: (Vec3::ZERO, 0.0),
+                scale: (vc.h_scale, vc.v_scale),
+                curves: [(0, 1), (1, 10)],
+                elapsed: 0.0,
+                duration: e.end - e.start,
+            });
         }
     }
 
@@ -2486,7 +2661,29 @@ fn decide(
         // *GroundJumpFall: STATE_TYPE_STANDBY in g_paramHkbState) carry none and take every input,
         // as the standby states on the ground (`is_free`).
         let air_ok = |a: &Actor, f: i64| a.state == "FreeFall" || a.state.ends_with("GroundJumpFall") || (!a.anim.is_empty() && d.flag(&a.anim, a.t, f));
-        if p.requests.remove(&Action::Guard).is_some() {
+        if let Some(th) = p.wire.and_then(|w| w.enemy).filter(|_| p.requests.contains_key(&Action::Attack) && air_ok(a, FLAG_ACCEPT_ATTACK)).and_then(|e| wire_throw(&combat, a, tf.translation, e, &enemies)) {
+            // The Grappling Hook Attack (崩しワイヤー, ThrowKind 180000 "[PC] Breaking wire 0":
+            // acceptableButton 0 = attack, doesCheckNormalFallOrbit 1, unlock type 5 = always):
+            // ThrowParam <chr>0170 in the wire fall at the hooked enemy - Wolf a<offset>_511600,
+            // the enemy ThrowDef13600; the landing takes 180100 (0171: 511610 / 13610).
+            p.requests.remove(&Action::Attack);
+            a.play("WireThrow", &th.atk_anim);
+            if let Some(Ok((_, mut ea, mut enemy, _))) = p.wire.and_then(|w| w.enemy).map(|e| enemies.get_mut(e)) {
+                enemy.react(&mut ea, &combat, &format!("ThrowDef{}", th.def_anim));
+            }
+            log.push("grappling hook attack", Color::srgb(1.0, 0.5, 0.3));
+        } else if p.wire.is_some() && p.requests.contains_key(&Action::Attack) && air_ok(a, FLAG_ACCEPT_ATTACK) {
+            // BEH_A_AIR_ATTACK in the wire-fall style (HKS 2877): W_WireFallAttackCombo1 with
+            // ACTION_UNLOCK_TYPE_WIRE_MOVE_ATTACK (14), else the additive attack (gap: not played).
+            p.requests.remove(&Action::Attack);
+            if crate::combat::action_unlocked(&combat, &config, 14) {
+                a.play_state(d, "WireFallAttackCombo1");
+            }
+        } else if p.wire.is_some() && p.requests.contains_key(&Action::Guard) && (air_ok(a, FLAG_ACCEPT_GUARD) || a.state == "WireMove") {
+            // BEH_A_AIR_DEFLECT_START in the wire-fall style (HKS 2965): W_WireMoveDeflectGuardStart.
+            p.requests.remove(&Action::Guard);
+            a.play_state(d, "WireMoveDeflectGuardStart");
+        } else if p.requests.remove(&Action::Guard).is_some() {
             // BEH_A_AIR_DEFLECT_START (HKS 6061): ACTION_UNLOCK_TYPE_AIR_DEFLECT_GUARD.
             if (air_ok(a, FLAG_ACCEPT_GUARD) || is_air_guard(&a.state)) && crate::combat::action_unlocked(&combat, &config, crate::combat::UNLOCK_AIR_DEFLECT_GUARD) {
                 a.play_state(d, "AirDeflectGuardStart");
@@ -2695,8 +2892,16 @@ fn decide(
                 }
             }
         }
+        if let Some(w) = p.wire.as_mut() {
+            w.steer(a, tf.translation, dt);
+        }
         a.move_vel = a.air_base;
-        let floor = crate::map::ground_y(tf.translation) + CAPSULE_HALF_HEIGHT;
+        let mut floor = crate::map::ground_y(tf.translation) + CAPSULE_HALF_HEIGHT;
+        // A ridden point is a floor once the arc is down to it (`Player::perch`).
+        let ride_spot = p.wire.filter(|w| w.ride && w.flight.is_none()).map(|w| w.land);
+        if let Some(spot) = ride_spot.filter(|s| (tf.translation - *s).with_y(0.0).length() < PERCH_RADIUS) {
+            floor = floor.max(spot.y + CAPSULE_HALF_HEIGHT);
+        }
         // A TAE 922 launch still easing in (the storm jumps) is lifting off, not landing.
         let lifting = p.vel_scale.as_ref().is_some_and(|vs| vs.add.1 > 0.0 && vs.anim == a.anim);
         if tf.translation.y <= floor && a.vel_y < 0.0 && !lifting {
@@ -2705,6 +2910,50 @@ fn decide(
             a.vel_y = 0.0;
             a.move_vel = Vec3::ZERO;
             a.air_base = Vec3::ZERO;
+            // BEH_R_LAND_WIRE (HKS 2076, the wire-fall style): out of the wire air attack
+            // W_LandWireFallAttackCombo1 at the same time, out of the wire guard
+            // W_LandAirDeflectGuard; with the stick held (MoveSpeedLevel > 0)
+            // W_StandMoveStartFromFreeFall = straight into moving (as BEH_R_LAND here); else
+            // W_LandWireMove. gap: the crouch landings (W_CrouchMoveStartFromFreeFall /
+            // W_LandCrouchFreeFall on TAE ref ENABLE_ADD_ACTION_INPUT_CROUCH) are not taken (nor in
+            // the plain landing).
+            if let Some(w) = p.wire.take() {
+                if ride_spot.is_some_and(|spot| (tf.translation - spot).with_y(0.0).length() < PERCH_RADIUS) {
+                    p.perch = Some(w.land);
+                }
+                // Breaking wire 1 (ThrowKind 180100, throwCheckSituation 1: on the landing, no
+                // button): ThrowParam <chr>0171, Wolf 511610 / the enemy ThrowDef13610, held as a
+                // pair (ThrowHold). Its hit is a deathblow: 511610 TAE 304 judge 660 = AtkParam_Pc
+                // 5000660 "右手刀_忍殺本体_落下" (throwFlag 2, atkPhysCorrection 60000); 13610 ends in
+                // SpEffect 300610 "HP reset" (changeHpRate -100) and 13611 is its death - one
+                // life bar off, or the kill on the last (Enemy::deathblow; Bosses' reading).
+                if a.state == "WireThrow" {
+                    let pair = w.enemy.and_then(|e| Some((e, combat.throw(combat.foe_of(&enemies.get(e).ok()?.1).throw_row(171))?)));
+                    if let Some((target, th)) = pair.filter(|(_, th)| d.anim(&th.atk_anim).is_some()) {
+                        if let Ok((_, mut ea, mut enemy, _)) = enemies.get_mut(target) {
+                            a.play("WireThrowLand", &th.atk_anim);
+                            p.wire_todome = false;
+                            enemy.deathblow(&mut ea, &combat, th.def_anim);
+                            throw.0 = Some(ThrowHold::new(target, &th, "WireThrowLand"));
+                            p.throw_target = Some(target);
+                            return;
+                        }
+                    }
+                }
+                let landed = match a.state.as_str() {
+                    "WireFallAttackCombo1" => a.continue_state(d, "LandWireFallAttackCombo1"),
+                    "WireMoveDeflectGuardStart" | "WireMoveDeflectGuardLoop" => a.play_state(d, "LandAirDeflectGuard"),
+                    _ if stick != Vec3::ZERO => {
+                        p.speed_level = if pad.walk { 1.0 } else { 2.0 };
+                        a.procedural("Locomotion");
+                        true
+                    }
+                    _ => a.play_state(d, "LandWireMove"),
+                };
+                if landed {
+                    return;
+                }
+            }
             // Plunge lands: ThrowParam 崩し落下1 (suffix 151): Wolf a20x_511410 (510310's clip),
             // the enemy ThrowDefDeath13411; 蹴り崩し1 (161): a20x_511510, ThrowDef13510.
             if a.state == "PlungeDeathblow" {
@@ -2894,6 +3143,28 @@ fn decide(
             match art_cat.and_then(|c| art_key(d, c, &fall)) {
                 Some(k) if a.state != fall => a.play(&fall, &k),
                 _ => a.t %= len.max(1e-3),
+            }
+        } else if ended && crate::wire::is_wire_state(&a.state) {
+            // The wire moves fall on in WireMove (a000_202020, loops) until BEH_R_LAND_WIRE; the
+            // wire guard holds its loop while guard is held, then W_WireMoveDeflectGuardEnd
+            // (HKS 2978).
+            match a.state.as_str() {
+                "WireMove" => a.t %= len.max(1e-3),
+                "WireMoveDeflectGuardStart" | "WireMoveDeflectGuardLoop" if pad.guard_held => {
+                    if a.state == "WireMoveDeflectGuardLoop" {
+                        a.t %= len.max(1e-3);
+                    } else {
+                        a.play_state(d, "WireMoveDeflectGuardLoop");
+                    }
+                }
+                "WireMoveDeflectGuardStart" | "WireMoveDeflectGuardLoop" => {
+                    a.play_state(d, "WireMoveDeflectGuardEnd");
+                }
+                _ => {
+                    if !a.play_state(d, "WireMove") {
+                        a.t = len;
+                    }
+                }
             }
         } else if ended {
             if a.state.ends_with("GroundJumpStart") {

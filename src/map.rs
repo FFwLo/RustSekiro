@@ -18,7 +18,7 @@
 //! Without a map (config `[world] map` unset and no `SHINOBI_MAP`), nothing here runs and the
 //! floor is the flat arena at y = 0 (`ground_y` returns 0): the sim tests stay as they were.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, OnceLock, RwLock};
 
 use bevy::asset::RenderAssetUsages;
@@ -148,33 +148,66 @@ pub fn raycast(origin: Vec3, dir: Vec3, max: f32) -> Option<f32> {
 }
 
 /// Wolf's start (his centre): 4 m in front of the enemy, the player's spot of every arena
-/// (tools/sekiro-extract map export). On a boss's own arena that spot can sit under the boss's
-/// cave roof (the Guardian Ape sleeps in a grotto: at (0, 4) the rock h019400 is 1.5 m over
-/// the floor and the camera has no room), so the start walks away from the boss along +z, half
-/// a metre at a time, to the first spot with a floor near the arena's and 2.8 m of headroom.
+/// (tools/sekiro-extract map export: the enemy at (0, y, -4) facing +z, the origin between
+/// them). The ground between the two can slope (the Fountainhead bridge rises 0.25 m per
+/// metre toward Wolf: 1.7 m up at z 4), so the floor under each spot is followed from the
+/// enemy's spot half a metre at a time, 2 m of step at most, instead of being read from a
+/// fixed height; a ledge over the spot counts as a floor too, so the nearer of the two to the
+/// last floor wins. On a boss's own arena the spot can sit under the boss's cave roof (the
+/// Guardian Ape sleeps in a grotto: at (0, 4) the rock h019400 is 1.5 m over the floor and
+/// the camera has no room), so the start walks on away from the boss along +z to the first
+/// spot with 2.8 m of headroom. A wall across the walk ends it and the plain spot is kept
+/// (the Headless Ape's MSB pose faces the pit's wall: tools/boss_arenas.py turns his arena).
 /// gap: the game starts the fight where the boss script's warp or the fog gate puts Wolf.
 pub fn player_start() -> Vec3 {
     const HEADROOM: f32 = 2.8;
     let base = Vec3::new(0.0, CAPSULE_HALF_HEIGHT, 4.0);
     let Some(t) = terrain().filter(|_| on_boss_arena()) else { return base };
-    // The arena's floor is at y 0 by construction (a ledge over it counts as a floor too, so
-    // the search tops out at 1 m).
-    let Some(h0) = t.floor(0.0, 4.0, 1.0) else { return base };
-    // Within half a metre of that floor: the top of the overhang itself is not the spot.
-    let floor_at = |z: f32| t.floor(0.0, z, h0 + 0.5);
-    let room = |z: f32, h: f32| t.raycast(Vec3::new(0.0, h + 0.1, z), Vec3::Y, HEADROOM).is_none();
-    if room(4.0, h0) {
-        return base;
+    // `SHINOBI_START=<x>,<z>` (a debug knob): that spot instead, on the floor nearest y 0.
+    if let Some((x, z)) = std::env::var("SHINOBI_START").ok().and_then(|v| v.split_once(',').and_then(|(x, z)| Some((x.trim().parse::<f32>().ok()?, z.trim().parse::<f32>().ok()?)))) {
+        let h = t.floor(x, z, 3.0).unwrap_or(0.0);
+        return Vec3::new(x, h + CAPSULE_HALF_HEIGHT, z);
     }
-    let mut z = 4.5;
-    while z <= 16.0 {
-        if let Some(h) = floor_at(z).filter(|h| (h - h0).abs() <= 0.5) {
-            if room(z, h) {
-                info!("player start moved to z {z}: no headroom at the arena's spot (floor {h0:.2}, {h:.2} here)");
-                return Vec3::new(0.0, h + CAPSULE_HALF_HEIGHT, z);
+    // The floor under (0, z) nearest to `from`, within 2 m up or down: the highest below
+    // `from` + 2, unless that is a ledge more than half a metre up with ground under it.
+    let floor_near = |z: f32, from: f32| -> Option<f32> {
+        let hi = t.floor(0.0, z, from + 2.0)?;
+        if hi > from + 0.5 {
+            if let Some(lo) = t.floor(0.0, z, from + 0.5).filter(|lo| *lo >= from - 2.0) {
+                return Some(lo);
             }
         }
+        (hi >= from - 2.0).then_some(hi)
+    };
+    let room = |z: f32, h: f32| t.raycast(Vec3::new(0.0, h + 0.1, z), Vec3::Y, HEADROOM).is_none();
+    // On another boss's arena (an encounter swap, enemy.rs on_own_arena) the line-up stands
+    // 8 m ahead of Wolf instead of at the boss's MSB spot: that spot needs a floor and headroom
+    // too, or the enemy starts in the rock. Its floor may sit on a slope (Isshin's field falls
+    // 0.27 m per metre toward Wolf: the boss spot is 1.3 m above his), so it is allowed 2 m of
+    // height difference, found from 2 m over Wolf's floor down.
+    let stranger = !crate::enemy::on_own_arena();
+    let lineup_ok = |z: f32, h: f32| {
+        !stranger || t.floor(0.0, z - 8.0, h + 2.0).filter(|hf| (hf - h).abs() <= 2.0).is_some_and(|hf| room(z - 8.0, hf))
+    };
+    // The enemy's floor at (0, -4) is the arena's y 0 by construction (the exporter puts the
+    // origin at his feet, half a metre of helper collision allowed).
+    let Some(h0) = t.floor(0.0, -4.0, 1.0) else { return base };
+    let mut h = h0;
+    let mut z = -4.0;
+    while z < 16.0 {
         z += 0.5;
+        let Some(hz) = floor_near(z, h) else {
+            warn!("player start: no floor within 2 m of {h:.2} at (0, {z}); kept at (0, 4) over {h0:.2}");
+            return base.with_y(h0 + CAPSULE_HALF_HEIGHT);
+        };
+        h = hz;
+        if z < 4.0 || !room(z, h) || !lineup_ok(z, h) {
+            continue;
+        }
+        if z > 4.0 {
+            info!("player start moved to z {z}: no headroom at the arena's spot (floor {h0:.2} at the enemy, {h:.2} here{})", if stranger { "; the line-up 8 m ahead checked too" } else { "" });
+        }
+        return Vec3::new(0.0, h + CAPSULE_HALF_HEIGHT, z);
     }
     warn!("player start: no spot with {HEADROOM} m of headroom within 12 m of (0, 4); kept");
     base
@@ -199,7 +232,7 @@ fn cell_of(x: f32, z: f32) -> (i32, i32) {
 }
 
 impl Terrain {
-    fn from_hit(d: &[u8]) -> Option<Self> {
+    pub(crate) fn from_hit(d: &[u8]) -> Option<Self> {
         if d.len() < 12 || &d[0..4] != b"SHMC" {
             return None;
         }
@@ -207,11 +240,18 @@ impl Terrain {
         let f = |o: usize| f32::from_le_bytes(d[o..o + 4].try_into().unwrap());
         let nv = u32_(8) as usize;
         let mut o = 12;
+        // A truncated file: None (the loader warns) instead of a slice panic.
+        if d.len() < o + nv * 12 + 4 {
+            return None;
+        }
         // X mirrored into Bevy space (as every model).
         let verts: Vec<Vec3> = (0..nv).map(|i| Vec3::new(-f(o + i * 12), f(o + i * 12 + 4), f(o + i * 12 + 8))).collect();
         o += nv * 12;
         let nt = u32_(o) as usize;
         o += 4;
+        if d.len() < o + nt * 16 {
+            return None;
+        }
         Some(Self::from_tris(verts, (0..nt).map(|i| {
             let k = o + i * 16;
             ([u32_(k), u32_(k + 4), u32_(k + 8)], u32_(k + 12))
@@ -252,6 +292,13 @@ impl Terrain {
             }
         }
         t
+    }
+
+    /// No terrain (the map switched to one without a `.hit`, or off).
+    pub(crate) fn clear() {
+        if let Ok(mut t) = TERRAIN.get_or_init(|| RwLock::new(None)).write() {
+            *t = None;
+        }
     }
 
     pub(crate) fn install(self) {
@@ -520,6 +567,225 @@ impl bevy::pbr::MaterialExtension for MapExt {
 }
 
 // ---------------------------------------------------------------------------------------------
+// Grapple points (docs/kb/grapple.md; the engine's "wire")
+
+/// One wire point of the map (json "grapple", tools/sekiro-extract map export): the hook the
+/// rope attaches to, the landing spot, the point's facing and its WireVariationParam row. Bevy
+/// space (X mirrored on load).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GrapplePoint {
+    pub hook: Vec3,
+    pub land: Vec3,
+    pub fwd: Vec3,
+    pub variation: i64,
+}
+
+/// The loaded map's wire points (empty without a map, in the sandbox, and on maps exported
+/// before the grapple export).
+#[derive(Resource, Default)]
+pub struct GrapplePoints(pub Vec<GrapplePoint>);
+
+/// A hang (kind 2) or wall-hug (kind 3) edge from the map's and objects' `.edge` files
+/// (kb/grapple.md section 1): the record's three vertices raw, in Bevy space. `a`-`b` is the
+/// edge's segment; what `c` means per kind is not decoded (gap). Data for the ledge hang and
+/// wall hug moves (HKS BEH_A_GROUND_HANG_START, COVER_*); nothing uses it yet but the gizmos.
+#[derive(Clone, Copy, Debug)]
+#[allow(dead_code)]
+pub struct LedgeEdge {
+    pub a: Vec3,
+    pub b: Vec3,
+    pub c: Vec3,
+    pub kind: u8,
+    pub variation: i64,
+}
+
+/// The loaded map's hang / hug edges (empty on maps exported before 2026-10-11's ledge export).
+#[derive(Resource, Default)]
+pub struct LedgeEdges(pub Vec<LedgeEdge>);
+
+/// The point the wire would fire at ([`grapple_target`]).
+#[derive(Clone, Copy, Debug)]
+#[allow(dead_code)] // read by the player move (VXf)
+pub struct GrappleTarget {
+    pub index: usize,
+    pub point: GrapplePoint,
+    /// Wolf's centre to the hook.
+    pub dist: f32,
+    /// Inside the row's action distance (the hook can be fired; outside it the marker is shown
+    /// greyed, `MENU_Wire_NG`).
+    pub in_action_range: bool,
+    /// Rideable (landing on the point, LandWireMove) or a swing-through point (targetMarkerType
+    /// 1 ring with an arrow: rows 20/23/24 "can't ride", 41 kite).
+    pub ride: bool,
+}
+
+/// WirePointSearchParam row 0 (WireSetParam 0 = rows [0, 100], the default set).
+pub const WIRE_ACTION_NEAR: f32 = 3.0;
+pub const WIRE_ACTION_FAR: f32 = 15.0;
+pub const WIRE_FIND_FAR: f32 = 25.0;
+/// filteringDistanceHeightUpper / Lower 10.2 and filteringDistanceWidth 14.3: the rectangle in
+/// the camera's plane a point must be inside to be a candidate; softlockDistanceHeight 10.2 /
+/// Width 7.15 the smaller one the current target keeps itself inside. Taken as metres in the
+/// camera plane: the height values one-sided, the widths the full width (soft lock = half the
+/// filter width). // gap: the exe may scale them with depth (screen fractions); untraced.
+const WIRE_FILTER_HEIGHT_UPPER: f32 = 10.2;
+const WIRE_FILTER_HEIGHT_LOWER: f32 = 10.2;
+const WIRE_FILTER_WIDTH: f32 = 14.3;
+const WIRE_SOFTLOCK_HEIGHT: f32 = 10.2;
+const WIRE_SOFTLOCK_WIDTH: f32 = 7.15;
+
+/// WireVariationParam: recognitionAngleUp/Down/Left/Right (degrees, the player's side of the
+/// point's reference direction), extendWireActionDistance (m, added to actionDistanceFar) and
+/// whether the point is ridden (targetMarkerType 0) or swung through (1). Rows 0/3/20/23/24
+/// are 90/90/180/180, 1/2/21/22 90 all round, 5 extend 10, 40 extend 30, 41 90/50/30/10
+/// extend 30; enemy rows 10700..70210 are the SpEffect's (never map points).
+fn wire_variation(row: i64) -> ([f32; 4], f32, bool) {
+    match row {
+        1 | 2 | 21 | 22 => ([90.0, 90.0, 90.0, 90.0], 0.0, row < 20),
+        5 => ([90.0, 90.0, 180.0, 180.0], 10.0, true),
+        20 | 23 | 24 => ([90.0, 90.0, 180.0, 180.0], 0.0, false),
+        40 => ([90.0, 90.0, 180.0, 180.0], 30.0, true),
+        41 => ([90.0, 50.0, 30.0, 10.0], 30.0, false),
+        // gap: rows 45 (homing +53105) and the enemy rows: taken as row 0.
+        _ => ([90.0, 90.0, 180.0, 180.0], 0.0, true),
+    }
+}
+
+/// The wire point Wolf would fire at: of the points within findDistanceFar whose recognition
+/// angles admit him and that sit inside the camera-plane rectangle, the one nearest the view
+/// axis; `prev` (last frame's target) is kept while it stays inside the smaller soft-lock
+/// rectangle (WirePointSearchParam 0). A collision triangle between Wolf's chest and the hook
+/// hides the point. `cam_fwd` unit; `wolf` his centre.
+pub fn grapple_target(cam_pos: Vec3, cam_fwd: Vec3, wolf: Vec3, prev: Option<usize>, points: &[GrapplePoint]) -> Option<GrappleTarget> {
+    let right = cam_fwd.cross(Vec3::Y).try_normalize().unwrap_or(Vec3::X);
+    let up = right.cross(cam_fwd).normalize();
+    let chest = wolf + Vec3::Y * 0.3;
+    // (index, dist, lateral, vertical, depth, ride, action far) of every candidate.
+    let mut found: Vec<(usize, f32, f32, f32, f32, bool, f32)> = Vec::new();
+    for (i, p) in points.iter().enumerate() {
+        let to_hook = p.hook - wolf;
+        let dist = to_hook.length();
+        if dist > WIRE_FIND_FAR || dist < 1e-3 {
+            continue;
+        }
+        let (angles, extend, ride) = wire_variation(p.variation);
+        // Wolf in the point's frame: ahead = the reference direction, horizontal angle to the
+        // right positive, vertical angle up positive. // gap: which side "left" is (mirrored X)
+        // and whether the angles are read from the hook or from the landing point.
+        let fwd = p.fwd.try_normalize().unwrap_or(Vec3::Z);
+        let pright = fwd.cross(Vec3::Y).try_normalize().unwrap_or(Vec3::X);
+        let to_wolf = -to_hook / dist;
+        let horizontal = to_wolf.x.hypot(to_wolf.z).max(1e-4);
+        let h = pright.dot(to_wolf).atan2(fwd.dot(to_wolf)).to_degrees();
+        let v = (to_wolf.y / horizontal).atan().to_degrees();
+        let ok_v = if v >= 0.0 { v <= angles[0] } else { -v <= angles[1] };
+        let ok_h = if h >= 0.0 { h <= angles[3] } else { -h <= angles[2] };
+        if !ok_v || !ok_h {
+            continue;
+        }
+        // The camera-plane rectangle.
+        let rel = p.hook - cam_pos;
+        let depth = rel.dot(cam_fwd);
+        if depth <= 0.0 {
+            continue;
+        }
+        let lateral = rel.dot(right);
+        let vertical = rel.dot(up);
+        if lateral.abs() > WIRE_FILTER_WIDTH / 2.0 || vertical > WIRE_FILTER_HEIGHT_UPPER || -vertical > WIRE_FILTER_HEIGHT_LOWER {
+            continue;
+        }
+        // Nothing in the way (the rope has no collision: kb/grapple.md).
+        if let Some(t) = raycast(chest, (p.hook - chest).normalize(), (p.hook - chest).length() - 0.3) {
+            if t < (p.hook - chest).length() - 0.3 {
+                continue;
+            }
+        }
+        found.push((i, dist, lateral, vertical, depth, ride, WIRE_ACTION_FAR + extend));
+    }
+    if found.is_empty() {
+        return None;
+    }
+    let pick = prev
+        .and_then(|k| found.iter().find(|f| f.0 == k && f.2.abs() <= WIRE_SOFTLOCK_WIDTH / 2.0 && f.3.abs() <= WIRE_SOFTLOCK_HEIGHT))
+        .or_else(|| found.iter().min_by(|a, b| (a.2 / a.4).hypot(a.3 / a.4).total_cmp(&(b.2 / b.4).hypot(b.3 / b.4))))?;
+    let &(index, dist, _, _, _, ride, far) = pick;
+    Some(GrappleTarget { index, point: points[index], dist, in_action_range: (WIRE_ACTION_NEAR..=far).contains(&dist), ride })
+}
+
+/// Debug (H / the debug menu, with the hurtboxes): every wire point as a green hook sphere, a
+/// line to its landing spot and a short facing tick; the current target yellow with a line
+/// from Wolf (grey when out of the action range).
+fn draw_grapple_points(
+    points: Res<GrapplePoints>,
+    show: Res<crate::combat::ShowHurtboxes>,
+    cams: Query<&GlobalTransform, With<crate::camera::OrbitCamera>>,
+    wolf: Query<&Transform, With<crate::player::Player>>,
+    mut prev: Local<Option<usize>>,
+    mut gizmos: Gizmos,
+) {
+    if !show.0 || points.0.is_empty() {
+        return;
+    }
+    let green = Color::srgba(0.2, 0.9, 0.3, 0.9);
+    for p in &points.0 {
+        gizmos.sphere(Isometry3d::from_translation(p.hook), 0.25, green);
+        gizmos.line(p.hook, p.land, green);
+        gizmos.line(p.hook, p.hook + p.fwd * 0.6, Color::srgba(0.2, 0.5, 1.0, 0.9));
+    }
+    let (Ok(cam), Ok(w)) = (cams.single(), wolf.single()) else { return };
+    let (_, rot, pos) = cam.to_scale_rotation_translation();
+    let target = grapple_target(pos, rot * Vec3::NEG_Z, w.translation, *prev, &points.0);
+    *prev = target.map(|t| t.index);
+    if let Some(t) = target {
+        let c = if t.in_action_range { Color::srgb(1.0, 0.9, 0.2) } else { Color::srgb(0.6, 0.6, 0.6) };
+        gizmos.sphere(Isometry3d::from_translation(t.point.hook), 0.4, c);
+        gizmos.line(w.translation, t.point.hook, c);
+    }
+}
+
+/// A json [x, y, z] as a Bevy point (X mirrored into Bevy space like every model).
+fn json_vec(p: &serde_json::Value, k: &str) -> Option<Vec3> {
+    let a = p[k].as_array()?;
+    Some(Vec3::new(-(a.first()?.as_f64()? as f32), a.get(1)?.as_f64()? as f32, a.get(2)?.as_f64()? as f32))
+}
+
+/// The map's wire points from its json.
+fn load_grapple(json: &serde_json::Value) -> Vec<GrapplePoint> {
+    let vec = json_vec;
+    json["grapple"]
+        .as_array()
+        .map(|a| a.iter().filter_map(|p| Some(GrapplePoint { hook: vec(p, "hook")?, land: vec(p, "land")?, fwd: vec(p, "fwd")?, variation: p["var"].as_i64().unwrap_or(0) })).collect())
+        .unwrap_or_default()
+}
+
+/// The map's hang / hug edges from its json ("ledges").
+pub(crate) fn load_ledges(json: &serde_json::Value) -> Vec<LedgeEdge> {
+    json["ledges"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|p| Some(LedgeEdge { a: json_vec(p, "a")?, b: json_vec(p, "b")?, c: json_vec(p, "c")?, kind: p["kind"].as_u64()? as u8, variation: p["var"].as_i64().unwrap_or(0) }))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Debug gizmos (H, with the hurtboxes): hang edges orange, hug edges cyan, `a`-`b` as a line
+/// with a short tick towards `c`; only those within 30 m of Wolf.
+fn draw_ledges(ledges: Res<LedgeEdges>, show: Res<crate::combat::ShowHurtboxes>, wolf: Query<&Transform, With<crate::player::Player>>, mut gizmos: Gizmos) {
+    if !show.0 || ledges.0.is_empty() {
+        return;
+    }
+    let Ok(w) = wolf.single() else { return };
+    for l in ledges.0.iter().filter(|l| l.a.distance(w.translation) < 30.0) {
+        let c = if l.kind == 2 { Color::srgba(1.0, 0.6, 0.1, 0.9) } else { Color::srgba(0.2, 0.8, 1.0, 0.9) };
+        gizmos.line(l.a, l.b, c);
+        let mid = (l.a + l.b) * 0.5;
+        gizmos.line(mid, mid + (l.c - mid).clamp_length_max(0.3), c);
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
 // Draw params
 
 /// The draw params JSON (`map_<id>.json` "drawparam": group -> param -> [{id, time, value}]).
@@ -538,6 +804,9 @@ pub struct MapLighting {
     pub luts: Vec<u32>,
     /// `map_<id>`: the asset stem of the LUT files.
     pub stem: String,
+    /// The reverb of the arena's floor collision (MSB SoundSpaceType, json "sound_space_type"):
+    /// 0 none .. 8, fmod.rs apply_reverb.
+    pub sound_space: u8,
 }
 
 impl MapLighting {
@@ -875,15 +1144,63 @@ pub(crate) fn tangents(pos: &[[f32; 3]], normal: &[[f32; 3]], uv: &[[f32; 2]], i
         .collect()
 }
 
-#[allow(clippy::too_many_arguments)]
-fn load_map(
+/// The map id loaded last (`load_map_id`): what the world shows now, after any encounter
+/// swap (`switch_map`). None before the first load or with the map off.
+static LOADED_MAP: RwLock<Option<String>> = RwLock::new(None);
+
+pub fn loaded_map() -> Option<String> {
+    LOADED_MAP.read().ok()?.clone()
+}
+
+fn load_map(config: Res<GameConfig>, mut commands: Commands, assets: Res<AssetServer>, mut meshes: ResMut<Assets<Mesh>>, mut materials: ResMut<Assets<MapMaterial>>) {
+    let Some(map) = map_id(&config) else { return };
+    load_map_id(&map, &config, &mut commands, &assets, &mut meshes, &mut materials);
+}
+
+/// An encounter swap (enemy.rs SpawnEncounter, the picker) moves the fight to the new boss's
+/// own arena, or back to the config's map, without a relaunch: the old pieces and lights go,
+/// the new map loads (terrain, lighting, pieces; `apply_lighting` re-dresses the camera from
+/// the fresh MapLighting) and Wolf stands on its start. Only with the config's `[world] map`
+/// on and not the sandbox; `SHINOBI_MAP` pins one map for the run.
+fn switch_map(
+    mut msgs: MessageReader<crate::enemy::SpawnEncounter>,
     config: Res<GameConfig>,
     mut commands: Commands,
     assets: Res<AssetServer>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<MapMaterial>>,
+    old: Query<Entity, Or<(With<MapPiece>, With<Sun>, With<FillLight>)>>,
+    mut wolf: Query<&mut Transform, With<crate::player::Player>>,
 ) {
-    let Some(map) = map_id(&config) else { return };
+    let Some(m) = msgs.read().last().cloned() else { return };
+    let Some(base) = config.world.map.clone().filter(|m| !m.is_empty()) else { return };
+    if base == crate::sandbox::MAP_ID || std::env::var("SHINOBI_MAP").is_ok() {
+        return;
+    }
+    let want = boss_arena(&m.chr, m.npc_row).unwrap_or(base);
+    if loaded_map().as_deref() == Some(want.as_str()) {
+        return;
+    }
+    for e in &old {
+        commands.entity(e).despawn();
+    }
+    Terrain::clear();
+    info!("map switch: {:?} -> {want} for {} {:?}", loaded_map(), m.chr, m.npc_row);
+    load_map_id(&want, &config, &mut commands, &assets, &mut meshes, &mut materials);
+    // The fight's row before the start search: `on_own_arena` must see the new boss, not the
+    // old one, in a frame where enemy.rs reads the message after this (Bosses' request).
+    crate::enemy::set_fight(&m.chr, m.npc_row);
+    let start = player_start();
+    for mut tf in &mut wolf {
+        tf.translation = start;
+    }
+}
+
+fn load_map_id(map: &str, config: &GameConfig, commands: &mut Commands, assets: &AssetServer, meshes: &mut Assets<Mesh>, materials: &mut Assets<MapMaterial>) {
+    let map = map.to_string();
+    if let Ok(mut l) = LOADED_MAP.write() {
+        *l = Some(map.clone());
+    }
     let dir = crate::paths::extracted();
     let t0 = std::time::Instant::now();
     // The sandbox (sandbox.rs): a generated arena under a real map's lighting and materials.
@@ -927,7 +1244,15 @@ fn load_map(
         arena_yaw: json["arena_yaw"].as_f64().unwrap_or(0.0) as f32,
         luts: json["luts"].as_array().map(|l| l.iter().filter_map(|n| n.as_u64().map(|n| n as u32)).filter(|n| dir.join(format!("map_{id}_lut_{n:04}.dds")).exists()).collect()).unwrap_or_default(),
         stem: format!("map_{id}"),
+        sound_space: json["sound_space_type"].as_u64().unwrap_or(0).min(8) as u8,
     });
+    // Wire points (grapple.md). The sandbox arena is generated: its source map's points would
+    // hang in the air, so it has none.
+    let grapple = if sandbox { Vec::new() } else { load_grapple(&json) };
+    let ledges = if sandbox { Vec::new() } else { load_ledges(&json) };
+    info!("map {id}: {} grapple points, {} hang / hug edges", grapple.len(), ledges.len());
+    commands.insert_resource(GrapplePoints(grapple));
+    commands.insert_resource(LedgeEdges(ledges));
     // Sun shadows: `SHINOBI_MAP_SHADOW=<cascades>,<max m>` (default 2,60: the cascades are the
     // map's frame-rate cost, kb/map.md), `SHINOBI_MAP_NO_SHADOW=1` none.
     let shadow: Option<(usize, f32)> = std::env::var("SHINOBI_MAP_SHADOW").ok().and_then(|v| {
@@ -935,8 +1260,8 @@ fn load_map(
         (d.len() == 2).then(|| (d[0].max(1.0) as usize, d[1]))
     });
     let (cascades, max_distance) = shadow.unwrap_or((2, 60.0));
-    if let Some(size) = std::env::var("SHINOBI_MAP_SHADOW_RES").ok().and_then(|v| v.parse::<usize>().ok()) {
-        commands.insert_resource(bevy::light::DirectionalLightShadowMap { size });
+    if let Some(size) = std::env::var("SHINOBI_MAP_SHADOW_RES").ok().and_then(|v| v.parse::<usize>().ok()).or(config.video.shadow_res) {
+        commands.insert_resource(bevy::light::DirectionalLightShadowMap { size: size.clamp(256, 8192) });
     }
     commands.spawn((
         Sun,
@@ -954,7 +1279,7 @@ fn load_map(
     let options = MaterialOptions::from_env();
     let mut mats = MaterialCache::default();
     if sandbox {
-        crate::sandbox::build(&d, &mut commands, &assets, &mut meshes, &mut materials, &mut mats, &options);
+        crate::sandbox::build(&d, commands, assets, meshes, materials, &mut mats, &options);
         info!("map sandbox ({id}): loaded in {:.1} s", t0.elapsed().as_secs_f32());
         return;
     }
@@ -962,12 +1287,21 @@ fn load_map(
     let mut n = 0;
     let mut tris = 0;
     let mut no_cast = 0;
+    let probe: Option<(f32, f32)> = std::env::var("SHINOBI_MAP_PROBE").ok().and_then(|v| {
+        let (x, z) = v.split_once(',')?;
+        Some((x.trim().parse().ok()?, z.trim().parse().ok()?))
+    });
     let ok = walk_bin(&d, |b| {
         n += 1;
+        let n_batch = n;
         tris += b.index_count / 3;
         let mut key = b.key();
         // `#<index>` skips one batch by its position in the bin.
         if key.0.iter().any(|n| options.skip.iter().any(|s| n.contains(s.as_str()))) || options.skip.iter().any(|s| s.strip_prefix('#').and_then(|x| x.parse::<usize>().ok()) == Some(n - 1)) {
+            return;
+        }
+        // `SHINOBI_MAP_ONLY=#<index>[,#<index>]`: load only those batches.
+        if !options.only.is_empty() && !options.only.contains(&(n - 1)) {
             return;
         }
         if options.no_layers {
@@ -992,8 +1326,28 @@ fn load_map(
             mesh.insert_attribute(Mesh::ATTRIBUTE_UV_1, uv2);
             mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, blend);
         }
+        // `SHINOBI_MAP_PROBE=x,z`: the final (mirrored, re-wound) triangles of this batch over
+        // that spot below 3 m, with their geometric normal: is a floor front-facing from above?
+        if let Some((px, pz)) = probe {
+            let pos = mesh.attribute(Mesh::ATTRIBUTE_POSITION).and_then(|a| a.as_float3()).unwrap_or(&[]);
+            for t in indices.chunks_exact(3) {
+                let [a, b, c] = [Vec3::from(pos[t[0] as usize]), Vec3::from(pos[t[1] as usize]), Vec3::from(pos[t[2] as usize])];
+                let inside = |p: Vec2, a: Vec2, b: Vec2, c: Vec2| {
+                    let s = |p: Vec2, q: Vec2| (p.x - q.x) * (p.y - q.y);
+                    let d1 = (p.x - b.x) * (a.y - b.y) - (a.x - b.x) * (p.y - b.y);
+                    let d2 = (p.x - c.x) * (b.y - c.y) - (b.x - c.x) * (p.y - c.y);
+                    let d3 = (p.x - a.x) * (c.y - a.y) - (c.x - a.x) * (p.y - a.y);
+                    let _ = s;
+                    !((d1 < 0.0 || d2 < 0.0 || d3 < 0.0) && (d1 > 0.0 || d2 > 0.0 || d3 > 0.0))
+                };
+                if inside(Vec2::new(px, pz), a.xz(), b.xz(), c.xz()) && a.y.max(b.y).max(c.y) < 3.0 && a.y.min(b.y).min(c.y) > -1.0 {
+                    let n = (b - a).cross(c - a).normalize_or_zero();
+                    info!("map probe ({px}, {pz}): batch {} {:?} tri y {:.2} {:.2} {:.2} face normal {:.2?} ({})", n_batch - 1, key.0[0], a.y, b.y, c.y, n, if n.y > 0.0 { "up: front from above" } else { "down: culled from above" });
+                }
+            }
+        }
         mesh.insert_indices(Indices::U32(indices));
-        let material = mats.get(&assets, &mut materials, &options, &key);
+        let material = mats.get(assets, materials, &options, &key);
         let mut e = commands.spawn((MapPiece, Mesh3d(meshes.add(mesh)), MeshMaterial3d(material), Transform::default(), Visibility::default()));
         if !b.casts {
             e.insert(bevy::light::NotShadowCaster);
@@ -1001,7 +1355,7 @@ fn load_map(
         }
     });
     if ok.is_none() {
-        warn!("map {id}: map_{id}.bin is not a SHMP file");
+        warn!("map {id}: map_{id}.bin is not a SHMP file or is cut short (re-export it)");
     }
     info!("map {id}: {n} meshes ({no_cast} without shadows), {tris} triangles, {} materials, loaded in {:.1} s", mats.len(), t0.elapsed().as_secs_f32());
 }
@@ -1069,14 +1423,19 @@ impl BinBatch<'_> {
         (pos, nrm, uv, uv2, blend)
     }
 
-    /// The triangle list, winding flipped for the mirrored X.
+    /// The triangle list as exported. FLVER triangles are DirectX clockwise; mirroring X
+    /// (`vertices`) alone turns them into Bevy's counter-clockwise front faces. (Until
+    /// 2026-10-11 the order was also swapped, as the Havok hit mesh needs (`Terrain::from_hit`,
+    /// right-handed data): every drawn surface was inside out. Closed rocks and planks still
+    /// looked right from their far walls, but open floors such as the Guardian Ape arena's
+    /// pond bed were back-face culled away, kb/map.md.)
     pub(crate) fn indices(&self) -> Vec<u32> {
         let d = self.d;
         let u32_ = |o: usize| u32::from_le_bytes(d[o..o + 4].try_into().unwrap());
         let mut indices = Vec::with_capacity(self.index_count);
         for t in 0..self.index_count / 3 {
             let i = self.indices_at + t * 12;
-            indices.extend([u32_(i), u32_(i + 8), u32_(i + 4)]);
+            indices.extend([u32_(i), u32_(i + 4), u32_(i + 8)]);
         }
         indices
     }
@@ -1089,41 +1448,46 @@ pub(crate) fn walk_bin(d: &[u8], mut f: impl FnMut(BinBatch)) -> Option<()> {
     if d.len() < 12 || &d[0..4] != b"SHMP" {
         return None;
     }
-    let u16_ = |o: usize| u16::from_le_bytes([d[o], d[o + 1]]);
-    let u32_ = |o: usize| u32::from_le_bytes(d[o..o + 4].try_into().unwrap());
-    let string = |o: &mut usize| {
-        let l = u16_(*o) as usize;
-        let s = String::from_utf8_lossy(&d[*o + 2..*o + 2 + l]).into_owned();
+    // A truncated file (a copy that did not finish) ends the walk with None before any batch
+    // reaches past the data; nothing here indexes `d` unchecked.
+    let u16_ = |o: usize| Some(u16::from_le_bytes([*d.get(o)?, *d.get(o + 1)?]));
+    let u32_ = |o: usize| Some(u32::from_le_bytes(d.get(o..o + 4)?.try_into().ok()?));
+    let string = |o: &mut usize| -> Option<String> {
+        let l = u16_(*o)? as usize;
+        let s = String::from_utf8_lossy(d.get(*o + 2..*o + 2 + l)?).into_owned();
         *o += 2 + l;
-        s
+        Some(s)
     };
-    let version = u32_(4);
-    let n = u32_(8) as usize;
+    let version = u32_(4)?;
+    let n = u32_(8)? as usize;
     let mut o = 12;
     for _ in 0..n {
-        let albedo = string(&mut o);
-        let normal = string(&mut o);
+        let albedo = string(&mut o)?;
+        let normal = string(&mut o)?;
         let mut layers: [String; 7] = Default::default();
         if version >= 3 {
             for l in layers.iter_mut().take(if version >= 4 { 7 } else { 6 }) {
-                *l = string(&mut o);
+                *l = string(&mut o)?;
             }
         }
-        let alpha = d[o];
-        let two_sided = d[o + 1] != 0;
+        let alpha = *d.get(o)?;
+        let two_sided = *d.get(o + 1)? != 0;
         o += 2;
         let casts = version < 2 || {
             o += 1;
-            d[o - 1] != 0
+            *d.get(o - 1)? != 0
         };
-        let vertex_count = u32_(o) as usize;
+        let vertex_count = u32_(o)? as usize;
         o += 4;
         let vertices_at = o;
         o += vertex_count * if version >= 3 { 44 } else { 32 };
-        let index_count = u32_(o) as usize;
+        let index_count = u32_(o)? as usize;
         o += 4;
         let indices_at = o;
         o += index_count * 4;
+        if o > d.len() {
+            return None;
+        }
         f(BinBatch { d, version, albedo, normal, layers, alpha, two_sided, casts, vertex_count, vertices_at, index_count, indices_at });
     }
     Some(())
@@ -1133,6 +1497,8 @@ pub(crate) fn walk_bin(d: &[u8], mut f: impl FnMut(BinBatch)) -> Option<()> {
 pub(crate) struct MaterialOptions {
     /// `SHINOBI_MAP_NO_NORMALS=1`: no normal maps.
     pub no_normals: bool,
+    /// `SHINOBI_MAP_TWO_SIDED=1`: no back-face culling (debug: is a piece wound inside out?).
+    pub two_sided: bool,
     /// `SHINOBI_MAP_UNLIT=1`: the raw albedo.
     pub unlit: bool,
     /// `SHINOBI_MAP_TEX=<stem>`: one texture on every piece (a UV check).
@@ -1140,10 +1506,16 @@ pub(crate) struct MaterialOptions {
     /// `SHINOBI_MAP_SKIP=<text>[,<text>]`: batches whose texture names contain one of them
     /// are not drawn (which surface is that?).
     pub skip: Vec<String>,
+    /// Batch indices to load, all when empty (`SHINOBI_MAP_ONLY`).
+    pub only: Vec<usize>,
     /// `SHINOBI_MAP_NO_LAYERS=1`: the base layer only.
     pub no_layers: bool,
     /// `SHINOBI_MAP_SOFT`: the mask blend softness (default 0.25).
     pub softness: f32,
+    /// `SHINOBI_MAP_SMOKE_SPEED`: the cloud sea's pace (map_material.wgsl `smoke`, default 1).
+    pub smoke_speed: f32,
+    /// `SHINOBI_MAP_SMOKE_TILE`: how often the cloud sea's mask repeats over its uv (default 8).
+    pub smoke_tile: f32,
     /// `SHINOBI_MAP_SNOW=a,b`: the up-facing smoothstep (N.y) of the snow (default 0.2..0.7).
     pub snow_up: [f32; 2],
     /// `SHINOBI_MAP_SHOW_BLEND=1` (bit 1) and `SHINOBI_MAP_BYTE2` = c (bit 3, default) / ao
@@ -1168,11 +1540,15 @@ impl MaterialOptions {
         };
         Self {
             no_normals: std::env::var("SHINOBI_MAP_NO_NORMALS").is_ok(),
+            two_sided: std::env::var("SHINOBI_MAP_TWO_SIDED").is_ok(),
             unlit: std::env::var("SHINOBI_MAP_UNLIT").is_ok(),
             tex_override: std::env::var("SHINOBI_MAP_TEX").ok().filter(|s| !s.is_empty()),
             skip: std::env::var("SHINOBI_MAP_SKIP").map(|v| v.split(',').filter(|s| !s.is_empty()).map(str::to_string).collect()).unwrap_or_default(),
+            only: std::env::var("SHINOBI_MAP_ONLY").map(|v| v.split(',').filter_map(|s| s.trim().trim_start_matches('#').parse().ok()).collect()).unwrap_or_default(),
             no_layers: std::env::var("SHINOBI_MAP_NO_LAYERS").is_ok(),
             softness: std::env::var("SHINOBI_MAP_SOFT").ok().and_then(|v| v.parse().ok()).unwrap_or(0.25),
+            smoke_speed: std::env::var("SHINOBI_MAP_SMOKE_SPEED").ok().and_then(|v| v.parse().ok()).unwrap_or(1.0),
+            smoke_tile: std::env::var("SHINOBI_MAP_SMOKE_TILE").ok().and_then(|v| v.parse().ok()).unwrap_or(8.0),
             snow_up,
             w_flags: ((std::env::var("SHINOBI_MAP_SHOW_BLEND").is_ok() as u32) << 1) | byte2,
         }
@@ -1181,16 +1557,20 @@ impl MaterialOptions {
 
 /// The map materials built so far, one per key.
 #[derive(Default)]
-pub(crate) struct MaterialCache(HashMap<MaterialKey, Handle<MapMaterial>>);
+pub(crate) struct MaterialCache {
+    built: HashMap<MaterialKey, Handle<MapMaterial>>,
+    /// Missing textures already warned about (once per load, not once per material).
+    warned: HashSet<String>,
+}
 
 impl MaterialCache {
     pub(crate) fn len(&self) -> usize {
-        self.0.len()
+        self.built.len()
     }
 
     /// The material for the key, built on first use (kb/map.md "Layers").
     pub(crate) fn get(&mut self, assets: &AssetServer, materials: &mut Assets<MapMaterial>, o: &MaterialOptions, key: &MaterialKey) -> Handle<MapMaterial> {
-        if let Some(h) = self.0.get(key) {
+        if let Some(h) = self.built.get(key) {
             return h.clone();
         }
         let MaterialKey(names, alpha, two_sided) = key;
@@ -1215,14 +1595,31 @@ impl MaterialCache {
                 })
                 .load(format!("tex/{stem}.dds"))
         };
-        let normal_h = (!normal.is_empty() && !o.no_normals).then(|| tex(normal, false));
-        let over = (!over_a.is_empty()).then(|| tex(over_a, true));
-        let over_n = (over.is_some() && !over_n.is_empty() && !o.no_normals).then(|| tex(over_n, false));
-        let snow = (!snow_a.is_empty()).then(|| tex(snow_a, true));
-        let snow_n = (snow.is_some() && !snow_n.is_empty() && !o.no_normals).then(|| tex(snow_n, false));
-        let c = (!c_a.is_empty()).then(|| tex(c_a, true));
-        let c_n = (c.is_some() && !c_n.is_empty() && !o.no_normals).then(|| tex(c_n, false));
-        let mask = (layered && !mask_t.is_empty()).then(|| tex(mask_t, false));
+        // A texture the export did not write (`m17_rock_92_3m` on the Guardian Ape arena: the
+        // FLVER names a mask that is in none of the game's m17 packs, so the export reports it
+        // missing) must not reach the material: Bevy never prepares a material whose image
+        // failed to load, so the whole batch would stay undrawn. The layer is dropped instead.
+        let warned = &mut self.warned;
+        let mut have = |stem: &str| {
+            let ok = stem.is_empty() || crate::paths::extracted().join(format!("tex/{stem}.dds")).is_file();
+            if !ok && warned.insert(stem.to_string()) {
+                warn!("map texture tex/{stem}.dds missing (not in the game's packs either?): layer dropped");
+            }
+            ok
+        };
+        let normal_h = (!normal.is_empty() && !o.no_normals && have(normal)).then(|| tex(normal, false));
+        let over = (!over_a.is_empty() && have(over_a)).then(|| tex(over_a, true));
+        let over_n = (over.is_some() && !over_n.is_empty() && !o.no_normals && have(over_n)).then(|| tex(over_n, false));
+        let snow = (!snow_a.is_empty() && have(snow_a)).then(|| tex(snow_a, true));
+        let snow_n = (snow.is_some() && !snow_n.is_empty() && !o.no_normals && have(snow_n)).then(|| tex(snow_n, false));
+        let c = (!c_a.is_empty() && have(c_a)).then(|| tex(c_a, true));
+        let c_n = (c.is_some() && !c_n.is_empty() && !o.no_normals && have(c_n)).then(|| tex(c_n, false));
+        // Alpha 3, the Divine Dragon arena's cloud sea (M[Flow]_Smoke, the exporter's `choose`):
+        // the "normal" is its flow vector map, the mask its height / blend mask; the shader's
+        // `smoke` scrolls them (kb/map.md). The MTD's light tint M_Flow__Smoke color_2 is the base
+        // colour, color_3 the shadow tint in the shader; `SHINOBI_MAP_SMOKE_SPEED` its pace.
+        let smoke = *alpha == 3;
+        let mask = ((layered || smoke) && !mask_t.is_empty() && have(mask_t)).then(|| tex(mask_t, false));
         let bits = |a: &Option<Handle<Image>>, n: &Option<Handle<Image>>| a.is_some() as u32 | ((n.is_some() as u32) << 1);
         let flags = UVec4::new(normal_h.is_some() as u32 | (bits(&c, &c_n) << 1), bits(&over, &over_n), bits(&snow, &snow_n), (!albedo.is_empty()) as u32 | o.w_flags);
         // Water surfaces (the Guardian Ape's pond and stream, the gate's river): no albedo, the
@@ -1232,29 +1629,31 @@ impl MaterialCache {
         let water = albedo.is_empty() && normal.contains("water");
         let h = materials.add(MapMaterial {
             base: StandardMaterial {
-                base_color_texture: (!albedo.is_empty()).then(|| tex(albedo, true)),
+                base_color_texture: (!albedo.is_empty() && have(albedo)).then(|| tex(albedo, true)),
                 base_color: if water {
                     Color::srgba(0.10, 0.15, 0.16, 0.6)
+                } else if smoke {
+                    Color::srgb(0.784, 0.863, 0.980)
                 } else if albedo.is_empty() {
                     Color::srgb(0.45, 0.43, 0.40)
                 } else {
                     Color::WHITE
                 },
                 perceptual_roughness: 0.85,
-                unlit: o.unlit,
+                unlit: o.unlit || smoke,
                 alpha_mode: match alpha {
-                    _ if water => AlphaMode::Blend,
+                    _ if water || smoke => AlphaMode::Blend,
                     1 => AlphaMode::AlphaToCoverage,
                     2 => AlphaMode::Blend,
                     _ => AlphaMode::Opaque,
                 },
-                double_sided: *two_sided,
-                cull_mode: if *two_sided { None } else { Some(bevy::render::render_resource::Face::Back) },
+                double_sided: *two_sided || o.two_sided,
+                cull_mode: if *two_sided || o.two_sided { None } else { Some(bevy::render::render_resource::Face::Back) },
                 ..default()
             },
-            extension: MapExt { normal: normal_h, over_albedo: over, over_normal: over_n, snow_albedo: snow, snow_normal: snow_n, c_albedo: c, c_normal: c_n, mask_params: Vec4::new(mask.is_some() as u32 as f32, o.softness, 0.0, 0.0), mask, flags, params: Vec4::new(0.0, 1.0, o.snow_up[0], o.snow_up[1]) },
+            extension: MapExt { normal: normal_h, over_albedo: over, over_normal: over_n, snow_albedo: snow, snow_normal: snow_n, c_albedo: c, c_normal: c_n, mask_params: Vec4::new(mask.is_some() as u32 as f32, o.softness, smoke as u32 as f32, o.smoke_speed), mask, flags, params: Vec4::new(if smoke { o.smoke_tile } else { 0.0 }, 1.0, o.snow_up[0], o.snow_up[1]) },
         });
-        self.0.insert(key.clone(), h.clone());
+        self.built.insert(key.clone(), h.clone());
         h
     }
 }
@@ -1311,11 +1710,25 @@ impl Plugin for MapPlugin {
             app.add_plugins(AutoExposurePlugin);
         }
         app.add_plugins(GradingPlugin);
+        // `SHINOBI_MESH_OWN_SLABS=1`: every mesh in its own GPU buffer (no shared slabs), to
+        // tell a mesh-allocator fault from a material one when a piece is not drawn.
+        if std::env::var("SHINOBI_MESH_OWN_SLABS").is_ok() {
+            if let Some(render_app) = app.get_sub_app_mut(bevy::render::RenderApp) {
+                info!("mesh allocator: every mesh in its own slab (SHINOBI_MESH_OWN_SLABS)");
+                render_app.insert_resource(bevy::render::mesh::allocator::MeshAllocatorSettings {
+                    slab_allocator_settings: bevy::render::slab_allocator::SlabAllocatorSettings { large_threshold: 0, ..default() },
+                    ..default()
+                });
+            }
+        }
         bevy::asset::embedded_asset!(app, "map_material.wgsl");
         app.add_plugins(MaterialPlugin::<MapMaterial>::default());
+        app.init_resource::<GrapplePoints>();
+        app.init_resource::<LedgeEdges>();
+        app.add_systems(Update, (draw_grapple_points, draw_ledges).run_if(resource_exists::<crate::combat::ShowHurtboxes>));
         app.add_systems(Startup, load_map)
             .add_systems(PostStartup, settle_player_start)
-            .add_systems(Update, ((hour_keys, apply_lighting).chain().run_if(resource_exists::<MapLighting>), frame_rate_log))
+            .add_systems(Update, ((hour_keys, apply_lighting).chain().run_if(resource_exists::<MapLighting>), frame_rate_log, switch_map))
             .add_systems(Startup, crate::sandbox::spawn_enemies.after(load_map))
             .add_systems(Update, (crate::sandbox::place_wolf, crate::sandbox::watch, mesh_events,crate::sandbox::catalog_shots.run_if(resource_exists::<crate::sandbox::Catalog>)))
             .add_systems(FixedUpdate, bodies_on_terrain.after(ActorSet::Advance));
@@ -1323,7 +1736,8 @@ impl Plugin for MapPlugin {
 }
 
 /// One line with the average frame rate over seconds 5..15 after start (the map's cost).
-fn frame_rate_log(time: Res<Time>, mut acc: Local<(f32, u32, bool)>) {
+fn frame_rate_log(time: Res<Time<Real>>, mut acc: Local<(f32, u32, bool)>) {
+    // Real time: the title screen pauses the virtual clock (menu.rs), which never reached 15 s.
     let t = time.elapsed_secs();
     if acc.2 || t < 5.0 {
         return;
@@ -1392,9 +1806,132 @@ mod tests {
         assert!(blend_f16_dds(&a, &b[..100], 0.5).is_none());
     }
 
+    #[test]
+    #[ignore]
+    fn grapple_floor_probe() {
+        let Some(t) = hit() else { return };
+        let j: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(crate::paths::extracted().join("map_m11_01_00_00.json")).unwrap()).unwrap();
+        let mut g = load_grapple(&j);
+        g.sort_by(|a, b| a.hook.xz().length().total_cmp(&b.hook.xz().length()));
+        let mut landed = 0;
+        for p in &g {
+            // A floor under the landing spot within 1.5 m: the branch / roof the object's
+            // own collision gives (none before 2026-10-11's object hit export).
+            let floor = t.floor(p.land.x, p.land.z, p.land.y + 0.3);
+            if floor.is_some_and(|f| p.land.y - f <= 1.5) {
+                landed += 1;
+            }
+        }
+        eprintln!("{} of {} landing spots have a floor within 1.5 m under them", landed, g.len());
+        for p in g.iter().take(8) {
+            let floor = t.floor(p.land.x, p.land.z, p.land.y + 0.3);
+            eprintln!("hook {:?} land y {:.2} var {} floor under the landing spot {:?}", p.hook, p.land.y, p.variation, floor);
+        }
+    }
+
+    /// Where the objects' own collision (2026-10-11) changes the walkable floor around the
+    /// General's fight: a grid over the arena, the gate .hit against a `MAP_NO_OBJECT_HIT=1
+    /// MAP_NAME=gate_noobj` export of the same map (not kept; re-export it for this).
+    #[test]
+    #[ignore]
+    fn object_collision_floor_diff() {
+        let load = |n: &str| std::fs::read(crate::paths::extracted().join(n)).ok().and_then(|d| Terrain::from_hit(&d));
+        let (Some(with), Some(without)) = (load("map_m11_01_00_00.hit"), load("map_gate_noobj.hit")) else { return };
+        let mut raised = Vec::new();
+        let mut n = 0;
+        for ix in -40..=40 {
+            for iz in -40..=40 {
+                let (x, z) = (ix as f32 * 0.5, iz as f32 * 0.5);
+                let base = without.floor(x, z, 3.0);
+                let now = with.floor(x, z, 3.0);
+                if let (Some(b), Some(w)) = (base, now) {
+                    n += 1;
+                    if w - b > 0.05 {
+                        raised.push((x, z, b, w));
+                    }
+                }
+            }
+        }
+        eprintln!("{} of {n} grid spots (0.5 m, +-20 m, from 3 m up) stand higher with the object collision", raised.len());
+        if let Some((y, tri)) = with.floor_tri(3.0, -0.5, 3.0) {
+            let t = with.tris[tri as usize];
+            eprintln!("spot (3, -0.5): floor {y:.2} triangle {tri} vertices {:?} material {} at {:?} {:?} {:?}", t, with.materials[tri as usize], with.verts[t[0] as usize], with.verts[t[1] as usize], with.verts[t[2] as usize]);
+        }
+        raised.sort_by(|a, b| (b.3 - b.2).total_cmp(&(a.3 - a.2)));
+        for (x, z, b, w) in raised.iter() {
+            eprintln!("  ({x:5.1}, {z:5.1}) floor {b:6.2} -> {w:6.2} (+{:.2})", w - b);
+        }
+    }
+
+    /// A copied map file that did not finish is reported, not a crash (release build C5).
+    #[test]
+    fn truncated_map_files_are_refused() {
+        let dir = crate::paths::extracted();
+        if let Ok(d) = std::fs::read(dir.join("map_m11_01_00_00.hit")) {
+            assert!(Terrain::from_hit(&d[..d.len() / 2]).is_none());
+            assert!(Terrain::from_hit(&d[..20]).is_none());
+        }
+        if let Ok(d) = std::fs::read(dir.join("map_m11_01_00_00.bin")) {
+            let mut n = 0;
+            assert!(walk_bin(&d[..d.len() / 3], |_| n += 1).is_none());
+            assert!(walk_bin(&d[..13], |_| n += 1).is_none());
+            let mut all = 0;
+            assert!(walk_bin(&d, |_| all += 1).is_some());
+            assert!(n < all && all > 0, "{n} of {all}");
+        }
+        let mut short = b"SHMP".to_vec();
+        short.extend_from_slice(&4u32.to_le_bytes());
+        short.extend_from_slice(&1u32.to_le_bytes());
+        short.extend_from_slice(&[7, 0, b'a']);
+        assert!(walk_bin(&short, |_| {}).is_none());
+    }
+
     fn hit() -> Option<Terrain> {
         let d = std::fs::read(crate::paths::extracted().join("map_m11_01_00_00.hit")).ok()?;
         Terrain::from_hit(&d)
+    }
+
+    #[test]
+    fn grapple_search_picks_the_point_on_the_view_axis_and_keeps_the_soft_lock() {
+        let pt = |hook: Vec3, var: i64| GrapplePoint { hook, land: hook + Vec3::Y * 0.5, fwd: -Vec3::Z, variation: var };
+        // Wolf at the origin looking +z from a camera 3 m behind him; the points ahead and up.
+        let points = vec![
+            pt(Vec3::new(0.0, 4.0, 8.0), 0),   // nearest the view axis, 8.9 m
+            pt(Vec3::new(4.0, 6.0, 8.0), 0),   // off to the side
+            pt(Vec3::new(0.0, 6.0, 30.0), 0),  // past findDistanceFar
+            pt(Vec3::new(0.0, 6.0, -8.0), 0),  // behind the camera
+            pt(Vec3::new(5.0, 2.0, 12.0), 41), // kite row (90/50/30/10): Wolf 23 deg left, 9 below
+        ];
+        let cam = Vec3::new(0.0, 1.5, -3.0);
+        let fwd = Vec3::Z;
+        let t = grapple_target(cam, fwd, Vec3::ZERO, None, &points).unwrap();
+        assert_eq!(t.index, 0);
+        assert!(t.in_action_range && t.ride, "{t:?}");
+        assert!((t.dist - 80f32.sqrt()).abs() < 1e-3);
+        // The side point stays the target while inside the soft-lock rectangle (3.575 m wide:
+        // 4 m lateral is outside it, so the axis point wins again).
+        assert_eq!(grapple_target(cam, fwd, Vec3::ZERO, Some(1), &points).unwrap().index, 0);
+        let near = vec![points[0], pt(Vec3::new(2.0, 4.0, 8.0), 0)];
+        assert_eq!(grapple_target(cam, fwd, Vec3::ZERO, Some(1), &near).unwrap().index, 1);
+        // Too close (under actionDistanceNear 3 m) is found but not fireable.
+        let close = vec![pt(Vec3::new(0.0, 2.0, 1.0), 0)];
+        let t = grapple_target(cam, fwd, Vec3::ZERO, None, &close).unwrap();
+        assert!(!t.in_action_range);
+        // Row 20 "can't ride" and row 5's extended range.
+        let far = vec![pt(Vec3::new(0.0, 6.0, 22.0), 5), pt(Vec3::new(0.0, 6.0, 22.0), 20)];
+        let t = grapple_target(cam, fwd, Vec3::ZERO, None, &far).unwrap();
+        assert!(t.in_action_range && t.ride, "{t:?}");
+        assert!(!grapple_target(cam, fwd, Vec3::ZERO, Some(1), &far).unwrap().ride);
+        // Behind the point's facing (fwd -z, Wolf at +z) with row 1's 90 deg all round: refused.
+        let back = vec![GrapplePoint { hook: Vec3::new(0.0, 6.0, 8.0), land: Vec3::ZERO, fwd: Vec3::Z, variation: 1 }];
+        assert!(grapple_target(cam, fwd, Vec3::ZERO, None, &back).is_none());
+        // The json loader mirrors X.
+        let j: serde_json::Value = serde_json::json!({"grapple": [{"hook": [1.0, 2.0, 3.0], "land": [1.0, 2.5, 3.0], "fwd": [1.0, 0.0, 0.0], "var": 3}]});
+        let g = load_grapple(&j);
+        assert_eq!(g.len(), 1);
+        assert_eq!(g[0].hook, Vec3::new(-1.0, 2.0, 3.0));
+        assert_eq!(g[0].fwd, Vec3::new(-1.0, 0.0, 0.0));
+        assert_eq!(g[0].variation, 3);
     }
 
     /// Prints wall distances and slides around the spawn spots (`-- --ignored --nocapture`).

@@ -236,6 +236,8 @@ struct NodeInst {
     /// NodeAccelerationPartialFollow / NodeSpeedPartialFollow followFactor fell to 0: the node stays
     /// where it was in the world (no longer follows its parent).
     detached: Option<Transform>,
+    /// NodeTranslation (15): the offset applied so far (its `translation` by active time).
+    offset: Vec3,
 }
 
 /// What an effect rides on.
@@ -388,6 +390,7 @@ fn make_node(lib: &mut FxrLib, node: &Value, seed: u32, depth: u32) -> Option<No
         seed,
         finished: false,
         detached: None,
+        offset: Vec3::ZERO,
     })
 }
 
@@ -427,6 +430,12 @@ fn emit_point(c: &Value, t: f32, rnd: &mut Rnd) -> (Vec3, Vec3) {
             let (x, y, z) = (s("sizeX", 1.0, rnd), s("sizeY", 1.0, rnd), s("sizeZ", 1.0, rnd));
             let p = Vec3::new((rnd.next() - 0.5) * x, (rnd.next() - 0.5) * y, (rnd.next() - 0.5) * z);
             (game_vec([p.x, p.y, p.z, 0.0]), Vec3::Z)
+        }
+        // RectangleEmitterShape: sizeX by sizeY in the node's XY plane, as the disk (401).
+        // gap: `distribution` (taken as uniform).
+        402 => {
+            let (x, y) = (s("sizeX", 1.0, rnd), s("sizeY", 1.0, rnd));
+            (Vec3::new((rnd.next() - 0.5) * x, (rnd.next() - 0.5) * y, 0.0), Vec3::Z)
         }
         405 => {
             let (r, h) = (s("radius", 1.0, rnd), s("height", 1.0, rnd));
@@ -474,16 +483,37 @@ fn step_node(n: &mut NodeInst, lib: &mut FxrLib, parent: Transform, dt: f32, sto
     }
     let active_t = n.time - n.delay;
     let alive = !stop && (n.duration < 0.0 || active_t < n.duration);
-    // Node movement: speed / acceleration along its Z (1 / 106 / 122), spin (34).
+    // Node movement: speed / acceleration along its Z (1 / 106 / 122; NodeSpeed 120 with its
+    // speedMultiplierZ; NodeAccelerationRandomTurns 83 with turns), spin (34), an offset by time
+    // (NodeTranslation 15). Field meanings: reference/fxr src/fxr.ts.
     if let Some(c) = n.cfg.clone() {
         let mv = &c["nodeMovement"];
         let mut rnd = Rnd { seed: n.seed ^ 0xabc, k: 0 };
         match mv["type"].as_i64() {
-            Some(1) | Some(106) | Some(122) => {
-                let v = scalar(mv, "speedZ", 0.0, &mut rnd, 0.0) + scalar(mv, "accelerationZ", active_t, &mut rnd, 0.0) * active_t;
+            Some(1) | Some(106) | Some(122) | Some(83) | Some(120) => {
+                let ty = mv["type"].as_i64();
+                let v = if ty == Some(120) {
+                    scalar(mv, "speedZ", 0.0, &mut rnd, 0.0) * scalar(mv, "speedMultiplierZ", active_t, &mut rnd, 1.0)
+                } else {
+                    scalar(mv, "speedZ", 0.0, &mut rnd, 0.0) + scalar(mv, "accelerationZ", active_t, &mut rnd, 0.0) * scalar(mv, "accelerationMultiplierZ", active_t, &mut rnd, 1.0) * active_t
+                };
+                // 83: a random turn of up to maxTurnAngle every turnInterval s.
+                // gap: the turn's axes and distribution (taken as yaw and pitch, uniform).
+                let every = scalar(mv, "turnInterval", active_t, &mut rnd, 0.0);
+                if ty == Some(83) && every > 0.0 && ((active_t / every).floor() > ((active_t - dt) / every).floor()) {
+                    let max = scalar(mv, "maxTurnAngle", active_t, &mut rnd, 0.0).to_radians();
+                    let mut tr = Rnd { seed: n.seed ^ ((active_t / every) as u32).wrapping_mul(0x9e37), k: 0 };
+                    let (yaw, pitch) = ((tr.next() * 2.0 - 1.0) * max, (tr.next() * 2.0 - 1.0) * max);
+                    n.local.rotation = n.local.rotation * Quat::from_euler(EulerRot::YXZ, yaw, pitch, 0.0);
+                }
                 let fwd = n.local.rotation * Vec3::Z;
                 n.local.translation += fwd * v * dt;
                 n.local.translation.y -= scalar(mv, "accelerationY", active_t, &mut rnd, 0.0) * active_t * dt;
+            }
+            Some(15) => {
+                let o = game_vec(prop(mv.get("translation"), active_t, &mut rnd, [0.0; 4]));
+                n.local.translation += o - n.offset;
+                n.offset = o;
             }
             Some(34) => {
                 let s = |k: &str, rnd: &mut Rnd| scalar(mv, k, active_t, rnd, 0.0).to_radians() * dt;
@@ -1747,6 +1777,39 @@ mod tests {
         assert_eq!(s[13].2, 1.0);
         assert!(s.windows(2).all(|w| w[1].0.x > w[0].0.x && w[1].2 > w[0].2));
         assert_eq!(subdivide(&pts, 0).len(), 4);
+    }
+
+    /// NodeTranslation (15) offsets the node by its `translation` curve (300169: (0, -0.4, 0) ->
+    /// 0 over 0.3 s); NodeSpeed (120) moves it along Z at speedZ x speedMultiplierZ.
+    #[test]
+    fn node_translation_and_node_speed_move_the_node() {
+        let mut lib = FxrLib::default();
+        let config = |mv: serde_json::Value| serde_json::json!({"type": 2200, "stateConfigMap": [0], "configs": [{"nodeMovement": mv}]});
+        let tr = config(serde_json::json!({"type": 15, "translation": {"function": "Linear", "loop": false, "keyframes": [{"position": 0, "value": [0, -0.4, 0]}, {"position": 0.3, "value": [0, 0, 0]}]}}));
+        let mut n = make_node(&mut lib, &tr, 1, 0).unwrap();
+        step_node(&mut n, &mut lib, Transform::IDENTITY, 0.0, false);
+        assert!((n.local.translation.y + 0.4).abs() < 1e-4);
+        for _ in 0..20 {
+            step_node(&mut n, &mut lib, Transform::IDENTITY, 1.0 / 60.0, false);
+        }
+        assert!(n.local.translation.length() < 1e-4, "{:?}", n.local.translation);
+        let sp = config(serde_json::json!({"type": 120, "speedZ": 2.0, "speedMultiplierZ": 0.5}));
+        let mut n = make_node(&mut lib, &sp, 1, 0).unwrap();
+        for _ in 0..60 {
+            step_node(&mut n, &mut lib, Transform::IDENTITY, 1.0 / 60.0, false);
+        }
+        assert!((n.local.translation.z - 1.0).abs() < 1e-3, "{:?}", n.local.translation);
+    }
+
+    /// RectangleEmitterShape (402): points inside sizeX x sizeY on the node's XY plane.
+    #[test]
+    fn rectangle_emitter_stays_inside_its_size() {
+        let c = serde_json::json!({"emitterShape": {"type": 402, "sizeX": 1.5, "sizeY": 0.5, "direction": 0}});
+        let mut rnd = Rnd { seed: 7, k: 0 };
+        for _ in 0..200 {
+            let (p, d) = emit_point(&c, 0.0, &mut rnd);
+            assert!(p.x.abs() <= 0.75 && p.y.abs() <= 0.25 && p.z == 0.0 && d == Vec3::Z);
+        }
     }
 
     /// The exe's Hermite blend: both angles pi/4 is the straight line, the ends stay put, and

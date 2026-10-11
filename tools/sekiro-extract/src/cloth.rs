@@ -54,7 +54,7 @@ pub fn survey(d: &[u8]) {
                 let fixed = tf.array(p + tf.field(&ty, "fixedParticles"));
                 let fixed: Vec<u16> = fixed.map(|(f, k, s)| (0..k).map(|j| r.u16(f + j * s)).collect()).unwrap_or_default();
                 let si = p + tf.field(&ty, "simulationInfo");
-                println!("  sim[{i}] {} particles={} gravity=({}, {}, {}) damping/s={} fixed={:?}", tf.string(p + tf.field(&ty, "name")), parts.map(|x| x.1).unwrap_or(0), r.f32(si), r.f32(si + 4), r.f32(si + 8), r.f32(si + 16), fixed);
+                println!("  sim[{i}] {} @{p:#x} particles={} gravity=({}, {}, {}) damping/s={} fixed={:?}", tf.string(p + tf.field(&ty, "name")), parts.map(|x| x.1).unwrap_or(0), r.f32(si), r.f32(si + 4), r.f32(si + 8), r.f32(si + 16), fixed);
                 if let Some((pa, pn, ps)) = parts {
                     let s: Vec<String> = (0..pn.min(6)).map(|j| format!("m{} r{} f{}", r.f32(pa + j * ps), r.f32(pa + j * ps + 8), r.f32(pa + j * ps + 12))).collect();
                     println!("    particle data {}", s.join(", "));
@@ -74,6 +74,19 @@ pub fn survey(d: &[u8]) {
             for i in 0..n {
                 if let Some((ty, p)) = tf.deref_obj(a + i * 8) {
                     println!("  op[{i}] {ty} {}", tf.string(p + tf.field(&ty, "name")));
+                    if ty == "hclSimulateOperator" {
+                        // Every config: name, substeps, iterations, the constraint execution order.
+                        if let Some((a, n, s)) = tf.array(p + tf.field(&ty, "simulateOpConfigs")) {
+                            let ct = "hclSimulateOperator::Config";
+                            for k in 0..n {
+                                let c = a + k * s;
+                                let exec: Vec<i32> = tf.array(c + tf.field(ct, "constraintExecution")).map(|(e, m, _)| (0..m).map(|i| r.i32(e + i * 4)).collect()).unwrap_or_default();
+                                println!("    config[{k}] {} substeps {} iterations {} execution {:?} adapt {}", tf.string(c + tf.field(ct, "name")), r.u8(c + tf.field(ct, "subSteps")), r.u8(c + tf.field(ct, "numberOfSolveIterations")), exec, r.u8(c + tf.field(ct, "adaptConstraintStiffness")));
+                            }
+                        } else {
+                            println!("    (no simulateOpConfigs)");
+                        }
+                    }
                     if ty == "hclSimpleMeshBoneDeformOperator" {
                         let pairs = tf.array(p + tf.field(&ty, "triangleBonePairs"));
                         let out: Vec<String> = pairs

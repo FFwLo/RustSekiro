@@ -22,6 +22,7 @@ use crate::player::Player;
 use crate::stealth::{self, Targeting};
 
 mod events;
+pub mod grapple;
 pub mod script;
 pub use script::{BossScript, Cast, Phantom};
 
@@ -708,15 +709,20 @@ impl Plugin for EnemyPlugin {
             .init_resource::<EnemyDebug>()
             .init_resource::<events::EventWarp>()
             .init_resource::<FightReset>()
+            .init_resource::<AiFlags>()
+            .init_resource::<SwapFrame>()
             .init_resource::<AutoRestart>()
             .add_message::<SpawnEncounter>()
+            .add_message::<grapple::WireHit>()
             .init_resource::<BossScript>()
             .add_systems(Startup, spawn_enemy)
             .add_systems(
                 FixedUpdate,
-                (spawn_encounter, reset_fight, stealth_env_start, parry_interrupt, think, todome_message, events::messages, script::run_scripts, events::apply_event_warp).chain().in_set(ActorSet::Decide),
+                (spawn_encounter, reset_fight, stealth_env_start, parry_interrupt, think, grapple::on_wire_hit, todome_message, events::messages, script::run_scripts, events::apply_event_warp).chain().in_set(ActorSet::Decide),
             )
-            .add_systems(Update, toggle_aggression.run_if(resource_exists::<ButtonInput<KeyCode>>));
+            .add_systems(Update, toggle_aggression.run_if(resource_exists::<ButtonInput<KeyCode>>))
+            .init_resource::<grapple::EnemyGrapples>()
+            .add_systems(PostUpdate, grapple::update.after(bevy::transform::TransformSystems::Propagate));
     }
 }
 
@@ -810,23 +816,52 @@ fn npc_stats(combat: &Combat, kind: usize) -> (f32, f32, f32, i64) {
 }
 
 fn spawn_enemy(mut commands: Commands, combat: Res<Combat>, config: Res<GameConfig>) {
-    if let Ok(mut m) = LOADED_MAP.write() {
-        *m = crate::map::map_id(&config);
-    }
+    set_fight(&config.enemy.chr, config.enemy.npc_row);
     spawn_lineup(&mut commands, &combat, &config, false);
 }
 
-/// The map loaded at startup (map.rs map_id: a boss's own arena is picked from the startup
-/// enemy). An encounter swap (SpawnEncounter) keeps it.
-static LOADED_MAP: std::sync::RwLock<Option<String>> = std::sync::RwLock::new(None);
-/// Whether the fight's boss is on its own arena (set with each line-up).
-static OWN_ARENA: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// The fight's boss NpcParam row (set_fight).
+static FIGHT_ROW: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(-1);
 
-/// Is the fight on the current boss's own arena (map.rs boss_arena of config enemy.chr /
-/// npc_row is the loaded map)? After a swap to another boss the map is a stranger's: its MSB
-/// heights and spots do not hold.
+/// The fight is now `chr` / `npc_row` (config enemy.*; None: the chr's roster row). Set at
+/// startup and by an encounter swap (spawn_encounter; map.rs switch_map before it places Wolf).
+pub fn set_fight(chr: &str, npc_row: Option<i64>) {
+    let row = npc_row.or_else(|| {
+        let text = std::fs::read_to_string(crate::paths::extracted().join(format!("enemies/{chr}.json"))).ok()?;
+        serde_json::from_str::<serde_json::Value>(&text).ok()?["roster"]["npc"].as_i64()
+    });
+    FIGHT_ROW.store(row.unwrap_or(-1), std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The arena that is a boss row's own: map.rs boss_arena's stem when that arena was cut from the
+/// boss's own MSB map (map_<stem>.json "map" = boss_scripts.json "map"). The user's rule
+/// (2026-10-11): only the Monk, Butterfly, the Apes and the Dragons keep their own surroundings;
+/// the others share Isshin's field boss_54000000 (m11_02), which is still the own arena of the
+/// rows fought there (54000000, Genichiro Way of Tomoe 71000000, 71101000).
+fn own_arena_of(row: i64) -> Option<String> {
+    static CACHE: std::sync::OnceLock<HashMap<i64, String>> = std::sync::OnceLock::new();
+    let all = CACHE.get_or_init(|| {
+        let dir = crate::paths::extracted();
+        let read = |p: std::path::PathBuf| std::fs::read_to_string(p).ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok());
+        let (Some(index), Some(scripts)) = (read(dir.join("map_boss_arenas.json")), read(dir.join("enemies/boss_scripts.json"))) else { return HashMap::new() };
+        let mut out = HashMap::new();
+        for (row, stem) in index.as_object().into_iter().flatten() {
+            let (Ok(r), Some(stem)) = (row.parse::<i64>(), stem.as_str()) else { continue };
+            let arena_map = read(dir.join(format!("map_{stem}.json"))).and_then(|v| v["map"].as_str().map(String::from));
+            if arena_map.is_some() && arena_map.as_deref() == scripts[row]["map"].as_str() {
+                out.insert(r, stem.to_string());
+            }
+        }
+        out
+    });
+    all.get(&row).cloned()
+}
+
+/// Is the fight on its boss's own arena (`own_arena_of` the fight's row is the loaded map,
+/// map::loaded_map)? Elsewhere the map is a stranger's: its MSB heights and spots do not hold.
 pub fn on_own_arena() -> bool {
-    OWN_ARENA.load(std::sync::atomic::Ordering::Relaxed) && crate::map::on_boss_arena()
+    let row = FIGHT_ROW.load(std::sync::atomic::Ordering::Relaxed);
+    crate::map::on_boss_arena() && own_arena_of(row).is_some_and(|a| crate::map::loaded_map().as_deref() == Some(a.as_str()))
 }
 
 /// The duel's enemies: config enemy.chr 4 m ahead of Wolf, then each config enemy.group entry
@@ -834,19 +869,21 @@ pub fn on_own_arena() -> bool {
 /// (after an encounter swap) the line-up keeps its 8 m from Wolf's start: that boss's spot can
 /// be in a cave (the Guardian Ape's grotto, map.rs player_start), out of sight.
 fn spawn_lineup(commands: &mut Commands, combat: &Combat, config: &GameConfig, aggressive: bool) {
-    let loaded = LOADED_MAP.read().ok().and_then(|m| m.clone());
-    let own = loaded.is_some_and(|m| crate::map::boss_arena(&config.enemy.chr, config.enemy.npc_row).as_deref() == Some(m.as_str()));
-    OWN_ARENA.store(own, std::sync::atomic::Ordering::Relaxed);
-    let dz = if crate::map::on_boss_arena() && !own { crate::map::player_start().z - 4.0 } else { 0.0 };
-    let y = crate::player::CAPSULE_HALF_HEIGHT + 0.05;
-    spawn_one(commands, combat, config, 0, Vec3::new(0.0, y, -4.0 + dz), 0.0, aggressive, 0x9E37_79B9);
+    let dz = if crate::map::on_boss_arena() && !on_own_arena() { crate::map::player_start().z - 4.0 } else { 0.0 };
+    // Standing on the ground under each spot (Isshin's shared field slopes 0.27 m per metre: 8 m
+    // ahead of Wolf's start is 1.3 m higher); y 0 without a map or over nothing.
+    let y = |x: f32, z: f32| {
+        let floor = crate::map::terrain().and_then(|t| t.floor(x, z, crate::map::player_start().y + 3.0)).unwrap_or(0.0);
+        floor + crate::player::CAPSULE_HALF_HEIGHT + 0.05
+    };
+    spawn_one(commands, combat, config, 0, Vec3::new(0.0, y(0.0, -4.0 + dz), -4.0 + dz), 0.0, aggressive, 0x9E37_79B9);
     for (i, g) in config.enemy.group.iter().enumerate() {
         let Some(kind) = combat.kind_index(&g.chr, g.npc_row) else { continue };
         let side = if i % 2 == 0 { 1.0 } else { -1.0 } * (3.0 * (i / 2 + 1) as f32);
         let [x, z] = g.at.unwrap_or([side, -4.0]);
         let z = z + dz;
         // A different seed each, so the group does not move in lockstep.
-        spawn_one(commands, combat, config, kind, Vec3::new(x, y, z), 0.0, aggressive, 0x9E37_79B9 ^ 0x85EB_CA6B_u32.wrapping_mul(i as u32 + 1));
+        spawn_one(commands, combat, config, kind, Vec3::new(x, y(x, z), z), 0.0, aggressive, 0x9E37_79B9 ^ 0x85EB_CA6B_u32.wrapping_mul(i as u32 + 1));
     }
 }
 
@@ -873,8 +910,11 @@ fn spawn_encounter(
     lib: Option<ResMut<crate::anim::AnimLib>>,
     mut config: ResMut<GameConfig>,
     mut reset: ResMut<FightReset>,
+    mut swap: ResMut<SwapFrame>,
+    frame: Option<Res<bevy::diagnostic::FrameCount>>,
 ) {
     let Some(m) = msgs.read().last().cloned() else { return };
+    set_fight(&m.chr, m.npc_row);
     config.enemy.chr = m.chr.clone();
     config.enemy.npc_row = m.npc_row;
     config.enemy.group = m.group.clone();
@@ -884,7 +924,13 @@ fn spawn_encounter(
     }
     info!("encounter: {} {:?} (+{} group) -> {} kinds", m.chr, m.npc_row, m.group.len(), combat.kinds.len());
     reset.0 = true;
+    swap.0 = frame.map(|f| f.0);
 }
+
+/// The frame of the last encounter swap: its line-up waits for a later frame, after map.rs
+/// switch_map (Update, after this FixedUpdate) has loaded the new arena and its terrain.
+#[derive(Resource, Default)]
+struct SwapFrame(Option<u32>);
 
 /// A won boss fight starts over by itself 5 s after the boss's defeat (BossScript run.defeated,
 /// set by the map event's Handle Boss Defeat). The menu turns it off to keep its Won screen up.
@@ -897,6 +943,12 @@ impl Default for AutoRestart {
     }
 }
 
+/// The event flags the enemies' AI set (SetEventFlag) when no boss script runs; with one they go
+/// to its flags. The fight starts with them off (none of 504000 / 509000 / 151010's flags is
+/// set by an EMEVD - checked against every extracted/event/*.emevd).
+#[derive(Resource, Default)]
+pub struct AiFlags(pub HashMap<i64, bool>);
+
 fn reset_fight(
     mut commands: Commands,
     mut reset: ResMut<FightReset>,
@@ -906,10 +958,15 @@ fn reset_fight(
     mut brains: NonSendMut<Brains>,
     mut warp: ResMut<events::EventWarp>,
     mut bs: ResMut<BossScript>,
+    mut ai_flags: ResMut<AiFlags>,
+    swap: Res<SwapFrame>,
+    frame: Option<Res<bevy::diagnostic::FrameCount>>,
 ) {
-    if !std::mem::take(&mut reset.0) {
+    if !reset.0 || swap.0.is_some_and(|f| frame.is_some_and(|n| n.0 == f)) {
         return;
     }
+    reset.0 = false;
+    ai_flags.0.clear();
     if bs.run.take().is_some_and(|r| r.defeated.is_some()) {
         bs.defeats += 1;
     }
@@ -1162,11 +1219,19 @@ fn wolf_seen(combat: &Combat, pa: &Actor, pos: Vec3, skills: &[crate::data::SpEf
 }
 
 /// The AI sounds Wolf's TAE made this step (CreateAISound, TAE 237): (AiSoundParam id, rank)
-/// of each whose radius reaches `listener`. Rows with bSpEffectEnable scale the radius by Wolf's
-/// SpEffects' hearingSearchEnemyRate (Covert B 150010: 0.5). gap: that scaling is read from the
-/// field names, not traced in the exe; the listener's ear_dist / ear_soundcut_dist are not
-/// applied.
-fn wolf_sounds(combat: &Combat, pa: &Actor, wolf: Vec3, listener: Vec3, skills: &[crate::data::SpEffect]) -> Vec<(i64, i64)> {
+/// of each the listener `la` (at `listener`, NpcThinkParam `think`) hears. Rows with
+/// bSpEffectEnable scale the radius by Wolf's SpEffects' hearingSearchEnemyRate (Covert B
+/// 150010: 0.5; gap: that scaling is read from the field names, not traced). The listener side
+/// is the exe's (FUN_140610470 -> FUN_140610b30 -> FUN_140610a30): reach = its hearing rate
+/// (`hearing_rate`) x radius - ear_soundcut_dist (none if <= 0); heard while the distance less
+/// both bodies' radii is under reach + ear_dist x the listener's factor at +0x20 (gap: taken as
+/// 1). gap: the radii are the vfuncs +0x50 (listener) / FUN_1409efb80 (source): our capsule
+/// radii stand in.
+fn wolf_sounds(combat: &Combat, pa: &Actor, wolf: Vec3, la: &Actor, listener: Vec3, think: &serde_json::Value, skills: &[crate::data::SpEffect]) -> Vec<(i64, i64)> {
+    let rate = hearing_rate(combat, la);
+    let ear = think["ear_dist"].as_f64().unwrap_or(0.0);
+    let cut = think["ear_soundcut_dist"].as_f64().unwrap_or(0.0);
+    let gap = (wolf.distance(listener) - crate::player::CAPSULE_RADIUS - crate::combat::BODY_RADIUS) as f64;
     // The clip on screen: walk / run loops are procedural states whose clips emit for their whole
     // length (walk a000_000200: 1000 r 0.5 m, run 000500: 1010 r 2 m, crouch walk 005200: 1001
     // r 0.25 m, crouch run 005500: 1011 r 0.5 m), refreshed while the event is active.
@@ -1181,10 +1246,22 @@ fn wolf_sounds(combat: &Combat, pa: &Actor, wolf: Vec3, listener: Vec3, skills: 
             let id = e.arg_i64("AISoundID")?;
             let row = combat.param("AiSoundParam", id);
             let scale = if row["bSpEffectEnable"].as_i64() == Some(1) { hearing } else { 1.0 };
-            let r = row["radius"].as_f64()? * scale;
-            ((wolf.distance(listener) as f64) <= r).then(|| (id, row["rank"].as_i64().unwrap_or(0)))
+            let reach = rate * row["radius"].as_f64()? * scale - cut;
+            (reach > 0.0 && gap < reach + ear).then(|| (id, row["rank"].as_i64().unwrap_or(0)))
         })
         .collect()
+}
+
+/// A listener's hearing rate (exe FUN_140bfe590): prod(1 - hearingSearchEnemyCut / 100) over
+/// its SpEffects (resident and its clip's TAE ones), within 0..1. gap: the base factor at the
+/// SpEffect module +0x14 is taken as 1; timed effects other enemies or Wolf's tools put on it
+/// are not held per enemy yet.
+pub(crate) fn hearing_rate(combat: &Combat, la: &Actor) -> f64 {
+    let d = combat.data_of(la);
+    let row = |id: i64| d.sp_effects.get(&id.to_string()).or_else(|| combat.player.sp_effects.get(&id.to_string()));
+    let clip: Vec<i64> = if la.anim.is_empty() { Vec::new() } else { d.sp_effects_at(&la.anim, la.t).into_iter().map(|(id, _)| id).collect() };
+    let r: f64 = la.resident.iter().chain(&clip).filter_map(|&id| row(id)).map(|e| 1.0 - (e.hearing_search_enemy_cut as f64).max(0.0) / 100.0).product();
+    r.clamp(0.0, 1.0)
 }
 
 /// c9997's state-name suffix for the AI state (UpdateAIState -> IndexAiState).
@@ -1231,6 +1308,15 @@ struct Rival {
     sp: Vec<i64>,
 }
 
+/// An AI script message, logged once per distinct text (a failing call repeats every frame).
+fn warn_once(line: &str) {
+    static SEEN: std::sync::Mutex<Option<HashSet<String>>> = std::sync::Mutex::new(None);
+    let mut seen = SEEN.lock().unwrap_or_else(|e| e.into_inner());
+    if seen.get_or_insert_with(HashSet::new).insert(line.to_string()) {
+        warn!("AI: {line}");
+    }
+}
+
 fn think(
     mut commands: Commands,
     mut warp: ResMut<events::EventWarp>,
@@ -1244,11 +1330,15 @@ fn think(
     mut log: Option<ResMut<crate::hud::CombatLog>>,
     mut perilous: Option<ResMut<crate::hud::Perilous>>,
     mut debug: Option<ResMut<EnemyDebug>>,
-    bs: Res<script::BossScript>,
+    mut bs: ResMut<script::BossScript>,
+    mut ai_flags: ResMut<AiFlags>,
 ) {
     let dt = time.delta_secs();
     let (pa, ptf) = *player;
-    let event_flags = bs.run.as_ref().map(|r| r.flags_on()).unwrap_or_default();
+    let mut event_flags = match &bs.run {
+        Some(r) => r.flags_on(),
+        None => ai_flags.0.iter().filter(|f| *f.1).map(|f| *f.0).collect(),
+    };
     // Every NPC in the fight, for the ones on a hostile team (combat::teams_hostile).
     let npcs: Vec<Rival> = q
         .iter()
@@ -1452,7 +1542,7 @@ fn think(
         let (home, home_yaw) = *e.home.get_or_insert((tf.translation, a.yaw));
         let seen = wolf_seen(&combat, pa, ptf.translation, &skills);
         let feet = tf.translation - Vec3::Y * (crate::player::CAPSULE_HALF_HEIGHT + 0.05);
-        for (id, rank) in wolf_sounds(&combat, pa, ptf.translation, tf.translation, &skills) {
+        for (id, rank) in wolf_sounds(&combat, pa, ptf.translation, &a, tf.translation, think_row, &skills) {
             e.targeting.hear(think_row, seen.pos, id, rank);
         }
         e.targeting.update(think_row, feet, a.forward(), &seen, dt);
@@ -1580,7 +1670,7 @@ fn think(
             match Brain::load(&dir, think_id, think_row, radius, e.rng) {
                 Ok(b) => {
                     for l in b.log.iter().filter(|l| !l.starts_with("stub:")) {
-                        warn!("AI: {l}");
+                        warn_once(l);
                     }
                     brains.map.insert(entity, b);
                 }
@@ -1662,12 +1752,24 @@ fn think(
         };
         let brain = brains.map.get_mut(&entity).unwrap();
         let cmd = brain.tick(&snap, dt);
+        for &(id, on) in &cmd.flags {
+            match bs.run.as_mut() {
+                Some(r) => r.set_flag(id, on),
+                None => {
+                    ai_flags.0.insert(id, on);
+                }
+            }
+            event_flags.retain(|f| *f != id);
+            if on {
+                event_flags.push(id);
+            }
+        }
         if script::trace() && scripted {
             eprintln!("brain {}: anim {:?} mv {:?} at {:?} face {} free {} ez {:?} state {}", foe.npc_row, cmd.anim, cmd.mv, cmd.at, cmd.face, free, snap.ez, a.state);
         }
         for l in brain.log.drain(..) {
             if !l.starts_with("stub:") {
-                warn!("AI: {l}");
+                warn_once(&l);
             }
         }
         e.ai_desc = brain.describe();

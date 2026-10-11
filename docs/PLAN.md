@@ -33,7 +33,7 @@ Surveys done for this plan: all open items in `docs/HANDOFF.md`, `docs/kb/*.md`,
 Goal: frame-for-frame match of hit capsules, hurt capsules and deathblow placement against live clips.
 
 - **Hurtboxes from the game data, not stand-ins.** Today Wolf is a 0.4 m capsule (`kb/enemy.md:101`, `kb/movement.md:58`), enemies use NpcParam hitRadius/hitHeight. Port the per-bone hit capsules the game uses for damage (the chr's `_c.hkx`/ragdoll hit shapes already parsed for cloth collidables in `tools/sekiro-extract` cloth_export.rs; the same capsule list, exported as `hurt` into `extracted/enemies/<chr>.json` and the Wolf model) and test them in `combat.rs` hit test (`combat.rs:685` hit capsule between AtkParam dummy polys stays). Keep hitRadius for AI distance only.
-- **Hit capsule verification pass**: for Wolf's basic swings, Ichimonji, Mortal Draw and 6 common enemy attacks (General c1020, Ogre c1040, c1010 spear, c1150, Genichiro, Monk), compare first-hit frame and reach between sim trace (`SHINOBI_TRACE`, sim_tests `*_trace`) and the user's Medal clips (ffmpeg contact sheets, as before). Record the table in `docs/kb/damage.md`.
+- **Hit capsule verification pass**: for Wolf's basic swings, Ichimonji, Mortal Draw and 6 common enemy attacks (General c1020, Ogre c5020 (c1040 is the Long-arm Centipede), c1010 spear, c1150, Genichiro, Monk), compare first-hit frame and reach between sim trace (`SHINOBI_TRACE`, sim_tests `*_trace`) and the user's Medal clips (ffmpeg contact sheets, as before). Record the table in `docs/kb/damage.md`.
 - **Deathblow geometry**: re-check front/behind deathblow placement after the absorb change (HANDOFF L186-188); the Ochimusha behind-deathblow drift up to 0.4 m (`kb/damage.md:174-177`): trace the exe's throw position interpolation (adsrobModelPosInterpolationTime 0.5, atkSorbDmyId 249) and the `targetBaseDmyPolyId 233 + (0,0,-0.3)` approximation (`kb/guard-deflect.md:148`); HP refill after a non-final boss deathblow (`kb/enemy.md:112`); grab ThrowParam lookup exe match (`kb/enemy.md:110`).
 - **Unexplained damage**: Wolf's x2.9 HP / x2 posture hits (`kb/damage.md:75,83`), leftover knockback push to the other character (`kb/damage.md:24`), TAE flag 73 confirmation (`kb/guard-deflect.md:50`).
 - Verify: new sim tests per capsule set (hit at the right frame, miss one frame earlier), `all_enemies_full` stays 86/102, live-clip tables in the KB.
@@ -66,11 +66,18 @@ Goal: frame-for-frame match of hit capsules, hurt capsules and deathblow placeme
 
 ### B5 Enemies and AI, fighters only (Bosses)
 
-- Remaining fighter gaps: Aging status for c1300 (`status.rs`, with VXf), c1550 "hidden for directing" row, teamType hostility, GetDist 3D and the radius field, AI command slot clearing, event flags default, Monk phantom vanish/region heights, bullets map collision and homing.
-- Stealth: map raycasts for sight (use `Terrain::raycast` from map.rs), patrol routes from MSB, grass/shadow regions, crouch attacks/steps/reactions, listener ear params.
+Status 2026-10-11: done except the Aging status (with VXf) and these documented gaps: the teamType
+table, shadow hiding 109201 (no bushes on any arena), patrol routes (blocked), the forced
+crouch (no forced-crouch area on any arena; env 3037 untraced). Aging (c1300): gap per VXf (9600
+curse build-up -> 9620, resist_curse 999 on every NpcParam, recovers 20/s; the old-man move set).
+Foreign arena start: done (Map player_start + enemy::on_own_arena on map::loaded_map).
+
+
+- Remaining fighter gaps: Aging status for c1300 (`status.rs`, with VXf), c1550 "hidden for directing" row, teamType hostility (EMEVD 2004[2] team flips: no effect, kb/enemy.md), GetDist 3D and the radius field, AI command slot clearing (done), event flags default (done: AI SetEventFlag), Monk phantom vanish/region heights (done), bullets map collision and homing.
+- Stealth: map raycasts for sight (use `Terrain::raycast` from map.rs), patrol routes from MSB (blocked: enemies stand at their MSB spots only in boss arenas; format in kb/enemy.md), grass/shadow regions (bushes solved: EMEVD 701 + bush objects, none on any arena; shadow 109201 unset by data), crouch attacks/steps/reactions (done: CrouchAttackToStand; the rest are the standing ones, forced crouch gap), listener ear params.
 - AI pacing vs live needs a recorded passive fight (ask the user for one clip).
 - Non-fighters: make sure the 16 spawn, idle and never panic (smoke test asserts "no crash, stands").
-- Verify: `all_enemies_full` 86/102 and `all_enemies_smoke` with the non-fighter "stands" rule 102/102.
+- Verify: `all_enemies_full` 86/102 and `all_enemies_smoke` with the non-fighter "stands" rule 102/102. (2026-10-11: smoke 102/102 done; full 95/110 = all but the 15 non-fighters. Done: GetDist 3D, bullets map/homing, sight raycast, ear params, c1550 row.)
 
 ### B6 Skills, VFX, HUD art (VXf owns all effects: fxr.rs, ffx.rs, vfx.rs, gore.rs, HUD)
 
@@ -79,6 +86,25 @@ Goal: frame-for-frame match of hit capsules, hurt capsules and deathblow placeme
 - VFX for enemies: every fighter's attack effects (dust, sparks, fire, poison, lightning for Genichiro, the Ogre's grab) play from its TAE SpawnFFX events; catalog shots per enemy in the sandbox (`SHINOBI_SANDBOX_ENEMIES=<chr>` plus `SHINOBI_FXR_SHOTS`) to find missing or wrong effects.
 - HUD art: stealth meter with MENU_Find_01/02, deathblow mark FE movie sizing.
 - Verify: `SHINOBI_SKILL_SHOTS` sheets for all 19 arts and 10 tools and `SHINOBI_FXR_SHOTS` sheets per enemy, compared with the game clips already collected.
+
+### B7 Grappling hook (all; added 2026-10-11, the user: "needed for many bosses")
+
+Research and the split in `docs/kb/grapple.md`. Map: grapple points exported per map / arena
+(object `.edge` grapple edges and map `.edge` files; the o000100 "markers" are item spots) into
+`map_<name>.json "grapple"`, a `GrapplePoints` resource with the WirePointSearchParam /
+WireVariationParam search and the obstacle raycast, sandbox gizmos. VXf: the player move
+(HKS BEH_A_GROUND/AIR_WIRE_SHOOT, anims 202000-202710 + 309000/203400, TAE 900-905 / 921 /
+920 row 1100 with ChrPhysicsHomingParam 300000000 guaranteed arrival), hook arm, rope FX, HUD
+marker. Bosses: enemies as targets through their `chrWire*` SpEffects (TAE 66 windows; Ogre
+3502020-22, Gyoubu 3508020-22/60/61, Ape 3510050), the Grappling Hook Attack throw pair
+(511600 / 13600). Verify: sim test for a ground wire to a point 8 m away, the Ogre grab window.
+Status 2026-10-11 (VXf): the player move done (shoot, move start, guaranteed-arrival launch,
+landing / perch / moving landing, wire attack / guard, wire-to-wire, HUD marker, the WP_A_9500
+hook-and-rope model), the Grappling Hook Attack throw (deathblow on landing, Gyoubu's Todome).
+Gaps in `kb/grapple.md` section 6 (rope placement, crouch landing, AirBreakFall wire, swim).
+Status 2026-10-11 (Bosses): the enemy side done. `enemy/grapple.rs` EnemyGrapples (chrWire*
+SpEffects, hook / land dummies, homing row), WireHit -> DamageWire0/1 (c9997 SP_DAMAGE_WIRE),
+`Combat::wire_throws` / `throws_of_kinds` (also the hang / hug deathblow rows); kb/enemy.md.
 
 ## Phase C: playable game (parallel; new files, little churn in owned ones)
 
@@ -102,6 +128,8 @@ Goal: frame-for-frame match of hit capsules, hurt capsules and deathblow placeme
 
 ### C5 Release build (Map)
 
+Status 2026-10-11: no-console exe + sv1.log + panic dialog, `[profile.dist]` + package.ps1, window + exe icon (icon.rs, build.rs) done (HANDOFF 4.16); bundled font, debug gating, parser errors open.
+
 - `#![windows_subsystem = "windows"]` with log to file (`sv1.log`), an app icon (`build.rs` + winres), `[profile.release]` (lto = "fat", codegen-units = 1, strip), window title "Sv1" with the chosen resolution.
 - Replace the `C:/Windows/Fonts` font lookups (`hud.rs:122, 468`) with a bundled font under `assets/` (license-checked).
 - Missing `config.toml` / `combat_data.json`: an error screen with the `extract.bat` instruction instead of a panic (`config.rs:180`, `data.rs:1133`); binary parsers return errors rather than slice-panic on truncated files (`map.rs`, `model.rs`, `anim.rs`, `sound.rs`).
@@ -119,7 +147,7 @@ Goal: frame-for-frame match of hit capsules, hurt capsules and deathblow placeme
 | Phase | Map (this session) | Bosses | VXf |
 |---|---|---|---|
 | A | cloth spam, use-after-free, HANDOFF clean-up | failing boss test | anim warning rate limit |
-| B | B2 cloth, B4 map/lighting, geometry tooling for B1 | B1 deathblows/hitboxes, B5 enemies/AI | B3 camera/controls, B6 skills + all VFX + HUD, B4 sound |
+| B | B2 cloth, B4 map/lighting, geometry tooling for B1, B7 grapple points | B1 deathblows/hitboxes, B5 enemies/AI, B7 enemy targets | B3 camera/controls, B6 skills + all VFX + HUD, B4 sound, B7 player move |
 | C | C3 video/audio plumbing, C5 release build | C2 encounter data/hot-swap | C1 screens, C2 UI, C3 UI, C4 gamepad |
 | Polish | perf | AI feel | effects/HUD |
 

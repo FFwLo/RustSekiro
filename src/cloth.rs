@@ -83,8 +83,12 @@ pub struct ClothDef {
     substeps: u32,
     iterations: u32,
     moves: Vec<(usize, usize)>,
-    /// Reference vertex skin: (bone name, local position with w = weight, local normal).
-    refs: Vec<Vec<(String, Vec4, Vec4)>>,
+    /// Reference vertex skin: (index into `ref_bones`, local position with w = weight, local
+    /// normal). Bone names resolved to indices once at load: the fur's thousands of entries
+    /// hashed their bone's name every frame (0.5 ms a cloth).
+    refs: Vec<Vec<(usize, Vec4, Vec4)>>,
+    /// The bones the reference vertices skin from, each once.
+    ref_bones: Vec<String>,
     displays: Vec<Display>,
     bones: Vec<(String, usize, Mat4)>,
 }
@@ -115,6 +119,7 @@ pub fn load(model_file: &std::path::Path) -> Vec<ClothDef> {
         .iter()
         .map(|c| {
             let particles = arr(&c["particles"]);
+            let mut ref_bones: Vec<String> = Vec::new();
             ClothDef {
                 name: c["name"].as_str().unwrap_or("").to_string(),
                 gravity: Vec3::new(fl(&c["gravity"][0]), fl(&c["gravity"][1]), fl(&c["gravity"][2])),
@@ -165,7 +170,16 @@ pub fn load(model_file: &std::path::Path) -> Vec<ClothDef> {
                         _ => Set::Unsolved,
                     })
                     .collect(),
-                execution: arr(&c["execution"]).iter().map(|e| e.as_i64().unwrap_or(-1) as i32).collect(),
+                // An empty constraintExecution (the Chained Ogre's four fur sims, c1070's hair,
+                // c1190's mino, c5020 / c5021's hair, c5050's beard, c5060's coat: 15 cloths) is
+                // Havok's "every set in its stored order", collision last; read literally it solved
+                // nothing and the fur flew off ("particle 8 4.5 m from the root", restart every
+                // few frames).
+                execution: {
+                    let e: Vec<i32> = arr(&c["execution"]).iter().map(|e| e.as_i64().unwrap_or(-1) as i32).collect();
+                    let n_sets = arr(&c["constraints"]).len() as i32;
+                    if e.is_empty() && n_sets > 0 { (0..n_sets).chain([-1]).collect() } else { e }
+                },
                 substeps: c["substeps"].as_u64().unwrap_or(1).max(1) as u32,
                 iterations: c["iterations"].as_u64().unwrap_or(1).max(1) as u32,
                 // Pairs beyond the particle count (an older export's second sim cloth) are
@@ -173,8 +187,21 @@ pub fn load(model_file: &std::path::Path) -> Vec<ClothDef> {
                 moves: arr(&c["move"]).iter().map(|m| (us(&m[0]), us(&m[1]))).filter(|&(_, p)| p < arr(&c["particles"]).len()).collect(),
                 refs: arr(&c["ref"])
                     .iter()
-                    .map(|r| arr(r).iter().map(|e| (e[0].as_str().unwrap_or("").to_string(), v4(&e[1]), v4(&e[2]))).collect())
+                    .map(|r| {
+                        arr(r)
+                            .iter()
+                            .map(|e| {
+                                let name = e[0].as_str().unwrap_or("");
+                                let b = ref_bones.iter().position(|n| n == name).unwrap_or_else(|| {
+                                    ref_bones.push(name.to_string());
+                                    ref_bones.len() - 1
+                                });
+                                (b, v4(&e[1]), v4(&e[2]))
+                            })
+                            .collect()
+                    })
                     .collect(),
+                ref_bones: ref_bones.clone(),
                 displays: arr(&c["displays"])
                     .iter()
                     .map(|d| Display {
@@ -372,10 +399,6 @@ fn simulate(
     let range = cloth_range();
     // Cost probe: SHINOBI_CLOTH_NO_MESH=1 skips the bone and display mesh outputs (step 4).
     let no_mesh = std::env::var("SHINOBI_CLOTH_NO_MESH").is_ok();
-    // SHINOBI_CLOTH_FLIP_N=1 flips the cloth vertex normals (a check). Read once: read per
-    // vertex, the environment lookup was most of the cloth's frame cost (6 ms a cloth).
-    static FLIP_N: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
-    let flip_n = *FLIP_N.get_or_init(|| if std::env::var("SHINOBI_CLOTH_FLIP_N").is_ok() { -1.0 } else { 1.0 });
     let cam = cameras.iter().next().and_then(|e| transforms.get(e).ok()).map(|t| t.translation);
     let time = &time;
     let (globals, transforms, children) = (&globals, &transforms, &children);
@@ -387,14 +410,20 @@ fn simulate(
             let tc = std::time::Instant::now();
             c.out.bones.clear();
             c.out.meshes.clear();
-            // Out of range: carried rigidly (the restart pose every frame), no simulation.
+            // Out of range: carried rigidly (the restart pose every frame), no simulation. The
+            // range is measured to the model root plus the cloth's own rest reach: the Demon of
+            // Hatred's root sits 5 m behind its head, so its mane 8 m from the camera was culled
+            // (bind pose floating above the crouched body) by the plain 15 m rule.
+            let rest_far = c.def.rest.iter().map(|p| p.length()).fold(0.0, f32::max);
             let culled = c.rigid
                 || match cam {
-                    Some(cam) if range > 0.0 => globals.get(c.root).is_ok_and(|g| g.translation().distance(cam) > range),
+                    Some(cam) if range > 0.0 => globals.get(c.root).is_ok_and(|g| g.translation().distance(cam) > range + rest_far),
                     _ => false,
                 };
             let bone_h = |name: &str| c.bones.get(name).and_then(|&e| globals.get(e).ok()).map(|g| havok(g.to_matrix()));
-            let bone_mats: HashMap<&str, Mat4> = c.def.refs.iter().flatten().map(|r| r.0.as_str()).chain(c.def.collidables.iter().map(|k| k.bone.as_str())).filter_map(|n| Some((n, bone_h(n)?))).collect();
+            // One world matrix per bone: the reference bones by index, the collidables' by name.
+            let ref_mats: Vec<Option<Mat4>> = c.def.ref_bones.iter().map(|n| bone_h(n)).collect();
+            let bone_mats: HashMap<&str, Mat4> = c.def.collidables.iter().filter_map(|k| Some((k.bone.as_str(), bone_h(&k.bone)?))).collect();
             // Capsules in Havok world space: (a, b, ra, rb).
             let capsules: Vec<Option<(Vec3, Vec3, f32, f32)>> = c
                 .def
@@ -413,14 +442,14 @@ fn simulate(
                     }
                     let (mut p, mut n) = (Vec4::ZERO, Vec4::ZERO);
                     for (b, l, ln) in r {
-                        let m = bone_mats.get(b.as_str())?;
-                        p += *m * *l;
-                        n += *m * *ln;
+                        let m = ref_mats.get(*b).copied().flatten()?;
+                        p += m * *l;
+                        n += m * *ln;
                     }
                     Some((p.truncate(), n.truncate().normalize_or_zero()))
                 })
                 .collect();
-            let mut tp = std::time::Instant::now();
+            let mut tp = tc; // phase 0: the bone matrices, capsules and reference vertices above
             let mut lap = |slot: usize, tp: &mut std::time::Instant, acc: &mut [u64; 6]| {
                 let now = std::time::Instant::now();
                 acc[slot] += (now - *tp).as_micros() as u64;
@@ -452,7 +481,12 @@ fn simulate(
                 let fixed_c = def.moves.iter().filter_map(|&(_, p)| c.x.get(p)).copied().sum::<Vec3>() / def.moves.len().max(1) as f32;
                 let fixed_r = def.moves.iter().filter_map(|&(v, _)| refs.get(v).and_then(|r| *r)).map(|(q, _)| q).sum::<Vec3>() / def.moves.len().max(1) as f32;
                 info!("cloth {}: centroid particles {:?} refs {:?} | fixed particles {:?} their refs {:?} (root {:?})", def.name, cx, rs / rn.max(1) as f32, fixed_c, fixed_r, root);
-                info!("cloth {}: refs {}/{} bones {}/{} far {far:.2} ref-far {rf:.2}", def.name, refs.iter().flatten().count(), refs.len(), bone_mats.len(), def.refs.iter().flatten().map(|r| &r.0).collect::<std::collections::HashSet<_>>().len());
+                let cam_d = cam.and_then(|cam| globals.get(c.root).ok().map(|g| g.translation().distance(cam))).unwrap_or(-1.0);
+                info!("cloth {}: refs {}/{} bones {}/{} far {far:.2} ref-far {rf:.2} rest-far {rest_far:.2} camera {cam_d:.1} m (range {range}, culled {culled})", def.name, refs.iter().flatten().count(), refs.len(), ref_mats.iter().flatten().count(), def.ref_bones.len());
+                // The reference bones by name with where they are (Havok space), to compare with
+                // the exporter's bind pose when the references sit off the particles.
+                let where_: Vec<String> = def.ref_bones.iter().zip(&ref_mats).map(|(n, m)| format!("{n} {:?}", m.map(|m| m.w_axis.truncate()))).collect();
+                info!("cloth {}: ref bones {}", def.name, where_.join("; "));
             }
             // First frame or a teleport (a fixed particle jumped > 1 m): restart from the bind pose
             // placed on the model root.
@@ -556,10 +590,12 @@ fn simulate(
                 }
             }
             // A particle more than 3 m further from the model root than the cloth's own
-            // reference vertices means the sim blew up: log and restart.
+            // reference vertices (or its rest pose: the Demon of Hatred's mane rests 10.2 m
+            // out while its crouched references reach 7.1 m, which restarted it every frame
+            // straight from the bind pose) means the sim blew up: log and restart.
             if let Ok(root) = globals.get(c.root) {
                 let r = havok(root.to_matrix()).w_axis.truncate();
-                let reach = refs.iter().flatten().map(|(q, _)| q.distance(r)).fold(0.0, f32::max) + 3.0;
+                let reach = refs.iter().flatten().map(|(q, _)| q.distance(r)).fold(rest_far, f32::max) + 3.0;
                 if let Some((i, far)) = c.x.iter().map(|p| p.distance(r)).enumerate().max_by(|a, b| a.1.total_cmp(&b.1)).filter(|(_, d)| !(*d < reach)) {
                     c.blowups += 1;
                     if c.blowups < GIVE_UP {
@@ -608,7 +644,7 @@ fn simulate(
                     }
                     if let (Some(dp), Some(dn)) = (pos.get_mut(*v), nrm.get_mut(*v)) {
                         *dp = mirror(p.truncate()).into();
-                        *dn = (mirror(n.truncate()).normalize_or_zero() * flip_n).into();
+                        *dn = mirror(n.truncate()).normalize_or_zero().into();
                     }
                 }
                 if debug_now(time) {

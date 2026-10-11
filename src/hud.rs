@@ -85,8 +85,8 @@ impl Plugin for HudPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<CombatLog>()
             .init_resource::<Perilous>()
-            .add_systems(Startup, (spawn_hud, spawn_perilous, spawn_deathblow_mark, spawn_item_icons))
-            .add_systems(Update, (update_player_hud, update_enemy_hud, update_debug, update_log, debug_only, update_perilous, update_stealth, update_deathblow_mark, update_item_icons, hud_shots));
+            .add_systems(Startup, (spawn_hud, spawn_perilous, spawn_deathblow_mark, spawn_item_icons, spawn_wire_mark))
+            .add_systems(Update, (update_player_hud, update_enemy_hud, update_debug, update_log, debug_only, update_perilous, update_stealth, update_deathblow_mark, update_item_icons, update_wolf_build_up, hud_shots, update_wire_mark));
     }
 }
 
@@ -140,7 +140,7 @@ fn framed(parent: &mut ChildSpawnerCommands, width: f32, height: f32, center: bo
         });
 }
 
-fn spawn_hud(mut commands: Commands, mut fonts: ResMut<Assets<Font>>) {
+fn spawn_hud(mut commands: Commands, mut fonts: ResMut<Assets<Font>>, assets: Res<AssetServer>) {
     let serif = std::fs::read("C:/Windows/Fonts/georgia.ttf").ok().map(|b| fonts.add(Font::from_bytes(b)));
     // Wolf, bottom left: resurrection nodes over the vitality bar, item counts under it.
     commands
@@ -153,6 +153,11 @@ fn spawn_hud(mut commands: Commands, mut fonts: ResMut<Assets<Font>>) {
             ..default()
         })
         .with_children(|c| {
+            c.spawn(Node { flex_direction: FlexDirection::Row, column_gap: Val::Px(8.0), ..default() }).with_children(|r| {
+                for (ty, file) in [(0, "hud/MENU_Resist_Poison.png"), (1, "hud/MENU_Resist_Fire.png")] {
+                    spawn_build_up(r, &assets, ty, file);
+                }
+            });
             c.spawn(Node { flex_direction: FlexDirection::Row, column_gap: Val::Px(6.0), ..default() }).with_children(|r| {
                 for i in 0..2 {
                     r.spawn((
@@ -258,6 +263,78 @@ Healing Gourd  {}      Spirit Emblems  {}", combat.weapon_name(config.player.com
         if t.0 != want {
             t.0 = want;
         }
+    }
+}
+
+/// Wolf's poison / burn build-up over his vitality bar, with the game's sprites (SB_FE
+/// MENU_Resist_Poison 102 x 134, MENU_Resist_Fire 106 x 132, extracted/hud): a dim icon with the
+/// full-colour one revealed from the bottom up as the gauge fills toward status::WOLF_RESIST,
+/// whole and bright while he is poisoned / burning; hidden at 0. gap: the HUD movie
+/// (menu/01_000_fe.gfx) builds this from ActionScript, not decoded: the place, size (a third of
+/// the sprite here) and the fill style are by eye.
+#[derive(Component)]
+struct WolfBuildUp(usize);
+#[derive(Component)]
+struct WolfBuildUpFill(usize);
+#[derive(Component)]
+struct WolfBuildUpBright(usize);
+
+/// The icon's size [px] (a third of the 102 x 134 sprite).
+const BUILD_UP_W: f32 = 34.0;
+const BUILD_UP_H: f32 = 44.0;
+
+fn spawn_build_up(parent: &mut ChildSpawnerCommands, assets: &AssetServer, ty: usize, file: &'static str) {
+    parent
+        .spawn((
+            Node { width: Val::Px(BUILD_UP_W), height: Val::Px(BUILD_UP_H), display: Display::None, ..default() },
+            ImageNode::new(assets.load(file)).with_color(Color::srgba(0.45, 0.45, 0.45, 0.6)),
+            WolfBuildUp(ty),
+        ))
+        .with_children(|c| {
+            c.spawn((
+                Node { position_type: PositionType::Absolute, left: Val::Px(0.0), bottom: Val::Px(0.0), width: Val::Percent(100.0), height: Val::Percent(0.0), overflow: Overflow::clip(), ..default() },
+                WolfBuildUpFill(ty),
+            ))
+            .with_children(|c| {
+                c.spawn((
+                    Node { position_type: PositionType::Absolute, left: Val::Px(0.0), bottom: Val::Px(0.0), width: Val::Px(BUILD_UP_W), height: Val::Px(BUILD_UP_H), ..default() },
+                    ImageNode::new(assets.load(file)),
+                    WolfBuildUpBright(ty),
+                ));
+            });
+        });
+}
+
+#[allow(clippy::type_complexity)]
+fn update_wolf_build_up(
+    time: Res<Time>,
+    combat: Res<Combat>,
+    statuses: Option<Res<crate::status::Statuses>>,
+    player: Query<Entity, With<crate::player::Player>>,
+    mut icons: Query<(&WolfBuildUp, &mut Node), Without<WolfBuildUpFill>>,
+    mut fills: Query<(&WolfBuildUpFill, &mut Node), Without<WolfBuildUp>>,
+    mut bright: Query<(&WolfBuildUpBright, &mut ImageNode)>,
+) {
+    let status = player.iter().next().zip(statuses.as_deref()).and_then(|(e, s)| s.0.get(&e));
+    let state = |ty: usize| -> (f32, bool) {
+        let Some(s) = status else { return (0.0, false) };
+        let refs = [crate::status::REF_POISON, crate::status::REF_BURNING];
+        let gauge = if ty == 0 { s.poison } else { s.burn };
+        ((gauge / crate::status::WOLF_RESIST).clamp(0.0, 1.0), s.afflicted(&combat, refs[ty]))
+    };
+    for (i, mut n) in &mut icons {
+        let (f, on) = state(i.0);
+        n.display = if f > 0.0 || on { Display::Flex } else { Display::None };
+    }
+    for (i, mut n) in &mut fills {
+        let (f, on) = state(i.0);
+        n.height = Val::Percent(if on { 100.0 } else { f * 100.0 });
+    }
+    // While afflicted the icon pulses (gap: the game's own animation is in the FE movie).
+    let pulse = 0.8 + 0.2 * (time.elapsed_secs() * 4.0).sin();
+    for (i, mut img) in &mut bright {
+        let (_, on) = state(i.0);
+        img.color = if on { Color::srgb(pulse, pulse, pulse) } else { Color::WHITE };
     }
 }
 
@@ -433,6 +510,48 @@ fn update_deathblow_mark(
         *vis = Visibility::Inherited;
         return;
     }
+}
+
+/// The grapple point mark (SB_FE): MENU_Wire_Marker on the point the hook would fire at when it is
+/// in the action range, MENU_Wire_NG (greyed) when it is only found (WirePointSearchParam 0: act
+/// to 15 m, find to 25 m; wire::WireAim). Hidden during a wire move. gap: the FE movie that sizes
+/// and animates it is not decoded; drawn at its atlas size (66 / 156 px on the 1920 x 1080 stage)
+/// scaled to the window.
+#[derive(Component)]
+struct WireMark;
+
+fn spawn_wire_mark(mut commands: Commands) {
+    commands.spawn((Node { position_type: PositionType::Absolute, ..default() }, ImageNode::default(), Visibility::Hidden, WireMark));
+}
+
+fn update_wire_mark(
+    assets: Res<AssetServer>,
+    aim: Option<Res<crate::wire::WireAim>>,
+    wolf: Query<&crate::player::Player>,
+    camera: Query<(&Camera, &GlobalTransform), With<crate::camera::OrbitCamera>>,
+    window: Query<&Window>,
+    mut shown: Local<Option<bool>>,
+    mut mark: Query<(&mut Node, &mut ImageNode, &mut Visibility), With<WireMark>>,
+) {
+    let Ok((mut node, mut img, mut vis)) = mark.single_mut() else { return };
+    *vis = Visibility::Hidden;
+    let busy = wolf.iter().any(|p| p.wire.is_some());
+    let (Some(t), Ok((cam, ct))) = (aim.and_then(|a| a.target), camera.single()) else { return };
+    if busy {
+        return;
+    }
+    let Ok(p) = cam.world_to_viewport(ct, t.point.hook) else { return };
+    if *shown != Some(t.in_action_range) {
+        *shown = Some(t.in_action_range);
+        img.image = assets.load(if t.in_action_range { "hud/MENU_Wire_Marker.png" } else { "hud/MENU_Wire_NG.png" });
+    }
+    let scale = window.single().map_or(720.0, |w| w.height()) / 1080.0;
+    let size = if t.in_action_range { 66.0 } else { 156.0 } * scale;
+    node.width = Val::Px(size);
+    node.height = Val::Px(size);
+    node.left = Val::Px(p.x - size / 2.0);
+    node.top = Val::Px(p.y - size / 2.0);
+    *vis = Visibility::Inherited;
 }
 
 /// The controls line, state readout and combat log show only with the debug menu (F1) open.

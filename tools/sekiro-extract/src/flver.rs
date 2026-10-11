@@ -41,6 +41,8 @@ pub struct Mesh {
     /// The albedo's alpha is a cutout (alpha test); otherwise the material is opaque and the alpha
     /// is a blend mask (DetailBlend / Blend shaders) or unused.
     pub alpha_test: bool,
+    /// Back-face culling on (FaceSet CullBackfaces); off = draw two-sided.
+    pub cull: bool,
     pub vertices: Vec<Vertex>,
     pub indices: Vec<u32>,
     /// FLVER node the mesh belongs to (its name = the Havok cloth display buffer name).
@@ -164,6 +166,9 @@ pub fn read_lod(d: &[u8], lod: u32) -> Flver {
     struct FaceSet {
         flags: u32,
         strip: bool,
+        /// SoulsFormats CullBackfaces: false = the game draws the set two-sided (the Guardian
+        /// Ape arena's pond floor is wound face-down and relies on it).
+        cull: bool,
         indices: Vec<u32>,
     }
     let facesets: Vec<FaceSet> = (0..faceset_count)
@@ -180,7 +185,7 @@ pub fn read_lod(d: &[u8], lod: u32) -> Flver {
                 32 => (0..count).map(|k| r.u32(off + k * 4)).collect(),
                 _ => Vec::new(), // edge-compressed (8-bit) sets are console-only
             };
-            FaceSet { flags: r.u32(f), strip: d[f + 4] != 0, indices }
+            FaceSet { flags: r.u32(f), strip: d[f + 4] != 0, cull: d[f + 5] != 0, indices }
         })
         .collect();
     o += faceset_count * 0x20;
@@ -345,19 +350,30 @@ pub fn read_lod(d: &[u8], lod: u32) -> Flver {
                 })?;
             let mut indices = Vec::new();
             if fs.strip {
+                // SoulsFormats FaceSet.Triangulate: the winding flips with every step of the
+                // strip, degenerate steps included, and starts over at a primitive restart
+                // index. (Until 2026-10-11 the flip was the plain index parity, so every strip
+                // after an odd-placed restart came out inside out: the Guardian Ape arena's
+                // pond floor was back-face culled away.)
+                let restart = |i: u32| i == 0xFFFF || i == u32::MAX;
+                let mut flip = false;
                 for k in 0..fs.indices.len().saturating_sub(2) {
                     let (a, b, c) = (fs.indices[k], fs.indices[k + 1], fs.indices[k + 2]);
-                    if a == b || b == c || a == c || a == 0xFFFF || b == 0xFFFF || c == 0xFFFF {
+                    if restart(a) || restart(b) || restart(c) {
+                        flip = false;
                         continue;
                     }
-                    if k % 2 == 0 { indices.extend([a, b, c]) } else { indices.extend([b, a, c]) }
+                    if a != b && b != c && a != c {
+                        if flip { indices.extend([c, b, a]) } else { indices.extend([a, b, c]) }
+                    }
+                    flip = !flip;
                 }
             } else {
                 indices = fs.indices.clone();
             }
             let slots = (tex_index..tex_index + tex_count).filter_map(|ti| textures.get(ti)).map(|(path, param)| (param.clone(), stem(path))).collect();
             let mesh_layouts = mh.vbs.iter().map(|&vb| layouts[vbs[vb].0].clone()).collect();
-            Some(Mesh { material: mat_name, mtd, albedo, normal_map: String::new(), metallic: String::new(), alpha_test: false, vertices, indices, node: mh.node, textures: slots, layouts: mesh_layouts })
+            Some(Mesh { material: mat_name, mtd, albedo, normal_map: String::new(), metallic: String::new(), alpha_test: false, cull: fs.cull, vertices, indices, node: mh.node, textures: slots, layouts: mesh_layouts })
         })
         .collect();
     Flver { nodes, meshes, dummies }

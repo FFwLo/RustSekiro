@@ -360,6 +360,9 @@ pub fn watch(
     wolf: Query<(&Actor, &Transform), With<Player>>,
     meshes: Query<(Entity, &GlobalTransform, Option<&Name>, Option<&ChildOf>, Option<&bevy::camera::primitives::Aabb>), (With<Mesh3d>, Without<crate::map::MapPiece>)>,
     names: Query<&Name>,
+    pieces: Query<(Entity, &bevy::camera::primitives::Aabb, &ViewVisibility, &Mesh3d), With<MapPiece>>,
+    map_materials: Res<Assets<MapMaterial>>,
+    asset_server: Res<AssetServer>,
 ) {
     if *done {
         return;
@@ -383,11 +386,39 @@ pub fn watch(
     if let Ok((_, wtf)) = wolf.single() {
         for (entity, gtf, name, parent, aabb) in &meshes {
             let p = gtf.translation();
-            if p.distance(wtf.translation) > 6.0 {
+            // Near Wolf, or a bigger mesh whose bounds reach under him (a far pivot hides a floor-sized quad).
+            let over_wolf = aabb.is_some_and(|a| {
+                let c = gtf.transform_point(a.center.into());
+                let he = Vec3::from(a.half_extents) * gtf.scale().abs();
+                (wtf.translation.x - c.x).abs() <= he.x + 1.0 && (wtf.translation.z - c.z).abs() <= he.z + 1.0 && (wtf.translation.y - c.y).abs() <= he.y + 3.0
+            });
+            if p.distance(wtf.translation) > 6.0 && !over_wolf {
                 continue;
             }
             let parent_name = parent.and_then(|c| names.get(c.parent()).ok()).map_or("-", |n| n.as_str());
             info!("  mesh {entity} {:?} under {parent_name} at {:.2} {:.2} {:.2} scale {:.2?} aabb {:?}", name.map(|n| n.as_str()).unwrap_or("-"), p.x, p.y, p.z, gtf.scale(), aabb.map(|a| (a.center, a.half_extents)));
+        }
+        // Map material textures that are not loaded (a material with one never draws).
+        let mut unloaded = 0;
+        for (id, m) in map_materials.iter() {
+            let e = &m.extension;
+            for (what, h) in [("albedo", &m.base.base_color_texture), ("normal", &e.normal), ("over_albedo", &e.over_albedo), ("over_normal", &e.over_normal), ("snow_albedo", &e.snow_albedo), ("snow_normal", &e.snow_normal), ("c_albedo", &e.c_albedo), ("c_normal", &e.c_normal), ("mask", &e.mask)] {
+                if let Some(h) = h {
+                    let state = asset_server.get_load_state(h.id());
+                    if !matches!(state, Some(bevy::asset::LoadState::Loaded)) {
+                        unloaded += 1;
+                        info!("  material {id:?} {what} {:?}: {state:?}", h.path().map(|p| p.to_string()));
+                    }
+                }
+            }
+        }
+        info!("  map materials: {} ({unloaded} textures not loaded)", map_materials.len());
+        // Map pieces whose bounds reach under Wolf: drawn or culled?
+        info!("  map pieces with bounds: {} (Wolf at {:.2} {:.2} {:.2})", pieces.iter().count(), wtf.translation.x, wtf.translation.y, wtf.translation.z);
+        for (entity, a, vis, mesh) in &pieces {
+            let (c, he) = (Vec3::from(a.center), Vec3::from(a.half_extents));
+            let under = (wtf.translation.x - c.x).abs() <= he.x && (wtf.translation.z - c.z).abs() <= he.z && wtf.translation.y >= c.y - he.y - 3.0 && wtf.translation.y <= c.y + he.y + 3.0;
+            info!("  piece {entity} mesh {:?} centre {:.1} {:.1} {:.1} half {:.1} {:.1} {:.1} visible {} under {under}", mesh.0.id(), c.x, c.y, c.z, he.x, he.y, he.z, vis.get());
         }
     }
 }

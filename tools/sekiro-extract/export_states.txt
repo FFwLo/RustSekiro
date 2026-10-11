@@ -344,6 +344,9 @@ GroundDeathLoop_B
 ItemGourdDrink
 ItemGourdDrinkRepeat
 ItemGourdDrinkFailed
+CrouchItemGourdDrink
+CrouchItemGourdDrinkRepeat
+CrouchItemGourdDrinkFailed
 
 # Combat art: Whirlwind Slash (weapon 5100, spAtkcategory 100 -> a100, behavior variation 5001)
 a100_316000
@@ -823,6 +826,10 @@ a010_000500   # sheathed run loop F
 CrouchStart
 CrouchEnd
 CrouchIdle
+# Attack from a crouch (HKS BEH_A_GROUND_ATTACK, STYLE_TYPE_CROUCH, no forced crouch): Wolf
+# stands up attacking; let go while ref 208 is up -> its release.
+CrouchAttackToStand
+CrouchAttackToStandRelease
 a000_005100   # crouch walk start F
 a000_005101
 a000_005102
@@ -980,3 +987,107 @@ AirStormJumpWeakStart
 AirStormJumpBackStart
 StormJumpFall
 LandStormJumpFall
+GroundWireShoot
+GroundWireMoveStart_Up
+GroundWireMoveStart_UpperSlope
+GroundWireMoveStart_Vertical
+AirWireShoot
+AirWireMoveStart_Up
+AirWireMoveStart_UpperSlope
+AirWireMoveStart_Vertical
+AirBreakFallWireShoot
+AirWireMoveStartFromBreakFall
+WireMove
+WireMoveWireShoot
+WireMoveWireMoveStart
+WireMoveWire2Shoot
+WireMoveWire2MoveStart
+WireFallLandReady
+LandWireMove
+WireFallAttackCombo1
+LandWireFallAttackCombo1
+WireFallDeflect
+WireMoveDeflectGuardStart
+WireMoveDeflectGuardLoop
+WireMoveDeflectGuardEnd
+AddActionInputWireShoot
+
+# Wall hug (cover) and ledge hang (c0000_transition.lua BEH_A_COVER_START / GROUND_HANG_START /
+# AIR_HANG_START; c0000.hkx CustomDockingGenerator nodes dock these to the edge with the
+# behavior variables DockingTranslationOffset_Cover / _Hang / _HangStart / _HangBackStart /
+# _HangLeftStart / _HangRightStart).
+StandToCover2Back
+StandToCover2Left
+StandToCover2Right
+StandToCover2Left180
+StandToCover2Right180
+MoveToCoverLeft
+MoveToCoverRight
+CoverIdle
+CoverWalkStart_L
+CoverWalkStart_R
+CoverWalkLoop_L
+CoverWalkLoop_R
+CoverWalkEnd_L
+CoverWalkEnd_R
+CoverRunStart_L
+CoverRunStart_R
+CoverRunLoop_L
+CoverRunLoop_R
+CoverRunEnd_L
+CoverRunEnd_R
+CoverEnd
+StandToHang
+StandToHang1Back
+StandToHang1Left
+StandToHang1Right
+StandToHang2
+StandToHang2Back
+StandToHang2Left
+StandToHang2Right
+StandToHangFootHold1
+StandToHangFootHold1Back
+StandToHangFootHold1Left
+StandToHangFootHold1Right
+StandToHangFootHold2
+StandToHangFootHold2Back
+StandToHangFootHold2Left
+StandToHangFootHold2Right
+FreeFallToHang
+FreeFallToHangLeft
+FreeFallToHangRight
+FreeFallToHangLongRange
+FreeFallToHangLongRangeLeft
+FreeFallToHangLongRangeRight
+FreeFallToHangFootHold
+FreeFallToHangFootHoldLeft
+FreeFallToHangFootHoldRight
+FreeFallToHangFootHoldLongRange
+FreeFallToHangFootHoldLongRangeLeft
+FreeFallToHangFootHoldLongRangeRight
+HangIdle
+HangFootHoldIdle
+HangMoveStart_L
+HangMoveStart_R
+HangMoveR
+a000_020202   # hang move loop L (HangMoveL CMSG has animId 0; 20202 by the R/L id pattern, skipped if absent)
+HangMoveEnd_L
+HangMoveEnd_R
+HangFootHoldMoveStart_L
+HangFootHoldMoveStart_R
+HangFootHoldMoveLoop_L
+HangFootHoldMoveLoop_R
+HangFootHoldMoveEnd_L
+HangFootHoldMoveEnd_R
+HangCornerMoveLeft
+HangCornerMoveRight
+HangInsideCornerMoveLeft
+HangInsideCornerMoveRight
+HangCornerMoveFootHoldLeft
+HangCornerMoveFootHoldRight
+HangInsideCornerMoveFootHoldLeft
+HangInsideCornerMoveFootHoldRight
+HangToStand
+HangFootHoldToStand
+HangToFreeFall
+HangFootHoldToFreeFall

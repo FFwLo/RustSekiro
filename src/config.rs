@@ -24,18 +24,25 @@ pub struct GameConfig {
     pub video: VideoConfig,
 }
 
-/// The Options screen's sound slider (menu.rs), 0-10 like the game's: the master category plays
-/// at volume / 10 on top of the game's own 0.7 (fmod.rs MASTER_VOLUME).
-/// gap: the game's separate SE / Music / Voice sliders (option bytes 4-6) are not split out here.
-#[derive(Deserialize, Clone, Debug)]
+/// The Options screen's sound sliders (menu.rs), 0-10 like the game's. `volume` is ours (the
+/// game has none): the master category at volume / 10 on top of the game's own 0.7 (fmod.rs
+/// MASTER_VOLUME). `music` / `se` / `voice` are the game's option bytes 4 / 5 / 6 (Bgm / Se /
+/// Voice), each its FMOD categories at value / 10 (fmod.rs set_mix).
+#[derive(Deserialize, Clone, Debug, PartialEq)]
 pub struct AudioConfig {
     #[serde(default = "default_volume")]
     pub volume: f32,
+    #[serde(default = "default_volume")]
+    pub music: f32,
+    #[serde(default = "default_volume")]
+    pub se: f32,
+    #[serde(default = "default_volume")]
+    pub voice: f32,
 }
 
 impl Default for AudioConfig {
     fn default() -> Self {
-        AudioConfig { volume: default_volume() }
+        AudioConfig { volume: default_volume(), music: default_volume(), se: default_volume(), voice: default_volume() }
     }
 }
 
@@ -51,11 +58,18 @@ pub struct VideoConfig {
     pub fullscreen: bool,
     #[serde(default = "default_true")]
     pub vsync: bool,
+    /// Window size in pixels (menu.rs apply_video); None = the default 1024x560.
+    #[serde(default)]
+    pub resolution: Option<[u32; 2]>,
+    /// Sun shadow map size in pixels (map.rs, the frame rate's main knob); None = Bevy's 2048.
+    /// `SHINOBI_MAP_SHADOW_RES` overrides it for one run.
+    #[serde(default)]
+    pub shadow_res: Option<usize>,
 }
 
 impl Default for VideoConfig {
     fn default() -> Self {
-        VideoConfig { fullscreen: false, vsync: true }
+        VideoConfig { fullscreen: false, vsync: true, resolution: None, shadow_res: None }
     }
 }
 
@@ -201,7 +215,7 @@ pub struct InputConfig {
     #[serde(default = "default_true")]
     pub gamepad: bool,
     /// The game's camera speed option, 1-10: the right stick turns at CameraParam
-    /// rotSpeed_Min + (Max - Min) * (speed - 1) / 9.
+    /// rotSpeed_Min + (Max - Min) * (speed / 10)^2 (camera.rs stick_rate).
     #[serde(default = "default_camera_speed")]
     pub camera_speed: f32,
     /// Right stick / mouse up looks down.
@@ -209,8 +223,9 @@ pub struct InputConfig {
     pub invert_y: bool,
 }
 
-/// gap: byte 0 of the game's option defaults is 5 (FUN_1407bc470, beside the volume bytes 4-6 =
-/// 10); that it is the camera speed is not traced.
+/// Byte 0 of the game's option defaults is 5 (FUN_1407bc470, beside the volume bytes 4-6 = 10);
+/// it is the camera speed: FUN_140734790 hands byte 0 / 10 to the camera (+0x270), which scales
+/// the CameraParam stick speeds by it (FUN_14073c260). gap: the menu's slider range (1-10 here).
 fn default_camera_speed() -> f32 {
     5.0
 }

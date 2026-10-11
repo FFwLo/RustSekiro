@@ -22,6 +22,9 @@ pub struct Part {
     pub npc: i32,
     /// Collisions: HitFilterID (type data +0x00).
     pub hit_filter: u8,
+    /// Collisions: SoundSpaceType (type data +0x01; SoulsFormats MSBS Collision): the reverb of
+    /// the space, 0 none .. 8 (the mixer's sd_reverb_size).
+    pub sound_space: u8,
     /// Draw groups (8 words of the 48-word mask block at unkOffset1: display[8], draw[8],
     /// collision mask[32] in DSMapStudio's split). Empty when the part has no block.
     pub draw_groups: Vec<u32>,
@@ -85,6 +88,11 @@ impl Region {
 pub struct Msb {
     pub parts: Vec<Part>,
     pub regions: Vec<Region>,
+    /// Indices into `parts` of the item pickups: the Treasure events' TreasurePartIndex
+    /// (SoulsFormats MSBS EventParam Treasure, type data +8). The same o000100 marker model
+    /// stands for a grapple point and for a treasure spot (gate map o000100_0073, entity
+    /// 1111510 "Set Object Treasure State" in m11_01's events, 0.25 m over the floor).
+    pub treasure_parts: Vec<usize>,
 }
 
 /// Each param: version, offsetCount, nameOffset, (offsetCount - 1) entry offsets, next param offset.
@@ -137,6 +145,7 @@ pub fn read(d: &[u8]) -> Msb {
                 think,
                 npc,
                 hit_filter: if kind == 5 { r.u8(td) } else { 0 },
+                sound_space: if kind == 5 { r.u8(td + 1) } else { 0 },
                 display_groups: if unk1 != 0 { words(o + unk1, 8) } else { Vec::new() },
                 draw_groups: if unk1 != 0 { words(o + unk1 + 32, 8) } else { Vec::new() },
                 gparam: if gp != 0 { [r.i32(o + gp), r.i32(o + gp + 4), r.i32(o + gp + 8), r.i32(o + gp + 12)] } else { [-1; 4] },
@@ -158,7 +167,17 @@ pub fn read(d: &[u8]) -> Msb {
             Region { name: r.utf16z(o + r.u64(o) as usize), kind: r.u32(o + 8), id: r.i32(o + 12), pos: v3(o + 0x14), rot: v3(o + 0x20), shape, size }
         })
         .collect();
-    Msb { parts, regions }
+    // Event: nameOffset, EventID, type, id, 0, baseDataOffset, typeDataOffset; Treasure (4)
+    // type data: 0, 0, TreasurePartIndex, 0, ItemLotID, ...
+    let treasure_parts = get("EVENT_PARAM_ST")
+        .iter()
+        .filter(|&&o| r.u32(o + 0xC) == 4)
+        .filter_map(|&o| {
+            let td = r.u64(o + 0x20) as usize;
+            (td != 0).then(|| usize::try_from(r.i32(o + td + 8)).ok()).flatten()
+        })
+        .collect();
+    Msb { parts, regions, treasure_parts }
 }
 
 /// Column-vector rotation of a part: Ry * Rz * Rx (degrees), i.e. SoulsFormats' row-vector

@@ -29,3 +29,13 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
+
+## Event instruction argument types
+
+`tools/emedf_types.json` lists, per EMEVD instruction class and index, the argument types the
+game's event scripts use (byte, short, int, float). It is a table of the binary format's facts,
+generated from the Sekiro instruction definitions that ship with
+[DarkScript3](https://github.com/AinTunez/DarkScript3) (`sekiro-common.emedf.json`, also at
+https://soulsmods.github.io/emedf/sekiro-emedf.html); none of that file's names, descriptions
+or text is included. `tools/boss_scripts.py` reads the definitions file itself when a
+`reference/DarkScript3` clone is next to the repo.

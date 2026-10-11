@@ -6,9 +6,10 @@
 // green, B = gloss).
 
 #import bevy_pbr::{
+    mesh_view_bindings::globals,
     pbr_fragment::pbr_input_from_standard_material,
     pbr_functions::{alpha_discard, apply_pbr_lighting, main_pass_post_lighting_processing},
-    pbr_types::STANDARD_MATERIAL_FLAGS_UNLIT_BIT,
+    pbr_types::{PbrInput, STANDARD_MATERIAL_FLAGS_UNLIT_BIT},
     pbr_bindings,
     forward_io::{VertexOutput, FragmentOutput},
 }
@@ -34,9 +35,10 @@
 // overlay (bit 1: with a normal), z: has snow (bit 1: with a normal), w: has a base albedo
 // (bit 1: show the blend weights; bit 2: byte 2 darkens (AO); bit 3: byte 2 blends layer C).
 @group(#{MATERIAL_BIND_GROUP}) @binding(110) var<uniform> map_flags: vec4<u32>;
-// x: overlay uv set (0 / 1), y: snow uv set, z: snow up-facing start (N.y), w: snow up-facing full.
+// x: overlay uv set (0 / 1; for flow smoke: the mask's tiling), y: snow uv set, z: snow up-facing start (N.y), w: snow up-facing full.
 @group(#{MATERIAL_BIND_GROUP}) @binding(111) var<uniform> map_params: vec4<f32>;
-// x: has a mask, y: blend softness (0 = the plain vertex weight), z / w: unused.
+// x: has a mask, y: blend softness (0 = the plain vertex weight), z: flow smoke (the cloud sea,
+// `smoke` below), w: its pace.
 @group(#{MATERIAL_BIND_GROUP}) @binding(118) var<uniform> mask_params: vec4<f32>;
 
 // A layer's coverage from its vertex weight and the base height: the layer wins where the
@@ -59,11 +61,46 @@ fn unpack_normal(n: vec4<f32>) -> vec3<f32> {
     return vec3(xy, sqrt(max(1.0 - dot(xy, xy), 0.0)));
 }
 
+// The Divine Dragon arena's cloud sea (M[Flow]_Smoke, map.rs alpha 3, kb/map.md): a stand-in.
+// The game's shader scrolls a height / blend mask (mask_texture, m25_00_smoke_g) along a flow
+// vector map (normal_texture, m25_00_SmokeFlow_v); here the mask is sampled at two phases of
+// the flow half a cycle apart and cross-faded (the flow-map trick), drifted by the MTD's two
+// float2 rates, and shaded between the MTD's shadow tint (color_3) and light tint (color_2, the
+// base colour). gap: the SPX shader's own math (its floats 0..13, which uv set, the view fade).
+fn smoke(in: VertexOutput, pbr_input: PbrInput) -> FragmentOutput {
+    let t = globals.time * mask_params.w;
+    // The mesh's uv spans -1..2 over the 490 m plane: the mask repeats map_params.x times per unit.
+    let uv = in.uv * map_params.x;
+    let flow = textureSample(normal_texture, normal_sampler, in.uv).rg * 2.0 - 1.0;
+    let cycle = 6.0;
+    let p0 = fract(t / cycle);
+    let p1 = fract(t / cycle + 0.5);
+    let w = abs(2.0 * p0 - 1.0);
+    let drift = vec2(-0.02, 0.01) * t * 0.05;
+    let h0 = textureSample(mask_texture, mask_sampler, uv + flow * p0 * 0.06 + drift).r;
+    let h1 = textureSample(mask_texture, mask_sampler, uv + flow * p1 * 0.06 + drift).r;
+    // The mask is a soft grey cloud (R 0.61..0.88, mean 0.77): stretched to the full range.
+    let h = smoothstep(0.62, 0.88, mix(h0, h1, w));
+    let shadow = vec3(0.667, 0.706, 0.765);
+    let light = pbr_bindings::material.base_color.rgb;
+    let rgb = mix(shadow, light, h);
+    let a = 0.92 + 0.08 * h;
+    var input = pbr_input;
+    input.material.base_color = vec4(rgb, a);
+    var out: FragmentOutput;
+    out.color = input.material.base_color;
+    out.color = main_pass_post_lighting_processing(input, out.color);
+    return out;
+}
+
 @fragment
 fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> FragmentOutput {
     var pbr_input = pbr_input_from_standard_material(in, is_front);
 
 #ifdef VERTEX_UVS_A
+    if mask_params.z > 0.5 {
+        return smoke(in, pbr_input);
+    }
     var uv_over = in.uv;
     var uv_snow = in.uv;
 #ifdef VERTEX_UVS_B

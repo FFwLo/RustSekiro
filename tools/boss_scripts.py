@@ -52,11 +52,27 @@ FMT = {0: 'B', 1: 'H', 2: 'I', 3: 'b', 4: 'h', 5: 'i', 6: 'f', 8: 'I'}
 
 
 def emedf():
-    p = glob.glob(os.path.join(REF, 'DarkScript3', '**', 'sekiro-common.emedf.json'), recursive=True)[0]
-    txt = re.sub(r'(?m)^\s*//.*$', '', open(p, encoding='utf-8').read())
-    txt = re.sub(r',(\s*[}\]])', r'\1', txt)
-    em = json.loads(txt)
-    return {(c['index'], i['index']): [a['type'] for a in i['args']] for c in em['main_classes'] for i in c['instrs']}
+    """Argument types per (class, instruction): DarkScript3's sekiro-common.emedf.json when the
+    reference clone is there, else tools/emedf_types.json, the same types alone (what a release
+    install has; regenerate it from the clone with `boss_scripts.py --emedf-table`)."""
+    p = glob.glob(os.path.join(REF, 'DarkScript3', '**', 'sekiro-common.emedf.json'), recursive=True)
+    if p:
+        txt = re.sub(r'(?m)^\s*//.*$', '', open(p[0], encoding='utf-8').read())
+        txt = re.sub(r',(\s*[}\]])', r'\1', txt)
+        em = json.loads(txt)
+        return {(c['index'], i['index']): [a['type'] for a in i['args']] for c in em['main_classes'] for i in c['instrs']}
+    table = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'emedf_types.json')
+    if not os.path.exists(table):
+        sys.exit(f'{table} missing (no reference/DarkScript3 clone either): no instruction argument types')
+    return {tuple(int(x) for x in k.split('.')): v for k, v in json.load(open(table, encoding='utf-8')).items()}
+
+
+def write_emedf_table():
+    types = emedf()
+    out = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'emedf_types.json')
+    with open(out, 'w', encoding='utf-8', newline='\n') as f:
+        f.write('{\n' + ',\n'.join(f'  "{c}.{i}": {json.dumps(v)}' for (c, i), v in types.items()) + '\n}\n')
+    print(f'{out}: {len(types)} instructions')
 
 
 def decode(types, a):
@@ -352,4 +368,7 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    if '--emedf-table' in sys.argv:
+        write_emedf_table()
+    else:
+        main()

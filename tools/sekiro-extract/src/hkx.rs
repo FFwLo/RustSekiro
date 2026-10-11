@@ -226,6 +226,13 @@ impl<'a> Tagfile<'a> {
         (idx != 0 && idx < self.items.len()).then(|| (self.data + self.items[idx].offset, self.items[idx].count))
     }
 
+    /// (absolute offset, element count) of a hkRelArray member: a u32 item index (HKLib
+    /// ArrayFormatHandler ReadHkRelArray; the hknp convex shapes' vertices / faces / indices).
+    pub fn deref_rel(&self, at: usize) -> Option<(usize, usize)> {
+        let idx = Reader::new(self.d).u32(at) as usize;
+        (idx != 0 && idx < self.items.len()).then(|| (self.data + self.items[idx].offset, self.items[idx].count))
+    }
+
     /// (type name, absolute offset) of the object a pointer field refers to.
     pub fn deref_obj(&self, at: usize) -> Option<(String, usize)> {
         let idx = Reader::new(self.d).u64(at) as usize;
@@ -910,14 +917,26 @@ pub fn collision_mesh(d: &[u8], compendium: &Types) -> CollisionMesh {
         for bi in 0..nb {
             let body = bodies + bi * stride;
             let Some((shape_ty, shape)) = tf.deref_obj(body + f("hknpPhysicsSystemData::bodyCinfoWithAttachment", "shape")) else { continue };
-            if !shape_ty.contains("CompressedMeshShape") {
-                continue;
-            }
             let pos = [r.f32(body + 48), r.f32(body + 52), r.f32(body + 56)];
             let q = [r.f32(body + 64), r.f32(body + 68), r.f32(body + 72), r.f32(body + 76)];
             let ql = (q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]).sqrt().max(1e-6);
             let q = [q[0] / ql, q[1] / ql, q[2] / ql, q[3] / ql];
-            let part = decode_shape(&tf, &shape_ty, shape);
+            let part = if shape_ty.contains("CompressedMeshShape") {
+                decode_shape(&tf, &shape_ty, shape)
+            } else {
+                // Objects (objbnd hkx): hknpBoxShape / hknpConvexPolytopeShape (vertices +
+                // faces), hknpCapsuleShape / hknpSphereShape (1-2 vertices + convexRadius).
+                // The hit material: the body's hknpMaterial userData (HitMtrlParam id when
+                // set, else u32::MAX).
+                let mat_id = r.u16(body + f("hknpPhysicsSystemData::bodyCinfoWithAttachment", "materialId")) as usize;
+                let material = tf
+                    .array(sys + f("hknpPhysicsSystemData", "materials"))
+                    .filter(|&(_, n, _)| mat_id < n)
+                    .map(|(o, _, stride)| r.u64(o + mat_id * stride + f("hknpMaterial", "userData")) as u32)
+                    .filter(|&u| u != 0)
+                    .unwrap_or(u32::MAX);
+                decode_convex(&tf, &shape_ty, shape, material)
+            };
             let base = mesh.vertices.len() as u32;
             mesh.vertices.extend(part.vertices.iter().map(|v| {
                 let w = quat_rotate(q, *v);
@@ -926,6 +945,67 @@ pub fn collision_mesh(d: &[u8], compendium: &Types) -> CollisionMesh {
             mesh.indices.extend(part.indices.iter().map(|i| i + base));
             mesh.materials.extend_from_slice(&part.materials);
         }
+    }
+    mesh
+}
+
+/// A convex hknp shape as triangles: the polytope's faces (fans over `indices`), or for a
+/// capsule / sphere (no faces: the 1-2 `vertices` plus `convexRadius`) an 8-sided prism
+/// around the segment, extended by the radius at both ends.
+fn decode_convex(tf: &Tagfile, shape_ty: &str, shape: usize, material: u32) -> CollisionMesh {
+    let r = Reader::new(tf.d);
+    let mut mesh = CollisionMesh { vertices: Vec::new(), indices: Vec::new(), materials: Vec::new() };
+    let Some(vf) = tf.try_field(shape_ty, "vertices") else { return mesh };
+    let Some((vo, nv)) = tf.deref_rel(shape + vf) else { return mesh };
+    let verts: Vec<[f32; 3]> = (0..nv).map(|i| [r.f32(vo + i * 16), r.f32(vo + i * 16 + 4), r.f32(vo + i * 16 + 8)]).collect();
+    let radius = tf.try_field(shape_ty, "convexRadius").map(|o| r.f32(shape + o)).unwrap_or(0.0);
+    let faces = tf.try_field(shape_ty, "faces").and_then(|o| tf.deref_rel(shape + o));
+    let indices = tf.try_field(shape_ty, "indices").and_then(|o| tf.deref_rel(shape + o));
+    let mut tri = |a: [f32; 3], b: [f32; 3], c: [f32; 3]| {
+        let base = mesh.vertices.len() as u32;
+        mesh.vertices.extend([a, b, c]);
+        mesh.indices.extend([base, base + 1, base + 2]);
+        mesh.materials.push(material);
+    };
+    match (faces, indices) {
+        (Some((fo, nf)), Some((io, ni))) if nf > 0 && nv >= 3 => {
+            // Face: u16 firstIndex, u8 numIndices, u8 minHalfAngle (4 bytes); indices u8.
+            for fi in 0..nf {
+                let first = r.u16(fo + fi * 4) as usize;
+                let n = r.u8(fo + fi * 4 + 2) as usize;
+                let idx: Vec<usize> = (0..n).filter(|k| first + k < ni).map(|k| r.u8(io + first + k) as usize).filter(|&v| v < nv).collect();
+                for k in 1..idx.len().saturating_sub(1) {
+                    tri(verts[idx[0]], verts[idx[k]], verts[idx[k + 1]]);
+                }
+            }
+        }
+        _ if (1..=2).contains(&nv) && radius > 0.0 => {
+            let a = verts[0];
+            let b = if nv == 2 { verts[1] } else { verts[0] };
+            let d = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+            let l = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+            let axis = if l > 1e-6 { [d[0] / l, d[1] / l, d[2] / l] } else { [0.0, 1.0, 0.0] };
+            let seed = if axis[1].abs() < 0.9 { [0.0, 1.0, 0.0] } else { [1.0, 0.0, 0.0] };
+            let u = [axis[1] * seed[2] - axis[2] * seed[1], axis[2] * seed[0] - axis[0] * seed[2], axis[0] * seed[1] - axis[1] * seed[0]];
+            let ul = (u[0] * u[0] + u[1] * u[1] + u[2] * u[2]).sqrt().max(1e-6);
+            let u = [u[0] / ul, u[1] / ul, u[2] / ul];
+            let v = [axis[1] * u[2] - axis[2] * u[1], axis[2] * u[0] - axis[0] * u[2], axis[0] * u[1] - axis[1] * u[0]];
+            let a2 = [a[0] - axis[0] * radius, a[1] - axis[1] * radius, a[2] - axis[2] * radius];
+            let b2 = [b[0] + axis[0] * radius, b[1] + axis[1] * radius, b[2] + axis[2] * radius];
+            let ring = |c: [f32; 3], k: usize| {
+                let t = k as f32 * std::f32::consts::TAU / 8.0;
+                let (s, co) = t.sin_cos();
+                [c[0] + (u[0] * co + v[0] * s) * radius, c[1] + (u[1] * co + v[1] * s) * radius, c[2] + (u[2] * co + v[2] * s) * radius]
+            };
+            for k in 0..8 {
+                let (p0, p1, q0, q1) = (ring(a2, k), ring(a2, k + 1), ring(b2, k), ring(b2, k + 1));
+                tri(p0, q0, q1);
+                tri(p0, q1, p1);
+                tri(a2, p1, p0);
+                tri(b2, q0, q1);
+            }
+        }
+        _ => {}
     }
     mesh
 }

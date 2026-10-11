@@ -37,6 +37,20 @@ fn scale4(v: [f32; 4], w: f32) -> [f32; 4] {
     [v[0] * w, v[1] * w, v[2] * w, v[3] * w]
 }
 
+/// Solves the frame's linear part for a direction: m_lin * x = v (None when degenerate).
+fn inv3_apply(m: &M4, v: [f32; 3]) -> Option<[f32; 3]> {
+    // Columns a, b, c of the linear part.
+    let (a, b, c) = ([m[0][0], m[0][1], m[0][2]], [m[1][0], m[1][1], m[1][2]], [m[2][0], m[2][1], m[2][2]]);
+    let cross = |p: [f32; 3], q: [f32; 3]| [p[1] * q[2] - p[2] * q[1], p[2] * q[0] - p[0] * q[2], p[0] * q[1] - p[1] * q[0]];
+    let dot = |p: [f32; 3], q: [f32; 3]| p[0] * q[0] + p[1] * q[1] + p[2] * q[2];
+    let det = dot(a, cross(b, c));
+    if det.abs() < 1e-12 {
+        return None;
+    }
+    // Cramer's rule: x_i = det with column i replaced by v, over det.
+    Some([dot(v, cross(b, c)) / det, dot(a, cross(v, c)) / det, dot(a, cross(b, v)) / det])
+}
+
 fn round(v: f32) -> Value {
     json!((v as f64 * 1e6).round() / 1e6)
 }
@@ -306,6 +320,58 @@ pub fn export(flver: &crate::flver::Flver, d: &[u8]) -> Value {
                         bone_out.push(json!({"bone": bones.get(b), "tri": t, "local": l.iter().map(|col| v4(*col)).collect::<Vec<_>>()}));
                     }
                 }
+            }
+        }
+        // No MeshMeshDeform display: the sim mesh is the drawn mesh itself (the Guardian Ape's
+        // 12 fur cloths: the sim buffer is gathered straight into the display buffer of the
+        // FLVER mesh's name and converted out, no deformer). The gather is a Copy op (vertex i
+        // = particle i) or a GatherAllVertices op (vertexInputFromVertexOutput: neckfur's 796
+        // display vertices from 762 particles, seam duplicates). Emitted as a display whose
+        // vertex rides its particle's own triangle at a corner of the centroid frame (local
+        // (1,0,0), (0,1,0) or (-1,-1,0): exact for any deformation), with the FLVER bind
+        // normal taken into that frame.
+        if displays.is_empty() && !tris.is_empty() {
+            let n = pose.len();
+            let is_sim = |i: i32| buf_name(i).contains("SimBuffer");
+            for &oi in &state_ops {
+                let Some((ty, p)) = ops.get(oi) else { continue };
+                let (ty, p) = (ty.as_str(), *p);
+                if ty != "hclCopyVerticesOperator" && ty != "hclGatherAllVerticesOperator" {
+                    continue;
+                }
+                let (inp, out) = (r.u32(p + tf.field(ty, "inputBufferIdx")) as i32, r.u32(p + tf.field(ty, "outputBufferIdx")) as i32);
+                let (bname, nv) = (buf_name(out), buf_verts(out));
+                if !is_sim(inp) || is_sim(out) || bname.starts_with("Previous Positions") || bname.is_empty() {
+                    continue;
+                }
+                let map: Vec<Option<u16>> = if ty == "hclGatherAllVerticesOperator" {
+                    u16s(&tf, p + tf.field(ty, "vertexInputFromVertexOutput")).into_iter().map(|i| (usize::from(i) < n).then_some(i)).collect()
+                } else {
+                    (0..nv.min(n) as u16).map(Some).collect()
+                };
+                let Some(mi) = flver.meshes.iter().enumerate().position(|(_, m)| {
+                    m.vertices.len() == nv
+                        && flver.nodes.get(m.node.max(0) as usize).is_some_and(|nd| nd.name == bname)
+                        && m.vertices.iter().zip(&map).all(|(v, pi)| pi.is_none_or(|pi| (0..3).all(|k| (v.pos[k] - pose[pi as usize][k]).abs() < 0.01)))
+                }) else {
+                    println!("  cloth {name}: no FLVER mesh for the gathered sim buffer {bname} ({nv} verts)");
+                    continue;
+                };
+                let corner = [[1.0, 0.0, 0.0, 1.0], [0.0, 1.0, 0.0, 1.0], [-1.0, -1.0, 0.0, 1.0]];
+                let verts: Vec<Value> = map
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(v, pi)| {
+                        let pi = (*pi)?;
+                        let (t, k) = tris.iter().enumerate().find_map(|(t, tri)| tri.iter().position(|&c| c == pi).map(|k| (t as u16, k)))?;
+                        let f = frame_of(&tris, &pose, t)?;
+                        let ln = inv3_apply(&f, flver.meshes[mi].vertices[v].normal)?;
+                        Some(json!([v, [json!([t, v4(corner[k]), v4([ln[0], ln[1], ln[2], 0.0])])]]))
+                    })
+                    .collect();
+                println!("  cloth {name}: sim mesh is the display -> mesh {mi} ({bname}: {} of {nv} verts on a particle's triangle, {ty})", verts.len());
+                displays.push(json!({"mesh": mi, "verts": verts}));
+                break;
             }
         }
         // Reference buffer skin: drives the fixed particles and the local-range / transition targets.

@@ -21,7 +21,12 @@ if (-not (Test-Path (Join-Path $Sekiro "sekiro.exe"))) { throw "Sekiro not found
 New-Item -ItemType Directory -Force $out | Out-Null
 # The game's FMOD runtime is loaded from the install at play time (src/paths.rs sekiro_dir).
 Set-Content -Path (Join-Path $out "sekiro_dir.txt") -Value $Sekiro -Encoding ascii
-& $exe unpack $Sekiro $out '^/(action/|param/gameparam/|chr/c0000(\.|_a|_c1020\.)|chr/c10[12][09]\.|sound/(s?main|c[0-9]+)\.|script/(aicommon|m\d\d_\d\d_00_00)\.luabnd|other/default\.rumblebnd|msg/engus/item\.msgbnd)'
+& $exe unpack $Sekiro $out '^/(action/|param/gameparam/|chr/c0000(\.|_a|_c1020\.)|chr/c10[12][09]\.|sound/(s?main|sm[0-9][0-9]|c[0-9]+)\.|script/(aicommon|m\d\d_\d\d_00_00)\.luabnd|other/default\.rumblebnd|msg/engus/item\.msgbnd)'
+# The FMOD mixer project (reverb, src/fmod.rs set_reverb) is a loose file next to the packed
+# banks, not in the archives' dictionary: copied as is (the music banks sm<area> are loose too,
+# bgm_decrypt.py below).
+New-Item -ItemType Directory -Force (Join-Path $out "sound") | Out-Null
+Copy-Item (Join-Path $Sekiro "sound\mixer.fev") (Join-Path $out "sound")
 & $exe params (Join-Path $out "param\gameparam\gameparam.parambnd.d") (Join-Path $out "json\params")
 # Every enemy and boss: their chr / anim / behaviour / texture binders, Wolf's per-enemy
 # deathblow and grab anims (chr/c0000_c<chr>.anibnd) and the map event scripts.
@@ -114,6 +119,13 @@ if ($python) {
     python (Join-Path $PSScriptRoot "boss_events.py")
     # Boss map scripts (bullets, summons, warps) -> extracted/enemies/boss_scripts.json (src/enemy/script.rs).
     python (Join-Path $PSScriptRoot "boss_scripts.py")
+    # Boss music: the loose sound/sm<area>.fsb music banks, FMOD-encrypted, decrypted into
+    # extracted/sound (the key is read from the player's own sekiro.exe, none is kept here); then
+    # per NpcParam row the area's bank, tracks and start / stop / phase flags (common_func
+    # 20005830 / 20005831 in the arena's events) -> extracted/enemies/boss_bgm.json (fmod.rs).
+    # After boss_scripts.py: it reads its event lists.
+    python (Join-Path $PSScriptRoot "bgm_decrypt.py") $Sekiro
+    python (Join-Path $PSScriptRoot "boss_bgm.py")
     # The bosses' and mini-bosses' English names (their health bars) -> extracted/enemies/npc_names.json (src/data.rs encounter_list).
     python (Join-Path $PSScriptRoot "npc_names.py")
     # Prosthetic tool models and their anims (parts/wp_a_07xx) -> extracted/tool (src/model/tool.rs).

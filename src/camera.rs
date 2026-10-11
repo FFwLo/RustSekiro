@@ -419,14 +419,16 @@ fn pitch_range(combat: &Combat, locked: bool) -> (f32, f32) {
 }
 
 /// The right stick's turn rate [rad/s] per axis (x: yaw, y: pitch) from CameraParam (deg/s in
-/// the paramdef, radians in the export): rotSpeed_Min..Max by the camera speed option; held at
-/// full tilt it rises to rotHiSpeed_Min..Max over rotHiSpeedRateIncTime.
-/// gap: the exe's reader of these fields is not traced: the option mapping (linear over 1-10),
-/// "full tilt" (> 0.95, the lock switch's fire level) and the linear rise are this reading.
+/// the paramdef, radians in the export), as the exe: the camera speed option (options byte 0,
+/// default 5) is stored as s = clamp(byte / 10, 0, 1) (FUN_140734790 -> camera +0x270), and each
+/// frame the camera keeps lerp(rotSpeed_Min, rotSpeed_Max, s * s) and lerp(rotHiSpeed_Min,
+/// rotHiSpeed_Max, s * s) (FUN_14073c260 -> +0x250..+0x264); the stick turns at
+/// lerp(normal, high, |ramp|) (`hi`, see orbit_with_stick).
 fn stick_rate(combat: &Combat, speed: f32, hi: f32) -> Vec2 {
     let c = combat.param("CameraParam", 0);
     let f = |k: &str, d: f64| c[k].as_f64().unwrap_or(d) as f32;
-    let t = ((speed - 1.0) / 9.0).clamp(0.0, 1.0);
+    let s = (speed / 10.0).clamp(0.0, 1.0);
+    let t = s * s;
     let lerp = |a: f32, b: f32| a + (b - a) * t;
     let base = Vec2::new(lerp(f("rotSpeed_MinY", 0.977), f("rotSpeed_MaxY", 3.665)), lerp(f("rotSpeed_MinX", 0.977), f("rotSpeed_MaxX", 2.932)));
     let high = Vec2::new(lerp(f("rotHiSpeed_MinY", 2.688), f("rotHiSpeed_MaxY", 7.575)), lerp(f("rotHiSpeed_MinX", 2.199), f("rotHiSpeed_MaxX", 6.109)));
@@ -449,11 +451,22 @@ fn orbit_with_stick(
     }
     let Some(r) = pads.iter().map(|g| g.right_stick()).max_by(|a, b| a.length().total_cmp(&b.length())) else { return };
     let dt = time.delta_secs();
-    *hi = if r.length() > 0.95 { *hi + dt / combat.param("CameraParam", 0)["rotHiSpeedRateIncTime"].as_f64().unwrap_or(0.6).max(1e-3) as f32 } else { 0.0 };
+    // The fast turn (exe camera +0x160): only with the stick all the way out (|stick| > 0.998)
+    // and turning sideways, it ramps toward +-1 (the turn's side) by dt / rotHiSpeedRateIncTime,
+    // starting over from 0 when the side flips; otherwise 0. gap: the exe's sideways threshold
+    // (thunk_FUN_1419dcdb0) is read as "not zero", and which stick component signs it as x.
+    let inc = dt / combat.param("CameraParam", 0)["rotHiSpeedRateIncTime"].as_f64().unwrap_or(0.6).max(1e-3) as f32;
+    *hi = if r.length() <= 0.998 || r.x.abs() <= 1e-3 {
+        0.0
+    } else if r.x > 0.0 {
+        (hi.max(0.0) + inc).min(1.0)
+    } else {
+        (hi.min(0.0) - inc).max(-1.0)
+    };
     if r.length() < 1e-3 {
         return;
     }
-    let rate = stick_rate(&combat, config.input.camera_speed, *hi);
+    let rate = stick_rate(&combat, config.input.camera_speed, hi.abs());
     let sign = if config.input.invert_y { -1.0 } else { 1.0 };
     camera.yaw -= r.x * rate.x * dt;
     let (lo, hi_pitch) = pitch_range(&combat, false);

@@ -1,7 +1,8 @@
 # Packages a release: dist/Sv1-v<version>/ (the game, a default config, extract.bat, the
 # prebuilt extractor with its keys and defs, the tools the extraction runs, README, licences)
-# and dist/Sv1-v<version>-windows.zip. Build first:
-#   cargo build --release
+# and dist/Sv1-v<version>-windows.zip. Build first (the dist profile: fat LTO, stripped, no
+# console window; the extractor as usual):
+#   cargo build --profile dist
 #   cargo build --release --manifest-path tools\sekiro-extract\Cargo.toml
 # Usage: powershell -File tools\package.ps1 [-Version 0.2.0]
 param([string]$Version = "")
@@ -16,7 +17,9 @@ if (Test-Path $dist) { Remove-Item -Recurse -Force $dist }
 New-Item -ItemType Directory -Force (Join-Path $dist "tools\sekiro-extract") | Out-Null
 New-Item -ItemType Directory -Force (Join-Path $dist "tools\fxr-dump") | Out-Null
 
-Copy-Item (Join-Path $root "target\release\sv1.exe") $dist
+$exe = Join-Path $root "target\dist\sv1.exe"
+if (-not (Test-Path $exe)) { throw "build the game first: cargo build --profile dist" }
+Copy-Item $exe $dist
 # The default config is the committed one, not the developer's working copy.
 git -C $root show HEAD:config.toml | Set-Content -Path (Join-Path $dist "config.toml") -Encoding utf8
 foreach ($f in "README.md", "LICENSE.md", "THIRD_PARTY.md") { Copy-Item (Join-Path $root $f) $dist }
@@ -29,7 +32,8 @@ powershell -ExecutionPolicy Bypass -File "%~dp0tools\extract.ps1" %*
 pause
 '@
 # The extraction script and the Python tools it runs.
-foreach ($f in "extract.ps1", "boss_events.py", "boss_scripts.py", "boss_arenas.py", "tool_export.py", "fxr_extract.py") {
+foreach ($f in "extract.ps1", "boss_events.py", "boss_scripts.py", "emedf_types.json", "bgm_decrypt.py", "boss_bgm.py",
+        "npc_names.py", "boss_arenas.py", "tool_export.py", "fxr_extract.py") {
     Copy-Item (Join-Path $root "tools\$f") (Join-Path $dist "tools")
 }
 # The FXR dumper (node): its sources, not node_modules (npm i runs in extract.ps1).

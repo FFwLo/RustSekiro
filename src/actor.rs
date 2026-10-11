@@ -426,7 +426,15 @@ pub fn advance(time: Res<Time>, combat: Res<Combat>, mut q: Query<(&mut Actor, &
                 // spin 180 deg): the enemy ends 0.6 m in front of Wolf; turning the steps with the
                 // current yaw slid him 1 m sideways.
                 let delta = Quat::from_rotation_y(a.yaw - y0 + a.root_yaw) * Vec3::new(p1.x - p0.x, 0.0, p1.y - p0.y) * a.root_scale;
-                tf.translation += delta;
+                // In the air (falling, not held by ChrActionFlag 27 SetNoGravity) the clip's
+                // horizontal root motion is not applied; the air velocity moves the body. Live
+                // (30 head kicks a000_213115 / 213114 / 213110 in the rec_* recordings): Wolf moves
+                // only while the kick holds him (frames 0-6), then goes straight up; the clip's
+                // 0.27 m step back at frames 17-20 never shows. gap: the exe's branch is not traced.
+                let held = data.flag(&a.anim, a.t, crate::player::FLAG_NO_GRAVITY);
+                if !a.airborne || held {
+                    tf.translation += delta;
+                }
                 a.yaw += y1 - y0;
                 // While ChrActionFlag 27 SetNoGravity holds a grounded character, the clip's own
                 // vertical root motion lifts it (the vault 511900 goes 1.5 m up; live: Wolf's
@@ -538,7 +546,7 @@ pub const PLAYER_BODY_RADIUS: f32 = 0.4;
 /// start anim stops against the enemy - the c1010 vault start moved 0.18 m with him 0.95 m away).
 fn in_throw(a: &Actor) -> bool {
     a.state.starts_with("ThrowDef")
-        || matches!(a.state.as_str(), "Deathblow" | "ThrowBreak" | "BreakKickJump" | "Mikiri" | "PlungeDeathblow")
+        || matches!(a.state.as_str(), "Deathblow" | "ThrowBreak" | "BreakKickJump" | "Mikiri" | "PlungeDeathblow" | "WireThrowLand" | "WireThrowTodome")
 }
 
 /// ChrActionFlag 39 (TAE name "Set_0x78_7"): on Wolf's throw and plunge anims (a2xx_510300,
@@ -553,13 +561,26 @@ fn proxy_off(combat: &Combat, a: &Actor) -> bool {
 }
 
 /// Characters don't overlap: pairs closer than the sum of their radii are pushed
-/// apart horizontally, half each (both weigh in like the game's char proxies).
+/// apart horizontally, half each (both weigh in like the game's char proxies). The proxies are
+/// upright capsules, so a pair whose heights don't meet (Wolf over an enemy's head after a
+/// head kick) is left alone: an enemy spans its feet to NpcParam hitHeight, Wolf his capsule
+/// (2 x CAPSULE_HALF_HEIGHT; gap: his proxy height is not traced).
 fn separate(combat: Res<Combat>, mut q: Query<(&Actor, &mut Transform)>) {
     let radius = |a: &Actor| {
         if a.side == Side::Player {
             PLAYER_BODY_RADIUS
         } else {
             combat.param("NpcParam", combat.foe_of(a).npc_row)["hitRadius"].as_f64().unwrap_or(0.5) as f32
+        }
+    };
+    let half = crate::player::CAPSULE_HALF_HEIGHT;
+    // Feet and top heights (enemies stand 0.05 m higher, enemy.rs spawn_lineup).
+    let span = |a: &Actor, t: &Transform| {
+        if a.side == Side::Player {
+            (t.translation.y - half, t.translation.y + half)
+        } else {
+            let feet = t.translation.y - half - 0.05;
+            (feet, feet + combat.param("NpcParam", combat.foe_of(a).npc_row)["hitHeight"].as_f64().unwrap_or(2.0 * half as f64) as f32)
         }
     };
     let mut items: Vec<_> = q.iter_mut().collect();
@@ -570,6 +591,10 @@ fn separate(combat: Res<Combat>, mut q: Query<(&Actor, &mut Transform)>) {
             let (b, tb) = &mut r[0];
             // Throw pairs pass through each other (the game's throws drop the character proxies).
             if a.hp <= 0.0 || b.hp <= 0.0 || in_throw(a) || in_throw(b) || proxy_off(&combat, a) || proxy_off(&combat, b) {
+                continue;
+            }
+            let ((a0, a1), (b0, b1)) = (span(a, ta), span(b, tb));
+            if a0 >= b1 || b0 >= a1 {
                 continue;
             }
             let min = radius(a) + radius(b);

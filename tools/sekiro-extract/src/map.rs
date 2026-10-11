@@ -15,7 +15,7 @@
 //!
 //! Layout "SHMP" (little endian):
 //!   u32 meshes; per mesh: u16 len albedo, u16 len normal map, u8 alpha (0 opaque, 1 cutout,
-//!     2 blend), u8 two-sided, u32 vertices; per vertex f32 pos[3] normal[3] uv[2];
+//!     2 blend, 3 flow smoke: the mask scrolled along the "normal" flow map), u8 two-sided, u32 vertices; per vertex f32 pos[3] normal[3] uv[2];
 //!     u32 indices; u32 each
 //! Layout "SHMC": u32 vertices; f32 pos[3] each; u32 triangles; per triangle u32 idx[3], u32 material
 
@@ -24,14 +24,12 @@ use std::path::Path;
 
 use crate::{container, flver, gparam, hkx, msb, mtd, cubemap};
 
-/// (map, part, mesh index): meshes left out of the export. gap: the game does not show them
-/// near the centre, by a rule not found yet (not the draw / display groups, LOD sets, node
-/// binding, entity flags or events; kb/map.md "Far-view stand-in").
-const HIDDEN_MESHES: &[(&str, &str, usize)] = &[
-    // The Guardian Ape's arena: the giant Buddha pedestal asset carries a rough copy of the
-    // arena's floor and walls about a metre above the real ones (a far-view stand-in).
-    ("m17_00_00_00", "m700850_7000", 3),
-];
+/// (map, part, mesh index): meshes left out of the export (`MAP_SKIP_MESH=<part>:<index>` adds
+/// to the list at run time). Empty since 2026-10-11: the Guardian Ape arena's giant Buddha
+/// pedestal shell (m17_00_00_00 m700850_7000 mesh 3, a far-view copy of the floor and walls
+/// a metre above the real ones) is back-face culled from inside once the triangles are wound
+/// the right way round (src/map.rs BinBatch::indices), so it needs no special case.
+const HIDDEN_MESHES: &[(&str, &str, usize)] = &[];
 
 #[derive(Default)]
 struct Batch {
@@ -64,6 +62,126 @@ impl Arena {
         let (s, c) = (-self.yaw).sin_cos();
         [v[0] * c + v[2] * s, v[1], -v[0] * s + v[2] * c]
     }
+}
+
+/// One record of an EDGE file (docs/kb/grapple.md section 1), in the owner's local space:
+/// the three vertices, the type (1 grapple, 2 hang, 3 hug) and the variation byte.
+struct EdgeRecord {
+    v: [[f32; 3]; 3],
+    kind: u8,
+    variation: u8,
+}
+
+/// The records of an EDGE file (version 4, 64-byte records from offset 16).
+fn edge_records(d: &[u8]) -> Vec<EdgeRecord> {
+    if d.len() < 16 || u32::from_le_bytes(d[0..4].try_into().unwrap()) != 4 {
+        return Vec::new();
+    }
+    let n = u32::from_le_bytes(d[4..8].try_into().unwrap()) as usize;
+    let f = |o: usize| f32::from_le_bytes(d[o..o + 4].try_into().unwrap());
+    (0..n)
+        .filter(|i| 16 + i * 64 + 64 <= d.len())
+        .map(|i| {
+            let o = 16 + i * 64;
+            EdgeRecord { v: [[f(o), f(o + 4), f(o + 8)], [f(o + 16), f(o + 20), f(o + 24)], [f(o + 32), f(o + 36), f(o + 40)]], kind: d[o + 52], variation: d[o + 53] }
+        })
+        .collect()
+}
+
+/// Grapple edges of an EDGE file: (hook = the midpoint of V1-V2, landing = V3, variation).
+fn edge_grapples(d: &[u8]) -> Vec<([f32; 3], [f32; 3], u8)> {
+    edge_records(d)
+        .into_iter()
+        .filter(|e| e.kind == 1)
+        .map(|e| {
+            let [v1, v2, v3] = e.v;
+            ([(v1[0] + v2[0]) / 2.0, (v1[1] + v2[1]) / 2.0, (v1[2] + v2[2]) / 2.0], v3, e.variation)
+        })
+        .collect()
+}
+
+/// Hang (2) and hug (3) edges of an EDGE file, raw: the three vertices (V1-V2 the edge's
+/// segment, V3 the third point: gap, their meaning per type is not decoded; see the gizmos).
+fn edge_ledges(d: &[u8]) -> Vec<EdgeRecord> {
+    edge_records(d).into_iter().filter(|e| e.kind == 2 || e.kind == 3).collect()
+}
+
+/// The grapple points within `radius` + 30 m of the arena origin, in the arena frame
+/// (docs/kb/grapple.md section 1): the grapple-type records of objects' `e<id>.edge` files and
+/// of the map's `<map>.edgebhd` (one `<map>_NNNNNN.edge` per collision part, local to it).
+/// Each entry: {hook, land, fwd, var, src}; `fwd` is the edge's reference direction for the
+/// WireVariationParam recognition angles (the owner part's facing: gap, the edge's own
+/// direction field is not decoded). The `o000100` marker objects (dummies 90 / 170) are not
+/// a source: on the gate map all 40 within range are the MSB Treasure events' item spots
+/// (`msb.treasure_parts`), 0.25 m over the floor; treasure parts of any model are skipped.
+fn export_grapple(root: &Path, map_id: &str, msb: &msb::Msb, arena: &Arena, origin: [f32; 3], radius: f32, obj_dir: &Path) -> (Vec<serde_json::Value>, Vec<serde_json::Value>) {
+    let near = |p: [f32; 3]| (p[0] - origin[0]).hypot(p[2] - origin[2]) <= radius + 30.0;
+    // Hang / hug edges ("ledges"): the same files' type 2 / 3 records within the radius + 10 m,
+    // raw ({a, b, c, kind, var, src}) for the ledge hang and wall hug moves later (HKS
+    // BEH_A_GROUND_HANG_START, COVER_*); the game only draws them (map.rs LedgeEdges).
+    let mut ledges = Vec::new();
+    let mut ledge = |e: &EdgeRecord, p: &msb::Part| {
+        let a = p.transform(e.v[0]);
+        if (a[0] - origin[0]).hypot(a[2] - origin[2]) <= radius + 10.0 {
+            ledges.push(serde_json::json!({ "a": arena.point(a), "b": arena.point(p.transform(e.v[1])), "c": arena.point(p.transform(e.v[2])), "kind": e.kind, "var": e.variation, "src": p.name }));
+        }
+    };
+    let mut ledge_cache: HashMap<String, Vec<EdgeRecord>> = HashMap::new();
+    let norm = |v: [f32; 3]| {
+        let l = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+        if l > 1e-6 { [v[0] / l, v[1] / l, v[2] / l] } else { [0.0, 0.0, 1.0] }
+    };
+    let mut out = Vec::new();
+    let mut entry = |hook: [f32; 3], land: [f32; 3], fwd: [f32; 3], var: u8, src: String| -> bool {
+        if !near(hook) {
+            return false;
+        }
+        out.push(serde_json::json!({ "hook": arena.point(hook), "land": arena.point(land), "fwd": arena.dir(norm(fwd)), "var": var, "src": src }));
+        true
+    };
+    let mut edge_cache: HashMap<String, Vec<([f32; 3], [f32; 3], u8)>> = HashMap::new();
+    let (mut obj_edges, mut map_edges, mut treasures) = (0, 0, 0);
+    for (pi, p) in msb.parts.iter().enumerate().filter(|(_, p)| p.kind == 1 && !p.model.is_empty()) {
+        if !near(p.pos) {
+            continue;
+        }
+        let m = p.model.to_lowercase();
+        if msb.treasure_parts.contains(&pi) {
+            treasures += 1;
+            if std::env::var("MAP_LOG").is_ok() {
+                println!("treasure {} ({m}) entity {} pos {:?}", p.name, p.entity, p.pos);
+            }
+            continue;
+        }
+        let edge_file = obj_dir.join(format!("{m}.objbnd.d/e{}.edge", &m[1..]));
+        let edges = edge_cache.entry(m.clone()).or_insert_with(|| std::fs::read(&edge_file).map(|d| edge_grapples(&d)).unwrap_or_default());
+        for &(hook, land, var) in edges.iter() {
+            obj_edges += entry(p.transform(hook), p.transform(land), msb::rotate(p.rot, [0.0, 0.0, 1.0]), var, p.name.clone()) as usize;
+        }
+        for e in ledge_cache.entry(m.clone()).or_insert_with(|| std::fs::read(&edge_file).map(|d| edge_ledges(&d)).unwrap_or_default()).iter() {
+            ledge(e, p);
+        }
+    }
+    // The map's own edge files (none with grapple edges on m11_01_00_00 or m10_00_00_00; kept
+    // for other maps).
+    let edge_dir = root.join(format!("map/{map_id}"));
+    if let (Ok(bhd), Ok(bdt)) = (std::fs::read(edge_dir.join(format!("{map_id}.edgebhd"))), std::fs::read(edge_dir.join(format!("{map_id}.edgebdt")))) {
+        for f in container::read_bxf4(&bhd, &bdt) {
+            let stem = f.name.rsplit(['\\', '/']).next().unwrap_or(&f.name).trim_end_matches(".edge");
+            let Some(id) = stem.rsplit('_').next() else { continue };
+            let part_model = format!("h{}_{id}", &map_id[1..]);
+            let Some(p) = msb.parts.iter().find(|p| p.kind == 5 && p.model.eq_ignore_ascii_case(&part_model)) else { continue };
+            for (hook, land, var) in edge_grapples(&f.data) {
+                map_edges += entry(p.transform(hook), p.transform(land), msb::rotate(p.rot, [0.0, 0.0, 1.0]), var, p.name.clone()) as usize;
+            }
+            for e in edge_ledges(&f.data) {
+                ledge(&e, p);
+            }
+        }
+    }
+    let hangs = ledges.iter().filter(|l| l["kind"] == 2).count();
+    println!("grapple points: {} ({obj_edges} object edges, {map_edges} map edges within the radius; {treasures} treasure spots skipped); ledges: {} ({hangs} hang, {} hug)", out.len(), ledges.len(), ledges.len() - hangs);
+    (out, ledges)
 }
 
 /// Hours of the six `envmap_00..05` probe variants. Matched by colour and sun direction to
@@ -180,9 +298,22 @@ fn choose(m: &flver::Mesh, mtd: Option<&mtd::Mtd>) -> Layers {
     let mut normal: Vec<String> = Vec::new();
     // Slot name -> path, for the layer slots of the sat shaders.
     let mut by_slot: Vec<(String, String)> = Vec::new();
+    // A FLVER whose slot names come from another variant of the shader than the MTD's (the
+    // Divine Dragon's tree o258000, c5200_cherryblossoms: FLVER "Character_AMSN__Wind__snp_
+    // Texture2D_2_AlbedoMap", MTD shader [Gradient] with "..__Gradient__snp_Texture2D_1_
+    // AlbedoMap_0" and a second, withered set in slots 2 / 4 plus two masks) matches no slot
+    // by name. Then the MTD's own first albedo / normal "_0" slot stands in (the bloom, not
+    // the withered set; gap: the gradient between the two, a shader float). Only when no
+    // slot matches at all, so a material with one unused slot keeps its layers as they are.
+    let variant_mismatch = mtd.is_some_and(|d| !m.textures.iter().any(|(param, _)| d.textures.iter().any(|t| &t.kind == param)));
+    let stand_in = |d: &mtd::Mtd, param: &str| -> Option<String> {
+        let want = ["AlbedoMap", "NormalMap"].into_iter().find(|k| param.contains(k))?;
+        let slot_no = |k: &str| k.rsplit("Texture2D_").next().and_then(|t| t.split('_').next()).and_then(|n| n.parse::<u32>().ok()).unwrap_or(99);
+        d.textures.iter().filter(|t| t.kind.contains(want) && t.kind.ends_with("_0") && !t.path.is_empty()).min_by_key(|t| slot_no(&t.kind)).map(|t| stem(&t.path))
+    };
     for (param, tex) in &m.textures {
         let path = if tex.is_empty() {
-            mtd.and_then(|d| d.textures.iter().find(|t| &t.kind == param)).map(|t| stem(&t.path)).unwrap_or_default()
+            mtd.and_then(|d| d.textures.iter().find(|t| &t.kind == param).map(|t| stem(&t.path)).or_else(|| if variant_mismatch { stand_in(d, param) } else { None })).unwrap_or_default()
         } else {
             tex.clone()
         };
@@ -198,6 +329,16 @@ fn choose(m: &flver::Mesh, mtd: Option<&mtd::Mtd>) -> Layers {
         }
     }
     let slot = |suffix: &str| by_slot.iter().find(|(p, _)| p.ends_with(suffix)).map(|(_, t)| t.clone()).unwrap_or_default();
+    // The Divine Dragon arena's cloud sea (m600000, M[Flow]_Smoke, kb/map.md): no albedo, a
+    // height / blend mask (slots 11 and 5, m25_00_smoke_g) and a flow vector map (slot 12,
+    // m25_00_SmokeFlow_v) the shader scrolls. Kept as mask + normal with alpha 3 ("flow
+    // smoke"); map.rs draws a stand-in (map_material.wgsl `smoke`).
+    if mtd.is_some_and(|d| d.shader.to_lowercase().contains("flow]_smoke")) {
+        let (mask, normal) = (slot("texture2d_11_heightmap"), slot("texture2d_12_vectormap"));
+        if !mask.is_empty() {
+            return Layers { albedo: String::new(), normal, over_albedo: String::new(), over_normal: String::new(), snow_albedo: String::new(), snow_normal: String::new(), c_albedo: String::new(), c_normal: String::new(), mask, alpha: 3, two_sided: true };
+        }
+    }
     let ground = m.mtd.to_lowercase().contains("ground") || mtd.is_some_and(|d| d.shader.to_lowercase().contains("multipleground"));
     let (over_albedo, over_normal) = (slot("texture2d_5_albedomap_0"), slot("texture2d_4_normalmap_0"));
     let (c_albedo, c_normal) = if ground { (String::new(), String::new()) } else { (slot("texture2d_7_albedomap_0"), slot("texture2d_0_normalmap_0")) };
@@ -225,6 +366,8 @@ fn choose(m: &flver::Mesh, mtd: Option<&mtd::Mtd>) -> Layers {
         }
         two_sided = d.int("g_DoubleSided").unwrap_or(0) != 0 || alpha != 0;
     }
+    // The face set's own CullBackfaces flag (flver.rs): off = two-sided whatever the MTD says.
+    two_sided |= !m.cull;
     let albedo = a.map(|i| albedo[i].clone()).unwrap_or_default();
     // An overlay that is the base again (stonewall_block_edge: the same albedo with another
     // normal) carries nothing worth a second sample.
@@ -268,10 +411,19 @@ pub fn export(root: &Path, map_id: &str, centre: &str, radius: f32) {
     // The enemy faces +Z in its own space; the origin is 4 m in front of him and the arena is
     // turned so he keeps facing +Z: the game spawns the enemy at (0, y, -4), his real spot, and
     // the player at (0, y, 4), in front of him where the player walks up in the game.
-    let facing = msb::rotate(c.rot, [0.0, 0.0, 1.0]);
-    let origin = [c.pos[0] + 4.0 * facing[0], c.pos[1], c.pos[2] + 4.0 * facing[2]];
-    let arena = Arena { origin, yaw: -c.rot[1].to_radians() };
-    println!("centre {} ({}) at {:?} yaw {:.1}; arena origin {:?}, facing {:?} -> {:?}", c.name, c.model, c.pos, c.rot[1], origin, facing, arena.dir(facing));
+    // `MAP_CENTRE_YAW=<degrees>` turns the arena about the centre part instead of taking his
+    // MSB pose (the Headless Ape faces the pit's wall 3 m off; his fight region runs the other
+    // way: tools/boss_arenas.py).
+    let yaw_add: f32 = std::env::var("MAP_CENTRE_YAW").ok().and_then(|v| v.parse().ok()).unwrap_or(0.0);
+    let rot = [c.rot[0], c.rot[1] + yaw_add, c.rot[2]];
+    let facing = msb::rotate(rot, [0.0, 0.0, 1.0]);
+    // `MAP_CENTRE_DIST=<m>` puts the origin that far in front of the centre part instead of
+    // 4 m: the fight then stands away from his MSB spot (the Divine Dragon's is in a cluster
+    // of rock and tree pieces).
+    let dist: f32 = std::env::var("MAP_CENTRE_DIST").ok().and_then(|v| v.parse().ok()).unwrap_or(4.0);
+    let origin = [c.pos[0] + dist * facing[0], c.pos[1], c.pos[2] + dist * facing[2]];
+    let arena = Arena { origin, yaw: -rot[1].to_radians() };
+    println!("centre {} ({}) at {:?} yaw {:.1}{}; arena origin {:?}, facing {:?} -> {:?}", c.name, c.model, c.pos, c.rot[1], if yaw_add != 0.0 { format!(" turned {yaw_add:+.0}") } else { String::new() }, origin, facing, arena.dir(facing));
     let area = &map_id[..3];
     let dir = root.join(format!("map/{map_id}"));
 
@@ -338,6 +490,12 @@ pub fn export(root: &Path, map_id: &str, centre: &str, radius: f32) {
     // Pieces within `MAP_SHADOW` m (default 45) of the arena cast the sun's shadows; the rest
     // are tagged not to (the shadow passes over the whole map cost half the frame rate).
     let shadow_m: f32 = std::env::var("MAP_SHADOW").ok().and_then(|v| v.parse().ok()).unwrap_or(45.0);
+    // `MAP_FAR=<m>` (default 0 = off): the map's distant-view models (m6xxxxx) and sky / cloud
+    // pieces (m9xxxxx) within that many metres of the centre join at their lowest LOD, so the
+    // horizon beyond the arena radius is not empty (the castle seen from the gate). Past
+    // MAP_SHADOW they cast no shadows; objects and ordinary pieces are not affected.
+    let far_m: f32 = std::env::var("MAP_FAR").ok().and_then(|v| v.parse().ok()).unwrap_or(0.0);
+    let mut far_pieces = 0;
     // `MAP_CELL=<m>` splits the batches by cells of the piece's centre so that the camera and
     // the shadow cascades can cull them; off by default: 20 m cells (1016 meshes) cost more
     // per entity than the culling saved (39 fps against 56, kb/map.md).
@@ -346,11 +504,25 @@ pub fn export(root: &Path, map_id: &str, centre: &str, radius: f32) {
     let mut pieces = 0;
     let mut tris = 0usize;
     let mut skipped_groups = 0;
+    let mut mirrored_pieces = 0;
     // Map pieces (part type 0, the map's mapbnds) and objects (type 1: trees, fences, the
     // Divine Dragon's arena; `obj/<model>.objbnd`, whose rigid meshes are in their bone's space,
     // flver.rs SEKIRO_FLVER_REF_POSE). An object not unpacked yet is listed for `unpack`.
-    // gap: objects' own collision (the objbnd's hkx) is not added to the .hit.
+    // The objects' own collision (the objbnd's hkx) joins the .hit (below).
     let obj_dir = root.join("obj");
+    // ObjectParam materialId per object id (json/params/ObjectParam.json, -1 none): the hit
+    // material of an object's collision ("treated the same as the floor material"), for the
+    // hkx shapes that carry none (the convex ones never do). 29 "None" when both are missing,
+    // so the loader does not take the shape for a helper plane. ObjectParam collisionType
+    // (0 / 1 / 4 / 8 / 10 on this map) is not applied: Sekiro's enum is not in Paramdex (gap;
+    // the AC6 one reads 0 normal, 1 no camera, 2 no camera/lock/damage, 3 camera only, 4
+    // damage only).
+    let obj_materials: HashMap<i64, u32> = std::fs::read_to_string(root.join("json/params/ObjectParam.json"))
+        .ok()
+        .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+        .and_then(|j| j["rows"].as_array().cloned())
+        .map(|rows| rows.iter().filter_map(|r| Some((r["id"].as_i64()?, u32::try_from(r["materialId"].as_i64()?).ok()?))).collect())
+        .unwrap_or_default();
     // Meshes the game does not show near the centre although their part passes the draw
     // groups: `MAP_SKIP_MESH=<part>:<mesh index>[,...]` (an experiment) and HIDDEN_MESHES.
     let hidden_meshes: Vec<(String, usize)> = std::env::var("MAP_SKIP_MESH")
@@ -362,7 +534,8 @@ pub fn export(root: &Path, map_id: &str, centre: &str, radius: f32) {
     let mut objects_missing: std::collections::BTreeSet<String> = Default::default();
     let mut objects = 0;
     let mut objects_used: std::collections::BTreeSet<String> = Default::default();
-    for p in msb.parts.iter().filter(|p| p.kind == 0 || p.kind == 1) {
+    let mut object_hits = 0;
+    for (pi, p) in msb.parts.iter().enumerate().filter(|(_, p)| p.kind == 0 || p.kind == 1) {
         if !groups.is_empty() && !p.draws_with(&groups) {
             skipped_groups += 1;
             if std::env::var("MAP_LOG").is_ok() && (p.pos[0] - origin[0]).hypot(p.pos[2] - origin[2]) <= radius {
@@ -409,13 +582,15 @@ pub fn export(root: &Path, map_id: &str, centre: &str, radius: f32) {
         }
         let dx = (lo[0] - origin[0]).max(origin[0] - hi[0]).max(0.0);
         let dz = (lo[1] - origin[2]).max(origin[2] - hi[1]).max(0.0);
-        if dx.hypot(dz) > radius {
+        let dist = dx.hypot(dz);
+        let far_piece = dist > radius && !object && (p.model.starts_with("m6") || p.model.starts_with("m9")) && dist <= far_m;
+        if dist > radius && !far_piece {
             continue;
         }
+        far_pieces += far_piece as usize;
         // Level of detail by distance, as the engine swaps them: full within 30 m, LodLevel1
         // to 55 m, LodLevel2 beyond (pieces without a level keep the next lower one).
         // `MAP_LOD=<full m>,<lod1 m>` overrides (docs/kb/map.md, frame-rate tuning).
-        let dist = dx.hypot(dz);
         let lod = if dist <= lod_dist[0] { 0 } else if dist <= lod_dist[1] { 1 } else { 2 };
         if lod > 0 {
             f = read(lod);
@@ -424,6 +599,32 @@ pub fn export(root: &Path, map_id: &str, centre: &str, radius: f32) {
         objects += object as usize;
         if object {
             objects_used.insert(p.model.to_lowercase());
+            // The object's own collision (`<model>.hkx` in the objbnd: convex boxes / polytopes
+            // / capsules, or a compressed mesh): Wolf stands on roofs and branches, the
+            // grapple landing spots. Not for the item pickups (MSB Treasure parts: the o000100
+            // marker's 1.2 m box would block the courtyard 3 m from the General); skipped
+            // altogether when `MAP_NO_OBJECT_HIT` is set.
+            if std::env::var("MAP_NO_OBJECT_HIT").is_err() && !msb.treasure_parts.contains(&pi) {
+                let m = p.model.to_lowercase();
+                if let Ok(hk) = std::fs::read(obj_dir.join(format!("{m}.objbnd.d/{m}.hkx"))) {
+                    let mesh = hkx::collision_mesh(&hk, &compendium);
+                    if !mesh.indices.is_empty() {
+                        object_hits += 1;
+                        let base = hit_verts.len() as u32;
+                        hit_verts.extend(mesh.vertices.iter().map(|v| arena.point(p.transform(*v))));
+                        let param_mat = m[1..].parse::<i64>().ok().and_then(|id| obj_materials.get(&id).copied()).unwrap_or(29);
+                        let mats: Vec<u32> = mesh.materials.iter().map(|&mt| if mt == u32::MAX { param_mat } else { mt }).collect();
+                        for t in 0..mesh.indices.len() / 3 {
+                            hit_tris.push([base + mesh.indices[t * 3], base + mesh.indices[t * 3 + 1], base + mesh.indices[t * 3 + 2], mats[t]]);
+                        }
+                        if std::env::var("MAP_LOG").is_ok() {
+                            let set: std::collections::BTreeSet<u32> = mats.iter().copied().collect();
+                            let (lo, hi) = mesh.vertices.iter().fold(([f32::MAX; 3], [f32::MIN; 3]), |(lo, hi), v| ([lo[0].min(v[0]), lo[1].min(v[1]), lo[2].min(v[2])], [hi[0].max(v[0]), hi[1].max(v[1]), hi[2].max(v[2])]));
+                            println!("object hit {} {} tris {} verts {}.. materials {:?} local box {:.2?}..{:.2?}", p.name, m, mesh.indices.len() / 3, base, set, lo, hi);
+                        }
+                    }
+                }
+            }
         }
         let piece_tris: usize = f.meshes.iter().map(|m| m.indices.len() / 3).sum();
         if std::env::var("MAP_LOG").is_ok() {
@@ -438,7 +639,7 @@ pub fn export(root: &Path, map_id: &str, centre: &str, radius: f32) {
             let mtd = mtds.entry(key.clone()).or_insert_with(|| std::fs::read(mtd_dir.join(format!("{key}.mtd"))).ok().and_then(|d| mtd::read(&d))).as_ref();
             let layers = choose(m, mtd);
             if std::env::var("MAP_LOG").is_ok() {
-                println!("piece-mesh {} {} lod {} albedo {} [{}] tris {}", p.name, p.model, lod, layers.albedo, m.mtd, m.indices.len() / 3);
+                println!("piece-mesh {} {} lod {} albedo {} [{}] tris {} cull {}", p.name, p.model, lod, layers.albedo, m.mtd, m.indices.len() / 3, m.cull);
             }
             if layers.albedo.is_empty() && std::env::var("MAP_LOG").is_ok() {
                 println!("noalbedo {} [{}] shader {} slots {:?} mtd slots {:?}", m.material, m.mtd, mtd.map_or("?", |d| d.shader.as_str()), m.textures, mtd.map(|d| d.textures.iter().map(|t| (t.kind.clone(), t.path.clone())).collect::<Vec<_>>()));
@@ -447,9 +648,17 @@ pub fn export(root: &Path, map_id: &str, centre: &str, radius: f32) {
             let cell = |v: f32| if cell_m > 0.0 { (v / cell_m).floor() as i32 } else { 0 };
             let b = batches.entry((layers, dist <= shadow_m, cell(centre[0]), cell(centre[1]))).or_default();
             let base = b.pos.len() as u32;
+            // A mirrored part (odd number of negative scale axes, e.g. the Guardian Ape arena's
+            // pond floor m17_00_00_00 ground piece) turns its triangles inside out: flip the
+            // winding so back-face culling keeps the floor, and mirror the normals with it.
+            let mirrored = p.scale.iter().filter(|s| **s < 0.0).count() % 2 == 1;
+            let sign = p.scale.map(|s| if s < 0.0 { -1.0 } else { 1.0 });
+            if mirrored {
+                mirrored_pieces += 1;
+            }
             for v in &m.vertices {
                 b.pos.push(arena.point(p.transform(v.pos)));
-                let n = arena.dir(msb::rotate(p.rot, v.normal));
+                let n = arena.dir(msb::rotate(p.rot, [v.normal[0] * sign[0], v.normal[1] * sign[1], v.normal[2] * sign[2]]));
                 let l = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt().max(1e-6);
                 b.normal.push([n[0] / l, n[1] / l, n[2] / l]);
                 b.uv.push(v.uv);
@@ -458,11 +667,15 @@ pub fn export(root: &Path, map_id: &str, centre: &str, radius: f32) {
                 // (kb/map.md "Layers": read off the vertex data, not the shader).
                 b.blend.push([v.blend[0][0], v.blend[1][0], v.blend[4][0], v.blend[2][0]]);
             }
-            b.indices.extend(m.indices.iter().map(|i| base + i));
+            if mirrored {
+                b.indices.extend(m.indices.chunks_exact(3).flat_map(|t| [base + t[0], base + t[2], base + t[1]]));
+            } else {
+                b.indices.extend(m.indices.iter().map(|i| base + i));
+            }
             tris += m.indices.len() / 3;
         }
     }
-    println!("{pieces} pieces ({objects} objects; {skipped_groups} outside the draw groups), {} batches, {tris} triangles", batches.len());
+    println!("{pieces} pieces ({objects} objects, {object_hits} with their own collision; {far_pieces} far-view pieces beyond the radius; {skipped_groups} outside the draw groups; {mirrored_pieces} mirrored), {} batches, {tris} triangles", batches.len());
     if !objects_missing.is_empty() {
         let list: Vec<String> = objects_missing.iter().cloned().collect();
         println!("objects to unpack: ^/obj/({})\\.objbnd", list.join("|"));
@@ -522,15 +735,19 @@ pub fn export(root: &Path, map_id: &str, centre: &str, radius: f32) {
     }
     let env_probe = export_env(root, map_id, name, &msb, &arena);
     let luts = export_luts(root, map_id, name);
+    let (grapple, ledges) = export_grapple(root, map_id, &msb, &arena, origin, radius, &obj_dir);
     let json = serde_json::json!({
+        "grapple": grapple,
+        "ledges": ledges,
         "env_probe": env_probe,
         "env_hours": ENV_HOURS,
         "luts": luts,
         "map": map_id,
-        "centre": { "name": c.name, "model": c.model, "npc": c.npc, "pos": c.pos, "yaw": c.rot[1] },
+        "centre": { "name": c.name, "model": c.model, "npc": c.npc, "pos": c.pos, "yaw": rot[1], "turned": yaw_add },
         "origin": origin,
         "arena_yaw": arena.yaw,
         "collision_part": under_part.map(|p| p.name.clone()),
+        "sound_space_type": under_part.map(|p| p.sound_space),
         "light_set": under_part.map(|p| p.gparam[0]).unwrap_or(0),
         "gparam": under_part.map(|p| p.gparam).unwrap_or([-1; 4]),
         "draw_groups": groups,
@@ -548,16 +765,27 @@ pub fn export(root: &Path, map_id: &str, centre: &str, radius: f32) {
             std::fs::write(tex_dir.join(format!("{name}.dds")), drop_top_mips(dds, 1024)).unwrap();
         }
     };
-    for e in std::fs::read_dir(root.join(format!("map/{area}"))).into_iter().flatten().flatten() {
-        let p = e.path();
-        if p.extension().is_none_or(|x| x != "tpfbhd") {
-            continue;
+    // A texture named after another area (the Headless Ape's ground uses m13's
+    // m13_ground_900) comes from that area's packs when they are unpacked (tools/boss_arenas.py
+    // unpacks them on the exporter's "missing" report and runs again).
+    let mut areas: Vec<String> = vec![area.to_string()];
+    for n in &wanted {
+        if n.len() > 4 && n.starts_with('m') && n.as_bytes()[3] == b'_' && n[1..3].bytes().all(|b| b.is_ascii_digit()) && !areas.iter().any(|a| *a == n[..3]) {
+            areas.push(n[..3].to_string());
         }
-        let (Ok(bhd), Ok(bdt)) = (std::fs::read(&p), std::fs::read(p.with_extension("tpfbdt"))) else { continue };
-        for f in container::read_bxf4(&bhd, &bdt) {
-            if f.data.starts_with(b"TPF\0") {
-                for (name, dds) in flver::tpf(&f.data) {
-                    take(name, &dds);
+    }
+    for a in &areas {
+        for e in std::fs::read_dir(root.join(format!("map/{a}"))).into_iter().flatten().flatten() {
+            let p = e.path();
+            if p.extension().is_none_or(|x| x != "tpfbhd") {
+                continue;
+            }
+            let (Ok(bhd), Ok(bdt)) = (std::fs::read(&p), std::fs::read(p.with_extension("tpfbdt"))) else { continue };
+            for f in container::read_bxf4(&bhd, &bdt) {
+                if f.data.starts_with(b"TPF\0") {
+                    for (name, dds) in flver::tpf(&f.data) {
+                        take(name, &dds);
+                    }
                 }
             }
         }

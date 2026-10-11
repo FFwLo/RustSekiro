@@ -63,6 +63,15 @@ pub struct Anim {
 #[derive(Deserialize, Clone, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct SpEffect {
+    /// Grapple target while worn (kb/grapple.md section 4): the wire variation (-1 none; the
+    /// player's arc row ChrPhysicsHomingParam 3000<variation>), the dummy poly the hook
+    /// catches, the one Wolf lands at (260: the model root).
+    #[serde(default = "minus_one")]
+    pub chr_wire_variation_no: i64,
+    #[serde(default = "minus_one")]
+    pub chr_wire_target_dmypoly_id: i64,
+    #[serde(default = "minus_one")]
+    pub chr_wire_landing_point_dmypoly_id: i64,
     /// Healing (negative = heal) as % of max HP, e.g. the gourd's SpEffect 3000 (-40).
     #[serde(default)]
     pub change_hp_estus_flask_rate: f32,
@@ -110,6 +119,10 @@ pub struct SpEffect {
     /// Factor on the AI sounds the wearer makes (Covert B 150010: 0.5).
     #[serde(default = "one")]
     pub hearing_search_enemy_rate: f32,
+    /// On a listener: % cut of its hearing (FUN_140bfe590; the smoke / dazzle blinds 200130,
+    /// 220011-220016, "hearing 0" 200140: 100).
+    #[serde(default)]
+    pub hearing_search_enemy_cut: f32,
     /// 0 = always, 1 / 2 = only when the observer's geometry bit 0 / 1 holds (hanging, wall hug).
     #[serde(default)]
     pub sight_cut_limit_type: i64,
@@ -269,6 +282,17 @@ pub struct Attack {
     /// Isshin 54000750).
     #[serde(default)]
     pub sp_attribute: i64,
+    /// decalId1 / 2: the DecalParam stain the hit leaves (-1 / 0 none; the oil pot's 50010 /
+    /// 50011). gore.rs PlaceStain.
+    #[serde(default = "minus_one", rename = "decalId1")]
+    pub decal_id1: i64,
+    #[serde(default = "minus_one", rename = "decalId2")]
+    pub decal_id2: i64,
+    /// decalBaseId1 / 2: the hit-blood stain bases (0 / 100 on most rows; gore::hit_stain_id).
+    #[serde(default = "minus_one", rename = "decalBaseId1")]
+    pub decal_base_id1: i64,
+    #[serde(default = "minus_one", rename = "decalBaseId2")]
+    pub decal_base_id2: i64,
     /// Hit sound: HitEffectSeParam column group (0 Iron, 3 Body, ...) and power (0 S, 1 L, 2 LL).
     #[serde(rename = "atkMaterial_forSe", default)]
     pub atk_material_se: i64,
@@ -580,6 +604,11 @@ pub struct BulletSpec {
     /// runs out (the Divine Dragon's updraft 52000661 renewing itself), else on a hit too.
     #[serde(default)]
     pub launch_condition_type: i64,
+    /// Paramdex BULLET_FOLLOW_TYPE: 3 "follow target" (the Divine Dragon's warning 52000980:
+    /// AtkParam 8 "[System] dummy bullet", SpEffect 211000 "dangerous enemy attack VFX"), 1 / 2
+    /// the shooter / its feet (no enemy row).
+    #[serde(default, rename = "FollowType")]
+    pub follow_type: i64,
     #[serde(default)]
     pub attack: Option<Attack>,
 }
@@ -842,6 +871,8 @@ pub struct VelocityChange {
     pub v_change: f32,
     pub h_angle: f32,
     pub fall_type: u8,
+    /// ChrPhysicsHomingParam row the launch homes with (0 none; 300000000 the wire's).
+    pub homing_id: i64,
 }
 
 /// Fall control per ChrPhysicsVelocityChangeParam.fallType. Not a param: a static
@@ -929,6 +960,32 @@ impl Combat {
         Some((id, self.throw(id)?))
     }
 
+    /// The Grappling Hook Attack on this enemy (kb/grapple.md section 4: "崩しワイヤー", breaking
+    /// wire): throwKind 180000 "[PC] Breaking wire 0" (Wolf a<offset>_511600 / its 13600), 180100
+    /// "... 1" (511610 / 13610) and 180900 (Gyoubu's Todome 15080179, 511690 / 13690): the Ogre
+    /// 15020170 / 71, Gyoubu 15080170 / 71 / 79. (throwTypeId 3023 / 3123 alone also takes the
+    /// falls and kick-downs.)
+    pub fn wire_throws(&self, foe: &Foe) -> Vec<(i64, Throw)> {
+        self.throws_of_kinds(foe, &[180_000, 180_100, 180_900])
+    }
+
+    /// This enemy's ThrowParam rows (DefChrId = the chr number) of the given ThrowKindParam
+    /// kinds, in id order. Wolf's deathblows by kind ("[PC] ..."): 90000 / 90010 wall-hug left
+    /// (start / body: Wolf 500600 / 510600, its 12600), 100000 / 100010 right (500700 / 510700,
+    /// 12700), 110000 / 110010 hanging (500800 / 510800, 12800; and 501000 / 511000, 13000),
+    /// 70000 / 70100 / 70900 the plunge, 180000-180900 the wire (wire_throws). The common
+    /// enemies have the hug / hang rows (48 kinds, c1010 11010060-131), the bosses none.
+    pub fn throws_of_kinds(&self, foe: &Foe, kinds: &[i64]) -> Vec<(i64, Throw)> {
+        let Some(rows) = self.params.get("ThrowParam").and_then(|t| t.as_object()) else { return Vec::new() };
+        let mut ids: Vec<i64> = rows
+            .iter()
+            .filter(|(_, r)| r["DefChrId"].as_i64() == Some(foe.chr_num) && r["throwKind"].as_i64().is_some_and(|k| kinds.contains(&k)))
+            .filter_map(|(k, _)| k.parse().ok())
+            .collect();
+        ids.sort();
+        ids.into_iter().filter_map(|id| Some((id, self.throw(id)?))).collect()
+    }
+
     /// The enemy's grab for a throwFlag-1 hit: its ThrowParam row (AtkChrId = the chr number)
     /// whose throwKind is a ThrowKindParam row checked on a grab hit (throwCheckSituation 4,
     /// only the 10 "[Enemy] Throw n" rows 1000000-1000140) with the hit's AtkParam throwTypeId
@@ -964,6 +1021,7 @@ impl Combat {
             v_change: f("verticalVelocityChange"),
             h_angle: f("horizontalVelocityAngle"),
             fall_type: r.get("fallType").and_then(|v| v.as_u64()).unwrap_or(0) as u8,
+            homing_id: r.get("homingId").and_then(|v| v.as_i64()).unwrap_or(0),
         })
     }
 }

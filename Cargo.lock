@@ -4812,13 +4812,15 @@ checksum = "6637bab7722d379c8b41ba849228d680cc12d0a45ba1fa2b48f2a30577a06731"
 
 [[package]]
 name = "sv1"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "bevy",
  "libloading",
  "serde",
  "serde_json",
  "toml",
+ "windows-sys 0.59.0",
+ "winit",
 ]
 
 [[package]]

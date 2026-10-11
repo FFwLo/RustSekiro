@@ -1053,6 +1053,43 @@ fn gourd_heals_forty_percent_at_the_consume_frame() {
     assert_eq!(p.gourd, 2);
 }
 
+/// Crouched, the gourd is the crouch drink (HKS STYLE_TYPE_CROUCH: W_CrouchItemGourdDrink,
+/// a000_250010): Wolf stays crouched and it heals the same.
+#[test]
+fn a_crouched_drink_keeps_wolf_crouched() {
+    let mut app = app();
+    move_enemy_far(&mut app);
+    for _ in 0..30 {
+        app.update();
+    }
+    app.world_mut().resource_mut::<PadInput>().press(Action::Crouch);
+    for _ in 0..40 {
+        app.update();
+    }
+    let max = {
+        let world = app.world_mut();
+        let mut q = world.query_filtered::<&mut Actor, With<Player>>();
+        let mut a = q.single_mut(world).unwrap();
+        assert!(a.crouch);
+        a.hp = 20.0;
+        a.hp_max
+    };
+    app.world_mut().resource_mut::<PadInput>().press(Action::UseItem);
+    for _ in 0..3 {
+        app.update();
+    }
+    assert_eq!(player_state(&mut app).0, "CrouchItemGourdDrink");
+    for _ in 0..90 {
+        app.update();
+    }
+    let world = app.world_mut();
+    let mut q = world.query_filtered::<(&Actor, &Player), With<Player>>();
+    let (a, p) = q.single(world).unwrap();
+    assert!(a.crouch, "standing after the drink: {}", a.state);
+    assert!((a.hp - (20.0 + max * 0.4)).abs() < 1.0, "hp {} of {max}", a.hp);
+    assert_eq!(p.gourd, 2);
+}
+
 #[test]
 fn attack_plus_guard_is_whirlwind_slash_and_hits_twice() {
     let mut app = app();
@@ -3032,6 +3069,31 @@ fn moving_right_after_crouching_is_not_held() {
 }
 
 #[test]
+fn an_attack_from_a_crouch_stands_wolf_up() {
+    // HKS BEH_A_GROUND_ATTACK in STYLE_TYPE_CROUCH: W_CrouchAttackToStand (a050_301000); Wolf is
+    // standing after it.
+    let mut app = app();
+    for _ in 0..30 {
+        app.update();
+    }
+    app.world_mut().resource_mut::<PadInput>().press(Action::Crouch);
+    for _ in 0..40 {
+        app.update();
+    }
+    app.world_mut().resource_mut::<PadInput>().attack_held = true;
+    app.world_mut().resource_mut::<PadInput>().press(Action::Attack);
+    for _ in 0..3 {
+        app.update();
+    }
+    assert_eq!(player_state(&mut app).0, "CrouchAttackToStand");
+    for _ in 0..5 {
+        app.update();
+    }
+    let mut q = app.world_mut().query_filtered::<&Actor, With<Player>>();
+    assert!(!q.single(app.world()).unwrap().crouch, "standing");
+}
+
+#[test]
 fn crouch_while_sprinting_is_the_slide() {
     // HKS BEH_A_CROUCH_START with ref 1 up: W_SprintToCrouchReady (a000_216010), then
     // SprintToCrouchLeft / Right (216020 / 216021), crouched.
@@ -3371,6 +3433,11 @@ fn firecracker_staggers_the_general_once_per_cool_time() {
 /// its real AI scripts load and attack the idle player within 20 s, and a posture-broken enemy
 /// takes Wolf's deathblow. Prints one line per enemy; run with
 /// `cargo test --release all_enemies_smoke -- --ignored --nocapture`.
+/// The characters that do not fight (merchants, nuns, handmaidens, Hanbei, scripted set pieces,
+/// HANDOFF 4.11 / PLAN "fighters only"): the smoke test only asks that they stand - spawn, idle,
+/// stay alive on their feet and never panic. c1300 waits for its Aging status.
+const NON_FIGHTERS: &[&str] = &["c1012", "c1110", "c1111", "c1260", "c1300", "c1320", "c1460", "c5410", "c7200", "c7300", "c7420", "c7430", "c7440", "c7450"];
+
 #[test]
 #[ignore]
 fn all_enemies_smoke() {
@@ -3398,10 +3465,31 @@ fn all_enemies_smoke() {
             }
             let mut anims = std::collections::BTreeSet::new();
             let mut first_hit = None;
+            let y0 = {
+                let world = app.world_mut();
+                world.query_filtered::<&Transform, (With<Enemy>, Without<crate::enemy::Cast>)>().single(world).unwrap().translation.y
+            };
+            let mut enemy_start: Option<Vec3> = None;
             for i in 0..1200 {
                 app.update();
                 anims.insert(enemy_state(&mut app).1);
-                if first_hit.is_none() && (log_text(&app).contains("enemy hit:") || log_text(&app).contains("thrown:")) {
+                // Wolf closes in like a player (3 m/s to 2.5 m, as fight_until_hits) on an enemy
+                // that moved more than 5 m from where it began (the Demon of Hatred's SpinStep
+                // 5201 off a standing target), within 20 m. Otherwise he stands (the Divine
+                // Dragon's script warps him 53 m off and its lightning finds him there at 18 s). A grab counts as the hit (the
+                // ground zombie c1500's restraint 4120 does no damage).
+                let grabbed = {
+                    let world = app.world_mut();
+                    let et = world.query_filtered::<&Transform, (With<Enemy>, Without<crate::enemy::Cast>)>().single(world).unwrap().translation;
+                    let (a, mut t) = world.query_filtered::<(&mut Actor, &mut Transform), With<Player>>().single_mut(world).unwrap();
+                    let to = (et - t.translation).with_y(0.0);
+                    let e0 = *enemy_start.get_or_insert(et);
+                    if (et - e0).with_y(0.0).length() > 5.0 && (2.5..20.0).contains(&to.length()) {
+                        t.translation += to.normalize() * 3.0 / 60.0;
+                    }
+                    a.state == "Grabbed"
+                };
+                if first_hit.is_none() && (grabbed || log_text(&app).contains("enemy hit:") || log_text(&app).contains("thrown:")) {
                     first_hit = Some(i as f32 / 60.0);
                     break;
                 }
@@ -3416,8 +3504,10 @@ fn all_enemies_smoke() {
             let can_blow = combat.throw(foe.throw_row(0)).is_some();
             let fights = foe.think_id > 3 && npc["hp"].as_i64().unwrap_or(0) < 9999;
             let world = app.world_mut();
-            let desc = world.query_filtered::<&Enemy, Without<crate::enemy::Cast>>().single(world).unwrap().ai_desc.clone();
-            (foe, failed, desc, anims.len(), first_hit, can_blow, fights)
+            let (e, ea, et) = world.query_filtered::<(&Enemy, &Actor, &Transform), Without<crate::enemy::Cast>>().single(world).unwrap();
+            let stands = !e.is_dead() && ea.hp > 0.0 && et.translation.is_finite() && (et.translation.y - y0).abs() < 0.5;
+            let desc = e.ai_desc.clone();
+            (foe, failed, desc, anims.len(), first_hit, can_blow, fights, stands)
         }));
         let blow = catch_unwind(AssertUnwindSafe(|| {
             let mut app = app_with(chr);
@@ -3442,8 +3532,12 @@ fn all_enemies_smoke() {
         }));
         let name = e["name"].as_str().unwrap_or("");
         let line = match (&fight, &blow) {
-            (Ok((foe, failed, desc, n, hit, can_blow, fights)), Ok((pa, es))) => {
-                let good = foe.chr == chr && !failed && (hit.is_some() || !fights) && (es.starts_with("ThrowDef") || !can_blow);
+            (Ok((foe, failed, desc, n, hit, can_blow, fights, stands)), Ok((pa, es))) => {
+                let good = if NON_FIGHTERS.contains(&chr) {
+                    foe.chr == chr && *stands
+                } else {
+                    foe.chr == chr && !failed && (hit.is_some() || !fights) && (es.starts_with("ThrowDef") || !can_blow)
+                };
                 ok += good as usize;
                 let goal: String = desc.chars().take(40).collect();
                 format!(
@@ -3456,7 +3550,7 @@ fn all_enemies_smoke() {
                     hit.map_or("none".to_string(), |t| format!("{t:.1}s")),
                     if *can_blow { "" } else { " (no deathblow)" },
                     if *fights { "" } else { " (non-combatant)" }
-                )
+                ) + if NON_FIGHTERS.contains(&chr) { " [stands rule]" } else { "" }
             }
             _ => {
                 let msg = |r: &Box<dyn std::any::Any + Send>| r.downcast_ref::<String>().cloned().or(r.downcast_ref::<&str>().map(|s| s.to_string())).unwrap_or_default();
@@ -5647,4 +5741,475 @@ fn encounters_carry_the_health_bar_names() {
     for e in list.iter().filter(|e| e.bar) {
         println!("{} {} {}{}", e.chr, e.npc_row, e.name, if e.boss { " [boss]" } else { "" });
     }
+}
+
+/// An enemy under a "hearing 0" SpEffect (220601 General purpose: sight 0 hearing 0, on c1020's
+/// TAE) hears nothing: the listener's hearing rate (exe FUN_140bfe590) is 0.
+#[test]
+fn a_deafened_enemy_hears_nothing() {
+    let mut app = app_with("c1020");
+    app.world_mut().resource_scope(|world, combat: Mut<Combat>| {
+        let mut q = world.query_filtered::<&mut Actor, With<Enemy>>();
+        let mut a = q.iter_mut(world).next().unwrap();
+        a.resident.clear();
+        assert_eq!(crate::enemy::hearing_rate(&combat, &a), 1.0);
+        a.resident.push(220601);
+        assert_eq!(crate::enemy::hearing_rate(&combat, &a), 0.0);
+    });
+}
+
+
+/// The bandit's oil pot (Bullet 15500700, AtkParam decalId1 / 2 50010 / 50011) leaves both its
+/// stains where it lands.
+#[test]
+fn the_oil_pot_leaves_its_stains_where_it_lands() {
+    let mut app = app_cfg("c1550", None, Vec::new());
+    app.update();
+    let world = app.world_mut();
+    let shooter = world.query_filtered::<Entity, (With<Enemy>, Without<crate::enemy::Cast>)>().single(world).unwrap();
+    let spec = world.resource::<Combat>().kind(0).data.bullet_rows.get("15500700").expect("oil pot row").clone();
+    let at = Vec3::new(6.0, 1.5, 6.0);
+    crate::enemy_bullet::spawn_row(&mut world.commands(), &spec, shooter, 0, at, Vec3::NEG_Y, 0.0, None);
+    world.flush();
+    let mut cursor = world.resource::<Messages<crate::gore::PlaceStain>>().get_cursor();
+    let mut placed = Vec::new();
+    for _ in 0..(60 * 3) {
+        app.update();
+        let m = app.world().resource::<Messages<crate::gore::PlaceStain>>();
+        placed.extend(cursor.read(m).map(|p| (p.id, p.at)));
+    }
+    let ids: Vec<i64> = placed.iter().map(|p| p.0).collect();
+    assert_eq!(ids, vec![50010, 50011], "{placed:?}");
+    assert!(placed.iter().all(|p| p.1.xz().distance(at.xz()) < 0.5 && p.1.y < 0.1), "{placed:?}");
+}
+
+/// The Divine Dragon's warning (Bullet 52000980, FollowType 3 "follow target", hitRadius 10,
+/// AtkParam 8 dummy): fired 40 m away it rides on Wolf and puts SpEffect 211000 ("dangerous enemy
+/// attack VFX") on him, with no damage.
+#[test]
+fn the_divine_dragons_warning_follows_wolf() {
+    let mut app = app_cfg("c5200", None, Vec::new());
+    app.update();
+    let world = app.world_mut();
+    let shooter = world.query_filtered::<Entity, (With<Enemy>, Without<crate::enemy::Cast>)>().single(world).unwrap();
+    let spec = world.resource::<Combat>().kind(0).data.bullet_rows.get("52000980").expect("warning row").clone();
+    assert_eq!(spec.follow_type, 3);
+    let wolf_at = world.query_filtered::<&Transform, With<Player>>().single(world).unwrap().translation;
+    let hp = world.query_filtered::<&Actor, With<Player>>().single(world).unwrap().hp;
+    crate::enemy_bullet::spawn_row(&mut world.commands(), &spec, shooter, 0, wolf_at + Vec3::new(40.0, 10.0, 0.0), Vec3::NEG_Z, 0.0, None);
+    world.flush();
+    let mut seen = false;
+    for _ in 0..3 {
+        app.update();
+        let world = app.world_mut();
+        seen |= world.query::<&Player>().single(world).unwrap().timed.iter().any(|t| t.0 == 211000);
+    }
+    assert!(seen, "no 211000 on Wolf");
+    let world = app.world_mut();
+    assert_eq!(world.query_filtered::<&Actor, With<Player>>().single(world).unwrap().hp, hp);
+}
+
+/// The Chained Ogre's grab a100_003005 opens the grapple (TAE 66 SpEffect 3502020
+/// chrWireVariationNo 50200, hook dummy 650, landing 260) only in its window 0.63-1.07 s
+/// (kb/grapple.md section 4); the hook sits on his choker, high above his root.
+#[test]
+fn the_ogres_grab_opens_the_grapple_in_its_window() {
+    let mut app = app_geom("c5020", None);
+    app.world_mut().resource_scope(|world, combat: Mut<Combat>| {
+        let mut q = world.query_filtered::<&mut Actor, (With<Enemy>, Without<crate::enemy::Cast>)>();
+        let mut a = q.single_mut(world).unwrap();
+        a.play("Ez3005", "a100_003005");
+        for (t, open) in [(0.3, false), (0.8, true), (1.2, false)] {
+            a.t = t;
+            a.prev_t = t;
+            let got = crate::enemy::grapple::wire_effect(&combat, &a);
+            assert_eq!(got.is_some(), open, "t {t}: {got:?}");
+        }
+        a.t = 0.8;
+        a.prev_t = 0.79;
+    });
+    app.update();
+    let world = app.world_mut();
+    let root = world.query_filtered::<&Transform, (With<Enemy>, Without<crate::enemy::Cast>)>().single(world).unwrap().translation;
+    let g = world.resource::<crate::enemy::grapple::EnemyGrapples>().0.clone();
+    assert_eq!(g.len(), 1, "{g:?}");
+    assert_eq!((g[0].variation, g[0].homing_row, g[0].sp_effect), (50200, 300050200, 3502020));
+    assert!(g[0].hook.y - root.y > 1.5, "hook {:?} root {root:?}", g[0].hook);
+    // The Grappling Hook Attack on him: ThrowParam 15020170 (Wolf a213_511600, his 13600) and
+    // 15020171 (511610 / 13610).
+    let combat = app.world().resource::<Combat>();
+    let foe = &combat.kind(0).foe;
+    let rows: Vec<(i64, String, i64)> = combat.wire_throws(foe).into_iter().map(|(id, t)| (id, t.atk_anim, t.def_anim)).collect();
+    assert_eq!(rows, vec![(15020170, "a213_511600".to_string(), 13600), (15020171, "a213_511610".to_string(), 13610)]);
+}
+
+/// Wolf's hook in the Chained Ogre mid-grab (a100_003005 holds 510010, ENABLE_WIRE_DAMAGE0):
+/// c9997 HKS SP_DAMAGE_WIRE -> DamageWire0 (a000_008910). Out of the window it does nothing.
+#[test]
+fn the_hook_in_the_ogres_grab_staggers_him() {
+    let mut app = app_with("c5020");
+    let set = |app: &mut App, t: f32| {
+        let world = app.world_mut();
+        let mut q = world.query_filtered::<(Entity, &mut Actor), (With<Enemy>, Without<crate::enemy::Cast>)>();
+        let (ent, mut a) = q.single_mut(world).unwrap();
+        a.play("Ez3005", "a100_003005");
+        a.t = t;
+        a.prev_t = t - 0.01;
+        ent
+    };
+    let ent = set(&mut app, 0.3);
+    app.world_mut().write_message(crate::enemy::grapple::WireHit(ent));
+    app.update();
+    assert_ne!(enemy_state(&mut app).0, "DamageWire0", "outside the window");
+    let ent = set(&mut app, 0.8);
+    app.world_mut().write_message(crate::enemy::grapple::WireHit(ent));
+    app.update();
+    assert_eq!(enemy_state(&mut app).0, "DamageWire0");
+}
+
+/// The Ochimusha's ledge-hang and wall-hug deathblows (ThrowKind 110000 / 110010 hanging,
+/// 90000 / 90010 left wall, 100000 / 100010 right): start rows without a defender anim, body rows
+/// with ThrowDef12800 / 13000 / 12600 / 12700, all in his anim set.
+#[test]
+fn the_ochimusha_has_his_hang_and_hug_deathblows() {
+    let app = app_with("c1010");
+    let combat = app.world().resource::<Combat>();
+    let foe = &combat.kind(0).foe;
+    let body = |kinds: &[i64]| -> Vec<(i64, i64)> { combat.throws_of_kinds(foe, kinds).into_iter().map(|(id, t)| (id, t.def_anim)).collect() };
+    assert_eq!(body(&[110_010]), vec![(11010081, 12800), (11010131, 13000)]);
+    assert_eq!(body(&[90_010, 100_010]), vec![(11010061, 12600), (11010071, 12700)]);
+    let d = &combat.kind(0).data;
+    for def in [12600, 12700, 12800, 13000] {
+        assert!(d.anim_key(&format!("ThrowDef{def}")).is_some(), "ThrowDef{def}");
+    }
+}
+
+/// The bandit's torch (SpEffect 9115, registBlood 62) builds up on Wolf against his resist 200
+/// (status::WOLF_RESIST): burning on the 4th clean hit, the 5th through his guard (sword
+/// bloodGuardResist 33 %), the 7th through deflects (bloodJustGuardResist 50 %); then he burns.
+#[test]
+fn the_bandits_torch_sets_wolf_on_fire() {
+    use crate::status::{Guard, Statuses};
+    let mut app = app_cfg("c1550", None, Vec::new());
+    app.update();
+    let world = app.world_mut();
+    let wolf = world.query_filtered::<Entity, With<Player>>().single(world).unwrap();
+    let weapon = world.resource::<crate::config::GameConfig>().player.combat_art;
+    let hp = world.query_filtered::<&Actor, With<Player>>().single(world).unwrap().hp;
+    world.resource_scope(|world, combat: Mut<Combat>| {
+        assert!(Statuses::is_build_up(&combat, 9115), "9115 not found as a build-up");
+        for (guard, hits) in [(Guard::None, 4), (Guard::Block, 5), (Guard::Deflect, 7)] {
+            let mut s = Statuses::default();
+            let n = (1..=10).find(|_| s.hit_wolf(&combat, wolf, weapon, &[9115], guard).iter().any(|l| l == "BURNING"));
+            assert_eq!(n, Some(hits), "{guard:?}");
+        }
+        let mut st = world.resource_mut::<Statuses>();
+        for _ in 0..4 {
+            st.hit_wolf(&combat, wolf, weapon, &[9115], Guard::None);
+        }
+    });
+    for _ in 0..(60 * 3) {
+        app.update();
+    }
+    let after = app.world_mut().query_filtered::<&Actor, With<Player>>().single(app.world()).unwrap().hp;
+    assert!(after < hp, "no burn damage: {hp} -> {after}");
+}
+
+#[test]
+fn the_head_kick_relaunch_goes_straight_up() {
+    // Live (30 locked head kicks a000_213115 in the rec_* recordings): Wolf goes straight up after
+    // the relaunch; the clip's 0.27 m step back (frames 17-20) never shows, as the air velocity,
+    // not the root motion, moves him once he falls free (actor.rs advance).
+    let mut app = app();
+    {
+        let world = app.world_mut();
+        let mut q = world.query_filtered::<&mut Transform, With<Enemy>>();
+        q.single_mut(world).unwrap().translation.z = 1.0;
+        let e = world.query_filtered::<Entity, With<Enemy>>().single(world).unwrap();
+        if !world.contains_resource::<crate::camera::LockOn>() {
+            world.insert_resource(crate::camera::LockOn::default());
+        }
+        world.resource_mut::<crate::camera::LockOn>().target = Some(e);
+    }
+    app.world_mut().resource_mut::<PadInput>().press(Action::Jump);
+    let (mut launch, mut relaunch) = (None, None);
+    let mut zs = Vec::new();
+    for i in 0..120 {
+        if launch.map(|l| i == l + 14).unwrap_or(false) {
+            app.world_mut().resource_mut::<PadInput>().press(Action::Jump);
+        }
+        app.update();
+        let world = app.world_mut();
+        let mut q = world.query_filtered::<(&Actor, &Transform), With<Player>>();
+        let (a, t) = q.single(world).unwrap();
+        if a.airborne && launch.is_none() {
+            launch = Some(i);
+        }
+        if a.state == "AirKickEnemyJumpStart_F_Lock" {
+            if relaunch.is_none() && a.vel_y > 5.0 {
+                relaunch = Some(i);
+            }
+            if relaunch.is_some() {
+                zs.push(t.translation.z);
+            }
+        }
+    }
+    assert!(zs.len() > 10, "no relaunch: {}", log_text(&app));
+    let drift = zs.iter().fold(0.0f32, |m, z| m.max((z - zs[0]).abs()));
+    assert!(drift < 0.02, "slid {drift} m: {zs:?}");
+}
+
+/// Fluid chains (user goal 2026-10-11: deflect / art / tool transitions): an action held down
+/// from the start of `from` fires on the first tick its TAE execute flag (115 attack and art,
+/// 117 guard, 137 tool) is up - nothing else in the routing holds it back. Returns (tick the
+/// flag opened, tick the state changed, the new state).
+fn chain_tick(from: &str, then: Action) -> (Option<usize>, Option<usize>, String) {
+    let mut app = app();
+    move_enemy_far(&mut app);
+    let from_action = match from {
+        "tool" => Some(Action::Prosthetic),
+        "art" => Some(Action::CombatArt),
+        "attack" => Some(Action::Attack),
+        _ => None,
+    };
+    if let Some(act) = from_action {
+        app.world_mut().resource_mut::<PadInput>().press(act);
+        for _ in 0..10 {
+            app.update();
+            if !crate::player::is_free(&player_state(&mut app).0) {
+                break;
+            }
+        }
+        // A tap: the button is let go, so the hold check moves on to the release state.
+        let tapped = player_state(&mut app).0;
+        for _ in 0..30 {
+            app.update();
+            if player_state(&mut app).0 != tapped {
+                break;
+            }
+        }
+    } else {
+        app.world_mut().resource_scope(|world, combat: Mut<Combat>| {
+            let mut q = world.query_filtered::<&mut Actor, With<Player>>();
+            q.single_mut(world).unwrap().play_state(&combat.player, from);
+        });
+    }
+    let start = player_state(&mut app).0;
+    let accept = match then {
+        Action::Guard => 117,
+        Action::Prosthetic => 137,
+        _ => 115,
+    };
+    let (mut open, mut fired) = (None, None);
+    for i in 0..120 {
+        let (s, anim, t, _) = player_state(&mut app);
+        if s != start {
+            fired = Some(i - 1);
+            return (open, fired, s);
+        }
+        if open.is_none() && app.world().resource::<Combat>().player.flag(&anim, t, accept) {
+            open = Some(i);
+        }
+        let mut pad = app.world_mut().resource_mut::<PadInput>();
+        pad.press(then);
+        pad.guard_held = then == Action::Guard;
+        app.update();
+    }
+    (open, fired, start)
+}
+
+/// Every chain fires the tick after its execute flag opens: the HKS reads the flags of the
+/// previous frame's TAE update (docs/kb/input-buffer.md), and a press held from the start is
+/// latched by 87 / the action's buffer flag before that. Guard out of a deflect recoil is not
+/// here: frames 0-9 (ref 228) it plays the additive deflect over the recoil instead.
+#[test]
+fn deflects_arts_and_tools_chain_on_the_cancel_frame() {
+    use Action::*;
+    let cases = [
+        ("StandDeflectHardSmall_F", Attack, "HardDeflectAtkSmallF"),
+        ("StandDeflectHardSmall_F", CombatArt, "GroundSpecialAttackCombo1"),
+        ("StandDeflectHardSmall_F", Prosthetic, "GroundSubAttackCombo2"),
+        ("StandDeflectHardLarge_F", Attack, "GroundAttackCombo1Reverse"),
+        ("StandDeflectHardLarge_F", CombatArt, "GroundSpecialAttackCombo1"),
+        ("StandDeflectHardLarge_F", Prosthetic, "GroundSubAttackCombo2"),
+        ("tool", CombatArt, "GroundSpecialAttackCombo1"),
+        ("tool", Guard, "StandToDeflectGuard"),
+        ("art", Guard, "StandToDeflectGuard"),
+        ("art", Attack, "GroundAttackCombo1"),
+        ("art", Prosthetic, "GroundSubAttackCombo1"),
+        ("attack", Guard, "StandToDeflectGuard"),
+        ("attack", CombatArt, "GroundSpecialAttackCombo1"),
+        ("attack", Prosthetic, "GroundSubAttackCombo2"),
+    ];
+    for (from, then, want) in cases {
+        let (open, fired, to) = chain_tick(from, then);
+        let open = open.unwrap_or_else(|| panic!("{from} -> {then:?}: the execute flag never opened"));
+        assert_eq!(to, want, "{from} -> {then:?}");
+        assert!(fired.is_some_and(|f| f <= open + 1), "{from} -> {then:?}: flag open at tick {open}, fired {fired:?}");
+    }
+}
+
+/// Grappling Hook (wire.rs): a ridden point 9 m ahead, 3 m up. G -> GroundWireShoot ->
+/// GroundWireMoveStart_UpperSlope (hook 16 deg up) -> the TAE 920 launch arrives on the landing
+/// spot when the camera slot turns 19 (0.67 s later), and Wolf lands there (LandWireMove) and
+/// stays on it.
+#[test]
+fn a_grapple_lands_on_the_point_in_the_move_start_time() {
+    let mut app = app();
+    move_enemy_far(&mut app);
+    let point = crate::map::GrapplePoint { hook: Vec3::new(0.0, 3.5, 9.0), land: Vec3::new(0.0, 3.0, 9.0), fwd: Vec3::NEG_Z, variation: 0 };
+    let target = crate::map::GrappleTarget { index: 0, point, dist: 9.0, in_action_range: true, ride: true };
+    app.insert_resource(crate::wire::WireAim { target: Some(target), enemy: None });
+    app.world_mut().resource_mut::<PadInput>().press(Action::Grapple);
+    let mut seen = Vec::new();
+    let mut launch = None;
+    let mut landed = None;
+    for i in 0..240 {
+        app.update();
+        let (s, _, _, _) = player_state(&mut app);
+        if seen.last() != Some(&s) {
+            seen.push(s.clone());
+        }
+        let w = app.world_mut();
+        let mut q = w.query_filtered::<(&Actor, &Transform), With<Player>>();
+        let (a, t) = q.single(w).unwrap();
+        if launch.is_none() && a.airborne && a.fall_type == 2 && s.starts_with("GroundWireMoveStart") && a.t > 0.66 {
+            launch = Some(i);
+        }
+        if landed.is_none() && s == "LandWireMove" {
+            landed = Some((i, t.translation));
+        }
+    }
+    println!("states {seen:?} launch {launch:?} landed {landed:?}");
+    assert!(seen.starts_with(&["GroundWireShoot".to_string(), "GroundWireMoveStart_UpperSlope".to_string()]), "{seen:?}");
+    let (li, pos) = landed.expect("never landed");
+    let flight = (li - launch.unwrap()) as f32 / 60.0;
+    assert!((flight - 0.667).abs() < 0.05, "flight {flight}");
+    assert!((pos - (point.land + Vec3::Y * CAPSULE_HALF_HEIGHT)).length() < 0.2, "landed at {pos}");
+    // Still on the perch at the end.
+    let (_, _, _, _) = player_state(&mut app);
+    let w = app.world_mut();
+    let mut q = w.query_filtered::<&Transform, With<Player>>();
+    let y = q.single(w).unwrap().translation.y;
+    assert!(y > 3.0, "fell off the perch: y {y}");
+}
+
+/// The Grappling Hook Attack (ThrowKind 180000 / 180100): hooked on the Chained Ogre, the attack
+/// in the wire fall takes his ThrowParam 15020170 (Wolf a213_511600, the Ogre ThrowDef13600) and
+/// the landing 15020171 (511610 / ThrowDef13610).
+#[test]
+fn the_grappling_hook_attack_throws_the_ogre() {
+    let mut app = app_with("c5020");
+    let ogre = {
+        let world = app.world_mut();
+        let mut q = world.query_filtered::<(Entity, &mut Transform), (With<Enemy>, Without<crate::enemy::Cast>)>();
+        let (e, mut t) = q.single_mut(world).unwrap();
+        t.translation = Vec3::new(0.0, 0.0, 9.0);
+        e
+    };
+    let point = crate::map::GrapplePoint { hook: Vec3::new(0.0, 2.0, 9.0), land: Vec3::new(0.0, 0.0, 9.0), fwd: Vec3::NEG_Z, variation: 50200 };
+    let target = crate::map::GrappleTarget { index: 0, point, dist: 9.0, in_action_range: true, ride: false };
+    app.insert_resource(crate::wire::WireAim { target: Some(target), enemy: Some((ogre, 300_050_200)) });
+    app.world_mut().resource_mut::<PadInput>().press(Action::Grapple);
+    let mut seen = Vec::new();
+    let mut foe = Vec::new();
+    for _ in 0..600 {
+        app.update();
+        let (s, _, _, _) = player_state(&mut app);
+        if s.starts_with("WireMove") || s.starts_with("GroundWireMoveStart") {
+            app.world_mut().resource_mut::<PadInput>().press(Action::Attack);
+        }
+        if seen.last() != Some(&s) {
+            seen.push(s);
+        }
+        let (es, _, _) = enemy_state(&mut app);
+        if foe.last() != Some(&es) {
+            foe.push(es);
+        }
+    }
+    let hp = {
+        let world = app.world_mut();
+        let mut q = world.query_filtered::<&Actor, (With<Enemy>, Without<crate::enemy::Cast>)>();
+        let a = q.single(world).unwrap();
+        (a.hp, a.hp_max)
+    };
+    println!("wolf {seen:?}\nogre {foe:?} hp {hp:?}");
+    // A deathblow (AtkParam_Pc 5000660): one of the Ogre's bars off, HP refilled by 13610's
+    // 300610 "HP reset" (on the last bar it would be ThrowDefDeath13611).
+    let bars = app.world_mut().query_filtered::<&Enemy, Without<crate::enemy::Cast>>().single(app.world()).unwrap().ninsatsu;
+    println!("bars {bars:?}");
+    assert_eq!(bars.0 + 1, bars.1, "{bars:?}");
+    assert!(seen.iter().any(|s| s == "WireThrow"), "{seen:?}");
+    assert!(seen.iter().any(|s| s == "WireThrowLand"), "{seen:?}");
+    assert!(foe.iter().any(|s| s == "ThrowDef13600"), "{foe:?}");
+    assert!(foe.iter().any(|s| s.starts_with("ThrowDef1361")), "{foe:?}");
+}
+
+/// Gyoubu on his last bar: the Grappling Hook Attack's landing deathblow kills (ThrowDef13610 ->
+/// ThrowDefDeath13611 on flag 69) and an attack pressed in the landing takes the Todome
+/// (ThrowParam 15080179: Wolf a225_511690, Gyoubu ThrowDef13690).
+#[test]
+fn the_grappling_hook_attack_todome_on_gyoubus_last_bar() {
+    let mut app = app_with("c5080");
+    let gyoubu = {
+        let world = app.world_mut();
+        let mut q = world.query_filtered::<(Entity, &mut Transform, &mut Enemy), Without<crate::enemy::Cast>>();
+        let (e, mut t, mut en) = q.single_mut(world).unwrap();
+        t.translation = Vec3::new(0.0, 0.0, 9.0);
+        en.ninsatsu.0 = 1;
+        e
+    };
+    let point = crate::map::GrapplePoint { hook: Vec3::new(0.0, 2.0, 9.0), land: Vec3::new(0.0, 0.0, 9.0), fwd: Vec3::NEG_Z, variation: 80200 };
+    let target = crate::map::GrappleTarget { index: 0, point, dist: 9.0, in_action_range: true, ride: false };
+    app.insert_resource(crate::wire::WireAim { target: Some(target), enemy: Some((gyoubu, 300_080_200)) });
+    app.world_mut().resource_mut::<PadInput>().press(Action::Grapple);
+    let mut seen = Vec::new();
+    let mut foe = Vec::new();
+    for _ in 0..900 {
+        app.update();
+        let (s, _, _, _) = player_state(&mut app);
+        if s.starts_with("WireMove") || s.starts_with("GroundWireMoveStart") || s == "WireThrowLand" {
+            app.world_mut().resource_mut::<PadInput>().press(Action::Attack);
+        }
+        if seen.last() != Some(&s) {
+            seen.push(s);
+        }
+        let (es, _, _) = enemy_state(&mut app);
+        if foe.last() != Some(&es) {
+            let w = app.world_mut();
+            let (en, ea) = w.query_filtered::<(&Enemy, &Actor), Without<crate::enemy::Cast>>().single(w).unwrap();
+            println!("{es} bars {:?} hp {} dead {}", en.ninsatsu, ea.hp, en.is_dead());
+            foe.push(es);
+        }
+    }
+    println!("wolf {seen:?}\ngyoubu {foe:?}");
+    assert!(seen.iter().any(|s| s == "WireThrowTodome"), "{seen:?}");
+    assert!(foe.iter().any(|s| s == "ThrowDef13690"), "{foe:?}");
+}
+
+/// BEH_R_LAND_WIRE with the stick held: W_StandMoveStartFromFreeFall, straight into moving
+/// instead of LandWireMove.
+#[test]
+fn a_wire_landing_with_the_stick_held_runs_on() {
+    let mut app = app();
+    move_enemy_far(&mut app);
+    let point = crate::map::GrapplePoint { hook: Vec3::new(0.0, 0.5, 9.0), land: Vec3::new(0.0, 0.0, 9.0), fwd: Vec3::NEG_Z, variation: 0 };
+    let target = crate::map::GrappleTarget { index: 0, point, dist: 9.0, in_action_range: true, ride: true };
+    app.insert_resource(crate::wire::WireAim { target: Some(target), enemy: None });
+    app.world_mut().resource_mut::<PadInput>().press(Action::Grapple);
+    let mut seen = Vec::new();
+    for i in 0..240 {
+        if i == 30 {
+            app.world_mut().resource_mut::<PadInput>().stick = Vec2::new(0.0, -1.0);
+        }
+        app.update();
+        let (s, _, _, _) = player_state(&mut app);
+        if seen.last() != Some(&s) {
+            seen.push(s);
+        }
+    }
+    println!("{seen:?}");
+    assert!(!seen.iter().any(|s| s == "LandWireMove"), "{seen:?}");
+    let i = seen.iter().position(|s| s.contains("WireMoveStart")).expect("no move start");
+    assert_eq!(seen.get(i + 1).map(|s| s.as_str()), Some("Locomotion"), "{seen:?}");
 }

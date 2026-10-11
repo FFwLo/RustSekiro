@@ -7,8 +7,9 @@
 //! F starts GroundSubAttackCombo1 (a070_400000); letting go early plays the Release
 //! (a070_400100), whose TAE BulletBehavior (judge 150, frame 3) throws Bullet 700050;
 //! holding through plays the full throw (judge 100, frame 21: Bullet 700000). Each throw
-//! costs a Spirit Emblem. Bullets fly at initVellocity, decelerate (accelOutRange) and
-//! drop (gravityOutRange) past `dist` metres, live `life` seconds and hit with their
+//! costs a Spirit Emblem. Bullets fly at initVellocity with the exe's bullet update
+//! (enemy_bullet.rs steer / flight: homing, in / out of range accel and gravity, min / max
+//! speed), live `life` seconds and hit with their
 //! AtkParam: damage = prosthetic attackBasePhysics x atkPhysCorrection, posture
 //! directAtkStamDamage. The enemy can guard or deflect them.
 
@@ -276,24 +277,36 @@ fn fly_bullets(
     mut sounds: Option<ResMut<crate::sound::SoundQueue>>,
     mut statuses: ResMut<crate::status::Statuses>,
     mut effects: Query<&mut crate::fxr::FxEffect>,
+    lock: Option<Res<crate::camera::LockOn>>,
 ) {
     let dt = time.delta_secs();
     let rows = &combat.player.bullet_rows;
+    // Homing aims at the locked target (gap: the exe's bullet target for Wolf's throws is taken
+    // as his lock-on target; without one nothing homes).
+    let aim = lock.and_then(|l| l.target).and_then(|t| enemies.get(t).ok()).map(|(_, _, tf, ..)| tf.translation);
     let row = |id: i64| if id > 0 { rows.get(&id.to_string()) } else { None };
     for (be, mut b, mut btf) in &mut bullets {
         b.age += dt;
-        // Past `dist`: decelerate along the flight and fall.
-        if b.travelled > b.spec.dist && b.spec.dist > 0.0 {
-            let speed = b.vel.length();
-            let new_speed = (speed + b.spec.accel_out_range * dt).max(0.0);
-            b.vel = b.vel.normalize_or_zero() * new_speed - Vec3::Y * b.spec.gravity_out_range * dt;
-        }
+        // The exe's bullet update, shared with the enemies' (enemy_bullet.rs): homing, then the
+        // in / out of range accel and gravity held within min..maxVellocity.
         let from = btf.translation;
+        let facing = b.vel.normalize_or(Vec3::NEG_Z);
+        b.vel = crate::enemy_bullet::steer(&b.spec, b.vel, b.travelled, from, aim, dt);
+        b.vel = crate::enemy_bullet::flight(&b.spec, b.vel, facing, b.travelled, dt);
         let mut to = from + b.vel * dt;
-        // The floor (y = 0) stops it unless it passes through the map (isPenetrateMap).
-        let landed = to.y <= 0.02 && b.vel.y < 0.0;
-        if landed {
-            to.y = 0.02;
+        // The map stops it unless it passes through (isPenetrateMap); with no map, the floor y 0.
+        let mut landed = false;
+        let step = to - from;
+        if b.spec.is_penetrate_map == 0 && step.length() > 1e-5 {
+            if let Some(t) = crate::map::terrain() {
+                if let Some(d) = t.raycast(from, step.normalize(), step.length()) {
+                    to = from + step.normalize() * d;
+                    landed = true;
+                }
+            } else if to.y <= 0.02 && b.vel.y < 0.0 {
+                to.y = 0.02;
+                landed = true;
+            }
         }
         b.travelled += (to - from).length();
         btf.translation = to;

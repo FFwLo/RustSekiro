@@ -127,6 +127,60 @@ Dated findings, oldest first. Append new entries at the end.
 - Sheaths (V3): Sheath01/02[omit] are tracked in all 260 c1020 clips (near bind pose), so their pose is
   the game's animation; no physics needed. They are not in the ragdoll (19 Ctrl bodies) or the cloth.
 - `SHINOBI_CLOTH_DEBUG=<sec>` logs each cloth (refs, bones, distances) once at that time.
+- 2026-10-11 the "ref gap" line is meaningless for a culled cloth: in the sandbox line-up the
+  Chained Ogre 40 m from Wolf reported a 1.4-2.2 m gap on every cloth (particles' centroid
+  y 3.05, references' y 0.95). Beyond `SHINOBI_CLOTH_RANGE` (15 m) a cloth is carried rigidly in
+  its bind pose on the root while the skeleton animates (the Ogre's idle sits), so the
+  references (the skinned skeleton) and the particles (the bind pose) part by the pose
+  difference; the debug now also prints each reference bone with its position ("ref bones"),
+  which is what showed it (Head at y 0.76 for a 3.5 m ogre). Within range the Ogre's cloths
+  sit at 0.1-0.3 m like everyone else's. The "particle 8" blow-up (4.5 m from the root, inv
+  mass 214) does come back in the sandbox line-up (`SHINOBI_SANDBOX_ENEMIES=all:0`) with the
+  Ogre within range and moving, on c1040_fur2 / fur3 / ropu / fur4 at once: the survey
+  (`sekiro-extract cloth`, now with each sim's address) shows those four cloth datas each own
+  a separate but identical 325-particle "c1040_meshsim_cloth" sim (masses 0.0047, fixed ones 0,
+  radius 0.1, damping/s 0.98, gravity -10; only the display mesh differs), so the game runs four
+  copies too and the export is right. FIXED the same day: the cause was an empty
+  `hclSimulateOperator::Config.constraintExecution` in the game data. 15 cloths have it empty
+  (c1040 fur2/fur3/ropu/fur4, c1070 #10#_hair1, c1190 mino/mino2-5/parts, c5020 hair, c5021
+  hair1, c5050 beard2, c5060 coat); Havok treats an empty list as "every constraint set in
+  stored order" (the collision pass last), but our loader took it literally and solved no
+  constraint at all, so the almost massless particle 8 fell free. The loader now defaults an
+  empty list to `0..n_sets` plus -1 (src/cloth.rs `execution`). The survey prints each
+  Simulate op's config (substeps, iterations, execution, adapt) to see which cloths hit this.
+  After the fix the 90 s line-up logs no blow-up; cloth cost 4.4 ms for 139 cloths (the Ogre's
+  four fur sims now really solve and skin: fur3 1.56 ms, fur4 0.65, ropu 0.52). The only
+  restarts left are the Guardian Ape's fur at 17 s into its idle (a jump), 34 info lines once.
+- 2026-10-11 GUARDIAN APE FUR DRAWN: its 12 fur cloths simulated 16k particles for nothing
+  ("0 display meshes"). They have no MeshMeshDeform display: the sim buffer ("c5100_fur02",
+  869 verts) is gathered straight into the display buffer of the same name and converted out,
+  so vertex i of the FLVER mesh of that node name IS particle i. The exporter (cloth_export.rs,
+  after the operator loop) now emits such a display when a buffer's name and vertex count
+  match a FLVER mesh whose bind positions equal the sim pose (< 0.01): each vertex rides its
+  own triangle's centroid frame at a corner (local (1,0,0), (0,1,0) or (-1,-1,0), exact for
+  any deformation) with the FLVER bind normal taken into that frame (`inv3_apply`); the
+  runtime needs nothing new. The gather into the display buffer is a `hclCopyVerticesOperator`
+  (vertex i = particle i) or a `hclGatherAllVerticesOperator` whose `vertexInputFromVertexOutput`
+  maps each display vertex to its particle (`#15#_c5100_neckfur`: 796 display verts from 762
+  particles, seam duplicates); the exporter follows either. This was not just the Ape: a
+  re-export of every character (scratchpad reexport_models.ps1, the extract.ps1 arguments)
+  gave 108 new displays on ~40 chrs: hair (c1010, c1070, c1080, c1340, c1350, c1450, c5000,
+  c5005, c5020/21, c7020 Demon of Hatred mane + beard, c7110, c7200/c7210, c7440), kimonos and
+  hakama (c1180/c7470, c1191, c1260 monkeys' suso, c5430, c7210, c7400/01, c7520), bandages
+  (c1030, c1040), the Shura's zukin, c5040's limbs, c5200's veils, horse hair, and Wolf's
+  face hair FC_M_0200_hairB-E. One miss: `#12#_c1010_hatimaki` (88 verts, no FLVER mesh of
+  that name / count; // gap). Checked in the sandbox (`SHINOBI_SANDBOX_ENEMIES=c5100`): the
+  Ape's fur strips hang from the arms and back. Line-up: 139 cloths, 109 display meshes
+  (was 78), 4.0 ms, no blow-up. The Demon of Hatred's kami1/kami2 restarted every frame
+  straight from the bind pose (particle 10.2 m from the root vs a reach of 7.1 + 3 m: the
+  mane rests further out than the crouched references reach): the blow-up threshold now also
+  covers the rest pose (`rest_far`). The range cull measures camera-to-root plus that rest
+  reach too (the Demon's root is 5 m behind its head: at 16 m its mane was carried in the
+  bind pose, floating above the crouched body). Mind that the sandbox catalog shot
+  (`SHINOBI_SANDBOX_SHOTS`) only moves Wolf and the orbit camera for the picture while the
+  simulate step saw the camera 36 m from the Demon's root: cloth in those shots is culled
+  unless `SHINOBI_CLOTH_RANGE=0`; the debug line now prints the camera distance, the range
+  and whether the cloth is culled.
 - 2026-10-10 CLOTH COST (the sandbox line-up of 20 enemies ran at 22 fps, cloth 41 ms a frame):
   the cost was not the solver. (1) `std::env::var("SHINOBI_CLOTH_FLIP_N")` was read per display
   vertex (50k+ on a fur mesh): now a OnceLock, like `debug_now`'s variable. (2) the blow-up
@@ -145,6 +199,14 @@ Dated findings, oldest first. Append new entries at the end.
   a frame) names the top 3 cloths with a per-phase split: refs / restart / solve / bones /
   skin / verts. Probes: `SHINOBI_CLOTH_NO_MESH=1` (no bone / mesh outputs),
   `SHINOBI_CLOTH_NO_UPLOAD=1`.
+- 2026-10-11 the Guardian Ape's fur (41 cloths on one character, three of 2000+ particles)
+  cost 4.8 ms a frame with 0.6 ms per fur cloth outside every phase timer: the reference
+  vertex pass (step 1) looked each entry's bone up by name (a String hash per entry, several
+  thousand per fur cloth per frame) and converted the bone's world matrix once per entry.
+  `ClothDef::refs` now holds an index into a `ref_bones` table (resolved once in `load`), and
+  `simulate` builds one matrix per reference bone; the phase timer starts at the top of the
+  cloth so "refs" covers that pass. Ape arena: simulate 4.79 -> 1.27 ms a frame, 60 fps in
+  play (was 53).
 - 2026-10-11 the every-frame restarts of c1060_mino1 and c1100_sleeve (c1110 / c1111 / c7520): their
   cloth containers hold two sim cloths; the exporter exported the first but took the
   hclMoveParticlesOperator pairs of the second (406 pairs for 59 particles), and a pair whose
@@ -249,3 +311,27 @@ Dated findings, oldest first. Append new entries at the end.
 - 2026-10-10 the game's own map around the fight (pieces, hit collision, draw-param lighting): see `docs/kb/map.md`.
   One lesson for every tiled texture: load it with a repeat sampler (Bevy's default clamps to the edge, which smears
   one texel over the whole mesh and looks like a missing texture).
+- 2026-10-11 (VXf) enemy effect audit: every extracted/enemies/c*.json TAE FFXID (with the
+  ReferenceNode 2001 chains) against what src/fxr.rs draws. Script: scratch `fx_audit.py`
+  (reads fxr/<id>.json, counts appearance / emitter / emitterShape / directionSpread /
+  nodeMovement / particleMovement / nodeTransform types). Over all enemies, 13,000 configs.
+  Added: NodeTranslation 15 (73 uses: c5400, c1310, c7100/7110, c1080 ...), NodeSpeed 120,
+  NodeAccelerationRandomTurns 83 (gap: turn axes / distribution), RectangleEmitterShape 402
+  (gap: distribution). Field meanings from reference/fxr src/fxr.ts.
+  Not drawn, and nothing to draw: WindForce 10300 (88: pushes particles, no picture; gap: the
+  push itself), WaterInteraction 10013 (3).
+  Not drawn (gaps):
+  - GPUStandardParticle 10000 (8): c7020 3043/3044/3047 embers 670240/670271, the carp
+    c5050 650541, the Serpent 650133. Field docs exist, but not the GPU update (speed 15-22 m/s
+    with random turns only make sense with the 10300 wind node).
+  - Line 601 (1: c1700 120014).
+  - NodeAttachToCamera 46 (16: the Serpent c5010 set piece, c1000, c5000).
+  Missing archives: 2, 3, 5, 21 (c1120, c7540-7600), 615102, 654061, 2255505.
+
+## Hit-blood stains (2026-10-11)
+
+Exe FUN_140888960 -> FUN_14088a7f0: DecalParam id = 600000000 + defender materialSfx1 * 1000 +
+AtkParam decalBaseId1/2 (0 / 100) + atkPow_forSfx. Flesh 109, base 0, size L = 600109002. The rows
+project from the hit along the blow (appearDirType 2, pitchAngle), red 191/54/19, mask 100030
+(base 0) / 160000 (base 100), sizes 0.15 -> 3 m over 10 m. Code: gore.rs `hit_stain_id`,
+`HitStains`; see HANDOFF 4.13.

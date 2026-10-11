@@ -30,6 +30,13 @@ pub struct ToolModel {
     /// EquipParamWeapon id of the tool shown (0: none yet).
     tool: i64,
     parts: Vec<ToolPart>,
+    /// The grappling hook (EquipParamWeapon 9500000 "ワイヤー武器", equipModelId 9500:
+    /// WP_A_9500, the kunai hook and its rope on an 80-bone chain, its clips named after Wolf's
+    /// wire anims). Shown while a TAE 715 of WeaponModelType 3 "Grappling Hook" places it (dummy
+    /// 144 in every wire anim). Loaded once.
+    wire: Option<ToolPart>,
+    /// The rope's length in the bind pose (root to the farthest node, ~4.0 m).
+    wire_len: f32,
 }
 
 struct ToolPart {
@@ -46,7 +53,7 @@ struct ToolPart {
 }
 
 pub(super) fn plugin(app: &mut App) {
-    app.add_systems(Update, (equip_tool_models, pose_tool_models).chain())
+    app.add_systems(Update, (equip_tool_models, pose_tool_models.after(crate::wire::draw_rope)).chain())
         .add_systems(PostUpdate, place_tool_models.after(bevy::transform::TransformSystems::Propagate));
 }
 
@@ -65,6 +72,7 @@ fn equip_tool_models(
     mut bindposes: ResMut<Assets<SkinnedMeshInverseBindposes>>,
     mut wolf: Query<(Entity, &crate::player::Player, Option<&mut ToolModel>, Option<&mut Dummies>), With<WeaponParts>>,
     mut rows: Local<Option<serde_json::Value>>,
+    mut rope: Option<ResMut<crate::wire::WireRope>>,
 ) {
     let rows = rows.get_or_insert_with(|| {
         std::fs::read_to_string(tool_dir().join("tools.json")).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
@@ -72,7 +80,25 @@ fn equip_tool_models(
     for (e, p, tm, mut dummies) in &mut wolf {
         let id = crate::player::equipped_tool(&combat, &config, p.tool_slot).map(|t| t.id).unwrap_or(0);
         let Some(mut tm) = tm else {
-            commands.entity(e).insert(ToolModel::default());
+            let mut tm = ToolModel::default();
+            let stem = "wp_a_9500";
+            if let Some(m) = load(&tool_dir().join(format!("model_{stem}.bin"))) {
+                let pivot = commands.spawn((Transform::default(), Visibility::Hidden, Name::new("grappling hook"))).id();
+                let (by_name, _) = spawn_part(&mut commands, &assets, &mut meshes, &mut materials, &mut bindposes, &m, pivot);
+                let lib = crate::anim::load_lib(&tool_dir().join(format!("anim_{stem}.bin")));
+                let joints: Vec<Option<Entity>> = lib.bones.iter().map(|b| by_name.get(&b.name).copied()).collect();
+                tm.wire = Some(ToolPart { num: 0, pivot, rest: -1, joints, lib, dummy_ids: Vec::new() });
+                let mut world: Vec<Mat4> = Vec::new();
+                for (i, n) in m.nodes.iter().enumerate() {
+                    let parent = (n.parent >= 0 && (n.parent as usize) < i).then(|| world[n.parent as usize]);
+                    world.push(parent.unwrap_or(Mat4::IDENTITY) * n.local.to_matrix());
+                }
+                tm.wire_len = world.iter().map(|w| w.w_axis.truncate().length()).fold(0.0, f32::max);
+                if let Some(r) = rope.as_mut() {
+                    r.model = true;
+                }
+            }
+            commands.entity(e).insert(tm);
             continue;
         };
         if tm.tool == id {
@@ -218,10 +244,16 @@ fn spawn_part(
 
 /// The part's clip for Wolf's current anim at Wolf's clock (else a999_000000 at 0), sampled
 /// like pose_skeletons (linear between frames).
-fn pose_tool_models(combat: Res<crate::data::Combat>, wolf: Query<(&Actor, &ToolModel)>, mut tfs: Query<&mut Transform>) {
+/// The wire's clips keep the rope at its modelled length (only its shape moves); here its chain
+/// is lengthened to reach the hook (each bone's offset from its parent times the hand-to-tip
+/// distance over the bind length), the kunai on the last bones keeping its shape. gap: the
+/// exe's own rope placement (TAE 717 WireModelEventUnk / 900 / 901) is not traced.
+fn pose_tool_models(combat: Res<crate::data::Combat>, rope: Option<Res<crate::wire::WireRope>>, wolf: Query<(&Actor, &ToolModel)>, mut tfs: Query<&mut Transform>) {
+    let reach = rope.and_then(|r| r.ends).map(|(hand, tip)| hand.distance(tip));
     for (a, tm) in &wolf {
         let d = crate::actor::data_for(&combat, a);
-        for part in &tm.parts {
+        let stretch = reach.filter(|_| tm.wire_len > 0.0).map(|r| (r / tm.wire_len).max(0.02));
+        for (part, wire) in tm.parts.iter().map(|p| (p, false)).chain(tm.wire.iter().map(|p| (p, true))) {
             let (clip, t) = match part.lib.clips.get(&a.anim).or_else(|| part.lib.clips.get(d.clip_key(&a.anim))) {
                 Some(c) => (c, a.t),
                 None => match part.lib.clips.get("a999_000000") {
@@ -241,6 +273,9 @@ fn pose_tool_models(combat: Res<crate::data::Combat>, wolf: Query<(&Actor, &Tool
                 let (p, q) = (&clip.data[i0 * tracks + track], &clip.data[i1 * tracks + track]);
                 if let Ok(mut tf) = tfs.get_mut(j) {
                     *tf = Transform { translation: p.translation.lerp(q.translation, k), rotation: p.rotation.slerp(q.rotation, k), scale: p.scale.lerp(q.scale, k) };
+                    if let (true, Some(s), true) = (wire, stretch, bone > 0) {
+                        tf.translation *= s;
+                    }
                 }
             }
         }
@@ -251,6 +286,7 @@ fn pose_tool_models(combat: Res<crate::data::Combat>, wolf: Query<(&Actor, &Tool
 /// dummy; hidden with neither.
 fn place_tool_models(
     combat: Res<crate::data::Combat>,
+    rope: Option<Res<crate::wire::WireRope>>,
     wolf: Query<(&Actor, &WeaponParts, &ToolModel)>,
     mut globals: Query<&mut GlobalTransform>,
     transforms: Query<&Transform>,
@@ -259,15 +295,24 @@ fn place_tool_models(
 ) {
     for (a, wp, tm) in &wolf {
         let d = crate::actor::data_for(&combat, a);
-        let ev = d
-            .events_at(&a.anim, a.t)
-            .find(|e| e.kind == 715 && e.args.get("WeaponModelType").and_then(|v| v.as_str()).is_some_and(|s| s.starts_with('1')));
-        for part in &tm.parts {
+        let event = |ty: char| {
+            d.events_at(&a.anim, a.t).find(|e| e.kind == 715 && e.args.get("WeaponModelType").and_then(|v| v.as_str()).is_some_and(|s| s.starts_with(ty)))
+        };
+        let (ev, wire_ev) = (event('1'), event('3'));
+        for (part, ev) in tm.parts.iter().map(|p| (p, ev)).chain(tm.wire.iter().map(|p| (p, wire_ev))) {
             let id = ev
                 .and_then(|e| e.arg_i64(&format!("Model{}DummyPolyID", part.num)).filter(|id| *id >= 0))
                 .map(|id| id as i16)
                 .or((part.rest >= 0).then_some(part.rest));
-            let place = id.and_then(|id| wp.dummies.get(&id)).and_then(|&(joint, local)| globals.get(joint).ok().map(|g| g.to_matrix() * local));
+            let mut place = id.and_then(|id| wp.dummies.get(&id)).and_then(|&(joint, local)| globals.get(joint).ok().map(|g| g.to_matrix() * local));
+            // The wire: its rope (the model's -Y) aimed from the hand at the hook's tip.
+            if let (true, Some(m), Some((_, tip))) = (part.pivot == tm.wire.as_ref().map_or(Entity::PLACEHOLDER, |w| w.pivot), place, rope.as_ref().and_then(|r| r.ends)) {
+                let at = m.w_axis.truncate();
+                let to = (tip - at).normalize_or_zero();
+                if to != Vec3::ZERO {
+                    place = Some(Mat4::from_rotation_translation(Quat::from_rotation_arc(Vec3::NEG_Y, to), at));
+                }
+            }
             if let Ok(mut v) = vis.get_mut(part.pivot) {
                 let want = if place.is_some() { Visibility::Inherited } else { Visibility::Hidden };
                 if *v != want {
@@ -280,6 +325,46 @@ fn place_tool_models(
             if let Some(m) = place {
                 set_global(part.pivot, GlobalTransform::from(bevy::math::Affine3A::from_mat4(m)), &mut globals, &transforms, &children);
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The wire model's reach per clip: the farthest node from the root over the clip.
+    #[test]
+    #[ignore]
+    fn wire_clip_reach_probe() {
+        let m = load(&tool_dir().join("model_wp_a_9500.bin")).expect("model");
+        let lib = crate::anim::load_lib(&tool_dir().join("anim_wp_a_9500.bin"));
+        let mut keys: Vec<_> = lib.clips.keys().cloned().collect();
+        keys.sort();
+        for k in keys {
+            let clip = &lib.clips[&k];
+            let tracks = clip.track_to_bone.len();
+            let mut out = Vec::new();
+            for f in (0..clip.frames).step_by(5) {
+                let mut local: Vec<Transform> = m.nodes.iter().map(|n| n.local).collect();
+                for (track, &bone) in clip.track_to_bone.iter().enumerate() {
+                    let Some(b) = usize::try_from(bone).ok().and_then(|b| lib.bones.get(b)) else { continue };
+                    if let Some(i) = m.nodes.iter().position(|n| n.name == b.name) {
+                        let p = &clip.data[f * tracks + track];
+                        local[i] = Transform { translation: p.translation, rotation: p.rotation, scale: p.scale };
+                    }
+                }
+                let mut world: Vec<Mat4> = Vec::new();
+                for (i, n) in m.nodes.iter().enumerate() {
+                    let parent = (n.parent >= 0 && (n.parent as usize) < i).then(|| world[n.parent as usize]);
+                    world.push(parent.unwrap_or(Mat4::IDENTITY) * local[i].to_matrix());
+                }
+                let far = world.iter().map(|w| w.w_axis.truncate().length()).fold(0.0f32, f32::max);
+                out.push(format!("{f}:{far:.1}"));
+            }
+            let matched = clip.track_to_bone.iter().filter(|&&b| usize::try_from(b).ok().and_then(|b| lib.bones.get(b)).is_some_and(|b| m.nodes.iter().any(|n| n.name == b.name))).count();
+            let moving: Vec<String> = clip.track_to_bone.iter().enumerate().filter(|(t, _)| (clip.data[*t].translation - clip.data[(clip.frames - 1) * tracks + t].translation).length() > 0.01).map(|(_, &b)| lib.bones.get(b as usize).map_or("?".into(), |b| b.name.clone())).take(8).collect();
+            println!("{k} frames {} tracks {tracks} matched {matched} moving {moving:?}: {}", clip.frames, out.join(" "));
         }
     }
 }

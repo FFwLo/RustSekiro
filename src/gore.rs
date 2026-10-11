@@ -10,6 +10,13 @@
 //!   game's own splat mask dp000160000 and diffuse dp000100000, extracted/decal/<id>.png, tinted by
 //!   diffuseColorR/G/B, projected straight down (pitchAngle -90), randomSize 100-120 %, a random
 //!   roll, at most distThinOutMaxNum stains within distThinOutCheckDist of each other).
+//! - An attack's own stain (AtkParam decalId1 / 2, `PlaceStain`): where an enemy bullet ends (the
+//!   bandit's oil pot 50010 / 50011, c1210's vomit 803021 / 803022, c1500's dung 803030 / 803031).
+//! - A hit on a character (`HitStains`, combat.rs): the exe's hit handler FUN_140888960 queues up to
+//!   four DecalParam ids: the attack's decalId1 / 2 and, per AtkParam decalBaseId1 / 2 (0 / 100 on
+//!   most rows), the hit-blood stain FUN_14088a7f0 builds (`hit_stain_id`). Those rows (600109000 ..)
+//!   are projected from the hit along the blow, tilted by pitchAngle (appearDirType 2), and grow
+//!   from nearSize to farSize with the distance the ray goes.
 
 use bevy::prelude::*;
 
@@ -31,6 +38,54 @@ fn blood_rate(ffx: i64) -> Option<f32> {
 /// Stains alive at once. gap: the game keeps them (lifeTimeSec 999, bLifeEnable 0) under an
 /// engine-wide decal budget that is not traced.
 const MAX_STAINS: usize = 24;
+
+/// A DecalParam stain to put on the floor under `at` (enemy_bullet.rs: AtkParam decalId1 / 2).
+#[derive(Message, Clone, Copy)]
+pub struct PlaceStain {
+    pub id: i64,
+    pub at: Vec3,
+}
+
+/// The floor under `at`: the map's ground within `depth` m below (and a hand above), else y 0.
+fn floor_below(at: Vec3, depth: f32) -> f32 {
+    crate::map::raycast(at + Vec3::Y * 0.5, Vec3::NEG_Y, depth + 0.5).map_or(0.0, |d| at.y + 0.5 - d)
+}
+
+/// A hit's stains (combat.rs spawns it; `bleed` places them and despawns it): `at` the hit point,
+/// `dir` the blow's horizontal direction (attacker -> defender).
+#[derive(Component)]
+pub struct HitStains {
+    pub ids: Vec<i64>,
+    pub at: Vec3,
+    pub dir: Vec3,
+}
+
+/// The hit-blood DecalParam id (exe FUN_14088a7f0): the base (AtkParam decalBaseId1 / 2) rounded to
+/// tens plus the variant, the defender's material in the thousands, then 600000000 on top.
+/// `material` = the hit record's +0x1dc (the defender's materialSfx1, Wolf's defenseMaterialSfx1
+/// 146), `variant` = its +0x7e, read as the attack's atkPow_forSfx (0-4: the rows' last digit;
+/// the same byte goes to the hit SFX call). 109 flesh, base 0, size L -> 600109002.
+pub fn hit_stain_id(base: i64, material: i64, variant: i64) -> Option<i64> {
+    if base < 0 {
+        return None;
+    }
+    let mut v = base / 10 * 10 + variant;
+    if material > 0 {
+        v = v % 1000 + material % 1000 * 1000 + v / 1_000_000 * 1_000_000;
+    }
+    v = v - v / 1_000_000 * 1_000_000 + v / 100_000_000 * 100_000_000;
+    Some(v % 100_000_000 + 600_000_000)
+}
+
+/// All of a hit's stain ids (FUN_140888960): decalId1, decalId2, then the two hit-blood ids.
+/// gap: the exe reshapes decalId1 / 2 (keeps the hundred-millions and the last six digits); every
+/// AtkParam decalId is under 1000000, so they are used as they are. Ids without a DecalParam row
+/// (most materials have no hit-blood rows) leave nothing.
+pub fn hit_stain_ids(atk: &crate::data::Attack, material: i64) -> Vec<i64> {
+    let own = [atk.decal_id1, atk.decal_id2].into_iter().filter(|id| *id > 0);
+    let blood = [atk.decal_base_id1, atk.decal_base_id2].into_iter().filter_map(|b| hit_stain_id(b, material, atk.atk_pow_sfx));
+    own.chain(blood).collect()
+}
 
 #[derive(Component)]
 struct Stain {
@@ -71,7 +126,7 @@ pub struct GorePlugin;
 
 impl Plugin for GorePlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, setup).add_systems(Update, bleed);
+        app.add_message::<PlaceStain>().add_systems(Startup, setup).add_systems(Update, bleed);
     }
 }
 
@@ -99,9 +154,16 @@ fn bleed(
     dummies: Query<&GlobalTransform>,
     stains: Query<(Entity, &Stain, &Transform)>,
     mut lib: Option<ResMut<crate::fxr::FxrLib>>,
+    mut placed: MessageReader<PlaceStain>,
+    hits: Query<(Entity, &HitStains)>,
 ) {
     let Some(vfx) = vfx else { return };
-    let mut new_stains: Vec<(i64, Vec3)> = Vec::new();
+    // (id, where, the hit's blow direction for the projected ones).
+    let mut new_stains: Vec<(i64, Vec3, Option<Vec3>)> = placed.read().map(|p| (p.id, p.at, None)).collect();
+    for (e, h) in &hits {
+        new_stains.extend(h.ids.iter().map(|id| (*id, h.at, Some(h.dir))));
+        commands.entity(e).despawn();
+    }
     for (a, dm) in &actors {
         let Some(anim) = data_for(&combat, &a).anim(&a.anim) else { continue };
         if a.t < a.prev_t {
@@ -157,27 +219,54 @@ fn bleed(
                     let (Some(id), Some(g)) = (e.arg_i64("DecalParamID"), e.arg_i64("DummyPolyID").and_then(dummy)) else { continue };
                     if started {
                         log(|| format!("{} {:.2}: stain {id} at {:.2}", a.anim, a.t, g.translation()));
-                        new_stains.push((id, g.translation()));
+                        new_stains.push((id, g.translation(), None));
                     }
                 }
                 _ => {}
             }
         }
     }
-    for (id, at) in new_stains {
+    for (id, at, blow) in new_stains {
         let row = combat.param("DecalParam", id);
         if row.is_null() {
             continue;
         }
         let f = |k: &str| row[k].as_f64().unwrap_or(0.0) as f32;
-        // Straight down (pitchAngle -90) onto the floor (y = 0). The box reaches from nearDistance to
-        // farDistance below the dummy and widens from nearSize to farSize. gap: read as the stain's
-        // size at the floor's depth in the box (not traced in the exe).
-        let depth = at.y;
-        if depth < f("nearDistance") || depth > f("farDistance") {
-            continue;
-        }
-        let k = (depth - f("nearDistance")) / (f("farDistance") - f("nearDistance")).max(1e-3);
+        // A hit's stain (appearDirType 2): a ray from the hit along the blow, pitchAngle up (+) or
+        // down (-), up to farDistance; the stain lands where it meets the map (or the floor plane
+        // under the hit), its size by how far the ray went. gap: the exe's projection (the hit
+        // record's +0x140 direction, delayAppearFrame 3) is not traced past the queue
+        // (FUN_140866b10); stains landing on walls (upward pitches like 600109002's 40) are dropped,
+        // since stains here lie flat.
+        let (at, k) = if let (Some(dir), 2) = (blow, row["appearDirType"].as_i64().unwrap_or(0)) {
+            let pitch = f("pitchAngle").to_radians();
+            let h = dir.with_y(0.0).normalize_or(Vec3::X);
+            let ray = (h * pitch.cos() + Vec3::Y * pitch.sin()).normalize();
+            let far = f("farDistance").max(0.0);
+            let floor = floor_below(at, far);
+            let plane = (ray.y < -1e-3).then(|| (at.y - floor) / -ray.y).filter(|d| *d <= far);
+            let Some(d) = crate::map::raycast(at, ray, far).or(plane) else { continue };
+            let p = at + ray * d;
+            if (p.y - floor_below(p + Vec3::Y * 0.05, 0.3)).abs() > 0.1 {
+                continue;
+            }
+            let k = ((d - f("nearDistance")) / (far - f("nearDistance")).max(1e-3)).clamp(0.0, 1.0);
+            (p + Vec3::Y * 0.05, Some(k))
+        } else {
+            (at, None)
+        };
+        // Straight down (pitchAngle -90) onto the floor (the map's ground under it, else y = 0). The
+        // box reaches from nearDistance to farDistance below the dummy and widens from nearSize to
+        // farSize. gap: read as the stain's size at the floor's depth in the box (not traced in the
+        // exe); the attack stains' other pitchAngles (50010: 0, 50011: 22.5, 803021: 90 with
+        // putVertical) are laid flat on the floor too.
+        let floor = floor_below(at, f("farDistance").max(0.0));
+        let depth = at.y - floor;
+        let k = match k {
+            Some(k) => k,
+            None if depth < f("nearDistance") || depth > f("farDistance") => continue,
+            None => (depth - f("nearDistance")) / (f("farDistance") - f("nearDistance")).max(1e-3),
+        };
         let size = (f("nearSize") + (f("farSize") - f("nearSize")) * k) * rng.range(f("randomSizeMin"), f("randomSizeMax")) / 100.0;
         // Thin out: at most distThinOutMaxNum stains of this row within distThinOutCheckDist.
         let near: Vec<(Entity, f32)> = stains.iter().filter(|(_, s, t)| s.id == id && t.translation.with_y(0.0).distance(at.with_y(0.0)) < f("distThinOutCheckDist")).map(|(e, s, _)| (e, s.born)).collect();
@@ -215,9 +304,23 @@ fn bleed(
         commands.spawn((
             Mesh3d(gore.plane.clone()),
             MeshMaterial3d(mat),
-            Transform::from_xyz(at.x, lift, at.z).with_rotation(Quat::from_rotation_y(roll)).with_scale(Vec3::new(size, 1.0, size)),
+            Transform::from_xyz(at.x, floor + lift, at.z).with_rotation(Quat::from_rotation_y(roll)).with_scale(Vec3::new(size, 1.0, size)),
             Stain { id, born: time.elapsed_secs() },
             bevy::light::NotShadowCaster,
         ));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// The exe's hit-blood id: flesh (109), base 0 / 100, sizes S-LLL -> the rows 600109000-004 /
+    /// 600109100-104; Wolf's 146; no base -> none.
+    #[test]
+    fn hit_stain_ids_follow_the_exe_formula() {
+        use super::hit_stain_id;
+        assert_eq!(hit_stain_id(0, 109, 2), Some(600109002));
+        assert_eq!(hit_stain_id(100, 109, 4), Some(600109104));
+        assert_eq!(hit_stain_id(100, 146, 0), Some(600146100));
+        assert_eq!(hit_stain_id(-1, 109, 0), None);
     }
 }

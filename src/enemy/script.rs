@@ -66,16 +66,35 @@ pub struct ShapePart {
     pub yaw: f32,
 }
 
-/// Whether a boss-frame point (x right, z ahead) is in a shape at `at` / `yaw` (degrees), seen
-/// from above (gap: heights are not checked; the arena drops them).
-fn shape_contains(shape: i32, size: &[f32], at: [f32; 3], yaw: f32, x: f32, z: f32) -> bool {
+/// Whether a boss-frame point (x right, y up, z ahead) is in a shape at `at` / `yaw` (degrees).
+/// `y` None: seen from above (off the boss's own arena, where events::place drops heights too).
+/// A sphere is round about `at`; a cylinder and a box stand on it, `height` up (DSMapStudio
+/// DbgPrimWireCylinder bottom 0 / top height, RenderableProxy region box -0.5,0,-0.5 .. 0.5,1,0.5);
+/// a circle and a rectangle have no height. gap: the region's x / z rotation is dropped.
+fn shape_contains(shape: i32, size: &[f32], at: [f32; 3], yaw: f32, x: f32, y: Option<f32>, z: f32) -> bool {
+    let s = |i: usize| size.get(i).copied().unwrap_or(0.0);
+    if let Some(y) = y {
+        let dy = y - at[1];
+        let fits = match shape {
+            2 => dy.abs() <= s(0),
+            3 => (0.0..=s(1)).contains(&dy),
+            5 => (0.0..=s(2)).contains(&dy),
+            _ => true,
+        };
+        if !fits {
+            return false;
+        }
+    }
     let (dx, dz) = (x - at[0], z - at[2]);
     let (sin, cos) = yaw.to_radians().sin_cos();
     // The map's yaw turns +Z toward +X: right = (cos, -sin), ahead = (sin, cos).
     let (lx, lz) = (dx * cos - dz * sin, dx * sin + dz * cos);
-    let s = |i: usize| size.get(i).copied().unwrap_or(0.0);
     match shape {
-        1..=3 => lx * lx + lz * lz <= s(0) * s(0),
+        1 | 3 => lx * lx + lz * lz <= s(0) * s(0),
+        2 => {
+            let dy = y.map_or(0.0, |y| y - at[1]);
+            lx * lx + dy * dy + lz * lz <= s(0) * s(0)
+        }
         4 | 5 => lx.abs() <= s(0) * 0.5 && lz.abs() <= s(1) * 0.5,
         _ => false,
     }
@@ -346,19 +365,25 @@ impl Run {
         Some(super::events::place(self.start, &at, &serde_json::json!(yaw)))
     }
 
-    /// Is the world point inside the MSB region? (Seen from above: gap, heights are dropped.)
+    /// Is the world point inside the MSB region? Heights count on the boss's own arena only.
     fn inside(&self, region: i64, p: Vec3) -> bool {
         let (Some(pl), Some(sh)) = (self.def.places.get(&region), self.def.regions.get(&region)) else { return false };
         // Into the boss frame (see events::place).
         let (x, z) = (self.start.x - p.x, p.z - self.start.z);
+        let y = super::on_own_arena().then(|| p.y - self.start.y);
         if sh.shape == 6 {
-            return sh.parts.iter().any(|k| shape_contains(k.shape, &k.size, k.at, k.yaw, x, z));
+            return sh.parts.iter().any(|k| shape_contains(k.shape, &k.size, k.at, k.yaw, x, y, z));
         }
-        shape_contains(sh.shape, &sh.size, pl.at, pl.yaw, x, z)
+        shape_contains(sh.shape, &sh.size, pl.at, pl.yaw, x, y, z)
     }
 
     fn flag(&self, id: i64) -> bool {
         self.flags.get(&id).copied().unwrap_or(false)
+    }
+
+    /// An event flag the AI set (SetEventFlag; enemy.rs think).
+    pub fn set_flag(&mut self, id: i64, on: bool) {
+        self.flags.insert(id, on);
     }
 
     /// The event flags that are on (for the AI's IsEventFlag).
@@ -1209,4 +1234,23 @@ fn play_event(d: &crate::data::CharData, a: &mut Actor, id: i64) -> bool {
     }
     a.play(&state, &key);
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::shape_contains;
+
+    #[test]
+    fn regions_have_heights_on_the_own_arena() {
+        // A 4 x 4 box 2 m high and a 3 m cylinder 1 m high, both standing at y = 1.
+        let at = [0.0, 1.0, 0.0];
+        assert!(shape_contains(5, &[4.0, 4.0, 2.0], at, 0.0, 1.0, Some(2.5), 1.0));
+        assert!(!shape_contains(5, &[4.0, 4.0, 2.0], at, 0.0, 1.0, Some(0.5), 1.0));
+        assert!(!shape_contains(5, &[4.0, 4.0, 2.0], at, 0.0, 1.0, Some(3.5), 1.0));
+        assert!(shape_contains(5, &[4.0, 4.0, 2.0], at, 0.0, 1.0, None, 1.0));
+        assert!(!shape_contains(3, &[3.0, 1.0], at, 0.0, 0.0, Some(2.5), 0.0));
+        // A sphere is round in 3D; a circle has no height.
+        assert!(!shape_contains(2, &[2.0], at, 0.0, 1.5, Some(2.5), 0.0));
+        assert!(shape_contains(1, &[2.0], at, 0.0, 1.5, Some(50.0), 0.0));
+    }
 }

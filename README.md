@@ -219,7 +219,9 @@ anywhere, and in that folder:
    game. The sounds and the boss arenas take the longest (the arenas unpack
    and delete about 2 GB per map; `extract.bat -SkipArenas` leaves every boss
    on the gate map).
-2. Run `sv1.exe`.
+2. Run `sv1.exe`. It opens no console; what it logs is in `sv1.log` next to
+   it, and if it stops with an error the message comes up in a dialog (a
+   missing file under `extracted` means step 1 did not finish).
 
 You need Windows, SEKIRO: SHADOWS DIE TWICE from Steam (patch 1.06) and
 [Python 3](https://www.python.org/downloads/) on the PATH (it runs the boss
@@ -279,6 +281,9 @@ cargo run --release --manifest-path tools/sekiro-extract/Cargo.toml -- export ex
 ```bash
 cargo run --release --manifest-path tools/sekiro-extract/Cargo.toml -- model <flver> <tpf> extracted/model_<name>.bin extracted/tex
 ```
+
+A release zip is built with `cargo build --profile dist` (whole-program
+optimisation, no symbols) followed by `powershell -File tools\package.ps1`.
 
 The behaviour tests run with `cargo test --release`. Values the game files
 don't contain live in `config.toml`, each with where the real value would come

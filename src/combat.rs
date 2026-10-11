@@ -977,6 +977,12 @@ fn resolve(
                 let mid = (atf.translation + dtf.translation) / 2.0 + Vec3::Y * 0.4;
                 match outcome {
                     Outcome::Deflect { window, at, rate } => {
+                        // The enemy's poison / burn builds up on Wolf, less through his sword.
+                        if aa.side == Side::Enemy && da.side == Side::Player {
+                            for m in statuses.hit_wolf(&combat, def_e, config.player.combat_art, &atk.sp_effects(), crate::status::Guard::Deflect) {
+                                log.push(format!("Wolf: {m}"), Color::srgb(0.7, 0.55, 0.9));
+                            }
+                        }
                         let left = apply_knockback(&combat, da, atf.translation, dtf.translation, atk.knockback_just_guard, guard_kb(level), "knockbackRate_vsPlayer_JustGuard");
                         recoil(&combat, aa, atf.translation, dtf.translation, left);
                         let skill = if da.side == Side::Player { guard_skill_rate(&combat, &config, atk.stamina_physics_attribute, true) } else { 1.0 };
@@ -1079,6 +1085,11 @@ fn resolve(
                         }
                     }
                     Outcome::Block => {
+                        if aa.side == Side::Enemy && da.side == Side::Player {
+                            for m in statuses.hit_wolf(&combat, def_e, config.player.combat_art, &atk.sp_effects(), crate::status::Guard::Block) {
+                                log.push(format!("Wolf: {m}"), Color::srgb(0.7, 0.55, 0.9));
+                            }
+                        }
                         if let Some(q) = sounds.as_mut() {
                             for se in crate::sound::guard_sounds(&combat, &atk, false) {
                                 q.0.push((se, mid));
@@ -1182,6 +1193,11 @@ fn resolve(
                         let left = apply_knockback(&combat, da, atf.translation, dtf.translation, atk.knockback_hit, damage_kb(level), "knockbackRate_vsPlayer_DirectHit");
                         recoil(&combat, aa, atf.translation, dtf.translation, left);
                         let mut ignited = false;
+                        if aa.side == Side::Enemy && da.side == Side::Player {
+                            for m in statuses.hit_wolf(&combat, def_e, config.player.combat_art, &atk.sp_effects(), crate::status::Guard::None) {
+                                log.push(format!("Wolf: {m}"), Color::srgb(0.7, 0.55, 0.9));
+                            }
+                        }
                         if aa.side == Side::Player && da.side == Side::Enemy {
                             for m in statuses.hit(&combat, def_e, da, &atk.sp_effects(), false) {
                                 ignited |= m == "BURNING";
@@ -1270,8 +1286,10 @@ fn resolve(
                             format!("{} hit: -{dmg:.0} HP, +{pd:.0} posture", if aa.side == Side::Player { "you" } else { "enemy" }),
                             Color::srgb(1.0, 0.45, 0.4),
                         );
-                        let sfx = crate::vfx::hit_sfx(&combat, &atk, crate::vfx::Kind::Hit, crate::vfx::defender_sfx_materials(&combat, da));
+                        let def_mats = crate::vfx::defender_sfx_materials(&combat, da);
+                        let sfx = crate::vfx::hit_sfx(&combat, &atk, crate::vfx::Kind::Hit, def_mats);
                         commands.spawn(crate::vfx::Clash::bundle_fx(mid, (atf.translation - dtf.translation).with_y(0.0), crate::vfx::Kind::Hit, sfx));
+                        commands.spawn(crate::gore::HitStains { ids: crate::gore::hit_stain_ids(&atk, def_mats[0]), at: mid, dir: dtf.translation - atf.translation });
                         if let Some(q) = sounds.as_mut() {
                             for se in crate::sound::hit_sounds(&combat, &atk, crate::sound::defender_materials(&combat, da)) {
                                 q.0.push((se, mid));
