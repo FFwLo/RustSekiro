@@ -128,6 +128,12 @@ if ($python) {
     python (Join-Path $PSScriptRoot "boss_bgm.py")
     # The bosses' and mini-bosses' English names (their health bars) -> extracted/enemies/npc_names.json (src/data.rs encounter_list).
     python (Join-Path $PSScriptRoot "npc_names.py")
+    # Armoured enemies: the EMEVD NPC parts (common_func 20005410) -> extracted/enemies/armor_parts.json
+    # (src/enemy.rs armor_of). After npc_names.py: it leaves the boss rows out.
+    python (Join-Path $PSScriptRoot "armor_parts.py")
+    # Enemy patrol routes (MSB WalkRouteIndex -> PatrolInfo) -> extracted/enemies/patrols.json
+    # (src/enemy.rs msb_patrol). After npc_names.py: it leaves the boss rows out.
+    python (Join-Path $PSScriptRoot "patrols.py")
     # Prosthetic tool models and their anims (parts/wp_a_07xx) -> extracted/tool (src/model/tool.rs).
     python (Join-Path $PSScriptRoot "tool_export.py") --sekiro $Sekiro --exe $exe
     # Every boss in its own arena (kb/map.md): one map at a time, about 2 GB of raw files each,

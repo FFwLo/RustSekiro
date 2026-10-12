@@ -4,7 +4,35 @@
 
 `src/ai/lua50.rs` (the Lua 5.0 loader and interpreter) is adapted from
 [sekiro-rs](https://github.com/AKJama/sekiro-rs), `crates/sim/src/lua_ai/lua50.rs`,
-which is dual-licensed MIT or Apache-2.0. It is used here under the MIT license:
+which is dual-licensed MIT or Apache-2.0.
+Rules also ported from it (no code copied verbatim): the Owl's 3506080 deathblow gate
+(`player.rs`, its docs/OWL.md) the bullet decay past range (`data.rs` `Attack::decayed`,
+its `bullets.rs`) and the deathblow absorb giving way at walls (`player.rs` `follow_throw`,
+its docs/DEATHBLOW.md). Smaller ports from the same repository follow its
+docs and code, each credited where it is used: the hit stop rules (`src/combat.rs`
+`start_hit_stop`, `src/actor.rs` `HitStop`) and the arena start and walk check
+(`src/map.rs` test `every_arena_start_stands_and_walks`, after `crates/sim/examples/map_baseline.rs`), and the
+map lighting rules its docs/SHADER-INPUTS.md traced in the exe (`src/map.rs` `colour`,
+`fog_colour`, `soft_adapt`, `SCENE_TO_BEVY`: light colours squared times W, fog colours at
+gamma 2.2, the soft Adaption Min / Max limit, one scene-to-Bevy light scale), the enemy super
+armour damage-level swap (`src/combat.rs` `damage_motion_level`), the enemies' aerial hit
+reactions (`enemy_damage_state_air`) and the guarded bullet leaving its shooter alone (its
+docs/PROJECTILE-GUARD.md). Also from its traced exe values: the fog density over
+GameScale (`src/map.rs` `MapLighting::fog_density`, its docs/SHADER-INPUTS.md), the
+game's metering centre weight and adaptation rate (`src/map.rs` `centre_weight`,
+`adapt_speed`, its docs/SHADERS.md "Metering and adaptation"), the bottom-centred MSB
+region box (`tools/sekiro-extract/src/msb.rs` `Region::contains`, its lighting.rs GIIV
+volumes), the story time-of-day flags of common.emevd events 100 / 820 (`src/config.rs`
+`default_hour`, its crates/sim/src/story.rs) and the tool hits' reaction path
+(`src/prosthetic.rs` `bullet_reaction`, after its fight.rs rules) and the boss fog walls'
+common events 20005820 / 20005825 (`tools/fog_walls.py`, `src/fog_wall.rs`, after its
+crates/sim/src/fogwall.rs). `src/height_fog.wgsl` (the game's fog pass) is adapted from its
+crates/game/src/fog.wgsl and `src/height_fog.rs` from its fog.rs, with the exe packing of its
+docs/SHADER-INPUTS.md (GameScale, the height offset, the depth slices). The sky domes (`src/sky.rs`,
+`src/sky.wgsl`, `tools/sekiro-extract/src/sky.rs`) are adapted from its crates/game/src/sky.rs,
+sky.wgsl and crates/extract/src/maps/sky.rs (9ee18b0); the map bloom's level weights
+(`src/map.rs` `map_bloom`) follow its SHADER-INPUTS.md "Bloom and glare".
+It is used here under the MIT license:
 
 ```
 MIT License

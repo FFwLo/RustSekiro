@@ -577,9 +577,8 @@ fn draw_menu(
                     _ => 2,
                 };
                 let id = slots(&config)[n];
-                // Tools whose HKS branch is ported so far: the Shuriken (070) and the Firecracker (071).
-                let todo = if id != 0 && !(70000..72000).contains(&id) { "  - not working yet" } else { "" };
-                format!("prosthetic slot {}: {}{todo}", n + 1, if id == 0 { "empty".to_string() } else { format!("{} ({id})", combat.weapon_name(id)) })
+                // Every tool's HKS branch is ported (prosthetic.rs; sim_tests every_tool_*).
+                format!("prosthetic slot {}: {}", n + 1, if id == 0 { "empty".to_string() } else { format!("{} ({id})", combat.weapon_name(id)) })
             }
             Item::God => format!("god mode (no HP loss): {}", on(menu.god)),
             Item::NoPosture => format!("no posture damage: {}", on(menu.no_posture)),

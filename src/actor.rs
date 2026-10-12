@@ -44,12 +44,13 @@ pub struct Actor {
     pub since_posture_damage: f32,
     /// Fractional posture recovery carried to the next frame (exe: ChrDataModule+0x15c).
     pub regen_carry: f32,
-    /// Remaining hit stop (AtkParam hitStopTime): the animation clock is frozen.
-    pub hit_stop: f32,
+    /// Hit stop (`HitStop`, started by combat.rs start_hit_stop): scales this actor's clock.
+    pub hit_stop: HitStop,
     /// Resident SpEffect ids (NpcParam spEffectID slots for enemies).
     pub resident: Vec<i64>,
-    /// AttackBehavior windows already resolved in the current anim: (judge, start).
-    pub hits_done: Vec<(i64, i32)>,
+    /// AttackBehavior windows already resolved in the current anim, per defender: (defender,
+    /// judge, start). One window hits each target once, so a swing through two enemies hurts both.
+    pub hits_done: Vec<(Entity, i64, i32)>,
     /// This character's bullets that touched someone (target, the bullet's AtkParam): combat.rs
     /// resolves them like a connected AttackBehavior window (enemy_bullet.rs fires NPC bullets).
     pub bullet_hits: Vec<(Entity, crate::data::Attack)>,
@@ -71,6 +72,8 @@ pub struct Actor {
     pub electro: Option<(i64, f32)>,
     /// Its opacity: the last TAE 193 keyframe value (CharData::opacity_key), 1 at spawn.
     pub opacity: f32,
+    /// The camera's fade of it (Wolf only: camera.rs cam_fade_step), times `opacity` when drawn.
+    pub cam_alpha: f32,
     /// Fall control: ChrPhysicsVelocityChangeParam.fallType, launch velocity (decays by
     /// the fall type's horizontal acceleration) and the stick-driven part on top.
     pub fall_type: u8,
@@ -79,6 +82,9 @@ pub struct Actor {
     pub lift_ground: Option<f32>,
     /// Root-motion scale from TAE 760 BoostRootMotionToReachTarget (1.0 outside it).
     pub root_scale: f32,
+    /// The clip's root turn is scaled by this (enemy turn-in-place clips turned to the asked
+    /// angle, enemy.rs start_turn); 1 again on every play.
+    pub yaw_scale: f32,
     /// Root-motion direction offset (radians): guard walk moves along the stick, between its
     /// directional clips (the game's blend), not straight along the clip.
     pub root_yaw: f32,
@@ -159,7 +165,7 @@ impl Actor {
             stamina_ctrl_row,
             since_posture_damage: 99.0,
             regen_carry: 0.0,
-            hit_stop: 0.0,
+            hit_stop: HitStop::default(),
             resident: Vec::new(),
             hits_done: Vec::new(),
             bullet_hits: Vec::new(),
@@ -172,11 +178,13 @@ impl Actor {
             airborne: false,
             electro: None,
             opacity: 1.0,
+            cam_alpha: 1.0,
             fall_type: 0,
             air_base: Vec3::ZERO,
             lift_ground: None,
             root_scale: 1.0,
             root_yaw: 0.0,
+            yaw_scale: 1.0,
             move_index: 0,
             move_dir: 0,
             move_start: 0.0,
@@ -204,6 +212,7 @@ impl Actor {
         self.prev_t = 0.0;
         self.hits_done.clear();
         self.vel_change_done = false;
+        self.yaw_scale = 1.0;
     }
 
     /// `key` in this actor's anim set: a000_<id> -> a<group>00_<id> when the set has that clip.
@@ -348,7 +357,7 @@ pub fn data_for<'a>(combat: &'a Combat, a: &Actor) -> &'a CharData {
 /// clamp(distance to it, EnableRangeMin, EnableRangeMax) / ReferenceDist (RangeMin when
 /// already inside ArriveDist, 1.0 without the event). So a slash lengthens its lunge toward
 /// a far target and shortens it on a close one. Target: the lock-on target for Wolf, the
-/// player for the enemy; unlocked, Wolf's attack auto-homing target (player.rs).
+/// player (or the rival it fights) for the enemy; unlocked, Wolf's attack auto-homing target (player.rs).
 fn boost_root_motion(
     combat: Res<Combat>,
     lock: Option<Res<crate::camera::LockOn>>,
@@ -365,7 +374,8 @@ fn boost_root_motion(
         let target = match a.side {
             // FUN_1407f0a70: the lock target, else the attack's auto-homing target.
             Side::Player => lock.as_ref().and_then(|l| l.target).or(a.homing).and_then(|t| positions.iter().find(|p| p.0 == t)).map(|p| p.2),
-            Side::Enemy => positions.iter().find(|p| p.1 == Side::Player).map(|p| p.2),
+            // The rival NPC it fights (enemy.rs think sets homing), else Wolf.
+            Side::Enemy => a.homing.and_then(|t| positions.iter().find(|p| p.0 == t)).or_else(|| positions.iter().find(|p| p.1 == Side::Player)).map(|p| p.2),
         };
         let Some(target) = target else { continue };
         let f = |k: &str| ev.args.get(k).and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
@@ -395,13 +405,66 @@ fn boost_root_motion(
     }
 }
 
+/// The full stop at the start of every hit stop (exe FUN_140a51800 default +0x130 = 0.06 s).
+pub const HIT_STOP_HOLD: f32 = 0.06;
+
+/// A character's hit stop (exe SprjChrHitStopModule, ChrIns module bag +0x90; FUN_140b9d1b0 /
+/// FUN_140b9dad0): the clock holds at 0 for HIT_STOP_HOLD, then eases back over the hit stop's
+/// length, each frame advancing dt * (elapsed / length)^2; the frame that ends the hold advances
+/// nothing; a new start replaces a running one; 0 starts nothing. From AKJama/sekiro-rs
+/// (crates/sim/src/combat/knockback.rs `HitStop`, docs/COMBAT-RULES.md "Hit stop"; MIT / Apache).
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct HitStop {
+    /// 0 idle, 1 hold, 2 ease.
+    phase: u8,
+    left: f32,
+    length: f32,
+}
+
+impl HitStop {
+    pub fn start(&mut self, seconds: f32) {
+        if seconds > 0.0 {
+            *self = Self { phase: 1, left: HIT_STOP_HOLD, length: seconds };
+        }
+    }
+
+    pub fn active(&self) -> bool {
+        self.phase != 0
+    }
+
+    /// Runs `dt` of real time; returns how far the character's clock moves.
+    pub fn split(&mut self, dt: f32) -> f32 {
+        match self.phase {
+            1 => {
+                self.left -= dt;
+                if self.left <= 1e-5 {
+                    (self.phase, self.left) = (2, self.length);
+                }
+                0.0
+            }
+            2 => {
+                self.left -= dt;
+                if self.left <= 1e-5 {
+                    *self = Self::default();
+                    return dt;
+                }
+                let k = (1.0 - self.left / self.length).clamp(0.0, 1.0);
+                k * k * dt
+            }
+            _ => dt,
+        }
+    }
+}
+
 /// Advances clocks, applies root motion and procedural motion.
 pub fn advance(time: Res<Time>, combat: Res<Combat>, mut q: Query<(&mut Actor, &mut Transform)>) {
-    let dt = time.delta_secs();
+    let real_dt = time.delta_secs();
     for (mut a, mut tf) in &mut q {
         a.prev_t = a.t;
-        if a.hit_stop > 0.0 {
-            a.hit_stop -= dt;
+        // The hit stop scales the whole step (clip, TAE, root motion, pushes), as the exe runs
+        // every module on the character's own time (FUN_140b9d1b0 -> FUN_1409f78a0).
+        let dt = a.hit_stop.split(real_dt);
+        if dt <= 0.0 {
             continue;
         }
         a.t += dt;
@@ -425,7 +488,7 @@ pub fn advance(time: Res<Time>, combat: Res<Combat>, mut q: Query<(&mut Actor, &
                 // facing. Live (rec_c1010_20261009, behind deathblow a200_511200 / ThrowDef13200, both
                 // spin 180 deg): the enemy ends 0.6 m in front of Wolf; turning the steps with the
                 // current yaw slid him 1 m sideways.
-                let delta = Quat::from_rotation_y(a.yaw - y0 + a.root_yaw) * Vec3::new(p1.x - p0.x, 0.0, p1.y - p0.y) * a.root_scale;
+                let delta = Quat::from_rotation_y(a.yaw - y0 * a.yaw_scale + a.root_yaw) * Vec3::new(p1.x - p0.x, 0.0, p1.y - p0.y) * a.root_scale;
                 // In the air (falling, not held by ChrActionFlag 27 SetNoGravity) the clip's
                 // horizontal root motion is not applied; the air velocity moves the body. Live
                 // (30 head kicks a000_213115 / 213114 / 213110 in the rec_* recordings): Wolf moves
@@ -435,7 +498,7 @@ pub fn advance(time: Res<Time>, combat: Res<Combat>, mut q: Query<(&mut Actor, &
                 if !a.airborne || held {
                     tf.translation += delta;
                 }
-                a.yaw += y1 - y0;
+                a.yaw += (y1 - y0) * a.yaw_scale;
                 // While ChrActionFlag 27 SetNoGravity holds a grounded character, the clip's own
                 // vertical root motion lifts it (the vault 511900 goes 1.5 m up; live: Wolf's
                 // height +1.53 m, landing 1.4 s in).
@@ -465,12 +528,18 @@ pub fn advance(time: Res<Time>, combat: Res<Combat>, mut q: Query<(&mut Actor, &
         }
         let v = a.move_vel;
         tf.translation += v * dt;
-        if a.kb_cont > 0.0 {
-            tf.translation += a.kb_vel * dt;
-            a.kb_cont -= dt;
-        } else if a.kb_dec > 0.0 {
-            tf.translation += a.kb_vel * (a.kb_dec / a.kb_dec_total.max(1e-4)) * dt;
-            a.kb_dec -= dt;
+        // The knockback's distance over this step, integrated exactly (as sekiro-rs knockback.rs
+        // `covered`): the rest of the full-speed hold, then the linear fall over the decay, whose
+        // area from r0 to r1 seconds left is v / (2 dec) * (r0^2 - r1^2). Whole steps at the
+        // start speed overshot the asked distance by 3-76 % (2026-10-12 bug hunt).
+        if a.kb_cont > 0.0 || a.kb_dec > 0.0 {
+            let hold = dt.min(a.kb_cont.max(0.0));
+            a.kb_cont -= hold;
+            let r0 = a.kb_dec.max(0.0);
+            let r1 = if a.kb_cont > 0.0 { r0 } else { (r0 - (dt - hold)).max(0.0) };
+            a.kb_dec = r1;
+            let fall = (r0 * r0 - r1 * r1) / (2.0 * a.kb_dec_total.max(1e-4));
+            tf.translation += a.kb_vel * (hold + fall);
         }
         // Gravity and landing are handled by the owner (player.rs, data::FALL_TYPES).
         if a.airborne {
@@ -500,6 +569,15 @@ pub fn regen_posture(time: Res<Time>, combat: Res<Combat>, config: Res<GameConfi
         let ty = if a.anim.is_empty() { None } else { data.stamina_ratio_type(&a.anim, a.t) };
         let ty = ty.unwrap_or(config.posture.default_ratio_type);
         let row = combat.param("StaminaControlParam", a.stamina_ctrl_row);
+        // (A row the export missed read as 100 % silently: c1180's 1070000 gives 0 % in a swing.)
+        if row.is_null() && a.stamina_ctrl_row > 0 {
+            static MISSING: std::sync::Mutex<Vec<i64>> = std::sync::Mutex::new(Vec::new());
+            let mut m = MISSING.lock().unwrap_or_else(|e| e.into_inner());
+            if !m.contains(&a.stamina_ctrl_row) {
+                m.push(a.stamina_ctrl_row);
+                warn!("StaminaControlParam {} not exported: posture regen at 100 %", a.stamina_ctrl_row);
+            }
+        }
         let ratio = if ty < 0 { 1.0 } else { row[format!("staminaRecoverRatio_forType{ty:03}")].as_f64().unwrap_or(100.0) as f32 / 100.0 };
         let hp_factor = if config.posture.hp_scales_regen { calc_correct(&graph, a.hp / a.hp_max) } else { 1.0 };
         // Resident HP-conditional SpEffects (NpcParam spEffectID slots) multiply regen
@@ -543,10 +621,13 @@ impl Plugin for ActorPlugin {
 pub const PLAYER_BODY_RADIUS: f32 = 0.4;
 
 /// Wolf's paired-throw states and the enemy's throw reactions (not the start throws: live, Wolf's
-/// start anim stops against the enemy - the c1010 vault start moved 0.18 m with him 0.95 m away).
+/// start anim stops against the enemy - the c1010 vault start moved 0.18 m with him 0.95 m away),
+/// and an enemy grab's pair (Wolf "Grabbed", the grabber ThrowAtk<id>: its ThrowParam absorb puts
+/// the c1360 Rappa on Wolf's dummy 173, 0.52 m in, inside the 0.8 m radii).
 fn in_throw(a: &Actor) -> bool {
     a.state.starts_with("ThrowDef")
-        || matches!(a.state.as_str(), "Deathblow" | "ThrowBreak" | "BreakKickJump" | "Mikiri" | "PlungeDeathblow" | "WireThrowLand" | "WireThrowTodome")
+        || a.state.starts_with("ThrowAtk")
+        || matches!(a.state.as_str(), "Deathblow" | "ThrowBreak" | "BreakKickJump" | "Mikiri" | "PlungeDeathblow" | "WireThrowLand" | "WireThrowTodome" | "Grabbed")
 }
 
 /// ChrActionFlag 39 (TAE name "Set_0x78_7"): on Wolf's throw and plunge anims (a2xx_510300,

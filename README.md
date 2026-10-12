@@ -7,6 +7,10 @@ The characters are the game's own models, and what drives them is real too:
 the timings, movement, animations, enemy AI and sounds are read from the
 game's own files rather than tuned by eye.
 
+Special thanks to @yama, creator of
+[sekiro-rs](https://github.com/AKJama/sekiro-rs): its Lua 5.0 interpreter runs
+the enemy AI here, and several combat rules were ported from it.
+
 [![Sv1 gameplay](docs/media/preview.webp)](https://github.com/FFwLo/RustSekiro/releases/download/v0.1.0/sv1-gameplay.mp4)
 
 *Fighting the Ashina Samurai General: deflects, perilous attacks and a

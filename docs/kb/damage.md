@@ -28,8 +28,26 @@ Dated findings, oldest first. Append new entries at the end.
   rest (dist - push) goes to the attacker along the reversed direction over ArgA seconds (FUN_140ba3420 +
   FUN_140ba3190(-1, rest / ArgA, ArgA)). Only Wolf's sword attacks have it (133 anims, ArgA 0.09); NpcParam
   knockbackRate_vsPlayer_* is 75 for c1180 (club samurai), 100 for 45 rows, 0 for most. combat.rs recoil; test
-  wolf_bounces_off_an_enemy_that_cuts_his_knockback (c1180: ~0.75 m back). Gaps: the cos^2 facing factor, the
-  one-frame start delay (+0x45) and the deferred path (damage +0x164, through TAE 226) are not modelled.
+  wolf_bounces_off_an_enemy_that_cuts_his_knockback (c1180: ~0.75 m back). Gaps: the one-frame start delay (+0x45)
+  and the deferred path (damage +0x164, through TAE 226) are not modelled.
+  2026-10-12 FACING done: 140b6.c:7699-7729 exact rule: f = dot(normalised knockback dir, attacker forward axis
+  (FUN_1409eeb40 -> FUN_1407dcc90)); factor f^2, but 0.4 when f < 0 or f^2 < 0.4 (range [0.4, 1]; 1 with no
+  attacker). The leftover for the attacker comes from the scaled distance. combat.rs knockback_facing (sword hits,
+  blocks, deflects; prosthetic bullets pass None = 1). Test knockback_scales_with_the_attackers_facing. gaps: the
+  exe's direction is the attack's own motion vector when it moves (|v|^2 > 0.0005), else contact point minus the
+  attack origin (FUN_140b11080); ours is defender root minus attacker root. The forward axis sign is unverified.
+  2026-10-12 INTEGRATION fixed (bug hunt): actor.rs moved whole frame steps at the start speed (pushes 3-76 % too
+  long); now exact: hold remainder + v / (2 dec) x (r0^2 - r1^2) over the decay. Test
+  a_knockback_covers_exactly_its_distance.
+- 2026-10-12 HIT SHAPES: AtkParam hitSourceType (Paramdex enum ATK_PARAM_HIT_SOURCE: 0 weapon, 1 body = which
+  model's dummy ids) and hti*_Priority ("higher wins when two touch at once", SDT Defs AtkParam.xml:324-329) are
+  not read, and need not be on this data: every NPC row (2396) is source 0, every priority is 0, and the 54 PC
+  body-source rows (contact 200-222 / 840-844, foot SFX, kicks 900-903, shinobi kills 600-807, puppet 400/410,
+  wire 9500000/1) name no id Kusabimaru (WP_A_0300: 100 101 110 120 130 140 141 300 301 311 321 331 341 730-733)
+  has, so the merged dummy map (weapon over body) picks the same points. Test
+  hit_source_and_priority_change_no_hit_on_this_data. gaps: the exe's shape loop is not located; hit*_hitType
+  is 0 / 1 in the data (PC: 224 of 552 shapes are 1, mostly the second shape of sword rows) against Paramdex's
+  0 "Ignore" / 2 "Invoke", meaning unknown; we treat every shape as live.
 - 2026-10-07 WOLF: damage reactions re-checked against HKS normal damage (c0000_transition.lua ~1162). Fixed: NONE (0)
   and MINIMUM (8) play no reaction (were Small); PUSH (5) = Middle 4-way (was LargeBlow); EXLARGE (4) = LargeBlow (was
   ExLargeBlow first); EX_BLAST (10) = ExLargeBlow, BREATH (11) = SpecialLargeBlow (both no clip -> LargeBlow; were
@@ -98,6 +116,39 @@ Dated findings, oldest first. Append new entries at the end.
   158, every rate 0.5 = the posture half) and 220062 "鎧ガード可能" (stateInfo 957, read by
   common_common_func_NTC.lua:355) are applied by neither params nor TAE (HKS/exe). The HP x0.35 source is
   unknown.
+  2026-10-12 SOURCE (static, re-scout): the armor is an EMEVD NPC part. m10_00_00_00 event 0 runs
+  common 20005410(1000363, ...) (entity 1000363 = c1180 NpcParam 11807101; its twin 1000362 /
+  11807100 is never initialised). common_func 20005410: Create NPC Part (part group 2 = the
+  PelvisArmor hkxpwv bodies, damage correction 1.0, body damage compensation 0x3F333333 = 0.7),
+  Set SpEffect 220061 (stateInfo 343, camouflageHitPartsGroup 2) / 220062 (stateInfo 957, the
+  TAE ShieldBlock StateInfo) / 400250 (every *DamageCutRate and def*StaminaDmgRate 0.5); at part
+  HP 0: anim 20039, those cleared, 230400 / 230401 set. Also m11_01 entities 1110432/33/35 and
+  20005411 for m11_00 1100480. Exe: FUN_140b6c880 (140b6.c:10778) swaps the hit part group for
+  the SpEffect's camouflageHitPartsGroup (stateInfo 0x156/0x157); FUN_140670040 (14067.c:37-83)
+  deals damage x part+0x108 to the part and returns x part+0x110 (0.7, "RetDam") to the body.
+  HP 0.5 x 0.7 = 0.35 (348 -> 121, exact); posture 0.5 (130 -> 65). gaps: where the 0.5 HP cut
+  applies in the exe; the one full hit (a050_300100 vs a100_003000) and art 316000's uncut -522;
+  the part's break HP (arg 1). 2004[62] Set NPC Part Damaging Prosthetic 11 = Loaded Spear (emedf
+  "Prosthetic Type"): only it damages the part (HP 1: one spear hit breaks it).
+  MODELLED 2026-10-12: tools/armor_parts.py -> extracted/enemies/armor_parts.json (rows 11807101,
+  11801100, 11806010; c1070 10701000's 20005411 is a boss row, left out); enemy.rs Armor /
+  armor_of (residents 220061/220062/400250 at spawn); combat.rs direct hit by Wolf: x0.35 HP /
+  x0.5 posture, a Loaded Spear hit (EquipParamWeapon 78xxx) breaks it (Event20039, 230400 / 230401).
+  Test the_armoured_servant_takes_a_third_and_the_loaded_spear_breaks_it. gaps: every Wolf hit is
+  taken as on the armour (live 7 of 8; per-body part groups not in our hurtboxes); (dispmask: the break anim a000_020039's TAE 233 sets
+  Mask20 / Mask21 to 0, which hides the armour through the TAE 233 DrawMask path, kept after the anim;
+  20005410's two 2004[26] Set Display Mask (bit 0 off, then on) run before the break wait, not at it); 230400/230401 (guard HP rates after
+  the break) have no fields.
+  2026-10-12 bug hunt: Wolf's prosthetic bullets (shuriken, Flame Vent ...) now go through the armour too
+  (combat::armor_rates from prosthetic.rs hit_enemy; they never break it). The rates are per attribute: HP cut
+  by atkAttribute, posture by staminaPhysicsAttribute (Paramdex ATKPARAM_ATKATTR_TYPE / _STAMINA_: 1 Slash,
+  2 Light Hit, 3 Thrust, 4 Neutral, 5 Ninsatsu, 6 Heavy Hit, 7 Anti Ground, 8 Anti Air, 9 Light Shoot,
+  10-12 Attribute A-C). HP cut: <attr>DamageCutRate for 1-4 and 10-12, def<Attr>DmgRate for 5-9
+  (defNinsatsu / HeavyHit / AntiGround / AntiAir / LightShootDmgRate, Paramdex SpEffect.xml:2598-2635;
+  first missed, found by the bug hunt): 400250 has 0.5 on all but Ninsatsu / AttriB, so the shuriken
+  (9 Light Shoot) is x0.35 HP and x0.5 posture like a slash. data.rs stamina_rate_field / damage_cut_field; the export now carries
+  all 12 def*StaminaDmgRate fields (Isshin's 3540090 x0.3 covers Light Shoot etc. too). Test
+  a_shuriken_on_the_armoured_servant_is_cut_like_a_slash.
 - 2026-10-08 the "odd" live hits are explained, no hidden mechanic: -400 / -220 = HP capped at death (Wolf at 0);
   -360 / -89 = normal 300 / 67 + a second contact 60 / 22 in the same tick; -180 / -45 = a smaller attack
   (atkPhys 48 / atkStam 12 equivalent) seen in many states - rec_attacks.py took the first of two active attack
@@ -236,4 +287,27 @@ Dated findings, oldest first. Append new entries at the end.
     | Genichiro c7100 a000_003000 | f20 | f22.5-23 | 4.25 m |
     | Monk c5000 | - | her default row starts in the intro Event20006 | - |
 
-    Still to do: the same moments in the user's clips (contact frame and distance).
+    Reach and first-hit vs the clips (2026-10-12; 60 fps clips, frames halved to TAE 30 fps;
+    "start" = first visible motion, which trails TAE frame 0 by input lag and blend, so a clip
+    count should run 1-3 frames LATE; contact sheets made with ffmpeg, kept in the session
+    scratchpad only). Ours from `wolf_first_hit_frames` (ignored test, prints the windows):
+
+    | attack | ours (TAE window) | clip | verdict |
+    |---|---|---|---|
+    | Wolf Combo1 a050_300100 | f7-11 | 49_Kawarada 1:10.3: motion -> spark on the guard 6.5; ~2 m apart (stand-off, not max reach) | matches |
+    | Ichimonji a102_316000 (5300) | j200 f40-44 | all_skills 1:27.8 / 1:31.8: sword lift -> first trail frame 25-26 (Double's 1st 23, 2nd +28) | not comparable: the clip counts from the sword lift, after the leap; every cast whiffs (trail, not contact) |
+    | Mortal Draw a104_316000 (5500) | j200 f11-13, j201 f16-20 (with every gate open too: no later window in this anim; the emblem slash 220-231 is not among its events) | all_skills 6:44.9-7:08.5: first red arc 23-25, big sweep 28-31; sweep ~3.5-5 m | open: ours opens 8-12 frames before the clip's first arc. Judges 220-231 are not Mortal Draw's: they sit in the a109 (spAtkcategory 109) anims 316650 / 316660 (220 f7, 221 f19); a104 has only 200 / 201 (316000) and 202 / 203 (316001), the same frames, and 210 / 222 in its loops 316200-316240 |
+    | General c1020 a000_003000 | f18 / contact f19 | 49_Kawarada (same chr): attacks come from a held raised-sword stance (lift -> capsule 14, contact 16); a000_003000 from idle not found | not comparable |
+    | c1010 a000_003000 | f20 / f22.5 | not found (c1010 is the Ochimusha; no clip of him) | gap |
+    | Dog c1150 a000_003000 | f17 | not found | gap |
+
+    2026-10-12 (bug hunt round 5): the "Mortal Draw" row above is Ashina Cross (art 5500 = a104).
+    Mortal Draw is art 5700 = a106: a106_316000 judges 200 / 220 at f58-62, a106_316100 201 / 221
+    at f13-17, hits on Model2 WP_A_0300_2's own dummies 12200-12280 (2-6 m along the blade). Those
+    were not looked up until then (combat.rs `dmy_entity`), so the hit test used the 2.1 m reach
+    approximation; the clip comparison should be redone with a106 (test
+    mortal_draw_reaches_an_enemy_four_metres_away).
+
+    Clips without the regular enemies: the combat-flow clip (Juzou, Nightjar, Lone Shadow,
+    Seven Spear, modded game), the all-bosses chapter of Kawarada (firecracker clutter). A
+    recording of c1010 / c1150 / a c1020 from idle is needed to close the table.

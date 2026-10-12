@@ -2159,6 +2159,42 @@ fn killed_mid_jump_falls_and_lands() {
     panic!("never landed");
 }
 
+/// Wolf's procedural walk (Locomotion, no TAE anim) plays its clip's PlaySound events (the
+/// footsteps): over two loops of the walk each fires twice (sound.rs `sound_windows`).
+#[test]
+fn locomotion_plays_its_clip_sounds() {
+    let app = app();
+    let combat = app.world().resource::<Combat>();
+    let d = &combat.player;
+    let mut a = crate::actor::Actor::new(crate::actor::Side::Player, 1.0, 1.0, 0.0, 0);
+    a.procedural("Locomotion");
+    a.move_start = d.length(&a.move_clip(true));
+    let loop_key = a.move_clip(false);
+    let len = d.length(&loop_key);
+    let Some(anim) = d.anim(&loop_key) else { return };
+    let sounds: Vec<f32> = anim.events.iter().filter(|e| matches!(e.kind, 128..=132) && e.start < len - 0.02).map(|e| e.start).collect();
+    println!("{loop_key}: {len:.3} s, sounds at {sounds:?}");
+    if sounds.is_empty() || len <= 0.0 {
+        return;
+    }
+    let dt = 1.0 / 60.0;
+    a.t = a.move_start - dt * 0.5;
+    let mut count = vec![0; sounds.len()];
+    while a.t < a.move_start + 2.0 * len - dt * 0.5 {
+        a.prev_t = a.t;
+        a.t += dt;
+        let (clip, windows, _) = crate::sound::sound_windows(&a, d).expect("windows");
+        if clip == loop_key {
+            for (i, s) in sounds.iter().enumerate() {
+                if windows.iter().any(|&(lo, hi)| *s > lo && *s <= hi) {
+                    count[i] += 1;
+                }
+            }
+        }
+    }
+    assert!(count.iter().all(|&c| c == 2), "{sounds:?} fired {count:?}");
+}
+
 #[test]
 fn hit_sounds_follow_the_exe_material_lookup() {
     let app = app();
@@ -2837,6 +2873,91 @@ fn debug_menu_plunge_setup_reaches_the_plunge_deathblow() {
     assert!(seen.iter().any(|s| s == "PlungeDeathblow") && seen.iter().any(|s| s == "Deathblow"), "{seen:?}");
 }
 
+/// A cross-fade runs on the character's own clock: hit stop freezes it with the clip (sekiro-rs
+/// fd53f99; it ran on the frame time, finishing the fade while the pose stood still).
+#[test]
+fn hit_stop_freezes_the_cross_fade() {
+    let mut app = app_geom("c1020", None);
+    move_enemy_far(&mut app);
+    for _ in 0..3 {
+        app.update();
+    }
+    app.world_mut().resource_mut::<PadInput>().press(Action::Attack);
+    let blend = |app: &mut App| {
+        let world = app.world_mut();
+        world.query_filtered::<&crate::anim::Skeleton, With<Player>>().single(world).unwrap().blend
+    };
+    let mut fading = false;
+    for _ in 0..10 {
+        app.update();
+        let b = blend(&mut app);
+        if b > 0.0 && b < 0.8 {
+            fading = true;
+            break;
+        }
+    }
+    assert!(fading, "the attack never cross-faded in");
+    let before = blend(&mut app);
+    {
+        let world = app.world_mut();
+        world.query_filtered::<&mut Actor, With<Player>>().single_mut(world).unwrap().hit_stop.start(0.1);
+    }
+    for _ in 0..4 {
+        app.update();
+    }
+    let after = blend(&mut app);
+    assert!((after - before).abs() < 1e-4, "the fade went on through the hit stop: {before} -> {after}");
+}
+
+fn enemy_broken(app: &mut App) -> bool {
+    let world = app.world_mut();
+    world.query_filtered::<&Enemy, Without<crate::enemy::Cast>>().single(world).unwrap().is_broken()
+}
+
+/// A plunge onto a broken enemy plays its defender pose ThrowDef13400 and holds it broken through
+/// the fall: its Broken window had 0.3 s left, which ran out mid-fall, and it stood up in its
+/// collapse instead (react does nothing on a broken enemy; 2026-10-12 bug hunt round 15).
+#[test]
+fn a_plunge_holds_the_broken_enemy_in_its_pose() {
+    let mut app = app();
+    break_enemy_at(&mut app, 1.2);
+    // Most of the break window (to its collapse SpEffect 220420, frame 75 = 2.5 s) gone.
+    for _ in 0..130 {
+        app.update();
+    }
+    assert!(enemy_broken(&mut app), "the break window ended early");
+    {
+        let world = app.world_mut();
+        world.resource_scope(|world, combat: Mut<Combat>| {
+            let mut q = world.query_filtered::<(&mut Actor, &mut Transform), With<Player>>();
+            let (mut a, mut t) = q.single_mut(world).unwrap();
+            a.play_state(&combat.player, "VerticalGroundJumpStart");
+            a.t = 0.5;
+            a.prev_t = 0.5;
+            a.airborne = true;
+            a.vel_y = -1.0;
+            t.translation.y += 6.0;
+            t.translation.z += 0.6;
+        });
+    }
+    app.world_mut().resource_mut::<PadInput>().press(Action::Attack);
+    let (mut seen, mut enemy_seen) = (Vec::new(), Vec::new());
+    for _ in 0..200 {
+        app.update();
+        let ps = player_state(&mut app).0;
+        if seen.last() != Some(&ps) {
+            seen.push(ps);
+        }
+        let es = enemy_state(&mut app).0;
+        if enemy_seen.last() != Some(&es) {
+            enemy_seen.push(es);
+        }
+    }
+    assert!(seen.iter().any(|s| s == "PlungeDeathblow"), "no plunge: {seen:?}");
+    assert!(enemy_seen.iter().any(|s| s == "ThrowDef13400"), "the broken enemy never took its plunge pose: {enemy_seen:?}");
+    assert!(seen.iter().any(|s| s == "Deathblow"), "no landing deathblow: {seen:?} / {enemy_seen:?}");
+}
+
 fn make_enemy_unaware(app: &mut App, z: f32, back_turned: bool) {
     let world = app.world_mut();
     let mut q = world.query_filtered::<(&mut Enemy, &mut Actor, &mut Transform), Without<crate::enemy::Cast>>();
@@ -2929,6 +3050,62 @@ fn plunging_onto_an_unaware_enemy_is_the_stealth_plunge() {
     }
 }
 
+
+/// Wolf falling onto the enemy from `above` m, with both of them `dy` m off the sim floor.
+fn start_falling_onto(app: &mut App, above: f32, dy: f32) {
+    let world = app.world_mut();
+    world.resource_scope(|world, combat: Mut<Combat>| {
+        let mut q = world.query_filtered::<(&mut Actor, &mut Transform), With<Player>>();
+        let (mut a, mut t) = q.single_mut(world).unwrap();
+        a.play_state(&combat.player, "VerticalGroundJumpStart");
+        a.t = 0.5;
+        a.prev_t = 0.5;
+        a.airborne = true;
+        a.vel_y = -1.0;
+        t.translation.y += above + dy;
+        t.translation.z += 0.6;
+    });
+    if dy != 0.0 {
+        let mut q = world.query_filtered::<&mut Transform, (With<Enemy>, Without<crate::enemy::Cast>)>();
+        for mut t in q.iter_mut(world) {
+            t.translation.y += dy;
+        }
+    }
+}
+
+/// The plunge row is chosen per target: a broken enemy elsewhere no longer turns the stealth
+/// plunge on an unaware one into nothing (2026-10-12 bug hunt round 16).
+#[test]
+fn a_broken_enemy_elsewhere_keeps_the_stealth_plunge() {
+    let g = crate::config::GroupEnemy { chr: "c1020".into(), npc_row: None, at: Some([0.0, 9.0]), msb: None };
+    let mut app = app_cfg("c1020", None, vec![g]);
+    {
+        let world = app.world_mut();
+        world.resource_scope(|world, combat: Mut<Combat>| {
+            let mut q = world.query_filtered::<(&mut Enemy, &mut Actor, &mut Transform), Without<crate::enemy::Cast>>();
+            let mut all: Vec<_> = q.iter_mut(world).collect();
+            all.sort_by(|a, b| a.2.translation.z.total_cmp(&b.2.translation.z));
+            let mut far = all.pop().unwrap();
+            far.1.posture = far.1.posture_max;
+            far.0.on_posture_break(&mut far.1, &combat, false, 8.0);
+            let near = all.first_mut().unwrap();
+            near.2.translation.z = 1.2;
+            near.1.yaw = std::f32::consts::PI;
+            near.0.make_unaware(&mut near.1);
+        });
+    }
+    start_falling_onto(&mut app, 3.0, 0.0);
+    app.world_mut().resource_mut::<PadInput>().press(Action::Attack);
+    let mut seen = Vec::new();
+    for _ in 0..3 {
+        app.update();
+        let pa = player_state(&mut app).1;
+        if seen.last() != Some(&pa) {
+            seen.push(pa);
+        }
+    }
+    assert!(seen.iter().any(|s| s == "a201_510300"), "no stealth plunge: {seen:?}");
+}
 
 /// Moves Wolf (feet height kept) without touching his state.
 fn put_wolf(app: &mut App, x: f32, z: f32) {
@@ -4122,6 +4299,74 @@ fn the_flame_vent_burns() {
     assert!(reacted, "no W_FireReaction");
 }
 
+/// A guarding General blocks a shuriken, but the Flame Vent (AtkParam disableGuard /
+/// disableJustGuard 1) goes through his guard and hurts him.
+#[test]
+fn the_flame_vent_goes_through_a_guard() {
+    // (tool, the enemy's HP lost while he holds a block pose)
+    let run = |tool: i64| -> f32 {
+        let mut app = app();
+        {
+            let world = app.world_mut();
+            world.resource_mut::<crate::config::GameConfig>().player.prosthetics = vec![tool];
+            let mut q = world.query_filtered::<&mut Transform, With<Enemy>>();
+            q.single_mut(world).unwrap().translation.z = 2.0;
+            world.resource_mut::<crate::enemy::EnemyDebug>().mode = crate::enemy::AiMode::Idle;
+            let mut q = world.query::<&mut Player>();
+            q.single_mut(world).unwrap().emblems = 20;
+        }
+        for _ in 0..10 {
+            app.update();
+        }
+        // A block pose of his: a ShieldBlock flag (3) without the deflect window there.
+        let (key, t) = {
+            let world = app.world_mut();
+            let a = world.query_filtered::<&Actor, With<Enemy>>().single(world).unwrap().clone();
+            let combat = world.resource::<Combat>();
+            let d = combat.data_of(&a);
+            let mut found: Vec<(String, f32)> = d
+                .anims
+                .iter()
+                .flat_map(|(k, an)| an.events.iter().filter(|e| e.kind == 0 && e.flag_type() == Some(crate::player::FLAG_SHIELD_BLOCK)).map(move |e| (k.clone(), e.start + 0.05)))
+                .filter(|(k, t)| d.flag(k, *t, crate::player::FLAG_SHIELD_BLOCK) && !d.has_state_info(k, *t, crate::data::STATE_INFO_JUST_GUARD))
+                .collect();
+            found.sort_by(|x, y| x.0.cmp(&y.0));
+            found.into_iter().next().expect("a block pose")
+        };
+        let hold = |app: &mut App| {
+            let world = app.world_mut();
+            let mut q = world.query_filtered::<&mut Actor, With<Enemy>>();
+            let mut a = q.single_mut(world).unwrap();
+            if a.anim != key {
+                a.play("Guard", &key);
+            }
+            a.prev_t = t;
+            a.t = t;
+        };
+        hold(&mut app);
+        let hp0 = enemy_hp(&mut app);
+        app.world_mut().resource_mut::<PadInput>().press(Action::Prosthetic);
+        for _ in 0..150 {
+            hold(&mut app);
+            app.update();
+        }
+        hp0 - enemy_hp(&mut app)
+    };
+    let shuriken = run(70000);
+    let flame = run(72000);
+    assert!(shuriken <= 0.0, "the shuriken went through the guard: -{shuriken}");
+    assert!(flame > 0.0, "the Flame Vent was blocked");
+}
+
+/// Sen Throw (70400) has its own BehaviorParam_PC rows, 107004100 / 107004150, which fire nothing
+/// (refType 0): no free Shuriken LV1 (the bare judge's 700000) flies.
+#[test]
+fn sen_throw_throws_no_free_shuriken() {
+    let (states, spent, hp) = use_tool(70400, 20, 0, 150);
+    assert!(!states.is_empty());
+    assert_eq!((spent, hp), (0, 0.0), "states {states:?}");
+}
+
 /// The Sabimaru poisons: each cut puts 9004 (poizonAttackPower 31, stateInfo 2) toward the
 /// General's resist_poison; full, 9004 hands on to 9045 (replaceSpEffectId), which takes 0.75 %
 /// + 12 HP every second for 19.9 s.
@@ -4474,7 +4719,8 @@ fn every_art_starts_and_costs_its_emblems() {
         (7700, "GroundSpecialAttackJumpReady", 1), // Sakura Dance
     ];
     for &(art, first, cost) in cases {
-        let (states, spent) = use_art(art, 10, 240);
+        // (300: a tapped hold art draws only once HoldStart's ref 222 opens, f21.)
+        let (states, spent) = use_art(art, 10, 300);
         assert_eq!(states.first().map(String::as_str), Some(first), "{art}: {states:?}");
         assert_eq!(spent, cost, "{art}: {states:?}");
         assert_eq!(states.last().map(String::as_str), Some("StandIdle"), "{art}: {states:?}");
@@ -4609,10 +4855,11 @@ fn arts_in_the_air() {
     let seen = run(5200, None, 1);
     assert!(has(&seen, "AirSpecialAttackStart"), "5200: {seen:?}");
     assert!(seen.iter().any(|s| s.starts_with("LandAirSpecialAttack")), "5200: {seen:?}");
-    let seen = run(6100, Some(30), 1);
-    for want in ["AirSpecialAttackHoldStart", "AirSpacialAttackHoldEnd"] {
-        assert!(has(&seen, want), "6100 {want}: {seen:?}");
-    }
+    // (Let go once HoldStart's ref 230 is up, f21-33: the air hold ends only in it.)
+    let seen = run(6100, Some(8 + 23), 1);
+    assert!(has(&seen, "AirSpecialAttackHoldStart"), "6100: {seen:?}");
+    // (HoldEnd, or its landing when it lands in the same step.)
+    assert!(seen.iter().any(|s| s.ends_with("AirSpacialAttackHoldEnd")), "6100 HoldEnd: {seen:?}");
     let seen = run(7700, None, 1);
     for want in ["AirSpecialAttackStart", "AirSpecialAttackLandingJumpReady", "AirSpecialAttackLandingJumpStart", "LandGroundSpecialAttackJumpAfterJumpStart"] {
         assert!(has(&seen, want), "7700 {want}: {seen:?}");
@@ -4865,7 +5112,7 @@ fn group_of_different_enemies_fights_together() {
     if !std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/extracted/enemies/c1010.json")).exists() {
         return;
     }
-    let g = |chr: &str, at: [f32; 2]| crate::config::GroupEnemy { chr: chr.into(), npc_row: None, at: Some(at) };
+    let g = |chr: &str, at: [f32; 2]| crate::config::GroupEnemy { chr: chr.into(), npc_row: None, at: Some(at), msb: None };
     let mut app = app_cfg("c1020", None, vec![g("c1010", [2.5, 3.0]), g("c1020", [-2.5, 3.0])]);
     assert_eq!(enemy_chrs(&mut app), ["c1010", "c1020", "c1020"]);
     {
@@ -4887,6 +5134,97 @@ fn group_of_different_enemies_fights_together() {
     assert!(attacked > 0, "nobody attacked");
 }
 
+/// Two broken Generals: the first in query order far off (out of reach), the second in reach in
+/// front of Wolf. The 忍殺 mark sits on the one in reach, and the deathblow takes that one too
+/// (hud.rs deathblow_mark_target and the attack share player.rs deathblow_pick).
+#[test]
+fn the_deathblow_mark_is_on_the_enemy_the_deathblow_takes() {
+    use bevy::ecs::system::RunSystemOnce;
+    let g = crate::config::GroupEnemy { chr: "c1020".into(), npc_row: None, at: Some([0.0, 6.0]), msb: None };
+    let mut app = app_cfg("c1020", None, vec![g]);
+    app.world_mut().resource_mut::<crate::enemy::EnemyDebug>().mode = crate::enemy::AiMode::Idle;
+    app.update();
+    let order: Vec<Entity> = {
+        let world = app.world_mut();
+        world.query_filtered::<Entity, With<Enemy>>().iter(world).collect()
+    };
+    assert_eq!(order.len(), 2);
+    let (far, near) = (order[0], order[1]);
+    // Ahead of Wolf (+Z of his real start), facing him (yaw 0 = -Z, Actor::forward); the HUD
+    // reads GlobalTransforms (no propagation in the sim app).
+    let place = |app: &mut App| {
+        let world = app.world_mut();
+        let wolf = world.query_filtered::<&Transform, With<Player>>().single(world).unwrap().translation;
+        for (e, dz) in [(far, 8.0), (near, 1.2)] {
+            let at = wolf + Vec3::Z * dz;
+            world.get_mut::<Actor>(e).unwrap().yaw = 0.0;
+            world.get_mut::<Transform>(e).unwrap().translation = at;
+            *world.get_mut::<GlobalTransform>(e).unwrap() = GlobalTransform::from_translation(at);
+        }
+        *world.query_filtered::<&mut GlobalTransform, With<Player>>().single_mut(world).unwrap() = GlobalTransform::from_translation(wolf);
+    };
+    place(&mut app);
+    {
+        let world = app.world_mut();
+        world.resource_scope(|world, combat: Mut<Combat>| {
+            for e in [far, near] {
+                let mut q = world.query::<(&mut Actor, &mut Enemy)>();
+                let (mut a, mut en) = q.get_mut(world, e).unwrap();
+                en.on_posture_break(&mut a, &combat, false, 3.0);
+            }
+        });
+    }
+    app.update();
+    place(&mut app);
+    let target = app
+        .world_mut()
+        .run_system_once(
+            |combat: Res<Combat>, wolf: Query<(&Actor, &GlobalTransform), With<Player>>, enemies: crate::hud::MarkEnemies, dummies: Query<&GlobalTransform>| {
+                let (wa, wg) = wolf.single().unwrap();
+                crate::hud::deathblow_mark_target(&combat, wa, wg.translation(), &enemies, &dummies, None)
+            },
+        )
+        .unwrap();
+    assert_eq!(target, Some(near), "the mark is on the far enemy (far {far:?}, near {near:?})");
+    app.world_mut().resource_mut::<PadInput>().press(Action::Attack);
+    let mut thrown = None;
+    for _ in 0..30 {
+        app.update();
+        let world = app.world_mut();
+        for e in [far, near] {
+            if world.get::<Actor>(e).unwrap().state.starts_with("ThrowDef") {
+                thrown.get_or_insert(e);
+            }
+        }
+    }
+    assert_eq!(thrown, Some(near), "the deathblow took another enemy");
+}
+
+/// A fight reset despawns every enemy and brings back the config's line-up; the sandbox's own
+/// line-up (SHINOBI_SANDBOX_ENEMIES) stands again too (sandbox.rs respawn_lineup).
+#[test]
+fn a_reset_brings_the_sandbox_line_up_back() {
+    let mut app = app();
+    app.add_systems(Update, crate::sandbox::respawn_lineup);
+    app.world_mut().insert_resource(crate::sandbox::Lineup(vec!["c1020".into()]));
+    let lineup = |app: &mut App| -> Vec<Entity> {
+        let world = app.world_mut();
+        world.query_filtered::<Entity, With<crate::sandbox::SandboxEnemy>>().iter(world).collect()
+    };
+    for _ in 0..3 {
+        app.update();
+    }
+    let before = lineup(&mut app);
+    assert_eq!(before.len(), 1, "no line-up to begin with");
+    app.world_mut().resource_mut::<crate::enemy::FightReset>().0 = true;
+    for _ in 0..5 {
+        app.update();
+    }
+    let after = lineup(&mut app);
+    assert_eq!(after.len(), 1, "the reset lost the sandbox line-up");
+    assert_ne!(after, before, "the old line-up was not reset");
+}
+
 /// NpcParam teamType: an Interior Ministry samurai of the invasion (c1700 17001000, team 24
 /// "Enemy 2") and an Ashina soldier (c1010, team 6) fight each other while Wolf is far off
 /// (combat::teams_hostile).
@@ -4895,7 +5233,7 @@ fn the_invaders_fight_ashina() {
     if !std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/extracted/enemies/c1700.json")).exists() {
         return;
     }
-    let g = crate::config::GroupEnemy { chr: "c1700".into(), npc_row: Some(17001000), at: Some([0.0, 6.0]) };
+    let g = crate::config::GroupEnemy { chr: "c1700".into(), npc_row: Some(17001000), at: Some([0.0, 6.0]), msb: None };
     let mut app = app_cfg("c1010", None, vec![g]);
     {
         let world = app.world_mut();
@@ -5530,6 +5868,362 @@ fn wolf_bounces_off_an_enemy_that_cuts_his_knockback() {
     assert!(v.length() < 1e-4, "recoil {v}");
 }
 
+/// Wolf's first slash on `chr` standing at `at`: (his recoil velocity, his forward, the enemy's
+/// root minus his) on the frame it connects.
+fn wolf_recoil_at(chr: &str, at: Vec3) -> Option<(Vec3, Vec3, Vec3)> {
+    let mut app = app_with(chr);
+    {
+        let world = app.world_mut();
+        let mut q = world.query_filtered::<&mut Transform, With<Enemy>>();
+        for mut t in q.iter_mut(world) {
+            t.translation.x = at.x;
+            t.translation.z = at.z;
+        }
+    }
+    app.update();
+    app.world_mut().resource_mut::<PadInput>().press(Action::Attack);
+    for _ in 0..90 {
+        app.update();
+        let world = app.world_mut();
+        let (a, wt) = world.query_filtered::<(&Actor, &Transform), With<Player>>().single(world).unwrap();
+        if a.attack_hit {
+            let (v, f, w) = (a.kb_vel, a.forward(), wt.translation);
+            let et = world.query_filtered::<&Transform, With<Enemy>>().iter(world).next().unwrap().translation;
+            return Some((v, f, et - w));
+        }
+    }
+    None
+}
+
+/// FUN_140b6bfe0's facing factor: a push square to the attacker's facing is whole, one at an angle
+/// is times cos^2, never below 0.4 (and 0.4 behind him). Wolf's recoil off c1180 (cut 75 %) is
+/// taken from the scaled distance, so a slash at an angle bounces him back less.
+#[test]
+fn knockback_scales_with_the_attackers_facing() {
+    use crate::combat::knockback_facing;
+    let fwd = Vec3::NEG_Z;
+    assert!((knockback_facing(Vec3::NEG_Z * 3.0, fwd) - 1.0).abs() < 1e-6);
+    let a = 40f32.to_radians();
+    let k = knockback_facing(Vec3::new(a.sin(), 0.0, -a.cos()), fwd);
+    assert!((k - a.cos().powi(2)).abs() < 1e-5, "{k}");
+    assert_eq!(knockback_facing(Vec3::X, fwd), 0.4, "side on: cos^2 0 floored");
+    assert_eq!(knockback_facing(Vec3::Z, fwd), 0.4, "behind");
+
+    let (square, f0, d0) = wolf_recoil_at("c1180", Vec3::new(0.0, 0.0, 2.0)).expect("the square slash connects");
+    let (angled, f1, d1) = wolf_recoil_at("c1180", Vec3::new(-0.8, 0.0, 1.8)).expect("the angled slash connects");
+    let (k0, k1) = (knockback_facing(d0, f0), knockback_facing(d1, f1));
+    assert!(k0 > 0.95 && k1 < 0.9, "facing factors {k0} {k1}");
+    let ratio = angled.length() / square.length();
+    assert!((ratio - k1 / k0).abs() < 0.03, "recoil {square} vs {angled}: ratio {ratio}, expected {}", k1 / k0);
+}
+
+/// AtkParam hitSourceType (Paramdex enum ATK_PARAM_HIT_SOURCE: 0 weapon, 1 body - which model's
+/// dummy ids the shapes name) and hti*_Priority ("the higher one wins when two touch at once")
+/// are not read by combat.rs: the merged dummy map (weapon ids over body ids) and "any shape
+/// connects" give the same hits on this data. Every NPC row is 0, every priority is 0, and no
+/// body-source PC row names an id Wolf's sword (WP_A_0300) has; only the wire rows' 30133 is
+/// also on the grapple model (WP_A_9500 133).
+#[test]
+fn hit_source_and_priority_change_no_hit_on_this_data() {
+    let rows = |name: &str| -> Vec<serde_json::Value> {
+        let t = std::fs::read_to_string(crate::paths::extracted().join(format!("json/params/{name}.json"))).unwrap();
+        serde_json::from_str::<serde_json::Value>(&t).unwrap()["rows"].as_array().unwrap().clone()
+    };
+    // The dummy ids of an exported model (model.rs `load`: the last section, u32 count then
+    // 18-byte records led by the i16 id).
+    let model_ids = |file: &str| -> std::collections::HashSet<i64> {
+        let d = std::fs::read(crate::paths::extracted().join(file)).unwrap();
+        (1..1000usize)
+            .find_map(|n| {
+                let o = d.len().checked_sub(4 + 18 * n)?;
+                (u32::from_le_bytes(d[o..o + 4].try_into().unwrap()) as usize == n)
+                    .then(|| (0..n).map(|i| i16::from_le_bytes([d[o + 4 + 18 * i], d[o + 5 + 18 * i]]) as i64).collect())
+            })
+            .unwrap()
+    };
+    let sword = model_ids("model_c0000_wp_a_0300.bin");
+    assert!(sword.contains(&100) && sword.contains(&120), "Kusabimaru's blade dummies");
+    let prio = |r: &serde_json::Value| (0..16).all(|i| r[format!("hti{i}_Priority")].as_i64().unwrap_or(0) == 0);
+    let npc = rows("AtkParam_Npc");
+    assert!(npc.len() > 2000 && npc.iter().all(|r| r["hitSourceType"].as_i64() == Some(0) && prio(r)));
+    let pc = rows("AtkParam_Pc");
+    assert!(pc.iter().all(prio));
+    let body: Vec<_> = pc.iter().filter(|r| r["hitSourceType"].as_i64() == Some(1)).collect();
+    assert_eq!(body.len(), 54);
+    for r in body {
+        for i in 0..16 {
+            for k in ["DmyPoly1", "DmyPoly2"] {
+                let id = r[format!("hit{i}_{k}")].as_i64().unwrap_or(-1);
+                if id > 0 {
+                    assert!(!sword.contains(&(id % 10000)), "row {} hit{i} {id} is on the sword", r["id"]);
+                }
+            }
+        }
+    }
+}
+
+/// A knockback covers the distance it asks for (v = dist / (cont + dec / 2), held then falling
+/// linearly), whatever the frame step: 1 m with KnockBackParam row 0 damage_S-like times
+/// (2026-10-12 bug hunt: whole steps at the start speed went 1.18 m).
+#[test]
+fn a_knockback_covers_exactly_its_distance() {
+    for (cont, dec) in [(0.1f32, 0.2f32), (0.033, 0.05), (0.0, 0.3), (0.25, 0.0)] {
+        let mut app = app();
+        move_enemy_far(&mut app);
+        app.update();
+        let start = {
+            let world = app.world_mut();
+            let (mut a, t) = world.query_filtered::<(&mut Actor, &Transform), With<Player>>().single_mut(world).unwrap();
+            a.knockback(Vec3::X, 1.0, cont, dec);
+            t.translation
+        };
+        for _ in 0..40 {
+            app.update();
+        }
+        let world = app.world_mut();
+        let t = world.query_filtered::<&Transform, With<Player>>().single(world).unwrap().translation;
+        let moved = (t - start).with_y(0.0).length();
+        assert!((moved - 1.0).abs() < 0.02, "cont {cont} dec {dec}: moved {moved}");
+    }
+}
+
+/// Wolf's first attack-window frames (TAE, 30 fps) for the clip comparison in kb/damage.md
+/// "Reach and first-hit vs the clips": Combo1, Ichimonji (art 5300) and Mortal Draw (5500),
+/// with the art's variation judges as in play. `cargo test wolf_first_hit_frames -- --ignored
+/// --nocapture` prints them.
+#[test]
+#[ignore]
+fn wolf_first_hit_frames() {
+    let mut app = app();
+    app.update();
+    let mut combat = app.world_mut().resource_mut::<Combat>();
+    for (art, anim) in [(5000, "a050_300100"), (5300, "a102_316000"), (5500, "a104_316000"), (5500, "a104_316010")] {
+        let var = combat.param("EquipParamWeapon", art)["behaviorVariationId"].as_i64();
+        combat.player.art_variation = var;
+        // Every StateInfo gate the anim's events name opened (Mortal Draw's emblem slash).
+        let gates: Vec<i64> = combat.player.anim(anim).into_iter().flat_map(|a| a.events.iter()).filter_map(|e| e.arg_i64("StateInfo")).filter(|g| *g > 0).collect();
+        combat.player.resident_gates = gates;
+        let w: Vec<_> = combat
+            .player
+            .attack_windows(anim)
+            .into_iter()
+            .map(|(e, atk, j)| format!("j{j} f{:.1}-{:.1} r{:.2}", e.start * TAE_FPS, e.end * TAE_FPS, atk.hit0_radius))
+            .collect();
+        println!("{art} {anim}: {w:?}");
+    }
+}
+
+/// MSB patrol routes (tools/patrols.py -> patrols.json, enemy.rs msb_patrol): the gate map's
+/// Ochimusha c1010_0051 (entity 1110248) stands 23 m off the export origin, turned into the arena
+/// like the map pieces; c1010_0046 (1110236, PatrolType 5) walks its three points in order and
+/// stays at the last, the route stepping on each MoveToSomewhere(POINT_MOVE_POINT) success
+/// (common_non_battle_act.lua NonBattleAct_Common). A point is reached on entering its region
+/// (a 1.2 m sphere: IsInsideMovePoint, FUN_1405caa00 -> FUN_1409825b0), not on top of it.
+#[test]
+fn an_msb_enemy_walks_its_patrol_route() {
+    let Some(spot) = crate::enemy::msb_patrol_on("m11_01_00_00", 1110248) else { return };
+    assert!((spot.at - Vec3::new(-11.9, 0.03, -19.78)).length() < 0.1, "{}", spot.at);
+    assert_eq!(spot.route.0.points.len(), 1);
+    assert!(crate::enemy::msb_patrol_on("m11_01_00_00", 1110414).is_none(), "the General has no route");
+    let spot = crate::enemy::msb_patrol_on("m11_01_00_00", 1110236).expect("c1010_0046");
+    let mut spot = spot;
+    assert_eq!((spot.route.0.kind, spot.route.0.points.len()), (5, 3));
+    let radii: Vec<f32> = spot.route.0.areas.iter().map(|a| a.as_ref().map_or(0.0, |a| a.size[0])).collect();
+    assert_eq!(radii, [1.2, 1.2, 1.2], "the points' sphere regions");
+    // The test arena is flat: the regions stand on its floor.
+    for a in spot.route.0.areas.iter_mut().flatten() {
+        a.at.y = 0.0;
+    }
+    let g = crate::config::GroupEnemy { chr: "c1010".into(), npc_row: Some(10102010), at: None, msb: None };
+    let mut app = app_cfg("c1010", Some(10102010), vec![g]);
+    let points = spot.route.0.points.clone();
+    let patroller = {
+        let world = app.world_mut();
+        // Wolf far behind the line-up, out of sight; the first enemy far away too.
+        let mut q = world.query_filtered::<&mut Transform, With<Player>>();
+        q.single_mut(world).unwrap().translation = Vec3::new(0.0, CAPSULE_HALF_HEIGHT, 80.0);
+        let ents: Vec<Entity> = world.query_filtered::<Entity, With<Enemy>>().iter(world).collect();
+        let mut q = world.query_filtered::<(&mut Transform, &mut Actor, &mut Enemy), With<Enemy>>();
+        let (mut t, mut a, mut e) = q.get_mut(world, ents[0]).unwrap();
+        t.translation = Vec3::new(40.0, CAPSULE_HALF_HEIGHT, 40.0);
+        a.yaw = 0.0;
+        e.make_unaware(&mut a);
+        let (mut t, mut a, mut e) = q.get_mut(world, ents[1]).unwrap();
+        t.translation = spot.at.with_y(CAPSULE_HALF_HEIGHT);
+        a.yaw = spot.yaw;
+        e.make_unaware(&mut a);
+        world.entity_mut(ents[1]).insert(spot.route);
+        ents[1]
+    };
+    let mut reached = Vec::new();
+    for _ in 0..60 * 40 {
+        app.update();
+        let world = app.world_mut();
+        let pos = world.get::<Transform>(patroller).unwrap().translation;
+        if let Some((cur, prev)) = world.non_send_resource::<crate::enemy::Brains>().map.get(&patroller).and_then(|b| b.patrol_points()) {
+            if prev >= 0 && reached.last() != Some(&prev) {
+                let d = (pos - points[prev as usize]).with_y(0.0).length();
+                reached.push(prev);
+                assert!(d < 1.2 && d > 0.9, "stepped at point {prev} {d:.2} m away (its region's edge: 1.2 m)");
+            }
+            if reached == [0, 1, 2] {
+                // A type 5 route ends at its last point: cur -1 (ai.rs Patrol, FUN_1405c2710).
+                assert_eq!(cur, -1, "the route is over");
+                break;
+            }
+        }
+    }
+    assert_eq!(reached, [0, 1, 2], "points reached in order");
+}
+
+/// The gate's c1010 1110236 waits with its AI off (its map event, common_func 20005110) until
+/// Wolf walks into "Event_巡回起動領域_地下牢前の橋" (a box 37 x 81 x 13 m turned -48°), or
+/// until it is hurt; then it walks its route.
+#[test]
+fn an_msb_enemy_waits_for_wolf_in_its_wake_region() {
+    let Some(spot) = crate::enemy::msb_patrol_on("m11_01_00_00", 1110236) else { return };
+    let hold = spot.hold.clone().expect("1110236 has its map event's AI hold");
+    let region = hold.region.clone().expect("its wake region");
+    assert_eq!((region.shape, region.size.len()), (5, 3));
+    // The box's far corner is inside, a point just past its end is not.
+    let inside = region.at + region.x * 18.0 + region.z * 40.0 + Vec3::Y;
+    assert!(region.contains(inside) && !region.contains(region.at + region.z * 41.0 + Vec3::Y));
+    assert!(!region.contains(region.at + region.x * 2.0 - Vec3::Y), "below its base");
+    for wake_by_hurt in [false, true] {
+        let g = crate::config::GroupEnemy { chr: "c1010".into(), npc_row: Some(10102010), at: None, msb: None };
+        let mut app = app_cfg("c1010", Some(10102010), vec![g]);
+        let held = {
+            let world = app.world_mut();
+            let mut q = world.query_filtered::<&mut Transform, With<Player>>();
+            q.single_mut(world).unwrap().translation = Vec3::new(0.0, CAPSULE_HALF_HEIGHT, 80.0);
+            let ents: Vec<Entity> = world.query_filtered::<Entity, With<Enemy>>().iter(world).collect();
+            let mut q = world.query_filtered::<(&mut Transform, &mut Actor, &mut Enemy), With<Enemy>>();
+            let (mut t, mut a, mut e) = q.get_mut(world, ents[0]).unwrap();
+            t.translation = Vec3::new(40.0, CAPSULE_HALF_HEIGHT, 40.0);
+            e.make_unaware(&mut a);
+            let (mut t, mut a, mut e) = q.get_mut(world, ents[1]).unwrap();
+            t.translation = spot.at.with_y(CAPSULE_HALF_HEIGHT);
+            a.yaw = spot.yaw;
+            e.make_unaware(&mut a);
+            world.entity_mut(ents[1]).insert((spot.route.clone(), hold.clone()));
+            ents[1]
+        };
+        let start = spot.at.with_y(0.0);
+        assert!(!region.contains(Vec3::new(0.0, 0.0, 80.0)));
+        for _ in 0..60 * 5 {
+            app.update();
+        }
+        let pos = app.world().get::<Transform>(held).unwrap().translation;
+        assert!((pos.with_y(0.0) - start).length() < 0.1, "held: it stays put ({pos})");
+        assert!(app.world().get::<crate::enemy::AiHold>(held).is_some());
+        {
+            let world = app.world_mut();
+            if wake_by_hurt {
+                world.get_mut::<Actor>(held).unwrap().hp -= 1.0;
+                world.get_mut::<Enemy>(held).unwrap().hurt_by_wolf = true;
+            } else {
+                let mut q = world.query_filtered::<&mut Transform, With<Player>>();
+                // Inside the region on the flat sim floor (its base is 5.3 m below Wolf's start).
+                let p = region.at + region.x * 12.0 + region.z * 30.0;
+                q.single_mut(world).unwrap().translation = p.with_y(CAPSULE_HALF_HEIGHT);
+            }
+        }
+        let mut moved = 0.0f32;
+        for _ in 0..60 * 20 {
+            app.update();
+            let pos = app.world().get::<Transform>(held).unwrap().translation;
+            moved = moved.max((pos.with_y(0.0) - start).length());
+        }
+        assert!(app.world().get::<crate::enemy::AiHold>(held).is_none(), "woken (hurt: {wake_by_hurt})");
+        assert!(moved > 1.0, "it moves once woken (hurt: {wake_by_hurt}): {moved:.2} m");
+    }
+}
+
+/// AI pacing for the comparison with the live recordings (kb/enemy.md "AI pacing"): the enemy
+/// (`SHINOBI_PACE=<chr>[:<NpcParam row>]`, default c1010 and c1020) fights a Wolf who only holds
+/// his guard (HP and posture refilled each tick) for 90 s; prints every attack start (time,
+/// anim, distance) and the gaps. `cargo test ai_pacing -- --ignored --nocapture`.
+#[test]
+#[ignore]
+fn ai_pacing() {
+    let runs: Vec<(String, Option<i64>)> = match std::env::var("SHINOBI_PACE") {
+        Ok(v) => v.split(',').map(|c| {
+            let (chr, row) = c.split_once(':').map_or((c, None), |(c, r)| (c, r.parse().ok()));
+            (chr.to_string(), row)
+        }).collect(),
+        Err(_) => vec![("c1010".into(), None), ("c1020".into(), None)],
+    };
+    for (chr, row) in runs {
+        let mut app = app_cfg(&chr, row, Vec::new());
+        {
+            let world = app.world_mut();
+            world.query_filtered::<&mut Enemy, Without<crate::enemy::Cast>>().single_mut(world).unwrap().aggressive = true;
+        }
+        app.world_mut().resource_mut::<PadInput>().guard_held = true;
+        let mut attacks: Vec<(f32, String, f32, f32)> = Vec::new(); // (start, anim, distance, end)
+        let mut cur: Option<String> = None;
+        let fps = 60.0;
+        for frame in 0..(90 * 60) {
+            app.update();
+            let t = frame as f32 / fps;
+            let world = app.world_mut();
+            {
+                let mut q = world.query_filtered::<&mut Actor, With<Player>>();
+                let mut w = q.single_mut(world).unwrap();
+                w.hp = w.hp_max;
+                w.posture = 0.0;
+            }
+            let wp = world.query_filtered::<&Transform, With<Player>>().single(world).unwrap().translation;
+            let (anim, ep) = {
+                let mut q = world.query_filtered::<(&Actor, &Transform), (With<Enemy>, Without<crate::enemy::Cast>)>();
+                let (a, t) = q.single(world).unwrap();
+                (a.anim.clone(), t.translation)
+            };
+            let kind = world.query_filtered::<&Actor, (With<Enemy>, Without<crate::enemy::Cast>)>().single(world).unwrap().kind;
+            let combat = world.resource::<Combat>();
+            let is_attack = !combat.kind(kind).data.attack_windows(&anim).is_empty();
+            if cur.as_deref() != Some(anim.as_str()) {
+                if let Some(last) = attacks.last_mut().filter(|l| l.3 < 0.0) {
+                    last.3 = t;
+                }
+                if is_attack {
+                    attacks.push((t, anim.clone(), (ep - wp).with_y(0.0).length(), -1.0));
+                }
+                cur = Some(anim);
+            }
+        }
+        let n = attacks.len();
+        let gaps: Vec<f32> = attacks.windows(2).map(|w| w[1].0 - w[0].0).collect();
+        let idle: Vec<f32> = attacks.windows(2).map(|w| (w[1].0 - w[0].3).max(0.0)).collect();
+        let combos = idle.iter().filter(|g| **g < 0.2).count();
+        let mean = |v: &[f32]| if v.is_empty() { 0.0 } else { v.iter().sum::<f32>() / v.len() as f32 };
+        let median = |v: &[f32]| {
+            let mut v = v.to_vec();
+            v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            v.get(v.len() / 2).copied().unwrap_or(0.0)
+        };
+        let mut by: std::collections::BTreeMap<String, usize> = Default::default();
+        for a in &attacks {
+            *by.entry(a.1.clone()).or_default() += 1;
+        }
+        let mut d: Vec<f32> = attacks.iter().map(|a| a.2).collect();
+        d.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        println!(
+            "{chr} {row:?}: {n} attacks in 90 s ({:.1}/min), start-to-start mean {:.2} / median {:.2} s, end-to-start mean {:.2} / median {:.2} s, chained {combos}/{}, distance min {:.1} median {:.1} max {:.1}",
+            n as f32 / 1.5,
+            mean(&gaps),
+            median(&gaps),
+            mean(&idle),
+            median(&idle),
+            idle.len(),
+            d.first().copied().unwrap_or(0.0),
+            d.get(d.len() / 2).copied().unwrap_or(0.0),
+            d.last().copied().unwrap_or(0.0)
+        );
+        println!("  {by:?}");
+    }
+}
+
 /// A fight reset (Wolf's death, Retry) respawns the line-up: the new enemies get their skeleton
 /// and model geometry (dummy polys) like the first ones.
 #[test]
@@ -5834,7 +6528,9 @@ fn the_ogres_grab_opens_the_grapple_in_its_window() {
     let g = world.resource::<crate::enemy::grapple::EnemyGrapples>().0.clone();
     assert_eq!(g.len(), 1, "{g:?}");
     assert_eq!((g[0].variation, g[0].homing_row, g[0].sp_effect), (50200, 300050200, 3502020));
-    assert!(g[0].hook.y - root.y > 1.5, "hook {:?} root {root:?}", g[0].hook);
+    // The body dummy, high on him (bent into the grab at 0.8 s: 2.3 m off the floor), not the
+    // no-model fallback two metres over the root.
+    assert!(g[0].hook.y - root.y > 1.0 && g[0].hook.distance(root + Vec3::Y * 2.0) > 1e-3, "hook {:?} root {root:?}", g[0].hook);
     // The Grappling Hook Attack on him: ThrowParam 15020170 (Wolf a213_511600, his 13600) and
     // 15020171 (511610 / 13610).
     let combat = app.world().resource::<Combat>();
@@ -5884,6 +6580,23 @@ fn the_ochimusha_has_his_hang_and_hug_deathblows() {
     }
 }
 
+/// The Owl's phase-2 heat-up (a000_020005, TAE marker 3506080) offers no deathblow even with
+/// his posture broken (sekiro-rs b997933).
+#[test]
+fn the_owl_has_no_deathblow_during_his_heat_up() {
+    let mut app = app_with("c5060");
+    let world = app.world_mut();
+    let wolf = world.query_filtered::<&Transform, With<Player>>().single(world).unwrap().translation;
+    world.resource_scope(|world, combat: Mut<Combat>| {
+        let mut q = world.query_filtered::<(&Enemy, &mut Actor, &Transform), Without<crate::enemy::Cast>>();
+        let (e, mut a, tf) = q.single_mut(world).unwrap();
+        let at = tf.translation;
+        a.play("Ez20005", "a000_020005");
+        a.t = 2.0;
+        assert!(crate::player::deathblow_check(&combat, wolf, &a, e, at, &|_| None).is_none());
+    });
+}
+
 /// The bandit's torch (SpEffect 9115, registBlood 62) builds up on Wolf against his resist 200
 /// (status::WOLF_RESIST): burning on the 4th clean hit, the 5th through his guard (sword
 /// bloodGuardResist 33 %), the 7th through deflects (bloodJustGuardResist 50 %); then he burns.
@@ -5913,6 +6626,34 @@ fn the_bandits_torch_sets_wolf_on_fire() {
     }
     let after = app.world_mut().query_filtered::<&Actor, With<Player>>().single(app.world()).unwrap().hp;
     assert!(after < hp, "no burn damage: {hp} -> {after}");
+}
+
+/// A burning Wolf set on fire again (burns have disableBlood 0) keeps one burn, its time started
+/// over - not a second affliction whose flames (midst fx) would never be stopped.
+#[test]
+fn reigniting_a_burn_refreshes_it() {
+    use crate::status::{Guard, Statuses};
+    let mut app = app_cfg("c1550", None, Vec::new());
+    app.update();
+    let world = app.world_mut();
+    let wolf = world.query_filtered::<Entity, With<Player>>().single(world).unwrap();
+    let weapon = world.resource::<crate::config::GameConfig>().player.combat_art;
+    world.resource_scope(|_, combat: Mut<Combat>| {
+        let mut s = Statuses::default();
+        let burning = |s: &mut Statuses| (1..=10).find(|_| s.hit_wolf(&combat, wolf, weapon, &[9115], Guard::None).iter().any(|l| l == "BURNING"));
+        assert!(burning(&mut s).is_some());
+        let first: Vec<(i64, f32)> = s.0[&wolf].effects.iter().map(|a| (a.id, a.left)).collect();
+        assert_eq!(first.len(), 1, "{first:?}");
+        // Its flames on the body (fx entity stand-in).
+        let flames = Entity::PLACEHOLDER;
+        let a = &mut s.0.get_mut(&wolf).unwrap().effects[0];
+        a.left = 0.5;
+        a.fx_mut().push(flames);
+        assert!(burning(&mut s).is_some(), "no second ignition");
+        let again: Vec<(i64, f32)> = s.0[&wolf].effects.iter().map(|a| (a.id, a.left)).collect();
+        assert_eq!(again, first, "the burn was not refreshed in place");
+        assert_eq!(s.0.get_mut(&wolf).unwrap().effects[0].fx_mut().as_slice(), &[flames], "the burning flames were dropped unstopped");
+    });
 }
 
 #[test]
@@ -6094,6 +6835,30 @@ fn a_grapple_lands_on_the_point_in_the_move_start_time() {
     assert!(y > 3.0, "fell off the perch: y {y}");
 }
 
+/// The wire flight's fall type (Wire::launch fallType 2: Wire gravity and air control) ends with
+/// the landing: walking off the perch afterwards is a plain fall (2026-10-12 bug hunt round 12).
+#[test]
+fn a_wire_landing_ends_the_wire_fall_type() {
+    let mut app = app();
+    move_enemy_far(&mut app);
+    let point = crate::map::GrapplePoint { hook: Vec3::new(0.0, 3.5, 9.0), land: Vec3::new(0.0, 3.0, 9.0), fwd: Vec3::NEG_Z, variation: 0 };
+    let target = crate::map::GrappleTarget { index: 0, point, dist: 9.0, in_action_range: true, ride: true };
+    app.insert_resource(crate::wire::WireAim { target: Some(target), enemy: None });
+    app.world_mut().resource_mut::<PadInput>().press(Action::Grapple);
+    let mut wired = false;
+    for _ in 0..240 {
+        app.update();
+        let w = app.world_mut();
+        let a = w.query_filtered::<&Actor, With<Player>>().single(w).unwrap();
+        wired |= a.airborne && a.fall_type == 2;
+    }
+    assert!(wired, "the grapple never flew on the wire fall type");
+    let w = app.world_mut();
+    let a = w.query_filtered::<&Actor, With<Player>>().single(w).unwrap();
+    assert!(!a.airborne, "still in the air: {}", a.state);
+    assert_eq!(a.fall_type, 0, "landed ({}) still on the wire fall type", a.state);
+}
+
 /// The Grappling Hook Attack (ThrowKind 180000 / 180100): hooked on the Chained Ogre, the attack
 /// in the wire fall takes his ThrowParam 15020170 (Wolf a213_511600, the Ogre ThrowDef13600) and
 /// the landing 15020171 (511610 / ThrowDef13610).
@@ -6212,4 +6977,2496 @@ fn a_wire_landing_with_the_stick_held_runs_on() {
     assert!(!seen.iter().any(|s| s == "LandWireMove"), "{seen:?}");
     let i = seen.iter().position(|s| s.contains("WireMoveStart")).expect("no move start");
     assert_eq!(seen.get(i + 1).map(|s| s.as_str()), Some("Locomotion"), "{seen:?}");
+}
+
+/// Probe (sekiro-rs 8eaf879's bug): strafing right locked on, the lock drops with the stick
+/// still held: within 0.5 s Wolf must run where the stick points (camera-relative), not keep
+/// the strafe.
+#[test]
+fn held_stick_realigns_after_the_lock_drops() {
+    let mut app = app();
+    let enemy = {
+        let world = app.world_mut();
+        let (e, mut t) = world.query_filtered::<(Entity, &mut Transform), With<Enemy>>().single_mut(world).unwrap();
+        t.translation.z = -40.0;
+        e
+    };
+    app.world_mut().resource_mut::<crate::camera::LockOn>().target = Some(enemy);
+    let hold = |app: &mut App, n: usize| {
+        for _ in 0..n {
+            app.world_mut().resource_mut::<PadInput>().stick = Vec2::new(1.0, 0.0);
+            app.update();
+        }
+    };
+    hold(&mut app, 60);
+    app.world_mut().resource_mut::<crate::camera::LockOn>().target = None;
+    hold(&mut app, 30);
+    let world = app.world_mut();
+    let cam_yaw = world.query::<&crate::camera::OrbitCamera>().iter(world).next().map_or(0.0, |c| c.yaw);
+    let a = world.query_filtered::<&Actor, With<Player>>().single(world).unwrap();
+    let want = crate::player::stick_world(Vec2::new(1.0, 0.0), cam_yaw);
+    let got = a.move_vel.with_y(0.0).normalize_or_zero();
+    assert!(got.dot(want) > 0.97, "moving {got:.2}, stick {want:.2}, state {} twist {:.1}", a.state, a.twist.to_degrees());
+}
+
+/// A bullet past its range (`dist`) loses damageDamp / staminaDamp / knockbackDamp percent per
+/// second (c1060's rows: 100 each, so a second past range they deal nothing).
+#[test]
+fn a_bullet_past_its_range_weakens() {
+    let mut app = app_cfg("c1060", None, Vec::new());
+    app.update();
+    let world = app.world_mut();
+    let combat = world.resource::<Combat>();
+    let spec = combat.kind(0).data.bullet_rows.values().find(|s| s.damage_damp > 0.0 && s.attack.as_ref().is_some_and(|a| a.atk_phys > 0.0)).expect("a decaying bullet").clone();
+    assert_eq!((spec.damage_damp, spec.stamina_damp, spec.knockback_damp), (100.0, 100.0, 100.0));
+    let atk = spec.attack.unwrap();
+    assert_eq!(atk.decayed([100.0; 3], 0.0).atk_phys, atk.atk_phys);
+    assert!((atk.decayed([100.0; 3], 0.5).atk_phys - atk.atk_phys * 0.5).abs() < 1e-3);
+    let gone = atk.decayed([100.0; 3], 1.5);
+    assert_eq!((gone.atk_phys, gone.atk_stam), (0.0, 0.0));
+}
+
+/// Isshin, the Sword Saint (c5400): a deflect that empties his posture plays the break pose
+/// (ThrowParam 15400010: Wolf a242_510100 / ThrowDef12100) and attack takes it to the deathblow,
+/// also as Isshin after the first deathblow and his a000_003015 change (the user's report:
+/// "the close look for the second but M1 does nothing").
+#[test]
+fn isshins_break_pose_leads_to_the_deathblow_after_his_change() {
+    let mut app = app_cfg("c5400", Some(54000000), Vec::new());
+    let seen = break_and_deathblow(&mut app, 400);
+    assert!(seen.iter().any(|s| s == "ThrowDef12000"), "{seen:?}");
+    let world = app.world_mut();
+    world.query_filtered::<&mut Enemy, Without<crate::enemy::Cast>>().single_mut(world).unwrap().aggressive = true;
+    let mut fails = Vec::new();
+    let mut tries = 0;
+    let mut f = 0;
+    while f < 1500 && tries < 12 {
+        app.update();
+        f += 1;
+        let (es, _, _) = enemy_state(&mut app);
+        if f % 120 != 0 || es.starts_with("Throw") {
+            continue;
+        }
+        tries += 1;
+        // combat.rs's breaking deflect, as it plays it.
+        let mode = app.world_mut().resource_scope(|world, combat: Mut<Combat>| {
+            let th = combat.throw(combat.foe0().throw_row(10)).unwrap();
+            let mut q = world.query_filtered::<(&mut Enemy, &mut Actor, &mut Transform), Without<crate::enemy::Cast>>();
+            let (mut e, mut a, mut t) = q.single_mut(world).unwrap();
+            let mode = format!("{} {} {}", e.mode_name(), a.state, a.anim);
+            t.translation = Vec3::new(0.0, CAPSULE_HALF_HEIGHT, 1.2);
+            a.yaw = 0.0;
+            a.posture = a.posture_max;
+            e.react(&mut a, &combat, &format!("ThrowDef{}", th.def_anim));
+            e.on_posture_break(&mut a, &combat, false, 4.0);
+            let mut q = world.query_filtered::<(&mut Actor, &mut Transform), With<Player>>();
+            let (mut pa, mut pt) = q.single_mut(world).unwrap();
+            pt.translation = Vec3::new(0.0, CAPSULE_HALF_HEIGHT, 0.0);
+            pa.yaw = std::f32::consts::PI;
+            pa.hp = pa.hp_max;
+            pa.play("ThrowBreak", &th.atk_anim);
+            mode
+        });
+        let mut ok = false;
+        for i in 0..200 {
+            if i == 36 {
+                app.world_mut().resource_mut::<PadInput>().press(Action::Attack);
+            }
+            app.update();
+            f += 1;
+            let (ps, _, _, _) = player_state(&mut app);
+            if ps == "Deathblow" || ps.starts_with("ThrowBreakAttack") || enemy_state(&mut app).0.starts_with("ThrowDef1211") {
+                ok = true;
+                break;
+            }
+        }
+        if !ok {
+            fails.push(format!("{mode} -> enemy {:?} wolf {:?}", enemy_state(&mut app), player_state(&mut app)));
+        }
+        // Back to the fight.
+        let world = app.world_mut();
+        let mut q = world.query_filtered::<&mut Actor, With<Player>>();
+        let mut pa = q.single_mut(world).unwrap();
+        pa.hp = pa.hp_max;
+        world.query_filtered::<&mut Enemy, Without<crate::enemy::Cast>>().single_mut(world).unwrap().ninsatsu.0 = 2;
+    }
+    assert!(fails.is_empty(), "{tries} tries: {fails:#?}");
+}
+
+/// The armoured club servant (c1180 NpcParam 11807101; common_func 20005410 on m10 1000363):
+/// his armour part takes Wolf's hits at x0.35 HP (400250 slash cut 0.5 x body compensation 0.7)
+/// and x0.5 posture, as live (348 -> 121, 130 -> 65); the Loaded Spear breaks it (anim 20039,
+/// 220061 / 220062 / 400250 -> 230400 / 230401). His plain twin 11807100 has none.
+#[test]
+fn the_armoured_servant_takes_a_third_and_the_loaded_spear_breaks_it() {
+    assert!(crate::enemy::armor_of(11807100).is_none());
+    let mut app = app_cfg("c1180", Some(11807101), Vec::new());
+    app.update();
+    app.world_mut().resource_scope(|world, combat: Mut<Combat>| {
+        let mut q = world.query_filtered::<(&mut Enemy, &mut Actor), Without<crate::enemy::Cast>>();
+        let (mut e, mut a) = q.single_mut(world).unwrap();
+        let armor = e.armor.clone().expect("armour");
+        assert!(a.resident.contains(&400_250) && a.resident.contains(&220_062));
+        let (hp, posture) = armor.rates(1, 1);
+        assert!((hp - 0.35).abs() < 1e-4 && (posture - 0.5).abs() < 1e-4, "{hp} {posture}");
+        assert_eq!((348.0 * hp) as i32, 121);
+        armor.shatter(&mut e, &mut a, &combat);
+        assert!(e.armor.is_none());
+        assert!(!a.resident.contains(&400_250) && a.resident.contains(&230_400));
+        assert_eq!(a.state, "Event20039");
+    });
+}
+
+/// HP and posture a shuriken takes off the c1180 `row` turned away from Wolf (no guard).
+fn shuriken_on_c1180(row: i64) -> (f32, f32) {
+    shuriken_on("c1180", row)
+}
+
+/// HP and posture a shuriken takes off the `chr` `row` turned away from Wolf (no guard).
+fn shuriken_on(chr: &str, row: i64) -> (f32, f32) {
+    let mut app = app_cfg(chr, Some(row), Vec::new());
+    {
+        let world = app.world_mut();
+        let mut q = world.query_filtered::<(&mut Actor, &mut Transform, &mut Enemy), Without<crate::enemy::Cast>>();
+        let (mut a, mut t, mut e) = q.single_mut(world).unwrap();
+        e.targeting.state = crate::stealth::BATTLE;
+        a.yaw = std::f32::consts::PI;
+        t.translation = Vec3::new(0.0, CAPSULE_HALF_HEIGHT, 4.0);
+    }
+    app.update();
+    let before = {
+        let world = app.world_mut();
+        let a = world.query_filtered::<&Actor, Without<crate::enemy::Cast>>().iter(world).find(|a| a.side == crate::actor::Side::Enemy).unwrap();
+        (a.hp, a.posture)
+    };
+    app.world_mut().resource_mut::<PadInput>().press(Action::Prosthetic);
+    for _ in 0..60 {
+        app.update();
+        if log_text(&app).contains("hit: -") {
+            break;
+        }
+    }
+    assert!(log_text(&app).contains("hit: -"), "{}", log_text(&app));
+    let world = app.world_mut();
+    let a = world.query_filtered::<&Actor, Without<crate::enemy::Cast>>().iter(world).find(|a| a.side == crate::actor::Side::Enemy).unwrap();
+    (before.0 - a.hp, a.posture - before.1)
+}
+
+/// Wolf's bullets land on the armour part too (2026-10-12 bug hunt): the shuriken (atkAttribute /
+/// staminaPhysicsAttribute 9 Light Shoot) does x0.35 HP (400250 defLightShootDmgRate 0.5 x the
+/// part's body compensation 0.7) and x0.5 posture (defLightShootStaminaDmgRate 0.5) on the
+/// armoured servant against his plain twin 11807100; no bullet breaks the armour.
+#[test]
+fn a_shuriken_on_the_armoured_servant_is_cut_like_a_slash() {
+    let (hp0, p0) = shuriken_on_c1180(11807100);
+    let (hp1, p1) = shuriken_on_c1180(11807101);
+    assert!(hp0 > 0.0 && p0 > 0.0, "{hp0} {p0}");
+    assert!((hp1 / hp0 - 0.35).abs() < 0.03 && (p1 / p0 - 0.5).abs() < 0.05, "plain {hp0} / {p0}, armoured {hp1} / {p1}");
+}
+
+/// A fight reset (R, the menu, or the one after Wolf's death) ends his poison: the Statuses
+/// entry of his entity, which lives on across resets, is cleared (2026-10-12 bug hunt).
+#[test]
+fn a_fight_reset_clears_wolfs_poison() {
+    let mut app = app();
+    let wolf = {
+        let world = app.world_mut();
+        world.query_filtered::<Entity, With<Player>>().single(world).unwrap()
+    };
+    app.world_mut().resource_mut::<crate::status::Statuses>().0.insert(wolf, {
+        let mut s = crate::status::Status::default();
+        s.poison = 50.0;
+        s
+    });
+    app.world_mut().resource_mut::<PadInput>().reset = true;
+    for _ in 0..3 {
+        app.update();
+    }
+    assert!(!app.world().resource::<crate::status::Statuses>().0.contains_key(&wolf), "Wolf kept his poison gauge through the reset");
+}
+
+/// R / Retry / an encounter swap drop Lightning Reversal's charge (Actor.electro): the reset puts
+/// Wolf on the ground without the landing that takes it (2026-10-12 bug hunt round 13).
+#[test]
+fn a_fight_reset_drops_the_lightning_charge() {
+    let mut app = app();
+    {
+        let world = app.world_mut();
+        world.query_filtered::<&mut Actor, With<Player>>().single_mut(world).unwrap().electro = Some((9490, 30.0));
+    }
+    app.world_mut().resource_mut::<PadInput>().reset = true;
+    for _ in 0..3 {
+        app.update();
+    }
+    let world = app.world_mut();
+    let a = world.query_filtered::<&Actor, With<Player>>().single(world).unwrap();
+    assert!(a.electro.is_none(), "Wolf kept the lightning charge through the reset: {:?}", a.electro);
+}
+
+/// Death and resurrection refresh Wolf as the game's anims say: the death loop (a000_110010,
+/// TAE 401 8002-8009) cures his ailments and empties the build-up gauges, the revival
+/// (a000_110030, 8001 changeStaminaRate 100) restores his posture (2026-10-12 bug hunt round 15:
+/// he came back poisoned with his posture as it was).
+#[test]
+fn death_and_resurrection_refresh_wolf() {
+    let mut app = app();
+    move_enemy_far(&mut app);
+    let wolf = {
+        let world = app.world_mut();
+        let (e, mut a) = world.query_filtered::<(Entity, &mut Actor), With<Player>>().single_mut(world).unwrap();
+        a.posture = a.posture_max * 0.6;
+        a.hp = 0.0;
+        e
+    };
+    app.world_mut().resource_mut::<crate::status::Statuses>().0.insert(wolf, {
+        let mut s = crate::status::Status::default();
+        s.poison = 50.0;
+        s
+    });
+    let mut looped = false;
+    for _ in 0..400 {
+        app.update();
+        if player_actor(&mut app).0 == "GroundDeathLoop_F" {
+            looped = true;
+            break;
+        }
+    }
+    assert!(looped, "never reached the death loop: {}", player_actor(&mut app).0);
+    app.update();
+    assert!(!app.world().resource::<crate::status::Statuses>().0.contains_key(&wolf), "the death loop kept Wolf's poison gauge");
+    app.world_mut().resource_mut::<PadInput>().press(Action::Attack);
+    let mut revived = false;
+    for _ in 0..10 {
+        app.update();
+        revived |= player_actor(&mut app).0 == "GroundRevival_F";
+    }
+    assert!(revived, "no resurrection: {}", player_actor(&mut app).0);
+    let world = app.world_mut();
+    let a = world.query_filtered::<&Actor, With<Player>>().single(world).unwrap();
+    assert!(a.posture < a.posture_max * 0.05, "the revival kept posture {} of {}", a.posture, a.posture_max);
+}
+
+/// One swing hits every enemy it reaches: AttackBehavior windows are done per defender
+/// (Actor.hits_done), so two soldiers side by side both take the slash (2026-10-12 bug hunt).
+#[test]
+fn one_slash_hits_two_enemies_side_by_side() {
+    if !std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/extracted/enemies/c1010.json")).exists() {
+        return;
+    }
+    let g = crate::config::GroupEnemy { chr: "c1010".into(), npc_row: None, at: Some([0.5, 1.6]), msb: None };
+    let mut app = app_cfg("c1010", None, vec![g]);
+    {
+        let world = app.world_mut();
+        // Both just in front of Wolf, turned away so neither guards, and fighting him (so the
+        // slash is no stealth deathblow).
+        let mut q = world.query_filtered::<(&mut Actor, &mut Transform, &mut Enemy), With<Enemy>>();
+        for (i, (mut a, mut t, mut e)) in q.iter_mut(world).enumerate() {
+            e.targeting.state = crate::stealth::BATTLE;
+            a.yaw = std::f32::consts::PI;
+            t.translation = Vec3::new(if i == 0 { -0.35 } else { 0.35 }, CAPSULE_HALF_HEIGHT, 1.5);
+        }
+    }
+    app.world_mut().resource_mut::<PadInput>().press(Action::Attack);
+    for _ in 0..60 {
+        app.update();
+    }
+    let world = app.world_mut();
+    let hurt: Vec<bool> = world.query_filtered::<&Actor, With<Enemy>>().iter(world).map(|a| a.hp < a.hp_max).collect();
+    assert_eq!(hurt, [true, true], "{}", log_text(&app));
+}
+
+/// A doped regular enemy (area_doping 7013, x2 HP) comes back from death with its whole bar:
+/// the respawn takes hp_max, which carries the doping, not the raw NpcParam hp.
+#[test]
+fn a_doped_enemy_respawns_with_its_full_bar() {
+    let mut app = app();
+    app.world_mut().resource_mut::<crate::config::GameConfig>().enemy.area_doping = 7013;
+    app.world_mut().resource_mut::<crate::enemy::FightReset>().0 = true;
+    for _ in 0..3 {
+        app.update();
+    }
+    let (_, died) = break_and_deathblow_died(&mut app, 900);
+    assert!(died, "the deathblow did not kill");
+    let world = app.world_mut();
+    let a = world.query_filtered::<&Actor, With<Enemy>>().single(world).unwrap();
+    assert!(a.hp > 0.0 && (a.hp - a.hp_max).abs() < 1e-3, "respawned at {} of {}", a.hp, a.hp_max);
+    // SpEffect 7013 maxHpRate / maxStaminaRate 2 (SpEffectParam; the export lacked the rates, so
+    // they read 1 and doping never scaled the bars: 2026-10-12 round 18).
+    let (hp_max, posture_max) = (a.hp_max, a.posture_max);
+    let combat = app.world().resource::<Combat>();
+    let n = combat.param("NpcParam", combat.kind(0).foe.npc_row);
+    let f = |k: &str| n[k].as_f64().unwrap() as f32;
+    assert!((hp_max - f("hp") * 2.0).abs() < 1e-3, "hp_max {hp_max} vs NpcParam hp {}", f("hp"));
+    assert!((posture_max - f("stamina") * 2.0).abs() < 1e-3, "posture_max {posture_max} vs stamina {}", f("stamina"));
+}
+
+/// A regular enemy that comes back from death gets a new AI: the old Brain (its SetNumber
+/// values, timers, observes) goes with the old life (2026-10-12 bug hunt).
+#[test]
+fn a_respawned_enemy_starts_with_a_fresh_brain() {
+    let mut app = app();
+    {
+        let world = app.world_mut();
+        for mut e in world.query::<&mut Enemy>().iter_mut(world) {
+            e.aggressive = true;
+        }
+    }
+    for _ in 0..30 {
+        app.update();
+    }
+    let enemy = {
+        let world = app.world_mut();
+        world.query_filtered::<Entity, With<Enemy>>().single(world).unwrap()
+    };
+    let Some(mut brains) = app.world_mut().get_non_send_mut::<crate::enemy::Brains>() else { return };
+    let Some(b) = brains.map.get_mut(&enemy) else {
+        eprintln!("no brain built (no Lua AI here): skipped");
+        return;
+    };
+    b.log.push("old life".into());
+    drop(brains);
+    let (_, died) = break_and_deathblow_died(&mut app, 900);
+    assert!(died, "the deathblow did not kill");
+    let brains = app.world().get_non_send::<crate::enemy::Brains>().unwrap();
+    assert!(!brains.map.get(&enemy).is_some_and(|b| b.log.iter().any(|l| l == "old life")), "the respawned enemy kept its old Brain");
+}
+
+/// A guard tap let go before its window is dropped, not kept: the next attack, long after, is
+/// a plain slash, not the combat art (it paired with the stale tap; 2026-10-12 bug hunt).
+#[test]
+fn a_dropped_guard_tap_does_not_turn_the_next_attack_into_the_art() {
+    let mut app = app();
+    app.update();
+    force_player(&mut app, "GroundStep_N", 1.0);
+    {
+        let mut pad = app.world_mut().resource_mut::<PadInput>();
+        pad.press(Action::Guard);
+        pad.guard_held = true;
+    }
+    for i in 0..120 {
+        if i == 4 {
+            app.world_mut().resource_mut::<PadInput>().guard_held = false;
+        }
+        app.update();
+    }
+    app.world_mut().resource_mut::<PadInput>().press(Action::Attack);
+    let mut states = Vec::new();
+    for _ in 0..10 {
+        app.update();
+        let s = player_state(&mut app).0;
+        if states.last() != Some(&s) {
+            states.push(s);
+        }
+    }
+    assert!(states.iter().any(|s| s.starts_with("GroundAttackCombo1")), "{states:?}");
+}
+
+/// A fight reset in mid-jump puts Wolf on the ground at the start, not still rising with the
+/// jump's speed (2026-10-12 bug hunt).
+#[test]
+fn a_reset_mid_jump_lands_wolf_at_the_start() {
+    let mut app = app();
+    app.update();
+    app.world_mut().resource_mut::<PadInput>().press(Action::Jump);
+    for _ in 0..12 {
+        app.update();
+    }
+    {
+        let world = app.world_mut();
+        let a = world.query_filtered::<&Actor, With<Player>>().single(world).unwrap();
+        assert!(a.airborne, "the jump did not leave the ground: {}", a.state);
+    }
+    app.world_mut().resource_mut::<PadInput>().reset = true;
+    for _ in 0..30 {
+        app.update();
+    }
+    let world = app.world_mut();
+    let (a, t) = world.query_filtered::<(&Actor, &Transform), With<Player>>().single(world).unwrap();
+    assert!(!a.airborne && a.vel_y == 0.0, "still airborne after the reset: {} vel_y {}", a.state, a.vel_y);
+    assert!((t.translation.y - crate::map::player_start().y).abs() < 0.05, "rose to {}", t.translation.y);
+}
+
+/// A regular enemy's new life starts as it spawned: the death anim's TAE 233 hid its sword and
+/// sheath (Mask0-9 = 0), and a broken armour (Loaded Spear) is whole again (2026-10-12 bug hunt).
+#[test]
+fn a_respawned_enemy_gets_its_weapons_and_armour_back() {
+    // The mask on the first drawn frame of the new life (later its AI may pick a move whose own
+    // TAE 233 hides a part).
+    #[derive(Resource, Default)]
+    struct FirstLife(bool, Option<usize>);
+    fn watch(mut seen: ResMut<FirstLife>, q: Query<(&Enemy, &crate::model::DrawMask)>) {
+        for (e, dm) in &q {
+            if e.is_dead() {
+                seen.0 = true;
+            } else if seen.0 && seen.1.is_none() {
+                seen.1 = Some(dm.hidden());
+            }
+        }
+    }
+    let mut app = app_geom("c1020", None);
+    app.init_resource::<FirstLife>()
+        .add_systems(FixedUpdate, crate::model::apply_draw_mask_events.after(crate::actor::ActorSet::Advance))
+        .add_systems(Last, watch);
+    let (_, died) = break_and_deathblow_died(&mut app, 900);
+    assert!(died, "the deathblow did not kill");
+    let hidden = app.world().resource::<FirstLife>().1;
+    assert_eq!(hidden, Some(0), "the respawned General hides {hidden:?} groups (None = no respawn)");
+    if !std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/extracted/enemies/c1180.json")).exists() {
+        return;
+    }
+    let mut app = app_cfg("c1180", Some(11801100), Vec::new());
+    {
+        let world = app.world_mut();
+        let mut e = world.query::<&mut Enemy>().single_mut(world).unwrap();
+        assert!(e.armor.is_some(), "the servant spawned without its armour");
+        e.armor = None;
+    }
+    let (_, died) = break_and_deathblow_died(&mut app, 900);
+    assert!(died, "the deathblow did not kill");
+    let world = app.world_mut();
+    assert!(world.query::<&Enemy>().single(world).unwrap().armor.is_some(), "the respawned servant has no armour");
+}
+
+/// TAE 233 is an edge kept until changed: a frame that runs two fixed ticks (under 60 fps) must
+/// still apply one that starts in its first tick (2026-10-12 bug hunt round 11: it was read in
+/// Update from the last tick's (prev_t, t] only, so a death anim could keep its weapons drawn).
+#[test]
+fn a_draw_mask_change_is_kept_when_a_frame_runs_two_ticks() {
+    let mut app = app_geom("c1020", None);
+    app.add_systems(FixedUpdate, crate::model::apply_draw_mask_events.after(crate::actor::ActorSet::Advance));
+    let world = app.world_mut();
+    let e = world.query_filtered::<Entity, With<Enemy>>().single(world).unwrap();
+    // Off the AI so nothing else plays over the clip.
+    world.entity_mut(e).remove::<Enemy>();
+    // (The new frame length takes effect a frame later.)
+    app.insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_secs_f64(2.0 / 60.0)));
+    app.update();
+    // c1020 a000_001040: TAE 233 at 0 s hides Mask6.
+    app.world_mut().get_mut::<Actor>(e).unwrap().play("Test", "a000_001040");
+    app.update();
+    let world = app.world();
+    let a = world.get::<Actor>(e).unwrap();
+    assert!(a.prev_t > 0.0, "the frame did not run two ticks (prev_t {}, t {})", a.prev_t, a.t);
+    let hidden = world.get::<crate::model::DrawMask>(e).unwrap().hidden();
+    assert_eq!(hidden, 1, "the TAE 233 at 0 s was missed");
+}
+
+/// Where the sim's hit test sees Wolf's dummy polys during a swing (FixedUpdate, before Resolve)
+/// and where they are drawn for the same tick (after transform propagation). Only dummies near
+/// Wolf: one effect dummy of his (2483) swings metres out and would swamp the numbers.
+#[derive(Resource, Default)]
+struct DummyProbe {
+    fixed: std::collections::HashMap<Entity, Vec3>,
+    worst: f32,
+}
+
+fn probe_dummies_fixed(mut probe: ResMut<DummyProbe>, wolf: Query<(&Transform, &crate::model::Dummies), With<Player>>, g: Query<&GlobalTransform>) {
+    probe.fixed = wolf
+        .iter()
+        .flat_map(|(tf, d)| d.0.values().map(move |&m| (tf.translation, m)))
+        .filter_map(|(at, m)| Some((m, g.get(m).ok()?.translation())).filter(|(_, p)| p.distance(at) < 3.0))
+        .collect();
+}
+
+fn probe_dummies_drawn(mut probe: ResMut<DummyProbe>, g: Query<&GlobalTransform>) {
+    let probe = &mut *probe;
+    for (m, p) in &probe.fixed {
+        if let Ok(now) = g.get(*m) {
+            probe.worst = probe.worst.max(now.translation().distance(*p));
+        }
+    }
+}
+
+/// Wolf's dummies after `ticks` updates: how far the hit test's view (FixedUpdate) ever was from
+/// the drawn one of the same tick.
+fn dummy_lag(app: &mut App, ticks: usize) -> f32 {
+    app.init_resource::<DummyProbe>()
+        .add_systems(FixedUpdate, probe_dummies_fixed.after(crate::anim::PoseSet).before(crate::actor::ActorSet::Resolve))
+        .add_systems(Last, probe_dummies_drawn);
+    for _ in 0..ticks {
+        app.update();
+    }
+    let probe = app.world().resource::<DummyProbe>();
+    assert!(!probe.fixed.is_empty(), "Wolf has no dummy polys");
+    probe.worst
+}
+
+/// The hit test runs on this tick's pose: the dummy polys combat reads in FixedUpdate are where
+/// the swing is at the sim's anim time, not where the last drawn frame left them (they lagged
+/// one tick at 60 fps and more below it; anim.rs PoseSet).
+#[test]
+fn the_hit_test_sees_this_ticks_pose() {
+    let mut app = app_geom("c1020", None);
+    // (The line-up moves the actors after the first tick: settle first.)
+    for _ in 0..3 {
+        app.update();
+    }
+    app.world_mut().resource_mut::<PadInput>().press(Action::Attack);
+    let worst = dummy_lag(&mut app, 40);
+    assert!(worst < 1e-3, "the hit test saw Wolf's dummies {worst} m from this tick's pose");
+}
+
+/// TAE 715 OverrideWeaponModelLocation in the sim pose: during Mortal Draw (a106_316000, Model2
+/// on body dummy 20 for frames 6-107, else its rest 149) the Model2 dummies the arcs and hit
+/// capsules use (12200-12280) are at the hand in FixedUpdate too, not back at the hip.
+#[test]
+fn the_hit_test_sees_weapon_parts_where_tae_715_puts_them() {
+    let mut app = app_geom("c1020", None);
+    for _ in 0..3 {
+        app.update();
+    }
+    {
+        let world = app.world_mut();
+        let mut a = world.query_filtered::<&mut Actor, With<Player>>().single_mut(world).unwrap();
+        a.play("GroundSpecialAttackCombo1", "a106_316000");
+        a.t = 0.5;
+        a.prev_t = 0.5;
+    }
+    let worst = dummy_lag(&mut app, 20);
+    let world = app.world_mut();
+    let has_model2 = world.query_filtered::<&crate::model::Dummies, With<Player>>().single(world).unwrap().0.contains_key(&12200);
+    assert!(has_model2, "no Model2 dummies");
+    assert!(worst < 1e-3, "the hit test saw Wolf's dummies {worst} m from the drawn ones");
+}
+
+/// Mortal Draw's slash (AtkParam hits 12220-12250 / 12280 / 12200: Model2 WP_A_0300_2's own
+/// dummies, 2-6 m along the long blade) is a real capsule: it reaches an enemy 4 m off, past the
+/// 2.5-2.9 m no-model reach approximation it fell back to while the full ids were not looked up.
+#[test]
+fn mortal_draw_reaches_an_enemy_four_metres_away() {
+    let mut app = app_geom("c1020", None);
+    {
+        let world = app.world_mut();
+        world.resource_mut::<crate::config::GameConfig>().player.combat_art = 5700;
+        world.resource_mut::<crate::enemy::EnemyDebug>().mode = crate::enemy::AiMode::Idle;
+        let mut q = world.query::<&mut Player>();
+        q.single_mut(world).unwrap().emblems = 10;
+    }
+    for _ in 0..10 {
+        app.update();
+    }
+    let hp0 = {
+        let world = app.world_mut();
+        let mut q = world.query_filtered::<(&mut Transform, &mut Enemy, &Actor), Without<crate::enemy::Cast>>();
+        let (mut t, mut e, a) = q.single_mut(world).unwrap();
+        t.translation = Vec3::new(0.0, CAPSULE_HALF_HEIGHT, 4.0);
+        e.targeting.state = crate::stealth::BATTLE;
+        a.hp
+    };
+    {
+        let mut pad = app.world_mut().resource_mut::<PadInput>();
+        pad.press(Action::Attack);
+        pad.press(Action::Guard);
+    }
+    let mut anims = Vec::<String>::new();
+    for _ in 0..240 {
+        app.update();
+        let world = app.world_mut();
+        let a = world.query_filtered::<&Actor, With<Player>>().single(world).unwrap();
+        if anims.last() != Some(&a.anim) {
+            anims.push(a.anim.clone());
+        }
+    }
+    let world = app.world_mut();
+    let hp = world.query_filtered::<&Actor, (With<Enemy>, Without<crate::enemy::Cast>)>().single(world).unwrap().hp;
+    assert!(anims.iter().any(|a| a.starts_with("a106_")), "no Mortal Draw: {anims:?}");
+    assert!(hp < hp0, "the slash missed the enemy 4 m off ({hp0} -> {hp}); {anims:?}\n{}", log_text(&app));
+}
+
+/// A respawned enemy starts its new life clean: the Sabimaru poison (9004 -> 9045, 19.9 s) it
+/// died with does not keep eating the full bar (2026-10-12 bug hunt round 6).
+#[test]
+fn a_respawned_enemy_is_not_still_poisoned() {
+    let mut app = app();
+    app.update();
+    app.world_mut().resource_scope(|world, mut st: Mut<crate::status::Statuses>| {
+        world.resource_scope(|world, combat: Mut<Combat>| {
+            let (ent, a) = world.query_filtered::<(Entity, &Actor), (With<Enemy>, Without<crate::enemy::Cast>)>().single(world).unwrap();
+            for _ in 0..40 {
+                st.hit(&combat, ent, &a, &[9004], false);
+                if st.0.get(&ent).is_some_and(|s| !s.effects.is_empty()) {
+                    break;
+                }
+            }
+            assert!(st.0.get(&ent).is_some_and(|s| !s.effects.is_empty()), "no poison");
+        });
+    });
+    let (_, died) = break_and_deathblow_died(&mut app, 900);
+    assert!(died, "the deathblow did not kill");
+    let world = app.world_mut();
+    let (ent, a) = world.query_filtered::<(Entity, &Actor), (With<Enemy>, Without<crate::enemy::Cast>)>().single(world).unwrap();
+    assert!(a.hp >= a.hp_max, "the new life lost {} HP", a.hp_max - a.hp);
+    let st = world.resource::<crate::status::Statuses>();
+    assert!(st.0.get(&ent).is_none_or(|s| s.effects.is_empty()), "still poisoned after the respawn");
+}
+
+/// A jump in the deflect break pose (ThrowParam 11020012 弾き1B_ジャンプ: a201_510120 / ThrowDef12120)
+/// vaults round behind the General and leaves him open to the deathblow; it killed him outright
+/// as a deathblow before (2026-10-12 bug hunt round 7).
+#[test]
+fn a_jump_in_the_break_pose_vaults_without_killing() {
+    let mut app = app();
+    {
+        let world = app.world_mut();
+        let mut q = world.query_filtered::<&mut Actor, With<Enemy>>();
+        let mut a = q.single_mut(world).unwrap();
+        a.posture = a.posture_max - 1.0;
+    }
+    start_enemy_combo(&mut app, 0);
+    let (mut pressed, mut pose, mut vault) = (false, None, false);
+    for i in 0..300u32 {
+        if !pressed && time_to_enemy_hit(&mut app).is_some_and(|dt| dt <= 3.0 / TAE_FPS) {
+            app.world_mut().resource_mut::<PadInput>().press(Action::Guard);
+            pressed = true;
+        }
+        app.update();
+        let (ps, ..) = player_state(&mut app);
+        if ps == "ThrowBreak" && pose.is_none() {
+            pose = Some(i);
+        }
+        if pose.is_some_and(|p| i == p + 15) {
+            app.world_mut().resource_mut::<PadInput>().guard_held = false;
+            app.world_mut().resource_mut::<PadInput>().press(Action::Jump);
+        }
+        vault |= enemy_state(&mut app).0 == "ThrowDef12120";
+        if pose.is_some_and(|p| i == p + 60) {
+            break;
+        }
+    }
+    assert!(pose.is_some(), "no break pose
+{}", log_text(&app));
+    assert!(vault, "no ThrowDef12120 vault: {:?}", enemy_state(&mut app));
+    let world = app.world_mut();
+    let (a, e) = world.query::<(&Actor, &Enemy)>().single(world).unwrap();
+    assert!(a.hp > 0.0 && !e.is_dead(), "the vault killed him (hp {})", a.hp);
+}
+
+/// The General's neck grab (ThrowParam 21020000: atkSorbDmyId 230, a point in front of him)
+/// takes Wolf onto that dummy, wherever the grab capsule touched him (2026-10-12 bug hunt round 7).
+#[test]
+fn a_grab_pulls_wolf_onto_the_grabbers_dummy() {
+    let mut app = app_geom("c1020", None);
+    for _ in 0..3 {
+        app.update();
+    }
+    {
+        let world = app.world_mut();
+        let mut q = world.query::<(&mut Enemy, &mut Actor)>();
+        let (mut e, mut a) = q.single_mut(world).unwrap();
+        e.force_anim(&mut a, "a000_003012");
+    }
+    let mut held = None;
+    for i in 0..200u32 {
+        app.update();
+        if held.is_none() && player_state(&mut app).0 == "Grabbed" {
+            held = Some(i);
+        }
+        if held.is_some_and(|h| i == h + 2) {
+            break;
+        }
+    }
+    assert!(held.is_some(), "no grab\n{}", log_text(&app));
+    let world = app.world_mut();
+    let wolf = world.query_filtered::<&Transform, With<Player>>().single(world).unwrap().translation;
+    let (dm, etf) = world.query_filtered::<(&crate::model::Dummies, &Transform), With<Enemy>>().single(world).unwrap();
+    let (m, et) = (dm.0[&230], etf.translation);
+    let at = world.get::<GlobalTransform>(m).unwrap().translation();
+    let off = (wolf - at).with_y(0.0).length();
+    // (2 cm with the absorb, two ticks of his anim later; 10-12 cm where the capsule touched.)
+    assert!(off < 0.05, "Wolf {off:.2} m off the grab dummy 230 (Wolf {wolf}, dummy {at}, General {et})");
+}
+
+/// An enemy grab is a throw pair too: separate() leaves "Grabbed" / ThrowAtk* alone. The Rappa
+/// (c1360, ThrowParam 21360000 defSorbDmyId 173: onto Wolf's dummy 0.52 m behind his root) is
+/// absorbed there and its anim then rides onto his back, roots ~4 cm apart; the push-out held it
+/// at the 0.8 m radii from the next tick on (2026-10-12 bug hunt round 14).
+#[test]
+fn a_grab_pair_is_not_pushed_apart() {
+    if !std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/extracted/enemies/c1360.json")).exists() {
+        return;
+    }
+    let mut app = app_geom("c1360", None);
+    for _ in 0..3 {
+        app.update();
+    }
+    {
+        let world = app.world_mut();
+        let mut q = world.query::<(&mut Enemy, &mut Actor)>();
+        let (mut e, mut a) = q.single_mut(world).unwrap();
+        // a000_003016: the grab (judge 180, throwFlag 1).
+        e.force_anim(&mut a, "a000_003016");
+    }
+    let (mut held, mut absorbed, mut closest) = (None, f32::MAX, f32::MAX);
+    for i in 0..300u32 {
+        app.update();
+        let grabbed = player_state(&mut app).0 == "Grabbed";
+        if held.is_none() && grabbed {
+            held = Some(i);
+        }
+        let Some(h) = held else { continue };
+        if !grabbed || i > h + 30 {
+            break;
+        }
+        let world = app.world_mut();
+        let (dm, wt) = world.query_filtered::<(&crate::model::Dummies, &Transform), With<Player>>().single(world).unwrap();
+        let (m, wt) = (dm.0[&173], wt.translation);
+        let at = world.get::<GlobalTransform>(m).unwrap().translation();
+        let et = world.query_filtered::<&Transform, With<Enemy>>().single(world).unwrap().translation;
+        if i == h + 2 {
+            absorbed = (et - at).with_y(0.0).length();
+        }
+        closest = closest.min((et - wt).with_y(0.0).length());
+    }
+    assert!(held.is_some(), "no grab
+{}", log_text(&app));
+    assert!(absorbed < 0.05, "the absorb left the Rappa {absorbed:.2} m off Wolf's dummy 173");
+    assert!(closest < 0.5, "the pair was held {closest:.2} m apart (the body radii are 0.8 m)");
+}
+
+/// A guard pressed in the air guard's break pose (AirDeflectGuardBreak, a050_190150) waits for
+/// the pose's own flag 117 at frame 69: it does not start a fresh air guard at once (2026-10-12
+/// bug hunt round 15: is_air_guard matched the break pose too).
+#[test]
+fn an_air_guard_break_holds_wolf_until_its_guard_flag() {
+    let mut app = app();
+    move_enemy_far(&mut app);
+    app.world_mut().resource_mut::<PadInput>().press(Action::Jump);
+    for _ in 0..40 {
+        app.update();
+        if player_actor(&mut app).2 {
+            break;
+        }
+    }
+    {
+        let world = app.world_mut();
+        let mut a = world.query_filtered::<&mut Actor, With<Player>>().single_mut(world).unwrap();
+        assert!(a.airborne, "the jump did not leave the ground: {}", a.state);
+        a.play("AirDeflectGuardBreak", "a050_190150");
+    }
+    app.world_mut().resource_mut::<PadInput>().press(Action::Guard);
+    for _ in 0..3 {
+        app.update();
+    }
+    let (state, ..) = player_actor(&mut app);
+    assert!(!state.starts_with("AirDeflectGuardStart"), "a guard press left the air guard break at once: {state}");
+}
+
+/// A jump pressed early in an air slash (AirComboAttack1 frame 5: flag 87 buffers from 3, the
+/// jump's 119 opens at 12) kicks when the window opens, as a mashed attack chains; the press
+/// was dropped on the spot (2026-10-12 bug hunt round 8).
+#[test]
+fn an_early_jump_in_an_air_slash_becomes_the_air_kick() {
+    let mut app = app();
+    move_enemy_far(&mut app);
+    app.world_mut().resource_mut::<PadInput>().press(Action::Jump);
+    let (mut slash, mut kicked, mut pressed, mut seen) = (None, false, false, Vec::<String>::new());
+    for i in 0..200u32 {
+        app.update();
+        let (state, _, airborne, _) = player_actor(&mut app);
+        if seen.last() != Some(&state) {
+            seen.push(state.clone());
+        }
+        if airborne && slash.is_none() && !state.starts_with("AirComboAttack") && i > 6 {
+            app.world_mut().resource_mut::<PadInput>().press(Action::Attack);
+        }
+        if state == "AirComboAttack1" && slash.is_none() {
+            slash = Some(i);
+        }
+        if !pressed && slash.is_some_and(|s| i == s + 5) {
+            app.world_mut().resource_mut::<PadInput>().press(Action::Jump);
+            pressed = true;
+        }
+        kicked |= state == "AirKick";
+        if kicked || !airborne && slash.is_some() {
+            break;
+        }
+    }
+    assert!(slash.is_some(), "no air slash: {seen:?}");
+    assert!(kicked, "the early jump press was lost: {seen:?}");
+}
+
+/// Regular enemies turn in place with their turn clips (c9997 ExecTurn): an unaware General
+/// turned 150 degrees off his home facing turns back (NonBattleAct's Turn / Stay to
+/// POINT_INIT_POSE) with a W_Turn*_*180 clip, not a slow spin, and ends facing it again.
+#[test]
+fn an_enemy_turns_in_place_with_its_turn_clip() {
+    let mut app = app_cfg("c1010", None, vec![]);
+    let enemy = {
+        let world = app.world_mut();
+        let mut q = world.query_filtered::<&mut Transform, With<Player>>();
+        q.single_mut(world).unwrap().translation = Vec3::new(0.0, CAPSULE_HALF_HEIGHT, 80.0);
+        let ents: Vec<Entity> = world.query_filtered::<Entity, With<Enemy>>().iter(world).collect();
+        let mut q = world.query_filtered::<(&mut Actor, &mut Enemy), With<Enemy>>();
+        let (mut a, mut e) = q.get_mut(world, ents[0]).unwrap();
+        e.make_unaware(&mut a);
+        ents[0]
+    };
+    for _ in 0..30 {
+        app.update();
+    }
+    let home = app.world().get::<Actor>(enemy).unwrap().yaw;
+    app.world_mut().get_mut::<Actor>(enemy).unwrap().yaw = home + 150f32.to_radians();
+    let mut states = Vec::new();
+    let mut faced = None;
+    for i in 0..60 * 8 {
+        app.update();
+        let a = app.world().get::<Actor>(enemy).unwrap();
+        if states.last() != Some(&a.state) {
+            states.push(a.state.clone());
+        }
+        let off = ((a.yaw - home + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI).abs();
+        if states.iter().any(|s| s.starts_with("Turn")) && !a.state.starts_with("Turn") && off < 0.2 {
+            faced = Some(i);
+            break;
+        }
+    }
+    assert!(states.iter().any(|s| s.starts_with("Turn") && s.ends_with("180")), "a 180 turn clip played: {states:?}");
+    let i = faced.unwrap_or_else(|| panic!("it ends up facing its home way: {states:?}"));
+    assert!(i < 60 * 3, "within 3 s ({i} frames)");
+}
+
+/// A group enemy whose npc_row is not one of its chr's rows (c1110 11103000) still comes in,
+/// on its chr's main row, and its kind is loaded once (2026-10-12 bug hunt round 9: the line-up
+/// looked it up by the asked row and dropped it).
+#[test]
+fn a_group_enemy_with_a_foreign_row_still_spawns() {
+    let g = crate::config::GroupEnemy { chr: "c1110".into(), npc_row: Some(11103000), ..Default::default() };
+    let mut app = app_cfg("c1010", None, vec![g.clone(), g]);
+    app.update();
+    let combat = app.world().resource::<Combat>();
+    let k = combat.kind_index("c1110", Some(11103000)).expect("found by the asked row");
+    assert_ne!(combat.kinds[k].foe.npc_row, 11103000, "on the chr's main row");
+    assert_eq!(combat.kinds.iter().filter(|k| k.foe.chr == "c1110").count(), 1);
+    let world = app.world_mut();
+    assert_eq!(world.query_filtered::<Entity, With<Enemy>>().iter(world).count(), 3);
+}
+
+/// The duel line-up faces Wolf's start (the arena export's enemy faces +Z, map.rs player_start),
+/// the main enemy and the group alike (2026-10-12 bug hunt round 10: they faced -Z, away).
+#[test]
+fn the_line_up_faces_wolf() {
+    let g = crate::config::GroupEnemy { chr: "c1010".into(), ..Default::default() };
+    let mut app = app_cfg("c1010", None, vec![g]);
+    app.update();
+    let world = app.world_mut();
+    let wolf = world.query_filtered::<&Transform, With<Player>>().single(world).unwrap().translation;
+    let mut n = 0;
+    for (t, a) in world.query_filtered::<(&Transform, &Actor), With<Enemy>>().iter(world) {
+        let to = (wolf - t.translation).with_y(0.0).normalize();
+        assert!(a.forward().dot(to) > 0.9, "facing Wolf: {} vs {to}", a.forward());
+        n += 1;
+    }
+    assert_eq!(n, 2);
+}
+
+/// A reset clears the perilous kanji (2026-10-12 bug hunt round 10: it stayed up to 0.8 s over
+/// the new line-up).
+#[test]
+fn a_reset_clears_the_perilous_kanji() {
+    let mut app = app_cfg("c1010", None, vec![]);
+    app.update();
+    if app.world().get_resource::<crate::hud::Perilous>().is_none() {
+        app.init_resource::<crate::hud::Perilous>();
+    }
+    app.world_mut().resource_mut::<crate::hud::Perilous>().raise(982);
+    app.world_mut().resource_mut::<crate::enemy::FightReset>().0 = true;
+    app.update();
+    assert!(app.world().resource::<crate::hud::Perilous>().timer <= 0.0);
+}
+
+/// launchConditionType picks which ends launch HitBulletID (2026-10-12 bug hunt round 10: every
+/// end did, so the Genpei arrow 13100520's lct 1 "hit water" child came on every hit).
+#[test]
+fn a_bullets_child_follows_its_launch_condition() {
+    use crate::enemy_bullet::launches;
+    // (lct, hit enemy, landed, expired)
+    assert!(!launches(1, true, false, false) && !launches(2, false, true, false), "no water in the sim");
+    assert!(launches(0, true, false, false) && launches(0, false, false, true));
+    assert!(launches(3, false, true, false) && !launches(3, true, false, false));
+    assert!(launches(4, true, false, false) && !launches(4, false, true, false));
+    assert!(launches(254, false, false, true) && !launches(254, true, false, false));
+    assert!(launches(255, false, true, false) && !launches(255, false, false, true));
+}
+
+/// A bullet that touches Wolf inside his iframes (TAE 950 / 951 / 954 type 2, combat.rs dodged)
+/// passes through: the gecko's poison cloud (11000021, build-up only, no damage) puts nothing on
+/// him then, but does when he is not dodging (2026-10-12 bug hunt round 10).
+#[test]
+fn a_dodged_bullet_passes_through_wolf() {
+    let run = |dodge: bool| -> bool {
+        let mut app = app_cfg("c1100", None, Vec::new());
+        app.update();
+        let world = app.world_mut();
+        let shooter = world.query_filtered::<Entity, (With<Enemy>, Without<crate::enemy::Cast>)>().single(world).unwrap();
+        let combat = world.resource::<Combat>();
+        let spec = combat.kind(0).data.bullet_rows.get("11000021").expect("gecko poison row").clone();
+        // One of Wolf's anims with a long full-iframe window.
+        let iframe = combat
+            .player
+            .anims
+            .iter()
+            .flat_map(|(k, a)| a.events.iter().filter(|e| e.kind == 950 && e.end - e.start > 0.5).map(move |e| (k.clone(), e.start + 0.05)))
+            .min_by(|a, b| a.0.cmp(&b.0))
+            .expect("an anim with TAE 950");
+        let (wolf, at) = {
+            let mut q = world.query_filtered::<(Entity, &Transform), With<Player>>();
+            let (e, t) = q.single(world).unwrap();
+            (e, t.translation)
+        };
+        crate::enemy_bullet::spawn_row(&mut world.commands(), &spec, shooter, 0, at, Vec3::NEG_Z, 0.0, None);
+        world.flush();
+        // A cloud (initVellocity 0, hitRadius 1, life 2 s) on Wolf.
+        for _ in 0..60 {
+            if dodge {
+                let mut a = app.world_mut().get_mut::<Actor>(wolf).unwrap();
+                a.anim = iframe.0.clone();
+                a.t = iframe.1;
+                a.prev_t = iframe.1;
+            }
+            app.update();
+        }
+        app.world().resource::<crate::status::Statuses>().0.contains_key(&wolf)
+    };
+    assert!(run(false), "the spit lands on a Wolf who is not dodging");
+    assert!(!run(true), "it passes through his iframes");
+}
+
+/// The guard stance (c9997 ExecAIGuard, GOAL_COMMON_Guard's request 9910 = ACTION_TYPE_GUARD):
+/// GuardStart -> GuardIdle, guard walks and W_TurnGuard while held, GuardEnd when the request
+/// stops; the stance's clips hold ShieldBlock (2026-10-12: 9910 was played as a missing clip,
+/// so enemies never took their guard).
+#[test]
+fn the_guard_goal_holds_the_guard_stance() {
+    let mut app = app_cfg("c1010", None, vec![]);
+    app.update();
+    let world = app.world_mut();
+    let ent = world.query_filtered::<Entity, With<Enemy>>().single(world).unwrap();
+    world.resource_scope(|world, combat: Mut<Combat>| {
+        let mut q = world.query::<(&mut Actor, &Enemy)>();
+        let (mut a, e) = q.get_mut(world, ent).unwrap();
+        let d = combat.data_of(&a);
+        let mut cmd = crate::ai::Command { guard: true, ..Default::default() };
+        a.procedural("IdleBattle");
+        crate::enemy::guard_stance(&mut a, d, &cmd, false, true);
+        assert_eq!(a.state, "GuardStart");
+        crate::enemy::guard_stance(&mut a, d, &cmd, true, true);
+        assert_eq!(a.state, "GuardIdle");
+        assert!(d.flag(&a.anim, 0.5, crate::player::FLAG_SHIELD_BLOCK), "the stance blocks");
+        cmd.mv = Some('L');
+        crate::enemy::guard_stance(&mut a, d, &cmd, false, true);
+        assert_eq!(a.state, "GuardWalkLeft");
+        cmd.mv = None;
+        crate::enemy::guard_stance(&mut a, d, &cmd, false, true);
+        assert_eq!(a.state, "GuardIdle");
+        let yaw = a.yaw;
+        assert!(crate::enemy::start_turn(e, &mut a, d, yaw + 2.0, false));
+        assert!(a.state.starts_with("TurnGuard_Left"), "{}", a.state);
+        crate::enemy::guard_stance(&mut a, d, &cmd, true, true);
+        assert_eq!(a.state, "GuardIdle");
+        cmd.guard = false;
+        crate::enemy::guard_stance(&mut a, d, &cmd, false, true);
+        assert_eq!(a.state, "GuardEnd");
+    });
+}
+
+/// A penetrating bullet launches its child by its whole-life hit record, not by the frame it
+/// ends on (2026-10-12 bug hunt round 11: the c1190 cannon blast 11903310, isPenetrate 1, lct
+/// 255, never spawned 11903311 after catching Wolf). The gecko's poison cloud (11000021,
+/// isPenetrate 1, life 2 s) on Wolf, made launchConditionType 4 "hit enemy": its child comes.
+#[test]
+fn a_penetrating_bullet_launches_by_its_hit_record() {
+    let mut app = app_cfg("c1100", None, Vec::new());
+    app.update();
+    let world = app.world_mut();
+    let shooter = world.query_filtered::<Entity, (With<Enemy>, Without<crate::enemy::Cast>)>().single(world).unwrap();
+    let mut spec = world.resource::<Combat>().kind(0).data.bullet_rows.get("11000021").expect("gecko poison row").clone();
+    assert_eq!(spec.is_penetrate, 1);
+    spec.launch_condition_type = 4;
+    spec.hit_bullet_id = 11000021;
+    let at = world.query_filtered::<&Transform, With<Player>>().single(world).unwrap().translation;
+    crate::enemy_bullet::spawn_row(&mut world.commands(), &spec, shooter, 0, at, Vec3::NEG_Z, 0.0, None);
+    world.flush();
+    // Past its 2 s life: the first cloud is gone, its child is there.
+    for _ in 0..(60 * 2 + 30) {
+        app.update();
+    }
+    let world = app.world_mut();
+    assert_eq!(world.query::<&crate::enemy_bullet::EnemyBullet>().iter(world).count(), 1, "the child cloud");
+}
+
+#[test]
+fn a_camera_shake_starts_once_per_tae_event() {
+    // Frames faster than the fixed step: (prev_t, t) only moves in FixedUpdate, so a shake
+    // started in Update was pushed again on every frame between two steps.
+    let mut app = app();
+    crate::camera::add_shakes(&mut app);
+    app.insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_secs_f64(1.0 / 240.0)));
+    let (key, start) = {
+        let world = app.world_mut();
+        let a = world.query_filtered::<&Actor, With<Player>>().single(world).unwrap().clone();
+        let d = world.resource::<Combat>().data_of(&a);
+        let mut found: Vec<(String, f32)> = d
+            .anims
+            .iter()
+            .flat_map(|(k, an)| an.events.iter().filter(|e| matches!(e.kind, 145 | 146) && e.start > 0.1 && e.arg_i64("RumbleCamID").is_some()).map(move |e| (k.clone(), e.start)))
+            .collect();
+        found.sort_by(|x, y| x.0.cmp(&y.0).then(x.1.total_cmp(&y.1)));
+        found.into_iter().next().expect("a Wolf anim with a RumbleCam event")
+    };
+    {
+        let world = app.world_mut();
+        let mut q = world.query_filtered::<&mut Actor, With<Player>>();
+        let mut a = q.single_mut(world).unwrap();
+        a.play("Attack", &key);
+        a.prev_t = start - 0.06;
+        a.t = start - 0.06;
+        world.resource_mut::<crate::camera::CameraShake>().0.clear();
+    }
+    let mut pushed = 0;
+    for _ in 0..40 {
+        app.update();
+        let world = app.world_mut();
+        let mut shake = world.resource_mut::<crate::camera::CameraShake>();
+        pushed += shake.0.len();
+        shake.0.clear();
+    }
+    let events = {
+        let world = app.world_mut();
+        let a = world.query_filtered::<&Actor, With<Player>>().single(world).unwrap().clone();
+        let d = world.resource::<Combat>().data_of(&a);
+        d.anim(&key).unwrap().events.iter().filter(|e| matches!(e.kind, 145 | 146) && (e.start - start).abs() < 1e-4 && e.arg_i64("RumbleCamID").is_some()).count()
+    };
+    assert_eq!(pushed, events, "{key} at {start}");
+}
+
+/// A deflect that empties the posture puts the enemy in its break pose (ThrowDef12100), and
+/// attack takes it to the deathblow: the 忍殺 mark shows there, on the same enemy.
+#[test]
+fn the_deathblow_mark_shows_on_a_break_pose() {
+    use bevy::ecs::system::RunSystemOnce;
+    let mut app = app();
+    {
+        let world = app.world_mut();
+        let mut q = world.query_filtered::<&mut Actor, With<Enemy>>();
+        let mut a = q.single_mut(world).unwrap();
+        a.posture = a.posture_max - 1.0;
+    }
+    start_enemy_combo(&mut app, 0);
+    let mut pressed = false;
+    for _ in 0..300u32 {
+        if !pressed && time_to_enemy_hit(&mut app).is_some_and(|dt| dt <= 3.0 / TAE_FPS) {
+            app.world_mut().resource_mut::<PadInput>().press(Action::Guard);
+            pressed = true;
+        }
+        app.update();
+        if player_state(&mut app).0 == "ThrowBreak" {
+            break;
+        }
+    }
+    assert_eq!(enemy_state(&mut app).0, "ThrowDef12100");
+    // The HUD reads GlobalTransforms (no propagation in the sim app).
+    {
+        let world = app.world_mut();
+        let mut q = world.query::<(&Transform, &mut GlobalTransform)>();
+        for (t, mut g) in q.iter_mut(world) {
+            *g = GlobalTransform::from(*t);
+        }
+    }
+    let enemy = {
+        let world = app.world_mut();
+        world.query_filtered::<Entity, With<Enemy>>().single(world).unwrap()
+    };
+    let target = app
+        .world_mut()
+        .run_system_once(
+            |combat: Res<Combat>, wolf: Query<(&Actor, &GlobalTransform), With<Player>>, enemies: crate::hud::MarkEnemies, dummies: Query<&GlobalTransform>| {
+                let (wa, wg) = wolf.single().unwrap();
+                crate::hud::deathblow_mark_target(&combat, wa, wg.translation(), &enemies, &dummies, None)
+            },
+        )
+        .unwrap();
+    assert_eq!(target, Some(enemy), "no mark on the break pose");
+}
+
+/// One Mind (6100: art variation 5005) fires its own BehaviorParam_PC rows' bullets (105005210 ->
+/// Bullet 500510 ...), never the equipped prosthetic's: with the Loaded Umbrella (76000) on, its
+/// a104_317000 judge 210 went through the umbrella's variation to 760010 "Iron fan unleashed slash".
+#[test]
+fn an_art_fires_its_own_bullets_not_the_prosthetics() {
+    let mut app = app();
+    {
+        let world = app.world_mut();
+        let mut config = world.resource_mut::<crate::config::GameConfig>();
+        config.player.combat_art = 6100;
+        config.player.prosthetics = vec![76000];
+        world.resource_mut::<crate::enemy::EnemyDebug>().mode = crate::enemy::AiMode::Idle;
+        let mut q = world.query::<&mut Player>();
+        q.single_mut(world).unwrap().emblems = 10;
+    }
+    app.update();
+    {
+        let mut pad = app.world_mut().resource_mut::<PadInput>();
+        pad.press(Action::Attack);
+        pad.press(Action::Guard);
+        pad.attack_held = true;
+        pad.guard_held = true;
+    }
+    let mut anims = Vec::<String>::new();
+    let mut bullets = std::collections::BTreeSet::<String>::new();
+    for i in 0..400 {
+        if i == 150 {
+            app.world_mut().resource_mut::<PadInput>().attack_held = false;
+        }
+        app.update();
+        let a = player_state(&mut app).1;
+        if anims.last() != Some(&a) {
+            anims.push(a);
+        }
+        let world = app.world_mut();
+        for n in world.query_filtered::<&Name, With<crate::prosthetic::Projectile>>().iter(world) {
+            bullets.insert(n.as_str().to_string());
+        }
+    }
+    assert!(anims.iter().any(|a| a == "a104_317000"), "{anims:?}");
+    let combat = app.world().resource::<Combat>();
+    // Its rows' bullets and their Bullet param children (HitBulletID / intervalCreateBulletId).
+    let d = &combat.player;
+    let mut own: Vec<i64> = (0..1000).filter_map(|j| d.behavior(5005, j)).map(|b| b.ref_id).collect();
+    let mut i = 0;
+    while i < own.len() {
+        if let Some(r) = d.bullet_rows.get(&own[i].to_string()) {
+            for c in [r.hit_bullet_id, r.interval_create_bullet_id] {
+                if c > 0 && !own.contains(&c) {
+                    own.push(c);
+                }
+            }
+        }
+        i += 1;
+    }
+    let own: Vec<String> = own.iter().map(|id| format!("Bullet {id}")).collect();
+    assert!(bullets.iter().all(|b| own.contains(b)), "not One Mind's bullets: {bullets:?}");
+}
+
+/// The general stance (9920, ACTION_TYPE_GENERAL_STANCE; c1010): W_GeneralStanceStart401060 ->
+/// GeneralStanceIdle, runs / walks front in it, W_GeneralStanceTrun_*, and its end clip when the
+/// request stops; asked for the guard instead, it ends the general stance first.
+#[test]
+fn the_general_stance_runs_like_the_guard() {
+    let mut app = app_cfg("c1010", None, vec![]);
+    app.update();
+    let world = app.world_mut();
+    let ent = world.query_filtered::<Entity, With<Enemy>>().single(world).unwrap();
+    world.resource_scope(|world, combat: Mut<Combat>| {
+        let mut q = world.query::<(&mut Actor, &Enemy)>();
+        let (mut a, e) = q.get_mut(world, ent).unwrap();
+        let d = combat.data_of(&a);
+        let mut cmd = crate::ai::Command { general: true, ..Default::default() };
+        a.procedural("IdleBattle");
+        crate::enemy::guard_stance(&mut a, d, &cmd, false, true);
+        assert_eq!(a.state, "GeneralStanceStart401060");
+        crate::enemy::guard_stance(&mut a, d, &cmd, true, true);
+        assert_eq!(a.state, "GeneralStanceIdle");
+        cmd.mv = Some('F');
+        crate::enemy::guard_stance(&mut a, d, &cmd, false, true);
+        assert_eq!(a.state, "GeneralStanceRunFront");
+        cmd.mv = None;
+        crate::enemy::guard_stance(&mut a, d, &cmd, false, true);
+        assert_eq!(a.state, "GeneralStanceIdle");
+        let yaw = a.yaw;
+        assert!(crate::enemy::start_turn(e, &mut a, d, yaw - 3.0, false));
+        assert_eq!(a.state, "GeneralStanceTrun_Right180");
+        crate::enemy::guard_stance(&mut a, d, &cmd, true, true);
+        assert_eq!(a.state, "GeneralStanceIdle");
+        cmd = crate::ai::Command { guard: true, ..Default::default() };
+        crate::enemy::guard_stance(&mut a, d, &cmd, false, true);
+        assert_eq!(a.state, "GeneralStanceEnd601040", "the guard asked for: the general stance ends first");
+    });
+}
+
+/// A respawn forgets a home its last life moved (a type 5 route's end, Patrol::new_home): the
+/// fresh Brain's IsChangeInitialPosition is false, so POINT_INITIAL / the leash must not keep the
+/// old pose (2026-10-12 bug hunt round 12).
+#[test]
+fn a_respawn_forgets_the_route_end_home() {
+    let mut app = app();
+    for _ in 0..30 {
+        app.update();
+    }
+    let marker = Vec3::new(50.0, 0.0, 50.0);
+    {
+        let world = app.world_mut();
+        world.query::<&mut Enemy>().single_mut(world).unwrap().home = Some((marker, 1.0));
+    }
+    let (_, died) = break_and_deathblow_died(&mut app, 900);
+    assert!(died, "the deathblow did not kill");
+    for _ in 0..5 {
+        app.update();
+    }
+    let world = app.world_mut();
+    let e = world.query::<&Enemy>().single(world).unwrap();
+    assert!(e.home.is_none_or(|h| h.0.distance(marker) > 1.0), "kept the old home {:?}", e.home);
+}
+
+/// An instant TAE recovery counts once when its start falls on a frame edge: the window is
+/// (prev_t, t], plus the anim's very first frame (2026-10-12 bug hunt round 12).
+#[test]
+fn an_instant_recovery_on_a_frame_edge_counts_once() {
+    let mut app = app_cfg("c1010", None, vec![]);
+    app.update();
+    let combat = app.world().resource::<Combat>();
+    let d = combat.enemy0();
+    let mut keys: Vec<&String> = d.anims.keys().collect();
+    keys.sort();
+    let mut seen = 0;
+    for key in keys {
+        let whole = crate::enemy::instant_hp_rate(d, key, -1.0, f32::INFINITY);
+        if whole <= 0.0 {
+            continue;
+        }
+        for ev in d.anim(key).unwrap().events.iter().filter(|ev| matches!(ev.kind, 66 | 67)) {
+            let s = ev.start;
+            let split = crate::enemy::instant_hp_rate(d, key, -1.0, s) + crate::enemy::instant_hp_rate(d, key, s, f32::INFINITY);
+            assert!((split - whole).abs() < 1e-3, "{key} at {s}: {split} split, {whole} whole");
+            seen += 1;
+        }
+    }
+    assert!(seen > 0, "no c1010 anim with an instant recovery");
+}
+
+/// A reset takes Wolf's prosthetic bullets in flight too, and stops their flying effects where
+/// they were (as an ended bullet's, prosthetic.rs fly): a shuriken thrown just before the reset
+/// hit the new line-up (2026-10-12 bug hunt round 12).
+#[test]
+fn a_reset_takes_wolfs_bullets_in_flight() {
+    let mut app = app();
+    {
+        let world = app.world_mut();
+        world.resource_mut::<crate::config::GameConfig>().player.prosthetics = vec![70000];
+        world.resource_mut::<crate::enemy::EnemyDebug>().mode = crate::enemy::AiMode::Idle;
+        let mut q = world.query_filtered::<&mut Transform, With<Enemy>>();
+        q.single_mut(world).unwrap().translation.z = 30.0;
+    }
+    for _ in 0..30 {
+        app.update();
+    }
+    app.world_mut().resource_mut::<PadInput>().press(Action::Prosthetic);
+    let mut flying = Vec::new();
+    for _ in 0..120 {
+        app.update();
+        let world = app.world_mut();
+        flying = world.query_filtered::<Entity, With<crate::prosthetic::Projectile>>().iter(world).collect();
+        if !flying.is_empty() {
+            break;
+        }
+    }
+    assert!(!flying.is_empty(), "no shuriken thrown");
+    app.world_mut().resource_mut::<crate::enemy::FightReset>().0 = true;
+    app.update();
+    let world = app.world_mut();
+    assert_eq!(world.query_filtered::<Entity, With<crate::prosthetic::Projectile>>().iter(world).count(), 0, "a bullet survived the reset");
+    for f in world.query::<&crate::fxr::FxEffect>().iter(world) {
+        let on_bullet = matches!(f.anchor, Some(crate::fxr::Anchor::Entity(b)) if flying.contains(&b));
+        assert!(!on_bullet, "a bullet's effect still rides on it (stop {})", f.stop);
+    }
+}
+
+/// The combat arts' TAE 2 bullets are exported at each art level's variation, as their attacks
+/// are: One Mind / Ashina Cross a104_317000 judge 210 -> BehaviorParam_PC 105005210 refType 1
+/// (2026-10-12 bug hunt round 12: only the sword's v5000 was looked up, so none were found).
+#[test]
+fn the_combat_arts_bullets_are_exported() {
+    let mut app = app();
+    app.update();
+    let combat = app.world().resource::<Combat>();
+    for (var, j) in [(5004, 210), (5005, 210), (5030, 210)] {
+        let key = format!("v{var}:{j}");
+        let b = combat.player.bullets.get(&key).unwrap_or_else(|| panic!("no {key} bullet"));
+        let row = combat.player.behavior(var, j).expect("behavior row");
+        assert_eq!(b.bullet_id, row.ref_id, "{key}");
+    }
+}
+
+/// Runs a deathblow kill, then the frames until the enemy is back (its in-place respawn); Wolf
+/// steps 80 m away once it is dead, so the new life does not see him at once.
+fn kill_and_respawn(app: &mut App, while_dead: impl Fn(&mut Enemy, &mut Actor)) {
+    let (_, died) = break_and_deathblow_died(app, 200);
+    assert!(died, "the deathblow did not kill");
+    {
+        let world = app.world_mut();
+        let mut q = world.query_filtered::<&mut Transform, With<Player>>();
+        q.single_mut(world).unwrap().translation = Vec3::new(0.0, CAPSULE_HALF_HEIGHT, 80.0);
+    }
+    for _ in 0..60 * 30 {
+        app.update();
+        let world = app.world_mut();
+        let mut q = world.query_filtered::<(&mut Enemy, &mut Actor), Without<crate::enemy::Cast>>();
+        let (mut e, mut a) = q.single_mut(world).unwrap();
+        if !e.is_dead() {
+            return;
+        }
+        while_dead(&mut e, &mut a);
+    }
+    panic!("no respawn");
+}
+
+/// A respawn comes back seen: its idle's opacity, not the death clip's TAE 193 fade to 0 (c1180
+/// ThrowDefDeath12001 3.1-3.6 s; the respawn's procedural Approach has no anim to read it from)
+/// (2026-10-12 bug hunt round 13).
+#[test]
+fn a_respawn_comes_back_visible() {
+    let mut app = app();
+    for _ in 0..30 {
+        app.update();
+    }
+    kill_and_respawn(&mut app, |_, a| a.opacity = 0.0);
+    let world = app.world_mut();
+    let a = world.query_filtered::<&Actor, With<Enemy>>().single(world).unwrap();
+    assert!(a.opacity > 0.99, "opacity {}", a.opacity);
+}
+
+/// A respawn faces its spawn way, and its home pose with it, not the way it died (a deathblow
+/// from behind turned it 180 degrees) (2026-10-12 bug hunt round 13).
+#[test]
+fn a_respawn_faces_its_start() {
+    let mut app = app();
+    app.update();
+    // Its spawn facing (the line-up's: toward Wolf's start; the test app turns it after).
+    let start_yaw = {
+        let world = app.world_mut();
+        world.query::<&Enemy>().single(world).unwrap().start_yaw
+    };
+    for _ in 0..30 {
+        app.update();
+    }
+    kill_and_respawn(&mut app, move |_, a| a.yaw = start_yaw + std::f32::consts::PI);
+    let world = app.world_mut();
+    let (e, a) = world.query::<(&Enemy, &Actor)>().single(world).unwrap();
+    let off = |y: f32| ((y - start_yaw + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI).abs();
+    assert!(off(a.yaw) < 0.05, "yaw {} vs start {start_yaw}", a.yaw);
+    assert!(e.home.is_some_and(|h| off(h.1) < 0.05), "home {:?} vs start {start_yaw}", e.home);
+}
+
+/// An MSB patroller's respawn starts its map life again: unaware of Wolf (patrol, NonBattleAct,
+/// open to the stealth deathblows) and held by its map event's AI hold until it wakes; not still
+/// hunting with the old life's battle target (2026-10-12 bug hunt round 13).
+#[test]
+fn a_patrollers_respawn_is_unaware_and_held_again() {
+    let Some(spot) = crate::enemy::msb_patrol_on("m11_01_00_00", 1110236) else { return };
+    let hold = spot.hold.clone().expect("1110236 has its map event's AI hold");
+    let mut app = app_cfg("c1010", Some(10102010), vec![]);
+    {
+        let world = app.world_mut();
+        let ent = world.query_filtered::<Entity, With<Enemy>>().single(world).unwrap();
+        world.entity_mut(ent).insert((spot.route.clone(), hold, crate::enemy::StartUnaware));
+    }
+    for _ in 0..5 {
+        app.update();
+    }
+    {
+        let world = app.world_mut();
+        let e = world.query::<&Enemy>().single(world).unwrap();
+        assert!(e.is_unaware(), "starts unaware");
+    }
+    // The old life hunting Wolf (react's damaged(): BATTLE, seen, its forget time).
+    kill_and_respawn(&mut app, |e, _| e.targeting.damaged(&serde_json::json!({ "SightTargetForgetTime": 60.0 })));
+    {
+        // On its MSB spot, not 2 m off it along world -Z (the line-up's rule; 2026-10-12 round 16).
+        let world = app.world_mut();
+        let (t, e) = world.query::<(&Transform, &Enemy)>().single(world).unwrap();
+        let (at, spawned) = (t.translation, e.start);
+        assert!((at - spawned).with_y(0.0).length() < 0.05, "respawned at {at}, its spot {spawned}");
+    }
+    // (Its targeting state updates on the next frames; Wolf is 80 m away.)
+    for _ in 0..3 {
+        app.update();
+    }
+    let world = app.world_mut();
+    let (ent, e) = world.query::<(Entity, &Enemy)>().single(world).unwrap();
+    assert!(e.is_unaware(), "came back hunting (state {})", e.targeting.state);
+    assert!(world.get::<crate::enemy::AiHold>(ent).is_some(), "its AI hold is gone");
+}
+
+/// The rival snapshot (an NPC on a hostile team as the target) is BATTLE with a normal enemy
+/// target, and a changed state only on the frames the rival comes or goes: the real targeting's
+/// prev_state (NONE) made IsChangeState true every frame, so _COMMON_AddStateTransitionGoal
+/// looped 401040 and never attacked (2026-10-12 bug hunt round 13).
+#[test]
+fn a_rival_target_changes_state_once() {
+    use crate::stealth::{BATTLE, NONE, TYPE_NORMAL_ENEMY};
+    let real = crate::stealth::Targeting::new(1);
+    assert_eq!(real.state, NONE);
+    let r = Some(Entity::PLACEHOLDER);
+    let first = crate::enemy::rival_view(&real, r, None);
+    assert_eq!((first.state, first.kind), (BATTLE, TYPE_NORMAL_ENEMY));
+    assert!(first.changed(), "the rival's first frame");
+    let next = crate::enemy::rival_view(&real, r, r);
+    assert_eq!((next.state, next.kind), (BATTLE, TYPE_NORMAL_ENEMY));
+    assert!(!next.changed(), "every frame after: no change");
+    let gone = crate::enemy::rival_view(&real, None, r);
+    assert_eq!(gone.state, NONE);
+    assert!(gone.changed(), "back to the real target: a change");
+    assert!(!crate::enemy::rival_view(&real, None, None).changed());
+}
+
+
+/// A hostile NPC's blow (combat.rs resolve's enemy-vs-enemy contacts) does not make Wolf the
+/// battle target, nor wake a map AI hold; Wolf's does (2026-10-12 bug hunt round 14: c1010 team
+/// 6 vs c1700 team 24 both turned on Wolf, unseen, at their first exchange).
+#[test]
+fn a_rivals_blow_does_not_turn_it_on_wolf() {
+    let mut app = app_cfg("c1010", None, vec![]);
+    app.update();
+    let world = app.world_mut();
+    world.resource_scope(|world, combat: Mut<Combat>| {
+        let mut q = world.query::<(&mut Enemy, &mut Actor)>();
+        let (mut e, mut a) = q.single_mut(world).unwrap();
+        e.make_unaware(&mut a);
+        e.react_from(&mut a, &combat, false, "DamageS_Front");
+        e.targeting.update(combat.param("NpcThinkParam", combat.foe_of(&a).think_id), Vec3::ZERO, Vec3::NEG_Z, &crate::stealth::Seen::new(Vec3::new(0.0, 0.0, 200.0), 0.3, &[]), 1.0 / 60.0);
+        assert!(e.is_unaware(), "a rival's blow: state {}", e.targeting.state);
+        assert!(!e.hurt_by_wolf);
+        e.react_from(&mut a, &combat, true, "DamageS_Front");
+        e.targeting.update(combat.param("NpcThinkParam", combat.foe_of(&a).think_id), Vec3::ZERO, Vec3::NEG_Z, &crate::stealth::Seen::new(Vec3::new(0.0, 0.0, 200.0), 0.3, &[]), 1.0 / 60.0);
+        assert_eq!(e.targeting.state, crate::stealth::BATTLE, "Wolf's blow");
+        assert!(e.hurt_by_wolf);
+    });
+}
+
+/// A new lock takes only an enemy in front (camera.rs acquirable: ChrFrontRange 5 m / 30 deg,
+/// CamFrontNear 8 m / 60 x 30 deg, CamFrontFar 45 x 30 deg): one behind the camera, though
+/// nearer, is not taken.
+#[test]
+fn a_new_lock_takes_an_enemy_in_front_not_the_nearest_behind() {
+    let cam = GlobalTransform::from(Transform::from_xyz(0.0, 2.0, -4.0).looking_at(Vec3::new(0.0, 1.0, 0.0), Vec3::Y));
+    let (wolf, fwd) = (Vec3::ZERO, Vec3::Z);
+    assert!(!crate::camera::acquirable(&cam, wolf, fwd, Vec3::new(0.0, 0.0, -6.0)), "behind the camera");
+    assert!(crate::camera::acquirable(&cam, wolf, fwd, Vec3::new(0.0, 0.0, 10.0)), "ahead");
+    // Off the camera's front but close in front of Wolf: ChrFrontRange.
+    let side = GlobalTransform::from(Transform::from_xyz(-4.0, 2.0, 0.0).looking_at(Vec3::new(0.0, 1.0, 0.0), Vec3::Y));
+    assert!(crate::camera::acquirable(&side, wolf, fwd, Vec3::new(0.3, 0.0, 3.0)));
+    assert!(!crate::camera::acquirable(&side, wolf, fwd, Vec3::new(-4.0, 0.0, -3.0)), "behind Wolf and off camera");
+}
+
+/// The switch's 30 deg up / down is from the camera's front, not the horizontal: a camera
+/// looking 40 deg down at an enemy straight ahead can switch to it.
+#[test]
+fn the_switch_pitch_is_from_the_camera_front() {
+    let target = Vec3::new(0.0, 0.0, 6.0);
+    let dir = Vec3::new(0.0, -40f32.to_radians().sin(), 40f32.to_radians().cos());
+    let cam = GlobalTransform::from(Transform::from_translation(target - dir * 6.0).looking_to(dir, Vec3::Y));
+    assert!(crate::camera::switchable(&cam, target));
+    assert!(!crate::camera::switchable(&cam, target + Vec3::Y * 6.0), "45 deg above the front");
+}
+
+/// Covert A (skill 60 -> 150000: sightSearchEnemyCut 20) works only crouched / wall-hugging /
+/// hanging (its invocationConditionsStateChange1 949, the stateInfo of 109200 / 109210 / 109220 /
+/// 109221): standing Wolf is seen at full distance (2026-10-12 bug hunt round 14).
+#[test]
+fn covert_a_cuts_sight_only_crouched() {
+    let mut app = app();
+    {
+        let world = app.world_mut();
+        world.resource_mut::<crate::config::GameConfig>().player.skills = vec![60];
+    }
+    app.update();
+    let cut = |app: &mut App| {
+        let world = app.world_mut();
+        let a = world.query_filtered::<&Actor, With<Player>>().single(world).unwrap();
+        let combat = world.resource::<Combat>();
+        let config = world.resource::<crate::config::GameConfig>();
+        let skills = crate::combat::skill_sp_effect_rows(combat, config);
+        assert!(skills.iter().any(|s| s.invocation_conditions_state_change1 == 949), "150000's condition");
+        crate::enemy::wolf_seen(combat, a, Vec3::ZERO, &skills).cut
+    };
+    let standing = cut(&mut app);
+    assert!((standing - 1.0).abs() < 1e-4, "standing: {standing}");
+    app.world_mut().resource_mut::<PadInput>().press(Action::Crouch);
+    for _ in 0..120 {
+        app.update();
+    }
+    // Crouched: 109200's 20 % and Covert A's 20 %.
+    let crouched = cut(&mut app);
+    assert!((crouched - 0.64).abs() < 1e-4, "crouched: {crouched}");
+}
+
+/// A hold art lets go only in its TAE windows (c0000_transition.lua 6198-6209 / 6048-6058):
+/// Ashina Cross tapped (attack up at once) still draws, but not before HoldStart's ref 222 opens
+/// (a104_316500 f21); in the air (a104_316200 / 316220: 230 only) letting go of attack keeps the
+/// hold, and only guard ends it.
+#[test]
+fn hold_arts_release_only_in_their_windows() {
+    let mut ground = app();
+    ground.world_mut().resource_mut::<crate::config::GameConfig>().player.combat_art = 5500;
+    ground.update();
+    {
+        let mut pad = ground.world_mut().resource_mut::<PadInput>();
+        pad.press(Action::Attack);
+        pad.press(Action::Guard);
+        pad.attack_held = true;
+        pad.guard_held = true;
+    }
+    let (mut hold, mut draw) = (None, None);
+    for i in 0..200 {
+        if i == 3 {
+            ground.world_mut().resource_mut::<PadInput>().attack_held = false;
+        }
+        ground.update();
+        let s = player_state(&mut ground).0;
+        if s == "GroundSpacialAttackHoldStart" && hold.is_none() {
+            hold = Some(i);
+        }
+        if s == "GroundSpecialAttackCombo1" && draw.is_none() {
+            draw = Some(i);
+        }
+    }
+    let (hold, draw) = (hold.expect("no hold"), draw.expect("no draw"));
+    assert!(draw - hold >= 40, "drew {} ticks into the hold (window from f21 = 42)", draw - hold);
+
+    // The air hold (One Mind's 104 group): attack let go -> still holding.
+    let mut app = app();
+    {
+        let world = app.world_mut();
+        world.resource_mut::<crate::config::GameConfig>().player.combat_art = 6100;
+        world.resource_mut::<crate::enemy::EnemyDebug>().mode = crate::enemy::AiMode::Idle;
+        let mut q = world.query::<&mut Player>();
+        q.single_mut(world).unwrap().emblems = 10;
+    }
+    for _ in 0..10 {
+        app.update();
+    }
+    app.world_mut().resource_mut::<PadInput>().press(Action::Jump);
+    let mut seen = Vec::<String>::new();
+    let (mut launch, mut held_from) = (None, None);
+    for f in 0..200 {
+        app.update();
+        let (s, _, airborne, _) = player_actor(&mut app);
+        if airborne && launch.is_none() {
+            launch = Some(f);
+            let mut pad = app.world_mut().resource_mut::<PadInput>();
+            pad.press(Action::Attack);
+            pad.press(Action::Guard);
+            pad.attack_held = true;
+            pad.guard_held = true;
+        }
+        if s == "AirSpecialAttackHoldStart" && held_from.is_none() {
+            held_from = Some(f);
+            app.world_mut().resource_mut::<PadInput>().attack_held = false;
+        }
+        if seen.last() != Some(&s) {
+            seen.push(s);
+        }
+    }
+    assert!(held_from.is_some(), "{seen:?}");
+    assert!(!seen.iter().any(|s| s.ends_with("AirSpacialAttackHoldEnd")), "letting go of attack ended the air hold: {seen:?}");
+}
+
+/// Wolf's hits take the enemy's NpcParam per-attribute rates (2026-10-12 bug hunt round 14): the
+/// dogs (c1150 / c1151), c1250 and c1260 have lightShootDamageRate 2.0 and
+/// lightShootStaminaDmgRate 8.0, so a shuriken (atkAttribute / staminaPhysicsAttribute 9 Light
+/// Shoot) does twice its HP damage and 8x its posture damage to c1260 12600000 (249 HP; the dogs
+/// die of one) next to the plain servant c1180 11807100 (light shoot rates 1.0).
+#[test]
+fn a_shuriken_takes_the_light_shoot_rates() {
+    let (hp0, p0) = shuriken_on("c1180", 11807100);
+    let (hp1, p1) = shuriken_on("c1260", 12600000);
+    assert!(hp0 > 0.0 && p0 > 0.0, "{hp0} {p0}");
+    assert!((hp1 / hp0 - 2.0).abs() < 0.05 && (p1 / p0 - 8.0).abs() < 0.2, "c1180 {hp0} / {p0}, c1260 {hp1} / {p1}");
+}
+
+/// Every StaminaControlParam row an exported NpcParam names is exported (2026-10-12 bug hunt round
+/// 14: only 0 / 1000000 / 1000100 / 1000200 were, so c1180's 1070000 regen ratios read as 100 %).
+#[test]
+fn the_enemies_posture_regen_rows_are_exported() {
+    for (chr, row) in [("c1180", 1070000), ("c1060", 1060000)] {
+        let mut app = app_cfg(chr, None, vec![]);
+        app.update();
+        let world = app.world_mut();
+        let a = world.query_filtered::<&Actor, With<Enemy>>().single(world).unwrap();
+        assert_eq!(a.stamina_ctrl_row, row, "{chr}");
+        let combat = world.resource::<Combat>();
+        let r = combat.param("StaminaControlParam", row);
+        assert!(r.get("staminaRecoverRatio_forType000").is_some(), "{chr}: no StaminaControlParam {row}");
+    }
+}
+
+/// The route-end anim event (m11_01 11115236 on the patroller 1110236): unaware and inside its
+/// region (a 1.2 m sphere at the type 5 route's end), the enemy plays W_Event20004 once, then
+/// goes on (no loop: the exe never reads the event's Should Loop byte); alerted first, the event
+/// ends without it.
+#[test]
+fn a_patroller_plays_its_route_end_anim_once() {
+    let Some(spot) = crate::enemy::msb_patrol_on("m11_01_00_00", 1110236) else { return };
+    let re = spot.route_end.clone().expect("1110236 has its route-end anim event");
+    assert_eq!((re.anim, re.region.shape), (20004, 2));
+    for alerted in [false, true] {
+        let mut app = app_cfg("c1010", Some(10102010), vec![]);
+        let ent = {
+            let world = app.world_mut();
+            let mut q = world.query_filtered::<&mut Transform, With<Player>>();
+            q.single_mut(world).unwrap().translation = Vec3::new(0.0, CAPSULE_HALF_HEIGHT, 80.0);
+            let ent = world.query_filtered::<Entity, With<Enemy>>().single(world).unwrap();
+            world.entity_mut(ent).insert(crate::enemy::StartUnaware);
+            ent
+        };
+        app.update();
+        if alerted {
+            app.world_mut().get_mut::<Enemy>(ent).unwrap().targeting.damaged(&serde_json::json!({ "SightTargetForgetTime": 60.0 }));
+            app.world_mut().get_mut::<Enemy>(ent).unwrap().targeting.state = crate::stealth::CAUTION;
+        }
+        // The region on its spot.
+        let mut region = re.region.clone();
+        region.at = app.world().get::<Transform>(ent).unwrap().translation - Vec3::Y * (CAPSULE_HALF_HEIGHT + 0.05);
+        app.world_mut().entity_mut(ent).insert(crate::enemy::RouteEndAnim { region, anim: re.anim });
+        let mut states = Vec::<String>::new();
+        for _ in 0..60 * 8 {
+            app.update();
+            let s = app.world().get::<Actor>(ent).unwrap().state.clone();
+            if states.last() != Some(&s) {
+                states.push(s);
+            }
+        }
+        let played = states.iter().filter(|s| *s == "Event20004").count();
+        assert!(app.world().get::<crate::enemy::RouteEndAnim>(ent).is_none(), "the event is over");
+        if alerted {
+            assert_eq!(played, 0, "alerted: no anim {states:?}");
+        } else {
+            assert_eq!(played, 1, "once {states:?}");
+            assert_ne!(states.last().map(String::as_str), Some("Event20004"), "it ends {states:?}");
+        }
+    }
+}
+
+/// MSB region shapes by SoulsFormats' ShapeType (1 circle, 2 sphere, 3 cylinder, 4 rectangle,
+/// 5 box): the route-end regions are 2 = spheres (one radius), not cylinders (they were read as
+/// a zero-height cylinder, so only a point at its exact height was inside).
+#[test]
+fn msb_region_shapes_follow_the_shape_type() {
+    let r = |shape: i64, size: Vec<f32>| crate::enemy::WakeRegion { shape, at: Vec3::ZERO, x: Vec3::X, z: Vec3::Z, size };
+    let sphere = r(2, vec![1.2]);
+    assert!(sphere.contains(Vec3::new(0.0, 1.0, 0.0)) && sphere.contains(Vec3::new(0.0, -1.0, 0.0)) && !sphere.contains(Vec3::new(1.3, 0.0, 0.0)));
+    let circle = r(1, vec![1.2]);
+    assert!(circle.contains(Vec3::new(1.0, 50.0, 0.0)) && !circle.contains(Vec3::new(1.3, 0.0, 0.0)));
+    let cylinder = r(3, vec![1.0, 2.0]);
+    assert!(cylinder.contains(Vec3::new(0.5, 1.5, 0.0)) && !cylinder.contains(Vec3::new(0.5, 2.5, 0.0)) && !cylinder.contains(Vec3::new(0.5, -0.1, 0.0)));
+    let rect = r(4, vec![2.0, 4.0]);
+    assert!(rect.contains(Vec3::new(0.9, -30.0, 1.9)) && !rect.contains(Vec3::new(1.1, 0.0, 0.0)));
+}
+
+/// Super armour (sekiro-rs c0f97ee, docs/COMBAT-RULES.md; exe 84ff70 -> bfd980 -> 10cea20 ->
+/// 10b5100): c1010's a000_003010 holds 5358 (spCategory 1001) for 0-0.87 s, whose dmgLv_S / M
+/// enum 2 makes a small / middle hit minimum (8: no reaction, an additive flinch) and whose
+/// dmgLv_L 5 keeps a large one large; after the window the level stands. It replaced the flag-73
+/// proxy (every swing's active part shrugged every hit off).
+#[test]
+fn super_armour_swaps_the_damage_level_in_its_window() {
+    let mut app = app_cfg("c1010", None, vec![]);
+    app.update();
+    let world = app.world_mut();
+    world.resource_scope(|world, combat: Mut<Combat>| {
+        let mut a = world.query_filtered::<&mut Actor, With<Enemy>>().single_mut(world).unwrap();
+        let d = combat.data_of(&a);
+        a.play("Ez3010", "a000_003010");
+        a.t = 0.3;
+        assert_eq!(crate::combat::damage_motion_level(d, &a, 2), 8, "middle -> minimum");
+        assert_eq!(crate::combat::damage_motion_level(d, &a, 1), 8, "small -> minimum");
+        assert_eq!(crate::combat::damage_motion_level(d, &a, 3), 3, "large stays");
+        assert_eq!(crate::combat::damage_motion_level(d, &a, 0), 0);
+        a.t = 1.2;
+        assert_eq!(crate::combat::damage_motion_level(d, &a, 2), 2, "after the window");
+    });
+}
+
+/// A deflected or blocked bullet is repelled itself: its distant shooter takes no posture,
+/// recoil or bound reaction, even with an attacker-side posture base and reaction on the row
+/// (sekiro-rs a8351b9 fight.rs:644, docs/PROJECTILE-GUARD.md; inferred from the rows).
+#[test]
+fn a_guarded_bullet_leaves_its_shooter_alone() {
+    for deflect in [true, false] {
+        let mut app = app_cfg("c1060", None, Vec::new());
+        app.update();
+        let (shooter, atk) = {
+            let world = app.world_mut();
+            let combat = world.resource::<Combat>();
+            let mut atk = combat.kind(0).data.bullet_rows.values().find_map(|s| s.attack.clone().filter(|a| a.atk_phys > 0.0)).expect("a bullet attack");
+            atk.repel_lost_stam_damage_attacker = 30.0;
+            atk.repel_victory_stam_damage_attacker = 30.0;
+            atk.just_deflected_action = 1;
+            atk.deflected_action = 1;
+            let pt = world.query_filtered::<&Transform, With<Player>>().single(world).unwrap().translation;
+            let pyaw = world.query_filtered::<&Actor, With<Player>>().single(world).unwrap().yaw;
+            let fwd = Vec3::new(-pyaw.sin(), 0.0, -pyaw.cos());
+            let mut q = world.query_filtered::<(Entity, &mut Transform, &mut Actor, &mut Enemy), Without<crate::enemy::Cast>>();
+            let (ent, mut t, mut a, mut e) = q.single_mut(world).unwrap();
+            t.translation = pt + fwd * 8.0;
+            a.posture = 0.0;
+            e.make_unaware(&mut a);
+            (ent, atk)
+        };
+        {
+            let mut pad = app.world_mut().resource_mut::<PadInput>();
+            pad.press(Action::Guard);
+            pad.guard_held = true;
+        }
+        // A deflect lands in the press's window; a block after it.
+        for _ in 0..if deflect { 2 } else { 30 } {
+            app.update();
+        }
+        let wolf = app.world_mut().query_filtered::<Entity, With<Player>>().single(app.world()).unwrap();
+        app.world_mut().get_mut::<Actor>(shooter).unwrap().bullet_hits.push((wolf, atk.clone()));
+        app.update();
+        let log = log_text(&app);
+        let want = if deflect { "DEFLECT" } else { "blocked" };
+        assert!(log.contains(want), "deflect {deflect}: {log}");
+        let a = app.world().get::<Actor>(shooter).unwrap();
+        assert_eq!(a.posture, 0.0, "deflect {deflect}: the shooter took posture");
+        assert!(!a.state.starts_with("AttackBound") && !a.state.starts_with("AttackNoBound"), "deflect {deflect}: {}", a.state);
+    }
+}
+
+/// c9997 IsDamagedAerial: an enemy hit in the air plays its aerial reactions (c1060 has 8140 /
+/// 8141 / 8150): middle / large / push / fling -> DamageAerialFront / Back, blow / upper / ex
+/// blast -> DamageAerialBlow; small blow keeps DamageBlow (ExecDamageBlow comes first); a small
+/// hit, or a chr with no aerial anims (c1010), has none (the additive flinch). On the ground the
+/// usual table (sekiro-rs c0f97ee character.rs:1045-1074).
+#[test]
+fn an_enemy_hit_in_the_air_takes_the_aerial_reactions() {
+    for (chr, aerial_anims) in [("c1060", true), ("c1010", false)] {
+        let mut app = app_cfg(chr, None, Vec::new());
+        app.update();
+        let world = app.world_mut();
+        let a = world.query_filtered::<&Actor, (With<Enemy>, Without<crate::enemy::Cast>)>().iter(world).next().unwrap();
+        let combat = world.resource::<Combat>();
+        let d = &combat.kind(0).data;
+        let at = Vec3::ZERO;
+        let front = a.forward() * 2.0;
+        let state = |level: i64, from: Vec3, aerial: bool| crate::combat::enemy_damage_state_air(d, level, &a, from, at, aerial);
+        let s = |v: &str| Some(v.to_string());
+        if aerial_anims {
+            assert_eq!(state(2, front, true), s("DamageAerialFront"));
+            assert_eq!(state(3, -front, true), s("DamageAerialBack"));
+            assert_eq!(state(6, front, true), s("DamageAerialFront"));
+            assert_eq!(state(4, front, true), s("DamageAerialBlow"));
+            assert_eq!(state(9, -front, true), s("DamageAerialBlow"));
+        } else {
+            assert_eq!(state(2, front, true), None);
+            assert_eq!(state(4, front, true), None);
+        }
+        assert_eq!(state(1, front, true), None, "{chr}: a small hit in the air");
+        assert_eq!(state(7, front, true), s("DamageBlowFront"), "{chr}");
+        assert_eq!(state(2, front, false), s("DamageMiddle_Front"), "{chr}: on the ground");
+    }
+}
+
+/// A tool hit reacts as a sword hit (prosthetic.rs bullet_reaction = combat.rs resolve): an
+/// enemy in the air takes c9997's aerial reaction (DamageAerialFront / Back, 8140 / 8141), not
+/// the ground flinch.
+#[test]
+fn a_tool_hit_in_the_air_takes_the_aerial_reaction() {
+    let mut app = app();
+    app.world_mut().resource_mut::<crate::enemy::EnemyDebug>().mode = crate::enemy::AiMode::Idle;
+    for _ in 0..5 {
+        app.update();
+    }
+    let react = |app: &mut App, airborne: bool| -> (Option<String>, bool) {
+        let world = app.world_mut();
+        world.resource_scope(|world, combat: Mut<Combat>| {
+            let mut q = world.query_filtered::<(&mut Actor, &Enemy, &Transform), With<Enemy>>();
+            let (mut a, e, t) = q.single_mut(world).unwrap();
+            a.airborne = airborne;
+            let at = t.translation;
+            let from = at + a.forward() * 3.0;
+            let has = combat.data_of(&a).anim("a000_008140").is_some();
+            (crate::prosthetic::bullet_reaction(&combat, &a, e, 2, from, at), has)
+        })
+    };
+    let (ground, _) = react(&mut app, false);
+    assert!(ground.as_deref().is_some_and(|s| s.starts_with("DamageMiddle")), "{ground:?}");
+    let (air, has) = react(&mut app, true);
+    if has {
+        assert_eq!(air.as_deref(), Some("DamageAerialFront"));
+    } else {
+        assert_eq!(air, None, "no aerial anim: the additive flinch");
+    }
+}
+
+/// c9997 ExecGuardBlock picks the guard clip by refs, not by the deflect itself: c1180's shield
+/// 400230 (stateInfo 158, no ref) deflects but plays GuardDamageSmall / Large (it has no
+/// JustGuardDamage clip; the old pick played nothing); ref 1000090 (200220) plays
+/// JustGuardDamage, 1000100 (200230) GuardDamageSpecial (c1010 a000_008502 on Common_Parry
+/// a000_003102), 1000105 the additive flinch; a missing clip falls to the next one.
+#[test]
+fn an_enemys_guard_clip_follows_exec_guard_block() {
+    use crate::combat::{GuardPick, enemy_guard_block};
+    let st = |s: &str| GuardPick::State(s.to_string());
+    let mut app = app_cfg("c1180", Some(11807400), Vec::new());
+    app.update();
+    let world = app.world_mut();
+    let combat = world.resource::<Combat>();
+    let d = &combat.kind(0).data;
+    assert_eq!(d.sp_effects.get("400230").map(|s| (s.state_info, s.behavior_ref_id)), Some((158, 0)), "the shield deflects without a ref");
+    assert_eq!(enemy_guard_block(d, &[], 2, 4, false, false), st("GuardDamageSmall_RighttoLeft"));
+    assert_eq!(enemy_guard_block(d, &[], 3, 4, true, false), st("GuardDamageLarge_LefttoRight"));
+    assert_eq!(enemy_guard_block(d, &[1000090], 2, 4, false, false), st("GuardDamageSmall_RighttoLeft"), "no JustGuardDamage clip: the next");
+    let mut app = app_cfg("c1010", None, Vec::new());
+    app.update();
+    let world = app.world_mut();
+    let ent = world.query_filtered::<Entity, (With<Enemy>, Without<crate::enemy::Cast>)>().iter(world).next().unwrap();
+    // Common_Parry a000_003102 carries 200230 (ref 1000100) at frames 0-30.
+    let refs = world.resource_scope(|world, combat: Mut<Combat>| {
+        let mut q = world.query::<(&mut Actor, &Enemy)>();
+        let (mut a, e) = q.get_mut(world, ent).unwrap();
+        a.play("Parry", "a000_003102");
+        a.t = 0.2;
+        crate::prosthetic::enemy_refs(&combat, &a, e)
+    });
+    assert!(refs.contains(&1000100), "{refs:?}");
+    let combat = world.resource::<Combat>();
+    let d = &combat.kind(0).data;
+    assert_eq!(enemy_guard_block(d, &refs, 3, 4, false, false), st("GuardDamageSpecial_RighttoLeft"));
+    assert_eq!(d.anim_key("GuardDamageSpecial_RighttoLeft"), Some("a000_008502"));
+    assert_eq!(enemy_guard_block(d, &[1000090], 2, 4, false, false), st("JustGuardDamage_RighttoLeft"));
+    assert_eq!(enemy_guard_block(d, &[1000090], 2, 4, true, false), st("JustGuardDanage_LefttoRight"));
+    assert_eq!(enemy_guard_block(d, &[1000090, 1000100], 2, 4, false, false), st("JustGuardDamageSpecial_RighttoLeft"));
+    assert_eq!(enemy_guard_block(d, &[1000105], 3, 4, false, false), GuardPick::Add);
+    assert_eq!(enemy_guard_block(d, &[], 8, 4, false, false), GuardPick::Add);
+    assert_eq!(enemy_guard_block(d, &[], 2, 4, false, false), st("GuardDamageSmall_RighttoLeft"));
+}
+
+/// c0000_transition.lua:1158: a hit on an already broken Wolf knocks him down only at push /
+/// small / middle / large; minimum plays nothing; blow / fling / upper / ex blast / breath take
+/// the normal reactions. A hit that breaks him again in StandDamageBreak knocks him down (:1615).
+#[test]
+fn a_broken_wolf_is_knocked_down_only_by_the_lighter_levels() {
+    let mut app = app();
+    app.update();
+    let combat = app.world().resource::<Combat>();
+    let mut a = Actor::new(crate::actor::Side::Player, 100.0, 100.0, 0.0, 0);
+    a.state = "StandDeflectBreak".into();
+    a.posture = 0.0;
+    let at = Vec3::ZERO;
+    let from = a.forward();
+    for level in [1, 2, 3, 5] {
+        assert!(!crate::combat::broken_takes_normal_damage(level, &a));
+        assert_eq!(crate::combat::player_break_state(combat, level, &a, from, at), "StandDamageBreakDamage", "level {level}");
+    }
+    assert!(!crate::combat::broken_takes_normal_damage(8, &a));
+    assert_eq!(crate::combat::player_break_state(combat, 8, &a, from, at), "", "minimum");
+    for level in [4, 6, 7, 9, 10, 11] {
+        assert!(crate::combat::broken_takes_normal_damage(level, &a), "level {level}");
+    }
+    // Broken again in StandDamageBreak: any level.
+    a.state = "StandDamageBreak_F".into();
+    a.posture = a.posture_max;
+    assert!(!crate::combat::broken_takes_normal_damage(4, &a));
+    assert_eq!(crate::combat::player_break_state(combat, 4, &a, from, at), "StandDamageBreakDamage");
+}
+
+/// INTERUPT_UseItem fires for a crouched drink too (CrouchItemGourdDrink).
+#[test]
+fn a_crouched_drink_raises_use_item() {
+    let mut a = Actor::new(crate::actor::Side::Player, 100.0, 100.0, 0.0, 0);
+    a.prev_t = 0.0;
+    a.t = 0.016;
+    for (state, want) in [("ItemGourdDrink", true), ("CrouchItemGourdDrink", true), ("CrouchIdle", false)] {
+        a.state = state.into();
+        assert_eq!(crate::enemy::wolf_starts_an_item(&a), want, "{state}");
+    }
+}
+
+/// c9997 ExecGuardBlock's EXLARGE (a blow / ex blast on a weak guard: guard_damage_table row 4
+/// guardLevel 1, row 10 guardLevels 1-3) has no guard clip: ExecDamageLargeBlow plays
+/// DamageLargeBlow, in the air DamageAerialBlow (c1060 has both). It played GuardDamageLarge.
+#[test]
+fn a_blow_on_a_weak_guard_launches_the_enemy() {
+    use crate::combat::{GuardPick, enemy_guard_block};
+    let mut app = app_cfg("c1060", None, Vec::new());
+    app.update();
+    let combat = app.world().resource::<Combat>();
+    let d = &combat.kind(0).data;
+    let st = |s: &str| GuardPick::State(s.to_string());
+    assert_eq!(enemy_guard_block(d, &[], 4, 1, false, false), st("DamageLargeBlow"));
+    assert_eq!(enemy_guard_block(d, &[], 10, 3, false, false), st("DamageLargeBlow"));
+    assert_eq!(enemy_guard_block(d, &[], 4, 1, false, true), st("DamageAerialBlow"));
+    // A strong guard keeps the guard clip.
+    assert_eq!(enemy_guard_block(d, &[], 4, 4, false, false), st("GuardDamageLarge_RighttoLeft"));
+}
+
+/// The general stance's own attacks (c9997 ExecAIGeneralStance; 119000 / 132000 / 155060 battle
+/// scripts ask AttackTunableSpin 603000-603002; c1190 / c1320 have them): out of the stance the
+/// request starts it first (they played the attack at once, standing), in it they play as
+/// GeneralStanceAttack<id>, count as attacks (flag-73 windows), and go back to the stance idle.
+#[test]
+fn the_general_stance_attacks_start_the_stance_first() {
+    use crate::enemy::general_stance_play;
+    let s = |v: &str| Some(v.to_string());
+    assert_eq!(general_stance_play("Idle", false, 603000), s("GeneralStanceStart401060"));
+    assert_eq!(general_stance_play("GeneralStanceStart401060", false, 603000), s("GeneralStanceStart401060"), "the start plays out");
+    assert_eq!(general_stance_play("GeneralStanceStart401060", true, 603001), s("GeneralStanceAttack603001"));
+    assert_eq!(general_stance_play("GeneralStanceIdle", false, 603002), s("GeneralStanceAttack603002"));
+    assert_eq!(general_stance_play("GeneralStanceIdle", false, 601040), s("GeneralStanceEnd601040"));
+    assert_eq!(general_stance_play("GeneralStanceIdle", false, 401060), s("GeneralStanceEnd601040"));
+    assert_eq!(general_stance_play("Idle", false, 3000), None);
+    let mut app = app_cfg("c1190", None, vec![]);
+    app.update();
+    let world = app.world_mut();
+    let ent = world.query_filtered::<Entity, (With<Enemy>, Without<crate::enemy::Cast>)>().iter(world).next().unwrap();
+    world.resource_scope(|world, combat: Mut<Combat>| {
+        let mut q = world.query::<(&mut Actor, &mut Enemy)>();
+        let (mut a, mut e) = q.get_mut(world, ent).unwrap();
+        let d = combat.data_of(&a);
+        assert!(a.play_state(d, "GeneralStanceAttack603000"));
+        e.cur_ez = Some(603000);
+        assert!(e.is_attacking());
+        let cmd = crate::ai::Command { general: true, ..Default::default() };
+        crate::enemy::guard_stance(&mut a, d, &cmd, true, true);
+        assert_eq!(a.state, "GeneralStanceIdle", "the attack ends in the stance");
+    });
+}
+
+/// IsArrived runs before the region test (FUN_1405caa00 1405c.c:7455; FUN_1405b9070: distance <
+/// the chr's radius + the goal's 0): a point whose region is a zero sphere (2 in the game) or a
+/// point region (51) is still reached on top of it. It waited for the region forever before.
+#[test]
+fn a_patrol_point_with_a_zero_region_is_reached_by_is_arrived() {
+    let Some(spot) = crate::enemy::msb_patrol_on("m11_01_00_00", 1110248) else { return };
+    assert!((spot.at - Vec3::new(-11.9, 0.03, -19.78)).length() < 0.1, "{}", spot.at);
+    assert_eq!(spot.route.0.points.len(), 1);
+    assert!(crate::enemy::msb_patrol_on("m11_01_00_00", 1110414).is_none(), "the General has no route");
+    let spot = crate::enemy::msb_patrol_on("m11_01_00_00", 1110236).expect("c1010_0046");
+    let mut spot = spot;
+    assert_eq!((spot.route.0.kind, spot.route.0.points.len()), (5, 3));
+    let radii: Vec<f32> = spot.route.0.areas.iter().map(|a| a.as_ref().map_or(0.0, |a| a.size[0])).collect();
+    assert_eq!(radii, [1.2, 1.2, 1.2], "the points' sphere regions");
+    // The test arena is flat: the regions stand on its floor.
+    for a in spot.route.0.areas.iter_mut().flatten() {
+        a.at.y = 0.0;
+        a.size[0] = 0.0;
+    }
+    let g = crate::config::GroupEnemy { chr: "c1010".into(), npc_row: Some(10102010), at: None, msb: None };
+    let mut app = app_cfg("c1010", Some(10102010), vec![g]);
+    let points = spot.route.0.points.clone();
+    let patroller = {
+        let world = app.world_mut();
+        // Wolf far behind the line-up, out of sight; the first enemy far away too.
+        let mut q = world.query_filtered::<&mut Transform, With<Player>>();
+        q.single_mut(world).unwrap().translation = Vec3::new(0.0, CAPSULE_HALF_HEIGHT, 80.0);
+        let ents: Vec<Entity> = world.query_filtered::<Entity, With<Enemy>>().iter(world).collect();
+        let mut q = world.query_filtered::<(&mut Transform, &mut Actor, &mut Enemy), With<Enemy>>();
+        let (mut t, mut a, mut e) = q.get_mut(world, ents[0]).unwrap();
+        t.translation = Vec3::new(40.0, CAPSULE_HALF_HEIGHT, 40.0);
+        a.yaw = 0.0;
+        e.make_unaware(&mut a);
+        let (mut t, mut a, mut e) = q.get_mut(world, ents[1]).unwrap();
+        t.translation = spot.at.with_y(CAPSULE_HALF_HEIGHT);
+        a.yaw = spot.yaw;
+        e.make_unaware(&mut a);
+        world.entity_mut(ents[1]).insert(spot.route);
+        ents[1]
+    };
+    let mut reached = Vec::new();
+    for _ in 0..60 * 40 {
+        app.update();
+        let world = app.world_mut();
+        let pos = world.get::<Transform>(patroller).unwrap().translation;
+        if let Some((cur, prev)) = world.non_send_resource::<crate::enemy::Brains>().map.get(&patroller).and_then(|b| b.patrol_points()) {
+            if prev >= 0 && reached.last() != Some(&prev) {
+                let d = (pos - points[prev as usize]).with_y(0.0).length();
+                reached.push(prev);
+                assert!(d < 0.9, "stepped at point {prev} {d:.2} m away (its radius)");
+            }
+            if reached == [0, 1, 2] {
+                // A type 5 route ends at its last point: cur -1 (ai.rs Patrol, FUN_1405c2710).
+                assert_eq!(cur, -1, "the route is over");
+                break;
+            }
+        }
+    }
+    assert_eq!(reached, [0, 1, 2], "points reached in order");
+}
+
+/// A map-held enemy wakes on Wolf's hit only when it takes HP (EMEVD 4[1] / 3[23] read a damage
+/// record written for final HP damage > 0, FUN_1406d8950 from FUN_140b6e150 140b6.c:8033): one
+/// already cut (a rival's blow) that blocks Wolf's swing, its HP whole, stays held; it woke
+/// before (Wolf's guard reaction + HP below max).
+#[test]
+fn a_blocked_hit_does_not_wake_a_held_enemy() {
+    let Some(spot) = crate::enemy::msb_patrol_on("m11_01_00_00", 1110236) else { return };
+    let hold = spot.hold.clone().expect("1110236 has its map event's AI hold");
+    let g = crate::config::GroupEnemy { chr: "c1010".into(), npc_row: Some(10102010), at: None, msb: None };
+    let mut app = app_cfg("c1010", Some(10102010), vec![g]);
+    let held = {
+        let world = app.world_mut();
+        let mut q = world.query_filtered::<&mut Transform, With<Player>>();
+        q.single_mut(world).unwrap().translation = Vec3::new(0.0, CAPSULE_HALF_HEIGHT, 80.0);
+        let ents: Vec<Entity> = world.query_filtered::<Entity, With<Enemy>>().iter(world).collect();
+        let mut q = world.query_filtered::<(&mut Transform, &mut Actor, &mut Enemy), With<Enemy>>();
+        let (mut t, mut a, mut e) = q.get_mut(world, ents[0]).unwrap();
+        t.translation = Vec3::new(40.0, CAPSULE_HALF_HEIGHT, 40.0);
+        e.make_unaware(&mut a);
+        let (mut t, mut a, mut e) = q.get_mut(world, ents[1]).unwrap();
+        t.translation = spot.at.with_y(CAPSULE_HALF_HEIGHT);
+        a.yaw = spot.yaw;
+        e.make_unaware(&mut a);
+        // Cut earlier by a rival.
+        a.hp -= 10.0;
+        world.entity_mut(ents[1]).insert((spot.route.clone(), hold.clone()));
+        ents[1]
+    };
+    for _ in 0..30 {
+        app.update();
+    }
+    // Wolf's swing blocked: his guard reaction, no HP lost.
+    app.world_mut().resource_scope(|world, combat: Mut<Combat>| {
+        let mut q = world.query::<(&mut Enemy, &mut Actor)>();
+        let (mut e, mut a) = q.get_mut(world, held).unwrap();
+        e.react_from(&mut a, &combat, true, "GuardDamageSmall_RighttoLeft");
+    });
+    for _ in 0..30 {
+        app.update();
+    }
+    assert!(app.world().get::<crate::enemy::AiHold>(held).is_some(), "a blocked hit woke it");
+    // Wolf's cut that takes HP wakes it.
+    app.world_mut().resource_scope(|world, combat: Mut<Combat>| {
+        let mut q = world.query::<(&mut Enemy, &mut Actor)>();
+        let (mut e, mut a) = q.get_mut(world, held).unwrap();
+        a.hp -= 5.0;
+        e.react_from(&mut a, &combat, true, "DamageS_Front");
+    });
+    for _ in 0..3 {
+        app.update();
+    }
+    assert!(app.world().get::<crate::enemy::AiHold>(held).is_none(), "Wolf's cut did not wake it");
+}
+
+/// A map-held enemy wakes on the SpEffects Wolf's bullets put on it (Enemy::add_timed, e.g. the
+/// Finger Whistle's 230518 from bullets 790004-6, zero damage): its wake list has them, but the
+/// hold only read the resident and TAE SpEffects (2026-10-12 round 19).
+#[test]
+fn the_finger_whistle_wakes_a_held_enemy() {
+    let Some(spot) = crate::enemy::msb_patrol_on("m11_01_00_00", 1110236) else { return };
+    let hold = spot.hold.clone().expect("1110236 has its map event's AI hold");
+    assert!(hold.sp_effects.contains(&230518), "wake list {:?}", hold.sp_effects);
+    let g = crate::config::GroupEnemy { chr: "c1010".into(), npc_row: Some(10102010), at: None, msb: None };
+    let mut app = app_cfg("c1010", Some(10102010), vec![g]);
+    let held = {
+        let world = app.world_mut();
+        let mut q = world.query_filtered::<&mut Transform, With<Player>>();
+        q.single_mut(world).unwrap().translation = Vec3::new(0.0, CAPSULE_HALF_HEIGHT, 80.0);
+        let ents: Vec<Entity> = world.query_filtered::<Entity, With<Enemy>>().iter(world).collect();
+        let mut q = world.query_filtered::<(&mut Transform, &mut Actor, &mut Enemy), With<Enemy>>();
+        let (mut t, mut a, mut e) = q.get_mut(world, ents[0]).unwrap();
+        t.translation = Vec3::new(40.0, CAPSULE_HALF_HEIGHT, 40.0);
+        e.make_unaware(&mut a);
+        let (mut t, mut a, mut e) = q.get_mut(world, ents[1]).unwrap();
+        t.translation = spot.at.with_y(CAPSULE_HALF_HEIGHT);
+        a.yaw = spot.yaw;
+        e.make_unaware(&mut a);
+        world.entity_mut(ents[1]).insert((spot.route.clone(), hold.clone()));
+        ents[1]
+    };
+    for _ in 0..30 {
+        app.update();
+    }
+    assert!(app.world().get::<crate::enemy::AiHold>(held).is_some(), "woke on its own");
+    app.world_mut().get_mut::<Enemy>(held).unwrap().add_timed(230518, 1.0);
+    for _ in 0..3 {
+        app.update();
+    }
+    assert!(app.world().get::<crate::enemy::AiHold>(held).is_none(), "the whistle did not wake it");
+}
+
+/// ChrActionFlag 24 on Wolf (GroundWireShoot a000_202000 frames 0-19): an enemy hit takes HP and
+/// posture but plays no reaction and no knockback, so the grapple goes on (exe b6bfe0; sekiro-rs
+/// fight.rs:660-666). It used to cancel the grapple and push Wolf back (2026-10-12 round 16).
+#[test]
+fn a_hit_under_flag_24_keeps_wolfs_grapple() {
+    let mut app = app();
+    app.update();
+    {
+        let world = app.world_mut();
+        world.resource_scope(|world, combat: Mut<Combat>| {
+            let d = &combat.player;
+            assert!(d.flag("a000_202000", 0.2, crate::combat::FLAG_NO_DAMAGE_MOTION), "the wire shot holds flag 24");
+            let mut q = world.query::<(&mut Enemy, &mut Actor)>();
+            let (mut e, mut a) = q.single_mut(world).unwrap();
+            e.force_anim(&mut a, "a000_003000");
+        });
+    }
+    let before = log_text(&app).matches("hit:").count();
+    let mut hit = false;
+    let mut hp0 = 0.0;
+    for _ in 0..300 {
+        {
+            let world = app.world_mut();
+            let mut a = world.query_filtered::<&mut Actor, With<Player>>().single_mut(world).unwrap();
+            if a.anim != "a000_202000" {
+                a.play("GroundWireShoot", "a000_202000");
+            }
+            a.t = 0.2;
+            a.prev_t = 0.2;
+            hp0 = a.hp;
+        }
+        app.update();
+        if log_text(&app).matches("hit:").count() > before {
+            hit = true;
+            break;
+        }
+    }
+    assert!(hit, "no hit: {}", log_text(&app));
+    let world = app.world_mut();
+    let a = world.query_filtered::<&Actor, With<Player>>().single(world).unwrap();
+    assert_eq!(a.anim, "a000_202000", "the hit cancelled the grapple ({})", a.state);
+    assert!(a.hp < hp0, "HP still lands");
+    assert_eq!(a.kb_vel, Vec3::ZERO, "no knockback under flag 24");
+}
+
+/// Wolf's cut that plays no reaction (mid-swing: the enemy_mid_swing setup, live) still marks
+/// the map AI hold's damage wake: it is set where Wolf's HP damage lands, not only by a reaction
+/// (react_from), so a held MSB enemy cut this way wakes (EMEVD 4[1] / 3[23]; 2026-10-12 round 16).
+#[test]
+fn a_cut_with_no_reaction_still_wakes_a_held_enemy() {
+    let mut app = app();
+    {
+        let world = app.world_mut();
+        let mut q = world.query::<(&mut Enemy, &mut Actor)>();
+        let (mut e, mut a) = q.single_mut(world).unwrap();
+        e.force_anim(&mut a, "a000_003000");
+        a.t = 7.0 / TAE_FPS;
+        a.prev_t = a.t;
+        a.yaw = std::f32::consts::PI;
+        e.hurt_by_wolf = false;
+    }
+    app.world_mut().resource_mut::<PadInput>().press(Action::Attack);
+    for _ in 0..40 {
+        app.update();
+        if log_text(&app).contains("you hit") {
+            break;
+        }
+    }
+    assert!(log_text(&app).contains("you hit"), "{}", log_text(&app));
+    assert_eq!(enemy_state(&mut app).1, "a000_003000", "it reacted: not the no-reaction case");
+    let world = app.world_mut();
+    assert!(world.query::<&Enemy>().single(world).unwrap().hurt_by_wolf, "no damage wake");
+}
+
+/// A sandbox line-up of kinds that do not exist places nobody: it must not try again (and log)
+/// every frame.
+#[test]
+fn a_lineup_that_places_nobody_is_not_retried() {
+    let mut app = app();
+    app.world_mut().insert_resource(crate::sandbox::Lineup(vec!["c9999".into()]));
+    app.add_systems(Update, crate::sandbox::respawn_lineup);
+    app.update();
+    assert!(app.world().get_resource::<crate::sandbox::Lineup>().is_none(), "the empty line-up is retried every frame");
+    assert_eq!(app.world_mut().query_filtered::<(), With<crate::sandbox::SandboxEnemy>>().iter(app.world()).count(), 0);
+}
+
+/// A tool hit on an enemy under ChrActionFlag 24 pushes it nowhere (as a sword hit), and any
+/// tool damage wakes a map-held enemy (hurt_by_wolf), reaction or not (round 16, Bosees).
+#[test]
+fn a_tool_hit_under_flag_24_has_no_knockback_and_wakes_the_hold() {
+    let mut app = app();
+    app.world_mut().resource_mut::<crate::enemy::EnemyDebug>().mode = crate::enemy::AiMode::Idle;
+    for _ in 0..5 {
+        app.update();
+    }
+    let world = app.world_mut();
+    world.resource_scope(|world, combat: Mut<Combat>| {
+        let mut q = world.query_filtered::<(&mut Actor, &mut Enemy, &Transform), With<Enemy>>();
+        let (mut a, mut e, t) = q.single_mut(world).unwrap();
+        let d = combat.data_of(&a);
+        let mut keys: Vec<&String> = d.anims.keys().collect();
+        keys.sort();
+        let held = keys.iter().find_map(|k| (0..90).map(|i| i as f32 / 30.0).find(|&t| d.flag(k, t, crate::combat::FLAG_NO_DAMAGE_MOTION)).map(|t| ((*k).clone(), t)));
+        let Some((anim, ft)) = held else {
+            eprintln!("no flag-24 anim for this enemy: skipped");
+            return;
+        };
+        let at = t.translation;
+        let from = at + a.forward() * 3.0;
+        e.force_anim(&mut a, &anim);
+        a.t = ft;
+        a.kb_vel = Vec3::ZERO;
+        e.hurt_by_wolf = false;
+        crate::prosthetic::tool_hit_push(&combat, &mut a, &mut e, from, at, 1.0, 2, 10.0);
+        assert_eq!(a.kb_vel, Vec3::ZERO, "knockback under flag 24 ({anim} {ft:.2})");
+        assert!(e.hurt_by_wolf, "tool damage did not wake the hold");
+        e.hurt_by_wolf = false;
+        crate::prosthetic::tool_hit_push(&combat, &mut a, &mut e, from, at, 1.0, 2, 0.0);
+        assert!(!e.hurt_by_wolf, "no damage, no wake");
+    });
+}
+
+fn wolf_skeleton(app: &mut App) -> (Entity, f32, Vec3, bool) {
+    let world = app.world_mut();
+    let (e, skel, lag) = world.query_filtered::<(Entity, &crate::anim::Skeleton, Option<&crate::anim::ModelLag>), With<Player>>().single(world).unwrap();
+    let (root, blend) = (skel.root, skel.blend);
+    let has_lag = lag.is_some();
+    let r = world.get::<Transform>(root).unwrap().translation;
+    (e, blend, r, has_lag)
+}
+
+/// Wolf's fight reset ends a running deathblow model slide and snaps his pose: the slide's
+/// world offset used to go on past the reset, his model drawn off the start spot and sliding
+/// back, and he faded in from the old pose (2026-10-12 bug hunt round 17).
+#[test]
+fn a_reset_snaps_wolfs_model_onto_the_start() {
+    let mut app = app_geom("c1020", None);
+    move_enemy_far(&mut app);
+    let (wolf, _, _, _) = wolf_skeleton(&mut app);
+    app.world_mut().resource_scope(|world, combat: Mut<Combat>| {
+        world.get_mut::<Actor>(wolf).unwrap().play_state(&combat.player, "StandDamageMiddle_F");
+    });
+    for _ in 0..10 {
+        app.update();
+    }
+    app.world_mut().entity_mut(wolf).insert(crate::anim::ModelLag { offset: Vec3::new(1.0, 0.0, 0.0), time: 0.5, left: 0.5 });
+    app.update();
+    app.world_mut().resource_mut::<PadInput>().reset = true;
+    for _ in 0..2 {
+        app.update();
+    }
+    let (_, blend, root, lag) = wolf_skeleton(&mut app);
+    assert!(!lag, "the model slide went on past the reset");
+    assert!((root - Vec3::new(0.0, -crate::player::CAPSULE_HALF_HEIGHT, 0.0)).length() < 1e-4, "root off its rest after the reset: {root}");
+    assert!(blend >= 1.0, "Wolf faded in from the old pose after the reset: blend {blend}");
+}
+
+/// The model slide's end puts the root back at rest even when frames are drawn between ticks:
+/// the drawn root was read back as the sim pose and kept a part of the last step's offset
+/// (2026-10-12 bug hunt round 17).
+#[test]
+fn the_model_slide_ends_at_rest_when_drawn_between_ticks() {
+    let mut app = app_geom("c1020", None);
+    move_enemy_far(&mut app);
+    app.insert_resource(crate::interp::DrawAlpha(0.5));
+    let (wolf, _, _, _) = wolf_skeleton(&mut app);
+    app.world_mut().entity_mut(wolf).insert(crate::anim::ModelLag { offset: Vec3::new(1.0, 0.0, 0.0), time: 0.11, left: 0.11 });
+    for _ in 0..30 {
+        app.update();
+    }
+    let (_, _, root, lag) = wolf_skeleton(&mut app);
+    assert!(!lag);
+    assert!((root - Vec3::new(0.0, -crate::player::CAPSULE_HALF_HEIGHT, 0.0)).length() < 1e-4, "root kept an offset: {root}");
+}
+
+/// A second burn row (9117 then 9118, both spCategory 10004) replaces the first: one burn, the
+/// new row, the old flames stopped - not two burns ticking with two flames (round 17).
+#[test]
+fn a_second_burn_row_replaces_the_first() {
+    use crate::status::{Guard, Statuses};
+    let mut app = app_cfg("c1700", None, Vec::new());
+    app.update();
+    let world = app.world_mut();
+    let wolf = world.query_filtered::<Entity, With<Player>>().single(world).unwrap();
+    let weapon = world.resource::<crate::config::GameConfig>().player.combat_art;
+    world.resource_scope(|_, combat: Mut<Combat>| {
+        let mut s = Statuses::default();
+        let burning = |s: &mut Statuses, id: i64| (1..=10).find(|_| s.hit_wolf(&combat, wolf, weapon, &[id], Guard::None).iter().any(|l| l == "BURNING"));
+        assert!(burning(&mut s, 9117).is_some());
+        let flames = Entity::PLACEHOLDER;
+        s.0.get_mut(&wolf).unwrap().effects[0].fx_mut().push(flames);
+        assert!(burning(&mut s, 9118).is_some());
+        let ids: Vec<i64> = s.0[&wolf].effects.iter().map(|a| a.id).collect();
+        assert_eq!(ids, vec![9118], "the burns stacked");
+        assert_eq!(s.stopping(), &[flames], "the old flames were not stopped");
+    });
+}
+
+/// A respawned enemy snaps to its new pose (anim::SnapPose): no fade-in from its death pose over
+/// the idle's Blend length, no deathblow ModelLag slide (2026-10-12 round 17).
+#[test]
+fn a_respawn_snaps_to_its_new_pose() {
+    let mut app = app_geom("c1010", None);
+    for _ in 0..10 {
+        app.update();
+    }
+    // (Returns on the respawn's tick.)
+    kill_and_respawn(&mut app, |_, _| {});
+    let world = app.world_mut();
+    let (ent, sk) = world.query_filtered::<(Entity, &crate::anim::Skeleton), (With<Enemy>, Without<crate::enemy::Cast>)>().iter(world).next().unwrap();
+    assert_eq!(sk.blend, 1.0, "fading in from the death pose (shown {})", sk.shown);
+    assert!(world.get::<crate::anim::ModelLag>(ent).is_none(), "kept its deathblow slide");
+}
+
+/// The camera's snap and follow focus on Wolf from his feet, not his capsule's middle: a snap
+/// at the follow's own target leaves nothing to sink (round 18).
+#[test]
+fn the_camera_snap_focus_is_measured_from_the_feet() {
+    let at = Vec3::new(1.0, crate::player::CAPSULE_HALF_HEIGHT, 2.0); // standing on y = 0
+    let f = crate::camera::chr_focus(at, 1.5);
+    assert!((f - Vec3::new(1.0, 1.5, 2.0)).length() < 1e-6, "{f}");
+}
+
+/// The firecracker's burst SpEffects (230110 / 230111) land on the enemy it hits: they wake a
+/// map-held enemy, and the burst does no HP damage (round 19).
+#[test]
+fn a_firecracker_burst_puts_its_sp_effect_on_the_enemy() {
+    let mut app = app();
+    {
+        let world = app.world_mut();
+        world.resource_mut::<crate::config::GameConfig>().player.prosthetics = vec![71000];
+        let mut q = world.query_filtered::<&mut Transform, With<Enemy>>();
+        q.single_mut(world).unwrap().translation.z = 2.0;
+        world.resource_mut::<crate::enemy::EnemyDebug>().mode = crate::enemy::AiMode::Idle;
+    }
+    for _ in 0..10 {
+        app.update();
+    }
+    app.world_mut().resource_mut::<PadInput>().press(Action::Prosthetic);
+    let mut landed = false;
+    for _ in 0..90 {
+        app.update();
+        let world = app.world_mut();
+        let e = world.query::<&Enemy>().single(world).unwrap();
+        if e.clash.iter().any(|c| c.0 == 230110 || c.0 == 230111) {
+            landed = true;
+            break;
+        }
+    }
+    assert!(landed, "the burst's SpEffect never reached the enemy");
+}
+
+/// The lock-on toggles on and off with the middle mouse button (and Q) (user, 2026-10-12: "i
+/// can't remove the lock in").
+#[test]
+fn the_middle_mouse_button_releases_the_lock() {
+    use bevy::input::mouse::AccumulatedMouseMotion;
+    let mut app = app();
+    app.init_resource::<ButtonInput<KeyCode>>()
+        .init_resource::<ButtonInput<MouseButton>>()
+        .init_resource::<AccumulatedMouseMotion>()
+        .add_systems(Update, crate::camera::toggle_lock);
+    if !app.world().contains_resource::<crate::camera::LockOn>() {
+        app.world_mut().insert_resource(crate::camera::LockOn::default());
+    }
+    for _ in 0..5 {
+        app.update();
+    }
+    let click = |app: &mut App| {
+        app.world_mut().resource_mut::<ButtonInput<MouseButton>>().press(MouseButton::Middle);
+        app.update();
+        let mut m = app.world_mut().resource_mut::<ButtonInput<MouseButton>>();
+        m.release(MouseButton::Middle);
+        m.clear();
+        for _ in 0..5 {
+            app.update();
+        }
+        app.world().resource::<crate::camera::LockOn>().target
+    };
+    assert!(click(&mut app).is_some(), "the first click did not lock on");
+    assert!(click(&mut app).is_none(), "the second click did not let go");
+}
+
+/// Locked on, a legs-only move (an upper action over the walk / run legs) with the stick let go
+/// keeps going the way its legs clip goes, not toward the target: the facing was used, so a
+/// back or strafe move slid Wolf onto the enemy (2026-10-12 bug hunt round 20).
+#[test]
+fn a_released_locked_on_back_move_does_not_slide_toward_the_target() {
+    let mut app = app();
+    if !app.world().contains_resource::<crate::camera::LockOn>() {
+        app.world_mut().insert_resource(crate::camera::LockOn::default());
+    }
+    let enemy = {
+        let world = app.world_mut();
+        let e = world.query_filtered::<Entity, With<Enemy>>().single(world).unwrap();
+        world.resource_mut::<crate::camera::LockOn>().target = Some(e);
+        e
+    };
+    let dist = |app: &mut App| {
+        let world = app.world_mut();
+        let w = world.query_filtered::<&Transform, With<Player>>().single(world).unwrap().translation;
+        let e = world.get::<Transform>(enemy).unwrap().translation;
+        (w - e).with_y(0.0).length()
+    };
+    app.world_mut().resource_scope(|world, combat: Mut<Combat>| {
+        let mut q = world.query_filtered::<(&mut Player, &mut Actor), With<Player>>();
+        let (mut p, mut a) = q.single_mut(world).unwrap();
+        a.play_state(&combat.player, "DeflectGuardToStandMoveRun");
+        a.move_dir = 1;
+        p.speed_level = 2.0;
+    });
+    let before = dist(&mut app);
+    for _ in 0..20 {
+        app.update();
+    }
+    let after = dist(&mut app);
+    assert!(after > before - 0.05, "slid toward the target: {before} -> {after}");
+}
+
+/// Lands Wolf on a ridden grapple point from where he stands; returns the states and where he
+/// stands after `ticks`.
+fn grapple_to(app: &mut App, hook: Vec3, land: Vec3, ticks: usize) -> (Vec<String>, Vec3) {
+    let point = crate::map::GrapplePoint { hook, land, fwd: Vec3::NEG_Z, variation: 0 };
+    let target = crate::map::GrappleTarget { index: 0, point, dist: hook.length(), in_action_range: true, ride: true };
+    app.insert_resource(crate::wire::WireAim { target: Some(target), enemy: None });
+    app.world_mut().resource_mut::<PadInput>().press(Action::Grapple);
+    let mut seen = Vec::new();
+    for _ in 0..ticks {
+        app.update();
+        let s = player_state(app).0;
+        if seen.last() != Some(&s) {
+            seen.push(s);
+        }
+    }
+    let w = app.world_mut();
+    let pos = w.query_filtered::<&Transform, With<Player>>().single(w).unwrap().translation;
+    (seen, pos)
+}
+
+/// A grapple from a perch flies: the walk-off fall check fired on the move start's launch tick
+/// (SetNoGravity just ended, the perch cleared at the shot) and dropped him (2026-10-12 bug hunt
+/// round 20).
+#[test]
+fn a_grapple_from_a_perch_flies_to_the_next_point() {
+    let mut app = app();
+    move_enemy_far(&mut app);
+    let (_, first) = grapple_to(&mut app, Vec3::new(0.0, 3.5, 9.0), Vec3::new(0.0, 3.0, 9.0), 240);
+    assert!(first.y > 3.0, "not on the first perch: {first}");
+    let (seen, second) = grapple_to(&mut app, Vec3::new(0.0, 4.5, 18.0), Vec3::new(0.0, 4.0, 18.0), 240);
+    assert!(!seen.iter().any(|s| s == "FreeFall"), "fell off the perch: {seen:?}");
+    let want = Vec3::new(0.0, 4.0 + CAPSULE_HALF_HEIGHT, 18.0);
+    assert!((second - want).length() < 0.3, "not on the second perch: {second} {seen:?}");
+}
+
+/// The arc to a high ridden point ends on its landing spot: it can arrive still rising, and the
+/// flight's horizontal speed carried him past the 0.6 m perch (2026-10-12 bug hunt round 20).
+#[test]
+fn a_grapple_to_a_high_point_lands_on_it() {
+    let mut app = app();
+    move_enemy_far(&mut app);
+    let (seen, pos) = grapple_to(&mut app, Vec3::new(0.0, 6.5, 8.0), Vec3::new(0.0, 6.0, 8.0), 240);
+    let want = Vec3::new(0.0, 6.0 + CAPSULE_HALF_HEIGHT, 8.0);
+    assert!((pos - want).length() < 0.3, "missed the high perch: {pos} {seen:?}");
+}
+
+/// isUseSharedHitList: a fan's pellets share one hit list, so one pellet hits Wolf and the rest fly
+/// through him, as prosthetic.rs SharedHits does for his own (c1190 11902100: 5 pellets, 4 deg
+/// apart, not penetrating). Every pellet landed its own hit and was used up on him (2026-10-12
+/// round 19).
+#[test]
+fn a_fans_pellets_hit_wolf_once() {
+    let mut app = app_cfg("c1190", None, Vec::new());
+    app.update();
+    let world = app.world_mut();
+    let shooter = world.query_filtered::<Entity, (With<Enemy>, Without<crate::enemy::Cast>)>().iter(world).next().unwrap();
+    let spec = world.resource::<Combat>().kind(0).data.bullet_rows.get("11902100").expect("c1190 pellet row").clone();
+    assert_ne!(spec.is_use_shared_hit_list, 0);
+    assert_eq!((spec.num_shoot, spec.is_penetrate), (5, 0));
+    let at = world.query_filtered::<&Transform, With<Player>>().single(world).unwrap().translation;
+    let hp0 = world.query_filtered::<&Actor, With<Player>>().single(world).unwrap().hp;
+    crate::enemy_bullet::spawn_row(&mut world.commands(), &spec, shooter, 0, at + Vec3::new(0.0, 0.3, 2.0), Vec3::NEG_Z, 0.0, None);
+    world.flush();
+    let mut left = None;
+    for _ in 0..10 {
+        app.update();
+        let world = app.world_mut();
+        let hp = world.query_filtered::<&Actor, With<Player>>().single(world).unwrap().hp;
+        if hp < hp0 {
+            left = Some(world.query::<&crate::enemy_bullet::EnemyBullet>().iter(world).count());
+            break;
+        }
+    }
+    let left = left.expect("no pellet hit Wolf");
+    assert_eq!(left, 4, "pellets still flying after the first hit");
 }

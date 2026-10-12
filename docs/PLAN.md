@@ -1,5 +1,49 @@
 # Sv1: finish, fix and polish (plan for all three sessions, approved 2026-10-11)
 
+## Update 2026-10-12: who does what now (read before the rest)
+
+The plan below is still the reference, with these changes from the user on 2026-10-12:
+
+- **All bosses and mini-bosses are given away.** Every row of `extracted/enemies/npc_names.json`
+  (57 rows) belongs to an outside contributor (docs/HANDOFF.md 0.1). Their status sheet is
+  `docs/reports/bosses-handover.md`. The sessions keep the regular enemies and the shared engine:
+  the harnesses, the script interpreter, model.rs masks, the wire engine and the menus.
+  - **Moved out of the items below:** in B1, the Genichiro and Monk clip checks and the boss
+    rows' share of `all_enemies_full`. In B6, Genichiro's lightning and the boss FX gaps. In B7,
+    the Gyoubu and Ape wire windows and Gyoubu's Todome. In C6, the Genichiro and Ogre feel
+    clips. In B4, the per-fight castle lighting and the boss arenas (Dragon far view and cloud
+    sea, Monk arenas).
+  - **Kept:** the c1020 General, c1010, c1150 and Wolf in B1; the TAE 110 handler and the
+    effects catalogue in B6; the wire engine in B7; the General feel clip in C6; tone curve
+    and exposure in B4.
+- **Release hardening and traversal are given away.** C5's font, debug gating and parser errors,
+  C6's quiet logs, and the traversal moves go to the contributor in the "Sv1: work split" doc
+  (Track 1 and Track 2).
+- **Performance is dropped.** The 60 fps item in C6 is no longer anyone's claim (the user removed
+  it from the collab board).
+- **The sessions are renamed.** "bug fixes" (was Map), "VFX and Maps" (was VXf, now also maps,
+  lighting and cloth) and "Bosees" (was Bosses, now regular enemies only).
+- **The open items are claimed on the collab board.** `AKJama/sekiro-collab` WORK.md (5b8f1d6,
+  FwLo, RustSekiro):
+
+  | Session | Claimed items | From |
+  |---|---|---|
+  | Bosees | Hit reach and first-hit frames vs clips (Wolf, regular enemies) | B1 |
+  | Bosees | hitSourceType priority, knockback facing, armour cut | B1 open, HANDOFF 4.14 |
+  | Bosees | Regular enemies' AI pacing, armoured c1180 servant's armour part | B5 |
+  | Bosees | Shadow hiding, forced crouch, patrol routes | B5 stealth |
+  | VFX and Maps | Hand-made effects onto FXR; regular enemies' attack effects | B6 |
+  | VFX and Maps | HUD art: stealth meter, deathblow mark | B6 |
+  | VFX and Maps | Mixer events, sound occlusion | HANDOFF 5 item 4 |
+  | VFX and Maps | Lock-on camera offsets, smoothing, limits, switch | B3 |
+  | VFX and Maps | Tone curve, exposure, night snow, probe blend | B4 |
+  | (given away) | Layered map materials (given to someone else by the user, 2026-10-12; v5 bin + M[Multiple] blend already in, gate map only) | B4 |
+  | VFX and Maps | Cape vs a clip, coat detail layer | B2 |
+  | bug fixes | Defects in the shared engine and regular enemies (verified bug hunt) | the user, 2026-10-12 |
+
+- **Pushes need the user's yes.** Nothing goes to any repo, including the collab board, before
+  the user is told what would go up and agrees.
+
 ## Context
 
 Sv1 (`C:\DeadlockModding\shinobi-combat`) recreates Sekiro's combat from the game's own files in Rust/Bevy. Three Claude sessions share one working tree: **Map** (this one: map, lighting, sandbox, cloth), **Bosses** (enemies, bosses, AI, stealth) and **VXf** (the skills/tools session: skills, prosthetics, status, HUD, sound, and all VFX: FXR effects, clash/hit effects, gore, blood decals, weapon trails). The user's decisions (2026-10-10):

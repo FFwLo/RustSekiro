@@ -446,7 +446,7 @@ impl Vm {
         }
         let math = Table::new_ref();
         for f in [
-            "rad", "sin", "cos", "abs", "floor", "sqrt", "random", "min", "max",
+            "rad", "deg", "sin", "cos", "tan", "abs", "floor", "sqrt", "random", "min", "max",
         ] {
             math.borrow_mut()
                 .set(Value::str(f), Value::Host(Rc::from(format!("math.{f}"))));
@@ -514,6 +514,9 @@ impl Vm {
             "math.rad" => vec![Value::Num(n(0).to_radians())],
             "math.sin" => vec![Value::Num(n(0).sin())],
             "math.cos" => vec![Value::Num(n(0).cos())],
+            // 45 battle scripts: math.tan(math.deg(30)) (2026-10-12 bug hunt round 11).
+            "math.tan" => vec![Value::Num(n(0).tan())],
+            "math.deg" => vec![Value::Num(n(0).to_degrees())],
             "math.abs" => vec![Value::Num(n(0).abs())],
             "math.floor" => vec![Value::Num(n(0).floor())],
             "math.sqrt" => vec![Value::Num(n(0).sqrt())],

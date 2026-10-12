@@ -33,6 +33,12 @@ Dated findings, oldest first. Append new entries at the end.
   parallel mikiri hitbox; attacker posture += staminaDamageAttackHitParry (90). Deathblow: ThrowParam 11020001
   (崩し, Dist 2.1: a201_510000 / ThrowDefDeath12001) or 11020010 (弾き = broken by deflect, Dist 4.0: a201_510100 /
   ThrowDefDeath12111). Throw anims live in c0000_a2xx.anibnd (now unpacked); 990-992 are only the deathblow shockwave.
+  The 弾き pair needs the attacker in that row's reach (Dist 4.0, upper / lowerYRange 2.4 m; c1450's 4.14) and a
+  melee deflect: a shooter broken by its own deflected bullet staggers where it stands (AttackBoundEmptyStamina)
+  instead of being pulled onto Wolf (combat.rs throw_in_reach, 2026-10-12).
+  An enemy grab absorbs as a deathblow does: Wolf onto the grabber's atkSorbDmyId (230 / 231, the General's
+  21020000) over adsrobModelPosInterpolationTime 0.5 (ThrowHold from combat.rs, player.rs follow_throw).
+  The break pose's jump (0012 / 0122) is a vault round behind (ThrowDef12120 / 13120), not a kill.
   Tests: perilous thrust breaks a block / can be deflected, sweep can't be deflected, step-in = mikiri, deathblow pair.
   Open in NEXT 8: neck grab (enemy 4100 ThrowAttackBehavior judge 230 -> player a210_600000, clip not in a2xx),
   sweep jump-stomp, guard walk, air deflect, multi-life deathblow (NpcParam lives).
@@ -168,3 +174,15 @@ Dated findings, oldest first. Append new entries at the end.
   deflects), block from f6-7 on (f6: 3 deflects / 1 block). = our 6-frame window (SpEffect 105010). Recoil guard
   cancels at f9.1-9.6 again (411 + 412, implemented). Land-air-combo inputs only look early because the Land anim
   continues the air slash's time (our continue_state) - not a gap.
+
+## Hit stop (redone 2026-10-11, combat.rs start_hit_stop, actor.rs HitStop)
+
+The old rule (both sides frozen for the raw AtkParam time on direct hits) was wrong. Exe
+(FUN_140b9cd90 attacker, FUN_140b9cfb0 defender, started on every contact, hit / block / deflect;
+rules first written up by AKJama/sekiro-rs docs/COMBAT-RULES.md "Hit stop"): attacker =
+hitStopTime x the defender's NpcParam hitStopType scale (0 none, 1 0.5, 2 full; Wolf as defender
+= full); defender = hitStopTime_Defencer only when its hitStopType_Defencer is 1 (Wolf always).
+ChrActionFlag 41 on the defender forces both. The clock holds 0.06 s, then eases back as
+(elapsed / length)^2 (0.1 s costs ~0.127 s). Most NpcParam rows are 0 / 0, so Wolf's sword on
+ordinary enemies and bosses stops nobody; type 1: Guardian Ape, Okiryu; type 2: the Great Serpent.
+Test hit_stop_follows_the_defenders_type.

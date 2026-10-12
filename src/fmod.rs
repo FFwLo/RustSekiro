@@ -73,6 +73,49 @@ pub struct Fmod {
     ninsatsu_last: [f32; 3],
     /// Projects tried and not loaded (no bank extracted), not tried again.
     failed: HashSet<String>,
+    /// The mixer graph (`mixers`), built on first use; None inside = could not be built.
+    mixers: Option<Option<Mixers>>,
+    /// Each played event's mixer (its "mixerID_0"; 0 = none), by key.
+    mixer_of: HashMap<String, usize>,
+}
+
+/// multimix.mix's mixers as running DSP chains (docs/kb/sound.md "Mixer routing"): mixer k's
+/// event (mixer/mixer/<name>) plays, its effect chain's input end is `input[k]` (a pass-through
+/// channel group's head for a mixer without effects), its output feeds its output mixer or master.
+struct Mixers {
+    input: Vec<Ptr>,
+    events: HashMap<String, Ptr>,
+}
+
+/// multimix.mix: (id, name, output id) per mixer. Layout ("MFOM"): u32 count at 0x08, u32 name
+/// table offset at 0x14, u32 entry table offset at 0x18; entries (u16 id, u16, u32 offset) whose
+/// target starts with the u16 output mixer (0 = master); name entries (u16 id, u16, u32 string
+/// offset), "mixer/mixer/<name>".
+fn read_mix(d: &[u8]) -> Vec<(usize, String, usize)> {
+    let u16_at = |o: usize| d.get(o..o + 2).map(|b| u16::from_le_bytes([b[0], b[1]]) as usize);
+    let u32_at = |o: usize| d.get(o..o + 4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]) as usize);
+    if d.get(0..4) != Some(b"MFOM".as_slice()) {
+        return Vec::new();
+    }
+    let (Some(n), Some(names), Some(table)) = (u32_at(8), u32_at(0x14), u32_at(0x18)) else { return Vec::new() };
+    let name_of = |id: usize| -> Option<String> {
+        (0..n).find_map(|i| {
+            let e = names + i * 8;
+            if u16_at(e)? != id {
+                return None;
+            }
+            let o = u32_at(e + 4)?;
+            let end = d.get(o..)?.iter().position(|&c| c == 0)? + o;
+            Some(String::from_utf8_lossy(&d[o..end]).rsplit('/').next()?.to_string())
+        })
+    };
+    (0..n)
+        .filter_map(|i| {
+            let e = table + i * 8;
+            let (id, off) = (u16_at(e)?, u32_at(e + 4)?);
+            Some((id, name_of(id)?, u16_at(off)?))
+        })
+        .collect()
 }
 
 /// Master category volume at the default options: SoundMan Master 1.0 * 0.7 (exe command 10).
@@ -80,6 +123,18 @@ const MASTER_VOLUME: f32 = 0.7;
 
 /// FMOD Ex FMOD_OUTPUTTYPE_NOSOUND: everything runs, nothing is heard (sound map).
 const OUTPUT_NOSOUND: i32 = 2;
+
+/// FMOD shut down before its DLLs go: without it, the process's exit crashed (access violation)
+/// in fmod_event64's unload (LdrShutdownProcess -> FMOD -> RtlDeleteCriticalSection, crash.rs
+/// report) with its mixer still running. FMOD_EventSystem_Release stops and frees everything
+/// (the event system releases its low-level system too); the fields (the libraries) drop after.
+impl Drop for Fmod {
+    fn drop(&mut self) {
+        if let Ok(release) = unsafe { self._ev.get::<unsafe extern "system" fn(Ptr) -> i32>(b"FMOD_EventSystem_Release") } {
+            unsafe { release(self.es) };
+        }
+    }
+}
 
 impl Fmod {
     fn open(sekiro: &std::path::Path, sound_dir: &std::path::Path, fevs: &[&str], silent: bool) -> Result<Self, String> {
@@ -191,6 +246,8 @@ impl Fmod {
                 ninsatsu: None,
                 ninsatsu_last: [0.0; 3],
                 failed: HashSet::new(),
+                mixers: None,
+                mixer_of: HashMap::new(),
             })
         }
     }
@@ -203,6 +260,41 @@ impl Fmod {
     /// (in-game master, menu, other menu) are taken as 1.0, their setters not traced.
     pub fn set_mix(&mut self, audio: &crate::config::AudioConfig) {
         let Some(set) = self.set_category_volume.filter(|_| !self.master.is_null()) else { return };
+        self.mix_categories();
+        let v = |x: f32| (x / 10.0).clamp(0.0, 1.0);
+        unsafe {
+            set(self.master, MASTER_VOLUME * v(audio.volume));
+            for (name, c) in &self.mix {
+                let slot = match name.as_str() {
+                    "music" => audio.music,
+                    "voice" => audio.voice,
+                    "se" | "menu" | "default" => audio.se,
+                    _ => continue,
+                };
+                set(*c, v(slot));
+            }
+        }
+    }
+
+    /// Pauses (or resumes) the game's own sounds - the SE, Voice and Default categories - while
+    /// a menu is up; Music (the boss music, stopped by boss_music itself) and Menu play on.
+    /// gap: the exe's pause path for its categories is not traced; Sv1's menus stop the sim
+    /// (Time<Virtual>), and its sounds went on behind them.
+    pub fn set_paused(&mut self, paused: bool) {
+        self.mix_categories();
+        let Ok(set) = (unsafe { self._ev.get::<unsafe extern "system" fn(Ptr, i32) -> i32>(b"FMOD_EventCategory_SetPaused") }) else { return };
+        for (name, c) in &self.mix {
+            if matches!(name.as_str(), "se" | "voice" | "default") {
+                unsafe { set(*c, paused as i32) };
+            }
+        }
+    }
+
+    /// The master's child categories (self.mix), looked up once.
+    fn mix_categories(&mut self) {
+        if self.master.is_null() {
+            return;
+        }
         if self.mix.is_empty() {
             unsafe {
                 let l = &self._ev;
@@ -222,39 +314,172 @@ impl Fmod {
                 }
             }
         }
-        let v = |x: f32| (x / 10.0).clamp(0.0, 1.0);
-        unsafe {
-            set(self.master, MASTER_VOLUME * v(audio.volume));
-            for (name, c) in &self.mix {
-                let slot = match name.as_str() {
-                    "music" => audio.music,
-                    "voice" => audio.voice,
-                    "se" | "menu" | "default" => audio.se,
-                    _ => continue,
-                };
-                set(*c, v(slot));
+    }
+
+    /// The mixer graph, the exe's way (141c9.c ~11836; docs/kb/sound.md "Mixer routing"): every
+    /// mixer event of multimix.mix runs; each one's effect chain (or a pass-through channel group)
+    /// takes the sounds routed to it at its input end and feeds its output mixer, or the master.
+    /// Before, ntc_rev and ntc_ninsatsu1-3 ran with nothing feeding their chains (test
+    /// fmod_mixer_dsp): the reverb and the deathblow muffle changed nothing.
+    fn mixers(&mut self) -> Option<&Mixers> {
+        if self.mixers.is_none() {
+            let built = self.build_mixers();
+            if built.is_none() {
+                warn!("FMOD: the mixer graph (multimix.mix) was not built: sounds play dry");
             }
+            self.mixers = Some(built);
+        }
+        self.mixers.as_ref().and_then(|m| m.as_ref())
+    }
+
+    fn build_mixers(&mut self) -> Option<Mixers> {
+        let mix = read_mix(&std::fs::read(crate::paths::extracted().join("sound/multimix.mix")).ok()?);
+        if mix.is_empty() {
+            return None;
+        }
+        self.load_project("mixer");
+        unsafe {
+            let ev_group = *self._ev.get::<unsafe extern "system" fn(Ptr, *mut Ptr) -> i32>(b"FMOD_Event_GetChannelGroup").ok()?;
+            let head = *self._ex.get::<unsafe extern "system" fn(Ptr, *mut Ptr) -> i32>(b"FMOD_ChannelGroup_GetDSPHead").ok()?;
+            let n_in = *self._ex.get::<unsafe extern "system" fn(Ptr, *mut i32) -> i32>(b"FMOD_DSP_GetNumInputs").ok()?;
+            let input = *self._ex.get::<unsafe extern "system" fn(Ptr, i32, *mut Ptr, *mut Ptr) -> i32>(b"FMOD_DSP_GetInput").ok()?;
+            let cut = *self._ex.get::<unsafe extern "system" fn(Ptr, i32, i32) -> i32>(b"FMOD_DSP_DisconnectAll").ok()?;
+            let add = *self._ex.get::<unsafe extern "system" fn(Ptr, Ptr, *mut Ptr) -> i32>(b"FMOD_DSP_AddInput").ok()?;
+            let create = *self._ex.get::<unsafe extern "system" fn(Ptr, *const c_char, *mut Ptr) -> i32>(b"FMOD_System_CreateChannelGroup").ok()?;
+            let master = *self._ex.get::<unsafe extern "system" fn(Ptr, *mut Ptr) -> i32>(b"FMOD_System_GetMasterChannelGroup").ok()?;
+            let group_head = |g: Ptr| -> Ptr {
+                let mut h: Ptr = std::ptr::null_mut();
+                if g.is_null() || head(g, &mut h) != 0 {
+                    return std::ptr::null_mut();
+                }
+                h
+            };
+            let mut m: Ptr = std::ptr::null_mut();
+            master(self.sys, &mut m);
+            let master_head = group_head(m);
+            if master_head.is_null() {
+                return None;
+            }
+            let top = mix.iter().map(|(id, _, _)| *id).max()?;
+            let mut inputs = vec![std::ptr::null_mut(); top + 1];
+            let mut outputs = vec![std::ptr::null_mut(); top + 1];
+            let mut events = HashMap::new();
+            for (id, name, _) in &mix {
+                let path = CString::new(format!("mixer/mixer/{name}")).unwrap();
+                let mut ev: Ptr = std::ptr::null_mut();
+                let mut g: Ptr = std::ptr::null_mut();
+                if (self.get_event)(self.es, path.as_ptr(), 0, &mut ev) == 0 && !ev.is_null() && (self.start)(ev) == 0 {
+                    events.insert(name.clone(), ev);
+                    (self.update)(self.es);
+                    ev_group(ev, &mut g);
+                }
+                // The chain's input end: follow the first input down to the node with none.
+                let out = group_head(g);
+                let mut leaf = out;
+                for _ in 0..16 {
+                    let mut k = 0;
+                    if leaf.is_null() || n_in(leaf, &mut k) != 0 || k == 0 {
+                        break;
+                    }
+                    let mut next: Ptr = std::ptr::null_mut();
+                    input(leaf, 0, &mut next, std::ptr::null_mut());
+                    leaf = next;
+                }
+                if out.is_null() || leaf.is_null() || leaf == out {
+                    // No effects: a pass-through group.
+                    let cname = CString::new(format!("mix_{name}")).unwrap();
+                    let mut pg: Ptr = std::ptr::null_mut();
+                    create(self.sys, cname.as_ptr(), &mut pg);
+                    let h = group_head(pg);
+                    inputs[*id] = h;
+                    outputs[*id] = h;
+                } else {
+                    inputs[*id] = leaf;
+                    outputs[*id] = out;
+                }
+            }
+            for (id, _, to) in &mix {
+                let out = outputs[*id];
+                if out.is_null() {
+                    continue;
+                }
+                let dest = if *to > 0 && *to <= top && !inputs[*to].is_null() { inputs[*to] } else { master_head };
+                cut(out, 0, 1);
+                add(dest, out, std::ptr::null_mut());
+            }
+            info!("FMOD: mixer graph built ({} mixers)", mix.len());
+            Some(Mixers { input: inputs, events })
         }
     }
 
-    /// The space's reverb, the game's way: mixer.fev's ntc_rev event puts its effect chain (FMOD
-    /// Echo -> Lowpass Simple -> SFX Reverb) on the Default category while it plays (seen in the
-    /// DSP tree, test fmod_mixer_dsp); its parameter sd_reverb_size (0-8) is the space type
+    /// Puts a started event's channel group on its mixer's input (its "mixerID_0" property), as
+    /// the exe does when an instance starts. gap: events with no mixer stay on their category
+    /// (the exe cuts their group off; what then feeds them is not traced), and only the first of
+    /// several mixer ids is used.
+    fn route(&mut self, key: &str, ev: Ptr) {
+        let id = match self.mixer_of.get(key) {
+            Some(&id) => id,
+            None => {
+                let id = unsafe { self.event_mixer(ev) };
+                self.mixer_of.insert(key.to_string(), id);
+                id
+            }
+        };
+        if id == 0 {
+            return;
+        }
+        let Some(dest) = self.mixers().and_then(|m| m.input.get(id).copied()).filter(|p| !p.is_null()) else { return };
+        unsafe {
+            let (Ok(ev_group), Ok(head), Ok(cut), Ok(add)) = (
+                self._ev.get::<unsafe extern "system" fn(Ptr, *mut Ptr) -> i32>(b"FMOD_Event_GetChannelGroup"),
+                self._ex.get::<unsafe extern "system" fn(Ptr, *mut Ptr) -> i32>(b"FMOD_ChannelGroup_GetDSPHead"),
+                self._ex.get::<unsafe extern "system" fn(Ptr, i32, i32) -> i32>(b"FMOD_DSP_DisconnectAll"),
+                self._ex.get::<unsafe extern "system" fn(Ptr, Ptr, *mut Ptr) -> i32>(b"FMOD_DSP_AddInput"),
+            ) else {
+                return;
+            };
+            let (mut g, mut h): (Ptr, Ptr) = (std::ptr::null_mut(), std::ptr::null_mut());
+            if ev_group(ev, &mut g) != 0 || g.is_null() || head(g, &mut h) != 0 || h.is_null() {
+                return;
+            }
+            cut(h, 0, 1);
+            add(dest, h, std::ptr::null_mut());
+        }
+    }
+
+    /// An event's first mixer id ("mixerNum" > 0, then "mixerID_0"), 0 when none.
+    unsafe fn event_mixer(&self, ev: Ptr) -> usize {
+        let Ok(prop) = (unsafe { self._ev.get::<unsafe extern "system" fn(Ptr, *const c_char, *mut c_void, i32) -> i32>(b"FMOD_Event_GetProperty") }) else { return 0 };
+        let (num, id0) = (CString::new("mixerNum").unwrap(), CString::new("mixerID_0").unwrap());
+        let (mut n, mut id): (i32, i32) = (0, 0);
+        unsafe {
+            if prop(ev, num.as_ptr(), &mut n as *mut i32 as *mut c_void, 0) != 0 || n <= 0 {
+                return 0;
+            }
+            if prop(ev, id0.as_ptr(), &mut id as *mut i32 as *mut c_void, 0) != 0 {
+                return 0;
+            }
+        }
+        id.max(0) as usize
+    }
+
+    /// The space's reverb, the game's way: mixer.fev's ntc_rev event (mixer 8) runs its effect
+    /// chain (FMOD Echo -> Lowpass Simple -> SFX Reverb; DSP tree, test fmod_mixer_dsp), which the
+    /// mixer graph (`mixers`) feeds; its parameter sd_reverb_size (0-8) is the space type
     /// (exe: the type eases to its target, FUN_14092fc30, and goes to the sound thread as
     /// "sd_reverb_size", FUN_1409312b0). gap: which other mixer events (ntc_main, ntc_battle_bgm
     /// ...) the game keeps running, and the easing time, are not traced; the value is set at once.
     pub fn set_reverb(&mut self, size: f32) {
-        self.load_project("mixer");
-        unsafe {
-            if self.reverb.is_null() {
-                let path = CString::new("mixer/mixer/ntc_rev").unwrap();
-                let mut ev: Ptr = std::ptr::null_mut();
-                if (self.get_event)(self.es, path.as_ptr(), 0, &mut ev) != 0 || ev.is_null() || (self.start)(ev) != 0 {
+        if self.reverb.is_null() {
+            match self.mixers().and_then(|m| m.events.get("ntc_rev").copied()) {
+                Some(ev) => self.reverb = ev,
+                None => {
                     warn!("FMOD: mixer/mixer/ntc_rev not started: no reverb");
                     return;
                 }
-                self.reverb = ev;
             }
+        }
+        unsafe {
             let (Ok(get), Ok(set)) = (
                 self._ev.get::<unsafe extern "system" fn(Ptr, *const c_char, *mut Ptr) -> i32>(b"FMOD_Event_GetParameter"),
                 self._ev.get::<unsafe extern "system" fn(Ptr, f32) -> i32>(b"FMOD_EventParameter_SetValue"),
@@ -270,7 +495,7 @@ impl Fmod {
     }
 
     /// The deathblow mixes: mixer.fev's ntc_ninsatsu2 / 1 / 3 (the exe's slots 0-2, names at
-    /// 0x143b139b8) each put an FMOD Lowpass Simple on ChannelGroup:Default whose cutoff follows
+    /// 0x143b139b8; mixers 1 / 6 / 7 of the graph, `mixers`) each run an FMOD Lowpass Simple whose cutoff follows
     /// the event's own 0-1 parameter of the same name: 22 kHz at 0; at 1 ntc_ninsatsu2 445 Hz,
     /// ntc_ninsatsu1 1332 Hz, ntc_ninsatsu3 10 Hz (test fmod_ninsatsu_mix). The exe sends the
     /// three values by name (FUN_140931320); here the three events run from the first non-zero
@@ -280,17 +505,14 @@ impl Fmod {
             if v == [0.0; 3] {
                 return;
             }
-            self.load_project("mixer");
+            let names = ["ntc_ninsatsu2", "ntc_ninsatsu1", "ntc_ninsatsu3"];
+            let evs: Vec<Option<Ptr>> = names.iter().map(|k| self.mixers().and_then(|m| m.events.get(*k).copied())).collect();
             let Ok(get) = (unsafe { self._ev.get::<unsafe extern "system" fn(Ptr, *const c_char, *mut Ptr) -> i32>(b"FMOD_Event_GetParameter") }) else { return };
             let mut prms: [Ptr; 3] = [std::ptr::null_mut(); 3];
-            for (i, k) in ["ntc_ninsatsu2", "ntc_ninsatsu1", "ntc_ninsatsu3"].iter().enumerate() {
-                let path = CString::new(format!("mixer/mixer/{k}")).unwrap();
+            for (i, k) in names.iter().enumerate() {
                 let name = CString::new(*k).unwrap();
-                let mut ev: Ptr = std::ptr::null_mut();
-                unsafe {
-                    if (self.get_event)(self.es, path.as_ptr(), 0, &mut ev) == 0 && !ev.is_null() && (self.start)(ev) == 0 {
-                        get(ev, name.as_ptr(), &mut prms[i]);
-                    }
+                if let Some(ev) = evs[i] {
+                    unsafe { get(ev, name.as_ptr(), &mut prms[i]) };
                 }
             }
             if prms.iter().any(|p| p.is_null()) {
@@ -319,6 +541,8 @@ impl Fmod {
             0 => {
                 info!("FMOD: {name}.fev loaded");
                 self.projects.push(name.to_string());
+                // A key marked missing before may be in the new project (a kind added later).
+                self.missing.clear();
             }
             r => {
                 warn!("FMOD: {name}.fev not loaded (error {r})");
@@ -350,6 +574,7 @@ impl Fmod {
                     let (pos, vel) = (FVec::from(pos), FVec::from(Vec3::ZERO));
                     (self.set_3d)(ev, &pos, &vel, std::ptr::null());
                     (self.start)(ev);
+                    self.route(key, ev);
                     return Some(EventHandle(ev));
                 }
             }
@@ -387,6 +612,7 @@ impl Fmod {
                     let (pos, vel) = (FVec::from(pos), FVec::from(Vec3::ZERO));
                     (self.set_3d)(ev, &pos, &vel, std::ptr::null());
                     (self.start)(ev);
+                    self.route(key, ev);
                     return true;
                 }
             }
@@ -546,7 +772,7 @@ impl Plugin for FmodPlugin {
                 let probe = ["c000004010", "c000004011", "c000006510", "s000003010", "c000001113", "c000001004", "c102004001"];
                 let found: Vec<&str> = probe.iter().copied().filter(|k| f.has(k)).collect();
                 info!("FMOD events: {:?}; probe {}/{} found {:?}", f.projects, found.len(), probe.len(), found);
-                app.insert_non_send(f).add_systems(PostUpdate, (load_new_kinds, apply_volume, apply_reverb, boss_music, update_fmod).chain());
+                app.insert_non_send(f).add_systems(PostUpdate, (load_new_kinds, apply_volume, apply_reverb, boss_music, pause_off_screen, update_fmod).chain());
             }
             Err(e) => warn!("FMOD event system unavailable ({e}); using the PCM samples"),
         }
@@ -562,6 +788,12 @@ fn load_new_kinds(mut fmod: NonSendMut<Fmod>, combat: Option<Res<crate::data::Co
     }
     for k in &combat.kinds {
         fmod.load_project(&k.foe.chr);
+        // A kind that plays another chr's TAE (NpcParam normalChangeAnimChrId: c1520 -> c1500,
+        // c1151 -> c1150, c7530 -> c1110) looks its sound keys up in that chr's bank; a missing
+        // .fev is only logged (load_project).
+        if k.foe.anim_chr != k.foe.chr {
+            fmod.load_project(&k.foe.anim_chr);
+        }
     }
 }
 
@@ -660,6 +892,25 @@ fn boss_bgm() -> &'static HashMap<i64, BgmEntry> {
 /// first track starts with the fight: its start flag is the end of the boss's intro (Gyoubu's
 /// 11105801 waits for his entrance anim's event message 20 and 4 s), and Sv1's fights start
 /// without intros.
+/// Whether the fight's music plays on this screen: Playing and Paused, and Options when it was
+/// opened from them (the pause menu's Options; from the title it is not). `from_fight` keeps
+/// the last answer off Options.
+pub(crate) fn fight_screen(screen: Option<&crate::menu::Screen>, from_fight: &mut bool) -> bool {
+    use crate::menu::Screen;
+    match screen {
+        None => true,
+        Some(Screen::Playing | Screen::Paused) => {
+            *from_fight = true;
+            true
+        }
+        Some(Screen::Options) => *from_fight,
+        Some(_) => {
+            *from_fight = false;
+            false
+        }
+    }
+}
+
 fn bgm_track<'a>(entry: &'a BgmEntry, on: &HashSet<i64>) -> Option<&'a BgmTrack> {
     entry.tracks.iter().enumerate().rev().find(|(i, t)| (*i == 0 || t.start.is_none_or(|f| on.contains(&f))) && t.stop.is_none_or(|f| !on.contains(&f))).map(|(_, t)| t)
 }
@@ -675,8 +926,9 @@ fn boss_music(
     screen: Option<Res<State<crate::menu::Screen>>>,
     camera: Query<&GlobalTransform, With<Camera3d>>,
     mut playing: Local<Option<(String, EventHandle)>>,
+    mut from_fight: Local<bool>,
 ) {
-    let fighting = screen.as_ref().is_none_or(|s| matches!(s.get(), crate::menu::Screen::Playing | crate::menu::Screen::Paused));
+    let fighting = fight_screen(screen.as_ref().map(|s| s.get()), &mut from_fight);
     let run = script.as_ref().and_then(|s| s.run.as_ref()).filter(|r| fighting && r.defeated.is_none());
     let want = run.and_then(|r| {
         let entry = boss_bgm().get(&r.row)?;
@@ -700,6 +952,16 @@ fn boss_music(
     if let (Some((_, ev)), Ok(c)) = (playing.as_ref(), camera.single()) {
         let ev = *ev;
         fmod.set_position(ev, c.translation());
+    }
+}
+
+/// The game's sounds pause while the screen is not Playing (Fmod::set_paused): the menus stop
+/// the sim, and a looping effect sound kept going behind Paused, Title and the picker.
+pub(crate) fn pause_off_screen(mut fmod: NonSendMut<Fmod>, screen: Option<Res<State<crate::menu::Screen>>>, mut last: Local<Option<bool>>) {
+    let paused = screen.is_some_and(|s| *s.get() != crate::menu::Screen::Playing);
+    if *last != Some(paused) {
+        fmod.set_paused(paused);
+        *last = Some(paused);
     }
 }
 
@@ -744,6 +1006,96 @@ mod ease_tests {
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
+
+    /// The tests that open the game's FMOD take turns: two systems at once in one process
+    /// crashed the test run (access violation).
+    static FMOD_TEST: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Off the Playing screen the SE / Voice / Default categories pause (Music plays on), and on
+    /// the title, the picker or death the slotted effect sounds stop - from Update, as
+    /// FixedUpdate (play_tae_sounds' own clean-up) is frozen there. Needs the game's FMOD DLLs.
+    /// Paused -> Options -> Paused keeps the fight's music (it stopped and restarted from the
+    /// start); Options from the title does not start it.
+    #[test]
+    fn the_pause_menus_options_keep_the_fight_music() {
+        use crate::menu::Screen;
+        let mut from = false;
+        let seq = |from: &mut bool, s: &[Screen]| s.iter().map(|s| fight_screen(Some(s), from)).collect::<Vec<_>>();
+        assert_eq!(seq(&mut from, &[Screen::Title, Screen::Options, Screen::Title]), [false, false, false]);
+        assert_eq!(seq(&mut from, &[Screen::Playing, Screen::Paused, Screen::Options, Screen::Paused, Screen::Playing]), [true; 5]);
+        assert_eq!(seq(&mut from, &[Screen::Dead, Screen::Options]), [false, false]);
+    }
+
+    #[test]
+    fn sounds_pause_and_slots_stop_off_the_playing_screen() {
+        use crate::menu::Screen;
+        use crate::sound::{Slotted, SlottedSounds};
+        let root = crate::paths::root();
+        let _one = FMOD_TEST.lock().unwrap_or_else(|e| e.into_inner());
+        let Ok(mut f) = Fmod::open(std::path::Path::new(&crate::paths::sekiro_dir()), &root.join("extracted/sound"), &["main", "smain"], true) else {
+            eprintln!("no FMOD DLLs: skipped");
+            return;
+        };
+        let ev = f.play_tracked("s000440000", Vec3::ZERO).expect("the Mortal Draw aura loop");
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, bevy::state::app::StatesPlugin))
+            .init_state::<Screen>()
+            .insert_non_send(f)
+            .init_resource::<SlottedSounds>()
+            .add_systems(Update, (crate::sound::stop_slotted_off_screen, pause_off_screen));
+        let go = |app: &mut App, s: Screen| {
+            app.world_mut().resource_mut::<NextState<Screen>>().set(s);
+            app.update();
+        };
+        let paused = |app: &mut App, cat: &str| -> bool {
+            let f = app.world_mut().non_send_mut::<Fmod>();
+            let get = unsafe { *f._ev.get::<unsafe extern "system" fn(Ptr, *mut i32) -> i32>(b"FMOD_EventCategory_GetPaused").unwrap() };
+            let c = f.mix.iter().find(|(n, _)| n == cat).expect(cat).1;
+            let mut p = 0;
+            unsafe { get(c, &mut p) };
+            p != 0
+        };
+        go(&mut app, Screen::Playing);
+        app.world_mut().resource_mut::<SlottedSounds>().0.push(Slotted { owner: Entity::PLACEHOLDER, slot: 0, anim: "a106_316000".into(), end: 3.0, last_t: 0.1, ev });
+        app.update();
+        assert!(!paused(&mut app, "se"));
+        go(&mut app, Screen::Paused);
+        assert!(paused(&mut app, "se") && paused(&mut app, "voice") && paused(&mut app, "default"), "the game's sounds play on behind the pause menu");
+        assert!(!paused(&mut app, "music"));
+        assert_eq!(app.world().resource::<SlottedSounds>().0.len(), 1, "a pause keeps the slot's sound");
+        go(&mut app, Screen::Title);
+        assert!(app.world().resource::<SlottedSounds>().0.is_empty(), "the slotted sound outlives the fight");
+        let get_state = {
+            let f = app.world_mut().non_send_mut::<Fmod>();
+            unsafe { *f._ev.get::<unsafe extern "system" fn(Ptr, *mut u32) -> i32>(b"FMOD_Event_GetState").unwrap() }
+        };
+        go(&mut app, Screen::Playing);
+        for _ in 0..30 {
+            let f = app.world_mut().non_send_mut::<Fmod>();
+            unsafe { (f.update)(f.es) };
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(!paused(&mut app, "se"));
+        let mut st = 0u32;
+        unsafe { get_state(ev.0, &mut st) };
+        assert!(st & 0x8 == 0, "the aura loop still plays: state {st:#x}");
+    }
+
+    /// A sound key looked up before its chr's project was loaded plays once that project loads
+    /// (load_new_kinds: an enemy kind added mid-run). Needs the game's FMOD DLLs; skipped without.
+    #[test]
+    fn a_key_missing_before_its_project_loads_plays_after() {
+        let root = crate::paths::root();
+        let _one = FMOD_TEST.lock().unwrap_or_else(|e| e.into_inner());
+        let Ok(mut f) = Fmod::open(std::path::Path::new(&crate::paths::sekiro_dir()), &root.join("extracted/sound"), &["main"], true) else {
+            eprintln!("no FMOD DLLs: skipped");
+            return;
+        };
+        let key = "c102004001";
+        assert!(!f.play(key, Vec3::ZERO), "{key} is in main");
+        f.load_project("c1020");
+        assert!(f.play(key, Vec3::ZERO), "{key} stays missing after c1020.fev loaded");
+    }
 
     /// Which of the Mortal Draw (a106) sounds keep playing: starts each (silent output), waits
     /// 6 s, prints whether FMOD still reports it playing (a loop).
@@ -801,6 +1153,131 @@ mod tests {
         let f = Fmod::open(std::path::Path::new(&crate::paths::sekiro_dir()), &root.join("extracted/sound"), &["mixer"], true).expect("fmod");
         for k in ["ntc_rev", "ntc_menu_rev", "ntc_through", "ntc_main", "ntc_enemy_rev", "ntc_ninsatsu1", "ntc_ninsatsu2", "ntc_ninsatsu3", "ntc_battle_bgm", "ntc_boss_bgm"] {
             println!("{k}: has {} {:?}", f.has(k), f.params_of(k));
+        }
+    }
+
+    /// The mixer graph carries sound: mixer-1 SFX (c000000000 / c000004091 ..., re-triggered
+    /// every 15 ms) routed through ntc_ninsatsu2 -> 1 -> 3 -> ntc_rev reach the output
+    /// (System_GetWaveData RMS), the deathblow muffle (slot 0 at 1, 445 Hz lowpass) takes most
+    /// of it away, and the master category volume applies, against the same sounds unrouted.
+    /// cargo test --release fmod_mixer_routing -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn fmod_mixer_routing() {
+        let root = crate::paths::root();
+        let mut f = Fmod::open(std::path::Path::new(&crate::paths::sekiro_dir()), &root.join("extracted/sound"), &["mixer", "main"], true).expect("fmod");
+        let wave = unsafe { *f._ex.get::<unsafe extern "system" fn(Ptr, *mut f32, i32, i32) -> i32>(b"FMOD_System_GetWaveData").unwrap() };
+        let keys = ["c000004091", "c000004101", "c000004151", "c000000000"];
+        let rms = |f: &mut Fmod| -> f32 {
+            let mut acc = 0.0;
+            for i in 0..40 {
+                if i % 4 == 0 {
+                    for k in keys {
+                        f.play(k, Vec3::new(0.0, 0.0, 1.0));
+                    }
+                }
+                (unsafe { (f.update)(f.es) });
+                std::thread::sleep(std::time::Duration::from_millis(15));
+                let mut buf = [0f32; 1024];
+                for ch in 0..2 {
+                    unsafe { wave(f.sys, buf.as_mut_ptr(), 1024, ch) };
+                    acc += buf.iter().map(|x| x * x).sum::<f32>() / 1024.0;
+                }
+            }
+            (acc / 80.0).sqrt()
+        };
+        let set = f.set_category_volume.unwrap();
+        let run = |f: &mut Fmod, routed: bool| -> (f32, f32, f32) {
+            for k in keys {
+                if routed {
+                    f.mixer_of.remove(k);
+                } else {
+                    f.mixer_of.insert(k.to_string(), 0);
+                }
+            }
+            unsafe { set(f.master, MASTER_VOLUME) };
+            let plain = rms(f);
+            f.set_deathblow_mix([1.0, 0.0, 0.0]);
+            let muffled = rms(f);
+            f.set_deathblow_mix([0.0, 0.0, 0.0]);
+            unsafe { set(f.master, 0.0) };
+            let muted = rms(f);
+            unsafe { set(f.master, MASTER_VOLUME) };
+            let _ = rms(f);
+            (plain, muffled, muted)
+        };
+        let dry = run(&mut f, false);
+        let wet = run(&mut f, true);
+        println!("mixers {:?}", keys.map(|k| f.mixer_of.get(k).copied()));
+        println!("unrouted: playing {:.5}, muffle {:.5}, master 0 {:.5}", dry.0, dry.1, dry.2);
+        println!("routed:   playing {:.5}, muffle {:.5}, master 0 {:.5}", wet.0, wet.1, wet.2);
+        assert!(wet.0 > 1e-4, "no signal through the mixer graph");
+        assert!(wet.1 < wet.0 * 0.8, "the deathblow muffle does not reach the sound");
+        assert!(wet.2 < wet.0 * 0.1, "the category volume no longer applies");
+    }
+
+    /// The events' mixer routing: user properties "mixerNum" / "mixerID_<k>" (read when the exe
+    /// starts an instance, 141c9.c ~11836: the instance's channel group feeds those multimix.mix
+    /// mixers). Counts per project of each mixer id set.
+    /// cargo test --release fmod_event_mixers -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn fmod_event_mixers() {
+        let root = crate::paths::root();
+        let projs = ["main", "smain", "m11", "sm11", "xm11", "vm11", "c0000", "c1020", "c1010"];
+        let f = Fmod::open(std::path::Path::new(&crate::paths::sekiro_dir()), &root.join("extracted/sound"), &projs, true).expect("fmod");
+        unsafe {
+            let l = &f._ev;
+            let get_proj = l.get::<unsafe extern "system" fn(Ptr, *const c_char, *mut Ptr) -> i32>(b"FMOD_EventSystem_GetProject").unwrap();
+            let n_ev = l.get::<unsafe extern "system" fn(Ptr, *mut i32) -> i32>(b"FMOD_EventProject_GetNumEvents").unwrap();
+            let by_id = l.get::<unsafe extern "system" fn(Ptr, i32, u32, *mut Ptr) -> i32>(b"FMOD_EventProject_GetEventByProjectID").unwrap();
+            let ev_info = l.get::<unsafe extern "system" fn(Ptr, *mut i32, *mut *const c_char, Ptr) -> i32>(b"FMOD_Event_GetInfo").unwrap();
+            let prop = l.get::<unsafe extern "system" fn(Ptr, *const c_char, *mut c_void, i32) -> i32>(b"FMOD_Event_GetProperty").unwrap();
+            let cs = |p: *const c_char| if p.is_null() { String::new() } else { std::ffi::CStr::from_ptr(p).to_string_lossy().into_owned() };
+            for p in projs {
+                let name = CString::new(p).unwrap();
+                let mut proj: Ptr = std::ptr::null_mut();
+                if get_proj(f.es, name.as_ptr(), &mut proj) != 0 || proj.is_null() {
+                    println!("{p}: not loaded");
+                    continue;
+                }
+                let mut n = 0;
+                n_ev(proj, &mut n);
+                let mut sets: HashMap<Vec<i32>, (usize, Vec<String>)> = HashMap::new();
+                for id in 0..n {
+                    let mut ev: Ptr = std::ptr::null_mut();
+                    if by_id(proj, id, 4, &mut ev) != 0 || ev.is_null() {
+                        continue;
+                    }
+                    let (mut idx, mut en) = (0, std::ptr::null());
+                    ev_info(ev, &mut idx, &mut en, std::ptr::null_mut());
+                    let mut num: i32 = 0;
+                    let k = CString::new("mixerNum").unwrap();
+                    let r = prop(ev, k.as_ptr(), &mut num as *mut i32 as *mut c_void, 0);
+                    let mut ids = Vec::new();
+                    if r == 0 {
+                        for i in 0..num {
+                            let k = CString::new(format!("mixerID_{i}")).unwrap();
+                            let mut v: i32 = -1;
+                            prop(ev, k.as_ptr(), &mut v as *mut i32 as *mut c_void, 0);
+                            ids.push(v);
+                        }
+                    } else {
+                        ids.push(-100 - r);
+                    }
+                    let e = sets.entry(ids).or_default();
+                    e.0 += 1;
+                    if e.1.len() < 4 {
+                        e.1.push(cs(en));
+                    }
+                }
+                let mut v: Vec<_> = sets.into_iter().collect();
+                v.sort_by(|a, b| b.1 .0.cmp(&a.1 .0));
+                println!("{p}: {n} events");
+                for (ids, (c, ex)) in v {
+                    println!("  mixers {ids:?}: {c} e.g. {ex:?}");
+                }
+            }
         }
     }
 
@@ -968,6 +1445,24 @@ mod tests {
                 }
                 tree(&format!("after {k} (get {r} start {s})"));
             }
+            for k in ["ntc_ninsatsu2", "ntc_ninsatsu1", "ntc_ninsatsu3"] {
+                let path = CString::new(format!("mixer/mixer/{k}")).unwrap();
+                let mut ev: Ptr = std::ptr::null_mut();
+                (f.get_event)(f.es, path.as_ptr(), 0, &mut ev);
+                if !ev.is_null() {
+                    (f.start)(ev);
+                }
+            }
+            // Where a played sound lands: a looping SFX (main, mixer 1).
+            let path = CString::new("main/main/c000004010").unwrap();
+            let mut ev: Ptr = std::ptr::null_mut();
+            let r = (f.get_event)(f.es, path.as_ptr(), 0, &mut ev);
+            let s = if ev.is_null() { -1 } else { (f.start)(ev) };
+            for _ in 0..5 {
+                (f.update)(f.es);
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            tree(&format!("after ninsatsu1-3 + c000004010 (get {r} start {s})"));
         }
     }
 

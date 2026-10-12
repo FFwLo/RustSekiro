@@ -102,8 +102,12 @@ before.
   the area's light probes: `gilm<probe>_<v>` 128^2 BC6H cube maps (7 mips, sky + surroundings
   with the sun disk baked in) and `giiv<probe>_<v>_{w,x,y,z}` BC7 3D irradiance volumes (not
   used). The probe is the MSB region around the arena: `Env_Box<probe>_...`
-  (EnvironmentMapEffectBox, type 17, centred box) else the nearest `Env_Point<probe>`
-  (type 2); the gate is `Env_Box380_ハブ櫓` -> `gilm0380`. `cubemap.rs` decodes BC6H
+  (EnvironmentMapEffectBox, type 17) else the nearest `Env_Point<probe>` (type 2). Boxes are
+  bottom-centred (2026-10-12, msb.rs `contains`): they stand on their position as DSMapStudio
+  draws them, and sekiro-rs 9ee18b0 (lighting.rs ~584, SHADERS.md "GIIV") places the giiv
+  volumes the same way. With that rule the gate origin is 4.4 m under Env_Box380's floor and
+  the pick is Env_Box280 -> `gilm0280` (before: centred, `Env_Box380_ハブ櫓` -> `gilm0380`). The
+  exported `map_*_env_*.dds` still hold the old pick until the next map export. `cubemap.rs` decodes BC6H
   (bcdec_rs), turns the cube into arena space (undo the X mirror, then the arena yaw), writes
   `map_<id>_env_<v>.dds` (RGBA16F cube with mips; DX10 arraySize must be 6 or Bevy makes a 2D
   texture) and `map_<id>_envd_<v>.dds` (16^2 Lambert irradiance / pi from the cube clamped at
@@ -210,8 +214,8 @@ before.
   night map (m11_00 castle, m10_00 Hirata) is compared; nothing to fix from the data.
 
 ### Open
-- Lighting is now the game's own light set + GI probe at 18 h (see above); left: the LUT and
-  auto exposure, and a blend between probe variants for in-between hours. (Material names like
+- Lighting is the game's own light set, GI probe, LUT and auto exposure; in-between hours blend
+  the two probe variants around the hour (`probe_maps`, RGBA16F texel blend). (Material names like
   "本城の遠景モデル" on the gate parts m00202x are reused castle materials, not far-view
   stand-ins.)
 - **Frame rate (2026-10-10)**: the game logs "map frame rate" once over seconds 5..15 (no map:
@@ -223,6 +227,13 @@ before.
   `SHINOBI_MAP_SHADOW_RES=<px>`): 83-86 fps (3 cascades 71). Splitting batches into 20 m cells
   (`MAP_CELL`) for culling made it worse (1016 meshes: 39 fps, 86 without shadows): the
   per-entity cost beats the culling, so it is off. Measurements are +-8 fps run to run.
+  Castle top (boss_71001000, 5.3 M triangles, 2026-10-12): 48 fps, 105 without shadows, 58
+  without cloth, 66 with one cascade. Exporter `MAP_SHADOW_BELOW` (default 6 m): a near piece
+  whose top is more than that under the arena floor casts no shadow (the sun is above the
+  horizon, so it could only shade ground further down, out of the fight): 629 of the castle
+  top's pieces, 519 -> 477 batches, 66 fps with the 2 cascades kept. Only arenas exported since
+  have it (the castle top), the gate (34 pieces, 47 -> 48 fps with the General's group of
+  three: its cost is the enemies' cloth and shadows, not the map) and the silvergrass field (35).
 - **Far view** (2026-10-11, exporter `MAP_FAR=<m>`, off by default): the map's distant-view
   models (m6xxxxx) and sky / cloud pieces (m9xxxxx) within that range join at their lowest LOD
   (no shadows past MAP_SHADOW). A gate probe at 600 m added 19 pieces, 0.2 M triangles, no
@@ -356,6 +367,14 @@ before.
   `Materials::get`: water batches are dark (0.10, 0.15, 0.16) and 60 % translucent with the
   ripple normal. gap: the game's water shader (reflection, refraction, flow), foam
   (`m11_00_waterform_a`) is untouched.
+- **Arena start check (2026-10-11):** the search runs on any terrain (`map::arena_start`), and
+  the test `every_arena_start_stands_and_walks` loads every extracted/map_boss_*.hit: a floor
+  under the boss's spot, a start found without fallback, and four 3 m walks from it (+-x, +-z,
+  0.15 m slides as in play) that never stand over a hole. After sekiro-rs's map_baseline
+  (every player start of every map walked four ways). All 8 arenas pass: starts at z 4
+  except the Guardian Ape (z 10.5); drops at most 0.3 m; another boss's line-up fits on all
+  8. sekiro-rs's own collision-hole scan (docs/COLLISION-HOLES.md) confirmed holes 160-390 m
+  from every area we export, so none are in play.
 - **Wolf's start on a boss arena** (`map::player_start`, used by the reset in player.rs and
   by `settle_player_start` at PostStartup): the arena's player spot (0, 4) is 8 m in front of
   the boss's MSB placement, and the Guardian Ape sleeps in a grotto whose rock (h019400) is
@@ -410,6 +429,84 @@ before.
   that spot: the field falls 0.27 m per metre toward Wolf (the boss spot is 1.3 m above his),
   so that spot may differ by 2 m in height; Wolf's own spot keeps the 0.5 m band of the Ape
   fix. Beyond z 10 the field's centre line has no floor (a drop), so the search stays short.
+- **Castle top** (the user, 2026-10-11: "use his arena", then "put Isshin from the flower arena
+  to the top", "isshin other form"): Genichiro (71001000) has his own arena on the Ashina Castle
+  top, after sekiro-rs `crates/sim/src/arena.rs` ARENAS (burnt floor m015072 skipped with
+  `MAP_SKIP_MODEL`); Way of Tomoe (71100000) shares it by the host search. The Owl (50600000) had
+  his own export from c5060_0000 too, but that spot is at the platform's edge and the start 8 m
+  behind him fell outside the railing onto the roof tiles 2.7 m below, so he is in MOVED as well
+  (sekiro-rs starts both fights at player point c0000_0003); the export was deleted (0.4 GB).
+  The index's `moved` list (the MOVED rows) makes enemy.rs `on_own_arena` false for them even
+  on their own map, so their scripts' place warps are skipped (Bosses, 2026-10-12): before,
+  the Owl's CutsceneWarp put Wolf at the outer railing 0.5 s in. `boss_arenas.py` MOVED puts Isshin the Sword Saint (54000000), his opening
+  Genichiro (71101000), Emma, the Gentle Blade (74000010) and Isshin Ashina (54300000) on `boss_71001000` too. The silvergrass field
+  is still exported as 54000000's map and stays the shared arena of the other bosses. Isshin's
+  boss script map (m11_02) is not the arena's, so he is a stranger there: the line-up 8 m ahead
+  of Wolf lands on Genichiro's spot (the arena test prints any start the line-up moves).
+- **Castle top lighting per fight** (2026-10-12, plan B4). The castle's event script
+  (`m11_01_00_00.emevd`, decoded with tools/boss_events.py `emevd_events`; survey script in the
+  Map session's scratchpad `lighting_events.py`) switches the block's draw params per fight
+  with 2003[88] Set Area Gparam Sub ID (area, block, sub, fade s) and 2003[81] Set Lighting
+  (time of day 1 Morning .. 5 Night per DarkScript3's emedf enum, fade s): Genichiro 11115800
+  sub 0 + time of day 1 (his cutscenes 11010030/31 with time of day 2 / 3); after him
+  11115820 sub 10 (m11_00: 30) + time of day 3; the Owl 11115860 sub 50; Emma 11115910 and
+  Isshin Ashina (m11_01_54_10 11115200) sub 40, his time of day 4 (11115930) after his death;
+  the ending 11110100 sub 0, time of day 5 then 1; common event 100 sets sub 20 on all of
+  area 11. The files are `param/drawparam/m11_01_0<T><SS>.gparam` (T 0..8, SS the sub id);
+  sub 40 / 50 exist only as `_0740` / `_0750`, and both differ from `_0000` only at the
+  18 h key of light set 100 (sun colour and angle; `_0750` sun x3 from yaw 2.62, `_0740`
+  x2.2 from yaw 0.52, pitch -0.26) plus a few fog / bloom values. gap: what the T digit is
+  (no Set Lighting value 7 exists; `_0100` / `_0400` only override light set 0) and the
+  exe's time-of-day -> key-hour table. Done: exporter `MAP_GPARAM_EXTRA=0740,0750`
+  (boss_arenas.py OVERRIDES) writes those files whole as json "drawparam_variants";
+  src/map.rs `FIGHT_LIGHTING` picks per (arena, boss row): Genichiro / Way of Tomoe the base
+  at 12 h (the real fight is flat grey daylight: the 12 h key's cool weak high sun; 6 h is a
+  warm low sun), the Owl `_0750` at 18 h, Emma and Isshin Ashina `_0740` at 18 h; the log
+  says "fight lighting: draw params _0750 at 18 h"; `SHINOBI_HOUR` and `[` / `]` still win.
+  Judged against the real frames (clips/sekiro_all_bosses, Owl 59:40, Genichiro 25:00):
+  still off the same way on all three: ours is flat, ~1 stop too bright, neutral / cool and
+  low-contrast; the game has a low warm golden sun, hard long shadows, dark ambient and an
+  amber haze sky. That is the general lighting pipeline (exposure, ambient vs sun ratio, the
+  hemisphere / probe weight), not the variant choice: the next B4 step.
+- **The game's tone curve and colour rules** (2026-10-12, plan B4; the rules traced by
+  sekiro-rs docs/SHADER-INPUTS.md, exe functions 310630 / 24d920 / 2508b0 / 24db30, credited in
+  THIRD_PARTY.md). In src/map.rs: light and hemisphere colours upload squared (`colour()`:
+  `r*r*W`), fog colours byte-quantised then raised to 2.2 (`fog_colour()`), one scene scale
+  `SCENE_TO_BEVY = 4500` (sekiro-rs lighting.rs) for lux, environment and ambient, and the
+  Adaption Min / Max as the exe's soft limit (`soft_adapt()`: `Max*(1-exp(-x/Max))` above,
+  `|Min|*(exp(x/|Min|)-1)` below) sampled into Bevy's exposure curve every 0.5 EV. Map
+  cameras with a LUT get `GameToneCurve` and Bevy `Tonemapping::None`: src/grading.rs /
+  grading_lut.wgsl apply Bevy's auto exposure (`view.color_grading.exposure`, which the skipped
+  tonemapping node would have applied) and the Yebis Sensitometric curve, mode 7, the shipped
+  default (`A = 1-e^(-1.442695x)`, `B = 1-e^(-4.456669x)`, `out = A + c(B^3 - A)`, c =
+  FilmicContrast 0.5, the castle and gate params having none), then the power 1/2.2 and the
+  LUT. `SHINOBI_MAP_TONEMAP=bevy` keeps Bevy's curve for comparison. About 63 fps on the castle.
+  Measured against the real frames (scratchpad look.py: mean log2 luminance, p10..p90 range,
+  warmth R-B, HSV saturation): the Owl's exposure and range moved toward the game but turned
+  blue; Genichiro is flat and dark with no sun.
+
+  | Shot | logL | range (stops) | warmth | saturation |
+  |---|---|---|---|---|
+  | real Owl | -6.06 | 7.6 | +26 | 100 |
+  | ours Owl | -2.73 | 5.0 | -11 | 44 |
+  | real Genichiro | -5.10 | 6.1 | +20 | 85 |
+  | ours Genichiro | -4.21 | 4.7 | -9 | 25 |
+
+  Open (now "VFX and Maps"'s): re-fit `METER_EV` / `BASE_EV` for the new curve (they were tuned
+  for Bevy's); the blue cast and low saturation (check the LUT input is the curve's output range
+  and that squared colours are not squared twice in the probe / ambient path); try the 6 h key on
+  the castle (DarkScript3 time of day 1 = Morning for Genichiro's event). Per-fight choices
+  themselves belong to the boss fights, which the user gave away (HANDOFF 0.1).
+  2026-10-12 (VXf) on the gate (SHINOBI_MAP=m11_01_00_00, the HUD-shot start view: the shaded
+  gate stairs), look.py: 18 h logL -4.84, 2.1 stops, warm +34, sat 117; 12 h -5.23, 1.9 stops,
+  warm +2, sat 18; 18 h without the env probe (SHINOBI_MAP_NO_ENV) -6.09, 2.1 stops, sat 22;
+  without the LUT -4.38, 1.7 stops; `SHINOBI_MAP_TONEMAP=bevy` changed nothing measurable here.
+  The gate's four LUTs (lut_0000-0030) are near identity (pure red / green / blue and greys map
+  to themselves within ~10 / 255), so the LUT is not the cast. The real frames (all open boss
+  areas, 4.7-8.3 stops) are no fair match for that shaded view: tuning waits for a real gate
+  frame at a known hour (ask the user). Seen: the 12 h key is grey (sat 18) where the 18 h one
+  is saturated; the scene is evenly lit by the ambient / probe with few sun shadows in view.
+
 - **Map switch at run time** (`switch_map`, 2026-10-11, Bosses' request for the encounter
   picker): a `SpawnEncounter` message with the config's `[world] map` on (not the sandbox, no
   `SHINOBI_MAP`) despawns the pieces and the two lights, clears the terrain and runs
@@ -495,3 +592,183 @@ before.
   map's 113 grapple landing spots have a floor within 1.5 m under them (none before), so Wolf
   stands on the branch or roof after LandWireMove instead of VXf's 0.6 m perch. Gate map:
   182 of 231 objects contributed. The arenas were re-exported with it.
+
+## 2026-10-12 The sat layer shaders, decompiled (M[Multiple] / M[MultipleGround])
+
+Static: `/shader/shaderbdle.shaderbdlebnd.dcx` -> `M[Multiple].shaderbdle` /
+`M[MultipleGround].shaderbdle` (not gxflvershader), unpacked with the extractor's `unpack`
+(`MSYS_NO_PATHCONV=1` under Git Bash), DXBC disassembled with d3dcompiler_47 D3DDisassemble
+(ctypes). The RDEF keeps the cbuffer names. 34 pixel variants per shader
+(`M[Multiple]_<N>_{Gbuf,Fwd,...}.ppo`); opaque map geometry draws the **Gbuf** pass (Fwd_27 has
+the same blend). **N = the MTD's `GXFT_SATStaticSwitch`** (map FLVERs name per-map MTDs like
+`M[m11_01]_Wood2_multi.mtd`: shader `M[Multiple].spx`, switch 1; variant 1 samples exactly its
+slots 8, 3, 0, 7, 6). Most used: Multiple 16 x107, 1 x57, 26 x38, 17 x30, 15 x27, 21 x21, 0 x19,
+11 x18; MultipleGround 12 x31, 24 x26, 13 x20, 6 x15, 16 x14. Slots per Multiple variant: 0 = 8, 3,
+0; 1 + 7, 6; 2 + 7, 6, 16; 5 + 12, 9; 10 + 12, 10, 9; 15 + 5, 4, 9; 16 + 5, 4, 6, 7, 9; 18 + 5, 4,
+6, 7, 9, 17; 27 all but 17.
+
+Vertex inputs (VS asm + FLVER layout): Color1 (UByte4Norm), UV0 = the UVPair (short4 / 2048:
+uv0 = xy, uv1 = zw; VC_TexScroll_0/1 scale xy, offset zw), UV1..UV6 (UByte4Norm) = TEXCOORD of the
+same index, so blend[k] = TEXCOORD(k+1), each read from one channel:
+b0 = blend[0].R overlay weight; b1 = blend[1].B (MultipleGround .G) layer L weight; b2 =
+blend[2].RGB a tint colour; b3 = blend[3].R wet weight; b4 = blend[4].G snow weight; b5 =
+blend[5].B detail-normal strength; COLOR1.R multiplies G-buffer o1.z (vertex AO, uncertain).
+UV sets: uvS = uv0 * |world X axis| (UVs scale with the instance; 1 unscaled) for base, overlay,
+snow and mask 9; the detail normal (slot 0) raw uv0; slots 7, 6, 16 **uv1**. Every sample also x
+FC_TextureTilingScale[t-register] (xy scale, zw offset; probably the FLVER texture scale,
+unverified).
+
+Multiple (variant 27, and 18), constants `M_Multiple__snp_0_*` from cb3[24] (FLV(x) = (x*2-1).xy,
+z rebuilt):
+```
+hb(w, h) = saturate((w - h*(1-w)) * (1 + float_5))        // height blend
+H(mask, sel, k) = (dot(mask.rgb, sel)*k + 0.01) * float_4
+m9 = tex9(uvS); m6 = tex6(uv1)
+wOv   = hb(b0, H(m9, float3_0, float_29))                 // overlay 5/4
+wL    = hb(b1, H(m6, float3_2, float_26))                 // layer 7 (uv1)
+wWet  = hb(b3, H(m6, float3_1, float_30))                 // only with slot 16
+wTint = hb(luma(1-b2.rgb), H(m6, float3_3, float_2))      // luma .29891 .58661 .11448
+d   = lerp((.502,.502,1), tex0(uv0).xyb, b5)              // detail normal
+n   = lerp(tex3(uvS), tex4(uvS), wOv)                     // xy normal, B gloss, A occlusion
+N   = FLV(n) + float3(FLV(d)*float_1, 0)
+Nw  = normalize(TBN*N)
+s   = dot(float3_7, Nw) * b4                              // e.g. (-.3, .8, -.3), not normalised
+wSnow = hb(s, H(m9, float3_5, float_32))
+N  += float3(FLV(tex16(uv1 + time*float2_1))*float_0*wWet, 0)
+N   = lerp(N, FLV(tex10(uvS)), wSnow)
+gloss = sat(lerp(lerp(n.b, float_19, wWet), tex10.b, wSnow))
+occl  = sat(lerp(n.a*d.b, tex10.a, wSnow)) * COLOR1.R
+A = tex8.rgb * lerp(color_1, color_7, b0)
+A = lerp(A, tex5(uvS)*color_2, wOv)
+A = lerp(A, tex7(uv1+float2_0)*color_5, wL)
+A = lerp(A, A*b2.rgb*color_6, wTint)
+A = sat(lerp(A, tex12(uvS)*color_8, wSnow)) * FC_DifMapMulCol * InstanceData.aColor[FC_ColorSlotNo]
+// variant 18 (no snow): metal = sat(lerp(tex17(uvS*float2_10).R, tex17(uvS*float2_11).G, wOv))
+```
+cb3 slots: color_0..8 [24..30] (color_0 unused), float_0 [31], 1 [32], 19 [33], 2 [34], 26 [35],
+29 [36], 30 [37], 32 [38], 4 [39], 41 [40], 5 [41], float2_0 [42], 2_1 [43], 2_10 [44], 2_11 [45],
+float3_0 [46], 3_1 [47], 3_2 [48], 3_3 [49], 3_5 [50], 3_7 [51]. Wood2: float_4 0.5, float_5 3,
+float3_7 (-0.3, 0.8, -0.3), float_19 0.75.
+
+MultipleGround (27, 26, 12; `M_MultipleGround__snp_0_*`): detail normal slot 12 on raw uv0 x b5 x
+float_23; overlay 5/4 wOv = hb(b0, H(m9, float3_0, float_10)); layer 1/6 on **uvS** wL = hb(b1(.G),
+H(m9, float3_2, float_6)); snow 11/7 s = dot(float3_5, Nw) * b4, wSnow = hb(s, H(m9, float3_3,
+float_22)), all with mask 9; snow normal added (N.xy += FLV(tex7) * float_31 * wSnow), gloss
+lerp(n.b, tex7.b, wSnow); albedo lerp(lerp(tex8, tex5, wOv), tex1, wL) * lerp(1, b2.rgb, float_2),
+then lerp(..., tex11 * color_0, wSnow); o1.z = COLOR1.R. Wet (26): wWet = b3 * float_7 (linear),
+normal toward flow normal 0 (uv1 scrolled by float2_1, x float_12) plus Ripple 2 (raw uv0, x
+float_11, faded by Ny^10), gloss -> float_3, albedo darkens toward color_1 by wWet * float_8.
+cb3: color_0 [24], color_1 [25], color_3 [26], float_10 [27], 11 [28], 12 [29], 2 [30], 20 [31],
+22 [32], 23 [33], 3 [34], 31 [35], 4 [36], 5 [37], 6 [38], 7 [39], 8 [40], float2_1 [41], float3_0
+[42], 3_2 [43], 3_3 [44], 3_5 [45].
+
+So the 2026-10-10 "Layers" reading above is wrong in places: the `_3m` masks are not height in
+R (a per-material float3 picks the channel, and a high value pushes the layer back through hb);
+the overlay uses mask 9; slot 7 is an albedo layer on uv1 by b1 with mask 6; slot 0 is the
+detail normal (every variant, strength b5); slot 17 a metal mask (variant 18); b2 an RGB tint
+gated by mask 6 (closer to "ao" than "c"); b3 the wet / flow normal (slot 16, uv1); snow = the
+world normal . float3_7 x b4, height-blended on mask 9. Uncertain: o1.x gloss / o1.z occlusion,
+whether color_N carry the MTD "-Intensity", where FC_TextureTilingScale comes from.
+Disassembly and tables (scratch, VXf session): satshader/asm/gbuf, variant_textures.txt,
+static_switch_histogram.txt, mtd/*.txt, dis.py, flv.py (copied to extracted/ref_shaders/).
+
+Ported 2026-10-12 (bin v5): the exporter's `choose` takes M[Multiple] / M[MultipleGround]
+materials by slot number, keeping only the slots the variant samples (`MULTIPLE_SLOTS` /
+`GROUND_SLOTS`), and writes their constants (`game_params`, 16 vec4: colours x
+`-Intensity`, which the engine multiplies in (GXMaterialParam_HDRColor, FUN_1403dc4b0); the snow
+direction turned into arena space) plus 8 blend bytes and the uv scale per vertex.
+map_material.wgsl `game_layers` runs the blend above; map.rs feeds the extra vertex data through
+its own vertex stage (`ATTR_MAP_BLEND2`, `ATTR_MAP_UV_SCALE`). v1-v4 bins and kind 0 keep the
+first reading. `MAP_OLD_LAYERS=1` exports the old way; `SHINOBI_MAP_SHOW_BLEND=1` shows overlay
+red, layer L green, snow blue. Gaps: the HDR colour's optional pow 2.2 (flag not traced), the
+G-buffer occlusion (n.a x d.b, COLOR1.R), FC_TextureTilingScale, MultipleGround's ripple and
+its wet darkening (read as a lerp toward color_1), the metal mask (variant 18), the shader
+tool's defaults for constants an MTD leaves out (0, colours 1). Gate check: no breakage, wood
+a little darker and greyer (the tint layer), snow on up-facing ground. The boss arenas are
+still v4 until re-exported.
+
+Given away 2026-10-12 (the user, relayed): layered map materials now belong to someone else.
+State: bin v5 + `game_layers` built and working on the gate (m11_01_00_00 re-exported 05:5x,
+448 batches, 60 fps, test `bin_v5_reads_the_game_path`); boss arenas still v4. Open: the gaps
+listed above, a real gate frame to compare against, re-exporting the other arenas.
+
+## 2026-10-12 ObjAct doors left out; teleports skip the wall slide ("bug fixes" session)
+
+- **The gate fight never started.** Since objects bring their own collision (above), the
+  gatehouse door o111410_8000 stood closed (bind pose) at z 1.2-1.38 across the passage
+  between Wolf's start (0, 4) and the line-up (0, -4): a solid wall, the General stayed behind
+  the slats. It is an **ObjAct** part (MSB event type 7; type data ObjActEntityID,
+  ObjActPartIndex, ObjActID, StateType, ..., EventFlagID: SoulsFormats MSBS EventParam.ObjAct):
+  the game opens it through the ObjAct and its anibnd, which we do not run. The exporter now
+  reads `Msb::objact_parts` and leaves those parts out, mesh and collision ("N ObjAct doors
+  left out"; `MAP_KEEP_OBJACT=1` keeps them). Gate map: o111410_8000 / 8001 and o111300_8000
+  (231 -> 228 objects, 182 -> 179 with collision). `arena_floor_and_walls` now also walks from
+  (0, -4) to (0, 4). Boss arenas keep their ObjAct doors until their next export.
+- **Teleports are not walks.** `bodies_on_terrain` slid every change of position since the last
+  tick along the floor; a script / event warp, the parking spot or a reset is a teleport. A
+  move longer than `TELEPORT` (2 m in one 60 Hz tick, 120 m/s) skips the slide now. The slide of
+  a 110 m warp gathered every triangle of the move's box on the 1.29 M-triangle Monkeys arena
+  and ran 512 substeps: one frame took about 33 s (the Monkeys fight's "3 fps"), and the warp
+  stopped at the first wall.
+
+## 2026-10-12 The bosses fight on the castle top (user's rule; tools/boss_arenas.py)
+
+- The user: "all the bosses the im working on should be in the top of castle unless they dont
+  fit". `boss_arenas.py` now sends every npc_names.json row without its own arena to
+  `boss_71001000` (the castle top; `TOP_ROW`), and the moved rows too: the Owl (Father),
+  prologue Genichiro 71000000, Isshin's field guests. `DONT_FIT` keeps Gyoubu 50800000 and
+  the Demon of Hatred 70200000 on Isshin's silvergrass field (too big for the roof). Own arenas
+  stay where a fight needs its place: Monk, Butterfly, both Apes, the Dragon, the Old Dragons,
+  the Monkeys. Index: 46 rows on boss_71001000, 2 on boss_54000000.
+- Check: General Naomori 10200000 loads boss_71001000, Wolf at [0, 0.906, 4], 54 fps; the
+  General stands on the roof behind the title screen. Mini-bosses still get no mini-boss bar
+  or music there (no map events for them).
+
+## 2026-10-12 Boss fog walls (tools/fog_walls.py, src/fog_wall.rs)
+
+- The maps raise a boss room's fog with common event 20005820 (end flag, object, SFX, start
+  flag; the SFX on dummy 101) and its boundary with 20005825 (end flag, collision, start flag).
+  `fog_walls.py` reads every map's starts into extracted/enemies/fog_walls.json (47 walls).
+- A fight's walls are its map's walls whose end flag its own boss_scripts.json events use (17 of
+  20 rows have some; the Monk on m17 gets its near door 1701800, not the two 470 m away).
+  `fog_wall.rs` puts their FXR up at the object's place from the start of the fight
+  (`FxEffect.keep`: no age limit) and lets it fade when the script handles the defeat.
+- gap: the collision part (h900800 on the roof) is not loaded, so the fog does not stop Wolf,
+  and the object's model is not drawn. After sekiro-rs crates/sim/src/fogwall.rs (credited in
+  THIRD_PARTY.md).
+
+## 2026-10-12 The game's height fog (src/height_fog.rs, height_fog.wgsl)
+
+- Bevy's DistanceFog (exponential, no height, a hand-set sun glow) is replaced by a pass after
+  the main pass: the game's fog model from sekiro-rs fog.wgsl with the exe's packing from its
+  docs/SHADER-INPUTS.md (884ea0b): FixedDensity, HeightFogDistribution and Density Scale over
+  GameScale (sH halved), Near / Far / StartDists times it, h = map Y - HeightFogOffset in
+  metres, the exe's geometric depth slices, then the analytical continuation past Far. Colours
+  are gamma 2.2 times W on the probes' radiance scale (ENV_PER_UNIT) times the camera exposure.
+  `SHINOBI_MAP_NO_FOG=1` turns it off.
+- Check (castle roof, 18 h): no broken pixels; the haze is faint (FixedDensity 0.0015 at
+  GameScale 1; the height layer sits about 140 m below the roof).
+- gap: VolumeDepth (128 slices, the exe clamp's top), AbsorptionScale, both HeightAttens,
+  NearOffset and EnableAnalyticalFog are not in the exports; the AngleClip floor; the fog light's
+  LightBankId (the light set's sun stands in); local fog lights; sun shadows in the fog; the sky
+  box is left unfogged; particles take the fog of what is behind them.
+
+## 2026-10-12 Sky domes and the map's bloom (src/sky.rs, map.rs map_bloom)
+
+- The sky is the game's own: one dome of the sky library m89_00_00_99 (`sekiro-extract sky
+  extracted` -> extracted/sky/sky.json + 5 textures from other/maptex.tpf; the 27 m89 mapbnds
+  unpacked with `unpack ... 'm89_00_00_99/m89_00_00_99_9[0-9]+\.mapbnd'`, MSYS_NO_PATHCONV=1).
+  common.emevd event 100 shows group 8907000..8907070 by the story time: m900040 0 h, 050 2 h,
+  000 6 h, 010 12 h, 020 18 h, 030 22 h, the nearest to the hour; m10 060, m25 070 (+ a Cloud
+  layer). Camera-centred at infinite depth, no depth write; the probe stays the reflections
+  and diffuse light but is no longer the sky box (`SHINOBI_MAP_PROBE_SKY=1` brings it back).
+  Ported from sekiro-rs sky.rs / sky.wgsl (THIRD_PARTY.md).
+- Check: 12 h pale hazy blue, 22 h dark teal with cloud wisps; 18 h flat ochre with dark cloud
+  smudges. gap: the colour packing (gamma 2 times Intensity) and cloud shading are sekiro-rs's
+  approximations, not the traced SkyDome_Ver2 shader; the fire sky and 8907015 are not chosen.
+- Bloom from Bloom[Yebis] (map_bloom): the exe's level weights Alpha * Luminance * Smooth^i /
+  sum Smooth^j reproduced exactly by Bevy's additive chain (intensity = level 0's weight,
+  low_frequency_boost = Smooth - it, curvature 0.9999), NumLevels mips, hard knee at the raw
+  Glare Threshold. gap: the threshold sees Bevy's pre-auto-exposure buffer; the 7-tap Gaussian,
+  level-0 size, Saturate Ctrl and FeedbackWeight are not modelled. `SHINOBI_MAP_BLOOM=camera`
+  keeps the camera's old bloom.

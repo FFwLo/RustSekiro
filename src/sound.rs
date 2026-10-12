@@ -185,6 +185,8 @@ impl Plugin for SoundPlugin {
             .insert_resource(SoundVolume(0.6))
             .insert_resource(index_sounds())
             .init_resource::<SoundQueue>()
+            .init_resource::<SlottedSounds>()
+            .add_systems(Update, stop_slotted_off_screen)
             // TAE sounds per simulation step (two steps in one frame would skip the first's events).
             .add_systems(FixedUpdate, (play_tae_sounds, deathblow_mix).after(crate::actor::ActorSet::Advance))
             .add_systems(Update, play_queued);
@@ -249,6 +251,74 @@ pub fn active_state_infos(combat: &Combat, a: &Actor, config: Option<&crate::con
 
 
 #[allow(clippy::too_many_arguments)]
+/// The clip whose TAE sounds play this step and the time windows (lo, hi] in it: the TAE anim
+/// from prev_t to t, or - Wolf's procedural walk / run / crouch-walk (Locomotion, no anim; their
+/// footsteps c00000100x / 200x and armour rustle are the clips' PlaySound events) - the shown
+/// locomotion clip (`locomotion_clip_at`), wrapping at the loop's end. A step that changes
+/// locomotion clip (the move start into the loop, a turn to another direction) starts the new
+/// clip at 0. gap: the rest of the clip left behind is not played. Also the clip time (the
+/// once-per-step key).
+pub(crate) fn sound_windows(a: &Actor, d: &crate::data::CharData) -> Option<(String, Vec<(f32, f32)>, f32)> {
+    const AT_ZERO: f32 = -1e-6;
+    if !a.anim.is_empty() {
+        // An event at 0 fires in the anim's first step.
+        let lo = if a.prev_t == 0.0 && a.t > 0.0 && a.t < 0.05 { AT_ZERO } else { a.prev_t };
+        return Some((a.anim.clone(), vec![(lo, a.t)], a.t));
+    }
+    if a.state != "Locomotion" {
+        return None;
+    }
+    let dt = a.t - a.prev_t;
+    let (key, t, looping) = a.locomotion_clip_at(a.t);
+    let len = d.length(&key);
+    let now = if looping && len > 0.0 { t.rem_euclid(len) } else { t };
+    if dt <= 0.0 {
+        return Some((key, Vec::new(), now));
+    }
+    if a.locomotion_clip_at(a.prev_t).0 != key {
+        return Some((key, vec![(AT_ZERO, now)], now));
+    }
+    let before = now - dt;
+    let windows = if before >= 0.0 {
+        vec![(before, now)]
+    } else if looping && len > 0.0 {
+        vec![(before + len, len), (AT_ZERO, now)]
+    } else {
+        vec![(AT_ZERO, now)]
+    };
+    Some((key, windows, now))
+}
+
+/// A slotted FFX's sound (play_tae_sounds): its owner and SlotID, the anim and event end it
+/// lives to, the anim time last seen (a drop = the anim started over).
+pub(crate) struct Slotted {
+    pub(crate) owner: Entity,
+    pub(crate) slot: i64,
+    pub(crate) anim: String,
+    pub(crate) end: f32,
+    pub(crate) last_t: f32,
+    pub(crate) ev: crate::fmod::EventHandle,
+}
+
+/// The slotted sounds playing (play_tae_sounds).
+#[derive(Resource, Default)]
+pub(crate) struct SlottedSounds(pub(crate) Vec<Slotted>);
+
+/// Stops every slotted sound on the title, the picker and death: play_tae_sounds ends them
+/// with their anims, but FixedUpdate is frozen off the Playing screen.
+pub(crate) fn stop_slotted_off_screen(screen: Option<Res<State<crate::menu::Screen>>>, fmod: Option<NonSendMut<crate::fmod::Fmod>>, mut slotted: ResMut<SlottedSounds>) {
+    use crate::menu::Screen;
+    if slotted.0.is_empty() || !screen.is_some_and(|s| matches!(s.get(), Screen::Title | Screen::Picker | Screen::Dead)) {
+        return;
+    }
+    if let Some(mut f) = fmod {
+        for s in &slotted.0 {
+            f.stop(s.ev);
+        }
+    }
+    slotted.0.clear();
+}
+
 fn play_tae_sounds(
     mut commands: Commands,
     combat: Res<Combat>,
@@ -260,25 +330,32 @@ fn play_tae_sounds(
     globals: Query<&GlobalTransform>,
     mut seen: Local<HashMap<Entity, (String, f32)>>,
     mut fmod: Option<NonSendMut<crate::fmod::Fmod>>,
-    mut slotted: Local<Vec<(Entity, String, f32, crate::fmod::EventHandle)>>,
+    mut slotted: ResMut<SlottedSounds>,
 ) {
+    let slotted = &mut slotted.0;
     // Sounds of slotted FFX (SpawnOneShotFFX with a SlotID >= 0, e.g. the Mortal Blade's aura
     // 440000 on slot 0, frames 5-100 of a106_316000): the effect lives while its TAE event runs and
     // ends with it or when the anim changes - its (looping) sound with it. Before, the loop kept
-    // playing after Mortal Draw.
+    // playing after Mortal Draw. A looping anim (an idle: enemy.rs starts it over at t 0 under
+    // the same key) ends it too, and a new sound on a slot replaces the slot's old one, so a
+    // slot event that runs past the clip's end does not stack an instance per loop (c1140
+    // IdleBattle s000611410).
     if let Some(f) = fmod.as_mut() {
-        slotted.retain(|(ent, anim, end, ev)| {
-            let alive = actors.get(*ent).is_ok_and(|(_, a, ..)| a.anim == *anim && a.t < *end);
-            if !alive {
-                f.stop(*ev);
+        slotted.retain_mut(|s| {
+            let now = actors.get(s.owner).ok().filter(|(_, a, ..)| a.anim == s.anim).map(|(_, a, ..)| a.t);
+            match now {
+                Some(t) if t < s.end && t >= s.last_t => {
+                    s.last_t = t;
+                    true
+                }
+                _ => {
+                    f.stop(s.ev);
+                    false
+                }
             }
-            alive
         });
     }
     for (entity, a, tf, player, dm) in &actors {
-        if a.anim.is_empty() {
-            continue;
-        }
         // Where a sound plays: its event's DummyPolyID (PlaySound_BySlot 129 / 131,
         // _ByDummyPoly_PlayerVoice 130; an FFX's sound on the FFX's dummy, SpawnFFX_Blade's on its
         // DummyPolyBladeBaseID; DSAnimStudio TAE.Template.SDT), else the character (CenterBody 128,
@@ -293,14 +370,15 @@ fn play_tae_sounds(
                 })
                 .unwrap_or(tf.translation)
         };
+        let d = data_for(&combat, &a);
+        let Some((clip, windows, now)) = sound_windows(a, d) else { continue };
         // Several render frames can share one fixed step: handle each step once.
-        let step = (a.anim.clone(), a.t);
+        let step = (clip.clone(), now);
         if seen.get(&entity) == Some(&step) {
             continue;
         }
         seen.insert(entity, step);
-        let d = data_for(&combat, &a);
-        let Some(anim) = d.anim(&a.anim) else { continue };
+        let Some(anim) = d.anim(&clip) else { continue };
         let mut states: Option<Vec<i64>> = None;
         for e in &anim.events {
             if !matches!(e.kind, 128..=132 | 96 | 118) {
@@ -314,7 +392,7 @@ fn play_tae_sounds(
                     continue;
                 }
             }
-            let started = (e.start > a.prev_t && e.start <= a.t) || (a.prev_t == 0.0 && e.start == 0.0 && a.t > 0.0 && a.t < 0.05);
+            let started = windows.iter().any(|&(lo, hi)| e.start > lo && e.start <= hi);
             if !started {
                 continue;
             }
@@ -327,9 +405,16 @@ fn play_tae_sounds(
                 if let (Some(ffx), Some(f)) = (e.arg_i64("FFXID").filter(|v| *v > 0), fmod.as_mut()) {
                     let key = format!("s{ffx:09}");
                     if f.has(&key) {
-                        if e.arg_i64("SlotID").is_some_and(|s| s >= 0) {
+                        if let Some(slot) = e.arg_i64("SlotID").filter(|s| *s >= 0 && !a.anim.is_empty()) {
+                            slotted.retain(|s| {
+                                let same = s.owner == entity && s.slot == slot;
+                                if same {
+                                    f.stop(s.ev);
+                                }
+                                !same
+                            });
                             if let Some(ev) = f.play_tracked(&key, at) {
-                                slotted.push((entity, a.anim.clone(), e.end, ev));
+                                slotted.push(Slotted { owner: entity, slot, anim: a.anim.clone(), end: e.end, last_t: a.t, ev });
                             }
                         } else {
                             f.play(&key, at);

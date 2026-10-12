@@ -58,6 +58,11 @@ One demo per chapter, several casts each (hit and whiffed, some at a dummy enemy
 | 14:17 | 14:44 | Puppeteer | ninjutsu |
 | 14:44 | 15:03 | Bestowal | ninjutsu (VFX) |
 
+Correction (2026-10-12, from the burned-in labels): plain "Ichimonji" runs to ~1:48,
+"Ichimonji Double" 1:49-~2:12, "Praying Strikes" from ~2:13; plain "Mortal Draw" to ~6:50-7:13,
+"Empowered Mortal Draw" 7:14-7:52 (plain Mortal Draw already shows red trails). The table's
+other rows are the uploader's chapter marks, not re-checked.
+
 Use: VXf's B6 skill sheets (`SHINOBI_SKILL_SHOTS`) against these chapters (arc place, size,
 colour of each art's trail and effect); Bosses' B1 deathblow placement (mid-air, ledge,
 wall-hug); the cape on the arts for B2 (the dark temple hides it; a daylight clip is better).

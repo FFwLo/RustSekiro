@@ -1,6 +1,7 @@
 //! Real animation playback: skeletons and spline-decoded clips exported by
-//! tools/sekiro-extract (extracted/anim_<chr>.bin), posed every frame from the
-//! actor's current anim and clock, drawn as bone lines.
+//! tools/sekiro-extract (extracted/anim_<chr>.bin), posed every sim tick (FixedUpdate,
+//! `PoseSet`) from the actor's current anim and clock, drawn between the last two ticks' poses,
+//! and as bone lines without a model.
 
 use bevy::prelude::*;
 use std::collections::{HashMap, HashSet};
@@ -138,6 +139,13 @@ fn load(path: &std::path::Path) -> Lib {
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct AnimSet;
 
+/// FixedUpdate, between ActorSet::Advance and ActorSet::Resolve: this tick's pose at the sim's
+/// anim time, with the skeletons' GlobalTransforms already updated, so the hit test, bullets
+/// and effects that read dummy polys see where the swing is now (they saw the last drawn
+/// frame's pose before: one tick old at 60 fps, more below it).
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct PoseSet;
+
 /// Marks a character whose real mesh is attached (bone lines are then hidden).
 #[derive(Component)]
 pub struct HasModel;
@@ -160,6 +168,12 @@ pub struct ModelLag {
     pub left: f32,
 }
 
+/// A character put back without moving there (Wolf's fight reset, an enemy's respawn): its next
+/// posed tick snaps to the new clip instead of fading from the old life's pose, the drawn pose
+/// does not lerp from it, and a running ModelLag ends (2026-10-12 bug hunt round 17).
+#[derive(Component)]
+pub struct SnapPose;
+
 /// Bone entities of one character, indexed like the skeleton.
 #[derive(Component)]
 pub struct Skeleton {
@@ -175,11 +189,13 @@ pub struct Skeleton {
     pub(crate) blend: f32,
     /// Crossfade length into the current clip (TAE Blend event, else CROSSFADE).
     blend_len: f32,
-    /// Last frame showed an upper action (its legs were the walk/run loop already).
+    /// Last tick showed an upper action (its legs were the walk/run loop already).
     was_upper: bool,
     /// The running crossfade leaves the legs alone (upper action -> its move loop: the legs keep
     /// the same loop at the same time, so only the upper body fades).
     upper_fade: bool,
+    /// Bone local transforms (then the root's) of the last two sim ticks, drawn in between.
+    sim: [Vec<Transform>; 2],
 }
 
 /// Crossfade into an anim: its TAE "Blend" event (type 16, frames 0-N; most anims have
@@ -221,11 +237,13 @@ impl Plugin for AnimPlugin {
         app.insert_resource(AnimLib { player, enemies, enemy_chrs, player_vs: done })
             .add_systems(PostStartup, build_skeletons.in_set(AnimSet))
             // Characters spawned later (a fight reset's line-up, the encounter picker).
-            .add_systems(Update, build_skeletons.in_set(AnimSet).before(pose_skeletons))
+            .add_systems(Update, build_skeletons.in_set(AnimSet).before(draw_poses))
+            .configure_sets(FixedUpdate, PoseSet.after(crate::actor::ActorSet::Advance).before(crate::actor::ActorSet::Resolve))
+            .add_systems(FixedUpdate, (pose_skeletons, apply_walk_twist, apply_twists, apply_model_lag, store_sim_poses).chain().in_set(PoseSet))
             .add_systems(
                 Update,
                 // (No gizmos headless: sim tests with the real geometry, model.rs GeometryPlugin.)
-                (pose_skeletons, apply_walk_twist, apply_twists, apply_model_lag, draw_skeletons.run_if(resource_exists::<bevy::gizmos::config::GizmoConfigStore>))
+                (draw_poses, draw_skeletons.run_if(resource_exists::<bevy::gizmos::config::GizmoConfigStore>))
                     .chain()
                     .before(TransformSystems::Propagate),
             );
@@ -298,13 +316,13 @@ fn build_skeletons(
             commands.entity(e).insert(Hurtboxes(boxes, parts));
         }
         // The skeleton replaces the placeholder capsule.
-        commands.entity(e).insert(Skeleton { bones, root, shown: String::new(), from: Vec::new(), last: Vec::new(), blend: 1.0, blend_len: CROSSFADE, was_upper: false, upper_fade: false }).remove::<Mesh3d>();
+        commands.entity(e).insert(Skeleton { bones, root, shown: String::new(), from: Vec::new(), last: Vec::new(), blend: 1.0, blend_len: CROSSFADE, was_upper: false, upper_fade: false, sim: [Vec::new(), Vec::new()] }).remove::<Mesh3d>();
     }
 }
 
 /// Clip to show for an actor: its current anim (or the sibling it borrows a clip
 /// from), or a loop for procedural states.
-/// `t` is the anim time to draw (draw_time).
+/// `t` is the anim time to pose (the sim's, `Actor.t`).
 fn clip_for<'a>(lib: &'a Lib, d: &CharData, a: &Actor, t: f32) -> Option<(&'a Clip, f32)> {
     if let Some(c) = lib.clips.get(d.clip_key(&a.anim)) {
         return Some((c, t));
@@ -324,13 +342,6 @@ impl Clip {
 
 /// Anim time drawn this frame: between the last two simulated steps, like the actor's position
 /// (interp.rs), so poses move every screen frame instead of in 60 Hz steps.
-fn draw_time(a: &Actor, alpha: Option<f32>) -> f32 {
-    match alpha {
-        Some(k) if a.prev_t <= a.t => a.prev_t + (a.t - a.prev_t) * k,
-        _ => a.t,
-    }
-}
-
 /// The clip a procedural state shows and the time in it (before looping): locomotion = the move
 /// start, then the loop (Actor::move_clip), else idle.
 fn proc_clip(a: &Actor, t: f32) -> (String, f32) {
@@ -359,17 +370,20 @@ fn clip_key(lib: &Lib, d: &CharData, a: &Actor, t: f32) -> String {
 }
 
 fn pose_skeletons(
-    time: Res<Time>,
-    alpha: Option<Res<crate::interp::DrawAlpha>>,
     lib: Res<AnimLib>,
     combat: Res<Combat>,
-    mut actors: Query<(&Actor, &mut Skeleton)>,
+    mut actors: Query<(&Actor, &mut Skeleton, Has<SnapPose>)>,
     mut tfs: Query<&mut Transform>,
 ) {
-    for (a, mut skel) in &mut actors {
+    for (a, mut skel, snap) in &mut actors {
+        if snap {
+            // No fade from the previous life's pose (an empty `shown` snaps in, blend = 1).
+            skel.shown.clear();
+            skel.last.clear();
+        }
         let l = lib.lib(&a);
         let d = data_for(&combat, &a);
-        let drawn = draw_time(a, alpha.as_deref().map(|k| k.0));
+        let drawn = a.t;
         let Some((clip, t)) = clip_for(l, d, a, drawn) else { continue };
         let tracks = clip.track_to_bone.len();
         if tracks == 0 || clip.frames == 0 {
@@ -392,7 +406,10 @@ fn pose_skeletons(
             skel.shown = key;
         }
         skel.was_upper = a.side == Side::Player && crate::player::is_upper_action(&a.state);
-        skel.blend = (skel.blend + time.delta_secs() / skel.blend_len).min(1.0);
+        // On the character's own clock (the step advance just took): hit stop freezes the fade
+        // with the clip, as the exe runs it on the character's time (sekiro-rs fd53f99, MIT /
+        // Apache-2.0: blend length from TAE 16 / 17 at 140984230, smoothstep 141408650).
+        skel.blend = (skel.blend + (a.t - a.prev_t).max(0.0) / skel.blend_len).min(1.0);
         let w = skel.blend * skel.blend * (3.0 - 2.0 * skel.blend);
         let f = (t / clip.frame_duration).clamp(0.0, (clip.frames - 1) as f32);
         let (i0, k) = (f.floor() as usize, f.fract());
@@ -487,14 +504,67 @@ fn pose_skeletons(
     }
 }
 
-/// Slides an absorbed character's model onto its capsule (ModelLag).
+/// Keeps this tick's pose (bones, then the root) for drawing, and updates the skeleton's
+/// GlobalTransforms by hand from the actor down (transform propagation runs only after Update),
+/// so FixedUpdate readers of bones and dummy polys see this tick (model.rs then moves the TAE 715
+/// weapon parts, as after the normal propagation).
+pub(crate) fn store_sim_poses(
+    mut commands: Commands,
+    mut actors: Query<(Entity, &Transform, &mut GlobalTransform, &mut Skeleton, Has<SnapPose>), With<Actor>>,
+    mut nodes: Query<(&Transform, &mut GlobalTransform, Option<&Children>), Without<Actor>>,
+) {
+    let mut stack: Vec<(Entity, GlobalTransform)> = Vec::new();
+    for (e, tf, mut g, mut skel, snap) in &mut actors {
+        let now: Vec<Transform> = skel.bones.iter().chain([&skel.root]).map(|&b| nodes.get(b).map(|n| *n.0).unwrap_or_default()).collect();
+        let prev = std::mem::replace(&mut skel.sim[1], now);
+        skel.sim[0] = if prev.len() == skel.sim[1].len() && !snap { prev } else { skel.sim[1].clone() };
+        if snap {
+            commands.entity(e).remove::<SnapPose>();
+        }
+        *g = GlobalTransform::from(*tf);
+        stack.push((skel.root, *g));
+        while let Some((e, parent)) = stack.pop() {
+            let Ok((local, mut global, children)) = nodes.get_mut(e) else { continue };
+            *global = parent.mul_transform(*local);
+            let here = *global;
+            stack.extend(children.into_iter().flat_map(|c| c.iter()).map(|c| (c, here)));
+        }
+    }
+}
+
+/// Draws each skeleton between its last two sim ticks' poses (interp.rs DrawAlpha; the latest
+/// pose without one), as the actors' capsules are.
+fn draw_poses(alpha: Option<Res<crate::interp::DrawAlpha>>, actors: Query<&Skeleton>, mut tfs: Query<&mut Transform, Without<Actor>>) {
+    let k = alpha.map_or(1.0, |a| a.0.clamp(0.0, 1.0));
+    for skel in &actors {
+        let [prev, cur] = &skel.sim;
+        for ((&e, p), c) in skel.bones.iter().chain([&skel.root]).zip(prev).zip(cur) {
+            if let Ok(mut tf) = tfs.get_mut(e) {
+                *tf = Transform { translation: p.translation.lerp(c.translation, k), rotation: p.rotation.slerp(c.rotation, k), scale: p.scale.lerp(c.scale, k) };
+            }
+        }
+    }
+}
+
+/// Slides an absorbed character's model onto its capsule (ModelLag). Without one the root is
+/// held at rest every tick: the drawn (interpolated) root is read back as the sim pose, so the
+/// slide's last step used to leave a small offset for good (2026-10-12 bug hunt round 17).
 fn apply_model_lag(
     mut commands: Commands,
     time: Res<Time>,
-    mut actors: Query<(Entity, &Transform, &Skeleton, &mut ModelLag), With<Actor>>,
+    mut actors: Query<(Entity, &Transform, &Skeleton, Option<&mut ModelLag>, Has<SnapPose>), With<Actor>>,
     mut roots: Query<&mut Transform, Without<Actor>>,
 ) {
-    for (e, tf, skel, mut lag) in &mut actors {
+    for (e, tf, skel, lag, snap) in &mut actors {
+        let Some(mut lag) = lag.filter(|_| !snap) else {
+            if let Ok(mut r) = roots.get_mut(skel.root) {
+                r.translation = Vec3::new(0.0, -CAPSULE_HALF_HEIGHT, 0.0);
+            }
+            if snap {
+                commands.entity(e).remove::<ModelLag>();
+            }
+            continue;
+        };
         lag.left -= time.delta_secs();
         let k = (lag.left / lag.time.max(1e-6)).max(0.0);
         if let Ok(mut r) = roots.get_mut(skel.root) {
@@ -625,7 +695,7 @@ fn apply_twists(
             let lock_t = lock.as_ref().and_then(|l| l.target);
             if lock_only { lock_t } else { lock_t.or(a.homing) }.and_then(|t| targets.get(t).ok()).map(|(_, t, _)| t)
         } else {
-            targets.iter().find(|(te, _, is_player)| *is_player && *te != e).map(|(_, t, _)| t)
+            a.homing.and_then(|t| targets.get(t).ok()).map(|(_, t, _)| t).or_else(|| targets.iter().find(|(te, _, is_player)| *is_player && *te != e).map(|(_, t, _)| t))
         };
         // Each chain is clamped by its own modifier's limits (Wolf's 0_TwistLR turns, 0_TwistUD tilts).
         let (mut raw_yaw, mut raw_pitch) = (0.0f32, 0.0f32);

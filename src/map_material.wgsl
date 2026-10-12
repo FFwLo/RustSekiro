@@ -1,5 +1,6 @@
 // Map pieces (map.rs): the game's layered map materials (M[Multiple], M[MultipleGround],
-// docs/kb/map.md "Layers") on top of Bevy's StandardMaterial. Base albedo from the
+// docs/kb/map.md "Layers") on top of Bevy's StandardMaterial. Bins of version 5 take the game's
+// own blend (`game_layers`, decompiled); older bins the first reading below. Base albedo from the
 // StandardMaterial; the overlay (moss, a second stone) and the snow come as extra textures and
 // blend by the vertex blend bytes (vertex colour: x overlay, y layer C, z snow, w byte 2) and,
 // for the snow, how much the surface faces up. Normal maps as sekiro_material.wgsl (RG, DirectX
@@ -11,6 +12,8 @@
     pbr_functions::{alpha_discard, apply_pbr_lighting, main_pass_post_lighting_processing},
     pbr_types::{PbrInput, STANDARD_MATERIAL_FLAGS_UNLIT_BIT},
     pbr_bindings,
+    mesh_functions,
+    view_transformations::position_world_to_clip,
     forward_io::{VertexOutput, FragmentOutput},
 }
 
@@ -40,6 +43,104 @@
 // x: has a mask, y: blend softness (0 = the plain vertex weight), z: flow smoke (the cloud sea,
 // `smoke` below), w: its pace.
 @group(#{MATERIAL_BIND_GROUP}) @binding(118) var<uniform> mask_params: vec4<f32>;
+// The game path (bin v5): the detail normal (M[Multiple] slot 0 / M[MultipleGround] 12), the
+// layer mask on uv1 (M[Multiple] slot 6), the wet flow normal (slot 16 / 0); sampled with
+// normal_sampler (every map texture repeats).
+@group(#{MATERIAL_BIND_GROUP}) @binding(120) var detail_texture: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(121) var mask_l_texture: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(122) var wet_texture: texture_2d<f32>;
+struct MapGame {
+    // x: texture bits (map.rs GameParams), y: kind (0 the old path, 1 M[Multiple],
+    // 2 M[MultipleGround]), z: show the blend weights.
+    flags: vec4<u32>,
+    p: array<vec4<f32>, 16>,
+}
+@group(#{MATERIAL_BIND_GROUP}) @binding(123) var<uniform> map_game: MapGame;
+
+// The vertex stage: Bevy's mesh.wgsl for static meshes plus the game path's extra vertex data
+// (MAP_GAME_ATTRS when the mesh carries it: bin v5 pieces).
+struct MapVertex {
+    @builtin(instance_index) instance_index: u32,
+    @location(0) position: vec3<f32>,
+    @location(1) normal: vec3<f32>,
+#ifdef VERTEX_UVS_A
+    @location(2) uv: vec2<f32>,
+#endif
+#ifdef VERTEX_UVS_B
+    @location(3) uv_b: vec2<f32>,
+#endif
+#ifdef VERTEX_TANGENTS
+    @location(4) tangent: vec4<f32>,
+#endif
+#ifdef VERTEX_COLORS
+    @location(5) color: vec4<f32>,
+#endif
+#ifdef MAP_GAME_ATTRS
+    @location(8) blend2: vec4<f32>,
+    @location(9) uv_scale: f32,
+#endif
+}
+
+struct MapVertexOutput {
+    @builtin(position) position: vec4<f32>,
+    @location(0) world_position: vec4<f32>,
+    @location(1) world_normal: vec3<f32>,
+#ifdef VERTEX_UVS_A
+    @location(2) uv: vec2<f32>,
+#endif
+#ifdef VERTEX_UVS_B
+    @location(3) uv_b: vec2<f32>,
+#endif
+#ifdef VERTEX_TANGENTS
+    @location(4) world_tangent: vec4<f32>,
+#endif
+#ifdef VERTEX_COLORS
+    @location(5) color: vec4<f32>,
+#endif
+#ifdef VERTEX_OUTPUT_INSTANCE_INDEX
+    @location(6) @interpolate(flat) instance_index: u32,
+#endif
+#ifdef VISIBILITY_RANGE_DITHER
+    @location(7) @interpolate(flat) visibility_range_dither: i32,
+#endif
+    @location(8) blend2: vec4<f32>,
+    @location(9) uv_scale: f32,
+}
+
+@vertex
+fn vertex(v: MapVertex) -> MapVertexOutput {
+    var out: MapVertexOutput;
+    let world_from_local = mesh_functions::get_world_from_local(v.instance_index);
+    out.world_normal = mesh_functions::mesh_normal_local_to_world(v.normal, v.instance_index);
+    out.world_position = mesh_functions::mesh_position_local_to_world(world_from_local, vec4<f32>(v.position, 1.0));
+    out.position = position_world_to_clip(out.world_position.xyz);
+#ifdef VERTEX_UVS_A
+    out.uv = v.uv;
+#endif
+#ifdef VERTEX_UVS_B
+    out.uv_b = v.uv_b;
+#endif
+#ifdef VERTEX_TANGENTS
+    out.world_tangent = mesh_functions::mesh_tangent_local_to_world(world_from_local, v.tangent, v.instance_index);
+#endif
+#ifdef VERTEX_COLORS
+    out.color = v.color;
+#endif
+#ifdef VERTEX_OUTPUT_INSTANCE_INDEX
+    out.instance_index = v.instance_index;
+#endif
+#ifdef VISIBILITY_RANGE_DITHER
+    out.visibility_range_dither = mesh_functions::get_visibility_range_dither_level(v.instance_index, world_from_local[3]);
+#endif
+#ifdef MAP_GAME_ATTRS
+    out.blend2 = v.blend2;
+    out.uv_scale = v.uv_scale;
+#else
+    out.blend2 = vec4(1.0, 1.0, 1.0, 0.0);
+    out.uv_scale = 1.0;
+#endif
+    return out;
+}
 
 // A layer's coverage from its vertex weight and the base height: the layer wins where the
 // weight exceeds the threshold, within `softness` of it. Overlays (moss, dirt) fill the low
@@ -93,9 +194,183 @@ fn smoke(in: VertexOutput, pbr_input: PbrInput) -> FragmentOutput {
     return out;
 }
 
+// ---------------------------------------------------------------------------------------------
+// The game's own layer blend (bin version 5, kind 1 M[Multiple] / 2 M[MultipleGround]):
+// decompiled from shader/shaderbdle.shaderbdlebnd.dcx M[Multiple].shaderbdle and
+// M[MultipleGround].shaderbdle, Gbuf pass (docs/kb/map.md "The sat layer shaders, decompiled").
+// The constants come from the material's MTD (`map_game.p`, layout in map.rs `GameParams`).
+// Vertex data: color = (b0 overlay, b1 layer L, b4 snow, b5 detail strength), blend2 =
+// (b2 tint rgb, b3 wet), uv_scale = |part scale X| (the game's uvS = uv0 x |world X axis|).
+
+// hb: the game's height blend of a vertex weight against a mask height.
+fn hb(w: f32, h: f32) -> f32 {
+    return saturate((w - h * (1.0 - w)) * (1.0 + map_game.p[6].y));
+}
+
+// H: a mask's height for one layer: the material's float3 picks the channels, k scales it.
+fn H(mask: vec3<f32>, sel: vec3<f32>, k: f32) -> f32 {
+    return (dot(mask, sel) * k + 0.01) * map_game.p[6].x;
+}
+
+// FLV: a game normal map's xy (z rebuilt), DirectX green flipped into Bevy's tangent frame.
+fn flv(n: vec4<f32>) -> vec3<f32> {
+    return unpack_normal(n);
+}
+
+fn has(bit: u32) -> bool {
+    return (map_game.flags.x & bit) != 0u;
+}
+
+#ifdef VERTEX_UVS_A
+fn game_layers(in: VertexOutput, b: vec4<f32>, b2: vec4<f32>, uv_scale: f32, pbr_in: PbrInput) -> PbrInput {
+    var pbr_input = pbr_in;
+    let p = map_game.p;
+    let ground = map_game.flags.y == 2u;
+    let uv0 = in.uv;
+    var uv1 = in.uv;
+#ifdef VERTEX_UVS_B
+    uv1 = in.uv_b;
+#endif
+    let uvs = uv0 * uv_scale;
+    var m9 = vec3(0.0);
+    if has(128u) { m9 = textureSample(mask_texture, mask_sampler, uvs).rgb; }
+    // M[Multiple]'s layer L / wet / tint mask (slot 6) is on uv1; M[MultipleGround] has none and
+    // uses mask 9 for every layer.
+    var m6 = m9;
+    if has(512u) { m6 = textureSample(mask_l_texture, normal_sampler, uv1).rgb; }
+
+    var wOv = 0.0;
+    if has(2u) { wOv = hb(b.x, H(m9, p[9].xyz, p[7].x)); }
+    var wL = 0.0;
+    if has(32u) {
+        if ground { wL = hb(b.y, H(m9, p[10].xyz, p[7].y)); } else { wL = hb(b.y, H(m6, p[10].xyz, p[7].y)); }
+    }
+    var wWet = 0.0;
+    if has(1024u) {
+        if ground { wWet = saturate(b2.w * p[7].z); } else { wWet = hb(b2.w, H(m6, p[11].xyz, p[7].z)); }
+    }
+    let lum = dot(1.0 - b2.rgb, vec3(0.29891, 0.58661, 0.11448));
+    let wTint = hb(lum, H(m6, p[12].xyz, p[8].x));
+
+    // Normals: base / overlay (B gloss), the detail normal's xy added, layer L (ground).
+    var nb = vec4(0.5, 0.5, 1.0, 0.15);
+    if has(1u) { nb = textureSample(normal_texture, normal_sampler, uvs); }
+    if has(4u) { nb = mix(nb, textureSample(over_normal_texture, over_normal_sampler, uvs), wOv); }
+    if ground && has(64u) { nb = mix(nb, textureSample(c_normal_texture, c_normal_sampler, uvs), wL); }
+    var nt = flv(nb);
+    var gloss = nb.b;
+    if has(256u) {
+        let d = mix(vec3(0.502, 0.502, 1.0), textureSample(detail_texture, normal_sampler, uv0).rgb, b.w);
+        nt = vec3(nt.xy + flv(vec4(d, 1.0)).xy * p[6].z, nt.z);
+    }
+    // Wet: a flow normal scrolled on uv1, gloss toward the wet gloss.
+    if wWet > 0.0 {
+        let wn = textureSample(wet_texture, normal_sampler, uv1 + globals.time * p[15].xy);
+        nt = vec3(nt.xy + flv(wn).xy * p[6].w * wWet, nt.z);
+        gloss = mix(gloss, p[8].y, wWet);
+    }
+    var Nw = pbr_input.world_normal;
+#ifdef VERTEX_TANGENTS
+    let N0 = pbr_input.world_normal;
+    let T = in.world_tangent.xyz;
+    let B = in.world_tangent.w * cross(N0, T);
+    Nw = normalize(nt.x * T + nt.y * B + normalize(nt).z * N0);
+#endif
+    // Snow: how much the bumped world normal faces the material's snow direction (not
+    // normalised), times the vertex weight, height-blended on mask 9.
+    var wSnow = 0.0;
+    if has(8u) {
+        let sd = dot(p[14].xyz, Nw) * b.z;
+        wSnow = hb(sd, H(m9, p[13].xyz, p[7].w));
+    }
+    if wSnow > 0.0 && has(16u) {
+        let sn = textureSample(snow_normal_texture, snow_normal_sampler, uvs);
+        if ground {
+            nt = vec3(nt.xy + flv(sn).xy * p[9].w * wSnow, nt.z);
+        } else {
+            nt = mix(nt, flv(sn), wSnow);
+        }
+        gloss = mix(gloss, sn.b, wSnow);
+    }
+
+    // Albedo.
+    var a = vec3(1.0);
+    if has(2048u) { a = textureSample(pbr_bindings::base_color_texture, pbr_bindings::base_color_sampler, uvs).rgb; }
+    var alpha = pbr_bindings::material.base_color.a;
+    if ground {
+        if has(2u) { a = mix(a, textureSample(over_texture, over_sampler, uvs).rgb, wOv); }
+        if has(32u) { a = mix(a, textureSample(c_texture, c_sampler, uvs).rgb, wL); }
+        a = a * mix(vec3(1.0), b2.rgb, p[8].x);
+        // gap: M[MultipleGround] wet darkening read as a lerp toward color_1 (kb/map.md).
+        a = mix(a, p[4].rgb, wWet * p[10].w);
+    } else {
+        a = a * mix(p[0].rgb, p[1].rgb, b.x);
+        if has(2u) { a = mix(a, textureSample(over_texture, over_sampler, uvs).rgb * p[2].rgb, wOv); }
+        if has(32u) { a = mix(a, textureSample(c_texture, c_sampler, uv1 + p[8].zw).rgb * p[3].rgb, wL); }
+        a = mix(a, a * b2.rgb * p[4].rgb, wTint);
+    }
+    if has(8u) { a = mix(a, textureSample(snow_texture, snow_sampler, uvs).rgb * p[5].rgb, wSnow); }
+    a = saturate(a);
+    if map_game.flags.z != 0u {
+        // Debug (SHINOBI_MAP_SHOW_BLEND=1): overlay red, layer L green, snow blue.
+        a = vec3(wOv, wL, wSnow);
+    }
+    pbr_input.material.base_color = vec4(a, alpha);
+    pbr_input.material.perceptual_roughness = clamp(1.0 - saturate(gloss), 0.089, 1.0);
+#ifdef VERTEX_TANGENTS
+    var mapped = normalize(nt.x * T + nt.y * B + nt.z * N0);
+    if dot(N0, pbr_input.V) < 0.0 {
+        mapped = mapped - 2.0 * dot(mapped, N0) / dot(N0, N0) * N0;
+    }
+    pbr_input.N = mapped;
+#endif
+    return pbr_input;
+}
+#endif
+
 @fragment
-fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> FragmentOutput {
+fn fragment(m: MapVertexOutput, @builtin(front_facing) is_front: bool) -> FragmentOutput {
+    var in: VertexOutput;
+    in.position = m.position;
+    in.world_position = m.world_position;
+    in.world_normal = m.world_normal;
+#ifdef VERTEX_UVS_A
+    in.uv = m.uv;
+#endif
+#ifdef VERTEX_UVS_B
+    in.uv_b = m.uv_b;
+#endif
+#ifdef VERTEX_TANGENTS
+    in.world_tangent = m.world_tangent;
+#endif
+#ifdef VERTEX_COLORS
+    in.color = m.color;
+#endif
+#ifdef VERTEX_OUTPUT_INSTANCE_INDEX
+    in.instance_index = m.instance_index;
+#endif
+#ifdef VISIBILITY_RANGE_DITHER
+    in.visibility_range_dither = m.visibility_range_dither;
+#endif
     var pbr_input = pbr_input_from_standard_material(in, is_front);
+#ifdef VERTEX_UVS_A
+    if map_game.flags.y != 0u {
+        var b = vec4(0.0, 0.0, 0.0, 1.0);
+#ifdef VERTEX_COLORS
+        b = in.color;
+#endif
+        pbr_input = game_layers(in, b, m.blend2, m.uv_scale, pbr_input);
+        pbr_input.material.base_color = alpha_discard(pbr_input.material, pbr_input.material.base_color);
+        var out: FragmentOutput;
+        if (pbr_input.material.flags & STANDARD_MATERIAL_FLAGS_UNLIT_BIT) == 0u {
+            out.color = apply_pbr_lighting(pbr_input);
+        } else {
+            out.color = pbr_input.material.base_color;
+        }
+        out.color = main_pass_post_lighting_processing(pbr_input, out.color);
+        return out;
+    }
+#endif
 
 #ifdef VERTEX_UVS_A
     if mask_params.z > 0.5 {

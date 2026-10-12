@@ -158,6 +158,7 @@ pub fn object_space_deformer(tf: &Tagfile, op: usize, op_ty: &str) -> Vec<Deform
         let counts: Vec<usize> = arrays.iter().map(|a| a.map(|x| x.1).unwrap_or(0)).collect();
         let first: Vec<Vec<u16>> = arrays.iter().map(|a| a.map(|(p, _, _)| (0..16).map(|v| r.u16(p + v * 2)).collect()).unwrap_or_default()).collect();
         eprintln!("ctrl {ctrl:?} counts(1..8) {counts:?} start {} end {} first-block verts {first:?}", r.u16(def + tf.field(dty, "startVertexIndex")), r.u16(def + tf.field(dty, "endVertexIndex")));
+        eprintln!("{op_ty}: packed stride {:?}, unpacked stride {:?}", packed.map(|p| p.2), unp.map(|u| u.2));
     }
     // controlBytes give the block order (one byte per 16-vertex block): 3 = one-blend, 2 = two,
     // 1 = three, 0 = four (checked against the sim cloth rest pose: every Sekiro skin uses at
@@ -189,13 +190,15 @@ pub fn object_space_deformer(tf: &Tagfile, op: usize, op_ty: &str) -> Vec<Deform
                     (bone, w)
                 })
                 .collect();
+            // A block holds normals only when it is long enough: position-only (P) blocks are
+            // 128 bytes packed / 256 unpacked, and the next block starts where normals would.
             let (pos, nrm) = if let Some((ua, _, us)) = unp {
                 let e = ua + blk * us;
                 let rd = |o: usize| [r.f32(o), r.f32(o + 4), r.f32(o + 8), r.f32(o + 12)];
-                (rd(e + v * 16), rd(e + 256 + v * 16))
+                (rd(e + v * 16), if us >= 512 { rd(e + 256 + v * 16) } else { [0.0; 4] })
             } else if let Some((pa, _, ps)) = packed {
                 let e = pa + blk * ps;
-                (unpack(&r, e + v * 8), unpack(&r, e + 128 + v * 8))
+                (unpack(&r, e + v * 8), if ps >= 256 { unpack(&r, e + 128 + v * 8) } else { [0.0; 4] })
             } else {
                 ([0.0; 4], [0.0; 4])
             };
@@ -382,6 +385,9 @@ pub fn bone_space_deformer(tf: &Tagfile, op: usize, op_ty: &str, unpacked_overri
     let packed = ["localPNs", "localPNTs", "localPNTBs", "localPs"].iter().filter_map(|f| tf.try_field(op_ty, f)).next().and_then(|f| tf.array(op + f));
     let unp = ["localUnpackedPNs", "localUnpackedPNTs", "localUnpackedPNTBs", "localUnpackedPs"].iter().filter_map(|f| tf.try_field(op_ty, f)).next().and_then(|f| tf.array(op + f));
     let use_unpacked = unpacked_override.unwrap_or(unp.is_some());
+    if std::env::var("CLOTH_DEBUG").is_ok() {
+        eprintln!("{op_ty}: bone-space packed stride {:?}, unpacked stride {:?}", packed.map(|p| p.2), unp.map(|u| u.2));
+    }
     let mut next = [0usize; 4];
     let mut out = Vec::new();
     for (blk, &c) in ctrl.iter().enumerate() {

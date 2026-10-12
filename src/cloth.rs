@@ -13,7 +13,7 @@
 //! Everything runs in Havok space (game space mirrored in X, like model.rs) so the exported
 //! locals apply unchanged; the world-space sim gives the cloth its inertia.
 //! Collisions (-1 steps): the cloth's capsules on their bones, per-particle masks and radii.
-//! Bend links solved (min / max length); gap: bend-stiffness and transition sets; transfer motion is
+//! Bend links solved (min / max length), bend stiffness as the exe's Mx solver; gap: transition sets; transfer motion is
 //! disabled in every Sekiro cloth checked (c1020, Wolf bd_m_9040), so it is not implemented;
 //! globalDampingPerSecond is read as the velocity fraction removed per second.
 
@@ -235,6 +235,9 @@ impl ClothDef {
 /// vertices follow the sim, the rest are skinned here from their joints.
 pub struct DisplayMesh {
     pub handle: Handle<Mesh>,
+    /// The mesh's entity (model.rs): a cloth whose meshes are all hidden (another kimono of the
+    /// Folding Screen Monkeys, NpcParam modelDispMask) is carried rigidly, not simulated.
+    pub entity: Entity,
     pub mesh: usize,
     pub pos: Vec<[f32; 3]>,
     pub normal: Vec<[f32; 3]>,
@@ -244,6 +247,64 @@ pub struct DisplayMesh {
     pub inv: Vec<Mat4>,
     pub idx: Vec<[u16; 4]>,
     pub weights: Vec<[f32; 4]>,
+    /// The mesh's triangles, for the cloths whose deform carries no normals (`rebuild_normals`).
+    pub tris: Vec<[u32; 3]>,
+}
+
+/// hclUpdateAllVertexFramesOperator: the position-only MeshMeshDeform (Wolf's coat
+/// bodybese01 / 02 / 03, c7400's haori; their display normals export as 0) leaves the normals to
+/// this operator, which rebuilds them from the deformed triangles. Here: the area-weighted
+/// triangle normal of each such vertex, turned to the side of its skinned normal (the mirrored
+/// winding makes the cross product's side unreliable).
+/// MeshMeshDeform: the display vertices follow the sim triangles (p = sum triFrame * local), then
+/// the normals the deform does not carry are rebuilt (`rebuild_normals`).
+fn deform_display(disp: &Display, frames: &[Mat4], tris: &[[u32; 3]], pos: &mut [[f32; 3]], nrm: &mut [[f32; 3]]) {
+    let mut no_normal: Vec<usize> = Vec::new();
+    for (v, slots) in &disp.verts {
+        let (mut p, mut n) = (Vec4::ZERO, Vec4::ZERO);
+        for s in slots {
+            if let Some(f) = frames.get(s.tri) {
+                p += *f * s.p;
+                n += *f * s.n;
+            }
+        }
+        if let (Some(dp), Some(dn)) = (pos.get_mut(*v), nrm.get_mut(*v)) {
+            *dp = mirror(p.truncate()).into();
+            let n = mirror(n.truncate()).normalize_or_zero();
+            if n == Vec3::ZERO {
+                no_normal.push(*v);
+            } else {
+                *dn = n.into();
+            }
+        }
+    }
+    rebuild_normals(tris, pos, nrm, &no_normal);
+}
+
+fn rebuild_normals(tris: &[[u32; 3]], pos: &[[f32; 3]], nrm: &mut [[f32; 3]], marked: &[usize]) {
+    if marked.is_empty() {
+        return;
+    }
+    let mut acc = vec![Vec3::ZERO; pos.len()];
+    for t in tris {
+        let [a, b, c] = t.map(|i| i as usize);
+        if a >= pos.len() || b >= pos.len() || c >= pos.len() {
+            continue;
+        }
+        let (pa, pb, pc) = (Vec3::from(pos[a]), Vec3::from(pos[b]), Vec3::from(pos[c]));
+        let n = (pb - pa).cross(pc - pa);
+        acc[a] += n;
+        acc[b] += n;
+        acc[c] += n;
+    }
+    let side: f32 = marked.iter().map(|&v| acc[v].dot(Vec3::from(nrm[v]))).sum();
+    let sign = if side < 0.0 { -1.0 } else { 1.0 };
+    for &v in marked {
+        let n = (acc[v] * sign).normalize_or_zero();
+        if n != Vec3::ZERO {
+            nrm[v] = n.into();
+        }
+    }
 }
 
 pub struct ClothInst {
@@ -375,11 +436,13 @@ fn solve_link(x: &mut [Vec3], w: &[f32], l: &Link, stretch_only: bool) {
 }
 
 /// Cloth further than this from the camera is not simulated: it is carried rigidly in its
-/// bind pose on the model root (`SHINOBI_CLOTH_RANGE=<m>`, 0 = simulate everything). With a
-/// line-up of 20 enemies (127 cloth pieces) the simulation took the sandbox from 68 to 22 fps.
-fn cloth_range() -> f32 {
-    static RANGE: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
-    *RANGE.get_or_init(|| std::env::var("SHINOBI_CLOTH_RANGE").ok().and_then(|v| v.parse().ok()).unwrap_or(15.0))
+/// bind pose on the model root. The Options menu's "Cloth physics" (config `[video] cloth`:
+/// on 15 m, near 6 m, off = none, negative here); `SHINOBI_CLOTH_RANGE=<m>` overrides it for one
+/// run (0 = simulate everything). With a line-up of 20 enemies (127 cloth pieces) the
+/// simulation took the sandbox from 68 to 22 fps.
+fn cloth_range(setting: crate::config::ClothSetting) -> f32 {
+    static RANGE: std::sync::OnceLock<Option<f32>> = std::sync::OnceLock::new();
+    RANGE.get_or_init(|| std::env::var("SHINOBI_CLOTH_RANGE").ok().and_then(|v| v.parse().ok())).unwrap_or(setting.range())
 }
 
 /// The simulation, one task per character (Bevy's parallel query: with 20 enemies in the
@@ -393,15 +456,17 @@ fn simulate(
     transforms: Query<&Transform>,
     children: Query<&Children>,
     cameras: Query<Entity, With<Camera3d>>,
+    config: Option<Res<crate::config::GameConfig>>,
+    shown: Query<&Visibility>,
 ) {
     let t0 = std::time::Instant::now();
     let dt = time.delta_secs().min(1.0 / 20.0);
-    let range = cloth_range();
+    let range = cloth_range(config.map_or(Default::default(), |c| c.video.cloth));
     // Cost probe: SHINOBI_CLOTH_NO_MESH=1 skips the bone and display mesh outputs (step 4).
     let no_mesh = std::env::var("SHINOBI_CLOTH_NO_MESH").is_ok();
     let cam = cameras.iter().next().and_then(|e| transforms.get(e).ok()).map(|t| t.translation);
     let time = &time;
-    let (globals, transforms, children) = (&globals, &transforms, &children);
+    let (globals, transforms, children, shown) = (&globals, &transforms, &children, &shown);
     actors.par_iter_mut().for_each(|mut cloths| {
         // World transforms this character's cloth-driven bones (and their children) take
         // this frame, ahead of `apply`: the display meshes skin from them.
@@ -415,7 +480,10 @@ fn simulate(
             // Hatred's root sits 5 m behind its head, so its mane 8 m from the camera was culled
             // (bind pose floating above the crouched body) by the plain 15 m rule.
             let rest_far = c.def.rest.iter().map(|p| p.length()).fold(0.0, f32::max);
+            let hidden = !c.displays.is_empty() && c.displays.iter().all(|d| shown.get(d.entity).is_ok_and(|v| *v == Visibility::Hidden));
             let culled = c.rigid
+                || hidden
+                || range < 0.0
                 || match cam {
                     Some(cam) if range > 0.0 => globals.get(c.root).is_ok_and(|g| g.translation().distance(cam) > range + rest_far),
                     _ => false,
@@ -634,19 +702,7 @@ fn simulate(
                 let joint_m: Vec<Mat4> = dm.joints.iter().zip(&dm.inv).map(|(&j, inv)| overrides.get(&j).copied().or_else(|| globals.get(j).ok().copied()).map(|g| g.to_matrix() * *inv).unwrap_or(Mat4::IDENTITY)).collect();
                 let (mut pos, mut nrm, mut tan) = skin(dm, &joint_m);
                 lap(4, &mut tp, &mut phase);
-                for (v, slots) in &disp.verts {
-                    let (mut p, mut n) = (Vec4::ZERO, Vec4::ZERO);
-                    for s in slots {
-                        if let Some(f) = frames.get(s.tri) {
-                            p += *f * s.p;
-                            n += *f * s.n;
-                        }
-                    }
-                    if let (Some(dp), Some(dn)) = (pos.get_mut(*v), nrm.get_mut(*v)) {
-                        *dp = mirror(p.truncate()).into();
-                        *dn = mirror(n.truncate()).normalize_or_zero().into();
-                    }
-                }
+                deform_display(disp, &frames, &dm.tris, &mut pos, &mut nrm);
                 if debug_now(time) {
                     let root = globals.get(c.root).map(|g| g.translation()).unwrap_or_default();
                     let far = |s: &[usize]| s.iter().map(|&i| Vec3::from(pos[i]).distance(root)).fold(0.0, f32::max);
@@ -846,4 +902,41 @@ fn debug_now(time: &Time) -> bool {
     static AT: std::sync::OnceLock<Option<f32>> = std::sync::OnceLock::new();
     let Some(at) = *AT.get_or_init(|| std::env::var("SHINOBI_CLOTH_DEBUG").ok().and_then(|v| v.parse::<f32>().ok())) else { return false };
     time.elapsed_secs() > at && time.elapsed_secs() - time.delta_secs() <= at
+}
+
+#[cfg(test)]
+mod tests {
+    /// Wolf's coat (bodybese01 / 02 / 03) has no normals in its deform data (position-only
+    /// MeshMeshDeform; the game rebuilds them, hclUpdateAllVertexFramesOperator): after a deform
+    /// step from the rest pose every coat display vertex has a unit normal, on the side of its
+    /// bind normal.
+    #[test]
+    fn coat_normals_after_deform() {
+        let model = crate::paths::root().join("extracted/model_c0000_bd_m_9040.bin");
+        let defs = super::load(&model);
+        if defs.is_empty() {
+            println!("no extracted cloth: skipped");
+            return;
+        }
+        let mut checked = 0;
+        for def in defs.iter().filter(|d| d.name.contains("bodyb")) {
+            let frames: Vec<bevy::math::Mat4> = def.tris.iter().map(|&t| super::tri_frame(&def.rest, t)).collect();
+            for disp in &def.displays {
+                assert!(disp.verts.iter().all(|(_, s)| s.iter().all(|s| s.n == bevy::math::Vec4::ZERO)), "{} mesh {} now carries normals", def.name, disp.mesh);
+                let (mut pos, bind, idx) = crate::model::test_mesh(&model, disp.mesh).expect("mesh");
+                let tris: Vec<[u32; 3]> = idx.chunks_exact(3).map(|t| [t[0], t[1], t[2]]).collect();
+                let mut nrm = bind.clone();
+                super::deform_display(disp, &frames, &tris, &mut pos, &mut nrm);
+                let same = disp.verts.iter().filter(|(v, _)| bevy::math::Vec3::from(nrm[*v]).dot(bevy::math::Vec3::from(bind[*v])) > 0.0).count();
+                for (v, _) in &disp.verts {
+                    let l = bevy::math::Vec3::from(nrm[*v]).length();
+                    assert!((l - 1.0).abs() < 1e-3, "{} mesh {} vertex {v}: |n| {l}", def.name, disp.mesh);
+                }
+                println!("{} mesh {}: {} vertices, {same} on the bind normal's side", def.name, disp.mesh, disp.verts.len());
+                assert!(same * 10 >= disp.verts.len() * 9, "{} mesh {}: only {same} of {} on the bind side", def.name, disp.mesh, disp.verts.len());
+                checked += disp.verts.len();
+            }
+        }
+        assert!(checked > 0);
+    }
 }

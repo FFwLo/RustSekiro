@@ -11,6 +11,9 @@ pub struct Texture {
     /// 1-based UV channel.
     pub uv_number: i32,
     pub path: String,
+    /// The texture's tiling scale (the floats after the path, version 5): (0, 0) = the shader
+    /// group's `group_N_CommonUV-UVParam` instead (docs/kb/visuals.md "DetailBlend").
+    pub scale: [f32; 2],
 }
 
 pub struct Mtd {
@@ -116,16 +119,20 @@ pub fn read(d: &[u8]) -> Option<Mtd> {
         let uv_number = m.i32();
         m.marker();
         let _shader_data_index = m.i32();
+        let mut scale = [1.0, 1.0];
         let path = if version == 5 {
             m.u32();
             let path = m.string();
             let n = m.u32() as usize;
-            m.o += n * 4;
+            let v: Vec<f32> = (0..n).map(|_| f32::from_bits(m.u32())).collect();
+            if v.len() >= 2 {
+                scale = [v[0], v[1]];
+            }
             path
         } else {
             String::new()
         };
-        textures.push(Texture { kind, uv_number, path });
+        textures.push(Texture { kind, uv_number, path, scale });
     }
     Some(Mtd { shader, ints, floats, textures })
 }

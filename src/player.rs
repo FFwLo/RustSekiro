@@ -24,7 +24,7 @@ pub struct Player {
     /// ThrowParam suffix of the landing (151 崩し落下1, 161 蹴り崩し1 out of a head-kick jump).
     plunge: Option<(Entity, i64)>,
     /// HKS MoveSpeedLevel: 0 idle, 1 walk, 2 run (converges at 3/s).
-    speed_level: f32,
+    pub(crate) speed_level: f32,
     requests: HashMap<Action, f32>,
     /// State after the last decide; a different state at the next decide was set by combat.
     last_state: String,
@@ -350,6 +350,9 @@ pub const REF_PRESS_GUARD: i64 = 221;
 /// SP_EF_REF_TAE_ENABLE_SP_ATK_RELEASE: letting go of attack here plays the art's Release
 /// (a106_316010 f6-18; live recording: let go at f2-3 -> a106_316110 at f6.5).
 pub const REF_SP_ATK_RELEASE: i64 = 222;
+/// SP_EF_REF_TAE_ENABLE_SP_ATK_HOLD_RELEASE: a hold art (104) can end its hold here
+/// (a104_316500 HoldStart f21-33; the air hold a104_316220 f0-93).
+pub const REF_SP_ATK_HOLD_RELEASE: i64 = 230;
 /// SP_EF_REF_TAE_ENABLE_SP_ATK_COMBO: the art's follow-up window (SpEffect 100252).
 pub const REF_ENABLE_SP_ATK_COMBO: i64 = 223;
 /// SP_EF_REF_TAE_ENABLE_ADD_JUST_DEFLECT / _ADD_ACTION_INPUT_GUARD_CANCEL / _HIT_DEFLECT_CANCEL.
@@ -398,8 +401,8 @@ impl Plugin for PlayerPlugin {
             .add_systems(Startup, spawn_player)
             .add_systems(Update, read_input.run_if(resource_exists::<ButtonInput<KeyCode>>))
             .init_resource::<ActiveThrow>()
-            .add_systems(FixedUpdate, (sync_art_variation, decide, record_state).chain().in_set(ActorSet::Decide))
-            .add_systems(FixedUpdate, follow_throw.after(ActorSet::Advance).before(ActorSet::Resolve));
+            .add_systems(FixedUpdate, (sync_art_variation, decide, apply_refresh_effects, record_state).chain().in_set(ActorSet::Decide))
+            .add_systems(FixedUpdate, follow_throw.after(ActorSet::Advance).before(crate::anim::PoseSet).before(ActorSet::Resolve));
     }
 }
 
@@ -478,9 +481,37 @@ pub struct DeathblowCheck {
     pub in_reach: bool,
 }
 
+/// Which enemy a deathblow goes to, from (entity, position, in reach, broken) candidates: among
+/// those in reach the locked-on one, else the nearest. With `or_broken` (the HUD's 忍殺 mark) and
+/// none in reach, a broken one the same way. One pick for the attack and the mark, so the mark
+/// sits on the enemy the deathblow takes.
+/// gap: the exe's pick among several throw candidates is not traced.
+pub(crate) fn deathblow_pick(cands: impl IntoIterator<Item = (Entity, Vec3, bool, bool)>, lock: Option<Entity>, wolf: Vec3, or_broken: bool) -> Option<Entity> {
+    let cands: Vec<(Entity, Vec3, bool, bool)> = cands.into_iter().collect();
+    let best = |keep: &dyn Fn(&(Entity, Vec3, bool, bool)) -> bool| {
+        cands
+            .iter()
+            .filter(|c| keep(c))
+            .min_by(|x, y| {
+                let key = |c: &(Entity, Vec3, bool, bool)| (Some(c.0) != lock, c.1.distance(wolf));
+                let (kx, ky) = (key(x), key(y));
+                kx.0.cmp(&ky.0).then(kx.1.total_cmp(&ky.1))
+            })
+            .map(|c| c.0)
+    };
+    best(&|c| c.2).or_else(|| if or_broken { best(&|c| c.3) } else { None })
+}
+
 pub fn deathblow_check(combat: &Combat, wolf: Vec3, ea: &Actor, enemy: &Enemy, at: Vec3, dmy: &dyn Fn(i16) -> Option<Vec3>) -> Option<DeathblowCheck> {
     let d = &combat.player;
     let foe = combat.foe_of(ea);
+    // No deathblow while the Owl's phase-2 transition holds its TAE marker 3506080 (a000_020005
+    // heat-up, the 021003 kneel loop, the first 0.233 s of 20006-20008); his castle Lua answers
+    // an attack then with escape 20007. Ported from AKJama/sekiro-rs b997933 (docs/OWL.md: the
+    // user's real-game check). gap: the exe's test of the marker is not traced.
+    if combat.data_of(ea).sp_effects_at(&ea.anim, ea.t).iter().any(|(id, _)| *id == 3_506_080) {
+        return None;
+    }
     // A boss in its finisher window (data.rs finisher_open): Wolf's last blow, within DiffAngMax
     // of its facing (Isshin 45; the Divine Dragon 180: any side), Dist from its judge dummy
     // (judgeRangeBasePosDmyId2) or root. gap: diffAngMyToDef and the Y range are not checked;
@@ -614,10 +645,24 @@ fn follow_throw(
     // The absorbed character moves onto the dummy and faces along its forward (front deathblow:
     // 266 faces back at Wolf; behind: 229 faces the enemy's way; plunge: 233 faces the enemy).
     // Its model slides there from where it stood (ModelLag, adsrobModelPosInterpolationTime).
+    // Walls: the move goes through the map collision (Terrain::slide); what a wall stops, the
+    // other character gives way instead (its own slide), so the pair keeps its spacing without
+    // either ending up in geometry. After AKJama/sekiro-rs docs/DEATHBLOW.md "Walls" (theirs too:
+    // the engine's handling is not traced). Returns that shortfall.
     let interp = h.model_interp;
-    let mut absorb = |e: Entity, tf: &mut Transform, a: &mut Actor, owner: &Transform, (l, f): (Vec3, Vec3)| {
+    let slide = |at: Vec3, d: Vec3| -> Vec3 {
+        match crate::map::terrain() {
+            Some(t) => {
+                let m = t.slide(at - Vec3::Y * CAPSULE_HALF_HEIGHT, Vec2::new(d.x, d.z));
+                Vec3::new(m.x, 0.0, m.y)
+            }
+            None => d,
+        }
+    };
+    let mut absorb = |e: Entity, tf: &mut Transform, a: &mut Actor, owner: &Transform, (l, f): (Vec3, Vec3)| -> Vec3 {
         let goal = owner.transform_point(l);
-        let jump = (goal - tf.translation).with_y(0.0);
+        let want = (goal - tf.translation).with_y(0.0);
+        let jump = slide(tf.translation, want);
         tf.translation += jump;
         if interp > 0.0 && jump.length_squared() > 1e-6 {
             commands.entity(e).insert(crate::anim::ModelLag { offset: -jump, time: interp, left: interp });
@@ -629,6 +674,7 @@ fn follow_throw(
             a.yaw += diff;
             tf.rotation = Quat::from_rotation_y(a.yaw);
         }
+        want - jump
     };
     if h.def_dmy != 0 {
         let Some(l) = local(edm, eg, h.def_dmy) else {
@@ -637,7 +683,11 @@ fn follow_throw(
             return;
         };
         let owner = *etf;
-        absorb(*pe, ptf, pa, &owner, l);
+        let short = absorb(*pe, ptf, pa, &owner, l);
+        if short.length_squared() > 1e-6 {
+            let give = slide(etf.translation, -short);
+            etf.translation += give;
+        }
     } else {
         let Some(l) = local(*pdm, pg, h.atk_dmy) else {
             warn!("deathblow: Wolf has no dummy poly {} (throw follow off)", h.atk_dmy);
@@ -655,7 +705,11 @@ fn follow_throw(
             owner.translation -= moved;
             owner.rotation = Quat::from_rotation_y(yaw0);
         }
-        absorb(h.target, &mut etf, &mut ea, &owner, l);
+        let short = absorb(h.target, &mut etf, &mut ea, &owner, l);
+        if short.length_squared() > 1e-6 {
+            let give = slide(ptf.translation, -short);
+            ptf.translation += give;
+        }
     }
     throw.0 = None;
 }
@@ -967,8 +1021,11 @@ pub(crate) fn is_upper_action(state: &str) -> bool {
         || (state.starts_with("CrouchSubAttack") && (state.ends_with("Moveable") || state.ends_with("Move")))
 }
 
+/// The air guard's own states (Start / Loop / End), not its break pose AirDeflectGuardBreak:
+/// that one opens the guard only at its flag 117 (frame 69); a press there started a fresh guard
+/// at once (2026-10-12 bug hunt round 15).
 fn is_air_guard(state: &str) -> bool {
-    state.starts_with("AirDeflectGuard")
+    state.starts_with("AirDeflectGuard") && state != "AirDeflectGuardBreak"
 }
 
 /// SpEffect behaviorRefIds the HKS reads with env(3036, ...) (c0000_define.lua SP_EF_REF_*).
@@ -1050,6 +1107,26 @@ fn wire_throw(
     None
 }
 
+/// The plunge's normal fall orbit (no steering, 1/60 s steps): does it pass within `range` of
+/// the target, at most `height` above it, inside `time_limit`?
+#[allow(clippy::too_many_arguments)]
+fn fall_reaches(pos: Vec3, vel_y: f32, air_base: Vec3, gravity: f32, target: Vec3, range: f32, height: f32, time_limit: f32) -> bool {
+    let (mut q, mut vy) = (pos, vel_y);
+    for _ in 0..((time_limit * 60.0) as usize).max(1) {
+        vy += gravity / 60.0;
+        q += air_base / 60.0 + Vec3::Y * vy / 60.0;
+        if (q - target).with_y(0.0).length() <= range && (height < 0.0 || q.y - target.y <= height) {
+            return true;
+        }
+        // Past the target's height the fall can no longer reach it (2026-10-12 bug hunt round
+        // 16: the cut-off was world y 0.9, so no plunge started on an enemy below about -2.1).
+        if q.y < target.y {
+            return false;
+        }
+    }
+    false
+}
+
 fn start_plunge(
     p: &mut Player,
     a: &mut Actor,
@@ -1064,16 +1141,18 @@ fn start_plunge(
     }
     // An enemy that has not noticed Wolf takes the stealth plunge 落下0 / 落下1 (0030 / 0031:
     // a20x_510300 -> 510310, ThrowDef12300 -> 12310): live (General) 0.54 s + 1.69 s + 1.83 s.
-    let stealth = enemies.iter().any(|(_, _, en, _)| en.is_unaware()) && !enemies.iter().any(|(_, _, en, _)| en.is_broken());
-    let (start, land) = if kick {
-        (160, 161)
-    } else if stealth {
-        (30, 31)
-    } else {
-        (150, 151)
-    };
+    // The row is chosen per target (2026-10-12 bug hunt round 16: one broken enemy anywhere
+    // used to turn off the stealth plunge on every unaware one).
     let ft = FALL_TYPES[(a.fall_type as usize).min(FALL_TYPES.len() - 1)];
     for (e, mut ea, mut enemy, etf) in enemies.iter_mut() {
+        let stealth = !enemy.is_broken() && enemy.is_unaware();
+        let (start, land) = if kick {
+            (160, 161)
+        } else if stealth {
+            (30, 31)
+        } else {
+            (150, 151)
+        };
         // Each enemy kind's own ThrowParam rows.
         let row_id = combat.foe_of(&ea).throw_row(start);
         let row = combat.param("ThrowParam", row_id);
@@ -1081,36 +1160,34 @@ fn start_plunge(
         let f = |k: &str| row[k].as_f64().unwrap_or(0.0) as f32;
         let (upper, lower) = (f("upperYRange"), f("lowerYRange"));
         let (range, height, time_limit) = (f("normalFallOrbitCheck_range"), f("normalFallOrbitCheck_heightLimit"), f("normalFallOrbitCheck_timeLimit") / 1000.0);
-        if !(enemy.is_broken() || (stealth && enemy.is_unaware())) || etf.translation.distance(pos) > th.dist {
+        if !(enemy.is_broken() || stealth) || etf.translation.distance(pos) > th.dist {
             continue;
         }
         let dy = etf.translation.y - pos.y;
         if dy > upper || dy < -lower {
             continue;
         }
-        // Normal fall orbit (no steering), 1/60 s steps.
-        let (mut q, mut vy) = (pos, a.vel_y);
-        let mut hit = false;
-        for _ in 0..((time_limit * 60.0) as usize).max(1) {
-            vy += ft.gravity() / 60.0;
-            q += a.air_base / 60.0 + Vec3::Y * vy / 60.0;
-            if (q - etf.translation).with_y(0.0).length() <= range && (height < 0.0 || q.y - etf.translation.y <= height) {
-                hit = true;
-                break;
-            }
-            if q.y < CAPSULE_HALF_HEIGHT {
-                break;
-            }
-        }
+        let hit = fall_reaches(pos, a.vel_y, a.air_base, ft.gravity(), etf.translation, range, height, time_limit);
         if !hit || combat.player.anim(&th.atk_anim).is_none() {
             continue;
         }
         a.play("PlungeDeathblow", &th.atk_anim);
         p.plunge = Some((e, land));
-        enemy.react(&mut ea, combat, &format!("ThrowDef{}", th.def_anim));
-        if stealth {
-            // Held in its ThrowDef reaction (no AI) until the landing throw.
-            enemy.on_posture_break(&mut ea, combat, false, 4.0);
+        if enemy.is_broken() {
+            // A broken enemy takes no reaction (react returns for Mode::Broken): it plays its
+            // ThrowDef pose (13400: 3 s, over the fall's 2 s timeLimit) and is held broken while
+            // it lasts, as the kick jump's 13900 (2026-10-12 bug hunt round 15: it stayed in its
+            // collapse and its Broken window could run out mid-fall).
+            let ed = combat.data_of(&ea);
+            if ea.play_state(ed, &format!("ThrowDef{}", th.def_anim)) {
+                enemy.on_posture_break(&mut ea, combat, false, 4.0);
+            }
+        } else {
+            enemy.react(&mut ea, combat, &format!("ThrowDef{}", th.def_anim));
+            if stealth {
+                // Held in its ThrowDef reaction (no AI) until the landing throw.
+                enemy.on_posture_break(&mut ea, combat, false, 4.0);
+            }
         }
         log.push("plunge", Color::srgb(1.0, 0.5, 0.3));
         return true;
@@ -1430,8 +1507,57 @@ fn turn_toward(yaw: f32, target: f32, max_step: f32) -> f32 {
     yaw + diff.clamp(-max_step, max_step)
 }
 
+/// A one-shot TAE event (a motionInterval 999 recovery) starting in this tick's (prev_t, t]:
+/// windows touch end to end, so a start on a tick boundary is in exactly one; frame 0 counts on
+/// the first step (prev_t 0). The old `prev_t - 1e-4` slack overlapped the previous window and
+/// gave back the deathblow posture / Breath of Life twice (2026-10-12 bug hunt round 12).
+fn one_shot_starts(start: f32, prev_t: f32, t: f32) -> bool {
+    (start > prev_t || (prev_t == 0.0 && start == 0.0)) && start <= t
+}
+
+
+/// The instant "Refresh" SpEffects Wolf's death and revival anims add (TAE 401 at f0,
+/// motionInterval 0, effectEndurance 0): the death loop a000_110010 cures every ailment (8002,
+/// stateInfo 13) and empties the poison / burn gauges (8003 poizonAttackPower / 8004 registBlood
+/// -99999); GroundRevival_F a000_110030's 8001 "full posture" (changeStaminaRate 100). Before,
+/// he came back still poisoned or burning with his posture as it was (2026-10-12 bug hunt round 15).
+fn apply_refresh_effects(
+    combat: Res<Combat>,
+    statuses: Option<ResMut<crate::status::Statuses>>,
+    mut log: ResMut<CombatLog>,
+    mut q: Query<(Entity, &mut Actor), With<Player>>,
+) {
+    let mut statuses = statuses;
+    for (e, mut a) in &mut q {
+        if a.anim.is_empty() || a.prev_t >= a.t {
+            continue;
+        }
+        let d = crate::actor::data_for(&combat, &a);
+        let Some(an) = d.anim(&a.anim) else { continue };
+        let (mut cure, mut posture) = (false, 0.0f32);
+        for ev in an.events.iter().filter(|ev| ev.kind == 401 && one_shot_starts(ev.start, a.prev_t, a.t)) {
+            let Some(s) = ev.arg_i64("SpEffectID").and_then(|id| d.sp_effects.get(&id.to_string())) else { continue };
+            if s.motion_interval != 0.0 || s.effect_endurance != 0.0 {
+                continue;
+            }
+            cure |= s.state_info == 13 || s.poizon_attack_power < 0.0 || s.regist_blood < 0.0;
+            posture += s.change_stamina_rate.max(0.0);
+        }
+        if cure {
+            if let Some(st) = statuses.as_deref_mut() {
+                st.clear(e);
+            }
+        }
+        if posture > 0.0 && a.posture > 0.0 {
+            let back = (a.posture_max * posture / 100.0).min(a.posture);
+            a.posture -= back;
+            log.push(format!("refresh: -{back:.0} posture"), Color::srgb(0.9, 0.8, 0.4));
+        }
+    }
+}
 #[allow(clippy::too_many_arguments)]
 fn decide(
+    mut commands: Commands,
     time: Res<Time>,
     combat: Res<Combat>,
     config: Res<GameConfig>,
@@ -1439,7 +1565,7 @@ fn decide(
     mut pad: ResMut<PadInput>,
     mut log: ResMut<CombatLog>,
     camera: Option<Single<&OrbitCamera>>,
-    mut player: Single<(&mut Player, &mut Actor, &mut Transform), Without<Enemy>>,
+    mut player: Single<(Entity, &mut Player, &mut Actor, &mut Transform), Without<Enemy>>,
     mut enemies: Query<(Entity, &mut Actor, &mut Enemy, &Transform), Without<Player>>,
     enemy_dummies: Query<&crate::model::Dummies, With<Enemy>>,
     globals: Query<&GlobalTransform>,
@@ -1450,7 +1576,7 @@ fn decide(
 ) {
     let dt = time.delta_secs();
     let d = &combat.player;
-    let (p, a, tf) = &mut *player;
+    let (pe, p, a, tf) = &mut *player;
     // The Lightning Reversal charge wears off (effectEndurance 30 s), or the release's
     // SpEffects 9505 / 9506 ("discharge parent", replaced by 9507 / 9508) discharge it.
     if let Some((id, left)) = a.electro {
@@ -1504,10 +1630,31 @@ fn decide(
         if let Some(mut f) = fight {
             f.0 = true;
         }
+        // Drawn at the start spot at once: no fade from the old pose, no deathblow model slide
+        // carried over (2026-10-12 bug hunt round 17).
+        commands.entity(*pe).insert(crate::anim::SnapPose);
         p.gourd = config.player.gourd_charges;
         p.emblems = config.player.spirit_emblems;
         p.resurrections = config.player.resurrections;
         p.held.clear();
+        // A reset mid-jump, mid-plunge or crouched starts the fight standing on the ground:
+        // the air state, knockback and queued presses go too (2026-10-12 bug hunt).
+        p.requests.clear();
+        p.plunge = None;
+        p.perch = None;
+        p.vel_scale = None;
+        p.timed.clear();
+        a.airborne = false;
+        a.fall_type = 0;
+        // Lightning Reversal's charge goes with the air state (it was kept for up to 30 s and
+        // fired at the next fight's line-up; 2026-10-12 bug hunt round 13).
+        a.electro = None;
+        a.vel_y = 0.0;
+        a.air_base = Vec3::ZERO;
+        a.move_vel = Vec3::ZERO;
+        a.kb_cont = 0.0;
+        a.kb_dec = 0.0;
+        a.crouch = false;
         a.hp = a.hp_max;
         a.posture = 0.0;
         a.play("StandIdle", "");
@@ -1534,7 +1681,7 @@ fn decide(
             let fired: Vec<(i64, &crate::data::SpEffect)> = an
                 .events
                 .iter()
-                .filter(|e| matches!(e.kind, 67 | 401) && e.start > a.prev_t - 1e-4 && e.start <= a.t)
+                .filter(|e| matches!(e.kind, 67 | 401) && one_shot_starts(e.start, a.prev_t, a.t))
                 .filter_map(|e| {
                     let id = e.arg_i64("SpEffectID").unwrap_or(0);
                     Some((id, d.sp_effects.get(&id.to_string())?))
@@ -1656,6 +1803,7 @@ fn decide(
             if tf.translation.y <= floor && a.vel_y < 0.0 {
                 tf.translation.y = floor;
                 a.airborne = false;
+                a.fall_type = 0;
                 a.vel_y = 0.0;
             }
         }
@@ -1687,8 +1835,13 @@ fn decide(
     // A wire perch holds him while he stays on it (`Player::perch`).
     p.perch = p.perch.filter(|spot| !a.airborne && (tf.translation - *spot).with_y(0.0).length() < PERCH_RADIUS);
     let perched = p.perch.is_some_and(|spot| tf.translation.y <= spot.y + CAPSULE_HALF_HEIGHT + 0.05);
-    if !a.airborne && !perched && tf.translation.y > crate::map::ground_y(tf.translation) + CAPSULE_HALF_HEIGHT + 0.05 && !(!a.anim.is_empty() && d.flag(&a.anim, a.t, FLAG_NO_GRAVITY)) {
+    // Not in a wire shot / move start: its launch fires on the tick SetNoGravity ends, after this
+    // check, and a grapple from a perch fell off it instead (2026-10-12 bug hunt round 20).
+    let wiring = p.wire.is_some() && crate::wire::is_wire_state(&a.state);
+    if !a.airborne && !perched && !wiring && tf.translation.y > crate::map::ground_y(tf.translation) + CAPSULE_HALF_HEIGHT + 0.05 && !(!a.anim.is_empty() && d.flag(&a.anim, a.t, FLAG_NO_GRAVITY)) {
         a.airborne = true;
+        // A plain fall (fallType 0), not the last wire flight's (2026-10-12 bug hunt round 12).
+        a.fall_type = 0;
         a.vel_y = 0.0;
         a.air_base = Vec3::ZERO;
         a.play_state(d, "FreeFall");
@@ -1808,6 +1961,9 @@ fn decide(
             .iter()
             .find(|(_, ea, en, _)| en.is_broken() && !ea.anim.is_empty() && combat.data_of(ea).flag(&ea.anim, ea.t, FLAG_THROW_START2))
             .map(|(e, ..)| e);
+        if target.is_none() && p.requests.contains_key(&Action::Attack) {
+            info!("deathblow refused: wolf in the break pose {} t {:.2}, no enemy in its ThrowStart2 window (broken: {})", a.anim, a.t, enemies.iter().any(|q| q.2.is_broken()));
+        }
         let pick = if target.is_some() && p.requests.remove(&Action::Attack).is_some() {
             Some(atk_sfx)
         } else if target.is_some() && p.requests.remove(&Action::Jump).is_some() {
@@ -1818,6 +1974,21 @@ fn decide(
         if let (Some(sfx), Some(ee)) = (pick, target) {
             let ok = enemies.get_mut(ee).ok().and_then(|q| Some((combat.throw(combat.foe_of(&q.1).throw_row(sfx))?, q)));
             if let Some((th, (_, mut ea, mut enemy, etf))) = ok {
+                if sfx == jump_sfx && d.anim(&th.atk_anim).is_some() {
+                    // 弾き1B_ジャンプ / 見切り崩しジャンプ (ThrowKind 20110 弾き1_裏回り): a vault round
+                    // behind it, no kill (a201_510120 has no ThrowAttackBehavior; ThrowDef12120 /
+                    // 13120 keep the deathblow mark, as 13900): the enemy stays open, as the 0201 kick
+                    // jump. It was run as a deathblow and killed a regular enemy outright.
+                    a.play("BreakKickJump", &th.atk_anim);
+                    a.move_vel = Vec3::ZERO;
+                    let ed = combat.data_of(&ea);
+                    if ea.play_state(ed, &format!("ThrowDef{}", th.def_anim)) {
+                        enemy.on_posture_break(&mut ea, &combat, false, 4.0);
+                    }
+                    throw.0 = Some(ThrowHold::new(ee, &th, "BreakKickJump"));
+                    log.push("jump round behind", Color::srgb(0.8, 0.9, 1.0));
+                    return;
+                }
                 if d.anim(&th.atk_anim).is_some() {
                     main_deathblow(a, tf.translation, &mut ea, &mut enemy, etf.translation, ee, &combat, &th, false, &mut throw, &mut log);
                     p.throw_target = Some(ee);
@@ -1856,19 +2027,33 @@ fn decide(
     // isTurnAtker). The Ochimusha also has 崩し始動（近）0005 (Dist 1.2) -> 崩し本体（近）0006
     // (a200_502500 -> 512500), taken first when that close. Live (rec_c1010_20261009): near 3x
     // (0.30 s + 1.83 s), far 1x (0.30 s + 2.00 s).
+    // Attack with a broken enemy around that does not become a deathblow: why, in the log (the
+    // user's report on Isshin: the mark up, M1 does nothing).
+    if p.requests.contains_key(&Action::Attack) && enemies.iter().any(|(_, _, en, _)| en.is_broken()) {
+        let dmy_of = |ee: Entity| move |id: i16| enemy_dummies.get(ee).ok().and_then(|dm| dm.0.get(&id)).and_then(|m| globals.get(*m).ok()).map(|g| g.translation());
+        for (ee, ea, en, etf) in enemies.iter().filter(|q| q.2.is_broken()) {
+            let db = deathblow_check(&combat, tf.translation, ea, en, etf.translation, &dmy_of(ee));
+            if !db.as_ref().is_some_and(|db| db.in_reach) || !accepts(d, a, Action::Attack) {
+                info!(
+                    "deathblow refused: wolf {} {} t {:.2} accepts {} | enemy {} {} t {:.2} dist {:.2} (y {:.2}) check {}",
+                    a.state, a.anim, a.t, accepts(d, a, Action::Attack), ea.state, ea.anim, ea.t,
+                    etf.translation.distance(tf.translation), etf.translation.y - tf.translation.y,
+                    db.map_or("none".to_string(), |db| format!("row {} reach {} start {:?}", db.suffix, db.in_reach, db.start.map(|s| s.dist))),
+                );
+            }
+        }
+    }
     if p.requests.contains_key(&Action::Attack) && accepts(d, a, Action::Attack) {
         let dmy_of = |ee: Entity| move |id: i16| enemy_dummies.get(ee).ok().and_then(|dm| dm.0.get(&id)).and_then(|m| globals.get(*m).ok()).map(|g| g.translation());
-        // Several enemies open at once: the locked-on one, else the nearest.
-        // gap: the exe's pick among several throw candidates is not traced.
-        let pick = enemies
-            .iter()
-            .filter(|(ee, ea, en, etf)| deathblow_check(&combat, tf.translation, ea, en, etf.translation, &dmy_of(*ee)).is_some_and(|db| db.in_reach))
-            .min_by(|x, y| {
-                let key = |q: &(Entity, &Actor, &Enemy, &Transform)| (Some(q.0) != lock.target, q.3.translation.distance(tf.translation));
-                let (kx, ky) = (key(x), key(y));
-                kx.0.cmp(&ky.0).then(kx.1.total_cmp(&ky.1))
-            })
-            .map(|(e, ..)| e);
+        // Several enemies open at once: deathblow_pick (the locked-on one, else the nearest).
+        let pick = deathblow_pick(
+            enemies.iter().filter_map(|(ee, ea, en, etf)| {
+                deathblow_check(&combat, tf.translation, ea, en, etf.translation, &dmy_of(ee)).map(|db| (ee, etf.translation, db.in_reach, en.is_broken()))
+            }),
+            lock.target,
+            tf.translation,
+            false,
+        );
         if let Some((ee, mut ea, mut enemy, etf)) = pick.and_then(|e| enemies.get_mut(e).ok()) {
             if let Some(db) = deathblow_check(&combat, tf.translation, &ea, &enemy, etf.translation, &dmy_of(ee)) {
                 let (behind, suffix, th, start) = (db.behind, db.suffix, db.main, db.start);
@@ -1955,8 +2140,12 @@ fn decide(
     // (it needs env(345) == SP_ATK_TYPE_NONE).
     let art = art_anim(d, &combat, &config);
     let art_equipped = art.is_some();
+    // A pending guard tap pairs only while it is recent: an old tap left in the buffer (buffer
+    // 0 = no timeout) turned the next attack, seconds later, into the art. gap: the game's own
+    // pairing window is not traced; 0.1 s (6 frames) taken.
+    let guard_recent = p.requests.get(&Action::Guard).is_some_and(|&age| age <= 0.1);
     if p.requests.contains_key(&Action::Attack)
-        && (p.requests.contains_key(&Action::Guard) || (pad.guard_held && art_equipped))
+        && (guard_recent || (pad.guard_held && art_equipped))
     {
         p.requests.remove(&Action::Guard);
         p.requests.remove(&Action::Attack);
@@ -2006,14 +2195,19 @@ fn decide(
         if let Some((cat, unlock)) = art_kind(&combat, &config) {
             // HKS 3476-3485: without the emblems (env 3035) the *NoResource draw.
             let enable = p.emblems >= art_cost(&combat, &config);
-            let next = if !pad.attack_held {
+            // Each only while its TAE window is up (c0000_transition.lua 6198-6209, checked in
+            // that order every tick): the draw with 222 and attack up; HoldEnd with 230 and
+            // attack or guard up. Out of them the hold goes on, the buttons re-read next tick.
+            let release = !pad.attack_held && d.has_ref(&a.anim, a.t, REF_SP_ATK_RELEASE);
+            let hold_release = (!pad.attack_held || !pad.guard_held) && d.has_ref(&a.anim, a.t, REF_SP_ATK_HOLD_RELEASE);
+            let next = if release {
                 Some(match (unlock == 287, enable) {
                     (true, true) => "GroundSpacialAttackHoldAction",
                     (true, false) => "GroundSpacialAttackHoldActionNoResource",
                     (false, true) => "GroundSpecialAttackCombo1",
                     (false, false) => "GroundSpecialAttackCombo1NoResource",
                 })
-            } else if !pad.guard_held {
+            } else if hold_release {
                 Some("GroundSpacialAttackHoldEnd")
             } else if ended {
                 Some("GroundSpacialAttackHoldLoop")
@@ -2459,6 +2653,10 @@ fn decide(
         && !a.anim.is_empty()
         && d.has_ref(&a.anim, a.t, REF_ADD_GUARD_CANCEL);
     let pressed_guard = pressed_guard || add_guard;
+    // The window reached with the tap let go: the game drops it (it stayed queued for good).
+    if !pressed_guard && !pad.guard_held && !fresh_guard && p.requests.contains_key(&Action::Guard) && accepts(d, a, Action::Guard) {
+        p.requests.remove(&Action::Guard);
+    }
     let held_guard = pad.guard_held && !a.anim.is_empty() && d.has_ref(&a.anim, a.t, REF_PRESS_GUARD);
     if (pressed_guard || held_guard) && !is_guard_idle(&a.state) && !a.airborne {
         p.requests.remove(&Action::Guard);
@@ -2683,8 +2881,11 @@ fn decide(
             // BEH_A_AIR_DEFLECT_START in the wire-fall style (HKS 2965): W_WireMoveDeflectGuardStart.
             p.requests.remove(&Action::Guard);
             a.play_state(d, "WireMoveDeflectGuardStart");
-        } else if p.requests.remove(&Action::Guard).is_some() {
-            // BEH_A_AIR_DEFLECT_START (HKS 6061): ACTION_UNLOCK_TYPE_AIR_DEFLECT_GUARD.
+        } else if p.requests.contains_key(&Action::Guard) && (air_ok(a, FLAG_ACCEPT_GUARD) || is_air_guard(&a.state) || !pad.guard_held) {
+            // BEH_A_AIR_DEFLECT_START (HKS 6061): ACTION_UNLOCK_TYPE_AIR_DEFLECT_GUARD. A press
+            // before the execute flag (117: AirComboAttack frame 12, AirKick 18) waits for it while
+            // held, as the ground guard does; a tap let go before it is dropped.
+            p.requests.remove(&Action::Guard);
             if (air_ok(a, FLAG_ACCEPT_GUARD) || is_air_guard(&a.state)) && crate::combat::action_unlocked(&combat, &config, crate::combat::UNLOCK_AIR_DEFLECT_GUARD) {
                 a.play_state(d, "AirDeflectGuardStart");
             }
@@ -2728,11 +2929,16 @@ fn decide(
                     a.play(state, &k);
                 }
             }
-        } else if p.requests.remove(&Action::Jump).is_some() {
+        } else if p.requests.contains_key(&Action::Jump)
+            && (air_ok(a, FLAG_ACCEPT_JUMP) || storm_jump(d, a, p, false).is_some_and(|_| wolf_ref(d, a, p, SP_REF_ENABLE_STORM_JUMP)))
+        {
             // BEH_A_AIR_STORM_JUMP first (validated before the kick, HKS g_behaviorValidateOrder):
             // ref 101 up and inside an updraft -> W_AirStormJump(Weak)Start.
             // BEH_A_AIR_KICK: a jump press in the air always kicks (AirKick, a000_213100) unless
-            // an SpEffect with behaviorRefId 108 (SP_EF_REF_DISABLE_AIR_KICK) is active.
+            // an SpEffect with behaviorRefId 108 (SP_EF_REF_DISABLE_AIR_KICK) is active. A press
+            // before the execute flag 119 (AirComboAttack frame 12, latched by 87 from frame 3)
+            // stays pending until it opens, as the air attack's does; it was dropped.
+            p.requests.remove(&Action::Jump);
             if let Some(state) = storm_jump(d, a, p, false).filter(|_| wolf_ref(d, a, p, SP_REF_ENABLE_STORM_JUMP)).filter(|s| a.play_state(d, s)) {
                 log.push(format!("storm jump ({state})"), Color::srgb(0.7, 0.9, 1.0));
             } else if air_ok(a, FLAG_ACCEPT_JUMP) && !sp_ref_active(d, a, SP_REF_DISABLE_AIR_KICK) {
@@ -2825,9 +3031,11 @@ fn decide(
             a.vel_y = 0.0;
             log.push("kick jump", Color::srgb(0.8, 0.9, 1.0));
         }
-        // BEH_A_AIR_SP_ATTACK_RELEASE / _GUARD_RELEASE (HKS 2941-2955): letting go of attack or
-        // guard in the air hold -> W_AirSpacialAttackHoldEnd (a104_316240).
-        if matches!(a.state.as_str(), "AirSpecialAttackHoldStart" | "AirSpecialAttackHoldLoop") && (!pad.attack_held || !pad.guard_held) {
+        // BEH_A_AIR_SP_ATTACK_RELEASE / _GUARD_RELEASE (HKS 2941-2955) -> W_AirSpacialAttackHoldEnd
+        // (a104_316240): attack let go while 222 is up, or guard while 230 is (c0000_transition
+        // .lua 6048-6058). The air hold anims have 230 only, so only guard ends it there.
+        let air_release = (!pad.attack_held && d.has_ref(&a.anim, a.t, REF_SP_ATK_RELEASE)) || (!pad.guard_held && d.has_ref(&a.anim, a.t, REF_SP_ATK_HOLD_RELEASE));
+        if matches!(a.state.as_str(), "AirSpecialAttackHoldStart" | "AirSpecialAttackHoldLoop") && air_release {
             if let Some(k) = art_kind(&combat, &config).and_then(|(c, _)| art_key(d, c, "AirSpacialAttackHoldEnd")) {
                 a.play("AirSpacialAttackHoldEnd", &k);
             }
@@ -2907,6 +3115,9 @@ fn decide(
         if tf.translation.y <= floor && a.vel_y < 0.0 && !lifting {
             tf.translation.y = floor;
             a.airborne = false;
+            // The fall type lasts one flight: Wire::launch's fallType 2 (gravity -9.8 - 9.8,
+            // stick 6 m/s) is not the next walk-off's (0, kb/movement.md -23.52).
+            a.fall_type = 0;
             a.vel_y = 0.0;
             a.move_vel = Vec3::ZERO;
             a.air_base = Vec3::ZERO;
@@ -2960,7 +3171,8 @@ fn decide(
                 let plunge = p.plunge.take();
                 let kind_foe = |t: Entity| enemies.get(t).ok().map(|q| combat.foe_of(q.1));
                 if let Some((target, th)) = plunge.and_then(|(t, s)| Some((t, combat.throw(kind_foe(t)?.throw_row(s))?))) {
-                    if let Ok((_, mut ea, mut enemy, etf)) = enemies.get_mut(target) {
+                    // Only onto an enemy still open to it (held broken by its ThrowDef pose).
+                    if let Ok((_, mut ea, mut enemy, etf)) = enemies.get_mut(target).map_err(|_| ()).and_then(|q| if q.2.is_broken() { Ok(q) } else { Err(()) }) {
                         if d.anim(&th.atk_anim).is_some() {
                             a.play("Deathblow", &th.atk_anim);
                         }
@@ -3493,12 +3705,49 @@ fn move_velocity(p: &Player, a: &mut Actor, d: &CharData, config: &GameConfig, s
     let (key, ct, looping) = a.locomotion_clip_at(a.t);
     let clip_speed = d.root_velocity_at(&key, ct, looping).length();
     let speed = if stick == Vec3::ZERO { clip_speed * p.speed_level.min(1.0) } else { clip_speed };
-    let dir = if stick == Vec3::ZERO { a.forward() } else if target_dir.is_some() { stick } else { a.forward() };
+    // Stick released: on along the shown clip's direction (F / B / L / R from the facing), not
+    // the facing, which locked on points at the target (2026-10-12 bug hunt round 20: a legs-only
+    // back or strafe move slid Wolf toward the enemy).
+    let dir = if stick == Vec3::ZERO {
+        let clip_angle = [0.0f32, 180.0, -90.0, 90.0][(a.move_dir as usize).min(3)].to_radians();
+        Quat::from_rotation_y(a.yaw) * Vec3::new(clip_angle.sin(), 0.0, -clip_angle.cos())
+    } else if target_dir.is_some() {
+        stick
+    } else {
+        a.forward()
+    };
     a.move_vel = dir * speed;
 }
 
 #[cfg(test)]
 mod tests {
+    /// Every whole 1/30 s TAE frame start fires on exactly one tick of the f32 clock that
+    /// actor::advance runs (t += the 60 Hz fixed step), e.g. a200_510110's kill-frame recoveries
+    /// at 0.36666667 (round 12: the slack fired 38 of 170 player recoveries twice).
+    #[test]
+    fn the_plunge_fall_check_works_below_world_zero() {
+        // Wolf 4 m over an enemy 10 m below the export origin, falling (heightLimit 3 m).
+        let (target, g) = (bevy::math::Vec3::new(0.0, -10.0, 0.0), -9.8 * 3.0);
+        assert!(super::fall_reaches(target + bevy::math::Vec3::new(0.0, 4.0, 0.3), -1.0, bevy::math::Vec3::ZERO, g, target, 1.0, 3.0, 2.0));
+        // Out of range sideways: no plunge.
+        assert!(!super::fall_reaches(target + bevy::math::Vec3::new(3.0, 4.0, 0.0), -1.0, bevy::math::Vec3::ZERO, g, target, 1.0, 3.0, 2.0));
+    }
+
+    #[test]
+    fn one_shot_recoveries_fire_once() {
+        let dt = std::time::Duration::from_secs_f64(1.0 / 60.0).as_secs_f32();
+        for frame in 0..120 {
+            let start = frame as f32 / 30.0;
+            let (mut prev_t, mut t, mut fired) = (0.0f32, 0.0f32, 0);
+            for _ in 0..300 {
+                prev_t = t;
+                t += dt;
+                fired += super::one_shot_starts(start, prev_t, t) as u32;
+            }
+            assert_eq!(fired, 1, "frame {frame} ({start} s) fired {fired} times");
+        }
+    }
+
     #[test]
     fn velosity_scale_ease_curves() {
         // The args every 922 event carries: 3 / 3 (EaseInOut, cube).

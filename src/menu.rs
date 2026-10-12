@@ -84,10 +84,11 @@ enum Opt {
     Voice,
     Fullscreen,
     Vsync,
+    Cloth,
     Back,
 }
 
-const OPTS: [Opt; 10] = [Opt::CameraSpeed, Opt::InvertY, Opt::Gamepad, Opt::Volume, Opt::Music, Opt::Se, Opt::Voice, Opt::Fullscreen, Opt::Vsync, Opt::Back];
+const OPTS: [Opt; 11] = [Opt::CameraSpeed, Opt::InvertY, Opt::Gamepad, Opt::Volume, Opt::Music, Opt::Se, Opt::Voice, Opt::Fullscreen, Opt::Vsync, Opt::Cloth, Opt::Back];
 
 impl Opt {
     fn label(self) -> &'static str {
@@ -101,6 +102,7 @@ impl Opt {
             Opt::Voice => "Voice volume",
             Opt::Fullscreen => "Fullscreen",
             Opt::Vsync => "Vertical sync",
+            Opt::Cloth => "Cloth physics",
             Opt::Back => "Back",
         }
     }
@@ -117,6 +119,12 @@ impl Opt {
             Opt::Voice => format!("{}", c.audio.voice.round()),
             Opt::Fullscreen => on(c.video.fullscreen),
             Opt::Vsync => on(c.video.vsync),
+            Opt::Cloth => match c.video.cloth {
+                crate::config::ClothSetting::On => "On",
+                crate::config::ClothSetting::Near => "Near only",
+                crate::config::ClothSetting::Off => "Off",
+            }
+            .to_string(),
             Opt::Back => String::new(),
         }
     }
@@ -133,6 +141,12 @@ impl Opt {
             Opt::Gamepad => c.input.gamepad = !c.input.gamepad,
             Opt::Fullscreen => c.video.fullscreen = !c.video.fullscreen,
             Opt::Vsync => c.video.vsync = !c.video.vsync,
+            Opt::Cloth => {
+                use crate::config::ClothSetting::*;
+                const ORDER: [crate::config::ClothSetting; 3] = [Off, Near, On];
+                let i = ORDER.iter().position(|s| *s == c.video.cloth).unwrap_or(2) as i32;
+                c.video.cloth = ORDER[(i + dir.signum() as i32).rem_euclid(3) as usize];
+            }
             Opt::Back => {}
         }
     }
@@ -150,6 +164,7 @@ fn save_options(c: &crate::config::GameConfig) {
         ("audio", "voice", format!("{:.1}", c.audio.voice)),
         ("video", "fullscreen", c.video.fullscreen.to_string()),
         ("video", "vsync", c.video.vsync.to_string()),
+        ("video", "cloth", format!("\"{}\"", c.video.cloth.name())),
     ];
     if let Err(e) = crate::config::save_keys(&keys) {
         warn!("options not saved: {e}");
@@ -468,6 +483,25 @@ fn fight(picker: &mut Picker, at: (usize, usize), pad: &mut Option<ResMut<crate:
 }
 
 #[allow(clippy::too_many_arguments)]
+/// The mouse on a menu's rows: a click picks its row; a hover moves the cursor only when it
+/// begins (the Interaction changed), so a mouse resting on a row neither undoes Up / Down nor
+/// makes Enter / Cross pick the row under it (the pause menu's Quit). Items: (row,
+/// interaction, changed this frame). Returns the clicked row.
+fn mouse_pick(cursor: &mut usize, items: impl Iterator<Item = (usize, Interaction, bool)>) -> Option<usize> {
+    let mut pick = None;
+    for (row, interaction, changed) in items {
+        match interaction {
+            Interaction::Hovered if changed => *cursor = row,
+            Interaction::Pressed => {
+                *cursor = row;
+                pick = Some(row);
+            }
+            _ => {}
+        }
+    }
+    pick
+}
+
 fn run_menu(
     mut commands: Commands,
     state: Res<State<Screen>>,
@@ -480,7 +514,7 @@ fn run_menu(
     fonts: Res<MenuFonts>,
     assets: Res<AssetServer>,
     roots: Query<Entity, With<MenuRoot>>,
-    (items, tabs): (Query<(&MenuItem, &Interaction, &Children)>, Query<(&PickerTab, &Interaction)>),
+    (items, tabs, hovers): (Query<(&MenuItem, &Interaction, &Children)>, Query<(&PickerTab, &Interaction), Changed<Interaction>>, Query<&MenuItem, Changed<Interaction>>),
     mut texts: Query<&mut TextColor>,
     mut window: Single<&mut CursorOptions, With<PrimaryWindow>>,
     (mut pad, mut exit, mut spawn, mut picker, mut config): (
@@ -597,15 +631,9 @@ fn run_menu(
     if keys.just_pressed(KeyCode::ArrowUp) || keys.just_pressed(KeyCode::KeyW) {
         cursor.index = (cursor.index + list.len() - 1) % list.len();
     }
-    for (item, interaction, _) in &items {
-        match interaction {
-            Interaction::Hovered => cursor.index = item.0,
-            Interaction::Pressed => {
-                cursor.index = item.0;
-                pick = list.get(item.0).copied();
-            }
-            Interaction::None => {}
-        }
+    let moved: Vec<usize> = hovers.iter().map(|m| m.0).collect();
+    if let Some(i) = mouse_pick(&mut cursor.index, items.iter().map(|(item, i, _)| (item.0, *i, moved.contains(&item.0)))) {
+        pick = list.get(i).copied();
     }
     if keys.just_pressed(KeyCode::Enter) || keys.just_pressed(KeyCode::Space) {
         pick = list.get(cursor.index).copied();
@@ -754,7 +782,7 @@ fn fight_from_env(mut done: Local<bool>, mut picker: ResMut<Picker>, mut pad: Op
 fn picker_input(
     keys: &ButtonInput<KeyCode>,
     items: &Query<(&MenuItem, &Interaction, &Children)>,
-    tabs: &Query<(&PickerTab, &Interaction)>,
+    tabs: &Query<(&PickerTab, &Interaction), Changed<Interaction>>,
     picker: &mut Picker,
     next: &mut NextState<Screen>,
 ) -> bool {
@@ -779,6 +807,8 @@ fn picker_input(
     if any(&[KeyCode::ArrowLeft, KeyCode::ArrowRight, KeyCode::KeyA, KeyCode::KeyD, KeyCode::Tab]) {
         picker.tab = 1 - picker.tab;
     }
+    // Only a new press: the menu clears the mouse (reset_all), so the button's release is never
+    // seen and a clicked tab stays Pressed.
     for (t, interaction) in tabs {
         if *interaction == Interaction::Pressed {
             picker.tab = t.0;
@@ -807,8 +837,15 @@ fn watch_fight(
     wolf: Query<(&crate::actor::Actor, &crate::player::Player)>,
     enemies: Query<&crate::enemy::Enemy>,
     boss: Res<crate::enemy::BossScript>,
+    pad: Option<Res<crate::player::PadInput>>,
     mut down_for: Local<f32>,
 ) {
+    // Retry / Title -> Start asked for the fight over: the reset runs in the next fixed step
+    // (player.rs), so until then Wolf still lies dead - not a new death.
+    if pad.is_some_and(|p| p.reset) {
+        *down_for = 0.0;
+        return;
+    }
     if let Ok((a, p)) = wolf.single() {
         if a.state == "GroundDeathLoop_F" && p.resurrections == 0 {
             next.set(Screen::Dead);
@@ -852,5 +889,24 @@ fn hide_hud_on_title(
             }
             (false, None) => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A resting mouse does not undo the keys: the hovered row takes the cursor only when the
+    /// hover begins; a click picks (round 17).
+    #[test]
+    fn a_resting_mouse_does_not_move_the_menu_cursor() {
+        let mut cursor = 0;
+        assert_eq!(mouse_pick(&mut cursor, [(0, Interaction::None, false), (2, Interaction::Hovered, true)].into_iter()), None);
+        assert_eq!(cursor, 2, "a new hover moves the cursor");
+        cursor = 1; // Up / Down
+        assert_eq!(mouse_pick(&mut cursor, [(2, Interaction::Hovered, false)].into_iter()), None);
+        assert_eq!(cursor, 1, "the resting mouse undid the key");
+        assert_eq!(mouse_pick(&mut cursor, [(2, Interaction::Pressed, true)].into_iter()), Some(2));
+        assert_eq!(cursor, 2);
     }
 }

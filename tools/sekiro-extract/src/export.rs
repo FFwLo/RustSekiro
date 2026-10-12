@@ -89,7 +89,19 @@ const SP_EFFECT_FIELDS: &[&str] = &[
     "guardStaminaCutRate", "toughnessDamageCutRate", "effectEndurance", "conditionHp", "spCategory",
     // Within one spCategory the lower categoryPriority wins (Paramdex SpEffectParam meta).
     "categoryPriority",
+    // spCategory 1001 damage-motion replacement enums by HKS damage level (combat.rs
+    // damage_motion_level; exe 84ff70 -> bfd980 -> 10cea20, sekiro-rs COMBAT-RULES).
+    "dmgLv_None", "dmgLv_S", "dmgLv_M", "dmgLv_L", "dmgLv_BlowM", "dmgLv_Push", "dmgLv_Strike", "dmgLv_BlowS",
+    "dmgLv_Min", "dmgLv_Uppercut", "dmgLv_BlowLL", "dmgLv_Breath",
+    // Posture damage taken while worn, by the attack's staminaPhysicsAttribute (Isshin's change
+    // 3540090: x0.3).
+    "defSlashStaminaDmgRate", "defLightHitStaminaDmgRate", "defThrustStaminaDmgRate", "defNeutralStaminaDmgRate", "defHeavyHitStaminaDmgRate",
+    "defNinsatuStaminaDmgRate", "defAntiGroundStaminaDmgRate", "defAntiAirStaminaDmgRate", "defLightShootStaminaDmgRate",
+    "defAttriAStaminaDmgRate", "defAttriBStaminaDmgRate", "defAttriCStaminaDmgRate",
     "changeHpRate", "changeHpPoint", "changeHpEstusFlaskRate",
+    // Area scaling ("Growth Doping" 7000-7xxx, config enemy.area_doping): max HP / posture and
+    // physical attack power (data.rs; they defaulted to 1.0 unexported).
+    "maxHpRate", "maxStaminaRate", "physicsAttackPowerRate",
     // Stealth: how a chr wearing the effect is seen and heard by NPCs (the exe's
     // SprjTargetingSystem, FUN_140bfe8a0 / FUN_140bfc050 / FUN_140bfea80...).
     "sightSearchEnemyCut", "aroundSightPointAddRate", "hearingSearchEnemyRate", "sightCutLimitType",
@@ -112,7 +124,7 @@ const BULLET_FIELDS: &[&str] = &[
     "numShoot", "shootInterval", "shootAngle", "shootAngleInterval", "shootAngleXZ", "shootAngleXInterval", "shootAngleXMaxRandom",
     "shootAngleYMaxRandom", "shootYOffsetRange", "targetYOffsetRange", "EmittePosType", "FollowType", "attachEffectType",
     "HitBulletID", "intervalCreateBulletId", "intervalCreateTimeMin", "intervalCreateTimeMax", "intervalCreateWaitTime",
-    "isPenetrate", "isPenetrateMap", "isUseSharedHitList", "dmgHitRecordLifeTime", "isCheckWall_byCenterRay", "launchConditionType",
+    "damageDamp", "staminaDamp", "knockbackDamp", "isPenetrate", "isPenetrateMap", "isUseSharedHitList", "dmgHitRecordLifeTime", "isCheckWall_byCenterRay", "launchConditionType",
     "spEffectIDForShooter", "spEffectId0", "spEffectId1", "spEffectId2", "spEffectId3", "spEffectId4",
     "isEnableAutoHoming", "homingAngle", "homingBeginDist", "hormingStopRange", "predictionShootObserveTime",
     "isInheritSpeedToChild", "isInheritSfxToChild", "isHitForceMagic", "isHitOtherBulletForceEraseB", "isHitDarkForceMagic", "guardRangeType",
@@ -358,6 +370,13 @@ fn export_character(
     if chr.sub_behavior_base == 0 {
         tools.clear();
     }
+    // (spAtkcategory = art anim group, behaviorVariationId) of every combat art weapon level.
+    let art_vars: Vec<(i64, i64)> = weapons
+        .iter()
+        .filter(|(id, _)| (5000..8000).contains(*id))
+        .filter_map(|(_, w)| Some((w.get("spAtkcategory")?.as_i64()?, w.get("behaviorVariationId")?.as_i64()?)))
+        .filter(|&(cat, _)| cat > 0)
+        .collect();
     for key in &keys {
         let Some((tae, src)) = resolve(&taes, key) else {
             eprintln!("{}: no TAE for {key}", chr.id);
@@ -386,10 +405,19 @@ fn export_character(
             }
             // Wolf's sword bullets (TAE 2 / 4 BulletBehavior(_Midair) outside the tool groups: the
             // Lightning Reversal's bolt, a050_308900 judge 184 -> BehaviorParam_PC 105000184 ->
-            // Bullet 500184), keyed "v5000:<judge>" at the sword's variation.
+            // Bullet 500184), keyed "v5000:<judge>" at the sword's variation; a combat art's
+            // (a100..a110 = spAtkcategory) at each of its levels' variations, as its attacks are
+            // (One Mind / Ashina Cross a104_317000 judge 210 -> 105005210; Dragon Flash 5004, 5030).
             if tool_group.is_none() && chr.npc_row.is_none() && (e["type"] == 2 || e["type"] == 4) {
                 if let Some(j) = e["args"].get("BehaviorJudgeID").and_then(Value::as_i64) {
-                    bullet_judges.insert(((chr.behavior_base - 100_000_000) / 1000, j));
+                    let group = key.get(1..4).and_then(|g| g.parse::<i64>().ok()).unwrap_or(0);
+                    let arts: Vec<i64> = art_vars.iter().filter(|a| (100..=110).contains(&group) && a.0 == group).map(|a| a.1).collect();
+                    if arts.is_empty() {
+                        bullet_judges.insert(((chr.behavior_base - 100_000_000) / 1000, j));
+                    }
+                    for var in arts {
+                        bullet_judges.insert((var, j));
+                    }
                 }
             }
             if e["type"] == 307 && chr.npc_row.is_none() && e["args"].get("GetWeaponData").and_then(Value::as_i64) == Some(0) {
@@ -1019,6 +1047,14 @@ fn export_hud(root: &Path, icons: &BTreeSet<String>) {
     };
     let tex: HashMap<String, Vec<u8>> = crate::flver::tpf(&tpf).into_iter().collect();
     let _ = std::fs::create_dir_all(root.join("hud"));
+    // Standalone textures (not in an atlas): MENU_Lockon01, the lock-on mark (a 10 px white disc
+    // in a 64 x 32 texture; the FE movie's clip Lockon_Ani_297 in menu/01_000_fe.gfx shows it).
+    for name in ["MENU_Lockon01"] {
+        let Some(dds) = tex.iter().find(|(k, _)| k.eq_ignore_ascii_case(name)).map(|(_, v)| v) else { continue };
+        let (w, h, px) = crate::decode_dds(dds);
+        let rgba: Vec<u8> = px.iter().flat_map(|p| [(p >> 16 & 0xff) as u8, (p >> 8 & 0xff) as u8, (p & 0xff) as u8, (p >> 24) as u8]).collect();
+        crate::write_png(&root.join(format!("hud/{name}.png")), w, h, &rgba);
+    }
     let Ok(dir) = std::fs::read_dir(root.join("menu/hi/01_common.sblytbnd.d")) else { return };
     let attr = |line: &str, k: &str| -> Option<String> {
         let i = line.find(&format!(" {k}=\""))? + k.len() + 3;
@@ -1216,6 +1252,7 @@ pub fn export_npcs(root: &Path, defs: &Path, only: &[String]) {
     let npc_p = load_param(&params, "NpcParam");
     let think_p = load_param(&params, "NpcThinkParam");
     let throw_p = load_param(&params, "ThrowParam");
+    let stamina_p = load_param(&params, "StaminaControlParam");
     let names: BTreeMap<i64, String> = std::fs::read(root.join("msg/engus/item.msgbnd.d/NPC名.fmg")).map(|d| crate::fmg::read(&d)).unwrap_or_default();
     let out_dir = root.join("enemies");
     let _ = std::fs::create_dir_all(&out_dir);
@@ -1281,10 +1318,16 @@ pub fn export_npcs(root: &Path, defs: &Path, only: &[String]) {
             .filter(|(_, r)| [r.get("AtkChrId"), r.get("DefChrId")].iter().any(|v| v.and_then(|v| v.as_i64()) == Some(num)))
             .map(|(id, _)| *id)
             .collect();
+        // The posture regen ratios its rows name (staminaControlParamId: c1180's 1070000 gives
+        // 0 % in a swing; actor.rs regen_posture fell back to 100 % for the rows not exported).
+        let mut stamina_rows: Vec<i64> = npc_rows.iter().filter_map(|id| npc_p.get(id)?.get("staminaControlParamId")?.as_i64()).collect();
+        stamina_rows.sort();
+        stamina_rows.dedup();
         data["params"] = json!({
             "NpcParam": pick_rows(&npc_p, &npc_rows),
             "NpcThinkParam": pick_rows(&think_p, &think_rows),
             "ThrowParam": pick_rows(&throw_p, &throws),
+            "StaminaControlParam": pick_rows(&stamina_p, &stamina_rows),
         });
         data["roster"] = entry;
         let path = out_dir.join(format!("{chr}.json"));

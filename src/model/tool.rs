@@ -54,7 +54,11 @@ struct ToolPart {
 
 pub(super) fn plugin(app: &mut App) {
     app.add_systems(Update, (equip_tool_models, pose_tool_models.after(crate::wire::draw_rope)).chain())
-        .add_systems(PostUpdate, place_tool_models.after(bevy::transform::TransformSystems::Propagate));
+        .add_systems(PostUpdate, place_tool_models.after(bevy::transform::TransformSystems::Propagate))
+        // The sim pose too (as model.rs does for the sword): the tool hit test reads the
+        // 21100-21130 dummies in FixedUpdate, which were a rendered frame old (two ticks a
+        // frame at 30 fps tested the stale blade).
+        .add_systems(FixedUpdate, (pose_tool_models, place_tool_models).chain().in_set(crate::anim::PoseSet).after(crate::anim::store_sim_poses));
 }
 
 fn tool_dir() -> std::path::PathBuf {
@@ -216,7 +220,7 @@ fn spawn_part(
                 cull_mode: None,
                 ..default()
             },
-            extension: SekiroExt { flags: UVec4::new(normal.is_some() as u32, metallic.is_some() as u32, 0, 0), normal, metallic },
+            extension: SekiroExt { flags: UVec4::new(normal.is_some() as u32, metallic.is_some() as u32, 0, 0), normal, metallic, ..Default::default() },
         });
         let skin = SkinnedMesh { inverse_bindposes: bindposes.add(SkinnedMeshInverseBindposes::from(inv)), joints: mesh_joints };
         // The pivot is placed after transform propagation (place_tool_models), so the culling
@@ -332,6 +336,23 @@ fn place_tool_models(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The tool parts are posed and placed in the sim's own pose pass (FixedUpdate), not only
+    /// for drawing (round 17).
+    #[test]
+    fn tool_parts_are_placed_in_the_sim_pose() {
+        let mut app = App::new();
+        plugin(&mut app);
+        let world = app.world_mut();
+        // System names need Bevy's debug feature: the plugin's FixedUpdate holds the pose and the
+        // place pass (it had none).
+        let count = world.resource_scope(|world, mut schedules: Mut<bevy::ecs::schedule::Schedules>| {
+            let Some(s) = schedules.get_mut(FixedUpdate) else { return 0 };
+            s.initialize(world).unwrap();
+            s.systems().unwrap().count()
+        });
+        assert_eq!(count, 2, "the tool parts are only posed and placed for drawing");
+    }
 
     /// The wire model's reach per clip: the farthest node from the root over the clip.
     #[test]

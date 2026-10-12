@@ -42,7 +42,8 @@ Dated findings, oldest first. Append new entries at the end.
   Export: all LockCamParam / CameraParam / CameraSetParam rows.
 - 2026-10-07 helper S2 integrated: TAE 151 look limits (camera singleton +0x4c..+0x58 -> FUN_140742230 absolute limits
   +0x230..+0x23c chased at lockCamParamLerpRate; +0x230/+0x234 clamp pitch, +0x238/+0x23c yaw) in camera.rs
-  apply_look_limits. Gaps: cone centre from the dummy's basis, no lerp back to the default cone after the event.
+  apply_look_limits. After the event the pitch limits chase back to the defaults at lockCamParamLerpRate
+  (follow_player). Gap: cone centre from the dummy's basis.
 - 2026-10-09 lock-on pitch ported from the exe (FUN_14073c260 0x14073d6xx-0x14073dd0e; camera +0xd0 = focus,
   +0xe0 = camera, written as focus - dir * dist): P = focus + CameraParam lockTgtPosRate (0.7) * (target
   DummyPoly 220 - focus); half = FOV (+0x50, LockCamParam camFovY in rad) * lockRotXShiftRatio (+0x278) * 0.5;
@@ -65,7 +66,9 @@ Dated findings, oldest first. Append new entries at the end.
   by dt toward targetChaseRateXZForNormal 0x6c, 0.1); Y = AtLockY (0x8c, 0.3) / targetChaseRateY (0x74, 0.4).
   X / Z rate * k, k from cos(angle(+0xf0 - focus, +0x100 - focus)) against cos(AngMin) / cos(AngMax) (0x78 / 0x7c
   10 / 20 deg; AtLock 0x90 / 0x94 = 0 -> k = 1): 0 inside Min, linear in cos to 1 at Max. Pitch of either vector
-  outside +0x230 / +0x234 (0.1 deg slack) forces X / Z to 1 (not ported). FUN_140831190 / 1408311b0 override (not
+  outside +0x230 / +0x234 (0.1 deg slack) forces X / Z to 1 (14073.c 11883-11898: both prev and raw
+  past the same limit, elevation = -FUN_140733e50 = atan2(y, xz); ported 2026-10-12, camera.rs chase_position
+  `pitch`, limits = the TAE 151 ones or rotRangeMinX / rotRangeXMax). FUN_140831190 / 1408311b0 override (not
   traced). Then r += (1 - r) * +0x150; new = r * (+0xf0 - +0x100) + +0x100, no dt factor (taken per 1/60 s).
   Distance: |+0xf0 - focus| vs |+0x110 - focus| chased at +0x1e8 / +0x1ec = targetChaseDistRateXZ / Y (0x80 / 0x84,
   0.4), or for +0x1e4 (= targetChaseDistRateTime 2 s, set after a wall hit) toward _ForHitWall (0x58 / 0x5c, 1.0)
@@ -73,8 +76,21 @@ Dated findings, oldest first. Append new entries at the end.
   2 s) by stick / mouse camera input (unlocked); +0x154 counts down, then +0x150 -= dt / rotCtrlEndReleaseTime (0xac,
   1 s). lockCamAdjustRot_MaxX/Y / ChaseRate (0x128..0x130): no load off the param row in FUN_14073c260 (the
   +0x128.. reads at 14073.c ~9140 are camera-object fields) nor the other getter callers.
-  Not ported: with isEnableChrChaseRotX (0x28, 1 in 136 / 142 rows) the free camera's yaw / pitch resync each frame
-  from the fulcrum +0xe0 -> focus direction (FUN_140734070 / FUN_140733e50, ~0x14073e015).
+- 2026-10-11 the fulcrum (camera +0xe0), ported (camera.rs drag_fulcrum / place_fulcrum, test
+  fulcrum_swings_the_camera_toward_a_sideways_run). 14073.c 9243 saves +0x90 (the chased character point); 9752-9770:
+  fulcrum += (targetTransChaseRateXZ / Y 0x60 / 0x64 = 0.4, each lifted by (1 - r) * +0x194) * its move this frame.
+  Unlocked, 9832-9880: yaw +0x174 = FUN_140734070(focus +0xd0 - fulcrum) every frame; with isEnableChrChaseRotX (0x28)
+  the pitch +0x170 too (FUN_140733e50) when chrChaseRotXInvalidAngle (0x2c, row 0: 80 deg) <= 0, or a character
+  vector (FUN_1409efea0 +0xc0, the move stick) is ~0 or its dot with the view is under cos(that angle); pitch ported
+  2026-10-12 (see "Pitch chase" below).
+  Then the rotation's forward re-places the fulcrum on the arm at its distance (10923), and with
+  fulcrumDistRateByLrMoveMaxDist (0x40, 0.3) > 0 that distance = max((1 - clamp(|move . right| / 0.3, 0x44 0.1,
+  0x48 0.99)) * |camera +0x40 - focus|, fulcrumDistMin 0x50 2 m) (10930-10990); first placement: fulcrumDistRate
+  (0x4c, 0.5) * the camera distance, at least 2 m (9262-9285). +0x194 (9305-9397): 0 while the camera input
+  (FUN_1409efea0 +0x80, or its +0xd0) is non-zero, 1 when it stops (held transChaseByControlEndWaitTime 0xa0, then
+  falling over transChaseByControlEndReleaseTime 0xa4), 1 while locked. Effect: a sideways run leaves the fulcrum
+  behind, so the camera swings to trail the run (6 m/s across: 31 deg at 0.5 s, 53 at 1 s, 75 at 2 s). Gaps: the
+  pitch part; where TAE 151's limits sit against it (the resync is skipped while they run).
 - 2026-10-11 TAE 151 look limits, FUN_140742230 (called from FUN_14073c260; param_2 = LockCamParam row, param_3 =
   CameraParam row): event (FUN_1408311c0 true): centre = view along -row 2 of the DummyPolyID world matrix
   (FUN_14073a1e0 -> FUN_1409e6c90), pitch FUN_140733d70 = -atan2(y, xz), yaw FUN_140733fb0 = atan2(x, z); yaw unwrapped
@@ -86,3 +102,41 @@ Dated findings, oldest first. Append new entries at the end.
 - 2026-10-11 lock switch mouse: FUN_1409ca120 reads (-v.x, -v.y), v = pad object +0x38f8 -> +0x20 / +0x24
   (FUN_14095fd40 / 50); the stick FUN_1409ca2d0 reads FUN_140960430 / 440 unnegated. The mouse state's writer is not
   found statically (scan for int->float stores at +0x20 / +0x24: none matching), so units and signs stay open.
+- 2026-10-11 checked AKJama/sekiro-rs's camera / movement fixes (c1782f8, 502c9be, 8eaf879): locked diagonals with
+  walk twist, the 4-dir step tilt and the dead-target lock drop were already here; the held-stick realign after a
+  lock drop already works (probe test held_stick_realigns_after_the_lock_drops). Their camera has no fulcrum.
+
+## Close camera: Wolf fades, safe margin (2026-10-12)
+
+- No minimum distance: the collision cast keeps max(hit, 1e-5) of the arm (FUN_14073c260 14073.c
+  12318-12395). Ours was clamped to 0.3 m, so a wall behind Wolf put the camera inside his head.
+- Safe margin (14073.c 12709-12730, under Game.IsUseSPChrExFollowCam, default 1 in FUN_14097b330):
+  the final camera moves toward the focus (+0xc0) by min((d - 1e-5) * camSafeMarginRate 0.1,
+  camSafeMarginMax 0.3). camera.rs `safe_margin`.
+- CamFade (14073.c 12743-12759; slot manager FUN_140b21ca0 / FUN_140b22000 in 140b2.c): when
+  camera +0x3ae is set and |+0xa0 - camera| < CameraParam playerFadeDist (0.5 m), the player is
+  asked to fade that frame. A slot's alpha falls at AlphaDecreaseRate 2.5 / s to its floor (the
+  player's: camera +0x40c, 0) and climbs back at AlphaIncreaseRate 5 / s (defaults of debug floats
+  Game.Camera.Obstacle.*, FUN_140b216b0; ExtensionOfTime 0). PlayerIns vtable +0x400
+  (0x140a2c230) stores it at +0x2074 and FUN_140a2f780 writes it to every model slot.
+  camera.rs `cam_fade_step` / `fade_player` -> Actor::cam_alpha -> model.rs update_opacity.
+- Gaps: +0xa0 taken as the focus; the draw is a plain alpha blend (the exe's consumer may be the
+  DitherFade material property, not traced).
+- Obstacle fade, parked (14073.c 11253-11320): with camera +0x3ad, a camCastSphereRadiusForFade
+  (0.3 m) sphere cast from the desired camera (+0x100) toward the midpoint of +0x90 / +0xa0,
+  shortened by the radius, FUN_14094ea80 with Havok filter group 0x76 (118, "Camera (fade
+  occluding OBJ)"; filter info bits 0-6 = group, FUN_140932c00). FUN_140933390 pairs group 118
+  with objects (0x18 / 0x19 / 0x1b / 0x20), 0x29, 0x2f, 0x43, 0x6c, 0x77 and the enemy / boss
+  character groups 2, 5, 7, 10, 0x66, 0x67, 0x69, 0x6a; not the player (1). Each hit
+  (FUN_140950620: short kind at +8; 1 = ChrIns, 6 = object, 0 / 2 ignored) goes to FUN_140b21d40
+  (fade to AlphaMin 0.2), a character only when byte +0x1f of *(owner + 0x18) is 2
+  (FUN_1408705a0; FUN_14095ce70 wants 1 for its own use). That byte is not identified, so
+  whether ordinary enemies fade is open: a live read of it on an enemy settles it.
+- Pitch chase, done 2026-10-12 (camera.rs `chases_pitch`): the unlocked pitch is read back from
+  the dragged fulcrum too (FUN_140733e50 = -atan2(y, |xz|) of focus - fulcrum) when
+  isEnableChrChaseRotX and (chrChaseRotXInvalidAngle <= 0, or the manipulator's +0xc0 ~ 0, or
+  dot(+0xc0, -camera z row) < cos(angle)). FUN_1409efea0 = the chr's ChrManipulator (ChrCtrl
+  +0x358 override, else +0x120; PadManipulator for Wolf); +0xc0 = the move stick (-x, 0, -y)
+  turned by the camera yaw, unnormalised, halved on walk, 0 when let go (FUN_1407f0f50, 1407f.c
+  1270); +0x80 the right stick, +0xd0 the mouse. So a climb or fall tilts the camera, except
+  while running toward it. gap: that the -z row means "toward the camera" is inferred.

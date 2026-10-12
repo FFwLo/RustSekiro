@@ -11,9 +11,11 @@
 //! - Lighting comes from the area's draw params (`param/drawparam/<area>_0000.gparam`): the
 //!   light set the collision under the enemy selects (GparamConfig LightSetID), at a time of
 //!   day. Angles are (pitch, yaw) radians with `Ry(yaw) * Rx(pitch) * +Z` pointing toward the
-//!   light; colours RGB with the intensity in W. The engine's units are not known: lux / ambient
-//!   scales are sekiro-rs's by-eye values (`LUX_PER_UNIT`, `AMBIENT_PER_UNIT`), the volumetric
-//!   fog becomes Bevy's exponential distance fog.
+//!   light; colours RGB with the intensity in W. The exe squares light and hemisphere colours
+//!   (`rgb * rgb * W`, gamma 2.0) and takes fog colours at gamma 2.2 (`colour`, `fog_colour`);
+//!   one scene-to-Bevy scale (`SCENE_TO_BEVY`) serves the sun, fill, ambient and probes. Both
+//!   from sekiro-rs `docs/SHADER-INPUTS.md` (exe traced, THIRD_PARTY.md). The volumetric fog
+//!   becomes Bevy's exponential distance fog.
 //!
 //! Without a map (config `[world] map` unset and no `SHINOBI_MAP`), nothing here runs and the
 //! floor is the flat arena at y = 0 (`ground_y` returns 0): the sim tests stay as they were.
@@ -24,13 +26,12 @@ use std::sync::{Arc, OnceLock, RwLock};
 use bevy::asset::RenderAssetUsages;
 use bevy::image::{CompressedImageFormats, ImageAddressMode, ImageFilterMode, ImageLoaderSettings, ImageSampler, ImageSamplerDescriptor, ImageType};
 use bevy::mesh::{Indices, PrimitiveTopology};
-use bevy::pbr::{DistanceFog, FogFalloff};
 use bevy::post_process::auto_exposure::{AutoExposure, AutoExposureCompensationCurve, AutoExposurePlugin};
 use bevy::prelude::*;
 
 use crate::actor::{Actor, ActorSet, Side};
 use crate::config::GameConfig;
-use crate::grading::{ColorGradingLut, GradingPlugin};
+use crate::grading::{ColorGradingLut, GameToneCurve, GradingPlugin};
 use crate::player::CAPSULE_HALF_HEIGHT;
 
 /// Body radius for wall contacts. gap: Sekiro's capsule radius (player.rs CAPSULE_RADIUS is the
@@ -43,17 +44,21 @@ const MAX_SLOPE_DEGREES: f32 = 50.0;
 /// the step height so stairs reach the floor query rather than the wall push.
 const SPHERES: [f32; 3] = [STEP_HEIGHT + RADIUS, 1.2, 1.55];
 const CELL: f32 = 4.0;
-const LUX_PER_UNIT: f32 = 9_000.0;
-const AMBIENT_PER_UNIT: f32 = 1_800.0;
-/// cd/m^2 per unit of probe radiance: a sun of one unit (LUX_PER_UNIT) seen as radiance,
-/// LUX_PER_UNIT / pi, so the probes and the directional lights share the scale.
-const ENV_PER_UNIT: f32 = 2_865.0;
+/// Bevy lux per native light unit (the game has no photometric unit: `rgb * rgb * W` goes to
+/// the shaders as is). sekiro-rs `crates/game/src/lighting.rs` SCENE_TO_BEVY: 4500 folds its
+/// earlier 9000 lux and 0.5 post calibration into one scale. gap: an exe-derived bridge.
+const SCENE_TO_BEVY: f32 = 4_500.0;
+const LUX_PER_UNIT: f32 = SCENE_TO_BEVY;
+/// cd/m^2 per unit of hemisphere / probe radiance: the same scale seen as radiance (/ pi).
+pub(crate) const ENV_PER_UNIT: f32 = SCENE_TO_BEVY / std::f32::consts::PI;
+const AMBIENT_PER_UNIT: f32 = ENV_PER_UNIT;
 /// Auto exposure (`auto_exposure`): the game's log2 luminance units onto this renderer's
 /// buffer, and the EV base that keeps the 18 h look (-Exposure at 18 h).
 const METER_EV: f32 = 2.6;
+/// Tone Map FilmicContrast: the castle and gate draw params have none, so the exe's
+/// constructor default (sekiro-rs docs/SHADER-INPUTS.md, function 24db30).
+const FILMIC_CONTRAST: f32 = 0.5;
 const BASE_EV: f32 = -0.8;
-/// The most the auto exposure may brighten (EV): the night sets allow 8, far too much here.
-const ADAPT_CAP_EV: f32 = 2.0;
 
 /// The hit collision, shared with the systems that cannot take a resource (player.rs floor
 /// checks, camera.rs arm clamp, sound.rs floor material) through [`terrain`].
@@ -160,7 +165,6 @@ pub fn raycast(origin: Vec3, dir: Vec3, max: f32) -> Option<f32> {
 /// (the Headless Ape's MSB pose faces the pit's wall: tools/boss_arenas.py turns his arena).
 /// gap: the game starts the fight where the boss script's warp or the fog gate puts Wolf.
 pub fn player_start() -> Vec3 {
-    const HEADROOM: f32 = 2.8;
     let base = Vec3::new(0.0, CAPSULE_HALF_HEIGHT, 4.0);
     let Some(t) = terrain().filter(|_| on_boss_arena()) else { return base };
     // `SHINOBI_START=<x>,<z>` (a debug knob): that spot instead, on the floor nearest y 0.
@@ -168,6 +172,14 @@ pub fn player_start() -> Vec3 {
         let h = t.floor(x, z, 3.0).unwrap_or(0.0);
         return Vec3::new(x, h + CAPSULE_HALF_HEIGHT, z);
     }
+    arena_start(&t, !crate::enemy::on_own_arena()).unwrap_or_else(|kept| kept)
+}
+
+/// [`player_start`]'s search on one arena's collision: `Ok` with the spot it found, `Err` with
+/// the spot it fell back to (warned). `stranger`: another boss's line-up stands 8 m ahead.
+fn arena_start(t: &Terrain, stranger: bool) -> Result<Vec3, Vec3> {
+    const HEADROOM: f32 = 2.8;
+    let base = Vec3::new(0.0, CAPSULE_HALF_HEIGHT, 4.0);
     // The floor under (0, z) nearest to `from`, within 2 m up or down: the highest below
     // `from` + 2, unless that is a ledge more than half a metre up with ground under it.
     let floor_near = |z: f32, from: f32| -> Option<f32> {
@@ -185,20 +197,19 @@ pub fn player_start() -> Vec3 {
     // too, or the enemy starts in the rock. Its floor may sit on a slope (Isshin's field falls
     // 0.27 m per metre toward Wolf: the boss spot is 1.3 m above his), so it is allowed 2 m of
     // height difference, found from 2 m over Wolf's floor down.
-    let stranger = !crate::enemy::on_own_arena();
     let lineup_ok = |z: f32, h: f32| {
         !stranger || t.floor(0.0, z - 8.0, h + 2.0).filter(|hf| (hf - h).abs() <= 2.0).is_some_and(|hf| room(z - 8.0, hf))
     };
     // The enemy's floor at (0, -4) is the arena's y 0 by construction (the exporter puts the
     // origin at his feet, half a metre of helper collision allowed).
-    let Some(h0) = t.floor(0.0, -4.0, 1.0) else { return base };
+    let Some(h0) = t.floor(0.0, -4.0, 1.0) else { return Err(base) };
     let mut h = h0;
     let mut z = -4.0;
     while z < 16.0 {
         z += 0.5;
         let Some(hz) = floor_near(z, h) else {
             warn!("player start: no floor within 2 m of {h:.2} at (0, {z}); kept at (0, 4) over {h0:.2}");
-            return base.with_y(h0 + CAPSULE_HALF_HEIGHT);
+            return Err(base.with_y(h0 + CAPSULE_HALF_HEIGHT));
         };
         h = hz;
         if z < 4.0 || !room(z, h) || !lineup_ok(z, h) {
@@ -207,10 +218,10 @@ pub fn player_start() -> Vec3 {
         if z > 4.0 {
             info!("player start moved to z {z}: no headroom at the arena's spot (floor {h0:.2} at the enemy, {h:.2} here{})", if stranger { "; the line-up 8 m ahead checked too" } else { "" });
         }
-        return Vec3::new(0.0, h + CAPSULE_HALF_HEIGHT, z);
+        return Ok(Vec3::new(0.0, h + CAPSULE_HALF_HEIGHT, z));
     }
     warn!("player start: no spot with {HEADROOM} m of headroom within 12 m of (0, 4); kept");
-    base
+    Err(base)
 }
 
 /// Puts Wolf on [`player_start`] once the terrain is loaded (player.rs spawns him at the plain
@@ -222,6 +233,7 @@ fn settle_player_start(mut wolf: Query<&mut Transform, With<crate::player::Playe
     let start = player_start();
     for mut tf in &mut wolf {
         if tf.translation.distance(start) > 1e-3 {
+            info!("player start: Wolf {} -> {start}", tf.translation);
             tf.translation = start;
         }
     }
@@ -558,13 +570,83 @@ pub struct MapExt {
     /// x: overlay uv set, y: snow uv set, z / w: snow up-facing smoothstep on N.y.
     #[uniform(111)]
     pub params: Vec4,
+    /// The game path (bin v5): the detail normal, the layer mask on uv1, the wet flow normal
+    /// (sampled with the base normal's sampler).
+    #[texture(120)]
+    pub detail: Option<Handle<Image>>,
+    #[texture(121)]
+    pub mask_l: Option<Handle<Image>>,
+    #[texture(122)]
+    pub wet: Option<Handle<Image>>,
+    #[uniform(123)]
+    pub game: MapGame,
 }
 
+/// The game path's uniform (map_material.wgsl `MapGame`): flags x = the textures it has
+/// (`GAME_*` bits), y = the kind (0 the first reading, 1 M[Multiple], 2 M[MultipleGround]),
+/// z = show the blend weights; `p` = the MTD constants as the exporter's `game_params` orders
+/// them.
+#[derive(bevy::render::render_resource::ShaderType, Reflect, Debug, Clone, Default)]
+pub struct MapGame {
+    pub flags: UVec4,
+    pub p: [Vec4; 16],
+}
+
+/// The game path's vertex data (bin v5): b2 tint rgb + b3 wet, and the uv scale.
+pub(crate) const ATTR_MAP_BLEND2: bevy::mesh::MeshVertexAttribute = bevy::mesh::MeshVertexAttribute::new("MapBlend2", 0x5ec1_0a01, bevy::render::render_resource::VertexFormat::Float32x4);
+pub(crate) const ATTR_MAP_UV_SCALE: bevy::mesh::MeshVertexAttribute = bevy::mesh::MeshVertexAttribute::new("MapUvScale", 0x5ec1_0a02, bevy::render::render_resource::VertexFormat::Float32);
+
 impl bevy::pbr::MaterialExtension for MapExt {
+    fn vertex_shader() -> bevy::shader::ShaderRef {
+        "embedded://sv1/map_material.wgsl".into()
+    }
     fn fragment_shader() -> bevy::shader::ShaderRef {
         "embedded://sv1/map_material.wgsl".into()
     }
+    /// The main pass reads the game path's two extra attributes when the mesh has them
+    /// (MAP_GAME_ATTRS); the prepass keeps Bevy's own layout.
+    fn specialize(
+        _pipeline: &bevy::pbr::MaterialExtensionPipeline,
+        descriptor: &mut bevy::render::render_resource::RenderPipelineDescriptor,
+        layout: &bevy::mesh::MeshVertexBufferLayoutRef,
+        _key: bevy::pbr::MaterialExtensionKey<Self>,
+    ) -> Result<(), bevy::render::render_resource::SpecializedMeshPipelineError> {
+        use bevy::shader::ShaderDefVal;
+        let prepass = descriptor.vertex.shader_defs.iter().any(|d| matches!(d, ShaderDefVal::Bool(n, true) if n == "PREPASS_PIPELINE"));
+        let l = &layout.0;
+        if prepass || !l.contains(ATTR_MAP_BLEND2) || !l.contains(ATTR_MAP_UV_SCALE) {
+            return Ok(());
+        }
+        let mut attrs = vec![Mesh::ATTRIBUTE_POSITION.at_shader_location(0), Mesh::ATTRIBUTE_NORMAL.at_shader_location(1)];
+        for (a, at) in [(Mesh::ATTRIBUTE_UV_0, 2), (Mesh::ATTRIBUTE_UV_1, 3), (Mesh::ATTRIBUTE_TANGENT, 4), (Mesh::ATTRIBUTE_COLOR, 5)] {
+            if l.contains(a.clone()) {
+                attrs.push(a.at_shader_location(at));
+            }
+        }
+        attrs.push(ATTR_MAP_BLEND2.at_shader_location(8));
+        attrs.push(ATTR_MAP_UV_SCALE.at_shader_location(9));
+        descriptor.vertex.buffers = vec![l.get_layout(&attrs)?];
+        descriptor.vertex.shader_defs.push("MAP_GAME_ATTRS".into());
+        if let Some(f) = descriptor.fragment.as_mut() {
+            f.shader_defs.push("MAP_GAME_ATTRS".into());
+        }
+        Ok(())
+    }
 }
+
+/// `MapGame.flags.x` bits: which game-path textures the material has.
+const GAME_NORMAL: u32 = 1;
+const GAME_OVER: u32 = 2;
+const GAME_OVER_N: u32 = 4;
+const GAME_SNOW: u32 = 8;
+const GAME_SNOW_N: u32 = 16;
+const GAME_L: u32 = 32;
+const GAME_L_N: u32 = 64;
+const GAME_MASK: u32 = 128;
+const GAME_DETAIL: u32 = 256;
+const GAME_MASK_L: u32 = 512;
+const GAME_WET: u32 = 1024;
+const GAME_ALBEDO: u32 = 2048;
 
 // ---------------------------------------------------------------------------------------------
 // Grapple points (docs/kb/grapple.md; the engine's "wire")
@@ -637,14 +719,15 @@ const WIRE_SOFTLOCK_WIDTH: f32 = 7.15;
 /// WireVariationParam: recognitionAngleUp/Down/Left/Right (degrees, the player's side of the
 /// point's reference direction), extendWireActionDistance (m, added to actionDistanceFar) and
 /// whether the point is ridden (targetMarkerType 0) or swung through (1). Rows 0/3/20/23/24
-/// are 90/90/180/180, 1/2/21/22 90 all round, 5 extend 10, 40 extend 30, 41 90/50/30/10
-/// extend 30; enemy rows 10700..70210 are the SpEffect's (never map points).
+/// are 90/90/180/180, 1/2/21/22 and 5 (extend 10) 90 all round, 40 90/90/180/180 extend 30
+/// (swung through: targetMarkerType 1), 41 90/50/30/10 extend 30; enemy rows 10700..70210 are
+/// the SpEffect's (never map points).
 fn wire_variation(row: i64) -> ([f32; 4], f32, bool) {
     match row {
         1 | 2 | 21 | 22 => ([90.0, 90.0, 90.0, 90.0], 0.0, row < 20),
-        5 => ([90.0, 90.0, 180.0, 180.0], 10.0, true),
+        5 => ([90.0, 90.0, 90.0, 90.0], 10.0, true),
         20 | 23 | 24 => ([90.0, 90.0, 180.0, 180.0], 0.0, false),
-        40 => ([90.0, 90.0, 180.0, 180.0], 30.0, true),
+        40 => ([90.0, 90.0, 180.0, 180.0], 30.0, false),
         41 => ([90.0, 50.0, 30.0, 10.0], 30.0, false),
         // gap: rows 45 (homing +53105) and the enemy rows: taken as row 0.
         _ => ([90.0, 90.0, 180.0, 180.0], 0.0, true),
@@ -807,9 +890,27 @@ pub struct MapLighting {
     /// The reverb of the arena's floor collision (MSB SoundSpaceType, json "sound_space_type"):
     /// 0 none .. 8, fmod.rs apply_reverb.
     pub sound_space: u8,
+    /// The game map the arena comes from (json "map", e.g. "m11_01_00_00"; empty on older
+    /// exports): picks the area battle music (area_music.rs).
+    pub source_map: String,
+    /// The export origin in the source map's MSB space (json "origin"; none on generated maps).
+    pub map_origin: Option<Vec3>,
+}
+
+/// An arena (Bevy) point back in the source map's MSB space: X un-mirrored, turned back by
+/// arena_yaw, plus the export origin (the inverse of enemy.rs `msb_patrol`'s point).
+pub fn arena_to_map(origin: Vec3, arena_yaw: f32, p: Vec3) -> Vec3 {
+    let (s, c) = (-arena_yaw).sin_cos();
+    let (x, z) = (-p.x, p.z);
+    origin + Vec3::new(x * c + z * s, p.y, -x * s + z * c)
 }
 
 impl MapLighting {
+    /// `arena_to_map` for the loaded map (None on a generated one).
+    pub fn to_map(&self, p: Vec3) -> Option<Vec3> {
+        Some(arena_to_map(self.map_origin?, self.arena_yaw, p))
+    }
+
     /// A param's value for the light set at the hour, interpolated between the keyed times
     /// (wrapping at midnight); id 0 when the set has none (sekiro-rs gparam::Param::at).
     pub fn at(&self, group: &str, name: &str, id: i32) -> Option<Vec<f32>> {
@@ -823,6 +924,17 @@ impl MapLighting {
         let span = (b.0 - a.0).rem_euclid(24.0);
         let t = if span > 0.0 { (hour - a.0).rem_euclid(24.0) / span } else { 0.0 };
         Some(a.1.iter().zip(&b.1).map(|(x, y)| x + (y - x) * t).collect())
+    }
+
+    /// The fog's density per metre: VolumetricFog FixedDensity / GameScale (sekiro-rs
+    /// SHADER-INPUTS.md "GameScale", exe 39e7e0: the blended record's per-length densities are
+    /// divided by it, its lengths multiplied; castle noon 0.0015 / 2.5). Before, the raw value
+    /// (2.5x too dense at noon) with a hand-set floor. The fog itself (with its height term) is
+    /// height_fog.rs's pass, which packs the same way.
+    pub fn fog_density(&self, id: i32) -> f32 {
+        let fog = |name: &str| self.at("VolumetricFog", name, id).and_then(|v| v.first().copied());
+        let gs = fog("GameScale").unwrap_or(1.0).max(f32::MIN_POSITIVE);
+        (fog("FixedDensity").unwrap_or(0.0) / gs).max(0.0)
     }
 
     /// A param's value at the keyed time nearest the hour (for ids and switches, which must
@@ -852,13 +964,40 @@ impl MapLighting {
     }
 }
 
+/// A light or hemisphere colour: the exe's LightSet blend (sekiro-rs SHADER-INPUTS.md "Lights
+/// and ambient", function 310630) uploads `(r*r*W, g*g*W, b*b*W)`: gamma 2.0, W a plain
+/// linear multiplier (returned apart, the callers scale by it).
 fn colour(v: &[f32]) -> (Color, f32) {
-    let g = |i: usize| v.get(i).copied().unwrap_or(0.0).max(0.0);
+    let g = |i: usize| v.get(i).copied().unwrap_or(0.0).max(0.0).powi(2);
     (Color::linear_rgb(g(0), g(1), g(2)), v.get(3).copied().unwrap_or(1.0))
+}
+
+/// A fog colour: the exe's fog copy quantises the clamped RGB to bytes, then gamma 2.2 (sekiro-rs
+/// `fog_colour`, SHADER-INPUTS.md "Fog colours and extinction"); W returned apart.
+pub(crate) fn fog_colour(v: &[f32]) -> (Color, f32) {
+    let g = |i: usize| ((v.get(i).copied().unwrap_or(0.0).clamp(0.0, 1.0) * 255.0).round() / 255.0).powf(2.2);
+    (Color::linear_rgb(g(0), g(1), g(2)), v.get(3).copied().unwrap_or(1.0))
+}
+
+/// The exe's soft Adaption Min / Max limit (sekiro-rs SHADER-INPUTS.md, function 24d920): the
+/// adaptation `x` EV approaches +max / -|min| instead of clamping.
+fn soft_adapt(x: f32, min: f32, max: f32) -> f32 {
+    if x > 0.0 && max > 0.0 {
+        max * (1.0 - (-x / max).exp())
+    } else if x < 0.0 && min.abs() > 0.0 {
+        min.abs() * ((x / min.abs()).exp() - 1.0)
+    } else {
+        0.0
+    }
 }
 
 /// Direction toward a light from a (pitch, yaw) map-space angle: turned into the arena like
 /// the pieces (`arena_yaw`), then into Bevy space (X mirrored); always from above.
+/// Toward the light set's sun (Angle0) in the arena at the map's hour (the sky's lobe).
+pub(crate) fn sun_toward(l: &MapLighting) -> Vec3 {
+    toward(&l.at("LightSet", "Angle0", l.light_set).unwrap_or_default(), l.arena_yaw)
+}
+
 fn toward(angle: &[f32], arena_yaw: f32) -> Vec3 {
     let (pitch, yaw) = (angle.first().copied().unwrap_or(-0.8), angle.get(1).copied().unwrap_or(0.0));
     let v = Quat::from_rotation_y(arena_yaw) * Quat::from_rotation_y(yaw) * Quat::from_rotation_x(pitch) * Vec3::Z;
@@ -964,14 +1103,32 @@ fn f32_to_half(v: f32) -> u16 {
 }
 
 /// Yebis auto exposure (ToneMap group) as Bevy's: the game meters the scene's average
-/// luminance and exposes it toward "Middle Gray" (log2 target), the adaptation clamped to
-/// [Adaption Min, Adaption Max] EV (at noon +-0.01: a fixed exposure; at night up to +8),
-/// plus "Exposure" EV. Bevy's compensation curve gives the target exposure per average log
-/// luminance L: `base + Exposure + clamp(MiddleGray + METER - L, min, max)`. `METER` shifts
+/// luminance and exposes it toward "Middle Gray" (log2 target), the adaptation soft-limited to
+/// [Adaption Min, Adaption Max] EV (`soft_adapt`; at noon +-0.01: a fixed exposure; at night
+/// up to +8), plus "Exposure" EV. Bevy's compensation curve gives the target exposure per
+/// average log luminance L: `base + Exposure - soft_adapt(L - MiddleGray - METER, min, max)`. `METER` shifts
 /// the game's luminance units onto this renderer's buffer (LUX_PER_UNIT, Bevy's Exposure) and
 /// `base` cancels the 18 h Exposure so that hour keeps the look judged against the game; both
 /// by eye (`SHINOBI_MAP_METER`, `SHINOBI_MAP_EV` add to them). `SHINOBI_MAP_NO_AE=1` turns it off.
-fn auto_exposure(lighting: &MapLighting, curves: &mut Assets<AutoExposureCompensationCurve>) -> Option<AutoExposure> {
+/// The game's metering weight at screen `uv` (sekiro-rs docs/SHADERS.md "Metering and
+/// adaptation", ToneMap_ColorToLuminancePS): `1 - (1 - 2^-r)^3`, `r = |2 (uv - 0.5) * (cw,
+/// cw * h / w)|` with g_AdaptCenterWeight = (CenterWeight, CenterWeight * viewH / viewW).
+pub(crate) fn centre_weight(uv: Vec2, cw: f32, h_over_w: f32) -> f32 {
+    let r = (2.0 * (uv - Vec2::splat(0.5)) * Vec2::new(cw, cw * h_over_w)).length();
+    1.0 - (1.0 - (-r).exp2()).powi(3)
+}
+
+/// Bevy's exposure speed (EV / s) that, with `exponential_transition_distance` = `span` (the
+/// whole range, so the linear cap never binds), moves the exposure as the game's adaptation:
+/// `adapted += (target - old) * (1 - 10^(-dt * speed))` (ToneMap_AdaptedLuminancePS, g_AdaptParam
+/// = (MiddleGray, dt * LightAdapt, dt * DarkAdapt), exe 2508b0). Bevy steps `delta * speed * dt
+/// / span`; equal to the game's to first order in dt. gap: the unit of the exe's dt (presumed
+/// seconds) and its reset frame (4.0: instant) are not modelled.
+pub(crate) fn adapt_speed(game_speed: f32, span: f32) -> f32 {
+    std::f32::consts::LN_10 * game_speed * span
+}
+
+fn auto_exposure(lighting: &MapLighting, curves: &mut Assets<AutoExposureCompensationCurve>, images: &mut Assets<Image>, h_over_w: f32) -> Option<AutoExposure> {
     if std::env::var("SHINOBI_MAP_NO_AE").is_ok() {
         return None;
     }
@@ -982,17 +1139,13 @@ fn auto_exposure(lighting: &MapLighting, curves: &mut Assets<AutoExposureCompens
     let knob = |k: &str| std::env::var(k).ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(0.0);
     let middle_gray = tone("Middle Gray").unwrap_or(-6.6);
     let exposure = tone("ToneMap-Exposure").unwrap_or(0.8);
-    // Adaption Max is 8 at night: read as +8 EV it washed the 0 h gate out white, so the
-    // brightening is capped at ADAPT_CAP_EV until the night look is judged (kb/map.md open).
-    let (ad_min, ad_max) = (tone("Adaption Min").unwrap_or(-0.5), tone("Adaption Max").unwrap_or(1.0).min(ADAPT_CAP_EV));
+    let (ad_min, ad_max) = (tone("Adaption Min").unwrap_or(-0.5), tone("Adaption Max").unwrap_or(1.0));
     let meter = METER_EV + knob("SHINOBI_MAP_METER");
     let base = BASE_EV + knob("SHINOBI_MAP_EV");
     let (lo, hi) = (-10.0f32, 6.0f32);
-    let target = |l: f32| base + exposure + (middle_gray + meter - l).clamp(ad_min.min(ad_max), ad_max.max(ad_min));
-    // Compensation c(L) = target(L) + L: slope 1 below the adaptation range, flat inside, 1 above.
-    let mut xs = vec![lo, (middle_gray + meter - ad_max).clamp(lo, hi), (middle_gray + meter - ad_min).clamp(lo, hi), hi];
-    xs.sort_by(|a, b| a.total_cmp(b));
-    xs.dedup_by(|a, b| (*a - *b).abs() < 1e-4);
+    let target = |l: f32| base + exposure - soft_adapt(l - middle_gray - meter, ad_min.min(ad_max), ad_max.max(ad_min));
+    // Compensation c(L) = target(L) + L, sampled every half EV (the soft limit is a curve).
+    let xs: Vec<f32> = (0..=((hi - lo) * 2.0) as i32).map(|i| lo + i as f32 * 0.5).collect();
     // Snapped to 1/64 EV: Bevy rejects the spline when a segment's end sample (a + (b - a) * 1)
     // is not bit-exactly the next point, which inexact fractions like 0.2 trip; sixty-fourths
     // below 16 add exactly in f32.
@@ -1005,9 +1158,78 @@ fn auto_exposure(lighting: &MapLighting, curves: &mut Assets<AutoExposureCompens
             return None;
         }
     };
-    info!("map auto exposure: middle grey {middle_gray} exposure {exposure} adaption {ad_min}..{ad_max} (meter {meter}, base {base})");
-    Some(AutoExposure { range: lo..=hi, compensation_curve: curves.add(curve), ..default() })
+    // Speeds and centre weight: the authored ones, else the exe's constructor defaults (24db30:
+    // LightAdapt 1, DarkAdapt 0.5, CenterWeight 4; the castle's draw params author none).
+    let light_adapt = tone("LightAdapt").or_else(|| tone("Light Adapt")).unwrap_or(1.0);
+    let dark_adapt = tone("DarkAdapt").or_else(|| tone("Dark Adapt")).unwrap_or(0.5);
+    let cw = tone("Center Weight").or_else(|| tone("CenterWeight")).unwrap_or(4.0);
+    const MASK: u32 = 64;
+    let mask: Vec<u8> = (0..MASK * MASK)
+        .flat_map(|i| {
+            let uv = (Vec2::new((i % MASK) as f32, (i / MASK) as f32) + 0.5) / MASK as f32;
+            let w = (centre_weight(uv, cw, h_over_w) * 255.0).round() as u8;
+            [w, w, w, 255]
+        })
+        .collect();
+    let mask = images.add(Image::new(
+        bevy::render::render_resource::Extent3d { width: MASK, height: MASK, depth_or_array_layers: 1 },
+        bevy::render::render_resource::TextureDimension::D2,
+        mask,
+        bevy::render::render_resource::TextureFormat::Rgba8Unorm,
+        bevy::asset::RenderAssetUsages::RENDER_WORLD,
+    ));
+    info!("map auto exposure: middle grey {middle_gray} exposure {exposure} adaption {ad_min}..{ad_max} (meter {meter}, base {base}), adapt {light_adapt} / {dark_adapt}, centre weight {cw}");
+    Some(AutoExposure {
+        range: lo..=hi,
+        // The game averages every (weighted) sample's log luminance: no percentile cut.
+        filter: 0.0..=1.0,
+        speed_brighten: adapt_speed(light_adapt, hi - lo),
+        speed_darken: adapt_speed(dark_adapt, hi - lo),
+        exponential_transition_distance: hi - lo,
+        metering_mask: mask,
+        compensation_curve: curves.add(curve),
+    })
 }
+
+/// The draw params' bloom (Bloom[Yebis]) as Bevy's: the exe's composite (sekiro-rs
+/// SHADER-INPUTS.md "Bloom and glare", function 2508b0) weighs blur level i by
+/// `G * Alpha * Luminance * Smooth^i / sum_{j<NumLevels} Smooth^j` (G, a global scale, 1), its
+/// bright pass is a hard knee on luminance at the raw Glare Threshold (SHADERS.md). Bevy's
+/// additive upsampling weighs level i by `b(0) * b(1) * .. * b(i)`, so b(0) = that level-0 weight
+/// and b(m >= 1) = Smooth: intensity = the level-0 weight, low_frequency_boost = Smooth - it,
+/// and a curvature near 1 that makes the boost a step at mip 1. NumLevels mips (Bevy's count is
+/// log2(max_mip_dimension) - 1). None with the bloom off (Enable 0).
+/// gap: the threshold is against the exe's exposure-scaled luminance, Bevy's prefilter sees the
+/// buffer before auto exposure; the seven-tap Gaussian (GaussianRadiusScale), the level-0
+/// resolution, Saturate Ctrl, the temporal FeedbackWeight and the renderer quality scale on
+/// Luminance are not modelled; the 3-level composite shader's fixed 1 / 0.5 / 0.25 weights
+/// leave open whether Smooth is the level ratio in every variant.
+pub(crate) fn map_bloom(l: &MapLighting, id: i32) -> Option<bevy::post_process::bloom::Bloom> {
+    use bevy::post_process::bloom::{Bloom, BloomCompositeMode, BloomPrefilter};
+    let at = |name: &str| l.at("Bloom", name, id).and_then(|v| v.first().copied());
+    let near = |name: &str| l.nearest("Bloom", name, id).and_then(|v| v.first().copied());
+    if near("Enable").is_some_and(|e| e < 0.5) {
+        return None;
+    }
+    let levels = near("GlareNumLevels").unwrap_or(7.0).round().clamp(2.0, 12.0) as i32;
+    let smooth = at("GlareBloom Smooth").unwrap_or(0.8).clamp(0.0, 1.0);
+    let sum: f32 = (0..levels).map(|i| smooth.powi(i)).sum();
+    let level0 = (at("GlareBloom Alpha").unwrap_or(0.0) * at("Glare Luminance").unwrap_or(1.0)).max(0.0) / sum.max(f32::MIN_POSITIVE);
+    Some(Bloom {
+        intensity: level0,
+        low_frequency_boost: smooth - level0,
+        low_frequency_boost_curvature: 0.9999,
+        high_pass_frequency: 1.0,
+        prefilter: BloomPrefilter { threshold: at("Glare Threshold").unwrap_or(0.0).max(0.0), threshold_softness: 0.0 },
+        composite_mode: BloomCompositeMode::Additive,
+        max_mip_dimension: 1 << (levels + 1),
+        ..Bloom::OLD_SCHOOL
+    })
+}
+
+/// A camera `apply_lighting` has dressed.
+#[derive(Component)]
+struct Lit;
 
 fn apply_lighting(
     mut lighting: ResMut<MapLighting>,
@@ -1017,10 +1239,11 @@ fn apply_lighting(
     mut fill: Query<(&mut DirectionalLight, &mut Transform), (With<FillLight>, Without<Sun>)>,
     mut commands: Commands,
     cameras: Query<Entity, With<Camera3d>>,
-    new_cameras: Query<Entity, (With<Camera3d>, Without<DistanceFog>)>,
+    new_cameras: Query<Entity, (With<Camera3d>, Without<Lit>)>,
     assets: Res<AssetServer>,
     mut curves: ResMut<Assets<AutoExposureCompensationCurve>>,
     mut images: ResMut<Assets<Image>>,
+    window: Query<&Window, With<bevy::window::PrimaryWindow>>,
 ) {
     // Once at start, again for a camera that has none of it yet, and whenever `applied` is
     // cleared (the hour keys).
@@ -1034,11 +1257,10 @@ fn apply_lighting(
     let (fill_color, fill_w) = colour(&get("DiffColor1").unwrap_or(vec![0.5, 0.6, 0.7, 0.2]));
     let (up, up_w) = colour(&get("Hemi Color Up").unwrap_or(vec![0.6, 0.7, 0.8, 0.5]));
     let (down, down_w) = colour(&get("Hemi Color Down").unwrap_or(vec![0.4, 0.4, 0.4, 0.2]));
-    let (sky, _) = colour(&fog("SkyColor").unwrap_or(vec![0.5, 0.55, 0.65, 1.0]));
-    let (fog_sun, fog_sun_w) = colour(&fog("DirectColor").unwrap_or(vec![1.0, 0.8, 0.6, 1.0]));
+    let (sky, _) = fog_colour(&fog("SkyColor").unwrap_or(vec![0.5, 0.55, 0.65, 1.0]));
     let (ul, dl) = (up.to_linear(), down.to_linear());
     let amb = Color::linear_rgb((ul.red * up_w + dl.red * down_w) * 0.5, (ul.green * up_w + dl.green * down_w) * 0.5, (ul.blue * up_w + dl.blue * down_w) * 0.5);
-    let density = fog("FixedDensity").and_then(|v| v.first().copied()).unwrap_or(0.002).max(0.0003);
+    let density = lighting.fog_density(id);
     let scale = std::env::var("SHINOBI_MAP_LUX").ok().and_then(|v| v.parse().ok()).unwrap_or(1.0);
     for (mut l, mut t) in &mut sun {
         l.color = sun_color;
@@ -1063,14 +1285,28 @@ fn apply_lighting(
     ambient.color = amb;
     ambient.brightness = if lighting.env.is_empty() { AMBIENT_PER_UNIT * scale } else { 0.0 };
     clear.0 = sky;
+    // The game's fog (height_fog.rs) in place of Bevy's DistanceFog, its colours on the probes'
+    // radiance scale; `SHINOBI_MAP_NO_FOG=1` none.
+    let bloom = map_bloom(&lighting, id);
+    let game_fog = std::env::var("SHINOBI_MAP_NO_FOG")
+        .is_err()
+        .then(|| crate::height_fog::GameFog::from_lighting(&lighting, id, toward(&get("Angle0").unwrap_or_default(), lighting.arena_yaw), ENV_PER_UNIT * scale))
+        .flatten();
     for e in &cameras {
         let mut c = commands.entity(e);
-        c.insert(DistanceFog {
-            color: sky,
-            directional_light_color: fog_sun.with_alpha((fog_sun_w * 0.4).clamp(0.0, 1.0)),
-            directional_light_exponent: 16.0,
-            falloff: FogFalloff::Exponential { density },
-        });
+        c.insert(Lit);
+        match &game_fog {
+            Some(f) => c.insert(f.clone()),
+            None => c.remove::<crate::height_fog::GameFog>(),
+        };
+        // The map's bloom in place of the camera's default (camera.rs); `SHINOBI_MAP_BLOOM=camera`
+        // keeps that one.
+        if std::env::var("SHINOBI_MAP_BLOOM").as_deref() != Ok("camera") {
+            match &bloom {
+                Some(b) => c.insert(b.clone()),
+                None => c.remove::<bevy::post_process::bloom::Bloom>(),
+            };
+        }
         if let Some((_, specular, diffuse)) = &probe {
             c.insert((
                 EnvironmentMapLight { diffuse_map: diffuse.clone(), specular_map: specular.clone(), intensity: ENV_PER_UNIT * scale * env_scale, ..default() },
@@ -1079,13 +1315,21 @@ fn apply_lighting(
         }
         if let Some(n) = lut {
             c.insert(ColorGradingLut(assets.load_builder().with_settings(|s: &mut ImageLoaderSettings| s.is_srgb = false).load(format!("{}_lut_{n:04}.dds", lighting.stem))));
+            // The game's tone curve in the grading pass instead of Bevy's (grading.rs);
+            // `SHINOBI_MAP_TONEMAP=bevy` keeps Bevy's for comparison.
+            if std::env::var("SHINOBI_MAP_TONEMAP").as_deref() != Ok("bevy") {
+                c.insert((GameToneCurve { contrast: FILMIC_CONTRAST }, bevy::core_pipeline::tonemapping::Tonemapping::None));
+            }
         }
-        if let Some(exposure) = auto_exposure(&lighting, &mut curves) {
+        let h_over_w = window.iter().next().map_or(9.0 / 16.0, |w| w.height() / w.width().max(1.0));
+        if let Some(exposure) = auto_exposure(&lighting, &mut curves, &mut images, h_over_w) {
             c.insert(exposure);
         }
     }
     if !lighting.applied {
         info!("map light set {id} at {:.1} h: sun {:?} x{sun_w}, fill x{fill_w}, sky {:?}, fog {density}, probe {:?}, lut {lut:?}", lighting.hour, sun_color, sky, probe.as_ref().map(|p| &p.0));
+        info!("map fog: {game_fog:?}");
+        info!("map bloom: {:?}", bloom.as_ref().map(|b| (b.intensity, b.low_frequency_boost, b.prefilter.threshold, b.max_mip_dimension)));
     }
     lighting.applied = true;
 }
@@ -1154,7 +1398,40 @@ pub fn loaded_map() -> Option<String> {
 
 fn load_map(config: Res<GameConfig>, mut commands: Commands, assets: Res<AssetServer>, mut meshes: ResMut<Assets<Mesh>>, mut materials: ResMut<Assets<MapMaterial>>) {
     let Some(map) = map_id(&config) else { return };
-    load_map_id(&map, &config, &mut commands, &assets, &mut meshes, &mut materials);
+    load_map_id(&map, &config, fight_row(&config.enemy.chr, config.enemy.npc_row), &mut commands, &assets, &mut meshes, &mut materials);
+}
+
+/// The castle top's lighting per fight, from m11_01_00_00.emevd (tools/boss_events.py
+/// emevd_events; the survey is in kb/map.md "Castle top lighting"): (arena, boss NpcParam row)
+/// -> (draw param variant `m11_01_<v>.gparam`, hour of its keys).
+/// - Genichiro 11115800: Set Area Gparam Sub ID 0 + Set Lighting time of day 1 (the base file;
+///   the real fight is flat grey daylight, which is the 12 h key of light set 100: the cool,
+///   weak, high sun; the 6 h key is a warm low sun. gap: the exe's time-of-day -> hour table).
+/// - After him 11115820: sub 10 + time of day 3 (dusk); the Owl 11115860 sub 50, Emma 11115910
+///   and Isshin Ashina (m11_01_54_10 11115200) sub 40: `_0750` / `_0740` differ from the base
+///   only at the 18 h key (sun colour and angle: the Owl's golden haze, Isshin's fiery sunset).
+///   Isshin Ashina's time of day 4 (11115930) comes after his death.
+/// `SHINOBI_HOUR` and `[` / `]` still override the hour; other fights keep the config's.
+const FIGHT_LIGHTING: [(&str, i64, &str, f32); 5] = [
+    ("boss_71001000", 71001000, "0000", 12.0),
+    ("boss_71001000", 50600000, "0750", 18.0),
+    ("boss_71001000", 74000010, "0740", 18.0),
+    ("boss_71001000", 54300000, "0740", 18.0),
+    ("boss_71001000", 71100000, "0000", 12.0),
+];
+
+fn fight_lighting(map: &str, row: Option<i64>) -> Option<(&'static str, f32)> {
+    let row = row?;
+    FIGHT_LIGHTING.iter().find(|f| f.0 == map && f.1 == row).map(|f| (f.2, f.3))
+}
+
+/// The fight's boss row: config enemy.npc_row, else the chr's roster row (enemy.rs set_fight
+/// resolves it the same way; this runs before it at startup).
+fn fight_row(chr: &str, npc_row: Option<i64>) -> Option<i64> {
+    npc_row.or_else(|| {
+        let text = std::fs::read_to_string(crate::paths::extracted().join(format!("enemies/{chr}.json"))).ok()?;
+        serde_json::from_str::<serde_json::Value>(&text).ok()?["roster"]["npc"].as_i64()
+    })
 }
 
 /// An encounter swap (enemy.rs SpawnEncounter, the picker) moves the fight to the new boss's
@@ -1186,7 +1463,7 @@ fn switch_map(
     }
     Terrain::clear();
     info!("map switch: {:?} -> {want} for {} {:?}", loaded_map(), m.chr, m.npc_row);
-    load_map_id(&want, &config, &mut commands, &assets, &mut meshes, &mut materials);
+    load_map_id(&want, &config, fight_row(&m.chr, m.npc_row), &mut commands, &assets, &mut meshes, &mut materials);
     // The fight's row before the start search: `on_own_arena` must see the new boss, not the
     // old one, in a frame where enemy.rs reads the message after this (Bosses' request).
     crate::enemy::set_fight(&m.chr, m.npc_row);
@@ -1196,7 +1473,7 @@ fn switch_map(
     }
 }
 
-fn load_map_id(map: &str, config: &GameConfig, commands: &mut Commands, assets: &AssetServer, meshes: &mut Assets<Mesh>, materials: &mut Assets<MapMaterial>) {
+fn load_map_id(map: &str, config: &GameConfig, fight: Option<i64>, commands: &mut Commands, assets: &AssetServer, meshes: &mut Assets<Mesh>, materials: &mut Assets<MapMaterial>) {
     let map = map.to_string();
     if let Ok(mut l) = LOADED_MAP.write() {
         *l = Some(map.clone());
@@ -1217,9 +1494,21 @@ fn load_map_id(map: &str, config: &GameConfig, commands: &mut Commands, assets: 
             None => warn!("map {id}: no map_{id}.hit (run `sekiro-extract map`)"),
         }
     }
-    // Draw params + light set.
+    // Draw params + light set; the fight's own variant and hour on the castle top.
     let json: serde_json::Value = std::fs::read_to_string(dir.join(format!("map_{id}.json"))).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
-    let hour = std::env::var("SHINOBI_HOUR").ok().and_then(|v| v.parse().ok()).unwrap_or(config.world.hour);
+    let fight = fight_lighting(&id, fight);
+    let drawparam = match fight {
+        Some(("0000", _)) | None => json["drawparam"].clone(),
+        Some((v, _)) if !json["drawparam_variants"][v].is_null() => json["drawparam_variants"][v].clone(),
+        Some((v, _)) => {
+            warn!("map {id}: no draw param variant {v} in map_{id}.json (re-run tools/boss_arenas.py -force)");
+            json["drawparam"].clone()
+        }
+    };
+    let hour = std::env::var("SHINOBI_HOUR").ok().and_then(|v| v.parse().ok()).or(fight.map(|f| f.1)).unwrap_or(config.world.hour);
+    if let Some((v, h)) = fight {
+        info!("map {id}: fight lighting: draw params _{v} at {h} h");
+    }
     let env: Vec<(f32, String)> = json["env_hours"]
         .as_array()
         .map(|hs| {
@@ -1236,7 +1525,7 @@ fn load_map_id(map: &str, config: &GameConfig, commands: &mut Commands, assets: 
         info!("map {id}: probe cube maps off (SHINOBI_MAP_NO_ENV)");
     }
     commands.insert_resource(MapLighting {
-        drawparam: json["drawparam"].clone(),
+        drawparam,
         light_set: std::env::var("SHINOBI_LIGHT_SET").ok().and_then(|v| v.parse().ok()).unwrap_or(json["light_set"].as_i64().unwrap_or(0) as i32),
         hour,
         applied: false,
@@ -1245,6 +1534,8 @@ fn load_map_id(map: &str, config: &GameConfig, commands: &mut Commands, assets: 
         luts: json["luts"].as_array().map(|l| l.iter().filter_map(|n| n.as_u64().map(|n| n as u32)).filter(|n| dir.join(format!("map_{id}_lut_{n:04}.dds")).exists()).collect()).unwrap_or_default(),
         stem: format!("map_{id}"),
         sound_space: json["sound_space_type"].as_u64().unwrap_or(0).min(8) as u8,
+        source_map: json["map"].as_str().unwrap_or_default().to_string(),
+        map_origin: if sandbox { None } else { json["origin"].as_array().filter(|a| a.len() == 3).map(|a| Vec3::from_array(std::array::from_fn(|i| a[i].as_f64().unwrap_or(0.0) as f32))) },
     });
     // Wire points (grapple.md). The sandbox arena is generated: its source map's points would
     // hang in the air, so it has none.
@@ -1306,6 +1597,7 @@ fn load_map_id(map: &str, config: &GameConfig, commands: &mut Commands, assets: 
         }
         if options.no_layers {
             key.0[2..].iter_mut().for_each(|l| l.clear());
+            key.3 = GameKey::default();
         }
         if let Some(t) = &tex_override {
             if !key.0[0].is_empty() {
@@ -1316,8 +1608,13 @@ fn load_map_id(map: &str, config: &GameConfig, commands: &mut Commands, assets: 
         let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::RENDER_WORLD);
         let (pos, nrm, uv, uv2, blend) = b.vertices();
         let indices = b.indices();
-        if !key.0[1].is_empty() && !options.no_normals {
+        if (!key.0[1].is_empty() || key.3.kind > 0) && !options.no_normals {
             mesh.insert_attribute(Mesh::ATTRIBUTE_TANGENT, tangents(&pos, &nrm, &uv, &indices));
+        }
+        if key.3.kind > 0 {
+            let (blend2, uv_scale) = b.game_vertices();
+            mesh.insert_attribute(ATTR_MAP_BLEND2, blend2);
+            mesh.insert_attribute(ATTR_MAP_UV_SCALE, uv_scale);
         }
         mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, pos);
         mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, nrm);
@@ -1364,14 +1661,24 @@ fn load_map_id(map: &str, config: &GameConfig, commands: &mut Commands, assets: 
 // The SHMP bin and its materials (shared with the sandbox)
 
 /// A material of the bin: the nine texture stems (base albedo / normal, overlay albedo /
-/// normal, snow albedo / normal, layer C albedo / normal, mask), the alpha mode and two-sided.
+/// normal, snow albedo / normal, layer C (game path: L) albedo / normal, mask), the alpha mode,
+/// two-sided, and the game path (bin v5).
 #[derive(Clone, PartialEq, Eq, Hash, Debug, Default)]
-pub(crate) struct MaterialKey(pub [String; 9], pub u8, pub bool);
+pub(crate) struct MaterialKey(pub [String; 9], pub u8, pub bool, pub GameKey);
+
+/// The game path of a material (bin v5; kind 0 = none): M[Multiple] (1) / M[MultipleGround]
+/// (2), the detail normal / layer mask / wet normal stems and the 64 MTD constants (f32 bits).
+#[derive(Clone, PartialEq, Eq, Hash, Debug, Default)]
+pub(crate) struct GameKey {
+    pub kind: u8,
+    pub extra: [String; 3],
+    pub params: Vec<u32>,
+}
 
 impl MaterialKey {
     /// Has a layer beyond the base (needs the blend bytes and the second UV set).
     pub(crate) fn layered(&self) -> bool {
-        !self.0[2].is_empty() || !self.0[4].is_empty() || !self.0[6].is_empty()
+        !self.0[2].is_empty() || !self.0[4].is_empty() || !self.0[6].is_empty() || self.3.kind > 0
     }
 }
 
@@ -1382,6 +1689,7 @@ pub(crate) struct BinBatch<'a> {
     albedo: String,
     normal: String,
     layers: [String; 7],
+    game: GameKey,
     pub alpha: u8,
     pub two_sided: bool,
     pub casts: bool,
@@ -1394,7 +1702,7 @@ pub(crate) struct BinBatch<'a> {
 impl BinBatch<'_> {
     pub(crate) fn key(&self) -> MaterialKey {
         let l = &self.layers;
-        MaterialKey([self.albedo.clone(), self.normal.clone(), l[0].clone(), l[1].clone(), l[2].clone(), l[3].clone(), l[4].clone(), l[5].clone(), l[6].clone()], self.alpha, self.two_sided)
+        MaterialKey([self.albedo.clone(), self.normal.clone(), l[0].clone(), l[1].clone(), l[2].clone(), l[3].clone(), l[4].clone(), l[5].clone(), l[6].clone()], self.alpha, self.two_sided, self.game.clone())
     }
 
     /// Positions, normals (X mirrored into Bevy space), the two UV sets and the blend bytes
@@ -1404,7 +1712,7 @@ impl BinBatch<'_> {
         let d = self.d;
         let f = |o: usize| f32::from_le_bytes(d[o..o + 4].try_into().unwrap());
         let vc = self.vertex_count;
-        let stride = if self.version >= 3 { 44 } else { 32 };
+        let stride = vertex_stride(self.version);
         let mut pos = Vec::with_capacity(vc);
         let mut nrm = Vec::with_capacity(vc);
         let mut uv = Vec::with_capacity(vc);
@@ -1421,6 +1729,23 @@ impl BinBatch<'_> {
             }
         }
         (pos, nrm, uv, uv2, blend)
+    }
+
+    /// The game path's extra vertex data (bin v5): (b2 tint rgb, b3 wet) and the uv scale;
+    /// empty for older bins.
+    pub(crate) fn game_vertices(&self) -> (Vec<[f32; 4]>, Vec<f32>) {
+        if self.version < 5 {
+            return (Vec::new(), Vec::new());
+        }
+        let d = self.d;
+        let stride = vertex_stride(self.version);
+        (0..self.vertex_count)
+            .map(|i| {
+                let v = self.vertices_at + i * stride;
+                let b = |k: usize| d[v + 44 + k] as f32 / 255.0;
+                ([b(0), b(1), b(2), b(3)], f32::from_le_bytes(d[v + 48..v + 52].try_into().unwrap()))
+            })
+            .unzip()
     }
 
     /// The triangle list as exported. FLVER triangles are DirectX clockwise; mirroring X
@@ -1441,9 +1766,18 @@ impl BinBatch<'_> {
     }
 }
 
-/// Walks the batches of a SHMP bin (versions 1-4; kb/map.md "Bin"); None when it is no SHMP.
+/// Bytes per vertex of a bin version.
+fn vertex_stride(version: u32) -> usize {
+    match version {
+        0..=2 => 32,
+        3 | 4 => 44,
+        _ => 52,
+    }
+}
+
+/// Walks the batches of a SHMP bin (versions 1-5; kb/map.md "Bin"); None when it is no SHMP.
 /// Version 2 adds a shadow-caster byte per batch, 3 the layers and 44-byte vertices, 4 the
-/// mask.
+/// mask, 5 the game path (kind, three more stems, 64 constants; 52-byte vertices).
 pub(crate) fn walk_bin(d: &[u8], mut f: impl FnMut(BinBatch)) -> Option<()> {
     if d.len() < 12 || &d[0..4] != b"SHMP" {
         return None;
@@ -1470,6 +1804,16 @@ pub(crate) fn walk_bin(d: &[u8], mut f: impl FnMut(BinBatch)) -> Option<()> {
                 *l = string(&mut o)?;
             }
         }
+        let mut game = GameKey::default();
+        if version >= 5 {
+            game.kind = *d.get(o)?;
+            o += 1;
+            for e in game.extra.iter_mut() {
+                *e = string(&mut o)?;
+            }
+            game.params = (0..64).map(|k| u32_(o + k * 4)).collect::<Option<Vec<u32>>>()?;
+            o += 256;
+        }
         let alpha = *d.get(o)?;
         let two_sided = *d.get(o + 1)? != 0;
         o += 2;
@@ -1480,7 +1824,7 @@ pub(crate) fn walk_bin(d: &[u8], mut f: impl FnMut(BinBatch)) -> Option<()> {
         let vertex_count = u32_(o)? as usize;
         o += 4;
         let vertices_at = o;
-        o += vertex_count * if version >= 3 { 44 } else { 32 };
+        o += vertex_count * vertex_stride(version);
         let index_count = u32_(o)? as usize;
         o += 4;
         let indices_at = o;
@@ -1488,7 +1832,7 @@ pub(crate) fn walk_bin(d: &[u8], mut f: impl FnMut(BinBatch)) -> Option<()> {
         if o > d.len() {
             return None;
         }
-        f(BinBatch { d, version, albedo, normal, layers, alpha, two_sided, casts, vertex_count, vertices_at, index_count, indices_at });
+        f(BinBatch { d, version, albedo, normal, layers, game, alpha, two_sided, casts, vertex_count, vertices_at, index_count, indices_at });
     }
     Some(())
 }
@@ -1573,7 +1917,7 @@ impl MaterialCache {
         if let Some(h) = self.built.get(key) {
             return h.clone();
         }
-        let MaterialKey(names, alpha, two_sided) = key;
+        let MaterialKey(names, alpha, two_sided, game) = key;
         let [albedo, normal, over_a, over_n, snow_a, snow_n, c_a, c_n, mask_t] = names;
         let layered = key.layered();
         // Map textures tile (UVs run far outside 0..1); Bevy's default sampler clamps to the
@@ -1621,6 +1965,13 @@ impl MaterialCache {
         let smoke = *alpha == 3;
         let mask = ((layered || smoke) && !mask_t.is_empty() && have(mask_t)).then(|| tex(mask_t, false));
         let bits = |a: &Option<Handle<Image>>, n: &Option<Handle<Image>>| a.is_some() as u32 | ((n.is_some() as u32) << 1);
+        // The game path's own textures (bin v5).
+        let [detail_t, mask_l_t, wet_t] = &game.extra;
+        let on = game.kind > 0;
+        let detail = (on && !detail_t.is_empty() && !o.no_normals && have(detail_t)).then(|| tex(detail_t, false));
+        let mask_l = (on && !mask_l_t.is_empty() && have(mask_l_t)).then(|| tex(mask_l_t, false));
+        let wet = (on && !wet_t.is_empty() && !o.no_normals && have(wet_t)).then(|| tex(wet_t, false));
+        let albedo_ok = !albedo.is_empty() && have(albedo);
         let flags = UVec4::new(normal_h.is_some() as u32 | (bits(&c, &c_n) << 1), bits(&over, &over_n), bits(&snow, &snow_n), (!albedo.is_empty()) as u32 | o.w_flags);
         // Water surfaces (the Guardian Ape's pond and stream, the gate's river): no albedo, the
         // shared `m99_water_n` ripple normal, and the game's own water shader (reflection,
@@ -1651,7 +2002,34 @@ impl MaterialCache {
                 cull_mode: if *two_sided || o.two_sided { None } else { Some(bevy::render::render_resource::Face::Back) },
                 ..default()
             },
-            extension: MapExt { normal: normal_h, over_albedo: over, over_normal: over_n, snow_albedo: snow, snow_normal: snow_n, c_albedo: c, c_normal: c_n, mask_params: Vec4::new(mask.is_some() as u32 as f32, o.softness, smoke as u32 as f32, o.smoke_speed), mask, flags, params: Vec4::new(if smoke { o.smoke_tile } else { 0.0 }, 1.0, o.snow_up[0], o.snow_up[1]) },
+            extension: {
+                let game_flags = [
+                    (normal_h.is_some(), GAME_NORMAL),
+                    (over.is_some(), GAME_OVER),
+                    (over_n.is_some(), GAME_OVER_N),
+                    (snow.is_some(), GAME_SNOW),
+                    (snow_n.is_some(), GAME_SNOW_N),
+                    (c.is_some(), GAME_L),
+                    (c_n.is_some(), GAME_L_N),
+                    (mask.is_some(), GAME_MASK),
+                    (detail.is_some(), GAME_DETAIL),
+                    (mask_l.is_some(), GAME_MASK_L),
+                    (wet.is_some(), GAME_WET),
+                    (albedo_ok, GAME_ALBEDO),
+                ]
+                .iter()
+                .fold(0, |f, (has, bit)| if *has { f | bit } else { f });
+                let mut p = [Vec4::ZERO; 16];
+                if game.params.len() == 64 {
+                    for (k, v) in p.iter_mut().enumerate() {
+                        *v = Vec4::from_array(std::array::from_fn(|c| f32::from_bits(game.params[k * 4 + c])));
+                    }
+                    // The snow direction is in arena space; Bevy mirrors X on load.
+                    p[14].x = -p[14].x;
+                }
+                let game_u = MapGame { flags: UVec4::new(game_flags, game.kind as u32, (o.w_flags >> 1) & 1, 0), p };
+                MapExt { normal: normal_h, over_albedo: over, over_normal: over_n, snow_albedo: snow, snow_normal: snow_n, c_albedo: c, c_normal: c_n, mask_params: Vec4::new(mask.is_some() as u32 as f32, o.softness, smoke as u32 as f32, o.smoke_speed), mask, flags, params: Vec4::new(if smoke { o.smoke_tile } else { 0.0 }, 1.0, o.snow_up[0], o.snow_up[1]), detail, mask_l, wet, game: game_u }
+            },
         });
         self.built.insert(key.clone(), h.clone());
         h
@@ -1660,6 +2038,10 @@ impl MaterialCache {
 
 // ---------------------------------------------------------------------------------------------
 // Bodies on the map
+
+/// The longest step one fixed tick can take as a walk (2 m at 60 Hz is 120 m/s, past any dash
+/// or grapple pull); a longer one is a teleport and skips the wall slide.
+pub const TELEPORT: f32 = 2.0;
 
 /// Where the actor was before this tick's movement, for the wall slide.
 #[derive(Component)]
@@ -1680,7 +2062,12 @@ fn bodies_on_terrain(combat: Res<crate::data::Combat>, mut commands: Commands, m
         let prev = state.prev;
         let feet_prev = prev - Vec3::Y * CAPSULE_HALF_HEIGHT;
         let delta = Vec2::new(tf.translation.x - prev.x, tf.translation.z - prev.z);
-        if delta.length_squared() > 1e-10 {
+        // A move longer than TELEPORT in one tick is a warp (script / event warps, the parking
+        // spot, fight resets), not a walk: no slide along the line. The slide gathered every
+        // triangle in the whole move's box and ran 512 substeps, so a 110 m script warp on the
+        // Folding Screen Monkeys arena stalled one frame for about 33 s, then stopped at the
+        // first wall and undid the warp (the fight's "3 fps", 2026-10-12 bug hunt).
+        if delta.length_squared() > 1e-10 && delta.length_squared() <= TELEPORT * TELEPORT {
             let moved = t.slide(feet_prev, delta);
             tf.translation.x = prev.x + moved.x;
             tf.translation.z = prev.z + moved.y;
@@ -1730,8 +2117,8 @@ impl Plugin for MapPlugin {
             .add_systems(PostStartup, settle_player_start)
             .add_systems(Update, ((hour_keys, apply_lighting).chain().run_if(resource_exists::<MapLighting>), frame_rate_log, switch_map))
             .add_systems(Startup, crate::sandbox::spawn_enemies.after(load_map))
-            .add_systems(Update, (crate::sandbox::place_wolf, crate::sandbox::watch, mesh_events,crate::sandbox::catalog_shots.run_if(resource_exists::<crate::sandbox::Catalog>)))
-            .add_systems(FixedUpdate, bodies_on_terrain.after(ActorSet::Advance));
+            .add_systems(Update, (crate::sandbox::place_wolf, crate::sandbox::watch, mesh_events, crate::sandbox::respawn_lineup, crate::sandbox::catalog_shots.run_if(resource_exists::<crate::sandbox::Catalog>)))
+            .add_systems(FixedUpdate, bodies_on_terrain.after(ActorSet::Advance).before(crate::anim::PoseSet));
     }
 }
 
@@ -1788,6 +2175,133 @@ fn mesh_events(mut events: MessageReader<AssetEvent<Mesh>>, mut frame: Local<u32
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The metering weight is 1 at the centre and falls with the screen radius; the adaptation
+    /// speed reproduces the game's exponential rate.
+    #[test]
+    fn metering_follows_the_games_centre_weight_and_rate() {
+        assert!((centre_weight(Vec2::splat(0.5), 4.0, 9.0 / 16.0) - 1.0).abs() < 1e-6);
+        let edge = centre_weight(Vec2::new(1.0, 0.5), 4.0, 9.0 / 16.0);
+        assert!((edge - (1.0 - 0.9375f32.powi(3))).abs() < 1e-5, "{edge}");
+        assert!(centre_weight(Vec2::new(0.5, 1.0), 4.0, 9.0 / 16.0) > edge, "the short axis is weighted less steeply");
+        // One 1/60 s frame 3 EV off: Bevy's step (delta * speed * dt / span) vs the game's.
+        let (dt, span, delta) = (1.0 / 60.0, 16.0, 3.0);
+        let bevy = delta * adapt_speed(1.0, span) * dt / span;
+        let game = delta * (1.0 - 10f32.powf(-dt * 1.0));
+        assert!((bevy - game).abs() / game < 0.03, "{bevy} vs {game}");
+    }
+
+    /// The castle roof's bloom (Bloom[Yebis], id 0): at 18 h Alpha 0.3, Luminance 1, Smooth 0.8,
+    /// 7 levels, threshold 0. Bevy's additive chain must weigh level i as the exe's
+    /// Alpha * Smooth^i / sum Smooth^j: b(0) * b(1) * .. * b(i) with Bevy's own blend factor.
+    #[test]
+    fn the_bloom_weighs_its_levels_like_the_games() {
+        let Ok(text) = std::fs::read_to_string(crate::paths::extracted().join("map_boss_71001000.json")) else {
+            eprintln!("no castle export: skipped");
+            return;
+        };
+        let j: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let l = MapLighting {
+            drawparam: j["drawparam"].clone(),
+            light_set: 0,
+            hour: 18.0,
+            applied: false,
+            env: Vec::new(),
+            arena_yaw: 0.0,
+            luts: Vec::new(),
+            stem: String::new(),
+            sound_space: 0,
+            source_map: String::new(),
+            map_origin: None,
+        };
+        let b = map_bloom(&l, 0).expect("the castle's bloom is on");
+        assert_eq!(b.prefilter.threshold, 0.0);
+        let mips = b.max_mip_dimension.ilog2().max(2) - 1;
+        assert_eq!(mips, 7);
+        // Bevy 0.19 bloom/mod.rs compute_blend_factor, Additive.
+        let blend = |mip: f32, max: f32| {
+            let lf = (1.0 - (1.0 - mip / max).powf(1.0 / (1.0 - b.low_frequency_boost_curvature))) * b.low_frequency_boost;
+            let hp = 1.0 - (((mip / max) - b.high_pass_frequency) / b.high_pass_frequency).clamp(0.0, 1.0);
+            (b.intensity + lf) * hp
+        };
+        let sum: f32 = (0..7).map(|i| 0.8f32.powi(i)).sum();
+        let mut w = 1.0;
+        for i in 0..mips {
+            w *= blend(i as f32, (mips - 1) as f32);
+            let game = 0.3 * 0.8f32.powi(i as i32) / sum;
+            assert!((w - game).abs() < 1e-4 * game.max(1e-3), "level {i}: {w} vs {game}");
+        }
+        // The night key's threshold (0 h: 0.075).
+        let night = MapLighting { hour: 0.0, ..l };
+        assert!((map_bloom(&night, 0).unwrap().prefilter.threshold - 0.075).abs() < 1e-6);
+    }
+
+    /// The castle's fog at noon: FixedDensity 0.0015 over GameScale 2.5 (exe 39e7e0).
+    #[test]
+    fn fog_density_is_divided_by_game_scale() {
+        let j: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(crate::paths::extracted().join("map_m11_01_00_00.json")).unwrap()).unwrap();
+        let l = MapLighting {
+            drawparam: j["drawparam"].clone(),
+            light_set: 0,
+            hour: 12.0,
+            applied: false,
+            env: Vec::new(),
+            arena_yaw: 0.0,
+            luts: Vec::new(),
+            stem: String::new(),
+            sound_space: 0,
+            source_map: String::new(),
+            map_origin: None,
+        };
+        assert!((l.fog_density(0) - 0.0015 / 2.5).abs() < 1e-7, "{}", l.fog_density(0));
+    }
+
+    /// Bin v5 (the exporter's writer): the game path's kind, stems and constants come back,
+    /// and the 52-byte vertices give the blend bytes, the tint / wet bytes and the uv scale.
+    #[test]
+    fn bin_v5_reads_the_game_path() {
+        let mut d = b"SHMP".to_vec();
+        d.extend(5u32.to_le_bytes());
+        d.extend(1u32.to_le_bytes());
+        let s = |d: &mut Vec<u8>, t: &str| {
+            d.extend((t.len() as u16).to_le_bytes());
+            d.extend(t.as_bytes());
+        };
+        for t in ["base_a", "base_n", "", "", "", "", "wood_51_a", "", "m9_3m"] {
+            s(&mut d, t);
+        }
+        d.push(1);
+        for t in ["detail_n", "wood_20_3m", ""] {
+            s(&mut d, t);
+        }
+        (0..64).for_each(|k| d.extend((k as f32 * 0.5).to_le_bytes()));
+        d.extend([0, 0, 1]);
+        d.extend(1u32.to_le_bytes());
+        for x in [1.0f32, 2.0, 3.0, 0.0, 1.0, 0.0, 0.25, 0.5, 0.75, 1.0] {
+            d.extend(x.to_le_bytes());
+        }
+        d.extend([255, 128, 0, 255, 51, 102, 153, 204]);
+        d.extend(2.5f32.to_le_bytes());
+        d.extend(0u32.to_le_bytes());
+        let mut seen = 0;
+        walk_bin(&d, |b| {
+            seen += 1;
+            let k = b.key();
+            assert_eq!(k.3.kind, 1);
+            assert_eq!(k.3.extra, ["detail_n".to_string(), "wood_20_3m".into(), String::new()]);
+            assert_eq!(f32::from_bits(k.3.params[7]), 3.5);
+            assert!(k.layered() && b.casts);
+            let (pos, _, _, uv2, blend) = b.vertices();
+            assert_eq!(pos[0], [-1.0, 2.0, 3.0]);
+            assert_eq!(uv2[0], [0.75, 1.0]);
+            assert_eq!(blend[0], [1.0, 128.0 / 255.0, 0.0, 1.0]);
+            let (b2, scale) = b.game_vertices();
+            assert_eq!(b2[0], [0.2, 0.4, 0.6, 0.8]);
+            assert_eq!(scale[0], 2.5);
+        })
+        .unwrap();
+        assert_eq!(seen, 1);
+    }
 
     #[test]
     fn half_floats_and_probe_blend() {
@@ -1891,6 +2405,66 @@ mod tests {
         Terrain::from_hit(&d)
     }
 
+    /// Every exported boss arena (extracted/map_boss_*.hit): the boss's spot has a floor, the
+    /// player start search finds a spot with headroom (no fallback), and from that spot four
+    /// 3 m walks (+-x, +-z, tick-sized slides as in play) never step over a hole (no collision
+    /// at all under the feet). After AKJama/sekiro-rs `crates/sim/examples/map_baseline.rs`
+    /// (every player start of every map, four walks each; MIT / Apache). Skipped when no arena
+    /// was exported.
+    #[test]
+    fn every_arena_start_stands_and_walks() {
+        let Ok(dir) = std::fs::read_dir(crate::paths::extracted()) else { return };
+        let mut files: Vec<_> = dir.filter_map(Result::ok).map(|e| e.path()).filter(|p| p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with("map_boss_") && n.ends_with(".hit"))).collect();
+        files.sort();
+        let mut bad = Vec::new();
+        for f in &files {
+            let name = f.file_stem().unwrap().to_string_lossy().to_string();
+            let Some(t) = std::fs::read(f).ok().and_then(|d| Terrain::from_hit(&d)) else {
+                bad.push(format!("{name}: unreadable"));
+                continue;
+            };
+            if t.floor(0.0, -4.0, 1.0).is_none() {
+                bad.push(format!("{name}: no floor under the boss's spot (0, -4)"));
+            }
+            let start = match arena_start(&t, false) {
+                Ok(s) => s,
+                Err(kept) => {
+                    bad.push(format!("{name}: start search fell back to {kept}"));
+                    kept
+                }
+            };
+            let stranger = arena_start(&t, true);
+            if stranger.is_ok_and(|s| s.distance(start) > 0.01) {
+                println!("{name}: another boss's line-up moves the start to {}", stranger.unwrap());
+            }
+            let lineup = stranger.is_ok();
+            let mut walks = Vec::new();
+            for dir in [Vec2::X, -Vec2::X, Vec2::Y, -Vec2::Y] {
+                let mut feet = start - Vec3::Y * CAPSULE_HALF_HEIGHT;
+                let (mut walked, mut drop) = (0.0f32, 0.0f32);
+                for _ in 0..20 {
+                    let d = t.slide(feet, dir * 0.15);
+                    feet.x += d.x;
+                    feet.z += d.y;
+                    walked += d.length();
+                    match t.floor(feet.x, feet.z, feet.y + STEP_HEIGHT) {
+                        Some(h) => {
+                            drop = drop.max(feet.y - h);
+                            feet.y = h;
+                        }
+                        None => {
+                            bad.push(format!("{name}: walking {dir} from {start} hits a hole at {feet}"));
+                            break;
+                        }
+                    }
+                }
+                walks.push(format!("{dir}: {walked:.1} m, drop {drop:.1}"));
+            }
+            eprintln!("{name}: start {start} (another boss's line-up fits: {lineup}); walks {}", walks.join(", "));
+        }
+        assert!(bad.is_empty(), "{} arenas checked:\n{}", files.len(), bad.join("\n"));
+    }
+
     #[test]
     fn grapple_search_picks_the_point_on_the_view_axis_and_keeps_the_soft_lock() {
         let pt = |hook: Vec3, var: i64| GrapplePoint { hook, land: hook + Vec3::Y * 0.5, fwd: -Vec3::Z, variation: var };
@@ -1984,5 +2558,42 @@ mod tests {
         let feet = Vec3::new(0.0, t.floor(0.0, 2.0, 1.0).unwrap(), 2.0);
         assert!(t.raycast(feet + Vec3::Y * 1.5, -Vec3::Y, 3.0).is_some_and(|d| (d - 1.5).abs() < 0.1));
         assert!(t.raycast(feet + Vec3::Y * 1.5, Vec3::Y, 30.0).is_some_and(|d| d < 5.0));
+        // The line-up at z -4 reaches Wolf's start at z 4: the gatehouse door (o111410_8000,
+        // an ObjAct door) is left out of the export, so no wall stands between them.
+        let mut feet = Vec3::new(0.0, t.floor(0.0, -4.0, 1.0).unwrap(), -4.0);
+        for _ in 0..200 {
+            let d = t.slide(feet, Vec2::new(0.0, 0.15));
+            feet.x += d.x;
+            feet.z += d.y;
+            feet.y = t.floor(feet.x, feet.z, feet.y + STEP_HEIGHT).unwrap_or(feet.y);
+            if feet.z >= 4.0 {
+                break;
+            }
+        }
+        assert!(feet.z >= 4.0, "the walk from the line-up to Wolf's start stopped at {feet}");
+    }
+
+    /// The wire point table follows WireVariationParam: angles, extend and ridden / swung
+    /// (targetMarkerType 0 / 1) for every map row the table names (row 5 was 180 left / right,
+    /// row 40 ridden; 2026-10-12 bug hunt).
+    #[test]
+    fn wire_variation_matches_the_param() {
+        let path = crate::paths::extracted().join("json/params/WireVariationParam.json");
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            eprintln!("no WireVariationParam.json: skipped");
+            return;
+        };
+        let j: serde_json::Value = serde_json::from_str(&text).unwrap();
+        for r in j["rows"].as_array().unwrap() {
+            let id = r["id"].as_i64().unwrap();
+            if ![0, 1, 2, 3, 5, 20, 21, 22, 23, 24, 40, 41].contains(&id) {
+                continue;
+            }
+            let f = |k: &str| r[k].as_f64().unwrap() as f32;
+            let (ang, extend, ridden) = wire_variation(id);
+            assert_eq!(ang, [f("recognitionAngleUp"), f("recognitionAngleDown"), f("recognitionAngleLeft"), f("recognitionAngleRight")], "row {id} angles");
+            assert_eq!(extend, f("extendWireActionDistance"), "row {id} extend");
+            assert_eq!(ridden, r["targetMarkerType"].as_i64() == Some(0), "row {id} ridden");
+        }
     }
 }

@@ -112,7 +112,7 @@ User request: "Work on all bosses and enemies".
     710200 and 710201 / 710203 / 710204 fire into nothing in the game too. boss_events.json
     gained "message" and "player"; `enemy.rs todome_message`.
 - Still failing (16): non-fighters (merchants, nuns, handmaidens, Hanbei, lookout gong),
-  scripted (c1260 chigo monkey: Folding Screen arena regions; c1550 "hidden for directing";
+  scripted (c1260 chigo monkey: Folding Screen Monkeys, own arena and cast since 2026-10-12, open items in HANDOFF 4.18, now the contributor's; c1550 "hidden for directing";
   c5300, c5410, c7200, c7300, c1320, c1460), and c1300 (its breath only builds Aging, not done
   in status.rs).
 - Done 2026-10-10 (several enemies at once, HANDOFF 4.10): the Monk's clones (m25 12505961

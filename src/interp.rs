@@ -55,7 +55,9 @@ fn restore_sim_pose(mut commands: Commands, mut q: Query<(Entity, &mut Transform
 fn store_sim_pose(mut q: Query<(&Transform, &mut SimPose), With<Actor>>) {
     for (tf, mut pose) in &mut q {
         pose.cur = Some((tf.translation, tf.rotation));
-        if pose.prev.is_none() {
+        // A teleport inside the step (Wolf's reset, an event or script warp) is drawn as one,
+        // not as a slide across the map (map::TELEPORT: longer than any one-tick move).
+        if pose.prev.is_none_or(|p| p.0.distance(tf.translation) > crate::map::TELEPORT) {
             pose.prev = pose.cur;
         }
     }

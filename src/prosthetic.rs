@@ -17,7 +17,7 @@ use bevy::prelude::*;
 
 use crate::actor::{Actor, ActorSet, data_for};
 use crate::anim::Hurtboxes;
-use crate::combat::{BODY_RADIUS, apply_knockback, damage_kb, enemy_damage_state, segment_distance};
+use crate::combat::{BODY_RADIUS, apply_knockback, damage_kb, segment_distance};
 use crate::data::{BulletSpec, Combat, STATE_INFO_JUST_GUARD};
 use crate::enemy::Enemy;
 use crate::hud::CombatLog;
@@ -62,7 +62,7 @@ pub struct ProstheticPlugin;
 
 impl Plugin for ProstheticPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(FixedUpdate, (spawn_bullets, fly_bullets).chain().after(ActorSet::Advance).before(ActorSet::Resolve))
+        app.add_systems(FixedUpdate, (spawn_bullets.after(crate::anim::PoseSet), fly_bullets).chain().after(ActorSet::Advance).before(ActorSet::Resolve))
             .add_systems(Update, draw_bullets.run_if(resource_exists::<GizmoConfigStore>));
     }
 }
@@ -156,12 +156,27 @@ fn spawn_bullets(
                     log.push(format!("{payer} ({} emblems)", p.emblems), Color::srgb(0.8, 0.85, 1.0));
                 }
             }
+            // A combat art's bullets: its own variation's rows only (One Mind 105005210 -> Bullet
+            // 500510), never the equipped tool's (the umbrella's 760010 on the same judge).
+            let art = art_anim.then(|| d.bullets.get(&format!("v{var}:{judge}"))).flatten();
             // The sword's bullets (outside the tool groups): Kusabimaru's variation 5000
             // (BehaviorParam_PC 105000184 -> Bullet 500184) and its attackBase*.
-            let sword = (!tool_anim).then(|| d.bullets.get(&format!("v5000:{judge}"))).flatten();
-            let spec = sword.or_else(|| tool.and_then(|t| d.bullets.get(&format!("v{}:{judge}", t.variation)))).or_else(|| d.bullets.get(&judge.to_string()));
+            let sword = (!tool_anim && !art_anim).then(|| d.bullets.get(&format!("v5000:{judge}"))).flatten();
+            // The bare judge's bullet (700000 / 700050 ...) only when the tool has no
+            // BehaviorParam_PC row of its own: a row that is not a bullet (refType != 1, as Sen
+            // Throw's 107004100 / 107004150: refType 0, refId 0) fires nothing.
+            let own_row = tool.and_then(|t| d.behavior(t.variation, judge)).is_some_and(|b| b.ref_type != 1);
+            let spec = if art_anim {
+                art
+            } else {
+                sword
+                    .or_else(|| tool.and_then(|t| d.bullets.get(&format!("v{}:{judge}", t.variation))))
+                    .or_else(|| (!own_row).then(|| d.bullets.get(&judge.to_string())).flatten())
+            };
             let Some(spec) = spec else { continue };
-            let base = if sword.is_some() {
+            // gap: an art bullet's attackBase* is taken as Kusabimaru's (the art's own
+            // EquipParamWeapon row is not traced as its source).
+            let base = if sword.is_some() || art.is_some() {
                 let w = combat.param("EquipParamWeapon", 5000);
                 let f = |k: &str| w[k].as_f64().unwrap_or(0.0) as f32;
                 (f("attackBasePhysics"), f("attackBaseFire"), f("attackBaseThunder"))
@@ -228,7 +243,9 @@ fn spawn_row(commands: &mut Commands, spec: &BulletSpec, pos: Vec3, dir: Vec3, c
             d = Quat::from_axis_angle(right, spec.shoot_angle_xz.to_radians()) * d;
         }
         let at = Transform::from_translation(pos).with_rotation(Quat::from_rotation_arc(Vec3::NEG_Z, d.normalize_or(Vec3::NEG_Z)));
-        let bullet = commands.spawn((at, Name::new(format!("Bullet {}", spec.bullet_id)))).id();
+        // With its GlobalTransform from the start: effects and hit tests reading it before the
+        // next propagation would see the origin.
+        let bullet = commands.spawn((at, GlobalTransform::from(at), Name::new(format!("Bullet {}", spec.bullet_id)))).id();
         // The flying effect rides on the bullet (FxEffect anchored to it).
         let fx = (sfx > 0).then(|| commands.spawn(crate::fxr::FxEffect::new(sfx, Some(crate::fxr::Anchor::Entity(bullet)), true, at)).id());
         commands.entity(bullet).insert(Projectile {
@@ -469,6 +486,14 @@ fn hit_enemy(
     let sps = [b.spec.sp_effect_id0, b.spec.sp_effect_id1, b.spec.sp_effect_id2, b.spec.sp_effect_id3, b.spec.sp_effect_id4];
     let sp_of = |id: i64| combat.player.sp_effects.get(&id.to_string());
     let refs: Vec<i64> = sps.iter().filter(|v| **v > 0).filter_map(|id| sp_of(*id)).map(|s| s.behavior_ref_id).collect();
+    // The bullet's SpEffects on the enemy for their effectEndurance (the reversal bolt's
+    // 3520085 "Divine Dragon: Lightning Reversal hit", 1 s, which the dragon's map script
+    // waits for), before any early return: the firecracker's 230110 / 230111 are in the map AI
+    // hold's wake list, and its burst does no HP damage (round 19).
+    for id in sps.iter().filter(|v| **v > 0) {
+        let secs = crate::data::sp_effect_endurance(combat, *id);
+        e.add_timed(*id, secs.max(0.1));
+    }
     if refs.contains(&REF_BURST_NONCRITICAL) || refs.contains(&REF_BURST_CRITICAL) {
         let npc = combat.npc(da);
         let special = (0..32)
@@ -495,25 +520,21 @@ fn hit_enemy(
         return None;
     }
     let atk = b.spec.attack.as_ref()?;
-    // The bullet's SpEffects on the enemy for their effectEndurance (the reversal bolt's
-    // 3520085 "Divine Dragon: Lightning Reversal hit", 1 s, which the dragon's map script
-    // waits for).
-    for id in sps.iter().filter(|v| **v > 0) {
-        let secs = crate::data::sp_effect_endurance(combat, *id);
-        e.add_timed(*id, secs.max(0.1));
-    }
     if !(atk.atk_phys_correction > 0.0 || atk.atk_fire_correction > 0.0 || atk.atk_thun_correction > 0.0 || atk.atk_stam > 0.0 || atk.direct_atk_stam_damage > 0.0) {
         return None;
     }
     let dd = combat.data_of(da);
-    let facing = da.forward().dot((from - dtf.translation).with_y(0.0).normalize_or_zero()) > 0.0;
-    if facing && !da.anim.is_empty() && dd.has_state_info(&da.anim, da.t, STATE_INFO_JUST_GUARD) {
+    // As a sword hit (combat.rs resolve): only inside the guard arc, and AtkParam
+    // disableJustGuard / disableGuard (the Flame Vent's and Projected Force's rows) go through
+    // a deflect / a block.
+    let facing = !da.anim.is_empty() && da.forward().angle_between((from - dtf.translation).with_y(0.0).normalize_or_zero()).to_degrees() <= crate::combat::guard_half_angle(dd, da);
+    if facing && atk.disable_just_guard == 0 && dd.has_state_info(&da.anim, da.t, STATE_INFO_JUST_GUARD) {
         if let Some(q) = sounds.as_mut() {
             q.0.extend(crate::sound::guard_sounds(combat, atk, true).into_iter().map(|se| (se, to)));
         }
         return Some("enemy deflects the shuriken".to_string());
     }
-    if facing && !da.anim.is_empty() && dd.flag(&da.anim, da.t, FLAG_SHIELD_BLOCK) {
+    if facing && atk.disable_guard == 0 && dd.flag(&da.anim, da.t, FLAG_SHIELD_BLOCK) {
         if let Some(q) = sounds.as_mut() {
             q.0.extend(crate::sound::guard_sounds(combat, atk, false).into_iter().map(|se| (se, to)));
         }
@@ -526,9 +547,13 @@ fn hit_enemy(
     let thun_cut = combat.npc(da)["thunderDamageCutRate"].as_f64().unwrap_or(1.0) as f32;
     let dmg = b.base.0 * atk.atk_phys_correction / 100.0 + b.base.1 * atk.atk_fire_correction / 100.0 * fire_cut + b.base.2 * atk.atk_thun_correction / 100.0 * thun_cut;
     let pd = if atk.direct_atk_stam_damage > 0.0 { atk.direct_atk_stam_damage } else { atk.atk_stam };
+    // The armour part and the enemy's posture SpEffects, as on a sword hit (combat.rs resolve).
+    let (armor_hp, armor_posture, _) = crate::combat::armor_rates(combat, e, da, atk, None);
+    let def_rate = crate::combat::def_stamina_rate(combat, da, atk.stamina_physics_attribute) * armor_posture;
+    let (dmg, pd) = (dmg * armor_hp, pd * def_rate);
     da.hp = (da.hp - dmg).max(0.0);
     da.add_posture(pd);
-    apply_knockback(combat, da, from, dtf.translation, atk.knockback_hit, damage_kb(atk.dmg_level), "knockbackRate_vsPlayer_DirectHit");
+    tool_hit_push(combat, da, e, from, dtf.translation, atk.knockback_hit, atk.dmg_level, dmg);
     // c9997 GetSpDamage: a lightning hit (DAMAGE_ELEMENT_LIGHTNING 6) on one with
     // SP_EFFECT_REF_LIGHTNING_DAMAGE_ENABLE (1000041: its NpcParam's 6021) and without
     // NO_LIGHTNING_DAMAGE (1000260) is SP_DAMAGE_LIGHTNING -> W_DamageLightningStart, a rank 3
@@ -540,7 +565,7 @@ fn hit_enemy(
     if lightning && !da.posture_broken() && !e.is_broken() && rank_allows(transition_rank(&da.state), 3) {
         e.react(da, combat, "DamageLightningStart");
     } else if !da.posture_broken() && !e.is_broken() {
-        match enemy_damage_state(atk.dmg_level, da, from, dtf.translation).filter(|_| !e.is_attacking()) {
+        match bullet_reaction(combat, da, e, atk.dmg_level, from, dtf.translation) {
             Some(s) => e.react(da, combat, &s),
             // No reaction (mid-swing, or none for that level: the Divine Dragon has none):
             // c9997 ExecNoSyncAddDamage, the part's additive flinch.
@@ -553,6 +578,34 @@ fn hit_enemy(
         }
     }
     Some(format!("hit: -{dmg:.0} HP, +{pd:.0} posture"))
+}
+
+/// After a tool hit's damage: its knockback, none under ChrActionFlag 24 (no damage motion, as
+/// combat.rs resolve; exe b6bfe0, sekiro-rs fight.rs:660-666), and the map AI hold's damage wake
+/// (enemy.rs ai_hold: hurt by Wolf with HP lost) whether or not a reaction plays - a held enemy
+/// hit with only the additive flinch never woke.
+pub(crate) fn tool_hit_push(combat: &Combat, da: &mut Actor, e: &mut Enemy, from: Vec3, at: Vec3, knockback: f32, level: i64, dmg: f32) {
+    let dd = combat.data_of(da);
+    let no_motion = !da.anim.is_empty() && dd.flag(&da.anim, da.t, crate::combat::FLAG_NO_DAMAGE_MOTION);
+    if !no_motion {
+        apply_knockback(combat, da, from, at, None, knockback, damage_kb(level), "knockbackRate_vsPlayer_DirectHit");
+    }
+    if dmg > 0.0 {
+        e.hurt_by_wolf = true;
+    }
+}
+
+/// A tool hit's reaction, as a sword hit's (combat.rs resolve): the damage level the HKS sees
+/// (0 under ChrActionFlag 24, else damage_motion_level's super-armour swap), no reaction
+/// mid-swing unless ChrActionFlag 73 (FLAG_DAMAGE_MOTION) allows it, and c9997's aerial table
+/// for an enemy in the air (enemy_damage_state_air). None = the additive flinch.
+pub(crate) fn bullet_reaction(combat: &Combat, da: &Actor, e: &Enemy, level: i64, from: Vec3, at: Vec3) -> Option<String> {
+    let dd = combat.data_of(da);
+    let level = if dd.flag(&da.anim, da.t, crate::combat::FLAG_NO_DAMAGE_MOTION) { 0 } else { crate::combat::damage_motion_level(dd, da, level) };
+    let can_flinch = !e.is_attacking() || dd.flag(&da.anim, da.t, crate::combat::FLAG_DAMAGE_MOTION);
+    // gap (as resolve): env 201 read as not lifted 5 cm above a SetNoGravity leap's start.
+    let aerial = da.airborne || da.lift_ground.is_some_and(|g| at.y > g + 0.05) || enemy_refs(combat, da, e).contains(&crate::combat::SP_REF_AERIAL_DAMAGE);
+    can_flinch.then(|| crate::combat::enemy_damage_state_air(dd, level, da, from, at, aerial)).flatten()
 }
 
 /// The behaviorRefIds of an enemy's SpEffects now: its residents, its anim's and the timed ones.

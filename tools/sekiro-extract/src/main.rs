@@ -39,6 +39,7 @@ mod map;
 mod msb;
 mod mtd;
 mod param;
+mod sky;
 mod spline;
 mod tae;
 
@@ -97,6 +98,15 @@ fn main() {
                 }
             }
         }
+        Some("gparam") if args.len() == 3 => {
+            // A draw-param file as JSON (the map export's "drawparam"; the per-fight variants
+            // `m11_01_0<T><SS>.gparam` the events select with Set Area Gparam Sub ID, kb/map.md).
+            println!("{}", gparam::to_json(&gparam::read(&std::fs::read(&args[2]).unwrap())));
+        }
+        Some("sky") if args.len() == 3 => {
+            // The sky library's domes (m89_00_00_99 m900000..070): sky/sky.json + textures.
+            sky::export(Path::new(&args[2]));
+        }
         Some("mtd") if args.len() == 3 => {
             // An MTD's shader, params and texture slots (map material layers: kb/map.md).
             let Some(m) = mtd::read(&std::fs::read(&args[2]).unwrap()) else {
@@ -150,6 +160,10 @@ fn main() {
                 println!("  slots {:?}", m.textures);
                 let uv: Vec<[f32; 2]> = m.vertices.iter().step_by((m.vertices.len() / 6).max(1)).map(|v| v.uv).collect();
                 println!("  uv {:?}", uv);
+            }
+            // Dummy polys (model space unless parented): `dummy <id> <x> <y> <z> parent <bone>`.
+            for d in &f.dummies {
+                println!("dummy {} {} {} {} parent {}", d.id, d.pos[0], d.pos[1], d.pos[2], d.parent);
             }
         }
         Some("dds2png") if args.len() >= 4 => dds2png(Path::new(&args[2]), Path::new(&args[3]), args.get(4).is_some_and(|a| a == "alpha")),
@@ -424,9 +438,107 @@ fn quat_mul(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
 ///   u32 meshes; per mesh: u16 len, material, u16 len, albedo texture name,
 ///     (v3) u16 len, normal-map texture name, (v4) u16 len, metallic-mask texture name,
 ///     (v5) u8 alpha test,
+///     (v6) u8 DetailBlend variant (255: neither; FRESNEL = the coat shader); unless 255: u8
+///       layer bits (`DETAIL_LAYERS`), 8 x (u16 len, name): layer A albedo / normal, B, C, D
+///       (the coat: layers 3 / 1, 4 / 5), then f32[40] (`detail_params` / `fresnel_params`),
 ///     u32 vertices; per vertex f32 pos[3] normal[3] uv[2], u16 bones[4], f32 weights[4]
 ///     u32 indices; u32 each
 ///   (v2) u32 dummies; per dummy: i16 id, i16 parent, i16 attach, f32 pos[3]
+/// Character_AMSN[DetailBlend] (Wolf's tops / scarf, many characters' cloth; docs/kb/visuals.md
+/// "DetailBlend"): the layers each Gbuf variant (by GXFT_SATStaticSwitch) has. Bits: 1 B, 2 C,
+/// 4 D, 8 / 16 / 32 B / C / D blended after the base modulation ("replace"), 64 back faces.
+/// gap: variant 19 applies D before C, variant 21 also blends slot 12's normal alone; both drawn
+/// in the common order.
+const DETAIL_LAYERS: [u8; 25] = [0, 1, 9, 3, 19, 27, 6, 38, 54, 7, 39, 55, 63, 2, 18, 64, 66, 82, 70, 86, 118, 4, 5, 13, 36];
+
+/// DetailBlend constants (40 floats, map in sekiro_material.wgsl `detail`): colours (rgb x
+/// Intensity; color_0 A, color_1 B, color_5 C, color_2 D), the layers' gloss adds (float_0 / 1 /
+/// 15 / 13) and metal (float_2 / 8 / 16 / 5), float_10 (normal strength), the groups' UV tiling
+/// (base, A, B, C, D: the layer albedo's own MTD texture scale, or when that is (0, 0) its
+/// group's `group_N_CommonUV-UVParam` (group_1 base, 2 A, 3 B, 4 C, 7 D): Wolf's scarf has
+/// blend01 18 x 6 in one MTD and (0, 0) + group_2 [18, 6] in its cloth twin; read as
+/// FC_TextureTilingScale, gap: inferred). A value the MTD leaves out: 0 (colours / tiling 1).
+fn detail_params(d: &mtd::Mtd) -> Vec<f32> {
+    let get = |n: &str| d.floats.iter().find(|(k, _)| k == n).map(|(_, v)| v.clone());
+    let p = "Character_AMSN__DetailBlend__snp_0_";
+    let f = |n: &str| get(&format!("{p}{n}")).and_then(|v| v.first().copied()).unwrap_or(0.0);
+    let col = |n: &str| -> [f32; 4] {
+        let c = get(&format!("{p}{n}")).filter(|v| v.len() >= 3).map_or([1.0; 3], |v| [v[0], v[1], v[2]]);
+        let k = get(&format!("{p}{n}-Intensity")).and_then(|v| v.first().copied()).unwrap_or(1.0);
+        [c[0] * k, c[1] * k, c[2] * k, 0.0]
+    };
+    let group = |g: u32| get(&format!("group_{g}_CommonUV-UVParam")).filter(|v| v.len() >= 2).map_or([1.0, 1.0], |v| [v[0], v[1]]);
+    let uv = |g: u32| {
+        let slot = match g {
+            1 => 7,
+            2 => 1,
+            3 => 2,
+            4 => 10,
+            _ => 4,
+        };
+        tex_scale(d, slot, "AlbedoMap").unwrap_or_else(|| group(g))
+    };
+    let mut out = Vec::with_capacity(40);
+    for c in ["color_0", "color_1", "color_5", "color_2"] {
+        out.extend(col(c));
+    }
+    out.extend(["float_0", "float_1", "float_15", "float_13"].map(f));
+    out.extend(["float_2", "float_8", "float_16", "float_5"].map(f));
+    out.extend([f("float_10"), 0.0, 0.0, 0.0]);
+    for g in [1, 2, 3, 4, 7] {
+        out.extend(uv(g));
+    }
+    out.extend([0.0, 0.0]);
+    out
+}
+
+/// A texture slot's own MTD tiling scale, None when it is (0, 0) (the group's then).
+fn tex_scale(d: &mtd::Mtd, slot: u32, kind: &str) -> Option<[f32; 2]> {
+    let want = format!("Texture2D_{slot}_{kind}");
+    d.textures.iter().find(|t| t.kind.ends_with(&want) || t.kind.contains(&format!("{want}_"))).map(|t| t.scale).filter(|s| s[0] != 0.0 || s[1] != 0.0)
+}
+
+/// The variant byte model v6 gives Character_AN_Blend_AMSN_[Fresnel] (Wolf's coat; no static
+/// switch of its own).
+const FRESNEL: u8 = 100;
+
+/// Character_AN_Blend_AMSN_[Fresnel] constants (40 floats, sekiro_material.wgsl `fresnel_layers`;
+/// docs/kb/visuals.md "Coat"): color_1 (blend layer 3 / 1 tint), color_3 (layer 4 / 5 tint),
+/// color_2 (rim colour), color_0 (rim target), color_4 (back faces), all rgb x Intensity; float_0
+/// (metal), float_1 / float_11 (the two layers' normal strength), float_3 (layer 3 gloss
+/// scale), float_5 (rim target mix), float_8 (rim exponent), float_9 (rim bias); the tiling of
+/// slots 3, 1, 4, 5 and the base (MTD texture scale, 1 when (0, 0)).
+fn fresnel_params(d: &mtd::Mtd) -> Vec<f32> {
+    let get = |n: &str| d.floats.iter().find(|(k, _)| k == n).map(|(_, v)| v.clone());
+    let p = "Character_AN_Blend_AMSN__Fresnel__snp_0_";
+    let f = |n: &str| get(&format!("{p}{n}")).and_then(|v| v.first().copied()).unwrap_or(0.0);
+    let col = |n: &str| -> [f32; 4] {
+        let c = get(&format!("{p}{n}")).filter(|v| v.len() >= 3).map_or([1.0; 3], |v| [v[0], v[1], v[2]]);
+        let k = get(&format!("{p}{n}-Intensity")).and_then(|v| v.first().copied()).unwrap_or(1.0);
+        [c[0] * k, c[1] * k, c[2] * k, 0.0]
+    };
+    let t = |slot: u32, kind: &str| tex_scale(d, slot, kind).unwrap_or([1.0, 1.0]);
+    let mut out = Vec::with_capacity(40);
+    for c in ["color_1", "color_3", "color_2", "color_0", "color_4"] {
+        out.extend(col(c));
+    }
+    out.extend(["float_0", "float_1", "float_11", "float_3"].map(f));
+    out.extend([f("float_5"), f("float_8"), f("float_9"), 0.0]);
+    for (slot, kind) in [(3, "AlbedoMap"), (1, "NormalMap"), (4, "AlbedoMap"), (5, "NormalMap"), (2, "AlbedoMap")] {
+        out.extend(t(slot, kind));
+    }
+    out.extend([0.0, 0.0]);
+    out
+}
+
+/// One mesh's DetailBlend data (`export_model`): variant, layer bits, layer texture names, params.
+struct Detail {
+    variant: u8,
+    bits: u8,
+    names: [String; 8],
+    params: Vec<f32>,
+}
+
 fn export_model(flver_path: &Path, tpf_path: &Path, out: &Path, tex_dir: &Path, extra_tex: &[&Path]) {
     let mut f = flver::read(&std::fs::read(flver_path).expect("read flver"));
     let mut textures = if tpf_path.to_string_lossy() != "-" { flver::tpf(&std::fs::read(tpf_path).expect("read tpf")) } else { Vec::new() };
@@ -470,6 +582,7 @@ fn export_model(flver_path: &Path, tpf_path: &Path, out: &Path, tex_dir: &Path, 
         .map(|e| (e.path().file_stem().unwrap_or_default().to_string_lossy().to_lowercase(), e.path()))
         .collect();
     let in_tpf: std::collections::HashSet<&str> = textures.iter().map(|(n, _)| n.as_str()).collect();
+    let mut details: Vec<Option<Detail>> = Vec::with_capacity(f.meshes.len());
     for m in f.meshes.iter_mut() {
         let mtd_data = mtd_files.get(&m.mtd.to_lowercase()).and_then(|p| std::fs::read(p).ok()).unwrap_or_default();
         let slots = flver::mtd_textures(&mtd_data);
@@ -491,6 +604,37 @@ fn export_model(flver_path: &Path, tpf_path: &Path, out: &Path, tex_dir: &Path, 
         };
         m.normal_map = same_set("NormalMap", "_n").unwrap_or_else(|| flver::guess_normal(&m.albedo, &normals));
         m.metallic = same_set("MetallicMap", "_m").unwrap_or_default();
+        // DetailBlend (and its `_cloth` twin, same pixel shaders): base albedo slot 7, normal 0,
+        // metal 3 by number; the fabric layers.
+        let detail = flver::mtd_shader(&mtd_data).to_lowercase().starts_with("character_amsn_[detailblend]").then(|| mtd::read(&mtd_data)).flatten().map(|d| {
+            let slot = |n: u32, kind: &str| available(kind).into_iter().find(|(s, _)| s.ends_with(&format!("Texture2D_{n}_{kind}"))).map(|(_, t)| t).unwrap_or_default();
+            if !slot(7, "AlbedoMap").is_empty() {
+                m.albedo = slot(7, "AlbedoMap");
+            }
+            if !slot(0, "NormalMap").is_empty() {
+                m.normal_map = slot(0, "NormalMap");
+            }
+            m.metallic = slot(3, "MetallicMap");
+            let variant = d.int("GXFT_SATStaticSwitch").unwrap_or(0).clamp(0, 24) as u8;
+            let names = [slot(1, "AlbedoMap"), slot(6, "NormalMap"), slot(2, "AlbedoMap"), slot(5, "NormalMap"), slot(10, "AlbedoMap"), slot(12, "NormalMap"), slot(4, "AlbedoMap"), slot(9, "NormalMap")];
+            Detail { variant, bits: DETAIL_LAYERS[variant as usize], names, params: detail_params(&d) }
+        });
+        // The coat shader (Character_AN_Blend_AMSN_[Fresnel] and its `_cloth` twin): base albedo
+        // slot 2, normal 7 (alpha = the layer mask), metal 0; layers 3 / 1 and 4 / 5.
+        let detail = detail.or_else(|| {
+            let d = flver::mtd_shader(&mtd_data).to_lowercase().starts_with("character_an_blend_amsn_[fresnel]").then(|| mtd::read(&mtd_data)).flatten()?;
+            let slot = |n: u32, kind: &str| available(kind).into_iter().find(|(s, _)| s.contains(&format!("Texture2D_{n}_{kind}"))).map(|(_, t)| t).unwrap_or_default();
+            if !slot(2, "AlbedoMap").is_empty() {
+                m.albedo = slot(2, "AlbedoMap");
+            }
+            if !slot(7, "NormalMap").is_empty() {
+                m.normal_map = slot(7, "NormalMap");
+            }
+            m.metallic = slot(0, "ReflectanceMap");
+            let names = [slot(3, "AlbedoMap"), slot(1, "NormalMap"), slot(4, "AlbedoMap"), slot(5, "NormalMap"), String::new(), String::new(), String::new(), String::new()];
+            Some(Detail { variant: FRESNEL, bits: 0, names, params: fresnel_params(&d) })
+        });
+        details.push(detail);
         m.textures = slots;
     }
     let mut b: Vec<u8> = Vec::new();
@@ -500,7 +644,7 @@ fn export_model(flver_path: &Path, tpf_path: &Path, out: &Path, tex_dir: &Path, 
     };
     let put_f = |b: &mut Vec<u8>, v: &[f32]| v.iter().for_each(|x| b.extend_from_slice(&x.to_le_bytes()));
     b.extend_from_slice(b"SHMD");
-    b.extend_from_slice(&5u32.to_le_bytes());
+    b.extend_from_slice(&6u32.to_le_bytes());
     b.extend_from_slice(&(f.nodes.len() as u32).to_le_bytes());
     for n in &f.nodes {
         put_str(&mut b, &n.name);
@@ -517,12 +661,21 @@ fn export_model(flver_path: &Path, tpf_path: &Path, out: &Path, tex_dir: &Path, 
         put_f(&mut b, &n.s);
     }
     b.extend_from_slice(&(f.meshes.len() as u32).to_le_bytes());
-    for m in &f.meshes {
+    for (m, detail) in f.meshes.iter().zip(&details) {
         put_str(&mut b, &m.material);
         put_str(&mut b, &m.albedo);
         put_str(&mut b, &m.normal_map);
         put_str(&mut b, &m.metallic);
         b.push(m.alpha_test as u8);
+        match detail {
+            Some(d) => {
+                b.push(d.variant);
+                b.push(d.bits);
+                d.names.iter().for_each(|n| put_str(&mut b, n));
+                put_f(&mut b, &d.params);
+            }
+            None => b.push(255),
+        }
         b.extend_from_slice(&(m.vertices.len() as u32).to_le_bytes());
         for v in &m.vertices {
             put_f(&mut b, &v.pos);
@@ -554,7 +707,13 @@ fn export_model(flver_path: &Path, tpf_path: &Path, out: &Path, tex_dir: &Path, 
     for m in &f.meshes {
         println!("  {} [{}] -> {} + {} + {}{} ({} verts)", m.material, m.mtd, m.albedo, m.normal_map, m.metallic, if m.alpha_test { " (alpha test)" } else { "" }, m.vertices.len());
     }
-    let wanted: std::collections::HashSet<&str> = f.meshes.iter().flat_map(|m| [m.albedo.as_str(), m.normal_map.as_str(), m.metallic.as_str()]).collect();
+    for (m, d) in f.meshes.iter().zip(&details) {
+        if let Some(d) = d {
+            let what = if d.variant == FRESNEL { "Fresnel coat".to_string() } else { format!("DetailBlend variant {} layers {:#x}", d.variant, d.bits) };
+            println!("  {} {what}: {:?}", m.material, d.names);
+        }
+    }
+    let wanted: std::collections::HashSet<&str> = f.meshes.iter().flat_map(|m| [m.albedo.as_str(), m.normal_map.as_str(), m.metallic.as_str()]).chain(details.iter().flatten().flat_map(|d| d.names.iter().map(String::as_str))).collect();
     for (name, dds) in &textures {
         if wanted.contains(name.as_str()) {
             write(&tex_dir.join(format!("{name}.dds")), dds);

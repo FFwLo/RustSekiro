@@ -989,12 +989,18 @@ pub(super) fn run_scripts(
                     *vis = Visibility::Hidden;
                 }
             }
+            // A fight moved onto another boss's arena (map boss_arena, MOVED in tools/boss_arenas.py):
+            // its places are in its own map's frame, so warps to them land off the platform (Map's
+            // probe: Wolf at the Owl's railing, (1.0, -11.4), 0.5 s in). Wolf keeps the arena's
+            // line-up; an enemy warped to a place stays where it is.
+            Act::CutsceneWarp(_) if crate::map::on_boss_arena() && !super::on_own_arena() => {}
             Act::CutsceneWarp(point) => {
                 if let Some(p) = run.place_of(point) {
                     warp.0 = Some(p);
                 }
 
             }
+            Act::Warp(_, ty, _, _) if ty != 2 && crate::map::on_boss_arena() && !super::on_own_arena() => {}
             Act::Warp(who, ty, target, short) => {
                 let to = match ty {
                     2 if target == PLAYER => Some((player.1.translation, player.0.yaw)),
@@ -1024,7 +1030,9 @@ pub(super) fn run_scripts(
                     }
                     run.warp_serial.insert(who, e.msg_serial);
                 }
-                tf.translation = Vec3::new(pos.x, run.start.y, pos.z);
+                // The target's own height: the place's MSB height on the boss's own arena
+                // (events::place; off it the place is at start.y anyway) or the character's.
+                tf.translation = pos;
                 // gap: the dummy poly offset is dropped; a warp onto another character faces Wolf.
                 let to_p = (player.1.translation - tf.translation).with_y(0.0);
                 a.yaw = if ty == 2 && to_p.length_squared() > 1e-4 { f32::atan2(-to_p.x, -to_p.z) } else { yaw };

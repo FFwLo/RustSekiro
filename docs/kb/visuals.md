@@ -324,7 +324,9 @@ Dated findings, oldest first. Append new entries at the end.
   - GPUStandardParticle 10000 (8): c7020 3043/3044/3047 embers 670240/670271, the carp
     c5050 650541, the Serpent 650133. Field docs exist, but not the GPU update (speed 15-22 m/s
     with random turns only make sense with the 10300 wind node).
-  - Line 601 (1: c1700 120014).
+  - Line 601 (1: c1700 120014): drawn since 2026-10-12 as one-pixel quads (fxr.rs 601; length along
+    the particle direction, colour x mean(startColor, endColor); gap: the start -> end gradient,
+    alphaThreshold). 120014 draws 200 lines (SHINOBI_FXR_LOG); its look is not checked against the game.
   - NodeAttachToCamera 46 (16: the Serpent c5010 set piece, c1000, c5000).
   Missing archives: 2, 3, 5, 21 (c1120, c7540-7600), 615102, 654061, 2255505.
 
@@ -335,3 +337,110 @@ AtkParam decalBaseId1/2 (0 / 100) + atkPow_forSfx. Flesh 109, base 0, size L = 6
 project from the hit along the blow (appearDirType 2, pitchAngle), red 191/54/19, mask 100030
 (base 0) / 160000 (base 100), sizes 0.15 -> 3 m over 10 m. Code: gore.rs `hit_stain_id`,
 `HitStains`; see HANDOFF 4.13.
+
+- **Cloth setting and coat cleanup** (2026-10-11, the user: "their coat still in arena after i fight
+  them", "turn down the cloth physics" -> an Options switch): Options "Cloth physics" On / Near
+  only / Off = config `[video] cloth = "on"|"near"|"off"` (15 m, 6 m from the camera, none:
+  every coat carried in its bind pose); `SHINOBI_CLOTH_RANGE` still overrides it. The cloth
+  display meshes have no parent (world-space CPU vertices), so model.rs `follow_owner` despawns
+  them with their actor and hides them while it is hidden (`FreeMesh`); before, a boss's coat
+  stayed on the arena after the fight or an encounter swap.
+
+## Lock-on mark (2026-10-11)
+
+MENU_Lockon01 in menu/hi/01_common.tpf: standalone (no .layout entry), BC7 64 x 32, a white disc
+about 10 px across centred at (16, 16), the rest clear. Scaleform clip Lockon_Ani_297 in
+menu/01_000_fe.gfx plays it. hud.rs `LockMark` draws it at the locked target's dummy 220 with the
+disc centre on the point, sized texture px x window height / 1080. 2026-10-12: the clip's timeline is decoded (shape 1042,
+32 x 32 centred, the texture's left half untinted; FadeIn f1-16 scale 3 -> 1, alpha 0 -> 1; Loop
+f16-83 alpha 1 -> 0.7383 (f50) -> 0.9922; FadeOut f84-89 alpha -0.2 / frame) and drawn so
+(hud.rs lock_clip). The deathblow (MenuVFX State_1) and stealth (MarkerTop_334) clips likewise,
+see HANDOFF "FE movie marks". dummy 220 as the anchor is still ours.
+
+## HitEffectSfxAngleParam (2026-10-12, parked)
+
+Param idx 0x3e, keyed by the HitEffectSfxParam row id; AtkParam+0x88 atkDir_forSfx (1 Upper, 2
+Bottom, 3 Left, 4 Right) selects the angle triple; atkDir<Dir> can swap the row id but only
+210 -> 211 uses it. Rows 200 / 290 / 300 / 310 / 550: Upper X -75, Bottom X +45, Left Y +65,
+Right Y -65 (degrees); 570 / 610 half. Base orientation: +Z from the hit toward a source node, at
+hitpos + hit[+0x60] x dir. FUN_14092b6c0 replaces the look-at basis with R = Ry(Y) Rx(X) Rz(Z)
+(absolute world); the event path FUN_140b63fe0 uses Euler(E - A) relative to a character. The
+two disagree, so vfx.rs keeps the plain look-at (gap).
+
+## DetailBlend (character fabric layers), decoded and ported 2026-10-12
+
+`Character_AMSN_[DetailBlend].shaderbdle` (shader/shaderbdle.shaderbdlebnd.dcx; the `_cloth`
+bundle's pixel shaders are byte-identical), 25 Gbuf variants by the MTD's `GXFT_SATStaticSwitch`
+(as M[Multiple], kb/map.md). Wolf (BD_M_9040): tops1 / tops1[a] / tops1_cloth switch 13, the
+muffler and tilingset1 switch 1. The coat ("Court") is another shader,
+`Character_AN_Blend_AMSN_[Fresnel]` (not decoded).
+- Slots (all on uv0, each with its group's tiling, `group_N_CommonUV-UVParam`, inferred to feed
+  FC_TextureTilingScale): base albedo 7, normal 0, metal 3 (.R); layer A (always) 1 / 6; B 2 / 5
+  (mask: base normal B >= 1/22, wB = min((22 n0.b)^260, 1)); C 10 / 12 (wC = (1 - n0.a)^8);
+  D 4 / 9 (wD = n0.a^8); back faces 8 / 13 / 11. No vertex-colour weights.
+- Albedo: a1 x color_0 -> lerp to a2 x color_1 by (1 - wB) -> a10 x color_5 by wC -> a4 x
+  color_2 by wD; then sat(albedo x a7 x 4.55). Normal: base FLV(n0) + FLV(layer normal xy, same
+  weights) x float_10. Gloss sat(2 x n0.b x layer gloss) (layer gloss = n.b + float_0 / 1 / 15 /
+  13). Metal layer = m3 + float_2 / float_8 / float_16 / float_5. Variants differ in which layers
+  exist and which "replace" (blend after the a7 x 4.55 modulation): table in
+  extracted/ref_shaders/detailblend.md.
+- Wolf: tops1 float_10 0.5, color_* white; slot 1 / 6 FC_A_0000_Fabric_blend04, 10 / 12
+  Fabric_blend02. Muffler color_0 0.851, color_1 (0.906, 0.894, 0.894), float_1 -0.5, group_3 UV
+  [51, 17]; slots 1 / 6 Fabric_blend01, 2 / 5 Fabric_blend05.
+- Why it matters: we draw a7 alone; BD_M_9040_tops_a averages 0.11 (sRGB), the fabric ~0.62, so
+  the game's tops were read as ~1.7x brighter (wrong: their layer A, Fabric_blend04, is a flat
+  0.2 linear grey, so 4.55 x 0.2 = 0.91, almost unchanged; the scarf's Fabric_blend01 is 0.37:
+  about 1.4x brighter and warmer). Colours carry x Intensity (the engine multiplies, kb/map.md).
+- Port: model format v6 (extractor `export_model`: `DETAIL_LAYERS`, `detail_params`; also the
+  `_cloth` twin shader), model.rs `DetailData` / `SekiroExt` layer textures + `DetailUniform`,
+  sekiro_material.wgsl `detail_layers`. v5 models load as before; `SHINOBI_NO_DETAIL=1` draws
+  the base alone. Re-exported 2026-10-12: Wolf's model_c0000_bd_m_9040 and the 69 roster models
+  with DetailBlend materials (c1010-c1700, c5000-c5430, c7010-c7600; list printed by
+  scratch detail_models.py). Shots (SHINOBI_PHOTO, before = SHINOBI_NO_DETAIL):
+  extracted/ref_frames/detail_{wolf,gen}_{before,after}_*.png; against real_002500 /
+  real_005230 (Wolf small, back view): the scarf warmer and lighter, the tops nearly the same,
+  still paler than the real orange-red (scene light). Nothing broken; the General's cloth shows
+  the weave.
+- Tiling (fixed 2026-10-12): each MTD texture entry (version 5) carries its own scale, the 2
+  floats after the path (mtd.rs `Texture.scale`; the mtd/*.txt dumps leave them out). A non-zero
+  scale is used; (0, 0) falls back to the group's `group_N_CommonUV-UVParam`. Wolf: tops1
+  blend04 32 x 16, blend02 100 x 50; scarf blend01 18 x 6 (its cloth twin: (0, 0), group_2
+  [18, 6]); tilingset1 blend01 8 x 4. Read as FC_TextureTilingScale (inferred: the cb1 index =
+  the t-register, never seen being filled).
+- Gaps: the SYSTEX_Dummy defaults for empty slots (white / flat / gloss 0.5 here),
+  the "after" layers' gloss, back faces (variants 15-20), variant 19's order and 21's lone normal,
+  o1 gloss / occlusion reading.
+
+## Coat shader Character_AN_Blend_AMSN_[Fresnel], decoded and ported 2026-10-12
+
+- Wolf's coat (BD_M_9040 Court, Court[a], their `_cloth` twins) and 66 MTDs in all (9000 / 9030
+  coats, 9110 kimono, 9120 haori, many NPC kimonos). One pixel shader (no static switch);
+  `_Gbuf_[A]` adds the alpha test. Decoded statically (D3DDisassemble).
+- Slots, all on uv0 x the texture's own MTD scale: 2 base albedo (alpha = cutout), 7 base normal
+  (B gloss, **A picks the fabric**), 0 reflectance -> metal R (empty: black), 3 / 1 fabric A
+  (blend05) albedo / normal, 4 / 5 fabric B (blend01). Wolf: fabric 25 x 25 (the cloth MTDs tile
+  blend05_n at 20), the base 1 x 1.
+- Math: w = n7.a^10; normal = base + lerp(FLV(n5) x float_11, FLV(n1) x float_1, w);
+  gloss = sat(2 n7.b lerp(n5.b, n1.b x float_3, w)); albedo = 4.55 a2 lerp(a4 color_3, a3
+  color_1, w); then the "Fresnel": a rim tint of the albedo, fres = (1 - sat(N.V - float_9))^
+  float_8 on the final normal, albedo = sat(lerp(albedo, lerp(color_2, albedo x color_0,
+  float_5), fres)); back faces: sat(a4 x color_4) (no base, no rim); metal = sat(t0.r +
+  float_0). Wolf: color_2 (0.78, 0.65, 0.57) x 0.5, float_8 2.36, float_9 -0.29 (rim 0.45 at
+  grazing, gone above N.V 0.71); color_3 white x 0.6, color_1 white; color_4 (0.5, 0.42, 0.4).
+- Port: model v6 variant byte 100 (exporter `FRESNEL`, `fresnel_params`; layer names a3, n1, a4,
+  n5), model.rs `Detail.flags.x = 2`, sekiro_material.wgsl `fresnel_layers`. Front / back by the
+  vertex normal, not by the winding (ours is reversed on the X-mirrored meshes).
+- Cloth normals (fixed with it): the coat's cloths (bodybese01 / bodybase02 / bodybese03) and
+  c7400's haori deform with the position-only hclObjectSpaceMeshMeshDeformOperator; the game
+  rebuilds their normals afterwards (hclUpdateAllVertexFramesOperator, in BD_M_9040_c.hkx). Ours
+  exported them as 0, so the coat drew with zero normals: that was the old black speckle.
+  cloth.rs `deform_display` / `rebuild_normals` now rebuild them from the deformed triangles
+  (area-weighted, on the bind normal's side). Test `coat_normals_after_deform`.
+- Re-exported 2026-10-12 in one pass (exporter tools/sekiro-extract, `cargo test --release`
+  passed): Wolf's model_c0000_{am_m_9000, bd_m_9040, fc_m_0200, lg_m_9000, wp_a_0300} and the 73
+  roster models with DetailBlend or Fresnel materials (the 69 before plus c1110, c5410, c7520,
+  c7530). Old files: scratchpad models_v5_backup. Shots: extracted/ref_frames/
+  coat_wolf_{before,after}_*.png. Before: the coat brown with black speckle (zero normals). After:
+  clean brown cloth with a fine weave, no speckle; the sleeves and skirt lit evenly.
+- Gaps: the pow 2.2 flag for colours (taken as linear), o1 gloss / occlusion reading, the Fwd /
+  Paint passes, the alpha dither of `_Gbuf_[A]` (alpha-to-coverage here).

@@ -8,7 +8,7 @@
 //! with Linear / Stepped / Hermite / Bezier keyframes and RandomDelta / RandomFraction modifiers.
 //! Drawn: BillboardEx (603), MultiTextureBillboardEx (604: all three layers, `MultiMaterial`,
 //! fx_multi.wgsl), PointSprite (600),
-//! QuadLine (602), Tracer / LegacyTracer (10012 / 606), PointLight (609), Model (605: the
+//! Line (601, one pixel wide), QuadLine (602), Tracer / LegacyTracer (10012 / 606), PointLight (609), Model (605: the
 //! s<model>.flver meshes exported to extracted/fxr_model), and the screen effects Distortion (607),
 //! RadialBlur (608) and the tracers' distortionIntensity (`DistortMaterial`, fx_distort.wgsl).
 //! Soft particles: `soften` + `FxDepth`. WindForce (10300) is not applied: unk_ds3_f1_31 = 1 (plants
@@ -263,13 +263,15 @@ pub struct FxEffect {
     pub stop: bool,
     /// Owner key: (actor, anim, event index), to stop slotted effects with their event.
     pub key: Option<(Entity, String, usize)>,
+    /// A placed effect that plays until stopped (the boss fog wall, fog_wall.rs): no age limit.
+    pub keep: bool,
     root: Option<NodeInst>,
     age: f32,
 }
 
 impl FxEffect {
     pub fn new(id: i64, anchor: Option<Anchor>, follow: bool, at: Transform) -> Self {
-        FxEffect { id, anchor, follow, at, stop: false, key: None, root: None, age: 0.0 }
+        FxEffect { id, anchor, follow, at, stop: false, key: None, keep: false, root: None, age: 0.0 }
     }
 }
 
@@ -702,10 +704,10 @@ fn tick(mut commands: Commands, time: Res<Time>, mut lib: ResMut<FxrLib>, global
         let place = if f.follow { anchor.unwrap_or(f.at) } else { f.at };
         let stop = f.stop;
         f.age += dt;
-        let too_old = f.age > 20.0;
+        let too_old = !f.keep && f.age > 20.0;
         let Some(root) = f.root.as_mut() else { continue };
         step_node(root, &mut lib, Transform { scale: Vec3::ONE, ..place }, dt, stop || too_old);
-        if root.finished || f.age > 30.0 {
+        if root.finished || (!f.keep && f.age > 30.0) {
             commands.entity(e).despawn();
         }
     }
@@ -1080,6 +1082,7 @@ fn collect(
     dist: &mut HashMap<i64, DistortBuf>,
     multi: &mut HashMap<MultiKey, MultiBuf>,
     lights: &mut Vec<(Vec3, Color, f32, f32)>,
+    px: f32,
 ) {
     if let Some(c) = &n.cfg {
         let a = &c["appearance"];
@@ -1192,6 +1195,22 @@ fn collect(
                     let key = (MODEL_KEY - int(a, "model", 0), if blend == 0 { 2 } else { blend });
                     out.entry(key).or_default().model(m, Transform { translation: world, rotation: rot, scale: size }, col);
                 }
+                // Line (601): a line primitive, a pixel wide, length / lengthMultiplier along the
+                // particle's direction like QuadLine's (reference/fxr fxr.ts class Line); drawn as a
+                // one-pixel quad. Its colours: color1-3 as the other appearances, times the mean of
+                // startColor (ActiveTime) and endColor. gap: the gradient from the start colour to
+                // the end colour along the line (one colour per quad here), alphaThreshold. Used once:
+                // c1700's 120014.
+                601 => {
+                    let len = scalar(a, "length", p.emit_t, &mut rnd, 1.0) * scalar(a, "lengthMultiplier", p.age, &mut rnd, 1.0) * sy;
+                    let sc = prop(a.get("startColor"), active_t, &mut rnd, [1.0; 4]).map(|v| v.clamp(0.0, 1.0));
+                    let ec = prop(a.get("endColor"), active_t, &mut rnd, [1.0; 4]).map(|v| v.clamp(0.0, 1.0));
+                    let col: [f32; 4] = std::array::from_fn(|i| col[i] * (sc[i] + ec[i]) * 0.5);
+                    let d = if p.attached { n.world.rotation * p.dir } else { p.dir };
+                    let side = d.cross(cam_f).normalize_or(cam_r) * px * world.distance(cam.translation()) * 0.5;
+                    let tail = world - d * len;
+                    out.entry((-1, blend)).or_default().quad([tail - side, world - side, world + side, tail + side], [[0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]], col, 0.0);
+                }
                 602 => {
                     let wl = scalar(a, "width", p.emit_t, &mut rnd, 1.0) * scalar(a, "widthMultiplier", p.age, &mut rnd, 1.0) * sx;
                     let len = scalar(a, "length", p.emit_t, &mut rnd, 1.0) * scalar(a, "lengthMultiplier", p.age, &mut rnd, 1.0) * sy;
@@ -1302,7 +1321,7 @@ fn collect(
         }
     }
     for ch in &n.children {
-        collect(ch, lib, cam, out, dist, multi, lights);
+        collect(ch, lib, cam, out, dist, multi, lights, px);
     }
 }
 
@@ -1436,12 +1455,19 @@ fn draw(
     mut dist_batches: ResMut<DistortBatches>,
     mut multi_materials: ResMut<Assets<MultiMaterial>>,
     mut multi_batches: ResMut<MultiBatches>,
-    camera: Query<&GlobalTransform, With<Camera3d>>,
+    camera: Query<(&GlobalTransform, Option<&Projection>, Option<&Camera>), With<Camera3d>>,
     mut fx: Query<&mut FxEffect>,
     old_lights: Query<Entity, With<FxLight>>,
     mut lib: ResMut<FxrLib>,
 ) {
-    let Some(cam) = camera.iter().next() else { return };
+    let Some((cam, proj, view)) = camera.iter().next() else { return };
+    // One screen pixel's height at 1 m (Line 601 is drawn a pixel wide).
+    let fov = match proj {
+        Some(Projection::Perspective(p)) => p.fov,
+        _ => std::f32::consts::FRAC_PI_4,
+    };
+    let rows = view.and_then(|c| c.physical_viewport_size()).map_or(1080.0, |s| s.y.max(1) as f32);
+    let px = 2.0 * (fov * 0.5).tan() / rows;
     let mut bufs: HashMap<(i64, i64), Buf> = HashMap::new();
     let mut dist: HashMap<i64, DistortBuf> = HashMap::new();
     let mut multi: HashMap<MultiKey, MultiBuf> = HashMap::new();
@@ -1450,7 +1476,7 @@ fn draw(
     for mut f in &mut fx {
         if let Some(root) = f.root.as_mut() {
             grow_trails(root, dt);
-            collect(root, &mut lib, cam, &mut bufs, &mut dist, &mut multi, &mut lights);
+            collect(root, &mut lib, cam, &mut bufs, &mut dist, &mut multi, &mut lights, px);
         }
     }
     if std::env::var("SHINOBI_FXR_LOG").is_ok() && !(bufs.is_empty() && dist.is_empty()) {
@@ -1581,7 +1607,9 @@ fn draw(
     }
     lights.sort_by(|a, b| b.2.total_cmp(&a.2));
     for (p, c, k, r) in lights.into_iter().take(8) {
-        commands.spawn((PointLight { color: c, intensity: k * 4000.0, range: r.max(0.5), shadow_maps_enabled: false, ..default() }, Transform::from_translation(p), FxLight));
+        // Spawned after this frame's propagation: its GlobalTransform given, or it would light
+        // from the origin.
+        commands.spawn((PointLight { color: c, intensity: k * 4000.0, range: r.max(0.5), shadow_maps_enabled: false, ..default() }, Transform::from_translation(p), GlobalTransform::from_translation(p), FxLight));
     }
 }
 
@@ -1597,7 +1625,10 @@ impl Plugin for FxrPlugin {
             .init_resource::<Batches>()
             .init_resource::<DistortBatches>()
             .init_resource::<MultiBatches>()
-            .add_systems(Update, (tick, draw).chain())
+            // After the transforms propagate: anchored effects read the pose the models are drawn
+            // with this frame (anim.rs draws between the last two sim poses), and a bullet spawned
+            // this frame already has its GlobalTransform.
+            .add_systems(PostUpdate, (tick, draw).chain().after(TransformSystems::Propagate))
             .add_systems(Startup, |mut commands: Commands, mut images: ResMut<Assets<Image>>| {
                 commands.insert_resource(FxDepth { image: images.add(depth_image(UVec2::ONE)) });
             })

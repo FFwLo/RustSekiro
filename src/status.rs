@@ -58,6 +58,13 @@ pub struct Affliction {
     fx: Vec<Entity>,
 }
 
+#[cfg(test)]
+impl Affliction {
+    pub(crate) fn fx_mut(&mut self) -> &mut Vec<Entity> {
+        &mut self.fx
+    }
+}
+
 #[derive(Default, Debug)]
 pub struct Status {
     pub poison: f32,
@@ -138,6 +145,26 @@ pub fn recover(gauge: &mut f32, carry: &mut f32, rate: f32, dt: f32) {
 pub struct Statuses(pub HashMap<Entity, Status>, Vec<Entity>);
 
 impl Statuses {
+    /// The body effects waiting to be stopped.
+    #[cfg(test)]
+    pub(crate) fn stopping(&self) -> &[Entity] {
+        &self.1
+    }
+
+    /// A new fight: every gauge and affliction goes, their effects on the body stop (Wolf keeps
+    /// his entity across resets, so his entry would carry the poison into the next fight).
+    pub fn clear_all(&mut self) {
+        let Statuses(all, stop) = self;
+        stop.extend(all.drain().flat_map(|(_, s)| s.effects.into_iter().flat_map(|a| a.fx)));
+    }
+
+    /// A character's new life (an enemy's in-place respawn): its gauges and afflictions go,
+    /// their effects on the body stop.
+    pub fn clear(&mut self, e: Entity) {
+        let Statuses(all, stop) = self;
+        stop.extend(all.remove(&e).into_iter().flat_map(|s| s.effects.into_iter().flat_map(|a| a.fx)));
+    }
+
     /// An affliction with this behaviorRefId is on the character (HKS env(3036, ref)).
     #[allow(dead_code)]
     pub fn has_ref(&self, combat: &Combat, e: Entity, behavior_ref: i64) -> bool {
@@ -175,7 +202,8 @@ impl Statuses {
     /// (0 poison, 1 burn).
     fn build_up(&mut self, combat: &Combat, target: Entity, sps: &[i64], resist: [f32; 2], guard: [f32; 2]) -> Vec<String> {
         let rules = ResistRules::get();
-        let status = self.0.entry(target).or_default();
+        let Statuses(all, stop) = self;
+        let status = all.entry(target).or_default();
         let mut out = Vec::new();
         for &id in sps.iter().filter(|id| **id > 0) {
             let Some(s) = sp(combat, id) else { continue };
@@ -205,7 +233,7 @@ impl Statuses {
                 continue;
             }
             *gauge = 0.0;
-            start(combat, status, id);
+            start(combat, status, id, stop);
             out.push(if name == "burn" { "BURNING".to_string() } else { "POISONED".to_string() });
         }
         out
@@ -219,13 +247,29 @@ fn sp(combat: &Combat, id: i64) -> Option<&SpEffect> {
     combat.player.sp_effects.get(&key).or_else(|| combat.kinds.iter().find_map(|k| k.data.sp_effects.get(&key)))
 }
 
-/// Applies an SpEffect; one with no duration hands straight on to its replaceSpEffectId.
-fn start(combat: &Combat, status: &mut Status, id: i64) {
+/// Applies an SpEffect; one with no duration hands straight on to its replaceSpEffectId. An
+/// active one of the same nonzero spCategory (else the same id) gives way to it: the burns
+/// 9100-9125 share category 10004, so a second burn row replaces the first instead of stacking
+/// (double ticks, two flames). Its body effects stop (`stop`) and the new row's start.
+fn start(combat: &Combat, status: &mut Status, id: i64, stop: &mut Vec<Entity>) {
     let mut id = id;
     for _ in 0..8 {
         let Some(s) = sp(combat, id) else { return };
         if s.effect_endurance > 0.0 {
-            status.effects.retain(|a| a.id != id);
+            // Already on (a burning target re-ignites: burns have disableBlood 0): its time starts
+            // over and it keeps its body effects, so no second flame layer is left running.
+            // gap: whether the exe also restarts the damage tick cadence is not traced.
+            let same = |a: &Affliction| a.id == id || (s.sp_category != 0 && sp(combat, a.id).is_some_and(|o| o.sp_category == s.sp_category));
+            if let Some(a) = status.effects.iter_mut().find(|a| same(a)) {
+                a.left = s.effect_endurance;
+                if a.id != id {
+                    stop.append(&mut a.fx);
+                    a.id = id;
+                    a.next_tick = s.motion_interval.max(0.1);
+                    a.shown = false;
+                }
+                return;
+            }
             status.effects.push(Affliction { id, left: s.effect_endurance, next_tick: s.motion_interval.max(0.1), shown: false, fx: Vec::new() });
             return;
         }
@@ -276,7 +320,7 @@ fn tick(time: Res<Time>, combat: Res<Combat>, mut statuses: ResMut<Statuses>, mu
         status.effects.retain(|f| f.left > 0.0);
         for (_, next) in ended {
             if next > 0 {
-                start(&combat, status, next);
+                start(&combat, status, next, stop);
             }
         }
     }

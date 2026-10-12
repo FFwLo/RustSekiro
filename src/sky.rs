@@ -1,0 +1,271 @@
+//! The game's sky: one dome of the sky library m89_00_00_99 around the camera at infinite depth
+//! (tools/sekiro-extract `sky` -> extracted/sky/sky.json), in place of the GI probe shown as the
+//! sky box (a capture from inside the level: nearby scenery blown up behind the world).
+//!
+//! common.emevd event 100 shows one library group by the story time (flags 9800-9803: morning,
+//! afternoon, evening, night = m900000 / 010 / 020 / 030, with past night 040 and dawn 050), and
+//! fixed ones on m10 (060) and m25 (070). Here the hour picks the nearest of the six keys, as
+//! the light set and probe do. Adapted from sekiro-rs (MIT / Apache-2.0) crates/game/src/sky.rs
+//! (9ee18b0): the selection, the material inputs and the radiance bridge (the probes' scale).
+//! `SHINOBI_MAP_PROBE_SKY=1` keeps the probe sky box instead.
+//! gap: the castle's late-story fire sky (Cloud_Fire) and the debug 8907015 are not chosen.
+
+use bevy::asset::embedded_path;
+use bevy::camera::visibility::NoFrustumCulling;
+use bevy::image::{ImageAddressMode, ImageLoaderSettings, ImageSampler, ImageSamplerDescriptor};
+use bevy::light::{NotShadowCaster, NotShadowReceiver};
+use bevy::mesh::{Indices, MeshVertexBufferLayoutRef, PrimitiveTopology};
+use bevy::pbr::{MaterialPipeline, MaterialPipelineKey};
+use bevy::prelude::*;
+use bevy::render::render_resource::{AsBindGroup, CompareFunction, RenderPipelineDescriptor, ShaderType, SpecializedMeshPipelineError};
+use bevy::shader::ShaderRef;
+use serde_json::Value;
+use std::collections::BTreeMap;
+
+pub struct SkyPlugin;
+
+impl Plugin for SkyPlugin {
+    fn build(&self, app: &mut App) {
+        bevy::asset::embedded_asset!(app, "sky.wgsl");
+        app.add_plugins(MaterialPlugin::<SkyMaterial>::default()).add_systems(Update, (load_library, update_sky).chain());
+    }
+}
+
+#[derive(Clone, ShaderType, Debug)]
+pub(crate) struct SkyInputs {
+    colors: [Vec4; 11],
+    floats: [Vec4; 48],
+    vectors: [Vec4; 10],
+    uv: [Vec4; 10],
+    sun: Vec4,
+    /// Kind (0 SkyDome, 1 Ver2, 2 Cloud), radiance scale, time, GXFT_SATStaticSwitch.
+    control: Vec4,
+}
+
+#[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
+pub(crate) struct SkyMaterial {
+    #[uniform(0)]
+    inputs: SkyInputs,
+    #[texture(1)]
+    #[sampler(2)]
+    high: Handle<Image>,
+    #[texture(3)]
+    #[sampler(4)]
+    low: Handle<Image>,
+}
+
+impl Material for SkyMaterial {
+    fn enable_prepass() -> bool {
+        false
+    }
+    fn enable_shadows() -> bool {
+        false
+    }
+    fn alpha_mode(&self) -> AlphaMode {
+        if self.inputs.control.x > 1.5 { AlphaMode::Blend } else { AlphaMode::Opaque }
+    }
+    fn vertex_shader() -> ShaderRef {
+        bevy::asset::AssetPath::from_path_buf(embedded_path!("sky.wgsl")).with_source("embedded").into()
+    }
+    fn fragment_shader() -> ShaderRef {
+        Self::vertex_shader()
+    }
+    fn specialize(_: &MaterialPipeline, d: &mut RenderPipelineDescriptor, _: &MeshVertexBufferLayoutRef, _: MaterialPipelineKey<Self>) -> Result<(), SpecializedMeshPipelineError> {
+        d.primitive.cull_mode = None;
+        if let Some(depth) = &mut d.depth_stencil {
+            depth.depth_write_enabled = Some(false);
+            depth.depth_compare = Some(CompareFunction::GreaterEqual);
+        }
+        Ok(())
+    }
+}
+
+/// The dome for a map at an hour: m10's and m25's own, else the nearest of the six story-time
+/// keys (common.emevd event 100's groups, the light set's hours).
+pub(crate) fn selection(source_map: &str, hour: f32) -> &'static str {
+    if source_map.starts_with("m25") {
+        return "m900070";
+    }
+    if source_map.starts_with("m10") {
+        return "m900060";
+    }
+    let keys = [(0.0, "m900040"), (2.0, "m900050"), (6.0, "m900000"), (12.0, "m900010"), (18.0, "m900020"), (22.0, "m900030")];
+    let hour = hour.rem_euclid(24.0);
+    let d = |h: f32| (h - hour).abs().min(24.0 - (h - hour).abs());
+    keys.into_iter().min_by(|a, b| d(a.0).total_cmp(&d(b.0))).unwrap().1
+}
+
+/// A material's MTD params as the shader's inputs (sekiro-rs sky.rs `inputs`).
+pub(crate) fn inputs(row: &Value, radiance: f32) -> SkyInputs {
+    let shader = row["shader"].as_str().unwrap_or_default();
+    let (prefix, kind) = if shader.contains("Ver2") {
+        ("M_Sky__SkyDome_Ver2_snp_0_", 1.0)
+    } else if shader.contains("M[Sky]_Cloud.") {
+        ("M_Sky__Cloud_snp_0_", 2.0)
+    } else {
+        ("M_Sky__SkyDome_snp_0_", 0.0)
+    };
+    let values = |name: &str| -> Vec<f32> { row["params"][name].as_array().into_iter().flatten().map(|v| v.as_f64().unwrap_or(0.0) as f32).collect() };
+    let vector = |name: &str| {
+        let v = values(name);
+        Vec4::new(v.first().copied().unwrap_or(0.0), v.get(1).copied().unwrap_or(0.0), v.get(2).copied().unwrap_or(0.0), v.get(3).copied().unwrap_or(0.0))
+    };
+    SkyInputs {
+        colors: std::array::from_fn(|i| {
+            let name = format!("{prefix}color_{i}");
+            let c = vector(&name).truncate();
+            let intensity = values(&format!("{name}-Intensity")).first().copied().unwrap_or(1.0);
+            (c * c * intensity).extend(1.0)
+        }),
+        floats: std::array::from_fn(|i| vector(&format!("{prefix}float_{i}"))),
+        vectors: std::array::from_fn(|i| vector(&format!("{prefix}float3_{i}"))),
+        uv: std::array::from_fn(|i| vector(&format!("{prefix}float2_{i}"))),
+        sun: Vec4::Y,
+        control: Vec4::new(kind, radiance, 0.0, values("GXFT_SATStaticSwitch").first().copied().unwrap_or(0.0)),
+    }
+}
+
+/// A dome mesh from sky.json in the arena: game space mirrored in X and turned by the arena's
+/// yaw (as the map pieces; fog_wall.rs `map_to_arena` without the origin, the dome being
+/// camera-centred).
+pub(crate) fn dome_mesh(m: &Value, arena_yaw: f32) -> Option<Mesh> {
+    let (s, c) = arena_yaw.sin_cos();
+    let f = |v: &Value| v.as_f64().unwrap_or(0.0) as f32;
+    let pos: Vec<[f32; 3]> = m["pos"].as_array()?.iter().map(|p| [-(f(&p[0]) * c + f(&p[2]) * s), f(&p[1]), -f(&p[0]) * s + f(&p[2]) * c]).collect();
+    let uv = |k: &str| -> Option<Vec<[f32; 2]>> { Some(m[k].as_array()?.iter().map(|p| [f(&p[0]), f(&p[1])]).collect()) };
+    let idx: Vec<u32> = m["idx"].as_array()?.iter().filter_map(|i| i.as_u64().map(|i| i as u32)).collect();
+    if pos.is_empty() || idx.is_empty() {
+        return None;
+    }
+    let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, bevy::asset::RenderAssetUsages::default());
+    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, pos);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uv("uv")?);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_UV_1, uv("uv2")?);
+    mesh.insert_indices(Indices::U32(idx));
+    Some(mesh)
+}
+
+#[derive(Resource)]
+struct Library {
+    json: Value,
+    current: String,
+    yaw: f32,
+    images: BTreeMap<String, Handle<Image>>,
+}
+
+#[derive(Component)]
+struct Dome;
+
+/// Reads sky.json once a map's lighting is there.
+fn load_library(mut commands: Commands, lighting: Option<Res<crate::map::MapLighting>>, library: Option<Res<Library>>, mut tried: Local<bool>) {
+    if library.is_some() || *tried || lighting.is_none() || std::env::var("SHINOBI_MAP_PROBE_SKY").is_ok() {
+        return;
+    }
+    *tried = true;
+    let Some(json) = std::fs::read_to_string(crate::paths::extracted().join("sky/sky.json")).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()) else {
+        warn!("sky: no extracted/sky/sky.json (sekiro-extract sky <extracted>): the probe stays the sky");
+        return;
+    };
+    commands.insert_resource(Library { json, current: String::new(), yaw: f32::NAN, images: BTreeMap::new() });
+}
+
+/// Puts up (or swaps) the dome for the map and hour, keeps its sun and drift time current, and
+/// takes the probe's sky box off the cameras.
+#[allow(clippy::too_many_arguments)]
+fn update_sky(
+    mut commands: Commands,
+    lighting: Option<Res<crate::map::MapLighting>>,
+    library: Option<ResMut<Library>>,
+    time: Res<Time>,
+    assets: Res<AssetServer>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<SkyMaterial>>,
+    domes: Query<(Entity, &MeshMaterial3d<SkyMaterial>), With<Dome>>,
+    skyboxes: Query<Entity, (With<Camera3d>, With<bevy::core_pipeline::Skybox>)>,
+) {
+    let (Some(lighting), Some(mut library)) = (lighting, library) else { return };
+    let want = selection(&lighting.source_map, lighting.hour);
+    if library.current != want || library.yaw != lighting.arena_yaw {
+        for (e, _) in &domes {
+            commands.entity(e).despawn();
+        }
+        library.current = want.to_string();
+        library.yaw = lighting.arena_yaw;
+        let row = library.json["models"][want].clone();
+        let radiance = crate::map::ENV_PER_UNIT;
+        for key in ["dome", "cloud"] {
+            let m = &row[key];
+            let Some(mesh) = m.get("mesh").and_then(|x| dome_mesh(x, lighting.arena_yaw)) else { continue };
+            // The texture slots in name order: the first is the high mask, the last the low.
+            let slots: Vec<Handle<Image>> = m["textures"]
+                .as_object()
+                .into_iter()
+                .flatten()
+                .filter_map(|(_, p)| p.as_str())
+                .map(|p| {
+                    library
+                        .images
+                        .entry(p.to_string())
+                        .or_insert_with(|| {
+                            assets.load_builder().with_settings(|s: &mut ImageLoaderSettings| {
+                                s.is_srgb = false;
+                                s.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor { address_mode_u: ImageAddressMode::Repeat, address_mode_v: ImageAddressMode::Repeat, ..ImageSamplerDescriptor::linear() });
+                            }).load(p.to_string())
+                        })
+                        .clone()
+                })
+                .collect();
+            let (Some(high), Some(low)) = (slots.first().cloned(), slots.last().cloned()) else { continue };
+            let material = materials.add(SkyMaterial { inputs: inputs(m, radiance), high, low });
+            commands.spawn((Dome, Mesh3d(meshes.add(mesh)), MeshMaterial3d(material), Transform::default(), NoFrustumCulling, NotShadowCaster, NotShadowReceiver, Name::new(format!("sky {want} {key}"))));
+        }
+        info!("sky: dome {want} ({}) at {:.1} h", lighting.source_map, lighting.hour);
+    }
+    let sun = crate::map::sun_toward(&lighting).extend(0.0);
+    for (_, h) in &domes {
+        if let Some(mut m) = materials.get_mut(&h.0) {
+            m.inputs.sun = sun;
+            m.inputs.control.z = time.elapsed_secs();
+        }
+    }
+    for e in &skyboxes {
+        commands.entity(e).remove::<bevy::core_pipeline::Skybox>();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// common.emevd event 100's story-time groups by hour (wrapping), and m10's / m25's own.
+    #[test]
+    fn the_hour_and_map_pick_the_dome() {
+        for (h, n) in [(6.0, "m900000"), (12.0, "m900010"), (18.0, "m900020"), (22.0, "m900030"), (0.0, "m900040"), (24.0, "m900040"), (2.0, "m900050"), (-6.0, "m900020")] {
+            assert_eq!(selection("m11_01_00_00", h), n, "{h} h");
+        }
+        assert_eq!(selection("m25_00_00_00", 12.0), "m900070");
+        assert_eq!(selection("m10_00_00_00", 12.0), "m900060");
+    }
+
+    /// The exported library: every dome has a mesh and its two masks, and its inputs are finite;
+    /// the colours are gamma 2 times their Intensity (m900000 color_2: white x30).
+    #[test]
+    fn the_exported_domes_load() {
+        let Ok(text) = std::fs::read_to_string(crate::paths::extracted().join("sky/sky.json")) else {
+            eprintln!("no sky.json: skipped");
+            return;
+        };
+        let json: Value = serde_json::from_str(&text).unwrap();
+        for name in ["m900000", "m900010", "m900020", "m900030", "m900040", "m900050", "m900060", "m900070"] {
+            let row = &json["models"][name]["dome"];
+            let mesh = dome_mesh(&row["mesh"], 0.7).unwrap_or_else(|| panic!("{name}: no mesh"));
+            assert!(mesh.count_vertices() > 100, "{name}");
+            assert!(row["textures"].as_object().is_some_and(|t| !t.is_empty()), "{name}: no textures");
+            let i = inputs(row, 1.0);
+            assert!(i.colors.iter().chain(&i.floats).all(|v| v.is_finite()), "{name}");
+        }
+        let morning = inputs(&json["models"]["m900000"]["dome"], 1.0);
+        assert_eq!(morning.control.x, 1.0, "m900000 is a Ver2 dome");
+        assert!((morning.colors[2].x - 30.0).abs() < 1e-4, "{:?}", morning.colors[2]);
+    }
+}

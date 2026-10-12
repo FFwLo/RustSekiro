@@ -37,7 +37,9 @@ struct Batch {
     normal: Vec<[f32; 3]>,
     uv: Vec<[f32; 2]>,
     uv2: Vec<[f32; 2]>,
-    blend: Vec<[u8; 4]>,
+    blend: Vec<[u8; 8]>,
+    /// |part scale X|: the game path's uv scale (uvS = uv0 x |world X axis|).
+    uv_scale: Vec<f32>,
     indices: Vec<u32>,
 }
 
@@ -290,9 +292,84 @@ struct Layers {
     mask: String,
     alpha: u8,
     two_sided: bool,
+    /// The game path (bin v5, docs/kb/map.md "The sat layer shaders, decompiled"): 1
+    /// M[Multiple], 2 M[MultipleGround], 0 none (the fields below empty). For kinds 1 / 2,
+    /// `c_albedo` / `c_normal` are layer L (M[Multiple] slot 7; M[MultipleGround] 1 / 6) and
+    /// `mask` is slot 9.
+    kind: u8,
+    /// The detail normal (slot 0; ground 12), the layer mask on uv1 (M[Multiple] slot 6), the
+    /// wet flow normal (slot 16; ground 0).
+    detail: String,
+    mask_l: String,
+    wet: String,
+    /// The material's shader constants in the game path's order (`game_params`), as f32 bits.
+    params: Vec<u32>,
 }
 
-fn choose(m: &flver::Mesh, mtd: Option<&mtd::Mtd>) -> Layers {
+/// The texture slots each pixel-shader variant samples (Gbuf pass, by GXFT_SATStaticSwitch;
+/// from the disassembly, docs/kb/map.md). A slot the variant does not sample is dropped.
+const MULTIPLE_SLOTS: [&[u8]; 34] = [
+    &[8, 0, 3], &[8, 0, 3, 6, 7], &[8, 0, 16, 3, 6, 7], &[8, 0, 3], &[8, 0, 3], &[8, 0, 12, 3, 9], &[8, 0, 12, 3, 6, 7, 9], &[8, 0, 12, 16, 3, 6, 7, 9],
+    &[8, 0, 3], &[8, 0, 3], &[8, 0, 10, 12, 3, 9], &[8, 0, 10, 12, 3, 6, 7, 9], &[8, 0, 10, 12, 16, 3, 6, 7, 9], &[8, 0, 3], &[8, 0, 3], &[8, 0, 3, 4, 5, 9],
+    &[8, 0, 3, 4, 5, 6, 7, 9], &[8, 0, 16, 3, 4, 5, 6, 7, 9], &[8, 0, 17, 3, 4, 5, 6, 7, 9], &[8, 0, 3], &[8, 0, 12, 3, 4, 5, 9], &[8, 0, 12, 3, 4, 5, 6, 7, 9],
+    &[8, 0, 12, 16, 3, 4, 5, 6, 7, 9], &[8, 0, 3], &[8, 0, 3], &[8, 0, 10, 12, 3, 4, 5, 9], &[8, 0, 10, 12, 3, 4, 5, 6, 7, 9], &[8, 0, 10, 12, 16, 3, 4, 5, 6, 7, 9],
+    &[8, 0, 3], &[8, 0, 3], &[8, 0, 3], &[8, 0, 3], &[8, 0, 3, 4, 5, 9], &[8, 0, 3, 4, 5, 9],
+];
+const GROUND_SLOTS: [&[u8]; 34] = [
+    &[12, 3, 8], &[0, 12, 3, 8], &[0, 12, 2, 3, 8], &[11, 12, 3, 7, 8, 9], &[0, 11, 12, 3, 7, 8, 9], &[3, 8], &[11, 12, 3, 7, 8, 9], &[0, 11, 12, 3, 7, 8, 9],
+    &[3, 8], &[3, 8], &[3, 8], &[3, 8], &[12, 3, 4, 5, 8, 9], &[0, 12, 3, 4, 5, 8, 9], &[0, 12, 2, 3, 4, 5, 8, 9], &[11, 12, 3, 4, 5, 7, 8, 9],
+    &[0, 11, 12, 3, 4, 5, 7, 8, 9], &[3, 8], &[11, 12, 3, 4, 5, 7, 8, 9], &[0, 11, 12, 3, 4, 5, 7, 8, 9], &[3, 8], &[3, 8], &[3, 8], &[3, 8],
+    &[1, 12, 3, 4, 5, 6, 8, 9], &[0, 1, 12, 3, 4, 5, 6, 8, 9], &[0, 1, 12, 2, 3, 4, 5, 6, 8, 9], &[1, 11, 12, 3, 4, 5, 6, 7, 8, 9], &[3, 8], &[3, 8],
+    &[1, 11, 12, 3, 4, 5, 6, 7, 8, 9], &[3, 8], &[3, 8], &[3, 8],
+];
+
+/// The game path's constants (64 floats, 16 vec4; map_material.wgsl `game_layers` reads them
+/// by index) from the MTD's `M_Multiple__snp_0_*` / `M_MultipleGround__snp_0_*` values. The
+/// snow direction is turned into arena space. A value the MTD leaves out is 0 (colours 1).
+/// Colours are rgb x `color_N-Intensity` (default 1), as the engine's GXMaterialParam_HDRColor
+/// uploads them (FUN_1403dc4b0; constructor FUN_1403dc1a0). gap: that class first raises the
+/// colour to the power 2.2 when a flag byte (+0x20 of its definition) is set, not traced: here
+/// raw; the shader tool's own defaults for left-out values.
+fn game_params(d: &mtd::Mtd, kind: u8, arena: &Arena) -> Vec<f32> {
+    let prefix = if kind == 2 { "M_MultipleGround__snp_0_" } else { "M_Multiple__snp_0_" };
+    let get = |n: &str| d.floats.iter().find(|(k, _)| *k == format!("{prefix}{n}")).map(|(_, v)| v.clone());
+    let f = |n: &str| get(n).and_then(|v| v.first().copied()).unwrap_or(0.0);
+    let v3 = |n: &str| get(n).filter(|v| v.len() >= 3).map_or([0.0; 3], |v| [v[0], v[1], v[2]]);
+    let v2 = |n: &str| get(n).filter(|v| v.len() >= 2).map_or([0.0; 2], |v| [v[0], v[1]]);
+    let col = |n: &str| -> [f32; 4] {
+        let c = get(n).filter(|v| v.len() >= 3).map_or([1.0; 3], |v| [v[0], v[1], v[2]]);
+        let k = get(&format!("{n}-Intensity")).and_then(|v| v.first().copied()).unwrap_or(1.0);
+        [c[0] * k, c[1] * k, c[2] * k, 0.0]
+    };
+    let w = |a: [f32; 3], x: f32| [a[0], a[1], a[2], x];
+    let one = [1.0, 1.0, 1.0, 0.0];
+    let p: [[f32; 4]; 16] = if kind == 2 {
+        let snow = arena.dir(v3("float3_5"));
+        let wet = v2("float2_1");
+        [
+            one, one, one, one, col("color_1"), col("color_0"),
+            [f("float_4"), f("float_5"), f("float_23"), f("float_12")],
+            [f("float_10"), f("float_6"), f("float_7"), f("float_22")],
+            [f("float_2"), f("float_3"), 0.0, 0.0],
+            w(v3("float3_0"), f("float_31")), w(v3("float3_2"), f("float_8")), [0.0; 4], [0.0; 4],
+            w(v3("float3_3"), 0.0), w(snow, 0.0), [wet[0], wet[1], 0.0, 0.0],
+        ]
+    } else {
+        let snow = arena.dir(v3("float3_7"));
+        let (l, wet) = (v2("float2_0"), v2("float2_1"));
+        [
+            col("color_1"), col("color_7"), col("color_2"), col("color_5"), col("color_6"), col("color_8"),
+            [f("float_4"), f("float_5"), f("float_1"), f("float_0")],
+            [f("float_29"), f("float_26"), f("float_30"), f("float_32")],
+            [f("float_2"), f("float_19"), l[0], l[1]],
+            w(v3("float3_0"), 0.0), w(v3("float3_2"), 0.0), w(v3("float3_1"), 0.0), w(v3("float3_3"), 0.0),
+            w(v3("float3_5"), 0.0), w(snow, 0.0), [wet[0], wet[1], 0.0, 0.0],
+        ]
+    };
+    p.iter().flatten().copied().collect()
+}
+
+fn choose(m: &flver::Mesh, mtd: Option<&mtd::Mtd>, arena: &Arena) -> Layers {
     let stem = |p: &str| p.rsplit(['\\', '/']).next().unwrap_or("").split('.').next().unwrap_or("").to_lowercase();
     let mut albedo: Vec<String> = Vec::new();
     let mut normal: Vec<String> = Vec::new();
@@ -336,8 +413,52 @@ fn choose(m: &flver::Mesh, mtd: Option<&mtd::Mtd>) -> Layers {
     if mtd.is_some_and(|d| d.shader.to_lowercase().contains("flow]_smoke")) {
         let (mask, normal) = (slot("texture2d_11_heightmap"), slot("texture2d_12_vectormap"));
         if !mask.is_empty() {
-            return Layers { albedo: String::new(), normal, over_albedo: String::new(), over_normal: String::new(), snow_albedo: String::new(), snow_normal: String::new(), c_albedo: String::new(), c_normal: String::new(), mask, alpha: 3, two_sided: true };
+            return Layers { albedo: String::new(), normal, over_albedo: String::new(), over_normal: String::new(), snow_albedo: String::new(), snow_normal: String::new(), c_albedo: String::new(), c_normal: String::new(), mask, alpha: 3, two_sided: true, ..Default::default() };
         }
+    }
+    // The game path: M[Multiple] / M[MultipleGround] with their decompiled blend (bin v5).
+    // Slots by number, kept only when the material's variant (GXFT_SATStaticSwitch) samples
+    // them. `MAP_OLD_LAYERS=1` exports the first reading (kind 0) instead.
+    let shader = mtd.map(|d| d.shader.to_lowercase()).unwrap_or_default();
+    let kind: u8 = if shader.ends_with("\\m[multipleground].spx") { 2 } else if shader.ends_with("\\m[multiple].spx") { 1 } else { 0 };
+    if let (Some(d), true) = (mtd, kind > 0 && std::env::var("MAP_OLD_LAYERS").is_err()) {
+        let variant = d.int("GXFT_SATStaticSwitch").unwrap_or(0).clamp(0, 33) as usize;
+        let used = if kind == 2 { GROUND_SLOTS[variant] } else { MULTIPLE_SLOTS[variant] };
+        let at = |n: u8, what: &str| -> String {
+            if !used.contains(&n) {
+                return String::new();
+            }
+            let want = format!("texture2d_{n}_{what}");
+            by_slot.iter().find(|(p, _)| p.ends_with(&want) || p.ends_with(&format!("{want}_0"))).map(|(_, t)| t.clone()).unwrap_or_default()
+        };
+        let (mut alpha, mut two_sided) = (0u8, false);
+        let alpha_ref = d.int("g_AlphaRef").unwrap_or(0);
+        let blend = d.int("g_BlendMode").unwrap_or(0);
+        if blend == 2 || blend >= 4 {
+            alpha = 2;
+        } else if alpha_ref > 0 || blend == 1 {
+            alpha = 1;
+        }
+        two_sided = two_sided || d.int("g_DoubleSided").unwrap_or(0) != 0 || alpha != 0 || !m.cull;
+        let ground = kind == 2;
+        return Layers {
+            albedo: at(8, "albedomap"),
+            normal: at(3, "normalmap"),
+            over_albedo: at(5, "albedomap"),
+            over_normal: at(4, "normalmap"),
+            snow_albedo: if ground { at(11, "albedomap") } else { at(12, "albedomap") },
+            snow_normal: if ground { at(7, "normalmap") } else { at(10, "normalmap") },
+            c_albedo: if ground { at(1, "albedomap") } else { at(7, "albedomap") },
+            c_normal: if ground { at(6, "normalmap") } else { String::new() },
+            mask: at(9, "mask3map"),
+            alpha,
+            two_sided,
+            kind,
+            detail: if ground { at(12, "normalmap") } else { at(0, "normalmap") },
+            mask_l: if ground { String::new() } else { at(6, "mask3map") },
+            wet: if ground { at(0, "normalmap") } else { at(16, "normalmap") },
+            params: game_params(d, kind, arena).into_iter().map(f32::to_bits).collect(),
+        };
     }
     let ground = m.mtd.to_lowercase().contains("ground") || mtd.is_some_and(|d| d.shader.to_lowercase().contains("multipleground"));
     let (over_albedo, over_normal) = (slot("texture2d_5_albedomap_0"), slot("texture2d_4_normalmap_0"));
@@ -385,6 +506,7 @@ fn choose(m: &flver::Mesh, mtd: Option<&mtd::Mtd>) -> Layers {
         mask,
         alpha,
         two_sided,
+        ..Default::default()
     }
 }
 
@@ -423,6 +545,14 @@ pub fn export(root: &Path, map_id: &str, centre: &str, radius: f32) {
     let dist: f32 = std::env::var("MAP_CENTRE_DIST").ok().and_then(|v| v.parse().ok()).unwrap_or(4.0);
     let origin = [c.pos[0] + dist * facing[0], c.pos[1], c.pos[2] + dist * facing[2]];
     let arena = Arena { origin, yaw: -rot[1].to_radians() };
+    // `MAP_PICK=<entity id>` keeps the pieces within the radius of that part instead of the
+    // origin: a fight spread over a building away from its centre part (the Folding Screen
+    // Monkeys' bar is a dummy, 2000800, at one end of the temple hall they run through;
+    // tools/boss_arenas.py). The arena frame stays on the centre part.
+    let pick: [f32; 3] = match std::env::var("MAP_PICK").ok().and_then(|v| v.parse::<i32>().ok()) {
+        Some(id) => msb.parts.iter().find(|p| p.entity == id).unwrap_or_else(|| panic!("MAP_PICK: no part with entity {id}")).pos,
+        None => origin,
+    };
     println!("centre {} ({}) at {:?} yaw {:.1}{}; arena origin {:?}, facing {:?} -> {:?}", c.name, c.model, c.pos, c.rot[1], if yaw_add != 0.0 { format!(" turned {yaw_add:+.0}") } else { String::new() }, origin, facing, arena.dir(facing));
     let area = &map_id[..3];
     let dir = root.join(format!("map/{map_id}"));
@@ -440,7 +570,7 @@ pub fn export(root: &Path, map_id: &str, centre: &str, radius: f32) {
         let mesh = hkx::collision_mesh(&data, &compendium);
         let world: Vec<[f32; 3]> = mesh.vertices.iter().map(|v| p.transform(*v)).collect();
         // Keep the part when any vertex is within the radius (horizontally).
-        let near = world.iter().any(|v| (v[0] - origin[0]).hypot(v[2] - origin[2]) <= radius + 10.0);
+        let near = world.iter().any(|v| (v[0] - pick[0]).hypot(v[2] - pick[2]) <= radius + 10.0);
         if !near {
             continue;
         }
@@ -490,6 +620,12 @@ pub fn export(root: &Path, map_id: &str, centre: &str, radius: f32) {
     // Pieces within `MAP_SHADOW` m (default 45) of the arena cast the sun's shadows; the rest
     // are tagged not to (the shadow passes over the whole map cost half the frame rate).
     let shadow_m: f32 = std::env::var("MAP_SHADOW").ok().and_then(|v| v.parse().ok()).unwrap_or(45.0);
+    // Pieces whose top is more than `MAP_SHADOW_BELOW` m (default 6) under the centre's floor cast
+    // none either: with the sun above the horizon they can only shade ground further down, far
+    // below the fight (the castle top: the keep's lower floors and the town under it; 2 cascades
+    // over its 5.3 M triangles ran at 48 fps, 105 without shadows).
+    let shadow_below: f32 = std::env::var("MAP_SHADOW_BELOW").ok().and_then(|v| v.parse().ok()).unwrap_or(6.0);
+    let mut low_pieces = 0;
     // `MAP_FAR=<m>` (default 0 = off): the map's distant-view models (m6xxxxx) and sky / cloud
     // pieces (m9xxxxx) within that many metres of the centre join at their lowest LOD, so the
     // horizon beyond the arena radius is not empty (the castle seen from the gate). Past
@@ -531,21 +667,43 @@ pub fn export(root: &Path, map_id: &str, centre: &str, radius: f32) {
         .into_iter()
         .chain(HIDDEN_MESHES.iter().filter(|(m, _, _)| *m == map_id).map(|(_, p, i)| (p.to_string(), *i)))
         .collect();
+    // Whole models left out (`MAP_SKIP_MODEL=<model>[,...]`, case-insensitive): overlapping
+    // event-swapped floors, e.g. the castle top's burnt floor m015072 over the tatami m015070
+    // that the Owl and Genichiro fights show (event 11115943 swaps them after a later cutscene;
+    // AKJama/sekiro-rs crates/sim/src/arena.rs `hidden_models`).
+    let skip_models: Vec<String> = std::env::var("MAP_SKIP_MODEL").map(|v| v.split(',').map(|s| s.trim().to_lowercase()).filter(|s| !s.is_empty()).collect()).unwrap_or_default();
     let mut objects_missing: std::collections::BTreeSet<String> = Default::default();
     let mut objects = 0;
     let mut objects_used: std::collections::BTreeSet<String> = Default::default();
     let mut object_hits = 0;
+    // Doors and gates an ObjAct event works (msb.objact_parts) are left out, mesh and collision:
+    // the game opens them through the ObjAct and its animation, which we do not run, so their
+    // bind pose is the closed door. The gate map's o111410_8000 stood closed between Wolf's
+    // start (0, 4) and the line-up (0, -4), and its hkx wall kept every regular fight from
+    // starting (2026-10-12). `MAP_KEEP_OBJACT=1` keeps them.
+    let keep_objact = std::env::var("MAP_KEEP_OBJACT").is_ok();
+    let mut objact_skipped = 0;
     for (pi, p) in msb.parts.iter().enumerate().filter(|(_, p)| p.kind == 0 || p.kind == 1) {
+        if !keep_objact && msb.objact_parts.contains(&pi) {
+            if std::env::var("MAP_LOG").is_ok() && (p.pos[0] - pick[0]).hypot(p.pos[2] - pick[2]) <= radius {
+                println!("objact part {} {} left out", p.name, p.model);
+            }
+            objact_skipped += 1;
+            continue;
+        }
         if !groups.is_empty() && !p.draws_with(&groups) {
             skipped_groups += 1;
-            if std::env::var("MAP_LOG").is_ok() && (p.pos[0] - origin[0]).hypot(p.pos[2] - origin[2]) <= radius {
+            if std::env::var("MAP_LOG").is_ok() && (p.pos[0] - pick[0]).hypot(p.pos[2] - pick[2]) <= radius {
                 println!("  not drawn there: {} ({}) draw groups {:08x?}", p.name, p.model, p.draw_groups);
             }
             continue;
         }
+        if skip_models.contains(&p.model.to_lowercase()) {
+            continue;
+        }
         let object = p.kind == 1;
         let path = if object {
-            if (p.pos[0] - origin[0]).hypot(p.pos[2] - origin[2]) > radius + 60.0 {
+            if (p.pos[0] - pick[0]).hypot(p.pos[2] - pick[2]) > radius + 60.0 {
                 continue;
             }
             let m = p.model.to_lowercase();
@@ -571,17 +729,22 @@ pub fn export(root: &Path, map_id: &str, centre: &str, radius: f32) {
             f
         };
         let mut f = read(0);
-        let (mut lo, mut hi) = ([f32::MAX; 2], [f32::MIN; 2]);
+        let (mut lo, mut hi, mut top) = ([f32::MAX; 2], [f32::MIN; 2], f32::MIN);
         for v in f.meshes.iter().flat_map(|m| m.vertices.iter()) {
             let w = p.transform(v.pos);
             lo = [lo[0].min(w[0]), lo[1].min(w[2])];
             hi = [hi[0].max(w[0]), hi[1].max(w[2])];
+            top = top.max(w[1]);
+        }
+        let low = top < origin[1] - shadow_below;
+        if low && dist_cast_counts(&lo, &hi, origin, shadow_m) {
+            low_pieces += 1;
         }
         if lo[0] > hi[0] {
             continue;
         }
-        let dx = (lo[0] - origin[0]).max(origin[0] - hi[0]).max(0.0);
-        let dz = (lo[1] - origin[2]).max(origin[2] - hi[1]).max(0.0);
+        let dx = (lo[0] - pick[0]).max(pick[0] - hi[0]).max(0.0);
+        let dz = (lo[1] - pick[2]).max(pick[2] - hi[1]).max(0.0);
         let dist = dx.hypot(dz);
         let far_piece = dist > radius && !object && (p.model.starts_with("m6") || p.model.starts_with("m9")) && dist <= far_m;
         if dist > radius && !far_piece {
@@ -637,7 +800,7 @@ pub fn export(root: &Path, map_id: &str, centre: &str, radius: f32) {
             }
             let key = m.mtd.to_lowercase();
             let mtd = mtds.entry(key.clone()).or_insert_with(|| std::fs::read(mtd_dir.join(format!("{key}.mtd"))).ok().and_then(|d| mtd::read(&d))).as_ref();
-            let layers = choose(m, mtd);
+            let layers = choose(m, mtd, &arena);
             if std::env::var("MAP_LOG").is_ok() {
                 println!("piece-mesh {} {} lod {} albedo {} [{}] tris {} cull {}", p.name, p.model, lod, layers.albedo, m.mtd, m.indices.len() / 3, m.cull);
             }
@@ -646,7 +809,8 @@ pub fn export(root: &Path, map_id: &str, centre: &str, radius: f32) {
             }
             let centre = [(lo[0] + hi[0]) * 0.5, (lo[1] + hi[1]) * 0.5];
             let cell = |v: f32| if cell_m > 0.0 { (v / cell_m).floor() as i32 } else { 0 };
-            let b = batches.entry((layers, dist <= shadow_m, cell(centre[0]), cell(centre[1]))).or_default();
+            let b_kind = layers.kind;
+            let b = batches.entry((layers, dist <= shadow_m && !low, cell(centre[0]), cell(centre[1]))).or_default();
             let base = b.pos.len() as u32;
             // A mirrored part (odd number of negative scale axes, e.g. the Guardian Ape arena's
             // pond floor m17_00_00_00 ground piece) turns its triangles inside out: flip the
@@ -663,9 +827,18 @@ pub fn export(root: &Path, map_id: &str, centre: &str, radius: f32) {
                 b.normal.push([n[0] / l, n[1] / l, n[2] / l]);
                 b.uv.push(v.uv);
                 b.uv2.push(v.uv2);
-                // Blend weights: overlay (byte 0), layer C (byte 1), snow (byte 4), byte 2
-                // (kb/map.md "Layers": read off the vertex data, not the shader).
-                b.blend.push([v.blend[0][0], v.blend[1][0], v.blend[4][0], v.blend[2][0]]);
+                // Blend weights, as the decompiled shaders read them (kb/map.md "The sat layer
+                // shaders"): b0 = blend[0].R overlay, b1 = blend[1].B layer L (ground .G),
+                // b4 = blend[4].G snow, b5 = blend[5].B detail strength; then b2 = blend[2].RGB
+                // tint, b3 = blend[3].R wet. The first reading (kind 0) takes bytes 0 / 1 / 4 / 2
+                // in the first four and ignores the rest.
+                let bl = &v.blend;
+                b.blend.push(if b_kind > 0 {
+                    [bl[0][0], bl[1][if b_kind == 2 { 1 } else { 2 }], bl[4][1], bl[5][2], bl[2][0], bl[2][1], bl[2][2], bl[3][0]]
+                } else {
+                    [bl[0][0], bl[1][0], bl[4][0], bl[2][0], 255, 255, 255, 0]
+                });
+                b.uv_scale.push(p.scale[0].abs());
             }
             if mirrored {
                 b.indices.extend(m.indices.chunks_exact(3).flat_map(|t| [base + t[0], base + t[2], base + t[1]]));
@@ -675,7 +848,7 @@ pub fn export(root: &Path, map_id: &str, centre: &str, radius: f32) {
             tris += m.indices.len() / 3;
         }
     }
-    println!("{pieces} pieces ({objects} objects, {object_hits} with their own collision; {far_pieces} far-view pieces beyond the radius; {skipped_groups} outside the draw groups; {mirrored_pieces} mirrored), {} batches, {tris} triangles", batches.len());
+    println!("{pieces} pieces ({objects} objects, {object_hits} with their own collision; {far_pieces} far-view pieces beyond the radius; {skipped_groups} outside the draw groups; {mirrored_pieces} mirrored; {low_pieces} near pieces below the floor cast no shadows; {objact_skipped} ObjAct doors left out), {} batches, {tris} triangles", batches.len());
     if !objects_missing.is_empty() {
         let list: Vec<String> = objects_missing.iter().cloned().collect();
         println!("objects to unpack: ^/obj/({})\\.objbnd", list.join("|"));
@@ -687,10 +860,12 @@ pub fn export(root: &Path, map_id: &str, centre: &str, radius: f32) {
     };
     let put_f = |b: &mut Vec<u8>, v: &[f32]| v.iter().for_each(|x| b.extend_from_slice(&x.to_le_bytes()));
     let mut b: Vec<u8> = Vec::new();
-    // Version 4: nine texture names per batch (base, overlay, snow, layer C albedo / normal,
-    // the base mask), a caster byte, and 44-byte vertices (pos, normal, uv, uv2, 4 blend bytes).
+    // Version 5: nine texture names per batch (base, overlay, snow, layer C / L albedo /
+    // normal, the base mask), the game path (kind byte, detail / layer mask / wet names, 64
+    // f32 constants), a caster byte, and 52-byte vertices (pos, normal, uv, uv2, 8 blend bytes,
+    // the uv scale).
     b.extend_from_slice(b"SHMP");
-    b.extend_from_slice(&4u32.to_le_bytes());
+    b.extend_from_slice(&5u32.to_le_bytes());
     b.extend_from_slice(&(batches.len() as u32).to_le_bytes());
     let mut wanted: HashSet<String> = HashSet::new();
     for ((l, casts, _, _), m) in &batches {
@@ -700,6 +875,15 @@ pub fn export(root: &Path, map_id: &str, centre: &str, radius: f32) {
             }
             put_str(&mut b, t);
         }
+        b.push(l.kind);
+        for t in [&l.detail, &l.mask_l, &l.wet] {
+            if !t.is_empty() {
+                wanted.insert(t.clone());
+            }
+            put_str(&mut b, t);
+        }
+        let params: Vec<f32> = if l.params.len() == 64 { l.params.iter().map(|x| f32::from_bits(*x)).collect() } else { vec![0.0; 64] };
+        put_f(&mut b, &params);
         b.push(l.alpha);
         b.push(l.two_sided as u8);
         b.push(*casts as u8);
@@ -710,6 +894,7 @@ pub fn export(root: &Path, map_id: &str, centre: &str, radius: f32) {
             put_f(&mut b, &m.uv[i]);
             put_f(&mut b, &m.uv2[i]);
             b.extend_from_slice(&m.blend[i]);
+            put_f(&mut b, &[m.uv_scale[i]]);
         }
         b.extend_from_slice(&(m.indices.len() as u32).to_le_bytes());
         m.indices.iter().for_each(|x| b.extend_from_slice(&x.to_le_bytes()));
@@ -733,9 +918,31 @@ pub fn export(root: &Path, map_id: &str, centre: &str, radius: f32) {
     if draw.is_none() {
         println!("no {} (unpack 'param/drawparam/{}')", gparam_path.display(), &map_id[..6]);
     }
+    // Other draw param files of the block (`MAP_GPARAM_EXTRA=0740,0750`: the `<block>_<v>.gparam`
+    // variants the area's event scripts switch to for a fight, kb/map.md "Castle top lighting"),
+    // written whole under "drawparam_variants" so the loader can pick one per fight.
+    let variants: serde_json::Map<String, serde_json::Value> = std::env::var("MAP_GPARAM_EXTRA")
+        .unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .filter_map(|v| {
+            let path = root.join(format!("param/drawparam/{}_{v}.gparam", &map_id[..6]));
+            match std::fs::read(&path) {
+                Ok(d) => Some((v.to_string(), gparam::to_json(&gparam::read(&d)))),
+                Err(_) => {
+                    println!("no {}", path.display());
+                    None
+                }
+            }
+        })
+        .collect();
+    if !variants.is_empty() {
+        println!("draw param variants {:?}", variants.keys().collect::<Vec<_>>());
+    }
     let env_probe = export_env(root, map_id, name, &msb, &arena);
     let luts = export_luts(root, map_id, name);
-    let (grapple, ledges) = export_grapple(root, map_id, &msb, &arena, origin, radius, &obj_dir);
+    let (grapple, ledges) = export_grapple(root, map_id, &msb, &arena, pick, radius, &obj_dir);
     let json = serde_json::json!({
         "grapple": grapple,
         "ledges": ledges,
@@ -752,6 +959,7 @@ pub fn export(root: &Path, map_id: &str, centre: &str, radius: f32) {
         "gparam": under_part.map(|p| p.gparam).unwrap_or([-1; 4]),
         "draw_groups": groups,
         "drawparam": draw,
+        "drawparam_variants": variants,
     });
     std::fs::write(root.join(format!("map_{name}.json")), serde_json::to_string_pretty(&json).unwrap()).unwrap();
 
@@ -841,4 +1049,12 @@ fn drop_top_mips(dds: &[u8], max: u32) -> Vec<u8> {
     out[28..32].copy_from_slice(&mips.to_le_bytes());
     out.extend_from_slice(&dds[o..]);
     out
+}
+
+/// Would the piece cast by distance alone (within `shadow_m` of the centre)? For the count of
+/// pieces the height rule (`MAP_SHADOW_BELOW`) takes out.
+fn dist_cast_counts(lo: &[f32; 2], hi: &[f32; 2], origin: [f32; 3], shadow_m: f32) -> bool {
+    let dx = (lo[0] - origin[0]).max(origin[0] - hi[0]).max(0.0);
+    let dz = (lo[1] - origin[2]).max(origin[2] - hi[1]).max(0.0);
+    dx.hypot(dz) <= shadow_m
 }

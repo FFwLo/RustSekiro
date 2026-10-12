@@ -126,7 +126,8 @@ pub struct GorePlugin;
 
 impl Plugin for GorePlugin {
     fn build(&self, app: &mut App) {
-        app.add_message::<PlaceStain>().add_systems(Startup, setup).add_systems(Update, bleed);
+        app.add_message::<PlaceStain>().add_systems(Startup, setup)// bleed reads the TAE edges (prev_t, t), which move once per fixed step.
+            .add_systems(FixedUpdate, bleed.after(crate::actor::ActorSet::Advance).after(crate::anim::PoseSet));
     }
 }
 
@@ -251,6 +252,7 @@ fn bleed(
                 continue;
             }
             let k = ((d - f("nearDistance")) / (far - f("nearDistance")).max(1e-3)).clamp(0.0, 1.0);
+            log(|| format!("hit stain {id} from {at:.2} pitch {:.0}: {d:.2} m -> {p:.2}", f("pitchAngle")));
             (p + Vec3::Y * 0.05, Some(k))
         } else {
             (at, None)

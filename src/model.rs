@@ -34,12 +34,26 @@ struct MeshData {
     /// The albedo alpha is a cutout (MTD "_e" / fur / decal); else opaque (DetailBlend / Blend
     /// shaders keep a blend mask in the alpha).
     alpha_test: bool,
+    /// Character_AMSN[DetailBlend] fabric layers (model v6; None for other shaders and older
+    /// models).
+    detail: Option<DetailData>,
     pos: Vec<[f32; 3]>,
     normal: Vec<[f32; 3]>,
     uv: Vec<[f32; 2]>,
     bones: Vec<[u16; 4]>,
     weights: Vec<[f32; 4]>,
     indices: Vec<u32>,
+}
+
+/// DetailBlend (docs/kb/visuals.md "DetailBlend"): the variant, its layer bits (exporter
+/// `DETAIL_LAYERS`), the layer textures (A albedo / normal, B, C, D) and the 40 constants.
+/// Variant `FRESNEL`: the coat shader instead ("Coat"; layers 3 / 1, 4 / 5).
+#[derive(Clone)]
+struct DetailData {
+    variant: u8,
+    bits: u8,
+    names: [String; 8],
+    params: Vec<f32>,
 }
 
 struct Dummy {
@@ -127,6 +141,13 @@ fn dummy_frame(dm: &Dummy) -> Option<Mat4> {
     Some(Mat4::from_rotation_translation(rot, dm.pos))
 }
 
+/// Tests: one mesh's bind positions, normals and indices (cloth.rs).
+#[cfg(test)]
+pub(crate) fn test_mesh(path: &std::path::Path, mesh: usize) -> Option<(Vec<[f32; 3]>, Vec<[f32; 3]>, Vec<u32>)> {
+    let m = load(path)?.meshes.into_iter().nth(mesh)?;
+    Some((m.pos, m.normal, m.indices))
+}
+
 fn load(path: &std::path::Path) -> Option<Model> {
     let d = std::fs::read(path).ok()?;
     if &d[0..4] != b"SHMD" {
@@ -173,9 +194,23 @@ fn load(path: &std::path::Path) -> Option<Model> {
         } else {
             true
         };
+        let detail = if version >= 6 {
+            let variant = d[o];
+            o += 1;
+            (variant != 255).then(|| {
+                let bits = d[o];
+                o += 1;
+                let names: [String; 8] = std::array::from_fn(|_| string(&mut o));
+                let params = (0..40).map(|k| f(o + k * 4)).collect();
+                o += 160;
+                DetailData { variant, bits, names, params }
+            })
+        } else {
+            None
+        };
         let vc = u32_(o) as usize;
         o += 4;
-        let mut md = MeshData { material, albedo, normal_map, metallic, alpha_test, pos: Vec::new(), normal: Vec::new(), uv: Vec::new(), bones: Vec::new(), weights: Vec::new(), indices: Vec::new() };
+        let mut md = MeshData { material, albedo, normal_map, metallic, alpha_test, detail, pos: Vec::new(), normal: Vec::new(), uv: Vec::new(), bones: Vec::new(), weights: Vec::new(), indices: Vec::new() };
         for _ in 0..vc {
             md.pos.push([-f(o), f(o + 4), f(o + 8)]);
             md.normal.push([-f(o + 12), f(o + 16), f(o + 20)]);
@@ -249,6 +284,19 @@ pub struct ModelMesh {
 #[derive(Component, Default)]
 pub struct DrawMask(HashMap<u32, bool>);
 
+impl DrawMask {
+    /// Back to the model's own groups (a respawn: the death anim's TAE 233 hid the weapons).
+    pub fn clear(&mut self) {
+        self.0.clear();
+    }
+
+    /// Groups a TAE 233 has hidden.
+    #[cfg(test)]
+    pub fn hidden(&self) -> usize {
+        self.0.values().filter(|on| !**on).count()
+    }
+}
+
 /// Sekiro "Character_AMSN" materials: StandardMaterial (albedo, alpha mask) + the normal map with
 /// shininess in its blue channel and the metallic mask (sekiro_material.wgsl).
 pub type SekiroMaterial = bevy::pbr::ExtendedMaterial<StandardMaterial, SekiroExt>;
@@ -264,6 +312,39 @@ pub struct SekiroExt {
     /// x: has a normal map, y: has a metallic mask.
     #[uniform(104)]
     pub flags: UVec4,
+    /// DetailBlend fabric layers (sekiro_material.wgsl `detail_layers`): A albedo / normal, B, C,
+    /// D, all repeating; sampled with layer A's sampler.
+    #[texture(110)]
+    #[sampler(111)]
+    pub layer_a: Option<Handle<Image>>,
+    #[texture(112)]
+    pub layer_a_n: Option<Handle<Image>>,
+    #[texture(113)]
+    pub layer_b: Option<Handle<Image>>,
+    #[texture(114)]
+    pub layer_b_n: Option<Handle<Image>>,
+    #[texture(115)]
+    pub layer_c: Option<Handle<Image>>,
+    #[texture(116)]
+    pub layer_c_n: Option<Handle<Image>>,
+    #[texture(117)]
+    pub layer_d: Option<Handle<Image>>,
+    #[texture(118)]
+    pub layer_d_n: Option<Handle<Image>>,
+    #[uniform(119)]
+    pub detail: DetailUniform,
+}
+
+/// The exporter's variant byte for Character_AN_Blend_AMSN_[Fresnel].
+const FRESNEL: u8 = 100;
+
+/// sekiro_material.wgsl `Detail`: flags x = 1 DetailBlend / 2 the coat shader, y = the layer bits, z = which layer
+/// textures are bound (bit k = `SekiroExt` layer texture k, A albedo first); `p` = the exporter's
+/// `detail_params`.
+#[derive(bevy::render::render_resource::ShaderType, Reflect, Debug, Clone, Default)]
+pub struct DetailUniform {
+    pub flags: UVec4,
+    pub p: [Vec4; 10],
 }
 
 impl bevy::pbr::MaterialExtension for SekiroExt {
@@ -281,7 +362,11 @@ impl Plugin for ModelPlugin {
         app.add_systems(PostStartup, attach_models.after(crate::anim::AnimSet))
             // Characters spawned later (a fight reset's line-up, the encounter picker).
             .add_systems(Update, attach_models.after(crate::anim::AnimSet))
-            .add_systems(Update, (hide_placeholder_blades, update_draw_masks, update_opacity))
+            .add_systems(Update, (hide_placeholder_blades, update_draw_masks, update_opacity, follow_owner.after(update_draw_masks)))
+            // TAE 233 is an edge: caught on the tick it starts (a frame can run two ticks).
+            .add_systems(FixedUpdate, apply_draw_mask_events.after(crate::actor::ActorSet::Advance))
+            // TAE 715 in the sim pose too (anim.rs PoseSet propagates by hand, from the rest dummies).
+            .add_systems(FixedUpdate, override_weapon_location.in_set(crate::anim::PoseSet).after(crate::anim::store_sim_poses))
             .add_systems(PostUpdate, override_weapon_location.after(bevy::transform::TransformSystems::Propagate));
         tool::plugin(app);
     }
@@ -296,6 +381,8 @@ impl Plugin for GeometryPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(PostStartup, attach_models.after(crate::anim::AnimSet))
             .add_systems(Update, attach_models.after(crate::anim::AnimSet))
+            // TAE 715 in the sim pose too (anim.rs PoseSet propagates by hand, from the rest dummies).
+            .add_systems(FixedUpdate, override_weapon_location.in_set(crate::anim::PoseSet).after(crate::anim::store_sim_poses))
             .add_systems(PostUpdate, override_weapon_location.after(bevy::transform::TransformSystems::Propagate));
     }
 }
@@ -536,6 +623,34 @@ fn attach_models(
             // SHINOBI_NO_NORMALS=1: flat normals (visual checks of the normal-map decode).
             let normal = if std::env::var("SHINOBI_NO_NORMALS").is_ok() { None } else { linear(&md.normal_map) };
             let metallic = linear(&md.metallic);
+            // DetailBlend layers: tiled (the group UV tiling runs far past 0..1), so repeating;
+            // albedos sRGB, normals linear. `SHINOBI_NO_DETAIL=1` draws the base alone (before).
+            let layer = |stem: &str, srgb: bool| -> Option<Handle<Image>> {
+                (!stem.is_empty() && crate::paths::extracted().join(format!("tex/{stem}.dds")).is_file()).then(|| {
+                    assets
+                        .load_builder()
+                        .with_settings(move |s: &mut bevy::image::ImageLoaderSettings| {
+                            s.is_srgb = srgb;
+                            s.sampler = bevy::image::ImageSampler::Descriptor(bevy::image::ImageSamplerDescriptor {
+                                address_mode_u: bevy::image::ImageAddressMode::Repeat,
+                                address_mode_v: bevy::image::ImageAddressMode::Repeat,
+                                mag_filter: bevy::image::ImageFilterMode::Linear,
+                                min_filter: bevy::image::ImageFilterMode::Linear,
+                                mipmap_filter: bevy::image::ImageFilterMode::Linear,
+                                anisotropy_clamp: 8,
+                                ..default()
+                            });
+                        })
+                        .load(format!("tex/{stem}.dds"))
+                })
+            };
+            let detail = md.detail.as_ref().filter(|_| std::env::var("SHINOBI_NO_DETAIL").is_err());
+            let layers: [Option<Handle<Image>>; 8] = std::array::from_fn(|k| detail.and_then(|d| layer(&d.names[k], k % 2 == 0)));
+            let detail_u = detail.map_or_else(DetailUniform::default, |d| DetailUniform {
+                flags: UVec4::new(if d.variant == FRESNEL { 2 } else { 1 }, d.bits as u32, layers.iter().enumerate().fold(0, |f, (k, l)| f | ((l.is_some() as u32) << k)), 0),
+                p: std::array::from_fn(|k| Vec4::from_slice(&d.params[k * 4..k * 4 + 4])),
+            });
+            let [layer_a, layer_a_n, layer_b, layer_b_n, layer_c, layer_c_n, layer_d, layer_d_n] = layers;
             // Cutouts as alpha-to-coverage (with the camera's 4x MSAA): a hard 0.5 mask made
             // the torn edges of Wolf's coat shimmer frame to frame whenever it moved a little.
             let alpha_mode = if md.alpha_test { AlphaMode::AlphaToCoverage } else { AlphaMode::Opaque };
@@ -552,6 +667,15 @@ fn attach_models(
                     flags: UVec4::new(normal.is_some() as u32, metallic.is_some() as u32, 0, 0),
                     normal,
                     metallic,
+                    layer_a,
+                    layer_a_n,
+                    layer_b,
+                    layer_b_n,
+                    layer_c,
+                    layer_c_n,
+                    layer_d,
+                    layer_d_n,
+                    detail: detail_u,
                 },
             });
             let base = visible(md);
@@ -564,9 +688,10 @@ fn attach_models(
             match cloth {
                 // World-space CPU vertices (cloth.rs): no GPU skin, no parent, no stale bounds.
                 Some(ci) => {
-                    commands.entity(e).insert(bevy::camera::visibility::NoFrustumCulling);
+                    commands.entity(e).insert((bevy::camera::visibility::NoFrustumCulling, FreeMesh::default()));
                     cloth_insts[ci].displays.push(crate::cloth::DisplayMesh {
                         handle,
+                        entity: e,
                         mesh: mi,
                         pos: md.pos.clone(),
                         normal: md.normal.clone(),
@@ -575,6 +700,7 @@ fn attach_models(
                         inv,
                         idx,
                         weights: md.weights.clone(),
+                        tris: md.indices.chunks_exact(3).map(|t| [t[0], t[1], t[2]]).collect(),
                     });
                 }
                 None => {
@@ -656,13 +782,10 @@ fn hide_placeholder_blades(
     }
 }
 
-/// Applies TAE draw-mask events to NPC mesh groups: 233 (Mask0-31: 0 hide, 1 show, 255 keep) when
-/// it starts - e.g. every death anim hides weapon groups 0-9 - and 711 / 713 while they run.
-fn update_draw_masks(
-    combat: Res<crate::data::Combat>,
-    mut actors: Query<(&Actor, &mut DrawMask)>,
-    mut groups: Query<(&MeshGroup, &mut Visibility)>,
-) {
+/// Records TAE 233 ChangeChrDrawMask (Mask0-31: 0 hide, 1 show, 255 keep) on the tick it starts -
+/// e.g. every death anim hides weapon groups 0-9. In FixedUpdate after the advance: (prev_t, t]
+/// is one tick's window, and Update would miss a start in the first of two ticks run in a frame.
+pub(crate) fn apply_draw_mask_events(combat: Res<crate::data::Combat>, mut actors: Query<(&Actor, &mut DrawMask)>) {
     for (a, mut dm) in &mut actors {
         if a.anim.is_empty() {
             continue;
@@ -679,6 +802,14 @@ fn update_draw_masks(
             }
         }
     }
+}
+
+/// Shows NPC mesh groups by the kept TAE 233 mask, and TAE 711 / 713 while they run.
+pub(crate) fn update_draw_masks(
+    combat: Res<crate::data::Combat>,
+    actors: Query<(&Actor, &DrawMask)>,
+    mut groups: Query<(&MeshGroup, &mut Visibility)>,
+) {
     for (g, mut vis) in &mut groups {
         let Ok((a, dm)) = actors.get(g.owner) else { continue };
         let mut on = dm.0.get(&g.group).copied().unwrap_or(g.base);
@@ -700,8 +831,35 @@ fn update_draw_masks(
     }
 }
 
-/// TAE 193 opacity (Actor::opacity) on the actor's materials: blended below 1, its own alpha
-/// mode again at 1.
+/// A character mesh outside the actor's hierarchy: the cloth display meshes (world-space CPU
+/// vertices, so no parent). `hidden` holds the visibility it had while its actor is not drawn.
+#[derive(Component, Default)]
+pub struct FreeMesh {
+    hidden: Option<Visibility>,
+}
+
+/// The free meshes go with their actor: despawned with it (a fight reset, the encounter
+/// picker, a boss's map event handing over to the next one: the coats stayed on the arena) and
+/// hidden while it is (the Monk's phantoms out of the fight).
+fn follow_owner(mut commands: Commands, owners: Query<Option<&InheritedVisibility>>, mut meshes: Query<(Entity, &ModelMesh, &mut FreeMesh, &mut Visibility)>) {
+    for (e, m, mut free, mut vis) in &mut meshes {
+        let Ok(owner) = owners.get(m.owner) else {
+            commands.entity(e).despawn();
+            continue;
+        };
+        if owner.is_some_and(|v| !v.get()) {
+            if *vis != Visibility::Hidden {
+                free.hidden = Some(*vis);
+                *vis = Visibility::Hidden;
+            }
+        } else if let Some(v) = free.hidden.take() {
+            *vis = v;
+        }
+    }
+}
+
+/// TAE 193 opacity (Actor::opacity) times the camera's fade (Actor::cam_alpha) on the actor's
+/// materials: blended below 1, its own alpha mode again at 1.
 fn update_opacity(
     actors: Query<&Actor>,
     meshes: Query<(&ModelMesh, &MeshMaterial3d<SekiroMaterial>)>,
@@ -709,7 +867,7 @@ fn update_opacity(
 ) {
     let mut seen: HashMap<Entity, f32> = HashMap::new();
     for (m, mat) in &meshes {
-        let op = *seen.entry(m.owner).or_insert_with(|| actors.get(m.owner).map_or(1.0, |a| a.opacity));
+        let op = *seen.entry(m.owner).or_insert_with(|| actors.get(m.owner).map_or(1.0, |a| a.opacity * a.cam_alpha));
         let Some(cur) = materials.get(&mat.0) else { continue };
         let mode = if op < 1.0 { AlphaMode::Blend } else { m.alpha };
         if (cur.base.base_color.alpha() - op).abs() < 0.004 && cur.base.alpha_mode == mode {
@@ -762,6 +920,28 @@ mod tests {
         let (r20, r22) = (d20.to_scale_rotation_translation().1, d22.to_scale_rotation_translation().1);
         assert!((r20 * bevy::math::Vec3::Z).dot(r22 * bevy::math::Vec3::Z) > 0.99, "forward differs");
         assert!((r20 * bevy::math::Vec3::Y).dot(r22 * bevy::math::Vec3::Y) < -0.99, "up not opposite");
+    }
+
+    /// A coat (free cloth display mesh) hides with its actor, comes back with it and is despawned
+    /// with it (the coats stayed on the arena after the fight).
+    #[test]
+    fn free_meshes_follow_their_actor() {
+        use bevy::prelude::*;
+        let mut app = App::new();
+        app.add_systems(Update, super::follow_owner);
+        let owner = app.world_mut().spawn(InheritedVisibility::VISIBLE).id();
+        let coat = app.world_mut().spawn((super::ModelMesh { owner, alpha: AlphaMode::Opaque }, super::FreeMesh::default(), Visibility::Inherited)).id();
+        app.update();
+        assert_eq!(app.world().get::<Visibility>(coat), Some(&Visibility::Inherited));
+        app.world_mut().entity_mut(owner).insert(InheritedVisibility::HIDDEN);
+        app.update();
+        assert_eq!(app.world().get::<Visibility>(coat), Some(&Visibility::Hidden));
+        app.world_mut().entity_mut(owner).insert(InheritedVisibility::VISIBLE);
+        app.update();
+        assert_eq!(app.world().get::<Visibility>(coat), Some(&Visibility::Inherited));
+        app.world_mut().entity_mut(owner).despawn();
+        app.update();
+        assert!(app.world().get_entity(coat).is_err(), "the coat outlived its actor");
     }
 }
 

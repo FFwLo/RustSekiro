@@ -120,8 +120,158 @@ Dated findings, oldest first. Append new entries at the end.
     in the exe); the MSB collision parts' MapVisibility (Good / Dark / Total Dark) is the likely
     shadow input, not traced.
   * Gaps: LastSightPos forget bookkeeping (forget runs on the normal target), listener ear_dist (done 2026-10-11: enemy.rs wolf_sounds / hearing_rate, FUN_140610a30: reach = rate x radius - ear_soundcut_dist, heard while dist - radii < reach + ear_dist; rate = prod(1 - hearingSearchEnemyCut/100) of the listener, FUN_140bfe590; exported hearingSearchEnemyCut; test a_deafened_enemy_hears_nothing),
-    map raycasts (done 2026-10-11: stealth::sight_clear, FUN_14061c8a0; points gap), patrol routes (MSB; blocked until enemies stand at their own MSB spots: MSBS Part.Enemy WalkRouteIndex i16 @type+0x20 -> the n-th PatrolInfo event (PatrolType i32, 32 x i16 walk region indices, 5 x {region i16, ArrivalAnimID i32, ArrivalWaitTime i32}; Smithbox SDT meta / SoulsFormats MSBS); the AI reads it by GetMovePointNumber / GetPrevMovePointNumber / GetMovePointWaitTime / GetMovePointAnimId and POINT_MOVE_POINT in common_non_battle_act.lua; how the engine steps the point is not traced), turn anims, the real HUD art, Wolf's physics radius
+    map raycasts (done 2026-10-11: stealth::sight_clear, FUN_14061c8a0; points gap), patrol routes (done 2026-10-12 for config `msb` enemies, see below: MSBS Part.Enemy WalkRouteIndex i16 @type+0x20 -> the n-th PatrolInfo event (PatrolType i32, 32 x i16 walk region indices, 5 x {region i16, ArrivalAnimID i32, ArrivalWaitTime i32}; Smithbox SDT meta / SoulsFormats MSBS); the AI reads it by GetMovePointNumber / GetPrevMovePointNumber / GetMovePointWaitTime / GetMovePointAnimId and POINT_MOVE_POINT in common_non_battle_act.lua; how the engine steps the point is not traced), turn anims (done 2026-10-12, see "Turning in place"), the real HUD art, Wolf's physics radius
     (CAPSULE_RADIUS 0.4 stands in).
+  * Patrol routes (2026-10-12): tools/patrols.py -> extracted/enemies/patrols.json (152 routes on 9
+    maps, boss rows left out): MSBS enemy type data +0x20 WalkRouteIndex -> the n-th type-14
+    PatrolInfo event (SoulsFormats MSBS EventParam.cs: PatrolType i32, 3 x i32 0, 32 x i16 region
+    indices, 5 x {region i16, 0, anim i32, wait i32}). Config enemy.group entries take `msb =
+    <entity>`: the enemy stands at its MSB spot (map pieces' transform: minus the export origin,
+    turned by arena_yaw, X mirrored) facing its MSB way, and its brain gets ai::Patrol.
+    GetMovePointNumber / GetPrevMovePointNumber / GetMovePointAnimId(n) / GetMovePointWaitTime(n)
+    / GetMovePointType answer from it, POINT_MOVE_POINT is the current point, and the route steps
+    when a MoveToSomewhere(POINT_MOVE_POINT) succeeds (common_non_battle_act.lua NonBattleAct_Common
+    then plays the arrival anim / wait). MoveToSomewhereSmooth 2013 runs as MoveToSomewhere. Gate
+    map (m11_01, 60 m around the export origin): 8 regular enemies have routes, all "Honjo
+    invasion" rows (Ochimusha 1010 1110248 / 1110236 / 1110252, Tokugawa 1700 x5); the default-state
+    ones there (the General 1110414, c1010_0086) have none. Test an_msb_enemy_walks_its_patrol_route.
+    Stepping (traced 2026-10-12, ai.rs Patrol): AiMovePointCtrl at AiThink +0x9060 (cur +0x9078,
+    prev +0x907c); FUN_1405afe20 (1405a.c:11008) steps when a move goal to POINT_MOVE_POINT ends
+    in success (Terminate callbacks FUN_1405c7b80 / c8050 / ca9b0) or on Lua StepNextMovePoint, not
+    by a distance check: prev = cur, cur = next by the PatrolType table 0x143af9550 (empty slots
+    skipped, 64 tries, else -1): 0 loop, 1 back and forth, 2 random, 3 loop over slots 0-15, 4
+    nearest of slots 16-31, 5 on to the last point then -1 (hook FUN_1405c2710 ends the route),
+    6+ never (cur -1). Spawn: prev -1, cur the first point (FUN_1405b06a0). Arrival anim / wait
+    match by region (FUN_1405c1ac0 / c1b90), and 4 routes pass a region twice (patrols.json
+    "regions"). IsRouteEnd (FUN_1405c20c0) = no point after prev. With cur -1 NonBattleAct plays
+    the last point's arrival anim and stays. Only types 0 / 1 / 5 occur (101 / 27 / 24). Test
+    patrol_points_step_by_their_type. Type 5's end (FUN_1405c2710 -> chr vtable +0x168 =
+    FUN_1409f60c0, 1409f.c:3833) makes the last point (region pos +0x14, rot +0x20) the enemy's
+    initial position / rotation (ChrIns +0xe0 / +0xf0, flag +0x1a15 bit 3 = IsChangeInitialPosition,
+    FUN_1405e4fc0): Patrol::new_home -> enemy home (patrols.json "yaws"). Route-end anims (ported 2026-10-12): m11_01
+    11115236 / 11115238 (1110236 / 1110252, both patrollers; 11115237's 1110296 has no route)
+    wait for the enemy inside region 1112238 / 1112252 (3[2] on itself; MSB shape 2 = sphere
+    r 1.2) OR its AI state 1 / 2 / 3 (4[9]); alerted it ends, else 2003[18] Force Animation
+    Playback 20004 (Should Loop 1). The exe never reads that loop byte: 2003[18] (FUN_140904ef0
+    case 0x12, 14090.c:8683) -> FUN_140bd84c0 keeps the anim id only, and the per-frame
+    FUN_140bd81b0 (140bd.c:5586) fires W_Event20004 and clears it the same frame. The state runs
+    EventCommonFunction (c9997.lua:3884; damage / death / fall take it) to its end (cxxxx.lua:49
+    env(339) -> W_Idle); its AI cancels (env 107 / 118 / 120 / 123-125, FUN_140b36410 140b3.c:9548-
+    9669) need TAE flags 23 / 79 / 86 / 122-124 (ActionCtrl +0x1f8, FUN_140b51b70), which
+    a000_020004 lacks. enemy.rs RouteEndAnim / route_end_anim, patrols.json "route_end"; test
+    a_patroller_plays_its_route_end_anim_once. MSB shapes are SoulsFormats' ShapeType (1 circle,
+    2 sphere, 3 cylinder, 4 rectangle, 5 box): WakeRegion read 1 / 2 as sphere / cylinder before
+    (test msb_region_shapes_follow_the_shape_type; the wake regions are all boxes). Patrol arrival (ported 2026-10-12): MoveToSomewhere(POINT_MOVE_POINT) succeeds when the
+    chr is inside the current point's MSB region (update FUN_1405caa00, 1405c.c:7420 ->
+    IsInsideMovePoint FUN_1405e55c0 -> FUN_1405ae370 -> FUN_1409825b0, 14098.c:2274: 1 circle XZ,
+    2 sphere 3D, 3 cylinder 0 <= dy <= h (FUN_140983380), 4 / 5 oriented box; radius tests are
+    strict). The goal's distance param is 0 on patrols. Points are spheres (1313) or cylinders
+    (122); 51 are point regions (exact equality: those end by IsArrived alone). IsArrived
+    (FUN_1405e4f20 -> FUN_1406052e0 -> FUN_1405b9070, 1405b.c:6531) runs first for every move
+    goal: distance < the chr's radius (vfunc 0x68, inferred) + the target's extent (+0x1c, 0 for
+    POINT_MOVE_POINT) + the goal's distance for dir type 0 / 9 (0 on patrols), strict, 2D or
+    3D by a flag (+0x20, gap: not mapped; read in XZ); a command with no target is arrived. patrols.json "areas", ai.rs
+    Patrol::inside_current; test an_msb_enemy_walks_its_patrol_route (steps at the 1.2 m edge).
+    gaps: whether the invasion rows are active in the default map state. MSB enemies start
+    unaware (enemy.rs StartUnaware -> make_unaware; the duel line-up starts fighting), so the
+    route runs in play.
+  * Guard stance (2026-10-12): GOAL_COMMON_Guard's usual action 9910 is c9997's ACTION_TYPE_GUARD
+    (hks_src/c9997.lua:258), not an anim: it was played as the missing a000_009910, so the goal
+    failed and enemies never held their guard. Now (ai.rs Command.guard, enemy.rs guard_stance):
+    from idle W_GuardStart (a000_401050) -> W_GuardIdle (500000 loop); while asked for, moves walk
+    guarded (GuardWalkFront / Back / Left / Right 50500x, move_table_guard), turns are
+    W_TurnGuard_* (50540x), attacks start from it (IdleCommonFunction(STYLE_GUARD)); the request
+    gone, W_GuardEnd (501040; ExecAIAction 1134-1140). All the guard clips hold ChrActionFlag 3
+    ShieldBlock, so combat.rs blocks Wolf's hits in the stance. Test
+    the_guard_goal_holds_the_guard_stance. Move goals carry a guard action as their last param
+    (MoveToSomewhere 8, which ApproachTarget / ApproachSettingDirection fill; LeaveTarget 4;
+    SidewayMove / KeepDist 5): 9910 moves in the stance (e.g. LeaveTarget(4, TARGET_ENE_0, d,
+    TARGET_ENE_0, true, 9910), 22 of 317 LeaveTargets with the literal); test
+    a_move_goal_with_9910_moves_guarded. The general stance 9920 (ACTION_TYPE_GENERAL_STANCE,
+    c9997.lua:259; ExecAIGeneralStance 1321-1375, ExecMove 1609-1632) runs the same way (ai.rs
+    Command.general, enemy.rs Stance): W_GeneralStanceStart401060 -> GeneralStanceIdle (600000),
+    GeneralStanceWalk* / RunFront (605000 / 605010), GeneralStanceTrun_* (60540x),
+    W_GeneralStanceEnd601040 when the request stops or another action comes; asking for one
+    stance in the other ends the other first. Used by KeepDist / SidewayMove /
+    ApproachSettingDirection (common_common_func2.lua) and 132000 / 155060 / 510000 / 720000
+    battle scripts. Test the_general_stance_runs_like_the_guard. gaps: W_GuardRun (a run walks
+    front), the start clips' cancel windows, Its own attacks (ported 2026-10-12): an AI action
+    603000-603009 / 601040-601044 out of the stance starts it first (W_GeneralStanceStart401060,
+    the goal keeps asking), in it plays W_GeneralStanceAttack<id> / End<id>, back to the stance
+    idle; a start in the stance ends it (enemy.rs general_stance_play; c1190 / c1320 have them,
+    119000 / 132000 / 155060 battle scripts ask). They count as attacks (is_attacking: flag-73
+    windows). Test the_general_stance_attacks_start_the_stance_first.
+  * Turning in place (2026-10-12): c9997 ExecTurn (hks_src/c9997.lua:1488-1563) from idle and at
+    the cancel of attacks / steps / damage (enable_turn TRUE; never from a turn or a walk / run):
+    |TurnAngle| >= 45 (or RequestEmergencyQuickTurn, env(330): AI +0x9054, FUN_1405e76e0) plays
+    W_Turn<AI state>_<Left|Right><90|180> (< 135: 90), not under SpEffect ref 1000072. Clips
+    a000_005400-3 / 105400-3 / 205400-3 / 405400-3 / 505400-3 (L90 R90 L180 R180); c1010 / c1020
+    have no 2054xx, c1700 only 4054xx / 5054xx (those states keep the turnVellocity spin). Root
+    motion turns them (no SetTurnSpeed); AI flags 23 / 86 / 79 / 78 open from 0.4 s (90) / 0.6 s
+    (180). enemy.rs start_turn, Actor::yaw_scale; the AI's TurnTo (FUN_1405e89f0, target at
+    +0x9050) is the request. Test an_enemy_turns_in_place_with_its_turn_clip (150 degrees off
+    home: TurnDefault_Right180, lands on the home facing). Scale (traced): act(9105, 90 / 180)
+    (FUN_140b32410 case 0x2391 -> FUN_1407de170, BehaviorTurn +0x30) and act(9104) (corrected-turn
+    flag); FUN_1407db220 (1407d.c:8110-8127) sets the root-motion rate (motion +0x904 / +0x90c,
+    used at 140bc.c:5150) to |yaw error| / that angle: Actor::yaw_scale. TurnAngle = AI desired
+    facing (+0x73e4 from the TurnTo target +0x9050, FUN_14060c7d0) minus the chr yaw, degrees,
+    right positive (FUN_140b4c600, 140b4.c:4531). env(106) = ActionCtrl +0x594 <- the AI's
+    SetAttackRequest (+0x7430) else StartGuard (+0x7414). gaps: the leftover error's 720 deg/s
+    correction (FUN_1407dab40), the 0xd branch (1407d.c:8046); the flight / crouch Default
+    rule not run (Guard / General stance turns: see Guard stance).
+  * Map AI hold (2026-10-12): m11_01 runs common_func 20005110 on 1110236 (15 patrolling enemies
+    on 9 maps have one; patrols.json "wake", tools/patrols.py): 2004[1] Set Character AI State
+    off, then on with Force Animation -1 once Wolf (10000) is inside its region (3[2]; 1110236's
+    is 1112236 "Event_巡回起動領域_地下牢前の橋", a box w37 d81 h13 turned -48°), it has one of
+    its 4[5] SpEffects (3500-3503, 3520, 8300, 220018, 230110/1, 9045, 230518/9) or Wolf hurt it.
+    enemy.rs AiHold / ai_hold does the same for config `msb` enemies (held = the map script's
+    AI off: idle, no senses). MSB region shapes: +0x10 type (SoulsFormats ShapeType: 1 circle r,
+    2 sphere r, 3 cylinder r h, 4 rectangle w d, 5 box w d h; data at +0x48); boxes and cylinders stand on their spot (DSMapStudio
+    RenderableProxy.cs:1364). Test an_msb_enemy_waits_for_wolf_in_its_wake_region. gaps: a
+    guarded hit (no HP lost) does not wake it; Force Animation -1 not played. Only Wolf's hits
+    wake it (react_from by_wolf, 2026-10-12 round 14: a rival's blow did too).
+  * Goal life end (2026-10-12 bug hunt): a goal whose life runs out while its update still
+    says Continue is a Success only if it or a goal above it has SetLifeEndSuccess (0x1405faa20
+    sets goal +0x4a0 bit 0x20; FUN_1405d06c0 1405d.c:1970-1985, FUN_1405d1b50 walks up), else
+    Failed (the parent fails, queued subgoals dropped). Was: every timed-out goal succeeded, so
+    a timed-out approach let the queued CommonAttack swing from out of reach. Started Attack /
+    SpinStep still run to their end; Wait / Stay / Guard end by life as a success (gap: their
+    updates not traced); FUN_140605ea0 (+0x7420) exception not traced. ai.rs life_end; test
+    a_timed_out_goal_fails_unless_life_end_success; all_enemies_full still 94 / 110.
+  * AI pacing vs the live recordings (2026-10-12, task 4). Live: memscope-data/logs rec_*_20261009,
+    enemies tracked by ChrIns handle (slots 1 / 2 swap every 60 ticks), body anim = TimeAct +0x100
+    without the overlay layers (face 7900xx, 9200, 9500-9503, 9600, 9700, 9999, 40000, 41500-41502),
+    attack = an anim whose TAE has a type 1 / 2 / 304 event; script kept in the session scratchpad
+    (pacing/enemy_pacing.py, not in the repo). Sim: `ai_pacing` (ignored test; SHINOBI_PACE=chr:row),
+    Wolf only holding his guard for 90 s.
+
+    | enemy | source | attacks/min | start->start median (mean) | end->start median (mean) | chained <= 0.2 s | distance median (min-max) |
+    |---|---|---|---|---|---|---|
+    | General 10203010 | live b+c+d, 121 attacks / 238 s, Wolf fighting | 30.4 | 1.54 (1.99) s | 0.52 (0.85) s | 28 % | 2.40 (0.95-6.59) m |
+    | General 10203010 | sim, Wolf guarding | 22.7 | 1.85 (2.63) s | 0.00 (1.06) s | 61 % | 2.1 (0.9-6.5) m |
+    | Ochimusha (4 rows pooled) | live c1010_b, 22 attacks / 47 s | 28.3 | 1.63 (2.17) s | 0.32 (0.67) s | 44 % | 2.2 (0.68-6.07) m |
+    | Ochimusha 10100000 | sim | 24.7 | 0.97 (1.31) s | 0.32 (0.23) s | 28 % | 3.3 (1.7-4.9) m |
+    | Ochimusha 10100110 (a100 set) | sim | 14.0 | 1.18 (4.47) s | 0.32 (3.38) s | 10 % | 3.6 (1.9-4.5) m |
+
+    Reading: the gaps and distances are in the same range; the sim General chains more and attacks
+    less often, the sim Ochimusha attacks from further out (its a000_003051 x11). Not comparable
+    one to one: live, 43 % (General) / 74 % (Ochimusha) of the time between attacks is recoil from
+    Wolf's deflects and hits (8600 1.6 s, 8010 / 8050) and ~10 % of the General's starts are cancelled
+    into guard 3100 / 3101 when Wolf attacks; the sim Wolf never attacks. Most used live: General
+    3000 x25, 3008 x14, 3004 x14, 3007 x10 (chains 3000 -> 3001 -> 3002, 3008 -> 3009 / 3067); sim
+    3000 x7, 3001 x5, 3002 x4. No tuning made from this. Data notes: rec_c1010_20261009 is Hanbei
+    (c1012, 10120000) with c1001 dummies, not c1010; rec_c1020_20261009 is a deathblow test (no
+    attacks); rec_c1020_b/c/d are one General (10203010); rec_c1010_b has 4 Ochimusha rows
+    (10100110, 10100000, 10100100, 10100300), each only briefly in the slots. gap: a like-for-like
+    recording (Wolf only guarding, one regular enemy, 2+ min) would settle the chain rate.
+  * Gate map forced crouch / shadow (2026-10-12): no 20004001 (forced crouch, 100210) in any
+    m11_01 EMEVD, so none on the gate; 109201 "crouch shadow stealth" has no setter in EMEVD, params,
+    TAE or HKS. The likely shadow input is the hit parts' MapVisibility (collision type data +0x27,
+    0 Good / 1 Dark / 2 Total Dark; FUN_1409b5c80 -> chr +0x1acd; FUN_140617150 puts it in the
+    sight query, remapped by the target's SpEffect mapVisibilityOverride*, scaled by query
+    +0x58[type] 1 / 0.5 / 0.3 in FUN_14061ae40 / FUN_14061c2a0; NpcThinkParam disableDark skips
+    it): all 221 m11_01 collision parts are Good, so the gate has no dark places. Not exported;
+    other maps have Dark ones (m11_00 2 + 4 Total, m17 19 Total, m20 7).
   * Footsteps: Wolf's walk / run clips carry CreateAISound (TAE 237) for their whole length - walk
     1000 (0.5 m), run 1010 (2 m), crouch walk 1001 (0.25 m), crouch run 1011 (0.5 m); read from the
     clip on screen (Actor::shown_clip), radius x hearingSearchEnemyRate when bSpEffectEnable. 103 tests.
@@ -267,8 +417,90 @@ Dated findings, oldest first. Append new entries at the end.
   * Ledge-hang / wall-hug deathblows (2026-10-11): Combat::throws_of_kinds(foe, kinds), ThrowKind
     110000/110010 hanging (12800; 13000), 90000/90010 left wall (12600), 100000/100010 right
     (12700); 48 common kinds have them, no boss. Test the_ochimusha_has_his_hang_and_hug_deathblows.
+  * Owl phase 2 (2026-10-11, from AKJama/sekiro-rs b997933, docs/OWL.md): no deathblow while his
+    TAE marker 3506080 is up (a000_020005 0-10.27 s, 021003 loop, 20006-20008 first 0.233 s);
+    player::deathblow_check. His castle Lua escape 20007 on Wolf's attack runs as is
+    (INTERUPT_ParryTiming). Test the_owl_has_no_deathblow_during_his_heat_up. gap: the exe's
+    test of the marker; ChrActionFlag 24 (no damage motion) not modelled.
+  * Posture recovery HP gates (checked against sekiro-rs COMBAT-FUNDAMENTALS): the resident
+    conditionHp SpEffects multiply (actor.rs product: 0.6, 0.3, 0.1 below 80 / 60 / 40 %), same.
+  * Bullet decay (2026-10-11): past `dist` a bullet's hits lose damageDamp / staminaDamp /
+    knockbackDamp percent per second (Paramdex "decreases in 1 second after the attenuation
+    distance"; 100 on many rows, e.g. c1060 / c1450 / c1470 / c5060), linear (gap: curve not
+    traced). Attack::decayed, enemy_bullet.rs; test a_bullet_past_its_range_weakens.
+  * Deathblow absorb vs walls (2026-10-11, after sekiro-rs docs/DEATHBLOW.md): the snap onto the
+    throw dummy goes through Terrain::slide; what a wall stops, the other character gives way
+    (player::follow_throw). gap: the engine's handling is not traced; no sim test (needs a map).
+  * Enemy posture-damage SpEffects (2026-10-12): an enemy's own TAE / resident SpEffects scale
+    the posture it takes by def<Attr>StaminaDmgRate for the attack's staminaPhysicsAttribute
+    (combat::def_stamina_rate; hits, blocks, deflects). Isshin's change a000_003015 holds 3540090
+    "Revived Kensei posture damage suppression" x0.3 (and 5350: no damage anims, not modelled).
+    gap: product vs other combination of several not traced.
+  * Native goal distances (2026-10-12 bug hunt): CommonAttack successDist, LeaveTarget and
+    KeepDist compare against GetDist's distance (centre minus the AI chr's own radius): their
+    updates call the GetDist thunk 0x1405e2c10 (r8b 1; CommonAttack 0x1405c6d30 at 0x1405c7073 /
+    0x1405c70cd, LeaveTarget 0x1405c80d0 at 0x1405c8163, KeepDist 0x1405c7c40 at 0x1405c7cb9);
+    the plain thunk 0x1405e3fb0 is used by no goal. ai.rs goal_dist (was the centre distance:
+    enemies stopped short / attacked from too far by their radius). gap: MoveToSomewhere's
+    arrival (successDist) is in its move subgoals (0x1405caa00 / 0x1405c9df0), not traced; read
+    the same. SidewayMove has no distance. Test native_goals_measure_distance_like_get_dist.
+  * Breaking-deflect pose (2026-10-12): Wolf's ThrowBreak pose and hold play only if the enemy
+    entered its ThrowDef<def> (react refuses while Rising / Held / Broken); before, Wolf could be
+    left in the close-up with nothing to finish (user's Isshin report). Not reproduced in the
+    sim; player.rs logs "deathblow refused: ..." with the reason.
+  * Moved fights (2026-10-12): on another boss's arena (Map's MOVED: Isshin, Isshin Ashina, Emma,
+    the Owl on boss_71001000) the boss script's CutsceneWarp and Warps to a place are skipped:
+    its places are in its own map's frame (Wolf landed at the railing). "Moved" = the index's
+    map_boss_arenas.json "moved" list (tools/boss_arenas.py MOVED; enemy::own_arena_of): the Owl,
+    Emma and Isshin Ashina share m11_01 with the castle top, so the same map is not enough.
+    Map's probe: Wolf stays at (0, 0.91, 4) through 7 s on the Owl and Isshin.
   * Own arena (2026-10-11): enemy::on_own_arena = map::loaded_map() is own_arena_of(fight row): the
     row's map_boss_arenas.json stem whose map_<stem>.json "map" equals its boss_scripts.json "map"
     (Monk, Butterfly, Apes, Dragons, and 54000000 / 71000000 / 71101000 on Isshin's field m11_02).
     set_fight(chr, row) at startup and on SpawnEncounter; a swap's line-up waits one frame for
     map.rs switch_map.
+- 2026-10-12 sekiro-rs ports ("bug fixes" findings; THIRD_PARTY.md):
+  * Super armour (sekiro-rs c0f97ee): the damage level an enemy reacts to is 0 under ChrActionFlag
+    24, else swapped by its active spCategory 1001 SpEffect (lowest categoryPriority; stateInfo
+    120 needs a super-armour meter, skipped) through dmgLv_* (FUN_14084ff70 -> bfd980 -> 10cea20
+    -> 10b5100; enum table 2b979e8 [0,8,1,2,3,7,4,6,9,5,10,11]); guards and level 0 bypass it.
+    combat.rs damage_motion_level; replaced the flag-73 proxy. Test
+    super_armour_swaps_the_damage_level_in_its_window (c1010 a000_003010 5358: 2 -> 8).
+  * Aerial reactions (sekiro-rs c0f97ee character.rs:1045-1074; c9997 IsDamagedAerial = env 201
+    false or ref 1000060): ExecDamageLargeBlow 4 / 9 / 10 -> DamageAerialBlow (8150),
+    ExecDamageDefault 2 / 3 / 5 / 6 -> DamageAerialBack (8141, from behind) / Front (8140), else
+    the additive flinch; 7 / 11 keep ExecDamageBlow. combat.rs enemy_damage_state_air. gap: env
+    201 read as lifted 5 cm above a SetNoGravity leap's start. 15 chrs have the anims. Test
+    an_enemy_hit_in_the_air_takes_the_aerial_reactions.
+  * Guarded bullets (sekiro-rs a8351b9 fight.rs:644, docs/PROJECTILE-GUARD.md): a blocked or
+    deflected bullet gives its shooter no recoil, posture or bound reaction (inferred from the
+    rows: every NPC bullet AtkParam has 0 attacker posture and no guarded reaction; the exe's
+    bullet-to-owner dispatch is not traced). Test a_guarded_bullet_leaves_its_shooter_alone.
+- 2026-10-12 round 15 (ours): enemy guard clips follow c9997 ExecGuardBlock for blocks and
+  deflects (combat.rs enemy_guard_block: refs 1000090 / 1000100 / 1000101 / 1000105, next clip
+  when one is missing; c1180's shield 400230 deflects without ref 1000090 so plays the plain
+  guard); a broken Wolf is knocked down only at levels 1 / 2 / 3 / 5 (or broken again in
+  StandDamageBreak), minimum nothing, the rest normal (broken_takes_normal_damage); a crouched
+  gourd drink raises INTERUPT_UseItem (enemy.rs wolf_starts_an_item). The flag-73 mid-swing
+  gate stays beside the super-armour swap (live rec; sekiro-rs has no such gate).
+- 2026-10-12 EXLARGE guard (c9997 guard_damage_table 4: a blow on guardLevel 1, an ex blast on
+  1-3): ExecGuardBlock has no clip for it and returns FALSE, so ExecDamage goes on to
+  ExecDamageLargeBlow: DamageLargeBlow (8130), in the air DamageAerialBlow (8150); without the
+  clip nothing (ExecDamageDefault has no blow branch). It played GuardDamageLarge before.
+  combat.rs enemy_guard_block (aerial: enemy_is_aerial); test a_blow_on_a_weak_guard_launches_the_enemy.
+- 2026-10-12 map AI hold, the damage wake: EMEVD 4[1] IF Character Damaged By / 3[23] IF Damage
+  Type (only types 0-2 are evaluated) read the SprjEventDamageInfo list (DAT_143d56058 +0x38),
+  written by FUN_1406d8950 (from FUN_140b6e150, 140b6.c:8033) only when the hit's final HP damage
+  (+0x1e0) > 0 and +0x1cb == 0. Guard / deflect hits run the same chain but a full guard cut
+  leaves HP damage 0: no record, still held; a guard that chips HP would wake. enemy.rs ai_hold:
+  HP lost since its last check + a reaction Wolf caused (react_from) since then. Test
+  a_blocked_hit_does_not_wake_a_held_enemy.
+- 2026-10-12 round 16 (ours): ChrActionFlag 24 on the defender skips the knockback (and the
+  attacker's leftover recoil) and, for Wolf, the reaction (GroundWireShoot keeps its grapple;
+  exe b6bfe0, sekiro-rs fight.rs:660-666); Wolf's HP damage sets the hold's damage wake with or
+  without a reaction; MSB enemies respawn on their spot (no 2 m -Z offset).
+- 2026-10-12 round 18 (ours): IsTargetGuard / GetSp / GetSpRate read their target argument like
+  GetHpRate (TARGET_SELF = the enemy itself: Snapshot.self_guard / sp; otherwise Wolf or the
+  rival: target_guard / target_sp / target_sp_rate). Area doping now scales HP / posture /
+  damage: the SpEffect export gained maxHpRate, maxStaminaRate and physicsAttackPowerRate (7013 =
+  2.0; before they read 1).

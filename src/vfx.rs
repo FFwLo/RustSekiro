@@ -202,7 +202,8 @@ fn spawn_clashes(
         commands.entity(e).despawn();
         let pos = tf.translation;
         // The game's effects, +Z toward the attacker. gap: HitEffectSfxAngleParam's turn by the
-        // attack's direction (atkDir_forSfx) is not applied.
+        // attack's direction (atkDir_forSfx) is not applied: the exe's two paths disagree
+        // (kb/visuals.md "HitEffectSfxAngleParam").
         let game: Vec<i64> = c.sfx.iter().copied().filter(|id| lib.as_mut().is_some_and(|l| l.has(*id))).collect();
         if !game.is_empty() {
             let at = Transform::from_translation(pos).looking_to(-c.normal, Vec3::Y);

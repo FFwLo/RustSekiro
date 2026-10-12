@@ -252,6 +252,13 @@ impl Wire {
             self.flight = Some(left);
         } else {
             self.flight = None;
+            // A ridden point: over the landing spot now, so no more horizontal speed. The arc to
+            // a high spot can arrive still rising, and the flight speed carried him past the
+            // 0.6 m perch (2026-10-12 bug hunt round 20); he settles onto it as he falls.
+            if self.ride {
+                a.air_base = Vec3::ZERO;
+                a.move_vel = Vec3::ZERO;
+            }
         }
         if to.length_squared() > 1e-4 {
             a.yaw = f32::atan2(-to.x, -to.z);

@@ -212,6 +212,26 @@ def brought_in(ins, parts, cast):
             yield v[1]
 
 
+# Flags read but never set that are not world progress: the fight's own "over" state, which the
+# reader would take as on. The Folding Screen Monkeys' defeat event (m20 12005800) jumps to its
+# reward part on "9305 on and 9405 off" and ends on 9405 on: 9405 is set after the defeat, so a
+# fresh fight has it off. (The Hirata fights' 8304 reads the same way in Lady Butterfly's event
+# but the Owl (Father)'s events need it on: no rule from the shape alone.)
+FLAGS_OFF = {12600050: {9405}}
+
+
+def defeat_gates(evs, boss, parts):
+    """The characters whose death decides the fight: the Dead/Alive checks (4[00]) in the event
+    that hands out the boss defeat (2003[12]) on `boss`. They stand from the start, so no event
+    enables them: the Folding Screen Monkeys' four monkeys (m20 12005800; the bar's c1000
+    dummy 2000800 is the "boss")."""
+    for ev in evs:
+        if any((b, i) == (2003, 12) and v and v[0] == boss for b, i, v in ev['ins']):
+            for b, i, v in ev['ins']:
+                if (b, i) == (4, 0) and len(v) >= 2 and v[1] in parts and v[1] != boss:
+                    yield v[1]
+
+
 def world_flags(evs):
     """Event flags the script reads but never sets: world progress (the fight is open, e.g.
     Owl's 8304), taken as on. Flags it sets (the boss defeated 9304, its phase flags) start off."""
@@ -327,7 +347,7 @@ def main():
             row = parts[boss][1]
             if str(row) in out:
                 continue
-            cast = {boss}
+            cast = {boss} | set(defeat_gates(evs, boss, parts))
             for _ in range(3):
                 more = set(cast)
                 for ev in evs:
@@ -357,7 +377,7 @@ def main():
                             rg[eid]['parts'].append({'shape': kst, 'size': ksize, 'at': at, 'yaw': yaw})
             shots, shot_rows, shot_sps = script_bullets(chosen)
             out[str(row)] = {'map': mp, 'boss': boss, 'chars': chars, 'places': pl, 'regions': rg, 'events': chosen,
-                             'flags_on': world_flags(chosen), 'bullets': shots, 'bullet_rows': shot_rows,
+                             'flags_on': [f for f in world_flags(chosen) if f not in FLAGS_OFF.get(row, ())], 'bullets': shots, 'bullet_rows': shot_rows,
                              'sp_effects': shot_sps}
     path = os.path.join(ROOT, 'enemies', 'boss_scripts.json')
     with open(path, 'w', encoding='utf-8', newline='\n') as fh:

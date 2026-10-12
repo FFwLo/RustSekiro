@@ -71,12 +71,13 @@ enum Mode {
 /// gap: what starts the loop in the game is not traced (no EMEVD, HKS or AI request for the
 /// dragon's 21000); by that data match.
 /// changeHpRate recovery (% of max HP) of the instant SpEffects (effectEndurance 0) the anim's
-/// TAE AddSpEffect (66 / 67) adds in (from, to] seconds.
-fn instant_hp_rate(d: &crate::data::CharData, key: &str, from: f32, to: f32) -> f32 {
+/// TAE AddSpEffect (66 / 67) adds in (from, to] seconds, plus one at 0 on the anim's first
+/// frame (from == 0): an event on a frame edge counts once, not in both frames.
+pub(crate) fn instant_hp_rate(d: &crate::data::CharData, key: &str, from: f32, to: f32) -> f32 {
     let Some(an) = d.anim(key) else { return 0.0 };
     an.events
         .iter()
-        .filter(|ev| matches!(ev.kind, 66 | 67) && ev.start > from - 1e-4 && ev.start <= to)
+        .filter(|ev| matches!(ev.kind, 66 | 67) && ((ev.start > from && ev.start <= to) || (from == 0.0 && ev.start == 0.0)))
         .filter_map(|ev| d.sp_effects.get(&ev.arg_i64("SpEffectID").unwrap_or(0).to_string()))
         .filter(|s| s.effect_endurance == 0.0 && s.change_hp_rate < 0.0)
         .map(|s| -s.change_hp_rate)
@@ -123,6 +124,8 @@ pub struct Enemy {
     /// Counts the event messages sent (each TAE 231 as it starts).
     pub msg_serial: u32,
     resident0: Vec<i64>,
+    /// Its armour while it holds (`armor_of`: the EMEVD NPC part of the c1180 servants).
+    pub armor: Option<Armor>,
     /// Passive enemies walk up but never attack (toggle with T) - for practising timing at your own pace.
     pub aggressive: bool,
     /// Game time until which a prosthetic cool-time SpEffect holds (the firecracker's 107100,
@@ -160,9 +163,22 @@ pub struct Enemy {
     ai_sp: i64,
     /// Home (POINT_INITIAL) and its facing yaw (POINT_INIT_POSE), taken where it stands when it
     /// starts (re)thinking.
-    home: Option<(Vec3, f32)>,
+    pub(crate) home: Option<(Vec3, f32)>,
+    /// Its spawn facing (a respawn faces it again).
+    pub(crate) start_yaw: f32,
+    /// It started unaware (an MSB enemy, StartUnaware) and with this map AI hold: a respawn
+    /// starts so again.
+    unaware0: bool,
+    hold0: Option<AiHold>,
+    route_end0: Option<RouteEndAnim>,
+    /// Last frame's NPC rival target (rival_view).
+    rival_last: Option<Entity>,
+    /// Wolf has hit it (react_from): its map AI hold's damage wake (4[1] / 3[23] on 10000).
+    pub(crate) hurt_by_wolf: bool,
+    /// HP at the map AI hold's last check (None: not checked since spawn / respawn).
+    pub(crate) hp_last: Option<f32>,
     /// Where it was placed; it comes back 2 m behind it after dying (the duel's reset).
-    start: Vec3,
+    pub(crate) start: Vec3,
     /// Phase-rule requests for other characters (events.rs): "enable" payloads, "disable"
     /// (itself), Wolf's "warp_player".
     spawn_req: Vec<serde_json::Value>,
@@ -277,6 +293,12 @@ pub fn phase_events(npc_row: i64) -> &'static [PhaseEvent] {
 const AI_STATE_SP: [i64; 4] = [200000, 200001, 200002, 200004];
 
 impl Enemy {
+    /// Its mode (tests).
+    #[cfg(test)]
+    pub fn mode_name(&self) -> String {
+        format!("{:?}", self.mode)
+    }
+
     pub fn is_broken(&self) -> bool {
         matches!(self.mode, Mode::Broken(_))
     }
@@ -563,11 +585,22 @@ impl Enemy {
     /// Plays a reaction state; the AI replans (Kengeki) and acts again at the
     /// reaction's AI cancel flags.
     pub fn react(&mut self, a: &mut Actor, combat: &Combat, state: &str) {
+        self.react_from(a, combat, true, state);
+    }
+
+    /// `react` to a contact from Wolf (`by_wolf`) or from a hostile NPC (combat.rs resolve's
+    /// enemy-vs-enemy exchanges): only Wolf's makes him its battle target.
+    pub fn react_from(&mut self, a: &mut Actor, combat: &Combat, by_wolf: bool, state: &str) {
         if matches!(self.mode, Mode::Dead(_) | Mode::Broken(_) | Mode::Rising(_) | Mode::Held(_)) {
             return;
         }
-        // Hurt (or made to block) by Wolf: he is a battle target now (target reason 4).
-        self.targeting.damaged(combat.param("NpcThinkParam", combat.foe_of(a).think_id));
+        // Hurt (or made to block) by Wolf: he is a battle target now (target reason 4). A
+        // rival's blow did not: it put both NPCs in BATTLE on Wolf, unseen, so they dropped
+        // each other when he was nearer and refused the stealth deathblow.
+        if by_wolf {
+            self.targeting.damaged(combat.param("NpcThinkParam", combat.foe_of(a).think_id));
+            self.hurt_by_wolf = true;
+        }
         if a.play_state(combat.data_of(a), state) {
             self.interrupt();
             a.move_vel = Vec3::ZERO;
@@ -621,8 +654,10 @@ impl Enemy {
     }
 
     /// Playing one of its own attacks (EzState 3000-3099), not a guard/deflect.
+    /// An attack anim (3000-3099, or the general stance's 603000-603009: AttackCommonFunction,
+    /// with the same flag-73 flinch windows).
     pub fn is_attacking(&self) -> bool {
-        matches!(self.cur_ez, Some(ez) if (3000..3100).contains(&ez))
+        matches!(self.cur_ez, Some(ez) if (3000..3100).contains(&ez) || (603000..=603009).contains(&ez))
     }
 
     pub fn guard_count(&self) -> i32 {
@@ -718,7 +753,7 @@ impl Plugin for EnemyPlugin {
             .add_systems(Startup, spawn_enemy)
             .add_systems(
                 FixedUpdate,
-                (spawn_encounter, reset_fight, stealth_env_start, parry_interrupt, think, grapple::on_wire_hit, todome_message, events::messages, script::run_scripts, events::apply_event_warp).chain().in_set(ActorSet::Decide),
+                (spawn_encounter, reset_fight, stealth_env_start, start_unaware, ai_hold, route_end_anim, parry_interrupt, think, grapple::on_wire_hit, todome_message, events::messages, script::run_scripts, events::apply_event_warp).chain().in_set(ActorSet::Decide),
             )
             .add_systems(Update, toggle_aggression.run_if(resource_exists::<ButtonInput<KeyCode>>))
             .init_resource::<grapple::EnemyGrapples>()
@@ -844,17 +879,86 @@ fn own_arena_of(row: i64) -> Option<String> {
         let dir = crate::paths::extracted();
         let read = |p: std::path::PathBuf| std::fs::read_to_string(p).ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok());
         let (Some(index), Some(scripts)) = (read(dir.join("map_boss_arenas.json")), read(dir.join("enemies/boss_scripts.json"))) else { return HashMap::new() };
+        let moved: Vec<i64> = index["moved"].as_array().into_iter().flatten().filter_map(|v| v.as_i64()).collect();
         let mut out = HashMap::new();
         for (row, stem) in index.as_object().into_iter().flatten() {
             let (Ok(r), Some(stem)) = (row.parse::<i64>(), stem.as_str()) else { continue };
-            let arena_map = read(dir.join(format!("map_{stem}.json"))).and_then(|v| v["map"].as_str().map(String::from));
-            if arena_map.is_some() && arena_map.as_deref() == scripts[row]["map"].as_str() {
+            let Some(arena) = read(dir.join(format!("map_{stem}.json"))) else { continue };
+            // Same map is not enough: the fights Map MOVED onto another boss's arena (the index's
+            // "moved" list, tools/boss_arenas.py MOVED: the Owl, Emma, Isshin Ashina onto
+            // Genichiro's castle top, m11_01 too) are strangers there.
+            if arena["map"].as_str().is_some() && arena["map"].as_str() == scripts[row]["map"].as_str() && !moved.contains(&r) {
                 out.insert(r, stem.to_string());
             }
         }
         out
     });
     all.get(&row).cloned()
+}
+
+/// An armoured enemy's armour: the NPC part its map event makes (tools/armor_parts.py ->
+/// extracted/enemies/armor_parts.json; common_func 20005410: the c1180 servants 11807101,
+/// 11801100, 11806010). While it holds, the part (group 2, the PelvisArmor bodies) takes Wolf's
+/// hits and passes `body_rate` (0.7) of them on, and its SpEffect 400250 halves HP and posture
+/// damage: x0.35 HP, x0.5 posture, as live (kb/damage.md). Only the prosthetic `prosthetic` (11 =
+/// Loaded Spear) damages the part; at part HP 0 it plays `break_anim` (20039), its SpEffects go
+/// and `after` (230400 / 230401) come.
+#[derive(Clone, Debug, serde::Deserialize)]
+pub struct Armor {
+    pub part_hp: f32,
+    pub damage_correction: f32,
+    pub body_rate: f32,
+    pub prosthetic: i64,
+    pub sp_effects: Vec<i64>,
+    pub break_anim: i64,
+    pub after: Vec<i64>,
+    /// Its SpEffects' <attr>DamageCutRate / def<Attr>StaminaDmgRate, multiplied (the export
+    /// reads SpEffectParam: these rows are not in the combat data).
+    #[serde(default)]
+    pub rates: HashMap<String, f32>,
+}
+
+/// The armour of an NpcParam row (`Armor`), if its map event gives it one.
+pub fn armor_of(row: i64) -> Option<Armor> {
+    static CACHE: std::sync::OnceLock<HashMap<i64, Armor>> = std::sync::OnceLock::new();
+    CACHE
+        .get_or_init(|| {
+            let path = crate::paths::extracted().join("enemies/armor_parts.json");
+            let text = std::fs::read_to_string(path).unwrap_or_default();
+            let all: HashMap<String, Armor> = serde_json::from_str(&text).unwrap_or_default();
+            all.into_iter().filter_map(|(k, v)| Some((k.parse().ok()?, v))).collect()
+        })
+        .get(&row)
+        .cloned()
+}
+
+impl Armor {
+    /// HP and posture rates of a hit on it: its SpEffects' <attr>DamageCutRate /
+    /// def<Attr>StaminaDmgRate for the attack's staminaPhysicsAttribute (400250: 0.5 each), the
+    /// HP also x body_rate. gap: the exe's attribute of the HP cut (atkAttribute?) is not
+    /// traced; the one uncut live hit of 8 (a non-armour body?) neither.
+    pub fn rates(&self, atk_attribute: i64, stamina_attribute: i64) -> (f32, f32) {
+        let rate = |f: Option<&str>| f.and_then(|f| self.rates.get(f)).copied().unwrap_or(1.0);
+        (rate(crate::data::damage_cut_field(atk_attribute)) * self.body_rate, rate(crate::data::stamina_rate_field(stamina_attribute)))
+    }
+
+    /// The armour breaks: its break anim, its SpEffects swapped for `after`.
+    pub fn shatter(&self, e: &mut Enemy, a: &mut Actor, combat: &Combat) {
+        a.resident.retain(|id| !self.sp_effects.contains(id));
+        for &id in &self.after {
+            if !a.resident.contains(&id) {
+                a.resident.push(id);
+            }
+        }
+        let d = combat.data_of(a);
+        let state = format!("Event{}", self.break_anim);
+        if !matches!(e.mode, Mode::Dead(_)) && a.play_state(d, &state) {
+            e.interrupt();
+            a.move_vel = Vec3::ZERO;
+            e.mode = Mode::Rising(d.length(&a.anim).max(0.1));
+        }
+        e.armor = None;
+    }
 }
 
 /// Is the fight on its boss's own arena (`own_arena_of` the fight's row is the loaded map,
@@ -876,15 +980,264 @@ fn spawn_lineup(commands: &mut Commands, combat: &Combat, config: &GameConfig, a
         let floor = crate::map::terrain().and_then(|t| t.floor(x, z, crate::map::player_start().y + 3.0)).unwrap_or(0.0);
         floor + crate::player::CAPSULE_HALF_HEIGHT + 0.05
     };
-    spawn_one(commands, combat, config, 0, Vec3::new(0.0, y(0.0, -4.0 + dz), -4.0 + dz), 0.0, aggressive, 0x9E37_79B9);
+    // Facing Wolf's start (the export's enemy faces +Z; forward = Ry(yaw) * -Z).
+    let facing = |x: f32, z: f32| {
+        let v = crate::map::player_start() - Vec3::new(x, 0.0, z);
+        f32::atan2(-v.x, -v.z)
+    };
+    spawn_one(commands, combat, config, 0, Vec3::new(0.0, y(0.0, -4.0 + dz), -4.0 + dz), facing(0.0, -4.0 + dz), aggressive, 0x9E37_79B9);
     for (i, g) in config.enemy.group.iter().enumerate() {
         let Some(kind) = combat.kind_index(&g.chr, g.npc_row) else { continue };
+        // An MSB enemy of the loaded map: at its spot, its way, on its patrol route.
+        if let Some(spot) = g.msb.and_then(msb_patrol) {
+            // On the floor under its own MSB height (a step up allowed), not the line-up's search
+            // from Wolf's start: the gate's MSB enemies stand from 5 m below to 11 m above it.
+            let floor = crate::map::terrain().and_then(|t| t.floor(spot.at.x, spot.at.z, spot.at.y + crate::map::STEP_HEIGHT)).unwrap_or(spot.at.y);
+            let at = Vec3::new(spot.at.x, floor + crate::player::CAPSULE_HALF_HEIGHT + 0.05, spot.at.z);
+            let e = spawn_one(commands, combat, config, kind, at, spot.yaw, aggressive, 0x9E37_79B9 ^ 0x85EB_CA6B_u32.wrapping_mul(i as u32 + 1));
+            commands.entity(e).insert((spot.route, StartUnaware));
+            if let Some(hold) = spot.hold {
+                commands.entity(e).insert(hold);
+            }
+            if let Some(re) = spot.route_end {
+                commands.entity(e).insert(re);
+            }
+            continue;
+        }
         let side = if i % 2 == 0 { 1.0 } else { -1.0 } * (3.0 * (i / 2 + 1) as f32);
         let [x, z] = g.at.unwrap_or([side, -4.0]);
         let z = z + dz;
         // A different seed each, so the group does not move in lockstep.
-        spawn_one(commands, combat, config, kind, Vec3::new(x, y(x, z), z), 0.0, aggressive, 0x9E37_79B9 ^ 0x85EB_CA6B_u32.wrapping_mul(i as u32 + 1));
+        spawn_one(commands, combat, config, kind, Vec3::new(x, y(x, z), z), facing(x, z), aggressive, 0x9E37_79B9 ^ 0x85EB_CA6B_u32.wrapping_mul(i as u32 + 1));
     }
+}
+
+/// An MSB enemy's patrol route on the loaded map, in world space (ai::Patrol takes it when
+/// the enemy's brain is made, also after a respawn).
+#[derive(Component, Clone, Debug)]
+pub struct PatrolRoute(pub crate::ai::Patrol);
+
+/// An MSB enemy starts unaware of Wolf (no battle target, AI state reset: `make_unaware`), as
+/// the map's enemies do, so its NonBattleAct walks its patrol route; the duel line-up starts
+/// fighting instead.
+#[derive(Component)]
+pub struct StartUnaware;
+
+fn start_unaware(mut commands: Commands, mut q: Query<(Entity, &mut Enemy, &mut Actor, Option<&AiHold>, Option<&RouteEndAnim>), With<StartUnaware>>) {
+    for (entity, mut e, mut a, hold, route_end) in &mut q {
+        e.make_unaware(&mut a);
+        // (A respawn starts so again.)
+        e.unaware0 = true;
+        e.hold0 = hold.cloned();
+        e.route_end0 = route_end.cloned();
+        commands.entity(entity).remove::<StartUnaware>();
+    }
+}
+
+/// Its map event's AI hold (common_func 20005110, the gate's c1010 1110236 and 14 more on
+/// patrols.json "wake", tools/patrols.py): 2004[1] Set Character AI State off at the map's
+/// start, then on (with Force Animation -1) once Wolf (10000) is inside the wake region (3[2]),
+/// it has one of the listed SpEffects (4[5]: 3500-3503, 3520, 8300, 220018, 230110/1, 9045,
+/// 230518/9) or Wolf damaged it (4[1] / 3[23]). Held, it stands idle like a map script's AI
+/// off (think). gap: hits it guards (no HP lost) do not wake it; the Force Animation -1 is not
+/// played (its anim is already idle).
+#[derive(Component, Clone, Debug)]
+pub struct AiHold {
+    pub region: Option<WakeRegion>,
+    pub sp_effects: Vec<i64>,
+}
+
+/// Its map event's route-end anim (m11_01 11115236 / 11115238 on the patrollers 1110236 /
+/// 1110252; patrols.json "route_end", tools/patrols.py): the event waits for the enemy inside its
+/// region (3[2] on itself: a 1.2 m sphere at the type 5 route's end) or alerted (4[9] AI state
+/// 1 / 2 / 3); alerted, it ends; else 2003[18] Force Animation Playback 20004 once. The exe never
+/// reads its Should Loop byte (FUN_140904ef0 case 0x12 -> FUN_140bd84c0 keeps the anim id only;
+/// FUN_140bd81b0 fires W_Event20004 and clears it the same frame), so W_Event20004 plays to its end
+/// (cxxxx.lua:49 env(339) -> W_Idle) unless a hit or death takes it (EventCommonFunction,
+/// c9997.lua:3884): its clip has no AI cancel flag (env 107 / 118 / 120 / 123-125 stay -1).
+#[derive(Component, Clone, Debug)]
+pub struct RouteEndAnim {
+    pub region: WakeRegion,
+    pub anim: i64,
+}
+
+/// Runs the [`RouteEndAnim`] events.
+fn route_end_anim(mut commands: Commands, combat: Res<Combat>, mut q: Query<(Entity, &mut Enemy, &mut Actor, &Transform, &RouteEndAnim)>) {
+    for (entity, mut e, mut a, tf, re) in &mut q {
+        if e.is_dead() || e.disabled {
+            continue;
+        }
+        if e.targeting.state != stealth::NONE {
+            commands.entity(entity).remove::<RouteEndAnim>();
+            continue;
+        }
+        let feet = tf.translation - Vec3::Y * (crate::player::CAPSULE_HALF_HEIGHT + 0.05);
+        if matches!(e.mode, Mode::Ai) && re.region.contains(feet) {
+            let d = combat.data_of(&a);
+            if a.play_state(d, &format!("Event{}", re.anim)) {
+                e.interrupt();
+                a.move_vel = Vec3::ZERO;
+            }
+            commands.entity(entity).remove::<RouteEndAnim>();
+        }
+    }
+}
+
+/// An MSB region in the arena: its spot, its local X / Z axes (the MSB rotation's Y turned like
+/// the map) and its shape (SoulsFormats MSB/Shape.cs ShapeType): 1 circle [r] and 4 rectangle
+/// [w, d] (flat: any height), 2 sphere [r], 3 cylinder [r, h], 5 box [w, d, h]. Boxes and
+/// cylinders stand on the spot (DSMapStudio RenderableProxy.cs:1364 draws the box from
+/// (-0.5, 0, -0.5) to (0.5, 1, 0.5)); spheres are centred on it.
+#[derive(Clone, Debug)]
+pub struct WakeRegion {
+    pub shape: i64,
+    pub at: Vec3,
+    pub x: Vec3,
+    pub z: Vec3,
+    pub size: Vec<f32>,
+}
+
+impl WakeRegion {
+    /// Whether the point (a character's feet) is inside.
+    pub fn contains(&self, p: Vec3) -> bool {
+        let d = p - self.at;
+        let (lx, ly, lz) = (d.dot(self.x), d.y, d.dot(self.z));
+        let s = |i: usize| self.size.get(i).copied().unwrap_or(0.0);
+        match self.shape {
+            // Strict radius tests, as FUN_1409825b0 / FUN_140983380 (14098.c:2274 / ~2372).
+            1 => lx * lx + lz * lz < s(0) * s(0),
+            2 => d.length_squared() < s(0) * s(0),
+            3 => lx * lx + lz * lz < s(0) * s(0) && (0.0..=s(1)).contains(&ly),
+            4 => lx.abs() <= s(0) / 2.0 && lz.abs() <= s(1) / 2.0,
+            5 => lx.abs() <= s(0) / 2.0 && lz.abs() <= s(1) / 2.0 && (0.0..=s(2)).contains(&ly),
+            _ => false,
+        }
+    }
+}
+
+/// INTERUPT_UseItem: Wolf just started a gourd drink, standing or crouched (W_ItemGourdDrink /
+/// W_CrouchItemGourdDrink; c1020 10203010 punishes it with 3012).
+pub(crate) fn wolf_starts_an_item(pa: &Actor) -> bool {
+    pa.state.trim_start_matches("Crouch").starts_with("ItemGourd") && pa.prev_t == 0.0 && pa.t > 0.0
+}
+
+/// Holds the AI of the enemies with an [`AiHold`] until their map event wakes them.
+fn ai_hold(
+    mut commands: Commands,
+    combat: Res<Combat>,
+    player: Single<&Transform, (With<Player>, Without<Enemy>)>,
+    mut q: Query<(Entity, &mut Enemy, &Actor, &AiHold)>,
+) {
+    let wolf = player.translation - Vec3::Y * crate::player::CAPSULE_HALF_HEIGHT;
+    for (entity, mut e, a, hold) in &mut q {
+        let d = combat.data_of(a);
+        // Also the SpEffects Wolf's bullets put on it (Enemy::add_timed: the Finger Whistle's
+        // 230518 / 230519, which every patrols.json wake list has).
+        let timed: Vec<i64> = e.clash.iter().map(|c| c.0).collect();
+        let has = |sp: i64| {
+            a.resident.contains(&sp)
+                || timed.contains(&sp)
+                || (!a.anim.is_empty() && d.sp_effects_at(&a.anim, a.t).iter().any(|(id, _)| *id == sp))
+                || (!a.add_anim.is_empty() && d.sp_effects_at(&a.add_anim, a.add_t).iter().any(|(id, _)| *id == sp))
+        };
+        // 4[1] IF Character Damaged By Wolf / 3[23] IF Damage Type: the event's damage record is
+        // written only for a hit whose final HP damage is > 0 (FUN_1406d8950 from FUN_140b6e150,
+        // 140b6.c:8033; read by the EMEVD conditions at DAT_143d56058 +0x38): a guarded or
+        // deflected hit with its HP fully cut leaves it held. Ours: HP lost since the last check
+        // and a reaction Wolf caused (react_from) since then.
+        let hurt = e.hurt_by_wolf && e.hp_last.is_some_and(|h| a.hp < h);
+        e.hp_last = Some(a.hp);
+        e.hurt_by_wolf = false;
+        let wake = hold.region.as_ref().is_some_and(|r| r.contains(wolf)) || hold.sp_effects.iter().any(|&sp| has(sp)) || hurt;
+        e.ai_off = !wake;
+        if wake {
+            commands.entity(entity).remove::<AiHold>();
+        }
+    }
+}
+
+/// Where an MSB enemy stands on the loaded map, its route and its AI hold (`msb_patrol`).
+pub struct MsbSpot {
+    pub at: Vec3,
+    pub yaw: f32,
+    pub route: PatrolRoute,
+    pub hold: Option<AiHold>,
+    pub route_end: Option<RouteEndAnim>,
+}
+
+/// The MSB enemy `entity` of the loaded map's MSB (map_<id>.json "map") from
+/// extracted/enemies/patrols.json (tools/patrols.py), turned into the arena like the map
+/// pieces: minus the export origin, turned by arena_yaw (sekiro-extract map.rs Arena::point),
+/// X mirrored. Its yaw is the MSB rotation's +Z the same way, as an Actor yaw (forward =
+/// Ry(yaw) * -Z). None without a map, or when the entity has no route there.
+pub fn msb_patrol(entity: i64) -> Option<MsbSpot> {
+    msb_patrol_on(&crate::map::loaded_map()?, entity)
+}
+
+/// [`msb_patrol`] on the exported map `stem` (extracted/map_<stem>.json).
+pub fn msb_patrol_on(stem: &str, entity: i64) -> Option<MsbSpot> {
+    static PATROLS: std::sync::OnceLock<serde_json::Value> = std::sync::OnceLock::new();
+    let patrols = PATROLS.get_or_init(|| {
+        std::fs::read_to_string(crate::paths::extracted().join("enemies/patrols.json")).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
+    });
+    let map: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(crate::paths::extracted().join(format!("map_{stem}.json"))).ok()?).ok()?;
+    let p = &patrols[map["map"].as_str()?][entity.to_string()];
+    let f = |v: &serde_json::Value| v.as_f64().unwrap_or(0.0) as f32;
+    let origin = map["origin"].as_array()?;
+    let (s, c) = f(&map["arena_yaw"]).sin_cos();
+    let turn = |x: f32, z: f32| Vec3::new(-(x * c + z * s), 0.0, -x * s + z * c);
+    let point = |v: &serde_json::Value| -> Option<Vec3> {
+        let a = v.as_array()?;
+        Some(turn(f(&a[0]) - f(&origin[0]), f(&a[2]) - f(&origin[2])).with_y(f(&a[1]) - f(&origin[1])))
+    };
+    let at = point(&p["pos"])?;
+    let (sy, cy) = f(&p["yaw"]).to_radians().sin_cos();
+    let fwd = turn(sy, cy);
+    let region_of = |r: &serde_json::Value| {
+        point(&r["pos"]).map(|at| {
+            let (sy, cy) = f(&r["yaw"]).to_radians().sin_cos();
+            WakeRegion {
+                shape: r["shape"].as_i64().unwrap_or(0),
+                at,
+                x: turn(cy, -sy),
+                z: turn(sy, cy),
+                size: r["size"].as_array().into_iter().flatten().map(f).collect(),
+            }
+        })
+    };
+    let hold = p.get("wake").map(|w| AiHold { region: region_of(&w["region"]), sp_effects: w["sp_effects"].as_array().into_iter().flatten().filter_map(|v| v.as_i64()).collect() });
+    let route_end = p.get("route_end").and_then(|r| Some(RouteEndAnim { region: region_of(&r["region"])?, anim: r["anim"].as_i64()? }));
+    let points = p["points"].as_array()?.iter().filter_map(point).collect::<Vec<_>>();
+    let yaws: Vec<f32> = p["yaws"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|v| {
+            let (s, c) = f(v).to_radians().sin_cos();
+            let fwd = turn(s, c);
+            (-fwd.x).atan2(-fwd.z)
+        })
+        .collect();
+    let arrivals = p["arrivals"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|a| (a["region"].as_i64().unwrap_or(-1), a["anim"].as_i64().unwrap_or(-1), a["wait"].as_f64().unwrap_or(0.0)))
+        .collect();
+    let regions = p["regions"].as_array().into_iter().flatten().filter_map(|v| v.as_i64()).collect();
+    let areas = p["areas"].as_array().into_iter().flatten().map(region_of).collect();
+    Some(MsbSpot {
+        at,
+        yaw: (-fwd.x).atan2(-fwd.z),
+        route: PatrolRoute({
+            let mut route = crate::ai::Patrol::new(p["type"].as_i64().unwrap_or(0), points, regions, arrivals);
+            route.yaws = yaws;
+            route.areas = areas;
+            route
+        }),
+        hold,
+        route_end,
+    })
 }
 
 /// Starts the whole fight over (Wolf's reset or death, or the death of a character a boss event
@@ -961,12 +1314,39 @@ fn reset_fight(
     mut ai_flags: ResMut<AiFlags>,
     swap: Res<SwapFrame>,
     frame: Option<Res<bevy::diagnostic::FrameCount>>,
+    (mut statuses, bullets): (ResMut<crate::status::Statuses>, Query<Entity, With<crate::enemy_bullet::EnemyBullet>>),
+    perilous: Option<ResMut<crate::hud::Perilous>>,
+    (wolf_bullets, mut effects): (Query<(Entity, &Transform), With<crate::prosthetic::Projectile>>, Query<&mut crate::fxr::FxEffect>),
 ) {
     if !reset.0 || swap.0.is_some_and(|f| frame.is_some_and(|n| n.0 == f)) {
         return;
     }
     reset.0 = false;
     ai_flags.0.clear();
+    // Wolf's poison / burn gauges and afflictions end with the fight, and the old line-up's
+    // arrows in flight go (they still applied their build-up after the reset).
+    statuses.clear_all();
+    // The perilous kanji of the old line-up's attack goes too.
+    if let Some(mut p) = perilous {
+        p.timer = 0.0;
+    }
+    for b in &bullets {
+        commands.entity(b).despawn();
+    }
+    // Wolf's prosthetic bullets go as well; their flying effects stop where they were, as an
+    // ended bullet's do (prosthetic.rs fly: stop, no anchor; what they spawned plays out).
+    for mut f in &mut effects {
+        let Some(crate::fxr::Anchor::Entity(b)) = f.anchor else { continue };
+        if let Ok((_, tf)) = wolf_bullets.get(b) {
+            f.stop = true;
+            f.follow = false;
+            f.anchor = None;
+            f.at = *tf;
+        }
+    }
+    for (b, _) in &wolf_bullets {
+        commands.entity(b).despawn();
+    }
     if bs.run.take().is_some_and(|r| r.defeated.is_some()) {
         bs.defeats += 1;
     }
@@ -990,6 +1370,13 @@ pub fn spawn_one(commands: &mut Commands, combat: &Combat, config: &GameConfig, 
     let k = combat.kind(kind);
     let npc = combat.param("NpcParam", k.foe.npc_row);
     actor.resident = (0..32).filter_map(|i| npc[format!("spEffectID{i}")].as_i64()).filter(|&v| v > 0).collect();
+    // Its armour's SpEffects (220061 / 220062 / 400250), set by its map event (armor_of).
+    let armor = armor_of(k.foe.npc_row);
+    for &id in armor.iter().flat_map(|ar| ar.sp_effects.iter()) {
+        if !actor.resident.contains(&id) {
+            actor.resident.push(id);
+        }
+    }
     actor.posture_debt = -(npc["maxDebtStamina"].as_f64().unwrap_or(0.0) as f32).min(0.0);
     actor.guard_angle = npc["guardAngle"].as_f64().unwrap_or(0.0) as f32;
     // Its anim set: the resident "Anime ID offset" SpEffect (c1021 spear General 200031 = a100).
@@ -1025,6 +1412,7 @@ pub fn spawn_one(commands: &mut Commands, combat: &Combat, config: &GameConfig, 
             last_notify: -1.0,
             cur_ez: None,
             throw_death: None,
+            armor,
             ninsatsu: {
                 let n = npc["ninsatuNum"].as_i64().unwrap_or(0).max(1) as u32;
                 (n, n)
@@ -1052,6 +1440,13 @@ pub fn spawn_one(commands: &mut Commands, combat: &Combat, config: &GameConfig, 
             },
             ai_sp: 200004,
             home: None,
+            start_yaw: yaw,
+            unaware0: false,
+            hold0: None,
+            route_end0: None,
+            rival_last: None,
+            hurt_by_wolf: false,
+            hp_last: None,
             start: at,
             spawn_req: Vec::new(),
             disable_req: false,
@@ -1084,6 +1479,30 @@ pub fn enemy_visuals(
             .insert((Mesh3d(meshes.add(Capsule3d::new(0.45, 1.1))), MeshMaterial3d(materials.add(Color::srgb(0.45, 0.2, 0.18)))))
             .with_children(|p| crate::world::spawn_blade(p, &mut meshes, &mut materials, Color::srgb(0.9, 0.75, 0.6)));
     }
+}
+
+/// The targeting the AI sees: its own, or with an NPC rival as the target (teams_hostile) a
+/// BATTLE one on that rival.
+/// BATTLE one on that rival (TYPE_NORMAL_ENEMY). Its state changes only on the frame the rival
+/// comes or goes: the real prev_state (NONE / CAUTION) kept IsChangeState true every frame, and
+/// _COMMON_AddStateTransitionGoal looped 401040 instead of attacking.
+pub(crate) fn rival_view(real: &Targeting, rival: Option<Entity>, last: Option<Entity>) -> Targeting {
+    let mut tg = real.clone();
+    if rival.is_some() {
+        if rival == last {
+            tg.prev_state = stealth::BATTLE;
+            tg.prev_kind = stealth::TYPE_NORMAL_ENEMY;
+        } else if last.is_none() {
+            tg.prev_state = real.state;
+            tg.prev_kind = real.kind;
+        }
+        tg.state = stealth::BATTLE;
+        tg.kind = stealth::TYPE_NORMAL_ENEMY;
+    } else if last.is_some() {
+        tg.prev_state = stealth::BATTLE;
+        tg.prev_kind = stealth::TYPE_NORMAL_ENEMY;
+    }
+    tg
 }
 
 fn turn_toward(yaw: f32, target: f32, max_step: f32) -> f32 {
@@ -1121,8 +1540,13 @@ fn parry_interrupt(
         }
         // Rising edge of the notify flag on the player's current anim.
         let notify = pd.events_at(&pa.anim, pa.t).find(|ev| ev.kind == 0 && ev.flag_type() == Some(FLAG_AI_NOTIFY)).map(|ev| ev.start);
-        let Some(start) = notify else { continue };
-        if (start - e.last_notify).abs() < 1e-4 && pa.t - start < 0.2 {
+        // Seen once per flag window: last_notify is cleared when no window is on, so the next
+        // swing whose window starts at the same time (Combo1 and Combo2 both at 0.6) counts again.
+        let Some(start) = notify else {
+            e.last_notify = -1.0;
+            continue;
+        };
+        if (start - e.last_notify).abs() < 1e-4 {
             continue;
         }
         e.last_notify = start;
@@ -1208,14 +1632,30 @@ fn parry_interrupt(
 /// Wolf as the enemies see him (stealth.rs): his feet, capsule radius and the sight factors of
 /// his active SpEffects (crouch 109200 cuts sight distances 20 %) and learned skills (`skills`:
 /// Covert A 150000 sightSearchEnemyCut 20, aroundSightPointAddRate 0.5).
-fn wolf_seen(combat: &Combat, pa: &Actor, pos: Vec3, skills: &[crate::data::SpEffect]) -> stealth::Seen {
+pub(crate) fn wolf_seen(combat: &Combat, pa: &Actor, pos: Vec3, skills: &[crate::data::SpEffect]) -> stealth::Seen {
     // The TAE of the clip on screen: crouch idle / moves are procedural states whose clips
     // carry the stealth SpEffect 109200.
     let (key, t) = pa.shown_clip(&combat.player);
     let mut sp: Vec<&crate::data::SpEffect> = combat.player.sp_effects_at(&key, t).into_iter().map(|(_, e)| e).collect();
-    sp.extend(skills.iter());
+    let skills = skills_in_force(skills, &sp);
+    sp.extend(skills);
     let feet = pos - Vec3::Y * (crate::player::CAPSULE_HALF_HEIGHT + 0.05);
     stealth::Seen::new(feet, crate::player::CAPSULE_RADIUS, &sp)
+}
+
+/// The learned skills' SpEffects that work now: those without invocationConditionsStateChange1-3,
+/// or with one of them a stateInfo on Wolf (his active SpEffects', or a skill's own), the rule
+/// player.rs uses for the deathblow recoveries. Covert A 150000 needs 949, the crouch / wall-hug
+/// / hang stateInfo (109200 / 109210 / 109220 / 109221): standing, its sight cut is off.
+fn skills_in_force<'a>(skills: &'a [crate::data::SpEffect], active: &[&crate::data::SpEffect]) -> Vec<&'a crate::data::SpEffect> {
+    let states: Vec<i64> = active.iter().map(|s| s.state_info).chain(skills.iter().map(|s| s.state_info)).filter(|&s| s > 0).collect();
+    skills
+        .iter()
+        .filter(|s| {
+            let conds = [s.invocation_conditions_state_change1, s.invocation_conditions_state_change2, s.invocation_conditions_state_change3];
+            conds.iter().all(|&c| c <= 0) || conds.iter().any(|c| *c > 0 && states.contains(c))
+        })
+        .collect()
 }
 
 /// The AI sounds Wolf's TAE made this step (CreateAISound, TAE 237): (AiSoundParam id, rank)
@@ -1237,7 +1677,8 @@ fn wolf_sounds(combat: &Combat, pa: &Actor, wolf: Vec3, la: &Actor, listener: Ve
     // r 0.25 m, crouch run 005500: 1011 r 0.5 m), refreshed while the event is active.
     let (key, t) = pa.shown_clip(&combat.player);
     let Some(an) = combat.player.anim(&key) else { return Vec::new() };
-    let hearing: f64 = combat.player.sp_effects_at(&key, t).iter().map(|(_, e)| *e).chain(skills.iter()).map(|e| e.hearing_search_enemy_rate as f64).product();
+    let active: Vec<&crate::data::SpEffect> = combat.player.sp_effects_at(&key, t).into_iter().map(|(_, e)| e).collect();
+    let hearing: f64 = active.iter().copied().chain(skills_in_force(skills, &active)).map(|e| e.hearing_search_enemy_rate as f64).product();
     let started = |e: &&crate::data::Event| !pa.anim.is_empty() && e.start > pa.prev_t && e.start <= pa.t;
     an.events
         .iter()
@@ -1294,7 +1735,8 @@ fn loco_state(d: &crate::data::CharData, ai_sp: i64, mv: char, walk: bool) -> St
 
 /// Idle / locomotion states: any AI action may start.
 fn is_free_state(state: &str) -> bool {
-    state.starts_with("Idle") || state.starts_with("Walk") || state.starts_with("Run") || matches!(state, "Approach" | "StandIdle")
+    // The guard stance's idle and walks too (GuardIdle_onUpdate -> IdleCommonFunction(STYLE_GUARD)).
+    state.starts_with("GuardIdle") || state.starts_with("GuardWalk") || state.starts_with("Idle") || state.starts_with("Walk") || state.starts_with("Run") || matches!(state, "Approach" | "StandIdle")
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1306,6 +1748,9 @@ struct Rival {
     hp_rate: f32,
     guard: bool,
     sp: Vec<i64>,
+    /// Posture left and its rate (GetSp / GetSpRate on it).
+    posture_left: f32,
+    posture_rate: f32,
 }
 
 /// An AI script message, logged once per distinct text (a failing call repeats every frame).
@@ -1317,6 +1762,39 @@ fn warn_once(line: &str) {
     }
 }
 
+/// Where a regular enemy's new life starts: 2 m behind its spawn spot, on the floor there found
+/// from its spawn height (a step up, plus up to 1 m per metre of those 2 m for a slope); the
+/// spawn height without a map or a floor.
+fn respawn_spot(start: Vec3, back: f32, terrain: Option<&crate::map::Terrain>) -> Vec3 {
+    let (x, z) = (start.x, start.z - back);
+    let feet = start.y - crate::player::CAPSULE_HALF_HEIGHT;
+    let floor = terrain.and_then(|t| t.floor(x, z, feet + crate::map::STEP_HEIGHT + 2.0));
+    Vec3::new(x, floor.map_or(start.y, |h| h + crate::player::CAPSULE_HALF_HEIGHT), z)
+}
+
+#[cfg(test)]
+mod respawn_tests {
+    use super::*;
+
+    /// Killed 3 m down a slope from its spot, it comes back on the slope at its start, not buried
+    /// at the height it died at (2026-10-12 bug hunt round 6).
+    #[test]
+    fn a_respawn_stands_on_the_floor_at_its_start() {
+        // A ramp rising 0.5 m per metre toward -z (z 10 -> -10: y -5 -> 5).
+        let verts = vec![Vec3::new(-10.0, -5.0, 10.0), Vec3::new(10.0, -5.0, 10.0), Vec3::new(10.0, 5.0, -10.0), Vec3::new(-10.0, 5.0, -10.0)];
+        let t = crate::map::Terrain::from_tris(verts, [([0, 1, 2], 0), ([0, 2, 3], 0)].into_iter());
+        let half = crate::player::CAPSULE_HALF_HEIGHT;
+        let start = Vec3::new(1.0, 0.0 + half + 0.05, 0.0);
+        let at = respawn_spot(start, 2.0, Some(&t));
+        // (Terrain::floor takes the highest of the feet's samples 8 cm around: +0.04 m here.)
+        assert!((at - Vec3::new(1.0, 1.0 + half, -2.0)).length() < 0.05, "{at}");
+        // Without a map: the spawn height.
+        assert_eq!(respawn_spot(start, 2.0, None), Vec3::new(1.0, start.y, -2.0));
+        // An MSB enemy (no offset): its own spot.
+        assert_eq!(respawn_spot(start, 0.0, None), start);
+    }
+}
+
 fn think(
     mut commands: Commands,
     mut warp: ResMut<events::EventWarp>,
@@ -1324,14 +1802,16 @@ fn think(
     combat: Res<Combat>,
     config: Res<GameConfig>,
     player: Single<(&Actor, &Transform), (With<Player>, Without<Enemy>)>,
-    mut q: Query<(Entity, &mut Enemy, &mut Actor, &mut Transform, Option<&Phantom>, Has<events::FromEvent>, Has<script::Scripted>), Without<Player>>,
+    mut q: Query<(Entity, &mut Enemy, &mut Actor, &mut Transform, Option<&Phantom>, Has<events::FromEvent>, Has<script::Scripted>, Option<&mut crate::model::DrawMask>), Without<Player>>,
     mut fight: ResMut<FightReset>,
     mut brains: NonSendMut<Brains>,
+    routes: Query<&PatrolRoute>,
     mut log: Option<ResMut<crate::hud::CombatLog>>,
     mut perilous: Option<ResMut<crate::hud::Perilous>>,
     mut debug: Option<ResMut<EnemyDebug>>,
     mut bs: ResMut<script::BossScript>,
     mut ai_flags: ResMut<AiFlags>,
+    mut statuses: Option<ResMut<crate::status::Statuses>>,
 ) {
     let dt = time.delta_secs();
     let (pa, ptf) = *player;
@@ -1350,11 +1830,13 @@ fn think(
             hp_rate: a.hp / a.hp_max.max(1.0),
             guard: a.state.contains("Guard"),
             sp: combat.data_of(a).sp_effects_at(&a.anim, a.t).iter().map(|(id, _)| *id).collect(),
+            posture_left: a.posture_max - a.posture,
+            posture_rate: (1.0 - a.posture / a.posture_max.max(1.0)).max(0.0),
         })
         .collect();
     // Wolf's learned skills' SpEffects (Covert A / B) for the sight and hearing checks.
     let skills = crate::combat::skill_sp_effect_rows(&combat, &config);
-    for (entity, mut e, mut a, mut tf, phantom, from_event, scripted) in &mut q {
+    for (entity, mut e, mut a, mut tf, phantom, from_event, scripted, mut draw_mask) in &mut q {
         // A phantom out of the fight does nothing until its boss's script calls it.
         if phantom.is_some_and(|p| p.parked()) || e.disabled {
             continue;
@@ -1472,8 +1954,9 @@ fn think(
                     continue;
                 }
                 if t - dt <= 0.0 {
-                    let (hp, _, _, _) = npc_stats(&combat, a.kind);
-                    a.hp = hp;
+                    // hp_max already carries the area doping's max_hp_rate (spawn_one); the
+                    // raw NpcParam hp brought a doped enemy back at a fraction of its bar.
+                    a.hp = a.hp_max;
                     a.posture = 0.0;
                     e.ninsatsu.0 = e.ninsatsu.1;
                     a.resident = e.resident0.clone();
@@ -1482,11 +1965,58 @@ fn think(
                     e.event_req.clear();
                     e.phase_replan = false;
                     a.anim_group = anim_group_of(d, a.resident.clone().into_iter()).unwrap_or(0);
-                    tf.translation = Vec3::new(e.start.x, tf.translation.y, e.start.z - 2.0);
+                    // Seen again: its idle's opacity as at spawn, not the death clip's TAE 193
+                    // fade to 0 (c1180 ThrowDefDeath12001; Approach below has no anim to read it).
+                    a.opacity = d.opacity_key(&format!("a{:03}_000000", a.anim_group * 100), 0.0).unwrap_or(1.0);
+                    // Facing its spawn way, not the way it died (a deathblow from behind).
+                    a.yaw = e.start_yaw;
+                    // On the floor at its start, not at the height it died at (bodies_on_terrain
+                    // only steps up STEP_HEIGHT: killed downhill it came back buried).
+                    // The duel's line-up comes back 2 m behind its spot (world -Z); an MSB enemy
+                    // (it started unaware on its map spot) at the spot itself, which stays its home.
+                    let back = if e.unaware0 { 0.0 } else { 2.0 };
+                    tf.translation = respawn_spot(e.start, back, crate::map::terrain().as_deref());
+                    // Its new pose at once: no crossfade from the death pose, no deathblow ModelLag.
+                    commands.entity(entity).insert(crate::anim::SnapPose);
+                    // Its poison / burn and their flames stay with the old life.
+                    if let Some(st) = statuses.as_mut() {
+                        st.clear(entity);
+                    }
                     e.mode = Mode::Ai;
                     e.cooldown = 2.0;
                     e.interrupt();
+                    // A new life, a new AI (the exe's AI reset FUN_140602020): the old Brain kept
+                    // its SetNumber values, timers and observes (c1010's Act08 never came back).
+                    brains.map.remove(&entity);
+                    // The death anim's TAE 233 hid the sword and sheath (Mask0-9 = 0) and a broken
+                    // armour stays broken: both come back with the new life, as at spawn.
+                    if let Some(dm) = draw_mask.as_mut() {
+                        dm.clear();
+                    }
+                    e.armor = armor_of(combat.foe_of(&a).npc_row);
                     a.procedural("Approach");
+                    // Its targeting starts over as at spawn: an MSB enemy unaware again (patrol,
+                    // NonBattleAct, the stealth deathblows) under its map AI hold; the line-up
+                    // fighting Wolf (spawn_one). The old life's BATTLE / forget time stayed.
+                    if e.unaware0 {
+                        e.make_unaware(&mut a);
+                        if let Some(h) = e.hold0.clone() {
+                            commands.entity(entity).insert(h);
+                            e.ai_off = true;
+                        }
+                        if let Some(re) = e.route_end0.clone() {
+                            commands.entity(entity).insert(re);
+                        }
+                    } else {
+                        e.targeting = Targeting::new(0x2545_F491 ^ e.rng);
+                        e.targeting.damaged(combat.param("NpcThinkParam", foe.think_id));
+                        e.ai_sp = 200004;
+                    }
+                    // Home is its start pose, not a home its last patrol moved (Patrol::new_home)
+                    // nor where and how it died.
+                    e.home = Some((tf.translation, e.start_yaw));
+                    e.hurt_by_wolf = false;
+                    e.hp_last = None;
                 } else {
                     e.mode = Mode::Dead(t - dt);
                 }
@@ -1586,6 +2116,8 @@ fn think(
             .filter(|(_, d)| *d <= sight && *d < wolf_dist)
             .min_by(|x, y| x.1.total_cmp(&y.1))
             .map(|(r, _)| r);
+        // The opponent for the root-motion boost (actor.rs) and the body twist (anim.rs).
+        a.homing = rival.map(|r| r.ent);
         let t_pos = match rival {
             Some(r) => r.pos,
             None => e.targeting.target_pos(ptf.translation).unwrap_or(ptf.translation),
@@ -1668,7 +2200,10 @@ fn think(
             let dir = crate::paths::root().join("extracted/script");
             let radius = npc["hitRadius"].as_f64().unwrap_or(0.5) as f32;
             match Brain::load(&dir, think_id, think_row, radius, e.rng) {
-                Ok(b) => {
+                Ok(mut b) => {
+                    if let Ok(route) = routes.get(entity) {
+                        b.set_patrol(route.0.clone());
+                    }
                     for l in b.log.iter().filter(|l| !l.starts_with("stub:")) {
                         warn_once(l);
                     }
@@ -1703,10 +2238,8 @@ fn think(
         e.prev_sp = sp_self.iter().chain(sp_target.iter()).copied().collect();
         // (In any anim set: a100_003000 is EzState 3000 too.)
         let playing_ez = e.cur_ez.filter(|ez| ez_of(&a.anim) == Some(*ez));
-        let mut tg = e.targeting.clone();
-        if rival.is_some() {
-            tg.state = stealth::BATTLE;
-        }
+        let tg = rival_view(&e.targeting, rival.map(|r| r.ent), e.rival_last);
+        e.rival_last = rival.map(|r| r.ent);
         let snap = Snapshot {
             // 3D, as the exe's GetDist (FUN_1405f1540: sqrt of dx^2 + dy^2 + dz^2 between the two
             // characters' positions); angles stay horizontal.
@@ -1714,6 +2247,7 @@ fn think(
             angle: dir.dot(right).atan2(dir.dot(fwd)).to_degrees(),
             bearing: (-to_t.x).atan2(-to_t.z).to_degrees(),
             target_guard: rival.map_or(pa.state.contains("Guard"), |r| r.guard),
+            self_guard: stance_of(&a.state) == Some(Stance::Guard),
             sp_self,
             sp_target,
             sp_new,
@@ -1721,6 +2255,8 @@ fn think(
             target_hp_rate: rival.map_or(pa.hp / pa.hp_max, |r| r.hp_rate),
             sp: a.posture_max - a.posture,
             sp_rate: (1.0 - a.posture / a.posture_max).max(0.0),
+            target_sp: rival.map_or(pa.posture_max - pa.posture, |r| r.posture_left),
+            target_sp_rate: rival.map_or((1.0 - pa.posture / pa.posture_max.max(1.0)).max(0.0), |r| r.posture_rate),
             free,
             flags: AI_CANCEL_FLAGS.iter().copied().filter(|&f| !a.anim.is_empty() && d.flag(&a.anim, a.t, f)).collect(),
             ez: playing_ez,
@@ -1731,7 +2267,7 @@ fn think(
             interrupted: std::mem::take(&mut e.interrupted),
             parry_timing: std::mem::take(&mut e.parry_timing),
             guard_count: e.guard_count(),
-            target_use_item: rival.is_none() && pa.state.starts_with("ItemGourd") && pa.prev_t == 0.0 && pa.t > 0.0,
+            target_use_item: rival.is_none() && wolf_starts_an_item(pa),
             me: tf.translation,
             fwd,
             home,
@@ -1752,6 +2288,10 @@ fn think(
         };
         let brain = brains.map.get_mut(&entity).unwrap();
         let cmd = brain.tick(&snap, dt);
+        // A finished type 5 patrol route moved its home (ai.rs Patrol::new_home).
+        if let Some(h) = brain.patrol_home() {
+            e.home = Some(h);
+        }
         for &(id, on) in &cmd.flags {
             match bs.run.as_mut() {
                 Some(r) => r.set_flag(id, on),
@@ -1794,11 +2334,32 @@ fn think(
 
         // Carry out the request.
         let move_ok = free || d.flag(&a.anim, a.t, FLAG_AI_MOVE);
-        if let Some(ez) = cmd.anim {
+        let cur = stance_of(&a.state);
+        let want = Stance::wanted(&cmd).filter(|s| d.anim_key(s.idle()).is_some());
+        let ending = a.state == "GuardEnd" || a.state.starts_with("GeneralStanceEnd");
+        // Another AI action from the general stance ends it first (c9997.lua:1353-1355; the
+        // stance's own start / attack / end ids excepted); from the guard it plays at once.
+        let leaves_general = cur == Some(Stance::General)
+            && cmd.anim.is_some_and(|ez| !matches!(ez, 401060..=401064 | 601040..=601044 | 603000..=603009));
+        if (cmd.anim.is_none() || leaves_general) && (cur.is_some() || (want.is_some() && free && !ending)) {
+            guard_stance(&mut a, d, &cmd, ended, move_ok);
+            e.cur_ez = None;
+        } else if let Some(ez) = cmd.anim {
             // In its anim set, or the set that has the clip (the ground-grab zombie's 20011 is
             // a100 only: Actor::grouped).
             let key = a.grouped(&format!("a000_{ez:06}"));
-            if d.anim(&key).is_some() {
+            let general_state = general_stance_play(&a.state, ended, ez);
+            let starting = general_state.as_deref().is_some_and(|s| !s.starts_with("GeneralStanceAttack"));
+            if let Some(state) = general_state.filter(|s| d.anim_key(s).is_some()) {
+                if !(starting && settling(&a.state) && !ended) && a.state != state {
+                    a.play_state(d, &state);
+                    a.move_vel = Vec3::ZERO;
+                    if !starting {
+                        e.cur_ez = Some(ez);
+                        e.ez_started = Some(ez);
+                    }
+                }
+            } else if d.anim(&key).is_some() {
                 a.play(&format!("Ez{ez}"), &key);
                 a.move_vel = Vec3::ZERO;
                 e.cur_ez = Some(ez);
@@ -1833,10 +2394,206 @@ fn think(
             a.move_vel = Vec3::ZERO;
             e.cur_ez = None;
         }
-        if (cmd.face || cmd.turn) && (free || cmd.mv.is_some()) {
+        let turned = cmd.turn && cmd.anim.is_none() && cmd.mv.is_none() && free && start_turn(&e, &mut a, d, goal_yaw, cmd.emergency);
+        if (cmd.face || cmd.turn) && (free || cmd.mv.is_some()) && !turned && !(a.state.starts_with("Turn") && !ended) {
             a.yaw = turn_toward(a.yaw, goal_yaw, turn_rate.to_radians() * dt);
         }
     }
+}
+
+/// The two held stances (HKS styles STYLE_GUARD / STYLE_GENERAL_STANCE).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Stance {
+    Guard,
+    General,
+}
+
+impl Stance {
+    /// The stance the AI asks for this frame (the general one first: ExecAIAction tries
+    /// ExecAIGeneralStance before ExecAIGuard).
+    fn wanted(cmd: &crate::ai::Command) -> Option<Stance> {
+        if cmd.general {
+            Some(Stance::General)
+        } else if cmd.guard {
+            Some(Stance::Guard)
+        } else {
+            None
+        }
+    }
+    fn start(self) -> &'static str {
+        match self {
+            Stance::Guard => "GuardStart",
+            Stance::General => "GeneralStanceStart401060",
+        }
+    }
+    fn idle(self) -> &'static str {
+        match self {
+            Stance::Guard => "GuardIdle",
+            Stance::General => "GeneralStanceIdle",
+        }
+    }
+    fn end(self) -> &'static str {
+        match self {
+            Stance::Guard => "GuardEnd",
+            Stance::General => "GeneralStanceEnd601040",
+        }
+    }
+    /// The move state (move_table_guard / move_table_general_stance, c9997.lua:697; ExecMove).
+    fn walk(self, mv: char, walk: bool) -> String {
+        let dir = match mv {
+            'B' => "Back",
+            'L' => "Left",
+            'R' => "Right",
+            _ => "Front",
+        };
+        match self {
+            Stance::Guard => format!("GuardWalk{dir}"),
+            Stance::General if mv == 'F' && !walk => "GeneralStanceRunFront".into(),
+            Stance::General => format!("GeneralStanceWalk{dir}"),
+        }
+    }
+}
+
+/// The stance a state belongs to, and whether it is one that plays out first (a start or a
+/// turn; the general stance's own starts 401060-401064 also come as AI action anims).
+fn stance_of(state: &str) -> Option<Stance> {
+    if ["GuardStart", "GuardIdle", "GuardWalk", "TurnGuard_"].iter().any(|s| state.starts_with(s)) {
+        Some(Stance::Guard)
+    } else if ["GeneralStanceStart", "GeneralStanceIdle", "GeneralStanceWalk", "GeneralStanceRun", "GeneralStanceTrun_", "GeneralStanceAttack", "Ez40106"].iter().any(|s| state.starts_with(s)) {
+        Some(Stance::General)
+    } else {
+        None
+    }
+}
+
+/// c9997 ExecAIGeneralStance (c9997.lua:1321-1350) for an AI action `ez`: the stance's own
+/// attacks / ends (603000-603009 / 601040-601044) out of the stance start it first
+/// (W_GeneralStanceStart401060; the goal keeps asking), in it they play as
+/// W_GeneralStanceAttack<id> / End<id>, which go back to the stance idle (GeneralStanceAttack*
+/// _onUpdate: env(339) -> W_GeneralStanceIdle); a start (401060-401064) in the stance ends it.
+/// A start, turn or attack plays out first. None: not a general stance action.
+pub(crate) fn general_stance_play(state: &str, ended: bool, ez: i64) -> Option<String> {
+    let in_general = stance_of(state) == Some(Stance::General) && (!settling(state) || ended);
+    match ez {
+        603000..=603009 if in_general => Some(format!("GeneralStanceAttack{ez}")),
+        601040..=601044 if in_general => Some(format!("GeneralStanceEnd{ez}")),
+        603000..=603009 | 601040..=601044 => Some("GeneralStanceStart401060".to_string()),
+        401060..=401064 if in_general => Some("GeneralStanceEnd601040".to_string()),
+        _ => None,
+    }
+}
+
+fn settling(state: &str) -> bool {
+    ["GuardStart", "TurnGuard_", "GeneralStanceStart", "GeneralStanceTrun_", "GeneralStanceAttack", "Ez40106"].iter().any(|s| state.starts_with(s))
+}
+
+/// The guard stance (c9997 ExecAIGuard / ExecAIAction, hks_src/c9997.lua:1110-1320, 10524-10556):
+/// the guard goal's request 9910 (ACTION_TYPE_GUARD) from idle fires W_GuardStart, which ends
+/// in W_GuardIdle (a000_500000 loop); in guard style a move request walks with the guard up
+/// (move_table_guard: GuardWalkFront / Back / Left / Right, a000_50500x), a turn is
+/// W_TurnGuard_* (start_turn), another AI action (an attack) plays from it as from idle, and
+/// when the request stops (env(106) <= 0 in STYLE_GUARD) W_GuardEnd (a000_501040) goes back to
+/// idle. Every guard clip holds ChrActionFlag 3 ShieldBlock, so the stance blocks (combat.rs).
+/// The general stance (9920, ACTION_TYPE_GENERAL_STANCE; ExecAIGeneralStance c9997.lua:1321-1375,
+/// ExecMove 1609-1632, GeneralStance*_onUpdate 10800-10890) runs the same way: W_GeneralStanceStart401060
+/// -> W_GeneralStanceIdle (a000_600000), W_GeneralStanceWalk* / RunFront (605000 / 605010),
+/// W_GeneralStanceTrun_* turns (60540x), W_GeneralStanceEnd601040 when the request stops or
+/// another action comes; asking for one stance in the other ends the other first (1361-1363).
+/// gaps: W_GuardRun (no c1010 / c1020 clip; a run asks for the front walk here), the start
+/// clips' cancel windows (TransStyleCommonFunction / AttackCommonFunction) and the general
+/// stance's own attacks (603000-603009, no c1010 state).
+pub(crate) fn guard_stance(a: &mut Actor, d: &crate::data::CharData, cmd: &crate::ai::Command, ended: bool, move_ok: bool) {
+    let st = a.state.clone();
+    let cur = stance_of(&st);
+    let want = Stance::wanted(cmd).filter(|s| d.anim_key(s.idle()).is_some());
+    let leaving = cmd.anim.is_some() || want != cur;
+    if let (Some(c), true) = (cur, leaving) {
+        // The request gone, or another stance / action asked for: this one's end clip.
+        if !settling(&st) || ended {
+            if !a.play_state(d, c.end()) {
+                a.procedural("IdleBattle");
+            }
+            a.move_vel = Vec3::ZERO;
+        }
+        return;
+    }
+    let Some(s) = want else { return };
+    if cur.is_none() {
+        a.play_state(d, s.start());
+        a.move_vel = Vec3::ZERO;
+        return;
+    }
+    if settling(&st) {
+        if ended {
+            a.play_state(d, s.idle());
+            a.move_vel = Vec3::ZERO;
+        }
+        return;
+    }
+    if let (Some(mv), true) = (cmd.mv, move_ok) {
+        let state = s.walk(mv, cmd.walk);
+        if (st != state || ended) && a.play_state(d, &state) {
+            return;
+        }
+        if st == state {
+            return;
+        }
+    }
+    if st != s.idle() || ended {
+        a.play_state(d, s.idle());
+        a.move_vel = Vec3::ZERO;
+    }
+}
+
+/// Turning in place (c9997 ExecTurn, hks_src/c9997.lua:1488-1563): an AI turn request (TurnTo)
+/// from idle of 45 degrees or more (any angle with RequestEmergencyQuickTurn, env(330)) plays
+/// W_Turn<AI state>_<Left|Right><90|180>: under 135 the 90 clip, else the 180 one; not under
+/// SpEffect ref 1000072 SP_EFFECT_REF_NO_QUICK_TURN, nor from a turn or a walk / run (their
+/// TurnCommonFunction / move states pass enable_turn FALSE; idle, attack, step and damage ends
+/// pass TRUE). The clip's root motion turns it (no
+/// SetTurnSpeed on them); its TAE's AI flags 23 / 86 / 79 / 78 open the AI's next action from
+/// 0.4 s (90) / 0.6 s (180). The AI states pick Default / CautionNoBattle / CautionBattle /
+/// Battle (IndexAiState, ai_suffix); a state without the clip (c1010 has no 2054xx) turns as
+/// before (turnVellocity). The clip's turn is scaled to the asked angle: act(9105, 90 / 180)
+/// (FUN_140b32410 case 0x2391, 140b3.c:8728 -> FUN_1407de170) and act(9104) (the corrected-turn
+/// flag) make FUN_1407db220 set the root-motion rate to |error| / 90 or 180. TurnAngle is the
+/// AI's desired facing (AI +0x73e4 from the TurnTo target +0x9050, FUN_14060c7d0) minus the
+/// chr's yaw, in degrees, right positive (FUN_140b4c600, 140b4.c:4531). gaps: the leftover error's
+/// 720 deg/s correction (FUN_1407dab40) and the 0xd branch (1407d.c:8046); the General stance
+/// turn and the flight / crouch Default rule are not run.
+pub(crate) fn start_turn(e: &Enemy, a: &mut Actor, d: &crate::data::CharData, goal_yaw: f32, emergency: bool) -> bool {
+    if ["Turn", "Walk", "Run", "Guard", "GeneralStance", "Ez40106"].iter().any(|s| a.state.starts_with(s)) && !a.state.starts_with("GuardIdle") && !a.state.starts_with("GeneralStanceIdle") {
+        return false;
+    }
+    // In the guard stance (GuardIdle): W_TurnGuard_* (ExecTurn, action type ACTION_TYPE_GUARD);
+    // in the general stance W_GeneralStanceTrun_* (sic).
+    let guard = a.state.starts_with("GuardIdle");
+    let general = a.state.starts_with("GeneralStanceIdle");
+    let no_turn = a.resident.iter().chain(e.clash.iter().map(|c| &c.0)).any(|id| d.sp_effects.get(&id.to_string()).is_some_and(|s| s.behavior_ref_id == 1000072))
+        || (!a.anim.is_empty() && d.sp_effects_at(&a.anim, a.t).iter().any(|(_, s)| s.behavior_ref_id == 1000072));
+    // TurnAngle: right is positive; Bevy's yaw grows to the left.
+    let angle = -(goal_yaw - a.yaw + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) + std::f32::consts::PI;
+    let deg = angle.to_degrees();
+    if no_turn || deg.abs() <= 0.0 || (deg.abs() < 45.0 && !emergency) {
+        return false;
+    }
+    let (side, clip) = (if deg < 0.0 { "Left" } else { "Right" }, if deg.abs() < 135.0 { 90.0 } else { 180.0 });
+    let state = if guard {
+        format!("TurnGuard_{side}{clip}")
+    } else if general {
+        format!("GeneralStanceTrun_{side}{clip}")
+    } else {
+        format!("Turn{}_{side}{clip}", ai_suffix(e.ai_sp))
+    };
+    if !d.anim_key(&state).is_some_and(|k| d.anim(&a.grouped(k)).is_some()) || !a.play_state(d, &state) {
+        return false;
+    }
+    // act(9105, 90 / 180) -> FUN_1407de170: BehaviorTurn +0x30 = the clip's angle; its first
+    // frame FUN_1407db220 (1407d.c:8110-8127) sets the root-motion rate (motion +0x904 / +0x90c)
+    // to |yaw error| / that angle.
+    a.yaw_scale = deg.abs() / clip;
+    a.move_vel = Vec3::ZERO;
+    true
 }
 
 /// Debug drills: walk into range, then every `interval` s one attack - a random perilous one, or

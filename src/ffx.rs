@@ -256,7 +256,9 @@ impl Plugin for FfxPlugin {
             .init_resource::<Ribbons>()
             .insert_resource(FootSfx::load())
             .add_systems(Startup, setup)
-            .add_systems(Update, (emit, animate_puffs, weapon_trail, skill_shots));
+            // emit reads the TAE edges (prev_t, t), which move once per fixed step.
+            .add_systems(FixedUpdate, emit.after(crate::actor::ActorSet::Advance).after(crate::anim::PoseSet))
+            .add_systems(Update, (animate_puffs, weapon_trail, skill_shots));
     }
 }
 
@@ -335,7 +337,8 @@ impl Rng {
 #[allow(clippy::too_many_arguments)]
 fn emit(
     mut commands: Commands,
-    time: Res<Time>,
+    // The fixed step's, and the render clock weapon_trail reads the ribbons with.
+    (time, clock): (Res<Time>, Res<Time<Virtual>>),
     combat: Res<Combat>,
     config: Res<crate::config::GameConfig>,
     mut assets: ResMut<FfxAssets>,
@@ -351,11 +354,12 @@ fn emit(
     mut playing: Query<&mut crate::fxr::FxEffect>,
     foot: Res<FootSfx>,
 ) {
-    // Slotted / held effects end with their TAE event or when the anim changes.
+    // Slotted / held effects end with their TAE event, when the anim changes, or when a looping
+    // anim (an idle, started over at t 0 under the same key) starts over.
     for mut f in &mut playing {
         if let Some((owner, anim, idx)) = f.key.clone() {
             let alive = actors.iter().zip(actor_e.iter()).find(|(_, e)| *e == owner).is_some_and(|((a, _, _), _)| {
-                a.anim == anim && data_for(&combat, &a).anim(&a.anim).and_then(|an| an.events.get(idx)).is_some_and(|ev| a.t < ev.end)
+                a.anim == anim && a.t >= a.prev_t && data_for(&combat, &a).anim(&a.anim).and_then(|an| an.events.get(idx)).is_some_and(|ev| a.t < ev.end)
             });
             if !alive {
                 f.stop = true;
@@ -382,11 +386,15 @@ fn emit(
     let rng = rng.get_or_insert(Rng(0x2468_1357));
     let dt = time.delta_secs();
     for ((a, dm, player), owner) in actors.iter().zip(actor_e.iter()) {
-        if a.anim.is_empty() || a.t < a.prev_t {
+        if a.t < a.prev_t {
             continue;
         }
         let d = data_for(&combat, &a);
-        let Some(anim) = d.anim(&a.anim) else { continue };
+        // The TAE anim's step, or Wolf's procedural walk / run: the shown locomotion clip (its
+        // foot dust, TAE 792 / 112) - the same windows as its footstep sounds.
+        let Some((clip, windows, _)) = crate::sound::sound_windows(a, d) else { continue };
+        let procedural = a.anim.is_empty();
+        let Some(anim) = d.anim(&clip) else { continue };
         let mut states: Option<Vec<i64>> = None;
         let foot_row = if player.is_some() { foot.player_row } else { combat.npc(a)["footEffectSfxId"].as_i64() };
         for (idx, e) in anim.events.iter().enumerate().filter(|(_, e)| matches!(e.kind, 96 | 112 | 118 | 792)) {
@@ -405,8 +413,9 @@ fn emit(
             if layers.is_empty() && !game_fx {
                 continue;
             }
-            let (from, to) = (a.prev_t.max(e.start), a.t.min(e.end));
-            let started = e.start > a.prev_t && e.start <= a.t || (a.prev_t == 0.0 && e.start == 0.0 && a.t > 0.0);
+            // A locomotion clip's events only start (gap: held ones are not kept up).
+            let (from, to) = if procedural { (0.0, 0.0) } else { (a.prev_t.max(e.start), a.t.min(e.end)) };
+            let started = windows.iter().any(|&(lo, hi)| e.start > lo && e.start <= hi);
             if to <= from && !started {
                 continue;
             }
@@ -445,7 +454,7 @@ fn emit(
                     };
                     let follow = e.args.get("IsFollowDummyPoly").and_then(|v| v.as_bool()).unwrap_or(e.kind != 112);
                     if std::env::var("SHINOBI_FFX_LOG").is_ok() {
-                        info!("fxr {ffx} on {dmy} ({} {:.2}) at {:.2}", a.anim, a.t, pos);
+                        info!("fxr {ffx} on {dmy} ({clip} {:.2}) at {:.2}", a.t, pos);
                     }
                     // Foot dust with IsIgnoreDummyPolyAngle (all of Wolf's 792s): at the foot,
                     // turned as the character, not as the foot.
@@ -458,8 +467,15 @@ fn emit(
                     } else {
                         crate::fxr::FxEffect::new(ffx, anchor, follow, Transform::from_translation(pos))
                     };
-                    if e.arg_i64("SlotID").is_some_and(|s| s >= 0) || e.kind == 118 {
-                        fx.key = Some((owner, a.anim.clone(), idx));
+                    if !procedural && (e.arg_i64("SlotID").is_some_and(|s| s >= 0) || e.kind == 118) {
+                        let key = (owner, a.anim.clone(), idx);
+                        // One instance per event: a new start replaces the old one.
+                        for mut old in &mut playing {
+                            if old.key.as_ref() == Some(&key) {
+                                old.stop = true;
+                            }
+                        }
+                        fx.key = Some(key);
                     }
                     commands.spawn(fx);
                 }
@@ -467,13 +483,13 @@ fn emit(
             }
             let short = e.end - e.start <= 4.5 / crate::data::TAE_FPS;
             if std::env::var("SHINOBI_FFX_LOG").is_ok() && started {
-                info!("ffx {ffx} on {dmy} ({} {:.2}) at {:.2}", a.anim, a.t, pos);
+                info!("ffx {ffx} on {dmy} ({clip} {:.2}) at {:.2}", a.t, pos);
             }
             for l in layers {
                 if l.kind == Kind::Ribbon {
                     // Held through the event (and a short tail) - sampled by weapon_trail.
                     let left = (e.end - a.t).max(0.0) + 0.06;
-                    ribbons.0.insert(a.side == crate::actor::Side::Player, (l.color, time.elapsed_secs() + left));
+                    ribbons.0.insert(a.side == crate::actor::Side::Player, (l.color, clock.elapsed_secs() + left));
                     continue;
                 }
                 let n = if short || l.rate == 0.0 {

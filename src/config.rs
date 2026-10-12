@@ -65,11 +65,44 @@ pub struct VideoConfig {
     /// `SHINOBI_MAP_SHADOW_RES` overrides it for one run.
     #[serde(default)]
     pub shadow_res: Option<usize>,
+    /// Cloth physics (cloth.rs, the Options menu): "on" within 15 m of the camera, "near"
+    /// within 6 m, "off" (every coat carried stiffly in its bind pose).
+    /// `SHINOBI_CLOTH_RANGE` overrides it for one run.
+    #[serde(default)]
+    pub cloth: ClothSetting,
+}
+
+#[derive(serde::Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ClothSetting {
+    #[default]
+    On,
+    Near,
+    Off,
+}
+
+impl ClothSetting {
+    /// The simulation range in metres from the camera; negative = none simulated.
+    pub fn range(self) -> f32 {
+        match self {
+            ClothSetting::On => 15.0,
+            ClothSetting::Near => 6.0,
+            ClothSetting::Off => -1.0,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            ClothSetting::On => "on",
+            ClothSetting::Near => "near",
+            ClothSetting::Off => "off",
+        }
+    }
 }
 
 impl Default for VideoConfig {
     fn default() -> Self {
-        VideoConfig { fullscreen: false, vsync: true, resolution: None, shadow_res: None }
+        VideoConfig { fullscreen: false, vsync: true, resolution: None, shadow_res: None, cloth: ClothSetting::On }
     }
 }
 
@@ -128,13 +161,18 @@ pub struct WorldConfig {
     /// Map id of `extracted/map_<id>.bin` (e.g. "m11_01_00_00"); unset = flat arena.
     #[serde(default)]
     pub map: Option<String>,
-    /// Time of day for the draw params (hours). gap: the game's clock for the area.
+    /// Time of day for the draw params (hours). A boss fight takes its own draw param variant's
+    /// hour (map.rs). The game has no clock: common.emevd event 100 picks the castle /
+    /// outskirts light from the cumulative story flags 9800-9803 (none 6 h morning, 9800 12 h,
+    /// +9801 18 h, +9802 22 h, all 2 h dawn), and event 820 raises 9800 / 9801 after one / three
+    /// of the time bosses (9303-9306) fall (sekiro-rs 9ee18b0 crates/sim/src/story.rs, checked
+    /// there against the installed event script). Sv1 has no story flags: morning.
     #[serde(default = "default_hour")]
     pub hour: f32,
 }
 
 fn default_hour() -> f32 {
-    18.0
+    6.0
 }
 
 #[derive(Deserialize, Clone, Debug)]
@@ -268,14 +306,19 @@ pub struct EnemyConfig {
 }
 
 /// One more enemy (config enemy.group): its chr, NpcParam row (unset: its default) and where it
-/// stands (x, z; unset: in a row beside the first).
-#[derive(Deserialize, Clone, Debug)]
+/// stands (x, z; unset: in a row beside the first). `msb`: an MSB enemy's entity id on the
+/// loaded map (extracted/enemies/patrols.json): it stands at its MSB spot facing its MSB way and
+/// walks its patrol route (enemy.rs msb_patrol), e.g. `{ chr = "c1010", npc_row = 10102010,
+/// msb = 1110236 }` on the gate map.
+#[derive(Deserialize, Clone, Debug, Default)]
 pub struct GroupEnemy {
     pub chr: String,
     #[serde(default)]
     pub npc_row: Option<i64>,
     #[serde(default)]
     pub at: Option<[f32; 2]>,
+    #[serde(default)]
+    pub msb: Option<i64>,
 }
 
 impl GameConfig {
@@ -308,7 +351,7 @@ fn reload_on_f5(keys: Res<ButtonInput<KeyCode>>, mut config: ResMut<GameConfig>)
     }
     match GameConfig::load() {
         Ok(new_config) => {
-            *config = new_config;
+            *config = reloaded(&config, new_config);
             info!("config.toml reloaded");
         }
         // A typo in the file keeps the old values instead of crashing the game.
@@ -316,8 +359,32 @@ fn reload_on_f5(keys: Res<ButtonInput<KeyCode>>, mut config: ResMut<GameConfig>)
     }
 }
 
+/// The file's values, but the fight in progress stays: the encounter picker (enemy.rs
+/// spawn_encounter) sets enemy.chr / npc_row / group in memory only, and Combat.kinds holds that
+/// encounter; taking the file's back made the next reset spawn its group into the picked fight.
+fn reloaded(old: &GameConfig, mut new: GameConfig) -> GameConfig {
+    new.enemy.chr = old.enemy.chr.clone();
+    new.enemy.npc_row = old.enemy.npc_row;
+    new.enemy.group = old.enemy.group.clone();
+    new
+}
+
 #[cfg(test)]
 mod tests {
+    /// F5 keeps the picked fight (2026-10-12 bug hunt round 9).
+    #[test]
+    fn f5_keeps_the_picked_encounter() {
+        let mut old = super::GameConfig::load().expect("config.toml must parse");
+        old.enemy.chr = "c1010".into();
+        old.enemy.npc_row = Some(10102010);
+        old.enemy.group.clear();
+        let mut file = super::GameConfig::load().unwrap();
+        file.enemy.chr = "c1020".into();
+        file.enemy.group.push(crate::config::GroupEnemy { chr: "c1010".into(), npc_row: Some(10102010), at: None, msb: Some(1110236) });
+        let got = super::reloaded(&old, file);
+        assert_eq!((got.enemy.chr.as_str(), got.enemy.npc_row, got.enemy.group.len()), ("c1010", Some(10102010), 0));
+    }
+
     #[test]
     fn config_toml_parses() {
         super::GameConfig::load().expect("config.toml must parse");

@@ -62,14 +62,18 @@ impl Region {
         digits.parse().ok()
     }
 
-    /// A world point inside this box (boxes are centred on the region position and turned by
-    /// its yaw) or sphere.
+    /// A world point inside this box or sphere. A box stands on its position (bottom-centred:
+    /// y 0..height above it, x / z centred) and is turned by its yaw - as DSMapStudio draws
+    /// region boxes (RenderableProxy, y 0..1 before scaling), as area_music.rs tests the indoor
+    /// regions, and as sekiro-rs (9ee18b0 lighting.rs ~584, docs/SHADERS.md "GIIV") places the
+    /// Env_Box irradiance volumes, whose voxel data fit the box that way. With it the gate's
+    /// probe is Env_Box280 (the origin is 4.4 m under Env_Box380's floor).
     pub fn contains(&self, p: [f32; 3]) -> bool {
         let d = [p[0] - self.pos[0], p[1] - self.pos[1], p[2] - self.pos[2]];
         match self.shape {
             5 => {
                 let l = rotate([0.0, -self.rot[1], 0.0], d);
-                l[0].abs() <= self.size[0] * 0.5 && l[2].abs() <= self.size[1] * 0.5 && l[1].abs() <= self.size[2] * 0.5
+                l[0].abs() <= self.size[0] * 0.5 && l[2].abs() <= self.size[1] * 0.5 && (0.0..=self.size[2]).contains(&l[1])
             }
             2 => d[0] * d[0] + d[1] * d[1] + d[2] * d[2] <= self.size[0] * self.size[0],
             _ => false,
@@ -93,6 +97,8 @@ pub struct Msb {
     /// stands for a grapple point and for a treasure spot (gate map o000100_0073, entity
     /// 1111510 "Set Object Treasure State" in m11_01's events, 0.25 m over the floor).
     pub treasure_parts: Vec<usize>,
+    /// Parts an ObjAct event works (doors, gates, levers), by part index.
+    pub objact_parts: Vec<usize>,
 }
 
 /// Each param: version, offsetCount, nameOffset, (offsetCount - 1) entry offsets, next param offset.
@@ -177,7 +183,17 @@ pub fn read(d: &[u8]) -> Msb {
             (td != 0).then(|| usize::try_from(r.i32(o + td + 8)).ok()).flatten()
         })
         .collect();
-    Msb { parts, regions, treasure_parts }
+    // ObjAct (7) type data: ObjActEntityID, ObjActPartIndex, ObjActID, StateType, ...,
+    // EventFlagID (SoulsFormats MSBS EventParam.ObjAct): the doors and levers the player works.
+    let objact_parts = get("EVENT_PARAM_ST")
+        .iter()
+        .filter(|&&o| r.u32(o + 0xC) == 7)
+        .filter_map(|&o| {
+            let td = r.u64(o + 0x20) as usize;
+            (td != 0).then(|| usize::try_from(r.i32(o + td + 4)).ok()).flatten()
+        })
+        .collect();
+    Msb { parts, regions, treasure_parts, objact_parts }
 }
 
 /// Column-vector rotation of a part: Ry * Rz * Rx (degrees), i.e. SoulsFormats' row-vector
@@ -199,5 +215,19 @@ impl Part {
         let s = [v[0] * self.scale[0], v[1] * self.scale[1], v[2] * self.scale[2]];
         let r = rotate(self.rot, s);
         [r[0] + self.pos[0], r[1] + self.pos[1], r[2] + self.pos[2]]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A box region stands on its position: inside from its floor up to its height, not below.
+    #[test]
+    fn a_box_region_stands_on_its_position() {
+        let b = Region { name: "Env_Box280".into(), kind: 17, id: 0, pos: [0.0, 10.0, 0.0], rot: [0.0; 3], shape: 5, size: [4.0, 4.0, 6.0] };
+        assert!(b.contains([0.0, 15.0, 0.0]), "5 m up a 6 m box");
+        assert!(!b.contains([0.0, 8.0, 0.0]), "2 m under its floor");
+        assert!(!b.contains([3.0, 12.0, 0.0]), "outside its width");
     }
 }

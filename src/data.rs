@@ -63,6 +63,32 @@ pub struct Anim {
 #[derive(Deserialize, Clone, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct SpEffect {
+    /// def<Attr>StaminaDmgRate: posture damage taken while worn, by the attack's
+    /// staminaPhysicsAttribute (combat::def_stamina_rate).
+    #[serde(default = "one", rename = "defSlashStaminaDmgRate")]
+    pub def_slash_stamina_dmg_rate: f32,
+    #[serde(default = "one", rename = "defLightHitStaminaDmgRate")]
+    pub def_light_hit_stamina_dmg_rate: f32,
+    #[serde(default = "one", rename = "defThrustStaminaDmgRate")]
+    pub def_thrust_stamina_dmg_rate: f32,
+    #[serde(default = "one", rename = "defNeutralStaminaDmgRate")]
+    pub def_neutral_stamina_dmg_rate: f32,
+    #[serde(default = "one", rename = "defHeavyHitStaminaDmgRate")]
+    pub def_heavy_hit_stamina_dmg_rate: f32,
+    #[serde(default = "one", rename = "defNinsatuStaminaDmgRate")]
+    pub def_ninsatu_stamina_dmg_rate: f32,
+    #[serde(default = "one", rename = "defAntiGroundStaminaDmgRate")]
+    pub def_anti_ground_stamina_dmg_rate: f32,
+    #[serde(default = "one", rename = "defAntiAirStaminaDmgRate")]
+    pub def_anti_air_stamina_dmg_rate: f32,
+    #[serde(default = "one", rename = "defLightShootStaminaDmgRate")]
+    pub def_light_shoot_stamina_dmg_rate: f32,
+    #[serde(default = "one", rename = "defAttriAStaminaDmgRate")]
+    pub def_attri_a_stamina_dmg_rate: f32,
+    #[serde(default = "one", rename = "defAttriBStaminaDmgRate")]
+    pub def_attri_b_stamina_dmg_rate: f32,
+    #[serde(default = "one", rename = "defAttriCStaminaDmgRate")]
+    pub def_attri_c_stamina_dmg_rate: f32,
     /// Grapple target while worn (kb/grapple.md section 4): the wire variation (-1 none; the
     /// player's arc row ChrPhysicsHomingParam 3000<variation>), the dummy poly the hook
     /// catches, the one Wolf lands at (260: the model root).
@@ -103,6 +129,32 @@ pub struct SpEffect {
     pub sp_category: i64,
     #[serde(default)]
     pub category_priority: i64,
+    /// spCategory 1001 damage-motion replacement enums (dmgLv_None .. dmgLv_Breath, by HKS damage
+    /// level 0-11; 0 = keep): `damage_motion_level`.
+    #[serde(default, rename = "dmgLv_None")]
+    pub dmg_lv_0: i64,
+    #[serde(default, rename = "dmgLv_S")]
+    pub dmg_lv_1: i64,
+    #[serde(default, rename = "dmgLv_M")]
+    pub dmg_lv_2: i64,
+    #[serde(default, rename = "dmgLv_L")]
+    pub dmg_lv_3: i64,
+    #[serde(default, rename = "dmgLv_BlowM")]
+    pub dmg_lv_4: i64,
+    #[serde(default, rename = "dmgLv_Push")]
+    pub dmg_lv_5: i64,
+    #[serde(default, rename = "dmgLv_Strike")]
+    pub dmg_lv_6: i64,
+    #[serde(default, rename = "dmgLv_BlowS")]
+    pub dmg_lv_7: i64,
+    #[serde(default, rename = "dmgLv_Min")]
+    pub dmg_lv_8: i64,
+    #[serde(default, rename = "dmgLv_Uppercut")]
+    pub dmg_lv_9: i64,
+    #[serde(default, rename = "dmgLv_BlowLL")]
+    pub dmg_lv_10: i64,
+    #[serde(default, rename = "dmgLv_Breath")]
+    pub dmg_lv_11: i64,
     #[serde(default)]
     pub def_stamina_attack_rate: f32,
     #[serde(default = "one")]
@@ -170,6 +222,122 @@ pub struct SpEffect {
     pub invocation_conditions_state_change2: i64,
     #[serde(default)]
     pub invocation_conditions_state_change3: i64,
+}
+
+/// SpEffectParam def<Attr>StaminaDmgRate for an AtkParam staminaPhysicsAttribute (Paramdex SDT
+/// enum ATKPARAM_STAMINA_ATKATTR_TYPE: 1 Slash, 2 Light Hit, 3 Thrust, 4 Neutral, 5 Ninsatsu,
+/// 6 Heavy Hit, 7 Anti Ground, 8 Anti Air, 9 Light Shoot (the shuriken), 10-12 Attribute A-C;
+/// 0 None has none).
+pub fn stamina_rate_field(attribute: i64) -> Option<&'static str> {
+    Some(match attribute {
+        1 => "defSlashStaminaDmgRate",
+        2 => "defLightHitStaminaDmgRate",
+        3 => "defThrustStaminaDmgRate",
+        4 => "defNeutralStaminaDmgRate",
+        5 => "defNinsatuStaminaDmgRate",
+        6 => "defHeavyHitStaminaDmgRate",
+        7 => "defAntiGroundStaminaDmgRate",
+        8 => "defAntiAirStaminaDmgRate",
+        9 => "defLightShootStaminaDmgRate",
+        10 => "defAttriAStaminaDmgRate",
+        11 => "defAttriBStaminaDmgRate",
+        12 => "defAttriCStaminaDmgRate",
+        _ => return None,
+    })
+}
+
+/// SpEffectParam HP cut rate for an AtkParam atkAttribute (same enum values): <attr>DamageCutRate
+/// for Slash, Light Hit, Thrust, Neutral and Attribute A-C, def<Attr>DmgRate for Ninsatsu, Heavy
+/// Hit, Anti Ground, Anti Air and Light Shoot (Paramdex SDT SpEffect.xml:2598-2635, the same
+/// description as slashDamageCutRate). gap: the exe site applying them is not traced.
+pub fn damage_cut_field(attribute: i64) -> Option<&'static str> {
+    Some(match attribute {
+        1 => "slashDamageCutRate",
+        2 => "lightHitDamageCutRate",
+        3 => "thrustDamageCutRate",
+        4 => "neutralDamageCutRate",
+        5 => "defNinsatsuDmgRate",
+        6 => "defHeavyHitDmgRate",
+        7 => "defAntiGroundDmgRate",
+        8 => "defAntiAirDmgRate",
+        9 => "defLightShootDmgRate",
+        10 => "attriADamageCutRate",
+        11 => "attriBDamageCutRate",
+        12 => "attriCDamageCutRate",
+        _ => return None,
+    })
+}
+
+/// NpcParam's own per-attribute rates (Paramdex SDT NpcParam.xml: "the damage result times this
+/// is the final damage" / "multiplied into the stamina damage when the stamina physical attribute
+/// is ..."): the HP one for an AtkParam atkAttribute, the posture one for its
+/// staminaPhysicsAttribute (the same enum as `stamina_rate_field`).
+pub fn npc_damage_rate_field(attribute: i64) -> Option<&'static str> {
+    Some(match attribute {
+        1 => "slashDamageCutRate",
+        2 => "lightHitDamageCutRate",
+        3 => "thrustDamageCutRate",
+        4 => "neutralDamageCutRate",
+        5 => "ninsatsuDamageRate",
+        6 => "heavyHitDamageRate",
+        7 => "antiGroundDamageRate",
+        8 => "antiAirDamageRate",
+        9 => "lightShootDamageRate",
+        10 => "attriADamageCutRate",
+        11 => "attriBDamageCutRate",
+        12 => "attriCDamageCutRate",
+        _ => return None,
+    })
+}
+
+pub fn npc_stamina_rate_field(attribute: i64) -> Option<&'static str> {
+    Some(match attribute {
+        1 => "slashStaminaDmgRate",
+        2 => "lightHitStaminaDmgRate",
+        3 => "thrustStaminaDmgRate",
+        4 => "neutralStaminaDmgRate",
+        5 => "ninsatuStaminaDmgRate",
+        6 => "heavyHitStaminaDmgRate",
+        7 => "antiGroundStaminaDmgRate",
+        8 => "antiAirStaminaDmgRate",
+        9 => "lightShootStaminaDmgRate",
+        10 => "attriAStaminaDmgRate",
+        11 => "attriBStaminaDmgRate",
+        12 => "attriCStaminaDmgRate",
+        _ => return None,
+    })
+}
+
+impl SpEffect {
+    /// Its dmgLv_* replacement enum for HKS damage level `level` (0-11).
+    pub fn dmg_lv(&self, level: i64) -> i64 {
+        [
+            self.dmg_lv_0, self.dmg_lv_1, self.dmg_lv_2, self.dmg_lv_3, self.dmg_lv_4, self.dmg_lv_5,
+            self.dmg_lv_6, self.dmg_lv_7, self.dmg_lv_8, self.dmg_lv_9, self.dmg_lv_10, self.dmg_lv_11,
+        ]
+        .get(level as usize)
+        .copied()
+        .unwrap_or(0)
+    }
+
+    /// Its def<Attr>StaminaDmgRate for a staminaPhysicsAttribute (`stamina_rate_field`).
+    pub fn def_stamina_rate(&self, attribute: i64) -> f32 {
+        match attribute {
+            1 => self.def_slash_stamina_dmg_rate,
+            2 => self.def_light_hit_stamina_dmg_rate,
+            3 => self.def_thrust_stamina_dmg_rate,
+            4 => self.def_neutral_stamina_dmg_rate,
+            5 => self.def_ninsatu_stamina_dmg_rate,
+            6 => self.def_heavy_hit_stamina_dmg_rate,
+            7 => self.def_anti_ground_stamina_dmg_rate,
+            8 => self.def_anti_air_stamina_dmg_rate,
+            9 => self.def_light_shoot_stamina_dmg_rate,
+            10 => self.def_attri_a_stamina_dmg_rate,
+            11 => self.def_attri_b_stamina_dmg_rate,
+            12 => self.def_attri_c_stamina_dmg_rate,
+            _ => 1.0,
+        }
+    }
 }
 
 fn one() -> f32 {
@@ -241,6 +409,9 @@ pub struct Attack {
     /// picks the defender's def<Attr>StaminaDmgRate (latent skill Flowing Water: slash 0.8, others 0.75).
     #[serde(rename = "staminaPhysicsAttribute")]
     pub stamina_physics_attribute: i64,
+    /// AtkParam atkAttribute (same enum): picks the defender's <attr>DamageCutRate (`damage_cut_field`).
+    #[serde(rename = "atkAttribute", default)]
+    pub atk_attribute: i64,
     pub repel_lost_stam_damage: f32,
     #[serde(rename = "repelLostStamDamage_Attacker", default)]
     pub repel_lost_stam_damage_attacker: f32,
@@ -508,6 +679,31 @@ pub struct Prosthetic {
 }
 
 /// A Bullet param row (projectile) and its AtkParam.
+
+impl Attack {
+    /// This attack from a bullet `seconds` past its range: hp damage, stamina damage and
+    /// knockback each lose their damp percent per second, linearly, to none. Ported from
+    /// AKJama/sekiro-rs bullets.rs `decayed`. gap: the exe's curve is not traced (linear assumed).
+    pub fn decayed(&self, damp: [f32; 3], seconds: f32) -> Attack {
+        let mut a = self.clone();
+        if seconds <= 0.0 {
+            return a;
+        }
+        let scale = |pct: f32| (1.0 - pct / 100.0 * seconds).max(0.0);
+        let (hp, stam, kb) = (scale(damp[0]), scale(damp[1]), scale(damp[2]));
+        for v in [&mut a.atk_phys, &mut a.atk_mag, &mut a.atk_fire, &mut a.atk_thun, &mut a.atk_dark] {
+            *v *= hp;
+        }
+        for v in [&mut a.atk_stam, &mut a.direct_atk_stam_damage, &mut a.repel_lost_stam_damage, &mut a.stamina_damage_attack_hit_parry] {
+            *v *= stam;
+        }
+        for v in [&mut a.knockback_hit, &mut a.knockback_guard, &mut a.knockback_just_guard] {
+            *v *= kb;
+        }
+        a
+    }
+}
+
 #[derive(Deserialize, Clone, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct BulletSpec {
@@ -594,14 +790,23 @@ pub struct BulletSpec {
     pub is_penetrate_map: i32,
     #[serde(default)]
     pub dist: f32,
+    /// damageDamp / staminaDamp / knockbackDamp: percent lost per second past `dist`
+    /// (Paramdex: "decreases in 1 second after the attenuation distance"; 100 on the arrows).
+    #[serde(default)]
+    pub damage_damp: f32,
+    #[serde(default)]
+    pub stamina_damp: f32,
+    #[serde(default)]
+    pub knockback_damp: f32,
     #[serde(default)]
     pub life: f32,
     #[serde(default)]
     pub hit_radius: f32,
     #[serde(default)]
     pub lock_shoot_limit_ang: f32,
-    /// When HitBulletID comes (Paramdex BULLET_LAUNCH_CONDITION_TYPE): 254 only when its life
-    /// runs out (the Divine Dragon's updraft 52000661 renewing itself), else on a hit too.
+    /// When HitBulletID comes (BULLET_LAUNCH_CONDITION_TYPE, enemy_bullet.rs launches): 0
+    /// always, 1 / 2 water, 3 missed, 4 hit an enemy, 254 life ran out (the Divine Dragon's
+    /// updraft 52000661 renewing itself), 255 hit the ground or an enemy.
     #[serde(default)]
     pub launch_condition_type: i64,
     /// Paramdex BULLET_FOLLOW_TYPE: 3 "follow target" (the Divine Dragon's warning 52000980:
@@ -731,7 +936,7 @@ impl Combat {
 
     /// The kind index of (chr, NpcParam row), if loaded.
     pub fn kind_index(&self, chr: &str, npc_row: Option<i64>) -> Option<usize> {
-        self.kinds.iter().position(|k| k.foe.chr == chr && npc_row.is_none_or(|r| k.foe.npc_row == r))
+        self.kinds.iter().position(|k| k.foe.is(chr, npc_row))
     }
 
     /// The official English name of a weapon row (art, tool, skill entry), else its id.
@@ -756,12 +961,21 @@ pub struct Foe {
     /// Passive-mode parry: None = the enemy's own Goal.Parry (102000_battle.lua), Some = the
     /// shared Common_Parry(guardMult, stepProb, stepType, rushAnim) its battle script calls.
     pub common_parry: Option<(i32, i32, i32, String)>,
+    /// The NpcParam row the config asked for when it is not one of this chr's (`npc_row` then
+    /// holds the main row): the line-up and the dedupe still find this kind by it (2026-10-12
+    /// bug hunt: c1110 row 11103000 was dropped).
+    pub asked_row: Option<i64>,
 }
 
 impl Foe {
+    /// Whether this is the kind for config (chr, npc_row): any row of the chr when unset.
+    pub fn is(&self, chr: &str, npc_row: Option<i64>) -> bool {
+        self.chr == chr && npc_row.is_none_or(|r| self.npc_row == r || self.asked_row == Some(r))
+    }
+
     pub fn new(chr: &str, anim_chr: &str, npc_row: i64, think_id: i64) -> Foe {
         let chr_num = chr.get(1..).and_then(|n| n.parse().ok()).unwrap_or(1020);
-        Foe { chr: chr.to_string(), anim_chr: anim_chr.to_string(), npc_row, think_id, chr_num, common_parry: None }
+        Foe { chr: chr.to_string(), anim_chr: anim_chr.to_string(), npc_row, think_id, chr_num, common_parry: None, asked_row: None }
     }
 
     /// The two enemies combat_data.json carries (tests and the fallback when extracted/enemies is
@@ -838,6 +1052,7 @@ impl EnemyFile {
             .and_then(|p| p["think"].as_i64())
             .unwrap_or(main_think);
         let mut foe = Foe::new(chr, &anim_chr, row, think);
+        foe.asked_row = npc_row.filter(|&r| r != row);
         let goal = self.params["NpcThinkParam"][think.to_string()]["battleGoalID"].as_i64().unwrap_or(0);
         foe.common_parry = Foe::read_common_parry(goal);
         foe
@@ -1305,7 +1520,7 @@ impl Plugin for DataPlugin {
         }
         let mut kinds: Vec<EnemyKind> = Vec::new();
         for (chr, npc_row) in wanted {
-            if kinds.iter().any(|k| k.foe.chr == chr && npc_row.is_none_or(|r| k.foe.npc_row == r)) {
+            if kinds.iter().any(|k| k.foe.is(&chr, npc_row)) {
                 continue;
             }
             let kind = load_kind(&mut f, &chr, npc_row);
@@ -1351,7 +1566,7 @@ impl Combat {
         let wanted: Vec<(String, Option<i64>)> = std::iter::once((chr.to_string(), npc_row)).chain(group.iter().map(|g| (g.chr.clone(), g.npc_row))).collect();
         let mut kinds: Vec<EnemyKind> = Vec::new();
         for (c, r) in wanted {
-            if kinds.iter().any(|k| k.foe.chr == c && r.is_none_or(|r| k.foe.npc_row == r)) {
+            if kinds.iter().any(|k| k.foe.is(&c, r)) {
                 continue;
             }
             kinds.push(self.with_params_file(|f| load_kind(f, &c, r)));

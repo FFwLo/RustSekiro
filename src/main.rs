@@ -15,8 +15,10 @@ use bevy::window::WindowResolution;
 mod actor;
 mod ai;
 mod anim;
+mod area_music;
 mod camera;
 mod cloth;
+mod crash;
 mod combat;
 mod config;
 mod data;
@@ -28,6 +30,9 @@ mod enemy;
 mod enemy_bullet;
 mod ffx;
 mod fxr;
+mod fog_wall;
+mod height_fog;
+mod sky;
 mod fmod;
 mod gore;
 mod grading;
@@ -37,6 +42,7 @@ mod interp;
 mod map;
 mod menu;
 mod sandbox;
+mod showcase;
 mod model;
 mod paths;
 mod photo;
@@ -72,8 +78,12 @@ fn main() {
         .add_plugins(vfx::VfxPlugin)
         .add_plugins(wire::WirePlugin)
         .add_plugins(gore::GorePlugin)
+        .add_plugins(area_music::AreaMusicPlugin)
         .add_plugins(ffx::FfxPlugin)
         .add_plugins(fxr::FxrPlugin)
+        .add_plugins(fog_wall::FogWallPlugin)
+        .add_plugins(height_fog::HeightFogPlugin)
+        .add_plugins(sky::SkyPlugin)
         .add_plugins(map::MapPlugin)
         .add_plugins(icon::IconPlugin)
         .add_plugins((
@@ -94,7 +104,7 @@ fn main() {
             prosthetic::ProstheticPlugin,
         ))
         // Bevy's plugin tuples hold at most 15.
-        .add_plugins((photo::PhotoPlugin, status::StatusPlugin, duel::DuelPlugin, enemy_bullet::EnemyBulletPlugin))
+        .add_plugins((photo::PhotoPlugin, status::StatusPlugin, duel::DuelPlugin, enemy_bullet::EnemyBulletPlugin, showcase::ShowcasePlugin))
         .run();
 }
 
@@ -124,6 +134,7 @@ fn startup() {
     let has_console = unsafe { windows_sys::Win32::System::Console::AttachConsole(windows_sys::Win32::System::Console::ATTACH_PARENT_PROCESS) != 0 } || cfg!(debug_assertions);
     #[cfg(not(windows))]
     let has_console = true;
+    crash::install();
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         default_hook(info);

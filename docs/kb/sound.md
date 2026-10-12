@@ -134,6 +134,96 @@ Dated findings, oldest first. Append new entries at the end.
   what each event's Shahei curve does (volume / lowpass, in the .fev). Our sounds are PCM through
   Bevy, so it would need those curves too. Low value for open boss arenas.
 
+## Mixer routing (decoded and ported 2026-10-12)
+- Each event instance names its mixers in user properties "mixerNum" / "mixerID_<k>" (read on
+  start, 141c9.c ~11836: a "%s_%x_DummyGroup" channel group under master, its DSP head cut off and
+  fed as input to mixer k's DSP, FUN_141ca2ff0 (+0x990 table) -> FUN_141cab500). Test
+  `fmod_event_mixers` (ignored) lists them per project.
+- multimix.mix ("MFOM", 1156 bytes): 10 mixers; a table of (u16 id, u16 1, u32 offset) at 0x1c;
+  each entry u16 output mixer (0 = master), u16 8 channels, an 8 x 8 matrix (identity, 1.0); the
+  names by id after 0x33c: 1 ntc_ninsatsu2, 2 ntc_menu_rev, 3 ntc_through, 4 ntc_main, 5
+  ntc_enemy_rev, 6 ntc_ninsatsu1, 7 ntc_ninsatsu3, 8 ntc_rev, 9 ntc_battle_bgm, 10 ntc_boss_bgm.
+  Outputs: 1 -> 6 -> 7 -> 8 -> master; 4 -> 8; 9 -> 6; 10 -> 7; 2, 3, 5, 8 -> master (the
+  "output" reading of the first u16 is inferred: the four end mixers all have 0).
+- Which events use which (FMOD_Event_GetProperty): main 1875 events: 902 mixer 4 (ntc_main:
+  reverb, no deathblow muffle), 826 mixer 1 (ntc_ninsatsu2: all three deathblow lowpasses, then
+  reverb), 95 mixer 5 (enemy_rev: dry to master), 32 mixer 2 (menu, f0000000xx: dry), 8 mixer 3
+  (through). Enemies c1010 / c1020: mostly 1, voices (c10x008xxx) 4. Voices vm11: 3897 mixer 4.
+  Music sm11: battle tracks (m110000004, m110102025 ...) mixer 9 (ntc_ninsatsu1 -> 3 -> reverb),
+  boss / event tracks (m110000001 / 2 / 50, m110100002) mixer 10 (ntc_ninsatsu3 -> reverb), 52
+  field / ambience tracks none. m11 map objects mostly 1, 59 with none.
+- So the deathblow muffle: type 0 / 2 (slot 0, ntc_ninsatsu2 = mixer 1) muffles the mixer-1 SFX
+  only; type 3 (slot 1, ntc_ninsatsu1 = mixer 6) those and the battle music; type 1 (slot 2,
+  ntc_ninsatsu3 = mixer 7) those, the battle and the boss music. Voices, menu and enemy_rev
+  sounds are never muffled; menu / through / enemy_rev get no reverb.
+- Before: fmod.rs started ntc_rev / ntc_ninsatsu1-3 alone; their effect chains hung under
+  ChannelGroup:Default with nothing feeding their input end (DSP tree, test fmod_mixer_dsp), so
+  the reverb and the deathblow muffle changed nothing (measured: unrouted SFX 0.60 RMS, with the
+  muffle at 1 0.71).
+- Ported (fmod.rs `mixers` / `build_mixers` / `route`, `read_mix`): all 10 mixer events run;
+  each chain's input end is the deepest DSP under its event group (a pass-through channel group
+  for a mixer with no effects), its output is cut from Default and fed to its output mixer's
+  input or the system master. Every started event's channel group head is cut from its category
+  and fed to its mixerID_0's input. Category volumes still apply (they scale the channels, not
+  the DSP path). Test `fmod_mixer_routing` (ignored, needs the game's DLLs): routed mixer-1 SFX
+  0.78 RMS, with the muffle 0.61, master category at 0 -> 0.02.
+- Events with no mixer (traced 2026-10-12, FUN_141c9eef0 at 141c9.c 11489): with the instance's
+  mixer list (+0x178..+0x180) empty, its "%s_%x_DummyGroup" goes under the master channel group;
+  then the event group's DSP head is cut from its parent (the category) and fed into the
+  DummyGroup's head, so the sound reaches master directly. Ours leaves it on its category,
+  which feeds master: the same, as FMOD Ex categories carry volume / pitch, no DSP effects.
+- Gaps: only mixerID_0 is used (9 main events list more, all -1); reading
+  the first u16 of a mix entry as the output mixer is inferred.
+
+## Area battle music (built 2026-10-12, src/area_music.rs)
+- common.emevd event 410 (started once by event 0, restarts itself) plays the map's MSB BGM
+  regions (2010[8] region, 1, 0) by the engine's map music state, EMEVD condition 12[2]
+  (CSEcTestIsMapBgmState, evaluate 0x14065b2b0: byte DAT_143d5d638 + 0x11fc, WorldSoundManImp,
+  not GameMan; names 通常 / 発見前 / 警戒 / 戦闘). FUN_1408aa5c0 keeps this frame's maximum request,
+  FUN_1408aa950 (from FUN_140a771a0) copies +0x11fd -> +0x11fc. Each non-player chr requests its
+  CSChrSoundModule byte (chr modules +0x140, byte +0x10; FUN_140a04760 / FUN_140a05310), set by
+  HKS act(3014) (FUN_140b32410 case 0xbc6, c9997.hks AI transitions): 3 in AI state 2 / 3, AI
+  state 1 -> 2 with a type-0xc (search) goal else 1, 0 when dead (HP < 1, ...).
+- 410 dispatch: state 3 (or flag 9208) -> combat region <area><block>2680 (m11_01: 1112680,
+  m110100020 "戦闘_平常時"; raid variants 2685 / 2686 with flags 8301 / 8302); state 1 -> 2688;
+  state 2 -> 2689; flag 9209 -> silence (3.0 s fade); else the outdoor field track 2690 while
+  flag 9100 is on (outside the 20004010 regions; 1.7 s fade-out indoors). Combat end (label 13): 2010[9] 0.7 s + all off, then
+  wait 2.0 s (or combat again / 9208 / 9200 / 9207 / swimming), then up to 1.0 s (or state 1 /
+  2), restart. States 1 / 2 swap with no fade. Boss music (9200), mini-boss tracks 9201-9204
+  and 9207 take over (3.0 s fade). Swimming: 1.8 s fade out. WorldSoundManImp defaults: fade-in
+  2.0 s (+0x11f4), fade-out 0.7 s (+0x11f8).
+- Every map numbers its regions the same way (2680 / 2688 / 2689 / 2690); tools/area_bgm.py ->
+  extracted/enemies/area_bgm.json (9 maps; m11_00 / m11_02 use m110000004-6). ntc_battle_bgm /
+  ntc_boss_bgm (mixer.fev) are not started by 410 and the exe has no string for them.
+- Built: area_music.rs `Music::step` (test `event_410_holds_after_combat`), the state = max
+  over live enemies of FIND / BATTLE -> 3, CAUTION -> 1; MapLighting.source_map (json "map")
+  picks the tracks; off while a boss script runs undefeated. Checked: a c1010 fight on the gate
+  starts m110100020 the moment he finds Wolf. Gaps: state 2 (no search-goal flag in our
+  targeting), raids, swimming, the exact 0.7 s / 2.0 s fades
+  (FMOD's event fade on stop), who writes the AI state / flag 9208, any distance limit on which
+  enemies count. Decoded 410 dump: scout scratch (session VXf).
+- **Field track (built 2026-10-12, corrected the same day).** "field" (region 2690,
+  "BGM_屋外フィールド_平常時") is the outdoor music. 410's default branch (label 8, no state, no
+  9209) does GotoIfEventFlag(label 10, OFF, 9100): with 9100 off, label 10 fades all music out
+  (2010[9] 1.7 s) and restarts. With it on, it plays the map's 2690 region; 8301 / 8302 raids
+  pick 2691 / 2692. Before that, m10 / m11_00 / m17 jump to label 9 (2691) when story flag
+  11000695 is on or the player stands in 1102695 / 1702695. common_func 20004010: OR(-2) =
+  player (10000) inside region k (a 0 arg skipped) or 9100 on; GotoIfConditionGroup(label 0,
+  PASS, -2) (packed 0x00FE0100), else SetEventFlag 9100 ON and wait for "inside any"; label 0
+  sets 9100 OFF and waits for "outside every". So 9100 = outside every region. (First read
+  inverted: the packed goto was taken as FAIL; bug-fix round 8.) Each map's event 0 passes
+  its regions (names 屋内判定 / 屋内外判定, "indoor check"); m11_01 passes 1112611-14, 21,
+  26, 30 and 70 (the keep's floors, the hidden-prison hub tower, the Sword Saint's room).
+  tools/area_bgm.py writes them into area_bgm.json "indoor" in map space, composites (shape 6,
+  8 x (region index, unk)) flattened, boxes standing on their position (DSMapStudio draws the
+  region box over y 0..1). area_music.rs turns Wolf's feet back into map space
+  (map.rs `arena_to_map`: X un-mirrored, -arena_yaw, + json origin) and tests the regions:
+  outside all of them (on a map with a list) is 9100 on. After combat, 410 label 13 holds
+  2.0 s (only combat cuts it), then up to 1.0 s more that states 1 / 2 / 3 cut short, so the
+  field track resumes 3.0 s after combat.
+  Tests: indoor_zones_contain, arena_points_back_to_map_space. Gaps: label 9's 2691 variants;
+  m25's 2502890 is not a region in m25_00_00_00.msb.
+
 ## Boss music (built 2026-10-11)
 - Banks sm10..sm25 (.fev / .itl in the archives, .fsb loose in the install's sound folder, the
   .fsb FMOD-encrypted: bit-reversed bytes XOR a key the exe holds as UTF-16; tools/bgm_decrypt.py

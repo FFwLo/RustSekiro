@@ -37,6 +37,8 @@ pub struct Snapshot {
     /// Bearing (deg) of the enemy around the target, for SidewayMove.
     pub bearing: f32,
     pub target_guard: bool,
+    /// The enemy itself is in its guard stance (IsTargetGuard(TARGET_SELF)).
+    pub self_guard: bool,
     pub sp_self: HashSet<i64>,
     pub sp_target: HashSet<i64>,
     pub sp_new: Vec<i64>,
@@ -45,6 +47,9 @@ pub struct Snapshot {
     /// Posture left (Sekiro's "stamina"): max - accumulated posture damage.
     pub sp: f32,
     pub sp_rate: f32,
+    /// The target's (Wolf's or the rival's) posture left and its rate (GetSp / GetSpRate(TARGET_ENE_0)).
+    pub target_sp: f32,
+    pub target_sp_rate: f32,
     /// The current anim is idle or locomotion (any action may start).
     pub free: bool,
     /// Active NPC cancel flags on the current anim (23 combo, 86 attack, 79 step, 78 move).
@@ -115,6 +120,14 @@ pub struct Command {
     pub walk: bool,
     pub face: bool,
     pub turn: bool,
+    /// RequestEmergencyQuickTurn (FUN_1405e76e0 -> AI +0x9054, cleared every frame
+    /// 14060.c:7485; the HKS's env(330)): a turn clip even under 45 degrees.
+    pub emergency: bool,
+    /// The guard goal's request 9910 (c9997 ACTION_TYPE_GUARD, env(106)) this frame: the guard
+    /// stance (enemy.rs guard_stance), held while it is asked for.
+    pub guard: bool,
+    /// The same with 9920 (ACTION_TYPE_GENERAL_STANCE, c9997.lua:259): the general stance.
+    pub general: bool,
     /// The point a move / turn is relative to when it is not the current target: home
     /// (POINT_INITIAL), the home facing (POINT_INIT_POSE).
     pub at: Option<Vec3>,
@@ -123,6 +136,11 @@ pub struct Command {
     /// Event flags the AI set this frame, in order (SetEventFlag(flag, on)).
     pub flags: Vec<(i64, bool)>,
 }
+
+/// The guard request (c9997.lua:258 ACTION_TYPE_GUARD), GOAL_COMMON_Guard's usual action.
+const ACTION_TYPE_GUARD: f64 = 9910.0;
+/// The general stance request (c9997.lua:259 ACTION_TYPE_GENERAL_STANCE).
+const ACTION_TYPE_GENERAL_STANCE: f64 = 9920.0;
 
 const SUCCESS: i32 = 1;
 const CONTINUE: i32 = 0;
@@ -182,6 +200,10 @@ fn native(id: i64) -> Option<Native> {
         2200 => Native::Attack,
         2020 => Native::SpinStep,
         2019 => Native::Approach,
+        // MoveToSomewhereSmooth(target, dirType, dist, turnTarget, walk, ...): the patrol's walk
+        // between points without a stop (common_non_battle_act.lua); same params up to walk.
+        // gap: what "smooth" changes (no stop at the point, by the name) is not traced.
+        2013 => Native::Approach,
         2016 => Native::Leave,
         2017 => Native::Sideway,
         2018 => Native::Keep,
@@ -267,6 +289,8 @@ struct Goal {
     busy: bool,
     req: bool,
     start_bearing: f64,
+    /// SetLifeEndSuccess (0x1405faa20: goal +0x4a0 bit 0x20): its life running out is a success.
+    life_end_success: bool,
 }
 
 impl Goal {
@@ -337,6 +361,104 @@ struct AiState {
     hit_radius: f32,
     rng: u64,
     k: Consts,
+    /// The MSB patrol route (Brain::set_patrol), None = no route (GetMovePointNumber -1).
+    patrol: Option<Patrol>,
+}
+
+/// An enemy's MSB patrol route in world space (enemy.rs PatrolRoute) and where it is on it:
+/// the exe keeps it in AiMovePointCtrl (AiThink +0x9060): the current point at +0x9078 and the
+/// previous one at +0x907c (GetMovePointNumber FUN_1405e3910). It steps (FUN_1405afe20,
+/// 1405a.c:11008) when a move goal to POINT_MOVE_POINT ends in success (Terminate callbacks
+/// FUN_1405c7b80 / c8050 / ca9b0) or on Lua StepNextMovePoint: prev = cur, cur = the next point
+/// by PatrolType (table 0x143af9550, FUN_1405c1f40 skips empty slots, 64 tries) or -1. Types:
+/// 0 loop, 1 back and forth (turns at the last point), 2 random, 3 loop over slots 0-15, 4 the
+/// nearest of slots 16-31, 5 on to the last point, then -1 (its pre-step hook FUN_1405c2710
+/// ends the route there), 6 and up never move (cur -1). At the start prev = -1 and cur = the
+/// first point (FUN_1405b06a0). With cur -1, NonBattleAct plays the last point's arrival anim
+/// and stays (common_non_battle_act.lua). Type 5's hook at the last point passes that region's
+/// position (+0x14) and rotation (+0x20) to the chr's vtable +0x168: FUN_1409f60c0 (1409f.c:3833)
+/// sets the initial position / rotation (ChrIns +0xe0 / +0xf0) and flag +0x1a15 bit 3, which
+/// IsChangeInitialPosition reads (FUN_1405e4fc0): the end of the route is its new home pose
+/// (`new_home`; POINT_INITIAL / POINT_INIT_POSE and BackToHome follow it). Only 0 / 1 / 5
+/// occur in the MSBs. gap: the points here are the used slots only, so types 3 / 4 (unused)
+/// step over them all.
+#[derive(Clone, Debug, Default)]
+pub struct Patrol {
+    pub kind: i64,
+    pub points: Vec<Vec3>,
+    /// Each point's MSB region index: the arrival entries match by region.
+    pub regions: Vec<i64>,
+    /// (region index, arrival anim id, arrival wait seconds): the MSB WREntries.
+    pub arrivals: Vec<(i64, i64, f64)>,
+    /// Each point's region facing as an actor yaw (empty: unknown).
+    pub yaws: Vec<f32>,
+    /// Each point's MSB region shape (None or empty: a point region, or unknown).
+    pub areas: Vec<Option<crate::enemy::WakeRegion>>,
+    /// The home pose a finished type 5 route left (its last point, facing its region).
+    pub new_home: Option<(Vec3, f32)>,
+    pub cur: i64,
+    pub prev: i64,
+    back: bool,
+}
+
+impl Patrol {
+    /// `regions` empty: each point its own region (its index).
+    pub fn new(kind: i64, points: Vec<Vec3>, regions: Vec<i64>, arrivals: Vec<(i64, i64, f64)>) -> Self {
+        let regions = if regions.len() == points.len() { regions } else { (0..points.len() as i64).collect() };
+        let cur = if points.is_empty() || !(0..=5).contains(&kind) { -1 } else { 0 };
+        Self { kind, points, regions, arrivals, yaws: Vec::new(), areas: Vec::new(), new_home: None, cur, prev: -1, back: false }
+    }
+
+    /// Reached the current point: it becomes the previous one, the next is picked by the type
+    /// (-1: the route is over).
+    fn step(&mut self, rng: u64) {
+        let n = self.points.len() as i64;
+        if n == 0 || self.cur < 0 {
+            return;
+        }
+        self.prev = self.cur;
+        // Type 5's pre-step hook (FUN_1405c2710): leaving the last point ends the route there.
+        if self.kind == 5 && self.cur + 1 >= n {
+            let at = self.points[self.cur as usize];
+            if let Some(&yaw) = self.yaws.get(self.cur as usize) {
+                self.new_home = Some((at, yaw));
+            }
+        }
+        self.cur = match self.kind {
+            0 | 3 | 4 if n > 1 => (self.cur + 1) % n,
+            1 if n > 1 => {
+                if (self.back && self.cur == 0) || (!self.back && self.cur == n - 1) {
+                    self.back = !self.back;
+                }
+                if self.back { self.cur - 1 } else { self.cur + 1 }
+            }
+            2 if n > 1 => ((self.cur as u64 + 1 + rng % (n as u64 - 1)) % n as u64) as i64,
+            5 if self.cur + 1 < n => self.cur + 1,
+            // Nowhere else to go (one point, the end of a type 5 route, type 6+): -1.
+            _ => -1,
+        };
+    }
+
+    /// Whether `feet` reached the current point: inside its region shape, as the exe's
+    /// MoveToSomewhere(POINT_MOVE_POINT) update asks (FUN_1405caa00, 1405c.c:7420: IsInsideMovePoint
+    /// FUN_1405e55c0 -> FUN_1405ae370 -> the shape test FUN_1409825b0, 14098.c:2274). None: no
+    /// shape (a point region: the exe's test is exact equality, so only IsArrived, the caller's
+    /// radius test, ends those).
+    pub fn inside_current(&self, feet: Vec3) -> Option<bool> {
+        let area = self.areas.get(usize::try_from(self.cur).ok()?)?.as_ref()?;
+        Some(area.contains(feet))
+    }
+
+    /// Point `point`'s arrival (anim, wait), by its region.
+    fn arrival(&self, point: i64) -> Option<(i64, f64)> {
+        let region = *self.regions.get(usize::try_from(point).ok()?)?;
+        self.arrivals.iter().find(|a| a.0 == region).map(|a| (a.1, a.2))
+    }
+
+    /// IsRouteEnd (FUN_1405e6250 -> FUN_1405c20c0, 1405c.c:1341): no point after the previous one.
+    fn route_end(&self) -> bool {
+        self.prev + 1 >= self.points.len() as i64
+    }
 }
 
 fn ai_obj() -> Value {
@@ -401,8 +523,31 @@ impl AiState {
             busy: false,
             req: false,
             start_bearing: 0.0,
+            life_end_success: false,
         });
         id
+    }
+
+    /// A goal whose life ran out while it still went on (FUN_1405d06c0, 1405d.c:1970-1985): a
+    /// success only if it or a goal above it has SetLifeEndSuccess (FUN_1405d1b50 walks up),
+    /// else a failure, which fails its parent and drops the queued subgoals (the scripts' own
+    /// common_approach_lifeSuccess / common_Leave_lifeSuccess wrappers rely on it). gap: the
+    /// other exception, FUN_140605ea0 (+0x7420), is not traced.
+    fn life_end(&self, g: u32) -> i32 {
+        let mut cur = Some(g);
+        for _ in 0..64 {
+            let Some(id) = cur else { break };
+            if self.goals.get(&id).is_some_and(|x| x.life_end_success) {
+                return SUCCESS;
+            }
+            cur = self.goals.iter().find(|(_, x)| x.subs.contains(&id)).map(|(k, _)| *k);
+        }
+        FAILED
+    }
+
+    fn life_over(&self, g: u32) -> bool {
+        let goal = self.goal(g);
+        goal.life >= 0.0 && goal.t >= goal.life
     }
 
     /// `ai:AddTopGoal` / `goal:AddSubGoal` arguments: (id, life, params...).
@@ -444,6 +589,9 @@ impl AiState {
         let id = id.and_then(Value::num)?;
         if id == k.target_self {
             Some(w.me)
+        } else if id == k.point_move_point && self.patrol.as_ref().is_some_and(|p| p.cur >= 0) {
+            let p = self.patrol.as_ref()?;
+            p.points.get(p.cur as usize).copied()
         } else if [k.point_initial, k.point_move_point, k.point_back_to_home, k.point_event, k.team_formation].contains(&id) {
             // No patrol route or event points without a map: they all mean home.
             Some(w.home)
@@ -461,6 +609,16 @@ impl AiState {
             Some(p) => (p - self.w.me).with_y(0.0).length() as f64,
             None => self.dist(),
         }
+    }
+
+    /// The distance the native goals compare their parameters against: GetDist's, minus the AI
+    /// chr's own radius. CommonAttack's successDist (FUN_1405c6d30, calls at 0x1405c7073 /
+    /// 0x1405c70cd), LeaveTarget (0x1405c80d0 -> 0x1405c8163) and KeepDist (0x1405c7c40 ->
+    /// 0x1405c7cb9) all call the GetDist thunk 0x1405e2c10 (r8b 1); the scripts' distances are
+    /// in the same terms. gap: MoveToSomewhere's arrival test (successDist) is not a distance
+    /// thunk call (its move subgoals 0x1405caa00 / 0x1405c9df0 are not traced); read the same.
+    fn goal_dist(&self, id: Option<&Value>) -> f64 {
+        self.dist_to(id) - self.hit_radius as f64
     }
 
     /// Signed angle (deg) from the enemy's facing to a target / point, positive to the right.
@@ -559,8 +717,11 @@ impl AiState {
             "GetLastResult" => vec![Value::Num(0.0)],
             // The setters return the goal: scripts chain them, e.g. 500000_battle.lua Act27
             // AddSubGoal(...):SetLifeEndSuccess(true):TimingSetNumber(3, 1, ...).
-            // (Life over is already a success for movement goals, tick_goal.)
-            "AddGoalScopedTeamRecord" | "SetFailedEndOption" | "SetLifeEndSuccess" | "SetManagementGoal" => vec![goal_obj(id)],
+            "SetLifeEndSuccess" => {
+                self.goal_mut(id).life_end_success = !matches!(a.first(), Some(Value::Bool(false)));
+                vec![goal_obj(id)]
+            }
+            "AddGoalScopedTeamRecord" | "SetFailedEndOption" | "SetManagementGoal" => vec![goal_obj(id)],
             "SetTargetRange" => vec![goal_obj(id)],
             "AddSubGoal" | "AddSubGoal_Front" => {
                 let combo = self.def(self.goal(id).kind).is_some_and(|d| d.combo);
@@ -638,9 +799,12 @@ impl AiState {
             }
             "HasSpecialEffectId" => boolean(self.sp_of(a.first()).contains(&key(a.get(1)))),
             "HasSpecialEffectAttribute" => boolean(false),
-            "IsTargetGuard" => boolean(w.target_guard),
-            "GetSp" => num(w.sp as f64),
-            "GetSpRate" => num(w.sp_rate as f64),
+            // By their target argument, as GetHpRate (TARGET_SELF: the enemy itself; Common_Parry,
+            // common_common_func_NTC.lua:380, asks IsTargetGuard(TARGET_SELF); 140010_battle.lua
+            // compares GetSpRate(TARGET_SELF) with (TARGET_ENE_0)).
+            "IsTargetGuard" => boolean(if is(a.first(), self.k.target_self) { w.self_guard } else { w.target_guard }),
+            "GetSp" => num(if is(a.first(), self.k.target_self) { w.sp } else { w.target_sp } as f64),
+            "GetSpRate" => num(if is(a.first(), self.k.target_self) { w.sp_rate } else { w.target_sp_rate } as f64),
             "GetHpRate" => num(if is(a.first(), self.k.target_self) { w.hp_rate } else { w.target_hp_rate } as f64),
             "GetHp" => num(1.0),
             // The General (102000_battle.lua) goes all out on his last one (<= 1).
@@ -682,10 +846,16 @@ impl AiState {
                 vec![]
             }
             "GetTeamOrder" | "GetOddsParam" | "GetOddsParamIdOffset" | "DbgGetForceActIdx" | "DbgGetForceKengekiActIdx"
-            | "GetChangeBattleStateCount" | "GetMovePointWaitTime" | "GetSmallActPreWaitTime" | "GetSmallActPostWaitTime"
-            | "GetMovePointType" => num(0.0),
-            // No patrol route (MSB) and no small acts: NonBattleAct stays at home.
-            "GetMovePointNumber" | "GetPrevMovePointNumber" | "GetMovePointAnimId" | "GetSmallActAnimId" => num(-1.0),
+            | "GetChangeBattleStateCount" | "GetSmallActPreWaitTime" | "GetSmallActPostWaitTime" => num(0.0),
+            // The MSB patrol route (Patrol): the current / previous point and a point's arrival
+            // anim and wait (WREntry); none -> -1, and NonBattleAct stays at home.
+            "GetMovePointNumber" => num(self.patrol.as_ref().map_or(-1, |p| p.cur) as f64),
+            "GetPrevMovePointNumber" => num(self.patrol.as_ref().map_or(-1, |p| p.prev) as f64),
+            "GetMovePointAnimId" => num(self.patrol.as_ref().and_then(|p| p.arrival(n(0) as i64)).map_or(-1, |a| a.0) as f64),
+            "GetMovePointWaitTime" => num(self.patrol.as_ref().and_then(|p| p.arrival(n(0) as i64)).map_or(0.0, |a| a.1)),
+            "GetMovePointType" => num(self.patrol.as_ref().map_or(0, |p| p.kind) as f64),
+            "IsRouteEnd" => vec![Value::Bool(self.patrol.as_ref().is_none_or(Patrol::route_end))],
+            "GetSmallActAnimId" => num(-1.0),
             // gap: the engine's move-point effect range; here the distance from home, which is what
             // NonBattleAct / _COMMON_SetBattleActLogic compare with the back-home distances.
             "GetMovePointEffectRange" => num((w.home - w.me).with_y(0.0).length() as f64),
@@ -724,8 +894,9 @@ impl AiState {
                 vec![]
             }
             "IsInsideTargetRegion" | "IsLadderAct" | "GetAreaObserveSlot" | "IsInsideObserve" | "IsStartAttack"
-            | "IsValidPlatoon" | "IsPlatoonLeader" | "TeamHelp_IsValidReply" | "IsForceBattleGoal" | "IsChangeInitialPosition"
+            | "IsValidPlatoon" | "IsPlatoonLeader" | "TeamHelp_IsValidReply" | "IsForceBattleGoal"
             | "IsLockOnTarget" => boolean(false),
+            "IsChangeInitialPosition" => boolean(self.patrol.as_ref().is_some_and(|p| p.new_home.is_some())),
             "IsExistMeshOnLine" | "CheckDoesExistPathWithSetPoint" | "IsFinishAttackCoolTime" => boolean(true),
             "GetExistMeshOnLineDistSpecifyAngleEx" | "GetExistMeshOnLineDistSpecifyAngle" => {
                 vec![a.get(2).cloned().unwrap_or_default()]
@@ -744,7 +915,11 @@ impl AiState {
             "TeamHelp_ValidateCall" | "TeamHelp_ValidateReply" | "ClearForceBattleGoal" | "ReqPlatoonState"
             | "RegisterTriggerRegionObserver" | "RegisterTriggerRegion" | "SetEventMoveTarget" | "SetEnableEndureCancel_forGoal"
             | "ClearCorpsePosTarget" => vec![],
-            "RequestEmergencyQuickTurn" | "SetAIPredictionMoveTargetSpecifyTargetDir" | "PrintText"
+            "RequestEmergencyQuickTurn" => {
+                self.cmd.emergency = true;
+                vec![]
+            }
+            "SetAIPredictionMoveTargetSpecifyTargetDir" | "PrintText"
             | "DbgSetLastActIdx" | "DbgSetLastKengekiActIdx" | "DeleteObserve" | "AddObserveArea"
             | "AddObserveRegion" | "AddObserveChrDmyArea" => vec![],
             "GetEzStateAnimId" => vec![a.first().cloned().unwrap_or_default()],
@@ -897,11 +1072,12 @@ impl AiState {
                     return r;
                 }
                 let succ = self.goal(g).succ;
-                if self.w.t > 0.1 && self.w.flags.contains(&23) && self.dist() <= succ {
+                let d = self.goal_dist(None);
+                if self.w.t > 0.1 && self.w.flags.contains(&23) && d <= succ {
                     return SUCCESS;
                 }
                 if self.w.anim_done {
-                    return if self.dist() <= succ { SUCCESS } else { FAILED };
+                    return if d <= succ { SUCCESS } else { FAILED };
                 }
                 CONTINUE
             }
@@ -921,10 +1097,25 @@ impl AiState {
                 // point such as POINT_INITIAL); the others to the current target.
                 let target = matches!(n, Native::Approach | Native::Leave).then(|| goal.param(0));
                 let mut at = self.pos_of(target.as_ref());
-                let d = self.dist_to(target.as_ref());
+                let d = self.goal_dist(target.as_ref());
                 let (mv, walk) = match n {
                     Native::Approach => {
-                        if d <= goal.raw(2, 0.0) {
+                        // FUN_1405caa00 (1405c.c:7455): IsArrived first (FUN_1405e4f20 ->
+                        // FUN_1406052e0 -> FUN_1405b9070, 1405b.c:6531: distance < the chr's
+                        // radius + the goal's distance, strict; the target's own extent +0x1c is 0
+                        // for POINT_MOVE_POINT), then for a patrol point IsInsideMovePoint (its
+                        // region). gap: the exe's 2D / 3D switch (+0x20) is not mapped to the calc
+                        // type; read in XZ as goal_dist.
+                        let on_route = is(target.as_ref(), self.k.point_move_point);
+                        let inside = on_route.then(|| self.patrol.as_ref().and_then(|p| p.inside_current(self.w.me - Vec3::Y * (crate::player::CAPSULE_HALF_HEIGHT + 0.05)))).flatten();
+                        if d < goal.raw(2, 0.0) || inside == Some(true) {
+                            // At the patrol point: the route steps on (Patrol::step).
+                            if on_route {
+                                let r = (self.random() * 1e9) as u64;
+                                if let Some(p) = self.patrol.as_mut() {
+                                    p.step(r);
+                                }
+                            }
                             return SUCCESS;
                         }
                         ('F', goal.p.get(4).is_some_and(|v| matches!(v, Value::Bool(true))))
@@ -963,6 +1154,22 @@ impl AiState {
                         (if d < lo { 'B' } else { 'F' }, true)
                     }
                 };
+                // The move's guard action (its last param: MoveToSomewhere 8, as ApproachTarget /
+                // ApproachSettingDirection pass it on; LeaveTarget 4; SidewayMove / KeepDist 5),
+                // e.g. LeaveTarget(4, TARGET_ENE_0, d, TARGET_ENE_0, true, 9910): it moves in the
+                // guard stance (ACTION_TYPE_GUARD; enemy.rs guard_stance); 9920 in the general
+                // stance (ACTION_TYPE_GENERAL_STANCE; common_common_func2.lua:705-708 KeepDist /
+                // SidewayMove).
+                let guard_at = match n {
+                    Native::Approach => 8,
+                    Native::Leave => 4,
+                    _ => 5,
+                };
+                match goal.raw(guard_at, -1.0) {
+                    ACTION_TYPE_GUARD => self.cmd.guard = true,
+                    ACTION_TYPE_GENERAL_STANCE => self.cmd.general = true,
+                    _ => {}
+                }
                 if !self.can_act(78) {
                     return CONTINUE;
                 }
@@ -1004,6 +1211,15 @@ impl AiState {
             }
             Native::Guard => {
                 let (req, ez) = (self.goal(g).req, self.goal(g).ez);
+                // 9910 is no anim but the HKS's ACTION_TYPE_GUARD (c9997.lua:258): the stance.
+                if ez == Some(ACTION_TYPE_GUARD) {
+                    self.cmd.guard = true;
+                    return CONTINUE;
+                }
+                if ez == Some(ACTION_TYPE_GENERAL_STANCE) {
+                    self.cmd.general = true;
+                    return CONTINUE;
+                }
                 if !req && ez.is_some_and(|e| e > 0.0) && self.can_act(86) {
                     self.cmd.anim = ez.map(|e| e as i64);
                     self.goal_mut(g).req = true;
@@ -1165,6 +1381,12 @@ fn tick_goal(vm: &mut Vm, st: &mut AiState, g: u32, dt: f64) -> LuaResult<i32> {
         }
         if !st.goal(g).subs.is_empty() {
             if nat.is_some() || !st.def(kind).is_some_and(|d| d.no_sub_goal && !d.no_update) {
+                // Still going on with its subgoals: its own life is checked all the same.
+                if st.life_over(g) {
+                    let r = st.life_end(g);
+                    clear_subs(vm, st, g)?;
+                    return Ok(r);
+                }
                 return Ok(CONTINUE);
             }
             // Its Update decides while the subgoals run.
@@ -1173,6 +1395,7 @@ fn tick_goal(vm: &mut Vm, st: &mut AiState, g: u32, dt: f64) -> LuaResult<i32> {
                 Some(Value::Num(n)) => n as i32,
                 Some(_) => OTHER,
             };
+            let r = if r == CONTINUE && st.life_over(g) { st.life_end(g) } else { r };
             if r == SUCCESS || r == FAILED {
                 clear_subs(vm, st, g)?;
             }
@@ -1182,18 +1405,22 @@ fn tick_goal(vm: &mut Vm, st: &mut AiState, g: u32, dt: f64) -> LuaResult<i32> {
     let goal = st.goal(g);
     if goal.life >= 0.0 && goal.t >= goal.life {
         // Life over: actions that already started run to their own end; an action that
-        // never got to start fails (dropping the rest of its combo).
+        // never got to start fails (dropping the rest of its combo). Waiting goals end by
+        // their life (gap: their own updates are not traced; read as a success).
         match nat {
             Some(n) if n.ignore_life() => {
                 if !goal.busy {
                     return Ok(FAILED);
                 }
             }
-            _ => return Ok(SUCCESS),
+            Some(Native::Wait | Native::Stay | Native::Guard) => return Ok(SUCCESS),
+            _ => {}
         }
     }
     if let Some(n) = nat {
-        return Ok(st.native_update(g, n));
+        let r = st.native_update(g, n);
+        let ends = r == CONTINUE && st.life_over(g) && !n.ignore_life();
+        return Ok(if ends { st.life_end(g) } else { r });
     }
     let Some(def) = st.def(kind) else { return Ok(FAILED) };
     if def.no_update {
@@ -1207,6 +1434,9 @@ fn tick_goal(vm: &mut Vm, st: &mut AiState, g: u32, dt: f64) -> LuaResult<i32> {
     let goal = st.goal(g);
     if r == CONTINUE && goal.had_sub && goal.subs.is_empty() {
         return Ok(SUCCESS);
+    }
+    if r == CONTINUE && st.life_over(g) {
+        return Ok(st.life_end(g));
     }
     Ok(r)
 }
@@ -1264,6 +1494,23 @@ pub struct Brain {
     vm: Vm,
     st: AiState,
     pub log: Vec<String>,
+}
+
+impl Brain {
+    /// Gives the brain its MSB patrol route (enemy.rs PatrolRoute), starting at its first point.
+    pub fn set_patrol(&mut self, patrol: Patrol) {
+        self.st.patrol = Some(patrol);
+    }
+
+    /// The home pose its finished type 5 route left (enemy.rs moves its home there).
+    pub fn patrol_home(&self) -> Option<(Vec3, f32)> {
+        self.st.patrol.as_ref().and_then(|p| p.new_home)
+    }
+
+    /// The patrol's (current, previous) point, None without a route.
+    pub fn patrol_points(&self) -> Option<(i64, i64)> {
+        self.st.patrol.as_ref().map(|p| (p.cur, p.prev))
+    }
 }
 
 /// Loaded first: constants and goal ids, then the table-goal helpers (RegisterTableGoal,
@@ -1346,6 +1593,7 @@ impl Brain {
             turn_id: None,
             hit_radius,
             rng: rng | 1,
+            patrol: None,
             k: Consts {
                 target_self: -1.0,
                 target_ene_0: 0.0,
@@ -1594,6 +1842,111 @@ mod tests {
         let errors: Vec<_> = b.log.iter().filter(|l| !l.starts_with("stub:")).cloned().collect();
         assert!(errors.is_empty(), "{errors:#?}");
         assert!(acted, "no action; goals: {}; log: {:?}", b.describe(), b.log);
+    }
+
+    /// IsTargetGuard / GetSp / GetSpRate read their target argument like GetHpRate: TARGET_SELF
+    /// is the enemy itself (Common_Parry asks IsTargetGuard(TARGET_SELF); 140010_battle.lua
+    /// compares GetSpRate(TARGET_SELF) with (TARGET_ENE_0)). They ignored it (2026-10-12 round 18).
+    #[test]
+    fn guard_and_posture_queries_follow_their_target() {
+        let Some(mut b) = load(10100000, 1.0, 3) else { return };
+        b.st.w = Snapshot { self_guard: true, target_guard: false, sp: 300.0, sp_rate: 0.5, target_sp: 900.0, target_sp_rate: 0.9, ..Snapshot::battle() };
+        let me = Value::Num(b.st.k.target_self);
+        let ene = Value::Num(0.0);
+        let get = |b: &mut Brain, n: &str, t: &Value| b.st.ai_method_raw(n, std::slice::from_ref(t)).into_iter().next().unwrap();
+        assert!(matches!(get(&mut b, "IsTargetGuard", &me), Value::Bool(true)));
+        assert!(matches!(get(&mut b, "IsTargetGuard", &ene), Value::Bool(false)));
+        assert_eq!(get(&mut b, "GetSp", &me).num(), Some(300.0));
+        assert_eq!(get(&mut b, "GetSp", &ene).num(), Some(900.0));
+        assert_eq!(get(&mut b, "GetSpRate", &me).num(), Some(0.5));
+        assert!((get(&mut b, "GetSpRate", &ene).num().unwrap() - 0.9).abs() < 1e-6);
+    }
+
+    /// The native goals (CommonAttack successDist, LeaveTarget, KeepDist) measure the same
+    /// distance as the scripts' GetDist: centre distance minus the AI chr's own radius (the
+    /// exe's goal updates all call the GetDist thunk 0x1405e2c10), not the centre distance
+    /// (2026-10-12 bug hunt).
+    #[test]
+    fn native_goals_measure_distance_like_get_dist() {
+        let Some(mut b) = load(10100000, 1.0, 3) else { return };
+        b.st.w = Snapshot { dist: 2.5, free: true, hp_rate: 1.0, target_hp_rate: 1.0, sp: 600.0, sp_rate: 1.0, ..Snapshot::battle() };
+        let get_dist = b.st.ai_method_raw("GetDist", &[]).first().and_then(Value::num).unwrap();
+        assert!((b.st.goal_dist(None) - 1.5).abs() < 1e-6);
+        assert!((get_dist - b.st.goal_dist(None)).abs() < 1e-6, "GetDist {get_dist}");
+    }
+
+    /// Patrol stepping by PatrolType (FUN_1405afe20 / table 0x143af9550): 0 loops, 1 turns at
+    /// the last point, 5 ends with cur -1; arrivals match by region (a route passing one region
+    /// twice gets its arrival both times).
+    #[test]
+    fn patrol_points_step_by_their_type() {
+        let pts = vec![Vec3::ZERO, Vec3::X, Vec3::Z];
+        let walk = |kind: i64| {
+            let mut p = Patrol::new(kind, pts.clone(), vec![], vec![]);
+            (0..5).map(|_| {
+                p.step(0);
+                p.cur
+            }).collect::<Vec<_>>()
+        };
+        assert_eq!(walk(0), [1, 2, 0, 1, 2]);
+        assert_eq!(walk(1), [1, 2, 1, 0, 1]);
+        assert_eq!(walk(5), [1, 2, -1, -1, -1]);
+        assert_eq!(Patrol::new(6, pts.clone(), vec![], vec![]).cur, -1, "type 6 never moves");
+        let mut p = Patrol::new(5, pts.clone(), vec![7, 8, 7], vec![(7, 3000, 2.0)]);
+        assert_eq!((p.arrival(0), p.arrival(1), p.arrival(2)), (Some((3000, 2.0)), None, Some((3000, 2.0))));
+        assert!(!p.route_end());
+        p.yaws = vec![0.0, 1.0, 2.0];
+        p.step(0);
+        p.step(0);
+        assert_eq!(p.new_home, None);
+        p.step(0);
+        assert!(p.route_end() && p.prev == 2);
+        // Its end is its new home pose (FUN_1405c2710 -> FUN_1409f60c0).
+        assert_eq!(p.new_home, Some((Vec3::Z, 2.0)));
+    }
+
+    /// A move goal with the guard action 9910 as its last param (LeaveTarget(4, TARGET_ENE_0, 5,
+    /// TARGET_ENE_0, true, 9910)) moves in the guard stance; with -1 it does not.
+    #[test]
+    fn a_move_goal_with_9910_moves_guarded() {
+        let Some(mut b) = load(10100000, 1.0, 3) else { return };
+        b.st.w = Snapshot { dist: 2.5, free: true, hp_rate: 1.0, target_hp_rate: 1.0, sp: 600.0, sp_rate: 1.0, ..Snapshot::battle() };
+        let t = Value::Num(b.st.k.target_ene_0);
+        for (guard, want) in [(9910.0, true), (-1.0, false)] {
+            let g = b.st.new_goal(Some(2016), 4.0, vec![t.clone(), Value::Num(5.0), t.clone(), Value::Bool(true), Value::Num(guard)]);
+            b.st.cmd = Command::default();
+            b.st.native_update(g, Native::Leave);
+            assert_eq!((b.st.cmd.mv, b.st.cmd.guard), (Some('B'), want), "guard {guard}");
+        }
+    }
+
+    /// A goal whose life runs out while it goes on fails (and fails its parent) unless it or a
+    /// goal above it has SetLifeEndSuccess (FUN_1405d06c0): a timed-out approach no longer lets
+    /// the queued attack swing from out of reach (2026-10-12 bug hunt).
+    #[test]
+    fn a_timed_out_goal_fails_unless_life_end_success() {
+        let Some(mut b) = load(10100000, 0.4, 3) else { return };
+        b.st.w = Snapshot { dist: 10.0, free: true, hp_rate: 1.0, target_hp_rate: 1.0, sp: 600.0, sp_rate: 1.0, ..Snapshot::battle() };
+        let approach = |st: &mut AiState| st.new_goal(Some(2019), 0.1, vec![Value::Num(0.0), Value::Num(0.0), Value::Num(1.0)]);
+        let g = approach(&mut b.st);
+        let mut r = CONTINUE;
+        for _ in 0..10 {
+            r = tick_goal(&mut b.vm, &mut b.st, g, 0.05).unwrap();
+            if r != CONTINUE {
+                break;
+            }
+        }
+        assert_eq!(r, FAILED, "timed out 9 m short");
+        let g = approach(&mut b.st);
+        b.st.goal_mut(g).life_end_success = true;
+        let mut r = CONTINUE;
+        for _ in 0..10 {
+            r = tick_goal(&mut b.vm, &mut b.st, g, 0.05).unwrap();
+            if r != CONTINUE {
+                break;
+            }
+        }
+        assert_eq!(r, SUCCESS, "SetLifeEndSuccess");
     }
 
     #[test]

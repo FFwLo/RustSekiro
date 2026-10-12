@@ -269,11 +269,68 @@ pub fn extra_kinds(config: &GameConfig) -> Vec<String> {
 /// kinds wider than `MAX_RADIUS` (the scene-sized bosses) are left out of `all` pages and
 /// stand alone when named.
 pub fn spawn_enemies(mut commands: Commands, combat: Res<Combat>, config: Res<GameConfig>, mut debug: Option<ResMut<crate::enemy::EnemyDebug>>) {
-    let mut order = Vec::new();
     let want = extra_kinds(&config);
     if want.is_empty() {
         return;
     }
+    let order = spawn_lineup(&mut commands, &combat, &config, &want);
+    let lined_up = order.len();
+    // Only a line-up that stood comes back after a reset (none placed: respawn_lineup would
+    // try again every frame).
+    if lined_up > 0 {
+        commands.insert_resource(Lineup(want));
+    }
+    if let Some(dir) = std::env::var("SHINOBI_SANDBOX_SHOTS").ok().filter(|s| !s.is_empty()) {
+        let _ = std::fs::create_dir_all(&dir);
+        commands.insert_resource(Catalog { dir, order, idx: 0, timer: -CATALOG_WARMUP, placed: false, taken: false });
+    }
+    if let Some(d) = debug.as_deref_mut() {
+        d.mode = crate::enemy::AiMode::Idle;
+    }
+    info!("sandbox: {} enemies lined up ({}), standing still (F1 menu: AI mode)", lined_up, std::env::var("SHINOBI_SANDBOX_ENEMIES").unwrap_or_default());
+}
+
+/// A sandbox line-up enemy (`spawn_lineup`).
+#[derive(Component)]
+pub struct SandboxEnemy;
+
+/// The sandbox line-up's kinds (chr ids), kept to bring it back after a reset.
+#[derive(Resource, Clone, Debug)]
+pub(crate) struct Lineup(pub Vec<String>);
+
+/// A fight reset (R, Retry, the debug menu: enemy.rs reset_fight) despawns every enemy and
+/// brings back only the config's: with the whole line-up gone, it stands again in its rows
+/// (the catalog goes on with the new entities).
+pub(crate) fn respawn_lineup(
+    mut commands: Commands,
+    combat: Res<Combat>,
+    config: Res<GameConfig>,
+    lineup: Option<Res<Lineup>>,
+    standing: Query<(), With<SandboxEnemy>>,
+    catalog: Option<ResMut<Catalog>>,
+) {
+    let Some(lineup) = lineup else { return };
+    if !standing.is_empty() {
+        return;
+    }
+    let order = spawn_lineup(&mut commands, &combat, &config, &lineup.0);
+    if order.is_empty() {
+        warn!("sandbox: no line-up kind could stand ({:?}); not retried", lineup.0);
+        commands.remove_resource::<Lineup>();
+        return;
+    }
+    info!("sandbox: line-up back after a reset ({} enemies)", order.len());
+    if let Some(mut c) = catalog {
+        c.order = order;
+        c.placed = false;
+        c.taken = false;
+    }
+}
+
+/// Spawns `want`'s kinds in rows (see `spawn_enemies`); returns them in spawn order with their
+/// spots.
+fn spawn_lineup(commands: &mut Commands, combat: &Combat, config: &GameConfig, want: &[String]) -> Vec<(Entity, Vec3)> {
+    let mut order = Vec::new();
     let kinds: Vec<usize> = want
         .iter()
         .filter_map(|chr| {
@@ -312,20 +369,14 @@ pub fn spawn_enemies(mut commands: Commands, combat: Res<Combat>, config: Res<Ga
         prev_r = r;
         let at = Vec3::new(x, y, z + r.max(0.5) - 0.5);
         // Yaw 0 faces -Z (Actor::forward): towards Wolf.
-        order.push((crate::enemy::spawn_one(&mut commands, &combat, &config, kind, at, 0.0, false, 0x1234_5678_u32.wrapping_mul(i as u32 + 7) ^ 0x9E37_79B9), at));
+        let e = crate::enemy::spawn_one(commands, combat, config, kind, at, 0.0, false, 0x1234_5678_u32.wrapping_mul(i as u32 + 7) ^ 0x9E37_79B9);
+        commands.entity(e).insert(SandboxEnemy);
+        order.push((e, at));
     }
     if !skipped.is_empty() {
         info!("sandbox: too big for the line-up (hitRadius > {MAX_RADIUS} m), name one alone to see it: {}", skipped.join(", "));
     }
-    let lined_up = order.len();
-    if let Some(dir) = std::env::var("SHINOBI_SANDBOX_SHOTS").ok().filter(|s| !s.is_empty()) {
-        let _ = std::fs::create_dir_all(&dir);
-        commands.insert_resource(Catalog { dir, order, idx: 0, timer: -CATALOG_WARMUP, placed: false, taken: false });
-    }
-    if let Some(d) = debug.as_deref_mut() {
-        d.mode = crate::enemy::AiMode::Idle;
-    }
-    info!("sandbox: {} enemies lined up ({}), standing still (F1 menu: AI mode)", lined_up, std::env::var("SHINOBI_SANDBOX_ENEMIES").unwrap_or_default());
+    order
 }
 
 /// `SHINOBI_SANDBOX_AT=x,z[,yaw]`: Wolf starts there, facing yaw degrees (the camera behind

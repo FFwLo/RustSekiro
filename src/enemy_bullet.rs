@@ -13,6 +13,8 @@
 //! Flight as the exe's bullet update (FUN_140b0ded0): homing (`steer`, FUN_140b11270), then
 //! acceleration, gravity and the speed limits (`flight`, FUN_140b14650), then the move; the map
 //! collision stops a bullet unless isPenetrateMap.
+//! Past `dist` its hits lose damageDamp / staminaDamp / knockbackDamp percent per second
+//! (Attack::decayed, after sekiro-rs bullets.rs).
 //! FollowType 3 (follow the target: the Divine Dragon's 52000980) rides on Wolf.
 //! gap: EmittePosType and FollowType 1 / 2 (the shooter; no enemy row; the exe takes
 //! FUN_140b14b20 for odd FollowTypes or 2) are not modelled; nor the force erase (isHitOtherBulletForceEraseA /
@@ -41,6 +43,8 @@ pub struct EnemyBullet {
     /// The way it was fired (a bullet fired at speed 0 speeds up along it).
     facing: Vec3,
     travelled: f32,
+    /// Seconds flown past `dist` (the damp decay).
+    out_of_range: f32,
     age: f32,
     next_interval: f32,
     /// Height of the floor it lands on (Wolf's feet when it was fired).
@@ -48,6 +52,8 @@ pub struct EnemyBullet {
     hit: bool,
     /// Fired by a boss script: its rows.
     script: Option<Arc<ScriptDef>>,
+    /// The shot it belongs to: a fan's pellets and their children share it (isUseSharedHitList).
+    chain: u32,
 }
 
 /// A boss script's Shoot Bullet this frame: its first Bullet row, the owner (whose attack it is)
@@ -69,7 +75,7 @@ impl Plugin for EnemyBulletPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<ScriptShots>()
             .add_message::<crate::gore::PlaceStain>()
-            .add_systems(FixedUpdate, (fire, fire_scripted, fly).chain().after(ActorSet::Advance).before(ActorSet::Resolve))
+            .add_systems(FixedUpdate, (fire, fire_scripted, fly).chain().after(ActorSet::Advance).after(crate::anim::PoseSet).before(ActorSet::Resolve))
             .add_systems(Update, draw.run_if(resource_exists::<GizmoConfigStore>));
     }
 }
@@ -151,6 +157,14 @@ fn fire_scripted(
 /// and tilted by shootAngleXZ, as prosthetic::spawn_row.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn spawn_row(commands: &mut Commands, spec: &BulletSpec, shooter: Entity, kind: usize, pos: Vec3, dir: Vec3, floor: f32, script: Option<Arc<ScriptDef>>) {
+    static CHAIN: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
+    let chain = CHAIN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    spawn_chain(commands, spec, shooter, kind, pos, dir, floor, script, chain);
+}
+
+/// [`spawn_row`] in an existing shot's chain (a child bullet).
+#[allow(clippy::too_many_arguments)]
+fn spawn_chain(commands: &mut Commands, spec: &BulletSpec, shooter: Entity, kind: usize, pos: Vec3, dir: Vec3, floor: f32, script: Option<Arc<ScriptDef>>, chain: u32) {
     let flat = dir.with_y(0.0).normalize_or(Vec3::NEG_Z);
     for i in 0..spec.num_shoot.max(1) {
         let yaw = (spec.shoot_angle + i as f32 * spec.shoot_angle_interval).to_radians();
@@ -167,11 +181,13 @@ pub(crate) fn spawn_row(commands: &mut Commands, spec: &BulletSpec, shooter: Ent
                 vel: d * spec.init_vellocity,
                 facing: d,
                 travelled: 0.0,
+                out_of_range: 0.0,
                 age: 0.0,
                 next_interval: spec.interval_create_wait_time,
                 floor,
                 hit: false,
                 script: script.clone(),
+                chain,
             },
             Transform::from_translation(pos),
             Name::new(format!("Enemy bullet {}", spec.bullet_id)),
@@ -185,11 +201,12 @@ fn fly(
     time: Res<Time>,
     combat: Res<Combat>,
     mut bullets: Query<(Entity, &mut EnemyBullet, &mut Transform), (Without<Actor>, Without<Player>)>,
-    mut player: Query<(Entity, &Transform, Option<&Hurtboxes>, &mut Player)>,
+    mut player: Query<(Entity, &Transform, Option<&Hurtboxes>, &mut Player, &Actor)>,
     mut shooters: Query<&mut Actor, (With<Enemy>, Without<Player>)>,
     markers: Query<&GlobalTransform>,
     mut stains: MessageWriter<crate::gore::PlaceStain>,
     (mut statuses, config): (ResMut<crate::status::Statuses>, Res<crate::config::GameConfig>),
+    mut shared_hit: Local<std::collections::HashSet<u32>>,
 ) {
     let dt = time.delta_secs();
     let mut wolf = player.single_mut().ok();
@@ -224,19 +241,25 @@ fn fly(
             }
         }
         b.travelled += (to - from).length();
+        if b.travelled > b.spec.dist {
+            b.out_of_range += dt;
+        }
         btf.translation = to;
         let dir = b.vel.normalize_or(Vec3::NEG_Z);
         if let Some(child) = row(b.spec.interval_create_bullet_id) {
             while b.age >= b.next_interval && b.spec.interval_create_time_min > 0.0 {
                 b.next_interval += b.spec.interval_create_time_min;
-                spawn_row(&mut commands, child, b.shooter, b.kind, to, dir, b.floor, script.clone());
+                spawn_chain(&mut commands, child, b.shooter, b.kind, to, dir, b.floor, script.clone(), b.chain);
             }
         }
         let expired = b.spec.life >= 0.0 && b.age > b.spec.life + 1e-4;
         let mut ended = landed || expired;
-        if !b.hit && (harmful(&b.spec) || sp_effects(&b.spec).next().is_some()) {
-            if let Some((we, wtf, hurt, p)) = wolf.as_mut() {
-                let (we, wtf, hurt) = (*we, *wtf, *hurt);
+        // isUseSharedHitList: one hit on Wolf per shot (a fan's pellets, its children), as
+        // prosthetic.rs SharedHits; the others fly through him.
+        let shared_done = false && shared_hit.contains(&b.chain);
+        if !b.hit && !shared_done && (harmful(&b.spec) || sp_effects(&b.spec).next().is_some()) {
+            if let Some((we, wtf, hurt, p, wa)) = wolf.as_mut() {
+                let (we, wtf, hurt, wa) = (*we, *wtf, *hurt, *wa);
                 let r = b.spec.hit_radius;
                 let touches = match hurt {
                     Some(h) => h.0.iter().any(|&(ma, mb, hr)| match (markers.get(ma), markers.get(mb)) {
@@ -248,10 +271,17 @@ fn fly(
                         segment_distance(from, to, feet + Vec3::Y * 0.3, feet + Vec3::Y * 1.5) <= r + BODY_RADIUS
                     }
                 };
-                if touches {
+                // Wolf's iframes (TAE 950 / 951 / 954, combat.rs dodged) let it pass through, before
+                // anything lands (2026-10-12 bug hunt round 10: a dodged bullet still poisoned or
+                // burned him and was used up).
+                let dodged = touches && crate::combat::dodged(&combat, wa, None, b.spec.attack.as_ref().unwrap_or(&crate::data::Attack::default()));
+                if touches && !dodged {
                     b.hit = true;
+                    if b.spec.is_use_shared_hit_list != 0 {
+                        shared_hit.insert(b.chain);
+                    }
                     if harmful(&b.spec) {
-                        if let (Ok(mut sa), Some(atk)) = (shooters.get_mut(b.shooter), b.spec.attack.clone()) {
+                        if let (Ok(mut sa), Some(atk)) = (shooters.get_mut(b.shooter), b.spec.attack.as_ref().map(|a| a.decayed([b.spec.damage_damp, b.spec.stamina_damp, b.spec.knockback_damp], b.out_of_range))) {
                             sa.bullet_hits.push((we, atk));
                         }
                     }
@@ -280,13 +310,32 @@ fn fly(
                     stains.write(crate::gore::PlaceStain { id, at: to });
                 }
             }
-            // launchConditionType 254: the child only when its life ran out.
-            let launch = b.spec.launch_condition_type != 254 || expired;
+            // By its whole-life hit record: a penetrating bullet ends on a later frame than its touch.
+            let launch = launches(b.spec.launch_condition_type, b.hit, landed, expired);
             if let Some(child) = row(b.spec.hit_bullet_id).filter(|_| launch) {
-                spawn_row(&mut commands, child, b.shooter, b.kind, to, dir, b.floor, script.clone());
+                spawn_chain(&mut commands, child, b.shooter, b.kind, to, dir, b.floor, script.clone(), b.chain);
             }
             commands.entity(be).despawn();
         }
+    }
+    // Forget the shots that have no bullets left.
+    let live: std::collections::HashSet<u32> = bullets.iter().map(|(_, b, _)| b.chain).collect();
+    shared_hit.retain(|c| live.contains(c));
+}
+
+/// Whether HitBulletID comes when a bullet ends, by its launchConditionType (Smithbox SDT Param
+/// Enums BULLET_LAUNCH_CONDITION_TYPE): 0 always, 1 hit water, 2 hit water or swamp (never:
+/// the sim has no water; gap), 3 did not hit an enemy, 4 hit an enemy, 254 its life ran out,
+/// 255 hit the ground or an enemy; other values (unknown) on any end. Its only enemy is Wolf.
+/// 2026-10-12 bug hunt round 10: every end launched (the Genpei arrow 13100520's child, lct 1).
+pub fn launches(lct: i64, hit_enemy: bool, landed: bool, expired: bool) -> bool {
+    match lct {
+        1 | 2 => false,
+        3 => !hit_enemy,
+        4 => hit_enemy,
+        254 => expired,
+        255 => hit_enemy || landed,
+        _ => true,
     }
 }
 

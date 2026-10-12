@@ -42,7 +42,17 @@ SHARE_M = 40.0
 # is turned round and Wolf starts down the pit.
 # The Divine Dragon's MSB spot sits in a cluster of rock and tree pieces: the fight stands
 # 24 m ahead of it on the cloud floor (h003100), the Old Dragons' row the same.
-OVERRIDES = {51000100: {'MAP_CENTRE_YAW': '180'}, 52000000: {'MAP_CENTRE_DIST': '24'}, 53000000: {'MAP_CENTRE_DIST': '24'}}
+# The castle top (Genichiro and the fights moved onto it): its burnt floor m015072 overlaps the tatami
+# m015070 these fights show (sekiro-rs `hidden_models`), so the exporter leaves it out. Its
+# draw param variants m11_01_0740 / _0750 are the ones the castle's events switch to for the
+# Emma / Isshin Ashina and the Owl fights (gparam sub 40 / 50; src/map.rs FIGHT_LIGHTING).
+# The Folding Screen Monkeys' bar sits on a c1000 dummy (2000800) at one end of the temple
+# hall; the four monkeys and the horde spread up to 118 m from it (boss_scripts.json 12600050),
+# so the pieces are picked round the second monkey (2000802, mid-hall) out to 85 m.
+# ('RADIUS' is the exporter's radius argument, the rest its env.)
+OVERRIDES = {51000100: {'MAP_CENTRE_YAW': '180'}, 52000000: {'MAP_CENTRE_DIST': '24'}, 53000000: {'MAP_CENTRE_DIST': '24'},
+             71001000: {'MAP_SKIP_MODEL': 'm015072', 'MAP_GPARAM_EXTRA': '0740,0750'},
+             12600050: {'MAP_PICK': '2000802', 'RADIUS': '85'}}
 # The user's rule (2026-10-11): only fights whose mechanics live in their surroundings get an
 # arena of their own; every other boss fights on Isshin the Sword Saint's flower field.
 OWN_ROWS = {
@@ -50,7 +60,32 @@ OWN_ROWS = {
     50900000, 50900001,  # Lady Butterfly: the illusions' spots, the burning hall
     51000000, 51000100,  # Guardian Ape, Headless Ape and the brown ape: the valley's pond and grotto
     52000000, 53000000,  # Divine Dragon and the Old Dragons: the cloud sea and the lightning trees
+    # The user's call (2026-10-11, "use his arena"): Genichiro on the Ashina Castle top, as
+    # AKJama/sekiro-rs crates/sim/src/arena.rs ARENAS (c7100_0000, m11_01_00_00, 60 m). Way of
+    # Tomoe (71100000) shares it.
+    71001000, 71100000,
+    # The Folding Screen Monkeys (2026-10-12, "work on the rest of the bosses"): the fight is
+    # the temple hall itself, its rooms, beams and the regions the monkeys hide and call in.
+    12600050,
 }
+# Fights moved onto another boss's arena (the user's call, 2026-10-11: "put Isshin from the
+# flower arena to the top", "isshin other form", "put emma at the top"): the Sword Saint fight,
+# opened by Genichiro, Way of Tomoe (71101000), and the Shura ending's Emma, the Gentle Blade
+# (74000010) and Isshin Ashina (54300000), both fought on the castle top in the game too, are on
+# Genichiro's castle top. The silvergrass field stays exported as 54000000's map for the
+# bosses that share it. The Great Shinobi Owl (50600000) too: his own spot c5060_0000 stands at
+# the platform's edge, so the start 8 m behind him fell outside the railing onto the roof tiles
+# 2.7 m below; sekiro-rs starts both fights at the same player point (c0000_0003).
+MOVED = {54000000: 71001000, 71101000: 71001000, 54300000: 71001000, 74000010: 71001000, 50600000: 71001000, 50601010: 71001000, 71000000: 71001000}
+# The user's rule (2026-10-12): "all the bosses the im working on should be in the top of castle
+# unless they dont fit". Every boss / mini-boss row of extracted/enemies/npc_names.json fights on
+# the castle top (boss_71001000), except the own-arena fights above (their mechanics live in
+# their surroundings) and these two, too big for the roof: Gyoubu's horseback charges across a
+# field and the Demon of Hatred (both stay on Isshin's silvergrass field, SHARED_ROW). The two
+# underwater Headless (c1340 13400000 / 13401000) come too: Sv1 has no swimming.
+# Added to the index only (no export); the mini-boss rows have no boss script.
+DONT_FIT = {50800000, 70200000}
+TOP_ROW = 71001000
 SHARED_ROW = 54000000  # Isshin, the Sword Saint: the silvergrass field below the castle
 
 
@@ -97,6 +132,17 @@ def main():
         else:
             own[row] = (s['map'], s['boss'])
             index[row] = f'boss_{row}'
+    for row, host in MOVED.items():
+        index[str(row)] = f'boss_{host}'
+    names = json.load(open(os.path.join(OUT, 'enemies', 'npc_names.json'), encoding='utf-8'))['rows']
+    for row in names:
+        if int(row) in OWN_ROWS or int(row) in DONT_FIT or int(row) == TOP_ROW:
+            continue
+        if int(row) in MOVED or row not in index or index[row] == f'boss_{SHARED_ROW}':
+            index[row] = f'boss_{TOP_ROW}'
+    # The moved rows, for enemy.rs own_arena_of: a stranger on its arena even when the arena is
+    # on its own map (the Owl on the castle top), so its script's place warps are skipped.
+    index['moved'] = sorted(MOVED)
 
     by_map = {}
     for row, (m, ent) in own.items():
@@ -116,8 +162,9 @@ def main():
         hit = os.path.join(OUT, 'map', m, f'h{m[1:]}.hkxbhd')
         run([EXE, 'bxf', hit, os.path.join(OUT, 'map', m, 'hit')], env=env, quiet=True)
         for row, ent in todo:
-            args = [EXE, 'map', OUT, m, str(ent), RADIUS]
-            env_row = dict(env, MAP_NAME=f'boss_{row}', **OVERRIDES.get(int(row), {}))
+            over = dict(OVERRIDES.get(int(row), {}))
+            args = [EXE, 'map', OUT, m, str(ent), over.pop('RADIUS', RADIUS)]
+            env_row = dict(env, MAP_NAME=f'boss_{row}', **over)
             out = run(args, env=env_row, capture=True)
             # The objects there (obj/<model>.objbnd) and the texture packs of other areas (the
             # Headless Ape's ground uses m13's m13_ground_900), unpacked on the first pass, then
