@@ -7,14 +7,15 @@ The characters are the game's own models, and what drives them is real too:
 the timings, movement, animations, enemy AI and sounds are read from the
 game's own files rather than tuned by eye.
 
-Special thanks to @yama, creator of
+Special thanks to AKJama, creator of
 [sekiro-rs](https://github.com/AKJama/sekiro-rs): its Lua 5.0 interpreter runs
-the enemy AI here, and several combat rules were ported from it.
+the enemy AI here, and several combat, lighting and sky rules were ported from
+it. Everyone else whose work helped is in [CREDITS.md](CREDITS.md).
 
-[![Sv1 gameplay](docs/media/preview.webp)](https://github.com/FFwLo/RustSekiro/releases/download/v0.1.0/sv1-gameplay.mp4)
+![Sv1 gameplay](docs/media/preview.webp)
 
 *Fighting the Ashina Samurai General: deflects, perilous attacks and a
-deathblow. Click for the full video.*
+deathblow.*
 
 This is a fan project for study. It is not affiliated with or endorsed by
 FromSoftware or Activision. Nothing from the game is in this repository, only
@@ -76,12 +77,16 @@ tools here generate the data.
 - [docs/deathblow_groups.md](docs/deathblow_groups.md) lists which of the
   game's 70 enemies share Wolf's deathblow animations.
 
-### Combat arts, prosthetic and items
+### Combat arts, prosthetic tools and items
 
-Combat arts with their follow-ups, chosen in `config.toml`: Whirlwind Slash,
-Ichimonji and Ichimonji: Double, Floating Passage, Nightjar Slash, and the
-other arts' first slashes. Held arts sheathe, wait and draw-slash on release.
-The Loaded Shuriken costs Spirit Emblems, and the Healing Gourd heals.
+- Combat arts with their follow-ups, chosen in `config.toml` or the debug
+  menu, including Mortal Draw with the Mortal Blade. Held arts sheathe, wait
+  and draw-slash on release.
+- The Shinobi Prosthetic tools, three slots switched with `Z`: each tool's own
+  animations, projectiles, Spirit Emblem cost and status effects (the Flame
+  Vent's burn, the Sabimaru's poison, the Firecracker's stun).
+- The Grappling Hook, to the map's grapple points.
+- The Healing Gourd.
 
 ### The enemies
 
@@ -131,6 +136,11 @@ Press `F1`. From there you can:
   target.
 - The sword and scabbard sit where the game's weapon params put them, and
   move to the hand or hip when an animation asks for it.
+- Effects from the game's own effect files: sparks, blood, combat art and
+  prosthetic effects, with floor blood stains.
+- The game's sky, fog and colour grading, and its HUD: vitality, posture,
+  resurrection nodes, item counts and the deathblow mark.
+- Title, pause, death and victory screens.
 
 ### Sound (optional)
 
@@ -153,7 +163,8 @@ Read from the game's files:
   enemies' AI, from their compiled battle scripts.
 - Camera distances, angles and chase rates.
 - The skeletons, animations, models, materials and cloth.
-- Which sounds each animation plays and on which frame.
+- Which sounds each animation plays and on which frame, and the area and
+  boss music.
 
 Checked against the running game with a read-only recorder: jump arcs, run
 speed, deflect and input windows, posture costs and recovery, and the
@@ -178,10 +189,10 @@ inferences worth knowing about:
 - Shininess becomes roughness as one minus the stored value. Sekiro's own
   lighting model isn't reproduced.
 
-Not included: levels, stealth, the grappling hook, most prosthetics, and any
-enemy beyond the two above. Feet aren't pinned to the ground (the game uses
-foot IK), so a straight run slips a little, and Sekiro's fabric-detail layers
-and skin shading are not drawn.
+Not included: the rest of the game around the fights (story, NPC dialogue,
+the menus beyond pause, saving). Feet aren't pinned to the ground (the game
+uses foot IK), so a straight run slips a little, and Sekiro's fabric-detail
+layers and skin shading are not drawn.
 
 Sound is not positional. Where the game picks a footstep sound from the
 floor, the sandbox uses cobblestone (`FLOOR_MATERIAL` in `src/sound.rs`).
@@ -205,17 +216,17 @@ floor, the sandbox uses cobblestone (`FLOOR_MATERIAL` in `src/sound.rs`).
 | Sheathe / draw | X |
 | Resurrect (when dead) | Left click |
 
-Sandbox keys: `F1` opens the debug menu (enemy, AI mode, skills, tools,
+Sandbox keys: `F3` shows the frame rate, `F1` opens the debug menu (enemy, AI mode, skills, tools,
 cheats), `T` turns the enemy's AI on or off, `H` shows hurtboxes, `R` resets,
 `[` / `]` change the hour, `F5` reloads `config.toml`, `Esc` releases the
 mouse. Click the window to capture the mouse.
 
 ## Setup
 
-### From a release
+### From a release zip
 
-Download `Sv1-<version>-windows.zip` from
-[Releases](https://github.com/FFwLo/RustSekiro/releases), unzip it
+There are no downloads on GitHub right now; build from source (below). A
+release zip built with `tools\package.ps1` works like this: unzip it
 anywhere, and in that folder:
 
 1. Run `extract.bat`, or `extract.bat -Sekiro "D:\path\to\Sekiro"` for a
@@ -306,7 +317,11 @@ from. `F5` reloads it while playing.
 | `src/cloth.rs` | Cloth simulation from the game's cloth data. |
 | `src/sound.rs`, `src/fmod.rs` | Sound events from the animations, played through the game's FMOD. |
 | `src/camera.rs`, `src/hud.rs`, `src/debug_menu.rs`, `src/world.rs` | Camera, HUD, debug menu and arena. |
-| `src/prosthetic.rs` | The Loaded Shuriken. |
+| `src/prosthetic.rs`, `src/model/tool.rs`, `src/status.rs`, `src/wire.rs` | The prosthetic tools, their models and status effects, and the Grappling Hook. |
+| `src/stealth.rs` | Enemy sight, hearing, caution and search. |
+| `src/map.rs`, `src/sky.rs`, `src/height_fog.rs`, `src/fog_wall.rs` | The game's maps, sky, fog and boss fog walls. |
+| `src/fxr.rs`, `src/ffx.rs`, `src/gore.rs`, `src/vfx.rs` | Effects from the game's effect files, blood and clash effects. |
+| `src/menu.rs`, `src/area_music.rs`, `src/perf.rs` | Title, pause and death screens, area music, the frame-rate overlay. |
 | `src/sim_tests.rs` | Behaviour tests; run with `cargo test`. |
 | `src/trace.rs`, `src/photo.rs` | A scripted run that logs every drawn frame, and a screenshot mode, for checking animation. |
 | `config.toml` | Values the game files don't hold, each with where its real value lives. |
