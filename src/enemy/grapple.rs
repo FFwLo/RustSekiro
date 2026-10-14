@@ -29,6 +29,9 @@ pub struct EnemyGrapple {
     pub homing_row: i64,
     /// The SpEffect that opened it.
     pub sp_effect: i64,
+    /// A grapple point of an object the character carries (the Divine Dragon's trees): a map
+    /// point that moves, ridden by its variation's targetMarkerType and no hit on the character.
+    pub object: bool,
 }
 
 /// Every enemy open to the grapple, refreshed each frame (after the dummies' transforms).
@@ -44,13 +47,48 @@ pub fn wire_effect(combat: &Combat, a: &Actor) -> Option<(i64, i64, i64, i64)> {
     from_tae.or_else(|| a.resident.iter().find_map(|&id| d.sp_effects.get(&id.to_string()).and_then(|s| wire(id, s))))
 }
 
+/// WireVariationParam chrPhysicsHomingIdOffset (the combat export leaves the table out): row 45
+/// (the trees' o259920 / 921) 53105.
+fn homing_offset(variation: i64) -> i64 {
+    static ROWS: std::sync::OnceLock<std::collections::HashMap<i64, i64>> = std::sync::OnceLock::new();
+    let rows = ROWS.get_or_init(|| {
+        let path = crate::paths::extracted().join("json/params/WireVariationParam.json");
+        let v: serde_json::Value = std::fs::read_to_string(path).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+        v["rows"].as_array().map_or(Default::default(), |r| r.iter().filter_map(|r| Some((r["id"].as_i64()?, r["chrPhysicsHomingIdOffset"].as_i64()?))).collect())
+    });
+    rows.get(&variation).copied().unwrap_or(0)
+}
+
 pub(super) fn update(
     combat: Res<Combat>,
     mut out: ResMut<EnemyGrapples>,
     q: Query<(Entity, &Enemy, &Actor, &GlobalTransform, Option<&Dummies>, Option<&super::script::Phantom>)>,
     markers: Query<&GlobalTransform>,
+    bs: Option<Res<super::script::BossScript>>,
 ) {
     out.0.clear();
+    // Grapple edges of objects a boss script hangs on a character (2003[58]): the Divine
+    // Dragon's trees, c5310, carry o259920-922 on their dummies 600-602 (m25 12505901), each
+    // with four grapple records (o259920 / 921 variation 45 -> ChrPhysicsHoming 300053105;
+    // o259922 0), active while the tree wears 5025-5027 (12505906). The exe registers an
+    // object's edges with ActionEdgeMng (FUN_140ef4470 from the ObjIns update FUN_14087b440);
+    // the tentacle's own wire SpEffect 3531500 has no setter anywhere (dead data). The object
+    // frame is the dummy's (X mirrored like positions). gap: whether the exe moves registered
+    // object edges with the tree (they are registered once) is not traced; ours follow it.
+    if let Some(run) = bs.as_ref().and_then(|b| b.run.as_ref()) {
+        for (entity, dmy, obj) in run.grapple_objects() {
+            let Ok((_, e, a, _, dummies, ph)) = q.get(entity) else { continue };
+            if e.disabled || a.hp <= 0.0 || ph.is_some_and(|p| p.parked()) {
+                continue;
+            }
+            let Some(frame) = dummies.and_then(|dm| dm.0.get(&dmy)).and_then(|&m| markers.get(m).ok()) else { continue };
+            for &(hook, land, variation) in &obj.edges {
+                let at = |p: [f32; 3]| frame.transform_point(Vec3::new(-p[0], p[1], p[2]));
+                let offset = homing_offset(variation);
+                out.0.push(EnemyGrapple { entity, hook: at(hook), land: at(land), variation, homing_row: 300_000_000 + offset, sp_effect: 0, object: true });
+            }
+        }
+    }
     for (entity, e, a, gt, dummies, ph) in &q {
         if e.disabled || e.is_dead() || a.hp <= 0.0 || ph.is_some_and(|p| p.parked()) {
             continue;
@@ -61,7 +99,7 @@ pub(super) fn update(
         let root = gt.translation();
         let hook = at(target).unwrap_or(root + Vec3::Y * 2.0);
         let land = at(landing).unwrap_or(root);
-        out.0.push(EnemyGrapple { entity, hook, land, variation, homing_row: 300_000_000 + variation, sp_effect });
+        out.0.push(EnemyGrapple { entity, hook, land, variation, homing_row: 300_000_000 + variation, sp_effect, object: false });
     }
 }
 

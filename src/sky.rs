@@ -7,6 +7,9 @@
 //! fixed ones on m10 (060) and m25 (070). Here the hour picks the nearest of the six keys, as
 //! the light set and probe do. Adapted from sekiro-rs (MIT / Apache-2.0) crates/game/src/sky.rs
 //! (9ee18b0): the selection, the material inputs and the radiance bridge (the probes' scale).
+//! 2026-10-13: the Ver2 math checked against the game's own shader (shaderbdle
+//! M[Sky]_SkyDome_Ver2_{0,1}_Fwd.ppo, D3DDisassemble): colours are rgb^2.2 x Intensity (was gamma
+//! 2), switch 1's sun lobe uses the MTD's float3_6 (not the scene sun); kb/map.md "Sky domes".
 //! `SHINOBI_MAP_PROBE_SKY=1` keeps the probe sky box instead.
 //! gap: the castle's late-story fire sky (Cloud_Fire) and the debug 8907015 are not chosen.
 
@@ -40,6 +43,8 @@ pub(crate) struct SkyInputs {
     sun: Vec4,
     /// Kind (0 SkyDome, 1 Ver2, 2 Cloud), radiance scale, time, GXFT_SATStaticSwitch.
     control: Vec4,
+    /// The game's world +X in arena space (the Ver2 clouds' flow axis, sky.wgsl `flow`).
+    flow_x: Vec4,
 }
 
 #[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
@@ -72,8 +77,12 @@ impl Material for SkyMaterial {
     }
     fn specialize(_: &MaterialPipeline, d: &mut RenderPipelineDescriptor, _: &MeshVertexBufferLayoutRef, _: MaterialPipelineKey<Self>) -> Result<(), SpecializedMeshPipelineError> {
         d.primitive.cull_mode = None;
+        // The opaque dome writes its own depth (it is drawn at its real distance, 3-6.4 km), so the
+        // fog pass fogs it at that view depth, as the game's sky shader samples the froxel fog at
+        // its v1.w (docs/kb/sky_shader.md section 6). The blended Cloud layer writes none.
+        let opaque = d.fragment.as_ref().is_none_or(|f| f.targets.iter().flatten().all(|t| t.blend.is_none()));
         if let Some(depth) = &mut d.depth_stencil {
-            depth.depth_write_enabled = Some(false);
+            depth.depth_write_enabled = Some(opaque);
             depth.depth_compare = Some(CompareFunction::GreaterEqual);
         }
         Ok(())
@@ -115,13 +124,16 @@ pub(crate) fn inputs(row: &Value, radiance: f32) -> SkyInputs {
             let name = format!("{prefix}color_{i}");
             let c = vector(&name).truncate();
             let intensity = values(&format!("{name}-Intensity")).first().copied().unwrap_or(1.0);
-            (c * c * intensity).extend(1.0)
+            // GXMaterialParam_HDRColor (FUN_1403dc4b0): rgb^2.2 x Intensity; the metaparam flag
+            // byte +0x2E that turns the power on is 1 for every colour of shaderbdle (2026-10-13).
+            (c.powf(2.2) * intensity).extend(1.0)
         }),
         floats: std::array::from_fn(|i| vector(&format!("{prefix}float_{i}"))),
         vectors: std::array::from_fn(|i| vector(&format!("{prefix}float3_{i}"))),
         uv: std::array::from_fn(|i| vector(&format!("{prefix}float2_{i}"))),
         sun: Vec4::Y,
         control: Vec4::new(kind, radiance, 0.0, values("GXFT_SATStaticSwitch").first().copied().unwrap_or(0.0)),
+        flow_x: Vec4::new(-1.0, 0.0, 0.0, 0.0),
     }
 }
 
@@ -222,9 +234,13 @@ fn update_sky(
         info!("sky: dome {want} ({}) at {:.1} h", lighting.source_map, lighting.hour);
     }
     let sun = crate::map::sun_toward(&lighting).extend(0.0);
+    // Game +X through dome_mesh's mirror and yaw.
+    let (ys, yc) = lighting.arena_yaw.sin_cos();
+    let flow_x = Vec4::new(-yc, 0.0, -ys, 0.0);
     for (_, h) in &domes {
         if let Some(mut m) = materials.get_mut(&h.0) {
             m.inputs.sun = sun;
+            m.inputs.flow_x = flow_x;
             m.inputs.control.z = time.elapsed_secs();
         }
     }
@@ -248,7 +264,7 @@ mod tests {
     }
 
     /// The exported library: every dome has a mesh and its two masks, and its inputs are finite;
-    /// the colours are gamma 2 times their Intensity (m900000 color_2: white x30).
+    /// the colours are rgb^2.2 times their Intensity (m900000 color_2: white x30).
     #[test]
     fn the_exported_domes_load() {
         let Ok(text) = std::fs::read_to_string(crate::paths::extracted().join("sky/sky.json")) else {

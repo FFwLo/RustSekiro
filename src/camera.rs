@@ -287,6 +287,12 @@ pub struct CameraSnap(pub bool);
 /// gap: hand-set; the game's starting camera angle (on load / at a checkpoint) is not traced.
 const START_PITCH: f32 = 15.0;
 
+/// [`START_PITCH`] in radians; `SHINOBI_CAM_PITCH=<deg>` (a debug knob for sky / lighting shots,
+/// negative looks up) replaces it.
+fn start_pitch() -> f32 {
+    std::env::var("SHINOBI_CAM_PITCH").ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(START_PITCH).to_radians()
+}
+
 pub struct CameraPlugin;
 
 /// The TAE camera shakes: started on the TAE edges (prev_t, t), which move once per fixed
@@ -328,7 +334,7 @@ fn spawn_camera(mut commands: Commands, combat: Res<Combat>) {
             ..bevy::post_process::bloom::Bloom::OLD_SCHOOL
         },
         Projection::Perspective(PerspectiveProjection { fov: lc.fov_y.to_radians(), ..default() }),
-        OrbitCamera { yaw: 0.0, pitch: START_PITCH.to_radians(), focus: Vec3::ZERO, cam: CamState::new(&lc) },
+        OrbitCamera { yaw: 0.0, pitch: start_pitch(), focus: Vec3::ZERO, cam: CamState::new(&lc) },
         Transform::from_xyz(0.0, 3.0, 9.0).looking_at(Vec3::Y, Vec3::Y),
         // Ears for positional sound effects (ear gap in metres).
         SpatialListener::new(0.25),
@@ -356,9 +362,17 @@ fn capture_mouse(
 /// 25 (@0x1432892d0) re-arms (cooldown 0). A switch sets the cooldown to 0.5 s, so a held
 /// movement repeats every 0.5 s. The exe reads the value from the pad object's mouse state
 /// (FUN_14095fd40 / 50: +0x38f8 -> +0x20 / +0x24), negates both axes and scores with
-/// d.x * in.x - d.y * in.y (the stick, FUN_1409ca2d0, is not negated). gap: that state's writer
-/// is not found, so its units (taken as pixels a frame) and axis signs are not known; here a
-/// flick toward a target on screen picks it (Bevy delta: x right, y down, as the viewport).
+/// d.x * in.x - d.y * in.y (the stick, FUN_1409ca2d0, is not negated). The state is the pad's
+/// frame snapshot (FUN_140960650, 14096.c:3190): analog actions 0x54 / 0x55 times -1 unless the
+/// option bytes +0x715 / +0x716 are set (likely the camera invert options, not verified), so with
+/// the defaults the switch sees the raw axis. The only DirectInput float source is the mouse poll
+/// FUN_141a8f540 (141a8.c:10829): DIMOUSESTATE lX / lY as is, relative counts per poll, no scale
+/// or accumulation found (the action 0x54 binding itself is not traced). Bevy's
+/// AccumulatedMouseMotion is the same unit (raw counts a frame, y down), so 50 / 25 apply as is.
+/// The pick's d is NDC (FUN_1409ca480, 1409c.c:6512-6532: view x projection, / w, no viewport
+/// step), so y up: with in.y = +lY a flick down picks the lower target, as here. gap: the sign
+/// the 0x55 binding gives lY (not traced), and the stick, unnegated, would then pick downward on
+/// stick up unless its struct stores +y down; here stick up picks up.
 const LOCK_SWITCH_FIRE: f32 = 50.0;
 const LOCK_SWITCH_REARM: f32 = 25.0;
 const LOCK_SWITCH_COOLDOWN: f32 = 0.5;
@@ -662,7 +676,7 @@ fn follow_player(
         orbit.cam.alpha = alpha;
         // Behind Wolf: the arm (yaw rotation of +Z) points opposite his facing (yaw rotation of -Z).
         orbit.yaw = actor.yaw;
-        orbit.pitch = START_PITCH.to_radians();
+        orbit.pitch = start_pitch();
         orbit.focus = chr_focus(player.translation, orbit.cam.focus_y);
     }
     update_cam_slot(&combat, actor, &mut orbit.cam, dt);

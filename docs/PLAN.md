@@ -1,6 +1,31 @@
 # Sv1: finish, fix and polish (plan for all three sessions, approved 2026-10-11)
 
-## Update 2026-10-12: who does what now (read before the rest)
+## Scope (the user, 2026-10-13; read first)
+
+"the scope of my plan is not rewrite the whole game i want the game combat and its Enemies to be
+playable same as the game and anything that they require music hud special effects move sets etc"
+
+- **In scope:** the combat and the regular enemies playing as in Sekiro, plus what the fights need:
+  move sets, AI, music, HUD, effects and sound, and the arena they are fought in.
+- **Out of scope:** rebuilding the rest of the game (open-world systems, full-map fidelity for its
+  own sake). Performance work is for smooth fights, not world rendering in general.
+
+## Update 2026-10-13: the bosses are split (read first; replaces "all given away" below)
+
+The user, 2026-10-13, to VFX and Maps: the outside contributor keeps **their half** - the
+mini-bosses and generals: c1020 generals, c1021 Seven Spears, c1400 Ashina Elites, c5020 Chained
+Ogre, c1370 Blazing Bull, c1070 Shigekichi / Juzou / Tokujiro, c1050 Enshin, c1470 Lone Shadows,
+c1040 Centipedes, c1191 Snake Eyes, c1300 Mist Noble, c7000 O'Rin, c1310 Okami Leader, c1380
+Sakura Bull, c1130 Armored Warrior, c1340 / c1350 Headless, c108x Shichimen (35 rows). **The
+22 main-boss rows are ours again:** 12600050 Folding Screen Monkeys, 50000000 / 50001000
+Corrupted Monk, 50600000 Great Shinobi Owl, 50601010 Owl (Father), 50800000 Gyoubu, 50900000 /
+50900001 Lady Butterfly, 51000000 / 51000100 Guardian Ape, 52000000 Divine Dragon, 53000000 Old
+Dragons, 54000000 Isshin Sword Saint, 54300000 Isshin Ashina, 70200000 Demon of Hatred, 71000000
+/ 71001000 Genichiro, 71100000 / 71101000 Way of Tomoe, 74000010 Emma. VFX and Maps was asked for
+"bosses and the cloth and visual effects and sound effects". The test map is the sandbox
+(config `[world] map = "sandbox"`, the user's choice).
+
+## Update 2026-10-12: who does what now
 
 The plan below is still the reference, with these changes from the user on 2026-10-12:
 
@@ -19,8 +44,17 @@ The plan below is still the reference, with these changes from the user on 2026-
 - **Release hardening and traversal are given away.** C5's font, debug gating and parser errors,
   C6's quiet logs, and the traversal moves go to the contributor in the "Sv1: work split" doc
   (Track 1 and Track 2).
-- **Performance is dropped.** The 60 fps item in C6 is no longer anyone's claim (the user removed
-  it from the collab board).
+- **Performance is back** (the user, 2026-10-13: "check game performance and optimize the game",
+  "Add the performance back to the plan"). The C6 goal stands: 60 fps with vsync on the gate map
+  and in the 20-enemy arena.
+  - bug fixes: the check itself, src/perf.rs. F3 shows the overlay; `SHINOBI_BENCH=<s>` writes
+    perf_report.txt. Also the profiling and the CPU-side fixes in the shared engine (anim,
+    cloth, AI, combat), each measured before and after.
+  - VFX and Maps: the render side, starting with the map-material batching from sekiro-rs
+    73eca1d (OK'd by the user, 2026-10-13). Their gate-map table (HANDOFF 4.44) is the starting
+    point: 18-24 fps.
+  - Bosees: fixes in their files when the profile points there.
+  - Not on the collab board yet; that needs the user's yes.
 - **The sessions are renamed.** "bug fixes" (was Map), "VFX and Maps" (was VXf, now also maps,
   lighting and cloth) and "Bosees" (was Bosses, now regular enemies only).
 - **The open items are claimed on the collab board.** `AKJama/sekiro-collab` WORK.md (5b8f1d6,
@@ -84,16 +118,16 @@ Goal: frame-for-frame match of hit capsules, hurt capsules and deathblow placeme
 
 ### B2 Cape / cloth movement (Map)
 
-- Get a close real-game clip of the cape on direction changes (ask the user for one Medal clip: run, stop, turn, jump). Compare with the same inputs in sim (`SHINOBI_PHOTO`/`SHINOBI_PHOTO_POSES` or a sim trace with cloth positions logged).
+- Get a close real-game clip of the cape on direction changes (ask the user for one Medal clip: run, stop, turn, jump). 2026-10-13: the all-skills clip's Run and Slide (9:17-9:33) is from behind and too far (Wolf ~40 px at 480 wide) to read the skirt; still needs a close clip. Compare with the same inputs in sim (`SHINOBI_PHOTO`/`SHINOBI_PHOTO_POSES` or a sim trace with cloth positions logged).
 - Constraint execution order and BendStiffness vs the exe (`hclBendStiffnessConstraintSetMx` already ported; check the order list in `constraintExecution` is applied as the exe does, and the transition sets, `kb/visuals.md:124-125`).
-- Coat second texture layer (AN_Blend detail at 25x tiling, HANDOFF L353).
+- ~~Coat second texture layer~~ done 2026-10-12 (Character_AN_Blend_AMSN_[Fresnel] port, `kb/visuals.md` "Coat shader").
 - c1010 spear cloth restart at spawn; the Phase A c1100/c1060 fix.
 - Verify: side-by-side contact sheets at the same frames; cloth cost stays under 4 ms with 20 enemies.
 
 ### B3 Camera and controls feel (VXf owns camera.rs/player.rs input; Map helps with clips)
 
-- Port `lockCamAdjustRot_MaxX/Y` manual offsets and the target-point smoothing by `targetChaseRateAtLock` (HANDOFF L132-139, L355).
-- Lock-on switch: mouse units and y sign vs the exe (`kb/camera.md:61`).
+- ~~Port `lockCamAdjustRot_MaxX/Y` manual offsets~~ (2026-10-13: unused by the exe, `kb/camera.md`) and the target-point smoothing by `targetChaseRateAtLock` (HANDOFF L132-139, L355).
+- Lock-on switch: mouse units done 2026-10-13 (raw counts a frame, as Bevy's); the screen y sign stays open (`kb/camera.md`).
 - TAE 151 look limits: cone centre from the dummy basis and lerp back (`kb/camera.md:45`).
 - Head-kick camera, vault and jump cloth: get the user's verdict with a clip each (HANDOFF L345-348).
 - Controls: `invert_y`, `mouse_sensitivity` already; add `[input]` key map in config (see C3) and gamepad (C4) once the front end exists.
@@ -182,7 +216,7 @@ Status 2026-10-11: no-console exe + sv1.log + panic dialog, `[profile.dist]` + p
 
 ### C6 Polish pass (all)
 
-- Performance: 60 fps with vsync on the gate map and the 20-enemy arena (today 59/48); cloth range, shadow cascades, FXR soft particles are the knobs.
+- Performance (back on 2026-10-13, see the update above): 60 fps with vsync on the gate map and the 20-enemy arena (today 59/48; the gate map measured 18-24 fps on 2026-10-13); cloth range, shadow cascades, FXR soft particles are the knobs. Measure with src/perf.rs (F3, SHINOBI_BENCH).
 - Quiet logs in release (info only for load lines), no per-frame warnings.
 - Feel check with the user: three clips (fight the General, the Ogre, Genichiro) compared with the game, last tweaks.
 

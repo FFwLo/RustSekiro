@@ -173,6 +173,22 @@ chapter per fight (the numbering is the uploader's):
 | 1:03:34 | 1:04:06 | 41. Juzou the Drunkard #2 |
 | 1:04:06 | 1:06:11 | 42. Owl (Father) |
 | 1:06:11 | 1:07:49 | 43. Corrupted Monk |
+
+The chapter starts are where the uploader's chapter begins, not where the fight begins. A
+chapter includes the walk-in and the cutscene, so the fight itself can start more than a minute
+later. The table is not shifted. Measured fight moments (bug fixes R97, 2026-10-14):
+
+- Juzou #1 (ch.9): still fighting at 13:00-13:20.
+- Lady Butterfly (ch.10): the Kuro / Emma / Owl cutscene runs 13:28-14:30. The fight runs about
+  14:40-16:36 (Shinobi Execution about 16:36). Phase 2 starts about 15:47, and the posture arrows
+  show from 15:52. No phantoms are summoned in this run.
+- Gyoubu (ch.8): the HP trails are at 11:59-12:03; the fatal deathblow is at 12:07.3; the banner
+  runs 12:16.8-12:20.1.
+- Folding Screen Monkeys (ch.19): the name shows about 30:40, and the fight runs about
+  30:40-31:20. Over-head bars show from 30:59.
+- Sen'un (ch.18): on screen at 29:00-29:10.
+- Shirafuji (ch.20): fighting at 32:20-32:50.
+- Giraffe (ch.21): starts about 32:50.
 | 1:07:49 | 1:08:56 | 44. Sakura Bull of the Palace |
 | 1:08:56 | 1:10:04 | 45. Shichimen Warrior #3 |
 | 1:10:04 | 1:10:19 | 46. Okami Leader Shizu |

@@ -82,6 +82,18 @@ const GOLD_WIND: [f32; 4] = [2.5, 2.2, 1.0, 0.3];
 
 /// The hand-made look of an FFX id with no extracted FXR (gap: made by eye). 304xxx are the upgraded tools'
 /// variants of 300xxx; 4404xx-4405xx are the weapon-enchantment versions (gated off).
+/// An FFX event whose effect ends with it (or when the anim changes): a slotted one (SlotID >= 0),
+/// SpawnFFX_Blade (118), and one with IsRestrictToDummyPoly: the game then sets the effect's
+/// External(0) to 1 ("set to 1 when ... the SpawnOneShotFFX event ends and it has
+/// IsRestrictToDummyPoly enabled", reference/fxr src/fxr.ts ExternalValue.Sekiro.Terminate), and
+/// 1211 of the 1213 extracted effects have the state "External(0) >= 1 then terminate". Without
+/// it the arts' and tools' effects with an endless node ran to the 20 s cap (manual test #4).
+/// gap: the two effects without that state stop as well.
+pub(crate) fn ends_with_event(e: &crate::data::Event) -> bool {
+    let restrict = e.args.get("IsRestrictToDummyPoly").and_then(|v| v.as_bool()) == Some(true);
+    e.arg_i64("SlotID").is_some_and(|s| s >= 0) || e.kind == 118 || restrict
+}
+
 fn looks(ffx: i64) -> &'static [Layer] {
     const DUST_KICK: &[Layer] = &[puff(DUST, 0.0, 5, (0.4, 1.2), (0.4, 0.7), (0.08, 0.35), -0.2, 1.0, true)];
     const MORTAL_AURA: &[Layer] = &[
@@ -210,6 +222,10 @@ struct Trail {
 pub struct FootSfx {
     rows: HashMap<i64, Vec<i64>>,
     player_row: Option<i64>,
+    /// ThrowDirectionSfxParam (TAE 117 SpawnFFX_ThrowDirection): row = a hit material (109 meat,
+    /// 114 meat under armour, 132 phantom, 134 poisonous, 135 white), column = the event's
+    /// ThrowDirectionSFXIndex (Wolf's deathblows: 11 -> 220501 on meat).
+    throw_rows: HashMap<i64, Vec<i64>>,
 }
 
 impl FootSfx {
@@ -223,22 +239,32 @@ impl FootSfx {
                 _ => Vec::new(),
             }
         };
-        let rows = read("FootSfxParam")
-            .iter()
-            .filter_map(|r| {
-                let mut cols = vec![0i64; 200];
-                for (k, v) in r.as_object()? {
-                    if let (Some(i), Some(v)) = (k.strip_prefix("sfxId_").and_then(|i| i.parse::<usize>().ok()), v.as_i64()) {
-                        if i < cols.len() {
-                            cols[i] = v;
+        let table = |name: &str, n: usize| -> HashMap<i64, Vec<i64>> {
+            read(name)
+                .iter()
+                .filter_map(|r| {
+                    let mut cols = vec![0i64; n];
+                    for (k, v) in r.as_object()? {
+                        if let (Some(i), Some(v)) = (k.strip_prefix("sfxId_").and_then(|i| i.parse::<usize>().ok()), v.as_i64()) {
+                            if i < cols.len() {
+                                cols[i] = v;
+                            }
                         }
                     }
-                }
-                Some((r["id"].as_i64()?, cols))
-            })
-            .collect();
+                    Some((r["id"].as_i64()?, cols))
+                })
+                .collect()
+        };
+        let rows = table("FootSfxParam", 200);
+        let throw_rows = table("ThrowDirectionSfxParam", 90);
         let player_row = read("TentativePlayerParam").iter().find(|r| r["id"].as_i64() == Some(0)).and_then(|r| r["PlayerFootEffect_bySFX"].as_i64());
-        Self { rows, player_row }
+        Self { rows, player_row, throw_rows }
+    }
+
+    /// TAE 117's effect: the ThrowDirectionSfxParam row of `material`, column `index`.
+    pub fn throw_id(&self, material: i64, index: i64) -> Option<i64> {
+        let v = *self.throw_rows.get(&material)?.get(usize::try_from(index).ok()?)?;
+        (v > 0).then_some(v)
     }
 
     /// The effect of one column of a row, if any.
@@ -258,8 +284,75 @@ impl Plugin for FfxPlugin {
             .add_systems(Startup, setup)
             // emit reads the TAE edges (prev_t, t), which move once per fixed step.
             .add_systems(FixedUpdate, emit.after(crate::actor::ActorSet::Advance).after(crate::anim::PoseSet))
-            .add_systems(Update, (animate_puffs, weapon_trail, skill_shots));
+            .add_systems(Update, (animate_puffs, weapon_trail, skill_shots, tae_sp_vfx));
     }
+}
+
+/// The SpEffects an enemy's own TAE puts on it (SpEffect events 67 / 66 / 401, data
+/// `sp_effects_at`) show their SpEffectVfx as the afflictions do (status.rs `show`): initSfxId
+/// once when it starts, midstSfxId riding its dummy while it lasts, stopped when it ends. The
+/// Demon of Hatred's burning body 3702011 (vfx 3702003 / 3702004 -> 670215 / 670216 on dummies
+/// 820 / 821), the Guardian Ape's 3510500 -> 651050 (dummy 31), the Divine Dragon's 3520000 ->
+/// 652012 (dummy 600). gap: the resident NpcParam SpEffects' VFX (the bosses' 23061x "enemy
+/// turn" glow, gated on state 955) are not shown.
+#[allow(clippy::type_complexity)]
+pub(crate) fn tae_sp_vfx(
+    mut commands: Commands,
+    combat: Res<crate::data::Combat>,
+    rows: Option<Res<crate::status::VfxRows>>,
+    actors: Query<(Entity, &crate::actor::Actor), With<crate::enemy::Enemy>>,
+    dummies: Query<&crate::model::Dummies>,
+    tfs: Query<&GlobalTransform>,
+    mut fx: Query<&mut crate::fxr::FxEffect>,
+    mut live: Local<HashMap<(Entity, i64), Vec<Entity>>>,
+) {
+    let Some(rows) = rows else { return };
+    let mut now: std::collections::HashSet<(Entity, i64)> = std::collections::HashSet::new();
+    for (e, a) in &actors {
+        if a.anim.is_empty() || a.hp <= 0.0 {
+            continue;
+        }
+        let d = crate::actor::data_for(&combat, a);
+        for (id, s) in d.sp_effects_at(&a.anim, a.t) {
+            if s.vfx_id <= 0 && s.vfx_id1 <= 0 {
+                continue;
+            }
+            now.insert((e, id));
+            if live.contains_key(&(e, id)) {
+                continue;
+            }
+            let mut kept = Vec::new();
+            for vfx in [s.vfx_id, s.vfx_id1] {
+                let Some(&[init, init_dmy, midst, midst_dmy]) = rows.0.get(&vfx) else { continue };
+                for (fid, dmy, keep) in [(init, init_dmy, false), (midst, midst_dmy, true)] {
+                    if fid <= 0 {
+                        continue;
+                    }
+                    let anchor = dummies.get(e).ok().and_then(|d| d.0.get(&(dmy as i16)).copied()).unwrap_or(e);
+                    let at = tfs.get(anchor).map(|g| g.compute_transform()).unwrap_or_default();
+                    let mut f = crate::fxr::FxEffect::new(fid, Some(crate::fxr::Anchor::Entity(anchor)), true, at);
+                    f.keep = keep;
+                    debug!("SpEffect {id} ({}): effect {fid} on dummy {dmy}", a.anim);
+                    let spawned = commands.spawn(f).id();
+                    if keep {
+                        kept.push(spawned);
+                    }
+                }
+            }
+            live.insert((e, id), kept);
+        }
+    }
+    live.retain(|k, v| {
+        let on = now.contains(k);
+        if !on {
+            for f in v.iter() {
+                if let Ok(mut f) = fx.get_mut(*f) {
+                    f.stop = true;
+                }
+            }
+        }
+        on
+    });
 }
 
 fn setup(mut assets: ResMut<FfxAssets>, mut meshes: ResMut<Assets<Mesh>>, mut images: ResMut<Assets<Image>>) {
@@ -354,12 +447,18 @@ fn emit(
     mut playing: Query<&mut crate::fxr::FxEffect>,
     foot: Res<FootSfx>,
 ) {
-    // Slotted / held effects end with their TAE event, when the anim changes, or when a looping
-    // anim (an idle, started over at t 0 under the same key) starts over.
+    // Slotted / held effects end with their TAE event (after its length on their own clock,
+    // FxEffect::window), when the anim changes, or when a looping anim (an idle, started over at
+    // t 0 under the same key) starts over.
     for mut f in &mut playing {
         if let Some((owner, anim, idx)) = f.key.clone() {
+            let window = f.window;
+            let age = f.age();
             let alive = actors.iter().zip(actor_e.iter()).find(|(_, e)| *e == owner).is_some_and(|((a, _, _), _)| {
-                a.anim == anim && a.t >= a.prev_t && data_for(&combat, &a).anim(&a.anim).and_then(|an| an.events.get(idx)).is_some_and(|ev| a.t < ev.end)
+                // The event's end on the clip's own clock (round 96: the effect's age kept running
+                // through a hit stop that froze the clip, ending it before its end frame); the
+                // age window stays as a backstop.
+                a.anim == anim && a.t >= a.prev_t && data_for(&combat, &a).anim(&a.anim).and_then(|an| an.events.get(idx)).is_some_and(|ev| a.t <= ev.end + 1e-3) && age < window + 1.0
             });
             if !alive {
                 f.stop = true;
@@ -397,7 +496,9 @@ fn emit(
         let Some(anim) = d.anim(&clip) else { continue };
         let mut states: Option<Vec<i64>> = None;
         let foot_row = if player.is_some() { foot.player_row } else { combat.npc(a)["footEffectSfxId"].as_i64() };
-        for (idx, e) in anim.events.iter().enumerate().filter(|(_, e)| matches!(e.kind, 96 | 112 | 118 | 792)) {
+        // TAE 117: Wolf's throw target's material (an enemy's own 117s have no partner here).
+        let throw_material = player.and_then(|p| p.throw_target).and_then(|t| actors.iter().zip(actor_e.iter()).find(|(_, e)| *e == t)).map(|((ta, _, _), _)| combat.npc(ta)["materialSfx1"].as_i64().unwrap_or(-1));
+        for (idx, e) in anim.events.iter().enumerate().filter(|(_, e)| matches!(e.kind, 96 | 112 | 117 | 118 | 792)) {
             // gap: SpawnFFX_ByFloor (112) has no case in the TAE dispatcher (FUN_140b59170) and
             // its handler is not found; its FFXIDs (Wolf: 0 / 1 / 11 / 111 on the feet 5 / 6)
             // are FootSfxParam columns (column 0 = column 1 there), so it is read as 792 is.
@@ -405,12 +506,20 @@ fn emit(
             let ffx = match e.kind {
                 792 => foot_row.zip(e.arg_i64("FootSFXIndex")).and_then(|(r, c)| foot.id(r, c)),
                 112 => foot_row.zip(e.arg_i64("FFXID")).and_then(|(r, c)| foot.id(r, c)),
+                // gap: the exe's row choice is not traced (FUN_140b56d40 -> ChrThrowDirectionSfxSlot
+                // takes a final sfx id; no ThrowDirectionSfxParam getter found, HANDOFF 4.57): read
+                // as the throw partner's NpcParam materialSfx1 (only the material rows 109 / 114 /
+                // 132 / 134 / 135 have effects, all blood of that material).
+                117 => throw_material.zip(e.arg_i64("ThrowDirectionSFXIndex")).and_then(|(m, i)| foot.throw_id(m, i)),
                 _ => e.arg_i64("FFXID").filter(|v| *v > 0),
             };
             let Some(ffx) = ffx else { continue };
             let game_fx = lib.has(ffx);
             let layers = if game_fx { &[][..] } else { looks(ffx) };
             if layers.is_empty() && !game_fx {
+                if std::env::var("SHINOBI_FFX_LOG").is_ok() && windows.iter().any(|&(lo, hi)| e.start > lo && e.start <= hi) {
+                    info!("ffx {ffx} skipped: no fxr / look ({clip} {:.2})", a.t);
+                }
                 continue;
             }
             // A locomotion clip's events only start (gap: held ones are not kept up).
@@ -435,7 +544,12 @@ fn emit(
             } else {
                 e.arg_i64("DummyPolyID").unwrap_or(10301)
             };
-            let Some(g) = dummy_candidates(dmy).iter().find_map(|k| dm.0.get(k)).and_then(|e| globals.get(*e).ok()) else { continue };
+            let Some(g) = dummy_candidates(dmy).iter().find_map(|k| dm.0.get(k)).and_then(|e| globals.get(*e).ok()) else {
+                if std::env::var("SHINOBI_FFX_LOG").is_ok() && started {
+                    info!("ffx {ffx} skipped: no dummy {dmy} ({clip} {:.2})", a.t);
+                }
+                continue;
+            };
             let (mut pos, fwd) = (g.translation(), (g.rotation() * Vec3::Z).normalize_or(Vec3::Y));
             // A weapon effect on a weapon dummy that is not loaded: along Kusabimaru's blade instead,
             // hilt (dummy 300) to tip (301).
@@ -443,7 +557,7 @@ fn emit(
             let along = (10000..20000).contains(&dmy) && !dm.0.contains_key(&(dmy as i16)) && !dm.0.contains_key(&((dmy % 10000) as i16));
             let seg = if along { blade(300).zip(blade(301)) } else { None };
             // The game's own effect (FXR), when the archive has it: spawned at the event start on the
-            // dummy (IsFollowDummyPoly: rides on it); a slotted one (SlotID >= 0) ends with the event.
+            // dummy (IsFollowDummyPoly: rides on it); some end with the event (`ends_with_event`).
             if game_fx {
                 if started {
                     // A weapon dummy that is not loaded: a frame along Kusabimaru's blade, hilt 300 -> tip 301.
@@ -467,7 +581,9 @@ fn emit(
                     } else {
                         crate::fxr::FxEffect::new(ffx, anchor, follow, Transform::from_translation(pos))
                     };
-                    if !procedural && (e.arg_i64("SlotID").is_some_and(|s| s >= 0) || e.kind == 118) {
+                    // sound.rs plays 's' + the FFX id for these two (fxr.rs then skips the root's own).
+                    fx.own_sound_played = matches!(e.kind, 96 | 118);
+                    if !procedural && ends_with_event(e) {
                         let key = (owner, a.anim.clone(), idx);
                         // One instance per event: a new start replaces the old one.
                         for mut old in &mut playing {
@@ -476,6 +592,7 @@ fn emit(
                             }
                         }
                         fx.key = Some(key);
+                        fx.window = (e.end - e.start).max(0.0);
                     }
                     commands.spawn(fx);
                 }
@@ -578,6 +695,7 @@ fn weapon_trail(
     mut effects: Query<&mut crate::fxr::FxEffect>,
     mut game_trail: Local<Option<Entity>>,
     mut meshes: ResMut<Assets<Mesh>>,
+    mut uploads: ResMut<crate::fxr::FxUploads>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     wolf: Query<(Entity, &Actor, &Dummies), With<crate::player::Player>>,
     globals: Query<&GlobalTransform>,
@@ -660,7 +778,7 @@ fn weapon_trail(
             empty.insert_attribute(Mesh::ATTRIBUTE_NORMAL, vec![[0.0, 1.0, 0.0]; 3]);
             empty.insert_attribute(Mesh::ATTRIBUTE_COLOR, vec![[0.0; 4]; 3]);
             let mesh = meshes.add(empty);
-            commands.spawn((Mesh3d(mesh.clone()), MeshMaterial3d(mat), Transform::IDENTITY, Trail { owner: we, samples: Vec::new(), mesh, color: [1.0; 4] }, bevy::light::NotShadowCaster));
+            commands.spawn((Mesh3d(mesh.clone()), MeshMaterial3d(mat), Transform::IDENTITY, Trail { owner: we, samples: Vec::new(), mesh, color: [1.0; 4] }, bevy::light::NotShadowCaster, bevy::camera::visibility::NoFrustumCulling));
             return;
         }
     };
@@ -673,7 +791,6 @@ fn weapon_trail(
         t.samples.push((b, tip, 0.0));
         t.color = color;
     }
-    let Some(mut m) = meshes.get_mut(&t.mesh) else { return };
     // Never empty (an empty mesh upset the render slab allocator): one degenerate triangle.
     let mut pos: Vec<[f32; 3]> = vec![[0.0, -10.0, 0.0]; 3];
     let mut col: Vec<[f32; 4]> = vec![[0.0; 4]; 3];
@@ -690,10 +807,13 @@ fn weapon_trail(
             col.push(shade(age, tip));
         }
     }
-    let n = pos.len();
-    m.insert_attribute(Mesh::ATTRIBUTE_POSITION, pos);
-    m.insert_attribute(Mesh::ATTRIBUTE_NORMAL, vec![[0.0, 1.0, 0.0]; n]);
-    m.insert_attribute(Mesh::ATTRIBUTE_COLOR, col);
+    // Padded to a capacity bucket and written in place (fxr.rs FxUploads).
+    let c = uploads.cap(&t.mesh, pos.len());
+    let mut m = Mesh::new(bevy::mesh::PrimitiveTopology::TriangleList, bevy::asset::RenderAssetUsages::default());
+    m.insert_attribute(Mesh::ATTRIBUTE_POSITION, crate::fxr::pad_to(pos, c, [0.0, -10.0, 0.0]));
+    m.insert_attribute(Mesh::ATTRIBUTE_NORMAL, vec![[0.0, 1.0, 0.0]; c]);
+    m.insert_attribute(Mesh::ATTRIBUTE_COLOR, crate::fxr::pad_to(col, c, [0.0; 4]));
+    uploads.put(&mut meshes, &t.mesh, m);
     let _ = te;
 }
 
@@ -757,6 +877,22 @@ fn skill_shots(
 
 #[cfg(test)]
 mod tests {
+    /// Manual test #4: the Shuriken's a070_400000 SpawnOneShotFFX 300080 (SlotID -1,
+    /// IsRestrictToDummyPoly) has an endless node; it ends with its event, as the game's External(0).
+    /// SpawnFFX_ByFloor (112) has no such flag and plays out.
+    #[test]
+    fn restricted_one_shot_effects_end_with_their_event() {
+        let path = crate::paths::extracted().join("combat_data.json");
+        let Ok(text) = std::fs::read_to_string(path) else { return };
+        let d: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let events: Vec<crate::data::Event> = serde_json::from_value(d["player"]["anims"]["a070_400000"]["events"].clone()).unwrap();
+        let fx = events.iter().find(|e| e.kind == 96 && e.arg_i64("FFXID") == Some(300080)).expect("300080 event");
+        assert_eq!(fx.arg_i64("SlotID"), Some(-1));
+        assert!(super::ends_with_event(fx));
+        let floor = crate::data::Event { kind: 112, start: 0.0, end: 0.1, args: serde_json::json!({"DummyPolyID": 5, "FFXID": 0}) };
+        assert!(!super::ends_with_event(&floor));
+    }
+
     #[test]
     fn foot_dust_from_foot_sfx_param() {
         let f = super::FootSfx::load();

@@ -14,12 +14,21 @@
 
 // The scene depth after the opaque pass (fxr.rs FxDepth; 0 = far when not copied).
 @group(#{MATERIAL_BIND_GROUP}) @binding(100) var fx_depth: texture_depth_multisampled_2d;
+// Lit particles' light (fxr.rs SoftExt.light): [0] ambient, [1] sun, rgb on the map's scale.
+@group(#{MATERIAL_BIND_GROUP}) @binding(101) var<uniform> fx_light: array<vec4<f32>, 2>;
 
 @fragment
 fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> FragmentOutput {
     var pbr_input = pbr_input_from_standard_material(in, is_front);
     pbr_input.material.base_color = alpha_discard(pbr_input.material, pbr_input.material.base_color);
 #ifdef VERTEX_UVS_B
+    // Lit (uv_b.y = 1 + sat(N.L)): the game's PS_VFX_SingleTextureAllLight / BumpLight,
+    // saturate(texture x colour) x (ambient + sun x N.L) (mov_sat before the light multiply).
+    if in.uv_b.y >= 1.0 {
+        let ndl = in.uv_b.y - 1.0;
+        let c = clamp(pbr_input.material.base_color.rgb, vec3(0.0), vec3(1.0));
+        pbr_input.material.base_color = vec4(c * (fx_light[0].rgb + fx_light[1].rgb * ndl), pbr_input.material.base_color.a);
+    }
     let soft = in.uv_b.x;
     if soft > 0.0001 {
         let scene = -depth_ndc_to_view_z(textureLoad(fx_depth, vec2<i32>(in.position.xy), 0));

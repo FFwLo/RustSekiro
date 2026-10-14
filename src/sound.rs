@@ -161,11 +161,20 @@ pub fn defender_materials(combat: &Combat, def: &crate::actor::Actor) -> [i64; 2
     [r[a].as_i64().unwrap_or(-1), r[b].as_i64().unwrap_or(-1)]
 }
 
-/// Floor sounds (TAE type 'x'): FMOD event c + (id / 1000 * 1000 + floor material). HitMtrlParam
+/// Floor sounds (TAE type 'x'): FMOD event c + (id / 100 * 100 + floor material; see floor_key). HitMtrlParam
 /// row names (soulsmods Paramdex SDT/Names): 1 cobblestone, 3 soil, 4 wood, 5 grass, 6 gravel,
 /// 16 tile, 28 tatami, ... - all have footstep events. The arena is stone: 1 (Ashina's courtyards).
 /// gap: real floors come from map collision.
 const FLOOR_MATERIAL: i64 = 1;
+
+/// A floor ('x') sound's FMOD event: the id rounded to 100 plus the floor material. The banks
+/// name the variants by hundreds: Wolf's 6505 is c000006500 / 6501 / 6502 (sound_events.txt),
+/// c1550's 155003101 / 155004101 / 155004201 and c1370's 137006501 have their own events beside
+/// ...3001 / ...4001 / ...6001 (round 32: rounded to 1000 they played the plain step or nothing).
+/// gap: the exe's key builder is not traced; the event names fit only this rounding.
+fn floor_key(id: i64, material: i64) -> String {
+    format!("c{:09}", id / 100 * 100 + material)
+}
 
 /// The floor material under an actor: the map's hit collision triangle (HitMtrlParam id) when a
 /// map is loaded, else the flat arena's stone.
@@ -182,14 +191,37 @@ impl Plugin for SoundPlugin {
     fn build(&self, app: &mut App) {
         app.add_audio_source::<PcmSound>()
             .init_asset_loader::<PcmLoader>()
-            .insert_resource(SoundVolume(0.6))
+            .insert_resource(SoundVolume(FALLBACK_BASE))
             .insert_resource(index_sounds())
             .init_resource::<SoundQueue>()
             .init_resource::<SlottedSounds>()
-            .add_systems(Update, stop_slotted_off_screen)
+            .add_systems(Update, (stop_slotted_off_screen, end_deathblow_mix_off_screen, fallback_volume))
             // TAE sounds per simulation step (two steps in one frame would skip the first's events).
-            .add_systems(FixedUpdate, (play_tae_sounds, deathblow_mix).after(crate::actor::ActorSet::Advance))
+            .init_resource::<DeathblowMix>()
+            // Before Resolve (round 55): its reactions restart the anim (t 0) and, run after it,
+            // dropped the interrupted anim's events of this step; the order was left to Bevy.
+            .add_systems(
+                FixedUpdate,
+                (play_tae_sounds, deathblow_mix).after(crate::actor::ActorSet::Advance).after(crate::anim::PoseSet).before(crate::actor::ActorSet::Resolve),
+            )
             .add_systems(Update, play_queued);
+    }
+}
+
+/// The PCM fallback's level (no FMOD): the Options volume and SE sliders, as fmod.rs set_mix
+/// gives the master and se categories (0-10 each), times the fallback's base 0.6. They were
+/// never applied here (2026-10-12 round 21).
+const FALLBACK_BASE: f32 = 0.6;
+
+pub(crate) fn fallback_level(audio: &crate::config::AudioConfig) -> f32 {
+    let v = |x: f32| (x / 10.0).clamp(0.0, 1.0);
+    FALLBACK_BASE * v(audio.volume) * v(audio.se)
+}
+
+fn fallback_volume(config: Res<crate::config::GameConfig>, mut volume: ResMut<SoundVolume>) {
+    let want = fallback_level(&config.audio);
+    if volume.0 != want {
+        volume.0 = want;
     }
 }
 
@@ -222,6 +254,23 @@ pub fn active_state_infos(combat: &Combat, a: &Actor, config: Option<&crate::con
     const NO_ENCHANTMENT: i64 = 914;
     let d = data_for(combat, &a);
     let mut v: Vec<i64> = if a.anim.is_empty() { Vec::new() } else { d.sp_effects_at(&a.anim, a.t).iter().map(|(_, s)| s.state_info).collect() };
+    // The live resident SpEffects too, every side (round 70: enemies' NpcParam residents such as
+    // the anim-set rows 200030-200034 -> stateInfo 270-274, or 3107040 -> 950 / 951, gate
+    // thousands of PlaySound / SpawnFFX events - c1180, c1220, c1260, c1700, ... - and only
+    // Wolf's were counted, so they were silent).
+    // A TAE SpEffect of the same spCategory overwrites the resident (the anim-set rows 200030-34
+    // are all category 100: a clip's 200031 replaces the resident 200030, HANDOFF ~367): its
+    // stateInfo alone gates, not both sets.
+    let tae_cats: Vec<i64> = if a.anim.is_empty() { Vec::new() } else { d.sp_effects_at(&a.anim, a.t).iter().filter_map(|(id, _)| crate::data::sp_cycle(*id)).map(|c| c.category).filter(|c| *c > 0).collect() };
+    for &id in &a.resident {
+        if crate::data::sp_cycle(id).is_some_and(|c| c.category > 0 && tae_cats.contains(&c.category)) {
+            continue;
+        }
+        let si = d.sp_effects.get(&id.to_string()).map(|s| s.state_info).or_else(|| crate::data::sp_cycle(id).map(|c| c.state_info));
+        if let Some(si) = si.filter(|s| *s > 0 && !v.contains(s)) {
+            v.push(si);
+        }
+    }
     if a.side == crate::actor::Side::Player {
         v.push(NO_ENCHANTMENT);
         let mut weapons: Vec<i64> = tool.into_iter().collect();
@@ -235,6 +284,18 @@ pub fn active_state_infos(combat: &Combat, a: &Actor, config: Option<&crate::con
             // Flame Vent's 127200 "Ignition LV1" -> 915 turns on its flame FFX 300161 / 300164).
             if let Some(t) = combat.player.prosthetics.iter().find(|t| t.id == w) {
                 ids.push(t.resident);
+            }
+            // Sen Throw (resident 127022, stateInfo 908): common.emevd (~193180-193570) puts one of
+            // 127060-127063 "sen held LV0-3" (stateInfo 999-996) on by the sen held; its throws'
+            // judges are gated by them (round 68: none was on, so 70400 threw nothing).
+            if ids.contains(&127022) {
+                let sen = config.map_or(500, |c| c.player.sen);
+                v.push(match sen {
+                    0 => 999,
+                    1..=249 => 998,
+                    250..=499 => 997,
+                    _ => 996,
+                });
             }
             for id in ids.into_iter().filter(|id| *id > 0) {
                 let si = d.sp_effects.get(&id.to_string()).map(|s| s.state_info).or_else(|| combat.param("SpEffectParam", id)["stateInfo"].as_i64());
@@ -255,9 +316,11 @@ pub fn active_state_infos(combat: &Combat, a: &Actor, config: Option<&crate::con
 /// from prev_t to t, or - Wolf's procedural walk / run / crouch-walk (Locomotion, no anim; their
 /// footsteps c00000100x / 200x and armour rustle are the clips' PlaySound events) - the shown
 /// locomotion clip (`locomotion_clip_at`), wrapping at the loop's end. A step that changes
-/// locomotion clip (the move start into the loop, a turn to another direction) starts the new
-/// clip at 0. gap: the rest of the clip left behind is not played. Also the clip time (the
-/// once-per-step key).
+/// locomotion clip (the move start into the loop) starts the new clip at 0, as does the first
+/// step of Locomotion (round 55: before, its window was (0, dt] and a start clip's event at 0,
+/// e.g. a000_005100's PlaySound 2100, never played). gap: the rest of the clip left behind is
+/// not played, and a turn or a walk / run switch keeps the clip phase (locomotion_clip_at
+/// keys on the current move_dir / move_index). Also the clip time (the once-per-step key).
 pub(crate) fn sound_windows(a: &Actor, d: &crate::data::CharData) -> Option<(String, Vec<(f32, f32)>, f32)> {
     const AT_ZERO: f32 = -1e-6;
     if !a.anim.is_empty() {
@@ -275,7 +338,7 @@ pub(crate) fn sound_windows(a: &Actor, d: &crate::data::CharData) -> Option<(Str
     if dt <= 0.0 {
         return Some((key, Vec::new(), now));
     }
-    if a.locomotion_clip_at(a.prev_t).0 != key {
+    if a.prev_t == 0.0 || a.locomotion_clip_at(a.prev_t).0 != key {
         return Some((key, vec![(AT_ZERO, now)], now));
     }
     let before = now - dt;
@@ -355,6 +418,8 @@ fn play_tae_sounds(
             }
         });
     }
+    // Despawned actors' last steps (round 55: before, one entry per enemy ever spawned).
+    seen.retain(|e, _| actors.contains(*e));
     for (entity, a, tf, player, dm) in &actors {
         // Where a sound plays: its event's DummyPolyID (PlaySound_BySlot 129 / 131,
         // _ByDummyPoly_PlayerVoice 130; an FFX's sound on the FFX's dummy, SpawnFFX_Blade's on its
@@ -405,9 +470,15 @@ fn play_tae_sounds(
                 if let (Some(ffx), Some(f)) = (e.arg_i64("FFXID").filter(|v| *v > 0), fmod.as_mut()) {
                     let key = format!("s{ffx:09}");
                     if f.has(&key) {
-                        if let Some(slot) = e.arg_i64("SlotID").filter(|s| *s >= 0 && !a.anim.is_empty()) {
+                        // An FFX that ends with its event (ffx::ends_with_event) takes its sound
+                        // along: the FFX's GXFfxSoundHost dtor (14040.c FUN_140406010) releases
+                        // each started SoundIns (SprjFfxSoundManager slot 0x30 -> state 5).
+                        // Unslotted ones are tracked as slot -1 and never replace each other.
+                        // gap: state 5's FMOD stop is not traced to the end (round 84).
+                        let slot = e.arg_i64("SlotID").filter(|s| *s >= 0).or((crate::ffx::ends_with_event(e)).then_some(-1));
+                        if let Some(slot) = slot.filter(|_| !a.anim.is_empty()) {
                             slotted.retain(|s| {
-                                let same = s.owner == entity && s.slot == slot;
+                                let same = slot >= 0 && s.owner == entity && s.slot == slot;
                                 if same {
                                     f.stop(s.ev);
                                 }
@@ -426,10 +497,10 @@ fn play_tae_sounds(
             let (Some(id), Some(letter)) = (e.arg_i64("SoundID"), e.args.get("SoundType").and_then(|v| v.as_str()).and_then(type_letter)) else {
                 continue;
             };
-            // The game's own FMOD event when available: floor 'x' = id rounded to 1000 + floor
-            // material, armour 'b' = id + defense material (Wolf's protector 113, c1020/c1010 108).
+            // The game's own FMOD event when available: floor 'x' = `floor_key`, armour 'b' = id +
+            // defense material (Wolf's protector 113, c1020/c1010 108).
             let event = match letter {
-                'x' => format!("c{:09}", id / 1000 * 1000 + floor_material(at.with_y(tf.translation.y))),
+                'x' => floor_key(id, floor_material(at.with_y(tf.translation.y))),
                 // Armour: id + the wearer's material - the first of its two (protector
                 // defenseMaterial1/2, NpcParam materialSe1/2) the banks have an event for
                 // (Wolf 113; the General 114 has none, 108 has).
@@ -441,6 +512,10 @@ fn play_tae_sounds(
                 }
                 _ => format!("{letter}{id:09}"),
             };
+            // No defense material above 0: the armour 'b' sound has no event (round 87).
+            if event.is_empty() {
+                continue;
+            }
             // With the game's sound system running, an event its projects lack is silent in the game
             // too: no raw-sample stand-in (those were sounds the game never plays here).
             if let Some(f) = fmod.as_mut() {
@@ -457,7 +532,7 @@ fn play_tae_sounds(
                     None => continue,
                 }
             } else {
-                let key = if letter == 'x' { format!("c{:09}", id / 1000 * 1000 + floor_material(at.with_y(tf.translation.y))) } else { format!("{letter}{id:09}") };
+                let key = if letter == 'x' { floor_key(id, floor_material(at.with_y(tf.translation.y))) } else { format!("{letter}{id:09}") };
                 let Some(file) = pick(&mut index, &key) else { continue };
                 file
             };
@@ -541,7 +616,7 @@ struct MixSlot {
 /// the mixer events ntc_ninsatsu2 / 1 / 3 (Fmod::set_deathblow_mix).
 /// gap: the GameMan +0x11fc byte (copied from +0x11fd; looks like an online mode) is taken as
 /// not 3 offline, so type 0 = slot 0 (ntc_ninsatsu2, the 445 Hz muffle).
-#[derive(Default)]
+#[derive(Resource, Default)]
 pub(crate) struct DeathblowMix {
     slots: [MixSlot; 3],
     active: Option<usize>,
@@ -550,6 +625,10 @@ pub(crate) struct DeathblowMix {
 }
 
 impl DeathblowMix {
+    /// No muffle on and none requested.
+    pub(crate) fn idle(&self) -> bool {
+        self.active.is_none() && self.slots.iter().all(|s| s.value == 0.0)
+    }
     /// One frame: `req` = the running 970 event's (type, its six times), if any. The values.
     pub(crate) fn step(&mut self, req: Option<(u8, [f32; 6])>, dt: f32) -> [f32; 3] {
         match req {
@@ -612,12 +691,26 @@ fn mix_request(combat: &Combat, a: &Actor) -> Option<(u8, [f32; 6])> {
     Some((ty, [f("unk1"), f("unk2"), f("unk3"), f("unk4"), f("unk5"), f("unk6")]))
 }
 
+/// Ends the deathblow muffle on the title, the picker and death (round 55): deathblow_mix runs
+/// in FixedUpdate, frozen off the Playing screen, so quitting mid-deathblow kept the 445 Hz
+/// ntc_ninsatsu2 cutoff on through the menus.
+pub(crate) fn end_deathblow_mix_off_screen(screen: Option<Res<State<crate::menu::Screen>>>, fmod: Option<NonSendMut<crate::fmod::Fmod>>, mut mix: ResMut<DeathblowMix>) {
+    use crate::menu::Screen;
+    if !screen.is_some_and(|s| matches!(s.get(), Screen::Title | Screen::Picker | Screen::Dead)) || mix.idle() {
+        return;
+    }
+    *mix = DeathblowMix::default();
+    if let Some(mut f) = fmod {
+        f.set_deathblow_mix([0.0; 3]);
+    }
+}
+
 fn deathblow_mix(
     time: Res<Time>,
     combat: Res<Combat>,
     wolf: Query<&Actor, With<crate::player::Player>>,
     fmod: Option<NonSendMut<crate::fmod::Fmod>>,
-    mut mix: Local<DeathblowMix>,
+    mut mix: ResMut<DeathblowMix>,
 ) {
     let Some(mut fmod) = fmod else { return };
     let req = wolf.single().ok().filter(|a| !a.anim.is_empty()).and_then(|a| mix_request(&combat, a));
@@ -657,5 +750,30 @@ mod mix_tests {
             v = m.step(Some((1, t)), dt);
         }
         assert_eq!(v, [0.0, 0.0, 1.0]);
+    }
+}
+
+#[cfg(test)]
+mod volume_tests {
+    #[test]
+    fn the_pcm_fallback_follows_the_volume_and_se_sliders() {
+        let mut audio = crate::config::AudioConfig::default();
+        assert!((super::fallback_level(&audio) - 0.6).abs() < 1e-6);
+        audio.se = 5.0;
+        assert!((super::fallback_level(&audio) - 0.3).abs() < 1e-6);
+        audio.volume = 0.0;
+        assert_eq!(super::fallback_level(&audio), 0.0);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// Floor sounds keep their hundreds: 6505 on material 1 is c000006501, which the banks have
+    /// (c000006001 is not an event); c1550's 155003101 stays apart from its plain 155003001.
+    #[test]
+    fn floor_sounds_round_to_the_hundred() {
+        assert_eq!(super::floor_key(6505, 1), "c000006501");
+        assert_eq!(super::floor_key(155003101, 0), "c155003100");
+        assert_eq!(super::floor_key(1004, 0), "c000001000");
     }
 }

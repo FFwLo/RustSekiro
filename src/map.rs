@@ -47,7 +47,7 @@ const CELL: f32 = 4.0;
 /// Bevy lux per native light unit (the game has no photometric unit: `rgb * rgb * W` goes to
 /// the shaders as is). sekiro-rs `crates/game/src/lighting.rs` SCENE_TO_BEVY: 4500 folds its
 /// earlier 9000 lux and 0.5 post calibration into one scale. gap: an exe-derived bridge.
-const SCENE_TO_BEVY: f32 = 4_500.0;
+pub const SCENE_TO_BEVY: f32 = 4_500.0;
 const LUX_PER_UNIT: f32 = SCENE_TO_BEVY;
 /// cd/m^2 per unit of hemisphere / probe radiance: the same scale seen as radiance (/ pi).
 pub(crate) const ENV_PER_UNIT: f32 = SCENE_TO_BEVY / std::f32::consts::PI;
@@ -75,6 +75,35 @@ pub struct Terrain {
 
 static TERRAIN: OnceLock<RwLock<Option<Arc<Terrain>>>> = OnceLock::new();
 
+/// The fog-wall collision in force: the terrain it belongs to (held, so its address stays
+/// unique) and the gates standing on it ([`set_gates`]).
+static GATES_ON: OnceLock<RwLock<(Option<Arc<Terrain>>, Vec<Arc<Terrain>>)>> = OnceLock::new();
+
+/// Switches the loaded map's fog-wall collision (`map_<id>.gates`, sekiro-extract) to these MSB
+/// entities: the walls' objects and collision parts while their fight is on (fog_wall.rs).
+/// Returns how many of them the map has.
+pub(crate) fn set_gates(entities: &[i64]) -> usize {
+    static FILES: OnceLock<std::sync::Mutex<HashMap<String, Arc<HashMap<i32, Arc<Terrain>>>>>> = OnceLock::new();
+    let base = terrain();
+    let all = match (loaded_map(), &base, entities.is_empty()) {
+        (Some(id), Some(_), false) if id != crate::sandbox::MAP_ID => {
+            let mut files = FILES.get_or_init(Default::default).lock().unwrap();
+            files
+                .entry(id.clone())
+                .or_insert_with(|| {
+                    let d = std::fs::read(crate::paths::extracted().join(format!("map_{id}.gates"))).unwrap_or_default();
+                    Arc::new(Terrain::gates_from(&d).into_iter().map(|(e, t)| (e, Arc::new(t))).collect())
+                })
+                .clone()
+        }
+        _ => Default::default(),
+    };
+    let on: Vec<Arc<Terrain>> = entities.iter().filter_map(|e| all.get(&i32::try_from(*e).ok()?).cloned()).collect();
+    let n = on.len();
+    *GATES_ON.get_or_init(Default::default).write().unwrap() = (base.filter(|_| n > 0), on);
+    n
+}
+
 /// Set when the loaded map is a boss's own arena (boss_arena).
 static BOSS_ARENA: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
@@ -90,6 +119,10 @@ pub fn terrain() -> Option<Arc<Terrain>> {
 /// The map id in force: config `[world] map`, overridden by `SHINOBI_MAP` ("" = none). With the
 /// config's map on (not the sandbox), a boss fights in its own arena when one is exported
 /// (boss_arena).
+/// `[world] map = "arenas"`: no base map, only the exported fight arenas (the flat test floor
+/// for a fight without one).
+pub const ARENAS_ONLY: &str = "arenas";
+
 pub fn map_id(config: &GameConfig) -> Option<String> {
     // "", "off" or "0" turn the map off for one run (PowerShell drops a variable set to "").
     match std::env::var("SHINOBI_MAP") {
@@ -99,7 +132,11 @@ pub fn map_id(config: &GameConfig) -> Option<String> {
             if m == crate::sandbox::MAP_ID {
                 return Some(m);
             }
-            Some(boss_arena(&config.enemy.chr, config.enemy.npc_row).unwrap_or(m))
+            let arena = boss_arena(&config.enemy.chr, config.enemy.npc_row);
+            if m == ARENAS_ONLY {
+                return arena;
+            }
+            Some(arena.unwrap_or(m))
         }
     }
 }
@@ -397,6 +434,8 @@ impl Terrain {
         // move is centimetres; the cap only bounds a wild teleport).
         let steps = ((len / (RADIUS * 0.5)).ceil() as usize).clamp(1, 512);
         let mut p = feet;
+        let gates = self.gates_on();
+        let gate_tris: Vec<Vec<u32>> = gates.iter().map(|g| (0..g.tris.len() as u32).collect()).collect();
         let mut tris = Vec::new();
         let reach = RADIUS + len / steps as f32 + 0.05;
         self.gather(
@@ -408,7 +447,13 @@ impl Terrain {
             p.x += delta.x / steps as f32;
             p.z += delta.y / steps as f32;
             for _ in 0..4 {
-                let push = self.push_out(p, &tris);
+                let mut push = self.push_out(p, &tris);
+                for (g, t) in gates.iter().zip(&gate_tris) {
+                    let gp = g.push_out(p, t);
+                    if gp.length_squared() > push.length_squared() {
+                        push = gp;
+                    }
+                }
                 if push == Vec2::ZERO {
                     break;
                 }
@@ -417,6 +462,43 @@ impl Terrain {
             }
         }
         Vec2::new(p.x - feet.x, p.z - feet.z)
+    }
+
+    /// The fog-wall collision switched on for this terrain ([`set_gates`]); none for any other
+    /// terrain (a test's, or a map loaded since).
+    fn gates_on(&self) -> Vec<Arc<Terrain>> {
+        GATES_ON.get().and_then(|g| g.read().ok()).filter(|g| g.0.as_ref().is_some_and(|t| std::ptr::eq(Arc::as_ptr(t), self))).map(|g| g.1.clone()).unwrap_or_default()
+    }
+
+    /// `map_<id>.gates` "SHMG" v1 (sekiro-extract map.rs): the fog walls' collision per MSB
+    /// entity, in the .hit's space.
+    pub(crate) fn gates_from(d: &[u8]) -> HashMap<i32, Terrain> {
+        let mut out = HashMap::new();
+        if d.len() < 12 || &d[0..4] != b"SHMG" {
+            return out;
+        }
+        let u32_ = |o: usize| d.get(o..o + 4).map(|b| u32::from_le_bytes(b.try_into().unwrap()));
+        let f = |o: usize| f32::from_le_bytes(d[o..o + 4].try_into().unwrap());
+        let mut o = 12;
+        for _ in 0..u32_(8).unwrap_or(0) {
+            let (Some(entity), Some(nv)) = (u32_(o), u32_(o + 4)) else { break };
+            let nv = nv as usize;
+            o += 8;
+            let Some(nt) = u32_(o + nv * 12).map(|n| n as usize) else { break };
+            if d.len() < o + nv * 12 + 4 + nt * 16 {
+                break;
+            }
+            let verts: Vec<Vec3> = (0..nv).map(|i| Vec3::new(-f(o + i * 12), f(o + i * 12 + 4), f(o + i * 12 + 8))).collect();
+            o += nv * 12 + 4;
+            let k = o;
+            let tris = (0..nt).map(|i| {
+                let t = k + i * 16;
+                ([u32_(t).unwrap(), u32_(t + 4).unwrap(), u32_(t + 8).unwrap()], u32_(t + 12).unwrap())
+            });
+            out.insert(entity as i32, Terrain::from_tris(verts, tris));
+            o += nt * 16;
+        }
+        out
     }
 
     fn push_out(&self, feet: Vec3, tris: &[u32]) -> Vec2 {
@@ -533,53 +615,108 @@ fn closest_on_triangle(p: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Vec3 {
 /// layers blended by the vertex blend bytes (ATTRIBUTE_COLOR) over the two UV sets.
 pub type MapMaterial = bevy::pbr::ExtendedMaterial<StandardMaterial, MapExt>;
 
+/// Bindless (map_material.wgsl `#ifdef BINDLESS`), so Bevy batches the map pieces into
+/// multi-draws instead of one bind group switch per material: the uniforms pack into one
+/// `MapUniform` per material, the textures go through an index table. After sekiro-rs 73eca1d
+/// (THIRD_PARTY.md).
 #[derive(Asset, bevy::render::render_resource::AsBindGroup, Reflect, Debug, Clone, Default)]
+#[data(100, MapUniform, binding_array(124))]
+#[bindless(index_table(range(100..123), binding(123)))]
 pub struct MapExt {
-    #[texture(100)]
-    #[sampler(101)]
+    #[texture(101)]
+    #[sampler(102)]
     pub normal: Option<Handle<Image>>,
-    #[texture(102)]
-    #[sampler(103)]
+    #[texture(103)]
+    #[sampler(104)]
     pub over_albedo: Option<Handle<Image>>,
-    #[texture(104)]
-    #[sampler(105)]
+    #[texture(105)]
+    #[sampler(106)]
     pub over_normal: Option<Handle<Image>>,
-    #[texture(106)]
-    #[sampler(107)]
+    #[texture(107)]
+    #[sampler(108)]
     pub snow_albedo: Option<Handle<Image>>,
-    #[texture(108)]
-    #[sampler(109)]
+    #[texture(109)]
+    #[sampler(110)]
     pub snow_normal: Option<Handle<Image>>,
-    #[texture(112)]
-    #[sampler(113)]
+    #[texture(111)]
+    #[sampler(112)]
     pub c_albedo: Option<Handle<Image>>,
-    #[texture(114)]
-    #[sampler(115)]
+    #[texture(113)]
+    #[sampler(114)]
     pub c_normal: Option<Handle<Image>>,
-    #[texture(116)]
-    #[sampler(117)]
+    #[texture(115)]
+    #[sampler(116)]
     pub mask: Option<Handle<Image>>,
     /// x: has a mask, y: blend softness (`SHINOBI_MAP_SOFT`, default 0.25; 0 = plain weights).
-    #[uniform(118)]
     pub mask_params: Vec4,
     /// x: base normal map (bit 1: layer C, bit 2: with normal), y: overlay (bit 1: with
     /// normal), z: snow (bit 1: with normal), w: base albedo (bit 1: show the blend weights,
     /// `SHINOBI_MAP_SHOW_BLEND=1`).
-    #[uniform(110)]
     pub flags: UVec4,
     /// x: overlay uv set, y: snow uv set, z / w: snow up-facing smoothstep on N.y.
-    #[uniform(111)]
     pub params: Vec4,
     /// The game path (bin v5): the detail normal, the layer mask on uv1, the wet flow normal
     /// (sampled with the base normal's sampler).
-    #[texture(120)]
+    #[texture(117)]
     pub detail: Option<Handle<Image>>,
-    #[texture(121)]
+    #[texture(118)]
     pub mask_l: Option<Handle<Image>>,
-    #[texture(122)]
+    #[texture(119)]
     pub wet: Option<Handle<Image>>,
-    #[uniform(123)]
     pub game: MapGame,
+    /// The Env_Boxes' irradiance volumes (`apply_giiv`): one atlas, each box's x, y, z, w
+    /// stacked along the depth.
+    #[texture(120, dimension = "3d")]
+    #[sampler(121)]
+    pub giiv: Option<Handle<Image>>,
+    pub giiv_params: GiivParams,
+    /// The variant after the hour (`giiv_params.scale.y` = its weight; sampled with 121).
+    #[texture(122, dimension = "3d")]
+    pub giiv_next: Option<Handle<Image>>,
+}
+
+/// map_material.wgsl `MapUniform`: `MapExt`'s uniforms, packed once per material.
+#[derive(bevy::render::render_resource::ShaderType, Debug, Clone)]
+pub struct MapUniform {
+    pub mask_params: Vec4,
+    pub flags: UVec4,
+    pub params: Vec4,
+    pub game: MapGame,
+    pub giiv: GiivParams,
+}
+
+impl From<&MapExt> for MapUniform {
+    fn from(m: &MapExt) -> Self {
+        Self { mask_params: m.mask_params, flags: m.flags, params: m.params, game: m.game.clone(), giiv: m.giiv_params.clone() }
+    }
+}
+
+/// At most this many Env_Box volumes per map (sekiro-extract map.rs GIIV_MAX; map_material.wgsl
+/// `Giiv.boxes`).
+pub const GIIV_MAX: usize = 16;
+
+/// map_material.wgsl `GiivBox`: one Env_Box's volume in the atlas: the Bevy point -> its 0..1
+/// rows, its size in metres along u / v / w with 1 / fade distance (w), its full voxel grid, the
+/// first voxel kept (the exporter crops to the arena), the voxels kept with their first depth
+/// slice (w).
+#[derive(bevy::render::render_resource::ShaderType, Reflect, Debug, Clone, Default, PartialEq)]
+pub struct GiivBox {
+    pub uvw: [Vec4; 3],
+    pub size: Vec4,
+    pub grid: Vec4,
+    pub lo: Vec4,
+    pub vox: Vec4,
+}
+
+/// map_material.wgsl `Giiv`: the Bevy normal -> map-space rows, the atlas texels with the box
+/// count (w, 0 = off), the radiance scale (x) and the next variant's weight (y), the boxes in
+/// drawing order.
+#[derive(bevy::render::render_resource::ShaderType, Reflect, Debug, Clone, Default, PartialEq)]
+pub struct GiivParams {
+    pub nrm: [Vec4; 3],
+    pub dims: Vec4,
+    pub scale: Vec4,
+    pub boxes: [GiivBox; GIIV_MAX],
 }
 
 /// The game path's uniform (map_material.wgsl `MapGame`): flags x = the textures it has
@@ -998,6 +1135,24 @@ pub(crate) fn sun_toward(l: &MapLighting) -> Vec3 {
     toward(&l.at("LightSet", "Angle0", l.light_set).unwrap_or_default(), l.arena_yaw)
 }
 
+/// The light a lit FXR particle takes (fxr.rs): the game's PS_VFX_SingleTextureAllLight /
+/// BumpLight (shader/gxffxshader.shaderbnd) shade `saturate(texture x colour) x (SH ambient +
+/// sat(N.L) x FC_DirLight Col_0 x g_ps_envCbColScale x lightMask x shadow)`. Here in game units,
+/// the same as the map's: the hemisphere ambient (gap: the game's SH is the GIIV volumes plus
+/// the point lights at the particle) and the light set's sun (DiffColor0 x W). Returns
+/// (ambient, sun, toward the sun).
+pub(crate) fn particle_light(l: &MapLighting) -> (Vec3, Vec3, Vec3) {
+    let get = |name: &str| l.at("LightSet", name, l.light_set);
+    let lin = |c: Color, w: f32| {
+        let c = c.to_linear();
+        Vec3::new(c.red, c.green, c.blue) * w
+    };
+    let (sun, sun_w) = colour(&get("DiffColor0").unwrap_or(vec![1.0, 0.95, 0.85, 1.5]));
+    let (up, up_w) = colour(&get("Hemi Color Up").unwrap_or(vec![0.6, 0.7, 0.8, 0.5]));
+    let (down, down_w) = colour(&get("Hemi Color Down").unwrap_or(vec![0.4, 0.4, 0.4, 0.2]));
+    ((lin(up, up_w) + lin(down, down_w)) * 0.5, lin(sun, sun_w), sun_toward(l))
+}
+
 fn toward(angle: &[f32], arena_yaw: f32) -> Vec3 {
     let (pitch, yaw) = (angle.first().copied().unwrap_or(-0.8), angle.get(1).copied().unwrap_or(0.0));
     let v = Quat::from_rotation_y(arena_yaw) * Quat::from_rotation_y(yaw) * Quat::from_rotation_x(pitch) * Vec3::Z;
@@ -1336,6 +1491,152 @@ fn apply_lighting(
 
 /// `[` / `]`: the time of day one hour back / on (wrapping), the whole lighting re-applied
 /// (light set, probe, LUT, exposure): a walk through the day on any map.
+/// The Env_Boxes' irradiance volumes on every map material (map_material.wgsl `lit`): the two
+/// variants around the hour, blended as the probe cubes are (`probe_maps`; within 2 % of a
+/// variant's hour that one alone), from `map_<id>_giiv_<v>.bin` + `map_<id>_giiv.json`
+/// (sekiro-extract map.rs `export_giiv`: up to GIIV_MAX boxes in drawing order), in place of the
+/// probe cube's diffuse where they cover, on the cube's radiance scale. `SHINOBI_MAP_NO_GIIV=1`
+/// keeps the cube's diffuse.
+fn apply_giiv(lighting: Res<MapLighting>, mut materials: ResMut<Assets<MapMaterial>>, mut images: ResMut<Assets<Image>>, mut applied: Local<Option<(String, usize, GiivParams)>>, mut volumes: Local<HashMap<String, Option<(Handle<Image>, [u32; 3])>>>, mut stem_of: Local<String>, mut seen: Local<Option<(String, u32, usize)>>) {
+    // Only when the map, the hour or the material count changes (the checks below read files:
+    // 0.48 ms a frame in the bug fixes session's trace, 2026-10-13).
+    let input = (lighting.stem.clone(), lighting.hour.to_bits(), materials.len());
+    if seen.as_ref() == Some(&input) {
+        return;
+    }
+    *seen = Some(input);
+    let dir = crate::paths::extracted();
+    if *stem_of != lighting.stem {
+        volumes.clear();
+        *stem_of = lighting.stem.clone();
+    }
+    let mut env: Vec<(f32, String)> = if std::env::var("SHINOBI_MAP_NO_GIIV").is_ok() {
+        Vec::new()
+    } else {
+        lighting.env.iter().map(|(h, stem)| (*h, stem.replace("_env_", "_giiv_"))).filter(|(_, s)| dir.join(format!("{s}.bin")).exists()).collect()
+    };
+    env.sort_by(|a, b| a.0.total_cmp(&b.0));
+    // The variants around the hour and the later one's weight (probe_maps' rule).
+    let hour = lighting.hour.rem_euclid(24.0);
+    let pick = (!env.is_empty()).then(|| {
+        let (a, b) = match env.iter().position(|e| e.0 > hour) {
+            Some(0) | None => (&env[env.len() - 1], &env[0]),
+            Some(i) => (&env[i - 1], &env[i]),
+        };
+        let span = (b.0 - a.0).rem_euclid(24.0);
+        let t = if span > 0.0 { (hour - a.0).rem_euclid(24.0) / span } else { 0.0 };
+        if t < 0.02 {
+            (a.1.clone(), a.1.clone(), 0.0)
+        } else if t > 0.98 {
+            (b.1.clone(), b.1.clone(), 0.0)
+        } else {
+            (a.1.clone(), b.1.clone(), t)
+        }
+    });
+    let mut get = |stem: &str| -> Option<(Handle<Image>, [u32; 3])> {
+        volumes
+            .entry(stem.to_string())
+            .or_insert_with(|| {
+                let v = load_giiv(&dir.join(format!("{stem}.bin")), &mut images);
+                if let Some((_, d)) = &v {
+                    info!("map giiv: {stem} {}x{}x{}", d[0], d[1], d[2]);
+                }
+                v
+            })
+            .clone()
+    };
+    let (first, next, t) = match &pick {
+        Some((a, b, t)) => (get(a), get(b), *t),
+        None => (None, None, 0.0),
+    };
+    // Both variants of one probe have the same voxels; another size cannot blend.
+    let (next, t) = match (&first, next) {
+        (Some((_, da)), Some((h, db))) if *da == db => (Some(h), t),
+        _ => (None, 0.0),
+    };
+    let params = first
+        .as_ref()
+        .and_then(|(_, d)| {
+            let j: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(dir.join(format!("{}_giiv.json", lighting.stem))).ok()?).ok()?;
+            let mut params = giiv_params(&j)?;
+            if params.dims.truncate() != Vec3::new(d[0] as f32, d[1] as f32, d[2] as f32) {
+                warn!("map giiv: {} atlas {d:?} does not match its json", lighting.stem);
+                return None;
+            }
+            let lux = std::env::var("SHINOBI_MAP_LUX").ok().and_then(|v| v.parse().ok()).unwrap_or(1.0f32);
+            let env = std::env::var("SHINOBI_MAP_ENV").ok().and_then(|v| v.parse().ok()).unwrap_or(1.0f32);
+            params.scale = Vec4::new(ENV_PER_UNIT * lux * env, t, 0.0, 0.0);
+            Some(params)
+        })
+        .unwrap_or_default();
+    let key = (pick.as_ref().map(|(a, b, _)| format!("{a}+{b}")).unwrap_or_default(), materials.len(), params.clone());
+    if applied.as_ref() == Some(&key) {
+        return;
+    }
+    let on = params.dims.w > 0.0;
+    let first = first.filter(|_| on).map(|(h, _)| h);
+    let next = next.filter(|_| on).or_else(|| first.clone());
+    for (_, m) in materials.iter_mut() {
+        m.extension.giiv = first.clone();
+        m.extension.giiv_next = next.clone();
+        m.extension.giiv_params = params.clone();
+    }
+    *applied = Some(key);
+}
+
+/// `map_<id>_giiv.json`'s boxes (sekiro-extract `export_giiv`) as the shader's table, without
+/// the radiance scale; None when it has no boxes.
+fn giiv_params(j: &serde_json::Value) -> Option<GiivParams> {
+    let f = |v: &serde_json::Value, i: usize| v[i].as_f64().unwrap_or(0.0) as f32;
+    let list = j["boxes"].as_array().filter(|l| !l.is_empty())?;
+    let mut p = GiivParams {
+        nrm: [0, 1, 2].map(|r| Vec4::new(f(&j["nrm"], r * 3), f(&j["nrm"], r * 3 + 1), f(&j["nrm"], r * 3 + 2), 0.0)),
+        dims: Vec4::new(f(&j["atlas"], 0), f(&j["atlas"], 1), f(&j["atlas"], 2), list.len().min(GIIV_MAX) as f32),
+        ..default()
+    };
+    for (b, v) in p.boxes.iter_mut().zip(list) {
+        let u = &v["uvw"];
+        b.uvw = [0, 1, 2].map(|r| Vec4::new(f(u, r * 4), f(u, r * 4 + 1), f(u, r * 4 + 2), f(u, r * 4 + 3)));
+        // A box without a fade distance cuts off at its faces.
+        let fade = v["fade"].as_f64().unwrap_or(0.0) as f32;
+        b.size = Vec4::new(f(&v["size"], 0), f(&v["size"], 1), f(&v["size"], 2), if fade > 0.0 { 1.0 / fade } else { 1e6 });
+        b.grid = Vec4::new(f(&v["grid"], 0), f(&v["grid"], 1), f(&v["grid"], 2), 0.0);
+        b.lo = Vec4::new(f(&v["lo"], 0), f(&v["lo"], 1), f(&v["lo"], 2), 0.0);
+        b.vox = Vec4::new(f(&v["vox"], 0), f(&v["vox"], 1), f(&v["vox"], 2), f(&v["vox"], 3));
+    }
+    Some(p)
+}
+
+/// `map_<id>_giiv_<v>.bin` "SHGI" v2 as one RGBA8 3D image (the boxes' coefficient volumes
+/// stacked along the depth), filtered linearly and clamped; with its texel counts.
+fn load_giiv(path: &std::path::Path, images: &mut Assets<Image>) -> Option<(Handle<Image>, [u32; 3])> {
+    let d = std::fs::read(path).ok()?;
+    let u32_ = |o: usize| d.get(o..o + 4).map(|b| u32::from_le_bytes(b.try_into().unwrap()));
+    if d.get(0..4) != Some(b"SHGI") || u32_(4)? != 2 {
+        warn!("map giiv: {} is not SHGI v2 (re-export the map's probe: MAP_ENV_ONLY=1)", path.display());
+        return None;
+    }
+    let dims = [u32_(8)?, u32_(12)?, u32_(16)?];
+    let n = dims.iter().map(|&x| x as usize).product::<usize>() * 4;
+    let data = d.get(20..20 + n)?.to_vec();
+    let mut image = Image::new(
+        bevy::render::render_resource::Extent3d { width: dims[0], height: dims[1], depth_or_array_layers: dims[2] },
+        bevy::render::render_resource::TextureDimension::D3,
+        data,
+        bevy::render::render_resource::TextureFormat::Rgba8Unorm,
+        RenderAssetUsages::RENDER_WORLD,
+    );
+    image.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
+        address_mode_u: ImageAddressMode::ClampToEdge,
+        address_mode_v: ImageAddressMode::ClampToEdge,
+        address_mode_w: ImageAddressMode::ClampToEdge,
+        mag_filter: ImageFilterMode::Linear,
+        min_filter: ImageFilterMode::Linear,
+        ..default()
+    });
+    Some((images.add(image), dims))
+}
+
 fn hour_keys(keys: Res<ButtonInput<KeyCode>>, mut lighting: ResMut<MapLighting>, mut log: ResMut<crate::hud::CombatLog>) {
     let step = if keys.just_pressed(KeyCode::BracketRight) {
         1.0
@@ -1454,7 +1755,17 @@ fn switch_map(
     if base == crate::sandbox::MAP_ID || std::env::var("SHINOBI_MAP").is_ok() {
         return;
     }
-    let want = boss_arena(&m.chr, m.npc_row).unwrap_or(base);
+    let want = match boss_arena(&m.chr, m.npc_row) {
+        Some(a) => a,
+        None if base == ARENAS_ONLY => {
+            // No arena for this fight: back to the flat test floor.
+            if loaded_map().is_some() {
+                warn!("map switch: no arena for {} {:?}; the map stays until a relaunch (arenas only)", m.chr, m.npc_row);
+            }
+            return;
+        }
+        None => base,
+    };
     if loaded_map().as_deref() == Some(want.as_str()) {
         return;
     }
@@ -2028,7 +2339,7 @@ impl MaterialCache {
                     p[14].x = -p[14].x;
                 }
                 let game_u = MapGame { flags: UVec4::new(game_flags, game.kind as u32, (o.w_flags >> 1) & 1, 0), p };
-                MapExt { normal: normal_h, over_albedo: over, over_normal: over_n, snow_albedo: snow, snow_normal: snow_n, c_albedo: c, c_normal: c_n, mask_params: Vec4::new(mask.is_some() as u32 as f32, o.softness, smoke as u32 as f32, o.smoke_speed), mask, flags, params: Vec4::new(if smoke { o.smoke_tile } else { 0.0 }, 1.0, o.snow_up[0], o.snow_up[1]), detail, mask_l, wet, game: game_u }
+                MapExt { normal: normal_h, over_albedo: over, over_normal: over_n, snow_albedo: snow, snow_normal: snow_n, c_albedo: c, c_normal: c_n, mask_params: Vec4::new(mask.is_some() as u32 as f32, o.softness, smoke as u32 as f32, o.smoke_speed), mask, flags, params: Vec4::new(if smoke { o.smoke_tile } else { 0.0 }, 1.0, o.snow_up[0], o.snow_up[1]), detail, mask_l, wet, game: game_u, ..default() }
             },
         });
         self.built.insert(key.clone(), h.clone());
@@ -2113,27 +2424,40 @@ impl Plugin for MapPlugin {
         app.init_resource::<GrapplePoints>();
         app.init_resource::<LedgeEdges>();
         app.add_systems(Update, (draw_grapple_points, draw_ledges).run_if(resource_exists::<crate::combat::ShowHurtboxes>));
-        app.add_systems(Startup, load_map)
+        app.add_systems(Startup, (load_map, log_bindless))
             .add_systems(PostStartup, settle_player_start)
-            .add_systems(Update, ((hour_keys, apply_lighting).chain().run_if(resource_exists::<MapLighting>), frame_rate_log, switch_map))
+            .add_systems(Update, ((hour_keys, apply_lighting, apply_giiv).chain().run_if(resource_exists::<MapLighting>), frame_rate_log, switch_map))
             .add_systems(Startup, crate::sandbox::spawn_enemies.after(load_map))
             .add_systems(Update, (crate::sandbox::place_wolf, crate::sandbox::watch, mesh_events, crate::sandbox::respawn_lineup, crate::sandbox::catalog_shots.run_if(resource_exists::<crate::sandbox::Catalog>)))
             .add_systems(FixedUpdate, bodies_on_terrain.after(ActorSet::Advance).before(crate::anim::PoseSet));
     }
 }
 
+/// Whether the map material batches (bindless): the GPU must have binding arrays and room for
+/// the slab's samplers, otherwise Bevy quietly binds one material at a time.
+fn log_bindless(device: Option<Res<bevy::render::renderer::RenderDevice>>) {
+    if let Some(d) = device {
+        let l = d.limits();
+        info!("map material bindless: {} (standard {}; sampler array limit {}, storage buffers {})", bevy::pbr::material_uses_bindless_resources::<MapMaterial>(&d), bevy::pbr::material_uses_bindless_resources::<StandardMaterial>(&d), l.max_binding_array_sampler_elements_per_shader_stage, l.max_storage_buffers_per_shader_stage);
+    }
+}
+
 /// One line with the average frame rate over seconds 5..15 after start (the map's cost).
-fn frame_rate_log(time: Res<Time<Real>>, mut acc: Local<(f32, u32, bool)>) {
+fn frame_rate_log(time: Res<Time<Real>>, mut acc: Local<(f32, u32, f32)>) {
     // Real time: the title screen pauses the virtual clock (menu.rs), which never reached 15 s.
+    // One line per 10 s window from 5 s to 65 s (the first ones include the load).
     let t = time.elapsed_secs();
-    if acc.2 || t < 5.0 {
+    if t < 5.0 || acc.2 >= 65.0 {
         return;
+    }
+    if acc.2 == 0.0 {
+        acc.2 = 5.0;
     }
     acc.0 += time.delta_secs();
     acc.1 += 1;
-    if t >= 15.0 {
-        acc.2 = true;
-        info!("map frame rate: {:.0} fps over {} frames ({})", acc.1 as f32 / acc.0, acc.1, if terrain().is_some() { "map" } else { "no map" });
+    if t >= acc.2 + 10.0 {
+        info!("map frame rate: {:.0} fps over {} frames, {:.0}-{:.0} s ({})", acc.1 as f32 / acc.0, acc.1, acc.2, acc.2 + 10.0, if terrain().is_some() { "map" } else { "no map" });
+        *acc = (0.0, 0, acc.2 + 10.0);
     }
 }
 
@@ -2175,6 +2499,105 @@ fn mesh_events(mut events: MessageReader<AssetEvent<Mesh>>, mut frame: Local<u32
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `[world] map = "arenas"`: a fight with an exported arena loads it, any other fight gets
+    /// no map (the flat test floor), never the base map.
+    #[test]
+    fn arenas_only_loads_just_the_arenas() {
+        if std::env::var("SHINOBI_MAP").is_ok() || boss_arena("c1020", Some(10200000)).is_none() {
+            return;
+        }
+        let mut config: GameConfig = toml::from_str(&std::fs::read_to_string(crate::paths::root().join("config.toml")).unwrap()).unwrap();
+        config.world.map = Some(ARENAS_ONLY.into());
+        config.enemy.chr = "c1020".into();
+        config.enemy.npc_row = Some(10200000);
+        assert_eq!(map_id(&config), boss_arena("c1020", Some(10200000)));
+        config.enemy.npc_row = Some(1);
+        assert_eq!(map_id(&config), None);
+        config.world.map = Some("m11_01_00_00".into());
+        assert_eq!(map_id(&config).as_deref(), Some("m11_01_00_00"));
+    }
+
+    /// Every exported map's Env_Box volumes (sekiro-extract `export_giiv`) fit the shader's
+    /// table: at most GIIV_MAX boxes in priority order, each one's kept voxels inside its grid
+    /// and inside the atlas, the atlas of each variant as the json says.
+    #[test]
+    fn giiv_boxes_fit_their_atlas() {
+        let dir = crate::paths::extracted();
+        let mut seen = 0;
+        for e in std::fs::read_dir(&dir).unwrap().flatten() {
+            let name = e.file_name().to_string_lossy().to_string();
+            let Some(stem) = name.strip_suffix("_giiv.json") else { continue };
+            let j: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(e.path()).unwrap()).unwrap();
+            let p = giiv_params(&j).unwrap_or_else(|| panic!("{name}: no boxes"));
+            let count = p.dims.w as usize;
+            assert!(count > 0 && count <= GIIV_MAX, "{name}: {count} boxes");
+            let prio: Vec<u64> = j["boxes"].as_array().unwrap().iter().map(|b| b["priority"].as_u64().unwrap()).collect();
+            assert!(prio.windows(2).all(|w| w[0] <= w[1]), "{name}: priorities {prio:?} out of drawing order");
+            let mut depth = 0.0;
+            for b in &p.boxes[..count] {
+                assert!((b.lo + b.vox).truncate().cmple(b.grid.truncate()).all(), "{name}: crop past the grid {b:?}");
+                assert!(b.vox.x <= p.dims.x && b.vox.y <= p.dims.y && b.vox.w == depth, "{name}: box outside the atlas {b:?}");
+                assert!(b.size.w > 0.0, "{name}: no fade {b:?}");
+                depth += 4.0 * b.vox.z;
+            }
+            assert_eq!(depth, p.dims.z, "{name}: atlas depth");
+            for v in j["variants"].as_array().unwrap() {
+                let bin = std::fs::read(dir.join(format!("{stem}_giiv_{:02}.bin", v.as_u64().unwrap()))).unwrap();
+                let w = |o: usize| u32::from_le_bytes(bin[o..o + 4].try_into().unwrap()) as f32;
+                assert_eq!((&bin[0..4], w(4)), (&b"SHGI"[..], 2.0), "{name}");
+                assert_eq!(Vec3::new(w(8), w(12), w(16)), p.dims.truncate(), "{name}: variant {v}");
+                assert_eq!(bin.len(), 20 + (p.dims.x * p.dims.y * p.dims.z) as usize * 4, "{name}: variant {v} size");
+            }
+            seen += 1;
+        }
+        assert!(seen > 0, "no map_*_giiv.json exported");
+    }
+
+    /// The map material stays bindless (base and extension both), so Bevy can batch the map
+    /// pieces into multi-draws.
+    #[test]
+    fn map_material_is_bindless() {
+        use bevy::render::render_resource::AsBindGroup;
+        assert!(<MapMaterial as AsBindGroup>::bindless_slot_count().is_some());
+    }
+
+    /// A fog wall's collision (map_<id>.gates) stops a body only on the terrain it was switched
+    /// on for, and only while it stands.
+    #[test]
+    fn fog_wall_gates_block_only_while_on() {
+        // One gate (entity 7): a 4 m x 3 m wall at export x = 1 (Bevy x = -1, X mirrored).
+        let mut d = b"SHMG".to_vec();
+        for x in [1u32, 1, 7, 4] {
+            d.extend_from_slice(&x.to_le_bytes());
+        }
+        for v in [[1.0f32, 0.0, -2.0], [1.0, 3.0, -2.0], [1.0, 3.0, 2.0], [1.0, 0.0, 2.0]] {
+            v.iter().for_each(|f| d.extend_from_slice(&f.to_le_bytes()));
+        }
+        d.extend_from_slice(&2u32.to_le_bytes());
+        for t in [[0u32, 1, 2, 29], [0, 2, 3, 29]] {
+            t.iter().for_each(|x| d.extend_from_slice(&x.to_le_bytes()));
+        }
+        let mut gates = Terrain::gates_from(&d);
+        assert_eq!(gates.len(), 1);
+        let gate = Arc::new(gates.remove(&7).unwrap());
+        assert_eq!(gate.triangle_count(), 2);
+        assert!(Terrain::gates_from(&d[..d.len() - 3]).is_empty(), "a truncated file must give no gate");
+        // A floor of 20 m.
+        let floor = |y: f32| {
+            let v = vec![Vec3::new(-10.0, y, -10.0), Vec3::new(10.0, y, -10.0), Vec3::new(10.0, y, 10.0), Vec3::new(-10.0, y, 10.0)];
+            Arc::new(Terrain::from_tris(v, [([0, 2, 1], 1), ([0, 3, 2], 1)].into_iter()))
+        };
+        let (base, other) = (floor(0.0), floor(0.0));
+        let walk = Vec2::new(-3.0, 0.0);
+        let set = |on: Option<&Arc<Terrain>>| *GATES_ON.get_or_init(Default::default).write().unwrap() = (on.cloned(), on.map(|_| vec![gate.clone()]).unwrap_or_default());
+        set(Some(&base));
+        let moved = base.slide(Vec3::ZERO, walk);
+        assert!(moved.x > -1.0 + RADIUS - 0.05 && moved.x < -0.5, "the wall did not stop the walk: {moved}");
+        assert!((other.slide(Vec3::ZERO, walk).x + 3.0).abs() < 1e-3, "another terrain must not see the gate");
+        set(None);
+        assert!((base.slide(Vec3::ZERO, walk).x + 3.0).abs() < 1e-3, "the wall still stands after it was switched off");
+    }
 
     /// The metering weight is 1 at the centre and falls with the screen radius; the adaptation
     /// speed reproduces the game's exponential rate.

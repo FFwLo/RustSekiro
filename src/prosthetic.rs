@@ -27,9 +27,9 @@ use crate::player::{FLAG_SHIELD_BLOCK, Player};
 #[derive(Component)]
 pub struct Projectile {
     spec: BulletSpec,
-    /// Base damage of the weapon that fired it (EquipParamWeapon attackBasePhysics / Fire /
-    /// Thunder: the tool level's, or Kusabimaru 5000's for the Lightning Reversal bolt).
-    base: (f32, f32, f32),
+    /// The EquipParamWeapon row whose attackBase* (all five elements) it scales: the tool
+    /// level's, or Kusabimaru 5000's for the Lightning Reversal bolt; 0 = none (20 physical).
+    base: i64,
     vel: Vec3,
     travelled: f32,
     age: f32,
@@ -38,7 +38,8 @@ pub struct Projectile {
     /// Age of the next intervalCreateBulletId child.
     next_interval: f32,
     /// Characters this bullet already hit.
-    hit: Vec<Entity>,
+    /// The characters it hit and its age then.
+    hit: Vec<(Entity, f32)>,
     /// Its flying effect (sfxId_Bullet, or the parent's with isInheritSfxToChild).
     fx: Option<Entity>,
     /// The effect its children inherit (-1 = none).
@@ -74,7 +75,7 @@ fn spawn_bullets(
     combat: Res<Combat>,
     config: Res<crate::config::GameConfig>,
     mut player: Query<(&Actor, &Transform, &mut Player, Option<&Dummies>)>,
-    enemies: Query<(Entity, &Transform), (With<Enemy>, Without<Player>)>,
+    enemies: Query<(&Enemy, &Actor, &Transform), Without<Player>>,
     markers: Query<&GlobalTransform>,
     lock: Option<Res<crate::camera::LockOn>>,
     mut log: Option<ResMut<CombatLog>>,
@@ -82,7 +83,8 @@ fn spawn_bullets(
     mut chain: Local<u32>,
 ) {
     for (a, tf, mut p, dummies) in &mut player {
-        let dt = time.delta_secs();
+        // Wolf's clock: SpEffect timers stop in a hit stop (actor.rs clock_dt, round 64).
+        let dt = a.clock(time.delta_secs());
         p.timed.retain_mut(|(_, left)| {
             *left -= dt;
             *left > 0.0
@@ -96,9 +98,13 @@ fn spawn_bullets(
         // An event fires when the anim time crosses its start (frame 0 on the anim's first step:
         // the Umbrella's consumption dummy 999).
         let crosses = |e: &crate::data::Event| ((e.start > a.prev_t && e.start <= a.t) || (a.prev_t == 0.0 && e.start == 0.0)) && d.fires(e);
-        // (And the sword's: the Lightning Reversal's TAE 4 BulletBehavior_Midair in a050_308900.)
+        // TAE 4 BulletBehavior_Midair: the sword's (the Lightning Reversal's a050_308900) and the
+        // tools' air throws, whose anims (a070..a079_403000 / 403050) hold only TAE 4 bullets:
+        // a071_403000 judge 120 -> BehaviorParam_PC 107100120 -> Bullet 710020 (wepCost 1). The
+        // air throw fired nothing and cost nothing before (round 26). gap: the exe's TAE 4
+        // handler is not traced (read as TAE 2 in the air).
         let tool_anim = crate::player::is_tool_anim(&a.anim);
-        let crossing = |e: &&crate::data::Event| (e.kind == 2 || (e.kind == 4 && !tool_anim)) && crosses(e);
+        let crossing = |e: &&crate::data::Event| (e.kind == 2 || e.kind == 4) && crosses(e);
         // The equipped tool level's bullets: "v<variation>:<judge>" (BehaviorParam_PC 100000000 +
         // variation * 1000 + judge), else the Shuriken LV1's bare judge.
         let tool = crate::player::equipped_tool(&combat, &config, p.tool_slot);
@@ -120,6 +126,8 @@ fn spawn_bullets(
         let payer = if art_anim { combat.weapon_name(config.player.combat_art) } else { tool.map_or_else(|| "prosthetic".to_string(), |t| combat.weapon_name(t.id)) };
         for e in anim.events.iter().filter(|e| e.kind == 1 && crosses(e)) {
             if e.arg_i64("BehaviorJudgeID").is_some_and(costs) {
+                // gap: the exe's wepCost consume is not traced; only the press gate (env 3035 ->
+                // FUN_14084dd10) checks the balance, so the TAE 1 / 940 payment is taken as unconditional.
                 p.emblems = p.emblems.saturating_sub(cost);
                 if let Some(log) = log.as_mut() {
                     log.push(format!("{payer} ({} emblems)", p.emblems), Color::srgb(0.8, 0.85, 1.0));
@@ -169,26 +177,27 @@ fn spawn_bullets(
             let spec = if art_anim {
                 art
             } else {
+                // The tool's rows only from the tool anims (round 49: a sword anim's judge with no
+                // v5000 row fell through to them, firing a tool bullet unpaid; none in the data
+                // today).
                 sword
-                    .or_else(|| tool.and_then(|t| d.bullets.get(&format!("v{}:{judge}", t.variation))))
-                    .or_else(|| (!own_row).then(|| d.bullets.get(&judge.to_string())).flatten())
+                    .or_else(|| tool.filter(|_| tool_anim).and_then(|t| d.bullets.get(&format!("v{}:{judge}", t.variation))))
+                    .or_else(|| (tool_anim && !own_row).then(|| d.bullets.get(&judge.to_string())).flatten())
             };
             let Some(spec) = spec else { continue };
             // gap: an art bullet's attackBase* is taken as Kusabimaru's (the art's own
             // EquipParamWeapon row is not traced as its source).
-            let base = if sword.is_some() || art.is_some() {
-                let w = combat.param("EquipParamWeapon", 5000);
-                let f = |k: &str| w[k].as_f64().unwrap_or(0.0) as f32;
-                (f("attackBasePhysics"), f("attackBaseFire"), f("attackBaseThunder"))
-            } else {
-                tool.map_or((20.0, 0.0, 0.0), |t| (t.attack_base_physics, t.attack_base_fire, 0.0))
-            };
+            // The EquipParamWeapon row whose attackBase* (all five elements) the bullet scales:
+            // Kusabimaru for sword / art bullets, else the tool level's own row (0 = none).
+            let base = if sword.is_some() || art.is_some() { 5000 } else { tool.map_or(0, |t| t.id) };
             // From the event's DummyPoly (2: the throwing hand); without a model (headless),
             // chest height in front of Wolf.
             let dmy = e.arg_i64("DummyPolyID").unwrap_or(-1) as i16;
+            // combat.rs's lookup (round 59): 1<model><dummy> ids (Lightning Reversal 10100, the
+            // Sabimaru's 21130) were missed and spawned at the headless point.
             let from = dummies
-                .and_then(|dm| dm.0.get(&dmy))
-                .and_then(|&m| markers.get(m).ok())
+                .and_then(|dm| crate::combat::dmy_entity(dm, dmy as i64))
+                .and_then(|m| markers.get(m).ok())
                 .map(|g| g.translation())
                 .unwrap_or(tf.translation + a.forward() * 0.4 + Vec3::Y * 0.5);
             // Target: the lock target, else LockCamParam's bullet auto-capture (bulletMaxRadius 30 m,
@@ -197,11 +206,15 @@ fn spawn_bullets(
             let mut dir = a.forward();
             let row = combat.param("LockCamParam", 0);
             let (max_r, ang) = (row["bulletMaxRadius"].as_f64().unwrap_or(30.0) as f32, row["bulletAngRange"].as_f64().unwrap_or(15.0) as f32);
-            let locked = lock.as_ref().and_then(|l| l.target).and_then(|e| enemies.get(e).ok()).map(|(_, t)| t);
+            // Only living enemies, as melee auto-homing (player.rs auto_homing_target): a body
+            // lying in Mode::Dead after a kill bent the throw past the next enemy (round 23).
+            let alive = |e: &Enemy, ea: &Actor| ea.hp > 0.0 && !e.is_dead();
+            let locked = lock.as_ref().and_then(|l| l.target).and_then(|e| enemies.get(e).ok()).filter(|(e, ea, _)| alive(e, ea)).map(|(.., t)| t);
             let captured = || {
                 enemies
                     .iter()
-                    .map(|(_, t)| t)
+                    .filter(|(e, ea, _)| alive(e, ea))
+                    .map(|(.., t)| t)
                     .filter(|t| {
                         let v = t.translation - tf.translation;
                         v.length() <= max_r && v.with_y(0.0).normalize_or_zero().angle_between(a.forward()).to_degrees() <= ang
@@ -216,13 +229,23 @@ fn spawn_bullets(
             }
             *chain += 1;
             spawn_row(&mut commands, spec, from, dir, *chain, base, -1);
+            // spEffectIDForShooter onto Wolf (round 59: never applied, so the Flame Vent's
+            // 106020 / the Spirit's 106030 enchantment never lit the sword; its stateInfo gates
+            // the sword's judges through resident_gates). gap: children's rows (fired in flight)
+            // are not applied.
+            let shooter = spec.sp_effect_id_for_shooter;
+            let endurance = d.sp_effects.get(&shooter.to_string()).map_or(0.0, |s| s.effect_endurance);
+            if shooter > 0 && endurance > 0.0 {
+                p.timed.retain(|(id, _)| *id != shooter);
+                p.timed.push((shooter, endurance));
+            }
         }
     }
 }
 
 /// Spawns one Bullet row at `pos`: numShoot bullets fanned from `dir` by shootAngle +
 /// i * shootAngleInterval (yaw, degrees) and tilted by shootAngleXZ (-90 = straight down).
-fn spawn_row(commands: &mut Commands, spec: &BulletSpec, pos: Vec3, dir: Vec3, chain: u32, base: (f32, f32, f32), inherited: i64) {
+fn spawn_row(commands: &mut Commands, spec: &BulletSpec, pos: Vec3, dir: Vec3, chain: u32, base: i64, inherited: i64) {
     let flat = dir.with_y(0.0).normalize_or(Vec3::NEG_Z);
     let sfx = if spec.sfx_id_bullet > 0 { spec.sfx_id_bullet } else { inherited };
     let inherit_sfx = if spec.is_inherit_sfx_to_child != 0 { sfx } else { -1 };
@@ -267,7 +290,20 @@ fn spawn_row(commands: &mut Commands, spec: &BulletSpec, pos: Vec3, dir: Vec3, c
 /// carriers are AtkParam "dummy bullet - do not hit the enemy" rows with none of them).
 fn hits_characters(spec: &BulletSpec) -> bool {
     let sp = [spec.sp_effect_id0, spec.sp_effect_id1, spec.sp_effect_id2, spec.sp_effect_id3, spec.sp_effect_id4].iter().any(|v| *v > 0);
-    sp || spec.attack.as_ref().is_some_and(|a| a.atk_phys_correction > 0.0 || a.atk_fire_correction > 0.0 || a.atk_stam > 0.0 || a.direct_atk_stam_damage > 0.0)
+    sp || spec.attack.as_ref().is_some_and(deals_something)
+}
+
+/// An AtkParam row that does HP (any of the five elements) or posture damage. Magic / dark were
+/// left out: Lazulite Sacred Flame 72300 (magic only) and Projected Force 760000-760020 (dark)
+/// did nothing (2026-10-12 round 22).
+fn deals_something(a: &crate::data::Attack) -> bool {
+    a.atk_phys_correction > 0.0
+        || a.atk_mag_correction > 0.0
+        || a.atk_fire_correction > 0.0
+        || a.atk_thun_correction > 0.0
+        || a.atk_dark_correction > 0.0
+        || a.atk_stam > 0.0
+        || a.direct_atk_stam_damage > 0.0
 }
 
 /// c9997.lua SP_EFFECT_REF_BURST_*: an NPC with a "special attack character" resident
@@ -276,10 +312,17 @@ fn hits_characters(spec: &BulletSpec) -> bool {
 const REF_BURST_ENABLE: i64 = 1000055;
 const REF_BURST_NONCRITICAL: i64 = 1000056;
 const REF_BURST_CRITICAL: i64 = 1000057;
+/// SP_EFFECT_REF_NO_BURST_REACTION (c9997.lua 548): the enemy's firecracker cool time.
+const REF_NO_BURST_REACTION: i64 = 1000044;
+/// SP_EFFECT_REF_FIRE_ACTION_ENABLE / NO_FIRE_FIAR_REACTION (c9997.lua 544 / 589).
+const REF_FIRE_ACTION_ENABLE: i64 = 1000040;
+const REF_NO_FIRE_REACTION: i64 = 1000240;
 
-/// Characters hit per bullet chain (isUseSharedHitList).
+/// Characters hit per bullet chain (isUseSharedHitList), with the time of the hit: the entry
+/// runs out after dmgHitRecordLifeTime as a bullet's own record (round 68: the chain list kept
+/// it for the chain's life, so the Flame Vent's second hit never landed).
 #[derive(Resource, Default)]
-struct SharedHits(std::collections::HashMap<u32, Vec<Entity>>);
+struct SharedHits(std::collections::HashMap<u32, Vec<(Entity, f32)>>);
 
 #[allow(clippy::too_many_arguments)]
 fn fly_bullets(
@@ -295,14 +338,38 @@ fn fly_bullets(
     mut statuses: ResMut<crate::status::Statuses>,
     mut effects: Query<&mut crate::fxr::FxEffect>,
     lock: Option<Res<crate::camera::LockOn>>,
+    players: Query<&crate::player::Player>,
+    mut ai_sounds: Option<ResMut<crate::enemy::AiSounds>>,
 ) {
     let dt = time.delta_secs();
     let rows = &combat.player.bullet_rows;
+    // The attack-occurrence SpEffect of a tool bullet's hit (data::atk_occurrence; FUN_140b6e6a0
+    // is the one hit path): category 2, so only a wepParamChange 0 / 2 row lands. Wolf's
+    // enchantments are all 1 (the sword's): none. gap: an attacker-aimed one is applied on sword
+    // hits only.
+    let occurrence: Vec<i64> = players
+        .iter()
+        .next()
+        .and_then(|p| crate::data::atk_occurrence(&p.timed.iter().map(|t| t.0).collect::<Vec<_>>(), crate::data::HIT_CAT_TOOL, false, false))
+        .filter(|o| !o.2)
+        .map_or(Vec::new(), |o| o.1);
     // Homing aims at the locked target (gap: the exe's bullet target for Wolf's throws is taken
     // as his lock-on target; without one nothing homes).
-    let aim = lock.and_then(|l| l.target).and_then(|t| enemies.get(t).ok()).map(|(_, _, tf, ..)| tf.translation);
+    // A live one only (round 59: a throw just after the kill curved into the corpse).
+    let aim = lock
+        .and_then(|l| l.target)
+        .and_then(|t| enemies.get(t).ok())
+        .filter(|(_, a, _, e, _)| a.hp > 0.0 && !e.is_dead())
+        .map(|(_, _, tf, ..)| tf.translation);
     let row = |id: i64| if id > 0 { rows.get(&id.to_string()) } else { None };
     for (be, mut b, mut btf) in &mut bullets {
+        // Its AtkParam_Pc AppearAiSoundId as it starts, at the bullet (FUN_1409a1290's bullet
+        // branch; enemy_bullet.rs fly).
+        if b.age == 0.0 {
+            if let (Some(s), Some(atk)) = (ai_sounds.as_mut(), b.spec.attack.as_ref()) {
+                s.emit(&combat, crate::data::atk_ai_sounds(true, atk.atk_param_id).0, btf.translation, None, None);
+            }
+        }
         b.age += dt;
         // The exe's bullet update, shared with the enemies' (enemy_bullet.rs): homing, then the
         // in / out of range accel and gravity held within min..maxVellocity.
@@ -339,13 +406,24 @@ fn fly_bullets(
         let mut ended = landed || b.age > b.spec.life.max(0.0) + 1e-4;
         if hits_characters(&b.spec) {
             for (ee, mut da, dtf, mut e, hurt) in &mut enemies {
-                if da.hp <= 0.0 || e.is_dead() || b.hit.contains(&ee) {
+                // A hit record runs out after dmgHitRecordLifeTime, as the enemies' (round 59:
+                // the Flame Vent 720001, record 0.6 s of life 0.9, landed once).
+                let record = b.spec.dmg_hit_record_life_time;
+                let recorded = b.hit.iter().any(|&(h, at)| h == ee && !(record > 0.0 && b.age - at >= record - 1e-4));
+                if da.hp <= 0.0 || e.is_dead() || recorded {
                     continue;
                 }
-                if b.spec.is_use_shared_hit_list != 0 && shared.0.get(&b.chain).is_some_and(|v| v.contains(&ee)) {
+                let now = time.elapsed_secs();
+                if b.spec.is_use_shared_hit_list != 0 && shared.0.get(&b.chain).is_some_and(|v| v.iter().any(|&(h, at)| h == ee && !(record > 0.0 && now - at >= record - 1e-4))) {
                     continue;
                 }
-                let r = b.spec.hit_radius;
+                // hitRadius growing to hitRadiusMax over spreadTime, as enemy_bullet.rs (round 59:
+                // the Flame Vent 720001 1.0 -> 1.6 m over 0.6 s).
+                let r = if b.spec.hit_radius_max > b.spec.hit_radius && b.spec.spread_time > 0.0 {
+                    b.spec.hit_radius + (b.spec.hit_radius_max - b.spec.hit_radius) * (b.age / b.spec.spread_time).min(1.0)
+                } else {
+                    b.spec.hit_radius
+                };
                 // The part group of the capsule it touched (env(1120)).
                 let mut part = 0u8;
                 let hit = match hurt {
@@ -367,14 +445,23 @@ fn fly_bullets(
                 if !hit {
                     continue;
                 }
-                b.hit.push(ee);
+                // Invulnerable (TAE 950 / 951, 954 IFrames: a knock-down, a throw) as for the
+                // sword (round 59: a shuriken interrupted those); not recorded, as resolve.
+                if b.spec.attack.as_ref().is_some_and(|atk| crate::combat::dodged(&combat, &da, None, atk)) {
+                    continue;
+                }
+                b.hit.retain(|&(h, _)| h != ee);
+                let age = b.age;
+                b.hit.push((ee, age));
                 if b.spec.is_use_shared_hit_list != 0 {
-                    shared.0.entry(b.chain).or_default().push(ee);
+                    let list = shared.0.entry(b.chain).or_default();
+                    list.retain(|&(h, _)| h != ee);
+                    list.push((ee, time.elapsed_secs()));
                 }
                 if b.spec.is_penetrate == 0 {
                     ended = true;
                 }
-                let msg = hit_enemy(&combat, &b, from, to, part, &mut da, dtf, &mut e, time.elapsed_secs(), sounds.as_deref_mut());
+                let msg = hit_enemy(&combat, &b, from, to, part, &mut da, dtf, &mut e, sounds.as_deref_mut());
                 // sfxId_Flick where it was deflected, sfxId_Hit where it landed or was blocked.
                 match msg.as_deref() {
                     Some(m) if m.contains("deflect") => spawn_fx_at(&mut commands, b.spec.sfx_id_flick, to, -dir),
@@ -391,7 +478,10 @@ fn fly_bullets(
                 // posture break).
                 if let Some(m) = msg.filter(|m| m.starts_with("hit") || m.contains("blocks")) {
                     let mut sps: Vec<i64> = [b.spec.sp_effect_id0, b.spec.sp_effect_id1, b.spec.sp_effect_id2, b.spec.sp_effect_id3, b.spec.sp_effect_id4].to_vec();
-                    sps.extend(b.spec.attack.as_ref().map(|a| a.sp_effects()).unwrap_or_default());
+                    // Only the Bullet row's: FUN_1410b7910 fills a bullet hit's slots 0-4 from
+                    // BulletParam +0x6c (FUN_1410b6880, 1410b.c:8413); the AtkParam's +0x20 ids
+                    // are read on melee hits only (14099.c:9681), as enemy_bullet.rs (R36 C).
+                    sps.extend(&occurrence);
                     let lines = statuses.hit(&combat, ee, &da, &sps, m.contains("blocks"));
                     // c9997 ExecDamage runs ExecDebuffReaction before ExecGuardBlock, and
                     // SP_DAMAGE_BURNING asks env(3041) GetStatusActivation STATUS_BURNING: the hit
@@ -404,11 +494,18 @@ fn fly_bullets(
                         }
                     }
                     let fire_reaction = combat.data_of(&da).states.contains_key("FireReaction");
-                    if ignited && fire_reaction && !da.posture_broken() && !e.is_broken() && rank_allows(transition_rank(&da.state), 3) {
+                    // ExecDebuffReaction runs before ExecSpReactionLarge: on the igniting hit the
+                    // DamageFire hit_enemy just started gives way to W_FireReaction.
+                    let just_damage_fire = da.state == "DamageFire" && da.t == 0.0;
+                    if ignited && fire_reaction && !da.posture_broken() && !e.is_broken() && (just_damage_fire || rank_allows(transition_rank(&da.state), 3)) {
                         e.react(&mut da, &combat, "FireReaction");
+                        add_reaction_cool_time(&combat, &da, &mut e, REF_NO_FIRE_REACTION);
                     }
                 }
-                if ended {
+                // Only a hit that stops it (not piercing) ends the sweep: a piercing bullet on its
+                // landing / last frame still reaches everyone it crosses (round 49; before, only
+                // the first - the Flame Vent puff 720000, the firecracker burst 710003 / 710013).
+                if b.spec.is_penetrate == 0 {
                     break;
                 }
             }
@@ -439,7 +536,7 @@ fn fly_bullets(
 pub(crate) fn transition_rank(state: &str) -> i32 {
     match state {
         "DamageLargeBlow" | "DamageFling" | "DamageUpper" | "DamageAerialBlow" => 0,
-        "TrunkCollapseLarge" | "TrunkCollapseBurst" | "TrunkCollapseLightningStart" | "TrunkCollapseLightningLoop" | "TrunkCollapseLightningEnd" => 1,
+        "TrunkCollapseLarge" | "TrunkCollapseBurst" | "TrunkCollapseBurst1" | "TrunkCollapseBurst2" | "TrunkCollapseBurst3" | "TrunkCollapseLightningStart" | "TrunkCollapseLightningLoop" | "TrunkCollapseLightningEnd" => 1,
         "TrunkCollapseFront" | "TrunkCollapseBack" | "TrunkCollapseAerial" | "GuardBreakRight" | "GuardBreakLeft" | "LandTrunk" => 2,
         s if s.starts_with("AttackBoundEmptyStaminaEnemy") => 2,
         "FireFearReaction" | "DamageWeak" | "DamageFire" | "DamageLightningStart" | "DamageLightningLoop" | "DamageLightningEnd" | "FireReaction" => 3,
@@ -468,6 +565,41 @@ pub(crate) fn rank_allows(cur: i32, dest: i32) -> bool {
     }
 }
 
+/// The cycle chain an SpEffect Wolf's bullet put on an enemy sets off (the exe's rule, "bug
+/// fixes" round 43: a row fires its cycleOccurrenceSpEffectId while its
+/// invocationConditionsStateChange1-3 gate holds, i.e. the owner wears an SpEffect of that
+/// stateInfo, FUN_140c060d0). The Finger Whistle's madness:
+/// - 230518 "enemy AI activation" (bullets 790004-6) -> 230510 "invoking, parent", gated on 959;
+///   959 is the stateInfo of 230500 "madness can be activated", NpcParam spEffectID9 of the
+///   dogs, chickens, monkeys ... (80 rows) -> 230515 "invoking" (COMMON_SP_EFFECT_CONFUSE):
+///   effectEndurance -1, changeTeamType 29, so it stays on and the beast turns on everyone.
+/// - The minor version: 230519 -> 230530 (ref 1000035, the FingerWhistleReaction) -> 230511 ->
+///   230516 (COMMON_SP_EFFECT_CONFUSE_GHOST), the same gate.
+/// A lasting row (endurance > 0, or -1 for good) goes on `sp_chained`, where the AI sees it
+/// (common_table_ai_common.lua:235 replans on it) and combat::team_of reads its team.
+/// It ends when its 959 gate fails (isWaitModeDelete, actor::run_sp_effect_chains): never while
+/// the beast keeps 230500. Its look is status.rs `lasting_glow` (300205 / 304205 on dummy 7).
+pub(crate) fn madden(a: &mut Actor, e: &Enemy, id: i64) {
+    let state_info = |id: i64| crate::data::sp_cycle(id).map_or(0, |c| c.state_info);
+    let mut worn: Vec<i64> = a.resident.iter().chain(e.clash.iter().map(|c| &c.0)).chain(a.sp_chained.iter().map(|c| &c.0)).map(|id| state_info(*id)).collect();
+    let mut id = id;
+    for _ in 0..4 {
+        let Some(next) = crate::data::sp_cycle(id).map(|c| c.cycle).filter(|n| *n > 0) else { return };
+        let Some(r) = crate::data::sp_cycle(next) else { return };
+        if !r.gate.iter().filter(|c| **c > 0).all(|c| worn.contains(c)) {
+            return;
+        }
+        let endurance = r.endurance;
+        if endurance != 0.0 {
+            let secs = if endurance < 0.0 { f32::INFINITY } else { endurance };
+            a.sp_chained.retain(|c| c.0 != next);
+            a.sp_chained.push((next, secs));
+            worn.push(state_info(next));
+        }
+        id = next;
+    }
+}
+
 /// One bullet hitting the enemy: its SpEffects (the firecracker's burst reaction and cool time),
 /// then its AtkParam (deflect / block / damage). Returns the log line.
 #[allow(clippy::too_many_arguments)]
@@ -480,7 +612,6 @@ fn hit_enemy(
     da: &mut Actor,
     dtf: &Transform,
     e: &mut Enemy,
-    now: f32,
     mut sounds: Option<&mut crate::sound::SoundQueue>,
 ) -> Option<String> {
     let sps = [b.spec.sp_effect_id0, b.spec.sp_effect_id1, b.spec.sp_effect_id2, b.spec.sp_effect_id3, b.spec.sp_effect_id4];
@@ -493,8 +624,34 @@ fn hit_enemy(
     for id in sps.iter().filter(|v| **v > 0) {
         let secs = crate::data::sp_effect_endurance(combat, *id);
         e.add_timed(*id, secs.max(0.1));
+        madden(da, e, *id);
     }
     if refs.contains(&REF_BURST_NONCRITICAL) || refs.contains(&REF_BURST_CRITICAL) {
+        // The burst's AtkParam posture, as any bullet hit's: the beasts' burst (710013 / 710213 /
+        // 710313, AtkParam 7100104: directAtkStamDamage 30, staminaPhysicsAttribute 10) times
+        // NpcParam attriAStaminaDmgRate 3.0 (c1150 dogs, c1250 monkeys ...: 90, a dog has 15);
+        // 0 on the General and the soldiers (round 30: it never did posture).
+        if let Some(atk) = b.spec.attack.as_ref() {
+            let pd = if atk.direct_atk_stam_damage > 0.0 { atk.direct_atk_stam_damage } else { atk.atk_stam };
+            let (_, armor_posture, _) = crate::combat::armor_rates(combat, e, da, atk, None);
+            let pd = (pd * crate::combat::def_stamina_rate(combat, da, atk.stamina_physics_attribute) * armor_posture).floor();
+            if pd > 0.0 {
+                da.add_posture(pd);
+            }
+        }
+        // c9997.lua ExecDamageBreak (2550-2560) / the critical burst at 0 posture (2524): a burst
+        // break plays W_TrunkCollapseBurst (8330 + GetRandomIndex 0-2, the ones it has), a rank 1
+        // reaction; without those clips the plain break (combat.rs, TrunkCollapseFront).
+        if da.posture_broken() && !e.is_broken() && rank_allows(transition_rank(&da.state), 1) {
+            let d = combat.data_of(da);
+            let clips: Vec<&str> = ["TrunkCollapseBurst1", "TrunkCollapseBurst2", "TrunkCollapseBurst3"].into_iter().filter(|s| d.anim_key(s).is_some()).collect();
+            if !clips.is_empty() {
+                let s = clips[(e.rand() * clips.len() as f32) as usize % clips.len()];
+                da.play_state(d, s);
+                e.on_posture_break(da, combat, false, 4.0);
+                return Some("firecracker: POSTURE BROKEN".into());
+            }
+        }
         let npc = combat.npc(da);
         let special = (0..32)
             .filter_map(|i| npc[format!("spEffectID{i}")].as_i64().filter(|v| *v > 0))
@@ -503,49 +660,78 @@ fn hit_enemy(
         if !refs.contains(&wanted) {
             return None;
         }
-        // The cool-time SpEffect (stateInfo 976, effectEndurance 30 s) blocks the next reaction.
-        // gap: what the exe does with stateInfo 976 is not traced; read as "no reaction meanwhile".
-        if now < e.burst_until {
+        // The cool time is the enemy's own (c9997.lua 873: no SP_DAMAGE_BURST under
+        // SP_EFFECT_REF_NO_BURST_REACTION 1000044). Its reaction clip a000_020110 adds it by TAE,
+        // gated on the bullet's 107100 (stateInfo 976): c1070 251070 15 s, c1130 251130 14 s,
+        // c5080 255080 20 s; the General, the soldiers, dogs and monkeys have none and react to
+        // every firecracker (round 30; it was a flat 30 s for everyone).
+        if enemy_refs(combat, da, e).contains(&REF_NO_BURST_REACTION) {
             return Some("firecracker: enemy is used to it (cool time)".into());
         }
-        let cool = sps.iter().filter_map(|id| sp_of(*id)).filter(|s| s.state_info == 976).map(|s| s.effect_endurance).fold(0.0, f32::max);
-        e.burst_until = now + cool;
         // c9997.lua GetSpDamage -> SP_DAMAGE_BURST -> W_AssassinationBloodReaction (a000_020110),
         // a rank 4 reaction (line 3091): not out of a rank 0-3 state (large blows, posture
         // breaks, burning / lightning reactions).
         if !e.is_broken() && rank_allows(transition_rank(&da.state), 4) {
             e.react(da, combat, "AssassinationBloodReaction");
+            add_reaction_cool_time(combat, da, e, REF_NO_BURST_REACTION);
             return Some("firecracker: enemy staggered".into());
         }
         return None;
     }
     let atk = b.spec.attack.as_ref()?;
-    if !(atk.atk_phys_correction > 0.0 || atk.atk_fire_correction > 0.0 || atk.atk_thun_correction > 0.0 || atk.atk_stam > 0.0 || atk.direct_atk_stam_damage > 0.0) {
-        return None;
+    if !deals_something(atk) {
+        // A bullet whose AtkParam deals nothing but whose Bullet row carries build-up still
+        // lands it: the Kodachi LV3-B poison mist (Bullet 750300-750302, spEffectId0 9009
+        // poizonAttackPower 31; AtkParam 7503150 all 0) never poisoned (round 26).
+        let carries = [b.spec.sp_effect_id0, b.spec.sp_effect_id1, b.spec.sp_effect_id2, b.spec.sp_effect_id3, b.spec.sp_effect_id4].iter().any(|&id| id > 0);
+        return carries.then(|| "hit: build-up only".to_string());
     }
     let dd = combat.data_of(da);
     // As a sword hit (combat.rs resolve): only inside the guard arc, and AtkParam
     // disableJustGuard / disableGuard (the Flame Vent's and Projected Force's rows) go through
     // a deflect / a block.
-    let facing = !da.anim.is_empty() && da.forward().angle_between((from - dtf.translation).with_y(0.0).normalize_or_zero()).to_degrees() <= crate::combat::guard_half_angle(dd, da);
-    if facing && atk.disable_just_guard == 0 && dd.has_state_info(&da.anim, da.t, STATE_INFO_JUST_GUARD) {
+    let facing = !da.anim.is_empty() && da.forward().angle_between((from - dtf.translation).with_y(0.0).normalize_or_zero()).to_degrees() <= crate::combat::guard_half_angle(dd, da, crate::combat::event_gates(combat, da, &[]).as_deref());
+    // A guarding enemy takes the bullet as a sword's deflect / block (combat.rs resolve, `bullet`):
+    // the posture through its guard rates (enemy_guard_posture_rate x timed_rates, floored), the
+    // c9997 ExecGuardBlock reaction (guard_damage_table by dmgLevel and guardLevel) and the clash
+    // SpEffects the AI counts (200210/211 deflect, 200215/216 block). Round 35: the deflect did
+    // nothing and the block added the raw repelLostStamDamage with no reaction. gap: the clash ids
+    // on a bullet are the melee path's (inferred).
+    let deflect = facing && atk.disable_just_guard == 0 && dd.has_state_info(&da.anim, da.t, STATE_INFO_JUST_GUARD);
+    if deflect || (facing && atk.disable_guard == 0 && dd.flag(&da.anim, da.t, FLAG_SHIELD_BLOCK)) {
         if let Some(q) = sounds.as_mut() {
-            q.0.extend(crate::sound::guard_sounds(combat, atk, true).into_iter().map(|se| (se, to)));
+            q.0.extend(crate::sound::guard_sounds(combat, atk, deflect).into_iter().map(|se| (se, to)));
         }
-        return Some("enemy deflects the shuriken".to_string());
-    }
-    if facing && atk.disable_guard == 0 && dd.flag(&da.anim, da.t, FLAG_SHIELD_BLOCK) {
-        if let Some(q) = sounds.as_mut() {
-            q.0.extend(crate::sound::guard_sounds(combat, atk, false).into_iter().map(|se| (se, to)));
+        let skill = crate::combat::enemy_guard_posture_rate(combat, da, atk) * crate::combat::timed_rates(combat, e, da, atk).1;
+        let level = atk.level(false);
+        let refs = enemy_refs(combat, da, e);
+        let glv = combat.npc(da)["guardLevel"].as_i64().unwrap_or(4);
+        let aerial = crate::combat::enemy_is_aerial(combat, da, e, dtf.translation.y);
+        if deflect {
+            // A deflect never breaks the defender (as the sword's).
+            let pd = (atk.atk_stam * skill).floor();
+            da.posture = (da.posture + pd).min(da.posture_max - 1.0);
+            da.since_posture_damage = 0.0;
+            let pick = crate::combat::enemy_guard_block(dd, &refs, level, glv, atk.just_deflect_action == 2, aerial);
+            crate::combat::guard_pick(dd, da, e, combat, true, pick, from, dtf.translation, level, aerial, part);
+            crate::combat::clash_after(dd, da, e, if atk.just_deflect_action == 1 { 200211 } else { 200210 });
+            return Some(format!("enemy deflects the shuriken (+{pd:.0} posture)"));
         }
-        da.add_posture(atk.repel_lost_stam_damage);
-        return Some(format!("enemy blocks the shuriken (+{:.0} posture)", atk.repel_lost_stam_damage));
+        let pd = (atk.repel_lost_stam_damage * skill).floor();
+        da.add_posture(pd);
+        if da.posture_broken() {
+            e.react_from(da, combat, true, if atk.deflect_action == 2 { "GuardBreakLeft" } else { "GuardBreakRight" });
+        } else {
+            let pick = crate::combat::enemy_guard_block(dd, &refs, level, glv, atk.deflect_action == 2, aerial);
+            crate::combat::guard_pick(dd, da, e, combat, true, pick, from, dtf.translation, level, aerial, part);
+        }
+        crate::combat::clash_after(dd, da, e, if atk.deflect_action == 1 { 200216 } else { 200215 });
+        return Some(format!("enemy blocks the shuriken (+{pd:.0} posture)"));
     }
-    // The tool's attackBasePhysics / attackBaseFire times the AtkParam corrections; fire scaled by
-    // the NPC's fireDamageCutRate.
-    let fire_cut = combat.npc(da)["fireDamageCutRate"].as_f64().unwrap_or(1.0) as f32;
-    let thun_cut = combat.npc(da)["thunderDamageCutRate"].as_f64().unwrap_or(1.0) as f32;
-    let dmg = b.base.0 * atk.atk_phys_correction / 100.0 + b.base.1 * atk.atk_fire_correction / 100.0 * fire_cut + b.base.2 * atk.atk_thun_correction / 100.0 * thun_cut;
+    // The weapon row's attackBase* per element times the AtkParam corrections, each scaled by
+    // the NPC's <element>DamageCutRate, as a sword hit (combat.rs player_attack_damage).
+    // Without a tool row: 20 physical.
+    let dmg = if b.base > 0 { crate::combat::player_attack_damage(combat, atk, b.base, da) } else { 20.0 * atk.atk_phys_correction / 100.0 };
     let pd = if atk.direct_atk_stam_damage > 0.0 { atk.direct_atk_stam_damage } else { atk.atk_stam };
     // The armour part and the enemy's posture SpEffects, as on a sword hit (combat.rs resolve).
     let (armor_hp, armor_posture, _) = crate::combat::armor_rates(combat, e, da, atk, None);
@@ -553,6 +739,8 @@ fn hit_enemy(
     let (dmg, pd) = (dmg * armor_hp, pd * def_rate);
     da.hp = (da.hp - dmg).max(0.0);
     da.add_posture(pd);
+    // The super-armour drain, as a sword hit's (combat::super_armor_hit).
+    crate::combat::super_armor_hit(da, &e.clash, true, atk.atk_param_id);
     tool_hit_push(combat, da, e, from, dtf.translation, atk.knockback_hit, atk.dmg_level, dmg);
     // c9997 GetSpDamage: a lightning hit (DAMAGE_ELEMENT_LIGHTNING 6) on one with
     // SP_EFFECT_REF_LIGHTNING_DAMAGE_ENABLE (1000041: its NpcParam's 6021) and without
@@ -562,8 +750,20 @@ fn hit_enemy(
         let refs = enemy_refs(combat, da, e);
         refs.contains(&1000041) && !refs.contains(&1000260)
     };
+    // SP_DAMAGE_FIRE (c9997 GetSpDamage 879, ExecSpReactionLarge 2986): a fire hit
+    // (DAMAGE_ELEMENT_FIRE 2: the Flame Vent's v7200 rows) on one with
+    // SP_EFFECT_REF_FIRE_ACTION_ENABLE (1000040: its NpcParam's 6020, the Villager zombies c1500,
+    // the General's 10209800) and without NO_FIRE_FIAR_REACTION (1000240, its DamageFire clip's
+    // own cool time) -> W_DamageFire, rank 3 (round 30: it played the level reaction).
+    let fire = atk.sp_attribute == 2 && {
+        let refs = enemy_refs(combat, da, e);
+        refs.contains(&REF_FIRE_ACTION_ENABLE) && !refs.contains(&REF_NO_FIRE_REACTION)
+    };
     if lightning && !da.posture_broken() && !e.is_broken() && rank_allows(transition_rank(&da.state), 3) {
         e.react(da, combat, "DamageLightningStart");
+    } else if fire && dd.anim_key("DamageFire").is_some() && !da.posture_broken() && !e.is_broken() && rank_allows(transition_rank(&da.state), 3) {
+        e.react(da, combat, "DamageFire");
+        add_reaction_cool_time(combat, da, e, REF_NO_FIRE_REACTION);
     } else if !da.posture_broken() && !e.is_broken() {
         match bullet_reaction(combat, da, e, atk.dmg_level, from, dtf.translation) {
             Some(s) => e.react(da, combat, &s),
@@ -606,6 +806,36 @@ pub(crate) fn bullet_reaction(combat: &Combat, da: &Actor, e: &Enemy, level: i64
     // gap (as resolve): env 201 read as not lifted 5 cm above a SetNoGravity leap's start.
     let aerial = da.airborne || da.lift_ground.is_some_and(|g| at.y > g + 0.05) || enemy_refs(combat, da, e).contains(&crate::combat::SP_REF_AERIAL_DAMAGE);
     can_flinch.then(|| crate::combat::enemy_damage_state_air(dd, level, da, from, at, aerial)).flatten()
+}
+
+/// A reaction clip's TAE SpEffects with the reaction's own block ref (SP_EFFECT_REF_NO_BURST_REACTION
+/// 1000044, NO_FIRE_FIAR_REACTION 1000240), kept for their effectEndurance past the clip's short
+/// TAE window, when their invocationConditionsStateChange is one of the enemy's stateInfos now
+/// (the firecracker's 107100: 976). An endurance-0 window row runs on as its replaceSpEffectId
+/// (c1020 DamageFire a000_008200: 287410 over 0-6.4 s -> 287411 5 s), as status.rs reads it.
+pub(crate) fn add_reaction_cool_time(combat: &Combat, da: &Actor, e: &mut Enemy, block_ref: i64) {
+    let d = combat.data_of(da);
+    let Some(anim) = d.anim(&da.anim) else { return };
+    let mut ids: Vec<i64> = da.resident.clone();
+    ids.extend(e.clash.iter().map(|c| c.0));
+    let states: Vec<i64> = ids.iter().filter_map(|id| d.sp_effects.get(&id.to_string()).or_else(|| combat.player.sp_effects.get(&id.to_string()))).map(|s| s.state_info).filter(|&s| s > 0).collect();
+    let on = |s: &crate::data::SpEffect| {
+        let conds = [s.invocation_conditions_state_change1, s.invocation_conditions_state_change2, s.invocation_conditions_state_change3];
+        conds.iter().all(|&c| c <= 0) || conds.iter().any(|c| *c > 0 && states.contains(c))
+    };
+    let mut add = Vec::new();
+    for ev in anim.events.iter().filter(|ev| matches!(ev.kind, 67 | 401)) {
+        let Some(id) = ev.arg_i64("SpEffectID") else { continue };
+        let Some(s) = d.sp_effects.get(&id.to_string()).filter(|s| s.behavior_ref_id == block_ref && on(s)) else { continue };
+        if s.effect_endurance > 0.0 {
+            add.push((id, ev.start + s.effect_endurance));
+        } else if let Some(r) = d.sp_effects.get(&s.replace_sp_effect_id.to_string()).filter(|r| r.behavior_ref_id == block_ref && r.effect_endurance > 0.0) {
+            add.push((s.replace_sp_effect_id, ev.end + r.effect_endurance));
+        }
+    }
+    for (id, secs) in add {
+        e.add_timed(id, secs.max(0.1));
+    }
 }
 
 /// The behaviorRefIds of an enemy's SpEffects now: its residents, its anim's and the timed ones.
@@ -656,6 +886,8 @@ pub mod hks {
     pub const REF_WEP_ENABLE_SUB_ATTACK_VARIATION: i64 = 322;
     pub const REF_WEP_ENABLE_SUB_ATTACK_HOLD: i64 = 325;
     pub const REF_SUB_ATTACK_USE_CHECK: i64 = 326;
+    /// SP_EF_REF_ENABLE_PRESS_SUB_ATTACK (c0000_define 675; SpEffect 100368).
+    pub const REF_ENABLE_PRESS_SUB_ATTACK: i64 = 311;
     /// SP_EF_REF_TAE_ENABLE_CANCEL_FLAMETHROWER (SpEffect 100290 "only the flamethrower cancels").
     pub const REF_ONLY_FLAMETHROWER_CANCEL: i64 = 329;
     pub const REF_POISON: i64 = 500;
@@ -932,7 +1164,19 @@ pub mod hks {
     /// "only the flamethrower cancels" (100290, ref 329; a072_400000 f75-96, 400100 f21-33).
     pub fn held_press(cat: i64, held: bool, enable_action: bool, refs: &dyn Fn(i64) -> bool) -> bool {
         let transition = refs(REF_TRANSITION_SUB_ATTACK_HOLD) || (refs(REF_SUB_ATTACK_COMBO) && refs(REF_ONLY_FLAMETHROWER_CANCEL));
-        (cat == 72 && held && transition && refs(REF_WEP_ENABLE_SUB_ATTACK_HOLD)) || (!enable_action && refs(REF_SUB_ATTACK_USE_CHECK))
+        // The umbrella's clause (round 59): 076 held inside SP_EF_REF_ENABLE_PRESS_SUB_ATTACK
+        // (311: 100368, the recovery windows of most a000 / a050 / a07x clips) opens it.
+        (cat == 72 && held && transition && refs(REF_WEP_ENABLE_SUB_ATTACK_HOLD))
+            || (cat == 76 && held && refs(REF_ENABLE_PRESS_SUB_ATTACK))
+            || (!enable_action && refs(REF_SUB_ATTACK_USE_CHECK))
+    }
+
+    /// BEH_A_GROUND_SUB_ATTACK's validate (6220), its flamethrower clause: inside
+    /// SP_EF_REF_TAE_ENABLE_CANCEL_FLAMETHROWER (329, "only the flamethrower cancels", a072 clips)
+    /// only a Flame Vent level that can spew (072 with WEP_ENABLE_SUB_ATTACK_HOLD 325) takes a press
+    /// (round 50; before, any tool's tap there replayed Combo1 and paid again).
+    pub fn flame_gate(cat: i64, refs: &dyn Fn(i64) -> bool) -> bool {
+        !refs(REF_ONLY_FLAMETHROWER_CANCEL) || (cat == 72 && refs(REF_WEP_ENABLE_SUB_ATTACK_HOLD))
     }
 
     /// BEH_A_GROUND_SUB_ATTACK_RELEASE's validate (6225): inside SP_EF_REF_TAE_ENABLE_SUB_ATTACK_RELEASE
@@ -1019,8 +1263,8 @@ pub mod hks {
             70 if refs(REF_TRANSITION_COMBO_2_WP070) && !refs(REF_TRANSITION_COMBO_1_WP070) => "AirSubAttackCombo2",
             70 if refs(REF_TRANSITION_COMBO_3_WP070) && !refs(REF_TRANSITION_COMBO_1_WP070) && !refs(REF_TRANSITION_COMBO_2_WP070) => "AirSubAttackCombo3",
             78 if refs(REF_WEP_ENABLE_SUB_ATTACK_VARIATION) => "AirSubAttackCombo1Variation",
-            // 077 without ref 309 falls through every branch (no event).
-            77 => return None,
+            // 077 without ref 309 takes the last branch, "071 or 077" (HKS 3083): Combo1, the air
+            // use a077_403000 (round 49; before, dropped as no event).
             _ => "AirSubAttackCombo1",
         };
         Some((state, counted))

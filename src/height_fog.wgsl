@@ -90,8 +90,8 @@ fn fragment(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
         depth = max(depth, textureLoad(depth_texture, pixel, i32(sample)));
     }
 #endif
-    // gap: the background (the probe sky box) is left unfogged; the game's sky domes draw
-    // with their own shaders.
+    // Only a bare background (the probe sky box) is left unfogged: the sky domes write their
+    // real depth (sky.rs) and are fogged at it, as the game's sky shader is.
     if depth <= 0.0 {
         return surface;
     }

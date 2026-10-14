@@ -100,6 +100,7 @@ enum Item {
     Tool3,
     God,
     NoPosture,
+    InfiniteEmblems,
     Refill,
     FlowingWater,
     Sheathe,
@@ -112,7 +113,7 @@ const SECTIONS: [(&str, &[Item]); 5] = [
     ("ENEMY", &[Item::AiMode, Item::Attack, Item::Interval, Item::EnemyType, Item::Outfit, Item::EnemyHeal]),
     ("DEATHBLOW", &[Item::BreakPosture, Item::DeathblowNow, Item::DeathblowBehind, Item::PlungeNow, Item::KickDownNow, Item::VaultNow, Item::StealthSetup, Item::StealthFar]),
     ("SKILLS", &[Item::Art, Item::Tool1, Item::Tool2, Item::Tool3]),
-    ("PLAYER", &[Item::God, Item::NoPosture, Item::Refill, Item::FlowingWater, Item::Sheathe]),
+    ("PLAYER", &[Item::God, Item::NoPosture, Item::InfiniteEmblems, Item::Refill, Item::FlowingWater, Item::Sheathe]),
     ("SIMULATION", &[Item::Speed, Item::Hitboxes, Item::Reset]),
 ];
 
@@ -130,13 +131,22 @@ fn art_ids(combat: &Combat) -> Vec<i64> {
     ids
 }
 
-/// The three prosthetic slots (0 = empty) from config player.prosthetics.
-fn slots(config: &GameConfig) -> [i64; 3] {
+/// The three prosthetic slots (0 = empty). The game keeps config player.prosthetics packed
+/// (player::equipped_tool, the Z key), so the menu keeps its own slot layout and only uses it
+/// while it still packs to the config's list; otherwise (F5, start-up) it is rebuilt packed.
+fn slots(layout: [i64; 3], packed: &[i64]) -> [i64; 3] {
+    if pack(layout) == packed {
+        return layout;
+    }
     let mut out = [0; 3];
-    for (i, id) in config.player.prosthetics.iter().take(3).enumerate() {
+    for (i, id) in packed.iter().take(3).enumerate() {
         out[i] = *id;
     }
     out
+}
+
+fn pack(slots: [i64; 3]) -> Vec<i64> {
+    slots.iter().copied().filter(|id| *id != 0).collect()
 }
 
 fn items() -> Vec<Item> {
@@ -150,10 +160,15 @@ pub struct DebugMenu {
     /// Player cheats.
     pub god: bool,
     pub no_posture: bool,
+    pub infinite_emblems: bool,
     speed: usize,
     /// Pending type / outfit choice (applied by restarting).
     enemy_type: usize,
     outfit: usize,
+    /// The slot layout shown for prosthetic slots 1-3 (see slots()).
+    tool_slots: [i64; 3],
+    /// The config enemy (chr, npc_row) the pending choice was last synced to.
+    seen_enemy: Option<(String, Option<i64>)>,
     message: String,
 }
 
@@ -167,13 +182,13 @@ impl Plugin for DebugMenuPlugin {
         app.init_resource::<DebugMenu>()
             .add_systems(Startup, spawn_menu)
             .add_systems(Update, (menu_input, draw_menu).chain().run_if(resource_exists::<ButtonInput<KeyCode>>))
-            .add_systems(FixedUpdate, player_cheats.after(ActorSet::Resolve));
+            .add_systems(FixedUpdate, player_cheats.after(ActorSet::Resolve).after(crate::status::tick));
     }
 }
 
-fn spawn_menu(mut commands: Commands, config: Res<GameConfig>, mut menu: ResMut<DebugMenu>) {
-    menu.enemy_type = enemy_choices().iter().position(|e| e.chr == config.enemy.chr).unwrap_or(0);
-    menu.outfit = config.enemy.npc_row.and_then(|r| enemy_choices()[menu.enemy_type].outfits.iter().position(|o| o.0 == r)).unwrap_or(0);
+fn spawn_menu(mut commands: Commands, config: Res<GameConfig>, combat: Option<Res<Combat>>, mut menu: ResMut<DebugMenu>) {
+    menu.infinite_emblems = config.player.infinite_emblems;
+    sync_enemy_choice(&mut menu, &config, combat.as_deref());
     commands.spawn((
         Text::new(""),
         TextFont { font_size: bevy::text::FontSize::Px(15.0), ..default() },
@@ -191,6 +206,21 @@ fn spawn_menu(mut commands: Commands, config: Res<GameConfig>, mut menu: ResMut<
     ));
 }
 
+/// Points the pending type / outfit at the enemy in the config: at start-up and whenever the
+/// Fight picker (enemy::spawn_encounter) swaps config.enemy in memory.
+/// No npc_row in the config = the kind's default row (the one being fought), as draw_menu's
+/// `pending` reads it; before, outfit 0, so the menu showed a restart into another row.
+fn sync_enemy_choice(menu: &mut DebugMenu, config: &GameConfig, combat: Option<&Combat>) {
+    let row = config.enemy.npc_row.or_else(|| combat.and_then(|c| c.kinds.first()).map(|k| k.foe.npc_row));
+    let seen = (config.enemy.chr.clone(), row);
+    if menu.seen_enemy.as_ref() == Some(&seen) {
+        return;
+    }
+    menu.enemy_type = enemy_choices().iter().position(|e| e.chr == config.enemy.chr).unwrap_or(0);
+    menu.outfit = row.and_then(|r| enemy_choices()[menu.enemy_type].outfits.iter().position(|o| o.0 == r)).unwrap_or(0);
+    menu.seen_enemy = Some(seen);
+}
+
 #[allow(clippy::too_many_arguments)]
 fn menu_input(
     keys: Res<ButtonInput<KeyCode>>,
@@ -202,15 +232,26 @@ fn menu_input(
     mut pad: ResMut<PadInput>,
     mut hurtboxes: ResMut<crate::combat::ShowHurtboxes>,
     mut player: Query<(&mut Player, &mut Actor, &mut Transform), Without<Enemy>>,
-    mut enemies: Query<(&mut Enemy, &mut Actor, &mut Transform), Without<Player>>,
+    mut enemies: Query<(Entity, &mut Enemy, &mut Actor, &mut Transform, Option<&crate::enemy::Phantom>), Without<Player>>,
+    mut statuses: Option<ResMut<crate::status::Statuses>>,
     mut exit: MessageWriter<AppExit>,
 ) {
     if keys.just_pressed(KeyCode::F1) {
         menu.open = !menu.open;
     }
+    sync_enemy_choice(&mut menu, &config, Some(&combat));
+    // The drill's attack belongs to the kind it was picked on: after the Fight picker swaps the
+    // kinds it names no anim, and drill fell back to random attacks while the menu still named it.
+    // Any kind's anim counts (SHINOBI_AI_ATTACK=3042 picks a later cast member's, c7110). The env
+    // attack is kept: on the first frames the kinds are still the start kind's, before the
+    // SHINOBI_FIGHT encounter loads, and the reset stuck it on a000_003000 (VFX, c7110 3043).
+    let env = crate::enemy::env_attack().is_some_and(|a| a == dbg.attack);
+    if !env && !dbg.attack.is_empty() && !combat.kinds.is_empty() && combat.kinds.iter().all(|k| k.data.anim(&dbg.attack).is_none()) {
+        dbg.attack = attack_list(combat.enemy0()).first().map(|a| a.0.clone()).unwrap_or_default();
+    }
     // Real AI vs passive is the enemy's own switch (T): show what it is.
     if matches!(dbg.mode, AiMode::Real | AiMode::Passive) {
-        if let Some((e, _, _)) = enemies.iter().next() {
+        if let Some((_, e, _, _, _)) = enemies.iter().next() {
             let want = if e.aggressive { AiMode::Real } else { AiMode::Passive };
             if dbg.mode != want {
                 dbg.mode = want;
@@ -238,6 +279,15 @@ fn menu_input(
     if step == 0 && !enter {
         return;
     }
+    // The enemy actions below take one enemy: the nearest one alive and in play (not dead, not
+    // disabled by a map script, not a parked phantom). Before, each moved / broke / revived every
+    // enemy entity at once (a group stacked on one spot, dead members came back).
+    let wolf_at = player.iter().next().map_or(Vec3::ZERO, |(_, _, t)| t.translation);
+    let target = enemies
+        .iter()
+        .filter(|(_, e, _, _, ph)| !e.is_dead() && !e.is_disabled() && !ph.is_some_and(|p| p.parked()))
+        .min_by(|a, b| a.3.translation.distance_squared(wolf_at).total_cmp(&b.3.translation.distance_squared(wolf_at)))
+        .map(|(id, ..)| id);
     let cycle = |i: usize, n: usize| ((i as i32 + step).rem_euclid(n as i32)) as usize;
     let attacks = attack_list(combat.enemy0());
     match list[menu.cursor] {
@@ -245,7 +295,7 @@ fn menu_input(
             let i = AI_MODES.iter().position(|m| m.0 == dbg.mode).unwrap_or(0);
             dbg.mode = AI_MODES[cycle(i, AI_MODES.len())].0;
             // The real AI and passive mode are the enemy's own aggressive switch (T).
-            for (mut e, _, _) in &mut enemies {
+            for (_, mut e, _, _, _) in &mut enemies {
                 e.aggressive = dbg.mode != AiMode::Passive;
             }
             if dbg.mode == AiMode::Repeat && dbg.attack.is_empty() {
@@ -276,14 +326,19 @@ fn menu_input(
             }
         }
         Item::EnemyHeal if enter => {
-            for (_, mut a, _) in &mut enemies {
+            for (_, mut e, mut a, _, _) in target.and_then(|t| enemies.get_mut(t).ok()) {
                 a.hp = a.hp_max;
                 a.posture = 0.0;
+                e.end_break_now();
+            }
+            // Its afflictions go too (round 57: a healed burning enemy kept burning and draining).
+            if let (Some(t), Some(s)) = (target, statuses.as_mut()) {
+                s.clear(t);
             }
             menu.message = "enemy healed".into();
         }
         Item::BreakPosture if enter => {
-            for (mut e, mut a, _) in &mut enemies {
+            for (_, mut e, mut a, _, _) in target.and_then(|t| enemies.get_mut(t).ok()) {
                 a.posture = a.posture_max;
                 e.on_posture_break(&mut a, &combat, false, 4.0);
             }
@@ -296,7 +351,7 @@ fn menu_input(
             let behind = list[menu.cursor] == Item::DeathblowBehind;
             if let Ok((_, pa, ptf)) = player.single() {
                 let fwd = pa.forward();
-                for (mut e, mut a, mut tf) in &mut enemies {
+                for (_, mut e, mut a, mut tf, _) in target.and_then(|t| enemies.get_mut(t).ok()) {
                     tf.translation = ptf.translation + fwd * if behind { 1.2 } else { 1.6 };
                     a.yaw = if behind { pa.yaw } else { pa.yaw + std::f32::consts::PI };
                     a.posture = a.posture_max;
@@ -313,7 +368,7 @@ fn menu_input(
             let it = list[menu.cursor];
             if let Ok((_, mut pa, mut ptf)) = player.single_mut() {
                 let fwd = pa.forward();
-                for (mut e, mut a, mut tf) in &mut enemies {
+                for (_, mut e, mut a, mut tf, _) in target.and_then(|t| enemies.get_mut(t).ok()) {
                     tf.translation = ptf.translation + fwd * 1.2;
                     a.yaw = pa.yaw + std::f32::consts::PI;
                     a.posture = a.posture_max;
@@ -348,12 +403,15 @@ fn menu_input(
             // up and attack from behind (stealth deathblow), or jump and plunge onto it.
             if let Ok((_, pa, ptf)) = player.single() {
                 let fwd = pa.forward();
-                for (mut e, mut a, mut tf) in &mut enemies {
+                for (_, mut e, mut a, mut tf, _) in target.and_then(|t| enemies.get_mut(t).ok()) {
                     tf.translation = ptf.translation + fwd * 5.0;
                     a.yaw = pa.yaw;
                     a.hp = a.hp_max;
                     a.posture = 0.0;
                     e.make_unaware(&mut a);
+                }
+                if let (Some(t), Some(s)) = (target, statuses.as_mut()) {
+                    s.clear(t);
                 }
                 menu.message = "enemy unaware, back turned - sneak up and attack".into();
             }
@@ -363,7 +421,7 @@ fn menu_input(
             // sight (the meter fills, then it comes to look) but outside its near sight.
             if let Ok((_, pa, ptf)) = player.single() {
                 let fwd = pa.forward();
-                for (mut e, mut a, mut tf) in &mut enemies {
+                for (_, mut e, mut a, mut tf, _) in target.and_then(|t| enemies.get_mut(t).ok()) {
                     tf.translation = ptf.translation + fwd * 22.0;
                     a.yaw = pa.yaw + std::f32::consts::PI;
                     a.hp = a.hp_max;
@@ -371,11 +429,15 @@ fn menu_input(
                     e.make_unaware(&mut a);
                     e.aggressive = true;
                 }
+                if let (Some(t), Some(s)) = (target, statuses.as_mut()) {
+                    s.clear(t);
+                }
                 menu.message = "enemy 22 m away, unaware, watching - stay out of its sight".into();
             }
         }
         Item::God => menu.god = !menu.god,
         Item::NoPosture => menu.no_posture = !menu.no_posture,
+        Item::InfiniteEmblems => menu.infinite_emblems = !menu.infinite_emblems,
         Item::Refill if enter => {
             for (mut p, _, _) in &mut player {
                 p.gourd = config.player.gourd_charges;
@@ -404,10 +466,11 @@ fn menu_input(
             };
             // Empty, then every tool level (EquipParamWeapon 70000-79200).
             let choices: Vec<i64> = std::iter::once(0).chain(combat.player.prosthetics.iter().map(|t| t.id)).collect();
-            let mut sl = slots(&config);
+            let mut sl = slots(menu.tool_slots, &config.player.prosthetics);
             let i = choices.iter().position(|c| *c == sl[n]).unwrap_or(0);
             sl[n] = choices[cycle(i, choices.len())];
-            config.player.prosthetics = sl.iter().copied().filter(|id| *id != 0).collect();
+            menu.tool_slots = sl;
+            config.player.prosthetics = pack(sl);
             if let Ok((mut p, _, _)) = player.single_mut() {
                 p.tool_slot = 0;
             }
@@ -510,11 +573,22 @@ fn set_enemy_keys(text: &str, chr: &str, row: i64) -> Option<String> {
     Some(out.join("\n") + "\n")
 }
 
-fn player_cheats(menu: Res<DebugMenu>, mut player: Query<&mut Actor, With<Player>>) {
-    for mut a in &mut player {
+pub(crate) fn player_cheats(menu: Res<DebugMenu>, config: Res<GameConfig>, mut player: Query<(&mut Actor, &mut Player)>) {
+    for (mut a, mut p) in &mut player {
+        // Topped up every tick to the carried count (at least the default 15).
+        if menu.infinite_emblems {
+            p.emblems = p.emblems.max(config.player.spirit_emblems.max(15));
+        }
         if menu.god {
             a.hp = a.hp_max;
+            // The killing hit's death pick (combat.rs) is spent unplayed: drop it, or a later real
+            // death would play this one's (a fire kill's GroundDeathStartFire for a plain hit).
+            a.death_ref = 0;
+            a.death_hit = None;
         }
+        // Before Resolve's next hits too (actor.rs add_posture): zeroing here alone came after
+        // Resolve, so one blocked hit that filled the bar still broke the guard (round 65).
+        a.no_posture = menu.no_posture;
         if menu.no_posture {
             a.posture = 0.0;
         }
@@ -540,10 +614,11 @@ fn draw_menu(
     }
     let attacks = attack_list(combat.enemy0());
     let on = |b: bool| if b { "ON" } else { "off" };
-    let kind = |p: Option<i64>| match p {
-        Some(980) => " [perilous sweep]",
-        Some(982) => " [perilous thrust]",
-        Some(983) => " [perilous grab]",
+    // The kind by the attack's AtkParam (enemy::perilous_kind), not the warning judge.
+    let kind = |p: Option<i64>| match p.map(|_| crate::enemy::perilous_kind(combat.enemy0(), &dbg.attack)) {
+        Some("sweep") => " [perilous sweep]",
+        Some("thrust") => " [perilous thrust]",
+        Some("grab") => " [perilous grab]",
         Some(_) => " [perilous]",
         None => "",
     };
@@ -576,12 +651,13 @@ fn draw_menu(
                     Item::Tool2 => 1,
                     _ => 2,
                 };
-                let id = slots(&config)[n];
+                let id = slots(menu.tool_slots, &config.player.prosthetics)[n];
                 // Every tool's HKS branch is ported (prosthetic.rs; sim_tests every_tool_*).
                 format!("prosthetic slot {}: {}", n + 1, if id == 0 { "empty".to_string() } else { format!("{} ({id})", combat.weapon_name(id)) })
             }
             Item::God => format!("god mode (no HP loss): {}", on(menu.god)),
             Item::NoPosture => format!("no posture damage: {}", on(menu.no_posture)),
+            Item::InfiniteEmblems => format!("infinite Spirit Emblems: {}", on(menu.infinite_emblems)),
             Item::Refill => "refill gourds / emblems / resurrections".into(),
             Item::Sheathe => "sheathe / draw the sword (X)".into(),
             Item::FlowingWater => format!("skill Flowing Water (SkillParam 280): {}", on(config.player.skills.contains(&FLOWING_WATER))),
@@ -610,6 +686,22 @@ fn draw_menu(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_tool_set_in_slot_3_stays_in_slot_3() {
+        // Default config: one tool in slot 1. Fill slot 3, then empty slot 1.
+        let mut config = vec![70000];
+        let mut layout = super::slots([0; 3], &config);
+        layout[2] = 70100;
+        config = super::pack(layout);
+        assert_eq!(config, vec![70000, 70100]);
+        assert_eq!(super::slots(layout, &config), [70000, 0, 70100]);
+        layout[0] = 0;
+        config = super::pack(layout);
+        assert_eq!(super::slots(layout, &config), [0, 0, 70100]);
+        // A list changed elsewhere (F5) is shown packed again.
+        assert_eq!(super::slots(layout, &[71000, 72000]), [71000, 72000, 0]);
+    }
+
     #[test]
     fn enemy_keys_are_set_in_the_enemy_table() {
         let text = "[camera]\nx = 1\n\n[enemy]\nchr = \"c1020\"\nattack_range = 3.0\n\n[input]\nbuffer = 0.0\n";

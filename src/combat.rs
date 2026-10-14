@@ -49,6 +49,7 @@ impl Plugin for CombatPlugin {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
 enum Outcome {
     Deflect { window: f32, at: f32, rate: f32 },
     Block,
@@ -193,6 +194,19 @@ pub(crate) fn apply_knockback(combat: &Combat, da: &mut Actor, from: Vec3, at: V
     };
     let d = dist * (1.0 - cut / 100.0) * percent;
     da.knockback(at - from, d, f(&format!("{kind}_ContTime")), f(&format!("{kind}_DecTime")));
+    // A negative distance pulls toward the attacker (the Spear's Combo2 pull, v7800 judges 115-117
+    // knockbackDist_DirectHit -8 / -6 / -4) and stops at the bodies' touch: the two capsule radii
+    // (the only negative rows are Wolf's, so the other body is his when the defender is an enemy;
+    // round 30: it did nothing). Its leftover (negative) moves no attacker: recoil drops it (gap:
+    // whether the exe pulls the attacker in is not traced).
+    if d < 0.0 {
+        let own = match da.side {
+            Side::Player => crate::actor::PLAYER_BODY_RADIUS,
+            Side::Enemy => combat.param("NpcParam", combat.foe_of(da).npc_row)["hitRadius"].as_f64().unwrap_or(0.5) as f32,
+        };
+        let other = if da.side == Side::Enemy { crate::actor::PLAYER_BODY_RADIUS } else { 0.5 };
+        da.limit_knockback((at - from).with_y(0.0).length() - own - other);
+    }
     dist * cut / 100.0
 }
 
@@ -299,12 +313,14 @@ fn player_guard_state(combat: &Combat, deflect: bool, level: i64, dir: &str, var
     let size = guard_size(level);
     let kind = if deflect { "Hard" } else { "Easy" };
     if air {
-        // AirDeflect{Hard,Easy}{Small,Large}_{L,R} / ExLarge / plain (minimum).
-        let sized = match size {
-            "Minimum" => format!("AirDeflect{kind}"),
-            "ExLarge" => format!("AirDeflect{kind}ExLarge"),
-            "Small" => format!("AirDeflect{kind}Small_{dir}"),
-            _ => format!("AirDeflect{kind}Large_{dir}"),
+        // The air handlers have their own three sizes (c0000_transition.lua 1285-1311 hard,
+        // 1322-1349 easy): Large for LARGE / EXLARGE / PUSH / FLING / UPPER, ExLarge for EX_BLAST /
+        // BREATH, else (SMALL, MIDDLE, SMALL_BLOW, MINIMUM) the default Small. Round 91: the ground
+        // table played PUSH small, SMALL_BLOW large and MINIMUM as the plain AirDeflect.
+        let sized = match level {
+            3 | 4 | 5 | 6 | 9 => format!("AirDeflect{kind}Large_{dir}"),
+            10 | 11 => format!("AirDeflect{kind}ExLarge"),
+            _ => format!("AirDeflect{kind}Small_{dir}"),
         };
         return [sized, format!("AirDeflect{kind}Small_{dir}"), format!("AirDeflect{kind}")]
             .into_iter()
@@ -325,19 +341,47 @@ fn player_guard_state(combat: &Combat, deflect: bool, level: i64, dir: &str, var
         .unwrap_or_default()
 }
 
-/// Is the defender in a TAE 954 IFrames window that covers this attack? Sweeps are the
-/// attacks whose anim raises the 980 perilous-sweep warning.
-/// `att` None: a bullet (no attacker anim; never a sweep).
-pub(crate) fn dodged(combat: &Combat, def: &Actor, att: Option<&Actor>, atk: &Attack) -> bool {
+/// A perilous thrust the forward step's MikiriCounter window catches: unguardable (disableGuard
+/// 1) and a thrust by atkType 2 or trackType 6 (the zombies' bamboo spear 15000400-402: atkType
+/// 0, trackType 6, under the 982 warning; round 31: it could never be Mikiri'd). The warning
+/// judge does not tell a thrust from a sweep: the Ochimusha's Mikiri'd thrust a000_003013
+/// (rec_c1010_20261009) fires 980. The data's thrust marker, SpEffect 104000 "critical symbol,
+/// piercing" in AtkParam spEffectId4, is on 99 rows, all within this rule (the c1220 / c1470
+/// trackType-6 kicks among them). gap: the exe's acceptance test (flag 125 against the hit) is
+/// not found; 1409e.c:7395-7434 is the throw-on-hit pairing, not a Mikiri gate.
+/// A hit's SpEffects with the attacker's attack-occurrence one (data::atk_occurrence): the ids
+/// that land on the defender join the AtkParam's; one aimed at the attacker (white-blood
+/// 106065, changeHpRate -10) heals him.
+fn occurrence_hit(aa: &mut Actor, atk: &Attack, occurrence: Option<&(i64, Vec<i64>, bool, f32)>) -> Vec<i64> {
+    let mut sps = atk.sp_effects().to_vec();
+    match occurrence {
+        Some((_, _, true, hp)) => aa.hp = (aa.hp - aa.hp_max * hp / 100.0).clamp(0.0, aa.hp_max),
+        Some((_, lands, false, _)) => sps.extend(lands),
+        None => {}
+    }
+    sps
+}
+
+pub(crate) fn mikiri_atk(atk: &Attack) -> bool {
+    atk.disable_guard == 1 && (atk.atk_type == 2 || atk.track_type == 6)
+}
+
+/// Is the defender in a TAE 954 IFrames window that covers this attack? 954 IFrameType n sets
+/// bit n (140b5.c:10693 -> FUN_140b29cb0) and the hit test FUN_140b68a50 (140b6.c:4234-4241)
+/// skips a hit whose AtkParam trackType (+0x193) bit is set: Wolf's steps are 7 / 2 (+6 sideways
+/// and back), his jump 1 (sweeps). Round 31: it judged by stand-ins (type 2 = everything, 6 =
+/// atkType 2, 7 = throwFlag, 1 = a 980 warning). A bullet (`_att` None) by its AtkParam's trackType.
+pub(crate) fn dodged(combat: &Combat, def: &Actor, _att: Option<&Actor>, atk: &Attack) -> bool {
     if def.anim.is_empty() {
         return false;
     }
     let dd = data_for(combat, &def);
     // Mikiri takes precedence: a perilous thrust into the step's MikiriCounter window.
-    if atk.atk_type == 2 && atk.disable_guard == 1 && dd.flag(&def.anim, def.t, FLAG_MIKIRI) {
+    // Not for bullets, and only against an attacker with a ThrowParam 0190 row (resolve's test).
+    let mikiri_row = _att.is_some_and(|a| throw_row_for(combat, a, 190).and_then(|r| combat.throw(r)).is_some_and(|th| dd.anim(&th.atk_anim).is_some()));
+    if def.side == Side::Player && mikiri_row && mikiri_atk(atk) && dd.flag(&def.anim, def.t, FLAG_MIKIRI) {
         return false;
     }
-    let is_sweep = || att.is_some_and(|att| data_for(combat, att).anim(&att.anim).is_some_and(|a| a.events.iter().any(|e| e.kind == 2 && e.arg_i64("BehaviorJudgeID") == Some(980))));
     // TAE 950 (exe: action module +0x70 |= 2) on every knock-down, launch, death and revival
     // anim, and 951 (|= 1) on the deathblow throws: full invulnerability windows (no juggling).
     if dd.events_at(&def.anim, def.t).any(|e| e.kind == 950 || e.kind == 951) {
@@ -345,13 +389,7 @@ pub(crate) fn dodged(combat: &Combat, def: &Actor, att: Option<&Actor>, atk: &At
     }
     dd.events_at(&def.anim, def.t).filter(|e| e.kind == 954).any(|e| {
         let ty = e.args.get("IFrameType").and_then(|v| v.as_str()).and_then(|t| t.split(':').next()).and_then(|n| n.trim().parse::<i64>().ok());
-        match ty {
-            Some(2) => true,
-            Some(6) => atk.atk_type == 2,
-            Some(7) => atk.throw_flag == 1,
-            Some(1) => is_sweep(),
-            _ => false,
-        }
+        ty.is_some_and(|ty| ty == atk.track_type)
     })
 }
 
@@ -368,7 +406,7 @@ fn throw_in_reach(combat: &Combat, row_id: i64, th: &crate::data::Throw, from: V
 /// model's own dummy. Model2's are kept under the full id (model.rs: Mortal Draw 12220 =
 /// WP_A_0300_2 dummy 220), Model0's under the bare one (Whirlwind Slash 10120 -> 120), as
 /// ffx::dummy_candidates resolves them.
-fn dmy_entity(d: &Dummies, id: i64) -> Option<Entity> {
+pub(crate) fn dmy_entity(d: &Dummies, id: i64) -> Option<Entity> {
     let full = i16::try_from(id).ok().and_then(|k| d.0.get(&k));
     full.or_else(|| d.0.get(&((if id >= 10000 { id % 10000 } else { id }) as i16))).copied()
 }
@@ -378,7 +416,7 @@ fn dmy_entity(d: &Dummies, id: i64) -> Option<Entity> {
 /// corrections [%], each scaled by the NPC's NpcParam <element>DamageCutRate (c1020: dark
 /// 0.6, others 1.0; NpcParam def_* are 0). Combat arts deal "dark" (Whirlwind Slash
 /// atkDarkCorrection 125 on attackBaseDark 40).
-fn player_attack_damage(combat: &Combat, atk: &Attack, weapon: i64, def: &Actor) -> f32 {
+pub(crate) fn player_attack_damage(combat: &Combat, atk: &Attack, weapon: i64, def: &Actor) -> f32 {
     let w = combat.param("EquipParamWeapon", weapon);
     let npc = combat.npc(def);
     let base = |k: &str| w[k].as_f64().unwrap_or(0.0) as f32;
@@ -390,10 +428,31 @@ fn player_attack_damage(combat: &Combat, atk: &Attack, weapon: i64, def: &Actor)
         + base("attackBaseDark") * atk.atk_dark_correction / 100.0 * cut("darkDamageCutRate")
 }
 
+/// Wolf's reaction to an AtkParam atkBehaviorId (HKS env 334, c0000_define
+/// BEHAVIOR_IDENTIFICATION_VALUE_*):
+/// - 17 BLINDING at damage level none (BEH_R_DAMAGE 1104 / 1155): W_StandDamageBlinding /
+///   W_AirDamageBlinding. The Rappa's powder, the Taro troop's mud, the apes' sand.
+/// - 18 SXL_BLAST (BEH_R_SPECIAL_DAMAGE 1005): W_AirDamageElectroReceiveExplosionStart, which
+///   falls and lands through the AirDamage chain. The Divine Dragon's lightning 52000820.
+/// - 19 STORM_BACK_JUMP (1007-1012): W_AirStormJumpBackStart in the air, else
+///   W_GroundStormJumpBackReady. The Divine Dragon's strong wind 52000830.
+/// BEH_R_SPECIAL_DAMAGE (5612) takes 18 / 19 at any damage level. gap: its other conditions
+/// (env 206 throw states, the death damage types) are left to the callers.
+pub(crate) fn special_damage_state(behavior_id: i64, level: i64, airborne: bool) -> Option<&'static str> {
+    match behavior_id {
+        17 if level == 0 => Some(if airborne { "AirDamageBlinding" } else { "StandDamageBlinding" }),
+        18 => Some("AirDamageElectroReceiveExplosionStart"),
+        19 => Some(if airborne { "AirStormJumpBackStart" } else { "GroundStormJumpBackReady" }),
+        _ => None,
+    }
+}
+
 /// Player hit reaction by HKS damage level (c0000_define DAMAGE_LEVEL_*): 1 small and 2
 /// middle in four directions, 3 large front/back, 4 ex-large blow, 6 fling (large blow),
 /// 7 small blow, 9 upper (launch), 8 minimum; blows launch through their TAE 920.
-fn player_damage_state(combat: &Combat, level: i64, defender: &Actor, from: Vec3, at: Vec3) -> Option<String> {
+/// `pull`: the hit's knockback is negative (toward the attacker; env(1121) < 0): HKS 1070-1079
+/// swaps damage_angle F<->B, L<->R - used only by SMALL / MIDDLE / PUSH (round 75).
+fn player_damage_state(combat: &Combat, level: i64, defender: &Actor, from: Vec3, at: Vec3, pull: bool) -> Option<String> {
     // HKS normal damage (c0000_transition.lua ~1162): DamageDirection = 4-way for SMALL / MIDDLE /
     // PUSH, front/back for the rest; NONE (0) and MINIMUM (8) play no reaction.
     let fwd = defender.forward();
@@ -401,6 +460,7 @@ fn player_damage_state(combat: &Combat, level: i64, defender: &Actor, from: Vec3
     let (f, r) = (to.dot(fwd), to.dot(fwd.cross(Vec3::Y)));
     let fb = if f >= 0.0 { "F" } else { "B" };
     let dir4 = if f.abs() >= r.abs() { fb } else if r > 0.0 { "R" } else { "L" };
+    let dir4 = if pull { match dir4 { "F" => "B", "B" => "F", "L" => "R", _ => "L" } } else { dir4 };
     let candidates = match level {
         0 | 8 => return None,
         1 => vec![format!("StandDamageSmall_{dir4}")],
@@ -456,11 +516,11 @@ pub(crate) fn player_break_state(combat: &Combat, level: i64, defender: &Actor, 
     let knocked_down = if defender.posture_broken() {
         defender.state.starts_with("StandDamageBreak_")
     } else {
-        is_player_broken(&defender.state) && matches!(level, 1 | 2 | 3 | 5)
+        hks_broken(&defender.state) && matches!(level, 1 | 2 | 3 | 5)
     };
     let candidates = if knocked_down {
         vec!["StandDamageBreakDamage".to_string()]
-    } else if is_player_broken(&defender.state) && !defender.posture_broken() {
+    } else if hks_broken(&defender.state) && !defender.posture_broken() {
         // Minimum: nothing (:1162).
         return "".to_string();
     } else if defender.airborne {
@@ -495,7 +555,48 @@ pub(crate) fn player_break_state(combat: &Combat, level: i64, defender: &Actor, 
 
 /// HKB_STATE_STAND_DAMAGE_BREAK / STAND_DEFLECT_BREAK: posture broken and still staggered.
 pub(crate) fn is_player_broken(state: &str) -> bool {
-    matches!(state, "StandDamageBreak_F" | "StandDamageBreak_B" | "StandDeflectBreak" | "LandAirDamageBreak" | "LandAirDeflectGuardBreak")
+    matches!(
+        state,
+        "StandDamageBreak_F" | "StandDamageBreak_B" | "StandDeflectBreak" | "StandSubGuardDeflectBreak" | "LandAirDamageBreak" | "LandAirDeflectGuardBreak" | "LandAirSubGuardDeflectBreak"
+    )
+}
+
+/// Wolf's guard break (HKS DAMAGE_TYPE_GUARDBREAK): W_StandDeflectBreak (a050_190100), in the air
+/// W_AirDeflectGuardBreak (a050_190150); in a SUB_GUARD state (the open Loaded Umbrella)
+/// W_StandSubGuardDeflectBreak / W_AirSubGuardDeflectBreak, clips a076_405400 / a076_421400
+/// via player::sub_anim (c0000_transition.lua 1607-1612, 1709-1713; round 29: the umbrella
+/// played the sword's).
+pub(crate) fn player_guard_break_state(sub_guard: bool, airborne: bool) -> &'static str {
+    match (sub_guard, airborne) {
+        (true, true) => "AirSubGuardDeflectBreak",
+        (true, false) => "StandSubGuardDeflectBreak",
+        (false, true) => "AirDeflectGuardBreak",
+        (false, false) => "StandDeflectBreak",
+    }
+}
+
+#[cfg(test)]
+mod guard_break_tests {
+    /// The umbrella's guard breaks are its own states, each with an exported clip (round 29).
+    #[test]
+    fn an_umbrella_guard_break_plays_the_umbrella_break() {
+        use super::player_guard_break_state as gb;
+        assert_eq!(gb(true, false), "StandSubGuardDeflectBreak");
+        assert_eq!(gb(true, true), "AirSubGuardDeflectBreak");
+        assert_eq!(gb(false, false), "StandDeflectBreak");
+        assert_eq!(gb(false, true), "AirDeflectGuardBreak");
+        assert!(super::is_player_broken("StandSubGuardDeflectBreak") && super::is_player_broken("LandAirSubGuardDeflectBreak"));
+        let Ok(text) = std::fs::read_to_string(crate::paths::root().join("extracted/combat_data.json")) else { return };
+        let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+        for st in ["StandSubGuardDeflectBreak", "AirSubGuardDeflectBreak", "LandAirSubGuardDeflectBreak"] {
+            assert!(v["player"]["states"][st].is_string(), "{st} not exported");
+        }
+        // Each plays its a076 clip, not the clipless a070 key the state table gives (round 30).
+        let player: crate::data::CharData = serde_json::from_value(v["player"].clone()).unwrap();
+        for (st, key) in [("StandSubGuardDeflectBreak", "a076_405400"), ("AirSubGuardDeflectBreak", "a076_421400")] {
+            assert_eq!(crate::player::sub_anim(&player, st, 76).as_deref(), Some(key), "{st}");
+        }
+    }
 }
 
 /// A hit that does not break Wolf again while he is broken: push / small / middle / large knock
@@ -503,7 +604,13 @@ pub(crate) fn is_player_broken(state: &str) -> bool {
 /// and breath levels go on down c0000_transition.lua's damage chain (:1158) to their normal
 /// reactions.
 pub(crate) fn broken_takes_normal_damage(level: i64, defender: &Actor) -> bool {
-    !defender.posture_broken() && is_player_broken(&defender.state) && !matches!(level, 1 | 2 | 3 | 5 | 8)
+    !defender.posture_broken() && hks_broken(&defender.state) && !matches!(level, 1 | 2 | 3 | 5 | 8)
+}
+
+/// The broken states c0000_transition.lua:1158 knocks down on a push / small / middle / large
+/// hit: not the umbrella's (SubGuard) breaks, which take the normal reactions (round 73).
+fn hks_broken(state: &str) -> bool {
+    matches!(state, "StandDamageBreak_F" | "StandDamageBreak_B" | "StandDeflectBreak" | "LandAirDamageBreak" | "LandAirDeflectGuardBreak")
 }
 
 /// ChrActionFlag 24: no damage motion (the exe's b51b70 / bdbb40 publish level 0 and skip the
@@ -522,8 +629,9 @@ pub(crate) const FLAG_DAMAGE_MOTION: i64 = 73;
 /// through the table at RVA 2b979e8: enums 1-12 -> 0, 8, 1, 2, 3, 7, 4, 6, 9, 5, 10, 11 (0 keeps
 /// it). Level 0 stays (guard contacts never get here). E.g. 5358 (Genichiro / c1010 perilous
 /// commitments) makes small / middle hits minimum (8: an additive flinch) and leaves large ones;
-/// the residents 5311 / 5320 / 5325 (priority 200). gap: stateInfo 120 effects (5375) need a
-/// super-armour meter (NpcParam superArmorDurability, 0 on the rows checked): skipped.
+/// the residents 5311 / 5320 / 5325 (priority 200). The stateInfo-120 rows ("damage anim change
+/// at SA": c1180's resident 5366, its TAE 5367) count only while the super-armour pool holds
+/// (FUN_140bdbaf0, actor::SuperArmor).
 pub(crate) fn damage_motion_level(d: &crate::data::CharData, a: &Actor, level: i64) -> i64 {
     const LEVELS: [i64; 12] = [0, 8, 1, 2, 3, 7, 4, 6, 9, 5, 10, 11];
     if level <= 0 || level >= 12 {
@@ -533,7 +641,7 @@ pub(crate) fn damage_motion_level(d: &crate::data::CharData, a: &Actor, level: i
     let tae: Vec<&crate::data::SpEffect> = if a.anim.is_empty() { Vec::new() } else { d.sp_effects_at(&a.anim, a.t).into_iter().map(|(_, s)| s).collect() };
     tae.into_iter()
         .chain(a.resident.iter().filter_map(|id| d.sp_effects.get(&id.to_string())))
-        .filter(|s| s.sp_category == 1001 && s.state_info != 120 && (s.condition_hp <= 0.0 || hp_pct <= s.condition_hp))
+        .filter(|s| s.sp_category == 1001 && (s.state_info != 120 || a.super_armor.holds()) && (s.condition_hp <= 0.0 || hp_pct <= s.condition_hp))
         .min_by_key(|s| s.category_priority)
         .and_then(|s| LEVELS.get((s.dmg_lv(level) - 1).max(-1) as usize).copied().filter(|_| s.dmg_lv(level) > 0))
         .unwrap_or(level)
@@ -562,6 +670,19 @@ pub(crate) fn enemy_is_aerial(combat: &Combat, a: &Actor, e: &crate::enemy::Enem
 /// (2 / 3 / 5 / 6 / 7) -> W_DamageAerialBack (hit from behind, env 3032, anim 8141) or
 /// W_DamageAerialFront (8140). Anything else in the air (a small hit, no aerial anim) has no
 /// reaction: ExecNoSyncAddDamage's additive flinch (aerial and damaged).
+/// c9997 ExecDamage*: may a sword hit's reaction interrupt the enemy's current state. The
+/// ExecDamageDefault states (Small / Middle / Large / Push, 3159-3215) need
+/// IsEnabledTransitionRank(cur, 4), ExecDamageLargeBlow / AerialBlow rank 0 (always), and
+/// ExecDamageBlow has no rank check. A rejected hit falls to ExecNoSyncAddDamage, so a burning
+/// FireReaction (rank 3) or a DamageLargeBlow (rank 0) is not cut by a slash (round 25).
+pub(crate) fn sword_reaction_allowed(cur: &str, reaction: &str) -> bool {
+    if reaction.starts_with("DamageBlow") {
+        return true;
+    }
+    let dest = if reaction.starts_with("DamageLargeBlow") || reaction.starts_with("DamageAerialBlow") { 0 } else { 4 };
+    crate::prosthetic::rank_allows(crate::prosthetic::transition_rank(cur), dest)
+}
+
 pub(crate) fn enemy_damage_state_air(d: &crate::data::CharData, level: i64, defender: &Actor, from: Vec3, at: Vec3, aerial: bool) -> Option<String> {
     if !aerial || matches!(level, 7 | 11) {
         return enemy_damage_state(level, defender, from, at);
@@ -771,10 +892,37 @@ pub(crate) fn enemy_guard_block(d: &crate::data::CharData, refs: &[i64], level: 
     candidates.into_iter().find(|(ok, s)| *ok && d.anim_key(s).is_some()).map_or(GuardPick::None, |(_, s)| GuardPick::State(s))
 }
 
+/// c9997 GetSpDamage's SP_DAMAGE_POISON_REACTION (c9997.lua:894-895; checked last, so it wins
+/// over burning / fire / lightning) -> ExecDebuffReaction W_SpecialPoisonReaction at rank 4
+/// (2969-2976, a000_020160; before ExecGuardBlock, so through a guard too): the poison status
+/// set off on this hit (STATUS_SPECIAL_POISON 0, inferred the poison gauge's break as the burn
+/// analogue at 891), on a chr with ref 1000220 WOMAN (the Okami warriors' resident 9080, c1310),
+/// by a hit carrying ref 1000032 WOMAN_POISON (the Sabimaru's build-ups 9003-9009, duration 0:
+/// on only on the hit).
+pub(crate) fn special_poison_reaction(combat: &Combat, d: &crate::data::CharData, da: &Actor, e: &crate::enemy::Enemy, poisoned: bool, atk_sps: &[i64]) -> bool {
+    poisoned
+        && !da.posture_broken()
+        && d.anim_key("SpecialPoisonReaction").is_some()
+        && atk_sps.iter().any(|id| combat.player.sp_effects.get(&id.to_string()).is_some_and(|s| s.behavior_ref_id == 1000032))
+        && crate::prosthetic::enemy_refs(combat, da, e).contains(&1000220)
+        && crate::prosthetic::rank_allows(crate::prosthetic::transition_rank(&da.state), 4)
+}
+
+/// Wolf (`da`) shrugs off a blue (weak, spAttribute 10) lightning hit: his anim holds ref 289
+/// (SpEffect 100235, the air arts a110_3162xx / 3167xx; c0000_transition.lua 1099-1103, 1157).
+pub(crate) fn weak_charge_armour(combat: &Combat, da: &Actor, atk: &Attack) -> bool {
+    da.side == Side::Player
+        && atk.sp_attribute == 10
+        && !da.anim.is_empty()
+        && data_for(combat, da).sp_effects_at(&da.anim, da.t).iter().any(|(_, s)| s.behavior_ref_id == 289)
+}
+
 /// Plays a [`GuardPick`]: GUARD_LEVEL_ADD is W_SABlend_Add_{Front,Left,Right,Back} (anim 9500+),
-/// by the hit's direction relative to the enemy.
+/// by the hit's direction relative to the enemy. None (no guard clip, or a NONE column such as
+/// guardLevel 0): ExecGuardBlock returns FALSE and ExecDamage goes on with the same level
+/// (c9997.lua:2252-2301): the damage reaction, else ExecNoSyncAddDamage's additive flinch.
 #[allow(clippy::too_many_arguments)]
-fn guard_pick(d: &crate::data::CharData, da: &mut Actor, e: &mut crate::enemy::Enemy, combat: &Combat, by_wolf: bool, pick: GuardPick, from: Vec3, at: Vec3) {
+pub(crate) fn guard_pick(d: &crate::data::CharData, da: &mut Actor, e: &mut crate::enemy::Enemy, combat: &Combat, by_wolf: bool, pick: GuardPick, from: Vec3, at: Vec3, level: i64, aerial: bool, part: u8) {
     match pick {
         GuardPick::State(s) => e.react_from(da, combat, by_wolf, &s),
         GuardPick::Add => {
@@ -784,18 +932,57 @@ fn guard_pick(d: &crate::data::CharData, da: &mut Actor, e: &mut crate::enemy::E
             let dir = if f.abs() >= r.abs() { if f >= 0.0 { "Front" } else { "Back" } } else if r > 0.0 { "Right" } else { "Left" };
             start_additive(d, da, &format!("SABlend_Add_{dir}"));
         }
-        GuardPick::None => {}
+        GuardPick::None => match guard_fall_through(d, da, level, aerial, from, at) {
+            (Some(s), _) => e.react_from(da, combat, by_wolf, &s),
+            (None, true) => no_sync_add_damage(d, da, part, from, at),
+            (None, false) => {}
+        },
     }
+}
+
+/// The clash row the AI reads after a guard / deflect / bound reaction: the reaction clip's own
+/// TAE AddSpEffect when it carries one (the 2002xx rows sit in the clips, not in the exe: c5060
+/// a000_008500 200216, a000_008502 GuardDamageSpecial 200225, a000_008602 AttackBoundEnemy2
+/// 200226, read by the AI's sp_self through sp_effects_at), else the engine-applied `fallback`
+/// (a reaction without a clip: the additive flinch, a refused one). Before, the fallback was
+/// pushed on top of the clip's row and won in ReturnKengekiSpecialEffect (200215 before 200225),
+/// so the Owl's Kengeki_Activate never saw its 200226 (boss bug hunt 2026-10-14).
+pub(crate) fn clash_after(d: &crate::data::CharData, a: &Actor, e: &mut crate::enemy::Enemy, fallback: i64) {
+    let own = d.anim(&a.anim).is_some_and(|an| {
+        an.events.iter().any(|ev| matches!(ev.kind, 66 | 67) && ev.start <= 0.05 && ev.arg_i64("SpEffectID").is_some_and(|id| (200200..=200229).contains(&id)))
+    });
+    if own {
+        e.clash_count(fallback);
+    } else {
+        e.add_clash(fallback);
+    }
+}
+
+/// [`GuardPick::None`]'s ExecDamage tail: the damage reaction the chr has for the level (rank
+/// permitting), else whether ExecNoSyncAddDamage flinches it additively.
+pub(crate) fn guard_fall_through(d: &crate::data::CharData, da: &Actor, level: i64, aerial: bool, from: Vec3, at: Vec3) -> (Option<String>, bool) {
+    let want = enemy_damage_state_air(d, level, da, from, at, aerial).filter(|s| d.anim_key(s).is_some());
+    let ok = want.clone().filter(|s| sword_reaction_allowed(&da.state, s));
+    let rejected = want.is_some() && ok.is_none();
+    let flinch = ok.is_none() && no_sync_add_flinches(level, aerial, rejected);
+    (ok, flinch)
+}
+
+/// c9997 ExecNoSyncAddDamage's gate (c9997.lua:2901): a minimum-level hit, an aerial one, or
+/// one whose reaction the transition rank rejected; level 0 (super armour / no motion) never.
+pub(crate) fn no_sync_add_flinches(level: i64, aerial: bool, rejected: bool) -> bool {
+    level == 8 || aerial || rejected
 }
 
 /// Guard arc half-angle [deg]: the active ShieldBlock flag's ArgB (exe FUN_140b6ab40: blocked
 /// when facing . attack dir < cos(ArgB + 180 deg); ArgB 0 acts like 90 = the front half).
-pub(crate) fn guard_half_angle(d: &crate::data::CharData, a: &Actor) -> f32 {
+pub(crate) fn guard_half_angle(d: &crate::data::CharData, a: &Actor, gates: Option<&[i64]>) -> f32 {
     // NPCs: NpcParam guardAngle (c1020 60) - the angle vfunc is per class (EnemyIns vs PlayerIns).
     if a.side == Side::Enemy && a.guard_angle > 0.0 {
         return a.guard_angle;
     }
-    d.events_at(&a.anim, a.t)
+    // The shield-block flag under the defender's live gates (`event_gates`).
+    d.events_at_on(&a.anim, a.t, gates)
         .find(|e| e.kind == 0 && e.flag_type() == Some(FLAG_SHIELD_BLOCK))
         .and_then(|e| e.arg_i64("ArgB"))
         .filter(|&b| b != 0)
@@ -805,7 +992,7 @@ pub(crate) fn guard_half_angle(d: &crate::data::CharData, a: &Actor) -> f32 {
 /// Samples of the attack capsule across one tick (previous position -> current).
 const SWEEP_STEPS: usize = 4;
 
-fn yaw_to(from: Vec3, to: Vec3) -> f32 {
+pub(crate) fn yaw_to(from: Vec3, to: Vec3) -> f32 {
     let d = (to - from).with_y(0.0);
     f32::atan2(-d.x, -d.z)
 }
@@ -842,6 +1029,8 @@ pub(crate) fn guard_skill_rate(combat: &Combat, config: &GameConfig, attribute: 
 /// Returns (HP rate, posture rate, broke).
 pub(crate) fn armor_rates(combat: &Combat, e: &mut crate::enemy::Enemy, da: &mut Actor, atk: &Attack, weapon: Option<i64>) -> (f32, f32, bool) {
     let (npc_hp, npc_posture) = npc_attribute_rates(combat, da, atk);
+    let (timed_hp, timed_posture) = timed_rates(combat, e, da, atk);
+    let (npc_hp, npc_posture) = (npc_hp * timed_hp, npc_posture * timed_posture);
     let Some(ar) = e.armor.clone() else {
         return (npc_hp, npc_posture, false);
     };
@@ -851,6 +1040,18 @@ pub(crate) fn armor_rates(combat: &Combat, e: &mut crate::enemy::Enemy, da: &mut
     }
     let (hp, posture) = ar.rates(atk.atk_attribute, atk.stamina_physics_attribute);
     (hp * npc_hp, posture * npc_posture, false)
+}
+
+/// The rates of the timed SpEffects Wolf's tools put on an enemy (Enemy::add_timed, kept in its
+/// clash list): the Firecracker LV3-B burst's 9800 (2 s, every damage cut and
+/// def*StaminaDmgRate x1.125). HP by the hit's physical atkAttribute (gap: the elemental parts
+/// get the same rate), posture by its staminaPhysicsAttribute. They were never read (round 30).
+pub(crate) fn timed_rates(combat: &Combat, e: &crate::enemy::Enemy, da: &Actor, atk: &Attack) -> (f32, f32) {
+    let d = combat.data_of(da);
+    e.clash
+        .iter()
+        .filter_map(|(id, _)| d.sp_effects.get(&id.to_string()).or_else(|| combat.player.sp_effects.get(&id.to_string())))
+        .fold((1.0, 1.0), |(hp, posture), s| (hp * s.damage_cut.physical(atk.atk_attribute), posture * s.def_stamina_rate(atk.stamina_physics_attribute)))
 }
 
 /// An NPC's NpcParam rates for a hit's attributes: HP x <attr>DamageCutRate / <attr>DamageRate for
@@ -867,10 +1068,60 @@ pub(crate) fn npc_attribute_rates(combat: &Combat, da: &Actor, atk: &Attack) -> 
     (rate(crate::data::npc_damage_rate_field(atk.atk_attribute)), rate(crate::data::npc_stamina_rate_field(atk.stamina_physics_attribute)))
 }
 
+/// An enemy's posture rate when it deflects or blocks Wolf: its SpEffects' rate times its NpcParam
+/// <attr>StaminaDmgRate, as on a hit. Exe FUN_1408439a0 (14084.c:2702-2747) multiplies the
+/// defender's per-attribute rate (vfunc 0x248, the attack's attribute +0x2c) and its SpEffects into
+/// every outcome; the guard arms read only the SpEffects (round 28: c1180 servants' heavyHit 0.6).
+pub(crate) fn enemy_guard_posture_rate(combat: &Combat, da: &Actor, atk: &Attack) -> f32 {
+    def_stamina_rate(combat, da, atk.stamina_physics_attribute) * npc_attribute_rates(combat, da, atk).1
+}
+
 /// Posture-damage rate of an enemy defender's own SpEffects (its anim's TAE ones and its
 /// residents): their def<Attr>StaminaDmgRate for the attack's staminaPhysicsAttribute, multiplied
 /// (as `guard_skill_rate`; Isshin's change a000_003015 holds 3540090 "Revived Kensei posture damage
 /// multiplier suppression": x0.3). gap: the exe's sum vs product of several is not traced.
+/// An NPC hit's HP on a defender through its worn SpEffects' damage rates (TAE-applied and
+/// resident): the physical part by the hit's atkAttribute, each element by its own rate. Wolf's
+/// break anims a000_190000 / a050_190100 put on 109400 (all x1.5: "more damage taken while
+/// broken"); it was never applied (round 25). gap: the exe site is not traced (damage_cut_field).
+pub(crate) fn npc_hit_damage(combat: &Combat, atk: &Attack, da: &Actor) -> f32 {
+    let r = damage_rates(combat, atk, da);
+    atk.atk_phys * r[0] + atk.atk_mag * r[1] + atk.atk_fire * r[2] + atk.atk_thun * r[3] + atk.atk_dark * r[4]
+}
+
+/// The defender's SpEffect damage cuts per element (phys, mag, fire, thunder, dark): the product
+/// of its TAE and resident rows' rates. Shared by the guarded hit (round 74: guard_chip skipped
+/// them, so a guarded hit could chip more than the same hit cut unguarded).
+pub(crate) fn damage_rates(combat: &Combat, atk: &Attack, da: &Actor) -> [f32; 5] {
+    let d = crate::actor::data_for(combat, da);
+    let mut cuts: Vec<&crate::data::DamageCut> = Vec::new();
+    if !da.anim.is_empty() {
+        cuts.extend(d.sp_effects_at(&da.anim, da.t).iter().map(|(_, s)| &s.damage_cut));
+    }
+    cuts.extend(da.resident.iter().filter_map(|id| d.sp_effects.get(&id.to_string())).map(|s| &s.damage_cut));
+    let rate = |f: &dyn Fn(&crate::data::DamageCut) -> f32| cuts.iter().map(|c| f(c)).product::<f32>();
+    [rate(&|c| c.physical(atk.atk_attribute)), rate(&|c| c.magic), rate(&|c| c.fire), rate(&|c| c.thunder), rate(&|c| c.dark)]
+}
+
+/// HP an NPC hit takes off Wolf through his guard (Block) or deflect: each element times
+/// (1 - Kusabimaru 5000's <elem>GuardCutRate / <elem>JustGuardCutRate %). The sword absorbs all
+/// physical damage but only 33 / 50 % of fire, 25 / 50 % of magic, 50 / 100 % of dark and none of
+/// lightning, so a torch bandit's fire chips HP through a block (round 25; kb/enemy.md: guarded
+/// hits run the same damage chain, a full guard cut leaves 0).
+/// `weapon`: the guarding row - the open Loaded Umbrella's own (76000-76300: dark 100 / 100, the
+/// Lotus fire 100, the Lilac magic 100) when it guards, else the sword's (round 73: the umbrella
+/// leaked the sword's fire / dark / magic chip).
+/// `rates`: the defender's own damage cuts ([`damage_rates`]).
+pub(crate) fn guard_chip(combat: &Combat, atk: &Attack, deflect: bool, weapon: i64, rates: [f32; 5]) -> f32 {
+    let full = crate::data::weapon_row(weapon);
+    let w = full.as_ref().unwrap_or_else(|| combat.param("EquipParamWeapon", weapon));
+    let pass = |e: &str| {
+        let key = if deflect { format!("{e}JustGuardCutRate") } else { format!("{e}GuardCutRate") };
+        (1.0 - w[key.as_str()].as_f64().unwrap_or(100.0) as f32 / 100.0).clamp(0.0, 1.0)
+    };
+    atk.atk_phys * pass("phys") * rates[0] + atk.atk_mag * pass("mag") * rates[1] + atk.atk_fire * pass("fire") * rates[2] + atk.atk_thun * pass("thun") * rates[3] + atk.atk_dark * pass("dark") * rates[4]
+}
+
 pub(crate) fn def_stamina_rate(combat: &Combat, da: &Actor, attribute: i64) -> f32 {
     if da.side != Side::Enemy {
         return 1.0;
@@ -950,9 +1201,80 @@ pub fn teams_hostile(a: i64, b: i64) -> bool {
     }
 }
 
-/// An NPC's team (NpcParam teamType; 6 "Enemy" without one).
+/// An NPC's team: an active SpEffect's changeTeamType (>= 0) over NpcParam teamType (6 "Enemy"
+/// without one). The Finger Whistle's madness 230515 / 230516 (prosthetic::madden) is 29,
+/// TEAM_TYPE_Indiscriminate (common_ai_define.lua:422).
+/// The SpEffects an actor wears now: NpcParam residents, the TAE ones (and those outliving their
+/// window, `sp_chained`), and an enemy's engine / bullet ones (`clash`).
+pub(crate) fn worn_sp(a: &Actor, clash: &[(i64, f32)]) -> Vec<i64> {
+    a.resident.iter().copied().chain(a.sp_chained.iter().map(|c| c.0)).chain(a.tae_prev.iter().copied()).chain(clash.iter().map(|c| c.0)).collect()
+}
+
+/// The stateInfos that gate an NPC's TAE events now (AttackBehavior / BulletBehavior /
+/// ChrActionFlag with a StateInfo): those of every SpEffect it wears (`worn_sp`), a resident
+/// giving way to a worn one of its spCategory (sound.rs active_state_infos's rule). The static
+/// NpcParam list (`resident_gates`) missed the ones put on in play: Lady Butterfly's 3509200
+/// "HU for bullet activation" (stateInfo 184, from her a100_021000, endurance -1) arms her
+/// second-form bullets 310-530; the Innsmouth c1300's 3130000 (971) its bullet 900. None for
+/// Wolf (player.rs keeps his gear's gates in `resident_gates`).
+pub(crate) fn event_gates(combat: &Combat, a: &Actor, clash: &[(i64, f32)]) -> Option<Vec<i64>> {
+    if a.side == Side::Player {
+        return None;
+    }
+    let d = data_for(combat, a);
+    let worn = worn_sp(a, clash);
+    let cat = |id: i64| crate::data::sp_cycle(id).map_or(0, |c| c.category);
+    let worn_cats: Vec<i64> = worn.iter().filter(|id| !a.resident.contains(id)).map(|&id| cat(id)).filter(|&c| c > 0).collect();
+    let mut v: Vec<i64> = worn
+        .iter()
+        .filter(|&&id| !(a.resident.contains(&id) && cat(id) > 0 && worn_cats.contains(&cat(id))))
+        .filter_map(|&id| d.sp_effects.get(&id.to_string()).map(|s| s.state_info).or_else(|| crate::data::sp_cycle(id).map(|c| c.state_info)))
+        .filter(|&si| si > 0)
+        .collect();
+    v.sort();
+    v.dedup();
+    Some(v)
+}
+
+/// The ThrowParam row "PC -> this enemy" with suffix `sfx` that enemy `a` takes now: the row or
+/// its "（HU）" twin (+500) whose additionalConditionSpecialEffect_forDef (-1 = none) it wears.
+/// The anim-set conditions 200030-200034 ("Anime ID offset", stateInfo 270-274) read its
+/// anim_group. So the spear General c1021 and the Okami warrior c7410 (a100, 200031) are
+/// mikiri'd by their only row 0690, and Isshin's spear phase by 15400690 / 0620 / 0510, not
+/// 0190 / 0120 / 0010 (200030); Butterfly's second form by 15090510.
+/// gap: the exe looks the row up by throw kind and chr ids (not traced); ours tries the two ids.
+pub(crate) fn throw_row_for(combat: &Combat, a: &Actor, sfx: i64) -> Option<i64> {
+    let foe = combat.foe_of(a);
+    let worn = worn_sp(a, &[]);
+    [sfx, sfx + 500].into_iter().map(|s| foe.throw_row(s)).find(|&id| {
+        let Some(r) = combat.params.get("ThrowParam").and_then(|t| t.get(id.to_string())) else { return false };
+        match r["additionalConditionSpecialEffect_forDef"].as_i64().unwrap_or(-1) {
+            c if c <= 0 => true,
+            c @ 200030..=200034 => c - 200030 == a.anim_group as i64,
+            c => worn.contains(&c),
+        }
+    })
+}
+
+/// A hit on an enemy drains its super-armour pool (actor::SuperArmor::hit): the attack's SA
+/// damage (data::super_armor_damage) x the product of the defender's worn saReceiveDamageRate
+/// (FUN_140bfdd20). The stateInfo-155 changeSuperArmorPoint bonus is in SuperArmor::full().
+/// gap: the SpEffect +0x8c factor (FUN_140bfd040) is not traced; NpcParam
+/// superArmorBrakeKnockbackDist is 0 on every row, so the break's knockback is left out.
+pub(crate) fn super_armor_hit(da: &mut Actor, clash: &[(i64, f32)], pc: bool, atk_param_id: i64) -> bool {
+    if da.super_armor.full() <= 0.0 {
+        return false;
+    }
+    let mut ids = worn_sp(da, clash);
+    ids.sort();
+    ids.dedup();
+    let rate: f32 = ids.iter().filter_map(|id| crate::data::sp_cycle(*id)).map(|c| c.sa_rate).product();
+    da.super_armor.hit(crate::data::super_armor_damage(pc, atk_param_id) * rate)
+}
+
 pub fn team_of(combat: &Combat, a: &Actor) -> i64 {
-    combat.npc(a)["teamType"].as_i64().unwrap_or(6)
+    let changed = a.sp_chained.iter().rev().find_map(|(id, _)| crate::data::sp_cycle(*id).map(|c| c.team).filter(|t| *t >= 0));
+    changed.unwrap_or_else(|| combat.npc(a)["teamType"].as_i64().unwrap_or(6))
 }
 
 fn resolve(
@@ -967,14 +1289,35 @@ fn resolve(
     mut throw: Option<ResMut<crate::player::ActiveThrow>>,
     players: Query<&crate::player::Player>,
     mut statuses: ResMut<crate::status::Statuses>,
+    mut ai_sounds: Option<ResMut<crate::enemy::AiSounds>>,
 ) {
     // The equipped prosthetic (group, enough Spirit Emblems for a use): the umbrella's guard
     // reactions and the Mist Raven's atemi.
     let equipped = players.iter().next().and_then(|p| crate::player::equipped_tool(&combat, &config, p.tool_slot).map(|t| (t, p.emblems)));
+    // Wolf's enchantment's hit effect (data::atk_occurrence: Flame Vent 106020 -> burn 9100 ...).
+    // A sword / combat-art hit (category 1). gap: throw / charge hits are passed as neither (no
+    // enchantment row asks for them).
+    let wolf_occurrence = players.iter().next().and_then(|p| crate::data::atk_occurrence(&p.timed.iter().map(|t| t.0).collect::<Vec<_>>(), crate::data::HIT_CAT_SWORD, false, false));
     let tool = equipped.map(|(t, emblems)| (t.group, emblems >= t.emblems.max(1)));
     let tool_weapon = equipped.map(|(t, _)| t.id);
     // Wolf's spot: a posture break faces him (front / back collapse), whichever pair sees it.
     let wolf_at = q.iter().find(|x| x.1.side == Side::Player).map(|x| x.2.translation);
+    // AtkParam AppearAiSoundId: once per attack issued (FUN_1409a1290, 1409a.c:2197), at the
+    // attacker: here each AttackBehavior window that opens this tick. gap: a bullet's own attack
+    // record (its Appear sound) is not emitted.
+    if let Some(s) = ai_sounds.as_mut() {
+        for (ent, a, tf, e, ..) in q.iter() {
+            if a.anim.is_empty() || a.prev_t >= a.t || e.is_some_and(|e| e.is_dead()) {
+                continue;
+            }
+            let pc = a.side == Side::Player;
+            let gates = event_gates(&combat, a, e.map_or(&[][..], |e| &e.clash[..]));
+            for (_, atk, _) in data_for(&combat, a).attack_windows_on(&a.anim, gates.as_deref()).into_iter().filter(|(ev, ..)| ev.start > a.prev_t && ev.start <= a.t) {
+                let id = crate::data::atk_ai_sounds(pc, atk.atk_param_id).0;
+                s.emit(&combat, id, tf.translation, (!pc).then_some(ent), (!pc).then(|| team_of(&combat, a)));
+            }
+        }
+    }
     let mut pairs = q.iter_combinations_mut();
     while let Some([mut x, mut y]) = pairs.fetch_next() {
         for flip in [false, true] {
@@ -998,9 +1341,20 @@ fn resolve(
                 continue;
             }
             let ad = data_for(&combat, &aa);
+            // An NPC's worn SpEffects shift its judges (data::shift_judge: the Shura samurai's
+            // enchanted 105 / 107), with no fallback when the shifted row is missing.
+            let worn = (aa.side != Side::Player).then(|| worn_sp(&aa, ae.as_ref().map_or(&[][..], |e| &e.clash[..])));
+            let gates = event_gates(&combat, &aa, ae.as_ref().map_or(&[][..], |e| &e.clash[..]));
             let mut windows: Vec<(i32, i64, Attack, bool)> = ad
-                .attack_windows(&aa.anim)
+                .attack_windows_on(&aa.anim, gates.as_deref())
                 .into_iter()
+                .filter_map(|(e, atk, j)| match &worn {
+                    Some(w) if crate::data::shift_judge(j, w) != j => {
+                        let s = crate::data::shift_judge(j, w);
+                        ad.attacks.get(&s.to_string()).map(|a| (e, a, s))
+                    }
+                    _ => Some((e, atk, j)),
+                })
                 .filter(|(e, atk, _)| e.in_time(aa.t) && atk.oppose_target != 0 && (atk.atk_stam > 0.0 || atk.npc_damage() > 0.0 || atk.direct_atk_stam_damage > 0.0))
                 .map(|(e, atk, j)| ((e.start * TAE_FPS).round() as i32, j, atk.clone(), false))
                 .collect();
@@ -1009,6 +1363,10 @@ fn resolve(
             let (mine, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut aa.bullet_hits).into_iter().partition(|(t, _)| *t == def_e);
             aa.bullet_hits = rest;
             windows.extend(mine.into_iter().map(|(_, atk)| (i32::MIN, -1, atk, true)));
+            // The first swing window this tick's outcome: a second one landing on the same tick
+            // (c1700 Attack3076's two blades, judges 160 + 161) meets the same guard, not the
+            // deflect / damage reaction the first just started (play_state resets anim / t).
+            let mut tick_outcome: Option<Outcome> = None;
             for (start, judge, atk, bullet) in windows {
                 if !bullet && aa.hits_done.contains(&(def_e, judge, start)) {
                     continue;
@@ -1079,6 +1437,13 @@ fn resolve(
                 }
                 aa.hits_done.push((def_e, judge, start));
                 aa.attack_hit = true;
+                // AtkParam HitAiSoundId: once per target the attack lands on, guarded or not
+                // (FUN_1409e68e0 after the damage call, 1409e.c:3685), at the hit (the defender here).
+                if let Some(s) = ai_sounds.as_mut() {
+                    let pc = aa.side == Side::Player;
+                    let hit = crate::data::atk_ai_sounds(pc, atk.atk_param_id).1;
+                    s.emit(&combat, hit, dtf.translation, (!pc).then_some(att_e), (!pc).then(|| team_of(&combat, aa)));
+                }
 
                 let dd = data_for(&combat, &da);
                 let defending = !da.anim.is_empty();
@@ -1109,19 +1474,21 @@ fn resolve(
                 // window becomes the mikiri throw (ThrowParam 11020190). The attacker loses
                 // staminaDamageAttackHitParry posture.
                 if aa.side == Side::Enemy
-                    && atk.atk_type == 2
-                    && atk.disable_guard == 1
+                    && mikiri_atk(&atk)
                     && defending
                     && dd.flag(&da.anim, da.t, FLAG_MIKIRI)
+                    // Only foes with a ThrowParam 0190 row can be mikiri'd (c1300 thrusts
+                    // 13000100-120, c5080 50800090 have none): the thrust lands as a plain hit.
+                    && throw_row_for(&combat, &aa, 190).and_then(|r| combat.throw(r)).is_some_and(|th| dd.anim(&th.atk_anim).is_some())
                 {
                     // When that empties the attacker's posture it is 見切り崩し instead (0120: Wolf
                     // a20x_511100, ThrowDef13100), the break pose player.rs takes on to the deathblow
                     // (live c1010: 511100 0.55-0.61 s -> 511110).
                     aa.add_posture(atk.stamina_damage_attack_hit_parry * skill_rate(&combat, &config, "attackHitParryStaminaAttackRate"));
-                    let broken_row = aa.posture_broken().then(|| combat.throw(combat.foe_of(&aa).throw_row(120))).flatten().filter(|th| dd.anim(&th.atk_anim).is_some());
+                    let broken_row = aa.posture_broken().then(|| throw_row_for(&combat, &aa, 120).and_then(|r| combat.throw(r))).flatten().filter(|th| dd.anim(&th.atk_anim).is_some());
                     let (row, state) = match broken_row {
                         Some(th) => (Some(th), "ThrowBreak"),
-                        None => (combat.throw(combat.foe_of(&aa).throw_row(190)), "Mikiri"),
+                        None => (throw_row_for(&combat, &aa, 190).and_then(|r| combat.throw(r)), "Mikiri"),
                     };
                     if let Some(th) = row {
                         if dd.anim(&th.atk_anim).is_some() {
@@ -1185,7 +1552,8 @@ fn resolve(
                 let blockable = atk.disable_guard == 0;
                 // The guard arc gates deflects as well as blocks: an attack from behind lands.
                 let in_guard_arc = !da.anim.is_empty()
-                    && da.forward().angle_between(-to_def.normalize_or_zero()).to_degrees() <= guard_half_angle(dd, da);
+                    && da.forward().angle_between(-to_def.normalize_or_zero()).to_degrees()
+                        <= guard_half_angle(dd, &da, event_gates(&combat, &da, de.as_ref().map_or(&[][..], |e| &e.clash[..])).as_deref());
                 // The deflect window comes from the base anim or the additive layer
                 // (AddHardDeflectGuard, HKS ref 228).
                 let (jk, jt) = if !da.add_anim.is_empty() && dd.has_state_info(&da.add_anim, da.add_t, STATE_INFO_JUST_GUARD) {
@@ -1193,7 +1561,14 @@ fn resolve(
                 } else {
                     (da.anim.clone(), da.t)
                 };
-                let outcome = if defending && in_guard_arc && deflectable && dd.has_state_info(&jk, jt, STATE_INFO_JUST_GUARD) {
+                // Only a deflect carries over (its StandDeflect reaction has no just-guard window);
+                // a block reaction keeps the guard pose, so the next window is judged on its own
+                // (the Flame Vent's later windows go through the guard the first one met), and
+                // only as far as this window allows it: a perilous second blade is not deflected.
+                let reuse = tick_outcome.filter(|o| !bullet && deflectable && matches!(o, Outcome::Deflect { .. }));
+                let outcome = if let Some(o) = reuse {
+                    o
+                } else if defending && in_guard_arc && deflectable && dd.has_state_info(&jk, jt, STATE_INFO_JUST_GUARD) {
                     let w = dd
                         .events_at(&jk, jt)
                         .find(|e| {
@@ -1211,13 +1586,27 @@ fn resolve(
                     Outcome::Deflect { window: w.0, at: w.1, rate }
                 } else if defending
                     && blockable
-                    && dd.flag(&da.anim, da.t, FLAG_SHIELD_BLOCK)
+                    // The Shura / servant's armour guard (957, 220062) and the shield's (956):
+                    // gated by the defender's live SpEffects.
+                    && dd.events_at_on(&da.anim, da.t, event_gates(&combat, &da, de.as_ref().map_or(&[][..], |e| &e.clash[..])).as_deref()).any(|e| e.kind == 0 && e.flag_type() == Some(FLAG_SHIELD_BLOCK))
                     && in_guard_arc
                 {
                     Outcome::Block
                 } else {
                     Outcome::Hit
                 };
+                // An enemy bullet's own effect (Bullet sfxId_Hit / sfxId_Flick): the repel one when
+                // guarded or deflected.
+                if let Some((hit, flick, at, dir)) = atk.bullet_fx.filter(|_| bullet) {
+                    let id = if matches!(outcome, Outcome::Hit) { hit } else { flick };
+                    if id > 0 {
+                        let tf = Transform::from_translation(at).with_rotation(Quat::from_rotation_arc(Vec3::NEG_Z, (-dir).normalize_or(Vec3::NEG_Z)));
+                        commands.spawn(crate::fxr::FxEffect::new(id, None, false, tf));
+                    }
+                }
+                if !bullet && tick_outcome.is_none() {
+                    tick_outcome = Some(outcome);
+                }
 
                 // Lightning Reversal: an enemy's lightning (spAttribute 6 / 10) catching Wolf in the
                 // air charges him instead of hurting him (c0000_transition.lua: free / wire fall +
@@ -1225,7 +1614,13 @@ fn resolve(
                 // ...WeakStart; guarded in the air -> g_AddElectroCharge, W_Air(Weak)ElectroCharge-
                 // Deflect{Hard,Easy}). gap: that the charging hit takes no HP or posture is the
                 // engine's (not traced in the exe); from the game, where it does not.
-                if aa.side == Side::Enemy && da.side == Side::Player && da.airborne && matches!(atk.sp_attribute, 6 | 10) {
+                // A blue (weak) lightning hit while Wolf's anim holds ref 289
+                // SP_EF_REF_TAE_ELECTRO_WEAK_DAMAGE_SUPER_ARMOR_SP_ATK_110 (100235 "super armour
+                // against weak charge damage", the air arts a110_3162xx / 3167xx) takes the empty
+                // branch (c0000_transition.lua 1099-1103 in the air, 1157 standing): no charge and
+                // no reaction; the damage stays the engine's.
+                let weak_charge_armour = aa.side == Side::Enemy && weak_charge_armour(&combat, da, &atk);
+                if aa.side == Side::Enemy && da.side == Side::Player && da.airborne && matches!(atk.sp_attribute, 6 | 10) && !weak_charge_armour {
                     let strong = atk.sp_attribute == 6;
                     let w = if strong { "" } else { "Weak" };
                     let state = match outcome {
@@ -1234,12 +1629,19 @@ fn resolve(
                         Outcome::Hit => format!("AirDamageElectroCharge{w}Start"),
                     };
                     if da.play_state(dd, &state) {
-                        // 9495 / 9490: the charge SpEffect, effectEndurance 30 s.
-                        da.electro = Some((if strong { 9495 } else { 9490 }, 30.0));
+                        // The hit's own charge SpEffect (9490-9495, effectEndurance 30 s; its
+                        // strength picks the landing shock's row), else 9495 / 9490.
+                        let charge = atk.sp_effects().into_iter().find(|id| (9490..=9495).contains(id));
+                        da.electro = Some((charge.unwrap_or(if strong { 9495 } else { 9490 }), 30.0));
                         da.move_vel = Vec3::ZERO;
                         log.push("LIGHTNING CAUGHT - attack before landing", Color::srgb(0.6, 0.8, 1.0));
                         continue;
                     }
+                }
+                // On the ground the hit's charge enchantment (9490-9495) sets off its shock at
+                // once (player.rs lightning_shock; round 43, bug fixes - before, a plain hit).
+                if aa.side == Side::Enemy && da.side == Side::Player && !da.airborne && !weak_charge_armour {
+                    da.shock = atk.sp_effects().into_iter().find(|id| (9490..=9495).contains(id)).or(da.shock);
                 }
                 let level = atk.level(da.side == Side::Player);
                 let mid = (atf.translation + dtf.translation) / 2.0 + Vec3::Y * 0.4;
@@ -1250,6 +1652,11 @@ fn resolve(
                         if aa.side == Side::Enemy && da.side == Side::Player {
                             for m in statuses.hit_wolf(&combat, def_e, config.player.combat_art, &atk.sp_effects(), crate::status::Guard::Deflect) {
                                 log.push(format!("Wolf: {m}"), Color::srgb(0.7, 0.55, 0.9));
+                            }
+                            let chip = guard_chip(&combat, &atk, true, if umbrella { tool_weapon.unwrap_or(5000) } else { 5000 }, damage_rates(&combat, &atk, da)) * aa.atk_rate;
+                            if chip > 0.0 {
+                                da.hp = (da.hp - chip).max(0.0);
+                                log.push(format!("deflect chip: -{chip:.0} HP"), Color::srgb(0.9, 0.6, 0.4));
                             }
                         }
                         let left = apply_knockback(&combat, da, atf.translation, dtf.translation, Some(aa.forward()), atk.knockback_just_guard, guard_kb(level), "knockbackRate_vsPlayer_JustGuard");
@@ -1262,7 +1669,7 @@ fn resolve(
                         if !bullet {
                             recoil(&combat, aa, atf.translation, dtf.translation, left);
                         }
-                        let skill = if da.side == Side::Player { guard_skill_rate(&combat, &config, atk.stamina_physics_attribute, true) } else { def_stamina_rate(&combat, da, atk.stamina_physics_attribute) };
+                        let skill = if da.side == Side::Player { guard_skill_rate(&combat, &config, atk.stamina_physics_attribute, true) } else { enemy_guard_posture_rate(&combat, da, &atk) * de.as_deref().map_or(1.0, |e| timed_rates(&combat, e, da, &atk).1) };
                         // The attacker's area-doping posture rate counts here as on a block or a hit.
                         let pd = (atk.atk_stam * aa.stam_atk_rate * skill).floor();
                         let full = da.posture + pd >= da.posture_max;
@@ -1298,9 +1705,10 @@ fn resolve(
                                 if let Some(e) = de.as_deref_mut() {
                                     let refs = crate::prosthetic::enemy_refs(&combat, da, e);
                                     let glv = combat.npc(&da)["guardLevel"].as_i64().unwrap_or(4);
-                                    let pick = enemy_guard_block(dd, &refs, level, glv, atk.just_deflect_action == 2, enemy_is_aerial(&combat, da, e, dtf.translation.y));
-                                    guard_pick(dd, da, e, &combat, aa.side == Side::Player, pick, atf.translation, dtf.translation);
-                                    e.add_clash(if atk.just_deflect_action == 1 { 200211 } else { 200210 });
+                                    let aerial = enemy_is_aerial(&combat, da, e, dtf.translation.y);
+                                    let pick = enemy_guard_block(dd, &refs, level, glv, atk.just_deflect_action == 2, aerial);
+                                    guard_pick(dd, da, e, &combat, aa.side == Side::Player, pick, atf.translation, dtf.translation, level, aerial, part);
+                                    clash_after(dd, da, e, if atk.just_deflect_action == 1 { 200211 } else { 200210 });
                                 }
                             }
                         }
@@ -1320,7 +1728,7 @@ fn resolve(
                                     // lowerYRange), as the plunge and deathblow starts check: one out of
                                     // reach staggers where it stands instead of being pulled onto Wolf's
                                     // dummy.
-                                    let row_id = combat.foe_of(&aa).throw_row(10);
+                                    let row_id = throw_row_for(&combat, &aa, 10).unwrap_or(0);
                                     let pose = (da.side == Side::Player && !da.airborne)
                                         .then(|| combat.throw(row_id))
                                         .flatten()
@@ -1350,8 +1758,20 @@ fn resolve(
                                         let s = if jd == 2 { "AttackBoundEmptyStaminaEnemy_Left" } else { "AttackBoundEmptyStaminaEnemy_Right" };
                                         e.react_from(aa, &combat, da.side == Side::Player, s);
                                     } else if jd == 1 || jd == 2 {
-                                        e.react_from(aa, &combat, da.side == Side::Player, if jd == 1 { "AttackBoundEnemy1_Right" } else { "AttackBoundEnemy1_Left" });
-                                        e.add_clash(if jd == 1 { 200200 } else { 200201 });
+                                        // c9997 ExecAttackJustBound: the clip's number is the hit's
+                                        // BehaviorParam category (data::behavior_category: 6 -> 1, 7 -> 2,
+                                        // 8 -> 3), and a chr without that clip plays no bound (the chain
+                                        // ends FALSE). The castle Owl's warp slashes (judges 220-260,
+                                        // category 7) bound into AttackBoundEnemy2 a000_008602/3, whose TAE
+                                        // 200226 is what 506001's Kengeki_Activate answers with the 3090
+                                        // sweep (boss bug hunt 2026-10-14: always Enemy1, never a perilous).
+                                        let var = combat.npc(aa)["behaviorVariationId"].as_i64().unwrap_or(0);
+                                        let n = crate::data::bound_clip_no(crate::data::behavior_category(200_000_000 + var * 1000 + judge));
+                                        let s = format!("AttackBoundEnemy{n}_{}", if jd == 1 { "Right" } else { "Left" });
+                                        if ad.anim_key(&s).is_some() {
+                                            e.react_from(aa, &combat, da.side == Side::Player, &s);
+                                            clash_after(ad, aa, e, if jd == 1 { 200200 } else { 200201 });
+                                        }
                                     } else if (11..=14).contains(&jd) {
                                         // Additive flinch only: the attack carries on (HKS ExecAttackAddJustBound:
                                         // AttackJustGuardBound_Add0N = anim 9600 + N - 1, when the chr has it).
@@ -1376,8 +1796,8 @@ fn resolve(
                             ),
                             Color::srgb(1.0, 0.85, 0.3),
                         );
-                        let sfx = crate::vfx::hit_sfx(&combat, &atk, crate::vfx::Kind::Deflect, [-1, -1]);
-                        commands.spawn(crate::vfx::Clash::bundle_fx(mid, (atf.translation - dtf.translation).with_y(0.0), crate::vfx::Kind::Deflect, sfx));
+                        let sfx = crate::vfx::hit_sfx_turned(&combat, &atk, crate::vfx::Kind::Deflect, [-1, -1]);
+                        commands.spawn(crate::vfx::Clash::bundle_fx_turned(mid, (atf.translation - dtf.translation).with_y(0.0), crate::vfx::Kind::Deflect, sfx));
                         if let Some(q) = sounds.as_mut() {
                             for se in crate::sound::guard_sounds(&combat, &atk, true) {
                                 q.0.push((se, mid));
@@ -1389,19 +1809,31 @@ fn resolve(
                             for m in statuses.hit_wolf(&combat, def_e, config.player.combat_art, &atk.sp_effects(), crate::status::Guard::Block) {
                                 log.push(format!("Wolf: {m}"), Color::srgb(0.7, 0.55, 0.9));
                             }
+                            let chip = guard_chip(&combat, &atk, false, if umbrella { tool_weapon.unwrap_or(5000) } else { 5000 }, damage_rates(&combat, &atk, da)) * aa.atk_rate;
+                            if chip > 0.0 {
+                                da.hp = (da.hp - chip).max(0.0);
+                                log.push(format!("guard chip: -{chip:.0} HP"), Color::srgb(0.9, 0.6, 0.4));
+                            }
                         }
                         if let Some(q) = sounds.as_mut() {
                             for se in crate::sound::guard_sounds(&combat, &atk, false) {
                                 q.0.push((se, mid));
                             }
                         }
+                        // ExecDebuffReaction played (TRUE ends ExecDamage before ExecGuardBlock).
+                        let mut debuffed = false;
                         if aa.side == Side::Player && da.side == Side::Enemy {
-                            let lines = statuses.hit(&combat, def_e, da, &atk.sp_effects(), true);
+                            let lines = statuses.hit(&combat, def_e, da, &occurrence_hit(aa, &atk, wolf_occurrence.as_ref()), true);
                             // Catching fire flails him through his guard (c9997 ExecDebuffReaction runs
                             // before ExecGuardBlock; see prosthetic.rs fly_bullets).
-                            if lines.iter().any(|l| l == "BURNING") && dd.states.contains_key("FireReaction") && !da.posture_broken() {
+                            let poisoned = lines.iter().any(|l| l == "POISONED");
+                            if let Some(e) = de.as_deref_mut().filter(|e| special_poison_reaction(&combat, dd, da, e, poisoned, &atk.sp_effects())) {
+                                e.react_from(da, &combat, aa.side == Side::Player, "SpecialPoisonReaction");
+                                debuffed = true;
+                            } else if lines.iter().any(|l| l == "BURNING") && dd.states.contains_key("FireReaction") && !da.posture_broken() {
                                 if let Some(e) = de.as_deref_mut() {
                                     e.react_from(da, &combat, aa.side == Side::Player, "FireReaction");
+                                    debuffed = true;
                                 }
                             }
                             for m in lines {
@@ -1413,7 +1845,7 @@ fn resolve(
                         if !bullet {
                             recoil(&combat, aa, atf.translation, dtf.translation, left);
                         }
-                        let skill = if da.side == Side::Player { guard_skill_rate(&combat, &config, atk.stamina_physics_attribute, false) } else { def_stamina_rate(&combat, da, atk.stamina_physics_attribute) };
+                        let skill = if da.side == Side::Player { guard_skill_rate(&combat, &config, atk.stamina_physics_attribute, false) } else { enemy_guard_posture_rate(&combat, da, &atk) * de.as_deref().map_or(1.0, |e| timed_rates(&combat, e, da, &atk).1) };
                         da.add_posture((atk.repel_lost_stam_damage * aa.stam_atk_rate * skill).floor());
                         if !bullet {
                             aa.add_posture(atk.repel_victory_stam_damage_attacker);
@@ -1427,10 +1859,16 @@ fn resolve(
                         match da.side {
                             Side::Player => {
                                 if broken {
-                                    // HKS DAMAGE_TYPE_GUARDBREAK -> W_StandDeflectBreak (a050_190100), in the
-                                    // air W_AirDeflectGuardBreak (a050_190150).
-                                    let gb = if da.airborne { "AirDeflectGuardBreak" } else { "StandDeflectBreak" };
-                                    da.play_state(dd, gb);
+                                    let gb = player_guard_break_state(umbrella, da.airborne);
+                                    // The umbrella's breaks resolve to a070_405400 / 421400 in the
+                                    // state table, which have no clip: theirs are a076 (group 76), as
+                                    // every tool state (round 30).
+                                    match crate::player::sub_anim(dd, gb, 76).filter(|_| umbrella) {
+                                        Some(k) => da.play(gb, &k),
+                                        None => {
+                                            da.play_state(dd, gb);
+                                        }
+                                    }
                                     da.posture = 0.0;
                                     log.push("GUARD BROKEN", Color::srgb(1.0, 0.3, 0.2));
                                 } else if umbrella {
@@ -1453,14 +1891,15 @@ fn resolve(
                                 if let Some(e) = de.as_deref_mut() {
                                     if broken {
                                         e.react_from(da, &combat, aa.side == Side::Player, if atk.deflect_action == 2 { "GuardBreakLeft" } else { "GuardBreakRight" });
-                                    } else {
+                                    } else if !debuffed {
                                         // guard_damage_table[damage level][NpcParam guardLevel] (c9997.lua).
                                         let refs = crate::prosthetic::enemy_refs(&combat, da, e);
                                         let glv = combat.npc(&da)["guardLevel"].as_i64().unwrap_or(4);
-                                        let pick = enemy_guard_block(dd, &refs, level, glv, atk.deflect_action == 2, enemy_is_aerial(&combat, da, e, dtf.translation.y));
-                                        guard_pick(dd, da, e, &combat, aa.side == Side::Player, pick, atf.translation, dtf.translation);
+                                        let aerial = enemy_is_aerial(&combat, da, e, dtf.translation.y);
+                                    let pick = enemy_guard_block(dd, &refs, level, glv, atk.deflect_action == 2, aerial);
+                                        guard_pick(dd, da, e, &combat, aa.side == Side::Player, pick, atf.translation, dtf.translation, level, aerial, part);
                                     }
-                                    e.add_clash(if atk.deflect_action == 1 { 200216 } else { 200215 });
+                                    clash_after(dd, da, e, if atk.deflect_action == 1 { 200216 } else { 200215 });
                                 }
                                 log.push(format!("enemy blocked  (+{:.0} posture)", atk.repel_lost_stam_damage), Color::srgb(0.7, 0.7, 0.8));
                             }
@@ -1471,7 +1910,13 @@ fn resolve(
                             Side::Enemy => {
                                 if let Some(e) = ae.as_deref_mut() {
                                     if dact == 1 || dact == 2 {
-                                        e.react_from(aa, &combat, da.side == Side::Player, if dact == 1 { "AttackNoBoundEnemy1_Right" } else { "AttackNoBoundEnemy1_Left" });
+                                        // c9997 ExecAttackBound: the clip number by category, as the bound's.
+                                        let var = combat.npc(aa)["behaviorVariationId"].as_i64().unwrap_or(0);
+                                        let n = crate::data::bound_clip_no(crate::data::behavior_category(200_000_000 + var * 1000 + judge));
+                                        let s = format!("AttackNoBoundEnemy{n}_{}", if dact == 1 { "Right" } else { "Left" });
+                                        if ad.anim_key(&s).is_some() {
+                                            e.react_from(aa, &combat, da.side == Side::Player, &s);
+                                        }
                                     }
                                 }
                             }
@@ -1482,31 +1927,45 @@ fn resolve(
                                 }
                             }
                         }
-                        let sfx = crate::vfx::hit_sfx(&combat, &atk, crate::vfx::Kind::Guard, [-1, -1]);
-                        commands.spawn(crate::vfx::Clash::bundle_fx(mid, (atf.translation - dtf.translation).with_y(0.0), crate::vfx::Kind::Guard, sfx));
+                        let sfx = crate::vfx::hit_sfx_turned(&combat, &atk, crate::vfx::Kind::Guard, [-1, -1]);
+                        commands.spawn(crate::vfx::Clash::bundle_fx_turned(mid, (atf.translation - dtf.translation).with_y(0.0), crate::vfx::Kind::Guard, sfx));
                     }
                     Outcome::Hit => {
+                        // The super-armour drain comes first: the hit that empties the pool already
+                        // meets it broken (gap: the order of 140b6.c:8214 against the dmgLv pick
+                        // is not traced).
+                        if da.side == Side::Enemy && super_armor_hit(da, de.as_ref().map_or(&[][..], |e| &e.clash[..]), aa.side == Side::Player, atk.atk_param_id) {
+                            log.push("SUPER ARMOUR BROKEN", Color::srgb(1.0, 0.6, 0.2));
+                        }
                         // ChrActionFlag 24 on the defender: no damage motion and no knockback (nor
                         // the attacker's leftover recoil); HP and posture still land (exe b6bfe0;
                         // sekiro-rs fight.rs:660-666, MIT / Apache-2.0).
                         let no_motion = !da.anim.is_empty() && dd.flag(&da.anim, da.t, FLAG_NO_DAMAGE_MOTION);
+                        // An enemy whose SpEffects make the hit's motion level 0 (the straw doll's
+                        // 5300, every dmgLv_* 1): exe b6bfe0 takes the cut as 1.0 and skips the push
+                        // start (FUN_140ba3420), so the enemy stays put and the attacker gets the
+                        // whole scaled distance back (round 25).
+                        let still = !no_motion && da.side == Side::Enemy && level > 0 && damage_motion_level(dd, da, level) == 0;
                         let left = if no_motion {
                             0.0
+                        } else if still {
+                            atk.knockback_hit * knockback_facing(dtf.translation - atf.translation, aa.forward())
                         } else {
                             apply_knockback(&combat, da, atf.translation, dtf.translation, Some(aa.forward()), atk.knockback_hit, damage_kb(level), "knockbackRate_vsPlayer_DirectHit")
                         };
                         if !bullet {
                             recoil(&combat, aa, atf.translation, dtf.translation, left);
                         }
-                        let mut ignited = false;
+                        let (mut ignited, mut poisoned) = (false, false);
                         if aa.side == Side::Enemy && da.side == Side::Player {
                             for m in statuses.hit_wolf(&combat, def_e, config.player.combat_art, &atk.sp_effects(), crate::status::Guard::None) {
                                 log.push(format!("Wolf: {m}"), Color::srgb(0.7, 0.55, 0.9));
                             }
                         }
                         if aa.side == Side::Player && da.side == Side::Enemy {
-                            for m in statuses.hit(&combat, def_e, da, &atk.sp_effects(), false) {
+                            for m in statuses.hit(&combat, def_e, da, &occurrence_hit(aa, &atk, wolf_occurrence.as_ref()), false) {
                                 ignited |= m == "BURNING";
+                                poisoned |= m == "POISONED";
                                 log.push(m, Color::srgb(0.7, 0.55, 0.9));
                             }
                         }
@@ -1520,7 +1979,7 @@ fn resolve(
                         let weapon = if crate::player::is_tool_anim(&aa.anim) { tool_weapon.unwrap_or(5000) } else { 5000 };
                         let dmg = match aa.side {
                             Side::Player => player_attack_damage(&combat, &atk, weapon, &da),
-                            Side::Enemy => atk.npc_damage() * aa.atk_rate,
+                            Side::Enemy => npc_hit_damage(&combat, &atk, &da) * aa.atk_rate,
                         };
                         // An armoured enemy (enemy.rs Armor): Wolf's hit lands on the armour part,
                         // which passes on x0.35 HP / x0.5 posture; its prosthetic (Loaded Spear,
@@ -1537,12 +1996,34 @@ fn resolve(
                         };
                         let dmg = dmg * armor_hp;
                         da.hp = (da.hp - dmg).max(0.0);
+                        // BEH_R_DEATH 962: a killing hit of element fire (env 285 = spAttribute 2) at
+                        // level NONE / SMALL / MIDDLE / LARGE / PUSH / MINIMUM is Wolf's fire death
+                        // (player.rs; round 40, bug fixes).
+                        if da.side == Side::Player && da.hp <= 0.0 && atk.sp_attribute == 2 && matches!(level, 0 | 1 | 2 | 3 | 5 | 8) {
+                            da.death_ref = crate::status::REF_FIRE_ADD_DAMAGE_BURN;
+                        }
+                        // BEH_R_DEATH 785-951: the blow / upper / fling / lightning deaths go by the
+                        // killing hit's damage level and element (player.rs death_starts; round 40).
+                        if da.side == Side::Player && da.hp <= 0.0 {
+                            da.death_hit = Some((level, atk.sp_attribute));
+                        }
                         let pd = aa.stam_atk_rate * if atk.direct_atk_stam_damage > 0.0 { atk.direct_atk_stam_damage } else { atk.atk_stam };
                         let def_rate = def_stamina_rate(&combat, da, atk.stamina_physics_attribute) * armor_posture;
-                        da.add_posture(pd * def_rate);
+                        // (int) like the exe's FUN_1408439a0 return (14084.c:2746) and the guard paths.
+                        da.add_posture((pd * def_rate).floor());
                         match da.side {
                             Side::Player => {
-                                if (da.posture_broken() || is_player_broken(&da.state)) && !broken_takes_normal_damage(level, da) {
+                                // The hit's side for the death (player.rs, BEH_R_DEATH).
+                                let to = (atf.translation - dtf.translation).with_y(0.0).normalize_or_zero();
+                                let (f, r) = (to.dot(da.forward()), to.dot(da.forward().cross(Vec3::Y)));
+                                da.hit_from_back = f < 0.0;
+                                da.hit_back_quadrant = f < 0.0 && f.abs() >= r.abs();
+                                // Wolf's own spCategory 1001 SpEffects replace the level as an enemy's
+                                // (the exe's bfd980 / 10b5100 run per chr): 100306 in the wake-up /
+                                // break poses, 100401 in the grapple, 100400 in the tool anims make a
+                                // hit minimum (an additive flinch), so he is not re-staggered (round 29).
+                                let level = if no_motion { 0 } else { damage_motion_level(dd, da, level) };
+                                if (da.posture_broken() || hks_broken(&da.state)) && !broken_takes_normal_damage(level, da) {
                                     let state = player_break_state(&combat, level, da, atf.translation, dtf.translation);
                                     if da.posture_broken() {
                                         log.push("POSTURE BROKEN", Color::srgb(1.0, 0.3, 0.2));
@@ -1551,14 +2032,18 @@ fn resolve(
                                         da.play_state(dd, &state);
                                     }
                                     da.posture = 0.0;
-                                } else if no_motion {
-                                    // Level 0 (GroundWireShoot a000_202000 frames 0-19, AirWireShoot):
-                                    // the grapple goes on.
+                                } else if !no_motion && special_damage_state(atk.atk_behavior_id, level, da.airborne).is_some_and(|st| da.play_state(dd, st)) {
+                                    // The AtkParam atkBehaviorId reactions (round 39, bug fixes; before,
+                                    // none): `special_damage_state`.
+                                } else if level == 0 || weak_charge_armour {
+                                    // Level 0 (flag 24: GroundWireShoot a000_202000 frames 0-19,
+                                    // AirWireShoot; or a 1001 SpEffect's "none"), or a blue lightning
+                                    // hit under ref 289: the move goes on.
                                 } else {
                                     let state = if da.airborne {
                                         player_air_damage_state(&combat, level, da, atf.translation, dtf.translation)
                                     } else {
-                                        player_damage_state(&combat, level, da, atf.translation, dtf.translation)
+                                        player_damage_state(&combat, level, da, atf.translation, dtf.translation, atk.knockback_hit < 0.0)
                                     };
                                     if let Some(state) = state {
                                         da.play_state(dd, &state);
@@ -1578,8 +2063,9 @@ fn resolve(
                             Side::Enemy => {
                                 // Super armour: the damage level the HKS sees (env 236) is 0 under
                                 // ChrActionFlag 24, else what its spCategory 1001 SpEffects replace it
-                                // with (damage_motion_level); minimum (8) / none flinch additively.
-                                // NpcParam toughness / superArmorDurability are 0 on the rows checked.
+                                // with (damage_motion_level); only minimum (8) flinches additively.
+                                // NpcParam toughness is 0 on every row; superArmorDurability is the
+                                // pool damage_motion_level reads (super_armor_hit, HANDOFF 4.42).
                                 if let Some(e) = de.as_deref_mut() {
                                     // Wolf's HP damage: the map AI hold's damage wake (EMEVD 4[1] /
                                     // 3[23]: a record for final HP damage > 0), with or without a
@@ -1588,6 +2074,13 @@ fn resolve(
                                         e.hurt_by_wolf = true;
                                     }
                                     let level = if no_motion { 0 } else { damage_motion_level(dd, da, level) };
+                                    {
+                                        let refs = crate::prosthetic::enemy_refs(&combat, da, e);
+                                        let hit_ref = |r: i64| atk.sp_effects().iter().any(|id| combat.player.sp_effects.get(&id.to_string()).is_some_and(|s| s.behavior_ref_id == r));
+                                        let fire = atk.sp_attribute == 2 && refs.contains(&1000040);
+                                        let poison = refs.contains(&1000220) && ((hit_ref(1000032) && poisoned) || hit_ref(1000031));
+                                        e.last_hit = (level, fire, poison);
+                                    }
                                     // c9997 GetSpDamage: Wolf's lightning (the weak Lightning Reversal's
                                     // 105000281, spAttribute 6) on one with ref 1000041 (NpcParam 6021) and
                                     // not 1000260 -> W_DamageLightningStart, rank 3 (also mid-swing).
@@ -1595,20 +2088,44 @@ fn resolve(
                                         let refs = crate::prosthetic::enemy_refs(&combat, da, e);
                                         refs.contains(&1000041) && !refs.contains(&1000260)
                                     } && crate::prosthetic::rank_allows(crate::prosthetic::transition_rank(&da.state), 3);
+                                    // SP_DAMAGE_FIRE (c9997 GetSpDamage 879, ExecSpReactionLarge 2986): Wolf's
+                                    // fire swing (spAttribute 2: the Flame Vent's v7302, the Spear's v7804
+                                    // rows) on one with ref 1000040 (NpcParam 6020) and not 1000240 (its
+                                    // DamageFire clip's cool time) -> W_DamageFire, rank 3, after an
+                                    // igniting hit's FireReaction (ExecDebuffReaction first), as
+                                    // prosthetic.rs's tool hits (round 30: the swing played its level's).
+                                    let fire = aa.side == Side::Player && atk.sp_attribute == 2 && dd.anim_key("DamageFire").is_some() && {
+                                        let refs = crate::prosthetic::enemy_refs(&combat, da, e);
+                                        refs.contains(&1000040) && !refs.contains(&1000240)
+                                    } && crate::prosthetic::rank_allows(crate::prosthetic::transition_rank(&da.state), 3);
                                     let aerial = enemy_is_aerial(&combat, da, e, dtf.translation.y);
-                                    let reaction = if lightning && !da.posture_broken() {
+                                    let mut rejected = false;
+                                    let reaction = if special_poison_reaction(&combat, dd, da, e, poisoned, &atk.sp_effects()) {
+                                        Some("SpecialPoisonReaction".to_string())
+                                    } else if lightning && !da.posture_broken() {
                                         Some("DamageLightningStart".to_string())
                                     } else if burning && !da.posture_broken() {
                                         Some("FireReaction".to_string())
+                                    } else if fire && !da.posture_broken() {
+                                        Some("DamageFire".to_string())
                                     } else {
                                         let can_flinch = !e.is_attacking() || dd.flag(&da.anim, da.t, FLAG_DAMAGE_MOTION);
-                                        (can_flinch && !da.posture_broken()).then(|| enemy_damage_state_air(dd, level, da, atf.translation, dtf.translation, aerial)).flatten()
+                                        let want = (!da.posture_broken()).then(|| enemy_damage_state_air(dd, level, da, atf.translation, dtf.translation, aerial)).flatten();
+                                        let ok = want.clone().filter(|s| can_flinch && sword_reaction_allowed(&da.state, s));
+                                        rejected = want.is_some() && ok.is_none();
+                                        ok
                                     };
                                     match reaction {
-                                        Some(state) => e.react_from(da, &combat, aa.side == Side::Player, &state),
-                                        // c9997 ExecNoSyncAddDamage: a hit with no reaction (rejected by the swing,
-                                        // or minimum level) flinches additively.
-                                        None if !da.posture_broken() => no_sync_add_damage(dd, da, part, atf.translation, dtf.translation),
+                                        Some(state) => {
+                                            e.react_from(da, &combat, aa.side == Side::Player, &state);
+                                            if state == "DamageFire" {
+                                                crate::prosthetic::add_reaction_cool_time(&combat, da, e, 1000240);
+                                            }
+                                        }
+                                        // c9997 ExecNoSyncAddDamage (c9997.lua:2901): a minimum-level or aerial hit,
+                                        // or one whose reaction the swing's rank rejected, flinches additively;
+                                        // level 0 (super armour / no motion) does not.
+                                        None if !da.posture_broken() && no_sync_add_flinches(level, aerial, rejected) => no_sync_add_damage(dd, da, part, atf.translation, dtf.translation),
                                         None => {}
                                     }
                                 }
@@ -1619,8 +2136,8 @@ fn resolve(
                             Color::srgb(1.0, 0.45, 0.4),
                         );
                         let def_mats = crate::vfx::defender_sfx_materials(&combat, da);
-                        let sfx = crate::vfx::hit_sfx(&combat, &atk, crate::vfx::Kind::Hit, def_mats);
-                        commands.spawn(crate::vfx::Clash::bundle_fx(mid, (atf.translation - dtf.translation).with_y(0.0), crate::vfx::Kind::Hit, sfx));
+                        let sfx = crate::vfx::hit_sfx_turned(&combat, &atk, crate::vfx::Kind::Hit, def_mats);
+                        commands.spawn(crate::vfx::Clash::bundle_fx_turned(mid, (atf.translation - dtf.translation).with_y(0.0), crate::vfx::Kind::Hit, sfx));
                         commands.spawn(crate::gore::HitStains { ids: crate::gore::hit_stain_ids(&atk, def_mats[0]), at: mid, dir: dtf.translation - atf.translation });
                         if let Some(q) = sounds.as_mut() {
                             for se in crate::sound::hit_sounds(&combat, &atk, crate::sound::defender_materials(&combat, da)) {
@@ -1642,6 +2159,17 @@ fn resolve(
                         // poison tick is seen first by an enemy-enemy pair with several enemies.
                         let other = wolf_at.unwrap_or(positions[1 - i]);
                         let from_behind = a.forward().dot((other - tf.translation).with_y(0.0).normalize_or_zero()) < 0.0;
+                        // A ChrActionFlag-96 anim holds a mortal enemy's HP at 1: no death, no
+                        // deathblow (IsNoDead -> SetHP; Enemy::tae_no_dead).
+                        if a.hp <= 0.0 && e.mortal && !a.posture_broken() && crate::enemy::Enemy::tae_no_dead(a, &combat) {
+                            a.hp = 1.0;
+                            continue;
+                        }
+                        if a.hp <= 0.0 && e.dies_at_zero_hp(a, &combat) {
+                            e.die_at_zero_hp(a, &combat);
+                            log.push("KILLED", Color::srgb(1.0, 0.15, 0.15));
+                            continue;
+                        }
                         let why = if a.hp <= 0.0 { "VITALITY EMPTY" } else { "POSTURE BROKEN" };
                         e.on_posture_break(a, &combat, from_behind, config.enemy.broken_time);
                         log.push(format!("{why} - deathblow!"), Color::srgb(1.0, 0.15, 0.15));
@@ -1664,6 +2192,50 @@ fn resolve(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Round 75: a pull hit (negative knockback, env 1121 < 0) mirrors the 4-way small / middle
+    /// reaction (HKS 1070-1079); the front/back levels keep their side.
+    #[test]
+    fn a_pull_hit_mirrors_the_small_reaction() {
+        let c = combat();
+        let wolf = Actor::new(Side::Player, 100.0, 100.0, 0.0, 0);
+        let at = Vec3::ZERO;
+        let front = at + wolf.forward() * 2.0;
+        let push = player_damage_state(&c, 1, &wolf, front, at, false);
+        let pull = player_damage_state(&c, 1, &wolf, front, at, true);
+        assert_eq!(push.as_deref(), Some("StandDamageSmall_F"));
+        assert_eq!(pull.as_deref(), Some("StandDamageSmall_B"));
+        assert_eq!(player_damage_state(&c, 3, &wolf, front, at, true), player_damage_state(&c, 3, &wolf, front, at, false));
+    }
+
+    /// Round 91: the air deflect / guard sizes follow the air handlers' own table (HKS 1285-1349).
+    #[test]
+    fn air_deflects_take_the_air_size_table() {
+        let c = combat();
+        let pick = |deflect: bool, level: i64| player_guard_state(&c, deflect, level, "L", false, true);
+        for deflect in [true, false] {
+            let kind = if deflect { "Hard" } else { "Easy" };
+            for (level, want) in [(1, "Small_L"), (2, "Small_L"), (3, "Large_L"), (5, "Large_L"), (7, "Small_L"), (8, "Small_L")] {
+                let want = format!("AirDeflect{kind}{want}");
+                if c.player.anim_key(&want).is_some() {
+                    assert_eq!(pick(deflect, level), want, "level {level}");
+                }
+            }
+        }
+    }
+
+    /// Round 73: c0000_transition.lua:1158 knocks Wolf down from the sword's break states only; the
+    /// umbrella's (SubGuard) breaks take the normal reactions.
+    #[test]
+    fn umbrella_breaks_take_normal_reactions() {
+        let mut a = Actor::new(Side::Player, 100.0, 100.0, 0.0, 0);
+        for st in ["StandSubGuardDeflectBreak", "LandAirSubGuardDeflectBreak"] {
+            a.state = st.into();
+            assert!(!hks_broken(&a.state) && !broken_takes_normal_damage(1, &a), "{st}");
+        }
+        a.state = "StandDeflectBreak".into();
+        assert!(hks_broken(&a.state));
+    }
 
     fn combat() -> Combat {
         let path = crate::paths::root().join("extracted/combat_data.json");
@@ -1691,6 +2263,57 @@ mod tests {
         assert!(!reach(Vec3::new(0.0, 0.0, 8.0)), "pulled from 8 m");
         assert!(!reach(Vec3::new(0.0, 3.0, 1.0)), "pulled off a roof 3 m up");
         assert!(!reach(Vec3::new(0.0, -3.0, 1.0)), "pulled from 3 m below");
+    }
+
+    /// Round 25: Wolf's posture-break anim wears SpEffect 109400 (every DamageCutRate 1.5), so an
+    /// NPC hit lands x1.5 while he is broken and x1 otherwise.
+    #[test]
+    fn a_broken_wolf_takes_half_again_the_damage() {
+        let c = combat();
+        let atk = Attack { atk_phys: 100.0, atk_fire: 20.0, atk_attribute: 1, ..Default::default() };
+        let mut wolf = Actor::new(Side::Player, 1.0, 1.0, 0.0, 0);
+        assert!((npc_hit_damage(&c, &atk, &wolf) - 120.0).abs() < 1e-3);
+        wolf.anim = "a000_190000".into();
+        wolf.t = 0.3;
+        let hit = npc_hit_damage(&c, &atk, &wolf);
+        assert!((hit - 180.0).abs() < 1e-3, "{hit}");
+    }
+
+    /// Round 25: Kusabimaru (EquipParamWeapon 5000) cuts all physical damage on a guard or a
+    /// deflect but lets 67 % / 50 % of fire, 75 % / 50 % of magic, 50 % / 0 % of dark and all
+    /// lightning through.
+    #[test]
+    fn a_guarded_fire_hit_chips_wolf() {
+        let c = combat();
+        let fire = Attack { atk_phys: 100.0, atk_fire: 30.0, ..Default::default() };
+        assert!((guard_chip(&c, &fire, false, 5000, [1.0; 5]) - 20.1).abs() < 1e-3, "{}", guard_chip(&c, &fire, false, 5000, [1.0; 5]));
+        assert!((guard_chip(&c, &fire, true, 5000, [1.0; 5]) - 15.0).abs() < 1e-3);
+        let sword = Attack { atk_phys: 100.0, ..Default::default() };
+        assert_eq!(guard_chip(&c, &sword, false, 5000, [1.0; 5]), 0.0);
+        let dark = Attack { atk_dark: 40.0, ..Default::default() };
+        assert_eq!(guard_chip(&c, &dark, true, 5000, [1.0; 5]), 0.0);
+        // Round 74: Wolf's own SpEffect cuts (damage_rates) apply through the guard too.
+        let half_fire = guard_chip(&c, &fire, false, 5000, [1.0, 1.0, 0.5, 1.0, 1.0]);
+        assert!((half_fire - 10.05).abs() < 1e-3, "{half_fire}");
+        // Round 73: the open umbrella guards with its own row - the Lotus (76200) stops fire, every
+        // umbrella all dark on a block.
+        if crate::data::weapon_row(76200).is_some() {
+            assert_eq!(guard_chip(&c, &fire, false, 76200, [1.0; 5]), 0.0);
+            assert_eq!(guard_chip(&c, &dark, false, 76000, [1.0; 5]), 0.0);
+            assert!(guard_chip(&c, &dark, false, 5000, [1.0; 5]) > 0.0);
+        }
+    }
+
+    /// Round 25: a slash does not cut a burning enemy's FireReaction (rank 3) or a large blow
+    /// (rank 0) with a small flinch, but a new large blow or a plain state still reacts.
+    #[test]
+    fn a_slash_keeps_the_protected_reactions() {
+        assert!(!sword_reaction_allowed("FireReaction", "DamageSmall_Front"));
+        assert!(!sword_reaction_allowed("DamageLargeBlow", "DamageMiddle_Front"));
+        assert!(sword_reaction_allowed("DamageLargeBlow", "DamageLargeBlow"));
+        assert!(sword_reaction_allowed("FireReaction", "DamageBlowFront"));
+        assert!(sword_reaction_allowed("Idle", "DamageSmall_Front"));
+        assert!(sword_reaction_allowed("DamageSmall_Front", "DamageSmall_Front"));
     }
 
     /// The clock a hit stop takes: 0.06 s held, then (elapsed / length)^2 over the length, so
@@ -1770,6 +2393,23 @@ mod tests {
 /// (staggered, posture-broken; a zombie's bite loop); after a throw that played out, his own
 /// clip (the fall and getting up) plays out.
 fn resolve_throws(combat: Res<Combat>, mut log: Option<ResMut<CombatLog>>, mut q: Query<&mut Actor>, mut was: Local<Option<(String, f32, usize)>>) {
+    // Wolf escaped the grab (player.rs: ThrowEscape on the grabber's flag-70 pulse): the grabber
+    // lets go. c9997 ThrowAtkCommonFunction: env 275 (its own flag 70 + throw state 3/4,
+    // FUN_140b39e40 140b3.c:2607) -> W_ThrowRelease<ThrowID> (c1500: ThrowRelease4112 / 4122,
+    // the grab + 2). gap: one frame late when the player system runs after this one.
+    if q.iter().any(|a| a.side == Side::Player && a.state == "ThrowEscape") {
+        for mut a in &mut q {
+            if a.side != Side::Enemy {
+                continue;
+            }
+            let Some(id) = a.state.strip_prefix("ThrowAtk").and_then(|n| n.parse::<i64>().ok()) else { continue };
+            let d = combat.data_of(&a);
+            let release = format!("ThrowRelease{}", id + 2);
+            if d.anim_key(&release).is_some() {
+                a.play_state(d, &release);
+            }
+        }
+    }
     // (judge, thrower kind, its atk_rate and stam_atk_rate) of a throw landing this frame.
     let mut lands: Option<(i64, usize, f32, f32)> = None;
     let mut throwing = false;
@@ -1813,8 +2453,12 @@ fn resolve_throws(combat: Res<Combat>, mut log: Option<ResMut<CombatLog>>, mut q
             if let Some(log) = log.as_mut() {
                 log.push(format!("thrown: -{:.0} HP, +{pd:.0} posture", atk.atk_phys), Color::srgb(1.0, 0.45, 0.4));
             }
-        } else if cut || (a.anim.is_empty() && !throwing) || (!a.anim.is_empty() && a.t >= combat.player.length(&a.anim)) {
+        } else if cut || (a.anim.is_empty() && !throwing) {
             a.play("StandIdle", "");
+        } else if !a.anim.is_empty() && a.t >= combat.player.length(&a.anim) && a.hp > 0.0 {
+            // The grab's own end: the blow-away of 600030 / 600040 / 600380, else idle (player.rs
+            // grab_end; round 37). At HP 0 player.rs's death takes it.
+            crate::player::grab_end(&mut a, &combat.player);
         }
     }
 }

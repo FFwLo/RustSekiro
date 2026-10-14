@@ -172,6 +172,10 @@ pub struct Sound {
     /// AiSoundParam row and its rank (AI_SOUND_RANK__NORMAL 0 / IMPORTANT 1).
     pub id: i64,
     pub rank: i64,
+    /// The sound record's serial (the exe's global counter, FUN_14060f840):
+    /// GetLatestSoundTargetInstanceID. Wolf's TAE sounds use their AiSoundParam id (one record
+    /// per id, as for `sound_new`); NPC sounds their AiSounds serial.
+    pub serial: i64,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -195,6 +199,8 @@ pub struct Meter {
 pub struct Targeting {
     pub normal: Option<Normal>,
     pub sound: Option<Sound>,
+    /// A sound target was taken or changed this frame (cleared by the hearing pass, enemy.rs).
+    pub sound_new: bool,
     pub indication: Option<Spot>,
     pub memory: Option<Spot>,
     pub meter: Option<Meter>,
@@ -265,8 +271,23 @@ impl Targeting {
     }
 
     /// An AI sound reached the enemy: a sound target at its source (SoundTargetForgetTime).
+    /// A held sound of a higher rank is kept: the exe listener (14062.c:4230-4257) takes rank 0
+    /// sounds only with no sound target or one of rank < 1, rank 1 only under rank 2, so Wolf's
+    /// footsteps (rank 0) do not overwrite a guard break's IMPORTANT sound 5000 (round 25).
     pub fn hear(&mut self, think: &Value, pos: Vec3, id: i64, rank: i64) {
-        self.sound = Some(Sound { pos, forget: f(think, "SoundTargetForgetTime"), id, rank });
+        self.hear_record(think, pos, id, rank, id);
+    }
+
+    /// `hear` for a sound record with its own serial (AiSounds).
+    pub fn hear_record(&mut self, think: &Value, pos: Vec3, id: i64, rank: i64, serial: i64) {
+        if self.sound.is_some_and(|s| s.rank > rank) {
+            return;
+        }
+        // The exe's "sound target changed" flag (FUN_14062a2a0 -> interrupt 46,
+        // INTERUPT_ChangeSoundTarget). gap: the exe compares the sound's serial; refreshed
+        // walk / run events are taken as one sound, so a new AiSoundParam id is "new".
+        self.sound_new |= self.sound.is_none_or(|s| s.id != id);
+        self.sound = Some(Sound { pos, forget: f(think, "SoundTargetForgetTime"), id, rank, serial });
     }
 
     pub fn clear_enemy(&mut self) {
@@ -423,6 +444,24 @@ mod tests {
         for _ in 0..(secs * 60.0) as usize {
             t.update(think, Vec3::ZERO, Vec3::Z, w, 1.0 / 60.0);
         }
+    }
+
+    /// Round 25: a footstep (rank 0) does not overwrite a held guard-break sound (rank 1); an
+    /// equal or higher rank does.
+    #[test]
+    fn a_footstep_keeps_a_held_important_sound() {
+        let think = c1020();
+        let mut t = Targeting::new(1);
+        let spot = Vec3::new(5.0, 0.0, 5.0);
+        t.hear(&think, spot, 5000, 1);
+        t.hear(&think, Vec3::ZERO, 1010, 0);
+        assert_eq!(t.sound.map(|s| (s.pos, s.id, s.rank)), Some((spot, 5000, 1)));
+        t.hear(&think, Vec3::ONE, 5000, 1);
+        assert_eq!(t.sound.map(|s| s.pos), Some(Vec3::ONE));
+        let mut t = Targeting::new(1);
+        t.hear(&think, spot, 1010, 0);
+        t.hear(&think, Vec3::ONE, 1000, 0);
+        assert_eq!(t.sound.map(|s| s.id), Some(1000));
     }
 
     #[test]

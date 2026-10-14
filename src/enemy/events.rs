@@ -55,11 +55,19 @@ pub(super) fn apply_requests(commands: &mut Commands, combat: &Combat, config: &
     std::mem::take(&mut e.disable_req)
 }
 
-/// Each enemy's event message: the latest TAE 231 its anim is in (see `Enemy::msg`).
-pub(super) fn messages(combat: Res<Combat>, mut q: Query<(&mut Enemy, &Actor)>) {
+/// Each enemy's event message: the latest TAE 231 its anim is in (see `Enemy::msg`), and
+/// Wolf's the same way (`WolfMessage`).
+pub(super) fn messages(combat: Res<Combat>, mut q: Query<(&mut Enemy, &Actor)>, player: Single<&Actor, (With<crate::player::Player>, Without<Enemy>)>, mut wolf: ResMut<super::WolfMessage>) {
+    let pa = *player;
+    if let Some(ev) = combat.player.events_at(&pa.anim, pa.t).filter(|ev| ev.kind == super::TAE_EVENT_MESSAGE).max_by(|x, y| x.start.total_cmp(&y.start)) {
+        wolf.msg = ev.arg_i64("EzStateRequestID");
+        if (ev.start > pa.prev_t || pa.prev_t == 0.0) && ev.start <= pa.t {
+            wolf.serial = wolf.serial.wrapping_add(1);
+        }
+    }
     for (mut e, a) in &mut q {
         let d = combat.data_of(a);
-        if let Some(ev) = d.events_at(&a.anim, a.t).filter(|ev| ev.kind == 231).max_by(|x, y| x.start.total_cmp(&y.start)) {
+        if let Some(ev) = d.events_at(&a.anim, a.t).filter(|ev| ev.kind == super::TAE_EVENT_MESSAGE).max_by(|x, y| x.start.total_cmp(&y.start)) {
             e.msg = ev.arg_i64("EzStateRequestID");
             // A new one (it starts this step, or its anim just began).
             if (ev.start > a.prev_t || a.prev_t == 0.0) && ev.start <= a.t {

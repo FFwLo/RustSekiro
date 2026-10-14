@@ -219,6 +219,14 @@ Dated findings, oldest first. Append new entries at the end.
     SetAttackRequest (+0x7430) else StartGuard (+0x7414). gaps: the leftover error's 720 deg/s
     correction (FUN_1407dab40), the 0xd branch (1407d.c:8046); the flight / crouch Default
     rule not run (Guard / General stance turns: see Guard stance).
+    2026-10-14: a move request from idle turns first. ExecActiveTransition's order is ExecAIAction,
+    ExecTurn, then the move (env 3014), and the move goals set the turn target themselves: the
+    exe's Approach / MoveToSomewhere (FUN_1405caa00) passes param 3 to TurnTo (FUN_1405e89f0,
+    +0x9050); FUN_14060c7d0 (from the AI update FUN_140608990) reads TARGET_SELF (-1) as the move
+    point (+0x73d0, only while a move is requested: FUN_1406040b0 == 4) and -2 as no turn. Our
+    driver (enemy.rs, the move arm) tries start_turn before the loco state; the run follows from
+    the turn clip's AI flag 78. Test: the patrol test a_patrol_point_with_a_zero_region_is_reached_by_is_arrived
+    (the point 177 deg behind: TurnDefault_Right180, then RunFrontDefault).
   * Map AI hold (2026-10-12): m11_01 runs common_func 20005110 on 1110236 (15 patrolling enemies
     on 9 maps have one; patrols.json "wake", tools/patrols.py): 2004[1] Set Character AI State
     off, then on with Force Animation -1 once Wolf (10000) is inside its region (3[2]; 1110236's
@@ -504,3 +512,26 @@ Dated findings, oldest first. Append new entries at the end.
   rival: target_guard / target_sp / target_sp_rate). Area doping now scales HP / posture /
   damage: the SpEffect export gained maxHpRate, maxStaminaRate and physicsAttackPowerRate (7013 =
   2.0; before they read 1).
+
+## Grab escape (exe trace, 2026-10-13, read-only; paths under extracted/decomp)
+
+- Throw state +0x18 (setter FUN_140803030 14080.c:1574): 1 thrower / 2 victim at start
+  (1407f.c:6771, 6798), 3 / 4 = escaped (only FUN_1407fa530 1407f.c:6076, from 1 / 2), 5 / 6 = death
+  pair (1407f.c:5661), 0 at cleanup (140be.c:858, not from 6).
+- escHp: ThrowParam +0x2c copied to state +0x1a (14080.c:80; 1407f.c:6771-6776; 140be.c:880-888).
+  FUN_140bdf220 (140bd.c:11248) adds a delta, clamps >= 0, no-op unless the row's escHp > 0; under 1
+  -> FUN_140802b70 (14080.c:1691) -> FUN_1407fa530 -> state 3 / 4. FUN_140be15c0 (140be.c:980) is the
+  network message path only.
+- Single-player decrements: the self-escape cycle FUN_140808640 (14080.c:2740; driven 14080.c:10710-
+  10723 when escHp != 0): each cycle window, presses >= count -> FUN_140802c30 (14080.c:1742) ->
+  escHp -1. Window / count inferred as selfEscCycleTime (+0x2e) / selfEscCycleCnt (+0x39) (the init
+  FUN_140808600's args are lost). Presses: FUN_140807eb0 (button count FUN_140960350 + a stick
+  shake with hysteresis; binding is a gap). Also damage on the victim: FUN_140b68ff0 140b6.c:4425
+  (-(int) of a float at +0xdc, victim flag +0x70 bit4; gap: unit / which hits).
+- env 277 BEH_R_THROW_ESCAPE = FUN_140b39e90 (140b3.c:2669): the thrower's latched TAE flag 70
+  (+0xc24 bit1; set unconditionally 140b5.c:7457, latched 140b2.c:6653) AND own state 3 / 4
+  (FUN_140be08f0 140be.c:288). HKS c0000_transition.lua:5597-5602 -> :759 W_ThrowEscape<ThrowId>
+  (HKB 600355 / 600375, c0000_cmsg.lua:1284).
+- c1500: 21500100 (4110 / 600350) escHp 20, cnt 1, time 100; 21500200 (4120 / 600370) escHp 10,
+  cnt 1, time 100; 21500000 (4100) and the 115000xx rows 0 (no escape).
+- Gaps: thrower-side anim on escape; 1407f.c:7230-7268 callers; the cycle time unit (100 read as ms).

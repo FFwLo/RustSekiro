@@ -931,10 +931,29 @@ fn boss_music(
     let fighting = fight_screen(screen.as_ref().map(|s| s.get()), &mut from_fight);
     let run = script.as_ref().and_then(|s| s.run.as_ref()).filter(|r| fighting && r.defeated.is_none());
     let want = run.and_then(|r| {
-        let entry = boss_bgm().get(&r.row)?;
+        // The arena's inits all run at once in the game, so the tracks of every boss row of the
+        // cast count: boss_bgm.json splits a two-boss arena by row (71101000 Way of Tomoe holds
+        // m110200001 only; Isshin's m110200002 / 3 sit under 54000000; Emma 74000010 / Isshin
+        // Ashina 54300000 the same) and Run.row stays the picked one when the fight goes on with
+        // the next boss, so his music never started.
         let on: HashSet<i64> = r.flags_on().into_iter().collect();
-        Some((entry.bank.as_str(), bgm_track(entry, &on)?.event.as_str()))
+        let bgm = boss_bgm();
+        let mut merged: Option<BgmEntry> = None;
+        for row in r.cast_rows() {
+            let Some(entry) = bgm.get(&row) else { continue };
+            match merged.as_mut() {
+                None => merged = Some(entry.clone()),
+                Some(m) => {
+                    let new: Vec<BgmTrack> = entry.tracks.iter().filter(|t| !m.tracks.iter().any(|x| x.event == t.event)).cloned().collect();
+                    m.tracks.extend(new);
+                }
+            }
+        }
+        let entry = merged?;
+        let track = bgm_track(&entry, &on)?.event.clone();
+        Some((entry.bank.clone(), track))
     });
+    let want = want.as_ref().map(|(b, t)| (b.as_str(), t.as_str()));
     if playing.as_ref().map(|p| p.0.as_str()) != want.map(|w| w.1) {
         if let Some((key, ev)) = playing.take() {
             info!("FMOD: boss music {key} off");
@@ -1356,6 +1375,30 @@ mod tests {
         assert_eq!(track(71001000, &[]).as_deref(), Some("m110100001"));
         assert_eq!(track(71001000, &[11115803, 11115802]).as_deref(), Some("m110100002"));
         assert_eq!(track(71001000, &[11115803, 11115802, 11110800]), None);
+        // The two-boss arenas, merged as boss_music does over the cast rows.
+        let merged = |rows: &[i64]| {
+            let mut m: Option<BgmEntry> = None;
+            for r in rows {
+                let e = &bgm[r];
+                match m.as_mut() {
+                    None => m = Some(e.clone()),
+                    Some(m) => m.tracks.extend(e.tracks.iter().cloned()),
+                }
+            }
+            m.unwrap()
+        };
+        let ss = merged(&[71101000, 54000000]);
+        let t = |on: &[i64]| bgm_track(&ss, &on.iter().copied().collect()).map(|t| t.event.clone());
+        assert_eq!(t(&[]).as_deref(), Some("m110200001"));
+        assert_eq!(t(&[11125831]).as_deref(), Some("m110200001"));
+        assert_eq!(t(&[11125831, 11120830, 11125861]).as_deref(), Some("m110200002"));
+        assert_eq!(t(&[11125831, 11120830, 11125861, 11125862]).as_deref(), Some("m110200003"));
+        assert_eq!(t(&[11125831, 11120830, 11125861, 11125862, 11120860]), None);
+        let emma = merged(&[74000010, 54300000]);
+        let t = |on: &[i64]| bgm_track(&emma, &on.iter().copied().collect()).map(|t| t.event.clone());
+        assert_eq!(t(&[11115901]).as_deref(), Some("m110102001"));
+        assert_eq!(t(&[11115901, 11110900, 11115921]).as_deref(), Some("m110102002"));
+        assert_eq!(t(&[11115901, 11110900, 11115921, 11115922]).as_deref(), Some("m110102005"));
     }
 
     /// The boss music banks: each boss_bgm.json track is an event of its sm<area>.fev.

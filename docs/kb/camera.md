@@ -102,6 +102,22 @@ Dated findings, oldest first. Append new entries at the end.
 - 2026-10-11 lock switch mouse: FUN_1409ca120 reads (-v.x, -v.y), v = pad object +0x38f8 -> +0x20 / +0x24
   (FUN_14095fd40 / 50); the stick FUN_1409ca2d0 reads FUN_140960430 / 440 unnegated. The mouse state's writer is not
   found statically (scan for int->float stores at +0x20 / +0x24: none matching), so units and signs stay open.
+- 2026-10-13 lock switch mouse, units (static): +0x38f8 is the pad's current frame snapshot (ring of 0xec-byte
+  frames, set 14096.c:3750), filled by FUN_140960650 (14096.c:3190-3192): +0x20 = FUN_140965bd0 = analog action 0x54
+  * s, +0x24 = FUN_140965c80 = action 0x55 * s, s = +1 if option byte DAT_143d5a988 +0x715 / +0x716 else -1 (likely
+  camera invert X / Y, not verified); FUN_1409ca120's -1 cancels the default, so the switch sees the raw axis.
+  Analog read FUN_1425e8150 (1425e.c:6483, up to 4 bindings, type 2 = device float). The only DirectInput float
+  source: MouseDevice poll FUN_141a8f540 (141a8.c:10829), GetDeviceState DIMOUSESTATE, +0x1b0 / +0x1b4 = (float)lX /
+  lY, relative axis mode, no scale or accumulation: raw counts per poll, y down. So 50 / 25 are counts a frame,
+  the same unit as Bevy's AccumulatedMouseMotion (camera.rs unchanged). Open: the 0x54 -> mouse binding table.
+  Screen d in FUN_1409ca480 is NDC (1409c.c:6512-6532, view then projection matrix from camera +0x10..+0x4c,
+  divided by clip w, no viewport transform; +0x29c7 remaps d via FUN_1402b8e90, not read): y up, so in.y > 0
+  favours lower candidates; mouse down (lY > 0) picks lower, matching camera.rs. Open: the binding's lY sign;
+  the stick (FUN_1409ca2d0 reads +0x10 / +0x14 unnegated, 1409c.c:4870) would pick lower on +y.
+- 2026-10-13 lockCamAdjustRot_MaxX / MaxY / ChaseRate (row +0x128..+0x130) are unused: FUN_1407374e0 copies /
+  blends whole LockCamParam rows (getter FUN_140737d80, 14073.c:3459) via FUN_1407381d0 (14073.c:5223-5225 lerp
+  them like every field) into DAT_143d59938 +8; its readers (FUN_140741e70 callers 14073.c:5426 / 7434 / 8919)
+  never load +0x128..+0x130. Not ported (nothing to port).
 - 2026-10-11 checked AKJama/sekiro-rs's camera / movement fixes (c1782f8, 502c9be, 8eaf879): locked diagonals with
   walk twist, the 4-dir step tilt and the dead-target lock drop were already here; the held-stick realign after a
   lock drop already works (probe test held_stick_realigns_after_the_lock_drops). Their camera has no fulcrum.

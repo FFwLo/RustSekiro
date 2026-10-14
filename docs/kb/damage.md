@@ -279,12 +279,17 @@ Dated findings, oldest first. Append new entries at the end.
 
     | attack | TAE window from | contact (1.5 m / Wolf 2.4 m) | reach |
     |---|---|---|---|
-    | Wolf Combo1 a050_300100 vs c1020 | f7 | f7 | 4.8 m |
-    | General c1020 a000_003000 | f18 | f19-19.5 | 4.25 m |
-    | Ogre c1040 a000_003023 | f28 | f28.5-29 | 5.5 m |
-    | c1010 a000_003000 | f20 | f22.5-23 | 4.0 m |
-    | Dog c1150 a000_003000 (sphere) | f17 | f17 | 4.0 m |
-    | Genichiro c7100 a000_003000 | f20 | f22.5-23 | 4.25 m |
+    | Wolf Combo1 a050_300100 vs c1020 | f7 | f8 | 4.2 m |
+    | General c1020 a000_003000 | f18 | f18.5 | 4.25 m |
+    | Ogre c1040 a000_003023 | f28 | f28 | 5.25 m |
+    | c1010 a000_003000 | f20 | f22 | 4.0 m |
+    | Dog c1150 a000_003000 (sphere) | f17 | f16.5 | 3.5 m |
+    | Genichiro c7100 a000_003000 | f20 | f22 | 4.25 m |
+
+    (Re-run 2026-10-14 after the blend-in root motion port, HANDOFF 4.63 item 8: a step-in out
+    of a standing start is weighted by the blend, so the reaches shrank: Wolf 4.8 -> 4.2 m, Ogre
+    5.5 -> 5.25, dog 4.0 -> 3.5; the 2026-10-12 values were Wolf 4.8, Ogre 5.5, dog 4.0 with
+    contacts f7 / f19-19.5 / f28.5-29 / f22.5-23 / f17 / f22.5-23.)
     | Monk c5000 | - | her default row starts in the intro Event20006 | - |
 
     Reach and first-hit vs the clips (2026-10-12; 60 fps clips, frames halved to TAE 30 fps;
@@ -311,3 +316,30 @@ Dated findings, oldest first. Append new entries at the end.
     Clips without the regular enemies: the combat-flow clip (Juzou, Nightjar, Lone Shadow,
     Seven Spear, modded game), the all-bosses chapter of Kawarada (firecracker clutter). A
     recording of c1010 / c1150 / a c1020 from idle is needed to close the table.
+
+    Regular enemies vs the hitbox playlist (2026-10-13, clips/hitboxes, 1080p60 full speed: the
+    multi-hit spacings land on the TAE offsets; yellow cages = the live hit spheres). TAE windows
+    = kind 1 events as data.rs attack_windows reads them, none StateInfo-gated. Clip frames /2.
+
+    | attack | ours (TAE window) | clip | verdict |
+    |---|---|---|---|
+    | Okami Warrior c1310 a000_003001 (6 hits) | j110 f32-38, then f45 / 57 / 66 / 83 / 112 | 09 0:31.3 (and 0:24.5): first cage TAE 31, gaps 13.5 / 13 / 8.5 / 16.5 / 29 | matches (gaps rule out 003062) |
+    | c1310 a000_003022 (2 hits) | j190 f20-24, j191 f39-45 | 09 0:18.9: gap 18.5, lengths 4 / 6 | matches (chained: no start) |
+    | c1310 a000_003002 (likely) | j120 f29-35 | 09 0:07.6: cage at 28-30 | likely matches (start is a get-up) |
+    | Taro Troop c1180 a100_003013 (likely) | j105 f9-13 | 21 0:51.8: first cage TAE 7.75 | matches |
+    | c1180 a100_003011 / 003012 | j102 f21-25 / j103 f22-26 | 21 0:52.6: 21.5 | about right (chained, +-2) |
+    | Nightjar c1450 a000_003004 / 3061 / 3066 (6 hits) | f58 + 6n, 1 frame each | 38 0:41.0: 12-frame spacing | spacing matches (leap hides the start) |
+    | c1450 4-hit family (3000 / 3001 / 3065) | 4 windows 6 apart | 38 0:22.5 | spacing matches |
+    | c1450 a000_003005 (likely) | j3 f27 / 33 / 39 | 38 1:02.4, 0:52.6 | spacing matches |
+    | Taro Greatshield c1180 a400_003008 Shield Rush | j150 f26-30, j151 x7 (f39-72, 3 each), j152 f89-94 | 24 1:51.2 / 1:55.6: first hit TAE 24.25 from a still pose; 9 cages, gaps exact | matches |
+    | Taro Bell c1180 a200_003020 (7 windows) | j170 f54-60 ... j173 f209 | 22 1:25.7: all 7 within 2 frames | matches (start hidden) |
+    | c1180 a200_003003 rotating swing | j130-132 f28-89, continuous | 22 2:15.7: ~61.5 TAE continuous | matches on length |
+    | c1180 a400_003000-002 / a200_003000-002 chains | 4-frame windows | 24 / 22: lengths match | chain timing not resolvable (no cancel frames in the export) |
+
+    No mismatch over 3 frames: every countable first hit falls 0-1.5 TAE frames from its window
+    start; lengths and spacings agree within +-1. On a deflect the cage often shows for only part
+    of the window (Taro: 5 of 8), so a short cage is not a short window. Not used: 29 Red Guard
+    (every c1070 row is a boss row), 07 Elite Ashina (red eyes: likely Ujinari 14004200, a boss
+    row). None of the c1180 / c1310 windows is StateInfo-gated; no c1180 Bell / Greatshield row has
+    guardBreakRate (only the Bell grab 190 / 191 is unblockable; not seen in the clip). Not done:
+    12 Okami Kemari (balls only, warrior too far), sphere radius vs AtkParam (no credible scale).

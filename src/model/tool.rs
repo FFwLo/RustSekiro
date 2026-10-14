@@ -346,11 +346,14 @@ mod tests {
         let world = app.world_mut();
         // System names need Bevy's debug feature: the plugin's FixedUpdate holds the pose and the
         // place pass (it had none).
-        let count = world.resource_scope(|world, mut schedules: Mut<bevy::ecs::schedule::Schedules>| {
-            let Some(s) = schedules.get_mut(FixedUpdate) else { return 0 };
-            s.initialize(world).unwrap();
-            s.systems().unwrap().count()
-        });
+        // Only FixedUpdate is taken out: initialising a system param may insert a resource, which
+        // a scope over the whole Schedules resource forbids (it failed on some target dirs).
+        let count = world
+            .try_schedule_scope(FixedUpdate, |world, s| {
+                s.initialize(world).unwrap();
+                s.systems().unwrap().count()
+            })
+            .unwrap_or(0);
         assert_eq!(count, 2, "the tool parts are only posed and placed for drawing");
     }
 

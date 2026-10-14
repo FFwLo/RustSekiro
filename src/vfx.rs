@@ -23,6 +23,9 @@ pub struct Clash {
     pub kind: Kind,
     /// The game's effects for it (FFX ids, `hit_sfx`).
     pub sfx: Vec<i64>,
+    /// Each effect's world rotation from HitEffectSfxAngleParam (`hit_sfx_turned`); None (or
+    /// missing) keeps the look-at toward the attacker.
+    pub turns: Vec<Option<Quat>>,
 }
 
 impl Clash {
@@ -30,7 +33,11 @@ impl Clash {
         Self::bundle_fx(pos, normal, kind, Vec::new())
     }
     pub fn bundle_fx(pos: Vec3, normal: Vec3, kind: Kind, sfx: Vec<i64>) -> impl Bundle {
-        (Clash { normal: normal.normalize_or(Vec3::Y), kind, sfx }, Transform::from_translation(pos))
+        (Clash { normal: normal.normalize_or(Vec3::Y), kind, sfx, turns: Vec::new() }, Transform::from_translation(pos))
+    }
+    pub fn bundle_fx_turned(pos: Vec3, normal: Vec3, kind: Kind, fx: Vec<(i64, Option<Quat>)>) -> impl Bundle {
+        let (sfx, turns) = fx.into_iter().unzip();
+        (Clash { normal: normal.normalize_or(Vec3::Y), kind, sfx, turns }, Transform::from_translation(pos))
     }
 }
 
@@ -49,6 +56,32 @@ const SFX_GROUPS: [&str; 15] =
 /// gap: the exe's SFX path is not traced; a deflect falls back to HitEffectSfxConceptParam when the
 /// JustGuard table has nothing, as the traced sound path does (sound::guard_sounds).
 pub fn hit_sfx(combat: &crate::data::Combat, atk: &crate::data::Attack, kind: Kind, def_materials: [i64; 2]) -> Vec<i64> {
+    hit_sfx_turned(combat, atk, kind, def_materials).into_iter().map(|(id, _)| id).collect()
+}
+
+/// `hit_sfx` with each effect's turn: the spark spawn (hit handler FUN_140888960 -> FXHGSfxCtrl
+/// FUN_140929dd0 -> FUN_14092b6c0, 14092.c:7843-8042) looks the HitEffectSfxParam row up in
+/// HitEffectSfxAngleParam. Where that row exists, Euler(X, Y, Z) of the attack's atkDir_forSfx
+/// (1 Upper, 2 Bottom, 3 Left, 4 Right; else 0, 0, 0; degrees, FUN_1406cd620) **replaces** the
+/// look-at rotation as an absolute world rotation; only the position is kept. The event path
+/// FUN_140b63fe0 (character-relative) is the hit-sound dispatcher, not this. atkDir<Dir> swaps
+/// the row (210 -> 211, which does not exist: look-at). FUN_1406cd620 -> FUN_1401b9820
+/// (1401b.c:5245-5407) is DirectXMath XMMatrixRotationRollPitchYaw(X, Y, Z): row-vector
+/// Rz Rx Ry (Z first), i.e. Qy Qx Qz, which is fxr::game_rot (its Y / Z negated for the X mirror).
+pub fn hit_sfx_turned(combat: &crate::data::Combat, atk: &crate::data::Attack, kind: Kind, def_materials: [i64; 2]) -> Vec<(i64, Option<Quat>)> {
+    let turn = |row: i64| -> Option<Quat> {
+        let dir = ["", "Upper", "Bottom", "Left", "Right"].get(atk.atk_dir_sfx as usize).copied().unwrap_or("");
+        let angles = combat.params.get("HitEffectSfxAngleParam")?;
+        let mut r = angles.get(row.to_string())?;
+        if !dir.is_empty() {
+            let swap = r[format!("atkDir{dir}")].as_i64().unwrap_or(-1);
+            if swap >= 0 {
+                r = angles.get(swap.to_string())?;
+            }
+        }
+        let a = |ax: &str| if dir.is_empty() { 0.0 } else { r[format!("{ax}AxisAngle_AttackDir{dir}")].as_f64().unwrap_or(0.0) as f32 };
+        Some(crate::fxr::game_rot([a("X"), a("Y"), a("Z"), 0.0]))
+    };
     let Some(group) = usize::try_from(atk.atk_material_sfx).ok().and_then(|g| SFX_GROUPS.get(g)) else { return Vec::new() };
     let col = format!(
         "{}_{}",
@@ -59,15 +92,15 @@ pub fn hit_sfx(combat: &crate::data::Combat, atk: &crate::data::Attack, kind: Ki
         },
         ["S", "M", "L", "LL", "LLL"][atk.atk_pow_sfx.clamp(0, 4) as usize]
     );
-    let look = |table: &str, mats: [i64; 2]| -> Vec<i64> {
+    let look = |table: &str, mats: [i64; 2]| -> Vec<(i64, Option<Quat>)> {
         let (Some(t), Some(sfx)) = (combat.params.get(table), combat.params.get("HitEffectSfxParam")) else { return Vec::new() };
         let mut out = Vec::new();
         for m in mats.into_iter().filter(|m| *m >= 0) {
             for n in 1..=2 {
                 let concept = t.get(m.to_string()).and_then(|r| r[format!("atk{group}_{n}")].as_i64()).unwrap_or(0);
                 if let Some(id) = (concept > 0).then(|| sfx.get(concept.to_string()).and_then(|r| r[&col].as_i64())).flatten().filter(|id| *id > 0) {
-                    if !out.contains(&id) {
-                        out.push(id);
+                    if !out.iter().any(|(o, _)| *o == id) {
+                        out.push((id, turn(concept)));
                     }
                 }
             }
@@ -201,13 +234,13 @@ fn spawn_clashes(
     for (e, c, tf) in &q {
         commands.entity(e).despawn();
         let pos = tf.translation;
-        // The game's effects, +Z toward the attacker. gap: HitEffectSfxAngleParam's turn by the
-        // attack's direction (atkDir_forSfx) is not applied: the exe's two paths disagree
-        // (kb/visuals.md "HitEffectSfxAngleParam").
-        let game: Vec<i64> = c.sfx.iter().copied().filter(|id| lib.as_mut().is_some_and(|l| l.has(*id))).collect();
+        // The game's effects: +Z toward the attacker, or HitEffectSfxAngleParam's world turn
+        // (`hit_sfx_turned`).
+        let game: Vec<(i64, Option<Quat>)> = c.sfx.iter().enumerate().map(|(i, id)| (*id, c.turns.get(i).copied().flatten())).filter(|(id, _)| lib.as_mut().is_some_and(|l| l.has(*id))).collect();
         if !game.is_empty() {
-            let at = Transform::from_translation(pos).looking_to(-c.normal, Vec3::Y);
-            for id in game {
+            let look = Transform::from_translation(pos).looking_to(-c.normal, Vec3::Y);
+            for (id, turn) in game {
+                let at = turn.map_or(look, |q| Transform::from_translation(pos).with_rotation(q));
                 commands.spawn(crate::fxr::FxEffect::new(id, None, false, at));
             }
             continue;

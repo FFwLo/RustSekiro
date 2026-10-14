@@ -833,12 +833,20 @@ pub fn state_machines(d: &[u8]) -> Vec<String> {
     out
 }
 
-/// A state's (or the machine's wildcard) transitions: " [ev <event id> -> <state id>]" (72-byte
-/// hkbStateMachine::TransitionInfo, eventId@48 toStateId@52).
+/// A state's (or the machine's wildcard) transitions: " [ev <event id> -> <state id> <effect>]"
+/// (72-byte hkbStateMachine::TransitionInfo, transition effect pointer @32, eventId@48,
+/// toStateId@52); the effect is the named hkbBlendingTransitionEffect / CustomTransitionEffect
+/// (see `transition_effects` for its flags: 1 = ignore the from generator's world-from-model,
+/// "NoSrcMotion") or "-" when the transition has none.
 fn transition_list(tf: &Tagfile, r: &Reader, at: usize) -> String {
     let Some((_, arr)) = tf.deref_obj(at) else { return String::new() };
     let Some((a, n)) = tf.deref(arr + tf.field("hkbStateMachine::TransitionInfoArray", "transitions")) else { return String::new() };
-    (0..n).map(|i| format!(" [ev {} -> {}]", r.i32(a + i * 72 + 48), r.i32(a + i * 72 + 52))).collect()
+    (0..n)
+        .map(|i| {
+            let effect = tf.deref_obj(a + i * 72 + 32).and_then(|(t, o)| tf.try_field(&t, "name").map(|f| tf.string(o + f))).unwrap_or_else(|| "-".into());
+            format!(" [ev {} -> {} {effect}]", r.i32(a + i * 72 + 48), r.i32(a + i * 72 + 52))
+        })
+        .collect()
 }
 
 /// hkbTwistModifier objects: name, members (axis, bones, angle method) and variable bindings.

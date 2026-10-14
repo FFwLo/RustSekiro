@@ -53,6 +53,10 @@ GroundJumpLandReady_F
 # W_StandMoveStartFromFreeFallShortStiff = walk/run start clips by direction)
 LandVerticalGroundJump
 LandForwardGroundJump
+# Out of a sprint (ref 1): W_SprintJumpReady a000_201200, or with ref 107 (fast jump) straight
+# W_SprintJumpStart a000_201210 (c0000_transition.lua 2784-2789)
+SprintJumpReady
+SprintJumpStart
 # Locked-on / directional jumps (HKS _SetJumpDirection: stick angle to the facing in 45-degree sectors)
 LockonForwardGroundJumpReady
 LockonForwardGroundJumpStart
@@ -141,6 +145,10 @@ SprintAttackRelease_R
 GroundStep_N
 
 # Hit reactions
+# Blinding (BEH_R_DAMAGE 1105 / 1156 / 1878: damage level none + AtkParam atkBehaviorId 17)
+StandDamageBlinding
+AirDamageBlinding
+LandAirDamageBlinding
 StandDamageSmall_F
 StandDamageMiddle_F
 StandDamageLarge_F
@@ -216,6 +224,7 @@ a200_511110
 a200_511120
 FreeFall
 LandFreeFall
+a000_200021   # LandFreeFall, Selector_LandStiff LONG (fall >= FALL_HEIGHT_LONG_STIFF_LAND 20 m)
 a200_500200
 a200_510200
 a200_510300
@@ -224,6 +233,148 @@ a200_501900   # 崩し蹴りジャンプ始動 / 崩し蹴りジャンプ: jump 
 a200_511900
 a200_511800
 a210_600000
+# Death in a grab (HKS BEH_R_THROW_DEATH -> W_ThrowDefDeathStart<ThrowId>: the grab clip + 1, at
+# the grab clip's flag 69 when HP <= 0 in it; exe env 276 = own flag 69 and throw state 6)
+a210_600001
+a223_600141
+a223_600351
+a223_600371
+# Death in a grab, per ThrowId (Selector_ThrowId; c0000_transition 285 / 301 / 354-356): the death
+# start, then the death loop (env 3028) or the revival-wait loop, and the revival out of it (their
+# CMSGs a000_<ThrowId>_DeathStart / _DeathLoop / _RevivalStayLoop / _Revival)
+a000_600000_DeathStart
+a000_600000_DeathLoop
+a000_600000_RevivalStayLoop
+a000_600000_Revival
+a000_600030_DeathStart
+a000_600030_DeathLoop
+a000_600030_RevivalStayLoop
+a000_600030_Revival
+a000_600040_DeathStart
+a000_600040_DeathLoop
+a000_600040_RevivalStayLoop
+a000_600040_Revival
+a000_600050_DeathStart
+a000_600050_DeathLoop
+a000_600050_RevivalStayLoop
+a000_600050_Revival
+a000_600060_DeathStart
+a000_600060_DeathLoop
+a000_600060_RevivalStayLoop
+a000_600060_Revival
+a000_600090_DeathStart
+a000_600090_DeathLoop
+a000_600090_RevivalStayLoop
+a000_600090_Revival
+a000_600070_DeathStart
+a000_600070_DeathLoop
+a000_600070_RevivalStayLoop
+a000_600070_Revival
+a000_600080_DeathStart
+a000_600080_DeathLoop
+a000_600080_RevivalStayLoop
+a000_600080_Revival
+a000_600100_DeathStart
+a000_600100_DeathLoop
+a000_600100_RevivalStayLoop
+a000_600100_Revival
+a000_600110_DeathStart
+a000_600110_DeathLoop
+a000_600110_RevivalStayLoop
+a000_600110_Revival
+a000_600120_DeathStart
+a000_600120_DeathLoop
+a000_600120_RevivalStayLoop
+a000_600120_Revival
+a000_600130_DeathStart
+a000_600130_DeathLoop
+a000_600130_RevivalStayLoop
+a000_600130_Revival
+a000_600140_DeathStart
+a000_600140_DeathLoop
+a000_600140_RevivalStayLoop
+a000_600140_Revival
+a000_600150_DeathStart
+a000_600150_DeathLoop
+a000_600150_RevivalStayLoop
+a000_600150_Revival
+a000_600160_DeathStart
+a000_600160_DeathLoop
+a000_600160_RevivalStayLoop
+a000_600160_Revival
+a000_600170_DeathStart
+a000_600170_DeathLoop
+a000_600170_RevivalStayLoop
+a000_600170_Revival
+a000_600180_DeathStart
+a000_600180_DeathLoop
+a000_600180_RevivalStayLoop
+a000_600180_Revival
+a000_600190_DeathStart
+a000_600190_DeathLoop
+a000_600190_RevivalStayLoop
+a000_600190_Revival
+a000_600200_DeathStart
+a000_600200_DeathLoop
+a000_600200_RevivalStayLoop
+a000_600200_Revival
+a000_600300_DeathStart
+a000_600300_DeathLoop
+a000_600300_RevivalStayLoop
+a000_600300_Revival
+a000_600310_DeathStart
+a000_600310_DeathLoop
+a000_600310_RevivalStayLoop
+a000_600310_Revival
+a000_600320_DeathStart
+a000_600320_DeathLoop
+a000_600320_RevivalStayLoop
+a000_600320_Revival
+a000_600210_DeathStart
+a000_600210_DeathLoop
+a000_600210_RevivalStayLoop
+a000_600210_Revival
+a000_600330_DeathStart
+a000_600330_DeathLoop
+a000_600330_RevivalStayLoop
+a000_600330_Revival
+a000_600340_DeathStart
+a000_600340_DeathLoop
+a000_600340_RevivalStayLoop
+a000_600340_Revival
+a000_600350_DeathStart
+a000_600350_DeathLoop
+a000_600350_RevivalStayLoop
+a000_600350_Revival
+a000_600360_DeathStart
+a000_600360_DeathLoop
+a000_600360_RevivalStayLoop
+a000_600360_Revival
+a000_600370_DeathStart
+a000_600370_DeathLoop
+a000_600370_RevivalStayLoop
+a000_600370_Revival
+a000_600390_DeathStart
+a000_600390_DeathLoop
+a000_600390_RevivalStayLoop
+a000_600390_Revival
+a000_600400_DeathStart
+a000_600400_DeathLoop
+a000_600400_RevivalStayLoop
+a000_600400_Revival
+# Grab blow-away ends (c0000_transition 386-399: ThrowId 600030 / 600040 -> W_ThrowDefLargeBlowStart,
+# 600380 (the Guardian Ape) -> its own chain, the Death one at HP <= 0; lands 1805 / 1883)
+ThrowDefLargeBlowStart
+ThrowDefLargeBlowFallLoop
+ThrowDefLargeBlowStart600380
+ThrowDefLargeBlowLoop600380
+ThrowDefLargeBlowLand600380
+ThrowDefDeathLargeBlowStart600380
+ThrowDefDeathLargeBlowLoop600380
+ThrowDefDeathLargeBlowLand600380
+# Grab escape (HKS BEH_R_THROW_ESCAPE -> ThrowEscape600350 / 600370)
+a223_600352
+a223_600372
 
 # Guard walk (layered guard + walk)
 DeflectGuardMoveF
@@ -337,6 +488,72 @@ StandDamageLargeUpperLand
 # Death
 GroundDeathStart_F
 GroundDeathStart_B
+GroundDeathStartInsane   # BEH_R_DEATH 966-968: SpEffect ref 590 (terror 9222 / 9223), IndexDeath B
+GroundDeathStartFire     # 962-964: fire element / ref burn, IndexDeath B
+GroundDeathStartPoison   # 969-971: ref poison with damage level none, IndexDeath B
+# The killing hit's deaths (BEH_R_DEATH 785-951 by element / damage level; lands 1784-1803;
+# the Land* death loops 277 / 334)
+StandDamageDeathLargeBlowStart_F
+StandDamageDeathLargeBlowStart_B
+StandDamageDeathLargeBlowFallLoop_F
+StandDamageDeathLargeBlowFallLoop_B
+StandDamageDeathLargeBlowLand_F
+StandDamageDeathLargeBlowLand_B
+StandDamageDeathExLargeBlowStart_F
+StandDamageDeathExLargeBlowStart_B
+StandDamageDeathExLargeBlowFallLoop_F
+StandDamageDeathExLargeBlowFallLoop_B
+StandDamageDeathExLargeBlowLand_F
+StandDamageDeathExLargeBlowLand_B
+StandDamageDeathSpecialLargeBlowStart_F
+StandDamageDeathSpecialLargeBlowStart_B
+StandDamageDeathLargeUpperStart
+StandDamageDeathLargeUpperFallLoop
+StandDamageDeathLargeUpperLand
+AirDamageDeathLargeBlowStart_F
+AirDamageDeathLargeBlowStart_B
+AirDamageDeathLargeBlowFallLoop_F
+AirDamageDeathLargeBlowFallLoop_B
+AirDamageDeathLargeBlowLand_F
+AirDamageDeathLargeBlowLand_B
+AirDamageDeathExLargeBlowStart_F
+AirDamageDeathExLargeBlowStart_B
+AirDamageDeathExLargeBlowFallLoop_F
+AirDamageDeathExLargeBlowFallLoop_B
+AirDamageDeathExLargeBlowLand_F
+AirDamageDeathExLargeBlowLand_B
+AirDamageDeathSpecialLargeBlowStart_F
+AirDamageDeathSpecialLargeBlowStart_B
+AirDamageDeathLargeUpperStart
+AirDamageDeathLargeUpperFallLoop
+AirDamageDeathLargeUpperLand
+StandDamageDeathSmallBlow_F
+StandDamageDeathSmallBlow_B
+StandDamageDeathLargePound
+AirDamageDeathLargePoundStart
+AirDamageDeathLargePoundFallLoop
+AirDamageDeathLargePoundLand
+FallDeathDmgStartF
+FallDeathDmgStartB
+FallDeathDmgLoopF
+FallDeathDmgLoopB
+LandFallDeathDmgF
+LandFallDeathDmgB
+FallDeathDmgStartNaturalDeath
+FallDeathElectroChargeWeakStart
+FallDeathElectroChargeWeakLoop
+LandFallDeathElectroChargeWeak
+# The ground shock (BEH_R_SPECIAL_DAMAGE 1013-1040: SpEffect ref 592 / 593)
+GroundDamageElectricShock
+GroundDamageElectricShockWeak
+GroundDeathStartElectricShock
+GroundDeathStartElectricShockWeak
+LandDeathLoop_F
+LandDeathLoop_B
+LandRevivalStayLoop_F
+LandRevivalStayLoop_B
+LandRevival_F
+LandRevival_B
 GroundDeathLoop_F
 GroundDeathLoop_B
 
@@ -347,6 +564,9 @@ ItemGourdDrinkFailed
 CrouchItemGourdDrink
 CrouchItemGourdDrinkRepeat
 CrouchItemGourdDrinkFailed
+# Empty-gourd press in the repeat window (c0000_transition.lua 4024-4033, round 30)
+ItemGourdDrinkRepeatFailed
+CrouchItemGourdDrinkRepeatFailed
 
 # Combat art: Whirlwind Slash (weapon 5100, spAtkcategory 100 -> a100, behavior variation 5001)
 a100_316000
@@ -1091,3 +1311,42 @@ HangToStand
 HangFootHoldToStand
 HangToFreeFall
 HangFootHoldToFreeFall
+
+# _execDamageStep (c0000_transition.lua 5062-5078, round 31)
+StandStepFromDamage_F
+StandStepFromDamage_B
+StandStepFromDown_FaceUp_N
+StandStepFromDown_FaceUp_F
+StandStepFromDown_FaceUp_B
+StandStepFromDown_FaceUp_L
+StandStepFromDown_FaceUp_R
+StandStepFromDown_FaceDown_N
+StandStepFromDown_FaceDown_F
+StandStepFromDown_FaceDown_B
+StandStepFromDown_FaceDown_L
+StandStepFromDown_FaceDown_R
+# Aging (BEH_R_AGING_DAMAGE / BEH_A_AGING_*, SpEffect ref 591: the Mist Noble's breath)
+StandAging
+FreeFallAging
+AgingIdle
+AgingStandMove_Walk_F
+AgingStandWalkStop
+AgingSprintStart
+AgingSprintLoop
+AgingSprintEnd
+AgingGroundJumpReady_F
+AgingGroundJumpReady_V
+AgingGroundJumpStart_F
+AgingGroundJumpStart_V
+AgingGroundJumpFallLoop
+LandAgingGroundJump
+AgingGroundAction
+AgingGroundAttack
+AgingFreeFallStart
+AgingFreeFallLoop
+LandAgingFreeFall
+AgingGroundDeathStart
+AgingGroundDeathLoop
+AgingFallDeathStart
+AgingFallDeathLoop
+LandAgingFallDeath

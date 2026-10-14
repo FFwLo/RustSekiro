@@ -109,12 +109,26 @@ pub struct Enemy {
     /// Deathblows left and in all (NpcParam ninsatuNum, the boss's red dots; 0 on regular
     /// enemies, which one deathblow kills). The AI reads the first (GetNinsatsuNum).
     pub ninsatsu: (u32, u32),
+    /// Deathblows taken whose hit has not landed yet: the exe lowers the count (chr module
+    /// +0x25c) only when the throw's atkAttribute 5 (Ninsatsu) hit is applied (FUN_140b6e6a0,
+    /// 140b6.c:8770; Wolf's ThrowAttackBehavior judge 800, a211_511700 at 1.23 s), not at the
+    /// throw's start. Until then the AI, the map scripts (4[37]) and the phase rules see it.
+    pub(crate) ninsatsu_unhit: u32,
+    /// NpcParam ninsatuNum is 0: nothing holds its HP at 1 (exe IsNoDead FUN_140bd5df0), so 0 HP
+    /// kills it outright (die_at_zero_hp) instead of opening the deathblow.
+    pub(crate) mortal: bool,
+    /// The last hit's ExecDeath inputs: damage level, a fire hit on a FIRE_ACTION_ENABLE chr, and
+    /// the special poison (refs 1000220 + the hit's 1000032 setting poison off, or 1000031).
+    pub(crate) last_hit: (i64, bool, bool),
     /// Boss phase events (`phase_events`): the ones done, the event flags they turned on, the AI
     /// command per slot (GetEventRequest), a pending AI re-plan, and the NpcParam residents to
     /// restore on respawn (the events set / clear residents).
     phase_done: HashSet<i64>,
     phase_flags: HashSet<i64>,
     event_req: Vec<(i64, i64)>,
+    /// A Request Character AI Command came this frame (INTERUPT_EventRequest on the next
+    /// update; ai.rs Snapshot::event_req_new).
+    event_req_new: bool,
     phase_replan: bool,
     /// Its event message (TAE 231, EMEVD IF Character Has Event Message): the exe's handler
     /// (decomp/140b5.c, case 0xe7) stores the id in the character and nothing clears it at the
@@ -128,9 +142,10 @@ pub struct Enemy {
     pub armor: Option<Armor>,
     /// Passive enemies walk up but never attack (toggle with T) - for practising timing at your own pace.
     pub aggressive: bool,
-    /// Game time until which a prosthetic cool-time SpEffect holds (the firecracker's 107100,
-    /// effectEndurance 30 s): no new burst reaction before it.
-    pub burst_until: f32,
+    /// Debug drill: the mode its timer runs for and the seconds to its next attack, per enemy
+    /// (the shared EnemyDebug timer ran down once per enemy each tick: N enemies drilled N x as
+    /// often as the menu's interval).
+    drill_timer: (AiMode, f32),
     cooldown: f32,
     rng: u32,
     /// "ConsecutiveGuardCount" and AI timer 13 (1 s) from common_func_NTC.lua.
@@ -149,7 +164,7 @@ pub struct Enemy {
     interrupted: bool,
     /// Player attack notify seen; the Lua brain runs Goal.Parry on its next tick.
     parry_timing: bool,
-    prev_sp: HashSet<i64>,
+    pub(crate) prev_sp: HashSet<i64>,
     /// Active goal chain, for the debug panel.
     pub ai_desc: String,
     /// Fallback combo when no AI scripts are available: (combo, step).
@@ -173,6 +188,9 @@ pub struct Enemy {
     route_end0: Option<RouteEndAnim>,
     /// Last frame's NPC rival target (rival_view).
     rival_last: Option<Entity>,
+    /// Its target for the team roles (assign_team_roles): Some(None) Wolf in battle, Some(Some)
+    /// an NPC rival, None no target.
+    pub(crate) team_target: Option<Option<Entity>>,
     /// Wolf has hit it (react_from): its map AI hold's damage wake (4[1] / 3[23] on 10000).
     pub(crate) hurt_by_wolf: bool,
     /// HP at the map AI hold's last check (None: not checked since spawn / respawn).
@@ -184,10 +202,14 @@ pub struct Enemy {
     spawn_req: Vec<serde_json::Value>,
     disable_req: bool,
     warp_req: Option<serde_json::Value>,
-    /// Map script (script.rs): its AI ID (Set Character AI ID: NpcThinkParam row), AI off (Set
-    /// Character AI State), immortality (HP stays at 1 or more), and down at 0 health bars.
-    think_override: Option<i64>,
-    ai_off: bool,
+    /// Map script (script.rs): its AI ID (Set Character AI ID: NpcThinkParam row; an MSB enemy
+    /// starts with its own MSB ThinkParamID, MsbSpot::think), AI off (Set Character AI State),
+    /// immortality (HP stays at 1 or more), and down at 0 health bars.
+    pub(crate) think_override: Option<i64>,
+    /// Its MSB placement groups (an MSB enemy: extracted/enemies/placement_groups.json); the
+    /// call-friend sounds reach only a shared one (ai_sound_heard).
+    pub(crate) placement: Vec<i64>,
+    pub(crate) ai_off: bool,
     immortal: bool,
     down: bool,
     /// Disabled by its map script (Change Character Enable State off): out of the fight.
@@ -198,6 +220,58 @@ pub struct Enemy {
 const STATE_INFO_ANIM_OFFSET: std::ops::RangeInclusive<i64> = 270..=274;
 
 /// The anim set (0-4 = a000-a400) the last of these SpEffects picks, if any is an offset one.
+/// Puts a lasting (effectEndurance -1) SpEffect on an enemy as the exe's add does
+/// (FUN_140c02c50, 140c0.c:2344; match FUN_140c02000 / FUN_140c05a80, accept FUN_140c064c0,
+/// deletes FUN_140c05c10). Lower categoryPriority wins.
+///   - spCategory 100: overwrites a row of the same category and priority (the AI states
+///     200000 / 200001 at 1, the anim sets 200030-200034 at 3).
+///   - 110, 130-133, 140, 150-174, 190-204: overwrites the same category.
+///   - 175-189: overwrites when not worse, else refused.
+///   - 141: worse refused, equal kept beside, better deletes the old.
+///   - other categories: one per id.
+/// Its maxHpRate / maxStaminaRate scale hp_max / posture_max (and HP / posture with them) while it
+/// is worn. gap: the exe's order of a max rate against a same-frame changeHpRate (the Ape's
+/// 401000) is not traced; scaling HP with the max keeps "full" full.
+pub(crate) fn wear_for_good(d: &crate::data::CharData, a: &mut Actor, id: i64) {
+    let row = |id: i64| d.sp_effects.get(&id.to_string());
+    let Some(new) = row(id) else { return };
+    if a.resident.contains(&id) {
+        return;
+    }
+    let (cat, pri) = (new.sp_category, new.category_priority);
+    let mut out: Vec<i64> = Vec::new();
+    for &r in &a.resident {
+        let Some(old) = row(r).filter(|o| o.sp_category == cat) else { continue };
+        match cat {
+            100 if old.category_priority == pri => out.push(r),
+            110 | 130..=133 | 140 | 150..=174 | 190..=204 => out.push(r),
+            175..=189 | 141 if pri > old.category_priority => return,
+            175..=189 => out.push(r),
+            141 if pri < old.category_priority => out.push(r),
+            _ => {}
+        }
+    }
+    let rates = |s: &crate::data::SpEffect| (if s.max_hp_rate > 0.0 { s.max_hp_rate } else { 1.0 }, if s.max_stamina_rate > 0.0 { s.max_stamina_rate } else { 1.0 });
+    for r in out {
+        a.resident.retain(|x| *x != r);
+        if let Some((h, p)) = row(r).map(rates) {
+            a.hp_max /= h;
+            a.hp = (a.hp / h).min(a.hp_max);
+            a.posture_max /= p;
+            a.posture = (a.posture / p).min(a.posture_max);
+        }
+    }
+    let (h, p) = rates(new);
+    a.hp_max *= h;
+    a.hp *= h;
+    a.posture_max *= p;
+    a.posture *= p;
+    a.resident.push(id);
+}
+
+/// TAE event 0 ChrActionFlag 96 "Set Immortality" (`Enemy::tae_no_dead`).
+pub(crate) const TAE_FLAG_SET_IMMORTALITY: i64 = 96;
+
 fn anim_group_of(d: &crate::data::CharData, ids: impl Iterator<Item = i64>) -> Option<u32> {
     ids.filter_map(|id| d.sp_effects.get(&id.to_string()))
         .map(|s| s.state_info)
@@ -293,6 +367,11 @@ pub fn phase_events(npc_row: i64) -> &'static [PhaseEvent] {
 const AI_STATE_SP: [i64; 4] = [200000, 200001, 200002, 200004];
 
 impl Enemy {
+    /// Its NpcThinkParam row: the map's (MSB ThinkParamID, Set Character AI ID), else its kind's.
+    pub(crate) fn think_id(&self, foe: &crate::data::Foe) -> i64 {
+        self.think_override.unwrap_or(foe.think_id)
+    }
+
     /// Its mode (tests).
     #[cfg(test)]
     pub fn mode_name(&self) -> String {
@@ -305,6 +384,64 @@ impl Enemy {
 
     pub fn is_dead(&self) -> bool {
         matches!(self.mode, Mode::Dead(_))
+    }
+
+    /// Exe SetHP (FUN_140bd64e0, 140bd.c:4187-4194) holds HP at 1 while IsNoDead
+    /// (FUN_140bd5df0, 140bd.c:3381-3409): deathblows left (NpcParam ninsatuNum > 0) or an active
+    /// stateInfo 143 SpEffect (5830 / 5831 / 220030-220032 / 3137015); else 0 HP is death (c9997
+    /// IsDead, 966-977). The TAE ChrActionFlag 96 bit is `tae_no_dead`. gap: the debug bits and
+    /// EMEVD 2004[12] on an enemy (hpmod +0x228 bit 0, inferred) are taken as off.
+    pub(crate) fn dies_at_zero_hp(&self, a: &Actor, combat: &Combat) -> bool {
+        if !self.mortal {
+            return false;
+        }
+        let d = combat.data_of(a);
+        let mut ids: Vec<i64> = a.resident.clone();
+        if !a.anim.is_empty() {
+            ids.extend(d.sp_effects_at(&a.anim, a.t).iter().map(|(id, _)| *id));
+        }
+        ids.extend(self.clash.iter().map(|c| c.0));
+        !ids.iter().any(|id| d.sp_effects.get(&id.to_string()).is_some_and(|s| s.state_info == 143))
+    }
+
+    /// IsNoDead's TAE input (re-scout): ChrActionFlag 96 "Set Immortality" sets ActionCtrl +0x90
+    /// bit 1 (FUN_140b51b70 case 0x60, 140b5.c:7587), cleared every frame (FUN_1407d8ce0), so it
+    /// holds while the event is on: c1500's a000_020000-020002 and c1360's a000_020000 / 021000
+    /// (from frame 0, about 3-4 s). HP then stays at 1 (SetHP FUN_140bd64e0).
+    pub(crate) fn tae_no_dead(a: &Actor, combat: &Combat) -> bool {
+        !a.anim.is_empty() && combat.data_of(a).flag(&a.anim, a.t, TAE_FLAG_SET_IMMORTALITY)
+    }
+
+    /// Death at 0 HP: c9997 ExecDeath's ground choice (1896-2120) from the last hit: DeathBlast
+    /// (W_DeathStartBlast, 10120) for a blow / ex-blast / breath level, DeathStartSpecialPoison
+    /// (10370), DeathStartFire (10200, a fire hit when the chr has no physical-type death clip:
+    /// none of the regular rows checked has one), else W_DeathStartDefault: DeathDefault<0-1>
+    /// (IndexDeathVariation, GetRandomIndex 0-1). gap: the land / aerial / event-20000 / hide /
+    /// back-reality / upper / fling / weak / physical-type branches are not modelled.
+    pub(crate) fn die_at_zero_hp(&mut self, a: &mut Actor, combat: &Combat) {
+        let d = combat.data_of(a);
+        let (level, fire, poison) = self.last_hit;
+        let has = |s: &str| d.anim_key(s).is_some();
+        let pick = if matches!(level, 4 | 10 | 11) && has("DeathBlast") {
+            "DeathBlast".to_string()
+        } else if poison && has("DeathStartSpecialPoison") {
+            "DeathStartSpecialPoison".to_string()
+        } else if fire && has("DeathStartFire") {
+            "DeathStartFire".to_string()
+        } else {
+            let i = (self.rand() * 2.0) as usize % 2;
+            [format!("DeathDefault{i}"), "DeathDefault0".to_string()].into_iter().find(|s| has(s)).unwrap_or_default()
+        };
+        self.cur_ez = None;
+        self.throw_death = None;
+        self.ninsatsu.0 = 0;
+        self.ninsatsu_unhit = 0;
+        a.hp = 0.0;
+        a.move_vel = Vec3::ZERO;
+        if pick.is_empty() || !a.play_state(d, &pick) {
+            a.procedural("Dead");
+        }
+        self.mode = Mode::Dead(d.length(&a.anim) + 2.0);
     }
 
     /// Kept alive at 0 health bars by its map script, lying in its death (Isshin's 20200 after
@@ -363,6 +500,7 @@ impl Enemy {
         // boss characters c5000 / c7100 do not even have), then it gets up for the next phase.
         if self.ninsatsu.0 > 1 {
             self.ninsatsu.0 -= 1;
+            self.ninsatsu_unhit += 1;
             // Its vitality comes back from the reaction's own TAE (300610 "HP reset", think:
             // instant_hp_rate); a reaction without it is refilled at once. gap: the posture
             // bar's reset (shown empty in the game) is not traced to an event.
@@ -379,6 +517,7 @@ impl Enemy {
         }
         // (An immortal one's map script keeps it alive after its reaction's first messages:
         // script.rs.)
+        self.ninsatsu_unhit += self.ninsatsu.0;
         self.ninsatsu.0 = 0;
         a.hp = 0.0;
         let (react, death) = (format!("ThrowDef{def_anim}"), format!("ThrowDefDeath{}", def_anim + 1));
@@ -398,6 +537,12 @@ impl Enemy {
         self.mode = Mode::Dead(len + 2.0);
     }
 
+    /// Deathblows left as the game reads them (GetNinsatsuNum, 4[37]): the count less the
+    /// deathblows whose ninsatsu hit has landed (`ninsatsu_unhit`).
+    pub fn ninsatsu_left(&self) -> u32 {
+        self.ninsatsu.0 + self.ninsatsu_unhit
+    }
+
     /// The map-event AI commands by slot (tests).
     #[cfg(test)]
     pub fn event_req(&self) -> &[(i64, i64)] {
@@ -413,7 +558,7 @@ impl Enemy {
     fn run_phase_events(&mut self, a: &mut Actor, combat: &Combat, sp_now: &HashSet<i64>) -> bool {
         let rules = phase_events(combat.foe_of(a).npc_row);
         let d = combat.data_of(a);
-        let bars = self.ninsatsu.0;
+        let bars = self.ninsatsu_left();
         let mut forced = false;
         for r in rules {
             let cmp = match r.cmp {
@@ -448,10 +593,14 @@ impl Enemy {
                             a.anim_group = g;
                         }
                     }
-                    "clear" => a.resident.retain(|&id| id != n(1)),
+                    "clear" => {
+                        a.resident.retain(|&id| id != n(1));
+                        a.anim_group = anim_group_of(d, a.resident.iter().copied()).unwrap_or(0);
+                    }
                     "ai" => {
                         self.event_req.retain(|&(slot, _)| slot != n(2));
                         self.event_req.push((n(2), n(1)));
+                        self.event_req_new = true;
                     }
                     "replan" => self.phase_replan = true,
                     "enable" => self.spawn_req.push(act[1].clone()),
@@ -552,8 +701,9 @@ impl Enemy {
             return;
         }
         let d = combat.data_of(a);
-        // A break throw pose (ThrowDef12100 / 13100, player.rs) is the break reaction itself.
-        if !a.state.starts_with("AttackBoundEmptyStamina") && !a.state.starts_with("GuardBreak") && !a.state.starts_with("ThrowDef") {
+        // A break throw pose (ThrowDef12100 / 13100, player.rs) is the break reaction itself, as is
+        // a firecracker's TrunkCollapseBurstN (prosthetic.rs hit_enemy, c9997 ExecDamageBreak).
+        if !a.state.starts_with("AttackBoundEmptyStamina") && !a.state.starts_with("GuardBreak") && !a.state.starts_with("ThrowDef") && !a.state.starts_with("TrunkCollapseBurst") {
             let s = if from_behind && d.anim_key("TrunkCollapseBack").is_some() { "TrunkCollapseBack" } else { "TrunkCollapseFront" };
             if !a.play_state(d, s) {
                 a.procedural("PostureBroken");
@@ -582,6 +732,22 @@ impl Enemy {
         self.cur_ez = None;
     }
 
+    /// Debug menu heal: the break window ends on the next tick, through its normal recovery
+    /// (round 65: a healed broken enemy stayed open to the deathblow at full HP).
+    pub(crate) fn end_break_now(&mut self) {
+        if let Mode::Broken(_) = self.mode {
+            self.mode = Mode::Broken(0.0);
+        }
+    }
+
+    /// Test hook: the posture-break window left [s].
+    #[cfg(test)]
+    pub(crate) fn set_broken_left(&mut self, left: f32) {
+        if let Mode::Broken(_) = self.mode {
+            self.mode = Mode::Broken(left);
+        }
+    }
+
     /// Plays a reaction state; the AI replans (Kengeki) and acts again at the
     /// reaction's AI cancel flags.
     pub fn react(&mut self, a: &mut Actor, combat: &Combat, state: &str) {
@@ -598,7 +764,7 @@ impl Enemy {
         // rival's blow did not: it put both NPCs in BATTLE on Wolf, unseen, so they dropped
         // each other when he was nearer and refused the stealth deathblow.
         if by_wolf {
-            self.targeting.damaged(combat.param("NpcThinkParam", combat.foe_of(a).think_id));
+            self.targeting.damaged(combat.param("NpcThinkParam", self.think_id(combat.foe_of(a))));
             self.hurt_by_wolf = true;
         }
         if a.play_state(combat.data_of(a), state) {
@@ -620,9 +786,19 @@ impl Enemy {
         self.clash.push((id, secs));
     }
 
-    /// Engine clash result SpEffect (lasts 0.1 s); also drives the guard count.
+    /// Engine clash result SpEffect (lasts 0.1 s); also drives the guard count. For a guard /
+    /// deflect / bound reaction clip use [`crate::combat::clash_after`]: the clip's own TAE
+    /// AddSpEffect row (a000_008502 GuardDamageSpecial -> 200225, a000_008602 AttackBoundEnemy2
+    /// -> 200226) is what the AI reads, and this engine row would hide it (ReturnKengekiSpecialEffect
+    /// takes 200215 before 200225).
     pub fn add_clash(&mut self, id: i64) {
         self.clash.push((id, 0.1));
+        self.clash_count(id);
+    }
+
+    /// The consecutive-guard count's side of a clash (c9997 Set_ConsecutiveGuardCount: weak
+    /// blocks count up, strong deflects reset).
+    pub fn clash_count(&mut self, id: i64) {
         match id {
             200215 | 200216 => {
                 self.guard_count = if self.guard_count_timer <= 0.0 { 1 } else { self.guard_count + 1 };
@@ -668,7 +844,7 @@ impl Enemy {
         (self.rand() * 100.0) as i32 + 1
     }
 
-    fn rand(&mut self) -> f32 {
+    pub(crate) fn rand(&mut self) -> f32 {
         self.rng ^= self.rng << 13;
         self.rng ^= self.rng >> 17;
         self.rng ^= self.rng << 5;
@@ -686,6 +862,38 @@ fn ez_of(anim: &str) -> Option<i64> {
 pub(crate) struct Brains {
     pub(crate) map: HashMap<Entity, Brain>,
     pub(crate) failed: bool,
+    /// AI team roles by enemy (GetTeamOrder(ORDER_TYPE_Role), assign_team_roles) and the clock
+    /// to their next update.
+    pub(crate) roles: HashMap<Entity, f64>,
+    pub(crate) role_clock: f32,
+}
+
+/// The exe's team-order update (FUN_140640b80 -> FUN_140640050, 14064.c:157 / 207-528): every
+/// 0.1 s (tunable DAT_143afb998's registered default, 14064.c:2746) the chrs on one target,
+/// nearest (3D) first, are ROLE_TYPE_Attack (0.0) for the first DAT_143afb990, Torimaki (1.0,
+/// surround) for the next DAT_143afb994, Kankyaku (2.0, spectate) for the rest; one without a
+/// target is ROLE_TYPE_None (-1.0). The counts are the tunables' registered defaults (1 / 1,
+/// 14064.c:2715-2785); gap: no shipped value overriding them was found, and the weighted mode
+/// (DAT_143afb99c, NpcThinkParam TeamAttackEffectivity?) is off by default and not modelled.
+pub(crate) const TEAM_ORDER_INTERVAL: f32 = 0.1;
+const TEAM_ATTACKERS: usize = 1;
+const TEAM_SURROUNDERS: usize = 1;
+
+/// [`TEAM_ORDER_INTERVAL`]'s pass over (target, distance to it, chr): the role of each chr.
+pub(crate) fn assign_team_roles<K: std::hash::Hash + Eq>(members: impl IntoIterator<Item = (K, f32, Entity)>) -> HashMap<Entity, f64> {
+    let mut groups: HashMap<K, Vec<(f32, Entity)>> = HashMap::new();
+    for (k, d, ent) in members {
+        groups.entry(k).or_default().push((d, ent));
+    }
+    let mut roles = HashMap::new();
+    for g in groups.values_mut() {
+        g.sort_by(|a, b| a.0.total_cmp(&b.0));
+        for (i, (_, ent)) in g.iter().enumerate() {
+            let role = if i < TEAM_ATTACKERS { 0.0 } else if i < TEAM_ATTACKERS + TEAM_SURROUNDERS { 1.0 } else { 2.0 };
+            roles.insert(*ent, role);
+        }
+    }
+    roles
 }
 
 /// Debug-menu control of the enemy's behaviour (debug_menu.rs).
@@ -698,7 +906,7 @@ pub enum AiMode {
     Passive,
     /// Only perilous (red kanji) attacks: sweeps, thrusts, grabs, picked at random.
     Perilous,
-    /// Only perilous thrusts (warning judge 982): Mikiri Counter practice.
+    /// Only perilous thrusts (combat::mikiri_atk): Mikiri Counter practice.
     Thrust,
     /// One chosen attack, again and again.
     Repeat,
@@ -713,17 +921,63 @@ pub struct EnemyDebug {
     pub attack: String,
     /// Seconds between drill attacks.
     pub interval: f32,
-    timer: f32,
 }
 
 impl Default for EnemyDebug {
     fn default() -> Self {
-        EnemyDebug { mode: AiMode::Real, attack: String::new(), interval: 1.5, timer: 0.0 }
+        // SHINOBI_AI_MODE=passive / perilous / thrust / idle: the F1 menu's AI mode from the start
+        // (for shots of one kind of attack).
+        let mode = match std::env::var("SHINOBI_AI_MODE").as_deref() {
+            Ok("passive") => AiMode::Passive,
+            Ok("perilous") => AiMode::Perilous,
+            Ok("thrust") => AiMode::Thrust,
+            Ok("idle") => AiMode::Idle,
+            _ => AiMode::Real,
+        };
+        // SHINOBI_AI_ATTACK=a000_003042 (or just 3042): "repeat one attack" with that anim from
+        // the start (VFX shots of one attack, e.g. the Way of Tomoe's lightning).
+        if let Some(attack) = env_attack() {
+            return EnemyDebug { mode: AiMode::Repeat, attack: attack.to_string(), interval: 1.5 };
+        }
+        EnemyDebug { mode, attack: String::new(), interval: 1.5 }
     }
 }
 
+/// SHINOBI_AI_ATTACK as an anim name (digits -> a000_<6 digits>), read once.
+pub(crate) fn env_attack() -> Option<&'static str> {
+    static ATTACK: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    ATTACK
+        .get_or_init(|| {
+            let v = std::env::var("SHINOBI_AI_ATTACK").ok()?;
+            let v = v.trim();
+            let attack = if !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit()) { format!("a000_{:06}", v.parse::<u32>().unwrap_or(0)) } else { v.to_string() };
+            (!attack.is_empty()).then_some(attack)
+        })
+        .as_deref()
+}
+
 /// The enemy's own attacks (EzState 3000-3099 anims with attack windows), sorted, with their
-/// perilous warning (TAE 2 BehaviorJudgeID 980 sweep / 982 thrust / 983 grab) if any.
+/// perilous warning (TAE 2 BehaviorJudgeID 980-983) if any.
+/// What a perilous attack is, by its first damaging window's AtkParam (the warning judge
+/// 980-983 does not say: each heralds sweeps, thrusts and grabs alike, e.g. the Ochimusha's
+/// Mikiri'd thrust a000_003013 under 980): "grab" (throwFlag 1 / trackType 7), "sweep"
+/// (trackType 1), "thrust" (combat::mikiri_atk), else "unblockable".
+pub fn perilous_kind(d: &crate::data::CharData, key: &str) -> &'static str {
+    let windows = d.attack_windows(key);
+    let Some((_, atk, _)) = windows.iter().filter(|(_, atk, _)| atk.throw_flag == 1 || atk.atk_phys > 0.0 || atk.atk_stam > 0.0).min_by(|x, y| x.0.start.total_cmp(&y.0.start)) else {
+        return "unblockable";
+    };
+    if atk.throw_flag == 1 || atk.track_type == 7 {
+        "grab"
+    } else if atk.track_type == 1 {
+        "sweep"
+    } else if crate::combat::mikiri_atk(atk) {
+        "thrust"
+    } else {
+        "unblockable"
+    }
+}
+
 pub fn attack_list(d: &crate::data::CharData) -> Vec<(String, Option<i64>)> {
     let mut v: Vec<(String, Option<i64>)> = d
         .anims
@@ -745,15 +999,19 @@ impl Plugin for EnemyPlugin {
             .init_resource::<events::EventWarp>()
             .init_resource::<FightReset>()
             .init_resource::<AiFlags>()
+            .init_resource::<AiSounds>()
+            .init_resource::<TriggerRegions>()
             .init_resource::<SwapFrame>()
             .init_resource::<AutoRestart>()
             .add_message::<SpawnEncounter>()
             .add_message::<grapple::WireHit>()
             .init_resource::<BossScript>()
+            .init_resource::<script::WolfImmortal>()
+            .init_resource::<WolfMessage>()
             .add_systems(Startup, spawn_enemy)
             .add_systems(
                 FixedUpdate,
-                (spawn_encounter, reset_fight, stealth_env_start, start_unaware, ai_hold, route_end_anim, parry_interrupt, think, grapple::on_wire_hit, todome_message, events::messages, script::run_scripts, events::apply_event_warp).chain().in_set(ActorSet::Decide),
+                (spawn_encounter, reset_fight, stealth_env_start, start_unaware, ai_hold, route_end_anim, parry_interrupt, think, grapple::on_wire_hit, ninsatsu_hit, todome_message, events::messages, script::run_scripts, events::apply_event_warp).chain().in_set(ActorSet::Decide),
             )
             .add_systems(Update, toggle_aggression.run_if(resource_exists::<ButtonInput<KeyCode>>))
             .init_resource::<grapple::EnemyGrapples>()
@@ -761,31 +1019,58 @@ impl Plugin for EnemyPlugin {
     }
 }
 
-/// TAE 936 (Wolf's event message, unk0 = message id): the Todome sends 10 (a242_511700 at
-/// 2.4 s, a240_511700 at 1.7 s; 11-13 with it).
-const TAE_EVENT_MESSAGE: i32 = 936;
+/// TAE 231 (EzStateRequestID): a character's event message, the field EMEVD 4[8] "IF Character
+/// Has Event Message" reads (chr+0x50 -> +0x50 -> +0x508; the handler 140b5.c case 0xe7 stores
+/// it and nothing clears it at the event's end). Wolf's deathblows send 10 near their end
+/// (a211_510000 at 3.7 s, a242_510000 at 3.6 s ...); no Todome (a2xx_511700) sends one, so the
+/// 10 his last deathblow left is there when it starts. (TAE 936 is ThrowDirectionDecalParam's
+/// decal: unk0 the slot, unk1 the spacing; it was read as the message before.)
+pub(crate) const TAE_EVENT_MESSAGE: i32 = 231;
+
+/// Wolf's event message (TAE 231, latched as an enemy's `Enemy::msg`; events.rs messages) and a
+/// count of the ones sent. Cleared with the fight.
+#[derive(Resource, Default, Clone, Copy, Debug)]
+pub struct WolfMessage {
+    pub msg: Option<i64>,
+    pub serial: u32,
+}
 
 /// A boss's last deathblow (the Todome) ends by its map event at 0 health bars: on Wolf's event
-/// message (IF Character Has Event Message 10000 / 10, his Todome's TAE 936) the boss gets
+/// message (IF Character Has Event Message 10000 / 10: the one his deathblows leave) the boss gets
 /// EzState 20200, its death, and Wolf his Event7102xx (c0000.hks: GetCommandIDFromEvent ->
 /// RequestThrowAnimInterrupt, W_Event7102xx; e.g. m11_02 11125874 Isshin -> 710206, m11_00
 /// 11105921 Demon of Hatred -> 710207). Only 710205-710207 have a state in c0000.hkx; the others
 /// (the Corrupted Monk's 710200) fire into nothing, and Wolf plays his Todome out.
 /// Without the message the boss switches to 20200 on its ThrowDef's flag 69 or end (`think`).
+/// A deathblow's count drop lands with Wolf's atkAttribute 5 (Ninsatsu) hit (`ninsatsu_unhit`):
+/// at that hit of his deathblow, or once he is out of it without one.
+fn ninsatsu_hit(combat: Res<Combat>, player: Single<&Actor, (With<Player>, Without<Enemy>)>, mut q: Query<&mut Enemy, Without<Player>>) {
+    let pa = *player;
+    let hit = !pa.state.starts_with("Deathblow")
+        || combat.player.anim(&pa.anim).is_some_and(|an| {
+            an.events.iter().any(|ev| {
+                ev.start > pa.prev_t && ev.start <= pa.t && ev.arg_i64("BehaviorJudgeID").is_some_and(|j| combat.player.attacks.get(&j.to_string()).is_some_and(|atk| atk.atk_attribute == 5))
+            })
+        });
+    if hit {
+        for mut e in &mut q {
+            if e.ninsatsu_unhit > 0 {
+                e.ninsatsu_unhit = 0;
+            }
+        }
+    }
+}
+
 fn todome_message(
     combat: Res<Combat>,
     mut player: Single<&mut Actor, (With<Player>, Without<Enemy>)>,
     mut q: Query<(&mut Enemy, &mut Actor), (Without<Player>, Without<script::Scripted>)>,
     mut throw: ResMut<crate::player::ActiveThrow>,
+    wolf_msg: Res<WolfMessage>,
 ) {
     let pa = &mut **player;
-    let Some(anim) = combat.player.anim(&pa.anim) else { return };
-    let sent: Vec<i64> = anim
-        .events
-        .iter()
-        .filter(|ev| ev.kind == TAE_EVENT_MESSAGE && ev.start > pa.prev_t && ev.start <= pa.t)
-        .filter_map(|ev| ev.arg_i64("unk0"))
-        .collect();
+    // A level test, as the EMEVD condition: the message Wolf holds now.
+    let sent: Vec<i64> = wolf_msg.msg.into_iter().collect();
     if sent.is_empty() {
         return;
     }
@@ -995,7 +1280,17 @@ fn spawn_lineup(commands: &mut Commands, combat: &Combat, config: &GameConfig, a
             let floor = crate::map::terrain().and_then(|t| t.floor(spot.at.x, spot.at.z, spot.at.y + crate::map::STEP_HEIGHT)).unwrap_or(spot.at.y);
             let at = Vec3::new(spot.at.x, floor + crate::player::CAPSULE_HALF_HEIGHT + 0.05, spot.at.z);
             let e = spawn_one(commands, combat, config, kind, at, spot.yaw, aggressive, 0x9E37_79B9 ^ 0x85EB_CA6B_u32.wrapping_mul(i as u32 + 1));
+            let think = msb_think(combat, &spot);
             commands.entity(e).insert((spot.route, StartUnaware));
+            let placement = g.msb.map(msb_groups).unwrap_or_default();
+            commands.entity(e).queue(move |mut w: EntityWorldMut| {
+                if let Some(mut en) = w.get_mut::<Enemy>() {
+                    if think.is_some() {
+                        en.think_override = think;
+                    }
+                    en.placement = placement;
+                }
+            });
             if let Some(hold) = spot.hold {
                 commands.entity(e).insert(hold);
             }
@@ -1118,7 +1413,10 @@ impl WakeRegion {
 /// INTERUPT_UseItem: Wolf just started a gourd drink, standing or crouched (W_ItemGourdDrink /
 /// W_CrouchItemGourdDrink; c1020 10203010 punishes it with 3012).
 pub(crate) fn wolf_starts_an_item(pa: &Actor) -> bool {
-    pa.state.trim_start_matches("Crouch").starts_with("ItemGourd") && pa.prev_t == 0.0 && pa.t > 0.0
+    // Not the empty gourd's shake (ItemGourdDrinkFailed): HKS acts AI_INTERUPT_USE_ITEM only on
+    // the drink branch (c0000_transition.lua 3971 vs 4010-4037; round 30).
+    let s = pa.state.trim_start_matches("Crouch");
+    s.starts_with("ItemGourd") && !s.contains("Failed") && pa.prev_t == 0.0 && pa.t > 0.0
 }
 
 /// Holds the AI of the enemies with an [`AiHold`] until their map event wakes them.
@@ -1163,6 +1461,9 @@ pub struct MsbSpot {
     pub route: PatrolRoute,
     pub hold: Option<AiHold>,
     pub route_end: Option<RouteEndAnim>,
+    /// Part.Enemy ThinkParamID (patrols.json "think"): its own NpcThinkParam row (1110252,
+    /// NpcParam 10102210, has 10102200; the roster's first 10102210 placement another).
+    pub think: Option<i64>,
 }
 
 /// The MSB enemy `entity` of the loaded map's MSB (map_<id>.json "map") from
@@ -1172,6 +1473,20 @@ pub struct MsbSpot {
 /// Ry(yaw) * -Z). None without a map, or when the entity has no route there.
 pub fn msb_patrol(entity: i64) -> Option<MsbSpot> {
     msb_patrol_on(&crate::map::loaded_map()?, entity)
+}
+
+/// The MSB placement groups of enemy `entity` on the loaded map (tools/placement_groups.py).
+pub fn msb_groups(entity: i64) -> Vec<i64> {
+    static GROUPS: std::sync::OnceLock<serde_json::Value> = std::sync::OnceLock::new();
+    let groups = GROUPS.get_or_init(|| {
+        std::fs::read_to_string(crate::paths::extracted().join("enemies/placement_groups.json")).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
+    });
+    let Some(stem) = crate::map::loaded_map() else { return Vec::new() };
+    let Some(map) = std::fs::read_to_string(crate::paths::extracted().join(format!("map_{stem}.json"))).ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()) else {
+        return Vec::new();
+    };
+    let Some(m) = map["map"].as_str() else { return Vec::new() };
+    groups[m][entity.to_string()].as_array().map_or(Vec::new(), |a| a.iter().filter_map(|v| v.as_i64()).collect())
 }
 
 /// [`msb_patrol`] on the exported map `stem` (extracted/map_<stem>.json).
@@ -1237,7 +1552,58 @@ pub fn msb_patrol_on(stem: &str, entity: i64) -> Option<MsbSpot> {
         }),
         hold,
         route_end,
+        think: p["think"].as_i64().filter(|t| *t > 0),
     })
+}
+
+/// The loaded map's MSB regions by entity id (`map_regions_on`).
+pub fn map_regions() -> Option<std::sync::Arc<HashMap<i64, WakeRegion>>> {
+    map_regions_on(&crate::map::loaded_map()?)
+}
+
+/// Every region with an entity id of the exported map `stem`'s MSB (extracted/enemies/
+/// regions.json, tools/regions.py), turned into the arena like `msb_patrol_on`'s regions. The
+/// AI's IsInsideTargetRegion / SetEventMoveTarget look one up by the id alone (FUN_1406d35d0,
+/// 1406d.c:2135); point regions (shape 0) only give a spot. Cached per map.
+pub fn map_regions_on(stem: &str) -> Option<std::sync::Arc<HashMap<i64, WakeRegion>>> {
+    type Cache = std::sync::Mutex<HashMap<String, Option<std::sync::Arc<HashMap<i64, WakeRegion>>>>>;
+    static ALL: std::sync::OnceLock<serde_json::Value> = std::sync::OnceLock::new();
+    static CACHE: std::sync::OnceLock<Cache> = std::sync::OnceLock::new();
+    let mut cache = CACHE.get_or_init(Default::default).lock().ok()?;
+    if let Some(r) = cache.get(stem) {
+        return r.clone();
+    }
+    let all = ALL.get_or_init(|| {
+        std::fs::read_to_string(crate::paths::extracted().join("enemies/regions.json")).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
+    });
+    let build = || -> Option<HashMap<i64, WakeRegion>> {
+        let map: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(crate::paths::extracted().join(format!("map_{stem}.json"))).ok()?).ok()?;
+        let f = |v: &serde_json::Value| v.as_f64().unwrap_or(0.0) as f32;
+        let origin = map["origin"].as_array()?;
+        let (s, c) = f(&map["arena_yaw"]).sin_cos();
+        let turn = |x: f32, z: f32| Vec3::new(-(x * c + z * s), 0.0, -x * s + z * c);
+        let regions = all[map["map"].as_str()?].as_object()?;
+        Some(
+            regions
+                .iter()
+                .filter_map(|(id, r)| {
+                    let a = r["pos"].as_array()?;
+                    let at = turn(f(&a[0]) - f(&origin[0]), f(&a[2]) - f(&origin[2])).with_y(f(&a[1]) - f(&origin[1]));
+                    let (sy, cy) = f(&r["yaw"]).to_radians().sin_cos();
+                    let size = r["size"].as_array().into_iter().flatten().map(f).collect();
+                    Some((id.parse().ok()?, WakeRegion { shape: r["shape"].as_i64().unwrap_or(-1), at, x: turn(cy, -sy), z: turn(sy, cy), size }))
+                })
+                .collect(),
+        )
+    };
+    let r = build().map(std::sync::Arc::new);
+    cache.insert(stem.to_string(), r.clone());
+    r
+}
+
+/// An MSB enemy's own NpcThinkParam row ([`MsbSpot::think`]) when its kind has the row.
+pub(crate) fn msb_think(combat: &Combat, spot: &MsbSpot) -> Option<i64> {
+    spot.think.filter(|t| !combat.param("NpcThinkParam", *t).is_null())
 }
 
 /// Starts the whole fight over (Wolf's reset or death, or the death of a character a boss event
@@ -1302,6 +1668,87 @@ impl Default for AutoRestart {
 #[derive(Resource, Default)]
 pub struct AiFlags(pub HashMap<i64, bool>);
 
+/// AI sounds in the air (exe SprjAiSound entries, manager FUN_14064a5f0): the attacks'
+/// AtkParam AppearAiSoundId (once per attack, at the attacker: FUN_1409a1290, 1409a.c:2197) and
+/// HitAiSoundId (once per target it lands on, guarded or not: FUN_1409e68e0, 1409e.c:3685), each
+/// for its AiSoundParam lifeFrame. Wolf's TAE 237 sounds stay wolf_sounds. The owner is the
+/// attacker (inferred for Hit: the exe emits through the target's module).
+#[derive(Resource, Default)]
+pub struct AiSounds(pub Vec<AiSound>);
+
+#[derive(Clone, Debug)]
+pub struct AiSound {
+    pub id: i64,
+    pub pos: Vec3,
+    /// The emitting NPC, None for Wolf.
+    pub owner: Option<Entity>,
+    /// The owner's team (combat::team_of), None for Wolf.
+    pub team: Option<i64>,
+    pub life: f32,
+    /// The record's serial (GetLatestSoundTargetInstanceID), kept when the owner refreshes it.
+    pub serial: i64,
+    /// The owner NPC's AI is in Battle or Find (think refreshes it each frame): a bCallFriend
+    /// sound is heard only then (FUN_140610470, 14061.c:1201-1223). True for Wolf's (no AI).
+    pub owner_alert: bool,
+    /// The owner's MSB placement groups (`Enemy::placement`, refreshed with owner_alert).
+    pub owner_groups: Vec<i64>,
+}
+
+/// The exe's sound-record counter (DAT_143d547b0, FUN_14060f840). Ours starts past every
+/// AiSoundParam id, which Wolf's TAE sounds use as their serial.
+static SOUND_SERIAL: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(1 << 32);
+
+/// Every live trigger region (RegisterTriggerRegion, ai.rs TriggerRegion): one store for all
+/// AIs, as the exe's singleton DAT_143d55070. think counts their lives down each frame.
+#[derive(Resource, Default)]
+pub struct TriggerRegions(pub Vec<crate::ai::TriggerRegion>);
+
+impl AiSounds {
+    /// Adds a sound (ids <= 0 and rows of radius 0 are none, FUN_14060f290 / 14060f840); the same
+    /// owner's same sound is refreshed (FUN_14060fa90 merges an owner's sound of one rank).
+    pub fn emit(&mut self, combat: &Combat, id: i64, pos: Vec3, owner: Option<Entity>, team: Option<i64>) {
+        let row = combat.param("AiSoundParam", id);
+        if id <= 0 || row["radius"].as_f64().unwrap_or(0.0) <= 0.0 {
+            return;
+        }
+        let life = row["lifeFrame"].as_f64().unwrap_or(0.0).max(1.0 / 30.0) as f32;
+        let old = self.0.iter().position(|s| s.owner == owner && s.id == id).map(|i| self.0.remove(i).serial);
+        let serial = old.unwrap_or_else(|| SOUND_SERIAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
+        self.0.push(AiSound { id, pos, owner, team, life, serial, owner_alert: true, owner_groups: Vec::new() });
+    }
+}
+
+/// Whether listener `me` (team `team`) at `at` hears `s` (exe SprjAiSoundNormalListener,
+/// FUN_140610470, 14061.c:1181): the row's selfTarget / opposeTarget / friendlyTarget flag for
+/// the owner's relation to it (FUN_140c09760's team matrix, here combat::teams_hostile; Wolf is
+/// hostile to every NPC), then the range as wolf_sounds' (FUN_140610b30: hearing rate x radius
+/// less the cut, within the ear distance). A bCallFriend row is heard only while its NPC owner's
+/// AI is in Battle or Find (`owner_alert`; an owner in Idle or Caution calls no one). A
+/// bRestrictSamePlacementGroup row (the call-friend sounds 2000000-2155000 and 4050-5400) needs
+/// the owner and listener `mine` to share an MSB placement group (FUN_140610810, the per-ChrSet
+/// group bytes: an owner in none passes, a listener in none fails; tools/placement_groups.py).
+/// gap: bSpEffectEnable's owner scale (1) is not modelled.
+pub(crate) fn ai_sound_heard(combat: &Combat, s: &AiSound, me: Entity, team: i64, la: &Actor, at: Vec3, think: &serde_json::Value, mine: &[i64]) -> Option<(i64, i64)> {
+    let row = combat.param("AiSoundParam", s.id);
+    let flag = if s.owner == Some(me) {
+        "selfTarget"
+    } else if s.team.is_none_or(|t| crate::combat::teams_hostile(t, team)) {
+        "opposeTarget"
+    } else {
+        "friendlyTarget"
+    };
+    if row[flag].as_i64() != Some(1) || (row["bCallFriend"].as_i64() == Some(1) && !s.owner_alert) {
+        return None;
+    }
+    if row["bRestrictSamePlacementGroup"].as_i64() == Some(1) && !s.owner_groups.is_empty() && !s.owner_groups.iter().any(|g| mine.contains(g)) {
+        return None;
+    }
+    let ear = think["ear_dist"].as_f64().unwrap_or(0.0);
+    let cut = think["ear_soundcut_dist"].as_f64().unwrap_or(0.0);
+    let reach = hearing_rate(combat, la) * row["radius"].as_f64()? - cut;
+    (reach > 0.0 && (s.pos.distance(at) as f64) < reach + ear).then(|| (s.id, row["rank"].as_i64().unwrap_or(0)))
+}
+
 fn reset_fight(
     mut commands: Commands,
     mut reset: ResMut<FightReset>,
@@ -1317,12 +1764,14 @@ fn reset_fight(
     (mut statuses, bullets): (ResMut<crate::status::Statuses>, Query<Entity, With<crate::enemy_bullet::EnemyBullet>>),
     perilous: Option<ResMut<crate::hud::Perilous>>,
     (wolf_bullets, mut effects): (Query<(Entity, &Transform), With<crate::prosthetic::Projectile>>, Query<&mut crate::fxr::FxEffect>),
+    mut wolf_msg: ResMut<WolfMessage>,
 ) {
     if !reset.0 || swap.0.is_some_and(|f| frame.is_some_and(|n| n.0 == f)) {
         return;
     }
     reset.0 = false;
     ai_flags.0.clear();
+    *wolf_msg = WolfMessage::default();
     // Wolf's poison / burn gauges and afflictions end with the fight, and the old line-up's
     // arrows in flight go (they still applied their build-up after the reset).
     statuses.clear_all();
@@ -1370,6 +1819,7 @@ pub fn spawn_one(commands: &mut Commands, combat: &Combat, config: &GameConfig, 
     let k = combat.kind(kind);
     let npc = combat.param("NpcParam", k.foe.npc_row);
     actor.resident = (0..32).filter_map(|i| npc[format!("spEffectID{i}")].as_i64()).filter(|&v| v > 0).collect();
+    actor.super_armor = crate::actor::SuperArmor::new(npc["superArmorDurability"].as_f64().unwrap_or(0.0) as f32, npc["superArmorRecoverCorrection"].as_f64().unwrap_or(0.0) as f32);
     // Its armour's SpEffects (220061 / 220062 / 400250), set by its map event (armor_of).
     let armor = armor_of(k.foe.npc_row);
     for &id in armor.iter().flat_map(|ar| ar.sp_effects.iter()) {
@@ -1402,7 +1852,7 @@ pub fn spawn_one(commands: &mut Commands, combat: &Combat, config: &GameConfig, 
         Enemy {
             mode: Mode::Ai,
             aggressive,
-            burst_until: 0.0,
+            drill_timer: (AiMode::Real, 0.0),
             cooldown: 1.5,
             rng,
             guard_count: 0,
@@ -1417,9 +1867,11 @@ pub fn spawn_one(commands: &mut Commands, combat: &Combat, config: &GameConfig, 
                 let n = npc["ninsatuNum"].as_i64().unwrap_or(0).max(1) as u32;
                 (n, n)
             },
+            ninsatsu_unhit: 0,
             phase_done: HashSet::new(),
             phase_flags: HashSet::new(),
             event_req: Vec::new(),
+            event_req_new: false,
             phase_replan: false,
             msg: None,
             msg_serial: 0,
@@ -1445,13 +1897,17 @@ pub fn spawn_one(commands: &mut Commands, combat: &Combat, config: &GameConfig, 
             hold0: None,
             route_end0: None,
             rival_last: None,
+            team_target: None,
             hurt_by_wolf: false,
+            mortal: npc["ninsatuNum"].as_i64().unwrap_or(0) == 0,
+            last_hit: (0, false, false),
             hp_last: None,
             start: at,
             spawn_req: Vec::new(),
             disable_req: false,
             warp_req: None,
             think_override: None,
+            placement: Vec::new(),
             ai_off: false,
             immortal: false,
             down: false,
@@ -1531,8 +1987,10 @@ fn parry_interrupt(
     for (mut e, mut a, tf) in &mut q {
         e.parry_timer -= dt;
         e.guard_count_timer -= dt;
+        // Timed SpEffects run on the character's own clock (chr+0x108, hit-stop scaled; R64).
+        let sp_dt = a.clock(dt);
         e.clash.retain_mut(|c| {
-            c.1 -= dt;
+            c.1 -= sp_dt;
             c.1 > 0.0
         });
         if pa.anim.is_empty() || matches!(e.mode, Mode::Dead(_) | Mode::Broken(_) | Mode::Rising(_) | Mode::Held(_)) || a.hp <= 0.0 {
@@ -1745,6 +2203,8 @@ struct Rival {
     ent: Entity,
     team: i64,
     pos: Vec3,
+    /// Its facing (IsInsideTargetEx with TARGET_ENE_0 as the observer).
+    fwd: Vec3,
     hp_rate: f32,
     guard: bool,
     sp: Vec<i64>,
@@ -1762,11 +2222,13 @@ fn warn_once(line: &str) {
     }
 }
 
-/// Where a regular enemy's new life starts: 2 m behind its spawn spot, on the floor there found
-/// from its spawn height (a step up, plus up to 1 m per metre of those 2 m for a slope); the
-/// spawn height without a map or a floor.
-fn respawn_spot(start: Vec3, back: f32, terrain: Option<&crate::map::Terrain>) -> Vec3 {
-    let (x, z) = (start.x, start.z - back);
+/// Where a regular enemy's new life starts: `back` m behind its spawn spot along its start
+/// facing `yaw` (forward = Ry(yaw) * -Z), on the floor there found from its spawn height (a step
+/// up, plus up to 1 m per metre of those 2 m for a slope); the spawn height without a map or a
+/// floor.
+fn respawn_spot(start: Vec3, yaw: f32, back: f32, terrain: Option<&crate::map::Terrain>) -> Vec3 {
+    let behind = Quat::from_rotation_y(yaw) * Vec3::Z * back;
+    let (x, z) = (start.x + behind.x, start.z + behind.z);
     let feet = start.y - crate::player::CAPSULE_HALF_HEIGHT;
     let floor = terrain.and_then(|t| t.floor(x, z, feet + crate::map::STEP_HEIGHT + 2.0));
     Vec3::new(x, floor.map_or(start.y, |h| h + crate::player::CAPSULE_HALF_HEIGHT), z)
@@ -1785,13 +2247,26 @@ mod respawn_tests {
         let t = crate::map::Terrain::from_tris(verts, [([0, 1, 2], 0), ([0, 2, 3], 0)].into_iter());
         let half = crate::player::CAPSULE_HALF_HEIGHT;
         let start = Vec3::new(1.0, 0.0 + half + 0.05, 0.0);
-        let at = respawn_spot(start, 2.0, Some(&t));
+        // Facing +Z (yaw pi): behind is -Z, up the ramp.
+        let pi = std::f32::consts::PI;
+        let at = respawn_spot(start, pi, 2.0, Some(&t));
         // (Terrain::floor takes the highest of the feet's samples 8 cm around: +0.04 m here.)
         assert!((at - Vec3::new(1.0, 1.0 + half, -2.0)).length() < 0.05, "{at}");
         // Without a map: the spawn height.
-        assert_eq!(respawn_spot(start, 2.0, None), Vec3::new(1.0, start.y, -2.0));
+        assert!((respawn_spot(start, pi, 2.0, None) - Vec3::new(1.0, start.y, -2.0)).length() < 1e-4);
         // An MSB enemy (no offset): its own spot.
-        assert_eq!(respawn_spot(start, 0.0, None), start);
+        assert_eq!(respawn_spot(start, pi, 0.0, None), start);
+    }
+
+    /// A sandbox line-up enemy past Wolf (z >= 9, yaw 0: facing -Z toward him) comes back 2 m
+    /// behind itself (+Z), not 2 m in front along world -Z (2026-10-12 bug hunt round 21).
+    #[test]
+    fn a_respawn_steps_back_along_its_start_facing() {
+        let start = Vec3::new(0.0, 1.0, 9.0);
+        assert!((respawn_spot(start, 0.0, 2.0, None) - Vec3::new(0.0, 1.0, 11.0)).length() < 1e-4);
+        // Facing +X (yaw -pi/2: Ry(-pi/2) * -Z = +X): behind is -X.
+        let at = respawn_spot(start, -std::f32::consts::FRAC_PI_2, 2.0, None);
+        assert!((at - Vec3::new(-2.0, 1.0, 9.0)).length() < 1e-4, "{at}");
     }
 }
 
@@ -1801,20 +2276,25 @@ fn think(
     time: Res<Time>,
     combat: Res<Combat>,
     config: Res<GameConfig>,
-    player: Single<(&Actor, &Transform), (With<Player>, Without<Enemy>)>,
+    player: Single<(Entity, &Actor, &Transform, &Player), (With<Player>, Without<Enemy>)>,
     mut q: Query<(Entity, &mut Enemy, &mut Actor, &mut Transform, Option<&Phantom>, Has<events::FromEvent>, Has<script::Scripted>, Option<&mut crate::model::DrawMask>), Without<Player>>,
     mut fight: ResMut<FightReset>,
     mut brains: NonSendMut<Brains>,
-    routes: Query<&PatrolRoute>,
+    (routes, dummies, markers): (Query<&PatrolRoute>, Query<&crate::model::Dummies>, Query<&GlobalTransform>),
     mut log: Option<ResMut<crate::hud::CombatLog>>,
-    mut perilous: Option<ResMut<crate::hud::Perilous>>,
     mut debug: Option<ResMut<EnemyDebug>>,
     mut bs: ResMut<script::BossScript>,
-    mut ai_flags: ResMut<AiFlags>,
+    (mut ai_flags, mut ai_sounds, mut triggers): (ResMut<AiFlags>, ResMut<AiSounds>, ResMut<TriggerRegions>),
     mut statuses: Option<ResMut<crate::status::Statuses>>,
+    lock: Option<Res<crate::camera::LockOn>>,
 ) {
     let dt = time.delta_secs();
-    let (pa, ptf) = *player;
+    let (pent, pa, ptf, pp) = *player;
+    // The afflictions' SpEffects are on their wearer too (HasSpecialEffectId sees every active
+    // one): Wolf aged by the Fountainhead noble's breath (9620, 130000_battle.lua), poisoned...
+    let worn: HashMap<Entity, Vec<i64>> = statuses.as_ref().map_or(HashMap::new(), |s| s.0.iter().map(|(e, st)| (*e, st.effects.iter().map(|a| a.id).collect())).collect());
+    let afflictions = |ent: Entity| worn.get(&ent).cloned().unwrap_or_default();
+    let regions = crate::enemy::map_regions();
     let mut event_flags = match &bs.run {
         Some(r) => r.flags_on(),
         None => ai_flags.0.iter().filter(|f| *f.1).map(|f| *f.0).collect(),
@@ -1827,13 +2307,48 @@ fn think(
             ent,
             team: crate::combat::team_of(&combat, a),
             pos: tf.translation,
+            fwd: a.forward(),
             hp_rate: a.hp / a.hp_max.max(1.0),
             guard: a.state.contains("Guard"),
-            sp: combat.data_of(a).sp_effects_at(&a.anim, a.t).iter().map(|(id, _)| *id).collect(),
+            sp: combat.data_of(a).sp_effects_at(&a.anim, a.t).iter().map(|(id, _)| *id).chain(afflictions(ent)).collect(),
             posture_left: a.posture_max - a.posture,
             posture_rate: (1.0 - a.posture / a.posture_max.max(1.0)).max(0.0),
         })
         .collect();
+    // The AI team roles, from last frame's targets.
+    brains.role_clock -= dt;
+    if brains.role_clock <= 0.0 {
+        brains.role_clock = TEAM_ORDER_INTERVAL;
+        let members: Vec<_> = q
+            .iter()
+            .filter(|x| !x.1.disabled && !x.1.is_dead() && x.2.hp > 0.0 && !x.4.is_some_and(|p| p.parked()))
+            .filter_map(|(ent, e, _, tf, ..)| {
+                let key = e.team_target?;
+                let at = match key {
+                    None => ptf.translation,
+                    Some(r) => npcs.iter().find(|n| n.ent == r)?.pos,
+                };
+                Some((key, tf.translation.distance(at), ent))
+            })
+            .collect();
+        brains.roles = assign_team_roles(members);
+    }
+    // The AI sounds age (combat.rs resolve emits the attacks').
+    triggers.0.retain_mut(|r| {
+        r.life -= dt;
+        r.life > 0.0
+    });
+    ai_sounds.0.retain_mut(|s| {
+        s.life -= dt;
+        s.life > 0.0
+    });
+    let alert: HashMap<Entity, (bool, Vec<i64>)> = q.iter().map(|(ent, e, ..)| (ent, (matches!(e.targeting.state, stealth::BATTLE | stealth::FIND), e.placement.clone()))).collect();
+    for s in &mut ai_sounds.0 {
+        if let Some(o) = s.owner {
+            s.owner_alert = alert.get(&o).is_none_or(|a| a.0);
+            s.owner_groups = alert.get(&o).map(|a| a.1.clone()).unwrap_or_default();
+        }
+    }
     // Wolf's learned skills' SpEffects (Covert A / B) for the sight and hearing checks.
     let skills = crate::combat::skill_sp_effect_rows(&combat, &config);
     for (entity, mut e, mut a, mut tf, phantom, from_event, scripted, mut draw_mask) in &mut q {
@@ -1847,21 +2362,19 @@ fn think(
         // (Also before its script has started: the first frame.)
         let scripted = scripted || script::scripts().contains_key(&foe.npc_row);
         let turn_rate = npc["turnVellocity"].as_f64().unwrap_or(135.0) as f32;
-        // An anim's TAE SpEffect can switch the anim set for good (Isshin's 3015 -> 200031 = a100;
-        // effectEndurance -1): the next state plays from it. It overwrites the set's SpEffect it
-        // had (the "Anime ID offset" rows 200030-200034 share spCategory 100, Paramdex SDT: the
-        // category that decides overwriting), so the AI no longer sees that one: the Okami
-        // warriors' resident 200031 (a100: their Act31 appearance 20001) gives way to 20001's
-        // 200030. gap: the exe's overwrite rule per category is not traced.
+        // An anim's TAE SpEffect (66 / 67) with effectEndurance -1 stays on for good: the exe never
+        // removes a TAE effect at the window's end, -1 never counts down (FUN_140b56500 ->
+        // FUN_140c02c50; FUN_140c03af0 / FUN_140c06b70). So Isshin's 3015 -> 200031 switches the
+        // anim set (a100) and the headless Ape's rise keeps 275100 / 3510991 / 3510110. The
+        // category rule (wear_for_good) overwrites: the Okami warriors' resident 200031 (a100,
+        // their Act31 appearance 20001) gives way to 20001's 200030.
         if !a.anim.is_empty() {
-            let set = d.sp_effects_at(&a.anim, a.t).iter().map(|(id, _)| *id).filter(|id| anim_group_of(d, std::iter::once(*id)).is_some()).last();
-            if let Some(id) = set {
-                a.anim_group = anim_group_of(d, std::iter::once(id)).unwrap_or(0);
-                let cat = d.sp_effects.get(&id.to_string()).map(|s| s.sp_category);
-                if !a.resident.contains(&id) && d.sp_effects.get(&id.to_string()).is_some_and(|s| s.effect_endurance < 0.0) {
-                    a.resident.retain(|r| d.sp_effects.get(&r.to_string()).map(|s| s.sp_category) != cat || anim_group_of(d, std::iter::once(*r)).is_none());
-                    a.resident.push(id);
-                }
+            let lasting: Vec<i64> = d.sp_effects_at(&a.anim, a.t).iter().filter(|(_, s)| s.effect_endurance == -1.0).map(|(id, _)| *id).collect();
+            for id in lasting {
+                wear_for_good(d, &mut a, id);
+            }
+            if let Some(g) = anim_group_of(d, d.sp_effects_at(&a.anim, a.t).iter().map(|(id, _)| *id)) {
+                a.anim_group = g;
             }
         }
         // Instant recoveries from the anim's TAE AddSpEffect (66 / 67): every ThrowDef reaction
@@ -1956,10 +2469,13 @@ fn think(
                 if t - dt <= 0.0 {
                     // hp_max already carries the area doping's max_hp_rate (spawn_one); the
                     // raw NpcParam hp brought a doped enemy back at a fraction of its bar.
+                    crate::status::set_aging(&mut a, &combat, None);
                     a.hp = a.hp_max;
                     a.posture = 0.0;
                     e.ninsatsu.0 = e.ninsatsu.1;
+                    e.ninsatsu_unhit = 0;
                     a.resident = e.resident0.clone();
+                    a.super_armor.refill();
                     e.phase_done.clear();
                     e.phase_flags.clear();
                     e.event_req.clear();
@@ -1972,10 +2488,11 @@ fn think(
                     a.yaw = e.start_yaw;
                     // On the floor at its start, not at the height it died at (bodies_on_terrain
                     // only steps up STEP_HEIGHT: killed downhill it came back buried).
-                    // The duel's line-up comes back 2 m behind its spot (world -Z); an MSB enemy
-                    // (it started unaware on its map spot) at the spot itself, which stays its home.
+                    // The line-up comes back 2 m behind its spot along its start facing (the
+                    // duel's faces +Z, the sandbox's past Wolf -Z); an MSB enemy (it started
+                    // unaware on its map spot) at the spot itself, which stays its home.
                     let back = if e.unaware0 { 0.0 } else { 2.0 };
-                    tf.translation = respawn_spot(e.start, back, crate::map::terrain().as_deref());
+                    tf.translation = respawn_spot(e.start, e.start_yaw, back, crate::map::terrain().as_deref());
                     // Its new pose at once: no crossfade from the death pose, no deathblow ModelLag.
                     commands.entity(entity).insert(crate::anim::SnapPose);
                     // Its poison / burn and their flames stay with the old life.
@@ -2009,7 +2526,8 @@ fn think(
                         }
                     } else {
                         e.targeting = Targeting::new(0x2545_F491 ^ e.rng);
-                        e.targeting.damaged(combat.param("NpcThinkParam", foe.think_id));
+                        let think = e.think_id(foe);
+                        e.targeting.damaged(combat.param("NpcThinkParam", think));
                         e.ai_sp = 200004;
                     }
                     // Home is its start pose, not a home its last patrol moved (Patrol::new_home)
@@ -2017,6 +2535,11 @@ fn think(
                     e.home = Some((tf.translation, e.start_yaw));
                     e.hurt_by_wolf = false;
                     e.hp_last = None;
+                    // The old life's timed SpEffects (its reaction cool times, prosthetic.rs
+                    // add_reaction_cool_time) and its guard count stay with it.
+                    e.clash.clear();
+                    e.guard_count = 0;
+                    e.guard_count_timer = 0.0;
                 } else {
                     e.mode = Mode::Dead(t - dt);
                 }
@@ -2067,13 +2590,20 @@ fn think(
 
         // What it knows of Wolf (stealth.rs), every frame: sounds, then sight and the state.
         // Set Character AI ID (map script) swaps its NpcThinkParam row.
-        let think_id = e.think_override.unwrap_or(foe.think_id);
+        let think_id = e.think_id(foe);
         let think_row = combat.param("NpcThinkParam", think_id);
         let (home, home_yaw) = *e.home.get_or_insert((tf.translation, a.yaw));
         let seen = wolf_seen(&combat, pa, ptf.translation, &skills);
         let feet = tf.translation - Vec3::Y * (crate::player::CAPSULE_HALF_HEIGHT + 0.05);
+        e.targeting.sound_new = false;
         for (id, rank) in wolf_sounds(&combat, pa, ptf.translation, &a, tf.translation, think_row, &skills) {
             e.targeting.hear(think_row, seen.pos, id, rank);
+        }
+        let my_team = crate::combat::team_of(&combat, &a);
+        for s in &ai_sounds.0 {
+            if let Some((id, rank)) = ai_sound_heard(&combat, s, entity, my_team, &a, tf.translation, think_row, &e.placement) {
+                e.targeting.hear_record(think_row, s.pos, id, rank, s.serial);
+            }
         }
         e.targeting.update(think_row, feet, a.forward(), &seen, dt);
         if e.targeting.changed() {
@@ -2118,6 +2648,11 @@ fn think(
             .map(|(r, _)| r);
         // The opponent for the root-motion boost (actor.rs) and the body twist (anim.rs).
         a.homing = rival.map(|r| r.ent);
+        e.team_target = match rival {
+            Some(r) => Some(Some(r.ent)),
+            None if e.targeting.state == stealth::BATTLE => Some(None),
+            None => None,
+        };
         let t_pos = match rival {
             Some(r) => r.pos,
             None => e.targeting.target_pos(ptf.translation).unwrap_or(ptf.translation),
@@ -2139,6 +2674,26 @@ fn think(
             _ => d.length(&a.anim),
         };
         let ended = !a.anim.is_empty() && a.t >= len;
+        // The Divine Dragon's trees (c5310 HKS Event20000 / 20002 / 20004 _onUpdate: at the
+        // anim's end ExecEventAllBody W_Event21000 / 21001 / 21002): each bloom stays open in
+        // its loop clip (TAE 66 5025 / 5026 / 5027 over all of it), which m25 12505906 reads to
+        // activate that point's grapple object; the loop repeats until the next event request
+        // (AI 531001 request 10 / 20 / 30, its AttackImmediateAction) or the re-warp.
+        if ended && combat.foe_of(&a).chr == "c5310" {
+            let next = match a.state.as_str() {
+                "Ez20000" | "Event21000" => Some(21000),
+                "Ez20002" | "Event21001" => Some(21001),
+                "Ez20004" | "Event21002" => Some(21002),
+                _ => None,
+            };
+            if let Some(id) = next {
+                let k = a.grouped(&format!("a000_{id:06}"));
+                if d.anim(&k).is_some() {
+                    a.play(&format!("Event{id}"), &k);
+                    continue;
+                }
+            }
+        }
         // c9997 DamageLightningStart / Loop _onUpdate (7972-8010): the start into a loop clip
         // (ANIME_ID_SPECIAL_DAMAGE_LIGHTNING_LOOP 8220 + GetRandomIndex 0-2, the ones it has),
         // which repeats while SP_EFFECT_REF_LIGHTNING_LOOP_LIFE (1000051: 6030-6039) is on, then
@@ -2155,17 +2710,17 @@ fn think(
             }
             continue;
         }
-        let free = a.anim.is_empty() || ended || is_free_state(&a.state);
-        // Perilous warning (red kanji) when the attack's TAE fires it.
-        if let Some(kind) = d.perilous_warning(&a.anim, a.prev_t, a.t) {
-            if let Some(p) = perilous.as_mut() {
-                p.raise(kind);
-            }
+        // The trees' bloom loops take the next event request at any frame (531001's
+        // AttackImmediateAction).
+        let free = a.anim.is_empty() || ended || is_free_state(&a.state) || (a.state.starts_with("Event2100") && combat.foe_of(&a).chr == "c5310");
+        // Perilous warning when the attack's TAE fires it: the combat log line. The HUD kanji is
+        // its warning bullet's hit on Wolf (enemy_bullet.rs fly).
+        if d.perilous_warning(&a.anim, a.prev_t, a.t).is_some() {
             if let Some(log) = log.as_mut() {
-                let what = match kind {
-                    980 => "sweep - jump",
-                    982 => "thrust - deflect or mikiri (step in)",
-                    983 => "grab - dodge",
+                let what = match perilous_kind(d, &a.anim) {
+                    "sweep" => "sweep - jump",
+                    "thrust" => "thrust - deflect or mikiri (step in)",
+                    "grab" => "grab - dodge",
                     _ => "unblockable",
                 };
                 log.push(format!("危 perilous {what}"), Color::srgb(1.0, 0.2, 0.1));
@@ -2184,7 +2739,11 @@ fn think(
         // Debug-menu drills: perilous-only / one repeated attack / standing still.
         if let Some(dbg) = debug.as_deref_mut() {
             if matches!(dbg.mode, AiMode::Perilous | AiMode::Thrust | AiMode::Repeat | AiMode::Idle) {
-                drill(&mut e, &mut a, d, &config, dbg, dist, want_yaw, dt, free, ended);
+                // Range from his body's edge: a big one (Demon of Hatred, NpcParam hitRadius
+                // 2.8) is held off by the body push-out before the centre distance reaches the
+                // range, and walked on forever (VFX's c7020 drill).
+                let body = (npc["hitRadius"].as_f64().unwrap_or(0.5) as f32 - 0.5).max(0.0);
+                drill(&mut e, &mut a, d, &config, dbg, dist - body, want_yaw, dt, free, ended);
                 continue;
             }
         }
@@ -2224,6 +2783,9 @@ fn think(
         let mut sp_self: HashSet<i64> = a.resident.iter().copied().collect();
         sp_self.extend(d.sp_effects_at(&a.anim, a.t).iter().map(|(id, _)| *id));
         sp_self.extend(e.clash.iter().map(|c| c.0));
+        // Its TAE SpEffects kept past their window and their replaceSpEffectId chains (actor.rs
+        // run_sp_effect_chains), as Wolf's below.
+        sp_self.extend(a.sp_chained.iter().map(|c| c.0));
         sp_self.insert(e.ai_sp);
         // The anim-set SpEffect lasts (effectEndurance -1): Corrupted Monk / Isshin read 200031 as
         // their second phase ("IsHU2", 500000_battle.lua).
@@ -2232,9 +2794,27 @@ fn think(
         }
         let sp_target: HashSet<i64> = match rival {
             Some(r) => r.sp.iter().copied().collect(),
-            None => combat.player.sp_effects_at(&pa.anim, pa.t).iter().map(|(id, _)| *id).collect(),
+            // With his chained ones: the revival's a000_110030 TAE 401 110031 (0.3 s) -> 110032
+            // (2.5 s) -> 110033 (0.5 s), whose 110032 common_table_ai_common.lua:178-200 answers
+            // (EndureAttack 1040 / KankyakuAct). Only the TAE-window 110031 was seen (round 30).
+            // And his timed rows (Player::timed: the Owl's recovery seal 3506090 from his 3031
+            // "Divine Abduction" bullet, which 506001_battle.lua re-weighs on
+            // HasSpecialEffectId(TARGET_ENE_0, 3506090); a warning's 211000) and the lightning
+            // charge on him (Actor::electro, 9490-9495: the Way of Tomoe's 9492 stateInfo 356).
+            // Before, the AI never saw them and the Owl kept re-sealing (boss bug hunt 2026-10-14).
+            None => combat
+                .player
+                .sp_effects_at(&pa.anim, pa.t)
+                .iter()
+                .map(|(id, _)| *id)
+                .chain(pa.sp_chained.iter().map(|c| c.0))
+                .chain(afflictions(pent))
+                .chain(pp.timed.iter().map(|t| t.0))
+                .chain(pa.electro.map(|e| e.0))
+                .collect(),
         };
         let sp_new: Vec<i64> = sp_self.iter().chain(sp_target.iter()).filter(|id| !e.prev_sp.contains(*id)).copied().collect();
+        let sp_gone: Vec<i64> = e.prev_sp.iter().filter(|id| !sp_self.contains(*id) && !sp_target.contains(*id)).copied().collect();
         e.prev_sp = sp_self.iter().chain(sp_target.iter()).copied().collect();
         // (In any anim set: a100_003000 is EzState 3000 too.)
         let playing_ez = e.cur_ez.filter(|ez| ez_of(&a.anim) == Some(*ez));
@@ -2251,6 +2831,7 @@ fn think(
             sp_self,
             sp_target,
             sp_new,
+            sp_gone,
             hp_rate: a.hp / a.hp_max,
             target_hp_rate: rival.map_or(pa.hp / pa.hp_max, |r| r.hp_rate),
             sp: a.posture_max - a.posture,
@@ -2270,6 +2851,13 @@ fn think(
             target_use_item: rival.is_none() && wolf_starts_an_item(pa),
             me: tf.translation,
             fwd,
+            target: t_pos,
+            // A caution spot has no facing (zero).
+            target_fwd: match rival {
+                Some(r) => r.fwd,
+                None if t_pos == ptf.translation => pa.forward(),
+                None => Vec3::ZERO,
+            },
             home,
             home_fwd: Vec3::new(-home_yaw.sin(), 0.0, -home_yaw.cos()),
             t_state: tg.state,
@@ -2280,14 +2868,42 @@ fn think(
             forgetting: tg.forgetting_time(think_row),
             sound_id: tg.sound.map_or(0, |s| s.id),
             sound_rank: tg.sound.map_or(0, |s| s.rank),
+            sound_new: tg.sound_new,
             t_replan: tg.replan || std::mem::take(&mut e.phase_replan),
             event_req: e.event_req.clone(),
+            event_req_new: std::mem::take(&mut e.event_req_new),
+            // The dummies its observe slots read (AddObserveChrDmySphere / Area): world position
+            // and +Z axis of each marker.
+            dummies: brains
+                .map
+                .get(&entity)
+                .map(|b| b.observe_dmys())
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|id| {
+                    let m = dummies.get(entity).ok().and_then(|d| crate::combat::dmy_entity(d, id as i64))?;
+                    let g = markers.get(m).ok()?;
+                    Some((id, g.translation(), g.rotation() * Vec3::Z))
+                })
+                .collect(),
             event_flags: event_flags.clone(),
-            ninsatsu: e.ninsatsu.0,
+            ninsatsu: e.ninsatsu_left(),
             ninsatsu_max: e.ninsatsu.1,
+            locked_on: rival.is_none() && lock.as_ref().is_some_and(|l| l.target == Some(entity)),
+            team_role: brains.roles.get(&entity).copied().unwrap_or(-1.0),
+            regions: regions.clone(),
+            me_id: entity.to_bits(),
+            sound_serial: tg.sound.map_or(-1, |s| s.serial),
+            triggers: triggers.0.clone(),
         };
         let brain = brains.map.get_mut(&entity).unwrap();
         let cmd = brain.tick(&snap, dt);
+        // Its new trigger regions are there for the AIs after it this frame (a repeat key
+        // replaces the old region, FUN_140643380).
+        for r in &cmd.triggers {
+            triggers.0.retain(|x| (x.owner, x.cat, x.unit) != (r.owner, r.cat, r.unit));
+            triggers.0.push(r.clone());
+        }
         // A finished type 5 patrol route moved its home (ai.rs Patrol::new_home).
         if let Some(h) = brain.patrol_home() {
             e.home = Some(h);
@@ -2334,6 +2950,7 @@ fn think(
 
         // Carry out the request.
         let move_ok = free || d.flag(&a.anim, a.t, FLAG_AI_MOVE);
+        let mut turned_first = false;
         let cur = stance_of(&a.state);
         let want = Stance::wanted(&cmd).filter(|s| d.anim_key(s.idle()).is_some());
         let ending = a.state == "GuardEnd" || a.state.starts_with("GeneralStanceEnd");
@@ -2371,9 +2988,19 @@ fn think(
                 e.ez_failed = Some(ez);
             }
         } else if let (Some(mv), true) = (cmd.mv, move_ok) {
-            let state = loco_state(d, e.ai_sp, mv, cmd.walk);
-            if a.state != state || ended {
-                a.play_state(d, &state);
+            // From idle the turn comes before the move: c9997 ExecActiveTransition tries ExecTurn
+            // (enable_turn TRUE) before the move request (env 3014), and the exe's Approach
+            // (FUN_1405caa00, 1405c.c) makes the goal's turn target (param 3; -1 = the move
+            // point, FUN_14060c7d0) the TurnTo target, so a point 45 deg or more off plays the
+            // turn clip first and the run starts from its AI flag 78. (A runner that only
+            // steered at turnVellocity 135 deg/s circled a patrol point behind it for ever.)
+            if cmd.face && free && start_turn(&e, &mut a, d, goal_yaw, cmd.emergency) {
+                turned_first = true;
+            } else {
+                let state = loco_state(d, e.ai_sp, mv, cmd.walk);
+                if a.state != state || ended {
+                    a.play_state(d, &state);
+                }
             }
             e.cur_ez = None;
         } else if free && (ended || a.state.starts_with("Walk") || a.state.starts_with("Run")) {
@@ -2394,7 +3021,7 @@ fn think(
             a.move_vel = Vec3::ZERO;
             e.cur_ez = None;
         }
-        let turned = cmd.turn && cmd.anim.is_none() && cmd.mv.is_none() && free && start_turn(&e, &mut a, d, goal_yaw, cmd.emergency);
+        let turned = turned_first || (cmd.turn && cmd.anim.is_none() && cmd.mv.is_none() && free && start_turn(&e, &mut a, d, goal_yaw, cmd.emergency));
         if (cmd.face || cmd.turn) && (free || cmd.mv.is_some()) && !turned && !(a.state.starts_with("Turn") && !ended) {
             a.yaw = turn_toward(a.yaw, goal_yaw, turn_rate.to_radians() * dt);
         }
@@ -2620,17 +3247,21 @@ fn drill(e: &mut Enemy, a: &mut Actor, d: &crate::data::CharData, config: &GameC
     }
     a.procedural("IdleBattle");
     a.move_vel = Vec3::ZERO;
-    dbg.timer -= dt;
-    if dbg.timer > 0.0 {
+    // A new drill mode starts at once.
+    if e.drill_timer.0 != dbg.mode {
+        e.drill_timer = (dbg.mode, 0.0);
+    }
+    e.drill_timer.1 -= dt;
+    if e.drill_timer.1 > 0.0 {
         return;
     }
     let key = if dbg.mode == AiMode::Repeat && d.anim(&dbg.attack).is_some() {
         dbg.attack.clone()
     } else {
-        // Mikiri practice: the perilous attacks whose hit is an undeflectable-by-guard thrust
-        // (AtkParam atkType 2 + disableGuard), the ones combat.rs turns into a Mikiri.
+        // Mikiri practice: the perilous thrusts combat.rs turns into a Mikiri (mikiri_atk:
+        // disableGuard + atkType 2 or trackType 6), under a perilous warning.
         let thrust_only = dbg.mode == AiMode::Thrust;
-        let is_thrust = |k: &str| d.attack_windows(k).iter().any(|(_, atk, _)| atk.atk_type == 2 && atk.disable_guard == 1);
+        let is_thrust = |k: &str| d.attack_windows(k).iter().any(|(_, atk, _)| crate::combat::mikiri_atk(atk));
         let red: Vec<String> = attack_list(d).into_iter().filter(|(k, p)| p.is_some() && (!thrust_only || is_thrust(k))).map(|(k, _)| k).collect();
         if red.is_empty() {
             return;
@@ -2642,7 +3273,7 @@ fn drill(e: &mut Enemy, a: &mut Actor, d: &crate::data::CharData, config: &GameC
     a.play(&format!("Ez{}", ez.unwrap_or(0)), &key);
     e.cur_ez = ez;
     e.fallback = None;
-    dbg.timer = dbg.interval;
+    e.drill_timer.1 = dbg.interval;
 }
 
 /// Passive practice partner (walks into range and waits), and the stand-in when

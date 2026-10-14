@@ -31,3 +31,9 @@ inherits = "release"
 lto = "fat"
 codegen-units = 1
 strip = true
+
+# Quick rebuilds for tests (`cargo test --profile quick`): release speed, but incremental, so
+# after a small edit only the changed parts recompile. Not for performance measurements.
+[profile.quick]
+inherits = "release"
+incremental = true

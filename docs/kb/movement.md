@@ -109,3 +109,17 @@ turn to the stick and ForwardGroundJump (row 101). Test locked_on_jumps_go_where
 - 2026-10-10 sprint deflect: SprintToDeflectGuard (a050_203001) slides 3.04 m on root motion and turns only
   by TAE SetTurnSpeed (180 f3-6, 360 f6-9); Sv1 snapped Wolf to the target first, so the slide carried him
   into the enemy (user: "I launch to the enemy"). HKS BEH_A_DEFLECT_GUARD_START sets no facing; now no snap.
+
+## Blend-in root motion (2026-10-14, exe)
+Havok's blending transition mixes the world-from-model: from x (1 - w) + to x w over the to clip's
+TAE Blend, w = smoothstep (FUN_141408650 curve 0; FUN_14140cfc0 -> FUN_1413bf6c0). The from
+generator keeps playing meanwhile, so an attack out of a run keeps the run's speed through its
+first ~0.1 s (live rec_* medians: live / unweighted clip 0.7-1.0 over 6 ticks). Effects with
+Havok flag 1 (c0000.hkx TaeBlend_NoSrcMotion*) take the to root at once: extracted/blend_src.json
+per target state (sekiro-extract sms), data::blend_keeps_src. actor.rs Actor.blend_* / advance.
+A clip restarted on its own key is the generator looping, not a transition (no blend), and the
+guard walk's four directions are layers of one state (DeflectGuardMove, hkbLayerGenerator): a
+direction change clears the blend. A looping from clip (hkbClipGenerator mode 1, 247 of Wolf's
+2566: extracted/loop_clips_c0000.json from `sekiro-extract clips`; data::loops_c0000) wraps its
+clock through the blend. Enemies' graphs carry no loop flag (gap: their from clips stop at the
+end). See HANDOFF 4.63 item 8.

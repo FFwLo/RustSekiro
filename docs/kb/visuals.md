@@ -124,6 +124,8 @@ Dated findings, oldest first. Append new entries at the end.
 - 2026-10-08 bend links solved (bendMinLength / stretchMaxLength with their stiffnesses). gap: bend_stiffness /
   transition sets; damping read as Havok
   globalDampingPerSecond (velocity fraction removed per second).
+- 2026-10-13 the cloth sim runs in model space (cloth.rs `carry`): the exe moves particles by the
+  character only in Transfer Motion (FUN_141578d50), off in every cloth; HANDOFF 4.44.
 - Sheaths (V3): Sheath01/02[omit] are tracked in all 260 c1020 clips (near bind pose), so their pose is
   the game's animation; no physics needed. They are not in the ragdoll (19 Ctrl bodies) or the cloth.
 - `SHINOBI_CLOTH_DEBUG=<sec>` logs each cloth (refs, bones, distances) once at that time.
@@ -357,7 +359,7 @@ f16-83 alpha 1 -> 0.7383 (f50) -> 0.9922; FadeOut f84-89 alpha -0.2 / frame) and
 (hud.rs lock_clip). The deathblow (MenuVFX State_1) and stealth (MarkerTop_334) clips likewise,
 see HANDOFF "FE movie marks". dummy 220 as the anchor is still ours.
 
-## HitEffectSfxAngleParam (2026-10-12, parked)
+## HitEffectSfxAngleParam (2026-10-12; ported 2026-10-13: the sparks use FUN_14092b6c0, absolute world, see HANDOFF)
 
 Param idx 0x3e, keyed by the HitEffectSfxParam row id; AtkParam+0x88 atkDir_forSfx (1 Upper, 2
 Bottom, 3 Left, 4 Right) selects the angle triple; atkDir<Dir> can swap the row id but only

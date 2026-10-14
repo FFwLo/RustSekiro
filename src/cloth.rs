@@ -15,7 +15,8 @@
 //! Collisions (-1 steps): the cloth's capsules on their bones, per-particle masks and radii.
 //! Bend links solved (min / max length), bend stiffness as the exe's Mx solver; gap: transition sets; transfer motion is
 //! disabled in every Sekiro cloth checked (c1020, Wolf bd_m_9040), so it is not implemented;
-//! globalDampingPerSecond is read as the velocity fraction removed per second.
+//! globalDampingPerSecond is read as the velocity fraction removed per second, of the velocity
+//! relative to the model: the sim runs in model space (`carry`, the exe's pose space).
 
 use bevy::prelude::*;
 use serde_json::Value;
@@ -43,6 +44,10 @@ enum Set {
     /// A..D; C-D is the hinge edge, A and B the opposite corners), maxRestPoseHeightSq, clamp,
     /// useRestPoseConfig. Solved as the exe's hclBendStiffnessConstraintSetMx (FUN_141526450).
     BendStiffness { links: Vec<([f32; 4], f32, f32, [usize; 4])>, max_height_sq: f32, clamp: bool, rest_pose: bool },
+    /// hclCompressibleLinkConstraintSet: (link, compressionLength) - free between the compression
+    /// and the rest length, pulled back to rest above it and pushed out to it below (exe
+    /// FUN_1414d62e0 / the Mx FUN_141519460: a dead zone [compressionLength, restLength]).
+    Compressible(Vec<(Link, f32)>),
     Unsolved,
 }
 
@@ -74,6 +79,8 @@ pub struct ClothDef {
     rest: Vec<Vec3>,
     inv_mass: Vec<f32>,
     radius: Vec<f32>,
+    /// ParticleData friction: the share of the tangential motion against a collidable removed.
+    friction: Vec<f32>,
     /// staticCollisionMasks: bit i = collides with collidables[i].
     masks: Vec<u32>,
     collidables: Vec<Collidable>,
@@ -89,6 +96,10 @@ pub struct ClothDef {
     refs: Vec<Vec<(usize, Vec4, Vec4)>>,
     /// The bones the reference vertices skin from, each once.
     ref_bones: Vec<String>,
+    /// References taken from an earlier cloth of the same character instead of bones (the Owl's
+    /// coat feathers c5060_coat#1 ride the coat sim): that cloth's name and, per reference vertex,
+    /// its triangle slots there (cloth_export.rs "ref_deform").
+    ref_deform: Option<(String, Vec<(usize, Vec<Slot>)>)>,
     displays: Vec<Display>,
     bones: Vec<(String, usize, Mat4)>,
 }
@@ -127,6 +138,7 @@ pub fn load(model_file: &std::path::Path) -> Vec<ClothDef> {
                 rest: particles.iter().map(|p| v4(p).truncate()).collect(),
                 inv_mass: particles.iter().map(|p| fl(&p[3])).collect(),
                 radius: particles.iter().map(|p| fl(&p[4])).collect(),
+                friction: particles.iter().map(|p| fl(&p[5])).collect(),
                 masks: arr(&c["masks"]).iter().map(|m| m.as_u64().unwrap_or(0) as u32).collect(),
                 collidables: arr(&c["collidables"])
                     .iter()
@@ -167,6 +179,9 @@ pub fn load(model_file: &std::path::Path) -> Vec<ClothDef> {
                             stiffness: fl(&s["stiffness"]),
                             normal: s["normal"].as_u64().unwrap_or(0) != 0,
                         },
+                        "compressible" => Set::Compressible(
+                            arr(&s["links"]).iter().map(|l| (Link { a: us(&l[0]), b: us(&l[1]), rest: fl(&l[2]), stiffness: fl(&l[4]) }, fl(&l[3]))).collect(),
+                        ),
                         _ => Set::Unsolved,
                     })
                     .collect(),
@@ -202,6 +217,13 @@ pub fn load(model_file: &std::path::Path) -> Vec<ClothDef> {
                     })
                     .collect(),
                 ref_bones: ref_bones.clone(),
+                ref_deform: c["ref_deform"]["cloth"].as_str().map(|src| {
+                    let verts = arr(&c["ref_deform"]["verts"])
+                        .iter()
+                        .map(|v| (us(&v[0]), arr(&v[1]).iter().map(|s| Slot { tri: us(&s[0]), p: v4(&s[1]), n: v4(&s[2]) }).collect()))
+                        .collect();
+                    (src.to_string(), verts)
+                }),
                 displays: arr(&c["displays"])
                     .iter()
                     .map(|d| Display {
@@ -331,6 +353,15 @@ pub struct ClothInst {
     /// 24 ms a frame restarting).
     blowups: u32,
     rigid: bool,
+    /// The model root last frame (Havok space): the sim runs in model space (`carry`).
+    root_m: Option<Mat4>,
+    /// Last frame's capsules (Havok space): the exe's Substep Collidables walks each collidable
+    /// from its old pose to its new one over the substeps (14156.c:12749).
+    caps_prev: Vec<Option<(Vec3, Vec3, f32, f32)>>,
+    /// SHINOBI_CLOTH_PROBE: the sim's swing off the animated cloth (deg, the LocalRange
+    /// particles' centre from the fixed particles' centre, sim vs skinned references) and the
+    /// LocalRange particles' mean / max gap from their references (m).
+    off_anim: (f32, f32, f32),
 }
 
 const GIVE_UP: u32 = 5;
@@ -346,7 +377,7 @@ struct ClothOut {
 
 impl ClothInst {
     pub fn new(def: ClothDef, root: Entity, bones: HashMap<String, Entity>) -> Self {
-        ClothInst { def, root, bones, displays: Vec::new(), x: Vec::new(), prev: Vec::new(), started: false, last_h: 0.0, out: ClothOut::default(), cost_us: 0, phase_us: [0; 6], blowups: 0, rigid: false }
+        ClothInst { def, root, bones, displays: Vec::new(), x: Vec::new(), prev: Vec::new(), started: false, last_h: 0.0, out: ClothOut::default(), cost_us: 0, phase_us: [0; 6], blowups: 0, rigid: false, root_m: None, caps_prev: Vec::new(), off_anim: (0.0, 0.0, 0.0) }
     }
 }
 
@@ -361,6 +392,20 @@ impl Plugin for ClothPlugin {
         // SHINOBI_NO_CLOTH=1: no simulation (visual checks of the skinned meshes underneath).
         if std::env::var("SHINOBI_NO_CLOTH").is_err() {
             app.add_systems(PostUpdate, (simulate, apply).chain().after(bevy::transform::TransformSystems::Propagate));
+            app.init_resource::<ClothUploads>();
+            if let Some(render_app) = app.get_sub_app_mut(bevy::render::RenderApp) {
+                use bevy::render::{Render, RenderSystems};
+                render_app.init_resource::<ClothUploads>();
+                render_app.add_systems(bevy::render::ExtractSchedule, extract_cloth_uploads);
+                render_app.add_systems(Render, write_cloth_uploads.in_set(RenderSystems::PrepareAssets).after(bevy::render::mesh::allocator::allocate_and_free_meshes));
+            }
+        }
+        if std::env::var("SHINOBI_CAPE_TURN").is_ok() {
+            app.add_systems(Update, cape_drive.after(crate::player::read_input));
+            app.add_systems(Last, cape_probe);
+        }
+        if std::env::var("SHINOBI_CLOTH_PROBE").is_ok() {
+            app.add_systems(Last, enemy_cloth_probe);
         }
     }
 }
@@ -435,11 +480,28 @@ fn solve_link(x: &mut [Vec3], w: &[f32], l: &Link, stretch_only: bool) {
     x[l.b] -= corr * wb;
 }
 
+/// hclCompressibleLinkConstraintSet's link: untouched between `comp` and the rest length,
+/// otherwise solved back to the nearer bound.
+fn solve_compressible(x: &mut [Vec3], w: &[f32], l: &Link, comp: f32) {
+    let len = x[l.b].distance(x[l.a]);
+    let rest = if len > l.rest { l.rest } else if len < comp { comp } else { return };
+    solve_link(x, w, &Link { a: l.a, b: l.b, rest, stiffness: l.stiffness }, false);
+}
+
 /// Cloth further than this from the camera is not simulated: it is carried rigidly in its
 /// bind pose on the model root. The Options menu's "Cloth physics" (config `[video] cloth`:
 /// on 15 m, near 6 m, off = none, negative here); `SHINOBI_CLOTH_RANGE=<m>` overrides it for one
 /// run (0 = simulate everything). With a line-up of 20 enemies (127 cloth pieces) the
 /// simulation took the sandbox from 68 to 22 fps.
+/// Model-space simulation: the particles (current and previous, so their velocity relative to
+/// the model is kept) move with the model root from `old` to `new` (world, Havok space).
+fn carry(x: &mut [Vec3], prev: &mut [Vec3], old: Mat4, new: Mat4) {
+    let d = new * old.inverse();
+    for p in x.iter_mut().chain(prev.iter_mut()) {
+        *p = d.transform_point3(*p);
+    }
+}
+
 fn cloth_range(setting: crate::config::ClothSetting) -> f32 {
     static RANGE: std::sync::OnceLock<Option<f32>> = std::sync::OnceLock::new();
     RANGE.get_or_init(|| std::env::var("SHINOBI_CLOTH_RANGE").ok().and_then(|v| v.parse().ok())).unwrap_or(setting.range())
@@ -471,10 +533,34 @@ fn simulate(
         // World transforms this character's cloth-driven bones (and their children) take
         // this frame, ahead of `apply`: the display meshes skin from them.
         let mut overrides: HashMap<Entity, GlobalTransform> = HashMap::new();
-        for c in cloths.0.iter_mut() {
+        for i in 0..cloths.0.len() {
+            let (before, rest) = cloths.0.split_at_mut(i);
+            let c = &mut rest[0];
             let tc = std::time::Instant::now();
             c.out.bones.clear();
             c.out.meshes.clear();
+            // A chained cloth's references: the earlier cloth's particles this frame through its
+            // deformer slots (Havok world space, as the bone-skinned references).
+            let chained: Option<Vec<Option<(Vec3, Vec3)>>> = c.def.ref_deform.as_ref().map(|(src, verts)| {
+                let mut out = vec![None; c.def.refs.len()];
+                let Some(s) = before.iter().find(|b| b.def.name == *src).filter(|b| b.started && b.x.len() == b.def.rest.len()) else { return out };
+                let frames: Vec<Mat4> = s.def.tris.iter().map(|&t| tri_frame(&s.x, t)).collect();
+                for (v, slots) in verts {
+                    let (mut p, mut n) = (Vec4::ZERO, Vec4::ZERO);
+                    for sl in slots {
+                        if let Some(f) = frames.get(sl.tri) {
+                            p += *f * sl.p;
+                            n += *f * sl.n;
+                        }
+                    }
+                    if let Some(o) = out.get_mut(*v) {
+                        *o = Some((p.truncate(), n.truncate().normalize_or_zero()));
+                    }
+                }
+                out
+            });
+            // Its source not running yet: carried rigidly this frame.
+            let chain_missing = chained.as_ref().is_some_and(|r| r.iter().all(Option::is_none));
             // Out of range: carried rigidly (the restart pose every frame), no simulation. The
             // range is measured to the model root plus the cloth's own rest reach: the Demon of
             // Hatred's root sits 5 m behind its head, so its mane 8 m from the camera was culled
@@ -482,6 +568,7 @@ fn simulate(
             let rest_far = c.def.rest.iter().map(|p| p.length()).fold(0.0, f32::max);
             let hidden = !c.displays.is_empty() && c.displays.iter().all(|d| shown.get(d.entity).is_ok_and(|v| *v == Visibility::Hidden));
             let culled = c.rigid
+                || chain_missing
                 || hidden
                 || range < 0.0
                 || match cam {
@@ -500,7 +587,7 @@ fn simulate(
                 .map(|k| bone_mats.get(k.bone.as_str()).map(|m| { let m = *m * k.offset; (m.transform_point3(k.a), m.transform_point3(k.b), k.ra, k.rb) }))
                 .collect();
             // 1. Reference buffer (Havok world space).
-            let refs: Vec<Option<(Vec3, Vec3)>> = c
+            let refs: Vec<Option<(Vec3, Vec3)>> = if let Some(r) = chained { r } else { c
                 .def
                 .refs
                 .iter()
@@ -516,7 +603,7 @@ fn simulate(
                     }
                     Some((p.truncate(), n.truncate().normalize_or_zero()))
                 })
-                .collect();
+                .collect() };
             let mut tp = tc; // phase 0: the bone matrices, capsules and reference vertices above
             let mut lap = |slot: usize, tp: &mut std::time::Instant, acc: &mut [u64; 6]| {
                 let now = std::time::Instant::now();
@@ -578,6 +665,22 @@ fn simulate(
                 c.prev = c.x.clone();
                 c.started = true;
             }
+            // The game simulates in model space (the pose buffers'): the character's motion reaches
+            // the particles only through Transfer Motion (FUN_141578d50, the root's delta blended
+            // onto current and previous positions), off in all 435 exported cloths. So the
+            // particles ride along with the model root (no inertia, and the damping acts on motion
+            // relative to it, not as air drag: Wolf's 0.99 trailed his cape ~50 deg in a run).
+            if let Ok(root) = globals.get(c.root) {
+                let m = havok(root.to_matrix());
+                if let Some(old) = c.root_m.filter(|_| !restarted) {
+                    carry(&mut c.x, &mut c.prev, old, m);
+                    let d = m * old.inverse();
+                    for (a, b, _, _) in c.caps_prev.iter_mut().flatten() {
+                        (*a, *b) = (d.transform_point3(*a), d.transform_point3(*b));
+                    }
+                }
+                c.root_m = Some(m);
+            }
             // 2. Move fixed particles: from where they were to their reference vertex, reached in
             // even parts over the substeps (the exe's Simulate lerps each fixed particle by
             // (substep + 1) / substeps before integrating that substep).
@@ -601,8 +704,19 @@ fn simulate(
                 // this step's h, or uneven frame times jitter the cloth (seen as flicker).
                 let ratio = if c.last_h > 0.0 { (h / c.last_h).clamp(0.25, 4.0) } else { 1.0 };
                 c.last_h = h;
+                if restarted || c.caps_prev.len() != capsules.len() {
+                    c.caps_prev = capsules.clone();
+                }
+                let swept = |f: f32| -> Vec<Option<(Vec3, Vec3, f32, f32)>> {
+                    capsules
+                        .iter()
+                        .zip(&c.caps_prev)
+                        .map(|(now, was)| now.map(|(a, b, ra, rb)| match was { Some((a0, b0, _, _)) => (a0.lerp(a, f), b0.lerp(b, f), ra, rb), None => (a, b, ra, rb) }))
+                        .collect()
+                };
                 for step in 0..def.substeps {
                     let f = (step + 1) as f32 / def.substeps as f32;
+                    let (caps, caps_was) = (swept(f), swept(step as f32 / def.substeps as f32));
                     for &(p, from, to) in &fixed {
                         c.x[p] = from.lerp(to, f);
                         c.prev[p] = c.x[p];
@@ -619,7 +733,7 @@ fn simulate(
                     for _ in 0..def.iterations {
                         for &e in &def.execution {
                             if e == -1 {
-                                collide(&mut c.x, w, &def.radius, &def.masks, &capsules);
+                                collide(&mut c.x, &mut c.prev, w, (&def.radius, &def.friction, &def.masks), &caps, &caps_was);
                                 continue;
                             }
                             let Some(set) = usize::try_from(e).ok().and_then(|e| def.sets.get(e)) else { continue };
@@ -651,10 +765,31 @@ fn simulate(
                                 Set::BendStiffness { links, max_height_sq, clamp, rest_pose } => {
                                     links.iter().for_each(|l| solve_bend_stiffness(&mut c.x, w, l, *max_height_sq, *clamp, *rest_pose))
                                 }
+                                Set::Compressible(ls) => {
+                                    ls.iter().for_each(|(l, comp)| solve_compressible(&mut c.x, w, l, *comp))
+                                }
                                 Set::Unsolved => {}
                             }
                         }
                     }
+                }
+            }
+            c.caps_prev = capsules;
+            if *PROBE {
+                let lr: Vec<(usize, Vec3)> = def
+                    .sets
+                    .iter()
+                    .filter_map(|st| if let Set::LocalRange { items, .. } = st { Some(items) } else { None })
+                    .flatten()
+                    .filter_map(|&(p, r, ..)| Some((p, refs.get(r).copied().flatten()?.0)))
+                    .filter(|&(p, _)| p < c.x.len() && w[p] > 0.0)
+                    .collect();
+                let fixed: Vec<(usize, Vec3)> = def.moves.iter().filter_map(|&(v, p)| Some((p, refs.get(v).copied().flatten()?.0))).filter(|&(p, _)| p < c.x.len()).collect();
+                if !lr.is_empty() && !fixed.is_empty() {
+                    let mean = |v: &[(usize, Vec3)], sim: bool| v.iter().map(|&(p, q)| if sim { c.x[p] } else { q }).sum::<Vec3>() / v.len() as f32;
+                    let (ds, dr) = (mean(&lr, true) - mean(&fixed, true), mean(&lr, false) - mean(&fixed, false));
+                    let gaps: Vec<f32> = lr.iter().map(|&(p, q)| c.x[p].distance(q)).collect();
+                    c.off_anim = (ds.angle_between(dr).to_degrees(), gaps.iter().sum::<f32>() / gaps.len() as f32, gaps.iter().copied().fold(0.0, f32::max));
                 }
             }
             // A particle more than 3 m further from the model root than the cloth's own
@@ -795,7 +930,80 @@ fn skin(dm: &DisplayMesh, joint_m: &[Mat4]) -> (Vec<[f32; 3]>, Vec<[f32; 3]>, Ve
 
 /// Writes the frame's cloth results: the driven bones' world transforms (propagated to what
 /// hangs from them) and the display meshes' vertices.
-fn apply(mut actors: Query<&mut Cloths>, mut globals: Query<&mut GlobalTransform>, transforms: Query<&Transform>, children: Query<&Children>, mut meshes: ResMut<Assets<Mesh>>) {
+/// A cloth display mesh's interleaved GPU vertex bytes (Mesh::create_packed_vertex_buffer_data)
+/// and where its position / normal / tangent sit in each vertex: `apply` patches those and
+/// `write_cloth_uploads` writes them over the mesh's slab in place.
+struct Packed {
+    bytes: Vec<u8>,
+    stride: usize,
+    pos: usize,
+    nrm: Option<usize>,
+    tan: Option<usize>,
+}
+
+impl Packed {
+    fn of(mesh: &Mesh) -> Option<Packed> {
+        let mut at = 0;
+        let (mut pos, mut nrm, mut tan) = (None, None, None);
+        for (attr, _) in mesh.attributes() {
+            if attr.id == Mesh::ATTRIBUTE_POSITION.id {
+                pos = Some(at);
+            } else if attr.id == Mesh::ATTRIBUTE_NORMAL.id {
+                nrm = Some(at);
+            } else if attr.id == Mesh::ATTRIBUTE_TANGENT.id {
+                tan = Some(at);
+            }
+            at += attr.format.size() as usize;
+        }
+        Some(Packed { bytes: mesh.create_packed_vertex_buffer_data(), stride: mesh.get_vertex_size() as usize, pos: pos?, nrm, tan })
+    }
+
+    fn patch(&mut self, pos: &[[f32; 3]], nrm: &[[f32; 3]], tan: &[[f32; 4]]) {
+        let put = |bytes: &mut [u8], at: usize, v: &[f32]| {
+            for (k, f) in v.iter().enumerate() {
+                bytes[at + 4 * k..at + 4 * k + 4].copy_from_slice(&f.to_le_bytes());
+            }
+        };
+        for (i, v) in self.bytes.chunks_exact_mut(self.stride).enumerate() {
+            if let Some(p) = pos.get(i) {
+                put(v, self.pos, p);
+            }
+            if let (Some(o), Some(n)) = (self.nrm, nrm.get(i)) {
+                put(v, o, n);
+            }
+            if let (Some(o), Some(t)) = (self.tan, tan.get(i)) {
+                put(v, o, t);
+            }
+        }
+    }
+}
+
+/// This frame's cloth vertex writes: (mesh, vertex size, interleaved bytes). Filled by `apply`,
+/// moved to the render world by `extract_cloth_uploads`.
+#[derive(Resource, Default)]
+struct ClothUploads(Vec<(AssetId<Mesh>, usize, Vec<u8>)>);
+
+fn extract_cloth_uploads(mut main: ResMut<bevy::render::MainWorld>, mut render: ResMut<ClothUploads>) {
+    if let Some(mut up) = main.get_resource_mut::<ClothUploads>() {
+        render.0 = std::mem::take(&mut up.0);
+    }
+}
+
+/// Bevy 0.19 frees and re-allocates a modified mesh's whole slab every frame
+/// (allocate_and_free_meshes: "TODO: Consider explicitly reusing allocations for changed meshes
+/// of the same size"), 4.4 ms of render-world time a frame for 47 cloth meshes (round 90 perf
+/// trace). The Mesh asset stays as it is; its vertices are written over its slab in place.
+fn write_cloth_uploads(mut ups: ResMut<ClothUploads>, allocator: Res<bevy::render::mesh::allocator::MeshAllocator>, queue: Res<bevy::render::renderer::RenderQueue>) {
+    for (id, stride, bytes) in ups.0.drain(..) {
+        if let Some(slice) = allocator.mesh_vertex_slice(&id) {
+            if (slice.range.end - slice.range.start) as usize * stride == bytes.len() {
+                queue.write_buffer(slice.buffer, slice.range.start as u64 * stride as u64, &bytes);
+            }
+        }
+    }
+}
+
+fn apply(mut actors: Query<&mut Cloths>, mut globals: Query<&mut GlobalTransform>, transforms: Query<&Transform>, children: Query<&Children>, meshes: Res<Assets<Mesh>>, mut packed: Local<HashMap<AssetId<Mesh>, Packed>>, mut uploads: ResMut<ClothUploads>) {
     // Cost probe: SHINOBI_CLOTH_NO_UPLOAD=1 keeps the bones but leaves the meshes alone.
     let no_upload = std::env::var("SHINOBI_CLOTH_NO_UPLOAD").is_ok();
     let t0 = std::time::Instant::now();
@@ -813,13 +1021,14 @@ fn apply(mut actors: Query<&mut Cloths>, mut globals: Query<&mut GlobalTransform
                 if no_upload {
                     continue;
                 }
-                if let Some(mut mesh) = meshes.get_mut(&handle) {
-                    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, pos);
-                    mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, nrm);
-                    if !tangents.is_empty() {
-                        mesh.insert_attribute(Mesh::ATTRIBUTE_TANGENT, tangents);
-                    }
+                let id = handle.id();
+                if !packed.contains_key(&id) {
+                    let Some(p) = meshes.get(&handle).and_then(Packed::of) else { continue };
+                    packed.insert(id, p);
                 }
+                let p = packed.get_mut(&id).unwrap();
+                p.patch(&pos, &nrm, &tangents);
+                uploads.0.push((id, p.stride, p.bytes.clone()));
             }
         }
     }
@@ -857,9 +1066,13 @@ fn propagate(e: Entity, g: GlobalTransform, transforms: &Query<&Transform>, chil
     }
 }
 
-/// The -1 execution step: pushes each particle out of the capsules its mask selects (capsule
-/// radius tapered along the axis, plus the particle radius).
-fn collide(x: &mut [Vec3], w: &[f32], radius: &[f32], masks: &[u32], capsules: &[Option<(Vec3, Vec3, f32, f32)>]) {
+/// The -1 execution step (the exe's capsule case, FUN_1415802d0): pushes each particle out of
+/// the capsules its mask selects (capsule radius tapered along the axis, plus the particle
+/// radius), along the nearest direction (no side from the previous position, no swept test).
+/// Friction then rewrites the previous position: that share of the particle's motion along the
+/// surface, relative to the surface's own motion this substep (`was` = the capsules a substep
+/// ago), is taken out.
+fn collide(x: &mut [Vec3], prev: &mut [Vec3], w: &[f32], (radius, friction, masks): (&[f32], &[f32], &[u32]), capsules: &[Option<(Vec3, Vec3, f32, f32)>], was: &[Option<(Vec3, Vec3, f32, f32)>]) {
     for (i, p) in x.iter_mut().enumerate() {
         let mask = masks.get(i).copied().unwrap_or(0);
         if mask == 0 || w[i] <= 0.0 {
@@ -878,6 +1091,13 @@ fn collide(x: &mut [Vec3], w: &[f32], radius: &[f32], masks: &[u32], capsules: &
             let len = d.length();
             if len < r && len > 1e-6 {
                 *p = q + d * (r / len);
+                let fr = friction.get(i).copied().unwrap_or(0.0);
+                if fr > 0.0 {
+                    let n = d / len;
+                    let moved = was.get(k).copied().flatten().map_or(Vec3::ZERO, |(a0, b0, _, _)| q - a0.lerp(b0, t));
+                    let rel = (*p - prev[i]) - moved;
+                    prev[i] += (rel - n * rel.dot(n)) * fr;
+                }
             }
         }
     }
@@ -904,12 +1124,192 @@ fn debug_now(time: &Time) -> bool {
     time.elapsed_secs() > at && time.elapsed_secs() - time.delta_secs() <= at
 }
 
+/// SHINOBI_CAPE_TURN=<deg> (90 / 180): Wolf runs ahead (stick forward) from 3 s for 2 s, then
+/// the stick turns by that many degrees (to the right) for 1 s, then lets go; the game exits at
+/// 8 s. SHINOBI_CAPE_SHOTS=<dir> screenshots it at 10 fps from 4.5 s. For comparing the cape with
+/// the user's clips (manual test #2): `cape_probe` logs each of Wolf's cloths' swing.
+fn cape_drive(time: Res<Time>, mut pad: ResMut<crate::player::PadInput>, mut exit: MessageWriter<AppExit>, mut commands: Commands, mut next: Local<f32>) {
+    let deg: f32 = std::env::var("SHINOBI_CAPE_TURN").ok().and_then(|v| v.parse().ok()).unwrap_or(90.0);
+    let t = time.elapsed_secs();
+    let a = deg.to_radians();
+    pad.stick = match t {
+        t if (3.0..5.0).contains(&t) => Vec2::new(0.0, 1.0),
+        t if (5.0..6.0).contains(&t) => Vec2::new(a.sin(), a.cos()),
+        _ => Vec2::ZERO,
+    };
+    if let Ok(dir) = std::env::var("SHINOBI_CAPE_SHOTS") {
+        if t >= 4.5 && t <= 7.5 && t >= *next {
+            *next = t + 0.1;
+            let path = format!("{dir}/c{:04}.png", (t * 100.0) as u32);
+            commands.spawn(bevy::render::view::screenshot::Screenshot::primary_window()).observe(bevy::render::view::screenshot::save_to_disk(path));
+        }
+    }
+    if t > 8.0 {
+        exit.write(AppExit::Success);
+    }
+}
+
+/// With `cape_drive`: per frame, each of Wolf's cloths' swing from hanging straight down: the
+/// angle (deg) of the free particles' centre from its fixed particles' centre, and that offset in
+/// Wolf's own frame (x, y, z; from 2 s, standing, for the rest pose).
+fn cape_probe(time: Res<Time>, wolf: Query<(&Cloths, &GlobalTransform), With<crate::player::Player>>) {
+    let t = time.elapsed_secs();
+    if !(2.0..8.0).contains(&t) {
+        return;
+    }
+    let Ok((cloths, g)) = wolf.single() else { return };
+    let mut line = format!("cape t {t:.3} yaw {:.0}", g.rotation().to_euler(EulerRot::YXZ).0.to_degrees());
+    line += &swings(cloths, g);
+    info!("{line}");
+}
+
+/// Each cloth's swing from hanging straight down (`cape_probe`): " | name deg (x,y,z)", the free
+/// particles' centre from the fixed ones' in the model's own frame.
+fn swings(cloths: &Cloths, g: &GlobalTransform) -> String {
+    let inv = g.rotation().inverse();
+    let mut line = String::new();
+    for c in &cloths.0 {
+        let (mut fixed, mut nf, mut free, mut nfree) = (Vec3::ZERO, 0.0, Vec3::ZERO, 0.0);
+        for (i, p) in c.x.iter().enumerate() {
+            if c.def.inv_mass.get(i).copied().unwrap_or(0.0) <= 0.0 {
+                fixed += mirror(*p);
+                nf += 1.0;
+            } else {
+                free += mirror(*p);
+                nfree += 1.0;
+            }
+        }
+        if nf == 0.0 || nfree == 0.0 {
+            continue;
+        }
+        let d = free / nfree - fixed / nf;
+        let ang = d.normalize_or(Vec3::NEG_Y).angle_between(Vec3::NEG_Y).to_degrees();
+        let l = inv * d;
+        line += &format!(" | {} {ang:.0} ({:.3},{:.3},{:.3}) anim {:.0} gap {:.2}/{:.2}", c.def.name, l.x, l.y, l.z, c.off_anim.0, c.off_anim.1, c.off_anim.2);
+    }
+    line
+}
+
+static PROBE: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::env::var("SHINOBI_CLOTH_PROBE").is_ok() || std::env::var("SHINOBI_CAPE_TURN").is_ok());
+
+/// SHINOBI_CLOTH_PROBE=1 (with SHINOBI_FIGHT / SHINOBI_DUEL): every 0.1 s each enemy's anim,
+/// speed (m/s), yaw rate (deg/s) and cloth swings, for comparing a boss's cloth with the clips.
+fn enemy_cloth_probe(time: Res<Time>, enemies: Query<(Entity, &Cloths, &GlobalTransform, &crate::actor::Actor), With<crate::enemy::Enemy>>, mut last: Local<std::collections::HashMap<Entity, (f32, Vec3, f32)>>, mut commands: Commands, mut next: Local<f32>) {
+    let t = time.elapsed_secs();
+    for (e, cloths, g, a) in &enemies {
+        let pos = g.translation();
+        let yaw = g.rotation().to_euler(EulerRot::YXZ).0.to_degrees();
+        let Some(&(t0, p0, y0)) = last.get(&e) else {
+            last.insert(e, (t, pos, yaw));
+            continue;
+        };
+        let dt = t - t0;
+        if dt < 0.1 {
+            continue;
+        }
+        last.insert(e, (t, pos, yaw));
+        let speed = (pos - p0).with_y(0.0).length() / dt;
+        let turn = ((yaw - y0 + 540.0).rem_euclid(360.0) - 180.0) / dt;
+        info!("cloth t {t:.2} anim {} speed {speed:.1} turn {turn:.0}{}", a.anim, swings(cloths, g));
+    }
+    // SHINOBI_CLOTH_SHOTS=<dir>[:<from s>:<to s>]: screenshots at 10 fps in that window.
+    if let Ok(v) = std::env::var("SHINOBI_CLOTH_SHOTS") {
+        let mut it = v.rsplitn(3, ':');
+        let (to, from) = (it.next().and_then(|x| x.parse().ok()).unwrap_or(30.0f32), it.next().and_then(|x| x.parse().ok()).unwrap_or(0.0f32));
+        let dir = it.next().unwrap_or(&v).to_string();
+        if (from..to).contains(&t) && t >= *next {
+            *next = t + 0.1;
+            commands.spawn(bevy::render::view::screenshot::Screenshot::primary_window()).observe(bevy::render::view::screenshot::save_to_disk(format!("{dir}/k{:05}.png", (t * 100.0) as u32)));
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    /// The exe's capsule collision (FUN_1415802d0): out along the nearest direction, and the
+    /// particle's friction rewrites its previous position along the surface.
+    #[test]
+    fn a_capsule_pushes_out_and_its_friction_takes_the_slide() {
+        use super::collide;
+        use bevy::prelude::Vec3;
+        // A particle 0.05 m inside a still capsule along x, sliding 0.1 m along the axis this
+        // step: pushed out to radius + particle radius; friction 1 leaves no slide in prev.
+        let cap = [Some((Vec3::ZERO, Vec3::X * 2.0, 0.2, 0.2))];
+        for (fr, slide) in [(0.0, 0.1), (1.0, 0.0)] {
+            let mut x = vec![Vec3::new(1.0, 0.15, 0.0)];
+            let mut prev = vec![Vec3::new(0.9, 0.15, 0.0)];
+            collide(&mut x, &mut prev, &[1.0], (&[0.01], &[fr], &[1]), &cap, &cap);
+            assert!((x[0].y - 0.21).abs() < 1e-5, "{x:?}");
+            assert!(((x[0].x - prev[0].x) - slide).abs() < 1e-5, "friction {fr}: {prev:?}");
+        }
+    }
+
+    /// A compressible link (Genichiro's kusazuri / mantle, 69 cloths) is free between its
+    /// compression and rest lengths and solved back to the nearer one outside them.
+    #[test]
+    fn a_compressible_link_has_a_dead_zone() {
+        use bevy::prelude::Vec3;
+        let l = super::Link { a: 0, b: 1, rest: 1.0, stiffness: 1.0 };
+        let w = [1.0, 1.0];
+        let len = |d: f32| {
+            let mut x = [Vec3::ZERO, Vec3::X * d];
+            super::solve_compressible(&mut x, &w, &l, 0.5);
+            x[1].distance(x[0])
+        };
+        assert!((len(0.8) - 0.8).abs() < 1e-5, "inside the dead zone it moved");
+        assert!((len(1.5) - 1.0).abs() < 1e-5, "a stretched link was not pulled back to rest");
+        assert!((len(0.2) - 0.5).abs() < 1e-5, "a squashed link was not pushed out to its compression length");
+    }
+
     /// Wolf's coat (bodybese01 / 02 / 03) has no normals in its deform data (position-only
     /// MeshMeshDeform; the game rebuilds them, hclUpdateAllVertexFramesOperator): after a deform
     /// step from the rest pose every coat display vertex has a unit normal, on the side of its
     /// bind normal.
+    /// Containers with two sim cloths export both (cloth_export.rs, 2026-10-13): the Corrupted
+    /// Monk's, Emma's and the Owl's second sims carry their own particles, skinned references, fixed
+    /// particles and driven bones, and their own solver config (the Owl's coat had the second sim's
+    /// empty constraint order and 1 substep before).
+    /// Manual test #2: the sim runs in model space, so a model that runs or turns carries its
+    /// cloth along with no velocity of its own (the game: no Transfer Motion), while motion relative
+    /// to the model is kept.
+    #[test]
+    fn cloth_rides_with_the_model_root() {
+        use bevy::prelude::{Mat4, Quat, Vec3};
+        let old = Mat4::from_translation(Vec3::new(1.0, 0.0, 0.0));
+        let new = Mat4::from_rotation_translation(Quat::from_rotation_y(1.0), Vec3::new(1.5, 0.0, 0.2));
+        let (mut x, mut prev) = (vec![Vec3::new(1.0, -0.5, 0.3)], vec![Vec3::new(1.0, -0.4, 0.3)]);
+        let local = (old.inverse().transform_point3(x[0]), old.inverse().transform_point3(prev[0]));
+        super::carry(&mut x, &mut prev, old, new);
+        assert!(new.inverse().transform_point3(x[0]).distance(local.0) < 1e-5);
+        assert!(new.inverse().transform_point3(prev[0]).distance(local.1) < 1e-5);
+    }
+
+    #[test]
+    fn second_sim_cloths_are_exported() {
+        for (model, name, bones) in [("c5000", "c5000_Sleeve#1", 26), ("c5005", "c5005_Sleeve#1", 26), ("c7400", "c7400_sleeve#1", 12), ("c5060", "c5060_Chainmail#1", 2)] {
+            let defs = super::load(&crate::paths::root().join(format!("extracted/model_{model}.bin")));
+            if defs.is_empty() {
+                println!("no extracted cloth: skipped");
+                return;
+            }
+            let d = defs.iter().find(|d| d.name == name).unwrap_or_else(|| panic!("{name} missing"));
+            assert_eq!(d.bones.len(), bones, "{name}");
+            assert!(!d.moves.is_empty() && d.moves.iter().all(|&(v, p)| p < d.rest.len() && !d.refs[v].is_empty()), "{name}");
+            assert!(!d.execution.is_empty(), "{name}");
+        }
+        let defs = super::load(&crate::paths::root().join("extracted/model_c5060.bin"));
+        let coat = defs.iter().find(|d| d.name == "c5060_coat").unwrap();
+        assert!(!coat.execution.is_empty() && coat.substeps == 2);
+        // The coat feathers ride the coat sim (ref_deform), and draw their fur mesh 4 themselves.
+        let feathers = defs.iter().position(|d| d.name == "c5060_coat#1").expect("c5060_coat#1");
+        let (src, verts) = defs[feathers].ref_deform.as_ref().expect("chained references");
+        assert_eq!(src, "c5060_coat");
+        assert!(defs.iter().position(|d| d.name == *src).unwrap() < feathers, "the source runs first");
+        assert!(defs[feathers].moves.iter().all(|&(v, _)| verts.iter().any(|(rv, _)| *rv == v)));
+        assert_eq!(defs[feathers].display_meshes().collect::<Vec<_>>(), vec![4]);
+        assert!(!coat.display_meshes().any(|m| m == 4));
+    }
+
     #[test]
     fn coat_normals_after_deform() {
         let model = crate::paths::root().join("extracted/model_c0000_bd_m_9040.bin");

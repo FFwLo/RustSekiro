@@ -42,6 +42,8 @@ pub struct Snapshot {
     pub sp_self: HashSet<i64>,
     pub sp_target: HashSet<i64>,
     pub sp_new: Vec<i64>,
+    /// SpEffects that were on last frame and are gone now (INTERUPT_InactivateSpecialEffect).
+    pub sp_gone: Vec<i64>,
     pub hp_rate: f32,
     pub target_hp_rate: f32,
     /// Posture left (Sekiro's "stamina"): max - accumulated posture damage.
@@ -72,6 +74,9 @@ pub struct Snapshot {
     /// facing (POINT_INIT_POSE).
     pub me: Vec3,
     pub fwd: Vec3,
+    /// The current target's (TARGET_ENE_0) position and facing; zero facing = a spot.
+    pub target: Vec3,
+    pub target_fwd: Vec3,
     pub home: Vec3,
     pub home_fwd: Vec3,
     /// The target system (stealth.rs): state, previous state, AI_TARGET_TYPE, whether the state
@@ -86,6 +91,8 @@ pub struct Snapshot {
     pub forgetting: f32,
     pub sound_id: i64,
     pub sound_rank: i64,
+    /// The sound target was taken or changed this frame: INTERUPT_ChangeSoundTarget (46).
+    pub sound_new: bool,
     /// The target state changed in a way that drops the plan (stealth.rs Targeting::replan).
     pub t_replan: bool,
     /// Deathblows left (Enemy::ninsatsu, NpcParam ninsatuNum; at least 1).
@@ -93,8 +100,48 @@ pub struct Snapshot {
     pub ninsatsu_max: u32,
     /// Map-event AI commands by slot (EMEVD Request Character AI Command; enemy.rs phase rules).
     pub event_req: Vec<(i64, i64)>,
+    /// A command was written this frame: INTERUPT_EventRequest (39).
+    pub event_req_new: bool,
+    /// The AI chr's own dummy polys its observe slots read (`Brain::observe_dmys`): (id, world
+    /// position, the dummy's +Z axis).
+    pub dummies: Vec<(i16, Vec3, Vec3)>,
     /// The map's event flags that are on (the running boss script's, enemy/script.rs).
     pub event_flags: Vec<i64>,
+    /// Wolf's lock-on (camera.rs LockOn) is on this enemy while it targets him:
+    /// IsLockOnTarget(TARGET_ENE_0 / TARGET_LOCALPLAYER, TARGET_SELF).
+    pub locked_on: bool,
+    /// GetTeamOrder(ORDER_TYPE_Role): enemy.rs assign_team_roles (0 Attack, 1 Torimaki, 2
+    /// Kankyaku, -1 none).
+    pub team_role: f64,
+    /// The loaded map's MSB regions by entity id (enemy.rs map_regions): IsInsideTargetRegion
+    /// and SetEventMoveTarget. None = no map: every region check is false.
+    pub regions: Option<std::sync::Arc<std::collections::HashMap<i64, crate::enemy::WakeRegion>>>,
+    /// This chr's id (Entity bits): its own trigger regions never alert it (FUN_1406074a0).
+    pub me_id: u64,
+    /// The sound target's record serial (GetLatestSoundTargetInstanceID; stealth.rs Sound).
+    pub sound_serial: i64,
+    /// Every live trigger region (enemy.rs TriggerRegions, RegisterTriggerRegion).
+    pub triggers: Vec<TriggerRegion>,
+}
+
+/// RegisterTriggerRegion's sphere (exe FUN_1405e7280 -> FUN_140642110, 14064.c:648): keyed by
+/// (registrant, category, unit id; a repeat replaces it), static at its centre, `life` seconds
+/// (FUN_140643250 counts it down each frame). The unit id is a tag the getters hand back.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TriggerRegion {
+    pub owner: u64,
+    pub cat: i64,
+    pub unit: i64,
+    pub at: Vec3,
+    pub radius: f32,
+    pub life: f32,
+}
+
+impl TriggerRegion {
+    /// FUN_1406424f0 (14064.c:1611): a sphere holds a point within its radius, in 3D.
+    pub fn contains(&self, p: Vec3) -> bool {
+        p.distance_squared(self.at) < self.radius * self.radius
+    }
 }
 
 #[cfg(test)]
@@ -135,6 +182,8 @@ pub struct Command {
     pub clear: u8,
     /// Event flags the AI set this frame, in order (SetEventFlag(flag, on)).
     pub flags: Vec<(i64, bool)>,
+    /// Trigger regions registered this frame (RegisterTriggerRegion), for enemy.rs's store.
+    pub triggers: Vec<TriggerRegion>,
 }
 
 /// The guard request (c9997.lua:258 ACTION_TYPE_GUARD), GOAL_COMMON_Guard's usual action.
@@ -319,6 +368,8 @@ struct Consts {
     int_parry: f64,
     int_use_item: f64,
     int_sp: f64,
+    int_sp_off: f64,
+    int_sound: f64,
     point_initial: f64,
     point_init_pose: f64,
     point_move_point: f64,
@@ -363,6 +414,23 @@ struct AiState {
     k: Consts,
     /// The MSB patrol route (Brain::set_patrol), None = no route (GetMovePointNumber -1).
     patrol: Option<Patrol>,
+    /// SetEventMoveTarget's region spot: POINT_EVENT (None = home).
+    event_target: Option<Vec3>,
+    /// The observe slots in the order they were added (the exe's per-AI std::list, any kind
+    /// under one byte id, no cap; GetAreaObserveSlot lists changes in this order).
+    observe: Vec<(i64, Observe)>,
+    /// The observe slots whose target was inside last frame, and this frame's changes (slot ids
+    /// that went in / out): INTERUPT_Inside_ObserveArea (16) / Outside (40) with
+    /// GetAreaObserveSlotNum / GetAreaObserveSlot(type, index).
+    observe_in: HashSet<i64>,
+    observe_changed: (Vec<i64>, Vec<i64>),
+    /// RegisterTriggerRegionObserver's categories (the exe's per-AI subscription table,
+    /// FUN_140642ab0), the regions this chr stood in last frame (owner, category, unit) and
+    /// this frame's entries / exits as (category, unit): INTERUPT_InvadeTriggerRegion (48) /
+    /// LeaveTriggerRegion (49) with GetInvade / GetLeaveTriggerRegion*.
+    trigger_observers: Vec<i64>,
+    trigger_in: Vec<(u64, i64, i64)>,
+    trigger_changed: (Vec<(i64, i64)>, Vec<(i64, i64)>),
 }
 
 /// An enemy's MSB patrol route in world space (enemy.rs PatrolRoute) and where it is on it:
@@ -473,12 +541,49 @@ fn key(v: Option<&Value>) -> i64 {
     v.and_then(Value::num).unwrap_or(0.0) as i64
 }
 
+/// Free walkable distance from the centre `from` along `dir` (unit, level), at most `dist`: the
+/// first collision `ray` hits at centre height less `radius`, or the first 0.5 m step whose
+/// `floor` (feet height under a centre) jumps more than map::STEP_HEIGHT up or down (a ledge
+/// or a cliff face ends the navmesh there). Inferred: the exe walks the navmesh
+/// (GetExistMeshOnLineDistSpecifyAngle), which we do not have.
+pub(crate) fn mesh_line_dist(from: Vec3, dir: Vec3, dist: f32, radius: f32, floor: impl Fn(Vec3) -> f32, ray: impl Fn(Vec3, Vec3, f32) -> Option<f32>) -> f32 {
+    const STEP: f32 = 0.5;
+    let wall = ray(from, dir, dist + radius).map_or(dist, |h| (h - radius).clamp(0.0, dist));
+    let half = from.y - floor(from);
+    let mut last = floor(from);
+    let mut s = 0.0;
+    while s < wall {
+        let next = (s + STEP).min(wall);
+        let f = floor((from + dir * next).with_y(last + half));
+        if (f - last).abs() > crate::map::STEP_HEIGHT {
+            return s;
+        }
+        last = f;
+        s = next;
+    }
+    wall
+}
+
 fn is(v: Option<&Value>, k: f64) -> bool {
     v.and_then(Value::num) == Some(k)
 }
 
 fn first(r: Vec<Value>) -> Value {
     r.into_iter().next().unwrap_or_default()
+}
+
+/// An observe slot (AddObserveArea / Region / ChrDmySphere / ChrDmyArea): the exe node's kind
+/// byte 1-4; the target is a TARGET_* id.
+#[derive(Clone, Debug)]
+enum Observe {
+    /// observer, target, AI_DIR, angle, dist
+    Area(Value, Value, Value, f64, f64),
+    /// target, MSB region id
+    Region(Value, i64),
+    /// target, dummy, radius
+    DmySphere(Value, i16, f64),
+    /// target, dummy, vertical angle, horizontal angle, far, near (back-off)
+    DmyArea(Value, i16, f64, f64, f64, f64),
 }
 
 fn angle_in(center: f64, width: f64, a: f64) -> bool {
@@ -592,6 +697,8 @@ impl AiState {
         } else if id == k.point_move_point && self.patrol.as_ref().is_some_and(|p| p.cur >= 0) {
             let p = self.patrol.as_ref()?;
             p.points.get(p.cur as usize).copied()
+        } else if id == k.point_event && self.event_target.is_some() {
+            self.event_target
         } else if [k.point_initial, k.point_move_point, k.point_back_to_home, k.point_event, k.team_formation].contains(&id) {
             // No patrol route or event points without a map: they all mean home.
             Some(w.home)
@@ -633,6 +740,32 @@ impl AiState {
         }
     }
 
+    /// Position and facing of an observer / target id: TARGET_SELF = the AI chr, a point = its
+    /// spot (no facing), anything else = the current target (TARGET_ENE_0).
+    fn frame_of(&self, id: Option<&Value>) -> (Vec3, Vec3) {
+        if is(id, self.k.target_self) {
+            return (self.w.me, self.w.fwd);
+        }
+        match self.pos_of(id) {
+            Some(p) => (p, Vec3::ZERO),
+            None => (self.w.target, self.w.target_fwd),
+        }
+    }
+
+    fn inside_ex(&self, observer: Option<&Value>, target: Option<&Value>, dir: Option<&Value>, width: f64, range: f64) -> bool {
+        let (o, fwd) = self.frame_of(observer);
+        let (t, _) = self.frame_of(target);
+        let d = (t - o).with_y(0.0);
+        let fwd = fwd.with_y(0.0).normalize_or_zero();
+        if fwd == Vec3::ZERO {
+            // gap: an observer without a facing (a point, a caution spot); only the range counts.
+            return d.length() as f64 <= range;
+        }
+        let d = d.normalize_or_zero();
+        let angle = d.dot(fwd.cross(Vec3::Y)).atan2(d.dot(fwd)).to_degrees() as f64;
+        angle_in(self.dir_center(dir), width, angle) && (t - o).with_y(0.0).length() as f64 <= range
+    }
+
     fn dir_center(&self, dir: Option<&Value>) -> f64 {
         if is(dir, self.k.dir_b) {
             180.0
@@ -643,6 +776,107 @@ impl AiState {
         } else {
             0.0
         }
+    }
+
+    /// An observe slot's target inside it now.
+    fn observe_inside(&self, slot: i64) -> bool {
+        let w = &self.w;
+        let dmy = |id: i16| w.dummies.iter().find(|d| d.0 == id).map(|d| (d.1, d.2));
+        self.observe.iter().find(|o| o.0 == slot).is_some_and(|(_, o)| match o {
+            // The target within `dist` (3D) of the observer and in its horizontal cone (full
+            // angle `ang`) about the AI_DIR.
+            Observe::Area(ob, t, d, ang, dist) => {
+                let (o, _) = self.frame_of(Some(ob));
+                let (at, _) = self.frame_of(Some(t));
+                (at - o).length() as f64 <= *dist && self.inside_ex(Some(ob), Some(t), Some(d), *ang, f64::INFINITY)
+            }
+            Observe::Region(t, region) => {
+                let at = self.pos_of(Some(t)).unwrap_or(w.target);
+                w.regions.as_ref().and_then(|r| r.get(region)).is_some_and(|r| r.contains(at))
+            }
+            // AddObserveChrDmySphere(slot, target, dmy, radius): the target strictly within the
+            // radius of the AI chr's own dummy.
+            Observe::DmySphere(t, id, r) => {
+                let (at, _) = self.frame_of(Some(t));
+                dmy(*id).is_some_and(|(p, _)| ((at - p).length() as f64) < *r)
+            }
+            // AddObserveChrDmyArea(slot, target, dmy, A, B, C, D) (SprjAiChrDmyObserveArea,
+            // FUN_140606710 -> FUN_140605ee0, 14060.c:5023-5234): from the dummy moved back D
+            // along its +Z, the target chr's position farther than D and within C (3D); the
+            // horizontal projections within B / 2 of each other, and the elevation within A / 2
+            // of the axis's.
+            Observe::DmyArea(t, id, va, ha, far, near) => {
+                let (at, _) = self.frame_of(Some(t));
+                dmy(*id).is_some_and(|(p, axis)| {
+                    let origin = p - axis * *near as f32;
+                    let to = at - origin;
+                    let dist = to.length() as f64;
+                    let (hd, hx) = (to.with_y(0.0).normalize_or_zero(), axis.with_y(0.0).normalize_or_zero());
+                    let h = hd.dot(hx.cross(Vec3::Y)).atan2(hd.dot(hx)).to_degrees() as f64;
+                    let elev = |v: Vec3| v.y.atan2(v.with_y(0.0).length()).to_degrees() as f64;
+                    dist > *near && dist <= *far && angle_in(0.0, *ha, h) && (elev(to) - elev(axis)).abs() <= *va / 2.0
+                })
+            }
+        })
+    }
+
+    /// The AI chr's dummy polys the observe slots read (enemy.rs fills Snapshot::dummies).
+    fn observe_dmys(&self) -> Vec<i16> {
+        let mut v: Vec<i16> = self
+            .observe
+            .iter()
+            .filter_map(|(_, o)| match o {
+                Observe::DmySphere(_, d, _) | Observe::DmyArea(_, d, ..) => Some(*d),
+                _ => None,
+            })
+            .collect();
+        v.sort_unstable();
+        v.dedup();
+        v
+    }
+
+    /// Adds or replaces an observe slot: the same id of the same kind keeps its place and its
+    /// inside state (a re-add every think leaves the edges alone); another kind starts outside.
+    fn add_observe(&mut self, slot: i64, o: Observe) {
+        match self.observe.iter_mut().find(|x| x.0 == slot) {
+            Some(x) => {
+                if std::mem::discriminant(&x.1) != std::mem::discriminant(&o) {
+                    self.observe_in.remove(&slot);
+                }
+                x.1 = o;
+            }
+            None => self.observe.push((slot, o)),
+        }
+    }
+
+    /// This frame's observe-slot changes against last frame's (a fresh slot starts outside:
+    /// the node's prev byte is 0, so a target already inside raises the enter on its first
+    /// update).
+    fn observe_edges(&mut self) {
+        let slots: Vec<i64> = self.observe.iter().map(|o| o.0).collect();
+        let now: HashSet<i64> = slots.iter().copied().filter(|&s| self.observe_inside(s)).collect();
+        let went_in = slots.iter().copied().filter(|s| now.contains(s) && !self.observe_in.contains(s)).collect();
+        let went_out = slots.iter().copied().filter(|s| !now.contains(s) && self.observe_in.contains(s)).collect();
+        self.observe_in = now;
+        self.observe_changed = (went_in, went_out);
+    }
+
+    /// This frame's trigger-region entries and exits (FUN_140642de0, 14064.c:2269): every live
+    /// region of an observed category holding this chr, but not its own; one that was not held
+    /// last frame is an entry, one held then and not now (left or expired) an exit. Up to 16.
+    fn trigger_edges(&mut self) {
+        let w = &self.w;
+        let now: Vec<(u64, i64, i64)> = w
+            .triggers
+            .iter()
+            .filter(|r| r.owner != w.me_id && self.trigger_observers.contains(&r.cat) && r.contains(w.me))
+            .map(|r| (r.owner, r.cat, r.unit))
+            .take(16)
+            .collect();
+        let went_in = now.iter().filter(|k| !self.trigger_in.contains(k)).map(|k| (k.1, k.2)).collect();
+        let went_out = self.trigger_in.iter().filter(|k| !now.contains(k)).map(|k| (k.1, k.2)).collect();
+        self.trigger_in = now;
+        self.trigger_changed = (went_in, went_out);
     }
 
     fn sp_of(&self, target: Option<&Value>) -> &HashSet<i64> {
@@ -781,7 +1015,11 @@ impl AiState {
             // player state (== 2 at singleton +0x88) in the exe.
             "GetDist" | "GetDist_Point" => num(self.dist_to(a.first()) - self.hit_radius as f64),
             "GetOriginDist" => num(self.dist_to(a.first())),
-            "GetDistYSigned" => num(0.0),
+            // Height of the target over the AI chr (positive = above): 101030 Act27 backs off to
+            // height / tan when Wolf is >= 3 m up, 106000 / 118000 pick acts on |dy| > 1.8 via the
+            // signed GetDistY. Both read 0 before (2026-10-12 round 22). gap: whether GetDistY is
+            // the absolute value in the exe is not traced; 106000 compares it with -1.8, so signed.
+            "GetDistYSigned" | "GetDistY" => num((self.frame_of(a.first()).0.y - self.w.me.y) as f64),
             "GetDistAtoB" => num(self.dist()),
             "GetMapHitRadius" => num(self.hit_radius as f64),
             "GetRandam_Int" => {
@@ -845,7 +1083,14 @@ impl AiState {
                 self.cmd.flags.push((id, on));
                 vec![]
             }
-            "GetTeamOrder" | "GetOddsParam" | "GetOddsParamIdOffset" | "DbgGetForceActIdx" | "DbgGetForceKengekiActIdx"
+            // FUN_1405b1b20 (1405b.c:588): the order float of type 0 (ORDER_TYPE_Role) / 1
+            // (CallHelp, gap: its writers are not traced, 0 here), else -1.
+            "GetTeamOrder" => num(match n(0) as i64 {
+                0 => w.team_role,
+                1 => 0.0,
+                _ => -1.0,
+            }),
+            "GetOddsParam" | "GetOddsParamIdOffset" | "DbgGetForceActIdx" | "DbgGetForceKengekiActIdx"
             | "GetChangeBattleStateCount" | "GetSmallActPreWaitTime" | "GetSmallActPostWaitTime" => num(0.0),
             // The MSB patrol route (Patrol): the current / previous point and a point's arrival
             // anim and wait (WREntry); none -> -1, and NonBattleAct stays at home.
@@ -862,9 +1107,11 @@ impl AiState {
             "GetActTypeOnNonBattleFailedPathEnd" => num(self.think["actTypeOnNonBtlFailedPath"].as_f64().unwrap_or(0.0)),
             "GetToTargetAngle" => num(self.angle_to(a.first())),
             "IsInsideTarget" => boolean(angle_in(self.dir_center(a.get(1)), n(2), self.angle_to(a.first()))),
-            "IsInsideTargetEx" => {
-                boolean(angle_in(self.dir_center(a.get(2)), n(3), self.angle_to(a.first())) && self.dist_to(a.first()) <= n(4))
-            }
+            // IsInsideTargetEx(observer, target, dir, angle, dist): is `target` inside the
+            // observer's dir cone and range. The scripts use both orders: (TARGET_ENE_0,
+            // TARGET_SELF, ...) = "am I in front of the player" (101200 / 125000 parry gates,
+            // 61 sidestep side picks), (TARGET_SELF, POINT_EVENT, ...) = from the AI chr.
+            "IsInsideTargetEx" => boolean(self.inside_ex(a.first(), a.get(1), a.get(2), n(3), n(4))),
             // The target system (stealth.rs).
             "IsBattleState" => boolean(w.t_state == 3),
             "IsFindState" => boolean(w.t_state == 2),
@@ -875,7 +1122,10 @@ impl AiState {
             "IsSearchTarget" => boolean(w.t_kind != 0),
             "IsVisibleCurrTarget" | "IsVisibleTarget" => boolean(w.t_kind == 3 && w.visible),
             "GetTopNormalEnemyForgettingTime" => num(w.forgetting as f64),
-            "GetLatestSoundTargetID" | "GetLatestSoundTargetInstanceID" => num(w.sound_id as f64),
+            "GetLatestSoundTargetID" => num(w.sound_id as f64),
+            // The sound record's serial (FUN_1405e3680: entry +0x58, the global counter of
+            // FUN_14060f840), -1 (0xFFFFFFFF) without a sound target.
+            "GetLatestSoundTargetInstanceID" => num(if w.sound_id > 0 { w.sound_serial as f64 } else { -1.0 }),
             "GetLatestSoundTargetRank" => num(w.sound_rank as f64),
             "ClearEnemyTarget" => {
                 self.cmd.clear |= CLEAR_ENEMY;
@@ -893,13 +1143,140 @@ impl AiState {
                 self.cmd.clear |= CLEAR_MEMORY;
                 vec![]
             }
-            "IsInsideTargetRegion" | "IsLadderAct" | "GetAreaObserveSlot" | "IsInsideObserve" | "IsStartAttack"
-            | "IsValidPlatoon" | "IsPlatoonLeader" | "TeamHelp_IsValidReply" | "IsForceBattleGoal"
-            | "IsLockOnTarget" => boolean(false),
+            // IsInsideTargetRegion(target, region): the target's feet in the MSB region with that
+            // entity id (FUN_1406068f0 -> FUN_140678380: the id's region from the tree
+            // FUN_1406d35d0, then its shape test). An id no MSB has is never inside: the Folding
+            // Screen Monkeys' 99028xx checks (126000_battle.lua Act17) all fall through to their
+            // 20028xx twins.
+            "IsInsideTargetRegion" => {
+                let at = self.pos_of(a.first()).unwrap_or(w.target);
+                let id = n(1) as i64;
+                boolean(w.regions.as_ref().and_then(|r| r.get(&id)).is_some_and(|r| r.contains(at)))
+            }
+            // SetEventMoveTarget(region): POINT_EVENT becomes the region's spot (126000 Act17
+            // walks there). An unknown id leaves it as it was.
+            "SetEventMoveTarget" => {
+                if let Some(r) = w.regions.as_ref().and_then(|r| r.get(&(n(0) as i64))) {
+                    self.event_target = Some(r.at);
+                }
+                vec![]
+            }
+            // AddObserveArea(slot, observer, target, dir, angle, dist) / IsInsideObserve(slot): the
+            // target in the observer's cone (102000 / 136000 pick their acts by it), read live each
+            // call; the slot list and its Inside / Outside edges as the exe's (`Observe`,
+            // add_observe, observe_edges).
+            "AddObserveArea" => {
+                let v = |i: usize| a.get(i).cloned().unwrap_or_default();
+                self.add_observe(n(0) as i64, Observe::Area(v(1), v(2), v(3), n(4), n(5)));
+                vec![]
+            }
+            // AddObserveRegion(slot, target, region): the target inside the MSB region (the castle's
+            // force-walk regions 101000 / 145000 slot 30, 106000 / 121010 / 145000 region slots).
+            "AddObserveRegion" => {
+                self.add_observe(n(0) as i64, Observe::Region(a.get(1).cloned().unwrap_or_default(), n(2) as i64));
+                vec![]
+            }
+            // The dummy-poly slots (the Okami 504000's eight spheres, the Orochi sight sphere,
+            // the common battle-stealth slot 101: dmy 7, 90 / 120 deg, 30 m, 4 m back).
+            "AddObserveChrDmySphere" => {
+                self.add_observe(n(0) as i64, Observe::DmySphere(a.get(1).cloned().unwrap_or_default(), n(2) as i16, n(3)));
+                vec![]
+            }
+            "AddObserveChrDmyArea" => {
+                let t = a.get(1).cloned().unwrap_or_default();
+                self.add_observe(n(0) as i64, Observe::DmyArea(t, n(2) as i16, n(3), n(4), n(5), n(6)));
+                vec![]
+            }
+            // Removed without an edge (no Outside interrupt).
+            "DeleteObserve" => {
+                let slot = n(0) as i64;
+                self.observe.retain(|o| o.0 != slot);
+                self.observe_in.remove(&slot);
+                vec![]
+            }
+            "IsInsideObserve" => boolean(self.observe_inside(n(0) as i64)),
+            // RegisterTriggerRegion(category, unit, life s, radius m, target, dir, extra): a sphere
+            // at the target's position + its dir vector x |hit radius + extra| (FUN_14060c250,
+            // 14060.c:6625-6696), stored for every AI by enemy.rs. The caution logic leaves one
+            // where it heard a sound (common_common_logic_func.lua:319 / 348), tagged with the
+            // sound's serial, so allies that heard the same sound stop on reaching it.
+            "RegisterTriggerRegion" => {
+                let (o, fwd) = self.frame_of(a.get(4));
+                let fwd = fwd.with_y(0.0).normalize_or_zero();
+                let yaw = (self.dir_center(a.get(5)) as f32).to_radians();
+                // The dir's angle as IsInsideTargetEx reads it (positive = fwd x Y).
+                let dir = fwd * yaw.cos() + fwd.cross(Vec3::Y) * yaw.sin();
+                let reach = if is(a.get(4), self.k.target_self) { self.hit_radius } else { 0.0 };
+                let at = o + dir * (reach + n(6) as f32).abs();
+                self.cmd.triggers.push(TriggerRegion { owner: w.me_id, cat: n(0) as i64, unit: n(1) as i64, at, radius: n(3) as f32, life: n(2) as f32 });
+                vec![]
+            }
+            "RegisterTriggerRegionObserver" => {
+                let cat = n(0) as i64;
+                if !self.trigger_observers.contains(&cat) && self.trigger_observers.len() < 16 {
+                    self.trigger_observers.push(cat);
+                }
+                vec![]
+            }
+            // FUN_1405e75f0 (1405e.c:5952) passes a literal 1 to the removal (FUN_140642ba0), not
+            // the category: RemoveTriggerRegionObserver(1000) leaves observer 1000 in place.
+            // gap: read from the decompile, not checked in the disassembly.
+            "RemoveTriggerRegionObserver" => {
+                self.trigger_observers.retain(|&c| c != 1);
+                vec![]
+            }
+            // The per-frame lists (AI +0x7460, FUN_1405b37f0 / 36d0 / 3800 and the Leave ones).
+            "GetInvadeTriggerRegionInfoNum" => num(self.trigger_changed.0.len() as f64),
+            "GetLeaveTriggerRegionInfoNum" => num(self.trigger_changed.1.len() as f64),
+            "GetInvadeTriggerRegionCategory" | "GetInvadeTriggerRegionUnitID" | "GetLeaveTriggerRegionCategory" | "GetLeaveTriggerRegionUnitID" => {
+                let list = if name.starts_with("GetInvade") { &self.trigger_changed.0 } else { &self.trigger_changed.1 };
+                let e = list.get(n(0) as usize).copied().unwrap_or((0, 0));
+                num(if name.ends_with("Category") { e.0 } else { e.1 } as f64)
+            }
+            // (type 1 inside / 2 outside, index): the index-th slot that changed this frame.
+            "GetAreaObserveSlotNum" => {
+                let c = &self.observe_changed;
+                num(match n(0) as i64 { 1 => c.0.len(), 2 => c.1.len(), _ => 0 } as f64)
+            }
+            "GetAreaObserveSlot" => {
+                let c = &self.observe_changed;
+                let list = match n(0) as i64 { 1 => &c.0, 2 => &c.1, _ => &c.0 };
+                match list.get(n(1) as usize) {
+                    Some(&slot) if n(0) as i64 != 0 => num(slot as f64),
+                    _ => boolean(false),
+                }
+            }
+            "IsLadderAct" | "IsStartAttack"
+            | "IsValidPlatoon" | "IsPlatoonLeader" | "TeamHelp_IsValidReply" | "IsForceBattleGoal" => boolean(false),
+            // IsLockOnTarget(locker, target): the player locked on to the AI chr (136000_battle.lua:116
+            // keeps its distance then, 115000_battle.lua:281, 101000_logic.lua:6); no NPC locks on.
+            "IsLockOnTarget" => boolean(!is(a.first(), self.k.target_self) && is(a.get(1), self.k.target_self) && w.locked_on),
             "IsChangeInitialPosition" => boolean(self.patrol.as_ref().is_some_and(|p| p.new_home.is_some())),
-            "IsExistMeshOnLine" | "CheckDoesExistPathWithSetPoint" | "IsFinishAttackCoolTime" => boolean(true),
+            // CheckDoesExistPath too: the fallback's number 0 is neither `== true` nor `== false` in Lua
+            // (126000 Act16, 720000 approach branches never ran). gap: no navmesh, so a path always
+            // exists; 101000 / 136000_battle.lua's no-path branch (acts 7 / 27) still runs for Wolf
+            // hanging or perched through its SpEffect twins 109220 / 109221.
+            "IsExistMeshOnLine" | "CheckDoesExistPath" | "CheckDoesExistPathWithSetPoint" | "IsFinishAttackCoolTime" => boolean(true),
+            // (from, angle, dist, AI_SPA_DIR_TYPE[, radius, _]): how far the walkable ground goes from
+            // `from` along the angle off the direction to the target (TargetF / ToTarget; Absolute
+            // off +z). SpaceCheck (common_common_func_FDP.lua:43-50) compares it with 0.95 x the
+            // step / LeaveTarget distance. gap: no navmesh; the map collision stands in
+            // (mesh_line_dist), and without a map the whole distance is free.
             "GetExistMeshOnLineDistSpecifyAngleEx" | "GetExistMeshOnLineDistSpecifyAngle" => {
-                vec![a.get(2).cloned().unwrap_or_default()]
+                let (from, fwd) = self.frame_of(a.first());
+                let to_t = (self.w.target - from).with_y(0.0).normalize_or_zero();
+                let base = if n(3) == 2.0 { Vec3::Z } else if to_t != Vec3::ZERO { to_t } else { fwd.with_y(0.0).normalize_or_zero() };
+                let ang = (n(1) as f32).to_radians();
+                let dir = (base * ang.cos() + base.cross(Vec3::Y) * ang.sin()).normalize_or_zero();
+                let radius = if name.ends_with("Ex") { n(4) as f32 } else { 0.0 };
+                let dist = n(2) as f32;
+                let free = if dir == Vec3::ZERO {
+                    dist
+                } else {
+                    let floor = |c: Vec3| crate::map::ground_y(c);
+                    mesh_line_dist(from, dir, dist, radius, floor, crate::map::raycast)
+                };
+                num(free as f64)
             }
             "IsLookToTarget" => {
                 let width = if n(0) > 0.0 { n(0) } else { 20.0 };
@@ -913,15 +1290,14 @@ impl AiState {
                 vec![]
             }
             "TeamHelp_ValidateCall" | "TeamHelp_ValidateReply" | "ClearForceBattleGoal" | "ReqPlatoonState"
-            | "RegisterTriggerRegionObserver" | "RegisterTriggerRegion" | "SetEventMoveTarget" | "SetEnableEndureCancel_forGoal"
+            | "SetEnableEndureCancel_forGoal"
             | "ClearCorpsePosTarget" => vec![],
             "RequestEmergencyQuickTurn" => {
                 self.cmd.emergency = true;
                 vec![]
             }
             "SetAIPredictionMoveTargetSpecifyTargetDir" | "PrintText"
-            | "DbgSetLastActIdx" | "DbgSetLastKengekiActIdx" | "DeleteObserve" | "AddObserveArea"
-            | "AddObserveRegion" | "AddObserveChrDmyArea" => vec![],
+            | "DbgSetLastActIdx" | "DbgSetLastKengekiActIdx" => vec![],
             "GetEzStateAnimId" => vec![a.first().cloned().unwrap_or_default()],
             "DoEzAction" => {
                 self.cmd.anim = a.get(1).and_then(Value::num).map(|v| v as i64);
@@ -962,7 +1338,10 @@ impl AiState {
                 vec![]
             }
             "IsInterupt" => boolean(self.interrupt.is_some_and(|(k, _)| is(a.first(), k))),
-            "GetSpecialEffectActivateInterruptType" => num(self.interrupt.map_or(0.0, |(_, sp)| sp)),
+            "GetSpecialEffectActivateInterruptType" => num(self.interrupt.filter(|(k, _)| *k == self.k.int_sp).map_or(0.0, |(_, sp)| sp)),
+            // An observed SpEffect ending (115000 / 118020 / 120000 / 102020 battle goals wait for
+            // 109220 / 5026-5028 to end); never raised before (2026-10-12 round 22).
+            "GetSpecialEffectInactivateInterruptType" => num(self.interrupt.filter(|(k, _)| *k == self.k.int_sp_off).map_or(0.0, |(_, sp)| sp)),
             "Replanning" => {
                 self.replan = true;
                 vec![]
@@ -1021,7 +1400,11 @@ impl AiState {
 
     /// Native goals with an engine-side Terminate.
     fn native_terminate(&mut self, g: u32, n: Native) {
-        if n == Native::ConfirmCaution && self.w.t_state == 1 {
+        // Not when a new sound raised INTERUPT_ChangeSoundTarget (46) this frame: its listen
+        // reaction replaced the plan, and clearing the sound made the same sound "new" again
+        // next frame, whose 46 then replanned the reaction away (round 26). gap: 53 / 55
+        // (indication / corpse) are not raised yet.
+        if n == Native::ConfirmCaution && self.w.t_state == 1 && !self.w.sound_new {
             // FUN_1405c3770: targeting vfuncs 0x28 / 0x30 / 0x38 / 0x40 (gap: taken as the sound,
             // indication, memory and corpse slots).
             let _ = g;
@@ -1490,6 +1873,74 @@ fn interrupt_goals(vm: &mut Vm, st: &mut AiState, kind: f64, sp: f64) -> LuaResu
     handled
 }
 
+/// The logic-level interrupt chain of a table-logic enemy (exe FUN_1405d3fd0):
+/// InterruptTableLogic(ai, goal, logic, kind), then COMMON_Interrupt, then
+/// InterruptTableLogic_Common - where common_table_ai_common.lua:247 turns a new sound into the
+/// ListenSound 700 / 710 reaction (Wait 0-0.3 s, EndureAttack) of enemies with SpEffect
+/// 241000 / chuboss reaction. A handled interrupt's AddTopGoal list becomes the plan.
+/// gap: only interrupt 46 is sent this way yet; the others still go to the root goal only.
+fn interrupt_logic(vm: &mut Vm, st: &mut AiState, kind: f64) -> LuaResult<bool> {
+    if st.root.is_none() {
+        plan(vm, st)?;
+    }
+    let Some(root) = st.root else { return Ok(false) };
+    let has_logic = match vm.get_global("g_LogicTable") {
+        Value::Table(t) => !t.borrow().get(&Value::Num(st.logic_id as f64)).is_nil(),
+        _ => false,
+    };
+    if !has_logic {
+        return Ok(false);
+    }
+    let logic = Value::Num(st.logic_id as f64);
+    // The exe calls InterruptTableLogic only for the types the logic registered (FUN_1405e5cc0);
+    // InterruptInfoTable has no entry for 46, so that one goes on to the common chain.
+    let registered = match vm.get_global("g_LogicTable") {
+        Value::Table(t) => match t.borrow().get(&logic) {
+            Value::Table(l) => match l.borrow().get(&Value::Str(Rc::from("InterruptInfoTable"))) {
+                Value::Table(i) => !i.borrow().get(&Value::Num(kind)).is_nil(),
+                _ => false,
+            },
+            _ => false,
+        },
+        _ => false,
+    };
+    st.interrupt = Some((kind, 0.0));
+    st.top_queue.clear();
+    let mut handled = false;
+    for (name, args) in [
+        ("InterruptTableLogic", vec![ai_obj(), goal_obj(root), logic.clone(), Value::Num(kind)]),
+        ("COMMON_Interrupt", vec![ai_obj(), goal_obj(root)]),
+        ("InterruptTableLogic_Common", vec![ai_obj(), goal_obj(root), logic.clone()]),
+    ] {
+        if name == "InterruptTableLogic" && !registered {
+            continue;
+        }
+        let f = vm.get_global(name);
+        if f.is_nil() {
+            continue;
+        }
+        let r = match vm.call(st, &f, &args) {
+            Ok(r) => r,
+            Err(e) => {
+                st.interrupt = None;
+                return Err(e);
+            }
+        };
+        if r.first().is_some_and(|v| v.truthy()) {
+            handled = true;
+            break;
+        }
+    }
+    st.interrupt = None;
+    if handled && !st.top_queue.is_empty() {
+        let queued = std::mem::take(&mut st.top_queue);
+        reset_root(vm, st)?;
+        st.tops = queued;
+        st.root = st.tops.first().copied();
+    }
+    Ok(handled)
+}
+
 pub struct Brain {
     vm: Vm,
     st: AiState,
@@ -1594,6 +2045,13 @@ impl Brain {
             hit_radius,
             rng: rng | 1,
             patrol: None,
+            event_target: None,
+            observe: Vec::new(),
+            observe_in: HashSet::new(),
+            observe_changed: (Vec::new(), Vec::new()),
+            trigger_observers: Vec::new(),
+            trigger_in: Vec::new(),
+            trigger_changed: (Vec::new(), Vec::new()),
             k: Consts {
                 target_self: -1.0,
                 target_ene_0: 0.0,
@@ -1605,6 +2063,8 @@ impl Brain {
                 int_parry: 24.0,
                 int_use_item: 12.0,
                 int_sp: 43.0,
+                int_sp_off: 44.0,
+                int_sound: 46.0,
                 point_initial: 100.0,
                 point_init_pose: 111.0,
                 point_move_point: 103.0,
@@ -1635,6 +2095,8 @@ impl Brain {
             int_parry: c("INTERUPT_ParryTiming", 24.0),
             int_use_item: c("INTERUPT_UseItem", 12.0),
             int_sp: c("INTERUPT_ActivateSpecialEffect", 43.0),
+            int_sp_off: c("INTERUPT_InactivateSpecialEffect", 44.0),
+            int_sound: c("INTERUPT_ChangeSoundTarget", 46.0),
             point_initial: c("POINT_INITIAL", 100.0),
             point_init_pose: c("POINT_INIT_POSE", 111.0),
             point_move_point: c("POINT_MOVE_POINT", 103.0),
@@ -1691,7 +2153,7 @@ impl Brain {
             reset_root(vm, st)?;
         }
         // The player's attack notify (TAE flag 63): Goal.Interrupt -> Goal.Parry.
-        let (int_parry, int_use_item, int_sp) = (st.k.int_parry, st.k.int_use_item, st.k.int_sp);
+        let (int_parry, int_use_item, int_sp, int_sp_off) = (st.k.int_parry, st.k.int_use_item, st.k.int_sp, st.k.int_sp_off);
         if s.parry_timing {
             interrupt_goals(vm, st, int_parry, 0.0)?;
         }
@@ -1702,6 +2164,40 @@ impl Brain {
             if st.observed.contains_key(&id) {
                 interrupt_goals(vm, st, int_sp, id as f64)?;
             }
+        }
+        for &id in &s.sp_gone {
+            if st.observed.contains_key(&id) {
+                interrupt_goals(vm, st, int_sp_off, id as f64)?;
+            }
+        }
+        // Observe areas (AddObserveArea / AddObserveRegion) the target entered or left.
+        st.observe_edges();
+        if !st.observe_changed.0.is_empty() {
+            interrupt_goals(vm, st, 16.0, 0.0)?;
+        }
+        if !st.observe_changed.1.is_empty() {
+            interrupt_goals(vm, st, 40.0, 0.0)?;
+        }
+        // Trigger regions entered (48: InterruptTableLogic_Common's caution stop,
+        // common_table_ai_common.lua:286) or left (49).
+        st.trigger_edges();
+        if !st.trigger_changed.0.is_empty() && !interrupt_logic(vm, st, 48.0)? {
+            interrupt_goals(vm, st, 48.0, 0.0)?;
+        }
+        if !st.trigger_changed.1.is_empty() {
+            interrupt_goals(vm, st, 49.0, 0.0)?;
+        }
+        if s.sound_new {
+            let k = st.k.int_sound;
+            interrupt_logic(vm, st, k)?;
+        }
+        // A map-event AI command (INTERUPT_EventRequest 39: bit 39 of the update's interrupt
+        // mask, set by FUN_1405b49e0 from the request's received bit, so for one update per
+        // write, a repeat of the same value too). The goals' Interrupt first (FUN_1405ada60 ->
+        // FUN_1405cfbd0; 507000_battle.lua replans on 10 / 20), then, unhandled, the logic's
+        // (FUN_1405d3fd0: the Divine Dragon's trees, 531001_logic.lua request 10 -> a bloom).
+        if s.event_req_new && !interrupt_goals(vm, st, 39.0, 0.0)? {
+            interrupt_logic(vm, st, 39.0)?;
         }
         // A target-state change drops the plan (FUN_1405ab7d0 -> FUN_14061f500).
         if std::mem::take(&mut st.replan) || s.t_replan {
@@ -1733,6 +2229,11 @@ impl Brain {
             }
         }
         Ok(())
+    }
+
+    /// The dummy polys of its own the AI's observe slots read (Snapshot::dummies).
+    pub fn observe_dmys(&self) -> Vec<i16> {
+        self.st.observe_dmys()
     }
 
     /// The active goal chain, e.g. "SamuraiTaisho_102000_Battle > 2221 > CommonAttack(3000)".
@@ -1860,6 +2361,312 @@ mod tests {
         assert_eq!(get(&mut b, "GetSp", &ene).num(), Some(900.0));
         assert_eq!(get(&mut b, "GetSpRate", &me).num(), Some(0.5));
         assert!((get(&mut b, "GetSpRate", &ene).num().unwrap() - 0.9).abs() < 1e-6);
+    }
+
+    /// IsInsideTargetRegion / SetEventMoveTarget use the loaded map's MSB regions by entity id
+    /// (FUN_1406d35d0). The Folding Screen Monkeys' Act17 (126000_battle.lua) picks its move
+    /// point by where it and Wolf stand among the m20 20028xx regions; its 99028xx ids are in
+    /// no MSB and stay false. Both were stubs (always false / ignored).
+    #[test]
+    fn monkeys_read_the_senpou_regions() {
+        let Some(regions) = crate::enemy::map_regions_on("boss_12600050") else { return };
+        let Some(mut b) = load(12600000, 0.5, 3) else { return };
+        assert!(regions.contains_key(&2002820) && !regions.contains_key(&9902820));
+        let up = Vec3::Y * 0.5;
+        let me_at = regions[&2002821].at + up;
+        let wolf_at = regions[&2002825].at + up;
+        assert!(!regions[&2002821].contains(wolf_at), "test spots overlap");
+        b.st.w = Snapshot { me: me_at, target: wolf_at, regions: Some(regions.clone()), ..Snapshot::battle() };
+        let me = Value::Num(b.st.k.target_self);
+        let ene = Value::Num(0.0);
+        let inside = |b: &mut Brain, t: &Value, id: f64| b.st.ai_method_raw("IsInsideTargetRegion", &[t.clone(), Value::Num(id)]).into_iter().next().unwrap();
+        assert!(matches!(inside(&mut b, &me, 2002821.0), Value::Bool(true)));
+        assert!(matches!(inside(&mut b, &ene, 2002825.0), Value::Bool(true)));
+        assert!(matches!(inside(&mut b, &ene, 2002821.0), Value::Bool(false)));
+        assert!(matches!(inside(&mut b, &me, 9902820.0), Value::Bool(false)), "no MSB has 99028xx");
+        let ev = Value::Num(b.st.k.point_event);
+        b.st.ai_method_raw("SetEventMoveTarget", &[Value::Num(2002859.0)]);
+        // GetDist is less the AI chr's radius (0.5 here).
+        let want = (regions[&2002859].at - me_at).with_y(0.0).length() as f64 - 0.5;
+        let got = b.st.ai_method_raw("GetDist", std::slice::from_ref(&ev))[0].num().unwrap();
+        assert!((got - want).abs() < 1e-3 && want > 5.0, "POINT_EVENT is the region: {got} vs {want}");
+    }
+
+    /// AddObserveArea / IsInsideObserve / DeleteObserve: a slot's cone answers like
+    /// IsInsideTargetEx (136000 Act23: slots 2 / 3, 180 deg at 4 / 10 m). It was always false.
+    #[test]
+    fn observe_areas_see_wolf() {
+        let Some(mut b) = load(10100000, 1.0, 3) else { return };
+        b.st.w = Snapshot { dist: 6.0, me: Vec3::ZERO, fwd: Vec3::Z, target: Vec3::new(0.0, 0.0, 6.0), target_fwd: Vec3::Z, ..Snapshot::battle() };
+        let me = Value::Num(b.st.k.target_self);
+        let add = |b: &mut Brain, slot: f64, dist: f64| {
+            b.st.ai_method_raw("AddObserveArea", &[Value::Num(slot), me.clone(), Value::Num(0.0), Value::Num(1.0), Value::Num(180.0), Value::Num(dist)]);
+        };
+        let inside = |b: &mut Brain, slot: f64| matches!(b.st.ai_method_raw("IsInsideObserve", &[Value::Num(slot)])[0], Value::Bool(true));
+        add(&mut b, 2.0, 4.0);
+        add(&mut b, 3.0, 10.0);
+        assert!(!inside(&mut b, 2.0) && inside(&mut b, 3.0));
+        b.st.ai_method_raw("DeleteObserve", &[Value::Num(3.0)]);
+        assert!(!inside(&mut b, 3.0) && !inside(&mut b, 9.0));
+        // AddObserveRegion(slot, target, region): an MSB region (m20's 2002821 box here).
+        let Some(regions) = crate::enemy::map_regions_on("boss_12600050") else { return };
+        b.st.w.me = regions[&2002821].at + Vec3::Y * 0.5;
+        b.st.w.regions = Some(regions);
+        b.st.ai_method_raw("AddObserveRegion", &[Value::Num(30.0), me.clone(), Value::Num(2002821.0)]);
+        b.st.ai_method_raw("AddObserveRegion", &[Value::Num(31.0), Value::Num(0.0), Value::Num(2002821.0)]);
+        assert!(inside(&mut b, 30.0) && !inside(&mut b, 31.0));
+    }
+
+    /// The observe slots' enter / leave edges: INTERUPT_Inside_ObserveArea (16) /
+    /// Outside (40) carry the changed slots (GetAreaObserveSlotNum / GetAreaObserveSlot).
+    #[test]
+    fn observe_areas_report_enter_and_leave() {
+        let Some(mut b) = load(10100000, 1.0, 3) else { return };
+        b.st.w = Snapshot { dist: 6.0, me: Vec3::ZERO, fwd: Vec3::Z, target: Vec3::new(0.0, 0.0, 6.0), ..Snapshot::battle() };
+        let me = Value::Num(b.st.k.target_self);
+        b.st.ai_method_raw("AddObserveArea", &[Value::Num(3.0), me, Value::Num(0.0), Value::Num(1.0), Value::Num(180.0), Value::Num(4.0)]);
+        b.st.observe_edges();
+        assert!(b.st.observe_changed == (vec![], vec![]));
+        b.st.w.target = Vec3::new(0.0, 0.0, 2.0);
+        b.st.observe_edges();
+        assert_eq!(b.st.observe_changed, (vec![3], vec![]));
+        let get = |b: &mut Brain, f: &str, a: &[Value]| b.st.ai_method_raw(f, a)[0].num();
+        assert_eq!(get(&mut b, "GetAreaObserveSlotNum", &[Value::Num(1.0)]), Some(1.0));
+        assert_eq!(get(&mut b, "GetAreaObserveSlot", &[Value::Num(1.0), Value::Num(0.0)]), Some(3.0));
+        b.st.observe_edges();
+        assert!(b.st.observe_changed == (vec![], vec![]), "no edge while it stays");
+        b.st.w.target = Vec3::new(0.0, 0.0, 9.0);
+        b.st.observe_edges();
+        assert_eq!(b.st.observe_changed, (vec![], vec![3]));
+    }
+
+    /// The exe's observe list (re-scout of the AI observe node: kind byte, cur / prev): the
+    /// dummy kinds read the AI chr's own dummy; a delete raises nothing; the same id and kind
+    /// re-added keeps its state, another kind starts outside; changes list in insertion order;
+    /// an area's range is 3D.
+    #[test]
+    fn observe_slots_follow_the_exe_list() {
+        let Some(mut b) = load(10100000, 1.0, 3) else { return };
+        let ene = Value::Num(0.0);
+        let me = Value::Num(b.st.k.target_self);
+        // Dummy 7 two metres up, looking +Z.
+        b.st.w = Snapshot { me: Vec3::ZERO, fwd: Vec3::Z, target: Vec3::new(0.0, 2.0, 3.0), dummies: vec![(7, Vec3::new(0.0, 2.0, 0.0), Vec3::Z)], ..Snapshot::battle() };
+        let raw = |b: &mut Brain, f: &str, a: &[f64], t: &Value| {
+            let mut v: Vec<Value> = vec![Value::Num(a[0]), t.clone()];
+            v.extend(a[1..].iter().map(|x| Value::Num(*x)));
+            b.st.ai_method_raw(f, &v);
+        };
+        // ChrDmySphere: strictly within the radius of dummy 7.
+        raw(&mut b, "AddObserveChrDmySphere", &[5.0, 7.0, 3.5], &ene);
+        raw(&mut b, "AddObserveChrDmySphere", &[6.0, 7.0, 3.0], &ene);
+        assert!(b.st.observe_inside(5) && !b.st.observe_inside(6));
+        assert_eq!(b.st.observe_dmys(), vec![7]);
+        // ChrDmyArea(101, ene, 7, 90, 120, 30, 4): origin 4 m behind the dummy; 3 m ahead is 7 m
+        // from it (in), level; behind the origin out; 45 deg up from the origin in, 60 out.
+        raw(&mut b, "AddObserveChrDmyArea", &[101.0, 7.0, 90.0, 120.0, 30.0, 4.0], &ene);
+        assert!(b.st.observe_inside(101));
+        b.st.w.target = Vec3::new(0.0, 2.0, -5.0);
+        assert!(!b.st.observe_inside(101), "behind");
+        b.st.w.target = Vec3::new(0.0, 2.0, -1.0);
+        assert!(!b.st.observe_inside(101), "within the 4 m back-off");
+        b.st.w.target = Vec3::new(0.0, 2.0 + 8.0 * 1.1, 4.0);
+        assert!(!b.st.observe_inside(101), "above the 45 deg");
+        b.st.w.target = Vec3::new(8.0 * 3f32.sqrt() * 0.9, 2.0, 4.0);
+        assert!(b.st.observe_inside(101), "inside 60 deg to the side");
+        b.st.w.target = Vec3::new(8.0 * 3f32.sqrt() * 1.2, 2.0, 4.0);
+        assert!(!b.st.observe_inside(101), "past 60 deg to the side");
+        // Edges in insertion order (6, then 5), not by id.
+        b.st.observe.clear();
+        b.st.observe_in.clear();
+        b.st.w.target = Vec3::new(0.0, 2.0, 1.0);
+        raw(&mut b, "AddObserveChrDmySphere", &[6.0, 7.0, 3.0], &ene);
+        raw(&mut b, "AddObserveChrDmySphere", &[5.0, 7.0, 3.0], &ene);
+        b.st.observe_edges();
+        assert_eq!(b.st.observe_changed, (vec![6, 5], vec![]), "a fresh slot raises its enter at once");
+        // Re-added as it was: no new edge. As another kind (an area that holds it too): reset,
+        // so it enters again.
+        raw(&mut b, "AddObserveChrDmySphere", &[6.0, 7.0, 3.0], &ene);
+        b.st.observe_edges();
+        assert_eq!(b.st.observe_changed, (vec![], vec![]));
+        b.st.ai_method_raw("AddObserveArea", &[Value::Num(6.0), me.clone(), ene.clone(), Value::Num(0.0), Value::Num(360.0), Value::Num(9.0)]);
+        b.st.observe_edges();
+        assert_eq!(b.st.observe_changed, (vec![6], vec![]));
+        // Deleted: gone without an Outside.
+        b.st.ai_method_raw("DeleteObserve", &[Value::Num(5.0)]);
+        b.st.observe_edges();
+        assert_eq!(b.st.observe_changed, (vec![], vec![]));
+        // Deleted and added again in one think: a fresh node, so the enter comes again.
+        b.st.ai_method_raw("DeleteObserve", &[Value::Num(6.0)]);
+        raw(&mut b, "AddObserveChrDmySphere", &[6.0, 7.0, 3.0], &ene);
+        b.st.observe_edges();
+        assert_eq!(b.st.observe_changed, (vec![6], vec![]));
+        // The area's range is 3D: 2 m up and 1 m ahead is 2.24 m away.
+        b.st.ai_method_raw("AddObserveArea", &[Value::Num(8.0), me, ene, Value::Num(0.0), Value::Num(360.0), Value::Num(2.0)]);
+        assert!(!b.st.observe_inside(8));
+    }
+
+    /// RegisterTriggerRegion leaves a sphere in front of the AI chr (radius 5, 5 s, unit = the
+    /// sound's serial); another AI observing the category gets INTERUPT_InvadeTriggerRegion's
+    /// list on the frame it enters (category, unit) and the Leave list on the frame it leaves.
+    /// Its own region and unobserved categories never count; RemoveTriggerRegionObserver(1000)
+    /// leaves observer 1000 (the exe removes category 1).
+    #[test]
+    fn trigger_regions_report_invade_and_leave() {
+        let Some(mut b) = load(10100000, 1.0, 3) else { return };
+        b.st.w = Snapshot { me: Vec3::new(0.0, 0.0, 10.0), fwd: Vec3::Z, me_id: 1, sound_id: 1010, sound_serial: 42, ..Snapshot::battle() };
+        let me = Value::Num(b.st.k.target_self);
+        let get = |b: &mut Brain, f: &str, a: &[Value]| b.st.ai_method_raw(f, a)[0].num();
+        assert_eq!(get(&mut b, "GetLatestSoundTargetInstanceID", &[]), Some(42.0));
+        b.st.ai_method_raw("RegisterTriggerRegion", &[Value::Num(1000.0), Value::Num(42.0), Value::Num(5.0), Value::Num(5.0), me, Value::Num(1.0), Value::Num(0.0)]);
+        let r = b.st.cmd.triggers.pop().expect("a region");
+        assert_eq!((r.owner, r.cat, r.unit, r.radius, r.life), (1, 1000, 42, 5.0, 5.0));
+        assert!((r.at - Vec3::new(0.0, 0.0, 10.0 + b.st.hit_radius)).length() < 1e-4, "{:?}", r.at);
+        // Another chr's region 3 m off; this chr observes 1000.
+        let other = crate::ai::TriggerRegion { owner: 7, at: Vec3::new(0.0, 0.0, 3.0), ..r.clone() };
+        b.st.w.me = Vec3::ZERO;
+        let own_here = crate::ai::TriggerRegion { unit: 43, at: Vec3::ZERO, ..r.clone() };
+        b.st.w.triggers = vec![r.clone(), own_here, other.clone(), crate::ai::TriggerRegion { cat: 5, unit: 44, ..other.clone() }];
+        b.st.trigger_edges();
+        assert!(b.st.trigger_changed == (vec![], vec![]), "no observer yet");
+        b.st.ai_method_raw("RegisterTriggerRegionObserver", &[Value::Num(1000.0)]);
+        b.st.trigger_edges();
+        assert_eq!(b.st.trigger_changed, (vec![(1000, 42)], vec![]));
+        assert_eq!(get(&mut b, "GetInvadeTriggerRegionInfoNum", &[]), Some(1.0));
+        assert_eq!(get(&mut b, "GetInvadeTriggerRegionCategory", &[Value::Num(0.0)]), Some(1000.0));
+        assert_eq!(get(&mut b, "GetInvadeTriggerRegionUnitID", &[Value::Num(0.0)]), Some(42.0));
+        b.st.trigger_edges();
+        assert!(b.st.trigger_changed == (vec![], vec![]), "no edge while it stays");
+        b.st.ai_method_raw("RemoveTriggerRegionObserver", &[Value::Num(1000.0)]);
+        b.st.w.me = Vec3::new(0.0, 0.0, 9.0);
+        b.st.trigger_edges();
+        assert_eq!(b.st.trigger_changed, (vec![], vec![(1000, 42)]));
+        assert_eq!(get(&mut b, "GetLeaveTriggerRegionUnitID", &[Value::Num(0.0)]), Some(42.0));
+    }
+
+    /// IsInsideTargetEx(observer, target, dir, angle, dist) measures from the observer's facing:
+    /// (TARGET_ENE_0, TARGET_SELF, F, 90, 3) = "am I in front of the player" (101200 / 125000
+    /// parry gates). It used the AI chr's own facing and ignored the second argument (2026-10-12
+    /// round 21). CheckDoesExistPath answers a boolean (the number 0 broke `== true`).
+    #[test]
+    fn inside_target_ex_looks_from_the_observer() {
+        let Some(mut b) = load(10100000, 1.0, 3) else { return };
+        // Wolf 2 m in front of the enemy (enemy faces +Z), looking away from it (+Z too).
+        b.st.w = Snapshot { dist: 2.0, me: Vec3::ZERO, fwd: Vec3::Z, target: Vec3::new(0.0, 0.0, 2.0), target_fwd: Vec3::Z, ..Snapshot::battle() };
+        let me = Value::Num(b.st.k.target_self);
+        let ene = Value::Num(0.0);
+        let (f, bk) = (Value::Num(1.0), Value::Num(b.st.k.dir_b));
+        let ex = |b: &mut Brain, o: &Value, t: &Value, d: &Value| {
+            b.st.ai_method_raw("IsInsideTargetEx", &[o.clone(), t.clone(), d.clone(), Value::Num(90.0), Value::Num(3.0)]).into_iter().next().unwrap()
+        };
+        assert!(matches!(ex(&mut b, &ene, &me, &f), Value::Bool(false)), "Wolf faces away: I am behind him");
+        assert!(matches!(ex(&mut b, &ene, &me, &bk), Value::Bool(true)));
+        assert!(matches!(ex(&mut b, &me, &ene, &f), Value::Bool(true)), "Wolf is in my front cone");
+        b.st.w.target_fwd = -Vec3::Z;
+        assert!(matches!(ex(&mut b, &ene, &me, &f), Value::Bool(true)), "Wolf faces me");
+        let path = b.st.ai_method_raw("CheckDoesExistPath", &[ene.clone(), f.clone(), Value::Num(0.0), Value::Num(0.0)]);
+        assert!(matches!(path.first(), Some(Value::Bool(true))));
+    }
+
+    /// An observed SpEffect that ends raises INTERUPT_InactivateSpecialEffect with its id
+    /// (GetSpecialEffectInactivateInterruptType); the activate getter stays 0 for it.
+    #[test]
+    fn an_ending_sp_effect_raises_the_inactivate_interrupt() {
+        let Some(mut b) = load(10100000, 1.0, 3) else { return };
+        b.st.interrupt = Some((b.st.k.int_sp_off, 5028.0));
+        let get = |b: &mut Brain, n: &str| b.st.ai_method_raw(n, &[]).first().and_then(Value::num).unwrap();
+        assert_eq!(get(&mut b, "GetSpecialEffectInactivateInterruptType"), 5028.0);
+        assert_eq!(get(&mut b, "GetSpecialEffectActivateInterruptType"), 0.0);
+        let off = Value::Num(b.st.k.int_sp_off);
+        assert!(matches!(b.st.ai_method_raw("IsInterupt", &[off]).first(), Some(Value::Bool(true))));
+        // A frame with the SpEffect gone runs the battle goal's Interrupt without error.
+        b.st.interrupt = None;
+        b.st.observed.insert(5028, Default::default());
+        let mut s = Snapshot { dist: 3.0, free: true, hp_rate: 1.0, target_hp_rate: 1.0, sp: 600.0, sp_rate: 1.0, ..Snapshot::battle() };
+        s.sp_self.insert(200004);
+        s.sp_gone = vec![5028];
+        b.tick(&s, 1.0 / 60.0);
+        let errors: Vec<_> = b.log.iter().filter(|l| !l.starts_with("stub:")).cloned().collect();
+        assert!(errors.is_empty(), "{errors:#?}");
+    }
+
+    /// Round 25: a new sound target raises INTERUPT_ChangeSoundTarget through the logic chain;
+    /// an Ashina soldier (241000 zako reaction) drops its plan and plays ListenSound 700 after a
+    /// 0-0.3 s wait (common_table_ai_common.lua:247), once per sound id (timer 12: 5 s).
+    #[test]
+    fn a_new_sound_plays_the_listen_reaction() {
+        let Some(mut b) = load(10100000, 1.0, 3) else { return };
+        let mut s = Snapshot { t_state: crate::stealth::CAUTION, t_prev: crate::stealth::CAUTION, t_kind: 1, visible: false, free: true, hp_rate: 1.0, sp: 600.0, sp_rate: 1.0, ..Snapshot::battle() };
+        s.sp_self.insert(241000);
+        s.sound_id = 1310;
+        s.sound_rank = 0;
+        let mut anims = Vec::new();
+        for i in 0..60 {
+            s.sound_new = i == 10;
+            anims.push(b.tick(&s, 1.0 / 60.0).anim);
+        }
+        let errors: Vec<_> = b.log.iter().filter(|l| !l.starts_with("stub:")).cloned().collect();
+        assert!(errors.is_empty(), "{errors:#?}");
+        assert!(anims[10..].contains(&Some(700)), "{anims:?}");
+        assert!(!anims[..10].contains(&Some(700)));
+    }
+
+    /// R33 A2: SpaceCheck's GetExistMeshOnLineDistSpecifyAngle(Ex) read the asked distance back,
+    /// so a backstep off a ledge or into a wall always passed. mesh_line_dist stops at a wall
+    /// (less the radius) and at a floor step over STEP_HEIGHT; open flat ground is all free.
+    #[test]
+    fn mesh_line_dist_stops_at_walls_and_ledges() {
+        let from = Vec3::new(0.0, 1.0, 0.0);
+        let flat = |_: Vec3| 0.0;
+        let none = |_: Vec3, _: Vec3, _: f32| None;
+        assert_eq!(mesh_line_dist(from, Vec3::Z, 3.0, 0.4, flat, none), 3.0);
+        let wall = |_: Vec3, _: Vec3, _: f32| Some(2.0);
+        assert!((mesh_line_dist(from, Vec3::Z, 3.0, 0.4, flat, wall) - 1.6).abs() < 1e-5);
+        let ledge = |c: Vec3| if c.z > 1.2 { -5.0 } else { 0.0 };
+        assert_eq!(mesh_line_dist(from, Vec3::Z, 3.0, 0.0, ledge, none), 1.0);
+        let slope = |c: Vec3| c.z * 0.3;
+        assert_eq!(mesh_line_dist(from, Vec3::Z, 3.0, 0.0, slope, none), 3.0, "a walkable slope is free");
+    }
+
+    /// R33 A4: GetTeamOrder(ORDER_TYPE_Role) was always 0 (Attack), so in a group every
+    /// thinkAttr_doAdmirer enemy (101000 / 136000) rushed Wolf. The exe (FUN_140640050) sorts each
+    /// target's chrs nearest first: 1 Attack, 1 Torimaki, the rest Kankyaku; per target.
+    #[test]
+    fn team_roles_go_nearest_first_per_target() {
+        let mut world = bevy::ecs::world::World::new();
+        let e: Vec<bevy::ecs::entity::Entity> = (0..5).map(|_| world.spawn_empty().id()).collect();
+        let roles = crate::enemy::assign_team_roles([(0, 6.0, e[0]), (0, 2.0, e[1]), (0, 9.0, e[2]), (0, 4.0, e[3]), (1, 8.0, e[4])]);
+        let got: Vec<f64> = e.iter().map(|x| roles[x]).collect();
+        assert_eq!(got, vec![2.0, 0.0, 2.0, 1.0, 0.0]);
+        let Some(mut b) = load(10100000, 1.0, 3) else { return };
+        b.st.w = Snapshot { team_role: 2.0, ..Snapshot::battle() };
+        let role = b.st.ai_method_raw("GetTeamOrder", &[Value::Num(0.0)]).first().and_then(Value::num);
+        assert_eq!(role, Some(2.0));
+    }
+
+    /// R33 A1: IsLockOnTarget(TARGET_ENE_0 / TARGET_LOCALPLAYER, TARGET_SELF) is Wolf's lock-on on
+    /// the AI chr (the Rappa's 136000_battle.lua:116 keeps its distance then); it always read false.
+    #[test]
+    fn is_lock_on_target_is_wolfs_lock_on_me() {
+        let Some(mut b) = load(10100000, 1.0, 3) else { return };
+        let (ene, me) = (Value::Num(b.st.k.target_ene_0), Value::Num(b.st.k.target_self));
+        let ask = |b: &mut Brain, x: &Value, y: &Value| b.st.ai_method_raw("IsLockOnTarget", &[x.clone(), y.clone()]).first().map(|v| matches!(v, Value::Bool(true)));
+        b.st.w = Snapshot { locked_on: true, ..Snapshot::battle() };
+        assert_eq!(ask(&mut b, &ene, &me), Some(true));
+        assert_eq!(ask(&mut b, &me, &ene), Some(false), "the AI chr locks on to nothing");
+        b.st.w.locked_on = false;
+        assert_eq!(ask(&mut b, &ene, &me), Some(false));
+    }
+
+    /// GetDistYSigned / GetDistY give the target's height over the AI chr (both read 0 before).
+    #[test]
+    fn dist_y_is_the_target_height_over_me() {
+        let Some(mut b) = load(10100000, 1.0, 3) else { return };
+        b.st.w = Snapshot { me: Vec3::new(0.0, 1.0, 0.0), target: Vec3::new(0.0, 4.5, 3.0), ..Snapshot::battle() };
+        let ene = Value::Num(0.0);
+        for name in ["GetDistYSigned", "GetDistY"] {
+            let v = b.st.ai_method_raw(name, std::slice::from_ref(&ene)).first().and_then(Value::num).unwrap();
+            assert!((v - 3.5).abs() < 1e-6, "{name} {v}");
+        }
     }
 
     /// The native goals (CommonAttack successDist, LeaveTarget, KeepDist) measure the same

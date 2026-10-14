@@ -1,0 +1,10 @@
+# Faster builds (the user, 2026-10-13: "is there better way to build or test rather than
+# compiling every time"; OK'd).
+# sccache caches compiled crates across all the target dirs (target/bugfix, target/bosees, ...):
+# Bevy and the other dependencies compile once for everyone. `sccache --show-stats` shows hits.
+[build]
+rustc-wrapper = "sccache"
+
+# rust-lld (ships with Rust) links much faster than the MSVC linker.
+[target.x86_64-pc-windows-msvc]
+linker = "rust-lld.exe"

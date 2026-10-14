@@ -133,6 +133,9 @@ def routes(path, bosses):
         eo, tdo = struct.unpack_from('<qq', d, o + 0x60)
         eid = struct.unpack_from('<i', d, o + eo)[0]
         td = o + tdo
+        # Part.Enemy +0x8 ThinkParamID, +0xC NPCParamID: its own NpcThinkParam row (the roster's
+        # first placement of the NpcParam row may have another).
+        think = struct.unpack_from('<i', d, td + 0x8)[0]
         npc = struct.unpack_from('<i', d, td + 0xC)[0]
         route = struct.unpack_from('<h', d, td + 0x20)[0]
         if eid <= 0 or route < 0 or route >= len(patrols) or str(npc) in bosses:
@@ -144,6 +147,7 @@ def routes(path, bosses):
             'part': u16s(d, o + no),
             'model': models[mi] if mi >= 0 else '',
             'npc': npc,
+            'think': think,
             'pos': [round(v, 3) for v in struct.unpack_from('<3f', d, o + 0x20)],
             'yaw': round(struct.unpack_from('<3f', d, o + 0x2C)[1], 3),
             'type': kind,

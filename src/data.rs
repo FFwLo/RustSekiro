@@ -63,6 +63,10 @@ pub struct Anim {
 #[derive(Deserialize, Clone, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct SpEffect {
+    /// HP damage taken while worn: <attr>DamageCutRate / def<Attr>DmgRate by atkAttribute (the
+    /// physical part, damage_cut_field names) and the element rates; 1 when the export lacks them.
+    #[serde(flatten, default)]
+    pub damage_cut: DamageCut,
     /// def<Attr>StaminaDmgRate: posture damage taken while worn, by the attack's
     /// staminaPhysicsAttribute (combat::def_stamina_rate).
     #[serde(default = "one", rename = "defSlashStaminaDmgRate")]
@@ -159,6 +163,11 @@ pub struct SpEffect {
     pub def_stamina_attack_rate: f32,
     #[serde(default = "one")]
     pub stamina_recover_speed_rate: f32,
+    /// Added to the posture regen base while worn (pts/s): kb/enemy.md FUN_140a04850,
+    /// SpEffectRecoverRate * (base + SpEffectChangeSpeed). 300240 +40 on c1010 / c1190 battle idles,
+    /// 300260 +60 on c1220's guard-break clips.
+    #[serde(default)]
+    pub stamina_recover_change_speed: f32,
     /// Active only while HP% <= this (resident HP-conditional effects); -1 or 0 = always.
     #[serde(default)]
     pub condition_hp: f32,
@@ -202,6 +211,11 @@ pub struct SpEffect {
     pub regist_poizon_change_rate: f32,
     #[serde(default = "one")]
     pub regist_blood_change_rate: f32,
+    /// Terror (stateInfo 5, the exe's resist type 1 "disease"): the zombies' dumplings 9222 / 9223.
+    #[serde(default)]
+    pub regist_illness: f32,
+    #[serde(default = "one")]
+    pub regist_illness_change_rate: f32,
     /// Applied when this one's effectEndurance runs out (Sabimaru 9004 -> 9045).
     #[serde(default)]
     pub replace_sp_effect_id: i64,
@@ -244,6 +258,71 @@ pub fn stamina_rate_field(attribute: i64) -> Option<&'static str> {
         12 => "defAttriCStaminaDmgRate",
         _ => return None,
     })
+}
+
+/// SpEffectParam HP damage rates while the effect is worn (round 25: 109400 x1.5 while Wolf is
+/// posture-broken). gap: the exe site applying them is not traced (see damage_cut_field).
+#[derive(Deserialize, Clone)]
+pub struct DamageCut {
+    #[serde(default = "one", rename = "slashDamageCutRate")]
+    pub slash: f32,
+    #[serde(default = "one", rename = "lightHitDamageCutRate")]
+    pub light_hit: f32,
+    #[serde(default = "one", rename = "thrustDamageCutRate")]
+    pub thrust: f32,
+    #[serde(default = "one", rename = "neutralDamageCutRate")]
+    pub neutral: f32,
+    #[serde(default = "one", rename = "defNinsatsuDmgRate")]
+    pub ninsatsu: f32,
+    #[serde(default = "one", rename = "defHeavyHitDmgRate")]
+    pub heavy_hit: f32,
+    #[serde(default = "one", rename = "defAntiGroundDmgRate")]
+    pub anti_ground: f32,
+    #[serde(default = "one", rename = "defAntiAirDmgRate")]
+    pub anti_air: f32,
+    #[serde(default = "one", rename = "defLightShootDmgRate")]
+    pub light_shoot: f32,
+    #[serde(default = "one", rename = "attriADamageCutRate")]
+    pub attri_a: f32,
+    #[serde(default = "one", rename = "attriBDamageCutRate")]
+    pub attri_b: f32,
+    #[serde(default = "one", rename = "attriCDamageCutRate")]
+    pub attri_c: f32,
+    #[serde(default = "one", rename = "fireDamageCutRate")]
+    pub fire: f32,
+    #[serde(default = "one", rename = "magicDamageCutRate")]
+    pub magic: f32,
+    #[serde(default = "one", rename = "thunderDamageCutRate")]
+    pub thunder: f32,
+    #[serde(default = "one", rename = "darkDamageCutRate")]
+    pub dark: f32,
+}
+
+impl Default for DamageCut {
+    fn default() -> Self {
+        DamageCut { slash: 1.0, light_hit: 1.0, thrust: 1.0, neutral: 1.0, ninsatsu: 1.0, heavy_hit: 1.0, anti_ground: 1.0, anti_air: 1.0, light_shoot: 1.0, attri_a: 1.0, attri_b: 1.0, attri_c: 1.0, fire: 1.0, magic: 1.0, thunder: 1.0, dark: 1.0 }
+    }
+}
+
+impl DamageCut {
+    /// The rate for the physical part of a hit of this atkAttribute (damage_cut_field order).
+    pub fn physical(&self, attribute: i64) -> f32 {
+        match attribute {
+            1 => self.slash,
+            2 => self.light_hit,
+            3 => self.thrust,
+            4 => self.neutral,
+            5 => self.ninsatsu,
+            6 => self.heavy_hit,
+            7 => self.anti_ground,
+            8 => self.anti_air,
+            9 => self.light_shoot,
+            10 => self.attri_a,
+            11 => self.attri_b,
+            12 => self.attri_c,
+            _ => 1.0,
+        }
+    }
 }
 
 /// SpEffectParam HP cut rate for an AtkParam atkAttribute (same enum values): <attr>DamageCutRate
@@ -361,9 +440,16 @@ pub struct Attack {
     #[serde(default)]
     #[allow(dead_code)] // kept for debugging / future use
     pub behavior_name: String,
+    /// An enemy bullet's hit (Bullet sfxId_Hit) and repel (sfxId_Flick) effects with where it met
+    /// the defender and its flight: combat.rs plays one by the outcome (enemy_bullet.rs).
+    #[serde(skip)]
+    pub bullet_fx: Option<(i64, i64, bevy::math::Vec3, bevy::math::Vec3)>,
     /// spEffectId0-4: SpEffects the hit puts on the target (Sabimaru 7500100 -> 9004 poison build-up).
     #[serde(default = "minus_one", rename = "spEffectId0")]
     pub sp_effect_id0: i64,
+    /// Its AtkParam row (AtkParam_Pc for Wolf's, _Npc for an NPC's): atk_ai_sounds.
+    #[serde(default = "minus_one", rename = "atkParamId")]
+    pub atk_param_id: i64,
     #[serde(default = "minus_one", rename = "spEffectId1")]
     pub sp_effect_id1: i64,
     #[serde(default = "minus_one", rename = "spEffectId2")]
@@ -428,6 +514,11 @@ pub struct Attack {
     pub hit_stop_time_defencer: f32,
     #[serde(default)]
     pub dmg_level: i64,
+    /// AtkParam atkBehaviorId, the HKS env(334) "Behavior identification value": 17 BLINDING
+    /// (the Rappa's powder 13600170, the Taro troop's mud 11804500, the Yasha apes' sand
+    /// 12500100 ...), 18 SXL_BLAST, 19 STORM_BACK_JUMP (c5200's).
+    #[serde(default)]
+    pub atk_behavior_id: i64,
     #[serde(rename = "dmgLevel_vsPlayer", default)]
     pub dmg_level_vs_player: i64,
     /// Defender's guard reaction direction: 1 = L, 2 = R (DEFLECT_DIR_*).
@@ -476,6 +567,9 @@ pub struct Attack {
     pub atk_material_sfx: i64,
     #[serde(rename = "atkPow_forSfx", default)]
     pub atk_pow_sfx: i64,
+    /// The hit effect's turn row (HitEffectSfxAngleParam): 1 Upper, 2 Bottom, 3 Left, 4 Right.
+    #[serde(rename = "atkDir_forSfx", default)]
+    pub atk_dir_sfx: i64,
     #[serde(rename = "defSfxMaterial1", default = "minus_one")]
     pub def_sfx_material1: i64,
     #[serde(rename = "defSfxMaterial2", default = "minus_one")]
@@ -491,6 +585,11 @@ pub struct Attack {
     /// 1 = grab attempt (contact starts the throw), 2 = the throw's damage.
     #[serde(default)]
     pub throw_flag: i64,
+    /// AtkParam trackType (+0x193, "attack trajectory"): the exe's i-frame test FUN_140b68a50
+    /// (140b6.c:4234-4241) skips the hit when the defender's TAE 954 IFrameType bit of this value
+    /// is set: 1 sweeps, 2 general, 6 thrusts, 7 grabs (round 31).
+    #[serde(default)]
+    pub track_type: i64,
     /// Defender knockback [m] when hit / guarded / deflected.
     #[serde(rename = "knockbackDist_DirectHit", default)]
     pub knockback_hit: f32,
@@ -802,6 +901,19 @@ pub struct BulletSpec {
     pub life: f32,
     #[serde(default)]
     pub hit_radius: f32,
+    /// hitRadiusMax / spreadTime: the radius grows from hitRadius to this over spreadTime s.
+    #[serde(default)]
+    pub hit_radius_max: f32,
+    /// spEffectIDForShooter: put on the one who fires it (the Flame Vent follow-up 720040 ->
+    /// 106020 "Flame enchantment", 7.5 s, stateInfo 62; prosthetic.rs).
+    #[serde(default, rename = "spEffectIDForShooter")]
+    pub sp_effect_id_for_shooter: i64,
+    #[serde(default)]
+    pub spread_time: f32,
+    /// dmgHitRecordLifeTime: how long a penetrating bullet's hit on a character is remembered
+    /// (it may hit again after it).
+    #[serde(default)]
+    pub dmg_hit_record_life_time: f32,
     #[serde(default)]
     pub lock_shoot_limit_ang: f32,
     /// When HitBulletID comes (BULLET_LAUNCH_CONDITION_TYPE, enemy_bullet.rs launches): 0
@@ -1059,6 +1171,72 @@ impl EnemyFile {
     }
 }
 
+/// BehaviorParam `category` of an NPC hit's behaviour row (200000000 + behaviorVariationId *
+/// 1000 + judge), read once from extracted/json/params/BehaviorParam.json (the per-chr export
+/// carries no NPC behaviour rows). The exe's damage type for a guarded NPC attack comes from
+/// it (FUN_140b698d0, 140b6.c:5487-5534: category 6 -> GUARDED_BOUND_ENEMY1 1008 / NO_BOUND 1019,
+/// 7 -> ENEMY2 1009 / 1020, 8 -> ENEMY3 1010 / 1021), which c9997 ExecAttackJustBound /
+/// ExecAttackBound turn into the AttackBoundEnemy1-3 / AttackNoBoundEnemy1-3 clips. 0 when
+/// the row is missing.
+pub fn behavior_category(row: i64) -> i64 {
+    static CATS: std::sync::OnceLock<HashMap<i64, i64>> = std::sync::OnceLock::new();
+    CATS.get_or_init(|| {
+        let path = crate::paths::extracted().join("json/params/BehaviorParam.json");
+        let Some(v) = std::fs::read_to_string(path).ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()) else { return HashMap::new() };
+        let rows: Vec<serde_json::Value> = match &v["rows"] {
+            serde_json::Value::Array(a) => a.clone(),
+            serde_json::Value::Object(o) => o.values().cloned().collect(),
+            _ => Vec::new(),
+        };
+        rows.iter().filter_map(|r| Some((r["id"].as_i64()?, r["category"].as_i64()?))).collect()
+    })
+    .get(&row)
+    .copied()
+    .unwrap_or(0)
+}
+
+/// Does the behaviour graph keep the from generator's root motion through the blend into
+/// `state`? c0000.hkx's transitions (sekiro-extract `sms`, tallied per target state into
+/// extracted/blend_src.json): TaeBlend / _Continue / _Sync (Havok flags without bit 1) blend
+/// the from and to world-from-model by the blend weight; TaeBlend_NoSrcMotion* (flags bit 1,
+/// FLAG_IGNORE_FROM_WORLD_FROM_MODEL) take the to generator's at once. A state reached both
+/// ways takes the majority (Idle: 2 drop / 1 keep); a state the table lacks (CMSG-selected
+/// locomotion, enemy labels) keeps it, the common case (934 TaeBlend vs 337 NoSrcMotion).
+pub fn blend_keeps_src(state: &str) -> bool {
+    static KEEP: std::sync::OnceLock<HashMap<String, bool>> = std::sync::OnceLock::new();
+    KEEP.get_or_init(|| {
+        let path = crate::paths::extracted().join("blend_src.json");
+        std::fs::read_to_string(path).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
+    })
+    .get(state)
+    .copied()
+    .unwrap_or(true)
+}
+
+/// Whether Wolf's clip loops in his behaviour graph (c0000.hkx hkbClipGenerator mode 1
+/// MODE_LOOPING: 247 of 2566 generators, extracted/loop_clips_c0000.json from `sekiro-extract
+/// clips`): a looping from generator keeps running past its end through a blend-in. gap: the
+/// enemies' graphs (c9997 CustomManualSelectorGenerator) carry no such flag; theirs wrap by
+/// nothing.
+pub fn loops_c0000(key: &str) -> bool {
+    static LOOPS: std::sync::OnceLock<std::collections::HashSet<String>> = std::sync::OnceLock::new();
+    LOOPS
+        .get_or_init(|| {
+            let path = crate::paths::extracted().join("loop_clips_c0000.json");
+            std::fs::read_to_string(path).ok().and_then(|t| serde_json::from_str::<Vec<String>>(&t).ok()).unwrap_or_default().into_iter().collect()
+        })
+        .contains(key)
+}
+
+/// The bound / no-bound clip number of an NPC attack guarded by Wolf (see [`behavior_category`]).
+pub fn bound_clip_no(category: i64) -> i64 {
+    match category {
+        7 => 2,
+        8 => 3,
+        _ => 1,
+    }
+}
+
 /// Makes the NpcParam row's behavior variation the default: "v<variation>:<judge>" attacks and
 /// bullets (BehaviorParam 200000000 + variation * 1000 + judge) replace the bare judge keys.
 pub fn select_variation(d: &mut CharData, variation: i64) {
@@ -1137,9 +1315,8 @@ pub struct Throw {
     /// The defender's anim group (defAnimOffset: Wolf's a210 for the General, a223 for the zombies).
     pub def_group: i64,
     /// Where the reach is measured on the defender (judgeRangeBasePosDmyId2: the Divine Dragon's
-    /// 230 by its head; -1 = its root) and the facing it allows (DiffAngMax, degrees).
+    /// 230 by its head; -1 = its root). The facings: player.rs throw_facing_ok.
     pub judge_dmy: i16,
-    pub diff_ang_max: f32,
     /// adsrobModelPosInterpolationTime (s): after the absorb snaps the capsule onto the dummy,
     /// the model slides to the anim's position over this time (0 = no slide). anim.rs ModelLag.
     pub model_interp: f32,
@@ -1158,7 +1335,6 @@ impl Combat {
             atk_anim_id: i("atkAnimId"),
             def_group: i("defAnimOffset"),
             judge_dmy: r.get("judgeRangeBasePosDmyId2").and_then(|v| v.as_i64()).unwrap_or(-1) as i16,
-            diff_ang_max: r.get("DiffAngMax").and_then(|v| v.as_f64()).unwrap_or(180.0) as f32,
             model_interp: r.get("adsrobModelPosInterpolationTime").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32,
         })
     }
@@ -1272,6 +1448,243 @@ impl Combat {
     }
 }
 
+/// AtkParam AppearAiSoundId (+0x98) / HitAiSoundId (+0x9c) of a row of AtkParam_Pc (`pc`) or
+/// _Npc, from extracted/json/params (the combat export leaves them out); (0, 0) for none.
+pub fn atk_ai_sounds(pc: bool, id: i64) -> (i64, i64) {
+    static T: std::sync::OnceLock<[HashMap<i64, (i64, i64)>; 2]> = std::sync::OnceLock::new();
+    let t = T.get_or_init(|| {
+        ["AtkParam_Pc", "AtkParam_Npc"].map(|name| {
+            let path = crate::paths::extracted().join(format!("json/params/{name}.json"));
+            let v: Value = std::fs::read_to_string(path).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+            v["rows"]
+                .as_array()
+                .map(|rows| rows.iter().filter_map(|r| Some((r["id"].as_i64()?, (r["AppearAiSoundId"].as_i64().unwrap_or(0), r["HitAiSoundId"].as_i64().unwrap_or(0))))).collect())
+                .unwrap_or_default()
+        })
+    });
+    t[if pc { 0 } else { 1 }].get(&id).copied().unwrap_or((0, 0))
+}
+
+/// The cycle / team fields of a SpEffectParam row, from extracted/json/params (combat_data holds
+/// only some rows): (stateInfo, effectEndurance, cycleOccurrenceSpEffectId,
+/// invocationConditionsStateChange1-3, changeTeamType, addBehaviorJudgeId_condition / _add).
+#[derive(Clone, Copy, Debug)]
+pub struct SpCycle {
+    pub state_info: i64,
+    pub endurance: f32,
+    pub cycle: i64,
+    pub gate: [i64; 3],
+    pub team: i64,
+    pub judge_add: (i64, i64),
+    /// saReceiveDamageRate: scales a hit's super-armour drain (FUN_140bfdd20).
+    pub sa_rate: f32,
+    /// changeSuperArmorPoint: a stateInfo-155 row's bonus to the super-armour pool's max.
+    pub sa_point: f32,
+    /// isWaitModeDelete (+0x275 bit 5): deleted the moment its gates fail instead of waiting
+    /// (FUN_140c04090, 140c0.c:2641).
+    pub wait_delete: bool,
+    /// changeHpRate (% of max HP) and changeHpPoint: damage (negative = heal) as it lands.
+    pub hp_rate: f32,
+    pub hp_point: f32,
+    /// spCategory and replaceSpEffectId (the refresh chain 8002 -> 8007, player.rs).
+    pub category: i64,
+    pub replace: i64,
+}
+
+/// A full EquipParamWeapon row (the combat export leaves out the tools' rows, e.g. the
+/// umbrellas 76000-76300).
+pub fn weapon_row(id: i64) -> Option<Value> {
+    static T: std::sync::OnceLock<HashMap<i64, Value>> = std::sync::OnceLock::new();
+    T.get_or_init(|| full_param("EquipParamWeapon")).get(&id).cloned()
+}
+
+/// EquipParamGoods useLimitSpEffectType0-4 of a goods row: the stateInfos that refuse its use
+/// (goods 3000, the Healing Gourd: 341 aging, 910 the Owl's recovery seal).
+pub fn goods_use_limits(goods: i64) -> Vec<i64> {
+    static T: std::sync::OnceLock<HashMap<i64, Value>> = std::sync::OnceLock::new();
+    let t = T.get_or_init(|| full_param("EquipParamGoods"));
+    t.get(&goods).map_or(Vec::new(), |r| (0..5).filter_map(|i| r[format!("useLimitSpEffectType{i}")].as_i64()).filter(|v| *v > 0).collect())
+}
+
+pub fn sp_cycle(id: i64) -> Option<SpCycle> {
+    static T: std::sync::OnceLock<HashMap<i64, SpCycle>> = std::sync::OnceLock::new();
+    let t = T.get_or_init(|| {
+        let path = crate::paths::extracted().join("json/params/SpEffectParam.json");
+        let v: Value = std::fs::read_to_string(path).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+        let rows: Vec<&Value> = match &v["rows"] {
+            Value::Array(a) => a.iter().collect(),
+            Value::Object(o) => o.values().collect(),
+            _ => Vec::new(),
+        };
+        let n = |r: &Value, k: &str| r[k].as_i64().unwrap_or(0);
+        rows.iter()
+            .filter_map(|r| {
+                Some((
+                    r["id"].as_i64()?,
+                    SpCycle {
+                        state_info: n(r, "stateInfo"),
+                        endurance: r["effectEndurance"].as_f64().unwrap_or(0.0) as f32,
+                        cycle: n(r, "cycleOccurrenceSpEffectId"),
+                        gate: [n(r, "invocationConditionsStateChange1"), n(r, "invocationConditionsStateChange2"), n(r, "invocationConditionsStateChange3")],
+                        team: r["changeTeamType"].as_i64().unwrap_or(-1),
+                        judge_add: (r["addBehaviorJudgeId_condition"].as_i64().unwrap_or(-1), n(r, "addBehaviorJudgeId_add")),
+                        sa_rate: r["saReceiveDamageRate"].as_f64().unwrap_or(1.0) as f32,
+                        sa_point: r["changeSuperArmorPoint"].as_f64().unwrap_or(0.0) as f32,
+                        wait_delete: r["isWaitModeDelete"].as_i64().unwrap_or(0) != 0,
+                        hp_rate: r["changeHpRate"].as_f64().unwrap_or(0.0) as f32,
+                        hp_point: n(r, "changeHpPoint") as f32,
+                        category: n(r, "spCategory"),
+                        replace: n(r, "replaceSpEffectId"),
+                    },
+                ))
+            })
+            .collect()
+    });
+    t.get(&id).copied()
+}
+
+/// A full param table from extracted/json/params (rows by id), for fields the export leaves out.
+fn full_param(name: &str) -> HashMap<i64, Value> {
+    let path = crate::paths::extracted().join(format!("json/params/{name}.json"));
+    let v: Value = std::fs::read_to_string(path).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+    let rows: Vec<Value> = match v["rows"].clone() {
+        Value::Array(a) => a,
+        Value::Object(o) => o.into_iter().map(|(_, r)| r).collect(),
+        _ => Vec::new(),
+    };
+    rows.into_iter().filter_map(|r| Some((r["id"].as_i64()?, r))).collect()
+}
+
+/// A hit's super-armour damage before the defender's rates (FUN_140bdb470): an NPC attack's
+/// AtkParam_Npc atkSuperArmor (+0x66: 0 on most, 999 / 45 on a few); Wolf's the weapon's
+/// EquipParamWeapon saWeaponDamage (+0xCE) x AtkParam_Pc atkSuperArmorCorrection (+0x56) / 100.
+/// The weapon is the hit's equip-slot weapon (FUN_14084fc50 hit+0x12c, 14084.c:8469; read in
+/// FUN_140848440, 14084.c:4836): a katana 5000-7700 or a tool 7xxxx, all 40, never a combat
+/// art's 2xxxxx row (0). So 5000 stands for them all. ReinforceParamWeapon saWeaponAtkRate
+/// (+0x14) multiplies in, and it is 1 on every row. gap: the 110000 bare-hands fallback (hit
+/// flags & 0x60) and FUN_140841bd0's rate are not traced.
+/// The attack-occurrence SpEffect a hit adds (FUN_140bfc170, 140bf.c:8239, applied by the damage
+/// apply FUN_140b6e6a0 at 140b6.c:9012-9029): the first worn row of the attacker whose stateInfo
+/// is 62 / 64 / 151-153 / 205 / 355-358 gives its atkOccurrenceSpEffectId. Wolf's enchantments:
+/// Flame Vent 106020 -> 106021 (endurance 0 -> its replace, burn 9100), Spirit 106030 -> 104016,
+/// poison-blood 106050 -> 9002, white-blood 106060 -> 106065 (HP +10 %, on the attacker); the
+/// Nightjars' 3145000 -> 9125. Returns (id, the ids that land: it and an endurance-0 row's
+/// replaceSpEffectId, on the attacker or not, changeHpRate).
+/// A row counts only for the hit's behaviour category (FUN_140c06240, 140c0.c:5288; the hit's
+/// +0xda = BehaviorParam category, 14084.c:8460): wepParamChange 0 passes every category, 1
+/// (right hand) the sword and combat arts (`HIT_CAT_SWORD`), 2 the prosthetic tools
+/// (`HIT_CAT_TOOL`), 4 a combat art's bullets (9). throwAttackParamChange asks for a throw hit
+/// (AtkParam throwFlag 2) and chargeAttackParamChange for a charge attack (isChargeAtk). Every
+/// enchantment of Wolf's is wepParamChange 1, so his tools' bullets carry none.
+/// gap: the categories 3 / 4 / 10-12 branches (no row uses them) and the entry skip mask
+/// (+0x1c & 0x800c0003) are not modelled.
+/// BehaviorParam(_PC) category of a hit (FUN_140c06240): 1 the sword and combat arts, 2 the
+/// prosthetic tools.
+pub const HIT_CAT_SWORD: i64 = 1;
+pub const HIT_CAT_TOOL: i64 = 2;
+
+pub fn atk_occurrence(worn: &[i64], cat: i64, throw_hit: bool, charge_hit: bool) -> Option<(i64, Vec<i64>, bool, f32)> {
+    #[derive(Clone)]
+    struct Row {
+        state_info: i64,
+        occurrence: i64,
+        endurance: f32,
+        replace: i64,
+        on_attacker: bool,
+        hp_rate: f32,
+        wep: i64,
+        throw_only: bool,
+        charge_only: bool,
+    }
+    static ROWS: std::sync::OnceLock<HashMap<i64, Row>> = std::sync::OnceLock::new();
+    let rows = ROWS.get_or_init(|| {
+        let i = |r: &Value, k: &str| r[k].as_i64().unwrap_or(-1);
+        full_param("SpEffectParam")
+            .iter()
+            .map(|(id, r)| {
+                (*id, Row {
+                    state_info: i(r, "stateInfo"),
+                    occurrence: i(r, "atkOccurrenceSpEffectId"),
+                    endurance: r["effectEndurance"].as_f64().unwrap_or(0.0) as f32,
+                    replace: i(r, "replaceSpEffectId"),
+                    on_attacker: i(r, "effectTargetAttacker") == 1 && i(r, "effectTargetEnemy") != 1,
+                    hp_rate: r["changeHpRate"].as_f64().unwrap_or(0.0) as f32,
+                    wep: i(r, "wepParamChange").max(0),
+                    throw_only: i(r, "throwAttackParamChange") == 1,
+                    charge_only: i(r, "chargeAttackParamChange") == 1,
+                })
+            })
+            .filter(|(_, r)| r.occurrence > 0 || r.replace > 0 || r.on_attacker)
+            .collect()
+    });
+    let passes = |r: &Row| {
+        let wep = match cat {
+            HIT_CAT_SWORD => matches!(r.wep, 0 | 1),
+            HIT_CAT_TOOL => matches!(r.wep, 0 | 2),
+            9 => matches!(r.wep, 0 | 4),
+            _ => r.wep == 0,
+        };
+        wep && (!r.throw_only || throw_hit) && (!r.charge_only || charge_hit)
+    };
+    let id = worn.iter().filter_map(|w| rows.get(w)).find(|r| r.occurrence > 0 && matches!(r.state_info, 62 | 64 | 151..=153 | 205 | 355..=358) && passes(r))?.occurrence;
+    let row = rows.get(&id).cloned();
+    let mut lands = vec![id];
+    if let Some(r) = row.as_ref().filter(|r| r.endurance == 0.0 && r.replace > 0) {
+        lands.push(r.replace);
+    }
+    Some((id, lands, row.as_ref().is_some_and(|r| r.on_attacker), row.map_or(0.0, |r| r.hp_rate)))
+}
+
+/// BulletParam predictionShootObserveTime (+0xB8, 0 = off): the window (s) over which a
+/// predictive shot averages its target's velocity (FUN_140b0acf0, 140b0.c:9107). The export
+/// leaves it out, so it is read from the full table.
+pub fn prediction_observe_time(bullet_id: i64) -> f32 {
+    static ROWS: std::sync::OnceLock<HashMap<i64, f32>> = std::sync::OnceLock::new();
+    ROWS.get_or_init(|| full_param("Bullet").iter().map(|(id, r)| (*id, r["predictionShootObserveTime"].as_f64().unwrap_or(0.0) as f32)).filter(|(_, t)| *t > 0.0).collect())
+        .get(&bullet_id)
+        .copied()
+        .unwrap_or(0.0)
+}
+
+pub fn super_armor_damage(pc: bool, atk_param_id: i64) -> f32 {
+    static NPC: std::sync::OnceLock<HashMap<i64, f32>> = std::sync::OnceLock::new();
+    static PC: std::sync::OnceLock<(f32, HashMap<i64, f32>)> = std::sync::OnceLock::new();
+    let f = |r: &Value, k: &str| r[k].as_f64().unwrap_or(0.0) as f32;
+    if pc {
+        let (weapon, corr) = PC.get_or_init(|| {
+            let w = full_param("EquipParamWeapon").get(&5000).map_or(0.0, |r| f(r, "saWeaponDamage"));
+            (w, full_param("AtkParam_Pc").iter().map(|(id, r)| (*id, f(r, "atkSuperArmorCorrection"))).collect())
+        });
+        weapon * corr.get(&atk_param_id).copied().unwrap_or(0.0) / 100.0
+    } else {
+        NPC.get_or_init(|| full_param("AtkParam_Npc").iter().map(|(id, r)| (*id, f(r, "atkSuperArmor"))).collect()).get(&atk_param_id).copied().unwrap_or(0.0)
+    }
+}
+
+/// An NPC's behaviour judge as its worn SpEffects shift it (exe FUN_140a12b80, 140a1.c:2191-2236,
+/// building BehaviorParam 200000000 + variation * 1000 + judge): every worn row whose
+/// addBehaviorJudgeId_condition is judge / 100 adds its addBehaviorJudgeId_add. A row counts
+/// while its invocationConditionsStateChange gate holds (a worn SpEffect of that stateInfo): the
+/// Shura samurai's a000_003014 adds both 3107010 (poison, +5, gate 950) and 3107011 (flame, +7,
+/// gate 951); its resident 3107040 (950) or 3107041 (951) picks one, so 100 -> 105 or 107 for
+/// 15 s. The Nightjars wear 3145040 (700 -> 701) for good. There is no fallback on a missing row
+/// (the shifted attack does nothing, 14084.c:8433). gap: the exe's "add 0 -> id 5" branch
+/// (only the test row 0 has condition 0) is not modelled.
+pub fn shift_judge(judge: i64, worn: &[i64]) -> i64 {
+    let mut ids: Vec<i64> = worn.to_vec();
+    ids.sort();
+    ids.dedup();
+    let rows: Vec<SpCycle> = ids.iter().filter_map(|id| sp_cycle(*id)).collect();
+    let states: Vec<i64> = rows.iter().map(|c| c.state_info).filter(|s| *s > 0).collect();
+    judge
+        + rows
+            .iter()
+            .filter(|c| c.judge_add.0 >= 0 && c.judge_add.0 == judge / 100 && c.judge_add.1 != 0)
+            .filter(|c| c.gate.iter().filter(|g| **g > 0).all(|g| states.contains(g)))
+            .map(|c| c.judge_add.1)
+            .sum::<i64>()
+}
+
 /// A SpEffect's effectEndurance [s] (SpEffectParam: 0 = a moment, -1 = for good), from Wolf's
 /// exported SpEffects or the SpEffectParam rows in combat_data.
 pub fn sp_effect_endurance(combat: &Combat, id: i64) -> f32 {
@@ -1306,6 +1719,20 @@ impl CharData {
     /// An event fires: ungated, or gated by a StateInfo of the equipment's resident SpEffects.
     pub fn fires(&self, e: &Event) -> bool {
         e.ungated() || self.resident_gates.contains(&e.arg_i64("StateInfo").unwrap_or(0))
+    }
+
+    /// `fires` with the character's live gates (`combat::event_gates`) in place of the static
+    /// NpcParam ones; None keeps `resident_gates` (Wolf's: player.rs keeps them with his gear).
+    pub fn fires_on(&self, e: &Event, gates: Option<&[i64]>) -> bool {
+        match gates {
+            Some(g) => e.ungated() || g.contains(&e.arg_i64("StateInfo").unwrap_or(0)),
+            None => self.fires(e),
+        }
+    }
+
+    /// `events_at` with live gates (`fires_on`).
+    pub fn events_at_on<'a>(&'a self, key: &str, t: f32, gates: Option<&'a [i64]>) -> impl Iterator<Item = &'a Event> + 'a {
+        self.anim(key).into_iter().flat_map(|a| a.events.iter()).filter(move |e| e.in_time(t) && self.fires_on(e, gates))
     }
 
     /// The character's opacity from TAE 193 SetOpacityKeyframe (OpacityAtEventStart -> End over
@@ -1388,12 +1815,16 @@ impl CharData {
     /// Perilous-attack warning (the red kanji): a TAE BulletBehavior (type 2) with
     /// judge 980-989 starting in (t0, t1]. 980 sweep, 982 thrust, 983 grab.
     pub fn perilous_warning(&self, key: &str, t0: f32, t1: f32) -> Option<i64> {
+        // By the bullet's SpEffect 211000 (the kanji), not the 980-989 suffix alone: the Guardian
+        // Ape's phase-1 grabs a000_003008 / 003016 / 003027 fire Bullet 51000480, which carries
+        // 211000 too (boss fidelity 2026-10-14: the trace and the AI's perilous answers missed them).
+        let kanji = |j: i64| self.bullets.get(&j.to_string()).is_some_and(|b| [b.sp_effect_id0, b.sp_effect_id1, b.sp_effect_id2, b.sp_effect_id3, b.sp_effect_id4].contains(&211000));
         self.anim(key)?
             .events
             .iter()
             .filter(|e| e.kind == 2 && ((e.start > t0 && e.start <= t1) || (t0 == 0.0 && e.start == 0.0)))
             .filter_map(|e| e.arg_i64("BehaviorJudgeID"))
-            .find(|j| (980..990).contains(j))
+            .find(|j| (980..990).contains(j) || kanji(*j))
     }
 
     /// TAE 16 "Blend" at the start of an anim: its crossfade-in time [s].
@@ -1414,11 +1845,16 @@ impl CharData {
 
     /// AttackBehavior (TAE type 1) events whose judge has AtkParam data.
     pub fn attack_windows<'a>(&'a self, key: &str) -> Vec<(&'a Event, &'a Attack, i64)> {
+        self.attack_windows_on(key, None)
+    }
+
+    /// `attack_windows` with live gates (`fires_on`).
+    pub fn attack_windows_on<'a>(&'a self, key: &str, gates: Option<&[i64]>) -> Vec<(&'a Event, &'a Attack, i64)> {
         let anim_key = key;
         self.anim(key)
             .into_iter()
             .flat_map(|a| a.events.iter())
-            .filter(|e| (e.kind == 1 || e.kind == 307) && self.fires(e))
+            .filter(|e| (e.kind == 1 || e.kind == 307) && self.fires_on(e, gates))
             .filter_map(|e| {
                 let j = e.arg_i64("BehaviorJudgeID")?;
                 // PCBehavior (307, e.g. the air kick) resolves straight to BehaviorParam_PC "pc<judge>".
@@ -1428,7 +1864,15 @@ impl CharData {
                 let var = self.art_variation.and_then(|v| self.attacks.get(&format!("v{v}:{j}")));
                 let tool = anim_key.get(1..4).and_then(|g| g.parse::<i64>().ok()).filter(|g| (70..=79).contains(g));
                 let tool_atk = tool.and(self.tool_variation).and_then(|v| self.attacks.get(&format!("v{v}:{j}")));
-                let atk = art.and_then(|g| var.or_else(|| self.attacks.get(&format!("a{g}:{j}")))).or(tool_atk).or_else(|| self.attacks.get(&key));
+                // A PCBehavior judge is BehaviorParam_PC's own row, never the art's / tool's attack of
+                // the same number: the air Mortal Draw a106_316200's 16 contact windows (307 judge
+                // 210, pc210: no damage) hit as v5007:210 (the Mortal Draw slash, ~200 HP + 38
+                // posture each) - round 28.
+                let atk = if e.kind == 307 {
+                    self.attacks.get(&key)
+                } else {
+                    art.and_then(|g| var.or_else(|| self.attacks.get(&format!("a{g}:{j}")))).or(tool_atk).or_else(|| self.attacks.get(&key))
+                };
                 atk.map(|a| (e, a, if e.kind == 307 { 1_000_000 + j } else { j }))
             })
             .collect()
@@ -1569,7 +2013,18 @@ impl Combat {
             if kinds.iter().any(|k| k.foe.is(&c, r)) {
                 continue;
             }
-            kinds.push(self.with_params_file(|f| load_kind(f, &c, r)));
+            let kind = self.with_params_file(|f| load_kind(f, &c, r));
+            // A missing / unreadable enemies/<chr>.json comes back as an empty "c1020" here (the
+            // startup fallback needs combat_data's General, which this File lacks): skip it, and
+            // keep the current fight when the main enemy fails (round 24).
+            if kind.foe.chr != c {
+                warn!("encounter: no usable data for {c}; skipped");
+                if kinds.is_empty() {
+                    return;
+                }
+                continue;
+            }
+            kinds.push(kind);
         }
         self.kinds = kinds;
         self.add_event_kinds();

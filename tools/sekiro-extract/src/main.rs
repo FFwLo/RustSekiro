@@ -165,6 +165,27 @@ fn main() {
             for d in &f.dummies {
                 println!("dummy {} {} {} {} parent {}", d.id, d.pos[0], d.pos[1], d.pos[2], d.parent);
             }
+            for (i, n) in f.nodes.iter().enumerate() {
+                println!("node {i} {} parent {} t {:?} r {:?} s {:?} flags {}", n.name, n.parent, n.t, n.r, n.s, n.flags);
+            }
+        }
+        // The Env_Box regions (GI probe boxes) within <metres> of a map point, their distance
+        // and whether it is inside (`envboxes <msb> x y z [metres]`).
+        Some("envboxes") if args.len() >= 6 => {
+            let m = msb::read(&std::fs::read(&args[2]).unwrap());
+            let p: [f32; 3] = std::array::from_fn(|i| args[3 + i].parse().unwrap());
+            let within: f32 = args.get(6).map_or(40.0, |v| v.parse().unwrap());
+            for o in m.regions.iter().filter(|r| r.kind == 17 && r.shape == 5) {
+                let l = msb::rotate([0.0, -o.rot[1], 0.0], [p[0] - o.pos[0], p[1] - o.pos[1], p[2] - o.pos[2]]);
+                let out = [(l[0].abs() - o.size[0] * 0.5).max(0.0), (-l[1]).max(l[1] - o.size[2]).max(0.0), (l[2].abs() - o.size[1] * 0.5).max(0.0)];
+                let dist = (out[0] * out[0] + out[1] * out[1] + out[2] * out[2]).sqrt();
+                if dist < within {
+                    let e = o.env.unwrap_or_default();
+                    let f = |w: u32| f32::from_bits(w);
+                    println!("{} {:?} rot {:?} dist {dist:.1} local {:?}", o.name, o.size, o.rot, l);
+                    println!("    env T00 {} T04 {} T08 {} T09 {} T0A {} words {:08x?} T24 {} T28 {} T2C {}", f(e[0]), f(e[1]), e[2] & 0xff, (e[2] >> 8) & 0xff, e[2] >> 16, &e[3..9], e[9] as i32, f(e[10]), f(e[11]));
+                }
+            }
         }
         Some("dds2png") if args.len() >= 4 => dds2png(Path::new(&args[2]), Path::new(&args[3]), args.get(4).is_some_and(|a| a == "alpha")),
         // Map pieces around an MSB part (e.g. `map extracted m11_01_00_00 c1020_0004 60`).
@@ -192,6 +213,13 @@ fn main() {
         Some("hkxdump") if args.len() == 3 => hkx::dump(&std::fs::read(&args[2]).unwrap(), None),
         // Map collision files keep their types in the binder's .compendium.
         Some("hkxdump") if args.len() == 4 => hkx::dump(&std::fs::read(&args[2]).unwrap(), Some(&hkx::read_types(&std::fs::read(&args[3]).unwrap()))),
+        // A map collision part's mesh in its own space: counts, bounds and hit materials.
+        Some("hitmesh") if args.len() == 4 => {
+            let m = hkx::collision_mesh(&std::fs::read(&args[2]).unwrap(), &hkx::read_types(&std::fs::read(&args[3]).unwrap()));
+            let (lo, hi) = m.vertices.iter().fold(([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]), |(lo, hi), v| (std::array::from_fn(|i| lo[i].min(v[i])), std::array::from_fn(|i| hi[i].max(v[i]))));
+            let mats: std::collections::BTreeSet<u32> = m.materials.iter().copied().collect();
+            println!("{} vertices, {} triangles, bounds {lo:?}..{hi:?}, materials {mats:?}", m.vertices.len(), m.indices.len() / 3);
+        }
         // Dummy poly frames (id, attach bone, model-space position / forward / upward) as JSON:
         // the sidecar model_<chr>.dummies.json (throw absorb directions).
         // One anibnd's skeleton + clips as an anim bin; keys = file stems minus [suffix].
@@ -285,6 +313,8 @@ fn main() {
             Err(e) => eprintln!("{e}"),
         },
         Some("sounds-fmod") if args.len() == 4 => fsb::decode_with_fmod(Path::new(&args[2]), Path::new(&args[3])).unwrap_or_else(|e| eprintln!("{e}")),
+        // `hud <extracted>`: only the HUD sprites (export_hud), without the full export.
+        Some("hud") if args.len() == 3 => export::export_hud(Path::new(&args[2]), &export::hud_icons(&Path::new(&args[2]).join("json/params"))),
         Some("npcs") if args.len() >= 3 => export::export_npcs(Path::new(&args[2]), Path::new(&defs_dir()), &args[3..]),
         Some("export") if args.len() == 3 => export::export(
             Path::new(&args[2]),

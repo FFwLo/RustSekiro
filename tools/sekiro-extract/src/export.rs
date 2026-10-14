@@ -87,6 +87,11 @@ const SP_EFFECT_FIELDS: &[&str] = &[
     "chrWireVariationNo", "chrWireTargetDmypolyId", "chrWireLandingPointDmypolyId", "defStaminaAttackRate", "defFlickPower", "staminaAttackRate",
     "staminaRecoverChangeSpeed", "staminaRecoverSpeedRate", "guardDefFlickPowerRate", "flickDamageCutRate",
     "guardStaminaCutRate", "toughnessDamageCutRate", "effectEndurance", "conditionHp", "spCategory",
+    // HP taken while worn, by the hit's atkAttribute (data::damage_cut_field) and by element:
+    // e.g. 109400 x1.5 on Wolf's posture-break anims (round 25).
+    "slashDamageCutRate", "lightHitDamageCutRate", "thrustDamageCutRate", "neutralDamageCutRate", "defNinsatsuDmgRate",
+    "defHeavyHitDmgRate", "defAntiGroundDmgRate", "defAntiAirDmgRate", "defLightShootDmgRate", "attriADamageCutRate",
+    "attriBDamageCutRate", "attriCDamageCutRate", "fireDamageCutRate", "magicDamageCutRate", "thunderDamageCutRate", "darkDamageCutRate",
     // Within one spCategory the lower categoryPriority wins (Paramdex SpEffectParam meta).
     "categoryPriority",
     // spCategory 1001 damage-motion replacement enums by HKS damage level (combat.rs
@@ -112,6 +117,8 @@ const SP_EFFECT_FIELDS: &[&str] = &[
     // burn, stateInfo 6), its tick and the effects it turns into.
     "motionInterval", "poizonAttackPower", "registBlood", "replaceSpEffectId", "cycleOccurrenceSpEffectId",
     "vfxId", "vfxId1", "iconId", "registPoizonChangeRate", "registBloodChangeRate",
+    // Terror (stateInfo 5, the exe's "disease" type 1): the zombies' dumplings 9222 / 9223.
+    "registIllness", "registIllnessChangeRate",
     // Deathblow recovery skills (105050, 150301-150331): posture refill and the state-change trigger.
     "changeStaminaRate", "changeStaminaPoint", "invocationConditionsStateChange1",
     "invocationConditionsStateChange2", "invocationConditionsStateChange3",
@@ -135,16 +142,16 @@ const BULLET_FIELDS: &[&str] = &[
 const ATK_FIELDS: &[&str] = &[
     "name", "atkPhys", "atkStam", "atkStamCorrection", "atkSuperArmor", "guardAtkRate", "guardBreakRate",
     "guardStaminaCutRate", "hit0_Radius", "hit1_Radius", "hit0_DmyPoly1", "hit0_DmyPoly2", "atkAttribute",
-    "spAttribute", "atkType", "guardAttribute", "staminaPhysicsAttribute", "atkMaterial_forSe", "atkPow_forSe", "defSeMaterial1", "defSeMaterial2",
+    "spAttribute", "atkType", "trackType", "guardAttribute", "staminaPhysicsAttribute", "atkMaterial_forSe", "atkPow_forSe", "defSeMaterial1", "defSeMaterial2",
     // Hit sparks (HitEffectSfxParam via the Concept / ConceptJustGuard tables), like the *_forSe fields.
-    "atkMaterial_forSfx", "atkPow_forSfx", "defSfxMaterial1", "defSfxMaterial2", "deflectAction", "deflectedAction", "justDeflectAction",
+    "atkMaterial_forSfx", "atkPow_forSfx", "atkDir_forSfx", "defSfxMaterial1", "defSfxMaterial2", "deflectAction", "deflectedAction", "justDeflectAction",
     "justDeflectedAction", "isDisableParry", "disableGuard_vsGuardAttribute0", "disableJustGuard_vsGuardAttribute0",
     "directAtkStamDamage", "directAtkStamDamage_Attacker", "repelLostStamDamage", "repelLostStamDamage_Attacker",
     "repelVictoryStamDamage_Attacker", "staminaDamageAttackHitParry", "knockbackDist_Guard", "knockbackDist_JustGuard",
     "atkFlickPower", "flickPower", "atkPhysCorrection", "atkStamCorrection", "directAtkStamCorrection",
     "guardAtkRateCorrection", "guardStaminaCutRate", "hitStopTime", "hitStopTime_Defencer", "dmgLevel", "dmgLevel_vsPlayer",
     "throwFlag", "knockbackDist_DirectHit", "atkMagCorrection", "atkFireCorrection", "atkThunCorrection",
-    "atkDarkCorrection", "spEffectId0", "spEffectId1", "spEffectId2", "spEffectId3", "spEffectId4", "opposeTarget", "friendlyTarget", "atkMag", "atkFire", "atkThun", "atkDark", "throwTypeId",
+    "atkDarkCorrection", "atkBehaviorId", "spEffectId0", "spEffectId1", "spEffectId2", "spEffectId3", "spEffectId4", "opposeTarget", "friendlyTarget", "atkMag", "atkFire", "atkThun", "atkDark", "throwTypeId",
     // The stain the hit leaves (DecalParam; -1 / 0 none): the oil pot's 50010 / 50011, c1210's vomit.
     "decalId1", "decalId2",
     // The hit-blood stain bases (gore::hit_stain_id: 600000000 + material * 1000 + base + size).
@@ -305,6 +312,19 @@ fn export_character(
         keys.extend(taes.keys().filter(|k| k.get(1..4).and_then(|g| g.parse::<u32>().ok()).is_some_and(|g| (70..=79).contains(&g))).cloned());
     }
     let state_names = &state_names[..];
+    // offsetType 17: the grab's group, ThrowParam defAnimOffset of Wolf's grab row (DefChrId 0)
+    // whose defAnimId is the ThrowId the state is named after (a000_600110_DeathLoop -> a221).
+    let mut compendiums = HashMap::new();
+    // A ThrowId can have rows in more than one group (600180: a227 and a228); the state takes the
+    // group whose clip exists.
+    let mut throw_groups: HashMap<i64, BTreeSet<i64>> = HashMap::new();
+    if chr.npc_row.is_none() {
+        for r in load_param(params, "ThrowParam").values().filter(|r| r.get("DefChrId").and_then(Value::as_i64) == Some(0)) {
+            if let (Some(t), Some(g)) = (r.get("defAnimId").and_then(Value::as_i64), r.get("defAnimOffset").and_then(Value::as_i64).filter(|g| *g > 0)) {
+                throw_groups.entry(t).or_default().insert(g);
+            }
+        }
+    }
     let wanted: Vec<&String> = if state_names.is_empty() { cmsg.keys().collect() } else { state_names.iter().collect() };
     let quiet = state_names.is_empty();
     for s in wanted {
@@ -320,6 +340,22 @@ fn export_character(
             11 | 15 | 0 => 0,
             13 => chr.weapon_category,
             14 if chr.sub_weapon_category > 0 => chr.sub_weapon_category,
+            17 => {
+                let groups = s.get(5..11).or_else(|| s.get(s.len().saturating_sub(6)..)).and_then(|t| t.parse::<i64>().ok()).and_then(|t| throw_groups.get(&t));
+                let found = groups.and_then(|gs| gs.iter().find(|g| find_hkx(&chr_dir, chr_id, &format!("a{g:03}_{anim:06}"), &mut compendiums).is_some()));
+                match found.or_else(|| groups.and_then(|gs| gs.iter().next())) {
+                    Some(&g) => {
+                        let key = format!("a{g:03}_{anim:06}");
+                        keys.insert(key.clone());
+                        states.insert(s.clone(), key);
+                        continue;
+                    }
+                    None => {
+                        eprintln!("{}: state {s} (offsetType 17) has no grab row", chr.id);
+                        continue;
+                    }
+                }
+            }
             other => {
                 if !quiet {
                     eprintln!("{}: state {s} uses offsetType {other}, skipped", chr.id);
@@ -340,7 +376,6 @@ fn export_character(
         keys.extend(taes.keys().cloned());
     }
 
-    let mut compendiums = HashMap::new();
     let mut anims = Map::new();
     // (output file, anim key, clip): output "" = anim_<chr>.bin.
     let mut clips: Vec<(String, String, hkx::Clip)> = Vec::new();
@@ -395,7 +430,8 @@ fn export_character(
             if let Some(g) = tool_group {
                 if let Some(j) = e["args"].get("BehaviorJudgeID").and_then(Value::as_i64) {
                     for &(_, _, var) in tools.iter().filter(|t| t.1 == g) {
-                        if e["type"] == 2 {
+                        // TAE 4 BulletBehavior_Midair: the air throws (a07x_403000 / 403050).
+                        if e["type"] == 2 || e["type"] == 4 {
                             bullet_judges.insert((var, j));
                         } else if e["type"] == 1 {
                             tool_judges.insert((var, j));
@@ -504,6 +540,9 @@ fn export_character(
         // Healing Gourd (goods 3000 -> SpEffect 3000, changeHpEstusFlaskRate -40), applied by the
         // item rather than a TAE event.
         sp_ids.insert(3000);
+        // Aging (9620 "Aging_invoking", ref 591): worn while aged, its damage rates and maxHpRate
+        // on Wolf (status.rs set_aging).
+        sp_ids.insert(9620);
     }
     // Resident SpEffects (NpcParam spEffectID0..31) for NPCs, e.g. HP-conditional posture regen.
     for npc_row in chr.npc_row.iter().chain(chr.npc_rows.iter()) {
@@ -517,6 +556,21 @@ fn export_character(
         }
     }
     let sp = load_param(params, "SpEffectParam");
+    // An NPC's worn SpEffect shifts its judges (exe FUN_140a12b80, 140a1.c:2191-2236): a row whose
+    // addBehaviorJudgeId_condition is judge / 100 adds its addBehaviorJudgeId_add (the Shura
+    // samurai's enchantments 3107010 / 3107011: 100 -> 105 poison / 107 flame; the Nightjars'
+    // 3145040: 700 -> 701), so those judges are exported too (rows that exist only).
+    if chr.npc_row.is_some() {
+        let shifts: BTreeSet<(i64, i64)> = sp
+            .values()
+            .filter_map(|r| Some((r.get("addBehaviorJudgeId_condition")?.as_i64()?, r.get("addBehaviorJudgeId_add")?.as_i64()?)))
+            .filter(|&(c, a)| c >= 0 && a != 0)
+            .collect();
+        for set in [&mut judge_ids, &mut npc_bullet_judges] {
+            let extra: Vec<i64> = set.iter().flat_map(|&j| shifts.iter().filter(move |s| s.0 == j / 100).map(move |s| j + s.1)).collect();
+            set.extend(extra);
+        }
+    }
     let sp_effects: Map<String, Value> = sp_ids
         .iter()
         .filter_map(|id| sp.get(id).map(|r| (id.to_string(), pick(r, SP_EFFECT_FIELDS))))
@@ -631,8 +685,13 @@ fn export_character(
         let first = b["refId"].as_i64().unwrap_or(-1);
         let mut next = Some(first);
         let mut pending: Vec<i64> = Vec::new();
-        while let Some(bid) = next.take().filter(|id| *id > 0 && !bullet_rows.contains_key(&id.to_string())) {
-            let Some(bl) = bullet_param.get(&bid) else { break };
+        // A popped id that is already out (or missing) moves on to the next pending one: it used
+        // to end the walk, dropping the rest (c1070's 380 -> interval 383).
+        while let Some(bid) = next.take() {
+            let Some(bl) = bullet_param.get(&bid).filter(|_| bid > 0 && !bullet_rows.contains_key(&bid.to_string())) else {
+                next = pending.pop();
+                continue;
+            };
             let mut v = pick(bl, BULLET_FIELDS);
             v["bulletId"] = json!(bid);
             if let Some(aid) = bl.get("atkId_Bullet").and_then(Value::as_i64) {
@@ -818,6 +877,11 @@ fn twist_json(mods: Vec<(String, [f32; 4], Vec<(i16, i16, f32, f32, f32, f32)>)>
     twists
 }
 
+/// The lightning shock chain on Wolf (player.rs ground_shock): the charge enchantments 9490-9495
+/// -> (cycleOccurrenceSpEffectId) the hit effects 9410-9415 -> the damage rows 9430-9435 -> the
+/// HKS notices 9450 / 9451 (refs 593 / 592).
+const LIGHTNING_SHOCK_SP: [i64; 20] = [9490, 9491, 9492, 9493, 9494, 9495, 9410, 9411, 9412, 9413, 9414, 9415, 9430, 9431, 9432, 9433, 9434, 9435, 9450, 9451];
+
 fn rows(params: &Path, name: &str, ids: &[i64]) -> Value {
     let p = load_param(params, name);
     Value::Object(ids.iter().filter_map(|id| p.get(id).map(|r| (id.to_string(), Value::Object(r.clone())))).collect())
@@ -931,15 +995,7 @@ pub fn export(root: &Path, list_file: &Path, defs: &Path) {
             i += 1;
         }
     }
-    // HUD item icons (MENU_ItemIcon_<iconId:05>) of the combat arts (5000-7999) and prosthetic
-    // tools (70000-79999) for the equipped-item slots.
-    let icons: BTreeSet<String> = load_param(&params, "EquipParamWeapon")
-        .iter()
-        .filter(|(id, _)| (5000..8000).contains(*id) || (70000..80000).contains(*id))
-        .filter_map(|(_, r)| r.get("iconId").and_then(Value::as_i64).filter(|i| *i > 0))
-        .map(|i| format!("MENU_ItemIcon_{i:05}"))
-        .collect();
-    export_hud(root, &icons);
+    export_hud(root, &hud_icons(&params));
     // The combat arts' "art has emblems" gates: resident R -> R / 100 * 100 + 10 when that row
     // exists (140310 stateInfo 995, 140410 990, 140510 994, 140610 993; TAE events are gated by
     // them). gap: the exe applies them; the link to the resident is inferred from ids and names.
@@ -961,6 +1017,10 @@ pub fn export(root: &Path, list_file: &Path, defs: &Path) {
     // env(3033, ACTION_UNLOCK_TYPE_n) counts (FUN_1407a7fe0).
     let mut weapon_ids = vec![5000, 5100, 5200, 5300, 5400, 5500, 5600, 5700, 5800, 5900, 6000, 6100, 7000, 7100, 7200, 7300, 7400, 7500, 7600, 7700, 70000];
     weapon_ids.extend(skills.as_object().into_iter().flat_map(|m| m.values()).filter_map(|r| r["virtualWeaponId"].as_i64()).filter(|v| *v > 0));
+    // Every prosthetic level's own row (70000-79999): its attackBase* scale the tool's bullets
+    // and swings (combat.rs player_attack_damage); only 70000 was exported, so e.g. the Lazulite
+    // Shuriken 70500 read an empty row (2026-10-12 round 22).
+    weapon_ids.extend(load_param(&params, "EquipParamWeapon").keys().copied().filter(|id| (70000..80000).contains(id)));
     weapon_ids.sort();
     weapon_ids.dedup();
     let out = json!({
@@ -997,9 +1057,10 @@ pub fn export(root: &Path, list_file: &Path, defs: &Path) {
             // (NpcParam materialSfx1/2, protector defenseMaterialSfx1/2), its column the attack's
             // atkMaterial_forSfx -> HitEffectSfxParam row -> FXR per attack type and power.
             "HitEffectSfxParam": all_rows(&params, "HitEffectSfxParam"),
+            "HitEffectSfxAngleParam": all_rows(&params, "HitEffectSfxAngleParam"),
             "HitEffectSfxConceptParam": all_rows(&params, "HitEffectSfxConceptParam"),
             "HitEffectSfxConceptJustGuardParam": all_rows(&params, "HitEffectSfxConceptJustGuardParam"),
-            "SpEffectParam": rows(&params, "SpEffectParam", &[skill_sp.as_slice(), &[127000, 150420, 150421, 140000, 140100, 140101, 140200, 140201, 140300, 140400, 140500, 140501, 140600, 140601, 140700, 140701, 140800, 140801, 140900, 140901, 141000, 100286], art_gates.as_slice()].concat()),
+            "SpEffectParam": rows(&params, "SpEffectParam", &[skill_sp.as_slice(), &[127000, 150420, 150421, 140000, 140100, 140101, 140200, 140201, 140300, 140400, 140500, 140501, 140600, 140601, 140700, 140701, 140800, 140801, 140900, 140901, 141000, 100286], art_gates.as_slice(), &LIGHTNING_SHOCK_SP].concat()),
             "EquipParamProtector": rows(&params, "EquipParamProtector", PLAYER_PROTECTORS),
             "LockCamParam": all_rows(&params, "LockCamParam"),
             "CameraParam": all_rows(&params, "CameraParam"),
@@ -1037,10 +1098,26 @@ pub fn export(root: &Path, list_file: &Path, defs: &Path) {
 /// (MENU_ninsatu_01 / _02 in SB_FE), the stealth meter (MENU_Find_01 / _02, SB_FE) and the
 /// screens' brush marks (src/menu.rs): 死 MENU_Death and 忍殺 MENU_Ninsatsu (SB_TextEffect), the
 /// title 隻狼 MENU_Title_SEKIRO with MENU_Shadows / MENU_DieTwice (SB_Title).
-fn export_hud(root: &Path, icons: &BTreeSet<String>) {
+/// HUD item icons (MENU_ItemIcon_<iconId:05>): the combat arts' (EquipParamWeapon 5000-7999) and
+/// prosthetic tools' (70000-79999) for the equipped-item slots, and the counters' goods icons
+/// (EquipParamGoods 1000 Spirit Emblem iconId 1, 3000 Healing Gourd 151; アイテム名.fmg names).
+pub fn hud_icons(params: &Path) -> BTreeSet<String> {
+    let icon = |r: &Map<String, Value>| r.get("iconId").and_then(Value::as_i64).filter(|i| *i > 0);
+    let mut icons: BTreeSet<String> = load_param(params, "EquipParamWeapon")
+        .iter()
+        .filter(|(id, _)| (5000..8000).contains(*id) || (70000..80000).contains(*id))
+        .filter_map(|(_, r)| icon(r))
+        .map(|i| format!("MENU_ItemIcon_{i:05}"))
+        .collect();
+    let goods = load_param(params, "EquipParamGoods");
+    icons.extend([1000, 3000].iter().filter_map(|id| goods.get(id)).filter_map(icon).map(|i| format!("MENU_ItemIcon_{i:05}")));
+    icons
+}
+
+pub fn export_hud(root: &Path, icons: &BTreeSet<String>) {
     // MENU_Resist_Poison / _Fire: the build-up icons that fill on Wolf's HUD (hud.rs WolfBuildUp).
     // MENU_Wire_Marker / _NG / _Cursor / _Distance: the grapple point marks (hud.rs WireMark).
-    const WANTED: [&str; 15] = ["MENU_ninsatu_01", "MENU_ninsatu_02", "MENU_Find_01", "MENU_Find_02", "MENU_Death", "MENU_Ninsatsu", "MENU_Title_SEKIRO", "MENU_Shadows", "MENU_DieTwice", "MENU_Resist_Poison", "MENU_Resist_Fire", "MENU_Wire_Marker", "MENU_Wire_NG", "MENU_Wire_Cursor", "MENU_Wire_Distance"];
+    const WANTED: [&str; 17] = ["MENU_SkillPoint", "MENU_Money", "MENU_ninsatu_01", "MENU_ninsatu_02", "MENU_Find_01", "MENU_Find_02", "MENU_Death", "MENU_Ninsatsu", "MENU_Title_SEKIRO", "MENU_Shadows", "MENU_DieTwice", "MENU_Resist_Poison", "MENU_Resist_Fire", "MENU_Wire_Marker", "MENU_Wire_NG", "MENU_Wire_Cursor", "MENU_Wire_Distance"];
     let Ok(tpf) = std::fs::read(root.join("menu/hi/01_common.tpf")) else {
         eprintln!("no menu/hi/01_common.tpf (sekiro-extract unpack <dir> extracted 'menu/hi/01_common'): HUD sprites skipped");
         return;
@@ -1066,7 +1143,12 @@ fn export_hud(root: &Path, icons: &BTreeSet<String>) {
         let mut decoded = None;
         for line in text.lines() {
             let Some(name) = attr(line, "name").map(|n| n.trim_end_matches(".png").to_string()) else { continue };
-            if !WANTED.contains(&name.as_str()) && !icons.contains(&name) {
+            // The FE gauges and panels (round 97, the HUD pass: SB_FE / SB_TextEffect sprites
+            // the HUD draws with): HP / posture bars and bases, the deathblow marks, the
+            // resurrection nodes, the item panel frames, the defeat banners.
+            const GAUGES: [&str; 8] = ["MENU_HP_", "MENU_Taikan_", "MENU_Sp_Center", "MENU_Item_", "MENU_Revive_", "MENU_Fusigiri", "MENU_Death_02", "MENU_Onihotoke"];
+            let gauge = GAUGES.iter().any(|g| name.starts_with(g)) && !name.starts_with("MENU_ItemIcon");
+            if !WANTED.contains(&name.as_str()) && !icons.contains(&name) && !gauge {
                 continue;
             }
             let Some(dds) = tex.get(&atlas) else { continue };
@@ -1098,7 +1180,10 @@ fn export_hud(root: &Path, icons: &BTreeSet<String>) {
 /// deathblow: 710011) and every AtkParam row's decalId1 / 2 (the oil pot's 50010), and per row extracted/decal/<id>.png from other/decaltex.tpf: RGB the
 /// diffuse texture dp<diffuseTextureId>_a, alpha the mask dp<maskTextureId>_m (its red channel,
 /// the splat shape). The colour tint (diffuseColorR/G/B) stays in the row for the game to apply.
-fn export_decals(root: &Path, params: &Path, chars: &[&Value]) -> Value {
+/// The DecalParam ids a character's data names: TAE 137-139 DecalParamID and AtkParam
+/// decalId1 / 2.
+fn decal_ids(v: &Value, ids: &mut BTreeSet<i64>) {
+    collect(v, ids);
     fn collect(v: &Value, ids: &mut BTreeSet<i64>) {
         match v {
             Value::Object(m) => {
@@ -1118,8 +1203,11 @@ fn export_decals(root: &Path, params: &Path, chars: &[&Value]) -> Value {
             _ => {}
         }
     }
+}
+
+fn export_decals(root: &Path, params: &Path, chars: &[&Value]) -> Value {
     let mut ids = BTreeSet::new();
-    chars.iter().for_each(|c| collect(c, &mut ids));
+    chars.iter().for_each(|c| decal_ids(c, &mut ids));
     // Every attack's own stain, also of the characters `npcs` exports (11 rows have one).
     for name in ["AtkParam_Npc", "AtkParam_Pc"] {
         for row in load_param(params, name).values() {
@@ -1130,12 +1218,22 @@ fn export_decals(root: &Path, params: &Path, chars: &[&Value]) -> Value {
     // AtkParam decalBaseId1 / 2 + atkPow_forSfx; the 700... rows are the black ones).
     ids.extend(load_param(params, "DecalParam").into_keys().filter(|id| (600_000_000..800_000_000).contains(id)));
     let ids: Vec<i64> = ids.into_iter().collect();
-    let rows = rows(params, "DecalParam", &ids);
+    decal_rows(root, params, &ids, decal_textures(root).as_ref())
+}
+
+/// other/decaltex.tpf's textures by name.
+fn decal_textures(root: &Path) -> Option<HashMap<String, Vec<u8>>> {
     let Ok(tpf) = std::fs::read(root.join("other/decaltex.tpf")) else {
         eprintln!("no other/decaltex.tpf (sekiro-extract unpack <dir> extracted decaltex): decal textures skipped");
-        return rows;
+        return None;
     };
-    let tex: HashMap<String, Vec<u8>> = crate::flver::tpf(&tpf).into_iter().collect();
+    Some(crate::flver::tpf(&tpf).into_iter().collect())
+}
+
+/// The DecalParam rows of `ids`, and each one's decal/<id>.png (diffuse RGB, mask alpha).
+fn decal_rows(root: &Path, params: &Path, ids: &[i64], tex: Option<&HashMap<String, Vec<u8>>>) -> Value {
+    let rows = rows(params, "DecalParam", ids);
+    let Some(tex) = tex else { return rows };
     let _ = std::fs::create_dir_all(root.join("decal"));
     for (id, row) in rows.as_object().into_iter().flatten() {
         let get = |k: &str| row[k].as_i64().filter(|v| *v >= 0).and_then(|v| tex.get(&format!("dp{v:09}_{}", if k == "maskTextureId" { "m" } else { "a" })));
@@ -1307,9 +1405,16 @@ pub fn export_npcs(root: &Path, defs: &Path, only: &[String]) {
     let path = out_dir.join("roster.json");
     std::fs::write(&path, serde_json::to_string_pretty(&list).unwrap()).unwrap();
     println!("roster: {} characters -> {}", list.len(), path.display());
+    let mut decal_tex: Option<Option<HashMap<String, Vec<u8>>>> = None;
     for (chr, main_npc, npc_rows, think_rows, entry, num, name) in jobs {
         let c = npc(&chr, main_npc, &npc_rows, &params);
         let mut data = export_character(root, &c, &[], &[], &tmpl, &params);
+        // Its own TAE 137-139 / AtkParam stains (export_decals only sees combat_data's
+        // characters: c1180's kill anims name 801012, 802000, ...); load_kind merges the rows.
+        let mut decal_set = BTreeSet::new();
+        decal_ids(&data, &mut decal_set);
+        let decal_list: Vec<i64> = decal_set.into_iter().collect();
+        let decals = decal_rows(root, &params, &decal_list, decal_tex.get_or_insert_with(|| decal_textures(root)).as_ref());
         let pick_rows = |p: &HashMap<i64, Map<String, Value>>, ids: &[i64]| -> Value {
             Value::Object(ids.iter().filter_map(|id| p.get(id).map(|r| (id.to_string(), Value::Object(r.clone())))).collect())
         };
@@ -1328,6 +1433,7 @@ pub fn export_npcs(root: &Path, defs: &Path, only: &[String]) {
             "NpcThinkParam": pick_rows(&think_p, &think_rows),
             "ThrowParam": pick_rows(&throw_p, &throws),
             "StaminaControlParam": pick_rows(&stamina_p, &stamina_rows),
+            "DecalParam": decals,
         });
         data["roster"] = entry;
         let path = out_dir.join(format!("{chr}.json"));

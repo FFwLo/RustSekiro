@@ -89,6 +89,11 @@ if (Get-Command npm -ErrorAction SilentlyContinue) {
 }
 # Dummy poly directions (throw absorb facing, player.rs follow_throw).
 foreach ($c in "c0000", "c1020", "c1010") { & $exe dummies (Join-Path $out "chr\$c.chrbnd.d\$c.flver") (Join-Path $out "model_$c.dummies.json") }
+# ... and Wolf's weapon parts': the effect dummies' +Z (forward) runs along the blade, which the sword
+# trails lay their ribbons and node offsets along (fxr.rs orientation 1; Mortal Draw's arcs).
+foreach ($w in @(@("wp_a_0300", "WP_A_0300", "wp_a_0300"), @("wp_a_0300", "WP_A_0300_1", "sheath_a_0300"), @("wp_a_0300", "WP_A_0300_2", "mortal_a_0300"), @("wp_a_0310", "WP_A_0310", "mblade_a_0310"), @("wp_a_0310", "WP_A_0310_1", "mbsheath_a_0310"))) {
+    & $exe dummies (Join-Path $out "parts\$($w[0]).partsbnd.d\$($w[1]).flver") (Join-Path $out "model_c0000_$($w[2]).dummies.json")
+}
 # Sounds: decoded by the game's own FMOD (fmodex64.dll). FMOD crashes on a few
 # subsounds; the decoder records progress and resumes, so rerun until it finishes.
 $dll = Join-Path $Sekiro "fmodex64.dll"

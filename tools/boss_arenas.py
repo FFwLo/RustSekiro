@@ -10,8 +10,10 @@ A boss whose entity stands in another boss's cast within SHARE_M of it fights in
 arena (Lady Butterfly's second phase, the Divine Dragon's fight). Writes
 extracted/map_boss_arenas.json: {NpcParam row: map stem}, read by src/map.rs boss_arena.
 
-Usage: python tools/boss_arenas.py [-Sekiro <install>] [-force] [map id ...]   (no ids: all of
-them; -force re-exports arenas that already exist, after an exporter change)
+Usage: python tools/boss_arenas.py [-Sekiro <install>] [-force] [-edges] [map id ...]   (no ids:
+all of them; -force re-exports arenas that already exist, after an exporter change; -edges
+re-exports only each arena json's grapple points and ledges, exporter MAP_EDGES_ONLY: pieces,
+collision, gates, probes, LUTs and draw params stay as they are)
 """
 import json
 import os
@@ -106,8 +108,9 @@ def main():
     if argv[:1] == ['-Sekiro']:
         sekiro, argv = argv[1], argv[2:]
     # `-force`: re-export the arenas that already exist (a changed exporter).
-    force = '-force' in argv
-    only = set(argv) - {'-force'}
+    edges = '-edges' in argv
+    force = '-force' in argv or edges
+    only = set(argv) - {'-force', '-edges'}
     scripts = json.load(open(os.path.join(OUT, 'enemies', 'boss_scripts.json'), encoding='utf-8'))
     index_path = os.path.join(OUT, 'map_boss_arenas.json')
     index = json.load(open(index_path, encoding='utf-8')) if os.path.exists(index_path) else {}
@@ -148,6 +151,8 @@ def main():
     for row, (m, ent) in own.items():
         by_map.setdefault(m, []).append((row, ent))
     env = dict(os.environ, SEKIRO_DIR=sekiro, MAP_LOD=LOD)
+    if edges:
+        env['MAP_EDGES_ONLY'] = '1'
     for m, rows in sorted(by_map.items()):
         if only and m not in only:
             continue
@@ -160,7 +165,8 @@ def main():
         if not os.path.isdir(os.path.join(OUT, 'map', m)):
             run([EXE, 'unpack', sekiro, OUT, f'map/{m}/|map/{m}_envmap|map/{area}/|param/drawparam/{block}|other/maptex'], env=env, quiet=True)
         hit = os.path.join(OUT, 'map', m, f'h{m[1:]}.hkxbhd')
-        run([EXE, 'bxf', hit, os.path.join(OUT, 'map', m, 'hit')], env=env, quiet=True)
+        if not edges:
+            run([EXE, 'bxf', hit, os.path.join(OUT, 'map', m, 'hit')], env=env, quiet=True)
         for row, ent in todo:
             over = dict(OVERRIDES.get(int(row), {}))
             args = [EXE, 'map', OUT, m, str(ent), over.pop('RADIUS', RADIUS)]

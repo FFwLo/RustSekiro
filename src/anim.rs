@@ -328,7 +328,9 @@ fn clip_for<'a>(lib: &'a Lib, d: &CharData, a: &Actor, t: f32) -> Option<(&'a Cl
         return Some((c, t));
     }
     let (key, t) = proc_clip(a, t);
-    lib.clips.get(&key).map(|c| (c, c.wrap(t)))
+    // A grouped key without a clip in the lib falls back to the a000 one.
+    let c = lib.clips.get(&key).or_else(|| lib.clips.get(&format!("a000{}", key.get(4..).unwrap_or(""))))?;
+    Some((c, c.wrap(t)))
 }
 
 impl Clip {
@@ -352,9 +354,10 @@ fn proc_clip(a: &Actor, t: f32) -> (String, f32) {
         }
         (Side::Player, _) if a.crouch => "a000_005000",
         (Side::Player, _) => "a000_000000",
-        (Side::Enemy, "IdleBattle") | (Side::Enemy, "Approach") => "a000_400000",
-        (Side::Enemy, "PostureBroken") => "a000_008550",
-        (Side::Enemy, _) => "a000_400000",
+        // In the enemy's anim set (Actor::grouped: the spear / matchlock / eight-phase soldiers'
+        // a200 / a300 / a100_400000); they all stood in the sword idle (2026-10-12 round 23).
+        (Side::Enemy, "PostureBroken") => return (a.grouped("a000_008550"), t),
+        (Side::Enemy, _) => return (a.grouped("a000_400000"), t),
     };
     (key.to_string(), t)
 }
@@ -588,7 +591,8 @@ fn draw_skeletons(
         let root = actor_tf.mul_transform(Transform::from_xyz(0.0, -CAPSULE_HALF_HEIGHT, 0.0));
         let mut world: Vec<Transform> = Vec::with_capacity(l.bones.len());
         for (i, b) in l.bones.iter().enumerate() {
-            let local = tfs.get(skel.bones[i]).copied().unwrap_or(b.pose);
+            // An encounter swap can leave the old (shorter) skeleton for a frame.
+            let local = skel.bones.get(i).and_then(|&e| tfs.get(e).ok()).copied().unwrap_or(b.pose);
             let parent = if b.parent >= 0 && (b.parent as usize) < i { world[b.parent as usize] } else { root };
             world.push(parent.mul_transform(local));
         }
@@ -819,5 +823,26 @@ mod sheath_probe {
                 println!("{k}: {tracked:?}");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod proc_clip_tests {
+    use super::*;
+
+    /// A grouped enemy (anim set 2: the Ashina spear soldier's a200) waits in its own battle
+    /// idle, not the sword's a000_400000 (2026-10-12 round 23).
+    #[test]
+    fn a_grouped_enemy_idles_in_its_own_stance() {
+        let mut a = Actor::new(Side::Enemy, 100.0, 100.0, 0.0, 0);
+        a.anim_keys = Some(std::sync::Arc::new(["a000_400000", "a200_400000", "a000_008550"].iter().map(|s| s.to_string()).collect()));
+        a.anim_group = 2;
+        a.procedural("IdleBattle");
+        assert_eq!(proc_clip(&a, 0.0).0, "a200_400000");
+        a.procedural("PostureBroken");
+        assert_eq!(proc_clip(&a, 0.0).0, "a000_008550", "no grouped clip: the a000 one");
+        a.anim_group = 0;
+        a.procedural("IdleBattle");
+        assert_eq!(proc_clip(&a, 0.0).0, "a000_400000");
     }
 }

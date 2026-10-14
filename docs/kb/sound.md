@@ -133,6 +133,17 @@ Dated findings, oldest first. Append new entries at the end.
   the step, FUN_141ca1300 sets it. gap: the query (rays, what counts as blocked), the step, and
   what each event's Shahei curve does (volume / lowpass, in the .fev). Our sounds are PCM through
   Bevy, so it would need those curves too. Low value for open boss arenas.
+- Shahei query (traced 2026-10-13, static): not a Havok cast. The +0x278 job is the sound
+  occlusion manager's (FUN_141c7bbf0, 141c7.c:9932, built only with config `UseMSP`; FUN_141c9a000
+  sets the step +0x150 = 0.1, FUN_141c9a190 likely `MSPLimitChangeCost` 10 / 100). FUN_141ca0ea0
+  (141ca.c:777) zeroes "Shahei", reads `UpdateDefilade`, queries once at start and sets the value
+  directly (FUN_141ca0d20). FUN_141c9a070 (141c9.c:6788) takes the listener point (+0x154) and the
+  emitter, FUN_141ca71c0 / FUN_141cafcb0: a region / portal route search on a voxel grid
+  (FUN_141ca6d80 quantises); result +0x14 = target (kept if < 0). Update FUN_141ca16b0
+  (141ca.c:1236) re-queries each call only when UpdateDefilade != 0, then FUN_141ca1660 moves
+  the value by at most 0.1 a call (no dt). Data: MSB points CSMsbPointOcclusionBoard / Box /
+  Portal (1410a.c:3839-4239), CSSoundOcclusionMan (140ed.c:9488). gap: FUN_141cafe70 (route ->
+  value). Not ported.
 
 ## Mixer routing (decoded and ported 2026-10-12)
 - Each event instance names its mixers in user properties "mixerNum" / "mixerID_<k>" (read on

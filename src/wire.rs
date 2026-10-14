@@ -125,6 +125,12 @@ fn aim_wire(
     aim.enemy = None;
     if let Some(t) = aim.target.as_mut().filter(|t| t.index >= n) {
         let g = &foes[t.index - n];
+        // An object's point (the Divine Dragon's trees, o259920-922): ridden like a map point
+        // (WireVariationParam 45 / 0: targetMarkerType 0), its row's arc, nothing hit.
+        if g.object {
+            t.point.variation = g.variation;
+            return;
+        }
         // An enemy is not ridden: the arc ends by him and Wolf falls on.
         t.ride = false;
         t.point.variation = g.variation;
@@ -215,14 +221,22 @@ impl Wire {
         }
     }
 
-    /// TAE 920 row 1100: solve the arc that arrives at the destination when the anim's camera
-    /// slot turns 19 (module doc). Ridden points end on the landing spot; a swing-through point
-    /// ends at the hook plus the homing row's targetOffset, an enemy at its landing dummy plus
-    /// its row's (the Ogre grabbing 300050200: (0, 1.5, -2)), taken in the travel frame (Z along
-    /// Wolf -> hook, Y up). gap: the offset's frame and base are not traced.
-    pub fn launch(&mut self, d: &CharData, a: &mut Actor, pos: Vec3) {
-        let flight = flight_time(d, &a.anim, a.t);
-        self.dest = if self.ride {
+    /// An enemy target moves on while the shoot and the flight play (Gyoubu's drifts a000_003032
+    /// / 003033 cover 7-10 m in a second, the Ape's 003018): the hook and the landing follow the
+    /// live dummies (enemy::grapple::EnemyGrapples, refreshed each frame) instead of the shoot's
+    /// snapshot, and an arc in flight re-aims at the new landing (the exe keeps the rope tip on
+    /// the hook, TAE 901, and the homing row's guaranteed arrival steers at the target).
+    pub fn track(&mut self, g: &crate::enemy::grapple::EnemyGrapple, pos: Vec3) {
+        self.hook = g.hook;
+        self.land = g.land;
+        if self.flight.is_some() {
+            self.dest = self.dest_for(pos);
+        }
+    }
+
+    /// The arc's destination from the current hook / landing (see `launch`).
+    fn dest_for(&self, pos: Vec3) -> Vec3 {
+        if self.ride {
             self.land + Vec3::Y * CAPSULE_HALF_HEIGHT
         } else {
             let fwd = (self.hook - pos).with_y(0.0).normalize_or_zero();
@@ -230,7 +244,17 @@ impl Wire {
             let off = homing_offset_vec(self.homing);
             let base = if self.enemy.is_some() { self.land } else { self.hook };
             base + right * off.x + Vec3::Y * off.y + fwd * off.z + Vec3::Y * CAPSULE_HALF_HEIGHT * self.enemy.is_some() as u8 as f32
-        };
+        }
+    }
+
+    /// TAE 920 row 1100: solve the arc that arrives at the destination when the anim's camera
+    /// slot turns 19 (module doc). Ridden points end on the landing spot; a swing-through point
+    /// ends at the hook plus the homing row's targetOffset, an enemy at its landing dummy plus
+    /// its row's (the Ogre grabbing 300050200: (0, 1.5, -2)), taken in the travel frame (Z along
+    /// Wolf -> hook, Y up). gap: the offset's frame and base are not traced.
+    pub fn launch(&mut self, d: &CharData, a: &mut Actor, pos: Vec3) {
+        let flight = flight_time(d, &a.anim, a.t);
+        self.dest = self.dest_for(pos);
         let g = FALL_TYPES[WIRE_FALL as usize].gravity();
         let to = self.dest - pos;
         a.fall_type = WIRE_FALL;
@@ -295,10 +319,13 @@ pub fn flight_time(d: &CharData, anim: &str, t: f32) -> f32 {
         .unwrap_or(DEFAULT_FLIGHT)
 }
 
-/// WireVariationParam chrPhysicsHomingIdOffset of the map rows (docs/kb/grapple.md section 2).
+/// WireVariationParam chrPhysicsHomingIdOffset of the map and object rows (docs/kb/grapple.md
+/// section 2).
 fn homing_offset(variation: i64) -> i64 {
     match variation {
         20 | 24 | 40 | 41 => variation,
+        // The Divine Dragon's trees' o259920 / 921 (enemy/grapple.rs): 300053105.
+        45 => 53105,
         _ => 0,
     }
 }

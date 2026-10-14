@@ -31,7 +31,13 @@ crates/game/src/fog.wgsl and `src/height_fog.rs` from its fog.rs, with the exe p
 docs/SHADER-INPUTS.md (GameScale, the height offset, the depth slices). The sky domes (`src/sky.rs`,
 `src/sky.wgsl`, `tools/sekiro-extract/src/sky.rs`) are adapted from its crates/game/src/sky.rs,
 sky.wgsl and crates/extract/src/maps/sky.rs (9ee18b0); the map bloom's level weights
-(`src/map.rs` `map_bloom`) follow its SHADER-INPUTS.md "Bloom and glare".
+(`src/map.rs` `map_bloom`) follow its SHADER-INPUTS.md "Bloom and glare". The GI probes'
+irradiance volumes (`tools/sekiro-extract/src/map.rs` `export_giiv`, `src/map.rs`
+`apply_giiv`, `src/map_material.wgsl` `giiv_light` / `lit`) follow its docs/SHADERS.md "GIIV"
+(the texel decoder and the directional basis traced in the exe's shaders) and its 6de8ff6
+lighting.rs / map_material.wgsl (the box placement, the one-voxel fade and normal bias). The map material's bindless
+batching (`src/map.rs` `MapExt` / `MapUniform`, `src/map_material.wgsl` `#ifdef BINDLESS`)
+follows its 73eca1d map_material.rs / map_material.wgsl (OK'd by the user 2026-10-13).
 It is used here under the MIT license:
 
 ```

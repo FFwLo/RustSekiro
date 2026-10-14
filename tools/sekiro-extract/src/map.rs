@@ -18,6 +18,8 @@
 //!     2 blend, 3 flow smoke: the mask scrolled along the "normal" flow map), u8 two-sided, u32 vertices; per vertex f32 pos[3] normal[3] uv[2];
 //!     u32 indices; u32 each
 //! Layout "SHMC": u32 vertices; f32 pos[3] each; u32 triangles; per triangle u32 idx[3], u32 material
+//! Layout "SHMG" (`map_<id>.gates`, the fog walls' collision): u32 version 1; u32 gates; per gate
+//!   i32 MSB entity, then the SHMC body (vertices, triangles) of that entity's parts
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
@@ -117,7 +119,13 @@ fn edge_ledges(d: &[u8]) -> Vec<EdgeRecord> {
 /// a source: on the gate map all 40 within range are the MSB Treasure events' item spots
 /// (`msb.treasure_parts`), 0.25 m over the floor; treasure parts of any model are skipped.
 fn export_grapple(root: &Path, map_id: &str, msb: &msb::Msb, arena: &Arena, origin: [f32; 3], radius: f32, obj_dir: &Path) -> (Vec<serde_json::Value>, Vec<serde_json::Value>) {
-    let near = |p: [f32; 3]| (p[0] - origin[0]).hypot(p[2] - origin[2]) <= radius + 30.0;
+    // Up or down only as far as the game could ever reach: the largest WirePointSearchParam
+    // findDistanceFar (50 m, Hirata's 10200) + the largest WireVariationParam
+    // extendWireActionDistance (30 m) = 80 m. The runtime search (map::grapple_target, section 2
+    // of kb/grapple.md) filters the rest as the game does. Drops points such as the Divine
+    // Dragon's o255610 from the area 277 m under the arena (only the horizontal distance was checked).
+    const WIRE_REACH_Y: f32 = 50.0 + 30.0;
+    let near = |p: [f32; 3]| (p[0] - origin[0]).hypot(p[2] - origin[2]) <= radius + 30.0 && (p[1] - origin[1]).abs() <= WIRE_REACH_Y;
     // Hang / hug edges ("ledges"): the same files' type 2 / 3 records within the radius + 10 m,
     // raw ({a, b, c, kind, var, src}) for the ledge hang and wall hug moves later (HKS
     // BEH_A_GROUND_HANG_START, COVER_*); the game only draws them (map.rs LedgeEdges).
@@ -171,7 +179,9 @@ fn export_grapple(root: &Path, map_id: &str, msb: &msb::Msb, arena: &Arena, orig
         for f in container::read_bxf4(&bhd, &bdt) {
             let stem = f.name.rsplit(['\\', '/']).next().unwrap_or(&f.name).trim_end_matches(".edge");
             let Some(id) = stem.rsplit('_').next() else { continue };
-            let part_model = format!("h{}_{id}", &map_id[1..]);
+            // MSB collision models are named h<id> (h003100), not h<map>_<id>: the old name never
+            // matched, so no map's own edge file was read (m25: 906 hang / 584 hug records).
+            let part_model = format!("h{id}");
             let Some(p) = msb.parts.iter().find(|p| p.kind == 5 && p.model.eq_ignore_ascii_case(&part_model)) else { continue };
             for (hook, land, var) in edge_grapples(&f.data) {
                 map_edges += entry(p.transform(hook), p.transform(land), msb::rotate(p.rot, [0.0, 0.0, 1.0]), var, p.name.clone()) as usize;
@@ -220,7 +230,7 @@ fn export_luts(root: &Path, map_id: &str, stem: &str) -> Vec<u32> {
     ids
 }
 
-fn export_env(root: &Path, map_id: &str, name: &str, msb: &msb::Msb, arena: &Arena) -> Option<u32> {
+fn export_env(root: &Path, map_id: &str, name: &str, msb: &msb::Msb, arena: &Arena, pick: [f32; 3], radius: f32) -> Option<u32> {
     let origin = arena.origin;
     let probe = msb
         .regions
@@ -258,7 +268,215 @@ fn export_env(root: &Path, map_id: &str, name: &str, msb: &msb::Msb, arena: &Are
         std::fs::write(root.join(format!("map_{name}_env_{v:02}.dds")), cubemap::write_rgba16f(&cubemap::mip_chain(spec))).unwrap();
         std::fs::write(root.join(format!("map_{name}_envd_{v:02}.dds")), cubemap::write_rgba16f(&[diff])).unwrap();
     }
+    export_giiv(root, map_id, name, msb, arena, pick, radius);
     Some(id)
+}
+
+/// The irradiance volumes of the Env_Boxes round the arena: `giiv<box>_<v>_{x,y,z,w}` in
+/// `envmap_<v>.tpf`, four BC7 3D textures over each Env_Box (bottom-centred, texture x / y / z
+/// along the box's width / height / depth). The game draws every box as a lighting volume
+/// (gxrenderershader GXEnvMapRegion[Box][Diff].ppo, docs/kb/map.md "GIIV boxes"): weight
+/// `smoothstep(saturate(metres to the nearest face / FadeDistance))`, blended over the boxes
+/// drawn before it, so the boxes go in by their MSB priority (type data byte 0x09). Exported:
+/// the boxes within `radius` of `pick` (at most GIIV_MAX, nearest first), not the reflection
+/// boxes (type data 0x24 = 2, the "映りこみ用" ones, taken as specular only). Texel decode and
+/// basis after sekiro-rs (MIT / Apache-2.0, docs/SHADERS.md "GIIV"; the same in the game's
+/// shader): `2 (rgb - 0.5) 2^(20 (a - 0.5))`, irradiance `max(n.x X + n.y Y + n.z Z + W, 0)`.
+/// Writes `map_<id>_giiv_<v>.bin` "SHGI" v2 (u32 width, height, depth, then RGBA8 texels, x
+/// fastest): one atlas per variant, each box's x, y, z, w volumes one after another along the
+/// depth from its `vox[3]`; and `map_<id>_giiv.json`: per box (in drawing order) `uvw`
+/// (row-major 3x4: a Bevy-space point -> its 0..1 coordinates), `size` (metres along u, v, w),
+/// `fade` (m), `grid` (its voxels), `lo` / `vox` (the voxels kept: the ones round the arena,
+/// GIIV_MARGIN, from `lo`, and its first depth slice); `nrm` (row-major 3x3: a Bevy normal ->
+/// map space). A box without a variant uses its nearest one.
+fn export_giiv(root: &Path, map_id: &str, name: &str, msb: &msb::Msb, arena: &Arena, pick: [f32; 3], radius: f32) {
+    let json_path = root.join(format!("map_{name}_giiv.json"));
+    let _ = std::fs::remove_file(&json_path);
+    let textures: Vec<Vec<(String, Vec<u8>)>> = (0..ENV_HOURS.len())
+        .map(|v| std::fs::read(root.join(format!("map/{map_id}/{map_id}_envmap_{v:02}.tpf"))).map(|t| flver::tpf(&t)).unwrap_or_default())
+        .collect();
+    // A box's volumes in one variant: [w, h, d] and the x / y / z / w texels.
+    let volume = |id: u32, v: usize| -> Option<([usize; 3], Vec<u8>)> {
+        let mut dims = None;
+        let mut out = Vec::new();
+        for axis in ["x", "y", "z", "w"] {
+            let want = format!("{map_id}_giiv{id:04}_{v:02}_{axis}");
+            let (_, dds) = textures[v].iter().find(|(n, _)| n.eq_ignore_ascii_case(&want))?;
+            let (d, texels) = decode_bc7_volume(dds)?;
+            if dims.is_some_and(|x| x != d) {
+                println!("  {want}: {d:?} differs from the other axes {dims:?}");
+                return None;
+            }
+            dims = Some(d);
+            out.extend_from_slice(&texels);
+        }
+        Some((dims?, out))
+    };
+    let dist = |o: &msb::Region| {
+        let l = msb::rotate([0.0, -o.rot[1], 0.0], [pick[0] - o.pos[0], pick[1] - o.pos[1], pick[2] - o.pos[2]]);
+        let out = [(l[0].abs() - o.size[0] * 0.5).max(0.0), (-l[1]).max(l[1] - o.size[2]).max(0.0), (l[2].abs() - o.size[1] * 0.5).max(0.0)];
+        (out[0] * out[0] + out[1] * out[1] + out[2] * out[2]).sqrt()
+    };
+    let mut near: Vec<(usize, f32)> = msb
+        .regions
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| r.kind == 17 && r.shape == 5 && r.probe().is_some() && r.env.is_some_and(|e| e[9] != 2))
+        .map(|(i, r)| (i, dist(r)))
+        .filter(|(_, d)| *d <= radius)
+        .collect();
+    near.sort_by(|a, b| a.1.total_cmp(&b.1));
+    type Vols = Vec<Option<([usize; 3], Vec<u8>)>>;
+    // Per box: its MSB index, full voxels, the cropped voxel range [lo, hi) and its variants.
+    let mut boxes: Vec<(usize, [usize; 3], [usize; 3], [usize; 3], Vols)> = Vec::new();
+    let mut depth = 0;
+    for (i, _) in near {
+        if boxes.len() >= GIIV_MAX {
+            break;
+        }
+        let r = &msb.regions[i];
+        let vols: Vols = (0..ENV_HOURS.len()).map(|v| volume(r.probe().unwrap(), v)).collect();
+        let Some(d) = vols.iter().flatten().next().map(|(d, _)| *d) else { continue };
+        if vols.iter().flatten().any(|(e, _)| *e != d) {
+            println!("  giiv: {} variants differ in size: skipped", r.name);
+            continue;
+        }
+        // Only the voxels round the arena: the sphere of `radius` + GIIV_MARGIN m about `pick`
+        // in the box's texture axes (x width, y height from the floor, z depth), two voxels
+        // more for the filter and the normal step.
+        let l = msb::rotate([0.0, -r.rot[1], 0.0], [pick[0] - r.pos[0], pick[1] - r.pos[1], pick[2] - r.pos[2]]);
+        let (c, size) = ([l[0] + r.size[0] * 0.5, l[1], l[2] + r.size[1] * 0.5], [r.size[0], r.size[2], r.size[1]]);
+        let reach = radius + GIIV_MARGIN;
+        let lo: [usize; 3] = std::array::from_fn(|k| (((c[k] - reach) / size[k] * d[k] as f32).floor() as i64 - 2).clamp(0, d[k] as i64) as usize);
+        let hi: [usize; 3] = std::array::from_fn(|k| (((c[k] + reach) / size[k] * d[k] as f32).ceil() as i64 + 2).clamp(lo[k] as i64 + 1, d[k] as i64) as usize);
+        let cd = [hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]];
+        // The atlas depth stays within a 3D texture's 2048.
+        if depth + 4 * cd[2] > 2048 {
+            println!("  giiv: {} would pass the atlas depth: skipped", r.name);
+            continue;
+        }
+        depth += 4 * cd[2];
+        if r.rot[0].abs() > 0.01 || r.rot[2].abs() > 0.01 {
+            println!("  giiv: {} has pitch / roll {:?}: only the yaw is applied", r.name, r.rot);
+        }
+        boxes.push((i, d, lo, hi, vols));
+    }
+    if boxes.is_empty() {
+        println!("  giiv: no Env_Box volumes within {radius} m");
+        return;
+    }
+    // Drawing order: priority, then the MSB's order.
+    boxes.sort_by_key(|b| ((msb.regions[b.0].env.unwrap()[2] >> 8) & 0xff, b.0));
+    let width = boxes.iter().map(|b| b.3[0] - b.2[0]).max().unwrap();
+    let height = boxes.iter().map(|b| b.3[1] - b.2[1]).max().unwrap();
+    let mut variants = Vec::new();
+    for v in 0..ENV_HOURS.len() {
+        if boxes.iter().all(|b| b.4[v].is_none()) {
+            continue;
+        }
+        let mut atlas = vec![0u8; width * height * depth * 4];
+        let mut z0 = 0;
+        for (_, [w, h, d], lo, hi, vols) in &boxes {
+            // This variant, else the nearest one.
+            let (_, texels) = (0..ENV_HOURS.len()).flat_map(|k| [v.checked_sub(k), Some(v + k)]).flatten().find_map(|k| vols.get(k).and_then(|x| x.as_ref())).unwrap();
+            let cw = hi[0] - lo[0];
+            let cd = hi[2] - lo[2];
+            for axis in 0..4 {
+                for z in lo[2]..hi[2] {
+                    for y in lo[1]..hi[1] {
+                        let src = (((axis * d + z) * h + y) * w + lo[0]) * 4;
+                        let dst = (((z0 + axis * cd + z - lo[2]) * height + y - lo[1]) * width) * 4;
+                        atlas[dst..dst + cw * 4].copy_from_slice(&texels[src..src + cw * 4]);
+                    }
+                }
+            }
+            z0 += 4 * cd;
+        }
+        let mut f = b"SHGI".to_vec();
+        for x in [2, width as u32, height as u32, depth as u32] {
+            f.extend_from_slice(&x.to_le_bytes());
+        }
+        f.extend_from_slice(&atlas);
+        std::fs::write(root.join(format!("map_{name}_giiv_{v:02}.bin")), &f).unwrap();
+        variants.push(v);
+    }
+    let mut z0 = 0;
+    let list: Vec<serde_json::Value> = boxes
+        .iter()
+        .map(|(i, [w, h, d], lo, hi, vols)| {
+            let b = &msb.regions[*i];
+            let e = b.env.unwrap();
+            // Bevy point -> arena (X mirrored back) -> map -> box local (undo the yaw) -> 0..1.
+            let uvw = |p: [f32; 3]| {
+                let m = arena.undir([-p[0], p[1], p[2]]);
+                let q = [m[0] + arena.origin[0] - b.pos[0], m[1] + arena.origin[1] - b.pos[1], m[2] + arena.origin[2] - b.pos[2]];
+                let l = msb::rotate([0.0, -b.rot[1], 0.0], q);
+                [l[0] / b.size[0] + 0.5, l[1] / b.size[2], l[2] / b.size[1] + 0.5]
+            };
+            let o = uvw([0.0; 3]);
+            let cols: [[f32; 3]; 3] = std::array::from_fn(|k| {
+                let mut u = [0.0; 3];
+                u[k] = 1.0;
+                let q = uvw(u);
+                [q[0] - o[0], q[1] - o[1], q[2] - o[2]]
+            });
+            let have: Vec<usize> = (0..vols.len()).filter(|&v| vols[v].is_some()).collect();
+            let cd = hi[2] - lo[2];
+            println!("  giiv {}: {w}x{h}x{d} cropped {lo:?}..{hi:?}, priority {}, fade {} m, variants {have:?}", b.name, (e[2] >> 8) & 0xff, f32::from_bits(e[1]));
+            let j = serde_json::json!({
+                "box": b.name,
+                "priority": (e[2] >> 8) & 0xff,
+                "fade": f32::from_bits(e[1]),
+                "uvw": [cols[0][0], cols[1][0], cols[2][0], o[0], cols[0][1], cols[1][1], cols[2][1], o[1], cols[0][2], cols[1][2], cols[2][2], o[2]],
+                "size": [b.size[0], b.size[2], b.size[1]],
+                "grid": [w, h, d],
+                "lo": lo,
+                "vox": [hi[0] - lo[0], hi[1] - lo[1], cd, z0],
+            });
+            z0 += 4 * cd;
+            j
+        })
+        .collect();
+    let nrm_cols: [[f32; 3]; 3] = std::array::from_fn(|i| {
+        let mut e = [0.0; 3];
+        e[i] = 1.0;
+        arena.undir([-e[0], e[1], e[2]])
+    });
+    println!("  giiv atlas {width}x{height}x{depth}, {} boxes, variants {variants:?}", list.len());
+    let j = serde_json::json!({
+        "variants": variants,
+        "atlas": [width, height, depth],
+        "boxes": list,
+        "nrm": [nrm_cols[0][0], nrm_cols[1][0], nrm_cols[2][0], nrm_cols[0][1], nrm_cols[1][1], nrm_cols[2][1], nrm_cols[0][2], nrm_cols[1][2], nrm_cols[2][2]],
+    });
+    std::fs::write(&json_path, serde_json::to_string_pretty(&j).unwrap()).unwrap();
+}
+
+/// At most this many Env_Box volumes per arena (src/map.rs GIIV_MAX, map_material.wgsl `Giiv`).
+const GIIV_MAX: usize = 16;
+/// Metres past the arena radius each box's volume keeps (pieces reaching past it read the edge).
+const GIIV_MARGIN: f32 = 30.0;
+
+/// A DX10 BC7 3D texture's top level: ([width, height, depth], RGBA8 texels, x fastest).
+fn decode_bc7_volume(dds: &[u8]) -> Option<([usize; 3], Vec<u8>)> {
+    let u32_ = |o: usize| dds.get(o..o + 4).map(|b| u32::from_le_bytes(b.try_into().unwrap()));
+    if dds.get(84..88) != Some(b"DX10") || !matches!(u32_(128)?, 98 | 99) || u32_(132)? != 4 {
+        return None;
+    }
+    let (h, w, d) = (u32_(12)? as usize, u32_(16)? as usize, u32_(24)?.max(1) as usize);
+    let slice = w.div_ceil(4) * h.div_ceil(4) * 16;
+    let data = dds.get(148..148 + slice * d)?;
+    let mut out = Vec::with_capacity(w * h * d * 4);
+    let mut px = vec![0u32; w * h];
+    for z in 0..d {
+        texture2ddecoder::decode_bc7(&data[z * slice..(z + 1) * slice], w, h, &mut px).ok()?;
+        // texture2ddecoder packs B, G, R, A little-endian.
+        out.extend(px.iter().flat_map(|p| {
+            let [b, g, r, a] = p.to_le_bytes();
+            [r, g, b, a]
+        }));
+    }
+    Some(([w, h, d], out))
 }
 
 /// Materials whose meshes are not visible surfaces (sekiro-rs maps/pieces.rs skip_material):
@@ -326,10 +544,11 @@ const GROUND_SLOTS: [&[u8]; 34] = [
 /// The game path's constants (64 floats, 16 vec4; map_material.wgsl `game_layers` reads them
 /// by index) from the MTD's `M_Multiple__snp_0_*` / `M_MultipleGround__snp_0_*` values. The
 /// snow direction is turned into arena space. A value the MTD leaves out is 0 (colours 1).
-/// Colours are rgb x `color_N-Intensity` (default 1), as the engine's GXMaterialParam_HDRColor
-/// uploads them (FUN_1403dc4b0; constructor FUN_1403dc1a0). gap: that class first raises the
-/// colour to the power 2.2 when a flag byte (+0x20 of its definition) is set, not traced: here
-/// raw; the shader tool's own defaults for left-out values.
+/// Colours are rgb^2.2 x `color_N-Intensity` (default 1), as the engine's GXMaterialParam_HDRColor
+/// uploads them (FUN_1403dc4b0; constructor FUN_1403dc1a0): the power is on when the metaparam
+/// entry's flag byte (+0x2E) is set, and it is 1 for every colour param of shaderbdle (checked
+/// 2026-10-13 on the binders' .metaparam). Before 2026-10-13 the export wrote the raw rgb.
+/// gap: the shader tool's own defaults for left-out values.
 fn game_params(d: &mtd::Mtd, kind: u8, arena: &Arena) -> Vec<f32> {
     let prefix = if kind == 2 { "M_MultipleGround__snp_0_" } else { "M_Multiple__snp_0_" };
     let get = |n: &str| d.floats.iter().find(|(k, _)| *k == format!("{prefix}{n}")).map(|(_, v)| v.clone());
@@ -337,7 +556,7 @@ fn game_params(d: &mtd::Mtd, kind: u8, arena: &Arena) -> Vec<f32> {
     let v3 = |n: &str| get(n).filter(|v| v.len() >= 3).map_or([0.0; 3], |v| [v[0], v[1], v[2]]);
     let v2 = |n: &str| get(n).filter(|v| v.len() >= 2).map_or([0.0; 2], |v| [v[0], v[1]]);
     let col = |n: &str| -> [f32; 4] {
-        let c = get(n).filter(|v| v.len() >= 3).map_or([1.0; 3], |v| [v[0], v[1], v[2]]);
+        let c = get(n).filter(|v| v.len() >= 3).map_or([1.0; 3], |v| [v[0], v[1], v[2]]).map(|x: f32| x.max(0.0).powf(2.2));
         let k = get(&format!("{n}-Intensity")).and_then(|v| v.first().copied()).unwrap_or(1.0);
         [c[0] * k, c[1] * k, c[2] * k, 0.0]
     };
@@ -556,6 +775,51 @@ pub fn export(root: &Path, map_id: &str, centre: &str, radius: f32) {
     println!("centre {} ({}) at {:?} yaw {:.1}{}; arena origin {:?}, facing {:?} -> {:?}", c.name, c.model, c.pos, c.rot[1], if yaw_add != 0.0 { format!(" turned {yaw_add:+.0}") } else { String::new() }, origin, facing, arena.dir(facing));
     let area = &map_id[..3];
     let dir = root.join(format!("map/{map_id}"));
+    // `MAP_ENV_ONLY=1`: only the GI probe (cubes and irradiance volumes) and the json's
+    // `env_probe`; the pieces and collision stay as last exported.
+    if std::env::var("MAP_ENV_ONLY").is_ok() {
+        let probe = export_env(root, map_id, name, &msb, &arena, pick, radius);
+        let path = root.join(format!("map_{name}.json"));
+        let json = std::fs::read_to_string(&path).ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok());
+        match json {
+            Some(mut j) => {
+                j["env_probe"] = serde_json::json!(probe);
+                std::fs::write(&path, serde_json::to_string_pretty(&j).unwrap()).unwrap();
+            }
+            None => println!("no {} to update", path.display()),
+        }
+        return;
+    }
+
+    // `MAP_EDGES_ONLY=1`: only the json's `grapple` / `ledges` (export_grapple); pieces,
+    // collision, gates, probes, LUTs and draw params stay as last exported (map lighting work
+    // paused 2026-10-13, so a geometry fix must not rewrite those).
+    if std::env::var("MAP_EDGES_ONLY").is_ok() {
+        // The objects near it must be unpacked (their e<id>.edge): list the missing ones as the
+        // full export does, and write nothing, so boss_arenas.py unpacks them and runs again.
+        let missing: std::collections::BTreeSet<String> = msb
+            .parts
+            .iter()
+            .filter(|p| p.kind == 1 && !p.model.is_empty() && (p.pos[0] - pick[0]).hypot(p.pos[2] - pick[2]) <= radius + 60.0)
+            .map(|p| p.model.to_lowercase())
+            .filter(|m| !root.join("obj").join(format!("{m}.objbnd.d")).is_dir())
+            .collect();
+        if !missing.is_empty() {
+            println!("objects to unpack: ^/obj/({})\\.objbnd", missing.into_iter().collect::<Vec<_>>().join("|"));
+            return;
+        }
+        let (grapple, ledges) = export_grapple(root, map_id, &msb, &arena, pick, radius, &root.join("obj"));
+        let path = root.join(format!("map_{name}.json"));
+        match std::fs::read_to_string(&path).ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()) {
+            Some(mut j) => {
+                j["grapple"] = serde_json::json!(grapple);
+                j["ledges"] = serde_json::json!(ledges);
+                std::fs::write(&path, serde_json::to_string_pretty(&j).unwrap()).unwrap();
+            }
+            None => println!("no {} to update", path.display()),
+        }
+        return;
+    }
 
     // Hit collision parts near the centre (all of them share one transform in a map).
     let hit_dir = dir.join("hit");
@@ -564,6 +828,17 @@ pub fn export(root: &Path, map_id: &str, centre: &str, radius: f32) {
     let mut hit_tris: Vec<[u32; 4]> = Vec::new();
     let mut under: Option<(f32, usize)> = None; // (height below the centre, part index)
     let mut hit_parts = 0;
+    // Fog-wall collision (tools/fog_walls.py -> enemies/fog_walls.json): the wall object's own
+    // box (o001401's hkx, 20005820) and the collision part 20005825 enables (h900800 on the
+    // castle roof) stand only while their fight is on, so they go to `map_<id>.gates` per
+    // entity instead of the static .hit (the game's fog_wall.rs switches them on).
+    let gate_entities: HashSet<i32> = std::fs::read_to_string(root.join("enemies/fog_walls.json"))
+        .ok()
+        .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+        .and_then(|j| j[map_id].as_array().cloned())
+        .map(|walls| walls.iter().flat_map(|w| [w["object"]["entity"].as_i64(), w["collision"]["entity"].as_i64()]).flatten().filter_map(|e| i32::try_from(e).ok()).filter(|&e| e > 0).collect())
+        .unwrap_or_default();
+    let mut gates: BTreeMap<i32, (Vec<[f32; 3]>, Vec<[u32; 4]>)> = BTreeMap::new();
     for (pi, p) in msb.parts.iter().enumerate().filter(|(_, p)| p.kind == 5) {
         let id = p.model.trim_start_matches('h');
         let Ok(data) = std::fs::read(hit_dir.join(format!("h{}_{id}.hkx", &map_id[1..]))) else { continue };
@@ -572,6 +847,14 @@ pub fn export(root: &Path, map_id: &str, centre: &str, radius: f32) {
         // Keep the part when any vertex is within the radius (horizontally).
         let near = world.iter().any(|v| (v[0] - pick[0]).hypot(v[2] - pick[2]) <= radius + 10.0);
         if !near {
+            continue;
+        }
+        if gate_entities.contains(&p.entity) {
+            let g = gates.entry(p.entity).or_default();
+            let base = g.0.len() as u32;
+            g.0.extend(world.iter().map(|v| arena.point(*v)));
+            g.1.extend((0..mesh.indices.len() / 3).map(|t| [base + mesh.indices[t * 3], base + mesh.indices[t * 3 + 1], base + mesh.indices[t * 3 + 2], mesh.materials[t]]));
+            println!("fog-wall collision {} {} (entity {}): {} triangles to the gates", p.name, p.model, p.entity, mesh.indices.len() / 3);
             continue;
         }
         hit_parts += 1;
@@ -684,6 +967,30 @@ pub fn export(root: &Path, map_id: &str, centre: &str, radius: f32) {
     let keep_objact = std::env::var("MAP_KEEP_OBJACT").is_ok();
     let mut objact_skipped = 0;
     for (pi, p) in msb.parts.iter().enumerate().filter(|(_, p)| p.kind == 0 || p.kind == 1) {
+        // A fog wall's object: its own hkx box goes to the gates whatever the draw groups say
+        // (its event enables it; the wall itself is drawn by its SFX, fog_wall.rs), never the
+        // static .hit, and its mesh is not drawn.
+        if p.kind == 1 && gate_entities.contains(&p.entity) {
+            if (p.pos[0] - pick[0]).hypot(p.pos[2] - pick[2]) > radius + 60.0 {
+                continue;
+            }
+            let m = p.model.to_lowercase();
+            match std::fs::read(obj_dir.join(format!("{m}.objbnd.d/{m}.hkx"))) {
+                Ok(hk) => {
+                    let mesh = hkx::collision_mesh(&hk, &compendium);
+                    let param_mat = m[1..].parse::<i64>().ok().and_then(|id| obj_materials.get(&id).copied()).unwrap_or(29);
+                    let g = gates.entry(p.entity).or_default();
+                    let base = g.0.len() as u32;
+                    g.0.extend(mesh.vertices.iter().map(|v| arena.point(p.transform(*v))));
+                    g.1.extend((0..mesh.indices.len() / 3).map(|t| [base + mesh.indices[t * 3], base + mesh.indices[t * 3 + 1], base + mesh.indices[t * 3 + 2], if mesh.materials[t] == u32::MAX { param_mat } else { mesh.materials[t] }]));
+                    println!("fog-wall object {} {} (entity {}): {} triangles to the gates", p.name, m, p.entity, mesh.indices.len() / 3);
+                }
+                Err(_) => {
+                    objects_missing.insert(m);
+                }
+            }
+            continue;
+        }
         if !keep_objact && msb.objact_parts.contains(&pi) {
             if std::env::var("MAP_LOG").is_ok() && (p.pos[0] - pick[0]).hypot(p.pos[2] - pick[2]) <= radius {
                 println!("objact part {} {} left out", p.name, p.model);
@@ -771,12 +1078,12 @@ pub fn export(root: &Path, map_id: &str, centre: &str, radius: f32) {
                 let m = p.model.to_lowercase();
                 if let Ok(hk) = std::fs::read(obj_dir.join(format!("{m}.objbnd.d/{m}.hkx"))) {
                     let mesh = hkx::collision_mesh(&hk, &compendium);
+                    let param_mat = m[1..].parse::<i64>().ok().and_then(|id| obj_materials.get(&id).copied()).unwrap_or(29);
+                    let mats: Vec<u32> = mesh.materials.iter().map(|&mt| if mt == u32::MAX { param_mat } else { mt }).collect();
                     if !mesh.indices.is_empty() {
                         object_hits += 1;
                         let base = hit_verts.len() as u32;
                         hit_verts.extend(mesh.vertices.iter().map(|v| arena.point(p.transform(*v))));
-                        let param_mat = m[1..].parse::<i64>().ok().and_then(|id| obj_materials.get(&id).copied()).unwrap_or(29);
-                        let mats: Vec<u32> = mesh.materials.iter().map(|&mt| if mt == u32::MAX { param_mat } else { mt }).collect();
                         for t in 0..mesh.indices.len() / 3 {
                             hit_tris.push([base + mesh.indices[t * 3], base + mesh.indices[t * 3 + 1], base + mesh.indices[t * 3 + 2], mats[t]]);
                         }
@@ -911,6 +1218,19 @@ pub fn export(root: &Path, map_id: &str, centre: &str, radius: f32) {
     h.extend_from_slice(&(hit_tris.len() as u32).to_le_bytes());
     hit_tris.iter().flatten().for_each(|x| h.extend_from_slice(&x.to_le_bytes()));
     std::fs::write(root.join(format!("map_{name}.hit")), &h).unwrap();
+    // The fog-wall collision, per entity (empty when the map has none in range).
+    let mut g: Vec<u8> = Vec::new();
+    g.extend_from_slice(b"SHMG");
+    g.extend_from_slice(&1u32.to_le_bytes());
+    g.extend_from_slice(&(gates.len() as u32).to_le_bytes());
+    for (entity, (verts, tris)) in &gates {
+        g.extend_from_slice(&entity.to_le_bytes());
+        g.extend_from_slice(&(verts.len() as u32).to_le_bytes());
+        verts.iter().for_each(|v| put_f(&mut g, v));
+        g.extend_from_slice(&(tris.len() as u32).to_le_bytes());
+        tris.iter().flatten().for_each(|x| g.extend_from_slice(&x.to_le_bytes()));
+    }
+    std::fs::write(root.join(format!("map_{name}.gates")), &g).unwrap();
 
     // Draw params of the area (the base file; the light set id picks the variant).
     let gparam_path = root.join(format!("param/drawparam/{}_0000.gparam", &map_id[..6]));
@@ -940,7 +1260,7 @@ pub fn export(root: &Path, map_id: &str, centre: &str, radius: f32) {
     if !variants.is_empty() {
         println!("draw param variants {:?}", variants.keys().collect::<Vec<_>>());
     }
-    let env_probe = export_env(root, map_id, name, &msb, &arena);
+    let env_probe = export_env(root, map_id, name, &msb, &arena, pick, radius);
     let luts = export_luts(root, map_id, name);
     let (grapple, ledges) = export_grapple(root, map_id, &msb, &arena, pick, radius, &obj_dir);
     let json = serde_json::json!({

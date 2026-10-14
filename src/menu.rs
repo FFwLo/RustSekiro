@@ -213,9 +213,30 @@ impl Picker {
     }
 }
 
-/// Seconds every enemy has to stay down before 忍殺 (a boss between phases is down for a moment).
-/// gap: hand-set, the game's own timing is not traced.
+/// Seconds every enemy has to stay down before 忍殺 in a fight without a boss script (a boss
+/// between phases is down for a moment). gap: hand-set, the game's own timing is not traced.
 const WON_HOLD: f32 = 4.0;
+
+/// After the end, Won waits for the finisher to play out (`finisher_done`): the game shows no
+/// menu over it. A safety cap for a clip that never ends (a held pose): 30 s.
+const FINISHER_CAP: f32 = 30.0;
+
+/// The fight's last moves are over: Wolf is back in a standby state (player::is_free: out of the
+/// deathblow / Todome / behind-finisher clip) and every enemy's clip has played to its end (its
+/// death or ThrowDef pose). Round 93, the user's bug: Won came WON_HOLD (4 s) after Handle Boss
+/// Defeat and cut the long finishers (Isshin's 12900, the Mortal Blade Todomes).
+/// Only the characters the ending plays on count: the dead (their death / ThrowDef pose) and
+/// one still in a ThrowDef or Todome clip. A cast member alive by design never reaches a clip
+/// end (the Divine Dragon's trees re-play their bloom loop, Mode::Held(true) loops, the Old
+/// Dragons' bodies keep their AI), so waiting on all of them ran into FINISHER_CAP: the banner
+/// 30 s after Handle Boss Defeat on rows 52000000 / 53000000.
+pub(crate) fn finisher_done<'a>(combat: &crate::data::Combat, wolf_state: &str, enemies: impl IntoIterator<Item = (&'a crate::enemy::Enemy, &'a crate::actor::Actor)>) -> bool {
+    crate::player::is_free(wolf_state)
+        && enemies.into_iter().filter(|(e, a)| e.is_dead() || a.state.starts_with("ThrowDef") || a.state.starts_with("Event20200")).all(|(_, a)| {
+            let len = if a.anim.is_empty() { 0.0 } else { combat.data_of(a).length(&a.anim) };
+            len <= 0.0 || a.t >= len - 1e-3
+        })
+}
 
 /// Real seconds the world runs behind the first title before it freezes: Wolf, the camera and
 /// the map settle (frozen at frame 0 the camera sat in the map's rock).
@@ -279,9 +300,10 @@ impl Plugin for MenuPlugin {
             .init_resource::<Cursor>()
             .init_resource::<Picker>()
             .init_resource::<MenuFonts>()
+            .init_resource::<BannerDone>()
             .add_systems(Startup, load_fonts)
             .add_systems(PreUpdate, (pad_to_menu_keys, run_menu).chain().after(UiSystems::Focus).after(InputSystems))
-            .add_systems(Update, (fight_from_env, apply_video, watch_fight.run_if(in_state(Screen::Playing))))
+            .add_systems(Update, (fight_from_env, apply_video, watch_fight.run_if(in_state(Screen::Playing)), defeat_banner))
             .add_systems(PostUpdate, hide_hud_on_title.before(bevy::camera::visibility::VisibilitySystems::VisibilityPropagate));
     }
 }
@@ -828,16 +850,19 @@ fn picker_input(
 }
 
 /// Playing -> Dead when Wolf lies in his death loop with no resurrection left (with one left the
-/// game's own choice runs: attack revives, waiting starts over); -> Won WON_HOLD after a boss's
+/// game's own choice runs: attack revives, waiting starts over); -> Won once the finisher has played
+/// out (`finisher_done`) after a boss's
 /// defeat (BossScript run.defeated, the map event's Handle Boss Defeat: right across phases and
 /// phantoms), or, in a fight without a boss script, once every enemy has been down for WON_HOLD.
 fn watch_fight(
     time: Res<Time<Real>>,
     mut next: ResMut<NextState<Screen>>,
     wolf: Query<(&crate::actor::Actor, &crate::player::Player)>,
-    enemies: Query<&crate::enemy::Enemy>,
+    enemies: Query<(&crate::enemy::Enemy, &crate::actor::Actor)>,
     boss: Res<crate::enemy::BossScript>,
+    combat: Res<crate::data::Combat>,
     pad: Option<Res<crate::player::PadInput>>,
+    banner_done: Res<BannerDone>,
     mut down_for: Local<f32>,
 ) {
     // Retry / Title -> Start asked for the fight over: the reset runs in the next fixed step
@@ -847,20 +872,123 @@ fn watch_fight(
         return;
     }
     if let Ok((a, p)) = wolf.single() {
-        if a.state == "GroundDeathLoop_F" && p.resurrections == 0 {
+        if (a.state.starts_with("GroundDeathLoop") || a.state.starts_with("LandDeathLoop") || a.state == "ThrowDefDeathLoop") && p.resurrections == 0 || a.state == "AgingGroundDeathLoop" {
             next.set(Screen::Dead);
             return;
         }
     }
-    let all_down = match &boss.run {
-        Some(run) => run.defeated.is_some(),
-        None => !enemies.is_empty() && enemies.iter().all(|e| e.is_dead()),
+    let (all_down, hold) = match &boss.run {
+        // Handle Boss Defeat is final: no hold for a phase change. With a banner, Won waits for
+        // the banner to play out (`defeat_banner`, after the finisher).
+        Some(run) if run.banner > 0 && run.defeated.is_some() && !banner_done.0 => return,
+        Some(run) => (run.defeated.is_some(), 0.0),
+        None => (!enemies.is_empty() && enemies.iter().all(|(e, _)| e.is_dead()), WON_HOLD),
     };
     *down_for = if all_down { *down_for + time.delta_secs() } else { 0.0 };
-    if *down_for >= WON_HOLD {
+    let done = wolf.single().is_ok_and(|(a, _)| finisher_done(&combat, &a.state, enemies.iter()));
+    if *down_for >= hold && all_down && (done || *down_for >= FINISHER_CAP) {
         *down_for = 0.0;
         next.set(Screen::Won);
     }
+}
+
+/// The defeat banner's fade in, full hold and fade out [s], measured on the all-bosses clip
+/// (Gyoubu's 忍殺 at 12:16.8-12:20.1, 10 fps): 0.4 + 2.5 + 0.4.
+const BANNER_IN: f32 = 0.4;
+const BANNER_HOLD: f32 = 2.5;
+const BANNER_SECS: f32 = BANNER_IN + BANNER_HOLD + 0.4;
+
+/// The banner's alpha `t` s after it shows.
+fn banner_alpha(t: f32) -> f32 {
+    (t / BANNER_IN).min((BANNER_SECS - t) / 0.4).clamp(0.0, 1.0)
+}
+
+#[derive(Component)]
+struct DefeatBanner;
+#[derive(Component)]
+struct DefeatBannerPart;
+
+/// The defeat banner has played out (Won waits for it); cleared with the defeat.
+#[derive(Resource, Default)]
+pub(crate) struct BannerDone(pub bool);
+
+/// The defeat's text banner over the play, with no pause (round 93): EMEVD 2003[12] / [74]
+/// "Handle Boss Defeat and Display Banner" shows it at the defeat, while Wolf's finisher and the
+/// boss's death play on; Won comes when they are done (`watch_fight`). Banner 1 = the brush
+/// 忍殺 (MENU_Ninsatsu); 5 Immortality Severed and 3 Gracious Gift of Tears have no exported
+/// brush art (gap): their names in the serif font.
+fn defeat_banner(
+    mut commands: Commands,
+    time: Res<Time<Real>>,
+    state: Res<State<Screen>>,
+    boss: Res<crate::enemy::BossScript>,
+    assets: Res<AssetServer>,
+    fonts: Option<Res<MenuFonts>>,
+    mut shown: Local<Option<(Entity, f32)>>,
+    mut done: Local<bool>,
+    mut banner_done: ResMut<BannerDone>,
+    combat: Res<crate::data::Combat>,
+    wolf: Query<&crate::actor::Actor, With<crate::player::Player>>,
+    enemies: Query<(&crate::enemy::Enemy, &crate::actor::Actor)>,
+    mut since_defeat: Local<f32>,
+    mut images: Query<&mut ImageNode, With<DefeatBannerPart>>,
+    mut texts: Query<&mut TextColor, With<DefeatBannerPart>>,
+) {
+    let banner = boss.run.as_ref().filter(|r| r.defeated.is_some()).map(|r| r.banner);
+    if banner.is_none() {
+        *done = false;
+        banner_done.0 = false;
+        *since_defeat = 0.0;
+    }
+    if let Some((e, t)) = shown.as_mut() {
+        *t += time.delta_secs();
+        let a = banner_alpha(*t);
+        for mut i in &mut images {
+            i.color.set_alpha(a);
+        }
+        for mut c in &mut texts {
+            c.0.set_alpha(a);
+        }
+        if *t >= BANNER_SECS || *state.get() != Screen::Playing || banner.is_none() {
+            banner_done.0 = banner.is_some();
+            commands.entity(*e).try_despawn();
+            *shown = None;
+        }
+        return;
+    }
+    let (Some(kind), false, Screen::Playing) = (banner, *done, state.get()) else { return };
+    // The banner comes once the boss's death (and Wolf's finisher) has played out: the
+    // all-bosses clip, Gyoubu: 9.5 s after the fatal deathblow, after his death animation.
+    *since_defeat += time.delta_secs();
+    let played_out = wolf.single().is_ok_and(|w| finisher_done(&combat, &w.state, enemies.iter()));
+    if !played_out && *since_defeat < FINISHER_CAP {
+        return;
+    }
+    *done = true;
+    let (text, art) = match kind {
+        5 => ("IMMORTALITY SEVERED", have("MENU_Fusigiri").then_some("MENU_Fusigiri")),
+        3 => ("GRACIOUS GIFT OF TEARS", None),
+        _ => ("SHINOBI EXECUTION", have("MENU_Ninsatsu").then_some("MENU_Ninsatsu")),
+    };
+    let serif = fonts.as_ref().and_then(|f| f.serif.clone());
+    let e = commands
+        .spawn((
+            Node { position_type: PositionType::Absolute, width: Val::Percent(100.0), height: Val::Percent(100.0), justify_content: JustifyContent::Center, align_items: AlignItems::Center, flex_direction: FlexDirection::Column, row_gap: Val::Vh(4.0), ..default() },
+            GlobalZIndex(90),
+            DefeatBanner,
+        ))
+        .with_children(|c| match art {
+            // The clip: the brush kanji over y 24-52 %, the name in small spaced caps at y 59 %.
+            Some(f) => {
+                c.spawn((Node { height: Val::Vh(30.0), ..default() }, ImageNode::new(assets.load(format!("hud/{f}.png"))).with_color(Color::WHITE.with_alpha(0.0)), DefeatBannerPart));
+                c.spawn((Text::new(text), font(&serif, 26.0), TextColor(Color::srgba(0.92, 0.88, 0.8, 0.0)), DefeatBannerPart));
+            }
+            None => {
+                c.spawn((Text::new(text), font(&serif, 56.0), TextColor(RED.with_alpha(0.0)), DefeatBannerPart));
+            }
+        })
+        .id();
+    *shown = Some((e, 0.0));
 }
 
 /// The title (and the picker) shows only itself: every other UI layer (the HUD, its marks, the debug text) is
@@ -894,6 +1022,16 @@ fn hide_hud_on_title(
 
 #[cfg(test)]
 mod tests {
+    /// The banner fades in over 0.4 s, holds 2.5 s and fades out over 0.4 s (the all-bosses clip).
+    #[test]
+    fn the_defeat_banner_fades_as_the_clip_does() {
+        assert_eq!(super::banner_alpha(0.0), 0.0);
+        assert!((super::banner_alpha(0.2) - 0.5).abs() < 1e-4);
+        assert_eq!(super::banner_alpha(1.5), 1.0);
+        assert_eq!(super::banner_alpha(2.9), 1.0);
+        assert!((super::banner_alpha(3.1) - 0.5).abs() < 1e-4);
+        assert!((super::BANNER_SECS - 3.3).abs() < 1e-4);
+    }
     use super::*;
 
     /// A resting mouse does not undo the keys: the hovered row takes the cursor only when the

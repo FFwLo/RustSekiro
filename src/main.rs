@@ -45,6 +45,7 @@ mod sandbox;
 mod showcase;
 mod model;
 mod paths;
+mod perf;
 mod photo;
 mod player;
 mod prosthetic;
@@ -104,7 +105,7 @@ fn main() {
             prosthetic::ProstheticPlugin,
         ))
         // Bevy's plugin tuples hold at most 15.
-        .add_plugins((photo::PhotoPlugin, status::StatusPlugin, duel::DuelPlugin, enemy_bullet::EnemyBulletPlugin, showcase::ShowcasePlugin))
+        .add_plugins((photo::PhotoPlugin, status::StatusPlugin, duel::DuelPlugin, enemy_bullet::EnemyBulletPlugin, showcase::ShowcasePlugin, perf::PerfPlugin))
         .run();
 }
 

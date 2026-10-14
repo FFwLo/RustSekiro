@@ -15,6 +15,9 @@
    texture, else its own s<id:05>, else its first texture that is not _n / _r / _m (this picks
    every pair of the old hand list in tools/extract.ps1: 4010 -> s04009_a, 8060 -> s34030 ...).
 
+`--ids <file>` also converts the ids in that file (any integers in it, e.g. a boss sweep's id
+list: SpEffectVfx of boss SpEffects, bullet chains, EMEVD effects the sources above miss).
+
 Needs: `sekiro-extract unpack <Sekiro dir> extracted 'sfxbnd_(commoneffects|m[0-9])'`, combat_data.json,
 `npm i` in tools/fxr-dump, and the built extractor (tools/sekiro-extract).
 """
@@ -43,6 +46,8 @@ EXTRACT = os.environ.get('SEKIRO_EXTRACT') or next(
     os.path.join(ROOT, 'tools/sekiro-extract/target/release/sekiro-extract.exe'))
 # The blood sprays gore.rs drives from the TAE.
 EXTRA = [220502, 220503, 220505, 220506]
+# SpEffects put on Wolf from outside his own list (their SpEffectVfx effects).
+SP_EFFECTS = [211000]
 
 
 def used_ids():
@@ -76,7 +81,20 @@ def used_ids():
     # initSfxId (once) / midstSfxId (while it lasts), src/status.rs.
     vfx = json.load(open(os.path.join(ROOT, 'extracted/json/params/SpEffectVfxParam.json'), encoding='utf-8'))['rows']
     vfx = {r['id']: r for r in (vfx.values() if isinstance(vfx, dict) else vfx)}
-    for s in d['player'].get('spEffects', {}).values():
+    # Plus the perilous warning on Wolf: SpEffect 211000 -> SpEffectVfx 48100 "Kanji" -> 600035
+    # on dummy 220 (src/enemy_bullet.rs).
+    sp = json.load(open(os.path.join(ROOT, 'extracted/json/params/SpEffectParam.json'), encoding='utf-8'))['rows']
+    sp = {r['id']: r for r in (sp.values() if isinstance(sp, dict) else sp)}
+    # And the SpEffects a character's TAE puts on itself (SpEffect event 67: the Demon of Hatred's
+    # burning body 3702011 -> 670215 / 670216, the Guardian Ape 3510500 -> 651050), src/ffx.rs.
+    tae_sp = set()
+    for c in chars:
+        for a in c['anims'].values():
+            if isinstance(a, dict):
+                for e in a.get('events', []):
+                    if e.get('type') == 67 and isinstance((e.get('args') or {}).get('SpEffectID'), int):
+                        tae_sp.add(e['args']['SpEffectID'])
+    for s in list(d['player'].get('spEffects', {}).values()) + [sp.get(i, {}) for i in SP_EFFECTS] + [sp.get(i, {}) for i in sorted(tae_sp)]:
         for k in ('vfxId', 'vfxId1'):
             r = vfx.get(s.get(k, -1))
             for f in ('initSfxId', 'midstSfxId'):
@@ -117,7 +135,10 @@ def dump(ids):
 def main():
     os.makedirs(OUT, exist_ok=True)
     os.makedirs(TEX, exist_ok=True)
-    dump(used_ids())
+    ids = used_ids()
+    if '--ids' in sys.argv:
+        ids |= {int(x) for x in re.findall(r'\d+', open(sys.argv[sys.argv.index('--ids') + 1]).read()) if int(x) > 0}
+    dump(ids)
     # References (2001 "sfx": id) until nothing new.
     while True:
         have = {int(os.path.basename(f)[:-5]) for f in glob.glob(os.path.join(OUT, '*.json'))}

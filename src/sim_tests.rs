@@ -79,9 +79,21 @@ fn app_build(chr: &str, npc_row: Option<i64>, group: Vec<crate::config::GroupEne
 
 fn enemy_state(app: &mut App) -> (String, String, f32) {
     let world = app.world_mut();
-    let mut q = world.query_filtered::<&Actor, (With<Enemy>, Without<crate::enemy::Cast>)>();
-    let a = q.single(world).unwrap();
+    let e = boss_in_play(world);
+    let a = world.get::<Actor>(e).unwrap();
     (a.state.clone(), a.anim.clone(), a.t)
+}
+
+/// The enemy the fight is about: the one character (the map script's cast aside), or, once the
+/// script has swapped it out (Lady Butterfly's 1000800 -> 1000810 at her change, m10 11005812),
+/// the enabled one with the largest HP pool.
+fn boss_in_play(world: &mut World) -> Entity {
+    let mut q = world.query_filtered::<(Entity, &Enemy, &Actor, Has<crate::enemy::Cast>), With<Enemy>>();
+    let all: Vec<(Entity, bool, f32, bool)> = q.iter(world).map(|(ent, e, a, cast)| (ent, e.disabled, a.hp_max, cast)).collect();
+    if let Some(main) = all.iter().find(|c| !c.3 && !c.1) {
+        return main.0;
+    }
+    all.iter().filter(|c| !c.1).max_by(|x, y| x.2.total_cmp(&y.2)).or(all.iter().find(|c| !c.3)).map(|c| c.0).expect("an enemy")
 }
 
 fn player_state(app: &mut App) -> (String, String, f32, f32) {
@@ -276,12 +288,20 @@ fn defend_against(anim: &str, lead: f32, act: Action, stick: Vec2) -> String {
 }
 
 fn defend_against_with(chr: &str, anim: &str, lead: f32, act: Action, stick: Vec2) -> String {
+    defend_against_locked(chr, anim, lead, act, stick, false)
+}
+
+/// As `defend_against_with`, locked on to the enemy when `locked` (the 4-way steps).
+fn defend_against_locked(chr: &str, anim: &str, lead: f32, act: Action, stick: Vec2, locked: bool) -> String {
     let mut app = app_with(chr);
     {
         let world = app.world_mut();
-        let mut q = world.query::<(&mut Enemy, &mut Actor)>();
-        let (mut e, mut a) = q.single_mut(world).unwrap();
+        let mut q = world.query::<(Entity, &mut Enemy, &mut Actor)>();
+        let (entity, mut e, mut a) = q.single_mut(world).unwrap();
         e.force_anim(&mut a, anim);
+        if locked {
+            world.resource_mut::<crate::camera::LockOn>().target = Some(entity);
+        }
     }
     let mut pressed = false;
     for _ in 0..300 {
@@ -304,6 +324,53 @@ fn defend_against_with(chr: &str, anim: &str, lead: f32, act: Action, stick: Vec
     let (ps, _, _, _) = player_state(&mut app);
     format!("{}
 enemy={es} player={ps}", log_text(&app))
+}
+
+/// Wolf's own spCategory 1001 SpEffects turn a hit's reaction level as an enemy's do: in the
+/// knock-down wake-up (a000_100310, 100306: small / middle / large / push -> minimum) the General's
+/// slash lands (HP) but does not re-stagger him (it played the damage state: a stunlock)
+/// (2026-10-13 round 29).
+#[test]
+fn wolfs_wake_up_super_armour_keeps_him_from_restaggering() {
+    let mut app = app_with("c1020");
+    let key = "a000_100310";
+    let t = {
+        let combat = app.world().resource::<Combat>();
+        let d = &combat.player;
+        (0..34)
+            .map(|f| (f as f32 + 0.5) / TAE_FPS)
+            .find(|&t| d.sp_effects_at(key, t).iter().any(|(id, _)| *id == 100306) && !d.events_at(key, t).any(|e| matches!(e.kind, 950 | 951 | 954)))
+            .expect("a 100306 frame without iframes")
+    };
+    {
+        let world = app.world_mut();
+        let mut q = world.query::<(&mut Enemy, &mut Actor)>();
+        let (mut e, mut a) = q.single_mut(world).unwrap();
+        e.force_anim(&mut a, "a000_003000");
+    }
+    let hold = |app: &mut App| {
+        let world = app.world_mut();
+        let mut a = world.query_filtered::<&mut Actor, With<Player>>().single_mut(world).unwrap();
+        if a.anim != key {
+            a.play("WakeUp", key);
+        }
+        a.prev_t = t;
+        a.t = t;
+    };
+    let hp0 = app.world_mut().query_filtered::<&Actor, With<Player>>().single(app.world()).unwrap().hp;
+    for _ in 0..300 {
+        hold(&mut app);
+        app.update();
+        if log_text(&app).contains("hit:") {
+            let log = log_text(&app);
+            let world = app.world_mut();
+            let a = world.query_filtered::<&Actor, With<Player>>().single(world).unwrap();
+            assert!(a.hp < hp0, "the slash did no damage");
+            assert_eq!((a.anim.as_str(), a.state.as_str()), (key, "WakeUp"), "re-staggered: {log}");
+            return;
+        }
+    }
+    panic!("the General's slash never hit: {}", log_text(&app));
 }
 
 /// a000_003010 "Advance thrust" (AtkParam 200: thrust, disableGuard 1, disableJustGuard 0).
@@ -335,6 +402,32 @@ fn stepping_into_a_perilous_thrust_is_a_mikiri() {
     let out = defend_against(PERILOUS_THRUST, 5.0 / TAE_FPS, Action::Step, Vec2::new(0.0, -1.0));
     assert!(out.contains("MIKIRI COUNTER"), "{out}");
     assert!(out.contains("enemy=ThrowDef13800") && out.contains("player=Mikiri"), "{out}");
+}
+
+/// A step's TAE 954 IFrames dodge by the attack's AtkParam trackType (FUN_140b68a50 bit test,
+/// 140b6.c:4234-4241): the side / back steps are types 6 / 7 / 2, the jump start type 1. A side
+/// step through the General's perilous sweep (judge 140, trackType 1) is hit; a back step through
+/// his perilous thrust (150, trackType 6) passes; a jump clears the sweep. Round 31: type 2 was
+/// "everything", so a step dodged the sweep too.
+#[test]
+fn a_side_step_does_not_dodge_a_sweep() {
+    let out = defend_against_locked("c1020", PERILOUS_SWEEP, 2.0 / TAE_FPS, Action::Step, Vec2::new(1.0, 0.0), true);
+    assert!(out.contains("enemy hit"), "{out}");
+}
+
+#[test]
+fn a_back_step_dodges_a_perilous_thrust() {
+    // Locked on, stick back (unlocked every step is GroundStep_F: the Mikiri step, and its
+    // IFrames 7 / 2 do not cover a thrust).
+    let out = defend_against_locked("c1020", PERILOUS_THRUST, 2.0 / TAE_FPS, Action::Step, Vec2::new(0.0, 1.0), true);
+    assert!(out.contains("player=GroundStep_B") || !out.contains("player=GroundStep_F"), "{out}");
+    assert!(!out.contains("enemy hit") && !out.contains("MIKIRI"), "{out}");
+}
+
+#[test]
+fn a_jump_clears_a_sweep() {
+    let out = defend_against(PERILOUS_SWEEP, 3.0 / TAE_FPS, Action::Jump, Vec2::ZERO);
+    assert!(!out.contains("enemy hit"), "{out}");
 }
 
 /// cargo test ai_trace -- --ignored --nocapture : prints 20 s of enemy AI decisions.
@@ -413,6 +506,42 @@ fn deathblow_plays_the_throw_pair() {
     assert!(switched.abs_diff(111) <= 3, "death anim {switched} frames in (live 111)");
 }
 
+/// The deathblow start commits the kill: nothing re-checks the enemy's break once the throw pair
+/// is made (the judge FUN_140be2d60 runs at pair time only; Wolf's W_ThrowKill needs env 274 and
+/// his own ref 211, c0000_transition.lua:5591-5595; c9997 ThrowDefCommonFunction leaves only on
+/// death / damage / fall / anim end). A press in the last frame of the break window still ends in
+/// ThrowDefDeath12001: the window stops counting once the start throw holds the enemy (the HANDOFF
+/// OPEN "deathblow start commits without re-checking": as the game).
+#[test]
+fn a_deathblow_pressed_at_the_end_of_the_break_still_kills() {
+    let mut app = app();
+    {
+        let world = app.world_mut();
+        world.resource_scope(|world, combat: Mut<Combat>| {
+            let mut q = world.query_filtered::<(&mut Enemy, &mut Actor, &mut Transform), Without<crate::enemy::Cast>>();
+            let (mut e, mut a, mut t) = q.single_mut(world).unwrap();
+            a.posture = a.posture_max;
+            e.on_posture_break(&mut a, &combat, false, 4.0);
+            // One frame of the window left.
+            e.set_broken_left(1.0 / 60.0);
+            t.translation.z = 1.8;
+        });
+    }
+    app.world_mut().resource_mut::<PadInput>().press(Action::Attack);
+    let mut seen = Vec::<String>::new();
+    for _ in 0..360u32 {
+        app.update();
+        let es = enemy_state(&mut app).0;
+        if seen.last() != Some(&es) {
+            seen.push(es.clone());
+        }
+        if es == "ThrowDefDeath12001" {
+            return;
+        }
+    }
+    panic!("the kill did not land: enemy {seen:?}, log {}", log_text(&app));
+}
+
 #[test]
 fn an_enemy_plays_its_own_anim_set() {
     // c1021 (spear General, NpcParam 10210000) has the resident SpEffect 200031 "Anime ID offset
@@ -467,9 +596,10 @@ fn break_and_deathblow(app: &mut App, frames: u32) -> Vec<String> {
 fn break_and_deathblow_died(app: &mut App, frames: u32) -> (Vec<String>, bool) {
     {
         let world = app.world_mut();
+        let boss = boss_in_play(world);
         world.resource_scope(|world, combat: Mut<Combat>| {
-            let mut q = world.query_filtered::<(&mut Enemy, &mut Actor, &mut Transform), Without<crate::enemy::Cast>>();
-            let (mut e, mut a, mut t) = q.single_mut(world).unwrap();
+            let mut q = world.query::<(&mut Enemy, &mut Actor, &mut Transform)>();
+            let (mut e, mut a, mut t) = q.get_mut(world, boss).unwrap();
             a.posture = a.posture_max;
             e.on_posture_break(&mut a, &combat, false, 4.0);
             t.translation = Vec3::new(0.0, CAPSULE_HALF_HEIGHT, 1.8);
@@ -491,7 +621,8 @@ fn break_and_deathblow_died(app: &mut App, frames: u32) -> (Vec<String>, bool) {
             states.push(s);
         }
         let world = app.world_mut();
-        died |= world.query_filtered::<&Enemy, Without<crate::enemy::Cast>>().single(world).unwrap().is_dead();
+        let boss = boss_in_play(world);
+        died |= world.get::<Enemy>(boss).unwrap().is_dead();
         // (A map script's Handle Boss Defeat: Isshin is defeated, not dead.)
         died |= world.resource::<crate::enemy::BossScript>().run.as_ref().is_some_and(|r| r.defeated.is_some());
     }
@@ -930,7 +1061,15 @@ fn duel_trace() {
         }
         app.update();
         let (es, _, _) = enemy_state(&mut app);
-        if es == last_state {
+        // While Wolf is down the enemy idles by design (110010 Pretending Dead in his revival
+        // wait, round 27): not a stall.
+        let wolf_down = {
+            let world = app.world_mut();
+            world.query_filtered::<&Actor, With<Player>>().single(world).unwrap().hp <= 0.0
+        };
+        if wolf_down {
+            since_change = 0;
+        } else if es == last_state {
             since_change += 1;
             worst_stall = worst_stall.max(since_change);
         } else {
@@ -1053,6 +1192,109 @@ fn gourd_heals_forty_percent_at_the_consume_frame() {
     assert_eq!(p.gourd, 2);
 }
 
+/// Round 26: a second drink press is the Repeat only inside a000_250000's
+/// SP_EF_REF_TAE_ENABLE_ITEM_REPEAT window (100315, 1.1-1.3 s); later in the accept window
+/// (flag 31 to 2.1 s) it restarts the full drink (c0000_transition.lua 3993-4008).
+#[test]
+fn a_late_second_drink_is_a_fresh_drink() {
+    let second = |at: usize| {
+        let mut app = app();
+        move_enemy_far(&mut app);
+        app.world_mut().resource_mut::<PadInput>().press(Action::UseItem);
+        for _ in 0..at {
+            app.update();
+        }
+        app.world_mut().resource_mut::<PadInput>().press(Action::UseItem);
+        let mut states = Vec::new();
+        for _ in 0..4 {
+            app.update();
+            let (s, _, _, _) = player_state(&mut app);
+            if states.last() != Some(&s) {
+                states.push(s);
+            }
+        }
+        states
+    };
+    let early = second(70);
+    assert!(early.iter().any(|s| s == "ItemGourdDrinkRepeat"), "{early:?}");
+    let late = second(95);
+    assert!(!late.iter().any(|s| s == "ItemGourdDrinkRepeat"), "{late:?}");
+}
+
+/// Drinking while walking is W_ItemGourdDrinkMove (HKS 3993-4009): the drink on the upper body
+/// while the legs walk on (is_upper_action), and it still heals (round 32: the standing clip
+/// slid along). Standing still it is the plain drink.
+#[test]
+fn drinking_while_walking_is_the_moving_drink() {
+    for (walking, want) in [(true, "ItemGourdDrinkMove"), (false, "ItemGourdDrink")] {
+        let mut app = app();
+        move_enemy_far(&mut app);
+        let gourd = {
+            let world = app.world_mut();
+            world.query::<&Player>().single(world).unwrap().gourd
+        };
+        for _ in 0..40 {
+            if walking {
+                app.world_mut().resource_mut::<PadInput>().stick = Vec2::new(0.0, 1.0);
+            }
+            app.update();
+        }
+        let start = {
+            let world = app.world_mut();
+            world.query_filtered::<&Transform, With<Player>>().single(world).unwrap().translation
+        };
+        app.world_mut().resource_mut::<PadInput>().press(Action::UseItem);
+        let mut seen = Vec::new();
+        for _ in 0..60 {
+            if walking {
+                app.world_mut().resource_mut::<PadInput>().stick = Vec2::new(0.0, 1.0);
+            }
+            app.update();
+            let (s, ..) = player_state(&mut app);
+            if seen.last() != Some(&s) {
+                seen.push(s);
+            }
+        }
+        assert!(seen.iter().any(|s| s == want), "walking {walking}: {seen:?}");
+        let world = app.world_mut();
+        let end = world.query_filtered::<&Transform, With<Player>>().single(world).unwrap().translation;
+        let left = world.query::<&Player>().single(world).unwrap().gourd;
+        assert_eq!(left, gourd - 1, "walking {walking}: the drink heals");
+        if walking {
+            assert!((end - start).with_y(0.0).length() > 1.0, "the legs walk on: moved {}", (end - start).length());
+        }
+    }
+}
+
+/// Pressing again in the repeat window after the last charge is
+/// W_ItemGourdDrinkRepeatFailed (a000_250006, 1.83 s; c0000_transition.lua 4024-4033), not the
+/// 2.33 s empty shake; later, the shake (round 30).
+#[test]
+fn an_empty_repeat_press_plays_the_repeat_failed_clip() {
+    for (at, want) in [(70usize, "ItemGourdDrinkRepeatFailed"), (150, "ItemGourdDrinkFailed")] {
+        let mut app = app();
+        move_enemy_far(&mut app);
+        {
+            let world = app.world_mut();
+            world.query::<&mut Player>().single_mut(world).unwrap().gourd = 1;
+        }
+        app.world_mut().resource_mut::<PadInput>().press(Action::UseItem);
+        for _ in 0..at {
+            app.update();
+        }
+        app.world_mut().resource_mut::<PadInput>().press(Action::UseItem);
+        let mut states = Vec::new();
+        for _ in 0..4 {
+            app.update();
+            let (s, ..) = player_state(&mut app);
+            if states.last() != Some(&s) {
+                states.push(s);
+            }
+        }
+        assert!(states.iter().any(|s| s == want), "press at {at}: {states:?}");
+    }
+}
+
 /// Crouched, the gourd is the crouch drink (HKS STYLE_TYPE_CROUCH: W_CrouchItemGourdDrink,
 /// a000_250010): Wolf stays crouched and it heals the same.
 #[test]
@@ -1136,6 +1378,70 @@ fn quick_shuriken_throw_reaches_the_enemy() {
     assert_eq!(q.single(world).unwrap().emblems, 14);
 }
 
+/// Round 59: Wolf's bullets respect the enemy's TAE 950 / 951 invulnerability as the sword
+/// does (a shuriken hit and interrupted a knock-down before).
+#[test]
+fn a_shuriken_passes_an_invulnerable_enemy() {
+    let mut app = app();
+    // An enemy anim with a long TAE 950 window, held in its middle.
+    let (anim, t) = {
+        let combat = app.world().resource::<Combat>();
+        let d = combat.enemy0();
+        let mut best: Option<(String, f32, f32)> = None;
+        for (k, a) in &d.anims {
+            for e in a.events.iter().filter(|e| e.kind == 950 || e.kind == 951) {
+                if best.as_ref().is_none_or(|b| e.end - e.start > b.2 - b.1) {
+                    best = Some((k.clone(), e.start, e.end));
+                }
+            }
+        }
+        let (k, s, e) = best.expect("no TAE 950 / 951 anim");
+        (k, (s + e) * 0.5)
+    };
+    let hold = |app: &mut App| {
+        let world = app.world_mut();
+        let mut q = world.query_filtered::<&mut Actor, (With<Enemy>, Without<crate::enemy::Cast>)>();
+        let mut a = q.single_mut(world).unwrap();
+        if a.anim != anim {
+            a.play("Down", &anim);
+        }
+        a.t = t;
+        a.prev_t = t;
+        a.hp
+    };
+    let hp0 = hold(&mut app);
+    app.world_mut().resource_mut::<PadInput>().press(Action::Prosthetic);
+    for _ in 0..60 {
+        hold(&mut app);
+        app.update();
+    }
+    let out = log_text(&app);
+    assert!(out.contains("Loaded Shuriken ("), "{out}");
+    assert!(!out.contains("hit: -"), "{anim} t {t}: {out}");
+    assert_eq!(hold(&mut app), hp0);
+}
+
+/// Round 59: the Flame Vent follow-up's Bullet 720040 puts its spEffectIDForShooter 106020
+/// "Flame enchantment" (stateInfo 62) on Wolf, and that opens the sword's fire bullets (a050
+/// BulletBehavior judge 295 gated on StateInfo 62).
+#[test]
+fn the_flame_vent_enchants_the_sword() {
+    let mut app = app();
+    {
+        let combat = app.world().resource::<Combat>();
+        let Some(row) = combat.player.bullet_rows.get("720040") else { return };
+        assert_eq!(row.sp_effect_id_for_shooter, 106020);
+        assert!(!combat.player.resident_gates.contains(&62));
+    }
+    {
+        let world = app.world_mut();
+        let mut p = world.query::<&mut Player>().single_mut(world).unwrap();
+        p.timed.push((106020, 7.5));
+    }
+    app.update();
+    assert!(app.world().resource::<Combat>().player.resident_gates.contains(&62), "the enchantment opens no fire judges");
+}
+
 #[test]
 fn timed_step_dodges_through_the_slash() {
     // Neutral step 1 frame before the 6-frame hit window: GroundStep_N IFrames (General)
@@ -1210,6 +1516,14 @@ fn posture_break_staggers_then_a_second_hit_knocks_wolf_down() {
         q.single(world).unwrap().posture_max
     };
     set_player_posture(&mut app, max - 1.0);
+    // The second hit lands on a broken Wolf at x1.5 (SpEffect 109400, round 25): 128 + 192 HP
+    // would kill a level-1 Wolf, so give him room to show the knock-down.
+    {
+        let world = app.world_mut();
+        let mut q = world.query_filtered::<&mut Actor, With<Player>>();
+        let mut a = q.single_mut(world).unwrap();
+        (a.hp_max, a.hp) = (2000.0, 2000.0);
+    }
     let s = take_hit(&mut app, "a000_003000");
     assert!(s.starts_with("StandDamageBreak_"), "{s}\n{}", log_text(&app));
     let s = take_hit(&mut app, "a000_003000");
@@ -1295,6 +1609,197 @@ fn hit_in_the_air_uses_the_air_reactions() {
     assert!(s.starts_with("AirDamage"), "landed before the hit: {s}\n{}", log_text(&app));
 }
 
+/// Round 27: Wolf killed in a grab plays the grab clip on to its ChrActionFlag 69 (frame 70 of
+/// a210_600000), then W_ThrowDefDeathStart's clip + 1 (a210_600001), then the revival wait - not
+/// GroundDeathStart_F mid-throw (exe env 206 / 276; HKS 326-333).
+#[test]
+fn a_lethal_grab_plays_its_throw_death() {
+    let mut app = app();
+    move_enemy_far(&mut app);
+    {
+        let world = app.world_mut();
+        let mut a = world.query_filtered::<&mut Actor, With<Player>>().single_mut(world).unwrap();
+        a.play("Grabbed", "a210_600000");
+        a.t = 60.0 / TAE_FPS;
+        a.prev_t = a.t;
+        a.hp = 0.0;
+    }
+    let mut seen = Vec::<String>::new();
+    for _ in 0..60 * 4 {
+        app.update();
+        let (s, anim, _, _) = player_state(&mut app);
+        let s = format!("{s} {anim}");
+        if seen.last() != Some(&s) {
+            seen.push(s);
+        }
+    }
+    assert!(!seen.iter().any(|s| s.starts_with("GroundDeathStart_F")), "{seen:?}");
+    let death = seen.iter().position(|s| s == "ThrowDefDeathStart a210_600001");
+    assert!(death.is_some(), "{seen:?}");
+    // Round 37: the throw's own loop (W_ThrowDefRevivalStayLoop600000: a210_610002), not the
+    // ground one, and attack gets up by its W_ThrowDefRevival (a210_610003).
+    assert!(seen[death.unwrap()..].iter().any(|s| s == "ThrowDefRevivalStayLoop a210_610002"), "{seen:?}");
+    app.world_mut().resource_mut::<PadInput>().press(Action::Attack);
+    for _ in 0..10 {
+        app.update();
+    }
+    let (s, anim, _, _) = player_state(&mut app);
+    assert_eq!((s.as_str(), anim.as_str()), ("GroundRevival_Throw", "a210_610003"));
+}
+
+/// Round 37: with no resurrection left a grab's death ends in its W_ThrowDefDeathLoop600000
+/// (a210_610001), which is the death screen's loop too.
+#[test]
+fn a_final_grab_death_loops_in_the_throws_own_death_loop() {
+    let mut app = app();
+    move_enemy_far(&mut app);
+    {
+        let world = app.world_mut();
+        let mut q = world.query_filtered::<(&mut Actor, &mut Player), With<Player>>();
+        let (mut a, mut p) = q.single_mut(world).unwrap();
+        p.resurrections = 0;
+        a.play("Grabbed", "a210_600000");
+        a.t = 60.0 / TAE_FPS;
+        a.prev_t = a.t;
+        a.hp = 0.0;
+    }
+    let mut seen = Vec::<String>::new();
+    for _ in 0..60 * 4 {
+        app.update();
+        let (s, anim, _, _) = player_state(&mut app);
+        let s = format!("{s} {anim}");
+        if seen.last() != Some(&s) {
+            seen.push(s);
+        }
+    }
+    assert_eq!(seen.last().map(String::as_str), Some("ThrowDefDeathLoop a210_610001"), "{seen:?}");
+}
+
+/// Round 37: a grab with a blow-away end (c0000_transition 386-399) throws Wolf into its own
+/// chain instead of idle: the Guardian Ape's 600380 -> ThrowDefLargeBlowStart600380 (a000_199231)
+/// -> its landing (199251) -> StandDamageLargeDown face down; at HP 0 the Death chain (199261 ...)
+/// whose landing ends in the face-down revival-wait loop. 600030 -> the generic
+/// ThrowDefLargeBlowStart (199201), landing as StandDamageLargeBlowLand_B.
+#[test]
+fn grabs_with_a_blow_away_end_throw_wolf_down() {
+    for (grab, hp, want) in [
+        ("a230_600380", 100.0, ["ThrowDefLargeBlowStart600380", "ThrowDefLargeBlowLand600380", "StandDamageLargeDown_FaceDown"]),
+        ("a230_600380", 0.0, ["ThrowDefDeathLargeBlowStart600380", "ThrowDefDeathLargeBlowLand600380", "GroundRevivalStayLoop_B"]),
+        ("a213_600030", 100.0, ["ThrowDefLargeBlowStart", "StandDamageLargeBlowLand_B", "StandDamageLargeDown_FaceDown"]),
+    ] {
+        let mut app = app();
+        move_enemy_far(&mut app);
+        {
+            let world = app.world_mut();
+            world.resource_scope(|world, combat: Mut<Combat>| {
+                let mut a = world.query_filtered::<&mut Actor, With<Player>>().single_mut(world).unwrap();
+                a.play("Grabbed", grab);
+                a.t = (combat.player.length(grab) - 0.02).max(0.0);
+                a.prev_t = a.t;
+                a.hp = hp;
+            });
+        }
+        let mut seen = Vec::<String>::new();
+        for _ in 0..60 * 6 {
+            app.update();
+            let s = player_state(&mut app).0;
+            if seen.last() != Some(&s) {
+                seen.push(s);
+            }
+        }
+        let mut at = 0;
+        for w in want {
+            match seen[at..].iter().position(|s| s == w) {
+                Some(i) => at += i,
+                None => panic!("{grab} hp {hp}: no {w} in order: {seen:?}"),
+            }
+        }
+    }
+}
+
+/// Round 60: HP emptied during the Ape's non-lethal blow-away (a tick) lets it land, then
+/// dies; before, "ThrowDef*" counted as a death state and Wolf stayed dead with no death.
+/// Killed in the air by no hit (a status tick): W_FallDeathDmgStartNaturalDeath (HKS 813-817).
+#[test]
+fn a_tick_kill_in_the_ape_blow_away_still_dies() {
+    assert_eq!(crate::player::death_starts(None, true, false, false, false), ["FallDeathDmgStartNaturalDeath"]);
+    assert!(crate::player::death_starts(None, false, false, false, false).is_empty());
+    let mut app = app();
+    move_enemy_far(&mut app);
+    {
+        let world = app.world_mut();
+        world.resource_scope(|world, combat: Mut<Combat>| {
+            let mut a = world.query_filtered::<&mut Actor, With<Player>>().single_mut(world).unwrap();
+            a.play("Grabbed", "a230_600380");
+            a.t = (combat.player.length("a230_600380") - 0.02).max(0.0);
+            a.prev_t = a.t;
+            a.hp = 100.0;
+        });
+    }
+    let mut seen = Vec::<String>::new();
+    for i in 0..60 * 8 {
+        app.update();
+        let s = player_state(&mut app).0;
+        if s == "ThrowDefLargeBlowStart600380" && i < 30 {
+            app.world_mut().query_filtered::<&mut Actor, With<Player>>().single_mut(app.world_mut()).unwrap().hp = 0.0;
+        }
+        if seen.last() != Some(&s) {
+            seen.push(s);
+        }
+    }
+    assert!(seen.iter().any(|s| s == "ThrowDefLargeBlowStart600380"), "{seen:?}");
+    assert!(seen.iter().any(|s| s.contains("RevivalStayLoop") || s.contains("DeathLoop")), "never died: {seen:?}");
+}
+
+/// Round 60: HP emptied during the revival anim starts the death again (HKS 5605), not after it.
+#[test]
+fn a_kill_during_the_revival_dies_at_once() {
+    let mut app = app();
+    move_enemy_far(&mut app);
+    app.world_mut().query_filtered::<&mut Actor, With<Player>>().single_mut(app.world_mut()).unwrap().hp = 0.0;
+    for _ in 0..300 {
+        app.update();
+        if player_state(&mut app).0 == "GroundRevivalStayLoop_F" {
+            break;
+        }
+    }
+    app.world_mut().resource_mut::<PadInput>().press(Action::Attack);
+    for _ in 0..30 {
+        app.update();
+        if player_state(&mut app).0.starts_with("GroundRevival_") {
+            break;
+        }
+    }
+    assert!(player_state(&mut app).0.starts_with("GroundRevival_"), "{:?}", player_state(&mut app));
+    app.update();
+    app.world_mut().query_filtered::<&mut Actor, With<Player>>().single_mut(app.world_mut()).unwrap().hp = 0.0;
+    app.update();
+    app.update();
+    let s = player_state(&mut app).0;
+    assert!(s.starts_with("GroundDeathStart"), "{s}");
+}
+
+/// Round 60: a dead Wolf left above the floor (knocked off a ledge) falls to it.
+#[test]
+fn a_dead_wolf_above_the_floor_falls() {
+    let mut app = app();
+    move_enemy_far(&mut app);
+    app.update();
+    let floor = {
+        let world = app.world_mut();
+        let (mut a, mut tf) = world.query_filtered::<(&mut Actor, &mut Transform), With<Player>>().single_mut(world).unwrap();
+        let floor = crate::map::ground_y(tf.translation) + crate::player::CAPSULE_HALF_HEIGHT;
+        tf.translation.y = floor + 2.0;
+        a.hp = 0.0;
+        floor
+    };
+    for _ in 0..120 {
+        app.update();
+    }
+    let y = app.world_mut().query_filtered::<&Transform, With<Player>>().single(app.world()).unwrap().translation.y;
+    assert!((y - floor).abs() < 0.05, "the body hangs at {y} over the floor {floor}");
+}
+
 #[test]
 fn resurrection_returns_wolf_at_half_hp() {
     let mut app = app();
@@ -1305,11 +1810,11 @@ fn resurrection_returns_wolf_at_half_hp() {
     }
     for _ in 0..300 {
         app.update();
-        if player_state(&mut app).0 == "GroundDeathLoop_F" {
+        if player_state(&mut app).0 == "GroundRevivalStayLoop_F" {
             break;
         }
     }
-    assert_eq!(player_state(&mut app).0, "GroundDeathLoop_F");
+    assert_eq!(player_state(&mut app).0, "GroundRevivalStayLoop_F");
     app.world_mut().resource_mut::<PadInput>().press(Action::Attack);
     for _ in 0..10 {
         app.update();
@@ -1319,6 +1824,122 @@ fn resurrection_returns_wolf_at_half_hp() {
     assert_eq!(a.state, "GroundRevival_F");
     // SpEffect 110015 changeHpRate -50: half of max HP (+1 from the revival kick-off).
     assert!((a.hp - (a.hp_max * 0.5 + 1.0)).abs() < 1.0, "hp {} / {}", a.hp, a.hp_max);
+}
+
+/// A small-blow posture break lands face down only from the back sector (HKS 1678-1684, the
+/// 4-way damage_angle): hit from behind the shoulder (its _B clip) it is still face up.
+#[test]
+fn a_break_small_blow_from_the_side_lands_face_up() {
+    for (back_sector, want) in [(false, "StandDamageBreakDown_FaceUp"), (true, "StandDamageBreakDown_FaceDown")] {
+        let mut app = app();
+        move_enemy_far(&mut app);
+        app.update();
+        {
+            let world = app.world_mut();
+            world.resource_scope(|world, combat: Mut<Combat>| {
+                let mut a = world.query_filtered::<&mut Actor, With<Player>>().single_mut(world).unwrap();
+                assert!(a.play_state(&combat.player, "StandDamageBreakSmallBlow_B"));
+                a.hit_from_back = true;
+                a.hit_back_quadrant = back_sector;
+            });
+        }
+        let mut next = None;
+        for _ in 0..400 {
+            app.update();
+            let s = player_state(&mut app).0;
+            if s != "StandDamageBreakSmallBlow_B" {
+                next = Some(s);
+                break;
+            }
+        }
+        assert_eq!(next.as_deref(), Some(want), "back sector {back_sector}");
+    }
+}
+
+/// Killed from behind, Wolf dies face down (BEH_R_DEATH 974-983: DEATH_TYPE_COMMON_BACK):
+/// Round 40: BEH_R_DEATH 785-951 - the killing hit's damage level / element picks Wolf's death:
+/// EXLARGE on the ground the large blow-away (StandDamageDeathLargeBlowStart_F -> .. Land_F,
+/// then the _B stay loop: IndexDeath B), SMALL_BLOW from behind StandDamageDeathSmallBlow_B,
+/// lightning GroundDeathStartElectricShock, and a plain hit in the air the fall death
+/// (FallDeathDmgStartNaturalDeath -> LandFallDeathDmgB -> LandRevivalStayLoop_B, whose revival
+/// is LandRevival_B). Before, all took GroundDeathStart.
+#[test]
+fn a_killing_hit_picks_the_death_by_its_level() {
+    let cases: [((i64, i64), bool, bool, &[&str], &str); 4] = [
+        ((4, 0), false, false, &["StandDamageDeathLargeBlowStart_F", "StandDamageDeathLargeBlowLand_F"], "GroundRevivalStayLoop_B"),
+        ((7, 0), false, true, &["StandDamageDeathSmallBlow_B"], "GroundRevivalStayLoop_B"),
+        ((2, 6), false, false, &["GroundDeathStartElectricShock"], "GroundRevivalStayLoop_B"),
+        ((0, 0), true, false, &["FallDeathDmgStartNaturalDeath", "LandFallDeathDmgB"], "LandRevivalStayLoop_B"),
+    ];
+    for (hit, air, back, want, stay) in cases {
+        let mut app = app();
+        move_enemy_far(&mut app);
+        {
+            let world = app.world_mut();
+            let (mut a, mut t) = world.query_filtered::<(&mut Actor, &mut Transform), With<Player>>().single_mut(world).unwrap();
+            a.hp = 0.0;
+            a.death_hit = Some(hit);
+            a.hit_back_quadrant = back;
+            if air {
+                a.airborne = true;
+                a.vel_y = 0.0;
+                t.translation.y += 3.0;
+            }
+        }
+        let mut seen: Vec<String> = Vec::new();
+        for _ in 0..60 * 12 {
+            app.update();
+            let s = player_state(&mut app).0;
+            if seen.last() != Some(&s) {
+                seen.push(s.clone());
+            }
+            if s == stay {
+                break;
+            }
+        }
+        for w in want {
+            assert!(seen.iter().any(|s| s == w), "{hit:?}: no {w} in {seen:?}");
+        }
+        assert_eq!(seen.last().map(String::as_str), Some(stay), "{hit:?}: {seen:?}");
+        if air {
+            app.world_mut().resource_mut::<PadInput>().press(Action::Attack);
+            for _ in 0..10 {
+                app.update();
+            }
+            assert_eq!(player_state(&mut app).0, "LandRevival_B");
+        }
+    }
+}
+
+/// GroundDeathStart_B, the _B stay loop, and the revival gets up from it (GroundRevival_B).
+#[test]
+fn a_death_from_behind_falls_face_down() {
+    let mut app = app();
+    move_enemy_far(&mut app);
+    {
+        let world = app.world_mut();
+        let mut a = world.query_filtered::<&mut Actor, With<Player>>().single_mut(world).unwrap();
+        a.hp = 0.0;
+        a.hit_from_back = true;
+    }
+    let mut seen: Vec<String> = Vec::new();
+    for _ in 0..300 {
+        app.update();
+        let s = player_state(&mut app).0;
+        if seen.last() != Some(&s) {
+            seen.push(s.clone());
+        }
+        if s == "GroundRevivalStayLoop_B" {
+            break;
+        }
+    }
+    assert!(seen.iter().any(|s| s == "GroundDeathStart_B"), "{seen:?}");
+    assert_eq!(seen.last().map(String::as_str), Some("GroundRevivalStayLoop_B"), "{seen:?}");
+    app.world_mut().resource_mut::<PadInput>().press(Action::Attack);
+    for _ in 0..10 {
+        app.update();
+    }
+    assert_eq!(player_state(&mut app).0, "GroundRevival_B");
 }
 
 #[test]
@@ -1383,6 +2004,89 @@ fn ochimusha_deathblow_uses_its_own_throw_rows() {
     // (the General's rows use a201), enemy ThrowDef 12000.
     assert_eq!((ps.as_str(), pa.as_str()), ("Deathblow", "a200_510000"), "{}", log_text(&app));
     assert!(es.starts_with("ThrowDef"), "{es}");
+}
+
+/// The castle Owl's (50600000, think 50601000 -> 506001) deflected warp slash (a000_003035,
+/// judge 220: BehaviorParam 250601220 category 7, justDeflectedAction 2) bounds into
+/// AttackBoundEnemy2_Left a000_008603 (c9997 ExecAttackJustBound on damage type 1009), whose TAE
+/// 200226 makes Kengeki_Activate pick Kengeki09 / 10: the 3090 sweep (perilous) or 3091. Before,
+/// every bound was Enemy1 (200200/1) and the Owl's perilous never came (0 % in the traces).
+#[test]
+fn the_owls_deflected_warp_slash_bounds_into_its_sweep() {
+    if !std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/extracted/enemies/c5060.json")).exists() {
+        return;
+    }
+    assert_eq!(crate::data::behavior_category(250601220), 7);
+    assert_eq!(crate::data::behavior_category(250601500), 6);
+    let mut app = app_with("c5060");
+    for _ in 0..30 {
+        app.update();
+    }
+    {
+        let world = app.world_mut();
+        let boss = boss_in_play(world);
+        let wolf = world.query_filtered::<&Transform, With<Player>>().single(world).unwrap().translation;
+        let bt = world.get::<Transform>(boss).unwrap().translation;
+        let at = wolf + (bt - wolf).with_y(0.0).normalize_or_zero() * 2.0;
+        world.get_mut::<Transform>(boss).unwrap().translation = at;
+        world.query_filtered::<&mut Actor, With<Player>>().single_mut(world).unwrap().yaw = crate::combat::yaw_to(wolf, at);
+        let mut q = world.query::<(&mut Enemy, &mut Actor)>();
+        let (mut e, mut a) = q.get_mut(world, boss).unwrap();
+        a.yaw = crate::combat::yaw_to(at, wolf);
+        e.aggressive = true;
+        e.force_anim(&mut a, "a000_003035");
+    }
+    let mut pressed = false;
+    let mut bound = None;
+    for f in 0..240 {
+        if let Some(dt) = time_to_enemy_hit(&mut app) {
+            if !pressed && dt <= 2.0 / TAE_FPS {
+                let mut pad = app.world_mut().resource_mut::<PadInput>();
+                pad.press(Action::Guard);
+                pad.guard_held = true;
+                pressed = true;
+            }
+        }
+        app.update();
+        let world = app.world_mut();
+        let boss = boss_in_play(world);
+        let s = world.get::<Actor>(boss).unwrap().state.clone();
+        if std::env::var("OWL_DBG").is_ok() {
+            let (ws, wa, wt, _) = player_state(&mut app);
+            let (es, ea, et) = enemy_state(&mut app);
+            eprintln!("f{f} wolf {ws} {wa} {wt:.2} | boss {es} {ea} {et:.2} | hit in {:?}", time_to_enemy_hit(&mut app));
+        }
+        if s.starts_with("AttackBound") {
+            bound = Some((f, s));
+            break;
+        }
+    }
+    let out = log_text(&app);
+    assert!(out.contains("YOU DEFLECT"), "{out}");
+    let (f0, state) = bound.expect("a bound reaction");
+    assert_eq!(state, "AttackBoundEnemy2_Left", "{out}");
+    {
+        let world = app.world_mut();
+        let boss = boss_in_play(world);
+        let e = world.get::<Enemy>(boss).unwrap();
+        assert!(!e.clash.iter().any(|c| c.0 == 200200 || c.0 == 200201), "the engine row hides the clip's 200226: {:?}", e.clash);
+    }
+    let mut next = None;
+    for f in f0..(f0 + 60 * 5) {
+        app.update();
+        let world = app.world_mut();
+        let boss = boss_in_play(world);
+        let a = world.get::<Actor>(boss).unwrap();
+        if std::env::var("OWL_DBG").is_ok() && (f - f0) % 6 == 0 {
+            let e = world.get::<Enemy>(boss).unwrap();
+            eprintln!("f{f} boss {} {} {:.2} | {} | clash {:?}", a.state, a.anim, a.t, e.ai_desc, e.clash);
+        }
+        if a.anim == "a000_003090" || a.anim == "a000_003091" {
+            next = Some(a.anim.clone());
+            break;
+        }
+    }
+    assert!(next.is_some(), "no Kengeki09 / 10 answer after the special bound:\n{}", log_text(&app));
 }
 
 #[test]
@@ -1526,6 +2230,36 @@ fn attack_while_holding_guard_is_the_combat_art() {
     }
     assert!(seen.iter().any(|s| s == "GroundSpecialAttackCombo1"), "{seen:?}");
     assert!(!seen.iter().any(|s| s == "DeflectGuardAttack"), "{seen:?}");
+}
+
+#[test]
+fn guard_and_attack_without_an_art_still_slashes() {
+    // Round 54: with no art equipped the pair became a CombatArt request nothing took (HKS 6193
+    // needs env(345) ~= SP_ATK_TYPE_NONE), and the press was lost.
+    let mut app = app();
+    move_enemy_far(&mut app);
+    app.world_mut().resource_mut::<crate::config::GameConfig>().player.combat_art = 0;
+    {
+        let mut pad = app.world_mut().resource_mut::<PadInput>();
+        pad.press(Action::Guard);
+        pad.guard_held = true;
+    }
+    for _ in 0..60 {
+        app.update();
+        app.world_mut().resource_mut::<PadInput>().guard_held = true;
+    }
+    app.world_mut().resource_mut::<PadInput>().press(Action::Attack);
+    let mut seen = Vec::<String>::new();
+    for _ in 0..20 {
+        app.world_mut().resource_mut::<PadInput>().guard_held = true;
+        app.update();
+        let s = player_state(&mut app).0;
+        if seen.last() != Some(&s) {
+            seen.push(s);
+        }
+    }
+    assert!(seen.iter().any(|s| s.contains("Attack")), "the press was lost: {seen:?}");
+    assert!(!seen.iter().any(|s| s.contains("SpecialAttack")), "{seen:?}");
 }
 
 #[test]
@@ -1698,18 +2432,85 @@ fn force_player(app: &mut App, state: &str, frame: f32) {
 
 #[test]
 fn guard_during_a_block_recoil_adds_a_deflect_window() {
-    // Ref 228 (StandDeflectEasySmall frames 0-9) -> additive AddHardDeflectGuard, recoil keeps playing.
-    let mut app = app();
+    // Hard deflect (STYLE_TYPE_STAND): ref 228 -> BEH_A_DEFLECT_GUARD_START's additive
+    // AddHardDeflectGuard, the recoil keeps playing.
+    let mut app = self::app();
     app.update();
-    force_player(&mut app, "StandDeflectEasySmall_V1_F", 2.0);
+    force_player(&mut app, "StandDeflectHardSmall_F", 2.0);
     app.world_mut().resource_mut::<PadInput>().press(Action::Guard);
     app.update();
     app.update();
+    {
+        let world = app.world_mut();
+        let a = world.query_filtered::<&Actor, With<Player>>().single(world).unwrap();
+        assert_eq!(a.state, "StandDeflectHardSmall_F");
+        assert!(!a.add_anim.is_empty(), "no additive deflect layer");
+    }
+    // Round 61: the easy (block) recoil is STYLE_TYPE_GROUND_GUARD, where START never runs:
+    // BEH_A_DEFLECT_GUARD_CONTINUE takes ref 227 -> StandToDeflectGuard1Reverse, no layer -
+    // and from a tap already let go (CONTINUE needs no hold).
+    let mut app = self::app();
+    app.update();
+    force_player(&mut app, "StandDeflectEasySmall_V1_F", 2.0);
+    app.world_mut().resource_mut::<PadInput>().press(Action::Guard);
+    app.world_mut().resource_mut::<PadInput>().guard_held = false;
+    app.update();
+    app.update();
     let world = app.world_mut();
-    let mut q = world.query_filtered::<&Actor, With<Player>>();
-    let a = q.single(world).unwrap();
-    assert_eq!(a.state, "StandDeflectEasySmall_V1_F");
+    let a = world.query_filtered::<&Actor, With<Player>>().single(world).unwrap();
+    assert_eq!(a.state, "StandToDeflectGuard1Reverse");
+    assert!(a.add_anim.is_empty(), "layer {}", a.add_anim);
+}
+
+/// Round 61 (HKS 2968-2970): guard in an air easy recoil's ref 228 adds AddHardDeflectGuard and
+/// the recoil plays on, as on the ground.
+#[test]
+fn guard_in_an_air_recoil_adds_a_deflect_window() {
+    let mut app = app();
+    app.update();
+    force_player(&mut app, "AirDeflectEasySmall_L", 2.0);
+    {
+        let world = app.world_mut();
+        let (mut a, mut tf) = world.query_filtered::<(&mut Actor, &mut Transform), With<Player>>().single_mut(world).unwrap();
+        a.airborne = true;
+        tf.translation.y += 3.0;
+    }
+    app.world_mut().resource_mut::<crate::config::GameConfig>().player.unlock_all_moves = true;
+    app.world_mut().resource_mut::<PadInput>().press(Action::Guard);
+    app.world_mut().resource_mut::<PadInput>().guard_held = true;
+    app.update();
+    let world = app.world_mut();
+    let a = world.query_filtered::<&Actor, With<Player>>().single(world).unwrap();
+    assert_eq!(a.state, "AirDeflectEasySmall_L");
     assert!(!a.add_anim.is_empty(), "no additive deflect layer");
+}
+
+/// Round 61: a press in SprintToDeflectGuard (guard style) is CONTINUE, never the sprint deflect
+/// again; LandAirDeflectGuard's ref 212 steps the spam chain; letting go in an easy recoil's
+/// ref 207 ends the guard (DeflectGuardToStand).
+#[test]
+fn guard_style_presses_continue_the_guard() {
+    let mut app = self::app();
+    app.update();
+    force_player(&mut app, "SprintToDeflectGuard", 8.0);
+    app.world_mut().resource_mut::<PadInput>().press(Action::Guard);
+    app.world_mut().resource_mut::<PadInput>().guard_held = true;
+    app.update();
+    let s = player_state(&mut app).0;
+    assert!(s.starts_with("StandToDeflectGuard"), "{s}");
+    let mut app = self::app();
+    app.update();
+    force_player(&mut app, "LandAirDeflectGuard", 10.0);
+    app.world_mut().resource_mut::<PadInput>().press(Action::Guard);
+    app.world_mut().resource_mut::<PadInput>().guard_held = true;
+    app.update();
+    assert_eq!(player_state(&mut app).0, "StandToDeflectGuard2");
+    let mut app = self::app();
+    app.update();
+    force_player(&mut app, "StandDeflectEasySmall_V1_F", 20.0);
+    app.world_mut().resource_mut::<PadInput>().guard_held = false;
+    app.update();
+    assert_eq!(player_state(&mut app).0, "DeflectGuardToStand");
 }
 
 #[test]
@@ -1753,6 +2554,82 @@ fn attack_out_of_a_sprint_loop_is_a_sprint_attack() {
     assert!(seen.iter().any(|s| s.starts_with("SprintAttack_")), "{seen:?}");
 }
 
+/// Round 26: the sliding sprint deflect only with ref 1 up (c0000_transition.lua 4443-4458):
+/// out of SprintLoop it is SprintToDeflectGuard; out of a sprint attack's recovery (a050_302011,
+/// guard accepted at frames 33-68, no ref 1) the plain StandToDeflectGuard.
+#[test]
+fn only_a_running_sprint_gives_the_sliding_deflect() {
+    let deflect_from = |state: &str, frame: f32, run: bool| {
+        let mut app = app();
+        app.update();
+        if run {
+            let mut pad = app.world_mut().resource_mut::<PadInput>();
+            pad.stick = Vec2::new(0.0, 1.0);
+            pad.dodge_held = true;
+        }
+        force_player(&mut app, state, frame);
+        app.world_mut().resource_mut::<PadInput>().press(Action::Guard);
+        let mut seen = Vec::<String>::new();
+        for _ in 0..4 {
+            app.update();
+            let s = player_state(&mut app).0;
+            if seen.last() != Some(&s) {
+                seen.push(s);
+            }
+        }
+        seen
+    };
+    let run = deflect_from("SprintLoop", 3.0, true);
+    assert!(run.iter().any(|s| s == "SprintToDeflectGuard"), "{run:?}");
+    let attack = deflect_from("SprintAttack_R", 45.0, false);
+    assert!(attack.iter().any(|s| s == "StandToDeflectGuard"), "{attack:?}");
+    assert!(!attack.iter().any(|s| s == "SprintToDeflectGuard"), "{attack:?}");
+}
+
+/// Round 26: a jump out of a sprint (ref 1) is W_SprintJumpReady a000_201200 -> SprintJumpStart
+/// a000_201210, launched by ChrPhysicsVelocityChangeParam 121 (9.15 m/s forward, 9.64 up), not
+/// the plain forward jump's row 101 (6.4 m/s); c0000_transition.lua 2784-2789.
+#[test]
+fn a_sprint_jump_is_the_fast_long_jump() {
+    let mut app = app();
+    app.update();
+    {
+        let mut pad = app.world_mut().resource_mut::<PadInput>();
+        pad.stick = Vec2::new(0.0, 1.0);
+        pad.dodge_held = true;
+    }
+    force_player(&mut app, "SprintLoop", 3.0);
+    app.world_mut().resource_mut::<PadInput>().press(Action::Jump);
+    let mut seen = Vec::<String>::new();
+    let mut fastest = 0.0f32;
+    for _ in 0..40 {
+        app.update();
+        let s = player_state(&mut app).0;
+        let world = app.world_mut();
+        let a = world.query_filtered::<&Actor, With<Player>>().single(world).unwrap();
+        fastest = fastest.max(a.air_base.with_y(0.0).length());
+        if seen.last() != Some(&s) {
+            seen.push(s);
+        }
+    }
+    assert!(seen.iter().any(|s| s == "SprintJumpReady") && seen.iter().any(|s| s == "SprintJumpStart"), "{seen:?}");
+    assert!((fastest - 9.15).abs() < 0.3, "launch {fastest} m/s {seen:?}");
+    {
+        let mut pad = app.world_mut().resource_mut::<PadInput>();
+        pad.stick = Vec2::ZERO;
+        pad.dodge_held = false;
+    }
+    for _ in 0..240 {
+        app.update();
+        let s = player_state(&mut app).0;
+        if seen.last() != Some(&s) {
+            seen.push(s);
+        }
+    }
+    assert!(seen.iter().any(|s| s == "LandForwardGroundJump"), "{seen:?}");
+    assert_eq!(seen.last().map(String::as_str), Some("StandIdle"), "{seen:?}");
+}
+
 #[test]
 fn deathblow_from_behind_uses_the_back_throw() {
     // ThrowParam 11020111 (崩し背後本体): player a201_511200 (imports a201_510200's clip),
@@ -1784,6 +2661,14 @@ fn deathblow_from_behind_uses_the_back_throw() {
     let (ps, pa, _, _) = player_state(&mut app);
     assert_eq!((ps.as_str(), pa.as_str()), ("Deathblow", "a201_511200"), "{}", log_text(&app));
     assert_eq!(es, "ThrowDef13200", "{ea}");
+    // Round 37: the start throw hands `behind` on to the main one, so the defender keeps his back
+    // to Wolf (he used to be turned round to face him).
+    let wolf = app.world_mut().query_filtered::<&Transform, With<Player>>().single(app.world()).unwrap().translation;
+    let mut q = app.world_mut().query_filtered::<(&Actor, &Transform), (With<Enemy>, Without<crate::enemy::Cast>)>();
+    let (a, t) = q.single(app.world()).unwrap();
+    let at = t.translation;
+    let to_wolf = (wolf - at).with_y(0.0).normalize();
+    assert!(a.forward().dot(to_wolf) < 0.0, "yaw {} faces Wolf", a.yaw);
 }
 
 #[test]
@@ -1848,6 +2733,131 @@ fn equipped_combat_art_ichimonji_plays_with_its_own_attack() {
     assert!(w.iter().any(|(_, a, _)| std::ptr::eq(*a, art)), "uses the art's own AtkParam");
 }
 
+/// The enemy's (anim, posture).
+fn enemy_anim_posture(app: &mut App) -> (String, f32) {
+    let world = app.world_mut();
+    let a = world.query_filtered::<&Actor, (With<Enemy>, Without<crate::enemy::Cast>)>().single(world).unwrap();
+    (a.anim.clone(), a.posture)
+}
+
+/// Round 28: SpEffect staminaRecoverChangeSpeed adds to the posture regen base (kb/enemy.md,
+/// FUN_140a04850): c1010's battle idle a100_400000 wears 300240 (+40/s) on frames 0-123, so with
+/// staminaRecoverBaseVel 20 it recovers 60/s there, not 20.
+#[test]
+fn the_battle_idles_change_speed_adds_to_posture_regen() {
+    let mut app = app_cfg("c1010", Some(10100000), Vec::new());
+    app.world_mut().resource_mut::<crate::enemy::EnemyDebug>().mode = crate::enemy::AiMode::Idle;
+    move_enemy_far(&mut app);
+    app.update();
+    let base = {
+        let world = app.world_mut();
+        let mut q = world.query_filtered::<(&mut Actor, &mut Enemy), Without<crate::enemy::Cast>>();
+        let (mut a, mut e) = q.single_mut(world).unwrap();
+        e.force_anim(&mut a, "a100_400000");
+        a.posture = a.posture_max * 0.8;
+        a.since_posture_damage = 10.0;
+        a.posture_regen
+    };
+    let before = enemy_anim_posture(&mut app).1;
+    for _ in 0..30 {
+        app.update();
+    }
+    let (anim, posture) = enemy_anim_posture(&mut app);
+    let drop = before - posture;
+    assert_eq!(anim, "a100_400000");
+    assert!(drop >= (base + 40.0) * 0.5 * 0.85, "base {base}/s, recovered {drop} in 0.5 s");
+}
+
+/// Round 51: 300240 (effectEndurance 0.1) is both in the TAE window and in sp_chained over its
+/// first 0.1 s; it counts once there (+40/s), not twice (+80/s).
+#[test]
+fn a_tae_speffect_counts_once_in_posture_regen() {
+    let mut app = app_cfg("c1010", Some(10100000), Vec::new());
+    app.world_mut().resource_mut::<crate::enemy::EnemyDebug>().mode = crate::enemy::AiMode::Idle;
+    move_enemy_far(&mut app);
+    app.update();
+    let base = {
+        let world = app.world_mut();
+        let mut q = world.query_filtered::<(&mut Actor, &mut Enemy), Without<crate::enemy::Cast>>();
+        let (mut a, mut e) = q.single_mut(world).unwrap();
+        e.force_anim(&mut a, "a100_400000");
+        a.posture = a.posture_max * 0.8;
+        a.since_posture_damage = 10.0;
+        a.posture_regen
+    };
+    let before = enemy_anim_posture(&mut app).1;
+    for _ in 0..6 {
+        app.update();
+    }
+    let drop = before - enemy_anim_posture(&mut app).1;
+    assert!(drop <= (base + 40.0) * 0.1 * 1.2 + 1.0, "base {base}/s, recovered {drop} in 0.1 s");
+}
+
+/// Round 28: a combat art's TAE 307 PCBehavior windows resolve to BehaviorParam_PC's own pc<judge>
+/// rows (no damage), not the art's attack of the same judge: the air Mortal Draw's contact
+/// windows (a106_316200 judge 210) dealt v5007:210's slash every 15 frames.
+#[test]
+fn an_air_arts_contact_windows_deal_nothing() {
+    let mut app = app();
+    app.world_mut().resource_mut::<crate::config::GameConfig>().player.combat_art = 5700;
+    app.update();
+    let combat = app.world().resource::<Combat>();
+    let w = combat.player.attack_windows("a106_316200");
+    let contact: Vec<_> = w.iter().filter(|(e, _, _)| e.kind == 307).collect();
+    assert!(!contact.is_empty(), "no 307 windows in a106_316200");
+    for (e, atk, _) in contact {
+        assert!(atk.atk_stam == 0.0 && atk.atk_phys_correction == 0.0 && atk.atk_mag_correction == 0.0, "307 at {} hits as an attack", e.start);
+    }
+}
+
+/// Round 28: a grab with an escape meter (c1500's 4120 restraint, ThrowParam 21500200: escHp 10,
+/// selfEscCycleCnt 1, selfEscCycleTime 100) is broken by presses: 10 windows with a press empty
+/// it, and the grabber's next flag-70 pulse plays ThrowEscape (a223_600372) and lets the zombie go
+/// into its ThrowRelease4122 (c9997 env 275; it held on in the 4120 loop). Without presses Wolf
+/// stays held.
+#[test]
+fn mashing_breaks_the_zombie_restraint() {
+    let run = |mash: bool| {
+        let mut app = app_cfg("c1500", None, Vec::new());
+        {
+            let world = app.world_mut();
+            let combat = world.remove_resource::<Combat>().unwrap();
+            {
+                let mut q = world.query_filtered::<(&mut Actor, &mut Enemy, &mut Transform), Without<crate::enemy::Cast>>();
+                let (mut ea, mut e, mut et) = q.single_mut(world).unwrap();
+                e.force_anim(&mut ea, "a100_004120");
+                ea.state = "ThrowAtk4120".into();
+                et.translation = Vec3::new(0.0, CAPSULE_HALF_HEIGHT, 0.8);
+            }
+            let mut a = world.query_filtered::<&mut Actor, With<Player>>().single_mut(world).unwrap();
+            a.play("Grabbed", "a223_600370");
+            world.insert_resource(combat);
+        }
+        let mut seen = Vec::<String>::new();
+        for i in 0..60 * 6 {
+            if mash && i % 4 == 0 {
+                app.world_mut().resource_mut::<PadInput>().press(Action::Attack);
+            }
+            app.update();
+            let (s, anim, _, _) = player_state(&mut app);
+            let s = format!("{s} {anim}");
+            if seen.last() != Some(&s) {
+                seen.push(s);
+            }
+            let es = format!("enemy {}", enemy_state(&mut app).0);
+            if !seen.contains(&es) {
+                seen.push(es);
+            }
+        }
+        seen
+    };
+    let mashed = run(true);
+    assert!(mashed.iter().any(|s| s == "ThrowEscape a223_600372"), "{mashed:?}");
+    assert!(mashed.iter().any(|s| s == "enemy ThrowRelease4122"), "{mashed:?}");
+    let held = run(false);
+    assert!(!held.iter().any(|s| s.starts_with("ThrowEscape")), "{held:?}");
+}
+
 #[test]
 fn ochimusha_plunge_deathblow_uses_its_a200_pair() {
     // c1010: ThrowParam 11010150/151, Wolf's a200 group (atkAnimOffset 200).
@@ -1883,6 +2893,11 @@ fn ochimusha_plunge_deathblow_uses_its_a200_pair() {
 /// Equips art `weapon`, starts it, presses it again inside its combo window (ref 223,
 /// SpEffect 100252) and returns every (state, anim) seen.
 fn art_chain(weapon: i64, presses: usize) -> Vec<(String, String)> {
+    art_chain_by(weapon, presses, false)
+}
+
+/// As `art_chain`; `attack_only`: the follow-ups are the attack button alone.
+fn art_chain_by(weapon: i64, presses: usize, attack_only: bool) -> Vec<(String, String)> {
     let mut app = app();
     app.world_mut().resource_mut::<crate::config::GameConfig>().player.combat_art = weapon;
     let press = |app: &mut App| {
@@ -1902,7 +2917,11 @@ fn art_chain(weapon: i64, presses: usize) -> Vec<(String, String)> {
         let in_window = app.world().resource::<Combat>().player.has_ref(&anim, t, crate::player::REF_ENABLE_SP_ATK_COMBO);
         let pressed_here = seen.len();
         if in_window && done < presses && seen.len() == pressed_here {
-            press(&mut app);
+            if attack_only {
+                app.world_mut().resource_mut::<PadInput>().press(Action::Attack);
+            } else {
+                press(&mut app);
+            }
             done += 1;
             // One press per state.
             for _ in 0..40 {
@@ -1924,6 +2943,12 @@ fn ichimonji_double_follows_up_but_ichimonji_does_not() {
     let double = art_chain(7100, 1);
     assert!(double.iter().any(|(s, a)| s == "GroundSpecialAttackCombo2" && a == "a102_316010"), "{double:?}");
     let single = art_chain(5300, 1);
+    assert!(!single.iter().any(|(s, _)| s == "GroundSpecialAttackCombo2"), "{single:?}");
+    // Round 62: the attack button alone continues it too (BEH_A_GROUND_ATTACK tries
+    // _FireSpAttackCombo first, HKS 3256), not a plain slash.
+    let by_attack = art_chain_by(7100, 1, true);
+    assert!(by_attack.iter().any(|(s, a)| s == "GroundSpecialAttackCombo2" && a == "a102_316010"), "{by_attack:?}");
+    let single = art_chain_by(5300, 1, true);
     assert!(!single.iter().any(|(s, _)| s == "GroundSpecialAttackCombo2"), "{single:?}");
 }
 
@@ -1983,6 +3008,44 @@ fn art_out_of_a_sprint_and_nightjar_steps() {
         }
         assert!(states.iter().any(|s| s == want), "{weapon}: {states:?}");
     }
+}
+
+/// Round 63 (g_behaviorValidateOrder: GROUND_JUMP before SP_ATTACK_RELEASE): One Mind's
+/// HoldStart (a104_316500) opens jump (flag 119) at frame 12; a jump press there jumps instead
+/// of being eaten by the hold.
+#[test]
+fn a_jump_press_leaves_the_hold_art() {
+    let mut app = app();
+    move_enemy_far(&mut app);
+    app.world_mut().resource_mut::<crate::config::GameConfig>().player.combat_art = 5500;
+    app.update();
+    {
+        let mut pad = app.world_mut().resource_mut::<PadInput>();
+        pad.press(Action::Attack);
+        pad.press(Action::Guard);
+        pad.attack_held = true;
+        pad.guard_held = true;
+    }
+    let mut at = None;
+    for _ in 0..60 {
+        app.update();
+        let (s, _, t, _) = player_state(&mut app);
+        if s == "GroundSpacialAttackHoldStart" && t >= 14.0 / TAE_FPS {
+            at = Some(t);
+            break;
+        }
+    }
+    assert!(at.is_some(), "no HoldStart past frame 14: {:?}", player_state(&mut app));
+    app.world_mut().resource_mut::<PadInput>().press(Action::Jump);
+    let mut seen = Vec::<String>::new();
+    for _ in 0..10 {
+        app.update();
+        let s = player_state(&mut app).0;
+        if seen.last() != Some(&s) {
+            seen.push(s);
+        }
+    }
+    assert!(seen.iter().any(|s| s.contains("Jump")), "{seen:?}");
 }
 
 #[test]
@@ -2102,6 +3165,72 @@ fn letting_go_of_attack_in_an_art_releases_it() {
     assert!(seen.iter().any(|(s, a)| s == "GroundSpecialAttackCombo1Release" && a == "a106_316100"), "{seen:?}");
 }
 
+/// Art `art` started with attack and guard held throughout: the states it went through.
+fn art_held_states(art: i64) -> Vec<(String, String)> {
+    let mut app = app();
+    app.world_mut().resource_mut::<crate::config::GameConfig>().player.combat_art = art;
+    app.update();
+    {
+        let mut pad = app.world_mut().resource_mut::<PadInput>();
+        pad.press(Action::Attack);
+        pad.press(Action::Guard);
+        pad.attack_held = true;
+        pad.guard_held = true;
+    }
+    let mut seen = Vec::<(String, String)>::new();
+    for _ in 0..60 {
+        app.update();
+        let (s, anim, _, _) = player_state(&mut app);
+        if seen.last() != Some(&(s.clone(), anim.clone())) {
+            seen.push((s, anim));
+        }
+    }
+    seen
+}
+
+/// Base Mortal Draw (5700, no ref 283) is always released at ref 222, attack held or not; the
+/// Empowered one (7300, resident 140601 -> 283) holds Combo1 (HKS BEH_A_GROUND_SP_ATTACK_RELEASE;
+/// round 24: the base art held into the upgrade's moveset).
+#[test]
+fn base_mortal_draw_is_released_even_when_held() {
+    let base = art_held_states(5700);
+    assert!(base.iter().any(|(s, _)| s == "GroundSpecialAttackCombo1Release"), "{base:?}");
+    let empowered = art_held_states(7300);
+    assert!(!empowered.iter().any(|(s, _)| s == "GroundSpecialAttackCombo1Release"), "{empowered:?}");
+}
+
+/// Ichimonji's slash adds SpEffect 140210 by TAE 67 (changeStaminaRate 12.5): Wolf's posture drops
+/// by 12.5 % of max (it was never applied; round 24).
+#[test]
+fn ichimonji_recovers_posture() {
+    let mut app = app();
+    move_enemy_far(&mut app);
+    app.world_mut().resource_mut::<crate::config::GameConfig>().player.combat_art = 5300;
+    app.update();
+    let max = {
+        let world = app.world_mut();
+        let mut a = world.query_filtered::<&mut Actor, With<Player>>().single_mut(world).unwrap();
+        a.posture = a.posture_max * 0.5;
+        a.posture_max
+    };
+    {
+        let mut pad = app.world_mut().resource_mut::<PadInput>();
+        pad.press(Action::Attack);
+        pad.press(Action::Guard);
+    }
+    let mut low = f32::MAX;
+    for _ in 0..90 {
+        app.update();
+        let world = app.world_mut();
+        let a = world.query_filtered::<&Actor, With<Player>>().single(world).unwrap();
+        low = low.min(a.posture);
+    }
+    // Natural regen lowers it too: look for the refresh itself (12.5 % of max at once).
+    let want = format!("refresh: -{:.0} posture", max * 0.125);
+    assert!(log_text(&app).contains(&want), "no {want} (posture fell to {low} of {max})
+{}", log_text(&app));
+}
+
 #[test]
 fn flowing_water_cuts_guarded_posture_damage_by_attack_attribute() {
     // Live 2026-10-08: Samurai General slash attacks (staminaPhysicsAttribute 1) cost x0.785 posture on
@@ -2196,6 +3325,45 @@ fn locomotion_plays_its_clip_sounds() {
 }
 
 #[test]
+fn the_first_locomotion_step_plays_the_start_clips_sound_at_0() {
+    // Round 55: Locomotion starts at t 0 / prev_t 0, and its first window was (0, dt], so an
+    // event at 0 of the move start clip (a000_005100 PlaySound 2100) never played.
+    let app = app();
+    let combat = app.world().resource::<Combat>();
+    let d = &combat.player;
+    let mut a = crate::actor::Actor::new(crate::actor::Side::Player, 1.0, 1.0, 0.0, 0);
+    a.procedural("Locomotion");
+    a.move_start = d.length(&a.move_clip(true));
+    if a.move_start <= 0.0 {
+        return;
+    }
+    a.t = 1.0 / 60.0;
+    let (clip, windows, _) = crate::sound::sound_windows(&a, d).expect("windows");
+    assert_eq!(clip, a.move_clip(true));
+    assert!(windows.iter().any(|&(lo, hi)| lo < 0.0 && hi > 0.0), "{windows:?}");
+}
+
+#[test]
+fn the_deathblow_muffle_ends_on_the_title() {
+    // Round 55: deathblow_mix runs in FixedUpdate, frozen off the Playing screen; quitting
+    // mid-deathblow kept the muffle on through the menus.
+    let mut app = App::new();
+    app.add_plugins((MinimalPlugins, bevy::state::app::StatesPlugin))
+        .init_state::<crate::menu::Screen>()
+        .init_resource::<crate::sound::DeathblowMix>()
+        .add_systems(Update, crate::sound::end_deathblow_mix_off_screen);
+    {
+        let mut mix = app.world_mut().resource_mut::<crate::sound::DeathblowMix>();
+        for _ in 0..30 {
+            mix.step(Some((0, [0.3, 2.0, 0.3, 1.0, 0.3, 3.0])), 1.0 / 60.0);
+        }
+        assert!(!mix.idle());
+    }
+    app.update();
+    assert!(app.world().resource::<crate::sound::DeathblowMix>().idle());
+}
+
+#[test]
 fn hit_sounds_follow_the_exe_material_lookup() {
     let app = app();
     let combat = app.world().resource::<Combat>();
@@ -2228,7 +3396,17 @@ fn clash_effects_follow_the_hit_effect_tables() {
     let sword = crate::data::Attack { atk_material_sfx: 0, atk_pow_sfx: 1, atk_type: 0, ..Default::default() };
     if combat.foe0().chr == "c1020" {
         assert_eq!(hit_sfx(combat, &sword, Kind::Hit, crate::vfx::defender_sfx_materials(combat, &crate::actor::Actor::new(crate::actor::Side::Enemy, 1.0, 1.0, 0.0, 0))), [201001, 229001]);
+        // HitEffectSfxAngleParam (FUN_14092b6c0): concept 290 has a row, so an Upper attack
+        // (atkDir_forSfx 1) turns 229001 to the absolute X -75; concept 10 has none (look-at).
+        let upper = crate::data::Attack { atk_dir_sfx: 1, ..sword.clone() };
+        let mats = crate::vfx::defender_sfx_materials(combat, &crate::actor::Actor::new(crate::actor::Side::Enemy, 1.0, 1.0, 0.0, 0));
+        let turned = crate::vfx::hit_sfx_turned(combat, &upper, Kind::Hit, mats);
+        assert_eq!(turned[0], (201001, None));
+        assert_eq!(turned[1], (229001, Some(crate::fxr::game_rot([-75.0, 0.0, 0.0, 0.0]))));
+        // No direction (0): the row's angles are (0, 0, 0), world-aligned.
+        assert_eq!(crate::vfx::hit_sfx_turned(combat, &sword, Kind::Hit, mats)[1], (229001, Some(Quat::IDENTITY)));
     }
+    assert_eq!(crate::vfx::hit_sfx_turned(combat, &general, Kind::Guard, [-1, -1]), [(201002, None)]);
     // Wolf's own attacks (AtkParam_Pc defSfxMaterial1/2 255 / 139, defSe the same) take the sword's
     // EquipParamWeapon 5000 materials for 255 (101 / 139; exe FUN_140ba8a50 / FUN_140ba8840), so an
     // enemy guarding or deflecting Wolf gets the sword's sparks and sounds.
@@ -2306,6 +3484,47 @@ fn debug_perilous_drill_plays_only_red_attacks() {
     for a in &seen {
         assert!(combat.enemy0().perilous_warning(a, -1.0, 1e9).is_some(), "{a} is not perilous");
     }
+}
+
+/// With three enemies drilling, each still waits the menu's interval between its attacks: the
+/// shared EnemyDebug timer ran down once per enemy each tick (3 enemies: 1.5 s -> 0.5 s)
+/// (2026-10-12 bug hunt round 23).
+#[test]
+fn each_drilling_enemy_waits_the_full_interval() {
+    let g = |at: [f32; 2]| crate::config::GroupEnemy { chr: "c1020".into(), npc_row: None, at: Some(at), msb: None };
+    let mut app = app_cfg("c1020", None, vec![g([1.8, 1.8]), g([-1.8, 1.8])]);
+    {
+        let mut dbg = app.world_mut().resource_mut::<crate::enemy::EnemyDebug>();
+        dbg.mode = crate::enemy::AiMode::Perilous;
+        dbg.interval = 1.5;
+    }
+    // Per enemy: ticks idle in range since its last attack, and how many attacks it started.
+    let mut idle: std::collections::HashMap<Entity, (u32, bool, u32)> = std::collections::HashMap::new();
+    let mut waits = Vec::new();
+    for _ in 0..60 * 20 {
+        app.update();
+        let world = app.world_mut();
+        let mut q = world.query_filtered::<(Entity, &Actor), (With<Enemy>, Without<crate::enemy::Cast>)>();
+        for (ent, a) in q.iter(world) {
+            let (ticks, was_attacking, attacks) = idle.entry(ent).or_insert((0, false, 0));
+            let attacking = a.state.starts_with("Ez");
+            if attacking && !*was_attacking {
+                // Its first attack comes at once (timer 0); later ones after the wait.
+                if *attacks > 0 {
+                    waits.push(*ticks);
+                }
+                *attacks += 1;
+                *ticks = 0;
+            } else if a.state == "IdleBattle" {
+                *ticks += 1;
+            }
+            *was_attacking = attacking;
+        }
+    }
+    assert!(idle.len() >= 3, "{} enemies", idle.len());
+    assert!(waits.len() >= 3, "too few repeat attacks: {waits:?}");
+    // 1.5 s = 90 ticks (a tick or two of the attack's own end blend aside).
+    assert!(waits.iter().all(|&w| w >= 85), "waits (ticks) {waits:?}");
 }
 
 /// Our General's attack choices over 3 simulated minutes (the player stands guarding at 2.4 m),
@@ -2443,6 +3662,45 @@ fn locked_on_step_tilts_toward_the_stick() {
     let want = crate::player::stick_world(stick, 0.0);
     let off = moved.normalize().angle_between(want).to_degrees();
     assert!(moved.length() > 0.5 && off < 8.0, "moved {:.2} m, {off:.1} deg off the stick", moved.length());
+}
+
+/// Not locked on, an attack's auto-aim homing is no lock (HKS _fireGroundStep: only env(1118)
+/// takes the 4-direction step): a dodge with the stick held away from the homed enemy is the free
+/// GroundStep_F along the stick, not GroundStep_B facing him (round 31).
+#[test]
+fn an_unlocked_step_ignores_the_auto_aim_target() {
+    let mut app = app();
+    app.world_mut().resource_mut::<crate::enemy::EnemyDebug>().mode = crate::enemy::AiMode::Idle;
+    let enemy = {
+        let world = app.world_mut();
+        let (e, mut t) = world.query_filtered::<(Entity, &mut Transform), With<Enemy>>().single_mut(world).unwrap();
+        t.translation = Vec3::new(0.0, t.translation.y, -3.0);
+        e
+    };
+    app.update();
+    let stick = Vec2::new(0.0, -1.0);
+    let away = crate::player::stick_world(stick, 0.0);
+    let enemy_z = -3.0f32;
+    assert!(away.z * enemy_z < 0.0, "the stick must point away from the enemy: {away}");
+    let mut states = Vec::new();
+    for i in 0..10 {
+        {
+            let world = app.world_mut();
+            world.query_filtered::<&mut Actor, With<Player>>().single_mut(world).unwrap().homing = Some(enemy);
+            let mut pad = world.resource_mut::<PadInput>();
+            pad.stick = stick;
+            if i == 0 {
+                pad.press(Action::Step);
+            }
+        }
+        app.update();
+        let s = player_actor(&mut app).0;
+        if states.last() != Some(&s) {
+            states.push(s);
+        }
+    }
+    assert!(states.iter().any(|s| s == "GroundStep_F"), "{states:?}");
+    assert!(!states.iter().any(|s| s == "GroundStep_B"), "{states:?}");
 }
 
 #[test]
@@ -2783,6 +4041,56 @@ fn mikiri_on_the_ochimusha_breaks_him_into_the_mikiri_deathblow() {
     assert!(outs.iter().any(|o| o.contains("enemy=ThrowDef13100") && o.contains("player=ThrowBreak")), "{outs:#?}");
 }
 
+/// The perilous kind is the heralded attack's AtkParam, not its warning judge: the Ochimusha's
+/// Mikiri'd thrust a000_003013 fires 980 (logged as a sweep before), the General's sweep and
+/// thrust read as such (round 31).
+#[test]
+fn a_perilous_kind_comes_from_its_attack() {
+    let app = app();
+    let combat = app.world().resource::<Combat>();
+    assert_eq!(crate::enemy::perilous_kind(combat.enemy0(), PERILOUS_SWEEP), "sweep");
+    assert_eq!(crate::enemy::perilous_kind(combat.enemy0(), PERILOUS_THRUST), "thrust");
+    let Some(ochimusha) = crate::data::EnemyFile::load("c1010") else { return };
+    let d: crate::data::CharData = ochimusha.data;
+    assert_eq!(d.perilous_warning("a000_003013", -1.0, 1e9), Some(980));
+    assert_eq!(crate::enemy::perilous_kind(&d, "a000_003013"), "thrust");
+}
+
+/// The Villager zombie's bamboo-spear thrust (a200_003011, AtkParam 15000400-402: atkType 0,
+/// trackType 6, disableGuard 1, under a 982 warning) is Mikiri'd: the gate read atkType 2 only, so
+/// it never was (round 31).
+#[test]
+fn the_zombies_spear_thrust_can_be_mikirid() {
+    let outs: Vec<String> = (2..12).map(|f| defend_against_with("c1500", "a200_003011", f as f32 / TAE_FPS, Action::Step, Vec2::new(0.0, -1.0))).collect();
+    assert!(outs.iter().any(|o| o.contains("MIKIRI")), "{outs:#?}");
+}
+
+/// ThrowParam additionalConditionSpecialEffect_forDef picks the row (combat::throw_row_for): the
+/// "（HU）" rows (+500) need the anim set a100 (200031), the plain ones a000 (200030). The spear
+/// General c1021 (a100) has only the mikiri 11021690, so its thrust (a100_003015, AtkParam
+/// 10201090) is Mikiri'd; Isshin's spear phase and Butterfly's second form take their HU rows.
+/// It read 0190 / 0120 / 0010 only, so c1021 and c7410 were never Mikiri'd (bug fixes R89).
+#[test]
+fn a_second_form_takes_its_hu_throw_rows() {
+    let pick = |chr: &str, group: u32, sfx: i64| {
+        let mut app = app_with(chr);
+        let world = app.world_mut();
+        world.query_filtered::<&mut Actor, With<Enemy>>().iter_mut(world).next().unwrap().anim_group = group;
+        let a = world.query_filtered::<&Actor, With<Enemy>>().iter(world).next().unwrap();
+        crate::combat::throw_row_for(world.resource::<Combat>(), a, sfx)
+    };
+    assert_eq!(pick("c1021", 1, 190), Some(11021690));
+    assert_eq!(pick("c7410", 1, 190), Some(17410690), "the charmed samurai's only mikiri row");
+    assert_eq!(pick("c1021", 1, 10), Some(11021010));
+    assert_eq!(pick("c1020", 0, 190), Some(11020190));
+    assert_eq!(pick("c1020", 1, 190), None, "11020190 needs a000");
+    assert_eq!(pick("c5400", 0, 190), Some(15400190));
+    assert_eq!((pick("c5400", 1, 190), pick("c5400", 1, 120), pick("c5400", 1, 10)), (Some(15400690), Some(15400620), Some(15400510)));
+    assert_eq!((pick("c5090", 0, 10), pick("c5090", 1, 10)), (Some(15090010), Some(15090510)));
+    let outs: Vec<String> = (2..12).map(|f| defend_against_with("c1021", "a100_003015", f as f32 / TAE_FPS, Action::Step, Vec2::new(0.0, -1.0))).collect();
+    assert!(outs.iter().any(|o| o.contains("MIKIRI") && o.contains("player=Mikiri")), "{outs:#?}");
+}
+
 #[test]
 fn landing_mid_air_deflect_continues_in_its_land_anim() {
     // Live (rec_c1010_b_20261009): AirDeflectHardSmall_R (a050_132102) 0.32 s, then on landing
@@ -2813,6 +4121,56 @@ fn landing_mid_air_deflect_continues_in_its_land_anim() {
     let (ps, pa, t_air, t_land) = land.expect("landed");
     assert_eq!((ps.as_str(), pa.as_str()), ("LandAirDeflectHardSmall_B", "a050_132112"));
     assert!((t_land - t_air).abs() < 0.05, "air t {t_air:.2} -> land t {t_land:.2}");
+}
+
+/// HKS 1862-1869: the air guard breaks (sword, and the open umbrella's
+/// W_AirSubGuardDeflectBreak a076_421400) land into their Land versions from the same time
+/// only while ref 201 (SpEffect 100302, 0-2.0 s) is up; later is a plain landing
+/// (2026-10-13 round 29 D2).
+#[test]
+fn an_air_guard_break_lands_into_its_land_version_while_ref_201_is_up() {
+    for (state, land, start, lands) in [
+        ("AirSubGuardDeflectBreak", "LandAirSubGuardDeflectBreak", 0.5, true),
+        ("AirDeflectGuardBreak", "LandAirDeflectGuardBreak", 0.5, true),
+        ("AirSubGuardDeflectBreak", "LandAirSubGuardDeflectBreak", 2.3, false),
+    ] {
+        let mut app = app();
+        app.world_mut().resource_mut::<crate::config::GameConfig>().player.prosthetics = vec![76000];
+        move_enemy_far(&mut app);
+        {
+            let world = app.world_mut();
+            world.resource_scope(|world, combat: Mut<Combat>| {
+                let mut q = world.query_filtered::<(&mut Actor, &mut Transform), With<Player>>();
+                let (mut a, mut t) = q.single_mut(world).unwrap();
+                let key = if state.contains("SubGuard") { crate::player::sub_anim(&combat.player, state, 76) } else { combat.player.anim_key(state).map(str::to_string) };
+                a.play(state, &key.expect(state));
+                a.t = start;
+                a.prev_t = start;
+                a.airborne = true;
+                a.vel_y = -2.0;
+                t.translation.y += 0.5;
+            });
+        }
+        let mut landed = None;
+        for _ in 0..60 {
+            let before = player_state(&mut app);
+            app.update();
+            let (ps, _, pt, _) = player_state(&mut app);
+            if ps != before.0 {
+                landed = Some((ps, before.2, pt));
+                break;
+            }
+        }
+        let (ps, t_air, t_land) = landed.expect("landed");
+        if lands {
+            assert_eq!(ps, land, "{state} at {start}");
+            let (_, pa, ..) = player_state(&mut app);
+            assert!(app.world().resource::<Combat>().player.length(&pa) > 2.0, "{land} plays a real clip ({pa})");
+            assert!((t_land - t_air).abs() < 0.05, "{state}: air t {t_air:.2} -> land t {t_land:.2}");
+        } else {
+            assert_ne!(ps, land, "{state} at {start}: ref 201 is over");
+        }
+    }
 }
 
 #[test]
@@ -2993,6 +4351,19 @@ fn attacking_an_unaware_enemy_from_behind_is_the_stealth_deathblow() {
     assert_eq!(enemy_state(&mut app).0, "ThrowDefDeath12201");
 }
 
+/// The stealth start's height window (ThrowParam 11020020 upper / lowerYRange 1.26 m): no
+/// deathblow across a 2 m ledge (round 36).
+#[test]
+fn a_stealth_deathblow_keeps_to_its_height_window() {
+    let app = app();
+    let combat = app.world().resource::<Combat>();
+    let row = 11020020;
+    assert!(crate::player::throw_height_ok(combat, row, Vec3::ZERO, Vec3::new(0.0, 1.0, 1.5)));
+    assert!(crate::player::throw_height_ok(combat, row, Vec3::ZERO, Vec3::new(0.0, -1.0, 1.5)));
+    assert!(!crate::player::throw_height_ok(combat, row, Vec3::ZERO, Vec3::new(0.0, 2.0, 1.5)));
+    assert!(!crate::player::throw_height_ok(combat, row, Vec3::ZERO, Vec3::new(0.0, -2.0, 1.5)));
+}
+
 #[test]
 fn an_unaware_enemy_notices_wolf_in_front_but_not_behind() {
     // Facing Wolf 3 m away (inside eye_BeginDist_normal 4 m): noticed within 0.5 s.
@@ -3123,6 +4494,45 @@ fn enemy_info(app: &mut App) -> (u8, u8, String, String, Vec3) {
     (e.targeting.state, e.targeting.kind, a.anim.clone(), e.ai_desc.clone(), t.translation)
 }
 
+/// Round 27: with a resurrection left Wolf's death start ends in GroundRevivalStayLoop_F
+/// (a000_110020, HKS 328-333), whose 110010 "Pretending Dead" (sightSearchEnemyCut 100) makes a
+/// fighting Ashina soldier drop him (common_common_logic_func.lua:16-22); with none left, the
+/// plain GroundDeathLoop_F.
+/// Ignored (open, Bosees): once Wolf is down the soldier's battle plan never ends - it flickers
+/// EndureAttack > CommonAttack(1040) (a000_405000 one tick, none the next) every frame - so the
+/// next plan's COMMON_HiPrioritySetup never sees 110010 (HANDOFF 4.49).
+#[test]
+fn a_feigning_wolf_is_dropped_by_the_enemy() {
+    let mut app = app_cfg("c1010", Some(10100000), Vec::new());
+    // Facing Wolf 3 m away: it sees him and fights, with its real AI (the test app's enemy is
+    // the passive practice partner once in BATTLE, which runs no AI script).
+    make_enemy_unaware(&mut app, 3.0, false);
+    {
+        let world = app.world_mut();
+        world.query::<&mut Enemy>().single_mut(world).unwrap().aggressive = true;
+    }
+    for _ in 0..60 * 2 {
+        app.update();
+    }
+    assert_eq!(enemy_info(&mut app).0, crate::stealth::BATTLE);
+    {
+        let world = app.world_mut();
+        world.query_filtered::<&mut Actor, With<Player>>().single_mut(world).unwrap().hp = 0.0;
+    }
+    let mut states = Vec::new();
+    for _ in 0..60 * 5 {
+        app.update();
+        let s = player_state(&mut app).0;
+        let (st, _, anim, desc, _) = enemy_info(&mut app);
+        let s = format!("{s} | enemy {st} {anim} {desc}");
+        if states.last() != Some(&s) {
+            states.push(s);
+        }
+    }
+    assert!(states.iter().any(|s| s.starts_with("GroundRevivalStayLoop_F")), "{states:#?}");
+    assert_ne!(enemy_info(&mut app).0, crate::stealth::BATTLE, "still fighting a feigning Wolf: {states:#?}");
+}
+
 /// cargo test --release stealth_trace -- --ignored --nocapture : the stealth loop, logged.
 /// SHINOBI_STEALTH_TRACE = leave (default: Wolf leaves once it is alerted) | stay | lose
 /// (c1010 fights, then Wolf gets out of its sight and is forgotten after SightTargetForgetTime 15 s).
@@ -3191,6 +4601,57 @@ fn crouching_cuts_how_far_enemies_see_wolf() {
     assert_eq!(player_state(&mut app).0, "CrouchEnd");
 }
 
+/// An Ashina soldier (c1010 10100000, resident 241000) already in CAUTION that hears a new Wolf
+/// sound plays ListenSound a000_000700: the new AiSoundParam id raises INTERUPT_ChangeSoundTarget
+/// (46) and common_table_ai_common.lua:247 answers it after a 0-0.3 s wait. The run that first
+/// alerted it (1010) goes through its caution start (EndureAttack 1010), not 46; the landing
+/// (1310) afterwards is the new id. Once, not every tick (HANDOFF 4.47 round 25).
+/// (It was lost before: ConfirmCautionTarget's terminate cleared the sound when the 46 reaction
+/// replaced the plan, so the same sound was "new" again next frame and replanned it away;
+/// FUN_1405c3770 skips the clear on a 46 frame - round 26.)
+#[test]
+fn a_cautious_enemy_listens_to_a_new_sound() {
+    let mut app = app_cfg("c1010", Some(10100000), Vec::new());
+    make_enemy_unaware(&mut app, 1.8, true);
+    let (mut listens, mut last, mut seen) = (0, String::new(), Vec::new());
+    let mut step = |app: &mut App, listens: &mut u32| {
+        app.update();
+        let (_, _, anim, desc, _) = enemy_info(app);
+        let world = app.world_mut();
+        let e = world.query::<&Enemy>().single(world).unwrap();
+        if e.targeting.sound_new {
+            seen.push(format!("NEW sound {:?}", e.targeting.sound.map(|s| s.id)));
+        }
+        if anim == "a000_000700" && last != anim {
+            *listens += 1;
+        }
+        let line = format!("{anim} | {desc}");
+        if seen.last() != Some(&line) {
+            seen.push(line);
+        }
+        last = anim;
+    };
+    // Run by: heard (1010), CAUTION. (12 ticks: the run start and its stop carry Wolf about
+    // 1.7 m, inside the landing sound's 2 m; 20 ran him out to 3 m once the stop kept the run's
+    // momentum through its blend-in.)
+    app.world_mut().resource_mut::<PadInput>().stick = Vec2::new(1.0, 0.0);
+    for _ in 0..12 {
+        step(&mut app, &mut listens);
+    }
+    app.world_mut().resource_mut::<PadInput>().stick = Vec2::ZERO;
+    for _ in 0..60 * 3 {
+        step(&mut app, &mut listens);
+    }
+    assert_eq!(enemy_info(&mut app).0, crate::stealth::CAUTION);
+    assert_eq!(listens, 0, "listened to the run that alerted it");
+    // A jump: the landing's 1310 is a new sound id.
+    app.world_mut().resource_mut::<PadInput>().press(Action::Jump);
+    for _ in 0..60 * 3 {
+        step(&mut app, &mut listens);
+    }
+    assert_eq!(listens, 1, "ListenSound after the landing: {seen:#?}");
+}
+
 #[test]
 fn running_near_an_unaware_enemy_is_heard_but_crouching_is_not() {
     // Run loop a000_000500 emits AiSound 1010 (radius 2 m) for its whole length; the crouch
@@ -3220,6 +4681,48 @@ fn running_near_an_unaware_enemy_is_heard_but_crouching_is_not() {
     }
     let (state, ..) = enemy_info(&mut app);
     assert_eq!(state, crate::stealth::NONE, "crouch-walking is not heard at 1.8 m");
+}
+
+/// A cautious enemy walking to a sound it heard (Wolf's AiSound 4, 10 m, at 7 m) stops on
+/// entering another AI's trigger region tagged with that sound's serial: interrupt 48 ->
+/// InterruptTableLogic_Common (common_table_ai_common.lua:286) -> ConfirmCautionTarget. A region
+/// with another serial does not stop it (it confirms only near the sound, as before).
+#[test]
+fn a_cautious_enemy_stops_in_an_allys_trigger_region() {
+    let stop_at = |same: bool| -> Option<f32> {
+        let mut app = app();
+        make_enemy_unaware(&mut app, 8.0, true);
+        for _ in 0..5 {
+            app.update();
+        }
+        let spot = Vec3::new(0.0, 0.9, 1.0);
+        let serial = {
+            let world = app.world_mut();
+            world.resource_scope(|world, combat: Mut<Combat>| {
+                let mut sounds = world.resource_mut::<crate::enemy::AiSounds>();
+                sounds.emit(&combat, 4, spot, None, None);
+                sounds.0.last().unwrap().serial
+            })
+        };
+        let mut placed = false;
+        for _ in 0..300 {
+            app.update();
+            let (_, _, _, goal, pos) = enemy_info(&mut app);
+            if !placed && goal.contains("MoveToSomewhere") && pos.distance(spot) > 5.0 {
+                let r = crate::ai::TriggerRegion { owner: 12345, cat: 1000, unit: if same { serial } else { serial + 1 }, at: pos, radius: 5.0, life: 5.0 };
+                app.world_mut().resource_mut::<crate::enemy::TriggerRegions>().0.push(r);
+                placed = true;
+            }
+            if placed && goal.contains("ConfirmCautionTarget") {
+                return Some(pos.distance(spot));
+            }
+        }
+        assert!(placed, "never walked to the sound: {}", log_text(&app));
+        None
+    };
+    let same = stop_at(true).expect("no stop in the region");
+    assert!(same > 4.0, "stopped only at the sound: {same}");
+    assert!(stop_at(false).is_none_or(|d| d < 3.5), "another serial stopped it");
 }
 
 /// HKS g_paramHkbState: CROUCH_START is STATE_TYPE_STANDBY, so the stick moves Wolf out of the
@@ -3268,6 +4771,70 @@ fn an_attack_from_a_crouch_stands_wolf_up() {
     }
     let mut q = app.world_mut().query_filtered::<&Actor, With<Player>>();
     assert!(!q.single(app.world()).unwrap().crouch, "standing");
+}
+
+/// HKS BEH_A_SPRINT: dodge held from a stand, then the stick pushed: once the run loop (ref 91)
+/// plays, the held dodge steps and the step goes on into the sprint (round 31: he only ran).
+#[test]
+fn holding_dodge_then_running_sprints() {
+    let mut app = app();
+    move_enemy_far(&mut app);
+    let mut states = Vec::new();
+    for i in 0..150 {
+        {
+            let mut pad = app.world_mut().resource_mut::<PadInput>();
+            pad.dodge_held = true;
+            if i >= 10 {
+                pad.stick = Vec2::new(0.0, 1.0);
+            }
+        }
+        app.update();
+        let s = player_actor(&mut app).0;
+        if states.last() != Some(&s) {
+            states.push(s);
+        }
+    }
+    assert!(states.iter().any(|s| s == "SprintStartFromStep_F" || s == "SprintLoop"), "{states:?}");
+}
+
+/// HKS _execDamageStep: a step out of StandDamageLarge_F inside ref 502 (100344, 0.5-2.0 s) is
+/// StandStepFromDamage_F (a000_206100); out of the face-down get-up inside ref 504 (100346) with
+/// the stick back, StandStepFromDown_FaceDown_B (206121) (round 31: plain steps).
+#[test]
+fn a_step_out_of_a_large_hit_is_the_damage_step() {
+    for (from, t, stick, want) in [
+        ("StandDamageLarge_F", 0.6f32, Vec2::ZERO, "StandStepFromDamage_F"),
+        ("StandDamageLargeDownWakeUp_FaceDown", 0.3, Vec2::new(0.0, -1.0), "StandStepFromDown_FaceDown_B"),
+    ] {
+        let mut app = app();
+        move_enemy_far(&mut app);
+        app.update();
+        {
+            let world = app.world_mut();
+            world.resource_scope(|world, combat: Mut<Combat>| {
+                let mut a = world.query_filtered::<&mut Actor, With<Player>>().single_mut(world).unwrap();
+                a.yaw = 0.0;
+                assert!(a.play_state(&combat.player, from), "{from}");
+                (a.t, a.prev_t) = (t, t);
+            });
+        }
+        let mut states = Vec::new();
+        for i in 0..4 {
+            {
+                let mut pad = app.world_mut().resource_mut::<PadInput>();
+                pad.stick = stick;
+                if i == 0 {
+                    pad.press(Action::Step);
+                }
+            }
+            app.update();
+            let s = player_actor(&mut app).0;
+            if states.last() != Some(&s) {
+                states.push(s);
+            }
+        }
+        assert!(states.iter().any(|s| s == want), "{from}: {states:?}");
+    }
 }
 
 #[test]
@@ -3543,6 +5110,11 @@ fn switching_prosthetics_plays_the_next_tool() {
         assert_eq!(p.tool_slot, 1);
         assert_eq!(a.add_anim, "a000_412090");
     }
+    // A second press while the switch still plays is refused (validate 6394, round 49).
+    app.update();
+    app.world_mut().resource_mut::<PadInput>().press(Action::SwitchTool);
+    app.update();
+    assert_eq!(app.world_mut().query::<&Player>().single(app.world()).unwrap().tool_slot, 1);
     let mut expanded = false;
     for _ in 0..240 {
         app.update();
@@ -3570,10 +5142,12 @@ fn switching_prosthetics_plays_the_next_tool() {
 /// Shinobi Firecracker LV1 (71000, forced release: SpEffect 127100 ref 314): a071_400100's TAE 2
 /// judges 150 / 160 fire Bullets 710050 / 710060 (3-way fans), whose sparks land as 2 m bursts
 /// (710003, SpEffect 230110 "vs. non-special character"); the General is no beast, so c9997's
-/// GetSpDamage gives SP_DAMAGE_BURST -> W_AssassinationBloodReaction. The 30 s cool time (107100)
-/// keeps a second firecracker from staggering him again.
+/// GetSpDamage gives SP_DAMAGE_BURST -> W_AssassinationBloodReaction. He has no cool time: his
+/// a000_020110 adds only 8300, no SP_EFFECT_REF_NO_BURST_REACTION (1000044) row, so a second
+/// firecracker staggers him again (round 30; the bullet's 107100 is only the gate for the
+/// enemies' own cool-time rows).
 #[test]
-fn firecracker_staggers_the_general_once_per_cool_time() {
+fn firecracker_staggers_the_general_every_time() {
     let mut app = app();
     {
         let world = app.world_mut();
@@ -3600,10 +5174,41 @@ fn firecracker_staggers_the_general_once_per_cool_time() {
         app.update();
     }
     app.world_mut().resource_mut::<PadInput>().press(Action::Prosthetic);
+    let mut again = false;
     for _ in 0..90 {
         app.update();
-        assert_ne!(enemy_state(&mut app).0, "AssassinationBloodReaction", "staggered again inside the cool time");
+        if enemy_state(&mut app).0 == "AssassinationBloodReaction" {
+            again = true;
+            break;
+        }
     }
+    assert!(again, "no second burst reaction; enemy {:?}", enemy_state(&mut app));
+}
+
+/// An enemy with its own cool time: c1070's a000_020110 adds 251070 (ref 1000044 NO_BURST_REACTION,
+/// 15 s, invocationConditionsStateChange1 976 = the bullet's 107100) for 0.1 s of TAE. It is kept
+/// its 15 s, and while it is on, a burst gives no reaction (c9997.lua 873).
+#[test]
+fn an_enemys_own_burst_cool_time_blocks_the_next_firecracker() {
+    let mut app = app_with("c1070");
+    for _ in 0..5 {
+        app.update();
+    }
+    let world = app.world_mut();
+    world.resource_scope(|world, combat: Mut<Combat>| {
+        let mut q = world.query::<(&mut Enemy, &mut Actor)>();
+        let (mut e, mut a) = q.single_mut(world).unwrap();
+        e.add_timed(107100, 30.0);
+        e.react(&mut a, &combat, "AssassinationBloodReaction");
+        crate::prosthetic::add_reaction_cool_time(&combat, &a, &mut e, 1000044);
+        let cool = e.clash.iter().find(|c| c.0 == 251070).map(|c| c.1);
+        assert_eq!(cool, Some(15.0), "{:?}", e.clash);
+        assert!(crate::prosthetic::enemy_refs(&combat, &a, &e).contains(&1000044));
+        // Without the bullet's 976 the row stays off.
+        e.clash.clear();
+        crate::prosthetic::add_reaction_cool_time(&combat, &a, &mut e, 1000044);
+        assert!(!e.clash.iter().any(|c| c.0 == 251070), "{:?}", e.clash);
+    });
 }
 
 /// Every exported enemy (extracted/enemies/roster.json, `sekiro-extract npcs`): loads as itself,
@@ -3677,9 +5282,8 @@ fn all_enemies_smoke() {
             // scripted / underwater ones); think 0-3 or hp 9999 = dummies, cutscene and conversation
             // NPCs. (ninsatuNum counts a boss's deathblows; regular enemies have 0.)
             let combat = app.world().resource::<Combat>();
-            let npc = combat.param("NpcParam", foe.npc_row);
             let can_blow = combat.throw(foe.throw_row(0)).is_some();
-            let fights = foe.think_id > 3 && npc["hp"].as_i64().unwrap_or(0) < 9999;
+            let fights = row_fights(combat, &foe);
             let world = app.world_mut();
             let (e, ea, et) = world.query_filtered::<(&Enemy, &Actor, &Transform), Without<crate::enemy::Cast>>().single(world).unwrap();
             let stands = !e.is_dead() && ea.hp > 0.0 && et.translation.is_finite() && (et.translation.y - y0).abs() < 0.5;
@@ -3745,11 +5349,21 @@ fn all_enemies_smoke() {
 
 /// Fights the enemy with Wolf standing (kept alive) until it lands `want` hits or `frames` pass:
 /// (hits, distinct attack anims it played).
+/// Whether a row fights: think 0-3 or hp 9999 are dummies, cutscene and conversation NPCs, and
+/// battle goal 11000 is GOAL_NanimoShinai_11000_Battle ("does nothing": common_011000_battle.lua
+/// only waits), the Folding Screen Monkeys' bar holder 12600050 (c1000, think 10000000, hp 100).
+fn row_fights(combat: &Combat, foe: &crate::data::Foe) -> bool {
+    let npc = combat.param("NpcParam", foe.npc_row);
+    let goal = combat.param("NpcThinkParam", foe.think_id)["battleGoalID"].as_i64().unwrap_or(0);
+    foe.think_id > 3 && npc["hp"].as_i64().unwrap_or(0) < 9999 && goal != 11000
+}
+
 fn fight_until_hits(app: &mut App, frames: u32, want: u32) -> (u32, usize) {
     let mut attacks = std::collections::BTreeSet::new();
     let mut hits = 0;
     let mut last_hit = 0;
     let mut was_grabbed = false;
+    let mut was_reacting = false;
     for f in 0..frames {
         // ... and, after 8 s without a hit, swings every 2 s (a channel like the Monk's 3033
         // waits for that).
@@ -3769,7 +5383,12 @@ fn fight_until_hits(app: &mut App, frames: u32, want: u32) -> (u32, usize) {
         // ThrowParam 21500200 "grab restraint from the ground", no damage of its own).
         let grabbed = a.state == "Grabbed" && !was_grabbed;
         was_grabbed = a.state == "Grabbed";
-        if a.hp < a.hp_max || grabbed {
+        // ... or a reaction with no damage (the Divine Dragon's wind 52000830, atkPhys 0, throws
+        // him back: GroundStormJumpBackReady).
+        let reacting = a.state.contains("Damage") || a.state.contains("StormJumpBack");
+        let reacted = reacting && !was_reacting;
+        was_reacting = reacting;
+        if a.hp < a.hp_max || grabbed || reacted {
             hits += 1;
             last_hit = f;
             a.hp = a.hp_max;
@@ -3778,7 +5397,9 @@ fn fight_until_hits(app: &mut App, frames: u32, want: u32) -> (u32, usize) {
         // Wolf closes in like a player would (3 m/s up to 2.5 m; after 8 s without a hit right
         // onto it, as onto the hidden ground zombie) and faces it.
         let to = (et - t.translation).with_y(0.0);
-        let stop = if f - last_hit > 480 { 0.05 } else { 2.5 };
+        // (Only onto one that has not attacked: the Divine Dragon's smashes 3007 / 3008, AtkParam
+        // 120 / 130 from its hand dummies 10-11, land in front of it, not at its centre.)
+        let stop = if f - last_hit > 480 && attacks.is_empty() { 0.05 } else { 2.5 };
         // (From far off, as after a boss script's warp to its arena entrance, 70 m from the
         // Divine Dragon: 15 m/s, a player sprinting and grappling in.)
         if to.length() > stop {
@@ -3868,7 +5489,7 @@ fn dbg_blow_after_fight() {
         let world = app.world_mut();
         let wolf = world.query_filtered::<&Transform, With<Player>>().single(world).unwrap().translation;
         let (e, ea, et) = world.query_filtered::<(&Enemy, &Actor, &Transform), Without<crate::enemy::Cast>>().single(world).unwrap();
-        let c = crate::player::deathblow_check(world.resource::<Combat>(), wolf, ea, e, et.translation, &|_| None);
+        let c = crate::player::deathblow_check(world.resource::<Combat>(), wolf, (et.translation - wolf).with_y(0.0).normalize_or_zero(), false, ea, e, et.translation, &|_| None);
         println!("check: {:?}", c.map(|c| (c.behind, c.suffix, c.in_reach, c.start.map(|s| s.dist), c.main.dist)));
         let pa = world.query_filtered::<&Actor, With<Player>>().single(world).unwrap();
         println!("wolf hp {} posture {}/{} state {} anim {:?}", pa.hp, pa.posture, pa.posture_max, pa.state, pa.anim);
@@ -3939,8 +5560,7 @@ fn all_enemies_full() {
                 let row = a.kind;
                 let combat = world.resource::<Combat>();
                 let foe = &combat.kind(row).foe;
-                let npc = combat.param("NpcParam", foe.npc_row);
-                (foe.think_id > 3 && npc["hp"].as_i64().unwrap_or(0) < 9999, combat.throw(foe.throw_row(0)).is_some(), blows)
+                (row_fights(combat, foe), combat.throw(foe.throw_row(0)).is_some(), blows)
             };
             let (mut fights, mut can_blow, mut total_blows) = stats(&mut app);
             let mut good = true;
@@ -4067,9 +5687,15 @@ fn hand_over(app: &mut App) -> bool {
 /// runs `frames` and returns every state Wolf passed through, the Spirit Emblems spent and the
 /// enemy's HP lost. The enemy stands idle 2 m in front.
 fn use_tool(tool: i64, emblems: u32, hold: usize, frames: usize) -> (Vec<String>, u32, f32) {
+    use_tool_sen(tool, emblems, hold, frames, 500)
+}
+
+/// As `use_tool`, carrying `sen` (the Sen Throw's level).
+fn use_tool_sen(tool: i64, emblems: u32, hold: usize, frames: usize, sen: u32) -> (Vec<String>, u32, f32) {
     let mut app = app();
     {
         let world = app.world_mut();
+        world.resource_mut::<crate::config::GameConfig>().player.sen = sen;
         world.resource_mut::<crate::config::GameConfig>().player.prosthetics = vec![tool];
         let mut q = world.query_filtered::<&mut Transform, With<Enemy>>();
         q.single_mut(world).unwrap().translation.z = 2.0;
@@ -4199,6 +5825,7 @@ fn the_umbrella_opens_while_held() {
     }
 }
 
+
 /// The Sabimaru's combo (HKS line 3605): a press inside SP_EF_REF_TAE_ENABLE_SUB_ATTACK_COMBO of
 /// GroundSubAttackCombo1 goes on to Combo2 (free: only the odd steps cost).
 #[test]
@@ -4299,6 +5926,36 @@ fn the_flame_vent_burns() {
     assert!(reacted, "no W_FireReaction");
 }
 
+/// R35's guard-skip: a blocked hit that sets the General on fire plays W_FireReaction, not his
+/// guard (c9997 ExecDebuffReaction runs before ExecGuardBlock and its TRUE ends ExecDamage).
+/// Wolf's sword is given the Flame Vent's burn build-up 9105, raised so the first hit ignites.
+#[test]
+fn a_blocked_hit_that_ignites_plays_the_fire_reaction() {
+    let mut app = app();
+    {
+        let mut combat = app.world_mut().resource_mut::<Combat>();
+        for atk in combat.player.attacks.values_mut() {
+            atk.sp_effect_id0 = 9105;
+        }
+        combat.player.sp_effects.get_mut("9105").expect("9105").regist_blood = 10000.0;
+    }
+    app.world_mut().resource_mut::<PadInput>().press(Action::Attack);
+    let mut blocked = None;
+    for f in 0..120 {
+        app.update();
+        if blocked.is_none() && log_text(&app).contains("enemy blocked") {
+            blocked = Some(f);
+        }
+        if blocked.is_some() {
+            break;
+        }
+    }
+    let out = log_text(&app);
+    assert!(blocked.is_some() && out.contains("BURNING"), "{out}
+enemy={:?}", enemy_state(&mut app));
+    assert_eq!(enemy_state(&mut app).0, "FireReaction", "{out}");
+}
+
 /// A guarding General blocks a shuriken, but the Flame Vent (AtkParam disableGuard /
 /// disableJustGuard 1) goes through his guard and hurts him.
 #[test]
@@ -4358,13 +6015,148 @@ fn the_flame_vent_goes_through_a_guard() {
     assert!(flame > 0.0, "the Flame Vent was blocked");
 }
 
-/// Sen Throw (70400) has its own BehaviorParam_PC rows, 107004100 / 107004150, which fire nothing
-/// (refType 0): no free Shuriken LV1 (the bare judge's 700000) flies.
+/// A guarding enemy blocks Wolf's shuriken as a sword blow (c9997 ExecGuardBlock): the guard
+/// reaction plays and the AI's guard streak counts it (clash 200215 / 200216), round 35 (it
+/// stood still and took the raw repelLostStamDamage).
 #[test]
-fn sen_throw_throws_no_free_shuriken() {
-    let (states, spent, hp) = use_tool(70400, 20, 0, 150);
-    assert!(!states.is_empty());
-    assert_eq!((spent, hp), (0, 0.0), "states {states:?}");
+fn a_blocked_shuriken_plays_the_guard_reaction() {
+    let mut app = app();
+    {
+        let world = app.world_mut();
+        world.resource_mut::<crate::config::GameConfig>().player.prosthetics = vec![70000];
+        let mut q = world.query_filtered::<&mut Transform, With<Enemy>>();
+        q.single_mut(world).unwrap().translation.z = 2.0;
+        world.resource_mut::<crate::enemy::EnemyDebug>().mode = crate::enemy::AiMode::Idle;
+        let mut q = world.query::<&mut Player>();
+        q.single_mut(world).unwrap().emblems = 20;
+    }
+    for _ in 0..10 {
+        app.update();
+    }
+    let (key, t) = {
+        let world = app.world_mut();
+        let a = world.query_filtered::<&Actor, With<Enemy>>().single(world).unwrap().clone();
+        let combat = world.resource::<Combat>();
+        let d = combat.data_of(&a);
+        let mut found: Vec<(String, f32)> = d
+            .anims
+            .iter()
+            .flat_map(|(k, an)| an.events.iter().filter(|e| e.kind == 0 && e.flag_type() == Some(crate::player::FLAG_SHIELD_BLOCK)).map(move |e| (k.clone(), e.start + 0.05)))
+            .filter(|(k, t)| d.flag(k, *t, crate::player::FLAG_SHIELD_BLOCK) && !d.has_state_info(k, *t, crate::data::STATE_INFO_JUST_GUARD))
+            .collect();
+        found.sort_by(|x, y| x.0.cmp(&y.0));
+        found.into_iter().next().expect("a block pose")
+    };
+    app.world_mut().resource_mut::<PadInput>().press(Action::Prosthetic);
+    let mut blocked = false;
+    for _ in 0..150 {
+        {
+            let world = app.world_mut();
+            let mut a = world.query_filtered::<&mut Actor, With<Enemy>>().single_mut(world).unwrap();
+            if a.anim != key {
+                a.play("Guard", &key);
+            }
+            (a.prev_t, a.t) = (t, t);
+        }
+        app.update();
+        if log_text(&app).contains("enemy blocks the shuriken") {
+            blocked = true;
+            break;
+        }
+    }
+    assert!(blocked, "no block:
+{}", log_text(&app));
+    let world = app.world_mut();
+    let (a, e) = world.query_filtered::<(&Actor, &Enemy), Without<crate::enemy::Cast>>().single(world).unwrap();
+    assert!(e.guard_count() >= 1, "the block was not counted as a clash");
+    assert!(a.state != "Guard" && a.state.contains("Guard"), "no guard reaction: {}", a.state);
+}
+
+/// An enemy that blocks or deflects Wolf's slash takes posture x its NpcParam <attr>StaminaDmgRate
+/// too, as on a hit (exe FUN_1408439a0: every outcome x vfunc 0x248's per-attribute rate). The
+/// General's row with every <attr>StaminaDmgRate set to 0.5 takes half (floored) of what it takes
+/// at 1.0, in a block pose and in a deflect window (2026-10-13 round 28).
+#[test]
+fn a_guarding_enemy_takes_its_npc_posture_rate() {
+    // (posture the enemy gains from Wolf's first slash while held in a block / deflect pose)
+    let run = |rate: f64, deflect: bool| -> f32 {
+        let mut app = app();
+        {
+            let world = app.world_mut();
+            let mut q = world.query_filtered::<&mut Transform, With<Enemy>>();
+            q.single_mut(world).unwrap().translation.z = 2.0;
+            world.resource_mut::<crate::enemy::EnemyDebug>().mode = crate::enemy::AiMode::Idle;
+        }
+        for _ in 0..10 {
+            app.update();
+        }
+        let (key, t, row) = {
+            let world = app.world_mut();
+            let a = world.query_filtered::<&Actor, With<Enemy>>().single(world).unwrap();
+            let combat = world.resource::<Combat>();
+            let row = combat.foe_of(a).npc_row.to_string();
+            let d = combat.data_of(a);
+            let mut found: Vec<(String, f32)> = d
+                .anims
+                .iter()
+                .flat_map(|(k, an)| an.events.iter().filter(|e| e.kind == 0 && e.flag_type() == Some(crate::player::FLAG_SHIELD_BLOCK)).map(move |e| (k.clone(), e.start + 0.05)))
+                .filter(|(k, t)| d.flag(k, *t, crate::player::FLAG_SHIELD_BLOCK) && d.has_state_info(k, *t, crate::data::STATE_INFO_JUST_GUARD) == deflect)
+                .collect();
+            found.sort_by(|x, y| x.0.cmp(&y.0));
+            let (key, t) = found.into_iter().next().expect("a guard pose");
+            (key, t, row)
+        };
+        {
+            let mut combat = app.world_mut().resource_mut::<Combat>();
+            if let Some(r) = combat.params["NpcParam"][&row].as_object_mut() {
+                for f in (1..=12).filter_map(crate::data::npc_stamina_rate_field) {
+                    r.insert(f.to_string(), rate.into());
+                }
+            }
+        }
+        let hold = |app: &mut App| {
+            let world = app.world_mut();
+            let mut q = world.query_filtered::<&mut Actor, With<Enemy>>();
+            let mut a = q.single_mut(world).unwrap();
+            if a.anim != key {
+                a.play("Guard", &key);
+            }
+            a.prev_t = t;
+            a.t = t;
+            a.posture = 0.0;
+        };
+        hold(&mut app);
+        app.world_mut().resource_mut::<PadInput>().press(Action::Attack);
+        for _ in 0..90 {
+            hold(&mut app);
+            app.update();
+            let world = app.world_mut();
+            let p = world.query_filtered::<&Actor, With<Enemy>>().single(world).unwrap().posture;
+            if p > 0.0 {
+                return p;
+            }
+        }
+        0.0
+    };
+    for deflect in [false, true] {
+        let (whole, half) = (run(1.0, deflect), run(0.5, deflect));
+        assert!(whole > 1.0, "deflect {deflect}: no posture at 1.0");
+        assert_eq!(half, (whole * 0.5).floor(), "deflect {deflect}: {whole} at 1.0, {half} at 0.5");
+    }
+}
+
+/// Sen Throw (70400): its throws' judges are gated by the sen-held levels (127060-127063,
+/// stateInfo 999-996, set by common.emevd). With 500+ sen the LV3 row's coins fly and hit; with
+/// none only LV0 (107004101: no bullet, wepCost 1) - the emblem goes and nothing flies. The bare
+/// judge 107004100 (refType 0) never throws the free Shuriken 700000 (round 68: no level was
+/// on, so it threw nothing at any sen).
+#[test]
+fn sen_throw_throws_by_the_sen_held() {
+    let (states, _, hp) = use_tool_sen(70400, 20, 0, 150, 500);
+    assert!(hp > 0.0, "500 sen: no hit, states {states:?}");
+    let (states, spent, hp) = use_tool_sen(70400, 20, 0, 150, 0);
+    assert_eq!(hp, 0.0, "0 sen hit: states {states:?}");
+    assert!(spent >= 1, "0 sen: spent {spent}");
 }
 
 /// The Sabimaru poisons: each cut puts 9004 (poizonAttackPower 31, stateInfo 2) toward the
@@ -4532,6 +6324,17 @@ fn tools_work_in_the_air() {
     let none = |_: i64| false;
     assert_eq!(hks::air_press(71, true, 1, false, &none), None);
     assert_eq!(hks::air_press(70, true, 1, false, &none), Some(("AirSubAttackCombo1", false)));
+    // Divine Abduction without ref 309: the "071 or 077" branch (HKS 3083), counted (round 49).
+    assert_eq!(hks::air_press(77, true, 0, false, &none), Some(("AirSubAttackCombo1", true)));
+    // Validate 6220's flamethrower clause (round 50): inside ref 329 only a 072 with ref 325.
+    let r329 = |r: i64| r == hks::REF_ONLY_FLAMETHROWER_CANCEL;
+    let r329_325 = |r: i64| r == hks::REF_ONLY_FLAMETHROWER_CANCEL || r == hks::REF_WEP_ENABLE_SUB_ATTACK_HOLD;
+    assert!(hks::flame_gate(70, &none) && hks::flame_gate(72, &r329_325));
+    assert!(!hks::flame_gate(72, &r329) && !hks::flame_gate(70, &r329_325));
+    // Round 59 (6220): the umbrella opens from a held button inside ref 311 (100368).
+    let r311 = |r: i64| r == hks::REF_ENABLE_PRESS_SUB_ATTACK;
+    assert!(hks::held_press(76, true, true, &r311));
+    assert!(!hks::held_press(76, false, true, &r311) && !hks::held_press(70, true, true, &r311));
     assert_eq!(hks::air_press(72, false, 0, false, &none), Some(("SubAttackFailedAir", false)));
     // The start lands as the game's misspelt LandAirSubAttacStart (403050) from the same time
     // while ref 201 is up, else from the loop's landing.
@@ -4567,6 +6370,49 @@ fn tools_work_in_the_air() {
         let landed = seen.iter().position(|s| s.starts_with("LandAirSubAtta") || s == "LandFreeFall");
         assert!(landed.is_some(), "{tool} never landed: {seen:?}");
         assert_eq!(seen.last().map(String::as_str), Some("StandIdle"), "{tool}: {seen:?}");
+    }
+}
+
+/// Round 26: the air throws fire their TAE 4 BulletBehavior_Midair bullets and pay the emblem:
+/// the shuriken's a070_403000 (judge 150 -> Bullet 700050-style row at v7000:150) and the
+/// firecracker's a071_403000 (judge 120 -> BehaviorParam_PC 107100120 -> Bullet 710020, wepCost
+/// 1); before, the air move played but nothing was thrown or paid.
+#[test]
+fn an_air_throw_fires_and_pays() {
+    for tool in [70000, 71000] {
+        let mut app = app();
+        {
+            let world = app.world_mut();
+            world.resource_mut::<crate::config::GameConfig>().player.prosthetics = vec![tool];
+            world.resource_mut::<crate::enemy::EnemyDebug>().mode = crate::enemy::AiMode::Idle;
+        }
+        for _ in 0..10 {
+            app.update();
+        }
+        let before = {
+            let world = app.world_mut();
+            world.query::<&Player>().single(world).unwrap().emblems
+        };
+        app.world_mut().resource_mut::<PadInput>().press(Action::Jump);
+        let mut pressed = false;
+        let mut thrown = false;
+        for _ in 0..200 {
+            let (state, _, t, _) = player_state(&mut app);
+            if !pressed && state.contains("GroundJumpStart") && t > 0.2 {
+                pressed = true;
+                app.world_mut().resource_mut::<PadInput>().press(Action::Prosthetic);
+            }
+            app.update();
+            let world = app.world_mut();
+            thrown |= world.query::<&crate::prosthetic::Projectile>().iter(world).next().is_some();
+        }
+        let after = {
+            let world = app.world_mut();
+            world.query::<&Player>().single(world).unwrap().emblems
+        };
+        assert!(thrown, "{tool}: no bullet
+{}", log_text(&app));
+        assert!(after < before, "{tool}: emblems {before} -> {after}");
     }
 }
 
@@ -4664,7 +6510,8 @@ fn deathblows_give_back_posture_and_hp_with_the_skills() {
 }
 
 /// After a Todome (Wolf's a000_710205-7 put on 105051 / 150302-150332, effectEndurance -1) the
-/// deathblow recoveries are blocked: same spCategory, categoryPriority 2 beats 3.
+/// deathblow recoveries are blocked: same spCategory, categoryPriority 2 beats 3. The General's
+/// deathblow clip has no release row, so it stays blocked.
 #[test]
 fn todome_blocks_the_deathblow_recoveries() {
     let mut app = app();
@@ -4689,6 +6536,32 @@ fn todome_blocks_the_deathblow_recoveries() {
         let (b, r) = (&d.sp_effects[&block.to_string()], &d.sp_effects[&rec.to_string()]);
         assert!(b.sp_category == r.sp_category && b.category_priority < r.category_priority, "{block} vs {rec}");
     }
+}
+
+/// The 14 deathblow clips that fire the categories' priority-1 rows at f0 (e.g. a225_510090:
+/// 105052 / 150303-150333 "release recovery prohibition") lift the Todome holds, since a row
+/// that outranks a held one of its category replaces it (round 30: the holds stayed until a
+/// reset).
+#[test]
+fn a_release_row_lifts_the_todome_recovery_block() {
+    let mut app = app();
+    move_enemy_far(&mut app);
+    for _ in 0..5 {
+        app.update();
+    }
+    {
+        let world = app.world_mut();
+        let mut q = world.query::<&mut Player>();
+        q.single_mut(world).unwrap().held = vec![105051, 150302, 150312, 150322, 150332];
+        let mut a = world.query_filtered::<&mut Actor, With<Player>>().single_mut(world).unwrap();
+        a.play("DeathblowTest", "a225_510090");
+    }
+    for _ in 0..3 {
+        app.update();
+    }
+    let world = app.world_mut();
+    let p = world.query::<&Player>().single(world).unwrap();
+    assert!(p.held.is_empty(), "still held: {:?}", p.held);
 }
 
 /// Every combat art from idle (HKS BEH_A_GROUND_SP_ATTACK 3388): its opening state and the Spirit
@@ -4921,6 +6794,38 @@ fn arts_combo_out_of_their_jump_and_hold() {
         }
         assert!(seen.iter().any(|s| s == want), "{art}: {seen:?}");
     }
+}
+
+/// Round 53: Sakura Dance's leap from the ground spends its one air use (HKS 3445): in the leap the
+/// counter is already at AIR_SP_ATTACK_COUNT_MAX, so the art pressed again there is refused.
+#[test]
+fn sakura_dances_ground_leap_counts_its_air_use() {
+    let mut app = app();
+    {
+        let world = app.world_mut();
+        world.resource_mut::<crate::config::GameConfig>().player.combat_art = 7700;
+        world.resource_mut::<crate::enemy::EnemyDebug>().mode = crate::enemy::AiMode::Idle;
+        let mut q = world.query_filtered::<&mut Transform, With<Enemy>>();
+        q.single_mut(world).unwrap().translation.z = 30.0;
+        world.query::<&mut Player>().single_mut(world).unwrap().emblems = 10;
+    }
+    for _ in 0..10 {
+        app.update();
+    }
+    {
+        let mut pad = app.world_mut().resource_mut::<PadInput>();
+        pad.press(Action::Attack);
+        pad.press(Action::Guard);
+    }
+    let mut count = None;
+    for _ in 0..30 {
+        app.update();
+        if player_state(&mut app).0 == "GroundSpecialAttackJumpReady" {
+            count = Some(app.world_mut().query::<&Player>().single(app.world()).unwrap().air_art_count);
+            break;
+        }
+    }
+    assert_eq!(count, Some(1));
 }
 
 /// One art use from idle: equips `art` with `emblems` Spirit Emblems, presses attack + guard and
@@ -5303,6 +7208,113 @@ fn genichiro_becomes_way_of_tomoe() {
     assert_eq!(enemy_chrs(&mut app), ["c7100"]);
 }
 
+/// The reservoir's Way of Tomoe (71101000) hands over to Isshin: 11125830 enables Isshin 1120860
+/// and sets Tomoe's 9311 in one go. A 93xx flag with the boss at 0 bars counted as the defeat,
+/// so the fight ended (Won / restart) instead of going on with Isshin.
+#[test]
+fn reservoir_tomoe_hands_over_to_isshin() {
+    if !std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/extracted/enemies/c5400.json")).exists() {
+        return;
+    }
+    let mut app = app_cfg("c7110", Some(71101000), Vec::new());
+    for _ in 0..30 {
+        app.update();
+    }
+    break_and_deathblow(&mut app, 600);
+    let mut isshin = false;
+    for _ in 0..1800 {
+        app.update();
+        if enemy_chrs(&mut app).iter().any(|c| c == "c5400") {
+            isshin = true;
+            break;
+        }
+    }
+    assert!(isshin, "no Isshin: {:?}", enemy_chrs(&mut app));
+    for _ in 0..60 * 6 {
+        app.update();
+    }
+    let bs = app.world().resource::<crate::enemy::BossScript>();
+    assert!(bs.defeats == 0 && bs.run.as_ref().is_some_and(|r| r.defeated.is_none()), "the fight ended at the hand-over");
+    assert!(enemy_chrs(&mut app).iter().any(|c| c == "c5400"));
+}
+
+/// The prologue Genichiro (71000000) is a scripted loss: with Wolf in region 1122802, 11125812
+/// makes him immortal (2004[12] on 10000; WolfImmortal for the player side), and 11125800 ends
+/// the fight at Wolf's 1 HP there (9300 with Genichiro still up): the duel starts over. An
+/// overkill on the immortal Wolf stops at 1 HP (player.rs wolf_no_dead, round 73).
+#[test]
+fn the_prologue_genichiro_is_a_scripted_loss() {
+    if !std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/extracted/enemies/c7100.json")).exists() {
+        return;
+    }
+    let mut app = app_cfg("c7100", Some(71000000), Vec::new());
+    app.update();
+    let spot = app.world().resource::<crate::enemy::BossScript>().run.as_ref().unwrap().place_of(1122802).unwrap().0;
+    let mut immortal = false;
+    let mut reset = false;
+    let mut low = f32::MAX;
+    for i in 0..600 {
+        {
+            let world = app.world_mut();
+            let mut q = world.query_filtered::<(&mut Transform, &mut Actor), With<Player>>();
+            let (mut tf, mut a) = q.single_mut(world).unwrap();
+            tf.translation = spot;
+            if i == 120 {
+                a.hp -= 10000.0;
+            }
+        }
+        app.update();
+        immortal |= app.world().resource::<crate::enemy::script::WolfImmortal>().0;
+        {
+            let world = app.world_mut();
+            low = low.min(world.query_filtered::<&Actor, With<Player>>().single(world).unwrap().hp);
+        }
+        if app.world().resource::<crate::enemy::BossScript>().run.as_ref().is_none_or(|r| r.flag(9300)) {
+            reset = true;
+            break;
+        }
+    }
+    assert!(immortal, "Wolf never immortal in 1122802");
+    assert!(reset, "no 9300");
+    assert!(low >= 1.0, "Wolf went to {low} HP");
+    // The duel starts over: a fresh script run (9300 off again).
+    for _ in 0..10 {
+        app.update();
+    }
+    assert!(app.world().resource::<crate::enemy::BossScript>().run.as_ref().is_some_and(|r| !r.flag(9300)), "no scripted loss");
+}
+
+/// Emma (74000010) is followed by Isshin Ashina: after her defeat event 11115900 (flag), 11115930
+/// enables him (1110920, c5430). The exporter left him out of her cast (his entry waits on a
+/// flag, not on a condition on her), and her handled defeat ended the fight.
+#[test]
+fn isshin_ashina_follows_emma() {
+    if !std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/extracted/enemies/c5430.json")).exists() {
+        return;
+    }
+    let mut app = app_cfg("c7400", Some(74000010), Vec::new());
+    for _ in 0..30 {
+        app.update();
+    }
+    let mut isshin = false;
+    'blows: for _ in 0..4 {
+        break_and_deathblow(&mut app, 600);
+        for _ in 0..60 * 8 {
+            app.update();
+            if enemy_chrs(&mut app).iter().any(|c| c == "c5430") {
+                isshin = true;
+                break 'blows;
+            }
+        }
+    }
+    let flags = app.world().resource::<crate::enemy::BossScript>().run.as_ref().map(|r| r.flags_on()).unwrap_or_default();
+    assert!(isshin, "no Isshin Ashina: {:?} flags {flags:?}", enemy_chrs(&mut app));
+    for _ in 0..60 * 6 {
+        app.update();
+    }
+    assert!(enemy_chrs(&mut app).iter().any(|c| c == "c5430"), "the fight ended: {:?}", enemy_chrs(&mut app));
+}
+
 /// The Corrupted Monk (c5000 50000000) at 2 health bars enables her three phantoms (c5005,
 /// m25 12505961). They stay out of the fight until she has SpEffect 5031 (her Attack3032 /
 /// 3033), then come in one after another (1 / 2 / 3.5 s, plus 1 s when she sent message 50)
@@ -5489,6 +7501,211 @@ fn skills_unlock_their_moves() {
     }
     app.update();
     assert_ne!(player_state(&mut app).0, "SprintToCrouchReady");
+    // Round 65: it is the plain crouch instead (HKS 4500-4509): moving -> the crouch move loop.
+    let world = app.world_mut();
+    let a = world.query_filtered::<&Actor, With<Player>>().single(world).unwrap();
+    assert!(a.crouch && a.state == "Locomotion", "state {} crouch {}", a.state, a.crouch);
+}
+
+/// R36 B: a blue (weak, spAttribute 10) lightning hit while Wolf's air art holds ref 289
+/// (SpEffect 100235) takes c0000_transition's empty branch (1099-1103): no charge, no reaction.
+/// We charged him for every airborne 6 / 10 hit. The strong lightning (6) still charges.
+#[test]
+fn an_air_art_shrugs_off_blue_lightning() {
+    let mut app = app();
+    app.update();
+    let world = app.world_mut();
+    world.resource_scope(|world, combat: Mut<Combat>| {
+        let mut a = world.query_filtered::<&mut Actor, With<Player>>().single_mut(world).unwrap();
+        let d = &combat.player;
+        let (key, t) = d
+            .anims
+            .keys()
+            .filter(|k| k.starts_with("a110_3162") || k.starts_with("a110_3167"))
+            .find_map(|k| (0..120).map(|i| i as f32 / 30.0).find(|t| d.sp_effects_at(k, *t).iter().any(|(id, _)| *id == 100235)).map(|t| (k.clone(), t)))
+            .expect("an air art with 100235");
+        a.play("AirArt", &key);
+        a.t = t;
+        let blue = crate::data::Attack { sp_attribute: 10, ..Default::default() };
+        let strong = crate::data::Attack { sp_attribute: 6, ..Default::default() };
+        assert!(crate::combat::weak_charge_armour(&combat, &a, &blue), "{key} at {t}");
+        assert!(!crate::combat::weak_charge_armour(&combat, &a, &strong));
+        a.play("Idle", "a000_000000");
+        assert!(!crate::combat::weak_charge_armour(&combat, &a, &blue), "not outside the art");
+    });
+}
+
+/// R36 B in resolve: an enemy's blue lightning (spAttribute 10, charge SpEffect 9490) striking
+/// Wolf in an air art under ref 289 (100235) takes c0000_transition's empty branch (1099-1103 in
+/// the air, 1157 standing): no charge, no shock, no reaction, the art goes on. The General's
+/// attacks are made blue; Wolf is held in the art, on the ground and 0.5 m up.
+#[test]
+fn blue_lightning_leaves_an_air_art_going() {
+    for air in [false, true] {
+        blue_lightning_on_an_air_art(air);
+    }
+}
+
+fn blue_lightning_on_an_air_art(air: bool) {
+    let mut app = app();
+    for atk in app.world_mut().resource_mut::<Combat>().kinds[0].data.attacks.values_mut() {
+        (atk.sp_attribute, atk.sp_effect_id0) = (10, 9490);
+    }
+    app.update();
+    let (key, t) = {
+        let d = &app.world().resource::<Combat>().player;
+        let mut keys: Vec<&String> = d.anims.keys().filter(|k| k.starts_with("a110_3162") || k.starts_with("a110_3167")).collect();
+        keys.sort();
+        keys.into_iter()
+            .find_map(|k| {
+                // The middle of its 100235 window (the anim moves on before the hit resolves).
+                let on: Vec<f32> = (0..120).map(|i| i as f32 / 30.0).filter(|t| d.sp_effects_at(k, *t).iter().any(|(id, _)| *id == 100235)).collect();
+                Some((k.clone(), (on.first()? + on.last()?) / 2.0))
+            })
+            .expect("an air art with 100235")
+    };
+    let ground = {
+        let world = app.world_mut();
+        world.query_filtered::<&Transform, With<Player>>().single(world).unwrap().translation.y
+    };
+    // Held airborne at ground height, he lands at once (LandVerticalGroundJump), so 0.5 m up.
+    let hold = |app: &mut App| {
+        let world = app.world_mut();
+        let (mut tf, mut a) = world.query_filtered::<(&mut Transform, &mut Actor), With<Player>>().single_mut(world).unwrap();
+        if a.anim != key {
+            a.play("AirArt", &key);
+        }
+        (a.prev_t, a.t) = (t, t);
+        if air {
+            (a.airborne, a.move_vel, tf.translation.y) = (true, Vec3::ZERO, ground + 0.5);
+        }
+    };
+    start_enemy_combo(&mut app, 0);
+    for _ in 0..240 {
+        hold(&mut app);
+        app.update();
+        if log_text(&app).contains("enemy hit") {
+            let out = log_text(&app);
+            assert!(!out.contains("LIGHTNING CAUGHT") && !out.contains("SHOCKED"), "air {air}: {out}");
+            assert_eq!(player_state(&mut app).1, key, "air {air}: {out}");
+            let world = app.world_mut();
+            let a = world.query_filtered::<&Actor, With<Player>>().single(world).unwrap();
+            assert!(a.electro.is_none() && a.shock.is_none(), "air {air}: {out}");
+            return;
+        }
+    }
+    panic!("air {air}: never hit: {}", log_text(&app));
+}
+
+/// Round 43: Genichiro's lightning (c7110 a000_003042, AtkParam 71100361 with the charge
+/// SpEffect 9492) striking Wolf on the ground shocks him at once: 9492 -> 9412 -> 9432 (160 +
+/// 30 % of max HP, posture) -> 9450 (ref 593) W_GroundDamageElectricShockWeak. Before, a plain
+/// hit.
+#[test]
+fn lightning_on_the_ground_shocks_wolf() {
+    if !std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/extracted/enemies/c7110.json")).exists() {
+        return;
+    }
+    let mut app = app_with("c7110");
+    {
+        let world = app.world_mut();
+        let mut q = world.query_filtered::<(&mut Enemy, &mut Actor), Without<crate::enemy::Cast>>();
+        let (mut e, mut a) = q.single_mut(world).unwrap();
+        e.force_anim(&mut a, "a000_003042");
+    }
+    let (hp0, max) = {
+        let world = app.world_mut();
+        let a = world.query_filtered::<&Actor, With<Player>>().single(world).unwrap();
+        (a.hp, a.hp_max)
+    };
+    let mut seen: Vec<String> = Vec::new();
+    for _ in 0..240 {
+        app.update();
+        let s = player_state(&mut app).0;
+        if seen.last() != Some(&s) {
+            seen.push(s);
+        }
+        if seen.iter().any(|s| s == "GroundDamageElectricShockWeak") {
+            break;
+        }
+    }
+    let world = app.world_mut();
+    let a = world.query_filtered::<&Actor, With<Player>>().single(world).unwrap();
+    assert!(seen.iter().any(|s| s == "GroundDamageElectricShockWeak"), "{seen:?}");
+    assert!(hp0 - a.hp >= 160.0 + max * 0.30 - 0.5, "hp {hp0} -> {} (max {max})", a.hp);
+}
+
+/// The Lightning Reversal's hit (AtkParam_Pc 5000281: atkPhys 0, spEffectId0 9400 -> its cycle
+/// 9420, registFreeze 200 vs the Way of Tomoe's resist_freeze 100) fills her shock gauge at once:
+/// 9420's 67 % of 2556 + 320 = 2032, x her resident 9461's freezeDamageRate 25 % = 508 HP, and
+/// 180 + 5 % posture (status.rs STATE_INFO_FREEZE). Before, 9400 was a 0 s row doing nothing and
+/// the reversal took no HP at all.
+#[test]
+fn the_reversal_takes_a_fifth_of_tomoes_bar() {
+    if !std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/extracted/enemies/c7110.json")).exists() {
+        return;
+    }
+    let mut app = app_with("c7110");
+    app.update();
+    let (ent, hp0, posture0, max, pmax) = {
+        let world = app.world_mut();
+        let mut q = world.query_filtered::<(Entity, &Actor), (With<Enemy>, Without<crate::enemy::Cast>)>();
+        let (e, a) = q.single(world).unwrap();
+        (e, a.hp, a.posture, a.hp_max, a.posture_max)
+    };
+    assert_eq!(max, 2556.0, "the Way of Tomoe's NpcParam hp");
+    let lines = app.world_mut().resource_scope::<crate::status::Statuses, _>(|world, mut statuses| {
+        world.resource_scope::<Combat, _>(|world, combat| {
+            let a = world.get::<Actor>(ent).unwrap();
+            statuses.hit(&combat, ent, a, &[9400], false)
+        })
+    });
+    assert!(lines.iter().any(|l| l == "SHOCK"), "{lines:?}");
+    app.update();
+    let a = app.world().get::<Actor>(ent).unwrap();
+    let took = hp0 - a.hp;
+    assert!((took - 508.0).abs() < 2.0, "took {took} of {max}");
+    let posture = a.posture - posture0;
+    assert!((posture - (180.0 + pmax * 0.05)).abs() < 1.0, "posture +{posture} (max {pmax})");
+}
+
+/// The Way of Tomoe's lightning arrow (a000_003039 BulletBehavior 521 at 1.87 s: Bullet 71100521
+/// spAttribute 10, spEffectId1 9492; its AtkParam 71100521 has no SpEffect and no atkPhys) shocks
+/// Wolf on the ground through the Bullet row's charge: GroundDamageElectricShockWeak and 9432's
+/// 160 + 30 % HP. Before, the bullet's 9492 went to a timed row nothing read and the arrow landed
+/// as a plain hit for 0.
+#[test]
+fn a_lightning_arrow_shocks_wolf_on_the_ground() {
+    if !std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/extracted/enemies/c7110.json")).exists() {
+        return;
+    }
+    let mut app = app_with("c7110");
+    {
+        let world = app.world_mut();
+        let mut q = world.query_filtered::<(&mut Enemy, &mut Actor), Without<crate::enemy::Cast>>();
+        let (mut e, mut a) = q.single_mut(world).unwrap();
+        e.force_anim(&mut a, "a000_003039");
+    }
+    let (hp0, max) = {
+        let world = app.world_mut();
+        let a = world.query_filtered::<&Actor, With<Player>>().single(world).unwrap();
+        (a.hp, a.hp_max)
+    };
+    let mut seen: Vec<String> = Vec::new();
+    for _ in 0..300 {
+        app.update();
+        let s = player_state(&mut app).0;
+        if seen.last() != Some(&s) {
+            seen.push(s);
+        }
+        if seen.iter().any(|s| s == "GroundDamageElectricShockWeak") {
+            break;
+        }
+    }
+    let world = app.world_mut();
+    let a = world.query_filtered::<&Actor, With<Player>>().single(world).unwrap();
+    assert!(seen.iter().any(|s| s == "GroundDamageElectricShockWeak"), "{seen:?}");
+    assert!(hp0 - a.hp >= 160.0 + max * 0.30 - 0.5, "hp {hp0} -> {} (max {max})", a.hp);
 }
 
 /// Genichiro's lightning (c7110 a000_003042 f50 AttackBehavior 361: AtkParam 71100361
@@ -5537,7 +7754,7 @@ fn lightning_caught_in_the_air_charges_wolf_and_an_attack_throws_it_back() {
         assert_eq!(s, "AirDamageElectroChargeWeakStart");
         let world = app.world_mut();
         let a = world.query_filtered::<&Actor, With<Player>>().single(world).unwrap();
-        assert!(a.hp >= hp0 && a.electro.is_some_and(|c| c.0 == 9490), "hp {} -> {}, charge {:?}", hp0, a.hp, a.electro);
+        assert!(a.hp >= hp0 && a.electro.is_some_and(|c| (9490..=9494).contains(&c.0)), "hp {} -> {}, charge {:?}", hp0, a.hp, a.electro);
         let mut seen = vec![s];
         for i in 0..240 {
             if i % 5 == 0 && !seen.iter().any(|s| s == "AirWeakElectroReceiveAttack") {
@@ -5625,6 +7842,104 @@ fn dragon_app() -> Option<App> {
         app.update();
     }
     Some(app)
+}
+
+/// m25 12505901 (one per tree, 1 s after the phase flag 12505888): the Divine Dragon's five
+/// trees, c5310 2500880-84, are warped onto its dummy polys 50 / 53 / 54 / 55 / 56 (2004[42] Warp
+/// Character and Copy Floor), facing each dummy's +Z. They were left at their MSB spot (883 / 884
+/// were not even in the cast), so Wolf had nothing to grapple.
+#[test]
+fn the_divine_dragons_trees_stand_on_its_dummies() {
+    if !std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/extracted/enemies/c5310.json")).exists() {
+        return;
+    }
+    let mut app = app_geom("c5200", Some(52000000));
+    let find = |app: &mut App, id: i64| {
+        let world = app.world_mut();
+        let mut q = world.query::<(Entity, &crate::enemy::script::Scripted)>();
+        q.iter(world).find(|(_, s)| s.0 == id).map(|(e, _)| e)
+    };
+    let pairs = [(2500880, 50), (2500881, 53), (2500882, 54), (2500883, 55), (2500884, 56)];
+    let mut last = Vec::new();
+    for i in 0..(60 * 12) {
+        if i == 2 {
+            let world = app.world_mut();
+            for mut e in world.query::<&mut Enemy>().iter_mut(world) {
+                e.aggressive = true;
+            }
+        }
+        app.update();
+        let Some(dragon) = find(&mut app, 2500800) else { continue };
+        last.clear();
+        for (tree, dmy) in pairs {
+            let Some(t) = find(&mut app, tree) else { break };
+            let world = app.world();
+            let Some(m) = world.get::<crate::model::Dummies>(dragon).and_then(|d| crate::combat::dmy_entity(d, dmy)) else { break };
+            let at = world.get::<GlobalTransform>(m).unwrap().translation();
+            last.push((tree, world.get::<Transform>(t).unwrap().translation.distance(at)));
+        }
+        if last.len() == pairs.len() && last.iter().all(|(_, d)| *d < 0.05) {
+            return;
+        }
+    }
+    panic!("trees off the dragon's dummies: {last:?}");
+}
+
+/// The trees' grapple points: m25 12505901 attaches o259920-922 to each tree's dummies 600-602
+/// (2003[58]) and switches them off (2005[3]); 12505911 asks the trees to bloom (AI request 10 ->
+/// AttackImmediateAction 20000 / 20002 / 20004, HKS -> loop Event21000-21002 with 5025-5027),
+/// and 12505906 switches on the point of the bloom. Each object carries four grapple records
+/// (o259920 / 921 variation 45 -> ChrPhysicsHoming 300053105), ridden like a map point.
+#[test]
+fn the_divine_dragons_trees_open_grapple_points_when_they_bloom() {
+    if !std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/extracted/enemies/c5310.json")).exists() {
+        return;
+    }
+    let mut app = app_geom("c5200", Some(52000000));
+    let trees = [2500880, 2500881, 2500882, 2500883, 2500884];
+    let mut bloomed = false;
+    for i in 0..(60 * 40) {
+        if i == 2 {
+            let world = app.world_mut();
+            for mut e in world.query::<&mut Enemy>().iter_mut(world) {
+                e.aggressive = true;
+            }
+        }
+        app.update();
+        let world = app.world_mut();
+        let mut q = world.query::<(Entity, &crate::enemy::script::Scripted, &Actor, &Transform)>();
+        let tree_of: Vec<(Entity, String, Vec3)> = q.iter(world).filter(|(_, s, _, _)| trees.contains(&s.0)).map(|(e, _, a, t)| (e, a.state.clone(), t.translation)).collect();
+        bloomed |= tree_of.iter().any(|(_, st, _)| st.starts_with("Event2100") || matches!(st.as_str(), "Ez20000" | "Ez20002" | "Ez20004"));
+        let g: Vec<_> = world.resource::<crate::enemy::grapple::EnemyGrapples>().0.iter().filter(|g| g.object).cloned().collect();
+        if !bloomed {
+            assert!(g.is_empty(), "frame {i}: points before any bloom {g:?}");
+            continue;
+        }
+        if g.is_empty() {
+            continue;
+        }
+        // Only the bloom's point (5025 -> o259920 on 600, 5026 -> 921 on 601, 5027 -> 922 on
+        // 602): four records on that tree, the other two objects stay off.
+        for (t, st, _) in &tree_of {
+            let n = g.iter().filter(|p| p.entity == *t).count();
+            assert!(n <= 4, "frame {i}: {n} points on one tree ({st})");
+            assert!(n == 0 || st.starts_with("Event2100") || st.starts_with("Ez2000"), "frame {i}: points on a tree in {st}");
+        }
+        for p in &g {
+            let (_, st, at) = tree_of.iter().find(|t| t.0 == p.entity).unwrap_or_else(|| panic!("point on a non-tree {p:?}"));
+            assert!(p.hook.distance(*at) < 12.0 && p.land.distance(*at) < 12.0, "frame {i}: {p:?} far from its tree at {at:?} ({st})");
+            assert!(p.homing_row == 300_053_105 || (p.variation == 0 && p.homing_row == 300_000_000), "{p:?}");
+        }
+        // Wolf takes it as a ridden map point: the search finds it from a camera looking at it.
+        let p = &g[0];
+        let wolf = p.hook + Vec3::new(0.0, -3.0, 8.0);
+        let pt = crate::map::GrapplePoint { hook: p.hook, land: p.land, fwd: (wolf - p.hook).with_y(0.0).normalize(), variation: p.variation };
+        let cam = wolf + Vec3::new(0.0, 1.5, 3.0);
+        let t = crate::map::grapple_target(cam, (p.hook - cam).normalize(), wolf, None, &[pt]).expect("the point is not found");
+        assert!(t.ride && t.in_action_range, "{t:?}");
+        return;
+    }
+    panic!("no tree grapple point (bloomed: {bloomed})");
 }
 
 #[test]
@@ -5755,7 +8070,7 @@ fn the_divine_dragons_lightning_comes_back_at_it() {
         let wolf = world.query_filtered::<&Transform, With<Player>>().single(world).unwrap().translation;
         let mut q = world.query::<(&Actor, &Enemy, &Transform)>();
         let (ea, e, et) = q.get(world, dragon).unwrap();
-        let c = crate::player::deathblow_check(world.resource::<Combat>(), wolf, ea, e, et.translation, &|_| None);
+        let c = crate::player::deathblow_check(world.resource::<Combat>(), wolf, (et.translation - wolf).with_y(0.0).normalize_or_zero(), false, ea, e, et.translation, &|_| None);
         assert!(c.as_ref().is_some_and(|c| c.in_reach), "finisher not open: {} {:?} wolf {wolf} dragon {}", ea.anim, c.map(|c| c.suffix), et.translation);
     }
     app.world_mut().resource_mut::<PadInput>().press(Action::Attack);
@@ -5866,6 +8181,50 @@ fn wolf_bounces_off_an_enemy_that_cuts_his_knockback() {
     // c1020 (cut 0): the General takes it all, Wolf stays.
     let v = wolf_recoil_on("c1020").expect("the slash connects");
     assert!(v.length() < 1e-4, "recoil {v}");
+}
+
+/// The straw doll (c5040 50400000, resident 5300: every dmgLv_* 1, motion level 0) stays put
+/// under Wolf's slash and he gets the whole scaled knockback back as recoil (exe FUN_140b6bfe0:
+/// cut 1.0, the push start skipped; HANDOFF 4.47 round 25).
+#[test]
+fn a_level_0_hit_leaves_the_doll_still_and_wolf_recoils() {
+    let mut app = app_cfg("c5040", Some(50400000), Vec::new());
+    {
+        let world = app.world_mut();
+        let mut q = world.query_filtered::<&mut Transform, With<Enemy>>();
+        for mut t in q.iter_mut(world) {
+            t.translation.x = 0.0;
+            t.translation.z = 2.0;
+        }
+    }
+    app.update();
+    app.world_mut().resource_mut::<PadInput>().press(Action::Attack);
+    // (Wolf's recoil, where the doll stands) on the frame the slash connects.
+    let mut hit = None;
+    for _ in 0..90 {
+        app.update();
+        let world = app.world_mut();
+        let a = world.query_filtered::<&Actor, With<Player>>().single(world).unwrap();
+        if a.attack_hit {
+            let v = a.kb_vel;
+            hit = Some((v, world.query_filtered::<&Transform, With<Enemy>>().iter(world).next().unwrap().translation));
+            break;
+        }
+    }
+    let (v, doll0) = hit.expect("the slash connects");
+    // Pushed back (-Z, away from the doll at +Z).
+    assert!(v.z < -1.0, "Wolf's recoil {v}");
+    let mut path = Vec::new();
+    for _ in 0..30 {
+        app.update();
+        let world = app.world_mut();
+        let (ea, et) = world.query_filtered::<(&Actor, &Transform), With<Enemy>>().iter(world).next().unwrap();
+        path.push(format!("{} {} {:.2} {:.3}", ea.state, ea.anim, ea.t, (et.translation - doll0).with_y(0.0).length()));
+    }
+    let world = app.world_mut();
+    let (ea, et) = world.query_filtered::<(&Actor, &Transform), With<Enemy>>().iter(world).next().unwrap();
+    let moved = (et.translation - doll0).with_y(0.0).length();
+    assert!(moved < 0.02 && ea.kb_vel.length() < 1e-4, "the doll slid {moved:.3} m (kb {}): {path:?}", ea.kb_vel);
 }
 
 /// Wolf's first slash on `chr` standing at `at`: (his recoil velocity, his forward, the enemy's
@@ -5985,6 +8344,58 @@ fn a_knockback_covers_exactly_its_distance() {
         let moved = (t - start).with_y(0.0).length();
         assert!((moved - 1.0).abs() < 0.02, "cont {cont} dec {dec}: moved {moved}");
     }
+}
+
+/// A negative knockback pulls back along its direction (the Spear's "Spear_pull" rows: -8 / -6 /
+/// -4 m), and `limit_knockback` stops it at the cap: 0.5 m of a 2 m pull.
+#[test]
+fn a_negative_knockback_pulls_and_stops_at_its_cap() {
+    for (cap, want) in [(f32::INFINITY, 2.0f32), (0.5, 0.5)] {
+        let mut app = app();
+        move_enemy_far(&mut app);
+        app.update();
+        let start = {
+            let world = app.world_mut();
+            let (mut a, t) = world.query_filtered::<(&mut Actor, &Transform), With<Player>>().single_mut(world).unwrap();
+            a.knockback(Vec3::X, -2.0, 0.1, 0.2);
+            a.limit_knockback(cap);
+            t.translation
+        };
+        for _ in 0..40 {
+            app.update();
+        }
+        let world = app.world_mut();
+        let t = world.query_filtered::<&Transform, With<Player>>().single(world).unwrap().translation;
+        let d = t - start;
+        assert!(d.x < 0.0, "pulled the wrong way: {d}");
+        assert!((d.with_y(0.0).length() - want).abs() < 0.02, "cap {cap}: moved {}", d.length());
+    }
+}
+
+/// The Spear's pull (v7800 judge 115: knockbackDist_DirectHit -8) draws the enemy to Wolf and
+/// stops it at the touch of their capsules, not 8 m on through him (round 30).
+#[test]
+fn a_spear_pull_draws_the_enemy_to_wolfs_capsule() {
+    let mut app = app();
+    app.update();
+    let (wolf, start) = {
+        let world = app.world_mut();
+        let wolf = world.query_filtered::<&Transform, With<Player>>().single(world).unwrap().translation;
+        let start = world.query_filtered::<&Transform, With<Enemy>>().single(world).unwrap().translation;
+        world.resource_scope(|world, combat: Mut<Combat>| {
+            let mut a = world.query_filtered::<&mut Actor, With<Enemy>>().single_mut(world).unwrap();
+            crate::combat::apply_knockback(&combat, &mut a, wolf, start, None, -8.0, crate::combat::damage_kb(2), "none");
+        });
+        (wolf, start)
+    };
+    for _ in 0..60 {
+        app.update();
+    }
+    let world = app.world_mut();
+    let end = world.query_filtered::<&Transform, With<Enemy>>().single(world).unwrap().translation;
+    let (was, now) = ((start - wolf).with_y(0.0), (end - wolf).with_y(0.0));
+    assert!(now.length() < was.length() - 0.5, "not pulled: {was} -> {now}");
+    assert!(now.dot(was) > 0.0 && now.length() > 0.6, "pulled through Wolf: {was} -> {now}");
 }
 
 /// Wolf's first attack-window frames (TAE, 30 fps) for the clip comparison in kb/damage.md
@@ -6357,15 +8768,17 @@ fn enemy_reach_table() {
     }
 }
 
+
 /// Wolf's first slash (a050_300100, AttackBehavior from TAE frame 7) with the game's geometry:
-/// it touches the General on its first hit frame up close, still reaches him at 4.8 m with its
-/// step-in and misses at 6 m.
+/// it touches the General on its first hit frame up close, still reaches him at 4.2 m with its
+/// step-in (4.8 m before the blend-in weighted the step out of a standing start; the live
+/// switches have no idle -> 300100 sample) and misses at 6 m.
 #[test]
 fn wolfs_first_slash_hits_on_its_tae_frame_with_the_game_geometry() {
     let close = geom_first_hit_frame(2.4).expect("hits at 2.4 m");
     assert_eq!(close.0, "a050_300100");
     assert!((6.5..=7.5).contains(&close.1), "first contact at TAE frame {}", close.1);
-    assert!(geom_first_hit_frame(4.8).is_some(), "reaches 4.8 m");
+    assert!(geom_first_hit_frame(4.2).is_some(), "reaches 4.2 m");
     assert!(geom_first_hit_frame(6.0).is_none(), "misses at 6 m");
 }
 
@@ -6580,6 +8993,35 @@ fn the_ochimusha_has_his_hang_and_hug_deathblows() {
     }
 }
 
+/// Round 41: the exe's throw range check (FUN_140be0270) - diffAngMyToDef 35 on the General's
+/// start rows: a broken General 1.5 m ahead takes the deathblow only while Wolf faces him; the
+/// back start (0110, DiffAng 0-90) only with both facing the same way.
+#[test]
+fn a_deathblow_needs_wolf_to_face_the_enemy() {
+    let mut app = app_with("c1010");
+    let world = app.world_mut();
+    world.resource_scope(|world, combat: Mut<Combat>| {
+        let mut q = world.query_filtered::<(&mut Enemy, &mut Actor, &mut Transform), Without<crate::enemy::Cast>>();
+        let (mut e, mut a, mut t) = q.single_mut(world).unwrap();
+        a.posture = a.posture_max;
+        e.on_posture_break(&mut a, &combat, false, 4.0);
+        let wolf = Vec3::new(0.0, CAPSULE_HALF_HEIGHT, 0.0);
+        t.translation = wolf + Vec3::Z * 1.5;
+        let at = t.translation;
+        // yaw 0 faces -Z: the General faces Wolf.
+        a.yaw = 0.0;
+        let e = &*e;
+        let to = |fwd: Vec3, ea: &Actor| crate::player::deathblow_check(&combat, wolf, fwd, false, ea, e, at, &|_| None).map(|c| (c.behind, c.in_reach));
+        let facing_back = -a.forward();
+        assert_eq!(to(facing_back, &a), Some((false, true)), "facing him");
+        assert_eq!(to(Vec3::X, &a).map(|c| c.1), Some(false), "facing aside");
+        assert_eq!(to(-facing_back, &a).map(|c| c.1), Some(false), "back to him");
+        // He faces away: Wolf behind him, facing his back, takes the back start.
+        a.yaw += std::f32::consts::PI;
+        assert_eq!(to(a.forward(), &a), Some((true, true)), "behind him");
+    });
+}
+
 /// The Owl's phase-2 heat-up (a000_020005, TAE marker 3506080) offers no deathblow even with
 /// his posture broken (sekiro-rs b997933).
 #[test]
@@ -6593,8 +9035,55 @@ fn the_owl_has_no_deathblow_during_his_heat_up() {
         let at = tf.translation;
         a.play("Ez20005", "a000_020005");
         a.t = 2.0;
-        assert!(crate::player::deathblow_check(&combat, wolf, &a, e, at, &|_| None).is_none());
+        assert!(crate::player::deathblow_check(&combat, wolf, (at - wolf).with_y(0.0).normalize_or_zero(), false, &a, e, at, &|_| None).is_none());
     });
+}
+
+/// The zombie's dumpling (c1500 Bullet 15000031: SpEffect 9222, registIllness 70, stateInfo 5)
+/// builds up terror on Wolf against his resist 200: the 3rd clean hit fills it, and the row's
+/// changeHpRate 100 (effectEndurance 0) takes all his HP once (round 36: no terror at all).
+/// Deflected (diseaseJustGuardResist 100) none lands.
+#[test]
+fn the_zombies_dumplings_build_up_terror() {
+    use crate::status::{Guard, Statuses};
+    let mut app = app_cfg("c1500", None, Vec::new());
+    move_enemy_far(&mut app);
+    app.update();
+    let world = app.world_mut();
+    let wolf = world.query_filtered::<Entity, With<Player>>().single(world).unwrap();
+    let weapon = world.resource::<crate::config::GameConfig>().player.combat_art;
+    world.resource_scope(|world, combat: Mut<Combat>| {
+        assert!(Statuses::is_build_up(&combat, 9222), "9222 is not a build-up");
+        let mut s = Statuses::default();
+        let n = (1..=5).find(|_| s.hit_wolf(&combat, wolf, weapon, &[9222], Guard::None).iter().any(|l| l == "TERROR"));
+        assert_eq!(n, Some(3));
+        let mut s = Statuses::default();
+        assert!((1..=10).all(|_| !s.hit_wolf(&combat, wolf, weapon, &[9222], Guard::Deflect).iter().any(|l| l == "TERROR")));
+        let mut st = world.resource_mut::<Statuses>();
+        for _ in 0..3 {
+            st.hit_wolf(&combat, wolf, weapon, &[9222], Guard::None);
+        }
+    });
+    app.update();
+    app.update();
+    // Round 57: the fill shows 9222's vfx 48020 once - init 5013, the terror kanji.
+    let kanji = app.world_mut().query::<&crate::fxr::FxEffect>().iter(app.world()).any(|f| f.id == 5013);
+    assert!(kanji, "no terror kanji 5013");
+    let hp = app.world_mut().query_filtered::<&Actor, With<Player>>().single(app.world()).unwrap().hp;
+    assert_eq!(hp, 0.0, "terror did not kill:
+{}", log_text(&app));
+    // Round 38: BEH_R_DEATH 966 - the terror death W_GroundDeathStartInsane (a000_191600), then
+    // the face-down (IndexDeath B) revival-wait loop.
+    let mut seen = Vec::<String>::new();
+    for _ in 0..60 * 6 {
+        app.update();
+        let s = player_state(&mut app).0;
+        if seen.last() != Some(&s) {
+            seen.push(s);
+        }
+    }
+    assert_eq!(seen.first().map(String::as_str), Some("GroundDeathStartInsane"), "{seen:?}");
+    assert!(seen.iter().any(|s| s == "GroundRevivalStayLoop_B"), "{seen:?}");
 }
 
 /// The bandit's torch (SpEffect 9115, registBlood 62) builds up on Wolf against his resist 200
@@ -6833,6 +9322,21 @@ fn a_grapple_lands_on_the_point_in_the_move_start_time() {
     let mut q = w.query_filtered::<&Transform, With<Player>>();
     let y = q.single(w).unwrap().translation.y;
     assert!(y > 3.0, "fell off the perch: y {y}");
+    // A jump in place on the perch lands back on it (round 53: the perch was dropped on leaving
+    // the ground, and he landed through it on the ground below).
+    app.world_mut().resource_mut::<PadInput>().press(Action::Jump);
+    let mut rose = false;
+    for _ in 0..180 {
+        app.update();
+        let w = app.world_mut();
+        let mut q = w.query_filtered::<&Actor, With<Player>>();
+        rose |= q.single(w).unwrap().airborne;
+    }
+    let w = app.world_mut();
+    let mut q = w.query_filtered::<(&Actor, &Transform), With<Player>>();
+    let (a, t) = q.single(w).unwrap();
+    assert!(rose, "no jump");
+    assert!(!a.airborne && t.translation.y > 3.0, "jumped off the perch to y {}", t.translation.y);
 }
 
 /// The wire flight's fall type (Wire::launch fallType 2: Wire gravity and air control) ends with
@@ -6910,6 +9414,38 @@ fn the_grappling_hook_attack_throws_the_ogre() {
     assert!(foe.iter().any(|s| s.starts_with("ThrowDef1361")), "{foe:?}");
 }
 
+/// Round 37: Gyoubu's broken deathblow on his last bar is the Todome, main + 8 (ThrowParam
+/// 15080009: Wolf a225_510090, ThrowDef12090); with bars left the plain 15080001 (a225_510000).
+/// His break pose ThrowDef12100 has no ThrowStart2 (67) in its TAE, so an attack in Wolf's
+/// a225_510100 goes this way too, not to 15080011 / 0019 (gap: how the exe reaches 0019).
+#[test]
+fn gyoubus_last_bar_broken_deathblow_is_the_todome() {
+    for (bars, want) in [(1, "a225_510090"), (2, "a225_510000")] {
+        let mut app = app_with("c5080");
+        app.world_mut().resource_scope(|world, combat: Mut<Combat>| {
+            let mut q = world.query_filtered::<(&mut Enemy, &mut Actor, &mut Transform), Without<crate::enemy::Cast>>();
+            let (mut e, mut a, mut t) = q.single_mut(world).unwrap();
+            e.ninsatsu.0 = bars;
+            a.posture = a.posture_max;
+            e.on_posture_break(&mut a, &combat, false, 4.0);
+            t.translation.z = 1.8;
+        });
+        app.world_mut().resource_mut::<PadInput>().press(Action::Attack);
+        let mut anims = Vec::new();
+        for _ in 0..60 {
+            app.update();
+            let (s, a, _, _) = player_state(&mut app);
+            if anims.last() != Some(&a) {
+                anims.push(a);
+            }
+            if s == "Deathblow" {
+                break;
+            }
+        }
+        assert_eq!(anims.last().map(String::as_str), Some(want), "bars {bars}: {anims:?}");
+    }
+}
+
 /// Gyoubu on his last bar: the Grappling Hook Attack's landing deathblow kills (ThrowDef13610 ->
 /// ThrowDefDeath13611 on flag 69) and an attack pressed in the landing takes the Todome
 /// (ThrowParam 15080179: Wolf a225_511690, Gyoubu ThrowDef13690).
@@ -6979,6 +9515,110 @@ fn a_wire_landing_with_the_stick_held_runs_on() {
     assert_eq!(seen.get(i + 1).map(|s| s.as_str()), Some("Locomotion"), "{seen:?}");
 }
 
+/// BEH_R_LAND (HKS 2026-2056): a free fall lands into W_StandMoveStartFromFreeFallShortStiff,
+/// straight into moving, with the stick held, and into the stiff LandFreeFall only without it
+/// (round 31: walking off a ledge with the stick froze him).
+#[test]
+fn a_free_fall_with_the_stick_held_runs_on() {
+    for (held, want) in [(true, "Locomotion"), (false, "LandFreeFall")] {
+        let mut app = app();
+        move_enemy_far(&mut app);
+        app.update();
+        {
+            let world = app.world_mut();
+            world.resource_scope(|world, combat: Mut<Combat>| {
+                let (mut a, mut t) = world.query_filtered::<(&mut Actor, &mut Transform), With<Player>>().single_mut(world).unwrap();
+                assert!(a.play_state(&combat.player, "FreeFall"));
+                a.airborne = true;
+                a.vel_y = -3.0;
+                t.translation.y += 0.6;
+            });
+        }
+        let mut landed = None;
+        for _ in 0..60 {
+            if held {
+                app.world_mut().resource_mut::<PadInput>().stick = Vec2::new(0.0, -1.0);
+            }
+            app.update();
+            let (s, ..) = player_state(&mut app);
+            if s != "FreeFall" {
+                landed = Some(s);
+                break;
+            }
+        }
+        assert_eq!(landed.as_deref(), Some(want), "stick held {held}");
+    }
+}
+
+/// From 20 m (FALL_HEIGHT_LONG_STIFF_LAND, BEH_R_LAND 1908) Wolf lands long-stiff
+/// (a000_200021), stick held or not; a short fall is the plain land.
+#[test]
+fn a_twenty_metre_fall_lands_long_stiff() {
+    for (drop, held, want) in [(21.0, true, "a000_200021"), (21.0, false, "a000_200021"), (2.0, false, "a000_200020")] {
+        let mut app = app();
+        move_enemy_far(&mut app);
+        app.update();
+        {
+            let world = app.world_mut();
+            world.resource_scope(|world, combat: Mut<Combat>| {
+                let (mut a, mut t) = world.query_filtered::<(&mut Actor, &mut Transform), With<Player>>().single_mut(world).unwrap();
+                assert!(a.play_state(&combat.player, "FreeFall"));
+                a.airborne = true;
+                a.vel_y = 0.0;
+                t.translation.y += drop;
+            });
+        }
+        let mut landed = None;
+        for _ in 0..600 {
+            if held {
+                app.world_mut().resource_mut::<PadInput>().stick = Vec2::new(0.0, -1.0);
+            }
+            app.update();
+            let world = app.world_mut();
+            let a = world.query_filtered::<&Actor, With<Player>>().single(world).unwrap();
+            if a.state != "FreeFall" {
+                landed = Some((a.state.clone(), a.anim.clone()));
+                break;
+            }
+        }
+        let (state, anim) = landed.expect("landed");
+        assert_eq!(state, "LandFreeFall", "drop {drop} held {held}");
+        assert_eq!(anim, want, "drop {drop} held {held}");
+    }
+}
+
+/// Round 38: BEH_R_LAND 2026 - a jump's fall from 5 m or more lands stiff (_LandFreeFall,
+/// a000_200020), not as the jump's own landing; a short one keeps LandVerticalGroundJump.
+#[test]
+fn a_jump_off_a_five_metre_ledge_lands_stiff() {
+    for (drop, want) in [(6.0, "LandFreeFall"), (0.5, "LandVerticalGroundJump")] {
+        let mut app = app();
+        move_enemy_far(&mut app);
+        app.update();
+        {
+            let world = app.world_mut();
+            world.resource_scope(|world, combat: Mut<Combat>| {
+                let (mut a, mut t) = world.query_filtered::<(&mut Actor, &mut Transform), With<Player>>().single_mut(world).unwrap();
+                assert!(a.play_state(&combat.player, "VerticalGroundJumpFall"));
+                a.airborne = true;
+                a.vel_y = 0.0;
+                t.translation.y += drop;
+            });
+        }
+        let mut landed = None;
+        for _ in 0..600 {
+            app.update();
+            let world = app.world_mut();
+            let a = world.query_filtered::<&Actor, With<Player>>().single(world).unwrap();
+            if !a.airborne {
+                landed = Some(a.state.clone());
+                break;
+            }
+        }
+        assert_eq!(landed.as_deref(), Some(want), "drop {drop}");
+    }
+}
+
 /// Probe (sekiro-rs 8eaf879's bug): strafing right locked on, the lock drops with the stick
 /// still held: within 0.5 s Wolf must run where the stick points (camera-relative), not keep
 /// the strafe.
@@ -7024,6 +9664,33 @@ fn a_bullet_past_its_range_weakens() {
     assert!((atk.decayed([100.0; 3], 0.5).atk_phys - atk.atk_phys * 0.5).abs() < 1e-3);
     let gone = atk.decayed([100.0; 3], 1.5);
     assert_eq!((gone.atk_phys, gone.atk_stam), (0.0, 0.0));
+}
+
+/// Round 42: Isshin's finisher (ThrowParam 15400590, DiffAng 0-45, diffAngMyToDef 35) by the
+/// exe's range check: Wolf behind him facing his way takes it; in front of him, facing him, not
+/// (his kneel a100_020200 has no root yaw; the absorb dummy 230 is at his back). Before, only
+/// the front within 45 degrees took it.
+#[test]
+fn isshins_finisher_is_taken_from_behind() {
+    let mut app = app_cfg("c5400", Some(54000000), Vec::new());
+    app.update();
+    let world = app.world_mut();
+    world.resource_scope(|world, combat: Mut<Combat>| {
+        let mut q = world.query_filtered::<(&Enemy, &mut Actor, &Transform), Without<crate::enemy::Cast>>();
+        let (e, mut a, tf) = q.single_mut(world).unwrap();
+        let at = tf.translation;
+        a.anim_group = 1;
+        a.play("Ez20200", "a100_020200");
+        a.t = 2.0;
+        a.yaw = 0.0;
+        assert!(combat.data_of(&a).finisher_open(&a.anim, a.t), "no finisher window on a100_020200 at 2 s");
+        let fwd = a.forward();
+        let behind = at - fwd * 1.5;
+        let c = crate::player::deathblow_check(&combat, behind, fwd, false, &a, e, at, &|_| None);
+        assert!(c.as_ref().is_some_and(|c| c.in_reach), "behind: {:?}", c.map(|c| c.suffix));
+        let front = at + fwd * 1.5;
+        assert!(crate::player::deathblow_check(&combat, front, -fwd, false, &a, e, at, &|_| None).is_none(), "taken from the front");
+    });
 }
 
 /// Isshin, the Sword Saint (c5400): a deflect that empties his posture plays the break pose
@@ -7124,7 +9791,15 @@ fn shuriken_on_c1180(row: i64) -> (f32, f32) {
 
 /// HP and posture a shuriken takes off the `chr` `row` turned away from Wolf (no guard).
 fn shuriken_on(chr: &str, row: i64) -> (f32, f32) {
+    tool_on(chr, row, None)
+}
+
+/// As shuriken_on, with the tool level `tool` (EquipParamWeapon id) in slot 1.
+fn tool_on(chr: &str, row: i64, tool: Option<i64>) -> (f32, f32) {
     let mut app = app_cfg(chr, Some(row), Vec::new());
+    if let Some(t) = tool {
+        app.world_mut().resource_mut::<crate::config::GameConfig>().player.prosthetics = vec![t];
+    }
     {
         let world = app.world_mut();
         let mut q = world.query_filtered::<(&mut Actor, &mut Transform, &mut Enemy), Without<crate::enemy::Cast>>();
@@ -7150,6 +9825,43 @@ fn shuriken_on(chr: &str, row: i64) -> (f32, f32) {
     let world = app.world_mut();
     let a = world.query_filtered::<&Actor, Without<crate::enemy::Cast>>().iter(world).find(|a| a.side == crate::actor::Side::Enemy).unwrap();
     (before.0 - a.hp, a.posture - before.1)
+}
+
+/// Tool bullets scale all five attackBase* elements (2026-10-12 round 22): the Lazulite
+/// Shuriken 70500 (physics 0, magic 5, dark 20; bullet 700500 phys / mag / dark corrections)
+/// did 0 HP, as bullet damage read only physics / fire / thunder.
+#[test]
+fn the_lazulite_shuriken_deals_its_magic_and_dark_damage() {
+    let (hp, _) = tool_on("c1180", 11807100, Some(70500));
+    assert!(hp > 1.0, "Lazulite Shuriken did {hp} HP");
+}
+
+/// Round 26: the Kodachi LV3-B poison mist (75300; Bullet 750300-750302 with spEffectId0 9009,
+/// AtkParam 7503150 all 0) builds poison on an enemy in it; it was dropped as "deals nothing".
+#[test]
+fn the_poison_mist_poisons() {
+    let mut app = app_cfg("c1020", None, Vec::new());
+    app.world_mut().resource_mut::<crate::config::GameConfig>().player.prosthetics = vec![75300];
+    let foe = {
+        let world = app.world_mut();
+        let mut q = world.query_filtered::<(Entity, &mut Actor, &mut Transform, &mut Enemy), Without<crate::enemy::Cast>>();
+        let (ent, mut a, mut t, mut e) = q.single_mut(world).unwrap();
+        e.targeting.state = crate::stealth::BATTLE;
+        a.yaw = std::f32::consts::PI;
+        t.translation = Vec3::new(0.0, CAPSULE_HALF_HEIGHT, 2.0);
+        ent
+    };
+    app.update();
+    app.world_mut().resource_mut::<PadInput>().press(Action::Prosthetic);
+    let mut poison = 0.0;
+    for _ in 0..240 {
+        app.update();
+        poison = app.world().resource::<crate::status::Statuses>().0.get(&foe).map_or(0.0, |s| s.poison);
+        if poison > 0.0 {
+            break;
+        }
+    }
+    assert!(poison > 0.0, "{}", log_text(&app));
 }
 
 /// Wolf's bullets land on the armour part too (2026-10-12 bug hunt): the shuriken (atkAttribute /
@@ -7192,7 +9904,7 @@ fn a_fight_reset_drops_the_lightning_charge() {
     let mut app = app();
     {
         let world = app.world_mut();
-        world.query_filtered::<&mut Actor, With<Player>>().single_mut(world).unwrap().electro = Some((9490, 30.0));
+        world.query_filtered::<&mut Actor, With<Player>>().single_mut(world).unwrap().electro = Some((9492, 30.0));
     }
     app.world_mut().resource_mut::<PadInput>().reset = true;
     for _ in 0..3 {
@@ -7201,6 +9913,36 @@ fn a_fight_reset_drops_the_lightning_charge() {
     let world = app.world_mut();
     let a = world.query_filtered::<&Actor, With<Player>>().single(world).unwrap();
     assert!(a.electro.is_none(), "Wolf kept the lightning charge through the reset: {:?}", a.electro);
+}
+
+/// The enemies see Wolf's revival chain: a000_110030's TAE 110031 (0.3 s) is replaced by 110032
+/// (2.5 s), which common_table_ai_common.lua:178-200 answers. Only the TAE-window 110031 reached
+/// their snapshot (2026-10-13 round 30).
+#[test]
+fn the_enemy_sees_wolfs_revival_chain() {
+    let mut app = app_cfg("c1010", Some(10100000), Vec::new());
+    app.update();
+    let world = app.world_mut();
+    world.query_filtered::<&mut Enemy, Without<crate::enemy::Cast>>().single_mut(world).unwrap().aggressive = true;
+    world.query_filtered::<&mut Actor, With<Player>>().single_mut(world).unwrap().hp = 0.0;
+    let mut looped = false;
+    for _ in 0..400 {
+        app.update();
+        if player_actor(&mut app).0 == "GroundRevivalStayLoop_F" {
+            looped = true;
+            break;
+        }
+    }
+    assert!(looped, "never reached the death loop: {}", player_actor(&mut app).0);
+    app.update();
+    app.world_mut().resource_mut::<PadInput>().press(Action::Attack);
+    let mut seen = false;
+    for _ in 0..60 * 3 {
+        app.update();
+        let world = app.world_mut();
+        seen |= world.query::<&Enemy>().iter(world).any(|e| e.prev_sp.contains(&110032));
+    }
+    assert!(seen, "no enemy saw 110032 after the revival");
 }
 
 /// Death and resurrection refresh Wolf as the game's anims say: the death loop (a000_110010,
@@ -7226,7 +9968,7 @@ fn death_and_resurrection_refresh_wolf() {
     let mut looped = false;
     for _ in 0..400 {
         app.update();
-        if player_actor(&mut app).0 == "GroundDeathLoop_F" {
+        if player_actor(&mut app).0 == "GroundRevivalStayLoop_F" {
             looped = true;
             break;
         }
@@ -7244,6 +9986,72 @@ fn death_and_resurrection_refresh_wolf() {
     let world = app.world_mut();
     let a = world.query_filtered::<&Actor, With<Player>>().single(world).unwrap();
     assert!(a.posture < a.posture_max * 0.05, "the revival kept posture {} of {}", a.posture, a.posture_max);
+}
+
+/// Round 66: the resurrection choice opens 1.8 s after HP empties (PlayerIns +0x2134,
+/// FUN_140a36a60), in the death start itself (HKS 274-275), not after it. Mashing Attack from the
+/// death revives then, out of GroundDeathStart_F (the loop's f0 cure 8002-8009 is skipped, as in
+/// the HKS).
+#[test]
+fn mashing_attack_through_death_revives_at_1_8_s() {
+    let mut app = app();
+    move_enemy_far(&mut app);
+    {
+        let world = app.world_mut();
+        world.query_filtered::<&mut Actor, With<Player>>().single_mut(world).unwrap().hp = 0.0;
+    }
+    let mut from = None;
+    for f in 0..400 {
+        let before = player_actor(&mut app).0;
+        app.world_mut().resource_mut::<PadInput>().press(Action::Attack);
+        app.update();
+        if player_actor(&mut app).0 == "GroundRevival_F" {
+            from = Some((f, before));
+            break;
+        }
+    }
+    let (f, before) = from.expect("no resurrection");
+    assert_eq!(before, "GroundDeathStart_F");
+    assert!((105..=112).contains(&f), "revived at frame {f}");
+}
+
+/// Round 23 guard: a press waiting for the stay loop is taken only after the loop's f0 refresh
+/// events (8002-8009 cure, the poison gauge emptied).
+#[test]
+fn a_revive_in_the_stay_loop_still_cures_the_poison() {
+    let mut app = app();
+    move_enemy_far(&mut app);
+    let wolf = {
+        let world = app.world_mut();
+        let (e, mut a) = world.query_filtered::<(Entity, &mut Actor), With<Player>>().single_mut(world).unwrap();
+        a.hp = 0.0;
+        e
+    };
+    app.world_mut().resource_mut::<crate::status::Statuses>().0.insert(wolf, {
+        let mut s = crate::status::Status::default();
+        s.poison = 50.0;
+        s
+    });
+    let mut in_loop = false;
+    for _ in 0..400 {
+        in_loop = player_actor(&mut app).0.starts_with("GroundRevivalStayLoop");
+        if in_loop {
+            break;
+        }
+        app.update();
+    }
+    assert!(in_loop, "no stay loop: {}", player_actor(&mut app).0);
+    let mut revived = false;
+    for _ in 0..60 {
+        app.world_mut().resource_mut::<PadInput>().press(Action::Attack);
+        app.update();
+        if player_actor(&mut app).0 == "GroundRevival_F" {
+            revived = true;
+            break;
+        }
+    }
+    assert!(revived, "no resurrection: {}", player_actor(&mut app).0);
+    assert!(!app.world().resource::<crate::status::Statuses>().0.contains_key(&wolf), "revived with the poison gauge");
 }
 
 /// One swing hits every enemy it reaches: AttackBehavior windows are done per defender
@@ -7600,6 +10408,239 @@ fn a_respawned_enemy_is_not_still_poisoned() {
     assert!(st.0.get(&ent).is_none_or(|s| s.effects.is_empty()), "still poisoned after the respawn");
 }
 
+/// An enemy wearing NpcParam's 90111 "Poison invalid" (zombies, geckos, monkeys) is never
+/// poisoned, and 91011 "fire invalid" never burns (round 57: before, only its afflictions'
+/// disable flags counted, and the Sabimaru filled a zombie's gauge).
+#[test]
+fn a_poison_invalid_resident_keeps_the_poison_off() {
+    let mut app = app();
+    app.update();
+    let hits = |app: &mut App, resident: Vec<i64>| -> bool {
+        let world = app.world_mut();
+        let ent = world.query_filtered::<Entity, (With<Enemy>, Without<crate::enemy::Cast>)>().single(world).unwrap();
+        world.get_mut::<Actor>(ent).unwrap().resident = resident;
+        world.resource_mut::<crate::status::Statuses>().clear(ent);
+        world.resource_scope(|world, mut st: Mut<crate::status::Statuses>| {
+            let combat = world.resource::<Combat>();
+            let a = world.get::<Actor>(ent).unwrap();
+            for _ in 0..200 {
+                st.hit(combat, ent, a, &[9004], false);
+            }
+            st.0.get(&ent).is_some_and(|s| !s.effects.is_empty() || s.poison > 0.0)
+        })
+    };
+    assert!(!hits(&mut app, vec![90111]), "poisoned through 90111 Poison invalid");
+    assert!(!hits(&mut app, vec![90011]), "poisoned through 90011 Poison & flaming invalid");
+    assert!(hits(&mut app, Vec::new()), "no poison without the resident");
+}
+
+/// A poisoned enemy despawned mid-fight (a phase swap, Genichiro -> Tomoe) takes its poison
+/// effect along: the kept midst loop is stopped, not left at its last spot (round 51).
+#[test]
+fn a_despawned_enemys_poison_effect_stops() {
+    let mut app = app();
+    app.update();
+    let ent = app.world_mut().query_filtered::<Entity, (With<Enemy>, Without<crate::enemy::Cast>)>().single(app.world()).unwrap();
+    app.world_mut().resource_scope(|world, mut st: Mut<crate::status::Statuses>| {
+        world.resource_scope(|world, combat: Mut<Combat>| {
+            let a = world.get::<Actor>(ent).unwrap().clone();
+            for _ in 0..40 {
+                st.hit(&combat, ent, &a, &[9004], false);
+                if st.0.get(&ent).is_some_and(|s| !s.effects.is_empty()) {
+                    break;
+                }
+            }
+        });
+    });
+    let on_body = |app: &mut App| -> Vec<(Entity, bool)> {
+        let world = app.world_mut();
+        world
+            .query::<(Entity, &crate::fxr::FxEffect)>()
+            .iter(world)
+            // The held (kept) midst loops; the init kanji (4013) ends by its own age.
+            .filter(|(_, f)| f.keep && matches!(f.anchor, Some(crate::fxr::Anchor::Entity(e)) if e == ent))
+            .map(|(id, f)| (id, f.stop))
+            .collect()
+    };
+    let mut fx = Vec::new();
+    for _ in 0..10 {
+        app.update();
+        fx = on_body(&mut app);
+        if !fx.is_empty() {
+            break;
+        }
+    }
+    assert!(fx.iter().any(|(_, stop)| !stop), "no poison effect on the body");
+    app.world_mut().despawn(ent);
+    app.update();
+    app.update();
+    let world = app.world_mut();
+    for (id, _) in fx {
+        assert!(world.get::<crate::fxr::FxEffect>(id).is_none_or(|f| f.stop), "the poison effect outlived its body");
+    }
+}
+
+/// Round 52: an enemy gone during Wolf's deathblow start (a boss swap despawns it) leaves him
+/// free: before, nothing left DeathblowStart and every input was ignored.
+#[test]
+fn a_deathblow_start_without_its_enemy_returns_to_idle() {
+    let mut app = app();
+    app.update();
+    {
+        let world = app.world_mut();
+        let boss = boss_in_play(world);
+        world.resource_scope(|world, combat: Mut<Combat>| {
+            let mut q = world.query::<(&mut Enemy, &mut Actor, &mut Transform)>();
+            let (mut e, mut a, mut t) = q.get_mut(world, boss).unwrap();
+            a.posture = a.posture_max;
+            e.on_posture_break(&mut a, &combat, false, 4.0);
+            t.translation = Vec3::new(0.0, CAPSULE_HALF_HEIGHT, 1.8);
+            a.yaw = 0.0;
+        });
+        let mut q = world.query_filtered::<(&mut Actor, &mut Transform), With<Player>>();
+        let (mut a, mut t) = q.single_mut(world).unwrap();
+        a.yaw = std::f32::consts::PI;
+        t.translation = Vec3::new(0.0, CAPSULE_HALF_HEIGHT, 0.0);
+    }
+    app.world_mut().resource_mut::<PadInput>().press(Action::Attack);
+    let mut started = false;
+    for _ in 0..30 {
+        app.update();
+        if player_state(&mut app).0 == "DeathblowStart" {
+            started = true;
+            break;
+        }
+    }
+    assert!(started, "no deathblow start");
+    let boss = boss_in_play(app.world_mut());
+    app.world_mut().despawn(boss);
+    let mut seen = Vec::<String>::new();
+    for _ in 0..90 {
+        app.update();
+        let s = player_state(&mut app).0;
+        if seen.last() != Some(&s) {
+            seen.push(s);
+        }
+    }
+    assert_ne!(seen.last().map(String::as_str), Some("DeathblowStart"), "{seen:?}");
+}
+
+/// Round 52: the fight reset clears what one life left for the next: an unspent death pick (a
+/// grab death never takes it); the aged form's private flag is cleared beside it.
+#[test]
+fn the_reset_clears_the_last_lifes_death_pick() {
+    let mut app = app();
+    app.update();
+    {
+        let world = app.world_mut();
+        let mut q = world.query_filtered::<&mut Actor, With<Player>>();
+        let mut a = q.single_mut(world).unwrap();
+        a.death_ref = crate::status::REF_ENABLE_INSANE;
+        a.death_hit = Some((4, 0));
+        // Round 58: the old fight's hit stop, additive deflect window and chained SpEffects.
+        a.hit_stop.start(5.0);
+        a.add_anim = "a000_008500".into();
+        a.sp_chained.push((109451, 10.0));
+    }
+    app.world_mut().resource_mut::<PadInput>().reset = true;
+    app.update();
+    let world = app.world_mut();
+    let a = world.query_filtered::<&Actor, With<Player>>().single(world).unwrap();
+    assert_eq!((a.death_ref, a.death_hit), (0, None));
+    assert!(!a.hit_stop.active(), "hit stop carried into the new fight");
+    assert!(a.add_anim.is_empty(), "additive {}", a.add_anim);
+    assert!(!a.sp_chained.iter().any(|c| c.0 == 109451), "{:?}", a.sp_chained);
+}
+
+/// Round 58: a hit stop in the air freezes the clip but not the fall - the exe runs the fall
+/// module and Havok on the raw dt (1407e.c:2650), as player.rs's gravity already did.
+#[test]
+fn a_hit_stop_in_the_air_does_not_freeze_the_fall() {
+    let mut app = app();
+    move_enemy_far(&mut app);
+    for _ in 0..10 {
+        app.update();
+    }
+    app.world_mut().resource_mut::<PadInput>().press(Action::Jump);
+    for _ in 0..60 {
+        app.update();
+        if app.world_mut().query_filtered::<&Actor, With<Player>>().single(app.world()).unwrap().airborne {
+            break;
+        }
+    }
+    let y = |app: &mut App| app.world_mut().query_filtered::<&Transform, With<Player>>().single(app.world()).unwrap().translation.y;
+    for _ in 0..5 {
+        app.update();
+    }
+    let t0;
+    {
+        let world = app.world_mut();
+        let mut a = world.query_filtered::<&mut Actor, With<Player>>().single_mut(world).unwrap();
+        assert!(a.airborne, "not in the air");
+        a.hit_stop.start(0.5);
+        t0 = a.t;
+    }
+    let y0 = y(&mut app);
+    app.update();
+    app.update();
+    let t1 = app.world_mut().query_filtered::<&Actor, With<Player>>().single(app.world()).unwrap().t;
+    assert_eq!(t1, t0, "the clip ran in the hold");
+    assert!((y(&mut app) - y0).abs() > 1e-3, "the body hung in the air");
+}
+
+/// Round 54 (g_behaviorTable, c0000_transition 6450): with the guard held (STYLE_TYPE_GROUND_GUARD)
+/// the gourd is refused; a prosthetic switch is taken in the air (FREE_FALL).
+#[test]
+fn no_gourd_while_guarding_and_a_tool_switch_in_the_air() {
+    let mut app = app();
+    move_enemy_far(&mut app);
+    for _ in 0..10 {
+        app.update();
+    }
+    {
+        let mut pad = app.world_mut().resource_mut::<PadInput>();
+        pad.press(Action::Guard);
+        pad.guard_held = true;
+    }
+    let mut guarding = false;
+    for _ in 0..40 {
+        app.update();
+        app.world_mut().resource_mut::<PadInput>().guard_held = true;
+        if player_state(&mut app).0 == "DeflectGuardIdle" {
+            guarding = true;
+            break;
+        }
+    }
+    assert!(guarding, "no DeflectGuardIdle: {}", player_state(&mut app).0);
+    let gourd0 = app.world_mut().query::<&Player>().single(app.world()).unwrap().gourd;
+    app.world_mut().resource_mut::<PadInput>().press(Action::UseItem);
+    for _ in 0..30 {
+        app.world_mut().resource_mut::<PadInput>().guard_held = true;
+        app.update();
+        let s = player_state(&mut app).0;
+        assert!(!s.contains("Gourd") && !s.contains("Item"), "drank while guarding: {s}");
+    }
+    assert_eq!(app.world_mut().query::<&Player>().single(app.world()).unwrap().gourd, gourd0);
+    // Let go, jump, switch at the top.
+    app.world_mut().resource_mut::<PadInput>().guard_held = false;
+    app.world_mut().resource_mut::<crate::config::GameConfig>().player.prosthetics = vec![70000, 71000];
+    for _ in 0..90 {
+        app.update();
+    }
+    app.world_mut().resource_mut::<PadInput>().press(Action::Jump);
+    for _ in 0..60 {
+        app.update();
+        if app.world_mut().query_filtered::<&Actor, With<Player>>().single(app.world()).unwrap().airborne {
+            break;
+        }
+    }
+    assert!(app.world_mut().query_filtered::<&Actor, With<Player>>().single(app.world()).unwrap().airborne, "no jump");
+    app.world_mut().resource_mut::<PadInput>().press(Action::SwitchTool);
+    app.update();
+    app.update();
+    assert_eq!(app.world_mut().query::<&Player>().single(app.world()).unwrap().tool_slot, 1, "no switch in the air");
+}
+
 /// A jump in the deflect break pose (ThrowParam 11020012 弾き1B_ジャンプ: a201_510120 / ThrowDef12120)
 /// vaults round behind the General and leaves him open to the deathblow; it killed him outright
 /// as a deathblow before (2026-10-12 bug hunt round 7).
@@ -7859,6 +10900,92 @@ fn the_line_up_faces_wolf() {
     assert_eq!(n, 2);
 }
 
+/// The 危 kanji is the warning bullet's hit (Bullet 10200982: 2 m, 0.1 s, SpEffect 211000), not
+/// the TAE start for any enemy anywhere: the General's perilous thrust raises it with Wolf at
+/// hand, not from 8 m away (round 31).
+#[test]
+fn the_perilous_kanji_needs_its_warning_bullet_to_reach_wolf() {
+    let raised = |z: f32| {
+        let mut app = app();
+        app.update();
+        app.init_resource::<crate::hud::Perilous>();
+        {
+            let world = app.world_mut();
+            let mut q = world.query::<(&mut Enemy, &mut Actor, &mut Transform)>();
+            let (mut e, mut a, mut t) = q.single_mut(world).unwrap();
+            t.translation.z = z;
+            e.force_anim(&mut a, PERILOUS_THRUST);
+        }
+        for _ in 0..30 {
+            app.update();
+        }
+        app.world().resource::<crate::hud::Perilous>().kind == 982
+    };
+    assert!(raised(1.5), "no kanji at 1.5 m");
+    assert!(!raised(8.0), "the kanji went up 8 m away");
+}
+
+/// Every warning bullet carries SpEffect 211000, not only the 980 / 982 / 983 suffixes: Isshin's
+/// a100_003016 fires Bullet 54000986 (sweep) and the Way of Tomoe's a000_003043 fires 71100986,
+/// so their kanji went up in the game and not here (boss bug hunt 2026-10-14).
+#[test]
+fn the_perilous_kanji_comes_with_every_warning_bullet() {
+    for (chr, anim, warn) in [("c5400", "a100_003016", 986), ("c7110", "a000_003043", 986)] {
+        if !std::path::Path::new(&format!("{}/extracted/enemies/{chr}.json", env!("CARGO_MANIFEST_DIR"))).exists() {
+            continue;
+        }
+        let mut app = app_with(chr);
+        // The arena's map switch (map.rs) puts Wolf on its start spot a few frames in.
+        for _ in 0..10 {
+            app.update();
+        }
+        app.init_resource::<crate::hud::Perilous>();
+        {
+            let world = app.world_mut();
+            // The arena rows stand Wolf well away (Isshin's 15 m): he steps up in front of the boss.
+            let mut q = world.query_filtered::<(&mut Enemy, &mut Actor, &Transform), (With<Enemy>, Without<crate::enemy::Cast>)>();
+            let (mut e, mut a, t) = q.single_mut(world).unwrap();
+            let front = t.translation + a.forward() * 1.5;
+            e.force_anim(&mut a, anim);
+            world.query_filtered::<&mut Transform, With<Player>>().single_mut(world).unwrap().translation = front;
+        }
+        let mut raised = false;
+        for _ in 0..120 {
+            app.update();
+            raised |= app.world().resource::<crate::hud::Perilous>().kind == warn;
+        }
+        assert!(raised, "{chr} {anim}: no kanji for its {warn} bullet");
+    }
+}
+
+/// The kanji is the game's effect: SpEffect 211000's SpEffectVfx 48100 plays 600035 on Wolf's
+/// dummy 220 (the HUD text only stands in without it).
+#[test]
+fn the_perilous_kanji_is_its_effect_on_wolf() {
+    let mut app = app();
+    app.update();
+    app.init_resource::<crate::hud::Perilous>();
+    app.init_resource::<crate::fxr::FxrLib>();
+    assert!(app.world_mut().resource_mut::<crate::fxr::FxrLib>().has(600035), "fxr 600035 (the kanji) is extracted");
+    {
+        let world = app.world_mut();
+        let mut q = world.query::<(&mut Enemy, &mut Actor, &mut Transform)>();
+        let (mut e, mut a, mut t) = q.single_mut(world).unwrap();
+        t.translation.z = 1.5;
+        e.force_anim(&mut a, PERILOUS_THRUST);
+    }
+    let mut played = false;
+    for _ in 0..30 {
+        app.update();
+        let world = app.world_mut();
+        played |= world.query::<&crate::fxr::FxEffect>().iter(world).any(|f| f.id == 600035);
+    }
+    assert!(played, "no 600035 effect");
+    let p = app.world().resource::<crate::hud::Perilous>();
+    assert_eq!(p.kind, 982);
+    assert!(p.timer <= 0.0, "the HUD text showed as well");
+}
+
 /// A reset clears the perilous kanji (2026-10-12 bug hunt round 10: it stayed up to 0.8 s over
 /// the new line-up).
 #[test]
@@ -7868,7 +10995,7 @@ fn a_reset_clears_the_perilous_kanji() {
     if app.world().get_resource::<crate::hud::Perilous>().is_none() {
         app.init_resource::<crate::hud::Perilous>();
     }
-    app.world_mut().resource_mut::<crate::hud::Perilous>().raise(982);
+    app.world_mut().resource_mut::<crate::hud::Perilous>().raise(982, true);
     app.world_mut().resource_mut::<crate::enemy::FightReset>().0 = true;
     app.update();
     assert!(app.world().resource::<crate::hud::Perilous>().timer <= 0.0);
@@ -8324,6 +11451,24 @@ fn a_respawn_comes_back_visible() {
     assert!(a.opacity > 0.99, "opacity {}", a.opacity);
 }
 
+/// A respawn starts without the old life's timed SpEffects: the firecracker's cool time (107100,
+/// 30 s: "used to it", no stagger) and the timed list ai_hold / sp_self read stayed (2026-10-12
+/// bug hunt round 21).
+#[test]
+fn a_respawn_forgets_the_firecracker_cool_time() {
+    let mut app = app();
+    for _ in 0..30 {
+        app.update();
+    }
+    kill_and_respawn(&mut app, |e, _| {
+        e.add_timed(107100, 30.0);
+    });
+    let world = app.world_mut();
+    let e = world.query::<&Enemy>().single(world).unwrap();
+    assert!(!e.clash.iter().any(|c| c.0 == 107100), "{:?}", e.clash);
+    assert_eq!(e.guard_count(), 0);
+}
+
 /// A respawn faces its spawn way, and its home pose with it, not the way it died (a deathblow
 /// from behind turned it 180 degrees) (2026-10-12 bug hunt round 13).
 #[test]
@@ -8676,8 +11821,8 @@ fn super_armour_swaps_the_damage_level_in_its_window() {
     });
 }
 
-/// A deflected or blocked bullet is repelled itself: its distant shooter takes no posture,
-/// recoil or bound reaction, even with an attacker-side posture base and reaction on the row
+/// A deflected or blocked bullet is repelled itself (and shows its sfxId_Flick): its distant
+/// shooter takes no posture, recoil or bound reaction, even with an attacker-side posture base and reaction on the row
 /// (sekiro-rs a8351b9 fight.rs:644, docs/PROJECTILE-GUARD.md; inferred from the rows).
 #[test]
 fn a_guarded_bullet_leaves_its_shooter_alone() {
@@ -8692,6 +11837,8 @@ fn a_guarded_bullet_leaves_its_shooter_alone() {
             atk.repel_victory_stam_damage_attacker = 30.0;
             atk.just_deflected_action = 1;
             atk.deflected_action = 1;
+            // Its Bullet sfxId_Hit / sfxId_Flick (test ids): the repel one plays.
+            atk.bullet_fx = Some((900001, 900002, Vec3::Y, Vec3::NEG_Z));
             let pt = world.query_filtered::<&Transform, With<Player>>().single(world).unwrap().translation;
             let pyaw = world.query_filtered::<&Actor, With<Player>>().single(world).unwrap().yaw;
             let fwd = Vec3::new(-pyaw.sin(), 0.0, -pyaw.cos());
@@ -8720,6 +11867,8 @@ fn a_guarded_bullet_leaves_its_shooter_alone() {
         let a = app.world().get::<Actor>(shooter).unwrap();
         assert_eq!(a.posture, 0.0, "deflect {deflect}: the shooter took posture");
         assert!(!a.state.starts_with("AttackBound") && !a.state.starts_with("AttackNoBound"), "deflect {deflect}: {}", a.state);
+        let ids: Vec<i64> = app.world_mut().query::<&crate::fxr::FxEffect>().iter(app.world()).map(|f| f.id).filter(|id| *id > 900000).collect();
+        assert_eq!(ids, vec![900002], "deflect {deflect}");
     }
 }
 
@@ -8787,6 +11936,34 @@ fn a_tool_hit_in_the_air_takes_the_aerial_reaction() {
     } else {
         assert_eq!(air, None, "no aerial anim: the additive flinch");
     }
+}
+
+/// R32: a guarded hit with no guard clip for its level goes on through ExecDamage (c9997.lua
+/// 2252-2301): c1360 has GuardDamageSmall but no Large, so a large hit on its guard staggers it
+/// (DamageLarge_*) instead of vanishing; guardLevel 0 (c1250) is the NONE column, a plain damage
+/// reaction. ExecNoSyncAddDamage (2901) flinches minimum / aerial / rank-rejected hits only:
+/// level 0 (super armour) has no flinch.
+#[test]
+fn a_guarded_hit_without_a_guard_clip_takes_its_damage_reaction() {
+    use crate::combat::{GuardPick, enemy_guard_block, guard_fall_through, no_sync_add_flinches};
+    for (chr, glv) in [("c1360", 4), ("c1250", 0)] {
+        let mut app = app_cfg(chr, None, Vec::new());
+        app.update();
+        let world = app.world_mut();
+        world.resource_scope(|world, combat: Mut<Combat>| {
+            let mut q = world.query_filtered::<(&Actor, &Transform), With<Enemy>>();
+            let (a, t) = q.single(world).unwrap();
+            let d = combat.data_of(a);
+            assert_eq!(combat.npc(a)["guardLevel"].as_i64(), Some(glv), "{chr}");
+            assert_eq!(enemy_guard_block(d, &[], 3, glv, false, false), GuardPick::None, "{chr}");
+            let from = t.translation + a.forward() * 3.0;
+            let (state, _) = guard_fall_through(d, a, 3, false, from, t.translation);
+            assert_eq!(state.as_deref(), Some("DamageLarge_Front"), "{chr}");
+            assert_eq!(guard_fall_through(d, a, 0, false, from, t.translation), (None, false), "{chr}: level 0 does nothing");
+        });
+    }
+    assert!(no_sync_add_flinches(8, false, false) && no_sync_add_flinches(0, true, false) && no_sync_add_flinches(2, false, true));
+    assert!(!no_sync_add_flinches(0, false, false), "super armour's level 0 does not flinch");
 }
 
 /// c9997 ExecGuardBlock picks the guard clip by refs, not by the deflect itself: c1180's shield
@@ -8861,13 +12038,14 @@ fn a_broken_wolf_is_knocked_down_only_by_the_lighter_levels() {
     assert_eq!(crate::combat::player_break_state(combat, 4, &a, from, at), "StandDamageBreakDamage");
 }
 
-/// INTERUPT_UseItem fires for a crouched drink too (CrouchItemGourdDrink).
+/// INTERUPT_UseItem fires for a crouched drink too (CrouchItemGourdDrink), not for the empty
+/// gourd's shake (ItemGourdDrinkFailed: HKS acts it on the drink branch only; round 30).
 #[test]
 fn a_crouched_drink_raises_use_item() {
     let mut a = Actor::new(crate::actor::Side::Player, 100.0, 100.0, 0.0, 0);
     a.prev_t = 0.0;
     a.t = 0.016;
-    for (state, want) in [("ItemGourdDrink", true), ("CrouchItemGourdDrink", true), ("CrouchIdle", false)] {
+    for (state, want) in [("ItemGourdDrink", true), ("CrouchItemGourdDrink", true), ("CrouchIdle", false), ("ItemGourdDrinkFailed", false)] {
         a.state = state.into();
         assert_eq!(crate::enemy::wolf_starts_an_item(&a), want, "{state}");
     }
@@ -9394,6 +12572,106 @@ fn a_released_locked_on_back_move_does_not_slide_toward_the_target() {
     assert!(after > before - 0.05, "slid toward the target: {before} -> {after}");
 }
 
+/// Round 62: in the wire flight (STYLE_TYPE_WIRE_FALL) attack + guard is the wire-fall attack,
+/// not an art (BEH_A_AIR_SP_ATTACK is off there), and a lightning charge throws it back first
+/// (HKS 2872-2876).
+#[test]
+fn wire_flight_attacks_are_no_art_and_throw_lightning_back() {
+    for charged in [false, true] {
+        let mut app = app();
+        move_enemy_far(&mut app);
+        app.world_mut().resource_mut::<crate::config::GameConfig>().player.unlock_all_moves = true;
+        app.world_mut().resource_mut::<crate::config::GameConfig>().player.combat_art = 7100;
+        let point = crate::map::GrapplePoint { hook: Vec3::new(0.0, 6.5, 12.0), land: Vec3::new(0.0, 6.0, 12.0), fwd: Vec3::NEG_Z, variation: 0 };
+        let target = crate::map::GrappleTarget { index: 0, point, dist: 12.0, in_action_range: true, ride: true };
+        app.insert_resource(crate::wire::WireAim { target: Some(target), enemy: None });
+        app.world_mut().resource_mut::<PadInput>().press(Action::Grapple);
+        let mut flying = false;
+        let mut path = Vec::<String>::new();
+        for _ in 0..300 {
+            app.update();
+            let st = player_state(&mut app).0;
+            if path.last() != Some(&st) {
+                path.push(st.clone());
+            }
+            let air = app.world_mut().query_filtered::<&Actor, With<Player>>().single(app.world()).unwrap().airborne;
+            if air && crate::wire::is_wire_state(&st) {
+                flying = true;
+                break;
+            }
+        }
+        assert!(flying, "no WireMove: {path:?}");
+        if charged {
+            app.world_mut().query_filtered::<&mut Actor, With<Player>>().single_mut(app.world_mut()).unwrap().electro = Some((9495, 10.0));
+        }
+        {
+            let mut pad = app.world_mut().resource_mut::<PadInput>();
+            pad.press(Action::Attack);
+            pad.press(Action::Guard);
+            pad.guard_held = true;
+        }
+        let mut seen = Vec::<String>::new();
+        for _ in 0..150 {
+            app.update();
+            let s = player_state(&mut app).0;
+            if seen.last() != Some(&s) {
+                seen.push(s);
+            }
+        }
+        assert!(!seen.iter().any(|s| s.contains("SpecialAttack")), "an art in the wire flight: {seen:?}");
+        let want = if charged { "AirElectroReceiveAttack" } else { "WireFallAttackCombo1" };
+        assert!(seen.iter().any(|s| s == want), "charged {charged}: no {want}: {seen:?}");
+    }
+}
+
+/// Round 63 (g_behaviorValidateOrder, HKS 6449): pending guard and jump presses in an air attack
+/// both open at its frame 12 - the kick is validated first, the air deflect last.
+#[test]
+fn a_pending_kick_beats_a_pending_air_guard() {
+    let mut app = app();
+    move_enemy_far(&mut app);
+    app.world_mut().resource_mut::<crate::config::GameConfig>().player.unlock_all_moves = true;
+    for _ in 0..5 {
+        app.update();
+    }
+    app.world_mut().resource_mut::<PadInput>().press(Action::Jump);
+    for _ in 0..30 {
+        app.update();
+        if app.world_mut().query_filtered::<&Actor, With<Player>>().single(app.world()).unwrap().airborne {
+            break;
+        }
+    }
+    for _ in 0..6 {
+        app.update();
+    }
+    app.world_mut().resource_mut::<PadInput>().press(Action::Attack);
+    for _ in 0..10 {
+        app.update();
+        if player_state(&mut app).0 == "AirComboAttack1" {
+            break;
+        }
+    }
+    assert_eq!(player_state(&mut app).0, "AirComboAttack1");
+    {
+        let mut pad = app.world_mut().resource_mut::<PadInput>();
+        pad.press(Action::Guard);
+        pad.guard_held = true;
+        pad.press(Action::Jump);
+    }
+    let mut seen = Vec::<String>::new();
+    for _ in 0..30 {
+        app.world_mut().resource_mut::<PadInput>().guard_held = true;
+        app.update();
+        let s = player_state(&mut app).0;
+        if seen.last() != Some(&s) {
+            seen.push(s);
+        }
+    }
+    let kick = seen.iter().position(|s| s == "AirKick");
+    let guard = seen.iter().position(|s| s.starts_with("AirDeflectGuard"));
+    assert!(kick.is_some() && guard.is_none_or(|g| g > kick.unwrap()), "{seen:?}");
+}
+
 /// Lands Wolf on a ridden grapple point from where he stands; returns the states and where he
 /// stands after `ticks`.
 fn grapple_to(app: &mut App, hook: Vec3, land: Vec3, ticks: usize) -> (Vec<String>, Vec3) {
@@ -9463,10 +12741,3119 @@ fn a_fans_pellets_hit_wolf_once() {
         let world = app.world_mut();
         let hp = world.query_filtered::<&Actor, With<Player>>().single(world).unwrap().hp;
         if hp < hp0 {
-            left = Some(world.query::<&crate::enemy_bullet::EnemyBullet>().iter(world).count());
+            // The pellets (a hit one ends and its HitBulletID child comes).
+            left = Some(world.query_filtered::<&Name, With<crate::enemy_bullet::EnemyBullet>>().iter(world).filter(|n| n.as_str() == "Enemy bullet 11902100").count());
             break;
         }
     }
     let left = left.expect("no pellet hit Wolf");
     assert_eq!(left, 4, "pellets still flying after the first hit");
+}
+
+/// Enemy bullets pass through Wolf's corpse: in the death loop the pellets were used up on him
+/// and their build-up / timed SpEffects landed after the loop's cure (2026-10-13 round 23).
+#[test]
+fn enemy_bullets_pass_through_wolfs_corpse() {
+    // The c1190 pellets flying each tick, at Wolf alive (the control: one hits him and ends) and
+    // dead.
+    let run = |dead: bool| -> Vec<usize> {
+        let mut app = app_cfg("c1190", None, Vec::new());
+        app.update();
+        let world = app.world_mut();
+        let shooter = world.query_filtered::<Entity, (With<Enemy>, Without<crate::enemy::Cast>)>().iter(world).next().unwrap();
+        let spec = world.resource::<Combat>().kind(0).data.bullet_rows.get("11902100").expect("c1190 pellet row").clone();
+        if dead {
+            world.query_filtered::<&mut Actor, With<Player>>().single_mut(world).unwrap().hp = 0.0;
+            // Into the death loop, past its TAE 950 iframes (f0-4).
+            let mut looping = false;
+            let mut in_loop = 0;
+            for _ in 0..60 * 15 {
+                app.update();
+                let world = app.world_mut();
+                let a = world.query_filtered::<&Actor, With<Player>>().single(world).unwrap();
+                // (The loop clip is one frame long and its time wraps: count ticks in it.)
+                if a.state == "GroundRevivalStayLoop_F" {
+                    in_loop += 1;
+                }
+                if in_loop > 18 {
+                    looping = true;
+                    break;
+                }
+            }
+            assert!(looping, "Wolf never reached the death loop");
+        }
+        let world = app.world_mut();
+        // Where he lies now (the death clip moves him).
+        let at = world.query_filtered::<&Transform, With<Player>>().single(world).unwrap().translation;
+        crate::enemy_bullet::spawn_row(&mut world.commands(), &spec, shooter, 0, at + Vec3::new(0.0, 0.3, 2.0), Vec3::NEG_Z, 0.0, None);
+        world.flush();
+        (0..10)
+            .map(|_| {
+                app.update();
+                let world = app.world_mut();
+                world.query_filtered::<&Name, With<crate::enemy_bullet::EnemyBullet>>().iter(world).filter(|n| n.as_str() == "Enemy bullet 11902100").count()
+            })
+            .collect()
+    };
+    let alive = run(false);
+    let dead = run(true);
+    let hit_tick = alive.iter().position(|&n| n == 4).expect(&format!("no pellet hit the living Wolf: {alive:?}"));
+    assert_eq!(dead[hit_tick], 5, "a pellet was used up on the corpse: alive {alive:?}, dead {dead:?}");
+}
+
+/// Spawns enemy bullet `row` of the first `kind` enemy at Wolf + `off`, flying along `dir`.
+fn shoot_at_wolf(app: &mut App, row: &str, off: Vec3, dir: Vec3) {
+    let world = app.world_mut();
+    let shooter = world.query_filtered::<Entity, (With<Enemy>, Without<crate::enemy::Cast>)>().iter(world).next().unwrap();
+    let spec = world.resource::<Combat>().kind(0).data.bullet_rows.get(row).expect("bullet row").clone();
+    let at = world.query_filtered::<&Transform, With<Player>>().single(world).unwrap().translation;
+    crate::enemy_bullet::spawn_row(&mut world.commands(), &spec, shooter, 0, at + off, dir, 0.0, None);
+    world.flush();
+}
+
+fn bullets_named(app: &mut App, row: &str) -> Vec<Vec3> {
+    let world = app.world_mut();
+    let name = format!("Enemy bullet {row}");
+    world
+        .query_filtered::<(&Name, &Transform), With<crate::enemy_bullet::EnemyBullet>>()
+        .iter(world)
+        .filter(|(n, _)| n.as_str() == name)
+        .map(|(_, t)| t.translation)
+        .collect()
+}
+
+/// A carrier bullet with no damage and no SpEffects of its own still touches Wolf: c1100's
+/// poison spit 11000020 (opposeTarget 1, HitBulletID 11000021) ends on him and its poison cloud
+/// comes there. It flew through him and the cloud came where it landed (2026-10-13 round 29).
+#[test]
+fn a_poison_spit_ends_on_wolf_and_its_cloud_comes_there() {
+    let mut app = app_cfg("c1100", None, Vec::new());
+    app.update();
+    shoot_at_wolf(&mut app, "11000020", Vec3::new(0.0, 1.0, 3.0), Vec3::NEG_Z);
+    for _ in 0..20 {
+        app.update();
+    }
+    let world = app.world_mut();
+    let at = world.query_filtered::<&Transform, With<Player>>().single(world).unwrap().translation;
+    assert!(bullets_named(&mut app, "11000020").is_empty(), "the spit flew on past Wolf");
+    let clouds = bullets_named(&mut app, "11000021");
+    assert!(
+        clouds.iter().any(|c| (c.xz() - at.xz()).length() < 1.0),
+        "no poison cloud at Wolf ({at}): {clouds:?}"
+    );
+}
+
+/// Wolf's burn build-up plus poison build-up (each hit of a build-up bullet raises one).
+fn wolf_build_up(app: &mut App) -> f32 {
+    let world = app.world_mut();
+    let we = world.query_filtered::<Entity, With<Player>>().single(world).unwrap();
+    world.resource::<crate::status::Statuses>().0.get(&we).map_or(0.0, |s| s.burn + s.poison)
+}
+
+/// R36 C: a bullet's hit takes its SpEffects from the Bullet row alone (exe FUN_1410b6880 fills
+/// the slots from it; the AtkParam's are not read). The Demon of Hatred's fire 70200125 carries
+/// burn 9116 on the Bullet and on its AtkParam 70200300: one build-up, not two.
+#[test]
+fn a_bullet_burns_once_not_through_its_atk_param_too() {
+    if !std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/extracted/enemies/c7020.json")).exists() {
+        return;
+    }
+    let once = {
+        let mut app = app_cfg("c7020", None, Vec::new());
+        app.update();
+        let world = app.world_mut();
+        let we = world.query_filtered::<Entity, With<Player>>().single(world).unwrap();
+        world.resource_scope(|world, combat: Mut<Combat>| {
+            let art = world.resource::<crate::config::GameConfig>().player.combat_art;
+            world.resource_mut::<crate::status::Statuses>().hit_wolf(&combat, we, art, &[9116], crate::status::Guard::None);
+        });
+        wolf_build_up(&mut app)
+    };
+    assert!(once > 0.0, "9116 builds burn on Wolf");
+    let mut app = app_cfg("c7020", None, Vec::new());
+    app.world_mut().resource_mut::<crate::enemy::EnemyDebug>().mode = crate::enemy::AiMode::Idle;
+    app.update();
+    {
+        let combat = app.world().resource::<Combat>();
+        let spec = combat.kind(0).data.bullet_rows.get("70200125").expect("bullet 70200125");
+        assert!(spec.attack.as_ref().is_some_and(|a| a.sp_effects().contains(&9116)), "its AtkParam carries 9116 too");
+    }
+    shoot_at_wolf(&mut app, "70200125", Vec3::new(0.0, 0.0, 1.5), Vec3::NEG_Z);
+    let mut got = 0.0;
+    for _ in 0..30 {
+        app.update();
+        got = wolf_build_up(&mut app).max(got);
+    }
+    assert_eq!(got, once, "one burn build-up per bullet hit");
+}
+
+/// A penetrating bullet's hit record runs out after dmgHitRecordLifeTime: c1030's fire 10300240
+/// (life 5 s, record 0.5 s) burns Wolf standing in it again and again. It hit him once in its 5 s
+/// (2026-10-13 round 29).
+#[test]
+fn a_fire_pool_burns_wolf_again_after_its_hit_record() {
+    let mut app = app_cfg("c1030", None, Vec::new());
+    app.update();
+    shoot_at_wolf(&mut app, "10300240", Vec3::new(0.0, 0.3, 0.0), Vec3::NEG_Z);
+    let mut rises = 0;
+    let mut last = wolf_build_up(&mut app);
+    for _ in 0..60 * 2 {
+        app.update();
+        let now = wolf_build_up(&mut app);
+        if now > last + 1e-3 {
+            rises += 1;
+        }
+        last = now;
+    }
+    assert!(rises >= 3, "the fire hit Wolf {rises} time(s) in 2 s (record 0.5 s)");
+}
+
+/// hitRadius grows to hitRadiusMax over spreadTime: c1250's 12500100 (0.2 -> 1.2 m over 0.8 s)
+/// rising 0.9 m beside Wolf (it climbs ~1.7 m) catches him once it has spread. It stayed 0.2 m and missed
+/// (2026-10-13 round 29).
+#[test]
+fn a_spreading_bullet_catches_wolf_beside_its_path() {
+    let mut app = app_cfg("c1250", None, Vec::new());
+    app.update();
+    let world = app.world_mut();
+    let hp0 = world.query_filtered::<&Actor, With<Player>>().single(world).unwrap().hp;
+    shoot_at_wolf(&mut app, "12500100", Vec3::new(0.9, -0.6, 0.5), Vec3::NEG_Z);
+    let mut hit = false;
+    for _ in 0..50 {
+        app.update();
+        let world = app.world_mut();
+        let hp = world.query_filtered::<&Actor, With<Player>>().single(world).unwrap().hp;
+        if hp < hp0 {
+            hit = true;
+            break;
+        }
+    }
+    assert!(hit, "the spreading bullet missed Wolf 0.9 m beside its path");
+}
+
+/// Round 39: a blinding hit (AtkParam atkBehaviorId 17 at damage level none: the Yasha apes'
+/// sand 12500100) plays W_StandDamageBlinding (a000_192600, BEH_R_DAMAGE 1155); it had no
+/// reaction.
+#[test]
+fn the_apes_sand_blinds_wolf() {
+    let mut app = app_cfg("c1250", None, Vec::new());
+    app.update();
+    shoot_at_wolf(&mut app, "12500100", Vec3::new(0.0, -0.6, 0.5), Vec3::NEG_Z);
+    let mut seen = Vec::<String>::new();
+    for _ in 0..50 {
+        app.update();
+        let s = player_state(&mut app).0;
+        if seen.last() != Some(&s) {
+            seen.push(s);
+        }
+    }
+    assert!(seen.iter().any(|s| s == "StandDamageBlinding"), "{seen:?}
+{}", log_text(&app));
+}
+
+/// Round 39: the Divine Dragon's atkBehaviorId bullets (BEH_R_SPECIAL_DAMAGE 1005-1012): the
+/// lightning 52000820 (18 SXL_BLAST) blasts Wolf into AirDamageElectroReceiveExplosionStart, the
+/// strong wind 52000830 (19 STORM_BACK_JUMP) into GroundStormJumpBackReady -> its Start.
+#[test]
+fn the_divine_dragons_blast_and_wind_throw_wolf() {
+    for (row, wants) in [
+        ("52000820", ["AirDamageElectroReceiveExplosionStart", "AirDamageElectroReceiveExplosionLand"]),
+        ("52000830", ["GroundStormJumpBackReady", "GroundStormJumpBackStart"]),
+    ] {
+        let mut app = app_cfg("c5200", None, Vec::new());
+        app.update();
+        shoot_at_wolf(&mut app, row, Vec3::new(0.0, -0.6, 0.5), Vec3::NEG_Z);
+        let mut seen = Vec::<String>::new();
+        for _ in 0..60 * 6 {
+            app.update();
+            let s = player_state(&mut app).0;
+            if seen.last() != Some(&s) {
+                seen.push(s);
+            }
+        }
+        for want in wants {
+            assert!(seen.iter().any(|s| s == want), "{row}: no {want} in {seen:?}");
+        }
+    }
+}
+
+/// Round 40: BEH_R_DEATH 962 - killed by a fire hit (spAttribute 2, level LARGE: c1030's
+/// 10300200, atkFire 320) Wolf dies in W_GroundDeathStartFire (a000_191200), face down.
+#[test]
+fn a_killing_fire_hit_is_the_fire_death() {
+    let mut app = app_cfg("c1030", None, Vec::new());
+    app.update();
+    {
+        let world = app.world_mut();
+        world.query_filtered::<&mut Actor, With<Player>>().single_mut(world).unwrap().hp = 1.0;
+    }
+    shoot_at_wolf(&mut app, "10300200", Vec3::new(0.0, -0.6, 0.5), Vec3::NEG_Z);
+    let mut seen = Vec::<String>::new();
+    for _ in 0..60 * 7 {
+        app.update();
+        let s = player_state(&mut app).0;
+        if seen.last() != Some(&s) {
+            seen.push(s);
+        }
+    }
+    assert!(seen.iter().any(|s| s == "GroundDeathStartFire"), "{seen:?}
+{}", log_text(&app));
+    assert!(seen.iter().any(|s| s.ends_with("Loop_B")), "{seen:?}");
+}
+
+/// A timed SpEffect Wolf's tool puts on an enemy counts in its hit rates: the Firecracker LV3-B
+/// burst's 9800 (2 s) makes it take x1.125 HP and posture. Enemy.clash was never read by the
+/// rates (2026-10-13 round 30).
+#[test]
+fn a_firecracker_burst_makes_the_enemy_take_more() {
+    let mut app = app();
+    app.update();
+    let world = app.world_mut();
+    world.resource_scope(|world, combat: Mut<Combat>| {
+        let mut q = world.query::<(&mut Enemy, &mut Actor)>();
+        let (mut e, mut a) = q.single_mut(world).unwrap();
+        let atk = crate::data::Attack { atk_attribute: 1, stamina_physics_attribute: 1, ..Default::default() };
+        let (hp0, posture0, _) = crate::combat::armor_rates(&combat, &mut e, &mut a, &atk, None);
+        e.add_timed(9800, 2.0);
+        let (hp1, posture1, _) = crate::combat::armor_rates(&combat, &mut e, &mut a, &atk, None);
+        assert!((hp1 / hp0 - 1.125).abs() < 1e-4, "HP rate {hp0} -> {hp1}");
+        assert!((posture1 / posture0 - 1.125).abs() < 1e-4, "posture rate {posture0} -> {posture1}");
+    });
+}
+
+/// An MSB enemy runs its own MSB ThinkParamID (Part.Enemy +0x8, patrols.json "think"), not the
+/// roster's first placement of its NpcParam row: 1110252 (c1010, NpcParam 10102210) has
+/// NpcThinkParam 10102200 (battle goal 101020). It ran the roster's pick (2026-10-12 round 20).
+#[test]
+fn an_msb_enemy_runs_its_own_think_row() {
+    let Some(spot) = crate::enemy::msb_patrol_on("m11_01_00_00", 1110252) else { return };
+    assert_eq!(spot.think, Some(10102200));
+    let mut app = app_cfg("c1010", Some(10102210), Vec::new());
+    app.update();
+    let world = app.world_mut();
+    let combat = world.resource::<Combat>();
+    let think = crate::enemy::msb_think(combat, &spot).expect("c1010 has NpcThinkParam 10102200");
+    let foe = combat.kind(0).foe.clone();
+    assert_eq!(foe.npc_row, 10102210);
+    let mut e = world.query::<&mut Enemy>().single_mut(world).unwrap();
+    e.think_override = Some(think);
+    assert_eq!(e.think_id(&foe), 10102200);
+}
+
+/// A two-blade swing (c1700 a000_003076: judges 160 and 161 both at 1.033-1.1 s) deflected on
+/// time is two deflects: the second window of the tick meets the guard the first one met, not
+/// the StandDeflectHard the first just started (no deflect window: it became a block, extra
+/// posture and StandDeflectEasy over the deflect) (2026-10-12 round 20).
+#[test]
+fn both_blades_of_a_two_blade_swing_are_deflected() {
+    let out = defend_against_with("c1700", "a000_003076", 2.0 / TAE_FPS, Action::Guard, Vec2::ZERO);
+    assert!(out.contains("YOU DEFLECT") && !out.contains("blocked"), "{out}");
+    assert!(out.contains("player=StandDeflectHard"), "{out}");
+}
+
+/// The beasts' firecracker burst does posture: 710013's AtkParam 7100104 directAtkStamDamage 30
+/// times the c1150 dog's NpcParam attriAStaminaDmgRate 3.0 = 90 against its 15 posture, and the
+/// break plays W_TrunkCollapseBurst (c9997 ExecDamageBreak) with the deathblow open (round 30;
+/// it did no posture and TrunkCollapseBurst was unreachable).
+#[test]
+fn a_firecracker_breaks_a_dogs_posture() {
+    let mut app = app_with("c1150");
+    {
+        let world = app.world_mut();
+        world.resource_mut::<crate::config::GameConfig>().player.prosthetics = vec![71000];
+        let mut q = world.query_filtered::<&mut Transform, With<Enemy>>();
+        q.single_mut(world).unwrap().translation.z = 2.0;
+        world.resource_mut::<crate::enemy::EnemyDebug>().mode = crate::enemy::AiMode::Idle;
+    }
+    for _ in 0..10 {
+        app.update();
+    }
+    app.world_mut().resource_mut::<PadInput>().press(Action::Prosthetic);
+    for _ in 0..90 {
+        app.update();
+        let (s, ..) = enemy_state(&mut app);
+        if s.starts_with("TrunkCollapseBurst") {
+            let world = app.world_mut();
+            let e = world.query::<&Enemy>().single(world).unwrap();
+            assert!(e.is_broken(), "the deathblow is open");
+            return;
+        }
+    }
+    panic!("no burst break: enemy {:?}, log {}", enemy_state(&mut app), log_text(&app));
+}
+
+/// The Sparking Axe (73200, v7302: spAttribute 2) swung through combat.rs's sword path on the
+/// fire-reacting zombie (NpcParam 15000000: 6020) sets it flailing as the Flame Vent does: SP_DAMAGE_FIRE
+/// -> W_DamageFire. The sword path played the level reaction (round 30).
+#[test]
+fn the_sparking_axe_sets_a_zombie_flailing() {
+    let mut app = app_cfg("c1500", Some(15000000), Vec::new());
+    for sp in app.world_mut().resource_mut::<Combat>().player.sp_effects.values_mut() {
+        sp.regist_blood = 0.0;
+    }
+    {
+        let world = app.world_mut();
+        world.resource_mut::<crate::config::GameConfig>().player.prosthetics = vec![73200];
+        let mut q = world.query_filtered::<&mut Transform, With<Enemy>>();
+        q.single_mut(world).unwrap().translation.z = 1.5;
+        world.resource_mut::<crate::enemy::EnemyDebug>().mode = crate::enemy::AiMode::Idle;
+    }
+    for _ in 0..10 {
+        app.update();
+    }
+    {
+        let world = app.world_mut();
+        let mut a = world.query_filtered::<&mut Actor, With<Enemy>>().single_mut(world).unwrap();
+        (a.hp, a.hp_max, a.posture_max) = (5000.0, 5000.0, 5000.0);
+        // Its back to Wolf: Idle still blocks a hit from the front.
+        a.yaw += std::f32::consts::PI;
+    }
+    app.world_mut().resource_mut::<PadInput>().press(Action::Prosthetic);
+    for _ in 0..120 {
+        app.update();
+        if enemy_state(&mut app).0 == "DamageFire" {
+            return;
+        }
+    }
+    panic!("no DamageFire: enemy {:?}, log {}", enemy_state(&mut app), log_text(&app));
+}
+
+/// R35: the Sabimaru on an Okami warrior (c1310: resident 9080, ref 1000220 WOMAN). The hit that
+/// sets the poison off carries ref 1000032 WOMAN_POISON (the build-up 9003-9009), so c9997
+/// GetSpDamage is SP_DAMAGE_POISON_REACTION -> W_SpecialPoisonReaction (a000_020160, rank 4).
+/// Only BURNING fed a reaction before. Build-ups raised so the first hit poisons.
+#[test]
+fn the_sabimaru_poisons_an_okami_warrior_into_her_reaction() {
+    let mut app = app_cfg("c1310", None, Vec::new());
+    for sp in app.world_mut().resource_mut::<Combat>().player.sp_effects.values_mut() {
+        if sp.behavior_ref_id == 1000032 {
+            sp.poizon_attack_power = 10000.0;
+        }
+    }
+    {
+        let world = app.world_mut();
+        world.resource_mut::<crate::config::GameConfig>().player.prosthetics = vec![75000];
+        let mut q = world.query_filtered::<&mut Transform, With<Enemy>>();
+        q.single_mut(world).unwrap().translation.z = 1.8;
+        world.resource_mut::<crate::enemy::EnemyDebug>().mode = crate::enemy::AiMode::Idle;
+    }
+    for _ in 0..10 {
+        app.update();
+    }
+    {
+        let world = app.world_mut();
+        let mut a = world.query_filtered::<&mut Actor, With<Enemy>>().single_mut(world).unwrap();
+        (a.hp, a.hp_max, a.posture_max) = (5000.0, 5000.0, 5000.0);
+    }
+    app.world_mut().resource_mut::<PadInput>().press(Action::Prosthetic);
+    for _ in 0..150 {
+        app.update();
+        if enemy_state(&mut app).0 == "SpecialPoisonReaction" {
+            return;
+        }
+    }
+    panic!("no SpecialPoisonReaction: enemy {:?}, log {}", enemy_state(&mut app), log_text(&app));
+}
+
+/// Exe SetHP holds HP at 1 only while IsNoDead (deathblows left: NpcParam ninsatuNum > 0, or a
+/// stateInfo 143 SpEffect; FUN_140bd64e0 / FUN_140bd5df0), so a regular enemy (ninsatuNum 0) at
+/// 0 HP dies outright through c9997 ExecDeath (W_DeathStartDefault: DeathDefault0/1). A
+/// two-dot General (10200000, ninsatuNum 2) still opens the deathblow. Every enemy used to open
+/// it (the 2026-10-06 rule).
+#[test]
+fn a_regular_enemy_dies_at_zero_hp_and_a_red_dot_one_opens_the_deathblow() {
+    for (chr, row, dies) in [("c1100", None, true), ("c1020", Some(10200000), false)] {
+        let mut app = app_cfg(chr, row, Vec::new());
+        app.world_mut().resource_mut::<crate::enemy::EnemyDebug>().mode = crate::enemy::AiMode::Idle;
+        for _ in 0..5 {
+            app.update();
+        }
+        {
+            let world = app.world_mut();
+            let mut a = world.query_filtered::<&mut Actor, With<Enemy>>().single_mut(world).unwrap();
+            a.hp = 0.0;
+        }
+        for _ in 0..3 {
+            app.update();
+        }
+        let log = log_text(&app);
+        let world = app.world_mut();
+        let (e, a) = world.query::<(&Enemy, &Actor)>().single(world).unwrap();
+        assert_eq!(e.is_dead(), dies, "{chr}: state {} log {log}", a.state);
+        if dies {
+            assert!(a.state.starts_with("DeathDefault"), "{chr}: {}", a.state);
+        } else {
+            assert!(e.is_broken(), "{chr}: the deathblow opens, state {}", a.state);
+        }
+    }
+}
+
+/// IsNoDead's TAE input: c1500's a000_020000 holds ChrActionFlag 96 "Set Immortality" (0-3.07 s),
+/// so the mortal zombie (15000000, ninsatuNum 0) emptied there keeps 1 HP: no death, no
+/// deathblow. Past the flag (idle) the same 0 HP kills it.
+#[test]
+fn a_zombie_rising_under_flag_96_keeps_1_hp() {
+    for (anim, held) in [("a000_020000", true), ("a000_000000", false)] {
+        let mut app = app_cfg("c1500", Some(15000000), Vec::new());
+        app.world_mut().resource_mut::<crate::enemy::EnemyDebug>().mode = crate::enemy::AiMode::Idle;
+        for _ in 0..5 {
+            app.update();
+        }
+        let set = |app: &mut App, hp: bool| {
+            let world = app.world_mut();
+            let mut a = world.query_filtered::<&mut Actor, With<Enemy>>().single_mut(world).unwrap();
+            if a.anim != anim {
+                a.play("Probe", anim);
+            }
+            (a.prev_t, a.t) = (1.0, 1.0);
+            if hp {
+                a.hp = 0.0;
+            }
+        };
+        set(&mut app, true);
+        for _ in 0..3 {
+            app.update();
+            if held {
+                set(&mut app, false);
+            }
+        }
+        let log = log_text(&app);
+        let world = app.world_mut();
+        let (e, a) = world.query::<(&Enemy, &Actor)>().single(world).unwrap();
+        if held {
+            assert!(!e.is_dead() && !e.is_broken() && a.hp == 1.0, "{anim}: hp {} state {} log {log}", a.hp, a.state);
+        } else {
+            assert!(e.is_dead(), "{anim}: state {} log {log}", a.state);
+        }
+    }
+}
+
+/// R36: the attacks' AI sounds (AtkParam AppearAiSoundId / HitAiSoundId) were never emitted.
+/// Wolf's slash (AtkParam_Pc 5000000: 2010 on the swing, 2110 on the hit, opposeTarget only)
+/// goes out on his swing; an NPC's hit sound 2000020 (20 m, friendlyTarget, bCallFriend) is
+/// heard by an ally within 20 m (it comes to the fight) and not beyond; Wolf's 2110 (4 m, oppose)
+/// reaches an enemy at 3 m, and no ally hears an opposeTarget-only sound. A bCallFriend sound is
+/// heard only while its owner's AI is in Battle / Find (FUN_140610470).
+#[test]
+fn attacks_make_ai_sounds_that_call_allies() {
+    use crate::enemy::{AiSound, AiSounds, ai_sound_heard};
+    assert_eq!(crate::data::atk_ai_sounds(true, 5000000), (2010, 2110));
+    assert_eq!(crate::data::atk_ai_sounds(false, 10201010), (2000025, 2000020));
+    let mut app = app();
+    app.world_mut().resource_mut::<crate::enemy::EnemyDebug>().mode = crate::enemy::AiMode::Idle;
+    app.update();
+    app.world_mut().resource_mut::<PadInput>().press(Action::Attack);
+    let (mut swung, mut hit) = (false, false);
+    for _ in 0..60 {
+        app.update();
+        swung |= app.world().resource::<AiSounds>().0.iter().any(|s| s.id == 2010 && s.owner.is_none());
+        hit |= app.world().resource::<AiSounds>().0.iter().any(|s| s.id == 2110 && s.owner.is_none());
+    }
+    assert!(hit, "no hit sound 2110 from Wolf's slash landing (guarded or not)");
+    assert!(swung, "no swing sound 2010 from Wolf: {:?}", app.world().resource::<AiSounds>().0);
+    let other = app.world_mut().spawn_empty().id();
+    let world = app.world_mut();
+    world.resource_scope(|world, combat: Mut<Combat>| {
+        let mut q = world.query_filtered::<(Entity, &Actor, &Transform), With<Enemy>>();
+        let (me, a, tf) = q.single(world).unwrap();
+        let team = crate::combat::team_of(&combat, a);
+        let think = combat.param("NpcThinkParam", combat.foe_of(a).think_id);
+        let at = tf.translation;
+        let npc = |id: i64, d: f32| AiSound { id, pos: at + Vec3::X * d, owner: Some(other), team: Some(team), life: 1.0, serial: 0, owner_alert: true, owner_groups: Vec::new() };
+        let wolf = |id: i64, d: f32| AiSound { id, pos: at + Vec3::X * d, owner: None, team: None, life: 1.0, serial: 0, owner_alert: true, owner_groups: Vec::new() };
+        let ai_sound_heard = |c: &Combat, s: &AiSound, me: Entity, team: i64, a: &Actor, at: Vec3, think: &serde_json::Value| ai_sound_heard(c, s, me, team, a, at, think, &[]);
+        assert_eq!(ai_sound_heard(&combat, &npc(2000020, 15.0), me, team, a, at, think), Some((2000020, 1)), "an ally's hit at 15 m");
+        assert_eq!(ai_sound_heard(&combat, &npc(2000020, 25.0), me, team, a, at, think), None, "beyond 20 m");
+        let calm = AiSound { owner_alert: false, ..npc(2000020, 15.0) };
+        assert_eq!(ai_sound_heard(&combat, &calm, me, team, a, at, think), None, "bCallFriend: an owner not in Battle / Find calls no one");
+        assert_eq!(ai_sound_heard(&combat, &wolf(2110, 3.0), me, team, a, at, think), Some((2110, 1)), "Wolf's hit at 3 m");
+        assert_eq!(ai_sound_heard(&combat, &npc(2110, 3.0), me, team, a, at, think), None, "opposeTarget only: not for an ally");
+        let mine = AiSound { owner: Some(me), ..npc(2000020, 1.0) };
+        assert_eq!(ai_sound_heard(&combat, &mine, me, team, a, at, think), None, "its own (selfTarget 0)");
+        // bRestrictSamePlacementGroup (2000020): an owner in MSB groups reaches only a listener
+        // that shares one (FUN_140610810); an owner in none reaches all.
+        let grouped = AiSound { owner_groups: vec![2, 5], ..npc(2000020, 15.0) };
+        let heard = |mine: &[i64]| crate::enemy::ai_sound_heard(&combat, &grouped, me, team, a, at, think, mine);
+        assert_eq!(heard(&[5]), Some((2000020, 1)), "a shared group");
+        assert_eq!(heard(&[3]), None, "another group");
+        assert_eq!(heard(&[]), None, "a listener in no group");
+        assert_eq!(crate::enemy::ai_sound_heard(&combat, &npc(2000020, 15.0), me, team, a, at, think, &[3]), Some((2000020, 1)), "an owner in no group");
+        assert_eq!(crate::enemy::ai_sound_heard(&combat, &AiSound { owner_groups: vec![2], ..wolf(2110, 3.0) }, me, team, a, at, think, &[]), Some((2110, 1)), "a row without the restriction");
+    });
+}
+
+/// The Flame Vent on a Villager zombie (c1500, NpcParam SpEffect 6020: ref 1000040
+/// FIRE_ACTION_ENABLE): its DAMAGE_ELEMENT_FIRE hit is SP_DAMAGE_FIRE -> W_DamageFire (c9997
+/// ExecSpReactionLarge), and the clip's own 3150601 (ref 1000240, 3 s) is kept past its TAE
+/// window as the next fire reaction's cool time (round 30: it played the level reaction).
+#[test]
+fn the_flame_vent_sets_a_zombie_flailing() {
+    // NpcParam 15000000 carries 6020 (the default 15000600 does not). The burn build-up is taken
+    // off so the hit does not ignite: an igniting hit plays W_FireReaction first (ExecDebuffReaction).
+    let mut app = app_cfg("c1500", Some(15000000), Vec::new());
+    for sp in app.world_mut().resource_mut::<Combat>().player.sp_effects.values_mut() {
+        sp.regist_blood = 0.0;
+    }
+    {
+        let world = app.world_mut();
+        world.resource_mut::<crate::config::GameConfig>().player.prosthetics = vec![72000];
+        let mut q = world.query_filtered::<&mut Transform, With<Enemy>>();
+        q.single_mut(world).unwrap().translation.z = 2.0;
+        world.resource_mut::<crate::enemy::EnemyDebug>().mode = crate::enemy::AiMode::Idle;
+    }
+    for _ in 0..10 {
+        app.update();
+    }
+    {
+        let world = app.world_mut();
+        let mut a = world.query_filtered::<&mut Actor, With<Enemy>>().single_mut(world).unwrap();
+        (a.hp, a.hp_max) = (5000.0, 5000.0);
+    }
+    app.world_mut().resource_mut::<PadInput>().press(Action::Prosthetic);
+    for _ in 0..120 {
+        app.update();
+        if enemy_state(&mut app).0 == "DamageFire" {
+            return;
+        }
+    }
+    panic!("no DamageFire: enemy {:?}, log {}", enemy_state(&mut app), log_text(&app));
+}
+
+/// A hit's reaction clip puts 109450 on Wolf for its TAE window (StandDamageSmall_F a000_100102:
+/// 0-0.2 s, staminaRecoverSpeedRate 0), which then becomes its replaceSpEffectId 109451
+/// "Stopping core recovery after being hit" (rate 0, 1 s): his posture holds until ~1.2 s and
+/// then recovers (round 30; it came back at 0.2 s).
+#[test]
+fn a_hit_stops_wolfs_posture_regen_a_second_past_its_window() {
+    let mut app = app();
+    move_enemy_far(&mut app);
+    app.update();
+    let posture = |app: &mut App| {
+        let world = app.world_mut();
+        world.query_filtered::<&Actor, With<Player>>().single(world).unwrap().posture
+    };
+    {
+        let world = app.world_mut();
+        world.resource_scope(|world, combat: Mut<Combat>| {
+            let mut a = world.query_filtered::<&mut Actor, With<Player>>().single_mut(world).unwrap();
+            assert!(a.play_state(&combat.player, "StandDamageSmall_F"));
+            a.posture = a.posture_max * 0.8;
+            a.since_posture_damage = 10.0;
+        });
+    }
+    let start = posture(&mut app);
+    for _ in 0..60 {
+        app.update(); // 1.0 s: the 0.2 s window, then 0.8 s of 109451
+    }
+    assert_eq!(posture(&mut app), start, "regen came back inside 109451's second");
+    for _ in 0..60 {
+        app.update();
+    }
+    assert!(posture(&mut app) < start, "no regen after 109451 ran out");
+}
+
+/// An enemy bullet carries its sfxId_Bullet on itself while it flies (as Wolf's prosthetic
+/// bullets, prosthetic::spawn_row) and leaves its sfxId_Hit where it lands; the flying one stops
+/// there. The oil pot's row with test effect ids.
+#[test]
+fn enemy_bullets_carry_their_effects() {
+    let mut app = app_cfg("c1550", None, Vec::new());
+    app.update();
+    let world = app.world_mut();
+    let shooter = world.query_filtered::<Entity, (With<Enemy>, Without<crate::enemy::Cast>)>().single(world).unwrap();
+    let mut spec = world.resource::<Combat>().kind(0).data.bullet_rows.get("15500700").expect("oil pot row").clone();
+    spec.sfx_id_bullet = 600035;
+    spec.sfx_id_hit = 600036;
+    let at = Vec3::new(6.0, 1.5, 6.0);
+    crate::enemy_bullet::spawn_row(&mut world.commands(), &spec, shooter, 0, at, Vec3::NEG_Y, 0.0, None);
+    world.flush();
+    let world = app.world_mut();
+    let flying: Vec<_> = world.query::<&crate::fxr::FxEffect>().iter(world).filter(|f| f.id == 600035).map(|f| matches!(f.anchor, Some(crate::fxr::Anchor::Entity(_)))).collect();
+    assert_eq!(flying, vec![true]);
+    let mut hit = None;
+    for _ in 0..(60 * 3) {
+        app.update();
+        let world = app.world_mut();
+        if let Some(f) = world.query::<&crate::fxr::FxEffect>().iter(world).find(|f| f.id == 600036) {
+            hit = Some(f.at.translation);
+            break;
+        }
+    }
+    let hit = hit.expect("no hit effect");
+    assert!(hit.xz().distance(at.xz()) < 0.5 && hit.y < 0.1, "{hit}");
+    let world = app.world_mut();
+    assert!(world.query::<&crate::fxr::FxEffect>().iter(world).filter(|f| f.id == 600035).all(|f| f.stop && f.anchor.is_none()));
+}
+
+/// The Demon of Hatred's attack a000_003002 puts SpEffect 3702011 (burning body) on him from
+/// 0.67 to 3.5 s: its SpEffectVfx 3702003 / 3702004 play 670215 / 670216 while it lasts
+/// (ffx.rs tae_sp_vfx), stopped once his anim no longer carries it.
+
+/// The resurrection's heartbeat (status.rs `heartbeat`): while Wolf holds 110091 (Player::held,
+/// put on by a000_110020 / 21), its cycle row 110092's SpEffectVfx 5010 sound 200001
+/// (c000200001) plays every 2.5 s (110091's motionInterval); it stops once the row is gone.
+#[test]
+fn the_resurrection_heartbeat_beats_every_two_and_a_half_seconds() {
+    if !std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/extracted/json/params/SpEffectVfxParam.json")).exists() {
+        return;
+    }
+    let mut app = app();
+    app.init_resource::<crate::sound::SoundQueue>();
+    app.update();
+    let set = |app: &mut App, on: bool| {
+        let world = app.world_mut();
+        let mut q = world.query::<&mut crate::player::Player>();
+        let mut p = q.single_mut(world).unwrap();
+        p.held.retain(|id| *id != 110091);
+        if on {
+            p.held.push(110091);
+        }
+    };
+    let beats = |app: &mut App| -> usize {
+        let mut q = app.world_mut().resource_mut::<crate::sound::SoundQueue>();
+        let n = q.0.iter().filter(|(k, _)| k == "c000200001").count();
+        q.0.clear();
+        n
+    };
+    beats(&mut app);
+    // 6 s at 60 fps: beats at 0, 2.5 and 5 s.
+    let mut n = 0;
+    for _ in 0..360 {
+        set(&mut app, true);
+        app.update();
+        n += beats(&mut app);
+    }
+    assert_eq!(n, 3, "heartbeats in 6 s");
+    let mut after = 0;
+    for _ in 0..360 {
+        set(&mut app, false);
+        app.update();
+        after += beats(&mut app);
+    }
+    assert_eq!(after, 0, "the heart kept beating without 110091");
+}
+
+/// The Finger Whistle's madness shows on the beast (status.rs `lasting_glow`): while 230515 is on
+/// its `sp_chained`, SpEffectVfx 7900's midst effect 300205 plays (230515 is in no character's
+/// combat data: read from SpEffectParam), and it stops when the row goes.
+#[test]
+fn a_maddened_beast_shows_the_whistle_madness() {
+    if !std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/extracted/fxr/300205.json")).exists() {
+        return;
+    }
+    let mut app = app();
+    app.update();
+    let set = |app: &mut App, on: bool| {
+        let world = app.world_mut();
+        let mut q = world.query_filtered::<&mut Actor, With<Enemy>>();
+        let mut a = q.iter_mut(world).next().unwrap();
+        a.sp_chained.retain(|c| c.0 != 230515);
+        // The beast's NpcParam resident 230500 (stateInfo 959) holds the madness's gate.
+        if !a.resident.contains(&230500) {
+            a.resident.push(230500);
+        }
+        if on {
+            a.sp_chained.push((230515, f32::INFINITY));
+        }
+    };
+    let glow = |app: &mut App| -> Vec<bool> {
+        let world = app.world_mut();
+        world.query::<&crate::fxr::FxEffect>().iter(world).filter(|f| f.id == 300205).map(|f| f.stop).collect()
+    };
+    // Stepped until it shows / stops (a frame may run no or several FixedUpdate steps).
+    let mut on = Vec::new();
+    for _ in 0..20 {
+        set(&mut app, true);
+        app.update();
+        on = glow(&mut app);
+        if !on.is_empty() {
+            break;
+        }
+    }
+    assert_eq!(on, vec![false], "no madness glow on the maddened beast");
+    let mut off = false;
+    for _ in 0..20 {
+        set(&mut app, false);
+        app.update();
+        if glow(&mut app).iter().all(|s| *s) {
+            off = true;
+            break;
+        }
+    }
+    assert!(off, "the madness glow outlived the madness");
+}
+
+/// Manual test #5: Wolf's lightning charge shows on his body (status.rs `electro_glow`): while
+/// Actor::electro holds an enemy charge 9492 (no row on Wolf, so his 9490 / SpEffectVfx 6000 stands in) the midst effect 404041 plays, and it stops when the
+/// charge is gone.
+#[test]
+fn wolfs_lightning_charge_glows_while_it_lasts() {
+    let mut app = app();
+    app.update();
+    let set = |app: &mut App, v: Option<(i64, f32)>| {
+        let world = app.world_mut();
+        let mut q = world.query_filtered::<&mut Actor, With<Player>>();
+        q.single_mut(world).unwrap().electro = v;
+    };
+    let glow = |app: &mut App| -> Vec<bool> {
+        let world = app.world_mut();
+        world.query::<&crate::fxr::FxEffect>().iter(world).filter(|f| f.id == 404041).map(|f| f.stop).collect()
+    };
+    // Step until the glow shows / stops (a frame under load may run no or several FixedUpdate
+    // steps; the charge is set again before each update so nothing in FixedUpdate takes it).
+    let mut on = Vec::new();
+    for _ in 0..20 {
+        set(&mut app, Some((9492, 30.0)));
+        app.update();
+        on = glow(&mut app);
+        if !on.is_empty() {
+            break;
+        }
+    }
+    assert_eq!(on, vec![false], "no glow while charged");
+    let mut off = false;
+    for _ in 0..20 {
+        set(&mut app, None);
+        app.update();
+        if glow(&mut app).iter().all(|s| *s) {
+            off = true;
+            break;
+        }
+    }
+    assert!(off, "the glow outlived the charge");
+}
+
+#[test]
+fn the_demons_burning_body_shows_while_his_tae_says_so() {
+    let mut app = app_cfg("c7020", None, Vec::new());
+    app.add_systems(Update, crate::ffx::tae_sp_vfx);
+    app.update();
+    let set = |app: &mut App, anim: &str, t: f32| {
+        let world = app.world_mut();
+        let mut q = world.query_filtered::<&mut Actor, (With<Enemy>, Without<crate::enemy::Cast>)>();
+        let mut a = q.single_mut(world).unwrap();
+        a.play("Attack3002", anim);
+        a.t = t;
+        a.prev_t = t;
+    };
+    let burning = |app: &mut App| -> Vec<(i64, bool)> {
+        let world = app.world_mut();
+        let mut v: Vec<(i64, bool)> = world.query::<&crate::fxr::FxEffect>().iter(world).filter(|f| matches!(f.id, 670215 | 670216)).map(|f| (f.id, f.stop)).collect();
+        v.sort();
+        v
+    };
+    set(&mut app, "a000_003002", 1.0);
+    app.update();
+    assert_eq!(burning(&mut app), vec![(670215, false), (670216, false)]);
+    set(&mut app, "a000_003002", 3.9);
+    app.update();
+    assert!(burning(&mut app).iter().all(|f| f.1), "{:?}", burning(&mut app));
+}
+
+/// The Old Dragons of the Tree (m25 12505801, bar 905300 on the shared body 2500810, NpcParam
+/// 53000000) come before the Divine Dragon: 12505949 (the shortcut 12505882 waits on, which
+/// sets 9318 and skips to the Divine Dragon) starts off for this row (boss_scripts.py
+/// FLAGS_OFF). So the tentacle event 12505901 never ends, and 530000_battle.lua's
+/// IsEventFlag(12505901) "follow the team leader" mode (Act11, weight 600) stays off. (The
+/// body's own attacks are no longer asserted: 12505801 now runs past its action button and turns
+/// the bar body's AI off, as in the game; the 15 dragons fight.)
+#[test]
+fn the_old_dragons_fight_before_the_divine_dragon() {
+    if !std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/extracted/enemies/c5300.json")).exists() {
+        return;
+    }
+    let mut app = app_cfg("c5300", Some(53000000), Vec::new());
+    {
+        let world = app.world_mut();
+        world.query_filtered::<&mut Enemy, Without<crate::enemy::Cast>>().single_mut(world).unwrap().aggressive = true;
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    for _ in 0..(60 * 20) {
+        app.update();
+        seen.insert(enemy_state(&mut app).1);
+        let world = app.world_mut();
+        let mut q = world.query_filtered::<&mut Actor, With<Player>>();
+        let mut a = q.single_mut(world).unwrap();
+        a.hp = a.hp_max;
+        a.posture = 0.0;
+    }
+    let flags = app.world().resource::<crate::enemy::BossScript>().run.as_ref().unwrap().flags_on();
+    assert!(!flags.contains(&12505901) && !flags.contains(&9318), "{flags:?} {seen:?}");
+}
+
+/// The Old Dragons' fall (m25 12505885: the bar body 2500810's HP <= 0 -> 9318, AiState 2500800
+/// on, SetSp 3520071, WarpCopy) hands over to the Divine Dragon: 9318 is their flag, not a
+/// defeat. Before, a 93xx flag with the boss at "0 bars" counted as the defeat, and the body's
+/// ninsatuNum is 0, so the fight ended (banner, restart) and the Divine Dragon never came.
+#[test]
+fn the_old_dragons_fall_hands_over_to_the_divine_dragon() {
+    if !std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/extracted/enemies/c5300.json")).exists() {
+        return;
+    }
+    let mut app = app_cfg("c5300", Some(53000000), Vec::new());
+    for _ in 0..120 {
+        app.update();
+    }
+    for _ in 0..(60 * 8) {
+        {
+            let world = app.world_mut();
+            let mut q = world.query::<(&crate::enemy::script::Scripted, &mut Actor)>();
+            if let Some((_, mut a)) = q.iter_mut(world).find(|(s, _)| s.0 == 2500810) {
+                a.hp = 0.0;
+            }
+            let mut w = world.query_filtered::<&mut Actor, With<Player>>().single_mut(world).unwrap();
+            w.hp = w.hp_max;
+        }
+        app.update();
+    }
+    let bs = app.world().resource::<crate::enemy::BossScript>();
+    let run = bs.run.as_ref().expect("the script runs");
+    assert!(run.flags_on().contains(&9318), "no 9318: {:?}", run.flags_on());
+    assert!(run.defeated.is_none() && bs.defeats == 0, "the Old Dragons' fall ended the fight");
+    let world = app.world_mut();
+    let mut q = world.query::<(&crate::enemy::script::Scripted, &Enemy)>();
+    let dragon = q.iter(world).find(|(s, _)| s.0 == 2500800).map(|(_, e)| (e.disabled, e.ai_off));
+    assert_eq!(dragon, Some((false, false)), "the Divine Dragon (disabled, ai_off)");
+}
+
+/// Gyoubu's defeat (m11_00 11105800: has 201000 or dead -> IfCharacterDead -> Wait 0.7 -> Handle
+/// Boss Defeat) waits for his reaction's ChrActionFlag 12 "Death" (a000_012090 f241 = 8.03 s), as
+/// the all-bosses clip's banner 9.5 s after the lunge shows (script.rs snapshot `dead`). Before:
+/// dead at the Ninsatsu hit (5.9 s), the banner ~3 s early; and before that on the throw's first
+/// frame.
+#[test]
+fn gyoubus_defeat_waits_for_the_ninsatsu_hit() {
+    if !std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/extracted/enemies/c5080.json")).exists() {
+        return;
+    }
+    let mut app = app_with("c5080");
+    for _ in 0..30 {
+        app.update();
+    }
+    {
+        let world = app.world_mut();
+        let boss = boss_in_play(world);
+        world.get_mut::<Enemy>(boss).unwrap().ninsatsu.0 = 1;
+    }
+    break_and_deathblow_died(&mut app, 1);
+    let (mut thrown, mut defeated) = (None, None);
+    for f in 0..(60 * 20) {
+        let world = app.world_mut();
+        let boss = boss_in_play(world);
+        if thrown.is_none() && world.get::<Enemy>(boss).unwrap().is_dead() {
+            thrown = Some(f);
+        }
+        if world.resource::<crate::enemy::BossScript>().run.as_ref().is_some_and(|r| r.defeated.is_some()) {
+            defeated = Some(f);
+            break;
+        }
+        app.update();
+    }
+    let (Some(t0), Some(t1)) = (thrown, defeated) else { panic!("thrown {thrown:?} defeated {defeated:?}: {}", log_text(&app)) };
+    let wait = (t1 - t0) as f32 / 60.0;
+    eprintln!("Gyoubu: defeat {wait:.2} s after the throw's start");
+    // The reaction's flag 12 at 8.03 s plus the event's 0.7 s (the clip: the banner at 9.5 s).
+    assert!((8.5..=9.5).contains(&wait), "defeat {wait:.2} s after the throw's start");
+}
+
+/// An attack out of a run keeps the run's momentum through its blend-in: the behaviour graph's
+/// TaeBlend transition mixes the from generator's world-from-model in by (1 - w), w the smoothstep
+/// over the clip's TAE Blend (actor.rs advance). Live (rec_* recordings): GroundAttackCombo1 out
+/// of the run loop a000_000500 moves 0.26-0.45 m in its first 0.1 s against the clip's own
+/// 0.094 m. Before, the clip's root alone: Wolf stopped dead on the first attack frame.
+#[test]
+fn an_attack_out_of_a_run_keeps_the_runs_momentum() {
+    fn player_pos(app: &mut App) -> Vec3 {
+        let world = app.world_mut();
+        world.query_filtered::<&Transform, With<Player>>().single(world).unwrap().translation
+    }
+    let mut app = app();
+    move_enemy_far(&mut app);
+    app.world_mut().resource_mut::<PadInput>().stick = Vec2::new(0.0, -1.0);
+    for _ in 0..90 {
+        app.update();
+    }
+    let run_step = {
+        let p0 = player_pos(&mut app);
+        for _ in 0..6 {
+            app.update();
+        }
+        (player_pos(&mut app) - p0).length()
+    };
+    assert!(run_step > 0.3, "run step over 6 ticks {run_step}");
+    app.world_mut().resource_mut::<PadInput>().press(Action::Attack);
+    let mut started = None;
+    for _ in 0..30 {
+        app.update();
+        if player_state(&mut app).0.starts_with("GroundAttackCombo1") {
+            started = Some(player_pos(&mut app));
+            break;
+        }
+    }
+    let p0 = started.unwrap_or_else(|| panic!("no attack: {}", log_text(&app)));
+    for _ in 0..6 {
+        app.update();
+    }
+    let d6 = (player_pos(&mut app) - p0).length();
+    assert!(d6 > 0.55 * run_step && d6 < run_step + 0.03, "attack's first 6 ticks {d6:.3} m, the run's {run_step:.3} m");
+}
+
+/// The run loop a000_000500 is a looping generator (c0000.hkx MODE_LOOPING; data::loops_c0000):
+/// an attack pressed as the loop wraps still carries the run's momentum, because the from
+/// generator keeps looping through the blend (actor.rs advance wraps its clock). Presses are
+/// spread over one loop length so some land on the wrap.
+#[test]
+fn an_attack_at_the_run_loops_wrap_keeps_the_momentum_too() {
+    fn player_pos(app: &mut App) -> Vec3 {
+        let world = app.world_mut();
+        world.query_filtered::<&Transform, With<Player>>().single(world).unwrap().translation
+    }
+    let mut worst = f32::MAX;
+    for extra in (0..36).step_by(3) {
+        let mut app = app();
+        move_enemy_far(&mut app);
+        app.world_mut().resource_mut::<PadInput>().stick = Vec2::new(0.0, -1.0);
+        for _ in 0..90 + extra {
+            app.update();
+        }
+        let p0 = player_pos(&mut app);
+        for _ in 0..6 {
+            app.update();
+        }
+        let run_step = (player_pos(&mut app) - p0).length();
+        app.world_mut().resource_mut::<PadInput>().press(Action::Attack);
+        let mut started = None;
+        for _ in 0..30 {
+            app.update();
+            if player_state(&mut app).0.starts_with("GroundAttackCombo1") {
+                started = Some(player_pos(&mut app));
+                break;
+            }
+        }
+        let p0 = started.unwrap_or_else(|| panic!("no attack: {}", log_text(&app)));
+        for _ in 0..6 {
+            app.update();
+        }
+        let d6 = (player_pos(&mut app) - p0).length();
+        worst = worst.min(d6 / run_step);
+        assert!(d6 > 0.55 * run_step && d6 < run_step + 0.03, "press at +{extra}: attack's first 6 ticks {d6:.3} m, the run's {run_step:.3} m");
+    }
+    eprintln!("worst attack / run ratio over the loop: {worst:.2}");
+}
+
+/// The castle Genichiro's last dot (71001000, kept immortal by m11_01 11115810 without a 201000
+/// reaction) goes at Wolf's Ninsatsu hit, not on the throw's first frame: 11115820 ("bars == 0"
+/// -> Wait 2 -> the Tomoe swap) runs from the hit. Before, the immortality rule zeroed the pending
+/// count at once.
+#[test]
+fn castle_genichiros_last_dot_waits_for_the_hit() {
+    if !std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/extracted/enemies/c7110.json")).exists() {
+        return;
+    }
+    let mut app = app_cfg("c7100", Some(71001000), Vec::new());
+    for _ in 0..30 {
+        app.update();
+    }
+    {
+        let world = app.world_mut();
+        let boss = boss_in_play(world);
+        world.get_mut::<Enemy>(boss).unwrap().ninsatsu.0 = 1;
+    }
+    break_and_deathblow_died(&mut app, 1);
+    let mut early = Vec::new();
+    let mut started = None;
+    for f in 0..(60 * 20) {
+        let wolf = player_state(&mut app).0;
+        if started.is_none() && wolf.starts_with("Deathblow") {
+            started = Some(f);
+        }
+        if let Some(s) = started {
+            if f < s + 20 {
+                let world = app.world_mut();
+                let boss = boss_in_play(world);
+                early.push(world.get::<Enemy>(boss).unwrap().ninsatsu_left());
+            }
+        }
+        if enemy_chrs(&mut app) == ["c7110"] {
+            break;
+        }
+        app.update();
+    }
+    assert!(started.is_some(), "no deathblow");
+    assert!(early.iter().all(|n| *n == 1), "the dot went early: {early:?}");
+    assert_eq!(enemy_chrs(&mut app), ["c7110"], "no Tomoe swap");
+}
+
+/// The Old Dragons of the Tree are 15 c5300 bodies (m25 2500811-825; rows 53000010-12) whose
+/// hits feed the shared bar 2500810 (12505803 x15: SpEffect 3530020 on the bar). No event enables
+/// them (they stand from the start), so the exporter left them out of the cast and the fight was
+/// the bar's dummy alone (tools/boss_scripts.py `linked`).
+#[test]
+fn the_old_dragons_bar_is_the_scripted_bar_body() {
+    if !std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/extracted/enemies/c5300.json")).exists() {
+        return;
+    }
+    let mut app = app_cfg("c5300", Some(53000000), Vec::new());
+    let mut bar = None;
+    for _ in 0..600 {
+        app.update();
+        bar = app.world().resource::<crate::enemy::BossScript>().run.as_ref().and_then(|r| r.bar);
+        if bar.is_some() {
+            break;
+        }
+    }
+    // m25 12505801: 2003[11](1, 2500810, 0, 905300) "Old Dragons of the Tree" on the shared bar
+    // body, whose NpcParam 53000000 has ninsatuNum 0 (so the ninsatsu rule alone showed no bar).
+    assert_eq!(bar, Some(2500810), "the script's boss bar");
+}
+
+#[test]
+fn the_old_dragons_stand_in_their_fight() {
+    if !std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/extracted/enemies/c5300.json")).exists() {
+        return;
+    }
+    let mut app = app_cfg("c5300", Some(53000000), Vec::new());
+    for _ in 0..60 {
+        app.update();
+    }
+    let world = app.world_mut();
+    let mut q = world.query::<(&crate::enemy::script::Scripted, &Actor, Option<&Visibility>)>();
+    let dragons: Vec<i64> = q.iter(world).filter(|(s, a, v)| (2500811..=2500825).contains(&s.0) && a.hp > 0.0 && v.is_none_or(|v| *v != Visibility::Hidden)).map(|(s, ..)| s.0).collect();
+    assert_eq!(dragons.len(), 15, "{dragons:?}");
+    // The fight's start (12505801 after its action button) turns the bar body 2500810's AI off.
+    {
+        let world = app.world_mut();
+        let mut q = world.query::<(&crate::enemy::script::Scripted, &Enemy)>();
+        assert!(q.iter(world).find(|(s, _)| s.0 == 2500810).is_some_and(|(_, e)| e.ai_off), "the bar body fights");
+    }
+    // A dragon down to 1 HP (4[14] HP <= 1) costs the bar: SpEffect 3530020 on 2500810.
+    let bar_hp = |app: &mut App| {
+        let world = app.world_mut();
+        let mut q = world.query::<(&crate::enemy::script::Scripted, &Actor)>();
+        q.iter(world).find(|(s, _)| s.0 == 2500810).map(|(_, a)| a.hp).unwrap()
+    };
+    let before = bar_hp(&mut app);
+    {
+        let world = app.world_mut();
+        let mut q = world.query::<(&crate::enemy::script::Scripted, &mut Actor)>();
+        let (_, mut a) = q.iter_mut(world).find(|(s, _)| s.0 == 2500811).unwrap();
+        a.hp = 1.0;
+    }
+    for _ in 0..60 {
+        app.update();
+    }
+    let after = bar_hp(&mut app);
+    assert!(after < before, "bar {before} -> {after}");
+}
+
+/// Isshin Ashina's volley (m11_01 11115944): on SpEffect 3540510 (a000_003032 f90) the script
+/// fires 254000382 from 33 region spheres 1112962-994, owner the c1000 dummy 1110921 no event
+/// enables. Every shot was dropped (a region source, an absent owner).
+#[test]
+fn isshin_ashinas_volley_fires_from_its_regions() {
+    if !std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/extracted/enemies/c5430.json")).exists() {
+        return;
+    }
+    let mut app = app_cfg("c5430", Some(54300000), Vec::new());
+    for _ in 0..30 {
+        app.update();
+    }
+    {
+        let world = app.world_mut();
+        let mut q = world.query::<(&crate::enemy::script::Scripted, &mut Actor)>();
+        let (_, mut a) = q.iter_mut(world).find(|(s, _)| s.0 == 1110920).unwrap();
+        a.resident.push(3540510);
+    }
+    let mut most = 0;
+    for _ in 0..10 {
+        app.update();
+        let world = app.world_mut();
+        most = most.max(world.query::<&crate::enemy_bullet::EnemyBullet>().iter(world).count());
+    }
+    assert!(most >= 33, "{most} fire spots");
+}
+
+/// Round 45: aged, Wolf's deathblow on a broken c1300 is the aging row 11300260 ("aging break",
+/// a222_502000 -> 512000), not the usual one; afterwards the aged form comes back as AgingIdle,
+/// not W_StandAging again (HKS 381). Before, the aged attack ate it.
+#[test]
+fn an_aged_wolf_takes_the_aging_deathblow() {
+    if !std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/extracted/enemies/c1300.json")).exists() {
+        return;
+    }
+    let mut app = app_cfg("c1300", None, Vec::new());
+    app.update();
+    let wolf = app.world_mut().query_filtered::<Entity, With<Player>>().single(app.world()).unwrap();
+    app.world_mut().resource_scope(|world, combat: Mut<Combat>| {
+        let mut st = world.resource_mut::<crate::status::Statuses>();
+        for _ in 0..8 {
+            st.hit_wolf(&combat, wolf, 0, &[9600], crate::status::Guard::None);
+        }
+    });
+    for _ in 0..60 * 6 {
+        app.update();
+    }
+    assert_eq!(player_state(&mut app).0, "AgingIdle");
+    app.world_mut().resource_scope(|world, combat: Mut<Combat>| {
+        let mut q = world.query_filtered::<(&mut Enemy, &mut Actor, &mut Transform), Without<crate::enemy::Cast>>();
+        let (mut e, mut a, mut t) = q.single_mut(world).unwrap();
+        e.aggressive = false;
+        t.translation = Vec3::new(0.0, CAPSULE_HALF_HEIGHT, -1.5);
+        a.yaw = std::f32::consts::PI;
+        a.posture = a.posture_max;
+        e.on_posture_break(&mut a, &combat, false, 4.0);
+        let mut q = world.query_filtered::<(&mut Actor, &mut Transform), With<Player>>();
+        let (mut pa, mut pt) = q.single_mut(world).unwrap();
+        pt.translation = Vec3::new(0.0, CAPSULE_HALF_HEIGHT, 0.0);
+        pa.yaw = 0.0;
+    });
+    app.world_mut().resource_mut::<PadInput>().press(Action::Attack);
+    let mut anims = Vec::<String>::new();
+    let mut states = Vec::<String>::new();
+    for _ in 0..60 * 12 {
+        app.update();
+        let (s, anim, _, _) = player_state(&mut app);
+        if anims.last() != Some(&anim) {
+            anims.push(anim);
+        }
+        if states.last() != Some(&s) {
+            states.push(s);
+        }
+    }
+    assert!(anims.iter().any(|k| k == "a222_502000"), "{anims:?} {states:?} {}", log_text(&app));
+    assert!(anims.iter().any(|k| k == "a222_512000"), "{anims:?}");
+    assert_eq!(states.iter().filter(|s| *s == "StandAging").count(), 0, "{states:?}");
+    assert!(states.last().is_some_and(|s| s.starts_with("Aging")), "{states:?}");
+}
+
+/// Round 44: aged (9600's curse build-up -> 9620, ref 591) Wolf plays the aged form: W_StandAging
+/// then AgingIdle, max HP x0.125 (maxHpRate), attack -> W_AgingGroundAttack; aged, a kill is
+/// W_AgingGroundDeathStart -> W_AgingGroundDeathLoop (HKS 365) with no resurrection offered.
+/// Before, nothing of it.
+#[test]
+fn an_aged_wolf_plays_the_aged_form() {
+    if !std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/extracted/enemies/c1300.json")).exists() {
+        return;
+    }
+    // c1300's data holds 9600 (the build-up row).
+    let mut app = app_cfg("c1300", None, Vec::new());
+    move_enemy_far(&mut app);
+    app.update();
+    let (wolf, max0) = {
+        let world = app.world_mut();
+        let (e, a) = world.query_filtered::<(Entity, &Actor), With<Player>>().single(world).unwrap();
+        (e, a.hp_max)
+    };
+    app.world_mut().resource_scope(|world, combat: Mut<Combat>| {
+        let mut st = world.resource_mut::<crate::status::Statuses>();
+        for _ in 0..8 {
+            st.hit_wolf(&combat, wolf, 0, &[9600], crate::status::Guard::None);
+        }
+    });
+    let mut seen: Vec<String> = Vec::new();
+    for _ in 0..60 * 6 {
+        app.update();
+        let s = player_state(&mut app).0;
+        if seen.last() != Some(&s) {
+            seen.push(s);
+        }
+    }
+    assert!(seen.iter().any(|s| s == "StandAging"), "{seen:?} {}", log_text(&app));
+    assert_eq!(seen.last().map(String::as_str), Some("AgingIdle"), "{seen:?}");
+    {
+        let world = app.world_mut();
+        let a = world.query_filtered::<&Actor, With<Player>>().single(world).unwrap();
+        assert!((a.hp_max - max0 * 0.125).abs() < 0.5, "hp_max {} of {max0}", a.hp_max);
+        assert!(a.resident.contains(&9620));
+        // 9620's changeStaminaRate -100 each frame: the posture stays drained (round 46).
+        assert!(a.posture >= a.posture_max - 0.01, "posture {} of {}", a.posture, a.posture_max);
+    }
+    app.world_mut().resource_mut::<PadInput>().press(Action::Attack);
+    for _ in 0..5 {
+        app.update();
+    }
+    assert_eq!(player_state(&mut app).0, "AgingGroundAttack");
+    {
+        let world = app.world_mut();
+        world.query_filtered::<&mut Actor, With<Player>>().single_mut(world).unwrap().hp = 0.0;
+    }
+    let mut seen: Vec<String> = Vec::new();
+    for _ in 0..60 * 8 {
+        app.update();
+        let s = player_state(&mut app).0;
+        if seen.last() != Some(&s) {
+            seen.push(s);
+        }
+    }
+    assert!(seen.iter().any(|s| s == "AgingGroundDeathStart"), "{seen:?}");
+    assert!(seen.iter().any(|s| s == "AgingGroundDeathLoop"), "{seen:?}");
+    assert!(!seen.iter().any(|s| s.contains("Revival")), "{seen:?}");
+}
+
+/// Manual test #1 (2026-10-13): the F1 menu's infinite Spirit Emblems tops Wolf's emblems back up
+/// every tick, for testing the arts and tools.
+#[test]
+fn the_infinite_emblems_cheat_refills_them() {
+    let mut app = app_cfg("c1000", None, Vec::new());
+    app.init_resource::<crate::debug_menu::DebugMenu>().add_systems(FixedUpdate, crate::debug_menu::player_cheats);
+    app.update();
+    app.world_mut().resource_mut::<crate::debug_menu::DebugMenu>().infinite_emblems = true;
+    app.world_mut().query::<&mut Player>().single_mut(app.world_mut()).unwrap().emblems = 0;
+    app.update();
+    app.update();
+    let n = app.world_mut().query::<&Player>().single(app.world()).unwrap().emblems;
+    assert!(n >= 15, "emblems {n}");
+}
+
+/// Round 46: aged, a jump press plays BEH_A_AGING_GROUND_JUMP: W_AgingGroundJumpReady_V (no
+/// stick) into its Start, whose TAE 920 lifts Wolf off the ground, the fall loop, and lands as
+/// W_LandAgingGroundJump (HKS 1776), not the free-fall landing. Before, the press did nothing.
+#[test]
+fn an_aged_wolf_jumps() {
+    if !std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/extracted/enemies/c1300.json")).exists() {
+        return;
+    }
+    let mut app = app_cfg("c1300", None, Vec::new());
+    move_enemy_far(&mut app);
+    app.update();
+    let wolf = app.world_mut().query_filtered::<Entity, With<Player>>().single(app.world()).unwrap();
+    app.world_mut().resource_scope(|world, combat: Mut<Combat>| {
+        let mut st = world.resource_mut::<crate::status::Statuses>();
+        for _ in 0..8 {
+            st.hit_wolf(&combat, wolf, 0, &[9600], crate::status::Guard::None);
+        }
+    });
+    for _ in 0..60 * 6 {
+        app.update();
+    }
+    assert_eq!(player_state(&mut app).0, "AgingIdle");
+    let y0 = app.world_mut().query_filtered::<&Transform, With<Player>>().single(app.world()).unwrap().translation.y;
+    app.world_mut().resource_mut::<PadInput>().press(Action::Jump);
+    let mut seen: Vec<String> = Vec::new();
+    let mut top = y0;
+    for _ in 0..60 * 4 {
+        app.update();
+        let s = player_state(&mut app).0;
+        top = top.max(app.world_mut().query_filtered::<&Transform, With<Player>>().single(app.world()).unwrap().translation.y);
+        if seen.last() != Some(&s) {
+            seen.push(s);
+        }
+    }
+    assert_eq!(seen.first().map(String::as_str), Some("AgingGroundJumpReady_V"), "{seen:?} {}", log_text(&app));
+    assert!(seen.iter().any(|s| s == "AgingGroundJumpStart_V"), "{seen:?}");
+    assert!(top > y0 + 0.2, "rose {} {seen:?}", top - y0);
+    assert!(seen.iter().any(|s| s == "LandAgingGroundJump"), "{seen:?}");
+    assert!(!seen.iter().any(|s| s == "LandAgingFreeFall"), "{seen:?}");
+    assert!(seen.last().is_some_and(|s| s.starts_with("Aging")), "{seen:?}");
+}
+
+/// Fountainhead's strong noble c1300 (NpcParam 13000001) breathes Bullet 13000200, "Breathe in
+/// life": SpEffect 9600, registCurse 40 (stateInfo 116, the exe's "curse" slot), against Wolf's
+/// 200, recovering ResistRecoverPoint_Curse_Player 20 a second. Full, it applies its
+/// cycleOccurrence 9620 "Aging_invoking" (30 s, behaviorRefId 591). The AI sees it on Wolf
+/// (130000_battle.lua: HasSpecialEffectId(TARGET_ENE_0, 9620)) and stops breathing: it strikes
+/// (Act03) or grabs (Act02).
+#[test]
+fn the_nobles_breath_ages_wolf() {
+    if !std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/extracted/enemies/c1300.json")).exists() {
+        return;
+    }
+    let mut app = app_cfg("c1300", None, Vec::new());
+    {
+        let world = app.world_mut();
+        world.query_filtered::<&mut Enemy, Without<crate::enemy::Cast>>().single_mut(world).unwrap().aggressive = true;
+    }
+    let mut aged_at = None;
+    let mut after = std::collections::BTreeSet::new();
+    for f in 0..(60 * 40) {
+        app.update();
+        let wolf = app.world_mut().query_filtered::<Entity, With<Player>>().single(app.world()).unwrap();
+        let aged = app.world().resource::<crate::status::Statuses>().0.get(&wolf).is_some_and(|s| s.effects.iter().any(|a| a.id == 9620));
+        if aged && aged_at.is_none() {
+            aged_at = Some(f);
+        }
+        if aged_at.is_some() {
+            after.insert(enemy_state(&mut app).1);
+        }
+        let world = app.world_mut();
+        let mut q = world.query_filtered::<&mut Actor, With<Player>>();
+        let mut a = q.single_mut(world).unwrap();
+        a.hp = a.hp_max;
+        a.posture = 0.0;
+    }
+    assert!(aged_at.is_some(), "never aged: {}", log_text(&app));
+    // (Not 3003: the breath combo's ComboFinal, Act01.)
+    assert!(after.contains("a000_003007") || after.contains("a000_003004"), "{after:?}");
+}
+
+/// The Finger Whistle maddens a beast (prosthetic::madden): its bullets' 230518 cycles to 230510,
+/// whose gate stateInfo 959 the dog wears (230500, NpcParam spEffectID9), then to 230515
+/// COMMON_SP_EFFECT_CONFUSE, endurance -1, changeTeamType 29 (TEAM_TYPE_Indiscriminate): the
+/// dog's team is 29 and it is hostile to the soldier. The soldier (no 230500) is not maddened.
+#[test]
+fn the_finger_whistle_maddens_a_dog_not_a_soldier() {
+    if !std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/extracted/enemies/c1150.json")).exists() {
+        return;
+    }
+    let group = vec![
+        crate::config::GroupEnemy { chr: "c1150".into(), npc_row: Some(11500000), at: Some([0.0, 2.0]), msb: None },
+        crate::config::GroupEnemy { chr: "c1010".into(), npc_row: None, at: Some([1.5, 2.5]), msb: None },
+    ];
+    let mut app = app_cfg("c1150", Some(11500000), group);
+    {
+        let world = app.world_mut();
+        world.resource_mut::<crate::config::GameConfig>().player.prosthetics = vec![79000];
+        world.resource_mut::<crate::enemy::EnemyDebug>().mode = crate::enemy::AiMode::Idle;
+        world.query::<&mut Player>().single_mut(world).unwrap().emblems = 10;
+    }
+    for _ in 0..10 {
+        app.update();
+    }
+    app.world_mut().resource_mut::<PadInput>().press(Action::Prosthetic);
+    for _ in 0..240 {
+        app.update();
+    }
+    let world = app.world_mut();
+    let mut q = world.query_filtered::<&Actor, With<Enemy>>();
+    let combat = world.resource::<Combat>();
+    let teams: Vec<(String, i64, bool)> = q.iter(world).map(|a| (combat.foe_of(a).chr.clone(), crate::combat::team_of(combat, a), a.sp_chained.iter().any(|c| c.0 == 230515))).collect();
+    let dog = teams.iter().find(|t| t.0 == "c1150").unwrap();
+    let soldier = teams.iter().find(|t| t.0 == "c1010").unwrap();
+    assert!(dog.2 && dog.1 == 29, "{teams:?}");
+    assert!(!soldier.2 && soldier.1 != 29, "{teams:?}");
+    assert!(crate::combat::teams_hostile(dog.1, soldier.1));
+}
+
+/// A maddened dog (team 29) turns on the soldier next to it: with the AI on, the soldier loses HP
+/// to it while Wolf stands back out of reach.
+#[test]
+fn a_maddened_dog_bites_the_soldier() {
+    if !std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/extracted/enemies/c1150.json")).exists() {
+        return;
+    }
+    let group = vec![
+        crate::config::GroupEnemy { chr: "c1150".into(), npc_row: Some(11500000), at: Some([0.0, 6.0]), msb: None },
+        crate::config::GroupEnemy { chr: "c1010".into(), npc_row: None, at: Some([1.5, 7.0]), msb: None },
+    ];
+    let mut app = app_cfg("c1150", Some(11500000), group);
+    let (dog, soldier) = {
+        let world = app.world_mut();
+        let mut q = world.query::<(Entity, &Actor, &mut Enemy)>();
+        let combat_chr = |a: &Actor, w: &World| w.resource::<Combat>().foe_of(a).chr.clone();
+        let ents: Vec<(Entity, String)> = q.iter(world).map(|(x, a, _)| (x, combat_chr(a, world))).collect();
+        let dog = ents.iter().find(|x| x.1 == "c1150").unwrap().0;
+        let soldier = ents.iter().find(|x| x.1 == "c1010").unwrap().0;
+        (dog, soldier)
+    };
+    for x in [dog, soldier] {
+        app.world_mut().get_mut::<Enemy>(x).unwrap().aggressive = true;
+    }
+    {
+        let world = app.world_mut();
+        let mut a = world.get_mut::<Actor>(dog).unwrap();
+        a.sp_chained.push((230515, f32::INFINITY));
+    }
+    let hp0 = app.world().get::<Actor>(soldier).unwrap().hp;
+    for _ in 0..(60 * 20) {
+        app.update();
+        let world = app.world_mut();
+        let mut q = world.query_filtered::<(&mut Actor, &mut Transform), With<Player>>();
+        let (mut a, mut t) = q.single_mut(world).unwrap();
+        a.hp = a.hp_max;
+        t.translation = Vec3::new(0.0, CAPSULE_HALF_HEIGHT, -30.0);
+    }
+    let hp = app.world().get::<Actor>(soldier).unwrap().hp;
+    assert!(hp < hp0, "the soldier kept {hp} / {hp0}: {}", log_text(&app));
+}
+
+/// A worn SpEffect shifts an NPC's behaviour judge (data::shift_judge, exe FUN_140a12b80): the
+/// Shura samurai's enchantment (a000_003014 adds 3107010 poison +5 and 3107011 flame +7, each
+/// gated on its resident 3107040 / 3107041) turns his combo's judge 100 (AtkParam 10700100, no
+/// SpEffect) into 105 (10700105, 9013 poison) or 107 (10700107, 9119 burn). Unenchanted, the
+/// same swing builds up nothing.
+#[test]
+fn the_shura_samurais_enchanted_blade_poisons_or_burns() {
+    if !std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/extracted/enemies/c1070.json")).exists() {
+        return;
+    }
+    let swing = |row: i64, enchant: Option<i64>| -> (f32, f32) {
+        let mut app = app_cfg("c1070", Some(row), Vec::new());
+        app.world_mut().resource_mut::<crate::enemy::EnemyDebug>().mode = crate::enemy::AiMode::Idle;
+        app.update();
+        {
+            let world = app.world_mut();
+            let mut q = world.query_filtered::<(&mut Actor, &mut Transform), (With<Enemy>, Without<crate::enemy::Cast>)>();
+            let (mut a, mut t) = q.single_mut(world).unwrap();
+            t.translation = Vec3::new(0.0, CAPSULE_HALF_HEIGHT, 1.2);
+            if let Some(id) = enchant {
+                a.sp_chained.push((id, 15.0));
+            }
+            a.play("Attack3000", "a000_003000");
+            a.t = 1.0;
+            a.prev_t = 1.0;
+        }
+        for _ in 0..20 {
+            app.update();
+        }
+        let world = app.world_mut();
+        let wolf = world.query_filtered::<Entity, With<Player>>().single(world).unwrap();
+        let s = world.resource::<crate::status::Statuses>().0.get(&wolf).map_or((0.0, 0.0), |s| (s.poison, s.burn));
+        s
+    };
+    assert_eq!(swing(10700000, None), (0.0, 0.0));
+    let poison = swing(10700000, Some(3107010));
+    assert!(poison.0 > 0.0 && poison.1 == 0.0, "{poison:?}");
+    let burn = swing(10701000, Some(3107011));
+    assert!(burn.1 > 0.0 && burn.0 == 0.0, "{burn:?}");
+    // The poison enchantment on the flame samurai (gate 950, he wears 951) shifts nothing.
+    assert_eq!(swing(10701000, Some(3107010)), (0.0, 0.0));
+    assert_eq!(crate::data::shift_judge(700, &[3145040]), 701);
+    assert_eq!(crate::data::shift_judge(10, &[3145040]), 10);
+}
+
+/// The super-armour pool (actor::SuperArmor, exe CSSuperArmorDurability): the armoured
+/// servant 11800000 (superArmorDurability 240, recover correction 4.0 -> 25 s) wears 5366
+/// "damage anim change at SA" (stateInfo 120, every dmgLv 2 = middle... -> the HKS level 8
+/// minimum for a small hit) only while the pool holds. Wolf's katana hits drain 40 x
+/// atkSuperArmorCorrection / 100; empty, it breaks: that hit staggers him and the next tick
+/// refills it (the hold, TAE ChrActionFlag 71, is in no anim); untouched for 25 s, a drained
+/// pool is full again.
+#[test]
+fn the_armoured_servants_super_armour_breaks_and_refills() {
+    if !std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/extracted/enemies/c1180.json")).exists() {
+        return;
+    }
+    let mut app = app_cfg("c1180", Some(11800000), Vec::new());
+    app.world_mut().resource_mut::<crate::enemy::EnemyDebug>().mode = crate::enemy::AiMode::Idle;
+    app.update();
+    let world = app.world_mut();
+    let ent = world.query_filtered::<Entity, (With<Enemy>, Without<crate::enemy::Cast>)>().single(world).unwrap();
+    let level = |world: &World| {
+        let a = world.get::<Actor>(ent).unwrap();
+        crate::combat::damage_motion_level(world.resource::<Combat>().data_of(a), a, 1)
+    };
+    {
+        let a = world.get::<Actor>(ent).unwrap();
+        assert!(a.resident.contains(&5366));
+        assert_eq!(a.super_armor.max, 240.0);
+        assert_eq!(a.super_armor.delay, 25.0);
+    }
+    assert_eq!(level(world), 8, "small -> minimum under super armour");
+    let atk = world.resource::<Combat>().player.attacks.values().map(|k| k.atk_param_id).filter(|id| crate::data::super_armor_damage(true, *id) > 0.0).min().expect("a katana row with SA damage");
+    let per = crate::data::super_armor_damage(true, atk);
+    let mut hits = 0;
+    while !crate::combat::super_armor_hit(&mut world.get_mut::<Actor>(ent).unwrap(), &[], true, atk) {
+        hits += 1;
+        assert!(hits < 100);
+    }
+    assert_eq!(hits + 1, (240.0 / per).ceil() as i32, "{per} a hit");
+    assert_eq!(level(world), 1, "broken: the hit's own level");
+    // In a damage reaction, the next tick refills it all the same.
+    world.resource_scope(|w, combat: Mut<Combat>| {
+        let mut q = w.query::<(&mut Enemy, &mut Actor)>();
+        let (mut e, mut a) = q.get_mut(w, ent).unwrap();
+        e.react(&mut a, &combat, "DamageSmall_Front");
+        assert!(a.state.starts_with("Damage"), "no reaction: {}", a.state);
+    });
+    app.update();
+    let world = app.world_mut();
+    let a = world.get::<Actor>(ent).unwrap();
+    assert!(a.state.starts_with("Damage"), "reaction over: {}", a.state);
+    assert!(a.super_armor.holds(), "held broken in the reaction");
+    let mut a = world.get_mut::<Actor>(ent).unwrap();
+    a.super_armor.hit(1000.0);
+    // Held broken through the reaction, refilled once it ends.
+    a.super_armor.tick(1.0, true, false, 0.0);
+    assert!(a.super_armor.broken);
+    a.super_armor.tick(1.0 / 60.0, false, false, 0.0);
+    assert!(a.super_armor.holds() && a.super_armor.cur == 240.0);
+    // A partial drain snaps back after the 25 s wait, re-armed by every hit.
+    crate::combat::super_armor_hit(&mut a, &[], true, atk);
+    a.super_armor.tick(24.0, false, false, 0.0);
+    assert!(a.super_armor.cur < 240.0);
+    a.super_armor.tick(1.1, false, false, 0.0);
+    assert_eq!(a.super_armor.cur, 240.0);
+}
+
+/// Deathblows a boss row until its map script handles the defeat (Handle Boss Defeat, after
+/// which the duel starts over): (deathblows, the script's flags on the frame before, the states
+/// seen).
+fn deathblow_to_defeat(chr: &str, row: i64) -> (usize, Vec<i64>, Vec<String>) {
+    let mut app = app_cfg(chr, Some(row), Vec::new());
+    for _ in 0..30 {
+        app.update();
+    }
+    let mut seen = Vec::new();
+    let mut flags = Vec::new();
+    for n in 1..=5 {
+        seen.extend(break_and_deathblow(&mut app, 600));
+        for _ in 0..600 {
+            let bs = app.world().resource::<crate::enemy::BossScript>();
+            if bs.defeats > 0 || bs.run.as_ref().is_some_and(|r| r.defeated.is_some()) {
+                return (n, flags, seen);
+            }
+            flags = bs.run.as_ref().map(|r| r.flags_on()).unwrap_or_default();
+            app.update();
+        }
+    }
+    (usize::MAX, flags, seen)
+}
+
+/// Lady Butterfly's second body 50900001 started alone (the picker): her defeat event 11005800
+/// waits on her first body 1000800 dead (group -1), and that one is never on the field;
+/// `dead_at_start` counts it dead, so her deathblows end the fight.
+#[test]
+fn butterflys_second_body_alone_reaches_her_defeat() {
+    if !std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/extracted/enemies/c5090.json")).exists() {
+        return;
+    }
+    let (n, flags, seen) = deathblow_to_defeat("c5090", 50900001);
+    assert!(n != usize::MAX, "no defeat: flags {flags:?} states {seen:?}");
+}
+
+/// Manual test #3: every boss row's defeat event must run. boss_scripts.py's world_flags read the
+/// world stages and other bosses' defeat flags as on, so Emma's defeat event (m11_01 11115900,
+/// sets 9315) ended at once on Isshin Ashina's 9316, the castle-top Genichiro / Way of Tomoe's
+/// (11115800, sets 9303) on the ninja-invasion stage 8301, and Isshin Ashina's 11115941 played
+/// 20200 over his Todome on 8300 (set only by the m11_01_54_10 variant), before the message 50
+/// his 11115920 waits on (FLAGS_OFF). Left out, with their own tests: the Divine Dragon (52000000,
+/// lightning reversals) and Isshin the Sword Saint (54000000, the spear draw and Todome message).
+#[test]
+fn every_boss_row_reaches_its_defeat() {
+    let txt = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/extracted/enemies/boss_scripts.json")).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&txt).unwrap();
+    let rows: Vec<(String, i64)> = v.as_object().unwrap().iter().map(|(k, r)| (r["chars"][r["boss"].as_i64().unwrap().to_string()]["chr"].as_str().unwrap_or("").to_string(), k.parse().unwrap())).collect();
+    let mut failed = Vec::new();
+    for (chr, row) in rows {
+        // 71101000 goes on into Isshin the Sword Saint (reservoir_tomoe_hands_over_to_isshin),
+        // 74000010 into Isshin Ashina (isshin_ashina_follows_emma).
+        if [52000000, 54000000, 71101000, 74000010].contains(&row) || !std::path::Path::new(&format!("{}/extracted/enemies/{chr}.json", env!("CARGO_MANIFEST_DIR"))).exists() {
+            continue;
+        }
+        let (n, flags, mut seen) = deathblow_to_defeat(&chr, row);
+        if n == usize::MAX {
+            seen.dedup();
+            failed.push(format!("{chr} {row}: flags {flags:?} states {seen:?}"));
+        }
+    }
+    assert!(failed.is_empty(), "no defeat: {failed:#?}");
+}
+
+/// Manual test #3: Isshin the Sword Saint's phases come from his own AI (540000_battle.lua),
+/// not from the map script: at 2 health bars or fewer with his resident 200050 his Act40 draws
+/// the spear (3015, whose TAE gives 200031 -> NpcThinkParam battle goal 540010, his second set);
+/// at 1 bar, with Number(6) still 0, 540010's Act06 / Act13 opens with the lightning 3056 / 3055.
+/// (The sim's enemies are passive by default: these need the real AI.)
+#[test]
+fn isshins_deathblows_bring_the_spear_then_the_lightning() {
+    if !std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/extracted/enemies/c5400.json")).exists() {
+        return;
+    }
+    let mut app = app_cfg("c5400", Some(54000000), Vec::new());
+    for _ in 0..30 {
+        app.update();
+    }
+    let set_ai = |app: &mut App, on: bool| {
+        let w = app.world_mut();
+        let b = boss_in_play(w);
+        w.get_mut::<Enemy>(b).unwrap().aggressive = on;
+    };
+    // Runs the AI until `want` plays; the states and AI goals seen.
+    let run_until = |app: &mut App, want: &[&str]| {
+        let mut seen = Vec::<String>::new();
+        for _ in 0..600 {
+            app.update();
+            let w = app.world_mut();
+            let b = boss_in_play(w);
+            let (e, a) = (w.get::<Enemy>(b).unwrap(), w.get::<Actor>(b).unwrap());
+            let line = format!("{} | {}", a.state, e.ai_desc);
+            if seen.last() != Some(&line) {
+                seen.push(line);
+            }
+            if want.contains(&a.state.as_str()) {
+                return (true, seen);
+            }
+        }
+        (false, seen)
+    };
+    set_ai(&mut app, true);
+    break_and_deathblow(&mut app, 60);
+    let (drew, seen) = run_until(&mut app, &["Ez3015"]);
+    assert!(drew, "no spear draw at 2 bars: {seen:#?}");
+    for _ in 0..200 {
+        app.update();
+    }
+    {
+        let w = app.world_mut();
+        let b = boss_in_play(w);
+        let (e, a) = (w.get::<Enemy>(b).unwrap(), w.get::<Actor>(b).unwrap());
+        assert_eq!(e.ninsatsu.0, 2);
+        assert!(crate::combat::worn_sp(a, &e.clash).contains(&200031), "no 200031 after 3015");
+        assert!(e.ai_desc.contains("540010"), "second set's battle goal: {}", e.ai_desc);
+    }
+    // The deathblow with the AI held (his attacks would knock Wolf out of it).
+    set_ai(&mut app, false);
+    for _ in 0..120 {
+        app.update();
+    }
+    break_and_deathblow(&mut app, 200);
+    set_ai(&mut app, true);
+    let (lightning, seen) = run_until(&mut app, &["Ez3055", "Ez3056"]);
+    assert!(lightning, "no lightning at 1 bar: {seen:#?}");
+    let w = app.world_mut();
+    let b = boss_in_play(w);
+    assert_eq!(w.get::<Enemy>(b).unwrap().ninsatsu.0, 1);
+}
+
+/// Manual test #3: the Guardian Ape's first Todome does not end the fight (m17). He is immortal
+/// (11705810) and lies in his Todome reaction a000_013700; its message 20 (6.1 s) and 12 s later
+/// he gets up (EzState 20000) as the headless Ape: AI ID 51000100, SpEffects 5304 / 5305 off and
+/// 5306 on (11705821). 11705820's 20200 (on Wolf's message 10) does not come: his Todome row
+/// gives Wolf a230_511700, which has no TAE 936 (a240 / a242_511700 do), and a 20200 would cut
+/// the reaction before its message 20.
+#[test]
+fn the_guardian_ape_gets_up_headless_after_his_first_todome() {
+    if !std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/extracted/enemies/c5100.json")).exists() {
+        return;
+    }
+    let mut app = app_cfg("c5100", Some(51000000), Vec::new());
+    let mut boss = Vec::<String>::new();
+    let mut wolf = Vec::<String>::new();
+    let mut headless = false;
+    'fight: for _ in 0..4 {
+        for _ in 0..300 {
+            app.update();
+        }
+        boss.extend(break_and_deathblow(&mut app, 60));
+        for _ in 0..1500 {
+            app.update();
+            let (s, an, _) = enemy_state(&mut app);
+            let s = format!("{s}/{an}");
+            if boss.last() != Some(&s) {
+                boss.push(s);
+            }
+            let (s, an, _, _) = player_state(&mut app);
+            let s = format!("{s}/{an}");
+            if wolf.last() != Some(&s) {
+                wolf.push(s);
+            }
+            let w = app.world_mut();
+            let b = boss_in_play(w);
+            let (e, a) = (w.get::<Enemy>(b).unwrap(), w.get::<Actor>(b).unwrap());
+            if e.think_override == Some(51000100) {
+                assert!(a.resident.contains(&5306) && !a.resident.contains(&5304) && !a.resident.contains(&5305), "residents {:?}", a.resident);
+                // Two dots, one used (finishers clip 2:48), and full HP.
+                assert_eq!(e.ninsatsu, (1, 2));
+                assert_eq!(a.hp, a.hp_max);
+                headless = true;
+                break 'fight;
+            }
+        }
+    }
+    assert!(headless, "boss {boss:?} wolf {wolf:?}");
+    let i = boss.iter().position(|s| s == "ThrowDef13700/a000_013700").unwrap_or_else(|| panic!("no Todome: {boss:?}"));
+    assert_eq!(boss[i + 1..], ["Event20000/a000_020000".to_string()], "boss {boss:?} wolf {wolf:?}");
+    assert_eq!(app.world().resource::<crate::enemy::BossScript>().defeats, 0);
+    // His rise's TAE 67 rows have effectEndurance -1 and stay after it (FUN_140b56500, nothing
+    // removes a TAE effect at the window's end): 275100 max HP / posture x1.1, 3510991 SA +120,
+    // 3510110 damage rates.
+    let (hp0, sa0) = {
+        let w = app.world_mut();
+        let b = boss_in_play(w);
+        let a = w.get::<Actor>(b).unwrap();
+        (a.hp_max, a.super_armor.max)
+    };
+    for _ in 0..600 {
+        app.update();
+    }
+    let w = app.world_mut();
+    let b = boss_in_play(w);
+    let a = w.get::<Actor>(b).unwrap();
+    assert!(a.state != "Event20000", "still rising");
+    for id in [275100, 3510991, 3510110] {
+        assert!(a.resident.contains(&id), "{id} not worn: {:?}", a.resident);
+    }
+    assert!((a.hp_max - hp0 * 1.1).abs() < 1.0, "hp_max {} from {hp0}", a.hp_max);
+    assert_eq!(a.super_armor.full(), sa0 + 120.0);
+}
+
+/// Manual test #3: Lady Butterfly's change (m10 11005812). Her first part (1000800, one bar) dies
+/// on its deathblow; 1 s later it is disabled and the second (1000810) comes in with the forced
+/// 21000 and her AI off; once Wolf is in 1002830 and she wears 5028 she gets AI command 10, her
+/// AI back and, 3 s on, 11005641 (the music's second part) and her health bar.
+#[test]
+fn lady_butterfly_changes_into_her_second_part() {
+    if !std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/extracted/enemies/c5090.json")).exists() {
+        return;
+    }
+    let mut app = app_cfg("c5090", Some(50900000), Vec::new());
+    for _ in 0..300 {
+        app.update();
+    }
+    let first = boss_in_play(app.world_mut());
+    let mut seen = break_and_deathblow(&mut app, 60);
+    let mut changed = false;
+    for _ in 0..900 {
+        app.update();
+        let s = enemy_state(&mut app).0;
+        if seen.last() != Some(&s) {
+            seen.push(s);
+        }
+        let w = app.world_mut();
+        let b = boss_in_play(w);
+        let bs = w.resource::<crate::enemy::BossScript>();
+        let run = bs.run.as_ref().unwrap();
+        if b != first && run.ents.get(&1000810) == Some(&b) && run.flags_on().contains(&11005641) {
+            changed = true;
+            break;
+        }
+    }
+    assert!(changed, "states {seen:?}");
+    assert!(seen.iter().any(|s| s == "Event21000"), "states {seen:?}");
+    let w = app.world_mut();
+    let b = boss_in_play(w);
+    assert_eq!(w.get::<Enemy>(b).unwrap().ninsatsu.0, 1);
+    assert_eq!(w.resource::<crate::enemy::BossScript>().defeats, 0);
+}
+
+/// Manual test #5 (timing side): when the Way of Tomoe casts his lightning. 711000_battle.lua
+/// forces Act18 (3043, weight 1e12) while Wolf wears 109031 or 110125: his knockdowns and
+/// get-ups (StandDamageLarge*, *BlowLand, BreakDown, a000_1003xx-1027xx / 1900xx TAE 67), not
+/// his jumps; his Interrupt re-plans on 109031 coming or going. Timer 4 (15 s, set by the cast)
+/// and the resident 3711500 (row 71101000, the Sword Saint fight) hold it back. 3043's lightning
+/// is its bullet 986 at 1.17 s (TAE BulletBehavior), 3042's 988 at 0.83 s.
+#[test]
+fn the_way_of_tomoe_answers_a_downed_wolf_with_lightning() {
+    if !std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/extracted/enemies/c7110.json")).exists() {
+        return;
+    }
+    let mut app = app_with("c7110");
+    {
+        let w = app.world_mut();
+        let b = boss_in_play(w);
+        w.get_mut::<Enemy>(b).unwrap().aggressive = true;
+        w.get_mut::<Transform>(b).unwrap().translation.z = 6.0;
+    }
+    // Into his opener (Number(7) == 0: Act20, 3008); Wolf goes down while it plays.
+    for _ in 0..60 {
+        app.update();
+    }
+    let mut ez = Vec::<String>::new();
+    for _ in 0..600 {
+        {
+            let w = app.world_mut();
+            let p = w.query_filtered::<Entity, With<Player>>().single(w).unwrap();
+            w.resource_scope(|w, combat: Mut<Combat>| {
+                let mut a = w.get_mut::<Actor>(p).unwrap();
+                if a.state != "StandDamageLargeDown_FaceUp" || a.t > 1.0 {
+                    a.play_state(&combat.player, "StandDamageLargeDown_FaceUp");
+                }
+            });
+        }
+        app.update();
+        let s = enemy_state(&mut app).0;
+        if s.starts_with("Ez") && ez.last() != Some(&s) {
+            ez.push(s.clone());
+        }
+        if s == "Ez3043" {
+            break;
+        }
+    }
+    let new: Vec<_> = ez.iter().filter(|s| *s != "Ez3008").collect();
+    assert_eq!(new.first().map(|s| s.as_str()), Some("Ez3043"), "attacks {ez:?}");
+}
+
+/// Manual test #6 ("double deathblows at the end", Isshin the Sword Saint). As in the game
+/// (finishers clip 5:32-5:45), his last-bar Todome (ThrowDef13700) gives way to his kneel
+/// (20200, on Wolf's message 10: m11_02 11125874), and the finisher taken from behind
+/// (Wolf a243_510900, Isshin ThrowDef12900) ends the fight: a100_012900's message 30 at
+/// 11.63 s -> 11125860, Handle Boss Defeat 5 s later. Before, 11125874, re-armed, took Wolf's
+/// finisher message 10 at 6.63 s and put Isshin back into 20200, so 12900 never reached its
+/// message 30 and he waited for another finisher. c9997.hks ThrowDef12900_onUpdate takes no
+/// event transition (script.rs takes_throw_transition).
+#[test]
+fn isshins_finisher_ends_the_fight_once() {
+    isshins_finisher_to_defeat("c5400", 54000000);
+}
+
+/// The reservoir run 71101000 (the Way of Tomoe, then Isshin the Sword Saint: 11125830's
+/// hand-over, reservoir_tomoe_hands_over_to_isshin) ends as his own row does: Tomoe's deathblow
+/// brings Isshin in, and his finisher's message 30 ends the run (11125860, 9312).
+#[test]
+fn the_reservoir_run_ends_with_isshins_finisher() {
+    isshins_finisher_to_defeat("c7110", 71101000);
+}
+
+fn isshins_finisher_to_defeat(chr: &str, row: i64) {
+    if !std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/extracted/enemies/c5400.json")).exists() {
+        return;
+    }
+    let mut app = app_cfg(chr, Some(row), Vec::new());
+    for _ in 0..30 {
+        app.update();
+    }
+    // A row that opens with someone else (Tomoe) goes on until Isshin alone is in.
+    for _ in 0..5 {
+        if enemy_chrs(&mut app) == ["c5400"] {
+            break;
+        }
+        break_and_deathblow(&mut app, 600);
+        for _ in 0..600 {
+            app.update();
+        }
+    }
+    assert_eq!(enemy_chrs(&mut app), ["c5400"], "{row}: Isshin never came in");
+    {
+        let bs = app.world().resource::<crate::enemy::BossScript>();
+        assert!(bs.defeats == 0 && bs.run.as_ref().is_some_and(|r| r.defeated.is_none()), "{row}: ended before Isshin");
+    }
+    let set_ai = |app: &mut App, on: bool| {
+        let w = app.world_mut();
+        let b = boss_in_play(w);
+        w.get_mut::<Enemy>(b).unwrap().aggressive = on;
+    };
+    // The first deathblow and his spear draw (his second set, which the Todome rows need).
+    set_ai(&mut app, true);
+    break_and_deathblow(&mut app, 60);
+    for _ in 0..400 {
+        app.update();
+    }
+    set_ai(&mut app, false);
+    for want in [1u32, 0] {
+        for _ in 0..6 {
+            for _ in 0..120 {
+                app.update();
+            }
+            let w = app.world_mut();
+            let b = boss_in_play(w);
+            if w.get::<Enemy>(b).unwrap().ninsatsu.0 <= want {
+                break;
+            }
+            break_and_deathblow(&mut app, 30);
+        }
+    }
+    let mut boss = Vec::<String>::new();
+    let mut finisher = false;
+    for f in 0..3600 {
+        if !finisher && f >= 400 && f % 20 == 0 {
+            // From behind him, facing his back.
+            let w = app.world_mut();
+            let b = boss_in_play(w);
+            let (at, fwd, yaw) = {
+                let a = w.get::<Actor>(b).unwrap();
+                (w.get::<Transform>(b).unwrap().translation, a.forward(), a.yaw)
+            };
+            let p = w.query_filtered::<Entity, With<Player>>().single(w).unwrap();
+            w.get_mut::<Transform>(p).unwrap().translation = at - fwd * 1.3;
+            w.get_mut::<Actor>(p).unwrap().yaw = yaw;
+            w.resource_mut::<PadInput>().press(Action::Attack);
+        }
+        app.update();
+        let s = enemy_state(&mut app).0;
+        finisher |= s == "ThrowDef12900";
+        if boss.last() != Some(&s) {
+            boss.push(s);
+        }
+        let bs = app.world().resource::<crate::enemy::BossScript>();
+        if bs.defeats > 0 || bs.run.as_ref().is_some_and(|r| r.defeated.is_some()) {
+            break;
+        }
+    }
+    let i = boss.iter().position(|s| s == "ThrowDef12900").unwrap_or_else(|| panic!("no finisher: {boss:?}"));
+    assert!(boss[..i].iter().any(|s| s == "Event20200"), "no kneel before the finisher: {boss:?}");
+    assert_eq!(boss[i..], ["ThrowDef12900".to_string()], "the finisher was cut: {boss:?}");
+    let bs = app.world().resource::<crate::enemy::BossScript>();
+    assert!(bs.defeats > 0 || bs.run.as_ref().is_some_and(|r| r.defeated.is_some()), "no defeat: {boss:?} run flags {:?}", bs.run.as_ref().map(|r| (r.row, r.flags_on())));
+    // Round 93: Won waits for the finisher (menu::finisher_done): ThrowDef12900 to its last frame.
+    let (secs, seen) = secs_to_finisher_done(&mut app);
+    assert!(seen.iter().any(|s| s == "ThrowDef12900") && secs < 30.0, "{row}: finisher done after {secs:.2} s: {seen:?}");
+    let w = app.world_mut();
+    let b = boss_in_play(w);
+    let a = w.get::<Actor>(b).unwrap();
+    assert!(a.anim.is_empty() || a.t >= w.resource::<Combat>().data_of(a).length(&a.anim) - 1e-3, "{row}: {} at {:.2}", a.anim, a.t);
+}
+
+/// Seconds from now until the fight's finisher has played out (menu::finisher_done: Wolf free and
+/// every enemy's clip at its end), and the enemy states seen on the way.
+fn secs_to_finisher_done(app: &mut App) -> (f32, Vec<String>) {
+    let mut seen = Vec::<String>::new();
+    for f in 0..(40 * 60) {
+        let s = enemy_state(app).0;
+        if seen.last() != Some(&s) {
+            seen.push(s);
+        }
+        let w = app.world_mut();
+        let wolf = w.query_filtered::<&Actor, With<Player>>().single(w).unwrap().state.clone();
+        let mut q = w.query::<(&Enemy, &Actor)>();
+        if crate::menu::finisher_done(w.resource::<Combat>(), &wolf, q.iter(w)) {
+            return (f as f32 / 60.0, seen);
+        }
+        app.update();
+    }
+    (f32::INFINITY, seen)
+}
+
+/// Round 93 (the user's bug: "most of the end deathblows are cut short by the title screen"):
+/// after the last deathblow the Won screen waits until Wolf is free and the enemy's death /
+/// ThrowDef clip has ended. Measured: the Monk's Todome ~19 s (Wolf's 10 s Todome, her Event20200,
+/// then her scripted Event20006), the General's ThrowDefDeath12001 ~6 s: both past the old 4 s.
+#[test]
+fn the_last_deathblow_plays_out_before_won() {
+    for chr in ["c5000", "c7100", "c1020"] {
+        let mut app = app_with(chr);
+        let over = |app: &mut App| {
+            let w = app.world_mut();
+            let b = boss_in_play(w);
+            w.get::<Enemy>(b).unwrap().is_dead() || w.resource::<crate::enemy::BossScript>().run.as_ref().is_some_and(|r| r.defeated.is_some())
+        };
+        let mut died = false;
+        'tries: for _ in 0..4 {
+            break_and_deathblow_died(&mut app, 1);
+            for _ in 0..600 {
+                if over(&mut app) {
+                    died = true;
+                    break 'tries;
+                }
+                app.update();
+            }
+        }
+        assert!(died, "{chr}: no last deathblow");
+        let (secs, seen) = secs_to_finisher_done(&mut app);
+        eprintln!("{chr}: finisher done after {secs:.2} s: {seen:?}");
+        assert!(secs.is_finite() && secs < 30.0, "{chr}: never done: {seen:?}");
+        let w = app.world_mut();
+        let wolf = w.query_filtered::<&Actor, With<Player>>().single(w).unwrap().state.clone();
+        assert!(crate::player::is_free(&wolf), "{chr}: Wolf still in {wolf}");
+        // Only the characters the ending plays on (menu::finisher_done): Gyoubu's horse / a cast
+        // member alive by design keeps its own loop going.
+        let mut q = w.query::<(&Enemy, &Actor)>();
+        let c = w.resource::<Combat>();
+        for (e, a) in q.iter(w).filter(|(e, a)| e.is_dead() || a.state.starts_with("ThrowDef") || a.state.starts_with("Event20200")) {
+            assert!(a.anim.is_empty() || a.t >= c.data_of(a).length(&a.anim) - 1e-3, "{chr}: {} cut at {:.2}", a.anim, a.t);
+        }
+    }
+}
+
+/// "Repeat one attack" (SHINOBI_AI_ATTACK=3042 starts in it) plays the chosen attack: the Way
+/// of Tomoe's lightning a000_003042 / 003043 (their TAE SpawnOneShotFFX 671026-671029, VFX's
+/// sword lightning shots).
+#[test]
+fn repeat_mode_plays_the_tomoe_lightning() {
+    if !std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/extracted/enemies/c7110.json")).exists() {
+        return;
+    }
+    for anim in ["a000_003042", "a000_003043"] {
+        let mut app = app_with("c7110");
+        {
+            let mut dbg = app.world_mut().resource_mut::<crate::enemy::EnemyDebug>();
+            dbg.mode = crate::enemy::AiMode::Repeat;
+            dbg.attack = anim.to_string();
+        }
+        let w = app.world_mut();
+        let b = boss_in_play(w);
+        w.get_mut::<Enemy>(b).unwrap().aggressive = true;
+        let mut played = 0;
+        let mut last = String::new();
+        for _ in 0..900 {
+            app.update();
+            let a = enemy_state(&mut app).1;
+            if a == anim && last != anim {
+                played += 1;
+            }
+            last = a;
+        }
+        assert!(played >= 2, "{anim} played {played} times");
+    }
+}
+
+/// The stateInfo-155 rows' changeSuperArmorPoint adds to the super-armour pool (FUN_140bdb690,
+/// 140bd.c:8889-8900): a rise is added to the pool at once, and the refill fills to the larger
+/// max. Isshin's NpcParam pool is 0; the "revived Kensei" row 3540110 (+200), put on by hand
+/// here (nothing in Sekiro's data or exe puts it on), gives him one.
+#[test]
+fn a_super_armour_bonus_grows_the_pool() {
+    let mut sa = crate::actor::SuperArmor::new(400.0, 4.0);
+    sa.hit(300.0);
+    assert_eq!(sa.cur, 100.0);
+    sa.tick(0.1, false, false, 120.0);
+    assert_eq!((sa.cur, sa.full()), (220.0, 520.0));
+    sa.tick(25.0, false, false, 120.0);
+    assert_eq!(sa.cur, 520.0);
+    if !std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/extracted/enemies/c5400.json")).exists() {
+        return;
+    }
+    let mut app = app_with("c5400");
+    {
+        let w = app.world_mut();
+        let b = boss_in_play(w);
+        let mut a = w.get_mut::<Actor>(b).unwrap();
+        assert!(!a.super_armor.holds());
+        a.resident.push(3540110);
+    }
+    for _ in 0..3 {
+        app.update();
+    }
+    let w = app.world_mut();
+    let b = boss_in_play(w);
+    let a = w.get::<Actor>(b).unwrap();
+    assert_eq!((a.super_armor.full(), a.super_armor.cur), (200.0, 200.0));
+    assert!(a.super_armor.holds());
+}
+
+/// The whistle's madness 230515 (effectEndurance -1, gate 959, isWaitModeDelete) lasts while the
+/// beast wears its resident 230500 (stateInfo 959) and is deleted the moment that goes
+/// (FUN_140c04090, 140c0.c:2641).
+#[test]
+fn the_whistle_madness_goes_when_its_gate_does() {
+    let mut app = app_with("c1000");
+    for _ in 0..3 {
+        app.update();
+    }
+    let w = app.world_mut();
+    let b = boss_in_play(w);
+    {
+        let mut a = w.get_mut::<Actor>(b).unwrap();
+        if !a.resident.contains(&230500) {
+            a.resident.push(230500);
+        }
+        a.sp_chained.push((230515, f32::INFINITY));
+    }
+    for _ in 0..30 {
+        app.update();
+    }
+    let w = app.world_mut();
+    assert!(w.get::<Actor>(b).unwrap().sp_chained.iter().any(|c| c.0 == 230515), "gone while 959 holds");
+    w.get_mut::<Actor>(b).unwrap().resident.retain(|r| *r != 230500);
+    for _ in 0..2 {
+        app.update();
+    }
+    let w = app.world_mut();
+    assert!(!w.get::<Actor>(b).unwrap().sp_chained.iter().any(|c| c.0 == 230515), "kept without its gate");
+}
+
+/// The exe's add rule for lasting rows (FUN_140c02c50): spCategory 100 overwrites the same
+/// category and priority (the AI states 200000 / 200001 at 1, the anim sets 200030-200034 at
+/// 3) and leaves another priority beside it; category 0 rows stack.
+#[test]
+fn a_lasting_spfx_overwrites_its_category() {
+    let mut app = app_with("c1010");
+    app.update();
+    let w = app.world_mut();
+    let b = boss_in_play(w);
+    let mut r = w.resource_scope::<Combat, _>(|w, combat| {
+        let mut a = w.get_mut::<Actor>(b).unwrap();
+        let d = combat.data_of(&a);
+        a.resident = vec![200000, 200030, 6011];
+        crate::enemy::wear_for_good(d, &mut a, 200001);
+        crate::enemy::wear_for_good(d, &mut a, 200031);
+        crate::enemy::wear_for_good(d, &mut a, 6071);
+        a.resident.clone()
+    });
+    r.sort();
+    assert_eq!(r, vec![6011, 6071, 200001, 200031]);
+}
+
+/// Every exported enemy's bulletRows holds its whole Bullet param chain (HitBulletID /
+/// intervalCreateBulletId), so enemy_bullet.rs never meets a missing child. The exporter's walk
+/// ended on a popped id it had already written and dropped the rest: c1070's 380 lost its
+/// interval child 10700383 (spEffectId0 9120, sfx 610742).
+#[test]
+fn enemy_bullet_rows_hold_their_whole_chain() {
+    let dir = crate::paths::extracted();
+    let Ok(text) = std::fs::read_to_string(dir.join("json/params/Bullet.json")) else { return };
+    let param: serde_json::Value = serde_json::from_str(&text).unwrap();
+    let rows: std::collections::HashMap<i64, &serde_json::Value> = param["rows"].as_array().unwrap().iter().filter_map(|r| Some((r["id"].as_i64()?, r))).collect();
+    let mut missing = Vec::new();
+    for f in std::fs::read_dir(dir.join("enemies")).unwrap().flatten() {
+        let name = f.file_name().to_string_lossy().to_string();
+        if !(name.starts_with('c') && name.ends_with(".json")) {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&std::fs::read_to_string(f.path()).unwrap()) else { continue };
+        let Some(have) = v["bulletRows"].as_object() else { continue };
+        for id in have.keys().filter_map(|k| k.parse::<i64>().ok()) {
+            for k in ["HitBulletID", "intervalCreateBulletId"] {
+                let c = rows.get(&id).and_then(|r| r[k].as_i64()).unwrap_or(-1);
+                if c > 0 && rows.contains_key(&c) && !have.contains_key(&c.to_string()) {
+                    missing.push(format!("{name}: {id} -> {c}"));
+                }
+            }
+        }
+    }
+    assert!(missing.is_empty(), "{missing:?}");
+}
+
+/// Predictive shots (BulletParam predictionShootObserveTime, FUN_140b0acf0 / FUN_140b05b80): the
+/// c1190 archer's 11900100 (0.2 s) leads a Wolf running sideways by his average velocity over
+/// the last 0.2 s, as far as he gets while the arrow flies to him; standing still, it aims at him.
+#[test]
+fn a_predictive_arrow_leads_a_running_wolf() {
+    if !std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/extracted/enemies/c1190.json")).exists() {
+        return;
+    }
+    let app = app_with("c1190");
+    let combat = app.world().resource::<Combat>();
+    let spec = combat.kinds[0].data.bullets.get("100").expect("c1190 bullet 100");
+    assert_eq!(spec.bullet_id, 11900100);
+    let window = crate::data::prediction_observe_time(spec.bullet_id);
+    assert!((window - 0.2).abs() < 1e-4, "{window}");
+    // 1 s still, then 0.5 s at 6 m/s along x: the 0.2 s average is the run alone.
+    let mut track = crate::enemy_bullet::TargetTrack::default();
+    let mut pos = Vec3::ZERO;
+    for i in 0..90 {
+        if i >= 60 {
+            pos.x += 6.0 / 60.0;
+        }
+        track.push(pos, 1.0 / 60.0);
+    }
+    let vel = track.velocity(window);
+    assert!((vel.x - 6.0).abs() < 0.05 && vel.y.abs() < 1e-4, "{vel}");
+    let (from, target) = (Vec3::new(0.0, 1.0, 20.0), Vec3::new(0.0, 1.0, 0.0));
+    assert_eq!(crate::enemy_bullet::predict(spec, from, target, Vec3::ZERO), target);
+    let aim = crate::enemy_bullet::predict(spec, from, target, vel);
+    // The lead is the run over the arrow's flight time to the led point (1/30 s steps).
+    let flight = aim.distance(from) / spec.init_vellocity.clamp(spec.min_vellocity, spec.max_vellocity.max(spec.min_vellocity));
+    assert!(aim.x > 0.5 && (aim.x - 6.0 * flight).abs() < 6.0 / 30.0 + 0.05, "aim {aim} flight {flight}");
+}
+
+/// Attack-occurrence SpEffects (FUN_140bfc170 -> FUN_140b6e6a0): with the Flame Vent's
+/// enchantment 106020 on (stateInfo 62, atkOccurrenceSpEffectId 106021, which lasts 0 s and
+/// becomes 9100 "burning damage, PC 25"), each sword hit builds burn on the enemy; the same
+/// slash without it builds none.
+#[test]
+fn an_enchanted_sword_builds_burn() {
+    let slash = |enchanted: bool| {
+        let mut app = app_cfg("c1020", None, Vec::new());
+        let foe = {
+            let world = app.world_mut();
+            let mut q = world.query_filtered::<(Entity, &mut Actor, &mut Transform, &mut Enemy), Without<crate::enemy::Cast>>();
+            let (ent, mut a, mut t, mut e) = q.single_mut(world).unwrap();
+            e.targeting.state = crate::stealth::BATTLE;
+            a.yaw = std::f32::consts::PI;
+            t.translation = Vec3::new(0.0, CAPSULE_HALF_HEIGHT, 1.6);
+            ent
+        };
+        app.update();
+        let hp0 = app.world().get::<Actor>(foe).unwrap().hp;
+        app.world_mut().resource_mut::<PadInput>().press(Action::Attack);
+        for _ in 0..60 {
+            if enchanted {
+                let world = app.world_mut();
+                let mut p = world.query::<&mut Player>().single_mut(world).unwrap();
+                p.timed.retain(|t| t.0 != 106020);
+                p.timed.push((106020, 7.5));
+            }
+            app.update();
+        }
+        let hit = app.world().get::<Actor>(foe).unwrap().hp < hp0;
+        let burn = app.world().resource::<crate::status::Statuses>().0.get(&foe).map_or(0.0, |s| s.burn);
+        (hit, burn, log_text(&app))
+    };
+    let (hit, burn, log) = slash(false);
+    assert!(hit && burn == 0.0, "plain: hit {hit} burn {burn}\n{log}");
+    let (hit, burn, log) = slash(true);
+    assert!(hit && burn > 0.0, "enchanted: hit {hit} burn {burn}\n{log}");
+}
+
+/// FUN_140c06240: an attack-occurrence row counts only for its hit category. Wolf's
+/// enchantments are wepParamChange 1 (the sword's), so the Flame Vent's 106020 lands with a
+/// sword hit (category 1) and not with a tool bullet (2) or a combat art's bullet (9); the
+/// Nightjars' 3145000 (wepParamChange 0) lands with any.
+#[test]
+fn attack_occurrence_follows_the_hit_category() {
+    use crate::data::{atk_occurrence, HIT_CAT_SWORD, HIT_CAT_TOOL};
+    assert_eq!(atk_occurrence(&[106020], HIT_CAT_SWORD, false, false).map(|o| o.0), Some(106021));
+    assert_eq!(atk_occurrence(&[106020], HIT_CAT_TOOL, false, false), None);
+    assert_eq!(atk_occurrence(&[106020], 9, false, false), None);
+    assert_eq!(atk_occurrence(&[3145000], HIT_CAT_TOOL, false, false).map(|o| o.0), Some(9125));
+    assert_eq!(atk_occurrence(&[3145000], 7, false, false).map(|o| o.0), Some(9125));
+    // A later worn row that passes is taken when the first does not.
+    assert_eq!(atk_occurrence(&[106020, 3145000], HIT_CAT_TOOL, false, false).map(|o| o.0), Some(9125));
+}
+
+/// A bullet issues its own attack as it starts (FUN_140b0fc60 -> FUN_1409a1290's bullet branch):
+/// its AtkParam's AppearAiSoundId goes out at the bullet, owned by its shooter. The c1190
+/// archer's arrow 11900100 (AtkParam 11900100: 2000025, 10 m) fired 6 m off is heard there, not
+/// at the archer; a dummy row (AtkParam 8) makes none.
+/// The c1180 servants' all-round armour guard: their anims carry ShieldBlock ArgB 800 under
+/// StateInfo 957, which 220062 (put on by the map's armour-part event) opens; without it the arc
+/// is the default 90 deg (combat.rs guard_half_angle on the live gates).
+#[test]
+fn the_armour_guard_arc_follows_its_worn_effect() {
+    let mut app = app_with("c1180");
+    app.world_mut().resource_scope(|world, combat: Mut<Combat>| {
+        let mut q = world.query_filtered::<&mut Actor, (With<Enemy>, Without<crate::enemy::Cast>)>();
+        let mut a = q.iter_mut(world).next().unwrap();
+        a.guard_angle = 0.0;
+        a.resident.retain(|&id| id != 220062);
+        a.play("Idle", "a000_000000");
+        a.t = 0.5;
+        let d = combat.data_of(&a);
+        let arc = |a: &Actor| crate::combat::guard_half_angle(d, a, crate::combat::event_gates(&combat, a, &[]).as_deref());
+        assert_eq!(arc(&a), 90.0, "without 220062");
+        a.sp_chained.push((220062, 1e6));
+        assert_eq!(arc(&a), 800.0, "with 220062");
+    });
+}
+
+/// Lady Butterfly's second-form bullets (a000_003010 BulletBehavior 310 / 330, StateInfo 184)
+/// fire only while she wears 3509200 "HU for bullet activation" (her a100_021000 TAE 67,
+/// endurance -1): a gate put on in play, which the static NpcParam list (`resident_gates`) missed
+/// (combat.rs event_gates).
+#[test]
+fn butterflys_second_form_bullets_need_her_3509200() {
+    for worn in [false, true] {
+        let mut app = app_with("c5090");
+        app.update();
+        let shooter = {
+            let world = app.world_mut();
+            let mut q = world.query_filtered::<(Entity, &mut Enemy, &mut Actor), Without<crate::enemy::Cast>>();
+            let (ent, mut e, mut a) = q.iter_mut(world).next().unwrap();
+            e.ai_off = true;
+            a.play("Ez3010", "a000_003010");
+            a.t = 1.32;
+            a.prev_t = 1.32;
+            if worn {
+                a.sp_chained.push((3509200, 1e6));
+            }
+            ent
+        };
+        let mut n = 0;
+        for _ in 0..8 {
+            app.update();
+            let world = app.world_mut();
+            n = n.max(world.query::<&crate::enemy_bullet::EnemyBullet>().iter(world).filter(|b| b.shooter == shooter).count());
+        }
+        assert_eq!(n, if worn { 2 } else { 0 }, "3509200 worn: {worn}");
+    }
+}
+
+#[test]
+fn a_bullet_makes_its_appear_sound_where_it_starts() {
+    let mut app = app_cfg("c1190", None, Vec::new());
+    app.update();
+    let (shooter, at) = {
+        let world = app.world_mut();
+        let (e, tf) = world.query_filtered::<(Entity, &Transform), (With<Enemy>, Without<crate::enemy::Cast>)>().iter(world).next().unwrap();
+        (e, tf.translation)
+    };
+    // The archer stands still: its own shot's 2000025 (same owner and id) would replace the record.
+    let world = app.world_mut();
+    for mut e in world.query::<&mut Enemy>().iter_mut(world) {
+        e.ai_off = true;
+    }
+    let from = at + Vec3::new(6.0, 1.0, 0.0);
+    for (row, sound) in [("11900100", true), ("10001600", false)] {
+        let world = app.world_mut();
+        let old: Vec<Entity> = world.query_filtered::<Entity, With<crate::enemy_bullet::EnemyBullet>>().iter(world).collect();
+        for b in old {
+            world.despawn(b);
+        }
+        world.resource_mut::<crate::enemy::AiSounds>().0.clear();
+        let spec = world.resource::<Combat>().kind(0).data.bullet_rows.get(row).expect("c1190 row").clone();
+        crate::enemy_bullet::spawn_row(&mut world.commands(), &spec, shooter, 0, from, Vec3::X, 0.0, None);
+        world.flush();
+        app.update();
+        let sounds = &app.world().resource::<crate::enemy::AiSounds>().0;
+        let heard = sounds.iter().find(|s| s.id == 2000025 && s.owner == Some(shooter) && s.pos.distance(from) < 0.01);
+        assert_eq!(heard.is_some(), sound, "{row}: {:?}", sounds.iter().map(|s| (s.id, s.pos)).collect::<Vec<_>>());
+    }
+}
+
+/// A growing bullet re-issues its attack (and so its AppearAiSoundId) every 1/6 s while it grows
+/// and once when it has (140b0.c:8408 / 8627): c1190's 11903311 (hitRadius 2.5 -> 3.4 over
+/// 0.5 s) issues 2000025 at 0, 1/6, 2/6 and about 0.5 s (3/6 and the final one fall on one frame
+/// or two); a bullet that does not grow (11900100) only at its start.
+#[test]
+fn a_growing_bullet_reissues_its_appear_sound() {
+    let mut app = app_cfg("c1190", None, Vec::new());
+    app.update();
+    let (shooter, at) = {
+        let world = app.world_mut();
+        let (e, tf) = world.query_filtered::<(Entity, &Transform), (With<Enemy>, Without<crate::enemy::Cast>)>().iter(world).next().unwrap();
+        (e, tf.translation)
+    };
+    let world = app.world_mut();
+    for mut e in world.query::<&mut Enemy>().iter_mut(world) {
+        e.ai_off = true;
+    }
+    let from = at + Vec3::new(6.0, 1.0, 0.0);
+    for (row, want) in [("11903311", 4..=5), ("11900100", 1..=1)] {
+        let world = app.world_mut();
+        let old: Vec<Entity> = world.query_filtered::<Entity, With<crate::enemy_bullet::EnemyBullet>>().iter(world).collect();
+        for b in old {
+            world.despawn(b);
+        }
+        world.resource_mut::<crate::enemy::AiSounds>().0.clear();
+        let spec = world.resource::<Combat>().kind(0).data.bullet_rows.get(row).expect("c1190 row").clone();
+        crate::enemy_bullet::spawn_row(&mut world.commands(), &spec, shooter, 0, from, Vec3::X, 0.0, None);
+        world.flush();
+        let (mut issues, mut prev) = (0, None::<f32>);
+        for _ in 0..60 {
+            app.update();
+            let life = app.world().resource::<crate::enemy::AiSounds>().0.iter().find(|s| s.id == 2000025 && s.owner == Some(shooter)).map(|s| s.life);
+            if life.is_some_and(|l| prev.is_none_or(|p| l > p + 1e-4)) {
+                issues += 1;
+            }
+            prev = life;
+        }
+        assert!(want.contains(&issues), "{row}: {issues} issues");
+    }
+}
+
+/// Round 64: c5080's perilous thrust (a000_003009, AtkParam 50800090) has no ThrowParam 0190 row,
+/// so it can't be mikiri'd and the step into it costs c5080 no staminaDamageAttackHitParry (90)
+/// posture (it did, with Wolf still hit).
+#[test]
+fn a_thrust_without_a_mikiri_row_costs_no_posture() {
+    for f in [3, 6, 9] {
+        let mut app = app_with("c5080");
+        {
+            let world = app.world_mut();
+            let mut q = world.query::<(&mut Enemy, &mut Actor)>();
+            let (mut e, mut a) = q.single_mut(world).unwrap();
+            e.force_anim(&mut a, "a000_003009");
+        }
+        let posture = |app: &mut App| app.world_mut().query::<(&Enemy, &Actor)>().single(app.world()).unwrap().1.posture;
+        let mut pressed = false;
+        let mut last = posture(&mut app);
+        for _ in 0..300 {
+            if let Some(dt) = time_to_enemy_hit(&mut app) {
+                if !pressed && dt <= f as f32 / TAE_FPS {
+                    let mut pad = app.world_mut().resource_mut::<PadInput>();
+                    pad.stick = Vec2::new(0.0, -1.0);
+                    pad.press(Action::Step);
+                    pressed = true;
+                }
+            }
+            app.update();
+            let now = posture(&mut app);
+            assert!(now <= last + 1e-3, "frame lead {f}: c5080 posture {last} -> {now}
+{}", log_text(&app));
+            last = now;
+            if log_text(&app).contains("hit:") {
+                break;
+            }
+        }
+        assert!(!log_text(&app).contains("MIKIRI"));
+    }
+}
+
+/// The repeat drill measures range from the enemy's body edge: the Demon of Hatred (c7020,
+/// NpcParam hitRadius 2.8) stood 3.2 m off, held by the body push-out, and walked on forever,
+/// so SHINOBI_AI_ATTACK=3043 never played his embers (VFX's drill).
+#[test]
+fn a_big_enemy_reaches_drill_range() {
+    if !std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/extracted/enemies/c7020.json")).exists() {
+        return;
+    }
+    let mut app = app_cfg("c7020", Some(70200000), Vec::new());
+    {
+        let mut dbg = app.world_mut().resource_mut::<crate::enemy::EnemyDebug>();
+        dbg.mode = crate::enemy::AiMode::Repeat;
+        dbg.attack = "a000_003043".to_string();
+    }
+    // Wolf 12 m off: the Demon has to walk in, and the push-out stops him at 3.2 m.
+    app.update();
+    {
+        let w = app.world_mut();
+        let b = boss_in_play(w);
+        let at = w.get::<Transform>(b).unwrap().translation;
+        let mut p = w.query_filtered::<&mut Transform, With<Player>>().single_mut(w).unwrap();
+        p.translation = Vec3::new(at.x, p.translation.y, at.z + 12.0);
+    }
+    let mut seen = Vec::<String>::new();
+    for _ in 0..1500 {
+        app.update();
+        let a = enemy_state(&mut app).1;
+        if seen.last() != Some(&a) {
+            seen.push(a.clone());
+        }
+        // A 3043 begun after he walked in (the spawn starts him in range).
+        if a == "a000_003043" && seen.iter().any(|s| s == "a000_405000") {
+            return;
+        }
+    }
+    panic!("no 3043: {seen:?}");
+}
+
+/// Round 64 (R51 question): the exe runs posture regen (FUN_140a04850), status recovery and the
+/// SpEffect timers on the character's own FD4Time (chr+0x108, the hit-stop-scaled dt), so a hit
+/// stop holds them; before, they ran on real time through the hold.
+#[test]
+fn hit_stop_holds_posture_regen_and_sp_effect_timers() {
+    let run = |stop: bool| {
+        let mut app = app();
+        move_enemy_far(&mut app);
+        app.update();
+        {
+            let world = app.world_mut();
+            let mut q = world.query_filtered::<&mut Actor, With<Player>>();
+            let mut a = q.single_mut(world).unwrap();
+            a.posture = 100.0;
+            a.since_posture_damage = 99.0;
+            a.regen_carry = 0.0;
+            a.sp_chained.push((-77, 5.0));
+            a.electro = Some((9490, 5.0));
+            if stop {
+                a.hit_stop.start(1.0);
+            }
+        }
+        for _ in 0..8 {
+            app.update();
+        }
+        let world = app.world_mut();
+        let a = world.query_filtered::<&Actor, With<Player>>().single(world).unwrap();
+        let electro = 5.0 - a.electro.map_or(0.0, |e| e.1);
+        (100.0 - a.posture, 5.0 - a.sp_chained.iter().find(|c| c.0 == -77).map_or(0.0, |c| c.1), electro)
+    };
+    let (free_regen, free_timer, free_electro) = run(false);
+    let (held_regen, held_timer, held_electro) = run(true);
+    // Round 81: the Lightning Reversal charge (9490 / 9495) is an SpEffect timer too.
+    assert!(free_electro > 0.1 && held_electro < free_electro * 0.25, "electro {held_electro} vs {free_electro}");
+    assert!(free_regen > 2.0 && free_timer > 0.1, "free: regen {free_regen} timer {free_timer}");
+    assert!(held_regen < free_regen * 0.25, "regen in hit stop {held_regen} vs {free_regen}");
+    assert!(held_timer < free_timer * 0.25, "timer in hit stop {held_timer} vs {free_timer}");
+}
+
+/// Round 65 (refuted lead, kept as a guard): a loop swapped mid-stride (walk -> run) keeps its
+/// phase and its one-step window - locomotion_clip_at(prev_t) reads the current move_index, so
+/// only the start clip's hand-over to the loop opens from frame 0.
+#[test]
+fn a_mid_stride_loop_swap_does_not_burst_its_sounds() {
+    let app = app();
+    let combat = app.world().resource::<Combat>();
+    let d = &combat.player;
+    let mut a = crate::actor::Actor::new(crate::actor::Side::Player, 1.0, 1.0, 0.0, 0);
+    a.procedural("Locomotion");
+    a.move_index = 0;
+    a.move_start = d.length(&a.move_clip(true));
+    let walk = a.move_clip(false);
+    a.move_index = 1;
+    let run = a.move_clip(false);
+    if walk == run || d.length(&walk) <= 0.0 || d.length(&run) <= 0.0 {
+        return;
+    }
+    a.move_index = 0;
+    let dt = 1.0 / 60.0;
+    a.prev_t = a.move_start + 0.5;
+    a.t = a.prev_t + dt;
+    a.move_index = 1;
+    let (clip, windows, now) = crate::sound::sound_windows(&a, d).expect("windows");
+    assert_eq!(clip, run);
+    assert!(windows.iter().all(|&(lo, hi)| hi - lo <= dt + 1e-4), "now {now}: {windows:?}");
+}
+
+/// Round 65: the "no posture damage" cheat keeps a single bar-filling hit from breaking Wolf
+/// (it zeroed the posture only after Resolve had already broken the guard).
+#[test]
+fn the_no_posture_cheat_blocks_a_bar_filling_hit() {
+    let mut app = app_cfg("c1000", None, Vec::new());
+    app.init_resource::<crate::debug_menu::DebugMenu>().add_systems(FixedUpdate, crate::debug_menu::player_cheats);
+    app.update();
+    app.world_mut().resource_mut::<crate::debug_menu::DebugMenu>().no_posture = true;
+    app.update();
+    let world = app.world_mut();
+    let mut a = world.query_filtered::<&mut Actor, With<Player>>().single_mut(world).unwrap();
+    let max = a.posture_max;
+    a.add_posture(max * 2.0);
+    assert!(!a.posture_broken(), "posture {} / {max}", a.posture);
+}
+
+/// Round 66: an SpEffect's interval timer starts at 0 (FUN_140c06860 / FUN_140c03af0) and
+/// FUN_140c06b70 ticks at <= 0, so poison 9045 (19.9 s, every 1 s) hurts on the frame it takes
+/// hold and 20 times in all. Before, the first tick came a second late: 19 in all.
+#[test]
+fn poison_ticks_from_its_first_frame() {
+    let mut app = app();
+    move_enemy_far(&mut app);
+    app.world_mut().resource_mut::<crate::enemy::EnemyDebug>().mode = crate::enemy::AiMode::Idle;
+    app.update();
+    let e = app.world_mut().query_filtered::<Entity, With<Enemy>>().single(app.world()).unwrap();
+    app.world_mut().resource_scope(|world, combat: Mut<Combat>| {
+        world.resource_mut::<crate::status::Statuses>().start_for(&combat, e, 9045);
+    });
+    let hp = |app: &mut App| app.world_mut().query_filtered::<&Actor, With<Enemy>>().single(app.world()).unwrap().hp;
+    let mut last = hp(&mut app);
+    let mut ticks = Vec::new();
+    for f in 0..(22 * 60) {
+        app.update();
+        let now = hp(&mut app);
+        if now < last {
+            ticks.push(f);
+        }
+        last = now;
+    }
+    assert_eq!(ticks.first(), Some(&0), "first tick frame {ticks:?}");
+    assert_eq!(ticks.len(), 20, "{ticks:?}");
+}
+
+/// The AI's view of Wolf (HasSpecialEffectId TARGET_ENE_0) includes his timed rows and his
+/// lightning charge: the Owl's 506001_battle.lua zeroes its Divine Abduction weight (act 11) while
+/// his seal 3506090 is on Wolf, and the Way of Tomoe reads her 9492 charge. Before, enemy.rs
+/// think's snapshot took only his TAE-window / chained rows and afflictions (boss bug hunt
+/// 2026-10-14: the Owl re-sealed an already sealed Wolf).
+#[test]
+fn the_ai_sees_wolfs_timed_rows_and_charge() {
+    if !std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/extracted/script/aicommon.luabnd.d")).exists() {
+        return;
+    }
+    let mut app = app();
+    app.update();
+    {
+        let world = app.world_mut();
+        world.query::<&mut Enemy>().single_mut(world).unwrap().aggressive = true;
+        world.query::<&mut Player>().single_mut(world).unwrap().timed.push((3506090, 30.0));
+        world.query_filtered::<&mut Actor, With<Player>>().single_mut(world).unwrap().electro = Some((9492, 30.0));
+    }
+    for _ in 0..30 {
+        app.update();
+        let world = app.world_mut();
+        world.query::<&mut Player>().single_mut(world).unwrap().timed.retain(|t| t.0 != 3506090);
+        world.query::<&mut Player>().single_mut(world).unwrap().timed.push((3506090, 30.0));
+        world.query_filtered::<&mut Actor, With<Player>>().single_mut(world).unwrap().electro = Some((9492, 30.0));
+    }
+    let world = app.world_mut();
+    let e = world.query::<&Enemy>().single(world).unwrap();
+    assert!(e.prev_sp.contains(&3506090), "no seal in the snapshot: {:?}", e.prev_sp);
+    assert!(e.prev_sp.contains(&9492), "no charge in the snapshot: {:?}", e.prev_sp);
+}
+
+/// Round 66: the Great Shinobi Owl's recovery seal 3506090 (stateInfo 910, 30 s) is one of goods
+/// 3000's useLimitSpEffectType rows: the gourd press is W_ItemFailed (HKS 3940-3951), no drink and
+/// no charge (its clip a000_259000 is not exported: the press is only spent). The death loop's refresh 8002 -> 8007 (spCategory 193) takes the seal off.
+#[test]
+fn the_owls_recovery_seal_stops_the_gourd() {
+    let mut app = app();
+    move_enemy_far(&mut app);
+    app.update();
+    let gourd = |app: &mut App| app.world_mut().query::<&Player>().single(app.world()).unwrap().gourd;
+    let before = gourd(&mut app);
+    app.world_mut().query::<&mut Player>().single_mut(app.world_mut()).unwrap().timed.push((3506090, 30.0));
+    app.world_mut().resource_mut::<PadInput>().press(Action::UseItem);
+    app.update();
+    let mut states = Vec::new();
+    for _ in 0..90 {
+        states.push(player_actor(&mut app).0);
+        app.update();
+    }
+    assert!(!states.iter().any(|s| s.starts_with("ItemGourdDrink")), "{states:?}");
+    assert_eq!(gourd(&mut app), before);
+    // The stay loop's f0 refresh lifts it.
+    {
+        let world = app.world_mut();
+        world.resource_scope(|world, combat: Mut<Combat>| {
+            let mut a = world.query_filtered::<&mut Actor, With<Player>>().single_mut(world).unwrap();
+            a.hp = 0.0;
+            a.play_state(&combat.player, "GroundRevivalStayLoop_F");
+        });
+    }
+    app.update();
+    app.update();
+    let timed = app.world_mut().query::<&Player>().single(app.world()).unwrap().timed.clone();
+    assert!(!timed.iter().any(|t| t.0 == 3506090), "{timed:?}");
+}
+
+/// Round 68: no tool switch while ref 316 (SpEffect 100393, the umbrella's guard / release clips)
+/// is up (HKS 6393): a mid-clip switch costed the rest of the clip with the new tool.
+#[test]
+fn no_tool_switch_in_the_umbrellas_release_window() {
+    let mut app = app();
+    move_enemy_far(&mut app);
+    app.world_mut().resource_mut::<crate::config::GameConfig>().player.prosthetics = vec![70000, 72000];
+    app.update();
+    let found = app.world_mut().resource_scope(|world, combat: Mut<Combat>| {
+        let d = &combat.player;
+        let hit = d.anims.keys().filter(|k| k.starts_with("a076_405")).find_map(|k| (0..90).map(|i| i as f32 / 30.0).find(|t| d.sp_effects_at(k, *t).iter().any(|(id, _)| *id == 100393)).map(|t| (k.clone(), t)));
+        let Some((k, t)) = hit else { return false };
+        let mut a = world.query_filtered::<&mut Actor, With<Player>>().single_mut(world).unwrap();
+        a.play("UmbrellaProbe", &k);
+        a.t = t;
+        a.prev_t = t;
+        true
+    });
+    if !found {
+        return;
+    }
+    let slot = |app: &mut App| app.world_mut().query::<&Player>().single(app.world()).unwrap().tool_slot;
+    let before = slot(&mut app);
+    app.world_mut().resource_mut::<PadInput>().press(Action::SwitchTool);
+    app.update();
+    assert_eq!(slot(&mut app), before);
+}
+
+/// Round 69: crouched, the new tool unfolds in the crouch expand (CrouchSubWeaponExpand1,
+/// a071_412100 for the Firecracker; BEH_R_SUB_WEAPON_EXPAND takes HKB_STATE_CROUCH_IDLE).
+#[test]
+fn a_crouched_switch_unfolds_crouched() {
+    let mut app = app();
+    {
+        let world = app.world_mut();
+        world.resource_mut::<crate::config::GameConfig>().player.prosthetics = vec![70000, 71000];
+        let mut q = world.query_filtered::<&mut Transform, With<Enemy>>();
+        q.single_mut(world).unwrap().translation.z = 30.0;
+    }
+    for _ in 0..30 {
+        app.update();
+    }
+    app.world_mut().resource_mut::<PadInput>().press(Action::Crouch);
+    for _ in 0..60 {
+        app.update();
+    }
+    app.world_mut().resource_mut::<PadInput>().press(Action::SwitchTool);
+    let mut seen = Vec::new();
+    for _ in 0..240 {
+        app.update();
+        let s = player_state(&mut app).0;
+        if seen.last() != Some(&s) {
+            seen.push(s);
+        }
+    }
+    assert!(seen.iter().any(|s| s == "CrouchSubWeaponExpand1"), "{seen:?}");
+    assert!(!seen.iter().any(|s| s == "SubWeaponExpand"), "{seen:?}");
+}
+
+/// Round 70: an enemy's NpcParam resident SpEffects gate its TAE sounds / FFX (c1180's resident
+/// 200030 -> stateInfo 270: 236 PlaySound events); only Wolf's residents were counted.
+#[test]
+fn an_enemys_resident_gates_its_sounds() {
+    if !std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/extracted/enemies/c1180.json")).exists() {
+        return;
+    }
+    let mut app = app_cfg("c1180", None, Vec::new());
+    app.update();
+    let world = app.world_mut();
+    world.resource_scope(|world, combat: Mut<Combat>| {
+        let a = world.query_filtered::<&Actor, With<Enemy>>().single(world).unwrap();
+        assert!(a.resident.contains(&200030), "residents {:?}", a.resident);
+        let gates = crate::sound::active_state_infos(&combat, a, None, None);
+        assert!(gates.contains(&270), "{gates:?}");
+    });
+}
+
+/// Round 71: a clip's anim-set SpEffect (200031-200034, spCategory 100) overwrites the resident
+/// one (200030 -> 270): only its own stateInfo gates the clip's sounds, not both sets.
+#[test]
+fn a_clips_anim_set_overwrites_the_resident_gate() {
+    for chr in ["c1180", "c1220", "c1191", "c7500", "c1260"] {
+        if !std::path::Path::new(&format!("{}/extracted/enemies/{chr}.json", env!("CARGO_MANIFEST_DIR"))).exists() {
+            continue;
+        }
+        let mut app = app_cfg(chr, None, Vec::new());
+        app.update();
+        let found = app.world_mut().resource_scope(|world, combat: Mut<Combat>| {
+            let mut a = world.query_filtered::<&mut Actor, With<Enemy>>().single_mut(world).unwrap();
+            let res: Vec<i64> = a.resident.iter().copied().filter(|id| (200030..=200034).contains(id)).collect();
+            let Some(&r) = res.first() else { return false };
+            let d = crate::actor::data_for(&combat, &a);
+            let hit = d.anims.keys().find_map(|k| (0..60).map(|i| i as f32 / 30.0).find(|t| d.sp_effects_at(k, *t).iter().any(|(id, _)| (200030..=200034).contains(id) && *id != r)).map(|t| (k.clone(), t)));
+            let Some((k, t)) = hit else { return false };
+            let own = d.sp_effects_at(&k, t).iter().find(|(id, _)| (200030..=200034).contains(id)).map(|(_, s)| s.state_info).unwrap();
+            let old = crate::data::sp_cycle(r).unwrap().state_info;
+            a.play("Probe", &k);
+            a.t = t;
+            let gates = crate::sound::active_state_infos(&combat, &a, None, None);
+            assert!(gates.contains(&own) && !gates.contains(&old), "{chr} {k}@{t}: {gates:?} (own {own}, resident {old})");
+            true
+        });
+        if found {
+            return;
+        }
+    }
+}
+
+/// Round 73: EMEVD immortality on Wolf (WolfImmortal) is the exe's NoDead clamp in SetHp: HP that
+/// would drop below 1 from above 0 is 1; not immortal, or already at 0, nothing changes.
+#[test]
+fn an_immortal_wolf_stays_at_1_hp() {
+    use crate::player::no_dead_clamp;
+    assert_eq!(no_dead_clamp(true, 50.0, -200.0), Some(1.0));
+    assert_eq!(no_dead_clamp(true, 50.0, 0.5), Some(1.0));
+    assert_eq!(no_dead_clamp(true, 50.0, 10.0), None);
+    assert_eq!(no_dead_clamp(false, 50.0, -200.0), None);
+    assert_eq!(no_dead_clamp(true, 0.0, -5.0), None);
+}
+
+/// Round 76: BEH_R_LAND 2026 - every non-sprint ground jump sets EnablePositioningJumpLand
+/// (HKS 2800), so a vertical jump off a 2.3 m ledge (plus its own rise: 3-5 m) lands stiff (LandFreeFall), not only the
+/// locked-on jumps; and a sprint jump (SprintJumpStart lasts to the ground) from 6 m too.
+#[test]
+fn jumps_off_ledges_land_stiff() {
+    // (how, extra drop, want)
+    for (sprint, drop) in [(false, 2.3f32), (true, 6.0)] {
+        let mut app = app();
+        move_enemy_far(&mut app);
+        app.update();
+        if sprint {
+            let world = app.world_mut();
+            world.resource_scope(|world, combat: Mut<Combat>| {
+                let (mut a, mut t) = world.query_filtered::<(&mut Actor, &mut Transform), With<Player>>().single_mut(world).unwrap();
+                assert!(a.play_state(&combat.player, "SprintJumpStart"));
+                a.airborne = true;
+                a.vel_y = 0.0;
+                t.translation.y += drop;
+            });
+        } else {
+            app.world_mut().resource_mut::<PadInput>().press(Action::Jump);
+            let mut up = false;
+            for _ in 0..60 {
+                app.update();
+                let world = app.world_mut();
+                let (a, mut t) = world.query_filtered::<(&Actor, &mut Transform), With<Player>>().single_mut(world).unwrap();
+                if a.airborne {
+                    t.translation.y += drop;
+                    up = true;
+                    break;
+                }
+            }
+            assert!(up, "never left the ground");
+        }
+        let mut landed = None;
+        for _ in 0..600 {
+            app.update();
+            let world = app.world_mut();
+            let a = world.query_filtered::<&Actor, With<Player>>().single(world).unwrap();
+            if !a.airborne {
+                landed = Some(a.state.clone());
+                break;
+            }
+        }
+        assert_eq!(landed.as_deref(), Some("LandFreeFall"), "sprint {sprint} drop {drop}");
+    }
+}
+
+/// Round 76: a locked-on jump flies along the stick, not its sector's fixed line
+/// (_setPositioningJumpTilt, act 3025: angle - centre). A stick 30 deg right of the target is the
+/// F_R jump (centre 45) tilted back to 30.
+#[test]
+fn a_locked_jump_follows_the_sticks_angle() {
+    let mut app = app();
+    let enemy = {
+        let world = app.world_mut();
+        let (e, mut t) = world.query_filtered::<(Entity, &mut Transform), With<Enemy>>().single_mut(world).unwrap();
+        t.translation.z = -30.0;
+        e
+    };
+    app.world_mut().resource_mut::<crate::enemy::EnemyDebug>().mode = crate::enemy::AiMode::Idle;
+    app.world_mut().resource_mut::<crate::camera::LockOn>().target = Some(enemy);
+    for _ in 0..20 {
+        app.update();
+    }
+    let (start, yaw) = {
+        let world = app.world_mut();
+        let (a, t) = world.query_filtered::<(&Actor, &Transform), With<Player>>().single(world).unwrap();
+        (t.translation, a.yaw)
+    };
+    let mut angles = Vec::new();
+    for (i, deg) in [30.0f32].iter().enumerate() {
+        let _ = i;
+        let r = deg.to_radians();
+        app.world_mut().resource_mut::<PadInput>().stick = Vec2::new(r.sin(), r.cos());
+        app.world_mut().resource_mut::<PadInput>().press(Action::Jump);
+        let mut states = Vec::new();
+        for _ in 0..45 {
+            app.update();
+            let s = player_state(&mut app).0;
+            if states.last() != Some(&s) {
+                states.push(s);
+            }
+        }
+        let world = app.world_mut();
+        let (a, t) = world.query_filtered::<(&Actor, &Transform), With<Player>>().single(world).unwrap();
+        let moved = (t.translation - start).with_y(0.0);
+        let local = Quat::from_rotation_y(-a.yaw) * moved;
+        let got = local.x.atan2(-local.z).to_degrees();
+        angles.push((got, states, yaw));
+    }
+    let (got, states, _) = &angles[0];
+    assert!(states.iter().any(|s| s.contains("F_R")), "{states:?}");
+    assert!((got - 30.0).abs() < 8.0, "moved at {got:.1} deg (want ~30, sector 45): {states:?}");
+}
+
+/// Round 79: Aging 9620 (maxHpRate 0.125) on an enemy that dies and respawns in place: the
+/// respawn set hp from the aged bar, then the cleared affliction's set_aging(None) multiplied
+/// hp_max back up, so the enemy came back at 1/8 of its bar.
+#[test]
+fn an_aged_enemy_respawns_at_a_full_bar() {
+    let mut app = app();
+    move_enemy_far(&mut app);
+    app.world_mut().resource_mut::<crate::enemy::EnemyDebug>().mode = crate::enemy::AiMode::Idle;
+    app.update();
+    let e = app.world_mut().query_filtered::<Entity, With<Enemy>>().single(app.world()).unwrap();
+    let max0 = app.world().get::<Actor>(e).unwrap().hp_max;
+    app.world_mut().resource_scope(|world, combat: Mut<Combat>| {
+        world.resource_mut::<crate::status::Statuses>().start_for(&combat, e, 9620);
+    });
+    app.update();
+    assert!(app.world().get::<Actor>(e).unwrap().hp_max < max0, "not aged");
+    app.world_mut().get_mut::<Actor>(e).unwrap().hp = 0.0;
+    let mut died = false;
+    for _ in 0..(60 * 60) {
+        app.update();
+        let Some(en) = app.world().get::<Enemy>(e) else { break };
+        died |= en.is_dead();
+        if died && !en.is_dead() {
+            break;
+        }
+    }
+    assert!(died, "never died");
+    for _ in 0..5 {
+        app.update();
+    }
+    let a = app.world().get::<Actor>(e).unwrap();
+    assert_eq!(a.hp_max, max0);
+    assert_eq!(a.hp, a.hp_max);
+}
+
+/// TAE effect events (SpawnOneShotFFX 96, SpawnFFX_ByFloor 112, SpawnFFX_Blade 118) whose start
+/// each actor crosses: who, anim, FFXID, dummy. Test-side only (the scripted-kill effect check,
+/// HANDOFF 4.57).
+#[derive(Resource, Default)]
+struct FxSeen(std::collections::BTreeSet<String>);
+
+fn record_fx(combat: Res<Combat>, mut seen: ResMut<FxSeen>, q: Query<(&Actor, Has<Player>)>) {
+    for (a, wolf) in &q {
+        if a.anim.is_empty() || a.t < a.prev_t {
+            continue;
+        }
+        let d = crate::actor::data_for(&combat, a);
+        // The clip the game plays (ffx.rs: an anim id may resolve to another set's clip).
+        let Some((clip, windows, _)) = crate::sound::sound_windows(a, d) else { continue };
+        let Some(anim) = d.anim(&clip) else { continue };
+        for e in anim.events.iter().filter(|e| matches!(e.kind, 96 | 112 | 118) && windows.iter().any(|&(lo, hi)| e.start > lo && e.start <= hi)) {
+            let ffx = e.arg_i64("FFXID").unwrap_or(0);
+            if e.kind == 112 || ffx <= 0 {
+                continue;
+            }
+            let dmy = e.arg_i64(if e.kind == 118 { "DummyPolyBladeBaseID" } else { "DummyPolyID" }).unwrap_or(-1);
+            let si = e.arg_i64("StateInfo").unwrap_or(0);
+            seen.0.insert(format!("{} {} {ffx} on {dmy} si {si}", if wolf { "wolf" } else { "enemy" }, clip));
+        }
+    }
+}
+
+/// Manual: the scripted kills' effects (Monk, Ape, Old Dragons), run with --ignored --nocapture.
+#[test]
+#[ignore]
+fn zz_scripted_kill_effects() {
+    for (chr, row, rounds, wait) in [("c5000", 50000000, 4, 900), ("c5100", 51000000, 4, 1800), ("c5100", 51000100, 3, 1200), ("c5300", 53000000, 3, 900)] {
+        if !std::path::Path::new(&format!("{}/extracted/enemies/{chr}.json", env!("CARGO_MANIFEST_DIR"))).exists() {
+            continue;
+        }
+        let mut app = app_cfg(chr, Some(row), Vec::new());
+        app.init_resource::<FxSeen>().add_systems(Update, record_fx);
+        for _ in 0..30 {
+            app.update();
+        }
+        let mut states = Vec::new();
+        for _ in 0..rounds {
+            states.extend(break_and_deathblow(&mut app, 600));
+            for _ in 0..wait {
+                app.update();
+            }
+            let bs = app.world().resource::<crate::enemy::BossScript>();
+            if bs.defeats > 0 || bs.run.as_ref().is_some_and(|r| r.defeated.is_some()) {
+                break;
+            }
+        }
+        states.dedup();
+        let bs = app.world().resource::<crate::enemy::BossScript>();
+        eprintln!("KILLFX {chr} {row} defeated {} states {states:?}", bs.defeats > 0 || bs.run.as_ref().is_some_and(|r| r.defeated.is_some()));
+        for l in &app.world().resource::<FxSeen>().0 {
+            eprintln!("KILLFX   {l}");
+        }
+    }
+}
+
+/// The deathblow count drops at Wolf's atkAttribute 5 hit (judge 800, a211_511700 at 1.23 s;
+/// FUN_140b6e6a0), not at the throw's start: until then the Monk's map script (4[37]) still sees
+/// her last bar, so 12505963's 20200 (bars 0 + Wolf's latched message 10) cuts her Todome there.
+#[test]
+fn the_deathblow_count_drops_at_the_ninsatsu_hit() {
+    let mut app = app_with("c5000");
+    for _ in 0..2 {
+        break_and_deathblow(&mut app, 500);
+    }
+    break_and_deathblow(&mut app, 1);
+    let mut drop = None;
+    let mut cut = None;
+    for f in 0..300 {
+        app.update();
+        let (s, _, _) = enemy_state(&mut app);
+        let (_, pa, pt, _) = player_state(&mut app);
+        let w = app.world_mut();
+        let b = boss_in_play(w);
+        let left = w.get::<Enemy>(b).unwrap().ninsatsu_left();
+        if drop.is_none() && left == 0 {
+            drop = Some((pa.clone(), pt, f));
+        }
+        if cut.is_none() && s == "Event20200" {
+            cut = Some(f);
+        }
+    }
+    let (anim, t, f) = drop.expect("the count drops");
+    assert!(anim.ends_with("511700") && (1.2..1.3).contains(&t), "dropped in {anim} at {t}");
+    assert_eq!(cut, Some(f), "20200 on the drop");
+}
+
+#[test]
+#[ignore]
+fn zz_monk_todome_timing() {
+    let mut app = app_with("c5000");
+    for _ in 0..2 {
+        break_and_deathblow(&mut app, 500);
+    }
+    break_and_deathblow(&mut app, 1);
+    let mut last = String::new();
+    for f in 0..900 {
+        app.update();
+        let (s, an, t) = enemy_state(&mut app);
+        let (ps, pa, _, _) = player_state(&mut app);
+        let extra = {
+            let w = app.world_mut();
+            let b = boss_in_play(w);
+            let e = w.get::<Enemy>(b).unwrap();
+            let held = w.resource::<crate::player::ActiveThrow>().0.map(|t| t.target == b);
+            format!("bars {} (unhit {}) held {held:?} wolfmsg {:?}", e.ninsatsu_left(), e.ninsatsu_unhit, w.resource::<crate::enemy::WolfMessage>().msg)
+        };
+        let line = format!("{s}/{an} | wolf {ps}/{pa} | {extra}");
+        if line != last {
+            eprintln!("MONK f{f} t{t:?} {line}");
+            last = line;
+        }
+    }
+}
+
+/// TAE 117 SpawnFFX_ThrowDirection: ThrowDirectionSfxParam's material row, the event's index
+/// as the column (Wolf's deathblow index 11: meat 220501, meat under armour 229501).
+#[test]
+fn throw_direction_effects_come_from_the_material_row() {
+    let f = crate::ffx::FootSfx::load();
+    assert_eq!(f.throw_id(109, 11), Some(220501));
+    assert_eq!(f.throw_id(114, 11), Some(229501));
+    assert_eq!(f.throw_id(132, 15), Some(255503));
+    assert_eq!(f.throw_id(109, 12), None);
+    assert_eq!(f.throw_id(-1, 11), None);
+}
+
+/// Per-boss behaviour trace for the clip comparison (docs/kb/clips.md all-bosses chapters):
+/// `BOSS=c7100:71000000 SECS=120 cargo test zz_boss_moveset_trace -- --ignored --nocapture`.
+/// Wolf walks in past 3.5 m, guards on each of the boss's hit windows (a deflect press 2 TAE
+/// frames ahead) and slashes while it recovers; each boss state change prints with the time,
+/// the distance and the perilous kind, then a summary (attacks per minute, perilous share).
+#[test]
+#[ignore]
+fn zz_boss_moveset_trace() {
+    let spec = std::env::var("BOSS").unwrap_or_else(|_| "c7100:71000000".into());
+    let (chr, row) = spec.split_once(':').map(|(c, r)| (c.to_string(), r.parse::<i64>().ok())).unwrap_or((spec.clone(), None));
+    let secs: u32 = std::env::var("SECS").ok().and_then(|s| s.parse().ok()).unwrap_or(120);
+    // CLOSE=<m>: how near Wolf walks in before he stops (the clips' no-damage player stays at ~1-2 m).
+    let close: f32 = std::env::var("CLOSE").ok().and_then(|s| s.parse().ok()).unwrap_or(3.5);
+    // GOD=1: Wolf's HP stays full (the pacing of a boss against a living player, as in the
+    // no-damage clip; without it he dies to grabs and the boss idles over his body).
+    let god = std::env::var("GOD").is_ok_and(|v| v == "1");
+    // ATTACK_EVERY=<frames>: how often Wolf presses attack in range (default 30 = every 0.5 s;
+    // the clips' player strikes less, so the boss's combos reach their ComboFinal perilous).
+    let attack_every: u32 = std::env::var("ATTACK_EVERY").ok().and_then(|s| s.parse().ok()).unwrap_or(30);
+    let mut app = app_cfg(&chr, row, Vec::new());
+    for _ in 0..30 {
+        app.update();
+    }
+    {
+        let w = app.world_mut();
+        let b = boss_in_play(w);
+        w.get_mut::<Enemy>(b).unwrap().aggressive = true;
+        if !w.contains_resource::<crate::camera::LockOn>() {
+            w.insert_resource(crate::camera::LockOn::default());
+        }
+    }
+    let (mut last, mut attacks, mut perilous, mut pressed_for) = (String::new(), 0u32, 0u32, String::new());
+    let (mut last_anim, mut last_t) = (String::new(), 0.0f32);
+    for i in 0..(secs * 60) {
+        let (es, anim, t, dist, hit_in, kind, attack, wolf, to_boss) = {
+            let world = app.world_mut();
+            let b = boss_in_play(world);
+            let (pp, wolf) = {
+                let (tf, pa) = world.query_filtered::<(&Transform, &Actor), With<Player>>().single(world).unwrap();
+                (tf.translation, format!("{} hp{:.0}", pa.state, pa.hp))
+            };
+            let goals = world.get_non_send_resource::<crate::enemy::Brains>().and_then(|br| br.map.get(&b)).map(|br| br.describe()).unwrap_or_default();
+            let wolf = format!("{wolf} | {goals}");
+            // The stick that walks Wolf at the boss (headless: no OrbitCamera, so the camera yaw is 0).
+            let cam_yaw = world.query::<&crate::camera::OrbitCamera>().iter(world).next().map_or(0.0, |c| c.yaw);
+            let to_boss = {
+                let bp = world.get::<Transform>(b).unwrap().translation;
+                let local = Quat::from_rotation_y(-cam_yaw) * (bp - pp).with_y(0.0).normalize_or_zero();
+                Vec2::new(local.x, -local.z)
+            };
+            let bp = world.get::<Transform>(b).unwrap().translation;
+            let ba = world.get::<Actor>(b).unwrap();
+            let combat = world.resource::<Combat>();
+            let d = combat.data_of(&ba);
+            let hit_in = d.attack_windows(&ba.anim).iter().filter(|(_, atk, _)| atk.atk_phys > 0.0).map(|(e, _, _)| e.start - ba.t).filter(|x| *x > -0.001).reduce(f32::min);
+            let kind = d.perilous_warning(&ba.anim, 0.0, f32::INFINITY).map(|_| crate::enemy::perilous_kind(d, &ba.anim));
+            // A damaging bullet (Lady Butterfly's kunai 3024, the Owl's shuriken) is an attack too.
+            let attack = d.attack_windows(&ba.anim).iter().any(|(_, atk, _)| atk.atk_phys > 0.0 || atk.throw_flag == 1)
+                || d.anim(&ba.anim).is_some_and(|an| an.events.iter().filter(|e| e.kind == 2).filter_map(|e| e.arg_i64("BehaviorJudgeID")).any(|j| d.bullets.get(&j.to_string()).is_some_and(|b| b.attack.as_ref().is_some_and(|a| a.atk_phys > 0.0))));
+            (ba.state.clone(), ba.anim.clone(), ba.t, bp.with_y(0.0).distance(pp.with_y(0.0)), hit_in, kind, attack, wolf, to_boss)
+        };
+        {
+            let w = app.world_mut();
+            let b = boss_in_play(w);
+            if god {
+                let mut pa = w.query_filtered::<&mut Actor, With<Player>>().single_mut(w).unwrap();
+                pa.hp = pa.hp_max;
+            }
+            w.resource_mut::<crate::camera::LockOn>().target = Some(b);
+            let mut pad = w.resource_mut::<PadInput>();
+            pad.stick = if dist > close { to_boss } else { Vec2::ZERO };
+            match hit_in {
+                Some(dt) if dt <= 2.0 / TAE_FPS && kind.is_none() && !pressed_for.starts_with(&anim) => {
+                    pad.press(Action::Guard);
+                    pressed_for = format!("{anim}@{i}");
+                }
+                // The clips' player answers every perilous: Mikiri a thrust (Step as it lands), jump a
+                // sweep, step back from a grab.
+                Some(dt) if kind.is_some() && !pressed_for.starts_with(&anim) => match kind.unwrap() {
+                    "thrust" if dt <= 3.0 / TAE_FPS => {
+                        pad.stick = to_boss;
+                        pad.press(Action::Step);
+                        pressed_for = format!("{anim}@{i}");
+                    }
+                    "sweep" if dt <= 4.0 / TAE_FPS => {
+                        pad.press(Action::Jump);
+                        pressed_for = format!("{anim}@{i}");
+                    }
+                    "grab" if dt <= 8.0 / TAE_FPS => {
+                        pad.stick = -to_boss;
+                        pad.press(Action::Step);
+                        pressed_for = format!("{anim}@{i}");
+                    }
+                    _ => {}
+                },
+                Some(_) => {}
+                None => {
+                    pressed_for.clear();
+                    if dist < 3.0 && i % attack_every == 0 && !attack {
+                        pad.press(Action::Attack);
+                    }
+                }
+            }
+        }
+        app.update();
+        // A restarted clip (ComboRepeat plays the same anim again) counts as a new attack.
+        let restarted = anim == last_anim && t < last_t && attack;
+        last_anim = anim.clone();
+        last_t = t;
+        if es != last || restarted {
+            if attack {
+                attacks += 1;
+                perilous += kind.is_some() as u32;
+            }
+            eprintln!("BOSS {:7.2}s d{dist:5.1} {es} ({anim} t{t:.2}){}{} | wolf {wolf}", i as f32 / 60.0, if attack { " ATK" } else { "" }, kind.map(|k| format!(" PERILOUS {k}")).unwrap_or_default());
+            last = es;
+        }
+    }
+    let mins = secs as f32 / 60.0;
+    eprintln!("BOSS SUMMARY {spec}: {attacks} attacks ({:.1}/min), {perilous} perilous ({:.0}%)", attacks as f32 / mins, 100.0 * perilous as f32 / attacks.max(1) as f32);
 }

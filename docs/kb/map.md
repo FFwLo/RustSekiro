@@ -100,8 +100,8 @@ before.
   on the same scale. Without probes the Hemi colours give a flat ambient (`AMBIENT_PER_UNIT`).
 - **GI probes (2026-10-10, "fix the gate lighting")**: `map/<id>/<id>_envmap_00..05.tpf` hold
   the area's light probes: `gilm<probe>_<v>` 128^2 BC6H cube maps (7 mips, sky + surroundings
-  with the sun disk baked in) and `giiv<probe>_<v>_{w,x,y,z}` BC7 3D irradiance volumes (not
-  used). The probe is the MSB region around the arena: `Env_Box<probe>_...`
+  with the sun disk baked in) and `giiv<probe>_<v>_{w,x,y,z}` BC7 3D irradiance volumes (used
+  since 2026-10-12, see the end). The probe is the MSB region around the arena: `Env_Box<probe>_...`
   (EnvironmentMapEffectBox, type 17) else the nearest `Env_Point<probe>` (type 2). Boxes are
   bottom-centred (2026-10-12, msb.rs `contains`): they stand on their position as DSMapStudio
   draws them, and sekiro-rs 9ee18b0 (lighting.rs ~584, SHADERS.md "GIIV") places the giiv
@@ -507,6 +507,21 @@ before.
   frame at a known hour (ask the user). Seen: the 12 h key is grey (sat 18) where the 18 h one
   is saturated; the scene is evenly lit by the ambient / probe with few sun shadows in view.
 
+- **Map emissives** (2026-10-13, not ported; shaderbdle.shaderbdlebnd, D3DDisassemble): the
+  Gbuf passes of M[Emissive]_Simple and M[Multiple]_Emissive write a fifth target o4 = the
+  emitted colour x SC_PreExposure (the deferred lighting adds it). M[Emissive]_Simple variant 1
+  (cb3 from 384: color_0, float_0, _1, _3, _4, _5, _6, float3_10, _11, _5, _7, _8, _9):
+  `R = Mask3Map (t3, uv slot 3)`, `m = dot(R, f3_5) * f_1 * dot(R, f3_7) * f_0 * dot(R, f3_8) *
+  f_3`; `N = t0 at uv0 + time * (0.15, 0.45)`, `y = 1 - dot(N, f3_10) * f_5 * dot(N, f3_11) *
+  f_6 * dot(N, f3_9) * f_4`; `L = luma(vertex colour)` (0.29891, 0.58661, 0.11448);
+  `emit = clamp(color_0, 0, 5) * m * L * y * L`. EmissiveCloth_simple: color_0 (1, 0.41, 0.13),
+  f_0 / 1 / 3 = 1.5, f_4 / 5 / 6 = 0.9, all float3s (1, 0, 0): `emit = colour * 3.375 R^3 *
+  (1 - 0.729 N^3) * L^2`. M[Multiple]_Emissive variant 33 (the m11_00 charcoal / thatch
+  materials): the M[Multiple] layers plus an ember term from scrolling masks (t2 at three
+  time-driven offsets, `pow(product * color_?, float_?)`) and the vertex blend weights
+  TEXCOORD5 x / z / w against height masks (`sat((v5.z - (mask + 0.01) * f * (1 - v5.z)) *
+  (1 + f))`); colours color_3 (1, 0.63-0.67, 0.29-0.40) x 7 and color_9 (1, 0.46-0.48, 0.13-0.20)
+  x 3-5. The camp curtains are not emissive (M[AMSN_light]_e = MetallicValue).
 - **Map switch at run time** (`switch_map`, 2026-10-11, Bosses' request for the encounter
   picker): a `SpawnEncounter` message with the config's `[world] map` on (not the sandbox, no
   `SHINOBI_MAP`) despawns the pieces and the two lights, clears the terrain and runs
@@ -766,9 +781,103 @@ listed above, a real gate frame to compare against, re-exporting the other arena
 - Check: 12 h pale hazy blue, 22 h dark teal with cloud wisps; 18 h flat ochre with dark cloud
   smudges. gap: the colour packing (gamma 2 times Intensity) and cloud shading are sekiro-rs's
   approximations, not the traced SkyDome_Ver2 shader; the fire sky and 8907015 are not chosen.
+- 2026-10-13 SkyDome_Ver2 decoded from the game (shader/shaderbdle.shaderbdlebnd.dcx ->
+  M[Sky]_SkyDome_Ver2.shaderbdle, `_{0,1}_Fwd.ppo` D3DDisassemble; spec:
+  docs/kb/sky_shader.md). Colours reach the shader as rgb^2.2 x Intensity
+  (GXMaterialParam_HDRColor FUN_1403dc4b0; the power is on when the metaparam entry byte +0x2E is
+  set, 1 for every colour of shaderbdle). Switch 0 (morning / evening / night / past night):
+  sun = engine FC_DirLightVec_0, sunT = min(pow(sat(d.L)(1 + float_12), float_10), 1), sunCol =
+  lerp(color_3, color_5, sunT); g = 1 - d.y; hor = lerp(color_6, color_7, min(pow(g float_4,
+  float_6), 1)); base = lerp(color_0, hor, min(pow(g (1 + float_11), float_46), 1)); sky =
+  saturate(base + sunT sunCol); clouds: two masks (A = cloudhigh on UV0 x float2_6, B = hcloud on
+  UV1 x float2_7 + float2_0) picked by float3_5 / 7 / 8 / 9, rim, body lerp(color_8, lerp(color_1,
+  color_4, ...)), sun tint color_2, alpha 4 float_17 (same terms as sky.wgsl). Switch 1
+  (afternoon): no gradient, the lobe faces the MTD's float3_6. Output col x pre-exposure, fogged
+  by the froxel volume; render target 1 = col x g_GlowScale (glow). Clouds drift by a two-phase
+  flow crossfade (frac(2 t speed), float_39 / 40 speeds, float_38 / 41 strengths, along U only).
+  Ported: the packing (was gamma 2), switch 1's float3_6 sun and the flow drift (sky.wgsl
+  flow_sample; tangent frame from screen derivatives); the rest already matched. gaps: the fog and glow outputs, the original SkyDome / Cloud shaders. The 18 h patch on
+  the gate look map stays a flat cream: the sky is clamped to 1 before exposure, and that view faces
+  the low sun.
+- 2026-10-13 the same packing for the map layer colours: the exporter's `game_params` now writes
+  M_Multiple / M_MultipleGround colours as rgb^2.2 x Intensity (was raw rgb x Intensity). Most are
+  white (unchanged); tints like (0.78, 0.86, 1.0) become (0.58, 0.72, 1.0). The gate map and all
+  arenas re-exported 2026-10-13. Character shaders (main.rs: the layered skin and the coat
+  Fresnel params, `-Intensity` at main.rs:474 / 524) still pack raw rgb x Intensity: same fix
+  needed there, with a model re-export (not this track's files).
 - Bloom from Bloom[Yebis] (map_bloom): the exe's level weights Alpha * Luminance * Smooth^i /
   sum Smooth^j reproduced exactly by Bevy's additive chain (intensity = level 0's weight,
   low_frequency_boost = Smooth - it, curvature 0.9999), NumLevels mips, hard knee at the raw
   Glare Threshold. gap: the threshold sees Bevy's pre-auto-exposure buffer; the 7-tap Gaussian,
   level-0 size, Saturate Ctrl and FeedbackWeight are not modelled. `SHINOBI_MAP_BLOOM=camera`
   keeps the camera's old bloom.
+
+## 2026-10-12 Fog-wall collision and GIIV irradiance volumes (VFX and Maps)
+
+- **Fog-wall collision ("gates")**: on the castle roof (boss_71001000) both blockers were already
+  in the static `.hit`: the wall object o001401's own hkx box (12 triangles, 5.95 m x 6.95 m x
+  5 cm, ObjectParam material 29) and the 20005825 part h900800 (24 triangles, a material-less
+  octagon of walls round the roof, open where the wall object stands). So Wolf was always shut
+  in, and the walls never went after a win. The exporter now writes every
+  `enemies/fog_walls.json` object / collision entity of the map to `map_<id>.gates` ("SHMG" v1:
+  u32 version, u32 gates; per gate i32 entity + an SHMC body) instead of the `.hit`;
+  `src/fog_wall.rs` switches them on through `map::set_gates` while the fight's walls stand,
+  and `Terrain::slide` pushes bodies out of them (test `fog_wall_gates_block_only_while_on`).
+  The gate map (m11_01_00_00 around c1020_0004) has none in range (the roof wall is 83 m off).
+  2026-10-13: of the other arenas only boss_50900000 (m10, o001401 at 39 m) had the box baked
+  in; o001400 / o001402 were never unpacked (the draw-group check skipped the parts before the
+  missing-object list), so their walls had no collision. The exporter now takes a fog-wall
+  object's hkx box into the gates before the draw-group / ObjAct checks and never draws its
+  mesh (the wall shows as its SFX); m17, m15, m11_02, m25, m10, m11_01 re-exported.
+- **GIIV**: `export_giiv` (sekiro-extract map.rs, called by `export_env`) decodes the probe's
+  `giiv<probe>_<v>_{x,y,z,w}` (DX10 BC7, dimension 4: the gate's 0280 is 20 x 16 x 16 over
+  Env_Box280, 62.7 x 59.0 m, 53.7 m high) into `map_<id>_giiv_<v>.bin` ("SHGI" v1: width,
+  height, depth, then the four RGBA8 volumes x, y, z, w) and `map_<id>_giiv.json` (`uvw`: Bevy
+  point -> volume 0..1, the box bottom-centred, texture x / y / z along width / height / depth;
+  `nrm`: Bevy normal -> map space). The game (`apply_giiv`) loads the variant nearest the hour
+  as one 3D texture (volumes stacked on depth) on every map material; `map_material.wgsl` `lit`
+  fades the probe cube's diffuse out by the volume weight and adds
+  `diffuse * max(n.x X + n.y Y + n.z Z + W, 0) * ENV_PER_UNIT` (texel decode
+  `2 (rgb - 0.5) 2^(20 (a - 0.5))`, sekiro-rs SHADERS.md "GIIV"). At the gate origin, noon:
+  W = (0.019, 0.024, 0.029), up-facing 0.03-0.05, the cube's mean 0.037-0.057, so the scale
+  carries over. Photo-mode pairs at 12 h (`SHINOBI_MAP_NO_GIIV=1` for the cube only): no
+  artifacts; map surfaces 3-4 / 255 darker on average, the stone by the doorway clearly darker
+  (more contrast between the open yard and the gate interior); the characters keep the cube.
+  `MAP_ENV_ONLY=1` re-exports only the probe (cubes + volumes) and the json's `env_probe`: the
+  gate's probe is now Env_Box280 (`gilm0280`), as the bottom-centred box rule picks.
+  The two variants around the hour blend like the cubes (decoded, then mixed in the shader;
+  `giiv_next`, weight `scale.y`; 15 h = 12 h and 18 h at 0.5: no artifacts).
+  Gaps: characters (sekiro_material.wgsl) still take the cube's diffuse. (The single volume
+  above was replaced 2026-10-13 by every box round the arena: "GIIV boxes" below.)
+- **GIIV boxes** (2026-10-13, from the game's own shader): gxrenderershader.shaderbnd
+  `GXEnvMapRegion[Box][Diff].ppo` (+ DiffSpc / Spc / Pcc / Lerp / Eh variants, a [Stencil]
+  pass; unpack `^/shader/`, D3DDisassemble) draws each Env_Box as a deferred light volume:
+  the pixel's point to the box's [-1, 1] space (`g_envMapInvWorld`), outside -> nothing; weight
+  `smoothstep(saturate(min((1 - |p|) * g_envMapDrawAreaExtents) * g_envMapInvFadeDistance))`
+  (metres to the nearest face over the fade distance) x `g_envMapFadeRate`; the four
+  `g_IrradianceVolumeX..W` sampled at the point plus a step along the normal
+  (`g_envMapInvIv`, `/ g_envMapIvSamplingParam`), decoded `2 (rgb - 0.5) 2^(20 (a - 0.5))`,
+  `max(dot(n, XYZ) + W, 0) * g_envMapDiffuseColorScale * SC_PreExposure` to RT1 rgb with the
+  weight in alpha: the boxes blend over each other in drawing order. The MSB's type data
+  (SoulsFormats MSBS EnvironmentMapEffectBox; read by msb.rs `Region::env`, printed by
+  `sekiro-extract envboxes <msb> x y z [m]`): 0x04 the fade distance (m: 3 for areas, 1.5 rooms,
+  0.25 the castle's burning hall, 0 the reflection boxes), byte 0x09 the priority (0 whole map,
+  10 play area, 19-20 areas, 30-32 rooms, 40 the burning hall Env_Box400, 90 the 映りこみ用
+  reflection boxes): the drawing order taken (then the MSB's order); 0x24 = 2 only on the
+  reflection boxes (taken as specular only: left out), 1 on the whole-map boxes and Env_Box400;
+  0x28 / 0x2C 1 / 1.5 and 0.25 / 1 (maybe the FadeRate / DiffuseColorScale: not mapped, taken
+  as 1). Every Env_Box has its own `giiv<box>` volumes (m11_01: ~120; Env_Box400 also 2400 /
+  3400 / 4400, event states, not used). The exporter (`export_giiv`) takes the boxes within the
+  arena radius of the pick point (nearest first, at most 16, atlas depth <= 2048), crops each
+  to the voxels within radius + 30 m (+2 voxels), and stacks them in one RGBA8 atlas per
+  variant ("SHGI" v2; a box without a variant takes its nearest); the json lists them in
+  drawing order (`uvw`, `size`, `fade`, `grid`, `lo`, `vox`). map_material.wgsl `giiv_light`
+  loops the boxes as the game blends them; the cover fades the cube's diffuse out. Arenas:
+  castle top 16 boxes (Env_Box346 meditation room 32 and Env_Box400 40 over it), monkeys' hall
+  16, gate 16, the rest 3-10; 204 MB of atlases in all (37 MB with one box). Checks (photo mode,
+  12 h, on vs `SHINOBI_MAP_NO_GIIV=1`): no seams or blocks on the gate look map or the castle
+  top; the castle's dark wood walls / ceilings read instead of near-black. Test
+  `giiv_boxes_fit_their_atlas`. gaps: the boxes past the 16 nearest (the castle has ~55 within
+  60 m, mostly reflection boxes and lower floors); the burning-hall box is always on (its event
+  switch and variants 2400-4400 untraced); FadeRate / DiffuseColorScale; the exe's draw-list
+  build (GXEnvMapRegionManager) not read, so the priority order is inferred from the data.

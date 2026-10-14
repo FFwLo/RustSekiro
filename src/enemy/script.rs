@@ -42,6 +42,16 @@ pub struct CharDef {
     pub yaw: f32,
 }
 
+/// An object the script attaches to a character (2003[58]), with the grapple records of its
+/// e<id>.edge (tools/boss_scripts.py attached_objects): [hook, landing, WireVariationParam row],
+/// in the object's own (FromSoftware, unmirrored) space.
+#[derive(serde::Deserialize, Clone, Debug)]
+pub struct ObjDef {
+    pub model: String,
+    #[serde(default)]
+    pub edges: Vec<([f32; 3], [f32; 3], i64)>,
+}
+
 #[derive(serde::Deserialize, Clone, Debug)]
 pub struct Place {
     pub at: [f32; 3],
@@ -141,6 +151,29 @@ pub struct ScriptDef {
     /// The SpEffectParam rows those bullets put on (the lightning signs' 3531061-5).
     #[serde(default)]
     pub sp_effects: HashMap<String, crate::data::SpEffect>,
+    /// Characters the row's fight starts after (dead from the first frame): Lady Butterfly's
+    /// first form 1000800 for her row after the change (tools/boss_scripts.py dead_at_start).
+    #[serde(default)]
+    pub dead_at_start: Vec<i64>,
+    /// Objects the events attach to characters, by entity id (the Divine Dragon's trees' grapple
+    /// points o259920-922).
+    #[serde(default)]
+    pub objects: HashMap<i64, ObjDef>,
+}
+
+impl Run {
+    /// The active attached objects that carry grapple edges: (the character's entity, its dummy
+    /// poly, the object).
+    pub fn grapple_objects(&self) -> Vec<(Entity, i16, &ObjDef)> {
+        let mut v: Vec<(i64, Entity, i16, &ObjDef)> = self
+            .attached
+            .iter()
+            .filter(|(_, o)| o.2)
+            .filter_map(|(id, o)| Some((*id, *self.ents.get(&o.0)?, o.1, self.def.objects.get(id).filter(|d| !d.edges.is_empty())?)))
+            .collect();
+        v.sort_by_key(|x| x.0);
+        v.into_iter().map(|x| (x.1, x.2, x.3)).collect()
+    }
 }
 
 /// The boss scripts by NpcParam row.
@@ -159,6 +192,12 @@ pub fn scripts() -> &'static HashMap<i64, Arc<ScriptDef>> {
         raw.into_iter().filter_map(|(k, v)| Some((k.parse().ok()?, Arc::new(v)))).collect()
     })
 }
+
+/// Set Character Immortality on Wolf (2004[12] on 10000): the prologue Genichiro's 11125812 while
+/// Wolf is in region 1122802. HP stays at 1 or more while on (the NoDead clamp, SetHp
+/// FUN_140bd64e0). Set by the script; the player side clamps (player.rs / combat.rs).
+#[derive(Resource, Default)]
+pub struct WolfImmortal(pub bool);
 
 /// A character of a running script, by its map entity id.
 #[derive(Component, Clone, Copy, Debug)]
@@ -231,8 +270,17 @@ pub struct Run {
     rng: u32,
     /// Time since the script handled the boss's defeat.
     pub defeated: Option<f32>,
+    /// The defeat's Text Banner Type (EMEVD 2003[74] arg 1: 1 Shinobi Execution, 5 Immortality
+    /// Severed, 3 Gracious Gift of Tears); 2003[12] and the flag path take 1. Round 93.
+    pub banner: i64,
     /// Time the boss part has lain dead without one.
     dead_for: f32,
+    /// The character 2003[11] put the boss bar on (the Old Dragons' shared bar body 2500810,
+    /// NpcParam 53000000 with no deathblow dots: m25 12505801 `2003[11](1, 2500810, 0, 905300)`,
+    /// swapped for the Divine Dragon's 2500800 by 12505885). None: the ninsatsu rule (hud.rs).
+    pub bar: Option<i64>,
+    /// Wolf's Set Character Immortality (mirrored into WolfImmortal).
+    pub wolf_immortal: bool,
     /// Characters seen dead (still dead once gone).
     dead_ids: HashSet<i64>,
     /// Warps of characters not on the field yet (they come in there).
@@ -245,6 +293,9 @@ pub struct Run {
     frame: u32,
     /// The event message (`Enemy::msg_serial`) each character's last short warp came on.
     warp_serial: HashMap<i64, u32>,
+    /// Objects attached to characters (2003[58] Attach Object to Character): object -> (the
+    /// character, its dummy poly, active: 2005[3] (De)activate Object).
+    attached: HashMap<i64, (i64, i16, bool)>,
 }
 
 #[derive(Resource, Default)]
@@ -262,12 +313,17 @@ struct Snap {
     hp_max: f32,
     posture_ratio: f32,
     bars: u32,
+    /// NpcParam ninsatuNum: 0 on the Old Dragons' shared bar body 2500810 (53000000), whose
+    /// `bars` is 0 from the first frame.
+    bars_max: u32,
     dead: bool,
     sp: HashSet<i64>,
     /// Its event messages (an enemy's one, Wolf's several: his Todome sends 10-13 together).
     msg: Vec<i64>,
     ai_state: i64,
     damaged: bool,
+    /// Wolf only: on the ground (not airborne).
+    grounded: bool,
 }
 
 /// What an event asked for this frame (applied after all events ran).
@@ -283,11 +339,16 @@ enum Act {
     EzState(i64, i64),
     Enable(i64, bool),
     /// Who, target type (Target Entity Type: 0 object, 1 area, 2 character), target, a short
-    /// warp request (2004[41]).
-    Warp(i64, i64, i64, bool),
+    /// warp request (2004[41]), the target character's dummy poly (-1: its root).
+    Warp(i64, i64, i64, bool, i64),
     Immortal(i64, bool),
     Death(i64),
-    BossDefeat,
+    /// The defeat with its Text Banner Type.
+    BossDefeat(i64),
+    /// 2003[11] Display Boss Health Bar: the character whose bar the HUD shows (on / off).
+    BossBar(i64, bool),
+    /// The fight's scripted loss (start over).
+    ScriptedLoss,
     CutsceneWarp(i64),
     /// Shoot Bullet: owner, source character (whose dummy poly it leaves from), dummy poly,
     /// behavior id.
@@ -325,6 +386,7 @@ impl Run {
             }
         }
         let mut ents = HashMap::new();
+        let dead_ids: HashSet<i64> = def.dead_at_start.iter().copied().collect();
         ents.insert(def.boss, boss);
         Run {
             row,
@@ -336,13 +398,17 @@ impl Run {
             prev_hp: HashMap::new(),
             rng,
             defeated: None,
+            banner: 0,
             dead_for: 0.0,
-            dead_ids: HashSet::new(),
+            bar: None,
+            wolf_immortal: false,
+            dead_ids,
             pending_warp: HashMap::new(),
             pending: Vec::new(),
             disabled: HashMap::new(),
             frame: 0,
             warp_serial: HashMap::new(),
+            attached: HashMap::new(),
         }
     }
 
@@ -354,7 +420,7 @@ impl Run {
     }
 
     /// Arena position and yaw of an MSB entity of this script.
-    fn place_of(&self, id: i64) -> Option<(Vec3, f32)> {
+    pub(crate) fn place_of(&self, id: i64) -> Option<(Vec3, f32)> {
         let (at, yaw) = if let Some(c) = self.def.chars.get(&id) {
             (c.at, c.yaw)
         } else {
@@ -377,7 +443,7 @@ impl Run {
         shape_contains(sh.shape, &sh.size, pl.at, pl.yaw, x, y, z)
     }
 
-    fn flag(&self, id: i64) -> bool {
+    pub(crate) fn flag(&self, id: i64) -> bool {
         self.flags.get(&id).copied().unwrap_or(false)
     }
 
@@ -389,6 +455,17 @@ impl Run {
     /// The event flags that are on (for the AI's IsEventFlag).
     pub fn flags_on(&self) -> Vec<i64> {
         self.flags.iter().filter(|(_, on)| **on).map(|(id, _)| *id).collect()
+    }
+
+    /// The boss rows of this run's cast: the picked row first, then every other character of
+    /// the script that has a boss script of its own (the next boss the fight goes on with).
+    pub fn cast_rows(&self) -> Vec<i64> {
+        let mut rows = vec![self.row];
+        let mut others: Vec<i64> = self.def.chars.values().map(|c| c.npc).filter(|n| *n != self.row && scripts().contains_key(n)).collect();
+        others.sort_unstable();
+        others.dedup();
+        rows.extend(others);
+        rows
     }
 
     /// An event value: `bits` flags from `base`, the first the highest bit.
@@ -500,6 +577,10 @@ fn pred(run: &Run, ev: usize, w: &World, ins: &(i32, i32, Vec<f64>), since: f32)
         (4, 5) => chr(1).is_some_and(|c| counted(c.sp.contains(&i(2)) == (i(3) == 1), i(4), f(5))),
         (4, 8) | (4, 21) => chr(1).is_some_and(|c| counted(c.msg.contains(&i(2)) == (i(3) == 1), i(4), f(5))),
         (4, 9) => chr(1).is_some_and(|c| counted(c.ai_state == i(2), i(3), f(4))),
+        // IF Player Standing On Hit (collision part): Isshin Ashina's entry (m11_01 11115930)
+        // waits on Wolf standing on the castle top's 1114801-804. gap: the arena keeps no
+        // collision ids, so any ground counts.
+        (11, 2) => w.chars.get(&PLAYER).is_some_and(|c| c.grounded),
         (4, 14) => chr(1).is_some_and(|c| counted(cmp(c.hp as f64, i(2), f(3)), i(4), f(5))),
         (4, 37) => chr(1).is_some_and(|c| counted(cmp(c.bars as f64, i(2), f(3)), i(4), f(5))),
         (4, 39) => chr(1).is_some_and(|c| counted(cmp(c.posture_ratio as f64, i(2), f(3)), i(4), f(5))),
@@ -688,10 +769,23 @@ fn step(run: &mut Run, ev: usize, w: &World, dt: f32, acts: &mut Vec<Act>) {
                 // 9312, each set by its defeat event) end the duel too when no Handle Boss Defeat
                 // does: Genichiro at the castle top gets away in a cutscene (m11_02 11125800).
                 // Only with the boss at 0 health bars (Isshin's entry, 11125830, sets the naked
-                // Genichiro's 9311).
-                let boss_out = w.chars.get(&run.def.boss).is_some_and(|c| c.bars == 0);
-                if on && boss_out && (9300..9400).contains(&i(0)) && !run.flag(i(0)) {
-                    acts.push(Act::BossDefeat);
+                // Genichiro's 9311) - of the bars it has: the Old Dragons' bar body 2500810 has
+                // none (ninsatuNum 0), so m25 12505885's 9318 at its 0 HP counted as the defeat and
+                // the Divine Dragon phase it starts (AiState 2500800 on, 3520071, the warp) never
+                // came (boss bug hunt 2026-10-14).
+                let boss_out = w.chars.get(&run.def.boss).is_some_and(|c| c.bars == 0 && c.bars_max > 0);
+                // Not when the same event enables another of the cast (2004[05] on): a hand-over,
+                // the fight goes on with it (11125830 enables Isshin 1120860 as it sets 9311).
+                let hand_over = ins.iter().any(|x| (x.0, x.1) == (2004, 5) && x.2.get(1).map(|v| *v as i64) == Some(1) && x.2.first().map(|v| *v as i64).is_some_and(|e| e != run.def.boss && run.def.chars.contains_key(&e)));
+                // The scripted loss: the flag with the boss still up and Wolf held at 1 HP by his
+                // immortality (the prologue Genichiro's 11125800: Wolf at 1 HP in 1122802 -> 9300,
+                // the arm-loss cutscene). The duel starts over.
+                let wolf_down = w.chars.get(&PLAYER).is_some_and(|c| c.hp <= 1.0);
+                if on && !boss_out && !hand_over && wolf_down && run.wolf_immortal && (9300..9400).contains(&i(0)) && !run.flag(i(0)) {
+                    acts.push(Act::ScriptedLoss);
+                }
+                if on && boss_out && !hand_over && (9300..9400).contains(&i(0)) && !run.flag(i(0)) {
+                    acts.push(Act::BossDefeat(1));
                 }
                 run.flags.insert(i(0), on);
             }
@@ -711,8 +805,28 @@ fn step(run: &mut Run, ev: usize, w: &World, dt: f32, acts: &mut Vec<Act>) {
             }
             (2003, 1) => acts.push(Act::ForceAnim(i(0), i(1), i(2) == 1)),
             (2003, 5) => acts.push(Act::Shoot(i(0), i(1), i(2), i(3))),
-            (2004, 61) => acts.push(Act::Warp(i(0), 0, i(0), false)),
-            (2003, 12) | (2003, 74) => acts.push(Act::BossDefeat),
+            // Attach Object to Character (character, dummy poly, object): it rides on the
+            // dummy from now on (the trees' o259920-922 on 600-602, m25 12505901), active as
+            // it was.
+            (2003, 58) => {
+                let active = run.attached.get(&i(2)).is_none_or(|o| o.2);
+                run.attached.insert(i(2), (i(0), i(1) as i16, active));
+            }
+            // (De)activate Object: an attached one's grapple edges count only while active
+            // (m25 12505906: a tree's point while it wears 5025-5027). gap: 2005[19] Set Object
+            // Interaction (switched with it there) is not modelled.
+            (2005, 3) => {
+                if let Some(o) = run.attached.get_mut(&i(0)) {
+                    o.2 = i(1) == 1;
+                }
+            }
+            (2004, 61) => acts.push(Act::Warp(i(0), 0, i(0), false, -1)),
+            // 2003[11] Display Boss Health Bar (state, entity, slot, name text id).
+            (2003, 11) => acts.push(Act::BossBar(i(1), i(0) == 1)),
+            // 2003[12] Handle Boss Defeat (gap: its banner taken as Shinobi Execution, not
+            // traced), 2003[74] ... and Display Banner (arg 1, Text Banner Type).
+            (2003, 12) => acts.push(Act::BossDefeat(1)),
+            (2003, 74) => acts.push(Act::BossDefeat(i(1))),
             (2003, 18) => acts.push(Act::ForceAnim(i(0), i(1), i(2) == 1)),
             (2002, 4) | (2002, 13) => acts.push(Act::CutsceneWarp(i(2))),
             (2004, 1) => acts.push(Act::AiState(i(0), i(1) == 1)),
@@ -725,7 +839,7 @@ fn step(run: &mut Run, ev: usize, w: &World, dt: f32, acts: &mut Vec<Act>) {
             (2004, 19) => acts.push(Act::AiId(i(0), i(1))),
             (2004, 20) => acts.push(Act::Replan(i(0))),
             (2004, 21) => acts.push(Act::ClearSp(i(0), i(1))),
-            (2004, 40) | (2004, 41) | (2004, 42) => acts.push(Act::Warp(i(0), i(1), i(2), *id == 41)),
+            (2004, 40) | (2004, 41) | (2004, 42) => acts.push(Act::Warp(i(0), i(1), i(2), *id == 41, i(3))),
             _ => {}
         }
         run.events[ev].pc = next;
@@ -754,12 +868,6 @@ fn end(run: &mut Run, ev: usize, restart: bool) {
     }
 }
 
-/// Wolf's event messages: his anim's TAE 936 (unk0) once started (the Todome's 10-13).
-/// gap: how long the exe keeps them is not traced; here while that anim plays.
-fn wolf_msg(combat: &Combat, pa: &Actor) -> Vec<i64> {
-    let Some(an) = combat.player.anim(&pa.anim) else { return Vec::new() };
-    an.events.iter().filter(|e| e.kind == super::TAE_EVENT_MESSAGE && e.start <= pa.t).filter_map(|e| e.arg_i64("unk0")).collect()
-}
 
 /// Starts a boss's script when its boss is on the field, runs every event, then applies what
 /// they did.
@@ -779,8 +887,14 @@ pub(super) fn run_scripts(
     mut throw: ResMut<crate::player::ActiveThrow>,
     mut q: Query<(Entity, &mut Enemy, &mut Actor, &mut Transform, Option<&Scripted>, Option<&mut Phantom>, Option<&mut Visibility>), Without<Player>>,
     mut brains: NonSendMut<super::Brains>,
+    wolf_immortal: Option<ResMut<WolfImmortal>>,
+    (dummies, markers, wolf_msg): (Query<&crate::model::Dummies>, Query<&GlobalTransform>, Res<super::WolfMessage>),
 ) {
     let dt = time.delta_secs();
+    // (Last frame's: Wolf's immortality as the script left it.)
+    if let Some(mut w) = wolf_immortal {
+        w.0 = bs.run.as_ref().is_some_and(|r| r.wolf_immortal);
+    }
     // Start: the first enemy whose NpcParam row has a script.
     if bs.run.is_none() {
         for (ent, e, a, _, s, _, _) in &q {
@@ -845,7 +959,7 @@ pub(super) fn run_scripts(
     wolf_sp.extend(pa.electro.map(|c| c.0));
     chars.insert(
         PLAYER,
-        Snap { pos: ptf.translation, hp: pa.hp, hp_max: pa.hp_max, msg: wolf_msg(&combat, pa), ai_state: 3, damaged: pa.hp < prev, sp: wolf_sp, ..Default::default() },
+        Snap { pos: ptf.translation, hp: pa.hp, hp_max: pa.hp_max, msg: wolf_msg.msg.into_iter().collect(), ai_state: 3, damaged: pa.hp < prev, grounded: !pa.airborne, sp: wolf_sp, ..Default::default() },
     );
     for (_, e, a, tf, s, ph, _) in &q {
         let Some(Scripted(id)) = s else { continue };
@@ -876,16 +990,37 @@ pub(super) fn run_scripts(
         // A death shows a frame late: the killing reaction's first event messages come first
         // (the Corrupted Monk's Todome ThrowDef13700 sends 10 at its start, which ends her
         // immortality: m25 12505965), and an immortal one lives on (see the end).
-        let dead = e.is_dead() && a.hp <= 0.0 && !run.dead_ids.insert(*id);
-        let prev = run.prev_hp.insert(*id, a.hp).unwrap_or(a.hp);
+        // And a deathblow kill only once Wolf's Ninsatsu hit has landed (enemy.rs
+        // ninsatsu_unhit: the exe applies the kill's damage in that hit, FUN_140b6e6a0, a211_511700
+        // at 1.23 s, a225_510090 at 5.9 s), as `bars` already does: IfDead / HP <= 0 events ran at
+        // the throw's first frame, so Gyoubu's Handle Boss Defeat (m11_00 11105800: IfDead, Wait
+        // 0.7) and the Won timer came ~8 s before the game's (clips.md: the banner 9.5 s after
+        // the fatal deathblow). The reaction's ChrActionFlag 12 "Death" (Gyoubu's a000_012090
+        // at 8.03 s) is not it: the exe's type-0 handler FUN_140b51b70 (140b5.c:7162) has no
+        // case 12, so the flag does nothing; death stays HP / state based (140bd.c:4165 SetHp,
+        // no-dead FUN_140bd5df0). gap: the clip's ~9.5 s banner vs the sim's 6.6 s is
+        // unexplained (the EMEVD IfCharacterDead handler is not located).
+        let pending = e.ninsatsu_unhit > 0;
+        // A boss killed by its last deathblow dies for the map script when its reaction's
+        // ChrActionFlag 12 "Death" starts (Gyoubu's a000_012090: f241 = 8.03 s; the all-bosses
+        // clip's banner 9.5 s after the lunge = 8.03 + 11105800's Wait 0.7 + the banner's fade-in),
+        // not at the Ninsatsu hit: the exe's dead test is HP <= 0 (FUN_140bd5d40, 140bd.c:3239)
+        // and SetHp clamps an immortal chr to 1, so only the kill routine FUN_1409fa0c0
+        // (1409f.c:6930, the unclamped FUN_140bd5590) ends it. gap: its caller - the flag's
+        // consumer - is not located; the flag's start stands for that moment.
+        let death_flag = d.anim(&a.anim).and_then(|an| an.events.iter().filter(|ev| ev.kind == 0 && ev.flag_type() == Some(12)).map(|ev| ev.start).reduce(f32::min));
+        let dead = e.is_dead() && a.hp <= 0.0 && !pending && death_flag.is_none_or(|s| a.t >= s) && !run.dead_ids.insert(*id);
+        let hp = if pending { a.hp.max(1.0) } else { a.hp };
+        let prev = run.prev_hp.insert(*id, hp).unwrap_or(hp);
         chars.insert(
             *id,
             Snap {
                 pos: tf.translation,
-                hp: a.hp,
+                hp,
                 hp_max: a.hp_max,
                 posture_ratio: if a.posture_max > 0.0 { (1.0 - a.posture / a.posture_max).max(0.0) } else { 1.0 },
-                bars: e.ninsatsu.0,
+                bars: e.ninsatsu_left(),
+                bars_max: e.ninsatsu.1,
                 dead,
                 sp,
                 msg: e.msg.into_iter().collect(),
@@ -894,13 +1029,16 @@ pub(super) fn run_scripts(
                     s if s >= crate::stealth::CAUTION => 2,
                     _ => 0,
                 },
-                damaged: a.hp < prev,
+                damaged: hp < prev,
+                grounded: !a.airborne,
             },
         );
     }
     // The boss lying dead with no defeat handled (its script waits on something this arena
     // lacks): the duel starts over. gap: no such rule in the game.
-    if chars.get(&run.def.boss).is_some_and(|c| c.dead) && run.defeated.is_none() && !kneeling {
+    // (Not while the next boss of the cast fights on: Isshin Ashina after Emma.)
+    let next_up = chars.iter().any(|(id, c)| *id != run.def.boss && !c.dead && run.def.chars.get(id).is_some_and(|d| scripts().contains_key(&d.npc)));
+    if chars.get(&run.def.boss).is_some_and(|c| c.dead) && run.defeated.is_none() && !kneeling && !next_up {
         run.dead_for += dt;
         if run.dead_for >= 15.0 {
             warn!("boss script: {} dead without a defeat event", run.row);
@@ -934,6 +1072,14 @@ pub(super) fn run_scripts(
             Act::Enable(id, true) => {
                 if id == PLAYER {
                     continue;
+                }
+                // The next boss coming in after a handled defeat: the fight goes on with him
+                // (Isshin Ashina after Emma: m11_01 11115930 on her defeat event 11115900's flag).
+                // (Only a boss of its own row: the Demon's c1001 dummy 1100955 comes back on after
+                // his defeat and must not undo it.)
+                let next_boss = id != run.def.boss && run.def.chars.get(&id).is_some_and(|c| scripts().contains_key(&c.npc));
+                if next_boss && run.defeated.take().is_some() {
+                    info!("boss script: {} goes on with {id}", run.row);
                 }
                 if let Some(&ent) = run.ents.get(&id) {
                     // Back where it was disabled.
@@ -1000,9 +1146,23 @@ pub(super) fn run_scripts(
                 }
 
             }
-            Act::Warp(_, ty, _, _) if ty != 2 && crate::map::on_boss_arena() && !super::on_own_arena() => {}
-            Act::Warp(who, ty, target, short) => {
+            Act::Warp(_, ty, _, _, _) if ty != 2 && crate::map::on_boss_arena() && !super::on_own_arena() => {}
+            Act::Warp(who, ty, target, short, dmy) => {
+                // Onto a character's dummy poly (2004[42] Warp Character and Copy Floor: the
+                // Divine Dragon's trees c5310 onto its dummies 50 / 53-56, m25 12505901), facing
+                // the dummy's +Z. Without the model's dummies (or -1): the character's root.
+                let on_dummy = (ty == 2 && dmy >= 0)
+                    .then(|| ent_of(run, target))
+                    .flatten()
+                    .and_then(|t| dummies.get(t).ok())
+                    .and_then(|d| crate::combat::dmy_entity(d, dmy))
+                    .and_then(|m| markers.get(m).ok())
+                    .map(|g| {
+                        let f = g.rotation() * Vec3::Z;
+                        (g.translation(), f32::atan2(-f.x, -f.z))
+                    });
                 let to = match ty {
+                    _ if on_dummy.is_some() => on_dummy,
                     2 if target == PLAYER => Some((player.1.translation, player.0.yaw)),
                     2 => ent_of(run, target).and_then(|t| q.get(t).ok()).map(|x| (x.3.translation, x.2.yaw)),
                     _ => run.place_of(target),
@@ -1033,9 +1193,9 @@ pub(super) fn run_scripts(
                 // The target's own height: the place's MSB height on the boss's own arena
                 // (events::place; off it the place is at start.y anyway) or the character's.
                 tf.translation = pos;
-                // gap: the dummy poly offset is dropped; a warp onto another character faces Wolf.
+                // A warp onto another character's root faces Wolf (gap: not traced).
                 let to_p = (player.1.translation - tf.translation).with_y(0.0);
-                a.yaw = if ty == 2 && to_p.length_squared() > 1e-4 { f32::atan2(-to_p.x, -to_p.z) } else { yaw };
+                a.yaw = if ty == 2 && on_dummy.is_none() && to_p.length_squared() > 1e-4 { f32::atan2(-to_p.x, -to_p.z) } else { yaw };
                 a.move_vel = Vec3::ZERO;
                 if let Some(mut ph) = ph {
                     if ph.out {
@@ -1051,14 +1211,41 @@ pub(super) fn run_scripts(
                     }
                 }
             }
-            Act::BossDefeat => {
-                run.defeated.get_or_insert(0.0);
+            Act::Immortal(PLAYER, on) => run.wolf_immortal = on,
+            Act::ScriptedLoss => {
+                warn!("boss script: {} scripted loss", run.row);
+                fight.0 = true;
+                return;
+            }
+            Act::BossBar(id, on) => {
+                if on {
+                    run.bar = Some(id);
+                } else if run.bar == Some(id) {
+                    run.bar = None;
+                }
+            }
+            Act::BossDefeat(banner) => {
+                // Not while another boss of the cast is still to come (a boss row of its own,
+                // never on the field yet): Emma's defeat (m11_01 11115900) is followed by Isshin
+                // Ashina 1110920 (54300000), whom 11115930 enables on her defeat event's flag.
+                let next_boss = run.def.chars.iter().any(|(id, c)| *id != run.def.boss && !run.ents.contains_key(id) && !run.dead_ids.contains(id) && scripts().contains_key(&c.npc));
+                if !next_boss && run.defeated.is_none() {
+                    run.defeated = Some(0.0);
+                    run.banner = banner;
+                }
             }
             Act::Shoot(owner, source, dmy, behavior) => {
                 let Some(&first) = run.def.bullets.get(&behavior.to_string()) else { continue };
+                // The source may be a region: Isshin Ashina's volley (m11_01 11115944) fires
+                // 254000382 (a still 1.5 m fire spot, life 1.5 s) at 33 "炎弾丸射出点" spheres
+                // 1112962-994 (1112960 / 961 are in no MSB: dropped). Its owner 1110921 is a c1000
+                // dummy (NpcParam 10006000) no event enables; the boss stands in for it. gap: the
+                // dummy's own NpcParam scaling of the shots.
                 let src = if source == PLAYER { Some(wolf.0) } else { ent_of(run, source) };
-                let (Some(owner), Some(source)) = (ent_of(run, owner), src) else { continue };
-                shots.0.push(crate::enemy_bullet::ScriptShot { def: run.def.clone(), row: first, owner, source, dmy: dmy as i16 });
+                let at = if src.is_none() { run.def.regions.contains_key(&source).then(|| run.place_of(source)).flatten().map(|p| p.0) } else { None };
+                let Some(owner) = ent_of(run, owner).or_else(|| at.and_then(|_| ent_of(run, run.def.boss))) else { continue };
+                let Some(source) = src.or(at.map(|_| owner)) else { continue };
+                shots.0.push(crate::enemy_bullet::ScriptShot { def: run.def.clone(), row: first, owner, source, dmy: dmy as i16, at });
             }
             Act::EzState(PLAYER, id) => {
                 // Not while his deathblow holds one that was already finished before these
@@ -1117,6 +1304,9 @@ pub(super) fn run_scripts(
         }
         a.hp = 1.0;
         if e.is_dead() {
+            // (ninsatsu_unhit stays: the count drops at Wolf's Ninsatsu hit, enemy.rs ninsatsu_hit.
+            // Zeroed here, the castle Genichiro's 11115820 "bars == 0" ran on the throw's first
+            // frame, 0.8 s before his a211_510000 judge; boss bug hunt 2026-10-14.)
             e.ninsatsu.0 = 0;
             e.throw_death = None;
             e.mode = Mode::Held(false);
@@ -1132,6 +1322,15 @@ fn apply(combat: &Combat, brains: &mut super::Brains, ent: Entity, e: &mut Enemy
     let d = combat.data_of(a);
     match act {
         Act::SetSp(_, sp) => {
+            // An instant row (effectEndurance 0) changes HP as it lands, each time it is set: the
+            // Old Dragons' 3530020 (changeHpRate 4) on their shared bar 2500810 per dragon felled
+            // (m25 12505803).
+            if let Some(c) = crate::data::sp_cycle(sp).filter(|c| c.endurance == 0.0) {
+                let dmg = a.hp_max * c.hp_rate / 100.0 + c.hp_point;
+                if dmg != 0.0 && a.hp > 0.0 {
+                    a.hp = (a.hp - dmg).clamp(0.0, a.hp_max);
+                }
+            }
             if !a.resident.contains(&sp) {
                 a.resident.push(sp);
             }
@@ -1139,7 +1338,12 @@ fn apply(combat: &Combat, brains: &mut super::Brains, ent: Entity, e: &mut Enemy
                 a.anim_group = g;
             }
         }
-        Act::ClearSp(_, sp) => a.resident.retain(|&x| x != sp),
+        Act::ClearSp(_, sp) => {
+            // Clearing the SpEffect that set the anim group gives the residents' group back
+            // (as spawn / respawn derive it).
+            a.resident.retain(|&x| x != sp);
+            a.anim_group = super::anim_group_of(d, a.resident.iter().copied()).unwrap_or(0);
+        }
         Act::AiCommand(_, cmd, slot) => {
             if let Some(mut ph) = ph {
                 if !ph.out {
@@ -1153,6 +1357,7 @@ fn apply(combat: &Combat, brains: &mut super::Brains, ent: Entity, e: &mut Enemy
             }
             e.event_req.retain(|&(s, _)| s != slot);
             e.event_req.push((slot, cmd));
+            e.event_req_new = true;
         }
         Act::Replan(_) => e.phase_replan = true,
         Act::AiId(_, think) => {
@@ -1188,6 +1393,9 @@ fn apply(combat: &Combat, brains: &mut super::Brains, ent: Entity, e: &mut Enemy
             if e.mode == Mode::Dead(f32::INFINITY) {
                 return;
             }
+            if !takes_throw_transition(d, a, &e.clash) {
+                return;
+            }
             if !play_event(d, a, id) {
                 return;
             }
@@ -1203,12 +1411,16 @@ fn apply(combat: &Combat, brains: &mut super::Brains, ent: Entity, e: &mut Enemy
                 e.down = true;
                 e.mode = Mode::Held(false);
             } else if e.ninsatsu.0 == 0 {
-                // Getting up from it (the Ape's 20000 after his 20200).
-                // gap: what the game gives back is not traced: full HP, posture and one bar.
+                // Getting up from it (the Guardian Ape's 20000 after his Todome): full HP (his
+                // a000_020000's TAE 401000 "enemy HP full recovery", changeHpRate -100, at
+                // 0.03 s; set here at once) and one more deathblow on top of the one taken: the
+                // finishers clip (2:48) shows his headless phase with two dots, one used.
+                // gap: posture (taken as reset) is not traced.
                 e.down = false;
                 a.hp = a.hp_max;
                 a.posture = 0.0;
-                e.ninsatsu.0 = e.ninsatsu.1.max(1);
+                e.ninsatsu = (1, e.ninsatsu.1.max(1) + 1);
+                e.ninsatsu_unhit = 0;
                 e.mode = Mode::Rising(len);
             } else {
                 e.mode = Mode::Rising(len);
@@ -1219,6 +1431,7 @@ fn apply(combat: &Combat, brains: &mut super::Brains, ent: Entity, e: &mut Enemy
             if !(e.is_dead() && a.hp <= 0.0) {
                 a.hp = 0.0;
                 e.ninsatsu.0 = 0;
+                e.ninsatsu_unhit = 0;
                 e.cur_ez = None;
                 if !a.play_state(d, "DeathStart") && !a.play_state(d, "Event20200") {
                     a.procedural("Dead");
@@ -1231,6 +1444,27 @@ fn apply(combat: &Combat, brains: &mut super::Brains, ent: Entity, e: &mut Enemy
 }
 
 /// Plays EzState / anim `id` (state Event<id>, else its clip a000_<id> in the anim set).
+/// c9997.hks: in a throw reaction an NPC takes an EzState request (ExecEventTrandition, event
+/// slot THROW_TRANSITION: 20200, 20000, 21000, ...) only where its ThrowDef<N>_onUpdate gets
+/// there: most of them, through ThrowDefCommonFunction / ThrowDefDeathCommonFunction ->
+/// ThrowCommonFunction, and 12090 / 12190 / 13290 / 13690 / 13700 directly. These never do,
+/// and ThrowDef12900 / 12950 (the finishers, Isshin's a100_012900) only while a SpEffect with
+/// behaviorRefId 1501000 (SP_EFFECT_REF_5010_EVENT_TRANSITION), 1000160 or 1000161
+/// (SAME_THRWO_DEF / _DEATH) is on. So m11_02 11125874, which Wolf's finisher a243_510900
+/// re-arms with its message 10 at 6.63 s, does not cut Isshin's 12900 before its message 30
+/// (his defeat, 11125860; manual test #6).
+fn takes_throw_transition(d: &crate::data::CharData, a: &Actor, clash: &[(i64, f32)]) -> bool {
+    const NEVER: [i64; 12] = [12210, 12230, 13210, 13230, 14000, 14100, 14200, 14300, 17210, 17230, 18210, 18230];
+    let Some(n) = a.state.strip_prefix("ThrowDef").and_then(|n| n.parse::<i64>().ok()) else { return true };
+    if NEVER.contains(&n) {
+        return false;
+    }
+    if n == 12900 || n == 12950 {
+        return crate::combat::worn_sp(a, clash).iter().any(|id| d.sp_effects.get(&id.to_string()).is_some_and(|s| [1501000, 1000160, 1000161].contains(&s.behavior_ref_id)));
+    }
+    true
+}
+
 fn play_event(d: &crate::data::CharData, a: &mut Actor, id: i64) -> bool {
     let state = format!("Event{id}");
     if a.play_state(d, &state) {

@@ -73,6 +73,8 @@ Dated findings, oldest first. Append new entries at the end.
   attack/step 0 %, guard 200 %); row 0 was not exported before, so those ratios now actually apply. Test added.
 - 2026-10-06: vitality emptied by hits opens the deathblow like a posture break (was: enemy left un-hittable at 0 HP);
   after an unused window the enemy is back at 1 HP so the next hit reopens it. Dead enemies are not hittable.
+  2026-10-13: only for enemies with deathblows left (NpcParam ninsatuNum > 0) or a stateInfo-143 SpEffect (exe
+  IsNoDead); ninsatuNum-0 rows die at 0 HP through ExecDeath (HANDOFF 4.42 "Rule change").
 - 2026-10-06: deathblow window corrected: every break anim applies SpEffect 220420 (stateInfo 352 "trunk display:
   collapsed") on frames 0-75 = the deathblow indicator -> window 2.5 s (was flag 86 at 85). Exe FUN_140a02a10 derives
   the posture display state (0 ok / 1 danger / 2 empty / 3 collapsed while 352) from current stamina; the post-window

@@ -36,7 +36,7 @@ use crate::player::{CAPSULE_HALF_HEIGHT, Player};
 #[derive(Component)]
 pub struct EnemyBullet {
     spec: BulletSpec,
-    shooter: Entity,
+    pub(crate) shooter: Entity,
     /// The shooter's enemy kind (its Bullet rows).
     kind: usize,
     vel: Vec3,
@@ -49,12 +49,27 @@ pub struct EnemyBullet {
     next_interval: f32,
     /// Height of the floor it lands on (Wolf's feet when it was fired).
     floor: f32,
-    hit: bool,
+    pub(crate) hit: bool,
+    /// Its age when it last hit Wolf (dmgHitRecordLifeTime).
+    last_hit: f32,
     /// Fired by a boss script: its rows.
     script: Option<Arc<ScriptDef>>,
     /// The shot it belongs to: a fan's pellets and their children share it (isUseSharedHitList).
     chain: u32,
+    /// Its flying effect (sfxId_Bullet, or the parent's with isInheritSfxToChild), riding on it.
+    fx: Option<Entity>,
+    /// The effect its children inherit (-1: none).
+    inherit_sfx: i64,
+    /// Its hit went to combat.rs with its effects (Attack::bullet_fx).
+    fx_handed: bool,
+    /// A growing bullet's next attack re-issue (age, s) and whether its last one went.
+    reissue_at: f32,
+    reissued: bool,
 }
+
+/// A growing bullet's attack re-issue period: the countdown at bullet+0x20 is reset to
+/// 0x3e2aaaab (1/6 s) after each (140b0.c:8412 / 8631).
+const REISSUE_PERIOD: f32 = 1.0 / 6.0;
 
 /// A boss script's Shoot Bullet this frame: its first Bullet row, the owner (whose attack it is)
 /// and where it leaves from (`source`'s dummy poly).
@@ -64,6 +79,8 @@ pub struct ScriptShot {
     pub owner: Entity,
     pub source: Entity,
     pub dmy: i16,
+    /// A region source's arena position (the shot leaves from there, not `source`).
+    pub at: Option<Vec3>,
 }
 
 #[derive(Resource, Default)]
@@ -74,27 +91,100 @@ pub struct EnemyBulletPlugin;
 impl Plugin for EnemyBulletPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<ScriptShots>()
+            .init_resource::<TargetTrack>()
             .add_message::<crate::gore::PlaceStain>()
-            .add_systems(FixedUpdate, (fire, fire_scripted, fly).chain().after(ActorSet::Advance).after(crate::anim::PoseSet).before(ActorSet::Resolve))
+            .add_systems(FixedUpdate, (track, fire, fire_scripted, fly).chain().after(ActorSet::Advance).after(crate::anim::PoseSet).before(ActorSet::Resolve))
             .add_systems(Update, draw.run_if(resource_exists::<GizmoConfigStore>));
     }
 }
 
 /// A bullet that can hurt: an AtkParam with damage or posture damage (the gong's 60 m "sound"
-/// bullets and the system dummies have none).
+/// bullets and the system dummies have none), or a reaction of its own (atkBehaviorId: the
+/// Divine Dragon's 0-damage blast 52000820 / wind 52000830; round 39).
+/// SpEffectVfx 48100 (SpEffect 211000): initSfxId 600035 at initDmyId 220.
+const PERILOUS_SFX: i64 = 600035;
+const PERILOUS_DMY: i16 = 220;
+
 fn harmful(spec: &BulletSpec) -> bool {
-    spec.attack.as_ref().is_some_and(|a| a.oppose_target != 0 && (a.npc_damage() > 0.0 || a.atk_stam > 0.0 || a.direct_atk_stam_damage > 0.0 || matches!(a.sp_attribute, 6 | 10)))
+    spec.attack.as_ref().is_some_and(|a| a.oppose_target != 0 && (a.npc_damage() > 0.0 || a.atk_stam > 0.0 || a.direct_atk_stam_damage > 0.0 || matches!(a.sp_attribute, 6 | 10) || a.atk_behavior_id != 0))
 }
 
-/// The Bullet row's SpEffects for Wolf (not the Lightning Reversal charges 9490 / 9495: the
-/// catch in combat.rs gives those).
+/// The Bullet row's SpEffects for Wolf (not the Lightning Reversal charges 9490-9495: the
+/// catch / ground shock in combat.rs takes those from the hit, see `charge`).
 fn sp_effects(spec: &BulletSpec) -> impl Iterator<Item = i64> {
-    [spec.sp_effect_id0, spec.sp_effect_id1, spec.sp_effect_id2, spec.sp_effect_id3, spec.sp_effect_id4].into_iter().filter(|id| *id > 0 && !matches!(id, 9490 | 9495))
+    [spec.sp_effect_id0, spec.sp_effect_id1, spec.sp_effect_id2, spec.sp_effect_id3, spec.sp_effect_id4].into_iter().filter(|id| *id > 0 && !(9490..=9495).contains(id))
+}
+
+/// The Bullet row's lightning charge (SpEffect 9490-9495). A lightning arrow (c7110 71100521:
+/// spEffectId1 9492, its AtkParam carries none; a000_003039 / 003047 / 003048, c7100 71000520)
+/// charges and shocks Wolf through this row alone, so it rides on the hit's slot 0 for combat.rs.
+fn charge(spec: &BulletSpec) -> Option<i64> {
+    [spec.sp_effect_id0, spec.sp_effect_id1, spec.sp_effect_id2, spec.sp_effect_id3, spec.sp_effect_id4].into_iter().find(|id| (9490..=9495).contains(id))
+}
+
+/// Wolf's recent moves for predictive shots: the exe keeps a 240-entry ring of {delta, dt} on
+/// each character (FUN_1405ac4e0 writes it; FUN_1405ac1b0, 1405a.c:9189, averages it).
+#[derive(Resource, Default)]
+pub(crate) struct TargetTrack {
+    last: Option<Vec3>,
+    ring: std::collections::VecDeque<(Vec3, f32)>,
+}
+
+impl TargetTrack {
+    pub(crate) fn push(&mut self, pos: Vec3, dt: f32) {
+        if let Some(last) = self.last {
+            self.ring.push_front((pos - last, dt));
+            self.ring.truncate(240);
+        }
+        self.last = Some(pos);
+    }
+
+    /// The average velocity over the last `window` seconds: sum(delta) / sum(dt).
+    pub(crate) fn velocity(&self, window: f32) -> Vec3 {
+        let (mut d, mut t) = (Vec3::ZERO, 0.0);
+        for &(delta, dt) in &self.ring {
+            if t >= window {
+                break;
+            }
+            d += delta;
+            t += dt;
+        }
+        if t > 0.0 { d / t } else { Vec3::ZERO }
+    }
+}
+
+fn track(time: Res<Time>, player: Query<&Transform, With<Player>>, mut track: ResMut<TargetTrack>) {
+    if let Ok(tf) = player.single() {
+        track.push(tf.translation, time.delta_secs());
+    }
+}
+
+/// The predictive aim (FUN_140b05b80, 140b0.c:3144): the target walks on at its average velocity
+/// in 1/30 s steps while a bullet flies its speed profile (initVellocity, accelIn / OutRange
+/// past `dist`, min / max), until the bullet has flown as far as the moved target is. No
+/// gravity; the plain target when the speed or the velocity is about zero.
+pub fn predict(spec: &BulletSpec, from: Vec3, target: Vec3, vel: Vec3) -> Vec3 {
+    const STEP: f32 = 1.0 / 30.0;
+    if vel.length_squared() < 1e-6 || spec.init_vellocity.max(spec.min_vellocity) <= 1e-4 {
+        return target;
+    }
+    let (mut at, mut speed, mut flown) = (target, spec.init_vellocity, 0.0f32);
+    for _ in 0..(4.0 / STEP) as usize {
+        if flown >= at.distance(from) {
+            break;
+        }
+        at += vel * STEP;
+        speed += if flown > spec.dist { spec.accel_out_range } else { spec.accel_in_range } * STEP;
+        speed = if speed < spec.min_vellocity { spec.min_vellocity } else { speed.min(spec.max_vellocity) };
+        flown += speed * STEP;
+    }
+    at
 }
 
 fn fire(
     mut commands: Commands,
     combat: Res<Combat>,
+    track: Res<TargetTrack>,
     enemies: Query<(Entity, &Actor, &Transform, &Enemy, Option<&Dummies>)>,
     player: Query<&Transform, With<Player>>,
     markers: Query<&GlobalTransform>,
@@ -106,9 +196,12 @@ fn fire(
             continue;
         }
         let Some(anim) = d.anim(&a.anim) else { continue };
-        let crosses = |ev: &crate::data::Event| ((ev.start > a.prev_t && ev.start <= a.t) || (a.prev_t == 0.0 && ev.start == 0.0)) && d.fires(ev);
+        // Gated by its live SpEffects (combat::event_gates: Lady Butterfly's 3509200 -> 184).
+        let gates = crate::combat::event_gates(&combat, a, &e.clash);
+        let crosses = |ev: &crate::data::Event| ((ev.start > a.prev_t && ev.start <= a.t) || (a.prev_t == 0.0 && ev.start == 0.0)) && d.fires_on(ev, gates.as_deref());
         for ev in anim.events.iter().filter(|ev| ev.kind == 2 && crosses(ev)) {
-            let judge = ev.arg_i64("BehaviorJudgeID").unwrap_or(-1);
+            // Shifted by its worn SpEffects (data::shift_judge: the Nightjars' 3145040, 700 -> 701).
+            let judge = crate::data::shift_judge(ev.arg_i64("BehaviorJudgeID").unwrap_or(-1), &crate::combat::worn_sp(a, &e.clash));
             let Some(spec) = d.bullets.get(&judge.to_string()) else { continue };
             let dmy = ev.arg_i64("DummyPolyID").unwrap_or(-1) as i16;
             let from = dummies
@@ -116,10 +209,17 @@ fn fire(
                 .and_then(|&m| markers.get(m).ok())
                 .map(|g| g.translation())
                 .unwrap_or(tf.translation + a.forward() * 0.5 + Vec3::Y * 0.6);
-            // Aimed at Wolf's chest when he is within lockShootLimitAng of the facing.
+            // Aimed at Wolf's chest when he is within lockShootLimitAng of the facing; a row with
+            // predictionShootObserveTime leads him by his average velocity over that window
+            // (FUN_140b0acf0), and that aim too must lie within the angle.
             let mut dir = a.forward();
             if let Some(t) = target {
-                let to = (t + Vec3::Y * 0.3 - from).normalize_or_zero();
+                let mut aim = t + Vec3::Y * 0.3;
+                let window = crate::data::prediction_observe_time(spec.bullet_id);
+                if window > 0.0 {
+                    aim = predict(spec, from, aim, track.velocity(window));
+                }
+                let to = (aim - from).normalize_or_zero();
                 if to.with_y(0.0).normalize_or_zero().angle_between(a.forward()).to_degrees() <= spec.lock_shoot_limit_ang.max(1.0) {
                     dir = to;
                 }
@@ -143,11 +243,9 @@ fn fire_scripted(
     for shot in shots.0.drain(..) {
         let (Ok((oa, otf, _)), Ok((sa, stf, dummies))) = (actors.get(shot.owner), actors.get(shot.source)) else { continue };
         let Some(spec) = shot.def.bullet_rows.get(&shot.row.to_string()) else { continue };
-        let from = dummies
-            .and_then(|dm| dm.0.get(&shot.dmy))
-            .and_then(|&m| markers.get(m).ok())
-            .map(|g| g.translation())
-            .unwrap_or(stf.translation + Vec3::Y);
+        let from = shot.at.unwrap_or_else(|| {
+            dummies.and_then(|dm| dm.0.get(&shot.dmy)).and_then(|&m| markers.get(m).ok()).map(|g| g.translation()).unwrap_or(stf.translation + Vec3::Y)
+        });
         let floor = floor.unwrap_or(otf.translation.y);
         spawn_row(&mut commands, spec, shot.owner, oa.kind, from, sa.forward(), floor, Some(shot.def.clone()));
     }
@@ -159,13 +257,17 @@ fn fire_scripted(
 pub(crate) fn spawn_row(commands: &mut Commands, spec: &BulletSpec, shooter: Entity, kind: usize, pos: Vec3, dir: Vec3, floor: f32, script: Option<Arc<ScriptDef>>) {
     static CHAIN: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
     let chain = CHAIN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    spawn_chain(commands, spec, shooter, kind, pos, dir, floor, script, chain);
+    spawn_chain(commands, spec, shooter, kind, pos, dir, floor, script, chain, -1);
 }
 
 /// [`spawn_row`] in an existing shot's chain (a child bullet).
 #[allow(clippy::too_many_arguments)]
-fn spawn_chain(commands: &mut Commands, spec: &BulletSpec, shooter: Entity, kind: usize, pos: Vec3, dir: Vec3, floor: f32, script: Option<Arc<ScriptDef>>, chain: u32) {
+fn spawn_chain(commands: &mut Commands, spec: &BulletSpec, shooter: Entity, kind: usize, pos: Vec3, dir: Vec3, floor: f32, script: Option<Arc<ScriptDef>>, chain: u32, inherited: i64) {
     let flat = dir.with_y(0.0).normalize_or(Vec3::NEG_Z);
+    // The game's Bullet effect fields, as prosthetic::spawn_row: its own sfxId_Bullet, else the
+    // parent's when that one passes it on (isInheritSfxToChild).
+    let sfx = if spec.sfx_id_bullet > 0 { spec.sfx_id_bullet } else { inherited };
+    let inherit_sfx = if spec.is_inherit_sfx_to_child != 0 { sfx } else { -1 };
     for i in 0..spec.num_shoot.max(1) {
         let yaw = (spec.shoot_angle + i as f32 * spec.shoot_angle_interval).to_radians();
         let mut d = if spec.shoot_angle == 0.0 && spec.shoot_angle_interval == 0.0 { dir } else { Quat::from_rotation_y(-yaw) * flat };
@@ -173,7 +275,11 @@ fn spawn_chain(commands: &mut Commands, spec: &BulletSpec, shooter: Entity, kind
             let right = d.cross(Vec3::Y).normalize_or(Vec3::X);
             d = Quat::from_axis_angle(right, spec.shoot_angle_xz.to_radians()) * d;
         }
-        commands.spawn((
+        // With its GlobalTransform from the start: the effect riding on it reads it this frame.
+        let at = Transform::from_translation(pos).with_rotation(Quat::from_rotation_arc(Vec3::NEG_Z, d.normalize_or(Vec3::NEG_Z)));
+        let bullet = commands.spawn((at, GlobalTransform::from(at))).id();
+        let fx = (sfx > 0).then(|| commands.spawn(crate::fxr::FxEffect::new(sfx, Some(crate::fxr::Anchor::Entity(bullet)), true, at)).id());
+        commands.entity(bullet).insert((
             EnemyBullet {
                 spec: spec.clone(),
                 shooter,
@@ -183,13 +289,18 @@ fn spawn_chain(commands: &mut Commands, spec: &BulletSpec, shooter: Entity, kind
                 travelled: 0.0,
                 out_of_range: 0.0,
                 age: 0.0,
+                reissue_at: REISSUE_PERIOD,
+                reissued: false,
                 next_interval: spec.interval_create_wait_time,
                 floor,
                 hit: false,
+                last_hit: 0.0,
                 script: script.clone(),
                 chain,
+                fx,
+                inherit_sfx,
+                fx_handed: false,
             },
-            Transform::from_translation(pos),
             Name::new(format!("Enemy bullet {}", spec.bullet_id)),
         ));
     }
@@ -205,15 +316,40 @@ fn fly(
     mut shooters: Query<&mut Actor, (With<Enemy>, Without<Player>)>,
     markers: Query<&GlobalTransform>,
     mut stains: MessageWriter<crate::gore::PlaceStain>,
-    (mut statuses, config): (ResMut<crate::status::Statuses>, Res<crate::config::GameConfig>),
-    mut shared_hit: Local<std::collections::HashSet<u32>>,
+    (mut statuses, config, mut perilous): (ResMut<crate::status::Statuses>, Res<crate::config::GameConfig>, Option<ResMut<crate::hud::Perilous>>),
+    (mut fxr, wolf_dummies, mut effects): (Option<ResMut<crate::fxr::FxrLib>>, Query<&crate::model::Dummies, With<Player>>, Query<&mut crate::fxr::FxEffect>),
+    // Each shot's hit on Wolf until when (its dmgHitRecordLifeTime; none: for good).
+    (mut shared_hit, mut clock): (Local<std::collections::HashMap<u32, f32>>, Local<f32>),
+    mut ai_sounds: Option<ResMut<crate::enemy::AiSounds>>,
 ) {
     let dt = time.delta_secs();
+    *clock += dt;
+    let now = *clock;
     let mut wolf = player.single_mut().ok();
     for (be, mut b, mut btf) in &mut bullets {
         let script = b.script.clone();
         let rows = script.as_ref().map_or(&combat.kind(b.kind).data.bullet_rows, |s| &s.bullet_rows);
         let row = |id: i64| if id > 0 { rows.get(&id.to_string()) } else { None };
+        // AtkParam AppearAiSoundId: a bullet issues its own attack as it starts (FUN_140b0fc60 ->
+        // FUN_1409a1290's bullet branch, 1409a.c:2243-2276): at the bullet, owned by its shooter.
+        // A growing one (spreadTime > 0, hitRadiusMax set and not hitRadius) re-issues it every
+        // 1/6 s while it grows and once more when it has (FUN_140b20b70 from 140b0.c:8408 /
+        // 8627), each with the sound again.
+        let growing = b.spec.spread_time > 0.0 && b.spec.hit_radius_max >= 0.0 && b.spec.hit_radius_max != b.spec.hit_radius;
+        let reissue = growing && !b.reissued && b.age > 0.0 && (b.age > b.spec.spread_time || b.age >= b.reissue_at);
+        if reissue {
+            if b.age > b.spec.spread_time {
+                b.reissued = true;
+            } else {
+                b.reissue_at += REISSUE_PERIOD;
+            }
+        }
+        if b.age == 0.0 || reissue {
+            if let (Some(s), Some(atk)) = (ai_sounds.as_mut(), b.spec.attack.as_ref()) {
+                let team = shooters.get(b.shooter).ok().map(|a| crate::combat::team_of(&combat, a));
+                s.emit(&combat, crate::data::atk_ai_sounds(false, atk.atk_param_id).0, btf.translation, Some(b.shooter), team);
+            }
+        }
         b.age += dt;
         let aim = wolf.as_ref().map(|w| w.1.translation + Vec3::Y * 0.3);
         // FollowType 3 "follow target": it rides on Wolf (his chest, where `fire` aims).
@@ -249,18 +385,35 @@ fn fly(
         if let Some(child) = row(b.spec.interval_create_bullet_id) {
             while b.age >= b.next_interval && b.spec.interval_create_time_min > 0.0 {
                 b.next_interval += b.spec.interval_create_time_min;
-                spawn_chain(&mut commands, child, b.shooter, b.kind, to, dir, b.floor, script.clone(), b.chain);
+                spawn_chain(&mut commands, child, b.shooter, b.kind, to, dir, b.floor, script.clone(), b.chain, b.inherit_sfx);
             }
         }
         let expired = b.spec.life >= 0.0 && b.age > b.spec.life + 1e-4;
         let mut ended = landed || expired;
         // isUseSharedHitList: one hit on Wolf per shot (a fan's pellets, its children), as
-        // prosthetic.rs SharedHits; the others fly through him.
-        let shared_done = false && shared_hit.contains(&b.chain);
-        if !b.hit && !shared_done && (harmful(&b.spec) || sp_effects(&b.spec).next().is_some()) {
+        // prosthetic.rs SharedHits; the others fly through him. Till the hit record runs out.
+        let shared_done = b.spec.is_use_shared_hit_list != 0 && shared_hit.get(&b.chain).is_some_and(|until| now < *until);
+        // A penetrating bullet's hit record runs out after dmgHitRecordLifeTime (c1030's fire
+        // 10300240: life 5, record 0.5): it may hit again (round 29; gap: inferred from the
+        // values, no exe trace).
+        let recorded = b.hit && !(b.spec.dmg_hit_record_life_time > 0.0 && b.age - b.last_hit >= b.spec.dmg_hit_record_life_time - 1e-4);
+        // A carrier with no damage and no SpEffects still touches Wolf when it targets him
+        // (opposeTarget) or carries a HitBulletID: c1100's poison spit 11000020 ends on him and
+        // its child 11000021 (spEffect 9011) comes there, not where the spit lands (round 29).
+        let touches_wolf = harmful(&b.spec)
+            || sp_effects(&b.spec).next().is_some()
+            || b.spec.hit_bullet_id > 0
+            || b.spec.attack.as_ref().is_some_and(|a| a.oppose_target != 0);
+        if !recorded && !shared_done && touches_wolf {
             if let Some((we, wtf, hurt, p, wa)) = wolf.as_mut() {
                 let (we, wtf, hurt, wa) = (*we, *wtf, *hurt, *wa);
-                let r = b.spec.hit_radius;
+                // hitRadius growing to hitRadiusMax over spreadTime (c1250 bullet 100: 0.2 -> 1.2 over
+                // 0.8 s; gap: the param names only, linear).
+                let r = if b.spec.hit_radius_max > b.spec.hit_radius && b.spec.spread_time > 0.0 {
+                    b.spec.hit_radius + (b.spec.hit_radius_max - b.spec.hit_radius) * (b.age / b.spec.spread_time).min(1.0)
+                } else {
+                    b.spec.hit_radius
+                };
                 let touches = match hurt {
                     Some(h) => h.0.iter().any(|&(ma, mb, hr)| match (markers.get(ma), markers.get(mb)) {
                         (Ok(pa), Ok(pb)) => segment_distance(from, to, pa.translation(), pb.translation()) <= r + hr,
@@ -273,16 +426,47 @@ fn fly(
                 };
                 // Wolf's iframes (TAE 950 / 951 / 954, combat.rs dodged) let it pass through, before
                 // anything lands (2026-10-12 bug hunt round 10: a dodged bullet still poisoned or
-                // burned him and was used up).
-                let dodged = touches && crate::combat::dodged(&combat, wa, None, b.spec.attack.as_ref().unwrap_or(&crate::data::Attack::default()));
+                // burned him and was used up). His corpse in the death loop the same: its poison /
+                // burn build-up and timed SpEffects landed after the loop's 8002-8009 cure
+                // (2026-10-13 bug hunt round 23).
+                let dodged = touches && (wa.hp <= 0.0 || crate::combat::dodged(&combat, wa, None, b.spec.attack.as_ref().unwrap_or(&crate::data::Attack::default())));
                 if touches && !dodged {
                     b.hit = true;
+                    b.last_hit = b.age;
+                    // The perilous warning is a dummy bullet (Bullet <chr>980 / 982 / 983: 2 m, 0.1 s,
+                    // SpEffect 211000) that has to reach Wolf: the kanji goes up on its hit, not for
+                    // any enemy anywhere (round 31). 211000's SpEffectVfx 48100 "Kanji 危" plays
+                    // initSfxId 600035 once on his dummy 220: the kanji is that effect, its time on
+                    // screen the effect's own. The HUD text stands in only without the effect.
+                    // Any warning bullet (<chr>980-989 all carry 211000; Isshin's 986 / 987, the
+                    // Way of Tomoe's 984-989 incl. the lightning 988): the kanji is 211000's, not the
+                    // id suffix's (the suffix only names the kind for the HUD stand-in).
+                    let warn = b.spec.bullet_id % 1000;
+                    if sp_effects(&b.spec).any(|id| id == 211000) {
+                        let fx = fxr.as_mut().is_some_and(|l| l.has(PERILOUS_SFX));
+                        if fx {
+                            let at = wolf_dummies.get(we).ok().and_then(|d| d.0.get(&PERILOUS_DMY).copied()).unwrap_or(we);
+                            commands.spawn(crate::fxr::FxEffect::new(PERILOUS_SFX, Some(crate::fxr::Anchor::Entity(at)), true, Transform::IDENTITY));
+                        }
+                        if let Some(p) = perilous.as_mut() {
+                            p.raise(warn, !fx);
+                        }
+                    }
                     if b.spec.is_use_shared_hit_list != 0 {
-                        shared_hit.insert(b.chain);
+                        let record = b.spec.dmg_hit_record_life_time;
+                        shared_hit.insert(b.chain, if record > 0.0 { now + record - 1e-4 } else { f32::INFINITY });
                     }
                     if harmful(&b.spec) {
-                        if let (Ok(mut sa), Some(atk)) = (shooters.get_mut(b.shooter), b.spec.attack.as_ref().map(|a| a.decayed([b.spec.damage_damp, b.spec.stamina_damp, b.spec.knockback_damp], b.out_of_range))) {
+                        if let (Ok(mut sa), Some(mut atk)) = (shooters.get_mut(b.shooter), b.spec.attack.as_ref().map(|a| a.decayed([b.spec.damage_damp, b.spec.stamina_damp, b.spec.knockback_damp], b.out_of_range))) {
+                            // Its hit / repel effect comes with the outcome (combat.rs).
+                            atk.bullet_fx = Some((b.spec.sfx_id_hit, b.spec.sfx_id_flick, to, dir));
+                            // A bullet's hit takes its SpEffect slots from the Bullet row alone (applied
+                            // below); its AtkParam's spEffectId0-4 are never read for it (exe
+                            // FUN_1410b7910 1410b.c:5026 -> FUN_1410b6880 1410b.c:8409-8417). Both
+                            // applied twice the Demon of Hatred's 9116 burn (14 rows 70200xxx share it).
+                            (atk.sp_effect_id0, atk.sp_effect_id1, atk.sp_effect_id2, atk.sp_effect_id3, atk.sp_effect_id4) = (charge(&b.spec).unwrap_or(-1), -1, -1, -1, -1);
                             sa.bullet_hits.push((we, atk));
+                            b.fx_handed = true;
                         }
                     }
                     // Its poison / burn build-up goes onto Wolf's gauges (status.rs; gap: whether his
@@ -313,14 +497,29 @@ fn fly(
             // By its whole-life hit record: a penetrating bullet ends on a later frame than its touch.
             let launch = launches(b.spec.launch_condition_type, b.hit, landed, expired);
             if let Some(child) = row(b.spec.hit_bullet_id).filter(|_| launch) {
-                spawn_chain(&mut commands, child, b.shooter, b.kind, to, dir, b.floor, script.clone(), b.chain);
+                spawn_chain(&mut commands, child, b.shooter, b.kind, to, dir, b.floor, script.clone(), b.chain, b.inherit_sfx);
+            }
+            // sfxId_Hit where it struck the ground, or Wolf when combat.rs does not judge the hit
+            // (no damage: then it plays sfxId_Hit or, guarded / deflected, sfxId_Flick).
+            if (landed || b.hit && !b.fx_handed) && b.spec.sfx_id_hit > 0 {
+                let at = Transform::from_translation(to).with_rotation(Quat::from_rotation_arc(Vec3::NEG_Z, (-dir).normalize_or(Vec3::NEG_Z)));
+                commands.spawn(crate::fxr::FxEffect::new(b.spec.sfx_id_hit, None, false, at));
+            }
+            // Its flying effect stops emitting where it ended; what it spawned plays out.
+            if let Some(f) = b.fx {
+                if let Ok(mut f) = effects.get_mut(f) {
+                    f.stop = true;
+                    f.follow = false;
+                    f.anchor = None;
+                    f.at = *btf;
+                }
             }
             commands.entity(be).despawn();
         }
     }
     // Forget the shots that have no bullets left.
     let live: std::collections::HashSet<u32> = bullets.iter().map(|(_, b, _)| b.chain).collect();
-    shared_hit.retain(|c| live.contains(c));
+    shared_hit.retain(|c, _| live.contains(c));
 }
 
 /// Whether HitBulletID comes when a bullet ends, by its launchConditionType (Smithbox SDT Param

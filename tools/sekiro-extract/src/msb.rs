@@ -53,6 +53,10 @@ pub struct Region {
     pub shape: u32,
     /// Box: width (x), depth (z), height (y); sphere / cylinder: radius in [0].
     pub size: [f32; 3],
+    /// Env_Box (17) type data (SoulsFormats MSBS EnvironmentMapEffectBox): UnkT00, Compare
+    /// (Smithbox "TransitionDist"), bytes UnkT08 / UnkT09, short UnkT0A, ..., UnkT24, UnkT28,
+    /// UnkT2C; the 0x30 bytes as words.
+    pub env: Option<[u32; 12]>,
 }
 
 impl Region {
@@ -170,7 +174,10 @@ pub fn read(d: &[u8]) -> Msb {
                 (1 | 2 | 3, s) if s != 0 => [r.f32(o + s), 0.0, 0.0],
                 _ => [0.0; 3],
             };
-            Region { name: r.utf16z(o + r.u64(o) as usize), kind: r.u32(o + 8), id: r.i32(o + 12), pos: v3(o + 0x14), rot: v3(o + 0x20), shape, size }
+            let kind = r.u32(o + 8);
+            let td = r.u64(o + 0x58) as usize;
+            let env = (kind == 17 && td != 0).then(|| std::array::from_fn(|i| r.u32(o + td + i * 4)));
+            Region { name: r.utf16z(o + r.u64(o) as usize), kind, id: r.i32(o + 12), pos: v3(o + 0x14), rot: v3(o + 0x20), shape, size, env }
         })
         .collect();
     // Event: nameOffset, EventID, type, id, 0, baseDataOffset, typeDataOffset; Treasure (4)
@@ -225,7 +232,7 @@ mod tests {
     /// A box region stands on its position: inside from its floor up to its height, not below.
     #[test]
     fn a_box_region_stands_on_its_position() {
-        let b = Region { name: "Env_Box280".into(), kind: 17, id: 0, pos: [0.0, 10.0, 0.0], rot: [0.0; 3], shape: 5, size: [4.0, 4.0, 6.0] };
+        let b = Region { name: "Env_Box280".into(), kind: 17, id: 0, pos: [0.0, 10.0, 0.0], rot: [0.0; 3], shape: 5, size: [4.0, 4.0, 6.0], env: None };
         assert!(b.contains([0.0, 15.0, 0.0]), "5 m up a 6 m box");
         assert!(!b.contains([0.0, 8.0, 0.0]), "2 m under its floor");
         assert!(!b.contains([3.0, 12.0, 0.0]), "outside its width");

@@ -32,8 +32,23 @@ impl Plugin for DuelPlugin {
     fn build(&self, app: &mut App) {
         if let Ok(file) = std::env::var("SHINOBI_DUEL") {
             let secs = std::env::var("SHINOBI_DUEL_SECS").ok().and_then(|s| s.parse().ok()).unwrap_or(20.0);
-            app.insert_resource(Duel { file, secs, timer: -WARMUP, lines: Vec::new(), shown: Vec::new(), gaps: Default::default() }).add_systems(Update, run_duel);
+            app.insert_resource(Duel { file, secs, timer: -WARMUP, lines: Vec::new(), shown: Vec::new(), gaps: Default::default() })
+                .add_systems(Update, run_duel)
+                .add_systems(FixedUpdate, keep_wolf_up.after(crate::actor::ActorSet::Resolve).after(crate::status::tick));
         }
+    }
+}
+
+/// Wolf can't die or break in a duel run. Each fixed step, after the hits and the status ticks
+/// (as debug_menu player_cheats): in Update, a frame of two fixed steps let the second play the
+/// first one's kill (round 65).
+fn keep_wolf_up(mut player: Query<&mut Actor, (With<Player>, Without<Enemy>)>) {
+    for mut wolf in &mut player {
+        wolf.hp = wolf.hp_max;
+        wolf.posture = 0.0;
+        wolf.no_posture = true;
+        wolf.death_ref = 0;
+        wolf.death_hit = None;
     }
 }
 
@@ -42,7 +57,7 @@ fn run_duel(
     combat: Res<crate::data::Combat>,
     mut duel: ResMut<Duel>,
     log: Option<Res<CombatLog>>,
-    mut player: Query<(&mut Actor, &Transform, Option<&crate::anim::Hurtboxes>), (With<Player>, Without<Enemy>)>,
+    player: Query<(&Actor, &Transform, Option<&crate::anim::Hurtboxes>), (With<Player>, Without<Enemy>)>,
     mut enemy: Query<(&mut Enemy, &Actor, &Transform, Option<&crate::model::Dummies>), Without<Player>>,
     markers: Query<&GlobalTransform>,
     mut next_sample: Local<f32>,
@@ -62,35 +77,40 @@ fn run_duel(
     }
     let wolf_at = player.single().map(|(_, t, _)| t.translation).unwrap_or_default();
     let wolf_hurt = player.single().ok().and_then(|(_, _, h)| h).map_or(0, |h| h.0.len());
-    if let Ok((mut wolf, _, _)) = player.single_mut() {
-        wolf.hp = wolf.hp_max;
-        wolf.posture = 0.0;
-    }
     let hurt: Vec<(Vec3, Vec3, f32)> = player
         .single()
         .ok()
         .and_then(|(_, _, h)| h)
         .map(|h| h.0.iter().filter_map(|&(a, b, r)| Some((markers.get(a).ok()?.translation(), markers.get(b).ok()?.translation(), r))).collect())
         .unwrap_or_default();
-    if let Ok((mut e, a, tf, dummies)) = enemy.single_mut() {
+    // Every enemy (a group, the Tomoe swap, the Monk's phantoms); before, single_mut() gave up
+    // once a second one existed and the samples stopped (round 48).
+    let sample = duel.timer >= *next_sample;
+    if sample {
+        *next_sample += 1.0;
+    }
+    for (mut e, a, tf, dummies) in &mut enemy {
         e.aggressive = true;
-        // Each active attack window: how close its capsule comes to Wolf.
+        // Each active attack window: how close its capsules come to Wolf - every shape the row
+        // uses (hit0..hit15) and combat.rs's dummy lookup (round 48: before hit0 only, and ids
+        // >= 10000 always as id % 10000).
         let d = combat.data_of(&a);
         for (ev, atk, judge) in d.attack_windows(&a.anim) {
             if !ev.in_time(a.t) {
                 continue;
             }
-            let at = |id: i64| dummies.and_then(|dm| dm.0.get(&((if id >= 10000 { id % 10000 } else { id }) as i16))).and_then(|m| markers.get(*m).ok()).map(|g| g.translation());
-            let gap = match (at(atk.hit0_dmy1), at(atk.hit0_dmy2).or(at(atk.hit0_dmy1))) {
-                (Some(p1), Some(p2)) => hurt.iter().map(|&(h1, h2, r)| crate::combat::segment_distance(p1, p2, h1, h2) - r - atk.hit0_radius).fold(f32::MAX, f32::min),
-                _ => f32::INFINITY,
-            };
-            let slot = duel.gaps.entry((a.anim.clone(), judge)).or_insert(f32::MAX);
+            let at = |id: i64| dummies.and_then(|dm| crate::combat::dmy_entity(dm, id)).and_then(|m| markers.get(m).ok()).map(|g| g.translation());
+            let gap = atk
+                .shapes()
+                .into_iter()
+                .filter_map(|(d1, d2, rad)| Some((at(d1)?, if d2 < 0 { at(d1)? } else { at(d2)? }, rad)))
+                .flat_map(|(p1, p2, rad)| hurt.iter().map(move |&(h1, h2, r)| crate::combat::segment_distance(p1, p2, h1, h2) - r - rad))
+                .fold(f32::INFINITY, f32::min);
+            let slot = duel.gaps.entry((a.anim.clone(), judge)).or_insert(f32::INFINITY);
             *slot = slot.min(gap);
         }
         // A sample every second: distance, state and AI plan.
-        if duel.timer >= *next_sample {
-            *next_sample += 1.0;
+        if sample {
             // The usual hit dummies (10 body, 30/31 weapon or horns): their distance to Wolf.
             let dm: Vec<String> = [10i16, 30, 31]
                 .iter()
@@ -104,12 +124,17 @@ fn run_duel(
         return;
     }
     let mut out = String::new();
-    if let Ok((e, a, _, _)) = enemy.single() {
+    for (e, a, _, _) in &enemy {
         out.push_str(&format!("enemy state {} anim {} ai [{}]\n", a.state, a.anim, e.ai_desc));
     }
     for l in &duel.lines {
         out.push_str(l);
         out.push('\n');
+    }
+    // The reach per attack window (the module's purpose; before, measured but never written).
+    out.push_str("gaps (anim judge: closest hit shape to Wolf's hurtboxes, m; negative = overlapping)\n");
+    for ((anim, judge), gap) in &duel.gaps {
+        out.push_str(&format!("{anim} {judge}: {gap:.2}\n"));
     }
     let _ = std::fs::write(&duel.file, out);
     exit.write(AppExit::Success);

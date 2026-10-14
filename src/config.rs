@@ -192,6 +192,9 @@ pub struct PlayerConfig {
     /// Spirit Emblems carried (prosthetic ammunition).
     #[serde(default = "default_emblems")]
     pub spirit_emblems: u32,
+    /// Testing cheat: the Spirit Emblems never run out (also the F1 menu's toggle).
+    #[serde(default)]
+    pub infinite_emblems: bool,
     /// Resurrection nodes (the game starts with 1).
     #[serde(default = "default_resurrections")]
     pub resurrections: u32,
@@ -214,6 +217,14 @@ pub struct PlayerConfig {
     /// whole tree. false = only those the `skills` list unlocks.
     #[serde(default = "default_true")]
     pub unlock_all_moves: bool,
+    /// Sen carried: the Sen Throw (70400) throws by it (common.emevd sets 127060-127063,
+    /// stateInfo 999-996: 0 / 1-249 / 250-499 / 500+). Default 500 (the full throw).
+    #[serde(default = "default_sen")]
+    pub sen: u32,
+}
+
+fn default_sen() -> u32 {
+    500
 }
 
 fn default_true() -> bool {
@@ -242,7 +253,7 @@ fn default_emblems() -> u32 {
 
 impl Default for PlayerConfig {
     fn default() -> Self {
-        Self { gourd_charges: 3, spirit_emblems: default_emblems(), resurrections: default_resurrections(), combat_art: default_combat_art(), prosthetics: default_prosthetics(), skills: Vec::new(), unlock_all_moves: true }
+        Self { gourd_charges: 3, spirit_emblems: default_emblems(), infinite_emblems: false, resurrections: default_resurrections(), combat_art: default_combat_art(), prosthetics: default_prosthetics(), skills: Vec::new(), unlock_all_moves: true, sen: default_sen() }
     }
 }
 

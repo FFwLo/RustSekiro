@@ -8,8 +8,10 @@
 //! handles the defeat (BossScript run.defeated) or the fight changes.
 //! After sekiro-rs (MIT / Apache-2.0, crates/sim/src/fogwall.rs): the castle roof's wall, object
 //! 1111800 (o001401) with SFX 11 on dummy 101.
-//! gap: the wall's collision part (20005825, e.g. h900800) is not loaded, so the fog does not
-//! stop Wolf; the object's own model (o001401) is not drawn, only its effect.
+//! The walls' collision (the object's own hkx box and the part 20005825 enables, h900800 on the
+//! castle roof) is in `map_<id>.gates` (sekiro-extract), switched on here while the walls
+//! stand (map.rs `set_gates`). gap: the object's own model (o001401) is not drawn, only its
+//! effect.
 
 use bevy::prelude::*;
 use serde_json::Value;
@@ -45,6 +47,8 @@ pub(crate) struct FogWall;
 pub(crate) struct Wall {
     pub(crate) sfx: i64,
     pub(crate) object: i64,
+    /// The MSB entities whose collision stands with it: the object and its 20005825 part.
+    pub(crate) gates: Vec<i64>,
     pub(crate) at: Transform,
 }
 
@@ -102,6 +106,7 @@ pub(crate) fn walls_for(row: i64, arena: &Arena) -> Vec<Wall> {
             seen.insert(object).then(|| Wall {
                 sfx: w["sfx"].as_i64().unwrap_or(0),
                 object,
+                gates: std::iter::once(object).chain(w["collision"]["entity"].as_i64()).collect(),
                 // The SFX's dummy (101 on o001401) sits at the object's origin.
                 // gap: other wall models' dummy offsets are not read.
                 at: Transform::from_translation(map_to_arena(arena.origin, arena.yaw, Vec3::new(f(&pos[0]), f(&pos[1]), f(&pos[2]))))
@@ -132,8 +137,17 @@ fn sync_walls(mut commands: Commands, fight: Res<WallFight>, mut walls: Query<(E
         fx.stop = true;
         commands.entity(e).remove::<FogWall>();
     }
-    let Some((row, arena)) = &fight.0 else { return };
-    for w in walls_for(*row, arena) {
+    let Some((row, arena)) = &fight.0 else {
+        crate::map::set_gates(&[]);
+        return;
+    };
+    let walls = walls_for(*row, arena);
+    let gates: Vec<i64> = walls.iter().flat_map(|w| w.gates.iter().copied()).collect();
+    let n = crate::map::set_gates(&gates);
+    if !walls.is_empty() {
+        info!("fog walls: {n} of {} collision entities {gates:?} in the map's gates", gates.len());
+    }
+    for w in walls {
         info!("fog wall: object {} sfx {} at {:.1}", w.object, w.sfx, w.at.translation);
         let mut fx = crate::fxr::FxEffect::new(w.sfx, None, false, w.at);
         fx.keep = true;

@@ -367,10 +367,16 @@ impl Plugin for ModelPlugin {
             .add_systems(FixedUpdate, apply_draw_mask_events.after(crate::actor::ActorSet::Advance))
             // TAE 715 in the sim pose too (anim.rs PoseSet propagates by hand, from the rest dummies).
             .add_systems(FixedUpdate, override_weapon_location.in_set(crate::anim::PoseSet).after(crate::anim::store_sim_poses))
-            .add_systems(PostUpdate, override_weapon_location.after(bevy::transform::TransformSystems::Propagate));
+            .add_systems(PostUpdate, override_weapon_location.in_set(WeaponLocation).after(bevy::transform::TransformSystems::Propagate));
         tool::plugin(app);
     }
 }
+
+/// PostUpdate: TAE 715 moves the weapon parts (and their dummies) after transform propagation.
+/// Anything reading weapon dummies in PostUpdate (the effects, fxr.rs `tick`) runs after it, or it
+/// sees the parts at their rest dummies (Mortal Draw's arcs were drawn from Model2 on the hip, 149).
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct WeaponLocation;
 
 /// The characters' real geometry without drawing it (sim tests): the FLVER joints, weapon
 /// pivots and dummy polys (`Dummies`) on the AnimPlugin skeletons, so the attack capsules
@@ -383,7 +389,7 @@ impl Plugin for GeometryPlugin {
             .add_systems(Update, attach_models.after(crate::anim::AnimSet))
             // TAE 715 in the sim pose too (anim.rs PoseSet propagates by hand, from the rest dummies).
             .add_systems(FixedUpdate, override_weapon_location.in_set(crate::anim::PoseSet).after(crate::anim::store_sim_poses))
-            .add_systems(PostUpdate, override_weapon_location.after(bevy::transform::TransformSystems::Propagate));
+            .add_systems(PostUpdate, override_weapon_location.in_set(WeaponLocation).after(bevy::transform::TransformSystems::Propagate));
     }
 }
 
@@ -718,8 +724,18 @@ fn attach_models(
                 (root, Mat4::IDENTITY)
             };
             let local = bind.inverse().transform_point3(dm.pos);
-            // Local +Z = the dummy's forward.
-            let rot = dm.fwd.map_or(Quat::IDENTITY, |f| Quat::from_rotation_arc(Vec3::Z, bind.inverse().transform_vector3(f).normalize()));
+            // Local +Z = the dummy's forward, +Y its up (as `dummy_frame`), in the bone's space.
+            let rot = match (dm.fwd, dm.up) {
+                (Some(f), Some(u)) => {
+                    let inv = bind.inverse();
+                    let z = inv.transform_vector3(f).normalize();
+                    let y = inv.transform_vector3(u);
+                    let y = (y - z * y.dot(z)).normalize_or_zero();
+                    if y == Vec3::ZERO { Quat::from_rotation_arc(Vec3::Z, z) } else { Quat::from_mat3(&Mat3::from_cols(y.cross(z), y, z)) }
+                }
+                (Some(f), None) => Quat::from_rotation_arc(Vec3::Z, bind.inverse().transform_vector3(f).normalize()),
+                _ => Quat::IDENTITY,
+            };
             let e = commands.spawn((DummyPoly { id: dm.id }, Transform::from_translation(local).with_rotation(rot), Visibility::default())).id();
             commands.entity(joint).add_child(e);
             if part2 {
