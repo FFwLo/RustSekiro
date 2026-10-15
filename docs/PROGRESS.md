@@ -106,3 +106,5 @@ matching topic file, and one line to Recent below (keep the last 15).
 - 2026-10-08 live recording analysed: input windows match (+1 frame engine latency); buffered guard needs the button held (fixed); 66 tests
 - 2026-10-08 live recording: speeds, posture costs and regen logged in kb (movement, damage)
 - 2026-10-08 art early release = ref 222 (found via live recording); guard posture hook script ready; 68 tests
+- 2026-10-15 cloth: solver / damping / collision order / warp-only transfer re-read from the exe, all match; cloth now steps in ~1/60 s pieces at low fps (cloth.rs frame_steps); thin boss cloth swings are in the data (kb/visuals.md)
+- 2026-10-15 cloth: all 80 stale cloth.json re-exported (friction, compressible, second sims); hclVolumeConstraintMx ported (Demon mane / beard, Wolf neck scarf, Dragon sakura, Isshin helm fur)
