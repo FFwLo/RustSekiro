@@ -216,7 +216,7 @@ per-boss status sheet: `docs/reports/bosses-handover.md`. Sessions renamed the s
    (the jump threshold now scales with the cloth, 4.12); closed unless it comes back.
 
 ## 6. How to verify things
-- **Gameplay logic:** `cargo test --release`; add sim tests in `src/sim_tests.rs`.
+- **Gameplay logic:** `cargo test --release`; add sim tests in `src/sim_tests/` (parts listed in its mod.rs).
 - **Geometry vs the real game:** compare `SHINOBI_THROW_TRACE` output with the memscope
   recordings.
   - Recordings: `C:\DeadlockModding\memscope-data\logs\rec_*`. `index.txt` lists the blocks.

@@ -39,7 +39,7 @@ SekiroTool, SoulsFormatsNEXT, sekiro-rs, fxr, ...). Check them first for names a
 - `docs/history/` (grep it), `docs/kb/log-archive.md`, `docs/kb/next.md`, `target/`.
 - `extracted/`: never list or read it wholesale. Open a named file, or grep one subfolder for
   one symbol. Never open `*.bin`; `decomp`, `ghidra`, `json` and `param` are huge.
-- Whole large source files (`src/sim_tests.rs` is ~16k lines): grep for the symbol, read a range.
+- Whole large source files: grep for the symbol, read a range. Sim tests are in `src/sim_tests/` (11 parts of ~1.5k lines; `mod.rs` lists which tests are where).
 
 ## Starting a session
 1. Read `docs/PROGRESS.md` and the open items in `docs/PLAN.md`; take one item and say which.

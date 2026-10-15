@@ -28,7 +28,7 @@ feel when the game has the real value.
 |---|---|
 | Overview, gaps, knowledge-base index | `docs/PROGRESS.md` (short); details per topic in `docs/kb/<topic>.md` - read only the topic your task needs |
 | Game code | `src/` - `player.rs` (Wolf state machine), `combat.rs` (hits, guard, deflect), `enemy.rs` + `ai.rs` (enemy, real Lua AI), `anim.rs` (clip playback, blending), `model.rs` (meshes, skinning, dummies), `camera.rs`, `sound.rs`, `hud.rs`, `data.rs` (loads `extracted/combat_data.json`), `world.rs` (arena, lights) |
-| Headless gameplay tests | `src/sim_tests.rs` (`cargo test`) |
+| Headless gameplay tests | `src/sim_tests/` (mod.rs lists the parts; `tools/t.sh <filter>`) |
 | Tunable gaps | `config.toml` (+ `src/config.rs`) |
 | Game effects (FXR) | `src/fxr.rs` (player), `src/ffx.rs` (TAE -> effects, fallbacks, `SHINOBI_SKILL` shots), `tools/fxr_extract.py` + `tools/fxr-dump/dump.mjs` (FXR -> `extracted/fxr/*.json`, textures -> `extracted/fxr_tex/`); HANDOFF section 9 |
 | Extractor (unpack, params, export, models) | `tools/sekiro-extract/src/` - `main.rs` (commands), `export.rs`, `flver.rs`, `hkx.rs`, `fsb.rs`, `param.rs` |
