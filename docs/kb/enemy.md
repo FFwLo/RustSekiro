@@ -564,3 +564,29 @@ Dated findings, oldest first. Append new entries at the end.
 - c1500: 21500100 (4110 / 600350) escHp 20, cnt 1, time 100; 21500200 (4120 / 600370) escHp 10,
   cnt 1, time 100; 21500000 (4100) and the 115000xx rows 0 (no escape).
 - Gaps: thrower-side anim on escape; 1407f.c:7230-7268 callers; the cycle time unit (100 read as ms).
+
+## Boss perilous rates vs the all-bosses clip (boss fidelity, 2026-10-15)
+Closes the two open items of history 4.62 / 4.63 (Owl perilous, Monk / Demon shares). No code
+change: the earlier "share" comparison divided by different things (single swings counted in the
+clip, whole attack anims in the trace), so compare perilous **per minute** instead. Clip counts
+in kb/clips.md (all-bosses section); traces `zz_boss_moveset_trace`, GOD=1, ATTACK_EVERY=120,
+SECS=180.
+
+| boss | clip | sim | read |
+|---|---|---|---|
+| Great Shinobi Owl, castle 50600000 (506001) | 0 in ~85 s | 0 | matches |
+| Owl (Father) 50601010 (506000) | ~7 in ~90 s, ~4.7/min | 15 / 3 min = 5.0/min (3024 sweep, 3033 thrust, 3004) | matches |
+| Corrupted Monk 50000000 (m25) | 4-5 in ~67 s, ~4/min | 16 / 3 min = 5.3/min (3010 / 3005 / 3067 sweeps, 3061 thrust, 3069) | matches |
+| Demon of Hatred 70200000 | ~2 in ~134 s, ~0.9/min | 2 / 3 min = 0.7/min (3025) | matches |
+
+- The castle Owl's 0 is the script's own: in 506001 the perilous anims (c5060 TAE judges 980-987:
+  a000_003004 980, 003024 985, 003033 987, 003090 986) are reached only by Act32 (3024) and by
+  Kengeki09 (3090) after TAE 200226, which needs a deflected BehaviorParam category-7 attack
+  (judges 220 / 230 / 240 / 260: a000_003035 / 3036 / 3038 / 3044 / 3046 / 3047 / 3093), thrown
+  only by Act10 / Act49. Goal.Activate gives Act10 / 32 / 49 no odds (506001_battle.lua:8-158), and
+  Common_Battle_Activate picks only by odds (common_common_battle_func.lua). So no castle-Owl
+  perilous in normal play, as in the clip. The 2-4 per 65 s in 4.62 was the Owl Father chapter.
+- 50000000 is the Fountainhead Monk (boss_scripts.py: m25 2500850 with the phantoms
+  2500851-54); 50001000 is the Mibu Illusion (m15 1500800).
+- gap: the clip player keeps the Demon staggered (art buff), so his 0.9/min is a floor; the
+  counts are small (Poisson noise ~ +-1 per fight).

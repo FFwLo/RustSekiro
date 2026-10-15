@@ -189,6 +189,19 @@ later. The table is not shifted. Measured fight moments (bug fixes R97, 2026-10-
 - Sen'un (ch.18): on screen at 29:00-29:10.
 - Shirafuji (ch.20): fighting at 32:20-32:50.
 - Giraffe (ch.21): starts about 32:50.
+- Perilous counts (boss fidelity 2026-10-15, 2 fps centre crops; the 危 is a small round red seal
+  near Wolf's head; the big red two-character 阿攻 over Wolf is the player's Ako's Spiritfall buff,
+  not a perilous, and a red-pixel counter cannot tell them apart in the fire arenas):
+  - Great Shinobi Owl, castle (ch.39): fight 1:01:25-1:02:50 (phase 1 to 1:02:05, the ash throw,
+    phase 2 1:02:10 on), **0 perilous**. The opening "Been a while since we did this" 阿攻 is
+    Spiritfall.
+  - Owl (Father) (ch.42): 危 at 1:04:56 and 1:05:36 among others; the earlier "2-4 per 65 s" for
+    "the Owl" was this fight.
+  - Corrupted Monk, Fountainhead (ch.43, NpcParam 50000000 on m25): phase 1 1:06:14-1:06:47 with
+    危 at ~6:23, ~6:28, ~6:32 (and maybe ~6:37); phase 2 1:06:57-1:07:31 with one at ~7:18.
+    4-5 in ~67 s = ~4 / min.
+  - Demon of Hatred (ch.53): fight 1:21:51-1:24:05; two motion-blurred seals (~1:23:39, ~1:23:57),
+    ~0.9 / min. The player keeps him staggered (purple art buff), so few full combos.
 | 1:07:49 | 1:08:56 | 44. Sakura Bull of the Palace |
 | 1:08:56 | 1:10:04 | 45. Shichimen Warrior #3 |
 | 1:10:04 | 1:10:19 | 46. Okami Leader Shizu |
