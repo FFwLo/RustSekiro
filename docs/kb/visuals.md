@@ -1,5 +1,54 @@
 # visuals: Models, textures, animation playback, blending, behaviour graph, lighting
 
+<!-- index -->
+Contents (line numbers of this file; read a range, not the whole file):
+- 54: 2026-10-06: NEXT 4 phase A done: real animations. tools/sekiro-extract/src/spline.rs decodes hk
+- 59: 2026-10-06: NEXT 4 phase B done: real meshes. tools/sekiro-extract/src/flver.rs (FLVER2 + TPF),
+- 66: 2026-10-06: NEXT 5 done: hitboxes from dummy polys. Model format v2 carries FLVER dummies (id, 
+- 71: 2026-10-06: NEXT 6c done: the regen level multiplier chr.f[0x10d0] (set in FUN_1409e6xxx Player
+- 76: 2026-10-06: real hurtboxes. chrbnd cXXXX.HKX (TAG0) holds hknpRagdollData: 18-19 bodies, each a
+- 81: 2026-10-07 FIX: models/textures/sounds missing when the release exe is started directly (not vi
+- 84: 2026-10-07 NEXT 18 partial: `sekiro-extract clips <behavior.hkx>` (hkx::clip_generators) reads 
+- 88: 2026-10-07 NEXT 18: `sekiro-extract transitions <behavior.hkx>`: all 16 transition effects (Sta
+- 93: 2026-10-07 NEXT 18 done: `sekiro-extract blenders`: c0000.hkx has only 2 hkbBlenderGenerators (
+- 97: 2026-10-07 TAE 151 CameraLookAtTarget (case 0x97 -> FUN_140b517a0 -> camera singleton +0x3c dmy
+- 103: 2026-10-07 VISUALS (user: "models and animations to be better"): (1) Wolf had no head: EquipPar
+- 111: 2026-10-07 docs/HANDOFF_PLAN.md: task packets for helper models (V1-V5 visuals, S1-S4 swordplay
+- 113: 2026-10-07 helper V1 (normal maps) integrated: SHMD v3 adds a normal-map name per mesh; Sekiro 
+- 118: 2026-10-07 CLIPS: TAE ImportOtherAnim (mini header 1) imports the HKX as well as the events, bu
+- 122: 2026-10-07 enemy weapons: c1020 weapon groups #00#-#07# (dominant bones: #00# R_Katana_long, #0
+- 131: 2026-10-07 tools/photo.ps1 + src/photo.rs (SHINOBI_PHOTO): deterministic 4-view contact sheet (
+- 132: 2026-10-07 V4 done by lead: TAE 700 upper-body twist. Export: hkx::twist_modifiers -> combat_da
+- 139: 2026-10-07 runtime draw masks: NPC "#NN#" meshes are all spawned (hidden when off at spawn) wit
+- 143: 2026-10-07 normal maps: flip_normal_map_y = true (Sekiro is DirectX; Bevy's flag is for DirectX
+- 150: 2026-10-07 ADDITIVE LAYER: additive clips are per-bone deltas (frame 0 = identity; e.g. a050_12
+- 157: 2026-10-07 Havok cloth in game (src/cloth.rs)
+- 173: 2026-10-08 bend links solved (bendMinLength / stretchMaxLength with their stiffnesses). gap: be
+- 176: 2026-10-13 the cloth sim runs in model space (cloth.rs `carry`): the exe moves particles by the
+- 181: 2026-10-11 the "ref gap" line is meaningless for a culled cloth: in the sandbox line-up the
+- 205: 2026-10-11 GUARDIAN APE FUR DRAWN: its 12 fur cloths simulated 16k particles for nothing
+- 235: 2026-10-10 CLOTH COST (the sandbox line-up of 20 enemies ran at 22 fps, cloth 41 ms a frame):
+- 253: 2026-10-11 the Guardian Ape's fur (41 cloths on one character, three of 2000+ particles)
+- 261: 2026-10-11 the every-frame restarts of c1060_mino1 and c1100_sleeve (c1110 / c1111 / c7520): th
+- 270: 2026-10-08 ENEMY TWIST (TAE 700) done. The NPC graph c9997.hkx binds its CustomLookAtTwistModif
+- 284: 2026-10-08 live: a000_7900x0 = AddBlendFace_1..N CMSGs (c0000.hkx) = Wolf's facial-expression a
+- 288: Outfit masks, scabbard (2026-10-08)
+- 298: 2026-10-08 weapon placement = WepAbsorpPosParam (EquipParamWeapon 5000 absorpParamId 5000): rig
+- 309: 2026-10-09 sheathing (X / debug menu): HKS BEH_R_NON_COMBAT_AREA_ENTER / LEAVE -> GroundNonComb
+- 315: 2026-10-09 materials (MTD-driven): the FLVER's texture paths are empty; each material's MTD (mt
+- 328: 2026-10-09 cloth from the exe's Havok solver:
+- 340: 2026-10-10 vfx.rs: clash effects (deflect burst + flash + light, guard sparks, hit blood) with 
+- 345: 2026-10-10 gore.rs: blood driven by each character's TAE. TAE 96 SpawnOneShotFFX with blood FFX
+- 356: 2026-10-10 deathblow mark (hud.rs): HUD sprites are Scaleform FE (menu/01_000_fe.gfx) over atla
+- 362: 2026-10-10 the game's own map around the fight (pieces, hit collision, draw-param lighting): se
+- 365: 2026-10-11 (VXf) enemy effect audit: every extracted/enemies/c*.json TAE FFXID (with the
+- 384: Hit-blood stains (2026-10-11)
+- 400: Lock-on mark (2026-10-11)
+- 411: HitEffectSfxAngleParam (2026-10-12; ported 2026-10-13: the sparks use FUN_14092b6c0, absolute w
+- 421: DetailBlend (character fabric layers), decoded and ported 2026-10-12
+- 465: Coat shader Character_AN_Blend_AMSN_[Fresnel], decoded and ported 2026-10-12
+<!-- /index -->
+
 Dated findings, oldest first. Append new entries at the end.
 
 - 2026-10-06: NEXT 4 phase A done: real animations. tools/sekiro-extract/src/spline.rs decodes hkaSplineCompressedAnimation

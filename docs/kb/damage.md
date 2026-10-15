@@ -1,5 +1,33 @@
 # damage: Damage reactions, knockback, breaks, invulnerability, death and revival
 
+<!-- index -->
+Contents (line numbers of this file; read a range, not the whole file):
+- 33: 2026-10-06: hit reactions by direction + level. Enemy: Damage{Small,Middle,Large}_{Front,Back,L
+- 37: 2026-10-07 WOLF: posture break flow from HKS (DAMAGE_TYPE_DAMAGEBREAK / GUARDBREAK, c0000_trans
+- 44: 2026-10-07 WOLF: player's KnockBackParam row found in data, not the exe: EquipParamProtector kn
+- 48: 2026-10-07 NEXT 17 done: TAE 226 SetKnockbackPercent (dispatcher case 0xe2 -> FUN_140ba34a0: kn
+- 70: 2026-10-12 HIT SHAPES: AtkParam hitSourceType (Paramdex enum ATK_PARAM_HIT_SOURCE: 0 weapon, 1 
+- 79: 2026-10-07 WOLF: damage reactions re-checked against HKS normal damage (c0000_transition.lua ~1
+- 85: 2026-10-07 enemy damage reactions per c9997.lua ExecDamage*: PUSH -> DamagePushFront/Back, SMAL
+- 89: 2026-10-07 WOLF: resurrection. GroundDeathStart_F -> GroundDeathLoop_F, then LMB resurrects whi
+- 95: 2026-10-07 invulnerability windows: TAE 950 (dispatcher 0x3b6 -> action module +0x70 |= 2) sits
+- 99: 2026-10-07 gap 7 closed: Wolf's per-enemy anims ship in chr/c0000_cXXXX.anibnd (dictionary: c10
+- 108: 2026-10-08 LIVE (tools/rec_hits.py; data module +0x130 HP, +0x148 posture REMAINING (counts dow
+- 113: 2026-10-08 LIVE per-attack match (tools/rec_attacks.py <rec> c1180; NPC behaviour id = 200,000,
+- 127: 2026-10-08 LIVE Wolf -> enemy (tools/rec_wolf_attacks.py; c1180 samurai, this save's attack pow
+- 133: 2026-10-08 LIVE #2 c1470 (k = 3.75 again): hit 80 phys -> 300 HP, direct 18 -> 67 posture (exac
+- 180: 2026-10-08 the "odd" live hits are explained, no hidden mechanic: -400 / -220 = HP capped at de
+- 185: 2026-10-08 scalings explained from data: enemy k = 3.75 = area SpEffect 7124 / 7820 "Growth Dop
+- 201: 2026-10-08 LIVE #4 Samurai General (rec_20261008_054259; slot 1 = lock-on target NpcParam 10203
+- 213: Flowing Water and hit sounds (2026-10-08)
+- 218: 2026-10-09 LIVE (memscope-data/logs/rec_c1010_*, rec_c1020_*_20261009; chr id at chr_head +0x6C
+- 239: 2026-10-09 (later) deathblows vs live, round 2:
+- 262: 2026-10-09 vault, enemy side: the throw absorb (follow_throw, ThrowParam atkSorbDmyId 267 on 02
+- 268: 2026-10-10 Ochimusha behind deathblow mid-throw drift: the exporter's yaw "unwrap" (hkx.rs unwr
+- 283: 2026-10-10 root yaw sign: the HKX reference-frame yaw is in the game's handedness; mirroring X 
+- 289: 2026-10-11 B1 (docs/PLAN.md) hit shapes and hurt capsules:
+<!-- /index -->
+
 Dated findings, oldest first. Append new entries at the end.
 
 - 2026-10-06: hit reactions by direction + level. Enemy: Damage{Small,Middle,Large}_{Front,Back,Left,Right} from the

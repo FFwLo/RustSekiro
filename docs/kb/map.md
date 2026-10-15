@@ -1,5 +1,28 @@
 # map: the game's own arena (MSB, map pieces, hit collision, draw params)
 
+<!-- index -->
+Contents (line numbers of this file; read a range, not the whole file):
+- 28: 2026-10-10 The real map around the General (tools/sekiro-extract/src/map.rs, src/map.rs)
+- 34: Pipeline (all in `tools/extract.ps1`, block "Map")
+- 55: Formats (readers in tools/sekiro-extract/src/)
+- 85: What the exporter does
+- 106: Game (src/map.rs)
+- 177: Sandbox map (2026-10-10, src/sandbox.rs; "sandbox to test everything: textures, enemies, lighti
+- 239: Open
+- 315: 2026-10-11 Every boss in its own arena (tools/boss_arenas.py, src/map.rs boss_arena)
+- 569: 2026-10-11 Grapple points (docs/kb/grapple.md; tools/sekiro-extract map.rs export_grapple, src/
+- 603: 2026-10-11 Objects' own collision in the .hit (tools/sekiro-extract map.rs, hkx.rs decode_conve
+- 634: 2026-10-12 The sat layer shaders, decompiled (M[Multiple] / M[MultipleGround])
+- 733: 2026-10-12 ObjAct doors left out; teleports skip the wall slide ("bug fixes" session)
+- 752: 2026-10-12 The bosses fight on the castle top (user's rule; tools/boss_arenas.py)
+- 765: 2026-10-12 Boss fog walls (tools/fog_walls.py, src/fog_wall.rs)
+- 778: 2026-10-12 The game's height fog (src/height_fog.rs, height_fog.wgsl)
+- 794: 2026-10-12 Sky domes and the map's bloom (src/sky.rs, map.rs map_bloom)
+- 807: 2026-10-13 SkyDome_Ver2 decoded from the game (shader/shaderbdle.shaderbdlebnd.dcx ->
+- 825: 2026-10-13 the same packing for the map layer colours: the exporter's `game_params` now writes
+- 838: 2026-10-12 Fog-wall collision and GIIV irradiance volumes (VFX and Maps)
+<!-- /index -->
+
 Dated findings, oldest first. Append new entries at the end.
 
 ## 2026-10-10 The real map around the General (tools/sekiro-extract/src/map.rs, src/map.rs)

@@ -1,5 +1,34 @@
 # enemy: Enemies: real Lua AI, NpcParam, c1020/c1010, enemy reactions
 
+<!-- index -->
+Contents (line numbers of this file; read a range, not the whole file):
+- 34: 2026-10-06: game runs; 4 data-rule tests pass (cargo test). Enemy starts passive (T toggles). A
+- 35: 2026-10-06 GHIDRA (Steamless exe, project extracted/ghidra, runner tools/ghidra.ps1): posture r
+- 43: 2026-10-06: NEXT 7 done: the enemy runs its REAL AI. src/ai.rs embeds Lua (mlua 5.4) and loads 
+- 58: 2026-10-06: Healing Gourd (E): goods 3000 -> SpEffect 3000 changeHpEstusFlaskRate -40 = 40 % ma
+- 62: 2026-10-07 shuriken aim: lock target, else LockCamParam bullet auto-capture (bulletMaxRadius 30
+- 65: 2026-10-07 WOLF: hits in the air use HKS air damage (c0000_transition.lua ~1106): SMALL/MIDDLE 
+- 69: 2026-10-07 NEXT 13: second enemy c1010 Ochimusha (one-handed sword), selected with config enemy
+- 79: 2026-10-07 PRIORITY (user): focus on Wolf. No further enemies unless asked; c1010 stays availab
+- 81: 2026-10-07 enemy additive recoils (c9997): deflected attack with bound type BOUND_ADD01-04 (Atk
+- 86: 2026-10-07 enemy hit without a reaction (mid-swing / minimum level): c9997 ExecNoSyncAddDamage 
+- 89: 2026-10-09: the AI now runs the game's COMPILED scripts directly (no DSLuaDecompiler step): src
+- 94: 2026-10-10 STEALTH (src/stealth.rs + ai.rs logic + enemy.rs): the exe's NPC targeting system
+- 355: 2026-10-11 (bosses finished, HANDOFF 4.11):
+- 378: 2026-10-11 non-final deathblow HP refill (B1): every chr's ThrowDef reaction anims add SpEffect
+- 385: 2026-10-11 C2 runtime encounter: `enemy::SpawnEncounter` -> `Combat::load_encounter` (same load
+- 390: 2026-10-11 C2 names + foreign arena: `tools/npc_names.py` -> extracted/enemies/npc_names.json: 
+- 399: 2026-10-11 B5 enemy bullet flight (enemy_bullet.rs) from the exe bullet update FUN_140b0ded0 (b
+- 416: 2026-10-11 B5 AI command slots: Request Character AI Command (2004[17]) -> FUN_1405b4730 writes
+- 499: 2026-10-12 sekiro-rs ports ("bug fixes" findings; THIRD_PARTY.md):
+- 516: 2026-10-12 round 15 (ours): enemy guard clips follow c9997 ExecGuardBlock for blocks and
+- 523: 2026-10-12 EXLARGE guard (c9997 guard_damage_table 4: a blow on guardLevel 1, an ex blast on
+- 528: 2026-10-12 map AI hold, the damage wake: EMEVD 4[1] IF Character Damaged By / 3[23] IF Damage
+- 535: 2026-10-12 round 16 (ours): ChrActionFlag 24 on the defender skips the knockback (and the
+- 539: 2026-10-12 round 18 (ours): IsTargetGuard / GetSp / GetSpRate read their target argument like
+- 545: Grab escape (exe trace, 2026-10-13, read-only; paths under extracted/decomp)
+<!-- /index -->
+
 Dated findings, oldest first. Append new entries at the end.
 
 - 2026-10-06: game runs; 4 data-rule tests pass (cargo test). Enemy starts passive (T toggles). Auto-resume schedule was blocked by permissions; user must allow it.
