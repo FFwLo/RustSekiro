@@ -590,3 +590,37 @@ SECS=180.
   2500851-54); 50001000 is the Mibu Illusion (m15 1500800).
 - gap: the clip player keeps the Demon staggered (art buff), so his 0.9/min is a floor; the
   counts are small (Poisson noise ~ +-1 per fight).
+
+### All main bosses, perilous per minute (second pass, 2026-10-15)
+Same method (traces GOD=1, ATTACK_EVERY=120, SECS=180; clip counts on 2 fps centre crops of
+the all-bosses clip, the small round 危 seal only).
+
+| boss (NpcParam) | clip | sim /min | read |
+|---|---|---|---|
+| Gyoubu 50800000 | 0-1 in ~110 s (4.62: 1-2 / 72 s) | 0.7 | matches |
+| Lady Butterfly 50900000 | 1 in ~110 s | 1.3 | matches |
+| Guardian Ape 51000000 (phase 1) | 1 in ~27 s | 3.3 (3016 grab) | matches (short sample) |
+| Headless Ape 51000100 (ch.26) | ~3 in ~70 s, screams 14 s apart | 4.3 (after the fix below; 3007 scream, 3005 / 3009 sweeps, 3050) | matches |
+| Genichiro 71001000 (ch.16) | ~4 in ~75 s | 4.7 | matches |
+| Way of Tomoe 71100000 (ch.16) | ~5 in ~55 s | 6.3 | matches |
+| Tomoe 71101000 (ch.54) | 1 in ~20 s | 2.0 | short sample |
+| Isshin Sword Saint 54000000 | ~3-4 in ~90 s | 3.7 | matches |
+| Emma 74000010 | 0 in ~30 s | 3.7 | short sample (the player stunlocks her) |
+| Isshin Ashina 54300000 | 2-4 in ~70 s | 2.3 | matches |
+| Corrupted Monk (Illusion) 50001000 | 0 in ~20 s | 5.3 | short sample (firecracker stunlock) |
+
+Not traced: Folding Screen Monkeys, Divine Dragon / Old Dragons (no deflect fights), castle
+Genichiro 71000000 (ch.2, 6.3/min sim; not counted in the clip).
+
+**Fix: an observed SpEffect only fires from the character the script names** (ai.rs
+`AiState::observes`). `AddObserveSpecialEffectAttribute(target, id)` was stored by id only and
+Snapshot.sp_new mixes the AI chr's own SpEffects with its target's, so any watch fired on
+either. The Headless Ape (510010_battle.lua:25) watches TARGET_EVENT, its partner ape, for
+3510900; its own a100_003007 scream and its 3001 / 3002 / 3005 / 3012 attacks put 3510900 on
+itself (TAE AddSpEffect, c5100), so Goal.Interrupt set Number 1 and Timer 5 = 14 s and
+Goal.Activate ran the partner branch (Act24 backstep 400-500) nearly all fight: 29 backsteps
+and 6.7 attacks/min in 3 min; after, 8 backsteps and 11.3/min. Test
+`the_apes_own_scream_is_not_its_partners`. gap: TARGET_EVENT (the partner chr; only the Ape
+scripts 510000 / 510001 / 510010 watch it) is not modelled, so those watches never fire; an
+ended SpEffect is not split by owner.
+

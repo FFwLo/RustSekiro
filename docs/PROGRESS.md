@@ -79,6 +79,7 @@ matching topic file, and one line to Recent below (keep the last 15).
 - [HANDOFF_PLAN.md](HANDOFF_PLAN.md) - task packets for helper models
 
 ## Recent
+- 2026-10-15 boss fidelity pass 2: all main bosses' perilous per minute vs the clip (kb/enemy.md); fix: SpEffect watches fire only from the named character (the Headless Ape no longer backsteps all fight); 1 new test
 - 2026-10-15 boss fidelity: perilous per minute matches the all-bosses clip for the castle Owl (0, the script never reaches its perilous acts; the clip's 2-4 were Owl Father), Owl Father, Monk and Demon; no code change (kb/enemy.md, kb/clips.md)
 - 2026-10-10 root yaw sign fixed (c1010 behind deathblow matches live, c1020 no 360 spin); crouch moves at once; idle twist lock-on only; sprint deflect stops at the enemy; 105 tests
 - 2026-10-10 gore: TAE-driven blood spray (FFX 2205xx on neck / sword dummies) + DecalParam floor stains with the game's decal textures; deathblow mark from the game's HUD atlas; vfx clashes, new HUD, sprint deflect fix; 104 tests
