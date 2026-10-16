@@ -148,9 +148,9 @@ pub(crate) fn the_sabimaru_poisons() {
 pub(crate) fn okinagas_spew_costs_while_held() {
     let (_, tap, _) = use_tool(72200, 30, 0, 200);
     // HoldLoop starts ~3.2 s in (Combo1 f75 + HoldStart); its 999 fires 3.67 s later.
-    let (states, held, _) = use_tool(72200, 30, 600, 650);
+    let (states, held, _) = use_tool_with(72200, 30, 600, 650, 500, Some((140, 190)));
     assert!(held >= tap + 6, "held {held} vs tap {tap}: {states:?}");
-    let (states, spent, _) = use_tool(72200, 6, 600, 650);
+    let (states, spent, _) = use_tool_with(72200, 6, 600, 650, 500, Some((140, 190)));
     assert!(spent <= 6 && states.iter().any(|s| s == "SubAttackFailed" || s.ends_with("SubAttackFailed")), "{spent}: {states:?}");
 }
 
@@ -1578,4 +1578,62 @@ pub(crate) fn emma_killed_from_her_deflect_break_does_not_get_up() {
         }
     }
     panic!("pose {pose:?} killed {killed:?}, enemy {}", enemy_state(&mut app).0);
+}
+
+/// Senpou Leaping Kicks / High Monk locked on a close enemy: the leap's 920 row 10010 homes with
+/// ChrPhysicsHomingParam 20000 (initialVelocityCorrection 2 slows it to land 1 m in front of the
+/// target), so Wolf lands short of the enemy instead of flying the row's 6.4 m/s over him. Unlocked
+/// the leap is the row's (the skills recording: ~5-6 m at ~6.4 m/s with no lock).
+#[test]
+pub(crate) fn leaping_kicks_land_in_front_of_the_lock_target() {
+    for (locked, art) in [(true, 5800), (true, 7400), (false, 5800)] {
+        let mut app = app();
+        if !app.world().contains_resource::<crate::camera::LockOn>() {
+            app.world_mut().insert_resource(crate::camera::LockOn::default());
+        }
+        let (start, fwd, enemy) = {
+            let world = app.world_mut();
+            world.resource_mut::<crate::config::GameConfig>().player.combat_art = art;
+            world.resource_mut::<crate::enemy::EnemyDebug>().mode = crate::enemy::AiMode::Idle;
+            let (a, t) = world.query_filtered::<(&Actor, &Transform), With<Player>>().single(world).unwrap();
+            let (start, fwd) = (t.translation, a.forward());
+            let mut q = world.query_filtered::<(Entity, &mut Transform), With<Enemy>>();
+            let (e, mut et) = q.single_mut(world).unwrap();
+            et.translation = start + fwd * 3.0;
+            // Facing Wolf.
+            et.rotation = Quat::from_rotation_arc(Vec3::NEG_Z, -fwd);
+            if locked {
+                world.resource_mut::<crate::camera::LockOn>().target = Some(e);
+            }
+            (start, fwd, e)
+        };
+        let _ = enemy;
+        for _ in 0..5 {
+            app.update();
+        }
+        {
+            let mut pad = app.world_mut().resource_mut::<PadInput>();
+            pad.press(Action::Attack);
+            pad.press(Action::Guard);
+        }
+        let mut landed = None;
+        let mut was_air = false;
+        for _ in 0..200 {
+            app.update();
+            let world = app.world_mut();
+            let (a, t) = world.query_filtered::<(&Actor, &Transform), With<Player>>().single(world).unwrap();
+            if was_air && !a.airborne {
+                landed = Some((t.translation - start).dot(fwd));
+                break;
+            }
+            was_air |= a.airborne;
+        }
+        let got = landed.unwrap_or_else(|| panic!("{art}: never landed"));
+        if locked {
+            // 3 m to the enemy, 1 m short of it (+ the 0.05 the enemy stands higher): ~2 m.
+            assert!((got - 2.0).abs() < 0.35, "{art} locked: landed {got:.2} m ahead");
+        } else {
+            assert!(got > 3.5, "unlocked: the row's leap, landed {got:.2} m ahead");
+        }
+    }
 }

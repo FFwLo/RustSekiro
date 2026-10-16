@@ -1283,6 +1283,9 @@ pub struct VelocityChange {
     pub fall_type: u8,
     /// ChrPhysicsHomingParam row the launch homes with (0 none; 300000000 the wire's).
     pub homing_id: i64,
+    /// homingTargetType: which target the homing aims at (0 none). gap: the enum's names are not
+    /// in Paramdex; 1 (the jump arts' 10010) is taken as the lock-on target (player.rs `LeapHoming`).
+    pub homing_target_type: u8,
 }
 
 /// Fall control per ChrPhysicsVelocityChangeParam.fallType. Not a param: a static
@@ -1430,6 +1433,7 @@ impl Combat {
             h_angle: f("horizontalVelocityAngle"),
             fall_type: r.get("fallType").and_then(|v| v.as_u64()).unwrap_or(0) as u8,
             homing_id: r.get("homingId").and_then(|v| v.as_i64()).unwrap_or(0),
+            homing_target_type: r.get("homingTargetType").and_then(|v| v.as_u64()).unwrap_or(0) as u8,
         })
     }
 }

@@ -223,6 +223,8 @@ struct Particle {
     /// A tracer particle whose life (or effect) ended: it no longer moves or adds points, its
     /// segments age out over segmentDuration (the weapon trail fading after the swing), then it goes.
     ended: bool,
+    /// The particle age when it ended: the tracer's fadeOutTime counts from here.
+    end_age: f32,
 }
 
 struct NodeInst {
@@ -748,6 +750,7 @@ fn step_node(n: &mut NodeInst, lib: &mut FxrLib, parent: Transform, dt: f32, sto
                     next_turn: 0.0,
                     dead: false,
                     ended: false,
+                    end_age: 0.0,
                 });
             }
         }
@@ -762,8 +765,15 @@ fn step_node(n: &mut NodeInst, lib: &mut FxrLib, parent: Transform, dt: f32, sto
             }
             // A negative particle duration (-1, or the common -1/30) lives as long as its node: it
             // ends with the node's own duration as well as with the effect.
-            if p.life >= 0.0 && p.age > p.life || (stop || !alive) && p.life < 0.0 {
+            // A stopped effect (its TAE event's window over: Mortal Draw's IsRestrictToDummyPoly
+            // 440003 / 440007, f10-20) stops emitting, but a node with its own duration plays it
+            // out: the slash's brush-stroke tracers (26041, nodes 0.8-2.5 s, fadeOutTime 0.2) stay
+            // ~1-2 s in the reference clip (sekiro_all_skills 7:00-7:12). They were cut at the
+            // event's end (~0.3 s). Endless nodes (-1) still end with the stop.
+            let node_done = n.duration >= 0.0 && active_t >= n.duration;
+            if p.life >= 0.0 && p.age > p.life || (node_done || stop && n.duration < 0.0) && p.life < 0.0 {
                 p.ended = p.trail.len() > 1;
+                p.end_age = p.age;
                 p.dead = !p.ended;
                 continue;
             }
@@ -916,7 +926,19 @@ fn tick(mut commands: Commands, time: Res<Time>, mut lib: ResMut<FxrLib>, global
             }
             f.root = make_node(&mut lib, &def["root"], (f.id as u32).wrapping_mul(97).wrapping_add(e.index().index()), 0);
         }
-        let place = if f.follow { anchor.unwrap_or(f.at) } else { f.at };
+        // A following effect remembers where its anchor last was: when the anchor goes (a bullet
+        // despawned, the blade's dummies gone for a frame) it stays there. Before, it fell back to
+        // its spawn point (the bullet's muzzle; the origin for the blade trails) and every tracer
+        // stretched a straight line of its colour back to it until its segments aged out.
+        if f.follow {
+            if let Some(a) = anchor {
+                f.at = a;
+            }
+        }
+        let place = f.at;
+        if std::env::var("SHINOBI_FXR_WHERE").ok().and_then(|v| v.parse::<i64>().ok()) == Some(f.id) {
+            info!("fxr {} age {:.2} at {:.2} anchored {}", f.id, f.age, place.translation, anchor.is_some());
+        }
         let stop = f.stop;
         let rate = lib.get(f.id).map_or(1.0, |d| time_rate(&d, f.age));
         f.age += dt;
@@ -1286,12 +1308,19 @@ fn particle_color(a: &Value, c: &Value, p: &Particle, active_t: f32, rnd: &mut R
     // Mortal Draw 440003: lit additive 26030 / 2010 tracers, rgbMultiplier 2.5) shows the arc
     // brighter than the scene; at 1/8 it drew as faint streaks. gap: the game's light term there.
     let additive_tracer = matches!(a["type"].as_i64(), Some(606 | 10012)) && matches!(a["blendMode"].as_i64(), Some(0 | 4 | 7));
-    let lit = matches!(a["lighting"].as_i64(), Some(-2 | 0)) && !additive_tracer;
+    // Tracers (10012) of any blend: none of the 48 pairs is one. Lit, the tracer shader's
+    // saturate(colour) x light: capped at 1 instead of the 1/8. One Mind's flurry 440131 (blend 6
+    // 2010 arcs, lighting -2) drew grey; the clip (sekiro_all_skills 5:57-7:16) shows them white at
+    // night. gap: the light term (taken as 1).
+    let lit_tracer = a["type"].as_i64() == Some(10012) && !additive_tracer && matches!(a["lighting"].as_i64(), Some(-2 | 0));
+    let lit = matches!(a["lighting"].as_i64(), Some(-2 | 0)) && !additive_tracer && !lit_tracer;
     let rgbm = scalar(a, "rgbMultiplier", active_t, rnd, 1.0) * if lit { LIT_UNLIT } else { 1.0 };
     let am = scalar(a, "alphaMultiplier", active_t, rnd, 1.0);
     let k: [f32; 4] = std::array::from_fn(|i| c1[i] * c2[i] * c3[i] * pm[i]);
     let h = hue_squared([k[0], k[1], k[2]]);
-    [h[0] * rgbm, h[1] * rgbm, h[2] * rgbm, (k[3] * am).clamp(0.0, 1.0)]
+    let c = [h[0] * rgbm, h[1] * rgbm, h[2] * rgbm];
+    let c = if lit_tracer { c.map(|v| v.clamp(0.0, 1.0)) } else { c };
+    [c[0], c[1], c[2], (k[3] * am).clamp(0.0, 1.0)]
 }
 
 /// The game's effect pixel shaders (shader/gxffxshader.shaderbnd GXFfxtexture.ppo /
@@ -1605,7 +1634,8 @@ fn collect(
                     let bend = scalar(a, "distortionIntensity", active_t, &mut rnd, 0.0);
                     let nm = int(a, "normalMap", 0);
                     let cross = int(a, "orientation", 0) == 4;
-                    if p.trail.len() < 2 {
+                    let end_k = tracer_end_fade(a, p);
+                    if p.trail.len() < 2 || end_k <= 0.0 {
                         continue;
                     }
                     let segs = subdivide(&p.trail, int(a, "segmentSubdivision", 0).clamp(0, 16) as usize);
@@ -1652,7 +1682,7 @@ fn collect(
                         let side = |x: Vec3| if x == Vec3::ZERO { travel } else { x };
                         let s0 = side(x0) * w * 0.5;
                         let s1 = side(x1) * w * 0.5;
-                        let (k0, k1) = (fade(u0), fade(u1));
+                        let (k0, k1) = (fade(u0) * end_k, fade(u1) * end_k);
                         let c0 = [col[0], col[1], col[2], col[3] * k0.min(k1)];
                         let quv = [[u0, 1.0], [u1, 1.0], [u1, 0.0], [u0, 0.0]];
                         let (t0, t1) = (tu(along(u0)), tu(along(u1)));
@@ -1748,6 +1778,22 @@ fn subdivide(segs: &[(Vec3, Vec3, f32)], sub: usize) -> Vec<(Vec3, Vec3, f32)> {
     out
 }
 
+/// A tracer whose particle ended fades out over its fadeOutTime (reference/fxr 10012.yml: "the
+/// trail will linger for this many seconds and its opacity will fade to 0"; 606 has the same
+/// field). 908 of the tracers have 1 s, 429 0.2 s. Before, an ended trail kept its full colour
+/// until its points aged out (segmentDuration, up to 3 s): lines of the effect's colour hung where
+/// the swing had been. gap: the curve (taken as linear).
+fn tracer_end_fade(a: &Value, p: &Particle) -> f32 {
+    if !p.ended {
+        return 1.0;
+    }
+    let t = num(&a["fadeOutTime"]);
+    if t <= 0.0 {
+        return 0.0;
+    }
+    (1.0 - (p.age - p.end_age) / t).clamp(0.0, 1.0)
+}
+
 /// Tracer segments: a new point every segmentInterval, each kept segmentDuration.
 fn grow_trails(n: &mut NodeInst, dt: f32) {
     if let Some(c) = n.cfg.clone() {
@@ -1756,6 +1802,7 @@ fn grow_trails(n: &mut NodeInst, dt: f32) {
             let interval = num(&a["segmentInterval"]).max(1.0 / 60.0);
             let seg_life = num(&a["segmentDuration"]).max(0.02);
             let max_segs = a["concurrentSegments"].as_i64().unwrap_or(100).max(2) as usize;
+            let fade_out = num(&a["fadeOutTime"]).max(0.0);
             // TracerOrientationMode: 0 Travel (by the path and the camera, at draw time), 1 the node's
             // local Z (the facing; width = travel x Z at draw), 2 global vertical, 3 global X, 4 cross (vertical here, X added at draw),
             // 5 the global diagonal.
@@ -1771,6 +1818,11 @@ fn grow_trails(n: &mut NodeInst, dt: f32) {
                 if p.ended {
                     let age = p.age;
                     p.trail.retain(|(_, _, t)| age - t <= seg_life);
+                    // fadeOutTime (reference/fxr 10012.yml): once the particle ends the trail
+                    // lingers this long, fading to 0, then goes (`tracer_end_fade`).
+                    if age - p.end_age >= fade_out {
+                        p.trail.clear();
+                    }
                     continue;
                 }
                 // Points are laid every segmentInterval and stay where they were laid; the head (the
@@ -2305,7 +2357,7 @@ mod tests {
     #[test]
     fn gpu_unk_acceleration_is_no_push() {
         let a = serde_json::json!({"type": 10000, "unkParticleAcceleration": 1.0});
-        let mut p = Particle { pos: Vec3::ZERO, dir: Vec3::X, speed: 5.0, age: 0.0, life: 6.0, emit_t: 0.0, seed: 1, attached: false, trail: Vec::new(), next_seg: 0.0, next_turn: 0.0, dead: false, ended: false };
+        let mut p = Particle { pos: Vec3::ZERO, dir: Vec3::X, speed: 5.0, age: 0.0, life: 6.0, emit_t: 0.0, seed: 1, attached: false, trail: Vec::new(), next_seg: 0.0, next_turn: 0.0, dead: false, ended: false, end_age: 0.0 };
         for _ in 0..30 {
             assert!(gpu_move(&a, &mut p, Quat::IDENTITY, 1.0 / 30.0));
         }

@@ -119,7 +119,13 @@ exe addresses, mark the rest `// gap:`), ask for a real-game clip per tool for t
   (316730); lands into LandGroundSpecialAttackJumpStart (same time) while ref 201 is up, else
   LandGroundSpecialAttackJumpFallLoop (316740). Out of a sprint SprintSpecialAttackJumpReady
   (316770: CMSG has no animId for it, `art_state_id`). Pressed
-  again in the landing -> Combo2 (HKS 5386). One Mind's hold action -> VariationCombo2 / NoResource
+  again in the landing -> Combo2 (HKS 5386). The leap's 920 row 10010 (6.4 m/s, 9.64 up) homes:
+  homingTargetType 1 (taken as the lock target; gap: enum unnamed) -> ChrPhysicsHomingParam 20000
+  (initialVelocityCorrection 2, chase 10 m/s^2, rate 1, offset 1 m in front of the target).
+  Correction 2 = exe FUN_140bb3580: keep the vertical speed, turn and slow the horizontal one to
+  land on the point (never faster than the row's; too far -> the row's leap); chase =
+  FUN_140bb3220 (player.rs `LeapHoming`). The skills recording (no lock): ~5-6 m at ~6.4 m/s.
+  Before, a close locked enemy was jumped over. Test `leaping_kicks_land_in_front_of_the_lock_target`. One Mind's hold action -> VariationCombo2 / NoResource
   (5379), HoldEnd -> Combo1 (5406). TAE 920: every event fires once as the clock crosses it
   (316710 has two). Test `arts_combo_out_of_their_jump_and_hold`.
 - Shadowrush / Shadowfall (109): the thrust connecting while ref 225 is up (a109_316000 f44-55) with

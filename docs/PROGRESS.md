@@ -79,6 +79,10 @@ matching topic file, and one line to Recent below (keep the last 15).
 - [HANDOFF_PLAN.md](HANDOFF_PLAN.md) - task packets for helper models
 
 ## Recent
+- 2026-10-16 tool effects vs the skills recording: axe / spear parts placed right (the 'spear behind Wolf' was a misread axis); every held tool's TAE and bullet effects match the game's; fixes: Divine Abduction's wind-collecting effect 300190 (Wolf's timed SpEffects show their visuals); spear head no longer flies off the shaft (Havok scale rule for tool clips, tip spark 4.26 m vs game 4.4 m); effects on tool parts (flame spear fire, axe trails) were drawn at the world's centre, now on the tool (kb/fxr.md 9)
+- 2026-10-16 One Mind slash storm (440131) brighter: lit tracer slashes skip the 1/8 lit scale; quick check of all arts and tools: all effects spawn (kb/fxr.md 9)
+- 2026-10-16 Senpou Leaping Kicks / High Monk home on the lock target (homing row 20000, exe FUN_140bb3580 / 3220): no longer jump over close enemies (kb/skills.md); Mortal Draw's emblem-gated blade effects 440005-440008 now play (kb/fxr.md 9)
+- 2026-10-16 effects: tracer trails fade out on end (fadeOutTime) instead of hanging as lines; Mortal Draw's brush strokes last their node time; Flame Vent's follow-up spew needs a new press, not a held button (recordings ticks 22283 / 18923) (kb/fxr.md 9, prosthetic.rs held_press)
 - 2026-10-15 boss fidelity pass 2: all main bosses' perilous per minute vs the clip (kb/enemy.md); fix: SpEffect watches fire only from the named character (the Headless Ape no longer backsteps all fight); 1 new test
 - 2026-10-15 boss fidelity: perilous per minute matches the all-bosses clip for the castle Owl (0, the script never reaches its perilous acts; the clip's 2-4 were Owl Father), Owl Father, Monk and Demon; no code change (kb/enemy.md, kb/clips.md)
 - 2026-10-15 effects pass: tracer width along the exe's per-point axis (FUN_14042c4d0 / tracer domain shader); additive tracers skip the lit 1/8 (Mortal Draw red, not pink); fixed-step skill shots; stray hand-made sparks on 27 effect-less tool bullets removed; every art and tool shot, lit smoke darkness left as the light-scale gap (kb/fxr.md 9)

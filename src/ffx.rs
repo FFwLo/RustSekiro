@@ -284,7 +284,7 @@ impl Plugin for FfxPlugin {
             .add_systems(Startup, setup)
             // emit reads the TAE edges (prev_t, t), which move once per fixed step.
             .add_systems(FixedUpdate, emit.after(crate::actor::ActorSet::Advance).after(crate::anim::PoseSet))
-            .add_systems(Update, (animate_puffs, weapon_trail, skill_shots, tae_sp_vfx));
+            .add_systems(Update, (animate_puffs, weapon_trail, skill_shots.after(crate::player::read_input), tae_sp_vfx));
         // Skill shots: every frame is 1/60 s of game time, so a shot lands on the same anim time
         // however slow the frame (the first press loads the art's effects and hitches).
         if std::env::var("SHINOBI_SKILL_SHOTS").is_ok() {
@@ -538,7 +538,16 @@ fn emit(
             if !e.ungated() {
                 let gate = e.arg_i64("StateInfo").unwrap_or(0);
                 let tool = player.and_then(|p| crate::player::equipped_tool(&combat, &config, p.tool_slot)).map(|t| t.id);
-                let active = states.get_or_insert_with(|| crate::sound::active_state_infos(&combat, a, Some(&config), tool));
+                // Wolf's also take player.rs's `resident_gates`: the art's "has emblems" one
+                // (Mortal Draw's 993 gates its 440005-440008, which the skills recording plays with
+                // every 440001 / 440003) and the timed SpEffects'.
+                let active = states.get_or_insert_with(|| {
+                    let mut v = crate::sound::active_state_infos(&combat, a, Some(&config), tool);
+                    if player.is_some() {
+                        v.extend(combat.player.resident_gates.iter().copied());
+                    }
+                    v
+                });
                 if !active.contains(&gate) {
                     continue;
                 }
@@ -575,7 +584,13 @@ fn emit(
                     };
                     let follow = e.args.get("IsFollowDummyPoly").and_then(|v| v.as_bool()).unwrap_or(e.kind != 112);
                     if std::env::var("SHINOBI_FFX_LOG").is_ok() {
-                        info!("fxr {ffx} on {dmy} ({clip} {:.2}) at {:.2}", a.t, pos);
+                        // Ahead / side / up of the character (forward -Z, Actor::forward), as the
+                        // recorder's fx rows read (side = +x in the game's own axes).
+                        let rel = globals.get(owner).ok().map(|w| {
+                            let (d, f) = (pos - w.translation(), (w.rotation() * Vec3::NEG_Z).normalize_or(Vec3::NEG_Z));
+                            Vec3::new(d.dot(f), d.dot(f.cross(Vec3::Y)), d.y)
+                        });
+                        info!("fxr {ffx} on {dmy} ({clip} {:.2}) at {:.2}, ahead / side / up of the actor {:.2?}", a.t, pos, rel);
                     }
                     // Foot dust with IsIgnoreDummyPolyAngle (all of Wolf's 792s): at the foot,
                     // turned as the character, not as the foot.
@@ -864,6 +879,16 @@ fn skill_shots(
             pad.press(crate::player::Action::Prosthetic);
         } else {
             pad.press(crate::player::Action::CombatArt);
+        }
+    }
+    // SHINOBI_SKILL_HOLD=<frames>: keep the button down that long after the press (the held
+    // versions: the axe's spin, the spear's pull, the umbrella's guard ...).
+    let hold = std::env::var("SHINOBI_SKILL_HOLD").ok().and_then(|v| v.parse::<u32>().ok()).unwrap_or(0);
+    if f >= start && f < start + hold {
+        if (70000..80000).contains(&id) {
+            pad.prosthetic_held = true;
+        } else {
+            (pad.attack_held, pad.guard_held) = (true, true);
         }
     }
     // SHINOBI_SKILL_SHOT_RANGE="from,to,step" frames after the press (default 3,90,3).

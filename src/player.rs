@@ -23,6 +23,9 @@ pub struct Player {
     /// Plunge deathblow in flight: the posture-broken enemy Wolf is falling onto and the
     /// ThrowParam suffix of the landing (151 崩し落下1, 161 蹴り崩し1 out of a head-kick jump).
     plunge: Option<(Entity, i64)>,
+    /// A launch homing on a character (ChrPhysicsVelocityChangeParam homingId other than the
+    /// wire's: the jump arts' 10010 -> ChrPhysicsHomingParam 20000), until he lands.
+    leap_homing: Option<LeapHoming>,
     /// HKS MoveSpeedLevel: 0 idle, 1 walk, 2 run (converges at 3/s).
     pub(crate) speed_level: f32,
     requests: HashMap<Action, f32>,
@@ -287,6 +290,75 @@ fn air_art_land(cat: i64, state: &str, ref_201: bool, ref_288: bool) -> Option<(
         "AirSpacialAttackHoldEnd" if ref_201 => ("LandAirSpacialAttackHoldEnd", true),
         _ => return None,
     })
+}
+
+/// ChrPhysicsHomingParam's target point on a character: its origin (targetBaseDmyPolyId -1) plus
+/// targetOffset in its own space (model forward is -Z, so 20000's (0, 0, -1) is 1 m in front of
+/// it). gap: the offset's space is taken from the plunge's dummy-space use (200000300), not
+/// traced for the origin case.
+fn leap_target(t: &Transform, offset: Vec3) -> Vec3 {
+    t.translation + t.rotation * offset
+}
+
+/// A launch homing on a character (exe FUN_140bb3580 / FUN_140bb3220, ChrPhysicsHomingParam).
+#[derive(Clone, Copy, Debug)]
+struct LeapHoming {
+    target: Entity,
+    row: crate::wire::HomingRow,
+    /// fallCorrectionChaseMaxVelocityRate x the planar speed when the homing starts.
+    max_speed: f32,
+}
+
+/// The horizontal speed that lands a launch (vertical speed `vy`, gravity `g` < 0) on a point
+/// `dist` away and `dy` above (exe FUN_140bb3b70, no horizontal acceleration): the later root of
+/// dy = vy t + g t^2 / 2, then dist / t. None when the point can't be reached.
+fn arrival_speed(vy: f32, dist: f32, dy: f32, g: f32) -> Option<f32> {
+    let disc = vy * vy + 2.0 * g * dy;
+    if g >= 0.0 || disc < 0.0 {
+        return None;
+    }
+    let t = (-vy - disc.sqrt()) / g;
+    (t > 0.0).then(|| dist / t)
+}
+
+impl LeapHoming {
+    /// initialVelocityCorrection 2 (FUN_140bb3580's second branch): the vertical speed stays the
+    /// row's; the horizontal one turns to the target and slows to land on it - but never speeds
+    /// up past the row's (needed > current: no correction, the row's launch as it is).
+    /// Correction 1 (the wire's arc) is wire.rs's.
+    fn launch(a: &mut Actor, pos: Vec3, target: Vec3, g: f32, e: Entity, row: crate::wire::HomingRow) -> Option<Self> {
+        if row.initial_correction == 2 {
+            let to = (target - pos).with_y(0.0);
+            let speed = a.air_base.length();
+            if to.length() <= 0.0 {
+                a.air_base = Vec3::ZERO;
+            } else if let Some(need) = arrival_speed(a.vel_y, to.length(), target.y - pos.y, g).filter(|n| *n > 0.0 && *n <= speed) {
+                a.air_base = to.normalize() * need;
+                a.yaw = yaw_of(to);
+            }
+            a.move_vel = a.air_base;
+        }
+        row.chase.then_some(Self { target: e, row, max_speed: a.air_base.length() * row.chase_speed_rate })
+    }
+
+    /// fallCorrectionChase (FUN_140bb3220): each frame the horizontal velocity moves toward the
+    /// one that lands on the (moving) target point, by at most chaseMaxAcceleration * dt; without
+    /// a solution it accelerates straight at it. Capped at `max_speed`. gap: where the exe
+    /// applies the velocity-rate cap is not traced (taken on the result).
+    fn chase(&self, a: &mut Actor, pos: Vec3, target: Vec3, g: f32, dt: f32) {
+        let to = (target - pos).with_y(0.0);
+        let dist = to.length();
+        if dist <= 1e-4 {
+            return;
+        }
+        let dir = to / dist;
+        let step = self.row.chase_accel * dt;
+        a.air_base += match arrival_speed(a.vel_y, dist, target.y - pos.y, g) {
+            Some(need) => (dir * need - a.air_base).clamp_length_max(step),
+            None => dir * step,
+        };
+        a.air_base = a.air_base.clamp_length_max(self.max_speed);
+    }
 }
 
 /// HKS BEH_A_GROUND_SP_ATTACK: the art's opening state by type. Out of a sprint (ref 1) the
@@ -1321,7 +1393,7 @@ fn spawn_player(mut commands: Commands, combat: Res<Combat>, config: Res<GameCon
         }
     }
     commands.spawn((
-        Player { plunge: None, speed_level: 0.0, requests: HashMap::new(), last_state: String::new(), gourd: config.player.gourd_charges, emblems: config.player.spirit_emblems, auto_aim: false, auto_aim_fresh: false, resurrections: config.player.resurrections, revive_queued: false, death_wait: 0.0, dead_for: 0.0, escape: None, jump_forward: false, jump_land: None, positioning_land: false, aged_form: false, step_tilt: 0.0, jump_tilt: 0.0, throw_start: None, throw_target: None, tool_slot: 0, vel_scale: None, expand_pending: false, sub_cat_before: 0, air_sub_count: 0, air_art_count: 0, art_enable_jump: false, timed: Vec::new(), held: Vec::new(), wire: None, perch: None, wire_todome: false, air_top: 0.0 },
+        Player { plunge: None, leap_homing: None, speed_level: 0.0, requests: HashMap::new(), last_state: String::new(), gourd: config.player.gourd_charges, emblems: config.player.spirit_emblems, auto_aim: false, auto_aim_fresh: false, resurrections: config.player.resurrections, revive_queued: false, death_wait: 0.0, dead_for: 0.0, escape: None, jump_forward: false, jump_land: None, positioning_land: false, aged_form: false, step_tilt: 0.0, jump_tilt: 0.0, throw_start: None, throw_target: None, tool_slot: 0, vel_scale: None, expand_pending: false, sub_cat_before: 0, air_sub_count: 0, air_art_count: 0, art_enable_jump: false, timed: Vec::new(), held: Vec::new(), wire: None, perch: None, wire_todome: false, air_top: 0.0 },
         actor,
         Name::new("Player"),
         Transform::from_xyz(0.0, CAPSULE_HALF_HEIGHT, 4.0),
@@ -3921,11 +3993,21 @@ fn decide(
             a.fall_type = vc.fall_type;
             a.airborne = true;
             a.move_vel = a.air_base;
+            p.leap_homing = None;
             // Row 1100's homing (ChrPhysicsHomingParam 300000000): the wire's guaranteed arrival.
             if vc.homing_id == crate::wire::WIRE_HOMING {
                 if let Some(w) = p.wire.as_mut() {
                     w.launch(d, a, tf.translation);
                 }
+            }
+            // Any other row with a target type homes on that character (the jump arts' 10010 ->
+            // 20000: Senpou Leaping Kicks / High Monk land in front of the lock target).
+            else if vc.homing_id != 0 && vc.homing_target_type == 1 {
+                let ft = FALL_TYPES[(a.fall_type as usize).min(FALL_TYPES.len() - 1)];
+                p.leap_homing = lock.target.zip(crate::wire::homing_row(vc.homing_id)).and_then(|(target, row)| {
+                    let (_, _, _, t) = enemies.get(target).ok()?;
+                    LeapHoming::launch(a, tf.translation, leap_target(t, row.offset), ft.gravity(), target, row)
+                });
             }
         }
     }
@@ -4305,6 +4387,11 @@ fn decide(
                 }
             }
         }
+        if let Some(h) = p.leap_homing {
+            if let Ok((_, _, _, t)) = enemies.get(h.target) {
+                h.chase(a, tf.translation, leap_target(t, h.row.offset), ft.gravity(), dt);
+            }
+        }
         if let Some(w) = p.wire.as_mut() {
             w.steer(a, tf.translation, dt);
         }
@@ -4324,6 +4411,7 @@ fn decide(
         if tf.translation.y <= floor && a.vel_y < 0.0 && !lifting {
             tf.translation.y = floor;
             a.airborne = false;
+            p.leap_homing = None;
             // The fall type lasts one flight: Wire::launch's fallType 2 (gravity -9.8 - 9.8,
             // stick 6 m/s) is not the next walk-off's (0, kb/movement.md -23.52).
             a.fall_type = 0;
