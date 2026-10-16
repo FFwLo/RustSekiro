@@ -1527,3 +1527,55 @@ pub(crate) fn blue_lightning_on_an_air_art(air: bool) {
     }
     panic!("air {air}: never hit: {}", log_text(&app));
 }
+
+#[test]
+pub(crate) fn emma_killed_from_her_deflect_break_does_not_get_up() {
+    // Emma (c7400, map-scripted) killed out of her deflect break pose: ThrowDef12110 has flag 69
+    // (ThrowType5) at TAE 63, where the HKS (c9997 ThrowDefCommonFunction, env 276) goes to
+    // ThrowDefDeath12111. The scripted path waited for the 9 s clip to end: she stood up first.
+    let mut app = app_cfg("c7400", Some(74000010), Vec::new());
+    for _ in 0..30 {
+        app.update();
+    }
+    start_enemy_combo(&mut app, 0);
+    let mut pressed = false;
+    let mut pose = None;
+    let mut killed = None;
+    for i in 0..60 * 20u32 {
+        if pose.is_none() {
+            let world = app.world_mut();
+            let mut q = world.query_filtered::<&mut Actor, With<Enemy>>();
+            for mut a in q.iter_mut(world) {
+                a.posture = a.posture_max - 1.0;
+            }
+        }
+        if !pressed {
+            if let Some(dt) = time_to_enemy_hit(&mut app) {
+                if dt <= 3.0 / TAE_FPS {
+                    app.world_mut().resource_mut::<PadInput>().press(Action::Guard);
+                    pressed = true;
+                }
+            }
+        }
+        app.update();
+        let ps = player_state(&mut app).0;
+        let es = enemy_state(&mut app).0;
+        if ps == "ThrowBreak" && pose.is_none() {
+            pose = Some(i);
+        }
+        if pose.is_some_and(|p| i == p + 36) {
+            app.world_mut().resource_mut::<PadInput>().guard_held = false;
+            app.world_mut().resource_mut::<PadInput>().press(Action::Attack);
+        }
+        if es == "ThrowDef12110" && killed.is_none() {
+            killed = Some(i);
+        }
+        if es == "ThrowDefDeath12111" {
+            let k = killed.expect("12110 first");
+            // Flag 69 at 63/30 s; the clip is 9 s.
+            assert!(((i - k) as f32 / 60.0) < 3.0, "{} s in 12110", (i - k) as f32 / 60.0);
+            return;
+        }
+    }
+    panic!("pose {pose:?} killed {killed:?}, enemy {}", enemy_state(&mut app).0);
+}

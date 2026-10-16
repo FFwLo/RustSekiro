@@ -130,7 +130,7 @@ pub fn map_id(config: &GameConfig) -> Option<String> {
         Err(_) => {
             let m = config.world.map.clone().filter(|m| !m.is_empty())?;
             if m == crate::sandbox::MAP_ID {
-                return Some(m);
+                return Some(sandbox_exception(&config.enemy.chr, config.enemy.npc_row).unwrap_or(m));
             }
             let arena = boss_arena(&config.enemy.chr, config.enemy.npc_row);
             if m == ARENAS_ONLY {
@@ -139,6 +139,18 @@ pub fn map_id(config: &GameConfig) -> Option<String> {
             Some(arena.unwrap_or(m))
         }
     }
+}
+
+/// Fights the sandbox cannot hold, which keep their own arena under `map = "sandbox"` (the user,
+/// 2026-10-15: "devine dragon need bigger arena becauce he push you away"): the Old Dragons of
+/// the Tree and the Divine Dragon. Their map script moves Wolf about the real place (m25
+/// 12505885 WarpCopy at the hand-over, the updrafts and the strong wind 52000830 across the cloud
+/// floor), and the trees' grapple points ride on its geometry; on the sandbox he started in
+/// the air and fell.
+const OWN_ARENA_ROWS: [i64; 2] = [52000000, 53000000];
+
+fn sandbox_exception(chr: &str, npc_row: Option<i64>) -> Option<String> {
+    fight_row(chr, npc_row).filter(|r| OWN_ARENA_ROWS.contains(r)).and_then(|_| boss_arena(chr, npc_row))
 }
 
 /// The boss's own arena: `extracted/map_boss_arenas.json` (tools/boss_arenas.py) maps a boss
@@ -1739,7 +1751,8 @@ fn fight_row(chr: &str, npc_row: Option<i64>) -> Option<i64> {
 /// own arena, or back to the config's map, without a relaunch: the old pieces and lights go,
 /// the new map loads (terrain, lighting, pieces; `apply_lighting` re-dresses the camera from
 /// the fresh MapLighting) and Wolf stands on its start. Only with the config's `[world] map`
-/// on and not the sandbox; `SHINOBI_MAP` pins one map for the run.
+/// on; on the sandbox only to and from the fights it cannot hold (`OWN_ARENA_ROWS`);
+/// `SHINOBI_MAP` pins one map for the run.
 fn switch_map(
     mut msgs: MessageReader<crate::enemy::SpawnEncounter>,
     config: Res<GameConfig>,
@@ -1752,10 +1765,12 @@ fn switch_map(
 ) {
     let Some(m) = msgs.read().last().cloned() else { return };
     let Some(base) = config.world.map.clone().filter(|m| !m.is_empty()) else { return };
-    if base == crate::sandbox::MAP_ID || std::env::var("SHINOBI_MAP").is_ok() {
+    if std::env::var("SHINOBI_MAP").is_ok() {
         return;
     }
     let want = match boss_arena(&m.chr, m.npc_row) {
+        // The sandbox, but for the fights it cannot hold (OWN_ARENA_ROWS).
+        _ if base == crate::sandbox::MAP_ID => sandbox_exception(&m.chr, m.npc_row).unwrap_or(base),
         Some(a) => a,
         None if base == ARENAS_ONLY => {
             // No arena for this fight: back to the flat test floor.
