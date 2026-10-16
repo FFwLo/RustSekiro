@@ -1621,3 +1621,28 @@ pub(crate) fn a_forward_jump_over_a_sweep_stops_at_the_body_and_the_kick_lands()
     assert!((16..=22).contains(&kicked), "kick landed {kicked} ticks after the press");
     assert!(far < 1.2, "drifted {far:.2} m from the enemy before the kick");
 }
+
+/// Live (rec_2026101x_*): an idle Wolf with an enemy within 1.3 m moved in 32 of 1267 ticks; the
+/// enemy stops at the body instead of shoving him. An enemy pushed into Wolf here (as its walk or
+/// lunge would) must not slide him in his idle pose (actor.rs separate).
+#[test]
+pub(crate) fn an_enemy_walking_into_idle_wolf_does_not_slide_him() {
+    let mut app = app();
+    for _ in 0..10 {
+        app.update();
+    }
+    let start = player_actor(&mut app).3;
+    for _ in 0..60 {
+        {
+            let world = app.world_mut();
+            let mut q = world.query_filtered::<&mut Transform, With<Enemy>>();
+            let mut t = q.single_mut(world).unwrap();
+            let to = (start - t.translation).with_y(0.0);
+            t.translation += to.normalize_or_zero() * to.length().min(0.05);
+        }
+        app.update();
+    }
+    let (state, _, _, pos) = player_actor(&mut app);
+    let moved = (pos - start).with_y(0.0).length();
+    assert!(moved < 0.05, "Wolf ({state}) slid {moved:.2} m");
+}

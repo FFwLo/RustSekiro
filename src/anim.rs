@@ -182,6 +182,9 @@ pub struct Skeleton {
     pub root: Entity,
     /// Clip shown last frame, and the pose to crossfade from after a clip change.
     pub(crate) shown: String,
+    /// The state clock the shown clip was drawn at last frame (a restart of the same clip runs it
+    /// back to 0).
+    shown_t: f32,
     from: Vec<Transform>,
     /// Last pose written by pose_skeletons (before the twist layer), the start of crossfades:
     /// snapshotting the bone transforms instead would bake that frame's twist into the fade.
@@ -316,7 +319,7 @@ fn build_skeletons(
             commands.entity(e).insert(Hurtboxes(boxes, parts));
         }
         // The skeleton replaces the placeholder capsule.
-        commands.entity(e).insert(Skeleton { bones, root, shown: String::new(), from: Vec::new(), last: Vec::new(), blend: 1.0, blend_len: CROSSFADE, was_upper: false, upper_fade: false, sim: [Vec::new(), Vec::new()] }).remove::<Mesh3d>();
+        commands.entity(e).insert(Skeleton { bones, root, shown: String::new(), shown_t: 0.0, from: Vec::new(), last: Vec::new(), blend: 1.0, blend_len: CROSSFADE, was_upper: false, upper_fade: false, sim: [Vec::new(), Vec::new()] }).remove::<Mesh3d>();
     }
 }
 
@@ -394,7 +397,15 @@ fn pose_skeletons(
         }
         // Clip changed: remember the current pose and fade from it.
         let key = clip_key(l, d, a, drawn);
-        if key != skel.shown {
+        // The same action replayed from its start (the deflect spam chain re-fires
+        // StandToDeflectGuard4 on every press, HKS BEH_A_DEFLECT_GUARD_CONTINUE) is a transition
+        // too and fades by its TAE Blend; before, the pose snapped back to frame 0 on each press.
+        // The state clock only runs back on a new play (loops wrap inside clip_for). gap: the
+        // graph's self-transition is taken as its TaeBlend, like any other (not seen live: the
+        // recorder's anim field does not change on a replay).
+        let replayed = key == skel.shown && !a.anim.is_empty() && drawn + 1e-4 < skel.shown_t;
+        skel.shown_t = drawn;
+        if key != skel.shown || replayed {
             skel.from = if skel.last.len() == skel.bones.len() { skel.last.clone() } else { skel.bones.iter().map(|&b| tfs.get(b).copied().unwrap_or_default()).collect() };
             // Behavior-graph transitions all have duration 0 (c0000.hkx / c9997.hkx: TaeBlend*,
             // DefaultTransition, StateToStateBlend): the blend time is the target anim's TAE Blend
