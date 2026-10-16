@@ -585,9 +585,9 @@ fn solve_volume(x: &mut [Vec3], frames: &[(Vec3, usize, f32)], apply: &[(Vec3, u
     }
 }
 
-/// Sim steps a frame of `dt` seconds runs: the nearest count of 1/60 s steps, 1 to 3.
+/// Sim steps a frame of `dt` seconds runs: the nearest count of 1/60 s steps, 1 to 4.
 fn frame_steps(dt: f32) -> u32 {
-    ((dt * 60.0).round() as u32).clamp(1, 3)
+    ((dt * 60.0).round() as u32).clamp(1, 4)
 }
 
 fn cloth_range(setting: crate::config::ClothSetting) -> f32 {
@@ -655,14 +655,16 @@ fn simulate(
             // (bind pose floating above the crouched body) by the plain 15 m rule.
             let rest_far = c.def.rest.iter().map(|p| p.length()).fold(0.0, f32::max);
             let hidden = !c.displays.is_empty() && c.displays.iter().all(|d| shown.get(d.entity).is_ok_and(|v| *v == Visibility::Hidden));
-            let culled = c.rigid
-                || chain_missing
-                || hidden
-                || range < 0.0
-                || match cam {
+            // Beyond the range only (not hidden, rigid or off): the cloth keeps its last
+            // simulated shape and rides the root, so a boss seen from afar does not have its
+            // cloth snap to the bind pose (which stands out stiff from the body).
+            let far = range >= 0.0
+                && match cam {
                     Some(cam) if range > 0.0 => globals.get(c.root).is_ok_and(|g| g.translation().distance(cam) > range + rest_far),
                     _ => false,
                 };
+            let culled = c.rigid || chain_missing || hidden || range < 0.0 || far;
+            let hold = far && !c.rigid && !chain_missing && !hidden && c.started;
             let bone_h = |name: &str| c.bones.get(name).and_then(|&e| globals.get(e).ok()).map(|g| havok(g.to_matrix()));
             // One world matrix per bone: the reference bones by index, the collidables' by name.
             let ref_mats: Vec<Option<Mat4>> = c.def.ref_bones.iter().map(|n| bone_h(n)).collect();
@@ -742,7 +744,7 @@ fn simulate(
             let jumped = c.started
                 && !culled
                 && (c.x.len() != def.rest.len() || def.moves.iter().any(|&(v, p)| refs.get(v).and_then(|r| *r).is_some_and(|(q, _)| c.x.get(p).is_none_or(|x| q.distance(*x) > jump))));
-            let restarted = !c.started || jumped || culled;
+            let restarted = !c.started || jumped || (culled && !hold);
             if restarted {
                 if jumped {
                     info!("cloth {}: restart (fixed particle jumped)", def.name);
@@ -777,7 +779,7 @@ fn simulate(
                 .iter()
                 .filter_map(|&(v, p)| refs.get(v).and_then(|r| *r).filter(|_| p < c.x.len()).map(|(q, _)| (p, if restarted { q } else { c.x[p] }, q)))
                 .collect();
-            if dt <= 0.0 {
+            if dt <= 0.0 || hold {
                 for &(p, _, to) in &fixed {
                     c.x[p] = to;
                     c.prev[p] = to;
@@ -829,10 +831,16 @@ fn simulate(
                     for _ in 0..def.iterations {
                         for &e in &def.execution {
                             if e == -1 {
+                                if *SKIP == "collide" {
+                                    continue;
+                                }
                                 collide(&mut c.x, &mut c.prev, w, (&def.radius, &def.friction, &def.masks), &caps, &caps_was);
                                 continue;
                             }
                             let Some(set) = usize::try_from(e).ok().and_then(|e| def.sets.get(e)) else { continue };
+                            if !SKIP.is_empty() && *SKIP == match set { Set::Standard(_) => "standard", Set::Stretch(_) => "stretch", Set::LocalRange { .. } => "local_range", Set::Bend(_) => "bend", Set::BendStiffness { .. } => "bend_stiffness", Set::Compressible(_) => "compressible", Set::Volume { .. } => "volume", Set::Unsolved => "transition" } {
+                                continue;
+                            }
                             match set {
                                 Set::Standard(ls) => ls.iter().for_each(|l| solve_link(&mut c.x, w, l, false)),
                                 Set::Stretch(ls) => ls.iter().for_each(|l| solve_link(&mut c.x, w, l, true)),
@@ -1287,6 +1295,10 @@ fn swings(cloths: &Cloths, g: &GlobalTransform) -> String {
     line
 }
 
+/// SHINOBI_CLOTH_SKIP=<standard|stretch|local_range|bend|bend_stiffness|compressible|volume|collide>:
+/// leaves that constraint kind out of every solve (finding what makes a cloth jitter).
+static SKIP: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| std::env::var("SHINOBI_CLOTH_SKIP").unwrap_or_default());
+
 static PROBE: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::env::var("SHINOBI_CLOTH_PROBE").is_ok() || std::env::var("SHINOBI_CAPE_TURN").is_ok());
 
 /// SHINOBI_CLOTH_PROBE=1 (with SHINOBI_FIGHT / SHINOBI_DUEL): every 0.1 s each enemy's anim,
@@ -1301,7 +1313,9 @@ fn enemy_cloth_probe(time: Res<Time>, enemies: Query<(Entity, &Cloths, &GlobalTr
             continue;
         };
         let dt = t - t0;
-        if dt < 0.1 {
+        // SHINOBI_CLOTH_PROBE_DT=<s>: log interval (default 0.1; 0 = every frame, for jitter).
+        let every: f32 = std::env::var("SHINOBI_CLOTH_PROBE_DT").ok().and_then(|v| v.parse().ok()).unwrap_or(0.1);
+        if dt < every || dt <= 0.0 {
             continue;
         }
         last.insert(e, (t, pos, yaw));
@@ -1416,7 +1430,7 @@ mod tests {
         assert_eq!(super::frame_steps(1.0 / 60.0), 1);
         assert_eq!(super::frame_steps(1.0 / 30.0), 2);
         assert_eq!(super::frame_steps(1.0 / 20.0), 3);
-        assert_eq!(super::frame_steps(0.2), 3);
+        assert_eq!(super::frame_steps(0.2), 4);
     }
 
     #[test]
