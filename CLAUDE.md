@@ -31,6 +31,7 @@ static Ghidra decompile of the exe. The crate and exe are `sv1`. GitHub: `FFwLo/
 | HUD, menus | `src/hud.rs`, `src/menu.rs` |
 | Extractor | `tools/sekiro-extract/src/`, `docs/kb/tools-exe.md` |
 | Reference clips | `docs/kb/clips.md` (check before asking the user for a new recording) |
+| Live recordings of the real Sekiro | `docs/kb/recordings.md`: read `python -m tools.rec summary <rec> --cat <topic>`, never raw data |
 
 Reference clones (read-only): `C:\DeadlockModding\reference` (SekiroHKS, SDT-HKS, Paramdex,
 SekiroTool, SoulsFormatsNEXT, sekiro-rs, fxr, ...). Check them first for names and layouts.

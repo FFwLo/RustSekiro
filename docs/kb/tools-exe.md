@@ -48,3 +48,24 @@ Physics yaw +0x74 / position +0x80. New for live work (1.6.0, base 0x140000000):
   confirmed on rec_20261008_054259: the General's poise and max poise are 0 for all 18480 ticks -
   no super-armour meter, as NpcParam superArmorDurability 0 says and combat.rs assumes. (Its
   basic-slash poise damage table 40 / 38 / ... / 24 per NG cycle is community-measured, not data.)
+
+## Live recording system for the real Sekiro (2026-10-15)
+- Pieces: `tools/memscope/rec2.lua` (memscope recorder: per-frame blocks of Wolf + 2 enemies + globals,
+  events.jsonl for SpEffects / slots / markers / test switches), `tools/rec-hooks` (me3 native DLL
+  `sv1_rec_hooks.dll`, ilhook jmp-back hooks, writes hooks.jsonl stamped with the recorder's tick),
+  `tools/rec/` (Python: ingest -> rec.db, per-category summaries, query, compare). Usage and the
+  recording list: `docs/kb/recordings.md`. me3 profile `C:\DeadlockModding\me3\sekiro-rec.me3`
+  (= sekiro-research.me3 + the DLL; hook list in `me3\sekiro-rec\sv1_rec_hooks.txt`).
+- Hooks under me3 via the DLL: items FUN_14079ab70 (AdjustItemCount), ai_goal FUN_1405ce510 (AddSubGoal),
+  music FUN_1408cebe0, posture FUN_1408439a0, guardcut FUN_140840870 all installed and ran 15 min without a
+  crash (the 2026-10-08 crashes were memscope's own trampolines before me3).
+- AdjustItemCount(inv, slot, delta): rdx is an inventory SLOT, not a goods id. Slot -> entry as FUN_1407aabf0:
+  table at inv +0x168; slot < [+0x24] -> [+0x58] + slot*0x10, else [+0x48] + (slot - [+0x24])*0x10; entry +0x4
+  item id (top nibble 4 = goods), +0x8 count. Verified live: slot 272 = goods 3001 (Empty Healing Gourd).
+- SpEffect list: [ChrIns+0x11D0]+0x8 head, entry +0x58 id, +0x60 param row, +0x70 next (FUN_140bfebf0,
+  FUN_140bfafa0 area); verified live (Healing Gourd 3000 appears on gourd use).
+- Debug flags 0x143D7A366 (SekiroTool): +0 player no death, +3 no goods consume, +4 no emblem consume,
+  +0xB all no death, +0x10 disable AI. Recorded every frame; summaries warn when set (SekiroTool had +3/+4
+  on during rec_20261015_184118_skills_tools).
+- Names in summaries: Smithbox SDT row names (`reference/Smithbox-src/.../Param Row Names/English`), labels only.
+- Size: ~46 MB per recorded minute (core blocks every frame, slow blocks every 6th); summaries <= 60 lines.
