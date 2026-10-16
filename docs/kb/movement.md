@@ -171,3 +171,28 @@ end). See HANDOFF 4.63 item 8.
     201000/201001 -> 299020 -> next jump. Sv1 kicks on any air press: OPEN - find what gates
     env(1106, ACTION_ARM_JUMP) in the air (likely a kick target in reach). Next: fix that, then the
     locked sprint-deflect (needs an enemy; this save's spot has none in WorldChrMan+0x998).
+
+## Fall death, void return (2026-10-16)
+- Exe (static): FUN_14084e5d0 = the kill test: fall height >= HitMtrlParam +0x4c (`fallDeathDist`, 40 default, 80 on deep-water planes 22/36/38), and only from 20 m up (DAT_143b01948 = 20.0, read from sekiro.exe .data; 5 m while SpEffect type 0x155 is worn, DAT_143b01950/54). FUN_140843660 = the damage factor (not the kill); FUN_1408433f0 reads the row's +0x50 `fallDamageRate`. Debug-menu FUN_140a27c60 case 7 confirms the two fields. Same numbers as sekiro-rs (its source was the same table).
+- Sv1: `map::fall_death_dist` (HitMtrlParam, disableFallDamage rows = no death), landing in player.rs: fatal drop -> `LandDeadReturnStart` (a000_200909, HKS DAMAGE_TYPE_LAND_DEAD_RETURN) -> `GroundFallReturn` at `Player::safe_pos` (last dry ground), HP kept; falling 40 m with no ground below -> `FallDeadReturnStart` (a000_199120). Test `a_forty_metre_fall_returns_wolf_to_safe_ground`. The three states were added to tools/sekiro-extract/export_states.txt (re-export needed).
+- gap: the non-lethal HP loss (20 m up, FUN_140843660's factors), whether the game returns or kills outright, the void kill height / return volume. Needs a live drop test (recorder).
+- sekiro-rs hints checked 2026-10-16: gravity, air control, 720 deg/s, radius 0.4, input buffer, walk twist were already in Sv1 from the same exe tables. Its ledge hang / wall hug / swim numbers (HANG_DEPTH 1.5, OUTWARD 0.35, reach 1.0, 45 deg) are marked "placeholder, not traced" there, so they are no better than a guess.
+
+## Recording check (2026-10-16, rec_20261016_083843_movement_hooks, m10, 236 s)
+Live Sekiro (rec.db, slot 0) vs Sv1 clip data / sim:
+- Run start from idle (speed every 67 ms): live 1.0 2.6 4.2 5.6 6.2 6.0 5.5 5.7 5.6, Sv1 1.8 2.5 4.2 5.7 6.3 6.0 5.7 5.6 5.6. Match.
+- Loop speeds (median m/s, live vs clip root motion): sprint a000_001151 8.68 / 8.74, run a000_000420 5.50 / 5.50, crouch walk a000_021402/3 2.32 / 2.36, run a000_000400 5.12 / 5.55 (live includes the start ramp). Match.
+- Run jump: live rise 1.96-1.97 m (a000_201000 / 201200), Sv1 1.97 m. Match.
+- Not settled: walk a000_000100 (live median 0.49 m/s, clip 1.64 - transitions dominate, needs a clean walk recording); locked sprint-deflect facing (no clean case in this recording).
+
+## Clean movement recording (2026-10-16, rec_20261016_092035_movement_clean, 186 s)
+- Loop speeds, live vs clip root motion (m/s): walk a000_000100/200 1.62-1.63 / 1.64 (the first recording's low walk value was transitions), strafe walk 000201 1.43 / 1.42, run 000500 5.58 / 5.61, lock-on run 000501 4.28 / 4.27, 000503 4.21 / 4.19, 000403 4.22 / 4.16, sprint 001151 8.80 / 8.74. Match.
+- Run jump: live press -> landing clip (a000_201055) 0.93-1.07 s, rise 1.93-2.00 m; Sv1 1.02 s, 1.97 m. Match.
+- AirKick CORRECTION: the recorder's anim field never shows a000_213100 (the kick is not in TimeAct +0x100; the fall loop 299020 stays), so the 2026-10-15 "no air kick when mashing" conclusion was wrong. SpEffects 100334 + 100247 (AirKick's own) fired 6 times in this recording, each when the user pressed jump in the air, two of them 0.9 s apart in ONE flight (ticks 8842 / 8896). Sv1's rule (kick again once ref 431's 0.4-0.7 s window is over) matches that spacing. Use the SpEffect events, not the anim, to find kicks.
+- Open: lock-on turn rate and the sprint-deflect facing still have no isolated case; jump presses are not recorded (no pad block in this recording), so mashing vs single presses can't be separated.
+- Jump presses vs kicks (decoded pad, recorder session schema 11, movement_clean): 14 jump presses in the air, 6 kicks (W_AirKick). A press kicks only when it lands after the take-off frames (a press 12 ticks after take-off did nothing, the next one 24 ticks in kicked, W_AirKick 2 ticks later) and never within about 0.4 s of the previous kick (presses 1, 12, 14, 24, 26 ticks after a kick: nothing; 54 ticks after: kick). Presses on the landing frames also do nothing. Same shape as Sv1's accept-flag gate plus the ref 431 window; a live-vs-sim run with the same press ticks is still to do.
+
+## Lock-on turn and sprint deflect (2026-10-16, rec_20261016_094717_lockturn_sprintdeflect, 57 s, 7 locked sprint deflects)
+- Sprint deflect (SprintToDeflectGuard, a050_203001): NOT a snap. Wolf keeps his sprint heading (90-150 deg off the enemy) for the first ~0.1 s (Disable Turning flag 7), turns 180 deg/s to 0.2 s and 360 deg/s to 0.3 s (the clip's SetTurnSpeed), then at the controller default 720 deg/s until square on the enemy (0 deg error at +0.5 s). This is the "deflect sideways, then see the enemy" the user described. Sv1 now turns the same way (player.rs sprint deflect block; test `a_locked_sprint_deflect_turns_to_the_enemy_instead_of_snapping`); the old snap and the "turns at most 54 deg" gap are gone. gap: the exe's target for that turn (HKS sets no facing) is taken as the lock target.
+- Standing deflect: Wolf is already facing the target (+-6 deg live), so the aim stays.
+- Locked strafe (a000_000502/503/602): facing stays 1-2 deg off the enemy while orbiting (follow rate 55-110 deg/s median/p90). Sv1 strafes at 0-1 deg error. Match.

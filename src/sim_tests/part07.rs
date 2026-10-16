@@ -473,6 +473,51 @@ pub(crate) fn a_twenty_metre_fall_lands_long_stiff() {
     }
 }
 
+/// A fall past HitMtrlParam fallDeathDist (40 m, the default row) ends in the fall-return death
+/// (HKS DAMAGE_TYPE_LAND_DEAD_RETURN, a000_200909), then Wolf stands at the last safe ground with
+/// his HP; a 25 m fall is only the long stiff landing.
+#[test]
+pub(crate) fn a_forty_metre_fall_returns_wolf_to_safe_ground() {
+    for (drop, dies) in [(45.0, true), (25.0, false)] {
+        let mut app = app();
+        move_enemy_far(&mut app);
+        for _ in 0..30 {
+            app.update();
+        }
+        let (start, hp) = {
+            let world = app.world_mut();
+            let (a, t) = world.query_filtered::<(&Actor, &Transform), With<Player>>().single(world).unwrap();
+            (t.translation, a.hp)
+        };
+        {
+            let world = app.world_mut();
+            world.resource_scope(|world, combat: Mut<Combat>| {
+                let (mut a, mut t) = world.query_filtered::<(&mut Actor, &mut Transform), With<Player>>().single_mut(world).unwrap();
+                assert!(a.play_state(&combat.player, "FreeFall"));
+                a.airborne = true;
+                a.vel_y = 0.0;
+                t.translation += Vec3::new(3.0, drop, 0.0);
+            });
+        }
+        let mut saw = false;
+        let mut seen: Vec<String> = Vec::new();
+        for _ in 0..900 {
+            app.update();
+            let world = app.world_mut();
+            let a = world.query_filtered::<&Actor, With<Player>>().single(world).unwrap();
+            saw |= a.state == "LandDeadReturnStart";
+            if seen.last() != Some(&a.state) { seen.push(a.state.clone()); }
+        }
+        let world = app.world_mut();
+        let (a, t) = world.query_filtered::<(&Actor, &Transform), With<Player>>().single(world).unwrap();
+        assert_eq!(saw, dies, "drop {drop} {seen:?}");
+        assert_eq!(a.hp, hp, "drop {drop}: the return keeps HP");
+        if dies {
+            assert!((t.translation - start).length() < 0.5, "back at the safe ground: {:?} vs {:?}", t.translation, start);
+        }
+    }
+}
+
 /// Round 38: BEH_R_LAND 2026 - a jump's fall from 5 m or more lands stiff (_LandFreeFall,
 /// a000_200020), not as the jump's own landing; a short one keeps LandVerticalGroundJump.
 #[test]

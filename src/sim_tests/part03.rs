@@ -1601,3 +1601,50 @@ pub(crate) fn sprint_keeps_its_speed_into_the_loop() {
     assert!(seen_loop, "never reached SprintLoop");
     assert!(min_in_loop > 6.0, "sprint loop dipped to {min_in_loop:.2} m/s");
 }
+
+/// Live (rec_20261016_094717_lockturn_sprintdeflect, 7 locked sprint deflects): the deflect does not
+/// snap to the enemy. Sprinting 90-150 deg off him, the facing is still ~100 deg off at the
+/// start, about 75 deg off 0.17 s in and square on by ~0.4 s (TAE turn 0 / 180 / 360, then 720 deg/s).
+#[test]
+pub(crate) fn a_locked_sprint_deflect_turns_to_the_enemy_instead_of_snapping() {
+    for sx in [1.0f32, -0.7] {
+        let mut app = app();
+        let enemy = {
+            let world = app.world_mut();
+            let (e, mut t) = world.query_filtered::<(Entity, &mut Transform), With<Enemy>>().single_mut(world).unwrap();
+            t.translation = Vec3::new(0.0, t.translation.y, -14.0);
+            e
+        };
+        app.world_mut().resource_mut::<crate::camera::LockOn>().target = Some(enemy);
+        for _ in 0..90 {
+            app.update();
+        }
+        let mut errs = Vec::new();
+        for i in 0..110 {
+            {
+                let mut pad = app.world_mut().resource_mut::<PadInput>();
+                pad.stick = Vec2::new(sx, 0.5);
+                if i == 0 {
+                    pad.press(Action::Step);
+                }
+                pad.dodge_held = i < 70;
+                pad.guard_held = (60..110).contains(&i);
+                if i == 60 {
+                    pad.press(Action::Guard);
+                }
+            }
+            app.update();
+            let world = app.world_mut();
+            let et = world.query_filtered::<&Transform, With<Enemy>>().single(world).unwrap().translation;
+            let (a, t) = world.query_filtered::<(&Actor, &Transform), With<Player>>().single(world).unwrap();
+            let to = (et - t.translation).with_y(0.0);
+            let err = ((a.yaw - (-to.x).atan2(-to.z)).to_degrees() + 180.0).rem_euclid(360.0) - 180.0;
+            errs.push((a.state.clone(), err));
+        }
+        let at = |n: usize| errs[60 + n].1.abs();
+        assert_eq!(errs[60].0, "SprintToDeflectGuard");
+        assert!(at(0) > 70.0, "snapped at the start: {:.0} deg off", at(0));
+        assert!(at(10) > 40.0, "already square at +10: {:.0} deg off", at(10));
+        assert!(at(30) < 5.0, "still {:.0} deg off at +30", at(30));
+    }
+}
