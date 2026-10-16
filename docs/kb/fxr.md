@@ -118,7 +118,41 @@ rgbMultiplier / 8 (`particle_color`). Before, they were 8x too bright: the death
    tracer's segments fade out over segmentDuration instead of vanishing (`fxr.rs` Particle.ended).
    The hand-made ribbon is left only for art ribbons and weapons without that FXR.
    The red hit capsules (combat.rs draw_hitboxes) now show only with the H / debug-menu overlay.
-2. Then every other art and tool through the shots (list: section 8), fix what looks wrong.
+   2026-10-15 pass (clip sekiro_all_skills 6:44.8-6:46): two fixes in `fxr.rs`.
+   (a) Tracer width direction, from the exe: the tracer builder FUN_14042c4d0 (orientation switch
+   at 14042da96) writes per point the vector the domain shader spreads the width along
+   (GXFfxtessellateTracerTexture.dpo: pos = lerp(p) + lerp(TEXCOORD4.xyz) x 2(v - 0.5) x width).
+   Mode 0 = travel x camera, 1 = the stored node Z itself (it was travel x Z before), 2 / 3 / 4 =
+   constants (DAT_143f083c0 / DAT_143f08390; 4 adds a crossed second ribbon). Weapon dummies point
+   +Z along the blade (FLVER dummies 300/301/311, mortal 200/240/280), so mode-1 arcs now spread
+   along the blade: Mortal Draw is a broad red sheet from the side, as in the clip.
+   (b) Additive tracers (606 / 10012, blend 0 / 4 / 7) no longer get the lit 1/8: the 48 lit/unlit
+   pairs behind the 1/8 are all normal blend, and the tracer pixel shader lights by
+   saturate(colour) x light (cb0[34].y g_ps_bEnableLighting), not a fixed scale. The Mortal Draw
+   red (26030 / 2010, rgbM 2.5) was near invisible; it now reads red, not pink. gap: the game's
+   light term (envCbColScale x FC_DirLight Col_0 x g_vLightMask.x + v3); the game's band is still a
+   brighter orange-red.
+   Shots: `SHINOBI_SKILL_SHOTS` now runs on a fixed 1/60 s step (`ffx.rs`
+   TimeUpdateStrategy::ManualDuration), so frame N is the same anim time on every run (the first
+   press hitches while the art's effects load). Use SHINOBI_MAP=off; for white / additive effects
+   aim the camera at the dark wall (SHINOBI_SKILL_CAM=200,-3): the pale floor hides them.
+2. Every art shot (5100-6100, 7700; 2026-10-15, flat floor). Ashina Cross 440070 / 440071 reads as
+   wide white crescents on the dark wall (faint only over the pale floor). Ichimonji's dust 440081
+   looks large but follows the file: 603 width 0.25 -> 3.75 m over 1.5 s, particleModifier scaleX
+   up to 2.25 on orientation-7 ground layers, speeds 6.6-26 m/s decaying. The one shared mismatch
+   across arts (Ichimonji, Shadowrush 5800, 6000, the foot dust 101141 grey 0.5) is that lit
+   ground dust draws dark grey: it is lighting -2 at the 1/8 stand-in. gap: the lit light scale
+   (SHINOBI_FX_LIT port waits on g_ps_envCbColScale / g_vLightMask.x, HANDOFF 4.58).
+   Every tool shot (70000-79200, 2026-10-15). Fixed: white star-burst sparks around Wolf on the
+   whistle, flame vent, umbrellas, axes and spears were `prosthetic.rs` spawn_row's firecracker
+   stand-in (vfx.rs Clash x4), which ran for any still area bullet (radius >= 1 m) without an FXR,
+   so also for the 27 rows that name no effect at all (sfxId_Bullet -1: 790004 / 79001x, 730201,
+   760201 / 760300, 710013 ...). It now needs sfxId > 0. Firecracker vs the clip (10:27): bright
+   orange bursts match; the game shows almost no smoke, ours leaves dark clouds (the lit gap
+   above; SHINOBI_FX_LIT=1 turns the same smoke blinding white, so the true scale is in between).
+   Divine Abduction's swirl reads right on a dark background. Sabimaru's swing trail 300213 is
+   faint by data (rgbMultiplier 0.3-0.4). 70500's shot froze on the Options menu (stray input):
+   not checked. `SHINOBI_LOG_DUMMIES=<frame>` (default 200) now also lists the tool dummies.
 3. Done: prosthetic bullets play their Bullet sfxId_Bullet on the bullet (FxEffect anchored to it;
    isInheritSfxToChild passes it to the children; when the bullet ends the effect stops emitting
    there), sfxId_Hit where they land / are blocked, sfxId_Flick where deflected (`prosthetic.rs`

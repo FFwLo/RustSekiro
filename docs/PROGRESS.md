@@ -79,6 +79,7 @@ matching topic file, and one line to Recent below (keep the last 15).
 - [HANDOFF_PLAN.md](HANDOFF_PLAN.md) - task packets for helper models
 
 ## Recent
+- 2026-10-15 effects pass: tracer width along the exe's per-point axis (FUN_14042c4d0 / tracer domain shader); additive tracers skip the lit 1/8 (Mortal Draw red, not pink); fixed-step skill shots; stray hand-made sparks on 27 effect-less tool bullets removed; every art and tool shot, lit smoke darkness left as the light-scale gap (kb/fxr.md 9)
 - 2026-10-10 root yaw sign fixed (c1010 behind deathblow matches live, c1020 no 360 spin); crouch moves at once; idle twist lock-on only; sprint deflect stops at the enemy; 105 tests
 - 2026-10-10 gore: TAE-driven blood spray (FFX 2205xx on neck / sword dummies) + DecalParam floor stains with the game's decal textures; deathblow mark from the game's HUD atlas; vfx clashes, new HUD, sprint deflect fix; 104 tests
 - 2026-10-10 stealth: exe targeting system (sight cones, meter, caution/find/battle, forget) + logic scripts + crouch; 102 tests

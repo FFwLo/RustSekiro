@@ -250,8 +250,11 @@ fn spawn_row(commands: &mut Commands, spec: &BulletSpec, pos: Vec3, dir: Vec3, c
     let sfx = if spec.sfx_id_bullet > 0 { spec.sfx_id_bullet } else { inherited };
     let inherit_sfx = if spec.is_inherit_sfx_to_child != 0 { sfx } else { -1 };
     // An area burst (standing still, >= 1 m: the firecracker's 710003) without its FXR extracted:
-    // sparks from vfx.rs stand in.
-    if spec.init_vellocity == 0.0 && spec.hit_radius >= 1.0 && !has_fxr(sfx) {
+    // sparks from vfx.rs stand in. Only for a row that names an effect: the 27 player area
+    // bullets with sfxId_Bullet -1 (BulletParam: the whistle's 790004 / 79001x, the axe's 730201,
+    // the umbrella's 760201 / 760300, the firecracker's 710013 ...) have nothing to draw, and
+    // drew these sparks around Wolf.
+    if spec.init_vellocity == 0.0 && spec.hit_radius >= 1.0 && sfx > 0 && !has_fxr(sfx) {
         for k in 0..4 {
             let a = k as f32 * std::f32::consts::FRAC_PI_2 + chain as f32;
             let p = pos + Vec3::new(a.cos(), 0.3 + 0.2 * k as f32, a.sin()) * 0.5;

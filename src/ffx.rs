@@ -285,6 +285,11 @@ impl Plugin for FfxPlugin {
             // emit reads the TAE edges (prev_t, t), which move once per fixed step.
             .add_systems(FixedUpdate, emit.after(crate::actor::ActorSet::Advance).after(crate::anim::PoseSet))
             .add_systems(Update, (animate_puffs, weapon_trail, skill_shots, tae_sp_vfx));
+        // Skill shots: every frame is 1/60 s of game time, so a shot lands on the same anim time
+        // however slow the frame (the first press loads the art's effects and hitches).
+        if std::env::var("SHINOBI_SKILL_SHOTS").is_ok() {
+            app.insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(std::time::Duration::from_secs_f64(1.0 / 60.0)));
+        }
     }
 }
 
@@ -467,14 +472,16 @@ fn emit(
     }
     let Some(vfx) = vfx else { return };
     *frames += 1;
-    if std::env::var("SHINOBI_LOG_DUMMIES").is_ok() && *frames == 200 {
+    // SHINOBI_LOG_DUMMIES[=frame] (default 200): Wolf's dummies at that frame, the tool parts' too.
+    let log_at = std::env::var("SHINOBI_LOG_DUMMIES").ok().map(|v| v.parse::<u32>().unwrap_or(200));
+    if log_at == Some(*frames) {
         for (a, dm, p) in &actors {
             if p.is_some() {
                 let mut ids: Vec<i16> = dm.0.keys().copied().collect();
                 ids.sort();
                 info!("wolf dummies ({}): {:?}", a.state, ids);
                 let hand = dm.0.get(&20).and_then(|e| globals.get(*e).ok()).map(|g| g.translation()).unwrap_or_default();
-                for k in [100i16, 101, 102, 110, 111, 112, 113, 120, 121, 123, 124, 300, 301, 311, 321, 331, 147, 149] {
+                for k in [100i16, 101, 102, 110, 111, 112, 113, 120, 121, 123, 124, 300, 301, 311, 321, 331, 147, 149, 21, 20300, 20301, 21100, 21130, 21300, 21301] {
                     if let Some(g) = dm.0.get(&k).and_then(|e| globals.get(*e).ok()) {
                         info!("dummy {k}: {:.2} m from the sword hand, at {:.2}", g.translation().distance(hand), g.translation());
                     }
