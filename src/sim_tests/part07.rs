@@ -1571,3 +1571,53 @@ pub(crate) fn no_gourd_while_guarding_and_a_tool_switch_in_the_air() {
     app.update();
     assert_eq!(app.world_mut().query::<&Player>().single(app.world()).unwrap().tool_slot, 1, "no switch in the air");
 }
+
+/// Live (rec_20261016_* boss fights, 19 head kicks off a locked forward jump over a perilous
+/// sweep): Wolf holds at the contact distance in front of the enemy and the kick lands 18-20 ticks
+/// after the press. Before, the jump kept its full speed against the body, so he slid round the
+/// enemy's head, flew past and the kick missed (actor.rs separate).
+#[test]
+pub(crate) fn a_forward_jump_over_a_sweep_stops_at_the_body_and_the_kick_lands() {
+    let mut app = app_with("c1020");
+    {
+        let world = app.world_mut();
+        let mut q = world.query::<(Entity, &mut Enemy, &mut Actor)>();
+        let (entity, mut e, mut a) = q.single_mut(world).unwrap();
+        e.force_anim(&mut a, PERILOUS_SWEEP);
+        world.resource_mut::<crate::camera::LockOn>().target = Some(entity);
+    }
+    let (mut pressed, mut launch, mut kicked) = (false, None, None);
+    let mut far = 0.0f32;
+    for i in 0..200 {
+        let to = {
+            let w = app.world_mut();
+            let e = w.query_filtered::<&Transform, With<Enemy>>().single(w).unwrap().translation;
+            let t = w.query_filtered::<&Transform, With<Player>>().single(w).unwrap().translation;
+            (e - t).with_y(0.0).normalize_or_zero()
+        };
+        app.world_mut().resource_mut::<PadInput>().stick = Vec2::new(to.x, -to.z);
+        if !pressed && time_to_enemy_hit(&mut app).is_some_and(|dt| dt <= 6.0 / TAE_FPS) {
+            app.world_mut().resource_mut::<PadInput>().press(Action::Jump);
+            pressed = true;
+        }
+        if launch.map(|l| i == l + 8).unwrap_or(false) {
+            app.world_mut().resource_mut::<PadInput>().press(Action::Jump);
+        }
+        app.update();
+        let w = app.world_mut();
+        let e = w.query_filtered::<&Transform, With<Enemy>>().single(w).unwrap().translation;
+        let (a, t) = w.query_filtered::<(&Actor, &Transform), With<Player>>().single(w).unwrap();
+        if pressed && a.airborne && launch.is_none() {
+            launch = Some(i);
+        }
+        if launch.is_some() && kicked.is_none() {
+            far = far.max((t.translation - e).with_y(0.0).length());
+        }
+        if kicked.is_none() && a.state.starts_with("AirKickEnemyJump") {
+            kicked = Some(i - launch.unwrap() - 8);
+        }
+    }
+    let kicked = kicked.unwrap_or_else(|| panic!("no kick jump: {}", log_text(&app)));
+    assert!((16..=22).contains(&kicked), "kick landed {kicked} ticks after the press");
+    assert!(far < 1.2, "drifted {far:.2} m from the enemy before the kick");
+}

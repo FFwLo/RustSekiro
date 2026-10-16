@@ -1010,7 +1010,7 @@ fn proxy_off(combat: &Combat, a: &Actor) -> bool {
 /// upright capsules, so a pair whose heights don't meet (Wolf over an enemy's head after a
 /// head kick) is left alone: an enemy spans its feet to NpcParam hitHeight, Wolf his capsule
 /// (2 x CAPSULE_HALF_HEIGHT; gap: his proxy height is not traced).
-fn separate(combat: Res<Combat>, mut q: Query<(&Actor, &mut Transform)>) {
+fn separate(combat: Res<Combat>, mut q: Query<(&mut Actor, &mut Transform)>) {
     let radius = |a: &Actor| {
         if a.side == Side::Player {
             PLAYER_BODY_RADIUS
@@ -1059,6 +1059,19 @@ fn separate(combat: Res<Combat>, mut q: Query<(&Actor, &mut Transform)>) {
                 let push = n * (min - len);
                 ta.translation -= push * wa;
                 tb.translation += push * wb;
+                // A body pushed in the air stops against the other (its launch velocity goes;
+                // the stick's air control still adds its bit each tick). Live (rec_20261016_* boss
+                // fights, 19 head kicks off a forward jump over a perilous sweep): Wolf holds at
+                // the contact distance (1.14 m from the Monk, 0.95 m from the Owl) at 0.7 m/s
+                // until the kick lands 19 ticks on. Before, the jump's full speed stayed, so he slid
+                // round the body and shot past it at 6-7.5 m/s and the kick missed.
+                // gap: Havok's char proxy response is not traced; this is the recorded result.
+                if wa > 0.0 && a.airborne {
+                    a.air_base = Vec3::ZERO;
+                }
+                if wb > 0.0 && b.airborne {
+                    b.air_base = Vec3::ZERO;
+                }
             }
         }
     }
