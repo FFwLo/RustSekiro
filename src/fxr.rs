@@ -1280,7 +1280,13 @@ fn particle_color(a: &Value, c: &Value, p: &Particle, active_t: f32, rnd: &mut R
     let pm = prop(c["particleModifier"].get("color"), active_t, rnd, [1.0; 4]);
     // Lit appearances: x 1/8 where they are still drawn unlit (models, multi-texture, tracers);
     // the sprite paths undo it and light them (`LIT_UNLIT`, fx_soft.wgsl).
-    let lit = matches!(a["lighting"].as_i64(), Some(-2 | 0));
+    // Not on additive tracers: the 48 pairs behind the 1/8 are all normal blend (603 / 606 blend 2
+    // and 6), and the game's tracer pixel shader (GXFfxtessellateTracerTexture.ppo) lights by
+    // saturate(colour) x light, not a fixed scale. The reference clip (sekiro_all_skills 6:45,
+    // Mortal Draw 440003: lit additive 26030 / 2010 tracers, rgbMultiplier 2.5) shows the arc
+    // brighter than the scene; at 1/8 it drew as faint streaks. gap: the game's light term there.
+    let additive_tracer = matches!(a["type"].as_i64(), Some(606 | 10012)) && matches!(a["blendMode"].as_i64(), Some(0 | 4 | 7));
+    let lit = matches!(a["lighting"].as_i64(), Some(-2 | 0)) && !additive_tracer;
     let rgbm = scalar(a, "rgbMultiplier", active_t, rnd, 1.0) * if lit { LIT_UNLIT } else { 1.0 };
     let am = scalar(a, "alphaMultiplier", active_t, rnd, 1.0);
     let k: [f32; 4] = std::array::from_fn(|i| c1[i] * c2[i] * c3[i] * pm[i]);
@@ -1599,7 +1605,6 @@ fn collect(
                     let bend = scalar(a, "distortionIntensity", active_t, &mut rnd, 0.0);
                     let nm = int(a, "normalMap", 0);
                     let cross = int(a, "orientation", 0) == 4;
-                    let local_z = int(a, "orientation", 0) == 1;
                     if p.trail.len() < 2 {
                         continue;
                     }
@@ -1638,9 +1643,13 @@ fn collect(
                         let ((a0, x0, u0), (a1, x1, u1)) = (w2[0], w2[1]);
                         let d = (a1 - a0).normalize_or(cam_r);
                         let travel = d.cross(cam_f).normalize_or(cam_u);
-                        // LocalZ (1) is the ribbon's facing: its width runs across the travel and Z
-                        // (Ichimonji's 440080 stays a wide crescent seen edge-on in the clips).
-                        let side = |x: Vec3| if x == Vec3::ZERO { travel } else if local_z { d.cross(x).normalize_or(x) } else { x };
+                        // The width runs along the point's source axis: the exe's tracer builder
+                        // (FUN_14042c4d0, the orientation switch at 14042da96) writes, per point,
+                        // the vector the domain shader spreads the width along
+                        // (GXFfxtessellateTracerTexture.dpo: lerp(TEXCOORD4.xyz) x (v - 0.5)):
+                        // mode 0 travel x camera, 1 the stored node Z itself, 2 / 3 constants. The
+                        // face normal is travel x that axis. (LocalZ was read as travel x Z before.)
+                        let side = |x: Vec3| if x == Vec3::ZERO { travel } else { x };
                         let s0 = side(x0) * w * 0.5;
                         let s1 = side(x1) * w * 0.5;
                         let (k0, k1) = (fade(u0), fade(u1));
