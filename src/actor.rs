@@ -386,7 +386,7 @@ impl Actor {
         // MODE_LOOPING), not a transition: no blend-in.
         let to = self.grouped(anim);
         if to != self.anim || to.is_empty() {
-            self.blend_from = if !to.is_empty() && crate::data::blend_keeps_src(state) { Some((self.anim.clone(), self.t)) } else { None };
+            self.blend_from = if !to.is_empty() && crate::data::blend_keeps_src(state, self.side == Side::Player) { Some((self.anim.clone(), self.t)) } else { None };
             self.blend_from_loops = self.side == Side::Player && crate::data::loops_c0000(&self.anim);
             self.blend_from_vel = self.last_move_vel;
             self.blend_t = 0.0;
@@ -695,7 +695,11 @@ pub fn advance(time: Res<Time>, combat: Res<Combat>, mut q: Query<(&mut Actor, &
         if a.blend_len < 0.0 {
             a.blend_len = if a.anim.is_empty() { 0.0 } else { data.blend_in(&a.anim).unwrap_or(0.0) };
         }
-        let w = if a.blend_len > 0.0 && a.blend_t < a.blend_len {
+        // No source motion (TaeBlend_NoSrcMotion, or nothing to blend from): the to clip moves
+        // at full weight from its first frame. Weighting it by the blend alone ramped its root
+        // motion up from zero - SprintStartFromStep_F -> SprintLoop dropped 8.6 -> 0 m/s and took
+        // 0.3 s to get back up (user: "slows down then speeds up").
+        let w = if a.blend_from.is_some() && a.blend_len > 0.0 && a.blend_t < a.blend_len {
             let b = (a.blend_t / a.blend_len).clamp(0.0, 1.0);
             b * b * (3.0 - 2.0 * b)
         } else {

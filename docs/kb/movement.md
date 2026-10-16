@@ -123,3 +123,51 @@ direction change clears the blend. A looping from clip (hkbClipGenerator mode 1,
 2566: extracted/loop_clips_c0000.json from `sekiro-extract clips`; data::loops_c0000) wraps its
 clock through the blend. Enemies' graphs carry no loop flag (gap: their from clips stop at the
 end). See HANDOFF 4.63 item 8.
+
+## Lock-on turning, quick-turn loop, sprint deflect, collision (2026-10-15)
+- Quick-turn loop (user: "Wolf shaking with no input"): StandQuickTurn{Left,Right}{90,180}
+  (a000_000010-13, crouch / guard kin) have no root motion (no hkaDefaultAnimatedReferenceFrame;
+  the Master bone ends where it starts) and no TAE 224, so Wolf never turned and the locked idle's
+  >60 deg check replayed the clip every 0.67 s. Now the turn controller's default rate (720 deg/s,
+  FUN_1407daa20) turns him to the target during the clip (180 deg in 0.25 s). gap: the exe's turn
+  request for these states. (TAE 607 on 2287 of Wolf's anims is FaceAnimation, not motion.)
+- Lock-on facing no longer snaps: walking / running locked on turns at turn_rate(locked) (TAE 224
+  with IsLockOnCheck, else 720 deg/s); the guard idle the same (its TAE 0 -> 720). Locked steps
+  and positioning jumps no longer snap to the target first: HKS reads KickAngle / MoveAngle
+  against the facing as it is (_fireGroundStep 5280-5300).
+- Guard start: HKS BEH_A_DEFLECT_GUARD_START sets no facing; act 156 (FUN_140b2e090) only
+  stores a homing point and turns nothing; SprintToDeflectGuard's TAE turns at most ~54 deg
+  (Disable Turning f0-3, 180 deg/s f3-6, 360 f6-9; root 3.04 m straight ahead). Tried keeping
+  the sprint heading: user, from the game, "deflect sideways then see the enemy" -> the snap to
+  the target is back. gap: where the game's turn to the enemy comes from (the exe turn
+  controller only clamps a yaw delta from the behaviour graph, FUN_1407dab40 / FUN_1407da8f0).
+- Collision (map.rs): Wolf's map capsule 1.5 m / r 0.4 (FUN_140bc3140, hard-coded; NPCs read
+  NpcParam hitHeight / hitRadius in FUN_140bc2e00), hknpCharacterProxy maxSlope 60 deg
+  (FUN_14104d3d0, 0x3f860a92). Were 0.35 / 50 deg from sekiro-rs. gap: step-up height (0.5 kept)
+  and the ledge / support logic are not traced; the top wall sphere (1.55 + 0.4) sits above the
+  1.5 m capsule.
+- Open: jumping feel (user: "not the same as the game", details pending); foot IK on the run
+  loop; _set4DirJumpTilt; wall jump (HKS BEH_A_WALL_JUMP, not in Sv1); ledge hang / climb (edges
+  loaded, unused); swim.
+- Sprint stop fixed (actor.rs advance): a transition that drops the source motion (blend_src
+  false, e.g. SprintLoop) weighted the to clip's root by the blend too, so SprintStartFromStep_F
+  -> SprintLoop went 8.6 -> 0 -> 9 m/s over 0.3 s (user: "slows down then speeds up"). Now full
+  weight from frame 0. Test sprint_keeps_its_speed_into_the_loop. Still from the data (not bugs):
+  the run start a000_000400 dips 5.6 -> 4.9 m/s at 0.9-1.0 s, the step -> sprint start blend dips
+  to ~3 m/s for 0.1 s (ref 15 opens at 0.4 s while the step brakes; blend 0.2 s keeps the source).
+- Air kick: HKS 2814-2823, under ref 431 (SpEffect 100247, AirKick 0.4-0.7 s) a jump press only
+  fires the additive W_AddActionInputJump, no new kick; now honoured. Test
+  mashed_air_kicks_kick_once_per_jump (a plain jump allowed only one kick already: jump start's
+  119 opens at 0.1 s, the jump lands before AirKick's 0.7 s). gap: the additive clip; where the
+  user's repeated kicks came from (off an enemy's head?) not reproduced.
+- 2026-10-15 LIVE auto-test (Sekiro via me3 `C:\DeadlockModding\me3\sekiro-research.me3`, keys sent by
+  scratchpad sk_input.py (SendInput scan codes reach DirectInput), memscope script move_log.lua: TimeAct
+  +0x100 anim, physics +0x80 pos / +0x74 yaw). A pre hook on FUN_1407dab40 ran 335 calls, no crash.
+  - Run a000_000400: 0 -> 6.4 m/s in 0.35 s, then 4.65-6.4 (the dips are real, as in Sv1).
+  - Step 213301 -> SprintStartFromStep 001151 stays 6.7-8.8 m/s. Sv1 dipped to 3: blend_keeps_src
+    looked up "SprintStartFromStep_F" / "GroundStep_F", the table has the graph names -> now strips
+    suffixes for Wolf (data.rs). Test sprint_keeps_its_speed_into_the_loop checks both.
+  - Jump mashed in open air (jump_mash_20261015_131809.csv): NO AirKick (213100) at all, only jump
+    201000/201001 -> 299020 -> next jump. Sv1 kicks on any air press: OPEN - find what gates
+    env(1106, ACTION_ARM_JUMP) in the air (likely a kick target in reach). Next: fix that, then the
+    locked sprint-deflect (needs an enemy; this save's spot has none in WorldChrMan+0x998).

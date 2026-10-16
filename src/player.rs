@@ -463,6 +463,30 @@ impl Plugin for PlayerPlugin {
             .add_systems(FixedUpdate, (sync_art_variation, decide, apply_refresh_effects, record_state).chain().in_set(ActorSet::Decide))
             .add_systems(FixedUpdate, follow_throw.after(ActorSet::Advance).before(crate::anim::PoseSet).before(ActorSet::Resolve));
         app.add_systems(FixedUpdate, wolf_no_dead.before(ActorSet::Decide));
+        if std::env::var("SHINOBI_MOVE_LOG").is_ok() {
+            app.add_systems(FixedUpdate, move_log.after(ActorSet::Resolve));
+        }
+    }
+}
+
+/// SHINOBI_MOVE_LOG=<csv>: Wolf's state, clip, clip time, ground speed, height and yaw per
+/// fixed tick, for checking movement in the real game build.
+fn move_log(q: Query<(&Actor, &Transform), With<Player>>, time: Res<Time>, mut last: Local<Option<Vec3>>, mut out: Local<Option<std::fs::File>>) {
+    use std::io::Write;
+    let Ok((a, tf)) = q.single() else { return };
+    if out.is_none() {
+        let path = std::env::var("SHINOBI_MOVE_LOG").unwrap_or_default();
+        *out = std::fs::File::create(path).ok();
+        if let Some(f) = out.as_mut() {
+            let _ = writeln!(f, "t,state,anim,anim_t,speed,y,yaw_deg,airborne");
+        }
+    }
+    let dt = time.delta_secs().max(1e-6);
+    let p = tf.translation;
+    let v = last.map_or(0.0, |l| (p - l).with_y(0.0).length() / dt);
+    *last = Some(p);
+    if let Some(f) = out.as_mut() {
+        let _ = writeln!(f, "{:.3},{},{},{:.3},{:.2},{:.2},{:.1},{}", time.elapsed_secs(), a.state, a.anim, a.t, v, p.y, a.yaw.to_degrees(), a.airborne);
     }
 }
 
@@ -1608,6 +1632,8 @@ fn is_air_guard(state: &str) -> bool {
 
 /// SpEffect behaviorRefIds the HKS reads with env(3036, ...) (c0000_define.lua SP_EF_REF_*).
 const SP_REF_DISABLE_AIR_KICK: i64 = 108;
+/// c0000_define SP_EF_REF_TAE_ONLY_ADD_ACTION_INPUT_JUMP (SpEffect 100247).
+const SP_REF_TAE_ONLY_ADD_ACTION_INPUT_JUMP: i64 = 431;
 /// SP_EF_REF_IN_STORM_JUMP_AREA / _WEAK_AREA (c0000_define.lua 775-776): inside an updraft (the
 /// Divine Dragon's bullets 52000660 / 53100640 give 106100, ref 110003; 106101, ref 110004).
 pub const SP_REF_IN_STORM_JUMP_AREA: i64 = 110003;
@@ -3310,9 +3336,8 @@ fn decide(
             // mirrored. Each launches by its own ChrPhysicsVelocityChangeParam row (111-118) and
             // lands in its LandGroundPositioningJump (live: lock-on forward 1.26 m, 0.65 s).
             (true, true) => {
-                if let Some(td) = target_dir {
-                    a.yaw = yaw_of(td);
-                }
+                // No snap to the target: KickAngle / MoveAngle are the stick against the facing
+                // as it is (the lock-on turn keeps that near the target).
                 let local = Quat::from_rotation_y(-a.yaw) * stick;
                 let angle = local.x.atan2(-local.z).to_degrees();
                 let (ready, anim, land) = directional_jump(angle);
@@ -3352,8 +3377,8 @@ fn decide(
         // (round 31: it took the locked 4-direction branch toward the auto-aim enemy).
         let lock_dir = lock.target.and(target_dir);
         let state = match (lock_dir, stick != Vec3::ZERO) {
-            (Some(td), true) => {
-                a.yaw = yaw_of(td);
+            (Some(_), true) => {
+                // No snap to the target: KickAngle is the stick against the facing as it is.
                 let local = Quat::from_rotation_y(-a.yaw) * stick;
                 // HKS _set4DirStepDir (PRM_4DIR_STEP_STICK_RANGE: 45-degree quadrants) and
                 // _set4DirStepTilt: the step is turned by the stick's offset from the quadrant
@@ -3372,10 +3397,7 @@ fn decide(
                 p.step_tilt = (-tilt).to_radians();
                 state
             }
-            (Some(td), false) => {
-                a.yaw = yaw_of(td);
-                "GroundStep_N"
-            }
+            (Some(_), false) => "GroundStep_N",
             (None, true) => {
                 a.yaw = yaw_of(stick);
                 "GroundStep_F"
@@ -3798,6 +3820,11 @@ fn decide(
         // deflects toward the enemy), and the slide stops against the enemy's body instead of
         // shoving him (actor::separate). gap: the exe's facing at the guard start (HKS has no
         // _StartAutoAim there) and its proxy push are not traced.
+        // gap: HKS BEH_A_DEFLECT_GUARD_START sets no facing (only _StartAutoAim: act 156 stores a
+        // homing point, FUN_140b2e090, and turns nothing) and SprintToDeflectGuard's TAE turns at
+        // most ~54 deg (no turn f0-3, 180 deg/s f3-6, 360 f6-9). The user's real-game checks say
+        // he faces the enemy (2026-10-10; 2026-10-15 "deflect sideways" with the facing kept), so
+        // the snap stays until the exe source of that turn is found.
         aim(a);
         a.move_vel = Vec3::ZERO;
         a.play_state(d, state);
@@ -4044,9 +4071,12 @@ fn decide(
             p.requests.remove(&Action::Jump);
             if let Some(state) = storm_jump(d, a, p, false).filter(|_| wolf_ref(d, a, p, SP_REF_ENABLE_STORM_JUMP)).filter(|s| a.play_state(d, s)) {
                 log.push(format!("storm jump ({state})"), Color::srgb(0.7, 0.9, 1.0));
-            } else if air_ok(a, FLAG_ACCEPT_JUMP) && !sp_ref_active(d, a, SP_REF_DISABLE_AIR_KICK) {
+            } else if air_ok(a, FLAG_ACCEPT_JUMP) && !sp_ref_active(d, a, SP_REF_DISABLE_AIR_KICK) && !sp_ref_active(d, a, SP_REF_TAE_ONLY_ADD_ACTION_INPUT_JUMP) {
                 a.play_state(d, "AirKick");
             }
+            // HKS 2814-2823: under ref 431 (SP_EF_REF_TAE_ONLY_ADD_ACTION_INPUT_JUMP: SpEffect
+            // 100247, AirKick frames 12-21) the press only fires W_AddActionInputJump, an additive
+            // layer, and no new kick (it chained kicks). gap: that additive clip is not played.
         } else if p.requests.contains_key(&Action::CombatArt) && air_ok(a, FLAG_ACCEPT_ATTACK) && art_equipped && p.wire.is_none() {
             // BEH_A_AIR_SP_ATTACK (`air_art_state`), in the art's group (a1xx_3162xx).
             p.requests.remove(&Action::CombatArt);
@@ -4759,6 +4789,17 @@ fn decide(
     if moving && move_ok && pad.guard_held && !a.airborne && (is_guard_start(&a.state) || is_guard_reaction(&a.state)) {
         a.play_state(d, "DeflectGuardIdle");
     }
+    // The in-place quick turns (Stand / Crouch / DeflectGuard QuickTurn*, a000_000010-13 and
+    // kin) have no root motion and no TAE 224: the turn controller turns Wolf to the target at
+    // its default rate (FUN_1407daa20: 720 deg/s when no TAE / module rate is set). Without it
+    // the clip played, Wolf never turned, and the >60 deg check replayed it forever (Wolf
+    // stepping in place with no input). gap: the exe's turn request for these states.
+    if a.state.contains("QuickTurn") && !a.state.starts_with("Sprint") && !a.anim.is_empty() && d.root_at(&a.anim, a.t).is_none() {
+        if let Some(td) = lock.target.and(target_dir) {
+            let rate = d.turn_speed(&a.anim, a.t, true).unwrap_or(config.movement.turn_speed);
+            a.yaw = turn_toward(a.yaw, yaw_of(td), rate.to_radians() * dt);
+        }
+    }
     if is_guard_idle(&a.state) {
         // Guard walk: DeflectGuardMoveF/B/L/R (root motion 2.0 m / 40 frames). Wolf keeps his
         // facing (guard idle TAE SetTurnSpeed 0; live, rec_20261008_051450: the facing holds while
@@ -4766,7 +4807,9 @@ fn decide(
         // the clip as HKS _MoveDirectionUpdate does: |a| < 55 F, > 125 B, else L (a < 0) / R.
         a.move_vel = Vec3::ZERO;
         if let Some(td) = target_dir {
-            a.yaw = yaw_of(td);
+            let rate = turn_rate(d, a, &config, true);
+            let rate = if rate > 0.0 { rate } else { config.movement.turn_speed };
+            a.yaw = turn_toward(a.yaw, yaw_of(td), rate.to_radians() * dt);
         } else if moving {
             // Free guard walk faces the camera's direction (Sekiro strafes while blocking; live:
             // the facing drifts with the camera while walking, and holds while standing - guard
@@ -4914,7 +4957,10 @@ fn move_velocity(p: &Player, a: &mut Actor, d: &CharData, config: &GameConfig, s
     // Locked on: the stick relative to the facing picks the directional clip; free: forward.
     let local = match target_dir {
         Some(td) => {
-            a.yaw = yaw_of(td);
+            // Locked on, Wolf turns to the target at the turn controller's rate (TAE SetTurnSpeed
+            // with IsLockOnCheck, else the exe default 720 deg/s, FUN_1407daa20), not instantly:
+            // the directional clip is chosen from the stick against the facing so far.
+            a.yaw = turn_toward(a.yaw, yaw_of(td), turn_rate(d, a, config, true).to_radians() * dt);
             Quat::from_rotation_y(-a.yaw) * stick
         }
         None => {

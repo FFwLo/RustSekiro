@@ -1202,7 +1202,7 @@ pub fn behavior_category(row: i64) -> i64 {
 /// FLAG_IGNORE_FROM_WORLD_FROM_MODEL) take the to generator's at once. A state reached both
 /// ways takes the majority (Idle: 2 drop / 1 keep); a state the table lacks (CMSG-selected
 /// locomotion, enemy labels) keeps it, the common case (934 TaeBlend vs 337 NoSrcMotion).
-pub fn blend_keeps_src(state: &str) -> bool {
+pub fn blend_keeps_src(state: &str, player: bool) -> bool {
     static KEEP: std::sync::OnceLock<HashMap<String, bool>> = std::sync::OnceLock::new();
     KEEP.get_or_init(|| {
         let path = crate::paths::extracted().join("blend_src.json");
@@ -1210,6 +1210,23 @@ pub fn blend_keeps_src(state: &str) -> bool {
     })
     .get(state)
     .copied()
+    // Sv1 names the directional children of a graph state with a suffix (GroundStep_F,
+    // SprintStartFromStep_F); blend_src.json holds the graph state (GroundStep,
+    // SprintStartFromStep). Missing that, the step -> sprint start kept the braking step's motion
+    // and dropped to 3 m/s; live (move_log 2026-10-15, 213301 -> 001151) it stays at 6.7-8.8.
+    .or_else(|| {
+        if !player {
+            return None;
+        }
+        let mut s = state;
+        while let Some(i) = s.rfind('_') {
+            s = &s[..i];
+            if let Some(&v) = KEEP.get().and_then(|m| m.get(s)) {
+                return Some(v);
+            }
+        }
+        None
+    })
     .unwrap_or(true)
 }
 
