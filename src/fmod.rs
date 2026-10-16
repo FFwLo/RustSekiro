@@ -1129,6 +1129,8 @@ mod tests {
             .map(|i| format!("s{i:09}"))
             .chain(["c000004320", "c000004103", "c000007550", "c000007551", "c000007552", "c000006501", "c000006503", "c000004003"].iter().map(|s| s.to_string()))
             .collect();
+        let keys: Vec<String> = match std::env::var("LOOP_KEYS") { Ok(v) => v.split(',').map(|s| s.to_string()).collect(), _ => keys };
+        if let Ok(p) = std::env::var("LOOP_PROJECTS") { for n in p.split(',') { f.load_project(n); } }
         let mut started = Vec::new();
         for k in &keys {
             if let Some(ev) = f.play_tracked(k, Vec3::ZERO) {
@@ -1136,6 +1138,24 @@ mod tests {
             } else {
                 println!("{k}: no event");
             }
+        }
+        if std::env::var("LOOP_TIMES").is_ok() {
+            let mut done = vec![None; started.len()];
+            let mut stopped_at = vec![None; started.len()];
+            for i in 0..150 {
+                unsafe { (f.update)(f.es) };
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                for (j, (_, ev)) in started.iter().enumerate() {
+                    let mut st = 0u32;
+                    unsafe { get_state(ev.0, &mut st) };
+                    if st & 0x8 == 0 && done[j].is_none() { done[j] = Some(i); }
+                    if i == 60 && st & 0x8 != 0 { f.stop(*ev); stopped_at[j] = Some(i); }
+                }
+            }
+            for (j, (k, _)) in started.iter().enumerate() {
+                println!("TIME {k}: ends {:?} (x0.1 s), stopped at {:?}", done[j], stopped_at[j]);
+            }
+            return;
         }
         for _ in 0..60 {
             unsafe { (f.update)(f.es) };

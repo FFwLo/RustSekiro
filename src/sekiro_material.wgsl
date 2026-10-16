@@ -9,6 +9,7 @@
     pbr_functions::{alpha_discard, apply_pbr_lighting, main_pass_post_lighting_processing},
     pbr_types::PbrInput,
     forward_io::{VertexOutput, FragmentOutput},
+    mesh_view_bindings::globals,
 }
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(100) var normal_texture: texture_2d<f32>;
@@ -39,6 +40,8 @@ struct Detail {
     // The coat (x = 2): [0] color_1 (layer A tint), [1] color_3 (B), [2] color_2 (rim), [3]
     // color_0, [4] color_4 (back faces); [5] float_0 / 1 / 11 / 3; [6] float_5 / 8 / 9; [7]
     // tiling A albedo.xy, A normal.zw; [8] B albedo.xy, B normal.zw; [9] base.xy.
+    // The ghost fire (x = 3): [0..5] color_0..color_5 (rgb^2.2 x Intensity, a); [6] float_0..3;
+    // [7] float_4..7; [8] float_8, float_9, float_10, color_0.a; [9] slot 0 tiling.
     p: array<vec4<f32>, 10>,
 }
 @group(#{MATERIAL_BIND_GROUP}) @binding(119) var<uniform> detail: Detail;
@@ -202,12 +205,55 @@ fn fresnel_layers(in: VertexOutput, pbr_in: PbrInput) -> PbrInput {
 }
 #endif
 
+#ifdef VERTEX_UVS_A
+// Character_Ghost_scroll_test2 (the Demon of Hatred's burning arm, c7020_arm_test.mtd; decoded
+// from shader/shaderbdle.shaderbdlebnd Character_Ghost_scroll_test2_Fwd.ppo): the albedo (t0)
+// scrolls by GlobalTime x (0.05, -0.05) and the normal map (t1) by (-0.05, -0.05); with
+// v = N.V on the bumped normal, a = (1 - sat(v - float_4)^float_9)^float_3 and
+// b = (1 - sat(v - float_2)^float_8)^float_1: albedo = sat(lerp(lerp(color_2, color_3, a),
+// lerp(color_5, color_4, a), float_10) x (tex + float_7)), alpha = sat(tex.a x color_0.a x
+// lerp(float_5, float_6, b)), emissive = tex x lerp(color_0, color_1, float_10), metal float_0.
+// gap: the normal map's tiling is taken as slot 0's; its axes as our other normal maps' (the
+// game puts x on the bitangent, y on the tangent); the gloss is not traced; float_10 (SAT_CAParam)
+// is the exe's run-time value, 0 here.
+fn ghost_scroll(in: VertexOutput, pbr_in: PbrInput) -> PbrInput {
+    var pbr_input = pbr_in;
+    let p = detail.p;
+    let t = globals.time;
+    let tile = select(vec2(1.0), p[9].xy, p[9].x != 0.0);
+    let tex = textureSample(pbr_bindings::base_color_texture, pbr_bindings::base_color_sampler, (in.uv + t * vec2(0.05, -0.05)) * tile);
+#ifdef VERTEX_TANGENTS
+    if sekiro_flags.x != 0u {
+        let n = textureSample(normal_texture, normal_sampler, (in.uv + t * vec2(-0.05, -0.05)) * tile);
+        let xy = flv(n);
+        let nt = vec3(xy, sqrt(max(1.0 - dot(xy, xy), 0.0)));
+        let N = pbr_input.N;
+        let T = in.world_tangent.xyz;
+        let B = in.world_tangent.w * cross(N, T);
+        pbr_input.N = normalize(nt.x * T + nt.y * B + nt.z * N);
+    }
+#endif
+    let v = dot(pbr_input.N, pbr_input.V);
+    let a = pow(1.0 - pow(saturate(v - p[7].x), max(p[8].y, 0.001)), max(p[6].w, 0.001));
+    let b = pow(1.0 - pow(saturate(v - p[6].z), max(p[8].x, 0.001)), max(p[6].y, 0.001));
+    let tp = tex.rgb + p[7].w;
+    let albedo = saturate(mix(mix(p[2].rgb, p[3].rgb, a), mix(p[5].rgb, p[4].rgb, a), p[8].z) * tp);
+    let alpha = saturate(tex.a * p[8].w * mix(p[7].y, p[7].z, b));
+    pbr_input.material.base_color = vec4(albedo, alpha * pbr_bindings::material.base_color.a);
+    pbr_input.material.emissive = vec4(tex.rgb * mix(p[0].rgb, p[1].rgb, p[8].z), 0.0);
+    pbr_input.material.metallic = saturate(p[6].x);
+    return pbr_input;
+}
+#endif
+
 @fragment
 fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> FragmentOutput {
     var pbr_input = pbr_input_from_standard_material(in, is_front);
 #ifdef VERTEX_UVS_A
     if detail.flags.x != 0u {
-        if detail.flags.x == 2u {
+        if detail.flags.x == 3u {
+            pbr_input = ghost_scroll(in, pbr_input);
+        } else if detail.flags.x == 2u {
             pbr_input = fresnel_layers(in, pbr_input);
         } else {
             pbr_input = detail_layers(in, pbr_input);

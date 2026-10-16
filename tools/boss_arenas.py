@@ -52,7 +52,11 @@ SHARE_M = 40.0
 # hall; the four monkeys and the horde spread up to 118 m from it (boss_scripts.json 12600050),
 # so the pieces are picked round the second monkey (2000802, mid-hall) out to 85 m.
 # ('RADIUS' is the exporter's radius argument, the rest its env.)
-OVERRIDES = {51000100: {'MAP_CENTRE_YAW': '180'}, 52000000: {'MAP_CENTRE_DIST': '24'}, 53000000: {'MAP_CENTRE_DIST': '24'},
+# The dragons (the user, 2026-10-15: "devine dragon need bigger arena becauce he push you
+# away"): the strong wind 52000830 blows Wolf across the cloud floor and the Old Dragons' fall
+# (m25 12505885 WarpCopy) hands over to the Divine Dragon 64 m from their own spot, so both
+# arenas reach 140 m: each holds the other's place.
+OVERRIDES = {51000100: {'MAP_CENTRE_YAW': '180'}, 52000000: {'MAP_CENTRE_DIST': '24', 'RADIUS': '140'}, 53000000: {'MAP_CENTRE_DIST': '24', 'RADIUS': '140'},
              71001000: {'MAP_SKIP_MODEL': 'm015072', 'MAP_GPARAM_EXTRA': '0740,0750'},
              12600050: {'MAP_PICK': '2000802', 'RADIUS': '85'}}
 # The user's rule (2026-10-11): only fights whose mechanics live in their surroundings get an

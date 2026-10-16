@@ -337,8 +337,10 @@ pub struct SekiroExt {
 
 /// The exporter's variant byte for Character_AN_Blend_AMSN_[Fresnel].
 const FRESNEL: u8 = 100;
+/// The exporter's variant byte for Character_Ghost_scroll_test2 (the Demon of Hatred's arm).
+const GHOST: u8 = 101;
 
-/// sekiro_material.wgsl `Detail`: flags x = 1 DetailBlend / 2 the coat shader, y = the layer bits, z = which layer
+/// sekiro_material.wgsl `Detail`: flags x = 1 DetailBlend / 2 the coat shader / 3 the ghost fire, y = the layer bits, z = which layer
 /// textures are bound (bit k = `SekiroExt` layer texture k, A albedo first); `p` = the exporter's
 /// `detail_params`.
 #[derive(bevy::render::render_resource::ShaderType, Reflect, Debug, Clone, Default)]
@@ -653,13 +655,20 @@ fn attach_models(
             let detail = md.detail.as_ref().filter(|_| std::env::var("SHINOBI_NO_DETAIL").is_err());
             let layers: [Option<Handle<Image>>; 8] = std::array::from_fn(|k| detail.and_then(|d| layer(&d.names[k], k % 2 == 0)));
             let detail_u = detail.map_or_else(DetailUniform::default, |d| DetailUniform {
-                flags: UVec4::new(if d.variant == FRESNEL { 2 } else { 1 }, d.bits as u32, layers.iter().enumerate().fold(0, |f, (k, l)| f | ((l.is_some() as u32) << k)), 0),
+                flags: UVec4::new(match d.variant { FRESNEL => 2, GHOST => 3, _ => 1 }, d.bits as u32, layers.iter().enumerate().fold(0, |f, (k, l)| f | ((l.is_some() as u32) << k)), 0),
                 p: std::array::from_fn(|k| Vec4::from_slice(&d.params[k * 4..k * 4 + 4])),
             });
             let [layer_a, layer_a_n, layer_b, layer_b_n, layer_c, layer_c_n, layer_d, layer_d_n] = layers;
             // Cutouts as alpha-to-coverage (with the camera's 4x MSAA): a hard 0.5 mask made
             // the torn edges of Wolf's coat shimmer frame to frame whenever it moved a little.
-            let alpha_mode = if md.alpha_test { AlphaMode::AlphaToCoverage } else { AlphaMode::Opaque };
+            // The ghost fire (c7020_arm_test.mtd g_BlendMode 2) is alpha blended.
+            let alpha_mode = if md.detail.as_ref().is_some_and(|d| d.variant == GHOST) {
+                AlphaMode::Blend
+            } else if md.alpha_test {
+                AlphaMode::AlphaToCoverage
+            } else {
+                AlphaMode::Opaque
+            };
             let material = materials.add(SekiroMaterial {
                 base: StandardMaterial {
                     base_color_texture: texture,

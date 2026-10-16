@@ -397,7 +397,9 @@ struct AiState {
     snum: HashMap<String, Value>,
     id_timers: HashMap<i64, f64>,
     atk_passed: HashMap<i64, f64>,
-    observed: HashMap<i64, Value>,
+    /// AddObserveSpecialEffectAttribute(target, id): SpEffect id -> the targets watched for it
+    /// (TARGET_SELF -1, TARGET_ENE_0 0, TARGET_EVENT 20, TARGET_LOCALPLAYER 21).
+    observed: HashMap<i64, Vec<i64>>,
     battle_goal: i64,
     think_id: i64,
     /// NpcThinkParam logicId (the logic script) and the row itself (GetExcelParam).
@@ -535,6 +537,25 @@ fn ai_obj() -> Value {
 
 fn goal_obj(id: u32) -> Value {
     Value::Obj(Obj { kind: OBJ_GOAL, id })
+}
+
+impl AiState {
+    /// Does an observed SpEffect change raise the interrupt? Only on the character the script
+    /// named: the Headless Ape's 510010_battle.lua:25 watches TARGET_EVENT (its partner ape)
+    /// for 3510900, which its own a100_003007 scream (TAE AddSpEffect 3510900) also carries;
+    /// fired from its own row it set Number 1 / Timer 5 = 14 s (Goal.Interrupt) and the battle
+    /// goal's partner branch (Act24 backstep 400-500) ran all fight (boss fidelity 2026-10-15).
+    /// gap: TARGET_EVENT (the partner chr set by the map) is not modelled, so it never fires;
+    /// an ended SpEffect (`new` false) is not split by owner, any self / target watch counts.
+    fn observes(&self, id: i64, s: &Snapshot, new: bool) -> bool {
+        let Some(watch) = self.observed.get(&id) else { return false };
+        let me = self.k.target_self as i64;
+        let ene = |t: &i64| *t == self.k.target_ene_0 as i64 || *t == 21;
+        if !new {
+            return watch.iter().any(|t| *t == me || ene(t));
+        }
+        (watch.contains(&me) && s.sp_self.contains(&id)) || (watch.iter().any(ene) && s.sp_target.contains(&id))
+    }
 }
 
 fn key(v: Option<&Value>) -> i64 {
@@ -1334,7 +1355,10 @@ impl AiState {
             }
             "GetAttackPassedTime" => num(self.atk_passed.get(&key(a.first())).copied().unwrap_or(9999.0)),
             "AddObserveSpecialEffectAttribute" => {
-                self.observed.insert(key(a.get(1)), a.first().cloned().unwrap_or_default());
+                let watch = self.observed.entry(key(a.get(1))).or_default();
+                if !watch.contains(&key(a.first())) {
+                    watch.push(key(a.first()));
+                }
                 vec![]
             }
             "IsInterupt" => boolean(self.interrupt.is_some_and(|(k, _)| is(a.first(), k))),
@@ -2161,12 +2185,12 @@ impl Brain {
             interrupt_goals(vm, st, int_use_item, 0.0)?;
         }
         for &id in &s.sp_new {
-            if st.observed.contains_key(&id) {
+            if st.observes(id, s, true) {
                 interrupt_goals(vm, st, int_sp, id as f64)?;
             }
         }
         for &id in &s.sp_gone {
-            if st.observed.contains_key(&id) {
+            if st.observes(id, s, false) {
                 interrupt_goals(vm, st, int_sp_off, id as f64)?;
             }
         }
@@ -2580,13 +2604,29 @@ mod tests {
         assert!(matches!(b.st.ai_method_raw("IsInterupt", &[off]).first(), Some(Value::Bool(true))));
         // A frame with the SpEffect gone runs the battle goal's Interrupt without error.
         b.st.interrupt = None;
-        b.st.observed.insert(5028, Default::default());
+        b.st.observed.insert(5028, vec![-1]);
         let mut s = Snapshot { dist: 3.0, free: true, hp_rate: 1.0, target_hp_rate: 1.0, sp: 600.0, sp_rate: 1.0, ..Snapshot::battle() };
         s.sp_self.insert(200004);
         s.sp_gone = vec![5028];
         b.tick(&s, 1.0 / 60.0);
         let errors: Vec<_> = b.log.iter().filter(|l| !l.starts_with("stub:")).cloned().collect();
         assert!(errors.is_empty(), "{errors:#?}");
+    }
+
+    /// The Headless Ape watches its partner (TARGET_EVENT) for 3510900; its own scream's
+    /// 3510900 must not switch on the partner branch (Number 1, 510010_battle.lua:653).
+    #[test]
+    fn the_apes_own_scream_is_not_its_partners() {
+        let Some(mut b) = load(51000100, 1.0, 3) else { return };
+        let mut s = Snapshot { dist: 6.0, free: true, hp_rate: 1.0, target_hp_rate: 1.0, sp: 600.0, sp_rate: 1.0, ..Snapshot::battle() };
+        s.sp_self.insert(200004);
+        b.tick(&s, 1.0 / 60.0);
+        assert!(b.st.observed.get(&3510900).is_some_and(|w| w == &vec![20]), "{:?}", b.st.observed.get(&3510900));
+        s.sp_self.insert(3510900);
+        s.sp_new = vec![3510900];
+        b.tick(&s, 1.0 / 60.0);
+        let n1 = b.st.numbers.get(&1).and_then(Value::num).unwrap_or(0.0);
+        assert_eq!(n1, 0.0, "own 3510900 raised the partner interrupt");
     }
 
     /// Round 25: a new sound target raises INTERUPT_ChangeSoundTarget through the logic chain;

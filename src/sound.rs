@@ -518,8 +518,29 @@ fn play_tae_sounds(
             }
             // With the game's sound system running, an event its projects lack is silent in the game
             // too: no raw-sample stand-in (those were sounds the game never plays here).
+            // A slotted sound (PlaySound_BySlot 129 with SlotID >= 0) lives while its event runs,
+            // as the slotted FFX above: DSAnimStudio zzz_SoundManagerIns.cs keeps a SlotID >= 0
+            // sound only while its event box is active and stops it after. Genichiro's black-sword
+            // charge (c7100 a000_003023, 710006102 on slot 1 for 0.3-1.5 s) is a 4.8 s sound and
+            // rang on after the swing (the user, 2026-10-15). Sound slots are kept apart from
+            // the FFX ones (+1000). gap: the exe's own slot stop is not traced.
             if let Some(f) = fmod.as_mut() {
-                f.play(&event, at);
+                let slot = e.arg_i64("SlotID").filter(|s| *s >= 0 && e.kind == 129 && !a.anim.is_empty());
+                if let Some(slot) = slot {
+                    let slot = 1000 + slot;
+                    slotted.retain(|s| {
+                        let same = s.owner == entity && s.slot == slot;
+                        if same {
+                            f.stop(s.ev);
+                        }
+                        !same
+                    });
+                    if let Some(ev) = f.play_tracked(&event, at) {
+                        slotted.push(Slotted { owner: entity, slot, anim: a.anim.clone(), end: e.end, last_t: a.t, ev });
+                    }
+                } else {
+                    f.play(&event, at);
+                }
                 continue;
             }
             let file = if letter == 'b' {

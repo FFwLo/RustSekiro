@@ -2070,8 +2070,16 @@ pub fn encounter_list() -> Vec<Encounter> {
             if out.iter().any(|o: &Encounter| o.chr == chr && o.npc_row == row) {
                 continue;
             }
+            // One fight, two phases (the user, 2026-10-15): the Old Dragons of the Tree (53000000)
+            // hand over to the Divine Dragon on their fall (m25 12505885 -> 9318, enemy/script.rs),
+            // so the Divine Dragon's row is not a fight of its own and the Old Dragons' is named
+            // for both.
+            if row == 52000000 {
+                continue;
+            }
             let pname = p["name"].as_str().unwrap_or("");
             let name = match official["rows"][row.to_string()].as_str() {
+                Some(n) if row == 53000000 => format!("{n} / Divine Dragon"),
                 Some(n) => n.to_string(),
                 None if pname.is_empty() || pname == chr_name => chr_name.to_string(),
                 None => format!("{chr_name} - {pname}"),

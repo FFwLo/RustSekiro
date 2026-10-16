@@ -2412,9 +2412,15 @@ fn think(
             Mode::Dead(t) if scripted => {
                 // Its map script ends it (EzState 20200 on Wolf's Todome message, Handle Boss
                 // Defeat, the duel's reset). Without a request by the end of the ThrowDef (plus
-                // 2 s): its death state.
+                // 2 s): its death state. A real ThrowDefDeath clip still comes on the reaction's
+                // flag 69 or its end, script or not (c9997 HKS ThrowDefCommonFunction: env(276) ->
+                // W_ThrowDefDeath<id>): Emma (c7400, scripted) played all 9 s of ThrowDef12000 /
+                // 12110, whose end is her getting up, before 12001 / 12111.
                 if let Some(death) = e.throw_death.clone() {
-                    if t - dt <= 0.0 {
+                    let switch = death != "Event20200"
+                        && !a.anim.is_empty()
+                        && (a.t >= d.length(&a.anim) || d.flag(&a.anim, a.t, FLAG_THROW_TYPE5));
+                    if t - dt <= 0.0 || switch {
                         e.throw_death = None;
                         a.play_state(d, &death);
                         e.mode = Mode::Dead(f32::INFINITY);

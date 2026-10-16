@@ -561,6 +561,36 @@ fn fresnel_params(d: &mtd::Mtd) -> Vec<f32> {
     out
 }
 
+/// The variant byte model v6 gives Character_Ghost_scroll_test2 (the Demon of Hatred's burning
+/// arm, c7020_arm_test.mtd; also c5070_em.mtd).
+const GHOST: u8 = 101;
+
+/// Character_Ghost_scroll_test2 constants (40 floats, sekiro_material.wgsl `ghost_scroll`;
+/// decoded from its Fwd pixel shader, shader/shaderbdle.shaderbdlebnd
+/// Character_Ghost_scroll_test2_Fwd.ppo, cbMtdParam cb3[24..39]): color_0..color_5 as
+/// rgb^2.2 x Intensity (GXMaterialParam_HDRColor FUN_1403dc4b0, docs/kb/sky_shader.md), then
+/// float_0..float_9, float_10 (cbMatDynParam SAT_CAParam, not in the MTD: 0, gap: set at run
+/// time by the exe, not traced), color_0's alpha, and slot 0's tiling.
+fn ghost_params(d: &mtd::Mtd) -> Vec<f32> {
+    let get = |n: &str| d.floats.iter().find(|(k, _)| k == n).map(|(_, v)| v.clone());
+    let p = "Character_Ghost_scroll_test2_snp_0_";
+    let f = |n: &str| get(&format!("{p}{n}")).and_then(|v| v.first().copied()).unwrap_or(0.0);
+    let col = |n: &str| -> [f32; 4] {
+        let c = get(&format!("{p}{n}")).filter(|v| v.len() >= 4).map_or([1.0; 4], |v| [v[0], v[1], v[2], v[3]]);
+        let k = get(&format!("{p}{n}-Intensity")).and_then(|v| v.first().copied()).unwrap_or(1.0);
+        [c[0].powf(2.2) * k, c[1].powf(2.2) * k, c[2].powf(2.2) * k, c[3]]
+    };
+    let mut out = Vec::with_capacity(40);
+    for c in ["color_0", "color_1", "color_2", "color_3", "color_4", "color_5"] {
+        out.extend(col(c));
+    }
+    out.extend(["float_0", "float_1", "float_2", "float_3", "float_4", "float_5", "float_6", "float_7", "float_8", "float_9"].map(f));
+    out.extend([0.0, col("color_0")[3]]);
+    out.extend(tex_scale(d, 0, "AlbedoMap").unwrap_or([1.0, 1.0]));
+    out.extend([0.0, 0.0]);
+    out
+}
+
 /// One mesh's DetailBlend data (`export_model`): variant, layer bits, layer texture names, params.
 struct Detail {
     variant: u8,
@@ -664,6 +694,11 @@ fn export_model(flver_path: &Path, tpf_path: &Path, out: &Path, tex_dir: &Path, 
             let names = [slot(3, "AlbedoMap"), slot(1, "NormalMap"), slot(4, "AlbedoMap"), slot(5, "NormalMap"), String::new(), String::new(), String::new(), String::new()];
             Some(Detail { variant: FRESNEL, bits: 0, names, params: fresnel_params(&d) })
         });
+        // The scrolling ghost-fire shader (and its `_cloth` twin): albedo slot 0.
+        let detail = detail.or_else(|| {
+            let d = flver::mtd_shader(&mtd_data).to_lowercase().starts_with("character_ghost_scroll_test2").then(|| mtd::read(&mtd_data)).flatten()?;
+            Some(Detail { variant: GHOST, bits: 0, names: Default::default(), params: ghost_params(&d) })
+        });
         details.push(detail);
         m.textures = slots;
     }
@@ -739,7 +774,7 @@ fn export_model(flver_path: &Path, tpf_path: &Path, out: &Path, tex_dir: &Path, 
     }
     for (m, d) in f.meshes.iter().zip(&details) {
         if let Some(d) = d {
-            let what = if d.variant == FRESNEL { "Fresnel coat".to_string() } else { format!("DetailBlend variant {} layers {:#x}", d.variant, d.bits) };
+            let what = if d.variant == GHOST { "ghost scroll".to_string() } else if d.variant == FRESNEL { "Fresnel coat".to_string() } else { format!("DetailBlend variant {} layers {:#x}", d.variant, d.bits) };
             println!("  {} {what}: {:?}", m.material, d.names);
         }
     }
