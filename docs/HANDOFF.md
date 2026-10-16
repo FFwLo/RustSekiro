@@ -1,6 +1,6 @@
 # Sv1 handoff: current state (slimmed 2026-10-15)
 
-Start with `CLAUDE.md` (rules, commands, file map), then `docs/PLAN.md` / `docs/PROGRESS.md` for
+Start with `CLAUDE.md` (commands, file map), then `docs/PLAN.md` / `docs/PROGRESS.md` for
 what is open, then only the `docs/kb/<topic>.md` for the topic you work on.
 
 Where the old sections went (nothing was deleted):
