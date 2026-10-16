@@ -184,8 +184,9 @@ per-boss status sheet: `docs/reports/bosses-handover.md`. Sessions renamed the s
    and ambient scales are by eye), far view (exporter `MAP_FAR`, 4.17; unused on the gate), the
    layer blends use the base `_3m` mask as height (soft knob `SHINOBI_MAP_SOFT`); byte 1 of the
    blend data is unused; frame rate is settled at 72-80 fps (kb/map.md).
-1. **Stealth, the rest** (core done, 4.7): crouch attacks / steps / reactions (HKS Crouch*
-   states); grass / shadow hiding (109201 no setter; MapVisibility Dark not exported, none on the
+1. **Stealth, the rest** (core done, 4.7): crouch attacks / turns / gourd / sub-attacks are done
+   (checked 2026-10-15: crouched idle is StandIdle + Actor.crouch, so _GroundQuickTurn's
+   CrouchQuickTurn* play; Crouch{Damage,Death}* only exist under a forced crouch, not modelled); grass / shadow hiding (109201 no setter; MapVisibility Dark not exported, none on the
    gate); wall hug, hanging (limit types); patrol routes done for config `msb` enemies (4.22;
    stepping traced and ported 2026-10-12, type 5 routes end; their map AI hold done 2026-10-12); the real HUD art; the
    user's verdict. (The listener's ear params were done 2026-10-11, kb/enemy.md.)
