@@ -243,6 +243,35 @@ pub(crate) fn killed_mid_jump_falls_and_lands() {
     panic!("never landed");
 }
 
+/// Mashing jump through a plain jump kicks once: AirKick's SpEffect 100247 (ref 431,
+/// SP_EF_REF_TAE_ONLY_ADD_ACTION_INPUT_JUMP) turns the presses into the additive input only
+/// (HKS 2814-2823), and the jump lands before that window closes.
+#[test]
+pub(crate) fn mashed_air_kicks_kick_once_per_jump() {
+    let mut app = app();
+    move_enemy_far(&mut app);
+    let mut kicks = 0;
+    let mut prev = String::new();
+    let mut left_ground = false;
+    for i in 0..150 {
+        if i % 3 == 0 {
+            app.world_mut().resource_mut::<PadInput>().press(Action::Jump);
+        }
+        app.update();
+        let (state, _, airborne, _) = player_actor(&mut app);
+        if state == "AirKick" && prev != "AirKick" {
+            kicks += 1;
+        }
+        left_ground |= airborne;
+        if left_ground && !airborne {
+            break;
+        }
+        prev = state;
+    }
+    assert!(left_ground, "never jumped");
+    assert_eq!(kicks, 1, "kicks in one jump");
+}
+
 /// Wolf's procedural walk (Locomotion, no TAE anim) plays its clip's PlaySound events (the
 /// footsteps): over two loops of the walk each fires twice (sound.rs `sound_windows`).
 #[test]
@@ -555,6 +584,10 @@ pub(crate) fn locked_on_jumps_go_where_the_stick_points() {
             e
         };
         app.world_mut().resource_mut::<crate::camera::LockOn>().target = Some(enemy);
+        // Wolf turns to the lock target (quick turn, then the lock-on turn) before the jump.
+        for _ in 0..90 {
+            app.update();
+        }
         let start = player_actor(&mut app).3;
         let mut seen_ready = false;
         let mut landed = String::new();
@@ -598,6 +631,9 @@ pub(crate) fn locked_on_step_tilts_toward_the_stick() {
         e
     };
     app.world_mut().resource_mut::<crate::camera::LockOn>().target = Some(enemy);
+    for _ in 0..90 {
+        app.update();
+    }
     let stick = Vec2::new(30f32.to_radians().sin(), 30f32.to_radians().cos());
     let start = player_actor(&mut app).3;
     let mut stepped = false;
@@ -1525,4 +1561,43 @@ pub(crate) fn stealth_trace() {
             last = line;
         }
     }
+}
+
+/// Sprinting keeps its speed into SprintLoop: that transition drops the source motion
+/// (TaeBlend_NoSrcMotion, blend_src.json), so the loop's root moves at full weight from its
+/// first frame. Weighting it by the blend stopped Wolf dead for a moment (8.6 -> 0 m/s).
+#[test]
+pub(crate) fn sprint_keeps_its_speed_into_the_loop() {
+    let mut app = app();
+    move_enemy_far(&mut app);
+    let mut last = player_actor(&mut app).3;
+    let mut min_in_loop = f32::INFINITY;
+    let mut min_start = f32::INFINITY;
+    let mut seen_loop = false;
+    for i in 0..200 {
+        {
+            let mut pad = app.world_mut().resource_mut::<PadInput>();
+            pad.stick = Vec2::new(0.0, 1.0);
+            if i == 90 {
+                pad.press(Action::Step);
+            }
+            pad.dodge_held = i >= 90;
+        }
+        app.update();
+        let (state, _, _, pos) = player_actor(&mut app);
+        let v = (pos - last).with_y(0.0).length() * 60.0;
+        last = pos;
+        if state == "SprintLoop" {
+            seen_loop = true;
+            min_in_loop = min_in_loop.min(v);
+        }
+        if state == "SprintStartFromStep_F" {
+            min_start = min_start.min(v);
+        }
+    }
+    // Live (Sekiro, move_log 2026-10-15): the step -> SprintStartFromStep hand-over stays at
+    // 6.7-8.8 m/s (graph state SprintStartFromStep drops the source motion).
+    assert!(min_start > 5.0, "sprint start dipped to {min_start:.2} m/s");
+    assert!(seen_loop, "never reached SprintLoop");
+    assert!(min_in_loop > 6.0, "sprint loop dipped to {min_in_loop:.2} m/s");
 }

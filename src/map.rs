@@ -34,12 +34,15 @@ use crate::config::GameConfig;
 use crate::grading::{ColorGradingLut, GameToneCurve, GradingPlugin};
 use crate::player::CAPSULE_HALF_HEIGHT;
 
-/// Body radius for wall contacts. gap: Sekiro's capsule radius (player.rs CAPSULE_RADIUS is the
-/// hit capsule; the map-contact radius is not read yet).
-pub const RADIUS: f32 = 0.35;
+/// Body radius for wall contacts: Wolf's map-hit capsule, 1.5 m high, radius 0.4 (exe
+/// FUN_140bc3140, hard-coded for the player; NPCs read NpcParam hitHeight / hitRadius in
+/// FUN_140bc2e00). Live physics module +0xD0 = 1.5 / 0.4 agrees.
+pub const RADIUS: f32 = 0.4;
 /// Highest ledge a walking body steps onto, and how far it follows the floor down.
+/// gap: the character proxy's step-up is not traced (Havok sweep, no explicit value found).
 pub const STEP_HEIGHT: f32 = 0.5;
-const MAX_SLOPE_DEGREES: f32 = 50.0;
+/// hknpCharacterProxyCinfo maxSlope, set to 60 deg in FUN_14104d3d0 (0x3f860a92 = 1.0472 rad).
+const MAX_SLOPE_DEGREES: f32 = 60.0;
 /// Heights of the contact spheres' centres above the feet; the lowest sphere's bottom sits at
 /// the step height so stairs reach the floor query rather than the wall push.
 const SPHERES: [f32; 3] = [STEP_HEIGHT + RADIUS, 1.2, 1.55];
