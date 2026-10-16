@@ -1648,3 +1648,42 @@ pub(crate) fn a_locked_sprint_deflect_turns_to_the_enemy_instead_of_snapping() {
         assert!(at(30) < 5.0, "still {:.0} deg off at +30", at(30));
     }
 }
+
+/// Live (rec_20261016_* W_StandRunStop): after the stick is released the run is down to
+/// 0.5 m/s within 3 ticks and Wolf slides 0.15-0.3 m in all (the clip a000_000600 moves 0.3 m).
+/// The stop must not carry the run's momentum through its blend (graph state StandRunStop).
+#[test]
+pub(crate) fn releasing_the_stick_at_a_run_stops_in_about_a_third_of_a_metre() {
+    let mut app = app();
+    move_enemy_far(&mut app);
+    for _ in 0..60 {
+        app.update();
+    }
+    let mut last = player_actor(&mut app).3;
+    let mut start = last;
+    for i in 0..100 {
+        {
+            let mut pad = app.world_mut().resource_mut::<PadInput>();
+            pad.stick = if i < 60 { Vec2::new(0.0, 1.0) } else { Vec2::ZERO };
+        }
+        app.update();
+        let (state, pos) = {
+            let w = app.world_mut();
+            let (a, t) = w.query_filtered::<(&Actor, &Transform), With<Player>>().single(w).unwrap();
+            (a.state.clone(), t.translation)
+        };
+        if i == 59 {
+            start = pos;
+        }
+        let v = (pos - last).with_y(0.0).length() * 60.0;
+        last = pos;
+        if i == 65 {
+            assert!(state.starts_with("StandRunStop"), "state {state}");
+            assert!(v < 1.0, "still {v:.1} m/s 5 ticks after release");
+        }
+        if i == 99 {
+            let slid = (pos - start).with_y(0.0).length();
+            assert!(slid < 0.4, "slid {slid:.2} m");
+        }
+    }
+}

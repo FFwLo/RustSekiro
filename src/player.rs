@@ -108,7 +108,7 @@ pub struct Player {
     wire_todome: bool,
     /// The highest point of the current flight (on the ground: the current height). The landing
     /// reads the fall height from it (env(224), `FALL_HEIGHT_LONG_STIFF_LAND`).
-    air_top: f32,
+    pub(crate) air_top: f32,
     /// The last ground Wolf stood on (not water): where a fall-return death puts him back.
     safe_pos: Option<Vec3>,
 }
