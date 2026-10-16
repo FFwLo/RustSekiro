@@ -48,6 +48,9 @@ enum Set {
     /// and the rest length, pulled back to rest above it and pushed out to it below (exe
     /// FUN_1414d62e0 / the Mx FUN_141519460: a dead zone [compressionLength, restLength]).
     Compressible(Vec<(Link, f32)>),
+    /// hclVolumeConstraintMx (exe FUN_141571de0): shape matching. `frames` = (frameVector,
+    /// particle, weight), `apply` = (frameVector, particle, stiffness).
+    Volume { frames: Vec<(Vec3, usize, f32)>, apply: Vec<(Vec3, usize, f32)> },
     Unsolved,
 }
 
@@ -182,6 +185,12 @@ pub fn load(model_file: &std::path::Path) -> Vec<ClothDef> {
                         "compressible" => Set::Compressible(
                             arr(&s["links"]).iter().map(|l| (Link { a: us(&l[0]), b: us(&l[1]), rest: fl(&l[2]), stiffness: fl(&l[4]) }, fl(&l[3]))).collect(),
                         ),
+                        "volume" => {
+                            let rows = |k: &str| -> Vec<(Vec3, usize, f32)> {
+                                arr(&s[k]).iter().map(|r| (Vec3::new(fl(&r[0]), fl(&r[1]), fl(&r[2])), us(&r[3]), fl(&r[4]))).collect()
+                            };
+                            Set::Volume { frames: rows("frames"), apply: rows("apply") }
+                        }
                         _ => Set::Unsolved,
                     })
                     .collect(),
@@ -502,6 +511,85 @@ fn carry(x: &mut [Vec3], prev: &mut [Vec3], old: Mat4, new: Mat4) {
     }
 }
 
+/// Rotation of the polar decomposition M = R S (S symmetric): R = M (M^T M)^(-1/2), as the exe's
+/// FUN_141572020: eigen-decompose A = M^T M (hkMatrix3::diagonalizeSymmetric, 20 sweeps), S =
+/// V sqrt(L) V^T (negative eigenvalues 0), R = M S^-1; a singular S (det exactly 0) gives zeros.
+fn polar_rotation(m: Mat3) -> Mat3 {
+    let mut a = m.transpose() * m;
+    let mut v = Mat3::IDENTITY;
+    for _ in 0..20 {
+        let mut off = 0.0f32;
+        for (p, q) in [(0, 1), (0, 2), (1, 2)] {
+            let apq = a.col(q)[p];
+            off += apq.abs();
+            if apq.abs() < 1e-12 {
+                continue;
+            }
+            let (app, aqq) = (a.col(p)[p], a.col(q)[q]);
+            let theta = (aqq - app) / (2.0 * apq);
+            let t = theta.signum() / (theta.abs() + (theta * theta + 1.0).sqrt());
+            let t = if theta == 0.0 { 1.0 } else { t };
+            let c = 1.0 / (t * t + 1.0).sqrt();
+            let sn = t * c;
+            // Rotation G in the (p, q) plane: columns p and q mix by (c, s).
+            let mut g = Mat3::IDENTITY;
+            *g.col_mut(p) = Vec3::ZERO;
+            *g.col_mut(q) = Vec3::ZERO;
+            g.col_mut(p)[p] = c;
+            g.col_mut(p)[q] = -sn;
+            g.col_mut(q)[p] = sn;
+            g.col_mut(q)[q] = c;
+            for k in 0..3 {
+                if k != p && k != q {
+                    g.col_mut(k)[k] = 1.0;
+                }
+            }
+            a = g.transpose() * a * g;
+            v *= g;
+        }
+        if off < 1e-9 {
+            break;
+        }
+    }
+    let root = Vec3::new(a.col(0)[0].max(0.0).sqrt(), a.col(1)[1].max(0.0).sqrt(), a.col(2)[2].max(0.0).sqrt());
+    let s = v * Mat3::from_diagonal(root) * v.transpose();
+    if s.determinant() == 0.0 {
+        return Mat3::ZERO;
+    }
+    m * s.inverse()
+}
+
+/// hclVolumeConstraintMx (exe FUN_141571de0 -> FUN_14157ec10 / ec70 / 141572020 / 14157edd0):
+/// c = sum w p; M = sum w (p - c) frameVector^T; R = polar rotation of M; each apply row moves its
+/// particle by stiffness * (c + R frameVector - p) (no inverse mass in the exe's code, and the
+/// solver stiffness factor, 1.0 here, multiplies in).
+fn solve_volume(x: &mut [Vec3], frames: &[(Vec3, usize, f32)], apply: &[(Vec3, usize, f32)]) {
+    let get = |i: usize| x.get(i).copied();
+    let mut c = Vec3::ZERO;
+    for &(_, p, w) in frames {
+        let Some(q) = get(p) else { return };
+        c += q * w;
+    }
+    let mut cols = [Vec3::ZERO; 3];
+    for &(fv, p, w) in frames {
+        let d = x[p] - c;
+        cols[0] += d * (w * fv.x);
+        cols[1] += d * (w * fv.y);
+        cols[2] += d * (w * fv.z);
+    }
+    let r = polar_rotation(Mat3::from_cols(cols[0], cols[1], cols[2]));
+    for &(fv, p, k) in apply {
+        if let Some(q) = x.get_mut(p) {
+            *q += (c + r * fv - *q) * k;
+        }
+    }
+}
+
+/// Sim steps a frame of `dt` seconds runs: the nearest count of 1/60 s steps, 1 to 4.
+fn frame_steps(dt: f32) -> u32 {
+    ((dt * 60.0).round() as u32).clamp(1, 4)
+}
+
 fn cloth_range(setting: crate::config::ClothSetting) -> f32 {
     static RANGE: std::sync::OnceLock<Option<f32>> = std::sync::OnceLock::new();
     RANGE.get_or_init(|| std::env::var("SHINOBI_CLOTH_RANGE").ok().and_then(|v| v.parse().ok())).unwrap_or(setting.range())
@@ -567,14 +655,16 @@ fn simulate(
             // (bind pose floating above the crouched body) by the plain 15 m rule.
             let rest_far = c.def.rest.iter().map(|p| p.length()).fold(0.0, f32::max);
             let hidden = !c.displays.is_empty() && c.displays.iter().all(|d| shown.get(d.entity).is_ok_and(|v| *v == Visibility::Hidden));
-            let culled = c.rigid
-                || chain_missing
-                || hidden
-                || range < 0.0
-                || match cam {
+            // Beyond the range only (not hidden, rigid or off): the cloth keeps its last
+            // simulated shape and rides the root, so a boss seen from afar does not have its
+            // cloth snap to the bind pose (which stands out stiff from the body).
+            let far = range >= 0.0
+                && match cam {
                     Some(cam) if range > 0.0 => globals.get(c.root).is_ok_and(|g| g.translation().distance(cam) > range + rest_far),
                     _ => false,
                 };
+            let culled = c.rigid || chain_missing || hidden || range < 0.0 || far;
+            let hold = far && !c.rigid && !chain_missing && !hidden && c.started;
             let bone_h = |name: &str| c.bones.get(name).and_then(|&e| globals.get(e).ok()).map(|g| havok(g.to_matrix()));
             // One world matrix per bone: the reference bones by index, the collidables' by name.
             let ref_mats: Vec<Option<Mat4>> = c.def.ref_bones.iter().map(|n| bone_h(n)).collect();
@@ -654,7 +744,7 @@ fn simulate(
             let jumped = c.started
                 && !culled
                 && (c.x.len() != def.rest.len() || def.moves.iter().any(|&(v, p)| refs.get(v).and_then(|r| *r).is_some_and(|(q, _)| c.x.get(p).is_none_or(|x| q.distance(*x) > jump))));
-            let restarted = !c.started || jumped || culled;
+            let restarted = !c.started || jumped || (culled && !hold);
             if restarted {
                 if jumped {
                     info!("cloth {}: restart (fixed particle jumped)", def.name);
@@ -689,7 +779,7 @@ fn simulate(
                 .iter()
                 .filter_map(|&(v, p)| refs.get(v).and_then(|r| *r).filter(|_| p < c.x.len()).map(|(q, _)| (p, if restarted { q } else { c.x[p] }, q)))
                 .collect();
-            if dt <= 0.0 {
+            if dt <= 0.0 || hold {
                 for &(p, _, to) in &fixed {
                     c.x[p] = to;
                     c.prev[p] = to;
@@ -698,7 +788,15 @@ fn simulate(
             lap(1, &mut tp, &mut phase);
             // 3. Simulate.
             if dt > 0.0 && !culled {
-                let h = dt / def.substeps as f32;
+                // The game steps its cloth once per frame, and it is locked to 60 fps (the
+                // update-time mode table FUN_141045c40 = [frame dt, 1/30, 1/60]); constraint
+                // stiffness acts per step (bend stiffness, local range), so a slower frame must
+                // not be one long step: it runs as several ~1/60 s steps (at most 3: dt is
+                // capped at 1/20). Faster frames stay one step. gap: the game's behaviour
+                // under its own frame drops (frame dt there) is not reproduced.
+                let frame_steps = frame_steps(dt);
+                let total = def.substeps * frame_steps;
+                let h = dt / total as f32;
                 let keep = (1.0 - def.damping).clamp(0.0, 1.0).powf(h);
                 // Time-corrected Verlet: the last step's displacement covered last_h; scale it to
                 // this step's h, or uneven frame times jitter the cloth (seen as flicker).
@@ -714,9 +812,9 @@ fn simulate(
                         .map(|(now, was)| now.map(|(a, b, ra, rb)| match was { Some((a0, b0, _, _)) => (a0.lerp(a, f), b0.lerp(b, f), ra, rb), None => (a, b, ra, rb) }))
                         .collect()
                 };
-                for step in 0..def.substeps {
-                    let f = (step + 1) as f32 / def.substeps as f32;
-                    let (caps, caps_was) = (swept(f), swept(step as f32 / def.substeps as f32));
+                for step in 0..total {
+                    let f = (step + 1) as f32 / total as f32;
+                    let (caps, caps_was) = (swept(f), swept(step as f32 / total as f32));
                     for &(p, from, to) in &fixed {
                         c.x[p] = from.lerp(to, f);
                         c.prev[p] = c.x[p];
@@ -733,10 +831,16 @@ fn simulate(
                     for _ in 0..def.iterations {
                         for &e in &def.execution {
                             if e == -1 {
+                                if *SKIP == "collide" {
+                                    continue;
+                                }
                                 collide(&mut c.x, &mut c.prev, w, (&def.radius, &def.friction, &def.masks), &caps, &caps_was);
                                 continue;
                             }
                             let Some(set) = usize::try_from(e).ok().and_then(|e| def.sets.get(e)) else { continue };
+                            if !SKIP.is_empty() && *SKIP == match set { Set::Standard(_) => "standard", Set::Stretch(_) => "stretch", Set::LocalRange { .. } => "local_range", Set::Bend(_) => "bend", Set::BendStiffness { .. } => "bend_stiffness", Set::Compressible(_) => "compressible", Set::Volume { .. } => "volume", Set::Unsolved => "transition" } {
+                                continue;
+                            }
                             match set {
                                 Set::Standard(ls) => ls.iter().for_each(|l| solve_link(&mut c.x, w, l, false)),
                                 Set::Stretch(ls) => ls.iter().for_each(|l| solve_link(&mut c.x, w, l, true)),
@@ -768,6 +872,7 @@ fn simulate(
                                 Set::Compressible(ls) => {
                                     ls.iter().for_each(|(l, comp)| solve_compressible(&mut c.x, w, l, *comp))
                                 }
+                                Set::Volume { frames, apply } => solve_volume(&mut c.x, frames, apply),
                                 Set::Unsolved => {}
                             }
                         }
@@ -1190,6 +1295,10 @@ fn swings(cloths: &Cloths, g: &GlobalTransform) -> String {
     line
 }
 
+/// SHINOBI_CLOTH_SKIP=<standard|stretch|local_range|bend|bend_stiffness|compressible|volume|collide>:
+/// leaves that constraint kind out of every solve (finding what makes a cloth jitter).
+static SKIP: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| std::env::var("SHINOBI_CLOTH_SKIP").unwrap_or_default());
+
 static PROBE: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::env::var("SHINOBI_CLOTH_PROBE").is_ok() || std::env::var("SHINOBI_CAPE_TURN").is_ok());
 
 /// SHINOBI_CLOTH_PROBE=1 (with SHINOBI_FIGHT / SHINOBI_DUEL): every 0.1 s each enemy's anim,
@@ -1204,7 +1313,9 @@ fn enemy_cloth_probe(time: Res<Time>, enemies: Query<(Entity, &Cloths, &GlobalTr
             continue;
         };
         let dt = t - t0;
-        if dt < 0.1 {
+        // SHINOBI_CLOTH_PROBE_DT=<s>: log interval (default 0.1; 0 = every frame, for jitter).
+        let every: f32 = std::env::var("SHINOBI_CLOTH_PROBE_DT").ok().and_then(|v| v.parse().ok()).unwrap_or(0.1);
+        if dt < every || dt <= 0.0 {
             continue;
         }
         last.insert(e, (t, pos, yaw));
@@ -1282,6 +1393,44 @@ mod tests {
         super::carry(&mut x, &mut prev, old, new);
         assert!(new.inverse().transform_point3(x[0]).distance(local.0) < 1e-5);
         assert!(new.inverse().transform_point3(prev[0]).distance(local.1) < 1e-5);
+    }
+
+    /// The volume constraint (shape matching): a rotated, translated copy of the rest shape is
+    /// its own target (nothing moves), and a squashed copy is pulled back toward the rotated
+    /// rest shape.
+    #[test]
+    fn volume_constraint_matches_the_shape() {
+        use bevy::prelude::{Quat, Vec3};
+        let rest = [Vec3::new(1.0, 0.0, 0.0), Vec3::new(-1.0, 0.0, 0.0), Vec3::new(0.0, 1.0, 0.0), Vec3::new(0.0, -1.0, 0.0), Vec3::new(0.0, 0.0, 1.0), Vec3::new(0.0, 0.0, -1.0), Vec3::new(0.3, 0.2, -0.5), Vec3::new(-0.3, -0.2, 0.5)];
+        let n = rest.len();
+        let w = 1.0 / n as f32;
+        let c0: Vec3 = rest.iter().sum::<Vec3>() / n as f32;
+        let frames: Vec<_> = rest.iter().enumerate().map(|(i, p)| (*p - c0, i, w)).collect();
+        let apply: Vec<_> = rest.iter().enumerate().map(|(i, p)| (*p - c0, i, 1.0)).collect();
+        let q = Quat::from_rotation_y(0.7) * Quat::from_rotation_x(0.3);
+        let moved: Vec<Vec3> = rest.iter().map(|p| q * *p + Vec3::new(2.0, -1.0, 0.5)).collect();
+        let mut x = moved.clone();
+        super::solve_volume(&mut x, &frames, &apply);
+        for (a, b) in x.iter().zip(&moved) {
+            assert!(a.distance(*b) < 1e-4, "{a:?} vs {b:?}");
+        }
+        // Squash it along y: the solve pulls it back toward the rigid copy.
+        let c1: Vec3 = moved.iter().sum::<Vec3>() / n as f32;
+        let mut x: Vec<Vec3> = moved.iter().map(|p| c1 + (*p - c1) * Vec3::new(1.0, 0.5, 1.0)).collect();
+        let err = |x: &[Vec3]| x.iter().zip(&moved).map(|(a, b)| a.distance(*b)).sum::<f32>();
+        let before = err(&x);
+        super::solve_volume(&mut x, &frames, &apply);
+        assert!(err(&x) < before * 0.9, "{} -> {}", before, err(&x));
+    }
+
+    /// A slow frame runs several ~1/60 s steps (the game's cloth is stepped per 60 fps frame).
+    #[test]
+    fn slow_frames_run_several_sixtieth_second_steps() {
+        assert_eq!(super::frame_steps(1.0 / 144.0), 1);
+        assert_eq!(super::frame_steps(1.0 / 60.0), 1);
+        assert_eq!(super::frame_steps(1.0 / 30.0), 2);
+        assert_eq!(super::frame_steps(1.0 / 20.0), 3);
+        assert_eq!(super::frame_steps(0.2), 4);
     }
 
     #[test]

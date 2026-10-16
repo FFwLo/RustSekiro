@@ -147,6 +147,45 @@ fn constraint_set(tf: &Tagfile, cty: &str, cp: usize) -> Value {
             // particle, referenceVertex
             "items": rows("perParticleData", &|e| json!([r.u16(e), r.u16(e + 2)])),
         }),
+        "hclVolumeConstraintMx" => {
+            // Shape matching (exe FUN_141571de0): frames sum the weighted particles to a centre
+            // and a covariance, the apply rows pull their particle to centre + R * frameVector.
+            // Batches hold 16 lanes (frameVector 16 x 16 bytes, particleIndex u16 x 16 at 256,
+            // weight / stiffness f32 x 16 at 288); singles one entry (frameVector, index at 16,
+            // weight / stiffness at 20). Padding lanes (weight 0) are dropped.
+            let f3 = |e: usize| [round(r.f32(e)), round(r.f32(e + 4)), round(r.f32(e + 8))];
+            let mut rows_of = |batch: &str, single: &str| -> Vec<Value> {
+                let mut out = Vec::new();
+                if let Some((a, n, s)) = arr(batch) {
+                    for i in 0..n {
+                        let e = a + i * s;
+                        for l in 0..16 {
+                            let w = r.f32(e + 288 + l * 4);
+                            if w != 0.0 {
+                                let v = f3(e + l * 16);
+                                out.push(json!([v[0], v[1], v[2], r.u16(e + 256 + l * 2), round(w)]));
+                            }
+                        }
+                    }
+                }
+                if let Some((a, n, s)) = arr(single) {
+                    for i in 0..n {
+                        let e = a + i * s;
+                        let w = r.f32(e + 20);
+                        if w != 0.0 {
+                            let v = f3(e);
+                            out.push(json!([v[0], v[1], v[2], r.u16(e + 16), round(w)]));
+                        }
+                    }
+                }
+                out
+            };
+            json!({
+                "kind": "volume",
+                "frames": rows_of("frameBatchDatas", "frameSingleDatas"),
+                "apply": rows_of("applyBatchDatas", "applySingleDatas"),
+            })
+        }
         other => json!({"kind": other}),
     }
 }
