@@ -75,6 +75,18 @@ foreach ($p in "am_m_9000", "bd_m_9040", "fc_m_0200", "lg_m_9000", "wp_a_0300") 
     $d = Join-Path $out "parts\$p.partsbnd.d"
     & $exe model (Join-Path $d "$($p.ToUpper()).flver") (Join-Path $d "$($p.ToUpper()).tpf") (Join-Path $out "model_c0000_$p.bin") (Join-Path $out "tex")
 }
+# Wolf's other forms (Change Form at an idol, src/form.rs): face / body / arms / legs of the
+# memories Shura, Ashina and Tengu (EquipParamProtector 30x000 / 40x000 / 50x000) ->
+# extracted/form (attached hidden, shown when chosen), and the memories' pictures (menu_costume_<id>).
+& $exe unpack $Sekiro $out '^/parts/((am|bd|lg)_m_91[123]0|fc_m_02[234]0)\.partsbnd'
+New-Item -ItemType Directory -Force (Join-Path $out "form") | Out-Null
+foreach ($p in "am_m_9110", "bd_m_9110", "fc_m_0240", "lg_m_9110", "am_m_9120", "bd_m_9120", "fc_m_0220", "lg_m_9120", "am_m_9130", "bd_m_9130", "fc_m_0230", "lg_m_9130") {
+    $d = Join-Path $out "parts\$p.partsbnd.d"
+    & $exe model (Join-Path $d "$($p.ToUpper()).flver") (Join-Path $d "$($p.ToUpper()).tpf") (Join-Path $out "form\model_c0000_$p.bin") (Join-Path $out "tex")
+}
+& $exe unpack $Sekiro $out '^/menu/hi/menu_costume_[0-9]+\.tpf'
+$env:SEKIRO_EXTRACT = $exe
+python (Join-Path $PSScriptRoot "costume_art.py")
 $d = Join-Path $out "parts\wp_a_0300.partsbnd.d"
 & $exe model (Join-Path $d "WP_A_0300_1.flver") (Join-Path $d "WP_A_0300.tpf") (Join-Path $out "model_c0000_sheath_a_0300.bin") (Join-Path $out "tex")
 # Right weapon model 2 (WP_A_0300_2: no meshes, the Mortal Draw effect dummies 200-280 = TAE 12200..)

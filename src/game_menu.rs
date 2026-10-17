@@ -106,13 +106,14 @@ pub(crate) fn sprite(file: &str) -> Option<String> {
     crate::paths::extracted().join(&f).exists().then_some(f)
 }
 
-/// A menu icon file for an iconId: the HUD's copy, else the menu atlases' (sb_icon*).
+/// A menu icon file for an iconId: the HUD's copy, else the menu atlases' (sb_icon*; the
+/// memories' 750-756 sit in sb_boss).
 pub(crate) fn any_icon(icon: i64) -> Option<String> {
     let hud = format!("hud/MENU_ItemIcon_{icon:05}.png");
     if crate::paths::extracted().join(&hud).exists() {
         return Some(hud);
     }
-    ["sb_icon", "sb_icon_02", "sb_icon_03", "sb_icon_04"].iter().find_map(|a| sprite(&format!("{a}/MENU_ItemIcon_{icon:05}")))
+    ["sb_icon", "sb_icon_02", "sb_icon_03", "sb_icon_04", "sb_boss"].iter().find_map(|a| sprite(&format!("{a}/MENU_ItemIcon_{icon:05}")))
 }
 
 /// The Equipment slots in cursor order: tools 0-2, the art, quick items 0-4, ninjutsu.

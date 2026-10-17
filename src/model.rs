@@ -374,7 +374,7 @@ impl Plugin for ModelPlugin {
         app.add_systems(PostStartup, attach_models.after(crate::anim::AnimSet))
             // Characters spawned later (a fight reset's line-up, the encounter picker).
             .add_systems(Update, attach_models.after(crate::anim::AnimSet))
-            .add_systems(Update, (hide_placeholder_blades, update_draw_masks, update_opacity, follow_owner.after(update_draw_masks)))
+            .add_systems(Update, (hide_placeholder_blades, update_draw_masks, update_opacity, follow_owner.after(update_draw_masks), crate::form::show_form.after(follow_owner)))
             // TAE 233 is an edge: caught on the tick it starts (a frame can run two ticks).
             .add_systems(FixedUpdate, apply_draw_mask_events.after(crate::actor::ActorSet::Advance))
             // TAE 715 in the sim pose too (anim.rs PoseSet propagates by hand, from the rest dummies).
@@ -441,6 +441,13 @@ fn attach_models(
             })
             .collect();
         files.sort();
+        // Wolf's other forms (form.rs): attached after his own parts (so his own dummies win)
+        // and shown only when chosen.
+        if a.side == Side::Player {
+            let mut forms: Vec<std::path::PathBuf> = std::fs::read_dir(dir.join("form")).into_iter().flatten().flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "bin")).collect();
+            forms.sort();
+            files.extend(forms);
+        }
         let skel_lib = lib.lib(&a);
         let by_name: HashMap<&str, usize> = skel_lib.bones.iter().enumerate().map(|(i, b)| (b.name.as_str(), i)).collect();
         let Some(skel_root) = roots.iter().find(|(_, p, n)| p.parent() == actor_e && n.as_str() == "SkeletonRoot").map(|(e, _, _)| e) else {
@@ -721,6 +728,9 @@ fn attach_models(
             if let Some(group) = group_of(md) {
                 commands.entity(e).insert(MeshGroup { owner: actor_e, group, base });
             }
+            if let Some(form) = (a.side == Side::Player).then(|| crate::form::form_of(&fname)).flatten() {
+                commands.entity(e).insert(crate::form::FormMesh { form, own: vis });
+            }
             match cloth {
                 // World-space CPU vertices (cloth.rs): no GPU skin, no parent, no stale bounds.
                 Some(ci) => {
@@ -859,10 +869,14 @@ pub(crate) fn apply_draw_mask_events(combat: Res<crate::data::Combat>, mut actor
 pub(crate) fn update_draw_masks(
     combat: Res<crate::data::Combat>,
     actors: Query<(&Actor, &DrawMask)>,
-    mut groups: Query<(&MeshGroup, &mut Visibility)>,
+    mut groups: Query<(&MeshGroup, &mut Visibility, Option<&crate::form::FormMesh>)>,
+    config: Option<Res<crate::config::GameConfig>>,
 ) {
-    for (g, mut vis) in &mut groups {
+    let form = config.map_or(0, |c| crate::form::current(&c));
+    for (g, mut vis, fm) in &mut groups {
         let Ok((a, dm)) = actors.get(g.owner) else { continue };
+        // A part of a form not worn (form.rs) stays hidden whatever its mask.
+        let worn = fm.is_none_or(|f| f.form == form);
         let mut on = dm.0.get(&g.group).copied().unwrap_or(g.base);
         if !a.anim.is_empty() {
             let key = format!("Mask{}", g.group);
@@ -875,7 +889,7 @@ pub(crate) fn update_draw_masks(
                 }
             }
         }
-        let want = if on { Visibility::Inherited } else { Visibility::Hidden };
+        let want = if on && worn { Visibility::Inherited } else { Visibility::Hidden };
         if *vis != want {
             *vis = want;
         }

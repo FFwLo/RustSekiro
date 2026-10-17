@@ -85,6 +85,8 @@ combat_art = 5100
 skills = [280]
 # Skill points to spend at a Sculptor's Idol (Acquire Skills).
 skill_points = 14
+# Wolf's look (Change Form at an idol): 0 Wolf, 1 Shura, 2 Ashina, 3 Tengu.
+form = 0
 
 [audio]
 volume = 10.0

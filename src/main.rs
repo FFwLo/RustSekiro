@@ -32,6 +32,7 @@ mod enemy_bullet;
 mod ffx;
 mod fxr;
 mod fog_wall;
+mod form;
 mod height_fog;
 mod sky;
 mod fmod;

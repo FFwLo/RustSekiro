@@ -224,6 +224,9 @@ pub struct PlayerConfig {
     /// gap: no skill experience is earned yet; the points are set here.
     #[serde(default)]
     pub skill_points: u32,
+    /// Wolf's look (Change Form at an idol, src/form.rs): 0 Wolf, 1 Shura, 2 Ashina, 3 Tengu.
+    #[serde(default)]
+    pub form: u32,
     /// Every move the game locks behind a skill (`combat::action_unlocked`: mid-air deflect / tools
     /// / arts, the sprint slide, the Prosthetic Arts follow-ups) is open, as for a Wolf with the
     /// whole tree. false = only those the `skills` list unlocks.
@@ -265,7 +268,7 @@ fn default_emblems() -> u32 {
 
 impl Default for PlayerConfig {
     fn default() -> Self {
-        Self { gourd_charges: 3, spirit_emblems: default_emblems(), infinite_emblems: false, resurrections: default_resurrections(), combat_art: default_combat_art(), prosthetics: default_prosthetics(), skills: Vec::new(), skill_points: 0, unlock_all_moves: true, sen: default_sen() }
+        Self { gourd_charges: 3, spirit_emblems: default_emblems(), infinite_emblems: false, resurrections: default_resurrections(), combat_art: default_combat_art(), prosthetics: default_prosthetics(), skills: Vec::new(), skill_points: 0, form: 0, unlock_all_moves: true, sen: default_sen() }
     }
 }
 

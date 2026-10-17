@@ -227,7 +227,7 @@ const ROWS: [(&str, bool); 10] = [
     ("Enhance Physical Attributes", false),
     ("Enhance Attack Power", false),
     ("Dragonrot Restoration", false),
-    ("Change Form", false),
+    ("Change Form", true),
     ("Reflection of Strength", false),
     ("Gauntlet of Strength", false),
 ];
@@ -241,6 +241,8 @@ enum Page {
     Travel,
     /// Acquire Skills (src/skill_tree.rs).
     Skills,
+    /// Change Form (src/form.rs).
+    Form,
 }
 
 #[derive(Resource, Default)]
@@ -321,7 +323,8 @@ fn stats_plate(root: &mut ChildSpawnerCommands, assets: &AssetServer, font: &Opt
 }
 
 #[allow(clippy::too_many_arguments)]
-fn build(commands: &mut Commands, assets: &AssetServer, menu: &IdolMenu, font: &Option<Handle<Font>>, config: &crate::config::GameConfig, tables: &Tables, texts: &ItemTexts, p: &crate::player::Player, a: &crate::actor::Actor) {
+#[allow(clippy::too_many_arguments)]
+fn build(commands: &mut Commands, assets: &AssetServer, menu: &IdolMenu, font: &Option<Handle<Font>>, config: &crate::config::GameConfig, tables: &Tables, texts: &ItemTexts, forms: &crate::form::FormTexts, p: &crate::player::Player, a: &crate::actor::Actor) {
     let seat_idol = p.seat.idol;
     let place = seat_idol.and_then(|i| IDOLS.read().ok().and_then(|v| v.get(i).map(|i| i.name.clone()))).unwrap_or_default();
     let full = Node { position_type: PositionType::Absolute, width: Val::Percent(100.0), height: Val::Percent(100.0), ..default() };
@@ -356,6 +359,7 @@ fn build(commands: &mut Commands, assets: &AssetServer, menu: &IdolMenu, font: &
                     "Purchase Spirit Emblems" => "Purchase Spirit Emblems with Sen",
                     "Travel" => "Travel to another Sculptor's Idol",
                     "Acquire Skills" => "Acquire new skills with skill points",
+                    "Change Form" => "Change Wolf's appearance",
                     _ => "Not in this recreation yet",
                 };
                 root.spawn(abs(5.9, 89.6, 30.0, 4.0)).with_children(|c| {
@@ -405,6 +409,56 @@ fn build(commands: &mut Commands, assets: &AssetServer, menu: &IdolMenu, font: &
                     c.spawn(text("Review and Acquire Skills.", 16.0, DIM, font));
                 });
                 key_guide(root, assets, font, &[("sb_keytop/KG_Key_Enter", ":Acquire  "), ("sb_keytop/KG_Key_Esc", ":Back")]);
+            });
+        }
+        Page::Form => {
+            commands.spawn((full, BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.55)), GlobalZIndex(110), IdolMenuRoot)).with_children(|root| {
+                root.spawn((abs(0.0, 0.0, 100.0, 100.0), image(assets, sprite("sb_in_game/MENU_Base_00"))));
+                title_bar(root, assets, font, "Change Form");
+                let worn = crate::form::current(config);
+                let name = |f: &crate::form::Form| forms.name.get(&(f.protector as u32)).cloned().unwrap_or_default();
+                // The memories: the icon box (the worn one marked) and the name on its brush.
+                for (i, f) in crate::form::FORMS.iter().enumerate() {
+                    let t = 18.0 + i as f32 * 10.7;
+                    let sel = i == menu.index;
+                    let icon = any_icon(f.icon);
+                    root.spawn((Button, abs(7.0, t, 5.1, 9.0), image(assets, sprite("sb_in_game/MENU_IconBase_02")), RowButton(i))).with_children(|b| {
+                        b.spawn((Node { position_type: PositionType::Absolute, left: Val::Percent(5.0), top: Val::Percent(5.0), width: Val::Percent(90.0), height: Val::Percent(90.0), ..default() }, image(assets, icon)));
+                        if i == worn {
+                            b.spawn((Node { position_type: PositionType::Absolute, left: Val::Percent(-6.0), top: Val::Percent(-6.0), width: Val::Percent(30.0), height: Val::Percent(30.0), ..default() }, image(assets, sprite("sb_in_game/MENU_Equipped"))));
+                        }
+                    });
+                    let plate = if sel { "sb_in_game/MENU_Cursor_03" } else { "sb_in_game/MENU_ItemBase_02" };
+                    root.spawn((Button, abs(13.4, t + 1.6, 34.4, 6.4), image(assets, sprite(plate)), RowButton(i))).with_children(|b| {
+                        b.spawn(Node { padding: UiRect::left(Val::Percent(4.5)), ..fill_row() }).with_children(|c| {
+                            c.spawn(text(&name(f), 17.0, if sel { Color::WHITE } else { TEXT }, font));
+                        });
+                    });
+                }
+                // The memory under the cursor: its name, picture and text.
+                if let Some(f) = crate::form::FORMS.get(menu.index) {
+                    root.spawn((abs(55.4, 13.6, 37.6, 74.4), image(assets, sprite("sb_in_game/MENU_WP_Base"))));
+                    root.spawn((abs(56.4, 14.6, 35.6, 4.6), image(assets, sprite("sb_in_game/MENU_ItemBase_08")).with_color(Color::srgb(0.25, 0.25, 0.25)))).with_children(|b| {
+                        b.spawn(Node { justify_content: JustifyContent::Center, ..fill_row() }).with_children(|c| {
+                            c.spawn(text(&name(f), 17.0, Color::WHITE, font));
+                        });
+                    });
+                    if let Some(pic) = crate::form::picture(f) {
+                        root.spawn((abs(57.7, 19.7, 33.0, 33.8), ImageNode::new(assets.load(pic))));
+                    }
+                    let mut r = 57.2;
+                    while r < 85.5 {
+                        root.spawn((abs(57.6, r, 33.2, 0.15), BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.18))));
+                        r += 3.15;
+                    }
+                    root.spawn(abs(57.9, 54.2, 32.6, 33.0)).with_children(|c| {
+                        c.spawn(text(forms.info.get(&(f.protector as u32)).map_or("", |s| s.as_str()), 15.5, TEXT, font));
+                    });
+                }
+                root.spawn(abs(5.3, 91.6, 50.0, 4.0)).with_children(|c| {
+                    c.spawn(text("Select Wolf's appearance", 16.0, DIM, font));
+                });
+                key_guide(root, assets, font, &[("sb_keytop/KG_Key_Enter", ":OK  "), ("sb_keytop/KG_Key_Esc", ":Back")]);
             });
         }
         Page::Travel => {
@@ -475,7 +529,7 @@ fn run_idol_menu(
     roots: Query<Entity, With<IdolMenuRoot>>,
     rows: Query<(&RowButton, &Interaction), Changed<Interaction>>,
     (nodes, cats): (Query<(&crate::skill_tree::SkillNodeButton, &Interaction), Changed<Interaction>>, Query<(&crate::game_menu::CatButton, &Interaction), Changed<Interaction>>),
-    (assets, font, mut config, texts, tables): (Res<AssetServer>, Res<MenuFont>, ResMut<crate::config::GameConfig>, Res<ItemTexts>, Res<Tables>),
+    (assets, font, mut config, texts, tables, forms): (Res<AssetServer>, Res<MenuFont>, ResMut<crate::config::GameConfig>, Res<ItemTexts>, Res<Tables>, Res<crate::form::FormTexts>),
     mut wolf: Query<(&mut crate::player::Player, &crate::actor::Actor)>,
 ) {
     if *state.get() != Screen::Idol {
@@ -504,7 +558,7 @@ fn run_idol_menu(
     for (r, i) in &rows {
         match i {
             Interaction::Pressed => clicked = Some(r.0),
-            Interaction::Hovered if menu.page == Page::Main => menu.index = r.0,
+            Interaction::Hovered if matches!(menu.page, Page::Main | Page::Form) => menu.index = r.0,
             _ => {}
         }
     }
@@ -538,6 +592,10 @@ fn run_idol_menu(
                         menu.page = Page::Purchase;
                         menu.index = 0;
                     }
+                    "Change Form" => {
+                        menu.page = Page::Form;
+                        menu.index = crate::form::current(&config);
+                    }
                     "Acquire Skills" => {
                         menu.page = Page::Skills;
                         menu.tree = crate::skill_tree::View::default();
@@ -559,6 +617,26 @@ fn run_idol_menu(
             } else if (confirm || clicked.is_some()) && p.emblems < config.player.spirit_emblems && config.player.sen >= EMBLEM_PRICE {
                 config.player.sen -= EMBLEM_PRICE;
                 p.emblems += 1;
+            }
+        }
+        Page::Form => {
+            let n = crate::form::FORMS.len();
+            if let Some(i) = clicked {
+                menu.index = i;
+                confirm = true;
+            }
+            if down {
+                menu.index = (menu.index + 1) % n;
+            }
+            if up {
+                menu.index = (menu.index + n - 1) % n;
+            }
+            if back {
+                menu.page = Page::Main;
+                menu.index = ROWS.iter().position(|r| r.0 == "Change Form").unwrap_or(0);
+            } else if confirm && crate::form::current(&config) != menu.index {
+                config.player.form = menu.index as u32;
+                info!("form: {}", crate::form::FORMS[menu.index].protector);
             }
         }
         Page::Skills => {
@@ -653,12 +731,12 @@ fn run_idol_menu(
             }
         }
     }
-    let key = format!("{:?} {} {} {} {} {} {:?} {:?} {}", menu.page, menu.index, menu.in_list, menu.region, p.emblems, config.player.sen, menu.tree, config.player.skills, config.player.skill_points);
+    let key = format!("{:?} {} {} {} {} {} {:?} {:?} {} {}", menu.page, menu.index, menu.in_list, menu.region, p.emblems, config.player.sen, menu.tree, config.player.skills, config.player.skill_points, config.player.form);
     if menu.built.as_ref() != Some(&key) {
         for r in &roots {
             commands.entity(r).despawn();
         }
-        build(&mut commands, &assets, &menu, &font.0, &config, &tables, &texts, &p, a);
+        build(&mut commands, &assets, &menu, &font.0, &config, &tables, &texts, &forms, &p, a);
         menu.built = Some(key);
     }
 }
@@ -789,17 +867,19 @@ pub struct IdolPlugin;
 
 impl Plugin for IdolPlugin {
     fn build(&self, app: &mut App) {
-        // SHINOBI_IDOL_PAGE=<0-3>: open on Main / Purchase / Travel / Acquire Skills (SHINOBI_SHOT captures with
+        // SHINOBI_IDOL_PAGE=<0-4>: open on Main / Purchase / Travel / Acquire Skills / Change Form (SHINOBI_SHOT captures with
         // SHINOBI_TITLE=idol).
         let page = match std::env::var("SHINOBI_IDOL_PAGE").ok().as_deref() {
             Some("1") => Page::Purchase,
             Some("2") => Page::Travel,
             Some("3") => Page::Skills,
+            Some("4") => Page::Form,
             _ => Page::Main,
         };
         // SHINOBI_TREE_PAGE=<0-4> / SHINOBI_TREE_CURSOR=<n>: the Acquire Skills tree and node shown.
         let num = |k: &str| std::env::var(k).ok().and_then(|v| v.parse::<usize>().ok()).unwrap_or(0);
         let tree = crate::skill_tree::View { page: num("SHINOBI_TREE_PAGE"), cursor: num("SHINOBI_TREE_CURSOR"), asking: false };
+        app.insert_resource(crate::form::FormTexts::load());
         app.insert_resource(IdolMenu { page, region: if page == Page::Travel { 1 } else { 0 }, tree, ..default() })
             .add_systems(Startup, spawn_idols)
             .add_systems(Update, open_menu)
