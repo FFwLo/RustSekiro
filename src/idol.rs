@@ -655,11 +655,32 @@ const IDOL_SFX: i64 = 1011;
 /// The heights (m) the flame's copies play at over dummy 100.
 const IDOL_SFX_LIFTS: [f32; 2] = [0.0, 0.15];
 
+/// The id the flame without its mist plays under (not a game id).
+const IDOL_SFX_NO_MIST: i64 = 9_001_011;
+
+/// FFX 1011 without its ground mist: node 0/0/1/0 (big soft 21051 puffs from a ring at the
+/// idol's feet, 12 s each) drew a blue fog round the base that the game's idols do not show
+/// (the user: "there was no smoke at the idol"). The flame, sparks and light are kept.
+fn flame_without_mist(lib: &mut crate::fxr::FxrLib) -> i64 {
+    let Some(v) = lib.get(IDOL_SFX) else { return IDOL_SFX };
+    let mut v = (*v).clone();
+    let Some(nodes) = v.pointer_mut("/root/nodes/0/nodes/0/nodes/1/nodes").and_then(|n| n.as_array_mut()) else { return IDOL_SFX };
+    let mist = nodes.first().and_then(|n| n.pointer("/configs/0/nodeTransform/rotation/0")).and_then(|r| r.as_f64()) == Some(-90.0);
+    if !mist {
+        warn!("idol flame {IDOL_SFX}: the ground mist node is not where expected; played whole");
+        return IDOL_SFX;
+    }
+    nodes.remove(0);
+    lib.put(IDOL_SFX_NO_MIST, v);
+    IDOL_SFX_NO_MIST
+}
+
 /// The idols of the map: installed, and drawn with the game's model (a stand-in figure if the
 /// model is not exported), with the idol's blue light.
-fn spawn_idols(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mats: ResMut<Assets<StandardMaterial>>, assets: Res<AssetServer>, config: Res<crate::config::GameConfig>) {
+fn spawn_idols(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mats: ResMut<Assets<StandardMaterial>>, assets: Res<AssetServer>, config: Res<crate::config::GameConfig>, fxr: Option<ResMut<crate::fxr::FxrLib>>) {
     let idols = if crate::map::map_id(&config).as_deref() == Some(crate::sandbox::PARKOUR_ID) { parkour_idols() } else { Vec::new() };
     let model = if idols.is_empty() { Vec::new() } else { idol_mesh(&mut meshes, &mut mats, &assets) };
+    let flame = fxr.map_or(IDOL_SFX, |mut lib| flame_without_mist(&mut lib));
     let wood = mats.add(StandardMaterial { base_color: Color::srgb(0.32, 0.2, 0.11), perceptual_roughness: 0.85, ..default() });
     for idol in &idols {
         let rot = Quat::from_rotation_y(f32::atan2(idol.out.x, idol.out.z) + IDOL_FACING);
@@ -677,7 +698,7 @@ fn spawn_idols(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mat
         // Two copies, the second a little higher: one alone burns thinner and lower than the
         // game's plume (the user's capture); the effects play at scale 1 (fxr.rs `place`).
         for lift in IDOL_SFX_LIFTS {
-            let mut fx = crate::fxr::FxEffect::new(IDOL_SFX, None, false, at(Vec3::Y * lift));
+            let mut fx = crate::fxr::FxEffect::new(flame, None, false, at(Vec3::Y * lift));
             fx.keep = true;
             commands.spawn(fx);
         }

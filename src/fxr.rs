@@ -355,6 +355,12 @@ impl FxrLib {
             })
             .clone()
     }
+    /// An effect built here rather than read from extracted/fxr (a game effect with a node
+    /// removed: the idol's flame without its ground mist, idol.rs), under an id of its own.
+    pub fn put(&mut self, id: i64, v: Value) {
+        screen_textures(&v, &mut self.screen_tex);
+        self.cache.insert(id, Some(Arc::new(v)));
+    }
     pub fn has(&mut self, id: i64) -> bool {
         self.get(id).is_some()
     }
