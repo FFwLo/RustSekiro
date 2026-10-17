@@ -47,7 +47,7 @@ hp_scales_regen = false
 # Player level for graphs 500/501/504, all confirmed in the exe: 500 = max HP and
 # 501 = max posture (FUN_140a368f0 writes PlayerGameData +0x20 / +0x3c and pushes them to
 # the data module), 504 = base posture regen. 1 = a fresh game (320 HP / 120 posture).
-player_level = 20   # Vitality 20 (the user, 2026-10-17: "upgrade vitality"; 1120 HP / 420 posture, the curve's top)
+player_level = 1
 
 [combat]
 # Hitboxes use the model's dummy polys (AtkParam hit0 DmyPoly ids); these reach
