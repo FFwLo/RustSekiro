@@ -357,6 +357,48 @@ fn homing_rows() -> &'static std::collections::HashMap<i64, Vec3> {
     })
 }
 
+/// A ChrPhysicsHomingParam row's correction settings (extracted/json/params): the jump arts'
+/// 20000 = initialVelocityCorrection 2, fallCorrectionChase 1, chase acceleration 10 m/s^2,
+/// max velocity rate 1, targetOffset (0, 0, -1).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct HomingRow {
+    /// targetOffset in Bevy axes (X mirrored, as `homing_rows`).
+    pub offset: Vec3,
+    pub initial_correction: u8,
+    pub chase: bool,
+    pub chase_accel: f32,
+    pub chase_speed_rate: f32,
+}
+
+pub fn homing_row(id: i64) -> Option<HomingRow> {
+    static ROWS: std::sync::OnceLock<std::collections::HashMap<i64, HomingRow>> = std::sync::OnceLock::new();
+    ROWS.get_or_init(|| {
+        let path = crate::paths::extracted().join("json/params/ChrPhysicsHomingParam.json");
+        let v: serde_json::Value = std::fs::read_to_string(&path).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+        let f = |r: &serde_json::Value, k: &str| r.get(k).and_then(|x| x.as_f64()).unwrap_or(0.0) as f32;
+        let b = |r: &serde_json::Value, k: &str| r.get(k).and_then(|x| x.as_u64()).unwrap_or(0) as u8;
+        v.get("rows")
+            .and_then(|r| r.as_array())
+            .map(|rows| {
+                rows.iter()
+                    .filter_map(|r| {
+                        let row = HomingRow {
+                            offset: Vec3::new(-f(r, "targetOffsetX"), f(r, "targetOffsetY"), f(r, "targetOffsetZ")),
+                            initial_correction: b(r, "initialVelocityCorrection"),
+                            chase: b(r, "fallCorrectionChase") != 0,
+                            chase_accel: f(r, "fallCorrectionChaseMaxAcceleration"),
+                            chase_speed_rate: f(r, "fallCorrectionChaseMaxVelocityRate"),
+                        };
+                        Some((r.get("id")?.as_i64()?, row))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    })
+    .get(&id)
+    .copied()
+}
+
 /// The rope while TAE 717 WireModelEventUnk runs (the hook arm out): from the hook model's dummy
 /// 144 (TAE 715 OverrideWeaponModelLocation, "Grappling Hook") to the tip. In the shoots the tip
 /// leaves at TAE 900's start and flies at its 50 m/s (module doc); in the move starts it is on the

@@ -272,16 +272,52 @@ fn pose_tool_models(combat: Res<crate::data::Combat>, rope: Option<Res<crate::wi
             let f = (t / clip.frame_duration).clamp(0.0, (clip.frames - 1) as f32);
             let (i0, k) = (f.floor() as usize, f.fract());
             let i1 = (i0 + 1).min(clip.frames - 1);
+            let mut local: Vec<Option<Transform>> = vec![None; part.lib.bones.len()];
             for (track, &bone) in clip.track_to_bone.iter().enumerate() {
-                let Some(&Some(j)) = usize::try_from(bone).ok().and_then(|b| part.joints.get(b)) else { continue };
+                let Some(slot) = usize::try_from(bone).ok().and_then(|b| local.get_mut(b)) else { continue };
                 let (p, q) = (&clip.data[i0 * tracks + track], &clip.data[i1 * tracks + track]);
-                if let Ok(mut tf) = tfs.get_mut(j) {
-                    *tf = Transform { translation: p.translation.lerp(q.translation, k), rotation: p.rotation.slerp(q.rotation, k), scale: p.scale.lerp(q.scale, k) };
-                    if let (true, Some(s), true) = (wire, stretch, bone > 0) {
-                        tf.translation *= s;
-                    }
+                let mut tf = Transform { translation: p.translation.lerp(q.translation, k), rotation: p.rotation.slerp(q.rotation, k), scale: p.scale.lerp(q.scale, k) };
+                if let (true, Some(s), true) = (wire, stretch, bone > 0) {
+                    tf.translation *= s;
+                }
+                *slot = Some(tf);
+            }
+            havok_locals(&part.lib.bones, &mut local);
+            for (b, tf) in local.into_iter().enumerate() {
+                if let (Some(tf), Some(&Some(j))) = (tf, part.joints.get(b))
+                    && let Ok(mut t) = tfs.get_mut(j)
+                {
+                    *t = tf;
                 }
             }
+        }
+    }
+}
+
+/// Havok composes a pose without scaling a child's offset by its parent's scale
+/// (hkQsTransform::setMul: t = t1 + r1 * t2, r = r1 * r2, s = s1 * s2); Bevy's hierarchy scales
+/// it. The spear's telescoping tubes (anim_wp_a_0780_1 / 0781_1 / 0782_1 a078_*) stretch a tube
+/// (poleC_01 y x2) and shrink the next (poleB_02 y x0.5): composed Bevy's way the head flew off
+/// the shaft and its tip spark 300185 / 304185 (dummy 21301) sat 6.2 m ahead of Wolf, the game's
+/// 4.4 m (rec_20261015_203558_skills_hooks, all 6 uses). With a scale on the clip the bones get
+/// locals that give Havok's model-space pose (bones untracked keep the skeleton's pose).
+fn havok_locals(bones: &[crate::anim::BoneDef], local: &mut [Option<Transform>]) {
+    if local.iter().flatten().all(|t| t.scale.abs_diff_eq(Vec3::ONE, 1e-4)) {
+        return;
+    }
+    let parent = |i: usize| usize::try_from(bones[i].parent).ok().filter(|&p| p < i);
+    let mut world: Vec<(Vec3, Quat, Vec3)> = Vec::with_capacity(bones.len());
+    for i in 0..bones.len() {
+        let l = local[i].unwrap_or(bones[i].pose);
+        world.push(match parent(i).map(|p| world[p]) {
+            Some((t, r, s)) => (t + r * l.translation, r * l.rotation, s * l.scale),
+            None => (l.translation, l.rotation, l.scale),
+        });
+    }
+    let m = |(t, r, s): (Vec3, Quat, Vec3)| Mat4::from_scale_rotation_translation(s, r, t);
+    for i in 0..bones.len() {
+        if let Some(p) = parent(i) {
+            local[i] = Some(Transform::from_matrix(m(world[p]).inverse() * m(world[i])));
         }
     }
 }
@@ -293,7 +329,7 @@ fn place_tool_models(
     rope: Option<Res<crate::wire::WireRope>>,
     wolf: Query<(&Actor, &WeaponParts, &ToolModel)>,
     mut globals: Query<&mut GlobalTransform>,
-    transforms: Query<&Transform>,
+    mut transforms: Query<&mut Transform>,
     children: Query<&Children>,
     mut vis: Query<&mut Visibility>,
 ) {
@@ -327,7 +363,13 @@ fn place_tool_models(
                 info!("tool part {} on {:?} at {:?}", part.num, id, place.map(|m| m.w_axis.truncate()));
             }
             if let Some(m) = place {
-                set_global(part.pivot, GlobalTransform::from(bevy::math::Affine3A::from_mat4(m)), &mut globals, &transforms, &children);
+                set_global(part.pivot, GlobalTransform::from(bevy::math::Affine3A::from_mat4(m)), &mut globals, &transforms.as_readonly(), &children);
+                // The pivot's own Transform too (it has no parent): the next propagation kept it at the
+                // origin, so whatever read the part's dummies before this pass (the effects' tick: the
+                // flame spear's 304183 on 21300) saw them 1.6 m under the floor at the world's centre.
+                if let Ok(mut t) = transforms.get_mut(part.pivot) {
+                    *t = Transform::from_matrix(m);
+                }
             }
         }
     }

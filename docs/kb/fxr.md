@@ -153,6 +153,56 @@ rgbMultiplier / 8 (`particle_color`). Before, they were 8x too bright: the death
    Divine Abduction's swirl reads right on a dark background. Sabimaru's swing trail 300213 is
    faint by data (rgbMultiplier 0.3-0.4). 70500's shot froze on the Options menu (stray input):
    not checked. `SHINOBI_LOG_DUMMIES=<frame>` (default 200) now also lists the tool dummies.
+   sekiro-rs hints (user OK, 2026-10-16), each checked against GXFfxtexture.ppo (disassembled:
+   rgb = |c| x (tex.rgb x a? x c/|c|)^2 x g_vColorScale, a = sat(tex.a + v3.w) x c.a):
+   (1) "drop the sqrt 3": A/B shots (Mortal Draw 5700, Firecracker 71000, dark wall) against
+   the clip (6:45, 10:27): without it both read dimmer and further from the game's bright
+   orange band / bursts. Kept. g_vColorScale (cb0[9]) has no static writer found (the exe's
+   "ColorScale" strings are the glow filter's). (2) premultiply before the square: confirmed
+   in the shader, behind g_ps_bPreAlphaMult (cb0[34].x); which draws set it is not in the FXR
+   data (gap: read it live with the light scale, HANDOFF 4.58). Not applied. (3) "load sprite
+   textures UNORM, sRGB is double gamma": does not apply here; our sprites load sRGB and the
+   shader does not square again, so the sRGB decode (~t^2.2) is the game's single t^2.
+   (4) "negate node X rotation, direction 6 = world up": reference/fxr InitialDirection 6 is
+   LocalNorth (+Z), as we use; our X mirror (game_vec -x) keeps X rotations and flips Y / Z
+   (game_rot), which is right for that mirror. Not applied.
+   Tool effects vs the recording rec_20261015_203558_skills_hooks (fx rows, 2026-10-16):
+   `SHINOBI_FFX_LOG` now prints each effect's ahead / side / up of the character (forward is
+   -Z, `Actor::forward`; the recorder's yaw forward is (-sin, -cos)) and each bullet's
+   sfxId_Bullet. Axe 300211 on 21300: game 1.1 m behind / 0.6 side / 1.07 up, ours 1.19 / 0.61,
+   so the tool parts' placement on dummy 21 is right (an earlier "spear behind Wolf" was the
+   +Z misread). The spear's tip spark 300185 / 304185 on 21301 sat 6.2 m ahead (game 4.4 m in all
+   6 uses) and the head flew off the shaft: its tubes' clips carry scale (poleC_01 y x2, poleB_02
+   y x0.5) and Havok does not scale a child's offset by its parent's (hkQsTransform::setMul);
+   `tool.rs havok_locals` now composes it so (4.26 m). The flame spear (78400) showed no fire
+   and the axes' trails were missing: the tool pivot's own Transform stayed at the origin, so
+   the effects' tick read the part's dummies 1.6 m under the floor at the world's centre; the
+   pivot's Transform is now set with its global (`place_tool_models`). Sparking / Lazulite Axe
+   trails and bursts, the flame spear's burning head and sweep now show. With every tool held
+   (`SHINOBI_SKILL_HOLD=<frames>`, the shot tool now runs after the input read) the TAE and
+   bullet effects of every move match the recording's, except two: Divine Abduction's "wind
+   collecting" 107700 / 107702 (TAE 940, 3 s) -> SpEffectVfx 7700 -> 300190 was never shown,
+   now is (status.rs `lasting_glow` also shows `Player::timed`; game 460-493 ms, ours ~0.5 s);
+   300052 is Bullet 1000000's sfxId_Hit (a hit, not the tool). The other only-game ids are
+   enemy hits (blood 201001 / 220001, 130xxx, 401000, 617030).
+   One Mind (6100): the recording plays 500530 -> 500531 -> 440131 once per use, as ours does; the
+   storm is that one FXR (two NodeEmitters, 9 emissions 1/30 s apart). Its slashes (type 10012,
+   normal blend, lighting -2/0) were drawn at 1/8 brightness; `particle_color` `lit_tracer` now
+   skips the 1/8 (gap: light term taken as 1). 2026-10-16 quick pass over all 19 arts and the
+   tools (held): every effect the TAE / bullets name spawns and shows; the whistle 300200 /
+   304200 are small swirls by design.
+   Mortal Draw (a106): its 440005-440008 are StateInfo 993 ("has emblems", art_emblem_gate) and
+   never played - ffx.rs built its gate list without player.rs's resident_gates; now it adds them
+   (the skills recording plays 440005 / 440007 with every 440001 / 440003).
+   Lingering lines (2026-10-16): tracers ignored fadeOutTime (10012 / 606: once the particle ends
+   the trail fades to 0 over it; 908 tracers 1 s, 429 0.2 s) and kept full colour until their
+   points aged out (segmentDuration, up to 4 s): lines of the effect's colour hung where a swing
+   had been. Now `tracer_end_fade`. A following effect whose anchor goes keeps its last place
+   (it fell back to its spawn point / the origin). A stopped effect (the TAE event's window over,
+   e.g. Mortal Draw's IsRestrictToDummyPoly 440003 / 440007 f10-20) stops emitting but a node
+   with its own duration plays out: the brush strokes (26041, 0.8-2.5 s) were cut at ~0.3 s; the
+   clip (sekiro_all_skills 7:00-7:12) keeps them ~1-2 s. 440130's thin glint after its arc is the
+   data's (width 0.001, colour3 10 x rgbMultiplier 2).
 3. Done: prosthetic bullets play their Bullet sfxId_Bullet on the bullet (FxEffect anchored to it;
    isInheritSfxToChild passes it to the children; when the bullet ends the effect stops emitting
    there), sfxId_Hit where they land / are blocked, sfxId_Flick where deflected (`prosthetic.rs`

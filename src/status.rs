@@ -700,18 +700,27 @@ fn param_endurance(id: i64) -> Option<f32> {
 /// or the row a TAE SpEffect hands on to), its SpEffectVfx plays as an affliction's does and the
 /// midst effect stops when the row goes. The Finger Whistle's madness 230515 -> SpEffectVfx 7900
 /// (midst 300205 on dummy 7), the minor one 230516 -> 7901 (304205). Rows the current anim still
-/// carries are left to ffx.rs (`tae_sp_vfx`), which shows them while the TAE does.
+/// carries are left to ffx.rs (`tae_sp_vfx`), which shows them while the TAE does. Wolf's timed
+/// rows (`Player::timed`, TAE 940's refType-2 SpEffect for its effectEndurance) too: Divine
+/// Abduction's "wind collecting" 107700 / 107702 -> SpEffectVfx 7700 (midst 300190), seen in the
+/// game during a077_400000 (rec_20261015_203558_skills_hooks, 460-493 ms).
 fn lasting_glow(
     mut commands: Commands,
     combat: Res<Combat>,
     rows: Res<VfxRows>,
-    actors: Query<(Entity, &Actor)>,
+    actors: Query<(Entity, &Actor, Option<&crate::player::Player>)>,
     dummies: Query<&crate::model::Dummies>,
     tfs: Query<&GlobalTransform>,
     mut fx: Query<&mut crate::fxr::FxEffect>,
     mut live: Local<HashMap<(Entity, i64), Vec<Entity>>>,
 ) {
-    let now: Vec<(Entity, i64)> = actors.iter().flat_map(|(e, a)| a.sp_chained.iter().filter(|(id, _)| !a.tae_prev.contains(id)).map(move |(id, _)| (e, *id))).collect();
+    let now: Vec<(Entity, i64)> = actors
+        .iter()
+        .flat_map(|(e, a, p)| {
+            let chained = a.sp_chained.iter().filter(|(id, _)| !a.tae_prev.contains(id)).map(|(id, _)| *id);
+            chained.chain(p.into_iter().flat_map(|p| p.timed.iter().map(|(id, _)| *id))).map(move |id| (e, id)).collect::<Vec<_>>()
+        })
+        .collect();
     live.retain(|k, held| {
         let on = now.contains(k);
         if !on {
