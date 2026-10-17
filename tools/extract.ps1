@@ -132,6 +132,10 @@ if ($python) {
     # The objects a boss script hangs on a character, with their grapple edges (the Divine
     # Dragon's trees o259920-922, tools/boss_scripts.py edge_grapples).
     & $exe unpack $Sekiro $out 'obj/o2599'
+    # The Sculptor's Idol (o005000, BonfireWarpParam's idols) for src/idol.rs.
+    & $exe unpack $Sekiro $out 'obj/o005000'
+    New-Item -ItemType Directory -Force (Join-Path $out "objmesh") | Out-Null
+    & $exe objmesh (Join-Path $out "obj\o005000.objbnd.d\o005000.flver") (Join-Path $out "objmesh\o005000.json")
     python (Join-Path $PSScriptRoot "boss_scripts.py")
     # The boss rooms' fog walls (src/fog_wall.rs). After boss_events.py: it reads its events.
     python (Join-Path $PSScriptRoot "fog_walls.py")

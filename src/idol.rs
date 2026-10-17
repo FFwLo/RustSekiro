@@ -589,24 +589,87 @@ fn run_idol_menu(
     }
 }
 
-/// The idols of the map: installed, and drawn as a stand-in (a kneeling wooden figure on a
-/// block, a warm light).
-fn spawn_idols(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mats: ResMut<Assets<StandardMaterial>>, config: Res<crate::config::GameConfig>) {
+/// The idol's model: the game's Sculptor's Idol (obj o005000, the model of 35 of the 58
+/// BonfireWarpParam idols; textures o005500_body_a / _n, shared with the shrine idol o005500),
+/// exported by `sekiro-extract objmesh` to extracted/objmesh/o005000.json. X mirrored as every
+/// FromSoftware position, the triangles' winding flipped with it.
+fn idol_mesh(meshes: &mut Assets<Mesh>, mats: &mut Assets<StandardMaterial>, assets: &AssetServer) -> Vec<(Handle<Mesh>, Handle<StandardMaterial>)> {
+    let path = crate::paths::extracted().join("objmesh/o005000.json");
+    let Some(json) = std::fs::read_to_string(path).ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()) else { return Vec::new() };
+    let floats = |v: &serde_json::Value| v.as_array().map(|a| a.iter().filter_map(|x| x.as_f64().map(|f| f as f32)).collect::<Vec<f32>>()).unwrap_or_default();
+    let tex = |stem: &str, srgb: bool| -> Option<Handle<Image>> {
+        (!stem.is_empty() && crate::paths::extracted().join(format!("tex/{stem}.dds")).is_file()).then(|| {
+            assets.load_builder().with_settings(move |s: &mut bevy::image::ImageLoaderSettings| s.is_srgb = srgb).load(format!("tex/{stem}.dds"))
+        })
+    };
+    let mut out = Vec::new();
+    for m in json["meshes"].as_array().into_iter().flatten() {
+        let (pos, nrm, uv) = (floats(&m["pos"]), floats(&m["normal_vec"]), floats(&m["uv"]));
+        let idx: Vec<u32> = m["indices"].as_array().map(|a| a.iter().filter_map(|x| x.as_u64().map(|i| i as u32)).collect()).unwrap_or_default();
+        let n = pos.len() / 3;
+        if n == 0 || idx.len() < 3 {
+            continue;
+        }
+        let positions: Vec<[f32; 3]> = pos.chunks(3).map(|p| [-p[0], p[1], p[2]]).collect();
+        let normals: Vec<[f32; 3]> = nrm.chunks(3).map(|p| [-p[0], p[1], p[2]]).collect();
+        let uvs: Vec<[f32; 2]> = uv.chunks(2).map(|p| [p[0], p[1]]).collect();
+        let tris: Vec<u32> = idx.chunks(3).filter(|t| t.len() == 3).flat_map(|t| [t[0], t[2], t[1]]).collect();
+        let mut mesh = Mesh::new(bevy::mesh::PrimitiveTopology::TriangleList, bevy::asset::RenderAssetUsages::default());
+        mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+        if normals.len() == n {
+            mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
+        }
+        if uvs.len() == n {
+            mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
+        }
+        mesh.insert_indices(bevy::mesh::Indices::U32(tris));
+        let normal_map = tex(m["normal"].as_str().unwrap_or(""), false);
+        if normal_map.is_some() {
+            let _ = mesh.generate_tangents();
+        }
+        let mat = StandardMaterial {
+            base_color_texture: tex(m["albedo"].as_str().unwrap_or(""), true),
+            normal_map_texture: normal_map,
+            perceptual_roughness: 0.8,
+            metallic: 0.0,
+            ..default()
+        };
+        out.push((meshes.add(mesh), mats.add(mat)));
+    }
+    out
+}
+
+/// The light at an idol: the game's cold blue-white idol glow (the user: "the light coming from
+/// the idol should be blue"). gap: the idol's own SFX (its glowing incense) is not played.
+const IDOL_LIGHT: Color = Color::srgb(0.45, 0.62, 1.0);
+
+/// The idols of the map: installed, and drawn with the game's model (a stand-in figure if the
+/// model is not exported), with the idol's blue light.
+fn spawn_idols(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mats: ResMut<Assets<StandardMaterial>>, assets: Res<AssetServer>, config: Res<crate::config::GameConfig>) {
     let idols = if crate::map::map_id(&config).as_deref() == Some(crate::sandbox::PARKOUR_ID) { parkour_idols() } else { Vec::new() };
+    let model = if idols.is_empty() { Vec::new() } else { idol_mesh(&mut meshes, &mut mats, &assets) };
     let wood = mats.add(StandardMaterial { base_color: Color::srgb(0.32, 0.2, 0.11), perceptual_roughness: 0.85, ..default() });
-    let stone = mats.add(StandardMaterial { base_color: Color::srgb(0.3, 0.29, 0.27), perceptual_roughness: 0.95, ..default() });
     for idol in &idols {
-        let rot = Quat::from_rotation_y(f32::atan2(idol.out.x, idol.out.z));
+        let rot = Quat::from_rotation_y(f32::atan2(idol.out.x, idol.out.z) + IDOL_FACING);
         let at = |off: Vec3| Transform::from_translation(idol.pos + rot * off).with_rotation(rot);
-        commands.spawn((Mesh3d(meshes.add(Cuboid::new(0.7, 0.3, 0.6))), MeshMaterial3d(stone.clone()), at(Vec3::Y * 0.15)));
-        commands.spawn((Mesh3d(meshes.add(Capsule3d::new(0.2, 0.3))), MeshMaterial3d(wood.clone()), at(Vec3::new(0.0, 0.6, 0.0))));
-        commands.spawn((Mesh3d(meshes.add(Sphere::new(0.13))), MeshMaterial3d(wood.clone()), at(Vec3::new(0.0, 0.98, 0.04))));
-        commands.spawn((PointLight { color: Color::srgb(1.0, 0.72, 0.42), intensity: 40_000.0, range: 5.0, shadow_maps_enabled: false, ..default() }, at(Vec3::new(0.0, 1.3, 0.6))));
+        if model.is_empty() {
+            commands.spawn((Mesh3d(meshes.add(Capsule3d::new(0.2, 0.3))), MeshMaterial3d(wood.clone()), at(Vec3::new(0.0, 0.45, 0.0))));
+        } else {
+            for (mesh, mat) in &model {
+                commands.spawn((Mesh3d(mesh.clone()), MeshMaterial3d(mat.clone()), at(Vec3::ZERO)));
+            }
+        }
+        // A soft glow round it, not a lamp on it: above and in front, dim enough that the carving
+        // keeps its wood colour.
+        commands.spawn((PointLight { color: IDOL_LIGHT, intensity: 15_000.0, range: 4.5, shadow_maps_enabled: false, ..default() }, Transform::from_translation(idol.pos + idol.out * 0.8 + Vec3::Y * 1.4)));
     }
     if let Ok(mut v) = IDOLS.write() {
         *v = idols;
     }
 }
+
+/// The model's front against `Idol::out` (rad): its face looks along its own +Z.
+const IDOL_FACING: f32 = 0.0;
 
 pub struct IdolPlugin;
 

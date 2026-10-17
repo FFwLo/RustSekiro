@@ -414,7 +414,7 @@ fn spawn_lineup(commands: &mut Commands, combat: &Combat, config: &GameConfig, w
 /// `SHINOBI_SANDBOX_AT=x,z[,yaw]`: Wolf starts there, facing yaw degrees (the camera behind
 /// him).
 pub fn place_wolf(config: Res<GameConfig>, mut done: Local<bool>, mut wolf: Query<(&mut Transform, &mut Actor), With<Player>>, mut camera: Query<&mut OrbitCamera>) {
-    if *done || !is_sandbox(&config) {
+    if *done || !map::map_id(&config).as_deref().is_some_and(is_generated) {
         return;
     }
     let Ok((mut tf, mut actor)) = wolf.single_mut() else { return };

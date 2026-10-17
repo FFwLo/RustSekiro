@@ -73,6 +73,10 @@ fn main() {
         Some("tae") if args.len() == 4 => dump_tae(Path::new(&args[2]), Path::new(&args[3])),
         // Optional further args: extra texture binder folders (NpcParam normalChangeTexChrId, e.g.
         // c5430 -> chr/c5408.texbnd.d; materials may name a sibling pack, c5400 hair -> c5408).
+        // One object's FLVER as JSON for the game to draw on its own (src/idol.rs): its meshes'
+        // positions / normals / UVs / indices in FromSoftware space, the albedo and normal texture
+        // stems (extracted/tex), and its dummies.
+        Some("objmesh") if args.len() == 4 => export_objmesh(Path::new(&args[2]), Path::new(&args[3])),
         Some("model") if args.len() >= 6 => {
             let extra: Vec<&Path> = args[6..].iter().map(Path::new).collect();
             export_model(Path::new(&args[2]), Path::new(&args[3]), Path::new(&args[4]), Path::new(&args[5]), &extra)
@@ -629,6 +633,29 @@ struct Detail {
     bits: u8,
     names: [String; 8],
     params: Vec<f32>,
+}
+
+fn export_objmesh(flver_path: &Path, out: &Path) {
+    let f = flver::read(&std::fs::read(flver_path).expect("read flver"));
+    let slot = |m: &flver::Mesh, kind: &str| m.textures.iter().find(|(s, t)| s.contains(kind) && s.ends_with("_0") && !t.is_empty()).or(m.textures.iter().find(|(s, t)| s.contains(kind) && !t.is_empty())).map(|(_, t)| t.clone()).unwrap_or_default();
+    let meshes: Vec<serde_json::Value> = f
+        .meshes
+        .iter()
+        .map(|m| {
+            let mut pos = Vec::with_capacity(m.vertices.len() * 3);
+            let mut nrm = Vec::with_capacity(m.vertices.len() * 3);
+            let mut uv = Vec::with_capacity(m.vertices.len() * 2);
+            for v in &m.vertices {
+                pos.extend_from_slice(&v.pos);
+                nrm.extend_from_slice(&v.normal);
+                uv.extend_from_slice(&v.uv);
+            }
+            serde_json::json!({ "mtd": m.mtd, "albedo": slot(m, "AlbedoMap"), "normal": slot(m, "NormalMap"), "cull": m.cull, "alpha_test": m.alpha_test, "pos": pos, "normal_vec": nrm, "uv": uv, "indices": m.indices })
+        })
+        .collect();
+    let dummies: Vec<serde_json::Value> = f.dummies.iter().map(|d| serde_json::json!({ "id": d.id, "pos": d.pos })).collect();
+    std::fs::write(out, serde_json::to_string(&serde_json::json!({ "meshes": meshes, "dummies": dummies })).unwrap()).expect("write");
+    println!("{} meshes -> {}", f.meshes.len(), out.display());
 }
 
 fn export_model(flver_path: &Path, tpf_path: &Path, out: &Path, tex_dir: &Path, extra_tex: &[&Path]) {
