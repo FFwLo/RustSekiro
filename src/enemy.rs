@@ -1022,7 +1022,7 @@ impl Plugin for EnemyPlugin {
             .add_systems(Startup, spawn_enemy)
             .add_systems(
                 FixedUpdate,
-                (spawn_encounter, reset_fight, stealth_env_start, start_unaware, ai_hold, route_end_anim, parry_interrupt, think, grapple::on_wire_hit, ninsatsu_hit, deathblow_flinch, todome_message, events::messages, script::run_scripts, talk::run_talk, events::apply_event_warp).chain().in_set(ActorSet::Decide),
+                (spawn_encounter, reset_fight, stealth_env_start, start_unaware, ai_hold, route_end_anim, parry_interrupt, think, grapple::on_wire_hit, ninsatsu_hit, deathblow_flinch, death_noise, todome_message, events::messages, script::run_scripts, talk::run_talk, events::apply_event_warp).chain().in_set(ActorSet::Decide),
             )
             .add_systems(Update, toggle_aggression.run_if(resource_exists::<ButtonInput<KeyCode>>))
             .init_resource::<grapple::EnemyGrapples>()
@@ -1773,6 +1773,27 @@ pub struct AiSound {
     pub owner_alert: bool,
     /// The owner's MSB placement groups (`Enemy::placement`, refreshed with owner_alert).
     pub owner_groups: Vec<i64>,
+    /// Heard by the owner's side only (`AiSounds::call`: a spotter's shout to its comrades; not
+    /// a game flag).
+    pub friends_only: bool,
+}
+
+/// The call an enemy gives as it spots Wolf (think): AiSoundParam 2000000.
+const SPOT_CALL_SOUND: i64 = 2000000;
+/// The noise of an enemy's death (`death_noise`): AiSoundParam 4060 (20 m, heard by friends and
+/// foes, rank 1, not a call). gap: no row is tied to a death in the data; 4060 is picked by its
+/// range and listeners.
+const DEATH_NOISE_SOUND: i64 = 4060;
+
+/// An enemy's fall is heard by its comrades (the user: "should get aware when there is
+/// non-player noise"): `DEATH_NOISE_SOUND` where it dies, once per death.
+fn death_noise(combat: Res<Combat>, q: Query<(Entity, &Enemy, &Actor, &Transform)>, mut sounds: ResMut<AiSounds>, mut dead: Local<HashSet<Entity>>) {
+    dead.retain(|e| q.get(*e).is_ok_and(|(_, en, ..)| en.is_dead()));
+    for (ent, e, a, tf) in &q {
+        if e.is_dead() && dead.insert(ent) {
+            sounds.emit(&combat, DEATH_NOISE_SOUND, tf.translation, Some(ent), Some(crate::combat::team_of(&combat, a)));
+        }
+    }
 }
 
 /// The exe's sound-record counter (DAT_143d547b0, FUN_14060f840). Ours starts past every
@@ -1795,7 +1816,16 @@ impl AiSounds {
         let life = row["lifeFrame"].as_f64().unwrap_or(0.0).max(1.0 / 30.0) as f32;
         let old = self.0.iter().position(|s| s.owner == owner && s.id == id).map(|i| self.0.remove(i).serial);
         let serial = old.unwrap_or_else(|| SOUND_SERIAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
-        self.0.push(AiSound { id, pos, owner, team, life, serial, owner_alert: true, owner_groups: Vec::new() });
+        self.0.push(AiSound { id, pos, owner, team, life, serial, owner_alert: true, owner_groups: Vec::new(), friends_only: false });
+    }
+
+    /// `emit` for a call to the owner's comrades only (`think`'s spot call): its foes (a maddened
+    /// dog beside it, test a_maddened_dog_bites_the_soldier) do not take it as a sound target.
+    pub fn call(&mut self, combat: &Combat, id: i64, pos: Vec3, owner: Entity, team: i64) {
+        self.emit(combat, id, pos, Some(owner), Some(team));
+        if let Some(s) = self.0.iter_mut().rev().find(|s| s.owner == Some(owner) && s.id == id) {
+            s.friends_only = true;
+        }
     }
 }
 
@@ -1818,7 +1848,7 @@ pub(crate) fn ai_sound_heard(combat: &Combat, s: &AiSound, me: Entity, team: i64
     } else {
         "friendlyTarget"
     };
-    if row[flag].as_i64() != Some(1) || (row["bCallFriend"].as_i64() == Some(1) && !s.owner_alert) {
+    if row[flag].as_i64() != Some(1) || (row["bCallFriend"].as_i64() == Some(1) && !s.owner_alert) || (s.friends_only && flag != "friendlyTarget") {
         return None;
     }
     if row["bRestrictSamePlacementGroup"].as_i64() == Some(1) && !s.owner_groups.is_empty() && !s.owner_groups.iter().any(|g| mine.contains(g)) {
@@ -2698,11 +2728,25 @@ fn think(
         }
         let my_team = crate::combat::team_of(&combat, &a);
         for s in &ai_sounds.0 {
+            // A comrade's spot call is for those not yet fighting: one already in battle keeps its
+            // fight (a soldier at a maddened dog's throat, test a_maddened_dog_bites_the_soldier).
+            if s.friends_only && e.targeting.state >= stealth::FIND {
+                continue;
+            }
             if let Some((id, rank)) = ai_sound_heard(&combat, s, entity, my_team, &a, tf.translation, think_row, &e.placement) {
                 e.targeting.hear_record(think_row, s.pos, id, rank, s.serial);
             }
         }
+        let was = e.targeting.state;
         e.targeting.update(think_row, feet, a.forward(), &seen, dt);
+        // Spotting Wolf it calls its comrades: AiSoundParam 2000000 (bCallFriend, 20 m, friends
+        // and foes; AtkParam 1500's AppearAiSoundId, the shout no c1010 / c1020 clip plays), heard
+        // by those of its side in range while it is alert (ai_sound_heard). The user: "enemies
+        // should hear their comrades spotting". gap: what in the game makes a finder call is not
+        // traced (no TAE 237 on c1010; its NpcThinkParam callHelp_* are 0).
+        if was < stealth::FIND && e.targeting.state >= stealth::FIND {
+            ai_sounds.call(&combat, SPOT_CALL_SOUND, tf.translation, entity, my_team);
+        }
         if e.targeting.changed() {
             if let Some(log) = log.as_mut() {
                 let (text, color) = match e.targeting.state {

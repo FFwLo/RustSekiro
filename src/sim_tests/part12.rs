@@ -767,3 +767,60 @@ fn the_generals_recovery_is_open() {
         assert_eq!(crate::combat::swing_can_flinch(d, &a), open, "3000 at {t} s");
     }
 }
+
+/// Two guards: one fighting Wolf, the other 12 m off facing away (it cannot see him). The
+/// fighter's swings and hits call friends (AtkParam AppearAiSoundId 2000025 / HitAiSoundId
+/// 2000020, bCallFriend): the other hears them and comes (the user: "enemies should hear their
+/// comrades ... fighting").
+#[test]
+fn a_guard_hears_its_comrade_fighting() {
+    let g = crate::config::GroupEnemy { chr: "c1010".into(), npc_row: None, at: None, msb: None };
+    let mut app = app_cfg("c1010", None, vec![g]);
+    let (fighter, other) = {
+        let world = app.world_mut();
+        let ents: Vec<Entity> = world.query_filtered::<Entity, With<Enemy>>().iter(world).collect();
+        let mut q = world.query_filtered::<(&mut Transform, &mut Actor, &mut Enemy), With<Enemy>>();
+        let (mut t, mut a, mut e) = q.get_mut(world, ents[0]).unwrap();
+        t.translation = Vec3::new(0.0, CAPSULE_HALF_HEIGHT, -2.5);
+        a.yaw = 0.0;
+        e.aggressive = true;
+        let (mut t, mut a, mut e) = q.get_mut(world, ents[1]).unwrap();
+        t.translation = Vec3::new(12.0, CAPSULE_HALF_HEIGHT, -2.5);
+        // Facing +X, away from Wolf at the origin.
+        a.yaw = -std::f32::consts::FRAC_PI_2;
+        e.make_unaware(&mut a);
+        e.aggressive = true;
+        (ents[0], ents[1])
+    };
+    let mut best = 0u8;
+    for _ in 0..60 * 12 {
+        app.update();
+        best = best.max(app.world().get::<Enemy>(other).unwrap().targeting.state);
+    }
+    let f = app.world().get::<Enemy>(fighter).unwrap().targeting.state;
+    assert!(best >= crate::stealth::CAUTION, "the other guard never noticed (fighter state {f}, other best {best})");
+}
+
+/// A guard that spots Wolf calls its comrades (AiSoundParam 2000000, bCallFriend) as it finds
+/// him (the user: "enemies should hear their comrades spotting").
+#[test]
+fn a_guard_calls_out_as_it_spots_wolf() {
+    let mut app = app_cfg("c1010", None, Vec::new());
+    let guard = {
+        let world = app.world_mut();
+        let e = world.query_filtered::<Entity, With<Enemy>>().iter(world).next().unwrap();
+        let mut q = world.query_filtered::<(&mut Transform, &mut Actor, &mut Enemy), With<Enemy>>();
+        let (mut t, mut a, mut en) = q.get_mut(world, e).unwrap();
+        // 5 m ahead of Wolf, facing him (+Z).
+        t.translation = Vec3::new(0.0, CAPSULE_HALF_HEIGHT, -5.0);
+        a.yaw = std::f32::consts::PI;
+        en.make_unaware(&mut a);
+        e
+    };
+    let mut called = false;
+    for _ in 0..60 * 4 {
+        app.update();
+        called |= app.world().resource::<crate::enemy::AiSounds>().0.iter().any(|s| s.id == 2000000 && s.owner == Some(guard));
+    }
+    assert!(called, "no call (state {})", app.world().get::<Enemy>(guard).unwrap().targeting.state);
+}
