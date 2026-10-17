@@ -1462,6 +1462,9 @@ fn update_perilous(time: Res<Time>, mut p: ResMut<Perilous>, mut q: Query<(&mut 
 /// gap: the engine's anchor (here the lock-on dummy 220), the gauge clips' mask travel (drawn as
 /// the brush shown from the bottom up), Caution's red fill layer and drop shadow, the
 /// discovery Highlight (x 1.4) are not drawn.
+/// An enemy off the screen (or behind the camera) gets the same mark beside Wolf instead, turned
+/// so its tip points the way to it, as if seen from above: behind the camera it sits below him
+/// (the user's captures). gap: the game's ring radius is not read from the movie.
 /// One enemy's stealth mark (`found_t`: seconds it has been fighting, for FOUND_SHOW).
 #[derive(Component)]
 struct StealthMark {
@@ -1480,6 +1483,19 @@ struct StealthBrush(Entity);
 const STEALTH_PX: f32 = 28.07;
 const STEALTH_LIFT: f32 = 35.5;
 
+/// The off-screen mark's distance from Wolf's chest at 1080p [px].
+const STEALTH_RING: f32 = 120.0;
+
+/// The off-screen mark's place and turn: from Wolf's screen point `wolf`, the way to the enemy
+/// (`to`, world) as seen from above with the camera's forward up the screen; the rotation turns
+/// the downward tip towards it (UiTransform turns clockwise). None when it is right above him.
+fn ring_mark(wolf: Vec2, to: Vec3, cam_right: Vec3, cam_fwd: Vec3, ring: f32) -> Option<(Vec2, f32)> {
+    let flat = |v: Vec3| Vec3::new(v.x, 0.0, v.z).normalize_or_zero();
+    let (to, right, fwd) = (flat(to), flat(cam_right), flat(cam_fwd));
+    let v = Vec2::new(to.dot(right), -to.dot(fwd)).normalize_or_zero();
+    (v != Vec2::ZERO).then(|| (wolf + v * ring, f32::atan2(-v.x, v.y)))
+}
+
 /// Seconds the red "found" mark stays once the fight starts.
 const FOUND_SHOW: f32 = 1.5;
 
@@ -1488,6 +1504,7 @@ fn spawn_stealth(commands: &mut Commands, assets: &AssetServer, enemy: Entity) {
         .spawn((
             Node { position_type: PositionType::Absolute, width: Val::Px(STEALTH_PX), height: Val::Px(STEALTH_PX), ..default() },
             ImageNode::new(assets.load("hud/MENU_Find_02.png")),
+            UiTransform::IDENTITY,
             Visibility::Hidden,
             StealthMark { enemy, found_t: 0.0, clip: MarkClip::default() },
         ))
@@ -1515,7 +1532,8 @@ fn update_stealth(
     enemies: Query<(Entity, &crate::enemy::Enemy, &GlobalTransform, Option<&crate::enemy::Phantom>, Option<&crate::model::Dummies>)>,
     dummies: Query<&GlobalTransform>,
     camera: Query<(&Camera, &GlobalTransform), With<crate::camera::OrbitCamera>>,
-    mut marks: Query<(Entity, &mut StealthMark, &mut Node, &mut ImageNode, &mut Visibility), (Without<StealthFill>, Without<StealthBrush>)>,
+    wolf: Query<&GlobalTransform, (With<crate::player::Player>, Without<crate::enemy::Enemy>)>,
+    mut marks: Query<(Entity, &mut StealthMark, &mut Node, &mut ImageNode, &mut UiTransform, &mut Visibility), (Without<StealthFill>, Without<StealthBrush>)>,
     mut fills: Query<(&StealthFill, &mut Node), (Without<StealthMark>, Without<StealthBrush>)>,
     mut brushes: Query<(&StealthBrush, &mut Node, &mut ImageNode), (Without<StealthMark>, Without<StealthFill>)>,
 ) {
@@ -1528,7 +1546,9 @@ fn update_stealth(
     }
     let side = STEALTH_PX * k;
     let cam = camera.single().ok();
-    for (me, mut m, mut node, mut frame, mut vis) in &mut marks {
+    let view = window.single().map_or(Vec2::new(1280.0, 720.0), |w| w.size());
+    let chest = wolf.single().ok().map(|g| g.translation() + Vec3::Y * 0.3);
+    for (me, mut m, mut node, mut frame, mut turn, mut vis) in &mut marks {
         let Ok((_, e, etf, ph, dm)) = enemies.get(m.enemy) else {
             commands.entity(me).despawn();
             continue;
@@ -1543,7 +1563,20 @@ fn update_stealth(
         // Anchored on the lock-on dummy 220 (root + 1.4 m without it), the mark's centre
         // STEALTH_LIFT px above it. gap: the game's anchor for this mark is not traced.
         let head = dm.and_then(|d| d.0.get(&220)).and_then(|d| dummies.get(*d).ok()).map_or(etf.translation() + Vec3::Y * 1.4, |g| g.translation());
-        let pos = cam.and_then(|(cam, ctf)| cam.world_to_viewport(ctf, head).ok()).filter(|_| show);
+        let on_screen = cam.and_then(|(cam, ctf)| cam.world_to_viewport(ctf, head).ok()).filter(|p| p.x >= 0.0 && p.y >= 0.0 && p.x <= view.x && p.y <= view.y);
+        let (pos, angle) = match (on_screen, cam, chest) {
+            (Some(p), ..) => (Some(p), 0.0),
+            (None, Some((cam, ctf)), Some(chest)) => match cam.world_to_viewport(ctf, chest).ok().and_then(|w| ring_mark(w, head - chest, ctf.right().into(), ctf.forward().into(), STEALTH_RING * k)) {
+                // The ring mark sits on its centre (no lift over a head).
+                Some((p, a)) => (Some(p + Vec2::Y * STEALTH_LIFT * k), a),
+                None => (None, 0.0),
+            },
+            _ => (None, 0.0),
+        };
+        let pos = pos.filter(|_| show);
+        if pos.is_some() {
+            turn.rotation = Rot2::radians(angle);
+        }
         let Some((t, gone, p)) = m.clip.step(pos, time.delta_secs(), 22.0 / 60.0) else {
             *vis = Visibility::Hidden;
             continue;
@@ -1577,6 +1610,28 @@ fn update_stealth(
                 img.color = color;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod ring_tests {
+    use bevy::prelude::*;
+
+    /// With the camera looking down -Z: an enemy ahead puts the mark above Wolf pointing up, one
+    /// behind the camera below him pointing down, one to the right to his right.
+    #[test]
+    fn the_off_screen_mark_points_the_way_to_the_enemy() {
+        let (right, fwd) = (Vec3::X, Vec3::NEG_Z);
+        let (p, a) = super::ring_mark(Vec2::ZERO, Vec3::NEG_Z * 5.0, right, fwd, 100.0).unwrap();
+        assert!(p.abs_diff_eq(Vec2::new(0.0, -100.0), 1e-3) && (a.abs() - std::f32::consts::PI).abs() < 1e-3, "{p} {a}");
+        let (p, a) = super::ring_mark(Vec2::ZERO, Vec3::Z * 5.0, right, fwd, 100.0).unwrap();
+        assert!(p.abs_diff_eq(Vec2::new(0.0, 100.0), 1e-3) && a.abs() < 1e-3, "{p} {a}");
+        let (p, a) = super::ring_mark(Vec2::ZERO, Vec3::X * 5.0, right, fwd, 100.0).unwrap();
+        assert!(p.abs_diff_eq(Vec2::new(100.0, 0.0), 1e-3), "{p}");
+        // The tip (down when unturned) turned clockwise by a: down -> right is counter-clockwise.
+        let tip = Vec2::new(-a.sin(), a.cos());
+        assert!(tip.abs_diff_eq(Vec2::X, 1e-3), "{tip}");
+        assert!(super::ring_mark(Vec2::ZERO, Vec3::Y, right, fwd, 100.0).is_none());
     }
 }
 

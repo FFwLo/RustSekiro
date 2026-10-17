@@ -1281,7 +1281,19 @@ fn spawn_lineup(commands: &mut Commands, combat: &Combat, config: &GameConfig, a
         let v = crate::map::player_start() - Vec3::new(x, 0.0, z);
         f32::atan2(-v.x, -v.z)
     };
-    spawn_one(commands, combat, config, 0, Vec3::new(0.0, y(0.0, -4.0 + dz), -4.0 + dz), facing(0.0, -4.0 + dz), aggressive, 0x9E37_79B9);
+    if crate::map::map_id(config).as_deref() == Some(crate::sandbox::CONSTRUCT_ID) {
+        // The Construct: no duel enemy ahead of Wolf; its courtyard guards walk their rounds,
+        // unaware of him until they see or hear him (the user: "replaced by roaming ones").
+        if let Some(kind) = combat.kind_index(crate::sandbox::GUARD_CHR, None) {
+            for (i, (at, yaw, route)) in crate::sandbox::construct_patrols().into_iter().enumerate() {
+                let at = at.with_y(y(at.x, at.z));
+                let e = spawn_one(commands, combat, config, kind, at, yaw, aggressive, 0x2545_F491 ^ 0x85EB_CA6B_u32.wrapping_mul(i as u32 + 1));
+                commands.entity(e).insert((PatrolRoute(route), StartUnaware));
+            }
+        }
+    } else {
+        spawn_one(commands, combat, config, 0, Vec3::new(0.0, y(0.0, -4.0 + dz), -4.0 + dz), facing(0.0, -4.0 + dz), aggressive, 0x9E37_79B9);
+    }
     for (i, g) in config.enemy.group.iter().enumerate() {
         let Some(kind) = combat.kind_index(&g.chr, g.npc_row) else { continue };
         // An MSB enemy of the loaded map: at its spot, its way, on its patrol route.
@@ -2360,8 +2372,10 @@ fn think(
             s.owner_groups = alert.get(&o).map(|a| a.1.clone()).unwrap_or_default();
         }
     }
-    // Wolf's learned skills' SpEffects (Covert A / B) for the sight and hearing checks.
-    let skills = crate::combat::skill_sp_effect_rows(&combat, &config);
+    // Wolf's learned skills' SpEffects (Covert A / B) and his items' timed ones (Gachiin's Sugar
+    // 3441: sightSearchEnemyCut 50, aroundSightPointAddRate 0.5) for the sight and hearing checks.
+    let mut skills = crate::combat::skill_sp_effect_rows(&combat, &config);
+    skills.extend(pp.timed.iter().filter_map(|(id, _)| serde_json::from_value(crate::items::param("SpEffectParam", *id).clone()).ok()));
     for (entity, mut e, mut a, mut tf, phantom, from_event, scripted, mut draw_mask) in &mut q {
         // A phantom out of the fight does nothing until its boss's script calls it.
         if phantom.is_some_and(|p| p.parked()) || e.disabled {
