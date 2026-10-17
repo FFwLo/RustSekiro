@@ -20,7 +20,7 @@ use std::sync::RwLock;
 
 use bevy::prelude::*;
 
-use crate::game_menu::{abs, any_icon, fill_row, image, key_guide, list_screen, parchment, sprite, text, title_bar, Detail, ItemTexts, MenuFont, Row, RowButton, Tables, DIM, TEXT};
+use crate::game_menu::{abs, any_icon, fill_row, image, key_guide, list_screen, sprite, text, title_bar, Detail, ItemTexts, MenuFont, Row, RowButton, Tables, DIM, TEXT};
 use crate::menu::Screen;
 
 /// One idol: its name, where it stands (its base, on the floor), the way it faces (Wolf kneels
@@ -623,13 +623,16 @@ fn idol_mesh(meshes: &mut Assets<Mesh>, mats: &mut Assets<StandardMaterial>, ass
             mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
         }
         mesh.insert_indices(bevy::mesh::Indices::U32(tris));
-        let normal_map = tex(m["normal"].as_str().unwrap_or(""), false);
-        if normal_map.is_some() {
-            let _ = mesh.generate_tangents();
-        }
+        // No normal map: the game's _n textures pack their channels for its own shaders (the map
+        // decodes them in map_material.wgsl); read as a plain tangent-space map they turned the
+        // carving dark with only its rims lit.
+        let albedo = tex(m["albedo"].as_str().unwrap_or(""), true);
         let mat = StandardMaterial {
-            base_color_texture: tex(m["albedo"].as_str().unwrap_or(""), true),
-            normal_map_texture: normal_map,
+            // The flame lights the carving from its own hands: a faint blue glow of the wood's
+            // texture, so the idol does not stand as a dark shape against the sun.
+            emissive: LinearRgba::from(IDOL_LIGHT) * IDOL_GLOW,
+            emissive_texture: albedo.clone(),
+            base_color_texture: albedo,
             perceptual_roughness: 0.8,
             metallic: 0.0,
             ..default()
@@ -640,8 +643,17 @@ fn idol_mesh(meshes: &mut Assets<Mesh>, mats: &mut Assets<StandardMaterial>, ass
 }
 
 /// The light at an idol: the game's cold blue-white idol glow (the user: "the light coming from
-/// the idol should be blue"). gap: the idol's own SFX (its glowing incense) is not played.
+/// the idol should be blue"), under the idol's own effect's light.
 const IDOL_LIGHT: Color = Color::srgb(0.45, 0.62, 1.0);
+
+/// The emissive strength of the idol's own glow (by eye against the parkour map's daylight).
+const IDOL_GLOW: f32 = 0.15;
+
+/// The lit idol's flame: o005000's TAE plays FFX 1011 on dummy 100 (the model's origin) in slot 1
+/// in its lit animations 10, 11, 13 and 100 (1010 in the unlit 1, 1000 the lighting flash).
+const IDOL_SFX: i64 = 1011;
+/// The heights (m) the flame's copies play at over dummy 100.
+const IDOL_SFX_LIFTS: [f32; 2] = [0.0, 0.15];
 
 /// The idols of the map: installed, and drawn with the game's model (a stand-in figure if the
 /// model is not exported), with the idol's blue light.
@@ -659,9 +671,16 @@ fn spawn_idols(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mat
                 commands.spawn((Mesh3d(mesh.clone()), MeshMaterial3d(mat.clone()), at(Vec3::ZERO)));
             }
         }
-        // A soft glow round it, not a lamp on it: above and in front, dim enough that the carving
-        // keeps its wood colour.
-        commands.spawn((PointLight { color: IDOL_LIGHT, intensity: 15_000.0, range: 4.5, shadow_maps_enabled: false, ..default() }, Transform::from_translation(idol.pos + idol.out * 0.8 + Vec3::Y * 1.4)));
+        // A blue pool round it (the user: "a good amount of blue light around it"): at the flame's
+        // height a little in front, wide enough to tint the ground round the idol in daylight.
+        commands.spawn((PointLight { color: IDOL_LIGHT, intensity: 60_000.0, range: 7.0, shadow_maps_enabled: false, ..default() }, Transform::from_translation(idol.pos + idol.out * 0.6 + Vec3::Y * 1.2)));
+        // Two copies, the second a little higher: one alone burns thinner and lower than the
+        // game's plume (the user's capture); the effects play at scale 1 (fxr.rs `place`).
+        for lift in IDOL_SFX_LIFTS {
+            let mut fx = crate::fxr::FxEffect::new(IDOL_SFX, None, false, at(Vec3::Y * lift));
+            fx.keep = true;
+            commands.spawn(fx);
+        }
     }
     if let Ok(mut v) = IDOLS.write() {
         *v = idols;

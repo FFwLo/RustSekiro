@@ -44,8 +44,9 @@ TEX = os.path.join(ROOT, 'extracted/fxr_tex')
 EXTRACT = os.environ.get('SEKIRO_EXTRACT') or next(
     (p for p in (os.path.join(ROOT, f'tools/sekiro-extract/target/{b}/sekiro-extract.exe') for b in ('release', 'debug')) if os.path.exists(p)),
     os.path.join(ROOT, 'tools/sekiro-extract/target/release/sekiro-extract.exe'))
-# The blood sprays gore.rs drives from the TAE.
-EXTRA = [220502, 220503, 220505, 220506]
+# The blood sprays gore.rs drives from the TAE, and the Sculptor's Idol's flame (o005000's TAE:
+# 1011 lit, 1010 unlit, 1000 the lighting flash; src/idol.rs).
+EXTRA = [220502, 220503, 220505, 220506, 1000, 1010, 1011]
 # SpEffects put on Wolf from outside his own list (their SpEffectVfx effects).
 SP_EFFECTS = [211000]
 
