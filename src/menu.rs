@@ -385,7 +385,8 @@ impl Plugin for MenuPlugin {
             .init_resource::<MenuFonts>()
             .init_resource::<BannerDone>()
             .add_systems(Startup, load_fonts)
-            .add_systems(PreUpdate, (pad_to_menu_keys, run_menu).chain().in_set(MenuInput).after(UiSystems::Focus).after(InputSystems))
+            .init_resource::<MenuMouse>()
+            .add_systems(PreUpdate, (menu_keys_and_wheel, pad_to_menu_keys, run_menu).chain().in_set(MenuInput).after(UiSystems::Focus).after(InputSystems))
             .add_systems(Update, (fight_from_env, apply_video, watch_fight.run_if(in_state(Screen::Playing)), defeat_banner))
             .add_systems(PostUpdate, hide_hud_on_title.before(bevy::camera::visibility::VisibilitySystems::VisibilityPropagate));
     }
@@ -832,6 +833,59 @@ fn apply_video(config: Res<crate::config::GameConfig>, mut window: Single<&mut W
         let [w, h] = want.2.unwrap_or([1024, 560]);
         window.resolution.set(w as f32, h as f32);
     }
+}
+
+/// Whether the pointer moved this frame: a hover moves a menu's cursor only then, so a list
+/// rebuilt under a still pointer (the wheel, the arrows) does not snap back to the row under it.
+#[derive(Resource, Default)]
+pub(crate) struct MenuMouse {
+    pub(crate) moved: bool,
+}
+
+/// Menu conveniences (the user): in every menu E is Enter (OK) and Q is Esc (back), and the
+/// mouse wheel moves the cursor (a notch = an arrow press). The keys it pressed are let go the
+/// next frame, so a menu that does not clear its keys still sees each notch.
+fn menu_keys_and_wheel(
+    state: Res<State<Screen>>,
+    mut keys: ResMut<ButtonInput<KeyCode>>,
+    scroll: Option<Res<bevy::input::mouse::AccumulatedMouseScroll>>,
+    motion: Option<Res<bevy::input::mouse::AccumulatedMouseMotion>>,
+    mut mouse: ResMut<MenuMouse>,
+    mut notches: Local<f32>,
+    mut held: Local<Vec<KeyCode>>,
+) {
+    mouse.moved = motion.is_some_and(|m| m.delta != Vec2::ZERO);
+    for k in held.drain(..) {
+        keys.release(k);
+    }
+    if *state.get() == Screen::Playing {
+        *notches = 0.0;
+        return;
+    }
+    let mut press = |keys: &mut ButtonInput<KeyCode>, k: KeyCode| {
+        if !keys.pressed(k) {
+            keys.press(k);
+            held.push(k);
+        }
+    };
+    if keys.just_pressed(KeyCode::KeyE) {
+        press(&mut keys, KeyCode::Enter);
+    }
+    if keys.just_pressed(KeyCode::KeyQ) {
+        press(&mut keys, KeyCode::Escape);
+    }
+    *notches += scroll.map_or(0.0, |s| match s.unit {
+        bevy::input::mouse::MouseScrollUnit::Line => s.delta.y,
+        bevy::input::mouse::MouseScrollUnit::Pixel => s.delta.y / 40.0,
+    });
+    if *notches >= 1.0 {
+        *notches -= 1.0;
+        press(&mut keys, KeyCode::ArrowUp);
+    } else if *notches <= -1.0 {
+        *notches += 1.0;
+        press(&mut keys, KeyCode::ArrowDown);
+    }
+    *notches = notches.clamp(-3.0, 3.0);
 }
 
 /// A gamepad in the menus (plan C4) presses the menu's keys: d-pad / left stick (a tilt past

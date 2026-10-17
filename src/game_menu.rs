@@ -782,7 +782,7 @@ fn run_game_menu(
     mut menu: ResMut<GameMenu>,
     roots: Query<Entity, With<GameMenuRoot>>,
     (tabs, rows, cats): (Query<(&TabButton, &Interaction), Changed<Interaction>>, Query<(&RowButton, &Interaction), Changed<Interaction>>, Query<(&CatButton, &Interaction), Changed<Interaction>>),
-    (assets, font, mut config, texts, tables, combat): (Res<AssetServer>, Res<MenuFont>, ResMut<crate::config::GameConfig>, Res<ItemTexts>, Res<Tables>, Res<crate::data::Combat>),
+    (assets, font, mut config, texts, tables, combat, pointer): (Res<AssetServer>, Res<MenuFont>, ResMut<crate::config::GameConfig>, Res<ItemTexts>, Res<Tables>, Res<crate::data::Combat>, Res<crate::menu::MenuMouse>),
     wolf: Query<&crate::actor::Actor, With<crate::player::Player>>,
     (mut pad, mut exit, mut cursor): (Option<ResMut<crate::player::PadInput>>, MessageWriter<AppExit>, ResMut<crate::menu::Cursor>),
 ) {
@@ -812,8 +812,8 @@ fn run_game_menu(
                     menu.index = r.0;
                     confirm = true;
                 }
-                Interaction::Hovered => menu.index = r.0,
-                Interaction::None => {}
+                Interaction::Hovered if pointer.moved => menu.index = r.0,
+                _ => {}
             }
         }
         let back = keys.just_pressed(KeyCode::Escape);
@@ -867,8 +867,8 @@ fn run_game_menu(
                 menu.index = r.0;
                 confirm = true;
             }
-            Interaction::Hovered => menu.index = r.0,
-            Interaction::None => {}
+            Interaction::Hovered if pointer.moved => menu.index = r.0,
+            _ => {}
         }
     }
     let n = match menu.tab {

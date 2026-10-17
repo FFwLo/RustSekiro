@@ -596,7 +596,7 @@ fn run_idol_menu(
     roots: Query<Entity, With<IdolMenuRoot>>,
     rows: Query<(&RowButton, &Interaction), Changed<Interaction>>,
     (nodes, cats, ups): (Query<(&crate::skill_tree::SkillNodeButton, &Interaction), Changed<Interaction>>, Query<(&crate::game_menu::CatButton, &Interaction), Changed<Interaction>>, Query<(&crate::workshop::UpgradeButton, &Interaction), Changed<Interaction>>),
-    (assets, font, mut config, texts, tables, forms): (Res<AssetServer>, Res<MenuFont>, ResMut<crate::config::GameConfig>, Res<ItemTexts>, Res<Tables>, Res<crate::form::FormTexts>),
+    (assets, font, mut config, texts, tables, forms, pointer): (Res<AssetServer>, Res<MenuFont>, ResMut<crate::config::GameConfig>, Res<ItemTexts>, Res<Tables>, Res<crate::form::FormTexts>, Res<crate::menu::MenuMouse>),
     mut wolf: Query<(&mut crate::player::Player, &crate::actor::Actor)>,
 ) {
     if *state.get() != Screen::Idol {
@@ -618,14 +618,15 @@ fn run_idol_menu(
     let (right, left) = (any(&[KeyCode::ArrowRight, KeyCode::KeyD]), any(&[KeyCode::ArrowLeft, KeyCode::KeyA]));
     let mut confirm = any(&[KeyCode::Enter, KeyCode::Space]);
     let back = keys.just_pressed(KeyCode::Escape);
-    let (prev_page, next_page) = (any(&[KeyCode::KeyC, KeyCode::KeyQ]), any(&[KeyCode::KeyV, KeyCode::KeyE]));
+    // The skill trees' pages: C / V (E and Q are OK and back in every menu, menu.rs).
+    let (prev_page, next_page) = (any(&[KeyCode::KeyC]), any(&[KeyCode::KeyV]));
     keys.reset_all();
     mouse.reset_all();
     let mut clicked = None;
     for (r, i) in &rows {
         match i {
             Interaction::Pressed => clicked = Some(r.0),
-            Interaction::Hovered if matches!(menu.page, Page::Main | Page::Form | Page::Workshop | Page::Fit) => menu.index = r.0,
+            Interaction::Hovered if pointer.moved && matches!(menu.page, Page::Main | Page::Form | Page::Workshop | Page::Fit) => menu.index = r.0,
             _ => {}
         }
     }
@@ -739,7 +740,7 @@ fn run_idol_menu(
                         menu.index = u.0;
                         buy = true;
                     }
-                    Interaction::Hovered if !menu.tree.asking => menu.index = u.0,
+                    Interaction::Hovered if pointer.moved && !menu.tree.asking => menu.index = u.0,
                     _ => {}
                 }
             }
@@ -801,7 +802,7 @@ fn run_idol_menu(
                         menu.tree.cursor = n.0;
                         acquire = true;
                     }
-                    Interaction::Hovered if !menu.tree.asking => menu.tree.cursor = n.0,
+                    Interaction::Hovered if pointer.moved && !menu.tree.asking => menu.tree.cursor = n.0,
                     _ => {}
                 }
             }
