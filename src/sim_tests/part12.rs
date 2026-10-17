@@ -528,8 +528,8 @@ fn turn_between(from: f32, to: f32) -> f32 {
 }
 
 
-/// Walking, the stick thrown back: the in-place 180 (StandWalkTurn*, the StandQuickTurn*180
-/// clip) turns Wolf round, then he walks on the other way.
+/// Walking, the stick thrown back: the walk's quick turn (StandWalkQuickTurn*180, a000_000142 /
+/// 143) turns Wolf round, then he walks on the other way.
 #[test]
 pub(crate) fn a_walk_reversed_turns_in_place_then_walks_on() {
     let mut app = app();
@@ -552,7 +552,7 @@ pub(crate) fn a_walk_reversed_turns_in_place_then_walks_on() {
     let end = player_actor(&mut app).3;
     let yaw = wolf_yaw(&mut app);
     println!("walk turn: {states:?}, {start:?} -> {end:?}, yaw {yaw:.2}");
-    assert!(states.iter().any(|s| s.starts_with("StandWalkTurn")), "{states:?}");
+    assert!(states.iter().any(|s| s.starts_with("StandWalkQuickTurn")), "{states:?}");
     assert_eq!(states.last().map(String::as_str), Some("Locomotion"));
     assert!(end.z > start.z + 0.3, "not walking back: {start:?} -> {end:?}");
     assert!(turn_between(yaw, std::f32::consts::PI).abs() < 0.1, "yaw {yaw}");
@@ -626,4 +626,36 @@ pub(crate) fn wolf_kneels_at_an_idol_rests_and_travels() {
     let (want, _) = crate::idol::respawn_at(1).unwrap();
     assert!((at - want).with_y(0.0).length() < 0.1, "{s} at {at:?}, the idol's spot {want:?}");
     IDOLS.write().unwrap().clear();
+}
+
+/// Standing, the stick pushed behind Wolf: the quick-turn move start (StandQuickTurnRunStart*180,
+/// or with walk held StandQuickTurnWalkStart*180) turns him and he moves off the other way.
+#[test]
+pub(crate) fn standing_a_stick_behind_quick_turns_into_the_move() {
+    for walk in [false, true] {
+        let mut app = app();
+        move_enemy_far(&mut app);
+        run(&mut app, 10);
+        place_wolf(&mut app, Vec3::ZERO, 0.0, false);
+        run(&mut app, 20);
+        let start = player_actor(&mut app).3;
+        app.world_mut().resource_mut::<PadInput>().walk = walk;
+        app.world_mut().resource_mut::<PadInput>().stick = Vec2::new(0.0, -1.0);
+        let mut states = Vec::new();
+        for _ in 0..90 {
+            app.update();
+            let s = player_actor(&mut app).0;
+            if states.last() != Some(&s) {
+                states.push(s);
+            }
+        }
+        let end = player_actor(&mut app).3;
+        let yaw = wolf_yaw(&mut app);
+        println!("standing turn (walk {walk}): {states:?} {start:?} -> {end:?}");
+        let want = if walk { "StandQuickTurnWalkStart" } else { "StandQuickTurnRunStart" };
+        assert!(states.first().is_some_and(|s| s.starts_with(want)), "{states:?}");
+        assert_eq!(states.last().map(String::as_str), Some("Locomotion"));
+        assert!(end.z > start.z + 0.5, "not moving the other way: {start:?} -> {end:?}");
+        assert!(turn_between(yaw, std::f32::consts::PI).abs() < 0.1, "yaw {yaw}");
+    }
 }

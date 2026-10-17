@@ -458,7 +458,7 @@ fn pose_skeletons(
             skel.fade_src = if skel.blend >= 1.0 { skel.shown_src.clone() } else { None };
             let left = skel.yaw_off * (1.0 - skel.blend * skel.blend * (3.0 - 2.0 * skel.blend));
             let jump = skel.yaw_seen.map_or(0.0, |y| (a.yaw - y + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI);
-            skel.yaw_off = if blend_len > 0.0 && jump.abs() > 0.5 && !a.state.starts_with("StandRunQuickTurn") { left - jump } else { 0.0 };
+            skel.yaw_off = if blend_len > 0.0 && jump.abs() > 0.5 && !crate::player::quick_turn_kind(&a.state).is_some_and(|(_, spins)| spins) { left - jump } else { 0.0 };
             skel.blend = if skel.shown.is_empty() || blend_len <= 0.0 { 1.0 } else { 0.0 };
             skel.blend_len = blend_len.max(1.0 / 60.0);
             skel.upper_fade = skel.was_upper && a.state == "Locomotion";

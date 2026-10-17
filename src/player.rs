@@ -5461,67 +5461,55 @@ fn locomotion(
     dt: f32,
 ) {
     converge_speed(p, stick, walk_held, dt);
-    // The run quick turn (BEH_A_STAND_MOVE_QUICK_TURN -> W_StandMoveQuickTurn{Left,Right}180,
-    // c0000.hkx StandRunQuickTurn*180_F_CMSG_Anime a000_000442 / 000443): the clip's root has no
-    // turn and runs on along the new heading, while the hips spin round from about 100 deg off it
-    // to straight by frame 16 (0.53 s). So the heading takes the stick at once and the pose does
-    // the turn (before: a 720 deg/s turn at full run speed drew a circle; the user: "spinning like
-    // a compass drawing a circle"). Let go mid-turn: the run stop.
-    if a.state.starts_with("StandRunQuickTurn") {
-        if stick == Vec3::ZERO && a.play_state(d, "StandRunStopF") {
+    // The 180 turns, the game's own clips (c0000.hkx *_F_CMSG_Anime; the user: "turning around
+    // animations when idle and walking"):
+    // - running: W_StandMoveQuickTurn{Left,Right}180 (StandRunQuickTurn*180, a000_000442 / 443);
+    // - from a standstill: BEH_A_QUICK_TURN_MOVE_START -> W_StandQuickTurnMoveStart*180, the run
+    //   start (StandQuickTurnRunStart*180, a000_000432 / 433) or with walk held the walk start
+    //   (StandQuickTurnWalkStart*180, a000_000132 / 133);
+    // - walking: the walk's quick turn (StandWalkQuickTurn*180, a000_000142 / 143).
+    // Their roots carry no turn and run on along the new heading, so the heading takes the stick
+    // at once. The run clips' hips spin from about 100 deg off it to straight by frame 16 (0.53 s);
+    // the walk clips only lean 50 deg into the turn, so the model swings round over the clip's
+    // blend from the old facing (anim.rs Skeleton::yaw_off). Turned, he moves on in the loop; let
+    // go mid-turn, the stop.
+    if let Some((walk, _)) = quick_turn_kind(&a.state) {
+        if stick == Vec3::ZERO && a.play_state(d, if walk { "StandWalkStop_F" } else { "StandRunStopF" }) {
             a.move_vel = Vec3::ZERO;
             p.speed_level = 0.0;
             return;
         }
-        if a.t < QUICK_TURN_TURNED {
+        if a.t < if walk { WALK_QUICK_TURN_TURNED } else { QUICK_TURN_TURNED } {
             a.move_vel = Vec3::ZERO;
-            return;
-        }
-        // Turned: on in the run loop (no move start).
-        a.procedural("Locomotion");
-        a.move_start = 0.0;
-        p.speed_level = p.speed_level.max(2.0);
-        move_velocity(p, a, d, config, stick, target_dir, dt);
-        return;
-    }
-    // The walk's 180: the game's walk quick turn clips (a000_000142 / 143) do not turn, so the
-    // in-place quick turn (StandQuickTurn{Left,Right}180, a000_000012 / 13) plays while the turn
-    // controller brings Wolf round, then he walks on (the user: the walk turn "should have
-    // animation"). gap: a stand-in, not the game's walk turn.
-    if a.state.starts_with("StandWalkTurn") {
-        a.move_vel = Vec3::ZERO;
-        if stick != Vec3::ZERO {
-            a.yaw = turn_toward(a.yaw, yaw_of(stick), WALK_TURN_RATE.to_radians() * dt);
-        }
-        let ended = a.t >= d.length(&a.anim);
-        let facing = stick == Vec3::ZERO || a.forward().angle_between(stick) < 0.15;
-        if !(ended || (facing && a.t >= WALK_TURN_MIN)) {
-            return;
-        }
-        if stick == Vec3::ZERO {
-            a.play("StandIdle", "");
             return;
         }
         a.procedural("Locomotion");
         a.move_start = 0.0;
+        p.speed_level = if walk { p.speed_level.max(1.0) } else { p.speed_level.max(2.0) };
         move_velocity(p, a, d, config, stick, target_dir, dt);
         return;
     }
-    if target_dir.is_none() && !a.crouch && stick != Vec3::ZERO && a.state == "Locomotion" && p.speed_level > 0.3 && p.speed_level <= 1.2 && a.forward().angle_between(stick).to_degrees() > QUICK_TURN_ANGLE {
-        let side = if stick.dot(a.forward().cross(Vec3::Y)) > 0.0 { "Right" } else { "Left" };
-        if let Some(key) = d.anim_key(&format!("StandQuickTurn{side}180")).map(str::to_string) {
-            a.play(&format!("StandWalkTurn{side}180"), &key);
-            a.move_vel = Vec3::ZERO;
-            return;
-        }
-    }
-    if target_dir.is_none() && !a.crouch && !walk_held && stick != Vec3::ZERO && a.state == "Locomotion" && p.speed_level > 1.2 && a.forward().angle_between(stick).to_degrees() > QUICK_TURN_ANGLE {
-        let side = if stick.dot(a.forward().cross(Vec3::Y)) > 0.0 { "Right" } else { "Left" };
-        if let Some(key) = d.anim_key(&format!("StandRunQuickTurn{side}180_F_CMSG_Anime")).map(str::to_string) {
-            a.yaw = yaw_of(stick);
-            a.play(&format!("StandRunQuickTurn{side}180"), &key);
-            a.move_vel = Vec3::ZERO;
-            return;
+    let behind = stick != Vec3::ZERO && a.forward().angle_between(stick).to_degrees() > QUICK_TURN_ANGLE;
+    // Not sheathed: these are the drawn sword's clips (the sheathed set is a010's; gap).
+    if target_dir.is_none() && !a.crouch && !a.sheathed && behind {
+        let standing = a.state == "StandIdle" || (a.state == "Locomotion" && p.speed_level <= 0.3);
+        let kind = if standing {
+            Some(if walk_held { "StandQuickTurnWalkStart" } else { "StandQuickTurnRunStart" })
+        } else if a.state == "Locomotion" && p.speed_level <= 1.2 {
+            Some("StandWalkQuickTurn")
+        } else if a.state == "Locomotion" && !walk_held {
+            Some("StandRunQuickTurn")
+        } else {
+            None
+        };
+        if let Some(kind) = kind {
+            let side = if stick.dot(a.forward().cross(Vec3::Y)) > 0.0 { "Right" } else { "Left" };
+            if let Some(key) = d.anim_key(&format!("{kind}{side}180_F_CMSG_Anime")).map(str::to_string) {
+                a.yaw = yaw_of(stick);
+                a.play(&format!("{kind}{side}180"), &key);
+                a.move_vel = Vec3::ZERO;
+                return;
+            }
         }
     }
     // Stick released: the stop anims carry their own slide (root motion), in the move direction
@@ -5591,12 +5579,22 @@ const QUICK_TURN_ANGLE: f32 = 135.0;
 const QUICK_TURN_TURNED: f32 = 0.53;
 
 pub(crate) fn is_move_quick_turn(state: &str) -> bool {
-    state.starts_with("StandRunQuickTurn") || state.starts_with("StandWalkTurn")
+    quick_turn_kind(state).is_some()
 }
 
-/// The walk 180's turn rate (deg/s) and its shortest play before walking on (s).
-const WALK_TURN_RATE: f32 = 540.0;
-const WALK_TURN_MIN: f32 = 0.35;
+/// A 180 quick turn's kind: (a walk one, its pose spins round itself - the run ones).
+pub(crate) fn quick_turn_kind(state: &str) -> Option<(bool, bool)> {
+    if state.starts_with("StandRunQuickTurn") || state.starts_with("StandQuickTurnRunStart") {
+        Some((false, true))
+    } else if state.starts_with("StandWalkQuickTurn") || state.starts_with("StandQuickTurnWalkStart") {
+        Some((true, false))
+    } else {
+        None
+    }
+}
+
+/// When a walk quick turn hands over to the walk loop (s): its lean is out by about frame 15.
+const WALK_QUICK_TURN_TURNED: f32 = 0.5;
 
 /// HKS GetMoveSpeed: ConvergeValue(level, speed, inc 3, dec 3), inc 6 toward level 2.
 fn converge_speed(p: &mut Player, stick: Vec3, walk_held: bool, dt: f32) {
