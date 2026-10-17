@@ -622,6 +622,17 @@ pub(crate) const FLAG_NO_DAMAGE_MOTION: i64 = 24;
 /// gap: the exe's reader of 0x7C bit 10 is not traced; sekiro-rs has no such gate.
 pub(crate) const FLAG_DAMAGE_MOTION: i64 = 73;
 
+/// Whether an attacking enemy's swing lets a hit's damage motion through now: only the attacks
+/// that carry ChrActionFlag 73 are closed between its spans (every c1020 attack has them, the
+/// live rec above); one without any (most of c1010's: 3002, 3003, 3005 ...) can be cut off, as
+/// the game's soldiers are (the user, 2026-10-17: "i cannot interrupt any of their attack").
+/// Their real super armour still comes from the spCategory 1001 SpEffects
+/// (`damage_motion_level`) and ChrActionFlag 24.
+pub(crate) fn swing_can_flinch(d: &crate::data::CharData, a: &Actor) -> bool {
+    let marked = d.anim(&a.anim).is_some_and(|an| an.events.iter().any(|e| e.kind == 0 && e.flag_type() == Some(FLAG_DAMAGE_MOTION)));
+    !marked || d.flag(&a.anim, a.t, FLAG_DAMAGE_MOTION)
+}
+
 /// The HKS damage level an NPC's hit reaction sees (sekiro-rs c0f97ee fight.rs damage_motion_level,
 /// docs/COMBAT-RULES.md "Super armour", traced in the v1.6 exe): the active spCategory 1001
 /// SpEffect (its anim's TAE ones and residents, HP gate open) with the lowest categoryPriority
@@ -2115,7 +2126,7 @@ fn resolve(
                                     } else if fire && !da.posture_broken() {
                                         Some("DamageFire".to_string())
                                     } else {
-                                        let can_flinch = !e.is_attacking() || dd.flag(&da.anim, da.t, FLAG_DAMAGE_MOTION);
+                                        let can_flinch = !e.is_attacking() || swing_can_flinch(dd, da);
                                         let want = (!da.posture_broken()).then(|| enemy_damage_state_air(dd, level, da, atf.translation, dtf.translation, aerial)).flatten();
                                         let ok = want.clone().filter(|s| can_flinch && sword_reaction_allowed(&da.state, s));
                                         rejected = want.is_some() && ok.is_none();

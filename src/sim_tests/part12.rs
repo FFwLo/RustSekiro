@@ -727,3 +727,24 @@ fn a_courtyard_guard_walks_its_round() {
     assert!(states.iter().any(|s| s.starts_with("WalkFront")), "walking: {states:?}");
     assert!(!states.iter().any(|s| s.starts_with("RunFront")), "not running: {states:?}");
 }
+
+/// A c1010 swing without ChrActionFlag 73 (3002) can be cut off mid-swing; one with it (3001)
+/// is closed between its spans (0.03-0.33 s, 0.73 s on) and open inside them (the user: "i
+/// cannot interrupt any of their attack").
+#[test]
+fn a_soldiers_plain_swing_can_be_interrupted() {
+    let app = app_cfg("c1010", None, Vec::new());
+    let combat = app.world().resource::<crate::data::Combat>();
+    let d = &combat.kind(0).data;
+    let mut a = Actor::new(crate::actor::Side::Enemy, 100.0, 100.0, 1.0, 0);
+    let at = |a: &mut Actor, anim: &str, t: f32| {
+        a.anim = anim.to_string();
+        a.t = t;
+    };
+    at(&mut a, "a000_003002", 1.0);
+    assert!(crate::combat::swing_can_flinch(d, &a), "3002 mid-swing");
+    at(&mut a, "a000_003001", 0.5);
+    assert!(!crate::combat::swing_can_flinch(d, &a), "3001 between its flag-73 spans");
+    at(&mut a, "a000_003001", 1.0);
+    assert!(crate::combat::swing_can_flinch(d, &a), "3001 in its recovery span");
+}

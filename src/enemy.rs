@@ -1022,7 +1022,7 @@ impl Plugin for EnemyPlugin {
             .add_systems(Startup, spawn_enemy)
             .add_systems(
                 FixedUpdate,
-                (spawn_encounter, reset_fight, stealth_env_start, start_unaware, ai_hold, route_end_anim, parry_interrupt, think, grapple::on_wire_hit, ninsatsu_hit, todome_message, events::messages, script::run_scripts, talk::run_talk, events::apply_event_warp).chain().in_set(ActorSet::Decide),
+                (spawn_encounter, reset_fight, stealth_env_start, start_unaware, ai_hold, route_end_anim, parry_interrupt, think, grapple::on_wire_hit, ninsatsu_hit, deathblow_flinch, todome_message, events::messages, script::run_scripts, talk::run_talk, events::apply_event_warp).chain().in_set(ActorSet::Decide),
             )
             .add_systems(Update, toggle_aggression.run_if(resource_exists::<ButtonInput<KeyCode>>))
             .init_resource::<grapple::EnemyGrapples>()
@@ -1068,6 +1068,38 @@ fn ninsatsu_hit(combat: Res<Combat>, player: Single<&Actor, (With<Player>, Witho
             if e.ninsatsu_unhit > 0 {
                 e.ninsatsu_unhit = 0;
             }
+        }
+    }
+}
+
+/// How near a fighting enemy must stand to flinch at Wolf's deathblow on another [m].
+const DEATHBLOW_FLINCH_RANGE: f32 = 10.0;
+
+/// As Wolf's deathblow starts, the other enemies fighting him within DEATHBLOW_FLINCH_RANGE drop
+/// what they are doing and flinch (their small damage reaction, away from him): the user
+/// (2026-10-17), "enemies should stop attacking and flinch when someone gets deathblow". gap: no
+/// game data found for it (Wolf's deathblow clips shoot nothing at the others; c1010 / c1020
+/// have no fear state but FireFearReaction).
+fn deathblow_flinch(
+    combat: Res<Combat>,
+    player: Single<(&Actor, &Transform), (With<Player>, Without<Enemy>)>,
+    mut q: Query<(&mut Enemy, &mut Actor, &Transform), Without<Player>>,
+    mut was: Local<bool>,
+) {
+    let (pa, ptf) = *player;
+    let now = pa.state.starts_with("Deathblow");
+    let started = now && !*was;
+    *was = now;
+    if !started {
+        return;
+    }
+    for (mut e, mut a, tf) in &mut q {
+        if e.is_dead() || e.is_broken() || e.targeting.state != crate::stealth::BATTLE || tf.translation.distance(ptf.translation) > DEATHBLOW_FLINCH_RANGE {
+            continue;
+        }
+        let d = combat.data_of(&a);
+        if let Some(state) = crate::combat::enemy_damage_state_air(d, 1, &a, ptf.translation, tf.translation, false) {
+            e.react_from(&mut a, &combat, false, &state);
         }
     }
 }
@@ -1292,8 +1324,8 @@ fn spawn_lineup(commands: &mut Commands, combat: &Combat, config: &GameConfig, a
             }
         }
     }
-    // On the Construct the config's enemy stands in its walled arena east of the start, facing
-    // the door, its group in a row across the arena.
+    // On the Construct the config's enemy stands in the middle of the second section, facing
+    // its door, its group in a row beside it.
     let construct = crate::map::map_id(config).as_deref() == Some(crate::sandbox::CONSTRUCT_ID);
     let first = if construct { crate::sandbox::ARENA_SPOT } else { Vec3::new(0.0, 0.0, -4.0 + dz) };
     let first_yaw = if construct { crate::sandbox::ARENA_YAW } else { facing(first.x, first.z) };
@@ -1327,7 +1359,7 @@ fn spawn_lineup(commands: &mut Commands, combat: &Combat, config: &GameConfig, a
             continue;
         }
         let side = if i % 2 == 0 { 1.0 } else { -1.0 } * (3.0 * (i / 2 + 1) as f32);
-        let [x, z] = g.at.unwrap_or(if construct { [first.x, side] } else { [side, -4.0] });
+        let [x, z] = g.at.unwrap_or(if construct { [first.x + side, first.z] } else { [side, -4.0] });
         let z = z + dz;
         let yaw = if construct { first_yaw } else { facing(x, z) };
         // A different seed each, so the group does not move in lockstep.

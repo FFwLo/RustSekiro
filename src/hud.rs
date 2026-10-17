@@ -1480,8 +1480,10 @@ struct StealthBrush(Entity);
 
 /// The mark's side at 1080p [px] (MENU_Find_02's 128 px at 0.2193) and its centre's height
 /// over the anchor.
-const STEALTH_PX: f32 = 28.07;
-const STEALTH_LIFT: f32 = 35.5;
+const STEALTH_PX: f32 = 28.07 * STEALTH_SCALE;
+const STEALTH_LIFT: f32 = 35.5 * STEALTH_SCALE;
+/// Larger and more solid than the movie's (the user: "a bit too small and too transparent").
+const STEALTH_SCALE: f32 = 1.6;
 
 /// The off-screen mark's distance from Wolf's chest at 1080p [px].
 const STEALTH_RING: f32 = 120.0;
@@ -1594,9 +1596,9 @@ fn update_stealth(
         node.top = Val::Px(p.y - STEALTH_LIFT * k - side / 2.0);
         let rgb = |r: u8, g: u8, b: u8| Color::srgb_u8(r, g, b);
         let (w, frame_color, color) = match level {
-            2 => (1.0, rgb(163, 64, 57).with_alpha(0.32), rgb(163, 64, 57).with_alpha(0.5)),
-            1 => (1.0, rgb(154, 134, 70).with_alpha(0.9), Color::srgb(0.719, 0.629, 0.238)),
-            _ => (ratio, Color::BLACK.with_alpha(0.3), Color::WHITE.with_alpha(0.7)),
+            2 => (1.0, rgb(163, 64, 57).with_alpha(0.85), rgb(200, 60, 50).with_alpha(0.95)),
+            1 => (1.0, rgb(154, 134, 70).with_alpha(0.95), Color::srgb(0.719, 0.629, 0.238)),
+            _ => (ratio, Color::BLACK.with_alpha(0.65), Color::WHITE.with_alpha(0.95)),
         };
         frame.color = frame_color.with_alpha(frame_color.alpha() * fade);
         let color = color.with_alpha(color.alpha() * fade);

@@ -808,7 +808,7 @@ pub(crate) fn tool_hit_push(combat: &Combat, da: &mut Actor, e: &mut Enemy, from
 pub(crate) fn bullet_reaction(combat: &Combat, da: &Actor, e: &Enemy, level: i64, from: Vec3, at: Vec3) -> Option<String> {
     let dd = combat.data_of(da);
     let level = if dd.flag(&da.anim, da.t, crate::combat::FLAG_NO_DAMAGE_MOTION) { 0 } else { crate::combat::damage_motion_level(dd, da, level) };
-    let can_flinch = !e.is_attacking() || dd.flag(&da.anim, da.t, crate::combat::FLAG_DAMAGE_MOTION);
+    let can_flinch = !e.is_attacking() || crate::combat::swing_can_flinch(dd, da);
     // gap (as resolve): env 201 read as not lifted 5 cm above a SetNoGravity leap's start.
     let aerial = da.airborne || da.lift_ground.is_some_and(|g| at.y > g + 0.05) || enemy_refs(combat, da, e).contains(&crate::combat::SP_REF_AERIAL_DAMAGE);
     can_flinch.then(|| crate::combat::enemy_damage_state_air(dd, level, da, from, at, aerial)).flatten()

@@ -154,23 +154,43 @@ pub(crate) fn build(
     let wall_key = pick("SHINOBI_SANDBOX_WALL", &["stone_wall_block", "stone_wall", "_wall_"]);
     let ramp = |x: f32| ((x - 6.0) / 30.0).clamp(0.0, 1.0);
 
-    // Floor: the overlay rises towards +X, the snow towards -X; the centre stays the base.
+    // Floor: the overlay rises towards +X, the snow towards -X; the centre stays the base (the
+    // road). The Construct's runs on through its second section to the north.
+    let (z0, depth) = if parkour { (-3.0 * HALF, 4.0 * HALF) } else { (-HALF, 2.0 * HALF) };
     let mut floor = Patch::default();
-    floor.grid(Vec3::new(-HALF, 0.0, -HALF), Vec3::new(2.0 * HALF, 0.0, 0.0), Vec3::new(0.0, 0.0, 2.0 * HALF), 30, 30, TILE_M, |u, _| {
+    floor.grid(Vec3::new(-HALF, 0.0, z0), Vec3::new(2.0 * HALF, 0.0, 0.0), Vec3::new(0.0, 0.0, depth), 30, (30.0 * depth / (2.0 * HALF)) as usize, TILE_M, |u, _| {
         let x = (u - 0.5) * 2.0 * HALF;
         [ramp(x), 0.0, ramp(-x), 0.0]
     });
-    // Walls facing in, the overlay rising along each.
+    // Walls facing in, the overlay rising along each (a face's normal is up x its run: +X runs
+    // face -Z).
     let mut walls = Patch::default();
     let up = Vec3::new(0.0, WALL_HEIGHT, 0.0);
     let side = 2.0 * HALF;
-    for (origin, du) in [
+    let run = HALF - DOOR_HALF;
+    let mut faces = vec![
         (Vec3::new(-HALF, 0.0, HALF), Vec3::new(side, 0.0, 0.0)),
-        (Vec3::new(HALF, 0.0, -HALF), Vec3::new(-side, 0.0, 0.0)),
         (Vec3::new(HALF, 0.0, HALF), Vec3::new(0.0, 0.0, -side)),
         (Vec3::new(-HALF, 0.0, -HALF), Vec3::new(0.0, 0.0, side)),
-    ] {
-        walls.grid(origin, du, up, 24, 2, TILE_M, |u, _| [u, 0.0, 0.0, 0.0]);
+    ];
+    if parkour {
+        faces.extend([
+            // The shared wall either side of the door, facing both sections.
+            (Vec3::new(HALF, 0.0, -HALF), Vec3::new(-run, 0.0, 0.0)),
+            (Vec3::new(-DOOR_HALF, 0.0, -HALF), Vec3::new(-run, 0.0, 0.0)),
+            (Vec3::new(-HALF, 0.0, -HALF), Vec3::new(run, 0.0, 0.0)),
+            (Vec3::new(DOOR_HALF, 0.0, -HALF), Vec3::new(run, 0.0, 0.0)),
+            // The second section's far, east and west walls.
+            (Vec3::new(HALF, 0.0, -3.0 * HALF), Vec3::new(-side, 0.0, 0.0)),
+            (Vec3::new(HALF, 0.0, -HALF), Vec3::new(0.0, 0.0, -side)),
+            (Vec3::new(-HALF, 0.0, -3.0 * HALF), Vec3::new(0.0, 0.0, side)),
+        ]);
+    } else {
+        faces.push((Vec3::new(HALF, 0.0, -HALF), Vec3::new(-side, 0.0, 0.0)));
+    }
+    for (origin, du) in faces {
+        let n = ((24.0 * du.length() / side).round() as usize).max(1);
+        walls.grid(origin, du, up, n, 2, TILE_M, |u, _| [u, 0.0, 0.0, 0.0]);
     }
     let mut spawn = |patch: &Patch, key: &MaterialKey, casts: bool| {
         let material = mats.get(assets, materials, options, key);
@@ -230,7 +250,7 @@ pub(crate) fn build(
     }
     // Collision: the floor and the walls.
     let mut solid = Patch::default();
-    solid.grid(Vec3::new(-HALF, 0.0, -HALF), Vec3::new(2.0 * HALF, 0.0, 0.0), Vec3::new(0.0, 0.0, 2.0 * HALF), 1, 1, TILE_M, |_, _| [0.0; 4]);
+    solid.grid(Vec3::new(-HALF, 0.0, z0), Vec3::new(2.0 * HALF, 0.0, 0.0), Vec3::new(0.0, 0.0, depth), 1, 1, TILE_M, |_, _| [0.0; 4]);
     solid.pos.extend_from_slice(&walls.pos);
     solid.nrm.extend_from_slice(&walls.nrm);
     solid.uv.extend_from_slice(&walls.uv);
@@ -665,20 +685,16 @@ const STEALTH_WALLS: [(Vec3, Vec3); 10] = [
 ];
 const HUGGABLE_WALLS: usize = 7;
 
-/// The duel arena east of the start (x 22 .. 44, z -11 .. 11), walled 3 m high with a 3 m door
-/// in its west wall: the config's enemy (enemy.chr, its group, a custom fight) stands in it,
-/// away from the course and the courtyard (the user: "readd starter enemy but in isolated
-/// arena").
-const ARENA_WALLS: [(Vec3, Vec3); 5] = [
-    (Vec3::new(21.5, 0.0, -11.5), Vec3::new(22.0, 3.0, -1.5)),
-    (Vec3::new(21.5, 0.0, 1.5), Vec3::new(22.0, 3.0, 11.5)),
-    (Vec3::new(44.0, 0.0, -11.5), Vec3::new(44.5, 3.0, 11.5)),
-    (Vec3::new(22.0, 0.0, -11.5), Vec3::new(44.0, 3.0, -11.0)),
-    (Vec3::new(22.0, 0.0, 11.0), Vec3::new(44.0, 3.0, 11.5)),
-];
-/// Where the arena's enemy stands, facing the door (-X: forward = Ry(yaw) * -Z).
-pub const ARENA_SPOT: Vec3 = Vec3::new(33.0, 0.0, 0.0);
-pub const ARENA_YAW: f32 = std::f32::consts::FRAC_PI_2;
+/// The Construct's second section: an empty walled square as big as the first (x -HALF .. HALF,
+/// z -3 HALF .. -HALF) north of it, through a `DOOR_HALF` x 2 opening in the shared wall where the
+/// floor's road (the base-material strip down the middle, x -6 .. 6) meets it. The config's
+/// enemy (enemy.chr, its group, a custom fight) stands in it, away from the course and the
+/// courtyard (the user: "isolated in a different section ... comparable to the size of the
+/// current map").
+const DOOR_HALF: f32 = 3.0;
+/// Where the section's enemy stands (its middle), facing the door (+Z: forward = Ry(yaw) * -Z).
+pub const ARENA_SPOT: Vec3 = Vec3::new(0.0, 0.0, -2.0 * HALF);
+pub const ARENA_YAW: f32 = std::f32::consts::PI;
 
 /// A courtyard guard (`construct_patrols`): always the real AI (T leaves it be), so it fights
 /// once it finds Wolf.
@@ -811,8 +827,6 @@ pub fn parkour_course() -> (Vec<(Vec3, Vec3)>, Vec<map::LedgeEdge>) {
     boxes.push((Vec3::new(sx0, 0.0, sz1), Vec3::new(15.0, sh, sz1 + t)));
     boxes.push((Vec3::new(16.2, 0.0, sz1), Vec3::new(sx1, sh, sz1 + t)));
     boxes.push((Vec3::new(15.0, 2.6, sz1), Vec3::new(16.2, sh, sz1 + t)));
-    // 6. The duel arena east of the start.
-    boxes.extend(ARENA_WALLS);
     // 5. The stealth courtyard behind the start (2026-10-17, the user: "add stealth segment").
     for (i, &(lo, hi)) in STEALTH_WALLS.iter().enumerate() {
         boxes.push((lo, hi));
