@@ -1333,15 +1333,16 @@ fn particle_color(a: &Value, c: &Value, p: &Particle, active_t: f32, rnd: &mut R
 /// GXFfxsoftTracer.ppo, disassembled with d3dcompiler_47 D3DDisassemble) split the particle colour
 /// into its length and direction (`dp3` / `sqrt` / `div r3.xyz, v0.xyz, |v0|`), multiply the texture
 /// by the direction, square that (`mul r1.xyz, r1.xyz, r1.xyz`) and scale by the length: the hue is
-/// gamma 2, the brightness (rgbMultiplier included) linear. Here: c_i^2 / |c|, times sqrt 3 so a
-/// grey keeps its value. gap: that sqrt 3 stands for g_vColorScale (cb0[9], set by the exe, not
-/// traced); the texture's own square is left to the PNG's sRGB decode (~ x^2.2).
+/// gamma 2, the brightness (rgbMultiplier included) linear. Here: c_i^2 / |c|, with no further
+/// factor: the disassembly has none (sekiro-rs docs/MAP-FX.md "Fire brightness audit": an earlier
+/// sqrt 3 made every effect 1.73 times too bright). The texture's own square is left to the PNG's
+/// sRGB decode (~ x^2.2).
 fn hue_squared(c: [f32; 3]) -> [f32; 3] {
     let len = (c[0] * c[0] + c[1] * c[1] + c[2] * c[2]).sqrt();
     if len < 1e-5 {
         return [0.0; 3];
     }
-    c.map(|v| v * v / len * 3f32.sqrt())
+    c.map(|v| v * v / len)
 }
 
 /// Distortion / RadialBlur colour: `color` (clamped) x the node's particleModifier colour,
@@ -1524,7 +1525,10 @@ fn collect(
                     let mut size = |k: &str| (num(&a[k]) + num(&a[format!("{k}Min")]) + (num(&a[format!("{k}Max")]) - num(&a[format!("{k}Min")])) * sr.next()) * mult;
                     let w = size("particleSizeX");
                     let h = if a["particleUniformScale"].as_bool() != Some(false) { w } else { size("particleSizeY") };
-                    let base = vec4(&a["color"]);
+                    // `color` is a property by particle age: a fixed value or keyframes (the
+                    // castle snow 839500 fades in over its first second and out over its last;
+                    // read as a plain number it was 0, every flake clear).
+                    let base = prop(a.get("color"), p.age, &mut Rnd { seed: p.seed ^ 0x51cf, k: 0 }, [1.0; 4]);
                     let rgbm = num(&a["rgbMultiplier"]) * if matches!(a["lighting"].as_i64(), Some(-2 | 0)) && !*LIT_PORT { LIT_UNLIT } else { 1.0 };
                     let hue = hue_squared([base[0], base[1], base[2]]);
                     let col = [hue[0] * rgbm, hue[1] * rgbm, hue[2] * rgbm, (base[3] * num(&a["alphaMultiplier"]) * fade).clamp(0.0, 1.0)];
@@ -2394,6 +2398,38 @@ mod tests {
         assert!(ds.len() >= 10, "{} turning particles", ds.len());
         let spread = ds.iter().map(|d| d.angle_between(ds[0]).to_degrees()).fold(0.0, f32::max);
         assert!(spread > 20.0, "the bolts fly within {spread} deg of each other");
+    }
+
+    /// The castle's snowfall 839500 rides the camera (46, rotation off) and keeps about 40 flakes
+    /// a 1/30 s frame alive for 6 s round it, inside its 15 x 5 x 15 m box 3.75 m up, and its
+    /// keyframed colour is seen (alpha 1 between 1 and 5 s).
+    #[test]
+    fn the_castle_snow_falls_round_the_camera() {
+        let mut lib = FxrLib::default();
+        let Some(def) = lib.get(839500) else { return };
+        let cam = Transform::from_xyz(40.0, 10.0, -20.0).with_rotation(Quat::from_rotation_y(0.7));
+        lib.cam = Some(cam);
+        let mut n = make_node(&mut lib, &def["root"], 7, 0).unwrap();
+        for _ in 0..90 {
+            step_node(&mut n, &mut lib, Transform::from_xyz(-300.0, 0.0, 0.0), 1.0 / 30.0, false);
+        }
+        fn all(n: &NodeInst, out: &mut Vec<Vec3>, alphas: &mut Vec<f32>) {
+            if let Some(c) = n.cfg.as_ref().filter(|c| c["appearance"]["type"].as_i64() == Some(10000)) {
+                out.extend(n.particles.iter().map(|p| if p.attached { n.world.transform_point(p.pos) } else { p.pos }));
+                alphas.extend(n.particles.iter().map(|p| prop(c["appearance"].get("color"), p.age, &mut Rnd { seed: 0, k: 0 }, [1.0; 4])[3]));
+            }
+            for c in &n.children {
+                all(c, out, alphas);
+            }
+        }
+        let (mut ps, mut alphas) = (Vec::new(), Vec::new());
+        all(&n, &mut ps, &mut alphas);
+        assert!(ps.len() >= 40 * 85, "{} flakes", ps.len());
+        for p in &ps {
+            let d = *p - cam.translation;
+            assert!(d.x.abs() < 11.0 && d.z.abs() < 11.0 && d.y > -3.0 && d.y < 7.0, "{d}");
+        }
+        assert!(alphas.iter().any(|a| *a > 0.9), "flake alphas {:?}", &alphas[..5]);
     }
 
     #[test]

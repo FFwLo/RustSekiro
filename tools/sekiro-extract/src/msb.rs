@@ -31,6 +31,9 @@ pub struct Part {
     pub display_groups: Vec<u32>,
     /// GparamConfig: LightSetID, FogParamID, LightScatteringID, EnvMapID (-1 when absent).
     pub gparam: [i32; 4],
+    /// EntityGroupIDs (entity data +0x1C, 8 ints; the positive ones): the event scripts'
+    /// groups (the sky library's 8907000.. dome and painted-horizon pairs).
+    pub groups: Vec<i32>,
 }
 
 impl Part {
@@ -159,6 +162,7 @@ pub fn read(d: &[u8]) -> Msb {
                 display_groups: if unk1 != 0 { words(o + unk1, 8) } else { Vec::new() },
                 draw_groups: if unk1 != 0 { words(o + unk1 + 32, 8) } else { Vec::new() },
                 gparam: if gp != 0 { [r.i32(o + gp), r.i32(o + gp + 4), r.i32(o + gp + 8), r.i32(o + gp + 12)] } else { [-1; 4] },
+                groups: if ed != 0 { (0..8).map(|i| r.i32(o + ed + 0x1C + i * 4)).filter(|&g| g > 0).collect() } else { Vec::new() },
             }
         })
         .collect();

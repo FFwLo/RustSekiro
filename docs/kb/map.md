@@ -236,6 +236,14 @@ before.
   is lit at 0 h (the Outskirts is a dusk area), so this stays a sandbox-only look until a
   night map (m11_00 castle, m10_00 Hirata) is compared; nothing to fix from the data.
 
+- **Debug menu MAP section (2026-10-17, debug_menu.rs):** map (every `map_<id>.bin` with its
+  json plus the sandbox; Enter loads it live through `map::GoToMap`, then a fight reset), time of
+  day (whole hours), day-night cycle (`map::DayCycle`, off / 1 h a minute / 10 s / 2 s, in
+  quarter-hour re-applies), weather (`map::MapLooks`: each draw-param look, base plus
+  `drawparam_variants`, with each LightSet id of the map) and sky (`sky::SkyChoice`, auto or one
+  of the eight domes). Sekiro has no weather table (Paramdex SDT has no WeatherParam); the late
+  castle snowfall / fire sky are story SFX and the Cloud_Fire dome (gap, not exported).
+
 ### Open
 - Lighting is the game's own light set, GI probe, LUT and auto exposure; in-between hours blend
   the two probe variants around the hour (`probe_maps`, RGBA16F texel blend). (Material names like

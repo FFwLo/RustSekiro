@@ -3,7 +3,9 @@
 //!   8 / 2 / 4 / 6 work as arrows too).
 //! Sections: Enemy (AI mode, drill attack and interval, type and outfit - those two restart the
 //! game with the choice written to config.toml), Deathblow, Skills (combat art and the three
-//! prosthetic slots, live; names from the game's own text), Player, Simulation.
+//! prosthetic slots, live; names from the game's own text), Player, Map (load any exported map,
+//! time of day, a day-night cycle, the map's light sets and draw-param looks, the sky dome),
+//! Simulation.
 
 use bevy::prelude::*;
 
@@ -112,16 +114,56 @@ enum Item {
     Speed,
     Hitboxes,
     Reset,
+    Map,
+    Hour,
+    DayCycle,
+    Weather,
+    Sky,
 }
 
-const SECTIONS: [(&str, &[Item]); 6] = [
+const SECTIONS: [(&str, &[Item]); 7] = [
     ("ENEMY", &[Item::AiMode, Item::Attack, Item::Interval, Item::EnemyType, Item::Outfit, Item::EnemyHeal]),
     ("DEATHBLOW", &[Item::BreakPosture, Item::DeathblowNow, Item::DeathblowBehind, Item::PlungeNow, Item::KickDownNow, Item::VaultNow, Item::StealthSetup, Item::StealthFar]),
     ("SKILLS", &[Item::Art, Item::Tool1, Item::Tool2, Item::Tool3]),
     ("PLAYER", &[Item::God, Item::NoPosture, Item::InfiniteEmblems, Item::Refill, Item::FlowingWater, Item::Sheathe]),
     ("MOVEMENT TESTS", &[Item::DropHeight, Item::DropNow, Item::HookHeight, Item::HookNow, Item::HookClear]),
+    ("MAP", &[Item::Map, Item::Hour, Item::DayCycle, Item::Weather, Item::Sky]),
     ("SIMULATION", &[Item::Speed, Item::Hitboxes, Item::Reset]),
 ];
+
+/// Day-night cycle speeds: game hours per real second (map::DayCycle).
+const DAY_SPEEDS: [(f32, &str); 4] = [(0.0, "off"), (1.0 / 60.0, "1 game hour a minute"), (0.1, "1 game hour in 10 s"), (0.5, "1 game hour in 2 s")];
+
+/// The castle top's story looks (map.rs FIGHT_LIGHTING, m11_01_00_00.emevd): the Owl's sub 50
+/// and Emma / Isshin Ashina's sub 40.
+fn look_name(v: &str) -> String {
+    match v {
+        "base" => "map's own".into(),
+        "0750" => "the Owl's golden haze (0750)".into(),
+        "0740" => "Isshin's fiery sunset (0740)".into(),
+        v => format!("draw params {v}"),
+    }
+}
+
+fn maps() -> &'static [(String, String)] {
+    static LIST: std::sync::OnceLock<Vec<(String, String)>> = std::sync::OnceLock::new();
+    LIST.get_or_init(crate::map::exported_maps)
+}
+
+/// The map's weather choices: each draw-param look with each of its light sets.
+fn weathers(looks: &crate::map::MapLooks) -> Vec<(usize, i32)> {
+    let sets = if looks.light_sets.is_empty() { vec![0] } else { looks.light_sets.clone() };
+    (0..looks.looks.len().max(1)).flat_map(|l| sets.iter().map(move |&id| (l, id))).collect()
+}
+
+/// The map-section resources, one parameter (a system takes 16 at most).
+type MapParams<'w> = (
+    Option<ResMut<'w, crate::map::MapLighting>>,
+    Option<Res<'w, crate::map::MapLooks>>,
+    Option<ResMut<'w, crate::map::DayCycle>>,
+    Option<ResMut<'w, crate::sky::SkyChoice>>,
+    Option<ResMut<'w, Messages<crate::map::GoToMap>>>,
+);
 
 /// Fall tests: the heights Wolf is lifted to (m). 20 m is where a fall can kill at all
 /// (exe FUN_14084e5d0, HitMtrlParam fallDeathDist 40 on a normal floor); 45 m is over it.
@@ -186,6 +228,12 @@ pub struct DebugMenu {
     tool_slots: [i64; 3],
     /// The config enemy (chr, npc_row) the pending choice was last synced to.
     seen_enemy: Option<(String, Option<i64>)>,
+    /// Map section: the picked map (index into maps()), the day-cycle speed, the weather (index
+    /// into weathers()) and the map it was set on.
+    map: usize,
+    day_speed: usize,
+    weather: usize,
+    weather_map: Option<String>,
     message: String,
 }
 
@@ -253,6 +301,7 @@ fn menu_input(
     mut statuses: Option<ResMut<crate::status::Statuses>>,
     mut hooks: Option<ResMut<crate::map::GrapplePoints>>,
     mut exit: MessageWriter<AppExit>,
+    (mut lighting, looks, mut day, mut sky, mut go): MapParams,
 ) {
     if keys.just_pressed(KeyCode::F1) {
         menu.open = !menu.open;
@@ -275,6 +324,17 @@ fn menu_input(
                 dbg.mode = want;
             }
         }
+    }
+    // A freshly loaded map starts on its own look and light set.
+    let loaded = crate::map::loaded_map();
+    if menu.weather_map != loaded {
+        if let (Some(l), Some(lk)) = (lighting.as_deref(), looks.as_deref()) {
+            menu.weather = weathers(lk).iter().position(|w| *w == (0, l.light_set)).unwrap_or(0);
+        }
+        if let Some(i) = loaded.as_ref().and_then(|m| maps().iter().position(|(id, _)| id == m)) {
+            menu.map = i;
+        }
+        menu.weather_map = loaded;
     }
     if !menu.open {
         return;
@@ -553,6 +613,51 @@ fn menu_input(
             pad.reset = true;
             menu.message = "reset".into();
         }
+        Item::Map if !maps().is_empty() => {
+            menu.map = cycle(menu.map, maps().len());
+            if enter {
+                let id = maps()[menu.map].0.clone();
+                match go.as_mut() {
+                    Some(m) => {
+                        m.write(crate::map::GoToMap(id.clone()));
+                        menu.message = format!("loading {id}");
+                    }
+                    None => menu.message = "no map system in this run".into(),
+                }
+            }
+        }
+        Item::Hour => {
+            if let Some(l) = lighting.as_mut() {
+                l.hour = ((l.hour + step as f32).round()).rem_euclid(24.0);
+                l.applied = false;
+            }
+        }
+        Item::DayCycle => {
+            menu.day_speed = cycle(menu.day_speed, DAY_SPEEDS.len());
+            if let Some(d) = day.as_mut() {
+                d.hours_per_sec = DAY_SPEEDS[menu.day_speed].0;
+            }
+        }
+        Item::Weather => {
+            if let (Some(l), Some(lk)) = (lighting.as_mut(), looks.as_deref()) {
+                let ws = weathers(lk);
+                menu.weather = cycle(menu.weather.min(ws.len() - 1), ws.len());
+                let (look, set) = ws[menu.weather];
+                if let Some((_, dp)) = lk.looks.get(look) {
+                    l.drawparam = dp.clone();
+                }
+                l.light_set = set;
+                l.applied = false;
+            }
+        }
+        Item::Sky => {
+            if let Some(c) = sky.as_mut() {
+                // None (the map's and hour's own), then each dome.
+                let i = c.0.and_then(|d| crate::sky::DOMES.iter().position(|x| x.0 == d)).map_or(0, |i| i + 1);
+                let n = cycle(i, crate::sky::DOMES.len() + 1);
+                c.0 = (n > 0).then(|| crate::sky::DOMES[n - 1].0);
+            }
+        }
         _ => {}
     }
 }
@@ -663,6 +768,7 @@ fn draw_menu(
     time: Res<Time<Virtual>>,
     hurtboxes: Res<crate::combat::ShowHurtboxes>,
     mut text: Query<(&mut Text, &mut Node), With<MenuText>>,
+    (lighting, looks, sky): (Option<Res<crate::map::MapLighting>>, Option<Res<crate::map::MapLooks>>, Option<Res<crate::sky::SkyChoice>>),
 ) {
     let Ok((mut t, mut node)) = text.single_mut() else { return };
     let want = if menu.open { Display::Flex } else { Display::None };
@@ -729,6 +835,32 @@ fn draw_menu(
             Item::Speed => format!("game speed: x{}", time.relative_speed()),
             Item::Hitboxes => format!("hitboxes / hurtboxes (H): {}", on(hurtboxes.0)),
             Item::Reset => "reset fight".into(),
+            Item::Map => match maps().get(menu.map) {
+                Some((id, label)) => format!("map: {label}{}", if crate::map::loaded_map().as_deref() == Some(id.as_str()) { "  (here)" } else { "  - Enter: go" }),
+                None => "map: none exported".into(),
+            },
+            Item::Hour => match lighting.as_deref() {
+                Some(l) => {
+                    let h = l.hour.rem_euclid(24.0);
+                    format!("time of day: {:02}:{:02}", h.floor() as u32, ((h.fract() * 60.0).round() as u32).min(59))
+                }
+                None => "time of day: no map".into(),
+            },
+            Item::DayCycle => format!("day-night cycle: {}", DAY_SPEEDS[menu.day_speed].1),
+            Item::Weather => match (lighting.as_deref(), looks.as_deref()) {
+                (Some(l), Some(lk)) => {
+                    let ws = weathers(lk);
+                    let (look, set) = ws[menu.weather.min(ws.len() - 1)];
+                    // The light set's sun (DiffColor0 weight) at the hour, as a hint of the look.
+                    let sun = l.at("LightSet", "DiffColor0", set).and_then(|c| c.get(3).copied()).map_or(String::new(), |w| format!(", sun x{w:.1}"));
+                    format!("weather: light set {set}{sun}, {}  ({}/{})", look_name(lk.looks.get(look).map_or("base", |x| x.0.as_str())), menu.weather.min(ws.len() - 1) + 1, ws.len())
+                }
+                _ => "weather: no map".into(),
+            },
+            Item::Sky => match sky.as_deref().and_then(|c| c.0) {
+                Some(d) => format!("sky: {} ({d})", crate::sky::DOMES.iter().find(|x| x.0 == d).map_or("?", |x| x.1)),
+                None => "sky: by map and hour".into(),
+            },
         }
     };
     let mut s = String::from("DEBUG MENU  (F1 close, arrows select / change, Enter run)\n");

@@ -14,11 +14,13 @@
 @group(0) @binding(5) var<uniform> tone: vec4<f32>;
 
 // Yebis Sensitometric tone table (mode 7) as a function of the exposed scene value x
-// (sekiro-rs docs/SHADER-INPUTS.md): A = 1 - e^(-1.442695x), B = 1 - e^(-4.456669x),
-// out = A + c (B^3 - A); the output power 1/2.2 follows (AfterGamma).
+// (sekiro-rs docs/SHADER-INPUTS.md): A = 1 - 2^(-1.442695x), B = 1 - 2^(-4.456669x),
+// out = A + c (B^3 - A); the output power 1/2.2 follows (AfterGamma). Base two, not e: the
+// game's ToneMap_WriteSensitometricToneMappingTablePS.ppo uses the SM4/5 `exp` instruction,
+// which is 2^x, with these two constants as its operands (sekiro-rs docs/EXPOSURE.md).
 fn sensitometric(x: vec3<f32>, c: f32) -> vec3<f32> {
-    let a = vec3(1.0) - exp(-1.442695 * x);
-    let b = vec3(1.0) - exp(-4.456669 * x);
+    let a = vec3(1.0) - exp2(-1.442695 * x);
+    let b = vec3(1.0) - exp2(-4.456669 * x);
     return a + c * (b * b * b - a);
 }
 

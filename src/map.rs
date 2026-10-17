@@ -1828,18 +1828,143 @@ fn switch_map(
     if loaded_map().as_deref() == Some(want.as_str()) {
         return;
     }
-    for e in &old {
+    info!("map switch: {:?} -> {want} for {} {:?}", loaded_map(), m.chr, m.npc_row);
+    swap_map(&want, &config, (&m.chr, m.npc_row), &old, &mut commands, &assets, &mut meshes, &mut materials, &mut wolf);
+}
+
+/// Unloads the map in force and loads `want` for the fight `(chr, npc_row)`; Wolf stands on
+/// its start.
+#[allow(clippy::too_many_arguments)]
+fn swap_map(
+    want: &str,
+    config: &GameConfig,
+    (chr, npc_row): (&str, Option<i64>),
+    old: &Query<Entity, Or<(With<MapPiece>, With<Sun>, With<FillLight>)>>,
+    commands: &mut Commands,
+    assets: &AssetServer,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<MapMaterial>,
+    wolf: &mut Query<&mut Transform, With<crate::player::Player>>,
+) {
+    for e in old {
         commands.entity(e).despawn();
     }
     Terrain::clear();
-    info!("map switch: {:?} -> {want} for {} {:?}", loaded_map(), m.chr, m.npc_row);
-    load_map_id(&want, &config, fight_row(&m.chr, m.npc_row), &mut commands, &assets, &mut meshes, &mut materials);
+    load_map_id(want, config, fight_row(chr, npc_row), commands, assets, meshes, materials);
     // The fight's row before the start search: `on_own_arena` must see the new boss, not the
     // old one, in a frame where enemy.rs reads the message after this (Bosses' request).
-    crate::enemy::set_fight(&m.chr, m.npc_row);
+    crate::enemy::set_fight(chr, npc_row);
     let start = player_start();
-    for mut tf in &mut wolf {
+    for mut tf in wolf.iter_mut() {
         tf.translation = start;
+    }
+}
+
+/// Debug menu (debug_menu.rs "MAP"): load this exported map now, with the fight in force, and
+/// restart the fight on it.
+#[derive(Message, Clone)]
+pub struct GoToMap(pub String);
+
+#[allow(clippy::too_many_arguments)]
+fn go_to_map(
+    mut msgs: MessageReader<GoToMap>,
+    config: Res<GameConfig>,
+    mut commands: Commands,
+    assets: Res<AssetServer>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<MapMaterial>>,
+    old: Query<Entity, Or<(With<MapPiece>, With<Sun>, With<FillLight>)>>,
+    mut wolf: Query<&mut Transform, With<crate::player::Player>>,
+    mut pad: Option<ResMut<crate::player::PadInput>>,
+) {
+    let Some(GoToMap(want)) = msgs.read().last().cloned() else { return };
+    info!("map switch (debug menu): {:?} -> {want}", loaded_map());
+    swap_map(&want, &config, (&config.enemy.chr, config.enemy.npc_row), &old, &mut commands, &assets, &mut meshes, &mut materials, &mut wolf);
+    // The enemies come back on their starts on the new ground (enemy::FightReset).
+    if let Some(p) = pad.as_mut() {
+        p.reset = true;
+    }
+}
+
+/// Every map the extractor exported (`extracted/map_<id>.bin` with its json: boss arenas, look
+/// maps, whole areas), plus the sandbox, for the debug menu: (id, label). A boss arena is named
+/// after its boss (the roster.json placement of its NpcParam row).
+pub fn exported_maps() -> Vec<(String, String)> {
+    let dir = crate::paths::extracted();
+    let roster: Vec<serde_json::Value> = std::fs::read_to_string(dir.join("enemies/roster.json")).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+    let boss_name = |row: i64| {
+        roster.iter().flat_map(|e| e["placements"].as_array().into_iter().flatten()).find(|p| p["npc"].as_i64() == Some(row)).and_then(|p| p["name"].as_str()).map(str::to_string)
+    };
+    let mut maps: Vec<String> = std::fs::read_dir(&dir)
+        .into_iter()
+        .flatten()
+        .filter_map(|e| e.ok()?.file_name().into_string().ok())
+        .filter_map(|n| n.strip_prefix("map_")?.strip_suffix(".bin").map(str::to_string))
+        .filter(|id| !id.contains("_giiv") && dir.join(format!("map_{id}.json")).exists())
+        .collect();
+    maps.sort();
+    let mut out: Vec<(String, String)> = maps
+        .into_iter()
+        .map(|id| {
+            let label = id.strip_prefix("boss_").and_then(|r| r.parse().ok()).and_then(boss_name).map_or(id.clone(), |n| format!("{n} arena ({id})"));
+            (id, label)
+        })
+        .collect();
+    out.push((crate::sandbox::CONSTRUCT_ID.to_string(), "Construct (parkour course)".to_string()));
+    out.push((crate::sandbox::MAP_ID.to_string(), "sandbox".to_string()));
+    out
+}
+
+/// The map's looks for the debug menu's weather: its draw params (the base file and the story
+/// variants `drawparam_variants`, the castle top's `_0740` / `_0750`) and the LightSet ids they
+/// key (m11_01: 0, 100, 110, 120).
+#[derive(Resource, Default, Clone)]
+pub struct MapLooks {
+    pub looks: Vec<(String, serde_json::Value)>,
+    pub light_sets: Vec<i32>,
+}
+
+impl MapLooks {
+    fn from_json(json: &serde_json::Value) -> Self {
+        let mut looks = vec![("base".to_string(), json["drawparam"].clone())];
+        for (k, v) in json["drawparam_variants"].as_object().into_iter().flatten() {
+            looks.push((k.clone(), v.clone()));
+        }
+        let mut light_sets: Vec<i32> = json["drawparam"]
+            .as_object()
+            .into_iter()
+            .flatten()
+            .filter(|(g, _)| g.starts_with("LightSet"))
+            .flat_map(|(_, params)| params.as_object().into_iter().flatten().flat_map(|(_, keys)| keys.as_array().into_iter().flatten().filter_map(|k| k["id"].as_i64())))
+            .map(|id| id as i32)
+            .collect();
+        light_sets.sort();
+        light_sets.dedup();
+        MapLooks { looks, light_sets }
+    }
+}
+
+/// Debug menu day-night cycle: game hours per real second (0 = the hour stays). The hour moves
+/// in quarter-hour steps, each a full lighting re-apply (light set, probe, LUT, sky dome).
+/// Sekiro has no running clock: its time of day is set by the story (common.emevd event 100,
+/// flags 9800-9803); this walks the same keyed hours.
+#[derive(Resource, Default)]
+pub struct DayCycle {
+    pub hours_per_sec: f32,
+    acc: f32,
+}
+
+fn day_cycle(time: Res<Time<Real>>, mut cycle: ResMut<DayCycle>, mut lighting: ResMut<MapLighting>) {
+    if cycle.hours_per_sec <= 0.0 {
+        cycle.acc = 0.0;
+        return;
+    }
+    cycle.acc += cycle.hours_per_sec * time.delta_secs();
+    if cycle.acc >= 0.25 {
+        let step = (cycle.acc / 0.25).floor() * 0.25;
+        cycle.acc -= step;
+        lighting.hour = (lighting.hour + step).rem_euclid(24.0);
+        lighting.applied = false;
     }
 }
 
@@ -1897,6 +2022,7 @@ fn load_map_id(map: &str, config: &GameConfig, fight: Option<i64>, commands: &mu
     if std::env::var("SHINOBI_MAP_NO_ENV").is_ok() {
         info!("map {id}: probe cube maps off (SHINOBI_MAP_NO_ENV)");
     }
+    commands.insert_resource(MapLooks::from_json(&json));
     commands.insert_resource(MapLighting {
         drawparam,
         light_set: std::env::var("SHINOBI_LIGHT_SET").ok().and_then(|v| v.parse().ok()).unwrap_or(json["light_set"].as_i64().unwrap_or(0) as i32),
@@ -2494,7 +2620,9 @@ impl Plugin for MapPlugin {
         app.add_systems(Update, (draw_grapple_points, draw_ledges).run_if(resource_exists::<crate::combat::ShowHurtboxes>));
         app.add_systems(Startup, (load_map, log_bindless))
             .add_systems(PostStartup, settle_player_start)
-            .add_systems(Update, ((hour_keys, apply_lighting, apply_giiv).chain().run_if(resource_exists::<MapLighting>), frame_rate_log, switch_map))
+            .add_message::<GoToMap>()
+            .init_resource::<DayCycle>()
+            .add_systems(Update, ((hour_keys, day_cycle, apply_lighting, apply_giiv).chain().run_if(resource_exists::<MapLighting>), frame_rate_log, switch_map, go_to_map.after(switch_map)))
             .add_systems(Startup, (crate::sandbox::spawn_enemies, crate::sandbox::spawn_bushes).after(load_map))
             .add_systems(Update, (crate::sandbox::place_wolf, crate::sandbox::watch, mesh_events, crate::sandbox::respawn_lineup, crate::sandbox::catalog_shots.run_if(resource_exists::<crate::sandbox::Catalog>)))
             .add_systems(FixedUpdate, bodies_on_terrain.after(ActorSet::Advance).before(crate::anim::PoseSet));
@@ -2567,6 +2695,25 @@ fn mesh_events(mut events: MessageReader<AssetEvent<Mesh>>, mut frame: Local<u32
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The debug menu's map list and the castle top's weather choices (its light sets and the
+    /// Owl's / Isshin's draw-param looks).
+    #[test]
+    fn the_debug_menu_lists_maps_and_looks() {
+        let dir = crate::paths::extracted();
+        let Ok(text) = std::fs::read_to_string(dir.join("map_boss_71001000.json")) else {
+            eprintln!("no map_boss_71001000.json: skipped");
+            return;
+        };
+        let maps = exported_maps();
+        assert!(maps.iter().any(|m| m.0 == "boss_71001000"), "{maps:?}");
+        assert!(maps.iter().all(|m| !m.0.contains("_giiv")), "{maps:?}");
+        assert_eq!(maps.last().map(|m| m.0.as_str()), Some(crate::sandbox::MAP_ID));
+        let looks = MapLooks::from_json(&serde_json::from_str(&text).unwrap());
+        assert_eq!(looks.light_sets, vec![0, 100, 110, 120]);
+        let names: Vec<&str> = looks.looks.iter().map(|l| l.0.as_str()).collect();
+        assert!(names.contains(&"base") && names.contains(&"0740") && names.contains(&"0750"), "{names:?}");
+    }
 
     /// `[world] map = "arenas"`: a fight with an exported arena loads it, any other fight gets
     /// no map (the flat test floor), never the base map.

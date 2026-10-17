@@ -46,6 +46,9 @@ mod hud;
 mod icon;
 mod interp;
 mod map;
+mod map_fx;
+mod map_grass;
+mod map_lights;
 mod menu;
 mod sandbox;
 mod showcase;
@@ -103,6 +106,9 @@ fn main() {
         .add_plugins(height_fog::HeightFogPlugin)
         .add_plugins(sky::SkyPlugin)
         .add_plugins(map::MapPlugin)
+        .add_plugins(map_lights::MapLightsPlugin)
+        .add_plugins(map_fx::MapFxPlugin)
+        .add_plugins(map_grass::MapGrassPlugin)
         .add_plugins(icon::IconPlugin)
         .add_plugins((
             config::ConfigPlugin,
