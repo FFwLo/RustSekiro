@@ -1981,10 +1981,12 @@ fn resolve(
                             && crate::prosthetic::rank_allows(crate::prosthetic::transition_rank(&da.state), 3);
                         // NpcParam def_* = 0; its per-attribute rates come with armor_rates below.
                         let weapon = if crate::player::is_tool_anim(&aa.anim) { tool_weapon.unwrap_or(5000) } else { 5000 };
+                        // atk_rate: an NPC's doping, Wolf's quick-item effects (items.rs); dmg_cut
+                        // the defender's (Wolf's Ungo's Sugar).
                         let dmg = match aa.side {
-                            Side::Player => player_attack_damage(&combat, &atk, weapon, &da),
+                            Side::Player => player_attack_damage(&combat, &atk, weapon, &da) * aa.atk_rate,
                             Side::Enemy => npc_hit_damage(&combat, &atk, &da) * aa.atk_rate,
-                        };
+                        } * da.dmg_cut;
                         // An armoured enemy (enemy.rs Armor): Wolf's hit lands on the armour part,
                         // which passes on x0.35 HP / x0.5 posture; its prosthetic (Loaded Spear,
                         // EquipParamWeapon 78xxx = Prosthetic Type 11) breaks it.

@@ -87,6 +87,13 @@ skills = [280]
 skill_points = 14
 # Wolf's look (Change Form at an idol): 0 Wolf, 1 Shura, 2 Ashina, 3 Tengu.
 form = 0
+# Goods held besides the gourd and the emblems: [EquipParamGoods id, count] (src/items.rs).
+# A starter kit for the test maps: Pellet 3020, Sweet Rice Ball 3060, Persimmon 3070, the sugars
+# 3400-3440, Divine Confetti 3450, Ceramic Shard 3500, Homeward Idol 3980; materials Scrap Iron 6000,
+# Black Gunpowder 6100, Lump of Fat Wax 6300 and others for the Sculptor's Workshop.
+items = [[3020, 3], [3060, 1], [3070, 3], [3400, 3], [3410, 3], [3420, 3], [3430, 3], [3440, 3], [3450, 5], [3500, 10], [3980, 1], [6000, 20], [6010, 5], [6100, 10], [6200, 5], [6300, 10], [6400, 3]]
+# The five quick-item slots (goods ids, 0 empty): R uses the one in hand, C moves to the next.
+quick_items = [3000, 3400, 3020, 3070, 3980]
 
 [audio]
 volume = 10.0

@@ -94,6 +94,10 @@ pub struct Player {
     pub(crate) throw_target: Option<Entity>,
     /// Equipped prosthetic slot (index into config player.prosthetics; Z cycles it).
     pub tool_slot: usize,
+    /// The quick-item slot in hand (config player.quick_items; items.rs).
+    pub quick_slot: usize,
+    /// A quick item being used: its goods and use state, until the state ends.
+    pub item_use: Option<(i64, String)>,
     /// TAE 922 ChrPhysicsVelosityScale in progress (`VelScale`).
     vel_scale: Option<VelScale>,
     /// A switch is in progress: when its arm anim ends the new tool unfolds (SubWeaponExpand).
@@ -143,6 +147,8 @@ pub enum Action {
     SwitchTool,
     /// Grappling Hook (ACTION_ARM_WIRE_SHOOT; wire.rs).
     Grapple,
+    /// Next quick item (gameAction 13 / 14: C here, the pad's d-pad down; items.rs).
+    NextItem,
     /// Talk / examine / wall hug / ledge hang (ACTION_ARM_WALL_HANG, key guide Kc@20; docking.rs).
     Interact,
 }
@@ -1427,7 +1433,7 @@ fn spawn_player(mut commands: Commands, combat: Res<Combat>, config: Res<GameCon
         }
     }
     commands.spawn((
-        Player { plunge: None, leap_homing: None, dock: None, wall_jumps: 0, last_wall: None, seat: Default::default(), wall_contact: None, speed_level: 0.0, requests: HashMap::new(), last_state: String::new(), gourd: config.player.gourd_charges, emblems: config.player.spirit_emblems, auto_aim: false, auto_aim_fresh: false, resurrections: config.player.resurrections, revive_queued: false, death_wait: 0.0, dead_for: 0.0, escape: None, jump_forward: false, jump_land: None, positioning_land: false, aged_form: false, step_tilt: 0.0, jump_tilt: 0.0, throw_start: None, throw_target: None, tool_slot: 0, vel_scale: None, expand_pending: false, sub_cat_before: 0, air_sub_count: 0, air_art_count: 0, art_enable_jump: false, timed: Vec::new(), held: Vec::new(), wire: None, perch: None, wire_todome: false, air_top: 0.0, safe_pos: None },
+        Player { plunge: None, leap_homing: None, dock: None, wall_jumps: 0, last_wall: None, seat: Default::default(), wall_contact: None, speed_level: 0.0, requests: HashMap::new(), last_state: String::new(), gourd: config.player.gourd_charges, emblems: config.player.spirit_emblems, auto_aim: false, auto_aim_fresh: false, resurrections: config.player.resurrections, revive_queued: false, death_wait: 0.0, dead_for: 0.0, escape: None, jump_forward: false, jump_land: None, positioning_land: false, aged_form: false, step_tilt: 0.0, jump_tilt: 0.0, throw_start: None, throw_target: None, tool_slot: 0, quick_slot: 0, item_use: None, vel_scale: None, expand_pending: false, sub_cat_before: 0, air_sub_count: 0, air_art_count: 0, art_enable_jump: false, timed: Vec::new(), held: Vec::new(), wire: None, perch: None, wire_todome: false, air_top: 0.0, safe_pos: None },
         actor,
         Name::new("Player"),
         Transform::from_xyz(0.0, CAPSULE_HALF_HEIGHT, 4.0),
@@ -1503,6 +1509,7 @@ pub(crate) fn read_pad(pads: &Query<&Gamepad>, enabled: bool, pad: &mut PadInput
         press(GamepadButton::North, Action::SwitchTool);
         press(GamepadButton::DPadUp, Action::SwitchTool);
         press(GamepadButton::LeftTrigger2, Action::Grapple);
+        press(GamepadButton::DPadDown, Action::NextItem);
     }
     // Updated every frame (a released stick drops back to walk) so the hysteresis has a history.
     pad.pad_running = stick_runs(pad.pad_running, level);
@@ -1578,6 +1585,10 @@ pub(crate) fn read_input(
     // Switch prosthetic tool: Z (gameAction 15).
     if keys.just_pressed(KeyCode::KeyZ) {
         pad.pressed.push(Action::SwitchTool);
+    }
+    // Next quick item: C (gameAction 14's key; 13's X sheathes here).
+    if keys.just_pressed(KeyCode::KeyC) {
+        pad.pressed.push(Action::NextItem);
     }
     // Grappling Hook: F, the game's key for the pad's L2.
     if keys.just_pressed(KeyCode::KeyF) {
@@ -2051,7 +2062,7 @@ fn buffer_flags(action: Action) -> &'static [i64] {
         Action::Prosthetic => &[136],
         // gap: the ChrActionFlags behind ACTION_ARM_CROUCH (bit 15) are not traced; the crouch
         // toggle is only taken from standby (decide).
-        Action::Crouch | Action::SwitchTool => &[],
+        Action::Crouch | Action::SwitchTool | Action::NextItem => &[],
         // gap: the accept / execute bits of ACTION_ARM_WIRE_SHOOT are not traced; taken as the
         // jump's (151 / 119): the wire moves open their cancels together with the jump's.
         Action::Grapple => &[151],
@@ -2178,7 +2189,7 @@ fn accept_flag(action: Action) -> &'static [i64] {
         Action::CombatArt => &[FLAG_ACCEPT_ATTACK],
         Action::Prosthetic => &[FLAG_ACCEPT_PROSTHETIC],
         Action::Grapple => &[FLAG_ACCEPT_JUMP],
-        Action::Crouch | Action::SwitchTool | Action::Interact => &[],
+        Action::Crouch | Action::SwitchTool | Action::Interact | Action::NextItem => &[],
     }
 }
 
@@ -2376,12 +2387,51 @@ fn decide(
     globals: Query<&GlobalTransform>,
     mut throw: ResMut<ActiveThrow>,
     mut fight: Option<ResMut<crate::enemy::FightReset>>,
-    snap: Option<ResMut<crate::camera::CameraSnap>>,
-    (wire_aim, grapples, ledges): (Option<Res<crate::wire::WireAim>>, Option<Res<crate::enemy::grapple::EnemyGrapples>>, Option<Res<crate::map::LedgeEdges>>),
+    mut snap: Option<ResMut<crate::camera::CameraSnap>>,
+    (wire_aim, grapples, ledges, mut used): (Option<Res<crate::wire::WireAim>>, Option<Res<crate::enemy::grapple::EnemyGrapples>>, Option<Res<crate::map::LedgeEdges>>, Option<ResMut<crate::items::Used>>),
 ) {
     let dt = time.delta_secs();
     let d = &combat.player;
     let (pe, p, a, tf) = &mut *player;
+    // The quick items' worn effects (items.rs): Wolf's damage rates and the regeneration.
+    let [atk, stam, cut, posture_cut] = crate::items::wolf_rates(&p.timed);
+    (a.atk_rate, a.stam_atk_rate, a.dmg_cut, a.posture_cut) = (atk, stam, cut, posture_cut);
+    let regen_dt = a.clock(dt);
+    crate::items::tick_regen(&p.timed, a, regen_dt);
+    // Next quick item (C / d-pad down): the next filled slot.
+    if p.requests.remove(&Action::NextItem).is_some() {
+        let next = crate::items::next_slot(&config, p.quick_slot);
+        if next != p.quick_slot {
+            p.quick_slot = next;
+            let id = crate::items::in_slot(&config, next);
+            let name = crate::items::param("EquipParamGoods", id)["name"].as_str().unwrap_or("").to_string();
+            log.push(format!("quick item: {}", if name.is_empty() { id.to_string() } else { name }), Color::srgb(0.85, 0.85, 0.75));
+        }
+    }
+    // A quick item in use: spent and in effect at its ConsumeCurrentGoods (TAE 65).
+    if let Some((goods, state)) = p.item_use.clone() {
+        if a.state.trim_start_matches("Crouch") != state {
+            p.item_use = None;
+        } else if d.anim(&a.anim).is_some_and(|an| an.events.iter().any(|e| e.kind == 65 && e.start > a.prev_t && e.start <= a.t)) {
+            for sp in crate::items::effects_of(goods) {
+                crate::items::wear(&mut p.timed, sp);
+            }
+            if let Some(u) = used.as_deref_mut() {
+                u.0.push(goods);
+            }
+            // The Homeward Idol: back to the last idol prayed at (idol.rs).
+            if goods == crate::items::HOMEWARD_IDOL {
+                if let Some((at, yaw)) = p.seat.checkpoint.and_then(crate::idol::respawn_at) {
+                    tf.translation = at + Vec3::Y * CAPSULE_HALF_HEIGHT;
+                    a.yaw = yaw;
+                    if let Some(s) = snap.as_deref_mut() {
+                        s.0 = true;
+                    }
+                }
+            }
+            log.push(format!("used goods {goods}"), Color::srgb(0.5, 1.0, 0.6));
+        }
+    }
     // A wire on an enemy follows him (wire.rs track): the shoot's snapshot left Wolf flying to
     // where Gyoubu / the Ape stood a second before.
     if let (Some(w), Some(gs)) = (p.wire.as_mut(), grapples.as_deref()) {
@@ -3404,6 +3454,21 @@ fn decide(
     // a000_250010 / 250011 / 250015), and Wolf stays crouched (crouch_ok).
     if p.requests.contains_key(&Action::UseItem) && accepts(d, a, Action::UseItem) {
         p.requests.remove(&Action::UseItem);
+        // Another quick item than the gourd (items.rs): its use state, if any is held. An empty
+        // slot or an empty stack does nothing.
+        let goods = crate::items::in_slot(&config, p.quick_slot);
+        if goods != GOURD_GOODS {
+            let state = crate::items::use_state(crate::items::param("EquipParamGoods", goods)["goodsUseAnim"].as_i64().unwrap_or(255));
+            if let Some(state) = state.filter(|_| goods > 0 && crate::items::count(&config, goods) > 0) {
+                let crouched = format!("Crouch{state}");
+                let play = if a.crouch && d.anim_key(&crouched).is_some() { crouched } else { state.to_string() };
+                if a.play_state(d, &play) {
+                    a.move_vel = Vec3::ZERO;
+                    p.item_use = Some((goods, state.to_string()));
+                }
+            }
+            return;
+        }
         // The repeat window counts only in the drinks (HKS 3986 / 3993: Drink, DrinkMove, Repeat,
         // RepeatMove), not in the empty shakes (round 32).
         let repeat_window = a.state.trim_start_matches("Crouch").starts_with("ItemGourdDrink") && !a.state.ends_with("Failed") && sp_ref_active(d, a, SP_REF_TAE_ENABLE_ITEM_REPEAT);

@@ -123,12 +123,20 @@ fn slots(config: &crate::config::GameConfig) -> Vec<Slot> {
         v.push(config.player.prosthetics.get(i).map_or(Slot::Empty, |id| Slot::Weapon(*id)));
     }
     v.push(Slot::Weapon(config.player.combat_art));
-    // Quick items: the Healing Gourd (goods 3000) with its charges, the rest empty.
-    v.push(Slot::Goods(3000, config.player.gourd_charges));
-    for _ in 0..4 {
-        v.push(Slot::Empty);
+    // Quick items: the five slots (config player.quick_items; items.rs) with their counts.
+    for k in 0..crate::items::SLOTS {
+        let id = crate::items::in_slot(config, k);
+        v.push(if id > 0 { Slot::Goods(id, crate::items::count(config, id)) } else { Slot::Empty });
     }
     v.push(Slot::Empty);
+    v
+}
+
+/// The goods Wolf holds of an EquipParamGoods goodsType (0 consumables, 1 key items, 2
+/// materials), by sortId, with their counts.
+fn held_goods(config: &crate::config::GameConfig, goods_type: i64) -> Vec<(i64, u32)> {
+    let mut v: Vec<(i64, u32)> = config.player.items.iter().copied().filter(|(id, n)| *n > 0 && crate::items::param("EquipParamGoods", *id)["goodsType"].as_i64() == Some(goods_type)).collect();
+    v.sort_by_key(|(id, _)| (crate::items::param("EquipParamGoods", *id)["sortId"].as_i64().unwrap_or(0), *id));
     v
 }
 
@@ -457,8 +465,9 @@ fn inventory(cat: usize, config: &crate::config::GameConfig, texts: &ItemTexts, 
         0 => {
             let g = config.player.gourd_charges;
             let mut v = vec![goods(3000, Some(g), vec![("Uses".to_string(), format!("{g}/{g}")), storage()])];
-            if let Some(id) = texts.goods_id("Homeward Idol") {
-                v.push(goods(id, None, vec![]));
+            for (id, n) in held_goods(config, 0) {
+                let max = crate::items::param("EquipParamGoods", id)["maxNum"].as_u64().unwrap_or(99) as u32;
+                v.push(goods(id, Some(n), vec![held(n, max), storage()]));
             }
             v
         }
@@ -470,9 +479,18 @@ fn inventory(cat: usize, config: &crate::config::GameConfig, texts: &ItemTexts, 
             if let Some(id) = texts.goods_id("Shinobi Prosthetic") {
                 v.push(goods(id, None, vec![held(1, 1), storage()]));
             }
+            for (id, n) in held_goods(config, 1) {
+                v.push(goods(id, (n > 1).then_some(n), vec![]));
+            }
             v
         }
-        2 => Vec::new(),
+        2 => held_goods(config, 2)
+            .into_iter()
+            .map(|(id, n)| {
+                let max = crate::items::param("EquipParamGoods", id)["maxNum"].as_u64().unwrap_or(99) as u32;
+                goods(id, Some(n), vec![held(n, max), storage()])
+            })
+            .collect(),
         _ => config.player.prosthetics.iter().map(|id| weapon(*id, vec![])).collect(),
     }
 }
@@ -499,7 +517,7 @@ fn skills(cat: usize, config: &crate::config::GameConfig, texts: &ItemTexts, tab
 /// prosthetic tools the combat data has (combat player.prosthetics, upgrades included); the art:
 /// the combat arts (EquipParamWeapon 5100-7700 with a name); quick items: the Healing Gourd and
 /// the Homeward Idol; Ninjutsu: none yet.
-fn equip_choices(slot: usize, combat: &crate::data::Combat, texts: &ItemTexts) -> Vec<Slot> {
+fn equip_choices(slot: usize, config: &crate::config::GameConfig, combat: &crate::data::Combat, texts: &ItemTexts) -> Vec<Slot> {
     match slot {
         0..=2 => {
             let mut ids: Vec<i64> = combat.player.prosthetics.iter().map(|t| t.id).collect();
@@ -509,9 +527,12 @@ fn equip_choices(slot: usize, combat: &crate::data::Combat, texts: &ItemTexts) -
         }
         3 => (5100..=7700).step_by(100).filter(|id| texts.weapon_name.contains_key(&(*id as u32))).map(Slot::Weapon).collect(),
         4..=8 => {
+            // The gourd and every consumable held that has a use (items.rs use_state).
             let mut v = vec![Slot::Goods(3000, 0)];
-            if let Some(id) = texts.goods_id("Homeward Idol") {
-                v.push(Slot::Goods(id, 0));
+            for (id, n) in held_goods(config, 0) {
+                if crate::items::use_state(crate::items::param("EquipParamGoods", id)["goodsUseAnim"].as_i64().unwrap_or(255)).is_some() && texts.goods_name.contains_key(&(id as u32)) {
+                    v.push(Slot::Goods(id, n));
+                }
             }
             v
         }
@@ -524,7 +545,7 @@ fn is_equipped(slot: usize, choice: &Slot, config: &crate::config::GameConfig) -
     match (slot, choice) {
         (0..=2, Slot::Weapon(id)) => config.player.prosthetics.contains(id),
         (3, Slot::Weapon(id)) => config.player.combat_art == *id,
-        (4..=8, Slot::Goods(3000, _)) => true,
+        (4..=8, Slot::Goods(id, _)) => config.player.quick_items.contains(id),
         _ => false,
     }
 }
@@ -548,13 +569,27 @@ fn equip(slot: usize, choice: &Slot, config: &mut crate::config::GameConfig) {
             }
         }
         (3, Slot::Weapon(id)) => config.player.combat_art = *id,
+        // A quick item goes in this slot (out of any other); the slot's own comes off.
+        (4..=8, Slot::Goods(id, _)) => {
+            let q = &mut config.player.quick_items;
+            q.resize(crate::items::SLOTS, 0);
+            let k = slot - 4;
+            if q[k] == *id {
+                q[k] = 0;
+            } else {
+                for s in q.iter_mut().filter(|s| **s == *id) {
+                    *s = 0;
+                }
+                q[k] = *id;
+            }
+        }
         _ => {}
     }
 }
 
 /// The picker's rows and details.
 fn equip_rows(slot: usize, config: &crate::config::GameConfig, combat: &crate::data::Combat, texts: &ItemTexts, tables: &Tables) -> Vec<(Row, Detail)> {
-    equip_choices(slot, combat, texts)
+    equip_choices(slot, config, combat, texts)
         .iter()
         .map(|c| {
             let (name, info) = slot_text(texts, c);
@@ -564,7 +599,7 @@ fn equip_rows(slot: usize, config: &crate::config::GameConfig, combat: &crate::d
                 _ => None,
             };
             let count = match c {
-                Slot::Goods(3000, _) => Some(config.player.gourd_charges.to_string()),
+                Slot::Goods(id, _) => Some(crate::items::count(config, *id).to_string()),
                 _ => None,
             };
             (Row { icon: icon.clone(), name: name.clone(), count, value: None, equipped: is_equipped(slot, c, config) }, Detail { name, icon, art, stats: vec![], info })
@@ -753,7 +788,7 @@ fn run_game_menu(
     let mut confirm = any(&[KeyCode::Enter, KeyCode::Space]);
     // The Equipped Items picker: up / down, Enter equips or removes, Esc back to its slot.
     if let Some(slot) = menu.pick {
-        let choices = equip_choices(slot, &combat, &texts);
+        let choices = equip_choices(slot, &config, &combat, &texts);
         let n = choices.len().max(1);
         if any(&[KeyCode::ArrowDown, KeyCode::KeyS, KeyCode::ArrowRight, KeyCode::KeyD]) {
             menu.index = (menu.index + 1) % n;
@@ -848,7 +883,7 @@ fn run_game_menu(
     }
     if confirm && menu.tab == 0 {
         let slot = menu.index;
-        menu.index = equip_choices(slot, &combat, &texts).iter().position(|c| is_equipped(slot, c, &config) && !matches!(c, Slot::Goods(..))).unwrap_or(0);
+        menu.index = equip_choices(slot, &config, &combat, &texts).iter().position(|c| match c { Slot::Goods(id, _) => slot >= 4 && crate::items::in_slot(&config, slot - 4) == *id, _ => is_equipped(slot, c, &config) }).unwrap_or(0);
         menu.pick = Some(slot);
     }
     if confirm && menu.tab == 3 {

@@ -66,9 +66,12 @@ struct ResLit(u32);
 /// The row the resurrection nodes sit in; one node per config player.resurrections.
 #[derive(Component)]
 struct ResRow;
-/// 0 the Spirit Emblem count, 1 the gourd's.
+/// 0 the Spirit Emblem count, 1 the quick item's.
 #[derive(Component)]
 struct ItemText(u8);
+/// The quick item's icon (the item in hand, items.rs).
+#[derive(Component)]
+struct QuickIcon;
 /// One enemy's bars over its head (one per enemy, spawned when it appears).
 #[derive(Component)]
 struct EnemyRoot(Entity);
@@ -95,7 +98,7 @@ impl Plugin for HudPlugin {
         app.init_resource::<CombatLog>()
             .init_resource::<Perilous>()
             .add_systems(Startup, (spawn_hud, spawn_perilous, spawn_deathblow_mark, spawn_lock_mark, spawn_item_icons, spawn_wire_mark))
-            .add_systems(Update, (sync_res_nodes, update_player_hud, update_enemy_hud, update_debug, update_log, debug_only, update_perilous, update_stealth, update_deathblow_mark, update_lock_mark, update_item_icons, update_wolf_build_up, hud_shots, update_wire_mark, update_boss_hud, flash_counters));
+            .add_systems(Update, (sync_res_nodes, update_player_hud, update_enemy_hud, update_debug, update_log, debug_only, update_perilous, update_stealth, update_deathblow_mark, update_lock_mark, update_item_icons, update_quick_icon, update_wolf_build_up, hud_shots, update_wire_mark, update_boss_hud, flash_counters));
         if let Some(f) = std::env::var("SHINOBI_HUD_POSTURE").ok().and_then(|v| v.parse::<f32>().ok()) {
             app.insert_resource(HoldPosture(f)).add_systems(Update, hold_posture);
         }
@@ -426,8 +429,14 @@ fn update_player_hud(
             *v = want;
         }
     }
+    let quick = crate::items::in_slot(&config, p.quick_slot);
     for (t, mut text) in &mut items {
-        let want = if t.0 == 0 { p.emblems.to_string() } else { p.gourd.to_string() };
+        let want = match (t.0, quick) {
+            (0, _) => p.emblems.to_string(),
+            (_, 0) => String::new(),
+            (_, crate::items::GOURD) => p.gourd.to_string(),
+            (_, id) => crate::items::count(&config, id).to_string(),
+        };
         if text.0 != want {
             text.0 = want;
         }
@@ -902,10 +911,10 @@ fn spawn_item_icons(mut commands: Commands, mut fonts: ResMut<Assets<Font>>, ass
             ItemText(which),
         )
     };
-    // The quick item (the Healing Gourd, iconId 151) and its count.
+    // The quick item in hand (the Healing Gourd, iconId 151, to start; items.rs) and its count.
     commands.spawn((at(79.1, 87.2, 4.2, 7.3), img("MENU_Item_Left").0)).with_children(|b| {
         let (i, v) = img("MENU_ItemIcon_00151");
-        b.spawn((inner(), i, v));
+        b.spawn((inner(), i, v, QuickIcon));
         b.spawn(Node { position_type: PositionType::Absolute, right: Val::Percent(2.0), bottom: Val::Percent(-4.0), ..default() }).with_children(|c| {
             c.spawn(number(17.0, 1));
         });
@@ -966,6 +975,33 @@ fn flash_counters(time: Res<Time>, config: Res<crate::config::GameConfig>, mut l
         let want = if config.player.combat_art > 0 { Visibility::Inherited } else { Visibility::Hidden };
         if *v != want {
             *v = want;
+        }
+    }
+}
+
+/// The quick item's icon follows the item in hand (its EquipParamGoods iconId; none when the
+/// slot is empty).
+fn update_quick_icon(
+    mut shown: Local<Option<i64>>,
+    assets: Res<AssetServer>,
+    config: Res<crate::config::GameConfig>,
+    player: Query<&crate::player::Player>,
+    mut q: Query<(&mut ImageNode, &mut Visibility), With<QuickIcon>>,
+) {
+    let goods = player.iter().next().map_or(0, |p| crate::items::in_slot(&config, p.quick_slot));
+    if *shown == Some(goods) {
+        return;
+    }
+    *shown = Some(goods);
+    let icon = if goods == crate::items::GOURD { 151 } else { crate::items::param("EquipParamGoods", goods)["iconId"].as_i64().unwrap_or(-1) };
+    let file = crate::game_menu::any_icon(icon).filter(|_| goods > 0 && icon >= 0);
+    for (mut img, mut vis) in &mut q {
+        match &file {
+            Some(f) => {
+                img.image = assets.load(f.clone());
+                *vis = Visibility::Inherited;
+            }
+            None => *vis = Visibility::Hidden,
         }
     }
 }
@@ -1269,7 +1305,7 @@ fn update_debug(
     mut text: Single<&mut Text, With<DebugText>>,
 ) {
     let mut s = String::from(
-        "LMB/J attack (hold = thrust)  RMB/K deflect  LMB+RMB art  Shift step (hold = sprint)  Space jump  MMB lock-on  Alt walk  Q crouch  Ctrl prosthetic  Z switch tool  F grapple  R gourd  E hug/hang  X sheathe/draw  LMB (dead) resurrect  T enemy AI on/off  H hurtboxes  Backspace reset  F5 reload config  F1 debug menu\n\n",
+        "LMB/J attack (hold = thrust)  RMB/K deflect  LMB+RMB art  Shift step (hold = sprint)  Space jump  MMB lock-on  Alt walk  Q crouch  Ctrl prosthetic  Z switch tool  F grapple  R quick item  C next item  E hug/hang  X sheathe/draw  LMB (dead) resurrect  T enemy AI on/off  H hurtboxes  Backspace reset  F5 reload config  F1 debug menu\n\n",
     );
     for (a, enemy) in &actors {
         let d = data_for(&combat, &a);

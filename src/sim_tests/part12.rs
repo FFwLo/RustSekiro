@@ -659,3 +659,39 @@ pub(crate) fn standing_a_stick_behind_quick_turns_into_the_move() {
         assert!(turn_between(yaw, std::f32::consts::PI).abs() < 0.1, "yaw {yaw}");
     }
 }
+
+/// A quick item other than the gourd (items.rs): C moves the hand to the next slot, R plays its
+/// use state (Ako's Sugar: ItemCandyAttackBuff, a000_250800) and at the consume frame Wolf wears
+/// its effect (SpEffect 3401, 30 s) and his attack rate rises; the stack loses one.
+#[test]
+pub(crate) fn a_sugar_is_eaten_and_raises_the_attack() {
+    let mut app = app();
+    move_enemy_far(&mut app);
+    {
+        let mut config = app.world_mut().resource_mut::<crate::config::GameConfig>();
+        config.player.items = vec![(3400, 3)];
+        config.player.quick_items = vec![3000, 3400, 0, 0, 0];
+    }
+    app.world_mut().init_resource::<crate::items::Used>();
+    app.world_mut().resource_mut::<PadInput>().press(Action::NextItem);
+    app.update();
+    app.world_mut().resource_mut::<PadInput>().press(Action::UseItem);
+    let mut states = Vec::new();
+    for _ in 0..120 {
+        app.update();
+        let world = app.world_mut();
+        let mut q = world.query_filtered::<&Actor, With<Player>>();
+        let s = q.single(world).unwrap().state.clone();
+        if states.last() != Some(&s) {
+            states.push(s);
+        }
+    }
+    assert!(states.iter().any(|s| s == "ItemCandyAttackBuff"), "{states:?}");
+    let world = app.world_mut();
+    let mut q = world.query_filtered::<(&Actor, &Player), With<Player>>();
+    let (a, p) = q.single(world).unwrap();
+    assert_eq!(p.quick_slot, 1);
+    assert!(p.timed.iter().any(|(id, left)| *id == 3401 && *left > 25.0), "{:?}", p.timed);
+    assert!((a.atk_rate - 1.125).abs() < 1e-3, "atk_rate {}", a.atk_rate);
+    assert_eq!(app.world().resource::<crate::items::Used>().0, vec![3400]);
+}

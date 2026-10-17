@@ -567,6 +567,53 @@ CrouchItemGourdDrinkFailed
 # Empty-gourd press in the repeat window (c0000_transition.lua 4024-4033, round 30)
 ItemGourdDrinkRepeatFailed
 CrouchItemGourdDrinkRepeatFailed
+# Quick items (EquipParamGoods goodsUseAnim -> the use state; items.rs)
+ItemPillTonic
+CrouchItemPillTonic
+ItemCandyAttackBuff
+CrouchItemCandyAttackBuff
+ItemCandyAttackBuffSacrifice
+CrouchItemCandyAttackBuffSacrifice
+ItemCandyBodyCoreBuff
+CrouchItemCandyBodyCoreBuff
+ItemCandyC
+CrouchItemCandyC
+ItemCandyE
+CrouchItemCandyE
+ItemAntiGhostBuff
+CrouchItemAntiGhostBuff
+ItemAntiHallucinogen
+CrouchItemAntiHallucinogen
+ItemPowderMedicineRecoverPoison
+CrouchItemPowderMedicineRecoverPoison
+ItemKaki
+CrouchItemKaki
+ItemOhagi
+CrouchItemOhagi
+ItemCoinBag
+CrouchItemCoinBag
+ItemColoredRice
+CrouchItemColoredRice
+ItemColoredRiceEmpty
+CrouchItemColoredRiceEmpty
+ItemBalloonMoneyDropBuff
+CrouchItemBalloonMoneyDropBuff
+ItemPottery
+CrouchItemPottery
+ItemStone
+CrouchItemStone
+ItemReturnStatue
+CrouchItemReturnStatue
+ItemFailed
+CrouchItemFailed
+ItemSuicide
+CrouchItemSuicide
+ItemStoneStatue
+CrouchItemStoneStatue
+ItemPaperDollExchangeWhite
+CrouchItemPaperDollExchangeWhite
+ItemRedoBell
+CrouchItemRedoBell
 
 # Combat art: Whirlwind Slash (weapon 5100, spAtkcategory 100 -> a100, behavior variation 5001)
 a100_316000

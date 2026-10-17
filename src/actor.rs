@@ -268,6 +268,9 @@ pub struct Actor {
     /// Attack multipliers from area scaling: HP damage, posture damage dealt.
     pub atk_rate: f32,
     pub stam_atk_rate: f32,
+    /// HP / posture damage taken x (Wolf's quick-item effects, items.rs: Ungo's / Gokan's Sugar).
+    pub dmg_cut: f32,
+    pub posture_cut: f32,
     /// Engine knockback (AtkParam knockbackDist_*, KnockBackParam times): horizontal
     /// velocity held for `kb_cont` seconds, then decelerated to 0 over `kb_dec_total`.
     pub kb_vel: Vec3,
@@ -382,6 +385,8 @@ impl Actor {
             vel_change_done: false,
             atk_rate: 1.0,
             stam_atk_rate: 1.0,
+            dmg_cut: 1.0,
+            posture_cut: 1.0,
             kb_vel: Vec3::ZERO,
             kb_cont: 0.0,
             kb_dec: 0.0,
@@ -539,7 +544,7 @@ impl Actor {
 
     pub fn add_posture(&mut self, amount: f32) {
         if amount > 0.0 && !self.no_posture {
-            self.posture = (self.posture + amount).min(self.posture_max + self.posture_debt);
+            self.posture = (self.posture + amount * self.posture_cut).min(self.posture_max + self.posture_debt);
             self.since_posture_damage = 0.0;
         }
     }

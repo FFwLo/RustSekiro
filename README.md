@@ -47,7 +47,8 @@ the game's key guide text). E (talk / wall hug / ledge hang) is reserved for tho
 | Prosthetic tool | Left Ctrl |
 | Switch prosthetic tool | Z |
 | Grappling hook | F |
-| Healing Gourd (use quick item) | R |
+| Use quick item (Healing Gourd, sugars, pellets ...) | R |
+| Next quick item | C |
 | Crouch | Q |
 | Wall hug / ledge hang / climb up (hold in the air to catch a ledge) | E |
 | Wall jump (jump in the air against a wall, or jump while hugging / hanging) | Space |

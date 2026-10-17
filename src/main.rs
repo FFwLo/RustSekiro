@@ -38,6 +38,7 @@ mod sky;
 mod fmod;
 mod game_menu;
 mod idol;
+mod items;
 mod gore;
 mod grading;
 mod hud;
@@ -82,6 +83,7 @@ fn main() {
         .add_plugins(shot::ShotPlugin)
         .add_plugins(game_menu::GameMenuPlugin)
         .add_plugins(idol::IdolPlugin)
+        .add_plugins(items::ItemsPlugin)
         .add_plugins(interp::InterpPlugin)
         .add_plugins(debug_menu::DebugMenuPlugin)
         .add_plugins(trace::TracePlugin)

@@ -227,6 +227,12 @@ pub struct PlayerConfig {
     /// Wolf's look (Change Form at an idol, src/form.rs): 0 Wolf, 1 Shura, 2 Ashina, 3 Tengu.
     #[serde(default)]
     pub form: u32,
+    /// Goods held besides the gourd and the emblems: [EquipParamGoods id, count] (src/items.rs).
+    #[serde(default)]
+    pub items: Vec<(i64, u32)>,
+    /// The five quick-item slots (goods ids, 0 empty); R uses the one in hand, C moves on.
+    #[serde(default = "default_quick_items")]
+    pub quick_items: Vec<i64>,
     /// Every move the game locks behind a skill (`combat::action_unlocked`: mid-air deflect / tools
     /// / arts, the sprint slide, the Prosthetic Arts follow-ups) is open, as for a Wolf with the
     /// whole tree. false = only those the `skills` list unlocks.
@@ -236,6 +242,10 @@ pub struct PlayerConfig {
     /// stateInfo 999-996: 0 / 1-249 / 250-499 / 500+). Default 500 (the full throw).
     #[serde(default = "default_sen")]
     pub sen: u32,
+}
+
+fn default_quick_items() -> Vec<i64> {
+    vec![3000, 0, 0, 0, 0]
 }
 
 fn default_sen() -> u32 {
@@ -268,7 +278,7 @@ fn default_emblems() -> u32 {
 
 impl Default for PlayerConfig {
     fn default() -> Self {
-        Self { gourd_charges: 3, spirit_emblems: default_emblems(), infinite_emblems: false, resurrections: default_resurrections(), combat_art: default_combat_art(), prosthetics: default_prosthetics(), skills: Vec::new(), skill_points: 0, form: 0, unlock_all_moves: true, sen: default_sen() }
+        Self { gourd_charges: 3, spirit_emblems: default_emblems(), infinite_emblems: false, resurrections: default_resurrections(), combat_art: default_combat_art(), prosthetics: default_prosthetics(), skills: Vec::new(), skill_points: 0, form: 0, items: Vec::new(), quick_items: default_quick_items(), unlock_all_moves: true, sen: default_sen() }
     }
 }
 
