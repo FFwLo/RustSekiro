@@ -83,6 +83,8 @@ resurrections = 1
 combat_art = 5100
 # Learned latent skills (SkillParam ids): 280 = Flowing Water (posture damage when guarding: slash x0.8, others x0.75).
 skills = [280]
+# Skill points to spend at a Sculptor's Idol (Acquire Skills).
+skill_points = 14
 
 [audio]
 volume = 10.0

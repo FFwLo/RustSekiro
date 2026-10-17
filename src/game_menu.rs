@@ -411,7 +411,7 @@ pub(crate) fn status_bar(root: &mut ChildSpawnerCommands, assets: &AssetServer, 
     root.spawn((abs(59.5, t, 20.0, h), BackgroundColor(plate))).with_children(|b| {
         b.spawn((abs(2.0, 12.0, 11.0, 40.0), image(assets, sprite("sb_fe/MENU_Skill_Lv")).with_color(Color::srgb(0.15, 0.15, 0.15)))).with_children(|d| {
             d.spawn(Node { justify_content: JustifyContent::Center, ..fill_row() }).with_children(|c| {
-                c.spawn(text("0", 14.0, Color::srgb(0.55, 0.85, 0.9), font));
+                c.spawn(text(&config.player.skill_points.to_string(), 14.0, Color::srgb(0.55, 0.85, 0.9), font));
             });
         });
         b.spawn((abs(14.0, 25.0, 60.0, 12.0), image(assets, sprite("sb_in_game/MENU_GaugeFrame"))));

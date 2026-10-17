@@ -47,6 +47,7 @@ mod menu;
 mod sandbox;
 mod showcase;
 mod shot;
+mod skill_tree;
 mod model;
 mod paths;
 mod perf;

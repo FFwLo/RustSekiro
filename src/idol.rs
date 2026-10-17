@@ -223,7 +223,7 @@ const ROWS: [(&str, bool); 10] = [
     ("Rest", true),
     ("Purchase Spirit Emblems", true),
     ("Travel", true),
-    ("Acquire Skills", false),
+    ("Acquire Skills", true),
     ("Enhance Physical Attributes", false),
     ("Enhance Attack Power", false),
     ("Dragonrot Restoration", false),
@@ -239,6 +239,8 @@ enum Page {
     Main,
     Purchase,
     Travel,
+    /// Acquire Skills (src/skill_tree.rs).
+    Skills,
 }
 
 #[derive(Resource, Default)]
@@ -248,7 +250,10 @@ struct IdolMenu {
     /// Travel: the region column (false) or its idols (true).
     in_list: bool,
     region: usize,
-    built: Option<(Page, usize, bool, usize, u32, u32)>,
+    /// Acquire Skills: the tree page, its cursor and the confirm dialog.
+    tree: crate::skill_tree::View,
+    /// What the screen was last built from (rebuilt when it changes).
+    built: Option<String>,
 }
 
 #[derive(Component)]
@@ -350,6 +355,7 @@ fn build(commands: &mut Commands, assets: &AssetServer, menu: &IdolMenu, font: &
                     "Rest" => "Rest at the Sculptor's Idol",
                     "Purchase Spirit Emblems" => "Purchase Spirit Emblems with Sen",
                     "Travel" => "Travel to another Sculptor's Idol",
+                    "Acquire Skills" => "Acquire new skills with skill points",
                     _ => "Not in this recreation yet",
                 };
                 root.spawn(abs(5.9, 89.6, 30.0, 4.0)).with_children(|c| {
@@ -388,6 +394,17 @@ fn build(commands: &mut Commands, assets: &AssetServer, menu: &IdolMenu, font: &
                     c.spawn(text(help, 16.0, DIM, font));
                 });
                 key_guide(root, assets, font, &[("sb_keytop/KG_Key_Enter", ":OK  "), ("sb_keytop/KG_Key_Esc", ":Back")]);
+            });
+        }
+        Page::Skills => {
+            commands.spawn((full, BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.55)), GlobalZIndex(110), IdolMenuRoot)).with_children(|root| {
+                root.spawn((abs(0.0, 0.0, 100.0, 100.0), image(assets, sprite("sb_in_game/MENU_Base_00"))));
+                title_bar(root, assets, font, "Acquire Skills");
+                crate::skill_tree::build(root, assets, font, menu.tree, &config.player.skills, config.player.skill_points, texts, tables);
+                root.spawn(abs(5.3, 91.6, 50.0, 4.0)).with_children(|c| {
+                    c.spawn(text("Review and Acquire Skills.", 16.0, DIM, font));
+                });
+                key_guide(root, assets, font, &[("sb_keytop/KG_Key_Enter", ":Acquire  "), ("sb_keytop/KG_Key_Esc", ":Back")]);
             });
         }
         Page::Travel => {
@@ -457,6 +474,7 @@ fn run_idol_menu(
     mut menu: ResMut<IdolMenu>,
     roots: Query<Entity, With<IdolMenuRoot>>,
     rows: Query<(&RowButton, &Interaction), Changed<Interaction>>,
+    (nodes, cats): (Query<(&crate::skill_tree::SkillNodeButton, &Interaction), Changed<Interaction>>, Query<(&crate::game_menu::CatButton, &Interaction), Changed<Interaction>>),
     (assets, font, mut config, texts, tables): (Res<AssetServer>, Res<MenuFont>, ResMut<crate::config::GameConfig>, Res<ItemTexts>, Res<Tables>),
     mut wolf: Query<(&mut crate::player::Player, &crate::actor::Actor)>,
 ) {
@@ -479,6 +497,7 @@ fn run_idol_menu(
     let (right, left) = (any(&[KeyCode::ArrowRight, KeyCode::KeyD]), any(&[KeyCode::ArrowLeft, KeyCode::KeyA]));
     let mut confirm = any(&[KeyCode::Enter, KeyCode::Space]);
     let back = keys.just_pressed(KeyCode::Escape);
+    let (prev_page, next_page) = (any(&[KeyCode::KeyC, KeyCode::KeyQ]), any(&[KeyCode::KeyV, KeyCode::KeyE]));
     keys.reset_all();
     mouse.reset_all();
     let mut clicked = None;
@@ -519,6 +538,10 @@ fn run_idol_menu(
                         menu.page = Page::Purchase;
                         menu.index = 0;
                     }
+                    "Acquire Skills" => {
+                        menu.page = Page::Skills;
+                        menu.tree = crate::skill_tree::View::default();
+                    }
                     "Travel" => {
                         menu.page = Page::Travel;
                         menu.region = regions().iter().position(|(_, v)| !v.is_empty()).unwrap_or(0);
@@ -536,6 +559,57 @@ fn run_idol_menu(
             } else if (confirm || clicked.is_some()) && p.emblems < config.player.spirit_emblems && config.player.sen >= EMBLEM_PRICE {
                 config.player.sen -= EMBLEM_PRICE;
                 p.emblems += 1;
+            }
+        }
+        Page::Skills => {
+            use crate::skill_tree as st;
+            let tree = st::tree();
+            let mut acquire = false;
+            for (n, i) in &nodes {
+                match i {
+                    Interaction::Pressed if !menu.tree.asking => {
+                        menu.tree.cursor = n.0;
+                        acquire = true;
+                    }
+                    Interaction::Hovered if !menu.tree.asking => menu.tree.cursor = n.0,
+                    _ => {}
+                }
+            }
+            for (c, i) in &cats {
+                if *i == Interaction::Pressed && !menu.tree.asking {
+                    menu.tree = st::View { page: c.0, ..default() };
+                }
+            }
+            let nodes_here = st::page(tree, menu.tree.page);
+            let here = nodes_here.get(menu.tree.cursor).map(|s| (*s).clone());
+            if menu.tree.asking {
+                if confirm {
+                    if let Some(s) = here.filter(|s| st::check(tree, s, &config.player.skills, config.player.skill_points).is_ok()) {
+                        config.player.skill_points -= s.cost;
+                        config.player.skills.push(s.id);
+                        info!("acquired skill {} (SkillParam), {} skill points left", s.id, config.player.skill_points);
+                    }
+                    menu.tree.asking = false;
+                } else if back {
+                    menu.tree.asking = false;
+                }
+            } else if back {
+                menu.page = Page::Main;
+                menu.index = 3;
+            } else if prev_page || next_page {
+                let n = st::PAGES.len();
+                menu.tree = st::View { page: if next_page { (menu.tree.page + 1) % n } else { (menu.tree.page + n - 1) % n }, ..default() };
+            } else {
+                for (go, dx, dy) in [(right, 1, 0), (left, -1, 0), (down, 0, 1), (up, 0, -1)] {
+                    if go {
+                        if let Some(i) = st::step(&nodes_here, menu.tree.cursor, dx, dy) {
+                            menu.tree.cursor = i;
+                        }
+                    }
+                }
+                if (confirm || acquire) && here.is_some_and(|s| st::check(tree, &s, &config.player.skills, config.player.skill_points).is_ok()) {
+                    menu.tree.asking = true;
+                }
             }
         }
         Page::Travel => {
@@ -579,8 +653,8 @@ fn run_idol_menu(
             }
         }
     }
-    let key = (menu.page, menu.index, menu.in_list, menu.region, p.emblems, config.player.sen);
-    if menu.built != Some(key) {
+    let key = format!("{:?} {} {} {} {} {} {:?} {:?} {}", menu.page, menu.index, menu.in_list, menu.region, p.emblems, config.player.sen, menu.tree, config.player.skills, config.player.skill_points);
+    if menu.built.as_ref() != Some(&key) {
         for r in &roots {
             commands.entity(r).despawn();
         }
@@ -715,14 +789,18 @@ pub struct IdolPlugin;
 
 impl Plugin for IdolPlugin {
     fn build(&self, app: &mut App) {
-        // SHINOBI_IDOL_PAGE=<0-2>: open on Main / Purchase / Travel (SHINOBI_SHOT captures with
+        // SHINOBI_IDOL_PAGE=<0-3>: open on Main / Purchase / Travel / Acquire Skills (SHINOBI_SHOT captures with
         // SHINOBI_TITLE=idol).
         let page = match std::env::var("SHINOBI_IDOL_PAGE").ok().as_deref() {
             Some("1") => Page::Purchase,
             Some("2") => Page::Travel,
+            Some("3") => Page::Skills,
             _ => Page::Main,
         };
-        app.insert_resource(IdolMenu { page, region: if page == Page::Travel { 1 } else { 0 }, ..default() })
+        // SHINOBI_TREE_PAGE=<0-4> / SHINOBI_TREE_CURSOR=<n>: the Acquire Skills tree and node shown.
+        let num = |k: &str| std::env::var(k).ok().and_then(|v| v.parse::<usize>().ok()).unwrap_or(0);
+        let tree = crate::skill_tree::View { page: num("SHINOBI_TREE_PAGE"), cursor: num("SHINOBI_TREE_CURSOR"), asking: false };
+        app.insert_resource(IdolMenu { page, region: if page == Page::Travel { 1 } else { 0 }, tree, ..default() })
             .add_systems(Startup, spawn_idols)
             .add_systems(Update, open_menu)
             .add_systems(PreUpdate, run_idol_menu.after(crate::menu::MenuInput));
