@@ -1072,30 +1072,33 @@ fn ninsatsu_hit(combat: Res<Combat>, player: Single<&Actor, (With<Player>, Witho
     }
 }
 
-/// How near a fighting enemy must stand to flinch when a comrade's posture breaks [m].
+/// How near Wolf a fighting enemy must stand to flinch at his deathblow [m].
 const DEATHBLOW_FLINCH_RANGE: f32 = 10.0;
 
-/// As an enemy's posture breaks (Wolf's deathblow opens), the others fighting him within
-/// DEATHBLOW_FLINCH_RANGE of it drop what they are doing and flinch (their small damage reaction,
-/// away from Wolf): the user (2026-10-17), "enemies should stop attacking and flinch when
-/// someone gets deathblow", then "only ... when their comrade gets staggered, not getting
-/// deathblow". gap: no game data found for it (Wolf's deathblow clips shoot nothing at the
-/// others; c1010 / c1020 have no fear state but FireFearReaction).
+/// As Wolf's deathblow blade goes in (its atkAttribute 5 Ninsatsu hit, as `ninsatsu_hit`), the
+/// other enemies fighting him within DEATHBLOW_FLINCH_RANGE drop what they are doing and flinch
+/// (their small damage reaction, away from him): the user (2026-10-17), "enemies should stop
+/// attacking and flinch when someone gets deathblow", with a capture of the soldiers recoiling
+/// at the kill (at the deathblow's start they flinched at the posture break itself). gap: no
+/// game data found for it (Wolf's deathblow clips shoot nothing at the others; c1010 / c1020
+/// have no fear state but FireFearReaction).
 fn deathblow_flinch(
     combat: Res<Combat>,
-    player: Single<&Transform, (With<Player>, Without<Enemy>)>,
-    mut q: Query<(Entity, &mut Enemy, &mut Actor, &Transform), Without<Player>>,
-    mut broken: Local<HashSet<Entity>>,
+    player: Single<(&Actor, &Transform), (With<Player>, Without<Enemy>)>,
+    mut q: Query<(&mut Enemy, &mut Actor, &Transform), Without<Player>>,
 ) {
-    let ptf = *player;
-    let now: HashSet<Entity> = q.iter().filter(|(_, e, ..)| e.is_broken()).map(|(ent, ..)| ent).collect();
-    let fresh: Vec<Vec3> = q.iter().filter(|(ent, ..)| now.contains(ent) && !broken.contains(ent)).map(|(_, _, _, tf)| tf.translation).collect();
-    *broken = now;
-    if fresh.is_empty() {
+    let (pa, ptf) = *player;
+    let blade = pa.state.contains("Deathblow")
+        && combat.player.anim(&pa.anim).is_some_and(|an| {
+            an.events.iter().any(|ev| {
+                ev.start > pa.prev_t && ev.start <= pa.t && ev.arg_i64("BehaviorJudgeID").is_some_and(|j| combat.player.attacks.get(&j.to_string()).is_some_and(|atk| atk.atk_attribute == 5))
+            })
+        });
+    if !blade {
         return;
     }
-    for (_, mut e, mut a, tf) in &mut q {
-        if e.is_dead() || e.is_broken() || e.targeting.state != crate::stealth::BATTLE || !fresh.iter().any(|p| p.distance(tf.translation) <= DEATHBLOW_FLINCH_RANGE) {
+    for (mut e, mut a, tf) in &mut q {
+        if e.is_dead() || e.is_broken() || e.targeting.state != crate::stealth::BATTLE || tf.translation.distance(ptf.translation) > DEATHBLOW_FLINCH_RANGE {
             continue;
         }
         let d = combat.data_of(&a);
