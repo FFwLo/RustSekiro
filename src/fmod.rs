@@ -982,9 +982,10 @@ fn boss_music(
 }
 
 /// The game's sounds pause while the screen is not Playing (Fmod::set_paused): the menus stop
-/// the sim, and a looping effect sound kept going behind Paused, Title and the picker.
+/// the sim, and a looping effect sound kept going behind Paused, Title and the picker. The idol
+/// menu leaves the world running, so its sounds go on (the user: muted at an idol).
 pub(crate) fn pause_off_screen(mut fmod: NonSendMut<Fmod>, screen: Option<Res<State<crate::menu::Screen>>>, mut last: Local<Option<bool>>) {
-    let paused = screen.is_some_and(|s| *s.get() != crate::menu::Screen::Playing);
+    let paused = screen.is_some_and(|s| !matches!(*s.get(), crate::menu::Screen::Playing | crate::menu::Screen::Idol));
     if *last != Some(paused) {
         fmod.set_paused(paused);
         *last = Some(paused);

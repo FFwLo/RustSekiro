@@ -115,7 +115,8 @@ pub struct Seat {
     pub open: bool,
     /// The last idol prayed at.
     pub checkpoint: Option<usize>,
-    /// The enemies should come back (a prayer or a rest; player.rs sets FightReset).
+    /// The enemies should come back (a rest; player.rs sets FightReset). Kneeling alone leaves
+    /// them (the user: they came back as soon as Wolf sat).
     pub respawn: bool,
 }
 
@@ -150,7 +151,7 @@ fn seat_tick(seat: &mut Seat, p: &mut crate::player::Player, a: &mut crate::acto
                         a.yaw = idol.wolf_yaw();
                         a.move_vel = Vec3::ZERO;
                         rest(p, a, config);
-                        *seat = Seat { idol: Some(i), phase: Phase::Kneeling, cmd: None, open: false, checkpoint: Some(i), respawn: true };
+                        *seat = Seat { idol: Some(i), phase: Phase::Kneeling, cmd: None, open: false, checkpoint: Some(i), respawn: false };
                         return true;
                     }
                 }
