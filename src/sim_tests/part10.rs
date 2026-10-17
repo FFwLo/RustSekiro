@@ -590,8 +590,27 @@ pub(crate) fn deathblow_to_defeat(chr: &str, row: i64) -> (usize, Vec<i64>, Vec<
     }
     let mut seen = Vec::new();
     let mut flags = Vec::new();
+    // The Folding Screen Monkeys: the bar holder 2000800 is a stand-in; the win (m20 12005800)
+    // waits on the four c1260, not on the c1250 monkeys among them.
+    super::part01::BOSS_CHR.with(|c| c.set((row == 12600050).then_some("c1260")));
+    super::part01::BOSS_DONE.with(|d| d.borrow_mut().clear());
+    // The win stays (no restart 5 s after it while a deathblow still plays: the Monkeys' last
+    // catch wins at once, the bar holder's HP 22 -> 0 by 3126010).
+    app.world_mut().resource_mut::<crate::enemy::AutoRestart>().0 = false;
+    // (Its cast comes in a few frames after the bar holder.)
+    for _ in 0..60 {
+        if super::part01::try_boss_in_play(app.world_mut()).is_some() {
+            break;
+        }
+        app.update();
+    }
     for n in 1..=5 {
-        seen.extend(break_and_deathblow(&mut app, 600));
+        if let Some(b) = super::part01::try_boss_in_play(app.world_mut()) {
+            seen.extend(break_and_deathblow(&mut app, 600));
+            if row == 12600050 {
+                super::part01::BOSS_DONE.with(|d| d.borrow_mut().push(b));
+            }
+        }
         // The Owl (Father)'s second phase (m11_00 11005912: his first ThrowDef12000's message 20,
         // then his SpEffect 3506022 from the step his AI takes, a000_005201-5203, sets 11005902,
         // which his kneel 11005920 needs; 11005912 sets 200051 first). The sim's boss is
@@ -1562,4 +1581,21 @@ pub(crate) fn hit_stop_holds_posture_regen_and_sp_effect_timers() {
     assert!(held_timer < free_timer * 0.25, "timer in hit stop {held_timer} vs {free_timer}");
 }
 
-
+/// The Folding Screen Monkeys as the menu picks them (c1260 / 12600050): the bar holder 2000800
+/// (a c1000 dummy in the MSB) is a hidden stand-in away from the field, not a fifth monkey one
+/// deathblow beat; the four c1260 are the fight.
+#[test]
+pub(crate) fn the_monkeys_bar_holder_is_off_the_field() {
+    if !std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/extracted/enemies/c1260.json")).exists() {
+        return;
+    }
+    let mut app = app_cfg("c1260", Some(12600050), Vec::new());
+    for _ in 0..60 {
+        app.update();
+    }
+    let w = app.world_mut();
+    let mut q = w.query::<(&Enemy, &Transform, &Visibility, Has<crate::enemy::Cast>)>();
+    let main: Vec<_> = q.iter(w).filter(|x| !x.3).map(|x| (x.0.stand_in, x.1.translation, *x.2)).collect();
+    assert!(main.len() == 1 && main[0].0 && main[0].1.z > 1000.0 && main[0].2 == Visibility::Hidden, "bar holder: {main:?}");
+    assert_eq!(q.iter(w).filter(|x| x.3).count(), 4, "the four monkeys");
+}

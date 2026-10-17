@@ -150,10 +150,12 @@ pub fn map_id(config: &GameConfig) -> Option<String> {
 /// 12505885 WarpCopy at the hand-over, the updrafts and the strong wind 52000830 across the cloud
 /// floor), and the trees' grapple points ride on its geometry; on the sandbox he started in
 /// the air and fell.
-const OWN_ARENA_ROWS: [i64; 2] = [52000000, 53000000];
-
+/// Since 2026-10-17 every main boss (menu.rs MAIN_BOSS_ROWS) fights in its own arena under the
+/// sandbox: the fights' scripts and AI read their places (the Folding Screen Monkeys hide in the
+/// temple hall's beams and rooms, Lady Butterfly's second form waits for Wolf in her region
+/// 1002830, m10 11005812).
 fn sandbox_exception(chr: &str, npc_row: Option<i64>) -> Option<String> {
-    fight_row(chr, npc_row).filter(|r| OWN_ARENA_ROWS.contains(r)).and_then(|_| boss_arena(chr, npc_row))
+    fight_row(chr, npc_row).filter(|r| crate::menu::MAIN_BOSS_ROWS.contains(r)).and_then(|_| boss_arena(chr, npc_row))
 }
 
 /// The boss's own arena: `extracted/map_boss_arenas.json` (tools/boss_arenas.py) maps a boss
@@ -1504,11 +1506,18 @@ fn apply_lighting(
                 None => c.remove::<bevy::post_process::bloom::Bloom>(),
             };
         }
-        if let Some((_, specular, diffuse)) = &probe {
-            c.insert((
-                EnvironmentMapLight { diffuse_map: diffuse.clone(), specular_map: specular.clone(), intensity: ENV_PER_UNIT * scale * env_scale, ..default() },
-                bevy::core_pipeline::Skybox { image: Some(specular.clone()), brightness: ENV_PER_UNIT * scale * env_scale, ..default() },
-            ));
+        // A map without a probe takes the last map's off (a switch from the castle top to Hirata
+        // kept its cubes), as a fresh start on it has none.
+        match &probe {
+            Some((_, specular, diffuse)) => {
+                c.insert((
+                    EnvironmentMapLight { diffuse_map: diffuse.clone(), specular_map: specular.clone(), intensity: ENV_PER_UNIT * scale * env_scale, ..default() },
+                    bevy::core_pipeline::Skybox { image: Some(specular.clone()), brightness: ENV_PER_UNIT * scale * env_scale, ..default() },
+                ));
+            }
+            None => {
+                c.remove::<(EnvironmentMapLight, bevy::core_pipeline::Skybox)>();
+            }
         }
         if let Some(n) = lut {
             c.insert(ColorGradingLut(assets.load_builder().with_settings(|s: &mut ImageLoaderSettings| s.is_srgb = false).load(format!("{}_lut_{n:04}.dds", lighting.stem))));
@@ -1781,7 +1790,7 @@ fn fight_row(chr: &str, npc_row: Option<i64>) -> Option<i64> {
 /// own arena, or back to the config's map, without a relaunch: the old pieces and lights go,
 /// the new map loads (terrain, lighting, pieces; `apply_lighting` re-dresses the camera from
 /// the fresh MapLighting) and Wolf stands on its start. Only with the config's `[world] map`
-/// on; on the sandbox only to and from the fights it cannot hold (`OWN_ARENA_ROWS`);
+/// on; on the sandbox to and from the main bosses' own arenas (`sandbox_exception`);
 /// `SHINOBI_MAP` pins one map for the run.
 fn switch_map(
     mut msgs: MessageReader<crate::enemy::SpawnEncounter>,
@@ -1799,7 +1808,7 @@ fn switch_map(
         return;
     }
     let want = match boss_arena(&m.chr, m.npc_row) {
-        // The sandbox, but for the fights it cannot hold (OWN_ARENA_ROWS).
+        // The sandbox, but the main bosses fight in their own arenas (sandbox_exception).
         _ if base == crate::sandbox::MAP_ID => sandbox_exception(&m.chr, m.npc_row).unwrap_or(base),
         Some(a) => a,
         None if base == ARENAS_ONLY => {

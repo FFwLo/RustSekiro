@@ -1244,6 +1244,13 @@ pub(crate) fn isshin_ashina_follows_emma() {
         app.update();
     }
     assert!(enemy_chrs(&mut app).iter().any(|c| c == "c5430"), "the fight ended: {:?}", enemy_chrs(&mut app));
+    // His entrance 11115930 unloads Emma (2004[29] Set Character Backread State 1110900, 1):
+    // she leaves the field, so his deathblows are his.
+    let world = app.world_mut();
+    let combat = world.resource::<Combat>().kind_index("c7400", Some(74000010));
+    let mut q = world.query::<(&Enemy, &Actor)>();
+    let emma: Vec<bool> = q.iter(world).filter(|(_, a)| Some(a.kind) == combat).map(|(e, _)| e.disabled).collect();
+    assert!(!emma.is_empty() && emma.iter().all(|d| *d), "Emma still on the field: {emma:?}");
 }
 
 /// The Corrupted Monk (c5000 50000000) at 2 health bars enables her three phantoms (c5005,

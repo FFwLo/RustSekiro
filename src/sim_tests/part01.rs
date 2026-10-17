@@ -74,16 +74,34 @@ pub(crate) fn enemy_state(app: &mut App) -> (String, String, f32) {
     (a.state.clone(), a.anim.clone(), a.t)
 }
 
+thread_local! {
+    /// boss_in_play's chr filter for this test's thread (None: every chr).
+    pub(crate) static BOSS_CHR: std::cell::Cell<Option<&'static str>> = const { std::cell::Cell::new(None) };
+    /// Cast members already deathblown, passed over (the caught monkeys).
+    pub(crate) static BOSS_DONE: std::cell::RefCell<Vec<Entity>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
 /// The enemy the fight is about: the one character (the map script's cast aside), or, once the
 /// script has swapped it out (Lady Butterfly's 1000800 -> 1000810 at her change, m10 11005812),
-/// the enabled one with the largest HP pool.
+/// the enabled one with the largest HP pool. A main that is only a stand-in (Enemy::stand_in)
+/// is not it; with BOSS_CHR set, only that chr counts (the Folding Screen Monkeys' four c1260,
+/// not the ordinary c1250 monkeys of the same fight, whose larger HP would come first); those in
+/// BOSS_DONE are passed over.
 pub(crate) fn boss_in_play(world: &mut World) -> Entity {
+    try_boss_in_play(world).expect("an enemy")
+}
+
+/// boss_in_play, None when no one is left (all four monkeys caught).
+pub(crate) fn try_boss_in_play(world: &mut World) -> Option<Entity> {
+    let only = BOSS_CHR.with(|c| c.get());
     let mut q = world.query_filtered::<(Entity, &Enemy, &Actor, Has<crate::enemy::Cast>), With<Enemy>>();
-    let all: Vec<(Entity, bool, f32, bool)> = q.iter(world).map(|(ent, e, a, cast)| (ent, e.disabled, a.hp_max, cast)).collect();
+    let all: Vec<(Entity, bool, f32, bool, usize)> = q.iter(world).map(|(ent, e, a, cast)| (ent, e.disabled || e.stand_in || BOSS_DONE.with(|d| d.borrow().contains(&ent)), a.hp_max, cast, a.kind)).collect();
+    let combat = world.resource::<Combat>();
+    let all: Vec<(Entity, bool, f32, bool)> = all.into_iter().filter(|c| only.is_none_or(|chr| combat.kind(c.4).foe.chr == chr)).map(|c| (c.0, c.1, c.2, c.3)).collect();
     if let Some(main) = all.iter().find(|c| !c.3 && !c.1) {
-        return main.0;
+        return Some(main.0);
     }
-    all.iter().filter(|c| !c.1).max_by(|x, y| x.2.total_cmp(&y.2)).or(all.iter().find(|c| !c.3)).map(|c| c.0).expect("an enemy")
+    all.iter().filter(|c| !c.1).max_by(|x, y| x.2.total_cmp(&y.2)).or(all.iter().find(|c| !c.3)).map(|c| c.0)
 }
 
 pub(crate) fn player_state(app: &mut App) -> (String, String, f32, f32) {

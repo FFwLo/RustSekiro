@@ -51,12 +51,14 @@ SHARE_M = 40.0
 # The Folding Screen Monkeys' bar sits on a c1000 dummy (2000800) at one end of the temple
 # hall; the four monkeys and the horde spread up to 118 m from it (boss_scripts.json 12600050),
 # so the pieces are picked round the second monkey (2000802, mid-hall) out to 85 m.
+# Gyoubu's MSB spot (1100800) faces the castle gate's walls and steps: his arena is turned round
+# and stands 16 m into the open field behind him, where his horse charges run.
 # ('RADIUS' is the exporter's radius argument, the rest its env.)
 # The dragons (the user, 2026-10-15: "devine dragon need bigger arena becauce he push you
 # away"): the strong wind 52000830 blows Wolf across the cloud floor and the Old Dragons' fall
 # (m25 12505885 WarpCopy) hands over to the Divine Dragon 64 m from their own spot, so both
 # arenas reach 140 m: each holds the other's place.
-OVERRIDES = {51000100: {'MAP_CENTRE_YAW': '180'}, 52000000: {'MAP_CENTRE_DIST': '24', 'RADIUS': '140'}, 53000000: {'MAP_CENTRE_DIST': '24', 'RADIUS': '140'},
+OVERRIDES = {51000100: {'MAP_CENTRE_YAW': '180'}, 50800000: {'MAP_CENTRE_YAW': '180', 'MAP_CENTRE_DIST': '16'}, 52000000: {'MAP_CENTRE_DIST': '24', 'RADIUS': '140'}, 53000000: {'MAP_CENTRE_DIST': '24', 'RADIUS': '140'},
              71001000: {'MAP_SKIP_MODEL': 'm015072', 'MAP_GPARAM_EXTRA': '0740,0750'},
              12600050: {'MAP_PICK': '2000802', 'RADIUS': '85'}}
 # The user's rule (2026-10-11): only fights whose mechanics live in their surroundings get an
@@ -73,6 +75,10 @@ OWN_ROWS = {
     # The Folding Screen Monkeys (2026-10-12, "work on the rest of the bosses"): the fight is
     # the temple hall itself, its rooms, beams and the regions the monkeys hide and call in.
     12600050,
+    # Every main boss in its own place (2026-10-17): the Sword Saint's silvergrass field holds
+    # the prologue Genichiro (71000000) and the Way of Tomoe hand-over (71101000) too, the Owl
+    # (Father) fights in Hirata (m10), Gyoubu and the Demon of Hatred in the Ashina Outskirts (m11_00).
+    54000000, 71000000, 71101000, 50601010, 50800000, 70200000,
 }
 # Fights moved onto another boss's arena (the user's call, 2026-10-11: "put Isshin from the
 # flower arena to the top", "isshin other form", "put emma at the top"): the Sword Saint fight,
@@ -82,7 +88,9 @@ OWN_ROWS = {
 # bosses that share it. The Great Shinobi Owl (50600000) too: his own spot c5060_0000 stands at
 # the platform's edge, so the start 8 m behind him fell outside the railing onto the roof tiles
 # 2.7 m below; sekiro-rs starts both fights at the same player point (c0000_0003).
-MOVED = {54000000: 71001000, 71101000: 71001000, 54300000: 71001000, 74000010: 71001000, 50600000: 71001000, 50601010: 71001000, 71000000: 71001000}
+# Since 2026-10-17 only the fights the game holds on the castle top itself stay moved (Emma and
+# Isshin Ashina, the Owl: their own spots are on m11_01 too, the Owl's start fixed by the move).
+MOVED = {54300000: 71001000, 74000010: 71001000, 50600000: 71001000}
 # The user's rule (2026-10-12): "all the bosses the im working on should be in the top of castle
 # unless they dont fit". Every boss / mini-boss row of extracted/enemies/npc_names.json fights on
 # the castle top (boss_71001000), except the own-arena fights above (their mechanics live in

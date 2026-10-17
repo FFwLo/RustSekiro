@@ -215,6 +215,14 @@ pub struct Enemy {
     down: bool,
     /// Disabled by its map script (Change Character Enable State off): out of the fight.
     pub(crate) disabled: bool,
+    /// A hidden stand-in for the map script's main character when that is a c1000 dummy (the
+    /// Folding Screen Monkeys' HP-display dummy 2000800, NpcParam 12600050 "Chigo monkey boss HP
+    /// display dummy character" on c1000, m20 12005810 `2003[11](1, 2000800, 0, 901260)`): it
+    /// carries the boss bar and the script's HP checks (12005800) but is not on the field - no
+    /// body, no AI, no hits, parked away (script.rs). The fight is picked as c1260 / 12600050
+    /// (the row is in c1260's params too), so it stood in the arena as a fifth monkey that one
+    /// deathblow beat.
+    pub(crate) stand_in: bool,
 }
 
 /// SpEffect stateInfo 270-274: "Anime ID offset [0]-[4]" (SpEffect 200030-200034, effectEndurance -1).
@@ -1370,7 +1378,7 @@ pub struct RouteEndAnim {
 /// Runs the [`RouteEndAnim`] events.
 fn route_end_anim(mut commands: Commands, combat: Res<Combat>, mut q: Query<(Entity, &mut Enemy, &mut Actor, &Transform, &RouteEndAnim)>) {
     for (entity, mut e, mut a, tf, re) in &mut q {
-        if e.is_dead() || e.disabled {
+        if e.is_dead() || e.disabled || e.stand_in {
             continue;
         }
         if e.targeting.state != stealth::NONE {
@@ -1923,6 +1931,7 @@ pub fn spawn_one(commands: &mut Commands, combat: &Combat, config: &GameConfig, 
             immortal: false,
             down: false,
             disabled: false,
+            stand_in: false,
         },
         actor,
         Name::new(format!("Enemy {} {}", k.foe.chr, k.foe.npc_row)),
@@ -2313,7 +2322,7 @@ fn think(
     // Every NPC in the fight, for the ones on a hostile team (combat::teams_hostile).
     let npcs: Vec<Rival> = q
         .iter()
-        .filter(|x| !x.1.disabled && !x.1.is_dead() && x.2.hp > 0.0 && !x.4.is_some_and(|p| p.parked()))
+        .filter(|x| !x.1.disabled && !x.1.stand_in && !x.1.is_dead() && x.2.hp > 0.0 && !x.4.is_some_and(|p| p.parked()))
         .map(|(ent, _, a, tf, ..)| Rival {
             ent,
             team: crate::combat::team_of(&combat, a),
@@ -2332,7 +2341,7 @@ fn think(
         brains.role_clock = TEAM_ORDER_INTERVAL;
         let members: Vec<_> = q
             .iter()
-            .filter(|x| !x.1.disabled && !x.1.is_dead() && x.2.hp > 0.0 && !x.4.is_some_and(|p| p.parked()))
+            .filter(|x| !x.1.disabled && !x.1.stand_in && !x.1.is_dead() && x.2.hp > 0.0 && !x.4.is_some_and(|p| p.parked()))
             .filter_map(|(ent, e, _, tf, ..)| {
                 let key = e.team_target?;
                 let at = match key {
@@ -2364,7 +2373,7 @@ fn think(
     let skills = crate::combat::skill_sp_effect_rows(&combat, &config);
     for (entity, mut e, mut a, mut tf, phantom, from_event, scripted, mut draw_mask) in &mut q {
         // A phantom out of the fight does nothing until its boss's script calls it.
-        if phantom.is_some_and(|p| p.parked()) || e.disabled {
+        if phantom.is_some_and(|p| p.parked()) || e.disabled || e.stand_in {
             continue;
         }
         let d = combat.data_of(&a);
@@ -2798,7 +2807,13 @@ fn think(
         let right = fwd.cross(Vec3::Y);
         let dir = to_t.normalize_or_zero();
         let mut sp_self: HashSet<i64> = a.resident.iter().copied().collect();
-        sp_self.extend(d.sp_effects_at(&a.anim, a.t).iter().map(|(id, _)| *id));
+        // A move that has played out no longer runs its TAE, also an AddSpEffect that runs past
+        // the clip's end: Lady Butterfly's drop a100_003290 (3.0 s) holds 5028 to 3.2 s, and
+        // 509000_battle.lua:59 picks the drop again (Act38) while she wears 5028, so the next
+        // plan must not see it (she dropped over and over, 2026-10-17). 5028 has effectEndurance 0.
+        if !(a.state.starts_with("Ez") && a.t >= d.length(&a.anim)) {
+            sp_self.extend(d.sp_effects_at(&a.anim, a.t).iter().map(|(id, _)| *id));
+        }
         sp_self.extend(e.clash.iter().map(|c| c.0));
         // Its TAE SpEffects kept past their window and their replaceSpEffectId chains (actor.rs
         // run_sp_effect_chains), as Wolf's below.
