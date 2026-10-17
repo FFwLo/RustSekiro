@@ -1,6 +1,6 @@
 # Sv1 (Sekiro combat recreation in Rust + Bevy)
 
-Project at `C:\DeadlockModding\shinobi-combat`: a 1:1 recreation of Sekiro's combat. Every number
+A 1:1 recreation of Sekiro's combat. Every number
 comes from the game's own files (TAE, HKS, params, behaviour graphs, FLVER, FMOD) or the
 static Ghidra decompile of the exe. The crate and exe are `sv1`. GitHub: `FFwLo/RustSekiro`, `main`.
 
