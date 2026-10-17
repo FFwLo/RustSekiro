@@ -1524,3 +1524,6 @@ StatueAttachEnd
 StatueAttachRest
 StatueAttachWarp
 StatueAttachCostumeChange
+# Item pickup (items.rs)
+# common_func 20006030: ForceAnimationPlayback(player, 60070) on an object's item pickup
+a000_060070

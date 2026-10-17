@@ -31,6 +31,8 @@ pub const CLIMB: u32 = 10010321;
 pub const DROP_DOWN: u32 = 10010322;
 /// "Rest" (the Sculptor's Idol, idol.rs).
 pub const IDOL_REST: u32 = 15000120;
+/// "Pick Up Item" (an item on the ground, items.rs).
+pub const PICK_UP: u32 = 10010103;
 
 /// The built-in English for each guide, when the FMG is not extracted.
 const FALLBACK: &[(u32, &str)] = &[
@@ -40,6 +42,7 @@ const FALLBACK: &[(u32, &str)] = &[
     (CLIMB, "<?kgiconKc@20?>: Climb"),
     (DROP_DOWN, "<?kgiconKc@5?>: Drop down"),
     (IDOL_REST, "Rest"),
+    (PICK_UP, "Pick Up Item"),
 ];
 
 /// The game's message texts and key names.
@@ -195,6 +198,9 @@ pub fn guides_for(p: &Player, a: &Actor, feet: Vec3, edges: &[crate::map::LedgeE
         };
     }
     if !a.airborne && crate::player::is_free(&a.state) {
+        if crate::items::pickup_near(feet).is_some() {
+            return vec![PICK_UP];
+        }
         if crate::idol::near(feet, a.yaw).is_some() {
             return vec![IDOL_REST];
         }

@@ -113,7 +113,11 @@ pub(crate) fn any_icon(icon: i64) -> Option<String> {
     if crate::paths::extracted().join(&hud).exists() {
         return Some(hud);
     }
-    ["sb_icon", "sb_icon_02", "sb_icon_03", "sb_icon_04", "sb_boss"].iter().find_map(|a| sprite(&format!("{a}/MENU_ItemIcon_{icon:05}")))
+    ["sb_icon", "sb_icon_02", "sb_icon_03", "sb_icon_04", "sb_boss"].iter().find_map(|a| sprite(&format!("{a}/MENU_ItemIcon_{icon:05}"))).or_else(|| {
+        // A few sit in other atlases (Divine Grass's 15 in sb_texteffect_02): any of them.
+        let dir = crate::paths::extracted().join("menu_sprites");
+        std::fs::read_dir(dir).ok()?.flatten().find_map(|e| sprite(&format!("{}/MENU_ItemIcon_{icon:05}", e.file_name().to_string_lossy())))
+    })
 }
 
 /// The Equipment slots in cursor order: tools 0-2, the art, quick items 0-4, ninjutsu.
