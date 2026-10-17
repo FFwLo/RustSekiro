@@ -665,6 +665,26 @@ const STEALTH_WALLS: [(Vec3, Vec3); 10] = [
 ];
 const HUGGABLE_WALLS: usize = 7;
 
+/// The duel arena east of the start (x 22 .. 44, z -11 .. 11), walled 3 m high with a 3 m door
+/// in its west wall: the config's enemy (enemy.chr, its group, a custom fight) stands in it,
+/// away from the course and the courtyard (the user: "readd starter enemy but in isolated
+/// arena").
+const ARENA_WALLS: [(Vec3, Vec3); 5] = [
+    (Vec3::new(21.5, 0.0, -11.5), Vec3::new(22.0, 3.0, -1.5)),
+    (Vec3::new(21.5, 0.0, 1.5), Vec3::new(22.0, 3.0, 11.5)),
+    (Vec3::new(44.0, 0.0, -11.5), Vec3::new(44.5, 3.0, 11.5)),
+    (Vec3::new(22.0, 0.0, -11.5), Vec3::new(44.0, 3.0, -11.0)),
+    (Vec3::new(22.0, 0.0, 11.0), Vec3::new(44.0, 3.0, 11.5)),
+];
+/// Where the arena's enemy stands, facing the door (-X: forward = Ry(yaw) * -Z).
+pub const ARENA_SPOT: Vec3 = Vec3::new(33.0, 0.0, 0.0);
+pub const ARENA_YAW: f32 = std::f32::consts::FRAC_PI_2;
+
+/// A courtyard guard (`construct_patrols`): always the real AI (T leaves it be), so it fights
+/// once it finds Wolf.
+#[derive(Component)]
+pub struct CourtyardGuard;
+
 /// The courtyard's guards (chr `GUARD_CHR`): where each starts, facing, and its round (ai::Patrol;
 /// a 2 s look-around wait at each point). Two walk loops around cover, one paces the middle,
 /// one stands at the far end watching the gate.
@@ -791,6 +811,8 @@ pub fn parkour_course() -> (Vec<(Vec3, Vec3)>, Vec<map::LedgeEdge>) {
     boxes.push((Vec3::new(sx0, 0.0, sz1), Vec3::new(15.0, sh, sz1 + t)));
     boxes.push((Vec3::new(16.2, 0.0, sz1), Vec3::new(sx1, sh, sz1 + t)));
     boxes.push((Vec3::new(15.0, 2.6, sz1), Vec3::new(16.2, sh, sz1 + t)));
+    // 6. The duel arena east of the start.
+    boxes.extend(ARENA_WALLS);
     // 5. The stealth courtyard behind the start (2026-10-17, the user: "add stealth segment").
     for (i, &(lo, hi)) in STEALTH_WALLS.iter().enumerate() {
         boxes.push((lo, hi));

@@ -695,3 +695,35 @@ pub(crate) fn a_sugar_is_eaten_and_raises_the_attack() {
     assert!((a.atk_rate - 1.125).abs() < 1e-3, "atk_rate {}", a.atk_rate);
     assert_eq!(app.world().resource::<crate::items::Used>().0, vec![3400]);
 }
+
+/// The Construct's courtyard guards walk their rounds (WalkFront*), unaware of a far-off Wolf;
+/// they do not run them (the user: "the enemies run ... instead of casual walking").
+#[test]
+fn a_courtyard_guard_walks_its_round() {
+    let mut app = app_cfg(crate::sandbox::GUARD_CHR, None, Vec::new());
+    let (at, yaw, route) = crate::sandbox::construct_patrols().remove(0);
+    let guard = {
+        let world = app.world_mut();
+        let mut q = world.query_filtered::<&mut Transform, With<Player>>();
+        q.single_mut(world).unwrap().translation = Vec3::new(0.0, CAPSULE_HALF_HEIGHT, -150.0);
+        let e = world.query_filtered::<Entity, With<Enemy>>().iter(world).next().unwrap();
+        let mut q = world.query_filtered::<(&mut Transform, &mut Actor, &mut Enemy), With<Enemy>>();
+        let (mut t, mut a, mut en) = q.get_mut(world, e).unwrap();
+        t.translation = at.with_y(CAPSULE_HALF_HEIGHT);
+        a.yaw = yaw;
+        en.make_unaware(&mut a);
+        world.entity_mut(e).insert(crate::enemy::PatrolRoute(route));
+        e
+    };
+    let mut states = std::collections::BTreeSet::new();
+    let mut moved = 0.0f32;
+    for _ in 0..60 * 12 {
+        app.update();
+        let a = app.world().get::<Actor>(guard).unwrap();
+        states.insert(a.state.clone());
+        moved = moved.max((app.world().get::<Transform>(guard).unwrap().translation.with_y(0.0) - at).length());
+    }
+    assert!(moved > 2.0, "it walks its round: {moved:.2} m, states {states:?}");
+    assert!(states.iter().any(|s| s.starts_with("WalkFront")), "walking: {states:?}");
+    assert!(!states.iter().any(|s| s.starts_with("RunFront")), "not running: {states:?}");
+}

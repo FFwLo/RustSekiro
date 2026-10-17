@@ -1287,13 +1287,17 @@ fn spawn_lineup(commands: &mut Commands, combat: &Combat, config: &GameConfig, a
         if let Some(kind) = combat.kind_index(crate::sandbox::GUARD_CHR, None) {
             for (i, (at, yaw, route)) in crate::sandbox::construct_patrols().into_iter().enumerate() {
                 let at = at.with_y(y(at.x, at.z));
-                let e = spawn_one(commands, combat, config, kind, at, yaw, aggressive, 0x2545_F491 ^ 0x85EB_CA6B_u32.wrapping_mul(i as u32 + 1));
-                commands.entity(e).insert((PatrolRoute(route), StartUnaware));
+                let e = spawn_one(commands, combat, config, kind, at, yaw, true, 0x2545_F491 ^ 0x85EB_CA6B_u32.wrapping_mul(i as u32 + 1));
+                commands.entity(e).insert((PatrolRoute(route), StartUnaware, crate::sandbox::CourtyardGuard));
             }
         }
-    } else {
-        spawn_one(commands, combat, config, 0, Vec3::new(0.0, y(0.0, -4.0 + dz), -4.0 + dz), facing(0.0, -4.0 + dz), aggressive, 0x9E37_79B9);
     }
+    // On the Construct the config's enemy stands in its walled arena east of the start, facing
+    // the door, its group in a row across the arena.
+    let construct = crate::map::map_id(config).as_deref() == Some(crate::sandbox::CONSTRUCT_ID);
+    let first = if construct { crate::sandbox::ARENA_SPOT } else { Vec3::new(0.0, 0.0, -4.0 + dz) };
+    let first_yaw = if construct { crate::sandbox::ARENA_YAW } else { facing(first.x, first.z) };
+    spawn_one(commands, combat, config, 0, first.with_y(y(first.x, first.z)), first_yaw, aggressive, 0x9E37_79B9);
     for (i, g) in config.enemy.group.iter().enumerate() {
         let Some(kind) = combat.kind_index(&g.chr, g.npc_row) else { continue };
         // An MSB enemy of the loaded map: at its spot, its way, on its patrol route.
@@ -1323,10 +1327,11 @@ fn spawn_lineup(commands: &mut Commands, combat: &Combat, config: &GameConfig, a
             continue;
         }
         let side = if i % 2 == 0 { 1.0 } else { -1.0 } * (3.0 * (i / 2 + 1) as f32);
-        let [x, z] = g.at.unwrap_or([side, -4.0]);
+        let [x, z] = g.at.unwrap_or(if construct { [first.x, side] } else { [side, -4.0] });
         let z = z + dz;
+        let yaw = if construct { first_yaw } else { facing(x, z) };
         // A different seed each, so the group does not move in lockstep.
-        spawn_one(commands, combat, config, kind, Vec3::new(x, y(x, z), z), facing(x, z), aggressive, 0x9E37_79B9 ^ 0x85EB_CA6B_u32.wrapping_mul(i as u32 + 1));
+        spawn_one(commands, combat, config, kind, Vec3::new(x, y(x, z), z), yaw, aggressive, 0x9E37_79B9 ^ 0x85EB_CA6B_u32.wrapping_mul(i as u32 + 1));
     }
 }
 
@@ -1777,7 +1782,7 @@ fn reset_fight(
     mut reset: ResMut<FightReset>,
     combat: Res<Combat>,
     config: Res<GameConfig>,
-    q: Query<(Entity, &Enemy)>,
+    q: Query<(Entity, &Enemy, Has<crate::sandbox::CourtyardGuard>)>,
     mut brains: NonSendMut<Brains>,
     mut warp: ResMut<events::EventWarp>,
     mut bs: ResMut<BossScript>,
@@ -1822,8 +1827,9 @@ fn reset_fight(
     if bs.run.take().is_some_and(|r| r.defeated.is_some()) {
         bs.defeats += 1;
     }
-    let aggressive = q.iter().next().is_some_and(|(_, e)| e.aggressive);
-    for (ent, _) in &q {
+    // (The courtyard guards are always aggressive: the duel enemy's setting carries over.)
+    let aggressive = q.iter().find(|(_, _, guard)| !guard).is_some_and(|(_, e, _)| e.aggressive);
+    for (ent, ..) in &q {
         commands.entity(ent).despawn();
     }
     brains.map.clear();
@@ -3334,7 +3340,10 @@ fn passive_or_fallback(e: &mut Enemy, a: &mut Actor, d: &crate::data::CharData, 
     }
     e.cooldown -= dt;
     a.yaw = turn_toward(a.yaw, want_yaw, std::f32::consts::PI * dt);
-    if dist > config.enemy.attack_range {
+    // On the Construct a passive enemy holds its spot (the user: "static unless AI toggle button
+    // is pressed"); elsewhere it walks into range for deflect practice.
+    let hold = crate::sandbox::ON_CONSTRUCT.load(std::sync::atomic::Ordering::Relaxed);
+    if dist > config.enemy.attack_range && !hold {
         // Battle walk speed from WalkFrontBattle's root motion.
         if a.state != "WalkFrontBattle" || ended {
             a.play_state(d, "WalkFrontBattle");
@@ -3352,7 +3361,7 @@ fn passive_or_fallback(e: &mut Enemy, a: &mut Actor, d: &crate::data::CharData, 
     }
 }
 
-fn toggle_aggression(keys: Res<ButtonInput<KeyCode>>, mut q: Query<&mut Enemy>, mut log: ResMut<crate::hud::CombatLog>) {
+fn toggle_aggression(keys: Res<ButtonInput<KeyCode>>, mut q: Query<&mut Enemy, Without<crate::sandbox::CourtyardGuard>>, mut log: ResMut<crate::hud::CombatLog>) {
     if keys.just_pressed(KeyCode::KeyT) {
         // All enemies switch together (the first one's state flipped).
         let Some(on) = q.iter().next().map(|e| !e.aggressive) else { return };
