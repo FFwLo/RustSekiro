@@ -840,11 +840,19 @@ fn apply_video(config: Res<crate::config::GameConfig>, mut window: Single<&mut W
 #[derive(Resource, Default)]
 pub(crate) struct MenuMouse {
     pub(crate) moved: bool,
+    /// Whole wheel notches this frame (up positive); the in-game and idol menus move their
+    /// cursor by them, stopping at the list's ends.
+    pub(crate) wheel: i32,
+}
+
+/// The cursor moved by the wheel's notches (up = towards the top), stopping at the ends.
+pub(crate) fn wheel_step(index: usize, wheel: i32, n: usize) -> usize {
+    (index as i32 - wheel).clamp(0, n.max(1) as i32 - 1) as usize
 }
 
 /// Menu conveniences (the user): in every menu E is Enter (OK) and Q is Esc (back), and the
-/// mouse wheel moves the cursor (a notch = an arrow press). The keys it pressed are let go the
-/// next frame, so a menu that does not clear its keys still sees each notch.
+/// mouse wheel moves the cursor: `MenuMouse::wheel` for the in-game and idol menus, an arrow
+/// press for the title screens' short lists. The keys it pressed are let go the next frame.
 fn menu_keys_and_wheel(
     state: Res<State<Screen>>,
     mut keys: ResMut<ButtonInput<KeyCode>>,
@@ -855,6 +863,7 @@ fn menu_keys_and_wheel(
     mut held: Local<Vec<KeyCode>>,
 ) {
     mouse.moved = motion.is_some_and(|m| m.delta != Vec2::ZERO);
+    mouse.wheel = 0;
     for k in held.drain(..) {
         keys.release(k);
     }
@@ -878,14 +887,16 @@ fn menu_keys_and_wheel(
         bevy::input::mouse::MouseScrollUnit::Line => s.delta.y,
         bevy::input::mouse::MouseScrollUnit::Pixel => s.delta.y / 40.0,
     });
-    if *notches >= 1.0 {
-        *notches -= 1.0;
-        press(&mut keys, KeyCode::ArrowUp);
-    } else if *notches <= -1.0 {
-        *notches += 1.0;
-        press(&mut keys, KeyCode::ArrowDown);
+    // Whole notches now; a fraction (a touchpad) waits for the rest, nothing carries over a
+    // fast spin (the old one-press-a-frame kept scrolling after the wheel stopped).
+    let whole = notches.trunc();
+    *notches -= whole;
+    let wheel = whole as i32;
+    if matches!(*state.get(), Screen::Paused | Screen::Idol) {
+        mouse.wheel = wheel;
+    } else if wheel != 0 {
+        press(&mut keys, if wheel > 0 { KeyCode::ArrowUp } else { KeyCode::ArrowDown });
     }
-    *notches = notches.clamp(-3.0, 3.0);
 }
 
 /// A gamepad in the menus (plan C4) presses the menu's keys: d-pad / left stick (a tilt past

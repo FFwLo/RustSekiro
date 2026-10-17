@@ -51,6 +51,8 @@ pub struct GameMenu {
     cat: [usize; 2],
     /// The Equipment slot whose Equipped Items picker is open.
     pick: Option<usize>,
+    /// The first list row shown (moves only when the cursor would leave the window).
+    top: usize,
     built: Option<(usize, usize, [usize; 2], Option<usize>, u64)>,
 }
 
@@ -280,7 +282,15 @@ pub(crate) struct Detail {
 /// The list screen of Inventory / Skills (and the Sculptor's shop): the category name and icons
 /// with C / V, the rows (a window of ROWS round the cursor), the scroll bar, the parchment.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn list_screen(root: &mut ChildSpawnerCommands, assets: &AssetServer, font: &Option<Handle<Font>>, cats: &[(&str, &str)], cat: usize, rows: &[Row], index: usize, detail: Option<&Detail>) {
+/// The first row a list of `n` shows with the cursor at `index`, from the last one: kept while
+/// the cursor stays inside the window of ROWS, moved just enough when it leaves.
+pub(crate) fn keep_visible(top: usize, index: usize, n: usize) -> usize {
+    let top = if index < top { index } else if index >= top + ROWS { index + 1 - ROWS } else { top };
+    top.min(n.saturating_sub(ROWS))
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn list_screen(root: &mut ChildSpawnerCommands, assets: &AssetServer, font: &Option<Handle<Font>>, cats: &[(&str, &str)], cat: usize, rows: &[Row], index: usize, top: usize, detail: Option<&Detail>) {
     if let Some((name, _)) = cats.get(cat) {
         root.spawn(abs(9.7, 14.0, 30.0, 4.0)).with_children(|c| {
             c.spawn(text(name, 17.0, TEXT, font));
@@ -302,7 +312,7 @@ pub(crate) fn list_screen(root: &mut ChildSpawnerCommands, assets: &AssetServer,
         right.flip_x = true;
         root.spawn((abs(end + 2.1, 19.2, 1.4, 4.4), right));
     }
-    let start = index.saturating_sub(ROWS - 1).min(rows.len().saturating_sub(ROWS));
+    let start = keep_visible(top, index, rows.len());
     for (k, (i, row)) in rows.iter().enumerate().skip(start).take(ROWS).enumerate() {
         let sel = i == index;
         let t = 26.6 + k as f32 * 8.3;
@@ -637,7 +647,7 @@ fn build(commands: &mut Commands, assets: &AssetServer, menu: &GameMenu, font: &
                 title_bar(root, assets, font, "Equipped Items");
                 let list = equip_rows(slot, config, combat, texts, tables);
                 let rows: Vec<Row> = list.iter().map(|(r, _)| r.clone()).collect();
-                list_screen(root, assets, font, &[], 0, &rows, menu.index, list.get(menu.index).map(|(_, d)| d));
+                list_screen(root, assets, font, &[], 0, &rows, menu.index, menu.top, list.get(menu.index).map(|(_, d)| d));
                 root.spawn(abs(5.3, 91.6, 50.0, 4.0)).with_children(|c| {
                     c.spawn(text(if rows.is_empty() { "Nothing to equip here yet." } else { "Choose item to equip." }, 16.0, DIM, font));
                 });
@@ -679,7 +689,7 @@ fn build(commands: &mut Commands, assets: &AssetServer, menu: &GameMenu, font: &
                     let (cats, list) = if menu.tab == 1 { (&INV_CATS, inventory(menu.cat[k], config, texts, tables)) } else { (&SKILL_CATS, skills(menu.cat[k], config, texts, tables)) };
                     let rows: Vec<Row> = list.iter().map(|(r, _)| r.clone()).collect();
                     let detail = list.get(menu.index).map(|(_, d)| d);
-                    list_screen(root, assets, font, cats, menu.cat[k], &rows, menu.index, detail);
+                    list_screen(root, assets, font, cats, menu.cat[k], &rows, menu.index, menu.top, detail);
                 }
                 _ => {
                     for (i, label) in OPTION_ITEMS.iter().enumerate() {
@@ -806,6 +816,7 @@ fn run_game_menu(
         if any(&[KeyCode::ArrowUp, KeyCode::KeyW, KeyCode::ArrowLeft, KeyCode::KeyA]) {
             menu.index = (menu.index + n - 1) % n;
         }
+        menu.index = crate::menu::wheel_step(menu.index, pointer.wheel, n);
         for (r, i) in &rows {
             match i {
                 Interaction::Pressed => {
@@ -819,6 +830,7 @@ fn run_game_menu(
         let back = keys.just_pressed(KeyCode::Escape);
         keys.reset_all();
         mouse.reset_all();
+        menu.top = keep_visible(menu.top, menu.index, n);
         if confirm {
             if let Some(c) = choices.get(menu.index) {
                 equip(slot, c, &mut config);
@@ -884,6 +896,8 @@ fn run_game_menu(
     if any(&[KeyCode::ArrowLeft, KeyCode::KeyA, KeyCode::ArrowUp, KeyCode::KeyW]) {
         menu.index = (menu.index + n - 1) % n;
     }
+    menu.index = crate::menu::wheel_step(menu.index, pointer.wheel, n);
+    menu.top = keep_visible(menu.top, menu.index, n);
     let close = keys.just_pressed(KeyCode::Escape);
     keys.reset_all();
     mouse.reset_all();
@@ -922,7 +936,7 @@ fn run_game_menu(
         (&config.player.prosthetics, config.player.combat_art).hash(&mut h);
         h.finish()
     };
-    let key = (menu.tab, menu.index, menu.cat, menu.pick, gear);
+    let key = (menu.tab, menu.index + menu.top * 1000, menu.cat, menu.pick, gear);
     if menu.built != Some(key) {
         for r in &roots {
             commands.entity(r).despawn();
@@ -951,5 +965,30 @@ impl Plugin for GameMenuPlugin {
             .insert_resource(tables)
             .add_systems(Startup, load_font)
             .add_systems(PreUpdate, run_game_menu.after(crate::menu::MenuInput));
+    }
+}
+
+#[cfg(test)]
+mod scroll_tests {
+    use super::*;
+
+    /// The list keeps its window while the cursor stays in it (scrolling up no longer drags the
+    /// whole list with the cursor pinned to the bottom row), and the wheel stops at the ends.
+    #[test]
+    fn the_list_window_holds_until_the_cursor_leaves_it() {
+        let n = 12;
+        let mut top = 0;
+        for i in 0..=7 {
+            top = keep_visible(top, i, n);
+        }
+        assert_eq!(top, 2, "the cursor on row 7 shows rows 2-7");
+        top = keep_visible(top, 5, n);
+        assert_eq!(top, 2, "back up to row 5: the window stays");
+        top = keep_visible(top, 1, n);
+        assert_eq!(top, 1);
+        assert_eq!(keep_visible(9, 11, n), 6, "never past the end");
+        assert_eq!(crate::menu::wheel_step(0, 3, n), 0);
+        assert_eq!(crate::menu::wheel_step(10, -5, n), 11);
+        assert_eq!(crate::menu::wheel_step(4, -2, n), 6);
     }
 }

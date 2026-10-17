@@ -237,7 +237,7 @@ pub(crate) struct View {
 pub(crate) fn build(root: &mut ChildSpawnerCommands, assets: &AssetServer, font: &Option<Handle<Font>>, view: View, learned: &[i64], points: u32, texts: &ItemTexts, tables: &Tables) {
     let all = tree();
     // The tree name and the tabs with C / V (the list screens' category row).
-    crate::game_menu::list_screen(root, assets, font, &PAGES, view.page, &[], 0, None);
+    crate::game_menu::list_screen(root, assets, font, &PAGES, view.page, &[], 0, 0, None);
     // The skill points: the ink drop with the count, and the gauge to the next point.
     root.spawn((abs(40.4, 17.6, 3.4, 4.6), image(assets, sprite("sb_fe/MENU_SkillPoint")).with_color(Color::srgb(0.1, 0.1, 0.1)))).with_children(|b| {
         b.spawn(Node { justify_content: JustifyContent::Center, ..fill_row() }).with_children(|c| {

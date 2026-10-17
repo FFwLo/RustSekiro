@@ -264,6 +264,8 @@ struct IdolMenu {
     region: usize,
     /// Acquire Skills: the tree page, its cursor and the confirm dialog.
     tree: crate::skill_tree::View,
+    /// The first row shown of a long list (Create Arm Tools; game_menu::keep_visible).
+    top: usize,
     /// What the screen was last built from (rebuilt when it changes).
     built: Option<String>,
 }
@@ -395,7 +397,7 @@ fn build(commands: &mut Commands, assets: &AssetServer, menu: &IdolMenu, font: &
                 let icon = id.and_then(|id| tables.goods_icon.get(&id)).and_then(|i| any_icon(*i));
                 let row = Row { icon: icon.clone(), name: name.clone(), value: Some(EMBLEM_PRICE.to_string()), ..default() };
                 let detail = Detail { name, icon, art: None, stats: vec![("Number Held".into(), format!("{} / {}", p.emblems, config.player.spirit_emblems)), ("In Storage".into(), "0".into())], info };
-                list_screen(root, assets, font, &cats, 0, &[row], 0, Some(&detail));
+                list_screen(root, assets, font, &cats, 0, &[row], 0, 0, Some(&detail));
                 // The purse beside the categories.
                 root.spawn((abs(38.0, 18.6, 13.0, 4.8), image(assets, sprite("sb_in_game/MENU_ItemBase_08")).with_color(Color::srgb(0.35, 0.35, 0.35)))).with_children(|b| {
                     b.spawn(Node { justify_content: JustifyContent::SpaceBetween, padding: UiRect::axes(Val::Percent(4.0), Val::Px(0.0)), ..fill_row() }).with_children(|c| {
@@ -460,7 +462,7 @@ fn build(commands: &mut Commands, assets: &AssetServer, menu: &IdolMenu, font: &
                 title_bar(root, assets, font, "Create Arm Tools");
                 let list = crate::workshop::fit_rows(config, texts, tables);
                 let rows: Vec<Row> = list.iter().map(|(r, _)| r.clone()).collect();
-                list_screen(root, assets, font, &[], 0, &rows, menu.index, list.get(menu.index).map(|(_, d)| d));
+                list_screen(root, assets, font, &[], 0, &rows, menu.index, menu.top, list.get(menu.index).map(|(_, d)| d));
                 root.spawn(abs(5.3, 91.6, 50.0, 4.0)).with_children(|c| {
                     c.spawn(text("Select a Prosthetic Tool to Craft.", 16.0, DIM, font));
                 });
@@ -614,7 +616,24 @@ fn run_idol_menu(
         return;
     }
     let any = |k: &[KeyCode]| k.iter().any(|k| keys.just_pressed(*k));
-    let (down, up) = (any(&[KeyCode::ArrowDown, KeyCode::KeyS]), any(&[KeyCode::ArrowUp, KeyCode::KeyW]));
+    let (mut down, mut up) = (any(&[KeyCode::ArrowDown, KeyCode::KeyS]), any(&[KeyCode::ArrowUp, KeyCode::KeyW]));
+    // The wheel: the lists' cursor moves by its notches and stops at the ends; the trees and
+    // Travel take a notch as an arrow press.
+    let list_len = match menu.page {
+        Page::Main => Some(ROWS.len()),
+        Page::Form => Some(crate::form::FORMS.len()),
+        Page::Workshop => Some(WORKSHOP_ROWS.len()),
+        Page::Fit => Some(crate::workshop::TOOLS.len()),
+        _ => None,
+    };
+    match list_len {
+        Some(n) if pointer.wheel != 0 => menu.index = crate::menu::wheel_step(menu.index, pointer.wheel, n),
+        None if pointer.wheel != 0 && !menu.tree.asking => {
+            up |= pointer.wheel > 0;
+            down |= pointer.wheel < 0;
+        }
+        _ => {}
+    }
     let (right, left) = (any(&[KeyCode::ArrowRight, KeyCode::KeyD]), any(&[KeyCode::ArrowLeft, KeyCode::KeyA]));
     let mut confirm = any(&[KeyCode::Enter, KeyCode::Space]);
     let back = keys.just_pressed(KeyCode::Escape);
@@ -884,7 +903,12 @@ fn run_idol_menu(
             }
         }
     }
-    let key = format!("{:?} {} {} {} {} {} {:?} {:?} {} {} {:?} {:?} {:?}", menu.page, menu.index, menu.in_list, menu.region, p.emblems, config.player.sen, menu.tree, config.player.skills, config.player.skill_points, config.player.form, config.player.upgrades, config.player.owned_tools, config.player.items);
+    if menu.page == Page::Fit {
+        menu.top = crate::game_menu::keep_visible(menu.top, menu.index, crate::workshop::TOOLS.len());
+    } else {
+        menu.top = 0;
+    }
+    let key = format!("{} ", menu.top) + &format!("{:?} {} {} {} {} {} {:?} {:?} {} {} {:?} {:?} {:?}", menu.page, menu.index, menu.in_list, menu.region, p.emblems, config.player.sen, menu.tree, config.player.skills, config.player.skill_points, config.player.form, config.player.upgrades, config.player.owned_tools, config.player.items);
     if menu.built.as_ref() != Some(&key) {
         for r in &roots {
             commands.entity(r).despawn();
