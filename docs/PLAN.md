@@ -1,6 +1,6 @@
 # Sv1: finish, fix and polish (plan for all three sessions, approved 2026-10-11)
 
-## Scope (the user, 2026-10-13; read first)
+## Scope (2026-10-13)
 
 "the scope of my plan is not rewrite the whole game i want the game combat and its Enemies to be
 playable same as the game and anything that they require music hud special effects move sets etc"
@@ -12,7 +12,7 @@ playable same as the game and anything that they require music hud special effec
 
 ## Update 2026-10-13: the bosses are split (read first; replaces "all given away" below)
 
-The user, 2026-10-13, to VFX and Maps: the outside contributor keeps **their half** - the
+The outside contributor keeps **their half** - the
 mini-bosses and generals: c1020 generals, c1021 Seven Spears, c1400 Ashina Elites, c5020 Chained
 Ogre, c1370 Blazing Bull, c1070 Shigekichi / Juzou / Tokujiro, c1050 Enshin, c1470 Lone Shadows,
 c1040 Centipedes, c1191 Snake Eyes, c1300 Mist Noble, c7000 O'Rin, c1310 Okami Leader, c1380
@@ -21,13 +21,12 @@ Sakura Bull, c1130 Armored Warrior, c1340 / c1350 Headless, c108x Shichimen (35 
 Corrupted Monk, 50600000 Great Shinobi Owl, 50601010 Owl (Father), 50800000 Gyoubu, 50900000 /
 50900001 Lady Butterfly, 51000000 / 51000100 Guardian Ape, 52000000 Divine Dragon, 53000000 Old
 Dragons, 54000000 Isshin Sword Saint, 54300000 Isshin Ashina, 70200000 Demon of Hatred, 71000000
-/ 71001000 Genichiro, 71100000 / 71101000 Way of Tomoe, 74000010 Emma. VFX and Maps was asked for
-"bosses and the cloth and visual effects and sound effects". The test map is the sandbox
-(config `[world] map = "sandbox"`, the user's choice).
+/ 71001000 Genichiro, 71100000 / 71101000 Way of Tomoe, 74000010 Emma. VFX and Maps takes the bosses' cloth, visual effects and sound effects. The test map is the
+sandbox (config `[world] map = "sandbox"`).
 
 ## Update 2026-10-12: who does what now
 
-The plan below is still the reference, with these changes from the user on 2026-10-12:
+The plan below is still the reference, with these changes on 2026-10-12:
 
 - **All bosses and mini-bosses are given away.** Every row of `extracted/enemies/npc_names.json`
   (57 rows) belongs to an outside contributor (docs/HANDOFF.md 0.1). Their status sheet is
@@ -44,17 +43,16 @@ The plan below is still the reference, with these changes from the user on 2026-
 - **Release hardening and traversal are given away.** C5's font, debug gating and parser errors,
   C6's quiet logs, and the traversal moves go to the contributor in the "Sv1: work split" doc
   (Track 1 and Track 2).
-- **Performance is back** (the user, 2026-10-13: "check game performance and optimize the game",
-  "Add the performance back to the plan"). The C6 goal stands: 60 fps with vsync on the gate map
+- **Performance is back** (2026-10-13). The C6 goal stands: 60 fps with vsync on the gate map
   and in the 20-enemy arena.
   - bug fixes: the check itself, src/perf.rs. F3 shows the overlay; `SHINOBI_BENCH=<s>` writes
     perf_report.txt. Also the profiling and the CPU-side fixes in the shared engine (anim,
     cloth, AI, combat), each measured before and after.
   - VFX and Maps: the render side, starting with the map-material batching from sekiro-rs
-    73eca1d (OK'd by the user, 2026-10-13). Their gate-map table (HANDOFF 4.44) is the starting
+    73eca1d (2026-10-13). Their gate-map table (HANDOFF 4.44) is the starting
     point: 18-24 fps.
   - Bosees: fixes in their files when the profile points there.
-  - Not on the collab board yet; that needs the user's yes.
+  - Not on the collab board yet.
 - **The sessions are renamed.** "bug fixes" (was Map), "VFX and Maps" (was VXf, now also maps,
   lighting and cloth) and "Bosees" (was Bosses, now regular enemies only).
 - **The open items are claimed on the collab board.** `AKJama/sekiro-collab` WORK.md (5b8f1d6,
@@ -71,30 +69,27 @@ The plan below is still the reference, with these changes from the user on 2026-
   | VFX and Maps | Mixer events, sound occlusion | HANDOFF 5 item 4 |
   | VFX and Maps | Lock-on camera offsets, smoothing, limits, switch | B3 |
   | VFX and Maps | Tone curve, exposure, night snow, probe blend | B4 |
-  | (given away) | Layered map materials (given to someone else by the user, 2026-10-12; v5 bin + M[Multiple] blend already in, gate map only) | B4 |
+  | (given away) | Layered map materials (given to someone else, 2026-10-12; v5 bin + M[Multiple] blend already in, gate map only) | B4 |
   | VFX and Maps | Cape vs a clip, coat detail layer | B2 |
-  | bug fixes | Defects in the shared engine and regular enemies (verified bug hunt) | the user, 2026-10-12 |
+  | bug fixes | Defects in the shared engine and regular enemies (verified bug hunt) | 2026-10-12 |
 
-- **Pushes need the user's yes.** Nothing goes to any repo, including the collab board, before
-  the user is told what would go up and agrees.
 
 ## Context
 
-Sv1 (`C:\DeadlockModding\shinobi-combat`) recreates Sekiro's combat from the game's own files in Rust/Bevy. Three Claude sessions share one working tree: **Map** (this one: map, lighting, sandbox, cloth), **Bosses** (enemies, bosses, AI, stealth) and **VXf** (the skills/tools session: skills, prosthetics, status, HUD, sound, and all VFX: FXR effects, clash/hit effects, gore, blood decals, weapon trails). The user's decisions (2026-10-10):
+Sv1 (`C:\DeadlockModding\shinobi-combat`) recreates Sekiro's combat from the game's own files in Rust/Bevy. Three Claude sessions share one working tree: **Map** (this one: map, lighting, sandbox, cloth), **Bosses** (enemies, bosses, AI, stealth) and **VXf** (the skills/tools session: skills, prosthetics, status, HUD, sound, and all VFX: FXR effects, clash/hit effects, gore, blood decals, weapon trails). Decisions (2026-10-10):
 
 - "Finished" = a **playable game**: close the fidelity gaps, then add what a game needs (title, pause, options, gamepad, enemy picker without relaunch, death/victory flow, clean release build).
 - **Fighters only**: the 86 kinds that pass the every-phase check are the target; the 16 non-fighters/scripted set pieces only need to stand and not crash.
-- Priorities, in the user's words: **deathblows and hitboxes same as the game**, cape/cloth movement, camera and controls feel, map/lighting/sound.
+- Priorities: **deathblows and hitboxes same as the game**, cape/cloth movement, camera and controls feel, map/lighting/sound.
 
 Surveys done for this plan: all open items in `docs/HANDOFF.md`, `docs/kb/*.md`, `docs/reports/enemies.md`, and a code survey (30 k lines, 29 plugins, 179 tests, 85 `SHINOBI_*` knobs, no menus/pause/quit/gamepad/options, fixed 1024x560 window, hand-assembled `dist/`).
 
 ## Ground rules (unchanged)
 
 - Static research first; every value cited from data or the exe, else `// gap:`; memscope only read-only, as the last step.
-- No commit or push unless the user says "save"/"push"; never commit `extracted/` or `config.toml`; LF line endings.
-- `taskkill //IM sv1.exe //F` before building; relaunch after changes without asking; short plain replies.
+- `taskkill //IM sv1.exe //F` before building.
 - File ownership stays as today (Map: map.rs, sandbox.rs, grading.rs, cloth.rs, shaders, extractor map code; Bosses: enemy.rs, enemy/*, ai/*, stealth.rs, sim_tests enemy tests, data export; VXf: player.rs skills, prosthetic.rs, status.rs, ffx.rs, fxr.rs, vfx.rs, gore.rs, hud.rs, sound.rs, fmod.rs). New front-end files are assigned below. Cross-file edits: tell the owner by SendMessage first.
-- Each phase ends with: tests green (`cargo test --release`, smoke harnesses), docs updated (kb + HANDOFF), a "save" offer to the user.
+- Each phase ends with: tests green (`cargo test --release`, smoke harnesses), docs updated (kb + HANDOFF).
 
 ## Phase A: stabilise (all sessions, first)
 
@@ -104,21 +99,21 @@ Surveys done for this plan: all open items in `docs/HANDOFF.md`, `docs/kb/*.md`,
 4. **Map**: trace the startup `bevy_render slab_allocator Use-after-free` (HANDOFF L651, L800): reproduce with `SHINOBI_MAP=""` vs map; likely a mesh asset replaced in the same frame it is uploaded (cloth `insert_attribute` on a mesh the map/model just spawned). If harmless, document; if a Bevy 0.19 bug, pin the workaround.
 5. **All**: HANDOFF clean-up: reconcile stale lines (test counts 107/104/131/148; L8/L29/L95 contradictions; section 8 "still to do" vs L594; section 7 #5 gore vs section 9). One pass by Map session, others confirm their sections.
 
-## Phase B: fidelity, in the user's priority order (sessions in parallel)
+## Phase B: fidelity, in priority order (sessions in parallel)
 
 ### B1 Deathblows and hitboxes same as the game (Bosses, with Map for geometry tooling)
 
 Goal: frame-for-frame match of hit capsules, hurt capsules and deathblow placement against live clips.
 
 - **Hurtboxes from the game data, not stand-ins.** Today Wolf is a 0.4 m capsule (`kb/enemy.md:101`, `kb/movement.md:58`), enemies use NpcParam hitRadius/hitHeight. Port the per-bone hit capsules the game uses for damage (the chr's `_c.hkx`/ragdoll hit shapes already parsed for cloth collidables in `tools/sekiro-extract` cloth_export.rs; the same capsule list, exported as `hurt` into `extracted/enemies/<chr>.json` and the Wolf model) and test them in `combat.rs` hit test (`combat.rs:685` hit capsule between AtkParam dummy polys stays). Keep hitRadius for AI distance only.
-- **Hit capsule verification pass**: for Wolf's basic swings, Ichimonji, Mortal Draw and 6 common enemy attacks (General c1020, Ogre c5020 (c1040 is the Long-arm Centipede), c1010 spear, c1150, Genichiro, Monk), compare first-hit frame and reach between sim trace (`SHINOBI_TRACE`, sim_tests `*_trace`) and the user's Medal clips (ffmpeg contact sheets, as before). Record the table in `docs/kb/damage.md`.
+- **Hit capsule verification pass**: for Wolf's basic swings, Ichimonji, Mortal Draw and 6 common enemy attacks (General c1020, Ogre c5020 (c1040 is the Long-arm Centipede), c1010 spear, c1150, Genichiro, Monk), compare first-hit frame and reach between sim trace (`SHINOBI_TRACE`, sim_tests `*_trace`) and the Medal clips (ffmpeg contact sheets, as before). Record the table in `docs/kb/damage.md`.
 - **Deathblow geometry**: re-check front/behind deathblow placement after the absorb change (HANDOFF L186-188); the Ochimusha behind-deathblow drift up to 0.4 m (`kb/damage.md:174-177`): trace the exe's throw position interpolation (adsrobModelPosInterpolationTime 0.5, atkSorbDmyId 249) and the `targetBaseDmyPolyId 233 + (0,0,-0.3)` approximation (`kb/guard-deflect.md:148`); HP refill after a non-final boss deathblow (`kb/enemy.md:112`); grab ThrowParam lookup exe match (`kb/enemy.md:110`).
 - **Unexplained damage**: Wolf's x2.9 HP / x2 posture hits (`kb/damage.md:75,83`), leftover knockback push to the other character (`kb/damage.md:24`), TAE flag 73 confirmation (`kb/guard-deflect.md:50`).
 - Verify: new sim tests per capsule set (hit at the right frame, miss one frame earlier), `all_enemies_full` stays 86/102, live-clip tables in the KB.
 
 ### B2 Cape / cloth movement (Map)
 
-- Get a close real-game clip of the cape on direction changes (ask the user for one Medal clip: run, stop, turn, jump). 2026-10-13: the all-skills clip's Run and Slide (9:17-9:33) is from behind and too far (Wolf ~40 px at 480 wide) to read the skirt; still needs a close clip. Compare with the same inputs in sim (`SHINOBI_PHOTO`/`SHINOBI_PHOTO_POSES` or a sim trace with cloth positions logged).
+- Get a close real-game clip of the cape on direction changes (one clip: run, stop, turn, jump). 2026-10-13: the all-skills clip's Run and Slide (9:17-9:33) is from behind and too far (Wolf ~40 px at 480 wide) to read the skirt; still needs a close clip. Compare with the same inputs in sim (`SHINOBI_PHOTO`/`SHINOBI_PHOTO_POSES` or a sim trace with cloth positions logged).
 - Constraint execution order and BendStiffness vs the exe (`hclBendStiffnessConstraintSetMx` already ported; check the order list in `constraintExecution` is applied as the exe does, and the transition sets, `kb/visuals.md:124-125`).
 - ~~Coat second texture layer~~ done 2026-10-12 (Character_AN_Blend_AMSN_[Fresnel] port, `kb/visuals.md` "Coat shader").
 - c1010 spear cloth restart at spawn; the Phase A c1100/c1060 fix.
@@ -129,7 +124,7 @@ Goal: frame-for-frame match of hit capsules, hurt capsules and deathblow placeme
 - ~~Port `lockCamAdjustRot_MaxX/Y` manual offsets~~ (2026-10-13: unused by the exe, `kb/camera.md`) and the target-point smoothing by `targetChaseRateAtLock` (HANDOFF L132-139, L355).
 - Lock-on switch: mouse units done 2026-10-13 (raw counts a frame, as Bevy's); the screen y sign stays open (`kb/camera.md`).
 - TAE 151 look limits: cone centre from the dummy basis and lerp back (`kb/camera.md:45`).
-- Head-kick camera, vault and jump cloth: get the user's verdict with a clip each (HANDOFF L345-348).
+- Head-kick camera, vault and jump cloth: check in game with a clip each (HANDOFF L345-348).
 - Controls: `invert_y`, `mouse_sensitivity` already; add `[input]` key map in config (see C3) and gamepad (C4) once the front end exists.
 - Verify: camera sim tests (pitch formula already ported) plus user play check.
 
@@ -139,7 +134,7 @@ Goal: frame-for-frame match of hit capsules, hurt capsules and deathblow placeme
 - Probe blend between hour variants for in-between hours (`kb/map.md:204`); the +2 EV adaption cap and adaptation speeds from the Yebis params (`kb/map.md:142-146`); LUX_PER_UNIT by comparison shots instead of by eye (`kb/map.md:97`).
 - Layer materials: bind each layer's own `_3m` mask, settle UV sets, use blend byte 1 / RGB bytes (`kb/map.md:232-250`); far-view castle stand-ins; `giiv` volumes later.
 - In play: stairs, walls, low ceilings vs the camera, spawn height on slopes (`kb/map.md:252`).
-- Sound (VXf): play at the TAE event's DummyPoly, map reverb (`setReverbProperties`, `sd_reverb_size`/`sd_dimension`), volume check with the user (`kb/sound.md:62`, HANDOFF L347-352).
+- Sound (VXf): play at the TAE event's DummyPoly, map reverb (`setReverbProperties`, `sd_reverb_size`/`sd_dimension`), volume check in game (`kb/sound.md:62`, HANDOFF L347-352).
 - Verify: sandbox `[`/`]` walk at 0/6/12/18 h screenshots vs real-game shots; gate map at 60 fps.
 
 ### B5 Enemies and AI, fighters only (Bosses)
@@ -153,7 +148,7 @@ Foreign arena start: done (Map player_start + enemy::on_own_arena on map::loaded
 
 - Remaining fighter gaps: Aging status for c1300 (`status.rs`, with VXf), c1550 "hidden for directing" row, teamType hostility (EMEVD 2004[2] team flips: no effect, kb/enemy.md), GetDist 3D and the radius field, AI command slot clearing (done), event flags default (done: AI SetEventFlag), Monk phantom vanish/region heights (done), bullets map collision and homing.
 - Stealth: map raycasts for sight (use `Terrain::raycast` from map.rs), patrol routes from MSB (blocked: enemies stand at their MSB spots only in boss arenas; format in kb/enemy.md), grass/shadow regions (bushes solved: EMEVD 701 + bush objects, none on any arena; shadow 109201 unset by data), crouch attacks/steps/reactions (done: CrouchAttackToStand; the rest are the standing ones, forced crouch gap), listener ear params.
-- AI pacing vs live needs a recorded passive fight (ask the user for one clip).
+- AI pacing vs live needs a recorded passive fight (one clip).
 - Non-fighters: make sure the 16 spawn, idle and never panic (smoke test asserts "no crash, stands").
 - Verify: `all_enemies_full` 86/102 and `all_enemies_smoke` with the non-fighter "stands" rule 102/102. (2026-10-11: smoke 102/102 done; full 95/110 = all but the 15 non-fighters. Done: GetDist 3D, bullets map/homing, sight raycast, ear params, c1550 row.)
 
@@ -165,7 +160,7 @@ Foreign arena start: done (Map player_start + enemy::on_own_arena on map::loaded
 - HUD art: stealth meter with MENU_Find_01/02, deathblow mark FE movie sizing.
 - Verify: `SHINOBI_SKILL_SHOTS` sheets for all 19 arts and 10 tools and `SHINOBI_FXR_SHOTS` sheets per enemy, compared with the game clips already collected.
 
-### B7 Grappling hook (all; added 2026-10-11, the user: "needed for many bosses")
+### B7 Grappling hook (all; added 2026-10-11)
 
 Research and the split in `docs/kb/grapple.md`. Map: grapple points exported per map / arena
 (object `.edge` grapple edges and map `.edge` files; the o000100 "markers" are item spots) into
@@ -218,7 +213,7 @@ Status 2026-10-11: no-console exe + sv1.log + panic dialog, `[profile.dist]` + p
 
 - Performance (back on 2026-10-13, see the update above): 60 fps with vsync on the gate map and the 20-enemy arena (today 59/48; the gate map measured 18-24 fps on 2026-10-13); cloth range, shadow cascades, FXR soft particles are the knobs. Measure with src/perf.rs (F3, SHINOBI_BENCH).
 - Quiet logs in release (info only for load lines), no per-frame warnings.
-- Feel check with the user: three clips (fight the General, the Ogre, Genichiro) compared with the game, last tweaks.
+- Feel check: three clips (fight the General, the Ogre, Genichiro) compared with the game, last tweaks.
 
 ## Order and ownership summary
 

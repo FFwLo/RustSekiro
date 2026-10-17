@@ -189,6 +189,10 @@ pub struct Skeleton {
     /// Last pose written by pose_skeletons (before the twist layer), the start of crossfades:
     /// snapshotting the bone transforms instead would bake that frame's twist into the fade.
     last: Vec<Transform>,
+    /// Bones the last shown clip had a track for, and those of the clip faded from: a bone the
+    /// old clip did not animate does not fade from its reference pose.
+    last_tracked: Vec<bool>,
+    from_tracked: Vec<bool>,
     pub(crate) blend: f32,
     /// Crossfade length into the current clip (TAE Blend event, else CROSSFADE).
     blend_len: f32,
@@ -319,7 +323,7 @@ fn build_skeletons(
             commands.entity(e).insert(Hurtboxes(boxes, parts));
         }
         // The skeleton replaces the placeholder capsule.
-        commands.entity(e).insert(Skeleton { bones, root, shown: String::new(), shown_t: 0.0, from: Vec::new(), last: Vec::new(), blend: 1.0, blend_len: CROSSFADE, was_upper: false, upper_fade: false, sim: [Vec::new(), Vec::new()] }).remove::<Mesh3d>();
+        commands.entity(e).insert(Skeleton { bones, root, shown: String::new(), shown_t: 0.0, from: Vec::new(), last: Vec::new(), last_tracked: Vec::new(), from_tracked: Vec::new(), blend: 1.0, blend_len: CROSSFADE, was_upper: false, upper_fade: false, sim: [Vec::new(), Vec::new()] }).remove::<Mesh3d>();
     }
 }
 
@@ -407,6 +411,7 @@ fn pose_skeletons(
         skel.shown_t = drawn;
         if key != skel.shown || replayed {
             skel.from = if skel.last.len() == skel.bones.len() { skel.last.clone() } else { skel.bones.iter().map(|&b| tfs.get(b).copied().unwrap_or_default()).collect() };
+            skel.from_tracked = skel.last_tracked.clone();
             // Behavior-graph transitions all have duration 0 (c0000.hkx / c9997.hkx: TaeBlend*,
             // DefaultTransition, StateToStateBlend): the blend time is the target anim's TAE Blend
             // event, and an anim without one (hit / deflect / stagger reactions) snaps in at once.
@@ -470,6 +475,7 @@ fn pose_skeletons(
                 *t = true;
             }
         }
+        skel.last_tracked.clone_from(&tracked);
         for (bi, _) in tracked.iter().enumerate().filter(|(_, t)| !**t) {
             if let (Some(def), Ok(mut tf)) = (l.bones.get(bi), tfs.get_mut(skel.bones[bi])) {
                 *tf = def.pose;
@@ -496,7 +502,13 @@ fn pose_skeletons(
             };
             let bone = bone as usize;
             let mut out = match skel.from.get(bone) {
-                Some(from) if w < 1.0 && !(skel.upper_fade && bone < LOWER_BODY_BONES) => Transform {
+                // A bone the old clip had no track for takes the new clip at once: a Havok clip's
+                // pose carries no weight on its unbound bones, so the blend is all the new clip's
+                // there. Emma's left-hand sheath L_Saya (c7400): untracked in a000_003005, shown by
+                // a000_003004's TAE 713 from 0 s; faded from the reference pose it floated 0.3 m
+                // off her hand (the user, 2026-10-16). gap: the exe's per-bone blend weights are
+                // not traced.
+                Some(from) if w < 1.0 && !(skel.upper_fade && bone < LOWER_BODY_BONES) && skel.from_tracked.get(bone).copied().unwrap_or(true) => Transform {
                     translation: from.translation.lerp(target.translation, w),
                     rotation: from.rotation.slerp(target.rotation, w),
                     scale: from.scale.lerp(target.scale, w),

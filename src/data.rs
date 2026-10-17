@@ -236,6 +236,12 @@ pub struct SpEffect {
     pub invocation_conditions_state_change2: i64,
     #[serde(default)]
     pub invocation_conditions_state_change3: i64,
+    /// A BehaviorParam row run every motionInterval at `dmypoly_id` while worn (stateInfo 275:
+    /// the Demon of Hatred's foot checks 3702080 / 3702081 -> 1802 -> Bullet 70200950).
+    #[serde(default)]
+    pub behavior_id: i64,
+    #[serde(default = "minus_one")]
+    pub dmypoly_id: i64,
 }
 
 /// SpEffectParam def<Attr>StaminaDmgRate for an AtkParam staminaPhysicsAttribute (Paramdex SDT
@@ -1765,9 +1771,9 @@ impl CharData {
     /// the event), None before the anim's first keyframe: the Corrupted Monk's phantoms (c5005)
     /// fade in at the start of their a200 attacks and out at the end, and stand at 0 in their
     /// a200 idle, which is how the game keeps them out of sight between calls. The value holds
-    /// until the next keyframe (Actor::opacity), also into anims without one (their a000 walk
-    /// fallback). gap: that hold, and the hold after a keyframe ends (a200_003001's last ends at
-    /// 5.0 s of 6.67), are assumed from the event's name, not traced in the exe.
+    /// to the clip's next keyframe; a clip without one takes the group idle's (actor.rs). gap:
+    /// the hold after a keyframe ends (a200_003001's last ends at 5.0 s of 6.67) is assumed from
+    /// the event's name, not traced in the exe.
     pub fn opacity_key(&self, key: &str, t: f32) -> Option<f32> {
         let a = self.anim(key)?;
         let f = |e: &Event, n: &str| e.args.get(n).and_then(|v| v.as_f64()).unwrap_or(1.0) as f32;
@@ -1786,9 +1792,19 @@ impl CharData {
     /// counts too. gap: what 932 / 104-105 is in the exe is not traced; the match of such windows
     /// to the characters with a 250000 row is the evidence (c1010 / c1140 have 104 and no row).
     pub fn finisher_open(&self, key: &str, t: f32) -> bool {
-        let Some(a) = self.anim(key) else { return false };
-        let is = |e: &Event| e.kind == 932 && matches!(e.arg_i64("unk0"), Some(104 | 105));
-        a.events.iter().any(|e| is(e) && (e.in_time(t) || t >= self.length(key)))
+        self.finisher_window(key, t).is_some()
+    }
+
+    /// Which finisher window is open (finisher_open): 105, the Todome's (every boss with Todome
+    /// rows has it on its Event20200, 1-5 s: c5000 c5060 c5090 c5100 c5400 c5430 c7020 c7110), or
+    /// 104, the "enemy special state A" one (Event21000 and the like). The recordings
+    /// (rec_2026101x_*_boss_*: Butterfly, Genichiro castle, Ape, True Monk, Demon of Hatred, Owl
+    /// Father, Isshin, Isshin Ashina) all take the Todome 0180 / 0181 from the boss's 20200, 0.8-1.8 s
+    /// into Wolf's Event7102xx; Isshin's 590 comes from his 21000 after it.
+    pub fn finisher_window(&self, key: &str, t: f32) -> Option<i64> {
+        let a = self.anim(key)?;
+        let end = t >= self.length(key);
+        a.events.iter().find(|e| e.kind == 932 && matches!(e.arg_i64("unk0"), Some(104 | 105)) && (e.in_time(t) || end)).and_then(|e| e.arg_i64("unk0"))
     }
 
     /// Is a ChrActionFlag (TAE type 0) of this FlagType active?

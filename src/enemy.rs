@@ -24,6 +24,7 @@ use crate::stealth::{self, Targeting};
 mod events;
 pub mod grapple;
 pub mod script;
+pub mod talk;
 pub use script::{BossScript, Cast, Phantom};
 
 /// Fallback c1020 attack strings (Goal.Act01..07 of 102000_battle.lua: 3000-3002 combo, 3004-3005, 3006, 3010).
@@ -489,6 +490,14 @@ impl Enemy {
         // down for good (its map script ends the fight on the reaction's message 30, m11_02
         // 11125860).
         if self.is_dead() || self.is_down() {
+            // The Todome on a boss kept alive in its kneel (the Monk's 20200: immortal until her
+            // ThrowDef13700's message 10, m25 12505965) kills it at Wolf's Ninsatsu hit, as the last
+            // deathblow did before (ninsatsu_unhit; a fake death's immortality still keeps it, the
+            // Guardian Ape's first 13700: script.rs).
+            if self.is_down() {
+                a.hp = 0.0;
+                self.ninsatsu_unhit += 1;
+            }
             if !a.play_state(d, &format!("ThrowDef{def_anim}")) {
                 a.procedural("Dead");
             }
@@ -1006,12 +1015,14 @@ impl Plugin for EnemyPlugin {
             .add_message::<SpawnEncounter>()
             .add_message::<grapple::WireHit>()
             .init_resource::<BossScript>()
+            .init_resource::<talk::Talk>()
+            .add_systems(Update, talk::hold_input.after(crate::player::read_input))
             .init_resource::<script::WolfImmortal>()
             .init_resource::<WolfMessage>()
             .add_systems(Startup, spawn_enemy)
             .add_systems(
                 FixedUpdate,
-                (spawn_encounter, reset_fight, stealth_env_start, start_unaware, ai_hold, route_end_anim, parry_interrupt, think, grapple::on_wire_hit, ninsatsu_hit, todome_message, events::messages, script::run_scripts, events::apply_event_warp).chain().in_set(ActorSet::Decide),
+                (spawn_encounter, reset_fight, stealth_env_start, start_unaware, ai_hold, route_end_anim, parry_interrupt, think, grapple::on_wire_hit, ninsatsu_hit, todome_message, events::messages, script::run_scripts, talk::run_talk, events::apply_event_warp).chain().in_set(ActorSet::Decide),
             )
             .add_systems(Update, toggle_aggression.run_if(resource_exists::<ButtonInput<KeyCode>>))
             .init_resource::<grapple::EnemyGrapples>()
@@ -1093,7 +1104,7 @@ fn todome_message(
             e.mode = Mode::Dead(d.length(&a.anim) + 2.0);
         }
         for id in &r.player {
-            if pa.play_state(&combat.player, &format!("Event{id}")) {
+            if pa.play_state(&combat.player, &crate::player::event_state(&combat.player, *id)) {
                 throw.0 = None;
                 break;
             }

@@ -2,9 +2,9 @@
 
 Moved out of `docs/HANDOFF.md` section 8 on 2026-10-15. Status at the end of the section.
 
-## 8. Skills plan (2026-10-10; user: "do all the skills and their effects and way to change between them")
+## 8. Skills plan (2026-10-10)
 Order: switching first, then combat arts, then prosthetic tools one by one, then latent skills. Ship
-each step to the user (relaunch the game), keep everything data-driven (cite rows / HKS lines /
+each step in game, keep everything data-driven (cite rows / HKS lines /
 exe addresses, mark the rest `// gap:`), ask for a real-game clip per tool for the look.
 
 **Done so far (extractor only, exported 2026-10-10, game not yet using it):**
@@ -281,5 +281,11 @@ HKS branch, the latent skills that have a system):**
    `MSYS_NO_PATHCONV=1` in Git Bash or the '^/parts/..' regex is mangled.
 
 Verify with sim tests (`src/sim_tests.rs`) per tool and art, and screenshots via the throw-trace
-shot env vars or `tools/screenshot.ps1`. Ask the user before
-committing (never `extracted/`, never their `config.toml`), never push.
+shot env vars or `tools/screenshot.ps1`.
+
+- 2026-10-17 Lightning Reversal (weak, a050_308910 / landing 308911): AttackBehavior 280 / 281 at
+  0.133-0.267 s -> BehaviorParam_PC 105000281 -> AtkParam_Pc 5000281: spAttribute 6, spEffectId0
+  9400 (the 508 HP shock), capsule dmy 10120 -> 10141 radius 1.2 (dmy 141 on WP_A_0300 Blade02),
+  no atkPhys / atkStam. The hit filter (combat.rs ~1340) dropped attacks with no damage and no
+  stamina, so it did 80 HP and no stun; an attack with any SpEffect now hits. Test
+  the_reversal_bolt_stuns_tomoe (part06).

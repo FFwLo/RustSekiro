@@ -2430,7 +2430,8 @@ fn bodies_on_terrain(combat: Res<crate::data::Combat>, mut commands: Commands, m
         }
         let data = crate::actor::data_for(&combat, &a);
         let lifted = !a.anim.is_empty() && data.flag(&a.anim, a.t, crate::player::FLAG_NO_GRAVITY);
-        if !a.airborne && !lifted {
+        // An enemy coming down from a SetNoGravity lift (actor.rs) lands by itself.
+        if !a.airborne && !lifted && a.lift_ground.is_none() {
             let feet = tf.translation.y - CAPSULE_HALF_HEIGHT;
             let floor = t.floor(tf.translation.x, tf.translation.z, feet + STEP_HEIGHT);
             match floor {

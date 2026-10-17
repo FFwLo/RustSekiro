@@ -1,7 +1,7 @@
 # Sv1 (Sekiro combat recreation in Rust + Bevy)
 
 Project at `C:\DeadlockModding\shinobi-combat`: a 1:1 recreation of Sekiro's combat. Every number
-comes from the user's own Sekiro install (TAE, HKS, params, behaviour graphs, FLVER, FMOD) or the
+comes from the game's own files (TAE, HKS, params, behaviour graphs, FLVER, FMOD) or the
 static Ghidra decompile of the exe. The crate and exe are `sv1`. GitHub: `FFwLo/RustSekiro`, `main`.
 
 ## Commands
@@ -30,7 +30,7 @@ static Ghidra decompile of the exe. The crate and exe are `sv1`. GitHub: `FFwLo/
 | Sound, music | `src/sound.rs`, `src/fmod.rs`, `src/area_music.rs`, `docs/kb/sound.md` |
 | HUD, menus | `src/hud.rs`, `src/menu.rs` |
 | Extractor | `tools/sekiro-extract/src/`, `docs/kb/tools-exe.md` |
-| Reference clips | `docs/kb/clips.md` (check before asking the user for a new recording) |
+| Reference clips | `docs/kb/clips.md` (check before asking for a new recording) |
 | Live recordings of the real Sekiro | `docs/kb/recordings.md`: read `python -m tools.rec summary <rec> --cat <topic>`, never raw data |
 
 Reference clones (read-only): `C:\DeadlockModding\reference` (SekiroHKS, SDT-HKS, Paramdex,

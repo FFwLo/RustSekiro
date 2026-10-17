@@ -1,7 +1,7 @@
 # Sv1: progress and next steps
 
 Goal: a Rust/Bevy combat prototype that plays 1:1 like Sekiro, with numbers read
-from the user's own Sekiro install (TAE, HKS, params) and Ghidra for the gaps.
+from the game's own files (TAE, HKS, params) and Ghidra for the gaps.
 
 ## Pipeline (all local, nothing game-derived is committed)
 
@@ -45,7 +45,7 @@ sekiro-extract export extracted                         # -> extracted/combat_da
 
 ## Ghidra notes
 Ghidra 12.1.4 at C:\Users\User\Desktop\ghidra_12.1.4_PUBLIC. sekiro.exe is Arxan-protected; work from a
-dump of the running process (user-run) plus community symbol names (souls modding wiki / Discord).
+dump of the running process plus community symbol names (souls modding wiki / Discord).
 
 ## Quick tools (use these instead of ad-hoc snippets; output is compact)
 - `python tools/anim_info.py <state|anim> [--enemy] [--types 0,67]` - one state's refs, flags, events;
@@ -115,3 +115,21 @@ matching topic file, and one line to Recent below (keep the last 15).
 - 2026-10-08 art early release = ref 222 (found via live recording); guard posture hook script ready; 68 tests
 - 2026-10-15 cloth: solver / damping / collision order / warp-only transfer re-read from the exe, all match; cloth now steps in ~1/60 s pieces at low fps (cloth.rs frame_steps); thin boss cloth swings are in the data (kb/visuals.md)
 - 2026-10-15 cloth: all 80 stale cloth.json re-exported (friction, compressible, second sims); hclVolumeConstraintMx ported (Demon mane / beard, Wolf neck scarf, Dragon sakura, Isshin helm fur)
+- 2026-10-15 bosses: Emma stays down after her last deathblow; the Demon of Hatred's ghost-fire arm draws (ghost_scroll shader); the dragons are one fight on their own 140 m arena from the sandbox; Genichiro's black-sword sound stops with its event (slotted sounds)
+- 2026-10-16 bosses: Bosses tab shows only the 20 main rows; boss audit vs the live recordings (tools/boss_audit.py, docs/reports/boss-audit.md)
+- 2026-10-16 boss endings as in the recordings: last mark = usual deathblow, boss kneels (20200), attack during the kneel = Todome; Isshin then kneels again (21000) for the 590 finisher
+- 2026-10-16 opacity: a clip without a TAE 193 keyframe takes the group idle's opacity (actor.rs), so a vanish cut short (Owl a000_003037, Owl Father a000_020001, Monk 021000) no longer leaves the boss invisible
+- 2026-10-16 Emma's sword: spawn draw mask adds IdleBattle's TAE 233 (only R_Katana #00# and waist Saya #04#, not all five parts); a bone the old clip had no track for no longer fades from its reference pose (her L_Saya floated off her hand). SHINOBI_DUEL_CAM films the enemy from the side; tools/model_info.py reads model v6
+- 2026-10-16 Lady Butterfly: a SetNoGravity (TAE 0 flag 27) clip that chains into another keeps her height, and after the lift she falls with gravity instead of snapping to the ground (rec_20261015_225710: 3200 -> 3202 drops 4.5 m)
+- 2026-10-16 skinned culling: non-cloth skinned meshes get DynamicSkinnedMeshBounds, so a part far from its bind pose (Gyoubu's face in his deathblow) is not culled while in view
+- 2026-10-16 Owl (Father) start: the real game opens with a ~10 s talk (Wolf a000_700400, Owl 401 / 41500 lipsync / 402; rec_20261016_074559), which the port does not have, so he stands in 401 (7.33 s loop). AiState Held now ends at the first TAE 0 AI cancel flag (23/78/79/86)
+- 2026-10-16 Owl (Father) talk: src/enemy/talk.rs plays talk ESD t100121's TalkParam 12030000-5 (voices v012030000-5, bank vm10), Wolf's Event700400 / 700420 (added to export_states.txt), the Owl's 402 gesture, Wolf's input held; flag 71000130 at the end lets m10 11005910 turn his AI on. Timing from rec_20261016_074559. gap: lip sync, subtitles. Test `the_owl_father_talks_before_the_fight`
+- 2026-10-16 cloth: standard / compressible / bend link stiffness is stored premultiplied with 1 / (invMassA + invMassB) (stretch links are not); cloth.rs divided it again, so light cloth overshot: the Owl's ponytail (invMass 0.16) exploded standing still (gap 0.87 m -> 0.50 m, its LocalRange max). Also stiffens heavy cloth (Isshin, Genichiro's hakama, Wolf's coat) to the data's values
+- 2026-10-16 Owl hair cards cut by alpha (Fur_NTC_SSS with g_AlphaRef > 0); Owl blood red squares fixed (DecalParam textureId fallback, missing textures skipped). Open: Owl ponytail too big in his deathblow. kb/visuals.md.
+- 2026-10-16 Owl (Father) talk skipped (talk.rs PLAY_TALKS false). Washed-out cloth fixed: empty fabric slots use the game's SYSTEX dummies (grey, not white). Guardian Ape fur shells decoded (C[Shell]). kb/visuals.md.
+- 2026-10-17 Weak Lightning Reversal (a050_308910 / 308911) now stuns and does its 508 HP shock: its AtkParam_Pc 5000281 has no damage, only spEffectId0 9400, and the hit filter skipped such attacks (combat.rs). TAE 156 SetCameraAngle ported (camera.rs set_camera_angle, from the exe): about 200 of Wolf's moves, mostly boss deathblows, tilt / turn the camera; Gyoubu's deathblow no longer looks from under the horse. kb/camera.md, kb/skills.md.
+- 2026-10-17 Merged claude/move (movement) and claude/amazing-panini-951ca9 (skill effects) into main. Together they broke the head kick over a sweep: the lock-on forward jump's homing row 10000 (point 1 m in front of the target) pulled Wolf back off the head from a body-to-body stand. A homing now does not start when Wolf is already nearer than its point (player.rs, gap: the exe's test not traced; the live head kicks hold at contact). The leaping-kicks test puts the enemy off the unlocked leap's path (a body in the way now stops a jump).
+- 2026-10-17 Old Dragons -> Divine Dragon hand-over: m25 12505885 sets 9318 and shows the Divine Dragon's bar (2003[11]); that is a hand-over, not the defeat (script.rs hand_over), so the dragon now fights (15 attack kinds in the audit). The all-bosses defeat test skips the Old Dragons row like the other hand-overs.
+- 2026-10-17 Demon of Hatred: his resident foot checks 3702080 / 3702081 (SpEffect stateInfo 275: BehaviorParam 1802 every 0.3 s from dummies 13 / 16 -> Bullet 70200950, 2.5 m) now fire (enemy_bullet.rs fire_worn; the extractor exports behaviorId / dmypolyId and the 'sp<behavior>' bullets). They mark Wolf with 3702085, which his stomp 3046 waits for; the audit now shows 3046, 3039 and 5203. 3006 is still missing there because the audit Wolf hugs him (his 3005 combo point adds 5032, and his script replans at GetDist <= 0.5). His last deathblow now kneels him (20200) for the Todome 17020180: m11_00 11105910's immortality (2004[12]) sat before the event's entry point and was skipped, so the third deathblow killed him (script.rs Run::new carries a skipped 2004[12] over). His idle-arm fire FFX 120 (dummies 820 / 50) is gated on stateInfo 951 = SpEffect 3702021 'HU後炎判定', which no TAE, param, event script or exe constant gives: a gap, probably unused. His self light 3702060 (FXR 670260) is a resident VFX we do not show yet (ffx.rs gap).
+- 2026-10-17 Divine Dragon check against rec_20261016_070725: each lightning Wolf sends back (a050_308900) takes 3904 HP (8.7 %) and 867 posture; the first posture break is his HU 20001 (phase 3, 5021), the second 9511 / 20002 -> Event21000, then the finisher 15200090 (a233_510900, 494 s). The sim tests cover that chain (part06, 7 dragon tests pass). The boss audit cannot: its Wolf never jumps, so no lightning is caught, no deathblow lands, and the phase-3 moves (3040-3049, 520000_battle.lua Act40-47) and the height-picked ones (GetDistYSigned >= 4.5 m) never come up there.
+- 2026-10-17 Genichiro's trousers and Isshin's robe checked in game: both look right (cloth item closed).

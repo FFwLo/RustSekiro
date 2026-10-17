@@ -1,7 +1,7 @@
 # docking: wall hug (cover) and ledge hang
 
 Owner: VXf. Static research 2026-10-11. Not built yet. It is parked because boss fights don't
-use it (Map's view to the user: hug / hang belong to the stealth part, mini-bosses in the open
+use it (hug / hang belong to the stealth part, mini-bosses in the open
 world) and the gate map has almost no usable edges (see 5).
 
 ## 1. Button

@@ -1166,6 +1166,10 @@ LandGroundSpecialAttackJumpAfterJumpStart
 Event710205
 Event710206
 Event710207
+# A talk before a fight (the Owl (Father), talk ESD t100121): c0000_transition.lua
+# BEH_R_NPC_TALK_START -> W_Event700400, BEH_R_NPC_TALK_END -> W_Event700420 (src/talk.rs).
+Event700400
+Event700420
 # Lightning Reversal (c0000_transition.lua: a lightning hit in the air charges Wolf,
 # W_AirDamageElectroCharge*; an attack then releases it, W_AirElectroReceiveAttack; landing
 # charged shocks him, W_LandAirDamageElectroCharge; a deflect in the air charges too).

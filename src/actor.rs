@@ -203,6 +203,12 @@ pub struct Actor {
     pub air_base: Vec3,
     /// Height where a SetNoGravity root lift began (enemies; actor.rs advance puts them back).
     pub lift_ground: Option<f32>,
+    /// The lift's height over `lift_ground` where the current clip's took over (a lifted clip
+    /// chained from another: Lady Butterfly's 3010 at 4 m into 3200), the clip it was taken for,
+    /// and the fall speed back down after the lift.
+    pub lift_off: f32,
+    pub lift_anim: String,
+    pub lift_vy: f32,
     /// Root-motion scale from TAE 760 BoostRootMotionToReachTarget (1.0 outside it).
     pub root_scale: f32,
     /// The clip's root turn is scaled by this (enemy turn-in-place clips turned to the asked
@@ -348,6 +354,9 @@ impl Actor {
             fall_type: 0,
             air_base: Vec3::ZERO,
             lift_ground: None,
+            lift_off: 0.0,
+            lift_anim: String::new(),
+            lift_vy: 0.0,
             root_scale: 1.0,
             root_yaw: 0.0,
             yaw_scale: 1.0,
@@ -673,9 +682,13 @@ pub fn advance(time: Res<Time>, combat: Res<Combat>, mut q: Query<(&mut Actor, &
         a.t += dt;
         a.since_posture_damage += dt;
         let data = data_for(&combat, &a);
-        if let Some(o) = data.opacity_key(&a.anim, a.t) {
-            a.opacity = o;
-        }
+        // A clip without a keyframe yet takes its group idle's opacity (1 if none; the Monk's
+        // phantoms' a200_000000 holds 0), so a vanish cut short (Owl a000_003037: 0 from 0.27 to
+        // 0.7 s, back to 1 at 0.8 s; hit or deflected in between) does not leave him invisible.
+        a.opacity = match data.opacity_key(&a.anim, a.t) {
+            Some(o) => o,
+            None => data.opacity_key(&format!("a{:03}_000000", a.anim_group * 100), 0.0).unwrap_or(1.0),
+        };
         // Additive layer clock: it ends after max(clip length, last TAE event).
         if !a.add_anim.is_empty() {
             a.add_t += dt;
@@ -775,15 +788,37 @@ pub fn advance(time: Res<Time>, combat: Res<Combat>, mut q: Query<(&mut Actor, &
         if a.side == Side::Enemy && !a.airborne {
             let lifted = !a.anim.is_empty() && data.flag(&a.anim, a.t, crate::player::FLAG_NO_GRAVITY);
             let rise = if lifted { data.root_y_at(&a.anim, a.t).max(0.0) } else { 0.0 };
+            // A lifted clip that follows another lifted one goes on from the height it is at (the
+            // recordings: Lady Butterfly's 3200 / 3240 start in the air after 3010 / 3024, then
+            // 3202 / 3242 come down 4.5 / 2.8 m, rec_20261015_225710); restarting from the ground
+            // snapped her down and back up. Out of the lift it falls back to the ground at
+            // WORLD_GRAVITY. gap: the enemies' fall acceleration (their fall type) is not traced.
             match (lifted, a.lift_ground) {
                 (true, None) => {
                     a.lift_ground = Some(tf.translation.y);
+                    a.lift_off = 0.0;
+                    a.lift_anim = a.anim.clone();
+                    a.lift_vy = 0.0;
                     tf.translation.y += rise;
                 }
-                (true, Some(g)) => tf.translation.y = g + rise,
+                (true, Some(g)) => {
+                    if a.lift_anim != a.anim {
+                        a.lift_off = (tf.translation.y - g - rise).max(0.0);
+                        a.lift_anim = a.anim.clone();
+                        a.lift_vy = 0.0;
+                    }
+                    tf.translation.y = g + a.lift_off + rise;
+                }
                 (false, Some(g)) => {
-                    tf.translation.y = g;
-                    a.lift_ground = None;
+                    a.lift_vy -= crate::data::WORLD_GRAVITY * dt;
+                    tf.translation.y += a.lift_vy * dt;
+                    if tf.translation.y <= g {
+                        tf.translation.y = g;
+                        a.lift_ground = None;
+                        a.lift_off = 0.0;
+                        a.lift_anim.clear();
+                        a.lift_vy = 0.0;
+                    }
                 }
                 (false, None) => {}
             }

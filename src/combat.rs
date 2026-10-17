@@ -1355,7 +1355,11 @@ fn resolve(
                     }
                     _ => Some((e, atk, j)),
                 })
-                .filter(|(e, atk, _)| e.in_time(aa.t) && atk.oppose_target != 0 && (atk.atk_stam > 0.0 || atk.npc_damage() > 0.0 || atk.direct_atk_stam_damage > 0.0))
+                // A row that carries only a SpEffect is an attack too: the weak Lightning
+                // Reversal's bolt AtkParam_Pc 5000281 (no atkStam / atkPhys, spEffectId0 9400 =
+                // the shock's 508 HP) never hit before (the user, 2026-10-16: "reversal dont stun
+                // him and dont do dmg as the game").
+                .filter(|(e, atk, _)| e.in_time(aa.t) && atk.oppose_target != 0 && (atk.atk_stam > 0.0 || atk.npc_damage() > 0.0 || atk.direct_atk_stam_damage > 0.0 || atk.sp_effects().iter().any(|&s| s > 0)))
                 .map(|(e, atk, j)| ((e.start * TAE_FPS).round() as i32, j, atk.clone(), false))
                 .collect();
             // The attacker's bullets that reached this defender (enemy_bullet.rs): already

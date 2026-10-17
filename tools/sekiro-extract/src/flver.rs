@@ -27,6 +27,9 @@ pub struct Vertex {
     pub blend: [[u8; 4]; 6],
     pub bones: [u16; 4],
     pub weights: [f32; 4],
+    /// VertexColor (semantic 10), RGBA 0..1; white when the buffers carry none. C[Shell] reads
+    /// its alpha as the shell layer's opacity (kb/visuals.md "Fur shells").
+    pub color: [f32; 4],
 }
 
 pub struct Mesh {
@@ -230,7 +233,7 @@ pub fn read_lod(d: &[u8], lod: u32) -> Flver {
                 .unwrap_or_default();
             let vcount = mh.vbs.first().map(|&v| vbs[v].2)?;
             let mut vertices: Vec<Vertex> = (0..vcount)
-                .map(|_| Vertex { pos: [0.0; 3], normal: [0.0, 1.0, 0.0], uv: [0.0; 2], uv2: [0.0; 2], blend: [[0; 4]; 6], bones: [0; 4], weights: [1.0, 0.0, 0.0, 0.0] })
+                .map(|_| Vertex { pos: [0.0; 3], normal: [0.0, 1.0, 0.0], uv: [0.0; 2], uv2: [0.0; 2], blend: [[0; 4]; 6], bones: [0; 4], weights: [1.0, 0.0, 0.0, 0.0], color: [1.0; 4] })
                 .collect();
             // NormalW (the normal's 4th value): the bone of a vertex in a rigid mesh whose buffers
             // carry no BoneIndices (SoulsFormats FLVER Vertex.NormalW; DSAnimStudio
@@ -260,6 +263,8 @@ pub fn read_lod(d: &[u8], lod: u32) -> Flver {
                             (1, 26) => v.weights = std::array::from_fn(|k| r.u16(p + k * 2) as i16 as f32 / 32767.0),
                             (2, 17) | (2, 18) | (2, 47) => v.bones = std::array::from_fn(|k| d[p + k] as u16),
                             (2, 24) => v.bones = std::array::from_fn(|k| r.u16(p + k * 2)),
+                            (10, 19) => v.color = std::array::from_fn(|k| d[p + k] as f32 / 255.0),
+                            (10, 3) => v.color = [r.f32(p), r.f32(p + 4), r.f32(p + 8), r.f32(p + 12)],
                             (3, 2) => v.normal = [r.f32(p), r.f32(p + 4), r.f32(p + 8)],
                             (3, 3) => {
                                 v.normal = [r.f32(p), r.f32(p + 4), r.f32(p + 8)];
@@ -543,9 +548,24 @@ pub fn mtd_shader(d: &[u8]) -> String {
 /// Alpha-tested material: Sekiro's character albedos keep a cutout in their alpha (BC1 punch-through
 /// or a 0/255 BC7 alpha: Wolf's tattered coat is 42 % holes), so alpha test is the default. The skin
 /// shaders (SSS: faces, hands, mouths) and eyes use the alpha for something else (Wolf's head
-/// albedo is 86 % alpha 0) and draw opaque.
-pub fn alpha_tested(_mtd: &str, shader: &str) -> bool {
+/// albedo is 86 % alpha 0) and draw opaque. The fur shaders with SSS (Fur_NTC_SSS) are hair cards
+/// when their g_AlphaRef is set: c5069_hair_e_sss (the Owl's ponytail and fringe) 128, c9010 /
+/// c9020 / c5090 hair_e_sss 128, P_*_9100_bodyhair 128; the scalps (c5069_hair_sss) and the furred
+/// bodies (c1180_body, c1559_body) have 0 and stay opaque.
+pub fn alpha_tested(mtd: &[u8], shader: &str) -> bool {
     // The AN_Blend shaders cut too: Wolf's coat (P_BD_M_9040_Court, g_AlphaRef 128) keeps its torn
     // hem and ragged collar edge in the albedo alpha.
+    if shader.starts_with("Fur") && shader.contains("SSS") {
+        return mtd_ints(mtd, "g_AlphaRef").first().is_some_and(|&r| r > 0);
+    }
     !(shader.contains("SSS") || shader.contains("Eye"))
+}
+
+/// An MTD int parameter's values: after its name and type, the 0xc5 value block (count, then i32s).
+pub fn mtd_ints(d: &[u8], name: &str) -> Vec<i32> {
+    let i32_ = |o: usize| d.get(o..o + 4).map(|b| i32::from_le_bytes(b.try_into().unwrap()));
+    let Some(at) = d.windows(name.len()).position(|w| w == name.as_bytes()) else { return Vec::new() };
+    let Some(v) = d[at..].windows(4).position(|w| w == [0xc5, 0, 0, 0]).map(|k| at + k) else { return Vec::new() };
+    let n = i32_(v + 4).unwrap_or(0).clamp(0, 16) as usize;
+    (0..n).filter_map(|k| i32_(v + 8 + 4 * k)).collect()
 }

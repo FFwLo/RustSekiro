@@ -2,7 +2,7 @@
 
 Moved out of `docs/HANDOFF.md` section 9 on 2026-10-15. Code: `src/fxr.rs`, `src/ffx.rs`.
 
-## 9. Game effects from the FXR files (2026-10-10; user: "pull them from the game, they are not 1:1")
+## 9. Game effects from the FXR files (2026-10-10)
 Every TAE effect (FFXID in TAE 96 / 118 / 120..) whose `f<id>.fxr` exists now plays the game's own
 effect, drawn by our FXR player. The hand-made looks in `ffx.rs` are only a fallback for ids with
 no FXR.
@@ -153,7 +153,7 @@ rgbMultiplier / 8 (`particle_color`). Before, they were 8x too bright: the death
    Divine Abduction's swirl reads right on a dark background. Sabimaru's swing trail 300213 is
    faint by data (rgbMultiplier 0.3-0.4). 70500's shot froze on the Options menu (stray input):
    not checked. `SHINOBI_LOG_DUMMIES=<frame>` (default 200) now also lists the tool dummies.
-   sekiro-rs hints (user OK, 2026-10-16), each checked against GXFfxtexture.ppo (disassembled:
+   sekiro-rs hints (2026-10-16), each checked against GXFfxtexture.ppo (disassembled:
    rgb = |c| x (tex.rgb x a? x c/|c|)^2 x g_vColorScale, a = sat(tex.a + v3.w) x c.a):
    (1) "drop the sqrt 3": A/B shots (Mortal Draw 5700, Firecracker 71000, dark wall) against
    the clip (6:45, 10:27): without it both read dimmer and further from the game's bright
@@ -220,7 +220,7 @@ rgbMultiplier / 8 (`particle_color`). Before, they were 8x too bright: the death
    HitEffectSfxParam id.
 4. A `slab_allocator Use-after-free` error line can appear once at start (dynamic mesh churn):
    harmless so far, not traced.
-- Sound fix (user: Mortal Draw's sound "stays playing"): slotted FFX sounds s000440000/1/2/5/6 are
+- Sound fix (Mortal Draw's sound kept playing): slotted FFX sounds s000440000/1/2/5/6 are
   FMOD loops; `sound.rs` now plays them tracked (`fmod.rs` EventHandle / play_tracked / stop) and
   stops them when the event ends or the anim changes. Ignored test `fmod_loops` lists the loops.
 

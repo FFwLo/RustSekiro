@@ -471,6 +471,7 @@ fn quat_mul(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
 ///     (v6) u8 DetailBlend variant (255: neither; FRESNEL = the coat shader); unless 255: u8
 ///       layer bits (`DETAIL_LAYERS`), 8 x (u16 len, name): layer A albedo / normal, B, C, D
 ///       (the coat: layers 3 / 1, 4 / 5), then f32[40] (`detail_params` / `fresnel_params`),
+///       SHELL only: then u32 n, f32[n] (each vertex's colour alpha),
 ///     u32 vertices; per vertex f32 pos[3] normal[3] uv[2], u16 bones[4], f32 weights[4]
 ///     u32 indices; u32 each
 ///   (v2) u32 dummies; per dummy: i16 id, i16 parent, i16 attach, f32 pos[3]
@@ -591,6 +592,36 @@ fn ghost_params(d: &mtd::Mtd) -> Vec<f32> {
     out
 }
 
+/// The variant byte model v6 gives C[Shell] (fur shells: the Guardian Ape's c5100_fur_shell,
+/// FC_A_0000_shell_fur). After its params the model carries u32 n and one f32 per vertex: the
+/// vertex colour alpha (the shell layer's opacity).
+const SHELL: u8 = 102;
+
+/// C[Shell] constants (40 floats, sekiro_material.wgsl `shell_layers`), decoded from
+/// C[Shell]_0_Gbuf_[A].ppo (shader/shaderbdle.shaderbdlebnd; cbMtdParam: color_0 at cb3[24],
+/// float_3 / 4 / 5 / 6 at cb3[29..32]): [0] color_0 (rgb x Intensity), [1].xyzw float_3, float_4,
+/// float_5, float_6, [2].x g_AlphaRef[0] / 255 (FC_AlphaRef.x, inferred), [7] tiling slot 6
+/// (noise).xy, slot 7 (colour).zw, [8].xy slot 8 (normal). A texture's own MTD scale, else its
+/// group: group_1 for the noise, group_2 for the colour and normal (inferred: FC_TextureTilingScale
+/// by t-register, as DetailBlend).
+fn shell_params(d: &mtd::Mtd) -> Vec<f32> {
+    let get = |n: &str| d.floats.iter().find(|(k, _)| k == n).map(|(_, v)| v.clone());
+    let p = "C_Shell__snp_0_";
+    let f = |n: &str| get(&format!("{p}{n}")).and_then(|v| v.first().copied()).unwrap_or(0.0);
+    let c = get(&format!("{p}color_0")).filter(|v| v.len() >= 3).map_or([1.0; 3], |v| [v[0], v[1], v[2]]);
+    let k = get(&format!("{p}color_0-Intensity")).and_then(|v| v.first().copied()).unwrap_or(1.0);
+    let group = |g: u32| get(&format!("group_{g}_CommonUV-UVParam")).filter(|v| v.len() >= 2).map_or([1.0, 1.0], |v| [v[0], v[1]]);
+    let alpha_ref = d.ints.iter().find(|(n, _)| n == "g_AlphaRef").and_then(|(_, v)| v.first().copied()).unwrap_or(0) as f32 / 255.0;
+    let mut out = vec![0.0; 40];
+    out[0..4].copy_from_slice(&[c[0] * k, c[1] * k, c[2] * k, 0.0]);
+    out[4..8].copy_from_slice(&["float_3", "float_4", "float_5", "float_6"].map(f));
+    out[8] = alpha_ref;
+    out[28..30].copy_from_slice(&tex_scale(d, 6, "AlbedoMap").unwrap_or_else(|| group(1)));
+    out[30..32].copy_from_slice(&tex_scale(d, 7, "AlbedoMap").unwrap_or_else(|| group(2)));
+    out[32..34].copy_from_slice(&tex_scale(d, 8, "NormalMap").unwrap_or_else(|| group(2)));
+    out
+}
+
 /// One mesh's DetailBlend data (`export_model`): variant, layer bits, layer texture names, params.
 struct Detail {
     variant: u8,
@@ -646,7 +677,7 @@ fn export_model(flver_path: &Path, tpf_path: &Path, out: &Path, tex_dir: &Path, 
     for m in f.meshes.iter_mut() {
         let mtd_data = mtd_files.get(&m.mtd.to_lowercase()).and_then(|p| std::fs::read(p).ok()).unwrap_or_default();
         let slots = flver::mtd_textures(&mtd_data);
-        m.alpha_test = flver::alpha_tested(&m.mtd, &flver::mtd_shader(&mtd_data));
+        m.alpha_test = flver::alpha_tested(&mtd_data, &flver::mtd_shader(&mtd_data));
         // Primary albedo = the layer-0 slot ("..._AlbedoMap_0"; faces also list damage / skin-tone
         // blend layers), then the normal / metallic maps of the same texture set (x_a -> x_n / x_m).
         let available = |kind: &str| -> Vec<(String, String)> { slots.iter().filter(|(s, t)| s.contains(kind) && in_tpf.contains(t.as_str())).cloned().collect() };
@@ -699,6 +730,18 @@ fn export_model(flver_path: &Path, tpf_path: &Path, out: &Path, tex_dir: &Path, 
             let d = flver::mtd_shader(&mtd_data).to_lowercase().starts_with("character_ghost_scroll_test2").then(|| mtd::read(&mtd_data)).flatten()?;
             Some(Detail { variant: GHOST, bits: 0, names: Default::default(), params: ghost_params(&d) })
         });
+        // C[Shell]: colour slot 7, normal 8, metal 10; the noise (slot 6) as layer A.
+        let detail = detail.or_else(|| {
+            let d = flver::mtd_shader(&mtd_data).to_lowercase().starts_with("c[shell]").then(|| mtd::read(&mtd_data)).flatten()?;
+            let slot = |n: u32, kind: &str| available(kind).into_iter().find(|(s, _)| s.contains(&format!("Texture2D_{n}_{kind}"))).map(|(_, t)| t).unwrap_or_default();
+            if !slot(7, "AlbedoMap").is_empty() {
+                m.albedo = slot(7, "AlbedoMap");
+            }
+            m.normal_map = slot(8, "NormalMap");
+            m.metallic = slot(10, "MetallicMap");
+            let names = [slot(6, "AlbedoMap"), String::new(), String::new(), String::new(), String::new(), String::new(), String::new(), String::new()];
+            Some(Detail { variant: SHELL, bits: 0, names, params: shell_params(&d) })
+        });
         details.push(detail);
         m.textures = slots;
     }
@@ -738,6 +781,10 @@ fn export_model(flver_path: &Path, tpf_path: &Path, out: &Path, tex_dir: &Path, 
                 b.push(d.bits);
                 d.names.iter().for_each(|n| put_str(&mut b, n));
                 put_f(&mut b, &d.params);
+                if d.variant == SHELL {
+                    b.extend_from_slice(&(m.vertices.len() as u32).to_le_bytes());
+                    put_f(&mut b, &m.vertices.iter().map(|v| v.color[3]).collect::<Vec<_>>());
+                }
             }
             None => b.push(255),
         }
@@ -774,7 +821,7 @@ fn export_model(flver_path: &Path, tpf_path: &Path, out: &Path, tex_dir: &Path, 
     }
     for (m, d) in f.meshes.iter().zip(&details) {
         if let Some(d) = d {
-            let what = if d.variant == GHOST { "ghost scroll".to_string() } else if d.variant == FRESNEL { "Fresnel coat".to_string() } else { format!("DetailBlend variant {} layers {:#x}", d.variant, d.bits) };
+            let what = if d.variant == SHELL { "fur shell".to_string() } else if d.variant == GHOST { "ghost scroll".to_string() } else if d.variant == FRESNEL { "Fresnel coat".to_string() } else { format!("DetailBlend variant {} layers {:#x}", d.variant, d.bits) };
             println!("  {} {what}: {:?}", m.material, d.names);
         }
     }

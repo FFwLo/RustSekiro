@@ -526,6 +526,12 @@ impl PadInput {
     pub fn press(&mut self, a: Action) {
         self.pressed.push(a);
     }
+
+    /// No movement or presses this frame (a talk holds Wolf, enemy/talk.rs); the fight reset
+    /// and the stick's walk / run history stay.
+    pub fn hold(&mut self) {
+        *self = PadInput { pad_running: self.pad_running, reset: self.reset, ..Default::default() };
+    }
 }
 
 pub struct PlayerPlugin;
@@ -733,7 +739,25 @@ pub fn deathblow_check(combat: &Combat, wolf: Vec3, wolf_fwd: Vec3, aged: bool, 
         let in_reach = at.distance(wolf) <= start.as_ref().map_or(main.dist, |st| st.dist) && throw_height_ok(combat, reach_row, wolf, at) && throw_facing_ok(combat, reach_row, wolf, wolf_fwd, at, ea.forward());
         return Some(DeathblowCheck { behind, suffix, main, start, in_reach });
     }
-    let finisher = combat.data_of(ea).finisher_open(&ea.anim, ea.t).then(|| combat.finisher(&foe)).flatten();
+    let usable = |sfx: i64| combat.throw(foe.throw_row(sfx)).is_some_and(|t| d.anim(&t.atk_anim).is_some());
+    let window = combat.data_of(ea).finisher_window(&ea.anim, ea.t);
+    // The Todome (トドメ始動 / 本体, ThrowParam 0180 / 0181, +500 in the second form: Wolf
+    // a2xx_501700 -> 511700, the boss ThrowDef13700) is taken from the boss's kneel, its Event20200
+    // with the 105 window (data.rs finisher_window), not from the last mark: in every recording
+    // (rec_2026101x_*_boss_*) the last mark is a usual deathblow, the map script then sends the
+    // boss to 20200 and Wolf to his Event7102xx, and 0180 / 0181 follow 0.8-1.8 s later (Isshin:
+    // 15400680 / 681 at 912.2 s). The start rows' Dist 20 and DiffAng 0-180 reach him anywhere
+    // near. gap: the exe's gate for the Todome is not traced (by the window and the recordings).
+    if window == Some(105) {
+        let hu = if ea.anim_group == 1 && usable(681) { 500 } else { 0 };
+        if usable(181 + hu) {
+            let main = combat.throw(foe.throw_row(181 + hu))?;
+            let start = combat.throw(foe.throw_row(180 + hu)).filter(|st| d.anim(&st.atk_anim).is_some());
+            let reach = start.as_ref().map_or(main.dist, |st| st.dist);
+            return Some(DeathblowCheck { behind: false, suffix: 181 + hu, main, start, in_reach: at.distance(wolf) <= reach });
+        }
+    }
+    let finisher = window.is_some().then(|| combat.finisher(&foe)).flatten();
     if let Some((id, main)) = finisher {
         let judge = (main.judge_dmy > 0).then(|| dmy(main.judge_dmy)).flatten();
         let base = judge.unwrap_or(at);
@@ -767,14 +791,11 @@ pub fn deathblow_check(combat: &Combat, wolf: Vec3, wolf_fwd: Vec3, aged: bool, 
     } else {
         (0, 1)
     };
-    // A major boss's last deathblow is its Todome (トドメ始動 / 本体, ThrowParam 0180 / 0181: Wolf
-    // a2xx_501700 -> 511700, the boss ThrowDef13700); only the bosses with several deathblows have
-    // these rows (c5000, c5060, c5100, c5400, c5430, c7020, c7110), the one-bar Guardian Ape and
-    // Way of Tomoe too (the Ape's a000_013700 is his 39.5 s fake death: m17 11705821 raises him
-    // on its message 20). gap: the exe's choice of the Todome rows is not traced (by the rows'
-    // names).
-    let todome = !unaware && enemy.ninsatsu.0 <= 1;
-    let usable = |sfx: i64| combat.throw(foe.throw_row(sfx)).is_some_and(|t| d.anim(&t.atk_anim).is_some());
+    // The last mark of a boss with "崩しトドメ" / "崩し背後トドメ" rows (main + 8: Gyoubu 0009 / 0119,
+    // the headless Ape 0509 / 0619 -> ThrowDef12090 / 13290, whose message 30 at 9.5 s is his
+    // defeat, m17 11705800) takes those, after the usual start. (The Todome 0180 / 0181 is not
+    // taken here but from the boss's kneel, above.)
+    let last = !unaware && enemy.ninsatsu.0 <= 1;
     // Its second form ("（HU）" rows, +500: Isshin's spear phase a243_*, the headless Guardian
     // Ape's a235_*, Lady Butterfly's) while it plays its second anim set (a100). gap: the exe's
     // pick of these rows is not traced (by the rows' names and the anim sets).
@@ -786,16 +807,9 @@ pub fn deathblow_check(combat: &Combat, wolf: Vec3, wolf_fwd: Vec3, aged: bool, 
         Some(_) => 0,
         None => if ea.anim_group == 1 && usable(suffix + 500) { 500 } else { 0 },
     };
-    let (mut start_sfx, mut suffix) = (start_sfx + hu, suffix + hu);
-    if todome {
-        if usable(181 + hu) {
-            (start_sfx, suffix) = (180 + hu, 181 + hu);
-        } else if usable(suffix + 8) {
-            // "崩しトドメ" / "崩し背後トドメ" (main + 8: Gyoubu 0009 / 0119, the headless Ape
-            // 0509 / 0619 -> ThrowDef12090 / 13290, whose message 30 at 9.5 s is his defeat,
-            // m17 11705800), after the usual start.
-            suffix += 8;
-        }
+    let (start_sfx, mut suffix) = (start_sfx + hu, suffix + hu);
+    if last && usable(suffix + 8) {
+        suffix += 8;
     }
     let main = combat.throw(foe.throw_row(suffix))?;
     let start = combat.throw(foe.throw_row(start_sfx)).filter(|st| d.anim(&st.atk_anim).is_some());
@@ -2022,6 +2036,13 @@ fn buffers(d: &CharData, a: &Actor, action: Action) -> bool {
     if a.state == "ThrowBreak" && matches!(action, Action::Attack | Action::Jump) {
         return true;
     }
+    // The walk-up to a kneeling boss reads attack for the Todome (todome_input): its clip has no
+    // accept flag, so the press was dropped (the user, 2026-10-16: Isshin's close-up, "i can't
+    // press the attack button"). Kept from its start (TAE 931 unk0 9, 0-5 s) until the 930 window
+    // takes it (rec_20261016_080607: the Todome 0.77 s into a000_710206).
+    if action == Action::Attack && a.anim.starts_with("a000_7102") && d.anim(&a.anim).is_some_and(|an| an.events.iter().any(|e| e.kind == 931 && e.in_time(a.t))) {
+        return true;
+    }
     // The aged standby states (g_paramHkbState STATE_TYPE_STANDBY: AgingIdle, the walk, the
     // sprint start / loop) take every input as StandIdle does.
     if a.airborne || is_free(&a.state) || is_aged_standby(&a.state) || a.anim.is_empty() || sprint_window(d, a) {
@@ -2157,6 +2178,28 @@ fn accepts(d: &CharData, a: &Actor, action: Action) -> bool {
     // game frame later than a fresh press, docs/kb/input-buffer.md), so the execute window is
     // read at the previous step's time.
     !a.anim.is_empty() && accept_flag(action).iter().any(|&f| d.flag(&a.anim, a.prev_t, f))
+}
+
+/// Wolf's state for an EzState request (W_Event<id>, c0000.hks 264): Event<id>, or for the walk-ups
+/// 710200 / 710201 / 710203 / 710204, which have no state of that name in c0000.hkx, the state
+/// playing that clip (statemap_c0000: Event390010 / 390011 / 390013 / 390014 -> a000_710200 / 201 /
+/// 203 / 204). The recordings show those clips on the request: the True Monk a000_710200, the Owl
+/// Father 710201, the Ape 710203, Genichiro (castle) 710204 (rec_2026101x_*_boss_*).
+pub fn event_state(d: &CharData, id: i64) -> String {
+    let own = format!("Event{id}");
+    if d.anim_key(&own).is_some() || !(710_200..=710_204).contains(&id) {
+        return own;
+    }
+    format!("Event{}", id - 710_200 + 390_010)
+}
+
+/// Wolf's walk-up to a kneeling boss (a000_710200-710207, the map script's request with the
+/// boss's 20200) takes the attack for the Todome while its TAE 930 (unk0 1, 1.0-5.0 s on
+/// a000_710200-710207) is on: the boss's own 20200 window (932 / 105) is the same 1.0-5.0 s, and the
+/// recordings start the Todome 0.8-1.8 s into the walk-up (data.rs finisher_window). gap: what
+/// 930 is in the exe is not traced.
+fn todome_input(d: &CharData, a: &Actor) -> bool {
+    a.anim.starts_with("a000_7102") && d.anim(&a.anim).is_some_and(|an| an.events.iter().any(|e| e.kind == 930 && e.arg_i64("unk0") == Some(1) && e.in_time(a.t)))
 }
 
 /// Ref 1 SP_EF_REF_ENABLE_SPRINT_ACTION (SprintStartFromStep_F, SprintLoop, SprintToDeflectGuard
@@ -3135,7 +3178,7 @@ fn decide(
             }
         }
     }
-    if p.requests.contains_key(&Action::Attack) && accepts(d, a, Action::Attack) {
+    if p.requests.contains_key(&Action::Attack) && (accepts(d, a, Action::Attack) || todome_input(d, a)) {
         let dmy_of = |ee: Entity| move |id: i16| enemy_dummies.get(ee).ok().and_then(|dm| dm.0.get(&id)).and_then(|m| globals.get(*m).ok()).map(|g| g.translation());
         // Several enemies open at once: deathblow_pick (the locked-on one, else the nearest).
         let pick = deathblow_pick(
@@ -4035,6 +4078,16 @@ fn decide(
                 let ft = FALL_TYPES[(a.fall_type as usize).min(FALL_TYPES.len() - 1)];
                 p.leap_homing = lock.target.zip(crate::wire::homing_row(vc.homing_id)).and_then(|(target, row)| {
                     let (_, _, _, t) = enemies.get(target).ok()?;
+                    // Already nearer the target than its homing point (the lock-on forward jump,
+                    // 10000, off a body-to-body stand): no homing. The live head kicks off such a
+                    // jump (rec_20261016_* boss fights, 19, sim test
+                    // a_forward_jump_over_a_sweep_stops_at_the_body_and_the_kick_lands) hold at the
+                    // contact distance; homing on the point 1 m out pulled Wolf back off the head.
+                    // gap: the exe's test for this is not traced.
+                    let point = leap_target(t, row.offset);
+                    if (point - tf.translation).with_y(0.0).dot((t.translation - tf.translation).with_y(0.0)) <= 0.0 {
+                        return None;
+                    }
                     LeapHoming::launch(a, tf.translation, leap_target(t, row.offset), ft.gravity(), target, row)
                 });
             }

@@ -600,7 +600,7 @@ pub(crate) fn a_bullet_past_its_range_weakens() {
 /// Round 42: Isshin's finisher (ThrowParam 15400590, DiffAng 0-45, diffAngMyToDef 35) by the
 /// exe's range check: Wolf behind him facing his way takes it; in front of him, facing him, not
 /// (his kneel a100_020200 has no root yaw; the absorb dummy 230 is at his back). Before, only
-/// the front within 45 degrees took it.
+/// the front within 45 degrees took it. (Since 2026-10-16 from his 21000, after the Todome.)
 #[test]
 pub(crate) fn isshins_finisher_is_taken_from_behind() {
     let mut app = app_cfg("c5400", Some(54000000), Vec::new());
@@ -611,15 +611,22 @@ pub(crate) fn isshins_finisher_is_taken_from_behind() {
         let (e, mut a, tf) = q.single_mut(world).unwrap();
         let at = tf.translation;
         a.anim_group = 1;
+        // His first kneel (20200, window 105) takes the Todome 15400680 / 681 from anywhere near
+        // (rec_20261016_080607: 680 / 681 at 912.2 s, from Wolf's walk-up).
         a.play("Ez20200", "a100_020200");
         a.t = 2.0;
         a.yaw = 0.0;
-        assert!(combat.data_of(&a).finisher_open(&a.anim, a.t), "no finisher window on a100_020200 at 2 s");
         let fwd = a.forward();
+        let front = at + fwd * 1.5;
+        let c = crate::player::deathblow_check(&combat, front, -fwd, false, &a, e, at, &|_| None);
+        assert!(c.as_ref().is_some_and(|c| c.in_reach && c.suffix == 681), "Todome: {:?}", c.map(|c| c.suffix));
+        // The finisher, from his second (21000, window 104; 11125875 after the Todome's message 20).
+        a.play("Event21000", "a100_021000");
+        a.t = 2.0;
+        assert!(combat.data_of(&a).finisher_window(&a.anim, a.t) == Some(104), "no finisher window on a100_021000 at 2 s");
         let behind = at - fwd * 1.5;
         let c = crate::player::deathblow_check(&combat, behind, fwd, false, &a, e, at, &|_| None);
-        assert!(c.as_ref().is_some_and(|c| c.in_reach), "behind: {:?}", c.map(|c| c.suffix));
-        let front = at + fwd * 1.5;
+        assert!(c.as_ref().is_some_and(|c| c.in_reach && c.suffix == 590), "behind: {:?}", c.map(|c| c.suffix));
         assert!(crate::player::deathblow_check(&combat, front, -fwd, false, &a, e, at, &|_| None).is_none(), "taken from the front");
     });
 }
@@ -1645,4 +1652,82 @@ pub(crate) fn an_enemy_walking_into_idle_wolf_does_not_slide_him() {
     let (state, _, _, pos) = player_actor(&mut app);
     let moved = (pos - start).with_y(0.0).length();
     assert!(moved < 0.05, "Wolf ({state}) slid {moved:.2} m");
+}
+
+/// The user's report (2026-10-16): Isshin's last mark taken from the deflect break pose (15400510
+/// / 511), then the close-up walk-up, where attack did nothing. Now: his kneel 20200 comes at
+/// Wolf's deathblow's own message 10 (a243_510110 TAE 231 at 2.5 s, not at its Ninsatsu hit with
+/// an older 10), the red mark shows on his kneel, and attack in the walk-up a000_710206 starts
+/// the Todome 15400680 / 681.
+#[test]
+pub(crate) fn isshins_todome_is_taken_from_the_walk_up() {
+    let mut app = app_cfg("c5400", Some(54000000), Vec::new());
+    break_and_deathblow(&mut app, 400);
+    {
+        let w = app.world_mut();
+        let mut a = w.query_filtered::<&mut Actor, (With<Enemy>, Without<crate::enemy::Cast>)>().single_mut(w).unwrap();
+        a.play("Ez3015", "a000_003015");
+    }
+    for _ in 0..400 {
+        app.update();
+    }
+    for left in [2u32, 1] {
+        app.world_mut().resource_scope(|world, combat: Mut<Combat>| {
+            let mut q = world.query_filtered::<(&mut Enemy, &mut Actor, &mut Transform), Without<crate::enemy::Cast>>();
+            let (mut e, mut a, mut t) = q.single_mut(world).unwrap();
+            e.ninsatsu.0 = left;
+            let th = combat.throw(crate::combat::throw_row_for(&combat, &a, 10).unwrap()).unwrap();
+            t.translation = Vec3::new(0.0, CAPSULE_HALF_HEIGHT, 1.2);
+            a.yaw = 0.0;
+            a.posture = a.posture_max;
+            e.react(&mut a, &combat, &format!("ThrowDef{}", th.def_anim));
+            e.on_posture_break(&mut a, &combat, false, 4.0);
+            let mut q = world.query_filtered::<(&mut Actor, &mut Transform), With<Player>>();
+            let (mut pa, mut pt) = q.single_mut(world).unwrap();
+            pt.translation = Vec3::new(0.0, CAPSULE_HALF_HEIGHT, 0.0);
+            pa.yaw = std::f32::consts::PI;
+            pa.play("ThrowBreak", &th.atk_anim);
+        });
+        let mut kneel_at = None;
+        let mut pressed = false;
+        let mut todome = false;
+        let mut marked = false;
+        for i in 0..900 {
+            if i == 36 {
+                app.world_mut().resource_mut::<PadInput>().press(Action::Attack);
+            }
+            app.update();
+            let (es, _, _) = enemy_state(&mut app);
+            let (ps, pa, _, _) = player_state(&mut app);
+            if kneel_at.is_none() && es == "Event20200" {
+                kneel_at = Some(ps.clone());
+                assert_eq!(left, 1, "a kneel with a mark left");
+            }
+            if !pressed && ps.starts_with("Event7102") && marked {
+                app.world_mut().resource_mut::<PadInput>().press(Action::Attack);
+                pressed = true;
+            }
+            // The red mark sits on him while his kneel's window is open (hud.rs).
+            if es == "Event20200" && enemy_state(&mut app).2 > 1.2 && !marked {
+                use bevy::ecs::system::RunSystemOnce;
+                let target = app
+                    .world_mut()
+                    .run_system_once(|combat: Res<Combat>, wolf: Query<(&Actor, &GlobalTransform), With<Player>>, enemies: crate::hud::MarkEnemies, dummies: Query<&GlobalTransform>| {
+                        let (wa, wg) = wolf.single().unwrap();
+                        crate::hud::deathblow_mark_target(&combat, wa, wg.translation(), &enemies, &dummies, None)
+                    })
+                    .unwrap();
+                marked = target.is_some();
+            }
+            todome |= pa.ends_with("511700") && es == "ThrowDef13700";
+            if todome {
+                break;
+            }
+        }
+        if left == 1 {
+            assert!(kneel_at.is_some(), "no kneel");
+            assert!(todome, "no Todome from the walk-up");
+            assert!(marked, "no red mark on his kneel");
+        }
+    }
 }

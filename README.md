@@ -1,349 +1,86 @@
 # Sv1
 
-A sandbox that recreates how Wolf moves and fights in SEKIRO: SHADOWS DIE
-TWICE, written in Rust on [Bevy](https://bevyengine.org) 0.19.
-
-The characters are the game's own models, and what drives them is real too:
-the timings, movement, animations, enemy AI and sounds are read from the
-game's own files rather than tuned by eye.
-
-Special thanks to AKJama, creator of
-[sekiro-rs](https://github.com/AKJama/sekiro-rs): its Lua 5.0 interpreter runs
-the enemy AI here, and several combat, lighting and sky rules were ported from
-it. Everyone else whose work helped is in [CREDITS.md](CREDITS.md).
+A recreation of SEKIRO: SHADOWS DIE TWICE's combat, written in Rust on
+[Bevy](https://bevyengine.org). Every number comes from the game's own files
+(animations, params, scripts, models, sounds), not from guessing.
 
 ![Sv1 gameplay](docs/media/preview.webp)
 
-*Fighting the Ashina Samurai General: deflects, perilous attacks and a
-deathblow.*
+A fan project for study, not affiliated with FromSoftware or Activision. No game
+files are in this repository: you need your own copy of the game to build the
+data.
 
-This is a fan project for study. It is not affiliated with or endorsed by
-FromSoftware or Activision. Nothing from the game is in this repository, only
-code: to build and run it you need your own copy of the game, from which the
-tools here generate the data.
+## What it does
 
-## What is in it
+- **Wolf:** walking, running, sprinting, jumping, steps, lock-on, crouch,
+  grappling hook, healing gourd, death and resurrection.
+- **Combat:** attacks, guard, deflect, posture, perilous attacks, Mikiri
+  Counter, combat arts, prosthetic tools with their status effects, Lightning
+  Reversal.
+- **Deathblows:** from the front, from behind, stealth and plunging, with the
+  game's own camera angles. Bosses kneel at their last mark and the Todome
+  finishes them.
+- **Enemies:** all 102 kinds the game places, each running its real AI script,
+  with stealth (sight, hearing, search). Every main boss with its phases, map
+  events and arena, from Genichiro to the Divine Dragon.
+- **Looks and sound:** the game's models, cloth, effects, blood, sky, fog,
+  lighting, HUD and menus; the game's own sounds and music through FMOD.
 
-### Movement
-
-- Walk and run, each starting with the game's move-start animation and
-  settling into its loop, with the stop animation in the direction you were
-  moving.
-- Sprint, by holding the step button.
-- Lock-on: strafing around the target in four directions while facing it. On
-  diagonals the legs turn toward where Wolf is going and the chest keeps
-  facing the target, so the feet don't slide.
-- Turning on the spot when locked on, and quick turns.
-- Sheathing and drawing the sword, with its own walk and run while sheathed.
-
-### Stepping and jumping
-
-- Steps in four directions while locked on, leaning toward the stick.
-- Jumps from a standstill and on the move. Locked on, they go forward, back,
-  left or right while you keep facing the target.
-- Steering in the air, landings, and the kick that bounces off an enemy into
-  a second jump.
-- Killed mid-jump, the body falls and lands instead of floating on.
-
-### Combat
-
-- The light-attack chain, with a held press turning into its thrust
-  follow-up.
-- Sprint, step, jump and air attacks, and attacks straight out of a deflect.
-- Hits land when the blade itself reaches the target, not when the swing
-  starts.
-- Hit reactions by strength and direction: a flinch, a stagger, a blow that
-  throws Wolf back, and a knockdown with its get-up.
-- Death, and resurrection while there is a node left.
-
-### Deflect and posture
-
-- Guarding and deflecting with the game's own deflect window, including the
-  shorter window when the button is spammed and the deflect that comes out of
-  a block recoil.
-- Blocked and deflected hits play the matching reaction for each attack
-  strength, on the ground and in the air.
-- Posture on both sides: damage from every hit, block and deflect, recovery
-  that changes with what you are doing, and the posture break.
-- Perilous attacks, and the Mikiri Counter against thrusts.
-- The Flowing Water skill, toggled in the debug menu.
-
-### Deathblows
-
-- From the front after a posture break, from behind, sneaking up from
-  behind, and plunging from above.
-- Both characters are placed by the attachment points the game uses for
-  each throw, and play their paired animations together.
-- [docs/deathblow_groups.md](docs/deathblow_groups.md) lists which of the
-  game's 70 enemies share Wolf's deathblow animations.
-
-### Combat arts, prosthetic tools and items
-
-- Combat arts with their follow-ups, chosen in `config.toml` or the debug
-  menu, including Mortal Draw with the Mortal Blade. Held arts sheathe, wait
-  and draw-slash on release.
-- The Shinobi Prosthetic tools, three slots switched with `Z`: each tool's own
-  animations, projectiles, Spirit Emblem cost and status effects (the Flame
-  Vent's burn, the Sabimaru's poison, the Firecracker's stun).
-- The Grappling Hook, to the map's grapple points.
-- The Healing Gourd.
-
-### The enemies
-
-Every enemy and boss the game places (102 kinds), picked in `config.toml` or
-the debug menu: from the Ashina Samurai General and the Chained Ogre to
-Genichiro, Lady Butterfly, the Corrupted Monk, the Guardian Ape, Owl and
-Isshin. Several at once with `[enemy] group`. Bosses have their deathblow
-counts, their phases and their map events (Genichiro's Tomoe form, the Monk's
-phantoms, the bullets, summons and warps of their map scripts).
-
-Each runs **its real AI**: the game's own compiled battle scripts, run as they
-ship in a small Lua 5.0 interpreter, on a runtime that answers their questions
-about distance, angle, timers and effects the way the game does. They space,
-attack, combo, guard, deflect and counter by those scripts, with their own
-stats, attacks and reactions. Unaware enemies run the game's stealth rules:
-sight cones, hearing, caution and search, and stealth deathblows from behind.
-
-### The arena
-
-The game's own map: the Ashina Outskirts gate where the General stands, with
-its pieces, collision and lighting from the game's draw params (colour grading,
-auto exposure, the hour with `[` and `]`). Every boss fights in its own arena
-when the extraction built them. `[world] map = "sandbox"` is a walled test
-arena with every material of the gate on a panel and any enemy line-up
-(`SHINOBI_SANDBOX_ENEMIES=all:0`).
-
-### The debug menu
-
-Press `F1`. From there you can:
-- set the enemy's AI: its real AI, passive, perilous attacks only, one attack
-  on repeat, or idle;
-- change the enemy's type or outfit, and heal it;
-- break its posture and deathblow it from the front or from behind;
-- turn on god mode or infinite posture, refill items, and toggle Flowing
-  Water;
-- change the simulation speed, show hurtboxes, and reset.
-
-### Visuals
-
-- The game's models for Wolf and the enemies. Each part uses the texture its
-  material definition names, and a custom shader reads Sekiro's normal,
-  shininess and metal maps.
-- Cloth simulated from the game's own cloth data: scarves, robes, armour
-  skirts and ropes, colliding with the body.
-- Animation crossfades timed by the animations themselves. Some actions play
-  on the upper body over moving legs, and the head and torso turn toward the
-  target.
-- The sword and scabbard sit where the game's weapon params put them, and
-  move to the hand or hip when an animation asks for it.
-- Effects from the game's own effect files: sparks, blood, combat art and
-  prosthetic effects, with floor blood stains.
-- The game's sky, fog and colour grading, and its HUD: vitality, posture,
-  resurrection nodes, item counts and the deathblow mark.
-- Title, pause, death and victory screens.
-
-### Sound (optional)
-
-With the game's FMOD runtime available, the sandbox plays the game's own
-sounds through it: footsteps, cloth and armour, swings, hits, blocks and
-deflects. They come on the frames the animations call for them, chosen by the
-same material tables the game uses. Without FMOD it falls back to decoded
-samples, or runs silent.
-
-## How faithful it is
-
-Read from the game's files:
-
-- Every action's length, hit windows, cancel windows and input windows.
-- Root motion for every action, and walk, run and sprint speeds.
-- Deflect and guard windows, posture damage and recovery, attack and damage
-  params, and the reactions they cause.
-- Deathblow geometry: distances, attachment points and timing.
-- Wolf's behaviour rules, from the decompiled character script, and the
-  enemies' AI, from their compiled battle scripts.
-- Camera distances, angles and chase rates.
-- The skeletons, animations, models, materials and cloth.
-- Which sounds each animation plays and on which frame, and the area and
-  boss music.
-
-Checked against the running game with a read-only recorder: jump arcs, run
-speed, deflect and input windows, posture costs and recovery, and the
-General's deathblow positions frame by frame.
-
-Still estimated (all marked `gap` in the code and explained in `config.toml`):
-
-- The floor's sound material. The real one comes from the level, which the
-  sandbox doesn't have, so cobblestone stands in.
-- Wolf's body radius for pushing against the enemy.
-- How long the deathblow window stays open after a break.
-- A few camera details.
-
-Some things are inferred from the data rather than read directly. Three
-inferences worth knowing about:
-
-- The sheathed walk and run are the `a010` animation set, which only appears
-  next to the normal set; nothing in the files names it "sheathed".
-- A character texture's alpha is treated as a cut-out, except on skin and
-  eyes, whose alpha means something else. The rule comes from what the
-  textures contain, not from a flag the game stores.
-- Shininess becomes roughness as one minus the stored value. Sekiro's own
-  lighting model isn't reproduced.
-
-Not included: the rest of the game around the fights (story, NPC dialogue,
-the menus beyond pause, saving). Feet aren't pinned to the ground (the game
-uses foot IK), so a straight run slips a little, and Sekiro's fabric-detail
-layers and skin shading are not drawn.
-
-Sound is not positional. Where the game picks a footstep sound from the
-floor, the sandbox uses cobblestone (`FLOOR_MATERIAL` in `src/sound.rs`).
+Values the files don't hold are marked `gap` in the code and in `config.toml`.
+Not included: the rest of the game (story, NPCs, saving, open world).
 
 ## Controls
 
-| Action | Keyboard / mouse |
+| Action | Key |
 |---|---|
 | Move / look | WASD / mouse |
-| Walk | Left Alt or Left Ctrl |
-| Attack (hold for the thrust) | Left click or J |
-| Guard / deflect | Right click or K |
-| Combat art | Left and right click together |
-| Step (hold to sprint) | Shift |
-| Jump, kick in the air | Space |
+| Walk | Left Alt |
+| Attack | Left click |
+| Guard / deflect | Right click |
+| Combat art | Left + right click |
+| Step (hold: sprint) | Shift |
+| Jump | Space |
 | Lock on | Q |
-| Prosthetic tool | F |
-| Switch prosthetic tool | Z |
+| Prosthetic / switch | F / Z |
 | Healing Gourd | E |
 | Crouch | C |
-| Sheathe / draw | X |
-| Resurrect (when dead) | Left click |
+| Sheathe | X |
 
-Sandbox keys: `F3` shows the frame rate, `F1` opens the debug menu (enemy, AI mode, skills, tools,
-cheats), `T` turns the enemy's AI on or off, `H` shows hurtboxes, `R` resets,
-`[` / `]` change the hour, `F5` reloads `config.toml`, `Esc` releases the
-mouse. Click the window to capture the mouse.
+`F1` debug menu (pick enemy, AI mode, cheats), `F3` frame rate, `R` reset,
+`[` `]` time of day, `F5` reload `config.toml`, `Esc` pause.
 
 ## Setup
 
-### From a release zip
+You need Windows, Sekiro from Steam (patch 1.06), Rust and Python 3
+(Node.js optional, for the game's effect files).
 
-There are no downloads on GitHub right now; build from source (below). A
-release zip built with `tools\package.ps1` works like this: unzip it
-anywhere, and in that folder:
-
-1. Run `extract.bat`, or `extract.bat -Sekiro "D:\path\to\Sekiro"` for a
-   non-default install. It builds the `extracted` folder from your copy of the
-   game. The sounds and the boss arenas take the longest (the arenas unpack
-   and delete about 2 GB per map; `extract.bat -SkipArenas` leaves every boss
-   on the gate map).
-2. Run `sv1.exe`. It opens no console; what it logs is in `sv1.log` next to
-   it, and if it stops with an error the message comes up in a dialog (a
-   missing file under `extracted` means step 1 did not finish).
-
-You need Windows, SEKIRO: SHADOWS DIE TWICE from Steam (patch 1.06) and
-[Python 3](https://www.python.org/downloads/) on the PATH (it runs the boss
-script, boss arena and prosthetic tool exports). [Node.js](https://nodejs.org)
-is optional: with it, the game's own effect definitions are exported; without
-it the effects are hand-made stand-ins.
-
-### From source
-
-You need Rust and Windows, SEKIRO: SHADOWS DIE TWICE from Steam (patch
-1.06), Python 3 (the boss, arena and tool exports) and optionally Node.js (the
-effect definitions).
-
-Generated files are deliberately not in the repository, because they are
-derived from the game: everything in `extracted/`. The project will not run
-until you generate it from your own copy. That is one command.
-
-1. **Tell the tools where the game is.** The script takes one parameter:
-
-   | Parameter | Points at | Default |
-   |---|---|---|
-   | `-Sekiro` | the game's install folder | the default Steam location |
-
-2. **Generate the data.** The extractor decrypts the game's archives itself,
-   so no other unpacking tool is needed:
-
+1. Build the data from your game (takes a while):
    ```powershell
    powershell -ExecutionPolicy Bypass -File tools\extract.ps1
    ```
-
-   It reads the params, animations, models, materials, cloth and sounds into
-   `extracted/`. The sound step decodes through the game's own FMOD and takes
-   the longest.
-
-3. **Run it** from the project folder:
-
+   Add `-Sekiro "D:\path\to\Sekiro"` if the game is not in the default Steam
+   folder.
+2. Run:
    ```bash
    cargo run --release
    ```
 
-After that the game is no longer needed to play, only to regenerate the data.
-Run `tools\extract.ps1` again after pulling changes that touch `tools/`. It
-runs the extractor's steps, which can also be run on their own:
+Tests: `cargo test --release`.
 
-```bash
-cargo run --release --manifest-path tools/sekiro-extract/Cargo.toml -- unpack "<Sekiro folder>" extracted "<regex>"
-```
+## Where things are
 
-```bash
-cargo run --release --manifest-path tools/sekiro-extract/Cargo.toml -- params extracted/param/gameparam/gameparam.parambnd.d extracted/json/params
-```
-
-```bash
-cargo run --release --manifest-path tools/sekiro-extract/Cargo.toml -- export extracted
-```
-
-```bash
-cargo run --release --manifest-path tools/sekiro-extract/Cargo.toml -- model <flver> <tpf> extracted/model_<name>.bin extracted/tex
-```
-
-A release zip is built with `cargo build --profile dist` (whole-program
-optimisation, no symbols) followed by `powershell -File tools\package.ps1`.
-
-The behaviour tests run with `cargo test --release`. Values the game files
-don't contain live in `config.toml`, each with where the real value would come
-from. `F5` reloads it while playing.
-
-## Layout
-
-| Path | What it is |
+| Path | What |
 |---|---|
-| `src/player.rs` | Wolf: the input buffer, the state machine from the character script, movement, guard and deflect, jumps, deathblows. |
-| `src/enemy.rs` | The enemies: their actions, reactions, guarding and deflecting, and their side of a deathblow. |
-| `src/ai.rs`, `src/ai/lua50.rs` | The Lua 5.0 interpreter and goal runtime that run the enemies' real battle scripts. |
-| `src/combat.rs`, `src/actor.rs` | Hits, posture, damage, reactions, knockback, root motion. |
-| `src/anim.rs` | Animation playback: crossfades, layers, loops, leg twist, head and torso turns. |
-| `src/model.rs`, `src/sekiro_material.wgsl` | Models, weapons and where they sit, and the material shader. |
-| `src/cloth.rs` | Cloth simulation from the game's cloth data. |
-| `src/sound.rs`, `src/fmod.rs` | Sound events from the animations, played through the game's FMOD. |
-| `src/camera.rs`, `src/hud.rs`, `src/debug_menu.rs`, `src/world.rs` | Camera, HUD, debug menu and arena. |
-| `src/prosthetic.rs`, `src/model/tool.rs`, `src/status.rs`, `src/wire.rs` | The prosthetic tools, their models and status effects, and the Grappling Hook. |
-| `src/stealth.rs` | Enemy sight, hearing, caution and search. |
-| `src/map.rs`, `src/sky.rs`, `src/height_fog.rs`, `src/fog_wall.rs` | The game's maps, sky, fog and boss fog walls. |
-| `src/fxr.rs`, `src/ffx.rs`, `src/gore.rs`, `src/vfx.rs` | Effects from the game's effect files, blood and clash effects. |
-| `src/menu.rs`, `src/area_music.rs`, `src/perf.rs` | Title, pause and death screens, area music, the frame-rate overlay. |
-| `src/sim_tests.rs` | Behaviour tests; run with `cargo test`. |
-| `src/trace.rs`, `src/photo.rs` | A scripted run that logs every drawn frame, and a screenshot mode, for checking animation. |
-| `config.toml` | Values the game files don't hold, each with where its real value lives. |
-| `tools/extract.ps1` | Generates `extracted/` from your copy of the game. |
-| `tools/sekiro-extract/` | The extractor: archives, params, animation and behaviour files, models, materials, cloth, sound banks. |
-| `tools/trace_pops.py`, `tools/trace_slide.py` | Find animation pops and foot sliding in a trace. |
-| `tools/memscope/` | The read-only recorder used to check timings against the running game. |
-| `docs/` | Progress log and a knowledge base per topic: what each mechanic is and where in the game data it was found. |
-
-## A note on the data
-
-`extracted/` is derived from the game's files, so none of it is committed and
-it is in `.gitignore`. Please keep it that way in forks: share the code, and
-let each person generate the data from the copy of the game they own.
-
-The archive keys and file-name list in `tools/sekiro-extract/keys/` are the
-ones the community already distributes with its unpacking tools.
+| `src/player.rs` | Wolf |
+| `src/enemy.rs`, `src/ai.rs` | Enemies and their AI scripts |
+| `src/combat.rs` | Hits, posture, damage |
+| `src/anim.rs`, `src/model.rs`, `src/cloth.rs` | Animation, models, cloth |
+| `src/fxr.rs`, `src/sound.rs`, `src/hud.rs` | Effects, sound, HUD |
+| `src/map.rs`, `src/camera.rs` | Maps, camera |
+| `tools/sekiro-extract/` | Reads the game's files into `extracted/` |
+| `docs/` | Notes on every mechanic and where it was found |
 
 ## License
 
-The code is under the [MIT License](LICENSE.md).
-
-The licence covers this project's code only. It grants nothing over SEKIRO:
-SHADOWS DIE TWICE or anything generated from its files, which remain
-FromSoftware's and Activision's.
+Code under the [MIT License](LICENSE.md). It covers this code only, not the
+game or anything generated from it. Please keep `extracted/` out of forks.

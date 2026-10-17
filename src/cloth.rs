@@ -430,6 +430,35 @@ fn mirror(v: Vec3) -> Vec3 {
     Vec3::new(-v.x, v.y, v.z)
 }
 
+/// A cloth-driven bone without the shear and stretch of its triangle: the triangle frame's
+/// columns are edge vectors (the exported locals carry scales of 35-39 on the Owl's Hair..Hair06),
+/// so a triangle squashed in a fast move sheared and twisted the bone and everything skinned to it
+/// (the Owl's ponytail balled up in his deathblow, the user 2026-10-16). The bone takes the
+/// nearest rotation (polar decomposition, as a matrix becomes a Havok hkQsTransform), each axis
+/// at its rest-pose length. gap: hclSimpleMeshBoneDeformOperator's output step in the exe is not
+/// traced.
+fn rigid_like(g: Mat4, rest: Mat4) -> Mat4 {
+    let m = bevy::math::Mat3::from_mat4(g);
+    if m.determinant().abs() < 1e-9 {
+        return g;
+    }
+    let flip = m.determinant() < 0.0;
+    let mut r = if flip { m * bevy::math::Mat3::from_diagonal(Vec3::new(1.0, 1.0, -1.0)) } else { m };
+    for _ in 0..20 {
+        let next = (r + r.inverse().transpose()) * 0.5;
+        let done = (next - r).to_cols_array().iter().all(|d| d.abs() < 1e-6);
+        r = next;
+        if done {
+            break;
+        }
+    }
+    if flip {
+        r *= bevy::math::Mat3::from_diagonal(Vec3::new(1.0, 1.0, -1.0));
+    }
+    let len = |v: Vec4| v.truncate().length();
+    Mat4::from_cols((r.x_axis * len(rest.x_axis)).extend(0.0), (r.y_axis * len(rest.y_axis)).extend(0.0), (r.z_axis * len(rest.z_axis)).extend(0.0), g.w_axis)
+}
+
 /// Frame of a sim triangle (sekiro-extract cloth::tri_frame): columns v0 - c, v1 - c, their cross, c.
 fn tri_frame(x: &[Vec3], t: [usize; 3]) -> Mat4 {
     let (v0, v1, v2) = (x[t[0]], x[t[1]], x[t[2]]);
@@ -474,6 +503,12 @@ fn solve_bend_stiffness(x: &mut [Vec3], w: &[f32], l: &([f32; 4], f32, f32, [usi
     }
 }
 
+/// A standard link's stiffness comes premultiplied with 1 / (invMassA + invMassB): every
+/// Sekiro cloth checked has it so (c5060 ponytail: stretch 0.7, standard 2.1875 = 0.7 / 0.32
+/// between two 0.16 particles and 4.375 = 0.7 / 0.16 to a fixed one; c1020 hakama 3.125 / 1.5625
+/// at 0.32; Wolf's muffler2 0.938 / 0.469 at 1.067). A stretch link's is not (1.0 / 0.7 / 0.5 at
+/// any mass). Dividing the standard one again made light cloth overshoot: the Owl's ponytail
+/// (invMass 0.16) exploded standing still (the user, 2026-10-16).
 fn solve_link(x: &mut [Vec3], w: &[f32], l: &Link, stretch_only: bool) {
     let (wa, wb) = (w[l.a], w[l.b]);
     if wa + wb <= 0.0 {
@@ -484,7 +519,8 @@ fn solve_link(x: &mut [Vec3], w: &[f32], l: &Link, stretch_only: bool) {
     if len < 1e-6 || (stretch_only && len <= l.rest) {
         return;
     }
-    let corr = d * ((len - l.rest) / len * l.stiffness / (wa + wb));
+    let k = if stretch_only { l.stiffness / (wa + wb) } else { l.stiffness };
+    let corr = d * ((len - l.rest) / len * k);
     x[l.a] += corr * wa;
     x[l.b] -= corr * wb;
 }
@@ -925,7 +961,7 @@ fn simulate(
             // 4a. Cloth-driven bones (and whatever hangs from them).
             for (name, t, local) in &def.bones {
                 let (Some(&e), Some(&tri)) = (c.bones.get(name), def.tris.get(*t)) else { continue };
-                let g = havok(tri_frame(&c.x, tri) * *local);
+                let g = rigid_like(havok(tri_frame(&c.x, tri) * *local), havok(tri_frame(&def.rest, tri) * *local));
                 if debug_now(time) {
                     let old = globals.get(e).map(|g| g.to_matrix()).unwrap_or_default();
                     info!("  bone {name}: cloth {:?} anim {:?} | x {:?} vs {:?}", g.w_axis.truncate(), old.w_axis.truncate(), g.x_axis.truncate(), old.x_axis.truncate());
@@ -1360,7 +1396,8 @@ mod tests {
     #[test]
     fn a_compressible_link_has_a_dead_zone() {
         use bevy::prelude::Vec3;
-        let l = super::Link { a: 0, b: 1, rest: 1.0, stiffness: 1.0 };
+        // Full stiffness, premultiplied with 1 / (invMassA + invMassB) as the data has it.
+        let l = super::Link { a: 0, b: 1, rest: 1.0, stiffness: 0.5 };
         let w = [1.0, 1.0];
         let len = |d: f32| {
             let mut x = [Vec3::ZERO, Vec3::X * d];

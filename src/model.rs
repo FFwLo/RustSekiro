@@ -54,6 +54,8 @@ struct DetailData {
     bits: u8,
     names: [String; 8],
     params: Vec<f32>,
+    /// `SHELL` only: each vertex's colour alpha (the shell layer's opacity).
+    vert_alpha: Vec<f32>,
 }
 
 struct Dummy {
@@ -203,7 +205,13 @@ fn load(path: &std::path::Path) -> Option<Model> {
                 let names: [String; 8] = std::array::from_fn(|_| string(&mut o));
                 let params = (0..40).map(|k| f(o + k * 4)).collect();
                 o += 160;
-                DetailData { variant, bits, names, params }
+                let mut vert_alpha = Vec::new();
+                if variant == SHELL {
+                    let n = u32_(o) as usize;
+                    vert_alpha = (0..n).map(|k| f(o + 4 + k * 4)).collect();
+                    o += 4 + n * 4;
+                }
+                DetailData { variant, bits, names, params, vert_alpha }
             })
         } else {
             None
@@ -339,6 +347,8 @@ pub struct SekiroExt {
 const FRESNEL: u8 = 100;
 /// The exporter's variant byte for Character_Ghost_scroll_test2 (the Demon of Hatred's arm).
 const GHOST: u8 = 101;
+/// The exporter's variant byte for C[Shell] (fur shells; the vertex colour alpha comes with it).
+const SHELL: u8 = 102;
 
 /// sekiro_material.wgsl `Detail`: flags x = 1 DetailBlend / 2 the coat shader / 3 the ghost fire, y = the layer bits, z = which layer
 /// textures are bound (bit k = `SekiroExt` layer texture k, A albedo first); `p` = the exporter's
@@ -530,10 +540,13 @@ fn attach_models(
         // 25,27 - armour, helmet, sheath #07 and the sheathed blade #06, and not the haori #12 (the
         // "with haori" rows add 12). (The Ashina Shitenno rows, 8/14/17/24, are another outfit.)
         // The enemy starts in battle, so TransToBattleFromDefault's TAE 233 ChangeChrDrawMask (draw
-        // the sword: c1020 #04# on, #06# off; 255 = unchanged) applies from the start.
+        // the sword: c1020 #04# on, #06# off; 255 = unchanged) applies from the start, then
+        // IdleBattle's, where that transition ends: Emma's (c7400 a000_001040) turns all five
+        // sword parts #00#-#04# on and her a000_400000 keeps #00# and #04# only (without it her
+        // attacks' TAE 711 / 713 drew the extra parts: a handle held up with no blade, a000_003004).
         let npc = combat.npc(a);
         let mut draw_mask: HashMap<u32, bool> = HashMap::new();
-        if let Some(an) = combat.data_of(a).anim_key("TransToBattleFromDefault").and_then(|k| combat.data_of(a).anim(k)) {
+        for an in ["TransToBattleFromDefault", "IdleBattle"].into_iter().filter_map(|s| combat.data_of(a).anim_key(s).and_then(|k| combat.data_of(a).anim(k))) {
             for e in an.events.iter().filter(|e| e.kind == 233) {
                 for n in 0..32u32 {
                     match e.arg_i64(&format!("Mask{n}")) {
@@ -611,7 +624,15 @@ fn attach_models(
                 mesh.insert_attribute(Mesh::ATTRIBUTE_JOINT_INDEX, VertexAttributeValues::Uint16x4(idx.clone()));
                 mesh.insert_attribute(Mesh::ATTRIBUTE_JOINT_WEIGHT, md.weights.clone());
             }
+            // C[Shell]: the shell opacity rides in the vertex colour alpha (the shader's v4.w).
+            if let Some(d) = md.detail.as_ref().filter(|d| d.variant == SHELL && d.vert_alpha.len() == md.pos.len()) {
+                mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, d.vert_alpha.iter().map(|&a| [1.0, 1.0, 1.0, a]).collect::<Vec<[f32; 4]>>());
+            }
             mesh.insert_indices(Indices::U32(md.indices.clone()));
+            // Culling bounds that follow the joints: the bind-pose box left a part that moved far
+            // from it culled while in view (Gyoubu's face in his deathblow, falling off the horse:
+            // the user, 2026-10-16).
+            let skin_bounds = cloth.is_none() && mesh.generate_skinned_mesh_bounds().is_ok();
             // Normal mapping needs tangents (sekiro_material.wgsl builds the TBN from them).
             if !md.normal_map.is_empty() {
                 let _ = mesh.generate_tangents();
@@ -655,7 +676,7 @@ fn attach_models(
             let detail = md.detail.as_ref().filter(|_| std::env::var("SHINOBI_NO_DETAIL").is_err());
             let layers: [Option<Handle<Image>>; 8] = std::array::from_fn(|k| detail.and_then(|d| layer(&d.names[k], k % 2 == 0)));
             let detail_u = detail.map_or_else(DetailUniform::default, |d| DetailUniform {
-                flags: UVec4::new(match d.variant { FRESNEL => 2, GHOST => 3, _ => 1 }, d.bits as u32, layers.iter().enumerate().fold(0, |f, (k, l)| f | ((l.is_some() as u32) << k)), 0),
+                flags: UVec4::new(match d.variant { FRESNEL => 2, GHOST => 3, SHELL => 4, _ => 1 }, d.bits as u32, layers.iter().enumerate().fold(0, |f, (k, l)| f | ((l.is_some() as u32) << k)), 0),
                 p: std::array::from_fn(|k| Vec4::from_slice(&d.params[k * 4..k * 4 + 4])),
             });
             let [layer_a, layer_a_n, layer_b, layer_b_n, layer_c, layer_c_n, layer_d, layer_d_n] = layers;
@@ -721,6 +742,11 @@ fn attach_models(
                 None => {
                     let skin = SkinnedMesh { inverse_bindposes: bindposes.add(SkinnedMeshInverseBindposes::from(inv)), joints: mesh_joints };
                     commands.entity(e).insert(skin);
+                    if skin_bounds {
+                        commands.entity(e).insert(bevy::camera::visibility::DynamicSkinnedMeshBounds);
+                    } else {
+                        commands.entity(e).insert(bevy::camera::visibility::NoFrustumCulling);
+                    }
                     commands.entity(root).add_child(e);
                 }
             }

@@ -70,6 +70,10 @@ fn step(
     if tr.frame == 180 {
         pa.yaw = std::f32::consts::PI;
         pa.play("StandIdle", "");
+        // The camera behind Wolf, as a fight leaves it (it starts behind his spawn facing).
+        if let Ok(mut oc) = cam.single_mut() {
+            oc.0.yaw = pa.yaw;
+        }
         ptf.translation.x = 0.0;
         ptf.translation.z = 0.0;
         let behind = tr.kind == "behind" || tr.kind == "stealth";

@@ -46,8 +46,13 @@ struct Detail {
 }
 @group(#{MATERIAL_BIND_GROUP}) @binding(119) var<uniform> detail: Detail;
 
-// One fabric layer: albedo, normal xy (FLV, Bevy's green), gloss, from its two textures (a
-// missing texture: white albedo, flat normal, gloss 0.5 - gap: the game binds SYSTEX_Dummy_a / _n).
+// An empty slot is the game's dummy (other/systex.tpf): SYSTEX_Dummy_a is BC1 sRGB 128 grey,
+// alpha 255 (linear 0.2159, about 1 / 4.55: a missing layer leaves the base albedo as it is);
+// SYSTEX_Dummy_n is BC7 (128, 128, 128, 255): flat, gloss 0.5, fabric mask alpha 1.
+const DUMMY_A: vec4<f32> = vec4(0.2159, 0.2159, 0.2159, 1.0);
+const DUMMY_N: vec4<f32> = vec4(0.502, 0.502, 0.502, 1.0);
+
+// One fabric layer: albedo, normal xy (FLV, Bevy's green), gloss, from its two textures.
 struct Layer {
     albedo: vec3<f32>,
     nxy: vec2<f32>,
@@ -63,8 +68,8 @@ fn flv(n: vec4<f32>) -> vec2<f32> {
 
 fn layer(a: texture_2d<f32>, n: texture_2d<f32>, bit: u32, uv: vec2<f32>, color: vec3<f32>, gloss_add: f32) -> Layer {
     var l: Layer;
-    var ta = vec4(1.0);
-    var tn = vec4(0.5, 0.5, 0.5, 1.0);
+    var ta = DUMMY_A;
+    var tn = DUMMY_N;
     if (detail.flags.z & (1u << bit)) != 0u { ta = textureSample(a, layer_sampler, uv); }
     if (detail.flags.z & (2u << bit)) != 0u { tn = textureSample(n, layer_sampler, uv); }
     l.albedo = ta.rgb * color;
@@ -95,7 +100,7 @@ fn detail_layers(in: VertexOutput, pbr_in: PbrInput) -> PbrInput {
     let uv = in.uv;
     let base_uv = uv * p[7].xy;
     let a7 = textureSample(pbr_bindings::base_color_texture, pbr_bindings::base_color_sampler, base_uv);
-    var n0 = vec4(0.5, 0.5, 0.5, 0.0);
+    var n0 = DUMMY_N;
     if sekiro_flags.x != 0u { n0 = textureSample(normal_texture, normal_sampler, base_uv); }
     var m3 = 0.0;
     if sekiro_flags.y != 0u { m3 = textureSample(metallic_texture, metallic_sampler, base_uv).r; }
@@ -163,14 +168,14 @@ fn fresnel_layers(in: VertexOutput, pbr_in: PbrInput) -> PbrInput {
     let uv = in.uv;
     let base_uv = uv * p[9].xy;
     let a2 = textureSample(pbr_bindings::base_color_texture, pbr_bindings::base_color_sampler, base_uv);
-    var n7 = vec4(0.5, 0.5, 0.5, 0.0);
+    var n7 = DUMMY_N;
     if sekiro_flags.x != 0u { n7 = textureSample(normal_texture, normal_sampler, base_uv); }
     var m0 = 0.0;
     if sekiro_flags.y != 0u { m0 = textureSample(metallic_texture, metallic_sampler, base_uv).r; }
-    var a3 = vec4(1.0);
-    var n1 = vec4(0.5, 0.5, 0.5, 1.0);
-    var a4 = vec4(1.0);
-    var n5 = vec4(0.5, 0.5, 0.5, 1.0);
+    var a3 = DUMMY_A;
+    var n1 = DUMMY_N;
+    var a4 = DUMMY_A;
+    var n5 = DUMMY_N;
     if (detail.flags.z & 1u) != 0u { a3 = textureSample(layer_a, layer_sampler, uv * p[7].xy); }
     if (detail.flags.z & 2u) != 0u { n1 = textureSample(layer_a_n, layer_sampler, uv * p[7].zw); }
     if (detail.flags.z & 4u) != 0u { a4 = textureSample(layer_b, layer_sampler, uv * p[8].xy); }
@@ -201,6 +206,53 @@ fn fresnel_layers(in: VertexOutput, pbr_in: PbrInput) -> PbrInput {
     pbr_input.material.base_color = vec4(saturate(albedo), saturate(a2.a) * pbr_bindings::material.base_color.a);
     pbr_input.material.perceptual_roughness = clamp(1.0 - gloss, 0.089, 1.0);
     pbr_input.material.metallic = saturate(m0 + p[5].x);
+    return pbr_input;
+}
+#endif
+
+#ifdef VERTEX_UVS_A
+// C[Shell] (fur shells, C[Shell]_0_Gbuf_[A].ppo; docs/kb/visuals.md "Fur shells"): t0 = slot 6
+// noise (layer A here), t4 = slot 7 colour (the base texture), t5 = slot 8 normal, t1 = slot 10
+// metal; va = the vertex colour alpha (v4.w).
+// albedo = sat(noise.rgb x color_0 x colour x 4.55 x (1 - va)^float_6), alpha = noise.a x float_4
+// x va, cut below g_AlphaRef / 255; gloss = sat(normal.b + float_5); metal = sat(t1.r).
+// gap: the dithered cut (FC_AlphaRef.y x (dither - 0.5)) is a hard step; o1.y occlusion
+// ((1 - va)^float_3 x 0.1) is not used.
+fn shell_layers(in: VertexOutput, pbr_in: PbrInput) -> PbrInput {
+    var pbr_input = pbr_in;
+    let p = detail.p;
+    let uv = in.uv;
+    var va = 1.0;
+#ifdef VERTEX_COLORS
+    va = in.color.a;
+#endif
+    var noise = DUMMY_A;
+    if (detail.flags.z & 1u) != 0u { noise = textureSample(layer_a, layer_sampler, uv * p[7].xy); }
+    let col = textureSample(pbr_bindings::base_color_texture, pbr_bindings::base_color_sampler, uv * p[7].zw);
+    var n8 = DUMMY_N;
+    if sekiro_flags.x != 0u { n8 = textureSample(normal_texture, normal_sampler, uv * p[8].xy); }
+    var m10 = 0.0;
+    if sekiro_flags.y != 0u { m10 = textureSample(metallic_texture, metallic_sampler, uv * p[7].zw).r; }
+    let dark = pow(max(1.0 - va, 0.0), p[1].w);
+    let albedo = saturate(noise.rgb * p[0].rgb * col.rgb * 4.55 * dark);
+    let alpha = noise.a * p[1].y * va;
+    pbr_input.material.base_color = vec4(albedo, select(0.0, 1.0, alpha >= p[2].x));
+    pbr_input.material.perceptual_roughness = clamp(1.0 - saturate(n8.b + p[1].z), 0.089, 1.0);
+    pbr_input.material.metallic = saturate(m10);
+#ifdef VERTEX_TANGENTS
+    if sekiro_flags.x != 0u {
+        let xy = flv(n8);
+        let nt = normalize(vec3(xy, sqrt(max(1.0 - dot(xy, xy), 0.0))));
+        let N = pbr_input.world_normal;
+        let T = in.world_tangent.xyz;
+        let Bt = in.world_tangent.w * cross(N, T);
+        var mapped = normalize(nt.x * T + nt.y * Bt + nt.z * N);
+        if dot(N, pbr_input.V) < 0.0 {
+            mapped = mapped - 2.0 * dot(mapped, N) / dot(N, N) * N;
+        }
+        pbr_input.N = mapped;
+    }
+#endif
     return pbr_input;
 }
 #endif
@@ -251,7 +303,9 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     var pbr_input = pbr_input_from_standard_material(in, is_front);
 #ifdef VERTEX_UVS_A
     if detail.flags.x != 0u {
-        if detail.flags.x == 3u {
+        if detail.flags.x == 4u {
+            pbr_input = shell_layers(in, pbr_input);
+        } else if detail.flags.x == 3u {
             pbr_input = ghost_scroll(in, pbr_input);
         } else if detail.flags.x == 2u {
             pbr_input = fresnel_layers(in, pbr_input);

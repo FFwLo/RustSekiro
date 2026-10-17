@@ -108,7 +108,7 @@ turn to the stick and ForwardGroundJump (row 101). Test locked_on_jumps_go_where
   c0000_transition.lua 4498 / 405). gap: ACTION_UNLOCK_TYPE_SPRINT_TO_CROUCH (26) taken as unlocked.
 - 2026-10-10 sprint deflect: SprintToDeflectGuard (a050_203001) slides 3.04 m on root motion and turns only
   by TAE SetTurnSpeed (180 f3-6, 360 f6-9); Sv1 snapped Wolf to the target first, so the slide carried him
-  into the enemy (user: "I launch to the enemy"). HKS BEH_A_DEFLECT_GUARD_START sets no facing; now no snap.
+  into the enemy. HKS BEH_A_DEFLECT_GUARD_START sets no facing; now no snap.
 
 ## Blend-in root motion (2026-10-14, exe)
 Havok's blending transition mixes the world-from-model: from x (1 - w) + to x w over the to clip's
@@ -125,7 +125,7 @@ clock through the blend. Enemies' graphs carry no loop flag (gap: their from cli
 end). See HANDOFF 4.63 item 8.
 
 ## Lock-on turning, quick-turn loop, sprint deflect, collision (2026-10-15)
-- Quick-turn loop (user: "Wolf shaking with no input"): StandQuickTurn{Left,Right}{90,180}
+- Quick-turn loop: StandQuickTurn{Left,Right}{90,180}
   (a000_000010-13, crouch / guard kin) have no root motion (no hkaDefaultAnimatedReferenceFrame;
   the Master bone ends where it starts) and no TAE 224, so Wolf never turned and the locked idle's
   >60 deg check replayed the clip every 0.67 s. Now the turn controller's default rate (720 deg/s,
@@ -146,12 +146,12 @@ end). See HANDOFF 4.63 item 8.
   (FUN_14104d3d0, 0x3f860a92). Were 0.35 / 50 deg from sekiro-rs. gap: step-up height (0.5 kept)
   and the ledge / support logic are not traced; the top wall sphere (1.55 + 0.4) sits above the
   1.5 m capsule.
-- Open: jumping feel (user: "not the same as the game", details pending); foot IK on the run
+- Open: jumping feel (details pending); foot IK on the run
   loop; _set4DirJumpTilt; wall jump (HKS BEH_A_WALL_JUMP, not in Sv1); ledge hang / climb (edges
   loaded, unused); swim.
 - Sprint stop fixed (actor.rs advance): a transition that drops the source motion (blend_src
   false, e.g. SprintLoop) weighted the to clip's root by the blend too, so SprintStartFromStep_F
-  -> SprintLoop went 8.6 -> 0 -> 9 m/s over 0.3 s (user: "slows down then speeds up"). Now full
+  -> SprintLoop went 8.6 -> 0 -> 9 m/s over 0.3 s. Now full
   weight from frame 0. Test sprint_keeps_its_speed_into_the_loop. Still from the data (not bugs):
   the run start a000_000400 dips 5.6 -> 4.9 m/s at 0.9-1.0 s, the step -> sprint start blend dips
   to ~3 m/s for 0.1 s (ref 15 opens at 0.4 s while the step brakes; blend 0.2 s keeps the source).
@@ -159,7 +159,7 @@ end). See HANDOFF 4.63 item 8.
   fires the additive W_AddActionInputJump, no new kick; now honoured. Test
   mashed_air_kicks_kick_once_per_jump (a plain jump allowed only one kick already: jump start's
   119 opens at 0.1 s, the jump lands before AirKick's 0.7 s). gap: the additive clip; where the
-  user's repeated kicks came from (off an enemy's head?) not reproduced.
+  reported repeated kicks came from (off an enemy's head?) not reproduced.
 - 2026-10-15 LIVE auto-test (Sekiro via me3 `C:\DeadlockModding\me3\sekiro-research.me3`, keys sent by
   scratchpad sk_input.py (SendInput scan codes reach DirectInput), memscope script move_log.lua: TimeAct
   +0x100 anim, physics +0x80 pos / +0x74 yaw). A pre hook on FUN_1407dab40 ran 335 calls, no crash.
@@ -188,18 +188,18 @@ Live Sekiro (rec.db, slot 0) vs Sv1 clip data / sim:
 ## Clean movement recording (2026-10-16, rec_20261016_092035_movement_clean, 186 s)
 - Loop speeds, live vs clip root motion (m/s): walk a000_000100/200 1.62-1.63 / 1.64 (the first recording's low walk value was transitions), strafe walk 000201 1.43 / 1.42, run 000500 5.58 / 5.61, lock-on run 000501 4.28 / 4.27, 000503 4.21 / 4.19, 000403 4.22 / 4.16, sprint 001151 8.80 / 8.74. Match.
 - Run jump: live press -> landing clip (a000_201055) 0.93-1.07 s, rise 1.93-2.00 m; Sv1 1.02 s, 1.97 m. Match.
-- AirKick CORRECTION: the recorder's anim field never shows a000_213100 (the kick is not in TimeAct +0x100; the fall loop 299020 stays), so the 2026-10-15 "no air kick when mashing" conclusion was wrong. SpEffects 100334 + 100247 (AirKick's own) fired 6 times in this recording, each when the user pressed jump in the air, two of them 0.9 s apart in ONE flight (ticks 8842 / 8896). Sv1's rule (kick again once ref 431's 0.4-0.7 s window is over) matches that spacing. Use the SpEffect events, not the anim, to find kicks.
+- AirKick CORRECTION: the recorder's anim field never shows a000_213100 (the kick is not in TimeAct +0x100; the fall loop 299020 stays), so the 2026-10-15 "no air kick when mashing" conclusion was wrong. SpEffects 100334 + 100247 (AirKick's own) fired 6 times in this recording, each when jump was pressed in the air, two of them 0.9 s apart in ONE flight (ticks 8842 / 8896). Sv1's rule (kick again once ref 431's 0.4-0.7 s window is over) matches that spacing. Use the SpEffect events, not the anim, to find kicks.
 - Open: lock-on turn rate and the sprint-deflect facing still have no isolated case; jump presses are not recorded (no pad block in this recording), so mashing vs single presses can't be separated.
 - Jump presses vs kicks (decoded pad, recorder session schema 11, movement_clean): 14 jump presses in the air, 6 kicks (W_AirKick). A press kicks only when it lands after the take-off frames (a press 12 ticks after take-off did nothing, the next one 24 ticks in kicked, W_AirKick 2 ticks later) and never within about 0.4 s of the previous kick (presses 1, 12, 14, 24, 26 ticks after a kick: nothing; 54 ticks after: kick). Presses on the landing frames also do nothing. Same shape as Sv1's accept-flag gate plus the ref 431 window; a live-vs-sim run with the same press ticks is still to do.
 
 ## Lock-on turn and sprint deflect (2026-10-16, rec_20261016_094717_lockturn_sprintdeflect, 57 s, 7 locked sprint deflects)
-- Sprint deflect (SprintToDeflectGuard, a050_203001): NOT a snap. Wolf keeps his sprint heading (90-150 deg off the enemy) for the first ~0.1 s (Disable Turning flag 7), turns 180 deg/s to 0.2 s and 360 deg/s to 0.3 s (the clip's SetTurnSpeed), then at the controller default 720 deg/s until square on the enemy (0 deg error at +0.5 s). This is the "deflect sideways, then see the enemy" the user described. Sv1 now turns the same way (player.rs sprint deflect block; test `a_locked_sprint_deflect_turns_to_the_enemy_instead_of_snapping`); the old snap and the "turns at most 54 deg" gap are gone. gap: the exe's target for that turn (HKS sets no facing) is taken as the lock target.
+- Sprint deflect (SprintToDeflectGuard, a050_203001): NOT a snap. Wolf keeps his sprint heading (90-150 deg off the enemy) for the first ~0.1 s (Disable Turning flag 7), turns 180 deg/s to 0.2 s and 360 deg/s to 0.3 s (the clip's SetTurnSpeed), then at the controller default 720 deg/s until square on the enemy (0 deg error at +0.5 s). Sv1 now turns the same way (player.rs sprint deflect block; test `a_locked_sprint_deflect_turns_to_the_enemy_instead_of_snapping`); the old snap and the "turns at most 54 deg" gap are gone. gap: the exe's target for that turn (HKS sets no facing) is taken as the lock target.
 - Standing deflect: Wolf is already facing the target (+-6 deg live), so the aim stays.
 - Locked strafe (a000_000502/503/602): facing stays 1-2 deg off the enemy while orbiting (follow rate 55-110 deg/s median/p90). Sv1 strafes at 0-1 deg error. Match.
 
 ## Run stop slide and debug test tools (2026-10-16)
 - Bug: releasing the stick at a run slid Wolf about 1 m over 0.3 s. Cause: `data::blend_keeps_src` found no entry for `StandRunStopF/B/L/R` (no underscore, graph state `StandRunStop`, blend_src.json: keeps no source motion), so the stop kept the run's momentum through its blend. Fixed by also trying the name without its direction letter. Now 0.5 m/s three ticks after release and 0.3 m in all, as live (rec_20261016_* `W_StandRunStop`: 0.15-0.3 m) and as the clip a000_000600 (0.3 m). Test `releasing_the_stick_at_a_run_stops_in_about_a_third_of_a_metre`.
-- Debug menu (F1) section MOVEMENT TESTS: fall test height (5 to 60 m) + "lift Wolf to that height and drop" (20 m = the kill limit starts, 45 m kills and returns him); test hook height (4-16 m) + "place a test hook" (10 m ahead of Wolf, rideable) + "remove the test hooks". File `src/debug_menu.rs` is outside the movement files; edited at the user's request.
+- Debug menu (F1) section MOVEMENT TESTS: fall test height (5 to 60 m) + "lift Wolf to that height and drop" (20 m = the kill limit starts, 45 m kills and returns him); test hook height (4-16 m) + "place a test hook" (10 m ahead of Wolf, rideable) + "remove the test hooks". File `src/debug_menu.rs` is outside the movement files; edited on request.
 - Open: non-lethal fall damage HP, void kill height, grapple compared against the live wire shots (rec_20261016_083843_movement_hooks), ledge hang / wall hug / swim (need recordings).
 
 ## Jumping a sweep and kicking off the head (2026-10-16)

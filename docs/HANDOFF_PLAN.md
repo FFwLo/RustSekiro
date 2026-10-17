@@ -6,7 +6,7 @@ game. Give a helper this whole file plus the packet ID ("do task V1").
 
 ## 1. What the project is
 A Rust + Bevy 0.19 prototype at `C:\DeadlockModding\shinobi-combat` that recreates Sekiro's
-combat 1:1. Every number comes from the user's own Sekiro install (TAE events, HKS behaviour
+combat 1:1. Every number comes from the game's own files (TAE events, HKS behaviour
 scripts, params, behaviour graphs) or from a static decompile of the exe. Nothing is tuned by
 feel when the game has the real value.
 
@@ -196,7 +196,7 @@ AI checks react to them. A table per tool in `docs/reports/K3.md`; no code.
 
 **K5.. - One tool each (M).** Firecracker, Flame Vent, Axe, Umbrella, Spear, Sabimaru, Mist Raven,
 Divine Abduction, Finger Whistle, in that order, each from its K3 table; a real-game clip per tool
-from the user for the look.
+for the look.
 
 **K6 - Latent skills (S).** SkillParam rows -> SpEffects: list all, implement the ones whose
 systems exist, list the rest as gaps.

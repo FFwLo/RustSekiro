@@ -3,7 +3,7 @@
 Dated findings, oldest first. Append new entries at the end. Owner of this file: Map; peers
 append their own sections.
 
-The user (2026-10-11): "the grapple is needed for many bosses in the game, we should add it".
+Added 2026-10-11: many bosses need the grapple.
 Everything the engine calls the hook is "wire" (ワイヤー): WirePointSearchParam, WireSetParam,
 WireVariationParam, HKS `ACTION_ARM_WIRE_SHOOT`, TAE events 900-905 and 921, SpEffect fields
 `chrWire*`, HUD `MENU_Wire_*`. Static research 2026-10-11 (Map), nothing live yet.
@@ -180,7 +180,7 @@ y 1.5, 200001602 Akaoni y 2.0).
   SpEffects (TAE 66 windows above) and expose `Enemy::grapple_target() -> Option<(hook dummy,
   land dummy, variation)>` so the search sees enemies as points; the Grappling Hook Attack
   throw pair (511600 / 13600) via the existing ThrowParam path; the Ogre and Gyoubu first (both
-  in the fighter set and in the user's clip list).
+  in the fighter set and in the clip list).
 
 Verify: sim test "a grapple from 8 m lands on the point in the move-start time", the Ogre grab
 window shows the prompt only in 0.63-1.07 s of a100_003005, contact sheets of the real clip

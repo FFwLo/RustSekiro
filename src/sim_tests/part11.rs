@@ -452,9 +452,10 @@ pub(crate) fn zz_scripted_kill_effects() {
     }
 }
 
-/// The deathblow count drops at Wolf's atkAttribute 5 hit (judge 800, a211_511700 at 1.23 s;
-/// FUN_140b6e6a0), not at the throw's start: until then the Monk's map script (4[37]) still sees
-/// her last bar, so 12505963's 20200 (bars 0 + Wolf's latched message 10) cuts her Todome there.
+/// The deathblow count drops at Wolf's atkAttribute 5 hit (FUN_140b6e6a0; on her last mark his
+/// usual deathblow a211_510000, at 0.83 s), not at the throw's start: until then the Monk's map
+/// script (4[37]) still sees her last bar; 12505963's 20200 (bars 0 + Wolf's message 10) comes
+/// at that deathblow's own message. (Her Todome a211_511700 is taken from that 20200 since 2026-10-16.)
 #[test]
 pub(crate) fn the_deathblow_count_drops_at_the_ninsatsu_hit() {
     let mut app = app_with("c5000");
@@ -479,8 +480,11 @@ pub(crate) fn the_deathblow_count_drops_at_the_ninsatsu_hit() {
         }
     }
     let (anim, t, f) = drop.expect("the count drops");
-    assert!(anim.ends_with("511700") && (1.2..1.3).contains(&t), "dropped in {anim} at {t}");
-    assert_eq!(cut, Some(f), "20200 on the drop");
+    assert!(anim.ends_with("510000") && (0.8..0.9).contains(&t), "dropped in {anim} at {t}");
+    // Her kneel waits for Wolf's own message 10 (a211_510000 TAE 231 at 3.7 s; events.rs
+    // messages), ~2.9 s after the drop, as the recordings' kneels come at that message.
+    let cut = cut.expect("her kneel");
+    assert!(((cut - f) as f32 / 60.0 - 2.87).abs() < 0.1, "20200 {} s after the drop", (cut - f) as f32 / 60.0);
 }
 
 #[test]

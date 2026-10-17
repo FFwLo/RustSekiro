@@ -59,6 +59,14 @@ pub(super) fn apply_requests(commands: &mut Commands, combat: &Combat, config: &
 /// Wolf's the same way (`WolfMessage`).
 pub(super) fn messages(combat: Res<Combat>, mut q: Query<(&mut Enemy, &Actor)>, player: Single<&Actor, (With<crate::player::Player>, Without<Enemy>)>, mut wolf: ResMut<super::WolfMessage>) {
     let pa = *player;
+    // A new deathblow starts without the message an earlier one left: the recordings ask for the
+    // boss's kneel at the last deathblow's own TAE 231 (rec_2026101x_*_boss_*: the Demon of
+    // Hatred 2.89 s into a240_510000, its 231 at 2.9; the Owl (Father) 2.99 / 3.0; Genichiro 3.58 /
+    // 3.6), not at its Ninsatsu hit with the 10 of the deathblow before (Isshin's walk-up cut his
+    // a243_510110 at 0.6 s). gap: where the exe clears it is not traced.
+    if pa.prev_t == 0.0 && (pa.state.starts_with("Deathblow") || pa.state == "ThrowBreak") {
+        wolf.msg = None;
+    }
     if let Some(ev) = combat.player.events_at(&pa.anim, pa.t).filter(|ev| ev.kind == super::TAE_EVENT_MESSAGE).max_by(|x, y| x.start.total_cmp(&y.start)) {
         wolf.msg = ev.arg_i64("EzStateRequestID");
         if (ev.start > pa.prev_t || pa.prev_t == 0.0) && ev.start <= pa.t {

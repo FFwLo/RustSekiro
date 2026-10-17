@@ -177,6 +177,15 @@ fn save_options(c: &crate::config::GameConfig) {
 /// bullet owners, sight checks) are left out: they are not fighters.
 const TABS: [&str; 2] = ["Bosses", "Enemies"];
 
+/// The main-boss rows (ours; docs/PLAN.md "Update 2026-10-13" names these 20 as "the 22"). The Bosses tab shows only these
+/// for now (the user, 2026-10-16: "in bosses menu keep the bosses that i work on only"); the
+/// mini-bosses and generals are the outside contributor's. 52000000 (Divine Dragon) is the Old
+/// Dragons' second phase (data::encounter_list).
+pub(crate) const MAIN_BOSS_ROWS: [i64; 20] = [
+    12600050, 50000000, 50001000, 50600000, 50601010, 50800000, 50900000, 50900001, 51000000, 51000100, 52000000,
+    53000000, 54000000, 54300000, 70200000, 71000000, 71001000, 71100000, 71101000, 74000010,
+];
+
 /// Rows the picker shows at once.
 const PICKER_ROWS: usize = 10;
 
@@ -195,7 +204,7 @@ impl Picker {
     fn lists(&mut self) -> &[Vec<crate::data::Encounter>; 2] {
         self.lists.get_or_insert_with(|| {
             let all: Vec<_> = crate::data::encounter_list().into_iter().filter(|e| !e.name.to_lowercase().contains("dummy")).collect();
-            let bosses: Vec<_> = all.iter().filter(|e| e.bar).cloned().collect();
+            let bosses: Vec<_> = all.iter().filter(|e| e.bar && MAIN_BOSS_ROWS.contains(&e.npc_row)).cloned().collect();
             let mut enemies: Vec<crate::data::Encounter> = Vec::new();
             for e in all.into_iter().filter(|e| !e.bar) {
                 if !enemies.iter().any(|o| o.chr == e.chr) {
@@ -230,11 +239,15 @@ const FINISHER_CAP: f32 = 30.0;
 /// end (the Divine Dragon's trees re-play their bloom loop, Mode::Held(true) loops, the Old
 /// Dragons' bodies keep their AI), so waiting on all of them ran into FINISHER_CAP: the banner
 /// 30 s after Handle Boss Defeat on rows 52000000 / 53000000.
+/// A boss kneeling for its Todome (its Event20200's 105 window, held at the clip's end; player.rs
+/// deathblow_check) is not done: the fight waits for Wolf's Todome.
 pub(crate) fn finisher_done<'a>(combat: &crate::data::Combat, wolf_state: &str, enemies: impl IntoIterator<Item = (&'a crate::enemy::Enemy, &'a crate::actor::Actor)>) -> bool {
     crate::player::is_free(wolf_state)
         && enemies.into_iter().filter(|(e, a)| e.is_dead() || a.state.starts_with("ThrowDef") || a.state.starts_with("Event20200")).all(|(_, a)| {
-            let len = if a.anim.is_empty() { 0.0 } else { combat.data_of(a).length(&a.anim) };
-            len <= 0.0 || a.t >= len - 1e-3
+            let d = combat.data_of(a);
+            let len = if a.anim.is_empty() { 0.0 } else { d.length(&a.anim) };
+            let todome = d.finisher_window(&a.anim, a.t) == Some(105) && combat.throw(combat.foe_of(a).throw_row(181)).is_some();
+            !todome && (len <= 0.0 || a.t >= len - 1e-3)
         })
 }
 
