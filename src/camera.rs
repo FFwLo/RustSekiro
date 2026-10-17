@@ -413,7 +413,7 @@ pub(crate) fn acquirable(cam: &GlobalTransform, wolf: Vec3, wolf_fwd: Vec3, p: V
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn toggle_lock(
-    keys: Res<ButtonInput<KeyCode>>,
+    _keys: Res<ButtonInput<KeyCode>>,
     mouse: Res<ButtonInput<MouseButton>>,
     motion: Res<AccumulatedMouseMotion>,
     combat: Res<Combat>,
@@ -443,7 +443,9 @@ pub(crate) fn toggle_lock(
         return;
     }
     let pad_lock = config.input.gamepad && pads.iter().any(|g| g.just_pressed(GamepadButton::RightThumb));
-    if keys.just_pressed(KeyCode::KeyQ) || mouse.just_pressed(MouseButton::Middle) || pad_lock {
+    // Lock on: the middle mouse button, the game's default (DefaultKeyAssignParam00, player.rs
+    // read_input); Q is the game's crouch key.
+    if mouse.just_pressed(MouseButton::Middle) || pad_lock {
         lock.target = match lock.target {
             Some(_) => None,
             // The nearest of those in front (acquirable); no camera (headless): any.
@@ -664,6 +666,7 @@ fn follow_player(
     mut camera: Single<(&mut Transform, &mut OrbitCamera, &mut Projection)>,
     mut snap: ResMut<CameraSnap>,
     pad: Option<Res<crate::player::PadInput>>,
+    config: Option<Res<crate::config::GameConfig>>,
 ) {
     let (player, actor, dummies) = *player_q;
     let (transform, orbit, projection) = &mut *camera;
@@ -766,7 +769,16 @@ fn follow_player(
     } else {
         orbit.pitch = orbit.pitch.clamp(range.0, range.1);
     }
-    let target_focus = chr_focus(player.translation, orbit.cam.focus_y);
+    let mut target_focus = chr_focus(player.translation, orbit.cam.focus_y);
+    // The hug peek (docking.rs CoverAction*): the camera leans out round the wall end with Wolf,
+    // 1.2 m to the peek's side and 0.3 m forward (gap: the game's cover camera rows are not
+    // read). The clips' _R peeks to Wolf's own left (named from the front, as the hug moves).
+    if crate::docking::is_peek(&actor.state) {
+        let fwd = Quat::from_rotation_y(actor.yaw) * Vec3::NEG_Z;
+        let right = fwd.cross(Vec3::Y);
+        let side = if actor.state.ends_with('R') { -right } else { right };
+        target_focus += side * 1.2 + fwd * 0.3;
+    }
     // Focus follow (exe FUN_141155d20 from the ChrCam update FUN_14073c260): fixed 1/30 s steps,
     // each closing CameraParam chrTransChaseRateXZ_ForNormal (0.2) / _Y (0.3) of the gap.
     let step = |rate: f32| 1.0 - (1.0 - rate.clamp(0.0, 1.0)).powf(dt * 30.0);
@@ -851,7 +863,13 @@ fn follow_player(
         // this frame's turning (the exe turns after the resync).
         let v = drag_fulcrum(f, moved, orbit.cam.trans_snap, fp) - orbit.focus;
         if v.with_y(0.0).length_squared() > 1e-6 {
-            orbit.yaw = f32::atan2(v.x, v.z) + turning.map_or(0.0, |d| d.0);
+            // config camera.follow_swing scales how far the camera swings round after a sideways
+            // run (1 = the CameraParam fulcrum's full swing: 68 deg/s at a run, 143 at a sprint,
+            // which ran Wolf in tight circles with the stick held sideways; the user: "spinning
+            // like a compass", the movement "feels off").
+            let swing = config.as_ref().map_or(1.0, |c| c.camera.follow_swing).clamp(0.0, 1.0);
+            let chased = f32::atan2(v.x, v.z);
+            orbit.yaw = orbit.yaw + angle_delta(chased, orbit.yaw) * swing + turning.map_or(0.0, |d| d.0);
             // The pitch too (FUN_140733e50; 14073.c 9840-9880) when `chases_pitch`: a climb
             // or a fall leaves the fulcrum behind in height, which tilts the camera.
             let stick = pad.as_ref().map_or(Vec2::ZERO, |p| p.stick);

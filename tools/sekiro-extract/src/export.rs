@@ -1114,6 +1114,45 @@ pub fn hud_icons(params: &Path) -> BTreeSet<String> {
     icons
 }
 
+/// `sekiro-extract hud-all <extracted>`: every sprite of the menu atlases (menu/hi/01_common) to
+/// extracted/menu_sprites/<atlas>/<name>.png, for finding the menu screens' art (2026-10-17).
+pub fn export_hud_all(root: &Path) {
+    let Ok(tpf) = std::fs::read(root.join("menu/hi/01_common.tpf")) else { return };
+    let tex: HashMap<String, Vec<u8>> = crate::flver::tpf(&tpf).into_iter().collect();
+    let Ok(dir) = std::fs::read_dir(root.join("menu/hi/01_common.sblytbnd.d")) else { return };
+    let attr = |line: &str, k: &str| -> Option<String> {
+        let i = line.find(&format!(" {k}=\""))? + k.len() + 3;
+        Some(line[i..].split('"').next()?.to_string())
+    };
+    let mut count = 0;
+    for f in dir.flatten() {
+        let Ok(text) = std::fs::read_to_string(f.path()) else { continue };
+        let Some(atlas) = text.lines().find_map(|l| attr(l, "imagePath")).map(|p| p.trim_end_matches(".png").to_lowercase()) else { continue };
+        let Some(dds) = tex.get(&atlas) else { continue };
+        let (w, _, px) = crate::decode_dds(dds);
+        let out = root.join("menu_sprites").join(&atlas);
+        let _ = std::fs::create_dir_all(&out);
+        for line in text.lines() {
+            let Some(name) = attr(line, "name").map(|n| n.trim_end_matches(".png").to_string()) else { continue };
+            let n = |k: &str| attr(line, k).and_then(|v| v.parse::<usize>().ok()).unwrap_or(0);
+            let (x, y, sw, sh) = (n("x"), n("y"), n("width"), n("height"));
+            if sw == 0 || sh == 0 {
+                continue;
+            }
+            let mut rgba = Vec::with_capacity(sw * sh * 4);
+            for yy in y..y + sh {
+                for xx in x..x + sw {
+                    let p = px.get(yy * w + xx).copied().unwrap_or(0);
+                    rgba.extend_from_slice(&[(p >> 16 & 0xff) as u8, (p >> 8 & 0xff) as u8, (p & 0xff) as u8, (p >> 24) as u8]);
+                }
+            }
+            crate::write_png(&out.join(format!("{name}.png")), sw, sh, &rgba);
+            count += 1;
+        }
+    }
+    println!("{count} sprites -> {}", root.join("menu_sprites").display());
+}
+
 pub fn export_hud(root: &Path, icons: &BTreeSet<String>) {
     // MENU_Resist_Poison / _Fire: the build-up icons that fill on Wolf's HUD (hud.rs WolfBuildUp).
     // MENU_Wire_Marker / _NG / _Cursor / _Distance: the grapple point marks (hud.rs WireMark).

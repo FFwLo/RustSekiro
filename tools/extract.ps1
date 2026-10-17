@@ -1,4 +1,4 @@
-# Rebuilds extracted/ and extracted/combat_data.json from your own Sekiro install.
+﻿# Rebuilds extracted/ and extracted/combat_data.json from your own Sekiro install.
 # Usage: powershell -File tools\extract.ps1 [-Sekiro "C:\...\Sekiro"]
 param([string]$Sekiro = "C:\Program Files (x86)\Steam\steamapps\common\Sekiro", [switch]$SkipArenas)
 $ErrorActionPreference = "Stop"
@@ -18,10 +18,13 @@ if (-not (Test-Path $exe)) {
     $exe = Join-Path $PSScriptRoot "sekiro-extract\target\release\sekiro-extract.exe"
 }
 if (-not (Test-Path (Join-Path $Sekiro "sekiro.exe"))) { throw "Sekiro not found in '$Sekiro': pass -Sekiro <install folder>" }
+# The DCX KRAK pieces need oo2core from the install (container.rs): set before the first unpack
+# that reads them (the map's bxf below ran before it was set and stopped on a fresh checkout).
+$env:SEKIRO_DIR = $Sekiro
 New-Item -ItemType Directory -Force $out | Out-Null
 # The game's FMOD runtime is loaded from the install at play time (src/paths.rs sekiro_dir).
 Set-Content -Path (Join-Path $out "sekiro_dir.txt") -Value $Sekiro -Encoding ascii
-& $exe unpack $Sekiro $out '^/(action/|param/gameparam/|chr/c0000(\.|_a|_c1020\.)|chr/c10[12][09]\.|sound/(s?main|sm[0-9][0-9]|c[0-9]+)\.|script/(aicommon|m\d\d_\d\d_00_00)\.luabnd|other/default\.rumblebnd|msg/engus/item\.msgbnd)'
+& $exe unpack $Sekiro $out '^/(action/|param/gameparam/|chr/c0000(\.|_a|_c1020\.)|chr/c10[12][09]\.|sound/(s?main|sm[0-9][0-9]|c[0-9]+)\.|script/(aicommon|m\d\d_\d\d_00_00)\.luabnd|other/default\.rumblebnd|msg/engus/(item|menu)\.msgbnd)'
 # The FMOD mixer project (reverb, src/fmod.rs set_reverb) is a loose file next to the packed
 # banks, not in the archives' dictionary: copied as is (the music banks sm<area> are loose too,
 # bgm_decrypt.py below).
@@ -36,6 +39,9 @@ Copy-Item (Join-Path $Sekiro "sound\mixer.fev") (Join-Path $out "sound")
 & $exe unpack $Sekiro $out '^/(other/decaltex|menu/hi/01_common)'
 & $exe export $out
 # extracted/enemies/roster.json (every placed chr, its MSB placements) and <chr>.json each.
+# The roster reads every map's MSB (and its events): unpacked here, not only with the map block
+# further down (a fresh checkout found 0 characters, so no enemy data or models were written).
+& $exe unpack $Sekiro $out 'map/mapstudio/'
 & $exe npcs $out
 # Enemy models: own textures, the texture chr (NpcParam normalChangeTexChrId) and the family
 # packs c<first 3 digits>8 / 9 (c1500 zombies share c1509), then their dummy polys.
@@ -123,7 +129,15 @@ if ($python) {
     $env:PYTHONIOENCODING = "utf-8"
     python (Join-Path $PSScriptRoot "boss_events.py")
     # Boss map scripts (bullets, summons, warps) -> extracted/enemies/boss_scripts.json (src/enemy/script.rs).
+    # The objects a boss script hangs on a character, with their grapple edges (the Divine
+    # Dragon's trees o259920-922, tools/boss_scripts.py edge_grapples).
+    & $exe unpack $Sekiro $out 'obj/o2599'
     python (Join-Path $PSScriptRoot "boss_scripts.py")
+    # The boss rooms' fog walls (src/fog_wall.rs). After boss_events.py: it reads its events.
+    python (Join-Path $PSScriptRoot "fog_walls.py")
+    # Wolf's graph tables: which transitions keep the source motion, which clips loop
+    # (src/data.rs blend_keeps_src / loops_c0000).
+    python (Join-Path $PSScriptRoot "behavior_tables.py")
     # Boss music: the loose sound/sm<area>.fsb music banks, FMOD-encrypted, decrypted into
     # extracted/sound (the key is read from the player's own sekiro.exe, none is kept here); then
     # per NpcParam row the area's bank, tracks and start / stop / phase flags (common_func

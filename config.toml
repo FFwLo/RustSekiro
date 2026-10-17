@@ -14,6 +14,7 @@
 # Distance, focus height, FOV and lock-on range: LockCamParam row 0; pitch limits and follow /
 # lock-on chase rates: CameraParam row 0 (data + exe).
 mouse_sensitivity = 0.15  # degrees of turn per pixel of mouse movement
+follow_swing = 0.5        # 0-1: how far the camera swings round after a sideways run (1 = the game data's full swing, which circled Wolf fast)
 
 
 [movement]
@@ -26,6 +27,9 @@ turn_speed = 720.0      # free-movement turn rate (deg/s): exe default 720 (FUN_
 # waits with no timer for its execute window; any state change drops it.
 # 0 = exe behaviour. > 0 = also expire a latched press after this many seconds.
 buffer = 0.0
+camera_speed = 5.0
+invert_y = false
+gamepad = true
 
 [posture]
 # The StaminaControlParam ratio type when no TAE event 960 sets one.
@@ -43,7 +47,7 @@ hp_scales_regen = false
 # Player level for graphs 500/501/504, all confirmed in the exe: 500 = max HP and
 # 501 = max posture (FUN_140a368f0 writes PlayerGameData +0x20 / +0x3c and pushes them to
 # the data module), 504 = base posture regen. 1 = a fresh game (320 HP / 120 posture).
-player_level = 1
+player_level = 20   # Vitality 20 (the user, 2026-10-17: "upgrade vitality"; 1120 HP / 420 posture, the curve's top)
 
 [combat]
 # Hitboxes use the model's dummy polys (AtkParam hit0 DmyPoly ids); these reach
@@ -79,3 +83,14 @@ resurrections = 1
 combat_art = 5100
 # Learned latent skills (SkillParam ids): 280 = Flowing Water (posture damage when guarding: slash x0.8, others x0.75).
 skills = [280]
+
+[audio]
+volume = 10.0
+music = 10.0
+se = 10.0
+voice = 10.0
+
+[video]
+fullscreen = false
+vsync = true
+cloth = "on"

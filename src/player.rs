@@ -23,6 +23,16 @@ pub struct Player {
     /// Plunge deathblow in flight: the posture-broken enemy Wolf is falling onto and the
     /// ThrowParam suffix of the landing (151 崩し落下1, 161 蹴り崩し1 out of a head-kick jump).
     plunge: Option<(Entity, i64)>,
+    /// Docked to a map edge: wall hug or ledge hang (docking.rs).
+    pub(crate) dock: Option<crate::docking::Dock>,
+    /// Wall jumps this flight (WALL_JUMP_COUNT_MAX 1) and the wall-contact side of the ready pose
+    /// in progress (docking.rs).
+    pub(crate) wall_jumps: u8,
+    /// The direction (from Wolf) of the wall the last chained wall jump left.
+    pub(crate) last_wall: Option<Vec3>,
+    /// At a Sculptor's Idol (idol.rs): which, the clip phase, the menu's command, the checkpoint.
+    pub(crate) seat: crate::idol::Seat,
+    pub(crate) wall_contact: Option<char>,
     /// HKS MoveSpeedLevel: 0 idle, 1 walk, 2 run (converges at 3/s).
     pub(crate) speed_level: f32,
     requests: HashMap<Action, f32>,
@@ -128,6 +138,8 @@ pub enum Action {
     SwitchTool,
     /// Grappling Hook (ACTION_ARM_WIRE_SHOOT; wire.rs).
     Grapple,
+    /// Talk / examine / wall hug / ledge hang (ACTION_ARM_WALL_HANG, key guide Kc@20; docking.rs).
+    Interact,
 }
 
 pub const CAPSULE_RADIUS: f32 = 0.4;
@@ -438,6 +450,8 @@ pub struct PadInput {
     pub guard_held: bool,
     pub dodge_held: bool,
     pub prosthetic_held: bool,
+    /// The interact / hug / hang button held (env 1108: the air hang catch wants it held).
+    pub interact_held: bool,
     pressed: Vec<Action>,
     pub reset: bool,
     /// Sheathe / draw the sword (X).
@@ -461,7 +475,8 @@ impl Plugin for PlayerPlugin {
             .add_systems(Update, read_input.run_if(resource_exists::<ButtonInput<KeyCode>>))
             .init_resource::<ActiveThrow>()
             .add_systems(FixedUpdate, (sync_art_variation, decide, apply_refresh_effects, record_state).chain().in_set(ActorSet::Decide))
-            .add_systems(FixedUpdate, follow_throw.after(ActorSet::Advance).before(crate::anim::PoseSet).before(ActorSet::Resolve));
+            .add_systems(FixedUpdate, follow_throw.after(ActorSet::Advance).before(crate::anim::PoseSet).before(ActorSet::Resolve))
+            .add_systems(FixedUpdate, crate::docking::hold.after(ActorSet::Advance).before(crate::anim::PoseSet).before(ActorSet::Resolve));
         app.add_systems(FixedUpdate, wolf_no_dead.before(ActorSet::Decide));
         if std::env::var("SHINOBI_MOVE_LOG").is_ok() {
             app.add_systems(FixedUpdate, move_log.after(ActorSet::Resolve));
@@ -1321,7 +1336,7 @@ fn spawn_player(mut commands: Commands, combat: Res<Combat>, config: Res<GameCon
         }
     }
     commands.spawn((
-        Player { plunge: None, speed_level: 0.0, requests: HashMap::new(), last_state: String::new(), gourd: config.player.gourd_charges, emblems: config.player.spirit_emblems, auto_aim: false, auto_aim_fresh: false, resurrections: config.player.resurrections, revive_queued: false, death_wait: 0.0, dead_for: 0.0, escape: None, jump_forward: false, jump_land: None, positioning_land: false, aged_form: false, step_tilt: 0.0, jump_tilt: 0.0, throw_start: None, throw_target: None, tool_slot: 0, vel_scale: None, expand_pending: false, sub_cat_before: 0, air_sub_count: 0, air_art_count: 0, art_enable_jump: false, timed: Vec::new(), held: Vec::new(), wire: None, perch: None, wire_todome: false, air_top: 0.0 },
+        Player { plunge: None, dock: None, wall_jumps: 0, last_wall: None, seat: Default::default(), wall_contact: None, speed_level: 0.0, requests: HashMap::new(), last_state: String::new(), gourd: config.player.gourd_charges, emblems: config.player.spirit_emblems, auto_aim: false, auto_aim_fresh: false, resurrections: config.player.resurrections, revive_queued: false, death_wait: 0.0, dead_for: 0.0, escape: None, jump_forward: false, jump_land: None, positioning_land: false, aged_form: false, step_tilt: 0.0, jump_tilt: 0.0, throw_start: None, throw_target: None, tool_slot: 0, vel_scale: None, expand_pending: false, sub_cat_before: 0, air_sub_count: 0, air_art_count: 0, art_enable_jump: false, timed: Vec::new(), held: Vec::new(), wire: None, perch: None, wire_todome: false, air_top: 0.0 },
         actor,
         Name::new("Player"),
         Transform::from_xyz(0.0, CAPSULE_HALF_HEIGHT, 4.0),
@@ -1419,7 +1434,15 @@ pub(crate) fn read_input(
     if keys.pressed(KeyCode::KeyD) { stick.x += 1.0; }
     if keys.pressed(KeyCode::KeyA) { stick.x -= 1.0; }
     pad.stick = stick.normalize_or_zero();
-    pad.walk = keys.pressed(KeyCode::AltLeft) || keys.pressed(KeyCode::ControlLeft);
+    // Keyboard defaults are the game's own: param DefaultKeyAssignParam00 (keyboardKeyId =
+    // DirectInput scan code + 69) per gameAction, whose meaning is the key guide's
+    // <?kgiconKc@N?> text (menu.msgbnd キーガイド.fmg): 0 walk Left Alt, 1-4 WASD, 5 step / sprint
+    // Shift, 6 jump Space, 7 crouch Q, 12 lock-on middle mouse (camera.rs), 15 prosthetic tool
+    // switch Z, 16 attack LMB, 17 prosthetic Left Ctrl, 18 guard RMB, 19 grappling hook F,
+    // 20 talk / examine / wall hug / ledge hang E (docking.rs, not built yet), 21 use quick item
+    // R, 13 / 14 quick item next / previous X / C, 22 eavesdrop V. J / K stay as extra attack /
+    // guard keys.
+    pad.walk = keys.pressed(KeyCode::AltLeft);
     let captured = cursor.grab_mode != bevy::window::CursorGrabMode::None;
     // Mouse buttons only count once the mouse is captured (the first click captures it).
     let lmb = captured && mouse.pressed(MouseButton::Left);
@@ -1436,32 +1459,37 @@ pub(crate) fn read_input(
     if keys.just_pressed(KeyCode::ShiftLeft) {
         pad.pressed.push(Action::Step);
     }
-    if keys.just_pressed(KeyCode::KeyE) {
+    if keys.just_pressed(KeyCode::KeyR) {
         pad.pressed.push(Action::UseItem);
     }
-    if keys.just_pressed(KeyCode::KeyF) {
+    if keys.just_pressed(KeyCode::ControlLeft) {
         pad.pressed.push(Action::Prosthetic);
     }
-    pad.prosthetic_held = keys.pressed(KeyCode::KeyF);
+    pad.prosthetic_held = keys.pressed(KeyCode::ControlLeft);
     if keys.just_pressed(KeyCode::Space) {
         pad.pressed.push(Action::Jump);
     }
-    if keys.just_pressed(KeyCode::KeyR) {
+    // Sandbox reset (not a game key; R is the game's switch-prosthetic key).
+    if keys.just_pressed(KeyCode::Backspace) {
         pad.reset = true;
     }
     if keys.just_pressed(KeyCode::KeyX) {
         pad.sheathe = true;
     }
-    if keys.just_pressed(KeyCode::KeyC) {
+    if keys.just_pressed(KeyCode::KeyQ) {
         pad.pressed.push(Action::Crouch);
     }
-    // gap: the game's PC binding for ACTION_ARM_CHANGE_WEAPON_L (DefaultKeyAssignParam's key ids
-    // are not decoded); Z is free here.
+    // Talk / examine / wall hug / ledge hang: E (gameAction 20; docking.rs).
+    if keys.just_pressed(KeyCode::KeyE) {
+        pad.pressed.push(Action::Interact);
+    }
+    pad.interact_held = keys.pressed(KeyCode::KeyE);
+    // Switch prosthetic tool: Z (gameAction 15).
     if keys.just_pressed(KeyCode::KeyZ) {
         pad.pressed.push(Action::SwitchTool);
     }
-    // Grappling Hook: G (gap: the game's PC key, as above); the pad's L2 as in the game.
-    if keys.just_pressed(KeyCode::KeyG) {
+    // Grappling Hook: F, the game's key for the pad's L2.
+    if keys.just_pressed(KeyCode::KeyF) {
         pad.pressed.push(Action::Grapple);
     }
     read_pad(&pads, config.input.gamepad, &mut pad);
@@ -1590,6 +1618,7 @@ pub(crate) fn is_free(state: &str) -> bool {
     // CrouchStart too: HKS g_paramHkbState [HKB_STATE_CROUCH_START] = STATE_TYPE_STANDBY, like
     // StandIdle (Wolf can move or act at once); CrouchEnd is STATE_TYPE_ACTION.
     matches!(state, "StandIdle" | "Locomotion" | "CrouchStart")
+        || is_move_quick_turn(state)
         || state.starts_with("StandRunStop")
         || state.starts_with("StandWalkStop_")
         || state.starts_with("CrouchRunStop_")
@@ -1935,6 +1964,8 @@ fn buffer_flags(action: Action) -> &'static [i64] {
         // gap: the accept / execute bits of ACTION_ARM_WIRE_SHOOT are not traced; taken as the
         // jump's (151 / 119): the wire moves open their cancels together with the jump's.
         Action::Grapple => &[151],
+        // Read raw by decide's docking (docking.rs), not buffered.
+        Action::Interact => &[],
     }
 }
 
@@ -2049,7 +2080,7 @@ fn accept_flag(action: Action) -> &'static [i64] {
         Action::CombatArt => &[FLAG_ACCEPT_ATTACK],
         Action::Prosthetic => &[FLAG_ACCEPT_PROSTHETIC],
         Action::Grapple => &[FLAG_ACCEPT_JUMP],
-        Action::Crouch | Action::SwitchTool => &[],
+        Action::Crouch | Action::SwitchTool | Action::Interact => &[],
     }
 }
 
@@ -2224,9 +2255,9 @@ fn decide(
     enemy_dummies: Query<&crate::model::Dummies, With<Enemy>>,
     globals: Query<&GlobalTransform>,
     mut throw: ResMut<ActiveThrow>,
-    fight: Option<ResMut<crate::enemy::FightReset>>,
+    mut fight: Option<ResMut<crate::enemy::FightReset>>,
     snap: Option<ResMut<crate::camera::CameraSnap>>,
-    (wire_aim, grapples): (Option<Res<crate::wire::WireAim>>, Option<Res<crate::enemy::grapple::EnemyGrapples>>),
+    (wire_aim, grapples, ledges): (Option<Res<crate::wire::WireAim>>, Option<Res<crate::enemy::grapple::EnemyGrapples>>, Option<Res<crate::map::LedgeEdges>>),
 ) {
     let dt = time.delta_secs();
     let d = &combat.player;
@@ -2282,6 +2313,10 @@ fn decide(
     }
     // Raw press (death screen choices are not TAE-buffered).
     let attack_pressed = pad.pressed.contains(&Action::Attack);
+    // Docking reads its presses raw (docking.rs: the hug / hang button, the climb and the drop).
+    let interact_pressed = pad.pressed.contains(&Action::Interact);
+    let dock_jump = pad.pressed.contains(&Action::Jump);
+    let dock_step = pad.pressed.contains(&Action::Step);
     let crouch_pressed = pad.pressed.contains(&Action::Crouch);
     // Any other action stands Wolf up. Steps, guards and hit reactions from a crouch are the
     // standing ones in the HKS too (_fireGroundStep -> W_GroundStep, W_StandToDeflectGuard; the
@@ -2356,7 +2391,7 @@ fn decide(
     if pad.reset {
         pad.reset = false;
         // The whole fight starts over (the enemies' starting line-up).
-        if let Some(mut f) = fight {
+        if let Some(f) = fight.as_mut() {
             f.0 = true;
         }
         // Drawn at the start spot at once: no fade from the old pose, no deathblow model slide
@@ -2418,6 +2453,13 @@ fn decide(
         a.play("StandIdle", "");
         tf.translation = crate::map::player_start();
         a.yaw = start_yaw();
+        // Back at the last Sculptor's Idol prayed at, standing before it (idol.rs).
+        let checkpoint = p.seat.checkpoint;
+        p.seat = crate::idol::Seat { checkpoint, ..Default::default() };
+        if let Some((at, yaw)) = checkpoint.and_then(crate::idol::respawn_at) {
+            tf.translation = at + Vec3::Y * CAPSULE_HALF_HEIGHT;
+            a.yaw = yaw;
+        }
         if let Some(mut s) = snap {
             s.0 = true;
         }
@@ -2790,12 +2832,22 @@ fn decide(
     // Not in a wire shot / move start: its launch fires on the tick SetNoGravity ends, after this
     // check, and a grapple from a perch fell off it instead (2026-10-12 bug hunt round 20).
     let wiring = p.wire.is_some() && crate::wire::is_wire_state(&a.state);
-    if !a.airborne && !perched && !wiring && tf.translation.y > crate::map::ground_y(tf.translation) + CAPSULE_HALF_HEIGHT + 0.05 && !(!a.anim.is_empty() && d.flag(&a.anim, a.t, FLAG_NO_GRAVITY)) {
+    // Docked at an edge (docking.rs: hanging, or climbing up off it) is held, not over a floor.
+    let docked = p.dock.is_some() || crate::docking::is_jump_ready(&a.state) || a.state.starts_with("WallJumpReady_");
+    if !a.airborne && !perched && !wiring && !docked && tf.translation.y > crate::map::ground_y(tf.translation) + CAPSULE_HALF_HEIGHT + 0.05 && !(!a.anim.is_empty() && d.flag(&a.anim, a.t, FLAG_NO_GRAVITY)) {
         a.airborne = true;
         // A plain fall (fallType 0), not the last wire flight's (2026-10-12 bug hunt round 12).
         a.fall_type = 0;
         a.vel_y = 0.0;
-        a.air_base = Vec3::ZERO;
+        // Off a ledge on the move he carries the move on (before: zeroed, so a run off an edge
+        // dropped straight down; the user: "no control when he falls", "the fall looks stiff").
+        // A clip's step (a stop, a quick turn) is its root velocity in the facing.
+        a.air_base = if !a.anim.is_empty() {
+            let v = d.root_velocity_at(&a.anim, a.t, false);
+            Quat::from_rotation_y(a.yaw) * Vec3::new(v.x, 0.0, v.y)
+        } else {
+            a.last_move_vel.with_y(0.0)
+        };
         a.play_state(d, "FreeFall");
     }
 
@@ -3122,6 +3174,22 @@ fn decide(
                 return;
             }
         }
+    }
+
+    // Wall hug / ledge hang (docking.rs, docs/kb/docking.md): held, nothing else runs.
+    // At a Sculptor's Idol (idol.rs): E kneels; while kneeling only its clips run.
+    let at_idol = crate::idol::tick(p, a, d, tf, interact_pressed, ended, &config);
+    // Praying or resting at an idol brings the enemies back (the fight's line-up).
+    if std::mem::take(&mut p.seat.respawn) {
+        if let Some(f) = fight.as_mut() {
+            f.0 = true;
+        }
+    }
+    if at_idol {
+        return;
+    }
+    if dock_step_tick(p, a, d, tf, ledges.as_deref(), stick, pad.walk, pad.interact_held, interact_pressed, dock_jump, dock_step, ended, &mut log, attack_pressed, &combat, &enemies) {
+        return;
     }
 
     // --- HKS g_behaviorValidateOrder (subset), highest priority first ---
@@ -4811,11 +4879,11 @@ fn decide(
             let rate = if rate > 0.0 { rate } else { config.movement.turn_speed };
             a.yaw = turn_toward(a.yaw, yaw_of(td), rate.to_radians() * dt);
         } else if moving {
-            // Free guard walk faces the camera's direction (Sekiro strafes while blocking; live:
-            // the facing drifts with the camera while walking, and holds while standing - guard
-            // idle's TAE SetTurnSpeed 0).
-            let cam_fwd = stick_world(Vec2::new(0.0, 1.0), cam_yaw);
-            a.yaw = turn_toward(a.yaw, yaw_of(cam_fwd), turn_rate(d, a, &config, false).to_radians() * dt);
+            // Free (not locked on) guard walk turns to the stick and walks forward, as the free
+            // walk does; the strafes are the lock-on's (the user, twice: "Wolf always faces the
+            // front of the camera when he guards"; before, it faced the camera's direction).
+            // Standing, the facing holds (guard idle's TAE SetTurnSpeed 0).
+            a.yaw = turn_toward(a.yaw, yaw_of(stick), turn_rate(d, a, &config, false).to_radians() * dt);
         }
         let local = Quat::from_rotation_y(-a.yaw) * stick;
         let angle = local.x.atan2(-local.z).to_degrees();
@@ -4850,7 +4918,7 @@ fn decide(
     if is_upper_action(&a.state) {
         // StandMoveOverwrite: the legs run the walk/run (StandMoveLower_SM carries the motion).
         lower_body_move(p, a, d, &config, stick, target_dir, pad.walk, dt);
-    } else if move_ok && (moving || a.state == "Locomotion") {
+    } else if move_ok && (moving || a.state == "Locomotion" || is_move_quick_turn(&a.state)) {
         locomotion(p, a, d, &config, stick, target_dir, pad.walk, dt);
     } else if !move_ok {
         a.move_vel = Vec3::ZERO;
@@ -4867,6 +4935,314 @@ fn decide(
     }
 }
 
+/// The hug / hang deathblows (ThrowParam "[PC] wall-mounted" / "hanging", per enemy: suffix
+/// 0060 -> 0061 hugging with the enemy on Wolf's left (Wolf a20x_500600 -> 510600, the enemy
+/// ThrowDef12600), 0070 -> 0071 on his right (500700 -> 510700, 12700), hanging 0080 -> 0081
+/// with the enemy facing away (500800 -> 510800, 12800) and 0130 -> 0131 facing Wolf (501000
+/// -> 511000, 13000)). The start row's reach (Dist), height window and facings decide, as the
+/// other deathblows' (throw_height_ok, throw_facing_ok); the enemy must not have found Wolf (or be
+/// posture-broken). Returns the enemy, the start and main suffixes and whether it faces away.
+/// gap: the exe's own pick between rows; the nearest that fits is taken.
+#[allow(clippy::type_complexity)]
+fn dock_deathblow(combat: &Combat, dock: &crate::docking::Dock, wolf: Vec3, wolf_fwd: Vec3, enemies: &Query<(Entity, &mut Actor, &mut Enemy, &Transform), Without<Player>>) -> Option<(Entity, i64, i64, bool)> {
+    let wolf_right = wolf_fwd.cross(Vec3::Y);
+    enemies
+        .iter()
+        .filter(|(_, ea, en, _)| ea.hp > 0.0 && !en.is_dead() && (en.is_unaware() || en.is_broken()))
+        .filter_map(|(ee, ea, _, etf)| {
+            let foe = combat.foe_of(ea);
+            let to = etf.translation - wolf;
+            let behind = ea.forward().dot(to.with_y(0.0).normalize_or_zero()) > 0.0;
+            let pairs: Vec<(i64, i64)> = if dock.hug() {
+                if to.dot(wolf_right) < 0.0 { vec![(60, 61)] } else { vec![(70, 71)] }
+            } else {
+                vec![(80, 81), (130, 131)]
+            };
+            pairs.into_iter().find_map(|(start, main)| {
+                let id = foe.throw_row(start);
+                let th = combat.throw(id)?;
+                let reach = to.with_y(0.0).length() <= th.dist;
+                let ok = reach && throw_height_ok(combat, id, wolf, etf.translation) && throw_facing_ok(combat, id, wolf, wolf_fwd, etf.translation, ea.forward());
+                ok.then_some((ee, start, main, behind, to.length()))
+            })
+        })
+        .min_by(|x, y| x.4.total_cmp(&y.4))
+        .map(|(ee, s, m, b, _)| (ee, s, m, b))
+}
+
+/// Wall hug and ledge hang (docking.rs): starts them on the button, runs the docked states and
+/// their ends. True while it owns Wolf this tick (decide returns).
+#[allow(clippy::too_many_arguments)]
+fn dock_step_tick(
+    p: &mut Player,
+    a: &mut Actor,
+    d: &CharData,
+    tf: &Transform,
+    ledges: Option<&crate::map::LedgeEdges>,
+    stick: Vec3,
+    walk: bool,
+    interact_held: bool,
+    interact: bool,
+    jump: bool,
+    step: bool,
+    ended: bool,
+    log: &mut CombatLog,
+    attack: bool,
+    combat: &Combat,
+    enemies: &Query<(Entity, &mut Actor, &mut Enemy, &Transform), Without<Player>>,
+) -> bool {
+    use crate::docking as dk;
+    let edges: &[crate::map::LedgeEdge] = ledges.map(|l| l.0.as_slice()).unwrap_or(&[]);
+    let feet = tf.translation - Vec3::Y * CAPSULE_HALF_HEIGHT;
+    // Wall jumps (BEH_A_WALL_JUMP): the count comes back on the ground.
+    if !a.airborne && p.dock.is_none() && !a.state.starts_with("WallJump") && !dk::is_jump_ready(&a.state) {
+        p.wall_jumps = 0;
+        p.last_wall = None;
+    }
+    // A ready pose (in the air, or out of a hug / hang) ends into its take-off; the take-off into
+    // the jump's fall loop (its TAE 920 launched it).
+    if let Some(contact) = p.wall_contact {
+        if (a.state.starts_with("WallJumpReady_") || dk::is_jump_ready(&a.state)) && ended {
+            let ty = dk::jump_type(contact, stick, a.yaw);
+            p.dock = None;
+            a.docked = false;
+            p.wall_contact = None;
+            // The take-off's TAE 920 launches along the facing (ChrPhysicsVelocityChangeParam 1001:
+            // 6.4 m/s at angle 0, 9.69 up): a horizontal one turns Wolf to the stick first (HKS
+            // _SetJumpDirection), or he jumped into the wall.
+            if ty != 'N' && stick.length_squared() > 0.01 {
+                a.yaw = yaw_of(stick);
+            }
+            if a.play_state(d, &dk::wall_jump_start(contact, ty)) {
+                log.push(format!("wall jump {contact}_{ty}"), Color::srgb(0.6, 0.8, 0.9));
+                return true;
+            }
+        }
+    }
+    if a.state.starts_with("WallJumpStart_") && ended {
+        let vertical = a.state.ends_with("_N");
+        a.play_state(d, if vertical { "VerticalGroundJumpFall" } else { "ForwardGroundJumpFall" });
+        return true;
+    }
+    if a.state.starts_with("WallJumpReady_") || dk::is_jump_ready(&a.state) {
+        return true;
+    }
+    // Jump in the air with a wall at the chest, once per flight.
+    if jump && a.airborne && p.dock.is_none() && p.wire.is_none() && p.plunge.is_none() && p.wall_jumps < dk::wall_jump_limit() {
+        let air_ok = a.state == "FreeFall" || a.state.contains("GroundJump") || a.state.starts_with("SprintJump") || a.state.starts_with("WallJumpStart");
+        if air_ok {
+            // Chained (the parkour map's lifted limit), each jump needs another wall: more than
+            // 90 deg from the last one's direction (the user: spamming jump climbed one flat wall).
+            let wall_dir = dk::wall_contact_dir(feet + Vec3::Y * 1.2, a.yaw);
+            let new_wall = match (p.last_wall, wall_dir) {
+                (Some(last), Some(now)) => last.angle_between(now) > std::f32::consts::FRAC_PI_2,
+                _ => true,
+            };
+            if let Some(angle) = dk::wall_contact(feet + Vec3::Y * 1.2, a.yaw).filter(|_| new_wall) {
+                p.last_wall = wall_dir;
+                let contact = dk::contact_type(angle);
+                if a.play_state(d, &format!("WallJumpReady_{contact}")) {
+                    p.wall_jumps += 1;
+                    p.wall_contact = Some(contact);
+                    a.vel_y = a.vel_y.max(0.0);
+                    log.push("wall contact", Color::srgb(0.6, 0.8, 0.9));
+                    return true;
+                }
+            }
+        }
+    }
+    // The drop's push-off runs into the fall (HangToFreeFall, 0.33 s).
+    if a.state.starts_with("Hang") && a.state.ends_with("ToFreeFall") {
+        if ended {
+            a.play_state(d, "FreeFall");
+        }
+        return !ended;
+    }
+    if let Some(dock) = p.dock.clone() {
+        let st = a.state.clone();
+        let climbing = st.starts_with("HangToStand") || st.starts_with("HangFootHoldToStand");
+        if climbing {
+            if dk::start_done(d, a, ended) {
+                p.dock = None;
+                a.play("StandIdle", "");
+            }
+            return true;
+        }
+        // A hang deathblow keeps Wolf at the edge (the enemy is pulled down past him), then
+        // back to hanging.
+        if !dock.hug() && (st == "Deathblow" || st == "DeathblowStart") {
+            if st == "Deathblow" && ended {
+                dk::play(a, d, if dock.edge.variation == 1 { "HangFootHoldIdle" } else { "HangIdle" });
+            }
+            return true;
+        }
+        if !dk::is_docked_state(&st) {
+            // Something else (a hit, a death) took Wolf off the edge.
+            p.dock = None;
+            return false;
+        }
+        if dk::is_start(&st) {
+            if dk::start_done(d, a, ended) {
+                let next = if dock.hug() { None } else { dk::hang_start_next(&st) };
+                match next {
+                    Some(n) => {
+                        if let Some(dd) = p.dock.as_mut() {
+                            dd.from = (feet, a.yaw);
+                        }
+                        dk::play(a, d, &n);
+                    }
+                    None => {
+                        if let Some(n) = dk::held_state(&dock, a, Vec3::ZERO, walk, true) {
+                            dk::play(a, d, &n);
+                        }
+                    }
+                }
+            }
+            return true;
+        }
+        // The hug / hang deathblows (dock_deathblow): the start throw, then decide's
+        // DeathblowStart runs the main one at the start anim's judge.
+        if attack && !dk::is_start(&st) {
+            let fwd = Quat::from_rotation_y(a.yaw) * Vec3::NEG_Z;
+            // Hanging, the reach and height are taken from the hands on the lip (the rows' 1.35 m
+            // height window could never reach an enemy on the top from the hanging body 1.6 m
+            // under it). gap: the exe measures from judgeRangeBasePosDmyId1 (not traced).
+            let from = if dock.hug() { tf.translation } else { dock.point(dock.s) + Vec3::Y * CAPSULE_HALF_HEIGHT };
+            if let Some((ee, start, main, behind)) = dock_deathblow(combat, &dock, from, fwd, enemies) {
+                let foe_start = enemies.get(ee).ok().and_then(|q| combat.throw(combat.foe_of(&q.1).throw_row(start)));
+                if let Some(th) = foe_start.filter(|th| d.anim(&th.atk_anim).is_some()) {
+                    a.play("DeathblowStart", &th.atk_anim);
+                    a.move_vel = Vec3::ZERO;
+                    p.throw_start = Some((ee, main, behind));
+                    if dock.hug() {
+                        p.dock = None;
+                        a.docked = false;
+                    }
+                    log.push(if dock.hug() { "wall deathblow" } else { "ledge deathblow" }, Color::srgb(1.0, 0.2, 0.2));
+                    return true;
+                }
+            }
+        }
+        if dock.hug() {
+            if jump && a.play_state(d, "CoverToWallJumpReady") {
+                p.dock = None;
+                a.docked = false;
+                p.wall_contact = Some('B');
+                p.wall_jumps += 1;
+                return true;
+            }
+            if interact || step {
+                p.dock = None;
+                a.play_state(d, if dk::is_peek(&a.state) { "CoverEndFromCoverLook" } else { "CoverEnd" });
+                log.push("wall hug end", Color::srgb(0.6, 0.8, 0.9));
+                return true;
+            }
+        } else {
+            let foot = dock.edge.variation == 1;
+            // Jump with the stick away from the wall: the kick off it (HangJumpReady, held at the
+            // edge until it ends, then WallJumpStart_F_<type>).
+            let away = stick.length_squared() > 0.01 && stick.dot(dock.out) > 0.7 * stick.length();
+            if jump && away && a.play_state(d, if foot { "HangFootHoldJumpReady" } else { "HangJumpReady" }) {
+                p.wall_contact = Some('F');
+                p.wall_jumps += 1;
+                return true;
+            }
+            if interact || jump {
+                if let Some(dd) = p.dock.as_mut() {
+                    dd.climb_from = None;
+                }
+                a.play_state(d, if foot { "HangFootHoldToStand" } else { "HangToStand" });
+                log.push("climb up", Color::srgb(0.6, 0.8, 0.9));
+                return true;
+            }
+            if step {
+                p.dock = None;
+                a.docked = false;
+                a.airborne = true;
+                a.fall_type = 0;
+                a.vel_y = 0.0;
+                a.air_base = Vec3::ZERO;
+                a.play_state(d, if foot { "HangFootHoldToFreeFall" } else { "HangToFreeFall" });
+                log.push("drop", Color::srgb(0.6, 0.8, 0.9));
+                return true;
+            }
+        }
+        // Hanging at an end with the stick on that way: the next edge carries on (the same face),
+        // or the corner move takes Wolf round onto it.
+        if !dock.hug() {
+            let along = stick.dot(dock.right());
+            if along.abs() > 0.3 {
+                let right = along > 0.0;
+                let toward_b = right == (dock.right().dot(dock.along) > 0.0);
+                let at_end = if toward_b { dock.s >= dock.len - dk::END_MARGIN - 0.01 } else { dock.s <= dk::END_MARGIN + 0.01 };
+                if at_end {
+                    if let Some((mut nd, turn)) = dk::next_hang_edge(edges, &dock, toward_b) {
+                        nd.from = (feet, a.yaw);
+                        if turn == dk::Turn::Straight {
+                            p.dock = Some(nd);
+                        } else {
+                            let st = dk::corner_state(turn, right, dock.edge.variation == 1);
+                            if a.play_state(d, &st) {
+                                p.dock = Some(nd);
+                                log.push("hang corner", Color::srgb(0.6, 0.8, 0.9));
+                                return true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if let Some(n) = dk::held_state(&dock, a, stick, walk, ended) {
+            dk::play(a, d, &n);
+        }
+        return true;
+    }
+    // Ground starts on the button, from standby: the wall hug (BEH_A_COVER_START), else the
+    // hang over the lip Wolf stands at (BEH_A_GROUND_HANG_START).
+    if interact && !a.airborne && is_free(&a.state) && p.wire.is_none() {
+        if let Some(mut dock) = dk::find_hug(edges, feet, a.yaw) {
+            // Stick held: the moving starts by the stick's angle; else the clip whose own turn and
+            // path fit (hug_start_best).
+            let st = if stick.length_squared() > 0.01 { dk::hug_start_state(&dock, a.yaw, stick) } else { dk::hug_start_best(d, &dock, (feet, a.yaw)) };
+            dock.from = (feet, a.yaw);
+            if a.play_state(d, st) {
+                a.crouch = false;
+                p.dock = Some(dock);
+                log.push("wall hug", Color::srgb(0.6, 0.8, 0.9));
+                return true;
+            }
+        } else if let Some(mut dock) = dk::find_hang_top(edges, feet, a.yaw) {
+            let st = dk::hang_start_best(d, &dock, (feet, a.yaw));
+            dock.from = (feet, a.yaw);
+            if dk::play(a, d, &st) {
+                a.crouch = false;
+                p.dock = Some(dock);
+                log.push("ledge hang", Color::srgb(0.6, 0.8, 0.9));
+                return true;
+            }
+        }
+    }
+    // The air catch (BEH_A_AIR_HANG_START): falling past a lip with the button held (env 1108).
+    // gap: the TAE grab window (SP_EF_REF_TAE_ENABLE_AIR_HANG_GRAB) that catches without it.
+    // The air catch: the button held (env 1108), or inside a jump's TAE grab window
+    // (SpEffect ref 5 SP_EF_REF_TAE_ENABLE_AIR_HANG_GRAB) without it.
+    let grab_window = !a.anim.is_empty() && d.has_ref(&a.anim, a.t, dk::REF_ENABLE_AIR_HANG_GRAB);
+    if (interact_held || interact || grab_window) && a.airborne && a.vel_y <= 0.0 && p.wire.is_none() && p.plunge.is_none() {
+        if let Some((mut dock, long)) = dk::find_hang_air(edges, feet, a.yaw) {
+            let st = dk::air_hang_state(&dock, a.yaw, long);
+            dock.from = (feet, a.yaw);
+            if dk::play(a, d, &st) {
+                p.dock = Some(dock);
+                a.airborne = false;
+                a.vel_y = 0.0;
+                log.push("ledge catch", Color::srgb(0.6, 0.8, 0.9));
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// Walk/run with speeds taken from the walk (a000_0001xx) and run (a000_0004xx)
 /// clips' root motion, blended by the HKS speed level.
 #[allow(clippy::too_many_arguments)]
@@ -4881,6 +5257,69 @@ fn locomotion(
     dt: f32,
 ) {
     converge_speed(p, stick, walk_held, dt);
+    // The run quick turn (BEH_A_STAND_MOVE_QUICK_TURN -> W_StandMoveQuickTurn{Left,Right}180,
+    // c0000.hkx StandRunQuickTurn*180_F_CMSG_Anime a000_000442 / 000443): the clip's root has no
+    // turn and runs on along the new heading, while the hips spin round from about 100 deg off it
+    // to straight by frame 16 (0.53 s). So the heading takes the stick at once and the pose does
+    // the turn (before: a 720 deg/s turn at full run speed drew a circle; the user: "spinning like
+    // a compass drawing a circle"). Let go mid-turn: the run stop.
+    if a.state.starts_with("StandRunQuickTurn") {
+        if stick == Vec3::ZERO && a.play_state(d, "StandRunStopF") {
+            a.move_vel = Vec3::ZERO;
+            p.speed_level = 0.0;
+            return;
+        }
+        if a.t < QUICK_TURN_TURNED {
+            a.move_vel = Vec3::ZERO;
+            return;
+        }
+        // Turned: on in the run loop (no move start).
+        a.procedural("Locomotion");
+        a.move_start = 0.0;
+        p.speed_level = p.speed_level.max(2.0);
+        move_velocity(p, a, d, config, stick, target_dir, dt);
+        return;
+    }
+    // The walk's 180: the game's walk quick turn clips (a000_000142 / 143) do not turn, so the
+    // in-place quick turn (StandQuickTurn{Left,Right}180, a000_000012 / 13) plays while the turn
+    // controller brings Wolf round, then he walks on (the user: the walk turn "should have
+    // animation"). gap: a stand-in, not the game's walk turn.
+    if a.state.starts_with("StandWalkTurn") {
+        a.move_vel = Vec3::ZERO;
+        if stick != Vec3::ZERO {
+            a.yaw = turn_toward(a.yaw, yaw_of(stick), WALK_TURN_RATE.to_radians() * dt);
+        }
+        let ended = a.t >= d.length(&a.anim);
+        let facing = stick == Vec3::ZERO || a.forward().angle_between(stick) < 0.15;
+        if !(ended || (facing && a.t >= WALK_TURN_MIN)) {
+            return;
+        }
+        if stick == Vec3::ZERO {
+            a.play("StandIdle", "");
+            return;
+        }
+        a.procedural("Locomotion");
+        a.move_start = 0.0;
+        move_velocity(p, a, d, config, stick, target_dir, dt);
+        return;
+    }
+    if target_dir.is_none() && !a.crouch && stick != Vec3::ZERO && a.state == "Locomotion" && p.speed_level > 0.3 && p.speed_level <= 1.2 && a.forward().angle_between(stick).to_degrees() > QUICK_TURN_ANGLE {
+        let side = if stick.dot(a.forward().cross(Vec3::Y)) > 0.0 { "Right" } else { "Left" };
+        if let Some(key) = d.anim_key(&format!("StandQuickTurn{side}180")).map(str::to_string) {
+            a.play(&format!("StandWalkTurn{side}180"), &key);
+            a.move_vel = Vec3::ZERO;
+            return;
+        }
+    }
+    if target_dir.is_none() && !a.crouch && !walk_held && stick != Vec3::ZERO && a.state == "Locomotion" && p.speed_level > 1.2 && a.forward().angle_between(stick).to_degrees() > QUICK_TURN_ANGLE {
+        let side = if stick.dot(a.forward().cross(Vec3::Y)) > 0.0 { "Right" } else { "Left" };
+        if let Some(key) = d.anim_key(&format!("StandRunQuickTurn{side}180_F_CMSG_Anime")).map(str::to_string) {
+            a.yaw = yaw_of(stick);
+            a.play(&format!("StandRunQuickTurn{side}180"), &key);
+            a.move_vel = Vec3::ZERO;
+            return;
+        }
+    }
     // Stick released: the stop anims carry their own slide (root motion), in the move direction
     // (HKS BEH_A_GROUND_MOVE_STOP: W_StandRunStop / W_StandWalkStop by MoveDirection).
     if stick == Vec3::ZERO && a.state == "Locomotion" && p.speed_level > 0.3 {
@@ -4940,6 +5379,21 @@ fn lower_body_move(
     move_velocity(p, a, d, config, stick, target_dir, dt);
 }
 
+/// The run quick turn: the stick this far (deg) from the facing while running. gap: the exe's
+/// BEH_A_STAND_MOVE_QUICK_TURN request angle is not traced; the sprint's brake angle (135).
+const QUICK_TURN_ANGLE: f32 = 135.0;
+/// When the quick turn's pose faces the run (the hips straight, frame 16 at 30 fps): the clip hands
+/// over to the run loop. gap: the hkb StandMoveQuickTurn*_to_StandMoveLoop condition is not read.
+const QUICK_TURN_TURNED: f32 = 0.53;
+
+pub(crate) fn is_move_quick_turn(state: &str) -> bool {
+    state.starts_with("StandRunQuickTurn") || state.starts_with("StandWalkTurn")
+}
+
+/// The walk 180's turn rate (deg/s) and its shortest play before walking on (s).
+const WALK_TURN_RATE: f32 = 540.0;
+const WALK_TURN_MIN: f32 = 0.35;
+
 /// HKS GetMoveSpeed: ConvergeValue(level, speed, inc 3, dec 3), inc 6 toward level 2.
 fn converge_speed(p: &mut Player, stick: Vec3, walk_held: bool, dt: f32) {
     let target_level = if stick == Vec3::ZERO { 0.0 } else if walk_held { 1.0 } else { 2.0 };
@@ -4965,6 +5419,9 @@ fn move_velocity(p: &Player, a: &mut Actor, d: &CharData, config: &GameConfig, s
         }
         None => {
             if stick != Vec3::ZERO {
+                // The turn controller's rate (TAE 224 or 720 deg/s, FUN_1407daa20). An eased walk
+                // turn (2026-10-17) made walking slow to answer the stick (90 deg in 0.35 s against
+                // the game's 0.125 s); gone again (the user: the movement "still feels off").
                 a.yaw = turn_toward(a.yaw, yaw_of(stick), turn_rate(d, a, &config, target_dir.is_some()).to_radians() * dt);
             }
             Vec3::NEG_Z

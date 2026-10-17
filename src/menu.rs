@@ -31,6 +31,8 @@ pub enum Screen {
     Picker,
     /// Options (plan C3): camera, pad, sound, window; saved to config.toml on leaving.
     Options,
+    /// Kneeling at a Sculptor's Idol: its menu (idol.rs).
+    Idol,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -68,7 +70,7 @@ fn choices(s: Screen, picker: &Picker) -> Vec<Choice> {
         // Next: the encounter after the one fought, in its picker tab.
         Screen::Won if picker.current.is_some() => vec![Choice::Next, Choice::Retry, Choice::Title],
         Screen::Won => vec![Choice::Retry, Choice::Title],
-        Screen::Playing | Screen::Picker | Screen::Options => vec![],
+        Screen::Playing | Screen::Picker | Screen::Options | Screen::Idol => vec![],
     }
 }
 
@@ -252,6 +254,69 @@ struct MenuRoot;
 #[derive(Component)]
 struct MenuItem(usize);
 
+/// The title screen after the game's (2026-10-17, the user's reference): black, the 隻狼 brush
+/// calligraphy (SB_Title MENU_Title_SEKIRO) large and faint behind, SEKIRO in its brush letters
+/// (SB_Title_02 MENU_Title_S/E/K/I/R/O), SHADOWS DIE TWICE under it (MENU_Shadows /
+/// MENU_DieTwice), the choices in capitals with a brush stroke behind the cursor's (SB_InGame
+/// MENU_Cursor_03, tinted), and a footer. Without the extracted sprites: the old serif title.
+/// gap: sizes, places and tints by eye from the reference; the title's movie is not decoded.
+fn build_title(commands: &mut Commands, assets: &AssetServer, fonts: &MenuFonts, list: &[Choice], index: usize) -> bool {
+    let sprite = |f: &str| crate::paths::root().join(format!("extracted/menu_sprites/{f}.png")).exists();
+    let letters = ["S", "E", "K", "I", "R", "O"];
+    if !letters.iter().all(|l| sprite(&format!("sb_title_02/MENU_Title_{l}"))) || !sprite("sb_in_game/MENU_Cursor_03") {
+        return false;
+    }
+    let full = || Node { position_type: PositionType::Absolute, width: Val::Percent(100.0), height: Val::Percent(100.0), justify_content: JustifyContent::Center, align_items: AlignItems::Center, ..default() };
+    commands.spawn((full(), BackgroundColor(Color::BLACK), GlobalZIndex(100), MenuRoot)).with_children(|c| {
+        // The calligraphy, faint, behind everything.
+        if sprite("sb_title/MENU_Title_SEKIRO") {
+            c.spawn(full()).with_children(|k| {
+                k.spawn((Node { height: Val::Vh(92.0), ..default() }, ImageNode::new(assets.load("menu_sprites/sb_title/MENU_Title_SEKIRO.png")).with_color(Color::srgb(0.16, 0.16, 0.16))));
+            });
+        }
+        c.spawn(Node { flex_direction: FlexDirection::Column, align_items: AlignItems::Center, ..full() }).with_children(|col| {
+            col.spawn(Node { column_gap: Val::Vh(1.8), align_items: AlignItems::Center, ..default() }).with_children(|r| {
+                for l in letters {
+                    r.spawn((Node { height: Val::Vh(11.0), ..default() }, ImageNode::new(assets.load(format!("menu_sprites/sb_title_02/MENU_Title_{l}.png")))));
+                }
+            });
+            if sprite("sb_title/MENU_Shadows") && sprite("sb_title/MENU_DieTwice") {
+                col.spawn(Node { column_gap: Val::Vh(1.4), margin: UiRect::top(Val::Vh(2.2)), ..default() }).with_children(|r| {
+                    for f in ["MENU_Shadows", "MENU_DieTwice"] {
+                        r.spawn((Node { height: Val::Vh(2.6), ..default() }, ImageNode::new(assets.load(format!("menu_sprites/sb_title/{f}.png"))).with_color(Color::srgb(0.78, 0.74, 0.68))));
+                    }
+                });
+            }
+            col.spawn(Node { height: Val::Vh(9.0), ..default() });
+            for (i, ch) in list.iter().enumerate() {
+                col.spawn((Button, Node { width: Val::Px(320.0), height: Val::Px(46.0), justify_content: JustifyContent::Center, align_items: AlignItems::Center, ..default() }, BackgroundColor(Color::NONE), MenuItem(i)))
+                    .with_children(|b| {
+                        b.spawn((
+                            Node { position_type: PositionType::Absolute, width: Val::Percent(100.0), height: Val::Percent(100.0), ..default() },
+                            ImageNode::new(assets.load("menu_sprites/sb_in_game/MENU_Cursor_03.png")).with_color(TITLE_BRUSH),
+                            if i == index { Visibility::Inherited } else { Visibility::Hidden },
+                            TitleBrush(i),
+                        ));
+                        b.spawn((Text::new(ch.label().to_uppercase()), font(&fonts.serif, 24.0), TextColor(DIM)));
+                    });
+            }
+        });
+        c.spawn(Node { position_type: PositionType::Absolute, bottom: Val::Vh(3.0), width: Val::Percent(100.0), justify_content: JustifyContent::Center, ..default() }).with_children(|f| {
+            f.spawn((Text::new("Sv1  \u{00b7}  an unofficial Sekiro recreation        Enter  select        Esc  back"), font(&fonts.serif, 13.0), TextColor(Color::srgba(0.85, 0.82, 0.76, 0.35))));
+        });
+    });
+    true
+}
+
+/// The title's cursor stroke (MENU_Cursor_03 is orange; this darkens it toward the reference's
+/// brown).
+const TITLE_BRUSH: Color = Color::srgba(0.5, 0.42, 0.38, 0.9);
+
+/// The brush stroke behind title choice n (shown on the cursor's).
+#[derive(Component)]
+struct TitleBrush(usize);
+
+
 /// A picker tab button.
 #[derive(Component)]
 struct PickerTab(usize);
@@ -267,14 +332,18 @@ struct MenuFonts {
 }
 
 #[derive(Resource, Default)]
-struct Cursor {
+pub(crate) struct Cursor {
     index: usize,
     built: Option<Screen>,
     /// The screen Options goes back to (Title or Paused).
-    options_from: Option<Screen>,
+    pub(crate) options_from: Option<Screen>,
     /// Options rebuilds its overlay after a change.
     dirty: bool,
 }
+
+/// The screens' input (pad_to_menu_keys, run_menu): game_menu.rs runs after it.
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct MenuInput;
 
 pub struct MenuPlugin;
 
@@ -283,6 +352,7 @@ impl Plugin for MenuPlugin {
         let automated = std::env::vars().any(|(k, _)| k.starts_with("SHINOBI_") && !matches!(k.as_str(), "SHINOBI_MAP" | "SHINOBI_HOUR" | "SHINOBI_ROOT" | "SHINOBI_TITLE") && !k.starts_with("SHINOBI_MAP_"));
         let start = match std::env::var("SHINOBI_TITLE").ok().as_deref() {
             Some("paused") => Screen::Paused,
+            Some("idol") => Screen::Idol,
             Some("dead") => Screen::Dead,
             Some("won") => Screen::Won,
             Some("picker") => Screen::Picker,
@@ -302,7 +372,7 @@ impl Plugin for MenuPlugin {
             .init_resource::<MenuFonts>()
             .init_resource::<BannerDone>()
             .add_systems(Startup, load_fonts)
-            .add_systems(PreUpdate, (pad_to_menu_keys, run_menu).chain().after(UiSystems::Focus).after(InputSystems))
+            .add_systems(PreUpdate, (pad_to_menu_keys, run_menu).chain().in_set(MenuInput).after(UiSystems::Focus).after(InputSystems))
             .add_systems(Update, (fight_from_env, apply_video, watch_fight.run_if(in_state(Screen::Playing)), defeat_banner))
             .add_systems(PostUpdate, hide_hud_on_title.before(bevy::camera::visibility::VisibilitySystems::VisibilityPropagate));
     }
@@ -344,13 +414,20 @@ fn build(commands: &mut Commands, assets: &AssetServer, s: Screen, fonts: &MenuF
         build_options(commands, fonts, config, index);
         return;
     }
+    // Paused is the in-game menu (game_menu.rs: Sekiro's Equipment / Inventory / Skills / Options).
+    if s == Screen::Paused {
+        return;
+    }
     let list = choices(s, picker);
+    if s == Screen::Title && build_title(commands, assets, fonts, &list, index) {
+        return;
+    }
     let (mark, sub, mark_color, shade) = match s {
         Screen::Title => ("Sv1", "Sv1 · a Sekiro combat recreation", GOLD, 0.55),
         Screen::Paused => ("Paused", "", GOLD, 0.45),
         Screen::Dead => ("死", "DEATH", RED, 0.35),
         Screen::Won => ("忍殺", "SHINOBI EXECUTION", RED, 0.25),
-        Screen::Playing | Screen::Picker | Screen::Options => return,
+        Screen::Playing | Screen::Picker | Screen::Options | Screen::Idol => return,
     };
     let art = marks(s);
     let art_ok = !art.is_empty() && art.iter().all(|(f, ..)| have(f));
@@ -536,7 +613,7 @@ fn run_menu(
     fonts: Res<MenuFonts>,
     assets: Res<AssetServer>,
     roots: Query<Entity, With<MenuRoot>>,
-    (items, tabs, hovers): (Query<(&MenuItem, &Interaction, &Children)>, Query<(&PickerTab, &Interaction), Changed<Interaction>>, Query<&MenuItem, Changed<Interaction>>),
+    (items, tabs, hovers, mut brushes): (Query<(&MenuItem, &Interaction, &Children)>, Query<(&PickerTab, &Interaction), Changed<Interaction>>, Query<&MenuItem, Changed<Interaction>>, Query<(&TitleBrush, &mut Visibility)>),
     mut texts: Query<&mut TextColor>,
     mut window: Single<&mut CursorOptions, With<PrimaryWindow>>,
     (mut pad, mut exit, mut spawn, mut picker, mut config): (
@@ -619,7 +696,13 @@ fn run_menu(
         build(&mut commands, &assets, s, &fonts, &mut picker, &config, 0);
         cursor.built = Some(s);
         cursor.index = 0;
-        if s == Screen::Playing {
+        // The world runs on under the idol's menu, as in the game (the user: "the game pauses when
+        // I meditate at a Sculptor's Idol").
+        if s == Screen::Idol {
+            time.unpause();
+            window.grab_mode = CursorGrabMode::None;
+            window.visible = true;
+        } else if s == Screen::Playing {
             time.unpause();
             window.grab_mode = CursorGrabMode::Confined;
             window.visible = false;
@@ -635,7 +718,7 @@ fn run_menu(
         mouse.reset_all();
         return;
     }
-    if s != Screen::Playing && !time.is_paused() && real.elapsed_secs() >= WARMUP {
+    if s != Screen::Playing && s != Screen::Idol && !time.is_paused() && real.elapsed_secs() >= WARMUP {
         time.pause();
     }
     if s == Screen::Playing {
@@ -643,6 +726,10 @@ fn run_menu(
             next.set(Screen::Paused);
             keys.reset_all();
         }
+        return;
+    }
+    // game_menu.rs runs the in-game menu's input, idol.rs the idol's.
+    if s == Screen::Paused || s == Screen::Idol {
         return;
     }
     let list = choices(s, &picker);
@@ -669,6 +756,9 @@ fn run_menu(
                 tc.0 = if item.0 == cursor.index { GOLD } else { DIM };
             }
         }
+    }
+    for (b, mut vis) in &mut brushes {
+        *vis = if b.0 == cursor.index { Visibility::Inherited } else { Visibility::Hidden };
     }
     // Nothing reaches the game while a menu is up.
     keys.reset_all();
@@ -996,9 +1086,10 @@ fn defeat_banner(
 fn hide_hud_on_title(
     mut commands: Commands,
     state: Res<State<Screen>>,
-    mut layers: Query<(Entity, &mut Visibility, Option<&mut TitleHidden>), (With<Node>, Without<ChildOf>, Without<MenuRoot>)>,
+    mut layers: Query<(Entity, &mut Visibility, Option<&mut TitleHidden>), (With<Node>, Without<ChildOf>, Without<MenuRoot>, Without<crate::idol::IdolMenuRoot>)>,
 ) {
-    let title = matches!(*state.get(), Screen::Title | Screen::Picker | Screen::Options);
+    // The idol's menu shows over the world without the HUD too (the game's capture).
+    let title = matches!(*state.get(), Screen::Title | Screen::Picker | Screen::Options | Screen::Idol);
     for (e, mut v, hidden) in &mut layers {
         match (title, hidden) {
             (true, Some(mut h)) => {

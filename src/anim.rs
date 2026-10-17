@@ -191,6 +191,20 @@ pub struct Skeleton {
     blend_len: f32,
     /// Last tick showed an upper action (its legs were the walk/run loop already).
     was_upper: bool,
+    /// The clip shown last tick as the lib holds it, its time and whether it loops: the source of
+    /// the next crossfade, which plays on under the fade (`fade_src`).
+    shown_src: Option<(String, f32, bool)>,
+    /// The crossfade's source clip still playing (key, time, loops), as Havok's blend runs the
+    /// source generator on through the transition (before: a frozen snapshot, so a combo chain or
+    /// a walk turn looked like one motion stopping dead and the next snapping in; the user:
+    /// "sword swings ... look too sudden"). None when the fade starts mid-fade (the frozen pose).
+    fade_src: Option<(String, f32, bool)>,
+    /// The actor's yaw at the last pose, and the model's yaw offset at the start of the running
+    /// fade: an action start that snaps the heading (player.rs `aim`: an attack pressed the other
+    /// way mid-combo) turns the model over the fade instead of in one frame (the user: "it has the
+    /// same snap").
+    yaw_seen: Option<f32>,
+    yaw_off: f32,
     /// The running crossfade leaves the legs alone (upper action -> its move loop: the legs keep
     /// the same loop at the same time, so only the upper body fades).
     upper_fade: bool,
@@ -316,13 +330,33 @@ fn build_skeletons(
             commands.entity(e).insert(Hurtboxes(boxes, parts));
         }
         // The skeleton replaces the placeholder capsule.
-        commands.entity(e).insert(Skeleton { bones, root, shown: String::new(), from: Vec::new(), last: Vec::new(), blend: 1.0, blend_len: CROSSFADE, was_upper: false, upper_fade: false, sim: [Vec::new(), Vec::new()] }).remove::<Mesh3d>();
+        commands.entity(e).insert(Skeleton { bones, root, shown: String::new(), from: Vec::new(), last: Vec::new(), blend: 1.0, blend_len: CROSSFADE, was_upper: false, upper_fade: false, shown_src: None, fade_src: None, yaw_seen: None, yaw_off: 0.0, sim: [Vec::new(), Vec::new()] }).remove::<Mesh3d>();
     }
 }
 
 /// Clip to show for an actor: its current anim (or the sibling it borrows a clip
 /// from), or a loop for procedural states.
 /// `t` is the anim time to pose (the sim's, `Actor.t`).
+/// The shown clip as a crossfade source: its key in the lib, its time (unwrapped) and whether it
+/// loops (the locomotion loops, idles and c0000's looping clips).
+fn src_of(lib: &Lib, d: &CharData, a: &Actor, t: f32) -> Option<(String, f32, bool)> {
+    let own = d.clip_key(&a.anim);
+    if lib.clips.contains_key(own) {
+        return Some((own.to_string(), t, a.side == Side::Player && crate::data::loops_c0000(&a.anim)));
+    }
+    let (key, t, looping) = if a.side == Side::Player && a.state == "Locomotion" {
+        a.locomotion_clip_at(t)
+    } else {
+        let (k, t) = proc_clip(a, t);
+        (k, t, true)
+    };
+    if lib.clips.contains_key(&key) {
+        return Some((key, t, looping));
+    }
+    let alt = format!("a000{}", key.get(4..).unwrap_or(""));
+    lib.clips.contains_key(&alt).then_some((alt, t, looping))
+}
+
 fn clip_for<'a>(lib: &'a Lib, d: &CharData, a: &Actor, t: f32) -> Option<(&'a Clip, f32)> {
     if let Some(c) = lib.clips.get(d.clip_key(&a.anim)) {
         return Some((c, t));
@@ -388,6 +422,7 @@ fn pose_skeletons(
         let d = data_for(&combat, &a);
         let drawn = a.t;
         let Some((clip, t)) = clip_for(l, d, a, drawn) else { continue };
+        let src_now = src_of(l, d, a, drawn);
         let tracks = clip.track_to_bone.len();
         if tracks == 0 || clip.frames == 0 {
             continue;
@@ -403,6 +438,11 @@ fn pose_skeletons(
             // master layer and the ledge hang), so a walk/run/idle switch blends by the shown
             // clip's own TAE Blend (walk/run 6 frames, idle 9). CROSSFADE only for clips with no TAE.
             let blend_len = if d.anim(&key).is_some() { d.blend_in(&key).unwrap_or(0.0) } else { CROSSFADE };
+            // From a settled clip the source plays on; from the middle of a fade, the frozen pose.
+            skel.fade_src = if skel.blend >= 1.0 { skel.shown_src.clone() } else { None };
+            let left = skel.yaw_off * (1.0 - skel.blend * skel.blend * (3.0 - 2.0 * skel.blend));
+            let jump = skel.yaw_seen.map_or(0.0, |y| (a.yaw - y + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI);
+            skel.yaw_off = if blend_len > 0.0 && jump.abs() > 0.5 && !a.state.starts_with("StandRunQuickTurn") { left - jump } else { 0.0 };
             skel.blend = if skel.shown.is_empty() || blend_len <= 0.0 { 1.0 } else { 0.0 };
             skel.blend_len = blend_len.max(1.0 / 60.0);
             skel.upper_fade = skel.was_upper && a.state == "Locomotion";
@@ -412,8 +452,35 @@ fn pose_skeletons(
         // On the character's own clock (the step advance just took): hit stop freezes the fade
         // with the clip, as the exe runs it on the character's time (sekiro-rs fd53f99, MIT /
         // Apache-2.0: blend length from TAE 16 / 17 at 140984230, smoothstep 141408650).
-        skel.blend = (skel.blend + (a.t - a.prev_t).max(0.0) / skel.blend_len).min(1.0);
+        let step = (a.t - a.prev_t).max(0.0);
+        skel.blend = (skel.blend + step / skel.blend_len).min(1.0);
         let w = skel.blend * skel.blend * (3.0 - 2.0 * skel.blend);
+        skel.shown_src = src_now;
+        skel.yaw_seen = Some(a.yaw);
+        let spin = if w < 1.0 && skel.yaw_off != 0.0 { Some(Quat::from_rotation_y(skel.yaw_off * (1.0 - w))) } else { None };
+        // The fade's source on its own clock: its pose this frame replaces the frozen one.
+        if w < 1.0 {
+            if let Some((key, st, loops)) = skel.fade_src.as_mut() {
+                *st += step;
+                if let Some(c) = l.clips.get(key.as_str()).filter(|c| c.frames > 0) {
+                    let ct = if *loops { c.wrap(*st) } else { *st };
+                    let f = (ct / c.frame_duration).clamp(0.0, (c.frames - 1) as f32);
+                    let (j0, kk) = (f.floor() as usize, f.fract());
+                    let j1 = (j0 + 1).min(c.frames - 1);
+                    let n = c.track_to_bone.len();
+                    if skel.from.len() == skel.bones.len() {
+                        for (track, &bone) in c.track_to_bone.iter().enumerate() {
+                            if let Some(slot) = usize::try_from(bone).ok().and_then(|b| skel.from.get_mut(b)) {
+                                let (p, q) = (&c.data[j0 * n + track], &c.data[j1 * n + track]);
+                                *slot = Transform { translation: p.translation.lerp(q.translation, kk), rotation: p.rotation.slerp(q.rotation, kk), scale: p.scale.lerp(q.scale, kk) };
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            skel.fade_src = None;
+        }
         let f = (t / clip.frame_duration).clamp(0.0, (clip.frames - 1) as f32);
         let (i0, k) = (f.floor() as usize, f.fract());
         let i1 = (i0 + 1).min(clip.frames - 1);
@@ -495,6 +562,10 @@ fn pose_skeletons(
             if let Some(&(dt_, dq)) = add_delta.get(&bone) {
                 out.rotation = (out.rotation * dq).normalize();
                 out.translation += dt_;
+            }
+            if let Some(q) = spin.filter(|_| l.bones.get(bone).is_some_and(|b| b.parent < 0)) {
+                out.rotation = (q * out.rotation).normalize();
+                out.translation = q * out.translation;
             }
             if let Ok(mut tf) = tfs.get_mut(skel.bones[bone]) {
                 *tf = out;

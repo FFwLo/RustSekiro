@@ -89,7 +89,7 @@ pub(crate) fn set_gates(entities: &[i64]) -> usize {
     static FILES: OnceLock<std::sync::Mutex<HashMap<String, Arc<HashMap<i32, Arc<Terrain>>>>>> = OnceLock::new();
     let base = terrain();
     let all = match (loaded_map(), &base, entities.is_empty()) {
-        (Some(id), Some(_), false) if id != crate::sandbox::MAP_ID => {
+        (Some(id), Some(_), false) if !crate::sandbox::is_generated(&id) => {
             let mut files = FILES.get_or_init(Default::default).lock().unwrap();
             files
                 .entry(id.clone())
@@ -134,6 +134,10 @@ pub fn map_id(config: &GameConfig) -> Option<String> {
             let m = config.world.map.clone().filter(|m| !m.is_empty())?;
             if m == crate::sandbox::MAP_ID {
                 return Some(sandbox_exception(&config.enemy.chr, config.enemy.npc_row).unwrap_or(m));
+            }
+            // The parkour course keeps itself whatever the fight (no boss arena swap).
+            if m == crate::sandbox::PARKOUR_ID {
+                return Some(m);
             }
             let arena = boss_arena(&config.enemy.chr, config.enemy.npc_row);
             if m == ARENAS_ONLY {
@@ -1810,7 +1814,9 @@ fn load_map_id(map: &str, config: &GameConfig, fight: Option<i64>, commands: &mu
     let dir = crate::paths::extracted();
     let t0 = std::time::Instant::now();
     // The sandbox (sandbox.rs): a generated arena under a real map's lighting and materials.
-    let sandbox = map == crate::sandbox::MAP_ID;
+    let sandbox = crate::sandbox::is_generated(&map);
+    let parkour = map == crate::sandbox::PARKOUR_ID;
+    crate::docking::WALL_JUMP_LIMIT.store(if parkour { u8::MAX } else { crate::docking::WALL_JUMP_COUNT_MAX }, std::sync::atomic::Ordering::Relaxed);
     let id = if sandbox { crate::sandbox::source() } else { map.clone() };
     BOSS_ARENA.store(id.starts_with("boss_"), std::sync::atomic::Ordering::Relaxed);
     // Hit collision.
@@ -1869,7 +1875,7 @@ fn load_map_id(map: &str, config: &GameConfig, fight: Option<i64>, commands: &mu
     // Wire points (grapple.md). The sandbox arena is generated: its source map's points would
     // hang in the air, so it has none.
     let grapple = if sandbox { Vec::new() } else { load_grapple(&json) };
-    let ledges = if sandbox { Vec::new() } else { load_ledges(&json) };
+    let ledges = if parkour { crate::sandbox::parkour_course().1 } else if sandbox { Vec::new() } else { load_ledges(&json) };
     info!("map {id}: {} grapple points, {} hang / hug edges", grapple.len(), ledges.len());
     commands.insert_resource(GrapplePoints(grapple));
     commands.insert_resource(LedgeEdges(ledges));
@@ -1899,7 +1905,7 @@ fn load_map_id(map: &str, config: &GameConfig, fight: Option<i64>, commands: &mu
     let options = MaterialOptions::from_env();
     let mut mats = MaterialCache::default();
     if sandbox {
-        crate::sandbox::build(&d, commands, assets, meshes, materials, &mut mats, &options);
+        crate::sandbox::build(&d, commands, assets, meshes, materials, &mut mats, &options, parkour);
         info!("map sandbox ({id}): loaded in {:.1} s", t0.elapsed().as_secs_f32());
         return;
     }
@@ -2388,6 +2394,11 @@ fn bodies_on_terrain(combat: Res<crate::data::Combat>, mut commands: Commands, m
             commands.entity(e).insert(OnTerrain { prev: tf.translation });
             continue;
         };
+        // Held at an edge (docking.rs hold places the body): no slide, no floor snap.
+        if a.docked {
+            state.prev = tf.translation;
+            continue;
+        }
         let prev = state.prev;
         let feet_prev = prev - Vec3::Y * CAPSULE_HALF_HEIGHT;
         let delta = Vec2::new(tf.translation.x - prev.x, tf.translation.z - prev.z);

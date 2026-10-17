@@ -12,6 +12,7 @@
 use bevy::prelude::*;
 use bevy::window::WindowResolution;
 
+mod action_guide;
 mod actor;
 mod ai;
 mod anim;
@@ -34,6 +35,8 @@ mod fog_wall;
 mod height_fog;
 mod sky;
 mod fmod;
+mod game_menu;
+mod idol;
 mod gore;
 mod grading;
 mod hud;
@@ -43,6 +46,7 @@ mod map;
 mod menu;
 mod sandbox;
 mod showcase;
+mod shot;
 mod model;
 mod paths;
 mod perf;
@@ -72,6 +76,10 @@ fn main() {
             ..default()
         }).set(bevy::log::LogPlugin { custom_layer: log_file_layer, ..default() }))
         .add_plugins(cloth::ClothPlugin)
+        .add_plugins(action_guide::ActionGuidePlugin)
+        .add_plugins(shot::ShotPlugin)
+        .add_plugins(game_menu::GameMenuPlugin)
+        .add_plugins(idol::IdolPlugin)
         .add_plugins(interp::InterpPlugin)
         .add_plugins(debug_menu::DebugMenuPlugin)
         .add_plugins(trace::TracePlugin)

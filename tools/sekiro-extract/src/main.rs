@@ -314,6 +314,7 @@ fn main() {
         },
         Some("sounds-fmod") if args.len() == 4 => fsb::decode_with_fmod(Path::new(&args[2]), Path::new(&args[3])).unwrap_or_else(|e| eprintln!("{e}")),
         // `hud <extracted>`: only the HUD sprites (export_hud), without the full export.
+        Some("hud-all") if args.len() == 3 => export::export_hud_all(Path::new(&args[2])),
         Some("hud") if args.len() == 3 => export::export_hud(Path::new(&args[2]), &export::hud_icons(&Path::new(&args[2]).join("json/params"))),
         Some("npcs") if args.len() >= 3 => export::export_npcs(Path::new(&args[2]), Path::new(&defs_dir()), &args[3..]),
         Some("export") if args.len() == 3 => export::export(

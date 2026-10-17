@@ -95,7 +95,10 @@ impl Plugin for HudPlugin {
         app.init_resource::<CombatLog>()
             .init_resource::<Perilous>()
             .add_systems(Startup, (spawn_hud, spawn_perilous, spawn_deathblow_mark, spawn_lock_mark, spawn_item_icons, spawn_wire_mark))
-            .add_systems(Update, (sync_res_nodes, update_player_hud, update_enemy_hud, update_debug, update_log, debug_only, update_perilous, update_stealth, update_deathblow_mark, update_lock_mark, update_item_icons, update_wolf_build_up, hud_shots, update_wire_mark, update_boss_hud));
+            .add_systems(Update, (sync_res_nodes, update_player_hud, update_enemy_hud, update_debug, update_log, debug_only, update_perilous, update_stealth, update_deathblow_mark, update_lock_mark, update_item_icons, update_wolf_build_up, hud_shots, update_wire_mark, update_boss_hud, flash_counters));
+        if let Some(f) = std::env::var("SHINOBI_HUD_POSTURE").ok().and_then(|v| v.parse::<f32>().ok()) {
+            app.insert_resource(HoldPosture(f)).add_systems(Update, hold_posture);
+        }
     }
 }
 
@@ -140,7 +143,10 @@ fn hud_shots(
 /// Frame colours: dark lacquer with a thin gold edge, like the game's bars.
 const FRAME: Color = Color::srgba(0.05, 0.04, 0.03, 0.75);
 const EDGE: Color = Color::srgba(0.78, 0.66, 0.42, 0.55);
-const VITALITY: Color = Color::srgb(0.66, 0.08, 0.06);
+/// The vitality fill: the game's muted orange-red (the user's captures: about 180, 70, 48), on
+/// the over-head bars as it is; on the textured MENU_HP_bar as the tint.
+const VITALITY: Color = Color::srgb_u8(180, 70, 48);
+const VITALITY_TINT: Color = Color::srgb(0.7, 0.27, 0.18);
 /// The trail's light, desaturated red (the all-bosses clip, Gyoubu's bar: about 165, 130, 120).
 const TRAIL: Color = Color::srgb_u8(165, 130, 120);
 
@@ -186,7 +192,7 @@ fn spawn_hud(mut commands: Commands, mut fonts: ResMut<Assets<Font>>, assets: Re
                 }
             });
             c.spawn((Node { flex_direction: FlexDirection::Row, ..default() }, ResRow));
-            sprite_bar(c, &assets, Val::Vw(9.5), Val::Vh(1.5), "hud/MENU_HP_base_2.png", "hud/MENU_HP_bar.png", false, VITALITY, HpFill, Some(HpTrail));
+            sprite_bar(c, &assets, Val::Vw(9.5), Val::Vh(1.25), "hud/MENU_HP_base_2.png", "hud/MENU_HP_bar.png", false, VITALITY_TINT, HpFill, Some(HpTrail));
         });
     // Counters, placed by the HUD movie (menu/01_000_fe.gfx main timeline, 1920 x 1080 stage):
     // PlayerCount at (1849.9, 994.6) is the Spirit Emblems (Timeline_154 "Soul": zanki_ari_symbol =
@@ -222,8 +228,7 @@ fn spawn_hud(mut commands: Commands, mut fonts: ResMut<Assets<Font>>, assets: Re
             ));
         });
     };
-    counter(&mut commands, 7.0, Some(91.1), None, 0, 1, 1.66);
-    counter(&mut commands, 1.0, Some(89.2), None, 1, 151, 2.2);
+    let _ = counter;
     let art = |file: &str| -> (ImageNode, Visibility) {
         let f = format!("hud/{file}.png");
         if crate::paths::extracted().join(&f).exists() { (ImageNode::new(assets.load(f)), Visibility::Inherited) } else { (ImageNode::default(), Visibility::Hidden) }
@@ -241,7 +246,7 @@ fn spawn_hud(mut commands: Commands, mut fonts: ResMut<Assets<Font>>, assets: Re
     // then the experience bar from x 1482 to 1747 (MENU_HP_bar_mark caps, 0.75 tall). gap: Sv1 has
     // no experience or skill points, the count stays 0 and the bar empty.
     commands
-        .spawn(Node { position_type: PositionType::Absolute, left: Val::Percent(74.3), top: Val::Percent(6.2), flex_direction: FlexDirection::Row, align_items: AlignItems::Center, ..default() })
+        .spawn((Node { position_type: PositionType::Absolute, left: Val::Percent(74.3), top: Val::Percent(6.2), flex_direction: FlexDirection::Row, align_items: AlignItems::Center, ..default() }, Visibility::Hidden, Flash(1)))
         .with_children(|r| {
             let (img, vis) = art("MENU_SkillPoint");
             r.spawn((Node { width: Val::Vw(3.67), height: Val::Vw(2.45), justify_content: JustifyContent::Center, align_items: AlignItems::Center, ..default() }, img, vis))
@@ -254,7 +259,7 @@ fn spawn_hud(mut commands: Commands, mut fonts: ResMut<Assets<Font>>, assets: Re
     // at (-61.8, -18.65), then a dark backing with the total right-aligned (TotalMoney_txt_166).
     // gap: Sv1 has no Sen, the total stays 0.
     commands
-        .spawn(Node { position_type: PositionType::Absolute, left: Val::Percent(85.4), top: Val::Percent(67.6), flex_direction: FlexDirection::Row, align_items: AlignItems::Center, ..default() })
+        .spawn((Node { position_type: PositionType::Absolute, left: Val::Percent(85.4), top: Val::Percent(67.6), flex_direction: FlexDirection::Row, align_items: AlignItems::Center, ..default() }, Visibility::Hidden, Flash(0)))
         .with_children(|r| {
             let (img, vis) = art("MENU_Money");
             r.spawn((Node { width: Val::Vw(1.72), height: Val::Vw(1.76), ..default() }, img, vis));
@@ -263,7 +268,7 @@ fn spawn_hud(mut commands: Commands, mut fonts: ResMut<Assets<Font>>, assets: Re
                 BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.85)),
             ))
             .with_children(|b| {
-                b.spawn(number("0", 20.0));
+                b.spawn((number("0", 20.0), SenText));
             });
         });
     // Wolf's posture, bottom centre (clip: x 36.5-63.5 %, y 86.7 %, 1.3 % thick): fills from the
@@ -324,6 +329,10 @@ fn sync_res_nodes(mut commands: Commands, config: Res<crate::config::GameConfig>
     }
 }
 
+/// The Vitality bar's width (vw) at HP_BAR_BASE maximum Vitality (level 1).
+const HP_BAR_VW: f32 = 9.5;
+const HP_BAR_BASE: f32 = 320.0;
+
 /// MenuParam SpMinimumDispTime (0.5, extracted/json/params/MenuParam.json; row offset 0xb4, read
 /// at exe 140e3.c:7651): the least time the posture gauge stays up once its damage is gone.
 const SP_MIN_DISP_TIME: f32 = 0.5;
@@ -368,6 +377,8 @@ fn update_player_hud(
     mut lit: Query<(&ResLit, &mut Visibility), Without<PostureRoot>>,
     mut items: Query<(&ItemText, &mut Text)>,
     config: Res<crate::config::GameConfig>,
+    hp_frame: Query<&ChildOf, With<HpFill>>,
+    mut frames: Query<&mut Node, (Without<HpFill>, Without<HpTrail>, Without<PostureFill>, Without<ResNode>)>,
 ) {
     let Some((a, p)) = player.iter().next() else { return };
     let f = (a.hp / a.hp_max).clamp(0.0, 1.0);
@@ -378,6 +389,16 @@ fn update_player_hud(
     }
     for mut n in &mut tr {
         n.width = Val::Percent(*shown * 100.0);
+    }
+    // The bar's length follows the maximum Vitality, as the game's grows with each Vitality level
+    // (9.5 % of the width at level 1's 320; the user's capture at Vitality 20, 1120: 32.7 %).
+    for c in &hp_frame {
+        if let Ok(mut n) = frames.get_mut(c.parent()) {
+            let w = Val::Vw(HP_BAR_VW * a.hp_max / HP_BAR_BASE);
+            if n.width != w {
+                n.width = w;
+            }
+        }
     }
     let pf = (a.posture / a.posture_max).clamp(0.0, 1.0);
     for (pfl, mut n, mut bg) in &mut posture {
@@ -453,7 +474,9 @@ fn sprite_bar(parent: &mut ChildSpawnerCommands, assets: &AssetServer, width: Va
             // the 1274 x 34 base: 6.1 % of the bar's width; clip r_000130 x 31.5 % / 68 %).
             if center {
                 for right in [false, true] {
-                    let side = if right { UiRect { right: Val::Percent(-6.1), ..default() } } else { UiRect { left: Val::Percent(-6.1), ..default() } };
+                    // The other side Auto: UiRect's default is 0 on every side, which put the
+                    // right arrow on the left one.
+                    let side = if right { UiRect { left: Val::Auto, right: Val::Percent(-6.1), ..default() } } else { UiRect { left: Val::Percent(-6.1), right: Val::Auto, ..default() } };
                     b.spawn((
                         Node { position_type: PositionType::Absolute, left: side.left, right: side.right, top: Val::Percent(-3.0), width: Val::Percent(6.1), height: Val::Percent(106.0), ..default() },
                         ImageNode { flip_x: !right, image_mode: bevy::ui::widget::NodeImageMode::Stretch, ..ImageNode::new(assets.load("hud/MENU_Taikan_Arrow.png")) },
@@ -491,18 +514,24 @@ struct BossOrb(u32);
 /// by posture_state 1-3; hidden at 0.
 #[derive(Component)]
 struct BossGlow;
+/// The boss's posture bar and its centre mark: shown while the posture has damage (and
+/// SP_MIN_DISP_TIME after), as Wolf's (the user's capture: no empty track at the top).
+#[derive(Component)]
+struct BossPostureRow;
 
 fn spawn_boss_hud(commands: &mut Commands, assets: &AssetServer, serif: Option<Handle<Font>>) {
     commands
         .spawn((Node { position_type: PositionType::Absolute, width: Val::Percent(100.0), height: Val::Percent(100.0), ..default() }, Visibility::Hidden, BossRoot))
         .with_children(|c| {
-            c.spawn(Node { position_type: PositionType::Absolute, left: Val::Percent(5.7), top: Val::Percent(4.3), flex_direction: FlexDirection::Row, column_gap: Val::Vw(0.4), align_items: AlignItems::Center, ..default() }).with_children(|r| {
+            c.spawn(Node { position_type: PositionType::Absolute, left: Val::Percent(5.5), top: Val::Percent(4.6), flex_direction: FlexDirection::Row, column_gap: Val::Vw(0.05), align_items: AlignItems::Center, ..default() }).with_children(|r| {
                 for i in 0..4 {
                     r.spawn((Node { width: Val::Vw(1.6), height: Val::Vw(1.6), display: Display::None, ..default() }, ImageNode::new(assets.load("hud/MENU_HP_Boss.png")), BossOrb(i)));
                 }
             });
-            c.spawn(Node { position_type: PositionType::Absolute, left: Val::Percent(5.7), top: Val::Percent(8.0), ..default() })
-                .with_children(|r| sprite_bar(r, assets, Val::Vw(21.6), Val::Vh(2.6), "hud/MENU_HP_base_Boss.png", "hud/MENU_HP_bar_Boss.png", false, Color::WHITE, BossHpFill, Some(BossHpTrail)));
+            c.spawn(Node { position_type: PositionType::Absolute, left: Val::Percent(5.7), top: Val::Percent(8.3), ..default() })
+                // As thin as Wolf's and the same orange-red (the user's capture of Genichiro's bar;
+                // MENU_HP_bar_Boss drew it thick and dark).
+                .with_children(|r| sprite_bar(r, assets, Val::Vw(21.6), Val::Vh(1.25), "hud/MENU_HP_base_2.png", "hud/MENU_HP_bar.png", false, VITALITY_TINT, BossHpFill, Some(BossHpTrail)));
             c.spawn((
                 Text::new(""),
                 TextFont { font: serif.map(bevy::text::FontSource::Handle).unwrap_or_default(), font_size: bevy::text::FontSize::Px(15.0), ..default() },
@@ -514,10 +543,10 @@ fn spawn_boss_hud(commands: &mut Commands, assets: &AssetServer, serif: Option<H
             c.spawn(Node { position_type: PositionType::Absolute, top: Val::Percent(4.2), width: Val::Percent(100.0), justify_content: JustifyContent::Center, ..default() }).with_children(|r| {
                 r.spawn((Node { width: Val::Vw(21.1), height: Val::Vh(4.1), ..default() }, ImageNode::new(assets.load("hud/MENU_Taikan_ST1.png")).with_mode(bevy::ui::widget::NodeImageMode::Stretch), Visibility::Hidden, BossGlow));
             });
-            c.spawn(Node { position_type: PositionType::Absolute, top: Val::Percent(5.4), width: Val::Percent(100.0), justify_content: JustifyContent::Center, ..default() }).with_children(|r| {
+            c.spawn((Node { position_type: PositionType::Absolute, top: Val::Percent(5.4), width: Val::Percent(100.0), justify_content: JustifyContent::Center, ..default() }, Visibility::Hidden, BossPostureRow)).with_children(|r| {
                 sprite_bar(r, assets, Val::Vw(38.4), Val::Vh(1.8), "hud/MENU_Taikan_base.png", "hud/MENU_Taikan_bar.png", true, Color::WHITE, BossPostureFill, None::<()>);
             });
-            c.spawn(Node { position_type: PositionType::Absolute, top: Val::Percent(4.6), width: Val::Percent(100.0), justify_content: JustifyContent::Center, ..default() }).with_children(|r| {
+            c.spawn((Node { position_type: PositionType::Absolute, top: Val::Percent(4.6), width: Val::Percent(100.0), justify_content: JustifyContent::Center, ..default() }, Visibility::Hidden, BossPostureRow)).with_children(|r| {
                 r.spawn((Node { width: Val::Vh(2.6), height: Val::Vh(3.1), ..default() }, ImageNode::new(assets.load("hud/MENU_Sp_Center.png"))));
             });
         });
@@ -565,11 +594,14 @@ fn update_boss_hud(
     mut arrows: Query<(&ChildOf, &mut Visibility), (With<PostureArrow>, Without<BossRoot>, Without<BossGlow>)>,
     boss_frame: Query<&ChildOf, With<BossPostureFill>>,
     script: Option<Res<crate::enemy::BossScript>>,
+    (mut posture_rows, mut boss_posture_hold): (Query<&mut Visibility, (With<BossPostureRow>, Without<BossRoot>, Without<BossGlow>, Without<PostureArrow>)>, Local<f32>),
 ) {
     // The map script's 2003[11] bar body first (the Old Dragons' 2500810 has no deathblow dots
     // and would never pass is_boss_bar), else the ninsatsu rule.
     let scripted = scripted_bar(script.as_deref()).and_then(|ent| enemies.get(ent).ok()).filter(|(_, e, ph)| !e.is_dead() && !e.is_disabled() && !ph.is_some_and(|p| p.parked()));
-    let boss = scripted.or_else(|| enemies.iter().find(|(_, e, ph)| is_boss_bar(e, *ph)));
+    // Only bosses and mini-bosses: named (the bar's NPC名) or with two deathblows or more. A
+    // plain enemy with one dot keeps only its over-head bars (the user's captures).
+    let boss = scripted.or_else(|| enemies.iter().find(|(a, e, ph)| is_boss_bar(e, *ph) && (e.ninsatsu.1 >= 2 || !boss_name(combat.foe_of(a).npc_row).is_empty())));
     for mut v in &mut root {
         *v = if boss.is_some() { Visibility::Inherited } else { Visibility::Hidden };
     }
@@ -578,6 +610,13 @@ fn update_boss_hud(
         return;
     };
     let f = (a.hp / a.hp_max).clamp(0.0, 1.0);
+    *boss_posture_hold = if a.posture > 0.005 * a.posture_max { SP_MIN_DISP_TIME } else { (*boss_posture_hold - time.delta_secs()).max(0.0) };
+    for mut v in &mut posture_rows {
+        let want = if *boss_posture_hold > 0.0 { Visibility::Inherited } else { Visibility::Hidden };
+        if *v != want {
+            *v = want;
+        }
+    }
     step_trail(&mut trail, f, time.delta_secs());
     for mut n in &mut hp {
         n.width = Val::Percent(f * 100.0);
@@ -612,7 +651,8 @@ fn update_boss_hud(
         let display = if o.0 < all { Display::Flex } else { Display::None };
         let lit = o.0 < left;
         // The spent orb is the smaller grey one (MENU_HP_Boss_base 80 px vs MENU_HP_Boss 114).
-        let size = Val::Vw(if lit { 2.4 } else { 1.2 });
+        // The user's capture of Genichiro's: lit about 1.9 % of the width with its glow.
+        let size = Val::Vw(if lit { 1.9 } else { 1.0 });
         if n.display != display || n.width != size {
             n.display = display;
             n.width = size;
@@ -701,23 +741,52 @@ fn update_wolf_build_up(
 }
 
 /// Each enemy's bars over its head: vitality above posture, the same width (6.8 % of the screen),
-/// 5 and 4 px tall at 1080p with a 2 px gap (the all-bosses clip, Folding Screen Monkeys 30:59).
-fn spawn_enemy_bars(commands: &mut Commands, enemy: Entity) {
+/// 5 and 4 px tall at 1080p with a 2 px gap (the all-bosses clip, Folding Screen Monkeys 30:59);
+/// an enemy with deathblows (NpcParam ninsatuNum) has its red dots just over the bar's left end
+/// (the user's capture: one dot, MENU_HP_Boss lit / MENU_HP_Boss_base spent). The posture bar
+/// shows only while the posture has damage.
+fn spawn_enemy_bars(commands: &mut Commands, assets: &AssetServer, enemy: Entity) {
     commands
         .spawn((
-            Node { position_type: PositionType::Absolute, width: Val::Vw(6.8), margin: UiRect::left(Val::Vw(-3.4)), flex_direction: FlexDirection::Column, row_gap: Val::Vh(0.19), ..default() },
+            Node { position_type: PositionType::Absolute, width: Val::Vw(OVERHEAD_W), margin: UiRect::left(Val::Vw(-OVERHEAD_W / 2.0)), flex_direction: FlexDirection::Column, row_gap: Val::Vh(0.3), ..default() },
             Visibility::Hidden,
             EnemyRoot(enemy),
         ))
         .with_children(|c| {
-            framed(c, Val::Percent(100.0), Val::Vh(0.46), false, (BackgroundColor(VITALITY), EnemyHpFill(enemy)), None::<()>);
-            framed(c, Val::Percent(100.0), Val::Vh(0.37), true, (BackgroundColor(Color::srgb(1.0, 0.7, 0.15)), EnemyPostureFill(enemy)), None::<()>);
+            c.spawn(Node { flex_direction: FlexDirection::Row, column_gap: Val::Vw(0.15), margin: UiRect { left: Val::Vw(-0.2), bottom: Val::Vh(0.1), ..default() }, ..default() }).with_children(|r| {
+                for i in 0..3 {
+                    r.spawn((Node { width: Val::Vw(1.15), height: Val::Vw(1.15), display: Display::None, ..default() }, ImageNode::new(assets.load("hud/MENU_HP_Boss.png")), EnemyDot(enemy, i)));
+                }
+            });
+            framed(c, Val::Percent(100.0), Val::Vh(0.75), false, (BackgroundColor(VITALITY), EnemyHpFill(enemy)), None::<()>);
+            c.spawn((Node { width: Val::Percent(100.0), ..default() }, Visibility::Hidden, EnemyPostureRow(enemy))).with_children(|r| {
+                framed(r, Val::Percent(100.0), Val::Vh(0.6), true, (BackgroundColor(Color::srgb(1.0, 0.7, 0.15)), EnemyPostureFill(enemy)), None::<()>);
+            });
         });
 }
+
+/// The over-head bars' width (vw): bigger than the clip's 6.8 (the user: "too small").
+const OVERHEAD_W: f32 = 8.5;
+/// How far over the head bone the bars stand (m).
+const OVERHEAD_ABOVE_HEAD: f32 = 0.35;
+
+/// An over-head deathblow dot (enemy, index).
+#[derive(Component)]
+struct EnemyDot(Entity, u32);
+/// The over-head posture bar's row (shown while it has damage).
+#[derive(Component)]
+struct EnemyPostureRow(Entity);
 
 #[allow(clippy::type_complexity)]
 fn update_enemy_hud(
     mut commands: Commands,
+    assets: Res<AssetServer>,
+    combat: Res<Combat>,
+    mut dots: Query<(&EnemyDot, &mut Node, &mut ImageNode), (Without<EnemyRoot>, Without<EnemyHpFill>, Without<EnemyPostureFill>)>,
+    mut posture_rows: Query<(&EnemyPostureRow, &mut Visibility), Without<EnemyRoot>>,
+    skeletons: Query<&crate::anim::Skeleton>,
+    bones: Query<(&Name, &GlobalTransform)>,
+    mut heads: Local<std::collections::HashMap<Entity, Entity>>,
     enemies: Query<(Entity, &Actor, &crate::enemy::Enemy, &GlobalTransform, Option<&crate::enemy::Phantom>)>,
     camera: Query<(&Camera, &GlobalTransform), With<crate::camera::OrbitCamera>>,
     mut roots: Query<(Entity, &EnemyRoot, &mut Node, &mut Visibility), (Without<EnemyHpFill>, Without<EnemyPostureFill>)>,
@@ -730,7 +799,7 @@ fn update_enemy_hud(
     let have: HashSet<Entity> = roots.iter().map(|(_, r, ..)| r.0).collect();
     for (e, ..) in &enemies {
         if !have.contains(&e) {
-            spawn_enemy_bars(&mut commands, e);
+            spawn_enemy_bars(&mut commands, &assets, e);
         }
     }
     let cam = camera.single().ok();
@@ -741,19 +810,50 @@ fn update_enemy_hud(
         };
         // Shown once it is fighting or hurt, over its head; gone when it dies (and while a
         // boss's phantom is out of the fight).
-        let show = e.ninsatsu.1 == 0 && scripted != Some(root.0) && !e.is_dead() && !e.is_disabled() && !ph.is_some_and(|p| p.parked()) && (e.targeting.state >= crate::stealth::FIND || a.posture > 0.0 || a.hp < a.hp_max);
-        let at = cam.and_then(|(cam, ct)| cam.world_to_viewport(ct, g.translation() + Vec3::Y * 0.85).ok());
+        // Not the boss bar's (named, or two deathblows or more: update_boss_hud).
+        let boss = e.ninsatsu.1 >= 2 || !boss_name(combat.foe_of(a).npc_row).is_empty();
+        let show = !boss && scripted != Some(root.0) && !e.is_dead() && !e.is_disabled() && !ph.is_some_and(|p| p.parked()) && (e.targeting.state >= crate::stealth::FIND || a.posture > 0.0 || a.hp < a.hp_max);
+        // Over the enemy's own head (its skeleton's Head bone), whatever its height (the user:
+        // "the position should be adjusted by height"); without a skeleton, 1.9 m up.
+        if !heads.contains_key(&root.0) {
+            if let Some(h) = skeletons.get(root.0).ok().and_then(|sk| sk.bones.iter().copied().find(|b| bones.get(*b).is_ok_and(|(n, _)| n.as_str() == "Head"))) {
+                heads.insert(root.0, h);
+            }
+        }
+        let top = heads.get(&root.0).and_then(|h| bones.get(*h).ok()).map(|(_, hg)| hg.translation().with_x(g.translation().x).with_z(g.translation().z) + Vec3::Y * OVERHEAD_ABOVE_HEAD).unwrap_or(g.translation() + Vec3::Y * 1.9);
+        let at = cam.and_then(|(cam, ct)| cam.world_to_viewport(ct, top).ok());
         let Some(p) = at.filter(|_| show) else {
             *vis = Visibility::Hidden;
             continue;
         };
         *vis = Visibility::Inherited;
         node.left = Val::Px(p.x);
-        node.top = Val::Px(p.y - 20.0);
+        // The bars' bottom at that point.
+        node.top = Val::Px(p.y - 26.0);
     }
     for (f, mut n) in &mut hp {
         if let Ok((_, a, ..)) = enemies.get(f.0) {
             n.width = Val::Percent((a.hp / a.hp_max).clamp(0.0, 1.0) * 100.0);
+        }
+    }
+    for (d, mut n, mut img) in &mut dots {
+        if let Ok((_, _, e, ..)) = enemies.get(d.0) {
+            let display = if d.1 < e.ninsatsu.1 { Display::Flex } else { Display::None };
+            if n.display != display {
+                n.display = display;
+            }
+            let file = if d.1 < e.ninsatsu_left() { "hud/MENU_HP_Boss.png" } else { "hud/MENU_HP_Boss_base.png" };
+            if img.image.path().is_none_or(|p| !p.to_string().ends_with(&file[4..])) {
+                img.image = assets.load(file);
+            }
+        }
+    }
+    for (r, mut v) in &mut posture_rows {
+        if let Ok((_, a, ..)) = enemies.get(r.0) {
+            let want = if a.posture > 0.0 { Visibility::Inherited } else { Visibility::Hidden };
+            if *v != want {
+                *v = want;
+            }
         }
     }
     for (f, mut n, mut bg) in &mut posture {
@@ -773,21 +873,101 @@ fn update_enemy_hud(
 #[derive(Component)]
 struct DeathblowMark;
 
-fn spawn_item_icons(mut commands: Commands) {
-    commands
-        .spawn(Node {
-            position_type: PositionType::Absolute,
-            right: Val::Percent(17.0),
-            bottom: Val::Percent(6.0),
-            flex_direction: FlexDirection::Row,
-            align_items: AlignItems::FlexEnd,
-            column_gap: Val::Px(10.0),
-            ..default()
-        })
-        .with_children(|c| {
-            c.spawn((Node { width: Val::Vw(3.0), height: Val::Vw(3.0), ..default() }, ImageNode::default(), Visibility::Hidden, ItemIcon(false)));
-            c.spawn((Node { width: Val::Vw(4.5), height: Val::Vw(4.5), ..default() }, ImageNode::default(), Visibility::Hidden, ItemIcon(true)));
+/// The item cluster, bottom right, after the user's captures of the game (1273 x 717): the quick
+/// item on its brush box (SB_FE MENU_Item_Left; x 79.1-83.3 %, y 87.2-94.4 %) with its count in
+/// the corner, the prosthetic tool on the bigger one (MENU_Item_Top; x 84.2-90.5 %, y 83.1-94.4 %),
+/// and a column (x 91.4 %): the combat art's mark (MENU_FE_Skill), the ninjutsu's
+/// (MENU_FE_Ninsatul, shown with one equipped), the Spirit Emblems with their count.
+fn spawn_item_icons(mut commands: Commands, mut fonts: ResMut<Assets<Font>>, assets: Res<AssetServer>) {
+    let serif = std::fs::read("C:/Windows/Fonts/georgia.ttf").ok().map(|b| fonts.add(Font::from_bytes(b)));
+    let img = |f: &str| -> (ImageNode, Visibility) {
+        let file = ["hud", "menu_sprites/sb_fe"].iter().map(|d| format!("{d}/{f}.png")).find(|p| crate::paths::extracted().join(p).exists());
+        match file {
+            Some(p) => {
+                let mut i = ImageNode::new(assets.load(p));
+                i.image_mode = bevy::ui::widget::NodeImageMode::Stretch;
+                (i, Visibility::Inherited)
+            }
+            None => (ImageNode::default(), Visibility::Hidden),
+        }
+    };
+    let at = |l: f32, t: f32, w: f32, h: f32| Node { position_type: PositionType::Absolute, left: Val::Percent(l), top: Val::Percent(t), width: Val::Percent(w), height: Val::Percent(h), ..default() };
+    let inner = || Node { position_type: PositionType::Absolute, left: Val::Percent(10.0), top: Val::Percent(10.0), width: Val::Percent(80.0), height: Val::Percent(80.0), ..default() };
+    let number = |px: f32, which: u8| {
+        (
+            Text::new(""),
+            TextFont { font: serif.clone().map(bevy::text::FontSource::Handle).unwrap_or_default(), font_size: bevy::text::FontSize::Px(px), ..default() },
+            TextColor(Color::srgba(0.92, 0.88, 0.8, 1.0)),
+            TextShadow { offset: Vec2::new(1.5, 1.5), color: Color::srgba(0.0, 0.0, 0.0, 1.0) },
+            ItemText(which),
+        )
+    };
+    // The quick item (the Healing Gourd, iconId 151) and its count.
+    commands.spawn((at(79.1, 87.2, 4.2, 7.3), img("MENU_Item_Left").0)).with_children(|b| {
+        let (i, v) = img("MENU_ItemIcon_00151");
+        b.spawn((inner(), i, v));
+        b.spawn(Node { position_type: PositionType::Absolute, right: Val::Percent(2.0), bottom: Val::Percent(-4.0), ..default() }).with_children(|c| {
+            c.spawn(number(17.0, 1));
         });
+    });
+    // The prosthetic tool.
+    commands.spawn((at(84.2, 83.1, 6.3, 11.3), img("MENU_Item_Top").0)).with_children(|b| {
+        b.spawn((Node { position_type: PositionType::Absolute, left: Val::Percent(6.0), top: Val::Percent(6.0), width: Val::Percent(88.0), height: Val::Percent(88.0), ..default() }, ImageNode::default(), Visibility::Hidden, ItemIcon(true)));
+    });
+    // The column: the art's mark, the ninjutsu's, the Spirit Emblems.
+    let (i, v) = img("MENU_FE_Skill");
+    commands.spawn((at(91.4, 83.3, 1.9, 3.2), i, v, ArtMark));
+    let (i, _) = img("MENU_FE_Ninsatul");
+    commands.spawn((at(91.4, 87.3, 1.9, 3.1), i, Visibility::Hidden, NinjutsuMark));
+    let (i, v) = img("MENU_ItemIcon_00001");
+    commands.spawn((at(91.4, 91.4, 1.9, 3.2), i, v));
+    commands.spawn(Node { position_type: PositionType::Absolute, left: Val::Percent(93.5), top: Val::Percent(91.0), ..default() }).with_children(|c| {
+        c.spawn(number(17.0, 0));
+    });
+}
+
+/// The combat art's mark (shown with an art equipped) and the ninjutsu's (gap: no ninjutsu yet).
+#[derive(Component)]
+struct ArtMark;
+#[derive(Component)]
+struct NinjutsuMark;
+
+/// The Sen purse and the skill gauge, which the game shows only for a while after they change
+/// (the user's captures: neither on the plain HUD).
+#[derive(Component)]
+struct Flash(u8);
+#[derive(Component)]
+struct SenText;
+
+/// How long the purse / gauge stay up after a change (s). gap: the movie's fade is not read.
+const FLASH_SHOW: f32 = 4.0;
+
+fn flash_counters(time: Res<Time>, config: Res<crate::config::GameConfig>, mut last: Local<Option<u32>>, mut left: Local<f32>, mut q: Query<(&Flash, &mut Visibility)>, mut texts: Query<&mut Text, With<SenText>>, mut art: Query<&mut Visibility, (With<ArtMark>, Without<Flash>)>) {
+    let sen = config.player.sen;
+    if last.is_some_and(|l| l != sen) {
+        *left = FLASH_SHOW;
+    }
+    *last = Some(sen);
+    *left = (*left - time.delta_secs()).max(0.0);
+    for (f, mut v) in &mut q {
+        // 0: the purse; 1: the skill gauge (no experience yet: never changes).
+        let want = if f.0 == 0 && *left > 0.0 { Visibility::Inherited } else { Visibility::Hidden };
+        if *v != want {
+            *v = want;
+        }
+    }
+    for mut t in &mut texts {
+        let s = sen.to_string();
+        if t.0 != s {
+            t.0 = s;
+        }
+    }
+    for mut v in &mut art {
+        let want = if config.player.combat_art > 0 { Visibility::Inherited } else { Visibility::Hidden };
+        if *v != want {
+            *v = want;
+        }
+    }
 }
 
 fn update_item_icons(
@@ -1086,7 +1266,7 @@ fn update_debug(
     mut text: Single<&mut Text, With<DebugText>>,
 ) {
     let mut s = String::from(
-        "LMB/J attack (hold = thrust)  RMB/K deflect  LMB+RMB art  Shift step (hold = sprint)  Space jump  Q lock-on  Alt walk  T enemy AI on/off  E gourd  F shuriken  X sheathe/draw  LMB (dead) resurrect  H hurtboxes  R reset  F5 reload config  F1 debug menu\n\n",
+        "LMB/J attack (hold = thrust)  RMB/K deflect  LMB+RMB art  Shift step (hold = sprint)  Space jump  MMB lock-on  Alt walk  Q crouch  Ctrl prosthetic  Z switch tool  F grapple  R gourd  E hug/hang  X sheathe/draw  LMB (dead) resurrect  T enemy AI on/off  H hurtboxes  Backspace reset  F5 reload config  F1 debug menu\n\n",
     );
     for (a, enemy) in &actors {
         let d = data_for(&combat, &a);
@@ -1365,5 +1545,16 @@ mod posture_tests {
         assert_eq!([0.0, 0.69, 0.7, 0.99, 1.0].map(super::posture_state), [0, 0, 1, 1, 2]);
         assert_eq!(super::posture_color(0.5), Color::srgb_u8(142, 123, 60));
         assert_eq!(super::posture_color(1.0), Color::srgb_u8(168, 107, 0));
+    }
+}
+
+/// `SHINOBI_HUD_POSTURE=<0-1>`: every fighter's posture held at that fill (SHINOBI_SHOT captures of
+/// the posture bars).
+#[derive(Resource)]
+struct HoldPosture(f32);
+
+fn hold_posture(f: Res<HoldPosture>, mut actors: Query<&mut Actor>) {
+    for mut a in &mut actors {
+        a.posture = a.posture_max * f.0;
     }
 }

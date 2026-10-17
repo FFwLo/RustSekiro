@@ -199,25 +199,31 @@ floor, the sandbox uses cobblestone (`FLOOR_MATERIAL` in `src/sound.rs`).
 
 ## Controls
 
+The keyboard defaults are Sekiro's own (its `DefaultKeyAssignParam`, each action named by
+the game's key guide text). E (talk / wall hug / ledge hang) is reserved for those.
+
 | Action | Keyboard / mouse |
 |---|---|
 | Move / look | WASD / mouse |
-| Walk | Left Alt or Left Ctrl |
+| Walk | Left Alt |
 | Attack (hold for the thrust) | Left click or J |
 | Guard / deflect | Right click or K |
 | Combat art | Left and right click together |
 | Step (hold to sprint) | Shift |
 | Jump, kick in the air | Space |
-| Lock on | Q |
-| Prosthetic tool | F |
+| Lock on | Middle mouse button |
+| Prosthetic tool | Left Ctrl |
 | Switch prosthetic tool | Z |
-| Healing Gourd | E |
-| Crouch | C |
+| Grappling hook | F |
+| Healing Gourd (use quick item) | R |
+| Crouch | Q |
+| Wall hug / ledge hang / climb up (hold in the air to catch a ledge) | E |
+| Wall jump (jump in the air against a wall, or jump while hugging / hanging) | Space |
 | Sheathe / draw | X |
 | Resurrect (when dead) | Left click |
 
 Sandbox keys: `F3` shows the frame rate, `F1` opens the debug menu (enemy, AI mode, skills, tools,
-cheats), `T` turns the enemy's AI on or off, `H` shows hurtboxes, `R` resets,
+cheats), `T` turns the enemy's AI on or off, `H` shows hurtboxes, `Backspace` resets,
 `[` / `]` change the hour, `F5` reloads `config.toml`, `Esc` releases the
 mouse. Click the window to capture the mouse.
 

@@ -188,6 +188,8 @@ pub struct Actor {
     /// game's per-frame heights match the analytic arc).
     pub grav_y: f32,
     pub airborne: bool,
+    /// Held at a map edge (docking.rs hold): the terrain neither drops nor slides the body.
+    pub docked: bool,
     /// Wolf's Lightning Reversal charge: the SpEffect a lightning hit in the air put on him
     /// (9490 "charged enchantment [weak lightning]" stateInfo 356 / 9495 "[strong thunder]" 151,
     /// effectEndurance 30 s) and its time left. gap: the exe applies it (no param references
@@ -342,6 +344,7 @@ impl Actor {
             vel_y: 0.0,
             grav_y: 0.0,
             airborne: false,
+            docked: false,
             electro: None,
             opacity: 1.0,
             cam_alpha: 1.0,
@@ -722,6 +725,20 @@ pub fn advance(time: Res<Time>, combat: Res<Combat>, mut q: Query<(&mut Actor, &
                     match (data.root_at(&k, t0), data.root_at(&k, len), data.root_at(&k, 0.0), data.root_at(&k, t0 + dt - len)) {
                         (Some((p0, y0)), Some((pe, ye)), Some((ps, ys)), Some((p1, y1))) => Some((p0, y0, pe - p0 + (p1 - ps), (ye - y0) + (y1 - ys))),
                         _ => None,
+                    }
+                } else if len > 0.0 && t0 + dt > len {
+                    // A from clip that ended (the transition fired at its end) carries on at its
+                    // last speed through the blend instead of standing still: the sprint start ->
+                    // loop (StateToStateBlendIgnoreToWorld: only the from motion moves) dropped
+                    // to 0 m/s at the hand-over (blend_src.json restored, 2026-10-17).
+                    match data.root_at(&k, t0.min(len)) {
+                        Some((p0, y0)) => {
+                            let v = data.root_velocity_at(&k, (len - 1.0 / 60.0).max(0.0), false);
+                            let in_clip = data.root_at(&k, len).map_or(Vec2::ZERO, |(pe, _)| pe - p0);
+                            let past = (t0 + dt - len.max(t0)).max(0.0);
+                            Some((p0, y0, in_clip + v * past, 0.0))
+                        }
+                        None => None,
                     }
                 } else {
                     match (data.root_at(&k, t0), data.root_at(&k, t0 + dt)) {

@@ -178,6 +178,14 @@ fn default_hour() -> f32 {
 #[derive(Deserialize, Clone, Debug)]
 pub struct CameraConfig {
     pub mouse_sensitivity: f32,
+    /// How far the free camera swings round after Wolf's sideways move, 0-1 (1 = the
+    /// CameraParam fulcrum's full swing; camera.rs).
+    #[serde(default = "default_follow_swing")]
+    pub follow_swing: f32,
+}
+
+fn default_follow_swing() -> f32 {
+    0.5
 }
 
 #[derive(Deserialize, Clone, Debug)]

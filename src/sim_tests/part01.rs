@@ -39,6 +39,8 @@ pub(crate) fn app_build(chr: &str, npc_row: Option<i64>, group: Vec<crate::confi
         let mut config = app.world_mut().resource_mut::<crate::config::GameConfig>();
         config.enemy.chr = chr.to_string();
         config.enemy.npc_row = npc_row;
+        // A fresh Wolf (Vitality 1), whatever config.toml plays at.
+        config.posture.player_level = 1.0;
         config.enemy.group = group;
     }
     app.add_plugins((DataPlugin, ActorPlugin, CombatPlugin, PlayerPlugin, EnemyPlugin, crate::prosthetic::ProstheticPlugin, crate::status::StatusPlugin, crate::enemy_bullet::EnemyBulletPlugin));
@@ -854,17 +856,19 @@ pub(crate) fn guard_walk_uses_the_guard_move_anims() {
         app.update();
     }
     let (_, _, _, p0) = player_actor(&mut app);
-    // Stick toward +Z = toward the camera (camera yaw 0 looks along -Z): the free guard walk faces
-    // the camera's direction, so this is walking backward.
+    // Stick toward +Z = toward the camera (camera yaw 0 looks along -Z): the free guard walk turns
+    // to the stick and walks forward (2026-10-17, the user: before, it faced the camera's
+    // direction and walked backward).
     app.world_mut().resource_mut::<PadInput>().stick = Vec2::new(0.0, -1.0);
     for _ in 0..60 {
         app.update();
     }
     let (state, _, _, p1) = player_actor(&mut app);
-    assert_eq!(state, "DeflectGuardMoveB");
-    // DeflectGuardMoveF root motion: 2.0 m over 40 frames = 1.5 m/s.
+    assert_eq!(state, "DeflectGuardMoveF");
+    // DeflectGuardMoveF root motion: 2.0 m over 40 frames = 1.5 m/s, less the turn.
     let moved = (p1 - p0).with_y(0.0).length();
-    assert!((moved - 1.5).abs() < 0.3, "moved {moved}");
+    assert!(moved > 0.9 && moved < 1.8, "moved {moved}");
+    assert!(p1.z > p0.z + 0.8, "{p0:?} -> {p1:?}");
 }
 
 #[test]

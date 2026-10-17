@@ -899,7 +899,7 @@ pub(crate) fn fight_screen(screen: Option<&crate::menu::Screen>, from_fight: &mu
     use crate::menu::Screen;
     match screen {
         None => true,
-        Some(Screen::Playing | Screen::Paused) => {
+        Some(Screen::Playing | Screen::Paused | Screen::Idol) => {
             *from_fight = true;
             true
         }

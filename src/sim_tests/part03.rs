@@ -404,9 +404,9 @@ pub(crate) fn clash_effects_follow_the_hit_effect_tables() {
 
 #[test]
 pub(crate) fn guard_walk_keeps_facing_and_follows_the_stick() {
-    // Live (rec_20261008_051450, no lock-on): guard-walking, Wolf faces the camera's direction
-    // (strafes); a stick 45 deg off it plays DeflectGuardMoveF (|angle| < 55) and moves along the
-    // stick at ~1.5 m/s.
+    // Not locked on, guard-walking Wolf turns to the stick and walks forward (DeflectGuardMoveF)
+    // along it at ~1.5 m/s. (rec_20261008_051450 was read as facing the camera's direction, but
+    // that camera trails behind Wolf; the user, playing: he must not face the camera.)
     let mut app = app();
     move_enemy_far(&mut app);
     {
@@ -434,9 +434,11 @@ pub(crate) fn guard_walk_keeps_facing_and_follows_the_stick() {
     let yaw1 = world.query_filtered::<&Actor, With<Player>>().single(world).unwrap().yaw;
     assert!(state.starts_with("DeflectGuardMove"), "{state}");
     let _ = yaw0;
-    // Faces the camera's forward (yaw 0 in tests).
-    let off_cam = ((yaw1 + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI).to_degrees();
-    assert!(off_cam.abs() < 1.0, "facing {off_cam:.1} deg off the camera");
+    // Faces the stick.
+    let want = crate::player::stick_world(Vec2::new(0.7071, 0.7071), 0.0);
+    let facing = Quat::from_rotation_y(yaw1) * Vec3::NEG_Z;
+    let off_stick = facing.angle_between(want).to_degrees();
+    assert!(off_stick < 3.0, "facing {off_stick:.1} deg off the stick");
     let moved = (end - start).with_y(0.0);
     assert!(moved.length() > 0.8 && moved.length() < 2.2, "moved {:.2} m in 1 s", moved.length());
     let want = crate::player::stick_world(Vec2::new(0.7071, 0.7071), 0.0);

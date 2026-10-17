@@ -12,6 +12,9 @@
 //! A panel's blend bytes run: overlay 0 -> 1 left to right, snow 0 -> 1 bottom to top, layer C
 //! at the real map's constant 0.5. The floor's overlay rises towards +X, its snow towards -X.
 //! `extracted/map_sandbox_panels.txt` lists which material each panel shows.
+//! `[world] map = "parkour"` (or `SHINOBI_MAP=parkour`): the same arena with the gallery off and
+//! the parkour course (`parkour_course`: a hug wall, an L platform with hang ledges and stairs,
+//! a cliff for the wall jumps) and its edges.
 //! `SHINOBI_SANDBOX_AT=x,z[,yaw]` stands Wolf there at the start, facing yaw degrees (0 = -Z,
 //! the gallery, the default; 180 = +Z, the line-up; a screenshot of one row: its z + 5).
 
@@ -124,6 +127,7 @@ pub(crate) fn build(
     materials: &mut Assets<MapMaterial>,
     mats: &mut MaterialCache,
     options: &MaterialOptions,
+    parkour: bool,
 ) {
     // The source map's materials, most triangles first.
     let mut tris: HashMap<MaterialKey, usize> = HashMap::new();
@@ -179,7 +183,29 @@ pub(crate) fn build(
     // `SHINOBI_SANDBOX_NO_GALLERY=1`: floor and walls only (a fight arena). The panels cast no
     // shadow unless `SHINOBI_SANDBOX_PANEL_SHADOW=1`: 242 more casters in two cascades cost
     // frames and their shadows on the floor show nothing.
-    let gallery = std::env::var("SHINOBI_SANDBOX_NO_GALLERY").is_err();
+    let gallery = std::env::var("SHINOBI_SANDBOX_NO_GALLERY").is_err() && !parkour;
+    // The parkour course (`map = "parkour"`): its boxes in the wall material, and collision.
+    let mut course = Patch::default();
+    if parkour {
+        for (lo, hi) in parkour_course().0 {
+            course.cuboid(lo, hi);
+        }
+        // The stairs: drawn as steps, walked as a ramp (the course patch is the collision too).
+        let mut steps = Patch::default();
+        for (lo, hi) in parkour_stairs() {
+            steps.cuboid(lo, hi);
+        }
+        let mut both = Patch::default();
+        both.pos = [course.pos.clone(), steps.pos.clone()].concat();
+        both.nrm = [course.nrm.clone(), steps.nrm.clone()].concat();
+        both.uv = [course.uv.clone(), steps.uv.clone()].concat();
+        both.blend = [course.blend.clone(), steps.blend.clone()].concat();
+        let n = course.pos.len() as u32;
+        both.idx = course.idx.iter().copied().chain(steps.idx.iter().map(|i| i + n)).collect();
+        spawn(&both, &wall_key, true);
+        // The ramp: from the floor at x -1.5 to the top (3 m) at x 2, 41 degrees.
+        course.grid(Vec3::new(-1.5, 0.0, -12.0), Vec3::new(3.5, 3.0, 0.0), Vec3::new(0.0, 0.0, 2.0), 1, 1, TILE_M, |_, _| [0.0; 4]);
+    }
     let panel_shadow = std::env::var("SHINOBI_SANDBOX_PANEL_SHADOW").is_ok();
 
     // The gallery: one leaning panel per material, in rows from the front.
@@ -208,6 +234,12 @@ pub(crate) fn build(
     solid.uv.extend_from_slice(&walls.uv);
     solid.blend.extend_from_slice(&walls.blend);
     solid.idx.extend(walls.idx.iter().map(|i| i + 4));
+    let base = solid.pos.len() as u32;
+    solid.pos.extend_from_slice(&course.pos);
+    solid.nrm.extend_from_slice(&course.nrm);
+    solid.uv.extend_from_slice(&course.uv);
+    solid.blend.extend_from_slice(&course.blend);
+    solid.idx.extend(course.idx.iter().map(|i| i + base));
     solid.terrain().install();
     info!("sandbox: {} materials{} in {} rows, floor {} ({} m), walls {}; legend {}", keys.len(), if gallery { " on panels" } else { " (gallery off)" }, keys.len().div_ceil(PER_ROW), floor_key.0[0], 2.0 * HALF, wall_key.0[0], legend_path.display());
 }
@@ -598,5 +630,141 @@ pub(crate) fn catalog_shots(
         catalog.placed = false;
         catalog.taken = false;
         catalog.timer = 0.0;
+    }
+}
+
+/// The `[world] map` / `SHINOBI_MAP` value of the parkour test course: the sandbox with the
+/// gallery off and the course built in (2026-10-17, the user: "make a test map for parkour").
+pub const PARKOUR_ID: &str = "parkour";
+
+/// Is this map id the sandbox (with or without the parkour course)?
+pub fn is_generated(id: &str) -> bool {
+    id == MAP_ID || id == PARKOUR_ID
+}
+
+impl Patch {
+    /// A solid box from `lo` to `hi`: its six faces, normals outward (the bottom shows under the
+    /// shaft's shelves).
+    fn cuboid(&mut self, lo: Vec3, hi: Vec3) {
+        let d = hi - lo;
+        let blend = |_: f32, _: f32| [0.0; 4];
+        self.grid(Vec3::new(lo.x, hi.y, lo.z), Vec3::new(d.x, 0.0, 0.0), Vec3::new(0.0, 0.0, d.z), 2, 2, TILE_M, blend);
+        if lo.y > 0.0 {
+            self.grid(Vec3::new(lo.x, lo.y, lo.z), Vec3::new(0.0, 0.0, d.z), Vec3::new(d.x, 0.0, 0.0), 2, 2, TILE_M, blend);
+        }
+        self.grid(Vec3::new(hi.x, lo.y, hi.z), Vec3::new(-d.x, 0.0, 0.0), Vec3::new(0.0, d.y, 0.0), 2, 2, TILE_M, blend);
+        self.grid(Vec3::new(lo.x, lo.y, lo.z), Vec3::new(d.x, 0.0, 0.0), Vec3::new(0.0, d.y, 0.0), 2, 2, TILE_M, blend);
+        self.grid(Vec3::new(hi.x, lo.y, lo.z), Vec3::new(0.0, 0.0, d.z), Vec3::new(0.0, d.y, 0.0), 2, 2, TILE_M, blend);
+        self.grid(Vec3::new(lo.x, lo.y, hi.z), Vec3::new(0.0, 0.0, -d.z), Vec3::new(0.0, d.y, 0.0), 2, 2, TILE_M, blend);
+    }
+}
+
+/// A hug edge along a wall's foot from `p0` to `p1` (on the floor, at the face), `n` the face's
+/// outward normal: 0.1 m out and 0.15 m up, as the game's records sit, `c` on the wall side
+/// (docking.rs: the wall is on c's side). Variation 1: peek at both ends.
+fn hug_edge(p0: Vec3, p1: Vec3, n: Vec3) -> map::LedgeEdge {
+    let (a, b) = (p0 + n * 0.1 + Vec3::Y * 0.15, p1 + n * 0.1 + Vec3::Y * 0.15);
+    map::LedgeEdge { a, b, c: (a + b) * 0.5 - n * 0.2 - Vec3::Y * 0.17, kind: 3, variation: 1 }
+}
+
+/// A hang edge along a lip from `p0` to `p1` (at the top), `n` the face's outward normal; `c` on
+/// the wall side, under the lip.
+fn hang_edge(p0: Vec3, p1: Vec3, n: Vec3) -> map::LedgeEdge {
+    map::LedgeEdge { a: p0, b: p1, c: (p0 + p1) * 0.5 - n * 0.3 - Vec3::Y * 0.5, kind: 2, variation: 0 }
+}
+
+/// The stairs up the L platform's west side (x -1.5 .. 2, z -12 .. -10), 7 steps of 0.43 m:
+/// drawn, while their collision is the ramp under them (`STAIRS_RAMP`), as the game's stairs are
+/// (step by step, the floor snap popped Wolf up and down each step: the user, "not smooth").
+pub fn parkour_stairs() -> Vec<(Vec3, Vec3)> {
+    (0..7).map(|i| (Vec3::new(-1.5 + 0.5 * i as f32, 0.0, -12.0), Vec3::new(2.0, 0.43 * (i + 1) as f32, -10.0))).collect()
+}
+
+/// The parkour course (metres; Wolf starts at the origin facing -Z, the duel enemy 4 m ahead):
+/// 1. a free-standing hug wall, 2.5 m high, both faces huggable with a peek at both ends:
+///    x -7..-1, z -9.5..-9;
+/// 2. an L-shaped platform 3 m high (x 2..8, z -14..-8 and x 8..12, z -14..-11) with hang
+///    ledges all round its lip (outside corners, and the inside corner at (8, -11)), stairs up its
+///    west side (0.43 m steps) for the ground hang and the climb;
+/// 3. a 4.5 m cliff (x -14..-7, z -24..-20) with a hug edge at its foot and a hang ledge on its
+///    lip: hug, jump straight up the wall (CoverToWallJumpReady -> WallJumpStart_B_N) and catch
+///    the ledge with E held; or a wall jump from a running jump at it.
+/// 4. a tall tight shaft (inside x 14..17, z -24..-21, 12 m high, a door in its south wall) for
+///    wall-to-wall chained wall jumps (the map lifts the one-a-flight limit:
+///    docking::WALL_JUMP_LIMIT).
+/// The arena's own walls (5 m) take wall jumps anywhere.
+pub fn parkour_course() -> (Vec<(Vec3, Vec3)>, Vec<map::LedgeEdge>) {
+    let mut boxes = Vec::new();
+    let mut edges = Vec::new();
+    // 1. The hug wall.
+    let (wl, wh) = (Vec3::new(-7.0, 0.0, -9.5), Vec3::new(-1.0, 2.5, -9.0));
+    boxes.push((wl, wh));
+    edges.push(hug_edge(Vec3::new(wl.x, 0.0, wh.z), Vec3::new(wh.x, 0.0, wh.z), Vec3::Z));
+    edges.push(hug_edge(Vec3::new(wh.x, 0.0, wl.z), Vec3::new(wl.x, 0.0, wl.z), Vec3::NEG_Z));
+    // 2. The L platform and its lip, round the outline (each corner shared by two edges).
+    let h = 3.0;
+    boxes.push((Vec3::new(2.0, 0.0, -14.0), Vec3::new(8.0, h, -8.0)));
+    boxes.push((Vec3::new(8.0, 0.0, -14.0), Vec3::new(12.0, h, -11.0)));
+    let outline = [(2.0, -8.0), (8.0, -8.0), (8.0, -11.0), (12.0, -11.0), (12.0, -14.0), (2.0, -14.0)];
+    let inside = |x: f32, z: f32| (x > 2.0 && x < 8.0 && z > -14.0 && z < -8.0) || (x > 8.0 && x < 12.0 && z > -14.0 && z < -11.0);
+    for k in 0..outline.len() {
+        let (p, q) = (outline[k], outline[(k + 1) % outline.len()]);
+        let (p0, p1) = (Vec3::new(p.0, h, p.1), Vec3::new(q.0, h, q.1));
+        let along = (p1 - p0).normalize();
+        let mut n = Vec3::Y.cross(along);
+        let mid = (p0 + p1) * 0.5;
+        if inside(mid.x + n.x * 0.2, mid.z + n.z * 0.2) {
+            n = -n;
+        }
+        // The west lip is cut where the stairs meet it (z -12 .. -10): no hanging into the steps.
+        if p0.x == 2.0 && p1.x == 2.0 {
+            let (z0, z1) = (p0.z.min(p1.z), p0.z.max(p1.z));
+            for (a, b) in [(z0, -12.0), (-10.0, z1)] {
+                edges.push(hang_edge(Vec3::new(2.0, h, a), Vec3::new(2.0, h, b), n));
+            }
+            continue;
+        }
+        edges.push(hang_edge(p0, p1, n));
+    }
+    // 3. The cliff: its foot huggable, its lip a hang ledge.
+    let (cl, ch) = (Vec3::new(-14.0, 0.0, -24.0), Vec3::new(-7.0, 4.5, -20.0));
+    boxes.push((cl, ch));
+    edges.push(hug_edge(Vec3::new(cl.x, 0.0, ch.z), Vec3::new(ch.x, 0.0, ch.z), Vec3::Z));
+    edges.push(hang_edge(Vec3::new(cl.x, ch.y, ch.z), Vec3::new(ch.x, ch.y, ch.z), Vec3::Z));
+    // 4. The wall-jump shaft (2026-10-17, the user: "a tight and tall room so Wolf can walljump
+    // around").
+    let (sx0, sx1, sz0, sz1, sh, t) = (14.0, 17.0, -24.0, -21.0, 12.0, 0.5);
+    boxes.push((Vec3::new(sx0 - t, 0.0, sz0 - t), Vec3::new(sx0, sh, sz1 + t)));
+    boxes.push((Vec3::new(sx1, 0.0, sz0 - t), Vec3::new(sx1 + t, sh, sz1 + t)));
+    boxes.push((Vec3::new(sx0, 0.0, sz0 - t), Vec3::new(sx1, sh, sz0)));
+    // The south wall, its door x 15..16.2 up to 2.6 m.
+    boxes.push((Vec3::new(sx0, 0.0, sz1), Vec3::new(15.0, sh, sz1 + t)));
+    boxes.push((Vec3::new(16.2, 0.0, sz1), Vec3::new(sx1, sh, sz1 + t)));
+    boxes.push((Vec3::new(15.0, 2.6, sz1), Vec3::new(16.2, sh, sz1 + t)));
+    (boxes, edges)
+}
+
+#[cfg(test)]
+mod parkour_tests {
+    use bevy::prelude::*;
+
+    /// Every course edge docks Wolf on the open side of its wall: hugging, his spot is outside
+    /// the boxes; hanging, the spot is off the platform.
+    #[test]
+    fn the_course_edges_face_out_of_their_walls() {
+        let (boxes, edges) = super::parkour_course();
+        let inside = |p: Vec3| boxes.iter().any(|(lo, hi)| p.x > lo.x + 0.01 && p.x < hi.x - 0.01 && p.z > lo.z + 0.01 && p.z < hi.z - 0.01 && p.y < hi.y);
+        assert_eq!(edges.iter().filter(|e| e.kind == 3).count(), 3);
+        assert_eq!(edges.iter().filter(|e| e.kind == 2).count(), 8);
+        for e in &edges {
+            let d = crate::docking::Dock::new_from_edge(e).expect("edge too short");
+            let mid = (e.a + e.b) * 0.5;
+            // Half a metre out from the edge along `out` is open air / floor, half a metre the
+            // other way is wall.
+            let out = mid + d.out * 0.5 + Vec3::Y * 0.1 - if e.kind == 2 { Vec3::Y * 0.6 } else { Vec3::ZERO };
+            let back = mid - d.out * 0.5 - if e.kind == 2 { Vec3::Y * 0.6 } else { Vec3::ZERO } + Vec3::Y * 0.1;
+            assert!(!inside(out), "kind {} edge {:?} -> {:?}: out side {:?} is inside a box", e.kind, e.a, e.b, out);
+            assert!(inside(back), "kind {} edge {:?} -> {:?}: wall side {:?} is open", e.kind, e.a, e.b, back);
+        }
     }
 }
