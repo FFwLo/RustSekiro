@@ -473,6 +473,51 @@ pub(crate) fn a_twenty_metre_fall_lands_long_stiff() {
     }
 }
 
+/// A fall past HitMtrlParam fallDeathDist (40 m, the default row) ends in the fall-return death
+/// (HKS DAMAGE_TYPE_LAND_DEAD_RETURN, a000_200909), then Wolf stands at the last safe ground with
+/// his HP; a 25 m fall is only the long stiff landing.
+#[test]
+pub(crate) fn a_forty_metre_fall_returns_wolf_to_safe_ground() {
+    for (drop, dies) in [(45.0, true), (25.0, false)] {
+        let mut app = app();
+        move_enemy_far(&mut app);
+        for _ in 0..30 {
+            app.update();
+        }
+        let (start, hp) = {
+            let world = app.world_mut();
+            let (a, t) = world.query_filtered::<(&Actor, &Transform), With<Player>>().single(world).unwrap();
+            (t.translation, a.hp)
+        };
+        {
+            let world = app.world_mut();
+            world.resource_scope(|world, combat: Mut<Combat>| {
+                let (mut a, mut t) = world.query_filtered::<(&mut Actor, &mut Transform), With<Player>>().single_mut(world).unwrap();
+                assert!(a.play_state(&combat.player, "FreeFall"));
+                a.airborne = true;
+                a.vel_y = 0.0;
+                t.translation += Vec3::new(3.0, drop, 0.0);
+            });
+        }
+        let mut saw = false;
+        let mut seen: Vec<String> = Vec::new();
+        for _ in 0..900 {
+            app.update();
+            let world = app.world_mut();
+            let a = world.query_filtered::<&Actor, With<Player>>().single(world).unwrap();
+            saw |= a.state == "LandDeadReturnStart";
+            if seen.last() != Some(&a.state) { seen.push(a.state.clone()); }
+        }
+        let world = app.world_mut();
+        let (a, t) = world.query_filtered::<(&Actor, &Transform), With<Player>>().single(world).unwrap();
+        assert_eq!(saw, dies, "drop {drop} {seen:?}");
+        assert_eq!(a.hp, hp, "drop {drop}: the return keeps HP");
+        if dies {
+            assert!((t.translation - start).length() < 0.5, "back at the safe ground: {:?} vs {:?}", t.translation, start);
+        }
+    }
+}
+
 /// Round 38: BEH_R_LAND 2026 - a jump's fall from 5 m or more lands stiff (_LandFreeFall,
 /// a000_200020), not as the jump's own landing; a short one keeps LandVerticalGroundJump.
 #[test]
@@ -1525,4 +1570,79 @@ pub(crate) fn no_gourd_while_guarding_and_a_tool_switch_in_the_air() {
     app.update();
     app.update();
     assert_eq!(app.world_mut().query::<&Player>().single(app.world()).unwrap().tool_slot, 1, "no switch in the air");
+}
+
+/// Live (rec_20261016_* boss fights, 19 head kicks off a locked forward jump over a perilous
+/// sweep): Wolf holds at the contact distance in front of the enemy and the kick lands 18-20 ticks
+/// after the press. Before, the jump kept its full speed against the body, so he slid round the
+/// enemy's head, flew past and the kick missed (actor.rs separate).
+#[test]
+pub(crate) fn a_forward_jump_over_a_sweep_stops_at_the_body_and_the_kick_lands() {
+    let mut app = app_with("c1020");
+    {
+        let world = app.world_mut();
+        let mut q = world.query::<(Entity, &mut Enemy, &mut Actor)>();
+        let (entity, mut e, mut a) = q.single_mut(world).unwrap();
+        e.force_anim(&mut a, PERILOUS_SWEEP);
+        world.resource_mut::<crate::camera::LockOn>().target = Some(entity);
+    }
+    let (mut pressed, mut launch, mut kicked) = (false, None, None);
+    let mut far = 0.0f32;
+    for i in 0..200 {
+        let to = {
+            let w = app.world_mut();
+            let e = w.query_filtered::<&Transform, With<Enemy>>().single(w).unwrap().translation;
+            let t = w.query_filtered::<&Transform, With<Player>>().single(w).unwrap().translation;
+            (e - t).with_y(0.0).normalize_or_zero()
+        };
+        app.world_mut().resource_mut::<PadInput>().stick = Vec2::new(to.x, -to.z);
+        if !pressed && time_to_enemy_hit(&mut app).is_some_and(|dt| dt <= 6.0 / TAE_FPS) {
+            app.world_mut().resource_mut::<PadInput>().press(Action::Jump);
+            pressed = true;
+        }
+        if launch.map(|l| i == l + 8).unwrap_or(false) {
+            app.world_mut().resource_mut::<PadInput>().press(Action::Jump);
+        }
+        app.update();
+        let w = app.world_mut();
+        let e = w.query_filtered::<&Transform, With<Enemy>>().single(w).unwrap().translation;
+        let (a, t) = w.query_filtered::<(&Actor, &Transform), With<Player>>().single(w).unwrap();
+        if pressed && a.airborne && launch.is_none() {
+            launch = Some(i);
+        }
+        if launch.is_some() && kicked.is_none() {
+            far = far.max((t.translation - e).with_y(0.0).length());
+        }
+        if kicked.is_none() && a.state.starts_with("AirKickEnemyJump") {
+            kicked = Some(i - launch.unwrap() - 8);
+        }
+    }
+    let kicked = kicked.unwrap_or_else(|| panic!("no kick jump: {}", log_text(&app)));
+    assert!((16..=22).contains(&kicked), "kick landed {kicked} ticks after the press");
+    assert!(far < 1.2, "drifted {far:.2} m from the enemy before the kick");
+}
+
+/// Live (rec_2026101x_*): an idle Wolf with an enemy within 1.3 m moved in 32 of 1267 ticks; the
+/// enemy stops at the body instead of shoving him. An enemy pushed into Wolf here (as its walk or
+/// lunge would) must not slide him in his idle pose (actor.rs separate).
+#[test]
+pub(crate) fn an_enemy_walking_into_idle_wolf_does_not_slide_him() {
+    let mut app = app();
+    for _ in 0..10 {
+        app.update();
+    }
+    let start = player_actor(&mut app).3;
+    for _ in 0..60 {
+        {
+            let world = app.world_mut();
+            let mut q = world.query_filtered::<&mut Transform, With<Enemy>>();
+            let mut t = q.single_mut(world).unwrap();
+            let to = (start - t.translation).with_y(0.0);
+            t.translation += to.normalize_or_zero() * to.length().min(0.05);
+        }
+        app.update();
+    }
+    let (state, _, _, pos) = player_actor(&mut app);
+    let moved = (pos - start).with_y(0.0).length();
+    assert!(moved < 0.05, "Wolf ({state}) slid {moved:.2} m");
 }

@@ -1350,3 +1350,8 @@ AgingGroundDeathLoop
 AgingFallDeathStart
 AgingFallDeathLoop
 LandAgingFallDeath
+
+# Fall-return deaths (HKS BEH_R_DEATH 769-776) and the return (player.rs fall_return)
+FallDeadReturnStart
+LandDeadReturnStart
+GroundFallReturn

@@ -104,18 +104,31 @@ enum Item {
     Refill,
     FlowingWater,
     Sheathe,
+    DropHeight,
+    DropNow,
+    HookHeight,
+    HookNow,
+    HookClear,
     Speed,
     Hitboxes,
     Reset,
 }
 
-const SECTIONS: [(&str, &[Item]); 5] = [
+const SECTIONS: [(&str, &[Item]); 6] = [
     ("ENEMY", &[Item::AiMode, Item::Attack, Item::Interval, Item::EnemyType, Item::Outfit, Item::EnemyHeal]),
     ("DEATHBLOW", &[Item::BreakPosture, Item::DeathblowNow, Item::DeathblowBehind, Item::PlungeNow, Item::KickDownNow, Item::VaultNow, Item::StealthSetup, Item::StealthFar]),
     ("SKILLS", &[Item::Art, Item::Tool1, Item::Tool2, Item::Tool3]),
     ("PLAYER", &[Item::God, Item::NoPosture, Item::InfiniteEmblems, Item::Refill, Item::FlowingWater, Item::Sheathe]),
+    ("MOVEMENT TESTS", &[Item::DropHeight, Item::DropNow, Item::HookHeight, Item::HookNow, Item::HookClear]),
     ("SIMULATION", &[Item::Speed, Item::Hitboxes, Item::Reset]),
 ];
+
+/// Fall tests: the heights Wolf is lifted to (m). 20 m is where a fall can kill at all
+/// (exe FUN_14084e5d0, HitMtrlParam fallDeathDist 40 on a normal floor); 45 m is over it.
+const DROP_HEIGHTS: [f32; 9] = [5.0, 10.0, 15.0, 20.0, 25.0, 30.0, 40.0, 45.0, 60.0];
+/// Grapple tests: how far above the floor the test hook hangs (m); it is placed 10 m ahead.
+const HOOK_HEIGHTS: [f32; 4] = [4.0, 8.0, 12.0, 16.0];
+const HOOK_AHEAD: f32 = 10.0;
 
 /// Every combat art (EquipParamWeapon 5100-7700 with an spAtkcategory), in id order.
 fn art_ids(combat: &Combat) -> Vec<i64> {
@@ -162,6 +175,10 @@ pub struct DebugMenu {
     pub no_posture: bool,
     pub infinite_emblems: bool,
     speed: usize,
+    /// Movement tests: index into DROP_HEIGHTS / HOOK_HEIGHTS, and how many hooks were added.
+    drop_height: usize,
+    hook_height: usize,
+    hooks_added: usize,
     /// Pending type / outfit choice (applied by restarting).
     enemy_type: usize,
     outfit: usize,
@@ -234,6 +251,7 @@ fn menu_input(
     mut player: Query<(&mut Player, &mut Actor, &mut Transform), Without<Enemy>>,
     mut enemies: Query<(Entity, &mut Enemy, &mut Actor, &mut Transform, Option<&crate::enemy::Phantom>), Without<Player>>,
     mut statuses: Option<ResMut<crate::status::Statuses>>,
+    mut hooks: Option<ResMut<crate::map::GrapplePoints>>,
     mut exit: MessageWriter<AppExit>,
 ) {
     if keys.just_pressed(KeyCode::F1) {
@@ -483,6 +501,48 @@ fn menu_input(
                 config.player.skills.push(FLOWING_WATER);
             }
         }
+        Item::DropHeight if step != 0 => {
+            menu.drop_height = cycle(menu.drop_height, DROP_HEIGHTS.len());
+            menu.message = format!("drop height {} m", DROP_HEIGHTS[menu.drop_height]);
+        }
+        Item::DropNow if enter => {
+            // Lifts Wolf straight up and lets go: the fall, the landing and (from 20 m) the
+            // death / safe return are the normal game code (player.rs).
+            let h = DROP_HEIGHTS[menu.drop_height];
+            if let Ok((mut p, mut a, mut t)) = player.single_mut() {
+                t.translation.y += h;
+                a.airborne = true;
+                a.vel_y = 0.0;
+                a.fall_type = 0;
+                a.air_base = Vec3::ZERO;
+                p.air_top = t.translation.y;
+                a.play_state(&combat.player, "FreeFall");
+                menu.message = format!("lifted {h} m and let go");
+            }
+        }
+        Item::HookHeight if step != 0 => {
+            menu.hook_height = cycle(menu.hook_height, HOOK_HEIGHTS.len());
+            menu.message = format!("test hook height {} m", HOOK_HEIGHTS[menu.hook_height]);
+        }
+        Item::HookNow if enter => {
+            // A rideable wire point HOOK_AHEAD in front of Wolf, up in the air: aim the camera
+            // at it and press the grapple button. Landing is on the point, so he falls from there.
+            if let (Some(hooks), Ok((_, a, t))) = (hooks.as_mut(), player.single()) {
+                let fwd = Vec3::new(-a.yaw.sin(), 0.0, -a.yaw.cos());
+                let at = t.translation + fwd * HOOK_AHEAD + Vec3::Y * HOOK_HEIGHTS[menu.hook_height];
+                hooks.0.push(crate::map::GrapplePoint { hook: at, land: at - Vec3::Y * 1.0, fwd: -fwd, variation: 0 });
+                menu.hooks_added += 1;
+                menu.message = format!("test hook {} m ahead, {} m up", HOOK_AHEAD, HOOK_HEIGHTS[menu.hook_height]);
+            }
+        }
+        Item::HookClear if enter => {
+            if let Some(hooks) = hooks.as_mut() {
+                let n = hooks.0.len().saturating_sub(menu.hooks_added);
+                hooks.0.truncate(n);
+                menu.hooks_added = 0;
+                menu.message = "test hooks removed".into();
+            }
+        }
         Item::Speed => {
             menu.speed = cycle(menu.speed, SPEEDS.len());
             time.set_relative_speed(SPEEDS[menu.speed]);
@@ -661,6 +721,11 @@ fn draw_menu(
             Item::Refill => "refill gourds / emblems / resurrections".into(),
             Item::Sheathe => "sheathe / draw the sword (X)".into(),
             Item::FlowingWater => format!("skill Flowing Water (SkillParam 280): {}", on(config.player.skills.contains(&FLOWING_WATER))),
+            Item::DropHeight => format!("fall test height: {} m  (20 m = kill limit starts, 45 m kills)", DROP_HEIGHTS[menu.drop_height]),
+            Item::DropNow => "lift Wolf to that height and drop".into(),
+            Item::HookHeight => format!("test hook height: {} m up, {} m ahead", HOOK_HEIGHTS[menu.hook_height], HOOK_AHEAD),
+            Item::HookNow => format!("place a test hook ({} placed)", menu.hooks_added),
+            Item::HookClear => "remove the test hooks".into(),
             Item::Speed => format!("game speed: x{}", time.relative_speed()),
             Item::Hitboxes => format!("hitboxes / hurtboxes (H): {}", on(hurtboxes.0)),
             Item::Reset => "reset fight".into(),

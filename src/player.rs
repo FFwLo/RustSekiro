@@ -108,7 +108,9 @@ pub struct Player {
     wire_todome: bool,
     /// The highest point of the current flight (on the ground: the current height). The landing
     /// reads the fall height from it (env(224), `FALL_HEIGHT_LONG_STIFF_LAND`).
-    air_top: f32,
+    pub(crate) air_top: f32,
+    /// The last ground Wolf stood on (not water): where a fall-return death puts him back.
+    safe_pos: Option<Vec3>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -419,6 +421,9 @@ const FALL_HEIGHT_LONG_STIFF_LAND: f32 = 20.0;
 const LAND_LONG_STIFF: &str = "a000_200021";
 /// c0000_define 211-212: FALL_HEIGHT_SHORT_STIFF_LAND(_FROM_JUMP), metres.
 const FALL_HEIGHT_SHORT_STIFF_LAND: f32 = 5.0;
+/// Falling this far with no ground below ends in the fall-return death (gap: HitMtrlParam's default
+/// fallDeathDist stands in for the exe's void rule).
+const FALL_VOID_DROP: f32 = 40.0;
 const FALL_HEIGHT_SHORT_STIFF_LAND_FROM_JUMP: f32 = 3.0;
 /// SP_EF_REF_TAE_ENABLE_SUB_ATTACK_DERIVE_ATTACK (c0000_define 666).
 pub const REF_SUB_ATTACK_DERIVE_ATTACK: i64 = 301;
@@ -1321,7 +1326,7 @@ fn spawn_player(mut commands: Commands, combat: Res<Combat>, config: Res<GameCon
         }
     }
     commands.spawn((
-        Player { plunge: None, speed_level: 0.0, requests: HashMap::new(), last_state: String::new(), gourd: config.player.gourd_charges, emblems: config.player.spirit_emblems, auto_aim: false, auto_aim_fresh: false, resurrections: config.player.resurrections, revive_queued: false, death_wait: 0.0, dead_for: 0.0, escape: None, jump_forward: false, jump_land: None, positioning_land: false, aged_form: false, step_tilt: 0.0, jump_tilt: 0.0, throw_start: None, throw_target: None, tool_slot: 0, vel_scale: None, expand_pending: false, sub_cat_before: 0, air_sub_count: 0, air_art_count: 0, art_enable_jump: false, timed: Vec::new(), held: Vec::new(), wire: None, perch: None, wire_todome: false, air_top: 0.0 },
+        Player { plunge: None, speed_level: 0.0, requests: HashMap::new(), last_state: String::new(), gourd: config.player.gourd_charges, emblems: config.player.spirit_emblems, auto_aim: false, auto_aim_fresh: false, resurrections: config.player.resurrections, revive_queued: false, death_wait: 0.0, dead_for: 0.0, escape: None, jump_forward: false, jump_land: None, positioning_land: false, aged_form: false, step_tilt: 0.0, jump_tilt: 0.0, throw_start: None, throw_target: None, tool_slot: 0, vel_scale: None, expand_pending: false, sub_cat_before: 0, air_sub_count: 0, air_art_count: 0, art_enable_jump: false, timed: Vec::new(), held: Vec::new(), wire: None, perch: None, wire_todome: false, air_top: 0.0, safe_pos: None },
         actor,
         Name::new("Player"),
         Transform::from_xyz(0.0, CAPSULE_HALF_HEIGHT, 4.0),
@@ -2587,6 +2592,30 @@ fn decide(
             }
         }
     }
+    // The fall-return deaths (HKS BEH_R_DEATH 769-776): the clip plays out, then Wolf stands at the
+    // last safe ground (GroundFallReturn a000_711210). They keep HP and the resurrections.
+    if matches!(a.state.as_str(), "LandDeadReturnStart" | "FallDeadReturnStart") {
+        a.move_vel = Vec3::ZERO;
+        if a.anim.is_empty() || a.t >= d.length(&a.anim) {
+            if let Some(safe) = p.safe_pos {
+                tf.translation = safe;
+            }
+            a.airborne = false;
+            a.vel_y = 0.0;
+            p.air_top = tf.translation.y;
+            if !a.play_state(d, "GroundFallReturn") {
+                a.play("StandIdle", "");
+            }
+        }
+        return;
+    }
+    if a.state == "GroundFallReturn" {
+        a.move_vel = Vec3::ZERO;
+        if a.anim.is_empty() || a.t >= d.length(&a.anim) {
+            a.play("StandIdle", "");
+        }
+        return;
+    }
     // BEH_R_DEATH fires whenever HP is out (HKS 5605), the revival too (round 60: a tick that
     // emptied the revived 1 HP before 110015's +50 % let Wolf get up at 0 and act; the revive
     // tick itself sets 1 HP).
@@ -3815,17 +3844,17 @@ fn decide(
         } else {
             "StandToDeflectGuard"
         };
-        // The sprint deflect slides 3.0 m along its facing (a050_203001 root; SetTurnSpeed 180 /
-        // 360 deg/s at frames 3-9). Wolf faces the lock-on target (user, from the real game: he
-        // deflects toward the enemy), and the slide stops against the enemy's body instead of
-        // shoving him (actor::separate). gap: the exe's facing at the guard start (HKS has no
-        // _StartAutoAim there) and its proxy push are not traced.
-        // gap: HKS BEH_A_DEFLECT_GUARD_START sets no facing (only _StartAutoAim: act 156 stores a
-        // homing point, FUN_140b2e090, and turns nothing) and SprintToDeflectGuard's TAE turns at
-        // most ~54 deg (no turn f0-3, 180 deg/s f3-6, 360 f6-9). The user's real-game checks say
-        // he faces the enemy (2026-10-10; 2026-10-15 "deflect sideways" with the facing kept), so
-        // the snap stays until the exe source of that turn is found.
-        aim(a);
+        // The sprint deflect slides 3.0 m along its facing (a050_203001 root) and turns toward the
+        // lock-on target over its first half second (live, rec_20261016_094717_lockturn_sprintdeflect,
+        // 7 sprint deflects locked on: no turn for 0.1 s (flag 7), 180 deg/s to 0.2 s, 360 deg/s to
+        // 0.3 s, then the controller default 720 deg/s until the facing is 0 deg off the enemy; a
+        // sprint 90-150 deg off him was square on at +0.5 s. Not a snap: the sideways start the
+        // user saw). The turn runs in the sprint_deflect_turn block below. A standing deflect is
+        // already facing the target (live +-6 deg), so it keeps the aim. gap: the exe's target for
+        // that turn (HKS sets no facing) is taken as the lock target.
+        if !sprinting {
+            aim(a);
+        }
         a.move_vel = Vec3::ZERO;
         a.play_state(d, state);
         return;
@@ -4025,6 +4054,23 @@ fn decide(
         return;
     }
     p.air_top = if a.airborne { p.air_top.max(tf.translation.y) } else { tf.translation.y };
+    if !a.airborne {
+        // HitMtrlParam 20-24 / 35-38 / 45-47 are water, swamp and underwater floors (not a safe spot).
+        let water = crate::map::floor_material(tf.translation).is_some_and(|m| matches!(m, 20..=24 | 35..=38 | 45..=47));
+        if !water && a.state != "Grabbed" {
+            p.safe_pos = Some(tf.translation);
+        }
+    } else if p.air_top - tf.translation.y >= FALL_VOID_DROP && crate::map::floor_material(tf.translation).is_none() && crate::map::terrain().is_some() {
+        // Falling with no ground below: HKS DAMAGE_TYPE_FALL_DEAD_RETURN -> W_FallDeadReturnStart
+        // (a000_199120), then back at the safe spot. gap: the exe's kill height / return volume is
+        // not traced; the default fallDeathDist (40 m) stands in.
+        if a.play_state(d, "FallDeadReturnStart") {
+            a.airborne = false;
+            a.vel_y = 0.0;
+            log.push("fell into the void", Color::srgb(1.0, 0.4, 0.4));
+            return;
+        }
+    }
     if a.airborne {
         // Air actions open on the jump/air anims' own cancel flags. The fall loops (FreeFall,
         // *GroundJumpFall: STATE_TYPE_STANDBY in g_paramHkbState) carry none and take every input,
@@ -4399,6 +4445,14 @@ fn decide(
                 return;
             }
             // Blown away: the matching Land anim (StandDamage*Blow*/Upper*).
+            // Landing from a height the ground's HitMtrlParam fallDeathDist (map::fall_death_dist)
+            // kills: HKS DAMAGE_TYPE_LAND_DEAD_RETURN -> W_LandDeadReturnStart (a000_200909), then
+            // back at the safe spot (gap: whether the game returns or kills outright is not traced).
+            let landing_drop = p.air_top - tf.translation.y;
+            if landing_drop >= FALL_HEIGHT_LONG_STIFF_LAND && crate::map::fall_death_dist(crate::map::floor_material(tf.translation)).is_some_and(|dist| landing_drop >= dist) && a.play_state(d, "LandDeadReturnStart") {
+                log.push("fall death - back to safe ground", Color::srgb(1.0, 0.4, 0.4));
+                return;
+            }
             let falling_reaction = |st: &str| {
                 st.contains("BlowStart") || st.contains("BlowFallLoop") || st.contains("UpperStart") || st.contains("UpperFallLoop")
                     || (st.starts_with("AirDamage") && (st.contains("Start") || st.contains("FallLoop")))
@@ -4797,6 +4851,15 @@ fn decide(
     if a.state.contains("QuickTurn") && !a.state.starts_with("Sprint") && !a.anim.is_empty() && d.root_at(&a.anim, a.t).is_none() {
         if let Some(td) = lock.target.and(target_dir) {
             let rate = d.turn_speed(&a.anim, a.t, true).unwrap_or(config.movement.turn_speed);
+            a.yaw = turn_toward(a.yaw, yaw_of(td), rate.to_radians() * dt);
+        }
+    }
+    // SprintToDeflectGuard turns to the lock target at the TAE rate (180 / 360 deg/s, then the
+    // default 720) except in the Disable Turning flag 7 windows (live, 7 deflects; see the guard
+    // start above).
+    if a.state == "SprintToDeflectGuard" && !a.anim.is_empty() && !d.flag(&a.anim, a.t, FLAG_DISABLE_TURN) {
+        if let Some(td) = lock.target.and(target_dir) {
+            let rate = turn_rate(d, a, &config, true);
             a.yaw = turn_toward(a.yaw, yaw_of(td), rate.to_radians() * dt);
         }
     }

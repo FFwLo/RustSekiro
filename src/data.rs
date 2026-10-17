@@ -1225,7 +1225,12 @@ pub fn blend_keeps_src(state: &str, player: bool) -> bool {
                 return Some(v);
             }
         }
-        None
+        // The run stops carry the direction without an underscore (StandRunStopF/B/L/R, graph
+        // state StandRunStop). Missing that, the stop kept the run's motion through its blend
+        // and slid 1 m; live (rec_20261016_*: W_StandRunStop events) the speed is down to
+        // 0.5 m/s 3 ticks after the stick is released, 0.15-0.3 m in all (clip a000_000600: 0.3 m).
+        let base = state.strip_suffix(['F', 'B', 'L', 'R'])?;
+        KEEP.get().and_then(|m| m.get(base)).copied()
     })
     .unwrap_or(true)
 }

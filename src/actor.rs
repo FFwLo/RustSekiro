@@ -1010,7 +1010,7 @@ fn proxy_off(combat: &Combat, a: &Actor) -> bool {
 /// upright capsules, so a pair whose heights don't meet (Wolf over an enemy's head after a
 /// head kick) is left alone: an enemy spans its feet to NpcParam hitHeight, Wolf his capsule
 /// (2 x CAPSULE_HALF_HEIGHT; gap: his proxy height is not traced).
-fn separate(combat: Res<Combat>, mut q: Query<(&Actor, &mut Transform)>) {
+fn separate(combat: Res<Combat>, mut last: Local<std::collections::HashMap<Entity, Vec3>>, mut q: Query<(Entity, &mut Actor, &mut Transform)>) {
     let radius = |a: &Actor| {
         if a.side == Side::Player {
             PLAYER_BODY_RADIUS
@@ -1032,8 +1032,8 @@ fn separate(combat: Res<Combat>, mut q: Query<(&Actor, &mut Transform)>) {
     for i in 0..items.len() {
         for j in i + 1..items.len() {
             let (l, r) = items.split_at_mut(j);
-            let (a, ta) = &mut l[i];
-            let (b, tb) = &mut r[0];
+            let (ea, a, ta) = &mut l[i];
+            let (eb, b, tb) = &mut r[0];
             // Throw pairs pass through each other (the game's throws drop the character proxies).
             if a.hp <= 0.0 || b.hp <= 0.0 || in_throw(a) || in_throw(b) || proxy_off(&combat, a) || proxy_off(&combat, b) {
                 continue;
@@ -1054,13 +1054,42 @@ fn separate(combat: Res<Combat>, mut q: Query<(&Actor, &mut Transform)>) {
                 let (wa, wb) = match (stops(a), stops(b)) {
                     (true, false) => (1.0, 0.0),
                     (false, true) => (0.0, 1.0),
-                    _ => (0.5, 0.5),
+                    // The one that walked in is stopped; one standing still is not shoved. Live
+                    // (rec_2026101x_*): an idle Wolf (a000_000000) with an enemy within 1.3 m moved
+                    // in 32 of 1267 ticks while the enemy closed in 148 times and stopped at 0.95 m;
+                    // Wolf running into an enemy (a000_0004xx / 5xx, 9306 ticks within 1.2 m) and the
+                    // enemy both median 0.0 m/s along the line between them. Before, the pair split
+                    // the overlap half each, so an enemy walking up slid Wolf in his idle pose.
+                    // Each side's share = its own approach this tick (both, or neither: half each).
+                    // gap: Havok's char proxy response is not traced; this is the recorded result.
+                    _ => {
+                        let came = |e: Entity, now: Vec3, toward: Vec3| last.get(&e).map_or(0.0, |p| (now - *p).with_y(0.0).dot(toward).max(0.0));
+                        let (ca, cb) = (came(*ea, ta.translation, n), came(*eb, tb.translation, -n));
+                        if ca + cb > 1e-5 { (ca / (ca + cb), cb / (ca + cb)) } else { (0.5, 0.5) }
+                    }
                 };
                 let push = n * (min - len);
                 ta.translation -= push * wa;
                 tb.translation += push * wb;
+                // A body pushed in the air stops against the other (its launch velocity goes;
+                // the stick's air control still adds its bit each tick). Live (rec_20261016_* boss
+                // fights, 19 head kicks off a forward jump over a perilous sweep): Wolf holds at
+                // the contact distance (1.14 m from the Monk, 0.95 m from the Owl) at 0.7 m/s
+                // until the kick lands 19 ticks on. Before, the jump's full speed stayed, so he slid
+                // round the body and shot past it at 6-7.5 m/s and the kick missed.
+                // gap: Havok's char proxy response is not traced; this is the recorded result.
+                if wa > 0.0 && a.airborne {
+                    a.air_base = Vec3::ZERO;
+                }
+                if wb > 0.0 && b.airborne {
+                    b.air_base = Vec3::ZERO;
+                }
             }
         }
+    }
+    last.clear();
+    for (e, _, t) in &items {
+        last.insert(*e, t.translation);
     }
 }
 
