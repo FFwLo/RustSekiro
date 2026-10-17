@@ -289,6 +289,9 @@ pub struct Run {
     pending: Vec<Act>,
     /// Disabled characters (Change Character Enable State off) and where they stood.
     disabled: HashMap<i64, (Vec3, f32)>,
+    /// Characters hidden by 2004[29] Set Character Backread State (removed); only these come
+    /// back on its "not removed".
+    unloaded: HashSet<i64>,
     /// Frames run.
     frame: u32,
     /// The event message (`Enemy::msg_serial`) each character's last short warp came on.
@@ -340,6 +343,10 @@ enum Act {
     ForceAnim(i64, i64, bool),
     EzState(i64, i64),
     Enable(i64, bool),
+    /// 2004[29] Set Character Backread State (entity, removed): a removed character is unloaded
+    /// (DarkScript3 sekiro-emedf). Isshin Ashina's entrance m11_01 11115930 removes Emma
+    /// (1110900) this way.
+    Unload(i64, bool),
     /// Who, target type (Target Entity Type: 0 object, 1 area, 2 character), target, a short
     /// warp request (2004[41]), the target character's dummy poly (-1: its root).
     Warp(i64, i64, i64, bool, i64),
@@ -421,6 +428,7 @@ impl Run {
             pending_warp: HashMap::new(),
             pending,
             disabled: HashMap::new(),
+            unloaded: HashSet::new(),
             frame: 0,
             warp_serial: HashMap::new(),
             attached: HashMap::new(),
@@ -861,6 +869,7 @@ fn step(run: &mut Run, ev: usize, w: &World, dt: f32, acts: &mut Vec<Act>) {
             (2004, 1) => acts.push(Act::AiState(i(0), i(1) == 1)),
             (2004, 4) => acts.push(Act::Death(i(0))),
             (2004, 5) => acts.push(Act::Enable(i(0), i(1) == 1)),
+            (2004, 29) => acts.push(Act::Unload(i(0), i(1) == 1)),
             (2004, 6) => acts.push(Act::EzState(i(0), i(1))),
             (2004, 8) => acts.push(Act::SetSp(i(0), i(1))),
             (2004, 12) => acts.push(Act::Immortal(i(0), i(1) == 1)),
@@ -926,6 +935,7 @@ pub(super) fn run_scripts(
     }
     // Start: the first enemy whose NpcParam row has a script.
     if bs.run.is_none() {
+        let mut stand_in = None;
         for (ent, e, a, _, s, _, _) in &q {
             if s.is_some() {
                 continue;
@@ -947,7 +957,20 @@ pub(super) fn run_scripts(
                 bs.run = Some(run);
                 commands.entity(ent).insert(Scripted(def.boss));
                 info!("boss script: {} {} ({} events)", def.map, row, def.events.len());
+                // A c1000 dummy as the main character (the Folding Screen Monkeys' HP display
+                // 2000800): a hidden stand-in, not a fighter (enemy.rs Enemy::stand_in).
+                if def.chars.get(&def.boss).is_some_and(|c| c.chr == "c1000") {
+                    stand_in = Some(ent);
+                }
                 break;
+            }
+        }
+        if let Some(Ok((_, mut e, mut a, mut tf, _, _, vis))) = stand_in.map(|ent| q.get_mut(ent)) {
+            e.stand_in = true;
+            tf.translation = PARK;
+            a.move_vel = Vec3::ZERO;
+            if let Some(mut vis) = vis {
+                *vis = Visibility::Hidden;
             }
         }
         return;
@@ -1093,7 +1116,15 @@ pub(super) fn run_scripts(
     }
     let w = World { chars: &chars };
     let mut acts = std::mem::take(&mut run.pending);
-    for ev in 0..run.events.len() {
+    // On the first frame the events entered part-way (the fight's own, at its boss's enable)
+    // run after the ones from their start: in the game the map-load set-up came first, e.g.
+    // m11_01 11115720 unloads the Owl (1110850, 2004[29]) on 8302 and his fight 11115860
+    // loads him again at its entrance.
+    let mut order: Vec<usize> = (0..run.events.len()).collect();
+    if run.frame == 0 {
+        order.sort_by_key(|&ev| run.def.events[ev].start > 0 && !run.def.events[ev].done);
+    }
+    for ev in order {
         step(run, ev, &w, dt, &mut acts);
     }
     run.frame += 1;
@@ -1172,6 +1203,47 @@ pub(super) fn run_scripts(
                 a.move_vel = Vec3::ZERO;
                 if let Some(mut vis) = vis {
                     *vis = Visibility::Hidden;
+                }
+            }
+            // Unloaded: out of the fight like a disabled character. Loaded again: back only if
+            // the unload hid it (a disabled character stays off).
+            Act::Unload(id, true) => {
+                let Some(&ent) = run.ents.get(&id) else { continue };
+                let Ok((_, mut e, mut a, mut tf, _, _, vis)) = q.get_mut(ent) else {
+                    run.pending.push(act);
+                    continue;
+                };
+                if e.disabled {
+                    continue;
+                }
+                e.disabled = true;
+                run.unloaded.insert(id);
+                run.disabled.insert(id, (tf.translation, a.yaw));
+                tf.translation = PARK;
+                a.move_vel = Vec3::ZERO;
+                if let Some(mut vis) = vis {
+                    *vis = Visibility::Hidden;
+                }
+            }
+            Act::Unload(id, false) => {
+                if !run.unloaded.remove(&id) {
+                    // (An unload still waiting for its character to spawn is cancelled.)
+                    run.pending.retain(|p| !matches!(p, Act::Unload(i, true) if *i == id));
+                    continue;
+                }
+                let Some(&ent) = run.ents.get(&id) else { continue };
+                let Some((pos, yaw)) = run.disabled.remove(&id) else { continue };
+                let Ok((_, mut e, mut a, mut tf, _, _, vis)) = q.get_mut(ent) else {
+                    run.disabled.insert(id, (pos, yaw));
+                    run.unloaded.insert(id);
+                    run.pending.push(act);
+                    continue;
+                };
+                e.disabled = false;
+                tf.translation = pos;
+                a.yaw = yaw;
+                if let Some(mut vis) = vis {
+                    *vis = Visibility::Inherited;
                 }
             }
             // A fight moved onto another boss's arena (map boss_arena, MOVED in tools/boss_arenas.py):

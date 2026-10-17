@@ -561,7 +561,7 @@ impl Plugin for PlayerPlugin {
         app.init_resource::<PadInput>()
             .init_resource::<LockOn>()
             .add_systems(Startup, spawn_player)
-            .add_systems(Update, read_input.run_if(resource_exists::<ButtonInput<KeyCode>>))
+            .add_systems(Update, read_input.run_if(resource_exists::<ButtonInput<KeyCode>>.and_then(not(resource_exists::<crate::autoboss::AutoBossOn>))))
             .init_resource::<ActiveThrow>()
             .add_systems(FixedUpdate, (sync_art_variation, decide, apply_refresh_effects, record_state).chain().in_set(ActorSet::Decide))
             .add_systems(FixedUpdate, follow_throw.after(ActorSet::Advance).before(crate::anim::PoseSet).before(ActorSet::Resolve))
@@ -3028,7 +3028,12 @@ fn decide(
     let wiring = p.wire.is_some() && crate::wire::is_wire_state(&a.state);
     // Docked at an edge (docking.rs: hanging, or climbing up off it) is held, not over a floor.
     let docked = p.dock.is_some() || crate::docking::is_jump_ready(&a.state) || a.state.starts_with("WallJumpReady_");
-    if !a.airborne && !perched && !wiring && !docked && tf.translation.y > crate::map::ground_y(tf.translation) + CAPSULE_HALF_HEIGHT + 0.05 && !(!a.anim.is_empty() && d.flag(&a.anim, a.t, FLAG_NO_GRAVITY)) {
+    // Not in a deathblow either: the throw plays out and only its end falls (HKS
+    // c0000_transition.hks FireStateEndEvent: HKB_STATE_THROW_ATK_TO_FREE_FALL -> W_FreeFall on
+    // IsAnimEnd). The Demon of Hatred's leap (a240_500000 / 510000) left Wolf above his field's
+    // uneven ground and the fall cut the deathblow, so the Demon never fell (2026-10-17).
+    let throwing = crate::actor::in_throw(&a) || a.state == "DeathblowStart";
+    if !a.airborne && !perched && !wiring && !docked && !throwing && tf.translation.y > crate::map::ground_y(tf.translation) + CAPSULE_HALF_HEIGHT + 0.05 && !(!a.anim.is_empty() && d.flag(&a.anim, a.t, FLAG_NO_GRAVITY)) {
         a.airborne = true;
         // A plain fall (fallType 0), not the last wire flight's (2026-10-12 bug hunt round 12).
         a.fall_type = 0;

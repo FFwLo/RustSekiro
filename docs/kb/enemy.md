@@ -673,3 +673,42 @@ ended SpEffect is not split by owner.
 - Phases: 3702001 (HU1) / 3702002 (HU2) state SpEffects; Act31 plays 20001 (the HU) at 3702001 with 2 deathblows left; 20001's TAE adds 3702050 'HU後状態' (endurance -1, kept for good).
 - End: 11105910 makes him immortal (2004[12]) before its region wait; 11105921 waits for 3702050, 0 bars and Wolf's message 10 (his deathblow's TAE 231 at 2.9 s), then EzState 20200 on him and 710207 on Wolf; the Todome is ThrowParam 17020180 (throwKind 190000, a240_501700 / 511700, his ThrowDef13700 sends 10 at its start, which ends the immortality: 11105920).
 - Fire looks: arm fire 3702011 (TAE, vfx 3702003 / 3702004 -> 670215 / 670216 on 820 / 821) shows. The idle FFX 120 on 820 / 50 is gated on stateInfo 951 (3702021 'HU後炎判定'); nothing in the data or exe gives 3702021 (950 = 3702020 likewise). gap.
+
+## Character backread state (2026-10-17)
+- 2004[29] Set Character Backread State (entity, removed), DarkScript3 sekiro-emedf: removed = the
+  character is unloaded. script.rs Act::Unload: removed hides it like 2004[5] off; "not removed"
+  brings back only a character the unload hid (a disabled one stays off).
+- Isshin Ashina's entrance m11_01 11115930 unloads Emma (1110900) and 1110850; m11_01 11115720
+  unloads the Owl (1110850) on 8302 at map load, and the Owl's fight 11115860 loads him at its
+  entrance (index 53 / 78). The run steps part-way-entered events after the others on frame 0.
+- In-game boss check (src/autoboss.rs): `SHINOBI_AUTOBOSS=<shots dir>` (optional
+  `SHINOBI_AUTOBOSS_SECS`, default 20; use `SHINOBI_ROOT` with a copied config to pick the fight)
+  plays the configured fight in the real build: unkillable Wolf walks up and swings, then each
+  phase the boss is broken and deathblown (Todome pressed while it kneels in 20200), real input
+  ignored. Logs `autoboss:` lines, screenshots every 10 frames for 10 s per deathblow and 5 s
+  after the win. Emma / Isshin Ashina 2026-10-17: Emma 1 deathblow, Isshin 2, kneel 20200 +
+  Wolf 710206, Death, Handle Boss Defeat, three runs in a row.
+  Also: `SHINOBI_AUTOBOSS_CHR` keeps to one chr (c1260 for the Monkeys); `SHINOBI_AUTOBOSS_MONITOR`
+  (default 1) puts the full-screen window on that monitor; the mouse is never held. A finisher
+  window 104 (Isshin's 21000 -> 15400590) is taken from behind him. Sword Saint 2026-10-17:
+  Tomoe's deathblow, Isshin 3 (a242, a243, a243), kneel, Todome, finisher, Handle Boss Defeat.
+  His gun 3045 (bullets 54000270-275) only follows a back-step (Act24 / Kengeki08 set
+  Number(11)) with Wolf over 4 m away (540000_battle.lua Activate): the walking-up test Wolf
+  never sees it.
+- Folding Screen Monkeys' bar holder (2026-10-17): the fight's main character 2000800 is a c1000
+  dummy, NpcParam 12600050 "Chigo monkey boss HP display dummy character" (m20 12005810 puts the
+  boss bar on it). Picked from the menu as c1260 / 12600050 it stood in the arena as a fifth
+  monkey with 100 HP, and one deathblow on it won (12005800 also wins on its HP ratio <= 0). Now
+  a c1000 main is a hidden stand-in (Enemy::stand_in: parked, no AI, no hits, its bar and HP
+  checks kept). Each monkey caught puts 3126010 on it (m20 12005820): 100 -> 74 -> 48 -> 22 -> 0,
+  so the fourth catch wins; one c1250 monkey of the horde joins per catch. Tests
+  the_monkeys_bar_holder_is_off_the_field, every_boss_row_reaches_its_defeat.
+- 2026-10-17 a finished move no longer feeds its TAE SpEffects to the AI (enemy.rs, the brain's
+  sp_self): an AddSpEffect may run past the clip's end (Lady Butterfly's drop a100_003290, 3.0 s,
+  holds 5028 to 3.2 s), and while she still fell after it her AI saw 5028 and picked the drop
+  again (509000_battle.lua:59 Act38), over and over. Now on her own arena she drops once, turns
+  and calls her phantoms (3018, eight c1510 enabled). The sim floor cannot show it (no fall).
+- 2026-10-17 Wolf no longer falls mid-deathblow (player.rs: the fall check skips actor::in_throw
+  and DeathblowStart; HKS ends a throw into a fall only at its end,
+  HKB_STATE_THROW_ATK_TO_FREE_FALL). On the Demon of Hatred's field his leap left Wolf above the
+  ground, the fall cut the deathblow and the Demon stood in ThrowDef12000 for good.
