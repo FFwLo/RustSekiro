@@ -230,6 +230,9 @@ pub(crate) fn parkour_pickups() -> Vec<Pickup> {
         at(3400, 1, -11.6, 4.5, -21.4),
         at(6100, 2, 14.2, 0.0, -21.8),
         at(3430, 1, 16.6, 0.0, -21.8),
+        // Gachiin's Sugar at the stealth courtyard's gate, two Ako's Sugars past its last guard.
+        at(3440, 1, -3.0, 0.0, 10.5),
+        at(3400, 2, 0.0, 0.0, 39.2),
     ]
 }
 
@@ -264,7 +267,7 @@ fn spawn_pickups(mut commands: Commands, config: Res<crate::config::GameConfig>,
     if let Some(id) = std::env::var("SHINOBI_ITEM_DIALOG").ok().and_then(|v| v.parse::<i64>().ok()) {
         picked.0.push((usize::MAX, id, 1));
     }
-    let list = if crate::map::map_id(&config).as_deref() == Some(crate::sandbox::PARKOUR_ID) { parkour_pickups() } else { Vec::new() };
+    let list = if crate::map::map_id(&config).as_deref() == Some(crate::sandbox::CONSTRUCT_ID) { parkour_pickups() } else { Vec::new() };
     for (i, p) in list.iter().enumerate() {
         let mut fx = crate::fxr::FxEffect::new(GLINT_SFX, None, false, Transform::from_translation(p.pos + Vec3::Y * 0.1));
         fx.keep = true;

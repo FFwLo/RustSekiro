@@ -129,14 +129,15 @@ pub const ARENAS_ONLY: &str = "arenas";
 pub fn map_id(config: &GameConfig) -> Option<String> {
     // "", "off" or "0" turn the map off for one run (PowerShell drops a variable set to "").
     match std::env::var("SHINOBI_MAP") {
-        Ok(v) => (!v.is_empty() && v != "off" && v != "0").then_some(v),
+        Ok(v) => (!v.is_empty() && v != "off" && v != "0").then(|| if v == crate::sandbox::PARKOUR_ALIAS { crate::sandbox::CONSTRUCT_ID.to_string() } else { v }),
         Err(_) => {
             let m = config.world.map.clone().filter(|m| !m.is_empty())?;
+            let m = if m == crate::sandbox::PARKOUR_ALIAS { crate::sandbox::CONSTRUCT_ID.to_string() } else { m };
             if m == crate::sandbox::MAP_ID {
                 return Some(sandbox_exception(&config.enemy.chr, config.enemy.npc_row).unwrap_or(m));
             }
-            // The parkour course keeps itself whatever the fight (no boss arena swap).
-            if m == crate::sandbox::PARKOUR_ID {
+            // The Construct keeps itself whatever the fight (no boss arena swap).
+            if m == crate::sandbox::CONSTRUCT_ID {
                 return Some(m);
             }
             let arena = boss_arena(&config.enemy.chr, config.enemy.npc_row);
@@ -1842,7 +1843,8 @@ fn load_map_id(map: &str, config: &GameConfig, fight: Option<i64>, commands: &mu
     let t0 = std::time::Instant::now();
     // The sandbox (sandbox.rs): a generated arena under a real map's lighting and materials.
     let sandbox = crate::sandbox::is_generated(&map);
-    let parkour = map == crate::sandbox::PARKOUR_ID;
+    let parkour = map == crate::sandbox::CONSTRUCT_ID;
+    crate::sandbox::ON_CONSTRUCT.store(parkour, std::sync::atomic::Ordering::Relaxed);
     crate::docking::WALL_JUMP_LIMIT.store(if parkour { u8::MAX } else { crate::docking::WALL_JUMP_COUNT_MAX }, std::sync::atomic::Ordering::Relaxed);
     let id = if sandbox { crate::sandbox::source() } else { map.clone() };
     BOSS_ARENA.store(id.starts_with("boss_"), std::sync::atomic::Ordering::Relaxed);

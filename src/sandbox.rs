@@ -12,9 +12,11 @@
 //! A panel's blend bytes run: overlay 0 -> 1 left to right, snow 0 -> 1 bottom to top, layer C
 //! at the real map's constant 0.5. The floor's overlay rises towards +X, its snow towards -X.
 //! `extracted/map_sandbox_panels.txt` lists which material each panel shows.
-//! `[world] map = "parkour"` (or `SHINOBI_MAP=parkour`): the same arena with the gallery off and
-//! the parkour course (`parkour_course`: a hug wall, an L platform with hang ledges and stairs,
-//! a cliff for the wall jumps) and its edges.
+//! `[world] map = "construct"` (or `SHINOBI_MAP=construct`; "parkour", its old name, still
+//! works): the same arena with the gallery off and the parkour course (`parkour_course`: a hug
+//! wall, an L platform with hang ledges and stairs, a cliff for the wall jumps, the wall-jump
+//! shaft) and its edges ahead of Wolf, and behind him the stealth courtyard (`STEALTH_WALLS`,
+//! `construct_patrols`): soldiers walking their rounds between cover walls.
 //! `SHINOBI_SANDBOX_AT=x,z[,yaw]` stands Wolf there at the start, facing yaw degrees (0 = -Z,
 //! the gallery, the default; 180 = +Z, the line-up; a screenshot of one row: its z + 5).
 
@@ -633,13 +635,61 @@ pub(crate) fn catalog_shots(
     }
 }
 
-/// The `[world] map` / `SHINOBI_MAP` value of the parkour test course: the sandbox with the
-/// gallery off and the course built in (2026-10-17, the user: "make a test map for parkour").
-pub const PARKOUR_ID: &str = "parkour";
+/// The `[world] map` / `SHINOBI_MAP` value of the Construct: the sandbox with the gallery off
+/// and the parkour course and stealth courtyard built in (2026-10-17, the user: "make a test map
+/// for parkour"; renamed from "parkour" the same day: "the default map should be renamed to
+/// construct").
+pub const CONSTRUCT_ID: &str = "construct";
+/// Its old name, still taken (map.rs map_id turns it into `CONSTRUCT_ID`).
+pub const PARKOUR_ALIAS: &str = "parkour";
+
+/// The Construct is loaded (map.rs sets it with the map): no victory screen when its guards are
+/// all down (menu.rs watch_fight), it is a place to practise, not a fight.
+pub static ON_CONSTRUCT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The stealth courtyard's walls (lo, hi), all 2.5 m: tall enough to break the guards' sight
+/// (stealth.rs sight_clear casts between the capsule centres, so crouching behind a low wall
+/// would not hide Wolf). The first two are the gate wall either side of its 3 m opening, then
+/// five cover walls; the long faces of these seven are huggable. Then the sides and the back.
+const STEALTH_WALLS: [(Vec3, Vec3); 10] = [
+    (Vec3::new(-16.0, 0.0, 12.0), Vec3::new(-1.5, 2.5, 12.5)),
+    (Vec3::new(1.5, 0.0, 12.0), Vec3::new(16.0, 2.5, 12.5)),
+    (Vec3::new(-10.0, 0.0, 18.0), Vec3::new(-6.0, 2.5, 18.5)),
+    (Vec3::new(5.0, 0.0, 20.0), Vec3::new(9.0, 2.5, 20.5)),
+    (Vec3::new(-3.0, 0.0, 27.0), Vec3::new(3.0, 2.5, 27.5)),
+    (Vec3::new(-13.0, 0.0, 32.0), Vec3::new(-9.0, 2.5, 32.5)),
+    (Vec3::new(8.0, 0.0, 33.0), Vec3::new(12.0, 2.5, 33.5)),
+    (Vec3::new(-16.5, 0.0, 12.0), Vec3::new(-16.0, 2.5, 40.5)),
+    (Vec3::new(16.0, 0.0, 12.0), Vec3::new(16.5, 2.5, 40.5)),
+    (Vec3::new(-16.0, 0.0, 40.0), Vec3::new(16.0, 2.5, 40.5)),
+];
+const HUGGABLE_WALLS: usize = 7;
+
+/// The courtyard's guards (chr `GUARD_CHR`): where each starts, facing, and its round (ai::Patrol;
+/// a 2 s look-around wait at each point). Two walk loops around cover, one paces the middle,
+/// one stands at the far end watching the gate.
+pub const GUARD_CHR: &str = "c1010";
+
+pub fn construct_patrols() -> Vec<(Vec3, f32, crate::ai::Patrol)> {
+    let route = |kind: i64, pts: &[(f32, f32)]| {
+        let points: Vec<Vec3> = pts.iter().map(|&(x, z)| Vec3::new(x, 0.0, z)).collect();
+        let arrivals = (0..points.len() as i64).map(|i| (i, -1, 2.0)).collect();
+        let at = points[0];
+        // Facing the second point (forward = Ry(yaw) * -Z), or the gate (-Z) when alone.
+        let yaw = points.get(1).map_or(0.0, |n| f32::atan2(-(n.x - at.x), -(n.z - at.z)));
+        (at, yaw, crate::ai::Patrol::new(kind, points, Vec::new(), arrivals))
+    };
+    vec![
+        route(0, &[(-13.0, 15.0), (-3.0, 15.0), (-3.0, 22.0), (-13.0, 22.0)]),
+        route(1, &[(-10.0, 25.0), (10.0, 25.0)]),
+        route(0, &[(6.0, 29.0), (14.0, 29.0), (14.0, 37.0), (6.0, 37.0)]),
+        route(0, &[(0.0, 37.0)]),
+    ]
+}
 
 /// Is this map id the sandbox (with or without the parkour course)?
 pub fn is_generated(id: &str) -> bool {
-    id == MAP_ID || id == PARKOUR_ID
+    id == MAP_ID || id == CONSTRUCT_ID
 }
 
 impl Patch {
@@ -741,6 +791,14 @@ pub fn parkour_course() -> (Vec<(Vec3, Vec3)>, Vec<map::LedgeEdge>) {
     boxes.push((Vec3::new(sx0, 0.0, sz1), Vec3::new(15.0, sh, sz1 + t)));
     boxes.push((Vec3::new(16.2, 0.0, sz1), Vec3::new(sx1, sh, sz1 + t)));
     boxes.push((Vec3::new(15.0, 2.6, sz1), Vec3::new(16.2, sh, sz1 + t)));
+    // 5. The stealth courtyard behind the start (2026-10-17, the user: "add stealth segment").
+    for (i, &(lo, hi)) in STEALTH_WALLS.iter().enumerate() {
+        boxes.push((lo, hi));
+        if i < HUGGABLE_WALLS {
+            edges.push(hug_edge(Vec3::new(lo.x, 0.0, hi.z), Vec3::new(hi.x, 0.0, hi.z), Vec3::Z));
+            edges.push(hug_edge(Vec3::new(hi.x, 0.0, lo.z), Vec3::new(lo.x, 0.0, lo.z), Vec3::NEG_Z));
+        }
+    }
     (boxes, edges)
 }
 
@@ -748,13 +806,31 @@ pub fn parkour_course() -> (Vec<(Vec3, Vec3)>, Vec<map::LedgeEdge>) {
 mod parkour_tests {
     use bevy::prelude::*;
 
+    /// The guards' rounds stay clear of the courtyard's walls (half a metre of body room), inside
+    /// the courtyard.
+    #[test]
+    fn the_guards_walk_clear_of_the_walls() {
+        let near_wall = |p: Vec3| super::STEALTH_WALLS.iter().any(|(lo, hi)| p.x > lo.x - 0.5 && p.x < hi.x + 0.5 && p.z > lo.z - 0.5 && p.z < hi.z + 0.5);
+        for (_, _, route) in super::construct_patrols() {
+            let n = route.points.len();
+            for i in 0..n {
+                let (a, b) = (route.points[i], route.points[(i + 1) % n]);
+                for k in 0..=40 {
+                    let p = a.lerp(b, k as f32 / 40.0);
+                    assert!(!near_wall(p), "route point {p} is in a wall");
+                    assert!(p.z > 12.5 && p.z < 40.0 && p.x.abs() < 16.0, "{p} is outside the courtyard");
+                }
+            }
+        }
+    }
+
     /// Every course edge docks Wolf on the open side of its wall: hugging, his spot is outside
     /// the boxes; hanging, the spot is off the platform.
     #[test]
     fn the_course_edges_face_out_of_their_walls() {
         let (boxes, edges) = super::parkour_course();
         let inside = |p: Vec3| boxes.iter().any(|(lo, hi)| p.x > lo.x + 0.01 && p.x < hi.x - 0.01 && p.z > lo.z + 0.01 && p.z < hi.z - 0.01 && p.y < hi.y);
-        assert_eq!(edges.iter().filter(|e| e.kind == 3).count(), 3);
+        assert_eq!(edges.iter().filter(|e| e.kind == 3).count(), 3 + 2 * super::HUGGABLE_WALLS);
         assert_eq!(edges.iter().filter(|e| e.kind == 2).count(), 8);
         for e in &edges {
             let d = crate::docking::Dock::new_from_edge(e).expect("edge too short");
