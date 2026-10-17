@@ -1072,29 +1072,30 @@ fn ninsatsu_hit(combat: Res<Combat>, player: Single<&Actor, (With<Player>, Witho
     }
 }
 
-/// How near a fighting enemy must stand to flinch at Wolf's deathblow on another [m].
+/// How near a fighting enemy must stand to flinch when a comrade's posture breaks [m].
 const DEATHBLOW_FLINCH_RANGE: f32 = 10.0;
 
-/// As Wolf's deathblow starts, the other enemies fighting him within DEATHBLOW_FLINCH_RANGE drop
-/// what they are doing and flinch (their small damage reaction, away from him): the user
-/// (2026-10-17), "enemies should stop attacking and flinch when someone gets deathblow". gap: no
-/// game data found for it (Wolf's deathblow clips shoot nothing at the others; c1010 / c1020
-/// have no fear state but FireFearReaction).
+/// As an enemy's posture breaks (Wolf's deathblow opens), the others fighting him within
+/// DEATHBLOW_FLINCH_RANGE of it drop what they are doing and flinch (their small damage reaction,
+/// away from Wolf): the user (2026-10-17), "enemies should stop attacking and flinch when
+/// someone gets deathblow", then "only ... when their comrade gets staggered, not getting
+/// deathblow". gap: no game data found for it (Wolf's deathblow clips shoot nothing at the
+/// others; c1010 / c1020 have no fear state but FireFearReaction).
 fn deathblow_flinch(
     combat: Res<Combat>,
-    player: Single<(&Actor, &Transform), (With<Player>, Without<Enemy>)>,
-    mut q: Query<(&mut Enemy, &mut Actor, &Transform), Without<Player>>,
-    mut was: Local<bool>,
+    player: Single<&Transform, (With<Player>, Without<Enemy>)>,
+    mut q: Query<(Entity, &mut Enemy, &mut Actor, &Transform), Without<Player>>,
+    mut broken: Local<HashSet<Entity>>,
 ) {
-    let (pa, ptf) = *player;
-    let now = pa.state.starts_with("Deathblow");
-    let started = now && !*was;
-    *was = now;
-    if !started {
+    let ptf = *player;
+    let now: HashSet<Entity> = q.iter().filter(|(_, e, ..)| e.is_broken()).map(|(ent, ..)| ent).collect();
+    let fresh: Vec<Vec3> = q.iter().filter(|(ent, ..)| now.contains(ent) && !broken.contains(ent)).map(|(_, _, _, tf)| tf.translation).collect();
+    *broken = now;
+    if fresh.is_empty() {
         return;
     }
-    for (mut e, mut a, tf) in &mut q {
-        if e.is_dead() || e.is_broken() || e.targeting.state != crate::stealth::BATTLE || tf.translation.distance(ptf.translation) > DEATHBLOW_FLINCH_RANGE {
+    for (_, mut e, mut a, tf) in &mut q {
+        if e.is_dead() || e.is_broken() || e.targeting.state != crate::stealth::BATTLE || !fresh.iter().any(|p| p.distance(tf.translation) <= DEATHBLOW_FLINCH_RANGE) {
             continue;
         }
         let d = combat.data_of(&a);

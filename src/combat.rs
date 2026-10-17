@@ -622,15 +622,20 @@ pub(crate) const FLAG_NO_DAMAGE_MOTION: i64 = 24;
 /// gap: the exe's reader of 0x7C bit 10 is not traced; sekiro-rs has no such gate.
 pub(crate) const FLAG_DAMAGE_MOTION: i64 = 73;
 
-/// Whether an attacking enemy's swing lets a hit's damage motion through now: only the attacks
-/// that carry ChrActionFlag 73 are closed between its spans (every c1020 attack has them, the
-/// live rec above); one without any (most of c1010's: 3002, 3003, 3005 ...) can be cut off, as
-/// the game's soldiers are (the user, 2026-10-17: "i cannot interrupt any of their attack").
-/// Their real super armour still comes from the spCategory 1001 SpEffects
-/// (`damage_motion_level`) and ChrActionFlag 24.
+/// Whether an attacking enemy's swing lets a hit's damage motion through now. Only an attack that
+/// carries ChrActionFlag 73 has armour, and only from its opening span's end through its last
+/// hit (TAE 1): the wind-up swings on (every c1020 attack, the live rec above: hit at 3000
+/// frame 9+, where its first span ends), the recovery after the blade has passed does not (the
+/// user, 2026-10-17: "General's recovery move still has hyperarmor"). One without the flag
+/// (most of c1010's: 3002, 3003, 3005 ...) can be cut off anywhere ("i cannot interrupt any of
+/// their attack"). The real super armour stays: the spCategory 1001 SpEffects
+/// (`damage_motion_level`), ChrActionFlag 24 and NpcParam superArmorDurability (137 rows; 0 on
+/// c1010 and c1020). gap: the exe's reader of flag 73 is not traced.
 pub(crate) fn swing_can_flinch(d: &crate::data::CharData, a: &Actor) -> bool {
-    let marked = d.anim(&a.anim).is_some_and(|an| an.events.iter().any(|e| e.kind == 0 && e.flag_type() == Some(FLAG_DAMAGE_MOTION)));
-    !marked || d.flag(&a.anim, a.t, FLAG_DAMAGE_MOTION)
+    let Some(an) = d.anim(&a.anim) else { return true };
+    let marked = an.events.iter().any(|e| e.kind == 0 && e.flag_type() == Some(FLAG_DAMAGE_MOTION));
+    let last_hit = an.events.iter().filter(|e| e.kind == 1).map(|e| e.end).fold(f32::NEG_INFINITY, f32::max);
+    !marked || a.t > last_hit || d.flag(&a.anim, a.t, FLAG_DAMAGE_MOTION)
 }
 
 /// The HKS damage level an NPC's hit reaction sees (sekiro-rs c0f97ee fight.rs damage_motion_level,

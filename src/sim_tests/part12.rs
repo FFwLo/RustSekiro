@@ -747,4 +747,23 @@ fn a_soldiers_plain_swing_can_be_interrupted() {
     assert!(!crate::combat::swing_can_flinch(d, &a), "3001 between its flag-73 spans");
     at(&mut a, "a000_003001", 1.0);
     assert!(crate::combat::swing_can_flinch(d, &a), "3001 in its recovery span");
+    // Past its hit (0.47-0.6 s), before the recovery span opens at 0.73 s: open too.
+    at(&mut a, "a000_003001", 0.65);
+    assert!(crate::combat::swing_can_flinch(d, &a), "3001 after its hit");
+}
+
+/// The General's recovery after the blade has passed takes a flinch; his wind-up does not (the
+/// user: "General's recovery move still has hyperarmor").
+#[test]
+fn the_generals_recovery_is_open() {
+    let app = app_cfg("c1020", None, Vec::new());
+    let combat = app.world().resource::<crate::data::Combat>();
+    let d = &combat.kind(0).data;
+    let mut a = Actor::new(crate::actor::Side::Enemy, 100.0, 100.0, 1.0, 0);
+    a.anim = "a000_003000".to_string();
+    // Hit 0.6-0.8 s, flag 73 spans 0.03-0.3 and 1.8 on.
+    for (t, open) in [(0.1, true), (0.5, false), (0.7, false), (1.0, true), (1.5, true), (2.0, true)] {
+        a.t = t;
+        assert_eq!(crate::combat::swing_can_flinch(d, &a), open, "3000 at {t} s");
+    }
 }
