@@ -592,7 +592,7 @@ fn run_idol_menu(
 /// The idol's model: the game's Sculptor's Idol (obj o005000, the model of 35 of the 58
 /// BonfireWarpParam idols; textures o005500_body_a / _n, shared with the shrine idol o005500),
 /// exported by `sekiro-extract objmesh` to extracted/objmesh/o005000.json. X mirrored as every
-/// FromSoftware position, the triangles' winding flipped with it.
+/// FromSoftware position; the winding stays as stored (the mirror already turns it the way Bevy culls).
 fn idol_mesh(meshes: &mut Assets<Mesh>, mats: &mut Assets<StandardMaterial>, assets: &AssetServer) -> Vec<(Handle<Mesh>, Handle<StandardMaterial>)> {
     let path = crate::paths::extracted().join("objmesh/o005000.json");
     let Some(json) = std::fs::read_to_string(path).ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()) else { return Vec::new() };
@@ -613,7 +613,7 @@ fn idol_mesh(meshes: &mut Assets<Mesh>, mats: &mut Assets<StandardMaterial>, ass
         let positions: Vec<[f32; 3]> = pos.chunks(3).map(|p| [-p[0], p[1], p[2]]).collect();
         let normals: Vec<[f32; 3]> = nrm.chunks(3).map(|p| [-p[0], p[1], p[2]]).collect();
         let uvs: Vec<[f32; 2]> = uv.chunks(2).map(|p| [p[0], p[1]]).collect();
-        let tris: Vec<u32> = idx.chunks(3).filter(|t| t.len() == 3).flat_map(|t| [t[0], t[2], t[1]]).collect();
+        let tris: Vec<u32> = idx.chunks(3).filter(|t| t.len() == 3).flatten().copied().collect();
         let mut mesh = Mesh::new(bevy::mesh::PrimitiveTopology::TriangleList, bevy::asset::RenderAssetUsages::default());
         mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
         if normals.len() == n {
@@ -668,8 +668,8 @@ fn spawn_idols(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mat
     }
 }
 
-/// The model's front against `Idol::out` (rad): its face looks along its own +Z.
-const IDOL_FACING: f32 = 0.0;
+/// The model's front against `Idol::out` (rad): the carved face looks along its own -Z.
+const IDOL_FACING: f32 = std::f32::consts::PI;
 
 pub struct IdolPlugin;
 
