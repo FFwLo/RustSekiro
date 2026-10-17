@@ -29,6 +29,7 @@ mod duel;
 mod emevd;
 mod enemy;
 mod enemy_bullet;
+mod experience;
 mod ffx;
 mod fxr;
 mod fog_wall;
@@ -86,6 +87,7 @@ fn main() {
         .add_plugins(game_menu::GameMenuPlugin)
         .add_plugins(idol::IdolPlugin)
         .add_plugins(items::ItemsPlugin)
+        .add_plugins(experience::ExperiencePlugin)
         .add_plugins(interp::InterpPlugin)
         .add_plugins(debug_menu::DebugMenuPlugin)
         .add_plugins(trace::TracePlugin)

@@ -695,3 +695,132 @@ pub(crate) fn a_sugar_is_eaten_and_raises_the_attack() {
     assert!((a.atk_rate - 1.125).abs() < 1e-3, "atk_rate {}", a.atk_rate);
     assert_eq!(app.world().resource::<crate::items::Used>().0, vec![3400]);
 }
+
+/// The Construct's courtyard guards walk their rounds (WalkFront*), unaware of a far-off Wolf;
+/// they do not run them (the user: "the enemies run ... instead of casual walking").
+#[test]
+fn a_courtyard_guard_walks_its_round() {
+    let mut app = app_cfg(crate::sandbox::GUARD_CHR, None, Vec::new());
+    let (at, yaw, route) = crate::sandbox::construct_patrols().remove(0);
+    let guard = {
+        let world = app.world_mut();
+        let mut q = world.query_filtered::<&mut Transform, With<Player>>();
+        q.single_mut(world).unwrap().translation = Vec3::new(0.0, CAPSULE_HALF_HEIGHT, -150.0);
+        let e = world.query_filtered::<Entity, With<Enemy>>().iter(world).next().unwrap();
+        let mut q = world.query_filtered::<(&mut Transform, &mut Actor, &mut Enemy), With<Enemy>>();
+        let (mut t, mut a, mut en) = q.get_mut(world, e).unwrap();
+        t.translation = at.with_y(CAPSULE_HALF_HEIGHT);
+        a.yaw = yaw;
+        en.make_unaware(&mut a);
+        world.entity_mut(e).insert(crate::enemy::PatrolRoute(route));
+        e
+    };
+    let mut states = std::collections::BTreeSet::new();
+    let mut moved = 0.0f32;
+    for _ in 0..60 * 12 {
+        app.update();
+        let a = app.world().get::<Actor>(guard).unwrap();
+        states.insert(a.state.clone());
+        moved = moved.max((app.world().get::<Transform>(guard).unwrap().translation.with_y(0.0) - at).length());
+    }
+    assert!(moved > 2.0, "it walks its round: {moved:.2} m, states {states:?}");
+    assert!(states.iter().any(|s| s.starts_with("WalkFront")), "walking: {states:?}");
+    assert!(!states.iter().any(|s| s.starts_with("RunFront")), "not running: {states:?}");
+}
+
+/// A c1010 swing without ChrActionFlag 73 (3002) can be cut off mid-swing; one with it (3001)
+/// is closed between its spans (0.03-0.33 s, 0.73 s on) and open inside them (the user: "i
+/// cannot interrupt any of their attack").
+#[test]
+fn a_soldiers_plain_swing_can_be_interrupted() {
+    let app = app_cfg("c1010", None, Vec::new());
+    let combat = app.world().resource::<crate::data::Combat>();
+    let d = &combat.kind(0).data;
+    let mut a = Actor::new(crate::actor::Side::Enemy, 100.0, 100.0, 1.0, 0);
+    let at = |a: &mut Actor, anim: &str, t: f32| {
+        a.anim = anim.to_string();
+        a.t = t;
+    };
+    at(&mut a, "a000_003002", 1.0);
+    assert!(crate::combat::swing_can_flinch(d, &a), "3002 mid-swing");
+    at(&mut a, "a000_003001", 0.5);
+    assert!(!crate::combat::swing_can_flinch(d, &a), "3001 between its flag-73 spans");
+    at(&mut a, "a000_003001", 1.0);
+    assert!(crate::combat::swing_can_flinch(d, &a), "3001 in its recovery span");
+    // Past its hit (0.47-0.6 s), before the recovery span opens at 0.73 s: open too.
+    at(&mut a, "a000_003001", 0.65);
+    assert!(crate::combat::swing_can_flinch(d, &a), "3001 after its hit");
+}
+
+/// The General's recovery after the blade has passed takes a flinch; his wind-up does not (the
+/// user: "General's recovery move still has hyperarmor").
+#[test]
+fn the_generals_recovery_is_open() {
+    let app = app_cfg("c1020", None, Vec::new());
+    let combat = app.world().resource::<crate::data::Combat>();
+    let d = &combat.kind(0).data;
+    let mut a = Actor::new(crate::actor::Side::Enemy, 100.0, 100.0, 1.0, 0);
+    a.anim = "a000_003000".to_string();
+    // Hit 0.6-0.8 s, flag 73 spans 0.03-0.3 and 1.8 on.
+    for (t, open) in [(0.1, true), (0.5, false), (0.7, false), (1.0, true), (1.5, true), (2.0, true)] {
+        a.t = t;
+        assert_eq!(crate::combat::swing_can_flinch(d, &a), open, "3000 at {t} s");
+    }
+}
+
+/// Two guards: one fighting Wolf, the other 12 m off facing away (it cannot see him). The
+/// fighter's swings and hits call friends (AtkParam AppearAiSoundId 2000025 / HitAiSoundId
+/// 2000020, bCallFriend): the other hears them and comes (the user: "enemies should hear their
+/// comrades ... fighting").
+#[test]
+fn a_guard_hears_its_comrade_fighting() {
+    let g = crate::config::GroupEnemy { chr: "c1010".into(), npc_row: None, at: None, msb: None };
+    let mut app = app_cfg("c1010", None, vec![g]);
+    let (fighter, other) = {
+        let world = app.world_mut();
+        let ents: Vec<Entity> = world.query_filtered::<Entity, With<Enemy>>().iter(world).collect();
+        let mut q = world.query_filtered::<(&mut Transform, &mut Actor, &mut Enemy), With<Enemy>>();
+        let (mut t, mut a, mut e) = q.get_mut(world, ents[0]).unwrap();
+        t.translation = Vec3::new(0.0, CAPSULE_HALF_HEIGHT, -2.5);
+        a.yaw = 0.0;
+        e.aggressive = true;
+        let (mut t, mut a, mut e) = q.get_mut(world, ents[1]).unwrap();
+        t.translation = Vec3::new(12.0, CAPSULE_HALF_HEIGHT, -2.5);
+        // Facing +X, away from Wolf at the origin.
+        a.yaw = -std::f32::consts::FRAC_PI_2;
+        e.make_unaware(&mut a);
+        e.aggressive = true;
+        (ents[0], ents[1])
+    };
+    let mut best = 0u8;
+    for _ in 0..60 * 12 {
+        app.update();
+        best = best.max(app.world().get::<Enemy>(other).unwrap().targeting.state);
+    }
+    let f = app.world().get::<Enemy>(fighter).unwrap().targeting.state;
+    assert!(best >= crate::stealth::CAUTION, "the other guard never noticed (fighter state {f}, other best {best})");
+}
+
+/// A guard that spots Wolf calls its comrades (AiSoundParam 2000000, bCallFriend) as it finds
+/// him (the user: "enemies should hear their comrades spotting").
+#[test]
+fn a_guard_calls_out_as_it_spots_wolf() {
+    let mut app = app_cfg("c1010", None, Vec::new());
+    let guard = {
+        let world = app.world_mut();
+        let e = world.query_filtered::<Entity, With<Enemy>>().iter(world).next().unwrap();
+        let mut q = world.query_filtered::<(&mut Transform, &mut Actor, &mut Enemy), With<Enemy>>();
+        let (mut t, mut a, mut en) = q.get_mut(world, e).unwrap();
+        // 5 m ahead of Wolf, facing him (+Z).
+        t.translation = Vec3::new(0.0, CAPSULE_HALF_HEIGHT, -5.0);
+        a.yaw = std::f32::consts::PI;
+        en.make_unaware(&mut a);
+        e
+    };
+    let mut called = false;
+    for _ in 0..60 * 4 {
+        app.update();
+        called |= app.world().resource::<crate::enemy::AiSounds>().0.iter().any(|s| s.id == 2000000 && s.owner == Some(guard));
+    }
+    assert!(called, "no call (state {})", app.world().get::<Enemy>(guard).unwrap().targeting.state);
+}

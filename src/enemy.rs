@@ -1030,7 +1030,7 @@ impl Plugin for EnemyPlugin {
             .add_systems(Startup, spawn_enemy)
             .add_systems(
                 FixedUpdate,
-                (spawn_encounter, reset_fight, stealth_env_start, start_unaware, ai_hold, route_end_anim, parry_interrupt, think, grapple::on_wire_hit, ninsatsu_hit, todome_message, events::messages, script::run_scripts, talk::run_talk, events::apply_event_warp).chain().in_set(ActorSet::Decide),
+                (spawn_encounter, reset_fight, stealth_env_start, start_unaware, ai_hold, route_end_anim, parry_interrupt, think, grapple::on_wire_hit, ninsatsu_hit, deathblow_flinch, death_noise, todome_message, events::messages, script::run_scripts, talk::run_talk, events::apply_event_warp).chain().in_set(ActorSet::Decide),
             )
             .add_systems(Update, toggle_aggression.run_if(resource_exists::<ButtonInput<KeyCode>>))
             .init_resource::<grapple::EnemyGrapples>()
@@ -1076,6 +1076,57 @@ fn ninsatsu_hit(combat: Res<Combat>, player: Single<&Actor, (With<Player>, Witho
             if e.ninsatsu_unhit > 0 {
                 e.ninsatsu_unhit = 0;
             }
+        }
+    }
+}
+
+/// How near Wolf a fighting enemy must stand to flinch at his deathblow [m].
+const DEATHBLOW_FLINCH_RANGE: f32 = 10.0;
+/// Within this the near reaction plays, past it the far one [m].
+const THROW_NEAR_RANGE: f32 = 4.0;
+
+/// As Wolf's deathblow blade goes in (its atkAttribute 5 Ninsatsu hit, as `ninsatsu_hit`), the
+/// other enemies fighting him within DEATHBLOW_FLINCH_RANGE drop what they are doing and jump
+/// back: the HKS's own reaction to a deathblow nearby, W_ThrowNearReaction /
+/// W_ThrowFarReaction (c9997 IndexThrowNearReaction / IndexThrowFarReaction; c1010
+/// ThrowNearReaction0 / 1 a000_020100 / 020101, ThrowFarReaction0 / 1 020105 / 020106; c1020 one
+/// each), facing him (the user's capture; "they have special animation when they jump back").
+/// Near within THROW_NEAR_RANGE, a variation at random; a kind without them flinches as hit.
+/// gap: the exe's trigger, range and variation pick are not traced.
+fn deathblow_flinch(
+    combat: Res<Combat>,
+    player: Single<(&Actor, &Transform), (With<Player>, Without<Enemy>)>,
+    mut q: Query<(&mut Enemy, &mut Actor, &Transform), Without<Player>>,
+) {
+    let (pa, ptf) = *player;
+    let blade = pa.state.contains("Deathblow")
+        && combat.player.anim(&pa.anim).is_some_and(|an| {
+            an.events.iter().any(|ev| {
+                ev.start > pa.prev_t && ev.start <= pa.t && ev.arg_i64("BehaviorJudgeID").is_some_and(|j| combat.player.attacks.get(&j.to_string()).is_some_and(|atk| atk.atk_attribute == 5))
+            })
+        });
+    if !blade {
+        return;
+    }
+    for (mut e, mut a, tf) in &mut q {
+        if e.is_dead() || e.is_broken() || e.targeting.state != crate::stealth::BATTLE || tf.translation.distance(ptf.translation) > DEATHBLOW_FLINCH_RANGE {
+            continue;
+        }
+        let d = combat.data_of(&a);
+        let to = (ptf.translation - tf.translation).with_y(0.0);
+        let kind = if to.length() <= THROW_NEAR_RANGE { "ThrowNearReaction" } else { "ThrowFarReaction" };
+        let have: Vec<String> = (0..4).map(|i| format!("{kind}{i}")).filter(|s| d.anim_key(s).is_some()).collect();
+        let state = if have.is_empty() {
+            crate::combat::enemy_damage_state_air(d, 1, &a, ptf.translation, tf.translation, false)
+        } else {
+            let pick = (e.rand() * have.len() as f32) as usize % have.len();
+            Some(have[pick].clone())
+        };
+        if let Some(state) = state {
+            if to.length() > 0.01 {
+                a.yaw = f32::atan2(-to.x, -to.z);
+            }
+            e.react_from(&mut a, &combat, false, &state);
         }
     }
 }
@@ -1289,7 +1340,25 @@ fn spawn_lineup(commands: &mut Commands, combat: &Combat, config: &GameConfig, a
         let v = crate::map::player_start() - Vec3::new(x, 0.0, z);
         f32::atan2(-v.x, -v.z)
     };
-    spawn_one(commands, combat, config, 0, Vec3::new(0.0, y(0.0, -4.0 + dz), -4.0 + dz), facing(0.0, -4.0 + dz), aggressive, 0x9E37_79B9);
+    if crate::map::map_id(config).as_deref() == Some(crate::sandbox::CONSTRUCT_ID) {
+        // The Construct: no duel enemy ahead of Wolf; its courtyard guards walk their rounds,
+        // unaware of him until they see or hear him (the user: "replaced by roaming ones").
+        if let Some(kind) = combat.kind_index(crate::sandbox::GUARD_CHR, None) {
+            for (i, (at, yaw, route)) in crate::sandbox::construct_patrols().into_iter().enumerate() {
+                // On whatever is under its point: the ground, the terrace, the tower.
+                let floor = crate::map::terrain().and_then(|t| t.floor(at.x, at.z, at.y + 1.0)).unwrap_or(at.y);
+                let at = at.with_y(floor + crate::player::CAPSULE_HALF_HEIGHT + 0.05);
+                let e = spawn_one(commands, combat, config, kind, at, yaw, true, 0x2545_F491 ^ 0x85EB_CA6B_u32.wrapping_mul(i as u32 + 1));
+                commands.entity(e).insert((PatrolRoute(route), StartUnaware, crate::sandbox::CourtyardGuard));
+            }
+        }
+    }
+    // On the Construct the config's enemy stands in the middle of the second section, facing
+    // its door, its group in a row beside it.
+    let construct = crate::map::map_id(config).as_deref() == Some(crate::sandbox::CONSTRUCT_ID);
+    let first = if construct { crate::sandbox::ARENA_SPOT } else { Vec3::new(0.0, 0.0, -4.0 + dz) };
+    let first_yaw = if construct { crate::sandbox::ARENA_YAW } else { facing(first.x, first.z) };
+    spawn_one(commands, combat, config, 0, first.with_y(y(first.x, first.z)), first_yaw, aggressive, 0x9E37_79B9);
     for (i, g) in config.enemy.group.iter().enumerate() {
         let Some(kind) = combat.kind_index(&g.chr, g.npc_row) else { continue };
         // An MSB enemy of the loaded map: at its spot, its way, on its patrol route.
@@ -1319,10 +1388,11 @@ fn spawn_lineup(commands: &mut Commands, combat: &Combat, config: &GameConfig, a
             continue;
         }
         let side = if i % 2 == 0 { 1.0 } else { -1.0 } * (3.0 * (i / 2 + 1) as f32);
-        let [x, z] = g.at.unwrap_or([side, -4.0]);
+        let [x, z] = g.at.unwrap_or(if construct { [first.x + side, first.z] } else { [side, -4.0] });
         let z = z + dz;
+        let yaw = if construct { first_yaw } else { facing(x, z) };
         // A different seed each, so the group does not move in lockstep.
-        spawn_one(commands, combat, config, kind, Vec3::new(x, y(x, z), z), facing(x, z), aggressive, 0x9E37_79B9 ^ 0x85EB_CA6B_u32.wrapping_mul(i as u32 + 1));
+        spawn_one(commands, combat, config, kind, Vec3::new(x, y(x, z), z), yaw, aggressive, 0x9E37_79B9 ^ 0x85EB_CA6B_u32.wrapping_mul(i as u32 + 1));
     }
 }
 
@@ -1711,6 +1781,27 @@ pub struct AiSound {
     pub owner_alert: bool,
     /// The owner's MSB placement groups (`Enemy::placement`, refreshed with owner_alert).
     pub owner_groups: Vec<i64>,
+    /// Heard by the owner's side only (`AiSounds::call`: a spotter's shout to its comrades; not
+    /// a game flag).
+    pub friends_only: bool,
+}
+
+/// The call an enemy gives as it spots Wolf (think): AiSoundParam 2000000.
+const SPOT_CALL_SOUND: i64 = 2000000;
+/// The noise of an enemy's death (`death_noise`): AiSoundParam 4060 (20 m, heard by friends and
+/// foes, rank 1, not a call). gap: no row is tied to a death in the data; 4060 is picked by its
+/// range and listeners.
+const DEATH_NOISE_SOUND: i64 = 4060;
+
+/// An enemy's fall is heard by its comrades (the user: "should get aware when there is
+/// non-player noise"): `DEATH_NOISE_SOUND` where it dies, once per death.
+fn death_noise(combat: Res<Combat>, q: Query<(Entity, &Enemy, &Actor, &Transform)>, mut sounds: ResMut<AiSounds>, mut dead: Local<HashSet<Entity>>) {
+    dead.retain(|e| q.get(*e).is_ok_and(|(_, en, ..)| en.is_dead()));
+    for (ent, e, a, tf) in &q {
+        if e.is_dead() && dead.insert(ent) {
+            sounds.emit(&combat, DEATH_NOISE_SOUND, tf.translation, Some(ent), Some(crate::combat::team_of(&combat, a)));
+        }
+    }
 }
 
 /// The exe's sound-record counter (DAT_143d547b0, FUN_14060f840). Ours starts past every
@@ -1733,7 +1824,16 @@ impl AiSounds {
         let life = row["lifeFrame"].as_f64().unwrap_or(0.0).max(1.0 / 30.0) as f32;
         let old = self.0.iter().position(|s| s.owner == owner && s.id == id).map(|i| self.0.remove(i).serial);
         let serial = old.unwrap_or_else(|| SOUND_SERIAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
-        self.0.push(AiSound { id, pos, owner, team, life, serial, owner_alert: true, owner_groups: Vec::new() });
+        self.0.push(AiSound { id, pos, owner, team, life, serial, owner_alert: true, owner_groups: Vec::new(), friends_only: false });
+    }
+
+    /// `emit` for a call to the owner's comrades only (`think`'s spot call): its foes (a maddened
+    /// dog beside it, test a_maddened_dog_bites_the_soldier) do not take it as a sound target.
+    pub fn call(&mut self, combat: &Combat, id: i64, pos: Vec3, owner: Entity, team: i64) {
+        self.emit(combat, id, pos, Some(owner), Some(team));
+        if let Some(s) = self.0.iter_mut().rev().find(|s| s.owner == Some(owner) && s.id == id) {
+            s.friends_only = true;
+        }
     }
 }
 
@@ -1756,7 +1856,7 @@ pub(crate) fn ai_sound_heard(combat: &Combat, s: &AiSound, me: Entity, team: i64
     } else {
         "friendlyTarget"
     };
-    if row[flag].as_i64() != Some(1) || (row["bCallFriend"].as_i64() == Some(1) && !s.owner_alert) {
+    if row[flag].as_i64() != Some(1) || (row["bCallFriend"].as_i64() == Some(1) && !s.owner_alert) || (s.friends_only && flag != "friendlyTarget") {
         return None;
     }
     if row["bRestrictSamePlacementGroup"].as_i64() == Some(1) && !s.owner_groups.is_empty() && !s.owner_groups.iter().any(|g| mine.contains(g)) {
@@ -1773,7 +1873,7 @@ fn reset_fight(
     mut reset: ResMut<FightReset>,
     combat: Res<Combat>,
     config: Res<GameConfig>,
-    q: Query<(Entity, &Enemy)>,
+    q: Query<(Entity, &Enemy, Has<crate::sandbox::CourtyardGuard>)>,
     mut brains: NonSendMut<Brains>,
     mut warp: ResMut<events::EventWarp>,
     mut bs: ResMut<BossScript>,
@@ -1818,8 +1918,9 @@ fn reset_fight(
     if bs.run.take().is_some_and(|r| r.defeated.is_some()) {
         bs.defeats += 1;
     }
-    let aggressive = q.iter().next().is_some_and(|(_, e)| e.aggressive);
-    for (ent, _) in &q {
+    // (The courtyard guards are always aggressive: the duel enemy's setting carries over.)
+    let aggressive = q.iter().find(|(_, _, guard)| !guard).is_some_and(|(_, e, _)| e.aggressive);
+    for (ent, ..) in &q {
         commands.entity(ent).despawn();
     }
     brains.map.clear();
@@ -2369,8 +2470,17 @@ fn think(
             s.owner_groups = alert.get(&o).map(|a| a.1.clone()).unwrap_or_default();
         }
     }
-    // Wolf's learned skills' SpEffects (Covert A / B) for the sight and hearing checks.
-    let skills = crate::combat::skill_sp_effect_rows(&combat, &config);
+    // Wolf's learned skills' SpEffects (Covert A / B) and his items' timed ones (Gachiin's Sugar
+    // 3441: sightSearchEnemyCut 50, aroundSightPointAddRate 0.5) for the sight and hearing checks.
+    let mut skills = crate::combat::skill_sp_effect_rows(&combat, &config);
+    skills.extend(pp.timed.iter().filter_map(|(id, _)| serde_json::from_value(crate::items::param("SpEffectParam", *id).clone()).ok()));
+    // Crouched in a bush (the Construct's outpost, sandbox.rs in_bush): SpEffect 109203, of the
+    // crouch family (109200 crouch, 109210 hug, 109220 hang) the grass one by its sight cut 80
+    // (gap: nothing in the params puts 109201-109203 on; the engine's grass rule is not traced,
+    // 80 picked over the 100 rows so a guard that walks right up still finds him).
+    if crate::player::crouch_ok(&pa.state) && crate::sandbox::in_bush(ptf.translation - Vec3::Y * (crate::player::CAPSULE_HALF_HEIGHT + 0.05)) {
+        skills.extend(serde_json::from_value(crate::items::param("SpEffectParam", 109203).clone()).ok());
+    }
     for (entity, mut e, mut a, mut tf, phantom, from_event, scripted, mut draw_mask) in &mut q {
         // A phantom out of the fight does nothing until its boss's script calls it.
         if phantom.is_some_and(|p| p.parked()) || e.disabled || e.stand_in {
@@ -2627,11 +2737,25 @@ fn think(
         }
         let my_team = crate::combat::team_of(&combat, &a);
         for s in &ai_sounds.0 {
+            // A comrade's spot call is for those not yet fighting: one already in battle keeps its
+            // fight (a soldier at a maddened dog's throat, test a_maddened_dog_bites_the_soldier).
+            if s.friends_only && e.targeting.state >= stealth::FIND {
+                continue;
+            }
             if let Some((id, rank)) = ai_sound_heard(&combat, s, entity, my_team, &a, tf.translation, think_row, &e.placement) {
                 e.targeting.hear_record(think_row, s.pos, id, rank, s.serial);
             }
         }
+        let was = e.targeting.state;
         e.targeting.update(think_row, feet, a.forward(), &seen, dt);
+        // Spotting Wolf it calls its comrades: AiSoundParam 2000000 (bCallFriend, 20 m, friends
+        // and foes; AtkParam 1500's AppearAiSoundId, the shout no c1010 / c1020 clip plays), heard
+        // by those of its side in range while it is alert (ai_sound_heard). The user: "enemies
+        // should hear their comrades spotting". gap: what in the game makes a finder call is not
+        // traced (no TAE 237 on c1010; its NpcThinkParam callHelp_* are 0).
+        if was < stealth::FIND && e.targeting.state >= stealth::FIND {
+            ai_sounds.call(&combat, SPOT_CALL_SOUND, tf.translation, entity, my_team);
+        }
         if e.targeting.changed() {
             if let Some(log) = log.as_mut() {
                 let (text, color) = match e.targeting.state {
@@ -3335,7 +3459,10 @@ fn passive_or_fallback(e: &mut Enemy, a: &mut Actor, d: &crate::data::CharData, 
     }
     e.cooldown -= dt;
     a.yaw = turn_toward(a.yaw, want_yaw, std::f32::consts::PI * dt);
-    if dist > config.enemy.attack_range {
+    // On the Construct a passive enemy holds its spot (the user: "static unless AI toggle button
+    // is pressed"); elsewhere it walks into range for deflect practice.
+    let hold = crate::sandbox::ON_CONSTRUCT.load(std::sync::atomic::Ordering::Relaxed);
+    if dist > config.enemy.attack_range && !hold {
         // Battle walk speed from WalkFrontBattle's root motion.
         if a.state != "WalkFrontBattle" || ended {
             a.play_state(d, "WalkFrontBattle");
@@ -3353,7 +3480,7 @@ fn passive_or_fallback(e: &mut Enemy, a: &mut Actor, d: &crate::data::CharData, 
     }
 }
 
-fn toggle_aggression(keys: Res<ButtonInput<KeyCode>>, mut q: Query<&mut Enemy>, mut log: ResMut<crate::hud::CombatLog>) {
+fn toggle_aggression(keys: Res<ButtonInput<KeyCode>>, mut q: Query<&mut Enemy, Without<crate::sandbox::CourtyardGuard>>, mut log: ResMut<crate::hud::CombatLog>) {
     if keys.just_pressed(KeyCode::KeyT) {
         // All enemies switch together (the first one's state flipped).
         let Some(on) = q.iter().next().map(|e| !e.aggressive) else { return };

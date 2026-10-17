@@ -1139,8 +1139,8 @@ pub(crate) fn attacks_make_ai_sounds_that_call_allies() {
         let team = crate::combat::team_of(&combat, a);
         let think = combat.param("NpcThinkParam", combat.foe_of(a).think_id);
         let at = tf.translation;
-        let npc = |id: i64, d: f32| AiSound { id, pos: at + Vec3::X * d, owner: Some(other), team: Some(team), life: 1.0, serial: 0, owner_alert: true, owner_groups: Vec::new() };
-        let wolf = |id: i64, d: f32| AiSound { id, pos: at + Vec3::X * d, owner: None, team: None, life: 1.0, serial: 0, owner_alert: true, owner_groups: Vec::new() };
+        let npc = |id: i64, d: f32| AiSound { id, pos: at + Vec3::X * d, owner: Some(other), team: Some(team), life: 1.0, serial: 0, owner_alert: true, owner_groups: Vec::new(), friends_only: false };
+        let wolf = |id: i64, d: f32| AiSound { id, pos: at + Vec3::X * d, owner: None, team: None, life: 1.0, serial: 0, owner_alert: true, owner_groups: Vec::new(), friends_only: false };
         let ai_sound_heard = |c: &Combat, s: &AiSound, me: Entity, team: i64, a: &Actor, at: Vec3, think: &serde_json::Value| ai_sound_heard(c, s, me, team, a, at, think, &[]);
         assert_eq!(ai_sound_heard(&combat, &npc(2000020, 15.0), me, team, a, at, think), Some((2000020, 1)), "an ally's hit at 15 m");
         assert_eq!(ai_sound_heard(&combat, &npc(2000020, 25.0), me, team, a, at, think), None, "beyond 20 m");

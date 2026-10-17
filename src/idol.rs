@@ -57,7 +57,8 @@ impl Idol {
 /// The map's idols.
 pub static IDOLS: RwLock<Vec<Idol>> = RwLock::new(Vec::new());
 
-/// The parkour course's idols: by the start, on the L platform, on the cliff, in the shaft.
+/// The Construct's idols: by the start, on the L platform, on the cliff, in the shaft, at the
+/// stealth courtyard's gate.
 pub fn parkour_idols() -> Vec<Idol> {
     let idol = |name: &str, pos: Vec3, out: Vec3| Idol { name: name.to_string(), pos, out };
     vec![
@@ -65,6 +66,8 @@ pub fn parkour_idols() -> Vec<Idol> {
         idol("Platform Top", Vec3::new(11.2, 3.0, -13.3), Vec3::NEG_X),
         idol("Cliff Top", Vec3::new(-13.0, 4.5, -23.0), Vec3::X),
         idol("Shaft Floor", Vec3::new(15.5, 0.0, -23.6), Vec3::Z),
+        idol("Outpost Gate", Vec3::new(4.5, 0.0, 10.0), Vec3::NEG_Z),
+        idol("Second Section", Vec3::new(5.0, 0.0, -48.0), Vec3::NEG_Z),
     ]
 }
 
@@ -276,7 +279,7 @@ pub(crate) struct IdolMenuRoot;
 /// Travel's regions: (name, idols). gap: only this map's idols ("Important Places" lists none).
 fn regions() -> Vec<(String, Vec<usize>)> {
     let n = IDOLS.read().map(|v| v.len()).unwrap_or(0);
-    vec![("Important Places".to_string(), Vec::new()), ("Parkour Course".to_string(), (0..n).collect())]
+    vec![("Important Places".to_string(), Vec::new()), ("Construct".to_string(), (0..n).collect())]
 }
 
 /// The stats plate of the idol menu (the capture: resurrection nodes over the Vitality bar,
@@ -1007,7 +1010,7 @@ fn flame_without_mist(lib: &mut crate::fxr::FxrLib) -> i64 {
 /// The idols of the map: installed, and drawn with the game's model (a stand-in figure if the
 /// model is not exported), with the idol's blue light.
 fn spawn_idols(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mats: ResMut<Assets<StandardMaterial>>, assets: Res<AssetServer>, config: Res<crate::config::GameConfig>, fxr: Option<ResMut<crate::fxr::FxrLib>>) {
-    let idols = if crate::map::map_id(&config).as_deref() == Some(crate::sandbox::PARKOUR_ID) { parkour_idols() } else { Vec::new() };
+    let idols = if crate::map::map_id(&config).as_deref() == Some(crate::sandbox::CONSTRUCT_ID) { parkour_idols() } else { Vec::new() };
     let model = if idols.is_empty() { Vec::new() } else { idol_mesh(&mut meshes, &mut mats, &assets) };
     let flame = fxr.map_or(IDOL_SFX, |mut lib| flame_without_mist(&mut lib));
     let wood = mats.add(StandardMaterial { base_color: Color::srgb(0.32, 0.2, 0.11), perceptual_roughness: 0.85, ..default() });

@@ -2000,6 +2000,10 @@ impl Plugin for DataPlugin {
         for g in config.map(|c| c.enemy.group.clone()).unwrap_or_default() {
             wanted.push((g.chr, g.npc_row));
         }
+        // The Construct's courtyard guards (sandbox.rs construct_patrols).
+        if config.is_some_and(|c| crate::map::map_id(c).as_deref() == Some(crate::sandbox::CONSTRUCT_ID)) {
+            wanted.push((crate::sandbox::GUARD_CHR.to_string(), None));
+        }
         // The sandbox map's enemy line-up (SHINOBI_SANDBOX_ENEMIES; sandbox.rs).
         for chr in config.map(crate::sandbox::extra_kinds).unwrap_or_default() {
             wanted.push((chr, None));

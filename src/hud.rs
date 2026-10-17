@@ -246,18 +246,31 @@ fn spawn_hud(mut commands: Commands, mut fonts: ResMut<Assets<Font>>, assets: Re
     };
     // The skill-point gauge, top right: the movie's SkillPoint_282 at (1484, 88.4): MENU_SkillPoint
     // (120 x 80 at 0.588 = 70 x 47 px) at (-56.75, -21.95) carrying the point count (SkillPiontLv_290),
-    // then the experience bar from x 1482 to 1747 (MENU_HP_bar_mark caps, 0.75 tall). gap: Sv1 has
-    // no experience or skill points, the count stays 0 and the bar empty.
+    // then the experience bar from x 1482 to 1747 (MENU_HP_bar_mark caps, 0.75 tall): the points
+    // to spend and the experience towards the next (src/experience.rs). gap: the bar's own art.
     commands
         .spawn((Node { position_type: PositionType::Absolute, left: Val::Percent(74.3), top: Val::Percent(6.2), flex_direction: FlexDirection::Row, align_items: AlignItems::Center, ..default() }, Visibility::Hidden, Flash(1)))
         .with_children(|r| {
             let (img, vis) = art("MENU_SkillPoint");
             r.spawn((Node { width: Val::Vw(3.67), height: Val::Vw(2.45), justify_content: JustifyContent::Center, align_items: AlignItems::Center, ..default() }, img, vis))
                 .with_children(|i| {
-                    i.spawn(number("0", 22.0));
+                    i.spawn((number("0", 22.0), PointsText));
                 });
-            r.spawn((Node { width: Val::Vw(13.75), height: Val::Vh(0.9), margin: UiRect::left(Val::Vw(-0.7)), ..default() }, BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.85))));
+            r.spawn((Node { width: Val::Vw(13.75), height: Val::Vh(0.9), margin: UiRect::left(Val::Vw(-0.7)), ..default() }, BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.85))))
+                .with_children(|b| {
+                    b.spawn((Node { width: Val::Percent(0.0), height: Val::Percent(100.0), ..default() }, BackgroundColor(Color::srgba(0.36, 0.68, 0.74, 1.0)), ExpFill));
+                });
         });
+    // What the last kills gave, on the bar's right end and under the purse's total (the user's
+    // captures) while they show (experience.rs
+    // Earned). gap: the game's own placement and font are not read from the movie.
+    for (kind, right, top) in [(1u8, 12.0, 7.5), (0u8, 6.6, 70.0)] {
+        commands
+            .spawn((Node { position_type: PositionType::Absolute, right: Val::Percent(right), top: Val::Percent(top), ..default() }, Visibility::Hidden, Flash(kind)))
+            .with_children(|c| {
+                c.spawn((number("", 17.0), GainText(kind)));
+            });
+    }
     // Sen, right middle: the movie's Money_164 at (1702, 748.5): MENU_Money (92 x 94 at 0.355 = 33 px)
     // at (-61.8, -18.65), then a dark backing with the total right-aligned (TotalMoney_txt_166).
     // gap: Sv1 has no Sen, the total stays 0.
@@ -947,20 +960,68 @@ struct NinjutsuMark;
 struct Flash(u8);
 #[derive(Component)]
 struct SenText;
+/// The skill gauge's point count and experience fill.
+#[derive(Component)]
+struct PointsText;
+#[derive(Component)]
+struct ExpFill;
+/// "+N": the Sen (0) or experience (1) the kills since the purse / gauge came up gave.
+#[derive(Component)]
+struct GainText(u8);
 
 /// How long the purse / gauge stay up after a change (s). gap: the movie's fade is not read.
 const FLASH_SHOW: f32 = 4.0;
 
-fn flash_counters(time: Res<Time>, config: Res<crate::config::GameConfig>, mut last: Local<Option<u32>>, mut left: Local<f32>, mut q: Query<(&Flash, &mut Visibility)>, mut texts: Query<&mut Text, With<SenText>>, mut art: Query<&mut Visibility, (With<ArtMark>, Without<Flash>)>) {
+#[allow(clippy::too_many_arguments)]
+fn flash_counters(
+    time: Res<Time>,
+    config: Res<crate::config::GameConfig>,
+    mut last: Local<Option<(u32, (u32, u32))>>,
+    mut left: Local<[f32; 2]>,
+    mut q: Query<(&Flash, &mut Visibility)>,
+    mut texts: Query<&mut Text, (With<SenText>, Without<PointsText>, Without<GainText>)>,
+    mut points: Query<&mut Text, (With<PointsText>, Without<GainText>)>,
+    (earned, mut base, mut gains): (Res<crate::experience::Earned>, Local<Option<([u32; 2], [u32; 2])>>, Query<(&mut Text, &GainText)>),
+    mut fill: Query<&mut Node, With<ExpFill>>,
+    mut art: Query<&mut Visibility, (With<ArtMark>, Without<Flash>)>,
+) {
     let sen = config.player.sen;
-    if last.is_some_and(|l| l != sen) {
-        *left = FLASH_SHOW;
+    let exp = (config.player.skill_exp, config.player.skill_points);
+    // A kill's gain shows as "+N"; more kills while the counter is up add to it. While it is
+    // hidden the base follows the totals, so it starts over (prev: last frame's totals).
+    let now = [earned.sen, earned.exp];
+    let (from, prev) = base.get_or_insert((now, now));
+    for i in 0..2 {
+        if left[i] == 0.0 {
+            from[i] = prev[i];
+        }
+        if now[i] != prev[i] {
+            left[i] = FLASH_SHOW;
+        }
     }
-    *last = Some(sen);
-    *left = (*left - time.delta_secs()).max(0.0);
+    *prev = now;
+    for (mut t, g) in &mut gains {
+        let n = now[g.0 as usize].wrapping_sub(from[g.0 as usize]);
+        let s = if n > 0 { format!("+{n}") } else { String::new() };
+        if t.0 != s {
+            t.0 = s;
+        }
+    }
+    if let Some((s, x)) = *last {
+        if s != sen {
+            left[0] = FLASH_SHOW;
+        }
+        if x != exp {
+            left[1] = FLASH_SHOW;
+        }
+    }
+    *last = Some((sen, exp));
+    for l in left.iter_mut() {
+        *l = (*l - time.delta_secs()).max(0.0);
+    }
     for (f, mut v) in &mut q {
-        // 0: the purse; 1: the skill gauge (no experience yet: never changes).
-        let want = if f.0 == 0 && *left > 0.0 { Visibility::Inherited } else { Visibility::Hidden };
+        // 0: the purse; 1: the skill gauge.
+        let want = if left[f.0 as usize] > 0.0 { Visibility::Inherited } else { Visibility::Hidden };
         if *v != want {
             *v = want;
         }
@@ -969,6 +1030,18 @@ fn flash_counters(time: Res<Time>, config: Res<crate::config::GameConfig>, mut l
         let s = sen.to_string();
         if t.0 != s {
             t.0 = s;
+        }
+    }
+    for mut t in &mut points {
+        let s = config.player.skill_points.to_string();
+        if t.0 != s {
+            t.0 = s;
+        }
+    }
+    let w = Val::Percent(100.0 * crate::experience::fill(&config.player).clamp(0.0, 1.0));
+    for mut n in &mut fill {
+        if n.width != w {
+            n.width = w;
         }
     }
     for mut v in &mut art {
@@ -1389,6 +1462,9 @@ fn update_perilous(time: Res<Time>, mut p: ResMut<Perilous>, mut q: Query<(&mut 
 /// gap: the engine's anchor (here the lock-on dummy 220), the gauge clips' mask travel (drawn as
 /// the brush shown from the bottom up), Caution's red fill layer and drop shadow, the
 /// discovery Highlight (x 1.4) are not drawn.
+/// An enemy off the screen (or behind the camera) gets the same mark beside Wolf instead, turned
+/// so its tip points the way to it, as if seen from above: behind the camera it sits below him
+/// (the user's captures). gap: the game's ring radius is not read from the movie.
 /// One enemy's stealth mark (`found_t`: seconds it has been fighting, for FOUND_SHOW).
 #[derive(Component)]
 struct StealthMark {
@@ -1404,8 +1480,23 @@ struct StealthBrush(Entity);
 
 /// The mark's side at 1080p [px] (MENU_Find_02's 128 px at 0.2193) and its centre's height
 /// over the anchor.
-const STEALTH_PX: f32 = 28.07;
-const STEALTH_LIFT: f32 = 35.5;
+const STEALTH_PX: f32 = 28.07 * STEALTH_SCALE;
+const STEALTH_LIFT: f32 = 35.5 * STEALTH_SCALE;
+/// Larger and more solid than the movie's (the user: "a bit too small and too transparent").
+const STEALTH_SCALE: f32 = 1.6;
+
+/// The off-screen mark's distance from Wolf's chest at 1080p [px].
+const STEALTH_RING: f32 = 120.0;
+
+/// The off-screen mark's place and turn: from Wolf's screen point `wolf`, the way to the enemy
+/// (`to`, world) as seen from above with the camera's forward up the screen; the rotation turns
+/// the downward tip towards it (UiTransform turns clockwise). None when it is right above him.
+fn ring_mark(wolf: Vec2, to: Vec3, cam_right: Vec3, cam_fwd: Vec3, ring: f32) -> Option<(Vec2, f32)> {
+    let flat = |v: Vec3| Vec3::new(v.x, 0.0, v.z).normalize_or_zero();
+    let (to, right, fwd) = (flat(to), flat(cam_right), flat(cam_fwd));
+    let v = Vec2::new(to.dot(right), -to.dot(fwd)).normalize_or_zero();
+    (v != Vec2::ZERO).then(|| (wolf + v * ring, f32::atan2(-v.x, v.y)))
+}
 
 /// Seconds the red "found" mark stays once the fight starts.
 const FOUND_SHOW: f32 = 1.5;
@@ -1415,6 +1506,7 @@ fn spawn_stealth(commands: &mut Commands, assets: &AssetServer, enemy: Entity) {
         .spawn((
             Node { position_type: PositionType::Absolute, width: Val::Px(STEALTH_PX), height: Val::Px(STEALTH_PX), ..default() },
             ImageNode::new(assets.load("hud/MENU_Find_02.png")),
+            UiTransform::IDENTITY,
             Visibility::Hidden,
             StealthMark { enemy, found_t: 0.0, clip: MarkClip::default() },
         ))
@@ -1442,7 +1534,8 @@ fn update_stealth(
     enemies: Query<(Entity, &crate::enemy::Enemy, &GlobalTransform, Option<&crate::enemy::Phantom>, Option<&crate::model::Dummies>)>,
     dummies: Query<&GlobalTransform>,
     camera: Query<(&Camera, &GlobalTransform), With<crate::camera::OrbitCamera>>,
-    mut marks: Query<(Entity, &mut StealthMark, &mut Node, &mut ImageNode, &mut Visibility), (Without<StealthFill>, Without<StealthBrush>)>,
+    wolf: Query<&GlobalTransform, (With<crate::player::Player>, Without<crate::enemy::Enemy>)>,
+    mut marks: Query<(Entity, &mut StealthMark, &mut Node, &mut ImageNode, &mut UiTransform, &mut Visibility), (Without<StealthFill>, Without<StealthBrush>)>,
     mut fills: Query<(&StealthFill, &mut Node), (Without<StealthMark>, Without<StealthBrush>)>,
     mut brushes: Query<(&StealthBrush, &mut Node, &mut ImageNode), (Without<StealthMark>, Without<StealthFill>)>,
 ) {
@@ -1455,7 +1548,9 @@ fn update_stealth(
     }
     let side = STEALTH_PX * k;
     let cam = camera.single().ok();
-    for (me, mut m, mut node, mut frame, mut vis) in &mut marks {
+    let view = window.single().map_or(Vec2::new(1280.0, 720.0), |w| w.size());
+    let chest = wolf.single().ok().map(|g| g.translation() + Vec3::Y * 0.3);
+    for (me, mut m, mut node, mut frame, mut turn, mut vis) in &mut marks {
         let Ok((_, e, etf, ph, dm)) = enemies.get(m.enemy) else {
             commands.entity(me).despawn();
             continue;
@@ -1466,11 +1561,26 @@ fn update_stealth(
         } else {
             m.found_t = 0.0;
         }
-        let show = e.ninsatsu.1 == 0 && !e.is_dead() && !e.is_disabled() && !e.stand_in && !ph.is_some_and(|p| p.parked()) && (level > 0 || ratio > 0.0) && m.found_t < FOUND_SHOW;
+        // (Every enemy, the ones with deathblow dots too: spawn_one counts at least 1, so the
+        // old "no dots" test hid them all; the game marks the minibosses as well.)
+        let show = !e.is_dead() && !e.is_disabled() && !e.stand_in && !ph.is_some_and(|p| p.parked()) && (level > 0 || ratio > 0.0) && m.found_t < FOUND_SHOW;
         // Anchored on the lock-on dummy 220 (root + 1.4 m without it), the mark's centre
         // STEALTH_LIFT px above it. gap: the game's anchor for this mark is not traced.
         let head = dm.and_then(|d| d.0.get(&220)).and_then(|d| dummies.get(*d).ok()).map_or(etf.translation() + Vec3::Y * 1.4, |g| g.translation());
-        let pos = cam.and_then(|(cam, ctf)| cam.world_to_viewport(ctf, head).ok()).filter(|_| show);
+        let on_screen = cam.and_then(|(cam, ctf)| cam.world_to_viewport(ctf, head).ok()).filter(|p| p.x >= 0.0 && p.y >= 0.0 && p.x <= view.x && p.y <= view.y);
+        let (pos, angle) = match (on_screen, cam, chest) {
+            (Some(p), ..) => (Some(p), 0.0),
+            (None, Some((cam, ctf)), Some(chest)) => match cam.world_to_viewport(ctf, chest).ok().and_then(|w| ring_mark(w, head - chest, ctf.right().into(), ctf.forward().into(), STEALTH_RING * k)) {
+                // The ring mark sits on its centre (no lift over a head).
+                Some((p, a)) => (Some(p + Vec2::Y * STEALTH_LIFT * k), a),
+                None => (None, 0.0),
+            },
+            _ => (None, 0.0),
+        };
+        let pos = pos.filter(|_| show);
+        if pos.is_some() {
+            turn.rotation = Rot2::radians(angle);
+        }
         let Some((t, gone, p)) = m.clip.step(pos, time.delta_secs(), 22.0 / 60.0) else {
             *vis = Visibility::Hidden;
             continue;
@@ -1486,9 +1596,9 @@ fn update_stealth(
         node.top = Val::Px(p.y - STEALTH_LIFT * k - side / 2.0);
         let rgb = |r: u8, g: u8, b: u8| Color::srgb_u8(r, g, b);
         let (w, frame_color, color) = match level {
-            2 => (1.0, rgb(163, 64, 57).with_alpha(0.32), rgb(163, 64, 57).with_alpha(0.5)),
-            1 => (1.0, rgb(154, 134, 70).with_alpha(0.9), Color::srgb(0.719, 0.629, 0.238)),
-            _ => (ratio, Color::BLACK.with_alpha(0.3), Color::WHITE.with_alpha(0.7)),
+            2 => (1.0, rgb(163, 64, 57).with_alpha(0.85), rgb(200, 60, 50).with_alpha(0.95)),
+            1 => (1.0, rgb(154, 134, 70).with_alpha(0.95), Color::srgb(0.719, 0.629, 0.238)),
+            _ => (ratio, Color::BLACK.with_alpha(0.65), Color::WHITE.with_alpha(0.95)),
         };
         frame.color = frame_color.with_alpha(frame_color.alpha() * fade);
         let color = color.with_alpha(color.alpha() * fade);
@@ -1504,6 +1614,28 @@ fn update_stealth(
                 img.color = color;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod ring_tests {
+    use bevy::prelude::*;
+
+    /// With the camera looking down -Z: an enemy ahead puts the mark above Wolf pointing up, one
+    /// behind the camera below him pointing down, one to the right to his right.
+    #[test]
+    fn the_off_screen_mark_points_the_way_to_the_enemy() {
+        let (right, fwd) = (Vec3::X, Vec3::NEG_Z);
+        let (p, a) = super::ring_mark(Vec2::ZERO, Vec3::NEG_Z * 5.0, right, fwd, 100.0).unwrap();
+        assert!(p.abs_diff_eq(Vec2::new(0.0, -100.0), 1e-3) && (a.abs() - std::f32::consts::PI).abs() < 1e-3, "{p} {a}");
+        let (p, a) = super::ring_mark(Vec2::ZERO, Vec3::Z * 5.0, right, fwd, 100.0).unwrap();
+        assert!(p.abs_diff_eq(Vec2::new(0.0, 100.0), 1e-3) && a.abs() < 1e-3, "{p} {a}");
+        let (p, a) = super::ring_mark(Vec2::ZERO, Vec3::X * 5.0, right, fwd, 100.0).unwrap();
+        assert!(p.abs_diff_eq(Vec2::new(100.0, 0.0), 1e-3), "{p}");
+        // The tip (down when unturned) turned clockwise by a: down -> right is counter-clockwise.
+        let tip = Vec2::new(-a.sin(), a.cos());
+        assert!(tip.abs_diff_eq(Vec2::X, 1e-3), "{tip}");
+        assert!(super::ring_mark(Vec2::ZERO, Vec3::Y, right, fwd, 100.0).is_none());
     }
 }
 

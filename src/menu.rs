@@ -1045,6 +1045,11 @@ fn watch_fight(
             return;
         }
     }
+    // The Construct is for practice: its guards all down is no victory.
+    if crate::sandbox::ON_CONSTRUCT.load(std::sync::atomic::Ordering::Relaxed) && boss.run.is_none() {
+        *down_for = 0.0;
+        return;
+    }
     let (all_down, hold) = match &boss.run {
         // Handle Boss Defeat is final: no hold for a phase change. With a banner, Won waits for
         // the banner to play out (`defeat_banner`, after the finisher).

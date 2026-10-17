@@ -1525,7 +1525,11 @@ impl AiState {
                             }
                             return SUCCESS;
                         }
-                        ('F', goal.p.get(4).is_some_and(|v| matches!(v, Value::Bool(true))))
+                        // A patrol walks its round: NonBattleAct passes walk false ([103, 0, 0,
+                        // -1, false, ..]) yet the game's guards walk between their points (the
+                        // user, 2026-10-17). gap: how the exe turns that false into a walk (the
+                        // HKS reads MoveSpeedLevel) is not traced.
+                        ('F', on_route || goal.p.get(4).is_some_and(|v| matches!(v, Value::Bool(true))))
                     }
                     Native::Leave => {
                         if d >= goal.raw(1, 0.0) {
