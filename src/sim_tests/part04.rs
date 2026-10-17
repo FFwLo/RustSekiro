@@ -1123,6 +1123,12 @@ pub(crate) fn use_tool(tool: i64, emblems: u32, hold: usize, frames: usize) -> (
 
 /// As `use_tool`, carrying `sen` (the Sen Throw's level).
 pub(crate) fn use_tool_sen(tool: i64, emblems: u32, hold: usize, frames: usize, sen: u32) -> (Vec<String>, u32, f32) {
+    use_tool_with(tool, emblems, hold, frames, sen, None)
+}
+
+/// As `use_tool`, pressing again every 10 frames over `repress` (from, to) - the skills recordings'
+/// taps into the Flame Vent's follow-up window - with the button held from there to `hold`.
+pub(crate) fn use_tool_with(tool: i64, emblems: u32, hold: usize, frames: usize, sen: u32, repress: Option<(usize, usize)>) -> (Vec<String>, u32, f32) {
     let mut app = app();
     {
         let world = app.world_mut();
@@ -1144,6 +1150,13 @@ pub(crate) fn use_tool_sen(tool: i64, emblems: u32, hold: usize, frames: usize, 
     for f in 0..frames {
         if f == hold {
             app.world_mut().resource_mut::<PadInput>().prosthetic_held = false;
+        }
+        if let Some((from, to)) = repress {
+            if f >= from && f <= to && (f - from) % 10 == 0 {
+                let mut pad = app.world_mut().resource_mut::<PadInput>();
+                pad.press(Action::Prosthetic);
+                pad.prosthetic_held = f < hold;
+            }
         }
         app.update();
         let s = player_state(&mut app).0;
@@ -1233,12 +1246,16 @@ pub(crate) fn the_axe_hits() {
     assert!(hp < hp0 || p > p0, "the axe did not land: {}", log_text(&app));
 }
 
-/// Okinaga's Flame Vent (72200, resident ref 325 WEP_ENABLE_SUB_ATTACK_HOLD): held through the
-/// spit (ref 321 + combo 300 window), it starts W_GroundSubAttackHoldStart and spews on
-/// (HoldLoop) while held; letting go ends it (HoldEnd). The LV1 (72000) can't.
+/// Okinaga's Flame Vent (72200, resident ref 325 WEP_ENABLE_SUB_ATTACK_HOLD): pressed again in the
+/// spit's follow-up window (combo 300 + ref 329, a072_400000 f75-96), it starts
+/// W_GroundSubAttackHoldStart and spews on (HoldLoop) while held; letting go ends it (HoldEnd).
+/// Only held from the first press it spits once (the skills recordings: a 1.8 s hold did nothing,
+/// the follow-up came on a new press). The LV1 (72000) can't.
 #[test]
 pub(crate) fn okinagas_flame_vent_spews_while_held() {
-    let (states, _, _) = use_tool(72200, 20, 200, 320);
+    let (states, _, _) = use_tool(72200, 20, 320, 320);
+    assert!(!states.iter().any(|s| s.starts_with("GroundSubAttackHold")), "held only: {states:?}");
+    let (states, _, _) = use_tool_with(72200, 20, 260, 360, 500, Some((140, 190)));
     for want in ["GroundSubAttackCombo1", "GroundSubAttackHoldStart", "GroundSubAttackHoldLoop", "GroundSubAttackHoldEnd"] {
         assert!(states.iter().any(|s| s == want), "no {want}: {states:?}");
     }

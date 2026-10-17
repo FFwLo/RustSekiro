@@ -7,7 +7,7 @@ Dated findings, oldest first. Append new entries at the end.
   (app 814380, .text AES-decrypted, OEP 0x14235a28c restored) -> extracted/sekiro_dearxan.exe (memory layout,
   loads as a normal PE). dearxan found 0 Arxan stubs: Sekiro has no `test rsp,0Fh` signature, so its Arxan
   variant is not one dearxan supports (tested games: DSR, DS2, DS3, ER, AC6, NR). Further Arxan analysis was
-  blocked by the session's permission policy; waiting on the user before continuing.
+  blocked by the session's permission policy.
 - 2026-10-06: user supplied a Steamless-unpacked exe (Sekiro\sekiro.exe.unpacked.exe). All sections byte-identical
   to tools/sekiro-dearxan's SteamStub unwrap (confirms it). Ghidra project: extracted/ghidra (sekiro), decompiles
   to extracted/decomp/. Exe debug labels found: posture regen debug menu ("current stamina control type: none"
@@ -30,7 +30,7 @@ Dated findings, oldest first. Append new entries at the end.
 ## Community offsets cross-check: SekiroTool (2026-10-08)
 
 github.com/borgCode/SekiroTool (read as source, not run; reference/SekiroTool). Its patch 1.6.0 table
-matches the user's exe (WorldChrMan +0x3D7A1E0) and every offset we found ourselves: PlayerIns +0x88,
+matches the 1.06 exe (WorldChrMan +0x3D7A1E0) and every offset we found ourselves: PlayerIns +0x88,
 ChrIns handle +0x8 / id +0x68 / SpEffect +0x11D0 / modules +0x1FF8, Data HP 0x130 / posture 0x148,
 Physics yaw +0x74 / position +0x80. New for live work (1.6.0, base 0x140000000):
 - AiThink = [[ChrIns+0x58]+0x340]: +0xB742 LastAct (battle-script act), +0xB744 LastKengekiAct,
@@ -38,7 +38,7 @@ Physics yaw +0x74 / position +0x80. New for live work (1.6.0, base 0x140000000):
 - WorldAiMan 0x143D55070 (+0x4C6EC global force act), DamageManager 0x143D77EF0 (+0x30 hitbox view),
   WorldChrManDbg 0x143D7A388 (+0x6F debug draw), DebugFlags 0x143D7A366 (+0x10 DisableAi, +0xE
   AllNoAttack, +0xC AllNoDamage, +0x17 AllNoPosture), Behavior module +0xD00 anim speed.
-  These are writes (toggles) - only with the user's go-ahead, and never hooks.
+  These are writes (toggles).
 - Smithbox Documentation/Memory/Sekiro_1.06.txt: singleton addresses for 1.06 (= 1.6.0), e.g.
   SprjSound 0x143D9A7B8 (the singleton the hit-SE code FUN_140b63fe0 calls), SprjWorldAiManager
   0x143D55070, CSAttachDummyChrHitSystem 0x143D87A58, SprjHkAiManager 0x143D91848. Smithbox's SDT

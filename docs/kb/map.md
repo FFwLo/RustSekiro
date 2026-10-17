@@ -14,7 +14,7 @@ Contents (line numbers of this file; read a range, not the whole file):
 - 603: 2026-10-11 Objects' own collision in the .hit (tools/sekiro-extract map.rs, hkx.rs decode_conve
 - 634: 2026-10-12 The sat layer shaders, decompiled (M[Multiple] / M[MultipleGround])
 - 733: 2026-10-12 ObjAct doors left out; teleports skip the wall slide ("bug fixes" session)
-- 752: 2026-10-12 The bosses fight on the castle top (user's rule; tools/boss_arenas.py)
+- 752: 2026-10-12 The bosses fight on the castle top
 - 765: 2026-10-12 Boss fog walls (tools/fog_walls.py, src/fog_wall.rs)
 - 778: 2026-10-12 The game's height fog (src/height_fog.rs, height_fog.wgsl)
 - 794: 2026-10-12 Sky domes and the map's bloom (src/sky.rs, map.rs map_bloom)
@@ -29,7 +29,7 @@ Dated findings, oldest first. Append new entries at the end.
 
 The fight now takes place where the General (c1020_0004, NpcParam 10203010) stands in
 m11_01_00_00 (Ashina Outskirts, the big gate): his pieces, hit collision, draw params. Everything
-comes from the user's own game files; nothing is modelled by hand.
+comes from the game's own files; nothing is modelled by hand.
 
 ### Pipeline (all in `tools/extract.ps1`, block "Map")
 ```
@@ -208,7 +208,7 @@ before.
   `<dir>/<idx>_<name>.png`, then exits. An enemy that walked more than 5 m from its spot is
   skipped. `SHINOBI_SANDBOX_WATCH=<sec>` logs the debug AI mode, Wolf and every enemy's
   state / stealth state / position once at that game time (checked: the line-up still stands
-  at 24 s; when it "fought" the window had the user's keyboard). Pages are shot one run each
+  at 24 s; when it "fought" the window had keyboard focus). Pages are shot one run each
   (`all:0` .. `all:5`); the scratchpad `sheet.ps1`
   tiles a page's shots into a contact sheet (crop 270,30,540,520 of the 1024x560 window).
   2026-10-10: all 102 kinds shot and the sheets reviewed: no missing / magenta textures on
@@ -438,9 +438,7 @@ before.
   0..13, uv set 1 vs 0, the view fade) is not decoded; the look is by eye. `SHINOBI_START=x,z` puts Wolf on another spot of the arena
   (probing). gap: the game starts the fight where the boss script's warp or the fog gate
   puts Wolf.
-- **Which bosses get an arena** (the user, 2026-10-11: "do one arena for the bosses that
-  don't need special arena and do arenas for bosses that need them ... Isshin boss arena, the
-  one with flowers"): `tools/boss_arenas.py` OWN_ROWS exports an arena only for the fights
+- **Which bosses get an arena** (2026-10-11): `tools/boss_arenas.py` OWN_ROWS exports an arena only for the fights
   whose mechanics live in their surroundings: Corrupted Monk (50000000 Mibu phantom spots,
   50001000 the Fountainhead bridge), Lady Butterfly (50900000/1, the illusions' spots),
   Guardian Ape and Headless Ape (51000000, 51000100: the valley's pond and grotto), Divine
@@ -452,8 +450,7 @@ before.
   that spot: the field falls 0.27 m per metre toward Wolf (the boss spot is 1.3 m above his),
   so that spot may differ by 2 m in height; Wolf's own spot keeps the 0.5 m band of the Ape
   fix. Beyond z 10 the field's centre line has no floor (a drop), so the search stays short.
-- **Castle top** (the user, 2026-10-11: "use his arena", then "put Isshin from the flower arena
-  to the top", "isshin other form"): Genichiro (71001000) has his own arena on the Ashina Castle
+- **Castle top** (2026-10-11): Genichiro (71001000) has his own arena on the Ashina Castle
   top, after sekiro-rs `crates/sim/src/arena.rs` ARENAS (burnt floor m015072 skipped with
   `MAP_SKIP_MODEL`); Way of Tomoe (71100000) shares it by the host search. The Owl (50600000) had
   his own export from c5060_0000 too, but that spot is at the platform's edge and the start 8 m
@@ -519,7 +516,7 @@ before.
   for Bevy's); the blue cast and low saturation (check the LUT input is the curve's output range
   and that squared colours are not squared twice in the probe / ambient path); try the 6 h key on
   the castle (DarkScript3 time of day 1 = Morning for Genichiro's event). Per-fight choices
-  themselves belong to the boss fights, which the user gave away (HANDOFF 0.1).
+  themselves belong to the boss fights, which were given away (HANDOFF 0.1).
   2026-10-12 (VXf) on the gate (SHINOBI_MAP=m11_01_00_00, the HUD-shot start view: the shaded
   gate stairs), look.py: 18 h logL -4.84, 2.1 stops, warm +34, sat 117; 12 h -5.23, 1.9 stops,
   warm +2, sat 18; 18 h without the env probe (SHINOBI_MAP_NO_ENV) -6.09, 2.1 stops, sat 22;
@@ -527,7 +524,7 @@ before.
   The gate's four LUTs (lut_0000-0030) are near identity (pure red / green / blue and greys map
   to themselves within ~10 / 255), so the LUT is not the cast. The real frames (all open boss
   areas, 4.7-8.3 stops) are no fair match for that shaded view: tuning waits for a real gate
-  frame at a known hour (ask the user). Seen: the 12 h key is grey (sat 18) where the 18 h one
+  frame at a known hour (needs a reference frame). Seen: the 12 h key is grey (sat 18) where the 18 h one
   is saturated; the scene is evenly lit by the ambient / probe with few sun shadows in view.
 
 - **Map emissives** (2026-10-13, not ported; shaderbdle.shaderbdlebnd, D3DDisassemble): the
@@ -725,7 +722,7 @@ tool's defaults for constants an MTD leaves out (0, colours 1). Gate check: no b
 a little darker and greyer (the tint layer), snow on up-facing ground. The boss arenas are
 still v4 until re-exported.
 
-Given away 2026-10-12 (the user, relayed): layered map materials now belong to someone else.
+Given away 2026-10-12: layered map materials now belong to someone else.
 State: bin v5 + `game_layers` built and working on the gate (m11_01_00_00 re-exported 05:5x,
 448 batches, 60 fps, test `bin_v5_reads_the_game_path`); boss arenas still v4. Open: the gaps
 listed above, a real gate frame to compare against, re-exporting the other arenas.
@@ -749,10 +746,9 @@ listed above, a real gate frame to compare against, re-exporting the other arena
   and ran 512 substeps: one frame took about 33 s (the Monkeys fight's "3 fps"), and the warp
   stopped at the first wall.
 
-## 2026-10-12 The bosses fight on the castle top (user's rule; tools/boss_arenas.py)
+## 2026-10-12 The bosses fight on the castle top
 
-- The user: "all the bosses the im working on should be in the top of castle unless they dont
-  fit". `boss_arenas.py` now sends every npc_names.json row without its own arena to
+- Bosses fight on the castle top unless they don't fit. `boss_arenas.py` now sends every npc_names.json row without its own arena to
   `boss_71001000` (the castle top; `TOP_ROW`), and the moved rows too: the Owl (Father),
   prologue Genichiro 71000000, Isshin's field guests. `DONT_FIT` keeps Gyoubu 50800000 and
   the Demon of Hatred 70200000 on Isshin's silvergrass field (too big for the roof). Own arenas
@@ -904,3 +900,7 @@ listed above, a real gate frame to compare against, re-exporting the other arena
   60 m, mostly reflection boxes and lower floors); the burning-hall box is always on (its event
   switch and variants 2400-4400 untraced); FadeRate / DiffuseColorScale; the exe's draw-list
   build (GXEnvMapRegionManager) not read, so the priority order is inferred from the data.
+- 2026-10-15 the dragons on the sandbox: map = "sandbox" keeps 52000000 / 53000000 on their own
+  m25 arena (map.rs OWN_ARENA_ROWS / sandbox_exception; Wolf fell through the sandbox floor
+  there), and both arenas reach 140 m (tools/boss_arenas.py OVERRIDES; the Divine
+  Dragon's wind pushes Wolf away), 96 grapple points each.

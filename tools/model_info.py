@@ -36,6 +36,17 @@ def read(path: Path):
         o, mat = s(o); o, alb = s(o)
         if version >= 3:
             o, _normal = s(o)
+        if version >= 4:
+            o, _metallic = s(o)
+        if version >= 5:
+            o += 1
+        if version >= 6:
+            variant = d[o]; o += 1
+            if variant != 255:
+                o += 1
+                for _ in range(8):
+                    o, _ = s(o)
+                o += 160
         vc = u32(o); o += 4
         bones = {}
         for v in range(vc):

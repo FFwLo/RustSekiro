@@ -246,3 +246,9 @@ Dated findings, oldest first. Append new entries at the end.
   (region 2, 257) the phase switch, (-1, 256) all off. common 410 does the same for the areas'
   battle / stealth tracks (not built).
 - tools/boss_bgm.py -> extracted/enemies/boss_bgm.json; fmod.rs boss_music.
+- 2026-10-15 slotted sounds: PlaySound_BySlot (129) with SlotID >= 0 now lives only while its
+  event runs (sound.rs, as the slotted FFX; DSAnimStudio zzz_SoundManagerIns.cs keeps a slot
+  sound only while its event box is active). Genichiro's black-sword charge (c7100 a000_003023,
+  710006102, a 4.8 s sound on slot 1 for 0.3-1.5 s) rang on after the swing. Sound slots are kept
+  apart from the FFX ones (+1000). gap: the exe's own slot stop not traced. fmod.rs fmod_loops
+  takes LOOP_KEYS / LOOP_PROJECTS / LOOP_TIMES for any event list.

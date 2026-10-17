@@ -1522,3 +1522,89 @@ pub(crate) fn the_bandits_torch_sets_wolf_on_fire() {
     let after = app.world_mut().query_filtered::<&Actor, With<Player>>().single(app.world()).unwrap().hp;
     assert!(after < hp, "no burn damage: {hp} -> {after}");
 }
+
+/// The whole Lightning Reversal on the Way of Tomoe: caught in the air, thrown back with an
+/// attack, the bolt (Bullet 500184's weak twin, AtkParam 105000281) hits him: c9997 GetSpDamage
+/// -> W_DamageLightningStart (the stun), and the shock SpEffect takes its HP (the test above:
+/// 508 of 2556).
+#[test]
+pub(crate) fn the_reversal_bolt_stuns_tomoe() {
+    if !std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/extracted/enemies/c7110.json")).exists() {
+        return;
+    }
+    let mut tries = vec![];
+    for jump_at in [0.95f32, 1.0, 1.05, 1.1, 1.15, 1.2, 1.25, 1.3, 1.35, 1.45] {
+        let mut app = app_with("c7110");
+        {
+            let world = app.world_mut();
+            let mut q = world.query_filtered::<(&mut Enemy, &mut Actor), Without<crate::enemy::Cast>>();
+            let (mut e, mut a) = q.single_mut(world).unwrap();
+            e.force_anim(&mut a, "a000_003042");
+        }
+        let mut jumped = false;
+        let mut caught = false;
+        for _ in 0..240 {
+            let t = enemy_state(&mut app).2;
+            if !jumped && t >= jump_at {
+                app.world_mut().resource_mut::<PadInput>().press(Action::Jump);
+                jumped = true;
+            }
+            app.update();
+            if player_state(&mut app).0.starts_with("AirDamageElectroCharge") {
+                caught = true;
+                break;
+            }
+        }
+        if !caught {
+            continue;
+        }
+        // The bolt is a 7.76 m capsule along the blade (dummies 10120 -> 10141, the latter on
+        // WP_A_0300's Blade02 at -7.755); headless there are no dummies and the reach is short,
+        // so he stands 2 m in front of Wolf.
+        let hp0 = {
+            let world = app.world_mut();
+            let e = boss_in_play(world);
+            world.get::<Actor>(e).unwrap().hp
+        };
+        let place = |app: &mut App| {
+            let world = app.world_mut();
+            let (wpos, fwd) = {
+                let mut q = world.query_filtered::<(&Transform, &Actor), With<Player>>();
+                let (t, a) = q.single(world).unwrap();
+                (t.translation, a.forward())
+            };
+            let e = boss_in_play(world);
+            let y = world.get::<Transform>(e).unwrap().translation.y;
+            world.get_mut::<Transform>(e).unwrap().translation = (wpos + fwd * 2.0).with_y(y);
+        };
+        let mut released = false;
+        let mut states = vec![enemy_state(&mut app).0];
+        for i in 0..480 {
+            if !released && i % 5 == 0 {
+                app.world_mut().resource_mut::<PadInput>().press(Action::Attack);
+            }
+            app.update();
+            if !released && player_state(&mut app).0 == "AirWeakElectroReceiveAttack" {
+                released = true;
+                place(&mut app);
+            }
+            let s = enemy_state(&mut app).0;
+            if states.last() != Some(&s) {
+                states.push(s);
+            }
+        }
+        if !released {
+            continue;
+        }
+        let hp = {
+            let world = app.world_mut();
+            let e = boss_in_play(world);
+            world.get::<Actor>(e).unwrap().hp
+        };
+        tries.push((jump_at, hp0 - hp, states.clone()));
+        assert!(states.iter().any(|s| s.starts_with("DamageLightning")), "no stun: took {} HP, {states:?}\n{}", hp0 - hp, log_text(&app));
+        assert!(hp0 - hp >= 500.0, "took {} HP: {states:?}\n{}", hp0 - hp, log_text(&app));
+        return;
+    }
+    panic!("no release: {tries:?}");
+}

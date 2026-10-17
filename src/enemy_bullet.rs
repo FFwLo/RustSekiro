@@ -67,6 +67,13 @@ pub struct EnemyBullet {
     reissued: bool,
 }
 
+impl EnemyBullet {
+    /// Its Bullet param row (the boss audit, sim_tests boss_audit).
+    pub(crate) fn row(&self) -> i64 {
+        self.spec.bullet_id
+    }
+}
+
 /// A growing bullet's attack re-issue period: the countdown at bullet+0x20 is reset to
 /// 0x3e2aaaab (1/6 s) after each (140b0.c:8412 / 8631).
 const REISSUE_PERIOD: f32 = 1.0 / 6.0;
@@ -93,7 +100,7 @@ impl Plugin for EnemyBulletPlugin {
         app.init_resource::<ScriptShots>()
             .init_resource::<TargetTrack>()
             .add_message::<crate::gore::PlaceStain>()
-            .add_systems(FixedUpdate, (track, fire, fire_scripted, fly).chain().after(ActorSet::Advance).after(crate::anim::PoseSet).before(ActorSet::Resolve))
+            .add_systems(FixedUpdate, (track, fire, fire_worn, fire_scripted, fly).chain().after(ActorSet::Advance).after(crate::anim::PoseSet).before(ActorSet::Resolve))
             .add_systems(Update, draw.run_if(resource_exists::<GizmoConfigStore>));
     }
 }
@@ -228,6 +235,56 @@ fn fire(
             spawn_row(&mut commands, spec, ent, a.kind, from, dir, floor, None);
         }
     }
+}
+
+/// SpEffect stateInfo 275: a worn effect runs its behaviorId every motionInterval at its dmypolyId.
+/// The Demon of Hatred's resident 3702080 / 3702081 (right / left foot, dummies 13 / 16, every
+/// 0.3 s) -> BehaviorParam 1802 -> Bullet 70200950 (radius 2.5 m, life 0.3 s, no damage,
+/// spEffectId0 3702085 "near the feet" on whom it touches); his AI (702000_battle.lua) answers
+/// 3702085 on Wolf with Act19's stomp 3046. The live fight creates 70200950 ~6 times a second
+/// for the whole fight (rec_20261016_072651_boss_demon_of_hatred, 6056 in 952 s).
+/// gap: when the first one fires after the effect is put on is not traced (at once here).
+#[allow(clippy::type_complexity)]
+fn fire_worn(
+    mut commands: Commands,
+    time: Res<Time>,
+    combat: Res<Combat>,
+    enemies: Query<(Entity, &Actor, &Transform, &Enemy, Option<&Dummies>)>,
+    player: Query<&Transform, With<Player>>,
+    markers: Query<&GlobalTransform>,
+    mut clocks: Local<std::collections::HashMap<(Entity, i64), f32>>,
+) {
+    const PERIODIC_BEHAVIOR: i64 = 275;
+    let dt = time.delta_secs();
+    let floor = player.single().ok().map(|t| t.translation.y - CAPSULE_HALF_HEIGHT);
+    let mut seen = std::collections::HashSet::new();
+    for (ent, a, tf, e, dummies) in &enemies {
+        if e.is_dead() || e.disabled {
+            continue;
+        }
+        let d = combat.data_of(a);
+        for &id in &a.resident {
+            let Some(sp) = d.sp_effects.get(&id.to_string()) else { continue };
+            if sp.state_info != PERIODIC_BEHAVIOR || sp.behavior_id <= 0 || sp.motion_interval <= 0.0 {
+                continue;
+            }
+            let Some(spec) = d.bullets.get(&format!("sp{}", sp.behavior_id)) else { continue };
+            seen.insert((ent, id));
+            let clock = clocks.entry((ent, id)).or_insert(0.0);
+            *clock -= dt;
+            if *clock > 0.0 {
+                continue;
+            }
+            *clock += sp.motion_interval;
+            let from = dummies
+                .and_then(|dm| dm.0.get(&(sp.dmypoly_id as i16)))
+                .and_then(|&m| markers.get(m).ok())
+                .map(|g| g.translation())
+                .unwrap_or(tf.translation);
+            spawn_row(&mut commands, spec, ent, a.kind, from, a.forward(), floor.unwrap_or(tf.translation.y - CAPSULE_HALF_HEIGHT), None);
+        }
+    }
+    clocks.retain(|k, _| seen.contains(k));
 }
 
 /// The boss scripts' Shoot Bullet: from the source's dummy poly (its root + 1 m without a model),
@@ -476,7 +533,8 @@ fn fly(
                     // Its other SpEffects for their effectEndurance (one with none: a frame).
                     for id in own {
                         let key = id.to_string();
-                        let row = script.as_ref().and_then(|s| s.sp_effects.get(&key)).or_else(|| combat.player.sp_effects.get(&key));
+                        // The shooter's own rows too: the Demon's 3702085 (0.3 s) is only there.
+                        let row = script.as_ref().and_then(|s| s.sp_effects.get(&key)).or_else(|| combat.kind(b.kind).data.sp_effects.get(&key)).or_else(|| combat.player.sp_effects.get(&key));
                         let left = row.map_or(0.0, |s| s.effect_endurance).max(dt);
                         p.timed.retain(|t| t.0 != id);
                         p.timed.push((id, left));

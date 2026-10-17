@@ -36,6 +36,9 @@ impl Plugin for DuelPlugin {
                 .add_systems(Update, run_duel)
                 .add_systems(FixedUpdate, keep_wolf_up.after(crate::actor::ActorSet::Resolve).after(crate::status::tick));
         }
+        if std::env::var("SHINOBI_DUEL_CAM").is_ok() {
+            app.add_systems(PostUpdate, watch_enemy.after(crate::camera::follow_player).after(crate::camera::apply_shakes).before(bevy::transform::TransformSystems::Propagate));
+        }
     }
 }
 
@@ -138,4 +141,19 @@ fn run_duel(
     }
     let _ = std::fs::write(&duel.file, out);
     exit.write(AppExit::Success);
+}
+
+/// SHINOBI_DUEL_CAM=<dist>[:<height>]: the camera films the enemy from its side at that distance
+/// (default height 1.2 m), looking at its chest, for cloth / model shots (the duel's own camera
+/// sits behind Wolf, under the boss).
+fn watch_enemy(enemies: Query<&GlobalTransform, (With<Enemy>, Without<crate::enemy::Cast>)>, mut cam: Query<&mut Transform, With<Camera3d>>) {
+    let v = std::env::var("SHINOBI_DUEL_CAM").unwrap_or_default();
+    let mut it = v.split(':').map(|x| x.parse::<f32>().ok());
+    let dist = it.next().flatten().unwrap_or(4.0);
+    let h = it.next().flatten().unwrap_or(1.2);
+    let (Some(g), Ok(mut tf)) = (enemies.iter().next(), cam.single_mut()) else { return };
+    let at = g.translation() + Vec3::Y * 1.2;
+    let side = g.rotation() * Vec3::X;
+    tf.translation = at + side * dist + Vec3::Y * (h - 1.2);
+    tf.look_at(at, Vec3::Y);
 }

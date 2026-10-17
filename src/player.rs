@@ -23,6 +23,9 @@ pub struct Player {
     /// Plunge deathblow in flight: the posture-broken enemy Wolf is falling onto and the
     /// ThrowParam suffix of the landing (151 崩し落下1, 161 蹴り崩し1 out of a head-kick jump).
     plunge: Option<(Entity, i64)>,
+    /// A launch homing on a character (ChrPhysicsVelocityChangeParam homingId other than the
+    /// wire's: the jump arts' 10010 -> ChrPhysicsHomingParam 20000), until he lands.
+    leap_homing: Option<LeapHoming>,
     /// Docked to a map edge: wall hug or ledge hang (docking.rs).
     pub(crate) dock: Option<crate::docking::Dock>,
     /// Wall jumps this flight (WALL_JUMP_COUNT_MAX 1) and the wall-contact side of the ready pose
@@ -118,7 +121,9 @@ pub struct Player {
     wire_todome: bool,
     /// The highest point of the current flight (on the ground: the current height). The landing
     /// reads the fall height from it (env(224), `FALL_HEIGHT_LONG_STIFF_LAND`).
-    air_top: f32,
+    pub(crate) air_top: f32,
+    /// The last ground Wolf stood on (not water): where a fall-return death puts him back.
+    safe_pos: Option<Vec3>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -301,6 +306,75 @@ fn air_art_land(cat: i64, state: &str, ref_201: bool, ref_288: bool) -> Option<(
     })
 }
 
+/// ChrPhysicsHomingParam's target point on a character: its origin (targetBaseDmyPolyId -1) plus
+/// targetOffset in its own space (model forward is -Z, so 20000's (0, 0, -1) is 1 m in front of
+/// it). gap: the offset's space is taken from the plunge's dummy-space use (200000300), not
+/// traced for the origin case.
+fn leap_target(t: &Transform, offset: Vec3) -> Vec3 {
+    t.translation + t.rotation * offset
+}
+
+/// A launch homing on a character (exe FUN_140bb3580 / FUN_140bb3220, ChrPhysicsHomingParam).
+#[derive(Clone, Copy, Debug)]
+struct LeapHoming {
+    target: Entity,
+    row: crate::wire::HomingRow,
+    /// fallCorrectionChaseMaxVelocityRate x the planar speed when the homing starts.
+    max_speed: f32,
+}
+
+/// The horizontal speed that lands a launch (vertical speed `vy`, gravity `g` < 0) on a point
+/// `dist` away and `dy` above (exe FUN_140bb3b70, no horizontal acceleration): the later root of
+/// dy = vy t + g t^2 / 2, then dist / t. None when the point can't be reached.
+fn arrival_speed(vy: f32, dist: f32, dy: f32, g: f32) -> Option<f32> {
+    let disc = vy * vy + 2.0 * g * dy;
+    if g >= 0.0 || disc < 0.0 {
+        return None;
+    }
+    let t = (-vy - disc.sqrt()) / g;
+    (t > 0.0).then(|| dist / t)
+}
+
+impl LeapHoming {
+    /// initialVelocityCorrection 2 (FUN_140bb3580's second branch): the vertical speed stays the
+    /// row's; the horizontal one turns to the target and slows to land on it - but never speeds
+    /// up past the row's (needed > current: no correction, the row's launch as it is).
+    /// Correction 1 (the wire's arc) is wire.rs's.
+    fn launch(a: &mut Actor, pos: Vec3, target: Vec3, g: f32, e: Entity, row: crate::wire::HomingRow) -> Option<Self> {
+        if row.initial_correction == 2 {
+            let to = (target - pos).with_y(0.0);
+            let speed = a.air_base.length();
+            if to.length() <= 0.0 {
+                a.air_base = Vec3::ZERO;
+            } else if let Some(need) = arrival_speed(a.vel_y, to.length(), target.y - pos.y, g).filter(|n| *n > 0.0 && *n <= speed) {
+                a.air_base = to.normalize() * need;
+                a.yaw = yaw_of(to);
+            }
+            a.move_vel = a.air_base;
+        }
+        row.chase.then_some(Self { target: e, row, max_speed: a.air_base.length() * row.chase_speed_rate })
+    }
+
+    /// fallCorrectionChase (FUN_140bb3220): each frame the horizontal velocity moves toward the
+    /// one that lands on the (moving) target point, by at most chaseMaxAcceleration * dt; without
+    /// a solution it accelerates straight at it. Capped at `max_speed`. gap: where the exe
+    /// applies the velocity-rate cap is not traced (taken on the result).
+    fn chase(&self, a: &mut Actor, pos: Vec3, target: Vec3, g: f32, dt: f32) {
+        let to = (target - pos).with_y(0.0);
+        let dist = to.length();
+        if dist <= 1e-4 {
+            return;
+        }
+        let dir = to / dist;
+        let step = self.row.chase_accel * dt;
+        a.air_base += match arrival_speed(a.vel_y, dist, target.y - pos.y, g) {
+            Some(need) => (dir * need - a.air_base).clamp_length_max(step),
+            None => dir * step,
+        };
+        a.air_base = a.air_base.clamp_length_max(self.max_speed);
+    }
+}
+
 /// HKS BEH_A_GROUND_SP_ATTACK: the art's opening state by type. Out of a sprint (ref 1) the
 /// Sprint* variant; 101 steps (_set2DirStepDir: stick within +-90 deg of the facing -> F, no
 /// stick -> N, else B; without SP_EF_REF_WEP_SP_ATK_UNLOCK_101_BACK_ATTACK (280) always F);
@@ -431,6 +505,9 @@ const FALL_HEIGHT_LONG_STIFF_LAND: f32 = 20.0;
 const LAND_LONG_STIFF: &str = "a000_200021";
 /// c0000_define 211-212: FALL_HEIGHT_SHORT_STIFF_LAND(_FROM_JUMP), metres.
 const FALL_HEIGHT_SHORT_STIFF_LAND: f32 = 5.0;
+/// Falling this far with no ground below ends in the fall-return death (gap: HitMtrlParam's default
+/// fallDeathDist stands in for the exe's void rule).
+const FALL_VOID_DROP: f32 = 40.0;
 const FALL_HEIGHT_SHORT_STIFF_LAND_FROM_JUMP: f32 = 3.0;
 /// SP_EF_REF_TAE_ENABLE_SUB_ATTACK_DERIVE_ATTACK (c0000_define 666).
 pub const REF_SUB_ATTACK_DERIVE_ATTACK: i64 = 301;
@@ -462,6 +539,12 @@ impl PadInput {
     /// Queue a button press (used by input reading and by the simulation tests).
     pub fn press(&mut self, a: Action) {
         self.pressed.push(a);
+    }
+
+    /// No movement or presses this frame (a talk holds Wolf, enemy/talk.rs); the fight reset
+    /// and the stick's walk / run history stay.
+    pub fn hold(&mut self) {
+        *self = PadInput { pad_running: self.pad_running, reset: self.reset, ..Default::default() };
     }
 }
 
@@ -671,7 +754,25 @@ pub fn deathblow_check(combat: &Combat, wolf: Vec3, wolf_fwd: Vec3, aged: bool, 
         let in_reach = at.distance(wolf) <= start.as_ref().map_or(main.dist, |st| st.dist) && throw_height_ok(combat, reach_row, wolf, at) && throw_facing_ok(combat, reach_row, wolf, wolf_fwd, at, ea.forward());
         return Some(DeathblowCheck { behind, suffix, main, start, in_reach });
     }
-    let finisher = combat.data_of(ea).finisher_open(&ea.anim, ea.t).then(|| combat.finisher(&foe)).flatten();
+    let usable = |sfx: i64| combat.throw(foe.throw_row(sfx)).is_some_and(|t| d.anim(&t.atk_anim).is_some());
+    let window = combat.data_of(ea).finisher_window(&ea.anim, ea.t);
+    // The Todome (トドメ始動 / 本体, ThrowParam 0180 / 0181, +500 in the second form: Wolf
+    // a2xx_501700 -> 511700, the boss ThrowDef13700) is taken from the boss's kneel, its Event20200
+    // with the 105 window (data.rs finisher_window), not from the last mark: in every recording
+    // (rec_2026101x_*_boss_*) the last mark is a usual deathblow, the map script then sends the
+    // boss to 20200 and Wolf to his Event7102xx, and 0180 / 0181 follow 0.8-1.8 s later (Isshin:
+    // 15400680 / 681 at 912.2 s). The start rows' Dist 20 and DiffAng 0-180 reach him anywhere
+    // near. gap: the exe's gate for the Todome is not traced (by the window and the recordings).
+    if window == Some(105) {
+        let hu = if ea.anim_group == 1 && usable(681) { 500 } else { 0 };
+        if usable(181 + hu) {
+            let main = combat.throw(foe.throw_row(181 + hu))?;
+            let start = combat.throw(foe.throw_row(180 + hu)).filter(|st| d.anim(&st.atk_anim).is_some());
+            let reach = start.as_ref().map_or(main.dist, |st| st.dist);
+            return Some(DeathblowCheck { behind: false, suffix: 181 + hu, main, start, in_reach: at.distance(wolf) <= reach });
+        }
+    }
+    let finisher = window.is_some().then(|| combat.finisher(&foe)).flatten();
     if let Some((id, main)) = finisher {
         let judge = (main.judge_dmy > 0).then(|| dmy(main.judge_dmy)).flatten();
         let base = judge.unwrap_or(at);
@@ -705,14 +806,11 @@ pub fn deathblow_check(combat: &Combat, wolf: Vec3, wolf_fwd: Vec3, aged: bool, 
     } else {
         (0, 1)
     };
-    // A major boss's last deathblow is its Todome (トドメ始動 / 本体, ThrowParam 0180 / 0181: Wolf
-    // a2xx_501700 -> 511700, the boss ThrowDef13700); only the bosses with several deathblows have
-    // these rows (c5000, c5060, c5100, c5400, c5430, c7020, c7110), the one-bar Guardian Ape and
-    // Way of Tomoe too (the Ape's a000_013700 is his 39.5 s fake death: m17 11705821 raises him
-    // on its message 20). gap: the exe's choice of the Todome rows is not traced (by the rows'
-    // names).
-    let todome = !unaware && enemy.ninsatsu.0 <= 1;
-    let usable = |sfx: i64| combat.throw(foe.throw_row(sfx)).is_some_and(|t| d.anim(&t.atk_anim).is_some());
+    // The last mark of a boss with "崩しトドメ" / "崩し背後トドメ" rows (main + 8: Gyoubu 0009 / 0119,
+    // the headless Ape 0509 / 0619 -> ThrowDef12090 / 13290, whose message 30 at 9.5 s is his
+    // defeat, m17 11705800) takes those, after the usual start. (The Todome 0180 / 0181 is not
+    // taken here but from the boss's kneel, above.)
+    let last = !unaware && enemy.ninsatsu.0 <= 1;
     // Its second form ("（HU）" rows, +500: Isshin's spear phase a243_*, the headless Guardian
     // Ape's a235_*, Lady Butterfly's) while it plays its second anim set (a100). gap: the exe's
     // pick of these rows is not traced (by the rows' names and the anim sets).
@@ -724,16 +822,9 @@ pub fn deathblow_check(combat: &Combat, wolf: Vec3, wolf_fwd: Vec3, aged: bool, 
         Some(_) => 0,
         None => if ea.anim_group == 1 && usable(suffix + 500) { 500 } else { 0 },
     };
-    let (mut start_sfx, mut suffix) = (start_sfx + hu, suffix + hu);
-    if todome {
-        if usable(181 + hu) {
-            (start_sfx, suffix) = (180 + hu, 181 + hu);
-        } else if usable(suffix + 8) {
-            // "崩しトドメ" / "崩し背後トドメ" (main + 8: Gyoubu 0009 / 0119, the headless Ape
-            // 0509 / 0619 -> ThrowDef12090 / 13290, whose message 30 at 9.5 s is his defeat,
-            // m17 11705800), after the usual start.
-            suffix += 8;
-        }
+    let (start_sfx, mut suffix) = (start_sfx + hu, suffix + hu);
+    if last && usable(suffix + 8) {
+        suffix += 8;
     }
     let main = combat.throw(foe.throw_row(suffix))?;
     let start = combat.throw(foe.throw_row(start_sfx)).filter(|st| d.anim(&st.atk_anim).is_some());
@@ -1336,7 +1427,7 @@ fn spawn_player(mut commands: Commands, combat: Res<Combat>, config: Res<GameCon
         }
     }
     commands.spawn((
-        Player { plunge: None, dock: None, wall_jumps: 0, last_wall: None, seat: Default::default(), wall_contact: None, speed_level: 0.0, requests: HashMap::new(), last_state: String::new(), gourd: config.player.gourd_charges, emblems: config.player.spirit_emblems, auto_aim: false, auto_aim_fresh: false, resurrections: config.player.resurrections, revive_queued: false, death_wait: 0.0, dead_for: 0.0, escape: None, jump_forward: false, jump_land: None, positioning_land: false, aged_form: false, step_tilt: 0.0, jump_tilt: 0.0, throw_start: None, throw_target: None, tool_slot: 0, vel_scale: None, expand_pending: false, sub_cat_before: 0, air_sub_count: 0, air_art_count: 0, art_enable_jump: false, timed: Vec::new(), held: Vec::new(), wire: None, perch: None, wire_todome: false, air_top: 0.0 },
+        Player { plunge: None, leap_homing: None, dock: None, wall_jumps: 0, last_wall: None, seat: Default::default(), wall_contact: None, speed_level: 0.0, requests: HashMap::new(), last_state: String::new(), gourd: config.player.gourd_charges, emblems: config.player.spirit_emblems, auto_aim: false, auto_aim_fresh: false, resurrections: config.player.resurrections, revive_queued: false, death_wait: 0.0, dead_for: 0.0, escape: None, jump_forward: false, jump_land: None, positioning_land: false, aged_form: false, step_tilt: 0.0, jump_tilt: 0.0, throw_start: None, throw_target: None, tool_slot: 0, vel_scale: None, expand_pending: false, sub_cat_before: 0, air_sub_count: 0, air_art_count: 0, art_enable_jump: false, timed: Vec::new(), held: Vec::new(), wire: None, perch: None, wire_todome: false, air_top: 0.0, safe_pos: None },
         actor,
         Name::new("Player"),
         Transform::from_xyz(0.0, CAPSULE_HALF_HEIGHT, 4.0),
@@ -1976,6 +2067,13 @@ fn buffers(d: &CharData, a: &Actor, action: Action) -> bool {
     if a.state == "ThrowBreak" && matches!(action, Action::Attack | Action::Jump) {
         return true;
     }
+    // The walk-up to a kneeling boss reads attack for the Todome (todome_input): its clip has no
+    // accept flag, so the press was dropped (the user, 2026-10-16: Isshin's close-up, "i can't
+    // press the attack button"). Kept from its start (TAE 931 unk0 9, 0-5 s) until the 930 window
+    // takes it (rec_20261016_080607: the Todome 0.77 s into a000_710206).
+    if action == Action::Attack && a.anim.starts_with("a000_7102") && d.anim(&a.anim).is_some_and(|an| an.events.iter().any(|e| e.kind == 931 && e.in_time(a.t))) {
+        return true;
+    }
     // The aged standby states (g_paramHkbState STATE_TYPE_STANDBY: AgingIdle, the walk, the
     // sprint start / loop) take every input as StandIdle does.
     if a.airborne || is_free(&a.state) || is_aged_standby(&a.state) || a.anim.is_empty() || sprint_window(d, a) {
@@ -2111,6 +2209,28 @@ fn accepts(d: &CharData, a: &Actor, action: Action) -> bool {
     // game frame later than a fresh press, docs/kb/input-buffer.md), so the execute window is
     // read at the previous step's time.
     !a.anim.is_empty() && accept_flag(action).iter().any(|&f| d.flag(&a.anim, a.prev_t, f))
+}
+
+/// Wolf's state for an EzState request (W_Event<id>, c0000.hks 264): Event<id>, or for the walk-ups
+/// 710200 / 710201 / 710203 / 710204, which have no state of that name in c0000.hkx, the state
+/// playing that clip (statemap_c0000: Event390010 / 390011 / 390013 / 390014 -> a000_710200 / 201 /
+/// 203 / 204). The recordings show those clips on the request: the True Monk a000_710200, the Owl
+/// Father 710201, the Ape 710203, Genichiro (castle) 710204 (rec_2026101x_*_boss_*).
+pub fn event_state(d: &CharData, id: i64) -> String {
+    let own = format!("Event{id}");
+    if d.anim_key(&own).is_some() || !(710_200..=710_204).contains(&id) {
+        return own;
+    }
+    format!("Event{}", id - 710_200 + 390_010)
+}
+
+/// Wolf's walk-up to a kneeling boss (a000_710200-710207, the map script's request with the
+/// boss's 20200) takes the attack for the Todome while its TAE 930 (unk0 1, 1.0-5.0 s on
+/// a000_710200-710207) is on: the boss's own 20200 window (932 / 105) is the same 1.0-5.0 s, and the
+/// recordings start the Todome 0.8-1.8 s into the walk-up (data.rs finisher_window). gap: what
+/// 930 is in the exe is not traced.
+fn todome_input(d: &CharData, a: &Actor) -> bool {
+    a.anim.starts_with("a000_7102") && d.anim(&a.anim).is_some_and(|an| an.events.iter().any(|e| e.kind == 930 && e.arg_i64("unk0") == Some(1) && e.in_time(a.t)))
 }
 
 /// Ref 1 SP_EF_REF_ENABLE_SPRINT_ACTION (SprintStartFromStep_F, SprintLoop, SprintToDeflectGuard
@@ -2629,6 +2749,30 @@ fn decide(
             }
         }
     }
+    // The fall-return deaths (HKS BEH_R_DEATH 769-776): the clip plays out, then Wolf stands at the
+    // last safe ground (GroundFallReturn a000_711210). They keep HP and the resurrections.
+    if matches!(a.state.as_str(), "LandDeadReturnStart" | "FallDeadReturnStart") {
+        a.move_vel = Vec3::ZERO;
+        if a.anim.is_empty() || a.t >= d.length(&a.anim) {
+            if let Some(safe) = p.safe_pos {
+                tf.translation = safe;
+            }
+            a.airborne = false;
+            a.vel_y = 0.0;
+            p.air_top = tf.translation.y;
+            if !a.play_state(d, "GroundFallReturn") {
+                a.play("StandIdle", "");
+            }
+        }
+        return;
+    }
+    if a.state == "GroundFallReturn" {
+        a.move_vel = Vec3::ZERO;
+        if a.anim.is_empty() || a.t >= d.length(&a.anim) {
+            a.play("StandIdle", "");
+        }
+        return;
+    }
     // BEH_R_DEATH fires whenever HP is out (HKS 5605), the revival too (round 60: a tick that
     // emptied the revived 1 HP before 110015's +50 % let Wolf get up at 0 and act; the revive
     // tick itself sets 1 HP).
@@ -3086,7 +3230,7 @@ fn decide(
             }
         }
     }
-    if p.requests.contains_key(&Action::Attack) && accepts(d, a, Action::Attack) {
+    if p.requests.contains_key(&Action::Attack) && (accepts(d, a, Action::Attack) || todome_input(d, a)) {
         let dmy_of = |ee: Entity| move |id: i16| enemy_dummies.get(ee).ok().and_then(|dm| dm.0.get(&id)).and_then(|m| globals.get(*m).ok()).map(|g| g.translation());
         // Several enemies open at once: deathblow_pick (the locked-on one, else the nearest).
         let pick = deathblow_pick(
@@ -3883,17 +4027,17 @@ fn decide(
         } else {
             "StandToDeflectGuard"
         };
-        // The sprint deflect slides 3.0 m along its facing (a050_203001 root; SetTurnSpeed 180 /
-        // 360 deg/s at frames 3-9). Wolf faces the lock-on target (user, from the real game: he
-        // deflects toward the enemy), and the slide stops against the enemy's body instead of
-        // shoving him (actor::separate). gap: the exe's facing at the guard start (HKS has no
-        // _StartAutoAim there) and its proxy push are not traced.
-        // gap: HKS BEH_A_DEFLECT_GUARD_START sets no facing (only _StartAutoAim: act 156 stores a
-        // homing point, FUN_140b2e090, and turns nothing) and SprintToDeflectGuard's TAE turns at
-        // most ~54 deg (no turn f0-3, 180 deg/s f3-6, 360 f6-9). The user's real-game checks say
-        // he faces the enemy (2026-10-10; 2026-10-15 "deflect sideways" with the facing kept), so
-        // the snap stays until the exe source of that turn is found.
-        aim(a);
+        // The sprint deflect slides 3.0 m along its facing (a050_203001 root) and turns toward the
+        // lock-on target over its first half second (live, rec_20261016_094717_lockturn_sprintdeflect,
+        // 7 sprint deflects locked on: no turn for 0.1 s (flag 7), 180 deg/s to 0.2 s, 360 deg/s to
+        // 0.3 s, then the controller default 720 deg/s until the facing is 0 deg off the enemy; a
+        // sprint 90-150 deg off him was square on at +0.5 s. Not a snap: the sideways start the
+        // user saw). The turn runs in the sprint_deflect_turn block below. A standing deflect is
+        // already facing the target (live +-6 deg), so it keeps the aim. gap: the exe's target for
+        // that turn (HKS sets no facing) is taken as the lock target.
+        if !sprinting {
+            aim(a);
+        }
         a.move_vel = Vec3::ZERO;
         a.play_state(d, state);
         return;
@@ -3989,11 +4133,31 @@ fn decide(
             a.fall_type = vc.fall_type;
             a.airborne = true;
             a.move_vel = a.air_base;
+            p.leap_homing = None;
             // Row 1100's homing (ChrPhysicsHomingParam 300000000): the wire's guaranteed arrival.
             if vc.homing_id == crate::wire::WIRE_HOMING {
                 if let Some(w) = p.wire.as_mut() {
                     w.launch(d, a, tf.translation);
                 }
+            }
+            // Any other row with a target type homes on that character (the jump arts' 10010 ->
+            // 20000: Senpou Leaping Kicks / High Monk land in front of the lock target).
+            else if vc.homing_id != 0 && vc.homing_target_type == 1 {
+                let ft = FALL_TYPES[(a.fall_type as usize).min(FALL_TYPES.len() - 1)];
+                p.leap_homing = lock.target.zip(crate::wire::homing_row(vc.homing_id)).and_then(|(target, row)| {
+                    let (_, _, _, t) = enemies.get(target).ok()?;
+                    // Already nearer the target than its homing point (the lock-on forward jump,
+                    // 10000, off a body-to-body stand): no homing. The live head kicks off such a
+                    // jump (rec_20261016_* boss fights, 19, sim test
+                    // a_forward_jump_over_a_sweep_stops_at_the_body_and_the_kick_lands) hold at the
+                    // contact distance; homing on the point 1 m out pulled Wolf back off the head.
+                    // gap: the exe's test for this is not traced.
+                    let point = leap_target(t, row.offset);
+                    if (point - tf.translation).with_y(0.0).dot((t.translation - tf.translation).with_y(0.0)) <= 0.0 {
+                        return None;
+                    }
+                    LeapHoming::launch(a, tf.translation, leap_target(t, row.offset), ft.gravity(), target, row)
+                });
             }
         }
     }
@@ -4093,6 +4257,23 @@ fn decide(
         return;
     }
     p.air_top = if a.airborne { p.air_top.max(tf.translation.y) } else { tf.translation.y };
+    if !a.airborne {
+        // HitMtrlParam 20-24 / 35-38 / 45-47 are water, swamp and underwater floors (not a safe spot).
+        let water = crate::map::floor_material(tf.translation).is_some_and(|m| matches!(m, 20..=24 | 35..=38 | 45..=47));
+        if !water && a.state != "Grabbed" {
+            p.safe_pos = Some(tf.translation);
+        }
+    } else if p.air_top - tf.translation.y >= FALL_VOID_DROP && crate::map::floor_material(tf.translation).is_none() && crate::map::terrain().is_some() {
+        // Falling with no ground below: HKS DAMAGE_TYPE_FALL_DEAD_RETURN -> W_FallDeadReturnStart
+        // (a000_199120), then back at the safe spot. gap: the exe's kill height / return volume is
+        // not traced; the default fallDeathDist (40 m) stands in.
+        if a.play_state(d, "FallDeadReturnStart") {
+            a.airborne = false;
+            a.vel_y = 0.0;
+            log.push("fell into the void", Color::srgb(1.0, 0.4, 0.4));
+            return;
+        }
+    }
     if a.airborne {
         // Air actions open on the jump/air anims' own cancel flags. The fall loops (FreeFall,
         // *GroundJumpFall: STATE_TYPE_STANDBY in g_paramHkbState) carry none and take every input,
@@ -4373,6 +4554,11 @@ fn decide(
                 }
             }
         }
+        if let Some(h) = p.leap_homing {
+            if let Ok((_, _, _, t)) = enemies.get(h.target) {
+                h.chase(a, tf.translation, leap_target(t, h.row.offset), ft.gravity(), dt);
+            }
+        }
         if let Some(w) = p.wire.as_mut() {
             w.steer(a, tf.translation, dt);
         }
@@ -4392,6 +4578,7 @@ fn decide(
         if tf.translation.y <= floor && a.vel_y < 0.0 && !lifting {
             tf.translation.y = floor;
             a.airborne = false;
+            p.leap_homing = None;
             // The fall type lasts one flight: Wire::launch's fallType 2 (gravity -9.8 - 9.8,
             // stick 6 m/s) is not the next walk-off's (0, kb/movement.md -23.52).
             a.fall_type = 0;
@@ -4467,6 +4654,14 @@ fn decide(
                 return;
             }
             // Blown away: the matching Land anim (StandDamage*Blow*/Upper*).
+            // Landing from a height the ground's HitMtrlParam fallDeathDist (map::fall_death_dist)
+            // kills: HKS DAMAGE_TYPE_LAND_DEAD_RETURN -> W_LandDeadReturnStart (a000_200909), then
+            // back at the safe spot (gap: whether the game returns or kills outright is not traced).
+            let landing_drop = p.air_top - tf.translation.y;
+            if landing_drop >= FALL_HEIGHT_LONG_STIFF_LAND && crate::map::fall_death_dist(crate::map::floor_material(tf.translation)).is_some_and(|dist| landing_drop >= dist) && a.play_state(d, "LandDeadReturnStart") {
+                log.push("fall death - back to safe ground", Color::srgb(1.0, 0.4, 0.4));
+                return;
+            }
             let falling_reaction = |st: &str| {
                 st.contains("BlowStart") || st.contains("BlowFallLoop") || st.contains("UpperStart") || st.contains("UpperFallLoop")
                     || (st.starts_with("AirDamage") && (st.contains("Start") || st.contains("FallLoop")))
@@ -4865,6 +5060,15 @@ fn decide(
     if a.state.contains("QuickTurn") && !a.state.starts_with("Sprint") && !a.anim.is_empty() && d.root_at(&a.anim, a.t).is_none() {
         if let Some(td) = lock.target.and(target_dir) {
             let rate = d.turn_speed(&a.anim, a.t, true).unwrap_or(config.movement.turn_speed);
+            a.yaw = turn_toward(a.yaw, yaw_of(td), rate.to_radians() * dt);
+        }
+    }
+    // SprintToDeflectGuard turns to the lock target at the TAE rate (180 / 360 deg/s, then the
+    // default 720) except in the Disable Turning flag 7 windows (live, 7 deflects; see the guard
+    // start above).
+    if a.state == "SprintToDeflectGuard" && !a.anim.is_empty() && !d.flag(&a.anim, a.t, FLAG_DISABLE_TURN) {
+        if let Some(td) = lock.target.and(target_dir) {
+            let rate = turn_rate(d, a, &config, true);
             a.yaw = turn_toward(a.yaw, yaw_of(td), rate.to_radians() * dt);
         }
     }

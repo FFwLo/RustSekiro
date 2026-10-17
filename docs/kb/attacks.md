@@ -13,7 +13,7 @@ Dated findings, oldest first. Append new entries at the end.
   (spAtkcategory 100 -> anim a100_316000 in c0000_a07x, behaviorVariationId 5001 -> judges 200/201 resolved at +1000).
   Its damage is the "dark" element: player damage now sums attackBase{Physics,Magic,Fire,Thunder,Dark} x AtkParam
   element corrections x NpcParam <element>DamageCutRate (c1020 dark 0.6). Dummy ids 10000+ = weapon dummy (id-10000).
-  Focus from here (user): Wolf's own combat.
+  Focus from here: Wolf's own combat.
 - 2026-10-06: Wolf's prosthetic - Loaded Shuriken (F): weapon 70000 (wepmotionCategory 70 -> offsetType 14 -> a070
   anims in c0000_a07x / a70.tae; behaviorVariationId 7000). GroundSubAttackCombo1 (a070_400000, held: TAE 2 judge 100
   frame 21 -> Bullet 700000) or let go -> GroundSubAttackCombo1Release (a070_400100, judge 150 frame 3 -> Bullet
@@ -50,7 +50,7 @@ Dated findings, oldest first. Append new entries at the end.
   bullet* auto-capture). FUN_1409efdb0 = attack target point: lock point (chr+0x1080) else homing target. Implemented:
   player.rs start_auto_aim / auto_homing_target, Actor.homing (turning during attacks + TAE 760 lunge). Gaps: darkness
   radii, line-of-sight ray.
-- 2026-10-07 FOCUS: sword play (user). Ground routing gained ref 231 GroundAttackCombo1Reverse (a050_300001, + Release
+- 2026-10-07 FOCUS: sword play. Ground routing gained ref 231 GroundAttackCombo1Reverse (a050_300001, + Release
   a050_300101) in the HKS order 214,215,231,219,216,217,218: after every easy deflect, Combo2, DeflectGuardAttack,
   DeflectGuardToStand, sprint/step L attacks the next slash starts from the other side (was Combo1).
 - 2026-10-07 air slashes: BEH_A_AIR_ATTACK refs 214/215/216 -> AirComboAttack1/2/3 (1 -> 2 -> 3 -> 2 ...). Landing while

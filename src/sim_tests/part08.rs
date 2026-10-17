@@ -813,6 +813,34 @@ pub(crate) fn a_respawn_comes_back_visible() {
     assert!(a.opacity > 0.99, "opacity {}", a.opacity);
 }
 
+/// A vanish cut short does not leave the boss invisible: the Owl's a000_003037 holds TAE 193 at
+/// 0 from 0.27 to 0.7 s; a clip without a keyframe after it takes his idle's opacity (1). The
+/// user (2026-10-16): the Owl and the Monk went invisible and could not be hit.
+#[test]
+pub(crate) fn a_vanish_cut_short_comes_back_visible() {
+    let mut app = app_cfg("c5060", Some(50600000), Vec::new());
+    for _ in 0..30 {
+        app.update();
+    }
+    let world = app.world_mut();
+    let mut q = world.query_filtered::<(Entity, &mut Enemy, &mut Actor), Without<crate::enemy::Cast>>();
+    let (ent, mut e, mut a) = q.single_mut(world).unwrap();
+    e.force_anim(&mut a, "a000_003037");
+    for _ in 0..30 {
+        app.update();
+    }
+    assert!(app.world().get::<Actor>(ent).unwrap().opacity < 0.01, "not vanished");
+    let world = app.world_mut();
+    let mut q = world.query_filtered::<(&mut Enemy, &mut Actor), Without<crate::enemy::Cast>>();
+    let (mut e, mut a) = q.single_mut(world).unwrap();
+    e.force_anim(&mut a, "a000_003000");
+    for _ in 0..2 {
+        app.update();
+    }
+    let a = app.world().get::<Actor>(ent).unwrap();
+    assert!(a.opacity > 0.99, "still invisible in {}: {}", a.anim, a.opacity);
+}
+
 /// A respawn starts without the old life's timed SpEffects: the firecracker's cool time (107100,
 /// 30 s: "used to it", no stagger) and the timed list ai_hold / sp_self read stayed (2026-10-12
 /// bug hunt round 21).
@@ -1522,4 +1550,50 @@ pub(crate) fn a_patrol_point_with_a_zero_region_is_reached_by_is_arrived() {
         }
     }
     assert_eq!(reached, [0, 1, 2], "points reached in order");
+}
+
+/// The Owl (Father) talks before he draws (enemy/talk.rs, rec_20261016_074559): Wolf in his talk
+/// pose, the Owl's AI off, his IdleUniqueDefault402 gesture at 3.2 s; at 10.1 s the talk's flag
+/// 71000130 lets m10 11005910 turn his AI on and Wolf leaves the talk pose.
+#[test]
+pub(crate) fn the_owl_father_talks_before_the_fight() {
+    if !std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/extracted/enemies/c5060.json")).exists() {
+        return;
+    }
+    let mut app = app_cfg("c5060", Some(50601010), Vec::new());
+    let wolf_state = |app: &mut App| {
+        let w = app.world_mut();
+        let mut q = w.query_filtered::<&Actor, With<crate::player::Player>>();
+        q.single(w).unwrap().state.clone()
+    };
+    let boss = |app: &mut App| {
+        let w = app.world_mut();
+        let b = boss_in_play(w);
+        (w.get::<Enemy>(b).unwrap().ai_off, w.get::<Actor>(b).unwrap().anim.clone())
+    };
+    if !crate::enemy::talk::PLAY_TALKS {
+        // Skipped: the Owl fights at once and Wolf never takes the talk pose.
+        for _ in 0..120 {
+            app.update();
+            assert_ne!(wolf_state(&mut app), "Event700400");
+        }
+        assert!(!boss(&mut app).0, "the Owl's AI is still off with the talk skipped");
+        return;
+    }
+    for _ in 0..120 {
+        app.update();
+    }
+    assert_eq!(wolf_state(&mut app), "Event700400");
+    assert!(boss(&mut app).0, "the Owl's AI is on during the talk");
+    for _ in 0..180 {
+        app.update();
+    }
+    assert_eq!(wolf_state(&mut app), "Event700400", "Wolf left the talk pose");
+    let (off, anim) = boss(&mut app);
+    assert!(off && anim == "a000_000402", "no gesture: {anim}");
+    for _ in 0..360 {
+        app.update();
+    }
+    assert!(!boss(&mut app).0, "the Owl's AI stays off after the talk");
+    assert_ne!(wolf_state(&mut app), "Event700400");
 }

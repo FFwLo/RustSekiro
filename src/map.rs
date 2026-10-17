@@ -203,6 +203,33 @@ pub fn floor_material(centre: Vec3) -> Option<u32> {
     t.floor_tri(centre.x, centre.z, centre.y - CAPSULE_HALF_HEIGHT + STEP_HEIGHT).map(|(_, tri)| t.materials[tri as usize])
 }
 
+/// HitMtrlParam fallDeathDist / disableFallDamage per material id (extracted/json/params).
+fn hit_mtrl_fall() -> &'static HashMap<u32, (f32, bool)> {
+    static T: std::sync::OnceLock<HashMap<u32, (f32, bool)>> = std::sync::OnceLock::new();
+    T.get_or_init(|| {
+        let path = crate::paths::extracted().join("json/params/HitMtrlParam.json");
+        let json: serde_json::Value = std::fs::read_to_string(path).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+        let rows = json["rows"].as_array().cloned().unwrap_or_default();
+        rows.iter().filter_map(|r| Some((r["id"].as_u64()? as u32, (r["fallDeathDist"].as_f64()? as f32, r["disableFallDamage"].as_u64().unwrap_or(0) != 0)))).collect()
+    })
+}
+
+/// How far (m) Wolf may fall onto this ground before the landing kills him, None where fall
+/// damage is off. Exe: FUN_14084e5d0 (the kill test) is `fall height >= HitMtrlParam +0x4c
+/// (fallDeathDist)`, and only from 20 m up (DAT_143b01948 = 20.0 in the exe's data; 5 m while
+/// SpEffect type 0x155 is worn, DAT_143b01950/54). The row is the material under the landing
+/// (FUN_1408433f0 reads it from the fall module's material id); no ground = the table's default
+/// 40 (gap: the exe's void kill height is not traced). The height is metres (the same 20 as the
+/// long stiff landing, c0000_define 213). gap: the non-lethal HP loss (FUN_140843660's factors)
+/// is not traced.
+pub fn fall_death_dist(material: Option<u32>) -> Option<f32> {
+    match material.and_then(|m| hit_mtrl_fall().get(&m)) {
+        Some((_, true)) => None,
+        Some((dist, false)) => Some(*dist),
+        None => Some(40.0),
+    }
+}
+
 /// Distance along `dir` (unit) to the first collision triangle within `max`.
 pub fn raycast(origin: Vec3, dir: Vec3, max: f32) -> Option<f32> {
     terrain()?.raycast(origin, dir, max)
@@ -2414,7 +2441,8 @@ fn bodies_on_terrain(combat: Res<crate::data::Combat>, mut commands: Commands, m
         }
         let data = crate::actor::data_for(&combat, &a);
         let lifted = !a.anim.is_empty() && data.flag(&a.anim, a.t, crate::player::FLAG_NO_GRAVITY);
-        if !a.airborne && !lifted {
+        // An enemy coming down from a SetNoGravity lift (actor.rs) lands by itself.
+        if !a.airborne && !lifted && a.lift_ground.is_none() {
             let feet = tf.translation.y - CAPSULE_HALF_HEIGHT;
             let floor = t.floor(tf.translation.x, tf.translation.z, feet + STEP_HEIGHT);
             match floor {

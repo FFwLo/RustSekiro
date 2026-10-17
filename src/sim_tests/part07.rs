@@ -473,6 +473,51 @@ pub(crate) fn a_twenty_metre_fall_lands_long_stiff() {
     }
 }
 
+/// A fall past HitMtrlParam fallDeathDist (40 m, the default row) ends in the fall-return death
+/// (HKS DAMAGE_TYPE_LAND_DEAD_RETURN, a000_200909), then Wolf stands at the last safe ground with
+/// his HP; a 25 m fall is only the long stiff landing.
+#[test]
+pub(crate) fn a_forty_metre_fall_returns_wolf_to_safe_ground() {
+    for (drop, dies) in [(45.0, true), (25.0, false)] {
+        let mut app = app();
+        move_enemy_far(&mut app);
+        for _ in 0..30 {
+            app.update();
+        }
+        let (start, hp) = {
+            let world = app.world_mut();
+            let (a, t) = world.query_filtered::<(&Actor, &Transform), With<Player>>().single(world).unwrap();
+            (t.translation, a.hp)
+        };
+        {
+            let world = app.world_mut();
+            world.resource_scope(|world, combat: Mut<Combat>| {
+                let (mut a, mut t) = world.query_filtered::<(&mut Actor, &mut Transform), With<Player>>().single_mut(world).unwrap();
+                assert!(a.play_state(&combat.player, "FreeFall"));
+                a.airborne = true;
+                a.vel_y = 0.0;
+                t.translation += Vec3::new(3.0, drop, 0.0);
+            });
+        }
+        let mut saw = false;
+        let mut seen: Vec<String> = Vec::new();
+        for _ in 0..900 {
+            app.update();
+            let world = app.world_mut();
+            let a = world.query_filtered::<&Actor, With<Player>>().single(world).unwrap();
+            saw |= a.state == "LandDeadReturnStart";
+            if seen.last() != Some(&a.state) { seen.push(a.state.clone()); }
+        }
+        let world = app.world_mut();
+        let (a, t) = world.query_filtered::<(&Actor, &Transform), With<Player>>().single(world).unwrap();
+        assert_eq!(saw, dies, "drop {drop} {seen:?}");
+        assert_eq!(a.hp, hp, "drop {drop}: the return keeps HP");
+        if dies {
+            assert!((t.translation - start).length() < 0.5, "back at the safe ground: {:?} vs {:?}", t.translation, start);
+        }
+    }
+}
+
 /// Round 38: BEH_R_LAND 2026 - a jump's fall from 5 m or more lands stiff (_LandFreeFall,
 /// a000_200020), not as the jump's own landing; a short one keeps LandVerticalGroundJump.
 #[test]
@@ -555,7 +600,7 @@ pub(crate) fn a_bullet_past_its_range_weakens() {
 /// Round 42: Isshin's finisher (ThrowParam 15400590, DiffAng 0-45, diffAngMyToDef 35) by the
 /// exe's range check: Wolf behind him facing his way takes it; in front of him, facing him, not
 /// (his kneel a100_020200 has no root yaw; the absorb dummy 230 is at his back). Before, only
-/// the front within 45 degrees took it.
+/// the front within 45 degrees took it. (Since 2026-10-16 from his 21000, after the Todome.)
 #[test]
 pub(crate) fn isshins_finisher_is_taken_from_behind() {
     let mut app = app_cfg("c5400", Some(54000000), Vec::new());
@@ -566,15 +611,22 @@ pub(crate) fn isshins_finisher_is_taken_from_behind() {
         let (e, mut a, tf) = q.single_mut(world).unwrap();
         let at = tf.translation;
         a.anim_group = 1;
+        // His first kneel (20200, window 105) takes the Todome 15400680 / 681 from anywhere near
+        // (rec_20261016_080607: 680 / 681 at 912.2 s, from Wolf's walk-up).
         a.play("Ez20200", "a100_020200");
         a.t = 2.0;
         a.yaw = 0.0;
-        assert!(combat.data_of(&a).finisher_open(&a.anim, a.t), "no finisher window on a100_020200 at 2 s");
         let fwd = a.forward();
+        let front = at + fwd * 1.5;
+        let c = crate::player::deathblow_check(&combat, front, -fwd, false, &a, e, at, &|_| None);
+        assert!(c.as_ref().is_some_and(|c| c.in_reach && c.suffix == 681), "Todome: {:?}", c.map(|c| c.suffix));
+        // The finisher, from his second (21000, window 104; 11125875 after the Todome's message 20).
+        a.play("Event21000", "a100_021000");
+        a.t = 2.0;
+        assert!(combat.data_of(&a).finisher_window(&a.anim, a.t) == Some(104), "no finisher window on a100_021000 at 2 s");
         let behind = at - fwd * 1.5;
         let c = crate::player::deathblow_check(&combat, behind, fwd, false, &a, e, at, &|_| None);
-        assert!(c.as_ref().is_some_and(|c| c.in_reach), "behind: {:?}", c.map(|c| c.suffix));
-        let front = at + fwd * 1.5;
+        assert!(c.as_ref().is_some_and(|c| c.in_reach && c.suffix == 590), "behind: {:?}", c.map(|c| c.suffix));
         assert!(crate::player::deathblow_check(&combat, front, -fwd, false, &a, e, at, &|_| None).is_none(), "taken from the front");
     });
 }
@@ -1525,4 +1577,157 @@ pub(crate) fn no_gourd_while_guarding_and_a_tool_switch_in_the_air() {
     app.update();
     app.update();
     assert_eq!(app.world_mut().query::<&Player>().single(app.world()).unwrap().tool_slot, 1, "no switch in the air");
+}
+
+/// Live (rec_20261016_* boss fights, 19 head kicks off a locked forward jump over a perilous
+/// sweep): Wolf holds at the contact distance in front of the enemy and the kick lands 18-20 ticks
+/// after the press. Before, the jump kept its full speed against the body, so he slid round the
+/// enemy's head, flew past and the kick missed (actor.rs separate).
+#[test]
+pub(crate) fn a_forward_jump_over_a_sweep_stops_at_the_body_and_the_kick_lands() {
+    let mut app = app_with("c1020");
+    {
+        let world = app.world_mut();
+        let mut q = world.query::<(Entity, &mut Enemy, &mut Actor)>();
+        let (entity, mut e, mut a) = q.single_mut(world).unwrap();
+        e.force_anim(&mut a, PERILOUS_SWEEP);
+        world.resource_mut::<crate::camera::LockOn>().target = Some(entity);
+    }
+    let (mut pressed, mut launch, mut kicked) = (false, None, None);
+    let mut far = 0.0f32;
+    for i in 0..200 {
+        let to = {
+            let w = app.world_mut();
+            let e = w.query_filtered::<&Transform, With<Enemy>>().single(w).unwrap().translation;
+            let t = w.query_filtered::<&Transform, With<Player>>().single(w).unwrap().translation;
+            (e - t).with_y(0.0).normalize_or_zero()
+        };
+        app.world_mut().resource_mut::<PadInput>().stick = Vec2::new(to.x, -to.z);
+        if !pressed && time_to_enemy_hit(&mut app).is_some_and(|dt| dt <= 6.0 / TAE_FPS) {
+            app.world_mut().resource_mut::<PadInput>().press(Action::Jump);
+            pressed = true;
+        }
+        if launch.map(|l| i == l + 8).unwrap_or(false) {
+            app.world_mut().resource_mut::<PadInput>().press(Action::Jump);
+        }
+        app.update();
+        let w = app.world_mut();
+        let e = w.query_filtered::<&Transform, With<Enemy>>().single(w).unwrap().translation;
+        let (a, t) = w.query_filtered::<(&Actor, &Transform), With<Player>>().single(w).unwrap();
+        if pressed && a.airborne && launch.is_none() {
+            launch = Some(i);
+        }
+        if launch.is_some() && kicked.is_none() {
+            far = far.max((t.translation - e).with_y(0.0).length());
+        }
+        if kicked.is_none() && a.state.starts_with("AirKickEnemyJump") {
+            kicked = Some(i - launch.unwrap() - 8);
+        }
+    }
+    let kicked = kicked.unwrap_or_else(|| panic!("no kick jump: {}", log_text(&app)));
+    assert!((16..=22).contains(&kicked), "kick landed {kicked} ticks after the press");
+    assert!(far < 1.2, "drifted {far:.2} m from the enemy before the kick");
+}
+
+/// Live (rec_2026101x_*): an idle Wolf with an enemy within 1.3 m moved in 32 of 1267 ticks; the
+/// enemy stops at the body instead of shoving him. An enemy pushed into Wolf here (as its walk or
+/// lunge would) must not slide him in his idle pose (actor.rs separate).
+#[test]
+pub(crate) fn an_enemy_walking_into_idle_wolf_does_not_slide_him() {
+    let mut app = app();
+    for _ in 0..10 {
+        app.update();
+    }
+    let start = player_actor(&mut app).3;
+    for _ in 0..60 {
+        {
+            let world = app.world_mut();
+            let mut q = world.query_filtered::<&mut Transform, With<Enemy>>();
+            let mut t = q.single_mut(world).unwrap();
+            let to = (start - t.translation).with_y(0.0);
+            t.translation += to.normalize_or_zero() * to.length().min(0.05);
+        }
+        app.update();
+    }
+    let (state, _, _, pos) = player_actor(&mut app);
+    let moved = (pos - start).with_y(0.0).length();
+    assert!(moved < 0.05, "Wolf ({state}) slid {moved:.2} m");
+}
+
+/// The user's report (2026-10-16): Isshin's last mark taken from the deflect break pose (15400510
+/// / 511), then the close-up walk-up, where attack did nothing. Now: his kneel 20200 comes at
+/// Wolf's deathblow's own message 10 (a243_510110 TAE 231 at 2.5 s, not at its Ninsatsu hit with
+/// an older 10), the red mark shows on his kneel, and attack in the walk-up a000_710206 starts
+/// the Todome 15400680 / 681.
+#[test]
+pub(crate) fn isshins_todome_is_taken_from_the_walk_up() {
+    let mut app = app_cfg("c5400", Some(54000000), Vec::new());
+    break_and_deathblow(&mut app, 400);
+    {
+        let w = app.world_mut();
+        let mut a = w.query_filtered::<&mut Actor, (With<Enemy>, Without<crate::enemy::Cast>)>().single_mut(w).unwrap();
+        a.play("Ez3015", "a000_003015");
+    }
+    for _ in 0..400 {
+        app.update();
+    }
+    for left in [2u32, 1] {
+        app.world_mut().resource_scope(|world, combat: Mut<Combat>| {
+            let mut q = world.query_filtered::<(&mut Enemy, &mut Actor, &mut Transform), Without<crate::enemy::Cast>>();
+            let (mut e, mut a, mut t) = q.single_mut(world).unwrap();
+            e.ninsatsu.0 = left;
+            let th = combat.throw(crate::combat::throw_row_for(&combat, &a, 10).unwrap()).unwrap();
+            t.translation = Vec3::new(0.0, CAPSULE_HALF_HEIGHT, 1.2);
+            a.yaw = 0.0;
+            a.posture = a.posture_max;
+            e.react(&mut a, &combat, &format!("ThrowDef{}", th.def_anim));
+            e.on_posture_break(&mut a, &combat, false, 4.0);
+            let mut q = world.query_filtered::<(&mut Actor, &mut Transform), With<Player>>();
+            let (mut pa, mut pt) = q.single_mut(world).unwrap();
+            pt.translation = Vec3::new(0.0, CAPSULE_HALF_HEIGHT, 0.0);
+            pa.yaw = std::f32::consts::PI;
+            pa.play("ThrowBreak", &th.atk_anim);
+        });
+        let mut kneel_at = None;
+        let mut pressed = false;
+        let mut todome = false;
+        let mut marked = false;
+        for i in 0..900 {
+            if i == 36 {
+                app.world_mut().resource_mut::<PadInput>().press(Action::Attack);
+            }
+            app.update();
+            let (es, _, _) = enemy_state(&mut app);
+            let (ps, pa, _, _) = player_state(&mut app);
+            if kneel_at.is_none() && es == "Event20200" {
+                kneel_at = Some(ps.clone());
+                assert_eq!(left, 1, "a kneel with a mark left");
+            }
+            if !pressed && ps.starts_with("Event7102") && marked {
+                app.world_mut().resource_mut::<PadInput>().press(Action::Attack);
+                pressed = true;
+            }
+            // The red mark sits on him while his kneel's window is open (hud.rs).
+            if es == "Event20200" && enemy_state(&mut app).2 > 1.2 && !marked {
+                use bevy::ecs::system::RunSystemOnce;
+                let target = app
+                    .world_mut()
+                    .run_system_once(|combat: Res<Combat>, wolf: Query<(&Actor, &GlobalTransform), With<Player>>, enemies: crate::hud::MarkEnemies, dummies: Query<&GlobalTransform>| {
+                        let (wa, wg) = wolf.single().unwrap();
+                        crate::hud::deathblow_mark_target(&combat, wa, wg.translation(), &enemies, &dummies, None)
+                    })
+                    .unwrap();
+                marked = target.is_some();
+            }
+            todome |= pa.ends_with("511700") && es == "ThrowDef13700";
+            if todome {
+                break;
+            }
+        }
+        if left == 1 {
+            assert!(kneel_at.is_some(), "no kneel");
+            assert!(todome, "no Todome from the walk-up");
+            assert!(marked, "no red mark on his kneel");
+        }
+    }
 }

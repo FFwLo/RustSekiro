@@ -66,6 +66,9 @@ pub struct CamState {
     end_rate: f32,
     /// The 153 event seen last frame (anim key, start), to spot its first frame.
     last_153: Option<(String, f32)>,
+    /// TAE 156 SetCameraAngle: the event running (anim key, start) and the (yaw, pitch) at its
+    /// first frame (exe ChrCam +0x1f4 / +0x1f0).
+    angle_from: Option<((String, f32), (f32, f32))>,
     /// +0x50 FOV (radians) and +0x204 focus height, lerped to the LockCamParam row.
     fov: f32,
     focus_y: f32,
@@ -248,6 +251,7 @@ impl CamState {
             dist_from: lc.dist,
             end_rate: 0.0,
             last_153: None,
+            angle_from: None,
             fov: lc.fov_y.to_radians(),
             focus_y: lc.focus_y,
             look: None,
@@ -520,6 +524,44 @@ fn clamp_angle(x: f32, lo: f32, hi: f32) -> f32 {
     center + angle_delta(x, center).clamp(-span.abs() * 0.5, span.abs() * 0.5)
 }
 
+/// TAE 156 SetCameraAngle (exe FUN_140b51490 -> FUN_1408327a0 fills the camera singleton
+/// DAT_143d5c0d0 +0x88..+0x9b each frame the event runs on the player; read by FUN_1408310d0 in
+/// the ChrCam update, 14073.c 10766-10855). `from` = the camera's (yaw, pitch) at the event's
+/// first frame (+0x1f4 / +0x1f0), `p` = (t - start) / (end - start) clamped to 1, eased to
+/// w = 1 - (p - 1)^2:
+/// - pitch (+0x170) = from + (VerticalAngle - from) * w when OverrideVertical (an absolute
+///   angle; positive looks down, as `OrbitCamera::pitch`);
+/// - yaw (+0x174) the same toward HorizontalAngle + the character's yaw (FUN_1409eec10 +
+///   FUN_14073a320 wrap) when OverrideHorizontal. Our map mirrors the game's x (map.md), so the
+///   game's angle offset turns the other way here: target = Wolf's yaw - HorizontalAngle
+///   (0 = behind him). InterpolationType 0 takes the short way round, 1 ("Clockwise") the way
+///   the game's angle grows, 2 the way it falls (14073.c 10801-10831).
+pub(crate) fn set_camera_angle(from: (f32, f32), chr_yaw: f32, horizontal: (bool, f32), vertical: (bool, f32), interp: i64, p: f32) -> (f32, f32) {
+    use std::f32::consts::{PI, TAU};
+    let wrap = |a: f32| (a + PI).rem_euclid(TAU) - PI;
+    let p = p.clamp(0.0, 1.0);
+    let w = 1.0 - (p - 1.0) * (p - 1.0);
+    let (mut yaw, mut pitch) = from;
+    if vertical.0 {
+        pitch = wrap(from.1 + (vertical.1 - from.1) * w);
+    }
+    if horizontal.0 {
+        let start = wrap(from.0);
+        let mut target = wrap(chr_yaw - horizontal.1);
+        // The game's angle grows = ours falls, and the other way round.
+        match interp {
+            1 if target > start => target -= TAU,
+            2 if target < start => target += TAU,
+            1 | 2 => {}
+            _ if target - start > PI => target -= TAU,
+            _ if target - start < -PI => target += TAU,
+            _ => {}
+        }
+        yaw = wrap(start + (target - start) * w);
+    }
+    (yaw, pitch)
+}
+
 /// TAE 151 CameraLookAtTarget look limits. The handler FUN_140b517a0 writes four degrees into
 /// the camera singleton (+0x4c LookUp, +0x50 LookDown, +0x54 LookLeft, +0x58 LookRight);
 /// FUN_140742230 turns them into absolute limits around the DummyPolyID direction and stores
@@ -656,7 +698,7 @@ fn orbit_with_mouse(
     camera.pitch = (camera.pitch + sign * motion.delta.y * sensitivity).clamp(lo, hi);
 }
 
-fn follow_player(
+pub(crate) fn follow_player(
     time: Res<Time>,
     combat: Res<Combat>,
     lock: Res<LockOn>,
@@ -722,7 +764,12 @@ fn follow_player(
         pp.fov = orbit.cam.fov;
     }
     let mut range = pitch_range(&combat, lock.target.is_some());
-    if let Some((target, tdummies, ta)) = lock.target.and_then(|e| enemies.get(e).ok()) {
+    // TAE 156 SetCameraAngle takes the place of the lock-on turning while it runs (14073.c 10606:
+    // the lock chase only when FUN_140831ea0, "an angle event is set", is false).
+    let set_angle = if actor.anim.is_empty() { None } else { combat.player.events_at(&actor.anim, actor.t).find(|e| e.kind == 156) };
+    if set_angle.is_some() {
+        // Set below, after the fulcrum resync (the exe's order).
+    } else if let Some((target, tdummies, ta)) = lock.target.and_then(|e| enemies.get(e).ok()) {
         let dir = (target.translation - player.translation).with_y(0.0);
         // Right over the target (head kick, vault, plunge) the direction to it flips within a few
         // centimetres: hold the yaw chase while the bodies overlap horizontally (Wolf's radius +
@@ -856,9 +903,11 @@ fn follow_player(
         }
     }
     let moved = orbit.cam.fulcrum.map_or(Vec3::ZERO, |(_, last)| orbit.focus - last);
+    // The resync runs under TAE 151 too (the unlocked branch, 14073.c 9832, has no test for it):
+    // Gyoubu's deathblow then swings up over Wolf's shoulder as in the clip (2026-10-17).
     // gap: where the exe's TAE 151 look limits (FUN_140742230) sit against the resync is not
-    // traced; while they run, they keep the yaw.
-    if let (Some((f, _)), None, None) = (orbit.cam.fulcrum, lock.target, look_angles) {
+    // traced; here they clamp before it.
+    if let (Some((f, _)), None) = (orbit.cam.fulcrum, lock.target) {
         // The free camera's yaw from the dragged fulcrum (FUN_140734070 of focus - fulcrum), plus
         // this frame's turning (the exe turns after the resync).
         let v = drag_fulcrum(f, moved, orbit.cam.trans_snap, fp) - orbit.focus;
@@ -878,6 +927,33 @@ fn follow_player(
                 orbit.pitch = (f32::atan2(v.y, v.with_y(0.0).length()) + turning.map_or(0.0, |d| d.1)).clamp(lo, hi);
             }
         }
+    }
+    match set_angle {
+        Some(e) => {
+            let id = (actor.anim.clone(), e.start);
+            if orbit.cam.angle_from.as_ref().is_none_or(|(k, _)| *k != id) {
+                orbit.cam.angle_from = Some((id, (orbit.yaw, orbit.pitch)));
+            }
+            let from = orbit.cam.angle_from.as_ref().map_or((orbit.yaw, orbit.pitch), |f| f.1);
+            let arg = |k: &str| e.arg_i64(k).unwrap_or(0) as f32;
+            let on = |k: &str| e.args.get(k).and_then(|v| v.as_bool()).unwrap_or(false);
+            let interp = e.args.get("InterpolationType").and_then(|v| v.as_str()).and_then(|s| s.split(':').next()?.trim().parse().ok()).or(e.arg_i64("InterpolationType")).unwrap_or(0);
+            let p = (actor.t - e.start) / (e.end - e.start).max(1e-4);
+            let (yaw, pitch) = set_camera_angle(
+                from,
+                actor.yaw,
+                (on("OverrideHorizontal"), arg("HorizontalAngle").to_radians()),
+                (on("OverrideVertical"), arg("VerticalAngle").to_radians()),
+                interp,
+                p,
+            );
+            orbit.yaw = yaw;
+            orbit.pitch = pitch;
+            // +0x150 = 1, +0x154 = 0: the position chase snaps to the new angle.
+            orbit.cam.ctrl_snap = 1.0;
+            orbit.cam.ctrl_hold = 0.0;
+        }
+        None => orbit.cam.angle_from = None,
     }
     let rotation = Quat::from_euler(EulerRot::YXZ, orbit.yaw, -orbit.pitch, 0.0);
     {
@@ -1065,7 +1141,7 @@ fn start_shakes(
     }
 }
 
-fn apply_shakes(time: Res<Time>, combat: Res<Combat>, mut shake: ResMut<CameraShake>, mut cam: Query<&mut Transform, With<OrbitCamera>>) {
+pub(crate) fn apply_shakes(time: Res<Time>, combat: Res<Combat>, mut shake: ResMut<CameraShake>, mut cam: Query<&mut Transform, With<OrbitCamera>>) {
     let dt = time.delta_secs();
     let mut delta = Quat::IDENTITY;
     shake.0.retain_mut(|(id, t, gain)| {
@@ -1152,6 +1228,24 @@ mod tests {
         assert!((a - 1.0).abs() < 1e-5, "{a}");
         assert!((safe_margin(1.0, 0.1, 0.3) - 0.900001).abs() < 1e-5);
         assert!((safe_margin(4.5, 0.1, 0.3) - 4.2).abs() < 1e-5);
+    }
+
+    #[test]
+    fn set_camera_angle_eases_out_to_the_event_angle() {
+        // Gyoubu's deathblow (a225_510000, 1.5-1.967 s): VerticalAngle -20, OverrideHorizontal off.
+        let from = (0.3, 0.2);
+        let v = (true, (-20f32).to_radians());
+        assert!((set_camera_angle(from, 1.0, (false, 0.9), v, 0, 0.0).1 - from.1).abs() < 1e-5);
+        let (y, p) = set_camera_angle(from, 1.0, (false, 0.9), v, 0, 0.5);
+        assert_eq!(y, 0.3);
+        assert!((p - (0.2 + (v.1 - 0.2) * 0.75)).abs() < 1e-5);
+        assert!((set_camera_angle(from, 1.0, (false, 0.9), v, 0, 2.0).1 - v.1).abs() < 1e-5);
+        // HorizontalAngle 180 puts the camera in front of Wolf, the short way round.
+        let (y, _) = set_camera_angle((0.1, 0.0), 0.0, (true, std::f32::consts::PI), (false, 0.0), 0, 1.0);
+        assert!((y.abs() - std::f32::consts::PI).abs() < 1e-4);
+        // "Clockwise" goes the way the game's angle grows: ours falls.
+        let (y, _) = set_camera_angle((0.0, 0.0), 0.0, (true, -1.0), (false, 0.0), 1, 0.1);
+        assert!(y < 0.0, "{y}");
     }
 
     /// The pitch chase: on with the stick let go or pushed forward / sideways; off while the

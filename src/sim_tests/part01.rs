@@ -606,7 +606,12 @@ pub(crate) fn break_and_deathblow_died(app: &mut App, frames: u32) -> (Vec<Strin
     app.world_mut().resource_mut::<PadInput>().press(Action::Attack);
     let mut states = Vec::<String>::new();
     let mut died = false;
-    for _ in 0..frames {
+    for f in 0..frames {
+        // A boss kneeling in its 20200 takes the Todome on attack (player.rs deathblow_check),
+        // as the player presses it.
+        if f % 20 == 0 && enemy_state(app).0 == "Event20200" {
+            app.world_mut().resource_mut::<PadInput>().press(Action::Attack);
+        }
         app.update();
         let s = enemy_state(app).0;
         if states.last() != Some(&s) {
@@ -641,6 +646,31 @@ pub(crate) fn the_corrupted_monks_last_deathblow_is_her_todome() {
     assert!(died, "{seen:?}");
 }
 
+/// The Demon of Hatred (70200000, three bars): m11_00 11105910 keeps him immortal, so his third
+/// deathblow's ThrowDef12000 leaves him at 0 bars, not dead; 11105921 (3702050 "HU後状態" from his
+/// 20001, 0 bars, Wolf's message 10) kneels him in 20200 for the Todome 17020180 (Wolf
+/// a240_501700 -> 511700, his ThrowDef13700), as rec_20261016_072651 (4 deathblows, the last one
+/// the Todome).
+#[test]
+pub(crate) fn the_demon_of_hatreds_last_deathblow_is_his_todome() {
+    let mut app = app_cfg("c7020", Some(70200000), Vec::new());
+    let mut all = Vec::new();
+    for _ in 0..2 {
+        let seen = break_and_deathblow(&mut app, 900);
+        let w = app.world_mut();
+        let boss = boss_in_play(w);
+        // (His AI's Act45 plays the 20001 that leaves it, which this deathblow loop gives no
+        // time for.)
+        w.get_mut::<Actor>(boss).unwrap().resident.push(3_702_050);
+        let (e, a) = (w.get::<Enemy>(boss).unwrap(), w.get::<Actor>(boss).unwrap());
+        all.push(format!("{seen:?} bars {} hp {}", e.ninsatsu_left(), a.hp));
+    }
+    let (seen, died) = break_and_deathblow_died(&mut app, 1500);
+    all.push(format!("{seen:?}"));
+    assert!(seen.iter().any(|s| s == "ThrowDef13700"), "{all:?}");
+    assert!(died, "{all:?}");
+}
+
 /// m25 without Wolf's Todome message (he drops his Todome before its TAE 936): her Todome's
 /// ThrowDef13700 still kills her (it sends 10 at its start, ending her immortality: 12505965)
 /// and 12505950 handles her defeat; 12505964's 20021 does not play on her dead (it would cut
@@ -654,11 +684,15 @@ pub(crate) fn the_corrupted_monk_without_the_todome_message_still_dies() {
     break_and_deathblow(&mut app, 30);
     let mut boss = Vec::<String>::new();
     let mut defeated = false;
-    for _ in 0..900 {
+    for f in 0..900 {
+        // Her Todome, from her kneel (20200).
+        if f % 20 == 0 && enemy_state(&mut app).0 == "Event20200" {
+            app.world_mut().resource_mut::<PadInput>().press(Action::Attack);
+        }
         {
             let world = app.world_mut();
             let mut a = world.query_filtered::<&mut Actor, With<Player>>().single_mut(world).unwrap();
-            if a.anim.ends_with("511700") || a.anim.ends_with("501700") {
+            if a.anim.ends_with("511700") {
                 a.play("StandIdle", "a000_000000");
             }
         }
@@ -674,9 +708,8 @@ pub(crate) fn the_corrupted_monk_without_the_todome_message_still_dies() {
 }
 
 #[test]
-pub(crate) fn isshins_todome_message_ends_the_fight_with_wolfs_event_710206() {
-    // m11_02 11125874: 0 health bars and Wolf's event message 10 (his Todome a242_511700's TAE 936
-    // at 2.4 s) -> Isshin EzState 20200, Wolf EzState 710206 (c0000.hkx Event710206_CMSG).
+pub(crate) fn isshins_last_deathblow_ends_the_fight_with_wolfs_event_710206() {
+    // m11_02 11125874: 0 health bars and Wolf's event message 10 (his deathblow's TAE 936) -> Isshin EzState 20200, Wolf EzState 710206 (c0000.hkx Event710206_CMSG).
     // (11125874 also needs 11125862: 11125872 sets it once he is at 2 bars or fewer with his
     // second set's 200031, from his 3015 spear draw.)
     let mut app = app_with("c5400");
@@ -706,7 +739,8 @@ pub(crate) fn isshins_todome_message_ends_the_fight_with_wolfs_event_710206() {
         }
     }
     let i = boss.iter().position(|s| s == "Event20200").unwrap_or_else(|| panic!("boss {boss:?} wolf {wolf:?}"));
-    assert!(boss[..i].iter().any(|s| s == "ThrowDef13700") || i == 0, "boss {boss:?}");
+    // His last mark is his usual deathblow (15400500 / 501 -> ThrowDef12000), not the Todome: rec_20261016_080607 a100_012000 -> 020200.
+    assert!(boss[..i].iter().any(|s| s == "ThrowDef12000") && !boss.iter().any(|s| s == "ThrowDef13700") || i == 0, "boss {boss:?}");
     assert!(wolf.iter().any(|s| s == "Event710206"), "wolf {wolf:?} boss {boss:?}");
 }
 

@@ -9,7 +9,7 @@ Contents (line numbers of this file; read a range, not the whole file):
 - 62: 2026-10-07 shuriken aim: lock target, else LockCamParam bullet auto-capture (bulletMaxRadius 30
 - 65: 2026-10-07 WOLF: hits in the air use HKS air damage (c0000_transition.lua ~1106): SMALL/MIDDLE 
 - 69: 2026-10-07 NEXT 13: second enemy c1010 Ochimusha (one-handed sword), selected with config enemy
-- 79: 2026-10-07 PRIORITY (user): focus on Wolf. No further enemies unless asked; c1010 stays availab
+- 79: 2026-10-07 PRIORITY: focus on Wolf. No further enemies unless asked; c1010 stays availab
 - 81: 2026-10-07 enemy additive recoils (c9997): deflected attack with bound type BOUND_ADD01-04 (Atk
 - 86: 2026-10-07 enemy hit without a reaction (mid-swing / minimum level): c9997 ExecNoSyncAddDamage 
 - 89: 2026-10-09: the AI now runs the game's COMPILED scripts directly (no DSLuaDecompiler step): src
@@ -61,7 +61,7 @@ Dated findings, oldest first. Append new entries at the end.
   to the AI (c1020 10219000 lacks the 3102050 drink-punish SpEffect, so it does not specially punish).
 - 2026-10-07 shuriken aim: lock target, else LockCamParam bullet auto-capture (bulletMaxRadius 30 m, bulletAngRange 15
   deg of the facing - the CSChrAutoHomingModule bullet limits), then bent toward it within Bullet lockShootLimitAng.
-  Was: nearest enemy within lockShootLimitAng. Stopping here: 5h usage near the user's 50 % cap.
+  Was: nearest enemy within lockShootLimitAng.
 - 2026-10-07 WOLF: hits in the air use HKS air damage (c0000_transition.lua ~1106): SMALL/MIDDLE AirDamageSmall,
   LARGE/PUSH AirDamageLargeStart -> FallLoop -> Land, FLING AirDamageLargePound*, EXLARGE/SMALL_BLOW/EX_BLAST/UPPER/BREATH
   -> their air blow states (no clips in c0000_a0xx -> the AirDamageLarge chain); landings -> StandDamageLargeDown face
@@ -76,7 +76,7 @@ Dated findings, oldest first. Append new entries at the end.
   material is "#NN#..." draw only when NpcParam modelDispMaskNN = 1 (c1010 39 of 81 meshes; applies to c1020 too).
   c1010's deathblows use player anims a200_* (atkAnimOffset 200) - exported. Sim tests pin c1020 (app_with); new
   tests ochimusha_runs_its_own_ai_and_attacks / _deathblow_uses_its_own_throw_rows / _attack_can_be_deflected. 45 pass.
-- 2026-10-07 PRIORITY (user): focus on Wolf. No further enemies unless asked; c1010 stays available via config
+- 2026-10-07 PRIORITY: focus on Wolf. No further enemies unless asked; c1010 stays available via config
   enemy.chr but the default opponent is the Samurai General (c1020).
 - 2026-10-07 enemy additive recoils (c9997): deflected attack with bound type BOUND_ADD01-04 (AtkParam
   just-deflected action 11-14) -> AttackJustGuardBound_Add0N (anim 9600 + N - 1, a000_009600 15 f) while the combo
@@ -483,7 +483,7 @@ Dated findings, oldest first. Append new entries at the end.
     the same. SidewayMove has no distance. Test native_goals_measure_distance_like_get_dist.
   * Breaking-deflect pose (2026-10-12): Wolf's ThrowBreak pose and hold play only if the enemy
     entered its ThrowDef<def> (react refuses while Rising / Held / Broken); before, Wolf could be
-    left in the close-up with nothing to finish (user's Isshin report). Not reproduced in the
+    left in the close-up with nothing to finish. Not reproduced in the
     sim; player.rs logs "deathblow refused: ..." with the reason.
   * Moved fights (2026-10-12): on another boss's arena (Map's MOVED: Isshin, Isshin Ashina, Emma,
     the Owl on boss_71001000) the boss script's CutsceneWarp and Warps to a place are skipped:
@@ -624,3 +624,52 @@ and 6.7 attacks/min in 3 min; after, 8 backsteps and 11.3/min. Test
 scripts 510000 / 510001 / 510010 watch it) is not modelled, so those watches never fire; an
 ended SpEffect is not split by owner.
 
+
+- 2026-10-15 Emma (c7400, scripted boss) stood up after her last deathblow: the scripted Dead
+  branch waited out all 9 s of ThrowDef12000 / 12110 (whose end is the get-up) before 12001 /
+  12111. It now switches on the reaction's flag 69 or its end, script or not (c9997 HKS
+  ThrowDefCommonFunction env(276) -> W_ThrowDefDeath). Test
+  `emma_killed_from_her_deflect_break_does_not_get_up`.
+- 2026-10-15 Old Dragons of the Tree (53000000) and the Divine Dragon (52000000) are one fight:
+  the picker lists only 53000000 as "Old Dragons of the Tree / Divine Dragon"; the
+  fall hands over by m25 12505885 (data::encounter_list).
+- 2026-10-16 the picker's Bosses tab lists only the main-boss rows (menu.rs MAIN_BOSS_ROWS). docs/PLAN.md "Update 2026-10-13" says 22 rows but
+  names 20; those 20 are the list.
+- 2026-10-16 boss audit against the live recordings: `python tools/boss_audit.py --run` plays
+  each main fight headless (sim_tests `boss_audit`: real models, an unkillable Wolf who walks up,
+  swings and backs off; every phase via break + deathblow, through the hand-overs) and compares
+  with the rec_*_boss_* recordings (docs/kb/recordings.md): characters, attacks, deathblows,
+  bullets, script events, arena spread. Report: docs/reports/boss-audit.md. 3100 / 3101 (deflect)
+  and 5201 / 5211 (backstep) are the shared answers to Wolf's attacks (common_func_NTC.lua), so
+  a Wolf who never swings never sees them.
+- 2026-10-16 How a boss fight ends (every recording, rec_2026101x_*_boss_*): the last mark is a
+  usual deathblow (0000 / 0001, 0160 / 0161, 0120 / 0121 ...), not the Todome. Wolf's message 10
+  -> the map script sends the boss to 20200 (its kneel) and Wolf to his walk-up 7102xx; the Todome
+  0180 / 0181 (+500 in the second form) is taken from that kneel 0.8-1.8 s in. The kneel's TAE
+  932 / 105 (1.0-5.0 s, all eight Todome bosses) and Wolf's walk-up TAE 930 / 1 (1.0-5.0 s) are
+  that window (data.rs finisher_window, player.rs deathblow_check / todome_input); 932 / 104 is the
+  "enemy special state A" window (Isshin's 21000 -> 15400590). Isshin: 20200 -> Todome 680 / 681
+  -> ThrowDef13700 message 20 at 13 s -> 11125875's 21000 -> the 590 finisher -> defeat. Wolf's
+  walk-ups 710200 / 201 / 203 / 204 are the states Event390010 / 11 / 13 / 14 (statemap).
+  Script fixes with it: a repeated EzState request for the state already playing does not restart
+  it; 21000 still plays on a dead boss (only a second 20200 is ignored); a script-requested death
+  clip kills at its flag 12 (the Mibu Monk's 20000); the Todome on a kneeling immortal boss kills
+  at Wolf's Ninsatsu hit; boss_scripts.py keeps 8300 on for Isshin Ashina (his 11115941 kneel).
+  gap: the exe's gate for the Todome input is not traced (by the windows and the recordings).
+  Round 2 (Isshin's close-up, attack did nothing): the walk-up clip has no accept flag,
+  so its attack press is now latched over its TAE 931 (0-5 s) and fires in the 930 window; Wolf's
+  event message is cleared when a new deathblow starts (the kneel comes at the last deathblow's own
+  TAE 231, 2.9-3.6 s in, in every recording, not at its Ninsatsu hit with an older 10); the
+  script's SpEffect checks count a TAE SpEffect through its last 30 fps frame (the Monk's 3500010
+  to 3.70 s, Wolf's message 10 then).
+
+- 2026-10-16 INVISIBLE BOSS FIX: TAE 193 opacity held its last keyframe into clips without one, so the Owl / Monk stayed at 0 after a vanish was cut short (Owl a000_003037 0 at 0.27-0.7 s; Owl Father a000_020001 and a000_010001 hold 0 for the whole clip; Monk a000_021000). Now a clip with no keyframe yet takes the group idle's opacity (a{group}00_000000 at 0, else 1; the Monk's phantoms keep 0). Test `a_vanish_cut_short_comes_back_visible`.
+- 2026-10-16 BUTTERFLY LIFT: SetNoGravity (TAE 0 flag 27) chains 3010 -> 3200 and 3024 -> 3240 in the air; 3202 / 3242 come down (rec_20261015_225710: 4.5 m and 2.8 m). actor.rs keeps the lift height across a clip change (lift_off) and lets her fall with WORLD_GRAVITY after it; map.rs does not snap a body that is coming down. gap: enemy fall acceleration not traced.
+- 2026-10-16 OWL FATHER START: real fight opens with a talk (Wolf 700400 10.26 s then 700420; Owl 401, 41500 lipsync, 402, 41500, 400000; first attack ~10.3 s). Script 11005910 holds 401 until Wolf is in region 1002810, 11005913 turns his AI on. Our port has no talk scene, so he idles out the 401 loop. Done: src/enemy/talk.rs. The talk ESD (extracted/script/talk/m10_00_00_00.talkesdbnd.d/t100121.esd, unpacked with `sekiro-extract unpack ... talk`) group 2147483619: SetEventFlag 71000137, TalkToPlayer 12030000 with done flag 71000130. Lines 12030000-5 (12030003 is Wolf's, soundId_pc), FMOD events v0<id> in vm10. Wolf's HKS: BEH_R_NPC_TALK_START -> W_Event700400, END -> W_Event700420.
+
+## Demon of Hatred (c7020, 70200000) details (2026-10-17)
+- Foot checks: resident 3702080 / 3702081 have stateInfo 275, behaviorId 1802, motionInterval 0.3, dmypolyId 13 / 16. The game fires the behavior every interval from that dummy: Bullet 70200950 (life 0.3 s, radius 2.5 m, no damage) puts 3702085 (0.3 s) on Wolf. His AI (702000_battle.lua Act19) stomps (3046) when Wolf has it. Sv1: enemy_bullet.rs fire_worn, for any enemy with such a resident SpEffect.
+- 3006 follows 3005 at its combo point (flag 23, 1.33 s). 3005 adds 5032 at 1.3 s; his Interrupt replans on 5032 when GetDist <= 0.5 (centre distance minus his hitRadius). A Wolf pressed against him is always that close, so the combo ends there.
+- Phases: 3702001 (HU1) / 3702002 (HU2) state SpEffects; Act31 plays 20001 (the HU) at 3702001 with 2 deathblows left; 20001's TAE adds 3702050 'HU後状態' (endurance -1, kept for good).
+- End: 11105910 makes him immortal (2004[12]) before its region wait; 11105921 waits for 3702050, 0 bars and Wolf's message 10 (his deathblow's TAE 231 at 2.9 s), then EzState 20200 on him and 710207 on Wolf; the Todome is ThrowParam 17020180 (throwKind 190000, a240_501700 / 511700, his ThrowDef13700 sends 10 at its start, which ends the immortality: 11105920).
+- Fire looks: arm fire 3702011 (TAE, vfx 3702003 / 3702004 -> 670215 / 670216 on 820 / 821) shows. The idle FFX 120 on 820 / 50 is gated on stateInfo 951 (3702021 'HU後炎判定'); nothing in the data or exe gives 3702021 (950 = 3702020 likewise). gap.

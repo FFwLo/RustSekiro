@@ -1603,3 +1603,89 @@ pub(crate) fn sprint_keeps_its_speed_into_the_loop() {
     assert!(seen_loop, "never reached SprintLoop");
     assert!(min_in_loop > 6.0, "sprint loop dipped to {min_in_loop:.2} m/s");
 }
+
+/// Live (rec_20261016_094717_lockturn_sprintdeflect, 7 locked sprint deflects): the deflect does not
+/// snap to the enemy. Sprinting 90-150 deg off him, the facing is still ~100 deg off at the
+/// start, about 75 deg off 0.17 s in and square on by ~0.4 s (TAE turn 0 / 180 / 360, then 720 deg/s).
+#[test]
+pub(crate) fn a_locked_sprint_deflect_turns_to_the_enemy_instead_of_snapping() {
+    for sx in [1.0f32, -0.7] {
+        let mut app = app();
+        let enemy = {
+            let world = app.world_mut();
+            let (e, mut t) = world.query_filtered::<(Entity, &mut Transform), With<Enemy>>().single_mut(world).unwrap();
+            t.translation = Vec3::new(0.0, t.translation.y, -14.0);
+            e
+        };
+        app.world_mut().resource_mut::<crate::camera::LockOn>().target = Some(enemy);
+        for _ in 0..90 {
+            app.update();
+        }
+        let mut errs = Vec::new();
+        for i in 0..110 {
+            {
+                let mut pad = app.world_mut().resource_mut::<PadInput>();
+                pad.stick = Vec2::new(sx, 0.5);
+                if i == 0 {
+                    pad.press(Action::Step);
+                }
+                pad.dodge_held = i < 70;
+                pad.guard_held = (60..110).contains(&i);
+                if i == 60 {
+                    pad.press(Action::Guard);
+                }
+            }
+            app.update();
+            let world = app.world_mut();
+            let et = world.query_filtered::<&Transform, With<Enemy>>().single(world).unwrap().translation;
+            let (a, t) = world.query_filtered::<(&Actor, &Transform), With<Player>>().single(world).unwrap();
+            let to = (et - t.translation).with_y(0.0);
+            let err = ((a.yaw - (-to.x).atan2(-to.z)).to_degrees() + 180.0).rem_euclid(360.0) - 180.0;
+            errs.push((a.state.clone(), err));
+        }
+        let at = |n: usize| errs[60 + n].1.abs();
+        assert_eq!(errs[60].0, "SprintToDeflectGuard");
+        assert!(at(0) > 70.0, "snapped at the start: {:.0} deg off", at(0));
+        assert!(at(10) > 40.0, "already square at +10: {:.0} deg off", at(10));
+        assert!(at(30) < 5.0, "still {:.0} deg off at +30", at(30));
+    }
+}
+
+/// Live (rec_20261016_* W_StandRunStop): after the stick is released the run is down to
+/// 0.5 m/s within 3 ticks and Wolf slides 0.15-0.3 m in all (the clip a000_000600 moves 0.3 m).
+/// The stop must not carry the run's momentum through its blend (graph state StandRunStop).
+#[test]
+pub(crate) fn releasing_the_stick_at_a_run_stops_in_about_a_third_of_a_metre() {
+    let mut app = app();
+    move_enemy_far(&mut app);
+    for _ in 0..60 {
+        app.update();
+    }
+    let mut last = player_actor(&mut app).3;
+    let mut start = last;
+    for i in 0..100 {
+        {
+            let mut pad = app.world_mut().resource_mut::<PadInput>();
+            pad.stick = if i < 60 { Vec2::new(0.0, 1.0) } else { Vec2::ZERO };
+        }
+        app.update();
+        let (state, pos) = {
+            let w = app.world_mut();
+            let (a, t) = w.query_filtered::<(&Actor, &Transform), With<Player>>().single(w).unwrap();
+            (a.state.clone(), t.translation)
+        };
+        if i == 59 {
+            start = pos;
+        }
+        let v = (pos - last).with_y(0.0).length() * 60.0;
+        last = pos;
+        if i == 65 {
+            assert!(state.starts_with("StandRunStop"), "state {state}");
+            assert!(v < 1.0, "still {v:.1} m/s 5 ticks after release");
+        }
+        if i == 99 {
+            let slid = (pos - start).with_y(0.0).length();
+            assert!(slid < 0.4, "slid {slid:.2} m");
+        }
+    }
+}

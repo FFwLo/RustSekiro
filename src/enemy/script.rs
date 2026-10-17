@@ -296,6 +296,8 @@ pub struct Run {
     /// Objects attached to characters (2003[58] Attach Object to Character): object -> (the
     /// character, its dummy poly, active: 2005[3] (De)activate Object).
     attached: HashMap<i64, (i64, i16, bool)>,
+    /// Its talk (enemy/talk.rs) was looked up: once per fight.
+    pub talk_seen: bool,
 }
 
 #[derive(Resource, Default)]
@@ -385,6 +387,19 @@ impl Run {
                 }
             }
         }
+        // An event entered past its start (`entry`: at the boss's enable) still left the
+        // immortality its skipped setup sets: m11_00 11105910 sets the Demon of Hatred's (2004[12],
+        // its 4th instruction) before its region wait and his enable at the 10th, and only his
+        // Todome's message 10 ends it (11105920); without it his third deathblow killed him and
+        // the 20200 kneel for the Todome (11105921, rec_20261016_072651) never came.
+        let mut pending = Vec::new();
+        for ev in def.events.iter().filter(|ev| !ev.done && ev.start > 0) {
+            for (bank, id, v) in &ev.ins[..ev.start.min(ev.ins.len())] {
+                if (*bank, *id) == (2004, 12) && v.len() >= 2 {
+                    pending.push(Act::Immortal(v[0] as i64, v[1] as i64 == 1));
+                }
+            }
+        }
         let mut ents = HashMap::new();
         let dead_ids: HashSet<i64> = def.dead_at_start.iter().copied().collect();
         ents.insert(def.boss, boss);
@@ -404,11 +419,12 @@ impl Run {
             wolf_immortal: false,
             dead_ids,
             pending_warp: HashMap::new(),
-            pending: Vec::new(),
+            pending,
             disabled: HashMap::new(),
             frame: 0,
             warp_serial: HashMap::new(),
             attached: HashMap::new(),
+            talk_seen: false,
         }
     }
 
@@ -441,6 +457,11 @@ impl Run {
             return sh.parts.iter().any(|k| shape_contains(k.shape, &k.size, k.at, k.yaw, x, y, z));
         }
         shape_contains(sh.shape, &sh.size, pl.at, pl.yaw, x, y, z)
+    }
+
+    /// The boss's entity id in the map (its part's).
+    pub fn boss(&self) -> i64 {
+        self.def.boss
     }
 
     pub(crate) fn flag(&self, id: i64) -> bool {
@@ -776,7 +797,15 @@ fn step(run: &mut Run, ev: usize, w: &World, dt: f32, acts: &mut Vec<Act>) {
                 let boss_out = w.chars.get(&run.def.boss).is_some_and(|c| c.bars == 0 && c.bars_max > 0);
                 // Not when the same event enables another of the cast (2004[05] on): a hand-over,
                 // the fight goes on with it (11125830 enables Isshin 1120860 as it sets 9311).
-                let hand_over = ins.iter().any(|x| (x.0, x.1) == (2004, 5) && x.2.get(1).map(|v| *v as i64) == Some(1) && x.2.first().map(|v| *v as i64).is_some_and(|e| e != run.def.boss && run.def.chars.contains_key(&e)));
+                // Or when it shows another of the cast's boss bar (2003[11] on): m25 12505885 sets
+                // the Old Dragons' 9318 and turns the Divine Dragon 2500800 on (AI state, bar) at
+                // their 0 HP; the live fight goes on with him (rec_20261016_070725: 12505885 at
+                // 120 s, the Divine Dragon from 174 s to his deathblow at 440 s).
+                let other = |e: i64| e != run.def.boss && run.def.chars.contains_key(&e);
+                let hand_over = ins.iter().any(|x| {
+                    let arg = |k: usize| x.2.get(k).map(|v| *v as i64);
+                    ((x.0, x.1) == (2004, 5) && arg(1) == Some(1) && arg(0).is_some_and(other)) || ((x.0, x.1) == (2003, 11) && arg(0) == Some(1) && arg(1).is_some_and(other))
+                });
                 // The scripted loss: the flag with the boss still up and Wolf held at 1 HP by his
                 // immortality (the prologue Genichiro's 11125800: Wolf at 1 HP in 1122802 -> 9300,
                 // the arm-loss cutscene). The duel starts over.
@@ -967,7 +996,9 @@ pub(super) fn run_scripts(
             continue;
         }
         let d = combat.data_of(&a);
-        if *id == run.def.boss && e.is_dead() && d.finisher_open(&a.anim, a.t) && combat.finisher(&combat.foe_of(&a)).is_some() {
+        // (Waiting for the Todome in its 20200, or the finisher.)
+        let foe = combat.foe_of(&a);
+        if *id == run.def.boss && e.is_dead() && d.finisher_open(&a.anim, a.t) && (combat.finisher(&foe).is_some() || combat.throw(foe.throw_row(181)).is_some()) {
             kneeling = true;
         }
         if trace() {
@@ -976,6 +1007,14 @@ pub(super) fn run_scripts(
         let mut sp: HashSet<i64> = a.resident.iter().copied().collect();
         if !a.anim.is_empty() {
             sp.extend(d.sp_effects_at(&a.anim, a.t).iter().map(|(id, _)| *id));
+            // Through the TAE's last 30 fps frame (its end frame counted in): the Monk's
+            // ThrowDef12000 3500010 ("忍殺時イベントアニメ遷移不可", 0-3.67 s) lasts until Wolf's
+            // a211_510000 message 10 at 3.70 s, so m25 12505964's 20021 (bars 0, no 3500010,
+            // 12505963 not yet run) does not cut her deathblow in the frame between. gap: the exe's
+            // TAE SpEffect end is not traced.
+            if a.t >= 1.0 / 30.0 {
+                sp.extend(d.sp_effects_at(&a.anim, a.t - 1.0 / 30.0).iter().map(|(id, _)| *id));
+            }
         }
         sp.extend(e.clash.iter().map(|c| c.0));
         // Its additive anim's (the Divine Dragon's PartBlend_Add01-05, a000_009510-4: 3520080
@@ -1255,7 +1294,7 @@ pub(super) fn run_scripts(
                 if throw.0.as_ref().is_some_and(|t| finished.contains(&t.target)) {
                     continue;
                 }
-                if player.0.play_state(&combat.player, &format!("Event{id}")) {
+                if player.0.play_state(&combat.player, &crate::player::event_state(&combat.player, id)) {
                     throw.0 = None;
                 }
             }
@@ -1293,6 +1332,14 @@ pub(super) fn run_scripts(
     // since his first deathblow's message 50, and 11105800 waits for his death. gap: the exe's
     // rule is not traced; no fake death (the Ape's first a000_013700) has 201000.
     for (_, mut e, mut a, _, s, ..) in &mut q {
+        // A death clip the script requests at 0 health bars (the Mibu Monk 50001000's a000_020000,
+        // m15 11505812 on Wolf's message 10) kills at its ChrActionFlag 12 "Death" (3.13 s), its
+        // immortality (11505810) or not: rec_20261016_000242's Handle Boss Defeat 11505800 (HP <= 0)
+        // 3.1 s after the 20000 request. (As the death flag stands for the kill above.)
+        if e.is_dead() && death_flag_at(combat.data_of(&a), &a.anim).is_some_and(|s| a.t >= s) {
+            a.hp = 0.0;
+            continue;
+        }
         if !e.immortal || a.hp >= 1.0 {
             continue;
         }
@@ -1367,10 +1414,21 @@ fn apply(combat: &Combat, brains: &mut super::Brains, ent: Entity, e: &mut Enemy
         }
         Act::AiState(_, on) => {
             e.ai_off = !on;
-            // A looping forced anim with the AI on plays once more, then the AI goes on (the
-            // Guardian Ape's 20005 roar, m17 11705810: forced looping, then his AI on).
+            // A looping forced anim with the AI on plays to its AI cancel window (TAE 0 flags 78 /
+            // 79 / 86 / 23 "End If AI Move / Step / Attack / ComboAttack Queued"), else to its end,
+            // then the AI goes on: the Guardian Ape's 20005 roar (m17 11705810) to 4.7 s; the Owl
+            // (Father)'s a000_000401 (m10 11005910) has the window from 0 s: his first attack
+            // (a000_003018) starts as his talk ends (rec_20261016_074559, enemy/talk.rs).
             if on && e.mode == Mode::Held(true) {
-                e.mode = Mode::Rising((d.length(&a.anim) - a.t).max(0.1));
+                let len = d.length(&a.anim);
+                let cancel = d
+                    .anim(&a.anim)
+                    .into_iter()
+                    .flat_map(|an| an.events.iter())
+                    .filter(|ev| ev.kind == 0 && matches!(ev.flag_type(), Some(23 | 78 | 79 | 86)) && ev.end > a.t)
+                    .map(|ev| ev.start.max(a.t))
+                    .fold(len, f32::min);
+                e.mode = Mode::Rising((cancel - a.t).max(0.1));
             }
         }
         Act::ForceAnim(_, anim, looped) => {
@@ -1388,9 +1446,19 @@ fn apply(combat: &Combat, brains: &mut super::Brains, ent: Entity, e: &mut Enemy
             e.mode = if looped && e.ai_off { Mode::Held(true) } else { Mode::Rising(d.length(&a.anim).max(0.1)) };
         }
         Act::EzState(_, id) => {
-            // Asked again while already dead from it (m25 12505963 restarts while Wolf's
-            // Todome message 10 lasts): it keeps playing. gap: the exe's rule is not traced.
-            if e.mode == Mode::Dead(f32::INFINITY) {
+            // Its kneel asked again while already dead from it (m25 12505963 restarts while Wolf's
+            // Todome message 10 lasts): it keeps playing; the recordings show one W_Event20200 per
+            // boss end. Other requests still play on the dead: Isshin's 21000 (m11_02 11125875 on
+            // his Todome ThrowDef13700's message 20 at 13 s; rec_20261016_080607 at 926.5 s), the
+            // kneel his finisher 15400590 is taken from. gap: the exe's rule is not traced.
+            if e.mode == Mode::Dead(f32::INFINITY) && id == 20200 {
+                return;
+            }
+            // Nor while it already plays that event (m25 12505963 restarts every frame while Wolf
+            // holds his deathblow's message 10, and the Monk is immortal there): the recordings
+            // fire W_Event20200 once per boss end (rec_2026101x_*_boss_*); restarting it each
+            // frame froze her kneel at 0 s, before its Todome window.
+            if a.state == format!("Event{id}") {
                 return;
             }
             if !takes_throw_transition(d, a, &e.clash) {
@@ -1403,7 +1471,11 @@ fn apply(combat: &Combat, brains: &mut super::Brains, ent: Entity, e: &mut Enemy
             e.throw_death = None;
             a.move_vel = Vec3::ZERO;
             let len = d.length(&a.anim).max(0.1);
-            if e.is_dead() && a.hp <= 0.0 {
+            if e.ninsatsu.0 == 0 && death_flag_at(d, &a.anim).is_some() {
+                // Its death clip (the Mibu Monk's 20000: flag 12 at 3.13 s), not a getting up.
+                e.down = false;
+                e.mode = Mode::Dead(f32::INFINITY);
+            } else if e.is_dead() && a.hp <= 0.0 {
                 // Its death (20200 after the Todome): held until the script ends the fight.
                 e.mode = Mode::Dead(f32::INFINITY);
             } else if e.ninsatsu.0 == 0 && id == 20200 {
@@ -1463,6 +1535,11 @@ fn takes_throw_transition(d: &crate::data::CharData, a: &Actor, clash: &[(i64, f
         return crate::combat::worn_sp(a, clash).iter().any(|id| d.sp_effects.get(&id.to_string()).is_some_and(|s| [1501000, 1000160, 1000161].contains(&s.behavior_ref_id)));
     }
     true
+}
+
+/// The start of a clip's ChrActionFlag 12 "Death", if it has one.
+fn death_flag_at(d: &crate::data::CharData, key: &str) -> Option<f32> {
+    d.anim(key)?.events.iter().filter(|ev| ev.kind == 0 && ev.flag_type() == Some(12)).map(|ev| ev.start).reduce(f32::min)
 }
 
 fn play_event(d: &crate::data::CharData, a: &mut Actor, id: i64) -> bool {

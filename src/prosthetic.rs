@@ -273,6 +273,9 @@ fn spawn_row(commands: &mut Commands, spec: &BulletSpec, pos: Vec3, dir: Vec3, c
         // next propagation would see the origin.
         let bullet = commands.spawn((at, GlobalTransform::from(at), Name::new(format!("Bullet {}", spec.bullet_id)))).id();
         // The flying effect rides on the bullet (FxEffect anchored to it).
+        if std::env::var("SHINOBI_FFX_LOG").is_ok() {
+            info!("bullet {} fxr {sfx} at {:.2}", spec.bullet_id, pos);
+        }
         let fx = (sfx > 0).then(|| commands.spawn(crate::fxr::FxEffect::new(sfx, Some(crate::fxr::Anchor::Entity(bullet)), true, at)).id());
         commands.entity(bullet).insert(Projectile {
             spec: spec.clone(),
@@ -1163,10 +1166,14 @@ pub mod hks {
     /// counts as a press; so does SP_EF_REF_TAE_SUB_ATTACK_USE_CHECK without the emblems (the hold
     /// loop checks every 10 frames and fails into the clack).
     /// gap: ref 321's only SpEffect (100260) is put on by no TAE, BehaviorParam, SpEffect chain or exe
-    /// constant found; the flame's own follow-up window stands in for it: the combo window (300) while
-    /// "only the flamethrower cancels" (100290, ref 329; a072_400000 f75-96, 400100 f21-33).
+    /// constant found, so only it counts the hold. The flame's own follow-up window (the combo
+    /// window 300 while "only the flamethrower cancels", 100290 ref 329; a072_400000 f75-96)
+    /// counted it too until 2026-10-16: holding the button from the first burst went on into the
+    /// spew. The skills recordings (rec_20261015_184118 tick 22283, rec_20261015_203558 tick
+    /// 18923) only enter 400200 on a new press in that window (a 1.8 s hold from the first press
+    /// did nothing); there the press path (`press`, enable_combo) takes it.
     pub fn held_press(cat: i64, held: bool, enable_action: bool, refs: &dyn Fn(i64) -> bool) -> bool {
-        let transition = refs(REF_TRANSITION_SUB_ATTACK_HOLD) || (refs(REF_SUB_ATTACK_COMBO) && refs(REF_ONLY_FLAMETHROWER_CANCEL));
+        let transition = refs(REF_TRANSITION_SUB_ATTACK_HOLD);
         // The umbrella's clause (round 59): 076 held inside SP_EF_REF_ENABLE_PRESS_SUB_ATTACK
         // (311: 100368, the recovery windows of most a000 / a050 / a07x clips) opens it.
         (cat == 72 && held && transition && refs(REF_WEP_ENABLE_SUB_ATTACK_HOLD))

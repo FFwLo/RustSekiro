@@ -122,6 +122,9 @@ const SP_EFFECT_FIELDS: &[&str] = &[
     // Deathblow recovery skills (105050, 150301-150331): posture refill and the state-change trigger.
     "changeStaminaRate", "changeStaminaPoint", "invocationConditionsStateChange1",
     "invocationConditionsStateChange2", "invocationConditionsStateChange3",
+    // A behaviour run every motionInterval at a dummy while worn (stateInfo 275: the Demon of
+    // Hatred's foot checks 3702080 / 3702081 -> BehaviorParam 1802 -> Bullet 70200950).
+    "behaviorId", "dmypolyId",
 ];
 
 /// Every Bullet field a prosthetic tool's bullet (70xxxx-79xxxx) sets.
@@ -675,6 +678,15 @@ fn export_character(
         bullet_sources.push((chr.behavior_base + j, vec![j.to_string()]));
         for &var in &chr.variations {
             bullet_sources.push((200_000_000 + var * 1000 + j, vec![format!("v{var}:{j}")]));
+        }
+    }
+    // The bullets of the worn SpEffects' behaviours (behaviorId, a BehaviorParam row id as it is:
+    // 3702080 -> 1802), keyed "sp<behaviorId>".
+    if chr.npc_row.is_some() || !chr.npc_rows.is_empty() {
+        for id in &sp_ids {
+            if let Some(b) = sp.get(id).and_then(|r| r.get("behaviorId")).and_then(Value::as_i64).filter(|v| *v > 0) {
+                bullet_sources.push((b, vec![format!("sp{b}")]));
+            }
         }
     }
     for (row, keys) in &bullet_sources {
@@ -1275,7 +1287,13 @@ fn decal_rows(root: &Path, params: &Path, ids: &[i64], tex: Option<&HashMap<Stri
     let Some(tex) = tex else { return rows };
     let _ = std::fs::create_dir_all(root.join("decal"));
     for (id, row) in rows.as_object().into_iter().flatten() {
-        let get = |k: &str| row[k].as_i64().filter(|v| *v >= 0).and_then(|v| tex.get(&format!("dp{v:09}_{}", if k == "maskTextureId" { "m" } else { "a" })));
+        // DecalParam (Paramdex): maskTextureId / diffuseTextureId -1 = "look at textureId" (the
+        // Owl's deathblow stains 801010 / 801030 have only textureId 100000 and drew as flat
+        // red squares, the user 2026-10-16).
+        let get = |k: &str| {
+            let v = row[k].as_i64().filter(|v| *v >= 0).or_else(|| row["textureId"].as_i64().filter(|v| *v >= 0))?;
+            tex.get(&format!("dp{v:09}_{}", if k == "maskTextureId" { "m" } else { "a" }))
+        };
         let (Some(diffuse), Some(mask)) = (get("diffuseTextureId"), get("maskTextureId")) else { continue };
         let ((w, h, d), (mw, mh, m)) = (crate::decode_dds(diffuse), crate::decode_dds(mask));
         // At the mask's size; a diffuse of another size (the oil's and vomit's flat 16x16

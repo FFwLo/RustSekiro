@@ -156,3 +156,15 @@ Dated findings, oldest first. Append new entries at the end.
   turned by the camera yaw, unnormalised, halved on walk, 0 when let go (FUN_1407f0f50, 1407f.c
   1270); +0x80 the right stick, +0xd0 the mouse. So a climb or fall tilts the camera, except
   while running toward it. gap: that the -z row means "toward the camera" is inferred.
+- 2026-10-17 TAE 156 SetCameraAngle (template order: s32 VerticalAngle, s32 HorizontalAngle, s32
+  InterpolationType, b OverrideVertical, b OverrideHorizontal). FUN_140b51490 (only on the camera's
+  chr, FUN_1409f3430) -> FUN_1408327a0 fills DAT_143d5c0d0 +0x88 Vertical rad, +0x8c Horizontal rad,
+  +0x90 type+1, +0x94 p = (t - start) / (end - start) <= 1, +0x99 / +0x9a the overrides. ChrCam
+  (14073.c 10606-10855): while +0x90 != 0 (FUN_140831ea0) the lock-on turning is skipped; at the
+  first frame (+0x98) the start angles are read from focus - fulcrum (+0x1f0 pitch, +0x1f4 yaw);
+  w = 1 - (p - 1)^2; pitch +0x170 = lerp(start, Vertical, w) (absolute); yaw +0x174 = lerp(start,
+  Horizontal + chr yaw, w), wrapped by the type (0 shortest, 1 up, 2 down); then +0x150 = 1. Ours:
+  camera.rs set_camera_angle; the map mirrors x, so target yaw = Wolf's yaw - Horizontal. 211
+  events on Wolf's anims (184 with OverrideVertical, 116 with OverrideHorizontal). The fulcrum yaw
+  resync now also runs under TAE 151. Gyoubu (a225_510000) checked against the reference clip; the
+  clip's final deathblow is a225_510090 (Horizontal 50 / 90 / -30), not traced here.

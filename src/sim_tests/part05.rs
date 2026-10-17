@@ -148,9 +148,9 @@ pub(crate) fn the_sabimaru_poisons() {
 pub(crate) fn okinagas_spew_costs_while_held() {
     let (_, tap, _) = use_tool(72200, 30, 0, 200);
     // HoldLoop starts ~3.2 s in (Combo1 f75 + HoldStart); its 999 fires 3.67 s later.
-    let (states, held, _) = use_tool(72200, 30, 600, 650);
+    let (states, held, _) = use_tool_with(72200, 30, 600, 650, 500, Some((140, 190)));
     assert!(held >= tap + 6, "held {held} vs tap {tap}: {states:?}");
-    let (states, spent, _) = use_tool(72200, 6, 600, 650);
+    let (states, spent, _) = use_tool_with(72200, 6, 600, 650, 500, Some((140, 190)));
     assert!(spent <= 6 && states.iter().any(|s| s == "SubAttackFailed" || s.ends_with("SubAttackFailed")), "{spent}: {states:?}");
 }
 
@@ -1578,4 +1578,248 @@ pub(crate) fn emma_killed_from_her_deflect_break_does_not_get_up() {
         }
     }
     panic!("pose {pose:?} killed {killed:?}, enemy {}", enemy_state(&mut app).0);
+}
+
+/// Senpou Leaping Kicks / High Monk locked on a close enemy: the leap's 920 row 10010 homes with
+/// ChrPhysicsHomingParam 20000 (initialVelocityCorrection 2 slows it to land 1 m in front of the
+/// target), so Wolf lands short of the enemy instead of flying the row's 6.4 m/s over him. Unlocked
+/// the leap is the row's (the skills recording: ~5-6 m at ~6.4 m/s with no lock).
+#[test]
+pub(crate) fn leaping_kicks_land_in_front_of_the_lock_target() {
+    for (locked, art) in [(true, 5800), (true, 7400), (false, 5800)] {
+        let mut app = app();
+        if !app.world().contains_resource::<crate::camera::LockOn>() {
+            app.world_mut().insert_resource(crate::camera::LockOn::default());
+        }
+        let (start, fwd, enemy) = {
+            let world = app.world_mut();
+            world.resource_mut::<crate::config::GameConfig>().player.combat_art = art;
+            world.resource_mut::<crate::enemy::EnemyDebug>().mode = crate::enemy::AiMode::Idle;
+            let (a, t) = world.query_filtered::<(&Actor, &Transform), With<Player>>().single(world).unwrap();
+            let (start, fwd) = (t.translation, a.forward());
+            let mut q = world.query_filtered::<(Entity, &mut Transform), With<Enemy>>();
+            let (e, mut et) = q.single_mut(world).unwrap();
+            // Unlocked, off his path: a body in the way now stops a jump (player.rs, the body
+            // push in the air), which is not what this measures.
+            et.translation = start + if locked { fwd * 3.0 } else { fwd.cross(Vec3::Y).normalize() * 4.0 };
+            // Facing Wolf.
+            et.rotation = Quat::from_rotation_arc(Vec3::NEG_Z, -fwd);
+            if locked {
+                world.resource_mut::<crate::camera::LockOn>().target = Some(e);
+            }
+            (start, fwd, e)
+        };
+        let _ = enemy;
+        for _ in 0..5 {
+            app.update();
+        }
+        {
+            let mut pad = app.world_mut().resource_mut::<PadInput>();
+            pad.press(Action::Attack);
+            pad.press(Action::Guard);
+        }
+        let mut landed = None;
+        let mut was_air = false;
+        for _ in 0..200 {
+            app.update();
+            let world = app.world_mut();
+            let (a, t) = world.query_filtered::<(&Actor, &Transform), With<Player>>().single(world).unwrap();
+            if was_air && !a.airborne {
+                landed = Some((t.translation - start).dot(fwd));
+                break;
+            }
+            was_air |= a.airborne;
+        }
+        let got = landed.unwrap_or_else(|| panic!("{art}: never landed"));
+        if locked {
+            // 3 m to the enemy, 1 m short of it (+ the 0.05 the enemy stands higher): ~2 m.
+            assert!((got - 2.0).abs() < 0.35, "{art} locked: landed {got:.2} m ahead");
+        } else {
+            assert!(got > 3.5, "unlocked: the row's leap, landed {got:.2} m ahead");
+        }
+    }
+}
+
+/// Boss audit against the live recordings of the real game (tools/boss_audit.py, docs/kb/recordings.md):
+/// `SHINOBI_AUDIT=<out.tsv> SHINOBI_ENEMIES=<chr> SHINOBI_ROW=<npc row>`. Per phase, the boss
+/// fights an unkillable Wolf who walks up to it for SHINOBI_AUDIT_SECS (default 90) s, then is
+/// broken and deathblown into the next phase (break_and_deathblow), until its deathblows run out.
+/// Writes one line per anim any character starts (`anim phase s who anim`), each hit on Wolf
+/// (`hit phase s who anim`) and both fighters' places every second (`pos phase s who x y z`).
+/// Real models and dummy polys (app_geom).
+#[test]
+#[ignore]
+pub(crate) fn boss_audit() {
+    let out = std::env::var("SHINOBI_AUDIT").expect("SHINOBI_AUDIT=<file>");
+    let chr = std::env::var("SHINOBI_ENEMIES").unwrap_or("c7100".into());
+    let row = std::env::var("SHINOBI_ROW").ok().and_then(|v| v.parse().ok());
+    let secs: f32 = std::env::var("SHINOBI_AUDIT_SECS").ok().and_then(|v| v.parse().ok()).unwrap_or(90.0);
+    let mut app = app_geom(&chr, row);
+    let mut lines: Vec<String> = Vec::new();
+    let mut last: std::collections::HashMap<Entity, String> = Default::default();
+    let mut clock = 0.0f32;
+    let log = |app: &mut App, lines: &mut Vec<String>, last: &mut std::collections::HashMap<Entity, String>, phase: u32, clock: f32, pos: bool| {
+        let world = app.world_mut();
+        let mut rows = Vec::new();
+        let mut q = world.query::<(Entity, &Actor, &Transform, Has<Player>)>();
+        let combat = world.resource::<Combat>();
+        for (ent, a, t, wolf) in q.iter(world) {
+            let who = if wolf { "wolf".to_string() } else { combat.kind(a.kind).foe.chr.clone() };
+            if last.get(&ent) != Some(&a.anim) && !a.anim.is_empty() {
+                rows.push(format!("anim\t{phase}\t{clock:.2}\t{who}\t{}", a.anim));
+            }
+            if pos {
+                rows.push(format!("pos\t{phase}\t{clock:.2}\t{who}\t{:.1}\t{:.1}\t{:.1}", t.translation.x, t.translation.y, t.translation.z));
+            }
+            last.insert(ent, a.anim.clone());
+        }
+        let mut q = world.query::<(Entity, &crate::enemy_bullet::EnemyBullet)>();
+        for (ent, b) in q.iter(world) {
+            if last.insert(ent, String::new()).is_some() {
+                continue;
+            }
+            rows.push(format!("bullet\t{phase}\t{clock:.2}\t-\t{}", b.row()));
+        }
+        lines.extend(rows);
+    };
+    // Wolf can't die or break (true when he was hit this frame).
+    fn keep_wolf(app: &mut App) -> bool {
+        let world = app.world_mut();
+        let mut q = world.query_filtered::<&mut Actor, With<Player>>();
+        let mut a = q.single_mut(world).unwrap();
+        let hit = a.hp < a.hp_max;
+        a.hp = a.hp_max;
+        a.posture = 0.0;
+        hit
+    }
+    // The fight is won: a map script's Handle Boss Defeat, or no boss standing for 15 s (a
+    // boss hidden between phases, Lady Butterfly's illusions or Isshin before he comes in, is
+    // not a win).
+    fn won(app: &mut App, idle: &mut u32) -> bool {
+        let world = app.world_mut();
+        if world.resource::<crate::enemy::BossScript>().run.as_ref().is_some_and(|r| r.defeated.is_some()) {
+            return true;
+        }
+        let mut q = world.query::<(&Enemy, Has<crate::enemy::Cast>)>();
+        let standing = q.iter(world).any(|(e, cast)| !e.disabled && !e.is_dead() && (!cast || e.ninsatsu.1 > 0));
+        *idle = if standing { 0 } else { *idle + 1 };
+        *idle > 900
+    }
+    let mut idle = 0u32;
+    let mut over = false;
+    for phase in 0..12u32 {
+        {
+            let world = app.world_mut();
+            let boss = boss_in_play(world);
+            world.get_mut::<Enemy>(boss).unwrap().aggressive = true;
+        }
+        for f in 0..(secs * 60.0) as u32 {
+            app.update();
+            clock += 1.0 / 60.0;
+            let hit = keep_wolf(&mut app);
+            let anim = {
+                let world = app.world_mut();
+                let boss = boss_in_play(world);
+                let et = world.get::<Transform>(boss).unwrap().translation;
+                // The boss keeps its health and posture: the phases change only on the forced
+                // deathblows below.
+                let mut ba = world.get_mut::<Actor>(boss).unwrap();
+                ba.hp = ba.hp_max;
+                ba.posture = 0.0;
+                let anim = ba.anim.clone();
+                let mut q = world.query_filtered::<(&mut Actor, &mut Transform), With<Player>>();
+                let (mut a, mut t) = q.single_mut(world).unwrap();
+                let to = (et - t.translation).with_y(0.0);
+                // 8 s of every 20 Wolf keeps about 15 m off (the AI's ranged moves: Genichiro's
+                // bow 3036 / 3009 and lightning 3044); the rest he walks up.
+                let away = f % 1200 >= 720;
+                if away && to.length() < 15.0 {
+                    t.translation -= to.normalize_or_zero() * 6.0 / 60.0;
+                } else if !away && to.length() > 2.5 {
+                    t.translation += to.normalize() * if to.length() > 10.0 { 6.0 } else { 3.0 } / 60.0;
+                }
+                a.yaw = f32::atan2(-to.x, -to.z);
+                // Wolf swings every 1.5 s when close: the AI's deflects (3100 / 3101) and
+                // backsteps (5201 / 5211, common_func_NTC.lua) answer his attacks.
+                if !away && f % 90 == 45 && to.length() < 3.5 {
+                    world.resource_mut::<PadInput>().press(Action::Attack);
+                }
+                anim
+            };
+            if hit {
+                lines.push(format!("hit\t{phase}\t{clock:.2}\tboss\t{anim}"));
+            }
+            log(&mut app, &mut lines, &mut last, phase, clock, f % 60 == 0);
+            if won(&mut app, &mut idle) {
+                over = true;
+                break;
+            }
+        }
+        if over {
+            lines.push(format!("won\t{phase}\t{clock:.2}\tboss\t-"));
+            break;
+        }
+        // break_and_deathblow, logging each frame; again (up to 3 times) when something knocked
+        // Wolf out of it (the Demon of Hatred's fire on the floor).
+        let (boss, left) = {
+            let world = app.world_mut();
+            let boss = boss_in_play(world);
+            (boss, world.get::<Enemy>(boss).unwrap().ninsatsu.0)
+        };
+        for _ in 0..3 {
+            {
+                let world = app.world_mut();
+                let mut q = world.query_filtered::<Entity, With<crate::enemy_bullet::EnemyBullet>>();
+                for b in q.iter(world).collect::<Vec<_>>() {
+                    world.despawn(b);
+                }
+                world.resource_scope(|world, combat: Mut<Combat>| {
+                    let mut q = world.query::<(&mut Enemy, &mut Actor, &mut Transform)>();
+                    let (mut e, mut a, mut t) = q.get_mut(world, boss).unwrap();
+                    a.posture = a.posture_max;
+                    e.on_posture_break(&mut a, &combat, false, 4.0);
+                    t.translation = Vec3::new(0.0, CAPSULE_HALF_HEIGHT, 1.8);
+                    a.yaw = 0.0;
+                });
+                let mut q = world.query_filtered::<(&mut Actor, &mut Transform), With<Player>>();
+                let (mut a, mut t) = q.single_mut(world).unwrap();
+                a.yaw = std::f32::consts::PI;
+                t.translation = Vec3::new(0.0, CAPSULE_HALF_HEIGHT, 0.0);
+            }
+            app.world_mut().resource_mut::<PadInput>().press(Action::Attack);
+            lines.push(format!("blow\t{phase}\t{clock:.2}\tboss\t-"));
+            let mut landed = false;
+            for f in 0..600u32 {
+                app.update();
+                clock += 1.0 / 60.0;
+                keep_wolf(&mut app);
+                log(&mut app, &mut lines, &mut last, phase, clock, f % 60 == 0);
+                let e = app.world().get::<Enemy>(boss).unwrap();
+                landed |= e.ninsatsu.0 < left || e.is_dead() || e.disabled;
+                if won(&mut app, &mut idle) {
+                    over = true;
+                    break;
+                }
+            }
+            if landed || over {
+                break;
+            }
+        }
+        // The phase change or the hand-over plays out.
+        for f in 0..900u32 {
+            if over {
+                break;
+            }
+            app.update();
+            clock += 1.0 / 60.0;
+            keep_wolf(&mut app);
+            log(&mut app, &mut lines, &mut last, phase, clock, f % 60 == 0);
+            over = won(&mut app, &mut idle);
+        }
+        if over {
+            lines.push(format!("won\t{phase}\t{clock:.2}\tboss\t-"));
+            break;
+        }
+    }
+    std::fs::write(&out, lines.join("\n")).unwrap();
 }

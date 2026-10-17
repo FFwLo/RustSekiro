@@ -12,7 +12,7 @@ ffmpeg -ss 00:01:52 -i "C:/DeadlockModding/clips/sekiro_all_skills_rYcHlOgI7pg.m
 The clip's own chapter title is burned into the top-left of every frame, so a frame
 identifies its skill by itself.
 
-## All skills and prosthetics (2026-10-11, the user's link)
+## All skills and prosthetics (2026-10-11)
 
 `sekiro_all_skills_rYcHlOgI7pg.mp4`: "Sekiro All Skills Attacks Moveset [Combat Arts, Shinobi
 Martial Arts, Ninjutsu Skills]" by cad5150, https://www.youtube.com/watch?v=rYcHlOgI7pg,
@@ -39,7 +39,7 @@ One demo per chapter, several casts each (hit and whiffed, some at a dummy enemy
 | 7:52 | 8:09 | Grappling Hook Attack | shinobi martial art |
 | 8:09 | 8:38 | Mid-air Deathblow | deathblow (B1) |
 | 8:38 | 9:01 | Mid-air Prosthetic Tool | prosthetic.rs air use |
-| 9:01 | 9:17 | Vault Over | movement (HANDOFF L345: the user's verdict wanted) |
+| 9:01 | 9:17 | Vault Over | movement (HANDOFF L345: in-game check wanted) |
 | 9:17 | 9:33 | Run and Slide | movement |
 | 9:33 | 9:40 | Mid-air Deflection | guard-deflect |
 | 9:40 | 9:56 | Chasing Slice - Loaded Shuriken | tool follow-up |
@@ -67,13 +67,12 @@ Use: VXf's B6 skill sheets (`SHINOBI_SKILL_SHOTS`) against these chapters (arc p
 colour of each art's trail and effect); Bosses' B1 deathblow placement (mid-air, ledge,
 wall-hug); the cape on the arts for B2 (the dark temple hides it; a daylight clip is better).
 
-## All Shinobi executions / finishers (2026-10-11, the user's link)
+## All Shinobi executions / finishers (2026-10-11)
 
 `sekiro_all_finishers_wodFkPrFUag.mp4`: "All Shinobi Executions / Finishers - SEKIRO" by
 Hatenak Le Petit Bridé, https://www.youtube.com/watch?v=wodFkPrFUag, 6:08, kept at 1280x720
 (VP9) and, for frame-exact measuring (Bosses' Ochimusha drift), the 4K 60 fps source as
-`sekiro_all_finishers_wodFkPrFUag_4k60.mp4` (913 MB, VP9 3840x2160, the user's "yes pull
-the 4k"). French UI and subtitles, no chapters. Every boss and mini-boss deathblow in game order, the camera
+`sekiro_all_finishers_wodFkPrFUag_4k60.mp4` (913 MB, VP9 3840x2160). French UI and subtitles, no chapters. Every boss and mini-boss deathblow in game order, the camera
 cuts of each 忍殺 included. Times are from a 2 s contact sheet (±2 s); the 19 scene cuts the
 watch skill picked are too sparse for this clip.
 
@@ -115,7 +114,7 @@ watch skill picked are too sparse for this clip.
 Use: Bosses' B1 deathblow geometry (front/behind placement, the throw position
 interpolation, the camera cuts per boss), VXf's deathblow blood and the 忍殺 mark art.
 
-## All 57 bosses, no damage, Demon Bell (2026-10-11, the user's link)
+## All 57 bosses, no damage, Demon Bell (2026-10-11)
 
 `sekiro_all_bosses_oS_gJf8ur8M_1080p60.mp4`: "Sekiro: Shadows Die Twice - All 57 Bosses (No
 Damage/Demon Bell) + All 4 Endings" by Kephket, https://www.youtube.com/watch?v=oS_gJf8ur8M,
@@ -225,7 +224,7 @@ Use: Bosses' B5 AI pacing (attack intervals, combo choice at range, posture brea
 frames of the six common attacks vs the sim trace, Map's arenas (every boss on its real
 arena in daylight and at night: lighting shots for B4), VXf's enemy VFX catalogue per boss.
 
-## Chained Ogre hitboxes (2026-10-11, the user's link "for ogre")
+## Chained Ogre hitboxes (2026-10-11)
 
 `sekiro_ogre_hitboxes_G1yqXihDh_g_1080p60.mp4`: "Chained Ogre - HitBoxes" by Spicy We1ner,
 https://www.youtube.com/watch?v=G1yqXihDh_g, 2:17, 1920x1080 60 fps H.264, 78 MB. A hitbox
@@ -263,12 +262,11 @@ Long-arm Centipede). His AtkParam spheres in extracted/enemies/c5020.json match 
   both-hands grab 50200510 (a100_003005): r 0.3. Slam 50200530: one capsule hand-to-hand (dmy 2-10,
   r 0.5), the "two spheres" at 1:04. Kicks: foot capsules dmy 3-15 / 4-16.
 
-## Hitbox showcase playlist, 51 enemies (2026-10-11, the user's link "have all hitboxes")
+## Hitbox showcase playlist, 51 enemies (2026-10-11)
 
 Playlist https://www.youtube.com/playlist?list=PLsYpcRmfPaU1fx6b6whkOBC8tBjau4hBZ: one
 hitbox-mod showcase per boss and mini-boss, 3 h 59 min in all, the attack spheres drawn on
-the live model as in the Ogre clip above. Kept at 1920x1080 60 fps (all 51, 9.9 GB, the
-user's call "do 1080p"; `-f "bv*[height<=1080][fps>=50]+ba"`) in
+the live model as in the Ogre clip above. Kept at 1920x1080 60 fps (all 51, 9.9 GB; `-f "bv*[height<=1080][fps>=50]+ba"`) in
 `C:\DeadlockModding\clips\hitboxes\<index>_<title>_<id>.mp4` (yt-dlp with a download
 archive, `archive.txt` there; rerun the same command to fill gaps). Several descriptions
 carry corrections ("read description": missed attacks, the laser deflection, the second
@@ -339,7 +337,7 @@ the sim trace (anim + AttackBehavior frames), then pull that moment at fps=60. T
 cases where a sim hit looks wrong, not a full pass. The Ogre (c5020) section above is the full
 check, and it matched the AtkParam export.
 
-## Combat flow reference, ONGBAL "Sekiro's Combat Is Still Best" (2026-10-11, the user: "this video shows how the gameplay should be: fluid, transitions between deflects and skills and prosthetics")
+## Combat flow reference, ONGBAL "Sekiro's Combat Is Still Best" (2026-10-11)
 
 https://www.youtube.com/watch?v=dReREg4Dtyc, 7:00, kept at 1920x1080 60 fps (H.264, 294 MB) as
 `C:\DeadlockModding\clips\sekiro_combat_flow_ongbal_dReREg4Dtyc_1080p60.mp4`. Chapters:
@@ -348,7 +346,7 @@ https://www.youtube.com/watch?v=dReREg4Dtyc, 7:00, kept at 1920x1080 60 fps (H.2
 (Nexus 723, a "complete overhaul", tagged Animation-Modified and NPC Behaviours) and *Multi Combat
 Arts* (Nexus 1058, several arts equipped at once). So the enemy movesets, the flame arts the player
 chains (the fire arcs all through the Juzou chapter, the burning status kanji on enemies) and the
-art-to-art chaining are **not vanilla data**; what transfers is the *feel* the user wants: no idle
+art-to-art chaining are **not vanilla data**; what transfers is the *feel*: no idle
 gap between a deflect and the next input, prosthetic use mid-chain, arts out of a deflect, lock-on
 camera that never fights the player.
 

@@ -592,7 +592,33 @@ pub(crate) fn deathblow_to_defeat(chr: &str, row: i64) -> (usize, Vec<i64>, Vec<
     let mut flags = Vec::new();
     for n in 1..=5 {
         seen.extend(break_and_deathblow(&mut app, 600));
+        // The Owl (Father)'s second phase (m11_00 11005912: his first ThrowDef12000's message 20,
+        // then his SpEffect 3506022 from the step his AI takes, a000_005201-5203, sets 11005902,
+        // which his kneel 11005920 needs; 11005912 sets 200051 first). The sim's boss is
+        // passive: the step is played here.
+        let mut stepped = false;
         for _ in 0..600 {
+            if row == 50601010 && !stepped {
+                let w = app.world_mut();
+                let b = boss_in_play(w);
+                let mut a = w.get_mut::<Actor>(b).unwrap();
+                if a.resident.contains(&200051) {
+                    a.play("Ez5201", "a000_005201");
+                    stepped = true;
+                }
+            }
+            // The Demon of Hatred's HU after his first deathblow (702000_battle.lua Act31 at
+            // 3702001 and 2 left: a000_020001), whose 3702050 his kneel 11105921 needs.
+            if row == 70200000 && !stepped {
+                let w = app.world_mut();
+                let b = boss_in_play(w);
+                let left = w.get::<Enemy>(b).unwrap().ninsatsu_left();
+                let mut a = w.get_mut::<Actor>(b).unwrap();
+                if left == 2 && !a.resident.contains(&3_702_050) && !a.state.starts_with("ThrowDef") {
+                    a.play("Ez20001", "a000_020001");
+                    stepped = true;
+                }
+            }
             let bs = app.world().resource::<crate::enemy::BossScript>();
             if bs.defeats > 0 || bs.run.as_ref().is_some_and(|r| r.defeated.is_some()) {
                 return (n, flags, seen);
@@ -632,7 +658,9 @@ pub(crate) fn every_boss_row_reaches_its_defeat() {
     for (chr, row) in rows {
         // 71101000 goes on into Isshin the Sword Saint (reservoir_tomoe_hands_over_to_isshin),
         // 74000010 into Isshin Ashina (isshin_ashina_follows_emma).
-        if [52000000, 54000000, 71101000, 74000010].contains(&row) || !std::path::Path::new(&format!("{}/extracted/enemies/{chr}.json", env!("CARGO_MANIFEST_DIR"))).exists() {
+        // 53000000 (the Old Dragons) hands over to the Divine Dragon (m25 12505885, script.rs
+        // hand_over).
+        if [52000000, 53000000, 54000000, 71101000, 74000010].contains(&row) || !std::path::Path::new(&format!("{}/extracted/enemies/{chr}.json", env!("CARGO_MANIFEST_DIR"))).exists() {
             continue;
         }
         let (n, flags, mut seen) = deathblow_to_defeat(&chr, row);
@@ -924,6 +952,19 @@ pub(crate) fn isshins_finisher_to_defeat(chr: &str, row: i64) {
         app.update();
     }
     set_ai(&mut app, false);
+    // His spear draw a000_003015 (200031: m11_02 11125872 -> 11125862, which his kneel 11125874
+    // needs), if his AI has not drawn it yet.
+    {
+        let w = app.world_mut();
+        let b = boss_in_play(w);
+        let mut a = w.get_mut::<Actor>(b).unwrap();
+        if a.anim_group == 0 {
+            a.play("Ez3015", "a000_003015");
+        }
+    }
+    for _ in 0..400 {
+        app.update();
+    }
     for want in [1u32, 0] {
         for _ in 0..6 {
             for _ in 0..120 {
@@ -1520,3 +1561,5 @@ pub(crate) fn hit_stop_holds_posture_regen_and_sp_effect_timers() {
     assert!(held_regen < free_regen * 0.25, "regen in hit stop {held_regen} vs {free_regen}");
     assert!(held_timer < free_timer * 0.25, "timer in hit stop {held_timer} vs {free_timer}");
 }
+
+

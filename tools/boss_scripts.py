@@ -271,22 +271,22 @@ def linked(ins, parts, boss):
 #   (m11_00 11105631, the second visit, whose Owl (Father) 50601010 keeps it on). (Her defeat
 #   event 11005800 reads it only on its already-defeated path: the stage, not a fix.)
 # - Isshin Ashina (54300000): 8300 is set only by the m11_01_54_10 variant's 11115200 (and
-#   cleared by m11_01_50_60's), never by m11_01_00_00 or common. On, his 11115941 plays 20200
-#   on Wolf's Todome message 10 and cuts a000_013700 before its message 50 (11.0 s), which
-#   his defeat event 11115920 waits on: the fight never ends.
+#   cleared by m11_01_50_60's), never by m11_01_00_00 or common. It stays on (2026-10-16): his
+#   11115941 (bars 0 + Wolf's message 10 -> his 20200, Wolf's 710206) is the kneel the Todome
+#   15430180 is taken from (rec_20261016_082459_boss_emma_isshin_ashina: 11115941, then 180 / 181
+#   1.75 s into 710206). (Off before, when the Todome was the last mark and 20200 cut it.)
 FLAGS_OFF = {
     12600050: {9405},
     53000000: {12505949, *range(12505818, 12505828)},
     71001000: {8301},
     71100000: {8301},
-    74000010: {9316, 8300},  # 8300: as 54300000, Isshin Ashina follows her
+    74000010: {9316},
     50600000: {9316, 11115900},
     51000000: {8303},
     54000000: {8306},
     71101000: {8306},
     50900000: {8304},
     50900001: {8304},
-    54300000: {8300},
 }
 
 

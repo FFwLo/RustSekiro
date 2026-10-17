@@ -270,6 +270,13 @@ fn bleed(
             None => (depth - f("nearDistance")) / (f("farDistance") - f("nearDistance")).max(1e-3),
         };
         let size = (f("nearSize") + (f("farSize") - f("nearSize")) * k) * rng.range(f("randomSizeMin"), f("randomSizeMax")) / 100.0;
+        // A row whose textures are not extracted (801110's diffuse dp009900010 is not in
+        // other/decaltex) is left out: untextured it drew as a flat red square (the Owl's
+        // deathblow, the user 2026-10-16). gap: where the game keeps that texture is not traced.
+        if !decal_mats.contains_key(&id) && !crate::paths::extracted().join(format!("decal/{id}.png")).exists() {
+            log(|| format!("stain {id}: no texture, skipped"));
+            continue;
+        }
         // Thin out: at most distThinOutMaxNum stains of this row within distThinOutCheckDist.
         let near: Vec<(Entity, f32)> = stains.iter().filter(|(_, s, t)| s.id == id && t.translation.with_y(0.0).distance(at.with_y(0.0)) < f("distThinOutCheckDist")).map(|(e, s, _)| (e, s.born)).collect();
         let max_near = row["distThinOutMaxNum"].as_i64().unwrap_or(0) as usize;

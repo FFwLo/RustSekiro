@@ -12,7 +12,7 @@ Contents (line numbers of this file; read a range, not the whole file):
 - 88: 2026-10-07 NEXT 18: `sekiro-extract transitions <behavior.hkx>`: all 16 transition effects (Sta
 - 93: 2026-10-07 NEXT 18 done: `sekiro-extract blenders`: c0000.hkx has only 2 hkbBlenderGenerators (
 - 97: 2026-10-07 TAE 151 CameraLookAtTarget (case 0x97 -> FUN_140b517a0 -> camera singleton +0x3c dmy
-- 103: 2026-10-07 VISUALS (user: "models and animations to be better"): (1) Wolf had no head: EquipPar
+- 103: 2026-10-07 VISUALS: (1) Wolf had no head: EquipPar
 - 111: 2026-10-07 docs/HANDOFF_PLAN.md: task packets for helper models (V1-V5 visuals, S1-S4 swordplay
 - 113: 2026-10-07 helper V1 (normal maps) integrated: SHMD v3 adds a normal-map name per mesh; Sekiro 
 - 118: 2026-10-07 CLIPS: TAE ImportOtherAnim (mini header 1) imports the HKX as well as the events, bu
@@ -102,7 +102,7 @@ Dated findings, oldest first. Append new entries at the end.
   blocked line of sight drops it). Wolf's body dummies were missing (only the sword's were exported): model_c0000.bin
   now holds the base c0000.flver's 563 dummies (0 meshes; tools/extract.ps1 exports it), which also gives body-based
   attacks (kick etc.) their real capsules instead of the reach fallback. Look limits not used yet.
-- 2026-10-07 VISUALS (user: "models and animations to be better"): (1) Wolf had no head: EquipParamProtector 100000
+- 2026-10-07 VISUALS: (1) Wolf had no head: EquipParamProtector 100000
   equipModelId 200 (category head) = parts/fc_m_0200 (face + hair; unpacked + exported to model_c0000_fc_m_0200.bin).
   fc_m_0100 is another face (beard). Face decals (fur, lashes, eyeshadow, mouth) use a shared alpha pack that is not
   exported: flver guess_albedo returns "-" and model.rs skips them; damage overlays are never used as albedo.
@@ -391,8 +391,7 @@ project from the hit along the blow (appearDirType 2, pitchAngle), red 191/54/19
 (base 0) / 160000 (base 100), sizes 0.15 -> 3 m over 10 m. Code: gore.rs `hit_stain_id`,
 `HitStains`; see HANDOFF 4.13.
 
-- **Cloth setting and coat cleanup** (2026-10-11, the user: "their coat still in arena after i fight
-  them", "turn down the cloth physics" -> an Options switch): Options "Cloth physics" On / Near
+- **Cloth setting and coat cleanup** (2026-10-11, an Options switch): Options "Cloth physics" On / Near
   only / Off = config `[video] cloth = "on"|"near"|"off"` (15 m, 6 m from the camera, none:
   every coat carried in its bind pose); `SHINOBI_CLOTH_RANGE` still overrides it. The cloth
   display meshes have no parent (world-space CPU vertices), so model.rs `follow_owner` despawns
@@ -506,3 +505,15 @@ muffler and tilingset1 switch 1. The coat ("Court") is another shader,
   * cloth dt = frame dt (mode 0), 1/30 (1) or 1/60 (2): FUN_141045c40.
 - 2026-10-15 CHANGE: the cloth now steps in ~1/60 s pieces (cloth.rs `frame_steps`: round(dt*60), 1..3). The game steps its cloth once per frame at its locked 60 fps; our dt is the rendered frame time, and the per-step constraint strengths (bend stiffness, local range, link stiffness) act per step, so at 20-30 fps they were 2-3x weaker per second and the cape / hair swung wider. Frames faster than 60 fps stay one step (gap: stiffer than the game there). The thin boss pieces (Tomoe hair02 LocalRange max 0.3 m, damping 0.9; Owl haori_new damping 0.001; Isshin beard02 LocalRange 1.0 m) are free to flip by their own data: a 0.3 m range around a 0.15 m strand allows 180 deg, so >90 deg off the animation is data, not a solver error.
 - 2026-10-15 DATA RE-EXPORT + VOLUME CONSTRAINT. (1) Friction (cefdc80, 10-14) and the compressible set / second sim cloths (10-13) were in the exporter but 80 of 81 `extracted/model_*.cloth.json` predated them: friction read as 0 and 9 models' compressible sets were skipped (kind saved under the raw hk class name). All 80 re-exported (`sekiro-extract model`, only the .cloth.json copied over; old files in the session scratchpad cloth_json_backup*). Re-run `tools/extract.ps1` after pulling to get this on a fresh checkout. (2) hclVolumeConstraintMx ported (src/cloth.rs `solve_volume` / `polar_rotation`; exporter kind "volume", 22 sets: Wolf's neck scarf, Demon of Hatred mane + beard, Divine Dragon sakura, Isshin's helmet fur, c1050 / c1180 / c1190 / c1191 / c1320 / c1321 / c7470). Exe FUN_141571de0: c = sum w p over the frame rows (single path FUN_14157ec10); M = sum w (p - c) frameVector^T (FUN_14157ec70); R = M (M^T M)^(-1/2) (FUN_141572020: Jacobi eigen-decomposition, sqrt, inverse; singular -> zero matrix); each apply row: p += stiffness * factor * (c + R frameVector - p) (FUN_14157edd0, no inverse mass). Batch rows are 16 lanes (frameVector 16x16 B, particleIndex u16 x16 at 256, weight f32 x16 at 288). Sandbox fight check: no restarts / blow-ups; Demon beard 91 -> 49 deg off its animation, mane gaps 5-20 % smaller. Test `volume_constraint_matches_the_shape`.
+- 2026-10-15 Demon of Hatred's arm: c7020_arm_test.mtd uses character_ghost_scroll_test2 (SAT
+  shader, DXBC read with d3dcompiler_47). The exporter writes it as DetailData variant 101 GHOST
+  (40 floats: color_0..5 as rgb^2.2 x Intensity + alpha, float_0..9, tiling); sekiro_material.wgsl
+  `ghost_scroll` (flags.x 3): albedo and normal scroll with time, two Fresnel ramps pick the colour
+  and alpha, emissive tex x colour; AlphaMode::Blend (g_BlendMode 2). gaps: normal tiling, axes,
+  gloss, float_10.
+
+- 2026-10-16 EMMA'S SWORD PARTS (c7400): #00# R_Katana (sword in the right hand), #01# L_Katana, #02# Katana (sheathed at the waist), #03# L_Saya (sheath in the left hand), #04# Saya (waist sheath). Her TransToBattle a000_001040 turns all five on, IdleBattle a000_400000 keeps #00# + #04#; spawn now applies both (model.rs). a000_003005 has no L_Saya / L_Katana track, a000_003004 shows #03# by TAE 713 from 0 s: the crossfade from the reference pose made the sheath float ~0.3 m off her hand; anim.rs now gives an untracked bone of the old clip the new clip at once (Havok partial-pose weights; gap: not traced in the exe).
+- 2026-10-16 CLOTH LINK STIFFNESS: the exported hclStandardLinkConstraintSet / compressible / bend link stiffness equals user stiffness / (invMassA + invMassB) in every cloth checked (c5060 ponytail 2.1875 = 0.7/0.32 and 4.375 = 0.7/0.16 next to its stretch 0.7; c1020 hakama 3.125 / 1.5625 at invMass 0.32; c1100 sleeve compressible 8.333 = 1/0.12; c1010 mino bend 0.347 = 1/2.88). Stretch link stiffness is not premultiplied. cloth.rs solve_link now applies it as stored (x_a += d * (len-rest)/len * k * w_a).
+- 2026-10-16 FUR HAIR CARDS: the Owl's hair (c5069_hair_e_sss, shader Fur_NTC_SSS) drew as solid dark quads: the extractor's alpha rule made every SSS shader opaque. Fur_NTC_SSS materials now cut by the albedo alpha when their MTD g_AlphaRef[0] > 0 (c5069 / c5090 / c9010 / c9020 hair_e_sss 128, P_*_9100_bodyhair 128, c7470_body 128); scalps and furred bodies with 0 (c5069_hair_sss, c1180_body, c1559_body) stay opaque (flver.rs alpha_tested, mtd_ints). Re-exported c5060 / c5090 / c7470. Still open: in the Owl's deathblow (a000_012000) the ponytail reads as a ball much bigger than the head.
+- 2026-10-16 DECAL TEXTURE FALLBACK: DecalParam maskTextureId / diffuseTextureId -1 means "use textureId" (Paramdex); export.rs decal_rows now falls back, so the Owl's blood 801010 / 801030 get their textures. gore.rs skips a stain whose texture is missing instead of drawing a flat red square (gap: 801110's dp009900010 is not exported).
+- 2026-10-16 SIMPLE MESH BONE DEFORM: the exported locals are relative to the non-orthonormal edge-vector triangle frame (scales 35-39); cloth.rs rigid_like takes the polar rotation and scales each axis to its rest length so driven bones keep their bind size.

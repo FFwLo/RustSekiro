@@ -772,7 +772,7 @@ impl Plugin for FmodPlugin {
                 let probe = ["c000004010", "c000004011", "c000006510", "s000003010", "c000001113", "c000001004", "c102004001"];
                 let found: Vec<&str> = probe.iter().copied().filter(|k| f.has(k)).collect();
                 info!("FMOD events: {:?}; probe {}/{} found {:?}", f.projects, found.len(), probe.len(), found);
-                app.insert_non_send(f).add_systems(PostUpdate, (load_new_kinds, apply_volume, apply_reverb, boss_music, pause_off_screen, update_fmod).chain());
+                app.insert_non_send(f).add_systems(PostUpdate, (load_new_kinds, load_talk_bank, apply_volume, apply_reverb, boss_music, pause_off_screen, update_fmod).chain());
             }
             Err(e) => warn!("FMOD event system unavailable ({e}); using the PCM samples"),
         }
@@ -794,6 +794,13 @@ fn load_new_kinds(mut fmod: NonSendMut<Fmod>, combat: Option<Res<crate::data::Co
         if k.foe.anim_chr != k.foe.chr {
             fmod.load_project(&k.foe.anim_chr);
         }
+    }
+}
+
+/// A fight's talk (enemy/talk.rs) gets its map's voice bank (vm10: the Owl (Father)'s lines).
+fn load_talk_bank(mut fmod: NonSendMut<Fmod>, talk: Option<Res<crate::enemy::talk::Talk>>) {
+    if let Some(bank) = talk.as_ref().and_then(|t| t.bank()) {
+        fmod.load_project(bank);
     }
 }
 

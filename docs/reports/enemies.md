@@ -42,7 +42,7 @@ User request: "Work on all bosses and enemies".
     IdleTransition at the anim end; `Mode::Rising`). The boss then gets up with full HP and empty
     posture. gap: the exe's refill is not traced.
   * The last deathblow kills, as before.
-  * Rows with ninsatuNum 0 (regular enemies, the user's General 10203010) die from one.
+  * Rows with ninsatuNum 0 (regular enemies, the General 10203010) die from one.
   * Test: `a_boss_takes_one_deathblow_per_red_dot`.
 - Phase-2 move sets (request: "work on the phase 2 boss move sets"):
   * Anim sets: SpEffect 200030-200034 ("Anime ID offset [0]-[4]", stateInfo 270-274) picks

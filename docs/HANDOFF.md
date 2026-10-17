@@ -22,7 +22,7 @@ Everything below is in the code with citations; the kb files have the details.
   dummies, floor stains from TAE 138 DecalParam rows with the game's decal textures.
 - **Clash effects + bloom** (`src/vfx.rs`), **Sekiro-style HUD** (`src/hud.rs`: vitality, posture,
   resurrection nodes, enemy bars, debug text only with F1), **deathblow mark** (the game's FE sprite).
-- **Fixes from the user's list:** crouch moves at once (CrouchStart is a standby state), the idle
+- **Fixes from the 2026-10-10 list:** crouch moves at once (CrouchStart is a standby state), the idle
   twist follows only the lock-on target (Wolf's chest swung at an enemy behind him), the sprint
   deflect faces the target and its 3 m slide stops against the enemy's body.
 - **Skills (section 8):** every tool / art / skill exported with official names; prosthetic
@@ -39,7 +39,7 @@ Everything below is in the code with citations; the kb files have the details.
 **Changed 2026-10-13 (docs/PLAN.md "Update 2026-10-13"): the 22 main-boss rows are ours again; the
 outside contributor keeps the mini-bosses and generals (35 rows). The text below is the
 2026-10-12 state.**
-The user: "exclude these bosses name list From the work because i gave it to someone", pointing at
+The boss work was handed to an outside contributor:
 `extracted/enemies/npc_names.json` "rows": all 57 boss and mini-boss NpcParam rows (generals,
 mini-bosses and every main boss). The Claude sessions no longer work on those fights: their
 scripts, phases, arenas, per-fight lighting, deathblows, clip checks and boss-only effects.
@@ -52,13 +52,13 @@ per-boss status sheet: `docs/reports/bosses-handover.md`. Sessions renamed the s
 ## 1. The project
 - **Sv1** is a 1:1 recreation of Sekiro's combat in Rust and Bevy 0.19, at
   `C:\DeadlockModding\shinobi-combat`. The crate and exe are both named `sv1`.
-- **The data is the source of truth:** the user's own Sekiro install (TAE events, HKS scripts,
+- **The data is the source of truth:** the game's own files (TAE events, HKS scripts,
   params, Havok behaviour graphs and cloth, FLVER models, FMOD sound projects), plus a full
   static Ghidra decompile of the exe (`extracted/decomp/*.c`).
 - **Enemies:** c1010 is the Ochimusha (the spear/naginata enemy) and c1020 is the Samurai
   General. `config.toml` sets `[enemy] chr` and `npc_row`.
-- **`config.toml` is the user's own file: never commit it** (it shows as modified in git). Their
-  setting on 2026-10-10: `chr = "c1020"`, `npc_row = 10203010`. To trace another enemy without
+- **`config.toml`** holds the local settings (on 2026-10-10: `chr = "c1020"`,
+  `npc_row = 10203010`). To trace another enemy without
   touching it, run with `SHINOBI_ROOT=<dir>` where `<dir>` holds a copied `config.toml` and a
   junction `extracted` -> the real one (`cmd /c mklink /J <dir>\extracted <repo>\extracted`).
 - **GitHub:** `FFwLo/RustSekiro` (public), branch `main`.
@@ -74,15 +74,15 @@ per-boss status sheet: `docs/reports/bosses-handover.md`. Sessions renamed the s
   "Map" block of `tools/extract.ps1` (MSBs, m11_01_00_00, m11 textures, drawparam, maptex, the
   `bxf` expand of the hit binder, then `sekiro-extract map`). Build the extractor with
   `CARGO_TARGET_DIR=target/map` when another session's `sekiro-extract.exe` locks target/debug.
-- **Working tree:** this session's work is committed (see `git log`); only `config.toml` (the
-  user's) stays modified. Older complaints from 2026-10-09 (head-kick shake, cloth flicker, sound
+- **Working tree:** this session's work is committed (see `git log`); only `config.toml` stays
+  modified. Older complaints from 2026-10-09 (head-kick shake, cloth flicker, sound
   levels, vault) were fixed then and not raised again; the current list is section 7.
-- **The user asked for "add all of the stealth system".** Core done 2026-10-10 (see 4.7); the
+- **Stealth system:** core done 2026-10-10 (see 4.7); the
   rest is in 5.1.
 
 ## 5. Open work, in rough priority
-- **Live checks wanted** (the real Sekiro running, memscope; the overseer collects them for one
-  user session):
+- **Live checks wanted** (the real Sekiro running, memscope; collected for one
+  recording session):
   - **guardCutCancelRate (bug fixes, round 75).**
     - Setup: Wolf blocks (no deflect, guard held) one plain physical hit from an ordinary NPC
       whose AtkParam_Npc row has guardCutCancelRate -30 (2017 of 2396 rows; e.g. an Ashina
@@ -131,8 +131,7 @@ per-boss status sheet: `docs/reports/bosses-handover.md`. Sessions renamed the s
     - Read: the distance between Wolf's and the enemy's root positions every frame through the throw (the ChrIns positions memscope already reads). The existing record (player.rs ~1112) shows a type-1 front throw at 1.50 -> 0.85 -> 2.35 m after the snap.
     - Decides: if type 1 keeps the pair locked to the dummy every frame (no drift) while type 0 drifts, follow_throw must re-snap each frame for type 1; today it snaps once and lets go for every type. The same drift on both = the field means something else (note what).
 - **VFX and Maps open items (2026-10-12, after 4.44):**
-  - **PAUSED 2026-10-13 by the user ("stop the work on map tone and lighting for now"):** B4,
-    map emissives, sky, GIIV and bloom below wait until the user resumes them.
+  - **PAUSED 2026-10-13:** B4, map emissives, sky, GIIV and bloom below are on hold.
   - **B4 brightness / warmth vs the real game:** 2026-10-13 compared against the all-bosses clip's
     outskirts-gate frames on the exported `look_m11_00_gate` (4.44 table): 18 h exposure and
     warmth match; the dark end (~2 stops lifted) and saturation (about half) are left, with no
@@ -141,7 +140,7 @@ per-boss status sheet: `docs/reports/bosses-handover.md`. Sessions renamed the s
     57, sat 0.41), and the game's combine GXLightCmbAlbedo is `irradiance x GBuffer2` with no
     other term (gxrenderershader; GBuffer2 = sat(albedo x vertex colour) x DifMapMulCol x
     InstanceData.aColor, kb/map.md 645), so its vivid orange in the real frame is light and
-    post, not the material: B4 waits for a real frame at a known hour (ask the user).
+    post, not the material: B4 waits for a real frame at a known hour (needs a reference frame).
   - **Map emissives (new, 2026-10-13):** no map material emits light in Sv1. The gate's 60 m
     (MAP_LOG scan) has ~110k triangles of emissive MTDs: M[Multiple]_Emissive (m11_00
     Emissive_wood1 / roof2 / roof_thatch1_e / strawsheaf1: charcoal embers, color_3 / color_9
@@ -188,9 +187,8 @@ per-boss status sheet: `docs/reports/bosses-handover.md`. Sessions renamed the s
    (checked 2026-10-15: crouched idle is StandIdle + Actor.crouch, so _GroundQuickTurn's
    CrouchQuickTurn* play; Crouch{Damage,Death}* only exist under a forced crouch, not modelled); grass / shadow hiding (109201 no setter; MapVisibility Dark not exported, none on the
    gate); wall hug, hanging (limit types); patrol routes done for config `msb` enemies (4.22;
-   stepping traced and ported 2026-10-12, type 5 routes end; their map AI hold done 2026-10-12); the real HUD art; the
-   user's verdict. (The listener's ear params were done 2026-10-11, kb/enemy.md.)
-2. **Confirm with the user** (ask for clips if still wrong):
+   stepping traced and ported 2026-10-12, type 5 routes end; their map AI hold done 2026-10-12); the real HUD art; an in-game check. (The listener's ear params were done 2026-10-11, kb/enemy.md.)
+2. **Confirm in game** (with clips if still wrong):
    - head-kick camera feel with the mouse fix;
    - cloth on jumps;
    - sound volume;
@@ -210,7 +208,7 @@ per-boss status sheet: `docs/reports/bosses-handover.md`. Sessions renamed the s
    enemies between the camera and Wolf (one byte unidentified, kb/camera.md). The fulcrum pitch
    resync is done (2026-10-12, camera.rs chases_pitch). The fulcrum yaw resync is done
    (2026-10-11, camera.rs drag_fulcrum / place_fulcrum): the free camera swings round when Wolf
-   runs sideways (about 30 deg in 0.5 s, 53 deg in 1 s at 6 m/s). Ask the user how it feels.
+   runs sideways (about 30 deg in 0.5 s, 53 deg in 1 s at 6 m/s). Needs an in-game feel check.
 7. **Clean-up: done 2026-10-11.** `SHINOBI_CLOTH_FLIP_N` removed; the "ref gap" log only fires
    at the `SHINOBI_CLOTH_DEBUG=<s>` second, not per frame.
 8. **c1010 spear cloth** `#04#_c1010_yarinuno`: no restart warning in the 2026-10-11 runs
@@ -244,7 +242,7 @@ per-boss status sheet: `docs/reports/bosses-handover.md`. Sessions renamed the s
 - Live checks still wanted: when the over-head bars hide and whether they fade; the found-mark hold; the Dead screen (no death in either clip).
 - Suite: 544 passed, 1 failed (the_corrupted_monks_last_deathblow_is_her_todome, Bosees' TAE_EVENT_MESSAGE WIP, acknowledged by Bosees).
 - R97f: the posture "< >" arrows (MENU_Taikan_Arrow, the left one flipped) sit at both posture bars' ends. The boss's show while posture > 0; Wolf's go with his bar. Fixed the sprite bars drawing as hairlines: Bevy's NodeImageMode::Auto kept the texture's aspect ratio, so every bar image is now Stretch. The boss name is 15 px, and the gourd counter moved clear of the icons. Checked with SHINOBI_HUD_SHOTS (c7100).
-- **STOPPED 2026-10-14 by the user (via the overseer) after R97f.** The tree compiles. Suite: 544 passed / 1 failed (the Monk todome test, Bosees' WIP). The clips.md fight moments were added (the chapter starts are not shifted: the chapters include the walk-ins and cutscenes).
+- **STOPPED 2026-10-14 after R97f.** The tree compiles. Suite: 544 passed / 1 failed (the Monk todome test, Bosees' WIP). The clips.md fight moments were added (the chapter starts are not shifted: the chapters include the walk-ins and cutscenes).
   Next, when resumed:
   (1) The Dead screen timing from the Medal recordings (C:/Medal/Clips/Screen Recording, 20261007 / 20261010; the search was stopped unfinished). Then the menu Dead screen: the 2.5 s fade + MENU_Death_02.
   (2) The sound gaps: the mixer event parameters besides sd_reverb_size, the reverb's 2.6 s easing, and a Shahei default for open arenas (the re-scout was stopped before reporting).

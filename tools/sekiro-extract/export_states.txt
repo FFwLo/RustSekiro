@@ -1166,6 +1166,10 @@ LandGroundSpecialAttackJumpAfterJumpStart
 Event710205
 Event710206
 Event710207
+# A talk before a fight (the Owl (Father), talk ESD t100121): c0000_transition.lua
+# BEH_R_NPC_TALK_START -> W_Event700400, BEH_R_NPC_TALK_END -> W_Event700420 (src/talk.rs).
+Event700400
+Event700420
 # Lightning Reversal (c0000_transition.lua: a lightning hit in the air charges Wolf,
 # W_AirDamageElectroCharge*; an attack then releases it, W_AirElectroReceiveAttack; landing
 # charged shocks him, W_LandAirDamageElectroCharge; a deflect in the air charges too).
@@ -1351,6 +1355,10 @@ AgingFallDeathStart
 AgingFallDeathLoop
 LandAgingFallDeath
 
+# Fall-return deaths (HKS BEH_R_DEATH 769-776) and the return (player.rs fall_return)
+FallDeadReturnStart
+LandDeadReturnStart
+GroundFallReturn
 # Wall jumps (c0000_transition BEH_A_WALL_JUMP: WallJumpReady by Selector_WallContactType F/B/L/R
 # from ContactWallAngle, WallJumpStart_<contact>_<Selector_WallJumpType N/F/B/L/R>), the bounce
 # wall jump, and the jumps out of a hug / hang (2026-10-17, src/docking.rs).

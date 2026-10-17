@@ -728,6 +728,45 @@ pub(crate) fn a_bullet_burns_once_not_through_its_atk_param_too() {
     assert_eq!(got, once, "one burn build-up per bullet hit");
 }
 
+/// The Demon of Hatred's foot checks (resident 3702080 / 3702081, stateInfo 275: BehaviorParam
+/// 1802 every 0.3 s -> Bullet 70200950, 2.5 m) mark Wolf next to him with 3702085 for 0.3 s; his
+/// AI's stomp (Act19 -> 3046) waits for it (702000_battle.lua). Nothing fired it before.
+#[test]
+pub(crate) fn the_demons_feet_mark_wolf_beside_them() {
+    if !std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/extracted/enemies/c7020.json")).exists() {
+        return;
+    }
+    let mut app = app_cfg("c7020", None, Vec::new());
+    app.world_mut().resource_mut::<crate::enemy::EnemyDebug>().mode = crate::enemy::AiMode::Idle;
+    app.update();
+    let marked = |app: &mut App| {
+        let w = app.world_mut();
+        w.query::<&Player>().single(w).unwrap().timed.iter().any(|t| t.0 == 3_702_085)
+    };
+    // No model here: his feet dummies (13 / 16) stand in as markers, the bodies' push keeps
+    // his root past the 2.5 m.
+    let foot = |app: &mut App, d: f32| {
+        let w = app.world_mut();
+        let wolf = w.query_filtered::<&Transform, With<Player>>().single(w).unwrap().translation;
+        let at = GlobalTransform::from_translation(wolf + Vec3::new(0.0, -0.8, -d));
+        let marker = w.spawn(at).id();
+        let e = w.query_filtered::<Entity, With<Enemy>>().single(w).unwrap();
+        w.entity_mut(e).insert(crate::model::Dummies([(13, marker), (16, marker)].into_iter().collect()));
+    };
+    foot(&mut app, 1.0);
+    let mut seen = 0;
+    for _ in 0..60 {
+        app.update();
+        seen += marked(&mut app) as u32;
+    }
+    assert!(seen > 30, "marked {seen} of 60 frames beside the feet");
+    foot(&mut app, 8.0);
+    for _ in 0..30 {
+        app.update();
+    }
+    assert!(!marked(&mut app), "still marked 8 m away");
+}
+
 /// A penetrating bullet's hit record runs out after dmgHitRecordLifeTime: c1030's fire 10300240
 /// (life 5 s, record 0.5 s) burns Wolf standing in it again and again. It hit him once in its 5 s
 /// (2026-10-13 round 29).

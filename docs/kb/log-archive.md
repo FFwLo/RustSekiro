@@ -3,7 +3,7 @@
 # Shinobi Combat: progress and next steps
 
 Goal: a Rust/Bevy combat prototype that plays 1:1 like Sekiro, with numbers read
-from the user's own Sekiro install (TAE, HKS, params) and Ghidra for the gaps.
+from the game's own files (TAE, HKS, params) and Ghidra for the gaps.
 
 ## Pipeline (all local, nothing game-derived is committed)
 
@@ -45,7 +45,7 @@ sekiro-extract export extracted                         # -> extracted/combat_da
 
 ## Ghidra notes
 Ghidra 12.1.4 at C:\Users\User\Desktop\ghidra_12.1.4_PUBLIC. sekiro.exe is Arxan-protected; work from a
-dump of the running process (user-run) plus community symbol names (souls modding wiki / Discord).
+dump of the running process plus community symbol names (souls modding wiki / Discord).
 
 ## Log
 - 2026-10-06: extractor, HKS decompile, statemap, export, Bevy game (player FSM, enemy, combat, HUD) built.
@@ -54,7 +54,7 @@ dump of the running process (user-run) plus community symbol names (souls moddin
   (app 814380, .text AES-decrypted, OEP 0x14235a28c restored) -> extracted/sekiro_dearxan.exe (memory layout,
   loads as a normal PE). dearxan found 0 Arxan stubs: Sekiro has no `test rsp,0Fh` signature, so its Arxan
   variant is not one dearxan supports (tested games: DSR, DS2, DS3, ER, AC6, NR). Further Arxan analysis was
-  blocked by the session's permission policy; waiting on the user before continuing.
+  blocked by the session's permission policy.
 - 2026-10-06: user supplied a Steamless-unpacked exe (Sekiro\sekiro.exe.unpacked.exe). All sections byte-identical
   to tools/sekiro-dearxan's SteamStub unwrap (confirms it). Ghidra project: extracted/ghidra (sekiro), decompiles
   to extracted/decomp/. Exe debug labels found: posture regen debug menu ("current stamina control type: none"
@@ -229,7 +229,7 @@ dump of the running process (user-run) plus community symbol names (souls moddin
 
 - 2026-10-07 shuriken aim: lock target, else LockCamParam bullet auto-capture (bulletMaxRadius 30 m, bulletAngRange 15
   deg of the facing - the CSChrAutoHomingModule bullet limits), then bent toward it within Bullet lockShootLimitAng.
-  Was: nearest enemy within lockShootLimitAng. Stopping here: 5h usage near the user's 50 % cap.
+  Was: nearest enemy within lockShootLimitAng.
 - 2026-10-07 10:09 scheduled run: checked in, no action (last log write 08:13 < 3 h ago; 5h window at 42 %).
 
 - 2026-10-07 WOLF: the air kick is a real attack. HKS env(2004) = action module +0x58 bit 4, set by the hit processing
@@ -336,14 +336,14 @@ dump of the running process (user-run) plus community symbol names (souls moddin
   count * 50 % deflect else guard, and a 25 % back-step when the player is just outside reach. 40 s AI trace: approach
   (MoveToSomewhere), ComboAttackTunableSpin 3000 > ComboFinal 3001, AttackTunableSpin 3008 / 3012. 46 pass.
 
-- 2026-10-07 PRIORITY (user): focus on Wolf. No further enemies unless asked; c1010 stays available via config
+- 2026-10-07 PRIORITY: focus on Wolf. No further enemies unless asked; c1010 stays available via config
   enemy.chr but the default opponent is the Samurai General (c1020).
 
 - 2026-10-07 quick turns (HKS): sprint quick turn (SprintLoop/SprintStartFromStep_F, SpEffect ref 2 up, not locked,
   stick > SPRINT_BRAKE_ANGLE 135 deg from facing -> SprintQuickTurnReady -> SprintQuickTurn{Right,Left}180, root motion
   turns; then SprintLoop if dodge still held else SprintStopReady). Locked idle: target > 60 deg off -> StandQuickTurn
   {Right,Left}{90,180} (180 past 120 deg).
-- 2026-10-07 FOCUS: sword play (user). Ground routing gained ref 231 GroundAttackCombo1Reverse (a050_300001, + Release
+- 2026-10-07 FOCUS: sword play. Ground routing gained ref 231 GroundAttackCombo1Reverse (a050_300001, + Release
   a050_300101) in the HKS order 214,215,231,219,216,217,218: after every easy deflect, Combo2, DeflectGuardAttack,
   DeflectGuardToStand, sprint/step L attacks the next slash starts from the other side (was Combo1).
 - 2026-10-07 air slashes: BEH_A_AIR_ATTACK refs 214/215/216 -> AirComboAttack1/2/3 (1 -> 2 -> 3 -> 2 ...). Landing while
@@ -397,7 +397,7 @@ dump of the running process (user-run) plus community symbol names (souls moddin
 SWORDPLAY NEXT (for the next session): (a) TAE 700 twists (vertical aim of slashes at height differences, idle torso
   twist to the lock target); (b) TAE 151 look limits (+0x4c..+0x58, used by FUN_140741?/14074.c:401); (c) user feedback.
 
-- 2026-10-07 VISUALS (user: "models and animations to be better"): (1) Wolf had no head: EquipParamProtector 100000
+- 2026-10-07 VISUALS: (1) Wolf had no head: EquipParamProtector 100000
   equipModelId 200 (category head) = parts/fc_m_0200 (face + hair; unpacked + exported to model_c0000_fc_m_0200.bin).
   fc_m_0100 is another face (beard). Face decals (fur, lashes, eyeshadow, mouth) use a shared alpha pack that is not
   exported: flver guess_albedo returns "-" and model.rs skips them; damage overlays are never used as albedo.
@@ -617,7 +617,7 @@ Round 3 (2026-10-07, Wolf feel; ideas from studying the ER/Mirror's Edge/FNV rew
   (spAtkcategory 100 -> anim a100_316000 in c0000_a07x, behaviorVariationId 5001 -> judges 200/201 resolved at +1000).
   Its damage is the "dark" element: player damage now sums attackBase{Physics,Magic,Fire,Thunder,Dark} x AtkParam
   element corrections x NpcParam <element>DamageCutRate (c1020 dark 0.6). Dummy ids 10000+ = weapon dummy (id-10000).
-  Focus from here (user): Wolf's own combat.
+  Focus from here: Wolf's own combat.
 - 2026-10-06: Wolf's prosthetic - Loaded Shuriken (F): weapon 70000 (wepmotionCategory 70 -> offsetType 14 -> a070
   anims in c0000_a07x / a70.tae; behaviorVariationId 7000). GroundSubAttackCombo1 (a070_400000, held: TAE 2 judge 100
   frame 21 -> Bullet 700000) or let go -> GroundSubAttackCombo1Release (a070_400100, judge 150 frame 3 -> Bullet

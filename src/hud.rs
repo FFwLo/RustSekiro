@@ -1078,7 +1078,10 @@ pub(crate) fn deathblow_mark_target(combat: &Combat, wa: &Actor, wolf: Vec3, ene
     let cands = enemies.iter().filter_map(|(ent, ea, e, eg, dm)| {
         // The same set the attack picks from (player.rs): a break pose (ThrowDef12100 / 13100)
         // takes a deathblow; the throws themselves end the mark above (Wolf in a Deathblow state).
-        if e.is_dead() {
+        // A kneeling boss is dead here too, but its Todome / finisher window (data.rs
+        // finisher_window) takes the deathblow, so it keeps the mark (the user, 2026-10-16: "no
+        // red dot on third deathblow").
+        if e.is_dead() && !combat.data_of(ea).finisher_open(&ea.anim, ea.t) {
             return None;
         }
         let dmy = |id: i16| dm.and_then(|dm| dm.0.get(&id)).and_then(|m| dummies.get(*m).ok()).map(|g| g.translation());
