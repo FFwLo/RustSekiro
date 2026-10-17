@@ -65,6 +65,7 @@ mod throw_trace;
 mod trace;
 mod vfx;
 mod wire;
+mod workshop;
 mod world;
 
 fn main() {

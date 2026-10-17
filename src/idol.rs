@@ -220,7 +220,7 @@ fn seat_tick(seat: &mut Seat, p: &mut crate::player::Player, a: &mut crate::acto
 }
 
 /// The idol menu's rows (the game's, in its order) and whether this recreation has them yet.
-const ROWS: [(&str, bool); 10] = [
+const ROWS: [(&str, bool); 11] = [
     ("Rest", true),
     ("Purchase Spirit Emblems", true),
     ("Travel", true),
@@ -231,7 +231,12 @@ const ROWS: [(&str, bool); 10] = [
     ("Change Form", true),
     ("Reflection of Strength", false),
     ("Gauntlet of Strength", false),
+    // Not the idol's: the Sculptor's (workshop.rs), here while the test map has no Sculptor.
+    ("Sculptor's Workshop", true),
 ];
+
+/// The Workshop's rows (the user's capture).
+const WORKSHOP_ROWS: [&str; 2] = ["Fit New Prosthetic Tool", "Upgrade Prosthetic Tool"];
 
 /// The idol menu's pages.
 #[derive(Clone, Copy, PartialEq, Debug, Default)]
@@ -244,6 +249,10 @@ enum Page {
     Skills,
     /// Change Form (src/form.rs).
     Form,
+    /// The Sculptor's Workshop (src/workshop.rs): its two rows, Create Arm Tools, the upgrade tree.
+    Workshop,
+    Fit,
+    Upgrade,
 }
 
 #[derive(Resource, Default)]
@@ -361,6 +370,7 @@ fn build(commands: &mut Commands, assets: &AssetServer, menu: &IdolMenu, font: &
                     "Travel" => "Travel to another Sculptor's Idol",
                     "Acquire Skills" => "Acquire new skills with skill points",
                     "Change Form" => "Change Wolf's appearance",
+                    "Sculptor's Workshop" => "Fit and upgrade Prosthetic Tools",
                     _ => "Not in this recreation yet",
                 };
                 root.spawn(abs(5.9, 89.6, 30.0, 4.0)).with_children(|c| {
@@ -410,6 +420,62 @@ fn build(commands: &mut Commands, assets: &AssetServer, menu: &IdolMenu, font: &
                     c.spawn(text("Review and Acquire Skills.", 16.0, DIM, font));
                 });
                 key_guide(root, assets, font, &[("sb_keytop/KG_Key_Enter", ":Acquire  "), ("sb_keytop/KG_Key_Esc", ":Back")]);
+            });
+        }
+        Page::Workshop => {
+            commands.spawn((full, GlobalZIndex(110), IdolMenuRoot)).with_children(|root| {
+                root.spawn((abs(0.0, 0.0, 33.0, 100.0), BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.93))));
+                for k in 0..10 {
+                    root.spawn((abs(33.0 + k as f32, 0.0, 1.0, 100.0), BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.93 * (1.0 - (k as f32 + 1.0) / 11.0)))));
+                }
+                root.spawn(abs(5.5, 8.6, 30.0, 5.0)).with_children(|c| {
+                    c.spawn(text("Workshop", 21.0, Color::WHITE, font));
+                });
+                root.spawn((abs(0.0, 13.3, 30.0, 0.2), BackgroundColor(Color::srgba(1.0, 1.0, 1.0, 0.25))));
+                for (i, label) in WORKSHOP_ROWS.iter().enumerate() {
+                    let t = 14.8 + i as f32 * 5.6;
+                    let sel = i == menu.index;
+                    if sel {
+                        root.spawn((abs(4.0, t, 29.0, 4.8), image(assets, sprite("sb_in_game/MENU_Cursor_03")).with_color(Color::srgba(0.8, 0.55, 0.3, 0.95))));
+                    }
+                    root.spawn((Button, abs(4.0, t, 29.0, 4.8), RowButton(i))).with_children(|b| {
+                        b.spawn(Node { padding: UiRect::left(Val::Percent(6.5)), ..fill_row() }).with_children(|c| {
+                            c.spawn(text(label, 17.0, if sel { Color::WHITE } else { TEXT }, font));
+                        });
+                    });
+                    root.spawn((abs(5.5, t + 4.9, 25.0, 0.15), BackgroundColor(Color::srgba(1.0, 1.0, 1.0, 0.18))));
+                }
+                root.spawn((Node { position_type: PositionType::Absolute, left: Val::Percent(5.3), top: Val::Percent(92.6), align_items: AlignItems::Center, column_gap: Val::Px(4.0), ..default() },)).with_children(|r| {
+                    for (key, label) in [("sb_keytop/KG_Key_Enter", ":OK  "), ("sb_keytop/KG_Key_Esc", ":Close")] {
+                        r.spawn((Node { height: Val::Px(20.0), width: Val::Px(30.0), ..default() }, image(assets, sprite(key))));
+                        r.spawn(text(label, 16.0, DIM, font));
+                    }
+                });
+                crate::workshop::sen_plate(root, assets, font, config.player.sen, 81.6, 91.4);
+            });
+        }
+        Page::Fit => {
+            commands.spawn((full, BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.55)), GlobalZIndex(110), IdolMenuRoot)).with_children(|root| {
+                root.spawn((abs(0.0, 0.0, 100.0, 100.0), image(assets, sprite("sb_in_game/MENU_Base_00"))));
+                title_bar(root, assets, font, "Create Arm Tools");
+                let list = crate::workshop::fit_rows(config, texts, tables);
+                let rows: Vec<Row> = list.iter().map(|(r, _)| r.clone()).collect();
+                list_screen(root, assets, font, &[], 0, &rows, menu.index, list.get(menu.index).map(|(_, d)| d));
+                root.spawn(abs(5.3, 91.6, 50.0, 4.0)).with_children(|c| {
+                    c.spawn(text("Select a Prosthetic Tool to Craft.", 16.0, DIM, font));
+                });
+                key_guide(root, assets, font, &[("sb_keytop/KG_Key_Enter", ":OK  "), ("sb_keytop/KG_Key_Esc", ":Back")]);
+            });
+        }
+        Page::Upgrade => {
+            commands.spawn((full, BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.55)), GlobalZIndex(110), IdolMenuRoot)).with_children(|root| {
+                root.spawn((abs(0.0, 0.0, 100.0, 100.0), image(assets, sprite("sb_in_game/MENU_Base_00"))));
+                title_bar(root, assets, font, "Prosthetic Tool Upgrades");
+                crate::workshop::build_tree(root, assets, font, menu.index, menu.tree.asking, config, texts, tables);
+                root.spawn(abs(5.3, 91.6, 50.0, 4.0)).with_children(|c| {
+                    c.spawn(text("Select a Prosthetic Tool to Upgrade.", 16.0, DIM, font));
+                });
+                key_guide(root, assets, font, &[("sb_keytop/KG_Key_Enter", ":Upgrade  "), ("sb_keytop/KG_Key_Esc", ":Back")]);
             });
         }
         Page::Form => {
@@ -529,7 +595,7 @@ fn run_idol_menu(
     mut menu: ResMut<IdolMenu>,
     roots: Query<Entity, With<IdolMenuRoot>>,
     rows: Query<(&RowButton, &Interaction), Changed<Interaction>>,
-    (nodes, cats): (Query<(&crate::skill_tree::SkillNodeButton, &Interaction), Changed<Interaction>>, Query<(&crate::game_menu::CatButton, &Interaction), Changed<Interaction>>),
+    (nodes, cats, ups): (Query<(&crate::skill_tree::SkillNodeButton, &Interaction), Changed<Interaction>>, Query<(&crate::game_menu::CatButton, &Interaction), Changed<Interaction>>, Query<(&crate::workshop::UpgradeButton, &Interaction), Changed<Interaction>>),
     (assets, font, mut config, texts, tables, forms): (Res<AssetServer>, Res<MenuFont>, ResMut<crate::config::GameConfig>, Res<ItemTexts>, Res<Tables>, Res<crate::form::FormTexts>),
     mut wolf: Query<(&mut crate::player::Player, &crate::actor::Actor)>,
 ) {
@@ -559,7 +625,7 @@ fn run_idol_menu(
     for (r, i) in &rows {
         match i {
             Interaction::Pressed => clicked = Some(r.0),
-            Interaction::Hovered if matches!(menu.page, Page::Main | Page::Form) => menu.index = r.0,
+            Interaction::Hovered if matches!(menu.page, Page::Main | Page::Form | Page::Workshop | Page::Fit) => menu.index = r.0,
             _ => {}
         }
     }
@@ -593,6 +659,10 @@ fn run_idol_menu(
                         menu.page = Page::Purchase;
                         menu.index = 0;
                     }
+                    "Sculptor's Workshop" => {
+                        menu.page = Page::Workshop;
+                        menu.index = 0;
+                    }
                     "Change Form" => {
                         menu.page = Page::Form;
                         menu.index = crate::form::current(&config);
@@ -618,6 +688,87 @@ fn run_idol_menu(
             } else if (confirm || clicked.is_some()) && p.emblems < config.player.spirit_emblems && config.player.sen >= EMBLEM_PRICE {
                 config.player.sen -= EMBLEM_PRICE;
                 p.emblems += 1;
+            }
+        }
+        Page::Workshop => {
+            if let Some(i) = clicked {
+                menu.index = i;
+                confirm = true;
+            }
+            let n = WORKSHOP_ROWS.len();
+            if down {
+                menu.index = (menu.index + 1) % n;
+            }
+            if up {
+                menu.index = (menu.index + n - 1) % n;
+            }
+            if back {
+                menu.page = Page::Main;
+                menu.index = ROWS.iter().position(|r| r.0 == "Sculptor's Workshop").unwrap_or(0);
+            } else if confirm {
+                menu.page = if menu.index == 0 { Page::Fit } else { Page::Upgrade };
+                menu.index = 0;
+                menu.tree.asking = false;
+            }
+        }
+        Page::Fit => {
+            if let Some(i) = clicked {
+                menu.index = i;
+                confirm = true;
+            }
+            let n = crate::workshop::TOOLS.len();
+            if down {
+                menu.index = (menu.index + 1) % n;
+            }
+            if up {
+                menu.index = (menu.index + n - 1) % n;
+            }
+            if back {
+                menu.page = Page::Workshop;
+                menu.index = 0;
+            } else if confirm && crate::workshop::craft(&mut config, crate::workshop::TOOLS[menu.index]) {
+                info!("made tool {}", crate::workshop::TOOLS[menu.index]);
+            }
+        }
+        Page::Upgrade => {
+            let all = crate::workshop::upgrades();
+            let mut buy = false;
+            for (u, i) in &ups {
+                match i {
+                    Interaction::Pressed if !menu.tree.asking => {
+                        menu.index = u.0;
+                        buy = true;
+                    }
+                    Interaction::Hovered if !menu.tree.asking => menu.index = u.0,
+                    _ => {}
+                }
+            }
+            let here = all.get(menu.index).cloned();
+            if menu.tree.asking {
+                if confirm {
+                    if let Some(u) = &here {
+                        if crate::workshop::buy(&mut config, u) {
+                            info!("upgrade {} -> tool {}", u.id, u.weapon);
+                        }
+                    }
+                    menu.tree.asking = false;
+                } else if back {
+                    menu.tree.asking = false;
+                }
+            } else if back {
+                menu.page = Page::Workshop;
+                menu.index = 1;
+            } else {
+                for (go, dx, dy) in [(right, 1, 0), (left, -1, 0), (down, 0, 1), (up, 0, -1)] {
+                    if go {
+                        if let Some(i) = crate::workshop::step(menu.index, dx, dy) {
+                            menu.index = i;
+                        }
+                    }
+                }
+                if (confirm || buy) && here.as_ref().is_some_and(|u| crate::workshop::check(&config, u).is_ok()) {
+                    menu.tree.asking = true;
+                }
             }
         }
         Page::Form => {
@@ -732,7 +883,7 @@ fn run_idol_menu(
             }
         }
     }
-    let key = format!("{:?} {} {} {} {} {} {:?} {:?} {} {}", menu.page, menu.index, menu.in_list, menu.region, p.emblems, config.player.sen, menu.tree, config.player.skills, config.player.skill_points, config.player.form);
+    let key = format!("{:?} {} {} {} {} {} {:?} {:?} {} {} {:?} {:?} {:?}", menu.page, menu.index, menu.in_list, menu.region, p.emblems, config.player.sen, menu.tree, config.player.skills, config.player.skill_points, config.player.form, config.player.upgrades, config.player.owned_tools, config.player.items);
     if menu.built.as_ref() != Some(&key) {
         for r in &roots {
             commands.entity(r).despawn();
@@ -868,13 +1019,15 @@ pub struct IdolPlugin;
 
 impl Plugin for IdolPlugin {
     fn build(&self, app: &mut App) {
-        // SHINOBI_IDOL_PAGE=<0-4>: open on Main / Purchase / Travel / Acquire Skills / Change Form (SHINOBI_SHOT captures with
+        // SHINOBI_IDOL_PAGE=<0-6>: open on Main / Purchase / Travel / Acquire Skills / Change Form / Create Arm Tools / Tool Upgrades (SHINOBI_SHOT captures with
         // SHINOBI_TITLE=idol).
         let page = match std::env::var("SHINOBI_IDOL_PAGE").ok().as_deref() {
             Some("1") => Page::Purchase,
             Some("2") => Page::Travel,
             Some("3") => Page::Skills,
             Some("4") => Page::Form,
+            Some("5") => Page::Fit,
+            Some("6") => Page::Upgrade,
             _ => Page::Main,
         };
         // SHINOBI_TREE_PAGE=<0-4> / SHINOBI_TREE_CURSOR=<n>: the Acquire Skills tree and node shown.

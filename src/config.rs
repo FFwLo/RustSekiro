@@ -233,6 +233,13 @@ pub struct PlayerConfig {
     /// The five quick-item slots (goods ids, 0 empty); R uses the one in hand, C moves on.
     #[serde(default = "default_quick_items")]
     pub quick_items: Vec<i64>,
+    /// Base prosthetic tools made (EquipParamWeapon 7X000; the Sculptor's Workshop,
+    /// src/workshop.rs). Default: all ten.
+    #[serde(default = "default_owned_tools")]
+    pub owned_tools: Vec<i64>,
+    /// Prosthetic tool upgrades bought (SkillParam 700+, workshop.rs).
+    #[serde(default)]
+    pub upgrades: Vec<i64>,
     /// Every move the game locks behind a skill (`combat::action_unlocked`: mid-air deflect / tools
     /// / arts, the sprint slide, the Prosthetic Arts follow-ups) is open, as for a Wolf with the
     /// whole tree. false = only those the `skills` list unlocks.
@@ -242,6 +249,10 @@ pub struct PlayerConfig {
     /// stateInfo 999-996: 0 / 1-249 / 250-499 / 500+). Default 500 (the full throw).
     #[serde(default = "default_sen")]
     pub sen: u32,
+}
+
+fn default_owned_tools() -> Vec<i64> {
+    (70000..80000).step_by(1000).collect()
 }
 
 fn default_quick_items() -> Vec<i64> {
@@ -278,7 +289,7 @@ fn default_emblems() -> u32 {
 
 impl Default for PlayerConfig {
     fn default() -> Self {
-        Self { gourd_charges: 3, spirit_emblems: default_emblems(), infinite_emblems: false, resurrections: default_resurrections(), combat_art: default_combat_art(), prosthetics: default_prosthetics(), skills: Vec::new(), skill_points: 0, form: 0, items: Vec::new(), quick_items: default_quick_items(), unlock_all_moves: true, sen: default_sen() }
+        Self { gourd_charges: 3, spirit_emblems: default_emblems(), infinite_emblems: false, resurrections: default_resurrections(), combat_art: default_combat_art(), prosthetics: default_prosthetics(), skills: Vec::new(), skill_points: 0, form: 0, items: Vec::new(), quick_items: default_quick_items(), owned_tools: default_owned_tools(), upgrades: Vec::new(), unlock_all_moves: true, sen: default_sen() }
     }
 }
 
@@ -363,7 +374,7 @@ impl GameConfig {
         crate::paths::root().join("config.toml")
     }
 
-    fn load() -> Result<Self, String> {
+    pub(crate) fn load() -> Result<Self, String> {
         let path = Self::path();
         let text = std::fs::read_to_string(&path)
             .map_err(|e| format!("Could not read {}: {e}", path.display()))?;

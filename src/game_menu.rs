@@ -323,8 +323,12 @@ pub(crate) fn list_screen(root: &mut ChildSpawnerCommands, assets: &AssetServer,
                 c.spawn(text(&row.name, 17.0, if sel { Color::WHITE } else { TEXT }, font));
                 if let Some(v) = &row.value {
                     c.spawn(Node { column_gap: Val::Px(14.0), align_items: AlignItems::Center, margin: UiRect::right(Val::Percent(4.0)), ..default() }).with_children(|r| {
-                        r.spawn((Node { height: Val::Px(18.0), width: Val::Px(18.0), ..default() }, image(assets, sprite("sb_fe/MENU_Money"))));
-                        r.spawn(text(v, 16.0, TEXT, font));
+                        // A price has the coin; a word ("Owned") stands alone, dimmed.
+                        let price = v.parse::<u32>().is_ok();
+                        if price {
+                            r.spawn((Node { height: Val::Px(18.0), width: Val::Px(18.0), ..default() }, image(assets, sprite("sb_fe/MENU_Money"))));
+                        }
+                        r.spawn(text(v, 16.0, if price { TEXT } else { DIM }, font));
                     });
                 }
             });
@@ -524,7 +528,9 @@ fn skills(cat: usize, config: &crate::config::GameConfig, texts: &ItemTexts, tab
 fn equip_choices(slot: usize, config: &crate::config::GameConfig, combat: &crate::data::Combat, texts: &ItemTexts) -> Vec<Slot> {
     match slot {
         0..=2 => {
-            let mut ids: Vec<i64> = combat.player.prosthetics.iter().map(|t| t.id).collect();
+            // The tools made and the upgrades bought (workshop.rs).
+            let ok = crate::workshop::equippable(config);
+            let mut ids: Vec<i64> = combat.player.prosthetics.iter().map(|t| t.id).filter(|id| ok.contains(id)).collect();
             ids.sort();
             ids.dedup();
             ids.into_iter().filter(|id| texts.weapon_name.contains_key(&(*id as u32))).map(Slot::Weapon).collect()
