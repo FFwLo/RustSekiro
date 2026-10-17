@@ -1708,7 +1708,7 @@ pub fn sub_anim(d: &CharData, state: &str, group: i64) -> Option<String> {
 }
 
 /// States that keep Wolf crouched: crouch idle / locomotion and its own starts, stops and turns.
-fn crouch_ok(state: &str) -> bool {
+pub(crate) fn crouch_ok(state: &str) -> bool {
     matches!(state, "StandIdle" | "Locomotion")
         || (state.starts_with("Crouch") && !state.starts_with("CrouchAttackToStand"))
         || state.starts_with("SprintToCrouch")

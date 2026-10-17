@@ -66,7 +66,7 @@ pub fn parkour_idols() -> Vec<Idol> {
         idol("Platform Top", Vec3::new(11.2, 3.0, -13.3), Vec3::NEG_X),
         idol("Cliff Top", Vec3::new(-13.0, 4.5, -23.0), Vec3::X),
         idol("Shaft Floor", Vec3::new(15.5, 0.0, -23.6), Vec3::Z),
-        idol("Courtyard Gate", Vec3::new(4.5, 0.0, 10.5), Vec3::NEG_Z),
+        idol("Outpost Gate", Vec3::new(4.5, 0.0, 10.0), Vec3::NEG_Z),
         idol("Second Section", Vec3::new(5.0, 0.0, -48.0), Vec3::NEG_Z),
     ]
 }

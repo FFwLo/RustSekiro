@@ -1903,7 +1903,7 @@ fn load_map_id(map: &str, config: &GameConfig, fight: Option<i64>, commands: &mu
     });
     // Wire points (grapple.md). The sandbox arena is generated: its source map's points would
     // hang in the air, so it has none.
-    let grapple = if sandbox { Vec::new() } else { load_grapple(&json) };
+    let grapple = if parkour { crate::sandbox::construct_grapple() } else if sandbox { Vec::new() } else { load_grapple(&json) };
     let ledges = if parkour { crate::sandbox::parkour_course().1 } else if sandbox { Vec::new() } else { load_ledges(&json) };
     info!("map {id}: {} grapple points, {} hang / hug edges", grapple.len(), ledges.len());
     commands.insert_resource(GrapplePoints(grapple));
@@ -2486,7 +2486,7 @@ impl Plugin for MapPlugin {
         app.add_systems(Startup, (load_map, log_bindless))
             .add_systems(PostStartup, settle_player_start)
             .add_systems(Update, ((hour_keys, apply_lighting, apply_giiv).chain().run_if(resource_exists::<MapLighting>), frame_rate_log, switch_map))
-            .add_systems(Startup, crate::sandbox::spawn_enemies.after(load_map))
+            .add_systems(Startup, (crate::sandbox::spawn_enemies, crate::sandbox::spawn_bushes).after(load_map))
             .add_systems(Update, (crate::sandbox::place_wolf, crate::sandbox::watch, mesh_events, crate::sandbox::respawn_lineup, crate::sandbox::catalog_shots.run_if(resource_exists::<crate::sandbox::Catalog>)))
             .add_systems(FixedUpdate, bodies_on_terrain.after(ActorSet::Advance).before(crate::anim::PoseSet));
     }

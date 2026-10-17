@@ -1074,14 +1074,17 @@ fn ninsatsu_hit(combat: Res<Combat>, player: Single<&Actor, (With<Player>, Witho
 
 /// How near Wolf a fighting enemy must stand to flinch at his deathblow [m].
 const DEATHBLOW_FLINCH_RANGE: f32 = 10.0;
+/// Within this the near reaction plays, past it the far one [m].
+const THROW_NEAR_RANGE: f32 = 4.0;
 
 /// As Wolf's deathblow blade goes in (its atkAttribute 5 Ninsatsu hit, as `ninsatsu_hit`), the
-/// other enemies fighting him within DEATHBLOW_FLINCH_RANGE drop what they are doing and flinch
-/// (their small damage reaction, away from him): the user (2026-10-17), "enemies should stop
-/// attacking and flinch when someone gets deathblow", with a capture of the soldiers recoiling
-/// at the kill (at the deathblow's start they flinched at the posture break itself). gap: no
-/// game data found for it (Wolf's deathblow clips shoot nothing at the others; c1010 / c1020
-/// have no fear state but FireFearReaction).
+/// other enemies fighting him within DEATHBLOW_FLINCH_RANGE drop what they are doing and jump
+/// back: the HKS's own reaction to a deathblow nearby, W_ThrowNearReaction /
+/// W_ThrowFarReaction (c9997 IndexThrowNearReaction / IndexThrowFarReaction; c1010
+/// ThrowNearReaction0 / 1 a000_020100 / 020101, ThrowFarReaction0 / 1 020105 / 020106; c1020 one
+/// each), facing him (the user's capture; "they have special animation when they jump back").
+/// Near within THROW_NEAR_RANGE, a variation at random; a kind without them flinches as hit.
+/// gap: the exe's trigger, range and variation pick are not traced.
 fn deathblow_flinch(
     combat: Res<Combat>,
     player: Single<(&Actor, &Transform), (With<Player>, Without<Enemy>)>,
@@ -1102,7 +1105,19 @@ fn deathblow_flinch(
             continue;
         }
         let d = combat.data_of(&a);
-        if let Some(state) = crate::combat::enemy_damage_state_air(d, 1, &a, ptf.translation, tf.translation, false) {
+        let to = (ptf.translation - tf.translation).with_y(0.0);
+        let kind = if to.length() <= THROW_NEAR_RANGE { "ThrowNearReaction" } else { "ThrowFarReaction" };
+        let have: Vec<String> = (0..4).map(|i| format!("{kind}{i}")).filter(|s| d.anim_key(s).is_some()).collect();
+        let state = if have.is_empty() {
+            crate::combat::enemy_damage_state_air(d, 1, &a, ptf.translation, tf.translation, false)
+        } else {
+            let pick = (e.rand() * have.len() as f32) as usize % have.len();
+            Some(have[pick].clone())
+        };
+        if let Some(state) = state {
+            if to.length() > 0.01 {
+                a.yaw = f32::atan2(-to.x, -to.z);
+            }
             e.react_from(&mut a, &combat, false, &state);
         }
     }
@@ -1322,7 +1337,9 @@ fn spawn_lineup(commands: &mut Commands, combat: &Combat, config: &GameConfig, a
         // unaware of him until they see or hear him (the user: "replaced by roaming ones").
         if let Some(kind) = combat.kind_index(crate::sandbox::GUARD_CHR, None) {
             for (i, (at, yaw, route)) in crate::sandbox::construct_patrols().into_iter().enumerate() {
-                let at = at.with_y(y(at.x, at.z));
+                // On whatever is under its point: the ground, the terrace, the tower.
+                let floor = crate::map::terrain().and_then(|t| t.floor(at.x, at.z, at.y + 1.0)).unwrap_or(at.y);
+                let at = at.with_y(floor + crate::player::CAPSULE_HALF_HEIGHT + 0.05);
                 let e = spawn_one(commands, combat, config, kind, at, yaw, true, 0x2545_F491 ^ 0x85EB_CA6B_u32.wrapping_mul(i as u32 + 1));
                 commands.entity(e).insert((PatrolRoute(route), StartUnaware, crate::sandbox::CourtyardGuard));
             }
@@ -2418,6 +2435,13 @@ fn think(
     // 3441: sightSearchEnemyCut 50, aroundSightPointAddRate 0.5) for the sight and hearing checks.
     let mut skills = crate::combat::skill_sp_effect_rows(&combat, &config);
     skills.extend(pp.timed.iter().filter_map(|(id, _)| serde_json::from_value(crate::items::param("SpEffectParam", *id).clone()).ok()));
+    // Crouched in a bush (the Construct's outpost, sandbox.rs in_bush): SpEffect 109203, of the
+    // crouch family (109200 crouch, 109210 hug, 109220 hang) the grass one by its sight cut 80
+    // (gap: nothing in the params puts 109201-109203 on; the engine's grass rule is not traced,
+    // 80 picked over the 100 rows so a guard that walks right up still finds him).
+    if crate::player::crouch_ok(&pa.state) && crate::sandbox::in_bush(ptf.translation - Vec3::Y * (crate::player::CAPSULE_HALF_HEIGHT + 0.05)) {
+        skills.extend(serde_json::from_value(crate::items::param("SpEffectParam", 109203).clone()).ok());
+    }
     for (entity, mut e, mut a, mut tf, phantom, from_event, scripted, mut draw_mask) in &mut q {
         // A phantom out of the fight does nothing until its boss's script calls it.
         if phantom.is_some_and(|p| p.parked()) || e.disabled {

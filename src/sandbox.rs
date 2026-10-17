@@ -227,6 +227,9 @@ pub(crate) fn build(
         spawn(&both, &wall_key, true);
         // The ramp: from the floor at x -1.5 to the top (3 m) at x 2, 41 degrees.
         course.grid(Vec3::new(-1.5, 0.0, -12.0), Vec3::new(3.5, 3.0, 0.0), Vec3::new(0.0, 0.0, 2.0), 1, 1, TILE_M, |_, _| [0.0; 4]);
+        // The outpost's terrace stairs' ramp.
+        let (o, across, up) = Outpost::ramp();
+        course.grid(o, across, up, 1, 1, TILE_M, |_, _| [0.0; 4]);
     }
     let panel_shadow = std::env::var("SHINOBI_SANDBOX_PANEL_SHADOW").is_ok();
 
@@ -667,23 +670,187 @@ pub const PARKOUR_ALIAS: &str = "parkour";
 /// all down (menu.rs watch_fight), it is a place to practise, not a fight.
 pub static ON_CONSTRUCT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// The stealth courtyard's walls (lo, hi), all 2.5 m: tall enough to break the guards' sight
-/// (stealth.rs sight_clear casts between the capsule centres, so crouching behind a low wall
-/// would not hide Wolf). The first two are the gate wall either side of its 3 m opening, then
-/// five cover walls; the long faces of these seven are huggable. Then the sides and the back.
-const STEALTH_WALLS: [(Vec3, Vec3); 10] = [
-    (Vec3::new(-16.0, 0.0, 12.0), Vec3::new(-1.5, 2.5, 12.5)),
-    (Vec3::new(1.5, 0.0, 12.0), Vec3::new(16.0, 2.5, 12.5)),
-    (Vec3::new(-10.0, 0.0, 18.0), Vec3::new(-6.0, 2.5, 18.5)),
-    (Vec3::new(5.0, 0.0, 20.0), Vec3::new(9.0, 2.5, 20.5)),
-    (Vec3::new(-3.0, 0.0, 27.0), Vec3::new(3.0, 2.5, 27.5)),
-    (Vec3::new(-13.0, 0.0, 32.0), Vec3::new(-9.0, 2.5, 32.5)),
-    (Vec3::new(8.0, 0.0, 33.0), Vec3::new(12.0, 2.5, 33.5)),
-    (Vec3::new(-16.5, 0.0, 12.0), Vec3::new(-16.0, 2.5, 40.5)),
-    (Vec3::new(16.0, 0.0, 12.0), Vec3::new(16.5, 2.5, 40.5)),
-    (Vec3::new(-16.0, 0.0, 40.0), Vec3::new(16.0, 2.5, 40.5)),
+/// The outpost behind the start (2026-10-17, the user: "revamp stealth section to match the layout
+/// of outpost in Ashina Outskirts after General Naomori Kawarada ... this section needs some type
+/// of vertical movement, also add bushes"), laid out after the user's captures of it: a dirt road
+/// climbing between a two-storey house with its shed (left of the road, seen from the start) and
+/// a stone terrace with stairs up its front and a watchtower on it (right), a second house at
+/// the back, crates along the way, a fence across the front with a gap for the road. Wolf
+/// climbs by the hang ledges round every roof and lip and by the grapple points
+/// (`construct_grapple`). Bevy metres: +X is on Wolf's left as he faces the outpost (+Z).
+struct Outpost;
+
+impl Outpost {
+    const FENCE_L: (Vec3, Vec3) = (Vec3::new(2.0, 0.0, 11.0), Vec3::new(30.0, 2.5, 11.5));
+    const FENCE_R: (Vec3, Vec3) = (Vec3::new(-30.0, 0.0, 11.0), Vec3::new(-2.0, 2.5, 11.5));
+    const HOUSE: (Vec3, Vec3) = (Vec3::new(7.0, 0.0, 18.0), Vec3::new(15.0, 5.0, 26.0));
+    const SHED: (Vec3, Vec3) = (Vec3::new(15.0, 0.0, 19.0), Vec3::new(19.0, 2.2, 25.0));
+    const BACK_HOUSE: (Vec3, Vec3) = (Vec3::new(8.0, 0.0, 34.0), Vec3::new(18.0, 4.5, 42.0));
+    const TERRACE: (Vec3, Vec3) = (Vec3::new(-28.0, 0.0, 26.0), Vec3::new(-6.0, 4.0, 44.0));
+    const TOWER: (Vec3, Vec3) = (Vec3::new(-24.0, 0.0, 38.0), Vec3::new(-20.0, 8.0, 42.0));
+    const CRATES: [(Vec3, Vec3); 4] = [
+        (Vec3::new(3.0, 0.0, 14.0), Vec3::new(4.5, 1.6, 15.5)),
+        (Vec3::new(-4.5, 0.0, 31.0), Vec3::new(-3.0, 1.6, 32.5)),
+        (Vec3::new(4.0, 0.0, 37.0), Vec3::new(5.5, 1.6, 38.5)),
+        (Vec3::new(-14.0, 4.0, 32.0), Vec3::new(-12.5, 5.6, 33.5)),
+    ];
+    /// The stairs up the terrace's front (x -9.5 .. -6.5, z 16 .. 26): 10 steps of 0.4 m.
+    const STAIRS_X: (f32, f32) = (-9.5, -6.5);
+    const STAIRS_Z: (f32, f32) = (16.0, 26.0);
+
+    fn boxes() -> Vec<(Vec3, Vec3)> {
+        let mut b = vec![Self::FENCE_L, Self::FENCE_R, Self::HOUSE, Self::SHED, Self::BACK_HOUSE, Self::TERRACE, Self::TOWER];
+        b.extend(Self::CRATES);
+        b
+    }
+
+    fn stairs() -> Vec<(Vec3, Vec3)> {
+        let (x0, x1) = Self::STAIRS_X;
+        let (z0, z1) = Self::STAIRS_Z;
+        (0..10).map(|i| (Vec3::new(x0, 0.0, z0 + i as f32), Vec3::new(x1, 0.4 * (i + 1) as f32, z1))).collect()
+    }
+
+    /// The stairs' walking ramp (origin, across, up the slope).
+    fn ramp() -> (Vec3, Vec3, Vec3) {
+        let (x0, x1) = Self::STAIRS_X;
+        let (z0, z1) = Self::STAIRS_Z;
+        (Vec3::new(x0, 0.0, z0), Vec3::new(x1 - x0, 0.0, 0.0), Vec3::new(0.0, Self::TERRACE.1.y, z1 - z0))
+    }
+
+    fn edges() -> Vec<map::LedgeEdge> {
+        let mut e = Vec::new();
+        let all = [Vec3::X, Vec3::NEG_X, Vec3::Z, Vec3::NEG_Z];
+        for side in all {
+            lip(&mut e, Self::HOUSE, side, true, None);
+            lip(&mut e, Self::BACK_HOUSE, side, true, None);
+            lip(&mut e, Self::TOWER, side, true, None);
+        }
+        for side in [Vec3::X, Vec3::Z, Vec3::NEG_Z] {
+            lip(&mut e, Self::SHED, side, true, None);
+        }
+        // The terrace: its road side whole, its front up to the stairs.
+        lip(&mut e, Self::TERRACE, Vec3::X, true, None);
+        lip(&mut e, Self::TERRACE, Vec3::NEG_Z, true, Some((Self::TERRACE.0.x, Self::STAIRS_X.0)));
+        lip(&mut e, Self::TERRACE, Vec3::X, false, None);
+        lip(&mut e, Self::TERRACE, Vec3::NEG_Z, false, Some((Self::TERRACE.0.x, Self::STAIRS_X.0)));
+        // The houses' road-side walls and fronts, and the fence's faces, to hug.
+        for (b, sides) in [(Self::HOUSE, &[Vec3::NEG_X, Vec3::NEG_Z][..]), (Self::BACK_HOUSE, &[Vec3::NEG_X, Vec3::NEG_Z][..]), (Self::FENCE_L, &[Vec3::Z, Vec3::NEG_Z][..]), (Self::FENCE_R, &[Vec3::Z, Vec3::NEG_Z][..])] {
+            for &side in sides {
+                lip(&mut e, b, side, false, None);
+            }
+        }
+        e
+    }
+}
+
+/// A hang edge round box `b`'s top on its `side` face (outward normal), or with `hang` false a
+/// hug edge along its foot; `span` limits it along the face (x for the Z faces, z for the X).
+/// The edge runs along (n.z, 0, -n.x), as the course's outline does.
+fn lip(e: &mut Vec<map::LedgeEdge>, b: (Vec3, Vec3), n: Vec3, hang: bool, span: Option<(f32, f32)>) {
+    let (lo, hi) = b;
+    let y = if hang { hi.y } else { lo.y };
+    let (p, q) = if n.z != 0.0 {
+        let z = if n.z > 0.0 { hi.z } else { lo.z };
+        let (a, c) = span.unwrap_or((lo.x, hi.x));
+        (Vec3::new(a, y, z), Vec3::new(c, y, z))
+    } else {
+        let x = if n.x > 0.0 { hi.x } else { lo.x };
+        let (a, c) = span.unwrap_or((lo.z, hi.z));
+        (Vec3::new(x, y, a), Vec3::new(x, y, c))
+    };
+    let dir = Vec3::new(n.z, 0.0, -n.x);
+    let (p0, p1) = if (q - p).dot(dir) >= 0.0 { (p, q) } else { (q, p) };
+    e.push(if hang { hang_edge(p0, p1, n) } else { hug_edge(p0, p1, n) });
+}
+
+/// The outpost's grapple points (variation 1, as the gate map's roofs and branches): the hook on
+/// a roof's lip, the landing just inside it, `fwd` the face's outward normal (Wolf fires from
+/// that side). The two houses, the terrace front and the watchtower.
+pub fn construct_grapple() -> Vec<map::GrapplePoint> {
+    let point = |x: f32, top: f32, z: f32, fwd: Vec3| map::GrapplePoint { hook: Vec3::new(x, top - 0.2, z), land: Vec3::new(x, top, z) - fwd * 0.7, fwd, variation: 1 };
+    vec![
+        point(Outpost::HOUSE.0.x, Outpost::HOUSE.1.y, 22.0, Vec3::NEG_X),
+        point(11.0, Outpost::HOUSE.1.y, Outpost::HOUSE.0.z, Vec3::NEG_Z),
+        point(13.0, Outpost::BACK_HOUSE.1.y, Outpost::BACK_HOUSE.0.z, Vec3::NEG_Z),
+        point(-18.0, Outpost::TERRACE.1.y, Outpost::TERRACE.0.z, Vec3::NEG_Z),
+        point(Outpost::TERRACE.1.x, Outpost::TERRACE.1.y, 34.0, Vec3::X),
+        point(-22.0, Outpost::TOWER.1.y, Outpost::TOWER.0.z, Vec3::NEG_Z),
+        point(Outpost::TOWER.1.x, Outpost::TOWER.1.y, 40.0, Vec3::X),
+    ]
+}
+
+/// The outpost's bushes (centre on the ground, radius): clumps of the game's tall grass
+/// (o007160, the Outskirts' grass object) Wolf hides in crouched (`in_bush`).
+const BUSHES: [(Vec3, f32); 6] = [
+    (Vec3::new(-3.0, 0.0, 19.5), 1.6),
+    (Vec3::new(5.0, 0.0, 22.0), 1.4),
+    (Vec3::new(11.0, 0.0, 30.0), 1.8),
+    (Vec3::new(17.5, 0.0, 15.0), 1.8),
+    (Vec3::new(-1.5, 0.0, 38.0), 1.6),
+    (Vec3::new(-17.0, 4.0, 31.0), 1.6),
 ];
-const HUGGABLE_WALLS: usize = 7;
+
+/// Is `feet` inside one of the outpost's bushes (and the Construct loaded)?
+pub fn in_bush(feet: Vec3) -> bool {
+    ON_CONSTRUCT.load(std::sync::atomic::Ordering::Relaxed) && BUSHES.iter().any(|(c, r)| (feet - *c).with_y(0.0).length() < *r && (feet.y - c.y).abs() < 1.0)
+}
+
+/// The bushes' clumps: o007160 (extracted/objmesh/o007160.json, `sekiro-extract objmesh`; its
+/// texture m11_o007160_grass_01_a, alpha-tested, both sides) six to a bush, 1.4 wide and 1.8
+/// tall (the clump's blades fan out low: at 1.4 a crouched Wolf showed over them). X mirrored as every FromSoftware position.
+pub fn spawn_bushes(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mats: ResMut<Assets<StandardMaterial>>, assets: Res<AssetServer>) {
+    if !ON_CONSTRUCT.load(std::sync::atomic::Ordering::Relaxed) {
+        return;
+    }
+    let path = crate::paths::extracted().join("objmesh/o007160.json");
+    let Some(json) = std::fs::read_to_string(&path).ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()) else {
+        warn!("construct: no {} (tools/extract.ps1 exports it): no bushes drawn", path.display());
+        return;
+    };
+    let floats = |v: &serde_json::Value| v.as_array().map(|a| a.iter().filter_map(|x| x.as_f64().map(|f| f as f32)).collect::<Vec<f32>>()).unwrap_or_default();
+    let tex = "tex/m11_o007160_grass_01_a.dds";
+    let albedo = crate::paths::extracted().join(tex).is_file().then(|| assets.load(tex));
+    let mat = mats.add(StandardMaterial {
+        base_color_texture: albedo,
+        alpha_mode: AlphaMode::Mask(0.5),
+        double_sided: true,
+        cull_mode: None,
+        perceptual_roughness: 0.9,
+        ..default()
+    });
+    let mut parts = Vec::new();
+    for m in json["meshes"].as_array().into_iter().flatten() {
+        let (pos, nrm, uv) = (floats(&m["pos"]), floats(&m["normal_vec"]), floats(&m["uv"]));
+        let idx: Vec<u32> = m["indices"].as_array().map(|a| a.iter().filter_map(|x| x.as_u64().map(|i| i as u32)).collect()).unwrap_or_default();
+        let n = pos.len() / 3;
+        if n == 0 || idx.len() < 3 {
+            continue;
+        }
+        let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
+        mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, pos.chunks(3).map(|p| [-p[0], p[1], p[2]]).collect::<Vec<[f32; 3]>>());
+        if nrm.len() == pos.len() {
+            mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, nrm.chunks(3).map(|p| [-p[0], p[1], p[2]]).collect::<Vec<[f32; 3]>>());
+        }
+        if uv.len() / 2 == n {
+            mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uv.chunks(2).map(|p| [p[0], p[1]]).collect::<Vec<[f32; 2]>>());
+        }
+        mesh.insert_indices(Indices::U32(idx));
+        parts.push(meshes.add(mesh));
+    }
+    let mut k = 0u32;
+    for (c, r) in BUSHES {
+        for i in 0..6 {
+            k = k.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+            let at = if i == 0 { c } else { c + Quat::from_rotation_y(i as f32 * std::f32::consts::TAU / 5.0) * Vec3::X * r * 0.55 };
+            let yaw = (k >> 8) as f32 / (1u32 << 24) as f32 * std::f32::consts::TAU;
+            let tf = Transform::from_translation(at + Vec3::Y * 0.45).with_rotation(Quat::from_rotation_y(yaw)).with_scale(Vec3::new(1.4, 1.8, 1.4));
+            for mesh in &parts {
+                commands.spawn((crate::map::MapPiece, Mesh3d(mesh.clone()), MeshMaterial3d(mat.clone()), tf, Visibility::default(), bevy::light::NotShadowCaster));
+            }
+        }
+    }
+    info!("construct: {} bushes drawn", BUSHES.len());
+}
 
 /// The Construct's second section: an empty walled square as big as the first (x -HALF .. HALF,
 /// z -3 HALF .. -HALF) north of it, through a `DOOR_HALF` x 2 opening in the shared wall where the
@@ -696,19 +863,20 @@ const DOOR_HALF: f32 = 3.0;
 pub const ARENA_SPOT: Vec3 = Vec3::new(0.0, 0.0, -2.0 * HALF);
 pub const ARENA_YAW: f32 = std::f32::consts::PI;
 
-/// A courtyard guard (`construct_patrols`): always the real AI (T leaves it be), so it fights
+/// An outpost guard (`construct_patrols`): always the real AI (T leaves it be), so it fights
 /// once it finds Wolf.
 #[derive(Component)]
 pub struct CourtyardGuard;
 
-/// The courtyard's guards (chr `GUARD_CHR`): where each starts, facing, and its round (ai::Patrol;
-/// a 2 s look-around wait at each point). Two walk loops around cover, one paces the middle,
-/// one stands at the far end watching the gate.
+/// The outpost's guards (chr `GUARD_CHR`): where each starts (its height on the ground or the
+/// terrace / tower), facing, and its round (ai::Patrol; a 2 s look-around wait at each point).
+/// One paces the road, one walks between the houses, one the terrace; one keeps the tower, one
+/// the far end of the road, watching the gate.
 pub const GUARD_CHR: &str = "c1010";
 
 pub fn construct_patrols() -> Vec<(Vec3, f32, crate::ai::Patrol)> {
-    let route = |kind: i64, pts: &[(f32, f32)]| {
-        let points: Vec<Vec3> = pts.iter().map(|&(x, z)| Vec3::new(x, 0.0, z)).collect();
+    let route = |kind: i64, pts: &[(f32, f32, f32)]| {
+        let points: Vec<Vec3> = pts.iter().map(|&(x, y, z)| Vec3::new(x, y, z)).collect();
         let arrivals = (0..points.len() as i64).map(|i| (i, -1, 2.0)).collect();
         let at = points[0];
         // Facing the second point (forward = Ry(yaw) * -Z), or the gate (-Z) when alone.
@@ -716,10 +884,11 @@ pub fn construct_patrols() -> Vec<(Vec3, f32, crate::ai::Patrol)> {
         (at, yaw, crate::ai::Patrol::new(kind, points, Vec::new(), arrivals))
     };
     vec![
-        route(0, &[(-13.0, 15.0), (-3.0, 15.0), (-3.0, 22.0), (-13.0, 22.0)]),
-        route(1, &[(-10.0, 25.0), (10.0, 25.0)]),
-        route(0, &[(6.0, 29.0), (14.0, 29.0), (14.0, 37.0), (6.0, 37.0)]),
-        route(0, &[(0.0, 37.0)]),
+        route(1, &[(1.0, 0.0, 14.0), (1.0, 0.0, 42.0)]),
+        route(0, &[(6.0, 0.0, 28.0), (19.0, 0.0, 28.0), (19.0, 0.0, 32.0), (6.0, 0.0, 32.0)]),
+        route(0, &[(-26.0, 4.0, 29.0), (-10.0, 4.0, 29.0), (-10.0, 4.0, 36.0), (-26.0, 4.0, 36.0)]),
+        route(0, &[(-22.0, 8.0, 40.0)]),
+        route(0, &[(0.0, 0.0, 43.5)]),
     ]
 }
 
@@ -763,7 +932,9 @@ fn hang_edge(p0: Vec3, p1: Vec3, n: Vec3) -> map::LedgeEdge {
 /// drawn, while their collision is the ramp under them (`STAIRS_RAMP`), as the game's stairs are
 /// (step by step, the floor snap popped Wolf up and down each step: the user, "not smooth").
 pub fn parkour_stairs() -> Vec<(Vec3, Vec3)> {
-    (0..7).map(|i| (Vec3::new(-1.5 + 0.5 * i as f32, 0.0, -12.0), Vec3::new(2.0, 0.43 * (i + 1) as f32, -10.0))).collect()
+    let mut s: Vec<(Vec3, Vec3)> = (0..7).map(|i| (Vec3::new(-1.5 + 0.5 * i as f32, 0.0, -12.0), Vec3::new(2.0, 0.43 * (i + 1) as f32, -10.0))).collect();
+    s.extend(Outpost::stairs());
+    s
 }
 
 /// The parkour course (metres; Wolf starts at the origin facing -Z, the duel enemy 4 m ahead):
@@ -827,14 +998,9 @@ pub fn parkour_course() -> (Vec<(Vec3, Vec3)>, Vec<map::LedgeEdge>) {
     boxes.push((Vec3::new(sx0, 0.0, sz1), Vec3::new(15.0, sh, sz1 + t)));
     boxes.push((Vec3::new(16.2, 0.0, sz1), Vec3::new(sx1, sh, sz1 + t)));
     boxes.push((Vec3::new(15.0, 2.6, sz1), Vec3::new(16.2, sh, sz1 + t)));
-    // 5. The stealth courtyard behind the start (2026-10-17, the user: "add stealth segment").
-    for (i, &(lo, hi)) in STEALTH_WALLS.iter().enumerate() {
-        boxes.push((lo, hi));
-        if i < HUGGABLE_WALLS {
-            edges.push(hug_edge(Vec3::new(lo.x, 0.0, hi.z), Vec3::new(hi.x, 0.0, hi.z), Vec3::Z));
-            edges.push(hug_edge(Vec3::new(hi.x, 0.0, lo.z), Vec3::new(lo.x, 0.0, lo.z), Vec3::NEG_Z));
-        }
-    }
+    // 5. The stealth outpost behind the start (`Outpost`).
+    boxes.extend(Outpost::boxes());
+    edges.extend(Outpost::edges());
     (boxes, edges)
 }
 
@@ -842,11 +1008,14 @@ pub fn parkour_course() -> (Vec<(Vec3, Vec3)>, Vec<map::LedgeEdge>) {
 mod parkour_tests {
     use bevy::prelude::*;
 
-    /// The guards' rounds stay clear of the courtyard's walls (half a metre of body room), inside
-    /// the courtyard.
+    /// The guards' rounds stay clear of the outpost's buildings (half a metre of body room; a
+    /// box under the route's height is its floor), inside the outpost, and each stands on
+    /// something: the ground, the terrace or the tower.
     #[test]
     fn the_guards_walk_clear_of_the_walls() {
-        let near_wall = |p: Vec3| super::STEALTH_WALLS.iter().any(|(lo, hi)| p.x > lo.x - 0.5 && p.x < hi.x + 0.5 && p.z > lo.z - 0.5 && p.z < hi.z + 0.5);
+        let boxes = super::Outpost::boxes();
+        let near_wall = |p: Vec3| boxes.iter().any(|(lo, hi)| hi.y > p.y + 0.1 && p.x > lo.x - 0.5 && p.x < hi.x + 0.5 && p.z > lo.z - 0.5 && p.z < hi.z + 0.5);
+        let floor = |p: Vec3| p.y == 0.0 || boxes.iter().any(|(lo, hi)| (hi.y - p.y).abs() < 0.01 && p.x > lo.x && p.x < hi.x && p.z > lo.z && p.z < hi.z);
         for (_, _, route) in super::construct_patrols() {
             let n = route.points.len();
             for i in 0..n {
@@ -854,9 +1023,19 @@ mod parkour_tests {
                 for k in 0..=40 {
                     let p = a.lerp(b, k as f32 / 40.0);
                     assert!(!near_wall(p), "route point {p} is in a wall");
-                    assert!(p.z > 12.5 && p.z < 40.0 && p.x.abs() < 16.0, "{p} is outside the courtyard");
+                    assert!(floor(p), "route point {p} stands on nothing");
+                    assert!(p.z > 11.5 && p.z < 44.5 && p.x.abs() < 30.0, "{p} is outside the outpost");
                 }
             }
+        }
+    }
+
+    /// Every grapple point's landing is on its roof, and its hook at the lip.
+    #[test]
+    fn the_grapple_points_land_on_their_roofs() {
+        let boxes = super::Outpost::boxes();
+        for p in super::construct_grapple() {
+            assert!(boxes.iter().any(|(lo, hi)| (hi.y - p.land.y).abs() < 0.01 && p.land.x > lo.x && p.land.x < hi.x && p.land.z > lo.z && p.land.z < hi.z), "{p:?} lands on no roof");
         }
     }
 
@@ -866,8 +1045,9 @@ mod parkour_tests {
     fn the_course_edges_face_out_of_their_walls() {
         let (boxes, edges) = super::parkour_course();
         let inside = |p: Vec3| boxes.iter().any(|(lo, hi)| p.x > lo.x + 0.01 && p.x < hi.x - 0.01 && p.z > lo.z + 0.01 && p.z < hi.z - 0.01 && p.y < hi.y);
-        assert_eq!(edges.iter().filter(|e| e.kind == 3).count(), 3 + 2 * super::HUGGABLE_WALLS);
-        assert_eq!(edges.iter().filter(|e| e.kind == 2).count(), 8);
+        let outpost = super::Outpost::edges();
+        assert_eq!(edges.iter().filter(|e| e.kind == 3).count(), 3 + outpost.iter().filter(|e| e.kind == 3).count());
+        assert_eq!(edges.iter().filter(|e| e.kind == 2).count(), 8 + outpost.iter().filter(|e| e.kind == 2).count());
         for e in &edges {
             let d = crate::docking::Dock::new_from_edge(e).expect("edge too short");
             let mid = (e.a + e.b) * 0.5;
