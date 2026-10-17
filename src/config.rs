@@ -220,10 +220,16 @@ pub struct PlayerConfig {
     /// Empty = level-1 Wolf.
     #[serde(default)]
     pub skills: Vec<i64>,
-    /// Skill points to spend at a Sculptor's Idol (Acquire Skills, src/skill_tree.rs).
-    /// gap: no skill experience is earned yet; the points are set here.
+    /// Skill points to spend at a Sculptor's Idol (Acquire Skills, src/skill_tree.rs); defeated
+    /// enemies' experience adds more (src/experience.rs).
     #[serde(default)]
     pub skill_points: u32,
+    /// Experience towards the next skill point.
+    #[serde(default)]
+    pub skill_exp: u32,
+    /// Skill points earned from experience so far, spent or not (the next costs more).
+    #[serde(default)]
+    pub skill_level: u32,
     /// Wolf's look (Change Form at an idol, src/form.rs): 0 Wolf, 1 Shura, 2 Ashina, 3 Tengu.
     #[serde(default)]
     pub form: u32,
@@ -289,7 +295,7 @@ fn default_emblems() -> u32 {
 
 impl Default for PlayerConfig {
     fn default() -> Self {
-        Self { gourd_charges: 3, spirit_emblems: default_emblems(), infinite_emblems: false, resurrections: default_resurrections(), combat_art: default_combat_art(), prosthetics: default_prosthetics(), skills: Vec::new(), skill_points: 0, form: 0, items: Vec::new(), quick_items: default_quick_items(), owned_tools: default_owned_tools(), upgrades: Vec::new(), unlock_all_moves: true, sen: default_sen() }
+        Self { gourd_charges: 3, spirit_emblems: default_emblems(), infinite_emblems: false, resurrections: default_resurrections(), combat_art: default_combat_art(), prosthetics: default_prosthetics(), skills: Vec::new(), skill_points: 0, skill_exp: 0, skill_level: 0, form: 0, items: Vec::new(), quick_items: default_quick_items(), owned_tools: default_owned_tools(), upgrades: Vec::new(), unlock_all_moves: true, sen: default_sen() }
     }
 }
 

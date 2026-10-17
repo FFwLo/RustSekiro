@@ -246,18 +246,31 @@ fn spawn_hud(mut commands: Commands, mut fonts: ResMut<Assets<Font>>, assets: Re
     };
     // The skill-point gauge, top right: the movie's SkillPoint_282 at (1484, 88.4): MENU_SkillPoint
     // (120 x 80 at 0.588 = 70 x 47 px) at (-56.75, -21.95) carrying the point count (SkillPiontLv_290),
-    // then the experience bar from x 1482 to 1747 (MENU_HP_bar_mark caps, 0.75 tall). gap: Sv1 has
-    // no experience or skill points, the count stays 0 and the bar empty.
+    // then the experience bar from x 1482 to 1747 (MENU_HP_bar_mark caps, 0.75 tall): the points
+    // to spend and the experience towards the next (src/experience.rs). gap: the bar's own art.
     commands
         .spawn((Node { position_type: PositionType::Absolute, left: Val::Percent(74.3), top: Val::Percent(6.2), flex_direction: FlexDirection::Row, align_items: AlignItems::Center, ..default() }, Visibility::Hidden, Flash(1)))
         .with_children(|r| {
             let (img, vis) = art("MENU_SkillPoint");
             r.spawn((Node { width: Val::Vw(3.67), height: Val::Vw(2.45), justify_content: JustifyContent::Center, align_items: AlignItems::Center, ..default() }, img, vis))
                 .with_children(|i| {
-                    i.spawn(number("0", 22.0));
+                    i.spawn((number("0", 22.0), PointsText));
                 });
-            r.spawn((Node { width: Val::Vw(13.75), height: Val::Vh(0.9), margin: UiRect::left(Val::Vw(-0.7)), ..default() }, BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.85))));
+            r.spawn((Node { width: Val::Vw(13.75), height: Val::Vh(0.9), margin: UiRect::left(Val::Vw(-0.7)), ..default() }, BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.85))))
+                .with_children(|b| {
+                    b.spawn((Node { width: Val::Percent(0.0), height: Val::Percent(100.0), ..default() }, BackgroundColor(Color::srgba(0.36, 0.68, 0.74, 1.0)), ExpFill));
+                });
         });
+    // What the last kills gave, on the bar's right end and under the purse's total (the user's
+    // captures) while they show (experience.rs
+    // Earned). gap: the game's own placement and font are not read from the movie.
+    for (kind, right, top) in [(1u8, 12.0, 7.5), (0u8, 6.6, 70.0)] {
+        commands
+            .spawn((Node { position_type: PositionType::Absolute, right: Val::Percent(right), top: Val::Percent(top), ..default() }, Visibility::Hidden, Flash(kind)))
+            .with_children(|c| {
+                c.spawn((number("", 17.0), GainText(kind)));
+            });
+    }
     // Sen, right middle: the movie's Money_164 at (1702, 748.5): MENU_Money (92 x 94 at 0.355 = 33 px)
     // at (-61.8, -18.65), then a dark backing with the total right-aligned (TotalMoney_txt_166).
     // gap: Sv1 has no Sen, the total stays 0.
@@ -947,20 +960,68 @@ struct NinjutsuMark;
 struct Flash(u8);
 #[derive(Component)]
 struct SenText;
+/// The skill gauge's point count and experience fill.
+#[derive(Component)]
+struct PointsText;
+#[derive(Component)]
+struct ExpFill;
+/// "+N": the Sen (0) or experience (1) the kills since the purse / gauge came up gave.
+#[derive(Component)]
+struct GainText(u8);
 
 /// How long the purse / gauge stay up after a change (s). gap: the movie's fade is not read.
 const FLASH_SHOW: f32 = 4.0;
 
-fn flash_counters(time: Res<Time>, config: Res<crate::config::GameConfig>, mut last: Local<Option<u32>>, mut left: Local<f32>, mut q: Query<(&Flash, &mut Visibility)>, mut texts: Query<&mut Text, With<SenText>>, mut art: Query<&mut Visibility, (With<ArtMark>, Without<Flash>)>) {
+#[allow(clippy::too_many_arguments)]
+fn flash_counters(
+    time: Res<Time>,
+    config: Res<crate::config::GameConfig>,
+    mut last: Local<Option<(u32, (u32, u32))>>,
+    mut left: Local<[f32; 2]>,
+    mut q: Query<(&Flash, &mut Visibility)>,
+    mut texts: Query<&mut Text, (With<SenText>, Without<PointsText>, Without<GainText>)>,
+    mut points: Query<&mut Text, (With<PointsText>, Without<GainText>)>,
+    (earned, mut base, mut gains): (Res<crate::experience::Earned>, Local<Option<([u32; 2], [u32; 2])>>, Query<(&mut Text, &GainText)>),
+    mut fill: Query<&mut Node, With<ExpFill>>,
+    mut art: Query<&mut Visibility, (With<ArtMark>, Without<Flash>)>,
+) {
     let sen = config.player.sen;
-    if last.is_some_and(|l| l != sen) {
-        *left = FLASH_SHOW;
+    let exp = (config.player.skill_exp, config.player.skill_points);
+    // A kill's gain shows as "+N"; more kills while the counter is up add to it. While it is
+    // hidden the base follows the totals, so it starts over (prev: last frame's totals).
+    let now = [earned.sen, earned.exp];
+    let (from, prev) = base.get_or_insert((now, now));
+    for i in 0..2 {
+        if left[i] == 0.0 {
+            from[i] = prev[i];
+        }
+        if now[i] != prev[i] {
+            left[i] = FLASH_SHOW;
+        }
     }
-    *last = Some(sen);
-    *left = (*left - time.delta_secs()).max(0.0);
+    *prev = now;
+    for (mut t, g) in &mut gains {
+        let n = now[g.0 as usize].wrapping_sub(from[g.0 as usize]);
+        let s = if n > 0 { format!("+{n}") } else { String::new() };
+        if t.0 != s {
+            t.0 = s;
+        }
+    }
+    if let Some((s, x)) = *last {
+        if s != sen {
+            left[0] = FLASH_SHOW;
+        }
+        if x != exp {
+            left[1] = FLASH_SHOW;
+        }
+    }
+    *last = Some((sen, exp));
+    for l in left.iter_mut() {
+        *l = (*l - time.delta_secs()).max(0.0);
+    }
     for (f, mut v) in &mut q {
-        // 0: the purse; 1: the skill gauge (no experience yet: never changes).
-        let want = if f.0 == 0 && *left > 0.0 { Visibility::Inherited } else { Visibility::Hidden };
+        // 0: the purse; 1: the skill gauge.
+        let want = if left[f.0 as usize] > 0.0 { Visibility::Inherited } else { Visibility::Hidden };
         if *v != want {
             *v = want;
         }
@@ -969,6 +1030,18 @@ fn flash_counters(time: Res<Time>, config: Res<crate::config::GameConfig>, mut l
         let s = sen.to_string();
         if t.0 != s {
             t.0 = s;
+        }
+    }
+    for mut t in &mut points {
+        let s = config.player.skill_points.to_string();
+        if t.0 != s {
+            t.0 = s;
+        }
+    }
+    let w = Val::Percent(100.0 * crate::experience::fill(&config.player).clamp(0.0, 1.0));
+    for mut n in &mut fill {
+        if n.width != w {
+            n.width = w;
         }
     }
     for mut v in &mut art {
