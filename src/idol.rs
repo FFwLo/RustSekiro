@@ -423,7 +423,7 @@ fn build(commands: &mut Commands, assets: &AssetServer, menu: &IdolMenu, font: &
             commands.spawn((full, BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.55)), GlobalZIndex(110), IdolMenuRoot)).with_children(|root| {
                 root.spawn((abs(0.0, 0.0, 100.0, 100.0), image(assets, sprite("sb_in_game/MENU_Base_00"))));
                 title_bar(root, assets, font, "Acquire Skills");
-                crate::skill_tree::build(root, assets, font, menu.tree, &config.player.skills, config.player.skill_points, texts, tables);
+                crate::skill_tree::build(root, assets, font, menu.tree, config, texts, tables);
                 root.spawn(abs(5.3, 91.6, 50.0, 4.0)).with_children(|c| {
                     c.spawn(text("Review and Acquire Skills.", 16.0, DIM, font));
                 });
@@ -695,7 +695,7 @@ fn run_idol_menu(
                     }
                     "Acquire Skills" => {
                         menu.page = Page::Skills;
-                        menu.tree = crate::skill_tree::View::default();
+                        menu.tree = crate::skill_tree::View { page: crate::skill_tree::available_pages(&config.player.items).first().copied().unwrap_or(0), ..default() };
                     }
                     "Travel" => {
                         menu.page = Page::Travel;
@@ -820,6 +820,11 @@ fn run_idol_menu(
         Page::Skills => {
             use crate::skill_tree as st;
             let tree = st::tree();
+            let pages = st::available_pages(&config.player.items);
+            // Config reloads can remove a book while this screen (or its confirmation) is up.
+            if !pages.contains(&menu.tree.page) {
+                menu.tree = st::View { page: pages.first().copied().unwrap_or(0), ..default() };
+            }
             let mut acquire = false;
             for (n, i) in &nodes {
                 match i {
@@ -833,14 +838,16 @@ fn run_idol_menu(
             }
             for (c, i) in &cats {
                 if *i == Interaction::Pressed && !menu.tree.asking {
-                    menu.tree = st::View { page: c.0, ..default() };
+                    if let Some(&page) = pages.get(c.0) {
+                        menu.tree = st::View { page, ..default() };
+                    }
                 }
             }
             let nodes_here = st::page(tree, menu.tree.page);
             let here = nodes_here.get(menu.tree.cursor).map(|s| (*s).clone());
             if menu.tree.asking {
                 if confirm {
-                    if let Some(s) = here.filter(|s| st::check(tree, s, &config.player.skills, config.player.skill_points).is_ok()) {
+                    if let Some(s) = here.filter(|s| st::check(tree, s, &config.player.skills, config.player.skill_points, &config.player.items).is_ok()) {
                         config.player.skill_points -= s.cost;
                         config.player.skills.push(s.id);
                         info!("acquired skill {} (SkillParam), {} skill points left", s.id, config.player.skill_points);
@@ -853,8 +860,10 @@ fn run_idol_menu(
                 menu.page = Page::Main;
                 menu.index = 3;
             } else if prev_page || next_page {
-                let n = st::PAGES.len();
-                menu.tree = st::View { page: if next_page { (menu.tree.page + 1) % n } else { (menu.tree.page + n - 1) % n }, ..default() };
+                if let Some(tab) = pages.iter().position(|&page| page == menu.tree.page) {
+                    let n = pages.len();
+                    menu.tree = st::View { page: pages[if next_page { (tab + 1) % n } else { (tab + n - 1) % n }], ..default() };
+                }
             } else {
                 for (go, dx, dy) in [(right, 1, 0), (left, -1, 0), (down, 0, 1), (up, 0, -1)] {
                     if go {
@@ -863,7 +872,7 @@ fn run_idol_menu(
                         }
                     }
                 }
-                if (confirm || acquire) && here.is_some_and(|s| st::check(tree, &s, &config.player.skills, config.player.skill_points).is_ok()) {
+                if (confirm || acquire) && here.is_some_and(|s| st::check(tree, &s, &config.player.skills, config.player.skill_points, &config.player.items).is_ok()) {
                     menu.tree.asking = true;
                 }
             }

@@ -8,8 +8,9 @@
 //! Mushin Arts' bottom row (400-403) repeats the other trees' last skills (the same virtual
 //! weapon): those nodes mirror the real ones and are not acquired there.
 //!
-//! gap: the trees are not locked behind their Esoteric Texts, and a skill with two parents asks
-//! for one of them (a Mushin skill for all): the game's rule is not read from its code.
+//! Each page requires its Esoteric Text (EquipParamGoods 2920-2924, in the same order).
+//! gap: a skill with two parents asks for one of them (a Mushin skill for all): the game's
+//! parent rule is not read from its code.
 
 use std::collections::HashMap;
 use std::sync::OnceLock;
@@ -26,6 +27,19 @@ pub(crate) const PAGES: [(&str, &str); 5] = [
     ("Temple Arts", "MENU_TB_Temlpe"),
     ("Mushin Arts", "MENU_TB_Coposite"),
 ];
+
+/// EquipParamGoods: Shinobi, Prosthetic, Ashina, Senpou and Mushin Esoteric Texts. The item
+/// descriptions name the school each text opens; these are permanent key items, not consumed.
+pub(crate) const TEXT_GOODS: [i64; 5] = [2920, 2921, 2922, 2923, 2924];
+
+pub(crate) fn has_text(page: usize, items: &[(i64, u32)]) -> bool {
+    TEXT_GOODS.get(page).is_some_and(|id| items.iter().any(|(goods, count)| goods == id && *count > 0))
+}
+
+/// Actual page ids, kept in school order even when only some books have been found.
+pub(crate) fn available_pages(items: &[(i64, u32)]) -> Vec<usize> {
+    (0..PAGES.len()).filter(|&page| has_text(page, items)).collect()
+}
 
 /// The skill point (EquipParamGoods 1200), the material every skill costs.
 const SKILL_POINT_GOODS: i64 = 1200;
@@ -52,6 +66,8 @@ pub(crate) struct TreeSkill {
 /// Why a skill cannot be acquired.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum Block {
+    /// This school's Esoteric Text has not been found.
+    Text,
     Learned,
     /// A Mushin copy: acquired on its own tree.
     Mirror,
@@ -145,8 +161,11 @@ pub(crate) fn is_revealed(tree: &[TreeSkill], s: &TreeSkill, learned: &[i64]) ->
     is_learned(tree, s.id, learned) || s.revealed_by.is_empty() || s.revealed_by.iter().any(|&r| is_learned(tree, r, learned))
 }
 
-/// Whether `s` can be acquired now with `points`.
-pub(crate) fn check(tree: &[TreeSkill], s: &TreeSkill, learned: &[i64], points: u32) -> Result<(), Block> {
+/// Whether `s` can be acquired now with `points` and the school's text in the bag.
+pub(crate) fn check(tree: &[TreeSkill], s: &TreeSkill, learned: &[i64], points: u32, items: &[(i64, u32)]) -> Result<(), Block> {
+    if !has_text(s.page, items) {
+        return Err(Block::Text);
+    }
     if s.mirror.is_some() {
         return Err(if is_learned(tree, s.id, learned) { Block::Learned } else { Block::Mirror });
     }
@@ -234,10 +253,21 @@ pub(crate) struct View {
 
 /// The Acquire Skills screen under `root` (already holding the menu backdrop and title).
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn build(root: &mut ChildSpawnerCommands, assets: &AssetServer, font: &Option<Handle<Font>>, view: View, learned: &[i64], points: u32, texts: &ItemTexts, tables: &Tables) {
+pub(crate) fn build(root: &mut ChildSpawnerCommands, assets: &AssetServer, font: &Option<Handle<Font>>, view: View, config: &crate::config::GameConfig, texts: &ItemTexts, tables: &Tables) {
     let all = tree();
+    let (learned, points, items) = (&config.player.skills[..], config.player.skill_points, &config.player.items[..]);
+    let pages = available_pages(items);
+    if pages.is_empty() {
+        root.spawn(abs(9.7, 28.0, 44.0, 16.0)).with_children(|c| {
+            c.spawn(text("Obtain an Esoteric Text to unlock its skill tree.", 18.0, TEXT, font));
+        });
+        return;
+    }
+    let tab = pages.iter().position(|&page| page == view.page).unwrap_or(0);
+    let view = View { page: pages[tab], ..view };
+    let tabs: Vec<_> = pages.iter().map(|&page| PAGES[page]).collect();
     // The tree name and the tabs with C / V (the list screens' category row).
-    crate::game_menu::list_screen(root, assets, font, &PAGES, view.page, &[], 0, 0, None);
+    crate::game_menu::list_screen(root, assets, font, &tabs, tab, &[], 0, 0, None);
     // The skill points: the ink drop with the count, and the gauge to the next point.
     root.spawn((abs(40.4, 17.6, 3.4, 4.6), image(assets, sprite("sb_fe/MENU_SkillPoint")).with_color(Color::srgb(0.1, 0.1, 0.1)))).with_children(|b| {
         b.spawn(Node { justify_content: JustifyContent::Center, ..fill_row() }).with_children(|c| {
@@ -269,7 +299,7 @@ pub(crate) fn build(root: &mut ChildSpawnerCommands, assets: &AssetServer, font:
         let (x, y) = center(s);
         let shown = is_revealed(all, s, learned);
         let has = is_learned(all, s.id, learned);
-        let open = check(all, s, learned, u32::MAX).is_ok();
+        let open = check(all, s, learned, u32::MAX, items).is_ok();
         let scale = if s.secret { 1.15 } else { 1.0 };
         let (w, h) = (NODE_W * scale, NODE_H * scale);
         if i == view.cursor {
@@ -296,7 +326,7 @@ pub(crate) fn build(root: &mut ChildSpawnerCommands, assets: &AssetServer, font:
         } else {
             ("???".to_string(), String::new())
         };
-        let status = match check(all, s, learned, points) {
+        let status = match check(all, s, learned, points, items) {
             _ if !shown => String::new(),
             Err(Block::Learned) => "Learned".to_string(),
             Err(Block::Mirror) => format!("Acquired on its own tree ({} Skill Points)", find(all, s.mirror.unwrap_or(s.id)).map_or(0, |m| m.cost)),
@@ -346,6 +376,8 @@ pub(crate) fn build(root: &mut ChildSpawnerCommands, assets: &AssetServer, font:
 mod tests {
     use super::*;
 
+    const ALL_TEXTS: [(i64, u32); 5] = [(2920, 1), (2921, 1), (2922, 1), (2923, 1), (2924, 1)];
+
     fn node(id: i64) -> &'static TreeSkill {
         tree().iter().find(|s| s.id == id).unwrap_or_else(|| panic!("SkillParam {id} not in the trees"))
     }
@@ -371,23 +403,72 @@ mod tests {
         let (root, child) = (node(10), node(2));
         assert!(is_revealed(t, root, &[]));
         assert!(!is_revealed(t, child, &[]), "skill 2 shows only once one of its revealers is learned");
-        assert_eq!(check(t, child, &[], 99), Err(Block::Locked));
-        assert_eq!(check(t, root, &[], 0), if root.cost == 0 { Ok(()) } else { Err(Block::Points) });
-        assert_eq!(check(t, root, &[], 99), Ok(()));
+        assert_eq!(check(t, child, &[], 99, &ALL_TEXTS), Err(Block::Locked));
+        assert_eq!(check(t, root, &[], 0, &ALL_TEXTS), if root.cost == 0 { Ok(()) } else { Err(Block::Points) });
+        assert_eq!(check(t, root, &[], 99, &ALL_TEXTS), Ok(()));
         assert!(is_revealed(t, child, &[10]));
-        assert_eq!(check(t, child, &[10], 99), Ok(()));
-        assert_eq!(check(t, child, &[10, 2], 99), Err(Block::Learned));
+        assert_eq!(check(t, child, &[10], 99, &ALL_TEXTS), Ok(()));
+        assert_eq!(check(t, child, &[10, 2], 99, &ALL_TEXTS), Err(Block::Learned));
     }
 
     #[test]
     fn mushin_asks_for_both_last_skills_and_mirrors_them() {
         let t = tree();
         let shura = node(411);
-        assert_eq!(check(t, node(400), &[], 99), Err(Block::Mirror));
+        assert_eq!(check(t, node(400), &[], 99, &ALL_TEXTS), Err(Block::Mirror));
         assert!(is_learned(t, 400, &[321]), "the copy is learned with its skill");
-        assert_eq!(check(t, node(400), &[321], 99), Err(Block::Learned));
-        assert_eq!(check(t, shura, &[321], 99), Err(Block::Locked));
-        assert_eq!(check(t, shura, &[321, 20], 99), Ok(()));
+        assert_eq!(check(t, node(400), &[321], 99, &ALL_TEXTS), Err(Block::Learned));
+        assert_eq!(check(t, shura, &[321], 99, &ALL_TEXTS), Err(Block::Locked));
+        assert_eq!(check(t, shura, &[321, 20], 99, &ALL_TEXTS), Ok(()));
+    }
+
+    #[test]
+    fn each_text_opens_only_its_school() {
+        assert!(available_pages(&[]).is_empty());
+        // Empty stacks and unrelated key items do not unlock anything.
+        assert!(available_pages(&[(2920, 0), (2420, 1)]).is_empty());
+        for (page, &goods) in TEXT_GOODS.iter().enumerate() {
+            assert_eq!(available_pages(&[(goods, 1)]), vec![page]);
+        }
+        // Tabs keep their school ids, rather than mistaking the second visible tab for page 1.
+        assert_eq!(available_pages(&[(2924, 1), (2921, 1)]), vec![1, 4]);
+        assert_eq!(available_pages(&ALL_TEXTS), vec![0, 1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn even_with_points_and_parents_a_skill_requires_its_text() {
+        let t = tree();
+        for school in 0..PAGES.len() {
+            let s = page(t, school).into_iter().find(|s| s.mirror.is_none()).unwrap();
+            let learned: Vec<_> = s.parents.iter().chain(&s.revealed_by).map(|&id| find(t, id).and_then(|s| s.mirror).unwrap_or(id)).collect();
+            assert_eq!(check(t, s, &learned, 99, &[]), Err(Block::Text));
+            assert_eq!(check(t, s, &learned, 99, &[(TEXT_GOODS[(school + 1) % 5], 1)]), Err(Block::Text));
+            assert_eq!(check(t, s, &learned, 99, &[(TEXT_GOODS[school], 1)]), Ok(()));
+        }
+    }
+
+    #[test]
+    fn the_construct_books_are_permanent_key_items_and_do_not_teach_skills() {
+        let mut config = crate::config::GameConfig::load().unwrap();
+        config.player.items.retain(|(id, _)| !TEXT_GOODS.contains(id));
+        let (skills, points) = (config.player.skills.clone(), config.player.skill_points);
+        let pickups = crate::items::parkour_pickups();
+        let (solids, _) = crate::sandbox::parkour_course();
+        for p in pickups.iter().filter(|p| TEXT_GOODS.contains(&p.goods)) {
+            let ground = solids.iter().filter(|(lo, hi)| p.pos.x > lo.x && p.pos.x < hi.x && p.pos.z > lo.z && p.pos.z < hi.z)
+                .map(|(_, hi)| hi.y).max_by(f32::total_cmp).unwrap_or(0.0);
+            assert!((p.pos.y - ground).abs() < 0.01, "text {} at {:?} is not on the course (ground {ground})", p.goods, p.pos);
+        }
+        for goods in TEXT_GOODS {
+            assert_eq!(pickups.iter().filter(|p| p.goods == goods && p.count == 1).count(), 1);
+            assert_eq!(crate::items::param("EquipParamGoods", goods)["goodsType"].as_i64(), Some(1));
+            assert_eq!(crate::items::add(&mut config, goods, 1), 1);
+            assert_eq!(crate::items::add(&mut config, goods, 1), 0, "unique key item");
+            crate::items::spend(&mut config, goods);
+            assert_eq!(crate::items::count(&config, goods), 1, "reading does not consume the text");
+        }
+        assert_eq!(available_pages(&config.player.items), vec![0, 1, 2, 3, 4]);
+        assert_eq!((config.player.skills, config.player.skill_points), (skills, points));
     }
 
     #[test]

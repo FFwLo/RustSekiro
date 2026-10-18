@@ -456,6 +456,13 @@ pub(crate) fn parkour_pickups() -> Vec<Pickup> {
         // Gachiin's Sugar at the outpost's gate, two Ako's Sugars on top of its watchtower.
         at(3440, 1, -3.0, 0.0, 10.0),
         at(3400, 2, -21.0, 8.0, 41.0),
+        // Esoteric Texts: the start, Platform Top, Cliff Top, Shaft Floor and the outpost's
+        // watchtower. These test-map placements replace the story's NPC gifts and temple loot.
+        at(crate::skill_tree::TEXT_GOODS[0], 1, -3.0, 0.0, -1.5),
+        at(crate::skill_tree::TEXT_GOODS[1], 1, 10.4, 3.0, -13.4),
+        at(crate::skill_tree::TEXT_GOODS[2], 1, -13.1, 4.5, -22.5),
+        at(crate::skill_tree::TEXT_GOODS[3], 1, 16.0, 0.0, -22.7),
+        at(crate::skill_tree::TEXT_GOODS[4], 1, -23.0, 8.0, 41.0),
     ]
 }
 

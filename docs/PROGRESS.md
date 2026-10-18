@@ -1,5 +1,10 @@
 # Sv1: progress and next steps
 
+- 2026-10-18 Esoteric Texts: collect EquipParamGoods 2920-2924 to open each school at an idol;
+  visible tabs and acquisition checks use possession. Five book pickups on the Construct use
+  the existing key-item dialog. Story gifts and saved progression remain outside this test map.
+  Validation: release build, seven skill-tree tests and the full suite (652 pass, 46 ignored).
+
 Goal: a Rust/Bevy combat prototype that plays 1:1 like Sekiro, with numbers read
 from the game's own files (TAE, HKS, params) and Ghidra for the gaps.
 

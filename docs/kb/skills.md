@@ -289,3 +289,19 @@ shot env vars or `tools/screenshot.ps1`.
   no atkPhys / atkStam. The hit filter (combat.rs ~1340) dropped attacks with no damage and no
   stamina, so it did 80 HP and no stun; an attack with any SpEffect now hits. Test
   the_reversal_bolt_stuns_tomoe (part06).
+
+## 2026-10-18: Esoteric Texts
+
+- EquipParamGoods 2920-2924 are the Shinobi, Prosthetic, Ashina, Senpou and Mushin Esoteric
+  Texts, respectively (English item-name / description FMGs). Their descriptions identify the
+  schools they open; all five are unique, non-consumable key items (goodsType 1, maxNum 1).
+- Acquire Skills now shows only schools whose texts are held, and rechecks possession at both
+  confirmation steps. C/V and mouse tabs map visible tabs back to the real SkillParam page,
+  including gaps (e.g. Prosthetic and Mushin only). Without any books it explains what is needed.
+- Text pickups use the existing item glow, key-item dialog, inventory and stack limit. Test-map
+  locations: Shinobi near Course Start; Prosthetic at Platform Top; Ashina at Cliff Top; Senpou
+  by Shaft Floor; Mushin on the outpost watchtower. Books unlock schools, not individual skills;
+  point costs, parent/reveal rules, existing learned skills and the sandbox's move cheat remain.
+- Gap: these are Construct placements, not the story's gifts / temple loot. No game-save system
+  is added: possession follows the existing in-memory inventory / config. The original menu's
+  exact hiding behavior was not traced in the exe; the possession rule comes from item data.

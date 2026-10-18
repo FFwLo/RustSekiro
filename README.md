@@ -27,6 +27,9 @@ data.
   events and arena, from Genichiro to the Divine Dragon.
 - **Looks and sound:** the game's models, cloth, effects, blood, sky, fog,
   lighting, HUD and menus; the game's own sounds and music through FMOD.
+- **Skill trees:** find each Esoteric Text to open its school at an idol. On the Construct,
+  the five books are at Course Start, Platform Top, Cliff Top, Shaft Floor and the outpost's
+  watchtower. Learning still costs skill points and requires the earlier skills.
 
 Values the files don't hold are marked `gap` in the code and in `config.toml`.
 Not included: the rest of the game (story, NPCs, saving, open world).
