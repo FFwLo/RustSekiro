@@ -824,3 +824,43 @@ fn a_guard_calls_out_as_it_spots_wolf() {
     }
     assert!(called, "no call (state {})", app.world().get::<Enemy>(guard).unwrap().targeting.state);
 }
+
+/// Wolf in deep water swims (SwimIdle); crouch dives only with the Mibu Breathing Technique
+/// held (swim.rs; the user: "swimming now ... mibu breathing technique").
+#[test]
+fn wolf_swims_and_dives_with_the_mibu_technique() {
+    // A pool far from every other test's ground (swim.rs WATER is global).
+    let (lo, hi) = (Vec3::new(990.0, -5.0, -10.0), Vec3::new(1010.0, -0.4, 10.0));
+    crate::swim::WATER.write().unwrap().push((lo, hi));
+    let mut app = app_cfg("c1010", None, Vec::new());
+    let feet = Vec3::new(1000.0, -3.0, 0.0);
+    {
+        let world = app.world_mut();
+        let mut q = world.query_filtered::<&mut Transform, With<Player>>();
+        q.single_mut(world).unwrap().translation = feet + Vec3::Y * CAPSULE_HALF_HEIGHT;
+    }
+    run(&mut app, 120);
+    let state = |app: &mut App| {
+        let world = app.world_mut();
+        world.query_filtered::<&Actor, With<Player>>().single(world).unwrap().state.clone()
+    };
+    let s = state(&mut app);
+    assert!(s.starts_with("Swim"), "swimming: {s}");
+    let y = {
+        let world = app.world_mut();
+        world.query_filtered::<&Transform, With<Player>>().single(world).unwrap().translation.y - CAPSULE_HALF_HEIGHT
+    };
+    assert!((y - (hi.y - crate::swim::SWIM_DEPTH)).abs() < 0.05, "at the surface: feet {y}");
+    // Without the technique crouch does not dive.
+    app.world_mut().resource_mut::<crate::config::GameConfig>().player.items.retain(|(g, _)| *g != crate::swim::MIBU_BREATHING);
+    app.world_mut().resource_mut::<PadInput>().press(Action::Crouch);
+    run(&mut app, 30);
+    let s = state(&mut app);
+    assert!(!s.contains("Dive"), "no dive without it: {s}");
+    // With it, crouch goes under.
+    crate::items::add(&mut app.world_mut().resource_mut::<crate::config::GameConfig>(), crate::swim::MIBU_BREATHING, 1);
+    app.world_mut().resource_mut::<PadInput>().press(Action::Crouch);
+    run(&mut app, 10);
+    assert_eq!(state(&mut app), "SwimToDive");
+    crate::swim::WATER.write().unwrap().retain(|w| w.0 != lo);
+}

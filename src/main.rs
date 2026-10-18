@@ -62,6 +62,7 @@ mod sim_tests;
 mod sound;
 mod status;
 mod stealth;
+mod swim;
 mod throw_trace;
 mod trace;
 mod vfx;

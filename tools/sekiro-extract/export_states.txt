@@ -1527,3 +1527,40 @@ StatueAttachCostumeChange
 # Item pickup (items.rs)
 # common_func 20006030: ForceAnimationPlayback(player, 60070) on an object's item pickup
 a000_060070
+
+# Swimming and diving (src/swim.rs; c0000.hkx state names 1239-1265, 1310-1325, 1740-1836)
+FallToSwim
+StandMoveToSwim
+Swim
+SwimIdle
+SwimMoveStart
+SwimMoveLoop
+SwimMoveEnd
+SwimToStandMove
+LandWaterFreeFall
+SwimSprintStart
+SwimSprintLoop
+SwimSprintEnd
+DiveIdle
+DiveMoveStart
+DiveMoveLoop
+DiveMoveEnd
+DiveMoveUpStart
+DiveMoveUpLoop
+DiveMoveUpEnd
+DiveMoveDownStart
+DiveMoveDownLoop
+DiveMoveDownEnd
+DiveSprintStart
+DiveSprintLoop
+DiveSprintEnd
+DiveToSwim
+SwimToDive
+DiveToAir
+DiveKickMove1
+DiveKickMove2
+DiveKickMoveBrake
+DiveDeathStart
+DiveDeathLoop
+SwimDeathStart
+SwimDeathLoop

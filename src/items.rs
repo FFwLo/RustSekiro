@@ -230,6 +230,8 @@ pub(crate) fn parkour_pickups() -> Vec<Pickup> {
         at(3400, 1, -11.6, 4.5, -21.4),
         at(6100, 2, 14.2, 0.0, -21.8),
         at(3430, 1, 16.6, 0.0, -21.8),
+        // The Mibu Breathing Technique beside the pool (diving, swim.rs).
+        at(crate::swim::MIBU_BREATHING, 1, -18.5, 0.0, 4.0),
         // Gachiin's Sugar at the outpost's gate, two Ako's Sugars on top of its watchtower.
         at(3440, 1, -3.0, 0.0, 10.0),
         at(3400, 2, -21.0, 8.0, 41.0),

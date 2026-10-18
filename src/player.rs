@@ -128,6 +128,8 @@ pub struct Player {
     pub(crate) air_top: f32,
     /// The last ground Wolf stood on (not water): where a fall-return death puts him back.
     safe_pos: Option<Vec3>,
+    /// Swimming or diving (swim.rs).
+    pub(crate) swim: Option<crate::swim::Swim>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -535,6 +537,9 @@ pub struct PadInput {
     pub prosthetic_held: bool,
     /// The interact / hug / hang button held (env 1108: the air hang catch wants it held).
     pub interact_held: bool,
+    /// Jump and crouch held: up and down under water (swim.rs).
+    pub jump_held: bool,
+    pub crouch_held: bool,
     pressed: Vec<Action>,
     pub reset: bool,
     /// Sheathe / draw the sword (X).
@@ -565,7 +570,8 @@ impl Plugin for PlayerPlugin {
             .init_resource::<ActiveThrow>()
             .add_systems(FixedUpdate, (sync_art_variation, decide, apply_refresh_effects, record_state).chain().in_set(ActorSet::Decide))
             .add_systems(FixedUpdate, follow_throw.after(ActorSet::Advance).before(crate::anim::PoseSet).before(ActorSet::Resolve))
-            .add_systems(FixedUpdate, crate::docking::hold.after(ActorSet::Advance).before(crate::anim::PoseSet).before(ActorSet::Resolve));
+            .add_systems(FixedUpdate, crate::docking::hold.after(ActorSet::Advance).before(crate::anim::PoseSet).before(ActorSet::Resolve))
+            .add_systems(FixedUpdate, crate::swim::hold.after(crate::docking::hold).before(crate::map::bodies_on_terrain).before(crate::anim::PoseSet).before(ActorSet::Resolve));
         app.add_systems(FixedUpdate, wolf_no_dead.before(ActorSet::Decide));
         if std::env::var("SHINOBI_MOVE_LOG").is_ok() {
             app.add_systems(FixedUpdate, move_log.after(ActorSet::Resolve));
@@ -1433,7 +1439,7 @@ fn spawn_player(mut commands: Commands, combat: Res<Combat>, config: Res<GameCon
         }
     }
     commands.spawn((
-        Player { plunge: None, leap_homing: None, dock: None, wall_jumps: 0, last_wall: None, seat: Default::default(), wall_contact: None, speed_level: 0.0, requests: HashMap::new(), last_state: String::new(), gourd: config.player.gourd_charges, emblems: config.player.spirit_emblems, auto_aim: false, auto_aim_fresh: false, resurrections: config.player.resurrections, revive_queued: false, death_wait: 0.0, dead_for: 0.0, escape: None, jump_forward: false, jump_land: None, positioning_land: false, aged_form: false, step_tilt: 0.0, jump_tilt: 0.0, throw_start: None, throw_target: None, tool_slot: 0, quick_slot: 0, item_use: None, vel_scale: None, expand_pending: false, sub_cat_before: 0, air_sub_count: 0, air_art_count: 0, art_enable_jump: false, timed: Vec::new(), held: Vec::new(), wire: None, perch: None, wire_todome: false, air_top: 0.0, safe_pos: None },
+        Player { plunge: None, leap_homing: None, dock: None, wall_jumps: 0, last_wall: None, seat: Default::default(), wall_contact: None, speed_level: 0.0, requests: HashMap::new(), last_state: String::new(), gourd: config.player.gourd_charges, emblems: config.player.spirit_emblems, auto_aim: false, auto_aim_fresh: false, resurrections: config.player.resurrections, revive_queued: false, death_wait: 0.0, dead_for: 0.0, escape: None, jump_forward: false, jump_land: None, positioning_land: false, aged_form: false, step_tilt: 0.0, jump_tilt: 0.0, throw_start: None, throw_target: None, tool_slot: 0, quick_slot: 0, item_use: None, vel_scale: None, expand_pending: false, sub_cat_before: 0, air_sub_count: 0, air_art_count: 0, art_enable_jump: false, timed: Vec::new(), held: Vec::new(), wire: None, perch: None, wire_todome: false, air_top: 0.0, safe_pos: None, swim: None },
         actor,
         Name::new("Player"),
         Transform::from_xyz(0.0, CAPSULE_HALF_HEIGHT, 4.0),
@@ -1493,6 +1499,8 @@ pub(crate) fn read_pad(pads: &Query<&Gamepad>, enabled: bool, pad: &mut PadInput
         pad.attack_held |= g.pressed(GamepadButton::RightTrigger);
         pad.guard_held |= g.pressed(GamepadButton::LeftTrigger);
         pad.dodge_held |= g.pressed(GamepadButton::East);
+        pad.jump_held |= g.pressed(GamepadButton::South);
+        pad.crouch_held |= g.pressed(GamepadButton::LeftThumb);
         pad.prosthetic_held |= g.pressed(GamepadButton::RightTrigger2);
         let mut press = |b: GamepadButton, a: Action| {
             if g.just_pressed(b) {
@@ -1548,6 +1556,8 @@ pub(crate) fn read_input(
     pad.attack_held = lmb || keys.pressed(KeyCode::KeyJ);
     pad.guard_held = rmb || keys.pressed(KeyCode::KeyK);
     pad.dodge_held = keys.pressed(KeyCode::ShiftLeft);
+    pad.jump_held = keys.pressed(KeyCode::Space);
+    pad.crouch_held = keys.pressed(KeyCode::KeyQ);
     if (captured && mouse.just_pressed(MouseButton::Left)) || keys.just_pressed(KeyCode::KeyJ) {
         pad.pressed.push(Action::Attack);
     }
@@ -3383,6 +3393,11 @@ fn decide(
         }
     }
     if at_idol {
+        return;
+    }
+    // In deep water (swim.rs): the swim and the dive, nothing else.
+    let mibu = crate::items::count(&config, crate::swim::MIBU_BREATHING) > 0;
+    if crate::swim::tick(p, a, d, tf, stick, pad.jump_held, pad.crouch_held, crouch_pressed, dock_step, ended, mibu, dt, &mut log) {
         return;
     }
     if dock_step_tick(p, a, d, tf, ledges.as_deref(), stick, pad.walk, pad.interact_held, interact_pressed, dock_jump, dock_step, ended, &mut log, attack_pressed, &combat, &enemies) {
