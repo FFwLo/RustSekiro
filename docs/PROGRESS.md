@@ -1,5 +1,12 @@
 # Sv1: progress and next steps
 
+- 2026-10-18 Sculptor idle clarification: the user wants ordinary sitting outside the menu,
+  with no carving or tinkering. Spawn and return from a visit now use a000_000000. Preserved
+  Claude's working prosthetic sequence (20001 -> 21003 -> 20002) and the fixed seat 1 m in
+  front of the Sculptor, facing him. The private screenshot harness can inspect the idle
+  without opening the Workshop. Validation: release build, private idle / Workshop captures,
+  five Sculptor tests and full suite (657 pass, 46 ignored, four threads). See `kb/sculptor.md`.
+
 - 2026-10-18 Sculptor visit animations: Wolf sits down (711200), stays seated (711201) and
   gets up when closing the Workshop (711202). The menu waits for the entry animation and
   movement waits for the exit. c7010 stops carving (400), plays his seated service loop (401),

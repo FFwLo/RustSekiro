@@ -16,6 +16,11 @@ pub(crate) const NPC_ROW: i64 = 70100080;
 /// Outside the replaceable enemy-kind indices: encounter changes must not turn him into a boss.
 pub(crate) const KIND: usize = usize::MAX;
 pub(crate) const POS: Vec3 = Vec3::new(-7.0, 0.0, 3.0);
+/// His facing: toward the Construct's centre.
+const YAW: f32 = -1.1659045; // atan2(-7, 3)
+/// Wolf sits at c7010's dummy poly 100, 1 m in front of him facing him (event 11105721 warps
+/// Wolf there; the user, 2026-10-18: Wolf clipped into him or sat too far for him to reach).
+const SEAT: f32 = 1.0;
 const REACH: f32 = 2.0;
 const HEIGHT: f32 = 0.8;
 const SIT_DOWN: &str = "Event711200";
@@ -44,8 +49,9 @@ pub(crate) fn tick(p: &mut Player, a: &mut Actor, data: &CharData, tf: &mut Tran
             && near(feet) && p.seat.idol.is_none() && !a.airborne && a.hp > 0.0
             && crate::player::is_free(&a.state) && a.play_state(data, SIT_DOWN)
         {
-            let dir = POS - feet;
-            a.yaw = f32::atan2(-dir.x, -dir.z);
+            let seat = POS + Vec3::new(-YAW.sin(), 0.0, -YAW.cos()) * SEAT;
+            tf.translation = seat.with_y(feet.y) + Vec3::Y * CAPSULE_HALF_HEIGHT;
+            a.yaw = YAW + std::f32::consts::PI;
             p.seat.sculptor = true;
             p.seat.phase = Phase::Kneeling;
             p.seat.cmd = None;
@@ -93,12 +99,12 @@ fn spawn(mut commands: Commands, combat: Res<Combat>) {
     }
     let mut actor = Actor::new(Side::Enemy, 1.0, 1.0, 0.0, -1);
     actor.kind = KIND;
-    actor.yaw = f32::atan2(-7.0, 3.0);
+    actor.yaw = YAW;
     actor.no_posture = true;
     actor.dmg_cut = 0.0;
-    // m11_00 event 11105720 forces 21005 on him (21006 / 21007 later in the story): carving.
-    let idle = std::env::var("SHINOBI_SCULPTOR_ANIM").unwrap_or_else(|_| "a000_021005".into());
-    actor.play("SculptorCarving", &idle);
+    // The user wants ordinary sitting outside visits, without the map event's carving loop.
+    let idle = std::env::var("SHINOBI_SCULPTOR_ANIM").unwrap_or_else(|_| "a000_000000".into());
+    actor.play("SculptorIdle", &idle);
     if kind.data.anim(&idle).is_none() {
         warn!("Sculptor: missing clip {idle}");
     }
@@ -106,14 +112,16 @@ fn spawn(mut commands: Commands, combat: Res<Combat>) {
     PRESENT.store(true, Ordering::Relaxed);
 }
 
-/// c7010's 400 / 401 / 402 are the entry, seated conversation loop and return to carving.
+/// While Wolf sits he works on the prosthetic: 20001 (event 11105721, with Wolf's 711200), the
+/// 21003 loop (its prosthetic mask and tool sounds; 20000 is the dragonrot cough), then
+/// 20002 (with 711202) back to ordinary sitting outside the menu (the user's preference).
 fn visit_animation(a: &mut Actor, data: &CharData, visiting: bool) {
     let ended = a.t >= data.length(&a.anim);
     match (a.state.as_str(), visiting, ended) {
-        ("SculptorCarving" | "SculptorTalkEnd", true, _) => a.play("SculptorTalkStart", "a000_000400"),
-        ("SculptorTalkStart", true, true) => a.play("SculptorTalkLoop", "a000_000401"),
-        ("SculptorTalkStart" | "SculptorTalkLoop", false, _) => a.play("SculptorTalkEnd", "a000_000402"),
-        ("SculptorTalkEnd", false, true) => a.play("SculptorCarving", "a000_021005"),
+        ("SculptorIdle" | "SculptorTalkEnd", true, _) => a.play("SculptorTalkStart", "a000_020001"),
+        ("SculptorTalkStart", true, true) => a.play("SculptorTalkLoop", "a000_021003"),
+        ("SculptorTalkStart" | "SculptorTalkLoop", false, _) => a.play("SculptorTalkEnd", "a000_020002"),
+        ("SculptorTalkEnd", false, true) => a.play("SculptorIdle", "a000_000000"),
         (_, _, true) => {
             a.t %= data.length(&a.anim).max(1e-3);
             a.prev_t = a.t;
@@ -146,6 +154,11 @@ fn shot_visit(config: Res<GameConfig>, combat: Res<Combat>, mut done: Local<bool
     *done = true;
     tf.translation = POS + Vec3::new(1.2, CAPSULE_HALF_HEIGHT, -0.5);
     a.procedural("Locomotion");
+    if std::env::var("SHINOBI_SCULPTOR_SHOT").as_deref() == Ok("idle") {
+        tf.translation = POS + Vec3::new(2.2, CAPSULE_HALF_HEIGHT, -0.9);
+        a.yaw = YAW + std::f32::consts::PI;
+        return;
+    }
     tick(&mut p, &mut a, &combat.player, &mut tf, true, false, &config);
 }
 
@@ -251,22 +264,22 @@ mod tests {
     }
 
     #[test]
-    fn sculptor_stops_carving_for_the_visit_and_resumes_after_leaving() {
+    fn sculptor_works_on_the_prosthetic_for_the_visit_and_returns_to_sitting() {
         let data: CharData = serde_json::from_str(&std::fs::read_to_string(crate::paths::extracted().join("enemies/c7010.json")).unwrap()).unwrap();
         let mut a = Actor::new(Side::Enemy, 1.0, 1.0, 0.0, -1);
-        a.play("SculptorCarving", "a000_021005");
+        a.play("SculptorIdle", "a000_000000");
         visit_animation(&mut a, &data, true);
-        assert_eq!(a.anim, "a000_000400");
+        assert_eq!(a.anim, "a000_020001");
         a.t = data.length(&a.anim);
         visit_animation(&mut a, &data, true);
-        assert_eq!(a.anim, "a000_000401");
+        assert_eq!(a.anim, "a000_021003");
         a.t = data.length(&a.anim) + 0.1;
         visit_animation(&mut a, &data, true);
         assert!(a.t < data.length(&a.anim));
         visit_animation(&mut a, &data, false);
-        assert_eq!(a.anim, "a000_000402");
+        assert_eq!(a.anim, "a000_020002");
         a.t = data.length(&a.anim);
         visit_animation(&mut a, &data, false);
-        assert_eq!(a.anim, "a000_021005");
+        assert_eq!(a.anim, "a000_000000");
     }
 }

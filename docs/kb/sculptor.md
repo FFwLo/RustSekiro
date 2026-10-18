@@ -9,8 +9,10 @@
   no Enemy component and is excluded from combat resolution and enemy-targeted projectiles.
 - Talk uses EventText 10010200, on E. Wolf plays Event711200 to sit down, Event711201 while
   seated, and Event711202 to get up. The menu waits for the entry clip to finish; movement
-  waits for the exit clip to finish. c7010 plays a000_000400 when the visit starts, loops
-  a000_000401 while Wolf visits, then plays a000_000402 and resumes carving, a000_021005 (event 11105720's first-stage clip), when he leaves.
+  waits for the exit clip to finish. c7010 works on the prosthetic: a000_020001 when the visit starts, loops
+  a000_021003 while Wolf visits, then plays a000_020002 and returns to ordinary sitting,
+  a000_000000, when he leaves. Wolf snaps to the seat 1 m in front of him, facing him, so
+  the Sculptor can reach the prosthetic regardless of the approach direction.
   Fit and Upgrade retain their data-driven costs and
   ownership rules. Esc/Q from the Workshop closes the visit; backing out of a service returns
   to the Workshop. The idol menu no longer includes it.
@@ -27,11 +29,17 @@
   [TAE Animation Designations](https://www.nexusmods.com/sekiro/articles/236); local exported
   clip data and private real-app captures determine the selected sequence.
 - Private screenshot harness: SHINOBI_SCULPTOR_SHOT=1 opens the real talk interaction nearby;
+  SHINOBI_SCULPTOR_SHOT=idle places Wolf nearby without opening the menu, to inspect sitting.
   SHINOBI_SCULPTOR_ANIM=<clip> allows inspecting the NPC's exported clips. Use SHINOBI_SHOT and
   SHINOBI_SHOT_FRAMES=600, without desktop input or publishing game-asset screenshots.
-- Validation after the animation follow-up: release build and private real-app seated
-  Workshop capture passed with both characters and the regular player camera. Five Sculptor
+- Outside-menu idle is the user's requested ordinary sitting, not the story map's carving.
+  Private inspection of c7010.hks confirms Event21005 marks TALK_REF_C7010_DIGGING (1701001),
+  so 21005 is intentionally not used here. 20000 is the Dragonrot cough and is not used for
+  the visit. The HKS reader layout was checked against
+  [DSLuaDecompiler LuaFile.cs](https://github.com/katalash/DSLuaDecompiler/blob/master/LuaDecompilerCore/LuaFile.cs).
+- Validation after the ordinary-idle clarification: release build and private real-app idle /
+  Workshop captures passed with both characters and the regular player camera. Five Sculptor
   tests cover reach, encounter changes, no rest or checkpoint changes, the NPC's visit / return
   sequence, and the full player update completing the sit-down before opening the menu.
-  Full suite: 657 passed, 46 ignored with four threads (130.92 s). Fitting and upgrade pages
+  Full suite: 657 passed, 46 ignored with four threads (154.43 s). Fitting and upgrade pages
   also passed private real-app captures during the initial NPC implementation.
