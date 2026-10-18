@@ -1,17 +1,18 @@
 //! Swimming and diving: Wolf in deep water swims at the surface (SwimIdle, SwimMoveStart / Loop
 //! / End, the game's clips and their root motion), and with the Mibu Breathing Technique
-//! (EquipParamGoods 2420, a key item) dives: crouch goes under (SwimToDive), and there jump (or
-//! E, the user's key for it) rises (DiveMoveUp*), crouch sinks (DiveMoveDown*), the stick swims (DiveMove*) and step
-//! kicks ahead (DiveKickMove1); up at the surface he comes out of the dive (DiveToSwim). Where
-//! the floor comes up near the surface he stands and walks out (SwimToStandMove).
+//! (EquipParamGoods 2420, a key item) dives: Ctrl goes under (SwimToDive), and there F rises
+//! (DiveMoveUp*; at the top he comes out of the dive, DiveToSwim), Ctrl sinks (DiveMoveDown*) and
+//! the stick swims (DiveMove*); Shift held swims fast, a chain of kicks (`kicks`) at the surface
+//! and under it. Where the floor comes up near the surface he stands and walks out
+//! (SwimToStandMove).
 //!
 //! The water is boxes (`WATER`: low corner, high corner whose y is the surface) the map sets:
 //! the Construct's pool (sandbox.rs). Held in water the body is the swim's (`hold`): the clips'
 //! vertical root motion moves it (the tracks of SwimToDive -1.5 m, DiveToSwim +1.6 m, the up /
 //! down loops 4.5 / 3.75 m/s), the surface keeps it at `SWIM_DEPTH`, the box and its floor bound
-//! it. gap: the game's water volumes (map hit material 20-24) and their depth rules, the swim
-//! sprints and fall entry clips (FallToSwim / Swim / SwimSprint* / DiveSprint* have no clip in
-//! c0000's export), breath, underwater combat and the camera's underwater look are not done.
+//! it. gap: the game's water volumes (map hit material 20-24) and their depth rules, the fall
+//! entry clips (FallToSwim / Swim have no clip in c0000's export), breath, underwater combat and
+//! the camera's underwater look are not done.
 
 use std::sync::RwLock;
 
@@ -73,11 +74,64 @@ fn keep(a: &mut Actor, d: &CharData, state: &str, ended: bool) {
     }
 }
 
+/// The swim's controls (the user, 2026-10-18): Ctrl dives from the surface and sinks under
+/// water, F rises (and at the top comes out of the dive), Shift held swims fast.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Controls {
+    /// The stick, world space.
+    pub stick: Vec3,
+    pub rise_held: bool,
+    pub sink_held: bool,
+    pub dive_pressed: bool,
+    pub fast_held: bool,
+}
+
+/// The fast swim's kicks: at the surface the clips a000_031400 / 031410 (the HKS's
+/// W_SwimSprintStart / Loop, exported by key: their states have no clip of their own), under
+/// water DiveKickMove1 / 2 (041400 / 041410). Each bursts to 11 / 17 m/s and fades; held, the
+/// next kicks in where the clip takes a queued dodge (ChrActionFlag 141 "Underwater_End If Dodge
+/// Queued": 0.9 s at the surface, 1.0 s under), let go the stick takes over at 1.5 s
+/// (flag 11 "End If LS Move Queued").
+const SURFACE_KICKS: [(&str, &str); 2] = [("SwimSprint1", "a000_031400"), ("SwimSprint2", "a000_031410")];
+const DIVE_KICKS: [&str; 2] = ["DiveKickMove1", "DiveKickMove2"];
+const KICK_CHAIN: [f32; 2] = [0.9, 1.0];
+const KICK_TO_MOVE: f32 = 1.5;
+
+/// The fast swim, surface (`under` false) or under water: true while a kick plays or starts.
+fn kicks(a: &mut Actor, d: &CharData, c: &Controls, under: bool, moving: bool, ended: bool, dt: f32) -> bool {
+    let idx = if under { DIVE_KICKS.iter().position(|k| a.state == *k) } else { SURFACE_KICKS.iter().position(|(k, _)| a.state == *k) };
+    let play = |a: &mut Actor, i: usize| {
+        if under {
+            a.play_state(d, DIVE_KICKS[i]);
+        } else {
+            a.play(SURFACE_KICKS[i].0, SURFACE_KICKS[i].1);
+        }
+    };
+    match idx {
+        None if c.fast_held && moving => {
+            play(a, 0);
+            true
+        }
+        None => false,
+        Some(i) => {
+            turn_to(a, c.stick, dt);
+            if c.fast_held && moving && a.t >= KICK_CHAIN[under as usize] {
+                play(a, 1 - i);
+                true
+            } else if ended || (!c.fast_held && moving && a.t >= KICK_TO_MOVE) {
+                false
+            } else {
+                true
+            }
+        }
+    }
+}
+
 /// The swim's input step, in player.rs decide before the hug / hang: true while Wolf swims (the
-/// rest of decide does not run). `stick` world space; `jump_held` / `crouch_held` move him up
-/// and down under water.
+/// rest of decide does not run).
 #[allow(clippy::too_many_arguments)]
-pub fn tick(p: &mut Player, a: &mut Actor, d: &CharData, tf: &Transform, stick: Vec3, jump_held: bool, crouch_held: bool, crouch_pressed: bool, step_pressed: bool, ended: bool, mibu: bool, dt: f32, log: &mut crate::hud::CombatLog) -> bool {
+pub fn tick(p: &mut Player, a: &mut Actor, d: &CharData, tf: &Transform, c: Controls, ended: bool, mibu: bool, dt: f32, log: &mut crate::hud::CombatLog) -> bool {
+    let stick = c.stick;
     let feet = tf.translation - Vec3::Y * CAPSULE_HALF_HEIGHT;
     let Some((_, hi)) = water_at(feet) else {
         if p.swim.take().is_some() {
@@ -113,7 +167,7 @@ pub fn tick(p: &mut Player, a: &mut Actor, d: &CharData, tf: &Transform, stick: 
         return true;
     }
     let moving = stick.length_squared() > 0.01;
-    let busy = matches!(a.state.as_str(), "StandMoveToSwim" | "SwimToDive" | "DiveToSwim" | "DiveKickMove1" | "DiveKickMove2") && !ended;
+    let busy = matches!(a.state.as_str(), "StandMoveToSwim" | "SwimToDive" | "DiveToSwim") && !ended;
     if !swim.diving {
         // Out where it gets shallow.
         if surface - floor < STAND_DEPTH && moving {
@@ -125,7 +179,7 @@ pub fn tick(p: &mut Player, a: &mut Actor, d: &CharData, tf: &Transform, stick: 
             turn_to(a, stick, dt);
             return true;
         }
-        if crouch_pressed {
+        if c.dive_pressed {
             if mibu {
                 swim.diving = true;
                 a.play_state(d, "SwimToDive");
@@ -133,6 +187,9 @@ pub fn tick(p: &mut Player, a: &mut Actor, d: &CharData, tf: &Transform, stick: 
                 return true;
             }
             log.push("diving needs the Mibu Breathing Technique", Color::srgb(0.8, 0.8, 0.8));
+        }
+        if kicks(a, d, &c, false, moving, ended, dt) {
+            return true;
         }
         if moving {
             turn_to(a, stick, dt);
@@ -162,34 +219,33 @@ pub fn tick(p: &mut Player, a: &mut Actor, d: &CharData, tf: &Transform, stick: 
         return true;
     }
     // Up at the surface: out of the dive.
-    if jump_held && feet.y >= surface - SWIM_DEPTH - 0.05 {
+    if c.rise_held && feet.y >= surface - SWIM_DEPTH - 0.05 {
         swim.diving = false;
         a.play_state(d, "DiveToSwim");
         return true;
     }
-    if step_pressed && a.play_state(d, "DiveKickMove1") {
+    if kicks(a, d, &c, true, moving, ended, dt) {
         return true;
     }
     turn_to(a, stick, dt);
     // The loop for what is held, through its start; letting go plays its end.
-    let (group, start, lp, end) = if jump_held {
-        ("Up", "DiveMoveUpStart", "DiveMoveUpLoop", "DiveMoveUpEnd")
-    } else if crouch_held {
-        ("Down", "DiveMoveDownStart", "DiveMoveDownLoop", "DiveMoveDownEnd")
+    let (start, lp) = if c.rise_held {
+        ("DiveMoveUpStart", "DiveMoveUpLoop")
+    } else if c.sink_held {
+        ("DiveMoveDownStart", "DiveMoveDownLoop")
     } else if moving {
-        ("Move", "DiveMoveStart", "DiveMoveLoop", "DiveMoveEnd")
+        ("DiveMoveStart", "DiveMoveLoop")
     } else {
-        ("", "", "", "")
+        ("", "")
     };
     let cur = a.state.clone();
-    let same = !group.is_empty() && (cur == start || cur == lp);
-    if same {
+    if !start.is_empty() && (cur == start || cur == lp) {
         if cur == start && ended {
             a.play_state(d, lp);
         } else if cur == lp {
             keep(a, d, lp, ended);
         }
-    } else if !group.is_empty() {
+    } else if !start.is_empty() {
         a.play_state(d, start);
     } else {
         let end_of = |s: &str| match s {
@@ -206,7 +262,6 @@ pub fn tick(p: &mut Player, a: &mut Actor, d: &CharData, tf: &Transform, stick: 
             None => keep(a, d, "DiveIdle", ended),
         }
     }
-    let _ = end;
     true
 }
 

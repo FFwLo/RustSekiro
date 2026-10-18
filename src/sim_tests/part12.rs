@@ -825,7 +825,7 @@ fn a_guard_calls_out_as_it_spots_wolf() {
     assert!(called, "no call (state {})", app.world().get::<Enemy>(guard).unwrap().targeting.state);
 }
 
-/// Wolf in deep water swims (SwimIdle); crouch dives only with the Mibu Breathing Technique
+/// Wolf in deep water swims (SwimIdle); Ctrl dives only with the Mibu Breathing Technique
 /// held (swim.rs; the user: "swimming now ... mibu breathing technique").
 #[test]
 fn wolf_swims_and_dives_with_the_mibu_technique() {
@@ -851,15 +851,15 @@ fn wolf_swims_and_dives_with_the_mibu_technique() {
         world.query_filtered::<&Transform, With<Player>>().single(world).unwrap().translation.y - CAPSULE_HALF_HEIGHT
     };
     assert!((y - (hi.y - crate::swim::SWIM_DEPTH)).abs() < 0.05, "at the surface: feet {y}");
-    // Without the technique crouch does not dive.
+    // Without the technique Ctrl (the prosthetic key) does not dive.
     app.world_mut().resource_mut::<crate::config::GameConfig>().player.items.retain(|(g, _)| *g != crate::swim::MIBU_BREATHING);
-    app.world_mut().resource_mut::<PadInput>().press(Action::Crouch);
+    app.world_mut().resource_mut::<PadInput>().press(Action::Prosthetic);
     run(&mut app, 30);
     let s = state(&mut app);
     assert!(!s.contains("Dive"), "no dive without it: {s}");
-    // With it, crouch goes under.
+    // With it, Ctrl goes under.
     crate::items::add(&mut app.world_mut().resource_mut::<crate::config::GameConfig>(), crate::swim::MIBU_BREATHING, 1);
-    app.world_mut().resource_mut::<PadInput>().press(Action::Crouch);
+    app.world_mut().resource_mut::<PadInput>().press(Action::Prosthetic);
     run(&mut app, 10);
     assert_eq!(state(&mut app), "SwimToDive");
     crate::swim::WATER.write().unwrap().retain(|w| w.0 != lo);
@@ -893,4 +893,37 @@ fn wolf_swims_forward_and_rises() {
     let (p1, _, anim) = pos(&mut app);
     assert!((p1 - p0).with_y(0.0).length() > 1.5, "swam {:.2} m from {s0}: states {states:?}, anim {anim}", (p1 - p0).with_y(0.0).length());
     crate::swim::WATER.write().unwrap().retain(|w| w.0 != lo);
+}
+
+/// Shift held swims fast: the kick chain (a000_031400 / 031410) covers more water than the plain
+/// stroke in the same time (the user: "fast swimming with shift").
+#[test]
+fn shift_swims_fast() {
+    let mut dist = Vec::new();
+    for (k, fast) in [false, true].into_iter().enumerate() {
+        let x = 3000.0 + 100.0 * k as f32;
+        let (lo, hi) = (Vec3::new(x - 30.0, -5.0, -40.0), Vec3::new(x + 30.0, -0.4, 40.0));
+        crate::swim::WATER.write().unwrap().push((lo, hi));
+        let mut app = app_cfg("c1010", None, Vec::new());
+        {
+            let world = app.world_mut();
+            let mut q = world.query_filtered::<&mut Transform, With<Player>>();
+            q.single_mut(world).unwrap().translation = Vec3::new(x, -3.0 + CAPSULE_HALF_HEIGHT, 0.0);
+        }
+        run(&mut app, 60);
+        let at = |app: &mut App| {
+            let world = app.world_mut();
+            world.query_filtered::<&Transform, With<Player>>().single(world).unwrap().translation
+        };
+        let p0 = at(&mut app);
+        for _ in 0..180 {
+            let mut pad = app.world_mut().resource_mut::<PadInput>();
+            pad.stick = Vec2::Y;
+            pad.dodge_held = fast;
+            app.update();
+        }
+        dist.push((at(&mut app) - p0).with_y(0.0).length());
+        crate::swim::WATER.write().unwrap().retain(|w| w.0 != lo);
+    }
+    assert!(dist[1] > dist[0] * 1.3, "plain {:.1} m, fast {:.1} m in 3 s", dist[0], dist[1]);
 }

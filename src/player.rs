@@ -537,9 +537,8 @@ pub struct PadInput {
     pub prosthetic_held: bool,
     /// The interact / hug / hang button held (env 1108: the air hang catch wants it held).
     pub interact_held: bool,
-    /// Jump and crouch held: up and down under water (swim.rs).
-    pub jump_held: bool,
-    pub crouch_held: bool,
+    /// The grappling hook key held (F): up under water (swim.rs).
+    pub grapple_held: bool,
     pressed: Vec<Action>,
     pub reset: bool,
     /// Sheathe / draw the sword (X).
@@ -1499,8 +1498,7 @@ pub(crate) fn read_pad(pads: &Query<&Gamepad>, enabled: bool, pad: &mut PadInput
         pad.attack_held |= g.pressed(GamepadButton::RightTrigger);
         pad.guard_held |= g.pressed(GamepadButton::LeftTrigger);
         pad.dodge_held |= g.pressed(GamepadButton::East);
-        pad.jump_held |= g.pressed(GamepadButton::South);
-        pad.crouch_held |= g.pressed(GamepadButton::LeftThumb);
+        pad.grapple_held |= g.pressed(GamepadButton::LeftTrigger2);
         pad.prosthetic_held |= g.pressed(GamepadButton::RightTrigger2);
         let mut press = |b: GamepadButton, a: Action| {
             if g.just_pressed(b) {
@@ -1556,8 +1554,7 @@ pub(crate) fn read_input(
     pad.attack_held = lmb || keys.pressed(KeyCode::KeyJ);
     pad.guard_held = rmb || keys.pressed(KeyCode::KeyK);
     pad.dodge_held = keys.pressed(KeyCode::ShiftLeft);
-    pad.jump_held = keys.pressed(KeyCode::Space);
-    pad.crouch_held = keys.pressed(KeyCode::KeyQ);
+    pad.grapple_held = keys.pressed(KeyCode::KeyF);
     if (captured && mouse.just_pressed(MouseButton::Left)) || keys.just_pressed(KeyCode::KeyJ) {
         pad.pressed.push(Action::Attack);
     }
@@ -2505,6 +2502,11 @@ fn decide(
     if a.crouch && !crouch_ok(&a.state) {
         a.crouch = false;
     }
+    // Swimming (swim.rs), Ctrl and F are the dive and the rise: no tool, no grappling hook.
+    let swim_dive = pad.pressed.contains(&Action::Prosthetic);
+    if p.swim.is_some() {
+        pad.pressed.retain(|act| !matches!(act, Action::Prosthetic | Action::Grapple));
+    }
     let presses = pad.pressed.len() as u32;
     for act in pad.pressed.drain(..) {
         if buffers(d, a, act) {
@@ -3403,7 +3405,8 @@ fn decide(
     }
     // In deep water (swim.rs): the swim and the dive, nothing else.
     let mibu = crate::items::count(&config, crate::swim::MIBU_BREATHING) > 0;
-    if crate::swim::tick(p, a, d, tf, stick, pad.jump_held || pad.interact_held, pad.crouch_held, crouch_pressed, dock_step, ended, mibu, dt, &mut log) {
+    let swim = crate::swim::Controls { stick, rise_held: pad.grapple_held, sink_held: pad.prosthetic_held, dive_pressed: swim_dive, fast_held: pad.dodge_held };
+    if crate::swim::tick(p, a, d, tf, swim, ended, mibu, dt, &mut log) {
         return;
     }
     if dock_step_tick(p, a, d, tf, ledges.as_deref(), stick, pad.walk, pad.interact_held, interact_pressed, dock_jump, dock_step, ended, &mut log, attack_pressed, &combat, &enemies) {

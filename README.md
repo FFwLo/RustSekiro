@@ -51,6 +51,7 @@ the game's key guide text). E (talk / wall hug / ledge hang) is reserved for tho
 | Next quick item | C |
 | Menus: OK / back / move | Enter or E / Esc or Q / arrows, mouse wheel; click a row |
 | Crouch | Q |
+| Swim: fast / dive and sink / rise (diving needs the Mibu Breathing Technique) | hold Shift / Ctrl / F |
 | Wall hug / ledge hang / climb up (hold in the air to catch a ledge) | E |
 | Wall jump (jump in the air against a wall, or jump while hugging / hanging) | Space |
 | Sheathe / draw | X |

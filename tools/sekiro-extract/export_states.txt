@@ -1564,3 +1564,8 @@ DiveDeathStart
 DiveDeathLoop
 SwimDeathStart
 SwimDeathLoop
+# The surface swim sprint's clips (no state of their own in the export; swim.rs)
+a000_031400
+a000_031410
+a000_031420
+a000_031430
