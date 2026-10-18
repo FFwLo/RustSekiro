@@ -236,6 +236,14 @@ before.
   is lit at 0 h (the Outskirts is a dusk area), so this stays a sandbox-only look until a
   night map (m11_00 castle, m10_00 Hirata) is compared; nothing to fix from the data.
 
+- **Debug menu MAP section (2026-10-17, debug_menu.rs):** map (every `map_<id>.bin` with its
+  json plus the sandbox; Enter loads it live through `map::GoToMap`, then a fight reset), time of
+  day (whole hours), day-night cycle (`map::DayCycle`, off / 1 h a minute / 10 s / 2 s, in
+  quarter-hour re-applies), weather (`map::MapLooks`: each draw-param look, base plus
+  `drawparam_variants`, with each LightSet id of the map) and sky (`sky::SkyChoice`, auto or one
+  of the eight domes). Sekiro has no weather table (Paramdex SDT has no WeatherParam); the late
+  castle snowfall / fire sky are story SFX and the Cloud_Fire dome (gap, not exported).
+
 ### Open
 - Lighting is the game's own light set, GI probe, LUT and auto exposure; in-between hours blend
   the two probe variants around the hour (`probe_maps`, RGBA16F texel blend). (Material names like
@@ -904,3 +912,24 @@ listed above, a real gate frame to compare against, re-exporting the other arena
   m25 arena (map.rs OWN_ARENA_ROWS / sandbox_exception; Wolf fell through the sandbox floor
   there), and both arenas reach 140 m (tools/boss_arenas.py OVERRIDES; the Divine
   Dragon's wind pushes Wolf away), 96 grapple points each.
+- 2026-10-17 every main boss on its own arena: map = "sandbox" now keeps every row of
+  menu.rs MAIN_BOSS_ROWS on its arena (map.rs sandbox_exception; OWN_ARENA_ROWS removed), and
+  the rows that used to share the castle top got their own exports (tools/boss_arenas.py
+  OWN_ROWS): the Sword Saint 54000000 and Tomoe 71101000 (m11_02 field), the prologue
+  Genichiro 71000000 (m11_02), Owl (Father) 50601010 (m10 Hirata), Gyoubu 50800000 and the
+  Demon of Hatred 70200000 (m11_00). Emma / Isshin Ashina 74000010 / 54300000 and the Owl
+  50600000 stay on the castle top (MOVED). Gyoubu's MSB spot faces the gate's walls and steps:
+  his arena is turned 180 and stands 16 m into the field (OVERRIDES; at 0 / +-45 / -90 there was
+  no floor under Wolf's start). sekiro-rs has no arena besides the Owl's castle top (m11_01).
+  Checked in game (SHINOBI_AUTOBOSS): Gyoubu, Butterfly, Owl (Father), Genichiro and the Demon
+  reach their defeat on their arenas.
+- 2026-10-17 crash on a switch into Hirata (m10, Butterfly / Owl (Father)): the Vulkan driver
+  lost the device 20-30 s after a switch from the castle top (DeviceLost, weird colours first).
+  Only with the fog and the sun's shadows both on; a fresh start on Hirata never did, nor DX12
+  (which draws no 3D at all here). The castle top has VolumetricFog, Hirata has it off: the fog
+  had made the camera's depth sampleable (height_fog.rs depth_binding) and that stayed after the
+  fog went. Now the usage goes with the fog (FogDepthBinding) and the fog pass skips a frame
+  whose depth is not sampleable yet. Also a map without a probe now removes the last map's
+  EnvironmentMapLight / Skybox (apply_lighting). Checked: castle top -> Butterfly, -> Owl
+  (Father) and back, 100 s each, no error. Test knob: SHINOBI_ARENA_CYCLE=<chr>:<row>,...
+  (autoboss.rs) starts those fights 6 s apart.

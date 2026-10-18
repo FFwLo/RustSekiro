@@ -345,6 +345,7 @@ fn unpack(game: &Path, out: &Path, pattern: &str) {
         .map(|l| (bhd::path_hash(l), l))
         .collect();
     println!("{} dictionary paths match", wanted.len());
+    let only = std::env::var("SEKIRO_UNPACK_ONLY").ok();
     let mut found = 0;
     for n in 1..=5 {
         let pem = std::fs::read_to_string(format!("{}/Data{n}.pem", keys_dir())).unwrap();
@@ -360,7 +361,11 @@ fn unpack(game: &Path, out: &Path, pattern: &str) {
                 rel = rel.trim_end_matches(".dcx").to_string();
             }
             let dest = out.join(&rel);
-            write(&dest, &data);
+            // SEKIRO_UNPACK_ONLY=<regex>: of a binder, write only the inner files whose names
+            // match (the maps' .grass tables without their gigabytes of pieces).
+            if only.is_none() {
+                write(&dest, &data);
+            }
             println!("Data{n}: {rel} ({} bytes)", data.len());
             if data.starts_with(b"BND4") {
                 expand_bnd(&dest, &data);
@@ -389,7 +394,10 @@ fn expand_bnd(dest: &Path, data: &[u8]) {
             write(&dir.join(format!("{folder}_{name}")), &f.data);
         }
         let p = dir.join(&name);
-        write(&p, &f.data);
+        let only = std::env::var("SEKIRO_UNPACK_ONLY").ok().and_then(|r| regex::Regex::new(&r).ok());
+        if only.as_ref().is_none_or(|re| re.is_match(&name)) {
+            write(&p, &f.data);
+        }
         if f.data.starts_with(b"BND4") {
             expand_bnd(&p, &f.data);
         }

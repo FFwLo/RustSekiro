@@ -174,6 +174,31 @@ if ($python) {
     python (Join-Path $PSScriptRoot "patrols.py")
     # Prosthetic tool models and their anims (parts/wp_a_07xx) -> extracted/tool (src/model/tool.rs).
     python (Join-Path $PSScriptRoot "tool_export.py") --sekiro $Sekiro --exe $exe
+    # The maps' own lights, placed effects and grass (src/map_lights.rs, map_fx.rs, map_grass.rs):
+    # the BTL light banks, the MSB effect regions with the first visit's event state, and the
+    # grass tables of the map pieces (only the .grass files of each mapbnd are written).
+    $maps = '^/map/m(10|11|13|15|17|20|25)_\d\d_00_00/'
+    & $exe unpack $Sekiro $out ($maps + '.*\.btl')
+    python (Join-Path $PSScriptRoot "map_lights.py")
+    python (Join-Path $PSScriptRoot "map_fx.py")
+    if (Get-Command npm -ErrorAction SilentlyContinue) {
+        $env:SEKIRO_EXTRACT = $exe
+        python (Join-Path $PSScriptRoot "fxr_extract.py") --ids (Join-Path $out "map_fx_ids.txt")
+    }
+    $env:SEKIRO_UNPACK_ONLY = '\.grass$'
+    & $exe unpack $Sekiro $out ($maps + 'm.*\.mapbnd')
+    Remove-Item Env:SEKIRO_UNPACK_ONLY
+    python (Join-Path $PSScriptRoot "map_grass.py")
+    # The clump models (GrassTypeParam modelName) and their textures; o007020's texture serves
+    # o007320 / o007330 too. Then map_grass.py again for their materials' textures.
+    $grass = @(Get-Content (Join-Path $out "map_grass_models.txt")) + "o007020"
+    & $exe unpack $Sekiro $out ('^/obj/(' + ($grass -join '|') + ')\.objbnd')
+    foreach ($m in $grass) {
+        $d = Join-Path $out "obj\$m.objbnd.d"
+        & $exe objmesh (Join-Path $d "$m.flver") (Join-Path $out "objmesh\$m.json")
+        if (Test-Path (Join-Path $d "$m.tpf")) { & $exe tpf (Join-Path $d "$m.tpf") (Join-Path $out "tex") | Out-Null }
+    }
+    python (Join-Path $PSScriptRoot "map_grass.py")
     # Every boss in its own arena (kb/map.md): one map at a time, about 2 GB of raw files each,
     # deleted after the export (30-40 min, 3.6 GB kept). -SkipArenas leaves every boss on the gate map.
     if (-not $SkipArenas) {

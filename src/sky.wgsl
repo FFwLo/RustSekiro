@@ -1,5 +1,5 @@
 // The sky dome (sky.rs): camera-centred at infinite depth, the authored Ver2 / original
-// SkyDome gradient, sun lobe and cloud masks, and the Cloud layer.
+// SkyDome gradient, sun lobe and cloud masks, the Cloud layer and the FarMountain range.
 // Adapted from sekiro-rs crates/game/src/sky.wgsl (9ee18b0; MIT / Apache-2.0). The Ver2 branch
 // checked 2026-10-13 against the game's M[Sky]_SkyDome_Ver2_{0,1}_Fwd.ppo (same terms; colour
 // packing rgb^2.2 x Intensity in sky.rs; switch 1 lights by the MTD's float3_6; the clouds'
@@ -66,6 +66,18 @@ fn fragment(v: VertexOutput) -> @location(0) vec4<f32> {
     let height=max(ray.y,0.0);
     let sun=max(dot(ray,sky.sun.xyz),0.0);
     var color: vec3<f32>;
+    if sky.control.x>2.5 {
+        // FarMountain (sekiro-rs sky.wgsl, after the game's M[LandScape]_FarMountain shader): the
+        // painted RGBA range x colour 10 x a sun lobe between 13 and 12, blended toward a
+        // height haze between 11 and 8 (1 - uv.y^1.5) by floats 21 / 22.
+        let mountain=textureSample(high,high_sampler,v.uv);
+        if mountain.a<sky.control.w { discard; }
+        let lobe=min(power(sun*(1.0+f(23u)),f(24u)),1.0);
+        let lit=mountain.rgb*c(0u)*mix(c(3u),c(2u),lobe);
+        let haze=1.0-min(power(v.uv.y,1.5),1.0);
+        let colour=mix(lit,mix(c(1u),c(4u),haze),mix(f(21u),f(22u),haze));
+        return vec4(max(colour,vec3(0.0))*sky.control.y*view.exposure,1.0);
+    }
     if sky.control.x>1.5 {
         // Native Cloud geometry and masks; normal perturbation is approximated by a mask slope.
         let drift=sky.control.z*0.0002;

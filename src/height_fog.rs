@@ -105,12 +105,23 @@ impl Plugin for HeightFogPlugin {
     }
 }
 
-/// Lets a fogged camera's depth buffer be sampled (keeping the usages others added).
-fn depth_binding(mut cams: Query<&mut Camera3d, With<GameFog>>) {
-    for mut c3 in &mut cams {
+/// The depth usage this module added (not one another system set).
+#[derive(Component)]
+struct FogDepthBinding;
+
+/// Lets a fogged camera's depth buffer be sampled (keeping the usages others added), and takes
+/// that back when the fog goes: a switch from a fogged map (the castle top) to one without
+/// (Hirata, VolumetricFog off) kept the sampled depth, and with the sun's shadows on the Vulkan
+/// driver lost the device 20-30 s later (2026-10-17; a fresh start on Hirata never did).
+fn depth_binding(mut commands: Commands, mut cams: Query<(Entity, &mut Camera3d, Has<GameFog>, Has<FogDepthBinding>)>) {
+    for (e, mut c3, fogged, ours) in &mut cams {
         let usage = TextureUsages::from(c3.depth_texture_usages);
-        if !usage.contains(TextureUsages::TEXTURE_BINDING) {
+        if fogged && !usage.contains(TextureUsages::TEXTURE_BINDING) {
             c3.depth_texture_usages = (usage | TextureUsages::TEXTURE_BINDING).into();
+            commands.entity(e).insert(FogDepthBinding);
+        } else if !fogged && ours {
+            c3.depth_texture_usages = (usage - TextureUsages::TEXTURE_BINDING).into();
+            commands.entity(e).remove::<FogDepthBinding>();
         }
     }
 }
@@ -166,7 +177,8 @@ fn fog(
     let (Some(pso), Some(view_binding), Some(fog_binding)) = (cache.get_render_pipeline(*id), views.uniforms.binding(), uniforms.uniforms().binding()) else {
         return;
     };
-    if target.main_texture_format() != TextureFormat::Rgba16Float {
+    // The frame the fog comes or goes, its depth usage (depth_binding) is a frame behind.
+    if target.main_texture_format() != TextureFormat::Rgba16Float || !depth.texture.usage().contains(TextureUsages::TEXTURE_BINDING) {
         return;
     }
     let post = target.post_process_write();

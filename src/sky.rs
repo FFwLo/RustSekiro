@@ -11,6 +11,9 @@
 //! M[Sky]_SkyDome_Ver2_{0,1}_Fwd.ppo, D3DDisassemble): colours are rgb^2.2 x Intensity (was gamma
 //! 2), switch 1's sun lobe uses the MTD's float3_6 (not the scene sun); kb/map.md "Sky domes".
 //! `SHINOBI_MAP_PROBE_SKY=1` keeps the probe sky box instead.
+//! The painted far-mountain range: the dome's "horizon" companion (m900130 for m900030; the
+//! extractor finds it by the m89 MSB's entity groups), drawn with the FarMountain material's own
+//! colours (sekiro-rs docs/BACKDROP.md, 2026-10-15; adopted 2026-10-17).
 //! gap: the castle's late-story fire sky (Cloud_Fire) and the debug 8907015 are not chosen.
 
 use bevy::asset::embedded_path;
@@ -30,7 +33,7 @@ pub struct SkyPlugin;
 impl Plugin for SkyPlugin {
     fn build(&self, app: &mut App) {
         bevy::asset::embedded_asset!(app, "sky.wgsl");
-        app.add_plugins(MaterialPlugin::<SkyMaterial>::default()).add_systems(Update, (load_library, update_sky).chain());
+        app.add_plugins(MaterialPlugin::<SkyMaterial>::default()).init_resource::<SkyChoice>().add_systems(Update, (load_library, update_sky).chain());
     }
 }
 
@@ -41,7 +44,8 @@ pub(crate) struct SkyInputs {
     vectors: [Vec4; 10],
     uv: [Vec4; 10],
     sun: Vec4,
-    /// Kind (0 SkyDome, 1 Ver2, 2 Cloud), radiance scale, time, GXFT_SATStaticSwitch.
+    /// Kind (0 SkyDome, 1 Ver2, 2 Cloud, 3 FarMountain), radiance scale, time,
+    /// GXFT_SATStaticSwitch (FarMountain: its g_AlphaRef / 255).
     control: Vec4,
     /// The game's world +X in arena space (the Ver2 clouds' flow axis, sky.wgsl `flow`).
     flow_x: Vec4,
@@ -67,7 +71,8 @@ impl Material for SkyMaterial {
         false
     }
     fn alpha_mode(&self) -> AlphaMode {
-        if self.inputs.control.x > 1.5 { AlphaMode::Blend } else { AlphaMode::Opaque }
+        // The FarMountain range is alpha-tested (discard below g_AlphaRef), not blended.
+        if self.inputs.control.x > 1.5 && self.inputs.control.x < 2.5 { AlphaMode::Blend } else { AlphaMode::Opaque }
     }
     fn vertex_shader() -> ShaderRef {
         bevy::asset::AssetPath::from_path_buf(embedded_path!("sky.wgsl")).with_source("embedded").into()
@@ -91,6 +96,23 @@ impl Material for SkyMaterial {
 
 /// The dome for a map at an hour: m10's and m25's own, else the nearest of the six story-time
 /// keys (common.emevd event 100's groups, the light set's hours).
+/// Every dome of the library with its story time (common.emevd event 100's groups; m10's and
+/// m25's own), for the debug menu's sky choice.
+pub const DOMES: [(&str, &str); 8] = [
+    ("m900000", "morning"),
+    ("m900010", "afternoon"),
+    ("m900020", "evening"),
+    ("m900030", "night"),
+    ("m900040", "past night"),
+    ("m900050", "dawn"),
+    ("m900060", "Hirata Estate"),
+    ("m900070", "Fountainhead Palace"),
+];
+
+/// Debug menu: a dome shown in place of the map's and hour's own (None = `selection`).
+#[derive(Resource, Default)]
+pub struct SkyChoice(pub Option<&'static str>);
+
 pub(crate) fn selection(source_map: &str, hour: f32) -> &'static str {
     if source_map.starts_with("m25") {
         return "m900070";
@@ -107,7 +129,9 @@ pub(crate) fn selection(source_map: &str, hour: f32) -> &'static str {
 /// A material's MTD params as the shader's inputs (sekiro-rs sky.rs `inputs`).
 pub(crate) fn inputs(row: &Value, radiance: f32) -> SkyInputs {
     let shader = row["shader"].as_str().unwrap_or_default();
-    let (prefix, kind) = if shader.contains("Ver2") {
+    let (prefix, kind) = if shader.contains("FarMountain") {
+        ("M_LandScape__FarMountain_snp_0_", 3.0)
+    } else if shader.contains("Ver2") {
         ("M_Sky__SkyDome_Ver2_snp_0_", 1.0)
     } else if shader.contains("M[Sky]_Cloud.") {
         ("M_Sky__Cloud_snp_0_", 2.0)
@@ -121,7 +145,9 @@ pub(crate) fn inputs(row: &Value, radiance: f32) -> SkyInputs {
     };
     SkyInputs {
         colors: std::array::from_fn(|i| {
-            let name = format!("{prefix}color_{i}");
+            // FarMountain's colours 10, 11, 12, 13 and 8 in slots 0-4 (sky.wgsl's terms).
+            let slot = if kind == 3.0 { [10, 11, 12, 13, 8][i.min(4)] } else { i };
+            let name = format!("{prefix}color_{slot}");
             let c = vector(&name).truncate();
             let intensity = values(&format!("{name}-Intensity")).first().copied().unwrap_or(1.0);
             // GXMaterialParam_HDRColor (FUN_1403dc4b0): rgb^2.2 x Intensity; the metaparam flag
@@ -132,7 +158,7 @@ pub(crate) fn inputs(row: &Value, radiance: f32) -> SkyInputs {
         vectors: std::array::from_fn(|i| vector(&format!("{prefix}float3_{i}"))),
         uv: std::array::from_fn(|i| vector(&format!("{prefix}float2_{i}"))),
         sun: Vec4::Y,
-        control: Vec4::new(kind, radiance, 0.0, values("GXFT_SATStaticSwitch").first().copied().unwrap_or(0.0)),
+        control: Vec4::new(kind, radiance, 0.0, if kind == 3.0 { values("g_AlphaRef").first().copied().unwrap_or(0.0) / 255.0 } else { values("GXFT_SATStaticSwitch").first().copied().unwrap_or(0.0) }),
         flow_x: Vec4::new(-1.0, 0.0, 0.0, 0.0),
     }
 }
@@ -194,9 +220,10 @@ fn update_sky(
     mut materials: ResMut<Assets<SkyMaterial>>,
     domes: Query<(Entity, &MeshMaterial3d<SkyMaterial>), With<Dome>>,
     skyboxes: Query<Entity, (With<Camera3d>, With<bevy::core_pipeline::Skybox>)>,
+    choice: Res<SkyChoice>,
 ) {
     let (Some(lighting), Some(mut library)) = (lighting, library) else { return };
-    let want = selection(&lighting.source_map, lighting.hour);
+    let want = choice.0.unwrap_or_else(|| selection(&lighting.source_map, lighting.hour));
     if library.current != want || library.yaw != lighting.arena_yaw {
         for (e, _) in &domes {
             commands.entity(e).despawn();
@@ -205,7 +232,7 @@ fn update_sky(
         library.yaw = lighting.arena_yaw;
         let row = library.json["models"][want].clone();
         let radiance = crate::map::ENV_PER_UNIT;
-        for key in ["dome", "cloud"] {
+        for key in ["dome", "cloud", "horizon"] {
             let m = &row[key];
             let Some(mesh) = m.get("mesh").and_then(|x| dome_mesh(x, lighting.arena_yaw)) else { continue };
             // The texture slots in name order: the first is the high mask, the last the low.
@@ -283,5 +310,12 @@ mod tests {
         let morning = inputs(&json["models"]["m900000"]["dome"], 1.0);
         assert_eq!(morning.control.x, 1.0, "m900000 is a Ver2 dome");
         assert!((morning.colors[2].x - 30.0).abs() < 1e-4, "{:?}", morning.colors[2]);
+        // The night dome's painted range m900130 (FarMountain, alpha ref 64).
+        let night = &json["models"]["m900030"]["horizon"];
+        assert_eq!(night["model"], "m900130");
+        let far = inputs(night, 1.0);
+        assert_eq!(far.control.x, 3.0);
+        assert!((far.control.w - 64.0 / 255.0).abs() < 1e-6);
+        assert!(dome_mesh(&night["mesh"], 0.0).is_some_and(|m| m.count_vertices() == 52));
     }
 }

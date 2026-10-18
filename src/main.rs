@@ -46,6 +46,9 @@ mod hud;
 mod icon;
 mod interp;
 mod map;
+mod map_fx;
+mod map_grass;
+mod map_lights;
 mod menu;
 mod sandbox;
 mod showcase;
@@ -65,6 +68,7 @@ mod stealth;
 mod swim;
 mod throw_trace;
 mod trace;
+mod autoboss;
 mod vfx;
 mod wire;
 mod workshop;
@@ -91,6 +95,7 @@ fn main() {
         .add_plugins(interp::InterpPlugin)
         .add_plugins(debug_menu::DebugMenuPlugin)
         .add_plugins(trace::TracePlugin)
+        .add_plugins(autoboss::AutoBossPlugin)
         .add_plugins(throw_trace::ThrowTracePlugin)
         .add_plugins(vfx::VfxPlugin)
         .add_plugins(wire::WirePlugin)
@@ -102,6 +107,9 @@ fn main() {
         .add_plugins(height_fog::HeightFogPlugin)
         .add_plugins(sky::SkyPlugin)
         .add_plugins(map::MapPlugin)
+        .add_plugins(map_lights::MapLightsPlugin)
+        .add_plugins(map_fx::MapFxPlugin)
+        .add_plugins(map_grass::MapGrassPlugin)
         .add_plugins(icon::IconPlugin)
         .add_plugins((
             config::ConfigPlugin,

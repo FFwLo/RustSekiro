@@ -1563,7 +1563,7 @@ fn update_stealth(
         }
         // (Every enemy, the ones with deathblow dots too: spawn_one counts at least 1, so the
         // old "no dots" test hid them all; the game marks the minibosses as well.)
-        let show = !e.is_dead() && !e.is_disabled() && !ph.is_some_and(|p| p.parked()) && (level > 0 || ratio > 0.0) && m.found_t < FOUND_SHOW;
+        let show = !e.is_dead() && !e.is_disabled() && !e.stand_in && !ph.is_some_and(|p| p.parked()) && (level > 0 || ratio > 0.0) && m.found_t < FOUND_SHOW;
         // Anchored on the lock-on dummy 220 (root + 1.4 m without it), the mark's centre
         // STEALTH_LIFT px above it. gap: the game's anchor for this mark is not traced.
         let head = dm.and_then(|d| d.0.get(&220)).and_then(|d| dummies.get(*d).ok()).map_or(etf.translation() + Vec3::Y * 1.4, |g| g.translation());
