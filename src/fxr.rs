@@ -704,7 +704,9 @@ fn step_node(n: &mut NodeInst, lib: &mut FxrLib, parent: Transform, dt: f32, sto
                 }
                 _ => {}
             }
-            if em["type"].as_i64() == Some(399) && count > 0 {
+            // A node with no emitter emits once as 399 does (the idol flame's root child 2002
+            // laid a particle every frame, never ending: the game slowed over minutes).
+            if !gpu && em["type"].as_i64().unwrap_or(399) == 399 && count > 0 {
                 n.emissions = 1;
             }
             let max_conc = int(em, "maxConcurrent", -1);
