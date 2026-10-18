@@ -42,9 +42,33 @@ pub struct Swim {
     pub diving: bool,
     /// The Mibu Breathing Technique held (the action guide's Dive).
     pub mibu: bool,
-    /// Steering while rising or sinking (the up / down clips go straight up): the stick's
-    /// world velocity, applied by `hold`.
+    /// Steering while rising or sinking (the up / down clips go straight up) and the camera's
+    /// climb or dive while swimming ahead under water: a world velocity `hold` applies.
     drift: Vec3,
+    /// Walking out (SwimToStandMove, cut short by the stick from its cancels at 0.3 s).
+    leaving: bool,
+}
+
+/// SwimToStandMove's cancels open (ChrActionFlag 26 / 119 ... at 0.3 s): the stick walks on.
+const OUT_CANCEL: f32 = 0.3;
+/// The camera's resting pitch (camera.rs START_PITCH 15 deg, looking a little down): swimming
+/// ahead with the camera there stays level; tilted from it, Wolf climbs or dives along it.
+const PITCH_LEVEL: f32 = 15.0;
+/// Under water the camera's tilt within this of level swims level [deg].
+const PITCH_DEAD: f32 = 6.0;
+/// The swim jump (c0000 W_SwimKickMoveJump*: Ready a000_201600 -> Start 201610, launched by
+/// ChrPhysicsVelocityChangeParam 221 (9.15 m/s ahead, 6.82 up, fallType 1) -> Loop 201630; landing
+/// LandSwimKickMoveJump 201640 on ground, LandWaterSwimKickMoveJump 201660 back in the water).
+pub const JUMP_READY: &str = "SwimKickMoveJumpReady";
+pub const JUMP_START: &str = "SwimKickMoveJumpStart";
+pub const JUMP_LOOP: &str = "SwimKickMoveJumpLoop";
+pub const JUMP_VELOCITY_ROW: i64 = 221;
+
+/// The swim jump in the air (player.rs decide, every tick): its start into its loop.
+pub fn air(a: &mut Actor, d: &CharData, ended: bool) {
+    if ended && (a.state == JUMP_START || a.state == JUMP_LOOP) {
+        a.play_state(d, JUMP_LOOP);
+    }
 }
 
 /// What the swim step leaves to player.rs.
@@ -60,6 +84,9 @@ pub enum Step {
 
 /// Steering speed while rising or sinking [m/s] (about the dive stroke's).
 const DRIFT_SPEED: f32 = 3.0;
+/// The dive stroke's speed [m/s] (DiveMoveLoop: 20.8 m in 4.5 s), the camera's climb or dive
+/// taken along it.
+const DIVE_SPEED: f32 = 4.6;
 
 /// The water box `feet` is in (inside it across, under its surface).
 pub fn water_at(feet: Vec3) -> Option<(Vec3, Vec3)> {
@@ -103,6 +130,9 @@ pub struct Controls {
     pub fast_held: bool,
     /// Jump at the surface: out of the water.
     pub jump_pressed: bool,
+    /// The camera's pitch [rad] (positive looking down): under water the way ahead climbs or
+    /// dives with it.
+    pub pitch: f32,
 }
 
 /// The fast swim's kicks: at the surface the clips a000_031400 / 031410 (the HKS's
@@ -172,8 +202,19 @@ pub fn tick(p: &mut Player, a: &mut Actor, d: &CharData, tf: &Transform, c: Cont
             a.vel_y = 0.0;
             a.air_base = Vec3::ZERO;
             a.move_vel = Vec3::ZERO;
-            // Walked in: StandMoveToSwim; fallen in (no FallToSwim clip): straight to the idle.
-            if falling || !a.play_state(d, "StandMoveToSwim") {
+            // Into the water: a swim jump lands back in it (LandWaterSwimKickMoveJump), a fall
+            // lands in place or swimming on (LandWaterFreeFallInSitu / SwimMoveStartFromLandWater;
+            // the HKS's LandWaterFreeFall has no clip), a walk wades in (StandMoveToSwim).
+            let state = if a.state.starts_with("SwimKickMoveJump") {
+                "LandWaterSwimKickMoveJump"
+            } else if falling && stick.length_squared() > 0.01 {
+                "SwimMoveStartFromLandWater"
+            } else if falling {
+                "LandWaterFreeFallInSitu"
+            } else {
+                "StandMoveToSwim"
+            };
+            if !a.play_state(d, state) {
                 a.play_state(d, "SwimIdle");
             }
             log.push("swimming", Color::srgb(0.5, 0.75, 1.0));
@@ -184,22 +225,44 @@ pub fn tick(p: &mut Player, a: &mut Actor, d: &CharData, tf: &Transform, c: Cont
     swim.mibu = mibu;
     swim.drift = Vec3::ZERO;
     let moving = stick.length_squared() > 0.01;
-    let busy = matches!(a.state.as_str(), "StandMoveToSwim" | "SwimToDive" | "DiveToSwim") && !ended;
-    if !swim.diving {
-        // Out where it gets shallow: straight into walking, no climb-out clip (the user: "remove
-        // the endlag when you go outside of water"; SwimToStandMove held him 1 s). The floor snap
-        // puts his feet on the ramp.
-        if surface - floor < STAND_DEPTH && moving {
+    // Walking out: the clip until the stick cuts it at its cancels (the user: "remove the endlag",
+    // then "add transition from water to surface").
+    if swim.leaving {
+        if ended || (moving && a.t >= OUT_CANCEL) {
             p.swim = None;
             a.docked = false;
             a.play("StandIdle", "");
             return Free;
         }
-        // Jump: out of the water (through the wade-in too; not mid-dive).
-        if c.jump_pressed && !(busy && a.state != "StandMoveToSwim") {
+        return Held;
+    }
+    let landing = matches!(a.state.as_str(), "LandWaterSwimKickMoveJump" | "LandWaterFreeFallInSitu" | "SwimMoveStartFromLandWater");
+    let busy = (matches!(a.state.as_str(), "StandMoveToSwim" | "SwimToDive" | "DiveToSwim" | JUMP_READY) || landing) && !ended;
+    if !swim.diving {
+        // Out where it gets shallow: SwimToStandMove (SwimToStandMoveInSitu standing still).
+        if surface - floor < STAND_DEPTH && moving {
+            swim.leaving = true;
+            a.play_state(d, "SwimToStandMove");
+            return Held;
+        }
+        // The swim jump: its Ready, then out of the water (player.rs launches the Start). The
+        // landings and the wade-in give way to it; the dive turns do not.
+        if a.state == JUMP_READY && ended {
             p.swim = None;
             a.docked = false;
             return Step::Jump;
+        }
+        if c.jump_pressed && !(busy && !landing && a.state != "StandMoveToSwim") {
+            if moving {
+                a.yaw = yaw_of(stick);
+            }
+            a.play_state(d, JUMP_READY);
+            return Held;
+        }
+        // A landing in the water goes on into swimming as soon as the stick moves.
+        if landing && moving && a.t >= OUT_CANCEL {
+            a.play_state(d, "SwimMoveLoop");
+            return Held;
         }
         if busy {
             turn_to(a, stick, dt);
@@ -244,8 +307,13 @@ pub fn tick(p: &mut Player, a: &mut Actor, d: &CharData, tf: &Transform, c: Cont
         turn_to(a, stick, dt);
         return Held;
     }
-    // Up at the surface: out of the dive.
-    if c.rise_held && feet.y >= surface - SWIM_DEPTH - 0.05 {
+    // Swimming ahead, the camera's tilt from level climbs or dives along it (the user: "there
+    // should be vertical movement underwater, not pressing f or ctrl").
+    let tilt = c.pitch.to_degrees() - PITCH_LEVEL;
+    let climb = if moving && tilt.abs() > PITCH_DEAD { -(tilt - PITCH_DEAD * tilt.signum()).to_radians().sin() * DIVE_SPEED } else { 0.0 };
+    // Up at the surface: out of the dive (F there, or swimming up into it).
+    let at_top = feet.y >= surface - SWIM_DEPTH - 0.05;
+    if at_top && (c.rise_held || climb > 0.5) {
         swim.diving = false;
         a.play_state(d, "DiveToSwim");
         return Held;
@@ -257,6 +325,8 @@ pub fn tick(p: &mut Player, a: &mut Actor, d: &CharData, tf: &Transform, c: Cont
     // Rising or sinking, the stick steers him across too.
     if (c.rise_held || c.sink_held) && moving {
         swim.drift = stick.with_y(0.0).normalize_or_zero() * DRIFT_SPEED;
+    } else {
+        swim.drift.y = climb;
     }
     // The loop for what is held, through its start; letting go plays its end.
     let (start, lp) = if c.rise_held {
@@ -314,6 +384,15 @@ pub fn hold(time: Res<Time>, combat: Res<crate::data::Combat>, mut q: Query<(&Pl
     let d = &combat.player;
     for (p, mut a, mut tf) in &mut q {
         let Some(swim) = p.swim.as_ref() else { continue };
+        if swim.leaving {
+            // Walking out on the ramp: the floor under him.
+            let feet = tf.translation - Vec3::Y * CAPSULE_HALF_HEIGHT;
+            if let Some(floor) = crate::map::terrain().and_then(|t| t.floor(feet.x, feet.z, feet.y + 1.5)) {
+                tf.translation.y = floor + CAPSULE_HALF_HEIGHT;
+            }
+            a.docked = false;
+            continue;
+        }
         a.docked = true;
         tf.translation += swim.drift * time.delta_secs();
         a.airborne = false;

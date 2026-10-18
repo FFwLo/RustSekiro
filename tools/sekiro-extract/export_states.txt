@@ -1569,3 +1569,23 @@ a000_031400
 a000_031410
 a000_031420
 a000_031430
+# Into and out of the water, the swim jump (swim.rs)
+LandWaterFreeFallLongStiff
+SwimMoveStartFromLandWater
+DiveToAir2
+SwimJumpReady
+SwimJumpStart
+SwimJumpLoop
+LandSwimKickMoveJump
+LandWaterSwimKickMoveJump
+SwimKickMoveJumpReady
+SwimKickMoveJumpStart
+SwimKickMoveJumpLoop
+LandWaterFreeFallInSitu
+StandMoveToSwimInSitu
+SwimToStandMoveInSitu
+DiveJump
+DiveJumpFromKickMove
+SwimKickMove1
+SwimKickMove2
+SwimKickMoveBrake

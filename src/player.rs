@@ -3063,6 +3063,7 @@ fn decide(
         a.play_state(d, "FreeFall");
     }
 
+    let cam_pitch = camera.as_ref().map_or(0.26, |c| c.pitch);
     let cam_yaw = camera.map_or(0.0, |c| c.yaw);
     let stick = stick_world(pad.stick, cam_yaw);
     // Aged, an attack in reach of an aging deathblow row takes the deathblow below.
@@ -3405,23 +3406,20 @@ fn decide(
     }
     // In deep water (swim.rs): the swim and the dive, nothing else.
     let mibu = crate::items::count(&config, crate::swim::MIBU_BREATHING) > 0;
-    let swim = crate::swim::Controls { stick, rise_held: pad.grapple_held, sink_held: pad.prosthetic_held, dive_pressed: swim_dive, fast_held: pad.dodge_held, jump_pressed: dock_jump };
+    crate::swim::air(a, d, ended);
+    let swim = crate::swim::Controls { stick, rise_held: pad.grapple_held, sink_held: pad.prosthetic_held, dive_pressed: swim_dive, fast_held: pad.dodge_held, jump_pressed: dock_jump, pitch: cam_pitch };
     match crate::swim::tick(p, a, d, tf, swim, ended, mibu, dt, &mut log) {
         crate::swim::Step::Held => return,
-        // Out of the water at the surface: the jump's fall at once (its Ready clip stands on
-        // ground he does not have), with the ground jump's launch (ChrPhysicsVelocityChangeParam
-        // 101: 6.4 m/s ahead with the stick, 9.69 up) - onto the pool's edge.
+        // Out of the water: the swim jump's Start (swim.rs), launched by its row 221 along the
+        // facing (fallType 1) - onto the pool's edge.
         crate::swim::Step::Jump => {
             p.requests.remove(&Action::Jump);
-            p.positioning_land = true;
+            let (h, v, fall) = combat.velocity_change_row(crate::swim::JUMP_VELOCITY_ROW).map_or((9.15, 6.82, 1), |r| (r.h_change, r.v_change, 1));
             a.airborne = true;
-            a.fall_type = 0;
-            a.vel_y = 9.69;
-            a.air_base = if stick != Vec3::ZERO { stick.normalize() * 6.4 } else { Vec3::ZERO };
-            if stick != Vec3::ZERO {
-                a.yaw = yaw_of(stick);
-            }
-            a.play_state(d, if stick != Vec3::ZERO { "ForwardGroundJumpFall" } else { "VerticalGroundJumpFall" });
+            a.fall_type = fall;
+            a.vel_y = v;
+            a.air_base = a.forward() * h;
+            a.play_state(d, crate::swim::JUMP_START);
             log.push("jump out of the water", Color::srgb(0.5, 0.75, 1.0));
             return;
         }
@@ -4855,6 +4853,10 @@ fn decide(
                     (a.t, a.prev_t) = (t, t);
                     return;
                 }
+            }
+            // The swim jump lands on its own clip (LandSwimKickMoveJump a000_201640).
+            if a.state.starts_with("SwimKickMoveJump") && a.play_state(d, "LandSwimKickMoveJump") {
+                return;
             }
             let blow_land = throw_blow(&a.state)
                 .map(|(_, land)| land.to_string())

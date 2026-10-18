@@ -928,7 +928,8 @@ fn shift_swims_fast() {
     assert!(dist[1] > dist[0] * 1.3, "plain {:.1} m, fast {:.1} m in 3 s", dist[0], dist[1]);
 }
 
-/// Jump at the surface leaves the water upward (the user: "add jumping").
+/// Jump at the surface leaves the water upward: the swim jump (SwimKickMoveJumpReady, then the
+/// Start launched by row 221; the user: "add jumping", "there is special jump animation").
 #[test]
 fn wolf_jumps_out_of_the_water() {
     let (lo, hi) = (Vec3::new(3990.0, -5.0, -10.0), Vec3::new(4010.0, -0.4, 10.0));
@@ -947,7 +948,8 @@ fn wolf_jumps_out_of_the_water() {
     let y0 = feet(&mut app);
     app.world_mut().resource_mut::<PadInput>().press(Action::Jump);
     let mut top = y0;
-    for _ in 0..40 {
+    // Its Ready (0.33 s) first, then the launch.
+    for _ in 0..80 {
         app.update();
         top = top.max(feet(&mut app));
     }
