@@ -96,7 +96,8 @@ fn spawn(mut commands: Commands, combat: Res<Combat>) {
     actor.yaw = f32::atan2(-7.0, 3.0);
     actor.no_posture = true;
     actor.dmg_cut = 0.0;
-    let idle = std::env::var("SHINOBI_SCULPTOR_ANIM").unwrap_or_else(|_| "a000_000000".into());
+    // m11_00 event 11105720 forces 21005 on him (21006 / 21007 later in the story): carving.
+    let idle = std::env::var("SHINOBI_SCULPTOR_ANIM").unwrap_or_else(|_| "a000_021005".into());
     actor.play("SculptorCarving", &idle);
     if kind.data.anim(&idle).is_none() {
         warn!("Sculptor: missing clip {idle}");
@@ -112,7 +113,7 @@ fn visit_animation(a: &mut Actor, data: &CharData, visiting: bool) {
         ("SculptorCarving" | "SculptorTalkEnd", true, _) => a.play("SculptorTalkStart", "a000_000400"),
         ("SculptorTalkStart", true, true) => a.play("SculptorTalkLoop", "a000_000401"),
         ("SculptorTalkStart" | "SculptorTalkLoop", false, _) => a.play("SculptorTalkEnd", "a000_000402"),
-        ("SculptorTalkEnd", false, true) => a.play("SculptorCarving", "a000_000000"),
+        ("SculptorTalkEnd", false, true) => a.play("SculptorCarving", "a000_021005"),
         (_, _, true) => {
             a.t %= data.length(&a.anim).max(1e-3);
             a.prev_t = a.t;
@@ -253,7 +254,7 @@ mod tests {
     fn sculptor_stops_carving_for_the_visit_and_resumes_after_leaving() {
         let data: CharData = serde_json::from_str(&std::fs::read_to_string(crate::paths::extracted().join("enemies/c7010.json")).unwrap()).unwrap();
         let mut a = Actor::new(Side::Enemy, 1.0, 1.0, 0.0, -1);
-        a.play("SculptorCarving", "a000_000000");
+        a.play("SculptorCarving", "a000_021005");
         visit_animation(&mut a, &data, true);
         assert_eq!(a.anim, "a000_000400");
         a.t = data.length(&a.anim);
@@ -266,6 +267,6 @@ mod tests {
         assert_eq!(a.anim, "a000_000402");
         a.t = data.length(&a.anim);
         visit_animation(&mut a, &data, false);
-        assert_eq!(a.anim, "a000_000000");
+        assert_eq!(a.anim, "a000_021005");
     }
 }

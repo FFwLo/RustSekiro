@@ -10,7 +10,7 @@
 - Talk uses EventText 10010200, on E. Wolf plays Event711200 to sit down, Event711201 while
   seated, and Event711202 to get up. The menu waits for the entry clip to finish; movement
   waits for the exit clip to finish. c7010 plays a000_000400 when the visit starts, loops
-  a000_000401 while Wolf visits, then plays a000_000402 and resumes a000_000000 when he leaves.
+  a000_000401 while Wolf visits, then plays a000_000402 and resumes carving, a000_021005 (event 11105720's first-stage clip), when he leaves.
   Fit and Upgrade retain their data-driven costs and
   ownership rules. Esc/Q from the Workshop closes the visit; backing out of a service returns
   to the Workshop. The idol menu no longer includes it.
