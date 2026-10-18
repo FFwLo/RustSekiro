@@ -18,6 +18,9 @@ pub(crate) const KIND: usize = usize::MAX;
 pub(crate) const POS: Vec3 = Vec3::new(-7.0, 0.0, 3.0);
 const REACH: f32 = 2.0;
 const HEIGHT: f32 = 0.8;
+const SIT_DOWN: &str = "Event711200";
+const SITTING: &str = "Event711201";
+const GET_UP: &str = "Event711202";
 static PRESENT: AtomicBool = AtomicBool::new(false);
 
 #[derive(Component)]
@@ -31,26 +34,28 @@ pub(crate) fn near(feet: Vec3) -> bool {
     PRESENT.load(Ordering::Relaxed) && in_reach(feet)
 }
 
-/// Before the idol and traversal in player::decide. Wolf uses his NPC-talk start/end clips,
-/// holding the talk pose while the service menu is open. Damage or moving away cancels it.
+/// Before the idol and traversal in player::decide. Finish sitting down before opening the
+/// Workshop, loop while visiting, then finish getting up before returning control to Wolf.
 pub(crate) fn tick(p: &mut Player, a: &mut Actor, data: &CharData, tf: &mut Transform, interact: bool, ended: bool, config: &GameConfig) -> bool {
     let feet = tf.translation - Vec3::Y * CAPSULE_HALF_HEIGHT;
+    let mut ended = ended;
     if !p.seat.sculptor {
         if interact && crate::map::map_id(config).as_deref() == Some(crate::sandbox::CONSTRUCT_ID)
             && near(feet) && p.seat.idol.is_none() && !a.airborne && a.hp > 0.0
-            && crate::player::is_free(&a.state) && a.play_state(data, "Event700400")
+            && crate::player::is_free(&a.state) && a.play_state(data, SIT_DOWN)
         {
             let dir = POS - feet;
             a.yaw = f32::atan2(-dir.x, -dir.z);
             p.seat.sculptor = true;
-            p.seat.phase = Phase::Menu;
+            p.seat.phase = Phase::Kneeling;
             p.seat.cmd = None;
-            p.seat.open = true;
+            p.seat.open = false;
+            ended = false;
         } else {
             return false;
         }
     }
-    if a.hp <= 0.0 || !in_reach(feet) || !matches!(a.state.as_str(), "Event700400" | "Event700420") {
+    if a.hp <= 0.0 || !in_reach(feet) || ![SIT_DOWN, SITTING, GET_UP].contains(&a.state.as_str()) {
         p.seat.sculptor = false;
         p.seat.open = false;
         p.seat.cmd = None;
@@ -58,7 +63,7 @@ pub(crate) fn tick(p: &mut Player, a: &mut Actor, data: &CharData, tf: &mut Tran
     }
     a.move_vel = Vec3::ZERO;
     if p.seat.cmd.take() == Some(Cmd::Leave) {
-        a.play_state(data, "Event700420");
+        a.play_state(data, GET_UP);
         p.seat.phase = Phase::Leaving;
     } else if p.seat.phase == Phase::Leaving {
         if ended {
@@ -66,8 +71,15 @@ pub(crate) fn tick(p: &mut Player, a: &mut Actor, data: &CharData, tf: &mut Tran
             p.seat.phase = Phase::Menu;
             a.procedural("Locomotion");
         }
-    } else {
-        a.t = a.t.min((data.length(&a.anim) - 1.0 / 30.0).max(0.0));
+    } else if ended {
+        if p.seat.phase == Phase::Kneeling {
+            a.play_state(data, SITTING);
+            p.seat.phase = Phase::Menu;
+            p.seat.open = true;
+        } else {
+            a.t %= data.length(&a.anim).max(1e-3);
+            a.prev_t = a.t;
+        }
     }
     true
 }
@@ -93,19 +105,33 @@ fn spawn(mut commands: Commands, combat: Res<Combat>) {
     PRESENT.store(true, Ordering::Relaxed);
 }
 
-fn carving(combat: Res<Combat>, mut npc: Query<(&mut Actor, &mut Transform, &mut Visibility), With<Sculptor>>) {
+/// c7010's 400 / 401 / 402 are the entry, seated conversation loop and return to carving.
+fn visit_animation(a: &mut Actor, data: &CharData, visiting: bool) {
+    let ended = a.t >= data.length(&a.anim);
+    match (a.state.as_str(), visiting, ended) {
+        ("SculptorCarving" | "SculptorTalkEnd", true, _) => a.play("SculptorTalkStart", "a000_000400"),
+        ("SculptorTalkStart", true, true) => a.play("SculptorTalkLoop", "a000_000401"),
+        ("SculptorTalkStart" | "SculptorTalkLoop", false, _) => a.play("SculptorTalkEnd", "a000_000402"),
+        ("SculptorTalkEnd", false, true) => a.play("SculptorCarving", "a000_000000"),
+        (_, _, true) => {
+            a.t %= data.length(&a.anim).max(1e-3);
+            a.prev_t = a.t;
+        }
+        _ => {}
+    }
+}
+
+fn carving(combat: Res<Combat>, wolf: Query<&Player>, mut npc: Query<(&mut Actor, &mut Transform, &mut Visibility), With<Sculptor>>) {
     let visible = crate::map::loaded_map().as_deref().is_none_or(|id| id == crate::sandbox::CONSTRUCT_ID);
+    let visiting = visible && wolf.iter().any(|p| p.seat.sculptor && p.seat.phase != Phase::Leaving);
     for (mut a, mut tf, mut visibility) in &mut npc {
         *visibility = if visible { Visibility::Inherited } else { Visibility::Hidden };
         PRESENT.store(visible, Ordering::Relaxed);
         tf.translation = POS + Vec3::Y * CAPSULE_HALF_HEIGHT;
         a.airborne = false;
         a.vel_y = 0.0;
-        let len = combat.data_of(&a).length(&a.anim);
-        if len > 0.0 && a.t >= len {
-            a.t %= len;
-            a.prev_t = a.t;
-        }
+        let data = combat.data_of(&a);
+        visit_animation(&mut a, data, visiting);
         a.move_vel = Vec3::ZERO;
     }
 }
@@ -122,27 +148,13 @@ fn shot_visit(config: Res<GameConfig>, combat: Res<Combat>, mut done: Local<bool
     tick(&mut p, &mut a, &combat.player, &mut tf, true, false, &config);
 }
 
-/// A three-quarter service view keeps seated c7010 visible beside the menu rather than behind
-/// Wolf. The normal player camera resumes on the first frame after the visit.
-fn talk_camera(wolf: Query<(&Player, &Transform)>, mut cameras: Query<&mut Transform, (With<crate::camera::OrbitCamera>, Without<Player>)>) {
-    let Some((_, wolf)) = wolf.iter().find(|(p, _)| p.seat.sculptor) else { return };
-    let dir = (wolf.translation - POS).with_y(0.0).normalize_or(Vec3::Z);
-    let side = Vec3::Y.cross(dir);
-    let at = POS + dir * 3.0 + side * 2.1 + Vec3::Y * 1.6;
-    let look = POS - side * 0.6 + Vec3::Y * 0.7;
-    for mut camera in &mut cameras {
-        *camera = Transform::from_translation(at).looking_at(look, Vec3::Y);
-    }
-}
-
 pub struct SculptorPlugin;
 
 impl Plugin for SculptorPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Startup, spawn)
             .add_systems(FixedUpdate, carving.in_set(ActorSet::Decide))
-            .add_systems(Update, shot_visit)
-            .add_systems(PostUpdate, talk_camera.after(crate::camera::follow_player).before(TransformSystems::Propagate));
+            .add_systems(Update, shot_visit);
     }
 }
 
@@ -183,25 +195,77 @@ mod tests {
         app.world_mut().resource_scope(|world, combat: Mut<Combat>| {
             let mut p = world.query::<&mut Player>().single_mut(world).unwrap();
             p.seat.sculptor = true;
-            p.seat.phase = Phase::Menu;
+            p.seat.phase = Phase::Kneeling;
             p.seat.checkpoint = Some(3);
             p.gourd = 1;
             p.resurrections = 0;
             p.revive_locked = true;
             let mut a = Actor::new(Side::Player, 320.0, 120.0, 0.0, -1);
             a.hp = 73.0;
-            assert!(a.play_state(&combat.player, "Event700400"));
+            assert!(a.play_state(&combat.player, SIT_DOWN));
             let mut tf = Transform::from_translation(POS + Vec3::new(1.0, CAPSULE_HALF_HEIGHT, 0.0));
             assert!(tick(&mut p, &mut a, &combat.player, &mut tf, false, false, &config));
+            assert!(!p.seat.open, "the menu waits for Wolf to sit down");
+            assert!(tick(&mut p, &mut a, &combat.player, &mut tf, false, true, &config));
+            assert_eq!(a.state, SITTING);
+            assert_eq!(p.seat.phase, Phase::Menu);
+            assert!(p.seat.open);
+            a.t = combat.player.length(&a.anim) + 0.1;
+            assert!(tick(&mut p, &mut a, &combat.player, &mut tf, false, true, &config));
+            assert!(a.t < combat.player.length(&a.anim), "the seated loop keeps playing");
             assert_eq!((a.hp, p.gourd, p.resurrections, p.seat.checkpoint), (73.0, 1, 0, Some(3)));
             assert!(p.revive_locked && !p.seat.respawn && !p.refill_items);
             p.seat.cmd = Some(Cmd::Leave);
             assert!(tick(&mut p, &mut a, &combat.player, &mut tf, false, false, &config));
-            assert_eq!(a.state, "Event700420");
+            assert_eq!(a.state, GET_UP);
+            assert!(p.seat.sculptor, "Wolf cannot move until he finishes getting up");
             assert!(tick(&mut p, &mut a, &combat.player, &mut tf, false, true, &config));
             assert!(!p.seat.sculptor);
             assert_eq!(a.state, "Locomotion");
             assert_eq!(p.seat.checkpoint, Some(3));
         });
+    }
+
+    #[test]
+    fn the_player_simulation_finishes_sitting_before_opening_the_workshop() {
+        let mut app = crate::sim_tests::app();
+        app.world_mut().resource_scope(|world, combat: Mut<Combat>| {
+            for mut enemy in world.query::<&mut crate::enemy::Enemy>().iter_mut(world) {
+                enemy.disabled = true;
+            }
+            let (mut p, mut a, mut tf) = world.query::<(&mut Player, &mut Actor, &mut Transform)>().single_mut(world).unwrap();
+            p.seat.sculptor = true;
+            p.seat.phase = Phase::Kneeling;
+            tf.translation = POS + Vec3::new(1.2, CAPSULE_HALF_HEIGHT, -0.5);
+            assert!(a.play_state(&combat.player, SIT_DOWN));
+        });
+        for _ in 0..240 {
+            app.update();
+        }
+        let world = app.world_mut();
+        let (p, a, tf) = world.query::<(&Player, &Actor, &Transform)>().single(world).unwrap();
+        assert!(p.seat.sculptor && p.seat.open && p.seat.phase == Phase::Menu,
+            "visit={}, open={}, phase={:?}, state={}, time={}, pos={:?}", p.seat.sculptor, p.seat.open, p.seat.phase, a.state, a.t, tf.translation);
+        assert_eq!(a.state, SITTING);
+    }
+
+    #[test]
+    fn sculptor_stops_carving_for_the_visit_and_resumes_after_leaving() {
+        let data: CharData = serde_json::from_str(&std::fs::read_to_string(crate::paths::extracted().join("enemies/c7010.json")).unwrap()).unwrap();
+        let mut a = Actor::new(Side::Enemy, 1.0, 1.0, 0.0, -1);
+        a.play("SculptorCarving", "a000_000000");
+        visit_animation(&mut a, &data, true);
+        assert_eq!(a.anim, "a000_000400");
+        a.t = data.length(&a.anim);
+        visit_animation(&mut a, &data, true);
+        assert_eq!(a.anim, "a000_000401");
+        a.t = data.length(&a.anim) + 0.1;
+        visit_animation(&mut a, &data, true);
+        assert!(a.t < data.length(&a.anim));
+        visit_animation(&mut a, &data, false);
+        assert_eq!(a.anim, "a000_000402");
+        a.t = data.length(&a.anim);
+        visit_animation(&mut a, &data, false);
+        assert_eq!(a.anim, "a000_000000");
     }
 }

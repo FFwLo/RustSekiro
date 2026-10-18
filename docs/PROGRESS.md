@@ -1,5 +1,13 @@
 # Sv1: progress and next steps
 
+- 2026-10-18 Sculptor visit animations: Wolf sits down (711200), stays seated (711201) and
+  gets up when closing the Workshop (711202). The menu waits for the entry animation and
+  movement waits for the exit. c7010 stops carving (400), plays his seated service loop (401),
+  then returns to carving (402 -> 000). Removed the custom conversation camera; regular
+  player camera throughout. Added the missing Wolf states to the exporter and re-exported
+  local data. Validation: release build, private real-app seated Workshop capture, five
+  Sculptor tests and full suite (657 pass, 46 ignored, four threads). See `kb/sculptor.md`.
+
 - 2026-10-18 Sculptor: c7010 beside Course Start on the Construct, E to talk, with the game's
   model, skeleton and idle / Wolf talk clips. The Workshop's fitting and upgrades now open
   through him. Talking preserves health, items and the idol checkpoint; encounter changes
