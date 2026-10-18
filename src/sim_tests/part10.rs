@@ -192,7 +192,7 @@ pub(crate) fn an_aged_wolf_takes_the_aging_deathblow() {
     app.world_mut().resource_scope(|world, combat: Mut<Combat>| {
         let mut st = world.resource_mut::<crate::status::Statuses>();
         for _ in 0..8 {
-            st.hit_wolf(&combat, wolf, 0, &[9600], crate::status::Guard::None);
+            st.hit_wolf(&combat, wolf, 0, &[], &[9600], crate::status::Guard::None);
         }
     });
     for _ in 0..60 * 6 {
@@ -252,7 +252,7 @@ pub(crate) fn an_aged_wolf_plays_the_aged_form() {
     app.world_mut().resource_scope(|world, combat: Mut<Combat>| {
         let mut st = world.resource_mut::<crate::status::Statuses>();
         for _ in 0..8 {
-            st.hit_wolf(&combat, wolf, 0, &[9600], crate::status::Guard::None);
+            st.hit_wolf(&combat, wolf, 0, &[], &[9600], crate::status::Guard::None);
         }
     });
     let mut seen: Vec<String> = Vec::new();
@@ -325,7 +325,7 @@ pub(crate) fn an_aged_wolf_jumps() {
     app.world_mut().resource_scope(|world, combat: Mut<Combat>| {
         let mut st = world.resource_mut::<crate::status::Statuses>();
         for _ in 0..8 {
-            st.hit_wolf(&combat, wolf, 0, &[9600], crate::status::Guard::None);
+            st.hit_wolf(&combat, wolf, 0, &[], &[9600], crate::status::Guard::None);
         }
     });
     for _ in 0..60 * 6 {

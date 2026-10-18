@@ -1105,3 +1105,208 @@ fn the_construct_floor_leaves_its_holes_open() {
     let area: f32 = rects.iter().map(|r| (r.1 - r.0) * (r.3 - r.2)).sum();
     assert!((area - (90.0 * 180.0 - 20.0 * 16.0 - 10.0 * 54.0)).abs() < 1e-2, "area {area}");
 }
+
+/// Uses quick item `goods` (alone in slot 0, `n` held) through its clip and items.rs apply_used;
+/// returns the states seen.
+fn use_goods(app: &mut App, goods: i64, n: u32, frames: usize) -> Vec<String> {
+    {
+        let mut config = app.world_mut().resource_mut::<crate::config::GameConfig>();
+        config.player.items.retain(|(g, _)| *g != goods);
+        config.player.items.push((goods, n));
+        config.player.quick_items = vec![goods, 0, 0, 0, 0];
+    }
+    app.world_mut().init_resource::<crate::items::Used>();
+    {
+        let world = app.world_mut();
+        world.query::<&mut Player>().single_mut(world).unwrap().quick_slot = 0;
+    }
+    app.world_mut().resource_mut::<PadInput>().press(Action::UseItem);
+    let mut states = Vec::new();
+    for _ in 0..frames {
+        app.update();
+        let (s, ..) = player_state(app);
+        if states.last() != Some(&s) {
+            states.push(s);
+        }
+    }
+    states
+}
+
+/// The coin purses give their Sen; the Ceremonial Tanto takes half the max HP for five Spirit
+/// Emblems (the user, 2026-10-18: "Items").
+#[test]
+pub(crate) fn coin_purses_and_the_tanto_pay_out() {
+    let mut app = app();
+    move_enemy_far(&mut app);
+    app.add_systems(Update, crate::items::apply_used);
+    let sen = app.world().resource::<crate::config::GameConfig>().player.sen;
+    let states = use_goods(&mut app, 3708, 1, 120);
+    assert!(states.iter().any(|s| s == "ItemCoinBag"), "{states:?}");
+    assert_eq!(app.world().resource::<crate::config::GameConfig>().player.sen, sen + 1000, "the Bulging Coin Purse");
+    {
+        let world = app.world_mut();
+        world.query::<&mut Player>().single_mut(world).unwrap().emblems = 0;
+    }
+    let states = use_goods(&mut app, 3800, 1, 150);
+    assert!(states.iter().any(|s| s == "ItemPaperDollExchangeWhite"), "{states:?}");
+    let world = app.world_mut();
+    let (a, p) = world.query::<(&Actor, &Player)>().single(world).unwrap();
+    assert!((a.hp - a.hp_max * 0.5).abs() < 1.0, "half the HP: {} / {}", a.hp, a.hp_max);
+    assert_eq!(p.emblems, 5);
+}
+
+/// Dousing Powder puts out a burn and keeps the next build-up lower for its 30 s.
+#[test]
+pub(crate) fn dousing_powder_puts_out_the_burn() {
+    // c1550's data carries the burn row 9115.
+    let mut app = app_cfg("c1550", None, Vec::new());
+    move_enemy_far(&mut app);
+    app.add_systems(Update, crate::items::apply_used);
+    app.world_mut().init_resource::<crate::items::Used>();
+    app.update();
+    let wolf = app.world_mut().query_filtered::<Entity, With<Player>>().single(app.world()).unwrap();
+    let burning = |app: &mut App| {
+        let world = app.world_mut();
+        world.resource_scope(|world, combat: Mut<Combat>| {
+            let mut st = world.resource_mut::<crate::status::Statuses>();
+            (1..=20).find(|_| st.hit_wolf(&combat, wolf, 5000, &[], &[9115], crate::status::Guard::None).iter().any(|l| l == "BURNING"))
+        })
+    };
+    let plain = burning(&mut app).expect("burns");
+    let on = |app: &mut App| app.world().resource::<crate::status::Statuses>().0.get(&wolf).is_some_and(|s| !s.effects.is_empty());
+    assert!(on(&mut app));
+    let states = use_goods(&mut app, 3210, 1, 120);
+    assert!(states.iter().any(|s| s.starts_with("ItemPowderMedicine")), "{states:?}");
+    assert!(!on(&mut app), "put out");
+    // Its 3212 (defBloodResistDamageRate 0.65) worn: more hits to burn again.
+    let worn = {
+        let world = app.world_mut();
+        world.query::<&Actor>().iter(world).find(|a| !a.item_sp.is_empty()).map(|a| a.item_sp.clone()).unwrap_or_default()
+    };
+    assert!(worn.contains(&3212), "{worn:?}");
+    let resisted = {
+        let world = app.world_mut();
+        world.resource_scope(|world, combat: Mut<Combat>| {
+            let mut st = world.resource_mut::<crate::status::Statuses>();
+            st.clear(wolf);
+            (1..=40).find(|_| st.hit_wolf(&combat, wolf, 5000, &worn, &[9115], crate::status::Guard::None).iter().any(|l| l == "BURNING"))
+        })
+    };
+    assert!(resisted.expect("still burns") > plain, "{plain} hits plain, {resisted:?} resisted");
+}
+
+/// A Fistful of Ash thrown at the enemy ahead: its cloud blinds him (the firecracker's flinch);
+/// the Ceramic Shard flies as its Bullet 3491.
+#[test]
+pub(crate) fn thrown_ash_blinds_and_the_shard_flies() {
+    let mut app = app();
+    app.add_systems(Update, crate::items::apply_used);
+    // The enemy 3 m ahead, passive.
+    {
+        let world = app.world_mut();
+        let mut q = world.query_filtered::<(&mut Transform, &mut crate::enemy::Enemy), Without<Player>>();
+        for (mut t, _) in q.iter_mut(world) {
+            t.translation = Vec3::new(0.0, t.translation.y, 1.0);
+        }
+    }
+    let mut reacted = false;
+    use_goods(&mut app, 3510, 1, 1);
+    for _ in 0..150 {
+        app.update();
+        let world = app.world_mut();
+        reacted |= world.query_filtered::<&Actor, Without<Player>>().iter(world).any(|a| a.state == "AssassinationBloodReaction");
+    }
+    assert!(reacted, "the ash blinds");
+    let mut flew = false;
+    use_goods(&mut app, 3500, 1, 1);
+    for _ in 0..90 {
+        app.update();
+        let world = app.world_mut();
+        flew |= world.query::<&Name>().iter(world).any(|n| n.as_str() == "Bullet 3491");
+    }
+    assert!(flew, "the shard flies");
+}
+
+/// Every usable item of the starter bag (config.toml): its use state plays its clip to the end,
+/// back to standing, and one is spent (the Homeward Idol is not consumed; it warps in the game).
+/// The user, 2026-10-18: "make sure again every item works and has proper animations".
+#[test]
+pub(crate) fn every_bag_item_plays_its_use_and_is_spent() {
+    let mut app = app();
+    move_enemy_far(&mut app);
+    app.add_systems(Update, crate::items::apply_used);
+    let bag: Vec<i64> = crate::config::GameConfig::load().unwrap().player.items.iter().map(|(g, _)| *g).collect();
+    let mut tried = 0;
+    for goods in bag {
+        let anim = crate::items::param("EquipParamGoods", goods)["goodsUseAnim"].as_i64().unwrap_or(255);
+        let Some(state) = crate::items::use_state(anim) else { continue };
+        if goods == 3980 {
+            continue;
+        }
+        {
+            let world = app.world_mut();
+            let mut a = world.query_filtered::<&mut Actor, With<Player>>().single_mut(world).unwrap();
+            a.hp = a.hp_max;
+        }
+        let states = use_goods(&mut app, goods, 2, 330);
+        tried += 1;
+        assert!(states.iter().any(|s| s == state), "goods {goods}: no {state} in {states:?}");
+        let (s, clip, ..) = player_state(&mut app);
+        assert!(!s.contains("Item"), "goods {goods}: still in {s} ({clip}) after 5.5 s");
+        let left = crate::items::count(app.world().resource::<crate::config::GameConfig>(), goods);
+        assert_eq!(left, 1, "goods {goods} ({state}): spent once");
+    }
+    assert!(tried >= 20, "{tried}");
+}
+
+/// Crouched, the items with a Crouch use state (CrouchItemPillTonic ...) play that one and
+/// Wolf stays crouched after.
+#[test]
+pub(crate) fn crouched_items_play_their_crouch_clips() {
+    let mut app = app();
+    move_enemy_far(&mut app);
+    app.add_systems(Update, crate::items::apply_used);
+    app.world_mut().init_resource::<crate::items::Used>();
+    app.world_mut().resource_mut::<PadInput>().press(Action::Crouch);
+    for _ in 0..120 {
+        app.update();
+    }
+    for (goods, state) in [(3020, "CrouchItemPillTonic"), (3060, "CrouchItemOhagi"), (3070, "CrouchItemKaki"), (3200, "CrouchItemPowderMedicineRecoverPoison"), (3500, "CrouchItemPottery"), (3510, "CrouchItemStone"), (3700, "CrouchItemCoinBag"), (3800, "CrouchItemPaperDollExchangeWhite")] {
+        let states = use_goods(&mut app, goods, 2, 300);
+        assert!(states.iter().any(|s| s == state), "goods {goods}: no {state} in {states:?}");
+        let world = app.world_mut();
+        let a = world.query_filtered::<&Actor, With<Player>>().single(world).unwrap();
+        assert!(a.crouch && !a.state.contains("Item"), "goods {goods}: {} crouch {}", a.state, a.crouch);
+    }
+}
+
+/// Yashariku's Sugar halves Wolf's max HP for its 30 s (3411 maxHpRate 0.5), HP held under it,
+/// and the max comes back when it ends (the user, 2026-10-18).
+#[test]
+pub(crate) fn yasharikus_sugar_halves_the_max_hp() {
+    let mut app = app();
+    move_enemy_far(&mut app);
+    app.add_systems(Update, crate::items::apply_used);
+    let full = {
+        let world = app.world_mut();
+        world.query_filtered::<&Actor, With<Player>>().single(world).unwrap().hp_max
+    };
+    use_goods(&mut app, 3410, 1, 240);
+    {
+        let world = app.world_mut();
+        let a = world.query_filtered::<&Actor, With<Player>>().single(world).unwrap();
+        assert!((a.hp_max - full * 0.5).abs() < 0.01, "{} of {full}", a.hp_max);
+        assert!(a.hp <= a.hp_max);
+    }
+    // Its 30 s run out.
+    {
+        let world = app.world_mut();
+        let mut p = world.query::<&mut Player>().single_mut(world).unwrap();
+        p.timed.retain(|(id, _)| *id != 3411);
+    }
+    app.update();
+    let world = app.world_mut();
+    let a = world.query_filtered::<&Actor, With<Player>>().single(world).unwrap();
+    assert!((a.hp_max - full).abs() < 0.01, "{} back to {full}", a.hp_max);
+    assert!(a.hp <= full * 0.5 + 0.01, "HP is not given back: {}", a.hp);
+}

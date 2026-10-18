@@ -65,8 +65,11 @@ fn reward_kills(
     mut config: ResMut<crate::config::GameConfig>,
     mut earned: ResMut<Earned>,
     enemies: Query<(Entity, &crate::enemy::Enemy, &crate::actor::Actor)>,
+    wolf: Query<&crate::player::Player>,
     mut paid: Local<HashSet<Entity>>,
 ) {
+    // The Mibu Balloon of Wealth's soulRate (items.rs).
+    let rate = wolf.single().map_or(1.0, |p| crate::items::sen_rate(&p.timed.iter().map(|t| t.0).collect::<Vec<_>>()));
     paid.retain(|e| enemies.get(*e).is_ok_and(|(_, en, _)| en.is_dead()));
     for (e, en, a) in &enemies {
         if !en.is_dead() || paid.contains(&e) {
@@ -74,6 +77,7 @@ fn reward_kills(
         }
         paid.insert(e);
         let (exp, sen) = reward(combat.npc(a));
+        let sen = (sen as f32 * rate).round() as u32;
         earned.exp = earned.exp.wrapping_add(exp);
         earned.sen = earned.sen.wrapping_add(sen);
         let p = &mut config.player;

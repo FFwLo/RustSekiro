@@ -15,7 +15,7 @@ pub(crate) fn reigniting_a_burn_refreshes_it() {
     let weapon = world.resource::<crate::config::GameConfig>().player.combat_art;
     world.resource_scope(|_, combat: Mut<Combat>| {
         let mut s = Statuses::default();
-        let burning = |s: &mut Statuses| (1..=10).find(|_| s.hit_wolf(&combat, wolf, weapon, &[9115], Guard::None).iter().any(|l| l == "BURNING"));
+        let burning = |s: &mut Statuses| (1..=10).find(|_| s.hit_wolf(&combat, wolf, weapon, &[], &[9115], Guard::None).iter().any(|l| l == "BURNING"));
         assert!(burning(&mut s).is_some());
         let first: Vec<(i64, f32)> = s.0[&wolf].effects.iter().map(|a| (a.id, a.left)).collect();
         assert_eq!(first.len(), 1, "{first:?}");

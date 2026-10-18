@@ -171,6 +171,9 @@ pub struct Actor {
     pub no_posture: bool,
     /// Resident SpEffect ids (NpcParam spEffectID slots for enemies).
     pub resident: Vec<i64>,
+    /// Wolf's worn quick-item SpEffects (player.rs mirrors Player::timed each tick; items.rs):
+    /// the combat code reads them as his own (damage cuts, damage levels, build-up resist).
+    pub item_sp: Vec<i64>,
     /// AttackBehavior windows already resolved in the current anim, per defender: (defender,
     /// judge, start). One window hits each target once, so a swing through two enemies hurts both.
     pub hits_done: Vec<(Entity, i64, i32)>,
@@ -344,6 +347,7 @@ impl Actor {
             clock_dt: None,
             no_posture: false,
             resident: Vec::new(),
+            item_sp: Vec::new(),
             hits_done: Vec::new(),
             bullet_hits: Vec::new(),
             anim_group: 0,

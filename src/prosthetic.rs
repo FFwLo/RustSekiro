@@ -245,7 +245,7 @@ fn spawn_bullets(
 
 /// Spawns one Bullet row at `pos`: numShoot bullets fanned from `dir` by shootAngle +
 /// i * shootAngleInterval (yaw, degrees) and tilted by shootAngleXZ (-90 = straight down).
-fn spawn_row(commands: &mut Commands, spec: &BulletSpec, pos: Vec3, dir: Vec3, chain: u32, base: i64, inherited: i64) {
+pub(crate) fn spawn_row(commands: &mut Commands, spec: &BulletSpec, pos: Vec3, dir: Vec3, chain: u32, base: i64, inherited: i64) {
     let flat = dir.with_y(0.0).normalize_or(Vec3::NEG_Z);
     let sfx = if spec.sfx_id_bullet > 0 { spec.sfx_id_bullet } else { inherited };
     let inherit_sfx = if spec.is_inherit_sfx_to_child != 0 { sfx } else { -1 };
@@ -320,6 +320,10 @@ const REF_BURST_NONCRITICAL: i64 = 1000056;
 const REF_BURST_CRITICAL: i64 = 1000057;
 /// SP_EFFECT_REF_NO_BURST_REACTION (c9997.lua 548): the enemy's firecracker cool time.
 const REF_NO_BURST_REACTION: i64 = 1000044;
+/// SpEffect 220018's behaviorRefId, "enemy reaction playback: blinding (ash bag)", and the ash's
+/// cool time row 3510 (30 s).
+const REF_BLINDING: i64 = 1000058;
+const ASH_COOL_TIME: i64 = 3510;
 /// SP_EFFECT_REF_FIRE_ACTION_ENABLE / NO_FIRE_FIAR_REACTION (c9997.lua 544 / 589).
 const REF_FIRE_ACTION_ENABLE: i64 = 1000040;
 const REF_NO_FIRE_REACTION: i64 = 1000240;
@@ -367,7 +371,8 @@ fn fly_bullets(
         .and_then(|t| enemies.get(t).ok())
         .filter(|(_, a, _, e, _)| a.hp > 0.0 && !e.is_dead())
         .map(|(_, _, tf, ..)| tf.translation);
-    let row = |id: i64| if id > 0 { rows.get(&id.to_string()) } else { None };
+    // The exported rows, else a goods' (items.rs bullet_row: the throwables' chains).
+    let row = |id: i64| if id > 0 { rows.get(&id.to_string()).or_else(|| crate::items::bullet_row(id)) } else { None };
     for (be, mut b, mut btf) in &mut bullets {
         // Its AtkParam_Pc AppearAiSoundId as it starts, at the bullet (FUN_1409a1290's bullet
         // branch; enemy_bullet.rs fly).
@@ -410,6 +415,15 @@ fn fly_bullets(
         }
 
         let mut ended = landed || b.age > b.spec.life.max(0.0) + 1e-4;
+        // A carrier that hits nothing itself but turns into what does (the Fistful of Ash's
+        // throw 3511 -> its cloud 3512) bursts on reaching a body. gap: the exe's end condition
+        // for such a carrier is not traced; flying its whole second put the cloud past the enemy.
+        if !ended && !hits_characters(&b.spec) && row(b.spec.hit_bullet_id).is_some_and(hits_characters) {
+            ended = enemies.iter().any(|(_, da, dtf, e, _)| {
+                let feet = dtf.translation - Vec3::Y * crate::player::CAPSULE_HALF_HEIGHT;
+                da.hp > 0.0 && !e.is_dead() && segment_distance(from, to, feet + Vec3::Y * 0.3, feet + Vec3::Y * 1.5) <= b.spec.hit_radius.max(0.2) + BODY_RADIUS
+            });
+        }
         if hits_characters(&b.spec) {
             for (ee, mut da, dtf, mut e, hurt) in &mut enemies {
                 // A hit record runs out after dmgHitRecordLifeTime, as the enemies' (round 59:
@@ -514,6 +528,13 @@ fn fly_bullets(
                 if b.spec.is_penetrate == 0 {
                     break;
                 }
+            }
+        }
+        // Landed on the map: its AtkParam HitAiSoundId there (the Ceramic Shard's 3500: the
+        // enemies hear where it broke).
+        if landed {
+            if let (Some(s), Some(atk)) = (ai_sounds.as_mut(), b.spec.attack.as_ref()) {
+                s.emit(&combat, crate::data::atk_ai_sounds(true, atk.atk_param_id).1, to, None, None);
             }
         }
         if ended {
@@ -621,8 +642,10 @@ fn hit_enemy(
     mut sounds: Option<&mut crate::sound::SoundQueue>,
 ) -> Option<String> {
     let sps = [b.spec.sp_effect_id0, b.spec.sp_effect_id1, b.spec.sp_effect_id2, b.spec.sp_effect_id3, b.spec.sp_effect_id4];
-    let sp_of = |id: i64| combat.player.sp_effects.get(&id.to_string());
+    let sp_of = |id: i64| combat.player.sp_effects.get(&id.to_string()).or_else(|| crate::items::sp_row(id));
     let refs: Vec<i64> = sps.iter().filter(|v| **v > 0).filter_map(|id| sp_of(*id)).map(|s| s.behavior_ref_id).collect();
+    // The Fistful of Ash's cool time (3510, 30 s, put on with the cloud): already blinded.
+    let ash_cool = e.clash.iter().any(|c| c.0 == ASH_COOL_TIME);
     // The bullet's SpEffects on the enemy for their effectEndurance (the reversal bolt's
     // 3520085 "Divine Dragon: Lightning Reversal hit", 1 s, which the dragon's map script
     // waits for), before any early return: the firecracker's 230110 / 230111 are in the map AI
@@ -684,6 +707,16 @@ fn hit_enemy(
         }
         return None;
     }
+    // The Fistful of Ash (220018, ref 1000058 "enemy reaction: blinding"): the enemy reels.
+    // gap: c9997's blinding reaction is not traced; the soldiers have no clip of their own for
+    // it, so the firecracker's flinch (W_AssassinationBloodReaction, rank 4) stands in.
+    if refs.contains(&REF_BLINDING) {
+        if !ash_cool && !e.is_broken() && rank_allows(transition_rank(&da.state), 4) && combat.data_of(da).states.contains_key("AssassinationBloodReaction") {
+            e.react(da, combat, "AssassinationBloodReaction");
+            return Some("ash: enemy blinded".into());
+        }
+        return Some(if ash_cool { "ash: enemy is used to it (cool time)" } else { "ash: no effect" }.into());
+    }
     let atk = b.spec.attack.as_ref()?;
     if !deals_something(atk) {
         // A bullet whose AtkParam deals nothing but whose Bullet row carries build-up still
@@ -736,8 +769,15 @@ fn hit_enemy(
     }
     // The weapon row's attackBase* per element times the AtkParam corrections, each scaled by
     // the NPC's <element>DamageCutRate, as a sword hit (combat.rs player_attack_damage).
-    // Without a tool row: 20 physical.
-    let dmg = if b.base > 0 { crate::combat::player_attack_damage(combat, atk, b.base, da) } else { 20.0 * atk.atk_phys_correction / 100.0 };
+    // Without a tool row: 20 physical; a goods' bullet (base -1, items.rs) its AtkParam's flat
+    // atkPhys (Oil's and the Ceramic Shard's 1).
+    let dmg = if b.base > 0 {
+        crate::combat::player_attack_damage(combat, atk, b.base, da, 0.0)
+    } else if b.base < 0 {
+        atk.atk_phys
+    } else {
+        20.0 * atk.atk_phys_correction / 100.0
+    };
     let pd = if atk.direct_atk_stam_damage > 0.0 { atk.direct_atk_stam_damage } else { atk.atk_stam };
     // The armour part and the enemy's posture SpEffects, as on a sword hit (combat.rs resolve).
     let (armor_hp, armor_posture, _) = crate::combat::armor_rates(combat, e, da, atk, None);

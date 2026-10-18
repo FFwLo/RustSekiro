@@ -416,12 +416,15 @@ pub(crate) fn dmy_entity(d: &Dummies, id: i64) -> Option<Entity> {
 /// corrections [%], each scaled by the NPC's NpcParam <element>DamageCutRate (c1020: dark
 /// 0.6, others 1.0; NpcParam def_* are 0). Combat arts deal "dark" (Whirlwind Slash
 /// atkDarkCorrection 125 on attackBaseDark 40).
-pub(crate) fn player_attack_damage(combat: &Combat, atk: &Attack, weapon: i64, def: &Actor) -> f32 {
+/// `magic_bonus`: Divine Confetti's spirit on the sword (items.rs magic_bonus), scaled as the
+/// physical part.
+pub(crate) fn player_attack_damage(combat: &Combat, atk: &Attack, weapon: i64, def: &Actor, magic_bonus: f32) -> f32 {
     let w = combat.param("EquipParamWeapon", weapon);
     let npc = combat.npc(def);
     let base = |k: &str| w[k].as_f64().unwrap_or(0.0) as f32;
     let cut = |k: &str| npc[k].as_f64().unwrap_or(1.0) as f32;
-    base("attackBasePhysics") * atk.atk_phys_correction / 100.0
+    magic_bonus * atk.atk_phys_correction / 100.0 * cut("magicDamageCutRate")
+        + base("attackBasePhysics") * atk.atk_phys_correction / 100.0
         + base("attackBaseMagic") * atk.atk_mag_correction / 100.0 * cut("magicDamageCutRate")
         + base("attackBaseFire") * atk.atk_fire_correction / 100.0 * cut("fireDamageCutRate")
         + base("attackBaseThunder") * atk.atk_thun_correction / 100.0 * cut("thunderDamageCutRate")
@@ -655,8 +658,10 @@ pub(crate) fn damage_motion_level(d: &crate::data::CharData, a: &Actor, level: i
     }
     let hp_pct = a.hp / a.hp_max.max(1.0) * 100.0;
     let tae: Vec<&crate::data::SpEffect> = if a.anim.is_empty() { Vec::new() } else { d.sp_effects_at(&a.anim, a.t).into_iter().map(|(_, s)| s).collect() };
+    // Wolf's quick items too (Red Lump 3051: small hits minimum).
     tae.into_iter()
         .chain(a.resident.iter().filter_map(|id| d.sp_effects.get(&id.to_string())))
+        .chain(a.item_sp.iter().filter_map(|id| crate::items::sp_row(*id)))
         .filter(|s| s.sp_category == 1001 && (s.state_info != 120 || a.super_armor.holds()) && (s.condition_hp <= 0.0 || hp_pct <= s.condition_hp))
         .min_by_key(|s| s.category_priority)
         .and_then(|s| LEVELS.get((s.dmg_lv(level) - 1).max(-1) as usize).copied().filter(|_| s.dmg_lv(level) > 0))
@@ -1116,7 +1121,11 @@ pub(crate) fn damage_rates(combat: &Combat, atk: &Attack, da: &Actor) -> [f32; 5
     }
     cuts.extend(da.resident.iter().filter_map(|id| d.sp_effects.get(&id.to_string())).map(|s| &s.damage_cut));
     let rate = |f: &dyn Fn(&crate::data::DamageCut) -> f32| cuts.iter().map(|c| f(c)).product::<f32>();
-    [rate(&|c| c.physical(atk.atk_attribute)), rate(&|c| c.magic), rate(&|c| c.fire), rate(&|c| c.thunder), rate(&|c| c.dark)]
+    // Wolf's quick items (items.rs): their element cuts (Dousing Powder fire x0.6, Eel Liver
+    // lightning x0.5, Red Lump fire x2); the physical part is their dmg_cut (wolf_rates).
+    let items: Vec<&crate::data::DamageCut> = da.item_sp.iter().filter_map(|id| crate::items::sp_row(*id)).map(|s| &s.damage_cut).collect();
+    let item = |f: &dyn Fn(&crate::data::DamageCut) -> f32| items.iter().map(|c| f(c)).product::<f32>();
+    [rate(&|c| c.physical(atk.atk_attribute)), rate(&|c| c.magic) * item(&|c| c.magic), rate(&|c| c.fire) * item(&|c| c.fire), rate(&|c| c.thunder) * item(&|c| c.thunder), rate(&|c| c.dark) * item(&|c| c.dark)]
 }
 
 /// HP an NPC hit takes off Wolf through his guard (Block) or deflect: each element times
@@ -1670,7 +1679,7 @@ fn resolve(
                     Outcome::Deflect { window, at, rate } => {
                         // The enemy's poison / burn builds up on Wolf, less through his sword.
                         if aa.side == Side::Enemy && da.side == Side::Player {
-                            for m in statuses.hit_wolf(&combat, def_e, config.player.combat_art, &atk.sp_effects(), crate::status::Guard::Deflect) {
+                            for m in statuses.hit_wolf(&combat, def_e, config.player.combat_art, &da.item_sp, &atk.sp_effects(), crate::status::Guard::Deflect) {
                                 log.push(format!("Wolf: {m}"), Color::srgb(0.7, 0.55, 0.9));
                             }
                             let chip = guard_chip(&combat, &atk, true, if umbrella { tool_weapon.unwrap_or(5000) } else { 5000 }, damage_rates(&combat, &atk, da)) * aa.atk_rate;
@@ -1826,7 +1835,7 @@ fn resolve(
                     }
                     Outcome::Block => {
                         if aa.side == Side::Enemy && da.side == Side::Player {
-                            for m in statuses.hit_wolf(&combat, def_e, config.player.combat_art, &atk.sp_effects(), crate::status::Guard::Block) {
+                            for m in statuses.hit_wolf(&combat, def_e, config.player.combat_art, &da.item_sp, &atk.sp_effects(), crate::status::Guard::Block) {
                                 log.push(format!("Wolf: {m}"), Color::srgb(0.7, 0.55, 0.9));
                             }
                             let chip = guard_chip(&combat, &atk, false, if umbrella { tool_weapon.unwrap_or(5000) } else { 5000 }, damage_rates(&combat, &atk, da)) * aa.atk_rate;
@@ -1978,7 +1987,7 @@ fn resolve(
                         }
                         let (mut ignited, mut poisoned) = (false, false);
                         if aa.side == Side::Enemy && da.side == Side::Player {
-                            for m in statuses.hit_wolf(&combat, def_e, config.player.combat_art, &atk.sp_effects(), crate::status::Guard::None) {
+                            for m in statuses.hit_wolf(&combat, def_e, config.player.combat_art, &da.item_sp, &atk.sp_effects(), crate::status::Guard::None) {
                                 log.push(format!("Wolf: {m}"), Color::srgb(0.7, 0.55, 0.9));
                             }
                         }
@@ -2000,7 +2009,7 @@ fn resolve(
                         // atk_rate: an NPC's doping, Wolf's quick-item effects (items.rs); dmg_cut
                         // the defender's (Wolf's Ungo's Sugar).
                         let dmg = match aa.side {
-                            Side::Player => player_attack_damage(&combat, &atk, weapon, &da) * aa.atk_rate,
+                            Side::Player => player_attack_damage(&combat, &atk, weapon, &da, crate::items::magic_bonus(&aa.item_sp)) * aa.atk_rate,
                             Side::Enemy => npc_hit_damage(&combat, &atk, &da) * aa.atk_rate,
                         } * da.dmg_cut;
                         // An armoured enemy (enemy.rs Armor): Wolf's hit lands on the armour part,

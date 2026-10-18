@@ -55,6 +55,9 @@ pub struct Player {
     /// rule; the user, 2026-10-18: "second ressurection should be locked away in game after you
     /// resurrect until you land a deathblow"). Resting and a reset unlock them too.
     pub revive_locked: bool,
+    /// The worn items' maxHpRate product now applied to hp_max (items.rs `max_hp_rate`;
+    /// Yashariku's Sugar 3411: 0.5), so it comes off again when they end.
+    pub item_hp_rate: f32,
     /// Seconds in the death / revival-wait loop. Those clips are one frame long and loop, so
     /// their time wraps and their f0-4 TAE (110010 Pretending Dead, iframes) stays on; the revive
     /// choice and the timeout run on this instead of the clip time (round 27).
@@ -1456,7 +1459,7 @@ fn spawn_player(mut commands: Commands, combat: Res<Combat>, config: Res<GameCon
         }
     }
     commands.spawn((
-        Player { plunge: None, leap_homing: None, dock: None, wall_jumps: 0, last_wall: None, seat: Default::default(), wall_contact: None, speed_level: 0.0, requests: HashMap::new(), last_state: String::new(), gourd: config.player.gourd_charges, emblems: config.player.spirit_emblems, auto_aim: false, auto_aim_fresh: false, resurrections: config.player.resurrections, revive_queued: false, death_wait: 0.0, dead_for: 0.0, escape: None, jump_forward: false, jump_land: None, positioning_land: false, aged_form: false, step_tilt: 0.0, jump_tilt: 0.0, throw_start: None, throw_target: None, tool_slot: 0, quick_slot: 0, item_use: None, vel_scale: None, expand_pending: false, sub_cat_before: 0, air_sub_count: 0, air_art_count: 0, art_enable_jump: false, timed: Vec::new(), held: Vec::new(), wire: None, perch: None, wire_todome: false, air_top: 0.0, safe_pos: None, swim: None, revive_open: false, gave_up: false, revive_locked: false },
+        Player { plunge: None, leap_homing: None, dock: None, wall_jumps: 0, last_wall: None, seat: Default::default(), wall_contact: None, speed_level: 0.0, requests: HashMap::new(), last_state: String::new(), gourd: config.player.gourd_charges, emblems: config.player.spirit_emblems, auto_aim: false, auto_aim_fresh: false, resurrections: config.player.resurrections, revive_queued: false, death_wait: 0.0, dead_for: 0.0, escape: None, jump_forward: false, jump_land: None, positioning_land: false, aged_form: false, step_tilt: 0.0, jump_tilt: 0.0, throw_start: None, throw_target: None, tool_slot: 0, quick_slot: 0, item_use: None, vel_scale: None, expand_pending: false, sub_cat_before: 0, air_sub_count: 0, air_art_count: 0, art_enable_jump: false, timed: Vec::new(), held: Vec::new(), wire: None, perch: None, wire_todome: false, air_top: 0.0, safe_pos: None, swim: None, revive_open: false, gave_up: false, revive_locked: false, item_hp_rate: 1.0 },
         actor,
         Name::new("Player"),
         Transform::from_xyz(0.0, CAPSULE_HALF_HEIGHT, 4.0),
@@ -2421,6 +2424,17 @@ fn decide(
     // The quick items' worn effects (items.rs): Wolf's damage rates and the regeneration.
     let [atk, stam, cut, posture_cut] = crate::items::wolf_rates(&p.timed);
     (a.atk_rate, a.stam_atk_rate, a.dmg_cut, a.posture_cut) = (atk, stam, cut, posture_cut);
+    a.item_sp.clear();
+    a.item_sp.extend(p.timed.iter().map(|t| t.0));
+    // Their maxHpRate (Yashariku's Sugar halves the max HP for its 30 s; the user, 2026-10-18:
+    // "make yashariku's sugar limit max hp to half hp of wolf"): hp_max rescaled when it
+    // changes, HP kept under it and not given back after (bCurrHPIndependeMaxHP 1).
+    let hp_rate = crate::items::max_hp_rate(&a.item_sp);
+    if (hp_rate - p.item_hp_rate).abs() > 1e-6 {
+        a.hp_max *= hp_rate / p.item_hp_rate;
+        a.hp = a.hp.min(a.hp_max);
+        p.item_hp_rate = hp_rate;
+    }
     let regen_dt = a.clock(dt);
     crate::items::tick_regen(&p.timed, a, regen_dt);
     // Next quick item (C / d-pad down): the next filled slot.
@@ -2437,7 +2451,8 @@ fn decide(
     if let Some((goods, state)) = p.item_use.clone() {
         if a.state.trim_start_matches("Crouch") != state {
             p.item_use = None;
-        } else if d.anim(&a.anim).is_some_and(|an| an.events.iter().any(|e| e.kind == 65 && e.start > a.prev_t && e.start <= a.t)) {
+        // At frame 0 too (Bite Down's, a000_250400): on the clip's first step.
+        } else if d.anim(&a.anim).is_some_and(|an| an.events.iter().any(|e| e.kind == 65 && ((e.start > a.prev_t && e.start <= a.t) || (e.start == 0.0 && a.prev_t == 0.0 && a.t > 0.0)))) {
             for sp in crate::items::effects_of(goods) {
                 crate::items::wear(&mut p.timed, sp);
             }
@@ -2651,6 +2666,7 @@ fn decide(
         p.dead_for = 0.0;
         // config posture.player_level after F5 (it was read only at spawn; round 24).
         (a.hp_max, a.posture_max, a.posture_regen) = level_stats(&combat, config.posture.player_level);
+        p.item_hp_rate = 1.0;
         a.hp = a.hp_max;
         a.posture = 0.0;
         a.play("StandIdle", "");

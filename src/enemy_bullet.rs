@@ -529,7 +529,7 @@ fn fly(
                     // Its poison / burn build-up goes onto Wolf's gauges (status.rs; gap: whether his
                     // guard keeps some off a bullet's own SpEffects is not traced: all of it lands).
                     let (build, own): (Vec<i64>, Vec<i64>) = sp_effects(&b.spec).partition(|id| crate::status::Statuses::is_build_up(&combat, *id));
-                    statuses.hit_wolf(&combat, we, config.player.combat_art, &build, crate::status::Guard::None);
+                    statuses.hit_wolf(&combat, we, config.player.combat_art, &wa.item_sp, &build, crate::status::Guard::None);
                     // Its other SpEffects for their effectEndurance (one with none: a frame).
                     for id in own {
                         let key = id.to_string();
