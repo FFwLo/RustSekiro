@@ -927,3 +927,30 @@ fn shift_swims_fast() {
     }
     assert!(dist[1] > dist[0] * 1.3, "plain {:.1} m, fast {:.1} m in 3 s", dist[0], dist[1]);
 }
+
+/// Jump at the surface leaves the water upward (the user: "add jumping").
+#[test]
+fn wolf_jumps_out_of_the_water() {
+    let (lo, hi) = (Vec3::new(3990.0, -5.0, -10.0), Vec3::new(4010.0, -0.4, 10.0));
+    crate::swim::WATER.write().unwrap().push((lo, hi));
+    let mut app = app_cfg("c1010", None, Vec::new());
+    {
+        let world = app.world_mut();
+        let mut q = world.query_filtered::<&mut Transform, With<Player>>();
+        q.single_mut(world).unwrap().translation = Vec3::new(4000.0, -3.0 + CAPSULE_HALF_HEIGHT, 0.0);
+    }
+    run(&mut app, 60);
+    let feet = |app: &mut App| {
+        let world = app.world_mut();
+        world.query_filtered::<&Transform, With<Player>>().single(world).unwrap().translation.y - CAPSULE_HALF_HEIGHT
+    };
+    let y0 = feet(&mut app);
+    app.world_mut().resource_mut::<PadInput>().press(Action::Jump);
+    let mut top = y0;
+    for _ in 0..40 {
+        app.update();
+        top = top.max(feet(&mut app));
+    }
+    assert!(top > hi.y + 0.3, "jumped from {y0:.2} to {top:.2}, surface {}: {}", hi.y, log_text(&app));
+    crate::swim::WATER.write().unwrap().retain(|w| w.0 != lo);
+}

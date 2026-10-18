@@ -40,9 +40,26 @@ const TURN_RATE: f32 = 3.5;
 #[derive(Clone, Debug, Default)]
 pub struct Swim {
     pub diving: bool,
-    /// Walking out (SwimToStandMove playing).
-    leaving: bool,
+    /// The Mibu Breathing Technique held (the action guide's Dive).
+    pub mibu: bool,
+    /// Steering while rising or sinking (the up / down clips go straight up): the stick's
+    /// world velocity, applied by `hold`.
+    drift: Vec3,
 }
+
+/// What the swim step leaves to player.rs.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Step {
+    /// Swimming: the rest of decide does not run.
+    Held,
+    /// Out of the water (or never in it): decide carries on.
+    Free,
+    /// Jumped out at the surface: decide launches the jump.
+    Jump,
+}
+
+/// Steering speed while rising or sinking [m/s] (about the dive stroke's).
+const DRIFT_SPEED: f32 = 3.0;
 
 /// The water box `feet` is in (inside it across, under its surface).
 pub fn water_at(feet: Vec3) -> Option<(Vec3, Vec3)> {
@@ -84,6 +101,8 @@ pub struct Controls {
     pub sink_held: bool,
     pub dive_pressed: bool,
     pub fast_held: bool,
+    /// Jump at the surface: out of the water.
+    pub jump_pressed: bool,
 }
 
 /// The fast swim's kicks: at the surface the clips a000_031400 / 031410 (the HKS's
@@ -130,20 +149,23 @@ fn kicks(a: &mut Actor, d: &CharData, c: &Controls, under: bool, moving: bool, e
 /// The swim's input step, in player.rs decide before the hug / hang: true while Wolf swims (the
 /// rest of decide does not run).
 #[allow(clippy::too_many_arguments)]
-pub fn tick(p: &mut Player, a: &mut Actor, d: &CharData, tf: &Transform, c: Controls, ended: bool, mibu: bool, dt: f32, log: &mut crate::hud::CombatLog) -> bool {
+pub fn tick(p: &mut Player, a: &mut Actor, d: &CharData, tf: &Transform, c: Controls, ended: bool, mibu: bool, dt: f32, log: &mut crate::hud::CombatLog) -> Step {
+    use Step::{Free, Held};
     let stick = c.stick;
     let feet = tf.translation - Vec3::Y * CAPSULE_HALF_HEIGHT;
     let Some((_, hi)) = water_at(feet) else {
         if p.swim.take().is_some() {
             a.play("StandIdle", "");
         }
-        return false;
+        return Free;
     };
     let surface = hi.y;
     let floor = floor_under(feet, surface);
     let Some(swim) = p.swim.as_mut() else {
-        // In: deep enough at the feet, over water too deep to stand in.
-        if feet.y < surface - ENTER_DEPTH && surface - floor > STAND_DEPTH {
+        // In: deep enough at the feet, over water too deep to stand in; not on the way up out of
+        // it (a jump from the surface).
+        let rising = a.airborne && a.vel_y > 0.0;
+        if feet.y < surface - ENTER_DEPTH && surface - floor > STAND_DEPTH && !rising {
             let falling = a.airborne;
             p.swim = Some(Swim::default());
             a.airborne = false;
@@ -155,41 +177,45 @@ pub fn tick(p: &mut Player, a: &mut Actor, d: &CharData, tf: &Transform, c: Cont
                 a.play_state(d, "SwimIdle");
             }
             log.push("swimming", Color::srgb(0.5, 0.75, 1.0));
-            return true;
+            return Held;
         }
-        return false;
+        return Free;
     };
-    if swim.leaving {
-        if ended {
-            p.swim = None;
-            a.play("StandIdle", "");
-        }
-        return true;
-    }
+    swim.mibu = mibu;
+    swim.drift = Vec3::ZERO;
     let moving = stick.length_squared() > 0.01;
     let busy = matches!(a.state.as_str(), "StandMoveToSwim" | "SwimToDive" | "DiveToSwim") && !ended;
     if !swim.diving {
-        // Out where it gets shallow.
+        // Out where it gets shallow: straight into walking, no climb-out clip (the user: "remove
+        // the endlag when you go outside of water"; SwimToStandMove held him 1 s). The floor snap
+        // puts his feet on the ramp.
         if surface - floor < STAND_DEPTH && moving {
-            swim.leaving = true;
-            a.play_state(d, "SwimToStandMove");
-            return true;
+            p.swim = None;
+            a.docked = false;
+            a.play("StandIdle", "");
+            return Free;
+        }
+        // Jump: out of the water (through the wade-in too; not mid-dive).
+        if c.jump_pressed && !(busy && a.state != "StandMoveToSwim") {
+            p.swim = None;
+            a.docked = false;
+            return Step::Jump;
         }
         if busy {
             turn_to(a, stick, dt);
-            return true;
+            return Held;
         }
         if c.dive_pressed {
             if mibu {
                 swim.diving = true;
                 a.play_state(d, "SwimToDive");
                 log.push("dive", Color::srgb(0.5, 0.75, 1.0));
-                return true;
+                return Held;
             }
             log.push("diving needs the Mibu Breathing Technique", Color::srgb(0.8, 0.8, 0.8));
         }
         if kicks(a, d, &c, false, moving, ended, dt) {
-            return true;
+            return Held;
         }
         if moving {
             turn_to(a, stick, dt);
@@ -211,23 +237,27 @@ pub fn tick(p: &mut Player, a: &mut Actor, d: &CharData, tf: &Transform, c: Cont
                 _ => keep(a, d, "SwimIdle", ended),
             }
         }
-        return true;
+        return Held;
     }
     // Diving.
     if busy {
         turn_to(a, stick, dt);
-        return true;
+        return Held;
     }
     // Up at the surface: out of the dive.
     if c.rise_held && feet.y >= surface - SWIM_DEPTH - 0.05 {
         swim.diving = false;
         a.play_state(d, "DiveToSwim");
-        return true;
+        return Held;
     }
     if kicks(a, d, &c, true, moving, ended, dt) {
-        return true;
+        return Held;
     }
     turn_to(a, stick, dt);
+    // Rising or sinking, the stick steers him across too.
+    if (c.rise_held || c.sink_held) && moving {
+        swim.drift = stick.with_y(0.0).normalize_or_zero() * DRIFT_SPEED;
+    }
     // The loop for what is held, through its start; letting go plays its end.
     let (start, lp) = if c.rise_held {
         ("DiveMoveUpStart", "DiveMoveUpLoop")
@@ -262,7 +292,7 @@ pub fn tick(p: &mut Player, a: &mut Actor, d: &CharData, tf: &Transform, c: Cont
             None => keep(a, d, "DiveIdle", ended),
         }
     }
-    true
+    Held
 }
 
 /// The clip's vertical root motion over this step (a restarted clip counts from its start).
@@ -280,19 +310,12 @@ fn root_dy(d: &CharData, a: &Actor) -> f32 {
 /// FixedUpdate after the root motion: Wolf held in the water (no gravity, no floor snap: the
 /// Actor's `docked`), at the surface or where the dive's vertical root motion takes him, inside
 /// the water box and over its floor.
-pub fn hold(combat: Res<crate::data::Combat>, mut q: Query<(&Player, &mut Actor, &mut Transform)>) {
+pub fn hold(time: Res<Time>, combat: Res<crate::data::Combat>, mut q: Query<(&Player, &mut Actor, &mut Transform)>) {
     let d = &combat.player;
     for (p, mut a, mut tf) in &mut q {
         let Some(swim) = p.swim.as_ref() else { continue };
-        if swim.leaving {
-            // Walking out: back on the floor under him.
-            let feet = tf.translation - Vec3::Y * CAPSULE_HALF_HEIGHT;
-            let floor = crate::map::terrain().and_then(|t| t.floor(feet.x, feet.z, feet.y + 1.5)).unwrap_or(feet.y);
-            tf.translation.y = floor + CAPSULE_HALF_HEIGHT;
-            a.docked = false;
-            continue;
-        }
         a.docked = true;
+        tf.translation += swim.drift * time.delta_secs();
         a.airborne = false;
         a.vel_y = 0.0;
         let feet = tf.translation - Vec3::Y * CAPSULE_HALF_HEIGHT;

@@ -3405,9 +3405,27 @@ fn decide(
     }
     // In deep water (swim.rs): the swim and the dive, nothing else.
     let mibu = crate::items::count(&config, crate::swim::MIBU_BREATHING) > 0;
-    let swim = crate::swim::Controls { stick, rise_held: pad.grapple_held, sink_held: pad.prosthetic_held, dive_pressed: swim_dive, fast_held: pad.dodge_held };
-    if crate::swim::tick(p, a, d, tf, swim, ended, mibu, dt, &mut log) {
-        return;
+    let swim = crate::swim::Controls { stick, rise_held: pad.grapple_held, sink_held: pad.prosthetic_held, dive_pressed: swim_dive, fast_held: pad.dodge_held, jump_pressed: dock_jump };
+    match crate::swim::tick(p, a, d, tf, swim, ended, mibu, dt, &mut log) {
+        crate::swim::Step::Held => return,
+        // Out of the water at the surface: the jump's fall at once (its Ready clip stands on
+        // ground he does not have), with the ground jump's launch (ChrPhysicsVelocityChangeParam
+        // 101: 6.4 m/s ahead with the stick, 9.69 up) - onto the pool's edge.
+        crate::swim::Step::Jump => {
+            p.requests.remove(&Action::Jump);
+            p.positioning_land = true;
+            a.airborne = true;
+            a.fall_type = 0;
+            a.vel_y = 9.69;
+            a.air_base = if stick != Vec3::ZERO { stick.normalize() * 6.4 } else { Vec3::ZERO };
+            if stick != Vec3::ZERO {
+                a.yaw = yaw_of(stick);
+            }
+            a.play_state(d, if stick != Vec3::ZERO { "ForwardGroundJumpFall" } else { "VerticalGroundJumpFall" });
+            log.push("jump out of the water", Color::srgb(0.5, 0.75, 1.0));
+            return;
+        }
+        crate::swim::Step::Free => {}
     }
     if dock_step_tick(p, a, d, tf, ledges.as_deref(), stick, pad.walk, pad.interact_held, interact_pressed, dock_jump, dock_step, ended, &mut log, attack_pressed, &combat, &enemies) {
         return;
