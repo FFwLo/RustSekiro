@@ -52,6 +52,7 @@ mod map_grass;
 mod map_lights;
 mod menu;
 mod sandbox;
+mod sculptor;
 mod showcase;
 mod shot;
 mod skill_tree;
@@ -91,6 +92,7 @@ fn main() {
         .add_plugins(shot::ShotPlugin)
         .add_plugins(game_menu::GameMenuPlugin)
         .add_plugins(idol::IdolPlugin)
+        .add_plugins(sculptor::SculptorPlugin)
         .add_plugins(items::ItemsPlugin)
         .add_plugins(experience::ExperiencePlugin)
         .add_plugins(drops::DropsPlugin)

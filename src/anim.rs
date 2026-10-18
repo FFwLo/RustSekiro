@@ -33,6 +33,8 @@ pub struct Lib {
 #[derive(Resource, Default)]
 pub struct AnimLib {
     pub player: Lib,
+    /// A friendly NPC's library is independent of the replaceable encounter slots.
+    sculptor: Option<Lib>,
     /// Per enemy kind (`Combat::kinds`); kinds with the same anim chr share one.
     pub enemies: Vec<std::sync::Arc<Lib>>,
     /// The anim chr of each `enemies` entry, and the chrs whose anim_c0000_<chr>.bin (Wolf's
@@ -66,6 +68,11 @@ impl AnimLib {
     }
 
     pub fn lib(&self, a: &crate::actor::Actor) -> &Lib {
+        if a.kind == crate::sculptor::KIND {
+            if let Some(sculptor) = &self.sculptor {
+                return sculptor;
+            }
+        }
         match a.side {
             Side::Player => &self.player,
             Side::Enemy => self.enemies.get(a.kind).or(self.enemies.first()).map_or(&self.player, |l| l.as_ref()),
@@ -255,7 +262,8 @@ impl Plugin for AnimPlugin {
             .map(|(chr, _)| by_chr.entry(chr.clone()).or_insert_with(|| std::sync::Arc::new(load(&dir.join(format!("anim_{chr}.bin"))))).clone())
             .collect();
         let enemy_chrs = kinds.iter().map(|(chr, _)| chr.clone()).collect();
-        app.insert_resource(AnimLib { player, enemies, enemy_chrs, player_vs: done })
+        let sculptor = app.world().get_resource::<Combat>().and_then(|c| c.sculptor.as_ref()).map(|k| load(&dir.join(format!("anim_{}.bin", k.foe.anim_chr))));
+        app.insert_resource(AnimLib { player, sculptor, enemies, enemy_chrs, player_vs: done })
             .add_systems(PostStartup, build_skeletons.in_set(AnimSet))
             // Characters spawned later (a fight reset's line-up, the encounter picker).
             .add_systems(Update, build_skeletons.in_set(AnimSet).before(draw_poses))

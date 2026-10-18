@@ -1,5 +1,13 @@
 # Sv1: progress and next steps
 
+- 2026-10-18 Sculptor: c7010 beside Course Start on the Construct, E to talk, with the game's
+  model, skeleton and idle / Wolf talk clips. The Workshop's fitting and upgrades now open
+  through him. Talking preserves health, items and the idol checkpoint; encounter changes
+  preserve his character data. Placement, reach and conversation camera are reconstructed;
+  story dialogue, voices, gifts and sake progression remain gaps. Validation: release build,
+  private real-app captures of Talk, fitting and upgrades, full suite (655 pass, 46 ignored;
+  serial rerun after the intermittent parallel Confetti assertion). See `kb/sculptor.md`.
+
 - 2026-10-18 Esoteric Texts: collect EquipParamGoods 2920-2924 to open each school at an idol;
   visible tabs and acquisition checks use possession. Five book pickups on the Construct use
   the existing key-item dialog. Story gifts and saved progression remain outside this test map.

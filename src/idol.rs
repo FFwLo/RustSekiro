@@ -113,6 +113,8 @@ pub enum Cmd {
 #[derive(Default, Clone)]
 pub struct Seat {
     pub idol: Option<usize>,
+    /// Talking to the Sculptor uses the Workshop, without kneeling, healing or changing idols.
+    pub sculptor: bool,
     pub phase: Phase,
     pub cmd: Option<Cmd>,
     /// The menu should open (the kneel or the rest clip is done).
@@ -157,7 +159,7 @@ fn seat_tick(seat: &mut Seat, p: &mut crate::player::Player, a: &mut crate::acto
                         a.yaw = idol.wolf_yaw();
                         a.move_vel = Vec3::ZERO;
                         rest(p, a, config);
-                        *seat = Seat { idol: Some(i), phase: Phase::Kneeling, cmd: None, open: false, checkpoint: Some(i), respawn: false };
+                        *seat = Seat { idol: Some(i), phase: Phase::Kneeling, cmd: None, open: false, checkpoint: Some(i), respawn: false, sculptor: false };
                         return true;
                     }
                 }
@@ -226,7 +228,7 @@ fn seat_tick(seat: &mut Seat, p: &mut crate::player::Player, a: &mut crate::acto
 }
 
 /// The idol menu's rows (the game's, in its order) and whether this recreation has them yet.
-const ROWS: [(&str, bool); 11] = [
+const ROWS: [(&str, bool); 10] = [
     ("Rest", true),
     ("Purchase Spirit Emblems", true),
     ("Travel", true),
@@ -237,8 +239,6 @@ const ROWS: [(&str, bool); 11] = [
     ("Change Form", true),
     ("Reflection of Strength", false),
     ("Gauntlet of Strength", false),
-    // Not the idol's: the Sculptor's (workshop.rs), here while the test map has no Sculptor.
-    ("Sculptor's Workshop", true),
 ];
 
 /// The Workshop's rows (the user's capture).
@@ -264,6 +264,8 @@ enum Page {
 #[derive(Resource, Default)]
 struct IdolMenu {
     page: Page,
+    /// The Workshop was opened by talking to the Sculptor, rather than a screenshot harness.
+    sculptor: bool,
     index: usize,
     /// Travel: the region column (false) or its idols (true).
     in_list: bool,
@@ -437,7 +439,7 @@ fn build(commands: &mut Commands, assets: &AssetServer, menu: &IdolMenu, font: &
                     root.spawn((abs(33.0 + k as f32, 0.0, 1.0, 100.0), BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.93 * (1.0 - (k as f32 + 1.0) / 11.0)))));
                 }
                 root.spawn(abs(5.5, 8.6, 30.0, 5.0)).with_children(|c| {
-                    c.spawn(text("Workshop", 21.0, Color::WHITE, font));
+                    c.spawn(text("Sculptor", 21.0, Color::WHITE, font));
                 });
                 root.spawn((abs(0.0, 13.3, 30.0, 0.2), BackgroundColor(Color::srgba(1.0, 1.0, 1.0, 0.25))));
                 for (i, label) in WORKSHOP_ROWS.iter().enumerate() {
@@ -588,7 +590,7 @@ fn open_menu(mut next: ResMut<NextState<Screen>>, mut menu: ResMut<IdolMenu>, mu
     let Ok(mut p) = wolf.single_mut() else { return };
     if p.seat.open {
         p.seat.open = false;
-        *menu = IdolMenu::default();
+        *menu = IdolMenu { page: if p.seat.sculptor { Page::Workshop } else { Page::Main }, sculptor: p.seat.sculptor, ..default() };
         next.set(Screen::Idol);
     }
 }
@@ -617,7 +619,7 @@ fn run_idol_menu(
     let Ok((mut p, a)) = wolf.single_mut() else { return };
     // Knocked off the idol (the world runs on): the menu closes. (SHINOBI_IDOL_PAGE captures open
     // it with no seat.)
-    if p.seat.idol.is_none() && std::env::var("SHINOBI_IDOL_PAGE").is_err() {
+    if (p.seat.idol.is_none() && !p.seat.sculptor || a.hp <= 0.0) && std::env::var("SHINOBI_IDOL_PAGE").is_err() {
         next.set(Screen::Playing);
         return;
     }
@@ -685,10 +687,6 @@ fn run_idol_menu(
                         menu.page = Page::Purchase;
                         menu.index = 0;
                     }
-                    "Sculptor's Workshop" => {
-                        menu.page = Page::Workshop;
-                        menu.index = 0;
-                    }
                     "Change Form" => {
                         menu.page = Page::Form;
                         menu.index = crate::form::current(&config);
@@ -729,8 +727,12 @@ fn run_idol_menu(
                 menu.index = (menu.index + n - 1) % n;
             }
             if back {
+                if menu.sculptor {
+                    command(Cmd::Leave, &mut p, &mut next);
+                    return;
+                }
                 menu.page = Page::Main;
-                menu.index = ROWS.iter().position(|r| r.0 == "Sculptor's Workshop").unwrap_or(0);
+                menu.index = 0;
             } else if confirm {
                 menu.page = if menu.index == 0 { Page::Fit } else { Page::Upgrade };
                 menu.index = 0;

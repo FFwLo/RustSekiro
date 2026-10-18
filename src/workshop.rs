@@ -7,8 +7,8 @@
 //! materials (materialCate 4: goods). Owned tools and upgrades are config player.owned_tools /
 //! player.upgrades; the Equipment's tool slots offer the owned tools and the upgrades' tools.
 //!
-//! gap: there is no Sculptor on the test map: the idol menu opens the Workshop. An upgrade with
-//! two parents asks for either (as the skill tree).
+//! Opened by talking to the Sculptor (sculptor.rs) on the Construct.
+//! gap: an upgrade with two parents asks for either (as the skill tree).
 
 use std::sync::OnceLock;
 

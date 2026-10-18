@@ -3470,6 +3470,9 @@ fn decide(
     // An item on the ground in reach (items.rs): E takes it, before the idol and the wall.
     let picked = interact_pressed && !a.airborne && is_free(&a.state) && picked.as_deref_mut().is_some_and(|q| crate::items::take_near(tf.translation - Vec3::Y * CAPSULE_HALF_HEIGHT, q));
     let interact_pressed = interact_pressed && !picked;
+    if crate::sculptor::tick(p, a, d, tf, interact_pressed, ended, &config) {
+        return;
+    }
     let at_idol = crate::idol::tick(p, a, d, tf, interact_pressed, ended, &config);
     // Praying or resting at an idol brings the enemies back (the fight's line-up).
     if std::mem::take(&mut p.seat.respawn) {

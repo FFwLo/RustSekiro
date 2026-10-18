@@ -30,6 +30,8 @@ data.
 - **Skill trees:** find each Esoteric Text to open its school at an idol. On the Construct,
   the five books are at Course Start, Platform Top, Cliff Top, Shaft Floor and the outpost's
   watchtower. Learning still costs skill points and requires the earlier skills.
+- **Sculptor:** talk to him near Course Start on the Construct (E) to fit new Prosthetic Tools
+  and buy upgrades. The Workshop is reached through him rather than an idol.
 
 Values the files don't hold are marked `gap` in the code and in `config.toml`.
 Not included: the rest of the game (story, NPCs, saving, open world).

@@ -1336,7 +1336,7 @@ fn resolve(
     config: Res<GameConfig>,
     mut log: ResMut<CombatLog>,
     mut commands: Commands,
-    mut q: Query<(Entity, &mut Actor, &Transform, Option<&mut Enemy>, Option<&Dummies>, Option<&Hurtboxes>)>,
+    mut q: Query<(Entity, &mut Actor, &Transform, Option<&mut Enemy>, Option<&Dummies>, Option<&Hurtboxes>), Without<crate::sculptor::Sculptor>>,
     dummy_tf: Query<&GlobalTransform>,
     mut sounds: Option<ResMut<crate::sound::SoundQueue>>,
     mut prev_dmy: Local<std::collections::HashMap<Entity, Vec3>>,
@@ -2304,6 +2304,7 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
         Combat {
             player: serde_json::from_value(v["player"].clone()).unwrap(),
+            sculptor: None,
             kinds: vec![crate::data::EnemyKind { foe: crate::data::Foe::for_chr("c1020"), data: serde_json::from_value(v["enemy"].clone()).unwrap() }],
             params: v["params"].clone(),
             rumble: Default::default(),

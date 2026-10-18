@@ -40,9 +40,12 @@ pub const UNDERWATER_DASH: u32 = 10010340;
 pub const SWIM_UP: u32 = 10010341;
 pub const SWIM_DOWN: u32 = 10010342;
 pub const JUMP: u32 = 10021010;
+/// The game's event-text guide for an NPC conversation.
+pub const TALK: u32 = 10010200;
 
 /// The built-in English for each guide, when the FMG is not extracted.
 const FALLBACK: &[(u32, &str)] = &[
+    (TALK, "Talk"),
     (HUG_WALL, "<?kgiconKc@20?>: Hug wall"),
     (STOP_HUGGING, "<?kgiconKc@20?>: Stop hugging wall"),
     (LEDGE_HANG, "<?kgiconKc@20?>: Ledge Hang"),
@@ -224,6 +227,9 @@ pub fn guides_for(p: &Player, a: &Actor, feet: Vec3, edges: &[crate::map::LedgeE
     if !a.airborne && crate::player::is_free(&a.state) {
         if crate::items::pickup_near(feet).is_some() {
             return vec![PICK_UP];
+        }
+        if crate::sculptor::near(feet) {
+            return vec![TALK];
         }
         if crate::idol::near(feet, a.yaw).is_some() {
             return vec![IDOL_REST];
