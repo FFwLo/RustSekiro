@@ -521,6 +521,7 @@ fn menu_input(
                 p.gourd = config.player.gourd_charges;
                 p.emblems = config.player.spirit_emblems;
                 p.resurrections = config.player.resurrections;
+                p.revive_locked = false;
             }
             menu.message = "gourds, emblems and resurrections refilled".into();
         }

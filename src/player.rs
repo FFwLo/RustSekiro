@@ -47,6 +47,14 @@ pub struct Player {
     pub resurrections: u32,
     /// Attack pressed on the death loop before its f0 refresh was read: revive once it is.
     revive_queued: bool,
+    /// The resurrection choice is open (menu.rs's death screen shows ": Die" / ": Resurrect").
+    pub revive_open: bool,
+    /// Die chosen there (guard): no resurrection, the death screen fades out to the final death.
+    pub gave_up: bool,
+    /// After a resurrection the nodes left are locked until Wolf lands a deathblow (the game's
+    /// rule; the user, 2026-10-18: "second ressurection should be locked away in game after you
+    /// resurrect until you land a deathblow"). Resting and a reset unlock them too.
+    pub revive_locked: bool,
     /// Seconds in the death / revival-wait loop. Those clips are one frame long and loop, so
     /// their time wraps and their f0-4 TAE (110010 Pretending Dead, iframes) stays on; the revive
     /// choice and the timeout run on this instead of the clip time (round 27).
@@ -510,6 +518,16 @@ pub const REF_HIT_DEFLECT_CANCEL: i64 = 503;
 pub const REF_ORIGINAL_LAND_ACTION: i64 = 201;
 /// c0000_define FALL_HEIGHT_LONG_STIFF_LAND (m) and the long-stiff LandFreeFall clip.
 const FALL_HEIGHT_LONG_STIFF_LAND: f32 = 20.0;
+/// The share of max HP a fall out of the map costs (the fall-return deaths).
+const FALL_RETURN_COST: f32 = 1.0 / 3.0;
+/// Seconds of the fall-return clip (under the black cut) before Wolf is back on safe ground.
+const FALL_RETURN_HOLD: f32 = 1.0;
+
+/// A fall-return death (W_FallDeadReturnStart / W_LandDeadReturnStart): Wolf out of the map, on
+/// his way back to safe ground.
+pub fn is_fall_return(state: &str) -> bool {
+    matches!(state, "LandDeadReturnStart" | "FallDeadReturnStart")
+}
 const LAND_LONG_STIFF: &str = "a000_200021";
 /// c0000_define 211-212: FALL_HEIGHT_SHORT_STIFF_LAND(_FROM_JUMP), metres.
 const FALL_HEIGHT_SHORT_STIFF_LAND: f32 = 5.0;
@@ -1438,7 +1456,7 @@ fn spawn_player(mut commands: Commands, combat: Res<Combat>, config: Res<GameCon
         }
     }
     commands.spawn((
-        Player { plunge: None, leap_homing: None, dock: None, wall_jumps: 0, last_wall: None, seat: Default::default(), wall_contact: None, speed_level: 0.0, requests: HashMap::new(), last_state: String::new(), gourd: config.player.gourd_charges, emblems: config.player.spirit_emblems, auto_aim: false, auto_aim_fresh: false, resurrections: config.player.resurrections, revive_queued: false, death_wait: 0.0, dead_for: 0.0, escape: None, jump_forward: false, jump_land: None, positioning_land: false, aged_form: false, step_tilt: 0.0, jump_tilt: 0.0, throw_start: None, throw_target: None, tool_slot: 0, quick_slot: 0, item_use: None, vel_scale: None, expand_pending: false, sub_cat_before: 0, air_sub_count: 0, air_art_count: 0, art_enable_jump: false, timed: Vec::new(), held: Vec::new(), wire: None, perch: None, wire_todome: false, air_top: 0.0, safe_pos: None, swim: None },
+        Player { plunge: None, leap_homing: None, dock: None, wall_jumps: 0, last_wall: None, seat: Default::default(), wall_contact: None, speed_level: 0.0, requests: HashMap::new(), last_state: String::new(), gourd: config.player.gourd_charges, emblems: config.player.spirit_emblems, auto_aim: false, auto_aim_fresh: false, resurrections: config.player.resurrections, revive_queued: false, death_wait: 0.0, dead_for: 0.0, escape: None, jump_forward: false, jump_land: None, positioning_land: false, aged_form: false, step_tilt: 0.0, jump_tilt: 0.0, throw_start: None, throw_target: None, tool_slot: 0, quick_slot: 0, item_use: None, vel_scale: None, expand_pending: false, sub_cat_before: 0, air_sub_count: 0, air_art_count: 0, art_enable_jump: false, timed: Vec::new(), held: Vec::new(), wire: None, perch: None, wire_todome: false, air_top: 0.0, safe_pos: None, swim: None, revive_open: false, gave_up: false, revive_locked: false },
         actor,
         Name::new("Player"),
         Transform::from_xyz(0.0, CAPSULE_HALF_HEIGHT, 4.0),
@@ -2490,6 +2508,7 @@ fn decide(
     }
     // Raw press (death screen choices are not TAE-buffered).
     let attack_pressed = pad.pressed.contains(&Action::Attack);
+    let guard_pressed = pad.pressed.contains(&Action::Guard);
     // Docking reads its presses raw (docking.rs: the hug / hang button, the climb and the drop).
     let interact_pressed = pad.pressed.contains(&Action::Interact);
     let dock_jump = pad.pressed.contains(&Action::Jump);
@@ -2583,6 +2602,7 @@ fn decide(
         p.gourd = config.player.gourd_charges;
         p.emblems = config.player.spirit_emblems;
         p.resurrections = config.player.resurrections;
+        p.revive_locked = false;
         p.held.clear();
         // A reset mid-jump, mid-plunge or crouched starts the fight standing on the ground:
         // the air state, knockback and queued presses go too (2026-10-12 bug hunt).
@@ -2812,20 +2832,25 @@ fn decide(
             }
         }
     }
-    // The fall-return deaths (HKS BEH_R_DEATH 769-776): the clip plays out, then Wolf stands at the
-    // last safe ground (GroundFallReturn a000_711210). They keep HP and the resurrections.
-    if matches!(a.state.as_str(), "LandDeadReturnStart" | "FallDeadReturnStart") {
+    // The fall-return deaths (HKS BEH_R_DEATH 769-776): the screen cuts to black (menu.rs
+    // `fall_cut`) for `FALL_RETURN_HOLD` of the clip, then Wolf stands at the last safe ground, a
+    // third of his max HP lost (`FALL_RETURN_COST`; the user, 2026-10-18: "the falls should take
+    // 1/3 of player's health every time wolf falls out of the map"); emptied, he dies there (the
+    // death below, resurrections as usual). Standing, not the get-up GroundFallReturn (a000_711210:
+    // the user, "why does he have animation when he returns").
+    if is_fall_return(&a.state) {
         a.move_vel = Vec3::ZERO;
-        if a.anim.is_empty() || a.t >= d.length(&a.anim) {
+        if a.anim.is_empty() || a.t >= d.length(&a.anim).min(FALL_RETURN_HOLD) {
             if let Some(safe) = p.safe_pos {
                 tf.translation = safe;
             }
             a.airborne = false;
             a.vel_y = 0.0;
             p.air_top = tf.translation.y;
-            if !a.play_state(d, "GroundFallReturn") {
-                a.play("StandIdle", "");
-            }
+            let cost = a.hp_max * FALL_RETURN_COST;
+            a.hp = (a.hp - cost).max(0.0);
+            log.push(format!("fall: -{cost:.0} HP"), Color::srgb(1.0, 0.4, 0.4));
+            a.play("StandIdle", "");
         }
         return;
     }
@@ -2980,7 +3005,7 @@ fn decide(
         // HKS 275 / 277 / 285: the death starts W_GroundRevival / W_LandRevival /
         // W_ThrowDefRevival take (the blow and fall deaths' lands among them, death_done).
         let start_revivable = !start_done && (a.state.starts_with("GroundDeathStart") || a.state.starts_with("LandDeathStart") || a.state == "ThrowDefDeathStart" || death_done(&a.state).is_some());
-        let can_revive = p.resurrections > 0 && a.state != "AgingGroundDeathLoop";
+        let can_revive = !p.gave_up && !p.revive_locked && p.resurrections > 0 && a.state != "AgingGroundDeathLoop";
         let choosing = if can_revive { p.dead_for >= REVIVE_DELAY && (loop_ready || start_revivable) } else { loop_ready };
         if in_loop && attack_pressed && !choosing {
             p.revive_queued = true;
@@ -2988,8 +3013,21 @@ fn decide(
         // The queued press is spent whenever the choice opens (round 52: `||` skipped the take on a
         // fresh press, and the leftover revived the next death on its first tick, a second node).
         let queued = choosing && std::mem::take(&mut p.revive_queued);
+        p.revive_open = choosing && can_revive;
+        // Die (guard; the game's ": Die" beside ": Resurrect" under 死): the node is kept, the
+        // death screen fades to black and the final death follows (menu.rs watch_fight).
+        if p.revive_open && guard_pressed && !attack_pressed && !queued {
+            p.gave_up = true;
+            p.revive_open = false;
+            log.push("death", Color::srgb(1.0, 0.4, 0.4));
+            return;
+        }
+        if p.gave_up {
+            return;
+        }
         if choosing && (attack_pressed || queued) && can_revive {
             p.resurrections -= 1;
+            p.revive_locked = true;
             a.hp = 1.0; // the revival anim's SpEffect brings it to half
             // The same IndexDeath side: GroundRevival_B (a000_110031) gets up from face down; out
             // of a grab's loop the throw's own W_ThrowDefRevival (285: a000_<ThrowId>_Revival,
@@ -3009,6 +3047,7 @@ fn decide(
                     a.play_state(d, &format!("GroundRevival_{side}"));
                 }
             }
+            p.revive_open = false;
             log.push(format!("resurrection ({} left)", p.resurrections), Color::srgb(1.0, 0.5, 0.5));
             return;
         }
@@ -3021,6 +3060,13 @@ fn decide(
     }
 
     p.dead_for = 0.0;
+    p.revive_open = false;
+    p.gave_up = false;
+    // A deathblow landed: the resurrection unlocks.
+    if p.revive_locked && a.state == "Deathblow" {
+        p.revive_locked = false;
+        log.push("resurrection unlocked", Color::srgb(1.0, 0.5, 0.5));
+    }
     // HKS _LandReset: the air tool uses count again once on the ground.
     if !a.airborne {
         p.air_sub_count = 0;

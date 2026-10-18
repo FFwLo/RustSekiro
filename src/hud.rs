@@ -390,7 +390,7 @@ fn update_player_hud(
     mut posture: Query<(&PostureFill, &mut Node, &mut ImageNode), (Without<HpFill>, Without<HpTrail>, Without<ResNode>)>,
     mut root: Query<(&PostureRoot, &mut Visibility), Without<ResLit>>,
     mut nodes: Query<(&ResNode, &mut Node), (Without<PostureFill>, Without<HpFill>, Without<HpTrail>)>,
-    mut lit: Query<(&ResLit, &mut Visibility), Without<PostureRoot>>,
+    mut lit: Query<(&ResLit, &mut Visibility, &mut ImageNode), (Without<PostureRoot>, Without<PostureFill>)>,
     mut items: Query<(&ItemText, &mut Text)>,
     config: Res<crate::config::GameConfig>,
     hp_frame: Query<&ChildOf, With<HpFill>>,
@@ -436,10 +436,15 @@ fn update_player_hud(
             n.display = display;
         }
     }
-    for (rl, mut v) in &mut lit {
+    // Locked after a resurrection (player.rs revive_locked): the charged nodes greyed out.
+    let tint = if p.revive_locked { Color::srgb(0.35, 0.35, 0.35) } else { Color::WHITE };
+    for (rl, mut v, mut img) in &mut lit {
         let want = if res_node_look(rl.0, config.player.resurrections, p.resurrections) == Some(true) { Visibility::Inherited } else { Visibility::Hidden };
         if *v != want {
             *v = want;
+        }
+        if img.color != tint {
+            img.color = tint;
         }
     }
     let quick = crate::items::in_slot(&config, p.quick_slot);
@@ -1378,7 +1383,7 @@ fn update_debug(
     mut text: Single<&mut Text, With<DebugText>>,
 ) {
     let mut s = String::from(
-        "LMB/J attack (hold = thrust)  RMB/K deflect  LMB+RMB art  Shift step (hold = sprint)  Space jump  MMB lock-on  Alt walk  Q crouch  Ctrl prosthetic  Z switch tool  F grapple  R quick item  C next item  E hug/hang  X sheathe/draw  LMB (dead) resurrect  T enemy AI on/off  H hurtboxes  Backspace reset  F5 reload config  F1 debug menu\n\n",
+        "LMB/J attack (hold = thrust)  RMB/K deflect  LMB+RMB art  Shift step (hold = sprint)  Space jump  MMB lock-on  Alt walk  Q crouch  Ctrl prosthetic  Z switch tool  F grapple  R quick item  C next item  E hug/hang  X sheathe/draw  LMB / RMB (dead) resurrect / die  T enemy AI on/off  H hurtboxes  Backspace reset  F5 reload config  F1 debug menu\n\n",
     );
     for (a, enemy) in &actors {
         let d = data_for(&combat, &a);

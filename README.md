@@ -13,7 +13,9 @@ data.
 ## What it does
 
 - **Wolf:** walking, running, sprinting, jumping, steps, lock-on, crouch,
-  grappling hook, healing gourd, death and resurrection.
+  grappling hook, healing gourd, swimming and diving, falls out of the map (back to safe
+  ground for a third of his health), death and resurrection (two nodes, the second locked
+  until a deathblow; the game's 死 death screen).
 - **Combat:** attacks, guard, deflect, posture, perilous attacks, Mikiri
   Counter, combat arts, prosthetic tools with their status effects, Lightning
   Reversal.
@@ -55,7 +57,7 @@ the game's key guide text). E (talk / wall hug / ledge hang) is reserved for tho
 | Wall hug / ledge hang / climb up (hold in the air to catch a ledge) | E |
 | Wall jump (jump in the air against a wall, or jump while hugging / hanging) | Space |
 | Sheathe / draw | X |
-| Resurrect (when dead) | Left click |
+| Resurrect / die (when dead) | Left click / right click |
 
 Sandbox keys: `F3` shows the frame rate, `F1` opens the debug menu (enemy, AI mode, skills, tools,
 cheats), `T` turns the enemy's AI on or off, `H` shows hurtboxes, `Backspace` resets,

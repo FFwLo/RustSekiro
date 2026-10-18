@@ -75,8 +75,9 @@ area_doping = 7010
 gourd_charges = 3
 # Spirit Emblems for the prosthetic (F: Loaded Shuriken, 1 per throw).
 spirit_emblems = 15
-# Resurrection nodes: after death, LMB resurrects at half HP (GroundRevival + SpEffect 110015).
-resurrections = 1
+# Resurrection nodes: after death, LMB resurrects at half HP (GroundRevival + SpEffect 110015),
+# RMB dies. Two, as in the game: the base node and the extra one.
+resurrections = 2
 # Equipped combat art (attack + guard): 5100 Whirlwind Slash, 5300 Ichimonji, 5200 Leaping Slash?,
 # 5400 / 5500 Iai variants, 5600 rush, 5700 Mortal Draw-like, 5800 kick, 5900 fist (EquipParamWeapon
 # virtual weapons; names from the param's Japanese row names). Press F5 after changing it.

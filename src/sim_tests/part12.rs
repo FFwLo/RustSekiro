@@ -1007,3 +1007,101 @@ fn wolf_attacks_and_drinks_in_the_water() {
     assert!(wolf(&mut app).1 > hp0, "healed: {} -> {}", hp0, wolf(&mut app).1);
     crate::swim::WATER.write().unwrap().retain(|w| w.0 != lo);
 }
+
+/// The death screen's choice (the user, 2026-10-18): with a node left, guard is ": Die" - no
+/// resurrection, the node kept, attack no longer revives; the default is two nodes.
+#[test]
+pub(crate) fn guard_on_the_death_choice_dies() {
+    assert_eq!(crate::config::PlayerConfig::default().resurrections, 2, "the base node and the extra one");
+    let mut app = app();
+    move_enemy_far(&mut app);
+    {
+        let world = app.world_mut();
+        world.query_filtered::<&mut Actor, With<Player>>().single_mut(world).unwrap().hp = 0.0;
+    }
+    for _ in 0..300 {
+        app.update();
+        let world = app.world_mut();
+        if world.query::<&Player>().single(world).unwrap().revive_open {
+            break;
+        }
+    }
+    let nodes = {
+        let world = app.world_mut();
+        let p = world.query::<&Player>().single(world).unwrap();
+        assert!(p.revive_open, "the choice opens");
+        p.resurrections
+    };
+    app.world_mut().resource_mut::<PadInput>().press(Action::Guard);
+    run(&mut app, 5);
+    app.world_mut().resource_mut::<PadInput>().press(Action::Attack);
+    run(&mut app, 30);
+    let world = app.world_mut();
+    let (a, p) = world.query::<(&Actor, &Player)>().single(world).unwrap();
+    assert!(p.gave_up && !p.revive_open, "died");
+    assert_eq!(p.resurrections, nodes, "the node is kept");
+    assert!(a.hp <= 0.0 && !a.state.contains("Revival_"), "no resurrection: {} {}", a.state, a.hp);
+}
+
+/// After a resurrection the node left is locked (the user, 2026-10-18): a second death has no
+/// choice; a deathblow unlocks it.
+#[test]
+pub(crate) fn a_resurrection_locks_the_next_until_a_deathblow() {
+    let mut app = app();
+    move_enemy_far(&mut app);
+    let kill = |app: &mut App| {
+        let world = app.world_mut();
+        world.query_filtered::<&mut Actor, With<Player>>().single_mut(world).unwrap().hp = 0.0;
+    };
+    let open = |app: &mut App| {
+        let world = app.world_mut();
+        world.query::<&Player>().single(world).unwrap().revive_open
+    };
+    kill(&mut app);
+    for _ in 0..300 {
+        app.update();
+        if open(&mut app) {
+            break;
+        }
+    }
+    assert!(open(&mut app), "the first death offers the choice");
+    app.world_mut().resource_mut::<PadInput>().press(Action::Attack);
+    run(&mut app, 200);
+    {
+        let world = app.world_mut();
+        let (a, p) = world.query::<(&Actor, &Player)>().single(world).unwrap();
+        assert!(a.hp > 0.0 && p.revive_locked && p.resurrections == 1, "revived, the other node locked");
+    }
+    kill(&mut app);
+    let mut offered = false;
+    for _ in 0..400 {
+        app.update();
+        offered |= open(&mut app);
+    }
+    assert!(!offered, "locked: no resurrection");
+    // A deathblow (the throw's state) unlocks it.
+    {
+        let world = app.world_mut();
+        let (mut a, mut p) = world.query::<(&mut Actor, &mut Player)>().single_mut(world).unwrap();
+        a.hp = a.hp_max;
+        a.play("Deathblow", "");
+        p.revive_locked = true;
+    }
+    run(&mut app, 2);
+    let world = app.world_mut();
+    assert!(!world.query::<&Player>().single(world).unwrap().revive_locked, "a deathblow unlocks it");
+}
+
+/// The Construct's floor is cut round the pool and the chasm: no rectangle covers either hole
+/// and the rest is all floor.
+#[test]
+fn the_construct_floor_leaves_its_holes_open() {
+    let holes = [crate::sandbox::POOL, crate::sandbox::CHASM];
+    let rects = crate::sandbox::floor_rects_for_test((-45.0, 45.0, -135.0, 45.0), &holes);
+    let on_floor = |x: f32, z: f32| rects.iter().any(|r| r.0 <= x && x <= r.1 && r.2 <= z && z <= r.3);
+    assert!(!on_floor(-30.0, 0.0), "the pool");
+    assert!(!on_floor(26.0, -20.0) && !on_floor(26.0, 5.0), "the chasm");
+    assert!(on_floor(26.0, 20.0) && on_floor(26.0, -60.0) && on_floor(0.0, 0.0) && on_floor(40.0, 0.0), "the rest");
+    let area: f32 = rects.iter().map(|r| (r.1 - r.0) * (r.3 - r.2)).sum();
+    assert!((area - (90.0 * 180.0 - 20.0 * 16.0 - 10.0 * 54.0)).abs() < 1e-2, "area {area}");
+}
