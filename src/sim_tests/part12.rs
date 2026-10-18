@@ -956,3 +956,44 @@ fn wolf_jumps_out_of_the_water() {
     assert!(top > hi.y + 0.3, "jumped from {y0:.2} to {top:.2}, surface {}: {}", hi.y, log_text(&app));
     crate::swim::WATER.write().unwrap().retain(|w| w.0 != lo);
 }
+
+/// In the water the attack swings the water combo (SwimAttackCombo1, then 2 on a second press)
+/// and the gourd drinks its water clip and heals (the user: "add attacks under the water and item
+/// usage").
+#[test]
+fn wolf_attacks_and_drinks_in_the_water() {
+    let (lo, hi) = (Vec3::new(4990.0, -5.0, -10.0), Vec3::new(5010.0, -0.4, 10.0));
+    crate::swim::WATER.write().unwrap().push((lo, hi));
+    let mut app = app_cfg("c1010", None, Vec::new());
+    {
+        let world = app.world_mut();
+        let mut q = world.query_filtered::<&mut Transform, With<Player>>();
+        q.single_mut(world).unwrap().translation = Vec3::new(5000.0, -3.0 + CAPSULE_HALF_HEIGHT, 0.0);
+    }
+    run(&mut app, 150);
+    let wolf = |app: &mut App| {
+        let world = app.world_mut();
+        let a = world.query_filtered::<&Actor, With<Player>>().single(world).unwrap();
+        (a.state.clone(), a.hp, a.hp_max)
+    };
+    app.world_mut().resource_mut::<PadInput>().press(Action::Attack);
+    run(&mut app, 10);
+    assert_eq!(wolf(&mut app).0, "SwimAttackCombo1");
+    app.world_mut().resource_mut::<PadInput>().press(Action::Attack);
+    run(&mut app, 60);
+    assert_eq!(wolf(&mut app).0, "SwimAttackCombo2", "the second press chains");
+    run(&mut app, 200);
+    // The gourd (the quick slot's first item): hurt, drink, healed.
+    {
+        let world = app.world_mut();
+        let mut a = world.query_filtered::<&mut Actor, With<Player>>().single_mut(world).unwrap();
+        a.hp = a.hp_max * 0.3;
+    }
+    let hp0 = wolf(&mut app).1;
+    app.world_mut().resource_mut::<PadInput>().press(Action::UseItem);
+    run(&mut app, 5);
+    assert_eq!(wolf(&mut app).0, "SwimItemGourdDrink");
+    run(&mut app, 90);
+    assert!(wolf(&mut app).1 > hp0, "healed: {} -> {}", hp0, wolf(&mut app).1);
+    crate::swim::WATER.write().unwrap().retain(|w| w.0 != lo);
+}

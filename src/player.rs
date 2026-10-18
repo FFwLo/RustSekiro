@@ -2495,6 +2495,7 @@ fn decide(
     let dock_jump = pad.pressed.contains(&Action::Jump);
     let dock_step = pad.pressed.contains(&Action::Step);
     let crouch_pressed = pad.pressed.contains(&Action::Crouch);
+    let item_pressed = pad.pressed.contains(&Action::UseItem);
     // Any other action stands Wolf up. Steps, guards and hit reactions from a crouch are the
     // standing ones in the HKS too (_fireGroundStep -> W_GroundStep, W_StandToDeflectGuard; the
     // Crouch{Damage,Death}* states only under a forced crouch, g_forceCrouch). The attack has
@@ -3407,7 +3408,35 @@ fn decide(
     // In deep water (swim.rs): the swim and the dive, nothing else.
     let mibu = crate::items::count(&config, crate::swim::MIBU_BREATHING) > 0;
     crate::swim::air(a, d, ended);
-    let swim = crate::swim::Controls { stick, rise_held: pad.grapple_held, sink_held: pad.prosthetic_held, dive_pressed: swim_dive, fast_held: pad.dodge_held, jump_pressed: dock_jump, pitch: cam_pitch };
+    // In the water (swim.rs): the quick item, if it has a water clip (the gourd, the Homeward
+    // Idol); its TAE 65 is spent as on land (the gourd below, the others by `item_use` above).
+    if let Some(under) = p.swim.as_ref().map(|s| s.diving).filter(|_| item_pressed) {
+        p.requests.remove(&Action::UseItem);
+        let goods = crate::items::in_slot(&config, p.quick_slot);
+        let dry = if goods == GOURD_GOODS { Some("ItemGourdDrink") } else { crate::items::use_state(crate::items::param("EquipParamGoods", goods)["goodsUseAnim"].as_i64().unwrap_or(255)) };
+        let have = if goods == GOURD_GOODS { p.gourd > 0 } else { goods > 0 && crate::items::count(&config, goods) > 0 };
+        match dry.and_then(|s| crate::swim::item_state(s, under)) {
+            Some(state) if have && !a.state.contains("Item") && a.play_state(d, &state) => {
+                if goods != GOURD_GOODS {
+                    p.item_use = Some((goods, state));
+                }
+                return;
+            }
+            Some(_) => {}
+            None => log.push("this item cannot be used in the water", Color::srgb(0.8, 0.8, 0.8)),
+        }
+    }
+    if crate::swim::is_water_drink(&a.state) {
+        let consumed = d.anim(&a.anim).is_some_and(|an| an.events.iter().any(|e| e.kind == 65 && e.start > a.prev_t && e.start <= a.t));
+        if consumed && p.gourd > 0 {
+            p.gourd -= 1;
+            let rate = d.sp_effects.get(GOURD_SPEFFECT).map_or(40.0, |s| -s.change_hp_estus_flask_rate);
+            let heal = a.hp_max * rate / 100.0 * medicine_rate(&combat, &config);
+            a.hp = (a.hp + heal).min(a.hp_max);
+            log.push(format!("gourd: +{heal:.0} HP ({} left)", p.gourd), Color::srgb(0.5, 1.0, 0.6));
+        }
+    }
+    let swim = crate::swim::Controls { stick, rise_held: pad.grapple_held, sink_held: pad.prosthetic_held, dive_pressed: swim_dive, fast_held: pad.dodge_held, jump_pressed: dock_jump, pitch: cam_pitch, attack_pressed };
     match crate::swim::tick(p, a, d, tf, swim, ended, mibu, dt, &mut log) {
         crate::swim::Step::Held => return,
         // Out of the water: the swim jump's Start (swim.rs), launched by its row 221 along the

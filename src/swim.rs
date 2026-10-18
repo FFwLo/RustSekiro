@@ -47,7 +47,46 @@ pub struct Swim {
     drift: Vec3,
     /// Walking out (SwimToStandMove, cut short by the stick from its cancels at 0.3 s).
     leaving: bool,
+    /// An attack pressed during a swing: the next of the combo once this one has struck.
+    queued: bool,
 }
+
+/// The sword in the water (c0000 W_SwimAttackCombo1-3 / W_DiveAttackCombo1-3, the a050 set:
+/// a050_310000 / 310010 / 310020 at the surface, 311000 / 311010 / 311020 under it): each strikes
+/// at 0.7 s (TAE 1, judges 86 / 87 / 86). A press during one queues the next, chained from
+/// `COMBO_NEXT`; the stick swims on from its ChrActionFlag 11 at 1.5 s. gap: the Release ones
+/// (the hold) and the kick attacks (no clip) are not used, nor the exe's own chain window.
+const COMBO_NEXT: f32 = 1.0;
+const ATTACK_TO_MOVE: f32 = 1.5;
+
+/// The water attack state `n` (1-3) at the surface or under it.
+fn combo(under: bool, n: u32) -> String {
+    format!("{}AttackCombo{n}", if under { "Dive" } else { "Swim" })
+}
+
+/// The combo step of a water attack state (1-3), if it is one.
+fn combo_step(state: &str) -> Option<u32> {
+    let rest = state.strip_prefix("SwimAttackCombo").or_else(|| state.strip_prefix("DiveAttackCombo"))?;
+    rest.parse().ok()
+}
+
+/// Items in the water: only the Healing Gourd and the Homeward Idol have water clips (c0000
+/// Swim / DiveItemGourdDrink a000_250030 / 250040, Swim / DiveItemReturnStatue 251530 / 251540;
+/// their TAE 65 at 0.7 / 7.5 s). The use state for `dry` (items.rs use_state / the gourd's), at
+/// the surface or under it; None: not usable in the water.
+pub fn item_state(dry: &str, under: bool) -> Option<String> {
+    matches!(dry, "ItemGourdDrink" | "ItemReturnStatue").then(|| format!("{}{dry}", if under { "Dive" } else { "Swim" }))
+}
+
+/// A Healing Gourd drink in the water (player.rs heals at its TAE 65 as on land).
+pub fn is_water_drink(state: &str) -> bool {
+    matches!(state, "SwimItemGourdDrink" | "DiveItemGourdDrink")
+}
+
+/// Under water Wolf stays this far below the surface's swim height [m]: a ceiling the stroke and
+/// the camera's climb stop at; only F there brings him out of the dive (the user: "manual
+/// underwater swimming shouldn't automatically lead wolf out from diving unless pressing f").
+const CEILING: f32 = 0.3;
 
 /// SwimToStandMove's cancels open (ChrActionFlag 26 / 119 ... at 0.3 s): the stick walks on.
 const OUT_CANCEL: f32 = 0.3;
@@ -133,6 +172,7 @@ pub struct Controls {
     /// The camera's pitch [rad] (positive looking down): under water the way ahead climbs or
     /// dives with it.
     pub pitch: f32,
+    pub attack_pressed: bool,
 }
 
 /// The fast swim's kicks: at the surface the clips a000_031400 / 031410 (the HKS's
@@ -236,6 +276,37 @@ pub fn tick(p: &mut Player, a: &mut Actor, d: &CharData, tf: &Transform, c: Cont
         }
         return Held;
     }
+    // The sword (`combo`): a press starts or queues; a struck swing chains the queued one; the
+    // stick swims on from its flag 11; at its end back to swimming.
+    let under = swim.diving;
+    if let Some(n) = combo_step(&a.state) {
+        if c.attack_pressed {
+            swim.queued = true;
+        }
+        if swim.queued && n < 3 && a.t >= COMBO_NEXT && a.play_state(d, &combo(under, n + 1)) {
+            swim.queued = false;
+            if moving {
+                a.yaw = yaw_of(stick);
+            }
+            return Held;
+        }
+        if !(ended || (moving && a.t >= ATTACK_TO_MOVE)) {
+            return Held;
+        }
+        swim.queued = false;
+    } else if c.attack_pressed && !matches!(a.state.as_str(), "SwimToDive" | "DiveToSwim" | JUMP_READY) {
+        if moving {
+            a.yaw = yaw_of(stick);
+        }
+        if a.play_state(d, &combo(under, 1)) {
+            swim.queued = false;
+            return Held;
+        }
+    }
+    // An item in the water (player.rs started it): its clip plays out.
+    if (a.state.contains("ItemGourdDrink") || a.state.contains("ItemReturnStatue")) && !ended {
+        return Held;
+    }
     let landing = matches!(a.state.as_str(), "LandWaterSwimKickMoveJump" | "LandWaterFreeFallInSitu" | "SwimMoveStartFromLandWater");
     let busy = (matches!(a.state.as_str(), "StandMoveToSwim" | "SwimToDive" | "DiveToSwim" | JUMP_READY) || landing) && !ended;
     if !swim.diving {
@@ -311,9 +382,9 @@ pub fn tick(p: &mut Player, a: &mut Actor, d: &CharData, tf: &Transform, c: Cont
     // should be vertical movement underwater, not pressing f or ctrl").
     let tilt = c.pitch.to_degrees() - PITCH_LEVEL;
     let climb = if moving && tilt.abs() > PITCH_DEAD { -(tilt - PITCH_DEAD * tilt.signum()).to_radians().sin() * DIVE_SPEED } else { 0.0 };
-    // Up at the surface: out of the dive (F there, or swimming up into it).
-    let at_top = feet.y >= surface - SWIM_DEPTH - 0.05;
-    if at_top && (c.rise_held || climb > 0.5) {
+    // Up at the ceiling: out of the dive with F only (swimming up into it stops there).
+    let at_top = feet.y >= surface - SWIM_DEPTH - CEILING - 0.05;
+    if at_top && c.rise_held {
         swim.diving = false;
         a.play_state(d, "DiveToSwim");
         return Held;
@@ -407,7 +478,9 @@ pub fn hold(time: Res<Time>, combat: Res<crate::data::Combat>, mut q: Query<(&Pl
         let floor = floor_under(f, hi.y);
         let dy = root_dy(d, &a);
         f.y = if swim.diving || a.state == "DiveToSwim" { f.y + dy } else { top };
-        f.y = f.y.min(top).max(floor + 0.05);
+        // Under water the ceiling (`CEILING`) holds him below the surface until F brings him out.
+        let ceiling = if swim.diving { top - CEILING } else { top };
+        f.y = f.y.min(ceiling).max(floor + 0.05);
         tf.translation = f + Vec3::Y * CAPSULE_HALF_HEIGHT;
         }
 }
