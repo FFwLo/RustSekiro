@@ -976,12 +976,22 @@ fn wolf_attacks_and_drinks_in_the_water() {
         let a = world.query_filtered::<&Actor, With<Player>>().single(world).unwrap();
         (a.state.clone(), a.hp, a.hp_max)
     };
+    // Held: the thrust; a tap: the cut, and a second tap chains the next step's cut.
     app.world_mut().resource_mut::<PadInput>().press(Action::Attack);
-    run(&mut app, 10);
-    assert_eq!(wolf(&mut app).0, "SwimAttackCombo1");
+    for _ in 0..10 {
+        app.world_mut().resource_mut::<PadInput>().attack_held = true;
+        app.update();
+    }
+    assert_eq!(wolf(&mut app).0, "SwimAttackCombo1", "held: the thrust");
+    // (The sim keeps the held flag until it is cleared: no input reader.)
+    app.world_mut().resource_mut::<PadInput>().attack_held = false;
+    run(&mut app, 220);
     app.world_mut().resource_mut::<PadInput>().press(Action::Attack);
-    run(&mut app, 60);
-    assert_eq!(wolf(&mut app).0, "SwimAttackCombo2", "the second press chains");
+    run(&mut app, 5);
+    assert_eq!(wolf(&mut app).0, "SwimAttackCombo1Release", "a tap: the cut");
+    app.world_mut().resource_mut::<PadInput>().press(Action::Attack);
+    run(&mut app, 40);
+    assert!(wolf(&mut app).0.starts_with("SwimAttackCombo2"), "the second press chains: {}", wolf(&mut app).0);
     run(&mut app, 200);
     // The gourd (the quick slot's first item): hurt, drink, healed.
     {

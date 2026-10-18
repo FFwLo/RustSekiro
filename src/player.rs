@@ -3436,7 +3436,7 @@ fn decide(
             log.push(format!("gourd: +{heal:.0} HP ({} left)", p.gourd), Color::srgb(0.5, 1.0, 0.6));
         }
     }
-    let swim = crate::swim::Controls { stick, rise_held: pad.grapple_held, sink_held: pad.prosthetic_held, dive_pressed: swim_dive, fast_held: pad.dodge_held, jump_pressed: dock_jump, pitch: cam_pitch, attack_pressed };
+    let swim = crate::swim::Controls { stick, rise_held: pad.grapple_held, sink_held: pad.prosthetic_held, dive_pressed: swim_dive, fast_held: pad.dodge_held, jump_pressed: dock_jump, pitch: cam_pitch, attack_pressed, attack_held: pad.attack_held };
     match crate::swim::tick(p, a, d, tf, swim, ended, mibu, dt, &mut log) {
         crate::swim::Step::Held => return,
         // Out of the water: the swim jump's Start (swim.rs), launched by its row 221 along the

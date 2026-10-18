@@ -52,22 +52,32 @@ pub struct Swim {
 }
 
 /// The sword in the water (c0000 W_SwimAttackCombo1-3 / W_DiveAttackCombo1-3, the a050 set:
-/// a050_310000 / 310010 / 310020 at the surface, 311000 / 311010 / 311020 under it): each strikes
-/// at 0.7 s (TAE 1, judges 86 / 87 / 86). A press during one queues the next, chained from
-/// `COMBO_NEXT`; the stick swims on from its ChrActionFlag 11 at 1.5 s. gap: the Release ones
-/// (the hold) and the kick attacks (no clip) are not used, nor the exe's own chain window.
-const COMBO_NEXT: f32 = 1.0;
-const ATTACK_TO_MOVE: f32 = 1.5;
+/// a050_310000 / 310010 / 310020 at the surface, 311000 / 311010 / 311020 under it). Each step
+/// starts as the held one, a thrust (judges 86 / 87 "water / underwater thrust", striking at
+/// 0.7 s); let go before it strikes (its AttackAction_Complex, ChrActionFlag 87, opens at 0.6 s)
+/// it turns into its Release, a quick cut (310100 / 310110 / 310120: judges 88 / 89 "water /
+/// underwater attack", striking at 0.27 s) - the user: "the attacks are only thrusts". A press
+/// during a step queues the next, chained at the clip's R1 cancel (flag 115: the cut 0.43 s, the
+/// thrust 1.3 s); the stick swims on after it (the cut 0.63 s, the thrust 1.5 s: flags 118 / 11).
+/// gap: the HKS's own release test and the kick attacks (no clip) are not used.
+const THRUST_COMMIT: f32 = 0.6;
+/// (chain, swim on) after the cut / the thrust.
+const CUT_TIMES: (f32, f32) = (0.43, 0.63);
+const THRUST_TIMES: (f32, f32) = (1.3, 1.5);
 
 /// The water attack state `n` (1-3) at the surface or under it.
 fn combo(under: bool, n: u32) -> String {
     format!("{}AttackCombo{n}", if under { "Dive" } else { "Swim" })
 }
 
-/// The combo step of a water attack state (1-3), if it is one.
-fn combo_step(state: &str) -> Option<u32> {
+/// The combo step of a water attack state (1-3) and whether it is the cut (Release), if it is one.
+fn combo_step(state: &str) -> Option<(u32, bool)> {
     let rest = state.strip_prefix("SwimAttackCombo").or_else(|| state.strip_prefix("DiveAttackCombo"))?;
-    rest.parse().ok()
+    let (n, cut) = match rest.strip_suffix("Release") {
+        Some(n) => (n, true),
+        None => (rest, false),
+    };
+    Some((n.parse().ok()?, cut))
 }
 
 /// Items in the water: only the Healing Gourd and the Homeward Idol have water clips (c0000
@@ -173,6 +183,7 @@ pub struct Controls {
     /// dives with it.
     pub pitch: f32,
     pub attack_pressed: bool,
+    pub attack_held: bool,
 }
 
 /// The fast swim's kicks: at the surface the clips a000_031400 / 031410 (the HKS's
@@ -279,18 +290,24 @@ pub fn tick(p: &mut Player, a: &mut Actor, d: &CharData, tf: &Transform, c: Cont
     // The sword (`combo`): a press starts or queues; a struck swing chains the queued one; the
     // stick swims on from its flag 11; at its end back to swimming.
     let under = swim.diving;
-    if let Some(n) = combo_step(&a.state) {
+    if let Some((n, cut)) = combo_step(&a.state) {
+        // Let go before the thrust: the cut instead.
+        if !cut && !c.attack_held && a.t < THRUST_COMMIT && a.play_state(d, &format!("{}Release", combo(under, n))) {
+            return Held;
+        }
         if c.attack_pressed {
             swim.queued = true;
         }
-        if swim.queued && n < 3 && a.t >= COMBO_NEXT && a.play_state(d, &combo(under, n + 1)) {
+        let (chain, move_on) = if cut { CUT_TIMES } else { THRUST_TIMES };
+        // After the third, the combo starts over.
+        if swim.queued && a.t >= chain && a.play_state(d, &combo(under, n % 3 + 1)) {
             swim.queued = false;
             if moving {
                 a.yaw = yaw_of(stick);
             }
             return Held;
         }
-        if !(ended || (moving && a.t >= ATTACK_TO_MOVE)) {
+        if !(ended || (moving && a.t >= move_on)) {
             return Held;
         }
         swim.queued = false;
