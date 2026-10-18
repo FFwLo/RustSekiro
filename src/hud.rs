@@ -1221,6 +1221,16 @@ pub(crate) fn deathblow_mark_target(combat: &Combat, wa: &Actor, wolf: Vec3, ene
     if wa.state.contains("Deathblow") {
         return None;
     }
+    // Falling: the enemy a plunge would take now (player.rs plunge_on), the nearest first.
+    if wa.state == "FreeFall" || wa.state.contains("Jump") {
+        let plunge = enemies
+            .iter()
+            .filter(|(_, ea, e, eg, _)| crate::player::plunge_on(combat, wa, wolf, ea, e, eg.translation()).is_some())
+            .min_by(|a, b| a.3.translation().distance(wolf).total_cmp(&b.3.translation().distance(wolf)));
+        if let Some((ent, ..)) = plunge {
+            return Some(ent);
+        }
+    }
     let cands = enemies.iter().filter_map(|(ent, ea, e, eg, dm)| {
         // The same set the attack picks from (player.rs): a break pose (ThrowDef12100 / 13100)
         // takes a deathblow; the throws themselves end the mark above (Wolf in a Deathblow state).

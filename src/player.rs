@@ -1906,6 +1906,43 @@ fn fall_reaches(pos: Vec3, vel_y: f32, air_base: Vec3, gravity: f32, target: Vec
     false
 }
 
+/// The plunge `ea` (at `epos`) would take from Wolf falling at `pos` now: its throw, landing
+/// row suffix and whether it is the stealth one. Shared by `start_plunge` and the HUD's
+/// deathblow mark (the user, 2026-10-18: "no indicator, sometimes works sometimes doesn't").
+pub(crate) fn plunge_on(combat: &Combat, a: &Actor, pos: Vec3, ea: &Actor, enemy: &crate::enemy::Enemy, epos: Vec3) -> Option<(crate::data::Throw, i64, bool)> {
+    let kick = a.state.starts_with("AirKickEnemyJumpStart");
+    if a.vel_y >= 0.0 && !kick {
+        return None;
+    }
+    let ft = FALL_TYPES[(a.fall_type as usize).min(FALL_TYPES.len() - 1)];
+    let stealth = !enemy.is_broken() && enemy.is_unaware();
+    let (start, land) = if kick {
+        (160, 161)
+    } else if stealth {
+        (30, 31)
+    } else {
+        (150, 151)
+    };
+    if !(enemy.is_broken() || stealth) || enemy.is_dead() {
+        return None;
+    }
+    // Each enemy kind's own ThrowParam rows.
+    let row_id = combat.foe_of(ea).throw_row(start);
+    let row = combat.param("ThrowParam", row_id);
+    let th = combat.throw(row_id)?;
+    let f = |k: &str| row[k].as_f64().unwrap_or(0.0) as f32;
+    let (upper, lower) = (f("upperYRange"), f("lowerYRange"));
+    let (range, height, time_limit) = (f("normalFallOrbitCheck_range"), f("normalFallOrbitCheck_heightLimit"), f("normalFallOrbitCheck_timeLimit") / 1000.0);
+    let dy = epos.y - pos.y;
+    if epos.distance(pos) > th.dist || dy > upper || dy < -lower {
+        return None;
+    }
+    if !fall_reaches(pos, a.vel_y, a.air_base, ft.gravity(), epos, range, height, time_limit) || combat.player.anim(&th.atk_anim).is_none() {
+        return None;
+    }
+    Some((th, land, stealth))
+}
+
 fn start_plunge(
     p: &mut Player,
     a: &mut Actor,
@@ -1914,42 +1951,12 @@ fn start_plunge(
     enemies: &mut Query<(Entity, &mut Actor, &mut Enemy, &Transform), Without<Player>>,
     log: &mut CombatLog,
 ) -> bool {
-    let kick = a.state.starts_with("AirKickEnemyJumpStart");
-    if a.vel_y >= 0.0 && !kick {
-        return false;
-    }
     // An enemy that has not noticed Wolf takes the stealth plunge 落下0 / 落下1 (0030 / 0031:
     // a20x_510300 -> 510310, ThrowDef12300 -> 12310): live (General) 0.54 s + 1.69 s + 1.83 s.
     // The row is chosen per target (2026-10-12 bug hunt round 16: one broken enemy anywhere
     // used to turn off the stealth plunge on every unaware one).
-    let ft = FALL_TYPES[(a.fall_type as usize).min(FALL_TYPES.len() - 1)];
     for (e, mut ea, mut enemy, etf) in enemies.iter_mut() {
-        let stealth = !enemy.is_broken() && enemy.is_unaware();
-        let (start, land) = if kick {
-            (160, 161)
-        } else if stealth {
-            (30, 31)
-        } else {
-            (150, 151)
-        };
-        // Each enemy kind's own ThrowParam rows.
-        let row_id = combat.foe_of(&ea).throw_row(start);
-        let row = combat.param("ThrowParam", row_id);
-        let Some(th) = combat.throw(row_id) else { continue };
-        let f = |k: &str| row[k].as_f64().unwrap_or(0.0) as f32;
-        let (upper, lower) = (f("upperYRange"), f("lowerYRange"));
-        let (range, height, time_limit) = (f("normalFallOrbitCheck_range"), f("normalFallOrbitCheck_heightLimit"), f("normalFallOrbitCheck_timeLimit") / 1000.0);
-        if !(enemy.is_broken() || stealth) || etf.translation.distance(pos) > th.dist {
-            continue;
-        }
-        let dy = etf.translation.y - pos.y;
-        if dy > upper || dy < -lower {
-            continue;
-        }
-        let hit = fall_reaches(pos, a.vel_y, a.air_base, ft.gravity(), etf.translation, range, height, time_limit);
-        if !hit || combat.player.anim(&th.atk_anim).is_none() {
-            continue;
-        }
+        let Some((th, land, stealth)) = plunge_on(combat, a, pos, &ea, &enemy, etf.translation) else { continue };
         a.play("PlungeDeathblow", &th.atk_anim);
         p.plunge = Some((e, land));
         if enemy.is_broken() {
