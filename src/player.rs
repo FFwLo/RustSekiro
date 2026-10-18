@@ -58,6 +58,8 @@ pub struct Player {
     /// The worn items' maxHpRate product now applied to hp_max (items.rs `max_hp_rate`;
     /// Yashariku's Sugar 3411: 0.5), so it comes off again when they end.
     pub item_hp_rate: f32,
+    /// Instant SpEffects whose looks show once (status.rs `sp_bursts`): the gourd's heal 3000.
+    pub sp_bursts: Vec<i64>,
     /// Seconds in the death / revival-wait loop. Those clips are one frame long and loop, so
     /// their time wraps and their f0-4 TAE (110010 Pretending Dead, iframes) stays on; the revive
     /// choice and the timeout run on this instead of the clip time (round 27).
@@ -1459,7 +1461,7 @@ fn spawn_player(mut commands: Commands, combat: Res<Combat>, config: Res<GameCon
         }
     }
     commands.spawn((
-        Player { plunge: None, leap_homing: None, dock: None, wall_jumps: 0, last_wall: None, seat: Default::default(), wall_contact: None, speed_level: 0.0, requests: HashMap::new(), last_state: String::new(), gourd: config.player.gourd_charges, emblems: config.player.spirit_emblems, auto_aim: false, auto_aim_fresh: false, resurrections: config.player.resurrections, revive_queued: false, death_wait: 0.0, dead_for: 0.0, escape: None, jump_forward: false, jump_land: None, positioning_land: false, aged_form: false, step_tilt: 0.0, jump_tilt: 0.0, throw_start: None, throw_target: None, tool_slot: 0, quick_slot: 0, item_use: None, vel_scale: None, expand_pending: false, sub_cat_before: 0, air_sub_count: 0, air_art_count: 0, art_enable_jump: false, timed: Vec::new(), held: Vec::new(), wire: None, perch: None, wire_todome: false, air_top: 0.0, safe_pos: None, swim: None, revive_open: false, gave_up: false, revive_locked: false, item_hp_rate: 1.0 },
+        Player { plunge: None, leap_homing: None, dock: None, wall_jumps: 0, last_wall: None, seat: Default::default(), wall_contact: None, speed_level: 0.0, requests: HashMap::new(), last_state: String::new(), gourd: config.player.gourd_charges, emblems: config.player.spirit_emblems, auto_aim: false, auto_aim_fresh: false, resurrections: config.player.resurrections, revive_queued: false, death_wait: 0.0, dead_for: 0.0, escape: None, jump_forward: false, jump_land: None, positioning_land: false, aged_form: false, step_tilt: 0.0, jump_tilt: 0.0, throw_start: None, throw_target: None, tool_slot: 0, quick_slot: 0, item_use: None, vel_scale: None, expand_pending: false, sub_cat_before: 0, air_sub_count: 0, air_art_count: 0, art_enable_jump: false, timed: Vec::new(), held: Vec::new(), wire: None, perch: None, wire_todome: false, air_top: 0.0, safe_pos: None, swim: None, revive_open: false, gave_up: false, revive_locked: false, item_hp_rate: 1.0, sp_bursts: Vec::new() },
         actor,
         Name::new("Player"),
         Transform::from_xyz(0.0, CAPSULE_HALF_HEIGHT, 4.0),
@@ -3495,6 +3497,7 @@ fn decide(
             let rate = d.sp_effects.get(GOURD_SPEFFECT).map_or(40.0, |s| -s.change_hp_estus_flask_rate);
             let heal = a.hp_max * rate / 100.0 * medicine_rate(&combat, &config);
             a.hp = (a.hp + heal).min(a.hp_max);
+            p.sp_bursts.push(GOURD_GOODS);
             log.push(format!("gourd: +{heal:.0} HP ({} left)", p.gourd), Color::srgb(0.5, 1.0, 0.6));
         }
     }
@@ -3659,6 +3662,7 @@ fn decide(
             let rate = d.sp_effects.get(GOURD_SPEFFECT).map_or(40.0, |s| -s.change_hp_estus_flask_rate);
             let heal = a.hp_max * rate / 100.0 * medicine_rate(&combat, &config);
             a.hp = (a.hp + heal).min(a.hp_max);
+            p.sp_bursts.push(GOURD_GOODS);
             log.push(format!("gourd: +{heal:.0} HP ({} left)", p.gourd), Color::srgb(0.5, 1.0, 0.6));
         }
         // Flag 90: may walk while drinking (the Move ones walk on the legs: lower_body_move).

@@ -797,13 +797,18 @@ fn sp_bursts(
     combat: Res<Combat>,
     rows: Res<VfxRows>,
     mut bursts: ResMut<SpBursts>,
+    mut players: Query<(Entity, &mut crate::player::Player)>,
     dummies: Query<&crate::model::Dummies>,
     tfs: Query<&GlobalTransform>,
     mut fx: Query<&mut crate::fxr::FxEffect>,
     mut held: Local<Vec<(Entity, f32)>>,
 ) {
     let now = time.elapsed_secs();
-    for (owner, id) in std::mem::take(&mut bursts.0) {
+    let mut queued = std::mem::take(&mut bursts.0);
+    for (e, mut p) in &mut players {
+        queued.extend(p.sp_bursts.drain(..).map(|id| (e, id)));
+    }
+    for (owner, id) in queued {
         held.extend(spawn_vfx(&mut commands, &combat, &rows, id, owner, &dummies, &tfs).into_iter().map(|e| (e, now + BURST_MIDST)));
     }
     held.retain(|(e, until)| {

@@ -138,11 +138,14 @@ pub(crate) fn next_slot(config: &crate::config::GameConfig, from: usize) -> usiz
 }
 
 /// The SpEffects an item puts on Wolf: its refId_default Bullet's (and that bullet's HitBulletID
-/// chain's) spEffectIDForShooter.
+/// chain's) spEffectIDForShooter (refCategory 1); with refCategory 2 refId_default is the
+/// SpEffect itself (the gourd's heal 3000, the coin purses' 3700, the tanto's 3800: their looks).
 pub(crate) fn effects_of(goods: i64) -> Vec<i64> {
     let g = param("EquipParamGoods", goods);
-    if g["refCategory"].as_i64() != Some(1) {
-        return Vec::new();
+    match g["refCategory"].as_i64() {
+        Some(1) => {}
+        Some(2) => return g["refId_default"].as_i64().filter(|s| *s > 0 && !param("SpEffectParam", *s).is_null()).into_iter().collect(),
+        _ => return Vec::new(),
     }
     let mut out = Vec::new();
     let mut bullet = g["refId_default"].as_i64().unwrap_or(-1);

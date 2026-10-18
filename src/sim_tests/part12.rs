@@ -1310,3 +1310,35 @@ pub(crate) fn yasharikus_sugar_halves_the_max_hp() {
     assert!((a.hp_max - full).abs() < 0.01, "{} back to {full}", a.hp_max);
     assert!(a.hp <= full * 0.5 + 0.01, "HP is not given back: {}", a.hp);
 }
+
+/// The thrown items fly where Wolf faces: their first rows (3490 / 3510 / 3520) stand still and
+/// hand their aim on (it went world -Z whatever his facing; the user, 2026-10-18: "ceramic shard
+/// doesn't get thrown where player faces").
+#[test]
+pub(crate) fn throwables_fly_where_wolf_faces() {
+    for (goods, flier) in [(3500, "Bullet 3491"), (3510, "Bullet 3511"), (3520, "Bullet 3521")] {
+        let mut app = app();
+        move_enemy_far(&mut app);
+        app.add_systems(Update, crate::items::apply_used);
+        app.world_mut().init_resource::<crate::items::Used>();
+        app.update();
+        {
+            let world = app.world_mut();
+            let mut a = world.query_filtered::<&mut Actor, With<Player>>().single_mut(world).unwrap();
+            // Facing +X.
+            a.yaw = -std::f32::consts::FRAC_PI_2;
+        }
+        use_goods(&mut app, goods, 1, 1);
+        let mut seen = None;
+        for _ in 0..90 {
+            app.update();
+            let world = app.world_mut();
+            if let Some(t) = world.query::<(&Name, &Transform)>().iter(world).find(|(n, _)| n.as_str() == flier).map(|(_, t)| *t) {
+                seen = Some(t.rotation * Vec3::NEG_Z);
+                break;
+            }
+        }
+        let d = seen.unwrap_or_else(|| panic!("goods {goods}: no {flier}"));
+        assert!(d.with_y(0.0).normalize().dot(Vec3::X) > 0.9, "goods {goods}: {flier} flies {d:.2}, not +X");
+    }
+}

@@ -522,13 +522,14 @@ fn emit(
                 // own effect, SFXIndexID 0 / 1 / 2 -> its castSfxId / fireSfxId / effectSfxId
                 // (Pellet 310020, the powders' puff 3100x0 / x1, the coin purse's 310070 / 71 ...).
                 // gap: ParamType 0 (magic) is not used by Wolf's clips; the exe's lookup is not traced.
-                114 => player.and_then(|p| p.item_use.as_ref()).and_then(|(goods, _)| {
+                // The gourd's drinks are no item_use: goods 3000 (its repeat 3001: fireSfxId 310015).
+                114 => player.and_then(|p| p.item_use.as_ref().map(|(g, _)| *g).or_else(|| a.state.contains("GourdDrink").then_some(if a.state.contains("Repeat") { 3001 } else { 3000 }))).and_then(|goods| {
                     let col = match e.args.get("SFXIndexID")? {
                         serde_json::Value::String(s) => s.split(':').next()?.trim().parse::<i64>().ok()?,
                         v => v.as_i64()?,
                     };
                     let key = ["castSfxId", "fireSfxId", "effectSfxId"].get(usize::try_from(col).ok()?)?;
-                    crate::items::param("EquipParamGoods", *goods)[*key].as_i64().filter(|v| *v > 0)
+                    crate::items::param("EquipParamGoods", goods)[*key].as_i64().filter(|v| *v > 0)
                 }),
                 _ => e.arg_i64("FFXID").filter(|v| *v > 0),
             };

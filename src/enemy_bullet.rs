@@ -438,7 +438,8 @@ fn fly(
             b.out_of_range += dt;
         }
         btf.translation = to;
-        let dir = b.vel.normalize_or(Vec3::NEG_Z);
+        // A bullet standing still (a speed-0 carrier) hands on the way it was fired, not world -Z.
+        let dir = b.vel.normalize_or(b.facing);
         if let Some(child) = row(b.spec.interval_create_bullet_id) {
             while b.age >= b.next_interval && b.spec.interval_create_time_min > 0.0 {
                 b.next_interval += b.spec.interval_create_time_min;

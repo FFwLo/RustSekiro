@@ -31,6 +31,9 @@ pub struct Projectile {
     /// level's, or Kusabimaru 5000's for the Lightning Reversal bolt; 0 = none (20 physical).
     base: i64,
     vel: Vec3,
+    /// The way it was shot: its children's when it has no speed (the items' carriers 3490 /
+    /// 3510 / 3520 stand still for their life; their throw went world -Z whatever Wolf faced).
+    aim: Vec3,
     travelled: f32,
     age: f32,
     /// The throw it belongs to (its children share the hit list).
@@ -281,6 +284,7 @@ pub(crate) fn spawn_row(commands: &mut Commands, spec: &BulletSpec, pos: Vec3, d
             spec: spec.clone(),
             base,
             vel: d * spec.init_vellocity,
+            aim: d.normalize_or(Vec3::NEG_Z),
             travelled: 0.0,
             age: 0.0,
             chain,
@@ -385,7 +389,7 @@ fn fly_bullets(
         // The exe's bullet update, shared with the enemies' (enemy_bullet.rs): homing, then the
         // in / out of range accel and gravity held within min..maxVellocity.
         let from = btf.translation;
-        let facing = b.vel.normalize_or(Vec3::NEG_Z);
+        let facing = b.vel.normalize_or(b.aim);
         b.vel = crate::enemy_bullet::steer(&b.spec, b.vel, b.travelled, from, aim, dt);
         b.vel = crate::enemy_bullet::flight(&b.spec, b.vel, facing, b.travelled, dt);
         let mut to = from + b.vel * dt;
@@ -405,7 +409,7 @@ fn fly_bullets(
         }
         b.travelled += (to - from).length();
         btf.translation = to;
-        let dir = b.vel.normalize_or(Vec3::NEG_Z);
+        let dir = b.vel.normalize_or(b.aim);
         // intervalCreateBulletId: a child every intervalCreateTimeMin s while it flies.
         if let Some(child) = row(b.spec.interval_create_bullet_id) {
             while b.age >= b.next_interval && b.spec.interval_create_time_min > 0.0 {

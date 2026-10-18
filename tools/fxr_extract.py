@@ -109,6 +109,9 @@ def used_ids():
         for k in ('castSfxId', 'fireSfxId', 'effectSfxId'):
             if isinstance(g.get(k), int) and g[k] > 0:
                 ids.add(g[k])
+        # refCategory 2: refId_default is the SpEffect itself (the gourd's heal 3000).
+        if g.get('refCategory') == 2 and g.get('refId_default', -1) in sp:
+            goods_sp.add(g['refId_default'])
         b = g.get('refId_default', -1) if g.get('refCategory') == 1 else -1
         for _ in range(4):
             if b not in bullets:
