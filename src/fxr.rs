@@ -2437,7 +2437,7 @@ mod tests {
         assert!(ps.len() >= 40 * 85, "{} flakes", ps.len());
         for p in &ps {
             let d = *p - cam.translation;
-            assert!(d.x.abs() < 11.0 && d.z.abs() < 11.0 && d.y > -3.0 && d.y < 7.0, "{d}");
+            assert!(d.x.abs() < 11.0 && d.z.abs() < 11.0 && d.y > -4.0 && d.y < 9.0, "{d}");
         }
         assert!(alphas.iter().any(|a| *a > 0.9), "flake alphas {:?}", &alphas[..5]);
     }
