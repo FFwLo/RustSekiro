@@ -131,6 +131,7 @@ fn rest(p: &mut crate::player::Player, a: &mut crate::actor::Actor, config: &cra
     p.gourd = config.player.gourd_charges;
     p.resurrections = config.player.resurrections;
     p.revive_locked = false;
+    p.refill_items = true;
 }
 
 /// Wolf at an idol, from player.rs (before the docking): E at a spot kneels him; while kneeling

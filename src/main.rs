@@ -24,6 +24,7 @@ mod combat;
 mod config;
 mod data;
 mod debug_menu;
+mod drops;
 mod docking;
 mod duel;
 mod emevd;
@@ -92,6 +93,7 @@ fn main() {
         .add_plugins(idol::IdolPlugin)
         .add_plugins(items::ItemsPlugin)
         .add_plugins(experience::ExperiencePlugin)
+        .add_plugins(drops::DropsPlugin)
         .add_plugins(interp::InterpPlugin)
         .add_plugins(debug_menu::DebugMenuPlugin)
         .add_plugins(trace::TracePlugin)

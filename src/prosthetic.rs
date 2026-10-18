@@ -537,6 +537,8 @@ fn fly_bullets(
         // Landed on the map: its AtkParam HitAiSoundId there (the Ceramic Shard's 3500: the
         // enemies hear where it broke).
         if landed {
+            // Its sfxId_Hit where it struck the map (Five-color Rice's 310163 marking the ground).
+            spawn_fx_at(&mut commands, b.spec.sfx_id_hit, to, -dir);
             if let (Some(s), Some(atk)) = (ai_sounds.as_mut(), b.spec.attack.as_ref()) {
                 s.emit(&combat, crate::data::atk_ai_sounds(true, atk.atk_param_id).1, to, None, None);
             }
@@ -786,7 +788,9 @@ fn hit_enemy(
     // The armour part and the enemy's posture SpEffects, as on a sword hit (combat.rs resolve).
     let (armor_hp, armor_posture, _) = crate::combat::armor_rates(combat, e, da, atk, None);
     let def_rate = crate::combat::def_stamina_rate(combat, da, atk.stamina_physics_attribute) * armor_posture;
-    let (dmg, pd) = (dmg * armor_hp, pd * def_rate);
+    // An apparition's ghost barrier: the tools are not enchanted (Confetti is the sword's).
+    let (ghost_hp, _) = crate::combat::ghost_barrier(combat, da, atk, &[]);
+    let (dmg, pd) = (dmg * armor_hp * ghost_hp, pd * def_rate);
     da.hp = (da.hp - dmg).max(0.0);
     da.add_posture(pd);
     // The super-armour drain, as a sword hit's (combat::super_armor_hit).

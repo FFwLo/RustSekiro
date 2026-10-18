@@ -72,6 +72,7 @@ pub(crate) const SLOTS: usize = 5;
 pub(crate) fn use_state(goods_use_anim: i64) -> Option<&'static str> {
     Some(match goods_use_anim {
         4 => "ItemColoredRice",
+        14 => "ItemColoredRiceEmpty",
         20 | 22 => "ItemPillTonic",
         30 => "ItemPowderMedicineRecoverPoison",
         34 => "ItemAntiHallucinogen",
@@ -94,6 +95,32 @@ pub(crate) fn use_state(goods_use_anim: i64) -> Option<&'static str> {
         89 => "ItemKaki",
         _ => return None,
     })
+}
+
+/// A refilled goods run out (isFullSuppleItem: Five-color Rice 3580): the use state of its empty
+/// twin, the next row with isSuppleItem (3581, goodsUseAnim 14 -> ItemColoredRiceEmpty).
+pub(crate) fn empty_state(goods: i64) -> Option<&'static str> {
+    if param("EquipParamGoods", goods)["isFullSuppleItem"].as_i64() != Some(1) {
+        return None;
+    }
+    let twin = param("EquipParamGoods", goods + 1);
+    (twin["isSuppleItem"].as_i64() == Some(1)).then(|| use_state(twin["goodsUseAnim"].as_i64().unwrap_or(255))).flatten()
+}
+
+/// Resting at an idol (idol.rs `rest`, the debug Refill) tops up the goods the game refills there
+/// (isFullSuppleItem, autoReplenishType 2: Five-color Rice to its maxNum 5).
+pub(crate) fn refill_rested(mut config: ResMut<crate::config::GameConfig>, mut wolf: Query<&mut crate::player::Player>) {
+    for mut p in &mut wolf {
+        if !std::mem::take(&mut p.refill_items) {
+            continue;
+        }
+        for (g, n) in config.player.items.iter_mut() {
+            let row = param("EquipParamGoods", *g);
+            if row["isFullSuppleItem"].as_i64() == Some(1) {
+                *n = row["maxNum"].as_u64().unwrap_or(*n as u64) as u32;
+            }
+        }
+    }
 }
 
 /// How many of `id` Wolf holds.
@@ -368,6 +395,14 @@ pub(crate) fn apply_used(
                 // Base -1: the AtkParam's own flat damage (Oil's 1), no weapon row.
                 crate::prosthetic::spawn_row(&mut commands, spec, from, dir, 0x4000_0000 + *chain, -1, -1);
             }
+            // Five-color Rice: its Bullet 3580 let fall from the hand (0.1 m/s, gravity 10, its
+            // rice 310162); where it lands its sfxId_Hit 310163 marks the ground (prosthetic.rs).
+            4 => {
+                let Some(spec) = g["refId_default"].as_i64().and_then(bullet_row) else { continue };
+                let from = tf.translation + a.forward() * 0.4 + Vec3::Y * 0.3;
+                *chain += 1;
+                crate::prosthetic::spawn_row(&mut commands, spec, from, a.forward(), 0x4000_0000 + *chain, -1, -1);
+            }
             _ => {}
         }
     }
@@ -381,7 +416,7 @@ impl Plugin for ItemsPlugin {
             .init_resource::<Picked>()
             .init_resource::<DialogUp>()
             .add_systems(Startup, spawn_pickups)
-            .add_systems(Update, (apply_used, collect))
+            .add_systems(Update, (apply_used, collect, refill_rested))
             .add_systems(PreUpdate, close_dialog.before(crate::menu::MenuInput));
     }
 }
@@ -423,6 +458,19 @@ pub(crate) fn parkour_pickups() -> Vec<Pickup> {
         at(3400, 2, -21.0, 8.0, 41.0),
     ]
 }
+
+/// An enemy's drop (drops.rs): a pickup at `pos` (feet height) with its glint.
+pub(crate) fn drop_pickup(commands: &mut Commands, goods: i64, count: u32, pos: Vec3) {
+    let Ok(mut list) = PICKUPS.write() else { return };
+    let i = list.len();
+    list.push(Pickup { goods, count, pos, taken: false });
+    let mut fx = crate::fxr::FxEffect::new(GLINT_SFX, None, false, Transform::from_translation(pos + Vec3::Y * 0.1));
+    fx.keep = true;
+    commands.spawn((fx, PickupGlint(i)));
+}
+
+/// Spirit Emblems (goods 1000) go to Wolf's emblems, not the bag.
+pub(crate) const SPIRIT_EMBLEM: i64 = 1000;
 
 /// The untaken pickup in reach of `feet`.
 pub(crate) fn pickup_near(feet: Vec3) -> Option<usize> {
@@ -497,6 +545,7 @@ fn collect(
     assets: Res<AssetServer>,
     font: Option<Res<crate::game_menu::MenuFont>>,
     texts: Option<Res<crate::game_menu::ItemTexts>>,
+    mut wolf: Query<&mut crate::player::Player>,
 ) {
     let now = time.elapsed_secs();
     for (e, l) in &lines {
@@ -506,8 +555,19 @@ fn collect(
     }
     let font = font.as_ref().and_then(|f| f.0.clone());
     for (i, goods, count) in std::mem::take(&mut picked.0) {
-        let first = count_held(&config, goods) == 0;
-        let got = add(&mut config, goods, count);
+        // Spirit Emblems: onto Wolf's count (up to the carried maximum), the short line only.
+        let emblem = goods == SPIRIT_EMBLEM;
+        let first = !emblem && count_held(&config, goods) == 0;
+        let got = if emblem {
+            let max = config.player.spirit_emblems;
+            wolf.iter_mut().next().map_or(0, |mut p| {
+                let before = p.emblems;
+                p.emblems = (p.emblems + count).min(max.max(p.emblems));
+                p.emblems - before
+            })
+        } else {
+            add(&mut config, goods, count)
+        };
         info!("picked up goods {goods} x{count} ({got} kept)");
         for (e, g) in &glints {
             if g.0 == i {

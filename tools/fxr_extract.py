@@ -116,6 +116,11 @@ def used_ids():
         for _ in range(4):
             if b not in bullets:
                 break
+            # The goods' own bullets' looks (Five-color Rice 3580: its rice 310162, the marker
+            # 310163 where it lands).
+            for k in ('sfxId_Bullet', 'sfxId_Hit'):
+                if isinstance(bullets[b].get(k), int) and bullets[b][k] > 0:
+                    ids.add(bullets[b][k])
             s = bullets[b].get('spEffectIDForShooter', -1)
             if s in sp:
                 goods_sp.add(s)

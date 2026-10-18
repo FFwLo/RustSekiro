@@ -1342,3 +1342,73 @@ pub(crate) fn throwables_fly_where_wolf_faces() {
         assert!(d.with_y(0.0).normalize().dot(Vec3::X) > 0.9, "goods {goods}: {flier} flies {d:.2}, not +X");
     }
 }
+
+/// A killed enemy's lots (drops.rs): the sim's General (NpcParam 10202060) leaves his Spirit
+/// Emblems (ResourceItemLotParam 10000100: 2 at 80 %, 5 at 20 %) as a pickup and his 12
+/// Resurrective Power (10005100, 100 %) goes to a used node (the user, 2026-10-18: "fill in the
+/// gaps").
+#[test]
+pub(crate) fn a_kill_drops_emblems_and_resurrective_power() {
+    let mut app = app();
+    app.add_systems(Update, crate::drops::drop_loot);
+    {
+        let world = app.world_mut();
+        let mut p = world.query::<&mut Player>().single_mut(world).unwrap();
+        p.resurrections = 0;
+        p.res_power = 0;
+    }
+    let (_, died) = break_and_deathblow_died(&mut app, 200);
+    assert!(died);
+    for _ in 0..5 {
+        app.update();
+    }
+    let emblems = crate::items::PICKUPS.read().unwrap().iter().any(|p| p.goods == crate::items::SPIRIT_EMBLEM && matches!(p.count, 2 | 5) && !p.taken);
+    assert!(emblems, "no emblems lying");
+    let world = app.world_mut();
+    let p = world.query::<&Player>().single(world).unwrap();
+    assert_eq!((p.resurrections, p.res_power), (0, 12));
+}
+
+/// Five-color Rice: a use lets its rice fall (Bullet 3580) and spends one of five; run out, the
+/// empty shake; an idol rest fills it again.
+#[test]
+pub(crate) fn five_color_rice_falls_runs_out_and_refills() {
+    let mut app = app();
+    move_enemy_far(&mut app);
+    app.add_systems(Update, (crate::items::apply_used, crate::items::refill_rested));
+    app.world_mut().init_resource::<crate::items::Used>();
+    let mut fell = false;
+    let states = use_goods(&mut app, 3580, 5, 1);
+    for _ in 0..120 {
+        app.update();
+        let world = app.world_mut();
+        fell |= world.query::<&Name>().iter(world).any(|n| n.as_str() == "Bullet 3580");
+    }
+    let _ = states;
+    assert!(fell, "the rice falls");
+    assert_eq!(crate::items::count(app.world().resource::<crate::config::GameConfig>(), 3580), 4);
+    let states = use_goods(&mut app, 3580, 0, 150);
+    assert!(states.iter().any(|s| s == "ItemColoredRiceEmpty"), "{states:?}");
+    {
+        let world = app.world_mut();
+        world.query::<&mut Player>().single_mut(world).unwrap().refill_items = true;
+    }
+    app.update();
+    assert_eq!(crate::items::count(app.world().resource::<crate::config::GameConfig>(), 3580), 5);
+}
+
+/// Divine Confetti against an apparition: the Shichimen Warrior's ghost barrier (230641, x0.33)
+/// cuts Wolf's HP damage; worn, the Confetti's spirit (3451) erases it, posture too.
+#[test]
+pub(crate) fn divine_confetti_erases_the_ghost_barrier() {
+    let mut app = app_cfg("c1080", None, Vec::new());
+    app.update();
+    let world = app.world_mut();
+    let a = world.query_filtered::<&Actor, Without<Player>>().iter(world).next().unwrap().clone();
+    let combat = world.resource::<Combat>();
+    let atk = combat.player.attacks.values().next().unwrap().clone();
+    let (hp, posture) = crate::combat::ghost_barrier(combat, &a, &atk, &[]);
+    assert!((hp - 0.33).abs() < 0.01 && posture == 1.0, "{hp} {posture}");
+    let (hp, posture) = crate::combat::ghost_barrier(combat, &a, &atk, &[3451]);
+    assert!(hp == 1.0 && (posture - 1.0 / 0.33).abs() < 0.05, "{hp} {posture}");
+}

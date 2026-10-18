@@ -60,6 +60,10 @@ pub struct Player {
     pub item_hp_rate: f32,
     /// Instant SpEffects whose looks show once (status.rs `sp_bursts`): the gourd's heal 3000.
     pub sp_bursts: Vec<i64>,
+    /// Resurrective Power gathered toward the next used resurrection node (drops.rs).
+    pub res_power: u32,
+    /// Rested at an idol: the refilled goods (Five-color Rice) are topped up (items.rs).
+    pub refill_items: bool,
     /// Seconds in the death / revival-wait loop. Those clips are one frame long and loop, so
     /// their time wraps and their f0-4 TAE (110010 Pretending Dead, iframes) stays on; the revive
     /// choice and the timeout run on this instead of the clip time (round 27).
@@ -1461,7 +1465,7 @@ fn spawn_player(mut commands: Commands, combat: Res<Combat>, config: Res<GameCon
         }
     }
     commands.spawn((
-        Player { plunge: None, leap_homing: None, dock: None, wall_jumps: 0, last_wall: None, seat: Default::default(), wall_contact: None, speed_level: 0.0, requests: HashMap::new(), last_state: String::new(), gourd: config.player.gourd_charges, emblems: config.player.spirit_emblems, auto_aim: false, auto_aim_fresh: false, resurrections: config.player.resurrections, revive_queued: false, death_wait: 0.0, dead_for: 0.0, escape: None, jump_forward: false, jump_land: None, positioning_land: false, aged_form: false, step_tilt: 0.0, jump_tilt: 0.0, throw_start: None, throw_target: None, tool_slot: 0, quick_slot: 0, item_use: None, vel_scale: None, expand_pending: false, sub_cat_before: 0, air_sub_count: 0, air_art_count: 0, art_enable_jump: false, timed: Vec::new(), held: Vec::new(), wire: None, perch: None, wire_todome: false, air_top: 0.0, safe_pos: None, swim: None, revive_open: false, gave_up: false, revive_locked: false, item_hp_rate: 1.0, sp_bursts: Vec::new() },
+        Player { plunge: None, leap_homing: None, dock: None, wall_jumps: 0, last_wall: None, seat: Default::default(), wall_contact: None, speed_level: 0.0, requests: HashMap::new(), last_state: String::new(), gourd: config.player.gourd_charges, emblems: config.player.spirit_emblems, auto_aim: false, auto_aim_fresh: false, resurrections: config.player.resurrections, revive_queued: false, death_wait: 0.0, dead_for: 0.0, escape: None, jump_forward: false, jump_land: None, positioning_land: false, aged_form: false, step_tilt: 0.0, jump_tilt: 0.0, throw_start: None, throw_target: None, tool_slot: 0, quick_slot: 0, item_use: None, vel_scale: None, expand_pending: false, sub_cat_before: 0, air_sub_count: 0, air_art_count: 0, art_enable_jump: false, timed: Vec::new(), held: Vec::new(), wire: None, perch: None, wire_todome: false, air_top: 0.0, safe_pos: None, swim: None, revive_open: false, gave_up: false, revive_locked: false, item_hp_rate: 1.0, sp_bursts: Vec::new(), res_power: 0, refill_items: false },
         actor,
         Name::new("Player"),
         Transform::from_xyz(0.0, CAPSULE_HALF_HEIGHT, 4.0),
@@ -3602,6 +3606,14 @@ fn decide(
                 if a.play_state(d, &play) {
                     a.move_vel = Vec3::ZERO;
                     p.item_use = Some((goods, state.to_string()));
+                }
+            } else if let Some(empty) = crate::items::empty_state(goods).filter(|_| goods > 0) {
+                // A refilled goods run out (Five-color Rice 3580 -> its empty 3581): the empty
+                // shake, nothing spent (W_ItemColoredRiceEmpty, a000_250105).
+                let crouched = format!("Crouch{empty}");
+                let play = if a.crouch && d.anim_key(&crouched).is_some() { crouched } else { empty.to_string() };
+                if a.play_state(d, &play) {
+                    a.move_vel = Vec3::ZERO;
                 }
             }
             return;

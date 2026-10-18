@@ -522,6 +522,7 @@ fn menu_input(
                 p.emblems = config.player.spirit_emblems;
                 p.resurrections = config.player.resurrections;
                 p.revive_locked = false;
+                p.refill_items = true;
             }
             menu.message = "gourds, emblems and resurrections refilled".into();
         }
