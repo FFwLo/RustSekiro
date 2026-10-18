@@ -203,7 +203,8 @@ pub struct PlayerConfig {
     /// Testing cheat: the Spirit Emblems never run out (also the F1 menu's toggle).
     #[serde(default)]
     pub infinite_emblems: bool,
-    /// Resurrection nodes (the game starts with 1).
+    /// Resurrection nodes (the user, 2026-10-18: "2 ressurection nodes just like in base game, one
+    /// base and one extra").
     #[serde(default = "default_resurrections")]
     pub resurrections: u32,
     /// Equipped combat art = its virtual weapon (EquipParamWeapon): 5100 Whirlwind Slash,
@@ -286,7 +287,7 @@ fn default_enemy_chr() -> String {
 }
 
 fn default_resurrections() -> u32 {
-    1
+    2
 }
 
 fn default_emblems() -> u32 {

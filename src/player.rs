@@ -47,6 +47,23 @@ pub struct Player {
     pub resurrections: u32,
     /// Attack pressed on the death loop before its f0 refresh was read: revive once it is.
     revive_queued: bool,
+    /// The resurrection choice is open (menu.rs's death screen shows ": Die" / ": Resurrect").
+    pub revive_open: bool,
+    /// Die chosen there (guard): no resurrection, the death screen fades out to the final death.
+    pub gave_up: bool,
+    /// After a resurrection the nodes left are locked until Wolf lands a deathblow (the game's
+    /// rule; the user, 2026-10-18: "second ressurection should be locked away in game after you
+    /// resurrect until you land a deathblow"). Resting and a reset unlock them too.
+    pub revive_locked: bool,
+    /// The worn items' maxHpRate product now applied to hp_max (items.rs `max_hp_rate`;
+    /// Yashariku's Sugar 3411: 0.5), so it comes off again when they end.
+    pub item_hp_rate: f32,
+    /// Instant SpEffects whose looks show once (status.rs `sp_bursts`): the gourd's heal 3000.
+    pub sp_bursts: Vec<i64>,
+    /// Resurrective Power gathered toward the next used resurrection node (drops.rs).
+    pub res_power: u32,
+    /// Rested at an idol: the refilled goods (Five-color Rice) are topped up (items.rs).
+    pub refill_items: bool,
     /// Seconds in the death / revival-wait loop. Those clips are one frame long and loop, so
     /// their time wraps and their f0-4 TAE (110010 Pretending Dead, iframes) stays on; the revive
     /// choice and the timeout run on this instead of the clip time (round 27).
@@ -128,6 +145,8 @@ pub struct Player {
     pub(crate) air_top: f32,
     /// The last ground Wolf stood on (not water): where a fall-return death puts him back.
     safe_pos: Option<Vec3>,
+    /// Swimming or diving (swim.rs).
+    pub(crate) swim: Option<crate::swim::Swim>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -508,6 +527,16 @@ pub const REF_HIT_DEFLECT_CANCEL: i64 = 503;
 pub const REF_ORIGINAL_LAND_ACTION: i64 = 201;
 /// c0000_define FALL_HEIGHT_LONG_STIFF_LAND (m) and the long-stiff LandFreeFall clip.
 const FALL_HEIGHT_LONG_STIFF_LAND: f32 = 20.0;
+/// The share of max HP a fall out of the map costs (the fall-return deaths).
+const FALL_RETURN_COST: f32 = 1.0 / 3.0;
+/// Seconds of the fall-return clip (under the black cut) before Wolf is back on safe ground.
+const FALL_RETURN_HOLD: f32 = 1.0;
+
+/// A fall-return death (W_FallDeadReturnStart / W_LandDeadReturnStart): Wolf out of the map, on
+/// his way back to safe ground.
+pub fn is_fall_return(state: &str) -> bool {
+    matches!(state, "LandDeadReturnStart" | "FallDeadReturnStart")
+}
 const LAND_LONG_STIFF: &str = "a000_200021";
 /// c0000_define 211-212: FALL_HEIGHT_SHORT_STIFF_LAND(_FROM_JUMP), metres.
 const FALL_HEIGHT_SHORT_STIFF_LAND: f32 = 5.0;
@@ -535,6 +564,8 @@ pub struct PadInput {
     pub prosthetic_held: bool,
     /// The interact / hug / hang button held (env 1108: the air hang catch wants it held).
     pub interact_held: bool,
+    /// The grappling hook key held (F): up under water (swim.rs).
+    pub grapple_held: bool,
     pressed: Vec<Action>,
     pub reset: bool,
     /// Sheathe / draw the sword (X).
@@ -565,7 +596,8 @@ impl Plugin for PlayerPlugin {
             .init_resource::<ActiveThrow>()
             .add_systems(FixedUpdate, (sync_art_variation, decide, apply_refresh_effects, record_state).chain().in_set(ActorSet::Decide))
             .add_systems(FixedUpdate, follow_throw.after(ActorSet::Advance).before(crate::anim::PoseSet).before(ActorSet::Resolve))
-            .add_systems(FixedUpdate, crate::docking::hold.after(ActorSet::Advance).before(crate::anim::PoseSet).before(ActorSet::Resolve));
+            .add_systems(FixedUpdate, crate::docking::hold.after(ActorSet::Advance).before(crate::anim::PoseSet).before(ActorSet::Resolve))
+            .add_systems(FixedUpdate, crate::swim::hold.after(crate::docking::hold).before(crate::map::bodies_on_terrain).before(crate::anim::PoseSet).before(ActorSet::Resolve));
         app.add_systems(FixedUpdate, wolf_no_dead.before(ActorSet::Decide));
         if std::env::var("SHINOBI_MOVE_LOG").is_ok() {
             app.add_systems(FixedUpdate, move_log.after(ActorSet::Resolve));
@@ -1433,7 +1465,7 @@ fn spawn_player(mut commands: Commands, combat: Res<Combat>, config: Res<GameCon
         }
     }
     commands.spawn((
-        Player { plunge: None, leap_homing: None, dock: None, wall_jumps: 0, last_wall: None, seat: Default::default(), wall_contact: None, speed_level: 0.0, requests: HashMap::new(), last_state: String::new(), gourd: config.player.gourd_charges, emblems: config.player.spirit_emblems, auto_aim: false, auto_aim_fresh: false, resurrections: config.player.resurrections, revive_queued: false, death_wait: 0.0, dead_for: 0.0, escape: None, jump_forward: false, jump_land: None, positioning_land: false, aged_form: false, step_tilt: 0.0, jump_tilt: 0.0, throw_start: None, throw_target: None, tool_slot: 0, quick_slot: 0, item_use: None, vel_scale: None, expand_pending: false, sub_cat_before: 0, air_sub_count: 0, air_art_count: 0, art_enable_jump: false, timed: Vec::new(), held: Vec::new(), wire: None, perch: None, wire_todome: false, air_top: 0.0, safe_pos: None },
+        Player { plunge: None, leap_homing: None, dock: None, wall_jumps: 0, last_wall: None, seat: Default::default(), wall_contact: None, speed_level: 0.0, requests: HashMap::new(), last_state: String::new(), gourd: config.player.gourd_charges, emblems: config.player.spirit_emblems, auto_aim: false, auto_aim_fresh: false, resurrections: config.player.resurrections, revive_queued: false, death_wait: 0.0, dead_for: 0.0, escape: None, jump_forward: false, jump_land: None, positioning_land: false, aged_form: false, step_tilt: 0.0, jump_tilt: 0.0, throw_start: None, throw_target: None, tool_slot: 0, quick_slot: 0, item_use: None, vel_scale: None, expand_pending: false, sub_cat_before: 0, air_sub_count: 0, air_art_count: 0, art_enable_jump: false, timed: Vec::new(), held: Vec::new(), wire: None, perch: None, wire_todome: false, air_top: 0.0, safe_pos: None, swim: None, revive_open: false, gave_up: false, revive_locked: false, item_hp_rate: 1.0, sp_bursts: Vec::new(), res_power: 0, refill_items: false },
         actor,
         Name::new("Player"),
         Transform::from_xyz(0.0, CAPSULE_HALF_HEIGHT, 4.0),
@@ -1493,6 +1525,7 @@ pub(crate) fn read_pad(pads: &Query<&Gamepad>, enabled: bool, pad: &mut PadInput
         pad.attack_held |= g.pressed(GamepadButton::RightTrigger);
         pad.guard_held |= g.pressed(GamepadButton::LeftTrigger);
         pad.dodge_held |= g.pressed(GamepadButton::East);
+        pad.grapple_held |= g.pressed(GamepadButton::LeftTrigger2);
         pad.prosthetic_held |= g.pressed(GamepadButton::RightTrigger2);
         let mut press = |b: GamepadButton, a: Action| {
             if g.just_pressed(b) {
@@ -1548,6 +1581,7 @@ pub(crate) fn read_input(
     pad.attack_held = lmb || keys.pressed(KeyCode::KeyJ);
     pad.guard_held = rmb || keys.pressed(KeyCode::KeyK);
     pad.dodge_held = keys.pressed(KeyCode::ShiftLeft);
+    pad.grapple_held = keys.pressed(KeyCode::KeyF);
     if (captured && mouse.just_pressed(MouseButton::Left)) || keys.just_pressed(KeyCode::KeyJ) {
         pad.pressed.push(Action::Attack);
     }
@@ -1872,6 +1906,43 @@ fn fall_reaches(pos: Vec3, vel_y: f32, air_base: Vec3, gravity: f32, target: Vec
     false
 }
 
+/// The plunge `ea` (at `epos`) would take from Wolf falling at `pos` now: its throw, landing
+/// row suffix and whether it is the stealth one. Shared by `start_plunge` and the HUD's
+/// deathblow mark (the user, 2026-10-18: "no indicator, sometimes works sometimes doesn't").
+pub(crate) fn plunge_on(combat: &Combat, a: &Actor, pos: Vec3, ea: &Actor, enemy: &crate::enemy::Enemy, epos: Vec3) -> Option<(crate::data::Throw, i64, bool)> {
+    let kick = a.state.starts_with("AirKickEnemyJumpStart");
+    if a.vel_y >= 0.0 && !kick {
+        return None;
+    }
+    let ft = FALL_TYPES[(a.fall_type as usize).min(FALL_TYPES.len() - 1)];
+    let stealth = !enemy.is_broken() && enemy.is_unaware();
+    let (start, land) = if kick {
+        (160, 161)
+    } else if stealth {
+        (30, 31)
+    } else {
+        (150, 151)
+    };
+    if !(enemy.is_broken() || stealth) || enemy.is_dead() {
+        return None;
+    }
+    // Each enemy kind's own ThrowParam rows.
+    let row_id = combat.foe_of(ea).throw_row(start);
+    let row = combat.param("ThrowParam", row_id);
+    let th = combat.throw(row_id)?;
+    let f = |k: &str| row[k].as_f64().unwrap_or(0.0) as f32;
+    let (upper, lower) = (f("upperYRange"), f("lowerYRange"));
+    let (range, height, time_limit) = (f("normalFallOrbitCheck_range"), f("normalFallOrbitCheck_heightLimit"), f("normalFallOrbitCheck_timeLimit") / 1000.0);
+    let dy = epos.y - pos.y;
+    if epos.distance(pos) > th.dist || dy > upper || dy < -lower {
+        return None;
+    }
+    if !fall_reaches(pos, a.vel_y, a.air_base, ft.gravity(), epos, range, height, time_limit) || combat.player.anim(&th.atk_anim).is_none() {
+        return None;
+    }
+    Some((th, land, stealth))
+}
+
 fn start_plunge(
     p: &mut Player,
     a: &mut Actor,
@@ -1880,42 +1951,12 @@ fn start_plunge(
     enemies: &mut Query<(Entity, &mut Actor, &mut Enemy, &Transform), Without<Player>>,
     log: &mut CombatLog,
 ) -> bool {
-    let kick = a.state.starts_with("AirKickEnemyJumpStart");
-    if a.vel_y >= 0.0 && !kick {
-        return false;
-    }
     // An enemy that has not noticed Wolf takes the stealth plunge 落下0 / 落下1 (0030 / 0031:
     // a20x_510300 -> 510310, ThrowDef12300 -> 12310): live (General) 0.54 s + 1.69 s + 1.83 s.
     // The row is chosen per target (2026-10-12 bug hunt round 16: one broken enemy anywhere
     // used to turn off the stealth plunge on every unaware one).
-    let ft = FALL_TYPES[(a.fall_type as usize).min(FALL_TYPES.len() - 1)];
     for (e, mut ea, mut enemy, etf) in enemies.iter_mut() {
-        let stealth = !enemy.is_broken() && enemy.is_unaware();
-        let (start, land) = if kick {
-            (160, 161)
-        } else if stealth {
-            (30, 31)
-        } else {
-            (150, 151)
-        };
-        // Each enemy kind's own ThrowParam rows.
-        let row_id = combat.foe_of(&ea).throw_row(start);
-        let row = combat.param("ThrowParam", row_id);
-        let Some(th) = combat.throw(row_id) else { continue };
-        let f = |k: &str| row[k].as_f64().unwrap_or(0.0) as f32;
-        let (upper, lower) = (f("upperYRange"), f("lowerYRange"));
-        let (range, height, time_limit) = (f("normalFallOrbitCheck_range"), f("normalFallOrbitCheck_heightLimit"), f("normalFallOrbitCheck_timeLimit") / 1000.0);
-        if !(enemy.is_broken() || stealth) || etf.translation.distance(pos) > th.dist {
-            continue;
-        }
-        let dy = etf.translation.y - pos.y;
-        if dy > upper || dy < -lower {
-            continue;
-        }
-        let hit = fall_reaches(pos, a.vel_y, a.air_base, ft.gravity(), etf.translation, range, height, time_limit);
-        if !hit || combat.player.anim(&th.atk_anim).is_none() {
-            continue;
-        }
+        let Some((th, land, stealth)) = plunge_on(combat, a, pos, &ea, &enemy, etf.translation) else { continue };
         a.play("PlungeDeathblow", &th.atk_anim);
         p.plunge = Some((e, land));
         if enemy.is_broken() {
@@ -2396,6 +2437,17 @@ fn decide(
     // The quick items' worn effects (items.rs): Wolf's damage rates and the regeneration.
     let [atk, stam, cut, posture_cut] = crate::items::wolf_rates(&p.timed);
     (a.atk_rate, a.stam_atk_rate, a.dmg_cut, a.posture_cut) = (atk, stam, cut, posture_cut);
+    a.item_sp.clear();
+    a.item_sp.extend(p.timed.iter().map(|t| t.0));
+    // Their maxHpRate (Yashariku's Sugar halves the max HP for its 30 s; the user, 2026-10-18:
+    // "make yashariku's sugar limit max hp to half hp of wolf"): hp_max rescaled when it
+    // changes, HP kept under it and not given back after (bCurrHPIndependeMaxHP 1).
+    let hp_rate = crate::items::max_hp_rate(&a.item_sp);
+    if (hp_rate - p.item_hp_rate).abs() > 1e-6 {
+        a.hp_max *= hp_rate / p.item_hp_rate;
+        a.hp = a.hp.min(a.hp_max);
+        p.item_hp_rate = hp_rate;
+    }
     let regen_dt = a.clock(dt);
     crate::items::tick_regen(&p.timed, a, regen_dt);
     // Next quick item (C / d-pad down): the next filled slot.
@@ -2412,7 +2464,8 @@ fn decide(
     if let Some((goods, state)) = p.item_use.clone() {
         if a.state.trim_start_matches("Crouch") != state {
             p.item_use = None;
-        } else if d.anim(&a.anim).is_some_and(|an| an.events.iter().any(|e| e.kind == 65 && e.start > a.prev_t && e.start <= a.t)) {
+        // At frame 0 too (Bite Down's, a000_250400): on the clip's first step.
+        } else if d.anim(&a.anim).is_some_and(|an| an.events.iter().any(|e| e.kind == 65 && ((e.start > a.prev_t && e.start <= a.t) || (e.start == 0.0 && a.prev_t == 0.0 && a.t > 0.0)))) {
             for sp in crate::items::effects_of(goods) {
                 crate::items::wear(&mut p.timed, sp);
             }
@@ -2483,17 +2536,24 @@ fn decide(
     }
     // Raw press (death screen choices are not TAE-buffered).
     let attack_pressed = pad.pressed.contains(&Action::Attack);
+    let guard_pressed = pad.pressed.contains(&Action::Guard);
     // Docking reads its presses raw (docking.rs: the hug / hang button, the climb and the drop).
     let interact_pressed = pad.pressed.contains(&Action::Interact);
     let dock_jump = pad.pressed.contains(&Action::Jump);
     let dock_step = pad.pressed.contains(&Action::Step);
     let crouch_pressed = pad.pressed.contains(&Action::Crouch);
+    let item_pressed = pad.pressed.contains(&Action::UseItem);
     // Any other action stands Wolf up. Steps, guards and hit reactions from a crouch are the
     // standing ones in the HKS too (_fireGroundStep -> W_GroundStep, W_StandToDeflectGuard; the
     // Crouch{Damage,Death}* states only under a forced crouch, g_forceCrouch). The attack has
     // its own (attack_route: CrouchAttackToStand), the gourd too (CrouchItemGourdDrink*).
     if a.crouch && !crouch_ok(&a.state) {
         a.crouch = false;
+    }
+    // Swimming (swim.rs), Ctrl and F are the dive and the rise: no tool, no grappling hook.
+    let swim_dive = pad.pressed.contains(&Action::Prosthetic);
+    if p.swim.is_some() {
+        pad.pressed.retain(|act| !matches!(act, Action::Prosthetic | Action::Grapple));
     }
     let presses = pad.pressed.len() as u32;
     for act in pad.pressed.drain(..) {
@@ -2570,6 +2630,7 @@ fn decide(
         p.gourd = config.player.gourd_charges;
         p.emblems = config.player.spirit_emblems;
         p.resurrections = config.player.resurrections;
+        p.revive_locked = false;
         p.held.clear();
         // A reset mid-jump, mid-plunge or crouched starts the fight standing on the ground:
         // the air state, knockback and queued presses go too (2026-10-12 bug hunt).
@@ -2618,6 +2679,7 @@ fn decide(
         p.dead_for = 0.0;
         // config posture.player_level after F5 (it was read only at spawn; round 24).
         (a.hp_max, a.posture_max, a.posture_regen) = level_stats(&combat, config.posture.player_level);
+        p.item_hp_rate = 1.0;
         a.hp = a.hp_max;
         a.posture = 0.0;
         a.play("StandIdle", "");
@@ -2799,20 +2861,25 @@ fn decide(
             }
         }
     }
-    // The fall-return deaths (HKS BEH_R_DEATH 769-776): the clip plays out, then Wolf stands at the
-    // last safe ground (GroundFallReturn a000_711210). They keep HP and the resurrections.
-    if matches!(a.state.as_str(), "LandDeadReturnStart" | "FallDeadReturnStart") {
+    // The fall-return deaths (HKS BEH_R_DEATH 769-776): the screen cuts to black (menu.rs
+    // `fall_cut`) for `FALL_RETURN_HOLD` of the clip, then Wolf stands at the last safe ground, a
+    // third of his max HP lost (`FALL_RETURN_COST`; the user, 2026-10-18: "the falls should take
+    // 1/3 of player's health every time wolf falls out of the map"); emptied, he dies there (the
+    // death below, resurrections as usual). Standing, not the get-up GroundFallReturn (a000_711210:
+    // the user, "why does he have animation when he returns").
+    if is_fall_return(&a.state) {
         a.move_vel = Vec3::ZERO;
-        if a.anim.is_empty() || a.t >= d.length(&a.anim) {
+        if a.anim.is_empty() || a.t >= d.length(&a.anim).min(FALL_RETURN_HOLD) {
             if let Some(safe) = p.safe_pos {
                 tf.translation = safe;
             }
             a.airborne = false;
             a.vel_y = 0.0;
             p.air_top = tf.translation.y;
-            if !a.play_state(d, "GroundFallReturn") {
-                a.play("StandIdle", "");
-            }
+            let cost = a.hp_max * FALL_RETURN_COST;
+            a.hp = (a.hp - cost).max(0.0);
+            log.push(format!("fall: -{cost:.0} HP"), Color::srgb(1.0, 0.4, 0.4));
+            a.play("StandIdle", "");
         }
         return;
     }
@@ -2967,7 +3034,7 @@ fn decide(
         // HKS 275 / 277 / 285: the death starts W_GroundRevival / W_LandRevival /
         // W_ThrowDefRevival take (the blow and fall deaths' lands among them, death_done).
         let start_revivable = !start_done && (a.state.starts_with("GroundDeathStart") || a.state.starts_with("LandDeathStart") || a.state == "ThrowDefDeathStart" || death_done(&a.state).is_some());
-        let can_revive = p.resurrections > 0 && a.state != "AgingGroundDeathLoop";
+        let can_revive = !p.gave_up && !p.revive_locked && p.resurrections > 0 && a.state != "AgingGroundDeathLoop";
         let choosing = if can_revive { p.dead_for >= REVIVE_DELAY && (loop_ready || start_revivable) } else { loop_ready };
         if in_loop && attack_pressed && !choosing {
             p.revive_queued = true;
@@ -2975,8 +3042,21 @@ fn decide(
         // The queued press is spent whenever the choice opens (round 52: `||` skipped the take on a
         // fresh press, and the leftover revived the next death on its first tick, a second node).
         let queued = choosing && std::mem::take(&mut p.revive_queued);
+        p.revive_open = choosing && can_revive;
+        // Die (guard; the game's ": Die" beside ": Resurrect" under 死): the node is kept, the
+        // death screen fades to black and the final death follows (menu.rs watch_fight).
+        if p.revive_open && guard_pressed && !attack_pressed && !queued {
+            p.gave_up = true;
+            p.revive_open = false;
+            log.push("death", Color::srgb(1.0, 0.4, 0.4));
+            return;
+        }
+        if p.gave_up {
+            return;
+        }
         if choosing && (attack_pressed || queued) && can_revive {
             p.resurrections -= 1;
+            p.revive_locked = true;
             a.hp = 1.0; // the revival anim's SpEffect brings it to half
             // The same IndexDeath side: GroundRevival_B (a000_110031) gets up from face down; out
             // of a grab's loop the throw's own W_ThrowDefRevival (285: a000_<ThrowId>_Revival,
@@ -2996,6 +3076,7 @@ fn decide(
                     a.play_state(d, &format!("GroundRevival_{side}"));
                 }
             }
+            p.revive_open = false;
             log.push(format!("resurrection ({} left)", p.resurrections), Color::srgb(1.0, 0.5, 0.5));
             return;
         }
@@ -3008,6 +3089,13 @@ fn decide(
     }
 
     p.dead_for = 0.0;
+    p.revive_open = false;
+    p.gave_up = false;
+    // A deathblow landed: the resurrection unlocks.
+    if p.revive_locked && a.state == "Deathblow" {
+        p.revive_locked = false;
+        log.push("resurrection unlocked", Color::srgb(1.0, 0.5, 0.5));
+    }
     // HKS _LandReset: the air tool uses count again once on the ground.
     if !a.airborne {
         p.air_sub_count = 0;
@@ -3027,7 +3115,8 @@ fn decide(
     // check, and a grapple from a perch fell off it instead (2026-10-12 bug hunt round 20).
     let wiring = p.wire.is_some() && crate::wire::is_wire_state(&a.state);
     // Docked at an edge (docking.rs: hanging, or climbing up off it) is held, not over a floor.
-    let docked = p.dock.is_some() || crate::docking::is_jump_ready(&a.state) || a.state.starts_with("WallJumpReady_");
+    // Swimming (swim.rs) is held by the water too.
+    let docked = p.dock.is_some() || p.swim.is_some() || crate::docking::is_jump_ready(&a.state) || a.state.starts_with("WallJumpReady_");
     // Not in a deathblow either: the throw plays out and only its end falls (HKS
     // c0000_transition.hks FireStateEndEvent: HKB_STATE_THROW_ATK_TO_FREE_FALL -> W_FreeFall on
     // IsAnimEnd). The Demon of Hatred's leap (a240_500000 / 510000) left Wolf above his field's
@@ -3050,6 +3139,7 @@ fn decide(
         a.play_state(d, "FreeFall");
     }
 
+    let cam_pitch = camera.as_ref().map_or(0.26, |c| c.pitch);
     let cam_yaw = camera.map_or(0.0, |c| c.yaw);
     let stick = stick_world(pad.stick, cam_yaw);
     // Aged, an attack in reach of an aging deathblow row takes the deathblow below.
@@ -3380,6 +3470,9 @@ fn decide(
     // An item on the ground in reach (items.rs): E takes it, before the idol and the wall.
     let picked = interact_pressed && !a.airborne && is_free(&a.state) && picked.as_deref_mut().is_some_and(|q| crate::items::take_near(tf.translation - Vec3::Y * CAPSULE_HALF_HEIGHT, q));
     let interact_pressed = interact_pressed && !picked;
+    if crate::sculptor::tick(p, a, d, tf, interact_pressed, ended, &config) {
+        return;
+    }
     let at_idol = crate::idol::tick(p, a, d, tf, interact_pressed, ended, &config);
     // Praying or resting at an idol brings the enemies back (the fight's line-up).
     if std::mem::take(&mut p.seat.respawn) {
@@ -3389,6 +3482,56 @@ fn decide(
     }
     if at_idol {
         return;
+    }
+    // In deep water (swim.rs): the swim and the dive, nothing else.
+    let mibu = crate::items::count(&config, crate::swim::MIBU_BREATHING) > 0;
+    crate::swim::air(a, d, ended);
+    // In the water (swim.rs): the quick item, if it has a water clip (the gourd, the Homeward
+    // Idol); its TAE 65 is spent as on land (the gourd below, the others by `item_use` above).
+    if let Some(under) = p.swim.as_ref().map(|s| s.diving).filter(|_| item_pressed) {
+        p.requests.remove(&Action::UseItem);
+        let goods = crate::items::in_slot(&config, p.quick_slot);
+        let dry = if goods == GOURD_GOODS { Some("ItemGourdDrink") } else { crate::items::use_state(crate::items::param("EquipParamGoods", goods)["goodsUseAnim"].as_i64().unwrap_or(255)) };
+        let have = if goods == GOURD_GOODS { p.gourd > 0 } else { goods > 0 && crate::items::count(&config, goods) > 0 };
+        match dry.and_then(|s| crate::swim::item_state(s, under)) {
+            Some(state) if have && !a.state.contains("Item") && a.play_state(d, &state) => {
+                if goods != GOURD_GOODS {
+                    p.item_use = Some((goods, state));
+                }
+                return;
+            }
+            Some(_) => {}
+            None => log.push("this item cannot be used in the water", Color::srgb(0.8, 0.8, 0.8)),
+        }
+    }
+    if crate::swim::is_water_drink(&a.state) {
+        let consumed = d.anim(&a.anim).is_some_and(|an| an.events.iter().any(|e| e.kind == 65 && e.start > a.prev_t && e.start <= a.t));
+        if consumed && p.gourd > 0 {
+            p.gourd -= 1;
+            let rate = d.sp_effects.get(GOURD_SPEFFECT).map_or(40.0, |s| -s.change_hp_estus_flask_rate);
+            let heal = a.hp_max * rate / 100.0 * medicine_rate(&combat, &config);
+            a.hp = (a.hp + heal).min(a.hp_max);
+            p.sp_bursts.push(GOURD_GOODS);
+            log.push(format!("gourd: +{heal:.0} HP ({} left)", p.gourd), Color::srgb(0.5, 1.0, 0.6));
+        }
+    }
+    let swim = crate::swim::Controls { stick, rise_held: pad.grapple_held, sink_held: pad.prosthetic_held, dive_pressed: swim_dive, fast_held: pad.dodge_held, jump_pressed: dock_jump, pitch: cam_pitch, attack_pressed, attack_held: pad.attack_held };
+    match crate::swim::tick(p, a, d, tf, swim, ended, mibu, dt, &mut log) {
+        crate::swim::Step::Held => return,
+        // Out of the water: the swim jump's Start (swim.rs), launched by its row 221 along the
+        // facing (fallType 1) - onto the pool's edge.
+        crate::swim::Step::Jump => {
+            p.requests.remove(&Action::Jump);
+            let (h, v, fall) = combat.velocity_change_row(crate::swim::JUMP_VELOCITY_ROW).map_or((9.15, 6.82, 1), |r| (r.h_change, r.v_change, 1));
+            a.airborne = true;
+            a.fall_type = fall;
+            a.vel_y = v;
+            a.air_base = a.forward() * h;
+            a.play_state(d, crate::swim::JUMP_START);
+            log.push("jump out of the water", Color::srgb(0.5, 0.75, 1.0));
+            return;
+        }
+        crate::swim::Step::Free => {}
     }
     if dock_step_tick(p, a, d, tf, ledges.as_deref(), stick, pad.walk, pad.interact_held, interact_pressed, dock_jump, dock_step, ended, &mut log, attack_pressed, &combat, &enemies) {
         return;
@@ -3474,6 +3617,14 @@ fn decide(
                     a.move_vel = Vec3::ZERO;
                     p.item_use = Some((goods, state.to_string()));
                 }
+            } else if let Some(empty) = crate::items::empty_state(goods).filter(|_| goods > 0) {
+                // A refilled goods run out (Five-color Rice 3580 -> its empty 3581): the empty
+                // shake, nothing spent (W_ItemColoredRiceEmpty, a000_250105).
+                let crouched = format!("Crouch{empty}");
+                let play = if a.crouch && d.anim_key(&crouched).is_some() { crouched } else { empty.to_string() };
+                if a.play_state(d, &play) {
+                    a.move_vel = Vec3::ZERO;
+                }
             }
             return;
         }
@@ -3533,6 +3684,7 @@ fn decide(
             let rate = d.sp_effects.get(GOURD_SPEFFECT).map_or(40.0, |s| -s.change_hp_estus_flask_rate);
             let heal = a.hp_max * rate / 100.0 * medicine_rate(&combat, &config);
             a.hp = (a.hp + heal).min(a.hp_max);
+            p.sp_bursts.push(GOURD_GOODS);
             log.push(format!("gourd: +{heal:.0} HP ({} left)", p.gourd), Color::srgb(0.5, 1.0, 0.6));
         }
         // Flag 90: may walk while drinking (the Move ones walk on the legs: lower_body_move).
@@ -4818,6 +4970,10 @@ fn decide(
                     (a.t, a.prev_t) = (t, t);
                     return;
                 }
+            }
+            // The swim jump lands on its own clip (LandSwimKickMoveJump a000_201640).
+            if a.state.starts_with("SwimKickMoveJump") && a.play_state(d, "LandSwimKickMoveJump") {
+                return;
             }
             let blow_land = throw_blow(&a.state)
                 .map(|(_, land)| land.to_string())

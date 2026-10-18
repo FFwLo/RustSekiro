@@ -404,7 +404,7 @@ fn menu_input(
             }
         }
         Item::EnemyHeal if enter => {
-            for (_, mut e, mut a, _, _) in target.and_then(|t| enemies.get_mut(t).ok()) {
+            if let Some((_, mut e, mut a, _, _)) = target.and_then(|t| enemies.get_mut(t).ok()) {
                 a.hp = a.hp_max;
                 a.posture = 0.0;
                 e.end_break_now();
@@ -416,7 +416,7 @@ fn menu_input(
             menu.message = "enemy healed".into();
         }
         Item::BreakPosture if enter => {
-            for (_, mut e, mut a, _, _) in target.and_then(|t| enemies.get_mut(t).ok()) {
+            if let Some((_, mut e, mut a, _, _)) = target.and_then(|t| enemies.get_mut(t).ok()) {
                 a.posture = a.posture_max;
                 e.on_posture_break(&mut a, &combat, false, 4.0);
             }
@@ -429,7 +429,7 @@ fn menu_input(
             let behind = list[menu.cursor] == Item::DeathblowBehind;
             if let Ok((_, pa, ptf)) = player.single() {
                 let fwd = pa.forward();
-                for (_, mut e, mut a, mut tf, _) in target.and_then(|t| enemies.get_mut(t).ok()) {
+                if let Some((_, mut e, mut a, mut tf, _)) = target.and_then(|t| enemies.get_mut(t).ok()) {
                     tf.translation = ptf.translation + fwd * if behind { 1.2 } else { 1.6 };
                     a.yaw = if behind { pa.yaw } else { pa.yaw + std::f32::consts::PI };
                     a.posture = a.posture_max;
@@ -446,7 +446,7 @@ fn menu_input(
             let it = list[menu.cursor];
             if let Ok((_, mut pa, mut ptf)) = player.single_mut() {
                 let fwd = pa.forward();
-                for (_, mut e, mut a, mut tf, _) in target.and_then(|t| enemies.get_mut(t).ok()) {
+                if let Some((_, mut e, mut a, mut tf, _)) = target.and_then(|t| enemies.get_mut(t).ok()) {
                     tf.translation = ptf.translation + fwd * 1.2;
                     a.yaw = pa.yaw + std::f32::consts::PI;
                     a.posture = a.posture_max;
@@ -481,7 +481,7 @@ fn menu_input(
             // up and attack from behind (stealth deathblow), or jump and plunge onto it.
             if let Ok((_, pa, ptf)) = player.single() {
                 let fwd = pa.forward();
-                for (_, mut e, mut a, mut tf, _) in target.and_then(|t| enemies.get_mut(t).ok()) {
+                if let Some((_, mut e, mut a, mut tf, _)) = target.and_then(|t| enemies.get_mut(t).ok()) {
                     tf.translation = ptf.translation + fwd * 5.0;
                     a.yaw = pa.yaw;
                     a.hp = a.hp_max;
@@ -499,7 +499,7 @@ fn menu_input(
             // sight (the meter fills, then it comes to look) but outside its near sight.
             if let Ok((_, pa, ptf)) = player.single() {
                 let fwd = pa.forward();
-                for (_, mut e, mut a, mut tf, _) in target.and_then(|t| enemies.get_mut(t).ok()) {
+                if let Some((_, mut e, mut a, mut tf, _)) = target.and_then(|t| enemies.get_mut(t).ok()) {
                     tf.translation = ptf.translation + fwd * 22.0;
                     a.yaw = pa.yaw + std::f32::consts::PI;
                     a.hp = a.hp_max;
@@ -521,6 +521,8 @@ fn menu_input(
                 p.gourd = config.player.gourd_charges;
                 p.emblems = config.player.spirit_emblems;
                 p.resurrections = config.player.resurrections;
+                p.revive_locked = false;
+                p.refill_items = true;
             }
             menu.message = "gourds, emblems and resurrections refilled".into();
         }

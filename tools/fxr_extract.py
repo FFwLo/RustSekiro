@@ -95,7 +95,38 @@ def used_ids():
                 for e in a.get('events', []):
                     if e.get('type') == 67 and isinstance((e.get('args') or {}).get('SpEffectID'), int):
                         tae_sp.add(e['args']['SpEffectID'])
-    for s in list(d['player'].get('spEffects', {}).values()) + [sp.get(i, {}) for i in SP_EFFECTS] + [sp.get(i, {}) for i in sorted(tae_sp)]:
+    # The quick items (src/items.rs): each goods' own use effects (castSfxId / fireSfxId /
+    # effectSfxId, TAE 114 SpawnFFX_GoodsAndMagic SFXIndexID 0 / 1 / 2, src/ffx.rs) and the
+    # SpEffects it puts on Wolf (items.rs `effects_of`: its refId_default Bullet's, and that
+    # bullet's HitBulletID chain's, spEffectIDForShooter: a sugar's glow).
+    goods_sp = set()
+    goods = json.load(open(os.path.join(ROOT, 'extracted/json/params/EquipParamGoods.json'), encoding='utf-8'))['rows']
+    bullets = json.load(open(os.path.join(ROOT, 'extracted/json/params/Bullet.json'), encoding='utf-8'))['rows']
+    bullets = {r['id']: r for r in (bullets.values() if isinstance(bullets, dict) else bullets)}
+    for g in (goods.values() if isinstance(goods, dict) else goods):
+        if g.get('goodsUseAnim', 255) == 255:
+            continue
+        for k in ('castSfxId', 'fireSfxId', 'effectSfxId'):
+            if isinstance(g.get(k), int) and g[k] > 0:
+                ids.add(g[k])
+        # refCategory 2: refId_default is the SpEffect itself (the gourd's heal 3000).
+        if g.get('refCategory') == 2 and g.get('refId_default', -1) in sp:
+            goods_sp.add(g['refId_default'])
+        b = g.get('refId_default', -1) if g.get('refCategory') == 1 else -1
+        for _ in range(4):
+            if b not in bullets:
+                break
+            # The goods' own bullets' looks (Five-color Rice 3580: its rice 310162, the marker
+            # 310163 where it lands).
+            for k in ('sfxId_Bullet', 'sfxId_Hit'):
+                if isinstance(bullets[b].get(k), int) and bullets[b][k] > 0:
+                    ids.add(bullets[b][k])
+            s = bullets[b].get('spEffectIDForShooter', -1)
+            if s in sp:
+                goods_sp.add(s)
+            n = bullets[b].get('HitBulletID', -1)
+            b = -1 if n == b else n
+    for s in list(d['player'].get('spEffects', {}).values()) + [sp.get(i, {}) for i in SP_EFFECTS] + [sp.get(i, {}) for i in sorted(tae_sp | goods_sp)]:
         for k in ('vfxId', 'vfxId1'):
             r = vfx.get(s.get(k, -1))
             for f in ('initSfxId', 'midstSfxId'):

@@ -1217,6 +1217,10 @@ Event710207
 # BEH_R_NPC_TALK_START -> W_Event700400, BEH_R_NPC_TALK_END -> W_Event700420 (src/talk.rs).
 Event700400
 Event700420
+# Sculptor's seated visit: sit down, seated loop, stand up (c0000.hkx CMSG states).
+Event711200
+Event711201
+Event711202
 # Lightning Reversal (c0000_transition.lua: a lightning hit in the air charges Wolf,
 # W_AirDamageElectroCharge*; an attack then releases it, W_AirElectroReceiveAttack; landing
 # charged shocks him, W_LandAirDamageElectroCharge; a deflect in the air charges too).
@@ -1527,3 +1531,92 @@ StatueAttachCostumeChange
 # Item pickup (items.rs)
 # common_func 20006030: ForceAnimationPlayback(player, 60070) on an object's item pickup
 a000_060070
+
+# Swimming and diving (src/swim.rs; c0000.hkx state names 1239-1265, 1310-1325, 1740-1836)
+FallToSwim
+StandMoveToSwim
+Swim
+SwimIdle
+SwimMoveStart
+SwimMoveLoop
+SwimMoveEnd
+SwimToStandMove
+LandWaterFreeFall
+SwimSprintStart
+SwimSprintLoop
+SwimSprintEnd
+DiveIdle
+DiveMoveStart
+DiveMoveLoop
+DiveMoveEnd
+DiveMoveUpStart
+DiveMoveUpLoop
+DiveMoveUpEnd
+DiveMoveDownStart
+DiveMoveDownLoop
+DiveMoveDownEnd
+DiveSprintStart
+DiveSprintLoop
+DiveSprintEnd
+DiveToSwim
+SwimToDive
+DiveToAir
+DiveKickMove1
+DiveKickMove2
+DiveKickMoveBrake
+DiveDeathStart
+DiveDeathLoop
+SwimDeathStart
+SwimDeathLoop
+# The surface swim sprint's clips (no state of their own in the export; swim.rs)
+a000_031400
+a000_031410
+a000_031420
+a000_031430
+# Into and out of the water, the swim jump (swim.rs)
+LandWaterFreeFallLongStiff
+SwimMoveStartFromLandWater
+DiveToAir2
+SwimJumpReady
+SwimJumpStart
+SwimJumpLoop
+LandSwimKickMoveJump
+LandWaterSwimKickMoveJump
+SwimKickMoveJumpReady
+SwimKickMoveJumpStart
+SwimKickMoveJumpLoop
+LandWaterFreeFallInSitu
+StandMoveToSwimInSitu
+SwimToStandMoveInSitu
+DiveJump
+DiveJumpFromKickMove
+SwimKickMove1
+SwimKickMove2
+SwimKickMoveBrake
+# Attacks and items in the water (swim.rs)
+SwimAttackCombo1
+SwimAttackCombo1Release
+SwimAttackCombo2
+SwimAttackCombo2Release
+SwimAttackCombo3
+SwimAttackCombo3Release
+DiveAttackCombo1
+DiveAttackCombo1Release
+DiveAttackCombo2
+DiveAttackCombo2Release
+DiveAttackCombo3
+DiveAttackCombo3Release
+SwimKickMoveAttack
+DiveKickMoveAttack
+SwimItemGourdDrink
+SwimItemGourdDrinkEmpty
+SwimItemGourdDrinkRepeat
+SwimItemPillTonic
+SwimItemPowderMedicineRecoverPoison
+DiveItemGourdDrink
+DiveItemGourdDrinkEmpty
+DiveItemGourdDrinkRepeat
+DiveItemPillTonic
+DiveItemPowderMedicineRecoverPoison
+SwimItemReturnStatue
+DiveItemReturnStatue

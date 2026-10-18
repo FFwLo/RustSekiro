@@ -2551,7 +2551,7 @@ pub struct OnTerrain {
 /// After the actors moved: push them out of walls along their step, then put grounded ones on
 /// the floor (following it up to STEP_HEIGHT up or down; a bigger drop leaves them in the air,
 /// which player.rs turns into FreeFall; enemies stay put, they have no fall of their own).
-fn bodies_on_terrain(combat: Res<crate::data::Combat>, mut commands: Commands, mut q: Query<(Entity, &Actor, &mut Transform, Option<&mut OnTerrain>)>) {
+pub(crate) fn bodies_on_terrain(combat: Res<crate::data::Combat>, mut commands: Commands, mut q: Query<(Entity, &Actor, &mut Transform, Option<&mut OnTerrain>)>) {
     let Some(t) = terrain() else { return };
     for (e, a, mut tf, state) in &mut q {
         let Some(mut state) = state else {

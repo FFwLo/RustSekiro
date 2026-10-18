@@ -1000,6 +1000,9 @@ pub struct TwistChain {
 #[derive(Resource)]
 pub struct Combat {
     pub player: CharData,
+    /// The Construct's friendly Sculptor, kept outside encounter kinds so boss swaps cannot
+    /// change his model or animations. He has no Enemy component or combat target.
+    pub sculptor: Option<EnemyKind>,
     /// The enemy kinds in play (a chr with one NpcParam row each): kind 0 is config enemy.chr,
     /// then config enemy.group's and the ones the boss map events bring in. An enemy actor's
     /// `Actor::kind` indexes it.
@@ -1022,6 +1025,11 @@ pub struct EnemyKind {
 impl Combat {
     /// Enemy kind `i` (kind 0 when out of range).
     pub fn kind(&self, i: usize) -> &EnemyKind {
+        if i == crate::sculptor::KIND {
+            if let Some(sculptor) = &self.sculptor {
+                return sculptor;
+            }
+        }
         self.kinds.get(i).unwrap_or(&self.kinds[0])
     }
 
@@ -2018,7 +2026,11 @@ impl Plugin for DataPlugin {
             kinds.push(kind);
         }
         f.player.alias_missing_clips();
-        let mut combat = Combat { player: f.player, kinds, params: f.params, rumble: f.rumble, twists: f.twists, names: f.names };
+        let sculptor = config.filter(|c| crate::map::map_id(c).as_deref() == Some(crate::sandbox::CONSTRUCT_ID)).and_then(|_| {
+            let kind = load_kind(&mut f, crate::sculptor::CHR, Some(crate::sculptor::NPC_ROW));
+            (kind.foe.chr == crate::sculptor::CHR).then_some(kind)
+        });
+        let mut combat = Combat { player: f.player, sculptor, kinds, params: f.params, rumble: f.rumble, twists: f.twists, names: f.names };
         combat.add_event_kinds();
         app.insert_resource(combat);
     }

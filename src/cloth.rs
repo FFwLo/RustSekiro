@@ -731,7 +731,7 @@ fn simulate(
                 })
                 .collect() };
             let mut tp = tc; // phase 0: the bone matrices, capsules and reference vertices above
-            let mut lap = |slot: usize, tp: &mut std::time::Instant, acc: &mut [u64; 6]| {
+            let lap = |slot: usize, tp: &mut std::time::Instant, acc: &mut [u64; 6]| {
                 let now = std::time::Instant::now();
                 acc[slot] += (now - *tp).as_micros() as u64;
                 *tp = now;
@@ -976,7 +976,7 @@ fn simulate(
             for dm in &c.displays {
                 let Some(disp) = def.displays.iter().find(|d| d.mesh == dm.mesh) else { continue };
                 let joint_m: Vec<Mat4> = dm.joints.iter().zip(&dm.inv).map(|(&j, inv)| overrides.get(&j).copied().or_else(|| globals.get(j).ok().copied()).map(|g| g.to_matrix() * *inv).unwrap_or(Mat4::IDENTITY)).collect();
-                let (mut pos, mut nrm, mut tan) = skin(dm, &joint_m);
+                let (mut pos, mut nrm, tan) = skin(dm, &joint_m);
                 lap(4, &mut tp, &mut phase);
                 deform_display(disp, &frames, &dm.tris, &mut pos, &mut nrm);
                 if debug_now(time) {

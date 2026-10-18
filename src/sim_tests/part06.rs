@@ -1461,13 +1461,13 @@ pub(crate) fn the_zombies_dumplings_build_up_terror() {
     world.resource_scope(|world, combat: Mut<Combat>| {
         assert!(Statuses::is_build_up(&combat, 9222), "9222 is not a build-up");
         let mut s = Statuses::default();
-        let n = (1..=5).find(|_| s.hit_wolf(&combat, wolf, weapon, &[9222], Guard::None).iter().any(|l| l == "TERROR"));
+        let n = (1..=5).find(|_| s.hit_wolf(&combat, wolf, weapon, &[], &[9222], Guard::None).iter().any(|l| l == "TERROR"));
         assert_eq!(n, Some(3));
         let mut s = Statuses::default();
-        assert!((1..=10).all(|_| !s.hit_wolf(&combat, wolf, weapon, &[9222], Guard::Deflect).iter().any(|l| l == "TERROR")));
+        assert!((1..=10).all(|_| !s.hit_wolf(&combat, wolf, weapon, &[], &[9222], Guard::Deflect).iter().any(|l| l == "TERROR")));
         let mut st = world.resource_mut::<Statuses>();
         for _ in 0..3 {
-            st.hit_wolf(&combat, wolf, weapon, &[9222], Guard::None);
+            st.hit_wolf(&combat, wolf, weapon, &[], &[9222], Guard::None);
         }
     });
     app.update();
@@ -1508,12 +1508,12 @@ pub(crate) fn the_bandits_torch_sets_wolf_on_fire() {
         assert!(Statuses::is_build_up(&combat, 9115), "9115 not found as a build-up");
         for (guard, hits) in [(Guard::None, 4), (Guard::Block, 5), (Guard::Deflect, 7)] {
             let mut s = Statuses::default();
-            let n = (1..=10).find(|_| s.hit_wolf(&combat, wolf, weapon, &[9115], guard).iter().any(|l| l == "BURNING"));
+            let n = (1..=10).find(|_| s.hit_wolf(&combat, wolf, weapon, &[], &[9115], guard).iter().any(|l| l == "BURNING"));
             assert_eq!(n, Some(hits), "{guard:?}");
         }
         let mut st = world.resource_mut::<Statuses>();
         for _ in 0..4 {
-            st.hit_wolf(&combat, wolf, weapon, &[9115], Guard::None);
+            st.hit_wolf(&combat, wolf, weapon, &[], &[9115], Guard::None);
         }
     });
     for _ in 0..(60 * 3) {

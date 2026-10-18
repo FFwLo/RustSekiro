@@ -15,7 +15,7 @@ pub(crate) fn reigniting_a_burn_refreshes_it() {
     let weapon = world.resource::<crate::config::GameConfig>().player.combat_art;
     world.resource_scope(|_, combat: Mut<Combat>| {
         let mut s = Statuses::default();
-        let burning = |s: &mut Statuses| (1..=10).find(|_| s.hit_wolf(&combat, wolf, weapon, &[9115], Guard::None).iter().any(|l| l == "BURNING"));
+        let burning = |s: &mut Statuses| (1..=10).find(|_| s.hit_wolf(&combat, wolf, weapon, &[], &[9115], Guard::None).iter().any(|l| l == "BURNING"));
         assert!(burning(&mut s).is_some());
         let first: Vec<(i64, f32)> = s.0[&wolf].effects.iter().map(|a| (a.id, a.left)).collect();
         assert_eq!(first.len(), 1, "{first:?}");
@@ -474,11 +474,12 @@ pub(crate) fn a_twenty_metre_fall_lands_long_stiff() {
 }
 
 /// A fall past HitMtrlParam fallDeathDist (40 m, the default row) ends in the fall-return death
-/// (HKS DAMAGE_TYPE_LAND_DEAD_RETURN, a000_200909), then Wolf stands at the last safe ground with
-/// his HP; a 25 m fall is only the long stiff landing.
+/// (HKS DAMAGE_TYPE_LAND_DEAD_RETURN, a000_200909), then Wolf stands at the last safe ground a
+/// third of his max HP down; a 25 m fall is only the long stiff landing. With a third or less
+/// left, the fall kills him (`low`).
 #[test]
 pub(crate) fn a_forty_metre_fall_returns_wolf_to_safe_ground() {
-    for (drop, dies) in [(45.0, true), (25.0, false)] {
+    for (drop, dies, low) in [(45.0, true, false), (25.0, false, false), (45.0, true, true)] {
         let mut app = app();
         move_enemy_far(&mut app);
         for _ in 0..30 {
@@ -496,23 +497,31 @@ pub(crate) fn a_forty_metre_fall_returns_wolf_to_safe_ground() {
                 assert!(a.play_state(&combat.player, "FreeFall"));
                 a.airborne = true;
                 a.vel_y = 0.0;
+                if low {
+                    a.hp = a.hp_max * 0.3;
+                }
                 t.translation += Vec3::new(3.0, drop, 0.0);
             });
         }
         let mut saw = false;
+        let mut dead = false;
         let mut seen: Vec<String> = Vec::new();
         for _ in 0..900 {
             app.update();
             let world = app.world_mut();
             let a = world.query_filtered::<&Actor, With<Player>>().single(world).unwrap();
             saw |= a.state == "LandDeadReturnStart";
+            dead |= a.state.contains("Death");
             if seen.last() != Some(&a.state) { seen.push(a.state.clone()); }
         }
         let world = app.world_mut();
         let (a, t) = world.query_filtered::<(&Actor, &Transform), With<Player>>().single(world).unwrap();
         assert_eq!(saw, dies, "drop {drop} {seen:?}");
-        assert_eq!(a.hp, hp, "drop {drop}: the return keeps HP");
-        if dies {
+        let want = if !dies { hp } else if low { 0.0 } else { hp - a.hp_max / 3.0 };
+        assert!((a.hp - want).abs() < 0.5, "drop {drop} low {low}: HP {} want {want}", a.hp);
+        assert_eq!(dead, low, "drop {drop} low {low}: {seen:?}");
+        assert!(!seen.iter().any(|s| s == "GroundFallReturn"), "back standing, no get-up clip: {seen:?}");
+        if dies && !low {
             assert!((t.translation - start).length() < 0.5, "back at the safe ground: {:?} vs {:?}", t.translation, start);
         }
     }

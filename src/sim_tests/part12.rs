@@ -824,3 +824,591 @@ fn a_guard_calls_out_as_it_spots_wolf() {
     }
     assert!(called, "no call (state {})", app.world().get::<Enemy>(guard).unwrap().targeting.state);
 }
+
+/// Wolf in deep water swims (SwimIdle); Ctrl dives only with the Mibu Breathing Technique
+/// held (swim.rs; the user: "swimming now ... mibu breathing technique").
+#[test]
+fn wolf_swims_and_dives_with_the_mibu_technique() {
+    // A pool far from every other test's ground (swim.rs WATER is global).
+    let (lo, hi) = (Vec3::new(990.0, -5.0, -10.0), Vec3::new(1010.0, -0.4, 10.0));
+    crate::swim::WATER.write().unwrap().push((lo, hi));
+    let mut app = app_cfg("c1010", None, Vec::new());
+    let feet = Vec3::new(1000.0, -3.0, 0.0);
+    {
+        let world = app.world_mut();
+        let mut q = world.query_filtered::<&mut Transform, With<Player>>();
+        q.single_mut(world).unwrap().translation = feet + Vec3::Y * CAPSULE_HALF_HEIGHT;
+    }
+    run(&mut app, 120);
+    let state = |app: &mut App| {
+        let world = app.world_mut();
+        world.query_filtered::<&Actor, With<Player>>().single(world).unwrap().state.clone()
+    };
+    let s = state(&mut app);
+    assert!(s.starts_with("Swim"), "swimming: {s}");
+    let y = {
+        let world = app.world_mut();
+        world.query_filtered::<&Transform, With<Player>>().single(world).unwrap().translation.y - CAPSULE_HALF_HEIGHT
+    };
+    assert!((y - (hi.y - crate::swim::SWIM_DEPTH)).abs() < 0.05, "at the surface: feet {y}");
+    // Without the technique Ctrl (the prosthetic key) does not dive.
+    app.world_mut().resource_mut::<crate::config::GameConfig>().player.items.retain(|(g, _)| *g != crate::swim::MIBU_BREATHING);
+    app.world_mut().resource_mut::<PadInput>().press(Action::Prosthetic);
+    run(&mut app, 30);
+    let s = state(&mut app);
+    assert!(!s.contains("Dive"), "no dive without it: {s}");
+    // With it, Ctrl goes under.
+    crate::items::add(&mut app.world_mut().resource_mut::<crate::config::GameConfig>(), crate::swim::MIBU_BREATHING, 1);
+    app.world_mut().resource_mut::<PadInput>().press(Action::Prosthetic);
+    run(&mut app, 10);
+    assert_eq!(state(&mut app), "SwimToDive");
+    crate::swim::WATER.write().unwrap().retain(|w| w.0 != lo);
+}
+
+/// Swimming with the stick held moves Wolf (the swim clips' root motion), and under water jump
+/// held lifts him (the user: "only floats, not swims around ... nor ascend").
+#[test]
+fn wolf_swims_forward_and_rises() {
+    let (lo, hi) = (Vec3::new(1990.0, -5.0, -10.0), Vec3::new(2010.0, -0.4, 10.0));
+    crate::swim::WATER.write().unwrap().push((lo, hi));
+    let mut app = app_cfg("c1010", None, Vec::new());
+    let pos = |app: &mut App| {
+        let world = app.world_mut();
+        let (a, t) = world.query_filtered::<(&Actor, &Transform), With<Player>>().single(world).unwrap();
+        (t.translation, a.state.clone(), a.anim.clone())
+    };
+    {
+        let world = app.world_mut();
+        let mut q = world.query_filtered::<&mut Transform, With<Player>>();
+        q.single_mut(world).unwrap().translation = Vec3::new(2000.0, -3.0 + CAPSULE_HALF_HEIGHT, 0.0);
+    }
+    run(&mut app, 60);
+    let (p0, s0, _) = pos(&mut app);
+    let mut states = std::collections::BTreeSet::new();
+    for _ in 0..120 {
+        app.world_mut().resource_mut::<PadInput>().stick = Vec2::Y;
+        app.update();
+        states.insert(pos(&mut app).1);
+    }
+    let (p1, _, anim) = pos(&mut app);
+    assert!((p1 - p0).with_y(0.0).length() > 1.5, "swam {:.2} m from {s0}: states {states:?}, anim {anim}", (p1 - p0).with_y(0.0).length());
+    crate::swim::WATER.write().unwrap().retain(|w| w.0 != lo);
+}
+
+/// Shift held swims fast: the kick chain (a000_031400 / 031410) covers more water than the plain
+/// stroke in the same time (the user: "fast swimming with shift").
+#[test]
+fn shift_swims_fast() {
+    let mut dist = Vec::new();
+    for (k, fast) in [false, true].into_iter().enumerate() {
+        let x = 3000.0 + 100.0 * k as f32;
+        let (lo, hi) = (Vec3::new(x - 30.0, -5.0, -40.0), Vec3::new(x + 30.0, -0.4, 40.0));
+        crate::swim::WATER.write().unwrap().push((lo, hi));
+        let mut app = app_cfg("c1010", None, Vec::new());
+        {
+            let world = app.world_mut();
+            let mut q = world.query_filtered::<&mut Transform, With<Player>>();
+            q.single_mut(world).unwrap().translation = Vec3::new(x, -3.0 + CAPSULE_HALF_HEIGHT, 0.0);
+        }
+        run(&mut app, 60);
+        let at = |app: &mut App| {
+            let world = app.world_mut();
+            world.query_filtered::<&Transform, With<Player>>().single(world).unwrap().translation
+        };
+        let p0 = at(&mut app);
+        for _ in 0..180 {
+            let mut pad = app.world_mut().resource_mut::<PadInput>();
+            pad.stick = Vec2::Y;
+            pad.dodge_held = fast;
+            app.update();
+        }
+        dist.push((at(&mut app) - p0).with_y(0.0).length());
+        crate::swim::WATER.write().unwrap().retain(|w| w.0 != lo);
+    }
+    assert!(dist[1] > dist[0] * 1.3, "plain {:.1} m, fast {:.1} m in 3 s", dist[0], dist[1]);
+}
+
+/// Jump at the surface leaves the water upward: the swim jump (SwimKickMoveJumpReady, then the
+/// Start launched by row 221; the user: "add jumping", "there is special jump animation").
+#[test]
+fn wolf_jumps_out_of_the_water() {
+    let (lo, hi) = (Vec3::new(3990.0, -5.0, -10.0), Vec3::new(4010.0, -0.4, 10.0));
+    crate::swim::WATER.write().unwrap().push((lo, hi));
+    let mut app = app_cfg("c1010", None, Vec::new());
+    {
+        let world = app.world_mut();
+        let mut q = world.query_filtered::<&mut Transform, With<Player>>();
+        q.single_mut(world).unwrap().translation = Vec3::new(4000.0, -3.0 + CAPSULE_HALF_HEIGHT, 0.0);
+    }
+    run(&mut app, 60);
+    let feet = |app: &mut App| {
+        let world = app.world_mut();
+        world.query_filtered::<&Transform, With<Player>>().single(world).unwrap().translation.y - CAPSULE_HALF_HEIGHT
+    };
+    let y0 = feet(&mut app);
+    app.world_mut().resource_mut::<PadInput>().press(Action::Jump);
+    let mut top = y0;
+    // Its Ready (0.33 s) first, then the launch.
+    for _ in 0..80 {
+        app.update();
+        top = top.max(feet(&mut app));
+    }
+    assert!(top > hi.y + 0.3, "jumped from {y0:.2} to {top:.2}, surface {}: {}", hi.y, log_text(&app));
+    crate::swim::WATER.write().unwrap().retain(|w| w.0 != lo);
+}
+
+/// In the water the attack swings the water combo (SwimAttackCombo1, then 2 on a second press)
+/// and the gourd drinks its water clip and heals (the user: "add attacks under the water and item
+/// usage").
+#[test]
+fn wolf_attacks_and_drinks_in_the_water() {
+    let (lo, hi) = (Vec3::new(4990.0, -5.0, -10.0), Vec3::new(5010.0, -0.4, 10.0));
+    crate::swim::WATER.write().unwrap().push((lo, hi));
+    let mut app = app_cfg("c1010", None, Vec::new());
+    {
+        let world = app.world_mut();
+        let mut q = world.query_filtered::<&mut Transform, With<Player>>();
+        q.single_mut(world).unwrap().translation = Vec3::new(5000.0, -3.0 + CAPSULE_HALF_HEIGHT, 0.0);
+    }
+    run(&mut app, 150);
+    let wolf = |app: &mut App| {
+        let world = app.world_mut();
+        let a = world.query_filtered::<&Actor, With<Player>>().single(world).unwrap();
+        (a.state.clone(), a.hp, a.hp_max)
+    };
+    // Held: the thrust; a tap: the cut, and a second tap chains the next step's cut.
+    app.world_mut().resource_mut::<PadInput>().press(Action::Attack);
+    for _ in 0..10 {
+        app.world_mut().resource_mut::<PadInput>().attack_held = true;
+        app.update();
+    }
+    assert_eq!(wolf(&mut app).0, "SwimAttackCombo1", "held: the thrust");
+    // (The sim keeps the held flag until it is cleared: no input reader.)
+    app.world_mut().resource_mut::<PadInput>().attack_held = false;
+    run(&mut app, 220);
+    app.world_mut().resource_mut::<PadInput>().press(Action::Attack);
+    run(&mut app, 5);
+    assert_eq!(wolf(&mut app).0, "SwimAttackCombo1Release", "a tap: the cut");
+    app.world_mut().resource_mut::<PadInput>().press(Action::Attack);
+    run(&mut app, 40);
+    assert!(wolf(&mut app).0.starts_with("SwimAttackCombo2"), "the second press chains: {}", wolf(&mut app).0);
+    run(&mut app, 200);
+    // The gourd (the quick slot's first item): hurt, drink, healed.
+    {
+        let world = app.world_mut();
+        let mut a = world.query_filtered::<&mut Actor, With<Player>>().single_mut(world).unwrap();
+        a.hp = a.hp_max * 0.3;
+    }
+    let hp0 = wolf(&mut app).1;
+    app.world_mut().resource_mut::<PadInput>().press(Action::UseItem);
+    run(&mut app, 5);
+    assert_eq!(wolf(&mut app).0, "SwimItemGourdDrink");
+    run(&mut app, 90);
+    assert!(wolf(&mut app).1 > hp0, "healed: {} -> {}", hp0, wolf(&mut app).1);
+    crate::swim::WATER.write().unwrap().retain(|w| w.0 != lo);
+}
+
+/// The death screen's choice (the user, 2026-10-18): with a node left, guard is ": Die" - no
+/// resurrection, the node kept, attack no longer revives; the default is two nodes.
+#[test]
+pub(crate) fn guard_on_the_death_choice_dies() {
+    assert_eq!(crate::config::PlayerConfig::default().resurrections, 2, "the base node and the extra one");
+    let mut app = app();
+    move_enemy_far(&mut app);
+    {
+        let world = app.world_mut();
+        world.query_filtered::<&mut Actor, With<Player>>().single_mut(world).unwrap().hp = 0.0;
+    }
+    for _ in 0..300 {
+        app.update();
+        let world = app.world_mut();
+        if world.query::<&Player>().single(world).unwrap().revive_open {
+            break;
+        }
+    }
+    let nodes = {
+        let world = app.world_mut();
+        let p = world.query::<&Player>().single(world).unwrap();
+        assert!(p.revive_open, "the choice opens");
+        p.resurrections
+    };
+    app.world_mut().resource_mut::<PadInput>().press(Action::Guard);
+    run(&mut app, 5);
+    app.world_mut().resource_mut::<PadInput>().press(Action::Attack);
+    run(&mut app, 30);
+    let world = app.world_mut();
+    let (a, p) = world.query::<(&Actor, &Player)>().single(world).unwrap();
+    assert!(p.gave_up && !p.revive_open, "died");
+    assert_eq!(p.resurrections, nodes, "the node is kept");
+    assert!(a.hp <= 0.0 && !a.state.contains("Revival_"), "no resurrection: {} {}", a.state, a.hp);
+}
+
+/// After a resurrection the node left is locked (the user, 2026-10-18): a second death has no
+/// choice; a deathblow unlocks it.
+#[test]
+pub(crate) fn a_resurrection_locks_the_next_until_a_deathblow() {
+    let mut app = app();
+    move_enemy_far(&mut app);
+    let kill = |app: &mut App| {
+        let world = app.world_mut();
+        world.query_filtered::<&mut Actor, With<Player>>().single_mut(world).unwrap().hp = 0.0;
+    };
+    let open = |app: &mut App| {
+        let world = app.world_mut();
+        world.query::<&Player>().single(world).unwrap().revive_open
+    };
+    kill(&mut app);
+    for _ in 0..300 {
+        app.update();
+        if open(&mut app) {
+            break;
+        }
+    }
+    assert!(open(&mut app), "the first death offers the choice");
+    app.world_mut().resource_mut::<PadInput>().press(Action::Attack);
+    run(&mut app, 200);
+    {
+        let world = app.world_mut();
+        let (a, p) = world.query::<(&Actor, &Player)>().single(world).unwrap();
+        assert!(a.hp > 0.0 && p.revive_locked && p.resurrections == 1, "revived, the other node locked");
+    }
+    kill(&mut app);
+    let mut offered = false;
+    for _ in 0..400 {
+        app.update();
+        offered |= open(&mut app);
+    }
+    assert!(!offered, "locked: no resurrection");
+    // A deathblow (the throw's state) unlocks it.
+    {
+        let world = app.world_mut();
+        let (mut a, mut p) = world.query::<(&mut Actor, &mut Player)>().single_mut(world).unwrap();
+        a.hp = a.hp_max;
+        a.play("Deathblow", "");
+        p.revive_locked = true;
+    }
+    run(&mut app, 2);
+    let world = app.world_mut();
+    assert!(!world.query::<&Player>().single(world).unwrap().revive_locked, "a deathblow unlocks it");
+}
+
+/// The Construct's floor is cut round the pool and the chasm: no rectangle covers either hole
+/// and the rest is all floor.
+#[test]
+fn the_construct_floor_leaves_its_holes_open() {
+    let holes = [crate::sandbox::POOL, crate::sandbox::CHASM];
+    let rects = crate::sandbox::floor_rects_for_test((-45.0, 45.0, -135.0, 45.0), &holes);
+    let on_floor = |x: f32, z: f32| rects.iter().any(|r| r.0 <= x && x <= r.1 && r.2 <= z && z <= r.3);
+    assert!(!on_floor(-30.0, 0.0), "the pool");
+    assert!(!on_floor(26.0, -20.0) && !on_floor(26.0, 5.0), "the chasm");
+    assert!(on_floor(26.0, 20.0) && on_floor(26.0, -60.0) && on_floor(0.0, 0.0) && on_floor(40.0, 0.0), "the rest");
+    let area: f32 = rects.iter().map(|r| (r.1 - r.0) * (r.3 - r.2)).sum();
+    assert!((area - (90.0 * 180.0 - 20.0 * 16.0 - 10.0 * 54.0)).abs() < 1e-2, "area {area}");
+}
+
+/// Uses quick item `goods` (alone in slot 0, `n` held) through its clip and items.rs apply_used;
+/// returns the states seen.
+fn use_goods(app: &mut App, goods: i64, n: u32, frames: usize) -> Vec<String> {
+    {
+        let mut config = app.world_mut().resource_mut::<crate::config::GameConfig>();
+        config.player.items.retain(|(g, _)| *g != goods);
+        config.player.items.push((goods, n));
+        config.player.quick_items = vec![goods, 0, 0, 0, 0];
+    }
+    app.world_mut().init_resource::<crate::items::Used>();
+    {
+        let world = app.world_mut();
+        world.query::<&mut Player>().single_mut(world).unwrap().quick_slot = 0;
+    }
+    app.world_mut().resource_mut::<PadInput>().press(Action::UseItem);
+    let mut states = Vec::new();
+    for _ in 0..frames {
+        app.update();
+        let (s, ..) = player_state(app);
+        if states.last() != Some(&s) {
+            states.push(s);
+        }
+    }
+    states
+}
+
+/// The coin purses give their Sen; the Ceremonial Tanto takes half the max HP for five Spirit
+/// Emblems (the user, 2026-10-18: "Items").
+#[test]
+pub(crate) fn coin_purses_and_the_tanto_pay_out() {
+    let mut app = app();
+    move_enemy_far(&mut app);
+    app.add_systems(Update, crate::items::apply_used);
+    let sen = app.world().resource::<crate::config::GameConfig>().player.sen;
+    let states = use_goods(&mut app, 3708, 1, 120);
+    assert!(states.iter().any(|s| s == "ItemCoinBag"), "{states:?}");
+    assert_eq!(app.world().resource::<crate::config::GameConfig>().player.sen, sen + 1000, "the Bulging Coin Purse");
+    {
+        let world = app.world_mut();
+        world.query::<&mut Player>().single_mut(world).unwrap().emblems = 0;
+    }
+    let states = use_goods(&mut app, 3800, 1, 150);
+    assert!(states.iter().any(|s| s == "ItemPaperDollExchangeWhite"), "{states:?}");
+    let world = app.world_mut();
+    let (a, p) = world.query::<(&Actor, &Player)>().single(world).unwrap();
+    assert!((a.hp - a.hp_max * 0.5).abs() < 1.0, "half the HP: {} / {}", a.hp, a.hp_max);
+    assert_eq!(p.emblems, 5);
+}
+
+/// Dousing Powder puts out a burn and keeps the next build-up lower for its 30 s.
+#[test]
+pub(crate) fn dousing_powder_puts_out_the_burn() {
+    // c1550's data carries the burn row 9115.
+    let mut app = app_cfg("c1550", None, Vec::new());
+    move_enemy_far(&mut app);
+    app.add_systems(Update, crate::items::apply_used);
+    app.world_mut().init_resource::<crate::items::Used>();
+    app.update();
+    let wolf = app.world_mut().query_filtered::<Entity, With<Player>>().single(app.world()).unwrap();
+    let burning = |app: &mut App| {
+        let world = app.world_mut();
+        world.resource_scope(|world, combat: Mut<Combat>| {
+            let mut st = world.resource_mut::<crate::status::Statuses>();
+            (1..=20).find(|_| st.hit_wolf(&combat, wolf, 5000, &[], &[9115], crate::status::Guard::None).iter().any(|l| l == "BURNING"))
+        })
+    };
+    let plain = burning(&mut app).expect("burns");
+    let on = |app: &mut App| app.world().resource::<crate::status::Statuses>().0.get(&wolf).is_some_and(|s| !s.effects.is_empty());
+    assert!(on(&mut app));
+    let states = use_goods(&mut app, 3210, 1, 120);
+    assert!(states.iter().any(|s| s.starts_with("ItemPowderMedicine")), "{states:?}");
+    assert!(!on(&mut app), "put out");
+    // Its 3212 (defBloodResistDamageRate 0.65) worn: more hits to burn again.
+    let worn = {
+        let world = app.world_mut();
+        world.query::<&Actor>().iter(world).find(|a| !a.item_sp.is_empty()).map(|a| a.item_sp.clone()).unwrap_or_default()
+    };
+    assert!(worn.contains(&3212), "{worn:?}");
+    let resisted = {
+        let world = app.world_mut();
+        world.resource_scope(|world, combat: Mut<Combat>| {
+            let mut st = world.resource_mut::<crate::status::Statuses>();
+            st.clear(wolf);
+            (1..=40).find(|_| st.hit_wolf(&combat, wolf, 5000, &worn, &[9115], crate::status::Guard::None).iter().any(|l| l == "BURNING"))
+        })
+    };
+    assert!(resisted.expect("still burns") > plain, "{plain} hits plain, {resisted:?} resisted");
+}
+
+/// A Fistful of Ash thrown at the enemy ahead: its cloud blinds him (the firecracker's flinch);
+/// the Ceramic Shard flies as its Bullet 3491.
+#[test]
+pub(crate) fn thrown_ash_blinds_and_the_shard_flies() {
+    let mut app = app();
+    app.add_systems(Update, crate::items::apply_used);
+    // The enemy 3 m ahead, passive.
+    {
+        let world = app.world_mut();
+        let mut q = world.query_filtered::<(&mut Transform, &mut crate::enemy::Enemy), Without<Player>>();
+        for (mut t, _) in q.iter_mut(world) {
+            t.translation = Vec3::new(0.0, t.translation.y, 1.0);
+        }
+    }
+    let mut reacted = false;
+    use_goods(&mut app, 3510, 1, 1);
+    for _ in 0..150 {
+        app.update();
+        let world = app.world_mut();
+        reacted |= world.query_filtered::<&Actor, Without<Player>>().iter(world).any(|a| a.state == "AssassinationBloodReaction");
+    }
+    assert!(reacted, "the ash blinds");
+    let mut flew = false;
+    use_goods(&mut app, 3500, 1, 1);
+    for _ in 0..90 {
+        app.update();
+        let world = app.world_mut();
+        flew |= world.query::<&Name>().iter(world).any(|n| n.as_str() == "Bullet 3491");
+    }
+    assert!(flew, "the shard flies");
+}
+
+/// Every usable item of the starter bag (config.toml): its use state plays its clip to the end,
+/// back to standing, and one is spent (the Homeward Idol is not consumed; it warps in the game).
+/// The user, 2026-10-18: "make sure again every item works and has proper animations".
+#[test]
+pub(crate) fn every_bag_item_plays_its_use_and_is_spent() {
+    let mut app = app();
+    move_enemy_far(&mut app);
+    app.add_systems(Update, crate::items::apply_used);
+    let bag: Vec<i64> = crate::config::GameConfig::load().unwrap().player.items.iter().map(|(g, _)| *g).collect();
+    let mut tried = 0;
+    for goods in bag {
+        let anim = crate::items::param("EquipParamGoods", goods)["goodsUseAnim"].as_i64().unwrap_or(255);
+        let Some(state) = crate::items::use_state(anim) else { continue };
+        if goods == 3980 {
+            continue;
+        }
+        {
+            let world = app.world_mut();
+            let mut a = world.query_filtered::<&mut Actor, With<Player>>().single_mut(world).unwrap();
+            a.hp = a.hp_max;
+        }
+        let states = use_goods(&mut app, goods, 2, 330);
+        tried += 1;
+        assert!(states.iter().any(|s| s == state), "goods {goods}: no {state} in {states:?}");
+        let (s, clip, ..) = player_state(&mut app);
+        assert!(!s.contains("Item"), "goods {goods}: still in {s} ({clip}) after 5.5 s");
+        let left = crate::items::count(app.world().resource::<crate::config::GameConfig>(), goods);
+        assert_eq!(left, 1, "goods {goods} ({state}): spent once");
+    }
+    assert!(tried >= 20, "{tried}");
+}
+
+/// Crouched, the items with a Crouch use state (CrouchItemPillTonic ...) play that one and
+/// Wolf stays crouched after.
+#[test]
+pub(crate) fn crouched_items_play_their_crouch_clips() {
+    let mut app = app();
+    move_enemy_far(&mut app);
+    app.add_systems(Update, crate::items::apply_used);
+    app.world_mut().init_resource::<crate::items::Used>();
+    app.world_mut().resource_mut::<PadInput>().press(Action::Crouch);
+    for _ in 0..120 {
+        app.update();
+    }
+    for (goods, state) in [(3020, "CrouchItemPillTonic"), (3060, "CrouchItemOhagi"), (3070, "CrouchItemKaki"), (3200, "CrouchItemPowderMedicineRecoverPoison"), (3500, "CrouchItemPottery"), (3510, "CrouchItemStone"), (3700, "CrouchItemCoinBag"), (3800, "CrouchItemPaperDollExchangeWhite")] {
+        let states = use_goods(&mut app, goods, 2, 300);
+        assert!(states.iter().any(|s| s == state), "goods {goods}: no {state} in {states:?}");
+        let world = app.world_mut();
+        let a = world.query_filtered::<&Actor, With<Player>>().single(world).unwrap();
+        assert!(a.crouch && !a.state.contains("Item"), "goods {goods}: {} crouch {}", a.state, a.crouch);
+    }
+}
+
+/// Yashariku's Sugar halves Wolf's max HP for its 30 s (3411 maxHpRate 0.5), HP held under it,
+/// and the max comes back when it ends (the user, 2026-10-18).
+#[test]
+pub(crate) fn yasharikus_sugar_halves_the_max_hp() {
+    let mut app = app();
+    move_enemy_far(&mut app);
+    app.add_systems(Update, crate::items::apply_used);
+    let full = {
+        let world = app.world_mut();
+        world.query_filtered::<&Actor, With<Player>>().single(world).unwrap().hp_max
+    };
+    use_goods(&mut app, 3410, 1, 240);
+    {
+        let world = app.world_mut();
+        let a = world.query_filtered::<&Actor, With<Player>>().single(world).unwrap();
+        assert!((a.hp_max - full * 0.5).abs() < 0.01, "{} of {full}", a.hp_max);
+        assert!(a.hp <= a.hp_max);
+    }
+    // Its 30 s run out.
+    {
+        let world = app.world_mut();
+        let mut p = world.query::<&mut Player>().single_mut(world).unwrap();
+        p.timed.retain(|(id, _)| *id != 3411);
+    }
+    app.update();
+    let world = app.world_mut();
+    let a = world.query_filtered::<&Actor, With<Player>>().single(world).unwrap();
+    assert!((a.hp_max - full).abs() < 0.01, "{} back to {full}", a.hp_max);
+    assert!(a.hp <= full * 0.5 + 0.01, "HP is not given back: {}", a.hp);
+}
+
+/// The thrown items fly where Wolf faces: their first rows (3490 / 3510 / 3520) stand still and
+/// hand their aim on (it went world -Z whatever his facing; the user, 2026-10-18: "ceramic shard
+/// doesn't get thrown where player faces").
+#[test]
+pub(crate) fn throwables_fly_where_wolf_faces() {
+    for (goods, flier) in [(3500, "Bullet 3491"), (3510, "Bullet 3511"), (3520, "Bullet 3521")] {
+        let mut app = app();
+        move_enemy_far(&mut app);
+        app.add_systems(Update, crate::items::apply_used);
+        app.world_mut().init_resource::<crate::items::Used>();
+        app.update();
+        {
+            let world = app.world_mut();
+            let mut a = world.query_filtered::<&mut Actor, With<Player>>().single_mut(world).unwrap();
+            // Facing +X.
+            a.yaw = -std::f32::consts::FRAC_PI_2;
+        }
+        use_goods(&mut app, goods, 1, 1);
+        let mut seen = None;
+        for _ in 0..90 {
+            app.update();
+            let world = app.world_mut();
+            if let Some(t) = world.query::<(&Name, &Transform)>().iter(world).find(|(n, _)| n.as_str() == flier).map(|(_, t)| *t) {
+                seen = Some(t.rotation * Vec3::NEG_Z);
+                break;
+            }
+        }
+        let d = seen.unwrap_or_else(|| panic!("goods {goods}: no {flier}"));
+        assert!(d.with_y(0.0).normalize().dot(Vec3::X) > 0.9, "goods {goods}: {flier} flies {d:.2}, not +X");
+    }
+}
+
+/// A killed enemy's lots (drops.rs): the sim's General (NpcParam 10202060) leaves his Spirit
+/// Emblems (ResourceItemLotParam 10000100: 2 at 80 %, 5 at 20 %) as a pickup and his 12
+/// Resurrective Power (10005100, 100 %) goes to a used node (the user, 2026-10-18: "fill in the
+/// gaps").
+#[test]
+pub(crate) fn a_kill_drops_emblems_and_resurrective_power() {
+    let mut app = app();
+    app.add_systems(Update, crate::drops::drop_loot);
+    {
+        let world = app.world_mut();
+        let mut p = world.query::<&mut Player>().single_mut(world).unwrap();
+        p.resurrections = 0;
+        p.res_power = 0;
+    }
+    let (_, died) = break_and_deathblow_died(&mut app, 200);
+    assert!(died);
+    for _ in 0..5 {
+        app.update();
+    }
+    let emblems = crate::items::PICKUPS.read().unwrap().iter().any(|p| p.goods == crate::items::SPIRIT_EMBLEM && matches!(p.count, 2 | 5) && !p.taken);
+    assert!(emblems, "no emblems lying");
+    let world = app.world_mut();
+    let p = world.query::<&Player>().single(world).unwrap();
+    assert_eq!((p.resurrections, p.res_power), (0, 12));
+}
+
+/// Five-color Rice: a use lets its rice fall (Bullet 3580) and spends one of five; run out, the
+/// empty shake; an idol rest fills it again.
+#[test]
+pub(crate) fn five_color_rice_falls_runs_out_and_refills() {
+    let mut app = app();
+    move_enemy_far(&mut app);
+    app.add_systems(Update, (crate::items::apply_used, crate::items::refill_rested));
+    app.world_mut().init_resource::<crate::items::Used>();
+    let mut fell = false;
+    let states = use_goods(&mut app, 3580, 5, 1);
+    for _ in 0..120 {
+        app.update();
+        let world = app.world_mut();
+        fell |= world.query::<&Name>().iter(world).any(|n| n.as_str() == "Bullet 3580");
+    }
+    let _ = states;
+    assert!(fell, "the rice falls");
+    assert_eq!(crate::items::count(app.world().resource::<crate::config::GameConfig>(), 3580), 4);
+    let states = use_goods(&mut app, 3580, 0, 150);
+    assert!(states.iter().any(|s| s == "ItemColoredRiceEmpty"), "{states:?}");
+    {
+        let world = app.world_mut();
+        world.query::<&mut Player>().single_mut(world).unwrap().refill_items = true;
+    }
+    app.update();
+    assert_eq!(crate::items::count(app.world().resource::<crate::config::GameConfig>(), 3580), 5);
+}
+
+/// Divine Confetti against an apparition: the Shichimen Warrior's ghost barrier (230641, x0.33)
+/// cuts Wolf's HP damage; worn, the Confetti's spirit (3451) erases it, posture too.
+#[test]
+pub(crate) fn divine_confetti_erases_the_ghost_barrier() {
+    let mut app = app_cfg("c1080", None, Vec::new());
+    app.update();
+    let world = app.world_mut();
+    let a = world.query_filtered::<&Actor, Without<Player>>().iter(world).next().unwrap().clone();
+    let combat = world.resource::<Combat>();
+    let atk = combat.player.attacks.values().next().unwrap().clone();
+    let (hp, posture) = crate::combat::ghost_barrier(combat, &a, &atk, &[]);
+    assert!((hp - 0.33).abs() < 0.01 && posture == 1.0, "{hp} {posture}");
+    let (hp, posture) = crate::combat::ghost_barrier(combat, &a, &atk, &[3451]);
+    assert!(hp == 1.0 && (posture - 1.0 / 0.33).abs() < 0.05, "{hp} {posture}");
+}

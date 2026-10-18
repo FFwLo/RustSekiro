@@ -60,6 +60,11 @@ struct PostureRoot(Side);
 struct PostureFill(Side);
 #[derive(Component)]
 struct ResNode(u32);
+
+/// A node's Resurrective Power fill (drops.rs): MENU_Revive_Gauge risen to the share gathered,
+/// on the next node to light.
+#[derive(Component)]
+struct ResFill(u32);
 /// The lit lotus (MENU_Revive_GaugeMax) over node i while it is charged.
 #[derive(Component)]
 struct ResLit(u32);
@@ -98,7 +103,7 @@ impl Plugin for HudPlugin {
         app.init_resource::<CombatLog>()
             .init_resource::<Perilous>()
             .add_systems(Startup, (spawn_hud, spawn_perilous, spawn_deathblow_mark, spawn_lock_mark, spawn_item_icons, spawn_wire_mark))
-            .add_systems(Update, (sync_res_nodes, update_player_hud, update_enemy_hud, update_debug, update_log, debug_only, update_perilous, update_stealth, update_deathblow_mark, update_lock_mark, update_item_icons, update_quick_icon, update_wolf_build_up, hud_shots, update_wire_mark, update_boss_hud, flash_counters));
+            .add_systems(Update, (sync_res_nodes, res_fill, update_player_hud, update_enemy_hud, update_debug, update_log, debug_only, update_perilous, update_stealth, update_deathblow_mark, update_lock_mark, update_item_icons, update_quick_icon, update_wolf_build_up, hud_shots, update_wire_mark, update_boss_hud, flash_counters));
         if let Some(f) = std::env::var("SHINOBI_HUD_POSTURE").ok().and_then(|v| v.parse::<f32>().ok()) {
             app.insert_resource(HoldPosture(f)).add_systems(Update, hold_posture);
         }
@@ -315,20 +320,47 @@ fn spawn_hud(mut commands: Commands, mut fonts: ResMut<Assets<Font>>, assets: Re
 
 /// A resurrection node as the FE movie draws it (menu/01_000_fe.gfx Resurrection_Icon_244, on the
 /// 1920 x 1080 stage: ResurrectionList Icon_0..2 at x 129.8 + 46.8 i, y 938.3): MENU_Revive_Window_2
-/// at half size (51 x 53 px) with MENU_Revive_GaugeMax over it while the node is charged. gap: the
-/// recharge needle and fill (MENU_Revive_Needle / _Gauge) and the Temp (charm) node art.
+/// at half size (51 x 53 px) with MENU_Revive_GaugeMax over it while the node is charged, and
+/// MENU_Revive_Gauge rising in it as Resurrective Power gathers (`res_fill`). gap: the FE's own
+/// fill (a sweep with MENU_Revive_Needle, taken as a rise from the bottom) and the Temp (charm)
+/// node art.
 fn res_node_bundle(i: u32, assets: Option<&AssetServer>) -> impl Bundle {
     let img = |f: &str| assets.map_or_else(ImageNode::default, |a| ImageNode::new(a.load(f.to_string())));
     (
         Node { width: Val::Vw(2.66), height: Val::Vw(2.76), margin: UiRect::left(Val::Vw(if i > 0 { -0.22 } else { 0.0 })), ..default() },
         img("hud/MENU_Revive_Window_2.png"),
         ResNode(i),
-        children![(
-            Node { position_type: PositionType::Absolute, left: Val::Px(0.0), top: Val::Px(0.0), width: Val::Percent(100.0), height: Val::Percent(100.0), ..default() },
-            img("hud/MENU_Revive_GaugeMax.png"),
-            ResLit(i),
-        )],
+        children![
+            (
+                Node { position_type: PositionType::Absolute, left: Val::Px(0.0), bottom: Val::Px(0.0), width: Val::Percent(100.0), height: Val::Percent(0.0), overflow: Overflow::clip(), ..default() },
+                Visibility::Hidden,
+                ResFill(i),
+                children![(Node { position_type: PositionType::Absolute, left: Val::Px(0.0), bottom: Val::Px(0.0), width: Val::Vw(2.66), height: Val::Vw(2.76), ..default() }, img("hud/MENU_Revive_Gauge.png"))],
+            ),
+            (
+                Node { position_type: PositionType::Absolute, left: Val::Px(0.0), top: Val::Px(0.0), width: Val::Percent(100.0), height: Val::Percent(100.0), ..default() },
+                img("hud/MENU_Revive_GaugeMax.png"),
+                ResLit(i),
+            )
+        ],
     )
+}
+
+/// The Resurrective Power fill on the node that lights next (node `left`, while one is used).
+fn res_fill(player: Query<&crate::player::Player>, config: Res<crate::config::GameConfig>, mut fills: Query<(&ResFill, &mut Node, &mut Visibility)>) {
+    let Some(p) = player.iter().next() else { return };
+    let share = p.res_power as f32 / crate::drops::RES_POWER_NODE as f32;
+    for (f, mut n, mut v) in &mut fills {
+        let on = f.0 == p.resurrections && p.resurrections < config.player.resurrections && p.res_power > 0;
+        let want = if on { Visibility::Inherited } else { Visibility::Hidden };
+        if *v != want {
+            *v = want;
+        }
+        let h = Val::Percent(if on { share.clamp(0.0, 1.0) * 100.0 } else { 0.0 });
+        if n.height != h {
+            n.height = h;
+        }
+    }
 }
 
 /// Node i of `max` with `left` resurrections: None = past the max (hidden), Some(lit).
@@ -390,7 +422,7 @@ fn update_player_hud(
     mut posture: Query<(&PostureFill, &mut Node, &mut ImageNode), (Without<HpFill>, Without<HpTrail>, Without<ResNode>)>,
     mut root: Query<(&PostureRoot, &mut Visibility), Without<ResLit>>,
     mut nodes: Query<(&ResNode, &mut Node), (Without<PostureFill>, Without<HpFill>, Without<HpTrail>)>,
-    mut lit: Query<(&ResLit, &mut Visibility), Without<PostureRoot>>,
+    mut lit: Query<(&ResLit, &mut Visibility, &mut ImageNode), (Without<PostureRoot>, Without<PostureFill>)>,
     mut items: Query<(&ItemText, &mut Text)>,
     config: Res<crate::config::GameConfig>,
     hp_frame: Query<&ChildOf, With<HpFill>>,
@@ -436,10 +468,15 @@ fn update_player_hud(
             n.display = display;
         }
     }
-    for (rl, mut v) in &mut lit {
+    // Locked after a resurrection (player.rs revive_locked): the charged nodes greyed out.
+    let tint = if p.revive_locked { Color::srgb(0.35, 0.35, 0.35) } else { Color::WHITE };
+    for (rl, mut v, mut img) in &mut lit {
         let want = if res_node_look(rl.0, config.player.resurrections, p.resurrections) == Some(true) { Visibility::Inherited } else { Visibility::Hidden };
         if *v != want {
             *v = want;
+        }
+        if img.color != tint {
+            img.color = tint;
         }
     }
     let quick = crate::items::in_slot(&config, p.quick_slot);
@@ -1184,6 +1221,16 @@ pub(crate) fn deathblow_mark_target(combat: &Combat, wa: &Actor, wolf: Vec3, ene
     if wa.state.contains("Deathblow") {
         return None;
     }
+    // Falling: the enemy a plunge would take now (player.rs plunge_on), the nearest first.
+    if wa.state == "FreeFall" || wa.state.contains("Jump") {
+        let plunge = enemies
+            .iter()
+            .filter(|(_, ea, e, eg, _)| crate::player::plunge_on(combat, wa, wolf, ea, e, eg.translation()).is_some())
+            .min_by(|a, b| a.3.translation().distance(wolf).total_cmp(&b.3.translation().distance(wolf)));
+        if let Some((ent, ..)) = plunge {
+            return Some(ent);
+        }
+    }
     let cands = enemies.iter().filter_map(|(ent, ea, e, eg, dm)| {
         // The same set the attack picks from (player.rs): a break pose (ThrowDef12100 / 13100)
         // takes a deathblow; the throws themselves end the mark above (Wolf in a Deathblow state).
@@ -1378,7 +1425,7 @@ fn update_debug(
     mut text: Single<&mut Text, With<DebugText>>,
 ) {
     let mut s = String::from(
-        "LMB/J attack (hold = thrust)  RMB/K deflect  LMB+RMB art  Shift step (hold = sprint)  Space jump  MMB lock-on  Alt walk  Q crouch  Ctrl prosthetic  Z switch tool  F grapple  R quick item  C next item  E hug/hang  X sheathe/draw  LMB (dead) resurrect  T enemy AI on/off  H hurtboxes  Backspace reset  F5 reload config  F1 debug menu\n\n",
+        "LMB/J attack (hold = thrust)  RMB/K deflect  LMB+RMB art  Shift step (hold = sprint)  Space jump  MMB lock-on  Alt walk  Q crouch  Ctrl prosthetic  Z switch tool  F grapple  R quick item  C next item  E hug/hang  X sheathe/draw  LMB / RMB (dead) resurrect / die  T enemy AI on/off  H hurtboxes  Backspace reset  F5 reload config  F1 debug menu\n\n",
     );
     for (a, enemy) in &actors {
         let d = data_for(&combat, &a);

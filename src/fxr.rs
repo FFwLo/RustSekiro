@@ -704,7 +704,9 @@ fn step_node(n: &mut NodeInst, lib: &mut FxrLib, parent: Transform, dt: f32, sto
                 }
                 _ => {}
             }
-            if em["type"].as_i64() == Some(399) && count > 0 {
+            // A node with no emitter emits once as 399 does (the idol flame's root child 2002
+            // laid a particle every frame, never ending: the game slowed over minutes).
+            if !gpu && em["type"].as_i64().unwrap_or(399) == 399 && count > 0 {
                 n.emissions = 1;
             }
             let max_conc = int(em, "maxConcurrent", -1);
@@ -1430,8 +1432,16 @@ fn collect(
             let sy = if pmod["uniformScale"].as_bool() == Some(true) { sx } else { scalar(pmod, "scaleY", p.emit_t, &mut rnd, 1.0) };
             match at {
                 600 | 603 | 604 => {
-                    let w = scalar(a, "width", p.age, &mut rnd, 1.0) * sx;
-                    let h = if a["uniformScale"].as_bool() == Some(true) { w } else { scalar(a, "height", p.age, &mut rnd, 1.0) * sy };
+                    // A PointSprite (600) has one `size` (by the particle's age), no width / height:
+                    // read as both (it drew every point 1 m wide: Yashariku's Sugar's 2.5-10 cm
+                    // soot 310331 as black discs; the user, 2026-10-18).
+                    let (w, h) = if at == 600 {
+                        let s = scalar(a, "size", p.age, &mut rnd, 1.0);
+                        (s * sx, s * sy)
+                    } else {
+                        let w = scalar(a, "width", p.age, &mut rnd, 1.0) * sx;
+                        (w, if a["uniformScale"].as_bool() == Some(true) { w } else { scalar(a, "height", p.age, &mut rnd, 1.0) * sy })
+                    };
                     let off = game_vec(prop(a.get("offsetX").map(|_| a), 0.0, &mut rnd, [0.0; 4]));
                     let _ = off;
                     let rz = (scalar(a, "rotationZ", 0.0, &mut rnd, 0.0) + scalar(a, "angularSpeedZ", p.age, &mut rnd, 0.0) * scalar(a, "angularSpeedMultiplierZ", p.age, &mut rnd, 1.0) * p.age).to_radians();

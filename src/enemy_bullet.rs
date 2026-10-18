@@ -438,7 +438,8 @@ fn fly(
             b.out_of_range += dt;
         }
         btf.translation = to;
-        let dir = b.vel.normalize_or(Vec3::NEG_Z);
+        // A bullet standing still (a speed-0 carrier) hands on the way it was fired, not world -Z.
+        let dir = b.vel.normalize_or(b.facing);
         if let Some(child) = row(b.spec.interval_create_bullet_id) {
             while b.age >= b.next_interval && b.spec.interval_create_time_min > 0.0 {
                 b.next_interval += b.spec.interval_create_time_min;
@@ -529,7 +530,7 @@ fn fly(
                     // Its poison / burn build-up goes onto Wolf's gauges (status.rs; gap: whether his
                     // guard keeps some off a bullet's own SpEffects is not traced: all of it lands).
                     let (build, own): (Vec<i64>, Vec<i64>) = sp_effects(&b.spec).partition(|id| crate::status::Statuses::is_build_up(&combat, *id));
-                    statuses.hit_wolf(&combat, we, config.player.combat_art, &build, crate::status::Guard::None);
+                    statuses.hit_wolf(&combat, we, config.player.combat_art, &wa.item_sp, &build, crate::status::Guard::None);
                     // Its other SpEffects for their effectEndurance (one with none: a frame).
                     for id in own {
                         let key = id.to_string();

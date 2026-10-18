@@ -384,11 +384,164 @@ impl Plugin for MenuPlugin {
             .init_resource::<Picker>()
             .init_resource::<MenuFonts>()
             .init_resource::<BannerDone>()
-            .add_systems(Startup, load_fonts)
+            .add_systems(Startup, (load_fonts, spawn_death_overlay, spawn_fall_cut).chain())
             .init_resource::<MenuMouse>()
             .add_systems(PreUpdate, (menu_keys_and_wheel, pad_to_menu_keys, run_menu).chain().in_set(MenuInput).after(UiSystems::Focus).after(InputSystems))
-            .add_systems(Update, (fight_from_env, apply_video, watch_fight.run_if(in_state(Screen::Playing)), defeat_banner))
+            .add_systems(Update, (fight_from_env, apply_video, watch_fight.run_if(in_state(Screen::Playing)), defeat_banner, death_overlay, fall_cut))
             .add_systems(PostUpdate, hide_hud_on_title.before(bevy::camera::visibility::VisibilitySystems::VisibilityPropagate));
+    }
+}
+
+/// The death screen while Wolf lies dead (the user, 2026-10-18, with the game's screen for
+/// reference): the 死 brush mark appears white with DEATH under it and slowly turns red while the
+/// screen darkens; with a resurrection left the choice shows under it (": Die" guard,
+/// ": Resurrect" attack, player.rs). The final death (no node left, or Die) fades to black in
+/// `FINAL_FADE`, then the Dead screen takes over with the same mark.
+#[derive(Component)]
+struct DeathOverlay;
+#[derive(Component)]
+struct DeathKanji;
+#[derive(Component)]
+struct DeathCaption;
+#[derive(Component)]
+struct DeathHints;
+
+/// Seconds: the mark's fade in, its white-to-red turn, the darkening during the choice (to
+/// `DEATH_SHADE`) and the final fade to black.
+const KANJI_IN: f32 = 0.8;
+const KANJI_RED: f32 = 4.0;
+const DEATH_DARKEN: f32 = 4.0;
+const DEATH_SHADE: f32 = 0.45;
+const FINAL_FADE: f32 = 2.5;
+
+fn spawn_death_overlay(mut commands: Commands, assets: Res<AssetServer>, fonts: Res<MenuFonts>) {
+    let full = Node { position_type: PositionType::Absolute, width: Val::Percent(100.0), height: Val::Percent(100.0), flex_direction: FlexDirection::Column, justify_content: JustifyContent::Center, align_items: AlignItems::Center, ..default() };
+    let art = have("MENU_Death");
+    let kanji_font = fonts.kanji.clone();
+    let serif = fonts.serif.clone();
+    commands.spawn((full, BackgroundColor(Color::NONE), GlobalZIndex(90), Visibility::Hidden, DeathOverlay)).with_children(|c| {
+        if art {
+            c.spawn((Node { height: Val::Vh(30.0), ..default() }, ImageNode::new(assets.load("hud/MENU_Death.png")).with_color(Color::NONE), DeathKanji));
+        } else {
+            let f = if kanji_font.is_some() { font(&kanji_font, 150.0) } else { font(&serif, 56.0) };
+            c.spawn((Text::new(if kanji_font.is_some() { "死" } else { "DEATH" }), f, TextColor(Color::NONE), DeathKanji));
+        }
+        c.spawn((Text::new("D E A T H"), font(&serif, 22.0), TextColor(Color::NONE), Node { margin: UiRect::top(Val::Vh(1.0)), ..default() }, DeathCaption));
+        c.spawn((
+            Node { position_type: PositionType::Absolute, bottom: Val::Vh(9.0), column_gap: Val::Vw(14.0), ..default() },
+            Visibility::Hidden,
+            DeathHints,
+        ))
+        .with_children(|r| {
+            for hint in ["RMB / K :  Die", "LMB / J :  Resurrect"] {
+                r.spawn((Text::new(hint), font(&serif, 20.0), TextColor(Color::srgba(0.92, 0.9, 0.86, 0.9))));
+            }
+        });
+    });
+}
+
+fn lerp_color(a: Color, b: Color, k: f32, alpha: f32) -> Color {
+    let (a, b) = (a.to_srgba(), b.to_srgba());
+    let m = |x: f32, y: f32| x + (y - x) * k.clamp(0.0, 1.0);
+    Color::srgba(m(a.red, b.red), m(a.green, b.green), m(a.blue, b.blue), alpha)
+}
+
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
+fn death_overlay(
+    time: Res<Time<Real>>,
+    screen: Option<Res<State<Screen>>>,
+    wolf: Query<(&crate::actor::Actor, &crate::player::Player)>,
+    mut since: Local<Option<f32>>,
+    mut final_since: Local<Option<f32>>,
+    mut root: Query<(&mut Visibility, &mut BackgroundColor), (With<DeathOverlay>, Without<DeathHints>)>,
+    mut hints: Query<&mut Visibility, (With<DeathHints>, Without<DeathOverlay>)>,
+    mut kanji_img: Query<&mut ImageNode, With<DeathKanji>>,
+    mut kanji_txt: Query<&mut TextColor, (With<DeathKanji>, Without<DeathCaption>)>,
+    mut caption: Query<&mut TextColor, (With<DeathCaption>, Without<DeathKanji>)>,
+) {
+    let now = time.elapsed_secs();
+    let playing = screen.is_none_or(|s| *s.get() == Screen::Playing);
+    let dead = wolf.single().ok().filter(|(a, _)| a.hp <= 0.0 && playing);
+    let Ok((mut vis, mut bg)) = root.single_mut() else { return };
+    let Some((_, p)) = dead else {
+        *vis = Visibility::Hidden;
+        *since = None;
+        *final_since = None;
+        return;
+    };
+    *vis = Visibility::Inherited;
+    let t = now - *since.get_or_insert(now);
+    let last = p.gave_up || p.resurrections == 0 || p.revive_locked;
+    let fin = if last { (now - *final_since.get_or_insert(now)) / FINAL_FADE } else { 0.0 };
+    let shade = DEATH_SHADE * (t / DEATH_DARKEN).min(1.0);
+    bg.0 = Color::srgba(0.0, 0.0, 0.0, shade + (1.0 - shade) * fin.min(1.0));
+    let alpha = (t / KANJI_IN).min(1.0);
+    let mark = lerp_color(Color::WHITE, RED, t / KANJI_RED, alpha);
+    for mut img in &mut kanji_img {
+        img.color = mark;
+    }
+    for mut c in &mut kanji_txt {
+        c.0 = mark;
+    }
+    for mut c in &mut caption {
+        c.0 = lerp_color(Color::WHITE, Color::srgb(0.85, 0.82, 0.76), t / KANJI_RED, alpha * 0.75);
+    }
+    for mut h in &mut hints {
+        *h = if p.revive_open { Visibility::Inherited } else { Visibility::Hidden };
+    }
+}
+
+/// A fall out of the map (player.rs's fall-return deaths; the user, 2026-10-18: "the screen
+/// should cut off black then back to where wolf was before he fell"): black at once while Wolf
+/// is out, then, back on safe ground, the camera snaps behind him and the black fades out in
+/// `FALL_CUT_FADE`.
+#[derive(Component)]
+struct FallCut;
+const FALL_CUT_FADE: f32 = 0.6;
+
+fn spawn_fall_cut(mut commands: Commands) {
+    commands.spawn((
+        Node { position_type: PositionType::Absolute, width: Val::Percent(100.0), height: Val::Percent(100.0), ..default() },
+        BackgroundColor(Color::NONE),
+        GlobalZIndex(95),
+        Visibility::Hidden,
+        FallCut,
+    ));
+}
+
+fn fall_cut(
+    time: Res<Time<Real>>,
+    wolf: Query<&crate::actor::Actor, With<crate::player::Player>>,
+    mut cut: Query<(&mut Visibility, &mut BackgroundColor), With<FallCut>>,
+    mut snap: Option<ResMut<crate::camera::CameraSnap>>,
+    mut state: Local<(bool, Option<f32>)>,
+) {
+    let Ok((mut vis, mut bg)) = cut.single_mut() else { return };
+    let out = wolf.single().is_ok_and(|a| crate::player::is_fall_return(&a.state));
+    let now = time.elapsed_secs();
+    let (was_out, back_at) = &mut *state;
+    if out {
+        *was_out = true;
+        *back_at = None;
+        *vis = Visibility::Inherited;
+        bg.0 = Color::BLACK;
+        return;
+    }
+    if std::mem::take(was_out) {
+        *back_at = Some(now);
+        if let Some(s) = snap.as_mut() {
+            s.0 = true;
+        }
+    }
+    match *back_at {
+        Some(t0) if now - t0 < FALL_CUT_FADE => {
+            *vis = Visibility::Inherited;
+            bg.0 = Color::srgba(0.0, 0.0, 0.0, 1.0 - (now - t0) / FALL_CUT_FADE);
+        }
+        _ => {
+            *back_at = None;
+            *vis = Visibility::Hidden;
+        }
     }
 }
 
@@ -439,7 +592,7 @@ fn build(commands: &mut Commands, assets: &AssetServer, s: Screen, fonts: &MenuF
     let (mark, sub, mark_color, shade) = match s {
         Screen::Title => ("Sv1", "Sv1 · a Sekiro combat recreation", GOLD, 0.55),
         Screen::Paused => ("Paused", "", GOLD, 0.45),
-        Screen::Dead => ("死", "DEATH", RED, 0.35),
+        Screen::Dead => ("死", "D E A T H", RED, 1.0),
         Screen::Won => ("忍殺", "SHINOBI EXECUTION", RED, 0.25),
         Screen::Playing | Screen::Picker | Screen::Options | Screen::Idol => return,
     };
@@ -480,8 +633,9 @@ fn build(commands: &mut Commands, assets: &AssetServer, s: Screen, fonts: &MenuF
                 let (text, f) = if kanji && has_kanji_font { (mark, font(&fonts.kanji, 150.0)) } else { (if kanji { sub } else { mark }, font(&fonts.serif, if s == Screen::Title { 72.0 } else { 56.0 })) };
                 c.spawn((Text::new(text), f, TextColor(mark_color)));
             }
-            // Under the brush 死 / 忍殺 the game shows no caption; the text stands in without them.
-            if !sub.is_empty() && !(art_ok && kanji) && (!kanji || has_kanji_font) {
+            // Under the brush 忍殺 the game shows no caption (the text stands in without it); under
+            // 死 it writes DEATH (the user's reference).
+            if !sub.is_empty() && !(art_ok && s == Screen::Won) && (!kanji || has_kanji_font) {
                 c.spawn((Text::new(sub), font(&fonts.serif, 22.0), TextColor(DIM)));
             }
             c.spawn(Node { height: Val::Px(30.0), ..default() });
@@ -1032,6 +1186,7 @@ fn watch_fight(
     pad: Option<Res<crate::player::PadInput>>,
     banner_done: Res<BannerDone>,
     mut down_for: Local<f32>,
+    mut final_for: Local<f32>,
 ) {
     // Retry / Title -> Start asked for the fight over: the reset runs in the next fixed step
     // (player.rs), so until then Wolf still lies dead - not a new death.
@@ -1040,7 +1195,16 @@ fn watch_fight(
         return;
     }
     if let Ok((a, p)) = wolf.single() {
-        if (a.state.starts_with("GroundDeathLoop") || a.state.starts_with("LandDeathLoop") || a.state == "ThrowDefDeathLoop") && p.resurrections == 0 || a.state == "AgingGroundDeathLoop" {
+        // Die chosen (player.rs): the death screen fades to black first (`FINAL_FADE`).
+        if p.gave_up {
+            *final_for += time.delta_secs();
+            if *final_for >= FINAL_FADE {
+                next.set(Screen::Dead);
+            }
+            return;
+        }
+        *final_for = 0.0;
+        if (a.state.starts_with("GroundDeathLoop") || a.state.starts_with("LandDeathLoop") || a.state == "ThrowDefDeathLoop") && (p.resurrections == 0 || p.revive_locked) || a.state == "AgingGroundDeathLoop" {
             next.set(Screen::Dead);
             return;
         }

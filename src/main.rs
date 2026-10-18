@@ -24,6 +24,7 @@ mod combat;
 mod config;
 mod data;
 mod debug_menu;
+mod drops;
 mod docking;
 mod duel;
 mod emevd;
@@ -51,6 +52,7 @@ mod map_grass;
 mod map_lights;
 mod menu;
 mod sandbox;
+mod sculptor;
 mod showcase;
 mod shot;
 mod skill_tree;
@@ -65,6 +67,7 @@ mod sim_tests;
 mod sound;
 mod status;
 mod stealth;
+mod swim;
 mod throw_trace;
 mod trace;
 mod autoboss;
@@ -89,8 +92,10 @@ fn main() {
         .add_plugins(shot::ShotPlugin)
         .add_plugins(game_menu::GameMenuPlugin)
         .add_plugins(idol::IdolPlugin)
+        .add_plugins(sculptor::SculptorPlugin)
         .add_plugins(items::ItemsPlugin)
         .add_plugins(experience::ExperiencePlugin)
+        .add_plugins(drops::DropsPlugin)
         .add_plugins(interp::InterpPlugin)
         .add_plugins(debug_menu::DebugMenuPlugin)
         .add_plugins(trace::TracePlugin)

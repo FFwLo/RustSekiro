@@ -281,7 +281,7 @@ pub(crate) fn a_second_burn_row_replaces_the_first() {
     let weapon = world.resource::<crate::config::GameConfig>().player.combat_art;
     world.resource_scope(|_, combat: Mut<Combat>| {
         let mut s = Statuses::default();
-        let burning = |s: &mut Statuses, id: i64| (1..=10).find(|_| s.hit_wolf(&combat, wolf, weapon, &[id], Guard::None).iter().any(|l| l == "BURNING"));
+        let burning = |s: &mut Statuses, id: i64| (1..=10).find(|_| s.hit_wolf(&combat, wolf, weapon, &[], &[id], Guard::None).iter().any(|l| l == "BURNING"));
         assert!(burning(&mut s, 9117).is_some());
         let flames = Entity::PLACEHOLDER;
         s.0.get_mut(&wolf).unwrap().effects[0].fx_mut().push(flames);
@@ -706,7 +706,7 @@ pub(crate) fn a_bullet_burns_once_not_through_its_atk_param_too() {
         let we = world.query_filtered::<Entity, With<Player>>().single(world).unwrap();
         world.resource_scope(|world, combat: Mut<Combat>| {
             let art = world.resource::<crate::config::GameConfig>().player.combat_art;
-            world.resource_mut::<crate::status::Statuses>().hit_wolf(&combat, we, art, &[9116], crate::status::Guard::None);
+            world.resource_mut::<crate::status::Statuses>().hit_wolf(&combat, we, art, &[], &[9116], crate::status::Guard::None);
         });
         wolf_build_up(&mut app)
     };

@@ -505,7 +505,7 @@ fn emit(
         let foot_row = if player.is_some() { foot.player_row } else { combat.npc(a)["footEffectSfxId"].as_i64() };
         // TAE 117: Wolf's throw target's material (an enemy's own 117s have no partner here).
         let throw_material = player.and_then(|p| p.throw_target).and_then(|t| actors.iter().zip(actor_e.iter()).find(|(_, e)| *e == t)).map(|((ta, _, _), _)| combat.npc(ta)["materialSfx1"].as_i64().unwrap_or(-1));
-        for (idx, e) in anim.events.iter().enumerate().filter(|(_, e)| matches!(e.kind, 96 | 112 | 117 | 118 | 792)) {
+        for (idx, e) in anim.events.iter().enumerate().filter(|(_, e)| matches!(e.kind, 96 | 112 | 114 | 117 | 118 | 792)) {
             // gap: SpawnFFX_ByFloor (112) has no case in the TAE dispatcher (FUN_140b59170) and
             // its handler is not found; its FFXIDs (Wolf: 0 / 1 / 11 / 111 on the feet 5 / 6)
             // are FootSfxParam columns (column 0 = column 1 there), so it is read as 792 is.
@@ -518,6 +518,19 @@ fn emit(
                 // as the throw partner's NpcParam materialSfx1 (only the material rows 109 / 114 /
                 // 132 / 134 / 135 have effects, all blood of that material).
                 117 => throw_material.zip(e.arg_i64("ThrowDirectionSFXIndex")).and_then(|(m, i)| foot.throw_id(m, i)),
+                // SpawnFFX_GoodsAndMagic (ParamType 1 EquipParamGoods): the quick item in use's
+                // own effect, SFXIndexID 0 / 1 / 2 -> its castSfxId / fireSfxId / effectSfxId
+                // (Pellet 310020, the powders' puff 3100x0 / x1, the coin purse's 310070 / 71 ...).
+                // gap: ParamType 0 (magic) is not used by Wolf's clips; the exe's lookup is not traced.
+                // The gourd's drinks are no item_use: goods 3000 (its repeat 3001: fireSfxId 310015).
+                114 => player.and_then(|p| p.item_use.as_ref().map(|(g, _)| *g).or_else(|| a.state.contains("GourdDrink").then_some(if a.state.contains("Repeat") { 3001 } else { 3000 }))).and_then(|goods| {
+                    let col = match e.args.get("SFXIndexID")? {
+                        serde_json::Value::String(s) => s.split(':').next()?.trim().parse::<i64>().ok()?,
+                        v => v.as_i64()?,
+                    };
+                    let key = ["castSfxId", "fireSfxId", "effectSfxId"].get(usize::try_from(col).ok()?)?;
+                    crate::items::param("EquipParamGoods", goods)[*key].as_i64().filter(|v| *v > 0)
+                }),
                 _ => e.arg_i64("FFXID").filter(|v| *v > 0),
             };
             let Some(ffx) = ffx else { continue };
@@ -839,8 +852,9 @@ fn weapon_trail(
     let _ = te;
 }
 
-/// SHINOBI_SKILL=<EquipParamWeapon id> (a combat art 5100-7700 or a tool 70000-79200) with
-/// SHINOBI_SKILL_SHOTS=<dir>: Wolf equips it, uses it 3 s in (art: attack + guard; tool: F) and
+/// SHINOBI_SKILL=<EquipParamWeapon id> (a combat art 5100-7700 or a tool 70000-79200; or an
+/// EquipParamGoods id 3000-3999, a quick item) with
+/// SHINOBI_SKILL_SHOTS=<dir>: Wolf equips it, uses it 3 s in (art: attack + guard; tool: F; item: R) and
 /// screenshots every 3 frames for 1.5 s, then the game exits. For checking the looks.
 /// SHINOBI_SKILL_EVERY=<frames> repeats the press.
 fn skill_shots(
@@ -856,8 +870,13 @@ fn skill_shots(
     let Ok(id) = id.parse::<i64>() else { return };
     *frame += 1;
     let f = *frame;
+    let goods = (3000..4000).contains(&id);
     if f == 2 {
-        if (70000..80000).contains(&id) {
+        if goods {
+            config.player.items.retain(|(g, _)| *g != id);
+            config.player.items.push((id, 9));
+            config.player.quick_items = vec![id, 0, 0, 0, 0];
+        } else if (70000..80000).contains(&id) {
             config.player.prosthetics = vec![id];
         } else {
             config.player.combat_art = id;
@@ -875,7 +894,9 @@ fn skill_shots(
     // SHINOBI_SKILL_EVERY=<frames>: press again every so many frames (build-ups: the Flame Vent's burn).
     let every = std::env::var("SHINOBI_SKILL_EVERY").ok().and_then(|v| v.parse::<u32>().ok()).filter(|v| *v > 0);
     if f == start || every.is_some_and(|n| f > start && (f - start) % n == 0) {
-        if (70000..80000).contains(&id) {
+        if goods {
+            pad.press(crate::player::Action::UseItem);
+        } else if (70000..80000).contains(&id) {
             pad.press(crate::player::Action::Prosthetic);
         } else {
             pad.press(crate::player::Action::CombatArt);

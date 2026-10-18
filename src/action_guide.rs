@@ -33,9 +33,19 @@ pub const DROP_DOWN: u32 = 10010322;
 pub const IDOL_REST: u32 = 15000120;
 /// "Pick Up Item" (an item on the ground, items.rs).
 pub const PICK_UP: u32 = 10010103;
+/// The swim's (swim.rs): "Dive" (Ctrl, gameAction 17), "Underwater Dash" (Shift, 5), "Swim Up"
+/// (F, 19), "Swim Down" (Ctrl), and "Jump" (Space, 6) out at the surface.
+pub const DIVE: u32 = 10010330;
+pub const UNDERWATER_DASH: u32 = 10010340;
+pub const SWIM_UP: u32 = 10010341;
+pub const SWIM_DOWN: u32 = 10010342;
+pub const JUMP: u32 = 10021010;
+/// The game's event-text guide for an NPC conversation.
+pub const TALK: u32 = 10010200;
 
 /// The built-in English for each guide, when the FMG is not extracted.
 const FALLBACK: &[(u32, &str)] = &[
+    (TALK, "Talk"),
     (HUG_WALL, "<?kgiconKc@20?>: Hug wall"),
     (STOP_HUGGING, "<?kgiconKc@20?>: Stop hugging wall"),
     (LEDGE_HANG, "<?kgiconKc@20?>: Ledge Hang"),
@@ -43,6 +53,11 @@ const FALLBACK: &[(u32, &str)] = &[
     (DROP_DOWN, "<?kgiconKc@5?>: Drop down"),
     (IDOL_REST, "Rest"),
     (PICK_UP, "Pick Up Item"),
+    (DIVE, "<?kgiconKc@17?>: Dive"),
+    (UNDERWATER_DASH, "<?kgiconKc@5?>: Underwater Dash"),
+    (SWIM_UP, "<?kgiconKc@19?>: Swim Up"),
+    (SWIM_DOWN, "<?kgiconKc@17?>: Swim Down"),
+    (JUMP, "<?kgiconKc@6?>: Jump"),
 ];
 
 /// The game's message texts and key names.
@@ -75,6 +90,9 @@ impl GuideTexts {
         // The two the guides use, if the param is not exported.
         keys.entry(20).or_insert_with(|| "E".into());
         keys.entry(5).or_insert_with(|| "Shift".into());
+        keys.entry(6).or_insert_with(|| "Space".into());
+        keys.entry(17).or_insert_with(|| "Ctrl".into());
+        keys.entry(19).or_insert_with(|| "F".into());
         GuideTexts { texts, keys }
     }
 
@@ -189,6 +207,15 @@ pub fn guides_for(p: &Player, a: &Actor, feet: Vec3, edges: &[crate::map::LedgeE
     if a.hp <= 0.0 {
         return Vec::new();
     }
+    // Swimming (swim.rs): at the surface Dive (with the Mibu Breathing Technique) and Jump, under
+    // water Swim Up / Swim Down / Underwater Dash.
+    if let Some(swim) = p.swim.as_ref() {
+        return match (swim.diving, swim.mibu) {
+            (true, _) => vec![SWIM_UP, SWIM_DOWN, UNDERWATER_DASH],
+            (false, true) => vec![DIVE, JUMP],
+            (false, false) => vec![JUMP],
+        };
+    }
     if let Some(dock) = p.dock.as_ref() {
         let held = dk::is_docked_state(&a.state) && !dk::is_start(&a.state) && !dk::is_jump_ready(&a.state);
         return match (held, dock.hug()) {
@@ -200,6 +227,9 @@ pub fn guides_for(p: &Player, a: &Actor, feet: Vec3, edges: &[crate::map::LedgeE
     if !a.airborne && crate::player::is_free(&a.state) {
         if crate::items::pickup_near(feet).is_some() {
             return vec![PICK_UP];
+        }
+        if crate::sculptor::near(feet) {
+            return vec![TALK];
         }
         if crate::idol::near(feet, a.yaw).is_some() {
             return vec![IDOL_REST];
@@ -235,7 +265,7 @@ struct GuideKey(usize);
 #[derive(Component)]
 struct GuideLabel(usize);
 
-const ROWS: usize = 2;
+const ROWS: usize = 3;
 /// The key icon's height (px): about the label's cap height again, as in the capture.
 const KEY_PX: f32 = 22.0;
 

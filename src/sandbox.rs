@@ -156,12 +156,53 @@ pub(crate) fn build(
 
     // Floor: the overlay rises towards +X, the snow towards -X; the centre stays the base (the
     // road). The Construct's runs on through its second section to the north.
-    let (z0, depth) = if parkour { (-3.0 * HALF, 4.0 * HALF) } else { (-HALF, 2.0 * HALF) };
+    let z0 = if parkour { -3.0 * HALF } else { -HALF };
+    // The Construct's floor is cut round its pool (`POOL`) and its chasm (`CHASM`).
+    let holes: Vec<(Vec3, Vec3)> = if parkour { vec![POOL, CHASM] } else { Vec::new() };
+    let rects = floor_rects((-HALF, HALF, z0, HALF), &holes);
     let mut floor = Patch::default();
-    floor.grid(Vec3::new(-HALF, 0.0, z0), Vec3::new(2.0 * HALF, 0.0, 0.0), Vec3::new(0.0, 0.0, depth), 30, (30.0 * depth / (2.0 * HALF)) as usize, TILE_M, |u, _| {
-        let x = (u - 0.5) * 2.0 * HALF;
-        [ramp(x), 0.0, ramp(-x), 0.0]
-    });
+    let mut ground = Patch::default();
+    for &(x0, x1, za, zb) in &rects {
+        let (nu, nv) = ((((x1 - x0) / 3.0).ceil() as usize).max(1), (((zb - za) / 3.0).ceil() as usize).max(1));
+        floor.grid(Vec3::new(x0, 0.0, za), Vec3::new(x1 - x0, 0.0, 0.0), Vec3::new(0.0, 0.0, zb - za), nu, nv, TILE_M, |u, _| {
+            let x = x0 + u * (x1 - x0);
+            [ramp(x), 0.0, ramp(-x), 0.0]
+        });
+        ground.grid(Vec3::new(x0, 0.0, za), Vec3::new(x1 - x0, 0.0, 0.0), Vec3::new(0.0, 0.0, zb - za), 1, 1, TILE_M, |_, _| [0.0; 4]);
+    }
+    // The pool's pit: its bottom (floor material), its four walls facing in and the ramp out at
+    // its west end (wall material); drawn and solid.
+    let mut pit_floor = Patch::default();
+    let mut pit = Patch::default();
+    if parkour {
+        let (lo, hi) = POOL;
+        let (w, l) = (hi.x - lo.x, hi.z - lo.z);
+        pit_floor.grid(Vec3::new(lo.x, lo.y, lo.z), Vec3::new(w, 0.0, 0.0), Vec3::new(0.0, 0.0, l), 8, 6, TILE_M, |_, _| [0.0; 4]);
+        let up = Vec3::new(0.0, -lo.y, 0.0);
+        for (origin, run) in [
+            (Vec3::new(lo.x, lo.y, lo.z), Vec3::new(w, 0.0, 0.0)),
+            (Vec3::new(hi.x, lo.y, hi.z), Vec3::new(-w, 0.0, 0.0)),
+            (Vec3::new(lo.x, lo.y, hi.z), Vec3::new(0.0, 0.0, -l)),
+            (Vec3::new(hi.x, lo.y, lo.z), Vec3::new(0.0, 0.0, l)),
+        ] {
+            pit.grid(origin, run, up, 4, 2, TILE_M, |_, _| [0.0; 4]);
+        }
+        let (o, down, across) = POOL_RAMP;
+        pit.grid(o, down, across, 4, 2, TILE_M, |_, _| [0.0; 4]);
+        // The chasm's sides, facing in, down to `CHASM_DEPTH`; no bottom.
+        let (lo, hi) = CHASM;
+        let (w, l) = (hi.x - lo.x, hi.z - lo.z);
+        let up = Vec3::new(0.0, CHASM_DEPTH, 0.0);
+        for (origin, run) in [
+            (Vec3::new(lo.x, -CHASM_DEPTH, lo.z), Vec3::new(w, 0.0, 0.0)),
+            (Vec3::new(hi.x, -CHASM_DEPTH, hi.z), Vec3::new(-w, 0.0, 0.0)),
+            (Vec3::new(lo.x, -CHASM_DEPTH, hi.z), Vec3::new(0.0, 0.0, -l)),
+            (Vec3::new(hi.x, -CHASM_DEPTH, lo.z), Vec3::new(0.0, 0.0, l)),
+        ] {
+            let n = ((run.length() / 4.0).ceil() as usize).max(1);
+            pit.grid(origin, run, up, n, 10, TILE_M, |_, _| [0.0; 4]);
+        }
+    }
     // Walls facing in, the overlay rising along each (a face's normal is up x its run: +X runs
     // face -Z).
     let mut walls = Patch::default();
@@ -202,6 +243,10 @@ pub(crate) fn build(
     };
     spawn(&floor, &floor_key, true);
     spawn(&walls, &wall_key, true);
+    if parkour {
+        spawn(&pit_floor, &floor_key, true);
+        spawn(&pit, &wall_key, true);
+    }
     // `SHINOBI_SANDBOX_NO_GALLERY=1`: floor and walls only (a fight arena). The panels cast no
     // shadow unless `SHINOBI_SANDBOX_PANEL_SHADOW=1`: 242 more casters in two cascades cost
     // frames and their shadows on the floor show nothing.
@@ -251,20 +296,16 @@ pub(crate) fn build(
     if let Err(e) = std::fs::write(&legend_path, &legend) {
         warn!("sandbox: cannot write {}: {e}", legend_path.display());
     }
-    // Collision: the floor and the walls.
+    // Collision: the floor, the walls, the course and the pool's pit.
     let mut solid = Patch::default();
-    solid.grid(Vec3::new(-HALF, 0.0, z0), Vec3::new(2.0 * HALF, 0.0, 0.0), Vec3::new(0.0, 0.0, depth), 1, 1, TILE_M, |_, _| [0.0; 4]);
-    solid.pos.extend_from_slice(&walls.pos);
-    solid.nrm.extend_from_slice(&walls.nrm);
-    solid.uv.extend_from_slice(&walls.uv);
-    solid.blend.extend_from_slice(&walls.blend);
-    solid.idx.extend(walls.idx.iter().map(|i| i + 4));
-    let base = solid.pos.len() as u32;
-    solid.pos.extend_from_slice(&course.pos);
-    solid.nrm.extend_from_slice(&course.nrm);
-    solid.uv.extend_from_slice(&course.uv);
-    solid.blend.extend_from_slice(&course.blend);
-    solid.idx.extend(course.idx.iter().map(|i| i + base));
+    for part in [&ground, &walls, &course, &pit_floor, &pit] {
+        let base = solid.pos.len() as u32;
+        solid.pos.extend_from_slice(&part.pos);
+        solid.nrm.extend_from_slice(&part.nrm);
+        solid.uv.extend_from_slice(&part.uv);
+        solid.blend.extend_from_slice(&part.blend);
+        solid.idx.extend(part.idx.iter().map(|i| i + base));
+    }
     solid.terrain().install();
     info!("sandbox: {} materials{} in {} rows, floor {} ({} m), walls {}; legend {}", keys.len(), if gallery { " on panels" } else { " (gallery off)" }, keys.len().div_ceil(PER_ROW), floor_key.0[0], 2.0 * HALF, wall_key.0[0], legend_path.display());
 }
@@ -776,7 +817,82 @@ pub fn construct_grapple() -> Vec<map::GrapplePoint> {
         point(Outpost::TERRACE.1.x, Outpost::TERRACE.1.y, 34.0, Vec3::X),
         point(-22.0, Outpost::TOWER.1.y, Outpost::TOWER.0.z, Vec3::NEG_Z),
         point(Outpost::TOWER.1.x, Outpost::TOWER.1.y, 40.0, Vec3::X),
+        // Across the chasm: the far post from the west, the near one from the east.
+        point(CHASM_POSTS[1].0.x, CHASM_POSTS[1].1.y, (CHASM_POSTS[1].0.z + CHASM_POSTS[1].1.z) / 2.0, Vec3::NEG_X),
+        point(CHASM_POSTS[0].1.x, CHASM_POSTS[0].1.y, (CHASM_POSTS[0].0.z + CHASM_POSTS[0].1.z) / 2.0, Vec3::X),
     ]
+}
+
+/// The floor `(x0, x1, z0, z1)` less the holes (low, high corners; their x ranges apart from
+/// each other): rectangles `(x0, x1, z0, z1)`.
+fn floor_rects(area: (f32, f32, f32, f32), holes: &[(Vec3, Vec3)]) -> Vec<(f32, f32, f32, f32)> {
+    let (x0, x1, z0, z1) = area;
+    let mut xs: Vec<f32> = vec![x0, x1];
+    for (lo, hi) in holes {
+        xs.extend([lo.x.clamp(x0, x1), hi.x.clamp(x0, x1)]);
+    }
+    xs.sort_by(f32::total_cmp);
+    xs.dedup();
+    let mut out = Vec::new();
+    for pair in xs.windows(2) {
+        let (a, b) = (pair[0], pair[1]);
+        let mid = (a + b) / 2.0;
+        match holes.iter().find(|(lo, hi)| lo.x < mid && mid < hi.x) {
+            Some((lo, hi)) => {
+                if lo.z > z0 {
+                    out.push((a, b, z0, lo.z.min(z1)));
+                }
+                if hi.z < z1 {
+                    out.push((a, b, hi.z.max(z0), z1));
+                }
+            }
+            None => out.push((a, b, z0, z1)),
+        }
+    }
+    out
+}
+
+/// The Construct's chasm, right of the start (2026-10-18, the user: "the right space from spawn
+/// is quite empty, let's add it"): a bottomless cut from the north wall to z 9 (the way round
+/// its south end stays open), its sides `CHASM_DEPTH` deep. A fall in is the void's fall-return
+/// death (player.rs: back at the edge, a third of max HP lost). Hang ledges along both lips, a
+/// grapple post either side (`CHASM_POSTS`, `construct_grapple`).
+pub const CHASM: (Vec3, Vec3) = (Vec3::new(21.0, -60.0, -HALF), Vec3::new(31.0, 0.0, 9.0));
+const CHASM_DEPTH: f32 = 60.0;
+/// The grapple posts: the near one west of the chasm, the far one east of it (3 m high).
+const CHASM_POSTS: [(Vec3, Vec3); 2] = [(Vec3::new(15.0, 0.0, 1.0), Vec3::new(17.0, 3.0, 3.0)), (Vec3::new(35.0, 0.0, -5.0), Vec3::new(37.0, 3.0, -3.0))];
+
+/// The Construct's pool, left of the start (2026-10-18, the user: "swimming now, put the space
+/// with water from the left of spawn"): its pit (low corner at its bottom, high corner at the
+/// floor), the water `POOL_SURFACE` deep below the floor (swim.rs WATER), 4.6 m of it over the
+/// bottom to dive in.
+pub const POOL: (Vec3, Vec3) = (Vec3::new(-40.0, -5.0, -8.0), Vec3::new(-20.0, 0.0, 8.0));
+const POOL_SURFACE: f32 = -0.4;
+/// The ramp out at the pool's west end (x -40 .. -30, z -3 .. 3): from the floor at its wall down
+/// to the bottom (origin, down the slope, across), its normal up.
+const POOL_RAMP: (Vec3, Vec3, Vec3) = (Vec3::new(-40.0, 0.0, -3.0), Vec3::new(10.0, -5.0, 0.0), Vec3::new(0.0, 0.0, 6.0));
+
+/// The pool's water: the swim box (swim.rs WATER) and its surface, translucent with the game's
+/// water ripple normal (m99_water_n, as map.rs's water pieces), seen from below too.
+fn spawn_pool(commands: &mut Commands, meshes: &mut Assets<Mesh>, mats: &mut Assets<StandardMaterial>, assets: &AssetServer) {
+    let (lo, hi) = POOL;
+    *crate::swim::WATER.write().unwrap() = vec![(lo, Vec3::new(hi.x, POOL_SURFACE, hi.z))];
+    let mut water = Patch::default();
+    water.grid(Vec3::new(lo.x, POOL_SURFACE, lo.z), Vec3::new(hi.x - lo.x, 0.0, 0.0), Vec3::new(0.0, 0.0, hi.z - lo.z), 8, 6, 3.0, |_, _| [0.0; 4]);
+    let normal = crate::paths::extracted().join("tex/m99_water_n.dds").is_file().then(|| {
+        assets.load_builder().with_settings(|s: &mut bevy::image::ImageLoaderSettings| s.is_srgb = false).load("tex/m99_water_n.dds")
+    });
+    let mat = mats.add(StandardMaterial {
+        base_color: Color::srgba(0.22, 0.45, 0.52, 0.42),
+        normal_map_texture: normal,
+        perceptual_roughness: 0.08,
+        reflectance: 0.6,
+        alpha_mode: AlphaMode::Blend,
+        double_sided: true,
+        cull_mode: None,
+        ..default()
+    });
+    commands.spawn((crate::map::MapPiece, Mesh3d(meshes.add(water.mesh(false, true))), MeshMaterial3d(mat), Transform::default(), Visibility::default(), bevy::light::NotShadowCaster));
 }
 
 /// The outpost's bushes (centre on the ground, radius): clumps of the game's tall grass
@@ -800,8 +916,10 @@ pub fn in_bush(feet: Vec3) -> bool {
 /// tall (the clump's blades fan out low: at 1.4 a crouched Wolf showed over them). X mirrored as every FromSoftware position.
 pub fn spawn_bushes(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mats: ResMut<Assets<StandardMaterial>>, assets: Res<AssetServer>) {
     if !ON_CONSTRUCT.load(std::sync::atomic::Ordering::Relaxed) {
+        crate::swim::WATER.write().unwrap().clear();
         return;
     }
+    spawn_pool(&mut commands, &mut meshes, &mut mats, &assets);
     let path = crate::paths::extracted().join("objmesh/o007160.json");
     let Some(json) = std::fs::read_to_string(&path).ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()) else {
         warn!("construct: no {} (tools/extract.ps1 exports it): no bushes drawn", path.display());
@@ -953,6 +1071,11 @@ pub fn parkour_stairs() -> Vec<(Vec3, Vec3)> {
 pub fn parkour_course() -> (Vec<(Vec3, Vec3)>, Vec<map::LedgeEdge>) {
     let mut boxes = Vec::new();
     let mut edges = Vec::new();
+    // The chasm's lips (hang ledges facing into it) and its grapple posts.
+    let (cl, ch) = CHASM;
+    edges.push(hang_edge(Vec3::new(cl.x, 0.0, ch.z), Vec3::new(cl.x, 0.0, cl.z + 0.5), Vec3::X));
+    edges.push(hang_edge(Vec3::new(ch.x, 0.0, cl.z + 0.5), Vec3::new(ch.x, 0.0, ch.z), Vec3::NEG_X));
+    boxes.extend(CHASM_POSTS);
     // 1. The hug wall.
     let (wl, wh) = (Vec3::new(-7.0, 0.0, -9.5), Vec3::new(-1.0, 2.5, -9.0));
     boxes.push((wl, wh));
@@ -1033,7 +1156,8 @@ mod parkour_tests {
     /// Every grapple point's landing is on its roof, and its hook at the lip.
     #[test]
     fn the_grapple_points_land_on_their_roofs() {
-        let boxes = super::Outpost::boxes();
+        let mut boxes = super::Outpost::boxes();
+        boxes.extend(super::CHASM_POSTS);
         for p in super::construct_grapple() {
             assert!(boxes.iter().any(|(lo, hi)| (hi.y - p.land.y).abs() < 0.01 && p.land.x > lo.x && p.land.x < hi.x && p.land.z > lo.z && p.land.z < hi.z), "{p:?} lands on no roof");
         }
@@ -1044,10 +1168,14 @@ mod parkour_tests {
     #[test]
     fn the_course_edges_face_out_of_their_walls() {
         let (boxes, edges) = super::parkour_course();
-        let inside = |p: Vec3| boxes.iter().any(|(lo, hi)| p.x > lo.x + 0.01 && p.x < hi.x - 0.01 && p.z > lo.z + 0.01 && p.z < hi.z - 0.01 && p.y < hi.y);
+        // Under the floor is solid rock but for the chasm.
+        let (cl, ch) = super::CHASM;
+        let rock = |p: Vec3| p.y < 0.0 && !(p.x > cl.x && p.x < ch.x && p.z > cl.z && p.z < ch.z);
+        let inside = |p: Vec3| rock(p) || boxes.iter().any(|(lo, hi)| p.x > lo.x + 0.01 && p.x < hi.x - 0.01 && p.z > lo.z + 0.01 && p.z < hi.z - 0.01 && p.y < hi.y);
         let outpost = super::Outpost::edges();
         assert_eq!(edges.iter().filter(|e| e.kind == 3).count(), 3 + outpost.iter().filter(|e| e.kind == 3).count());
-        assert_eq!(edges.iter().filter(|e| e.kind == 2).count(), 8 + outpost.iter().filter(|e| e.kind == 2).count());
+        // 8 on the course, 2 on the chasm's lips.
+        assert_eq!(edges.iter().filter(|e| e.kind == 2).count(), 10 + outpost.iter().filter(|e| e.kind == 2).count());
         for e in &edges {
             let d = crate::docking::Dock::new_from_edge(e).expect("edge too short");
             let mid = (e.a + e.b) * 0.5;
@@ -1059,4 +1187,9 @@ mod parkour_tests {
             assert!(inside(back), "kind {} edge {:?} -> {:?}: wall side {:?} is open", e.kind, e.a, e.b, back);
         }
     }
+}
+
+#[cfg(test)]
+pub(crate) fn floor_rects_for_test(area: (f32, f32, f32, f32), holes: &[(Vec3, Vec3)]) -> Vec<(f32, f32, f32, f32)> {
+    floor_rects(area, holes)
 }

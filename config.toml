@@ -75,8 +75,9 @@ area_doping = 7010
 gourd_charges = 3
 # Spirit Emblems for the prosthetic (F: Loaded Shuriken, 1 per throw).
 spirit_emblems = 15
-# Resurrection nodes: after death, LMB resurrects at half HP (GroundRevival + SpEffect 110015).
-resurrections = 1
+# Resurrection nodes: after death, LMB resurrects at half HP (GroundRevival + SpEffect 110015),
+# RMB dies. Two, as in the game: the base node and the extra one.
+resurrections = 2
 # Equipped combat art (attack + guard): 5100 Whirlwind Slash, 5300 Ichimonji, 5200 Leaping Slash?,
 # 5400 / 5500 Iai variants, 5600 rush, 5700 Mortal Draw-like, 5800 kick, 5900 fist (EquipParamWeapon
 # virtual weapons; names from the param's Japanese row names). Press F5 after changing it.
@@ -88,10 +89,13 @@ skill_points = 14
 # Wolf's look (Change Form at an idol): 0 Wolf, 1 Shura, 2 Ashina, 3 Tengu.
 form = 0
 # Goods held besides the gourd and the emblems: [EquipParamGoods id, count] (src/items.rs).
-# A starter kit for the test maps: Pellet 3020, Sweet Rice Ball 3060, Persimmon 3070, the sugars
-# 3400-3440, Divine Confetti 3450, Ceramic Shard 3500, Homeward Idol 3980; materials Scrap Iron 6000,
-# Black Gunpowder 6100, Lump of Fat Wax 6300 and others for the Sculptor's Workshop.
-items = [[3020, 3], [3060, 1], [3070, 3], [3400, 3], [3410, 3], [3420, 3], [3430, 3], [3440, 3], [3450, 5], [3500, 10], [3980, 1], [6000, 20], [6010, 5], [6100, 10], [6200, 5], [6300, 10], [6400, 3], [9720, 1], [9750, 1]]
+# A starter kit for the test maps: Pellet 3020, Divine Grass 3040, Red Lump 3050, Sweet Rice Ball
+# 3060, Persimmon 3070, Rice 3080, Antidote Powder 3200, Dousing Powder 3210, Pacifying Agent 3220,
+# Eel Liver 3230, the sugars 3400-3440, Divine Confetti 3450, Ceramic Shard 3500, Fistful of Ash
+# 3510, Oil 3520, Mibu Balloon of Wealth 3600, the coin purses 3700 / 3704 / 3708, Ceremonial Tanto
+# 3800, Homeward Idol 3980; materials Scrap Iron 6000, Black Gunpowder 6100, Lump of Fat Wax 6300
+# and others for the Sculptor's Workshop.
+items = [[3020, 3], [3040, 1], [3050, 3], [3060, 1], [3070, 3], [3080, 3], [3200, 3], [3210, 3], [3220, 3], [3230, 3], [3400, 3], [3410, 3], [3420, 3], [3430, 3], [3440, 3], [3450, 5], [3500, 10], [3510, 5], [3520, 5], [3580, 5], [3600, 3], [3610, 3], [3620, 3], [3630, 3], [3700, 3], [3704, 2], [3708, 1], [3800, 1], [3980, 1], [6000, 20], [6010, 5], [6100, 10], [6200, 5], [6300, 10], [6400, 3], [9720, 1], [9750, 1]]
 # The five quick-item slots (goods ids, 0 empty): R uses the one in hand, C moves to the next.
 quick_items = [3000, 3400, 3020, 3070, 3980]
 # Prosthetic tools made (EquipParamWeapon 7X000; the Sculptor's Workshop makes the others from

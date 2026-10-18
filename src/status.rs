@@ -272,6 +272,29 @@ impl Statuses {
         stop.extend(all.drain().flat_map(|(_, s)| s.effects.into_iter().flat_map(|a| a.fx)));
     }
 
+    /// A cure (items.rs: Antidote Powder, Dousing Powder, Pacifying Agent, Divine Grass): the
+    /// gauges of `types` (0 poison, 1 burn, 2 terror) empty and their afflictions end.
+    pub fn cure(&mut self, e: Entity, types: [bool; 3]) {
+        let Statuses(all, stop) = self;
+        let Some(status) = all.get_mut(&e) else { return };
+        for (ty, gauge) in [&mut status.poison, &mut status.burn, &mut status.terror].into_iter().enumerate() {
+            if types[ty] {
+                *gauge = 0.0;
+            }
+        }
+        let info = [STATE_INFO_POISON, STATE_INFO_BURN, STATE_INFO_TERROR];
+        let mut kept = Vec::new();
+        for a in std::mem::take(&mut status.effects) {
+            let s = crate::items::param("SpEffectParam", a.id)["stateInfo"].as_i64().unwrap_or(0);
+            if (0..3).any(|t| types[t] && s == info[t]) {
+                stop.extend(a.fx);
+            } else {
+                kept.push(a);
+            }
+        }
+        status.effects = kept;
+    }
+
     /// A character's new life (an enemy's in-place respawn): its gauges and afflictions go,
     /// their effects on the body stop.
     pub fn clear(&mut self, e: Entity) {
@@ -296,7 +319,8 @@ impl Statuses {
 
     /// An enemy's hit (or bullet) on Wolf: as `hit`, against WOLF_RESIST, the guard's share kept
     /// off by his sword `weapon` (EquipParamWeapon, the equipped combat art's row).
-    pub fn hit_wolf(&mut self, combat: &Combat, wolf: Entity, weapon: i64, sps: &[i64], guard: Guard) -> Vec<String> {
+    /// `worn`: his quick items' rows (Actor::item_sp): their resist rates and freezeDamageRate.
+    pub fn hit_wolf(&mut self, combat: &Combat, wolf: Entity, weapon: i64, worn: &[i64], sps: &[i64], guard: Guard) -> Vec<String> {
         let w = combat.param("EquipParamWeapon", weapon);
         let num = |k: &str| w[k].as_f64().unwrap_or(0.0) as f32;
         let kept = match guard {
@@ -304,8 +328,8 @@ impl Statuses {
             Guard::Block => [num("poisonGuardResist"), num("bloodGuardResist"), num("diseaseGuardResist"), num("curseGuardResist"), num("freezeGuardResist")],
             Guard::Deflect => [num("poisonJustGuardResist"), num("bloodJustGuardResist"), num("diseaseJustGuardResist"), num("curseJustGuardResist"), num("freezeJustGuardResist")],
         };
-        // gap: Wolf's worn rows (110010 Pretending Dead disables all five) are not passed.
-        self.build_up(combat, wolf, &[], sps, [WOLF_RESIST; 5], kept)
+        // gap: Wolf's other worn rows (110010 Pretending Dead disables all five) are not passed.
+        self.build_up(combat, wolf, worn, sps, [WOLF_RESIST; 5], kept)
     }
 
     /// Whether SpEffect `id` is a build-up (poison / burn) rather than an effect of its own.
@@ -353,6 +377,12 @@ impl Statuses {
             // Whole points, as the exe's int build-up: (int)(power * rate), then
             // (int)(x * (1 - guard resist %)) when guarded.
             let mut amount = power.trunc();
+            // The worn rows' def<Type>ResistDamageRate (the cures' 30 s resist: Antidote 0.55,
+            // Dousing 0.65, Pacifying 0.5; Red Lump and Oil x2 burn).
+            let resist_rate = resist_damage_rate(worn, ty);
+            if resist_rate != 1.0 {
+                amount = (amount * resist_rate).trunc();
+            }
             if guard > 0.0 && amount > 0.0 {
                 amount = (amount * (1.0 - guard / 100.0)).trunc().max(0.0);
             }
@@ -442,6 +472,19 @@ pub(crate) fn set_aging(a: &mut Actor, combat: &Combat, aging: Option<i64>) {
 /// SpEffect `id` from Wolf's exported rows, else an enemy kind's (their poison / burn build-ups:
 /// 9015 Rappa blowgun, 9115 bandit torches ...).
 /// The shock build-up `id` carries (ResistRules::freeze): (its payload row, its power).
+/// The product of the worn rows' def<Type>ResistDamageRate for build-up type `ty` (0 poison,
+/// 1 burn, 2 terror, 3 curse; the shock has freezeDamageRate instead).
+fn resist_damage_rate(worn: &[i64], ty: usize) -> f32 {
+    let key = match ty {
+        0 => "defPoisonResistDamageRate",
+        1 => "defBloodResistDamageRate",
+        2 => "defDiseaseResistDamageRate",
+        3 => "defCurseResistDamageRate",
+        _ => return 1.0,
+    };
+    worn.iter().map(|id| crate::items::param("SpEffectParam", *id)[key].as_f64().unwrap_or(1.0) as f32).product()
+}
+
 fn freeze_row(id: i64) -> Option<(i64, f32)> {
     ResistRules::get().freeze.get(&id).copied()
 }
@@ -740,6 +783,45 @@ fn lasting_glow(
     }
 }
 
+/// Instant SpEffects (effectEndurance 0) put on a character this frame, shown once: their
+/// SpEffectVfx init effects (the Pellet's 3020 -> 310021 / 310022 sparkle), and a midst one, if
+/// any (the Red Lump's 3050 -> 310461), for `BURST_MIDST` s. items.rs `apply_used` fills it.
+#[derive(Resource, Default)]
+pub(crate) struct SpBursts(pub(crate) Vec<(Entity, i64)>);
+const BURST_MIDST: f32 = 1.5;
+
+#[allow(clippy::too_many_arguments)]
+fn sp_bursts(
+    mut commands: Commands,
+    time: Res<Time>,
+    combat: Res<Combat>,
+    rows: Res<VfxRows>,
+    mut bursts: ResMut<SpBursts>,
+    mut players: Query<(Entity, &mut crate::player::Player)>,
+    dummies: Query<&crate::model::Dummies>,
+    tfs: Query<&GlobalTransform>,
+    mut fx: Query<&mut crate::fxr::FxEffect>,
+    mut held: Local<Vec<(Entity, f32)>>,
+) {
+    let now = time.elapsed_secs();
+    let mut queued = std::mem::take(&mut bursts.0);
+    for (e, mut p) in &mut players {
+        queued.extend(p.sp_bursts.drain(..).map(|id| (e, id)));
+    }
+    for (owner, id) in queued {
+        held.extend(spawn_vfx(&mut commands, &combat, &rows, id, owner, &dummies, &tfs).into_iter().map(|e| (e, now + BURST_MIDST)));
+    }
+    held.retain(|(e, until)| {
+        if now < *until {
+            return true;
+        }
+        if let Ok(mut f) = fx.get_mut(*e) {
+            f.stop = true;
+        }
+        false
+    });
+}
+
 /// SpEffectVfxParam midstSeId of a vfx row (5010, the resurrection's heart sound: 200001).
 fn vfx_se(vfx: i64) -> Option<i64> {
     static T: std::sync::OnceLock<HashMap<i64, i64>> = std::sync::OnceLock::new();
@@ -854,7 +936,7 @@ pub struct StatusPlugin;
 
 impl Plugin for StatusPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<Statuses>().insert_resource(VfxRows::load()).add_systems(FixedUpdate, tick.after(ActorSet::Resolve)).add_systems(Update, (show, electro_glow, lasting_glow, heartbeat));
+        app.init_resource::<Statuses>().init_resource::<SpBursts>().insert_resource(VfxRows::load()).add_systems(FixedUpdate, tick.after(ActorSet::Resolve)).add_systems(Update, (show, electro_glow, lasting_glow, heartbeat, sp_bursts));
     }
 }
 

@@ -1,5 +1,33 @@
 # Sv1: progress and next steps
 
+- 2026-10-18 Sculptor idle clarification: the user wants ordinary sitting outside the menu,
+  with no carving or tinkering. Spawn and return from a visit now use a000_000000. Preserved
+  Claude's working prosthetic sequence (20001 -> 21003 -> 20002) and the fixed seat 1 m in
+  front of the Sculptor, facing him. The private screenshot harness can inspect the idle
+  without opening the Workshop. Validation: release build, private idle / Workshop captures,
+  five Sculptor tests and full suite (657 pass, 46 ignored, four threads). See `kb/sculptor.md`.
+
+- 2026-10-18 Sculptor visit animations: Wolf sits down (711200), stays seated (711201) and
+  gets up when closing the Workshop (711202). The menu waits for the entry animation and
+  movement waits for the exit. c7010 stops carving (400), plays his seated service loop (401),
+  then returns to carving (402 -> 000). Removed the custom conversation camera; regular
+  player camera throughout. Added the missing Wolf states to the exporter and re-exported
+  local data. Validation: release build, private real-app seated Workshop capture, five
+  Sculptor tests and full suite (657 pass, 46 ignored, four threads). See `kb/sculptor.md`.
+
+- 2026-10-18 Sculptor: c7010 beside Course Start on the Construct, E to talk, with the game's
+  model, skeleton and idle / Wolf talk clips. The Workshop's fitting and upgrades now open
+  through him. Talking preserves health, items and the idol checkpoint; encounter changes
+  preserve his character data. Placement, reach and conversation camera are reconstructed;
+  story dialogue, voices, gifts and sake progression remain gaps. Validation: release build,
+  private real-app captures of Talk, fitting and upgrades, full suite (655 pass, 46 ignored;
+  serial rerun after the intermittent parallel Confetti assertion). See `kb/sculptor.md`.
+
+- 2026-10-18 Esoteric Texts: collect EquipParamGoods 2920-2924 to open each school at an idol;
+  visible tabs and acquisition checks use possession. Five book pickups on the Construct use
+  the existing key-item dialog. Story gifts and saved progression remain outside this test map.
+  Validation: release build, seven skill-tree tests and the full suite (652 pass, 46 ignored).
+
 Goal: a Rust/Bevy combat prototype that plays 1:1 like Sekiro, with numbers read
 from the game's own files (TAE, HKS, params) and Ghidra for the gaps.
 
