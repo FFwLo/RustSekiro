@@ -1,7 +1,7 @@
 //! Swimming and diving: Wolf in deep water swims at the surface (SwimIdle, SwimMoveStart / Loop
 //! / End, the game's clips and their root motion), and with the Mibu Breathing Technique
-//! (EquipParamGoods 2420, a key item) dives: crouch goes under (SwimToDive), and there jump
-//! rises (DiveMoveUp*), crouch sinks (DiveMoveDown*), the stick swims (DiveMove*) and step
+//! (EquipParamGoods 2420, a key item) dives: crouch goes under (SwimToDive), and there jump (or
+//! E, the user's key for it) rises (DiveMoveUp*), crouch sinks (DiveMoveDown*), the stick swims (DiveMove*) and step
 //! kicks ahead (DiveKickMove1); up at the surface he comes out of the dive (DiveToSwim). Where
 //! the floor comes up near the surface he stands and walks out (SwimToStandMove).
 //!
@@ -138,8 +138,9 @@ pub fn tick(p: &mut Player, a: &mut Actor, d: &CharData, tf: &Transform, stick: 
             turn_to(a, stick, dt);
             match a.state.as_str() {
                 "SwimMoveStart" if ended => a.play_state(d, "SwimMoveLoop"),
-                "SwimMoveStart" | "SwimMoveLoop" => {
-                    keep(a, d, "SwimMoveLoop", ended && a.state == "SwimMoveLoop");
+                "SwimMoveStart" => true,
+                "SwimMoveLoop" => {
+                    keep(a, d, "SwimMoveLoop", ended);
                     true
                 }
                 _ => a.play_state(d, "SwimMoveStart"),
@@ -251,7 +252,7 @@ pub fn hold(combat: Res<crate::data::Combat>, mut q: Query<(&Player, &mut Actor,
         f.y = if swim.diving || a.state == "DiveToSwim" { f.y + dy } else { top };
         f.y = f.y.min(top).max(floor + 0.05);
         tf.translation = f + Vec3::Y * CAPSULE_HALF_HEIGHT;
-    }
+        }
 }
 
 #[cfg(test)]

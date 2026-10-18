@@ -3037,7 +3037,8 @@ fn decide(
     // check, and a grapple from a perch fell off it instead (2026-10-12 bug hunt round 20).
     let wiring = p.wire.is_some() && crate::wire::is_wire_state(&a.state);
     // Docked at an edge (docking.rs: hanging, or climbing up off it) is held, not over a floor.
-    let docked = p.dock.is_some() || crate::docking::is_jump_ready(&a.state) || a.state.starts_with("WallJumpReady_");
+    // Swimming (swim.rs) is held by the water too.
+    let docked = p.dock.is_some() || p.swim.is_some() || crate::docking::is_jump_ready(&a.state) || a.state.starts_with("WallJumpReady_");
     // Not in a deathblow either: the throw plays out and only its end falls (HKS
     // c0000_transition.hks FireStateEndEvent: HKB_STATE_THROW_ATK_TO_FREE_FALL -> W_FreeFall on
     // IsAnimEnd). The Demon of Hatred's leap (a240_500000 / 510000) left Wolf above his field's
@@ -3402,7 +3403,7 @@ fn decide(
     }
     // In deep water (swim.rs): the swim and the dive, nothing else.
     let mibu = crate::items::count(&config, crate::swim::MIBU_BREATHING) > 0;
-    if crate::swim::tick(p, a, d, tf, stick, pad.jump_held, pad.crouch_held, crouch_pressed, dock_step, ended, mibu, dt, &mut log) {
+    if crate::swim::tick(p, a, d, tf, stick, pad.jump_held || pad.interact_held, pad.crouch_held, crouch_pressed, dock_step, ended, mibu, dt, &mut log) {
         return;
     }
     if dock_step_tick(p, a, d, tf, ledges.as_deref(), stick, pad.walk, pad.interact_held, interact_pressed, dock_jump, dock_step, ended, &mut log, attack_pressed, &combat, &enemies) {

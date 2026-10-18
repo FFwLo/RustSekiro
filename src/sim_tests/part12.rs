@@ -864,3 +864,33 @@ fn wolf_swims_and_dives_with_the_mibu_technique() {
     assert_eq!(state(&mut app), "SwimToDive");
     crate::swim::WATER.write().unwrap().retain(|w| w.0 != lo);
 }
+
+/// Swimming with the stick held moves Wolf (the swim clips' root motion), and under water jump
+/// held lifts him (the user: "only floats, not swims around ... nor ascend").
+#[test]
+fn wolf_swims_forward_and_rises() {
+    let (lo, hi) = (Vec3::new(1990.0, -5.0, -10.0), Vec3::new(2010.0, -0.4, 10.0));
+    crate::swim::WATER.write().unwrap().push((lo, hi));
+    let mut app = app_cfg("c1010", None, Vec::new());
+    let pos = |app: &mut App| {
+        let world = app.world_mut();
+        let (a, t) = world.query_filtered::<(&Actor, &Transform), With<Player>>().single(world).unwrap();
+        (t.translation, a.state.clone(), a.anim.clone())
+    };
+    {
+        let world = app.world_mut();
+        let mut q = world.query_filtered::<&mut Transform, With<Player>>();
+        q.single_mut(world).unwrap().translation = Vec3::new(2000.0, -3.0 + CAPSULE_HALF_HEIGHT, 0.0);
+    }
+    run(&mut app, 60);
+    let (p0, s0, _) = pos(&mut app);
+    let mut states = std::collections::BTreeSet::new();
+    for _ in 0..120 {
+        app.world_mut().resource_mut::<PadInput>().stick = Vec2::Y;
+        app.update();
+        states.insert(pos(&mut app).1);
+    }
+    let (p1, _, anim) = pos(&mut app);
+    assert!((p1 - p0).with_y(0.0).length() > 1.5, "swam {:.2} m from {s0}: states {states:?}, anim {anim}", (p1 - p0).with_y(0.0).length());
+    crate::swim::WATER.write().unwrap().retain(|w| w.0 != lo);
+}
