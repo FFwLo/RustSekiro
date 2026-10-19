@@ -707,7 +707,7 @@ pub(crate) fn all_enemies_smoke() {
                     break;
                 }
             }
-            let failed = app.world().get_non_send_resource::<crate::enemy::Brains>().is_some_and(|b| b.failed);
+            let failed = app.world().get_non_send::<crate::enemy::Brains>().is_some_and(|b| b.failed);
             // What applies to this row: a deathblow needs its ThrowParam start row (none for the
             // cricket and the phantom monk; the Divine Dragon and the underwater Headless have only
             // scripted / underwater ones); think 0-3 or hp 9999 = dummies, cutscene and conversation
@@ -1326,7 +1326,7 @@ pub(crate) fn enemy_trace() {
             last = line;
         }
     }
-    if let Some(b) = app.world().get_non_send_resource::<crate::enemy::Brains>() {
+    if let Some(b) = app.world().get_non_send::<crate::enemy::Brains>() {
         for brain in b.map.values() {
             let mut seen = std::collections::BTreeSet::new();
             for l in brain.log.iter().filter(|l| seen.insert((*l).clone())).take(60) {

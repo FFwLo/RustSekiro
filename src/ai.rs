@@ -122,6 +122,26 @@ pub struct Snapshot {
     pub sound_serial: i64,
     /// Every live trigger region (enemy.rs TriggerRegions, RegisterTriggerRegion).
     pub triggers: Vec<TriggerRegion>,
+    /// TARGET_EVENT: the character the map script named (EMEVD 2004[11] Set Character Event
+    /// Target; enemy/script.rs). None: not set, or Wolf (then it reads as the current target).
+    pub event: Option<EventView>,
+}
+
+/// What the AI sees of its TARGET_EVENT character (the Headless Ape's partner ape, m17 11705880;
+/// Lady Butterfly for her illusions, m10 11005820; the Old Dragons' body for their parts, m25
+/// 12505803).
+#[derive(Default, Clone, Debug)]
+pub struct EventView {
+    pub pos: Vec3,
+    pub fwd: Vec3,
+    pub hp_rate: f32,
+    /// Posture left and its rate (GetSp / GetSpRate).
+    pub sp_left: f32,
+    pub sp_rate: f32,
+    /// The SpEffects it wears, those new this frame and those gone (its observe interrupts).
+    pub sp: HashSet<i64>,
+    pub sp_new: Vec<i64>,
+    pub sp_gone: Vec<i64>,
 }
 
 /// RegisterTriggerRegion's sphere (exe FUN_1405e7280 -> FUN_140642110, 14064.c:648): keyed by
@@ -360,6 +380,7 @@ impl Goal {
 struct Consts {
     target_self: f64,
     target_ene_0: f64,
+    target_event: f64,
     dir_b: f64,
     dir_l: f64,
     dir_r: f64,
@@ -545,8 +566,8 @@ impl AiState {
     /// for 3510900, which its own a100_003007 scream (TAE AddSpEffect 3510900) also carries;
     /// fired from its own row it set Number 1 / Timer 5 = 14 s (Goal.Interrupt) and the battle
     /// goal's partner branch (Act24 backstep 400-500) ran all fight (boss fidelity 2026-10-15).
-    /// gap: TARGET_EVENT (the partner chr set by the map) is not modelled, so it never fires;
-    /// an ended SpEffect (`new` false) is not split by owner, any self / target watch counts.
+    /// A TARGET_EVENT watch (the partner chr the map set) is `observes_event`'s. gap: an ended
+    /// SpEffect (`new` false) is not split by owner, any self / target watch counts.
     fn observes(&self, id: i64, s: &Snapshot, new: bool) -> bool {
         let Some(watch) = self.observed.get(&id) else { return false };
         let me = self.k.target_self as i64;
@@ -555,6 +576,21 @@ impl AiState {
             return watch.iter().any(|t| *t == me || ene(t));
         }
         (watch.contains(&me) && s.sp_self.contains(&id)) || (watch.iter().any(ene) && s.sp_target.contains(&id))
+    }
+
+    fn watches_event(&self, id: i64) -> bool {
+        self.observed.get(&id).is_some_and(|w| w.contains(&(self.k.target_event as i64)))
+    }
+
+    /// An observed SpEffect on the TARGET_EVENT character came on (`new`) or went: the Headless
+    /// Ape's partner's 3510900 / 3510901 (510010_battle.lua:25-26).
+    fn observes_event(&self, id: i64, new: bool) -> bool {
+        self.watches_event(id) && self.w.event.as_ref().is_some_and(|e| if new { e.sp_new.contains(&id) } else { e.sp_gone.contains(&id) })
+    }
+
+    /// The TARGET_EVENT character when `id` names it and the map set one.
+    fn event_of(&self, id: Option<&Value>) -> Option<&EventView> {
+        if is(id, self.k.target_event) { self.w.event.as_ref() } else { None }
     }
 }
 
@@ -715,6 +751,8 @@ impl AiState {
         let id = id.and_then(Value::num)?;
         if id == k.target_self {
             Some(w.me)
+        } else if id == k.target_event && w.event.is_some() {
+            w.event.as_ref().map(|e| e.pos)
         } else if id == k.point_move_point && self.patrol.as_ref().is_some_and(|p| p.cur >= 0) {
             let p = self.patrol.as_ref()?;
             p.points.get(p.cur as usize).copied()
@@ -732,6 +770,10 @@ impl AiState {
     }
 
     fn dist_to(&self, id: Option<&Value>) -> f64 {
+        // A character's distance is 3D, as the current target's (`Snapshot::dist`).
+        if let Some(e) = self.event_of(id) {
+            return (e.pos - self.w.me).length() as f64;
+        }
         match self.pos_of(id) {
             Some(_) if is(id, self.k.point_init_pose) => (self.w.home - self.w.me).with_y(0.0).length() as f64,
             Some(p) => (p - self.w.me).with_y(0.0).length() as f64,
@@ -766,6 +808,9 @@ impl AiState {
     fn frame_of(&self, id: Option<&Value>) -> (Vec3, Vec3) {
         if is(id, self.k.target_self) {
             return (self.w.me, self.w.fwd);
+        }
+        if let Some(e) = self.event_of(id) {
+            return (e.pos, e.fwd);
         }
         match self.pos_of(id) {
             Some(p) => (p, Vec3::ZERO),
@@ -901,7 +946,13 @@ impl AiState {
     }
 
     fn sp_of(&self, target: Option<&Value>) -> &HashSet<i64> {
-        if is(target, self.k.target_self) { &self.w.sp_self } else { &self.w.sp_target }
+        if is(target, self.k.target_self) {
+            &self.w.sp_self
+        } else if let Some(e) = self.event_of(target) {
+            &e.sp
+        } else {
+            &self.w.sp_target
+        }
     }
 
     fn apply_timing(&mut self, g: u32, when: f64) {
@@ -1041,7 +1092,12 @@ impl AiState {
             // signed GetDistY. Both read 0 before (2026-10-12 round 22). gap: whether GetDistY is
             // the absolute value in the exe is not traced; 106000 compares it with -1.8, so signed.
             "GetDistYSigned" | "GetDistY" => num((self.frame_of(a.first()).0.y - self.w.me.y) as f64),
-            "GetDistAtoB" => num(self.dist()),
+            // Between the two named (the Old Dragons' parts: TARGET_EVENT to TARGET_ENE_0, 530010
+            // Act); one not modelled (TARGET_TEAM_LEADER) reads as the AI chr to its target.
+            "GetDistAtoB" => {
+                let known = |v: Option<&Value>| is(v, self.k.target_ene_0) || self.pos_of(v).is_some();
+                num(if known(a.first()) && known(a.get(1)) { (self.frame_of(a.first()).0 - self.frame_of(a.get(1)).0).length() as f64 } else { self.dist() })
+            }
             "GetMapHitRadius" => num(self.hit_radius as f64),
             "GetRandam_Int" => {
                 let (lo, hi) = (n(0).floor(), n(1).floor());
@@ -1062,9 +1118,9 @@ impl AiState {
             // common_common_func_NTC.lua:380, asks IsTargetGuard(TARGET_SELF); 140010_battle.lua
             // compares GetSpRate(TARGET_SELF) with (TARGET_ENE_0)).
             "IsTargetGuard" => boolean(if is(a.first(), self.k.target_self) { w.self_guard } else { w.target_guard }),
-            "GetSp" => num(if is(a.first(), self.k.target_self) { w.sp } else { w.target_sp } as f64),
-            "GetSpRate" => num(if is(a.first(), self.k.target_self) { w.sp_rate } else { w.target_sp_rate } as f64),
-            "GetHpRate" => num(if is(a.first(), self.k.target_self) { w.hp_rate } else { w.target_hp_rate } as f64),
+            "GetSp" => num(if is(a.first(), self.k.target_self) { w.sp } else { self.event_of(a.first()).map_or(w.target_sp, |e| e.sp_left) } as f64),
+            "GetSpRate" => num(if is(a.first(), self.k.target_self) { w.sp_rate } else { self.event_of(a.first()).map_or(w.target_sp_rate, |e| e.sp_rate) } as f64),
+            "GetHpRate" => num(if is(a.first(), self.k.target_self) { w.hp_rate } else { self.event_of(a.first()).map_or(w.target_hp_rate, |e| e.hp_rate) } as f64),
             "GetHp" => num(1.0),
             // The General (102000_battle.lua) goes all out on his last one (<= 1).
             "GetNinsatsuNum" => num(w.ninsatsu.max(1) as f64),
@@ -2083,6 +2139,7 @@ impl Brain {
             k: Consts {
                 target_self: -1.0,
                 target_ene_0: 0.0,
+                target_event: 20.0,
                 dir_b: 2.0,
                 dir_l: 3.0,
                 dir_r: 4.0,
@@ -2115,6 +2172,7 @@ impl Brain {
         st.k = Consts {
             target_self: c("TARGET_SELF", -1.0),
             target_ene_0: c("TARGET_ENE_0", 0.0),
+            target_event: c("TARGET_EVENT", 20.0),
             dir_b: c("AI_DIR_TYPE_B", 2.0),
             dir_l: c("AI_DIR_TYPE_L", 3.0),
             dir_r: c("AI_DIR_TYPE_R", 4.0),
@@ -2196,6 +2254,16 @@ impl Brain {
         for &id in &s.sp_gone {
             if st.observes(id, s, false) {
                 interrupt_goals(vm, st, int_sp_off, id as f64)?;
+            }
+        }
+        // The same on the TARGET_EVENT character.
+        if let Some(e) = &s.event {
+            for (ids, new, int) in [(&e.sp_new, true, int_sp), (&e.sp_gone, false, int_sp_off)] {
+                for &id in ids {
+                    if st.observes_event(id, new) {
+                        interrupt_goals(vm, st, int, id as f64)?;
+                    }
+                }
             }
         }
         // Observe areas (AddObserveArea / AddObserveRegion) the target entered or left.
@@ -2631,6 +2699,30 @@ mod tests {
         b.tick(&s, 1.0 / 60.0);
         let n1 = b.st.numbers.get(&1).and_then(Value::num).unwrap_or(0.0);
         assert_eq!(n1, 0.0, "own 3510900 raised the partner interrupt");
+    }
+
+    /// Atlas flow.30b-headless-ape (sekiro-rs headless_ape.rs, TARGET_EVENT): the map names the
+    /// partner ape (m17 11705880, 2004[11]); its 3510900 coming on raises the Headless Ape's
+    /// interrupt (510010_battle.lua:25, Goal.Interrupt sets Number 1). GetDist /
+    /// GetHpRate(TARGET_EVENT) read the partner, not Wolf.
+    #[test]
+    fn atlas_headless_ape_answers_its_partners_call() {
+        let Some(mut b) = load(51000100, 1.0, 3) else { return };
+        let mut s = Snapshot { dist: 6.0, free: true, hp_rate: 1.0, target_hp_rate: 1.0, sp: 600.0, sp_rate: 1.0, ..Snapshot::battle() };
+        s.sp_self.insert(200004);
+        let mut partner = EventView { pos: Vec3::new(0.0, 0.0, 12.0), fwd: Vec3::Z, hp_rate: 0.5, sp_left: 400.0, sp_rate: 1.0, ..Default::default() };
+        s.event = Some(partner.clone());
+        b.tick(&s, 1.0 / 60.0);
+        let ev = Value::Num(b.st.k.target_event);
+        let d = b.st.ai_method_raw("GetDist", std::slice::from_ref(&ev))[0].num().unwrap();
+        assert!((d - (12.0 - 1.0)).abs() < 1e-3, "GetDist(TARGET_EVENT) {d}");
+        let hp = b.st.ai_method_raw("GetHpRate", std::slice::from_ref(&ev))[0].num().unwrap();
+        assert!((hp - 0.5).abs() < 1e-6, "GetHpRate(TARGET_EVENT) {hp}");
+        partner.sp.insert(3510900);
+        partner.sp_new = vec![3510900];
+        s.event = Some(partner.clone());
+        b.tick(&s, 1.0 / 60.0);
+        assert_eq!(b.st.numbers.get(&1).and_then(Value::num), Some(1.0), "the partner's 3510900 did not raise the interrupt");
     }
 
     /// Round 25: a new sound target raises INTERUPT_ChangeSoundTarget through the logic chain;

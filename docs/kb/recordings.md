@@ -3,10 +3,10 @@
 One line per recording: `python -m tools.rec list` rewrites this file. Read a summary with
 `python -m tools.rec summary <rec> --cat <movement|combat|enemies|bosses|skills|items|camera|sound|effects|script|all>`
 (cached in `<rec>/summary/<cat>.md`); drill down with `python -m tools.rec query <rec> help`.
-Folder: `C:\DeadlockModding\memscope-data\logs`. Recorder: `tools/memscope/rec2.lua` (v1: recorder.lua).
+Folder: `..\memscope-data\logs`. Recorder: `tools/memscope/rec2.lua` (v1: recorder.lua).
 
 How to record (one person plays, the session records):
-1. Start Sekiro with the hook DLL: from `C:\DeadlockModding\me3` run `bin\me3.exe launch -p sekiro-rec.me3`;
+1. Start Sekiro with the hook DLL: from `..\me3` run `bin\me3.exe launch -p sekiro-rec.me3`;
    `me3\sekiro-rec\sv1_rec_hooks.log` lists the installed hooks.
 2. `python -m tools.rec install`, then `python -m tools.rec new <name> --note "..." --cats a,b` (prints the folder).
 3. In the background: `python -m tools.rec keys <rec>` (F9 marker, F10 stop, F5 can't-die, F6 freeze AI,

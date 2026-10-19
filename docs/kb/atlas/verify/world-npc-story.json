@@ -1,0 +1,1090 @@
+[
+ {
+  "id": "cutscenes.cutscenebnd-inventory",
+  "verdict": "confirmed",
+  "reason": "SekiroDictionary.txt lists 54 /cutscene/sMM_BB_NNNN.cutscenebnd.dcx names (s11_01_0030 exists for id 11010030); exe strings hold cutscene:/%s.cutscenebnd and game_dlc1:/remo, game_dlc2:/remo.",
+  "needs_recording": false
+ },
+ {
+  "id": "cutscenes.remo-engine",
+  "verdict": "confirmed",
+  "reason": "Exe strings list SprjRemoIns STEP_Init/Play_Init/Play_Wait/Finish/DummyForWarp_*, SprjRemoRes STEP_LoadRemobnd/LoadExtraResource/LoadMapTpf, CutsceneGPARAM and %s#cut%04d#a%04d.",
+  "needs_recording": false
+ },
+ {
+  "id": "cutscenes.dummy-for-warp",
+  "verdict": "corrected",
+  "reason": "EMEVD 2002[7] fade-and-warp is called with points 2002200 (events 12005210/12005211) and 2002201 (12005213) in m20 and 2502895 in m25_00_52_00 event 12505880, and the exe has STEP_DummyForWarp_*; file sizes were not re-read. Ours handles only (2002,4) and (2002,13), not 2002[7].",
+  "fix": {
+   "ours": {
+    "has": "no",
+    "where": ""
+   },
+   "note": "Sizes show stubs. That they are used purely for warp is inferred from the exe step name. The fade-only calls are 2002[7] with a warp point, and ours has no handler for that instruction."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "cutscenes.emevd-play-cutscene",
+  "verdict": "corrected",
+  "reason": "emedf names match (2002[1,2,3,4,5,6,7,9,10,11,13], 3[31]); script.rs line 869 maps (2002,4) and (2002,13) to Act::CutsceneWarp. Instructions [2], [5], [6], [9], [10], [11] have zero uses in the 30 EMEVD files; usage is 4 x [1], 4 x [3], 29 x [4], 22 x [13], 4 x [7].",
+  "fix": {
+   "note": "Ours implements (2002,4) and (2002,13) as an instant warp. Playback is skipped. 2002[2], [5], [6], [9], [10], [11] are never called in the shipped scripts."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "cutscenes.playback-method",
+  "verdict": "corrected",
+  "reason": "emedf enum 'Cutscene Play Mode' names the argument: 0 Skippable, 2 Unskippable, 8 Skippable With Fade-Out, 10 Unskippable With Fade-Out. In the 61 play calls the value is 0 (34), 16 (26) and 2 (one, 89000099); 16 is not in the enum.",
+  "fix": {
+   "summary": "The playback argument is a play mode: 0 skippable, 2 unskippable, 8 and 10 the same with a fade-out. The shipped calls use 0 (34), 16 (26) and 2 (1). The value 16 is not in the emedf enum; its meaning is not decoded.",
+   "values": "61 play calls: playback 0 x34, 16 x26, 2 x1 (89000099). Enum: 0 Skippable, 2 Unskippable, 8 Skippable With Fade-Out, 10 Unskippable With Fade-Out",
+   "confidence": "data",
+   "note": "16 is probably an extra flag bit on top of the enum; not confirmed.",
+   "check": "Play a 16 scene (11010030) and a 0 scene (11000001) and see whether a skip prompt appears."
+  },
+  "needs_recording": true
+ },
+ {
+  "id": "cutscenes.warp-fade",
+  "verdict": "corrected",
+  "reason": "emedf names exist (2002[7] Fade Out and Warp Player, 2003[82] Set Menu Fade, 2003[71] Hide HUD), but 2003[71] has zero uses and 2003[82] has 71 uses; 2002[7] has 4 uses (m20 and m25).",
+  "fix": {
+   "note": "2003[71] Hide HUD is defined but never called in the shipped scripts; the menu fade is 2003[82] (71 uses)."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "cutscenes.ceremony",
+  "verdict": "corrected",
+  "reason": "emedf: 2003[59] Set Map Ceremony has 12 uses (m15_00 and m25_00 files), 2003[57] Set Current Map Ceremony has 0 uses and 2002[9]/[10] have 0 uses; 2005[17] has 0 uses.",
+  "fix": {
+   "values": "2003[59] Set Map Ceremony x12 (m15_00_00_00 3, m25_00_00_00 3, m25_00_50_00 3, m25_00_52_00 3); 2003[57], 2002[9], 2002[10], 2005[17] defined but unused",
+   "note": "The burned Hirata Estate is not set by these instructions in the shipped scripts; only m15 and m25 use Set Map Ceremony. The Castle fire uses Set Area Gparam Sub ID instead."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "cutscenes.cutsceneparam",
+  "verdict": "confirmed",
+  "reason": "CutsceneParam.json has 28 rows with bgmFadeinTime, bgmFadeoutTime and doPausePrevCutsceneBgm; row 10000000 has fadeout 2.5 and pause 1.",
+  "needs_recording": false
+ },
+ {
+  "id": "cutscenes.hirata-burning",
+  "verdict": "confirmed",
+  "reason": "m10_00_00_00 event 11005800 calls 2002[13] (and one 2002[4]) with cutscene 10000000 and warp 1102631 area 11, lighting variants 257 to 260; event 11005810 plays 10000010 (warp 1002815); event 50 plays 10000020 with 2002[1].",
+  "needs_recording": false
+ },
+ {
+  "id": "cutscenes.m11-00-list",
+  "verdict": "corrected",
+  "reason": "m11_00_00_00 EMEVD: 11000000 (event 11100100, 2002[3]), 11000001 (11105625), and event 11100628 warps to 1002630 for 11000030, 31, 32, 33, 35 and 36. 11000034 is not called.",
+  "fix": {
+   "summary": "The Outskirts area has scenes 11000000 and 11000001 (events 11100100, 11105625) and the 11000030 to 11000036 group without 34 (event 11100628, warp 1002630).",
+   "values": "11000000/11000001; 11000030-33, 11000035, 11000036 (no 11000034)"
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "cutscenes.m11-01-list",
+  "verdict": "confirmed",
+  "reason": "Every example id/event pair (11010010/11 with 11115810, 11010020 with 11115820, 11010030/31 with 11115800, 11010040, 50, 60, 70, 80, 100, 110) matches the 2002 calls in m11_01_00_00.",
+  "needs_recording": false
+ },
+ {
+  "id": "cutscenes.m11-02-list",
+  "verdict": "confirmed",
+  "reason": "All listed ids and events match m11_02_00_00 (11125800 warp 1102621, 11125810, 11120100, 11125840, 11125830, 11120201, 11125202, 11120110 for 100/110/120/121).",
+  "needs_recording": false
+ },
+ {
+  "id": "cutscenes.other-areas",
+  "verdict": "confirmed",
+  "reason": "15000000 (11505695), 20000000 (12005210), 20000011/12 (12005906), 20000020 (12000700), 20000030 (12005704), 25000000 (12505801), 25000020 (12505885) and 89000099 (common event 250) all match the EMEVD calls.",
+  "needs_recording": false
+ },
+ {
+  "id": "cutscenes.cutscene-call-inventory",
+  "verdict": "corrected",
+  "reason": "Counting bank 2002 in all 30 EMEVD files gives 61 play calls (ids [1,3,4,13]) plus 4 fade-and-warp calls [7], so 65, not 105; 44 distinct cutscene ids; maps m10, m11_00, m11_01, m11_02, m15, m20 (two files), m25 and common (m89).",
+  "fix": {
+   "summary": "61 calls to cutscene play instructions exist across the EMEVD files (65 with the four fade-and-warp calls), naming 44 distinct cutscene ids.",
+   "values": "61 play calls (2002[1] x4, [3] x4, [4] x29, [13] x22) + 4 x 2002[7]; 44 distinct ids; maps m10, m11_00, m11_01, m11_02, m15, m20, m25, common (m89)"
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "cutscenes.fight-handover",
+  "verdict": "confirmed",
+  "reason": "Event 11115820 plays 11010020, waits 3[31] IF Ongoing Cutscene Finished, then 2004[5] sets 1110800 off and 1110801 on; 3[31] is used 40 times in the scripts.",
+  "needs_recording": false
+ },
+ {
+  "id": "cutscenes.skip",
+  "verdict": "corrected",
+  "reason": "The emedf enum 'Cutscene Play Mode' (0 Skippable, 2 Unskippable, 8/10 with fade-out) shows the EMEVD play call does carry a skip rule, contrary to the record.",
+  "fix": {
+   "summary": "The play instruction's mode argument sets whether a scene is skippable: 0 skippable, 2 unskippable, 8 and 10 the same with a fade-out. Only 89000099 is unskippable (2); the 16 values are not in the enum.",
+   "confidence": "data",
+   "note": "How the in-game skip input behaves for mode 16 is not decoded.",
+   "check": "Press the skip input during scene 11010030 (mode 16) and scene 11000001 (mode 0)."
+  },
+  "needs_recording": true
+ },
+ {
+  "id": "cutscenes.movies-bk2",
+  "verdict": "confirmed",
+  "reason": "movie/ holds openingmovie.bk2 (314346532 bytes) and stafflistmovie.bk2 (598104408 bytes); exe strings have movie:/%s%s.bk2, Movie_Advertise/Title/Opening/StaffRoll/EndingBad/EndingGood/OldTale and CSMovieIns.",
+  "needs_recording": false
+ },
+ {
+  "id": "cutscenes.movie-subtitles-link",
+  "verdict": "confirmed",
+  "reason": "ムービー字幕.fmg parses to 71 ids from 8000000 to 8000070; the exe has MovieSubtitle strings; the link to movies stays open.",
+  "needs_recording": false
+ },
+ {
+  "id": "cutscenes.cutscene-bgm",
+  "verdict": "confirmed",
+  "reason": "CutsceneParam rows carry bgmFadeinTime, bgmFadeoutTime and doPausePrevCutsceneBgm (28 rows).",
+  "needs_recording": false
+ },
+ {
+  "id": "cutscenes.cutscene-lighting",
+  "verdict": "corrected",
+  "reason": "The exe strings show CutsceneGPARAM and 'RemoBase' (no 'remobase.gparam' string); 2002[13] carries a lighting argument (257 to 260 for the Hirata scene, small values 1 to 5 elsewhere).",
+  "fix": {
+   "values": "RemoBase and CutsceneGPARAM strings in the exe; 2002[13] warp with lighting (last argument: 257-260 in m10 and m11_02, 259 in m11_01 event 11110100, 2-5 and 1 in the other calls)"
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "cutscenes.dlc-remo",
+  "verdict": "confirmed",
+  "reason": "The exe holds the wide strings game_dlc1:/remo and game_dlc2:/remo.",
+  "needs_recording": false
+ },
+ {
+  "id": "cutscenes.ongoing-wait",
+  "verdict": "confirmed",
+  "reason": "3[31] IF Ongoing Cutscene Finished is used 40 times (e.g. 11115800, 11115820, 11115740).",
+  "needs_recording": false
+ },
+ {
+  "id": "cutscenes.ours-coverage",
+  "verdict": "confirmed",
+  "reason": "script.rs line 869 maps (2002,4) and (2002,13) to Act::CutsceneWarp and line 1255 applies the warp.",
+  "needs_recording": false
+ },
+ {
+  "id": "cutscenes.his-coverage",
+  "verdict": "confirmed",
+  "reason": "sekiro-rs docs/PROGRESS.md line 165 lists 'cutscenes, dialogue' as Not started.",
+  "needs_recording": false
+ },
+ {
+  "id": "cutscenes.remo-resource-load",
+  "verdict": "confirmed",
+  "reason": "Exe strings SprjRemoRes::STEP_LoadRemobnd_Init/Wait, STEP_LoadExtraResource_Init/Wait, STEP_LoadMapTpf_Init/Wait exist.",
+  "needs_recording": false
+ },
+ {
+  "id": "dialogue.esd-format",
+  "verdict": "corrected",
+  "reason": "The files start with 'fsSL' (long format, 8-byte varints, data start 0x6C), not 'fSSL'; 194 ESDs in 10 talkesdbnd folders (m00, m10, m11_00, m11_01, m11_02, m13, m15, m17, m20, m25) counted on disk and parsed with the SoulsFormats layout.",
+  "fix": {
+   "summary": "Talk scripts are state machines in .esd files. The file starts with fsSL (the 64-bit long format). It holds state groups, states, conditions and a small expression bytecode.",
+   "values": "magic fsSL, data start 0x6C, 64-bit varints; 194 ESDs in 10 talkesdbnd binders (m00, m10, m11_00, m11_01, m11_02, m13, m15, m17, m20, m25)"
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "dialogue.esd-expr",
+  "verdict": "confirmed",
+  "reason": "Decoded the command argument bytecode of all 194 ESDs: 0x82 + int32 constants, small ints below 0x80, 0xB8 StateGroupArg and 0xA1 end markers appear as described and the constants read back sensibly (flags, TalkParam rows, SpEffect 30700).",
+  "needs_recording": false
+ },
+ {
+  "id": "dialogue.esd-names",
+  "verdict": "confirmed",
+  "reason": "t110100 sits in m11_00_00_00.talkesdbnd; files t*00 to t*06 in every block are the identical 26414-byte idol menu scripts (checked t100000..t100005, t110000..t110006, t111000..).",
+  "needs_recording": false
+ },
+ {
+  "id": "dialogue.command-banks",
+  "verdict": "confirmed",
+  "reason": "Parsing all command calls shows only banks 1, 5, 6 and 7; bank 6 ids are 0x7FFFFFxx machine calls and bank 7 is -1 (RETURN); bank 5 and 1 unnamed ids match the record (1_116/117/120/130, 5_11/19/100/116/117/120/128; also 1_131).",
+  "needs_recording": false
+ },
+ {
+  "id": "dialogue.command-frequency",
+  "verdict": "confirmed",
+  "reason": "Counted every (bank,id) over all 194 ESDs with the SDT command names: RETURN 4885, SetEventFlag 1634, GiveSpEffectToPlayer 627, TalkToPlayer 528, AddTalkListData 502, OpenGenericDialog 173, OpenConversationChoicesMenu 108 in 36 files, OpenRegularShop 87, OfferHumanity 91, AwardItemLot 50, OpenSellShop 16, OpenScalesShop 2, OpenTranspositionShop 2, UpgradeProstheticsMenu 2. All equal.",
+  "needs_recording": false
+ },
+ {
+  "id": "dialogue.talkparam-fields",
+  "verdict": "corrected",
+  "reason": "TalkParam.json has 7385 rows, not 7380; the fields (textId, soundId0..7 with _female and _pc, talkAnimation0..7 and _pc default 100, lookAtTarget, lipSyncStart/Time, timeout) are as described.",
+  "fix": {
+   "values": "7385 rows; textId; soundId0..7 (+_female, soundId_pc); talkAnimation0..7 and _pc (100 default); lookAtTarget0..7 and _pc; lipSyncStart/Time; timeout"
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "dialogue.talkparam-groups",
+  "verdict": "corrected",
+  "reason": "TalkParam ids: 7029 eight-digit and 356 seven-digit rows (7385 total), not 7026 and 354; group row counts match the listed speakers (10 Sculptor, 11 Kuro and Wolf, 13 idol, 16 Suzu-baba, 26 Anayama, 60/65 guards, 70 groaning). Group 17 is the t110171 shopkeeper (it also calls OpenRegularShop 1100300); group 47 reads like a peddler.",
+  "fix": {
+   "values": "7029 eight-digit and 356 seven-digit ids; 10 Sculptor, 11 Wolf talk (t111110 Kuro), 12 Hirata/Owl pre-fight, 13 idol, 16 Suzu-baba, 17 shopkeeper t110171, 19 Anayama's servant, 24 Genichiro area, 26 Anayama (t110260), 29 asks about the Divine Child, 34-36 shops (36 scales), 41-46 Memorial Mobs, 60 guards and moon-viewing, 65 ambient, 70 groaning victims"
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "dialogue.subtitle-text-fmg",
+  "verdict": "corrected",
+  "reason": "Parsed the FMGs: 会話.fmg has 6700 entries and ダイアログ.fmg 161, but イベントテキスト.fmg has 1103 ids (not 1032); 15xxxxxx (262) and 14xxxxxx (126) ranges exist; textId 12030000 reads 'That day...'.",
+  "fix": {
+   "values": "msg/engus/menu.msgbnd.d/会話.fmg; イベントテキスト.fmg (1103 ids): talk menu 15xxxxxx, choices 14xxxxxx; ダイアログ.fmg (161)"
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "dialogue.voice-banks",
+  "verdict": "confirmed",
+  "reason": "TalkParam 12030000 has soundId0 12030000 and the kb sound.md/AUDIO.md state events v0<soundId> in vm10; the language banks vm<area>_<lang>.fsb are encrypted like sm10 (header 80c69086 on disk, the exe-key decrypt gives FSB5) while the base vm<area>.fsb are plain, so playback of the lines needs bgm_decrypt.",
+  "needs_recording": false
+ },
+ {
+  "id": "dialogue.talk-menu-list",
+  "verdict": "confirmed",
+  "reason": "AddTalkListData occurs 502 times in 100 ESDs; event text has 262 ids in the 15xxxxxx range.",
+  "needs_recording": false
+ },
+ {
+  "id": "dialogue.talk-menu-choices",
+  "verdict": "confirmed",
+  "reason": "OpenConversationChoicesMenu occurs 108 times in 36 ESDs; event text has 126 ids in 14xxxxxx.",
+  "needs_recording": false
+ },
+ {
+  "id": "dialogue.talk-to-player",
+  "verdict": "corrected",
+  "reason": "528 TalkToPlayer calls confirmed, but the arguments in t100121 are (row, -1, -1, flag/mode, ...) as in the ESDLang doc (talkParamRow, two -1 fields, an event flag), not 'row and state machine ids'.",
+  "fix": {
+   "values": "528 uses; args: TalkParam row, -1, -1, then flag/mode fields (t100121: [row, -1, -1, 2, 0/1])"
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "dialogue.generic-dialog",
+  "verdict": "confirmed",
+  "reason": "OpenGenericDialog occurs 173 times in 77 ESDs; ダイアログ.fmg has 161 texts.",
+  "needs_recording": false
+ },
+ {
+  "id": "dialogue.shop-from-esd",
+  "verdict": "confirmed",
+  "reason": "ESD shop calls: OpenRegularShop 87 (ranges such as 1000-1001, 1100500-1100599, 9000000-9000099), OpenSellShop 16, OpenScalesShop 2 (t100360 and t250360), OpenTranspositionShop 2 (t110100, t110200).",
+  "needs_recording": false
+ },
+ {
+  "id": "dialogue.flags-in-esd",
+  "verdict": "confirmed",
+  "reason": "SetEventFlag 1634 uses in 186 ESDs and GiveSpEffectToPlayer 627 in 135 ESDs.",
+  "needs_recording": false
+ },
+ {
+  "id": "dialogue.progress-gated-lines",
+  "verdict": "confirmed",
+  "reason": "Counting TalkParam ids referenced per ESD gives t110230 110, t111230 110, t111110 98, t110100 80, t110171 64; each is the record value plus one shared row, so the ranking is right.",
+  "needs_recording": false
+ },
+ {
+  "id": "dialogue.idol-menu",
+  "verdict": "confirmed",
+  "reason": "t*00 to t*06 are 26414-byte ESDs; TalkParam 13030000 appears as a constant in 46 ESDs; t000001 has 38 state machines.",
+  "needs_recording": false
+ },
+ {
+  "id": "dialogue.memories-remnants",
+  "verdict": "corrected",
+  "reason": "t000001 holds the constants 5200-5213, 5220-5222 and 5300-5313, but 5320/5322 and flags 6038, 6040, 6070, 6072, 6280, 6286 and the tutorial texts 10024890/91 and 10024910/11 are in common.emevd events 275 to 285, not in the ESD.",
+  "fix": {
+   "how": "ESD t000001 (item ranges 5200-5313) and common.emevd events 275, 279 to 285 (flags, remnant 5320-5322, tutorial texts 10024890/10024891 and 10024910/10024911 via 2007[17])."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "dialogue.ambient-proximity",
+  "verdict": "confirmed",
+  "reason": "t111650 calls machine 2147483641 with 71118500 and 65000900 plus GiveSpEffectToPlayer 30700; the two distances are float constants not decoded here.",
+  "needs_recording": false
+ },
+ {
+  "id": "dialogue.eavesdrop-player",
+  "verdict": "corrected",
+  "reason": "c0000_cmsg.hks has STATE_TYPE_EVENT_EAVESDROP_LOOP 98 and _END 99 and the HKB start/end ids 19210-19215 (crouch/stand), 19220-19225 (cover), 19230-19232 (hang); it also defines swim 19242 and hang foot-hold 19252 eavesdrop states.",
+  "fix": {
+   "values": "STATE_TYPE_EVENT_EAVESDROP_LOOP 98, _END 99; HKB 19210-19212 crouch, 19213-19215 stand, 19220-19222 cover, 19223-19225 cover-look, 19230-19232 hang, 19240-19242 swim, 19250-19252 hang foot hold"
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "dialogue.eavesdrop-esd",
+  "verdict": "confirmed",
+  "reason": "t112500 references TalkParam 90000050 whose text is 'Eavesdrop dummy text (the Imperial Prince is in the Moon-vie...'; the wiki list remains missing.",
+  "needs_recording": false
+ },
+ {
+  "id": "dialogue.owl-pre-fight",
+  "verdict": "confirmed",
+  "reason": "t100121 references TalkParam 12030000/100/200/400/500 and flags 71000137 and 71000130 and SpEffect 30700; TalkParam rows 12030000-12030005 exist with soundId0 12030000 and texts; talk.rs header and the owl recording match.",
+  "needs_recording": false
+ },
+ {
+  "id": "dialogue.hostile-talks",
+  "verdict": "confirmed",
+  "reason": "t111330, t111331, t112330, t112331, t100340, t100341 exist; TalkParam 33160000 reads 'Face me...' and 24060000 'Shura... I never did think...'.",
+  "needs_recording": false
+ },
+ {
+  "id": "dialogue.groaning-victims",
+  "verdict": "confirmed",
+  "reason": "t100700, t100701, t110700, t111700-704 and t170700 exist; TalkParam has 273 rows in the 70xxxxxx group starting with '(Groan...)'.",
+  "needs_recording": false
+ },
+ {
+  "id": "dialogue.timeouts-lipsync",
+  "verdict": "confirmed",
+  "reason": "TalkParam rows hold timeout and lipSyncStart/lipSyncTime per voice slot (e.g. 12030000 lipSyncStart0 0, time -1).",
+  "needs_recording": false
+ },
+ {
+  "id": "dialogue.exe-talk-system",
+  "verdict": "confirmed",
+  "reason": "Exe strings found: SprjChrTalkModule, SprjWorldTalkMan, 'Npc Talk Ins', 'EzState Talk Env', talkscript:/%s.talkesdbnd, data1:/script/talk, TalkMsg.",
+  "needs_recording": false
+ },
+ {
+  "id": "dialogue.movie-subtitles",
+  "verdict": "confirmed",
+  "reason": "ムービー字幕.fmg parses to 71 ids 8000000 to 8000070.",
+  "needs_recording": false
+ },
+ {
+  "id": "dialogue.ours-his-coverage",
+  "verdict": "confirmed",
+  "reason": "src/enemy/talk.rs implements the Owl talk (header cites t100121); sekiro-rs PROGRESS.md line 165 lists dialogue as Not started.",
+  "needs_recording": false
+ },
+ {
+  "id": "npcs.roster-names",
+  "verdict": "confirmed",
+  "reason": "NPC名.fmg has 90 entries; 937010 Sculptor, 937200 Kuro the Divine Heir, 937300 Divine Child, 937400 Emma, 937420 Anayama, 937430 Fujioka, 937431-936 six Memorial Mobs, 937437/8 Harunaga/Koremori, 937500 Shosuke, 937510 Blackhat Badger and 931012 Hanbei all read back.",
+  "needs_recording": false
+ },
+ {
+  "id": "npcs.npcparam-rows",
+  "verdict": "corrected",
+  "reason": "NpcParam has the c7010, c7200, c7300, c7400, c7410, c7420, c7430, c7450, c7460, c7500, c7510 families as listed, but the Memorial Mob clerk models are c7540, c7550, c7560, c7580, c7590, c7600 (no c7570; Paramdex names Valley, Temple, Dungeon, Honjo, Sick Village, Castle cliff / small tower).",
+  "fix": {
+   "values": "c7010 Sculptor, c7200 Kuro, c7300 Divine Child, c7400 Emma, c7410 Hanbei, c7420 Anayama, c7430 Fujioka, c7450 Suzu-baba, c7460 her son, c7500 Shosuke, c7510 Badger, Memorial Mobs c7540/7550/7560/7580/7590/7600; rows like 70100080, 74200082"
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "npcs.msb-flag-gating",
+  "verdict": "corrected",
+  "reason": "Parsed all MSB enemy parts: the Sculptor parts match exactly (m11_00 c7010_0000 entity 1100720 row 70100080 flag 8302 cmp 1 at 122.87,-47.23,-190.63; m11_02 entity 1120721 row 70100000 flag 8306), offsets +0x40 and +0x44 confirmed; but only 108 parts use c7xxx models, not 140.",
+  "fix": {
+   "how": "MSB part flags read by the map loader; 108 NPC parts (models c7xxx) in the nine MSBs.",
+   "note": "Offsets +0x40 EventFlagID and +0x44 compare state were re-read from the retail MSBs."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "npcs.story-flags-8301",
+  "verdict": "confirmed",
+  "reason": "common.emevd events 910 (8301 when items 2400, 2500 or 2501), 911 (8302 when 9310), 912 (8303 when 9304 and not 9314), 920 (8307 with 9314/map and items 79000/79100) read as described; 8306 is set by common events 0 and 50.",
+  "needs_recording": false
+ },
+ {
+  "id": "npcs.sculptor",
+  "verdict": "confirmed",
+  "reason": "MSB parts, flags 8302/8306 and entities 1100720/1120721 verified; events 11105720 and 11105721 exist in m11_00 and use 7110xxxx flags; death flag 1019 is initialised via event 20006002 for entity 1100720; t110100 references 77 TalkParam rows (group 10).",
+  "needs_recording": false
+ },
+ {
+  "id": "npcs.sculptor-services",
+  "verdict": "confirmed",
+  "reason": "t110100 contains OpenTranspositionShop(1101000,1101009) and UpgradeProstheticsMenu; ShopLineupParam 1101000-1101009 have equipId 70000..79000, mtrlId 100000..100090 and release flags 6500..6509.",
+  "needs_recording": false
+ },
+ {
+  "id": "npcs.shop-lineup-structure",
+  "verdict": "confirmed",
+  "reason": "ShopLineupParam.json has 373 rows with the listed fields; lineup 1100000 value 500 vs 1100050 450 shows the +50 copy at x0.9.",
+  "needs_recording": false
+ },
+ {
+  "id": "npcs.shop-discount-flag",
+  "verdict": "corrected",
+  "reason": "ESD t*800 and t110171 test flag 6020 once; common.emevd event 710 sets 6020 when the player holds item 9061 (Promissory Note), which answers the open note.",
+  "fix": {
+   "note": "Flag 6020 is set by common event 710 when the player has item 9061 (Promissory Note).",
+   "check": "Give the player item 9061 and open a Memorial Mob shop: prices use the +50 lineup (about 10 percent lower)."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "npcs.memorial-mobs",
+  "verdict": "corrected",
+  "reason": "ESDs t110800, t111800, t112800, t130800, t150800, t170800, t200800 are all 46452 bytes and call OpenRegularShop (plus t110801); NpcParam clerk models are c7540, c7550, c7560, c7580, c7590, c7600 (not c7570-less list in the record); TalkParam 15000010 is referenced.",
+  "fix": {
+   "values": "NPC names 937431-937436; ESDs t110800, t111800, t112800, t130800, t150800, t170800, t200800 (and t110801); TalkParam 15000010; models c7540, c7550, c7560, c7580, c7590, c7600"
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "npcs.pot-nobles",
+  "verdict": "corrected",
+  "reason": "Common events 20006126 (flags 1620-1639) and 20006127 (flags 1640-1659) are initialised in different maps: 20006126 in m10_00 event 50 (entity 1000731, ESD t100360) and 20006127 in m25_00 event 50 (entity 2500702, ESD t250360); both ESDs call OpenScalesShop(0,1,2). Harunaga is therefore in Hirata, Koremori in Fountainhead.",
+  "fix": {
+   "summary": "Two clerks, Harunaga and Koremori, sell for Treasure Carp Scales: Harunaga in the Hirata Estate (m10) and Koremori in the Fountainhead Palace (m25). They use their own lineups. Harunaga's scale event uses flags 1620 to 1639, Koremori's 1640 to 1659.",
+   "values": "names 937437, 937438; events 20006126 (m10, entity 1000731, ESD t100360) and 20006127 (m25, entity 2500702, ESD t250360); OpenScalesShop (2 uses); lineup 2500000; item 10000 Treasure Carp Scale; SpEffect 30202 scale shop clerk",
+   "check": "Bring a scale to Harunaga in Hirata and to Koremori at the Fountainhead and watch flags 1620 and 1640."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "npcs.kuro",
+  "verdict": "corrected",
+  "reason": "NpcParam c7200/c7210/c7300 and name 937200 verified, and item 9090 'Rice for Kuro'; but the ESD that checks 9090 is t111110 (97 TalkParam rows, group 11, 'I have come for you, my lord'), while t111290 (27 rows, group 29) asks about the Divine Child and belongs to someone else.",
+  "fix": {
+   "values": "model c7200 rows 72000xxx, 72001xxx; c7210 child; c7300 Divine Child; name 937200; ESD t111110 (97 TalkParams, group 11, uses item 9090); item 9090 Rice for Kuro",
+   "how": "NpcParam rows with phantom conversation variants and ESD t111110."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "npcs.emma",
+  "verdict": "corrected",
+  "reason": "NpcParam c7400/c7401 and item 9560 verified; item 9560 is tested in t110230 and t111230 (109 rows, group 23, the Emma scripts), while t110110/t110112 are single-row Hirata scene scripts (11250000, 11250200).",
+  "fix": {
+   "values": "c7400, c7401; name 937400; item 9560 Dragonrot Blood Sample; ESD t110230/t111230 (109 TalkParams, group 23); t110110/t110112 are one-row Hirata scenes"
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "npcs.hanbei",
+  "verdict": "confirmed",
+  "reason": "NpcParam c7410 rows 74100000.. exist (Paramdex 'Fascinated Samurai' Hidden Prison, dragon cough variants) and name 931012 reads 'Hanbei the Undying'; the lineup range 1000000-1000007 exists in ShopLineupParam (1000007 is released by flag 1642, so it may belong to another clerk).",
+  "needs_recording": false
+ },
+ {
+  "id": "npcs.anayama",
+  "verdict": "confirmed",
+  "reason": "Rows 74200080/81/82 and 74201080 exist; common events: 20006001 (1100704, 1215, 1216, 71100287, 3 hits), 20006207 (1100704 to 1100732, appear 70002015, dead 1219), ESD t110260 references 20 TalkParam rows; lineups 1100400 and 1100500 exist.",
+  "needs_recording": false
+ },
+ {
+  "id": "npcs.fujioka",
+  "verdict": "confirmed",
+  "reason": "NpcParam rows 74300082 and 74305081 exist; name 937430 reads 'Fujioka the Info Broker'.",
+  "needs_recording": false
+ },
+ {
+  "id": "npcs.blackhat-badger",
+  "verdict": "confirmed",
+  "reason": "NpcParam has 12 rows in 7510xxxx; name 937510 reads 'Blackhat Badger'; Paramdex names them 'White Rappa'.",
+  "needs_recording": false
+ },
+ {
+  "id": "npcs.shosuke",
+  "verdict": "confirmed",
+  "reason": "c7500 rows 75000000/80/81 and name 937500 exist; t150270 references 22 TalkParam rows (group 27).",
+  "needs_recording": false
+ },
+ {
+  "id": "npcs.suzu-baba",
+  "verdict": "confirmed",
+  "reason": "Rows 74500000/74500080/74501080 (c7450) and 74600000/80/81/1080 (c7460, 74600081 'after the aunt's killing') exist; t110160 references 16 rows (group 16) including 'Oh... is that you, Inosuke?'.",
+  "needs_recording": false
+ },
+ {
+  "id": "npcs.minor-models",
+  "verdict": "confirmed",
+  "reason": "NpcParam has rows for c7440, c7470, c7480, c7490, c7520, c7530 with the Paramdex names given; common event 20006090 sets SpEffect 32901 (nun prayer) for flag 71110119.",
+  "needs_recording": false
+ },
+ {
+  "id": "npcs.hostility-hit-counter",
+  "verdict": "confirmed",
+  "reason": "Event 20006001 uses Damage Type from entity 10000 with a jump table for up to 9 hits; Anayama is initialised with flags 1215/1216 and 3 hits.",
+  "needs_recording": false
+ },
+ {
+  "id": "npcs.hostile-switch",
+  "verdict": "confirmed",
+  "reason": "Events 20006000 and 20006007 set Team Type 27 (2004[2]) and clear SpEffects 30200, 30601, 5301 and 3742000, then set the flags.",
+  "needs_recording": false
+ },
+ {
+  "id": "npcs.death-flag-event",
+  "verdict": "confirmed",
+  "reason": "Event 20006002 waits for the character dead or SpEffect 220020, sets the network flag and calls Save Request; the Sculptor is initialised with 1019.",
+  "needs_recording": false
+ },
+ {
+  "id": "npcs.dragon-cough-swap",
+  "verdict": "confirmed",
+  "reason": "Event 20006207 is initialised as (1100704, 1100732, 70002015, 1219, 1200, 0) for Anayama in m11_00.",
+  "needs_recording": false
+ },
+ {
+  "id": "npcs.placement-event",
+  "verdict": "confirmed",
+  "reason": "Event 20006206 is initialised many times with appear flags 70002000 to 70002080 (7000200x range) and an animation id; 20006061 and 20006040 exist.",
+  "needs_recording": false
+ },
+ {
+  "id": "npcs.talk-speffects",
+  "verdict": "confirmed",
+  "reason": "Paramdex SpEffectParam names: 30100 dead judgement, 30200 throw invalid, 30202 scale shop clerk, 30600 quick turn, 30601 do not turn, 30700 judgement during conversation, 32901 nun prayer, 220020 puppet shinobi judgement.",
+  "needs_recording": false
+ },
+ {
+  "id": "npcs.talk-range-cmd",
+  "verdict": "confirmed",
+  "reason": "emedf 2004[55] is 'Set Character Talk Range'; the exe has 'Npc Talk Ins', '|Talkable Ang Range', '|Max UnTalk Time' and '|m_isFirstTalk' strings.",
+  "needs_recording": false
+ },
+ {
+  "id": "npcs.talk-id-binding",
+  "verdict": "confirmed",
+  "reason": "The exe has 'TalkID:%06d | EntityId:%07d' and talkscript:/%s.talkesdbnd; no binding was found in data, so the question stays open.",
+  "needs_recording": false
+ },
+ {
+  "id": "npcs.dragonrot-cure",
+  "verdict": "confirmed",
+  "reason": "Items 9560 Dragonrot Blood Sample, 5600 Dragon's Blood Droplet and 9000 Divine Dragon's Tears read back; ShopLineupParam 1100104, 1100112, 1100411, 1100417, 1110007, 1110013, 1700005, 2000008, 2000014 sell 5600 with release flags 9090-9099; 2003[94] is Reset Dragonrot Counter.",
+  "needs_recording": false
+ },
+ {
+  "id": "npcs.dragonrot-cause",
+  "verdict": "confirmed",
+  "reason": "Web-only claim kept as community: no data source found; only 2003[94] Reset Dragonrot Counter exists in the EMEVD table and nothing in the scripts raises the counter.",
+  "needs_recording": true
+ },
+ {
+  "id": "npcs.genichiro-npc-forms",
+  "verdict": "confirmed",
+  "reason": "NpcParam c7100/c7110 rows exist (Paramdex 'Rival'); event 11115820 sets entity 1110800 off and 1110801 on after the cutscene.",
+  "needs_recording": false
+ },
+ {
+  "id": "npcs.spirit-emblem-shop",
+  "verdict": "confirmed",
+  "reason": "ShopLineupParam 1000, 1010, 1020, 1030 have value_Magnification 10, 20, 30, 50, release flag 6205; 9000000 and 9100000 are x50 emblem lineups.",
+  "needs_recording": false
+ },
+ {
+  "id": "npcs.coverage-note",
+  "verdict": "confirmed",
+  "reason": "src/sculptor.rs is the only friendly NPC service (header says no ESD story talk); sekiro-rs PROGRESS.md lists dialogue as Not started.",
+  "needs_recording": false
+ },
+ {
+  "id": "map.msb-parts-models",
+  "verdict": "confirmed",
+  "reason": "Parsed m11_00_00_00.msb: 4498 pieces, 1509 objects, 144 enemies, 10 players, 166 collisions, 99 connect collisions, and enemy/collision type data and the gparam block (an offset pair at part +0x70 that leads to LightSetID 100/110/130) read as described.",
+  "needs_recording": false
+ },
+ {
+  "id": "map.block-ids-and-connected-areas",
+  "verdict": "confirmed",
+  "reason": "Counted MSB player parts per map (9, 10, 11, 3, 3, 5, 10, 8, 10 = 69) and read 地名.fmg: 1000 Hirata Estate, 1100 Ashina Outskirts, 1110 Ashina Castle, 1120 Ashina Reservoir, 1300 Abandoned Dungeon, 1500 Mibu Village, 1510 Ashina Depths, 1700 Sunken Valley, 1710 Sunken Valley Passage, 2000 Senpou Temple, 2500 Fountainhead Palace.",
+  "needs_recording": false
+ },
+ {
+  "id": "map.connect-collision-streaming",
+  "verdict": "confirmed",
+  "reason": "Parsed all type 11 parts: Outskirts 99 (97 to m11_01, 2 to m20_00), Castle 298 (177 to m11_00, 86 to m11_02, 25 to m17, 8 + 2 to m13) and 103 Castle source collisions with more than one connection; map id bytes include -1 (for example m13_-1).",
+  "needs_recording": false
+ },
+ {
+  "id": "map.worldbackread-streaming",
+  "verdict": "corrected",
+  "reason": "Decompiled the WorldBackRead constructor 0x14081d460: Default set start 0 / end 1, Hit set 80 / 90, interval 0.2 and retire 3.0 are set in the constructor, but the same function first writes 25.0 and 30.0 into both sets before overwriting them, so the stated values are the final defaults only.",
+  "fix": {
+   "note": "These are constructor defaults, not a measured radius. The constructor first sets 25 / 30 m and then overwrites both sets (Default 0 / 1, Hit 80 / 90). Gate traversal, query budget and airborne fallback were not traced. Sekiro-rs says streaming is not implemented for whole maps."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "map.draw-group-mask-algebra",
+  "verdict": "confirmed",
+  "reason": "sekiro-rs MAP-COMPLETENESS.md lines 942-944 give the same formula (primary & selector) | (alternative & ~selector) for draw and for backread; I could not re-trace the loader in the exe here.",
+  "needs_recording": false
+ },
+ {
+  "id": "map.player-hit-collision-selects-map",
+  "verdict": "confirmed",
+  "reason": "sekiro-rs MAP-COMPLETENESS and OBJECT-COLLISION.md say the map selection stays on the last standing part (h023300 in the trunk walk) and MapWorld::stand exists; the exe offsets were not re-traced.",
+  "needs_recording": false
+ },
+ {
+  "id": "map.lod-bank-selection",
+  "verdict": "corrected",
+  "reason": "LodParam rows 0 (30/2, 60/4, crossfade 0.2 s, texture LOD 1), 60 (80 / 2000, no crossfade) and 61 (-1 borders) match, and the Outskirts pieces use LOD id 255 x4436, 61 x60, 60 x2 exactly; but MAP-COMPLETENESS.md line 986 says the selector also applies per-type scale tables and additive globals.",
+  "fix": {
+   "note": "Objects and characters take a model-side default for id 255, source not traced. The exe selector also applies per-type scale tables and additive globals, so the bare LodParam distances are not the whole effective threshold. Ours cuts LOD at fixed MAP_LOD distances."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "map.flver-lod-facesets",
+  "verdict": "confirmed",
+  "reason": "The Outskirts has 535 distinct piece models and the eight listed models are placed 154 times in the MSB; MAP-COMPLETENESS.md line 151 gives the 93 LOD-only meshes. The per-mesh set counts (3029, 2936, 2610, 2541) were not recounted.",
+  "needs_recording": false
+ },
+ {
+  "id": "map.far-view-models",
+  "verdict": "confirmed",
+  "reason": "Counted MSB map pieces: Outskirts 22 m6* and 52 m9* (m902000 x22, m902010 x11), Castle 20 and 19 (m911061 present), and m925000 is placed once in the Outskirts.",
+  "needs_recording": false
+ },
+ {
+  "id": "map.hit-collision-havok",
+  "verdict": "confirmed",
+  "reason": "FORMATS.md line 318 states the 2.3 million m11 triangles with 34 distinct ids and the shape key layout; hkx.rs collision_mesh and Terrain exist in ours.",
+  "needs_recording": false
+ },
+ {
+  "id": "map.hit-material-table",
+  "verdict": "confirmed",
+  "reason": "HitMtrlParam.json has 51 rows and the Paramdex names match the list (1 cobblestone, 3 soil, 4 wood, 5 grassland, 6 gravel, 7 bamboo, 8 tree, 9 and 10 straw, 11 iron, 12 flesh, 13 sand, 14 bone, 15 ash, 16 tile, 17 cloth, 18 dead leaves, 19 bell, 20 to 24 water and swamp, 27 mud, 28 tatami, 29 none, 30 snow, 31 bushes, 32 indoor wood, 33 autumn leaves, 34 ice, 35 to 38, 40 cloud, 45 to 47, 80 miasma); all field names exist.",
+  "needs_recording": false
+ },
+ {
+  "id": "map.hit-material-effects",
+  "verdict": "corrected",
+  "reason": "HitMtrlParam shows 110147 on 20, 21, 22 and 35 to 38, 4002 on 23, 108000 and 4000 on 24, 109920 on 27, wet 130000 and 130010, aiVolumeRate 1.5 on 20 to 22 as written, but grep finds no code in ours that applies spEffectIdOnHit or the wet effect.",
+  "fix": {
+   "ours": {
+    "has": "no",
+    "where": ""
+   },
+   "note": "Every effect repeats unchanged in the ClearCount_2 to 8 columns, so there is no new-game-plus change. Ours reads the floor material only for fall rules, swim detection (player.rs) and footstep sounds; it never applies these SpEffects."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "map.fall-damage-by-material",
+  "verdict": "confirmed",
+  "reason": "HitMtrlParam: fallDeathDist 40 everywhere except rows 22, 36, 38 at 80 with fallDamageRate 0.5, row 40 disableFallDamage 1; the exe constant at 0x143b01948 reads 20.0 and map.rs fall_death_dist uses the table.",
+  "needs_recording": false
+ },
+ {
+  "id": "map.hit-filter-groups",
+  "verdict": "confirmed",
+  "reason": "Counted the MSB hit filter bytes: m11_00 has filter 8 x155, 9 x1, 11 x1, 13 x1, 15 x1, 19 x2, 22 x1, 25 x2, 28 x2 and m11_01 has 8 x192, 27 x12, 22 x3; this equals the sekiro-rs HIT-FILTERS.md table row by row.",
+  "needs_recording": false
+ },
+ {
+  "id": "map.event-wall-reactions",
+  "verdict": "confirmed",
+  "reason": "Outskirts h900000 has filter 15 and h900001 filter 13, and HIT-FILTERS.md lines 54-58 give the 1.0 / -2.0 per second alpha fade (0.5 s) and the WorldChrMan+0x98 write.",
+  "needs_recording": false
+ },
+ {
+  "id": "map.fall-return-points",
+  "verdict": "confirmed",
+  "reason": "PlayRegionParam.json has 173 rows and exactly 12 with returnPointEntityId set, with the 12 region and entity pairs matching the record.",
+  "needs_recording": false
+ },
+ {
+  "id": "map.object-collision-groups",
+  "verdict": "corrected",
+  "reason": "sekiro-rs OBJECT-COLLISION.md has the same group table and the counts for types 0, 1, 2, 4, 6, 10, 11 (351, 545, 5, 149, 29, 29, 11) and 1395 binders (1000 intact, 495 broken, 32 cloth), 1019 / 706 / 7027 bodies; those counts are for objects with an intact physics file only, not all 1509 placed objects.",
+  "fix": {
+   "note": "Counts are objects that have an intact hkx (1119 of 1509 placed objects, summing the listed types). Types 2, 6 and 11 equal the full ObjectParam count; others do not."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "map.objact-doors",
+  "verdict": "confirmed",
+  "reason": "Our map.rs excludes ObjAct parts (objact_parts, MAP_KEEP_OBJACT); EMEVD 2005[19] Set Object Interaction has 107 uses, but 2005[14] has none in the shipped scripts.",
+  "needs_recording": false
+ },
+ {
+  "id": "map.object-destruction",
+  "verdict": "confirmed",
+  "reason": "EMEVD 2005[1] Request Object Destruction has 6 uses and 2005[2] Restoration 10, 2005[8] and 2005[16] have none; OBJECT-COLLISION.md gives 1395 binders (1000 intact, 495 broken, 32 cloth).",
+  "needs_recording": false
+ },
+ {
+  "id": "map.helper-planes-not-floors",
+  "verdict": "confirmed",
+  "reason": "Terrain::from_tris in src/map.rs skips triangles with material u32::MAX whose normal is walkable and counts them as helper_planes; walls are kept; comment names the Ape plane h900702 and the kill planes.",
+  "needs_recording": false
+ },
+ {
+  "id": "map.handedness-mirror",
+  "verdict": "confirmed",
+  "reason": "Both code bases mirror X per their module notes; no data contradicts this and the Outskirts h9xxxxx parts all sit on the same MSB offset.",
+  "needs_recording": false
+ },
+ {
+  "id": "map.fog-walls",
+  "verdict": "corrected",
+  "reason": "Common_func events 20005820 and 20005825 exist and are initialised 47 and 9 times, but the collision is toggled with 2011[1] Activate Hit (231 uses), not 2003[6] (1 use), and the SFX is created by 2006[4] Create Object-following SFX on the object.",
+  "fix": {
+   "values": "20005820 is called 47 times (end flag, object, SFX id, start flag) and 20005825 9 times (end flag, collision, start flag). Object toggle 2005[3], SFX 2006[4] Create Object-following SFX and 2006[5] Delete, collision 2011[1] Activate Hit. Roof wall: object o001401 box 5.95 x 6.95 x 0.05 m material 29, helper h900800 (24 triangles, hit filter 22). Castle roof wall object 1111440 (model o001402) is disabled initially and enabled after the authored character condition. Walls stay up until the defeat flag.",
+   "how": "Event toggles the wall object (2005[3]), creates the fog SFX (2006[4]) and switches the blocker collision with 2011[1] Activate Hit."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "map.first-visit-object-states",
+  "verdict": "confirmed",
+  "reason": "Common events 20004110 (50 calls), 20004112 (57), 20004120 (4), 20005500 (27), 20005560 (8) exist, and m11_00 calls 20004112 with group 1106600 and flag 8302 as described.",
+  "needs_recording": false
+ },
+ {
+  "id": "map.ceremony-param",
+  "verdict": "confirmed",
+  "reason": "Ceremony.json has 61 rows and the listed example rows read back (30000010 gi 1 map layer 10 point cloud 1, 30001012 gi 2 event layer 9, 30001020 override gparam 600 bake light 6, 40000010 event layer 1 map layer 1, 91080010 and 91080050 gparam 1 and 5); 2003[59] has 12 uses and 2003[57] none.",
+  "needs_recording": false
+ },
+ {
+  "id": "map.emevd-instruction-map",
+  "verdict": "corrected",
+  "reason": "Counts match (Activate Map Part 609, Character Backread 593, Spawn Map SFX 591, Register Bonfire 71, Treasure State 79, Save Request 32, Respawn Point 19, Disable Bonfire 27), but 2010[1] Play BGM, 2003[7] Set Map Visibility, 2003[20], 2003[49], 2003[72] have zero uses in the shipped scripts.",
+  "fix": {
+   "note": "Defined but never called in the shipped scripts: 2003[7] Set Map Visibility, 2003[20] Set Temporary Player Respawn Point, 2003[49], 2003[72] Set Bonfire Warping State, 2010[1] Play BGM; music is started with 2010[8] Set Map Sound State (118 uses)."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "map.idol-registration",
+  "verdict": "confirmed",
+  "reason": "BonfireWarpParam has 58 rows, isHome only on row 100, blockCultId 0 everywhere, grayout = flag + 10 on all rows, page counts 3/8/10/2/7/6/7/9/6, and rows 100/1100, 101/1114, 102/2004 reuse entities 1101950, 1111953, 2001954; Register Bonfire args (11100000, 1101950, 5.0, 180.0, 1) and per map counts 5, 7, 10, 2 match.",
+  "needs_recording": false
+ },
+ {
+  "id": "map.idol-rest",
+  "verdict": "confirmed",
+  "reason": "Event text 15000120 reads 'Rest', Save Request has 32 uses and Bonfire-like Recovery 1 use in m11_00; the enemy respawn rule stays a community wiki fact because no script or param shows it.",
+  "needs_recording": true
+ },
+ {
+  "id": "map.idol-travel",
+  "verdict": "corrected",
+  "reason": "Page counts and flags match BonfireWarpParam, but Set Bonfire Warping State 2003[72] has zero uses; Disable Bonfire 2003[90] has 27 uses (24 in common, 3 in m11_00).",
+  "fix": {
+   "values": "Page numbers: 0 home, 1 Outskirts, 2 Castle, 4 Dungeon, 5 Senpou, 6 Valley, 7 Mibu/Depths, 8 Fountainhead, 9 Hirata. Unlock flag = eventflagId, grey-out flag = grayoutEventflagId. Disable Bonfire 2003[90] (27 uses, 24 in common) toggles idols during story events; Set Bonfire Warping State 2003[72] is never called."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "map.respawn-checkpoint",
+  "verdict": "corrected",
+  "reason": "2003[23] Set Player Respawn Point has 19 uses but the split is m11_02 5, m11_00 4, m10 2, m15 2, m11_00_70_10 1, m11_01 1, m20 1, m20_00_12_60 1, m25 1, common 1; 2003[20] Set Temporary Player Respawn Point has zero uses.",
+  "fix": {
+   "values": "Set Player Respawn Point used 19 times (m11_02 5, m11_00 4, m10 2, m15 2, m11_00_70_10 1, m11_01 1, m20 1, m20_00_12_60 1, m25 1, common 1). Warp Player (New) 2003[93] 4 uses. Set Temporary Player Respawn Point 2003[20] is never called. Fall return uses PlayRegionParam.returnPointEntityId or the saved position."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "map.treasure-pickups",
+  "verdict": "corrected",
+  "reason": "2005[4] Set Object Treasure State has 79 uses (27 in common_func) and 2004[37] Force Character Treasure 82, but 2005[15] Reroll Object Treasure has no uses in the shipped scripts.",
+  "fix": {
+   "note": "Pickup interaction and animation are not implemented in ours. Reroll Object Treasure 2005[15] exists in the table but is never called."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "map.water-areas",
+  "verdict": "confirmed",
+  "reason": "HitMtrlParam rows 20, 21, 35, 37 are walkable water, 22, 36, 38 deep (fallDeathDist 80), 23 and 24 swamp, 45 to 47 underwater floors; the filter 16 and 27 rows match HIT-FILTERS.md.",
+  "needs_recording": false
+ },
+ {
+  "id": "map.collision-visibility-dark",
+  "verdict": "corrected",
+  "reason": "Counted collision +0x27 over all MSBs: m11_00 2 Dark + 4 Total, m11_01 221 Good, m17 19 Total, m20 7 Total as written, and also m13 3 Total and m25 2 Total; FUN_14061ae40 indexes a 3 entry scale array at +0x58 by the byte at +0x79.",
+  "fix": {
+   "values": "Collision +0x27: 0 Good, 1 Dark, 2 Total Dark. Scale per query type 1 / 0.5 / 0.3 (FUN_14061ae40 / FUN_14061c2a0). NpcThinkParam disableDark skips it. All 221 m11_01 collisions are Good; others: m11_00 2 Dark + 4 Total, m13 3 Total, m17 19 Total, m20 7 Total, m25 2 Total."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "map.sound-space-type",
+  "verdict": "confirmed",
+  "reason": "Counted collision +0x01: m17 has values 0, 2, 3, 4, 5, 6 and m25 has 0, 1, 2 as written; map.rs reads sound_space_type and fmod.rs set_reverb exists.",
+  "needs_recording": false
+ },
+ {
+  "id": "map.player-starts-and-spawn",
+  "verdict": "confirmed",
+  "reason": "Counted 69 player parts (9, 10, 11, 3, 3, 5, 10, 8, 10) and map.rs player_start exists.",
+  "needs_recording": false
+ },
+ {
+  "id": "map.map-offset-ancillary",
+  "verdict": "corrected",
+  "reason": "The MSB event of type 9 (MapOffset) in m11_00 reads (90, 3, -40) with rotation 20 degrees and all Outskirts h9 parts sit at (90, 3, -40); the Castle has none, but m13, m15, m17, m20 and m11_02 and m10 also have one.",
+  "fix": {
+   "values": "MapOffset (x, y, z, rotY): m11_00 (90, 3, -40, 20), m11_02 (-8.5, -45, -62.5, 27), m13 (-303, -54, 300, 132), m15 (-183.8, -421.5, 1014.5, 11), m17 (64, -82, 398, 100), m20 (-546, -14, 376, 145), m10 (0, -800, 0, 0); m11_01 and m25 have none. BTL light coordinates get the offset before the X mirror."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "map.grapple-edges",
+  "verdict": "confirmed",
+  "reason": "MOBILITY.md section 3.2 lists m11_01 with 963 kind 2 (hang) and 1326 kind 3 (cover) records; WirePointSearchParam row 0 reads find 25 m, action 3 to 15 m; the 113 exported points and the Hirata counts were not recounted.",
+  "needs_recording": false
+ },
+ {
+  "id": "map.grass-and-foliage-data",
+  "verdict": "confirmed",
+  "reason": "GrassLodRangeParam has 9 rows: row 0 LOD0 40 / LOD1 120 / LOD2 160 m, shadow 1000; row 1 30 / 60 / 90, shadow 15; GrassTypeParam has 166 rows; src/map_grass.rs exists.",
+  "needs_recording": false
+ },
+ {
+  "id": "map.collision-holes-audit",
+  "verdict": "confirmed",
+  "reason": "COLLISION-HOLES.md table: total 208241 found, 119 body reproduced, 12 visually confirmed, with every per-map count equal to the record.",
+  "needs_recording": false
+ },
+ {
+  "id": "map.load-time-memory",
+  "verdict": "confirmed",
+  "reason": "The record is a planning note read in sekiro-rs MAP-BASELINE.md (m17 3.9 s, m20 5.2 s and 6.8-7.1 GB, m25 5.4 s and 6.0-6.3 GB) and our map.md (4.13 M triangles, 186 MB); it is not a game rule and no game data bears on it.",
+  "needs_recording": false
+ },
+ {
+  "id": "sound.fsb-fmod-format",
+  "verdict": "confirmed",
+  "reason": "Read the banks in the install's sound folder: the plain ones start with FSB5 and the decrypted music bank sm11 gives 'FSB5' too, and kb/sound.md and AUDIO.md state FMOD Ex 4.4 with the game's own fmodex64.dll and fmod_event64.dll; src/fmod.rs exists.",
+  "needs_recording": false
+ },
+ {
+  "id": "sound.event-path-keys",
+  "verdict": "confirmed",
+  "reason": "AUDIO.md lines 40-41 list the same type letters (a, c, f, o, p, s, m, v, x, b, g, z) and the project/group/event path, for example main/main/c000004010.",
+  "needs_recording": false
+ },
+ {
+  "id": "sound.tae-sound-cues",
+  "verdict": "corrected",
+  "reason": "Sound cues are TAE PlaySound types 128 to 132 handled in src/sound.rs and TAE 970 is the deathblow mix (kb/sound.md), but src/tae.rs does not exist; the cues are handled in sound.rs.",
+  "fix": {
+   "ours": {
+    "has": "yes",
+    "where": "src/sound.rs"
+   },
+   "values": "TAE sound types 128-132 (PlaySound variants), 970 deathblow mix (188 deathblow anims), 237 CreateAISound; gated sounds need a SpEffect with the StateInfo."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "sound.floor-footsteps",
+  "verdict": "confirmed",
+  "reason": "AUDIO.md and kb/sound.md give the rule floor event = id rounded down to 1000 + HitMtrl id (tatami 28 -> c000001028); FootSfxParam.json has 46 rows.",
+  "needs_recording": false
+ },
+ {
+  "id": "sound.armour-sounds",
+  "verdict": "confirmed",
+  "reason": "AUDIO.md says armour event = c + id + defense material, Wolf's protector rows 113 and 139 and NPC materialSe 108 and 114, as written.",
+  "needs_recording": false
+ },
+ {
+  "id": "sound.hit-sounds",
+  "verdict": "corrected",
+  "reason": "HitEffectSeParam has 92 rows and HitEffectSeJustGuardParam 82, and kb/sound.md describes the deflect-first lookup, but src/damage.rs does not exist; the code is sound.rs hit_sounds and guard_sounds with fields on the Attack in data.rs.",
+  "fix": {
+   "ours": {
+    "has": "yes",
+    "where": "src/sound.rs hit_sounds, guard_sounds; src/data.rs"
+   },
+   "values": "HitEffectSeParam 92 rows, HitEffectSeJustGuardParam 82 rows; row = each defender material, column group = attacker atkMaterial_forSe, index = power + type*3; deflect looks in the just-guard table first, block in HitEffectSeParam"
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "sound.fmod-categories",
+  "verdict": "confirmed",
+  "reason": "kb/sound.md (exe FUN_141c7b760, command 10) gives the master category as Master * 0.7 and the SoundMan slots Master, InGameMaster, Bgm, Se, Voice, Menu, OtherMenu, with set_mix in fmod.rs.",
+  "needs_recording": false
+ },
+ {
+  "id": "sound.reverb-space-type",
+  "verdict": "confirmed",
+  "reason": "Counted collision +0x01 in the MSBs (m17 uses 0 and 2 to 6, m25 0 to 2) and kb/sound.md gives the 2.6 s ease (constructor FUN_14092cec0) into sd_reverb_size; the exe string sd_reverb_size exists.",
+  "needs_recording": false
+ },
+ {
+  "id": "sound.mixer-routing",
+  "verdict": "corrected",
+  "reason": "multimix.mix is 1156 bytes, magic MFOM, and holds the 10 names listed; kb/sound.md says the routing is ported in fmod.rs (build_mixers, route, read_mix), not just partly.",
+  "fix": {
+   "ours": {
+    "has": "yes",
+    "where": "src/fmod.rs build_mixers, route, read_mix"
+   },
+   "note": "Only mixerID_0 of each event is used. Reading the first u16 of a mix entry as the output mixer is inferred."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "sound.deathblow-mix",
+  "verdict": "confirmed",
+  "reason": "kb/sound.md traces TAE 970 to the three ntc_ninsatsu lowpasses (445, 1332 and 10 Hz) and fmod.rs set_deathblow_mix carries the same figures; the exe string ntc_ninsatsu1 to 3 exists.",
+  "needs_recording": false
+ },
+ {
+  "id": "sound.occlusion-shahei",
+  "verdict": "confirmed",
+  "reason": "kb/sound.md traces Shahei to a region and portal route search on a voxel grid (141ca.c, 141c9.c) and the exe has the Shahei string; no event of the sampled projects has room, deep or sd_dimension.",
+  "needs_recording": false
+ },
+ {
+  "id": "sound.dummy-poly-placement",
+  "verdict": "confirmed",
+  "reason": "AUDIO.md measured the event ranges (swing 29 m, deflect 60 m, hit on Wolf 40 m) and kb/sound.md lines 'Placement' describe dummy-poly placement in sound.rs.",
+  "needs_recording": false
+ },
+ {
+  "id": "sound.slot-sounds",
+  "verdict": "corrected",
+  "reason": "kb/sound.md (2026-10-15) says the slotted sound lives only while its event runs, copied from DSAnimStudio, with the exe's own slot stop not traced, so the source is not the exe.",
+  "fix": {
+   "confidence": "community",
+   "ours": {
+    "has": "yes",
+    "where": "src/sound.rs"
+   },
+   "values": "Slot sounds are kept apart from slotted FFX (+1000). The exe stop is not traced."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "sound.area-music",
+  "verdict": "corrected",
+  "reason": "Common event 410 sets 2010[9] fade-out times 1.7, 3.0, 1.8, 0.7 and 3.0 s, so the record leaves out the 0.7 s fade at combat end; the 2680, 2688, 2689, 2690 regions, flag 9100 and the 2.0 s hold then up to 1.0 s are as written, 2010[8] has 118 uses (105 in common).",
+  "fix": {
+   "values": "Fade-outs set in common 410: 1.7 s (indoors), 3.0 s (silence and boss takeover), 1.8 s (swimming), 0.7 s (combat end). After combat a 2.0 s hold, then up to 1.0 s more. WorldSoundManImp defaults: fade-in 2.0 s, fade-out 0.7 s."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "sound.boss-music",
+  "verdict": "confirmed",
+  "reason": "boss_bgm.json holds 17 boss entries, and kb/sound.md names common events 20005830 and 20005831 with 2010[8] (region, 1) on; 2010[8] has 118 uses.",
+  "needs_recording": false
+ },
+ {
+  "id": "sound.encrypted-banks",
+  "verdict": "corrected",
+  "reason": "On disk the music banks sm*, the SFX banks xm*, smain*, rm10/11/15/20/25 and the language voice banks vm<area>_<lang> start with 80c69086 (encrypted), while vm<area>.fsb, rm13 and rm17 are plain FSB5; bgm_decrypt.find_key found the key in the exe and turned sm11 into FSB5, so the open question is settled.",
+  "fix": {
+   "confidence": "data",
+   "summary": "The sm*, xm*, smain*, rm* and the language voice banks (vm<area>_<lang>) are FMOD-encrypted: each byte bit-reversed, then XOR a key held in the exe. Ours decrypts them (tools/bgm_decrypt.py). The base vm<area> banks and rm13/rm17 are plain. The sekiro-rs AUDIO doc says it leaves the encrypted banks silent.",
+   "note": "Both statements are true: sekiro-rs does not decrypt, ours does. Verified by decrypting sm11 with the key from the exe (result starts with FSB5).",
+   "check": "Run tools/bgm_decrypt.py and open sm11.fsb: FSB5 header appears; without it the bank starts 80c69086."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "sound.stealth-noise",
+  "verdict": "confirmed",
+  "reason": "AiSoundParam.json has 90 rows and rows 1000 (While walking) radius 0.5, 1001 (walking, crouching) 0.25, 1010 (Running) 2.0, 1011 (running, crouching) 0.5 as written.",
+  "needs_recording": false
+ },
+ {
+  "id": "sound.map-sound-instructions",
+  "verdict": "corrected",
+  "reason": "Counted bank 2010 over all EMEVD: [1] Play BGM 0 uses, [2] Play SE 14, [3] 78, [4] 0, [5] 0, [6] 1, [8] 118 (105 in common) and [9] 5; the 'many 2010[8] in m11_00' check is wrong because m11_00 has none.",
+  "fix": {
+   "values": "2010[1] Play BGM (0 uses), [2] Play SE (14), [3] Set Map Sound State (78), [4] Enable Boss Map Sound (0), [5] Notify Sound Dampening of Door Event (0), [6] Enable Map Sound With Fade (1), [8] Set Map Sound State + (118, 105 of them in common.emevd), [9] Set Map Sound Fade Out Time (5, all in event 410)",
+   "ours": {
+    "has": "partial",
+    "where": "tools/boss_bgm.py; tools/area_bgm.py; src/area_music.rs"
+   },
+   "check": "Count 2010[8] calls in common.emevd (105): event 410 and the boss functions."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "sound.object-material-sounds",
+  "verdict": "corrected",
+  "reason": "ObjectMaterialSfxParam.json has 40 rows, but grep finds no use of it in ours.",
+  "fix": {
+   "ours": {
+    "has": "no",
+    "where": ""
+   }
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "sound.door-dampening",
+  "verdict": "corrected",
+  "reason": "2010[5] is named 'Notify Sound Dampening of Door Event' (entity, door state) and has zero uses in the shipped EMEVD, so no script lowers sound across a door.",
+  "fix": {
+   "summary": "EMEVD 2010[5] Notify Sound Dampening of Door Event exists in the instruction table, but no shipped script calls it.",
+   "values": "2010[5] args: Entity ID, Door State; 0 uses in the 30 EMEVD files.",
+   "note": "Door dampening is probably done elsewhere (for example the Shahei occlusion) or never used."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "sound.ambient-env",
+  "verdict": "confirmed",
+  "reason": "The a-event letter matches AUDIO.md (type 0 environment); no script or data contradicts the claim and nothing in ours plays ambience, so ours is no.",
+  "needs_recording": false
+ },
+ {
+  "id": "sound.voice-events",
+  "verdict": "confirmed",
+  "reason": "AUDIO.md maps type 7 to the v letter and TalkParam soundId0 12030000 uses it; the language banks are encrypted and the base vm banks are plain.",
+  "needs_recording": false
+ },
+ {
+  "id": "sound.menu-sounds",
+  "verdict": "corrected",
+  "reason": "Event names f0000000xx exist (32 main events on mixer 2 per kb/sound.md), but grep finds no code in ours that plays them; only the ntc_menu_rev mixer is started.",
+  "fix": {
+   "ours": {
+    "has": "no",
+    "where": ""
+   }
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "sound.cutscene-sound",
+  "verdict": "confirmed",
+  "reason": "AUDIO.md maps type 4 to the p letter and lists the rm banks as the cutscene banks; neither project plays them.",
+  "needs_recording": false
+ },
+ {
+  "id": "sound.bgm-fades",
+  "verdict": "corrected",
+  "reason": "The fades come from common 410 (2010[9]: 1.7, 3.0, 1.8, 0.7 and 3.0 s); the 0.7 s fade at combat end is missing from the record, and the exact 0.7 s and 2.0 s are noted in kb/sound.md as not fully matched to FMOD's event fade.",
+  "fix": {
+   "values": "2010[9] fades 1.7 / 3.0 / 1.8 / 0.7 / 3.0 s, combat end 0.7 s then a 2.0 s hold, then up to 1.0 s",
+   "confidence": "data"
+  },
+  "needs_recording": false
+ }
+]

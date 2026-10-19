@@ -1,0 +1,1535 @@
+[
+ {
+  "id": "map.msb-parts-models",
+  "category": "map",
+  "title": "MSB parts and models (map file layout)",
+  "summary": "Each map's MSB lists models and placed parts: map pieces (type 0), objects (1), enemies (2), players (4), collisions (5), connect collisions (11). A part carries name, model, position, rotation in degrees, scale, three kinds of masks and type specific data.",
+  "values": "Part transform = T*Ry*Rz*Rx*S. Mask block is 48 words: DisplayGroups[8], DrawGroups[8], CollisionMask[32], then two condition bytes. Enemy data: think param +8, npc param +12. Collision data: hit filter byte 0, sound space +1, map name id, play region, map visibility +0x27. gparam config @0x70 = [LightSetID, FogParamID, LightScatteringID, EnvMapID].",
+  "how": "MSBS file read by SoulsFormats-style readers; the game loader fixes masks up at load (see map.draw-group-mask-algebra).",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/map.md"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "docs/FORMATS.md"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "docs/MAP-COMPLETENESS.md"
+   },
+   {
+    "kind": "web",
+    "ref": "https://github.com/soulsmods/DSMapStudio"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "tools/sekiro-extract/src/msb.rs; src/map.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "crates/formats/src/msb.rs; crates/extract/src/maps/layout.rs"
+  },
+  "check": "Dump an MSB with sekiro-extract or sekiro-extract map and compare the part counts: m11_00 has 4498 pieces, 1509 objects, 166 collisions, 10 player parts.",
+  "note": "Outskirts counts come from sekiro-rs MAP-COMPLETENESS. Ours reads only the parts it needs for an arena radius.",
+  "needs": [
+   {
+    "id": "map.draw-group-mask-algebra",
+    "why": "which parts are drawn depends on the masks"
+   },
+   {
+    "id": "map.hit-collision-havok",
+    "why": "collision parts are MSB parts"
+   }
+  ]
+ },
+ {
+  "id": "map.block-ids-and-connected-areas",
+  "category": "map",
+  "title": "Map ids, blocks and connections",
+  "summary": "Maps are named mAA_BB_CC_DD (area, block, then two sub fields). The base maps are m10_00 Hirata, m11_00 Outskirts, m11_01 Castle, m11_02 Reservoir, m13_00 Dungeon, m15_00 Mibu/Depths, m17_00 Valley, m20_00 Senpou, m25_00 Fountainhead, plus m89_00_00_99 the sky library with no floor. Boss and event sub maps (e.g. m11_01_54_10) only hold events and extra parts.",
+  "values": "Place name ids: 1000 Hirata, 1100 Outskirts, 1110 Castle, 1120 Reservoir, 1300 Dungeon, 1500 Mibu, 1510 Depths, 1700 Valley, 1710 Valley passage, 2000 Senpou, 2500 Fountainhead. 69 gameplay player starts (m10 9, m11_00 10, m11_01 11, m11_02 3, m13 3, m15 5, m17 10, m20 8, m25 10).",
+  "how": "MSB per map under map/mapstudio, EMEVD per map under event/, world list map:/WorldMsbList.worldloadlistlist gives area/block pairs (32 entries).",
+  "sources": [
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "docs/MAP-BASELINE.md"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "docs/FORMATS.md"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "docs/MAP-COMPLETENESS.md"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/event/ (29 emevd files)"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "src/map.rs boss_arena; extracted/map_boss_arenas.json"
+  },
+  "his": {
+   "has": "yes",
+   "where": "crates/game/src/map_world.rs; crates/game/src/map.rs"
+  },
+  "check": "List extracted/event: one emevd per map and sub map. Load m11_00 and m11_01 in the viewer and cross the gate seam.",
+  "note": "Ours exports 60 m arenas per boss, not whole maps.",
+  "needs": [
+   {
+    "id": "map.connect-collision-streaming",
+    "why": "which neighbour blocks load"
+   },
+   {
+    "id": "map.emevd-instruction-map",
+    "why": "event files per map"
+   }
+  ]
+ },
+ {
+  "id": "map.connect-collision-streaming",
+  "category": "map",
+  "title": "ConnectCollision requests neighbour blocks",
+  "summary": "A ConnectCollision part is attached to a source collision (index within the collision-only list) and names a target map. While the player stands on the source collision, the exe unions the row's DispGroups plus one group bit from its Condition integer into the target block's 256-bit mask. Contributions from several connections accumulate. The Condition is a group-bit index, not an event flag.",
+  "values": "Outskirts 99 connect rows (97 to m11_01, 2 to m20_00); Castle 298 (177 to m11_00, 86 to m11_02, 8 to m13, 25 to m17, 2 more m13). Castle has 103 source collisions with more than one connection. Map id bytes are signed; a negative byte skips that field in the exe matcher but block -1 resolves to block 0.",
+  "how": "Exe collision setup 0x1409b5310 attaches rows; accumulation 0x140b029b0 builds per-block masks; install 0x140affb20. Editor wildcard expansion is not proof of the retail target set.",
+  "sources": [
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "docs/MAP-COMPLETENESS.md"
+   },
+   {
+    "kind": "exe",
+    "ref": "sekiro.exe 0x1409b5310 / 0x140b029b0 / 0x140affb20 (via sekiro-rs Ghidra notes)"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "partial",
+   "where": "crates/game/src/map_visibility.rs; crates/game/src/map_world.rs"
+  },
+  "check": "Walk the Outskirts/Castle seam and watch which block's pieces draw; a sim test can compare per-block mask output against the unions above.",
+  "note": "The exe has extra source-enable and target-world gates (0x140b02930) that were not decoded.",
+  "needs": [
+   {
+    "id": "map.player-hit-collision-selects-map",
+    "why": "the source collision is the one under the player"
+   },
+   {
+    "id": "map.draw-group-mask-algebra",
+    "why": "the unioned mask is a draw mask"
+   }
+  ]
+ },
+ {
+  "id": "map.worldbackread-streaming",
+  "category": "map",
+  "title": "WorldBackRead block residency timers",
+  "summary": "Which blocks stay resident is driven by navigation demand around the player through a WorldBackRead object with two sets, Default and Hit. Pending requests promote after a timer, active records stay while demand is within the end distance, stale ones retire and are removed after a retire timer.",
+  "values": "Default set start/end distance 0 / 1 m, Hit set 80 / 90 m, promotion interval 0.2 s, retirement interval 3 s (constructor defaults, overridable). Query uses the larger end distance of the two sets.",
+  "how": "Exe 0x14081d460 ctor, 0x14081e460 navigation demand, 0x14081eae0 state machine, 0x140affb20 distributes masks to block, collision, piece, object and character managers.",
+  "sources": [
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "docs/MAP-COMPLETENESS.md"
+   },
+   {
+    "kind": "exe",
+    "ref": "sekiro.exe 0x14081d460..0x14081f1f0"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "partial",
+   "where": "crates/game/src/map_visibility.rs"
+  },
+  "check": "Fly a viewer camera across a seam and log block ready states; compare retirement delay to 3 s.",
+  "note": "These are constructor defaults, not a measured radius. Gate traversal, query budget and airborne fallback were not traced. Sekiro-rs says streaming is not implemented for whole maps.",
+  "needs": [
+   {
+    "id": "map.connect-collision-streaming",
+    "why": "neighbours are requested through connect rows"
+   }
+  ]
+ },
+ {
+  "id": "map.draw-group-mask-algebra",
+  "category": "map",
+  "title": "Display and draw group mask preprocessing",
+  "summary": "The 48-word mask block is split into draw primary/alternative/selector (offsets 0x00, 0x20, 0x40) and backread primary/alternative/selector (0x60, 0x80, 0xa0), plus Condition1/Condition2 at 0xc0/0xc1. The loader merges them per bit, so the editor names (display, draw, collision mask) do not describe the retail roles.",
+  "values": "result = (primary & selector) | (alternative & ~selector), independently for draw and backread, only when Condition1 == 0 and Condition2 != 0 for MapPiece/Object/Collision (PartsParam version 35). Collisions then union their draw mask into backread. A map piece with an empty resulting draw mask is expanded to all 256 bits.",
+  "how": "Exe loader 0x1410957c0; accessors 0x141092570 (draw) and 0x141092400 (backread); piece construct 0x140853d40; piece backread select 0x14085dcc0.",
+  "sources": [
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "docs/MAP-COMPLETENESS.md"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/map.md"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "partial",
+   "where": "tools/sekiro-extract/src/map.rs (draw group intersection, ours uses the first-array rule)"
+  },
+  "his": {
+   "has": "partial",
+   "where": "crates/game/src/map_visibility.rs; crates/game/src/draw_mask.rs"
+  },
+  "check": "Compare piece visibility under a collision with the algebra for three parts that have non-zero selectors.",
+  "note": "Our exporter uses the plain intersection of draw groups and drops zero-mask pieces; the exe fallback says all-zero map pieces are visible. Open-question for non-piece categories.",
+  "needs": [
+   {
+    "id": "map.msb-parts-models",
+    "why": "masks live in the MSB"
+   }
+  ]
+ },
+ {
+  "id": "map.player-hit-collision-selects-map",
+  "category": "map",
+  "title": "The player's ground collision selects the visible map part",
+  "summary": "Per-block display masks follow one collision part, the player character's current hit collision, not the camera. It is set from the physics ground contact and kept as the last one while the player is airborne, grappling or on the wire; a null result never replaces it. On map entry a cast from the player position finds the first type-8 collision.",
+  "values": "Sticky slot in the mask object at +0x20; transient slots +0x28..+0x60 are filled only from a caller list. Reserved block 0x59000063 is forced to all groups. ChrIns::SetHitCollision 0x1409f5820 also copies the part's draw params, so lighting and fog follow the same part.",
+  "how": "Exe 0x140a75920 per-frame step, 0x140810310 wrapper, 0x140b028a0 sticky store, 0x140a01d70 ground contact caller, 0x140b024e0 spawn cast.",
+  "sources": [
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "docs/MAP-COMPLETENESS.md"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "docs/LIGHTING.md"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "yes",
+   "where": "crates/game/src/map_world.rs MapWorld::stand"
+  },
+  "check": "Grapple to the Outskirts pine and orbit the camera; the standing part stays h023300 and the nearby geometry keeps drawing.",
+  "note": "Sekiro-rs approximates the ground contact by a height band (0.5 m above to 1 m below the feet).",
+  "needs": [
+   {
+    "id": "map.draw-group-mask-algebra",
+    "why": "selected collision supplies the masks"
+   },
+   {
+    "id": "visuals.lightset-per-collision",
+    "why": "same collision supplies lighting"
+   }
+  ]
+ },
+ {
+  "id": "map.lod-bank-selection",
+  "category": "map",
+  "title": "Mesh LOD levels from LodParam",
+  "summary": "Map pieces pick LOD0/1/2 from LodParam by distance to the part's oriented bounds (not its origin). Most pieces author LOD id 255, which means use the caller default, row 0 for map pieces. Hysteresis uses PlayDist, and a 0.2 s crossfade blends the two levels.",
+  "values": "Row 0: lv01 border 30 m play 2, lv12 border 60 m play 4, crossfade on 0.2 s, texture LOD on. Row 60: 80 / 2000 m, no crossfade, no texture LOD. Row 61: borders -1 (never switches). Outward 0 to 1 at 32 m, 1 to 2 at 64 m; inward 2 to 1 below 56 m, 1 to 0 below 28 m. LodPlatform rows 4/5/6 (low/mid/high) all scale 1.0. Outskirts pieces: 4436 id 255, 2 id 60, 60 id 61.",
+  "how": "Exe: 0x1410a7f80 reads the byte signed (255 = -1), 0x140858ee0 default, 0x140f3ac20 update, 0x140f3b240 selector, 0x14108e2a0 row resolver, 0x140f19a40 submits both levels during a fade.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/LodParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/LodPlatform.json"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "docs/MAP-COMPLETENESS.md"
+   },
+   {
+    "kind": "exe",
+    "ref": "sekiro.exe 0x140f3b240"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "partial",
+   "where": "tools/sekiro-extract exporter MAP_LOD=20,40 (fixed distances, not LodParam)"
+  },
+  "his": {
+   "has": "partial",
+   "where": "crates/game/src/map_lod.rs"
+  },
+  "check": "Walk away from a wall of tile roofs and note the switch at roughly 32 m outward and 28 m inward.",
+  "note": "Objects and characters take a model-side default for id 255, source not traced. Ours cuts LOD at export time with fixed distances.",
+  "needs": [
+   {
+    "id": "map.flver-lod-facesets",
+    "why": "the LOD data it chooses between"
+   }
+  ]
+ },
+ {
+  "id": "map.flver-lod-facesets",
+  "category": "map",
+  "title": "FLVER face set LOD flags",
+  "summary": "A map FLVER stores several index sets per mesh. Flag 0 is full detail, 0x01000000 LOD1, 0x02000000 LOD2 and 0x80000000 is the motion blur set. Some meshes exist only at LOD1/LOD2, so exporting flag 0 alone loses them.",
+  "values": "Outskirts: 535 FLVERs, 3029 meshes, 2936 flag 0 sets, 2610 LOD1, 2541 LOD2, 93 meshes with only LOD sets (models m004100, m004110, m004140, m004200, m004210, m004300, m004410, m004420, 154 placed instances). Triangle strips flip winding each step and restart at primitive-restart.",
+  "how": "Renderer picks the face set per LOD level; the byte 5 CullBackfaces flag of a set can force two-sided drawing.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/map.md"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "docs/MAP-COMPLETENESS.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "tools/sekiro-extract/src/flver.rs"
+  },
+  "his": {
+   "has": "partial",
+   "where": "crates/formats/src/flver.rs; crates/extract/src/maps/pieces.rs"
+  },
+  "check": "Run sekiro-extract flverinfo on m004100 and list face set flags per mesh.",
+  "note": "Sekiro-rs flver.rs required flag exactly 0 at the time of its audit.",
+  "needs": [
+   {
+    "id": "map.lod-bank-selection",
+    "why": "chooses which set is drawn"
+   }
+  ]
+ },
+ {
+  "id": "map.far-view-models",
+  "category": "map",
+  "title": "Distant view and sky pieces on the map",
+  "summary": "Maps place far scenery as m6xxxxx distant-view models and m9xxxxx sky or cloud pieces in the same MSB. They are normal map pieces with their own draw groups, shown at low LOD far away.",
+  "values": "Outskirts places 22 m6* and 52 m9* pieces; Castle 20 and 19. The Outskirts horizon is the Mountain material family on m925000 with m902000 and m902010; Castle uses m911061. Our MAP_FAR export for the Divine Dragon arena adds 67 pieces and 0.42 M triangles at 3000 m.",
+  "how": "Plain MapPiece parts; LOD row usually 255 or 60/61.",
+  "sources": [
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "docs/MAP-COMPLETENESS.md"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/map.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "tools/sekiro-extract MAP_FAR (off by default)"
+  },
+  "his": {
+   "has": "partial",
+   "where": "crates/extract/src/maps/pieces.rs --models"
+  },
+  "check": "Fly out past the arena rim and see the mountain ring; skip m925000 to remove the horizon.",
+  "note": "A purple gap on our Dragon arena horizon is a seam between far mountain pieces; the game hides it with fog and sky.",
+  "needs": [
+   {
+    "id": "visuals.volumetric-fog",
+    "why": "fog hides the horizon seam"
+   },
+   {
+    "id": "map.lod-bank-selection",
+    "why": "far pieces use LOD rows 60/61"
+   }
+  ]
+ },
+ {
+  "id": "map.hit-collision-havok",
+  "category": "map",
+  "title": "Hit collision format",
+  "summary": "Map hit collision is one Havok 2016 tagfile per collision model (h-prefixed binder, a compendium holds the types). The body uses fsnpCustomParamCompressedMeshShape with sections of primitives and packed or shared vertices; each triangle maps through its shape key to a PrimitiveData that holds the HitMtrlParam id.",
+  "values": "Packed vertex: x 11, y 11, z 10 bits scaled by the section codec; shared vertex: 21/21/22 bits. Quad (a,b,c,d) with c != d splits into (a,b,c),(a,c,d). Shape key = (section<<8)|(primitive<<1)|second. Outskirts 2.3 M triangles, 34 distinct material ids. Bodies have identity transforms; the MSB collision part transform places them. Low-res l* and f* binders are not decoded. Tagfile arrays use the TBDY type size as stride.",
+  "how": "Havok hknp physics; the exe uses the low-resolution binder for player walking and keeps group 38 for the high-res h binder.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/map.md"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "docs/FORMATS.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "tools/sekiro-extract/src/hkx.rs collision_mesh; src/map.rs Terrain"
+  },
+  "his": {
+   "has": "yes",
+   "where": "crates/formats/src/hknp.rs; crates/sim/src/collision.rs"
+  },
+  "check": "Extract h022400 and compare the vertex count; every triangle must resolve a material id.",
+  "note": "Both projects walk on the high-res h collision as a stand-in for the exe's low-res one.",
+  "needs": [
+   {
+    "id": "map.hit-material-table",
+    "why": "each triangle names a material"
+   },
+   {
+    "id": "map.hit-filter-groups",
+    "why": "which parts the player collides with"
+   }
+  ]
+ },
+ {
+  "id": "map.hit-material-table",
+  "category": "map",
+  "title": "HitMtrlParam: floor material ids",
+  "summary": "The hit material id of the triangle under a character picks footsteps, foot effects, fall rules and special effects. There are 51 rows. Names (Paramdex): 1 cobblestone, 3 soil, 4 wood, 5 grassland, 6 gravel, 7 bamboo, 8 tree, 9 soft straw, 10 hard straw, 11 iron, 12 flesh, 13 sand, 14 bone, 15 ash, 16 tile, 17 cloth, 18 dead leaves, 19 bell, 20 shallow flat water, 21 walkable water plane, 22 dive plane, 23 and 24 poison swamp, 27 mud, 28 tatami, 29 none, 30 snow, 31 bushes, 32 indoor wood, 33 autumn leaves, 34 ice, 35 to 38 water slopes and water with grass, 40 cloud, 45 to 47 underwater soil, stone, tree, 80 miasma.",
+  "values": "Fields: aiVolumeRate, spEffectIdOnHit0/1 (+ per clear count 2..8), footEffectHeightType/DirType, floorHeightType, disableFallDamage, hardnessType (0 soft, 1 mid, 2 hard in data), wetTiming, spEffectId_forWet, fallDeathDist, fallDamageRate.",
+  "how": "Looked up per triangle by id; the player's sticky ground contact reads it.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/HitMtrlParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "reference/Paramdex/SDT/Names/HitMtrlParam.txt"
+   },
+   {
+    "kind": "data",
+    "ref": "reference/Paramdex/SDT/Defs/HitMtrlParam.xml"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/map.rs floor_material; src/sound.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "crates/sim/src/collision.rs Ground::material"
+  },
+  "check": "Run grep on HitMtrlParam.json by id; stand on tatami and play a footstep: the event key ends in 028.",
+  "note": "",
+  "needs": [
+   {
+    "id": "map.hit-collision-havok",
+    "why": "ids come from collision triangles"
+   },
+   {
+    "id": "sound.floor-footsteps",
+    "why": "footstep events use the id"
+   },
+   {
+    "id": "map.fall-damage-by-material",
+    "why": "fall rules"
+   }
+  ]
+ },
+ {
+  "id": "map.hit-material-effects",
+  "category": "map",
+  "title": "Hit material special effects and wetness",
+  "summary": "Some floors apply a SpEffect when stepped on, and some wet the character. Water planes 20, 21 and 22 apply SpEffect 110147 (and aiVolumeRate 1.5, so noise carries further) and wet with 130000. Poison swamp 23 applies 4002 plus wet 130010, 24 applies 108000 and 4000. Mud-like 27 applies 109920 as effect 1. Rows 35 to 38 also apply 110147.",
+  "values": "aiVolumeRate 1.5 on 20/21/22, 1.0 elsewhere. wetTiming 2 on 21, 22, 23, 24 (wet when stepping on), 0 on 20. spEffectId_forWet 130000 (water) and 130010 (swamp). Rows 37 and 38 footEffectHeightType 1 and floorHeightType 1.",
+  "how": "Applied when the character's foot touches the hit material; per-clear-count variants (NG+) exist but are all -1 here.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/HitMtrlParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "reference/Paramdex/SDT/Defs/HitMtrlParam.xml"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "src/swim.rs; src/status.rs (SpEffects by state, material hooks unverified)"
+  },
+  "his": {
+   "has": "partial",
+   "where": "crates/sim/src/collision.rs material reads"
+  },
+  "check": "Wade a shallow pond: SpEffect 110147 appears and the wet SpEffect 130000 follows; steps are louder to enemies.",
+  "note": "Whether ours applies spEffectIdOnHit from the floor at all is untested.",
+  "needs": [
+   {
+    "id": "map.hit-material-table",
+    "why": "row source"
+   },
+   {
+    "id": "stealth.noise-radius",
+    "why": "aiVolumeRate scales footstep noise"
+   }
+  ]
+ },
+ {
+  "id": "map.fall-damage-by-material",
+  "category": "map",
+  "title": "Fall death and fall damage per floor material",
+  "summary": "Landing from a high drop kills the player only if the fall is at least the material's fallDeathDist, and only from 20 m up; fall damage is scaled by fallDamageRate. Cloud (40) has disableFallDamage.",
+  "values": "fallDeathDist 40 m on every material except deep-water planes 22, 36, 38 at 80 m with fallDamageRate 0.5; row 40 cloud disableFallDamage 1. The kill test is FUN_14084e5d0 with a 20 m floor (DAT_143b01948).",
+  "how": "HitMtrlParam on the landing triangle; the game then runs the land-dead-return damage type.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/HitMtrlParam.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/movement.md"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "docs/MOBILITY.md"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "yes",
+   "where": "src/map.rs fall_death_dist; src/player.rs"
+  },
+  "his": {
+   "has": "partial",
+   "where": "crates/sim (MOBILITY notes; Ground::material)"
+  },
+  "check": "Drop Wolf from over 40 m onto stone: instant land-dead-return; into deep water: survives to 80 m.",
+  "note": "",
+  "needs": [
+   {
+    "id": "map.hit-material-table",
+    "why": "row source"
+   },
+   {
+    "id": "movement.fall-and-land",
+    "why": "landing state machine"
+   }
+  ]
+ },
+ {
+  "id": "map.hit-filter-groups",
+  "category": "map",
+  "title": "Collision hit filters and Havok groups",
+  "summary": "Every MSB collision part has a hit filter byte that maps to a Havok collision group. Filter 8 (ordinary) is the walkable high/low/middle map group; helper parts h9xxxxx use filters that select who collides: player, enemies, camera, or only event reactions.",
+  "values": "Filter 8 groups 38/39/40 (player, enemy, camera collide on 39/40); 9 camera only (41); 11 and 19 enemy-only walls (42); 12-15, 20, 21, 23 event walls (44, nothing solid); 16 water surface (46, enemy and camera); 17 draw-group copy (109); 18 enemy raycast only (51); 22 character capsules only (43); 24 hits nothing (68); 25 wall-hug hit (85); 26 non-wall-jumpable (88); 27 swim hit (91, player and enemy); 28 fall-prevention assist (92); 29 bullets only (79). Player capsule group 1 collides with groups 39, 40, 43, 91; camera group 48 collides with 39, 40, 41, 46.",
+  "how": "Matrix at NS_SPRJ::FrpgCollisionFilter +0x20 (128x128 bits) built at 0x140933390; filter byte to group at 0x1409b58b0.",
+  "sources": [
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "docs/HIT-FILTERS.md"
+   },
+   {
+    "kind": "exe",
+    "ref": "sekiro.exe 0x1409b58b0 / 0x140933390"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "partial",
+   "where": "src/map.rs Terrain::from_tris (drops material-less level helper planes only)"
+  },
+  "his": {
+   "has": "yes",
+   "where": "crates/sim/src/hit_filter.rs"
+  },
+  "check": "Count collision parts by hit filter in an MSB: Outskirts has 155 filter-8 parts and h900000 filter 15 in the ravine.",
+  "note": "Ours treats all helper planes without a material as non-floor; the exe uses the full matrix.",
+  "needs": [
+   {
+    "id": "map.hit-collision-havok",
+    "why": "parts carry the filter"
+   },
+   {
+    "id": "map.event-wall-reactions",
+    "why": "filters 13-23 are event walls"
+   }
+  ]
+ },
+ {
+  "id": "map.event-wall-reactions",
+  "category": "map",
+  "title": "Event walls, kill planes and fall return",
+  "summary": "Helper collisions with filter 12-23 act as contact triggers, not floors. Filter 15 under a pit is the kill plane: touching it fades the character out and the fall-return script brings the player back. Other filters set small flags or warp.",
+  "values": "Filter 15: sets chr+0x1a48 = 1.0 and +0x1a4c = -2.0 so draw alpha fades over 0.5 s, then holds the body (0x92a/0x92b). Filter 13 sets WorldChrMan+0x98 = 1. Filter 14 sets bit 2 at chr+0x50->+0x9c. 16 spawns an effect at the contact. 20 flag, 21 warp to a point from the part's parameter plus 100. Maps' kill planes sit 20 to 50 m under the arena. Outskirts ravine: h900000 (15) at y -74.2, h900001 (13) at -79.0.",
+  "how": "Reaction function 0x1409edf20 switches on the hit filter.",
+  "sources": [
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "docs/HIT-FILTERS.md"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/map.md"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "partial",
+   "where": "src/map.rs (drops level helper planes; fall return in src/player.rs)"
+  },
+  "his": {
+   "has": "yes",
+   "where": "crates/sim/src/collision.rs trigger_contact; crates/sim/src/duel.rs"
+  },
+  "check": "Walk off the Outskirts ravine ledge: Wolf fades over 0.5 s and is returned to the last standing spot (HP cost not traced).",
+  "note": "The HP cost and the return position rules of the exe are untraced; sekiro-rs returns to the last stance on collision.",
+  "needs": [
+   {
+    "id": "map.fall-return-points",
+    "why": "where the player comes back"
+   },
+   {
+    "id": "map.hit-filter-groups",
+    "why": "filter table"
+   }
+  ]
+ },
+ {
+  "id": "map.fall-return-points",
+  "category": "map",
+  "title": "Fall return points per play region",
+  "summary": "PlayRegionParam.returnPointEntityId names a Warp Point entity where the player reappears after a fall. -1 means the saved (idol) position. Only 12 of 173 regions set one.",
+  "values": "Region ids: 110092 -> 1102850, 110095 -> 1102300, 110096 -> 1102311, 111096 -> 1112160, 112092 -> 1122850, 112093 -> 1122170, 112095 -> 1122171, 112096 -> 1122526, 170095 -> 1702216, 200092 -> 2002819, 200093 -> 2002402, 250092 -> 2502795. Collisions also carry the play region id.",
+  "how": "Read when the fall-return damage type triggers.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/PlayRegionParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "reference/Paramdex/SDT/Defs/PlayRegionParam.xml"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Fall into the m11_00 region 110092 pit and check that Wolf returns near entity 1102850's MSB point.",
+  "note": "Sekiro-rs and ours return the player to where he last stood instead.",
+  "needs": [
+   {
+    "id": "map.event-wall-reactions",
+    "why": "trigger"
+   },
+   {
+    "id": "map.msb-parts-models",
+    "why": "warp point entities are MSB points"
+   }
+  ]
+ },
+ {
+  "id": "map.object-collision-groups",
+  "category": "map",
+  "title": "Object collision from ObjectParam.collisionType",
+  "summary": "Placed objects bring their own hkx physics. ObjectParam.collisionType picks the Havok group for static/keyframed bodies and a second group for dynamic ones. Only types 0, 1 and 2 are stood on by the player and enemies.",
+  "values": "Type to group (static): 0 -> 24 (player, enemy, camera), 1 -> 25 (no camera), 2 -> 27 (no camera, lock or damage), 3 -> 41, 4 -> 47, 5 -> 67, 6 -> 92 (fall-prevention pine), 7 -> 108, 10 -> 32, 11 -> 93. Outskirts counts: type 0 351 objects, 1 545, 2 5, 4 149, 6 29, 10 29, 11 11. 1019 static bodies, 706 keyframed massless (doors, pine trunks), 7027 dynamic debris bodies. Convex shapes have no triangle material; the object row's materialId is used (4 wood trees, 10 straw, 11 iron, 16 tile).",
+  "how": "Exe: object ctor FUN_140872b40 reads collisionType via FUN_1408705d0; tables 0x1429e73b8 / 0x1429e73e8; set filter FUN_140949fb0.",
+  "sources": [
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "docs/OBJECT-COLLISION.md"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/map.md"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "yes",
+   "where": "tools/sekiro-extract/src/map.rs objects in .hit"
+  },
+  "his": {
+   "has": "yes",
+   "where": "crates/extract/src/maps/object_collision.rs; crates/sim/src/collision.rs add_objects"
+  },
+  "check": "Grapple to the pine o002500_0005 and walk its trunk: Wolf stays grounded on the object.",
+  "note": "Ours does not apply collisionType (all object hulls collide); keyframed bodies stay in bind pose in both projects.",
+  "needs": [
+   {
+    "id": "map.hit-material-table",
+    "why": "convex shapes use the row material"
+   },
+   {
+    "id": "map.objact-doors",
+    "why": "animated doors are ObjAct"
+   }
+  ]
+ },
+ {
+  "id": "map.objact-doors",
+  "category": "map",
+  "title": "ObjAct doors and interactive objects",
+  "summary": "Doors, levers and similar objects are ObjAct events: the player interacts, the game runs the object's animation and updates its collision. Our exporter leaves ObjAct parts out because we do not run the animations, otherwise a closed door can seal a passage in the bind pose.",
+  "values": "MSB event type 7 (ObjActEntityID, ObjActPartIndex, ObjActID, StateType, EventFlagID). Gate map: o111410_8000, o111410_8001 and o111300_8000 left out (231 to 228 objects, 182 to 179 with collision). EMEVD 2005[14] (De)activate ObjAct, 2005[19] Set Object Interaction.",
+  "how": "ObjActParam rows plus per-object anibnd animations.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/map.md"
+   },
+   {
+    "kind": "data",
+    "ref": "reference/DarkScript3 emedf 2005[14]"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "tools/sekiro-extract/src/map.rs Msb::objact_parts (excluded)"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Open the Outskirts gate door o111410_8000 in the game; our arena exports omit it.",
+  "note": "Sekiro-rs says this should not become a general map rule.",
+  "needs": [
+   {
+    "id": "map.object-collision-groups",
+    "why": "the door's collision"
+   },
+   {
+    "id": "map.emevd-instruction-map",
+    "why": "activation instructions"
+   }
+  ]
+ },
+ {
+  "id": "map.object-destruction",
+  "category": "map",
+  "title": "Breakable and destructible objects",
+  "summary": "Objects can switch to a broken physics state (_1.hkx, debris group 0x21) through destruction requests from events or damage. Both our projects keep every object intact.",
+  "values": "1395 object binders: 1000 intact hkx, 495 broken, 32 cloth. EMEVD 2005[1] Request Object Destruction, 2005[2] Restoration, 2005[8] Reproduce Destruction, 2005[16] Extinguish Burning Objects. Dynamic debris pieces use motionType 2.",
+  "how": "FUN_14087d530 builds physics for the current break state (0..3).",
+  "sources": [
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "docs/OBJECT-COLLISION.md"
+   },
+   {
+    "kind": "data",
+    "ref": "reference/DarkScript3 emedf class 2005"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Break a barrel or a lantern and watch the debris pieces fall.",
+  "note": "Gap in both projects.",
+  "needs": [
+   {
+    "id": "map.object-collision-groups",
+    "why": "intact state"
+   },
+   {
+    "id": "combat.object-damage",
+    "why": "damage to objects"
+   }
+  ]
+ },
+ {
+  "id": "map.helper-planes-not-floors",
+  "category": "map",
+  "title": "Level helper planes and water surface planes",
+  "summary": "Collision parts h9xxxxx without a hit material (u32 max) are helper geometry such as kill planes and water surface planes, not walkable ground. Ours drops level material-less triangles at load; walls like h900700 stay as arena bounds.",
+  "values": "Guardian Ape h900702: a 66 m plane 0.4 m over the pond floor (Wolf stood on it). Kill planes sit 20 to 50 m below the arena. Water surface helper is filter 16 on h900500.",
+  "how": "Terrain::from_tris in our map.rs; hit_filter::strip_helpers in sekiro-rs.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/map.md"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "docs/HIT-FILTERS.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/map.rs Terrain::from_tris"
+  },
+  "his": {
+   "has": "yes",
+   "where": "crates/sim/src/hit_filter.rs strip_helpers"
+  },
+  "check": "Start on the Guardian Ape arena: the floor is the pond bed, not the water plane.",
+  "note": "",
+  "needs": [
+   {
+    "id": "map.hit-filter-groups",
+    "why": "helper filters"
+   }
+  ]
+ },
+ {
+  "id": "map.handedness-mirror",
+  "category": "map",
+  "title": "Coordinate handedness and winding",
+  "summary": "FromSoftware's space is left handed; both projects mirror X on load. For map FLVERs the mirror alone turns DirectX clockwise triangles into counter-clockwise front faces, so no index swap is needed. The Havok hit mesh is right handed data and does need a swap.",
+  "values": "Boxes stand on their position (DSMapStudio draws regions y 0..1 before scale). Env boxes are bottom centred. A part with an odd number of negative scale axes flips its winding and normals. Wolf starts at +Z, the boss at -Z in our arenas.",
+  "how": "Matrix M -> S M S in sekiro-rs layouts; X mirror in ours at load.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/map.md"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "docs/FORMATS.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/map.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "crates/extract/src/maps/pieces.rs"
+  },
+  "check": "Check that an open floor is not back-face culled: SHINOBI_MAP_PROBE=0,10.5 reports normals pointing up.",
+  "note": "A wrong swap hid the whole Ape arena pond bed once.",
+  "needs": [
+   {
+    "id": "map.msb-parts-models",
+    "why": "transform order"
+   }
+  ]
+ },
+ {
+  "id": "map.fog-walls",
+  "category": "map",
+  "title": "Boss fog walls",
+  "summary": "Boss rooms close behind the player with a fog wall: a wall object plus an SFX and a blocker collision, driven by common event 20005820 (end flag, object, SFX, start flag) and 20005825 (end flag, collision, start flag). The fog is the effect, the collision is a box or an octagon.",
+  "values": "47 walls found across maps. Roof wall: object o001401 box 5.95 x 6.95 x 0.05 m material 29, helper h900800 (24 triangles, hit filter 22). Castle roof wall object 1111440 (model o001402) is disabled initially and enabled after the authored character condition. Walls stay up until the defeat flag.",
+  "how": "Event creates the SFX on dummy 101 and toggles the collision with 2003[6].",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/map.md"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "docs/MAP-COMPLETENESS.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/fog_wall.rs; tools/fog_walls.py"
+  },
+  "his": {
+   "has": "yes",
+   "where": "crates/sim/src/fogwall.rs"
+  },
+  "check": "Enter the Genichiro roof fight: the fog rises and the gate collision blocks the exit until the win.",
+  "note": "Ours writes gates to map_<id>.gates and switches them while the fight's walls stand.",
+  "needs": [
+   {
+    "id": "map.emevd-instruction-map",
+    "why": "events raise it"
+   },
+   {
+    "id": "bosses.fight-start-trigger",
+    "why": "walls close at fight start"
+   }
+  ]
+ },
+ {
+  "id": "map.first-visit-object-states",
+  "category": "map",
+  "title": "Event state for scenery and props",
+  "summary": "Which objects and scenery groups are on depends on story flags set by common events. For the Outskirts and Castle first visit, 477 of 1509 and 243 of 1674 objects are addressed by visibility commands; the rest are on by default.",
+  "values": "Flag 8302 off: group 1106600 on (182 objects), 1106610 off (215 objects). 1106200 off without Wolf SpEffect 4100. Castle: 1116203 off, 1116204 off, 1117550 normal floor on and 1117551 burnt floor off until cutscene flag 11115921 with 8301. Common helpers 20004110 (parts), 20004112 (objects), 20004120, 20005500 (boss idol visibility by boss flags 9301 / 9403), 20005560.",
+  "how": "EMEVD 2005[3] (De)activate Object and 2012[1] Activate Map Part, targeting entity ids or entity group ids.",
+  "sources": [
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "docs/MAP-COMPLETENESS.md"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/event/common_func.emevd"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "tools/map_fx.py walks first-visit flags for effects only"
+  },
+  "his": {
+   "has": "yes",
+   "where": "crates/game/src/map_story.rs; crates/sim/src/world_events.rs"
+  },
+  "check": "Start the Outskirts before and after setting 8302: the siege props change.",
+  "note": "Sekiro-rs evaluates the event files; ours bakes arenas and ignores object states except fog walls and ObjAct doors.",
+  "needs": [
+   {
+    "id": "map.emevd-instruction-map",
+    "why": "activation instructions"
+   },
+   {
+    "id": "map.ceremony-param",
+    "why": "ceremony changes the same state"
+   }
+  ]
+ },
+ {
+  "id": "map.ceremony-param",
+  "category": "map",
+  "title": "Map ceremonies (story variants of a block)",
+  "summary": "A ceremony is a named variant of a map block that swaps its draw params, GI textures, event layer and map studio layer. Events set it with Set Map Ceremony / Set Current Map Ceremony; bonfire warp rows can change it on warp (blockCultId).",
+  "values": "61 Ceremony rows. Example ids: 11010010 gparam sub 10, 11010020 sub 20, 11020020 sub 20, 15000010 sub 10, 25000010 sub 10, 30000010 gi texture 1 map layer 10 point cloud 1, 30001012 gi 2 event layer 9, 30001020 override gparam 600 bake light 6, 40000010 event layer 1 map layer 1, 91080010..91080050 gparam 1..5. EMEVD 2003[57] Set Current Map Ceremony, 2003[59] Set Map Ceremony, 2005[17] Show Object by Map Ceremony.",
+  "how": "Ceremony row feeds gparamId (the sub id of the draw param file), giTextureId, eventLayerId, mapStudioLayerId, overrideGparamId.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/Ceremony.json"
+   },
+   {
+    "kind": "data",
+    "ref": "reference/DarkScript3 sekiro-common.emedf.json"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "partial",
+   "where": "crates/game/src/map_story.rs (uses Set Area Gparam Sub ID, not the Ceremony rows)"
+  },
+  "check": "Check Ceremony.json row 30000010 against the Outskirts invasion look.",
+  "note": "Used instructions count: Set Map Ceremony 12 uses (m15, m25), no 2003[57] in base map scripts.",
+  "needs": [
+   {
+    "id": "visuals.gparam-layer-stack",
+    "why": "gparamId picks the file"
+   },
+   {
+    "id": "map.first-visit-object-states",
+    "why": "same story state"
+   }
+  ]
+ },
+ {
+  "id": "map.emevd-instruction-map",
+  "category": "map",
+  "title": "EMEVD instructions that drive the map",
+  "summary": "Map scripts use a small set of banks: 2000 init/flags/save, 2003 map and player, 2004 character, 2005 objects, 2006 SFX, 2009 bonfire, 2010 sound, 2012 map parts. Event 0 of each map initialises the idols, regions, fog walls and music.",
+  "values": "2000[5] Save Request; 2003[6] Activate Map Hit; 2003[7] Set Map Visibility; 2003[14] Warp Player; 2003[20] Set Temporary Respawn Point; 2003[23] Set Player Respawn Point; 2003[49] Warp Player to Respawn Point; 2003[52] Initialize Warp Object; 2003[57/59] ceremony; 2003[72] Set Bonfire Warping State; 2003[80] Set Area Envmap; 2003[81] Set Lighting; 2003[88] Set Area Gparam Sub ID; 2003[90] Disable Bonfire; 2003[93] Warp Player (New); 2004[29] Set Character Backread State; 2004[37] Force Character Treasure; 2004[47] Bonfire-like Recovery; 2005[3] Activate Object; 2005[4] Set Object Treasure State; 2006[2] Spawn Map SFX; 2009[3] Register Bonfire; 2010[1] Play BGM; 2010[8] Set Map Sound State; 2012[1] Activate Map Part. Counts over all maps: ActivateMapPart 609, ChrBackread 593, SpawnMapSFX 591, ObjActivate 455, RegisterBonfire 71, ObjTreasure 79, SaveRequest 32, SetPlayerRespawnPoint 19, DisableBonfire 27.",
+  "how": "EMEVD 64-bit DS3 form version 0xCD; DarkScript3's sekiro-common.emedf.json names the arguments.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/event/*.emevd"
+   },
+   {
+    "kind": "data",
+    "ref": "reference/DarkScript3/DarkScript3/Resources/sekiro-common.emedf.json"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "docs/FORMATS.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "tools/boss_events.py emevd_events; src/emevd.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "crates/formats/src/emevd.rs; crates/sim/src/events.rs"
+  },
+  "check": "Run tools/boss_events.py emevd_events on m11_00_00_00.emevd and count instructions by (bank,id).",
+  "note": "",
+  "needs": [
+   {
+    "id": "map.idol-registration",
+    "why": "bonfire instructions"
+   },
+   {
+    "id": "map.first-visit-object-states",
+    "why": "visibility instructions"
+   }
+  ]
+ },
+ {
+  "id": "map.idol-registration",
+  "category": "map",
+  "title": "Sculptor's Idol registration and list",
+  "summary": "Each map's event 0 registers its idols with Register Bonfire (flag, entity id, reaction distance, reaction angle, kindling level). BonfireWarpParam has 58 rows that build the Travel menu: unlock flag, idol entity, page, grey-out flag and the message id for the name.",
+  "values": "Register Bonfire args seen: reaction distance 5.0 m, angle 180 degrees, e.g. flag 11100000 entity 1101950. BonfireWarpParam: eventflagId = 11AABBxx unlock flag, grayoutEventflagId = flag + 10, isHome 1 only on row 100 (Dilapidated Temple), blockCultId 0 everywhere. Menu pages: 0 home (3 rows), 1 Outskirts (8), 2 Castle and Reservoir (10), 4 Dungeon (2), 5 Senpou (7), 6 Valley (6), 7 Mibu and Depths (7), 8 Fountainhead (9), 9 Hirata (6). Rows 100/1100, 101/1114 and 102/2004 reuse entities 1101950, 1111953, 2001954. Registrations per map: m10 5, m11_00 7, m11_01 10, m11_02 2+2.",
+  "how": "EMEVD 2009[3]; param BonfireWarpParam; names from NTC menu text msgId.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/BonfireWarpParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "reference/Paramdex/SDT/Names/BonfireWarpParam.txt"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/event/m11_00_00_00.emevd"
+   },
+   {
+    "kind": "data",
+    "ref": "reference/Paramdex/SDT/Defs/BonfireWarpParam.xml"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/idol.rs warp_rows"
+  },
+  "his": {
+   "has": "partial",
+   "where": "crates/sim/src/world_events.rs registers idol TAE glow only"
+  },
+  "check": "Read event 0 of m11_00: seven 2009[3] calls with flags 11100000..11100007.",
+  "note": "Entity 1101950 is both the Dilapidated Temple home row and Outskirts page 1 row.",
+  "needs": [
+   {
+    "id": "map.idol-rest",
+    "why": "resting"
+   },
+   {
+    "id": "map.idol-travel",
+    "why": "travel menu"
+   }
+  ]
+ },
+ {
+  "id": "map.idol-rest",
+  "category": "map",
+  "title": "Resting at an idol",
+  "summary": "Resting at a Sculptor's Idol restores Vitality and refills the Healing Gourd, makes that idol the respawn point, and respawns defeated regular enemies. Merely praying (communing) does not respawn enemies. Resurrection and Spirit Emblem stock are also refilled.",
+  "values": "Rest clip in our build: a000_710310 start, 710320 loop, 710330 end, 710340 rest, 710360 warp (HKS StatueAttach*). Event text 15000120 shows the Rest guide. Save Request 2000[5] runs at save points (32 uses). Bonfire-like Recovery 2004[47] used once in m11_00.",
+  "how": "Hardcoded idol logic with an EMEVD Save Request; the exe rest path was not traced.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/map.md"
+   },
+   {
+    "kind": "web",
+    "ref": "https://gamewith.net/sekiro/article/show/8506"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "src/idol.rs header"
+   }
+  ],
+  "confidence": "community",
+  "ours": {
+   "has": "partial",
+   "where": "src/idol.rs rest(); player.rs FightReset"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Rest at the Dilapidated Temple, kill an enemy in the Outskirts, rest again: it returns. Pray only: it stays dead.",
+  "note": "Wiki level facts. The respawn exceptions (mini bosses, Spirit-Bound) were not checked in data.",
+  "needs": [
+   {
+    "id": "map.respawn-checkpoint",
+    "why": "rest sets the checkpoint"
+   },
+   {
+    "id": "items.healing-gourd",
+    "why": "gourd refill"
+   },
+   {
+    "id": "combat.resurrection",
+    "why": "resurrection refill"
+   }
+  ]
+ },
+ {
+  "id": "map.idol-travel",
+  "category": "map",
+  "title": "Idol travel (warp) menu",
+  "summary": "Travel lists unlocked idols by page (area tab) from BonfireWarpParam. An idol shows grey when its grayout flag is set, and the warp can also switch the block's ceremony via blockCultId (always 0 here). Idols are listed once per page even if two rows share an entity.",
+  "values": "Page numbers: 0 home, 1 Outskirts, 2 Castle, 4 Dungeon, 5 Senpou, 6 Valley, 7 Mibu/Depths, 8 Fountainhead, 9 Hirata. Unlock flag = eventflagId, grey-out flag = grayoutEventflagId. Set Bonfire Warping State 2003[72] and Disable Bonfire 2003[90] (27 uses, 24 in common) toggle idols during story events.",
+  "how": "Menu reads the param; the warp itself plays the warp clip and loads the destination block.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/BonfireWarpParam.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "src/idol.rs header"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/idol.rs travel menu; src/sr_map.rs travel"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Open the idol menu with 3 idols unlocked: the home page shows Dilapidated Temple.",
+  "note": "",
+  "needs": [
+   {
+    "id": "map.idol-registration",
+    "why": "list source"
+   },
+   {
+    "id": "progression.event-flags",
+    "why": "unlock flags"
+   }
+  ]
+ },
+ {
+  "id": "map.respawn-checkpoint",
+  "category": "map",
+  "title": "Death, respawn and checkpoints",
+  "summary": "After death with no resurrection charge left, the player returns to the last idol rested at (or the temporary respawn point set by an event). Events override it with Set Player Respawn Point and Set Temporary Player Respawn Point; some fights warp the player to a point.",
+  "values": "Set Player Respawn Point used 19 times (m11_02 5, m11_00 4, m10 2, m11_00_70_10 1, m11_01 1, common 1). Warp Player (New) 2003[93] 4 uses. Fall return uses PlayRegionParam.returnPointEntityId or the saved position.",
+  "how": "Respawn entity id is an MSB point; death screen then reloads the block.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/event/*.emevd"
+   },
+   {
+    "kind": "web",
+    "ref": "https://gamewith.net/sekiro/article/show/8506"
+   }
+  ],
+  "confidence": "community",
+  "ours": {
+   "has": "partial",
+   "where": "src/idol.rs (checkpoint set on rest; dying does not yet return)"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Die after resting at an idol with 0 resurrection nodes: the player stands at that idol.",
+  "note": "",
+  "needs": [
+   {
+    "id": "map.idol-rest",
+    "why": "checkpoint is set by rest"
+   },
+   {
+    "id": "map.fall-return-points",
+    "why": "fall variant"
+   },
+   {
+    "id": "combat.resurrection",
+    "why": "resurrection avoids the return"
+   }
+  ]
+ },
+ {
+  "id": "map.treasure-pickups",
+  "category": "map",
+  "title": "Item pickups and treasure",
+  "summary": "Items in the world are Treasure events in the MSB: an object (o000100 marker or a shaped model such as a chest) plus ItemLotParam ids. The marker objects are item spots 0.25 m over the floor with no hkx collision. Events set the pickup state and rerolls.",
+  "values": "All 40 o000100 objects near the General are Treasure parts (EventParam type 4 TreasurePartIndex, e.g. entity 1111510 event 11115652). EMEVD 2005[4] Set Object Treasure State (79 uses, 27 in common_func), 2005[15] Reroll Object Treasure, 2004[37] Force Character Treasure. ItemLotParam provides the drops.",
+  "how": "Interaction through ObjAct/Treasure events and item lot rows.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/map.md"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/ItemLotParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "reference/DarkScript3 emedf"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "src/items.rs; src/drops.rs (drop side only)"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Walk to a marker on the Outskirts: the pickup prompt appears and the lot's item is granted once.",
+  "note": "Pickup interaction and animation are not implemented in ours.",
+  "needs": [
+   {
+    "id": "items.item-lots",
+    "why": "lot rows"
+   },
+   {
+    "id": "map.emevd-instruction-map",
+    "why": "treasure state"
+   }
+  ]
+ },
+ {
+  "id": "map.water-areas",
+  "category": "map",
+  "title": "Water and swim areas",
+  "summary": "Water is a mix of collision hit materials and a surface helper. Shallow materials 20, 21, 35, 37 are walkable; 22, 36, 38 are deep and let the player dive or swim; 45 to 47 are underwater floors; 23 and 24 are walkable poison swamp. The visible water is a separate shader material.",
+  "values": "Hit materials 20/21/35/37 walk, 22/36/38 swim or dive, 23/24 swamp, 45-47 underwater floors. Surface helper filter 16 (group 46) is collided by enemies and the camera. Swim hit filter 27 (group 91) collides with player and enemies. Water pond bed is the floor; the surface plane is only a helper.",
+  "how": "HitMtrlParam rows plus filter 27 swim collision; the water shader draws the surface.",
+  "sources": [
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "docs/MOBILITY.md"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/HitMtrlParam.json"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "docs/HIT-FILTERS.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "src/swim.rs; src/map.rs water stand-in (dark 60 % translucent)"
+  },
+  "his": {
+   "has": "partial",
+   "where": "crates/sim/src/collision.rs; MOBILITY.md"
+  },
+  "check": "Wade the Ape arena pond: knee deep, then a dive.",
+  "note": "Neither project has the game's water shader (reflection, refraction, flow, foam).",
+  "needs": [
+   {
+    "id": "map.hit-material-table",
+    "why": "materials"
+   },
+   {
+    "id": "visuals.water-shader",
+    "why": "surface look"
+   },
+   {
+    "id": "movement.swim",
+    "why": "swim state"
+   }
+  ]
+ },
+ {
+  "id": "map.collision-visibility-dark",
+  "category": "map",
+  "title": "Map visibility (dark areas) on collisions",
+  "summary": "Collision type data has a map visibility value that makes areas count as dark for enemy sight. It feeds the sight query as a remap and a scale.",
+  "values": "Collision +0x27: 0 Good, 1 Dark, 2 Total Dark. Scale per query type 1 / 0.5 / 0.3 (FUN_14061ae40 / FUN_14061c2a0). NpcThinkParam disableDark skips it. All 221 m11_01 collisions are Good; other maps: m11_00 2 Dark + 4 Total, m17 19 Total, m20 7.",
+  "how": "Written to chr+0x1acd by FUN_1409b5c80, read in FUN_140617150.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/enemy.md"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Stand in an m17 Total Dark spot: enemy sight range shrinks to 0.3 of normal.",
+  "note": "Not exported by ours; setter of 'crouch shadow stealth' 109201 not found.",
+  "needs": [
+   {
+    "id": "stealth.enemy-sight",
+    "why": "sight cone"
+   },
+   {
+    "id": "map.msb-parts-models",
+    "why": "collision type data"
+   }
+  ]
+ },
+ {
+  "id": "map.sound-space-type",
+  "category": "map",
+  "title": "Collision sound space type",
+  "summary": "Each collision has a sound space type (0 to 8) that drives the sound reverb size while the player stands on it.",
+  "values": "Boss arenas: most 0; map_boss_50601010 and 50900000 (m10 h016200) 3; map_boss_51000100 (m17 h005500) 5; m17 has 0 and 2 to 6, m25 0 to 2.",
+  "how": "MSB collision type data +0x01; eased over 2.6 s into the global sound parameter sd_reverb_size.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/sound.md"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "yes",
+   "where": "src/map.rs (json sound_space_type); src/fmod.rs set_reverb"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Fight in the Ape grotto (5): the reverb is larger than on the castle roof (0).",
+  "note": "",
+  "needs": [
+   {
+    "id": "sound.reverb-space-type",
+    "why": "consumer"
+   }
+  ]
+ },
+ {
+  "id": "map.player-starts-and-spawn",
+  "category": "map",
+  "title": "Player start points and spawn",
+  "summary": "MSB Player parts are the start points. On map entry the exe casts down from the start to find a floor. Some starts are above their floor and snap down.",
+  "values": "69 gameplay starts; m11_01 start 2 is 1.60 m above its floor; m11_00 start 4 drops 16.8 m on a walk; m25 start 0 is a narrow branch. Our arena start walks z in half-metre steps for a floor within 0.5 m of the arena floor and 2.8 m headroom (Guardian Ape z 10.5).",
+  "how": "MSB part type 4; our player_start() logic.",
+  "sources": [
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "docs/MAP-BASELINE.md"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/map.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/map.rs player_start"
+  },
+  "his": {
+   "has": "yes",
+   "where": "crates/game/src/play.rs; sim collision"
+  },
+  "check": "Start every arena with the every_arena_start_stands_and_walks test.",
+  "note": "",
+  "needs": [
+   {
+    "id": "map.msb-parts-models",
+    "why": "player parts"
+   }
+  ]
+ },
+ {
+  "id": "map.map-offset-ancillary",
+  "category": "map",
+  "title": "MapOffset and ancillary resources",
+  "summary": "MSBS has a MapOffset event with a position and Y rotation that is already baked into placed parts. It applies to ancillary data such as BTL lights and navigation.",
+  "values": "Outskirts offset (90, 3, -40) with Y rotation 20 degrees (all m11 collision parts share it); Castle has none. BTL light coordinates get the offset before the X mirror.",
+  "how": "Read from the MSB event table.",
+  "sources": [
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "docs/MAP-COMPLETENESS.md"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "docs/LIGHTING.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "yes",
+   "where": "crates/game/src/map_lights.rs"
+  },
+  "check": "Place Outskirts BTL lights with and without the offset and compare to the lamps.",
+  "note": "",
+  "needs": [
+   {
+    "id": "visuals.btl-local-lights",
+    "why": "offset applies to lights"
+   }
+  ]
+ },
+ {
+  "id": "map.grapple-edges",
+  "category": "map",
+  "title": "Grapple and ledge edges",
+  "summary": "Grapple points, hang ledges and hug surfaces are stored as .edge records inside object binders and per-collision edge binders. A grapple record has two vertices (hook midpoint), a landing vertex and a variation byte.",
+  "values": "Gate map: 963 hang + 1326 hug edge records; 113 grapple points exported; Hirata 393 + 864. Variations 1 common, 3, 5, 20, 40/41 kites. 84 of 113 landing spots have a floor within 1.5 m. WirePointSearchParam row 0: find 25 m, act 3 to 15 m.",
+  "how": "Edge binders .edgebhd/.edgebdt plus object e<id>.edge.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/map.md"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/grapple.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "tools/sekiro-extract/src/map.rs export_grapple; src/map.rs GrapplePoints"
+  },
+  "his": {
+   "has": "partial",
+   "where": "crates/formats/src/edge.rs"
+  },
+  "check": "Press H overlay near the gate: green hook spheres with landing lines.",
+  "note": "",
+  "needs": [
+   {
+    "id": "movement.grapple-hook",
+    "why": "consumer"
+   }
+  ]
+ },
+ {
+  "id": "map.grass-and-foliage-data",
+  "category": "map",
+  "title": "Grass and foliage rows",
+  "summary": "Grass patches are placed by GrassTypeParam and GrassLodRangeParam with draw distance rows; the map exporter writes a grass sidecar.",
+  "values": "GrassLodRangeParam has 9 rows, e.g. row 0 LOD0 40 m, LOD1 120 m, LOD2 160 m, shadow 1000 m; row 1 30 / 60 / 90 m, shadow 15 m.",
+  "how": "Param rows plus per-map grass data in the map files.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/GrassLodRangeParam.json"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "docs/MAP-COMPLETENESS.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "src/map_grass.rs"
+  },
+  "his": {
+   "has": "partial",
+   "where": "crates/game/src/map_grass.rs; crates/extract/src/maps/grass.rs"
+  },
+  "check": "Look at tall grass at 40 m vs 120 m and see the LOD step.",
+  "note": "",
+  "needs": [
+   {
+    "id": "map.lod-bank-selection",
+    "why": "related LOD"
+   }
+  ]
+ },
+ {
+  "id": "map.collision-holes-audit",
+  "category": "map",
+  "title": "Collision holes between render and hit",
+  "summary": "The drawn floor and the hit collision do not always match; sekiro-rs audited 208241 render surfaces without collision across nine maps and reproduced 119 with the Body, visually confirmed 12.",
+  "values": "Per map found: m10 27950, m11_00 26279, m11_01 18250, m11_02 4998, m13 4180, m15 19695, m17 29043, m20 36367, m25 41479. Visually confirmed: m11_00 2, m11_01 3, m11_02 2, m13 1, m15 2, m17 1, m25 1. Holes nearest to our exported areas are 160 to 390 m away.",
+  "how": "Audit raster at 0.5 m cells, slopes under 50 degrees, probes 64 moves of 0.5 to 3 m, capsule radius 0.4 m.",
+  "sources": [
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "docs/COLLISION-HOLES.md"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/map.md"
+   }
+  ],
+  "confidence": "recorded",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "yes",
+   "where": "crates/game/src/map_sweep.rs"
+  },
+  "check": "Open the candidate at m17 coordinates from COLLISION-HOLES.md and try to walk through.",
+  "note": "Candidates are not all gameplay defects.",
+  "needs": [
+   {
+    "id": "map.hit-collision-havok",
+    "why": "data audited"
+   }
+  ]
+ },
+ {
+  "id": "map.load-time-memory",
+  "category": "map",
+  "title": "Map load time and memory",
+  "summary": "Maps are big: a full block needs several GB of memory in sekiro-rs and loads in 0.8 to 6 s; the game streams blocks. Our 60 m arenas load in 0.1 to 0.5 s.",
+  "values": "Sekiro-rs loads: m10 3.6 to 5.3 s, m11_00 2.9 s, m13 0.8 to 1.3 s, m17 3.9 s, m20 5.2 s, m25 5.4 s; peak memory m10 4.1 to 4.6 GB, m20 6.8 to 7.1 GB, m25 6.0 to 6.3 GB. Ours: gate 257 batches 4.13 M triangles 186 MB loads in 0.3 s.",
+  "how": "Not a game mechanic; a bound for the clone design.",
+  "sources": [
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "docs/MAP-BASELINE.md"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/map.md"
+   }
+  ],
+  "confidence": "recorded",
+  "ours": {
+   "has": "yes",
+   "where": "tools/sekiro-extract map radius 60"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Time a map load in each project.",
+  "note": "Included for planning, not a game rule.",
+  "needs": [
+   {
+    "id": "map.worldbackread-streaming",
+    "why": "the real game streams"
+   }
+  ]
+ }
+]

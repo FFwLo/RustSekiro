@@ -1,0 +1,1180 @@
+[
+ {
+  "id": "camera.basic-framing",
+  "category": "camera",
+  "title": "Follow camera basics",
+  "summary": "The camera orbits a point 1.5 m above Wolf at 4.5 m distance with a 43 degree vertical field of view. Modes change these through param rows.",
+  "values": "LockCamParam row 0: camDistTarget 4.5, camFovY 43, chrOrg_offset_Y 1.5, lockRotXShiftRatio 0.45. CameraParam row 0: chrOrgOffset (0, 1.5, 0). Crouch camera row 100: offset Y 1.0, distance 3.5.",
+  "how": "LockCamParam (id from CameraSetParam slot) + CameraParam; exe ChrExFollowCam (vtable 0x1429a7d88).",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/json/params/LockCamParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/json/params/CameraParam.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "fireguy-rustsekiro/docs/kb/camera.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "fireguy-rustsekiro/src/camera.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "sekiro-rs/crates/sim/src/camera.rs (row 0 only)"
+  },
+  "check": "Walk in the open: camera distance 4.5 m and FOV 43.",
+  "note": "His sim reads only row 0; slot rows are not switched.",
+  "needs": []
+ },
+ {
+  "id": "camera.slot-table",
+  "category": "camera",
+  "title": "Camera slots swap the param rows",
+  "summary": "Animations choose camera behaviour by a slot number (TAE 155). CameraSetParam row 0 maps each slot to a LockCamParam and CameraParam row with blend times in and out.",
+  "values": "Slots (lock/cam ids, begin/end s): 2 crouch 100/100 (0.5/0.5), 3 cover 200/200, 4 cover-look-left 300/300, 5 cover-look-right 300/400, 6 hang 500/500, 8 death 700/700 (2.0/0.25), 10 0/900, 11 air 0/1000 (0.1/0.5), 17 air wire shoot 0/1600, 18 and 19 wire move 0/1700 and 0/1800, 21 swim 2000/2000, 22 swim kick 2000/2100, 27 2600, 31 dive 3000/3000, 32 3000/3100, 33-36 3200-3500, 38 3700/3000, 41 deathblow 0/4000 (0.0/1.0), 44 4300, 45 4400. 117 CameraSetParam rows exist for bosses and events.",
+  "how": "TAE 155 SetLockParamID -> FUN_140737430 (slot 1..45, reset to 1 every frame); blend over beginTime, back over endTime.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/json/params/CameraSetParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/json/params/LockCamParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/json/params/CameraParam.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "fireguy-rustsekiro/docs/kb/camera.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "fireguy-rustsekiro/src/camera.rs CamState"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Hang from a ledge and during a deathblow: the camera changes as the slot rows say.",
+  "note": "Slot 7 (ground wire shoot) has no row, so defaults apply.",
+  "needs": [
+   {
+    "id": "movement.traversal-camera-slots",
+    "why": "poses choose slots"
+   }
+  ]
+ },
+ {
+  "id": "camera.pitch-limits",
+  "category": "camera",
+  "title": "Pitch limits free and locked",
+  "summary": "Looking up and down is limited. Free camera allows -40 to 80 degrees; locked on it is limited to +-30 degrees and widens when the target is far above or below.",
+  "values": "CameraParam row 0: rotRangeXMin -40, rotRangeXMax 80 (1.396 rad), rotRangeXAtLockMin/Max -30/+30, rotRangeLerpBeginHeight 0.5 m and EndHeight 3.0 m blend toward the free range by height gap. LockCamParam rotRangeMinX overrides the lower limit: -40 default, -60 hang (500), -20 swim (2000), -80 dive (3000), 0 dive transitions (4300/4400).",
+  "how": "FUN_14073c260 lock pitch; LockCamParam.rotRangeMinX.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/json/params/CameraParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/json/params/LockCamParam.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "fireguy-rustsekiro/docs/kb/camera.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "fireguy-rustsekiro/src/camera.rs pitch_range"
+  },
+  "his": {
+   "has": "partial",
+   "where": "sekiro-rs/crates/sim/src/camera.rs"
+  },
+  "check": "Lock on a taller boss and look down: pitch clamps at the +-30 degrees until the height gap exceeds 0.5 m.",
+  "note": "",
+  "needs": []
+ },
+ {
+  "id": "camera.stick-turn-speed",
+  "category": "camera",
+  "title": "Camera turn speed from the stick",
+  "summary": "Stick (and mouse) camera rotation speed grows with how far the stick is pushed, and a high-speed boost ramps in over 0.6 s of holding.",
+  "values": "CameraParam row 0 (rad/s): rotSpeed_Min/Max X 0.977/2.932, Y 0.977/3.665; rotHiSpeed_Min/Max X 2.199/6.109, Y 2.688/7.575; rotHiSpeedRateIncTime 0.6 s. Speed is lerp(min, max, s squared) with s the stick magnitude.",
+  "how": "ChrCam update FUN_14073c260 (+0x250..+0x264).",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/json/params/CameraParam.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "fireguy-rustsekiro/docs/kb/camera.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "fireguy-rustsekiro/src/camera.rs (rotSpeed, rotHiSpeed)"
+  },
+  "his": {
+   "has": "partial",
+   "where": "sekiro-rs/crates/game/src/play.rs (rotSpeed via camera.rs)"
+  },
+  "check": "Push the right stick slowly and fully: full push turns about 210 deg/s horizontally after the boost.",
+  "note": "Units assumed radians per second; the exe formula for the s curve is taken from ours.",
+  "needs": [
+   {
+    "id": "interface.camera-input",
+    "why": "input device feeds it"
+   }
+  ]
+ },
+ {
+  "id": "camera.rotation-control-release",
+  "category": "camera",
+  "title": "Auto re-centering after camera input",
+  "summary": "After you move the camera by hand it stays put for 2 s, then the camera drifts back behind Wolf over 1 s.",
+  "values": "CameraParam row 0: rotCtrlEndWaitTime 2.0, rotCtrlEndReleaseTime 1.0; transChaseByControlEndWaitTime / ReleaseTime (position chase, same pattern). Camera object +0x150 = 1 on input, counts down +0x154.",
+  "how": "FUN_14073c260 (+0x150/+0x154); CameraParam.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/json/params/CameraParam.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "fireguy-rustsekiro/docs/kb/camera.md"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "yes",
+   "where": "fireguy-rustsekiro/src/camera.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Swing the camera sideways, release, run forward: camera holds 2 s then re-aligns.",
+  "note": "",
+  "needs": []
+ },
+ {
+  "id": "camera.follow-chase",
+  "category": "camera",
+  "title": "Focus chase rates",
+  "summary": "The camera focus lags behind Wolf: horizontal 20 percent and vertical 30 percent of the gap per 1/30 s.",
+  "values": "CameraParam row 0: chrTransChaseRateXZ_ForNormal 0.2, chrTransChaseRateY_ForNormal 0.3, targetChaseRateXZForNormal 0.1. Row 5000 sets 1.0 (snap). Focus moves in 1/30 s sub-steps: blend = 1 - (1 - rate)^(dt*30).",
+  "how": "FUN_14073c260 -> FUN_141155d20.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/json/params/CameraParam.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "fireguy-rustsekiro/docs/kb/camera.md"
+   },
+   {
+    "kind": "exe",
+    "ref": "FUN_14073c260, FUN_141155d20"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "yes",
+   "where": "fireguy-rustsekiro/src/camera.rs focus"
+  },
+  "his": {
+   "has": "yes",
+   "where": "sekiro-rs/crates/sim/src/camera.rs (chr_trans_chase_rate)"
+  },
+  "check": "Run in a straight line then stop: focus catches up in about 0.3 s.",
+  "note": "",
+  "needs": []
+ },
+ {
+  "id": "camera.position-chase",
+  "category": "camera",
+  "title": "Camera position chase and distance rates",
+  "summary": "The camera position follows its ideal spot with its own rates and a distance rate that speeds up after hitting a wall.",
+  "values": "CameraParam row 0: targetChaseRateAtLockXZ 0.4, AtLockY 0.3 (unlocked XZ 0.1 working rate, Y targetChaseRateY 0.4), angle ramp targetChaseRateAngMin/Max 10 and 20 deg, targetChaseDistRateXZ/Y 0.4, ForHitWall 1.0 for 2 s after a wall hit (targetChaseDistRateTime). Pitch outside limits forces rate 1.",
+  "how": "FUN_14073c260 0x140740764-0x140740d40.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/json/params/CameraParam.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "fireguy-rustsekiro/docs/kb/camera.md"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "yes",
+   "where": "fireguy-rustsekiro/src/camera.rs chase_position"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Spin the camera quickly around Wolf: position catches up with a lag, no lag when pitch hits a limit.",
+  "note": "FUN_140831190/1408311b0 overrides not traced.",
+  "needs": []
+ },
+ {
+  "id": "camera.fulcrum",
+  "category": "camera",
+  "title": "Fulcrum swing when running sideways",
+  "summary": "The camera hangs off a fulcrum that trails Wolf, so running sideways makes the view swing round to trail the run.",
+  "values": "CameraParam row 0: targetTransChaseRateXZ/Y 0.4, fulcrumDistRate 0.5, fulcrumDistMin 2 m, fulcrumDistRateByLrMove Min/Max 0.1/0.99 over 0.3 m/s lateral. Measured effect: 31 deg after 0.5 s, 53 at 1 s, 75 at 2 s at 6 m/s across.",
+  "how": "FUN_14073c260 (+0xe0 fulcrum, +0x174 yaw, +0x170 pitch).",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/json/params/CameraParam.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "fireguy-rustsekiro/docs/kb/camera.md"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "yes",
+   "where": "fireguy-rustsekiro/src/camera.rs drag_fulcrum"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Run perpendicular to the view: camera swings about 30 degrees in half a second.",
+  "note": "sekiro-rs has no fulcrum.",
+  "needs": []
+ },
+ {
+  "id": "camera.pitch-chase",
+  "category": "camera",
+  "title": "Unlocked pitch follows climbs and falls",
+  "summary": "While not locked on, the camera tilts to follow up/down motion unless Wolf is running toward the camera.",
+  "values": "CameraParam isEnableChrChaseRotX 1, chrChaseRotXInvalidAngle 80 deg (row 0; 0 in rows 200-500). Applies when the move stick is zero or its dot with the view is below cos(angle).",
+  "how": "FUN_140733e50 pitch from focus - fulcrum; ChrManipulator +0xc0 stick vector.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/json/params/CameraParam.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "fireguy-rustsekiro/docs/kb/camera.md"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "yes",
+   "where": "fireguy-rustsekiro/src/camera.rs chases_pitch"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Walk up a slope and drop: camera tilts with the terrain only when the stick is not toward the camera.",
+  "note": "The meaning of the -z row as toward the camera is inferred.",
+  "needs": []
+ },
+ {
+  "id": "camera.lock-range",
+  "category": "camera",
+  "title": "Lock-on range by light level",
+  "summary": "You can only lock enemies within 30 m in light, 15 m in the dark and 10 m in pitch darkness.",
+  "values": "LockCamParam chrLockRangeMaxRadius 30, _forD 15, _forPD 10; map visibility type (MAP_VISIBILITY_TYPE_GOOD 0 / DARK 1 / PICHDARK 2, env 3040). Row 0 values; defaults in the def are 15/-1/-1.",
+  "how": "LockCamParam; env 3040 map visibility.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/json/params/LockCamParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "reference/Paramdex/SDT/Defs/LockCamParam.xml"
+   },
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/hks_src/c0000_define.lua"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "fireguy-rustsekiro/src/camera.rs (bright range only)"
+  },
+  "his": {
+   "has": "partial",
+   "where": "sekiro-rs/crates/sim/src/camera.rs lock_range"
+  },
+  "check": "Lock on an enemy at 25 m in the open; then in a pitch-dark cave only inside 10 m.",
+  "note": "Dark variants not implemented in either project.",
+  "needs": [
+   {
+    "id": "map.visibility-type",
+    "why": "area darkness flag"
+   }
+  ]
+ },
+ {
+  "id": "camera.lock-on-acquire",
+  "category": "camera",
+  "title": "Which enemy a new lock picks",
+  "summary": "A lock press takes the nearest enemy in front of Wolf or the camera. The accepted zones are a close cone around Wolf and two camera cones.",
+  "values": "ChrFrontRange: within 5 m and 30 deg of Wolf facing; CamFrontNear: 60 deg sideways, 30 deg up/down within 8 m of the camera; CamFrontFar: 45 deg, 30 deg out to 200 m limit (clamped to lock range 30 m). Defaults at LockTgtManImp +0x2944..+0x2984.",
+  "how": "Exe FUN_1409c5fe0 (LockTgtManImp).",
+  "sources": [
+   {
+    "kind": "exe",
+    "ref": "FUN_1409c5fe0"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "fireguy-rustsekiro/docs/kb/camera.md"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "yes",
+   "where": "fireguy-rustsekiro/src/camera.rs acquirable"
+  },
+  "his": {
+   "has": "partial",
+   "where": "sekiro-rs/crates/game/src/play.rs (nearest target)"
+  },
+  "check": "Stand with an enemy at your back and press lock: nothing locks; turn so it is within 45 deg of the camera and it does.",
+  "note": "Extra distance terms fVar71 / local_2a8 not traced.",
+  "needs": [
+   {
+    "id": "camera.lock-range",
+    "why": ""
+   }
+  ]
+ },
+ {
+  "id": "camera.lock-switch-stick",
+  "category": "camera",
+  "title": "Switching target with the right stick",
+  "summary": "While locked, flicking the right stick moves the lock to the best enemy in that screen direction. Two thresholds stop jitter.",
+  "values": "Stick |axis| < 0.5 re-arms, > 0.95 fires. Cooldowns +0x2844/+0x2848 set to 0.5 s after a switch. Candidate zone while locked: CamFront Near/Far half angles yaw 60/45 deg, pitch 30/30, radius 8/200. Score = cos(angle(d, input)) / |d| in screen space, best above cos(pi/2).",
+  "how": "Exe FUN_1409ca2d0 (stick), pick FUN_1409ca480.",
+  "sources": [
+   {
+    "kind": "exe",
+    "ref": "FUN_1409c5fe0, FUN_1409ca2d0, FUN_1409ca480"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "fireguy-rustsekiro/docs/kb/camera.md"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "yes",
+   "where": "fireguy-rustsekiro/src/camera.rs toggle_lock"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Lock one of two enemies and flick the stick toward the other: it switches once, and not again for 0.5 s.",
+  "note": "Stick y sign not verified: exe reads it unnegated.",
+  "needs": [
+   {
+    "id": "interface.stick-input",
+    "why": ""
+   }
+  ]
+ },
+ {
+  "id": "camera.lock-switch-mouse",
+  "category": "camera",
+  "title": "Switching target with the mouse",
+  "summary": "Mouse movement switches the lock when it moves fast enough. Thresholds are in raw counts per frame.",
+  "values": "Mouse delta negated; re-arm below 25 counts, fire above 50 counts per poll; the same 0.5 s cooldown. Raw counts from DirectInput DIMOUSESTATE, relative axes, no scaling.",
+  "how": "Exe FUN_1409ca120; MouseDevice poll FUN_141a8f540.",
+  "sources": [
+   {
+    "kind": "exe",
+    "ref": "FUN_1409ca120, FUN_141a8f540"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "fireguy-rustsekiro/docs/kb/camera.md"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "partial",
+   "where": "fireguy-rustsekiro/src/camera.rs (units follow Bevy motion)"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Lock on two enemies and flick the mouse sideways quickly.",
+  "note": "The mouse binding table (action 0x54/0x55) and sign are open.",
+  "needs": [
+   {
+    "id": "interface.camera-input",
+    "why": ""
+   }
+  ]
+ },
+ {
+  "id": "camera.lock-anchor",
+  "category": "camera",
+  "title": "Lock point on the target",
+  "summary": "The camera and attacks aim at a fixed body point on the locked enemy, DummyPoly 220 (chest).",
+  "values": "Target position P = focus + lockTgtPosRate 0.7 * (dummy 220 - focus); lock mark drawn at dummy 220.",
+  "how": "CameraParam.lockTgtPosRate; dummy 220 on every character model.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/json/params/CameraParam.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "fireguy-rustsekiro/docs/kb/visuals.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "fireguy-rustsekiro/src/camera.rs lock anchor"
+  },
+  "his": {
+   "has": "partial",
+   "where": "sekiro-rs/crates/sim/src/camera.rs (lock_target_pitch)"
+  },
+  "check": "Lock a boss and check the reticle sits on its chest.",
+  "note": "",
+  "needs": []
+ },
+ {
+  "id": "camera.lock-pitch-framing",
+  "category": "camera",
+  "title": "Lock-on pitch framing",
+  "summary": "Locked on, the camera pitches so the target sits half a screen above centre, giving a 20-30 degree look down in melee and steep views over the target on head kicks.",
+  "values": "half = FOV * lockRotXShiftRatio (0.45) * 0.5; a = asin(dist * sin(half) / |P - focus|); target pitch = a + half - elevation(P - focus); chased at lockRotChaseRateX 0.6 per 1/30 s (CameraParam 4000 deathblow: 0.4). Row 7000 shift 0.23.",
+  "how": "FUN_14073c260 0x14073d6xx-0x14073dd0e.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/json/params/CameraParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/json/params/LockCamParam.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "fireguy-rustsekiro/docs/kb/camera.md"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "yes",
+   "where": "fireguy-rustsekiro/src/camera.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "sekiro-rs/crates/sim/src/camera.rs lock_target_pitch"
+  },
+  "check": "Fight a boss in melee range: the view looks down 20-30 degrees.",
+  "note": "",
+  "needs": [
+   {
+    "id": "camera.lock-anchor",
+    "why": ""
+   }
+  ]
+ },
+ {
+  "id": "camera.lock-yaw-chase",
+  "category": "camera",
+  "title": "Lock-on turning rate",
+  "summary": "The locked camera swings toward the target with a yaw rate of 30 percent of the gap per 1/30 s and a pitch rate of 60 percent.",
+  "values": "CameraParam lockRotChaseRateY 0.3, lockRotChaseRateX 0.6 (4000: 0.2 / 0.4), lockRotChasePlayAng X/Y 0 (dead zone).",
+  "how": "FUN_14073c260.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/json/params/CameraParam.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "fireguy-rustsekiro/docs/kb/camera.md"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "yes",
+   "where": "fireguy-rustsekiro/src/camera.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "sekiro-rs/crates/sim/src/camera.rs"
+  },
+  "check": "Lock a target and circle: camera turns smoothly, no snapping.",
+  "note": "",
+  "needs": []
+ },
+ {
+  "id": "camera.lock-drop-dead",
+  "category": "camera",
+  "title": "Lock on a dead or out-of-range target",
+  "summary": "When the locked enemy dies or leaves range the lock is dropped. Whether it jumps to another enemy was not settled.",
+  "values": "Lockable = alive and within chrLockRangeMaxRadius. Ours drops the lock; Sekiro also has an auto-retarget feature (wiki \"Auto Target\").",
+  "how": "LockTgtManImp update FUN_1409c5fe0.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "fireguy-rustsekiro/docs/kb/camera.md"
+   },
+   {
+    "kind": "web",
+    "ref": "https://tropedia.fandom.com/wiki/Camera_Lock-On"
+   }
+  ],
+  "confidence": "open-question",
+  "ours": {
+   "has": "partial",
+   "where": "fireguy-rustsekiro/src/camera.rs toggle_lock"
+  },
+  "his": {
+   "has": "partial",
+   "where": "sekiro-rs/crates/game/src/play.rs"
+  },
+  "check": "Kill one of two close enemies while locked and see if the lock moves to the other.",
+  "note": "Wiki search snippets mention auto target after a kill; not verified in the exe here.",
+  "needs": [
+   {
+    "id": "camera.lock-on-acquire",
+    "why": ""
+   }
+  ]
+ },
+ {
+  "id": "camera.auto-capture",
+  "category": "camera",
+  "title": "Soft lock when not locked on",
+  "summary": "Even without a lock, attacks and shinobi tools pick a nearby enemy to aim at, within a small cone and range.",
+  "values": "LockCamParam close attack: radius 3 m (dark 3, pitch-dark 3), +-30 deg, height -3..+1 m; bullets (tools): 30 m (dark 15, pitch-dark 10), +-15 deg. HKS act 156 SetAutoCaptureTarget runs the first 1/6 s of attacks when not locked (upper_limit 0.1667 s).",
+  "how": "LockCamParam close*/bullet* fields; HKS _UpdateAutoAim; CSChrAutoHomingModule.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/json/params/LockCamParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "reference/Paramdex/SDT/Defs/LockCamParam.xml"
+   },
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/hks_src/c0000_transition.lua"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "fireguy-rustsekiro/src/player.rs (closeMaxRadius)"
+  },
+  "his": {
+   "has": "partial",
+   "where": "sekiro-rs/crates/sim/src/homing.rs"
+  },
+  "check": "Attack with no lock next to an enemy at 2 m off-axis: Wolf turns to it; at 4 m he does not.",
+  "note": "Bullet range not used in ours.",
+  "needs": [
+   {
+    "id": "combat.attack-homing",
+    "why": ""
+   }
+  ]
+ },
+ {
+  "id": "camera.distance-event",
+  "category": "camera",
+  "title": "Boss and move cameras: distance events",
+  "summary": "Special attacks and boss anims push the camera in or out by TAE 153, easing between the current and target distance.",
+  "values": "TAE 153 CameraModule3: distance target from LockCamParam camDistTarget chased at CameraParam lockCamParamLerpRate 0.05, or StartInterpolationSpeed/EndInterpolationSpeed (persists); SlowStart eases by 1 - (p - 1)^2; used distance follows at 0.1 per frame.",
+  "how": "TAE dispatcher FUN_140b59170 case 0x99 -> FUN_140b51680 -> camera singleton DAT_143d5c0d0 +0x70..+0x85.",
+  "sources": [
+   {
+    "kind": "exe",
+    "ref": "FUN_140b59170, FUN_140b51680, FUN_14073c260"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "fireguy-rustsekiro/docs/kb/camera.md"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "yes",
+   "where": "fireguy-rustsekiro/src/camera.rs CamState"
+  },
+  "his": {
+   "has": "yes",
+   "where": "sekiro-rs/crates/sim/src/camera.rs (TAE 153)"
+  },
+  "check": "Perform a combat art with a camera pull and watch the distance lerp.",
+  "note": "",
+  "needs": [
+   {
+    "id": "arts.camera-moves",
+    "why": "arts use it"
+   }
+  ]
+ },
+ {
+  "id": "camera.look-limits",
+  "category": "camera",
+  "title": "Camera look limits (TAE 151)",
+  "summary": "An animation can restrict how far the camera may turn around a body direction, for cinematic holds.",
+  "values": "Limits = centre (view along DummyPoly matrix -row 2) + four event angles; chased at lockCamParamLerpRate per call. Without event, pitch limits chase rotRangeMinX/MaxX and yaw rotRangeYMin/Max (full circle in most rows; +-90 deg in the six cover-style rows 200-500 centred on Wolf matrix row 2 + rotBaseY).",
+  "how": "Camera singleton +0x4c..+0x58 -> FUN_140742230 (+0x230..+0x23c).",
+  "sources": [
+   {
+    "kind": "exe",
+    "ref": "FUN_140742230"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "fireguy-rustsekiro/docs/kb/camera.md"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "yes",
+   "where": "fireguy-rustsekiro/src/camera.rs apply_look_limits"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Hug a wall: the camera is limited to +-90 deg around the wall normal.",
+  "note": "Cone centre from the dummy basis is partly guessed.",
+  "needs": [
+   {
+    "id": "movement.wall-hug",
+    "why": ""
+   }
+  ]
+ },
+ {
+  "id": "camera.set-angle",
+  "category": "camera",
+  "title": "Forced camera angle (TAE 156)",
+  "summary": "Some animations rotate the camera to a set pitch and yaw relative to Wolf, mostly deathblows and cutscene-style moves.",
+  "values": "TAE 156 SetCameraAngle: VerticalAngle, HorizontalAngle, InterpolationType, OverrideVertical/Horizontal. 211 events on Wolf anims (184 with vertical, 116 with horizontal override). Eases by w = 1 - (p - 1)^2; yaw = Horizontal + Wolf yaw. Lock turning is skipped meanwhile.",
+  "how": "FUN_140b51490 -> FUN_1408327a0 (DAT_143d5c0d0 +0x88..+0x9a); ChrCam 14073.c 10606-10855.",
+  "sources": [
+   {
+    "kind": "exe",
+    "ref": "FUN_140b51490, FUN_1408327a0"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "fireguy-rustsekiro/docs/kb/camera.md"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "yes",
+   "where": "fireguy-rustsekiro/src/camera.rs set_camera_angle"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Perform a deathblow: camera moves to the authored angle.",
+  "note": "Gyoubu final blow a225_510090 angles not traced.",
+  "needs": [
+   {
+    "id": "deathblows.camera",
+    "why": "deathblows use it"
+   }
+  ]
+ },
+ {
+  "id": "camera.wall-collision",
+  "category": "camera",
+  "title": "Camera wall collision cast",
+  "summary": "A sphere cast from the focus backward stops the camera at walls. There is no minimum distance, so a wall behind Wolf can put the camera at his head.",
+  "values": "CameraParam camCastSphereRadius 0.05; distance = max(hit, 1e-5) of the arm. After a hit the distance chase uses the ForHitWall rate 1.0 for 2 s. escapeWall* fields (wing length 0.01, rotation 0) are effectively off in row 0.",
+  "how": "FUN_14073c260 14073.c 12318-12395.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/json/params/CameraParam.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "fireguy-rustsekiro/docs/kb/camera.md"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "yes",
+   "where": "fireguy-rustsekiro/src/camera.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "sekiro-rs/crates/game/src/play.rs camera_raycast (min distance clamp differs)"
+  },
+  "check": "Back Wolf against a wall and look: camera sits just in front of the wall.",
+  "note": "His camera keeps a ray push-in with its own clamp.",
+  "needs": []
+ },
+ {
+  "id": "camera.safe-margin",
+  "category": "camera",
+  "title": "Camera safe margin",
+  "summary": "After placing the camera it is pulled slightly toward Wolf so it does not clip into geometry.",
+  "values": "camSafeMarginRate 0.1 of the distance, capped by camSafeMarginMax 0.3 m (distance minus 1e-5). Applies when Game.IsUseSPChrExFollowCam (default 1).",
+  "how": "FUN_14073c260 14073.c 12709-12730.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/json/params/CameraParam.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "fireguy-rustsekiro/docs/kb/camera.md"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "yes",
+   "where": "fireguy-rustsekiro/src/camera.rs safe_margin"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Look at a wall from 1 m: camera stays 0.1 m off it.",
+  "note": "",
+  "needs": [
+   {
+    "id": "camera.wall-collision",
+    "why": ""
+   }
+  ]
+ },
+ {
+  "id": "camera.close-fade",
+  "category": "camera",
+  "title": "Wolf fades when the camera is close",
+  "summary": "When the camera comes within 0.5 m of Wolf, he fades out so you can see through him.",
+  "values": "playerFadeDist 0.5 m; alpha falls 2.5 per second to a floor of 0, climbs back at 5 per second (Game.Camera.Obstacle.* defaults). Slot manager FUN_140b21ca0 / FUN_140b22000; PlayerIns vtable +0x400 stores alpha +0x2074.",
+  "how": "Camera +0x3ae flag, |+0xa0 - camera| < playerFadeDist.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/json/params/CameraParam.json"
+   },
+   {
+    "kind": "exe",
+    "ref": "FUN_140b21ca0, FUN_140b22000, FUN_140a2f780"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "fireguy-rustsekiro/docs/kb/camera.md"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "yes",
+   "where": "fireguy-rustsekiro/src/camera.rs cam_fade_step"
+  },
+  "his": {
+   "has": "partial",
+   "where": "sekiro-rs/crates/game/src/camera_fade.rs (map material dither only)"
+  },
+  "check": "Back into a wall with the camera arm shortened: Wolf dissolves.",
+  "note": "Draw path may be a dither-fade material parameter, not plain alpha.",
+  "needs": []
+ },
+ {
+  "id": "camera.obstacle-fade",
+  "category": "camera",
+  "title": "Fading objects between camera and target",
+  "summary": "Objects that block the view of Wolf can fade out. The cast uses a 0.3 m sphere and a filter group for fading occluders.",
+  "values": "camCastSphereRadiusForFade 0.3; Havok filter group 0x76 (118, \"Camera (fade occluding OBJ)\") paired with objects 0x18/0x19/0x1b/0x20, 0x29, 0x2f, 0x43, 0x6c, 0x77 and enemy groups 2, 5, 7, 10, 0x66, 0x67, 0x69, 0x6a; fade to AlphaMin 0.2. Enemy fade depends on a byte at *(owner+0x18)+0x1f == 2 (unidentified).",
+  "how": "Camera +0x3ad parked in ours; FUN_14094ea80, FUN_140933390, FUN_140b21d40.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/json/params/CameraParam.json"
+   },
+   {
+    "kind": "exe",
+    "ref": "FUN_14094ea80, FUN_140933390, FUN_140b21d40"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "fireguy-rustsekiro/docs/kb/camera.md"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "partial",
+   "where": "sekiro-rs/crates/game/src/camera_fade.rs"
+  },
+  "check": "Stand behind a hanging blind or wooden screen with the camera behind it: it dithers away.",
+  "note": "Whether ordinary enemies fade is open (needs a live read).",
+  "needs": []
+ },
+ {
+  "id": "camera.shake",
+  "category": "camera",
+  "title": "Camera shake from animations",
+  "summary": "Hits, landings and big attacks shake the camera using small recorded camera animations triggered by TAE events.",
+  "values": "TAE RumbleCam events 145/146 global on the player anims, 144/147 local with FalloffStart/End metres on enemies; other/default.rumblebnd camera_NNN.hkx = 42 shakes, e.g. 61: 0.17 s / 1.1 deg, 56: 0.3 s / 4 deg, 377: 3.3 s rumble. Applied as rotation delta from frame 0 on top of the follow camera.",
+  "how": "TAE 144-147; hkaInterleavedUncompressed animations in rumblebnd.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "fireguy-rustsekiro/docs/kb/camera.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "fireguy-rustsekiro/src/camera.rs (RumbleCam)"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Take a heavy hit or land from a height and watch for a 1-4 degree shake lasting 0.2-0.3 s.",
+  "note": "",
+  "needs": [
+   {
+    "id": "combat.hit-reactions",
+    "why": ""
+   }
+  ]
+ },
+ {
+  "id": "camera.wire-camera",
+  "category": "camera",
+  "title": "Camera rows for the grapple move",
+  "summary": "The grapple move start uses camera rows that enable a default camera angle and a wire rotation, contrary to the earlier notes.",
+  "values": "CameraParam 1700 and 1800 (slots 18/19): isEnableDefaultCamera 1, defaultRot 45 deg (0.785), defaultAngX 15 deg (0.262), wireRotX/Y 0.785, fallHeightMargine 10; 1700 targetChaseDist rates 0.8. Boss variants 5200017/18, 10001700/1800, 15200017/18 repeat it. Earlier kb says wireRotX/Y are 0 in every row, which is wrong for these rows.",
+  "how": "CameraSetParam slots 18 and 19 from TAE 155 on a000_202010-12; exe consumer of wireRot* not traced.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/json/params/CameraParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/json/params/CameraSetParam.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "fireguy-rustsekiro/docs/kb/grapple.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Grapple to a high point: camera should swing toward a 45 degree heading with 15 degrees of tilt.",
+  "note": "Disagrees with docs/kb/grapple.md (\"wireRotX/Y are 0 in every row\"); the data wins.",
+  "needs": [
+   {
+    "id": "movement.grapple-flight",
+    "why": ""
+   }
+  ]
+ },
+ {
+  "id": "camera.default-camera",
+  "category": "camera",
+  "title": "Default camera for dives and wires",
+  "summary": "Some rows turn on a default camera: a fixed heading and tilt the camera drifts to, used in the dive transitions and the grapple move.",
+  "values": "isEnableDefaultCamera 1 rows: 1700, 1800 (45 deg heading, 15 deg tilt), 4300 and 4400 (30 deg heading, 0 tilt, pitch range 0..0, targetChaseRateY 1.0; slots 44 and 45 for SwimToDive and DiveToAir).",
+  "how": "CameraParam defaultRot / defaultAngX; not decoded in the exe here.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/json/params/CameraParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/json/params/CameraSetParam.json"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Dive from the surface and watch the camera fix its pitch.",
+  "note": "Consumer in ChrCam not located.",
+  "needs": [
+   {
+    "id": "movement.dive",
+    "why": ""
+   }
+  ]
+ },
+ {
+  "id": "camera.fall-look",
+  "category": "camera",
+  "title": "Fall camera",
+  "summary": "While falling a long way the camera has settings for looking down, with a base height and times.",
+  "values": "CameraParam row 0: isEnableFall 1, fallBaseHeight 5 m, fallHeightMargine 2 m (10 in air wire rows), fallMinTime 0.2 s, fallMaxTime 0.3 s, fallTargetRot 0. directPitchAng 60 deg, directPitchRate 0.06.",
+  "how": "CameraParam only; ChrCam consumer not traced.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/json/params/CameraParam.json"
+   }
+  ],
+  "confidence": "open-question",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Jump from 12 m and watch the camera look-down amount.",
+  "note": "Purpose inferred from field names.",
+  "needs": [
+   {
+    "id": "movement.landing-stiffness",
+    "why": ""
+   }
+  ]
+ },
+ {
+  "id": "camera.force-front-lock",
+  "category": "camera",
+  "title": "Force front lock time",
+  "summary": "A CameraParam field forceFrontLockTime (0.4 s in row 0) suggests the camera is forced to face the target for a short time after locking.",
+  "values": "forceFrontLockTime 0.4 s; no consumer found.",
+  "how": "CameraParam.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/json/params/CameraParam.json"
+   }
+  ],
+  "confidence": "open-question",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Press lock with the camera facing away and time how long it takes to face the target.",
+  "note": "Meaning is a guess from the name.",
+  "needs": [
+   {
+    "id": "camera.lock-on-acquire",
+    "why": ""
+   }
+  ]
+ },
+ {
+  "id": "camera.cover-look",
+  "category": "camera",
+  "title": "Cover look camera",
+  "summary": "Peeking around a corner shifts the camera sideways and brings it close.",
+  "values": "Slots 4/5: LockCamParam 300 camDistTarget 1.5; CameraParam 300/400 chrOrgOffsetX +1.0 / -1.0, offset Y 1.25, yaw range +-90 deg, resetBaseY 180 deg, targetTransChaseRateY 0.8. Cover idle slot 3: CameraParam 200 offset Y 1.25, yaw +-90 deg, distance 3.5.",
+  "how": "TAE 155 values 4/5 on a000_205010/205011/205020/205021; CameraSetParam row 0.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/json/params/CameraParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/json/params/LockCamParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/json/params/CameraSetParam.json"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "fireguy-rustsekiro/src/camera.rs peek lean 1.2 m / 0.3 m"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Peek around a corner: camera moves 1 m to that side at distance 1.5 m.",
+  "note": "Ours leans the focus 1.2 m out and 0.3 m forward; the data says 1.0 m offset and 1.5 m distance.",
+  "needs": [
+   {
+    "id": "movement.wall-peek",
+    "why": ""
+   }
+  ]
+ },
+ {
+  "id": "camera.swim-dive",
+  "category": "camera",
+  "title": "Swim and dive cameras",
+  "summary": "Swimming raises the focus to 2.0 m and the dive allows looking steeply down.",
+  "values": "Swim slot 21: CameraParam 2000 chrOrgOffsetY 2.0, chase XZ 0.5, at-lock 0.8/0.6; LockCamParam 2000 rotRangeMinX -20. Dive slot 31: CameraParam 3000 rotRangeXMin -80 deg, XZ 0.5; LockCamParam 3000 -80. Swim kick uses 2100 (XZ 0.1). Dive upward/downward slots 33/35: LockCam 3200/3400 pitch min 0.",
+  "how": "TAE 155 values 21, 22, 31-35 on swim/dive clips.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/json/params/CameraParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/json/params/LockCamParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/json/params/CameraSetParam.json"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "fireguy-rustsekiro/src/camera.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Dive and look straight down: pitch limit reaches -80 deg.",
+  "note": "",
+  "needs": [
+   {
+    "id": "movement.dive",
+    "why": ""
+   }
+  ]
+ },
+ {
+  "id": "camera.death-camera",
+  "category": "camera",
+  "title": "Death camera",
+  "summary": "On death the camera pulls out to 7.5 m and holds for 2 s.",
+  "values": "Slot 8: LockCamParam/CameraParam 700 (camDistTarget 7.5, chrOrgOffsetY 1.0), beginTime 2.0 s, endTime 0.25 s.",
+  "how": "TAE 155 value 8 on a000_110000... (136 anims).",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/json/params/CameraParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/json/params/LockCamParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/json/params/CameraSetParam.json"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "fireguy-rustsekiro/src/camera.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Die and watch the camera pull back.",
+  "note": "",
+  "needs": [
+   {
+    "id": "combat.player-death",
+    "why": ""
+   }
+  ]
+ },
+ {
+  "id": "camera.deathblow-camera",
+  "category": "camera",
+  "title": "Deathblow camera slot",
+  "summary": "Deathblow animations use slot 41 with a slower lock chase so the camera stays steady on the kill.",
+  "values": "Slot 41: CameraParam 4000 lockRotChaseRateX 0.4, Y 0.2, targetChaseRateAtLockXZ 0.2, Y 0.15; begin 0.0 s, end 1.0 s. 255 anims (a200_5xxxxx) set it.",
+  "how": "TAE 155 value 41.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/json/params/CameraParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/json/params/CameraSetParam.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "fireguy-rustsekiro/docs/kb/camera.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "fireguy-rustsekiro/src/camera.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Execute a deathblow: camera lag increases for the duration.",
+  "note": "",
+  "needs": [
+   {
+    "id": "deathblows.camera",
+    "why": ""
+   }
+  ]
+ }
+]

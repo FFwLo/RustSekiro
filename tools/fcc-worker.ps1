@@ -7,7 +7,7 @@
 #   ... -Task bosses-T1-003                                                            # run that task only
 #
 # Every task runs in a snapshot of the current tree (tracked + untracked files, so other
-# sessions' uncommitted edits are included) at C:\DeadlockModding\fcc-work\<id>, with its own
+# sessions' uncommitted edits are included) at ..\fcc-work\<id>, with its own
 # git repo and a "base" commit. The worker's edits come back as fcc/done/<id>.patch against
 # that base; tools\fcc-review.ps1 accept applies it to the real tree.
 
@@ -19,7 +19,10 @@ param(
 $ErrorActionPreference = "Stop"
 $Repo = Split-Path -Parent $PSScriptRoot
 $Fcc = Join-Path $Repo "fcc"
-$WorkRoot = "C:\DeadlockModding\fcc-work"
+$WorkRoot = Join-Path (Resolve-Path "$PSScriptRoot\..\..") "fcc-work"
+# The workspace folder in the //c/... form of the permission rules.
+$WsPath = (Resolve-Path "$PSScriptRoot\..\..").Path
+$Ws = '//' + $WsPath.Substring(0, 1).ToLower() + ($WsPath.Substring(2) -replace '\\', '/')
 $TargetDir = Join-Path $Repo "target\fcc"
 foreach ($d in "queue", "running", "done", "accepted", "rejected") { New-Item -ItemType Directory -Force (Join-Path $Fcc $d) | Out-Null }
 New-Item -ItemType Directory -Force $WorkRoot | Out-Null
@@ -44,9 +47,9 @@ $Tiers = @{
 }
 $Denied = @(
     "NotebookEdit", "WebFetch", "WebSearch", "Agent",
-    "Read(//c/DeadlockModding/extracted/**)", "Read(//c/DeadlockModding/shinobi-combat/extracted/**)",
-    "Read(//c/DeadlockModding/reference/**)", "Read(//c/DeadlockModding/sekiro-rs/**)",
-    "Read(//c/DeadlockModding/shinobi-combat/tools/DSLuaDecompiler/**)"
+    "Read($Ws/extracted/**)", "Read($Ws/shinobi-combat/extracted/**)",
+    "Read($Ws/reference/**)", "Read($Ws/sekiro-rs/**)",
+    "Read($Ws/shinobi-combat/tools/DSLuaDecompiler/**)"
 )
 # Never part of an accepted patch, whatever the task says.
 $NeverTouch = @("config.toml", "Cargo.lock", ".cargo/*", ".github/*")
@@ -135,7 +138,7 @@ function Invoke-Task($T) {
     $prompt = @"
 You are an FCC worker on the Rust project in the current folder (Sv1, a Sekiro combat clone). Rules:
 - $editRule
-- Do not run git. Do not read anything under C:\DeadlockModding\extracted, C:\DeadlockModding\reference, C:\DeadlockModding\sekiro-rs or any decomp folder.
+- Do not run git. Do not read anything under ..\extracted, ..\reference, ..\sekiro-rs or any decomp folder.
 - Never invent game values (frame counts, damage, speeds, ids). If the task needs a value it does not give you, stop and say so in NOTES.
 - Build and test only with: cargo test --profile quick --bin sv1 <filter>  (or cargo check / cargo clippy). CARGO_TARGET_DIR is already set; do not pass --target-dir. Never run the full test suite unless the task says so.
 

@@ -15,7 +15,7 @@ param(
 $ErrorActionPreference = "Stop"
 $Repo = Split-Path -Parent $PSScriptRoot
 $Fcc = Join-Path $Repo "fcc"
-$WorkRoot = "C:\DeadlockModding\fcc-work"
+$WorkRoot = Join-Path (Resolve-Path "$PSScriptRoot\..\..") "fcc-work"
 
 function Move-Results([string] $To, [string] $Note) {
     foreach ($ext in ".md", ".result.md", ".patch") {

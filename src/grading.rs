@@ -26,11 +26,13 @@ use bevy::render::{RenderApp, RenderStartup};
 
 /// The LUT strip (16x256, loaded with `is_srgb = false`: the bytes are display values).
 #[derive(Component, Clone, ExtractComponent)]
+#[extract_app(RenderApp)]
 pub struct ColorGradingLut(pub Handle<Image>);
 
 /// The game's own tone curve on this view instead of Bevy's: `contrast` is the Tone Map
 /// FilmicContrast.
 #[derive(Component, Clone, Copy, ExtractComponent)]
+#[extract_app(RenderApp)]
 pub struct GameToneCurve {
     pub contrast: f32,
 }
@@ -39,7 +41,7 @@ pub struct GradingPlugin;
 
 impl Plugin for GradingPlugin {
     fn build(&self, app: &mut App) {
-        bevy::asset::embedded_asset!(app, "grading_lut.wgsl");
+        bevy::asset::embedded_asset!(app, "grading_lut.wesl");
         app.add_plugins((ExtractComponentPlugin::<ColorGradingLut>::default(), ExtractComponentPlugin::<GameToneCurve>::default()));
         let Some(render_app) = app.get_sub_app_mut(RenderApp) else { return };
         render_app
@@ -83,7 +85,7 @@ fn init_pipeline(mut commands: Commands, device: Res<RenderDevice>, assets: Res<
         layout: vec![layout.clone()],
         vertex: fullscreen.to_vertex_state(),
         fragment: Some(FragmentState {
-            shader: assets.load("embedded://sv1/grading_lut.wgsl"),
+            shader: assets.load("embedded://sv1/grading_lut.wesl"),
             targets: vec![Some(ColorTargetState { format: TextureFormat::Rgba16Float, blend: None, write_mask: ColorWrites::ALL })],
             ..default()
         }),

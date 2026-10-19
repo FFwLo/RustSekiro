@@ -30,10 +30,12 @@ static Ghidra decompile of the exe. The crate and exe are `sv1`. GitHub: `FFwLo/
 | Sound, music | `src/sound.rs`, `src/fmod.rs`, `src/area_music.rs`, `docs/kb/sound.md` |
 | HUD, menus | `src/hud.rs`, `src/menu.rs` |
 | Extractor | `tools/sekiro-extract/src/`, `docs/kb/tools-exe.md` |
+| How any Sekiro mechanic works (values, sources, coverage, needs) | `docs/kb/mechanics-atlas.json` (filter by id/category with python; `mechanics-atlas.md` is generated from it) |
+| The playthrough start to finish, gates, endings | `docs/kb/game-flow.md` |
 | Reference clips | `docs/kb/clips.md` (check before asking for a new recording) |
 | Live recordings of the real Sekiro | `docs/kb/recordings.md`: read `python -m tools.rec summary <rec> --cat <topic>`, never raw data |
 
-Reference clones (read-only): `C:\DeadlockModding\reference` (SekiroHKS, SDT-HKS, Paramdex,
+Reference clones (read-only): `..\reference` (SekiroHKS, SDT-HKS, Paramdex,
 SekiroTool, SoulsFormatsNEXT, sekiro-rs, fxr, ...). Check them first for names and layouts.
 
 ## Do not read by default
@@ -47,3 +49,14 @@ SekiroTool, SoulsFormatsNEXT, sekiro-rs, fxr, ...). Check them first for names a
 2. Read only that item's kb file and source module (table above).
 3. Record what changed in the kb file for the topic and in `docs/PROGRESS.md`, not in
    `docs/HANDOFF.md` (that file is the current-state summary only).
+
+## Subagents and workflows
+- Project agents already pick their own model (`re-scout`, `screenshot-judge`: sonnet;
+  `cargo-check`: haiku). Prefer them over `general-purpose`.
+- When spawning `general-purpose` agents or workflow `agent()` calls, pass `model: "sonnet"`.
+  Use Opus only for hard reverse-engineering (TAE/HKX, AI scripts, exe research) and say why.
+- Subagents are for searches with a short answer; batch related shell commands into one call.
+
+## Ending a session
+Once the task is committed and `docs/PROGRESS.md` (plus the topic's kb file) is updated, tell the
+user to start a new session for the next item instead of continuing this one.

@@ -160,7 +160,7 @@ end). See HANDOFF 4.63 item 8.
   mashed_air_kicks_kick_once_per_jump (a plain jump allowed only one kick already: jump start's
   119 opens at 0.1 s, the jump lands before AirKick's 0.7 s). gap: the additive clip; where the
   reported repeated kicks came from (off an enemy's head?) not reproduced.
-- 2026-10-15 LIVE auto-test (Sekiro via me3 `C:\DeadlockModding\me3\sekiro-research.me3`, keys sent by
+- 2026-10-15 LIVE auto-test (Sekiro via me3 `..\me3\sekiro-research.me3`, keys sent by
   scratchpad sk_input.py (SendInput scan codes reach DirectInput), memscope script move_log.lua: TimeAct
   +0x100 anim, physics +0x80 pos / +0x74 yaw). A pre hook on FUN_1407dab40 ran 335 calls, no crash.
   - Run a000_000400: 0 -> 6.4 m/s in 0.35 s, then 4.65-6.4 (the dips are real, as in Sv1).
@@ -215,3 +215,21 @@ Live Sekiro (rec.db, slot 0) vs Sv1 clip data / sim:
 ## Deflect spam replays (2026-10-16)
 - Spamming guard steps the chain StandToDeflectGuard (a050_203000) -> 2 (203005) -> 3 (203006) -> 4 (203007), then every further press replays 4 (HKS BEH_A_DEFLECT_GUARD_CONTINUE, ref 212). Live the same order: 203006 -> 203007 33 times, else 203010 or a recoil.
 - Bug: anim.rs crossfaded only when the shown clip's key changed, so each replay of 203007 snapped the pose back to frame 0. Now a replay (the state clock running back to 0 on the same key) fades by the clip's TAE Blend like any transition (applies to every character). gap: the graph's self-transition taken as its TaeBlend; not visible live (the recorder's anim field does not change on a replay). Checked by eye only (the sim tests draw no poses).
+
+## Atlas movement pass (2026-10-19)
+
+- Walk-off: HKS BEH_R_FALL starts the fall only once env 224 (the height fallen) is 30 cm while
+  moving (TAE refs 90-92 or the move loop). Ours keeps the move loop over the first 30 cm and
+  lands without a land clip under it; Wolf follows the floor down 30 cm (`FALL_START_DROP`).
+- Weapon state: BEH_A_GROUND_JUMP / WALL_JUMP / ITEM_USE / ADD_SUB_WEAPON_CHANGE need sheathed
+  inside a non-combat area (ref 600: SpEffect 100298 / 100308 / 108900) and drawn outside it
+  (`arm_style_matches`). With X sheathing anywhere, a sheathed Wolf outside such an area cannot
+  jump, use items or switch tools.
+- Landing: dodge pressed or held (env 1106 / 1108 SP_MOVE) with the sword drawn steps out of the
+  landing before the stick and land clips (BEH_R_LAND 2027 / 2044). Into deep water from 20 m:
+  LandWaterFreeFallLongStiff (a000_210011).
+- Knockdown step: StandStepFromDown_* turns by the stick minus PRM_4DIR_JUMP_ANGLE_CENTER.
+- Hang: a jump is always HangJumpReady (BEH_A_HANG_END_CONNECT before BEH_A_HANG_CLIMB); the hang
+  button climbs. Wall kills only from the peek (ThrowGrabType COVER_LOOK).
+- Not done: the land-ready poses (env 248 untraced), crouch landings, swamp / waterside limits
+  (floor material SpEffects are not applied), the turn lean of Move_onGenerate.

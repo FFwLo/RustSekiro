@@ -1489,6 +1489,11 @@ pub(crate) fn blue_lightning_on_an_air_art(air: bool) {
     for atk in app.world_mut().resource_mut::<Combat>().kinds[0].data.attacks.values_mut() {
         (atk.sp_attribute, atk.sp_effect_id0) = (10, 9490);
     }
+    // Wolf's art lands no reaction (attacks carry no armour of their own, so a flinch would end
+    // the enemy's combo before its lightning reaches him).
+    for atk in app.world_mut().resource_mut::<Combat>().player.attacks.values_mut() {
+        atk.dmg_level = 0;
+    }
     app.update();
     let (key, t) = {
         let d = &app.world().resource::<Combat>().player;

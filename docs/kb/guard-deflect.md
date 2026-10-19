@@ -57,7 +57,7 @@ Dated findings, oldest first. Append new entries at the end.
   never on hit frames -> used as "damage motion allowed" (inferred; test enemy_mid_swing_...). 2026-10-11 exe: flag 73 is the
   opponents' ParryTiming gate, not a flinch rule (dispatcher FUN_140b51b70 case 0x49 -> bit 0x400 at (ChrIns+0x50)+0x50
   +0x8c, read only by FUN_14061fad0: an AI handling the sender's flag-63 message 7 raises INTERUPT_ParryTiming (24) when
-  the sender is within its +0x154 range and has this bit or vfunc +0x1a8). Our flinch gate keeps it as a proxy (gap). Posture break: hit breaks
+  the sender is within its +0x154 range and has this bit or vfunc +0x1a8). 2026-10-19: the proxy is removed. Posture break: hit breaks
   play TrunkCollapseFront/Back (HKS ExecDamageBreak), deflect/guard breaks keep AttackBoundEmptyStamina / GuardBreak; the
   deathblow window = until the break anim opens AI flag 86 (frame 85-87 of 90, ~2.9 s) instead of config 4 s.
   Clip aliases: 57 enemy / 10 player anims ship TAE-only (mirrors, chain steps); data::alias_missing_clips borrows the
@@ -88,6 +88,9 @@ Dated findings, oldest first. Append new entries at the end.
 - 2026-10-07 guard arc from the exe: FUN_140b6ab40 blocks only when facing . attack direction < cos((angle + 180) deg),
   angle = the ShieldBlock flag's ArgB via a vfunc (0 -> same as 90). ArgB 90 everywhere in Wolf's TAE -> the front half.
   combat.rs guard_half_angle reads it per anim; config combat.guard_angle removed (gap closed; old value matched).
+  2026-10-19 correction: ArgB is the guard judge, not the angle (Wolf 90 -> BehaviorParam_PC 105000090 ->
+  AtkParam_Pc 5000090; the umbrella 100 -> 7600100; NPC 900 -> 2xxxxx900). The angle is NpcParam guardAngle or the
+  weapon's guardAngle (0 = 90; the umbrellas 180). combat.rs guard_contact.
 - 2026-10-07 FIX: deflects had no facing check (a perfect press deflected attacks from behind). The exe's guard-arc
   test (FUN_140b6ab40) runs before the guard outcome, so the same arc now gates deflect and block on both sides
   (backstabs on a deflecting enemy land too). Test a_deflect_facing_away_is_still_hit. 40 pass.
@@ -188,3 +191,31 @@ ChrActionFlag 41 on the defender forces both. The clock holds 0.06 s, then eases
 (elapsed / length)^2 (0.1 s costs ~0.127 s). Most NpcParam rows are 0 / 0, so Wolf's sword on
 ordinary enemies and bosses stops nobody; type 1: Guardian Ape, Okiryu; type 2: the Great Serpent.
 Test hit_stop_follows_the_defenders_type.
+
+## Guard by repel values (2026-10-19, src/guard.rs, combat.rs guard_contact / guard_posture)
+
+Ported after sekiro-rs crates/sim/src/combat (hit.rs, posture.rs, hp.rs); every value read from the params.
+- Guard row: the ShieldBlock flag's ArgB is the judge -> BehaviorParam(_PC) -> AtkParam (Wolf 5000090:
+  guardBreakCorrection 100; umbrella 7600100: guardAttribute 1; soldier 10100900: guardBreakRate 20). A PC
+  variation without its own row takes variation / 100 x 100 (7602, 7603). 20 enemy variation / judge pairs
+  have no row and keep the old window / flag rule (gap).
+- Block or deflect (b6c880): repel = max(base, defFlickPower of the active SpEffects); Wolf base = trunc(
+  guardBreakCorrection % x weapon guardBaseRepel 20 x guardDefFlickPowerRate of the 158 / 204 effects), NPC base
+  = trunc(guardBreakRate x the same). Attack power: Wolf weapon attacks guardAtkRateCorrection % x
+  attackBaseRepel 10 (Combo1 30), else AtkParam guardAtkRate (30 most, 100 on guard rows and fireballs).
+  repel < power: block (hit if disableGuard for the guard type); else deflect (hit if disableJustGuard). The
+  windows 105010 / 200220 give defFlickPower 40, so the window deflects 30 and only blocks 100.
+- Grabs run after the guard test: the sword (type 0) cannot guard most grabs, the umbrella (type 1) can.
+- Arc: NpcParam guardAngle or the weapon's guardAngle (0 = 90, umbrellas 180); AtkParam isAllDirGuard (4 rows)
+  covers all round.
+- Posture through a guard (8439a0, 840550 / 840870): cut = clamp((guardDef + bias) x (1 + row guardStaminaCutRate
+  / 100) x family guardStaminaCutRate, 0, 100); guarded = (1 - cut / 100) x base + BehaviorParam stamina, x the
+  defender's attribute rate x family def<attr>StaminaDmgRate, truncated. guardDef: NpcParam staminaGuardDef
+  (soldiers 50 on 166 rows), Wolf the weapon's staminaGuardDef / JustGuardDef (sword 0, umbrella 25); bias 1 for
+  Wolf. Family (bfafa0): 158 on a block, 204 on a deflect; a direct hit counts all but 158 / 204 / 110 / 300
+  (the shield servants' 400230 / 400250 now cut only a block). Soldier slash on Wolf's block: 18 -> 17.
+- Deflect return to the attacker (842790): repelLostStamDamage_Attacker x the 204 defStaminaAttackRate chain x
+  Wolf's guarding weapon passiveStaminaAtkRate (umbrella 1.5), truncated.
+- HP through an enemy's block (845ed0): physical (100 - (1 + <attr>GuardCutRate / 100) x physGuardCutRate x (1 +
+  guardRate / 100)) / 100, elements (100 - cut x the same) / 100, negative = 0: fire 67 %, magic 75 %, dark 50 %,
+  lightning all; the sword's physical stops. gap: a deflecting enemy takes no HP (repel cut 841c80 not traced).

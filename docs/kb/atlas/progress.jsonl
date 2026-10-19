@@ -1,0 +1,47 @@
+{"t": "2026-10-19T09:27:18Z", "step": "research", "agent": "A", "category": "movement", "status": "started"}
+{"t": "2026-10-19T09:27:20Z", "step": "research", "agent": "G", "category": "npcs", "status": "started"}
+{"t": "2026-10-19T09:27:21Z", "step": "research", "agent": "D", "category": "arts", "status": "started"}
+{"t": "2026-10-19T09:27:22Z", "step": "research", "agent": "C", "category": "deathblows", "status": "started"}
+{"t": "2026-10-19T09:27:16Z", "step": "research", "agent": "F", "category": "map", "status": "started"}
+{"t": "2026-10-19T09:27:27Z", "step": "research", "agent": "B", "category": "combat", "status": "started"}
+{"t": "2026-10-19T09:38:36Z", "step": "research", "agent": "F", "category": "map", "added": 39, "data": 24, "exe": 11, "recorded": 2, "community": 2, "open": 0}
+{"t": "2026-10-19T09:40:43Z", "step": "research", "agent": "F", "category": "visuals", "status": "started"}
+{"t": "2026-10-19T09:40:14Z", "step": "research", "agent": "E", "category": "ai", "status": "started"}
+{"t": "2026-10-19T09:40:57Z", "step": "research", "agent": "A", "category": "movement", "added": 62, "data": 38, "exe": 10, "recorded": 10, "community": 3, "open": 1}
+{"t": "2026-10-19T09:40:57Z", "step": "research", "agent": "A", "category": "camera", "status": "started"}
+{"t": "2026-10-19T09:40:43Z", "step": "research", "agent": "F", "category": "visuals", "added": 34, "data": 7, "exe": 24, "recorded": 0, "community": 1, "open": 2}
+{"t": "2026-10-19T09:41:33Z", "step": "research", "agent": "F", "category": "sound", "status": "started"}
+{"t": "2026-10-19T09:41:33Z", "step": "research", "agent": "F", "category": "sound", "added": 25, "data": 17, "exe": 5, "recorded": 2, "community": 0, "open": 1}
+{"t": "2026-10-19T09:42:28Z", "step": "research", "agent": "B", "category": "combat", "added": 53, "data": 28, "exe": 17, "recorded": 6, "community": 0, "open": 2}
+{"t": "2026-10-19T09:42:45Z", "step": "research", "agent": "A", "category": "camera", "added": 34, "data": 14, "exe": 17, "recorded": 0, "community": 0, "open": 3}
+{"t": "2026-10-19T09:42:45Z", "step": "research", "agent": "A", "category": "interface", "status": "started"}
+{"t": "2026-10-19T09:43:30Z", "step": "research", "agent": "D", "category": "arts", "added": 98, "data": 88, "exe": 4, "recorded": 0, "community": 3, "open": 3}
+{"t": "2026-10-19T09:45:28Z", "step": "research", "agent": "B", "category": "armor", "added": 38, "data": 23, "exe": 9, "recorded": 3, "community": 2, "open": 1}
+{"t": "2026-10-19T09:46:51Z", "step": "research", "agent": "A", "category": "interface", "added": 33, "data": 20, "exe": 8, "recorded": 5, "community": 0, "open": 0}
+{"t": "2026-10-19T09:46:58Z", "step": "research", "agent": "E", "category": "ai", "added": 46, "data": 25, "exe": 19, "recorded": 1, "community": 0, "open": 1}
+{"t": "2026-10-19T09:46:58Z", "step": "research", "agent": "E", "category": "bosses", "status": "started"}
+{"t": "2026-10-19T09:46:58Z", "step": "research", "agent": "E", "category": "bosses", "added": 33, "data": 28, "exe": 1, "recorded": 4, "community": 0, "open": 0}
+{"t": "2026-10-19T09:47:23Z", "step": "research", "agent": "G", "category": "npcs", "added": 32, "data": 27, "exe": 1, "recorded": 0, "community": 3, "open": 1}
+{"t": "2026-10-19T09:47:23Z", "step": "research", "agent": "G", "category": "cutscenes", "status": "started"}
+{"t": "2026-10-19T09:47:23Z", "step": "research", "agent": "G", "category": "cutscenes", "added": 25, "data": 18, "exe": 4, "recorded": 0, "community": 0, "open": 3}
+{"t": "2026-10-19T09:47:23Z", "step": "research", "agent": "G", "category": "dialogue", "status": "started"}
+{"t": "2026-10-19T09:47:23Z", "step": "research", "agent": "G", "category": "dialogue", "added": 28, "data": 25, "exe": 1, "recorded": 0, "community": 1, "open": 1}
+{"t": "2026-10-19T09:47:32Z", "step": "research", "agent": "E", "category": "stealth", "status": "started"}
+{"t": "2026-10-19T09:50:51Z", "step": "research", "agent": "C", "category": "deathblows", "added": 43, "data": 27, "exe": 4, "recorded": 6, "community": 3, "open": 3}
+{"t": "2026-10-19T09:50:51Z", "step": "research", "agent": "C", "category": "progression", "status": "started"}
+{"t": "2026-10-19T09:51:56Z", "step": "research", "agent": "E", "category": "stealth", "added": 36, "data": 22, "exe": 12, "recorded": 0, "community": 0, "open": 2}
+{"t": "2026-10-19T09:51:56Z", "step": "research", "agent": "E", "category": "ai", "added": 44, "data": 23, "exe": 19, "recorded": 1, "community": 0, "open": 1, "note": "2 records moved to stealth"}
+{"t": "2026-10-19T09:52:02Z", "step": "research", "agent": "E", "category": "ai", "added": 44, "data": 24, "exe": 18, "recorded": 1, "community": 0, "open": 1, "note": "corrects previous ai line after the 2 records moved to stealth"}
+{"t": "2026-10-19T09:58:02Z", "step": "research", "agent": "C", "category": "progression", "added": 35, "data": 24, "exe": 0, "recorded": 2, "community": 4, "open": 5}
+{"t":"2026-10-19T10:08:36Z","step":"deps","agent":"deps","category":"all","remapped":168,"dropped":125,"new":14,"loops_kept":1}
+{"t":"2026-10-19T10:13:56Z","step":"verify","agent":"ai-stealth-bosses","category":"ai-stealth-bosses","checked":114,"confirmed":90,"corrected":24,"rejected":0}
+{"t":"2026-10-19T10:22:52Z","step":"verify","agent":"arts-items-status-progression","category":"arts-items-status-progression","checked":133,"confirmed":96,"corrected":37,"rejected":0}
+{"t":"2026-10-19T10:26:40Z","step":"verify","agent":"movement-camera-interface","category":"movement-camera-interface","checked":129,"confirmed":111,"corrected":18,"rejected":0}
+{"t":"2026-10-19T10:29:34Z","step":"verify","agent":"combat-armor-deathblows","category":"combat-armor-deathblows","checked":134,"confirmed":83,"corrected":51,"rejected":0}
+{"t":"2026-10-19T10:41:30Z","step":"research","agent":"I","category":"flow","status":"started"}
+{"t":"2026-10-19T10:41:06Z","step":"research","agent":"H","category":"frontend","status":"started"}
+{"t": "2026-10-19T10:48:18Z", "step": "clips", "agent": "clips", "category": "all", "checked": 17, "found": 3, "settled": 1}
+{"t":"2026-10-19T10:56:16Z","step":"verify","agent":"visuals-new","category":"visuals-new","checked":47,"confirmed":14,"corrected":33,"rejected":0}
+{"t":"2026-10-19T10:56:30Z","step":"research","agent":"H","category":"frontend","added":44,"data":30,"exe":8,"recorded":0,"community":3,"open":3}
+{"t":"2026-10-19T11:05:55Z","step":"research","agent":"I","category":"flow","added":85,"data":69,"exe":0,"recorded":6,"community":8,"open":2}
+{"t":"2026-10-19T11:34:56Z","step":"verify","agent":"frontend-flow","category":"frontend-flow","checked":129,"confirmed":98,"corrected":31,"rejected":0,"added":3}

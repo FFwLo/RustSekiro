@@ -228,7 +228,6 @@ struct Particle {
 }
 
 struct NodeInst {
-    node: Arc<Value>,
     /// Active config (stateConfigMap[0]).
     cfg: Option<Arc<Value>>,
     local: Transform,
@@ -414,7 +413,6 @@ fn make_node(lib: &mut FxrLib, node: &Value, seed: u32, depth: u32) -> Option<No
         (kids.iter().enumerate().filter_map(|(i, k)| make_node(lib, k, seed.wrapping_mul(31).wrapping_add(i as u32 + 1), depth + 1)).collect(), Vec::new())
     };
     Some(NodeInst {
-        node: Arc::new(node.clone()),
         cfg,
         local,
         world: Transform::IDENTITY,
@@ -1032,10 +1030,10 @@ pub struct DistortMaterial {
 
 impl Material for DistortMaterial {
     fn vertex_shader() -> bevy::shader::ShaderRef {
-        "embedded://sv1/fx_distort.wgsl".into()
+        "embedded://sv1/fx_distort.wesl".into()
     }
     fn fragment_shader() -> bevy::shader::ShaderRef {
-        "embedded://sv1/fx_distort.wgsl".into()
+        "embedded://sv1/fx_distort.wesl".into()
     }
     fn alpha_mode(&self) -> AlphaMode {
         AlphaMode::Opaque
@@ -1160,10 +1158,10 @@ pub struct MultiMaterial {
 
 impl Material for MultiMaterial {
     fn vertex_shader() -> bevy::shader::ShaderRef {
-        "embedded://sv1/fx_multi.wgsl".into()
+        "embedded://sv1/fx_multi.wesl".into()
     }
     fn fragment_shader() -> bevy::shader::ShaderRef {
-        "embedded://sv1/fx_multi.wgsl".into()
+        "embedded://sv1/fx_multi.wesl".into()
     }
     fn alpha_mode(&self) -> AlphaMode {
         AlphaMode::Premultiplied
@@ -1212,7 +1210,7 @@ pub struct SoftExt {
 
 impl bevy::pbr::MaterialExtension for SoftExt {
     fn fragment_shader() -> bevy::shader::ShaderRef {
-        "embedded://sv1/fx_soft.wgsl".into()
+        "embedded://sv1/fx_soft.wesl".into()
     }
 }
 
@@ -1892,11 +1890,25 @@ fn draw(
     mut fx: Query<&mut FxEffect>,
     old_lights: Query<Entity, With<FxLight>>,
     mut lib: ResMut<FxrLib>,
-    (map_light, soft_mats, mut uploads): (Option<Res<crate::map::MapLighting>>, Query<&MeshMaterial3d<SoftMaterial>>, ResMut<FxUploads>),
+    (map_light, sr_light, soft_mats, mut uploads): (Option<Res<crate::map::MapLighting>>, Option<Res<sekiro_rs::lighting::MapLighting>>, Query<&MeshMaterial3d<SoftMaterial>>, ResMut<FxUploads>),
+    mut sr_cached: Local<Option<((i32, u32), (Vec3, Vec3, Vec3))>>,
 ) {
     let Some((cam, proj, view)) = camera.iter().next() else { return };
     // Lit particles' light (game units -> the map's radiance scale, ENV_PER_UNIT): ambient, sun.
-    let (amb, sun, to_sun) = map_light.as_deref().map(crate::map::particle_light).unwrap_or((Vec3::splat(0.4), Vec3::splat(1.5), Vec3::new(0.3, 0.8, 0.5).normalize()));
+    // Under sekiro-rs's map his light set in force (the collision under Wolf, the story's hour),
+    // looked up again only when it changes.
+    let sr = sr_light.map(|l| {
+        let key = (l.light_set, l.hour.to_bits());
+        match *sr_cached {
+            Some((k, v)) if k == key => v,
+            _ => {
+                let v = crate::sr_map::particle_light(&l);
+                *sr_cached = Some((key, v));
+                v
+            }
+        }
+    });
+    let (amb, sun, to_sun) = sr.or_else(|| map_light.as_deref().map(crate::map::particle_light)).unwrap_or((Vec3::splat(0.4), Vec3::splat(1.5), Vec3::new(0.3, 0.8, 0.5).normalize()));
     let light = [(amb * crate::map::ENV_PER_UNIT).extend(0.0), (sun * crate::map::ENV_PER_UNIT).extend(0.0)];
     for m in &soft_mats {
         if materials.get(&m.0).is_some_and(|x| x.extension.light != light) {
@@ -2056,9 +2068,9 @@ fn draw(
         m.insert_attribute(Mesh::ATTRIBUTE_NORMAL, vec![[0.0, 1.0, 0.0]; c]);
         uploads.put(&mut meshes, mesh, m);
     }
-    // Lights: rebuilt each frame, the brightest 8. They use the sun's bridge (map.rs SCENE_TO_BEVY lux
-    // per game unit). The unit is matched at 1 m, so 4 pi x 4500 lm per diffuseMultiplier;
-    // before, x 4000 lm, about 14x dimmer. gap: the game's falloff curve (Bevy's is 1/d^2 within range).
+    // Lights: rebuilt each frame, the brightest 8. They use the sun's bridge (sekiro-rs
+    // lighting LOCAL_LUMENS_PER_UNIT: SCENE_TO_BEVY lux per game unit x 4 pi lm), the same unit as
+    // the map's BTL lamps and his scene lights. gap: the game's falloff curve (Bevy's is 1/d^2 within range).
     for e in &old_lights {
         commands.entity(e).despawn();
     }
@@ -2066,17 +2078,24 @@ fn draw(
     for (p, c, k, r) in lights.into_iter().take(8) {
         // Spawned after this frame's propagation: its GlobalTransform given, or it would light
         // from the origin.
-        commands.spawn((PointLight { color: c, intensity: k * 4.0 * std::f32::consts::PI * crate::map::SCENE_TO_BEVY, range: r.max(0.5), shadow_maps_enabled: false, ..default() }, Transform::from_translation(p), GlobalTransform::from_translation(p), FxLight));
+        commands.spawn((PointLight { color: c, intensity: k * sekiro_rs::lighting::LOCAL_LUMENS_PER_UNIT, range: r.max(0.5), shadow_maps_enabled: false, ..default() }, Transform::from_translation(p), GlobalTransform::from_translation(p), FxLight));
     }
 }
 
 pub struct FxrPlugin;
 
 impl Plugin for FxrPlugin {
+    fn finish(&self, app: &mut App) {
+        // DistortMaterial reads the view transmission texture; Bevy 0.19 required
+        // ScreenSpaceTransmission on every Camera3d, 0.20 no longer does. sekiro-rs's effects
+        // (sr_map.rs) register the same requirement during build, so only when still missing.
+        let _ = app.try_register_required_components::<Camera3d, bevy::pbr::ScreenSpaceTransmission>();
+    }
+
     fn build(&self, app: &mut App) {
-        bevy::asset::embedded_asset!(app, "fx_distort.wgsl");
-        bevy::asset::embedded_asset!(app, "fx_multi.wgsl");
-        bevy::asset::embedded_asset!(app, "fx_soft.wgsl");
+        bevy::asset::embedded_asset!(app, "fx_distort.wesl");
+        bevy::asset::embedded_asset!(app, "fx_multi.wesl");
+        bevy::asset::embedded_asset!(app, "fx_soft.wesl");
         app.add_plugins((MaterialPlugin::<DistortMaterial>::default(), MaterialPlugin::<MultiMaterial>::default(), MaterialPlugin::<SoftMaterial>::default()));
         app.init_resource::<FxrLib>()
             .init_resource::<Batches>()
@@ -2124,6 +2143,7 @@ impl Plugin for FxrPlugin {
 /// edges showed the clear colour.) Never written (SHINOBI_NO_SOFT=1, or a size / MSAA mismatch),
 /// it stays 0 = infinitely far and the particles keep hard edges.
 #[derive(Resource, Clone, bevy::render::extract_resource::ExtractResource)]
+#[extract_app(bevy::render::RenderApp)]
 pub struct FxDepth {
     image: Handle<Image>,
 }
@@ -2178,7 +2198,7 @@ fn soft_depth(
 /// Render world: the camera's depth (opaque pass done) into `FxDepth`, when size and sample
 /// count match (Bevy's own prepass copies its depth the same way, prepass/node.rs).
 fn copy_fx_depth(
-    view: bevy::render::renderer::ViewQuery<&bevy::render::view::ViewDepthTexture>,
+    view: bevy::render::renderer::ViewQuery<&bevy::render::view::ViewDepthStencilTexture>,
     fx: Option<Res<FxDepth>>,
     images: Res<bevy::render::render_asset::RenderAssets<bevy::render::texture::GpuImage>>,
     mut ctx: bevy::render::renderer::RenderContext,
@@ -2186,7 +2206,7 @@ fn copy_fx_depth(
     let depth = view.into_inner();
     let Some(fx) = fx else { return };
     let Some(dst) = images.get(&fx.image) else { return };
-    let (s, d) = (&depth.texture, &dst.texture);
+    let (s, d) = (depth.texture(), &dst.texture);
     if s.size() != d.size() || s.sample_count() != d.sample_count() || s.format() != d.format() {
         return;
     }

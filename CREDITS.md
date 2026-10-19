@@ -13,15 +13,21 @@ recreation in Rust. From their work:
   compiled enemy battle scripts.
 - **Combat rules:** hit stop, the Owl's deathblow gate, bullets fading past their range,
   deathblow positioning giving way at walls, enemy super armour, enemies' reactions to hits in
-  the air, guarded bullets leaving their shooter alone, and how prosthetic tool hits cause
-  reactions.
+  the air, guarded bullets leaving their shooter alone, how prosthetic tool hits cause
+  reactions, block versus deflect by repel values, the posture and HP a guard lets through,
+  the posture ranges of a collapse, the counter-only mikiri hitbox and Attack Power growth.
 - **Maps and lighting:** the light and fog colour rules, fog density, the camera's exposure
   metering and adaptation, the GI probe lighting, the bloom levels and the map material's
-  batching, from values they traced in the game's exe and shaders.
+  batching, from values they traced in the game's exe and shaders. Our own sandbox and
+  Construct are lit by their lighting library (light sets, time of day, fog, exposure, bloom,
+  sun shadow), and its light units light our effects.
 - **Sky and fog:** the sky domes (`src/sky.rs`, `src/sky.wgsl`) and the height fog
   (`src/height_fog.rs`, `src/height_fog.wgsl`) are adapted from their code.
 - **World:** the story time of day, the boss fog walls, MSB region boxes and the arena start
   check.
+- **Movement:** the grapple marker's grey disc for a point found but out of range.
+- **Bosses:** the Headless Ape and its partner reading each other through the map's event
+  target.
 
 Where each one is used in the code is listed in [THIRD_PARTY.md](THIRD_PARTY.md).
 

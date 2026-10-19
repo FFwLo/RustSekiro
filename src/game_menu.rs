@@ -304,7 +304,7 @@ pub(crate) fn list_screen(root: &mut ChildSpawnerCommands, assets: &AssetServer,
             if i == cat {
                 root.spawn((abs(l - 0.35, 17.7, 3.9, 7.2), image(assets, sprite("sb_in_game/MENU_Cursor_TB")).with_color(ORANGE)));
             }
-            root.spawn((Button, abs(l, 18.3, 3.2, 6.0), image(assets, sprite(&format!("sb_in_game/{icon}"))), CatButton(i)));
+            root.spawn((crate::menu::ui_button(), abs(l, 18.3, 3.2, 6.0), image(assets, sprite(&format!("sb_in_game/{icon}"))), CatButton(i)));
         }
         let end = 10.0 + cats.len() as f32 * 4.85;
         root.spawn((abs(end, 19.8, 1.6, 3.2), image(assets, sprite("sb_keytop/KG_Key_V"))));
@@ -316,7 +316,7 @@ pub(crate) fn list_screen(root: &mut ChildSpawnerCommands, assets: &AssetServer,
     for (k, (i, row)) in rows.iter().enumerate().skip(start).take(ROWS).enumerate() {
         let sel = i == index;
         let t = 26.6 + k as f32 * 8.3;
-        root.spawn((Button, abs(7.4, t, 4.2, 7.4), image(assets, sprite("sb_in_game/MENU_IconBase_02")), RowButton(i))).with_children(|b| {
+        root.spawn((crate::menu::ui_button(), abs(7.4, t, 4.2, 7.4), image(assets, sprite("sb_in_game/MENU_IconBase_02")), RowButton(i))).with_children(|b| {
             b.spawn((Node { position_type: PositionType::Absolute, left: Val::Percent(6.0), top: Val::Percent(6.0), width: Val::Percent(88.0), height: Val::Percent(88.0), ..default() }, image(assets, row.icon.clone())));
             if row.equipped {
                 b.spawn((Node { position_type: PositionType::Absolute, left: Val::Percent(-6.0), top: Val::Percent(-6.0), width: Val::Percent(34.0), height: Val::Percent(34.0), ..default() }, image(assets, sprite("sb_in_game/MENU_Equipped"))));
@@ -328,7 +328,7 @@ pub(crate) fn list_screen(root: &mut ChildSpawnerCommands, assets: &AssetServer,
             }
         });
         let plate = if sel { "sb_in_game/MENU_Cursor_03" } else { "sb_in_game/MENU_ItemBase_02" };
-        root.spawn((Button, abs(12.3, t + 0.6, 36.6, 6.2), image(assets, sprite(plate)), RowButton(i))).with_children(|b| {
+        root.spawn((crate::menu::ui_button(), abs(12.3, t + 0.6, 36.6, 6.2), image(assets, sprite(plate)), RowButton(i))).with_children(|b| {
             b.spawn(Node { padding: UiRect::axes(Val::Percent(4.5), Val::Px(0.0)), justify_content: JustifyContent::SpaceBetween, ..fill_row() }).with_children(|c| {
                 c.spawn(text(&row.name, 17.0, if sel { Color::WHITE } else { TEXT }, font));
                 if let Some(v) = &row.value {
@@ -423,7 +423,7 @@ pub(crate) fn status_bar(root: &mut ChildSpawnerCommands, assets: &AssetServer, 
     // Vitality / Attack Power.
     root.spawn((abs(43.4, t, 15.2, h), BackgroundColor(plate))).with_children(|b| {
         b.spawn(Node { flex_direction: FlexDirection::Column, justify_content: JustifyContent::Center, row_gap: Val::Px(2.0), width: Val::Percent(100.0), height: Val::Percent(100.0), padding: UiRect::axes(Val::Percent(4.0), Val::Px(0.0)), ..default() }).with_children(|c| {
-            for (icon, label, value) in [("MENU_ST_Vitality", "Vitality", format!("{:.0}", config.posture.player_level)), ("MENU_ST_Offensive", "Attack Power", "1".to_string())] {
+            for (icon, label, value) in [("MENU_ST_Vitality", "Vitality", format!("{:.0}", config.posture.player_level)), ("MENU_ST_Offensive", "Attack Power", config.player.attack_power.to_string())] {
                 c.spawn(Node { align_items: AlignItems::Center, column_gap: Val::Px(6.0), ..default() }).with_children(|r| {
                     r.spawn((Node { width: Val::Px(20.0), height: Val::Px(20.0), ..default() }, image(assets, sprite(&format!("sb_in_game/{icon}")))));
                     r.spawn((Node { flex_grow: 1.0, ..default() },)).with_children(|n| {
@@ -674,7 +674,7 @@ fn build(commands: &mut Commands, assets: &AssetServer, menu: &GameMenu, font: &
             for (i, name) in TABS.iter().enumerate() {
                 let open = i == menu.tab;
                 let brush = if open { "sb_in_game/MENU_Cursor_01" } else { "sb_in_game/MENU_Caption_01" };
-                root.spawn((Button, abs(11.5 + i as f32 * 19.0, 4.2, 18.0, 9.0), image(assets, sprite(brush)), TabButton(i))).with_children(|t| {
+                root.spawn((crate::menu::ui_button(), abs(11.5 + i as f32 * 19.0, 4.2, 18.0, 9.0), image(assets, sprite(brush)), TabButton(i))).with_children(|t| {
                     t.spawn(Node { justify_content: JustifyContent::Center, ..fill_row() }).with_children(|c| {
                         c.spawn(text(name, 18.0, if open { Color::WHITE } else { TEXT }, font));
                     });
@@ -695,7 +695,7 @@ fn build(commands: &mut Commands, assets: &AssetServer, menu: &GameMenu, font: &
                     for (i, label) in OPTION_ITEMS.iter().enumerate() {
                         let sel = i == menu.index;
                         let plate = if sel { "sb_in_game/MENU_Cursor_01" } else { "sb_in_game/MENU_Caption_01" };
-                        root.spawn((Button, abs(6.8, 18.0 + i as f32 * 7.55, 22.2, 6.4), image(assets, sprite(plate)), RowButton(i))).with_children(|b| {
+                        root.spawn((crate::menu::ui_button(), abs(6.8, 18.0 + i as f32 * 7.55, 22.2, 6.4), image(assets, sprite(plate)), RowButton(i))).with_children(|b| {
                             b.spawn(Node { justify_content: JustifyContent::Center, ..fill_row() }).with_children(|c| {
                                 c.spawn(text(label, 17.0, if sel { Color::WHITE } else { TEXT }, font));
                             });
@@ -754,7 +754,7 @@ fn equipment(root: &mut ChildSpawnerCommands, assets: &AssetServer, menu: &GameM
     for (i, l, t, size) in places {
         let w = size * 9.0 / 16.0;
         let slot = &all[i];
-        root.spawn((Button, abs(l, t, w, size), image(assets, sprite("sb_in_game/MENU_IconBase_02")), RowButton(i))).with_children(|s| {
+        root.spawn((crate::menu::ui_button(), abs(l, t, w, size), image(assets, sprite("sb_in_game/MENU_IconBase_02")), RowButton(i))).with_children(|s| {
             // The cursor glows behind the item, not over it.
             if i == menu.index {
                 s.spawn((Node { position_type: PositionType::Absolute, left: Val::Percent(-8.0), top: Val::Percent(-8.0), width: Val::Percent(116.0), height: Val::Percent(116.0), ..default() }, image(assets, sprite("sb_in_game/MENU_Cursor_TB")).with_color(ORANGE.with_alpha(0.55))));
@@ -775,13 +775,6 @@ fn equipment(root: &mut ChildSpawnerCommands, assets: &AssetServer, menu: &GameM
     parchment(root, assets, font, &Detail { name, icon: slot_icon(tables, slot), art: None, stats: vec![], info });
 }
 
-#[derive(Resource, Default)]
-pub(crate) struct MenuFont(pub(crate) Option<Handle<Font>>);
-
-fn load_font(mut fonts: ResMut<Assets<Font>>, mut f: ResMut<MenuFont>) {
-    f.0 = std::fs::read("C:/Windows/Fonts/georgia.ttf").ok().map(|b| fonts.add(Font::from_bytes(b)));
-}
-
 #[allow(clippy::too_many_arguments)]
 fn run_game_menu(
     mut commands: Commands,
@@ -792,7 +785,7 @@ fn run_game_menu(
     mut menu: ResMut<GameMenu>,
     roots: Query<Entity, With<GameMenuRoot>>,
     (tabs, rows, cats): (Query<(&TabButton, &Interaction), Changed<Interaction>>, Query<(&RowButton, &Interaction), Changed<Interaction>>, Query<(&CatButton, &Interaction), Changed<Interaction>>),
-    (assets, font, mut config, texts, tables, combat, pointer): (Res<AssetServer>, Res<MenuFont>, ResMut<crate::config::GameConfig>, Res<ItemTexts>, Res<Tables>, Res<crate::data::Combat>, Res<crate::menu::MenuMouse>),
+    (assets, font, mut config, texts, tables, combat, pointer): (Res<AssetServer>, Res<crate::fonts::GameFonts>, ResMut<crate::config::GameConfig>, Res<ItemTexts>, Res<Tables>, Res<crate::data::Combat>, Res<crate::menu::MenuMouse>),
     wolf: Query<&crate::actor::Actor, With<crate::player::Player>>,
     (mut pad, mut exit, mut cursor): (Option<ResMut<crate::player::PadInput>>, MessageWriter<AppExit>, ResMut<crate::menu::Cursor>),
 ) {
@@ -942,7 +935,7 @@ fn run_game_menu(
             commands.entity(r).despawn();
         }
         let w = wolf.single().ok().map(|a| (a.hp, a.hp_max));
-        build(&mut commands, &assets, &menu, &font.0, &config, &combat, &texts, &tables, w);
+        build(&mut commands, &assets, &menu, &font.ui, &config, &combat, &texts, &tables, w);
         menu.built = Some(key);
     }
 }
@@ -960,10 +953,8 @@ impl Plugin for GameMenuPlugin {
         // SHINOBI_MENU_PICK=<slot>: open on that Equipment slot's Equipped Items.
         let pick = std::env::var("SHINOBI_MENU_PICK").ok().and_then(|v| v.parse::<usize>().ok());
         app.insert_resource(GameMenu { tab, cat: [cat, cat], pick, ..default() })
-            .init_resource::<MenuFont>()
             .insert_resource(texts)
             .insert_resource(tables)
-            .add_systems(Startup, load_font)
             .add_systems(PreUpdate, run_game_menu.after(crate::menu::MenuInput));
     }
 }

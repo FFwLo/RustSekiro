@@ -1,0 +1,1389 @@
+[
+ {
+  "id": "stealth.wolf-sight-cuts",
+  "category": "stealth",
+  "title": "Wolf's SpEffects shrink every enemy's vision",
+  "summary": "Wolf's active SpEffects cut the enemy's seeing distance and angles: distances scale by product(1 - sightSearchEnemyCut/100) and angle limits by the matching angle cuts. Crouching, hanging, hiding and some items stack.",
+  "values": "109200 crouch 20 %, 109203 crouching in a bush 80 %, 109201 crouch in shadow 100 %, 109202 forced stealth 3 s 100 %, 109220/109221 hanging 100 %, 109230 blood smoke 100 %, 109250 wire 20 %, 530 hidden 90 %, 1500 mimicry 100 %, 96 vision cut 100 %, 2111 stone hat 70 %, 3391/3441 stealth enhancement 50 % plus around rate 0.5, 150000 covert A 20 % plus around 0.5, 200130 smoke-ball blindness (all four angles and hearing 100 %). Crouching Ochimusha: 20 m * 0.8 = 16 m, eye offset also scaled.",
+  "how": "FUN_140bd3e40 fills the sight context from Wolf's SpEffects: dist cut FUN_140bfe8a0, angle cuts +0x26c..0x26f. Rows with sightCutLimitType 1/2 apply only when geometry bits hold (FUN_140616f50).",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/enemy.md"
+   },
+   {
+    "kind": "exe",
+    "ref": "tools/fn.sh 140bfe8a0"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "partial",
+   "where": "src/stealth.rs Seen::new; limit-type 1/2 rows (hanging, wall hug) left out"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Compare the distance at which a soldier turns when you walk up crouched vs upright: 16 m vs 20 m on the row 10100000 cone.",
+  "note": "109201 'crouch in shadow' has no setter in EMEVD, params, TAE or HKS. Whoever sets it is probably the map visibility value (see ai.dark-map-visibility).",
+  "needs": [
+   {
+    "id": "stealth.crouch-sneak",
+    "why": "109200 comes from crouching"
+   }
+  ]
+ },
+ {
+  "id": "stealth.bush-hiding",
+  "category": "stealth",
+  "title": "Crouching in grass or water bushes hides Wolf (EMEVD event 701)",
+  "summary": "common.emevd event 701 gives Wolf SpEffect 109203 (vision cut 80 %) while he is in a bush object and crouching, or in a water bush swimming, or in a forced-crouch area and crouching. It clears when none holds.",
+  "values": "Conditions: SpEffect 4200 (bush, ObjectParam InsideHit, 0.5 s renewed) or 4201 (water/underwater bush) AND 109200 crouch; or 100210 (forced crouch area) AND 109200. Bush objects o007001/2, o007280-7287, o007330, o007360, o007501/2. 109203 -> sightSearchEnemyCut 80, so a 20 m cone becomes 4 m.",
+  "how": "Event 701 is initialised by event 0 and restarts. common_func 20004000 does the same with 109012. Forced crouch areas come from common_func 20004001 (SpEffect 100210).",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/enemy.md"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/event/common.emevd"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "src/combat.rs (crouch in the Construct outpost bush list, sandbox.rs in_bush)"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Crouch inside a tall-grass clump (Ashina Outskirts): soldiers 5 m away ignore you.",
+  "note": "No arena has a bush; ours models only a hand list of bush circles. A free map needs the objbnd inside-hit shape.",
+  "needs": [
+   {
+    "id": "stealth.crouch-sneak",
+    "why": "needs crouching"
+   },
+   {
+    "id": "map.grass",
+    "why": "bush objects"
+   }
+  ]
+ },
+ {
+  "id": "stealth.detection",
+  "category": "stealth",
+  "title": "How an enemy notices Wolf: the whole chain",
+  "summary": "Detection has four inputs: seeing Wolf in a cone, filling a slow alert meter in a wider cone, hearing a noise, and being hit. Each gives a target slot; the strongest slot sets the alert state.",
+  "values": "Normal cone hit -> FIND (found). Around cone, 100 meter points -> position target, CAUTION. Sound, corpse, or last-seen position -> CAUTION. A hit on the enemy -> BATTLE at once. FIND turns to BATTLE inside BattleStartDist (12 m for most soldiers).",
+  "how": "SprjTargetingSystem, per enemy, updated every frame (sight search every 0.2 to 0.4 s). Wolf's SpEffects scale sight and hearing.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/enemy.md"
+   },
+   {
+    "kind": "exe",
+    "ref": "tools/fn.sh 14061ff40"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/NpcThinkParam.json"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "yes",
+   "where": "src/stealth.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Sim test stealth_trace: leave, stay and lose scripts print the state per frame.",
+  "note": "Overview record; the details are in the stealth.* and ai.* records it links to.",
+  "needs": [
+   {
+    "id": "ai.target-state-machine",
+    "why": "slots and states"
+   },
+   {
+    "id": "stealth.enemy-sight",
+    "why": "cones"
+   },
+   {
+    "id": "stealth.hearing",
+    "why": "noise"
+   }
+  ]
+ },
+ {
+  "id": "stealth.detection-state",
+  "category": "stealth",
+  "title": "Alert states: unaware, caution, found, fighting",
+  "summary": "An enemy is NONE (unaware), CAUTION (suspicious, searching), FIND (has seen Wolf, coming closer) or BATTLE (fighting). A state change plays a reaction and replans the AI.",
+  "values": "Values 0 NONE, 1 CAUTION, 2 FIND, 3 BATTLE. AI SpEffects: 200000 normal, 200001 non-combat caution, 200002 combat caution, 200004 found/battle. Notice clips: 401040 found, 201040 combat caution, 101040 unaware caution, 1040 default. Replan on change unless goalAction_ToCaution / ToFind is 0.",
+  "how": "Exe FUN_1406208c0 picks the state from the slots; the clips and SpEffects come from the Lua state transition goal.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/enemy.md"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/ai_src/common_common_logic_func.lua"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "yes",
+   "where": "src/stealth.rs Targeting::state; src/ai.rs"
+  },
+  "his": {
+   "has": "partial",
+   "where": "crates/sim/src/lua_ai/runtime.rs (visible -> FIND -> BATTLE only)"
+  },
+  "check": "Walk into a soldier's cone: 401040 notice clip with SpEffect 200004 on him.",
+  "note": "",
+  "needs": [
+   {
+    "id": "ai.target-state-machine",
+    "why": "same machine"
+   },
+   {
+    "id": "ai.notice-anim-by-state",
+    "why": "clips"
+   }
+  ]
+ },
+ {
+  "id": "stealth.enemy-sight",
+  "category": "stealth",
+  "title": "Enemy sight: the cones in NpcThinkParam",
+  "summary": "Every enemy sees through three cones: the normal cone (finds Wolf), the perceive cone (keeps a found Wolf, longer) and the around cone (wide, only fills the alert meter). Distances run from eye_BeginDist to eye_dist from a point behind the feet.",
+  "values": "Soldier 10100000: normal 4 to 20 m (eye point 4 m behind the feet, so about 16.4 m ahead of the body), yaw +-30, pitch +10 / -15; perceive 40 m; around 40 m. General 10200000: yaw +-45. Shichimen 10800000: 50 m. Headless 13500000 and Female Musician 70000000: all around (yaw 180, pitch 90). Guardian Ape 51000000: 40 m, begin and back offset 10. Bosses such as Owl and Isshin: 120 dist, begin 80, yaw +-15 (about 0 to 40 m ahead). Most common: 25 m (169 rows), 20 m (150), 120 m (48 bosses); yaw 30 (323 rows), 45 (114), 180 (34).",
+  "how": "FUN_14061bb70 (normal and perceive) and FUN_14061c2a0 (around) over NpcThinkParam eye_* columns; line of sight ray at the end.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/NpcThinkParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "reference/Paramdex/SDT/Defs/NpcThinkParam.xml"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/enemy.md"
+   },
+   {
+    "kind": "exe",
+    "ref": "tools/fn.sh 14061bb70"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "yes",
+   "where": "src/stealth.rs in_cone"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Stand 15 m in front of a soldier at 25 degrees off axis: found; at 17 m or 35 degrees: not found.",
+  "note": "Wolf's capsule radius is taken as 0.4 m (placeholder).",
+  "needs": [
+   {
+    "id": "ai.sight-normal-cone",
+    "why": "param detail"
+   },
+   {
+    "id": "map.collision-raycast",
+    "why": "line of sight"
+   }
+  ]
+ },
+ {
+  "id": "stealth.visible-range-table",
+  "category": "stealth",
+  "title": "How far each Wolf pose can be seen from (soldier 10100000)",
+  "summary": "The seeing distance of one soldier changes with what Wolf is doing. Standing is the full cone; crouching, hiding in a bush or hanging cut it down.",
+  "values": "Standing: about 16 m ahead of the soldier's body (20 m minus the 4 m eye offset). Crouched (109200, cut 20 %): about 13 m. Crouched in a bush (109203, cut 80 %): about 3.6 m. Hanging (109220, cut 100 %): not seen. Wall hug (109210): yaw cut 90 % so only the soldier's near front sees him. Covert A (150000, cut 20 %) and stealth enhancement (3391 / 3441, cut 50 %) stack by multiplying. Smoke-ball blindness (200130) blinds him fully for 2 s.",
+  "how": "Distance = radius + eye_dist * product(1 - cut/100), begin distance scaled the same way.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/NpcThinkParam.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/enemy.md"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "yes",
+   "where": "src/stealth.rs Seen::new"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Sim: measure where the soldier turns for each pose and compare the numbers.",
+  "note": "Derived by formula, not measured against a recording.",
+  "needs": [
+   {
+    "id": "stealth.wolf-sight-cuts",
+    "why": "the cut list"
+   },
+   {
+    "id": "stealth.enemy-sight",
+    "why": "base cone"
+   }
+  ]
+ },
+ {
+  "id": "stealth.visibility-gauge",
+  "category": "stealth",
+  "title": "The alert meter and the HUD mark over the enemy",
+  "summary": "While Wolf stands in an enemy's wide 'around' cone the enemy fills a meter; the HUD mark above the enemy fills from the bottom with it. Full meter (100) gives the enemy a position target and caution. The meter drains at 20 points per second outside the cone.",
+  "values": "Soldier 10100000: 25 points per second, so full in 4.0 s (491 rows use 25, 239 rows have none, 9 rows 1000 = instant, 11 rows 40). Stealth enhancement and Covert A halve the fill rate (aroundSightPointAddRate 0.5). HUD levels: 0 none (grey-white mark, frame black 0.30), 1 caution (amber, 154 / 134 / 70), 2 found (red, 163 / 64 / 57). The mark fades in over frames 1 to 16 and out over 17 to 38.",
+  "how": "Exe FUN_14061ff40 calls the HUD function FUN_1408c5fb0 with level 0 / 1 / 2 and the meter / 100; the gfx movie 01_000_fe holds FindIcon0-7.",
+  "sources": [
+   {
+    "kind": "exe",
+    "ref": "tools/fn.sh 1408c5fb0"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/enemy.md"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/NpcThinkParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/hud/menu/01_000_fe.gfx"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "yes",
+   "where": "src/hud.rs update_stealth"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Stand in the around cone of a soldier: the mark fills over 4 s. Out of the cone it empties.",
+  "note": "Off-screen enemies get the mark on a ring beside Wolf; the exact ring radius is not read from the movie. Real caution fill layer and shadow are not drawn.",
+  "needs": [
+   {
+    "id": "interface.stealth-mark",
+    "why": "HUD side"
+   },
+   {
+    "id": "stealth.detection-state",
+    "why": "level"
+   }
+  ]
+ },
+ {
+  "id": "stealth.detection-speed",
+  "category": "stealth",
+  "title": "How fast an enemy finds Wolf",
+  "summary": "In the normal cone an enemy finds Wolf at its next sight search, 0.2 to 0.4 s after he enters. In the around cone only the slow meter fills, 4 s for a soldier. A hit finds him at once.",
+  "values": "Search interval = rand * 0.2 + 0.2 s. Meter: 25 per second to 100 (4 s). Damage: BATTLE immediately (target reason 4).",
+  "how": "FUN_140623ca0 schedules the search; FUN_14062bdb0 sets the normal target; FUN_14061d140 handles damage.",
+  "sources": [
+   {
+    "kind": "exe",
+    "ref": "tools/fn.sh 140623ca0"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/enemy.md"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "yes",
+   "where": "src/stealth.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Step into the normal cone and count frames until the notice clip: 12 to 24 frames at 60 fps.",
+  "note": "An older note in damage.md guessed 0.5 to 3 s by distance; the exe trace replaced it.",
+  "needs": [
+   {
+    "id": "stealth.visibility-gauge",
+    "why": "the slow route"
+   }
+  ]
+ },
+ {
+  "id": "stealth.crouch-sneak",
+  "category": "stealth",
+  "title": "Crouching halves noise and shrinks the cone",
+  "summary": "Crouching adds SpEffect 109200 to Wolf: enemies see 20 % less far, and his footsteps get quieter. The crouch clips carry the SpEffect, so it is on only while the clip plays.",
+  "values": "109200 sightSearchEnemyCut 20 (stateInfo 949). Crouch walk sound 1001 radius 0.25 m, crouch run 1011 radius 0.5 m (stand: walk 0.5, run 2). CrouchStart 216000, CrouchEnd 216100, crouch locomotion = stand animation ids + 5000. Attack from a crouch: CrouchAttackToStand a050_301000.",
+  "how": "TAE SpEffect events on the crouch clips plus TAE 237 CreateAISound.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/tae/c0000/a00.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/enemy.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/player.rs crouch; src/stealth.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Compare the distance a soldier turns when you approach crouched and standing.",
+  "note": "",
+  "needs": [
+   {
+    "id": "movement.crouch",
+    "why": "crouch state"
+   }
+  ]
+ },
+ {
+  "id": "stealth.noise-radius",
+  "category": "stealth",
+  "title": "Wolf's noise: radius by movement",
+  "summary": "Wolf's movement clips create AI sounds. The radius is the distance within which an enemy with a normal ear can hear it (plus the ear_dist, 0.1 m for most). Sprinting and swimming are loud; crouching is nearly silent.",
+  "values": "Walk 1000 = 0.5 m, crouch walk 1001 = 0.25 m, crouch run 1011 = 0.5 m, run 1010 = 2 m, sprint 1020 = 4 m, cover and hang shimmy 1002 / 1003 = 0.25 m, swim 1014 / 1015 = 2 m, fast swim and dive 1024 / 1025 = 4 m, wire shot 1200 = 2 m, step from damage 1100 = 4 m. Counts of clips with the event: walk 29, run 35, crouch walk 12, hang shimmy 20, free-fall landing 71, jump starts 54.",
+  "how": "TAE event 237 CreateAISound on the clip; AiSoundParam gives the radius, rank 0 (normal) and life (0.25 s on footsteps, 1 s on others).",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/tae/c0000/a00.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/AiSoundParam.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/enemy.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/enemy.rs wolf_sounds"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Walk up behind a soldier: unnoticed until about 0.6 m. Run: heard from 2.1 m.",
+  "note": "Names of the sound ids are matched from the animation ids, the param rows have no names.",
+  "needs": [
+   {
+    "id": "ai.hearing-model",
+    "why": "listener rule"
+   }
+  ]
+ },
+ {
+  "id": "stealth.noise-jump-landing",
+  "category": "stealth",
+  "title": "Jumping and landing make noise",
+  "summary": "A jump start makes a 2 m noise and a landing from a fall a 2 m noise. Wall-jump and hang jumps are quieter (0.5 m). Water landings are 2 m.",
+  "values": "1300 jump start = 2 m (54 clips, 0.03 s events), 1304 swim jump, 1310 landing from free fall = 2 m (71 clips), 1314 water landing = 2 m, 1320 wall or hang jump start = 0.5 m, 1330 = 1 m (7 clips).",
+  "how": "TAE 237 events a few frames long at the start of the clip.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/tae/c0000/a00.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/AiSoundParam.json"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/enemy.rs wolf_sounds"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Drop from a ledge next to a soldier's back: he turns even if you walked in crouched.",
+  "note": "",
+  "needs": [
+   {
+    "id": "movement.jump",
+    "why": "jump clips"
+   },
+   {
+    "id": "stealth.noise-radius",
+    "why": "same model"
+   }
+  ]
+ },
+ {
+  "id": "stealth.noise-combat",
+  "category": "stealth",
+  "title": "Swings, hits, deflects and breaks are loud",
+  "summary": "Wolf's attacks announce themselves. Every attack makes a sound when it starts and another when it hits; guard breaks and deflects have their own big sounds, ranked IMPORTANT.",
+  "values": "Attack start 2010 = 2 m (224 attacks), 2000 = 1 m, 2020 = 4 m, 2140 = 6 m, 2150 = 12 m. Hit 2110 = 4 m (223 attacks), 2100 = 2 m, 2120 = 8 m, 2130 = 16 m. Deflect 2030 = 8 m rank 1 (12 clips). Guard-break sound 5000 = 20 m rank 1 (a50_190100, 4 clips). Enemy attacks call friends: start 2000025 = 10 m, hit 2000020 = 20 m.",
+  "how": "AtkParam AppearAiSoundId / HitAiSoundId; TAE 237 on deflect and guard break.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/AtkParam_Pc.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/AiSoundParam.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/enemy.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/combat.rs ai_sounds; src/enemy.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Fight one soldier near a second: the second joins within 10 to 20 m.",
+  "note": "",
+  "needs": [
+   {
+    "id": "combat.attack-noise",
+    "why": "attack params"
+   }
+  ]
+ },
+ {
+  "id": "stealth.mist-raven-noise",
+  "category": "stealth",
+  "title": "Mist Raven is a rank-3 noise",
+  "summary": "The Mist Raven combat art creates a 10 m noise of rank 3, the highest rank in use, so it overrides any quieter sound the enemy already holds.",
+  "values": "Sound 7400: radius 10 m, rank 3, life 1 s. Event at 0.33 to 0.43 s of the a074_404000 family (5 clips). Held sound rule: a new sound replaces a held one unless the held rank is higher.",
+  "how": "TAE 237 on the Mist Raven clips; listener rule in the exe (14062.c:4230-4257).",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/tae/c0000/a74.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/AiSoundParam.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/skills.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "src/enemy.rs (sound 7400 played via the clip event)"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Use Mist Raven near an unaware soldier at 8 m and watch his target state (a sound target is taken).",
+  "note": "Whether this sound is meant to attract enemies on purpose is not known.",
+  "needs": [
+   {
+    "id": "arts.mist-raven",
+    "why": "the art"
+   },
+   {
+    "id": "stealth.hearing",
+    "why": "rank rule"
+   }
+  ]
+ },
+ {
+  "id": "stealth.hearing",
+  "category": "stealth",
+  "title": "Hearing: ears, ranks and what blocks it",
+  "summary": "An enemy hears a sound when it is closer than its hearing reach: sound radius times a hearing rate, minus the ear cut distance, plus the ear_dist of its row. Rank decides which held sound is replaced.",
+  "values": "reach = rate * radius - ear_soundcut_dist; heard while dist - radii < reach + ear_dist. rate = product(1 - hearingSearchEnemyCut / 100) of the listener's SpEffects. ear_dist 0.1 m on 633 rows, 6 m on 16 (dogs), 0 on 117. Firecracker (220011) and smoke-ball (200130) set hearingSearchEnemyCut 100: deaf. Covert B 150010: hearingSearchEnemyRate 0.5 (quieter Wolf).",
+  "how": "FUN_140610a30 / b30 range, FUN_140bfe590 rate, listener FUN_140610470.",
+  "sources": [
+   {
+    "kind": "exe",
+    "ref": "tools/fn.sh 140610a30"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/NpcThinkParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/enemy.md"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "yes",
+   "where": "src/enemy.rs ai_sound_heard / hearing_rate"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Sim test a_deafened_enemy_hears_nothing; a dog (ear_dist 6) hears a walking Wolf from 6.5 m.",
+  "note": "Owner scale of bSpEffectEnable sounds and the exact use of dist minus radii are not traced.",
+  "needs": [
+   {
+    "id": "ai.hearing-model",
+    "why": "ai side"
+   }
+  ]
+ },
+ {
+  "id": "stealth.dogs-ear",
+  "category": "stealth",
+  "title": "Dogs hear 6 m farther",
+  "summary": "The dog rows (c1150) have ear_dist 6 m instead of 0.1 m, so a dog hears Wolf's footsteps from far outside a soldier's range. Only 16 rows have it.",
+  "values": "ear_dist 6 on 16 rows; 18, 25 and 30 on four more.",
+  "how": "Added to the hearing reach test.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/NpcThinkParam.json"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/enemy.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Sneak past a dog crouched: still heard within 6.25 m.",
+  "note": "",
+  "needs": [
+   {
+    "id": "stealth.hearing",
+    "why": "rule"
+   }
+  ]
+ },
+ {
+  "id": "stealth.wall-hug-cover",
+  "category": "stealth",
+  "title": "Hugging a wall hides Wolf from the side view",
+  "summary": "While Wolf hugs a wall (cover) he gets SpEffect 109210. It cuts the enemy's left and right view angles by 90 %, so only an enemy looking almost straight at him sees him. The effect applies only when the geometry check passes (sightCutLimitType 2).",
+  "values": "109210: sightSearchLeftAngleCut 90, sightSearchRightAngleCut 90, sightCutLimitType 2, stateInfo 949. A 30 degree soldier yaw becomes 3 degrees. Cover walk sound 1002 = 0.25 m. Ours leaves the limit-type rows out.",
+  "how": "SpEffect from the cover clips; FUN_140616f50 checks the geometry bits.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/docking.md"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/enemy.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Hug a wall beside a corridor soldier: he passes without noticing unless he looks along the wall.",
+  "note": "The geometry bits of limit type 1 and 2 are not traced.",
+  "needs": [
+   {
+    "id": "movement.wall-hug",
+    "why": "cover state"
+   }
+  ]
+ },
+ {
+  "id": "stealth.ledge-hang-hide",
+  "category": "stealth",
+  "title": "Hanging from a ledge hides Wolf completely",
+  "summary": "While hanging from a ledge Wolf has SpEffect 109220 (distance cut 100 %). Enemies below do not see him. 109221 does the same for the start of the hang only.",
+  "values": "109220: sightSearchEnemyCut 100, sightCutLimitType 1, stateInfo 949. 109221: cut 100 without a limit. Hang shimmy sound 1003 = 0.25 m. Ochimusha switches to ranged acts 7 and 27 when Wolf hangs (101000_battle.lua).",
+  "how": "SpEffect on the hang clips; the enemy Lua watches 109220 / 109221 as an interrupt.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/ai_src/101000_battle.lua"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/enemy.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Hang below a ledge beside an unaware soldier: he does not turn. A soldier already in battle uses his ranged acts.",
+  "note": "Limit type 1 geometry bits not traced.",
+  "needs": [
+   {
+    "id": "movement.ledge-hang",
+    "why": "hang state"
+   },
+   {
+    "id": "ai.ranged-when-no-path",
+    "why": "enemy answer"
+   }
+  ]
+ },
+ {
+  "id": "stealth.shadow-crouch-open",
+  "category": "stealth",
+  "title": "Crouching in shadow: 109201 has no known setter",
+  "summary": "A SpEffect 'crouching in shadow covert' (109201, distance cut 100 %) exists but nothing in the event files, TAE, HKS or params sets it. The map collision visibility (Good, Dark, Total Dark) is the likely input.",
+  "values": "109201 sightSearchEnemyCut 100. Collision visibility byte +0x27: 0 Good, 1 Dark, 2 Total Dark; factors 1 / 0.5 / 0.3.",
+  "how": "Unknown; may be an exe internal.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/enemy.md"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   }
+  ],
+  "confidence": "open-question",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Needs a recording: crouch in a dark corner next to a soldier and note whether he sees you.",
+  "note": "Recorded as an open question; do not code it as a fact.",
+  "needs": [
+   {
+    "id": "stealth.dark-areas",
+    "why": "map side"
+   }
+  ]
+ },
+ {
+  "id": "stealth.dark-areas",
+  "category": "stealth",
+  "title": "Dark map parts shorten sight",
+  "summary": "Each map collision part has a visibility: good, dark or total dark. Enemies in or looking at dark parts see less far (x0.5 or x0.3). Rows with disableDark ignore it.",
+  "values": "Factors 1.0 / 0.5 / 0.3. m11_01 is all Good. m11_00 has 2 Dark + 4 Total Dark parts, m17 has 19 Total Dark, m20 has 7. disableDark = 1 on 20 rows.",
+  "how": "Collision type byte into chr +0x1acd, sight query scales the distance.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/enemy.md"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/NpcThinkParam.json"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "partial",
+   "where": "not exported; light is always Good"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Find a Dark part in m11_00 and compare reach.",
+  "note": "",
+  "needs": [
+   {
+    "id": "map.collision-visibility",
+    "why": "map byte"
+   },
+   {
+    "id": "ai.dark-map-visibility",
+    "why": "ai side"
+   }
+  ]
+ },
+ {
+  "id": "stealth.temporary-covers",
+  "category": "stealth",
+  "title": "Short-lived stealth effects",
+  "summary": "Several SpEffects hide Wolf for a short time: forced stealth, blood-smoke cover, mimicry, hidden status, a stone hat and a generic vision cut.",
+  "values": "109202 forced stealth: 3 s, cut 100 %. 109230 blood smoke cover: 0.5 s, cut 100 %. 1500 mimicry: cut 100 % (stateInfo 95). 530 hidden: 30 s, cut 90 % (stateInfo 8). 2111 stone hat: cut 70 %. 96: vision cut 100 %. 3391 / 3441 stealth enhancement: 60 s, cut 50 %, around fill 0.5. 150000 covert A: cut 20 %, around fill 0.5. 150010 covert B: Wolf's sounds 0.5.",
+  "how": "Stat effects added by items, skills, or events; the sight code multiplies all of them.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/enemy.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "src/stealth.rs reads any active SpEffect"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Give Wolf SpEffect 109202 in a sim: the soldier loses him for 3 s.",
+  "note": "The sources of 3391 / 3441 (a skill or equipment) and 150000 / 150010 are not traced.",
+  "needs": [
+   {
+    "id": "status.speffect-sources",
+    "why": "who applies them"
+   }
+  ]
+ },
+ {
+  "id": "stealth.bush-grass-note",
+  "category": "stealth",
+  "title": "Where tall grass hides Wolf in the real map",
+  "summary": "Hiding places exist as bush objects: o007001 and o007002, o007280 to 7287, o007330, o007360, o007501 and o007502. Only some are placed on the maps we have.",
+  "values": "Placed: 2 x o007001 in m11_02 and 1 x o007281 in m17; none inside any boss arena. Each object carries a 0.5 s renewed 'inside' SpEffect 4200 (4201 in water).",
+  "how": "ObjectParam SpecialEffectId_InsideHit.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/enemy.md"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "src/sandbox.rs in_bush at the Construct outpost only"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Find the bush in m11_02 and crouch in it.",
+  "note": "A free map needs the inside-hit shape from the object bundle.",
+  "needs": [
+   {
+    "id": "map.grass",
+    "why": "bush objects"
+   }
+  ]
+ },
+ {
+  "id": "stealth.alert-spread-group",
+  "category": "stealth",
+  "title": "One alert pulls in the group",
+  "summary": "Enemies do not shout. When one fights, its attack sounds call friends in the same placement group. The call reaches 10 m on attack start and 20 m on hit. A group that fights as a platoon follows a leader state.",
+  "values": "Sounds 2000025 (10 m) and 2000020 (20 m) on about 1240 NPC attacks; spot-call 2000000 20 m. callHelp_* fields are 0 on all 771 rows, so the 'call for help' goals are unused. Platoon states 0 None, 1 Caution, 2 Find, 3 ReplyHelp, 4 Battle.",
+  "how": "AiSound with bCallFriend + bRestrictSamePlacementGroup + friendlyTarget.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/AiSoundParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/AtkParam_Npc.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/NpcThinkParam.json"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/enemy.rs SPOT_CALL_SOUND"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Alert one soldier next to a camp: the others within 10 to 20 m join.",
+  "note": "Whether the group is MSB placement group or an AI group is not traced.",
+  "needs": [
+   {
+    "id": "ai.alert-spread-call-sounds",
+    "why": "ai side"
+   },
+   {
+    "id": "map.msb-placement-group",
+    "why": "group data"
+   }
+  ]
+ },
+ {
+  "id": "stealth.search-behaviour",
+  "category": "stealth",
+  "title": "Searching after a noise or a lost sight",
+  "summary": "On CAUTION an enemy walks to the spot, looks around and waits, then returns to normal. A sound target is chased until it arrives; an unconfirmed one is cleared.",
+  "values": "ConfirmCautionTarget: look clips 600 / 610 (400600 / 400610 alert), wait 3 to 8 s (4 to 6 on some paths), arrival radius 2.5 m, stop at 0.4 m for sounds 7900 / 7910 and 0.2 m for 3501. goalAction 2 approaches, 1 looks, 5 keeps 2.5 m away.",
+  "how": "Lua _COMMON_AddCautionAndFindGoal; exe goal 5100.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/ai_src/common_common_logic_func.lua"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/enemy.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/ai.rs"
+  },
+  "his": {
+   "has": "partial",
+   "where": "crates/sim/src/lua_ai (script runs)"
+  },
+  "check": "Throw a loud object near a soldier: 3 to 8 s search at the spot.",
+  "note": "",
+  "needs": [
+   {
+    "id": "ai.caution-confirm-search",
+    "why": "ai side"
+   }
+  ]
+ },
+ {
+  "id": "stealth.losing-wolf",
+  "category": "stealth",
+  "title": "Losing the enemy: forget times",
+  "summary": "An enemy that cannot see Wolf keeps hunting for a while, then gives up. The time depends on the row.",
+  "values": "Sight forget: 15 s (317 rows, soldier 10100000), 10 s (126), 3 s (49), 3600 s (69, General), never 99999 (95). Sound / memory / indication / corpse forget: 150 s default. At the end the last seen spot is searched, then the enemy walks home.",
+  "how": "SightTargetForgetTime counts down while unseen.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/NpcThinkParam.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/enemy.md"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "partial",
+   "where": "src/stealth.rs (LastSightPos bookkeeping missing)"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Break line of sight at 10 m and wait: about 15 s.",
+  "note": "",
+  "needs": [
+   {
+    "id": "ai.forget-times",
+    "why": "ai side"
+   }
+  ]
+ },
+ {
+  "id": "stealth.leash-home-return",
+  "category": "stealth",
+  "title": "Going back home after losing Wolf",
+  "summary": "Enemies fight only near their post. Far from it they stop and walk home, look back at Wolf for up to 9 s if he is within 16 m, then resume their route.",
+  "values": "backhomeDist 48 m (563 rows; 9999 = no leash on 115), maxBackhomeDist 64 m, backhomeBattleDist 8 m, BackHome_LookTargetTime 9 s, BackHome_LookTargetDist 16 m, BackHomeLife_OnHitEneWal 6 s.",
+  "how": "_COMMON_SetBattleActLogic and BackToHome_With_Parry.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/NpcThinkParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/ai_src/common_non_battle_act.lua"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/enemy.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/ai.rs; src/enemy.rs home point"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Run 50 m from a soldier's post: he gives up and walks home.",
+  "note": "",
+  "needs": [
+   {
+    "id": "ai.leash-home-return",
+    "why": "ai side"
+   }
+  ]
+ },
+ {
+  "id": "stealth.patrol-sight-gap",
+  "category": "stealth",
+  "title": "Patrols make stealth possible",
+  "summary": "Unaware enemies walk routes (loop, back and forth, or run to the end), so the player waits for the back to turn. Route points hold an arrival animation and wait time.",
+  "values": "152 routes on 9 maps: 101 loops, 27 back and forth, 24 run-to-end. nonBattleActLife 9 s on 729 rows.",
+  "how": "MSB PatrolInfo + Lua non-battle goals.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/enemy.md"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/enemies/patrols.json"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/enemy.rs patrol"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Watch a type-1 soldier turn at each end and pass behind him.",
+  "note": "",
+  "needs": [
+   {
+    "id": "ai.patrol-route-types",
+    "why": "ai side"
+   }
+  ]
+ },
+ {
+  "id": "stealth.corpse-discovery",
+  "category": "stealth",
+  "title": "Enemies notice dead friends",
+  "summary": "Enemies with corpse sight (corpse_eye_dist_rate 20 or 25) go to caution when they see a body, then search the spot.",
+  "values": "corpse_eye_dist_rate 0 on 349 rows (blind to corpses), 20 on 100, 25 on 97. Corpse forget time 150 s.",
+  "how": "Target type CORPSE_POS; goalAction_ToCautionCorpseTarget.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/NpcThinkParam.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/enemy.md"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "partial",
+   "where": "src/stealth.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Leave a stealth kill in view of another soldier.",
+  "note": "Exact meaning of the rate (metres or percent of eye_dist) not traced.",
+  "needs": [
+   {
+    "id": "ai.corpse-detection",
+    "why": "ai side"
+   }
+  ]
+ },
+ {
+  "id": "stealth.death-noise-gap",
+  "category": "stealth",
+  "title": "Our enemies make a death noise the game may not",
+  "summary": "RustSekiro gives a dying enemy a 20 m sound (id 4060). It is our own addition and is flagged as a gap.",
+  "values": "Sound 4060, 20 m.",
+  "how": "Ours only.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/enemy.md"
+   }
+  ],
+  "confidence": "open-question",
+  "ours": {
+   "has": "partial",
+   "where": "src/enemy.rs death_noise"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Compare to a recording of a stealth kill next to a second soldier.",
+  "note": "",
+  "needs": [
+   {
+    "id": "ai.death-noise-ours",
+    "why": "ai side"
+   }
+  ]
+ },
+ {
+  "id": "stealth.deathblow-unaware",
+  "category": "stealth",
+  "title": "Stealth deathblow: from behind on an unaware enemy",
+  "summary": "An enemy that has not noticed Wolf can be deathblowed from behind with one hit. The start grab needs Wolf within 2.1 m of the General's back (within 90 degrees) and about 1.3 m in height. The main kill follows in a second throw.",
+  "values": "General 11020020 start: Dist 2.1 m, DiffAngMax 90 degrees, height range +-1.26 m, atk anim 500200. Main 11020021: Dist 2.1, atk 510200, def 12200, throwKind 100. Ochimusha 11010021: Dist 2.0. Live: c1010 0.29 s + 2.0 s; General 0.28 s + 1.52 s + 1.82 s. Unaware in ours = AI mode with target state below FIND (NONE or CAUTION).",
+  "how": "ThrowParam rows 0020 (start) and 0021 (body) per enemy group; the exe throw check picks by distance and angle.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/ThrowParam.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/damage.md"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/enemy.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/player.rs deathblow check; enemy.rs is_unaware"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Sneak behind a soldier and press the attack within 2 m: he dies in one throw. Face him: no throw.",
+  "note": "The exe's own 'unaware' condition is not traced; ours uses state < FIND. The mark and throw ids are per enemy kind, so a new enemy needs its own row.",
+  "needs": [
+   {
+    "id": "deathblows.stealth-deathblow",
+    "why": "deathblow system"
+   },
+   {
+    "id": "stealth.detection-state",
+    "why": "unaware state"
+   }
+  ]
+ },
+ {
+  "id": "stealth.deathblow-plunge",
+  "category": "stealth",
+  "title": "Plunge deathblow on an unaware enemy",
+  "summary": "Falling onto an enemy that has not noticed Wolf gives a stealth plunge kill. It needs a downward fall that passes near the enemy within the check range.",
+  "values": "General rows 11020030 (start) and 11020031 (body): Dist 20 m, height above +3 m / below -15 m, fall orbit check range 1.5 m, height limit 3 m, time limit 2 s; body Dist 10 m +-10 m. Atk 510300 then 510310, def 12300 / 12310. Broken enemies use rows 0150 / 0151 instead; kick-jump 0160 / 0161. 65 rows of throwKind 70000 exist.",
+  "how": "ThrowParam 0030 / 0031 plus the normalFallOrbitCheck_* columns; the player must be falling (vel_y below 0).",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/ThrowParam.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/damage.md"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/enemy.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/player.rs plunge_on / start_plunge"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Jump from a ledge so you land on a soldier's head from above: stealth plunge.",
+  "note": "Live: General 0.54 s + 1.69 s + 1.83 s.",
+  "needs": [
+   {
+    "id": "deathblows.plunge",
+    "why": "plunge system"
+   },
+   {
+    "id": "movement.fall",
+    "why": "fall orbit"
+   }
+  ]
+ },
+ {
+  "id": "stealth.deathblow-hang-wall",
+  "category": "stealth",
+  "title": "Deathblows from a ledge hang or wall hug",
+  "summary": "Wolf can kill an enemy from a ledge hang below it or from a wall hug beside it. These throws are grabs with a short reach and wide angles.",
+  "values": "Hang start rows (throwKind 110000): Dist 2.25 m, angle 0 to 90, height +-1.35 m, atk anim 500800 (98 rows). Wall left (90000) and right (100000): Dist 1.8 m, angle 0 to 180, height +-1.08 m, atk 500600 / 500700 (49 rows each). 48 common enemy kinds have them; no boss.",
+  "how": "ThrowParam kinds 90000 / 100000 / 110000 and their 90010 / 100010 / 110010 bodies.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/ThrowParam.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/enemy.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/combat.rs throws_of_kinds; test the_ochimusha_has_his_hang_and_hug_deathblows"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Hang below a soldier on a ledge and attack: a hang kill.",
+  "note": "Whether these need an unaware enemy is not traced.",
+  "needs": [
+   {
+    "id": "deathblows.hang-wall",
+    "why": "deathblow system"
+   },
+   {
+    "id": "stealth.ledge-hang-hide",
+    "why": "hide state"
+   }
+  ]
+ },
+ {
+  "id": "stealth.deathblow-ninjutsu",
+  "category": "stealth",
+  "title": "Stealth ninjutsu kills: Bloodsmoke, Puppeteer, Grant",
+  "summary": "From behind on an unaware enemy Wolf can use the shinobi arts as a kill. They reach far: 10 m with a 6 m height range, and need no melee grab.",
+  "values": "General rows 11020022 (Bloodsmoke, throwKind 201), 11020023 (Puppeteer, 202), 11020024 (Grant, 203): Dist 10 m, angle 180, height +-6 m; atk 510210 / 510220 / 510230, def 12210 / 12220 / 12230. Broken versions 41201 / 41202 / 41203. 138 rows across enemy kinds.",
+  "how": "ThrowParam kinds 201 to 203 plus art-specific SpEffects (110080 smoke, 110081 puppet).",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/ThrowParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Use Bloodsmoke on an unaware soldier from 8 m behind.",
+  "note": "Which of the three arts matches Grant is by name only.",
+  "needs": [
+   {
+    "id": "arts.bloodsmoke",
+    "why": "art"
+   },
+   {
+    "id": "arts.puppeteer",
+    "why": "art"
+   },
+   {
+    "id": "deathblows.ninjutsu-kill",
+    "why": "throw system"
+   }
+  ]
+ },
+ {
+  "id": "stealth.puppeteer-vision",
+  "category": "stealth",
+  "title": "Puppeteer's puppet: 360-degree vision and immortality",
+  "summary": "A puppet enemy sees all around and cannot die for a time. It also changes team, so its allies treat it as a friend or attack indiscriminately.",
+  "values": "220021: eye angles 180 / 180 yaw, 90 / 90 pitch (around), sightSearchRate 2. 220030 immortal 45 s, 220031 90 s, 220032 permanent. 220040 team type change (fascination), 220041 (indiscriminate). 220022: dies over time.",
+  "how": "SpEffects added to the puppeted enemy; AI team type read by the targeting system.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Puppeteer a soldier next to others: they react to him by the team type.",
+  "note": "Only the parts that change detection are recorded here.",
+  "needs": [
+   {
+    "id": "arts.puppeteer",
+    "why": "art"
+   },
+   {
+    "id": "ai.team-roles",
+    "why": "team type"
+   }
+  ]
+ },
+ {
+  "id": "stealth.hit-forces-battle",
+  "category": "stealth",
+  "title": "A hit ends all stealth",
+  "summary": "If Wolf damages an enemy, it is in BATTLE at once whatever it knew before.",
+  "values": "Target reason 4 (damage) gives state 3.",
+  "how": "FUN_14061d140.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/enemy.md"
+   },
+   {
+    "kind": "exe",
+    "ref": "tools/fn.sh 14061d140"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "yes",
+   "where": "src/stealth.rs hurt"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Hit an unaware soldier without killing him: he is in battle, and so are his friends within 20 m.",
+  "note": "",
+  "needs": [
+   {
+    "id": "ai.target-state-machine",
+    "why": "reason 4"
+   }
+  ]
+ },
+ {
+  "id": "stealth.always-aware-enemies",
+  "category": "stealth",
+  "title": "Enemies that cannot be sneaked on",
+  "summary": "A few enemy rows see all around or from very far: Headless, the Female Musician, Shichimen (50 m, fights at 50 m), the 120 m boss rows. No stealth kill works on them without a bush or other cover.",
+  "values": "Headless 13500000 and Female Musician 70000000: yaw +-180, pitch +-90. Shichimen 10800000: dist 50, BattleStartDist 50. 23 rows have BattleStartDist 9999: always fight once found. 95 rows never forget (99999 s).",
+  "how": "NpcThinkParam eye_* and BattleStartDist columns.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/NpcThinkParam.json"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "reads the param"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Approach a Headless from behind: still seen.",
+  "note": "",
+  "needs": [
+   {
+    "id": "stealth.enemy-sight",
+    "why": "base rules"
+   }
+  ]
+ },
+ {
+  "id": "stealth.ignored-fields",
+  "category": "stealth",
+  "title": "NpcThinkParam fields that do nothing",
+  "summary": "A few stealth-looking fields are zero on every row: ignoreStealthTime, callHelp_*, BackHome_GuardActId. They can be skipped.",
+  "values": "All 771 rows are 0.",
+  "how": "Data only.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/NpcThinkParam.json"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "not needed"
+  },
+  "his": {
+   "has": "yes",
+   "where": "not needed"
+  },
+  "check": "Dump the columns.",
+  "note": "",
+  "needs": []
+ }
+]

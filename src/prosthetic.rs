@@ -18,11 +18,11 @@ use bevy::prelude::*;
 use crate::actor::{Actor, ActorSet, data_for};
 use crate::anim::Hurtboxes;
 use crate::combat::{BODY_RADIUS, apply_knockback, damage_kb, segment_distance};
-use crate::data::{BulletSpec, Combat, STATE_INFO_JUST_GUARD};
+use crate::data::{BulletSpec, Combat};
 use crate::enemy::Enemy;
 use crate::hud::CombatLog;
 use crate::model::Dummies;
-use crate::player::{FLAG_SHIELD_BLOCK, Player};
+use crate::player::Player;
 
 #[derive(Component)]
 pub struct Projectile {
@@ -47,11 +47,6 @@ pub struct Projectile {
     fx: Option<Entity>,
     /// The effect its children inherit (-1 = none).
     inherit_sfx: i64,
-}
-
-/// Is the game's effect for this FFX id extracted (extracted/fxr/<id>.json)?
-fn has_fxr(id: i64) -> bool {
-    id > 0 && crate::paths::extracted().join(format!("fxr/{id}.json")).exists()
 }
 
 /// A one-shot game effect placed in the world (a bullet's sfxId_Hit / sfxId_Flick).
@@ -252,18 +247,6 @@ pub(crate) fn spawn_row(commands: &mut Commands, spec: &BulletSpec, pos: Vec3, d
     let flat = dir.with_y(0.0).normalize_or(Vec3::NEG_Z);
     let sfx = if spec.sfx_id_bullet > 0 { spec.sfx_id_bullet } else { inherited };
     let inherit_sfx = if spec.is_inherit_sfx_to_child != 0 { sfx } else { -1 };
-    // An area burst (standing still, >= 1 m: the firecracker's 710003) without its FXR extracted:
-    // sparks from vfx.rs stand in. Only for a row that names an effect: the 27 player area
-    // bullets with sfxId_Bullet -1 (BulletParam: the whistle's 790004 / 79001x, the axe's 730201,
-    // the umbrella's 760201 / 760300, the firecracker's 710013 ...) have nothing to draw, and
-    // drew these sparks around Wolf.
-    if spec.init_vellocity == 0.0 && spec.hit_radius >= 1.0 && sfx > 0 && !has_fxr(sfx) {
-        for k in 0..4 {
-            let a = k as f32 * std::f32::consts::FRAC_PI_2 + chain as f32;
-            let p = pos + Vec3::new(a.cos(), 0.3 + 0.2 * k as f32, a.sin()) * 0.5;
-            commands.spawn(crate::vfx::Clash::bundle(p, Vec3::new(a.cos(), 0.6, a.sin()), crate::vfx::Kind::Deflect));
-        }
-    }
     for i in 0..spec.num_shoot.max(1) {
         let yaw = (spec.shoot_angle + i as f32 * spec.shoot_angle_interval).to_radians();
         let mut d = if spec.shoot_angle == 0.0 && spec.shoot_angle_interval == 0.0 { dir } else { Quat::from_rotation_y(-yaw) * flat };
@@ -732,29 +715,30 @@ fn hit_enemy(
         return carries.then(|| "hit: build-up only".to_string());
     }
     let dd = combat.data_of(da);
-    // As a sword hit (combat.rs resolve): only inside the guard arc, and AtkParam
-    // disableJustGuard / disableGuard (the Flame Vent's and Projected Force's rows) go through
-    // a deflect / a block.
-    let facing = !da.anim.is_empty() && da.forward().angle_between((from - dtf.translation).with_y(0.0).normalize_or_zero()).to_degrees() <= crate::combat::guard_half_angle(dd, da, crate::combat::event_gates(combat, da, &[]).as_deref());
+    // As a sword hit (combat.rs resolve, guard_contact): only inside the guard arc, block or
+    // deflect by the repel values and the guard type's disableGuard / disableJustGuard columns
+    // (the Flame Vent's and Projected Force's rows). The bullet's weapon is taken as the sword's
+    // (every Wolf weapon has attackBaseRepel 10).
+    let contact = crate::combat::guard_contact(combat, dd, da, Some(&*e), (&da.anim, da.t), None, true, atk, 5000);
+    let facing = !da.anim.is_empty() && da.forward().angle_between((from - dtf.translation).with_y(0.0).normalize_or_zero()).to_degrees() <= contact.half_angle;
     // A guarding enemy takes the bullet as a sword's deflect / block (combat.rs resolve, `bullet`):
-    // the posture through its guard rates (enemy_guard_posture_rate x timed_rates, floored), the
+    // the posture through its guard (combat.rs guard_posture: staminaGuardDef, the guard family), the
     // c9997 ExecGuardBlock reaction (guard_damage_table by dmgLevel and guardLevel) and the clash
     // SpEffects the AI counts (200210/211 deflect, 200215/216 block). Round 35: the deflect did
     // nothing and the block added the raw repelLostStamDamage with no reaction. gap: the clash ids
     // on a bullet are the melee path's (inferred).
-    let deflect = facing && atk.disable_just_guard == 0 && dd.has_state_info(&da.anim, da.t, STATE_INFO_JUST_GUARD);
-    if deflect || (facing && atk.disable_guard == 0 && dd.flag(&da.anim, da.t, FLAG_SHIELD_BLOCK)) {
+    let deflect = facing && contact.guarded == crate::guard::Guarded::Deflect;
+    if deflect || (facing && contact.guarded == crate::guard::Guarded::Block) {
         if let Some(q) = sounds.as_mut() {
             q.0.extend(crate::sound::guard_sounds(combat, atk, deflect).into_iter().map(|se| (se, to)));
         }
-        let skill = crate::combat::enemy_guard_posture_rate(combat, da, atk) * crate::combat::timed_rates(combat, e, da, atk).1;
         let level = atk.level(false);
         let refs = enemy_refs(combat, da, e);
         let glv = combat.npc(da)["guardLevel"].as_i64().unwrap_or(4);
         let aerial = crate::combat::enemy_is_aerial(combat, da, e, dtf.translation.y);
         if deflect {
             // A deflect never breaks the defender (as the sword's).
-            let pd = (atk.atk_stam * skill).floor();
+            let pd = crate::combat::guard_posture(combat, da, &contact, None, &[], atk.atk_stam, true, atk);
             da.posture = (da.posture + pd).min(da.posture_max - 1.0);
             da.since_posture_damage = 0.0;
             let pick = crate::combat::enemy_guard_block(dd, &refs, level, glv, atk.just_deflect_action == 2, aerial);
@@ -762,8 +746,13 @@ fn hit_enemy(
             crate::combat::clash_after(dd, da, e, if atk.just_deflect_action == 1 { 200211 } else { 200210 });
             return Some(format!("enemy deflects the shuriken (+{pd:.0} posture)"));
         }
-        let pd = (atk.repel_lost_stam_damage * skill).floor();
+        let pd = crate::combat::guard_posture(combat, da, &contact, None, &[], atk.repel_lost_stam_damage, false, atk);
         da.add_posture(pd);
+        // The parts of a tool's damage the guard lets through (the Flame Vent's fire: 67 %).
+        if b.base > 0 {
+            let chip = crate::combat::npc_guard_chip(combat, da, &contact, atk, crate::combat::player_attack_elements(combat, atk, b.base, da, 0.0));
+            da.hp = (da.hp - chip).max(0.0);
+        }
         if da.posture_broken() {
             e.react_from(da, combat, true, if atk.deflect_action == 2 { "GuardBreakLeft" } else { "GuardBreakRight" });
         } else {
@@ -850,16 +839,12 @@ pub(crate) fn tool_hit_push(combat: &Combat, da: &mut Actor, e: &mut Enemy, from
 }
 
 /// A tool hit's reaction, as a sword hit's (combat.rs resolve): the damage level the HKS sees
-/// (0 under ChrActionFlag 24, else damage_motion_level's super-armour swap), no reaction
-/// mid-swing unless ChrActionFlag 73 (FLAG_DAMAGE_MOTION) allows it, and c9997's aerial table
-/// for an enemy in the air (enemy_damage_state_air). None = the additive flinch.
+/// (0 under ChrActionFlag 24, else damage_motion_level's super-armour swap) and c9997's aerial
+/// table for an enemy in the air (enemy_damage_state_air). None = the additive flinch.
 pub(crate) fn bullet_reaction(combat: &Combat, da: &Actor, e: &Enemy, level: i64, from: Vec3, at: Vec3) -> Option<String> {
     let dd = combat.data_of(da);
     let level = if dd.flag(&da.anim, da.t, crate::combat::FLAG_NO_DAMAGE_MOTION) { 0 } else { crate::combat::damage_motion_level(dd, da, level) };
-    let can_flinch = !e.is_attacking() || crate::combat::swing_can_flinch(dd, da);
-    // gap (as resolve): env 201 read as not lifted 5 cm above a SetNoGravity leap's start.
-    let aerial = da.airborne || da.lift_ground.is_some_and(|g| at.y > g + 0.05) || enemy_refs(combat, da, e).contains(&crate::combat::SP_REF_AERIAL_DAMAGE);
-    can_flinch.then(|| crate::combat::enemy_damage_state_air(dd, level, da, from, at, aerial)).flatten()
+    crate::combat::enemy_damage_state_air(dd, level, da, from, at, crate::combat::enemy_is_aerial(combat, da, e, at.y))
 }
 
 /// A reaction clip's TAE SpEffects with the reaction's own block ref (SP_EFFECT_REF_NO_BURST_REACTION

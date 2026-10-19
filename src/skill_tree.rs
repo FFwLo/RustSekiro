@@ -309,7 +309,7 @@ pub(crate) fn build(root: &mut ChildSpawnerCommands, assets: &AssetServer, font:
         let icon = if shown { tables.weapon_icon.get(&s.weapon).and_then(|i| any_icon(*i)) } else { sprite("sb_remodeling/MENU_ItemBase_Skill") };
         // Not yet in reach: the node greyed (the game dims them the same way).
         let tint = if !shown || has || open { Color::WHITE } else { Color::srgb(0.55, 0.55, 0.55) };
-        root.spawn((Button, abs(x - w / 2.0, y - h / 2.0, w, h), image(assets, icon).with_color(tint), SkillNodeButton(i))).with_children(|b| {
+        root.spawn((crate::menu::ui_button(), abs(x - w / 2.0, y - h / 2.0, w, h), image(assets, icon).with_color(tint), SkillNodeButton(i))).with_children(|b| {
             if s.secret && shown {
                 b.spawn((Node { position_type: PositionType::Absolute, left: Val::Percent(-9.0), top: Val::Percent(-9.0), width: Val::Percent(118.0), height: Val::Percent(118.0), ..default() }, image(assets, sprite("sb_remodeling/MENU_Skill_Ougi"))));
             }

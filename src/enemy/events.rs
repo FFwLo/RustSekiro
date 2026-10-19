@@ -30,7 +30,10 @@ pub(super) fn place(start: Vec3, at: &serde_json::Value, yaw: &serde_json::Value
     // The height difference counts on the boss's own arena (map.rs boss_arena: the ground
     // under it is the real one); on another floor it is dropped. gap: no navmesh either way.
     let y = if super::on_own_arena() { start.y + n(1) } else { start.y };
-    (Vec3::new(start.x - n(0), y, start.z + n(2)), std::f32::consts::PI - d.to_radians())
+    // Laid out along the arena's axes, turned with them into the fight's space (map.rs Frame).
+    let fr = crate::map::frame();
+    let off = fr.dir(Vec3::new(-n(0), 0.0, n(2)));
+    (Vec3::new(start.x + off.x, y, start.z + off.z), std::f32::consts::PI - d.to_radians() + fr.yaw)
 }
 
 /// Runs a boss's pending event requests: spawns the characters it enables and queues Wolf's

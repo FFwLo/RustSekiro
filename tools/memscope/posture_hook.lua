@@ -5,7 +5,7 @@
 -- stack args 5/6 = defender chr / attacker chr. Compare result with base x 3.75 to isolate the x0.74 term.
 local args = args or {}
 local SECONDS = tonumber(args.seconds) or 60
-local path = "C:\\DeadlockModding\\memscope-data\\logs\\posture_hook_" .. os.date("%Y%m%d_%H%M%S") .. ".txt"
+local path = (os.getenv("MEMSCOPE_HOME") or "memscope-data") .. "\\logs\\posture_hook_" .. os.date("%Y%m%d_%H%M%S") .. ".txt"
 local f = assert(io.open(path, "w"))
 pcall(destroyRingBuffer)
 createRingBuffer({entry_count = 512, max_data_size = 512})

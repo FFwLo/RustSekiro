@@ -1020,30 +1020,40 @@ pub(crate) fn neck_grab_holds_then_throws() {
     assert!(thrown, "{}", log_text(&app));
 }
 
+/// Atlas armor.flag73-parry-gate: an enemy swing has no armour of its own. The General's
+/// a000_003000 (ChrActionFlag 73 at frames 1-9 and 54-80, nothing else) flinches from Wolf's
+/// slash mid-swing; his 3003 swings on through frames 5-24, where ChrActionFlag 24 and the
+/// spCategory 1001 SpEffect 5350 hold.
 #[test]
 pub(crate) fn enemy_mid_swing_takes_the_hit_without_flinching() {
-    let mut app = app();
-    {
-        // a000_003000 at frame 7: flag 73 (damage motion) is off from frame 9 until the recovery.
-        let world = app.world_mut();
-        let mut q = world.query::<(&mut Enemy, &mut Actor)>();
-        let (mut e, mut a) = q.single_mut(world).unwrap();
-        e.force_anim(&mut a, "a000_003000");
-        a.t = 7.0 / TAE_FPS;
-        a.prev_t = a.t;
-        // Swinging away from the player, so only the player's cut lands.
-        a.yaw = std::f32::consts::PI;
-    }
-    app.world_mut().resource_mut::<PadInput>().press(Action::Attack);
-    for _ in 0..40 {
-        app.update();
-        if log_text(&app).contains("you hit") {
-            break;
+    for (anim, ez, armoured) in [("a000_003003", "Ez3003", true), ("a000_003000", "Ez3000", false)] {
+        let mut app = app();
+        {
+            let world = app.world_mut();
+            let mut q = world.query::<(&mut Enemy, &mut Actor)>();
+            let (mut e, mut a) = q.single_mut(world).unwrap();
+            e.force_anim(&mut a, anim);
+            a.t = 7.0 / TAE_FPS;
+            a.prev_t = a.t;
+            // Swinging away from the player, so only the player's cut lands.
+            a.yaw = std::f32::consts::PI;
+        }
+        app.world_mut().resource_mut::<PadInput>().press(Action::Attack);
+        for _ in 0..40 {
+            app.update();
+            if log_text(&app).contains("you hit") {
+                break;
+            }
+        }
+        let (state, got, t) = enemy_state(&mut app);
+        assert!(log_text(&app).contains("you hit"), "{anim}: {}", log_text(&app));
+        if armoured {
+            assert!(t * TAE_FPS <= 24.0, "{anim}: the hit landed after the armour, frame {:.1}", t * TAE_FPS);
+            assert_eq!((state.as_str(), got.as_str()), (ez, anim), "{}", log_text(&app));
+        } else {
+            assert!(state.starts_with("Damage"), "{anim} flinches: {state} {got} {}", log_text(&app));
         }
     }
-    let (state, anim, _) = enemy_state(&mut app);
-    assert!(log_text(&app).contains("you hit"), "{}", log_text(&app));
-    assert_eq!((state.as_str(), anim.as_str()), ("Ez3000", "a000_003000"), "{}", log_text(&app));
 }
 
 #[test]

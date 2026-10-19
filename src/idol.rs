@@ -20,16 +20,96 @@ use std::sync::RwLock;
 
 use bevy::prelude::*;
 
-use crate::game_menu::{abs, any_icon, fill_row, image, key_guide, list_screen, sprite, text, title_bar, Detail, ItemTexts, MenuFont, Row, RowButton, Tables, DIM, TEXT};
+use crate::game_menu::{abs, any_icon, fill_row, image, key_guide, list_screen, sprite, text, title_bar, Detail, ItemTexts, Row, RowButton, Tables, DIM, TEXT};
 use crate::menu::Screen;
 
 /// One idol: its name, where it stands (its base, on the floor), the way it faces (Wolf kneels
 /// IDOL_SPOT in front of it, facing it).
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct Idol {
     pub name: String,
     pub pos: Vec3,
     pub out: Vec3,
+    /// Under sekiro-rs's map: the idol's entity (BonfireWarpParam bonfireEntityId), the Travel
+    /// pages it is listed on, and whether it stands in another map (then `pos` / `out` are
+    /// unknown and Travel goes there by a new run, sr_map.rs `travel`).
+    pub entity: i64,
+    pub pages: Vec<usize>,
+    pub away: bool,
+}
+
+/// One BonfireWarpParam row: the idol's entity, its Travel page (menuPageNo) and name
+/// (NTC_メニューテキスト msgId), in the param's order.
+pub struct WarpRow {
+    pub entity: i64,
+    pub page: usize,
+    pub name: String,
+}
+
+fn menu_texts() -> &'static std::collections::HashMap<u32, String> {
+    static T: std::sync::OnceLock<std::collections::HashMap<u32, String>> = std::sync::OnceLock::new();
+    T.get_or_init(|| std::fs::read(crate::paths::extracted().join("msg/engus/menu.msgbnd.d/NTC_メニューテキスト.fmg")).ok().map(|d| crate::action_guide::read_fmg(&d)).unwrap_or_default())
+}
+
+/// The game's idol list (BonfireWarpParam), named.
+pub fn warp_rows() -> &'static [WarpRow] {
+    static ROWS: std::sync::OnceLock<Vec<WarpRow>> = std::sync::OnceLock::new();
+    ROWS.get_or_init(|| {
+        let path = crate::paths::extracted().join("json/params/BonfireWarpParam.json");
+        let json: serde_json::Value = std::fs::read_to_string(path).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+        let mut rows: Vec<&serde_json::Value> = json["rows"].as_array().into_iter().flatten().collect();
+        rows.sort_by_key(|r| r["id"].as_i64().unwrap_or(0));
+        rows.iter()
+            .filter_map(|r| {
+                let entity = r["bonfireEntityId"].as_i64().filter(|e| *e > 0)?;
+                let msg = r["msgId"].as_i64().unwrap_or(0) as u32;
+                let name = menu_texts().get(&msg).cloned().unwrap_or_else(|| format!("Idol {entity}"));
+                Some(WarpRow { entity, page: r["menuPageNo"].as_i64().unwrap_or(0).max(0) as usize, name })
+            })
+            .collect()
+    })
+}
+
+/// A Travel page's title: NTC_メニューテキスト 211100 + page ("Important Places", then
+/// `<?placeName@n?>`, the 地名 text n: "Ashina Outskirts", ...).
+fn page_name(page: usize) -> String {
+    static PLACES: std::sync::OnceLock<std::collections::HashMap<u32, String>> = std::sync::OnceLock::new();
+    let t = menu_texts().get(&(211_100 + page as u32)).cloned().unwrap_or_default();
+    match t.strip_prefix("<?placeName@").and_then(|r| r.strip_suffix("?>")).and_then(|n| n.parse::<u32>().ok()) {
+        Some(n) => PLACES
+            .get_or_init(|| std::fs::read(crate::paths::extracted().join("msg/engus/item.msgbnd.d/地名.fmg")).ok().map(|d| crate::action_guide::read_fmg(&d)).unwrap_or_default())
+            .get(&n)
+            .cloned()
+            .unwrap_or(t),
+        None => t,
+    }
+}
+
+/// Under sekiro-rs's map: every idol of the game, one per entity, those of this play world at
+/// their place, the rest away (sr_map.rs).
+fn sr_idols() -> Vec<Idol> {
+    let mut out: Vec<Idol> = Vec::new();
+    for r in warp_rows() {
+        if let Some(i) = out.iter_mut().find(|i| i.entity == r.entity) {
+            i.pages.push(r.page);
+            continue;
+        }
+        let spot = crate::sr_map::idol_spot(r.entity);
+        let (pos, out_dir) = spot.unwrap_or((Vec3::ZERO, Vec3::Z));
+        out.push(Idol { name: r.name.clone(), pos, out: out_dir, entity: r.entity, pages: vec![r.page], away: spot.is_none() });
+    }
+    out
+}
+
+/// Whether Travel can go to idol `i`: here, or on a map a new run can start on.
+fn reachable(i: &Idol) -> bool {
+    !i.away || crate::sr_map::arena_on(&crate::sr_map::map_of(i.entity)).is_some()
+}
+
+/// The idol a run starts at (`SHINOBI_IDOL`, idol travel), as an index of [`IDOLS`].
+pub fn start_index() -> Option<usize> {
+    let e = crate::sr_map::idol_start()?;
+    IDOLS.read().ok()?.iter().position(|i| i.entity == e && !i.away)
 }
 
 /// How far in front of the idol Wolf kneels (m).
@@ -60,7 +140,7 @@ pub static IDOLS: RwLock<Vec<Idol>> = RwLock::new(Vec::new());
 /// The Construct's idols: by the start, on the L platform, on the cliff, in the shaft, at the
 /// stealth courtyard's gate.
 pub fn parkour_idols() -> Vec<Idol> {
-    let idol = |name: &str, pos: Vec3, out: Vec3| Idol { name: name.to_string(), pos, out };
+    let idol = |name: &str, pos: Vec3, out: Vec3| Idol { name: name.to_string(), pos, out, ..default() };
     vec![
         idol("Course Start", Vec3::new(-3.5, 0.0, 1.5), Vec3::X),
         idol("Platform Top", Vec3::new(11.2, 3.0, -13.3), Vec3::NEG_X),
@@ -84,6 +164,9 @@ pub fn respawn_at(i: usize) -> Option<(Vec3, f32)> {
 pub fn near(feet: Vec3, _yaw: f32) -> Option<usize> {
     let idols = IDOLS.read().ok()?;
     idols.iter().position(|i| {
+        if i.away {
+            return false;
+        }
         let s = i.spot();
         (s - feet).with_y(0.0).length() < IDOL_REACH && (s.y - feet.y).abs() < IDOL_REACH_Y
     })
@@ -206,6 +289,10 @@ fn seat_tick(seat: &mut Seat, p: &mut crate::player::Player, a: &mut crate::acto
         Phase::Warping(to) if ended || a.t >= WARP_CUT => {
             // Up at the chosen idol: its spot, then stand.
             let idol = IDOLS.read().ok().and_then(|v| v.get(to).cloned());
+            // In another map: a new run there (sr_map.rs), which ends this one.
+            if let Some(idol) = idol.as_ref().filter(|i| i.away) {
+                crate::sr_map::travel(idol.entity);
+            }
             if let Some(idol) = idol {
                 tf.translation = idol.spot() + Vec3::Y * crate::player::CAPSULE_HALF_HEIGHT;
                 a.yaw = idol.wolf_yaw();
@@ -281,10 +368,20 @@ struct IdolMenu {
 #[derive(Component)]
 pub(crate) struct IdolMenuRoot;
 
-/// Travel's regions: (name, idols). gap: only this map's idols ("Important Places" lists none).
+/// Travel's regions: (name, idols). Under sekiro-rs's map the game's pages (BonfireWarpParam
+/// menuPageNo, those with idols); else this map's idols ("Important Places" lists none).
 fn regions() -> Vec<(String, Vec<usize>)> {
-    let n = IDOLS.read().map(|v| v.len()).unwrap_or(0);
-    vec![("Important Places".to_string(), Vec::new()), ("Construct".to_string(), (0..n).collect())]
+    let idols = IDOLS.read().map(|v| v.clone()).unwrap_or_default();
+    if idols.iter().any(|i| i.entity != 0) {
+        let last = idols.iter().flat_map(|i| i.pages.iter().copied()).max().unwrap_or(0);
+        return (0..=last)
+            .filter_map(|page| {
+                let list: Vec<usize> = warp_rows().iter().filter(|r| r.page == page).filter_map(|r| idols.iter().position(|i| i.entity == r.entity)).collect();
+                (!list.is_empty()).then(|| (page_name(page), list))
+            })
+            .collect();
+    }
+    vec![("Important Places".to_string(), Vec::new()), ("Construct".to_string(), (0..idols.len()).collect())]
 }
 
 /// The stats plate of the idol menu (the capture: resurrection nodes over the Vitality bar,
@@ -319,7 +416,7 @@ fn stats_plate(root: &mut ChildSpawnerCommands, assets: &AssetServer, font: &Opt
                 });
             });
         }
-        for (k, (icon, label, value)) in [("MENU_ST_Vitality", "Vitality", format!("{:.0}", config.posture.player_level)), ("MENU_ST_Offensive", "Attack Power", "1".to_string())].into_iter().enumerate() {
+        for (k, (icon, label, value)) in [("MENU_ST_Vitality", "Vitality", format!("{:.0}", config.posture.player_level)), ("MENU_ST_Offensive", "Attack Power", config.player.attack_power.to_string())].into_iter().enumerate() {
             let t = 39.0 + k as f32 * 13.0;
             b.spawn((abs(64.0, t, 5.5, 11.0), image(assets, sprite(&format!("sb_in_game/{icon}")))));
             b.spawn(Node { justify_content: JustifyContent::SpaceBetween, align_items: AlignItems::Center, ..abs(70.5, t, 25.0, 11.0) }).with_children(|c| {
@@ -366,7 +463,7 @@ fn build(commands: &mut Commands, assets: &AssetServer, menu: &IdolMenu, font: &
                     if sel {
                         root.spawn((abs(4.0, t, 30.0, 4.8), image(assets, sprite("sb_in_game/MENU_Cursor_03")).with_color(Color::srgba(0.8, 0.55, 0.3, 0.95))));
                     }
-                    root.spawn((Button, abs(4.0, t, 30.0, 4.8), RowButton(i))).with_children(|b| {
+                    root.spawn((crate::menu::ui_button(), abs(4.0, t, 30.0, 4.8), RowButton(i))).with_children(|b| {
                         b.spawn(Node { padding: UiRect::left(Val::Percent(6.5)), ..fill_row() }).with_children(|c| {
                             let color = if !live { Color::srgba(0.7, 0.68, 0.64, 0.4) } else if sel { Color::WHITE } else { TEXT };
                             c.spawn(text(label, 17.0, color, font));
@@ -448,7 +545,7 @@ fn build(commands: &mut Commands, assets: &AssetServer, menu: &IdolMenu, font: &
                     if sel {
                         root.spawn((abs(4.0, t, 29.0, 4.8), image(assets, sprite("sb_in_game/MENU_Cursor_03")).with_color(Color::srgba(0.8, 0.55, 0.3, 0.95))));
                     }
-                    root.spawn((Button, abs(4.0, t, 29.0, 4.8), RowButton(i))).with_children(|b| {
+                    root.spawn((crate::menu::ui_button(), abs(4.0, t, 29.0, 4.8), RowButton(i))).with_children(|b| {
                         b.spawn(Node { padding: UiRect::left(Val::Percent(6.5)), ..fill_row() }).with_children(|c| {
                             c.spawn(text(label, 17.0, if sel { Color::WHITE } else { TEXT }, font));
                         });
@@ -499,14 +596,14 @@ fn build(commands: &mut Commands, assets: &AssetServer, menu: &IdolMenu, font: &
                     let t = 18.0 + i as f32 * 10.7;
                     let sel = i == menu.index;
                     let icon = any_icon(f.icon);
-                    root.spawn((Button, abs(7.0, t, 5.1, 9.0), image(assets, sprite("sb_in_game/MENU_IconBase_02")), RowButton(i))).with_children(|b| {
+                    root.spawn((crate::menu::ui_button(), abs(7.0, t, 5.1, 9.0), image(assets, sprite("sb_in_game/MENU_IconBase_02")), RowButton(i))).with_children(|b| {
                         b.spawn((Node { position_type: PositionType::Absolute, left: Val::Percent(5.0), top: Val::Percent(5.0), width: Val::Percent(90.0), height: Val::Percent(90.0), ..default() }, image(assets, icon)));
                         if i == worn {
                             b.spawn((Node { position_type: PositionType::Absolute, left: Val::Percent(-6.0), top: Val::Percent(-6.0), width: Val::Percent(30.0), height: Val::Percent(30.0), ..default() }, image(assets, sprite("sb_in_game/MENU_Equipped"))));
                         }
                     });
                     let plate = if sel { "sb_in_game/MENU_Cursor_03" } else { "sb_in_game/MENU_ItemBase_02" };
-                    root.spawn((Button, abs(13.4, t + 1.6, 34.4, 6.4), image(assets, sprite(plate)), RowButton(i))).with_children(|b| {
+                    root.spawn((crate::menu::ui_button(), abs(13.4, t + 1.6, 34.4, 6.4), image(assets, sprite(plate)), RowButton(i))).with_children(|b| {
                         b.spawn(Node { padding: UiRect::left(Val::Percent(4.5)), ..fill_row() }).with_children(|c| {
                             c.spawn(text(&name(f), 17.0, if sel { Color::WHITE } else { TEXT }, font));
                         });
@@ -549,7 +646,7 @@ fn build(commands: &mut Commands, assets: &AssetServer, menu: &IdolMenu, font: &
                     let sel = i == menu.region;
                     let plate = if sel { "sb_in_game/MENU_Cursor_03" } else { "sb_in_game/MENU_ItemBase_02" };
                     let tint = if sel && menu.in_list { Color::srgba(1.0, 1.0, 1.0, 0.6) } else { Color::WHITE };
-                    root.spawn((Button, abs(6.8, t, 34.5, 6.4), image(assets, sprite(plate)).with_color(tint), RowButton(i))).with_children(|b| {
+                    root.spawn((crate::menu::ui_button(), abs(6.8, t, 34.5, 6.4), image(assets, sprite(plate)).with_color(tint), RowButton(i))).with_children(|b| {
                         b.spawn(Node { padding: UiRect::left(Val::Percent(5.0)), ..fill_row() }).with_children(|c| {
                             c.spawn(text(name, 17.0, if sel { Color::WHITE } else { TEXT }, font));
                         });
@@ -565,13 +662,17 @@ fn build(commands: &mut Commands, assets: &AssetServer, menu: &IdolMenu, font: &
                 root.spawn((abs(43.2, 58.4, 50.0, 30.6), image(assets, sprite("sb_in_game/MENU_WP_Base")).with_color(Color::srgb(0.6, 0.6, 0.6))));
                 let idols = IDOLS.read().map(|v| v.clone()).unwrap_or_default();
                 if let Some((_, list)) = regions.get(menu.region) {
+                    // Rows closer together when a region has many (the parchment is 40 high).
+                    let step = (40.0 / list.len().max(1) as f32).min(5.6);
                     for (k, &i) in list.iter().enumerate() {
                         let sel = menu.in_list && k == menu.index;
                         let plate = if sel { "sb_in_game/MENU_Cursor_03" } else { "sb_in_game/MENU_ItemBase_07" };
-                        root.spawn((abs(45.8, 16.2 + k as f32 * 5.6, 42.6, 4.6), image(assets, sprite(plate)).with_color(if sel { Color::WHITE } else { Color::srgb(0.5, 0.5, 0.5) }))).with_children(|b| {
+                        root.spawn((abs(45.8, 16.2 + k as f32 * step, 42.6, step.min(4.6)), image(assets, sprite(plate)).with_color(if sel { Color::WHITE } else { Color::srgb(0.5, 0.5, 0.5) }))).with_children(|b| {
                             b.spawn(Node { justify_content: JustifyContent::Center, ..fill_row() }).with_children(|c| {
                                 let here = if seat_idol == Some(i) { "  (here)" } else { "" };
-                                c.spawn(text(&format!("{}{here}", idols.get(i).map(|x| x.name.as_str()).unwrap_or("")), 16.5, if sel { Color::WHITE } else { TEXT }, font));
+                                let can = idols.get(i).is_some_and(reachable);
+                                let colour = if !can { DIM } else if sel { Color::WHITE } else { TEXT };
+                                c.spawn(text(&format!("{}{here}", idols.get(i).map(|x| x.name.as_str()).unwrap_or("")), 16.5, colour, font));
                             });
                         });
                     }
@@ -606,7 +707,7 @@ fn run_idol_menu(
     roots: Query<Entity, With<IdolMenuRoot>>,
     rows: Query<(&RowButton, &Interaction), Changed<Interaction>>,
     (nodes, cats, ups): (Query<(&crate::skill_tree::SkillNodeButton, &Interaction), Changed<Interaction>>, Query<(&crate::game_menu::CatButton, &Interaction), Changed<Interaction>>, Query<(&crate::workshop::UpgradeButton, &Interaction), Changed<Interaction>>),
-    (assets, font, mut config, texts, tables, forms, pointer): (Res<AssetServer>, Res<MenuFont>, ResMut<crate::config::GameConfig>, Res<ItemTexts>, Res<Tables>, Res<crate::form::FormTexts>, Res<crate::menu::MenuMouse>),
+    (assets, font, mut config, texts, tables, forms, pointer): (Res<AssetServer>, Res<crate::fonts::GameFonts>, ResMut<crate::config::GameConfig>, Res<ItemTexts>, Res<Tables>, Res<crate::form::FormTexts>, Res<crate::menu::MenuMouse>),
     mut wolf: Query<(&mut crate::player::Player, &crate::actor::Actor)>,
 ) {
     if *state.get() != Screen::Idol {
@@ -911,7 +1012,8 @@ fn run_idol_menu(
                     menu.in_list = false;
                 } else if confirm {
                     if let Some(&to) = regions.get(menu.region).and_then(|(_, v)| v.get(menu.index)) {
-                        if p.seat.idol != Some(to) {
+                        let can = IDOLS.read().ok().and_then(|v| v.get(to).map(reachable)).unwrap_or(false);
+                        if p.seat.idol != Some(to) && can {
                             command(Cmd::Warp(to), &mut p, &mut next);
                             return;
                         }
@@ -930,7 +1032,7 @@ fn run_idol_menu(
         for r in &roots {
             commands.entity(r).despawn();
         }
-        build(&mut commands, &assets, &menu, &font.0, &config, &tables, &texts, &forms, &p, a);
+        build(&mut commands, &assets, &menu, &font.ui, &config, &tables, &texts, &forms, &p, a);
         menu.built = Some(key);
     }
 }
@@ -1024,6 +1126,15 @@ fn flame_without_mist(lib: &mut crate::fxr::FxrLib) -> i64 {
 /// The idols of the map: installed, and drawn with the game's model (a stand-in figure if the
 /// model is not exported), with the idol's blue light.
 fn spawn_idols(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mats: ResMut<Assets<StandardMaterial>>, assets: Res<AssetServer>, config: Res<crate::config::GameConfig>, fxr: Option<ResMut<crate::fxr::FxrLib>>) {
+    // Under sekiro-rs's map the game's idols: its map draws them (and their light) itself.
+    if crate::sr_map::world() {
+        let idols = sr_idols();
+        info!("idols: {} of the game's, {} in this play world", idols.len(), idols.iter().filter(|i| !i.away).count());
+        if let Ok(mut v) = IDOLS.write() {
+            *v = idols;
+        }
+        return;
+    }
     let idols = if crate::map::map_id(&config).as_deref() == Some(crate::sandbox::CONSTRUCT_ID) { parkour_idols() } else { Vec::new() };
     let model = if idols.is_empty() { Vec::new() } else { idol_mesh(&mut meshes, &mut mats, &assets) };
     let flame = fxr.map_or(IDOL_SFX, |mut lib| flame_without_mist(&mut lib));

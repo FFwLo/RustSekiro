@@ -10,7 +10,7 @@ no FXR.
 **Pipeline (run once after `sekiro-extract export`):**
 - `sekiro-extract unpack <Sekiro dir> extracted 'sfxbnd_commoneffects'` (2349 FXRs + their TPFs).
 - `cd tools/fxr-dump && npm i` (@cccode/fxr, public domain, github.com/EvenTorset/fxr; a clone is
-  in `C:/DeadlockModding/reference/fxr`), then `python tools/fxr_extract.py`: every FFX id the
+  in `../reference/fxr`), then `python tools/fxr_extract.py`: every FFX id the
   exported characters use (TAE, bullet sfxId_*, blood 220502/3/5/6) -> `extracted/fxr/<id>.json`,
   following ReferenceNode (2001 "sfx") chains; every texture they name -> `extracted/fxr_tex/<id>.png`
   (s<id:05>.tpf). ~280 effects.

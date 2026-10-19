@@ -1,0 +1,1363 @@
+[
+ {
+  "id": "armor.flag24-super-armor",
+  "category": "armor",
+  "title": "ChrActionFlag 24: no damage motion",
+  "summary": "While a TAE ChrActionFlag 24 window is active the defender plays no hit reaction at all. HP and posture damage still apply and the knockback is skipped. It is the closest thing to full hyper armor in the game.",
+  "values": "Smithbox name 'Super Armor' (our extractor names it Set_0x78_16). Wolf: 20 anims, all grapple-hook shoot/pull (a000_202000 frames 0-19, 202010 0-20, 202100 0-18, 202300 0-18, 202400 0-18, 202600 0-13) plus 210160/161, 413000, 413010, 413150. General c1020 attack 3003 frames 5-24. Owl 3044 / 3093 windows 0.9-1.467 s etc. Soldier 3011 0.967-1.367 s, 3080 0-2.433 s.",
+  "how": "Exe b51b70 case 0x18 publishes damage level 0 (bdbb40 / b68d00); ChrActionFlag 24 on the defender also skips knockback (b6bfe0).",
+  "sources": [
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "../sekiro-rs/docs/COMBAT-RULES.md"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/enemy.md"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/tae/c0000/a00.json"
+   },
+   {
+    "kind": "data",
+    "ref": "../reference/smithbox/TAE.Template.SDT.xml"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "yes",
+   "where": "src/combat.rs(damage_motion_level, round 16)"
+  },
+  "his": {
+   "has": "yes",
+   "where": "../sekiro-rs/crates/sim/src/fight.rs"
+  },
+  "check": "Fire the grappling hook at an enemy mid-swing: Wolf is not interrupted by hits during the shoot frames. Sim: GroundWireShoot keeps its grapple.",
+  "note": "Smithbox names flag 67 'Invincible excluding throws' and 8 'Invincible'; our extractor calls 67 ThrowStart2 and no Wolf anim uses 8. Treat the Smithbox flag names with care.",
+  "needs": [
+   {
+    "id": "combat.hit-resolution-order",
+    "why": "applied at the reaction stage"
+   }
+  ]
+ },
+ {
+  "id": "armor.spcategory-1001-replace",
+  "category": "armor",
+  "title": "SpEffect category 1001: damage reaction replacement",
+  "summary": "Damage motion is decided separately from damage. The engine takes the active SpEffect in category 1001 with the lowest categoryPriority and swaps the incoming damage level through its dmgLv_* fields. The result goes to HKS. Guard contacts and level 0 skip this.",
+  "values": "Row fields dmgLv_None, S, M, L, Push, Strike, BlowS, BlowM, BlowLL, Min, Uppercut, Breath hold enum values. Resident rows have priority 200 (5311, 5320, 5325), timed TAE rows 190 (5350, 5355, 5358, 5359, 3506001), super-armor-pool rows 150 / 140 (5375, 5366, 5367). Lowest priority number wins. Rows with stateInfo 120 count only while the SA pool holds.",
+  "how": "Exe 84ff70 -> bfd980 (pick) -> 10cea20 (field) -> 10b5100 (enum to level). Applied after HP and posture, before HKS.",
+  "sources": [
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "../sekiro-rs/docs/COMBAT-RULES.md"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/enemy.md"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "yes",
+   "where": "src/combat.rs(damage_motion_level)"
+  },
+  "his": {
+   "has": "yes",
+   "where": "../sekiro-rs/crates/sim/src/fight.rs, sp_category.rs"
+  },
+  "check": "Sim: super_armour_swaps_the_damage_level_in_its_window (c1010 a000_003010 5358: 2 -> 8).",
+  "note": "SpEffect overwrite by category and priority is inferred from data, not traced in the exe.",
+  "needs": [
+   {
+    "id": "armor.dmglv-levels",
+    "why": "the replacement works on damage levels"
+   }
+  ]
+ },
+ {
+  "id": "armor.dmglv-enum-table",
+  "category": "armor",
+  "title": "Replacement enum to damage level table",
+  "summary": "The numbers in the dmgLv_* fields are not damage levels. They are enum values that a fixed table converts. Enum 2 becomes level 8 (minimum), which gives only an additive flinch.",
+  "values": "Table at RVA 2b979e8: enums 1..12 -> levels 0, 8, 1, 2, 3, 7, 4, 6, 9, 5, 10, 11. So 5350 (all fields 2) turns every hit into minimum; 5358 keeps large (enum 5 -> level 3) and ex-large blow-offs (enum 7 -> level 4); 5311 leaves middle as middle (enum 4 -> 2), small blow as small blow (6 -> 7) and turns small and push into minimum (2 -> 8); 5320 keeps push as push (enum 10 -> 5).",
+  "how": "Exe 10b5100.",
+  "sources": [
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "../sekiro-rs/docs/COMBAT-RULES.md"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/enemy.md"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "yes",
+   "where": "src/combat.rs(LEVELS table)"
+  },
+  "his": {
+   "has": "yes",
+   "where": "../sekiro-rs/crates/sim/src/fight.rs"
+  },
+  "check": "Read SpEffect 5350 and 5358 and apply the table.",
+  "note": "Paramdex enum ATKPARAM_REP_DMGTYPE is not in the local Paramdex; table verified by the two projects independently.",
+  "needs": [
+   {
+    "id": "armor.spcategory-1001-replace",
+    "why": "the table is its last step"
+   }
+  ]
+ },
+ {
+  "id": "armor.dmglv-levels",
+  "category": "armor",
+  "title": "Damage levels (flinch sizes)",
+  "summary": "AtkParam dmgLevel (and dmgLevel_vsPlayer) says which reaction the target plays: 0 none, 1 small, 2 middle, 3 large, 4 ex-large blow, 5 push, 6 fling, 7 small blow, 8 minimum, 9 upper, 10 ex blast, 11 breath. Enemy levels: 2 on 830 NPC rows, 3 on 470, 1 on 323, 0 on 273, 4 on 179, 6 on 121, 10 on 109, 9 on 48.",
+  "values": "Wolf rows: 2 on 125, 0 on 95, 1 on 89, 3 on 59, 8 on 48, 5 on 17, 7 on 3, 4 on 3. Wolf reactions per level: 1/2 Small/Middle in 4 directions, 3 Large F/B, 4 blow, 5 push = Middle, 6 fling = LargePound, 7 SmallBlow, 8 and 0 nothing, 9 upper, 10 ex blast, 11 breath.",
+  "how": "AtkParam dmgLevel; HKS c0000 and c9997 map levels to animations.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/AtkParam_Npc.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/AtkParam_Pc.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/damage.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/combat.rs+ data.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "../sekiro-rs/crates/sim/src/combat/damage_type.rs"
+  },
+  "check": "Get hit by a small slash versus a heavy blow and watch the reaction.",
+  "note": "",
+  "needs": []
+ },
+ {
+  "id": "armor.resident-damage-tables",
+  "category": "armor",
+  "title": "Resident flinch tables of fighters",
+  "summary": "Many fighters wear a permanent category-1001 SpEffect that already downgrades some hit sizes. Each is a small table of 'this hit becomes that reaction'.",
+  "values": "5320 'standard NTC' (enums): S 3, M 4, L 5, Push 10, Strike 5, BlowS 2, BlowM/BlowLL 7, Uppercut 7, Breath 5, Min 2, so small, middle, large and push stay, a small blow becomes minimum and blow-offs become ex-large. 5325 rival (Genichiro) is the same but small hits become minimum (S 2). 5311 Owl: small and push become minimum, middle stays middle, large and heavier become large, small blow stays. Priority 200.",
+  "how": "NpcParam resident SpEffect slots.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "../sekiro-rs/docs/COMBAT-RULES.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/combat.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "../sekiro-rs/crates/sim/src/fight.rs"
+  },
+  "check": "Hit Genichiro with a fast slash early in his move: no flinch for small hits.",
+  "note": "",
+  "needs": [
+   {
+    "id": "armor.spcategory-1001-replace",
+    "why": "mechanism"
+   }
+  ]
+ },
+ {
+  "id": "armor.timed-windows-5350-5358-5359",
+  "category": "armor",
+  "title": "Timed flinch windows in attack animations",
+  "summary": "Enemy attacks add short category-1001 SpEffects with TAE AddSpEffect. 5350 stops all flinching during a commitment, 5358 stops everything but large and blow-off hits, 5359 only protects against middle and below when the trunk collapses.",
+  "values": "5350 all enums 2 (minimum) priority 190; 5358 L -> large, BlowM/LL -> exlarge, others minimum; 5359 same but L -> minimum; 5355 'medium or higher' (small and push hits are promoted to middle, fling stays fling). Examples: Genichiro 3025 5358 0-0.867 s, 3028 0-4.733 s; Owl 3008 5358 0-0.7 s; soldier 3031 5358 0-5.0 s; Owl aerials 3003 5350 0.3-0.967 s; Genichiro 3030 5350 0.067-1.167 s; 3092 5359 0-4.033 s.",
+  "how": "TAE AddSpEffect (66/67/401).",
+  "sources": [
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "../sekiro-rs/docs/COMBAT-RULES.md"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/combat.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "../sekiro-rs/crates/sim/src/fight.rs"
+  },
+  "check": "Hit Genichiro during 3025 (perilous thrust): nothing but a small jolt.",
+  "note": "Genichiro 3015 and 3007 have no category effect in the audited clips; do not infer armor from the act number.",
+  "needs": [
+   {
+    "id": "armor.spcategory-1001-replace",
+    "why": "mechanism"
+   }
+  ]
+ },
+ {
+  "id": "armor.sa-pool-meter",
+  "category": "armor",
+  "title": "Super armor pool (stateInfo 120)",
+  "summary": "Some enemies have an invisible super armor meter. While it holds, their stateInfo 120 SpEffects replace flinches with something lighter. Each hit drains it. When empty it breaks, the next hit flinches normally, and the pool refills after a delay.",
+  "values": "NpcParam superArmorDurability: 137 of 1279 rows. Shura Samurai 200, Seven-spear 160, Nanban armor 200, Younger man (mallet) 140-320, Headless 560, Neckless 400, Fire cow 200, Prisoner zombie 200, Bandit axe 80, Akaoni 400, Cavalry 360, Butterfly 80, Yasha Ape 140-400, Okiryu 240, Monk (demon) 640. superArmorRecoverCorrection 0.4 on 1188 rows and 4.0 on 91. Refill timer = 5 x (correction + 1) s: 7 s or 25 s; the pool snaps to full at the end. Rows 5375 / 5366 / 5367 (priority 150 / 150 / 140) apply only while it holds.",
+  "how": "Exe CSSuperArmorDurability: FUN_140bdb470 drain, bdb690 bonus, bdbaf0 holds, bdbcb0 tick (140bd.c:8904-8929).",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/enemy.md"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/NpcParam.json"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "../sekiro-rs/docs/COMBAT-RULES.md"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "yes",
+   "where": "src/actor.rs (SuperArmor) + combat.rs (super_armor_hit)"
+  },
+  "his": {
+   "has": "partial",
+   "where": "../sekiro-rs/crates/sim/src/fight.rs"
+  },
+  "check": "Fight a Shura samurai or Okiryu: a few hits are ignored, then one flinches him and the armor returns after seconds.",
+  "note": "sekiro-rs says the three NPCs it audited all have durability 0 and does not model the pool. Ours does (137 rows).",
+  "needs": [
+   {
+    "id": "armor.sa-damage-values",
+    "why": "what drains the pool"
+   }
+  ]
+ },
+ {
+  "id": "armor.sa-damage-values",
+  "category": "armor",
+  "title": "How much a hit drains the SA pool",
+  "summary": "Wolf's hit drains the pool by his weapon's saWeaponDamage times the attack's SA correction percent. Enemy attacks carry atkSuperArmor directly. A received-damage SpEffect scales it.",
+  "values": "EquipParamWeapon 5000 saWeaponDamage 40 (65 weapons 40, 108 weapons 0). AtkParam_Pc atkSuperArmorCorrection from 25 to 300 percent (Combo1-type 100 = 40 points; 200 percent = 80). AtkParam_Npc atkSuperArmor: 0 on 2387 rows, 999 on 7 (rows 3100, 3101, 3230, 50000980/981, 50001980/981), 45 on 2 (3111, 3112). SpEffect saReceiveDamageRate (default 1) scales the drain. A 200-pool Shura samurai takes five 40-point hits to break.",
+  "how": "Exe FUN_140bdb470 and FUN_140bfdd20 (rate); AtkParam atkSuperArmor per Paramdex 'SA break formula'.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/EquipParamWeapon.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/AtkParam_Pc.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/AtkParam_Npc.json"
+   },
+   {
+    "kind": "data",
+    "ref": "../reference/Paramdex/SDT/Defs/AtkParam.xml"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "yes",
+   "where": "src/data.rs (super_armor_damage)"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Hit a Shura samurai with Combo1 five times without a heavy hit and count flinches.",
+  "note": "The SpEffect +0x8c factor (FUN_140bfd040) is not traced.",
+  "needs": [
+   {
+    "id": "armor.sa-pool-meter",
+    "why": "what the damage drains"
+   }
+  ]
+ },
+ {
+  "id": "armor.sa-capacity-bonus",
+  "category": "armor",
+  "title": "SA capacity changes (stateInfo 155)",
+  "summary": "A SpEffect with stateInfo 155 adds to the SA pool size. A rise also tops up the current pool at once.",
+  "values": "SpEffect 2090 'SA up' +40; 3510991 Yasha Ape (HU) +120; 3540110 revived Kensei +200 (no known source attaches it). Field changeSuperArmorPoint (s16, -9999..9999).",
+  "how": "Exe FUN_140bdb690 (140bd.c:8889-8900).",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/enemy.md"
+   },
+   {
+    "kind": "data",
+    "ref": "../reference/Paramdex/SDT/Defs/SpEffect.xml"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "yes",
+   "where": "src/actor.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Read SpEffect 2090.",
+  "note": "",
+  "needs": [
+   {
+    "id": "armor.sa-pool-meter",
+    "why": "bonus adds to the pool"
+   }
+  ]
+ },
+ {
+  "id": "armor.toughness-unused",
+  "category": "armor",
+  "title": "Toughness fields are dead in Sekiro",
+  "summary": "The Dark Souls style toughness system exists in the param layouts but is unused. NpcParam toughness is 0 on all 1279 rows, Wolf's weapon toughnessCorrectRate is 0, and the TAE event 795 'Invoke Toughness' appears on no sampled clip.",
+  "values": "NpcParam toughness 0 x1279; toughnessRecoverCorrection 0.4 on 1247, 0 on 32; SpEffect toughnessDamageCutRate default 1; ToughnessParam fields correctionRate, minToughness, spEffectId (player only). Exe be4e30 needs positive toughness plus action flag +0x70 bit 34.",
+  "how": "Exe be4e30 / be5bf0; param defs.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/NpcParam.json"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "../sekiro-rs/docs/COMBAT-RULES.md"
+   },
+   {
+    "kind": "data",
+    "ref": "../reference/Paramdex/SDT/Defs/ToughnessParam.xml"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/combat.rs(documented; no effect)"
+  },
+  "his": {
+   "has": "yes",
+   "where": "../sekiro-rs/crates/sim/src/fight.rs (documented)"
+  },
+  "check": "Search the TAE json for event type 795: none.",
+  "note": "A hidden use in untested clips cannot be excluded, but no row supplies a base value.",
+  "needs": []
+ },
+ {
+  "id": "armor.flag73-parry-gate",
+  "category": "armor",
+  "title": "ChrActionFlag 73 is not a flinch rule",
+  "summary": "Enemy attacks carry ChrActionFlag 73 in their wind-up and recovery but never on hit frames. It looks like armor but the exe uses it as the ParryTiming gate for other AIs. Our sim still uses it as a proxy for 'can flinch', which is the current gap.",
+  "values": "Flag 73 (SetBool32_0x7C_10) is on in idle and reactions, and in the first 9-13 frames plus recovery of every attack. Dispatcher FUN_140b51b70 case 0x49 sets bit 0x400 at (ChrIns+0x50)+0x50+0x8c, read only by FUN_14061fad0: an AI handling Wolf's flag-63 message 7 raises INTERUPT_ParryTiming (24) when the sender is within its +0x154 range and has this bit.",
+  "how": "Exe b51b70 case 0x49, 61fad0.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/guard-deflect.md"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/enemy.md"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "partial",
+   "where": "src/combat.rs(swing_can_flinch)"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Hit a General in his recovery: ours does not let you flinch him there, the real game reportedly does flinch him.",
+  "note": "Open: live-user report says General recovery had hyperarmor in ours, which contradicts the real game; sekiro-rs has no such gate.",
+  "needs": [
+   {
+    "id": "combat.enemy-guard-decision",
+    "why": "the same flag feeds the parry AI"
+   }
+  ]
+ },
+ {
+  "id": "armor.iframes-950-mistraven",
+  "category": "armor",
+  "title": "TAE 950 full i-frames (knock-down, death, revival)",
+  "summary": "TAE event 950 makes the character fully invulnerable while it is active. It sits on all of Wolf's knock-down, launch, death and revival animations, so a downed Wolf cannot be juggled.",
+  "values": "55 Wolf anims: a000_100400 frames 0-18, a000_110030 (GroundRevival) frames 0-27, death 0-103; others 0-18..33. Flag word +0x70 bit 1.",
+  "how": "TAE 950 dispatcher 0x3b6 -> action module +0x70 |= 2; checked before the capsule test.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/damage.md"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "../sekiro-rs/docs/COMBAT-RULES.md"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/tae/c0000/a00.json"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/combat.rs(dodged)"
+  },
+  "his": {
+   "has": "yes",
+   "where": "../sekiro-rs/crates/sim/src/hits.rs (can_be_hit)"
+  },
+  "check": "Get launched by a heavy attack and watch other enemies' swings pass through you while down.",
+  "note": "",
+  "needs": [
+   {
+    "id": "combat.hit-resolution-order",
+    "why": "checked before the hit"
+   }
+  ]
+ },
+ {
+  "id": "armor.iframes-951-during-action",
+  "category": "armor",
+  "title": "TAE 951 invulnerability during throws",
+  "summary": "TAE event 951 makes the character invulnerable during an action. It is on Wolf's deathblow throw animations, so nothing can hit him while he finishes an enemy.",
+  "values": "Example a200_510000 (deathblow) frames 0-60. Flag word +0x70 bit 0 (dispatcher sets action module |= 1).",
+  "how": "TAE 951.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/damage.md"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/tae/c0000/a00.json"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/combat.rs(dodged)"
+  },
+  "his": {
+   "has": "yes",
+   "where": "../sekiro-rs/crates/sim/src/hits.rs"
+  },
+  "check": "Start a deathblow with another enemy attacking: the swing misses.",
+  "note": "",
+  "needs": [
+   {
+    "id": "deathblows.deathblow-throw",
+    "why": "the throw carries the flag"
+   }
+  ]
+ },
+ {
+  "id": "armor.iframes-954-types",
+  "category": "armor",
+  "title": "TAE 954 typed i-frames",
+  "summary": "TAE event 954 grants i-frames against one type of attack. The types are 1 sweeps, 2 general (everything normal), 6 thrusts and 7 grabs. An animation can stack several.",
+  "values": "IFrameType 1 Sweeps, 2 General, 6 Thrusts, 7 Grabs (judge ids 980 / 982 / 983 are the matching warning kanji on the General). The type is the attack's perilous kind (AtkParam atkType and throwFlag).",
+  "how": "TAE 954 u8 Jump Table ID (per DSAnimStudio naming).",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/guard-deflect.md"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "../sekiro-rs/docs/COMBAT-RULES.md"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/tae/c0000/a00.json"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/combat.rs(dodged)"
+  },
+  "his": {
+   "has": "partial",
+   "where": "../sekiro-rs/crates/sim/src/hits.rs (only sweep typed i-frames work)"
+  },
+  "check": "Step at an attack in all four directions.",
+  "note": "sekiro-rs lists the general and thrust types as not applied yet.",
+  "needs": [
+   {
+    "id": "combat.perilous-flags",
+    "why": "type matches the attack kind"
+   }
+  ]
+ },
+ {
+  "id": "armor.iframes-step-forward",
+  "category": "armor",
+  "title": "Forward step i-frames",
+  "summary": "The forward and neutral step give general and grab i-frames for the first 9 frames (0.3 s) but no thrust i-frames. The forward step is the Mikiri step.",
+  "values": "a000_213301 GroundStep_F: IFrames type 7 Grabs frames 0-9, type 2 General frames 0-9. a000_213300 neutral step is the same clip. Also flag 125 MikiriCounter 0-12, StaminaControl type 0 frames 0-18 (no regen).",
+  "how": "TAE 954 + 125.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/tae/c0000/a00.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/guard-deflect.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/combat.rs(dodged)"
+  },
+  "his": {
+   "has": "partial",
+   "where": "../sekiro-rs/crates/sim/src/hits.rs"
+  },
+  "check": "Step forward into a slash 9+ frames before it lands: you are hit. Within 9 frames: pass through.",
+  "note": "",
+  "needs": [
+   {
+    "id": "combat.mikiri-window",
+    "why": "same clip"
+   }
+  ]
+ },
+ {
+  "id": "armor.iframes-step-back-side",
+  "category": "armor",
+  "title": "Back and side step i-frames",
+  "summary": "Backward, left and right steps give general, grab and thrust i-frames for the first 6 frames (0.2 s). They are shorter than the forward step but avoid thrusts.",
+  "values": "a000_213302 GroundStep_B, 213303 L, 213304 R: IFrames type 6 Thrusts, 7 Grabs, 2 General frames 0-6.",
+  "how": "TAE 954.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/tae/c0000/a00.json"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/combat.rs(dodged)"
+  },
+  "his": {
+   "has": "partial",
+   "where": "../sekiro-rs/crates/sim/src/hits.rs"
+  },
+  "check": "Back-step a thrust: it misses.",
+  "note": "",
+  "needs": [
+   {
+    "id": "armor.iframes-954-types",
+    "why": "uses the types"
+   }
+  ]
+ },
+ {
+  "id": "armor.iframes-954-sweep-jump",
+  "category": "armor",
+  "title": "Jump i-frames against sweeps",
+  "summary": "Jumps and the air kick carry sweep i-frames, so a sweep that arrives under Wolf passes without hitting. Jump starts also carry a short general plus grab i-frame at takeoff.",
+  "values": "a000_201110 LockonForwardGroundJumpStart sweep frames 0-38; a000_201100 ReadyJump 0-8; a000_201114 GroundJumpStart_F_L sweep 0-38 and grab + general 0-3; AirKick a000_213100 sweep 0-73.",
+  "how": "TAE 954 type 1.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/tae/c0000/a00.json"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "../sekiro-rs/docs/COMBAT-RULES.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/combat.rs(dodged)"
+  },
+  "his": {
+   "has": "yes",
+   "where": "../sekiro-rs/crates/sim/src/hits.rs"
+  },
+  "check": "Jump at the kanji moment of a sweep.",
+  "note": "A jump too early lands before the blade, too late the blade is already past the jump start.",
+  "needs": [
+   {
+    "id": "combat.perilous-sweep",
+    "why": "what the i-frames avoid"
+   }
+  ]
+ },
+ {
+  "id": "armor.dodged-hit-not-spent",
+  "category": "armor",
+  "title": "A dodged attack is not used up",
+  "summary": "When i-frames let an attack pass, the attack window is not consumed. If the i-frames end while the hitbox is still live, the same swing can still hit.",
+  "values": "Test timed_step_dodges_through_the_slash (step 1 frame before the window). The 0-9 frame window is 0.3 s so a step pressed early is hit by the live box afterwards.",
+  "how": "Hit tracking per attack window.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/guard-deflect.md"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "../sekiro-rs/docs/COMBAT-RULES.md"
+   }
+  ],
+  "confidence": "recorded",
+  "ours": {
+   "has": "yes",
+   "where": "src/combat.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "../sekiro-rs/crates/sim/src/hits.rs"
+  },
+  "check": "Step early against a long slash and get hit as you land.",
+  "note": "Source of the claim for 950 / 951 is FwLo's notes (community-labelled in his doc).",
+  "needs": [
+   {
+    "id": "armor.iframes-954-types",
+    "why": "i-frames let it pass"
+   }
+  ]
+ },
+ {
+  "id": "armor.mikiri-beats-thrust-iframes",
+  "category": "armor",
+  "title": "Mikiri takes priority over thrust i-frames",
+  "summary": "If Wolf is in a Mikiri window and the thrust has an i-frame match, the counter wins and the thrust is intercepted instead of ignored.",
+  "values": "Flag 125 frames 0-12 on the forward step; the forward step has no thrust i-frames anyway, so it only matters on neutral and special steps.",
+  "how": "Contact check order in resolve.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/guard-deflect.md"
+   }
+  ],
+  "confidence": "recorded",
+  "ours": {
+   "has": "yes",
+   "where": "src/combat.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "../sekiro-rs/crates/sim/src/perilous.rs"
+  },
+  "check": "Forward step into a thrust within 12 frames.",
+  "note": "",
+  "needs": [
+   {
+    "id": "combat.mikiri-window",
+    "why": "same window"
+   }
+  ]
+ },
+ {
+  "id": "armor.ignore-iframes-attack",
+  "category": "armor",
+  "title": "Attacks that ignore step i-frames",
+  "summary": "A few attack rows have isDisableNoDamage set, meaning they ignore dodge invincibility. They still cannot ignore full TAE invulnerability (950 / 951).",
+  "values": "AtkParam isDisableNoDamage: 30 of 2396 NPC rows, 8 of 443 PC rows. SpEffect field isIgnoreNoDamage lets an effect work through invincibility when a state-change type allows it. Exe: hit record +0xED bit 0.",
+  "how": "Paramdex description: ignores step and similar invincibility, cannot ignore TAE full invincibility.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "../reference/Paramdex/SDT/Defs/AtkParam.xml"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/AtkParam_Npc.json"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "../sekiro-rs/docs/COMBAT-RULES.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Dodge a move that always connects.",
+  "note": "The ours sim does not read the flag (a gap).",
+  "needs": [
+   {
+    "id": "armor.iframes-954-types",
+    "why": "the flag overrides it"
+   }
+  ]
+ },
+ {
+  "id": "armor.reaction-rank-interrupt",
+  "category": "armor",
+  "title": "Which enemy states a hit can interrupt",
+  "summary": "Even when the flinch level allows a reaction, the enemy's current state decides whether it may be cut off. Normal flinches need transition rank 4, blow-offs rank 0, and a small blow no check. A rejected hit becomes the additive flinch.",
+  "values": "c9997 ExecDamageDefault (Small / Middle / Large / Push) needs IsEnabledTransitionRank(cur, 4); ExecDamageLargeBlow and AerialBlow rank 0 (always); ExecDamageBlow no check. A burning FireReaction is rank 3 and a DamageLargeBlow rank 0, so a slash does not cut them.",
+  "how": "NPC HKS c9997.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/enemy.md"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "../sekiro-rs/docs/COMBAT-RULES.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/combat.rs(sword_reaction_allowed)"
+  },
+  "his": {
+   "has": "partial",
+   "where": "../sekiro-rs/crates/sim/src/combat/damage_type.rs"
+  },
+  "check": "Slash an enemy that is on fire or knocked back: no new flinch.",
+  "note": "",
+  "needs": [
+   {
+    "id": "ai.enemy-states",
+    "why": "transition ranks belong to the AI states"
+   }
+  ]
+ },
+ {
+  "id": "armor.min-level-additive-flinch",
+  "category": "armor",
+  "title": "Minimum level and additive flinch",
+  "summary": "A hit at minimum level (8), or one downgraded to it, does not change the enemy's pose. A small additive jolt plays over the current animation instead, and HP and posture still change.",
+  "values": "c9997 ExecNoSyncAddDamage -> PartBlend_Add0N by env 1120 damage part (when the chr has 9xxx clips) else SABlend_Add_<dir>. Wolf: NONE (0) and MINIMUM (8) play no reaction; additive guard flinch: MINIMUM guard or small/middle/large while ref 202 is up (SprintToDeflectGuard 0-12). Breaks at minimum play nothing.",
+  "how": "HKS c9997 / c0000 additive layers.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/enemy.md"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/guard-deflect.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/combat.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "../sekiro-rs/crates/sim/src/combat/damage_type.rs"
+  },
+  "check": "Slash an armored General mid-attack: he jolts but continues.",
+  "note": "",
+  "needs": [
+   {
+    "id": "armor.dmglv-enum-table",
+    "why": "downgrade to minimum comes from the table"
+   }
+  ]
+ },
+ {
+  "id": "armor.reaction-prohibit-220500",
+  "category": "armor",
+  "title": "Reaction-prohibit SpEffect",
+  "summary": "SpEffect 220500 'various reactions prohibited' gives behavior reference 1000230. It appears on victims in recordings right after hits and in break animations, so reactions are locked for a moment. Its exact reach is not decoded.",
+  "values": "SpEffect 220500 behaviorRefId 1000230. Recorded on 7 victim hits (1484 ms) in the tutorial fight together with 5359 and 109450 (core recovery stop, spCategory 20).",
+  "how": "Behavior ref read by NPC HKS.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   },
+   {
+    "kind": "recording",
+    "ref": "../memscope-data/logs/rec_20261015_182811_combat_regular"
+   }
+  ],
+  "confidence": "open-question",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Break an enemy then hit him repeatedly: he stays collapsed rather than re-flinching.",
+  "note": "Which scripts read ref 1000230 was not traced.",
+  "needs": []
+ },
+ {
+  "id": "armor.aerial-reactions",
+  "category": "armor",
+  "title": "Hits in the air use aerial reactions",
+  "summary": "An enemy off the ground, or wearing the aerial-damage reference (SpEffect 5900, ref 1000060), takes aerial reactions. Middle and larger hits play DamageAerialFront / Back (8140 / 8141), blows play DamageAerialBlow (8150), and armored aerial moves keep going.",
+  "values": "c9997 IsDamagedAerial: env 201 false or ref 1000060. ExecDamageLargeBlow 4 / 9 / 10 -> 8150; ExecDamageDefault 2 / 3 / 5 / 6 -> 8141 (from behind) or 8140; 7 / 11 keep ExecDamageBlow. Genichiro 8140/8141 alias HKX 8010/8011; velocity rows 5000, 5100; landing ref 1000070.",
+  "how": "NPC HKS c9997 plus SpEffect 5900.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/enemy.md"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "../sekiro-rs/docs/COMBAT-RULES.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/combat.rs(enemy_damage_state_air)"
+  },
+  "his": {
+   "has": "yes",
+   "where": "../sekiro-rs/crates/sim/src/fight.rs"
+  },
+  "check": "Hit a leaping Genichiro: he is knocked out of the jump unless a 5350 window protects it.",
+  "note": "Elevation and support height are approximations in both projects.",
+  "needs": [
+   {
+    "id": "armor.timed-windows-5350-5358-5359",
+    "why": "windows protect aerial moves"
+   }
+  ]
+ },
+ {
+  "id": "armor.knockback-resistance-npc",
+  "category": "armor",
+  "title": "Knockback resistance of NPCs",
+  "summary": "NpcParam knockbackRate_vsPlayer_Guard and _JustGuard cut how far a guarding or deflecting enemy slides. Most are 0 (full slide); about 100 rows cut the slide by 75 to 100 percent.",
+  "values": "knockbackRate_vsPlayer_Guard / _JustGuard: 0 on 1183 rows, 75 on 44, 100 on 45, 90 on 7. c1180 club samurai 75. The direct-hit knockbackRate column is absent in the export. Wolf armor knockBackCutRate_* and weapon cut 0.",
+  "how": "NpcParam, applied in 140b6bfe0 after dist x facing: push = (1 - cut) x dist x rate.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/NpcParam.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/damage.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/combat.rs(apply_knockback)"
+  },
+  "his": {
+   "has": "partial",
+   "where": "../sekiro-rs/crates/sim/src/combat/knockback.rs"
+  },
+  "check": "Block against a club samurai versus a soldier and compare slide.",
+  "note": "Described as a cut rate: 75 leaves 25 percent of the push (c1180 live), 100 should remove it.",
+  "needs": [
+   {
+    "id": "combat.knockback-distance",
+    "why": "cut applies to distance"
+   }
+  ]
+ },
+ {
+  "id": "armor.knockback-skipped-flag24",
+  "category": "armor",
+  "title": "No knockback under ChrActionFlag 24",
+  "summary": "A defender in a flag 24 window is neither reacted nor pushed, and the attacker's leftover recoil is skipped too. For Wolf's grapple shoot the grapple continues.",
+  "values": "exe b6bfe0 (sekiro-rs fight.rs:660-666): flag 24 skips knockback and the attacker's leftover; Wolf GroundWireShoot keeps its grapple.",
+  "how": "Exe.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/enemy.md"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "../sekiro-rs/docs/COMBAT-RULES.md"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "yes",
+   "where": "src/combat.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "../sekiro-rs/crates/sim/src/fight.rs"
+  },
+  "check": "Shoot the grapple while hit.",
+  "note": "",
+  "needs": [
+   {
+    "id": "armor.flag24-super-armor",
+    "why": "the same flag"
+   }
+  ]
+ },
+ {
+  "id": "armor.guard-break-reaction",
+  "category": "armor",
+  "title": "Guard break (posture emptied by a block)",
+  "summary": "When blocking empties posture the guarder breaks. The engine reports damage type 1001 (or 1004 / 1005 for blast and fling levels) and Wolf plays StandDeflectBreak. Enemies play GuardBreak left or right.",
+  "values": "Types: 1001 guard break; 1004 guard break at damage level 4, 7 or 10; 1005 at level 6. Wolf: StandDeflectBreak a050_190100 (air: AirDeflectGuardBreak a050_190150, landing a050_190155). Any hit during it -> StandDamageBreakDamage a000_191000 -> StandDamageBreakDown. Enemy: c9997 ExecGuardBlock guard break clips by guard dir (value 1 -> GuardBreakRight, 2 -> Left). Knockback class guardBrake_* (row 1: 0.06 / 0.54 s).",
+  "how": "Exe b6bd40; HKS player and NPC scripts.",
+  "sources": [
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "../sekiro-rs/docs/COMBAT-RULES.md"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "../sekiro-rs/docs/HKS-COMBAT.md"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/damage.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/combat.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "../sekiro-rs/crates/sim/src/combat/damage_type.rs"
+  },
+  "check": "Block three heavy hits in a row.",
+  "note": "",
+  "needs": [
+   {
+    "id": "combat.posture-break-rule",
+    "why": "the cause"
+   }
+  ]
+ },
+ {
+  "id": "armor.posture-break-reaction-wolf",
+  "category": "armor",
+  "title": "Wolf's posture break",
+  "summary": "A direct hit that empties Wolf's posture plays StandDamageBreak (3 s), choosing a blow variant by damage level. During it posture is pinned, damage is x1.5, and another hit knocks him down to a face-down get-up.",
+  "values": "StandDamageBreak_F/B a000_190000/01 (90 f, StaminaControl type 5 frames 0-60, flag 28 18-57, refs 304 45-60, 504 45-60). Variants: EXLARGE BreakLargeBlowStart, SMALL_BLOW BreakSmallBlow, UPPER BreakLargeUpper, FLING BreakLargePound; level 8 plays nothing. Second hit -> StandDamageBreakDamage a000_191000 (0-33 with 109400) -> StandDamageBreakDown_FaceDown/Up a000_19001x. Air break: AirDamageBreak a000_190050 until landing, LandAirDamageBreak a000_190055.",
+  "how": "HKS BEH_R_AIR_BREAK_DAMAGE and ground break; SpEffect 109400.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/damage.md"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/tae/c0000/a00.json"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/combat.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "../sekiro-rs/crates/sim/src/combat/damage_type.rs"
+  },
+  "check": "Let a boss empty Wolf's bar with a hit.",
+  "note": "",
+  "needs": [
+   {
+    "id": "combat.broken-wolf-more-damage",
+    "why": "damage taken rises"
+   },
+   {
+    "id": "combat.posture-break-rule",
+    "why": "the cause"
+   }
+  ]
+ },
+ {
+  "id": "armor.posture-break-reaction-enemy",
+  "category": "armor",
+  "title": "Enemy posture break (trunk collapse)",
+  "summary": "A posture break plays a trunk collapse reaction. Its animations add the 'trunk display: collapsed' SpEffect, which is the deathblow indicator, and pin posture. The deathblow window ends with the collapse animation.",
+  "values": "SpEffect 220420 (stateInfo 352) added frames 0-75 of the break anim; window about 2.5 s. StaminaControl type 5 pins posture (maxRatio 0), type 6 releases to 30 percent. Genichiro counter reaction holds type 5 until 1.5 s then type 6. Break anim for hit: TrunkCollapseFront / Back (HKS ExecDamageBreak); deflect / guard breaks keep AttackBoundEmptyStamina / GuardBreak. After the window posture is not reset; regen continues from what it was.",
+  "how": "TAE 67 AddSpEffect 220420, TAE 960 types.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/guard-deflect.md"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "../sekiro-rs/docs/COMBAT-RULES.md"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/StaminaControlParam.json"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/combat.rs+ enemy.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "../sekiro-rs/crates/sim/src/combat/posture.rs"
+  },
+  "check": "Break an enemy and time how long the deathblow indicator stays.",
+  "note": "Exe does not contain a post-window posture reset; the community 'reset to 50 percent' is not found.",
+  "needs": [
+   {
+    "id": "deathblows.deathblow-window",
+    "why": "the window is this state"
+   }
+  ]
+ },
+ {
+  "id": "armor.armored-servant-part",
+  "category": "armor",
+  "title": "Armored servant: armor part halves damage",
+  "summary": "The armored younger servant (c1180 row 11807101) wears an NPC part created by map events. Normal slashes do 0.35 times HP damage and 0.5 times posture, and the Loaded Spear breaks the armor in one hit.",
+  "values": "EMEVD common 20005410 creates part group 2 (PelvisArmor hkxpwv bodies), damage correction 1.0, body compensation 0.7. Sets SpEffect 220061 (stateInfo 343, camouflageHitPartsGroup 2), 220062 (stateInfo 957, behavior ref 1000105, 'armor guard possible'), 400250 (stateInfo 158, every cut rate 0.5, def*StaminaDmgRate 0.5). HP 0.5 x 0.7 = 0.35 (348 -> 121); posture 130 -> 65. Break: anim 20039, 230400 / 230401. Loaded Spear (prosthetic 11) only; part HP 1. Live: 7 of 8 slashes cut, 1 full (unknown).",
+  "how": "Exe FUN_140b6c880 swaps hit part group; FUN_140670040 deals damage x part+0x108 and returns x part+0x110 (0.7).",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/damage.md"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   }
+  ],
+  "confidence": "recorded",
+  "ours": {
+   "has": "yes",
+   "where": "src/combat.rs+ enemy.rs (armor_of)"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Slash the armored servant in the Samurai Residence: little HP; spear him: armor falls.",
+  "note": "The part-HP break and one full hit are unexplained. Shuriken counts as Light Shoot (x0.35 HP).",
+  "needs": [
+   {
+    "id": "map.npc-part-events",
+    "why": "created by map event 20005410"
+   }
+  ]
+ },
+ {
+  "id": "armor.part-guard-rule",
+  "category": "armor",
+  "title": "Armor parts guard even when idle",
+  "summary": "A hit on an armored body part is treated as guarded whatever the defender is doing when the attack's guardAtkRate is below the part row's guardBreakRate. The part row then acts as the guard row.",
+  "values": "NpcParam partsAtkParamId1..8 pick the part by the collision body's part group 1..8; group 31 has extra handling; unguarded part hits use part damage-group rates (record +0x210 / +0x214). Wolf's attack repel power 30 means any part with positive guardBreakRate guards against him.",
+  "how": "Exe b6c880, 1058380, 10c66a0.",
+  "sources": [
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "../sekiro-rs/docs/COMBAT-RULES.md"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "yes",
+   "where": "../sekiro-rs/crates/sim/src/combat/hit.rs"
+  },
+  "check": "Strike an armored limb vs the head.",
+  "note": "Part damage-group rates are untraced.",
+  "needs": [
+   {
+    "id": "combat.block-vs-deflect-repel",
+    "why": "reuses the repel comparison"
+   }
+  ]
+ },
+ {
+  "id": "armor.owl-transition-immunity",
+  "category": "armor",
+  "title": "Boss phase transitions block deathblows",
+  "summary": "During the Owl's phase two transition a marker TAE SpEffect rejects deathblows, and a replacement damage table (3506001) stops flinches. This is not the generic armor system but a state flag.",
+  "values": "SpEffect 3506080 'action judgment HU animation' marker; 3506001 category-1001 table: BlowS 6, others 5 or 2, priority 190. User real-game confirmation noted in sekiro-rs FIDELITY.",
+  "how": "TAE marker + native damage-motion suppression bit.",
+  "sources": [
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "../sekiro-rs/docs/FIDELITY.md"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   }
+  ],
+  "confidence": "community",
+  "ours": {
+   "has": "yes",
+   "where": "src/combat.rs (HANDOFF 4.42)"
+  },
+  "his": {
+   "has": "yes",
+   "where": "../sekiro-rs/crates/sim/src/bosses"
+  },
+  "check": "Hit the Owl during the transition.",
+  "note": "Complete native throw-defence dispatcher is unreconstructed.",
+  "needs": [
+   {
+    "id": "bosses.owl-phases",
+    "why": "belongs to the fight"
+   }
+  ]
+ },
+ {
+  "id": "armor.hit-reaction-none-at-zero",
+  "category": "armor",
+  "title": "No flinch when damage is zero",
+  "summary": "NpcParam isNoDamageMotion decides whether a zero-damage hit plays a reaction. It is 0 on all rows in the export, so a zero-damage hit still plays its dmgLevel reaction.",
+  "values": "isNoDamageMotion 0 on 1279 rows. Paramdex: whether to skip the damage motion when damage is 0.",
+  "how": "NpcParam field.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "../reference/Paramdex/SDT/Defs/NpcParam.xml"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/NpcParam.json"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Guard-cut a hit fully: a block recoil still plays.",
+  "note": "",
+  "needs": []
+ },
+ {
+  "id": "armor.wolf-sa-item",
+  "category": "armor",
+  "title": "Wolf's temporary super armor item",
+  "summary": "One quick item gives Wolf a 30 second category-1001 SpEffect that turns small, middle and large hits into minimum (no stagger). Blows and pushes still react. It is the only way Wolf gets damage-motion armor outside the grapple frames.",
+  "values": "SpEffect 3051 'effect: SA grant', spCategory 1001, categoryPriority 254, effectEndurance 30 s, stateInfo 359. Fields: S, M, L, Min, None -> minimum; Push enum 10 -> push; BlowS 6 -> small blow; BlowM 7 -> ex-large; Strike 8 -> fling; Uppercut 9 -> upper. Our notes call the item Red Lump.",
+  "how": "Same category-1001 replacement as enemies, applied to Wolf's HKS damage level.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/enemy.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/combat.rs(damage_motion_level item_sp)"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Use the item and take a slash: Wolf keeps attacking.",
+  "note": "Priority 254 is the highest number, so any lower-priority category-1001 effect wins over it when both are active (lowest number wins).",
+  "needs": [
+   {
+    "id": "items.sa-grant",
+    "why": "the item applies it"
+   },
+   {
+    "id": "armor.spcategory-1001-replace",
+    "why": "mechanism"
+   }
+  ]
+ },
+ {
+  "id": "armor.wolf-no-hyper-armor",
+  "category": "armor",
+  "title": "Wolf has no armor of his own",
+  "summary": "Outside the grapple frames, the item above and i-frames, Wolf is always interrupted by hits. His weapon, armor and params carry no super armor or toughness, and his sword attacks have SA correction only for draining enemy pools.",
+  "values": "EquipParamWeapon toughnessCorrectRate 0 (Kusabimaru); AtkParam_Pc atkSuperArmor 0 on 443 rows; Wolf knockBackCutRate_* 0; TAE flag 24 only on grapple anims (20 anims) and a few 4130xx.",
+  "how": "Absence of data.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/EquipParamWeapon.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/AtkParam_Pc.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/damage.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/combat.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "../sekiro-rs/crates/sim/src/fight.rs"
+  },
+  "check": "Attack into an enemy's swing: Wolf is staggered on a trade unless the enemy's move is armored and Wolf's is not.",
+  "note": "",
+  "needs": [
+   {
+    "id": "armor.dmglv-levels",
+    "why": "Wolf reacts by level"
+   }
+  ]
+ },
+ {
+  "id": "armor.enemy-trade-attack",
+  "category": "armor",
+  "title": "Trading blows: who gets interrupted",
+  "summary": "An enemy move without armor can be cut off by Wolf's slash, but a protected move (category-1001 window, flag 24 or an SA pool) goes through and hits Wolf. The player cannot tell protected moves by sight except the kanji or timing.",
+  "values": "Examples: Genichiro 3025 5358 0-0.867 s; Owl 3008 5358 0-0.7 s; soldier 3031 5358 0-5.0 s; General 3003 flag 24 frames 5-24; c1010 attacks without flag 73 are cut off anywhere. Community: ordinary exposed wind-ups can be interrupted, protected sequences trade through.",
+  "how": "Armor windows decided in the damage-motion stage.",
+  "sources": [
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "../sekiro-rs/docs/COMBAT-FUNDAMENTALS.md"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "../sekiro-rs/docs/COMBAT-RULES.md"
+   },
+   {
+    "kind": "web",
+    "ref": "https://www.reddit.com/r/Sekiro/comments/ycdp3m"
+   }
+  ],
+  "confidence": "community",
+  "ours": {
+   "has": "yes",
+   "where": "src/combat.rs"
+  },
+  "his": {
+   "has": "partial",
+   "where": "../sekiro-rs/crates/sim/src/fight.rs"
+  },
+  "check": "Slash the General at the start of a swing versus at its end.",
+  "note": "Community analysis is anecdotal; the windows in data are authoritative.",
+  "needs": [
+   {
+    "id": "armor.timed-windows-5350-5358-5359",
+    "why": "protection windows"
+   }
+  ]
+ },
+ {
+  "id": "armor.deflect-stagger-wolf",
+  "category": "armor",
+  "title": "Stagger after being deflected",
+  "summary": "When Wolf's attack is deflected the recoil is a hard-deflected reaction that cancels his swing; a blocked attack gives an easy recoil that lets him follow up sooner. These count as flinch-like interruptions of the attacker.",
+  "values": "Codes 1000 / 1003 / 1033 hard, 1017 / 1018 easy (see combat.deflect-recoil-attacker). Additive variants (action 11-14) keep the combo going. TAE window ref 232 can disable the recoil.",
+  "how": "HKS c0000 Validate.",
+  "sources": [
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "../sekiro-rs/docs/HKS-COMBAT.md"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/enemy.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/combat.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "../sekiro-rs/crates/sim/src/combat/damage_type.rs"
+  },
+  "check": "Attack a deflecting General.",
+  "note": "",
+  "needs": [
+   {
+    "id": "combat.deflect-recoil-attacker",
+    "why": "same codes"
+   }
+  ]
+ },
+ {
+  "id": "armor.recoil-disable-ref232",
+  "category": "armor",
+  "title": "TAE window that disables the recoil",
+  "summary": "A TAE window carrying behavior reference 232 on the attacker's animation disables the guarded recoil, so some moves are not pushed back or staggered by a block or deflect.",
+  "values": "HKS ref 232 (hard deflected / easy deflected disable). Specific animations not enumerated here.",
+  "how": "HKS Validate reaction table.",
+  "sources": [
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "../sekiro-rs/docs/HKS-COMBAT.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Search Wolf's TAE json for SpEffects whose behaviorRefId is 232 and play those attacks into a guard.",
+  "note": "Not enumerated by the local KBs.",
+  "needs": []
+ }
+]

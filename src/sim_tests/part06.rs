@@ -877,7 +877,7 @@ pub(crate) fn an_msb_enemy_walks_its_patrol_route() {
         app.update();
         let world = app.world_mut();
         let pos = world.get::<Transform>(patroller).unwrap().translation;
-        if let Some((cur, prev)) = world.non_send_resource::<crate::enemy::Brains>().map.get(&patroller).and_then(|b| b.patrol_points()) {
+        if let Some((cur, prev)) = world.non_send::<crate::enemy::Brains>().map.get(&patroller).and_then(|b| b.patrol_points()) {
             if prev >= 0 && reached.last() != Some(&prev) {
                 let d = (pos - points[prev as usize]).with_y(0.0).length();
                 reached.push(prev);

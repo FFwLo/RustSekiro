@@ -54,7 +54,7 @@ Physics yaw +0x74 / position +0x80. New for live work (1.6.0, base 0x140000000):
   events.jsonl for SpEffects / slots / markers / test switches), `tools/rec-hooks` (me3 native DLL
   `sv1_rec_hooks.dll`, ilhook jmp-back hooks, writes hooks.jsonl stamped with the recorder's tick),
   `tools/rec/` (Python: ingest -> rec.db, per-category summaries, query, compare). Usage and the
-  recording list: `docs/kb/recordings.md`. me3 profile `C:\DeadlockModding\me3\sekiro-rec.me3`
+  recording list: `docs/kb/recordings.md`. me3 profile `..\me3\sekiro-rec.me3`
   (= sekiro-research.me3 + the DLL; hook list in `me3\sekiro-rec\sv1_rec_hooks.txt`).
 - Hooks under me3 via the DLL: items FUN_14079ab70 (AdjustItemCount), ai_goal FUN_1405ce510 (AddSubGoal),
   music FUN_1408cebe0, posture FUN_1408439a0, guardcut FUN_140840870 all installed and ran 15 min without a

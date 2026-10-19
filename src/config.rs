@@ -70,6 +70,29 @@ pub struct VideoConfig {
     /// `SHINOBI_CLOTH_RANGE` overrides it for one run.
     #[serde(default)]
     pub cloth: ClothSetting,
+    /// The HUD and menus on a centred 16:9 stage ("16:9", ui_stage.rs) or across the whole
+    /// window ("stretch"); only matters on a window wider than 16:9.
+    #[serde(default)]
+    pub hud_aspect: HudAspect,
+}
+
+#[derive(serde::Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum HudAspect {
+    #[default]
+    #[serde(rename = "16:9")]
+    Stage,
+    #[serde(rename = "stretch")]
+    Stretch,
+}
+
+impl HudAspect {
+    /// The config.toml spelling.
+    pub fn name(self) -> &'static str {
+        match self {
+            HudAspect::Stage => "16:9",
+            HudAspect::Stretch => "stretch",
+        }
+    }
 }
 
 #[derive(serde::Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -102,7 +125,7 @@ impl ClothSetting {
 
 impl Default for VideoConfig {
     fn default() -> Self {
-        VideoConfig { fullscreen: false, vsync: true, resolution: None, shadow_res: None, cloth: ClothSetting::On }
+        VideoConfig { fullscreen: false, vsync: true, resolution: None, shadow_res: None, cloth: ClothSetting::On, hud_aspect: HudAspect::Stage }
     }
 }
 
@@ -256,6 +279,14 @@ pub struct PlayerConfig {
     /// stateInfo 999-996: 0 / 1-249 / 250-499 / 500+). Default 500 (the full throw).
     #[serde(default = "default_sen")]
     pub sen: u32,
+    /// Attack Power (1 at the start; each Memory offered adds 1, up to 99): Wolf wears SpEffect
+    /// 160000 + it, "Player Growth_Core Level N" (combat::growth_sp).
+    #[serde(default = "default_attack_power")]
+    pub attack_power: u32,
+}
+
+fn default_attack_power() -> u32 {
+    1
 }
 
 fn default_owned_tools() -> Vec<i64> {
@@ -296,7 +327,7 @@ fn default_emblems() -> u32 {
 
 impl Default for PlayerConfig {
     fn default() -> Self {
-        Self { gourd_charges: 3, spirit_emblems: default_emblems(), infinite_emblems: false, resurrections: default_resurrections(), combat_art: default_combat_art(), prosthetics: default_prosthetics(), skills: Vec::new(), skill_points: 0, skill_exp: 0, skill_level: 0, form: 0, items: Vec::new(), quick_items: default_quick_items(), owned_tools: default_owned_tools(), upgrades: Vec::new(), unlock_all_moves: true, sen: default_sen() }
+        Self { gourd_charges: 3, spirit_emblems: default_emblems(), infinite_emblems: false, resurrections: default_resurrections(), combat_art: default_combat_art(), prosthetics: default_prosthetics(), skills: Vec::new(), skill_points: 0, skill_exp: 0, skill_level: 0, form: 0, items: Vec::new(), quick_items: default_quick_items(), owned_tools: default_owned_tools(), upgrades: Vec::new(), unlock_all_moves: true, sen: default_sen(), attack_power: default_attack_power() }
     }
 }
 

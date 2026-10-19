@@ -1,12 +1,12 @@
 # Reference clips
 
-Game footage kept outside the repo in `C:\DeadlockModding\clips\` (never committed). Pulled
-with the watch skill (`C:\DeadlockModding\reference\claude-video`, yt-dlp + ffmpeg; the
+Game footage kept outside the repo in `..\clips\` (never committed). Pulled
+with the watch skill (`..\reference\claude-video`, yt-dlp + ffmpeg; the
 local engine extracts frames, Gemini can watch a whole clip once a key is in
 `~/.config/watch/.env`). For a frame-exact look use ffmpeg on the kept file, e.g.
 
 ```bash
-ffmpeg -ss 00:01:52 -i "C:/DeadlockModding/clips/sekiro_all_skills_rYcHlOgI7pg.mp4" -t 3 -vf fps=30,scale=960:-1 -q:v 3 out/f_%03d.jpg
+ffmpeg -ss 00:01:52 -i "../clips/sekiro_all_skills_rYcHlOgI7pg.mp4" -t 3 -vf fps=30,scale=960:-1 -q:v 3 out/f_%03d.jpg
 ```
 
 The clip's own chapter title is burned into the top-left of every frame, so a frame
@@ -267,7 +267,7 @@ Long-arm Centipede). His AtkParam spheres in extracted/enemies/c5020.json match 
 Playlist https://www.youtube.com/playlist?list=PLsYpcRmfPaU1fx6b6whkOBC8tBjau4hBZ: one
 hitbox-mod showcase per boss and mini-boss, 3 h 59 min in all, the attack spheres drawn on
 the live model as in the Ogre clip above. Kept at 1920x1080 60 fps (all 51, 9.9 GB; `-f "bv*[height<=1080][fps>=50]+ba"`) in
-`C:\DeadlockModding\clips\hitboxes\<index>_<title>_<id>.mp4` (yt-dlp with a download
+`..\clips\hitboxes\<index>_<title>_<id>.mp4` (yt-dlp with a download
 archive, `archive.txt` there; rerun the same command to fill gaps). Several descriptions
 carry corrections ("read description": missed attacks, the laser deflection, the second
 Headless Ape phase), fetch them with `yt-dlp --skip-download --print "%(description)s" <id>`.
@@ -340,9 +340,9 @@ check, and it matched the AtkParam export.
 ## Combat flow reference, ONGBAL "Sekiro's Combat Is Still Best" (2026-10-11)
 
 https://www.youtube.com/watch?v=dReREg4Dtyc, 7:00, kept at 1920x1080 60 fps (H.264, 294 MB) as
-`C:\DeadlockModding\clips\sekiro_combat_flow_ongbal_dReREg4Dtyc_1080p60.mp4`. Chapters:
-0:00 Juzou, 1:37 Nightjar Elite, 3:28 Lone Shadow, 5:10 Seven Spear (ends in a death screen at
-6:40). **Caveat: this is a modded game.** The description credits *Sekiro Resurrection 1.16.1*
+`..\clips\sekiro_combat_flow_ongbal_dReREg4Dtyc_1080p60.mp4`. Chapters:
+0:00 Juzou, 1:37 Nightjar Elite, 3:28 Lone Shadow, 5:10 Seven Spear (ends with a leap off a cliff and a fade-out at 6:59; no death screen, see the correction below
+). **Caveat: this is a modded game.** The description credits *Sekiro Resurrection 1.16.1*
 (Nexus 723, a "complete overhaul", tagged Animation-Modified and NPC Behaviours) and *Multi Combat
 Arts* (Nexus 1058, several arts equipped at once). So the enemy movesets, the flame arts the player
 chains (the fire arcs all through the Juzou chapter, the burning status kanji on enemies) and the
@@ -389,3 +389,30 @@ additive deflect (AddHardDeflectGuard) over the recoil, as HKS c0000_transition.
 the deflect itself is live from frame 0; from ref 412 (frame 9) it moves on to
 StandToDeflectGuard1Reverse. So nothing in Sv1 holds an input back past the game's window; the
 remaining feel gap is the root-motion blend-in (HANDOFF item 3), not the cancel frames.
+
+## Medal screen recordings (user's own, indexed 2026-10-19)
+
+13 screen recordings in `C:\Medal\Clips\Screen Recording\` (`MedalTVScreenRecording<stamp>.mp4`, 2580x1080 at 60 fps, the game in the left 1935 px, the rest is the desktop). Only four show the real Sekiro; the others are our Sv1 clone (checker floor or the real map with the debug menu) or another game. Check the clone ones before using them as reference. Frame grabs: `ffmpeg -ss <t> -i <file> -vf crop=1935:1080:0:0 -frames:v 1`. `C:\Medal\Clips\sv1` is empty. A scan against the atlas questions is in `atlas/verify/clips-check.json`.
+
+| File (stamp) | Length | What it shows | Notable times |
+|---|---|---|---|
+| 20261005070753561 | 4:15 | EldenKill (ULTRAKILL in Elden Ring), first person. Not Sekiro. | none for Sekiro |
+| 20261007190653883 | 0:35 | Sv1 clone, duel against a swordsman on the checker arena. | Windows overlay 0:20-0:26 |
+| 20261009042448864 | 2:49 | Sv1 clone, Wolf against an armoured enemy and a mounted one, debug panel on the right. | Medal settings window 2:24 |
+| 20261009182556411 | 0:12 | Sv1 clone, short fights on the checker arena. | none |
+| 20261009182637721 | 0:14 | Real Sekiro. Wolf idles and walks about a burning castle gate at night next to a glowing lamp, no enemies. | 0:04 purple wisp, no rest |
+| 20261009182708278 | 0:33 | Sv1 clone duel. The real game flashes up for a moment while switching windows. | real game 0:18-0:22 |
+| 20261010013052179 | 0:17 | Real Sekiro, burning snowy castle area. Behind deathblow on a red-armoured soldier on a wooden scaffold, then Wolf walks down a plank and runs over snow. Vitality stays full. | deathblow 0:02-0:05, plank 0:06-0:08, hop from rock onto roof 0:14.5 |
+| 20261010013749267 | 0:14 | Real Sekiro, snowy bamboo clearing. Wolf repeats forward tumbles and gets up, no enemies, vitality full. | whole clip |
+| 20261010013834205 | 1:27 | Real Sekiro, fight with several Ashina soldiers on stairs and in a courtyard, fire arts at 0:14-0:22, Healing Gourd at 0:51-0:53. Vitality drops at 0:21, 0:36 and 0:49. | deathblows 0:30-0:33 and 0:44-0:46 (lock-on switches at 0:33.0), perilous mark 0:48-0:49 |
+| 20261010054828588 | 0:07 | Sv1 clone, two models on a blood-sprayed checker floor. | none |
+| 20261011222656376 | 2:50 | Sv1 clone on the real castle roof map: title menu at 0:00, fight with a blue-robed boss, perilous mark at 0:40 and 0:52, Pause popup at 1:16 and 1:48, then walking in a snowy courtyard and field. | menu 0:00, pause 1:16 |
+| 20261011233458607 | 0:05 | Sv1 clone, dark roof with a boss list menu overlay. | none |
+| 20261014131548464 | 0:02 | Sv1 clone with the debug menu: Wolf behind a passive test enemy at a shadow edge in daylight (stealth test). | whole clip |
+
+Findings from the real clips and the downloaded ones (2026-10-19):
+- Lock-on switch: in 20261010013834205 the lock dot sits on a dying soldier at 0:32.8 and on another soldier at 0:33.0, so the lock jumps to another enemy at once when the target dies.
+- Small drops: in 20261010013052179 steps of 1 to 2 m cause no damage and no landing stagger. No medium-height fall is recorded.
+- Camera on a fall: it pitches down within about 0.3 s of a leap, in the combat-flow clip at 6:55.9 (modded game) and in 20261010013052179 at 0:14.2.
+- Correction: the combat-flow clip has no death screen at 6:40. At 6:45-6:51 there is a red Bloodsmoke cloud, and at 6:59 the clip fades out while Wolf falls off a cliff.
+- Still not settled by any clip: fall death and return, ledge stop, death noise, shadow crouch, blind duration, dodge through a swing, death screen timing, pause menu, idol rest, cutscene skip, New Game+, Dragonrot.

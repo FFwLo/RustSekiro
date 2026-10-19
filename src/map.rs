@@ -14,8 +14,8 @@
 //!   light; colours RGB with the intensity in W. The exe squares light and hemisphere colours
 //!   (`rgb * rgb * W`, gamma 2.0) and takes fog colours at gamma 2.2 (`colour`, `fog_colour`);
 //!   one scene-to-Bevy scale (`SCENE_TO_BEVY`) serves the sun, fill, ambient and probes. Both
-//!   from sekiro-rs `docs/SHADER-INPUTS.md` (exe traced, THIRD_PARTY.md). The volumetric fog
-//!   becomes Bevy's exponential distance fog.
+//!   from sekiro-rs `docs/SHADER-INPUTS.md` (exe traced, THIRD_PARTY.md); the scale is sekiro-rs's
+//!   own constant (library). The volumetric fog is height_fog.rs's pass.
 //!
 //! Without a map (config `[world] map` unset and no `SHINOBI_MAP`), nothing here runs and the
 //! floor is the flat arena at y = 0 (`ground_y` returns 0): the sim tests stay as they were.
@@ -38,8 +38,8 @@ use crate::player::CAPSULE_HALF_HEIGHT;
 /// FUN_140bc3140, hard-coded for the player; NPCs read NpcParam hitHeight / hitRadius in
 /// FUN_140bc2e00). Live physics module +0xD0 = 1.5 / 0.4 agrees.
 pub const RADIUS: f32 = 0.4;
-/// Highest ledge a walking body steps onto, and how far it follows the floor down.
-/// gap: the character proxy's step-up is not traced (Havok sweep, no explicit value found).
+/// Highest ledge a walking body steps onto (Wolf follows the floor down by
+/// player::FALL_START_DROP). gap: the character proxy's step-up is not traced (Havok sweep, no explicit value found).
 pub const STEP_HEIGHT: f32 = 0.5;
 /// hknpCharacterProxyCinfo maxSlope, set to 60 deg in FUN_14104d3d0 (0x3f860a92 = 1.0472 rad).
 const MAX_SLOPE_DEGREES: f32 = 60.0;
@@ -47,13 +47,15 @@ const MAX_SLOPE_DEGREES: f32 = 60.0;
 /// the step height so stairs reach the floor query rather than the wall push.
 const SPHERES: [f32; 3] = [STEP_HEIGHT + RADIUS, 1.2, 1.55];
 const CELL: f32 = 4.0;
-/// Bevy lux per native light unit (the game has no photometric unit: `rgb * rgb * W` goes to
-/// the shaders as is). sekiro-rs `crates/game/src/lighting.rs` SCENE_TO_BEVY: 4500 folds its
-/// earlier 9000 lux and 0.5 post calibration into one scale. gap: an exe-derived bridge.
-pub const SCENE_TO_BEVY: f32 = 4_500.0;
+/// Bevy lux per native light unit, from sekiro-rs's lighting (library): the exe's deferred
+/// accumulators store `Col * N.L` with no 1 / pi (GXLightAcc_DDirLight1, GXLightCmbAlbedo), so a
+/// white surface under `Col * N.L = 1` has native radiance 1; Bevy's diffuse is
+/// `albedo / pi * lux * exposure`, so lux = pi / exposure at Bevy's default camera exposure.
+/// Before, the older fitted 4500 (1.435x too bright against it).
+pub const SCENE_TO_BEVY: f32 = sekiro_rs::lighting::SCENE_TO_BEVY;
 const LUX_PER_UNIT: f32 = SCENE_TO_BEVY;
 /// cd/m^2 per unit of hemisphere / probe radiance: the same scale seen as radiance (/ pi).
-pub(crate) const ENV_PER_UNIT: f32 = SCENE_TO_BEVY / std::f32::consts::PI;
+pub(crate) const ENV_PER_UNIT: f32 = sekiro_rs::lighting::ENV_PER_UNIT;
 const AMBIENT_PER_UNIT: f32 = ENV_PER_UNIT;
 /// Auto exposure (`auto_exposure`): the game's log2 luminance units onto this renderer's
 /// buffer, and the EV base that keeps the 18 h look (-Exposure at 18 h).
@@ -74,6 +76,9 @@ pub struct Terrain {
     min_walk_ny: f32,
     /// Level triangles without a hit material dropped at load (see `from_tris`).
     helper_planes: usize,
+    /// Under sekiro-rs's map: its whole play world's collision (sr_map.rs `collision`), which
+    /// answers the floor, ray and wall queries in place of the triangles above (left empty).
+    world: Option<Arc<sekiro_sim::collision::CollisionWorld>>,
 }
 
 static TERRAIN: OnceLock<RwLock<Option<Arc<Terrain>>>> = OnceLock::new();
@@ -131,7 +136,14 @@ pub fn map_id(config: &GameConfig) -> Option<String> {
     match std::env::var("SHINOBI_MAP") {
         Ok(v) => (!v.is_empty() && v != "off" && v != "0").then(|| if v == crate::sandbox::PARKOUR_ALIAS { crate::sandbox::CONSTRUCT_ID.to_string() } else { v }),
         Err(_) => {
-            let m = config.world.map.clone().filter(|m| !m.is_empty())?;
+            // No map named: a `SHINOBI_FIGHT` fight on its own arena (the flat floor without
+            // one), else sekiro-rs's connected world at the Ashina Castle idol (sr_map.rs).
+            let Some(m) = config.world.map.clone().filter(|m| !m.is_empty()) else {
+                if let Some((chr, row)) = crate::sr_map::fight_env() {
+                    return boss_arena(&chr, row);
+                }
+                return crate::sr_map::default_start(config).then(|| crate::sr_map::DEFAULT_START.0.to_string());
+            };
             let m = if m == crate::sandbox::PARKOUR_ALIAS { crate::sandbox::CONSTRUCT_ID.to_string() } else { m };
             if m == crate::sandbox::MAP_ID {
                 return Some(sandbox_exception(&config.enemy.chr, config.enemy.npc_row).unwrap_or(m));
@@ -203,7 +215,11 @@ pub fn ground_y(centre: Vec3) -> f32 {
 /// HitMtrlParam id of the floor under an actor centre (None without a map or over nothing).
 pub fn floor_material(centre: Vec3) -> Option<u32> {
     let t = terrain()?;
-    t.floor_tri(centre.x, centre.z, centre.y - CAPSULE_HALF_HEIGHT + STEP_HEIGHT).map(|(_, tri)| t.materials[tri as usize])
+    let top = centre.y - CAPSULE_HALF_HEIGHT + STEP_HEIGHT;
+    if let Some(w) = &t.world {
+        return w.floor_material(centre.x, centre.z, top);
+    }
+    t.floor_tri(centre.x, centre.z, top).map(|(_, tri)| t.materials[tri as usize])
 }
 
 /// HitMtrlParam fallDeathDist / disableFallDamage per material id (extracted/json/params).
@@ -251,20 +267,49 @@ pub fn raycast(origin: Vec3, dir: Vec3, max: f32) -> Option<f32> {
 /// (the Headless Ape's MSB pose faces the pit's wall: tools/boss_arenas.py turns his arena).
 /// gap: the game starts the fight where the boss script's warp or the fog gate puts Wolf.
 pub fn player_start() -> Vec3 {
+    frame().point(player_start_local())
+}
+
+/// [`player_start`] in arena-local space (the boss's spot at (0, y, -4)).
+pub fn player_start_local() -> Vec3 {
     let base = Vec3::new(0.0, CAPSULE_HALF_HEIGHT, 4.0);
     let Some(t) = terrain().filter(|_| on_boss_arena()) else { return base };
-    // `SHINOBI_START=<x>,<z>` (a debug knob): that spot instead, on the floor nearest y 0.
+    // `SHINOBI_START=<x>,<z>` (a debug knob, arena-local): that spot instead, on the floor
+    // nearest y 0.
     if let Some((x, z)) = std::env::var("SHINOBI_START").ok().and_then(|v| v.split_once(',').and_then(|(x, z)| Some((x.trim().parse::<f32>().ok()?, z.trim().parse::<f32>().ok()?)))) {
-        let h = t.floor(x, z, 3.0).unwrap_or(0.0);
+        let h = LocalTerrain::new(&t).floor(x, z, 3.0).unwrap_or(0.0);
         return Vec3::new(x, h + CAPSULE_HALF_HEIGHT, z);
     }
     arena_start(&t, !crate::enemy::on_own_arena()).unwrap_or_else(|kept| kept)
+}
+
+/// The terrain asked in arena-local coordinates (through the [`Frame`]): vertical probes only,
+/// which a turn about Y keeps vertical.
+struct LocalTerrain<'a> {
+    t: &'a Terrain,
+    f: Frame,
+}
+
+impl<'a> LocalTerrain<'a> {
+    fn new(t: &'a Terrain) -> Self {
+        Self { t, f: frame() }
+    }
+
+    fn floor(&self, x: f32, z: f32, top: f32) -> Option<f32> {
+        let p = self.f.point(Vec3::new(x, top, z));
+        self.t.floor(p.x, p.z, p.y).map(|h| h - self.f.offset.y)
+    }
+
+    fn up_hit(&self, from: Vec3, max: f32) -> bool {
+        self.t.raycast(self.f.point(from), Vec3::Y, max).is_some()
+    }
 }
 
 /// [`player_start`]'s search on one arena's collision: `Ok` with the spot it found, `Err` with
 /// the spot it fell back to (warned). `stranger`: another boss's line-up stands 8 m ahead.
 fn arena_start(t: &Terrain, stranger: bool) -> Result<Vec3, Vec3> {
     const HEADROOM: f32 = 2.8;
+    let t = LocalTerrain::new(t);
     let base = Vec3::new(0.0, CAPSULE_HALF_HEIGHT, 4.0);
     // The floor under (0, z) nearest to `from`, within 2 m up or down: the highest below
     // `from` + 2, unless that is a ledge more than half a metre up with ground under it.
@@ -277,7 +322,7 @@ fn arena_start(t: &Terrain, stranger: bool) -> Result<Vec3, Vec3> {
         }
         (hi >= from - 2.0).then_some(hi)
     };
-    let room = |z: f32, h: f32| t.raycast(Vec3::new(0.0, h + 0.1, z), Vec3::Y, HEADROOM).is_none();
+    let room = |z: f32, h: f32| !t.up_hit(Vec3::new(0.0, h + 0.1, z), HEADROOM);
     // On another boss's arena (an encounter swap, enemy.rs on_own_arena) the line-up stands
     // 8 m ahead of Wolf instead of at the boss's MSB spot: that spot needs a floor and headroom
     // too, or the enemy starts in the rock. Its floor may sit on a slope (Isshin's field falls
@@ -312,15 +357,31 @@ fn arena_start(t: &Terrain, stranger: bool) -> Result<Vec3, Vec3> {
 
 /// Puts Wolf on [`player_start`] once the terrain is loaded (player.rs spawns him at the plain
 /// spot during Startup, before or after `load_map`).
-fn settle_player_start(mut wolf: Query<&mut Transform, With<crate::player::Player>>) {
-    if !on_boss_arena() {
+fn settle_player_start(mut wolf: Query<(&mut Transform, &mut crate::actor::Actor, &mut crate::player::Player)>) {
+    // Under sekiro-rs's map every arena runs at its absolute place, so Wolf (spawned at the
+    // arena-local spot) moves there and turns toward the line-up even off a boss arena.
+    let sr = crate::sr_map::world();
+    if !on_boss_arena() && !sr {
         return;
     }
     let start = player_start();
-    for mut tf in &mut wolf {
+    for (mut tf, mut actor, mut player) in &mut wolf {
+        // Idol travel's run (sr_map.rs `travel`): up at that idol, its checkpoint.
+        if let Some(i) = crate::idol::start_index() {
+            if let Some((at, yaw)) = crate::idol::respawn_at(i) {
+                info!("player start: Wolf at idol {i}, {at}");
+                tf.translation = at + Vec3::Y * CAPSULE_HALF_HEIGHT;
+                actor.yaw = yaw;
+                player.seat.checkpoint = Some(i);
+                continue;
+            }
+        }
         if tf.translation.distance(start) > 1e-3 {
             info!("player start: Wolf {} -> {start}", tf.translation);
             tf.translation = start;
+        }
+        if sr {
+            actor.yaw = crate::player::start_yaw();
         }
     }
 }
@@ -342,8 +403,9 @@ impl Terrain {
         if d.len() < o + nv * 12 + 4 {
             return None;
         }
-        // X mirrored into Bevy space (as every model).
-        let verts: Vec<Vec3> = (0..nv).map(|i| Vec3::new(-f(o + i * 12), f(o + i * 12 + 4), f(o + i * 12 + 8))).collect();
+        // X mirrored into Bevy space (as every model), then into the fight's space.
+        let fr = frame();
+        let verts: Vec<Vec3> = (0..nv).map(|i| fr.point(Vec3::new(-f(o + i * 12), f(o + i * 12 + 4), f(o + i * 12 + 8)))).collect();
         o += nv * 12;
         let nt = u32_(o) as usize;
         o += 4;
@@ -360,7 +422,7 @@ impl Terrain {
     /// files and the sandbox map's generated floor and walls.
     pub(crate) fn from_tris(verts: Vec<Vec3>, tris: impl Iterator<Item = ([u32; 3], u32)>) -> Self {
         let nv = verts.len();
-        let mut t = Terrain { verts, tris: Vec::new(), normals: Vec::new(), materials: Vec::new(), cells: HashMap::new(), min_walk_ny: MAX_SLOPE_DEGREES.to_radians().cos(), helper_planes: 0 };
+        let mut t = Terrain { verts, tris: Vec::new(), normals: Vec::new(), materials: Vec::new(), cells: HashMap::new(), min_walk_ny: MAX_SLOPE_DEGREES.to_radians().cos(), helper_planes: 0, world: None };
         for (tri, material) in tris {
             if tri.iter().any(|&x| x as usize >= nv) {
                 continue;
@@ -392,6 +454,13 @@ impl Terrain {
         t
     }
 
+    /// sekiro-rs's play world as the terrain (sr_map.rs `collision`).
+    pub(crate) fn from_world(world: Arc<sekiro_sim::collision::CollisionWorld>) -> Self {
+        let mut t = Self::from_tris(Vec::new(), std::iter::empty());
+        t.world = Some(world);
+        t
+    }
+
     /// No terrain (the map switched to one without a `.hit`, or off).
     pub(crate) fn clear() {
         if let Ok(mut t) = TERRAIN.get_or_init(|| RwLock::new(None)).write() {
@@ -404,7 +473,7 @@ impl Terrain {
     }
 
     pub fn triangle_count(&self) -> usize {
-        self.tris.len()
+        self.world.as_ref().map_or(self.tris.len(), |w| w.triangle_count())
     }
 
     fn corners(&self, t: u32) -> [Vec3; 3] {
@@ -432,6 +501,9 @@ impl Terrain {
     /// Feet are not a point: a few centimetres around count too, so seams between triangles
     /// do not drop the body.
     pub fn floor_tri(&self, x: f32, z: f32, top: f32) -> Option<(f32, u32)> {
+        if let Some(w) = &self.world {
+            return w.floor_hit(x, z, top);
+        }
         const R: f32 = 0.08;
         let mut best: Option<(f32, u32)> = None;
         for (dx, dz) in [(0.0, 0.0), (R, 0.0), (-R, 0.0), (0.0, R), (0.0, -R)] {
@@ -457,6 +529,9 @@ impl Terrain {
     }
 
     pub fn raycast(&self, origin: Vec3, dir: Vec3, max: f32) -> Option<f32> {
+        if let Some(w) = &self.world {
+            return w.raycast(origin, dir, max);
+        }
         let end = origin + dir * max;
         let mut tris = Vec::new();
         self.gather(Vec2::new(origin.x.min(end.x), origin.z.min(end.z)), Vec2::new(origin.x.max(end.x), origin.z.max(end.z)), &mut tris);
@@ -482,9 +557,23 @@ impl Terrain {
         // Sub-steps of at most half the radius so a thin post cannot be stepped over (a tick's
         // move is centimetres; the cap only bounds a wild teleport).
         let steps = ((len / (RADIUS * 0.5)).ceil() as usize).clamp(1, 512);
-        let mut p = feet;
         let gates = self.gates_on();
         let gate_tris: Vec<Vec<u32>> = gates.iter().map(|g| (0..g.tris.len() as u32).collect()).collect();
+        // sekiro-rs's world slides the body; the fog walls on it push it back out after.
+        if let Some(w) = &self.world {
+            let moved = Vec2::from(w.slide(feet.to_array(), delta.to_array()));
+            let mut p = feet + Vec3::new(moved.x, 0.0, moved.y);
+            for _ in 0..4 {
+                let push = gates.iter().zip(&gate_tris).map(|(g, t)| g.push_out(p, t)).max_by(|a, b| a.length_squared().total_cmp(&b.length_squared())).unwrap_or(Vec2::ZERO);
+                if push == Vec2::ZERO {
+                    break;
+                }
+                p.x += push.x;
+                p.z += push.y;
+            }
+            return Vec2::new(p.x - feet.x, p.z - feet.z);
+        }
+        let mut p = feet;
         let mut tris = Vec::new();
         let reach = RADIUS + len / steps as f32 + 0.05;
         self.gather(
@@ -537,7 +626,8 @@ impl Terrain {
             if d.len() < o + nv * 12 + 4 + nt * 16 {
                 break;
             }
-            let verts: Vec<Vec3> = (0..nv).map(|i| Vec3::new(-f(o + i * 12), f(o + i * 12 + 4), f(o + i * 12 + 8))).collect();
+            let fr = frame();
+            let verts: Vec<Vec3> = (0..nv).map(|i| fr.point(Vec3::new(-f(o + i * 12), f(o + i * 12 + 4), f(o + i * 12 + 8)))).collect();
             o += nv * 12 + 4;
             let k = o;
             let tris = (0..nt).map(|i| {
@@ -784,10 +874,10 @@ pub(crate) const ATTR_MAP_UV_SCALE: bevy::mesh::MeshVertexAttribute = bevy::mesh
 
 impl bevy::pbr::MaterialExtension for MapExt {
     fn vertex_shader() -> bevy::shader::ShaderRef {
-        "embedded://sv1/map_material.wgsl".into()
+        "embedded://sv1/map_material.wesl".into()
     }
     fn fragment_shader() -> bevy::shader::ShaderRef {
-        "embedded://sv1/map_material.wgsl".into()
+        "embedded://sv1/map_material.wesl".into()
     }
     /// The main pass reads the game path's two extra attributes when the mesh has them
     /// (MAP_GAME_ATTRS); the prepass keeps Bevy's own layout.
@@ -880,7 +970,7 @@ pub struct GrappleTarget {
     /// Wolf's centre to the hook.
     pub dist: f32,
     /// Inside the row's action distance (the hook can be fired; outside it the marker is shown
-    /// greyed, `MENU_Wire_NG`).
+    /// as the grey `MENU_Wire_Distance` disc).
     pub in_action_range: bool,
     /// Rideable (landing on the point, LandWireMove) or a swing-through point (targetMarkerType
     /// 1 ring with an arrow: rows 20/23/24 "can't ride", 41 kite).
@@ -1020,20 +1110,32 @@ fn json_vec(p: &serde_json::Value, k: &str) -> Option<Vec3> {
 
 /// The map's wire points from its json.
 fn load_grapple(json: &serde_json::Value) -> Vec<GrapplePoint> {
-    let vec = json_vec;
+    grapple_in(json, frame())
+}
+
+/// A json's wire points, its points turned into the fight's space by `fr` (Frame::IDENTITY
+/// for the whole-map exports, `map_edges_<map>.json`, already absolute).
+pub(crate) fn grapple_in(json: &serde_json::Value, fr: Frame) -> Vec<GrapplePoint> {
+    let point = |p: &serde_json::Value, k: &str| json_vec(p, k).map(|v| fr.point(v));
     json["grapple"]
         .as_array()
-        .map(|a| a.iter().filter_map(|p| Some(GrapplePoint { hook: vec(p, "hook")?, land: vec(p, "land")?, fwd: vec(p, "fwd")?, variation: p["var"].as_i64().unwrap_or(0) })).collect())
+        .map(|a| a.iter().filter_map(|p| Some(GrapplePoint { hook: point(p, "hook")?, land: point(p, "land")?, fwd: fr.dir(json_vec(p, "fwd")?), variation: p["var"].as_i64().unwrap_or(0) })).collect())
         .unwrap_or_default()
 }
 
 /// The map's hang / hug edges from its json ("ledges").
 pub(crate) fn load_ledges(json: &serde_json::Value) -> Vec<LedgeEdge> {
+    ledges_in(json, frame())
+}
+
+/// A json's hang / hug edges, turned by `fr` ([`grapple_in`]).
+pub(crate) fn ledges_in(json: &serde_json::Value, fr: Frame) -> Vec<LedgeEdge> {
+    let point = |p: &serde_json::Value, k: &str| json_vec(p, k).map(|v| fr.point(v));
     json["ledges"]
         .as_array()
         .map(|a| {
             a.iter()
-                .filter_map(|p| Some(LedgeEdge { a: json_vec(p, "a")?, b: json_vec(p, "b")?, c: json_vec(p, "c")?, kind: p["kind"].as_u64()? as u8, variation: p["var"].as_i64().unwrap_or(0) }))
+                .filter_map(|p| Some(LedgeEdge { a: point(p, "a")?, b: point(p, "b")?, c: point(p, "c")?, kind: p["kind"].as_u64()? as u8, variation: p["var"].as_i64().unwrap_or(0) }))
                 .collect()
         })
         .unwrap_or_default()
@@ -1089,6 +1191,59 @@ pub fn arena_to_map(origin: Vec3, arena_yaw: f32, p: Vec3) -> Vec3 {
     let (s, c) = (-arena_yaw).sin_cos();
     let (x, z) = (-p.x, p.z);
     origin + Vec3::new(x * c + z * s, p.y, -x * s + z * c)
+}
+
+/// Arena-local space (the export's, boss at (0, y, -4)) -> the space the fight runs in.
+/// Identity, except under sekiro-rs's map (sr_map.rs): the source map's absolute Bevy space
+/// (MSB with X mirrored, as sekiro-rs exports it), i.e. `arena_to_map` then X mirrored. A turn
+/// about Y plus a shift.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Frame {
+    pub rot: Quat,
+    /// The turn's angle (`rot` = Ry(yaw)): added to an arena-local actor yaw.
+    pub yaw: f32,
+    pub offset: Vec3,
+}
+
+impl Frame {
+    pub const IDENTITY: Self = Self { rot: Quat::IDENTITY, yaw: 0.0, offset: Vec3::ZERO };
+
+    fn of_arena(origin: Vec3, arena_yaw: f32) -> Self {
+        let abs = |p: Vec3| {
+            let m = arena_to_map(origin, arena_yaw, p);
+            Vec3::new(-m.x, m.y, m.z)
+        };
+        let offset = abs(Vec3::ZERO);
+        let x = abs(Vec3::X) - offset;
+        let yaw = (-x.z).atan2(x.x);
+        Self { rot: Quat::from_rotation_y(yaw), yaw, offset }
+    }
+
+    pub fn point(&self, p: Vec3) -> Vec3 {
+        self.rot * p + self.offset
+    }
+
+    pub fn dir(&self, d: Vec3) -> Vec3 {
+        self.rot * d
+    }
+}
+
+static FRAME: RwLock<Frame> = RwLock::new(Frame::IDENTITY);
+
+/// The loaded map's [`Frame`].
+pub fn frame() -> Frame {
+    *FRAME.read().unwrap()
+}
+
+/// json "origin" / "arena_yaw" of an arena export as the readers turning MSB positions into
+/// the fight's space need them: under sekiro-rs's map origin 0 and no turn, so MSB points land
+/// at their absolute place (X mirrored) like the frame's.
+pub fn json_frame(json: &serde_json::Value) -> Option<(Vec3, f32)> {
+    let o = json["origin"].as_array().filter(|a| a.len() == 3)?;
+    if crate::sr_map::world() {
+        return Some((Vec3::ZERO, 0.0));
+    }
+    Some((Vec3::from_array(std::array::from_fn(|i| o[i].as_f64().unwrap_or(0.0) as f32)), json["arena_yaw"].as_f64().unwrap_or(0.0) as f32))
 }
 
 impl MapLighting {
@@ -1218,7 +1373,7 @@ pub struct FillLight;
 /// RGBA16F DDS files (`map_<id>_env_<v>.dds` / `_envd_`) are blended pixel by pixel and
 /// added as images (same layout: the exporter writes every variant the same way); within
 /// 2 % of a variant's hour that variant's files load as they are.
-fn probe_maps(lighting: &MapLighting, assets: &AssetServer, images: &mut Assets<Image>) -> Option<(String, Handle<Image>, Handle<Image>)> {
+fn probe_maps(lighting: &MapLighting, images: &mut Assets<Image>) -> Option<(String, Handle<Image>, Handle<Image>)> {
     if lighting.env.is_empty() {
         return None;
     }
@@ -1231,25 +1386,41 @@ fn probe_maps(lighting: &MapLighting, assets: &AssetServer, images: &mut Assets<
     };
     let span = (b.0 - a.0).rem_euclid(24.0);
     let t = if span > 0.0 { (hour - a.0).rem_euclid(24.0) / span } else { 0.0 };
-    let single = |e: &(f32, String)| Some((e.1.clone(), assets.load(format!("{}.dds", e.1)), assets.load(format!("{}.dds", e.1.replace("_env_", "_envd_")))));
-    if t < 0.02 {
-        return single(a);
-    }
-    if t > 0.98 {
-        return single(b);
-    }
     let dir = crate::paths::extracted();
-    let mut blend = |suffix: &str| -> Option<Handle<Image>> {
-        let read = |stem: &str| std::fs::read(dir.join(format!("{}.dds", stem.replace("_env_", suffix)))).ok();
-        let bytes = blend_f16_dds(&read(&a.1)?, &read(&b.1)?, t)?;
+    let read = |stem: &str, suffix: &str| std::fs::read(dir.join(format!("{}.dds", stem.replace("_env_", suffix)))).ok();
+    let mut cube = |bytes: Option<Vec<u8>>| -> Option<Handle<Image>> {
+        let mut bytes = bytes?;
+        one_cube_dds(&mut bytes);
         let image = Image::from_buffer(&bytes, ImageType::Extension("dds"), CompressedImageFormats::all(), false, ImageSampler::Default, RenderAssetUsages::RENDER_WORLD)
-            .map_err(|e| warn!("map probe blend: {e}"))
+            .map_err(|e| warn!("map probe: {e}"))
             .ok()?;
         Some(images.add(image))
     };
-    match (blend("_env_"), blend("_envd_")) {
+    let pick = if t < 0.5 { a } else { b };
+    let (spec, diff) = if t < 0.02 || t > 0.98 {
+        (None, None)
+    } else {
+        let blend = |suffix: &str| blend_f16_dds(&read(&a.1, suffix)?, &read(&b.1, suffix)?, t);
+        (cube(blend("_env_")), cube(blend("_envd_")))
+    };
+    match (spec, diff) {
         (Some(spec), Some(diff)) => Some((format!("{} x{:.2} + {} x{:.2}", a.1, 1.0 - t, b.1, t), spec, diff)),
-        _ => single(if t < 0.5 { a } else { b }),
+        _ => Some((pick.1.clone(), cube(read(&pick.1, "_env_"))?, cube(read(&pick.1, "_envd_"))?)),
+    }
+}
+
+/// The exporter's probe cubes say DX10 array size 6 (the faces), as the older Bevy DDS reader
+/// wanted; Bevy 0.20's reader counts cubes there (and multiplies by 6 itself), so a single cube
+/// is set back to 1 before loading. Files already saying 1 are left as they are.
+fn one_cube_dds(bytes: &mut [u8]) {
+    const MISC: usize = 136;
+    const ARRAY: usize = 140;
+    if bytes.len() < 148 || &bytes[..4] != b"DDS " || &bytes[84..88] != b"DX10" {
+        return;
+    }
+    let word = |at: usize| u32::from_le_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]]);
+    if word(MISC) & 0x4 != 0 && word(ARRAY) == 6 {
+        bytes[ARRAY..ARRAY + 4].copy_from_slice(&1u32.to_le_bytes());
     }
 }
 
@@ -1355,7 +1526,7 @@ fn auto_exposure(lighting: &MapLighting, curves: &mut Assets<AutoExposureCompens
     // below 16 add exactly in f32.
     let snap = |v: f32| (v * 64.0).round() / 64.0;
     let points: Vec<Vec2> = xs.iter().map(|&l| Vec2::new(snap(l), snap(target(l) + l))).collect();
-    let curve = match AutoExposureCompensationCurve::from_curve(bevy::math::cubic_splines::LinearSpline::new(points.clone())) {
+    let curve = match AutoExposureCompensationCurve::from_curve(bevy::curve::cubic_splines::LinearSpline::new(points.clone())) {
         Ok(c) => c,
         Err(e) => {
             warn!("map auto exposure: no compensation curve ({e:?}) from {points:?}");
@@ -1479,7 +1650,7 @@ fn apply_lighting(
     // The GI probe at the hour (blended between the two variants around it): real sky light
     // and reflections (and the sky itself) in place of the flat hemisphere ambient and clear
     // colour.
-    let probe = (!cameras.is_empty()).then(|| probe_maps(&lighting, &assets, &mut images)).flatten();
+    let probe = (!cameras.is_empty()).then(|| probe_maps(&lighting, &mut images)).flatten();
     let env_scale = std::env::var("SHINOBI_MAP_ENV").ok().and_then(|v| v.parse().ok()).unwrap_or(1.0);
     // The colour-grading LUT the draw params select at the hour (nearest key: an id).
     let lut = (std::env::var("SHINOBI_MAP_NO_LUT").is_err() && lighting.nearest("ColorGrading", "Enable", id).and_then(|v| v.first().copied()).unwrap_or(1.0) > 0.0)
@@ -1753,7 +1924,7 @@ pub fn loaded_map() -> Option<String> {
     LOADED_MAP.read().ok()?.clone()
 }
 
-fn load_map(config: Res<GameConfig>, mut commands: Commands, assets: Res<AssetServer>, mut meshes: ResMut<Assets<Mesh>>, mut materials: ResMut<Assets<MapMaterial>>) {
+pub(crate) fn load_map(config: Res<GameConfig>, mut commands: Commands, assets: Res<AssetServer>, mut meshes: ResMut<Assets<Mesh>>, mut materials: ResMut<Assets<MapMaterial>>) {
     let Some(map) = map_id(&config) else { return };
     load_map_id(&map, &config, fight_row(&config.enemy.chr, config.enemy.npc_row), &mut commands, &assets, &mut meshes, &mut materials);
 }
@@ -1777,14 +1948,14 @@ const FIGHT_LIGHTING: [(&str, i64, &str, f32); 5] = [
     ("boss_71001000", 71100000, "0000", 12.0),
 ];
 
-fn fight_lighting(map: &str, row: Option<i64>) -> Option<(&'static str, f32)> {
+pub(crate) fn fight_lighting(map: &str, row: Option<i64>) -> Option<(&'static str, f32)> {
     let row = row?;
     FIGHT_LIGHTING.iter().find(|f| f.0 == map && f.1 == row).map(|f| (f.2, f.3))
 }
 
 /// The fight's boss row: config enemy.npc_row, else the chr's roster row (enemy.rs set_fight
 /// resolves it the same way; this runs before it at startup).
-fn fight_row(chr: &str, npc_row: Option<i64>) -> Option<i64> {
+pub(crate) fn fight_row(chr: &str, npc_row: Option<i64>) -> Option<i64> {
     npc_row.or_else(|| {
         let text = std::fs::read_to_string(crate::paths::extracted().join(format!("enemies/{chr}.json"))).ok()?;
         serde_json::from_str::<serde_json::Value>(&text).ok()?["roster"]["npc"].as_i64()
@@ -1846,6 +2017,9 @@ fn swap_map(
     materials: &mut Assets<MapMaterial>,
     wolf: &mut Query<&mut Transform, With<crate::player::Player>>,
 ) {
+    if crate::sr_map::switch_relaunches(want) {
+        crate::sr_map::relaunch(want, chr, npc_row);
+    }
     for e in old {
         commands.entity(e).despawn();
     }
@@ -1982,8 +2156,30 @@ fn load_map_id(map: &str, config: &GameConfig, fight: Option<i64>, commands: &mu
     crate::docking::WALL_JUMP_LIMIT.store(if parkour { u8::MAX } else { crate::docking::WALL_JUMP_COUNT_MAX }, std::sync::atomic::Ordering::Relaxed);
     let id = if sandbox { crate::sandbox::source() } else { map.clone() };
     BOSS_ARENA.store(id.starts_with("boss_"), std::sync::atomic::Ordering::Relaxed);
+    // The fight's space (before anything baked in arena space loads): under sekiro-rs's map the
+    // source map's absolute place, from the export's own origin and turn.
+    let frame = if crate::sr_map::active() && !sandbox {
+        std::fs::read_to_string(dir.join(format!("map_{id}.json")))
+            .ok()
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+            .and_then(|j| {
+                let o = j["origin"].as_array().filter(|a| a.len() == 3)?;
+                let origin = Vec3::from_array(std::array::from_fn(|i| o[i].as_f64().unwrap_or(0.0) as f32));
+                Some(Frame::of_arena(origin, j["arena_yaw"].as_f64().unwrap_or(0.0) as f32))
+            })
+            .unwrap_or(Frame::IDENTITY)
+    } else {
+        Frame::IDENTITY
+    };
+    info!("map {id}: fight space {frame:?}");
+    *FRAME.write().unwrap() = frame;
     // Hit collision.
-    if !sandbox {
+    // Under sekiro-rs's map its whole play world's collision (sr_map.rs), so Wolf can leave the arena.
+    let world = (!sandbox).then(crate::sr_map::collision).flatten();
+    if let Some(w) = world {
+        info!("map {id}: sekiro-rs play-world collision ({} triangles)", w.triangle_count());
+        Terrain::from_world(w).install();
+    } else if !sandbox {
         match std::fs::read(dir.join(format!("map_{id}.hit"))).ok().and_then(|d| Terrain::from_hit(&d)) {
             Some(t) => {
                 info!("map {id}: {} collision triangles ({} material-less helper planes dropped)", t.triangle_count(), t.helper_planes);
@@ -2029,37 +2225,53 @@ fn load_map_id(map: &str, config: &GameConfig, fight: Option<i64>, commands: &mu
         hour,
         applied: false,
         env: if std::env::var("SHINOBI_MAP_NO_ENV").is_ok() { Vec::new() } else { env },
-        arena_yaw: json["arena_yaw"].as_f64().unwrap_or(0.0) as f32,
+        arena_yaw: json_frame(&json).map_or(json["arena_yaw"].as_f64().unwrap_or(0.0) as f32, |(_, yaw)| yaw),
         luts: json["luts"].as_array().map(|l| l.iter().filter_map(|n| n.as_u64().map(|n| n as u32)).filter(|n| dir.join(format!("map_{id}_lut_{n:04}.dds")).exists()).collect()).unwrap_or_default(),
         stem: format!("map_{id}"),
         sound_space: json["sound_space_type"].as_u64().unwrap_or(0).min(8) as u8,
         source_map: json["map"].as_str().unwrap_or_default().to_string(),
-        map_origin: if sandbox { None } else { json["origin"].as_array().filter(|a| a.len() == 3).map(|a| Vec3::from_array(std::array::from_fn(|i| a[i].as_f64().unwrap_or(0.0) as f32))) },
+        map_origin: if sandbox { None } else { json_frame(&json).map(|(origin, _)| origin) },
     });
     // Wire points (grapple.md). The sandbox arena is generated: its source map's points would
     // hang in the air, so it has none.
-    let grapple = if parkour { crate::sandbox::construct_grapple() } else if sandbox { Vec::new() } else { load_grapple(&json) };
-    let ledges = if parkour { crate::sandbox::parkour_course().1 } else if sandbox { Vec::new() } else { load_ledges(&json) };
+    // Under sekiro-rs's map those of its whole play world (sr_map.rs `edges`).
+    let world_edges = (!sandbox).then(crate::sr_map::edges).flatten();
+    let (grapple, ledges) = match world_edges {
+        Some(e) => e,
+        None => (
+            if parkour { crate::sandbox::construct_grapple() } else if sandbox { Vec::new() } else { load_grapple(&json) },
+            if parkour { crate::sandbox::parkour_course().1 } else if sandbox { Vec::new() } else { load_ledges(&json) },
+        ),
+    };
     info!("map {id}: {} grapple points, {} hang / hug edges", grapple.len(), ledges.len());
     commands.insert_resource(GrapplePoints(grapple));
     commands.insert_resource(LedgeEdges(ledges));
-    // Sun shadows: `SHINOBI_MAP_SHADOW=<cascades>,<max m>` (default 2,60: the cascades are the
-    // map's frame-rate cost, kb/map.md), `SHINOBI_MAP_NO_SHADOW=1` none.
-    let shadow: Option<(usize, f32)> = std::env::var("SHINOBI_MAP_SHADOW").ok().and_then(|v| {
-        let d: Vec<f32> = v.split(',').filter_map(|x| x.trim().parse().ok()).collect();
-        (d.len() == 2).then(|| (d[0].max(1.0) as usize, d[1]))
-    });
-    let (cascades, max_distance) = shadow.unwrap_or((2, 60.0));
-    if let Some(size) = std::env::var("SHINOBI_MAP_SHADOW_RES").ok().and_then(|v| v.parse::<usize>().ok()).or(config.video.shadow_res) {
-        commands.insert_resource(bevy::light::DirectionalLightShadowMap { size: size.clamp(256, 8192) });
+    // sekiro-rs draws the pieces, sun and sky (sr_map.rs); on our own scene (the sandbox) only
+    // the sun and sky.
+    let sr = crate::sr_map::active();
+    if sr && !sandbox {
+        info!("map {id}: collision and points loaded in {:.1} s; sekiro-rs draws the world", t0.elapsed().as_secs_f32());
+        return;
     }
-    commands.spawn((
-        Sun,
-        DirectionalLight { shadow_maps_enabled: std::env::var("SHINOBI_MAP_NO_SHADOW").is_err(), ..default() },
-        bevy::light::CascadeShadowConfigBuilder { num_cascades: cascades, maximum_distance: max_distance, first_cascade_far_bound: 12.0, ..default() }.build(),
-        Transform::default(),
-    ));
-    commands.spawn((FillLight, DirectionalLight { shadow_maps_enabled: false, ..default() }, Transform::default()));
+    if !sr {
+        // Sun shadows: `SHINOBI_MAP_SHADOW=<cascades>,<max m>` (default 2,60: the cascades are the
+        // map's frame-rate cost, kb/map.md), `SHINOBI_MAP_NO_SHADOW=1` none.
+        let shadow: Option<(usize, f32)> = std::env::var("SHINOBI_MAP_SHADOW").ok().and_then(|v| {
+            let d: Vec<f32> = v.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+            (d.len() == 2).then(|| (d[0].max(1.0) as usize, d[1]))
+        });
+        let (cascades, max_distance) = shadow.unwrap_or((2, 60.0));
+        if let Some(size) = std::env::var("SHINOBI_MAP_SHADOW_RES").ok().and_then(|v| v.parse::<usize>().ok()).or(config.video.shadow_res) {
+            commands.insert_resource(bevy::light::DirectionalLightShadowMap { size: size.clamp(256, 8192) });
+        }
+        commands.spawn((
+            Sun,
+            DirectionalLight { shadow_maps_enabled: std::env::var("SHINOBI_MAP_NO_SHADOW").is_err(), ..default() },
+            bevy::light::CascadeShadowConfigBuilder { num_cascades: cascades, maximum_distance: max_distance, first_cascade_far_bound: 12.0, ..default() }.build(),
+            Transform::default(),
+        ));
+        commands.spawn((FillLight, DirectionalLight { shadow_maps_enabled: false, ..default() }, Transform::default()));
+    }
 
     // Pieces.
     let Ok(d) = std::fs::read(dir.join(format!("map_{id}.bin"))) else {
@@ -2545,11 +2757,11 @@ pub const TELEPORT: f32 = 2.0;
 /// Where the actor was before this tick's movement, for the wall slide.
 #[derive(Component)]
 pub struct OnTerrain {
-    prev: Vec3,
+    pub(crate) prev: Vec3,
 }
 
 /// After the actors moved: push them out of walls along their step, then put grounded ones on
-/// the floor (following it up to STEP_HEIGHT up or down; a bigger drop leaves them in the air,
+/// the floor (following it up to STEP_HEIGHT up and FALL_START_DROP down; a bigger drop leaves them in the air,
 /// which player.rs turns into FreeFall; enemies stay put, they have no fall of their own).
 pub(crate) fn bodies_on_terrain(combat: Res<crate::data::Combat>, mut commands: Commands, mut q: Query<(Entity, &Actor, &mut Transform, Option<&mut OnTerrain>)>) {
     let Some(t) = terrain() else { return };
@@ -2582,8 +2794,11 @@ pub(crate) fn bodies_on_terrain(combat: Res<crate::data::Combat>, mut commands: 
         if !a.airborne && !lifted && a.lift_ground.is_none() {
             let feet = tf.translation.y - CAPSULE_HALF_HEIGHT;
             let floor = t.floor(tf.translation.x, tf.translation.z, feet + STEP_HEIGHT);
+            // Wolf follows the floor down only FALL_START_DROP (HKS BEH_R_FALL: a smaller drop
+            // never leaves the move state, so following it is the same); a deeper one falls.
+            let down = if a.side == Side::Enemy { f32::INFINITY } else { crate::player::FALL_START_DROP };
             match floor {
-                Some(h) if h >= feet - STEP_HEIGHT || a.side == Side::Enemy => tf.translation.y = h + CAPSULE_HALF_HEIGHT,
+                Some(h) if h >= feet - down => tf.translation.y = h + CAPSULE_HALF_HEIGHT,
                 Some(_) => {}
                 None => {
                     // Over nothing walkable within reach: the enemy keeps its height.
@@ -2598,10 +2813,14 @@ pub struct MapPlugin;
 
 impl Plugin for MapPlugin {
     fn build(&self, app: &mut App) {
-        if !app.is_plugin_added::<AutoExposurePlugin>() {
+        // With sekiro-rs's map its post chain meters and grades the view (sr_map.rs).
+        let own_post = !crate::sr_map::active();
+        if own_post && !app.is_plugin_added::<AutoExposurePlugin>() {
             app.add_plugins(AutoExposurePlugin);
         }
-        app.add_plugins(GradingPlugin);
+        if own_post {
+            app.add_plugins(GradingPlugin);
+        }
         // `SHINOBI_MESH_OWN_SLABS=1`: every mesh in its own GPU buffer (no shared slabs), to
         // tell a mesh-allocator fault from a material one when a piece is not drawn.
         if std::env::var("SHINOBI_MESH_OWN_SLABS").is_ok() {
@@ -2613,7 +2832,7 @@ impl Plugin for MapPlugin {
                 });
             }
         }
-        bevy::asset::embedded_asset!(app, "map_material.wgsl");
+        bevy::asset::embedded_asset!(app, "map_material.wesl");
         app.add_plugins(MaterialPlugin::<MapMaterial>::default());
         app.init_resource::<GrapplePoints>();
         app.init_resource::<LedgeEdges>();
@@ -2622,7 +2841,7 @@ impl Plugin for MapPlugin {
             .add_systems(PostStartup, settle_player_start)
             .add_message::<GoToMap>()
             .init_resource::<DayCycle>()
-            .add_systems(Update, ((hour_keys, day_cycle, apply_lighting, apply_giiv).chain().run_if(resource_exists::<MapLighting>), frame_rate_log, switch_map, go_to_map.after(switch_map)))
+            .add_systems(Update, (((hour_keys, day_cycle).chain(), (apply_lighting, apply_giiv).chain().run_if(|| !crate::sr_map::active())).chain().run_if(resource_exists::<MapLighting>), frame_rate_log, switch_map, go_to_map.after(switch_map)))
             .add_systems(Startup, (crate::sandbox::spawn_enemies, crate::sandbox::spawn_bushes).after(load_map))
             .add_systems(Update, (crate::sandbox::place_wolf, crate::sandbox::watch, mesh_events, crate::sandbox::respawn_lineup, crate::sandbox::catalog_shots.run_if(resource_exists::<crate::sandbox::Catalog>)))
             .add_systems(FixedUpdate, bodies_on_terrain.after(ActorSet::Advance).before(crate::anim::PoseSet));
@@ -2634,7 +2853,7 @@ impl Plugin for MapPlugin {
 fn log_bindless(device: Option<Res<bevy::render::renderer::RenderDevice>>) {
     if let Some(d) = device {
         let l = d.limits();
-        info!("map material bindless: {} (standard {}; sampler array limit {}, storage buffers {})", bevy::pbr::material_uses_bindless_resources::<MapMaterial>(&d), bevy::pbr::material_uses_bindless_resources::<StandardMaterial>(&d), l.max_binding_array_sampler_elements_per_shader_stage, l.max_storage_buffers_per_shader_stage);
+        info!("map material bindless: {} (standard {}; sampler array limit {}, storage buffers {})", bevy::render::material_bind_groups::material_uses_bindless_resources::<MapMaterial>(&d), bevy::render::material_bind_groups::material_uses_bindless_resources::<StandardMaterial>(&d), l.max_binding_array_sampler_elements_per_shader_stage, l.max_storage_buffers_per_shader_stage);
     }
 }
 

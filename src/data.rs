@@ -537,6 +537,13 @@ pub struct Attack {
     pub deflected_action: i64,
     #[serde(default)]
     pub just_deflected_action: i64,
+    /// AtkParam guardAtkRate: an NPC attack's repel power against a guard (guard.rs).
+    #[serde(rename = "guardAtkRate", default)]
+    pub guard_atk_rate: i64,
+    /// AtkParam guardAtkRateCorrection [%]: a Wolf weapon attack's repel power, on the weapon's
+    /// attackBaseRepel (guard.rs).
+    #[serde(rename = "guardAtkRateCorrection", default)]
+    pub guard_atk_rate_correction: f32,
     /// Perilous attacks: cannot be blocked (1) / cannot be deflected either (1).
     #[serde(rename = "disableGuard_vsGuardAttribute0", default)]
     pub disable_guard: i64,
@@ -777,10 +784,6 @@ pub struct Prosthetic {
     /// EquipParamWeapon iconId: the HUD's MENU_ItemIcon_<icon> (hud.rs).
     #[serde(default)]
     pub icon: i64,
-    #[serde(default, rename = "attackBasePhysics")]
-    pub attack_base_physics: f32,
-    #[serde(default, rename = "attackBaseFire")]
-    pub attack_base_fire: f32,
 }
 
 /// A Bullet param row (projectile) and its AtkParam.
@@ -1186,27 +1189,13 @@ impl EnemyFile {
 }
 
 /// BehaviorParam `category` of an NPC hit's behaviour row (200000000 + behaviorVariationId *
-/// 1000 + judge), read once from extracted/json/params/BehaviorParam.json (the per-chr export
-/// carries no NPC behaviour rows). The exe's damage type for a guarded NPC attack comes from
+/// 1000 + judge), from the full param table (the per-chr export carries no NPC behaviour rows). The exe's damage type for a guarded NPC attack comes from
 /// it (FUN_140b698d0, 140b6.c:5487-5534: category 6 -> GUARDED_BOUND_ENEMY1 1008 / NO_BOUND 1019,
 /// 7 -> ENEMY2 1009 / 1020, 8 -> ENEMY3 1010 / 1021), which c9997 ExecAttackJustBound /
 /// ExecAttackBound turn into the AttackBoundEnemy1-3 / AttackNoBoundEnemy1-3 clips. 0 when
 /// the row is missing.
 pub fn behavior_category(row: i64) -> i64 {
-    static CATS: std::sync::OnceLock<HashMap<i64, i64>> = std::sync::OnceLock::new();
-    CATS.get_or_init(|| {
-        let path = crate::paths::extracted().join("json/params/BehaviorParam.json");
-        let Some(v) = std::fs::read_to_string(path).ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()) else { return HashMap::new() };
-        let rows: Vec<serde_json::Value> = match &v["rows"] {
-            serde_json::Value::Array(a) => a.clone(),
-            serde_json::Value::Object(o) => o.values().cloned().collect(),
-            _ => Vec::new(),
-        };
-        rows.iter().filter_map(|r| Some((r["id"].as_i64()?, r["category"].as_i64()?))).collect()
-    })
-    .get(&row)
-    .copied()
-    .unwrap_or(0)
+    crate::items::param("BehaviorParam", row)["category"].as_i64().unwrap_or(0)
 }
 
 /// Does the behaviour graph keep the from generator's root motion through the blend into
@@ -1531,12 +1520,6 @@ pub struct SpCycle {
     pub replace: i64,
 }
 
-/// A full EquipParamWeapon row (the combat export leaves out the tools' rows, e.g. the
-/// umbrellas 76000-76300).
-pub fn weapon_row(id: i64) -> Option<Value> {
-    static T: std::sync::OnceLock<HashMap<i64, Value>> = std::sync::OnceLock::new();
-    T.get_or_init(|| full_param("EquipParamWeapon")).get(&id).cloned()
-}
 
 /// EquipParamGoods useLimitSpEffectType0-4 of a goods row: the stateInfos that refuse its use
 /// (goods 3000, the Healing Gourd: 341 aging, 910 the Owl's recovery seal).
@@ -1584,6 +1567,14 @@ pub fn sp_cycle(id: i64) -> Option<SpCycle> {
 }
 
 /// A full param table from extracted/json/params (rows by id), for fields the export leaves out.
+/// SpEffectParam behaviorRefId of any row (the HKS env 3036 ref), for effects outside Wolf's
+/// exported set (map area effects such as 108900 or the storm-jump areas); 0 for none.
+pub fn sp_effect_behavior_ref(id: i64) -> i64 {
+    static REFS: std::sync::OnceLock<HashMap<i64, i64>> = std::sync::OnceLock::new();
+    let refs = REFS.get_or_init(|| full_param("SpEffectParam").iter().filter_map(|(id, r)| Some((*id, r["behaviorRefId"].as_i64().filter(|&v| v > 0)?))).collect());
+    refs.get(&id).copied().unwrap_or(0)
+}
+
 fn full_param(name: &str) -> HashMap<i64, Value> {
     let path = crate::paths::extracted().join(format!("json/params/{name}.json"));
     let v: Value = std::fs::read_to_string(path).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
@@ -1687,18 +1678,19 @@ pub fn prediction_observe_time(bullet_id: i64) -> f32 {
 }
 
 pub fn super_armor_damage(pc: bool, atk_param_id: i64) -> f32 {
-    static NPC: std::sync::OnceLock<HashMap<i64, f32>> = std::sync::OnceLock::new();
-    static PC: std::sync::OnceLock<(f32, HashMap<i64, f32>)> = std::sync::OnceLock::new();
     let f = |r: &Value, k: &str| r[k].as_f64().unwrap_or(0.0) as f32;
     if pc {
-        let (weapon, corr) = PC.get_or_init(|| {
-            let w = full_param("EquipParamWeapon").get(&5000).map_or(0.0, |r| f(r, "saWeaponDamage"));
-            (w, full_param("AtkParam_Pc").iter().map(|(id, r)| (*id, f(r, "atkSuperArmorCorrection"))).collect())
-        });
-        weapon * corr.get(&atk_param_id).copied().unwrap_or(0.0) / 100.0
+        f(crate::items::param("EquipParamWeapon", 5000), "saWeaponDamage") * f(atk_row(true, atk_param_id), "atkSuperArmorCorrection") / 100.0
     } else {
-        NPC.get_or_init(|| full_param("AtkParam_Npc").iter().map(|(id, r)| (*id, f(r, "atkSuperArmor"))).collect()).get(&atk_param_id).copied().unwrap_or(0.0)
+        f(atk_row(false, atk_param_id), "atkSuperArmor")
     }
+}
+
+/// A whole AtkParam row (AtkParam_Pc for Wolf's attacks, else AtkParam_Npc) for the fields the
+/// combat export does not carry (isDisableNoDamage, guardAtkRate, guardBreakRate ...). Null when
+/// the row is missing.
+pub fn atk_row(pc: bool, atk_param_id: i64) -> &'static Value {
+    crate::items::param(if pc { "AtkParam_Pc" } else { "AtkParam_Npc" }, atk_param_id)
 }
 
 /// An NPC's behaviour judge as its worn SpEffects shift it (exe FUN_140a12b80, 140a1.c:2191-2236,

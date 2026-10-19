@@ -361,7 +361,7 @@ pub struct DetailUniform {
 
 impl bevy::pbr::MaterialExtension for SekiroExt {
     fn fragment_shader() -> bevy::shader::ShaderRef {
-        "embedded://sv1/sekiro_material.wgsl".into()
+        "embedded://sv1/sekiro_material.wesl".into()
     }
 }
 
@@ -369,7 +369,7 @@ pub struct ModelPlugin;
 
 impl Plugin for ModelPlugin {
     fn build(&self, app: &mut App) {
-        bevy::asset::embedded_asset!(app, "sekiro_material.wgsl");
+        bevy::asset::embedded_asset!(app, "sekiro_material.wesl");
         app.add_plugins(MaterialPlugin::<SekiroMaterial>::default());
         app.add_systems(PostStartup, attach_models.after(crate::anim::AnimSet))
             // Characters spawned later (a fight reset's line-up, the encounter picker).

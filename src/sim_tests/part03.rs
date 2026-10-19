@@ -190,16 +190,23 @@ pub(crate) fn ichimonji_recovers_posture() {
 pub(crate) fn flowing_water_cuts_guarded_posture_damage_by_attack_attribute() {
     // Live 2026-10-08: Samurai General slash attacks (staminaPhysicsAttribute 1) cost x0.785 posture on
     // deflect / block, c1180 / c1470 strikes (2) x0.74 = SkillParam 280 "Flowing Water" -> SpEffect 150420
-    // (deflect, stateInfo 158) / 150421 (guard, 204): defSlashStaminaDmgRate 0.8, others 0.75 (+ int truncation).
+    // (block family, stateInfo 158) / 150421 (deflect family, 204): defSlashStaminaDmgRate 0.8, others
+    // 0.75, after the sword's 1 % guard cut, truncated (guard::guarded_posture).
     let app = app();
     let combat = app.world().resource::<Combat>();
     let mut config = app.world().resource::<crate::config::GameConfig>().clone();
+    let row = crate::guard::GuardRow::of(true, 5000, 90);
+    assert!(row.is_some(), "Wolf's guard row 105000090 -> 5000090");
+    let posture = |config: &crate::config::GameConfig, attribute: i64, deflect: bool| {
+        let skills: Vec<i64> = crate::combat::skill_sp_ids(combat, config).collect();
+        crate::guard::guarded_posture(18.0, &crate::guard::GuardDef::player(5000, deflect), row.as_ref(), &skills, deflect, attribute)
+    };
     config.player.skills = vec![];
-    assert_eq!(crate::combat::guard_skill_rate(combat, &config, 1, true), 1.0, "no skill = level-1 Wolf");
+    assert_eq!(posture(&config, 1, false), 17.0, "no skill = level-1 Wolf: 18 x 0.99");
     config.player.skills = vec![280];
     for deflect in [true, false] {
-        assert!((crate::combat::guard_skill_rate(combat, &config, 1, deflect) - 0.8).abs() < 1e-6);
-        assert!((crate::combat::guard_skill_rate(combat, &config, 2, deflect) - 0.75).abs() < 1e-6);
+        assert_eq!(posture(&config, 1, deflect), 14.0, "17.82 x 0.8");
+        assert_eq!(posture(&config, 2, deflect), 13.0, "17.82 x 0.75");
     }
 }
 

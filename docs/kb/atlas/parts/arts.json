@@ -1,0 +1,3765 @@
+[
+ {
+  "id": "arts.art-roster",
+  "category": "arts",
+  "title": "Combat art rows and ids",
+  "summary": "Sekiro has 19 combat art weapon rows (EquipParamWeapon 5100-6100 base arts, 7000-7700 upgrades). Each points to a behavior variation id and a resident SpEffect that other rules key on.",
+  "values": "5100 Whirlwind Slash var 5001 res 140000; 5200 Nightjar Slash var 5002 res 140100; 7000 Nightjar Reversal var 5002 res 140101; 5300 Ichimonji var 5003 res 140200; 7100 Ichimonji Double res 140201; 5400 Dragon Flash var 5004 res 140300; 5500 Ashina Cross var 5005 res 140400; 6100 One Mind var 5005 res 100286; 5600 Floating Passage var 5020 res 140500; 7200 Spiral Cloud var 5021 res 140501; 5700 Mortal Draw var 5007 res 140600; 7300 Empowered Mortal Draw res 140601; 5800 Senpou Leaping Kicks var 5008 res 140700; 7400 High Monk res 140701; 5900 Praying Strikes var 5009 res 140800; 7500 Exorcism res 140801; 6000 Shadowrush var 5010 res 140900; 7600 Shadowfall res 140901; 7700 Sakura Dance var 5030 res 141000. All have attackBasePhysics 40, attackBaseRepel 10.",
+  "how": "EquipParamWeapon behaviorVariationId selects BehaviorParam_PC rows 100000000 + var*1000 + judge; residentSpEffectId marks which art is equipped (the HKS and event scripts read it).",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/EquipParamWeapon.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/skills.md"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/msg/engus (item.msgbnd.d item/weapon FMGs, menu.msgbnd.d loading texts)"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/player.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Equip each art in the F1 skills menu and check the HUD name; sim test every_art_starts_and_costs_its_emblems covers all 19.",
+  "note": "Base art and its upgrade share a behavior variation (5100/7000 etc. are different rows, 5500 and 6100 share var 5005).",
+  "needs": [
+   {
+    "id": "progression.skill-tree",
+    "why": "arts are learned and equipped through the skill tree"
+   }
+  ]
+ },
+ {
+  "id": "arts.emblem-cost-table",
+  "category": "arts",
+  "title": "Spirit Emblem cost of each art",
+  "summary": "Only some arts cost Spirit Emblems; the cost is the art's EquipParamWeapon resourceItemA.",
+  "values": "Dragon Flash 2, Ashina Cross 2, One Mind 3, Mortal Draw 3, Empowered Mortal Draw 3, Spiral Cloud Passage 1, Sakura Dance 1, Shadowrush 2 (paid at the leap), Shadowfall 2 (paid at the leap). Free: Whirlwind, Nightjar (both), Ichimonji (both), Floating Passage, Senpou kicks, High Monk, Praying Strikes (both).",
+  "how": "EquipParamWeapon resourceItemA; the emblems are goods 1000 (Spirit Emblem).",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/EquipParamWeapon.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/skills.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/player.rs art_cost"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Use each art with 0 emblems and 5 emblems and watch the counter (top right).",
+  "note": "Floating Passage is 0 here and Spiral Cloud Passage is 1.",
+  "needs": [
+   {
+    "id": "arts.item-spirit-emblem",
+    "why": "emblems are the currency"
+   }
+  ]
+ },
+ {
+  "id": "arts.emblem-payment-wepcost",
+  "category": "arts",
+  "title": "When the emblems are actually spent",
+  "summary": "Emblems are not paid on the button press. A behavior row with wepCost 1 pays the cost when that attack fires. Rows named 'form consumption dummy' (judge 999) pay without an attack.",
+  "values": "wepCost 1 judges: Dragon Flash 200 and 220; Ashina Cross/One Mind 200 and 210; Mortal Draw 999; Spiral Cloud 999; Shadowrush 215 (the leap hit); Sakura Dance 200. Rows with the same attack but no cost ('no form fee') carry the HP damage.",
+  "how": "BehaviorParam_PC.wepCost, checked by TAE 1 / 2 / 940 when the behavior fires.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/BehaviorParam_PC.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/skills.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/player.rs, src/prosthetic.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Press Dragon Flash with exactly 1 emblem: the empty clack plays and nothing is paid.",
+  "note": "The cost row often has atkPhysCorrection 0 and the no-fee twin has 200; how the game picks between them is the emblem gate SpEffect (arts.emblem-gate-speffects).",
+  "needs": [
+   {
+    "id": "arts.emblem-cost-table",
+    "why": "the amount paid"
+   }
+  ]
+ },
+ {
+  "id": "arts.emblem-gate-speffects",
+  "category": "arts",
+  "title": "The 'has emblems' StateInfo gates",
+  "summary": "Event scripts (common.emevd) copy the emblem counts into a value every frame and put a gate SpEffect on Wolf while the equipped art's cost is affordable. The HKS then picks the emblem version or the NoResource version.",
+  "values": "Event 9900 copies goods 1000+1001 to value 9910. 9930-9934 set/clear: 140300 -> 140310 (stateInfo 995, cost 2); 140501 -> 140510 (994, 1); 140600/140601 -> 140610 (993, 3); 100286 -> 140410 (990, 3); 140900/140901 -> 140910 (2). Ashina Cross 140400 has no gate.",
+  "how": "common.emevd events 9900 and 9930-9934 (started by event 0 with the cost), SpEffect stateInfo read by HKS.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/event/common.emevd"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/skills.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/emevd.rs, src/player.rs art_emblem_gate"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Hold 2 vs 1 emblem and start Dragon Flash: with 1 the NoResource state plays.",
+  "note": "",
+  "needs": [
+   {
+    "id": "arts.emblem-cost-table",
+    "why": "gate compares against the cost"
+   }
+  ]
+ },
+ {
+  "id": "arts.no-emblem-states",
+  "category": "arts",
+  "title": "Arts used without enough emblems",
+  "summary": "Too few emblems selects the *NoResource states (a050 offsetType 13). Only Dragon Flash (a103 clips) and Sakura Dance (a110) ship dedicated air NoResource clips; the other arts have none.",
+  "values": "Air clips: a103 / a110 316201 / 316211; a110 316261 / 316271 / 316711 / 316721.",
+  "how": "HKS *NoResource transitions; CMSG offsetType 13.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/skills.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/player.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Fire Sakura Dance in the air with 0 emblems.",
+  "note": "The export needed export_states.txt to map offsetType 13; fixed 2026-10-10.",
+  "needs": [
+   {
+    "id": "arts.emblem-gate-speffects",
+    "why": "selects the NoResource state"
+   }
+  ]
+ },
+ {
+  "id": "arts.whirlwind-slash",
+  "category": "arts",
+  "title": "Whirlwind Slash",
+  "summary": "A free spinning slash art. In the data both hits have HP correction 0 and only posture and stamina damage, with guardAtkRateCorrection 300 so it damages guard.",
+  "values": "Var 5001: judge 200 (atk 5001200) directAtkStamDamage 10, atkStam 5, dmgLevel 1; judge 201 (5001201) directAtkStamDamage 20, atkStam 10, dmgLevel 2. atkPhysCorrection 0 on both. Resident 140000. Description: hits several enemies and damages through guard.",
+  "how": "AtkParam_Pc 5001200/5001201 via BehaviorParam_PC 105001200/201.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/AtkParam_Pc.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/BehaviorParam_PC.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/msg/engus (item.msgbnd.d item/weapon FMGs, menu.msgbnd.d loading texts)"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/player.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Hit a dummy and read the log: posture damage only.",
+  "note": "Open question: any HP damage from these rows is not in the two AtkParam rows (not traced further).",
+  "needs": [
+   {
+    "id": "combat.posture-bar",
+    "why": "posture damage is its job"
+   }
+  ]
+ },
+ {
+  "id": "arts.nightjar-slash",
+  "category": "arts",
+  "title": "Nightjar Slash and Reversal",
+  "summary": "A free leaping dive slash. The upgrade (Reversal) shares behavior var 5002 and only changes the resident SpEffect.",
+  "values": "Var 5002: judge 200 atk 5002200 atkPhysCorrection 212, directAtkStamDamage 30, atkStam 15; judge 201 atk 5002201 phys 188, same posture. dmgLevel 2. Residents 140100 (base) and 140101 (Reversal).",
+  "how": "AtkParam_Pc 5002200/5002201.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/AtkParam_Pc.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/skills.md"
+   },
+   {
+    "kind": "clip",
+    "ref": "docs/kb/clips.md (sekiro_all_skills_rYcHlOgI7pg.mp4, arts and tools chapters)"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/player.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Use it at range and from a sprint; compare 0:58-1:49 of the skills clip.",
+  "note": "KB open item: a sprint Nightjar Slash picks F/N/B from the stick; HKS not confirmed.",
+  "needs": [
+   {
+    "id": "movement.sprint",
+    "why": "the sprint branch"
+   }
+  ]
+ },
+ {
+  "id": "arts.ichimonji",
+  "category": "arts",
+  "title": "Ichimonji and Ichimonji: Double",
+  "summary": "A free one-hit overhead strike with heavy posture damage that also restores Wolf's own posture. The Double upgrade adds a second cut.",
+  "values": "Var 5003: j200 (charged) phys 275, posture 75, atkStam 38, dmgLevel 3; j201 phys 225, posture 60, atkStam 30; j210 (Double second cut) phys 150, posture 30, atkStam 15. Self posture recovery: SpEffect 140210 changeStaminaRate +12.5. Residents 140200 / 140201.",
+  "how": "AtkParam_Pc 5003200/201/210; SpEffect 140210 added on the hit.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/AtkParam_Pc.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/skills.md"
+   },
+   {
+    "kind": "clip",
+    "ref": "docs/kb/clips.md (sekiro_all_skills_rYcHlOgI7pg.mp4, arts and tools chapters)"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/player.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Test ichimonji_recovers_posture; compare 1:49-2:33 of the clip.",
+  "note": "Plain Ichimonji ends near 1:48 in the clip, Double starts 1:49 (correction in clips.md).",
+  "needs": [
+   {
+    "id": "combat.posture-bar",
+    "why": "recovers own posture"
+   }
+  ]
+ },
+ {
+  "id": "arts.dragon-flash",
+  "category": "arts",
+  "title": "Dragon Flash",
+  "summary": "Sheathed-stance iai that can be charged to release shockwaves. Costs 2 emblems; the HP damage sits on the 'no form fee' twin rows.",
+  "values": "Var 5004: j200 COST (charge) posture 45; j201 no-fee phys 200 posture 45; j210/215 charge bullets 500410/500415 (posture 60, spAttribute 1); j220 COST + j221 (phys 200) the plain draw; j230 bullet 500430 (posture 60). Resident 140300, gate 140310 stateInfo 995.",
+  "how": "BehaviorParam_PC 1050042xx; bullets 500410, 500430.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/BehaviorParam_PC.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/Bullet.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/skills.md"
+   },
+   {
+    "kind": "clip",
+    "ref": "docs/kb/clips.md (sekiro_all_skills_rYcHlOgI7pg.mp4, arts and tools chapters)"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/player.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Charge to the release and see the shockwave bullet; sim test dragon_flash_costs_two_emblems.",
+  "note": "",
+  "needs": [
+   {
+    "id": "arts.emblem-cost-table",
+    "why": "2 emblems"
+   }
+  ]
+ },
+ {
+  "id": "arts.ashina-cross",
+  "category": "arts",
+  "title": "Ashina Cross",
+  "summary": "Sheathed-stance art with a held stance to intercept. Costs 2 emblems and has no gate SpEffect in the events.",
+  "values": "Var 5005 shared with One Mind: j200 COST posture 30, j201 posture 45 dmgLevel 3, j202 phys 133, j203 phys 267 (no-form-fee). Resident 140400.",
+  "how": "BehaviorParam_PC 105005200-203.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/BehaviorParam_PC.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/skills.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/player.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Hold the stance and let an enemy attack.",
+  "note": "An earlier id guess gave it gate 140410; fixed to none.",
+  "needs": []
+ },
+ {
+  "id": "arts.one-mind",
+  "category": "arts",
+  "title": "One Mind",
+  "summary": "An iai flurry. 3 emblems; shares variation 5005 with Ashina Cross but has its own resident (100286) and gate 140410 (stateInfo 990).",
+  "values": "Judges 210/240 COST posture 45; sub-strike rows 211-216 and 241-246 posture 15, dmgLevel 8; enchant variants of strikes add red blood, poison (9002), white blood (106065); 214/215 apply 107710-107712 and 230620.",
+  "how": "BehaviorParam_PC 105005210-246; hold -> VariationCombo2 (HKS 5379).",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/BehaviorParam_PC.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/skills.md"
+   },
+   {
+    "kind": "clip",
+    "ref": "docs/kb/clips.md (sekiro_all_skills_rYcHlOgI7pg.mp4, arts and tools chapters)"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/player.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Compare 5:57-7:16 of the clip; test arts_combo_out_of_their_jump_and_hold.",
+  "note": "The enchant rows look like shared sword imbue behaviors; why 107710-12 and 230620 appear here is not explained.",
+  "needs": [
+   {
+    "id": "arts.emblem-gate-speffects",
+    "why": "gate 140410"
+   }
+  ]
+ },
+ {
+  "id": "arts.floating-passage-spiral-cloud",
+  "category": "arts",
+  "title": "Floating Passage and Spiral Cloud Passage",
+  "summary": "Floating Passage is a free dance of weak hits; Spiral Cloud Passage costs 1 emblem and adds shockwaves.",
+  "values": "Var 5020: five hits, posture 10 to 20, phys correction 0. Var 5021: eight hits posture 10, a finisher posture 20 (j208), shockwave rows 220-228 posture 5-10 (dmgLevel 8), cost row j999 (dummy). Residents 140500 / 140501, gate 140510 (994).",
+  "how": "BehaviorParam_PC 105005020x / 105005021x.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/BehaviorParam_PC.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/AtkParam_Pc.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/skills.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/player.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Compare 4:19-5:11 of the clip.",
+  "note": "",
+  "needs": []
+ },
+ {
+  "id": "arts.mortal-draw",
+  "category": "arts",
+  "title": "Mortal Draw and Empowered Mortal Draw",
+  "summary": "Mortal Blade arts, 3 emblems. The draw has a base and an emblem-boosted pair of cuts.",
+  "values": "Var 5007: j200/210 phys 200 posture 75; j201/211 phys 150 posture 50; j220-231 (emblem rows) phys 0 posture 75/50; j999 cost dummy. Residents 140600 / 140601, gate 140610 (993).",
+  "how": "BehaviorParam_PC 105007200-231.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/BehaviorParam_PC.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/skills.md"
+   },
+   {
+    "kind": "clip",
+    "ref": "docs/kb/clips.md (sekiro_all_skills_rYcHlOgI7pg.mp4, arts and tools chapters)"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/player.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Compare 7:16-7:52 of the clip.",
+  "note": "Plain Mortal Draw already shows red trails (clips.md correction).",
+  "needs": []
+ },
+ {
+  "id": "arts.senpou-kicks-high-monk",
+  "category": "arts",
+  "title": "Senpou Leaping Kicks and High Monk",
+  "summary": "Free kick combo that starts with a leap. High Monk continues in the air.",
+  "values": "Var 5008: j200 phys 40 posture 10; j201 phys 80 posture 15; j210/211 phys 60; j220/221 phys 80 posture 20; j230 phys 100 posture 30 dmgLevel 3. SpEffects 104011, 104017, 104018 (reaction plays). Leap row 920 10010 6.4 m/s, 9.64 up, homing 20000.",
+  "how": "BehaviorParam_PC 105008xxx; TAE 920 launch; ChrPhysicsHomingParam 20000.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/BehaviorParam_PC.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/skills.md"
+   },
+   {
+    "kind": "clip",
+    "ref": "docs/kb/clips.md (sekiro_all_skills_rYcHlOgI7pg.mp4, arts and tools chapters)"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/player.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Test leaping_kicks_land_in_front_of_the_lock_target.",
+  "note": "",
+  "needs": [
+   {
+    "id": "movement.air-actions",
+    "why": "jump and landing chain"
+   }
+  ]
+ },
+ {
+  "id": "arts.praying-strikes",
+  "category": "arts",
+  "title": "Praying Strikes and Exorcism",
+  "summary": "Free elbow and palm flurry that stops enemy counterattacks; Exorcism adds a finisher.",
+  "values": "Var 5009: j200 phys 175 posture 60 dmgLevel 3; j201 phys 25 posture 15; j210 phys 75 posture 30; j220 phys 125 posture 45; j251 phys 25.",
+  "how": "BehaviorParam_PC 105009xxx.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/BehaviorParam_PC.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/skills.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/player.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Compare 2:33-2:55 of the clip.",
+  "note": "",
+  "needs": []
+ },
+ {
+  "id": "arts.shadowrush-shadowfall",
+  "category": "arts",
+  "title": "Shadowrush and Shadowfall",
+  "summary": "A thrust that vaults off the target; the 2 emblems are spent only when the thrust connects and the leap happens. Shadowfall adds a dive slash.",
+  "values": "Var 5010: j200 phys 250 posture 30; j210 phys 200; j215 COST phys 100 posture 45 (hit jump); j220/221 the Shadowfall slashes posture 10/20. SpEffect 104010. Gate window ref 225 (a109_316000 f44-55); Shadowfall ref 226 (f24-39). Residents 140900 / 140901, gate 140910.",
+  "how": "BehaviorParam_PC 105010xxx; HKS 5750, 2893, 2928.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/BehaviorParam_PC.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/skills.md"
+   },
+   {
+    "kind": "clip",
+    "ref": "docs/kb/clips.md (sekiro_all_skills_rYcHlOgI7pg.mp4, arts and tools chapters)"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/player.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Test shadowrush_jumps_off_the_hit; a miss costs nothing.",
+  "note": "",
+  "needs": [
+   {
+    "id": "arts.emblem-payment-wepcost",
+    "why": "paid at the leap"
+   }
+  ]
+ },
+ {
+  "id": "arts.sakura-dance",
+  "category": "arts",
+  "title": "Sakura Dance",
+  "summary": "A leaping chain art that can switch into mid-air tools. Costs 1 emblem and allows one air use per jump.",
+  "values": "Var 5030: ground rows j200-202 posture 10/20/30; j205-207 phys 50/100/150; many dummy rows 210-267 (no damage); lightning reversal tie-in SpEffect 9400. Resident 141000. Air count env g_airSpecialAttackCount.",
+  "how": "BehaviorParam_PC 105030xxx; TAE 920/922.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/BehaviorParam_PC.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/skills.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/player.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Test arts_in_the_air; no clip of Sakura Dance exists in the skills recording.",
+  "note": "No clip, so its look is unconfirmed.",
+  "needs": [
+   {
+    "id": "movement.air-actions",
+    "why": "leaps and air count"
+   }
+  ]
+ },
+ {
+  "id": "arts.mid-air-arts",
+  "category": "arts",
+  "title": "Using arts in the air",
+  "summary": "Some arts have air versions (HKS BEH_A_AIR_SP_ATTACK) with a landing chain; they need the Mid-Air Combat Arts action unlocked.",
+  "values": "Air arts: 101, 107, 108 Start/Loop/Land; 104 hold start/loop/end; 109 Shadowfall off the hit; 110 landing jump. Unlock ACTION_UNLOCK_TYPE 25.",
+  "how": "HKS 2906-2940, 1971-2015; ActionUnlockParam via SkillParam virtualWeaponId (skill 6 -> 200500).",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/skills.md"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/ActionUnlockParam.json"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/player.rs air_art_state"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Cast an art while falling.",
+  "note": "",
+  "needs": [
+   {
+    "id": "movement.air-actions",
+    "why": "needs air state"
+   }
+  ]
+ },
+ {
+  "id": "arts.lightning-reversal",
+  "category": "arts",
+  "title": "Lightning Reversal (return a bolt)",
+  "summary": "Wolf can catch a lightning strike in the air and return it. The return attack applies the shock chain to the enemy and does large HP damage plus a stagger.",
+  "values": "Weak: a050_308910 / landing 308911; AttackBehavior 280/281 at 0.133-0.267 s -> BehaviorParam_PC 105000281 -> AtkParam_Pc 5000281: spAttribute 6, spEffectId0 9400, capsule dummies 10120 -> 10141 radius 1.2. 9400 -> 9420: registFreeze 200, changeHpRate 67 + 320 HP, posture -5 % -180. Genichiro dropped from 2556 to 524 HP in the sekiro-rs replay.",
+  "how": "HKS reference 511 (weak) / 510 (strong) with the attack input in the air.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/skills.md"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "../sekiro-rs/docs/GENICHIRO.md (Castle lightning)"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/player.rs, src/status.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "crates/sim/tests/it/lightning.rs"
+  },
+  "check": "Be struck by Tomoe's bow in the air and press attack; test the_reversal_bolt_stuns_tomoe.",
+  "note": "",
+  "needs": [
+   {
+    "id": "arts.status-shock",
+    "why": "the return uses the shock chain"
+   }
+  ]
+ },
+ {
+  "id": "arts.latent-posture-skills",
+  "category": "arts",
+  "title": "Latent posture skills (Mikiri and deflect)",
+  "summary": "Two latent skills raise posture damage: Mikiri Counter posture and deflect posture.",
+  "values": "Skill 70 -> SpEffect 150400 attackHitParryStaminaAttackRate 1.25; skill 270 -> 150410 defStaminaAttackRate 1.25.",
+  "how": "SkillParam spEffect1-3 -> SpEffectParam, combat::skill_rate.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SkillParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/skills.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/combat.rs skill_rate"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Test latent_skill_rates.",
+  "note": "",
+  "needs": [
+   {
+    "id": "combat.mikiri",
+    "why": "the counter it boosts"
+   }
+  ]
+ },
+ {
+  "id": "arts.knowledge-of-medicine",
+  "category": "arts",
+  "title": "Knowledge of Medicine and Shinobi Medicine",
+  "summary": "Skills 170/171 and 600-602 each add one stack that makes the Healing Gourd heal more.",
+  "values": "SpEffect 150210 adds accumuVal 1 to the stack in 150200 (accumuOverVal 2) whose over-fire climbs 150201-150204: gourd heal correction x1.1, x1.2, x1.3, x1.4, x1.5.",
+  "how": "SpEffectParam accumuVal / accumuOverFireId / changeHpEstusFlaskCorrectRate.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SkillParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/skills.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/player.rs medicine_rate"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Learn skills and drink the gourd; test latent_skill_rates.",
+  "note": "",
+  "needs": [
+   {
+    "id": "arts.item-healing-gourd",
+    "why": "multiplies the heal"
+   }
+  ]
+ },
+ {
+  "id": "arts.buff-duration-skill",
+  "category": "arts",
+  "title": "Buff duration latent skill",
+  "summary": "A latent skill (370) multiplies the duration of buff effects that are flagged extendable.",
+  "values": "SpEffect 150600 extendLifeRate 1.5; applies to rows with isExtendSpEffectLife 1 (the sugars and spiritfalls 3351-3441 carry the flag).",
+  "how": "SpEffectParam isExtendSpEffectLife / extendLifeRate.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/skills.md"
+   }
+  ],
+  "confidence": "open-question",
+  "ours": {
+   "has": "partial",
+   "where": "src/items.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Eat a sugar with the skill: 30 s should become 45 s.",
+  "note": "KB notes it was not applicable when written (no sugars in game); items.rs now wears the sugars, whether the extension is applied is not confirmed.",
+  "needs": [
+   {
+    "id": "arts.item-sugar-ako",
+    "why": "a buff it extends"
+   }
+  ]
+ },
+ {
+  "id": "arts.covert-skills",
+  "category": "arts",
+  "title": "Covert A and B",
+  "summary": "Latent stealth skills lower how far enemies see and hear Wolf.",
+  "values": "Covert A 150000 sightSearchEnemyCut 20 and aroundSightPointAddRate 0.5; Covert B 150010 hearingSearchEnemyRate 0.5.",
+  "how": "SkillParam 60/61 -> SpEffects read by enemy sight/hearing.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/skills.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/enemy.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Walk near an enemy with and without the skill.",
+  "note": "",
+  "needs": [
+   {
+    "id": "stealth.detection",
+    "why": "feeds enemy sight and hearing"
+   }
+  ]
+ },
+ {
+  "id": "arts.deathblow-recovery-skills",
+  "category": "arts",
+  "title": "Deathblow recovery skills",
+  "summary": "Some skills return HP or posture on a deathblow; after a Todome-style deathblow they are blocked.",
+  "values": "Kill frame adds SpEffects: 105050 posture 34 % for all; 150301/150311 HP +10 %; 150321/150331 posture 34 %, gated by the skills' permit stateInfo (80/604 -> 986/987; 265/605 -> 984/985). Blocked by 105051 / 150302-150332 from Todome anims (same spCategory, priority 2 vs 3).",
+  "how": "Deathblow clip a20x_510xxx and Todome a000_710205-7 TAE 401.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/skills.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/player.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Test deathblows_give_back_posture_and_hp_with_the_skills.",
+  "note": "",
+  "needs": [
+   {
+    "id": "deathblows.recovery",
+    "why": "what is recovered"
+   }
+  ]
+ },
+ {
+  "id": "arts.skill-unlock-actions",
+  "category": "arts",
+  "title": "Skill unlocks of moves",
+  "summary": "Moves such as mid-air deflect, air tools, air arts, sprint slide and the prosthetic follow-ups are gated by ActionUnlockParam through skills' virtual weapons.",
+  "values": "env(3033, ACTION_UNLOCK_TYPE_n): 15 mid-air deflect, 16 air tools, 25 mid-air combat arts, 26 sprint slide, 20-23 prosthetic follow-ups.",
+  "how": "Exe FUN_1407a7fe0; SkillParam.virtualWeaponId -> EquipParamWeapon.actionUnlockParamId.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/ActionUnlockParam.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/skills.md"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "yes",
+   "where": "src/combat.rs action_unlocked"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Config player.unlock_all_moves false and check the move is blocked.",
+  "note": "",
+  "needs": [
+   {
+    "id": "progression.skill-tree",
+    "why": "where skills are bought"
+   }
+  ]
+ },
+ {
+  "id": "arts.esoteric-texts",
+  "category": "arts",
+  "title": "Esoteric Texts open skill schools",
+  "summary": "Five key items unlock the skill schools in the Acquire Skills menu.",
+  "values": "Goods 2920 Shinobi, 2921 Prosthetic, 2922 Ashina, 2923 Senpou, 2924 Mushin Esoteric Text; unique, goodsType 1, maxNum 1.",
+  "how": "EquipParamGoods + menu rule.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/EquipParamGoods.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/skills.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/skill_tree.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Open Acquire Skills with no texts.",
+  "note": "Placements in the test map are ours, not the story's; the original menu's hiding rule was not traced in the exe.",
+  "needs": [
+   {
+    "id": "progression.skill-tree",
+    "why": "gates the menu"
+   }
+  ]
+ },
+ {
+  "id": "arts.tool-families",
+  "category": "arts",
+  "title": "Prosthetic tool families and levels",
+  "summary": "There are 10 tool families (wepmotionCategory 70-79) with 40 level rows in EquipParamWeapon 70000-79200. Each family's rows share a behavior variation, upgrades change it or its resident SpEffect.",
+  "values": "70 Shuriken: 70000 Loaded, 70100 Spinning, 70200 Gouging Top, 70300 Phantom Kunai, 70400 Sen Throw, 70500 Lazulite. 71 Firecracker: 71000, 71100 Spring-load, 71200 Long Spark, 71300 Purple Fume. 72 Flame Vent: 72000, 72100, 72200 Okinaga's, 72300 Lazulite. 73 Axe: 73000, 73100, 73200 Sparking, 73300 Lazulite. 74 Mist Raven: 74000, 74100 Aged Feather, 74200 Great Feather. 75 Sabimaru: 75000, 75100, 75200 Piercing, 75300 Lazulite. 76 Umbrella: 76000, 76100 Magnet, 76200 Suzaku's, 76300 Phoenix's. 77 Divine Abduction: 77000, 77100 Double, 77200 Golden Vortex. 78 Spear: 78000, 78100 Thrust, 78200 Cleave, 78300 Spiral, 78400 Leaping Flame. 79 Finger Whistle: 79000, 79100 Mountain Echo, 79200 Malcontent. Resident SpEffects 127000-127920.",
+  "how": "EquipParamWeapon wepmotionCategory, behaviorVariationId, residentSpEffectId; upgrades are unlocked by the Sculptor with materials (upgrade items 701000-792000 are virtual rows).",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/EquipParamWeapon.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/skills.md"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/msg/engus (item.msgbnd.d item/weapon FMGs, menu.msgbnd.d loading texts)"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/prosthetic.rs"
+  },
+  "his": {
+   "has": "partial",
+   "where": "crates/sim/src/bullets.rs, crates/sim/tests/it/owl_tools.rs (enemy-side tool bullets only)"
+  },
+  "check": "Open the F1 skills menu and cycle the 3 tool slots; every level is listed.",
+  "note": "Sekiro tool upgrades need Scrap Iron, Gunpowder etc.; the material costs were not extracted for this atlas.",
+  "needs": [
+   {
+    "id": "progression.sculptor-upgrades",
+    "why": "how levels are obtained"
+   }
+  ]
+ },
+ {
+  "id": "arts.tool-emblem-costs",
+  "category": "arts",
+  "title": "Emblem cost of each tool level",
+  "summary": "Every tool use costs Spirit Emblems, set per level by resourceItemA. Costs are per behavior that fires, not per press.",
+  "values": "Shuriken 1 (Kunai 2, Sen Throw 2); Firecracker 2 on all four; Flame Vent 3 on all four; Axe 2 on all four; Mist Raven 2, 2, 3 (Great Feather); Sabimaru 1; Umbrella 1; Divine Abduction 3, 3, 4 (Golden Vortex); Spear 1,1,1,1 and Leaping Flame 2; Finger Whistle 3, 3, 4 (Malcontent).",
+  "how": "EquipParamWeapon resourceItemA; BehaviorParam_PC wepCost judges (Shuriken 100/110/150/160; Sabimaru 7 judges; Spear 100/105).",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/EquipParamWeapon.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/BehaviorParam_PC.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/skills.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/prosthetic.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Use each tool with 0 and enough emblems; no emblems plays W_SubAttackFailed (a070_400900).",
+  "note": "Mist Raven 74200 shows no wepCost judge in the variation rows read; its cost may sit on a 999 row. Open-question.",
+  "needs": [
+   {
+    "id": "arts.item-spirit-emblem",
+    "why": "emblems are the currency"
+   }
+  ]
+ },
+ {
+  "id": "arts.tool-switch-and-press",
+  "category": "arts",
+  "title": "Switching tools and pressing the tool button",
+  "summary": "Z switches the equipped tool (AddSubWeaponChange a000_412090 then SubWeaponExpand in the tool's group). The tool button starts the tool's state; a hit in the ref 302 window or the LV1 resident (ref 314) forces release, so LV1 tools never charge.",
+  "values": "HKS press 3523, release 3750, validates 6220-6227, state ends 536-570. Combos use ref 300 plus the same tool. Only a070 ships 412xxx clips; a071-a079 body clips fall back to a070's.",
+  "how": "c0000 HKS transitions.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/skills.md"
+   },
+   {
+    "kind": "exe",
+    "ref": "tools/anim_info.py / HKS c0000"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/prosthetic.rs hks module"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Switch with Z and fire from standing, sprint and crouch (test tools_from_a_sprint_and_a_crouch).",
+  "note": "",
+  "needs": [
+   {
+    "id": "movement.crouch",
+    "why": "crouch variants of 070/071/076/079"
+   }
+  ]
+ },
+ {
+  "id": "arts.tool-air-use",
+  "category": "arts",
+  "title": "Using tools in the air",
+  "summary": "Air tool use is gated by the Mid-Air Prosthetic Tool action and allowed once per jump for 071/072/074/075/077/078/079.",
+  "values": "AIR_SUB_ATTACK_COUNT_MAX 1; HKS 3007; Shuriken AirSubAttackCombo1-3, Firecracker AirSubAttackStart->Loop, Mist Raven AirSubAttackMoveAtemiReady, Umbrella AirSubAttackGuard*, Abduction SpecialEffect, Whistle LockOn; no emblems -> SubAttackFailedAir (a070_403900).",
+  "how": "HKS BEH_A_AIR_SUB_ATTACK 3007; landings 1888-1970.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/skills.md"
+   },
+   {
+    "kind": "clip",
+    "ref": "docs/kb/clips.md (sekiro_all_skills_rYcHlOgI7pg.mp4, arts and tools chapters)"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/prosthetic.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Test tools_work_in_the_air; clip 8:38-9:01.",
+  "note": "Known gap: W_LandAirSubAttackStart is not in the state table; an air move ending mid-air goes to FreeFall.",
+  "needs": [
+   {
+    "id": "movement.air-actions",
+    "why": "air state"
+   }
+  ]
+ },
+ {
+  "id": "arts.shuriken-loaded",
+  "category": "arts",
+  "title": "Loaded Shuriken (70000) and the throw chain",
+  "summary": "The base shuriken throws 1 to 3 shuriken per press at 1 emblem each and is the tool that does extra to jumping enemies.",
+  "values": "Var 7000: j100 (reservoir 1/3 throw) bullets 700000/700002/700004 life 0.5 s, AtkParam phys 50, 75 and posture 2-3; j150/j160 single throw phys 200, posture 5; each carries SpEffect 104012 (stateInfo 917 'anti-air effective when jumping'). Base attack 20.",
+  "how": "Bullet 700000-700060 -> AtkParam_Pc 7000100-7000160.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/Bullet.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/AtkParam_Pc.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/msg/engus (item.msgbnd.d item/weapon FMGs, menu.msgbnd.d loading texts)"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/prosthetic.rs"
+  },
+  "his": {
+   "has": "partial",
+   "where": "crates/sim/src/bullets.rs, crates/sim/tests/it/owl_tools.rs (enemy-side tool bullets only)"
+  },
+  "check": "Throw at a jumping and a grounded enemy and compare; clip 9:40.",
+  "note": "Wiki-style claim of 'huge damage to jumping enemies' is the 917 state; the multiplier itself was not isolated.",
+  "needs": [
+   {
+    "id": "combat.enemy-airborne",
+    "why": "extra effect on jumpers"
+   }
+  ]
+ },
+ {
+  "id": "arts.shuriken-upgrades",
+  "category": "arts",
+  "title": "Spinning Shuriken, Gouging Top, Phantom Kunai, Lazulite Shuriken",
+  "summary": "Upgrades change behavior and numbers: the Spinning Shuriken keeps spinning when charged; Gouging Top pierces and hurts through guard; Phantom Kunai sends butterflies that hurt through guard; Lazulite does heavy HP damage and keeps flying after a hit.",
+  "values": "70100 base attack 20, var 7000; 70200 base 5 var 7002 (posture 5 per hit); 70300 base 10 var 7003, up to 7 butterfly bullets, emblem 2; 70500 base 0 var 7005 with SpEffects 104012 and 104013, emblem 1.",
+  "how": "Variation rows 7002/7003/7005 and bullets.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/EquipParamWeapon.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/BehaviorParam_PC.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/msg/engus (item.msgbnd.d item/weapon FMGs, menu.msgbnd.d loading texts)"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/prosthetic.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Throw each and watch the trail.",
+  "note": "Lazulite HP damage is on attack rows with phys correction 200 (no isolated numbers).",
+  "needs": []
+ },
+ {
+  "id": "arts.sen-throw",
+  "category": "arts",
+  "title": "Sen Throw (70400)",
+  "summary": "A shuriken-wheel upgrade that throws coin bundles. It spends emblems and sen; more sen means more coins.",
+  "values": "Emblem 2; var 7004 has 16 cost judges, up to 11 bullets per throw, SpEffects 127072-127077 with soul -1 (sen paid). Base attack 15.",
+  "how": "BehaviorParam_PC 107004xxx and SpEffect soul field.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/EquipParamWeapon.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/msg/engus (item.msgbnd.d item/weapon FMGs, menu.msgbnd.d loading texts)"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "src/prosthetic.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Throw with 0 sen vs 1000 sen.",
+  "note": "Sen payment not confirmed in our code (no economy in the sim).",
+  "needs": [
+   {
+    "id": "progression.sen",
+    "why": "money spent"
+   }
+  ]
+ },
+ {
+  "id": "arts.firecracker-effect",
+  "category": "arts",
+  "title": "Shinobi Firecracker burst and beast weakness",
+  "summary": "The firecracker burst blinds and, on 'special-attack characters' (animals and beasts), staggers them with posture damage. It also disables the katana guard of normal targets. A 30 s cool time stops repeated staggers.",
+  "values": "Bullets 710000-710003 (8 shots at 0.15 s, charged; 3 for the quick press 710050). Burst 710003: spEffects 230110 (ref 1000056 vs non-special) and 107100 (stateInfo 976 cool time, 30 s), disableGuard vs guard attribute 0. Beast twin 710013: 230111 (ref 1000057), posture 30, atkStam 15, 104030 (reaction permit). Beast tag 230100 (ref 1000055). 9800 'firecracker debuff' 2 s on Purple Fume.",
+  "how": "c9997 GetSpDamage SP_DAMAGE_BURST with refs 1000055/56/57 -> AssassinationBloodReaction (a000_020110).",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/Bullet.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/AtkParam_Pc.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/skills.md"
+   },
+   {
+    "kind": "clip",
+    "ref": "docs/kb/clips.md (sekiro_all_skills_rYcHlOgI7pg.mp4, arts and tools chapters)"
+   },
+   {
+    "kind": "web",
+    "ref": "https://sekiroshadowsdietwice.wiki.fextralife.com/Shinobi+Firecracker"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/prosthetic.rs"
+  },
+  "his": {
+   "has": "partial",
+   "where": "docs: BOSSES-b.md says firecracker fear not implemented"
+  },
+  "check": "Use it on a dog or monkey twice in 30 s: second use does not stagger; clip 10:27.",
+  "note": "Wiki says it does not work on apparitions; not traced in the data here. The Fextralife page (summarised) says beasts are the most affected and that apparitions are not; the data confirms the beast tag, the apparition part is not checked.",
+  "needs": [
+   {
+    "id": "ai.enemy-beast-type",
+    "why": "who counts as a beast"
+   }
+  ]
+ },
+ {
+  "id": "arts.firecracker-beast-roster",
+  "category": "arts",
+  "title": "Which NpcParam rows carry the beast tag 230100",
+  "summary": "104 NpcParam rows have SpEffect 230100 ('firecracker special-attack character'): the beasts.",
+  "values": "Dogs (castle, hidden prison, ninja dogs, samurai residence, sick village, temple, Honjo, Innsmouth dogs), Shamo chickens (7 rows), monkeys and apes (Valley, Temple, Honjo, Sick village, Revenge, shooting, sword, dual, Chigo monkeys, about 60 rows), Fire Cow (4 rows), cavalry warrior horse (5 rows), Yasha Ape (about 6 rows).",
+  "how": "NpcParam spEffectID0-31 containing 230100.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/NpcParam.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/skills.md"
+   },
+   {
+    "kind": "web",
+    "ref": "https://sekiroshadowsdietwice.wiki.fextralife.com/Shinobi+Firecracker"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "src/enemy.rs (Enemy.burst_until, resident 230100)"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Check an enemy's resident list for 230100 in the debug menu.",
+  "note": "Boss rows (e.g. Guardian Ape) were not separated from regular Yasha Ape rows here.",
+  "needs": [
+   {
+    "id": "ai.enemy-beast-type",
+    "why": "tag source"
+   }
+  ]
+ },
+ {
+  "id": "arts.firecracker-upgrades",
+  "category": "arts",
+  "title": "Spring-load, Long Spark and Purple Fume Spark",
+  "summary": "Upgrades change the spark pattern: Spring-load spreads to all sides when charged, Long Spark lingers, Purple Fume Spark leaves a debuff that makes blinded enemies take more damage for 2 s.",
+  "values": "71100 var 7100 (quick 710050 3 shots); 71200 var 7102 SpEffects 104030, 107100, 230110/230111; 71300 var 7103 adds SpEffect 9800 (effectEndurance 2.0). All cost 2 emblems.",
+  "how": "BehaviorParam_PC 1071xxxxx.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/EquipParamWeapon.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/msg/engus (item.msgbnd.d item/weapon FMGs, menu.msgbnd.d loading texts)"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "src/prosthetic.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Compare sparks length in the clip.",
+  "note": "The extra damage under 9800 is not numerically traced.",
+  "needs": []
+ },
+ {
+  "id": "arts.flame-vent",
+  "category": "arts",
+  "title": "Flame Vent (72000) burn tool",
+  "summary": "A short flame blast that deals fire damage and builds Burn. It is a held tool: HoldStart -> HoldLoop while held -> HoldEnd.",
+  "values": "3 emblems; fire base attack 42 (Okinaga's 46); var 7200 burn rows 9102 (62), 9103 (84), 9105 (125), 9109 (250); SpEffects 104015, 106020 (fire enchant 7.5 s). Hold dummy judge 999 (f10 HoldStart, f110 HoldLoop). Ref 321 is never set, so refs 300+329 act as the window.",
+  "how": "HKS flame vent hold; bullets 72xxxx.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/EquipParamWeapon.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/BehaviorParam_PC.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/skills.md"
+   },
+   {
+    "kind": "clip",
+    "ref": "docs/kb/clips.md (sekiro_all_skills_rYcHlOgI7pg.mp4, arts and tools chapters)"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/prosthetic.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": "Owl/Monk burn not done"
+  },
+  "check": "Hold the tool on an enemy until it ignites; clip 12:30.",
+  "note": "Wiki: red-eyed enemies fear fire; behaviour not traced in this pass.",
+  "needs": [
+   {
+    "id": "arts.status-burn",
+    "why": "burn build-up"
+   }
+  ]
+ },
+ {
+  "id": "arts.flame-vent-upgrades",
+  "category": "arts",
+  "title": "Spring-load, Okinaga's and Lazulite Sacred Flame",
+  "summary": "Spring-load charges a big blast that throws opponents; Okinaga's sustains the stream; Lazulite Sacred Flame uses purple fire that hurts apparitions and does not burn.",
+  "values": "72100 base fire 42, var 7200; 72200 fire 46; 72300 var 7203: no burn rows, SpEffects 104016 (anti-spirit), 106030 (spirit enchant), 230645, attack rows with phys 0 (damage comes from the spirit enchant); all cost 3.",
+  "how": "Var 7200/7203.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/EquipParamWeapon.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/msg/engus (item.msgbnd.d item/weapon FMGs, menu.msgbnd.d loading texts)"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "src/prosthetic.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Use Lazulite on an apparition vs the base vent.",
+  "note": "Lazulite apparition damage path is only the spirit-enchant row; not verified.",
+  "needs": [
+   {
+    "id": "arts.status-terror",
+    "why": "apparitions"
+   }
+  ]
+ },
+ {
+  "id": "arts.loaded-axe",
+  "category": "arts",
+  "title": "Loaded Axe family",
+  "summary": "Heavy axe tool: breaks wooden shields and shreds posture. Upgrades add a spring swing, flames (Sparking) or guard-piercing (Lazulite).",
+  "values": "73000 base 45; 73100 same; 73200 base 30 + fire 21 (burn rows 9101, 9103); 73300 base 30. Var 7300 phys correction up to 250, posture up to 120 (base), emblems 2. SpEffect 104031 (permit), 107300 on hit.",
+  "how": "Var 7300/7302/7303.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/EquipParamWeapon.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/BehaviorParam_PC.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/msg/engus (item.msgbnd.d item/weapon FMGs, menu.msgbnd.d loading texts)"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/prosthetic.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Hit a wooden shield; clip 10:46.",
+  "note": "Lazulite axe 'dispels illusions' via a sound (KB: 300157 on dummy 21300).",
+  "needs": []
+ },
+ {
+  "id": "arts.mist-raven",
+  "category": "arts",
+  "title": "Mist Raven (74000)",
+  "summary": "Defensive teleport: when attacked while in the stance, Wolf vanishes and moves away. Aged Feather also works after being hit; Great Feather adds fire and an extra emblem.",
+  "values": "Emblems 2 / 2 / 3. Atemi window ref 305 (a hit in it becomes W_SubAttackJumpReady); stick leaps 404011-404017 slide 5 m; no-stick leap rises (TAE 922 row 7401 +0.6 m/s); SpEffect 9102 on 74200 (fire base 36). Air derive attack 413000.",
+  "how": "HKS 536-561, 1152; TAE 920/922.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/skills.md"
+   },
+   {
+    "kind": "clip",
+    "ref": "docs/kb/clips.md (sekiro_all_skills_rYcHlOgI7pg.mp4, arts and tools chapters)"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/msg/engus (item.msgbnd.d item/weapon FMGs, menu.msgbnd.d loading texts)"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/prosthetic.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Press the tool and get hit; test the_mist_raven_leap_rises_and_falls; clip 11:28.",
+  "note": "",
+  "needs": [
+   {
+    "id": "combat.hit-reaction",
+    "why": "triggers on being hit"
+   }
+  ]
+ },
+ {
+  "id": "arts.sabimaru",
+  "category": "arts",
+  "title": "Sabimaru (75000) poison blades",
+  "summary": "A quick series of sword-like cuts with blue poison rust. Each hit adds poison build-up.",
+  "values": "Emblem 1 (7 cost judges: each cut pays); base 36 (Piercing 10, Lazulite 36). Poison rows 9003 (16), 9004 (31), 9005 (62); Lazulite 9006 (6), 9007 (12), 9008 (25), 9009 (31) -> replace 9045; the 9003-9009 rows also name cycleOccurrence 9020, a row named 'poison damage against women' (HP 10 % + 80, posture -10 %). Piercing: posture 16 / atkStam 8, hurts through guard.",
+  "how": "AtkParam spEffectId and BehaviorParam_PC 107500xxx.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/EquipParamWeapon.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/skills.md"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/msg/engus (item.msgbnd.d item/weapon FMGs, menu.msgbnd.d loading texts)"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/prosthetic.rs"
+  },
+  "his": {
+   "has": "partial",
+   "where": "Owl tools only"
+  },
+  "check": "Hit a poison-vulnerable enemy until it ticks; test the poison tests in status.rs.",
+  "note": "",
+  "needs": [
+   {
+    "id": "arts.status-poison",
+    "why": "poison build-up"
+   }
+  ]
+ },
+ {
+  "id": "arts.loaded-umbrella",
+  "category": "arts",
+  "title": "Loaded Umbrella (76000) family",
+  "summary": "An open umbrella guards from all directions but not from low attacks. Magnet deflects when spun; Suzaku's blocks fire and Burn; Phoenix's blocks apparition damage.",
+  "values": "Emblem 1 on all. Base attack 40; Suzaku's fire 48. Hold: GuardStart/Loop/End with its own guard reactions 1371-1386 (additive 676-690). Judge 999 at f0 (cost dummy). 76300 SpEffect 230645.",
+  "how": "HKS Umbrella guard states.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/EquipParamWeapon.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/skills.md"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/msg/engus (item.msgbnd.d item/weapon FMGs, menu.msgbnd.d loading texts)"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/prosthetic.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Hold it against thrusts and sweeps; clip 12:20.",
+  "note": "The umbrella's resist rows (Suzaku burn and Phoenix terror) were not traced.",
+  "needs": [
+   {
+    "id": "combat.guard",
+    "why": "separate guard system"
+   }
+  ]
+ },
+ {
+  "id": "arts.divine-abduction",
+  "category": "arts",
+  "title": "Divine Abduction (77000) family",
+  "summary": "A fan gust that spins enemies around (backs turned) and exposes them to a deathblow. The upgrade adds a second use; Golden Vortex also drops money or items from spun enemies.",
+  "values": "Emblems 3 / 3 / 4. SpEffect 107700 (behaviorRefId 309, 3 s, stateInfo 938) put on Wolf by TAE 940. Hold windows 107715 (0.8 s, stateInfo 938) and 107716 (stateInfo 939). Turn reactions 107710 (0.5 s) and 107711-12. Enemy tags 230620 (orange, playable) / 230625 (gold).",
+  "how": "BehaviorParam_AddSpEffect TAE 940; HKS SpecialEffect ref 309.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/skills.md"
+   },
+   {
+    "kind": "clip",
+    "ref": "docs/kb/clips.md (sekiro_all_skills_rYcHlOgI7pg.mp4, arts and tools chapters)"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/prosthetic.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Use it on a group; clip 12:50.",
+  "note": "Which enemy classes resist the turn is not in the rows read.",
+  "needs": [
+   {
+    "id": "deathblows.backstab",
+    "why": "turned enemies take backstabs"
+   }
+  ]
+ },
+ {
+  "id": "arts.loaded-spear",
+  "category": "arts",
+  "title": "Loaded Spear (78000) family",
+  "summary": "Long thrusts that pull light enemies in and tear armor from heavy ones. Cleave stores spring energy; Spiral hurts through guard; Leaping Flame sets enemies alight on a charged knock-down.",
+  "values": "Emblem 1 (Leaping Flame 2); base 38 / 38 / 42 / 12 / 27+fire 30. Judges 100 and 105 pay. SpEffect 104010 on all, burn rows 9100/9102 on 78400. Phys correction up to 250.",
+  "how": "Var 7800/7802/7803/7804.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/EquipParamWeapon.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/BehaviorParam_PC.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/msg/engus (item.msgbnd.d item/weapon FMGs, menu.msgbnd.d loading texts)"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/prosthetic.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Hit a light and a heavy enemy; clip 9:56 and 11:10.",
+  "note": "Boss notes (BOSSES-b.md): the Loaded Spear centipede pull is not implemented in sekiro-rs.",
+  "needs": []
+ },
+ {
+  "id": "arts.finger-whistle",
+  "category": "arts",
+  "title": "Finger Whistle (79000) family",
+  "summary": "A whistle that calls enemies to the point of origin; with lock-on only the target hears it. Mountain Echo delays the sound; Malcontent drives beasts mad and torments apparitions. Beasts that hear it go berserk.",
+  "values": "Emblems 3 / 3 / 4. AI sound SpEffects 107910-107925 (stateInfo 275), enemy AI activation 230518/230519, AI sound param. Has walking and crouch-walking upper-body states.",
+  "how": "BehaviorParam_PC 1079xxxxx; AiSoundParam.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/skills.md"
+   },
+   {
+    "kind": "clip",
+    "ref": "docs/kb/clips.md (sekiro_all_skills_rYcHlOgI7pg.mp4, arts and tools chapters)"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/msg/engus (item.msgbnd.d item/weapon FMGs, menu.msgbnd.d loading texts)"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/prosthetic.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Whistle near enemies; clip 11:45.",
+  "note": "The enemy reaction logic (AI) is not part of this research.",
+  "needs": [
+   {
+    "id": "ai.sound-alert",
+    "why": "what enemies do on hearing it"
+   }
+  ]
+ },
+ {
+  "id": "arts.tool-follow-ups",
+  "category": "arts",
+  "title": "Attack-button follow-ups out of a tool",
+  "summary": "After a tool press, the attack button continues with Chasing Slice, Fang and Blade, Projected Force or Living Force depending on the tool.",
+  "values": "BEH_A_GROUND_ATTACK 3199-3324 (Fang and Blade 070/071/078, Axe/Mist Raven/Spear Combo2, Sabimaru directed cut by stick, Umbrella/Whistle/Flame Vent/Abduction forms). Unlock ACTION_UNLOCK 20-23.",
+  "how": "hks::derive_attack.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/skills.md"
+   },
+   {
+    "kind": "clip",
+    "ref": "docs/kb/clips.md (sekiro_all_skills_rYcHlOgI7pg.mp4, arts and tools chapters)"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/prosthetic.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Chasing Slice on Shuriken 9:40; Fang and Blade 10:46.",
+  "note": "",
+  "needs": [
+   {
+    "id": "arts.skill-unlock-actions",
+    "why": "gated by prosthetic arts skills"
+   }
+  ]
+ },
+ {
+  "id": "arts.tool-sa-gate-reactions",
+  "category": "arts",
+  "title": "Tool hit-reaction permits",
+  "summary": "Several tool bullets carry a 'reaction permit' SpEffect that lets the enemy's critical sparkle/reaction play only for the right tool.",
+  "values": "104030 stateInfo 924 firecracker (0.5 s); 104031 stateInfo 928 axe (0.5 s); 104012/104017/104018 stateInfo 917 'light fire effective when jumping'; 400240/400244/400245.",
+  "how": "SpEffect invocationConditionsStateChange1.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "src/prosthetic.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Hit an enemy with each tool and watch the sparkle.",
+  "note": "Only partly covered: only the effect-permit idea, not the actual reaction animation choice per tool.",
+  "needs": []
+ },
+ {
+  "id": "arts.item-healing-gourd",
+  "category": "arts",
+  "title": "Healing Gourd (goods 3000 / 3001)",
+  "summary": "The Healing Gourd heals 40 % of max HP per sip and is refilled by resting at an idol. Drinking is blocked while Recovery Seal (stateInfo 910) is on or while aged.",
+  "values": "Goods 3000 maxNum 10, refCategory 2 (SpEffect) refId 3000 -> SpEffect 3000 changeHpEstusFlaskRate -40 (negative = heal). Empty twin 3001 (goodsUseAnim 10, replaceItemId 3000). suppleType 1, autoReplenishType 2. useLimit SpEffects 341 (aged) and 910 (recovery seal). Applied at TAE 65 ConsumeCurrentGoods (ItemGourdDrink f21, Repeat f9); walking while drinking (flag 90); empty -> ItemGourdDrinkFailed; crouched variants a000_250010/11/15. Config gourd_charges default 3.",
+  "how": "EquipParamGoods -> SpEffectParam changeHpEstusFlaskRate, scaled by changeHpEstusFlaskCorrectRate (Knowledge of Medicine).",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/EquipParamGoods.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/enemy.md (Healing Gourd entries)"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/msg/engus (item.msgbnd.d item/weapon FMGs, menu.msgbnd.d loading texts)"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/items.rs GOURD, src/player.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Drink at 50 % HP and check +40 % of max; drink empty to see the fail clip.",
+  "note": "Ours reads the potency as 40 % of max HP; the actual game's charge count progression comes from Gourd Seeds (maxNum 10 here is the cap).",
+  "needs": [
+   {
+    "id": "arts.item-gourd-seed",
+    "why": "raises max uses"
+   },
+   {
+    "id": "arts.knowledge-of-medicine",
+    "why": "raises heal"
+   }
+  ]
+ },
+ {
+  "id": "arts.item-gourd-seed",
+  "category": "arts",
+  "title": "Gourd Seed (goods 4400)",
+  "summary": "A key item given to Emma to raise the Healing Gourd's maximum uses.",
+  "values": "Goods 4400 goodsType 1, maxNum 99, saleValue 100, usable in all vows. The Gourd's own cap row maxNum 10.",
+  "how": "Menu action at Emma; adds one to the gourd's max.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/EquipParamGoods.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/msg/engus (item.msgbnd.d item/weapon FMGs, menu.msgbnd.d loading texts)"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Give seeds to Emma and count the gourd icon.",
+  "note": "The max-uses per seed count is not in these rows (event script not read).",
+  "needs": [
+   {
+    "id": "npcs.emma",
+    "why": "who raises the gourd"
+   }
+  ]
+ },
+ {
+  "id": "arts.item-pellet",
+  "category": "arts",
+  "title": "Pellet (goods 3020)",
+  "summary": "Pellets give a short HP regeneration: 3 % of max HP each second for about 10 s. Max 3 carried.",
+  "values": "Goods 3020 maxNum 3, goodsUseAnim 20, refCategory 1 -> Bullet 3020 (shooter SpEffect 3020) -> 3021: effectEndurance 9.9, motionInterval 1.0, changeHpEstusFlaskRate -3, spCategory 20.",
+  "how": "Item Bullet chain (HitBulletID) with spEffectIDForShooter.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/EquipParamGoods.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/Bullet.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/msg/engus (item.msgbnd.d item/weapon FMGs, menu.msgbnd.d loading texts)"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/items.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Eat a pellet at low HP and watch +3 % ticks; test every_bag_item_has_its_effects.",
+  "note": "Our code reads the rates as percent of max per second; the exact time base is a stated gap.",
+  "needs": [
+   {
+    "id": "arts.item-healing-gourd",
+    "why": "same flask maths"
+   }
+  ]
+ },
+ {
+  "id": "arts.item-divine-grass",
+  "category": "arts",
+  "title": "Divine Grass (goods 3040)",
+  "summary": "A one-use full cure: restores all HP and posture and clears every status buildup and affliction.",
+  "values": "Goods 3040 maxNum 1, refCategory 1 -> Bullet 3040 -> 3041..3046. SpEffect 3040: changeHpEstusFlaskRate -100, changeStaminaRate +100. 3041 stateInfo 13 'abnormal recovery'; 3042 poizonAttackPower -99999 (stateInfo 2); 3043 removes poison slip (spCategory 194); 3044 registBlood -99999 (burn); 3045 registIllness -99999 (terror, bullet life 0.5 s).",
+  "how": "Item bullet chain; negative build-up values clear the gauges.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/EquipParamGoods.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/Bullet.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/msg/engus (item.msgbnd.d item/weapon FMGs, menu.msgbnd.d loading texts)"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/items.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Use it while poisoned and burning.",
+  "note": "Name from the item text is 'Divine Grass'.",
+  "needs": [
+   {
+    "id": "arts.status-poison",
+    "why": "cured"
+   },
+   {
+    "id": "arts.status-burn",
+    "why": "cured"
+   },
+   {
+    "id": "arts.status-terror",
+    "why": "cured"
+   }
+  ]
+ },
+ {
+  "id": "arts.item-red-lump",
+  "category": "arts",
+  "title": "Red Lump (goods 3050 family)",
+  "summary": "Eating a red lump makes Wolf bulky for 30 s: hits seldom make him flinch, but he takes double fire damage and burns twice as easily, and Resurrection is disabled.",
+  "values": "Goods 3050/3051/3052/3053 (Academics' Red Lump) share Bullet 3050 -> 3051: effectEndurance 30, stateInfo 359 (SA grant), spCategory 1001 categoryPriority 254, defBloodResistDamageRate 2.0, fireDamageCutRate 2.0, dmgLv_* table collapses most damage levels to 2 (small flinch), blows keep 6-12.",
+  "how": "SpEffect dmgLv_ fields remap hit reaction levels.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/EquipParamGoods.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/msg/engus (item.msgbnd.d item/weapon FMGs, menu.msgbnd.d loading texts)"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/items.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Eat it and take light hits: no flinch; burn gauge fills at double.",
+  "note": "The Resurrection ban comes from the item text; the SpEffect carrying it was not isolated.",
+  "needs": [
+   {
+    "id": "combat.hit-reaction",
+    "why": "damage level remap"
+   }
+  ]
+ },
+ {
+  "id": "arts.item-sweet-rice-ball",
+  "category": "arts",
+  "title": "Sweet Rice Ball (3060 / 3061)",
+  "summary": "Heals slowly and restores posture over about 30 s.",
+  "values": "Bullet chain 3060->3061->3062->3063: 3061 changeHpEstusFlaskRate -7 per second, 3062 changeStaminaRate +20 (posture), both 29.9 s, interval 1.0, spCategory 20. maxNum 1; 3061 uses Bullet 3065.",
+  "how": "Item Bullet chain.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/EquipParamGoods.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/Bullet.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/msg/engus (item.msgbnd.d item/weapon FMGs, menu.msgbnd.d loading texts)"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/items.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Eat it in a fight.",
+  "note": "Persimmon and rice use the same pattern.",
+  "needs": [
+   {
+    "id": "combat.posture-bar",
+    "why": "posture recovery"
+   }
+  ]
+ },
+ {
+  "id": "arts.item-persimmon",
+  "category": "arts",
+  "title": "Persimmon and Taro Persimmon (3070 / 3071)",
+  "summary": "Restores posture over 30 s even while attacking or being hit.",
+  "values": "3070 -> 3071: changeStaminaRate +10 per second, 29.9 s, spCategory 199. Taro persimmon 3075 -> 3076: +20 per second. maxNum 3.",
+  "how": "Item Bullet chain.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/EquipParamGoods.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/msg/engus (item.msgbnd.d item/weapon FMGs, menu.msgbnd.d loading texts)"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/items.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Use then attack: posture keeps recovering.",
+  "note": "",
+  "needs": [
+   {
+    "id": "combat.posture-bar",
+    "why": "recovery rule"
+   }
+  ]
+ },
+ {
+  "id": "arts.item-rice-fine-snow",
+  "category": "arts",
+  "title": "Rice and Fine Snow (3080 / 3081)",
+  "summary": "Plain HP regeneration over 30 s; Fine Snow regenerates more.",
+  "values": "3080 -> 3081: changeHpEstusFlaskRate -5 per second, 29.9 s, spCategory 200. 3085 -> 3086 (Fine Snow): -7 per second. maxNum 3. Both use goodsUseAnim 30.",
+  "how": "Item Bullet chain.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/EquipParamGoods.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/msg/engus (item.msgbnd.d item/weapon FMGs, menu.msgbnd.d loading texts)"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/items.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Eat both and compare.",
+  "note": "",
+  "needs": []
+ },
+ {
+  "id": "arts.item-antidote-powder",
+  "category": "arts",
+  "title": "Antidote Powder (3200)",
+  "summary": "Cures poison and for 30 s reduces new poison build-up to 55 %.",
+  "values": "Bullet 3200->3204: 3201 poizonAttackPower -99999 (stateInfo 2), 3202 clears slip (194), 3203 defPoisonResistDamageRate 0.55 for 30 s (icon 2101, spCategory 201), stateInfo 10. maxNum 5.",
+  "how": "Item Bullet chain.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/EquipParamGoods.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/msg/engus (item.msgbnd.d item/weapon FMGs, menu.msgbnd.d loading texts)"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/items.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Take it while poisoned.",
+  "note": "",
+  "needs": [
+   {
+    "id": "arts.status-poison",
+    "why": "cure and resist"
+   }
+  ]
+ },
+ {
+  "id": "arts.item-dousing-powder",
+  "category": "arts",
+  "title": "Dousing Powder and Ministry Dousing Powder (3210 / 3211)",
+  "summary": "Cures burning and for 30 s reduces burn build-up (65 % taken) and fire damage (60 %). The Ministry version is stronger (55 % and 40 %).",
+  "values": "3211 registBlood -99999 (stateInfo 6); 3212 defBloodResistDamageRate 0.65, fireDamageCutRate 0.6 (30 s, icon 2102, spCategory 202); Ministry 3214: 0.55 and 0.4. maxNum 5.",
+  "how": "Item Bullet chain.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/EquipParamGoods.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/msg/engus (item.msgbnd.d item/weapon FMGs, menu.msgbnd.d loading texts)"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/items.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Take it while burning.",
+  "note": "The text says Ministry is 'slightly more effective'; the data confirms it.",
+  "needs": [
+   {
+    "id": "arts.status-burn",
+    "why": "cure and resist"
+   }
+  ]
+ },
+ {
+  "id": "arts.item-pacifying-agent",
+  "category": "arts",
+  "title": "Pacifying Agent (3220)",
+  "summary": "Reduces terror build-up and halves it for 30 s; also clears the terror gauge.",
+  "values": "3221 registIllness -99999 (stateInfo 5); 3222 defDiseaseResistDamageRate 0.5, 30 s (icon 2103, spCategory 203). stateInfo 11 on the use row. maxNum 5.",
+  "how": "Item Bullet chain.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/EquipParamGoods.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/msg/engus (item.msgbnd.d item/weapon FMGs, menu.msgbnd.d loading texts)"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/items.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Use against a terror-casting enemy.",
+  "note": "",
+  "needs": [
+   {
+    "id": "arts.status-terror",
+    "why": "cure and resist"
+   }
+  ]
+ },
+ {
+  "id": "arts.item-eel-liver",
+  "category": "arts",
+  "title": "Eel Liver (3230)",
+  "summary": "For 30 s halves lightning damage and the Shock buildup.",
+  "values": "3231: thunderDamageCutRate 0.5, freezeDamageRate 50, effectEndurance 30, isContractSpEffectLife, icon 2104. maxNum 5.",
+  "how": "Item Bullet 3230 -> 3231.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/EquipParamGoods.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/msg/engus (item.msgbnd.d item/weapon FMGs, menu.msgbnd.d loading texts)"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/items.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Eat before Genichiro's lightning.",
+  "note": "",
+  "needs": [
+   {
+    "id": "arts.status-shock",
+    "why": "reduces shock"
+   }
+  ]
+ },
+ {
+  "id": "arts.item-contact-medicine",
+  "category": "arts",
+  "title": "Contact Medicine (3250)",
+  "summary": "Puts a weak poison on Wolf on purpose; a poisoned Wolf cannot build up more poison. Used by a ninjutsu technique.",
+  "values": "Bullet 3250 shooter SpEffect 9000: poizonAttackPower 250 (fills the gauge), replace 9040 (39.9 s, 0.25 % + 2 HP per second, disablePoison). maxNum 3.",
+  "how": "Item Bullet chain.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/EquipParamGoods.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/msg/engus (item.msgbnd.d item/weapon FMGs, menu.msgbnd.d loading texts)"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "src/items.rs, src/status.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Eat it: poison icon, slow HP drain, no new poison.",
+  "note": "9040 is the 'PC self-poison' row.",
+  "needs": [
+   {
+    "id": "arts.status-poison",
+    "why": "self-poison"
+   }
+  ]
+ },
+ {
+  "id": "arts.item-bite-down",
+  "category": "arts",
+  "title": "Bite Down and Hidden Tooth (3290 / 3291)",
+  "summary": "The suicide drug. Bite Down kills Wolf at once; its text says resurrection is not limited after use. Hidden Tooth is reusable.",
+  "values": "SpEffect 3290 changeHpRate 100 replace 3291; Hidden Tooth 3295 same. Use limits 341, 988 (deep water), 948 (forced crouch area), 910. maxNum 3 / 1.",
+  "how": "SpEffect changeHpRate 100.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/EquipParamGoods.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/msg/engus (item.msgbnd.d item/weapon FMGs, menu.msgbnd.d loading texts)"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "src/items.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Use it and see the death screen.",
+  "note": "Unclear whether 'Resurrection is not limited' is implemented anywhere.",
+  "needs": []
+ },
+ {
+  "id": "arts.item-cure-gourds",
+  "category": "arts",
+  "title": "Green Mossy, Withered Red and Mottled Purple Gourds",
+  "summary": "Refillable gourds that cure nothing but clear the build-up and raise resistance for 30 s.",
+  "values": "3300 Green Mossy: poizonAttackPower -99999 + 3302 resist; 3310 Withered Red: registBlood -99999 + 3312; 3320 Mottled Purple: registIllness -99999 + 3322. maxNum 5, replaceItemId 3301/3311/3321 empty twins, refill on rest. 3302 likely the same 0.55 poison rate as 3203 (not shown for these rows).",
+  "how": "Item Bullet chain.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/EquipParamGoods.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/msg/engus (item.msgbnd.d item/weapon FMGs, menu.msgbnd.d loading texts)"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "src/items.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Drink until empty, rest.",
+  "note": "The gourd resist multipliers were only read for the powders; assume equal.",
+  "needs": [
+   {
+    "id": "arts.status-poison",
+    "why": "gourd cure"
+   }
+  ]
+ },
+ {
+  "id": "arts.item-spiritfalls",
+  "category": "arts",
+  "title": "Spiritfalls (Ako, Yashariku, Ungo, Gokan, Gachiin)",
+  "summary": "Fallen headless spirits give the same buffs as the sugars but cost Spirit Emblems per use instead of being consumed (consumeResourceItemA).",
+  "values": "Ako's 3350 cost 2, Yashariku 3360 cost 3, Ungo 3370 cost 2, Gokan 3380 cost 1, Gachiin 3390 cost 3. Effects 3351/3361/3371/3381/3391 identical to the sugars (30 s; Gachiin 60 s). maxNum 1. goodsUseAnim 40-44.",
+  "how": "EquipParamGoods consumeResourceItemA + sugar chain.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/EquipParamGoods.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/msg/engus (item.msgbnd.d item/weapon FMGs, menu.msgbnd.d loading texts)"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "src/items.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Use Ako's Spiritfall with 1 emblem: should fail.",
+  "note": "Whether failing is a blocked or silent animation is not read.",
+  "needs": [
+   {
+    "id": "arts.item-spirit-emblem",
+    "why": "paid in emblems"
+   }
+  ]
+ },
+ {
+  "id": "arts.item-sugar-ako",
+  "category": "arts",
+  "title": "Ako's Sugar (3400)",
+  "summary": "Attack buff for 30 s: damage x1.125 on all physical and element types and posture damage x1.25.",
+  "values": "3401: all attack rates 1.125 (slash, thrust, neutral, magic, fire, thunder, dark, heavy/light/anti-air/ground), staminaAttackRate 1.25, attackHitParryStaminaAttackRate 1.25, defStaminaAttackRate 1.25, 30 s, stateInfo 204, spCategory 162, isExtendSpEffectLife 1. maxNum 3.",
+  "how": "Item Bullet 3400 -> 3401.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/EquipParamGoods.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/msg/engus (item.msgbnd.d item/weapon FMGs, menu.msgbnd.d loading texts)"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/items.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Eat one and compare a hit; test a_sugar_wears_its_effect_and_raises_the_attack.",
+  "note": "",
+  "needs": [
+   {
+    "id": "combat.attack-power",
+    "why": "multiplier"
+   },
+   {
+    "id": "arts.buff-duration-skill",
+    "why": "extendable"
+   }
+  ]
+ },
+ {
+  "id": "arts.item-sugar-yashariku",
+  "category": "arts",
+  "title": "Yashariku's Sugar (3410)",
+  "summary": "Big attack buff (x1.25 damage, x1.5 posture damage) for 30 s at the price of halving max HP and max posture.",
+  "values": "3411: attack rates 1.25, stamina rates 1.5, maxHpRate 0.5, maxStaminaRate 0.5, bCurrHPIndependeMaxHP 1, 30 s. Ours applies the HP part; maxStaminaRate 0.5 is not applied.",
+  "how": "Item Bullet 3410 -> 3411.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/EquipParamGoods.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "src/items.rs header comment (effects modelled and gaps)"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "src/items.rs max_hp_rate"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Eat it and watch max HP halve.",
+  "note": "Posture max is not halved in ours.",
+  "needs": [
+   {
+    "id": "combat.attack-power",
+    "why": "multiplier"
+   }
+  ]
+ },
+ {
+  "id": "arts.item-sugar-ungo",
+  "category": "arts",
+  "title": "Ungo's Sugar (3420)",
+  "summary": "Reduces physical HP damage taken to 67 % for up to 30 s (the chain may end it after one hit, open-question).",
+  "values": "3421: all damage cut rates 0.67 (slash, thrust, neutral, dark, light-hit, def* rates), motionInterval 31 s, cycleOccurrence 3422 (stateInfo 158, invocation 978 'when directly hit' with isWaitModeDelete), effectEndurance 30, stateInfo 978.",
+  "how": "Chain 3421 -> 3422 -> 3423 (consumes on hit).",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/EquipParamGoods.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/msg/engus (item.msgbnd.d item/weapon FMGs, menu.msgbnd.d loading texts)"
+   }
+  ],
+  "confidence": "open-question",
+  "ours": {
+   "has": "partial",
+   "where": "src/items.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Eat it and take a hit: buff goes after one hit if the chain acts as read.",
+  "note": "The 'ends after being hit' reading comes from the chain (isWaitModeDelete + invocation stateInfo 978), not from a clip. open-question.",
+  "needs": [
+   {
+    "id": "combat.damage-cut",
+    "why": "multiplier"
+   }
+  ]
+ },
+ {
+  "id": "arts.item-sugar-gokan",
+  "category": "arts",
+  "title": "Gokan's Sugar (3430)",
+  "summary": "Cuts posture damage taken to 33 % for up to 30 s (the chain may end it after one hit, open-question).",
+  "values": "3431: every def*StaminaDmgRate 0.33, interval 31 s, cycleOccurrence 3432 (invocation 982 stateInfo 982), 30 s.",
+  "how": "Chain 3431 -> 3432 -> 3433.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/EquipParamGoods.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/msg/engus (item.msgbnd.d item/weapon FMGs, menu.msgbnd.d loading texts)"
+   }
+  ],
+  "confidence": "open-question",
+  "ours": {
+   "has": "partial",
+   "where": "src/items.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Eat and take a heavy hit.",
+  "note": "Hit-consume reading is the same as Ungo's: open-question.",
+  "needs": [
+   {
+    "id": "combat.posture-bar",
+    "why": "posture damage taken"
+   }
+  ]
+ },
+ {
+  "id": "arts.item-sugar-gachiin",
+  "category": "arts",
+  "title": "Gachiin's Sugar (3440)",
+  "summary": "Stealth buff for 60 s: sight reduced, nearby sight halved, hearing zeroed.",
+  "values": "3441: sightSearchEnemyCut 50, aroundSightPointAddRate 0.5, hearingSearchEnemyRate 0.0, effectEndurance 60, spCategory 162. maxNum 3. Spiritfall 3391 identical.",
+  "how": "Item Bullet 3440 -> 3441.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/EquipParamGoods.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/msg/engus (item.msgbnd.d item/weapon FMGs, menu.msgbnd.d loading texts)"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "src/items.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Walk near an enemy while buffed.",
+  "note": "Not confirmed that ours feeds this into enemy hearing.",
+  "needs": [
+   {
+    "id": "stealth.detection",
+    "why": "feeds enemy senses"
+   }
+  ]
+ },
+ {
+  "id": "arts.item-divine-confetti",
+  "category": "arts",
+  "title": "Divine Confetti (3450)",
+  "summary": "Lets attacks land on apparition-type enemies for 60 s by adding spirit magic damage and turning the weapon into a spirit weapon.",
+  "values": "3451: magicAttackPower 20, spAttribute 3, wepParamChange 1, atkOccurrence 104016 (anti-spirit effect), stateInfo 64, 60 s; cycleOccurrence 3452 (invocation 64, magicDamageCutRate 0.75). maxNum 5.",
+  "how": "Item Bullet 3450 -> 3451 -> 3452.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/EquipParamGoods.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/msg/engus (item.msgbnd.d item/weapon FMGs, menu.msgbnd.d loading texts)"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "src/items.rs magic_bonus"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Hit a Corrupted Monk apparition with and without it.",
+  "note": "Our gap: apparition hits themselves are not done.",
+  "needs": [
+   {
+    "id": "arts.status-terror",
+    "why": "apparitions use terror"
+   }
+  ]
+ },
+ {
+  "id": "arts.item-ceramic-shard",
+  "category": "arts",
+  "title": "Ceramic Shard (3500)",
+  "summary": "Thrown piece of pottery that makes noise to draw attention. No damage, 4 m noise burst on landing.",
+  "values": "Goods 3500 goodsUseAnim 70, maxNum 10, refCategory 0. Clip BulletBehavior 910: Bullet 3490 -> 3491 (v 40 m/s, life 4 s, AtkParam 3500 'piece of porcelain', HitAiSoundId 3500) -> 3492 (radius 4 m, life 0.3 s, SpEffect 3500 stateInfo 275 AI sound).",
+  "how": "Thrown bullet; AI sound SpEffect.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/EquipParamGoods.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/Bullet.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/skills.md"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "src/items.rs header comment (effects modelled and gaps)"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/items.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Throw it away from you; enemies turn toward the sound.",
+  "note": "Goods row has no refId; the chain is from the clip's bullet behavior, per ours.",
+  "needs": [
+   {
+    "id": "ai.sound-alert",
+    "why": "AI hears it"
+   }
+  ]
+ },
+ {
+  "id": "arts.item-fistful-of-ash",
+  "category": "arts",
+  "title": "Fistful of Ash (3510)",
+  "summary": "Thrown ash that blinds enemies for a moment. A 30 s cool time stops repeated use on the same target.",
+  "values": "Bullet 3510 -> 3511 (v 10, life 1 s, AtkParam 3511 'grip ash', atkBehaviorId 3) -> 3512 (life 0.3 s): spEffects 220018 (behaviorRefId 1000058 'enemy reaction blurring') and 3510 (stateInfo 977, 30 s cool time). maxNum 10.",
+  "how": "Item Bullet chain.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/EquipParamGoods.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/Bullet.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "src/items.rs header comment (effects modelled and gaps)"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/items.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Throw ash at a close enemy twice.",
+  "note": "Our stand-in uses the firecracker flinch for the blind.",
+  "needs": [
+   {
+    "id": "ai.enemy-blind",
+    "why": "enemy reaction"
+   }
+  ]
+ },
+ {
+  "id": "arts.item-oil",
+  "category": "arts",
+  "title": "Oil (3520)",
+  "summary": "Thrown oil jar. Covered enemies take 25 % more fire damage and burn twice as easily for 30 s.",
+  "values": "Bullet 3520 -> 3521 (v 40, life 4 s, AtkParam 3520 'oil jar' atkPhys 1): SpEffect 3520 stateInfo 921, defBloodResistDamageRate 2.0, fireDamageCutRate 1.25, effectEndurance 30, isFireDamageCancel 1 (the 'play flame reaction' permit shared with 6020). maxNum 10.",
+  "how": "Item Bullet chain; SpEffect on target.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/EquipParamGoods.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/Bullet.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "src/items.rs header comment (effects modelled and gaps)"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/items.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Throw oil then use the flame vent.",
+  "note": "",
+  "needs": [
+   {
+    "id": "arts.status-burn",
+    "why": "burn doubles"
+   }
+  ]
+ },
+ {
+  "id": "arts.item-snap-seed",
+  "category": "arts",
+  "title": "Snap Seed (3530)",
+  "summary": "Breaks illusions: a snap noise releases Wolf from genjutsu effects within a radius.",
+  "values": "Bullet 3530: hitRadiusMax 16 m, spreadTime 0.5 s, life 1 s; AtkParam 3530 'illusion release / phantom drowning bullet' atkBehaviorId 6, unblockable. useLimit 948 (forced crouch area). maxNum 10.",
+  "how": "Item Bullet; illusion break handled by atkBehaviorId 6.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/EquipParamGoods.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/Bullet.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/msg/engus (item.msgbnd.d item/weapon FMGs, menu.msgbnd.d loading texts)"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "src/items.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Use it inside Butterfly's illusion fight.",
+  "note": "Ours has no clip for use anim 84 (stated gap).",
+  "needs": [
+   {
+    "id": "bosses.butterfly-illusions",
+    "why": "what it breaks"
+   }
+  ]
+ },
+ {
+  "id": "arts.item-five-color-rice",
+  "category": "arts",
+  "title": "Five-color Rice (3580 / 3581)",
+  "summary": "Rice dropped on the ground as a landmark. Refilled by resting; the empty twin is 3581.",
+  "values": "Goods 3580 maxNum 5, isFullSuppleItem, replaceItemId 3581 (goodsUseAnim 14), useLimitCategory 3. Bullet 3580 falls from the hand: 0.1 m/s, gravity 10, life 2.69 s, no damage.",
+  "how": "Item Bullet.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/EquipParamGoods.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/Bullet.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/msg/engus (item.msgbnd.d item/weapon FMGs, menu.msgbnd.d loading texts)"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "src/items.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Drop it and look at the marker.",
+  "note": "The marker display itself is a stated gap.",
+  "needs": [
+   {
+    "id": "interface.map-marks",
+    "why": "what the marker does"
+   }
+  ]
+ },
+ {
+  "id": "arts.item-mibu-balloons",
+  "category": "arts",
+  "title": "Mibu Balloons (3600-3640)",
+  "summary": "Mibu balloons give a 150 s boost to sen, resurrective power, item drops or Spirit Emblem drops; the Pilgrimage balloon gives all four.",
+  "values": "3600 Wealth -> stateInfo 76 (money gain), 3610 Soul -> stateInfo 345 (resurrective power gain), 3620 Possession -> stateInfo 66 (item drop rate), 3630 Spirit -> stateInfo 346 (emblem drop rate), 3640 Pilgrimage -> 76 + 345 + 66 + 346 (maxNum 1). All effectEndurance 150, spCategory 20. Ours: Wealth x1.5 sen.",
+  "how": "Item Bullet chain; stateInfo read by the economy code.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/EquipParamGoods.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/msg/engus (item.msgbnd.d item/weapon FMGs, menu.msgbnd.d loading texts)"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "src/items.rs, src/experience.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Burst one and kill an enemy; sen should be x1.5.",
+  "note": "The multiplier value (1.5) is from the SpEffect soulRate (our reading); soul/item/emblem drops are stated gaps.",
+  "needs": [
+   {
+    "id": "progression.sen",
+    "why": "money gain"
+   }
+  ]
+ },
+ {
+  "id": "arts.item-use-limit-states",
+  "category": "arts",
+  "title": "Item use limit states",
+  "summary": "Items carry up to four 'cannot use while this state is on' SpEffect stateInfos.",
+  "values": "341 = aged (Aging row 9620), 988 = deep water, 948 = forced crouch area, 910 = recovery seal (Owl's powder 3506090). Healing Gourd uses 341 and 910; most consumables 341 + 988; spiritfalls/sugars/balloons also 948; throwing items 341 + 988.",
+  "how": "EquipParamGoods useLimitSpEffectType0-3 vs SpEffect stateInfo.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/EquipParamGoods.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "../sekiro-rs/docs/OWL.md (recovery seal)"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "src/items.rs"
+  },
+  "his": {
+   "has": "partial",
+   "where": "OWL.md: seal blocks nothing until healing items exist"
+  },
+  "check": "Get sealed by the Owl and try the gourd.",
+  "note": "Which of 341 / 988 are checked in ours is unverified.",
+  "needs": [
+   {
+    "id": "arts.status-aging",
+    "why": "aged blocks items"
+   }
+  ]
+ },
+ {
+  "id": "arts.item-recovery-seal",
+  "category": "arts",
+  "title": "Recovery Seal (Owl's powder)",
+  "summary": "The Owl throws a powder that stops healing items for 30 s.",
+  "values": "SpEffect 3506090: effectEndurance 30, stateInfo 910, spCategory 193; Bullet 50601710 -> child 50600711; thrown up at +75 degrees 4 m/s, cloud 0.1 m growing to 3.2 m in 1 s for 1.7 s.",
+  "how": "Bullet SpEffect on Wolf; blocks goods with useLimit 910.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "../sekiro-rs/docs/OWL.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "yes",
+   "where": "crates/sim/tests/it/owl_tools.rs"
+  },
+  "check": "Fight the Owl and use the gourd after the powder.",
+  "note": "The seal blocks nothing in sekiro-rs until healing items exist.",
+  "needs": [
+   {
+    "id": "bosses.owl-fight",
+    "why": "the Owl's tool"
+   }
+  ]
+ },
+ {
+  "id": "arts.item-ceremonial-tanto",
+  "category": "arts",
+  "title": "Ceremonial Tanto (3800)",
+  "summary": "Converts HP into Spirit Emblems: costs half of max HP and gives 5 emblems. Charges refill at rest.",
+  "values": "Goods 3800 maxNum 3, consumeHpRate 0.5, useGetItemId 1001 (the Red Spirit Emblem id), useGetItemNum 5, goodsUseAnim 80, replaceItemId 3801.",
+  "how": "EquipParamGoods consumeHpRate + useGetItem.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/EquipParamGoods.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/msg/engus (item.msgbnd.d item/weapon FMGs, menu.msgbnd.d loading texts)"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "src/items.rs header comment (effects modelled and gaps)"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/items.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Use it and check emblems.",
+  "note": "The data names goods 1001 (Red Spirit Emblem) as the reward while ours says Spirit Emblems; the gate event adds 1000 + 1001 together.",
+  "needs": [
+   {
+    "id": "arts.item-spirit-emblem",
+    "why": "reward"
+   }
+  ]
+ },
+ {
+  "id": "arts.item-spirit-emblem",
+  "category": "arts",
+  "title": "Spirit Emblem and Red Spirit Emblem (1000 / 1001)",
+  "summary": "Emblems are the resource of arts and tools. Carry cap 15 for normal emblems, 5 for red ones; the gate counts both together.",
+  "values": "Goods 1000 maxNum 15, goodsType 7; 1001 maxNum 5. Event 9900 copies the sum into 9910. Drops are boosted by the Mibu Balloon of Spirit (stateInfo 346). Env 3035 = emblems held >= resourceItemA (exe FUN_140a26010 -> FUN_14084dd10).",
+  "how": "EquipParamGoods + common.emevd 9900.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/EquipParamGoods.json"
+   },
+   {
+    "kind": "exe",
+    "ref": "FUN_140a26010 / FUN_14084dd10"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/skills.md"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "yes",
+   "where": "src/items.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Count emblems in the HUD.",
+  "note": "Where emblems drop (enemy item lots) is not part of this pass.",
+  "needs": [
+   {
+    "id": "progression.item-drops",
+    "why": "emblem drops"
+   }
+  ]
+ },
+ {
+  "id": "arts.item-coin-purses",
+  "category": "arts",
+  "title": "Coin purses and Homeward Idol",
+  "summary": "Coin purses give sen on use; the Homeward Idol warps back to the last idol.",
+  "values": "Coin purses 3700 / 3704 / 3708: sellValue 100 / 500 / 1000 sen (saleValue 110 / 550 / 1100) (goodsUseAnim 60). Homeward Idol 3980: goodsUseAnim 87, isWarpProhibited flag, maxNum 1, reusable.",
+  "how": "EquipParamGoods; ours reads sellValue.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/EquipParamGoods.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "src/items.rs header comment (effects modelled and gaps)"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/items.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Use a purse; use the idol.",
+  "note": "",
+  "needs": [
+   {
+    "id": "interface.map-travel",
+    "why": "warp"
+   }
+  ]
+ },
+ {
+  "id": "arts.status-model",
+  "category": "arts",
+  "title": "Build-up status model",
+  "summary": "Poison, burn, terror, aging and shock work the same way: every hit adds a build-up number from a SpEffect to a gauge; when the gauge reaches the target's resistance the effect fires and the gauge empties. Gauges drain slowly on their own.",
+  "values": "Five gauges (exe resist types): 0 poison (poizonAttackPower, stateInfo 2), 1 disease = terror (registIllness, stateInfo 5), 2 blood = burn (registBlood, stateInfo 6), 3 curse = aging (registCurse, stateInfo 116), 4 freeze = shock (registFreeze, stateInfo 260). Fired effect = replaceSpEffectId or cycleOccurrenceSpEffectId; the exe sets an 'activation' bit for one frame (read by HKS env(3041) GetStatusActivation).",
+  "how": "Exe SprjChrResistModule: hit FUN_140a00f60; blocked only by an active SpEffect with disablePoison / disableBlood (FUN_140bff7a0); refill FUN_140bd9d30; drain FUN_140bda460.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "src/status.rs module comments (exe SprjChrResistModule vtable 0x142a8d178)"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "reference/Paramdex/SDT/Defs/SpEffect.xml"
+   },
+   {
+    "kind": "exe",
+    "ref": "FUN_140a00f60, FUN_140bd9d30, FUN_140bda460"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "yes",
+   "where": "src/status.rs"
+  },
+  "his": {
+   "has": "partial",
+   "where": "crates/sim/src/status.rs"
+  },
+  "check": "Hit a dummy with Sabimaru and read the poison n/max log lines.",
+  "note": "The field names are legacy (registIllness = terror, registBlood = burn, registFreeze = shock).",
+  "needs": [
+   {
+    "id": "combat.hit-resolution",
+    "why": "a hit delivers the SpEffects"
+   }
+  ]
+ },
+ {
+  "id": "arts.status-recovery-rates",
+  "category": "arts",
+  "title": "Gauge drain rates",
+  "summary": "Each gauge drains by whole points per second while no new build-up arrives. Terror drains slowest, aging fastest.",
+  "values": "TentativePlayerParam row 0: poison 5, burn (blood) 5, terror (disease) 2.5, aging (curse) 20, shock (freeze) 5, per second, for Player and Enemy alike; toughness recovery correction 1.0. Whole points only, the fraction carried.",
+  "how": "TentativePlayerParam ResistRecoverPoint_* (Poision_ / Blood_ / Desease_ / Curse_ / Freeze_).",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/TentativePlayerParam.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "src/status.rs module comments (exe SprjChrResistModule vtable 0x142a8d178)"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/status.rs"
+  },
+  "his": {
+   "has": "partial",
+   "where": "crates/sim/src/status.rs"
+  },
+  "check": "Fill the gauge half way and wait: poison halves in 20 s on a 200 gauge.",
+  "note": "Whether the 'point' unit matches the UI percentage is inferred.",
+  "needs": [
+   {
+    "id": "arts.status-model",
+    "why": "the gauge being drained"
+   }
+  ]
+ },
+ {
+  "id": "arts.status-wolf-resist",
+  "category": "arts",
+  "title": "Wolf's resistances",
+  "summary": "Wolf has a flat 200 build-up room for every status, regardless of level (from the first stat point on). Armour and other SpEffects were not found to add to it in the base game rows.",
+  "values": "Max 200 for poison, burn, terror, aging, shock. Exe PlayerIns vtable +0x1d0 -> FUN_1408457f0: CalcCorrectGraph 110-114 of his stat sum (flat 200) + 120-124 (0). Protector resist fields are 0 on all but two rows.",
+  "how": "CalcCorrectGraph 110 'poison resistance (soul level)' ... 114.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "src/status.rs module comments (exe SprjChrResistModule vtable 0x142a8d178)"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/CalcCorrectGraph.json"
+   },
+   {
+    "kind": "exe",
+    "ref": "FUN_1408457f0"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "yes",
+   "where": "src/status.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "crates/sim/src/status.rs"
+  },
+  "check": "Take 200 points of poison build-up and see the effect fire.",
+  "note": "Gap: protector resist fields and SpEffect resist rates (FUN_140bfdbc0 / FUN_140bfdb60) are not added in either project.",
+  "needs": [
+   {
+    "id": "arts.status-model",
+    "why": "Wolf's gauge sizes"
+   }
+  ]
+ },
+ {
+  "id": "arts.status-npc-resists",
+  "category": "arts",
+  "title": "Enemy resistances",
+  "summary": "Enemy poison and burn resistance varies by row; terror and aging resistances are 999 on almost every enemy (effectively immune) and shock resistance is 100.",
+  "values": "NpcParam (1279 rows): resist_poison most common 100 (488 rows), 999 (281), 300 (129), 150, 200, 25, 50; resist_blood (burn) 100 (588), 200 (233), 25 (149), 999 (135), 300 (115); resist_desease and resist_curse 999 on 1278 rows (0 on one); resist_freeze 100 on 1278 rows. Lady Butterfly 300 poison / 300 burn; Rival Bowless 200 / 300.",
+  "how": "NpcParam resist_poison / resist_desease / resist_blood / resist_curse / resist_freeze.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/NpcParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "reference/Paramdex/SDT/Defs/NpcParam.xml"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/status.rs ResistRules, enemy tables"
+  },
+  "his": {
+   "has": "partial",
+   "where": "crates/sim/src/status.rs"
+  },
+  "check": "Print the gauge max of a regular enemy vs a boss.",
+  "note": "Boss rows listed by name were not fully mapped (names are in Japanese in NpcParam).",
+  "needs": [
+   {
+    "id": "ai.npc-params",
+    "why": "where the row comes from"
+   }
+  ]
+ },
+ {
+  "id": "arts.status-guard-interaction",
+  "category": "arts",
+  "title": "Guarding and status build-up",
+  "summary": "Guarding does not stop build-up in general (the game's own texts say so). Wolf's sword keeps a percentage of burn and terror off while guarding and more when deflecting.",
+  "values": "Kusabimaru (EquipParamWeapon 5000-7700): bloodGuardResist 33, bloodJustGuardResist 50, diseaseGuardResist 25, diseaseJustGuardResist 100, poison 0 / 0. Guard: amount = trunc(amount x (1 - %)). Shock hits regardless of guard if Wolf is on the ground. Enemy poisonGuardResist is 0 on 1271 rows and 100 on 8.",
+  "how": "EquipParamWeapon *GuardResist / *JustGuardResist; exe build-up int maths.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/EquipParamWeapon.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "src/status.rs module comments (exe SprjChrResistModule vtable 0x142a8d178)"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/msg/engus/menu.msgbnd.d (loading screen texts 105 Burn, 110 Poison, 111 Terror, 112 Shock)"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/status.rs"
+  },
+  "his": {
+   "has": "partial",
+   "where": "crates/sim/src/status.rs"
+  },
+  "check": "Block a poison dart and a torch: poison fills fully, fire partly.",
+  "note": "Open question: whether the guard also cuts a bullet's own SpEffects (kept as a gap in both projects).",
+  "needs": [
+   {
+    "id": "combat.guard",
+    "why": "the guard state"
+   },
+   {
+    "id": "combat.deflect",
+    "why": "deflect factor"
+   }
+  ]
+ },
+ {
+  "id": "arts.status-poison",
+  "category": "arts",
+  "title": "Poison",
+  "summary": "Poison darts, powders and floors add poison build-up; when full the target loses a small share of max HP every second for up to 40 s and cannot refill the gauge meanwhile.",
+  "values": "Enemy-to-Wolf: rows 9010-9019 poizonAttackPower 10-200 (replace 9050): 9011 gecko fog 10, 9012 Shura fog 20, 9013 enchant 50, 9015 blowgun 80, 9016 bandit arrow 120, 9018 Kageshu 200, 9019 chief's bed 30. Effect 9050: 39.9 s, every 1.0 s 0.25 % max HP + 12, disablePoison, spCategory 194, ref 500. Wolf-to-enemy: 9001/9002 (42/62), Sabimaru 9003-9009 (see arts.sabimaru) -> 9045 (19.9 s, 0.75 % + 12 per second). Self poison 9000 (250) -> 9040 (0.25 % + 2).",
+  "how": "SpEffectParam poizonAttackPower + replaceSpEffectId + effectEndurance/motionInterval/changeHpRate/changeHpPoint.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "../sekiro-rs/docs/OWL.md (poison floors, seal)"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "src/status.rs module comments (exe SprjChrResistModule vtable 0x142a8d178)"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/msg/engus/menu.msgbnd.d (loading screen texts 105 Burn, 110 Poison, 111 Terror, 112 Shock)"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/status.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "crates/sim/src/status.rs"
+  },
+  "check": "Poison the General with Sabimaru; sim tests in status.rs (poison_builds_up_triggers_and_ticks).",
+  "note": "The first tick is assumed one interval after the start and the sum truncates; not exe-verified.",
+  "needs": [
+   {
+    "id": "arts.status-model",
+    "why": "gauge model"
+   }
+  ]
+ },
+ {
+  "id": "arts.status-poison-owl-floor",
+  "category": "arts",
+  "title": "Owl poison floor and balls",
+  "summary": "The Owl's poison balls leave a floor that adds poison every 0.15 s.",
+  "values": "Bullets 700 / 730 / 740 (25, 11, 7 m/s) drop five drops each into poison floor: 2 m, 18 s, re-hit 0.15 s, SpEffect 9019 (poizonAttackPower 30) -> 9050. Poison floor contact deals no damage and has no guard check.",
+  "how": "AtkParam with dmgLevel 0 applies only SpEffects.",
+  "sources": [
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "../sekiro-rs/docs/OWL.md (poison floors, seal)"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   }
+  ],
+  "confidence": "community",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "yes",
+   "where": "crates/sim/tests/it/owl_tools.rs"
+  },
+  "check": "Fight the Owl and stand in the floor.",
+  "note": "Read from sekiro-rs doc; the tick order inside the floor is inferred.",
+  "needs": [
+   {
+    "id": "bosses.owl-fight",
+    "why": "the boss uses it"
+   }
+  ]
+ },
+ {
+  "id": "arts.status-burn",
+  "category": "arts",
+  "title": "Burn",
+  "summary": "Fire attacks add burn build-up. Full burn sets the target on fire for about 10 s: small HP loss each second and no posture recovery. The hit that fills the gauge makes the target flinch.",
+  "values": "Wolf-to-enemy rows 9100-9109 (registBlood 31, 41, 62, 84, 94, 125, 156, 188, 219, 250); effect on the same row: effectEndurance 9.9, motionInterval 1.0, changeHpRate 0.5 % + 4 HP per second, ref 1000130, spCategory 10004. Enemy-to-Wolf 9110-9125: 9111 centipede floor 42, 9112 fire arrow 42, 9114 Fire Cow rush 62, 9115 bandit torches 62, 9116/9118/9119 125, 9124 strong sword flame 250, 9125 Nightjar flame 31. Burn flinch W_FireReaction: guarded or not, rank 3 transition.",
+  "how": "SpEffectParam registBlood; c9997 SP_DAMAGE_BURNING = env(3041).",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "src/status.rs module comments (exe SprjChrResistModule vtable 0x142a8d178)"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/msg/engus/menu.msgbnd.d (loading screen texts 105 Burn, 110 Poison, 111 Terror, 112 Shock)"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/skills.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/status.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": "burn not done (docs/PROGRESS.md)"
+  },
+  "check": "Hit an enemy with the flame vent until it flails; test the_bandits_torch_sets_wolf_on_fire.",
+  "note": "Loading text says burn also stops posture recovery; not confirmed in data here.",
+  "needs": [
+   {
+    "id": "arts.status-model",
+    "why": "gauge model"
+   }
+  ]
+ },
+ {
+  "id": "arts.status-burn-fire-cow",
+  "category": "arts",
+  "title": "Fire Cow burning",
+  "summary": "Contact with the Blazing Bull's burn row kills quickly: full burn replaces itself with a 100 % HP per half second effect.",
+  "values": "9121 'Fire cow_burning' registBlood 250 -> replace 9122: 30 s, motionInterval 0.5, changeHpRate 100 %.",
+  "how": "SpEffect 9121 -> 9122.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "src/status.rs (generic path)"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Let the Bull ignite you.",
+  "note": "Row names are machine translations; actual use by the bull's Lua not read here.",
+  "needs": [
+   {
+    "id": "arts.status-burn",
+    "why": "burn gauge"
+   }
+  ]
+ },
+ {
+  "id": "arts.status-burn-enemy-reaction",
+  "category": "arts",
+  "title": "Enemy flame reaction gate",
+  "summary": "Most enemies do not flinch from fire; only rows with SpEffect 6020 play the flame reaction.",
+  "values": "SpEffect 6020 (stateInfo 921 'play the flame reaction anim') is on some NpcParam spEffectID9 (c1020: 10209800), not on the General 10203010. SP_DAMAGE_FIRE / FIRE_FEAR need ref 1000040 = 6020. Burning itself (SP_DAMAGE_BURNING) does not need it.",
+  "how": "c9997 GetSpDamage.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/skills.md"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/status.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Burn a Shamo chicken vs the General.",
+  "note": "",
+  "needs": [
+   {
+    "id": "arts.status-burn",
+    "why": "burning flail"
+   }
+  ]
+ },
+ {
+  "id": "arts.status-terror",
+  "category": "arts",
+  "title": "Terror",
+  "summary": "Taking damage from apparition-type enemies fills a terror gauge; when it fills the victim dies outright. Guarding does not stop it. A small instant HP effect row of 100 % max HP does the killing.",
+  "values": "Rows 9200-9223 (stateInfo 5, ref 590 SP_EF_REF_ENABLE_INSANE, changeHpRate 100, replace 9250 = 2 s icon): registIllness 25, 28, 31, 36, 42, 50, 62, 83, 125, 250 for 9200-9209; named rows: 9211 weak grief bullet 36, 9212 strong 125, 9213/9214/9215 'Neckless' attacks 73 / 114 / 160, 9216 Yasha Ape roar 125, 9218 demon monkey 50, 9219 grief field 50, 9220 Yasha Ape mad roar 18, 9221 hair bullet 21, 9222 village zombie parents 70, 9223 child 4. Wolf resistance 200, drain 2.5 per second. Cure: Pacifying Agent 3220, Mottled Purple Gourd 3320, Divine Grass 3040, 9280 permit.",
+  "how": "SpEffectParam registIllness (legacy 'disease' field) with stateInfo 5.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "../sekiro-rs/docs/BOSSES-b.md (Guardian Ape terror)"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/msg/engus/menu.msgbnd.d (loading screen texts 105 Burn, 110 Poison, 111 Terror, 112 Shock)"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/TentativePlayerParam.json"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/status.rs"
+  },
+  "his": {
+   "has": "partial",
+   "where": "crates/sim/src/status.rs terror_attack, tests/it/guardian_ape.rs"
+  },
+  "check": "Stand 4 m from the Guardian Ape's scream and fill the gauge; test in guardian_ape tests.",
+  "note": "BOSSES-b.md: the resistance dispatcher, equipment modifiers and exact timing remain incompletely recovered; BOSSES-d.md: no Monk terror threshold replay.",
+  "needs": [
+   {
+    "id": "bosses.guardian-ape",
+    "why": "scream"
+   },
+   {
+    "id": "bosses.corrupted-monk",
+    "why": "apparitions"
+   }
+  ]
+ },
+ {
+  "id": "arts.status-terror-scream",
+  "category": "arts",
+  "title": "Headless Ape scream terror",
+  "summary": "The Guardian Ape's scream applies terror in a 10 m bullet radius; at 4 m the gauge fills and Wolf dies, at 20 m he is safe.",
+  "values": "Scream TAE emits Bullet 51000580 with SpEffect 9220 (registIllness 18) rather than the test row 9216 (125). Fill -> changeHpRate 100 (fatal).",
+  "how": "Bullet 51000580 -> SpEffect 9220.",
+  "sources": [
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "../sekiro-rs/docs/BOSSES-b.md (Guardian Ape terror)"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   }
+  ],
+  "confidence": "community",
+  "ours": {
+   "has": "partial",
+   "where": "src/enemy_bullet.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "crates/sim/tests/it/guardian_ape.rs"
+  },
+  "check": "Run the near / far scripted replay from BOSSES-b.md.",
+  "note": "Resistance maths there uses CalcCorrectGraph 111.",
+  "needs": [
+   {
+    "id": "arts.status-terror",
+    "why": "the effect"
+   }
+  ]
+ },
+ {
+  "id": "arts.status-shock",
+  "category": "arts",
+  "title": "Shock (electric)",
+  "summary": "Being hit by lightning while standing on the ground builds a shock gauge that fires at once: huge HP damage and a short stun, even when guarded. Lightning that hits in the air charges Wolf instead, and he can return it.",
+  "values": "Resist freeze 100 on enemies, 200 on Wolf. Chain: hit effect 9400 / 9405 (Wolf's return) and 9410-9415 (enemy strengths 1-5, 9415 mermaid dragon) -> resist-scrape rows 9420 / 9425 / 9430-9435: registFreeze 200, stateInfo 260. 9420: changeHpRate 67 + 320, posture -5 % -180; 9430: 10 % + 160, -5 % -120; 9431: 20 %, -10 %; 9432: 30 %, -15 %; 9433: 40 %, -20 %; 9434: 50 %, -25 %; 9435 (strong): 20 %, -10 %. Then replace 9445 (1.5 s indicator), cycle 9450 (ref 593 weak shock reaction) / 9451 (ref 592 strong). Reset 9440 (registFreeze -99999). Damage scaled by wearer's freezeDamageRate (Wolf 100; Eel Liver 50; Way of Tomoe 9461 25).",
+  "how": "SpEffectParam registFreeze (legacy), stateInfo 260; exe resist type 4.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "../sekiro-rs/docs/GENICHIRO.md (Castle lightning)"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "src/status.rs module comments (exe SprjChrResistModule vtable 0x142a8d178)"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/msg/engus/menu.msgbnd.d (loading screen texts 105 Burn, 110 Poison, 111 Terror, 112 Shock)"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/status.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "crates/sim/src/status.rs electric path, tests/it/lightning.rs"
+  },
+  "check": "Stand under Tomoe's bolt: GroundDamageElectricShockWeak plays; test lightning tests.",
+  "note": "Gap: whether the posture fields also scale with freezeDamageRate is not traced.",
+  "needs": [
+   {
+    "id": "bosses.genichiro",
+    "why": "lightning source"
+   },
+   {
+    "id": "arts.lightning-reversal",
+    "why": "the counter"
+   }
+  ]
+ },
+ {
+  "id": "arts.status-electrified-charge",
+  "category": "arts",
+  "title": "Electrified charge (lightning in the air)",
+  "summary": "A lightning hit in the air does not shock; it puts a 30 s charge on Wolf that discharges when he lands or lets him return it.",
+  "values": "Charge enchants 9490-9494 (weak strengths 1-5 -> 9410-9414, stateInfo 356, ref 511) and 9495 (strong, stateInfo 151, ref 510): effectEndurance 30, motionInterval 0.1. Discharge parents 9505 (weak) / 9506 (strong, 0.1 s) -> 9507 / 9508 (replace 9440, cycle 9500 erase). Castle Tomoe bolt leaves 9492 even on a guarded hit.",
+  "how": "SpEffect chains; HKS reads env 3036 ref 510/511.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "../sekiro-rs/docs/GENICHIRO.md (Castle lightning)"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/player.rs lightning_shock"
+  },
+  "his": {
+   "has": "yes",
+   "where": "crates/sim/tests/it/lightning.rs"
+  },
+  "check": "Be hit in the air; test airborne capture.",
+  "note": "Native stateInfo 356 dispatcher and full threshold not reconstructed in sekiro-rs.",
+  "needs": [
+   {
+    "id": "arts.status-shock",
+    "why": "what the discharge applies"
+   }
+  ]
+ },
+ {
+  "id": "arts.status-aging",
+  "category": "arts",
+  "title": "Aging (Enfeeble)",
+  "summary": "The Fountainhead nobles' breath builds an aging gauge; when full Wolf ages for 30 s: lowered max HP, posture pinned to the floor, near-total damage vulnerability and no item use.",
+  "values": "Build-up 9600: registCurse 40, stateInfo 116 (Paramdex: 'Enfeeble'), cycle 9620. Wolf 200 vs enemy 999. Effect 9620: 30 s, changeStaminaRate -100 every frame, maxHpRate 0.125, stateInfo 341 (blocks items), ref 591 SP_EF_REF_AGING, damage cut rates 99. Cure/overwrite 9601 (-99999), 9640 / 9641 end rows. Source Bullet 13000200 (c1300). Event text label 'Enfeebled' (event text 10010776).",
+  "how": "SpEffect 9600 -> 9620; drain 20 points per second.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "src/status.rs module comments (exe SprjChrResistModule vtable 0x142a8d178)"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/msg/engus/menu.msgbnd.d (event text 10010776 Enfeebled)"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "src/status.rs set_aging"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Take the strong noble's breath; Wolf's HP bar shrinks to a fraction.",
+  "note": "Gap: the fill -> cycleOccurrence step and the posture floor are inferred; the 'Enfeeble' stateInfo label and the 'Enfeebled' text are matched here by name only, open-question whether another effect also uses it.",
+  "needs": [
+   {
+    "id": "arts.status-model",
+    "why": "gauge model"
+   },
+   {
+    "id": "arts.item-use-limit-states",
+    "why": "aged blocks items"
+   }
+  ]
+ },
+ {
+  "id": "arts.status-cures",
+  "category": "arts",
+  "title": "Cures and resistance items",
+  "summary": "Items that clear gauges also give a 30 s resistance rate; Divine Grass clears all.",
+  "values": "Antidote 3201 poison -99999 + 0.55 x poison build-up; Dousing 3211 burn + 0.65 x burn and fire 0.6 (Ministry 0.55 and 0.4); Pacifying 3221 terror + 0.5 x; Mottled Purple, Withered Red, Green Mossy gourds the same clears; Divine Grass 3041-3045 clears all; Eel Liver 3231 shock 50 % and lightning 0.5. Red Lump doubles burn.",
+  "how": "Item Bullet chains with registX -99999 and def*ResistDamageRate.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/EquipParamGoods.json"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/status.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Try each cure; test every_bag_item_has_its_effects.",
+  "note": "",
+  "needs": [
+   {
+    "id": "arts.item-antidote-powder",
+    "why": "poison cure"
+   },
+   {
+    "id": "arts.item-dousing-powder",
+    "why": "burn cure"
+   },
+   {
+    "id": "arts.item-pacifying-agent",
+    "why": "terror cure"
+   }
+  ]
+ },
+ {
+  "id": "arts.status-hud",
+  "category": "arts",
+  "title": "Status gauge HUD",
+  "summary": "The game shows Poison and Burn sprites over the vitality bar that fill from the bottom and pulse when afflicted. Terror shows a percentage and shock a short indicator.",
+  "values": "Sprites MENU_Resist_Poison / MENU_Resist_Fire; icon rows 9250 (2 s terror), 9445 (1.5 s shock). Place, size and animation from the FE ActionScript not decoded.",
+  "how": "FE movie + SpEffect icon rows.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "src/status.rs module comments (exe SprjChrResistModule vtable 0x142a8d178)"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "../sekiro-rs/docs/BOSSES-b.md (Guardian Ape terror)"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "src/hud.rs WolfBuildUp"
+  },
+  "his": {
+   "has": "partial",
+   "where": "crates/game/src/combat_hud.rs"
+  },
+  "check": "Compare against any Sekiro video with poison on screen.",
+  "note": "HUD place and size are inferred.",
+  "needs": [
+   {
+    "id": "interface.hud",
+    "why": "the HUD layout"
+   }
+  ]
+ },
+ {
+  "id": "arts.status-dragonrot",
+  "category": "arts",
+  "title": "Dragonrot is not a gauge",
+  "summary": "Dragonrot is a world-state sickness tied to deaths, not a build-up. It is cured with Dragon's Blood Droplets or a Recovery Charm at an idol.",
+  "values": "Text: dying without resurrecting adds to a stagnation counter; Rot Essence items track victims; Dragon's Blood Droplet (5600) cures all; Recovery Charm 2930.",
+  "how": "Event flags and idol menu; texts only here.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/msg/engus (item.msgbnd.d item/weapon FMGs, menu.msgbnd.d loading texts)"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/msg/engus/menu.msgbnd.d (loading screen texts 105 Burn, 110 Poison, 111 Terror, 112 Shock)"
+   }
+  ],
+  "confidence": "community",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Die repeatedly and check an NPC.",
+  "note": "Only texts were read; no event script was inspected.",
+  "needs": [
+   {
+    "id": "npcs.dragonrot",
+    "why": "who is afflicted"
+   }
+  ]
+ }
+]

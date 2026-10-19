@@ -134,6 +134,16 @@ if ($need) {
     & $exe unpack $Sekiro $out ($need -replace "^objects to unpack: ", "")
     & $exe map $out m11_01_00_00 c1020_0004 60
 }
+# Whole maps' grapple points and ledges for runs on sekiro-rs's map (src/sr_map.rs `edges`):
+# the maps' edge binders and all their objects, then map_edges_<map>.json.
+$edgeMaps = @("m10_00_00_00", "m11_00_00_00", "m11_01_00_00", "m11_02_00_00", "m13_00_00_00", "m15_00_00_00", "m17_00_00_00", "m20_00_00_00", "m25_00_00_00")
+& $exe unpack $Sekiro $out 'map/m[0-9][0-9]_0[0-2]_00_00/m[0-9][0-9]_0[0-2]_00_00\.edgeb'
+$edgeLog = & $exe edges $out @edgeMaps
+$objs = $edgeLog | Select-String -Pattern 'o\d{6}' -AllMatches | Where-Object { $_.Line -like "objects to unpack: *" } | ForEach-Object { $_.Matches.Value } | Sort-Object -Unique
+if ($objs) {
+    & $exe unpack $Sekiro $out ('^/obj/(' + ($objs -join '|') + ')\.objbnd')
+    & $exe edges $out @edgeMaps
+}
 
 # Boss phases: the map events on a boss's health bars (event/*.emevd + map/mapstudio/*.msb)
 # -> extracted/enemies/boss_events.json (src/enemy.rs phase_events).

@@ -34,6 +34,7 @@ mod experience;
 mod ffx;
 mod fxr;
 mod fog_wall;
+mod fonts;
 mod form;
 mod height_fog;
 mod sky;
@@ -42,6 +43,7 @@ mod game_menu;
 mod idol;
 mod items;
 mod gore;
+mod guard;
 mod grading;
 mod hud;
 mod icon;
@@ -63,13 +65,18 @@ mod photo;
 mod player;
 mod prosthetic;
 #[cfg(test)]
+mod shader_tests;
+#[cfg(test)]
 mod sim_tests;
 mod sound;
+mod sr_map;
 mod status;
 mod stealth;
 mod swim;
 mod throw_trace;
 mod trace;
+mod ui_stage;
+mod ufo;
 mod autoboss;
 mod vfx;
 mod wire;
@@ -78,18 +85,27 @@ mod world;
 
 fn main() {
     startup();
-    App::new()
-        .add_plugins(DefaultPlugins.set(AssetPlugin { file_path: paths::extracted().to_string_lossy().into_owned(), ..default() }).set(WindowPlugin {
-            primary_window: Some(Window {
-                title: "Sv1".into(),
-                resolution: WindowResolution::new(1024, 560),
-                ..default()
-            }),
+    let sr = sr_map::active();
+    let mut app = App::new();
+    if sr {
+        sr_map::register_source(&mut app);
+    }
+    let defaults = DefaultPlugins.set(AssetPlugin { file_path: paths::extracted().to_string_lossy().into_owned(), ..default() }).set(WindowPlugin {
+        primary_window: Some(Window {
+            title: "Sv1".into(),
+            resolution: WindowResolution::new(1024, 560),
             ..default()
-        }).set(bevy::log::LogPlugin { custom_layer: log_file_layer, ..default() }))
+        }),
+        ..default()
+    }).set(bevy::log::LogPlugin { custom_layer: log_file_layer, ..default() });
+    // sekiro-rs's map GLBs carry its layered-material vertex attributes.
+    let defaults = if sr { defaults.set(sekiro_rs::map::layered_gltf_plugin()) } else { defaults };
+    app.add_plugins(defaults)
         .add_plugins(cloth::ClothPlugin)
         .add_plugins(action_guide::ActionGuidePlugin)
         .add_plugins(shot::ShotPlugin)
+        .add_plugins(fonts::FontsPlugin)
+        .add_plugins(ui_stage::UiStagePlugin)
         .add_plugins(game_menu::GameMenuPlugin)
         .add_plugins(idol::IdolPlugin)
         .add_plugins(sculptor::SculptorPlugin)
@@ -98,6 +114,7 @@ fn main() {
         .add_plugins(drops::DropsPlugin)
         .add_plugins(interp::InterpPlugin)
         .add_plugins(debug_menu::DebugMenuPlugin)
+        .add_plugins(ufo::UfoPlugin)
         .add_plugins(trace::TracePlugin)
         .add_plugins(autoboss::AutoBossPlugin)
         .add_plugins(throw_trace::ThrowTracePlugin)
@@ -108,12 +125,7 @@ fn main() {
         .add_plugins(ffx::FfxPlugin)
         .add_plugins(fxr::FxrPlugin)
         .add_plugins(fog_wall::FogWallPlugin)
-        .add_plugins(height_fog::HeightFogPlugin)
-        .add_plugins(sky::SkyPlugin)
         .add_plugins(map::MapPlugin)
-        .add_plugins(map_lights::MapLightsPlugin)
-        .add_plugins(map_fx::MapFxPlugin)
-        .add_plugins(map_grass::MapGrassPlugin)
         .add_plugins(icon::IconPlugin)
         .add_plugins((
             config::ConfigPlugin,
@@ -133,8 +145,17 @@ fn main() {
             prosthetic::ProstheticPlugin,
         ))
         // Bevy's plugin tuples hold at most 15.
-        .add_plugins((photo::PhotoPlugin, status::StatusPlugin, duel::DuelPlugin, enemy_bullet::EnemyBulletPlugin, showcase::ShowcasePlugin, perf::PerfPlugin))
-        .run();
+        .add_plugins((photo::PhotoPlugin, status::StatusPlugin, duel::DuelPlugin, enemy_bullet::EnemyBulletPlugin, showcase::ShowcasePlugin, perf::PerfPlugin));
+    if sr {
+        // sekiro-rs draws the world, sky, fog and lights (sr_map.rs).
+        sr_map::install(&mut app);
+        if !sr_map::has_grass() {
+            app.add_plugins(map_grass::MapGrassPlugin);
+        }
+    } else {
+        app.add_plugins((height_fog::HeightFogPlugin, sky::SkyPlugin, map_lights::MapLightsPlugin, map_fx::MapFxPlugin, map_grass::MapGrassPlugin));
+    }
+    app.run();
 }
 
 /// The log file next to `config.toml` (`paths::root`), rewritten on every start.

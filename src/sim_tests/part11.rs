@@ -568,7 +568,7 @@ pub(crate) fn zz_boss_moveset_trace() {
                 let (tf, pa) = world.query_filtered::<(&Transform, &Actor), With<Player>>().single(world).unwrap();
                 (tf.translation, format!("{} hp{:.0}", pa.state, pa.hp))
             };
-            let goals = world.get_non_send_resource::<crate::enemy::Brains>().and_then(|br| br.map.get(&b)).map(|br| br.describe()).unwrap_or_default();
+            let goals = world.get_non_send::<crate::enemy::Brains>().and_then(|br| br.map.get(&b)).map(|br| br.describe()).unwrap_or_default();
             let wolf = format!("{wolf} | {goals}");
             // The stick that walks Wolf at the boss (headless: no OrbitCamera, so the camera yaw is 0).
             let cam_yaw = world.query::<&crate::camera::OrbitCamera>().iter(world).next().map_or(0.0, |c| c.yaw);

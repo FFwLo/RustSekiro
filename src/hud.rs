@@ -180,8 +180,8 @@ fn framed(parent: &mut ChildSpawnerCommands, width: Val, height: Val, center: bo
         });
 }
 
-fn spawn_hud(mut commands: Commands, mut fonts: ResMut<Assets<Font>>, assets: Res<AssetServer>) {
-    let serif = std::fs::read("C:/Windows/Fonts/georgia.ttf").ok().map(|b| fonts.add(Font::from_bytes(b)));
+fn spawn_hud(mut commands: Commands, fonts: Res<crate::fonts::GameFonts>, assets: Res<AssetServer>) {
+    let serif = fonts.ui.clone();
     // Wolf, bottom left (clip r_000230, 960 x 540: x 5.7-15.2 %, y 90.7-92.2 %): resurrection
     // nodes over the vitality bar (SB_FE MENU_HP_base_2 frame, MENU_HP_bar fill tinted red).
     commands
@@ -807,14 +807,15 @@ fn update_wolf_build_up(
 fn spawn_enemy_bars(commands: &mut Commands, assets: &AssetServer, enemy: Entity) {
     commands
         .spawn((
-            Node { position_type: PositionType::Absolute, width: Val::Vw(OVERHEAD_W), margin: UiRect::left(Val::Vw(-OVERHEAD_W / 2.0)), flex_direction: FlexDirection::Column, row_gap: Val::Vh(0.3), ..default() },
+            Node { position_type: PositionType::Absolute, width: stage_w(OVERHEAD_W), margin: UiRect::left(stage_w(-OVERHEAD_W / 2.0)), flex_direction: FlexDirection::Column, row_gap: Val::Vh(0.3), ..default() },
             Visibility::Hidden,
             EnemyRoot(enemy),
+            crate::ui_stage::WorldUi,
         ))
         .with_children(|c| {
-            c.spawn(Node { flex_direction: FlexDirection::Row, column_gap: Val::Vw(0.15), margin: UiRect { left: Val::Vw(-0.2), bottom: Val::Vh(0.1), ..default() }, ..default() }).with_children(|r| {
+            c.spawn(Node { flex_direction: FlexDirection::Row, column_gap: stage_w(0.15), margin: UiRect { left: stage_w(-0.2), bottom: Val::Vh(0.1), ..default() }, ..default() }).with_children(|r| {
                 for i in 0..3 {
-                    r.spawn((Node { width: Val::Vw(1.15), height: Val::Vw(1.15), display: Display::None, ..default() }, ImageNode::new(assets.load("hud/MENU_HP_Boss.png")), EnemyDot(enemy, i)));
+                    r.spawn((Node { width: stage_w(1.15), height: stage_w(1.15), display: Display::None, ..default() }, ImageNode::new(assets.load("hud/MENU_HP_Boss.png")), EnemyDot(enemy, i)));
                 }
             });
             framed(c, Val::Percent(100.0), Val::Vh(0.75), false, (BackgroundColor(VITALITY), EnemyHpFill(enemy)), None::<()>);
@@ -822,6 +823,13 @@ fn spawn_enemy_bars(commands: &mut Commands, assets: &AssetServer, enemy: Entity
                 framed(r, Val::Percent(100.0), Val::Vh(0.6), true, (BackgroundColor(Color::srgb(1.0, 0.7, 0.15)), EnemyPostureFill(enemy)), None::<()>);
             });
         });
+}
+
+/// A width in the 16:9 stage's vw (1 vw of a 16:9 window), from the window height: the bars
+/// over the world are on the whole window (ui_stage.rs WorldUi), so plain Vw would stretch on
+/// a wider one.
+fn stage_w(x: f32) -> Val {
+    Val::Vh(x * 16.0 / 9.0)
 }
 
 /// The over-head bars' width (vw): bigger than the clip's 6.8 (the user: "too small").
@@ -937,8 +945,8 @@ struct DeathblowMark;
 /// the corner, the prosthetic tool on the bigger one (MENU_Item_Top; x 84.2-90.5 %, y 83.1-94.4 %),
 /// and a column (x 91.4 %): the combat art's mark (MENU_FE_Skill), the ninjutsu's
 /// (MENU_FE_Ninsatul, shown with one equipped), the Spirit Emblems with their count.
-fn spawn_item_icons(mut commands: Commands, mut fonts: ResMut<Assets<Font>>, assets: Res<AssetServer>) {
-    let serif = std::fs::read("C:/Windows/Fonts/georgia.ttf").ok().map(|b| fonts.add(Font::from_bytes(b)));
+fn spawn_item_icons(mut commands: Commands, fonts: Res<crate::fonts::GameFonts>, assets: Res<AssetServer>) {
+    let serif = fonts.ui.clone();
     let img = |f: &str| -> (ImageNode, Visibility) {
         let file = ["hud", "menu_sprites/sb_fe"].iter().map(|d| format!("{d}/{f}.png")).find(|p| crate::paths::extracted().join(p).exists());
         match file {
@@ -1156,7 +1164,7 @@ fn update_item_icons(
 const DEATHBLOW_SIDE: f32 = 405.0 * 0.45;
 
 fn spawn_deathblow_mark(mut commands: Commands, assets: Res<AssetServer>) {
-    commands.spawn((Node { position_type: PositionType::Absolute, ..default() }, ImageNode::new(assets.load("hud/MENU_ninsatu_02.png")), Visibility::Hidden, DeathblowMark));
+    commands.spawn((Node { position_type: PositionType::Absolute, ..default() }, ImageNode::new(assets.load("hud/MENU_ninsatu_02.png")), Visibility::Hidden, DeathblowMark, crate::ui_stage::WorldUi));
 }
 
 /// The deathblow clip's alpha `t` s after FadeIn, `gone` s into FadeOut.
@@ -1317,7 +1325,7 @@ const LOCK_SIDE: f32 = 32.0;
 fn spawn_lock_mark(mut commands: Commands, assets: Res<AssetServer>) {
     let mut img = ImageNode::new(assets.load("hud/MENU_Lockon01.png"));
     img.rect = Some(Rect::new(0.0, 0.0, LOCK_SIDE, LOCK_SIDE));
-    commands.spawn((Node { position_type: PositionType::Absolute, ..default() }, img, Visibility::Hidden, LockMark));
+    commands.spawn((Node { position_type: PositionType::Absolute, ..default() }, img, Visibility::Hidden, LockMark, crate::ui_stage::WorldUi));
 }
 
 /// The lock-on clip's scale and alpha `t` s after FadeIn, `gone` s into FadeOut.
@@ -1370,15 +1378,33 @@ fn update_lock_mark(
 }
 
 /// The grapple point mark (SB_FE): MENU_Wire_Marker on the point the hook would fire at when it is
-/// in the action range, MENU_Wire_NG (greyed) when it is only found (WirePointSearchParam 0: act
-/// to 15 m, find to 25 m; wire::WireAim). Hidden during a wire move. gap: the FE movie that sizes
-/// and animates it is not decoded; drawn at its atlas size (66 / 156 px on the 1920 x 1080 stage)
-/// scaled to the window.
+/// in the action range, the grey disc MENU_Wire_Distance when it is only found
+/// (WirePointSearchParam 0: act to 15 m, find to 25 m; wire::WireAim). Hidden during a wire move.
+/// Off screen it is held on the exe's ellipse (`wire_clamp`) with the arrow MENU_Wire_Cursor
+/// turned toward the point. gap: the FE movie that sizes it by distance (a 101-frame clip driven
+/// by the distance percent, FUN_140d51470) and its no-ride variant are not decoded; drawn at the
+/// atlas size (66 px on the 1920 x 1080 stage) scaled to the window. MenuParam WirePoint* /
+/// WireOffScreen* are never read by the exe (atlas interface.wire-markers).
 #[derive(Component)]
 struct WireMark;
+#[derive(Component)]
+struct WireArrow;
 
-fn spawn_wire_mark(mut commands: Commands) {
-    commands.spawn((Node { position_type: PositionType::Absolute, ..default() }, ImageNode::default(), Visibility::Hidden, WireMark));
+/// The off-screen clamp of the wire target marker (exe FUN_140c6a590, called by FUN_140e36df0
+/// with the .data globals of the debug menu "Wire Target": centre 960 / 540, width 1460, height
+/// 800 on the 1920 x 1080 stage): a point outside the ellipse moves onto it along the line from
+/// the centre. Returns the stage point and whether it was clamped.
+fn wire_clamp(p: Vec2) -> (Vec2, bool) {
+    const CENTRE: Vec2 = Vec2::new(960.0, 540.0);
+    const SIZE: Vec2 = Vec2::new(1460.0, 800.0);
+    let d = p - CENTRE;
+    let r = Vec2::new(d.x, d.y * SIZE.x / SIZE.y).length() / (SIZE.x / 2.0);
+    if r > 1.0 { (CENTRE + d / r, true) } else { (p, false) }
+}
+
+fn spawn_wire_mark(mut commands: Commands, assets: Res<AssetServer>) {
+    commands.spawn((Node { position_type: PositionType::Absolute, ..default() }, ImageNode::default(), Visibility::Hidden, WireMark, crate::ui_stage::WorldUi));
+    commands.spawn((Node { position_type: PositionType::Absolute, ..default() }, ImageNode::new(assets.load("hud/MENU_Wire_Cursor.png")), UiTransform::IDENTITY, Visibility::Hidden, WireArrow, crate::ui_stage::WorldUi));
 }
 
 fn update_wire_mark(
@@ -1388,27 +1414,65 @@ fn update_wire_mark(
     camera: Query<(&Camera, &GlobalTransform), With<crate::camera::OrbitCamera>>,
     window: Query<&Window>,
     mut shown: Local<Option<bool>>,
-    mut mark: Query<(&mut Node, &mut ImageNode, &mut Visibility), With<WireMark>>,
+    mut mark: Query<(&mut Node, &mut ImageNode, &mut Visibility), (With<WireMark>, Without<WireArrow>)>,
+    mut arrow: Query<(&mut Node, &mut UiTransform, &mut Visibility), With<WireArrow>>,
 ) {
     let Ok((mut node, mut img, mut vis)) = mark.single_mut() else { return };
+    let Ok((mut anode, mut turn, mut avis)) = arrow.single_mut() else { return };
     *vis = Visibility::Hidden;
+    *avis = Visibility::Hidden;
     let busy = wolf.iter().any(|p| p.wire.is_some());
     let (Some(t), Ok((cam, ct))) = (aim.and_then(|a| a.target), camera.single()) else { return };
     if busy {
         return;
     }
+    // gap: a point behind the camera has no projection here (FUN_140c69ca0 not traced): hidden.
     let Ok(p) = cam.world_to_viewport(ct, t.point.hook) else { return };
     if *shown != Some(t.in_action_range) {
         *shown = Some(t.in_action_range);
-        img.image = assets.load(if t.in_action_range { "hud/MENU_Wire_Marker.png" } else { "hud/MENU_Wire_NG.png" });
+        img.image = assets.load(if t.in_action_range { "hud/MENU_Wire_Marker.png" } else { "hud/MENU_Wire_Distance.png" });
     }
-    let scale = window.single().map_or(720.0, |w| w.height()) / 1080.0;
-    let size = if t.in_action_range { 66.0 } else { 156.0 } * scale;
+    let view = window.single().map_or(Vec2::new(1280.0, 720.0), |w| Vec2::new(w.width(), w.height()));
+    let stage = Vec2::new(1920.0, 1080.0);
+    let (at, clamped) = wire_clamp(p * stage / view);
+    let p = at * view / stage;
+    let scale = view.y / 1080.0;
+    let size = 66.0 * scale;
     node.width = Val::Px(size);
     node.height = Val::Px(size);
     node.left = Val::Px(p.x - size / 2.0);
     node.top = Val::Px(p.y - size / 2.0);
     *vis = Visibility::Inherited;
+    if clamped {
+        // The arrow turned from the arrow base (the stage centre) toward the marker (FUN_140c69f30),
+        // its tip (the sprite points up) outward, at the disc's edge. gap: its place in the movie.
+        let dir = (at - Vec2::new(960.0, 540.0)).normalize_or_zero();
+        let (w, h) = (86.0 * scale, 38.0 * scale);
+        let c = p + dir * (size / 2.0 + h / 2.0);
+        anode.width = Val::Px(w);
+        anode.height = Val::Px(h);
+        anode.left = Val::Px(c.x - w / 2.0);
+        anode.top = Val::Px(c.y - h / 2.0);
+        // UiTransform turns clockwise; screen y points down, so up is (0, -1).
+        turn.rotation = Rot2::radians(f32::atan2(dir.x, -dir.y));
+        *avis = Visibility::Inherited;
+    }
+}
+
+#[cfg(test)]
+mod wire_mark_tests {
+    /// Atlas interface.wire-markers: inside the exe's 1460 x 800 ellipse the marker stays put,
+    /// outside it lands on the ellipse along the line from the centre.
+    #[test]
+    fn atlas_wire_marker_clamps_to_the_exe_ellipse() {
+        use bevy::math::Vec2;
+        let (p, c) = super::wire_clamp(Vec2::new(1000.0, 500.0));
+        assert!(!c && p == Vec2::new(1000.0, 500.0));
+        let (p, c) = super::wire_clamp(Vec2::new(3000.0, 540.0));
+        assert!(c && (p - Vec2::new(960.0 + 730.0, 540.0)).length() < 0.01, "{p}");
+        let (p, c) = super::wire_clamp(Vec2::new(960.0, -500.0));
+        assert!(c && (p - Vec2::new(960.0, 540.0 - 400.0)).length() < 0.01, "{p}");
+    }
 }
 
 /// The controls line, state readout and combat log show only with the debug menu (F1) open.
@@ -1459,13 +1523,9 @@ fn update_log(time: Res<Time>, mut log: ResMut<CombatLog>, mut text: Single<&mut
     text.0 = log.lines.iter().map(|l| l.0.clone()).collect::<Vec<_>>().join("\n");
 }
 
-/// The kanji needs a Japanese font: the first of Windows' Yu Gothic Bold / MS Gothic
-/// found; without one the warning falls back to "!!".
-fn spawn_perilous(mut commands: Commands, mut fonts: ResMut<Assets<Font>>) {
-    let font = ["YuGothB.ttc", "msgothic.ttc", "meiryo.ttc"]
-        .iter()
-        .find_map(|f| std::fs::read(std::path::Path::new("C:/Windows/Fonts").join(f)).ok())
-        .map(|bytes| fonts.add(Font::from_bytes(bytes)));
+/// The kanji needs a Japanese font (`GameFonts::kanji`); without one the warning falls back to "!!".
+fn spawn_perilous(mut commands: Commands, fonts: Res<crate::fonts::GameFonts>) {
+    let font = fonts.kanji.clone();
     let has_cjk = font.is_some();
     commands
         .spawn(Node { position_type: PositionType::Absolute, top: Val::Percent(18.0), width: Val::Percent(100.0), justify_content: JustifyContent::Center, ..default() })
@@ -1556,6 +1616,7 @@ fn spawn_stealth(commands: &mut Commands, assets: &AssetServer, enemy: Entity) {
             UiTransform::IDENTITY,
             Visibility::Hidden,
             StealthMark { enemy, found_t: 0.0, clip: MarkClip::default() },
+            crate::ui_stage::WorldUi,
         ))
         .with_children(|c| {
             c.spawn((

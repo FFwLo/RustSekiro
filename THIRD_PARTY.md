@@ -26,7 +26,8 @@ volumes), the story time-of-day flags of common.emevd events 100 / 820 (`src/con
 `default_hour`, its crates/sim/src/story.rs) and the tool hits' reaction path
 (`src/prosthetic.rs` `bullet_reaction`, after its fight.rs rules) and the boss fog walls'
 common events 20005820 / 20005825 (`tools/fog_walls.py`, `src/fog_wall.rs`, after its
-crates/sim/src/fogwall.rs). `src/height_fog.wgsl` (the game's fog pass) is adapted from its
+crates/sim/src/fogwall.rs). The grapple marker's grey MENU_Wire_Distance disc for a point found
+but out of range (`src/hud.rs` `update_wire_mark`) follows its crates/game/src/grapple_hud.rs. `src/height_fog.wgsl` (the game's fog pass) is adapted from its
 crates/game/src/fog.wgsl and `src/height_fog.rs` from its fog.rs, with the exe packing of its
 docs/SHADER-INPUTS.md (GameScale, the height offset, the depth slices). The sky domes (`src/sky.rs`,
 `src/sky.wgsl`, `tools/sekiro-extract/src/sky.rs`) are adapted from its crates/game/src/sky.rs,
@@ -38,6 +39,23 @@ irradiance volumes (`tools/sekiro-extract/src/map.rs` `export_giiv`, `src/map.rs
 lighting.rs / map_material.wgsl (the box placement, the one-voxel fade and normal bias). The map material's bindless
 batching (`src/map.rs` `MapExt` / `MapUniform`, `src/map_material.wgsl` `#ifdef BINDLESS`)
 follows its 73eca1d map_material.rs / map_material.wgsl (2026-10-13).
+The combat pass (2026-10-19) ported its combat rules, each value checked against the params: the
+guard row, block versus deflect by repel values, the guard type's columns, the guard arc and the
+posture and HP a guard lets through (`src/guard.rs`, `src/combat.rs` `guard_contact`,
+`guard_posture`, `npc_guard_chip`, after its crates/sim/src/combat hit.rs, posture.rs, hp.rs and
+effects.rs), the StaminaControlParam posture ranges (`src/actor.rs` `hold_posture_range`, its
+posture.rs `ControlRange`), the counter-only mikiri dummy (`src/combat.rs` `counter_dummy`, its
+perilous.rs) and the Attack Power growth row (`src/combat.rs` `growth_sp`, its progression.rs).
+The vfx and lighting pass (2026-10-19) calls its library instead of copying it: its light unit
+constants (`src/map.rs`, `src/map_lights.rs`, `src/fxr.rs` use `sekiro_rs::lighting::SCENE_TO_BEVY`,
+`ENV_PER_UNIT`, `LOCAL_LUMENS_PER_UNIT`, traced from the exe's deferred light pass), its
+`LightSet::from_gparam` for the lit particles' light (`src/sr_map.rs` `particle_light`), its
+`map::add_map` lighting with no map pieces for our sandbox and Construct (`src/sr_map.rs`
+`lighting_only`) and the gparam reader of its sekiro-formats crate in tests.
+The bosses pass (2026-10-19) ported its TARGET_EVENT rule for the two apes of the Headless Ape
+fight (the map's 2004[11] gives each AI its partner's live position, HP, posture and SpEffects;
+`src/ai.rs` `EventView`, `src/enemy/script.rs` `Act::EventTarget`, after its
+crates/sim/src/headless_ape.rs and docs/BOSSES-b.md), on our enemy AI, not its duel host.
 It is used here under the MIT license:
 
 ```

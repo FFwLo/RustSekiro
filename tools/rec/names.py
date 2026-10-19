@@ -4,7 +4,7 @@ import json
 from functools import lru_cache
 from pathlib import Path
 
-ROOT = Path(r"C:\DeadlockModding\reference\Smithbox-src\Smithbox.Release\Output\Assets\PARAM\SDT\Param Row Names\English")
+ROOT = Path(__file__).resolve().parents[3] / Path(r"reference\Smithbox-src\Smithbox.Release\Output\Assets\PARAM\SDT\Param Row Names\English")
 
 
 @lru_cache(None)
@@ -32,7 +32,7 @@ def speffect(i):
     return name("SpEffectParam", i, 24)
 
 
-EMEDF = Path(r"C:\DeadlockModding\reference\DarkScript3\DarkScript3\Resources\sekiro-common.emedf.json")
+EMEDF = Path(__file__).resolve().parents[3] / Path(r"reference\DarkScript3\DarkScript3\Resources\sekiro-common.emedf.json")
 # EMEDF arg types -> struct format (DarkScript3 EMEDF.cs: 0 u8, 1 u16, 2 u32, 3 s8, 4 s16, 5 s32, 6 f32, 8 u32)
 _ARG = {0: "B", 1: "H", 2: "I", 3: "b", 4: "h", 5: "i", 6: "f", 8: "I"}
 

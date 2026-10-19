@@ -1,11 +1,10 @@
 //! Blood like the game's: driven by each character's own TAE, so a deathblow bleeds where and when
 //! the game's does.
-//! - SpawnOneShotFFX (TAE 96) with a blood FFX: a spray from the event's dummy along the dummy's
-//!   forward for the event's length (c1010 behind deathblow a000_012200: FFX 220505 on dummy 802,
-//!   the side of the neck, frames 46-81; Wolf's blade 220502 / 220503 on sword dummies 121 / 100).
-//!   The game's own effect (extracted/fxr/<id>.json) plays through fxr.rs (ffx.rs spawns it); this
-//!   hand-made spray (made to read like clip 1: a long dark-red jet of fine drops that thins out)
-//!   only stands in when that FXR is not extracted.
+//! - SpawnOneShotFFX (TAE 96) with a blood FFX (c1010 behind deathblow a000_012200: FFX 220505 on
+//!   dummy 802, the side of the neck, frames 46-81; Wolf's blade 220502 / 220503 on sword dummies
+//!   121 / 100): the game's own effect (extracted/fxr/<id>.json), spawned by ffx.rs and played by
+//!   fxr.rs. Every blood FFX the TAE names is in the game's archives (the hand-made spray that
+//!   stood in for a missing one is gone).
 //! - DecalParamID_DummyPoly (TAE 138): a blood stain under the dummy, from DecalParam (710011: the
 //!   game's own splat mask dp000160000 and diffuse dp000100000, extracted/decal/<id>.png, tinted by
 //!   diffuseColorR/G/B, projected straight down (pitchAngle -90), randomSize 100-120 %, a random
@@ -23,17 +22,7 @@ use bevy::prelude::*;
 use crate::actor::{Actor, data_for};
 use crate::data::Combat;
 use crate::model::Dummies;
-use crate::vfx::{Particle, VfxAssets, VfxRng};
-
-/// Blood FFX ids: 220505 / 220506 the deathblow gush, 220502 / 220503 the blood on Wolf's blade.
-fn blood_rate(ffx: i64) -> Option<f32> {
-    // gap: emission per second, chosen to read like clip 1 (FXR not decoded).
-    match ffx {
-        220505 | 220506 => Some(2000.0),
-        220502 | 220503 => Some(90.0),
-        _ => None,
-    }
-}
+use crate::vfx::VfxRng;
 
 /// Stains alive at once. gap: the game keeps them (lifeTimeSec 999, bLifeEnable 0) under an
 /// engine-wide decal budget that is not traced.
@@ -96,8 +85,6 @@ struct Stain {
 #[derive(Resource)]
 struct GoreAssets {
     plane: Handle<Mesh>,
-    drop: Handle<StandardMaterial>,
-    mist: Handle<StandardMaterial>,
 }
 
 /// SHINOBI_GORE_LOG=1: a line per blood event as it fires.
@@ -131,13 +118,8 @@ impl Plugin for GorePlugin {
     }
 }
 
-fn setup(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut materials: ResMut<Assets<StandardMaterial>>) {
-    commands.insert_resource(GoreAssets {
-        plane: meshes.add(Plane3d::default().mesh().size(1.0, 1.0)),
-        // Near-black red with a wet highlight, like the game's blood in daylight.
-        drop: materials.add(StandardMaterial { base_color: Color::srgb(0.16, 0.0, 0.0), perceptual_roughness: 0.25, reflectance: 0.4, ..default() }),
-        mist: materials.add(StandardMaterial { base_color: Color::srgba(0.12, 0.0, 0.0, 0.22), alpha_mode: AlphaMode::Blend, unlit: true, ..default() }),
-    });
+fn setup(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>) {
+    commands.insert_resource(GoreAssets { plane: meshes.add(Plane3d::default().mesh().size(1.0, 1.0)) });
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -145,7 +127,6 @@ fn bleed(
     mut commands: Commands,
     time: Res<Time>,
     combat: Res<Combat>,
-    vfx: Option<Res<VfxAssets>>,
     gore: Res<GoreAssets>,
     mut rng: ResMut<VfxRng>,
     mut materials: ResMut<Assets<StandardMaterial>>,
@@ -154,11 +135,9 @@ fn bleed(
     actors: Query<(&Actor, &Dummies)>,
     dummies: Query<&GlobalTransform>,
     stains: Query<(Entity, &Stain, &Transform)>,
-    mut lib: Option<ResMut<crate::fxr::FxrLib>>,
     mut placed: MessageReader<PlaceStain>,
     hits: Query<(Entity, &HitStains)>,
 ) {
-    let Some(vfx) = vfx else { return };
     // (id, where, the hit's blow direction for the projected ones).
     let mut new_stains: Vec<(i64, Vec3, Option<Vec3>)> = placed.read().map(|p| (p.id, p.at, None)).collect();
     for (e, h) in &hits {
@@ -171,59 +150,12 @@ fn bleed(
             continue;
         }
         let dummy = |id: i64| dm.0.get(&(id as i16)).and_then(|e| dummies.get(*e).ok());
-        for e in anim.events.iter().filter(|e| e.ungated()) {
-            match e.kind {
-                96 => {
-                    let Some(rate) = e.arg_i64("FFXID").filter(|id| !lib.as_mut().is_some_and(|l| l.has(*id))).and_then(blood_rate) else { continue };
-                    // The part of this frame inside the event.
-                    let (from, to) = (a.prev_t.max(e.start), a.t.min(e.end));
-                    if to <= from {
-                        continue;
-                    }
-                    let Some(g) = e.arg_i64("DummyPolyID").and_then(dummy) else {
-                        log(|| format!("{} {:.2}: no dummy {:?} ({} dummies)", a.anim, a.t, e.arg_i64("DummyPolyID"), dm.0.len()));
-                        continue;
-                    };
-                    let (pos, fwd) = (g.translation(), (g.rotation() * Vec3::Z).normalize_or(Vec3::Y));
-                    // A gush that thins out over the event.
-                    let u = ((from - e.start) / (e.end - e.start).max(1e-3)).clamp(0.0, 1.0);
-                    log(|| format!("{} {:.2}: spray at {:.2} dir {:.2}", a.anim, a.t, pos, fwd));
-                    let n = rate * (1.0 - u).powf(1.5) * (to - from) + rng.f();
-                    let big = rate > 200.0;
-                    for _ in 0..n as u32 {
-                        let dir = rng.cone(fwd, if big { 0.12 } else { 0.6 });
-                        let speed = if big { rng.range(2.5, 7.5) * (1.0 - 0.5 * u) } else { rng.range(0.3, 1.5) };
-                        // Round drops (the unit ball, radius = width) stretched along their flight.
-                        let width = rng.range(0.002, if big { 0.01 } else { 0.004 });
-                        commands.spawn((
-                            Mesh3d(vfx.ball.clone()),
-                            MeshMaterial3d(gore.drop.clone()),
-                            Transform::from_translation(pos).with_scale(Vec3::splat(width)),
-                            Particle { vel: dir * speed, age: 0.0, life: rng.range(0.5, 1.3), width, stretch: 0.004, gravity: 9.8, drag: 0.4 },
-                            bevy::light::NotShadowCaster,
-                        ));
-                    }
-                    // The red haze around the jet.
-                    if big && rng.f() < 45.0 * (to - from) {
-                        let width = rng.range(0.05, 0.12);
-                        commands.spawn((
-                            Mesh3d(vfx.ball.clone()),
-                            MeshMaterial3d(gore.mist.clone()),
-                            Transform::from_translation(pos).with_scale(Vec3::splat(width)),
-                            Particle { vel: rng.cone(fwd, 0.4) * rng.range(1.0, 3.0), age: 0.0, life: rng.range(0.25, 0.5), width, stretch: 0.0, gravity: 1.0, drag: 3.0 },
-                            bevy::light::NotShadowCaster,
-                        ));
-                    }
-                }
-                138 => {
-                    let started = (e.start > a.prev_t && e.start <= a.t) || (a.prev_t == 0.0 && e.start == 0.0 && a.t > 0.0 && a.t < 0.05);
-                    let (Some(id), Some(g)) = (e.arg_i64("DecalParamID"), e.arg_i64("DummyPolyID").and_then(dummy)) else { continue };
-                    if started {
-                        log(|| format!("{} {:.2}: stain {id} at {:.2}", a.anim, a.t, g.translation()));
-                        new_stains.push((id, g.translation(), None));
-                    }
-                }
-                _ => {}
+        for e in anim.events.iter().filter(|e| e.kind == 138 && e.ungated()) {
+            let started = (e.start > a.prev_t && e.start <= a.t) || (a.prev_t == 0.0 && e.start == 0.0 && a.t > 0.0 && a.t < 0.05);
+            let (Some(id), Some(g)) = (e.arg_i64("DecalParamID"), e.arg_i64("DummyPolyID").and_then(dummy)) else { continue };
+            if started {
+                log(|| format!("{} {:.2}: stain {id} at {:.2}", a.anim, a.t, g.translation()));
+                new_stains.push((id, g.translation(), None));
             }
         }
     }

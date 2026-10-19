@@ -32,7 +32,7 @@ pub struct SkyPlugin;
 
 impl Plugin for SkyPlugin {
     fn build(&self, app: &mut App) {
-        bevy::asset::embedded_asset!(app, "sky.wgsl");
+        bevy::asset::embedded_asset!(app, "sky.wesl");
         app.add_plugins(MaterialPlugin::<SkyMaterial>::default()).init_resource::<SkyChoice>().add_systems(Update, (load_library, update_sky).chain());
     }
 }
@@ -75,7 +75,7 @@ impl Material for SkyMaterial {
         if self.inputs.control.x > 1.5 && self.inputs.control.x < 2.5 { AlphaMode::Blend } else { AlphaMode::Opaque }
     }
     fn vertex_shader() -> ShaderRef {
-        bevy::asset::AssetPath::from_path_buf(embedded_path!("sky.wgsl")).with_source("embedded").into()
+        bevy::asset::AssetPath::from_path_buf(embedded_path!("sky.wesl")).with_source("embedded").into()
     }
     fn fragment_shader() -> ShaderRef {
         Self::vertex_shader()

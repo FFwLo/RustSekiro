@@ -550,7 +550,7 @@ fn collect(
     glints: Query<(Entity, &PickupGlint)>,
     lines: Query<(Entity, &GotLine)>,
     assets: Res<AssetServer>,
-    font: Option<Res<crate::game_menu::MenuFont>>,
+    font: Option<Res<crate::fonts::GameFonts>>,
     texts: Option<Res<crate::game_menu::ItemTexts>>,
     mut wolf: Query<&mut crate::player::Player>,
 ) {
@@ -560,7 +560,7 @@ fn collect(
             commands.entity(e).despawn();
         }
     }
-    let font = font.as_ref().and_then(|f| f.0.clone());
+    let font = font.as_ref().and_then(|f| f.ui.clone());
     for (i, goods, count) in std::mem::take(&mut picked.0) {
         // Spirit Emblems: onto Wolf's count (up to the carried maximum), the short line only.
         let emblem = goods == SPIRIT_EMBLEM;
@@ -626,7 +626,7 @@ fn spawn_dialog(commands: &mut Commands, assets: &AssetServer, font: &Option<Han
                 c.spawn(text(info, 15.0, TEXT, font));
             });
             root.spawn((abs(28.0, 67.3, 41.0, 0.15), BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.3))));
-            root.spawn((Button, abs(41.7, 68.4, 16.8, 6.7), image(assets, sprite("sb_in_game/MENU_Cursor_03")), DialogOk)).with_children(|b| {
+            root.spawn((crate::menu::ui_button(), abs(41.7, 68.4, 16.8, 6.7), image(assets, sprite("sb_in_game/MENU_Cursor_03")), DialogOk)).with_children(|b| {
                 b.spawn(Node { justify_content: JustifyContent::Center, ..fill_row() }).with_children(|c| {
                     c.spawn(text("OK", 17.0, Color::WHITE, font));
                 });

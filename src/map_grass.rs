@@ -40,7 +40,7 @@ fn arena_grass(source_map: &str, origin: Vec3, arena_yaw: f32) -> Vec<(String, T
         let c: Vec<f32> = g["clumps"].as_array().map(|a| a.iter().map(|v| v.as_f64().unwrap_or(0.0) as f32).collect()).unwrap_or_default();
         for k in c.chunks_exact(9) {
             let pos = crate::fog_wall::map_to_arena(origin, arena_yaw, Vec3::new(k[0], k[1], k[2]));
-            if Vec2::new(pos.x, pos.z).length() > REACH {
+            if (pos - crate::map::frame().offset).xz().length() > REACH {
                 continue;
             }
             // The X mirror flips a turn's Y and Z parts; the arena's yaw goes on top.

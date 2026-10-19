@@ -228,8 +228,7 @@ Dated findings, oldest first. Append new entries at the end.
     603000-603009 / 601040-601044 out of the stance starts it first (W_GeneralStanceStart401060,
     the goal keeps asking), in it plays W_GeneralStanceAttack<id> / End<id>, back to the stance
     idle; a start in the stance ends it (enemy.rs general_stance_play; c1190 / c1320 have them,
-    119000 / 132000 / 155060 battle scripts ask). They count as attacks (is_attacking: flag-73
-    windows). Test the_general_stance_attacks_start_the_stance_first.
+    119000 / 132000 / 155060 battle scripts ask). They count as attacks (is_attacking). Test the_general_stance_attacks_start_the_stance_first.
   * Turning in place (2026-10-12): c9997 ExecTurn (hks_src/c9997.lua:1488-1563) from idle and at
     the cancel of attacks / steps / damage (enable_turn TRUE; never from a turn or a walk / run):
     |TurnAngle| >= 45 (or RequestEmergencyQuickTurn, env(330): AI +0x9054, FUN_1405e76e0) plays
@@ -501,7 +500,7 @@ Dated findings, oldest first. Append new entries at the end.
     24, else swapped by its active spCategory 1001 SpEffect (lowest categoryPriority; stateInfo
     120 needs a super-armour meter, skipped) through dmgLv_* (FUN_14084ff70 -> bfd980 -> 10cea20
     -> 10b5100; enum table 2b979e8 [0,8,1,2,3,7,4,6,9,5,10,11]); guards and level 0 bypass it.
-    combat.rs damage_motion_level; replaced the flag-73 proxy. Test
+    combat.rs damage_motion_level; replaced the old flag-73 proxy. Test
     super_armour_swaps_the_damage_level_in_its_window (c1010 a000_003010 5358: 2 -> 8).
   * Aerial reactions (sekiro-rs c0f97ee character.rs:1045-1074; c9997 IsDamagedAerial = env 201
     false or ref 1000060): ExecDamageLargeBlow 4 / 9 / 10 -> DamageAerialBlow (8150),
@@ -518,8 +517,9 @@ Dated findings, oldest first. Append new entries at the end.
   when one is missing; c1180's shield 400230 deflects without ref 1000090 so plays the plain
   guard); a broken Wolf is knocked down only at levels 1 / 2 / 3 / 5 (or broken again in
   StandDamageBreak), minimum nothing, the rest normal (broken_takes_normal_damage); a crouched
-  gourd drink raises INTERUPT_UseItem (enemy.rs wolf_starts_an_item). The flag-73 mid-swing
-  gate stays beside the super-armour swap (live rec; sekiro-rs has no such gate).
+  gourd drink raises INTERUPT_UseItem (enemy.rs wolf_starts_an_item). 2026-10-19: the flag-73
+  mid-swing gate is gone (flag 73 is the ParryTiming gate); attacks carry no armour of their
+  own, only flag 24, the spCategory 1001 swap and the super-armour pool.
 - 2026-10-12 EXLARGE guard (c9997 guard_damage_table 4: a blow on guardLevel 1, an ex blast on
   1-3): ExecGuardBlock has no clip for it and returns FALSE, so ExecDamage goes on to
   ExecDamageLargeBlow: DamageLargeBlow (8130), in the air DamageAerialBlow (8150); without the
@@ -620,9 +620,22 @@ either. The Headless Ape (510010_battle.lua:25) watches TARGET_EVENT, its partne
 itself (TAE AddSpEffect, c5100), so Goal.Interrupt set Number 1 and Timer 5 = 14 s and
 Goal.Activate ran the partner branch (Act24 backstep 400-500) nearly all fight: 29 backsteps
 and 6.7 attacks/min in 3 min; after, 8 backsteps and 11.3/min. Test
-`the_apes_own_scream_is_not_its_partners`. gap: TARGET_EVENT (the partner chr; only the Ape
-scripts 510000 / 510001 / 510010 watch it) is not modelled, so those watches never fire; an
-ended SpEffect is not split by owner.
+`the_apes_own_scream_is_not_its_partners`. gap: an ended SpEffect is not split by owner.
+- 2026-10-19 TARGET_EVENT is modelled (ai.rs `EventView`): the map's 2004[11] Set Character
+  Event Target (script.rs `Act::EventTarget`) gives the AI that character's live position,
+  facing, HP rate, posture and worn SpEffects; GetDist / GetDistAtoB / GetHpRate / GetSp(Rate) /
+  HasSpecialEffectId / IsInsideTarget(Region / Ex) and the observe interrupts read it. The two
+  apes of m17 11705880 name each other, Lady Butterfly's illusions her (m10 11005820), the Old
+  Dragons' parts their body (m25 12505803). Wolf as the event target (Owl (Father), m10
+  11005910) reads as the current target. Tests `atlas_headless_ape_answers_its_partners_call`,
+  `atlas_headless_ape_and_its_partner_target_each_other`.
+- 2026-10-19 Set Character Team Type (2004[2]) is applied (Actor::team, combat::team_of): the
+  Demon of Hatred is 28 through his entrance, Genichiro 26 through his talk, both 6 once they
+  fight. Test `atlas_bosses_team_type_flips_follow_the_demons_script`.
+- 2026-10-19 The area checks (3[2] / 3[3]) see a hidden character where it stands (where it was
+  disabled, else its warp or MSB spot): Owl (Father)'s bird 1000901 sat "outside" 1002800 while
+  absent, so m10 11005923 warped it back every frame. Test
+  `atlas_owl_father_calls_his_bird_after_the_first_deathblow`.
 
 
 - 2026-10-15 Emma (c7400, scripted boss) stood up after her last deathblow: the scripted Dead

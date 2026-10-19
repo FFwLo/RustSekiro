@@ -1,0 +1,3913 @@
+[
+  {
+    "id": "flow.00-route-overview",
+    "category": "flow",
+    "title": "The whole route in one line",
+    "summary": "Reservoir prologue, lost duel, Dilapidated Temple, Outskirts, Hirata memory, Ashina Castle, then four regions in a free order (Senpou, Sunken Valley, Ashina Depths, Mibu) that feed the castle invasion, Fountainhead and the Reservoir finale. Shura ends the game early at the castle; the other three endings share Fountainhead, the Divine Dragon and the Sword Saint.",
+    "values": "main boss defeat flags 9300-9318; castle invasion 8301 (Mortal Blade 2400 + Lotus 2500 + Shelter Stone 2501); Divine Dragon down 8302; ending flags 6830-6833",
+    "how": "common.emevd events 300 (boss rewards), 820/830 (story clock), 910-912/920 (world stages), 901 (first time boss); per-map boss events",
+    "sources": [
+      {
+        "kind": "data",
+        "ref": "extracted/event/common.emevd"
+      },
+      {
+        "kind": "data",
+        "ref": "tools/boss_events.py"
+      },
+      {
+        "kind": "web",
+        "ref": "https://sekiroshadowsdietwice.wiki.fextralife.com/Walkthrough"
+      },
+      {
+        "kind": "recording",
+        "ref": "docs/kb/clips.md (All 57 Bosses run, https://www.youtube.com/watch?v=oS_gJf8ur8M)"
+      }
+    ],
+    "confidence": "data",
+    "ours": {
+      "has": "no",
+      "where": ""
+    },
+    "his": {
+      "has": "no",
+      "where": ""
+    },
+    "needs": [
+      {
+        "id": "npcs.story-flags-8301",
+        "why": "the world-stage flags this route flips"
+      },
+      {
+        "id": "progression.event-flags",
+        "why": "flags are the route's state"
+      }
+    ],
+    "check": "Open docs/kb/game-flow.md and follow the numbered steps; each has its flag and idol to look for.",
+    "note": "Order follows the all-bosses recording and the Fextralife walkthrough. The four region steps (23 to 34) can be done in other orders in the real game; the data only forces the gates named in each step."
+  },
+  {
+    "id": "flow.01-reservoir-start",
+    "category": "flow",
+    "title": "New game: Ashina Reservoir opening",
+    "summary": "A new save starts in the Ashina Reservoir (m11_02) after the opening movie. Common event 50 raises the prologue flag 8306 while 11120100 is off, then event 11120100 plays cutscene 11020020, sets the first respawn point 1122102 and saves.",
+    "values": "movie Opening (openingmovie.bk2); flags 8306 on, 11120100 on after the scene; cutscene 11020020; respawn point 1122102; CharaInitParam row 10000 (New game)",
+    "how": "common.emevd event 50 (2003[2] Set Event Flag 8306); m11_02_00_00 event 11120100 (2002[3] Play Cutscene to Player, 2003[23] Set Player Respawn Point, 2000[5] Save Request)",
+    "sources": [
+      {
+        "kind": "data",
+        "ref": "extracted/event/common.emevd"
+      },
+      {
+        "kind": "data",
+        "ref": "extracted/event/m11_02_00_00.emevd"
+      },
+      {
+        "kind": "data",
+        "ref": "extracted/json/params/CharaInitParam.json"
+      }
+    ],
+    "confidence": "data",
+    "ours": {
+      "has": "partial",
+      "where": "src/config.rs (arena starts; the prologue scene is not played)"
+    },
+    "his": {
+      "has": "no",
+      "where": ""
+    },
+    "needs": [
+      {
+        "id": "cutscenes.movies-bk2",
+        "why": "the opening movie file"
+      },
+      {
+        "id": "cutscenes.m11-02-list",
+        "why": "cutscene 11020020 is in the Reservoir list"
+      },
+      {
+        "id": "progression.chara-init-area-presets",
+        "why": "row 10000 is the new-game kit"
+      },
+      {
+        "id": "map.respawn-checkpoint",
+        "why": "event sets the respawn point"
+      }
+    ],
+    "check": "Start a new game, watch the opening, then the Reservoir scene; reload and you should wake in the same field.",
+    "note": ""
+  },
+  {
+    "id": "flow.01b-kuros-charm",
+    "category": "flow",
+    "title": "Kuro's Charm (optional start item)",
+    "summary": "Kuro's Charm (goods 9003) comes from lot 3300 through m11_02 event 11120120 after the opening scene (it checks flag 6910), and again as NPC lots 61006 and 3300. Giving it back is what turns on Charmless mode later.",
+    "values": "goods 9003; ItemLotParam 3300 (flag 50003300), 61006 (flag 50006106); flags 11120120, 6910",
+    "how": "m11_02_00_00 event 11120120 (2003[4] Award Item Lot 3300)",
+    "sources": [
+      {
+        "kind": "data",
+        "ref": "extracted/event/m11_02_00_00.emevd"
+      },
+      {
+        "kind": "data",
+        "ref": "extracted/json/params/ItemLotParam.json"
+      }
+    ],
+    "confidence": "data",
+    "ours": {
+      "has": "no",
+      "where": ""
+    },
+    "his": {
+      "has": "no",
+      "where": ""
+    },
+    "needs": [
+      {
+        "id": "flow.01-reservoir-start",
+        "why": "after the opening scene"
+      },
+      {
+        "id": "progression.kuro-charm",
+        "why": "what the charm does"
+      }
+    ],
+    "check": "Check key items after the opening; Kuro's Charm should be listed (unless the save started Charmless).",
+    "note": ""
+  },
+  {
+    "id": "flow.02-reservoir-ornamental-letter",
+    "category": "flow",
+    "title": "Reservoir pickup: Ornamental Letter",
+    "summary": "On the walk through the Reservoir the player can pick up the Ornamental Letter (goods 9020), a plain item lot (1120000) in m11_02. No gate needs it.",
+    "values": "ItemLotParam 1120000 -> goods 9020 Ornamental Letter, flag 51120000",
+    "how": "ItemLotParam row 1120000 (map treasure); EquipParamGoods 9020",
+    "sources": [
+      {
+        "kind": "data",
+        "ref": "extracted/json/params/ItemLotParam.json"
+      },
+      {
+        "kind": "data",
+        "ref": "extracted/json/params/EquipParamGoods.json"
+      },
+      {
+        "kind": "web",
+        "ref": "https://sekiroshadowsdietwice.wiki.fextralife.com/Key+Items"
+      }
+    ],
+    "confidence": "data",
+    "ours": {
+      "has": "no",
+      "where": ""
+    },
+    "his": {
+      "has": "no",
+      "where": ""
+    },
+    "needs": [
+      {
+        "id": "flow.01-reservoir-start",
+        "why": "first controllable stretch"
+      },
+      {
+        "id": "map.treasure-pickups",
+        "why": "a plain item lot"
+      }
+    ],
+    "check": "Search the starting Reservoir area for the letter; the item list shows 'Ornamental Letter'.",
+    "note": "Community sources place it in a prologue well; the lot only proves it is in m11_02."
+  },
+  {
+    "id": "flow.03-reservoir-kusabimaru-scene",
+    "category": "flow",
+    "title": "Reservoir: the Kusabimaru scene",
+    "summary": "Walking into area 1122371 while the prologue flag 8306 is on triggers cutscene 11020070. Wolf then gets the Kusabimaru (lot 3001, goods 2300), the Wolf outfit (lot 3080, armor 131000) and respawn 1122200.",
+    "values": "event 11120201; area 1122371; cutscene 11020070 warp 1122201; ItemLotParam 3001 (goods 2300 Kusabimaru), 3080 (armor 131000); achievement 16",
+    "how": "m11_02_00_00 event 11120201 (3[2] In/Outside Area, 2002[4] Play Cutscene and Warp Player, 2003[4] Award Item Lot 3080 and 3001, 2003[83] Force Player Armor Equip)",
+    "sources": [
+      {
+        "kind": "data",
+        "ref": "extracted/event/m11_02_00_00.emevd"
+      },
+      {
+        "kind": "data",
+        "ref": "extracted/json/params/ItemLotParam.json"
+      }
+    ],
+    "confidence": "data",
+    "ours": {
+      "has": "no",
+      "where": ""
+    },
+    "his": {
+      "has": "no",
+      "where": ""
+    },
+    "needs": [
+      {
+        "id": "flow.01-reservoir-start",
+        "why": "prologue flag 8306 on"
+      },
+      {
+        "id": "cutscenes.m11-02-list",
+        "why": "cutscene 11020070"
+      },
+      {
+        "id": "cutscenes.warp-fade",
+        "why": "the scene warps the player"
+      }
+    ],
+    "check": "Reach the first gate; after the scene the weapon slot shows Kusabimaru.",
+    "note": ""
+  },
+  {
+    "id": "flow.04-reservoir-gate-yamauchi",
+    "category": "flow",
+    "title": "Reservoir: the gate and the Yamauchi leader",
+    "summary": "An object prompt at the gate (object 1121711) asks a yes or no question. Yes plays cutscene 11020090 and moves the player to 1122202; the all-bosses run counts the Yamauchi leader fight as boss 1. The scene resets flags 1020-1034 and sets 11120392.",
+    "values": "event 11125202; action button on object 1121711; generic dialog 10010700; cutscene 11020090 warp 1122202; flags 11120400 (choice), 11120392; respawn 1122202",
+    "how": "m11_02_00_00 event 11125202 (3[24] IF Action Button, 2007[10] Display Generic Dialog and Set Event Flags, 2002[4] Play Cutscene and Warp Player)",
+    "sources": [
+      {
+        "kind": "data",
+        "ref": "extracted/event/m11_02_00_00.emevd"
+      },
+      {
+        "kind": "recording",
+        "ref": "docs/kb/clips.md (All 57 Bosses run, https://www.youtube.com/watch?v=oS_gJf8ur8M)"
+      }
+    ],
+    "confidence": "data",
+    "ours": {
+      "has": "no",
+      "where": ""
+    },
+    "his": {
+      "has": "no",
+      "where": ""
+    },
+    "needs": [
+      {
+        "id": "flow.03-reservoir-kusabimaru-scene",
+        "why": "flag 11120201 must be on"
+      },
+      {
+        "id": "dialogue.generic-dialog",
+        "why": "the yes/no box"
+      },
+      {
+        "id": "map.objact-doors",
+        "why": "gate object prompt"
+      }
+    ],
+    "check": "Walk to the gate, answer yes, and look for the 0:00 to 0:24 leader fight in the run (chapter 1).",
+    "note": "The Yamauchi leader has no named boss bar in the dumped events; the name comes from the recording chapter list."
+  },
+  {
+    "id": "flow.05-prologue-genichiro-loss",
+    "category": "flow",
+    "title": "Prologue: the lost duel with Genichiro",
+    "summary": "In the silvergrass field Genichiro's bar (907101) is shown after cutscene 11020010. The fight cannot be won: when the HP check trips, event 11125800 sets 9300, plays 11020001 (or 11020000) and warps Wolf to 1102621 at the Dilapidated Temple. It is the first boss flag and starts the temple wake-up.",
+    "values": "boss NpcParam 71000000 (entity 1120800); bar nameId 907101; cutscenes 11020010 (event 11125810), 11020001 and 11020000 (event 11125800); flags 9300, 6800, 11120800/01/02/03; respawn 1102621; arena area 1122802",
+    "how": "m11_02_00_00 events 11125810 (entry scene, team type 26) and 11125800 (3[23] Damage Type, 4[37] bars, 2002[13] Play Cutscene and Warp Player With Lighting)",
+    "sources": [
+      {
+        "kind": "data",
+        "ref": "extracted/event/m11_02_00_00.emevd"
+      },
+      {
+        "kind": "data",
+        "ref": "extracted/enemies/boss_scripts.json"
+      },
+      {
+        "kind": "ours-kb",
+        "ref": "docs/kb/clips.md"
+      }
+    ],
+    "confidence": "data",
+    "ours": {
+      "has": "partial",
+      "where": "src/enemy/script.rs (the scripted defeat runs; no wake-up chain)"
+    },
+    "his": {
+      "has": "no",
+      "where": ""
+    },
+    "needs": [
+      {
+        "id": "flow.04-reservoir-gate-yamauchi",
+        "why": "path to the field"
+      },
+      {
+        "id": "bosses.prologue-genichiro",
+        "why": "the scripted loss"
+      },
+      {
+        "id": "bosses.defeat-handler",
+        "why": "boss defeat flags"
+      }
+    ],
+    "check": "Fight Genichiro at the Reservoir; Wolf falls at low HP, the scene plays, and the screen fades to the temple.",
+    "note": ""
+  },
+  {
+    "id": "flow.06-dilapidated-temple-wake",
+    "category": "flow",
+    "title": "Dilapidated Temple: waking up",
+    "summary": "After the defeat scenes event 11100100 (m11_00) runs: cutscene 11000000, lot 3070 (armor 102000), lot 3060 (the Shinobi Prosthetic), idol flag 11100000, and flag 8306 off so the prologue state ends. The Sculptor is here and the temple idol (BonfireWarpParam 100 and 1100, home) is the first save point.",
+    "values": "event 11100100; cutscene 11000000; ItemLotParam 3070, 3060; flags 11100000 (idol), 8306 off, 6074, 6209; achievement 17; idol entity 1101950",
+    "how": "m11_00_00_00 event 11100100 (waits for 11020000/01 end or 11120801, then 2002[3] Play Cutscene, 2003[4] Award Item Lot 3060)",
+    "sources": [
+      {
+        "kind": "data",
+        "ref": "extracted/event/m11_00_00_00.emevd"
+      },
+      {
+        "kind": "data",
+        "ref": "extracted/json/params/BonfireWarpParam.json"
+      },
+      {
+        "kind": "data",
+        "ref": "extracted/json/params/ItemLotParam.json"
+      }
+    ],
+    "confidence": "data",
+    "ours": {
+      "has": "partial",
+      "where": "src/idol.rs (the temple idol is the first Travel entry)"
+    },
+    "his": {
+      "has": "no",
+      "where": ""
+    },
+    "needs": [
+      {
+        "id": "flow.05-prologue-genichiro-loss",
+        "why": "flags 11120800 and 9300"
+      },
+      {
+        "id": "npcs.sculptor",
+        "why": "the Sculptor lives here"
+      },
+      {
+        "id": "map.idol-registration",
+        "why": "idol flag 11100000"
+      },
+      {
+        "id": "cutscenes.m11-00-list",
+        "why": "cutscene 11000000"
+      }
+    ],
+    "check": "After the loss, the screen shows the temple; the idol list has Dilapidated Temple and the prosthetic slot is filled.",
+    "note": ""
+  },
+  {
+    "id": "flow.07-shinobi-prosthetic",
+    "category": "flow",
+    "title": "The Shinobi Prosthetic arrives",
+    "summary": "Lot 3060 puts the Shinobi Prosthetic (goods 2310, flag 50003060) on Wolf in the temple wake-up. The first tool, the emblem stock and the skill pages open from here, and the Sculptor sells upgrades. The grapple, shuriken and firecracker routes of every later area need it.",
+    "values": "ItemLotParam 3060 -> goods 2310 Shinobi Prosthetic, flag 50003060; goods 1000 Spirit Emblem; Sculptor services",
+    "how": "m11_00 event 11100100 awards lot 3060; EquipParamGoods 2310",
+    "sources": [
+      {
+        "kind": "data",
+        "ref": "extracted/event/m11_00_00_00.emevd"
+      },
+      {
+        "kind": "data",
+        "ref": "extracted/json/params/EquipParamGoods.json"
+      },
+      {
+        "kind": "data",
+        "ref": "extracted/json/params/ItemLotParam.json"
+      }
+    ],
+    "confidence": "data",
+    "ours": {
+      "has": "partial",
+      "where": "src/prosthetic.rs (tools work; no award event)"
+    },
+    "his": {
+      "has": "no",
+      "where": ""
+    },
+    "needs": [
+      {
+        "id": "flow.06-dilapidated-temple-wake",
+        "why": "given in the same event"
+      },
+      {
+        "id": "arts.tool-families",
+        "why": "what the prosthetic holds"
+      },
+      {
+        "id": "npcs.sculptor-services",
+        "why": "what the Sculptor offers"
+      },
+      {
+        "id": "progression.skill-points-spend",
+        "why": "skill pages open at idols"
+      }
+    ],
+    "check": "Open the equipment screen after waking; the Shinobi Prosthetic is listed with the starter tool.",
+    "note": ""
+  },
+  {
+    "id": "flow.08-resurrection-tutorial",
+    "category": "flow",
+    "title": "Resurrection arrives",
+    "summary": "Common event 250 runs once after the Genichiro loss (9300 on): it waits for one of flags 131-143 and for Wolf's event message 50, then sets 9207, awards lot 3010 (Resurrection, goods 2000), plays the common cutscene 89000099 and adds a resurrection node. It sets 250, 6250 and 8250 and shows the tutorial text.",
+    "values": "common event 250; ItemLotParam 3010 -> goods 2000 Resurrection, flag 50003010; cutscene 89000099; flags 9207, 250, 6250, 8250; achievement 19",
+    "how": "common.emevd event 250 (3[0] 9300, 3[1] batch 131-143, 4[8] event message 50, 2003[4] Award Item Lot 3010, 2002[1] Play Cutscene to All, 2003[85] Add Resurrection Nodes)",
+    "sources": [
+      {
+        "kind": "data",
+        "ref": "extracted/event/common.emevd"
+      },
+      {
+        "kind": "data",
+        "ref": "extracted/json/params/ItemLotParam.json"
+      }
+    ],
+    "confidence": "data",
+    "ours": {
+      "has": "partial",
+      "where": "src/player.rs (resurrection exists; no first-grant event)"
+    },
+    "his": {
+      "has": "no",
+      "where": ""
+    },
+    "needs": [
+      {
+        "id": "flow.05-prologue-genichiro-loss",
+        "why": "flag 9300"
+      },
+      {
+        "id": "interface.resource-counters",
+        "why": "resurrection nodes"
+      },
+      {
+        "id": "cutscenes.other-areas",
+        "why": "common scene 89000099"
+      }
+    ],
+    "check": "Die once after the prologue; the first resurrection prompt shows the tutorial text.",
+    "note": ""
+  },
+  {
+    "id": "flow.09-hub-story-clock",
+    "category": "flow",
+    "title": "The temple hub follows the story clock",
+    "summary": "The temple and the Outskirts change light and sky with the cumulative flags 9800-9803. Common event 820 raises 9800 after one of the four time bosses (9303-9306) is down and 9801 after three; event 830 mirrors them into 9820-9823; event 100 picks the sky dome group (m89 parts 8907000-8907100). After the castle fight the Outskirts goes from morning to day.",
+    "values": "flags 9800-9803, 9820-9823, 9810; event 820 (count 9303-9306 >= 1 / >= 3); sky parts 8907000-8907100; envmap 0-5",
+    "how": "common.emevd events 820, 830, 100 (3[10] IF Count Event Flags, 2012[1] Activate Map Part, 2003[80] Set Area Envmap)",
+    "sources": [
+      {
+        "kind": "data",
+        "ref": "extracted/event/common.emevd"
+      },
+      {
+        "kind": "sekiro-rs-doc",
+        "ref": "crates/sim/src/story.rs"
+      },
+      {
+        "kind": "ours-kb",
+        "ref": "docs/kb/atlas/parts/map.json"
+      }
+    ],
+    "confidence": "data",
+    "ours": {
+      "has": "partial",
+      "where": "src/config.rs world.hour (a fixed hour; no story flags)"
+    },
+    "his": {
+      "has": "partial",
+      "where": "crates/sim/src/story.rs; crates/game/src/map_story.rs (story time and part visibility for Outskirts and Castle)"
+    },
+    "needs": [
+      {
+        "id": "map.story-clock",
+        "why": "the clock itself"
+      },
+      {
+        "id": "visuals.time-of-day-variants",
+        "why": "environment variants"
+      },
+      {
+        "id": "visuals.sky-dome-selection",
+        "why": "sky group chosen by event 100"
+      },
+      {
+        "id": "flow.35-time-bosses-clock",
+        "why": "which bosses raise the clock"
+      }
+    ],
+    "check": "Kill one time boss and return to the temple; the sky changes from morning to afternoon.",
+    "note": "9802 and 9803 are not set by any EMEVD instruction in the dumped files; talk scripts or other state set them (open question)."
+  },
+  {
+    "id": "flow.10-outskirts-entry",
+    "category": "flow",
+    "title": "Ashina Outskirts: first steps",
+    "summary": "The temple opens to the Outskirts (m11_00). Event 11100120 shows the area welcome message (1100) and sets 8201 and 9110. Idols along the road are Ashina Outskirts, Outskirts Wall Gate Path, Stairway, Underbridge Valley, Ashina Castle Gate Fortress, Ashina Castle Gate and, later, Flames of Hatred.",
+    "values": "idols (BonfireWarpParam 1101-1107): 1101956 Ashina Outskirts, 1101951 Gate Path, 1101952 Stairway, 1101953 Underbridge Valley, 1101954 Gate Fortress, 1101955 Castle Gate, 1101957 Flames of Hatred; welcome message 1100; flags 8201, 9110",
+    "how": "m11_00_00_00 event 11100120 (2007[11] Display Area Welcome Message, 2003[2] Set Event Flag); BonfireWarpParam rows 1100-1107",
+    "sources": [
+      {
+        "kind": "data",
+        "ref": "extracted/event/m11_00_00_00.emevd"
+      },
+      {
+        "kind": "data",
+        "ref": "extracted/json/params/BonfireWarpParam.json"
+      },
+      {
+        "kind": "web",
+        "ref": "https://sekiroshadowsdietwice.wiki.fextralife.com/Ashina+Outskirts"
+      }
+    ],
+    "confidence": "data",
+    "ours": {
+      "has": "partial",
+      "where": "src/idol.rs (BonfireWarpParam idol list and Travel menu; no unlock flags)"
+    },
+    "his": {
+      "has": "no",
+      "where": ""
+    },
+    "needs": [
+      {
+        "id": "flow.07-shinobi-prosthetic",
+        "why": "grapple routes need the prosthetic"
+      },
+      {
+        "id": "map.idol-registration",
+        "why": "idol rows"
+      },
+      {
+        "id": "movement.grapple-search",
+        "why": "rooftop routes"
+      }
+    ],
+    "check": "Leave the temple and count idols in the Travel menu: the Outskirts shows six before the castle.",
+    "note": ""
+  },
+  {
+    "id": "flow.10b-outskirts-mini-bosses",
+    "category": "flow",
+    "title": "Outskirts mini-bosses (optional)",
+    "summary": "On the road the all-bosses run meets General Naomori Kawarada, the first Chained Ogre, General Tenzen Yamauchi, Shinobi Hunter Enshin of Misen and a first Headless. They use mini-boss bars (2003[87]), are not needed to open the castle, and pay sen, XP and some Prayer Beads.",
+    "values": "mini-boss bars use 2003[87] (common_func 20005330); chapters 3 to 7 of the recording",
+    "how": "common_func.emevd event 20005330 (Display Miniboss Health Bar); recording chapter list",
+    "sources": [
+      {
+        "kind": "data",
+        "ref": "extracted/event/common_func.emevd"
+      },
+      {
+        "kind": "recording",
+        "ref": "docs/kb/clips.md (All 57 Bosses run, https://www.youtube.com/watch?v=oS_gJf8ur8M)"
+      },
+      {
+        "kind": "web",
+        "ref": "https://sekiroshadowsdietwice.wiki.fextralife.com/Ashina+Outskirts"
+      }
+    ],
+    "confidence": "recorded",
+    "ours": {
+      "has": "partial",
+      "where": "src/enemy/script.rs; extracted/enemies/boss_scripts.json (the fight's own events run in a flat arena, no story flow)"
+    },
+    "his": {
+      "has": "no",
+      "where": ""
+    },
+    "needs": [
+      {
+        "id": "flow.10-outskirts-entry",
+        "why": "same road"
+      },
+      {
+        "id": "bosses.mini-vs-boss",
+        "why": "mini-boss versus boss"
+      }
+    ],
+    "check": "Walk the Outskirts and see which mini-boss bars show; the Ogre is the one with a chain.",
+    "note": ""
+  },
+  {
+    "id": "flow.11-gyoubu-oniwa",
+    "category": "flow",
+    "title": "Gyoubu Masataka Oniwa",
+    "summary": "Entering area 1102810 starts event 11105810 (camera set 500, bar 905081); defeat sets 9301 and 6801 through 11105800. Event 300 then pays lot 2000 (goods 2910) and lot 2001 (Memory: Gyoubu Oniwa). The way to the Castle Gate opens.",
+    "values": "boss entity 1100800; bar nameId 905081; defeat flag 9301 (local 11100800); ItemLotParam 2000 -> goods 2910, 2001 -> goods 5200 Memory: Gyoubu Oniwa, 2002 -> goods 5400; arena area 1102810",
+    "how": "m11_00_00_00 events 11105810, 11105800; common.emevd event 300 (flag 9301, lot 2000)",
+    "sources": [
+      {
+        "kind": "data",
+        "ref": "extracted/event/m11_00_00_00.emevd"
+      },
+      {
+        "kind": "data",
+        "ref": "extracted/event/common.emevd"
+      },
+      {
+        "kind": "data",
+        "ref": "extracted/json/params/ItemLotParam.json"
+      }
+    ],
+    "confidence": "data",
+    "ours": {
+      "has": "partial",
+      "where": "src/enemy/script.rs; extracted/enemies/boss_scripts.json (the fight's own events run in a flat arena, no story flow)"
+    },
+    "his": {
+      "has": "yes",
+      "where": "crates/sim/src/gyoubu.rs"
+    },
+    "needs": [
+      {
+        "id": "flow.10-outskirts-entry",
+        "why": "the arena is at the end of the road"
+      },
+      {
+        "id": "bosses.gyoubu",
+        "why": "the fight"
+      },
+      {
+        "id": "bosses.fog-walls",
+        "why": "arena fog"
+      },
+      {
+        "id": "progression.attack-power-memories",
+        "why": "memory pays attack power"
+      }
+    ],
+    "check": "Reach the horse arena at the Castle Gate Fortress; the HUD names Gyoubu Masataka Oniwa.",
+    "note": ""
+  },
+  {
+    "id": "flow.12-young-lords-bell-charm",
+    "category": "flow",
+    "title": "Gate: Young Lord's Bell Charm",
+    "summary": "The Young Lord's Bell Charm (goods 9010, lots 51600 and 61600, flag 50006160) is the key to the Hirata Estate memory. No EMEVD award gives it, so a talk gives it. Offering it at the temple Buddha starts the memory.",
+    "values": "goods 9010; ItemLotParam 51600 and 61600 (flag 50006160); talk flag 71100599 later sets 8304 for the second visit",
+    "how": "ItemLotParam rows; no 2003[4] award found, so an ESD talk gives it",
+    "sources": [
+      {
+        "kind": "data",
+        "ref": "extracted/json/params/ItemLotParam.json"
+      },
+      {
+        "kind": "web",
+        "ref": "https://sekiroshadowsdietwice.wiki.fextralife.com/Hirata+Estate"
+      }
+    ],
+    "confidence": "community",
+    "ours": {
+      "has": "no",
+      "where": ""
+    },
+    "his": {
+      "has": "no",
+      "where": ""
+    },
+    "needs": [
+      {
+        "id": "flow.11-gyoubu-oniwa",
+        "why": "earlier boss"
+      },
+      {
+        "id": "dialogue.flags-in-esd",
+        "why": "talks set the flag"
+      },
+      {
+        "id": "npcs.sculptor",
+        "why": "hub NPC area"
+      }
+    ],
+    "check": "After Gyoubu, talk to the people at the temple; the Bell Charm appears in key items.",
+    "note": "The exact giver and its flag gate sit in an ESD (talk) file, not in the event scripts. Open question: whether Gyoubu is needed first."
+  },
+  {
+    "id": "flow.13-hirata-entry-warp",
+    "category": "flow",
+    "title": "Offering the Charm: warp to Hirata",
+    "summary": "Event 11100628 in m11_00 plays one of the entry cutscenes 11000030-11000036 (picked by 9800-9802 and 8302) and warps Wolf to the Hirata Estate, point 1002630 in m10_00. Event 11100629 warps to 1000631 for the other visit.",
+    "values": "cutscenes 11000030, 31, 32, 33, 35, 36; warp point 1002630 (m10_00) and 1000630/1000631; flags 9800, 9801, 9802, 8302, 11100630",
+    "how": "m11_00_00_00 events 11100628, 11100629 (2002[4] Play Cutscene and Warp Player, 2003[93] Warp Player (New))",
+    "sources": [
+      {
+        "kind": "data",
+        "ref": "extracted/event/m11_00_00_00.emevd"
+      },
+      {
+        "kind": "ours-kb",
+        "ref": "docs/kb/atlas/parts/cutscenes.json"
+      }
+    ],
+    "confidence": "data",
+    "ours": {
+      "has": "no",
+      "where": ""
+    },
+    "his": {
+      "has": "no",
+      "where": ""
+    },
+    "needs": [
+      {
+        "id": "flow.12-young-lords-bell-charm",
+        "why": "the item"
+      },
+      {
+        "id": "cutscenes.warp-fade",
+        "why": "fade and warp"
+      },
+      {
+        "id": "cutscenes.m11-00-list",
+        "why": "scene list"
+      },
+      {
+        "id": "flow.09-hub-story-clock",
+        "why": "scene variant follows the clock"
+      }
+    ],
+    "check": "Use the Buddha with the Charm; the entry scene's light matches the current time stage.",
+    "note": ""
+  },
+  {
+    "id": "flow.13b-hirata-optional-rooms",
+    "category": "flow",
+    "title": "Hirata optional rooms",
+    "summary": "Hirata Estate has six idols: Dragonspring, Estate Path, Bamboo Thicket Slope, Main Hall, Hidden Temple and Audience Chamber (BonfireWarpParam 1000-1005). The Hidden Temple Key (goods 9403, lot 61200, flag 50006120) opens the Hidden Temple. Juzou the Drunkard, Enshin and Masanaga are optional mini-bosses.",
+    "values": "idol entities 1001950-1001955 (flags 11000000-11000005); Hidden Temple Key goods 9403, lot 61200; mini-boss chapters 9 and 35 of the recording",
+    "how": "BonfireWarpParam; ItemLotParam 61200; recording",
+    "sources": [
+      {
+        "kind": "data",
+        "ref": "extracted/json/params/BonfireWarpParam.json"
+      },
+      {
+        "kind": "data",
+        "ref": "extracted/json/params/ItemLotParam.json"
+      },
+      {
+        "kind": "recording",
+        "ref": "docs/kb/clips.md (All 57 Bosses run, https://www.youtube.com/watch?v=oS_gJf8ur8M)"
+      },
+      {
+        "kind": "web",
+        "ref": "https://sekiroshadowsdietwice.wiki.fextralife.com/Hirata+Estate"
+      }
+    ],
+    "confidence": "community",
+    "ours": {
+      "has": "no",
+      "where": ""
+    },
+    "his": {
+      "has": "no",
+      "where": ""
+    },
+    "needs": [
+      {
+        "id": "flow.13-hirata-entry-warp",
+        "why": "inside the memory"
+      },
+      {
+        "id": "map.objact-doors",
+        "why": "key doors"
+      }
+    ],
+    "check": "In the memory, open the Travel menu and see the six Hirata idols.",
+    "note": ""
+  },
+  {
+    "id": "flow.14-lady-butterfly",
+    "category": "flow",
+    "title": "Lady Butterfly",
+    "summary": "Crossing area 1002810 plays cutscene 10000010 (warp 1002815) and shows bar 905090 (event 11005810). Defeat sets 9302 and 6802 (event 11005800). Event 300 pays lot 2030 (Sakura Droplet, goods 9009) and lot 2031 (Memory: Lady Butterfly).",
+    "values": "boss entities 1000800 and 1000810; bar nameId 905090; flag 9302; ItemLotParam 2030 -> 9009 Sakura Droplet, 2031 -> 5201; cutscene 10000010; achievement 21",
+    "how": "m10_00_00_00 events 11005810, 11005812, 11005800; common event 300",
+    "sources": [
+      {
+        "kind": "data",
+        "ref": "extracted/event/m10_00_00_00.emevd"
+      },
+      {
+        "kind": "data",
+        "ref": "extracted/event/common.emevd"
+      },
+      {
+        "kind": "data",
+        "ref": "extracted/json/params/ItemLotParam.json"
+      }
+    ],
+    "confidence": "data",
+    "ours": {
+      "has": "partial",
+      "where": "src/enemy/script.rs; extracted/enemies/boss_scripts.json (the fight's own events run in a flat arena, no story flow)"
+    },
+    "his": {
+      "has": "yes",
+      "where": "crates/sim/src/butterfly.rs; crates/sim/src/butterfly_illusions.rs"
+    },
+    "needs": [
+      {
+        "id": "flow.13-hirata-entry-warp",
+        "why": "she is in the first memory"
+      },
+      {
+        "id": "bosses.lady-butterfly",
+        "why": "the fight"
+      },
+      {
+        "id": "bosses.phase-handover-pattern",
+        "why": "bar swap 1000800 to 1000810"
+      }
+    ],
+    "check": "Climb to the Audience Chamber; the bar reads Lady Butterfly.",
+    "note": ""
+  },
+  {
+    "id": "flow.15-hirata-burning-return",
+    "category": "flow",
+    "title": "Hirata burns and Wolf returns",
+    "summary": "Right after Butterfly dies event 11005800 sets respawn 1102631 and flags 9261, 9402 and 11000805, then plays cutscene 10000000 (one of five lighting variants chosen by 9800-9803) and warps Wolf to the temple. The estate is shown burning and the first memory is over.",
+    "values": "cutscene 10000000 warp 1102631 with lighting variants 1-4; flags 9402, 9261, 11000805; respawn 1102631",
+    "how": "m10_00_00_00 event 11005800 (2002[13] Play Cutscene and Warp Player With Lighting)",
+    "sources": [
+      {
+        "kind": "data",
+        "ref": "extracted/event/m10_00_00_00.emevd"
+      },
+      {
+        "kind": "ours-kb",
+        "ref": "docs/kb/atlas/parts/cutscenes.json"
+      },
+      {
+        "kind": "web",
+        "ref": "https://sekiroshadowsdietwice.wiki.fextralife.com/Hirata+Estate"
+      }
+    ],
+    "confidence": "data",
+    "ours": {
+      "has": "partial",
+      "where": "src/enemy/script.rs (cutscene treated as done)"
+    },
+    "his": {
+      "has": "no",
+      "where": ""
+    },
+    "needs": [
+      {
+        "id": "flow.14-lady-butterfly",
+        "why": "her defeat starts it"
+      },
+      {
+        "id": "cutscenes.hirata-burning",
+        "why": "the scene"
+      },
+      {
+        "id": "map.ceremony-param",
+        "why": "burned variant"
+      }
+    ],
+    "check": "Win the fight; the scene ends with Wolf at the temple and the estate in flames.",
+    "note": ""
+  },
+  {
+    "id": "flow.15b-father-bell-charm-owl-memory",
+    "category": "flow",
+    "title": "Second Hirata memory: Owl (Father)",
+    "summary": "The Father's Bell Charm (goods 9011, lot 62302, flag 50006232) starts a second visit with the estate burning (stage 8304). Event 11105631 disables three Hirata idols; Owl (Father) (bar 905061, event 11005910) is fought for Memory: Foster Father and the Aromatic Flower (lot 2100, goods 2503) the Purification ending needs.",
+    "values": "goods 9011; ItemLotParam 62302; flag 8304 (event 11105631 on talk flag 71100599); boss entity 1000900, bar 905061, flag 9317, 6817; lots 2100 (Aromatic Flower 2503), 2101 (Memory: Foster Father 5207)",
+    "how": "m11_00_00_00 event 11105631; m10_00_00_00 events 11005900, 11005910; common event 300",
+    "sources": [
+      {
+        "kind": "data",
+        "ref": "extracted/event/m10_00_00_00.emevd"
+      },
+      {
+        "kind": "data",
+        "ref": "extracted/event/m11_00_00_00.emevd"
+      },
+      {
+        "kind": "data",
+        "ref": "extracted/json/params/ItemLotParam.json"
+      },
+      {
+        "kind": "web",
+        "ref": "https://sekiroshadowsdietwice.wiki.fextralife.com/Hirata+Estate"
+      }
+    ],
+    "confidence": "data",
+    "ours": {
+      "has": "partial",
+      "where": "src/enemy/script.rs; extracted/enemies/boss_scripts.json (the fight's own events run in a flat arena, no story flow)"
+    },
+    "his": {
+      "has": "yes",
+      "where": "crates/sim/src/owl_father.rs; crates/sim/src/father_bird.rs"
+    },
+    "needs": [
+      {
+        "id": "flow.15-hirata-burning-return",
+        "why": "first memory done"
+      },
+      {
+        "id": "bosses.owl-father",
+        "why": "the fight"
+      },
+      {
+        "id": "dialogue.owl-pre-fight",
+        "why": "pre-fight talk"
+      },
+      {
+        "id": "flow.13-hirata-entry-warp",
+        "why": "same warp"
+      }
+    ],
+    "check": "With the Father's Bell Charm offer it at the Buddha; the estate is burning and Owl waits in the main hall.",
+    "note": "Who gives the Father's Bell Charm and when sits in a talk file (open question)."
+  },
+  {
+    "id": "flow.16-outskirts-to-castle",
+    "category": "flow",
+    "title": "Road to the Castle Gate",
+    "summary": "From the Gate Fortress the road runs through the Castle Gate idol into Ashina Castle (m11_01). No dumped flag blocks the castle road: the Butterfly flag 9302 is read only inside Hirata, and the Genichiro fight gates on its own area and the time flags.",
+    "values": "idols 1105 Gate Fortress (flag 11100004), 1106 Castle Gate (11100005); entry area 1112811 for the castle top",
+    "how": "BonfireWarpParam; m11_01 event 11115810 gates on area 1112811 and 9303",
+    "sources": [
+      {
+        "kind": "data",
+        "ref": "extracted/json/params/BonfireWarpParam.json"
+      },
+      {
+        "kind": "data",
+        "ref": "extracted/event/m11_01_00_00.emevd"
+      }
+    ],
+    "confidence": "data",
+    "ours": {
+      "has": "partial",
+      "where": "src/idol.rs (BonfireWarpParam idol list and Travel menu; no unlock flags)"
+    },
+    "his": {
+      "has": "no",
+      "where": ""
+    },
+    "needs": [
+      {
+        "id": "flow.11-gyoubu-oniwa",
+        "why": "the road is open after him"
+      },
+      {
+        "id": "map.block-ids-and-connected-areas",
+        "why": "m11_00 connects to m11_01"
+      }
+    ],
+    "check": "Pass the Castle Gate idol and the loading shows Ashina Castle.",
+    "note": "Community says Hirata comes first; the events show Hirata changes the world but do not show a hard door."
+  },
+  {
+    "id": "flow.17-ashina-castle-ascent",
+    "category": "flow",
+    "title": "Ashina Castle: the climb",
+    "summary": "The castle (m11_01) is climbed through the Ashina Castle, Upper Tower Antechamber, Ashina Dojo, Castle Tower Lookout and Kuro's Room idols. Event 11110717 plays an ambient cutscene 11010100 and 11115740 plays 11010110. Mini-bosses on the way are Blazing Bull, a Lone Shadow, Shikibu Yamauchi, Matsumoto and Jinsuke Saze.",
+    "values": "idols 1110-1116 (flags 11110000-11110006, Kuro's Room 11110003); cutscenes 11010100 (event 11110717), 11010110 (event 11115740); mini-bosses chapters 11 to 15",
+    "how": "BonfireWarpParam 1110-1116; m11_01 events 11110717, 11115740",
+    "sources": [
+      {
+        "kind": "data",
+        "ref": "extracted/json/params/BonfireWarpParam.json"
+      },
+      {
+        "kind": "data",
+        "ref": "extracted/event/m11_01_00_00.emevd"
+      },
+      {
+        "kind": "recording",
+        "ref": "docs/kb/clips.md (All 57 Bosses run, https://www.youtube.com/watch?v=oS_gJf8ur8M)"
+      },
+      {
+        "kind": "web",
+        "ref": "https://sekiroshadowsdietwice.wiki.fextralife.com/Ashina+Castle"
+      }
+    ],
+    "confidence": "data",
+    "ours": {
+      "has": "partial",
+      "where": "src/enemy/script.rs; extracted/enemies/boss_scripts.json (the fight's own events run in a flat arena, no story flow)"
+    },
+    "his": {
+      "has": "partial",
+      "where": "crates/sim/src/story.rs; crates/game/src/map_story.rs (story time and part visibility for Outskirts and Castle)"
+    },
+    "needs": [
+      {
+        "id": "flow.16-outskirts-to-castle",
+        "why": "same map step"
+      },
+      {
+        "id": "cutscenes.m11-01-list",
+        "why": "castle scenes"
+      },
+      {
+        "id": "movement.grapple-search",
+        "why": "rooftop grapples"
+      }
+    ],
+    "check": "Follow the dojo roofs up to the Antechamber idol, then the lookout.",
+    "note": ""
+  },
+  {
+    "id": "flow.17b-elites-lone-shadows",
+    "category": "flow",
+    "title": "Ashina Elite and Lone Shadow fights (optional)",
+    "summary": "Several mini-bosses are side fights: Ashina Elite Jinsuke Saze in the castle, Ashina Elite Ujinari Mizuo after the Divine Dragon, Lone Shadow Longswordsman, Masanaga (twice) and Vilehand, and the Seven Ashina Spears. They pay sen and Prayer Beads and gate nothing.",
+    "values": "recording chapters 12, 14, 15, 35, 37, 40, 50, 51",
+    "how": "recording chapter list; mini-boss bars",
+    "sources": [
+      {
+        "kind": "recording",
+        "ref": "docs/kb/clips.md (All 57 Bosses run, https://www.youtube.com/watch?v=oS_gJf8ur8M)"
+      },
+      {
+        "kind": "web",
+        "ref": "https://sekiroshadowsdietwice.wiki.fextralife.com/Ashina+Castle"
+      }
+    ],
+    "confidence": "recorded",
+    "ours": {
+      "has": "no",
+      "where": ""
+    },
+    "his": {
+      "has": "no",
+      "where": ""
+    },
+    "needs": [
+      {
+        "id": "flow.17-ashina-castle-ascent",
+        "why": "castle and later areas"
+      },
+      {
+        "id": "bosses.mini-vs-boss",
+        "why": "different bar type"
+      }
+    ],
+    "check": "Look for the 'Ashina Elite' and 'Lone Shadow' names in the mini-boss bar while exploring.",
+    "note": ""
+  },
+  {
+    "id": "flow.18-genichiro-castle-top",
+    "category": "flow",
+    "title": "Genichiro at the castle top",
+    "summary": "Entering area 1112811 (event 11115810) plays 11010010 or 11010011 (picked by the time flags), warps Wolf to 1112812 and shows bar 907100. Event 11115800 ends at once when 8301 is on, so the fight is only there before the invasion.",
+    "values": "boss entity 1110800; bar nameId 907100; arena area 1112811; cutscenes 11010010, 11010011; flags 11115801, 11115809, 11110676",
+    "how": "m11_01_00_00 events 11115810, 11115800 (END IF 8301)",
+    "sources": [
+      {
+        "kind": "data",
+        "ref": "extracted/event/m11_01_00_00.emevd"
+      },
+      {
+        "kind": "data",
+        "ref": "extracted/enemies/boss_scripts.json"
+      }
+    ],
+    "confidence": "data",
+    "ours": {
+      "has": "partial",
+      "where": "src/enemy/script.rs; extracted/enemies/boss_scripts.json (the fight's own events run in a flat arena, no story flow)"
+    },
+    "his": {
+      "has": "no",
+      "where": ""
+    },
+    "needs": [
+      {
+        "id": "flow.17-ashina-castle-ascent",
+        "why": "climb done"
+      },
+      {
+        "id": "bosses.genichiro-tomoe",
+        "why": "the fight"
+      },
+      {
+        "id": "bosses.arena-activation",
+        "why": "region entry"
+      }
+    ],
+    "check": "Climb to the castle top; the camera cuts to Genichiro and the bar reads Genichiro Ashina.",
+    "note": ""
+  },
+  {
+    "id": "flow.19-genichiro-tomoe-handover",
+    "category": "flow",
+    "title": "Genichiro: Way of Tomoe",
+    "summary": "At zero bars on 1110800 event 11115820 sets 11115803 and plays cutscene 11010020, then swaps to entity 1110801 with bar 907110 (Genichiro, Way of Tomoe). Defeating that bar runs 11115800: achievement 22, flags 9303 and 6803, lot 2080 (Bloodsmoke Ninjutsu, goods 2100) and lot 2081 (Memory: Genichiro).",
+    "values": "entities 1110800 then 1110801; bars 907100 then 907110; cutscene 11010020; flag 9303 (local 11110800); ItemLotParam 2080 -> goods 2100, 2081 -> goods 5202; achievement 22",
+    "how": "m11_01_00_00 events 11115820 and 11115800; common event 300",
+    "sources": [
+      {
+        "kind": "data",
+        "ref": "extracted/event/m11_01_00_00.emevd"
+      },
+      {
+        "kind": "data",
+        "ref": "extracted/event/common.emevd"
+      },
+      {
+        "kind": "data",
+        "ref": "extracted/json/params/ItemLotParam.json"
+      }
+    ],
+    "confidence": "data",
+    "ours": {
+      "has": "partial",
+      "where": "src/enemy/script.rs; extracted/enemies/boss_scripts.json (the fight's own events run in a flat arena, no story flow)"
+    },
+    "his": {
+      "has": "no",
+      "where": ""
+    },
+    "needs": [
+      {
+        "id": "flow.18-genichiro-castle-top",
+        "why": "first bar"
+      },
+      {
+        "id": "bosses.genichiro-tomoe",
+        "why": "phase two"
+      },
+      {
+        "id": "bosses.phase-handover-pattern",
+        "why": "hand-over"
+      },
+      {
+        "id": "bosses.kneel-todome",
+        "why": "end of fight"
+      }
+    ],
+    "check": "Deathblow his last mark: the Tomoe scene plays and a second bar appears.",
+    "note": ""
+  },
+  {
+    "id": "flow.20-castle-after-genichiro",
+    "category": "flow",
+    "title": "The castle after Genichiro",
+    "summary": "Defeat sets 9303 and 8305 (castle stage on), then picks cutscene 11010030 or 11010031 by how many of 9304-9306 are down; the castle sky parts 8907xxx change. Kuro and Emma speak, Isshin's wish is explained and the next tasks (Gun Fort Shrine Key, Mortal Blade) are given.",
+    "values": "flags 9303, 8305, 9800-9803; cutscenes 11010030, 11010031 (warp 1112814); sky parts 8907000-8907100; Kuro's Room idol 1114; BonfireWarpParam 101 (home alt) flag 11110003",
+    "how": "m11_01_00_00 event 11115800 (3[10] Count Event Flags 9304 to 9306, 2002[13] with lighting)",
+    "sources": [
+      {
+        "kind": "data",
+        "ref": "extracted/event/m11_01_00_00.emevd"
+      },
+      {
+        "kind": "web",
+        "ref": "https://sekiroshadowsdietwice.wiki.fextralife.com/Ashina+Castle"
+      }
+    ],
+    "confidence": "data",
+    "ours": {
+      "has": "no",
+      "where": ""
+    },
+    "his": {
+      "has": "partial",
+      "where": "crates/sim/src/story.rs; crates/game/src/map_story.rs (story time and part visibility for Outskirts and Castle)"
+    },
+    "needs": [
+      {
+        "id": "flow.19-genichiro-tomoe-handover",
+        "why": "9303 on"
+      },
+      {
+        "id": "cutscenes.m11-01-list",
+        "why": "scene list"
+      },
+      {
+        "id": "npcs.kuro",
+        "why": "Kuro speaks"
+      },
+      {
+        "id": "npcs.emma",
+        "why": "Emma speaks"
+      }
+    ],
+    "check": "After the fight the same hall is at a different time of day and Kuro waits at the Kuro's Room idol.",
+    "note": ""
+  },
+  {
+    "id": "flow.21-gun-fort-shrine-key",
+    "category": "flow",
+    "title": "Gate: Gun Fort Shrine Key",
+    "summary": "The Gun Fort Shrine Key (goods 9405, lot 1110860, flag 51110860) is a treasure in Ashina Castle. It opens the shrine on the way to Sunken Valley (Under-Shrine Valley idol 1700).",
+    "values": "goods 9405; ItemLotParam 1110860 flag 51110860; idol 1700 Under-Shrine Valley flag 11700007",
+    "how": "ItemLotParam row 1110860 (m11_01 map treasure)",
+    "sources": [
+      {
+        "kind": "data",
+        "ref": "extracted/json/params/ItemLotParam.json"
+      },
+      {
+        "kind": "data",
+        "ref": "extracted/json/params/BonfireWarpParam.json"
+      },
+      {
+        "kind": "web",
+        "ref": "https://sekiroshadowsdietwice.wiki.fextralife.com/Sunken+Valley"
+      }
+    ],
+    "confidence": "data",
+    "ours": {
+      "has": "no",
+      "where": ""
+    },
+    "his": {
+      "has": "no",
+      "where": ""
+    },
+    "needs": [
+      {
+        "id": "flow.20-castle-after-genichiro",
+        "why": "after the castle story"
+      },
+      {
+        "id": "map.treasure-pickups",
+        "why": "a plain map lot"
+      },
+      {
+        "id": "map.objact-doors",
+        "why": "the shrine door"
+      }
+    ],
+    "check": "Search the castle for the key, then try the shrine door behind the castle.",
+    "note": "Fextralife says Kuro hands the key over after Genichiro; the lot is a map treasure in m11_01."
+  },
+  {
+    "id": "flow.22-abandoned-dungeon",
+    "category": "flow",
+    "title": "Abandoned Dungeon (via the castle)",
+    "summary": "Past the Kuro's Room idol the castle opens to the Abandoned Dungeon (m13). The Abandoned Dungeon Entrance idol (BonfireWarpParam 1117, entity 1111955, flag 11110005) is the last castle idol before it. The dungeon holds the lift up to Senpou Temple and the Underground Waterway idols (1300, 1301).",
+    "values": "idol rows 1117 (flag 11110005), 1300, 1301; map m13",
+    "how": "BonfireWarpParam rows; m13 events; community route",
+    "sources": [
+      {
+        "kind": "data",
+        "ref": "extracted/json/params/BonfireWarpParam.json"
+      },
+      {
+        "kind": "data",
+        "ref": "extracted/event/m13_00_00_00.emevd"
+      },
+      {
+        "kind": "web",
+        "ref": "https://sekiroshadowsdietwice.wiki.fextralife.com/Walkthrough"
+      }
+    ],
+    "confidence": "community",
+    "ours": {
+      "has": "partial",
+      "where": "src/idol.rs (BonfireWarpParam idol list and Travel menu; no unlock flags)"
+    },
+    "his": {
+      "has": "no",
+      "where": ""
+    },
+    "needs": [
+      {
+        "id": "flow.20-castle-after-genichiro",
+        "why": "castle stage 8305 opens the way"
+      },
+      {
+        "id": "map.idol-registration",
+        "why": "idol rows"
+      },
+      {
+        "id": "map.block-ids-and-connected-areas",
+        "why": "m13 is its own block"
+      }
+    ],
+    "check": "Take the Abandoned Dungeon Entrance idol path and see the dungeon idols list.",
+    "note": ""
+  },
+  {
+    "id": "flow.23-senpou-temple",
+    "category": "flow",
+    "title": "Senpou Temple, Mt. Kongo",
+    "summary": "A lift in the Abandoned Dungeon (m13) leads to Senpou Temple (m20). Idols: Senpou Shugendo 2001950, Temple Grounds, Main Hall, Inner Sanctum 2001954, Sunken Valley Cavern and Bell Demon's Temple (BonfireWarpParam 2000 to 2006). The Illusive Hall mechanism sits here.",
+    "values": "idol rows 2000-2006 (entities 2001950-2001956); map m20; Illusive Hall object 2001200; Bell Demon lot 3400; Holy Chapter: Dragon's Return lot 2000010",
+    "how": "m20 events 12005200 (Bell Demon), 12005210 (Illusive Hall), 12005218 (Holy Chapter); BonfireWarpParam rows 2000-2006",
+    "sources": [
+      {
+        "kind": "data",
+        "ref": "extracted/event/m20_00_00_00.emevd"
+      },
+      {
+        "kind": "data",
+        "ref": "extracted/json/params/BonfireWarpParam.json"
+      },
+      {
+        "kind": "web",
+        "ref": "https://sekiroshadowsdietwice.wiki.fextralife.com/Senpou+Temple+Mt.+Kongo"
+      }
+    ],
+    "confidence": "data",
+    "ours": {
+      "has": "partial",
+      "where": "src/idol.rs (BonfireWarpParam idol list and Travel menu; no unlock flags)"
+    },
+    "his": {
+      "has": "no",
+      "where": ""
+    },
+    "needs": [
+      {
+        "id": "flow.22-abandoned-dungeon",
+        "why": "the lift"
+      },
+      {
+        "id": "map.idol-travel",
+        "why": "Travel menu rows"
+      },
+      {
+        "id": "map.grapple-edges",
+        "why": "Senpou rooftops"
+      }
+    ],
+    "check": "Ride the dungeon lift and note the first Senpou idol in the Travel menu.",
+    "note": ""
+  },
+  {
+    "id": "flow.23b-illusive-hall-bell",
+    "category": "flow",
+    "title": "Illusive Hall Bell (optional branch)",
+    "summary": "Event 12005210 lets the player ring the hall bell: action button on object 2001200, cutscene 20000000 (warp 2002200), lot 2000060 gives the Illusive Hall Bell (goods 3990). It reopens the Monkeys' arena later.",
+    "values": "goods 3990; lot 2000060; event 12005210; object 2001200; cutscene 20000000 warp 2002200",
+    "how": "m20_00_00_00 event 12005210 (3[24] Action Button, 2002[4] Play Cutscene and Warp, 2003[4] Award Item Lot 2000060)",
+    "sources": [
+      {
+        "kind": "data",
+        "ref": "extracted/event/m20_00_00_00.emevd"
+      },
+      {
+        "kind": "data",
+        "ref": "extracted/json/params/ItemLotParam.json"
+      }
+    ],
+    "confidence": "data",
+    "ours": {
+      "has": "no",
+      "where": ""
+    },
+    "his": {
+      "has": "no",
+      "where": ""
+    },
+    "needs": [
+      {
+        "id": "flow.23-senpou-temple",
+        "why": "area"
+      },
+      {
+        "id": "cutscenes.other-areas",
+        "why": "scene 20000000"
+      },
+      {
+        "id": "map.objact-doors",
+        "why": "the bell object"
+      }
+    ],
+    "check": "Ring the bell at the hall and check the item list.",
+    "note": ""
+  },
+  {
+    "id": "flow.23c-bell-demon",
+    "category": "flow",
+    "title": "Bell Demon (optional branch)",
+    "summary": "At the Bell Demon's Temple the player can defeat the Iron Bell. Event 12005200 sets 9830 and lot 3400 gives the Bell Demon (goods 3730, a plain key-style item).",
+    "values": "goods 3730; lot 3400; flag 9830; event 12005200",
+    "how": "m20 event 12005200 (Award Item Lot 3400)",
+    "sources": [
+      {
+        "kind": "data",
+        "ref": "extracted/event/m20_00_00_00.emevd"
+      },
+      {
+        "kind": "data",
+        "ref": "extracted/json/params/ItemLotParam.json"
+      }
+    ],
+    "confidence": "data",
+    "ours": {
+      "has": "no",
+      "where": ""
+    },
+    "his": {
+      "has": "no",
+      "where": ""
+    },
+    "needs": [
+      {
+        "id": "flow.23-senpou-temple",
+        "why": "area"
+      },
+      {
+        "id": "progression.demon-bell",
+        "why": "what the bell does"
+      }
+    ],
+    "check": "Ring the Iron Bell at the temple and note the new goods entry.",
+    "note": "Goods row 3730 is type 0 (a normal item); what it does in the game is not decoded here."
+  },
+  {
+    "id": "flow.23d-senpou-mini-bosses",
+    "category": "flow",
+    "title": "Senpou mini-bosses (optional)",
+    "summary": "Senpou has a few optional mini-bosses on the way up (the recording counts the Armored Warrior among them). They pay sen and XP and are not gates.",
+    "values": "mini-boss bars via common_func 20005330",
+    "how": "common_func event 20005330; recording chapters",
+    "sources": [
+      {
+        "kind": "data",
+        "ref": "extracted/event/common_func.emevd"
+      },
+      {
+        "kind": "recording",
+        "ref": "docs/kb/clips.md (All 57 Bosses run, https://www.youtube.com/watch?v=oS_gJf8ur8M)"
+      }
+    ],
+    "confidence": "recorded",
+    "ours": {
+      "has": "partial",
+      "where": "src/enemy/script.rs; extracted/enemies/boss_scripts.json (the fight's own events run in a flat arena, no story flow)"
+    },
+    "his": {
+      "has": "no",
+      "where": ""
+    },
+    "needs": [
+      {
+        "id": "flow.23-senpou-temple",
+        "why": "area"
+      },
+      {
+        "id": "bosses.mini-vs-boss",
+        "why": "mini bar"
+      }
+    ],
+    "check": "Look for mini-boss bars on the Senpou path.",
+    "note": "Names and counts come from the recording only."
+  },
+  {
+    "id": "flow.24-folding-screen-monkeys",
+    "category": "flow",
+    "title": "Folding Screen Monkeys",
+    "summary": "Entering the Inner Sanctum arena starts event 12005810; defeat sets 9305 and 9405 through 12005800. Event 300 pays lot 2020 (Puppeteer Ninjutsu, goods 2110) and lot 2021 (Memory: Screen Monkeys, goods 5203). The inner sanctum scene (event 12005906) follows.",
+    "values": "boss bar nameId 901260; flags 9305, 9405; ItemLotParam 2020; event 12005810, 12005800, 12005906",
+    "how": "m20 events 12005810/12005800; common.emevd event 300",
+    "sources": [
+      {
+        "kind": "data",
+        "ref": "extracted/event/m20_00_00_00.emevd"
+      },
+      {
+        "kind": "data",
+        "ref": "extracted/event/common.emevd"
+      },
+      {
+        "kind": "data",
+        "ref": "extracted/json/params/ItemLotParam.json"
+      },
+      {
+        "kind": "recording",
+        "ref": "docs/kb/clips.md (All 57 Bosses run, https://www.youtube.com/watch?v=oS_gJf8ur8M)"
+      }
+    ],
+    "confidence": "data",
+    "ours": {
+      "has": "partial",
+      "where": "src/enemy/script.rs; extracted/enemies/boss_scripts.json (the fight's own events run in a flat arena, no story flow)"
+    },
+    "his": {
+      "has": "yes",
+      "where": "crates/sim/src/screen_monkeys.rs"
+    },
+    "needs": [
+      {
+        "id": "flow.23-senpou-temple",
+        "why": "area"
+      },
+      {
+        "id": "bosses.folding-screen-monkeys",
+        "why": "the fight"
+      },
+      {
+        "id": "bosses.fog-walls",
+        "why": "arena fog"
+      }
+    ],
+    "check": "Reach the Inner Sanctum; the HUD names Folding Screen Monkeys.",
+    "note": ""
+  },
+  {
+    "id": "flow.25-inner-sanctum-divine-child",
+    "category": "flow",
+    "title": "Inner Sanctum: the Divine Child",
+    "summary": "After the Monkeys the Divine Child of Rejuvenation waits in the Inner Sanctum. Event 12000700 plays cutscene 20000020 on talk flag 72000002 and lot 3090 gives armor 101000. The Mortal Blade is given here later, as is the Return questline.",
+    "values": "event 12000700; cutscene 20000020; talk flag 72000002; lot 3090 (armor 101000); idol Inner Sanctum 2001954",
+    "how": "m20 event 12000700; ESD talk flags",
+    "sources": [
+      {
+        "kind": "data",
+        "ref": "extracted/event/m20_00_00_00.emevd"
+      },
+      {
+        "kind": "data",
+        "ref": "extracted/json/params/ItemLotParam.json"
+      },
+      {
+        "kind": "web",
+        "ref": "https://sekiroshadowsdietwice.wiki.fextralife.com/Mortal+Blade"
+      }
+    ],
+    "confidence": "data",
+    "ours": {
+      "has": "no",
+      "where": ""
+    },
+    "his": {
+      "has": "no",
+      "where": ""
+    },
+    "needs": [
+      {
+        "id": "flow.24-folding-screen-monkeys",
+        "why": "arena cleared"
+      },
+      {
+        "id": "npcs.kuro",
+        "why": "the Divine Child is Kuro's counterpart"
+      },
+      {
+        "id": "npcs.story-flags-8301",
+        "why": "talk flags"
+      }
+    ],
+    "check": "Meet the Child after the Monkeys; the cutscene starts on the first talk.",
+    "note": ""
+  },
+  {
+    "id": "flow.25b-return-quest-items",
+    "category": "flow",
+    "title": "Return questline items",
+    "summary": "The Return ending needs items from several NPC talks: Rice for Kuro (goods 9090, lot 62210), Frozen Tears (goods 9091, lot 62212), Holy Chapter: Infested (9215 lot 63200, 9228 lot 2000820), Holy Chapter: Dragon's Return (9209, lot 2000010, event 12005218), Pinwheels (9080 lot 2000030, 9081 lot 2000170). Network flags 1040-1054 are tracked by common_func event 20006111.",
+    "values": "goods 9090, 9091, 9209, 9215, 9228, 9080, 9081; lots 62210, 62212, 2000010, 63200, 2000820, 2000030, 2000170; flags 1040-1054; talk flags 72000361/362/015/017/019",
+    "how": "m20 events 12005218 etc.; common_func event 20006111; ItemLotParam rows",
+    "sources": [
+      {
+        "kind": "data",
+        "ref": "extracted/event/m20_00_00_00.emevd"
+      },
+      {
+        "kind": "data",
+        "ref": "extracted/event/common_func.emevd"
+      },
+      {
+        "kind": "data",
+        "ref": "extracted/json/params/ItemLotParam.json"
+      },
+      {
+        "kind": "data",
+        "ref": "extracted/json/params/EquipParamGoods.json"
+      },
+      {
+        "kind": "web",
+        "ref": "https://www.gamespot.com/articles/sekiro-endings-guide-heres-how-to-get-them-all/1100-6465988/"
+      }
+    ],
+    "confidence": "data",
+    "ours": {
+      "has": "no",
+      "where": ""
+    },
+    "his": {
+      "has": "no",
+      "where": ""
+    },
+    "needs": [
+      {
+        "id": "flow.25-inner-sanctum-divine-child",
+        "why": "talks"
+      },
+      {
+        "id": "npcs.dragonrot-cure",
+        "why": "quest uses the cure items"
+      },
+      {
+        "id": "npcs.story-flags-8301",
+        "why": "talk flags"
+      }
+    ],
+    "check": "Talk to the Child and the Sculptor in the order the guide gives; Rice for Kuro must reach Kuro before the Dragon dies.",
+    "note": "The step order inside the quest comes from community text; only the item ids and lots are from the data."
+  },
+  {
+    "id": "flow.26-mortal-blade",
+    "category": "flow",
+    "title": "Gate: the Mortal Blade",
+    "summary": "The Mortal Blade (goods 2400) comes as lot 3020 (and 62200, flag 50006224). Mortal Draw is lot 62202 and Empowered Mortal Draw lot 62204. It is the first of three castle-invasion key items; the other two are the Lotus (2500) and the Shelter Stone (2501).",
+    "values": "goods 2400; lots 3020, 62200 (flag 50006224), 62202 (goods 5700), 62204 (goods 7300)",
+    "how": "ItemLotParam rows; common event 910 checks goods 2400",
+    "sources": [
+      {
+        "kind": "data",
+        "ref": "extracted/json/params/ItemLotParam.json"
+      },
+      {
+        "kind": "data",
+        "ref": "extracted/event/common.emevd"
+      }
+    ],
+    "confidence": "data",
+    "ours": {
+      "has": "no",
+      "where": ""
+    },
+    "his": {
+      "has": "no",
+      "where": ""
+    },
+    "needs": [
+      {
+        "id": "flow.25-inner-sanctum-divine-child",
+        "why": "the Child gives it"
+      },
+      {
+        "id": "progression.esoteric-texts",
+        "why": "arts from the blade"
+      },
+      {
+        "id": "npcs.story-flags-8301",
+        "why": "the three items set the invasion"
+      }
+    ],
+    "check": "Receive the blade after the Monkeys and check the key item list for goods 2400.",
+    "note": ""
+  },
+  {
+    "id": "flow.27-sunken-valley",
+    "category": "flow",
+    "title": "Sunken Valley and Gun Fort",
+    "summary": "The Gun Fort Shrine Key (goods 9405) opens the way to the Sunken Valley (m17). Idols: Under-Shrine Valley 1701957, Sunken Valley, Gun Fort, Riven Cave, Bodhisattva Valley 1701958 and Ape's Watering Hole (BonfireWarpParam 1700 to 1705).",
+    "values": "idol rows 1700-1705; map m17; Gun Fort Shrine Key goods 9405 lot 1110860",
+    "how": "BonfireWarpParam rows; m17 events",
+    "sources": [
+      {
+        "kind": "data",
+        "ref": "extracted/event/m17_00_00_00.emevd"
+      },
+      {
+        "kind": "data",
+        "ref": "extracted/json/params/BonfireWarpParam.json"
+      },
+      {
+        "kind": "web",
+        "ref": "https://sekiroshadowsdietwice.wiki.fextralife.com/Sunken+Valley"
+      }
+    ],
+    "confidence": "data",
+    "ours": {
+      "has": "partial",
+      "where": "src/idol.rs (BonfireWarpParam idol list and Travel menu; no unlock flags)"
+    },
+    "his": {
+      "has": "no",
+      "where": ""
+    },
+    "needs": [
+      {
+        "id": "flow.21-gun-fort-shrine-key",
+        "why": "the key"
+      },
+      {
+        "id": "map.idol-registration",
+        "why": "idol rows"
+      }
+    ],
+    "check": "Open the shrine, ride down and list the Sunken Valley idols.",
+    "note": ""
+  },
+  {
+    "id": "flow.27b-serpent-viscera",
+    "category": "flow",
+    "title": "Serpent Viscera (optional branch)",
+    "summary": "Fresh Serpent Viscera (goods 9192, lot 50100000, event 11705614) is dropped when the Great Serpent (entity 1700600) is dead (flag 9351). Dried Serpent Viscera is lot 1700810 (goods 9193). Both are Dragonrot cure ingredients.",
+    "values": "goods 9192, 9193; lots 50100000, 1700810; flag 9351; event 11705614",
+    "how": "m17 event 11705614 (Award Item Lot 50100000 when 9351)",
+    "sources": [
+      {
+        "kind": "data",
+        "ref": "extracted/event/m17_00_00_00.emevd"
+      },
+      {
+        "kind": "data",
+        "ref": "extracted/json/params/ItemLotParam.json"
+      },
+      {
+        "kind": "web",
+        "ref": "https://sekiroshadowsdietwice.wiki.fextralife.com/Sunken+Valley"
+      }
+    ],
+    "confidence": "data",
+    "ours": {
+      "has": "no",
+      "where": ""
+    },
+    "his": {
+      "has": "no",
+      "where": ""
+    },
+    "needs": [
+      {
+        "id": "flow.27-sunken-valley",
+        "why": "area"
+      },
+      {
+        "id": "status.dragonrot",
+        "why": "cure"
+      },
+      {
+        "id": "npcs.dragonrot-cure",
+        "why": "the cure quest"
+      }
+    ],
+    "check": "Kill the serpent and check the item list for Fresh Serpent Viscera.",
+    "note": ""
+  },
+  {
+    "id": "flow.28-guardian-ape",
+    "category": "flow",
+    "title": "Guardian Ape",
+    "summary": "In the Ape's Watering Hole event 11705810 starts the fight; defeat sets 9304 through 11705800 and event 300 pays lot 2010 (Slender Finger, goods 9790) and lot 2011 (Memory: Guardian Ape, goods 5204). Event 912 then sets 8303 so the Headless Ape appears later.",
+    "values": "bar nameId 905100; flag 9304; ItemLotParam 2010; stage 8303 (event 912 = 9304 on and 9314 off)",
+    "how": "m17 events 11705810, 11705800; common event 912, 300",
+    "sources": [
+      {
+        "kind": "data",
+        "ref": "extracted/event/m17_00_00_00.emevd"
+      },
+      {
+        "kind": "data",
+        "ref": "extracted/event/common.emevd"
+      },
+      {
+        "kind": "data",
+        "ref": "extracted/json/params/ItemLotParam.json"
+      },
+      {
+        "kind": "recording",
+        "ref": "docs/kb/clips.md (All 57 Bosses run, https://www.youtube.com/watch?v=oS_gJf8ur8M)"
+      }
+    ],
+    "confidence": "data",
+    "ours": {
+      "has": "partial",
+      "where": "src/enemy/script.rs; extracted/enemies/boss_scripts.json (the fight's own events run in a flat arena, no story flow)"
+    },
+    "his": {
+      "has": "yes",
+      "where": "crates/sim/src/guardian_ape.rs"
+    },
+    "needs": [
+      {
+        "id": "flow.27-sunken-valley",
+        "why": "area"
+      },
+      {
+        "id": "bosses.guardian-ape",
+        "why": "the fight"
+      },
+      {
+        "id": "bosses.fog-walls",
+        "why": "arena fog"
+      },
+      {
+        "id": "flow.35-time-bosses-clock",
+        "why": "it is one of the four time bosses"
+      }
+    ],
+    "check": "Enter the burrow-side arena; HUD shows Guardian Ape.",
+    "note": ""
+  },
+  {
+    "id": "flow.29-lotus-gate",
+    "category": "flow",
+    "title": "Gate: Lotus of the Palace",
+    "summary": "Behind the Guardian Ape lies the Lotus of the Palace (goods 2500, lot 1700000, event 11705200). It is the second castle-invasion key item.",
+    "values": "goods 2500; lot 1700000; event 11705200",
+    "how": "m17 event 11705200 (Award Item Lot 1700000)",
+    "sources": [
+      {
+        "kind": "data",
+        "ref": "extracted/event/m17_00_00_00.emevd"
+      },
+      {
+        "kind": "data",
+        "ref": "extracted/json/params/ItemLotParam.json"
+      },
+      {
+        "kind": "web",
+        "ref": "https://sekiroshadowsdietwice.wiki.fextralife.com/Lotus+of+the+Palace"
+      }
+    ],
+    "confidence": "data",
+    "ours": {
+      "has": "no",
+      "where": ""
+    },
+    "his": {
+      "has": "no",
+      "where": ""
+    },
+    "needs": [
+      {
+        "id": "flow.28-guardian-ape",
+        "why": "the lotus lies beyond"
+      },
+      {
+        "id": "npcs.story-flags-8301",
+        "why": "goods 2500 sets the invasion"
+      }
+    ],
+    "check": "Pick up the Lotus and see key item 2500.",
+    "note": ""
+  },
+  {
+    "id": "flow.29b-bodhisattva-valley",
+    "category": "flow",
+    "title": "Bodhisattva Valley (optional branch)",
+    "summary": "A side path leads to Bodhisattva Valley (idol 1701958) with optional foes and treasures. It is not a gate.",
+    "values": "idol entity 1701958; BonfireWarpParam row 1704",
+    "how": "BonfireWarpParam; community route",
+    "sources": [
+      {
+        "kind": "data",
+        "ref": "extracted/json/params/BonfireWarpParam.json"
+      },
+      {
+        "kind": "web",
+        "ref": "https://sekiroshadowsdietwice.wiki.fextralife.com/Sunken+Valley"
+      }
+    ],
+    "confidence": "community",
+    "ours": {
+      "has": "partial",
+      "where": "src/idol.rs (BonfireWarpParam idol list and Travel menu; no unlock flags)"
+    },
+    "his": {
+      "has": "no",
+      "where": ""
+    },
+    "needs": [
+      {
+        "id": "flow.27-sunken-valley",
+        "why": "same region"
+      }
+    ],
+    "check": "Find the Bodhisattva Valley idol in the Travel menu.",
+    "note": ""
+  },
+  {
+    "id": "flow.30-ashina-depths",
+    "category": "flow",
+    "title": "Ashina Depths",
+    "summary": "From the Sunken Valley the path leads past the Great Serpent and a steep drop to the Ashina Depths (m17). Idols: Ashina Depths 1701955, Poison Pool 1701954 and Guardian Ape's Burrow 1701956 (BonfireWarpParam 1500 to 1502). The Bottomless Hole (1301) is another entrance.",
+    "values": "idol rows 1500-1502, 1301; entities 1701955/54/56",
+    "how": "BonfireWarpParam rows",
+    "sources": [
+      {
+        "kind": "data",
+        "ref": "extracted/json/params/BonfireWarpParam.json"
+      },
+      {
+        "kind": "web",
+        "ref": "https://sekiroshadowsdietwice.wiki.fextralife.com/Ashina+Depths"
+      }
+    ],
+    "confidence": "data",
+    "ours": {
+      "has": "partial",
+      "where": "src/idol.rs (BonfireWarpParam idol list and Travel menu; no unlock flags)"
+    },
+    "his": {
+      "has": "no",
+      "where": ""
+    },
+    "needs": [
+      {
+        "id": "flow.27-sunken-valley",
+        "why": "the first path"
+      },
+      {
+        "id": "map.idol-registration",
+        "why": "idol rows"
+      },
+      {
+        "id": "movement.dive",
+        "why": "water and drops"
+      }
+    ],
+    "check": "Take the Bottomless Hole and see the Depths idol list.",
+    "note": ""
+  },
+  {
+    "id": "flow.30b-headless-ape",
+    "category": "flow",
+    "title": "Headless Ape (stage 8303)",
+    "summary": "After the Guardian Ape (9304) and before the optional Headless is killed (9314), stage 8303 is on and the Headless Ape appears in the Burrow (event 11705850, entity 1700850). Defeat sets 9307 and 9314; lots 2015 and 2016 pay a Prayer Bead each (goods 4000) and lot 2017 the memory (goods 5213). Idol 1701956 is disabled by 8307 (event 920) when no 79000/79100 item is held.",
+    "values": "entity 1700850; flags 9307, 9314, 8303, 8307; ItemLotParam 2015, 2017; events 11705850, 11705873, 11705826",
+    "how": "m17 events; common events 912 and 920",
+    "sources": [
+      {
+        "kind": "data",
+        "ref": "extracted/event/m17_00_00_00.emevd"
+      },
+      {
+        "kind": "data",
+        "ref": "extracted/event/common.emevd"
+      },
+      {
+        "kind": "data",
+        "ref": "extracted/json/params/ItemLotParam.json"
+      },
+      {
+        "kind": "recording",
+        "ref": "docs/kb/clips.md (All 57 Bosses run, https://www.youtube.com/watch?v=oS_gJf8ur8M)"
+      }
+    ],
+    "confidence": "data",
+    "ours": {
+      "has": "partial",
+      "where": "src/enemy/script.rs; extracted/enemies/boss_scripts.json (the fight's own events run in a flat arena, no story flow)"
+    },
+    "his": {
+      "has": "yes",
+      "where": "crates/sim/src/headless_ape.rs"
+    },
+    "needs": [
+      {
+        "id": "flow.28-guardian-ape",
+        "why": "stage 8303 starts here"
+      },
+      {
+        "id": "bosses.guardian-ape",
+        "why": "this is the clone fight"
+      },
+      {
+        "id": "progression.prayer-beads-necklaces",
+        "why": "the bead"
+      }
+    ],
+    "check": "Return to the Burrow; HUD shows the Headless Ape.",
+    "note": ""
+  },
+  {
+    "id": "flow.30c-depths-mini-bosses",
+    "category": "flow",
+    "title": "Ashina Depths mini-bosses (optional)",
+    "summary": "The Depths and the Poison Pool hold several mini-bosses (the recording lists several in the Depths and the Poison Pool). They pay XP and sen and are not gates.",
+    "values": "common_func 20005330 mini-boss bars; recording chapters",
+    "how": "common_func event 20005330; recording",
+    "sources": [
+      {
+        "kind": "data",
+        "ref": "extracted/event/common_func.emevd"
+      },
+      {
+        "kind": "recording",
+        "ref": "docs/kb/clips.md (All 57 Bosses run, https://www.youtube.com/watch?v=oS_gJf8ur8M)"
+      }
+    ],
+    "confidence": "recorded",
+    "ours": {
+      "has": "partial",
+      "where": "src/enemy/script.rs; extracted/enemies/boss_scripts.json (the fight's own events run in a flat arena, no story flow)"
+    },
+    "his": {
+      "has": "no",
+      "where": ""
+    },
+    "needs": [
+      {
+        "id": "flow.30-ashina-depths",
+        "why": "area"
+      },
+      {
+        "id": "bosses.mini-vs-boss",
+        "why": "mini bar"
+      }
+    ],
+    "check": "Walk the Depths and see mini-boss bars.",
+    "note": "Some names in this record are recording based and not all verified."
+  },
+  {
+    "id": "flow.31-mibu-village",
+    "category": "flow",
+    "title": "Hidden Forest and Mibu Village",
+    "summary": "The Depths lead up through the Hidden Forest into Mibu Village (m15). Idols: Hidden Forest 1501950, Mibu Village 1501951, Water Mill 1501952 and Wedding Cave Door 1501953 (BonfireWarpParam 1503 to 1506). The village is where the Dragonrot story shows up.",
+    "values": "idol rows 1503-1506; map m15",
+    "how": "BonfireWarpParam; m15 events",
+    "sources": [
+      {
+        "kind": "data",
+        "ref": "extracted/event/m15_00_00_00.emevd"
+      },
+      {
+        "kind": "data",
+        "ref": "extracted/json/params/BonfireWarpParam.json"
+      },
+      {
+        "kind": "web",
+        "ref": "https://sekiroshadowsdietwice.wiki.fextralife.com/Mibu+Village"
+      }
+    ],
+    "confidence": "data",
+    "ours": {
+      "has": "partial",
+      "where": "src/idol.rs (BonfireWarpParam idol list and Travel menu; no unlock flags)"
+    },
+    "his": {
+      "has": "no",
+      "where": ""
+    },
+    "needs": [
+      {
+        "id": "flow.30-ashina-depths",
+        "why": "the way up"
+      },
+      {
+        "id": "status.dragonrot",
+        "why": "dragonrot shows"
+      },
+      {
+        "id": "map.idol-travel",
+        "why": "Travel rows"
+      }
+    ],
+    "check": "Take the Depths exit, see the Hidden Forest idol.",
+    "note": ""
+  },
+  {
+    "id": "flow.32-corrupted-monk",
+    "category": "flow",
+    "title": "Corrupted Monk (Mibu illusion)",
+    "summary": "In the Water Mill area event 11505810 starts the fight, with the monk's arena set by the illusion. Defeat sets 9306 through 11505800 and event 300 pays lot 2051 (Memory: Corrupted Monk, goods 5205); lot 2050 has no row.",
+    "values": "bar nameId 905000; flag 9306; ItemLotParam 2051 (goods 5205); events 11505810, 11505800",
+    "how": "m15 events; common event 300",
+    "sources": [
+      {
+        "kind": "data",
+        "ref": "extracted/event/m15_00_00_00.emevd"
+      },
+      {
+        "kind": "data",
+        "ref": "extracted/event/common.emevd"
+      },
+      {
+        "kind": "data",
+        "ref": "extracted/json/params/ItemLotParam.json"
+      },
+      {
+        "kind": "recording",
+        "ref": "docs/kb/clips.md (All 57 Bosses run, https://www.youtube.com/watch?v=oS_gJf8ur8M)"
+      }
+    ],
+    "confidence": "data",
+    "ours": {
+      "has": "partial",
+      "where": "src/enemy/script.rs; extracted/enemies/boss_scripts.json (the fight's own events run in a flat arena, no story flow)"
+    },
+    "his": {
+      "has": "no",
+      "where": ""
+    },
+    "needs": [
+      {
+        "id": "flow.31-mibu-village",
+        "why": "area"
+      },
+      {
+        "id": "bosses.corrupted-monk",
+        "why": "the fight"
+      },
+      {
+        "id": "bosses.fog-walls",
+        "why": "arena fog"
+      },
+      {
+        "id": "flow.35-time-bosses-clock",
+        "why": "fourth time boss"
+      }
+    ],
+    "check": "Enter the mist-covered illusion; HUD shows the Corrupted Monk.",
+    "note": ""
+  },
+  {
+    "id": "flow.33-mibu-breathing-gate",
+    "category": "flow",
+    "title": "Gate: Mibu Breathing Technique",
+    "summary": "The Mibu Breathing Technique (goods 2420, type 7, a skill-style row) has no item lot, so a talk gives it. The existing atlas notes that Wolf can dive only after learning it. It is not a castle gate by itself.",
+    "values": "goods 2420; no ItemLotParam row (talk award)",
+    "how": "EquipParamGoods row 2420; ESD talk",
+    "sources": [
+      {
+        "kind": "data",
+        "ref": "extracted/json/params/EquipParamGoods.json"
+      },
+      {
+        "kind": "web",
+        "ref": "https://sekiroshadowsdietwice.wiki.fextralife.com/Mibu+Village"
+      }
+    ],
+    "confidence": "community",
+    "ours": {
+      "has": "no",
+      "where": ""
+    },
+    "his": {
+      "has": "no",
+      "where": ""
+    },
+    "needs": [
+      {
+        "id": "flow.31-mibu-village",
+        "why": "area"
+      },
+      {
+        "id": "movement.dive",
+        "why": "diving needs it"
+      }
+    ],
+    "check": "Talk to the village monk; check the esoteric texts list for the technique.",
+    "note": ""
+  },
+  {
+    "id": "flow.34-shelter-stone-gate",
+    "category": "flow",
+    "title": "Gate: Shelter Stone",
+    "summary": "The Shelter Stone (goods 2501) is in the Wedding Cave at lot 1500050 (event 11505290), and also NPC lot 3030. It is the third castle-invasion key item.",
+    "values": "goods 2501; lots 1500050, 3030; event 11505290",
+    "how": "m15 event 11505290; ItemLotParam rows",
+    "sources": [
+      {
+        "kind": "data",
+        "ref": "extracted/event/m15_00_00_00.emevd"
+      },
+      {
+        "kind": "data",
+        "ref": "extracted/json/params/ItemLotParam.json"
+      },
+      {
+        "kind": "web",
+        "ref": "https://sekiroshadowsdietwice.wiki.fextralife.com/Shelter+Stone"
+      }
+    ],
+    "confidence": "data",
+    "ours": {
+      "has": "no",
+      "where": ""
+    },
+    "his": {
+      "has": "no",
+      "where": ""
+    },
+    "needs": [
+      {
+        "id": "flow.31-mibu-village",
+        "why": "area"
+      },
+      {
+        "id": "npcs.story-flags-8301",
+        "why": "completes the invasion trio"
+      }
+    ],
+    "check": "Enter the Wedding Cave and read the key item list for goods 2501.",
+    "note": ""
+  },
+  {
+    "id": "flow.35-time-bosses-clock",
+    "category": "flow",
+    "title": "The four time bosses and the clock",
+    "summary": "Genichiro (9303), Guardian Ape (9304), Folding Screen Monkeys (9305) and Corrupted Monk (9306) each advance the clock. Event 820 raises 9800 after one and 9801 after three; event 901 records which was first in 8405-8408. Event 830 mirrors them to 9820-9823.",
+    "values": "flags 9303-9306, 9800-9803, 9820-9823, 8405-8408; events 820, 830, 901",
+    "how": "common.emevd events 820, 830, 901",
+    "sources": [
+      {
+        "kind": "data",
+        "ref": "extracted/event/common.emevd"
+      },
+      {
+        "kind": "sekiro-rs-doc",
+        "ref": "crates/sim/src/story.rs"
+      }
+    ],
+    "confidence": "data",
+    "ours": {
+      "has": "partial",
+      "where": "src/config.rs world.hour (a fixed hour; no story flags)"
+    },
+    "his": {
+      "has": "partial",
+      "where": "crates/sim/src/story.rs; crates/game/src/map_story.rs (story time and part visibility for Outskirts and Castle)"
+    },
+    "needs": [
+      {
+        "id": "map.story-clock",
+        "why": "the clock"
+      },
+      {
+        "id": "flow.09-hub-story-clock",
+        "why": "visible result at the hub"
+      }
+    ],
+    "check": "Kill them in any order; the sky at the hub moves forward after each count threshold.",
+    "note": ""
+  },
+  {
+    "id": "flow.36-castle-invasion-trigger",
+    "category": "flow",
+    "title": "Castle invasion (stage 8301)",
+    "summary": "Common event 910 sets 8301 once the player holds Mortal Blade (2400), Lotus (2500) and Shelter Stone (2501). It disables 9 castle and reservoir idols, sets flag 11110005 and respawn 1112955. Event 11115720 plays cutscene 11010040 (warp 1112722) on entering area 1112811.",
+    "values": "flags 8301, 11110005; goods 2400, 2500, 2501; respawn 1112955; cutscene 11010040 warp 1112722; event 11115720",
+    "how": "common.emevd event 910; m11_01 event 11115720",
+    "sources": [
+      {
+        "kind": "data",
+        "ref": "extracted/event/common.emevd"
+      },
+      {
+        "kind": "data",
+        "ref": "extracted/event/m11_01_00_00.emevd"
+      }
+    ],
+    "confidence": "data",
+    "ours": {
+      "has": "no",
+      "where": ""
+    },
+    "his": {
+      "has": "no",
+      "where": ""
+    },
+    "needs": [
+      {
+        "id": "npcs.story-flags-8301",
+        "why": "the flag"
+      },
+      {
+        "id": "flow.26-mortal-blade",
+        "why": "first item"
+      },
+      {
+        "id": "flow.29-lotus-gate",
+        "why": "second item"
+      },
+      {
+        "id": "flow.34-shelter-stone-gate",
+        "why": "third item"
+      },
+      {
+        "id": "cutscenes.m11-01-list",
+        "why": "scene 11010040"
+      }
+    ],
+    "check": "Hold all three items and reload; the castle idols vanish and the invasion scene plays.",
+    "note": ""
+  },
+  {
+    "id": "flow.36b-castle-idol-changes",
+    "category": "flow",
+    "title": "Idol changes during the invasion",
+    "summary": "Stage 8301 disables nine castle and reservoir idols and event 11115200 re-registers the Castle Gate idol (flag 11110000, entity 1111950) when the fight resolves. Stage 8302 later disables castle idols 1111950/51/52/54/56/57 and Outskirts idols 1101951-56, plus 1121950/51.",
+    "values": "flags 8301, 8302; idol entities 1111950-57, 1101951-56, 1121950/51",
+    "how": "common events 910, 911; m11_01 event 11115200",
+    "sources": [
+      {
+        "kind": "data",
+        "ref": "extracted/event/common.emevd"
+      },
+      {
+        "kind": "data",
+        "ref": "extracted/event/m11_01_00_00.emevd"
+      },
+      {
+        "kind": "data",
+        "ref": "extracted/json/params/BonfireWarpParam.json"
+      }
+    ],
+    "confidence": "data",
+    "ours": {
+      "has": "partial",
+      "where": "src/idol.rs (BonfireWarpParam idol list and Travel menu; no unlock flags)"
+    },
+    "his": {
+      "has": "no",
+      "where": ""
+    },
+    "needs": [
+      {
+        "id": "map.idol-registration",
+        "why": "idol on/off"
+      },
+      {
+        "id": "flow.36-castle-invasion-trigger",
+        "why": "stage 8301"
+      },
+      {
+        "id": "flow.50-post-dragon-castle-night",
+        "why": "stage 8302"
+      }
+    ],
+    "check": "Open the Travel menu before and after the invasion and compare lists.",
+    "note": ""
+  },
+  {
+    "id": "flow.37-invaded-castle-ascent",
+    "category": "flow",
+    "title": "Invaded castle: the ascent",
+    "summary": "With 8301 on the castle fills with enemies and the way up runs through the Tower and the Great Shinobi Owl's roofs. Idols appear and vanish with the stage. The Tower Gate idols mark the Owl's approach.",
+    "values": "stage 8301; castle idol rows 1110-1117",
+    "how": "m11_01 events",
+    "sources": [
+      {
+        "kind": "data",
+        "ref": "extracted/event/m11_01_00_00.emevd"
+      },
+      {
+        "kind": "web",
+        "ref": "https://sekiroshadowsdietwice.wiki.fextralife.com/Ashina+Castle"
+      }
+    ],
+    "confidence": "community",
+    "ours": {
+      "has": "no",
+      "where": ""
+    },
+    "his": {
+      "has": "no",
+      "where": ""
+    },
+    "needs": [
+      {
+        "id": "flow.36-castle-invasion-trigger",
+        "why": "stage on"
+      },
+      {
+        "id": "map.idol-registration",
+        "why": "idols"
+      }
+    ],
+    "check": "Walk the castle after the scene and count foes.",
+    "note": ""
+  },
+  {
+    "id": "flow.38-great-shinobi-owl",
+    "category": "flow",
+    "title": "Great Shinobi Owl",
+    "summary": "Entity 905060's bar starts the fight; defeat sets 9308 (events 11115860/50/70) and event 300 pays lot 2090 (Aromatic Branch, goods 2502) and lot 2091 (Memory: Great Shinobi, goods 5206). Stage 8302 unloads it. Its father, the Owl Father (9317), is a separate fight in the second Hirata memory (stage 8304).",
+    "values": "bar nameId 905060; flag 9308; ItemLotParam 2090 -> goods 2502; events 11115860, 11115850, 11115870",
+    "how": "m11_01 events; common event 300",
+    "sources": [
+      {
+        "kind": "data",
+        "ref": "extracted/event/m11_01_00_00.emevd"
+      },
+      {
+        "kind": "data",
+        "ref": "extracted/event/common.emevd"
+      },
+      {
+        "kind": "data",
+        "ref": "extracted/json/params/ItemLotParam.json"
+      },
+      {
+        "kind": "recording",
+        "ref": "docs/kb/clips.md (All 57 Bosses run, https://www.youtube.com/watch?v=oS_gJf8ur8M)"
+      }
+    ],
+    "confidence": "data",
+    "ours": {
+      "has": "partial",
+      "where": "src/enemy/script.rs; extracted/enemies/boss_scripts.json (the fight's own events run in a flat arena, no story flow)"
+    },
+    "his": {
+      "has": "yes",
+      "where": "crates/sim/src/owl_father.rs; crates/sim/src/father_bird.rs"
+    },
+    "needs": [
+      {
+        "id": "bosses.owl-castle-phase2",
+        "why": "second phase"
+      },
+      {
+        "id": "bosses.fog-walls",
+        "why": "arena fog"
+      },
+      {
+        "id": "flow.36-castle-invasion-trigger",
+        "why": "stage 8301"
+      }
+    ],
+    "check": "Fight on the burning roofs; HUD names Great Shinobi Owl.",
+    "note": ""
+  },
+  {
+    "id": "flow.39-iron-code-choice",
+    "category": "flow",
+    "title": "The Iron Code choice",
+    "summary": "After the Owl (9308), the story branches: Kuro and the Dragon path (Fountainhead) or Emma's Iron Code path (Shura). The choice is made in talks that set the branch flags.",
+    "values": "flags 9308, 8415 (talk), 8301",
+    "how": "ESD talk flags; m11_01 events",
+    "sources": [
+      {
+        "kind": "data",
+        "ref": "extracted/event/m11_01_00_00.emevd"
+      },
+      {
+        "kind": "web",
+        "ref": "https://sekiroshadowsdietwice.wiki.fextralife.com/Endings"
+      }
+    ],
+    "confidence": "community",
+    "ours": {
+      "has": "no",
+      "where": ""
+    },
+    "his": {
+      "has": "no",
+      "where": ""
+    },
+    "needs": [
+      {
+        "id": "flow.38-great-shinobi-owl",
+        "why": "9308 on"
+      },
+      {
+        "id": "npcs.kuro",
+        "why": "talk"
+      },
+      {
+        "id": "npcs.emma",
+        "why": "talk"
+      }
+    ],
+    "check": "Talk to Kuro in the hall after the Owl and see the branch dialog.",
+    "note": "Exact ESD flag for the choice is not decoded here. Flag 8415, set by a talk, is read by the Wedding Cave warp (step 43)."
+  },
+  {
+    "id": "flow.40-shura-emma",
+    "category": "flow",
+    "title": "Shura: Emma, the Gentle Blade",
+    "summary": "Event 11115900 starts Emma with bar 907400 and cutscene 11010060 (warp 1112812). Defeat sets 9315. Emma's fight is the first half of the Shura route.",
+    "values": "bar nameId 907400; flags 9315, 11110826, 11115901, 11115909; cutscene 11010060; events 11115900, 11115910",
+    "how": "m11_01 events 11115900, 11115910",
+    "sources": [
+      {
+        "kind": "data",
+        "ref": "extracted/event/m11_01_00_00.emevd"
+      },
+      {
+        "kind": "recording",
+        "ref": "docs/kb/clips.md (All 57 Bosses run, https://www.youtube.com/watch?v=oS_gJf8ur8M)"
+      }
+    ],
+    "confidence": "data",
+    "ours": {
+      "has": "partial",
+      "where": "src/enemy/script.rs; extracted/enemies/boss_scripts.json (the fight's own events run in a flat arena, no story flow)"
+    },
+    "his": {
+      "has": "no",
+      "where": ""
+    },
+    "needs": [
+      {
+        "id": "bosses.emma",
+        "why": "the fight"
+      },
+      {
+        "id": "flow.39-iron-code-choice",
+        "why": "branch"
+      },
+      {
+        "id": "cutscenes.m11-01-list",
+        "why": "scene 11010060"
+      }
+    ],
+    "check": "Choose the Shura path and fight Emma at the castle top.",
+    "note": ""
+  },
+  {
+    "id": "flow.41-shura-isshin-ashina",
+    "category": "flow",
+    "title": "Shura: Isshin Ashina",
+    "summary": "After Emma the Isshin Ashina fight (bar 905401, events 11115920/30) sets 9316. Event 300 pays lot 2120 (One Mind, goods 2462) and lot 2121 (Memory: Isshin Ashina, goods 5212).",
+    "values": "bar nameId 905401; flag 9316; ItemLotParam 2120, 2121; events 11115920, 11115930, 11115941",
+    "how": "m11_01 events; common event 300",
+    "sources": [
+      {
+        "kind": "data",
+        "ref": "extracted/event/m11_01_00_00.emevd"
+      },
+      {
+        "kind": "data",
+        "ref": "extracted/event/common.emevd"
+      },
+      {
+        "kind": "data",
+        "ref": "extracted/json/params/ItemLotParam.json"
+      }
+    ],
+    "confidence": "data",
+    "ours": {
+      "has": "partial",
+      "where": "src/enemy/script.rs; extracted/enemies/boss_scripts.json (the fight's own events run in a flat arena, no story flow)"
+    },
+    "his": {
+      "has": "yes",
+      "where": "crates/sim/src/isshin.rs"
+    },
+    "needs": [
+      {
+        "id": "flow.40-shura-emma",
+        "why": "after Emma"
+      },
+      {
+        "id": "bosses.isshin-ashina",
+        "why": "the fight"
+      },
+      {
+        "id": "progression.attack-power-memories",
+        "why": "memory"
+      }
+    ],
+    "check": "After Emma the castle scene leads to the Isshin fight.",
+    "note": ""
+  },
+  {
+    "id": "flow.42-shura-ending",
+    "category": "flow",
+    "title": "Ending: Shura",
+    "summary": "With 9316 on, event 11110100 plays cutscene 11010070 and the credits follow. Ending flag 6833 and achievement 12; the award lot 54300000 has no row in ItemLotParam.",
+    "values": "cutscene 11010070; flags 6833, 23; achievement 12; lot 54300000 (missing row)",
+    "how": "m11_01 event 11110100 (needs 9316, Play Cutscene)",
+    "sources": [
+      {
+        "kind": "data",
+        "ref": "extracted/event/m11_01_00_00.emevd"
+      },
+      {
+        "kind": "data",
+        "ref": "extracted/json/params/ItemLotParam.json"
+      }
+    ],
+    "confidence": "data",
+    "ours": {
+      "has": "no",
+      "where": ""
+    },
+    "his": {
+      "has": "no",
+      "where": ""
+    },
+    "needs": [
+      {
+        "id": "flow.41-shura-isshin-ashina",
+        "why": "9316"
+      },
+      {
+        "id": "frontend.ending-shura",
+        "why": "the ending event"
+      },
+      {
+        "id": "frontend.credits-movie",
+        "why": "credits follow"
+      },
+      {
+        "id": "frontend.ending-sequence",
+        "why": "shared ending script"
+      }
+    ],
+    "check": "Beat Isshin Ashina; the cutscene runs and the credits start.",
+    "note": ""
+  },
+  {
+    "id": "flow.43-wedding-cave-door",
+    "category": "flow",
+    "title": "Kuro's road: the Wedding Cave Door",
+    "summary": "On the non-Shura path, the Wedding Cave Door idol (1501953) opens to a palanquin ride to Fountainhead. Event 11505695 (m15) plays cutscene 15000000 and warps to m25 point 2502822, gated by flag 8415 set in a talk.",
+    "values": "idol 1501953; flag 8415; cutscene 15000000; warp m25 point 2502822; event 11505695",
+    "how": "m15 event 11505695",
+    "sources": [
+      {
+        "kind": "data",
+        "ref": "extracted/event/m15_00_00_00.emevd"
+      },
+      {
+        "kind": "data",
+        "ref": "extracted/event/m25_00_00_00.emevd"
+      }
+    ],
+    "confidence": "data",
+    "ours": {
+      "has": "no",
+      "where": ""
+    },
+    "his": {
+      "has": "no",
+      "where": ""
+    },
+    "needs": [
+      {
+        "id": "flow.39-iron-code-choice",
+        "why": "the other branch"
+      },
+      {
+        "id": "map.idol-travel",
+        "why": "warp points"
+      },
+      {
+        "id": "cutscenes.warp-fade",
+        "why": "warp scene"
+      }
+    ],
+    "check": "After the choice, return to the Wedding Cave Door and ride the palanquin.",
+    "note": ""
+  },
+  {
+    "id": "flow.44-fountainhead-arrival",
+    "category": "flow",
+    "title": "Fountainhead Palace",
+    "summary": "Fountainhead (m25) opens with the idols at 2500 to 2508. It is the final region before the Dragon and holds the Water of the Palace (goods 9070, lot 2500650).",
+    "values": "idol rows 2500-2508; Water of the Palace goods 9070 lot 2500650",
+    "how": "BonfireWarpParam rows; ItemLotParam",
+    "sources": [
+      {
+        "kind": "data",
+        "ref": "extracted/event/m25_00_00_00.emevd"
+      },
+      {
+        "kind": "data",
+        "ref": "extracted/json/params/BonfireWarpParam.json"
+      },
+      {
+        "kind": "data",
+        "ref": "extracted/json/params/ItemLotParam.json"
+      },
+      {
+        "kind": "web",
+        "ref": "https://sekiroshadowsdietwice.wiki.fextralife.com/Fountainhead+Palace"
+      }
+    ],
+    "confidence": "data",
+    "ours": {
+      "has": "partial",
+      "where": "src/idol.rs (BonfireWarpParam idol list and Travel menu; no unlock flags)"
+    },
+    "his": {
+      "has": "no",
+      "where": ""
+    },
+    "needs": [
+      {
+        "id": "flow.43-wedding-cave-door",
+        "why": "the ride"
+      },
+      {
+        "id": "map.idol-registration",
+        "why": "idol rows"
+      }
+    ],
+    "check": "Arrive and see the Fountainhead idol list.",
+    "note": ""
+  },
+  {
+    "id": "flow.45-fountainhead-route",
+    "category": "flow",
+    "title": "Fountainhead: the route to the monk",
+    "summary": "The palace is a long climb with water areas and many elites. A Great White Whisker (goods 9071, lot 50500000, event 11705535) is a Sunken Valley item that feeds a side quest.",
+    "values": "goods 9071; lot 50500000; event 11705535",
+    "how": "m17 event 11705535",
+    "sources": [
+      {
+        "kind": "data",
+        "ref": "extracted/event/m25_00_00_00.emevd"
+      },
+      {
+        "kind": "data",
+        "ref": "extracted/event/m17_00_00_00.emevd"
+      },
+      {
+        "kind": "data",
+        "ref": "extracted/json/params/ItemLotParam.json"
+      }
+    ],
+    "confidence": "community",
+    "ours": {
+      "has": "no",
+      "where": ""
+    },
+    "his": {
+      "has": "no",
+      "where": ""
+    },
+    "needs": [
+      {
+        "id": "flow.44-fountainhead-arrival",
+        "why": "area"
+      },
+      {
+        "id": "map.water-areas",
+        "why": "water"
+      }
+    ],
+    "check": "Climb with the idols and note elite fights.",
+    "note": ""
+  },
+  {
+    "id": "flow.46-true-corrupted-monk",
+    "category": "flow",
+    "title": "True Corrupted Monk",
+    "summary": "The Fountainhead monk (bar 2500850, events 12505960/50) sets 9309 and pays lot 2060 (Dragon's Tally Board, goods 9060) and lot 2061 (Memory: True Monk, goods 5208).",
+    "values": "entity bar 2500850; flag 9309; ItemLotParam 2060 -> goods 9060; events 12505960, 12505950",
+    "how": "m25 events; common event 300",
+    "sources": [
+      {
+        "kind": "data",
+        "ref": "extracted/event/m25_00_00_00.emevd"
+      },
+      {
+        "kind": "data",
+        "ref": "extracted/event/common.emevd"
+      },
+      {
+        "kind": "data",
+        "ref": "extracted/json/params/ItemLotParam.json"
+      },
+      {
+        "kind": "recording",
+        "ref": "docs/kb/clips.md (All 57 Bosses run, https://www.youtube.com/watch?v=oS_gJf8ur8M)"
+      }
+    ],
+    "confidence": "data",
+    "ours": {
+      "has": "partial",
+      "where": "src/enemy/script.rs; extracted/enemies/boss_scripts.json (the fight's own events run in a flat arena, no story flow)"
+    },
+    "his": {
+      "has": "yes",
+      "where": "crates/sim/src/monk_phantoms.rs"
+    },
+    "needs": [
+      {
+        "id": "bosses.corrupted-monk",
+        "why": "same character, tougher fight"
+      },
+      {
+        "id": "bosses.fog-walls",
+        "why": "arena fog"
+      }
+    ],
+    "check": "Beat the monk; the item list adds the Tally Board.",
+    "note": ""
+  },
+  {
+    "id": "flow.46b-palace-mini-bosses",
+    "category": "flow",
+    "title": "Fountainhead mini-bosses (optional)",
+    "summary": "Okami Leader Shizu (entity 2500406) and a few other mini-bosses guard the climb. They are not gates.",
+    "values": "entity 2500406; mini-boss bar",
+    "how": "m25 events",
+    "sources": [
+      {
+        "kind": "data",
+        "ref": "extracted/event/m25_00_00_00.emevd"
+      },
+      {
+        "kind": "recording",
+        "ref": "docs/kb/clips.md (All 57 Bosses run, https://www.youtube.com/watch?v=oS_gJf8ur8M)"
+      }
+    ],
+    "confidence": "recorded",
+    "ours": {
+      "has": "partial",
+      "where": "src/enemy/script.rs; extracted/enemies/boss_scripts.json (the fight's own events run in a flat arena, no story flow)"
+    },
+    "his": {
+      "has": "no",
+      "where": ""
+    },
+    "needs": [
+      {
+        "id": "flow.44-fountainhead-arrival",
+        "why": "area"
+      },
+      {
+        "id": "bosses.mini-vs-boss",
+        "why": "mini bar"
+      }
+    ],
+    "check": "Look for mini-boss bars in the palace.",
+    "note": ""
+  },
+  {
+    "id": "flow.48-old-dragons-divine-dragon",
+    "category": "flow",
+    "title": "Old Dragons of the Tree and the Divine Dragon",
+    "summary": "Event 12505801 runs the Old Dragons (bar 905300, cutscene 25000000 warp 2502821). Then event 12505885 plays cutscene 25000020 (warp 2502824) and 12505880 starts the Divine Dragon (bar 905200); defeat sets 9310 and 9410, warps to m11_01 point 1110799 and sets respawn 1112953.",
+    "values": "bars 905300, 905200; flags 9310, 9410, 9318; cutscenes 25000000, 25000020; warp 1110799 respawn 1112953; lots 2070 (goods 9000)",
+    "how": "m25 events 12505801, 12505885, 12505880",
+    "sources": [
+      {
+        "kind": "data",
+        "ref": "extracted/event/m25_00_00_00.emevd"
+      },
+      {
+        "kind": "data",
+        "ref": "extracted/event/common.emevd"
+      },
+      {
+        "kind": "data",
+        "ref": "extracted/json/params/ItemLotParam.json"
+      },
+      {
+        "kind": "recording",
+        "ref": "docs/kb/clips.md (All 57 Bosses run, https://www.youtube.com/watch?v=oS_gJf8ur8M)"
+      }
+    ],
+    "confidence": "data",
+    "ours": {
+      "has": "partial",
+      "where": "src/enemy/script.rs; extracted/enemies/boss_scripts.json (the fight's own events run in a flat arena, no story flow)"
+    },
+    "his": {
+      "has": "yes",
+      "where": "crates/sim/src/old_dragons.rs; crates/sim/src/dragon_finish.rs"
+    },
+    "needs": [
+      {
+        "id": "bosses.dragons",
+        "why": "the fights"
+      },
+      {
+        "id": "bosses.fog-walls",
+        "why": "arena fog"
+      }
+    ],
+    "check": "Climb the tree; the sequence ends with the dragon's lightning and the warp to the castle.",
+    "note": ""
+  },
+  {
+    "id": "flow.49-dragon-tears-gate",
+    "category": "flow",
+    "title": "Gate: Divine Dragon's Tears",
+    "summary": "Divine Dragon's Tears (goods 9000, lot 2070) are paid at the Dragon's death. Offering them is the base of three endings.",
+    "values": "goods 9000; ItemLotParam 2070",
+    "how": "common event 300; ItemLotParam",
+    "sources": [
+      {
+        "kind": "data",
+        "ref": "extracted/event/common.emevd"
+      },
+      {
+        "kind": "data",
+        "ref": "extracted/json/params/ItemLotParam.json"
+      }
+    ],
+    "confidence": "data",
+    "ours": {
+      "has": "no",
+      "where": ""
+    },
+    "his": {
+      "has": "no",
+      "where": ""
+    },
+    "needs": [
+      {
+        "id": "flow.48-old-dragons-divine-dragon",
+        "why": "the drop"
+      }
+    ],
+    "check": "Check the key item list after the Dragon.",
+    "note": ""
+  },
+  {
+    "id": "flow.50-post-dragon-castle-night",
+    "category": "flow",
+    "title": "Back at the castle (stage 8302)",
+    "summary": "Common event 911 sets 8302 when 9310 is on. The castle reloads at night, six castle idols and the Outskirts idols are disabled, and the Hirata memories change. Kuro's talk opens the Reservoir path.",
+    "values": "flag 8302; castle idols 1111950/51/52/54/56/57; respawn 1112953; event 911",
+    "how": "common.emevd event 911",
+    "sources": [
+      {
+        "kind": "data",
+        "ref": "extracted/event/common.emevd"
+      },
+      {
+        "kind": "data",
+        "ref": "extracted/event/m11_01_00_00.emevd"
+      }
+    ],
+    "confidence": "data",
+    "ours": {
+      "has": "no",
+      "where": ""
+    },
+    "his": {
+      "has": "no",
+      "where": ""
+    },
+    "needs": [
+      {
+        "id": "flow.48-old-dragons-divine-dragon",
+        "why": "9310"
+      },
+      {
+        "id": "npcs.story-flags-8301",
+        "why": "world stage"
+      },
+      {
+        "id": "visuals.story-state-lighting",
+        "why": "lighting"
+      }
+    ],
+    "check": "Reload the castle after the Dragon and note the time of day.",
+    "note": ""
+  },
+  {
+    "id": "flow.50b-demon-of-hatred",
+    "category": "flow",
+    "title": "Demon of Hatred (optional, stage 8302)",
+    "summary": "Events 11105900/11105910 run the Demon of Hatred (bar 907021) only when 8302 is on, in the Outskirts Flames of Hatred area. Defeat sets 9313; lot 2040 pays two Lapis Lazuli (goods 6400) and lot 2041 the memory (goods 5210).",
+    "values": "bar nameId 907021; flag 9313; ItemLotParam 2040; events 11105900, 11105910",
+    "how": "m11_00 events",
+    "sources": [
+      {
+        "kind": "data",
+        "ref": "extracted/event/m11_00_00_00.emevd"
+      },
+      {
+        "kind": "data",
+        "ref": "extracted/json/params/ItemLotParam.json"
+      },
+      {
+        "kind": "recording",
+        "ref": "docs/kb/clips.md (All 57 Bosses run, https://www.youtube.com/watch?v=oS_gJf8ur8M)"
+      }
+    ],
+    "confidence": "data",
+    "ours": {
+      "has": "partial",
+      "where": "src/enemy/script.rs; extracted/enemies/boss_scripts.json (the fight's own events run in a flat arena, no story flow)"
+    },
+    "his": {
+      "has": "no",
+      "where": ""
+    },
+    "needs": [
+      {
+        "id": "bosses.demon-of-hatred",
+        "why": "the fight"
+      },
+      {
+        "id": "flow.50-post-dragon-castle-night",
+        "why": "8302"
+      }
+    ],
+    "check": "After the Dragon, the Flames of Hatred idol shows and the Demon appears.",
+    "note": ""
+  },
+  {
+    "id": "flow.50c-enemy-swaps",
+    "category": "flow",
+    "title": "Enemy swaps by world stage",
+    "summary": "Stages 8301, 8302, 8303 and 8304 swap enemy rosters: the castle becomes invaded, the Outskirts and Hirata go to the night versions, and the Burrow gets the Headless Ape.",
+    "values": "stage flags 8301-8304",
+    "how": "common events 910-912 and per-map spawn events",
+    "sources": [
+      {
+        "kind": "data",
+        "ref": "extracted/event/common.emevd"
+      }
+    ],
+    "confidence": "data",
+    "ours": {
+      "has": "no",
+      "where": ""
+    },
+    "his": {
+      "has": "no",
+      "where": ""
+    },
+    "needs": [
+      {
+        "id": "npcs.story-flags-8301",
+        "why": "stage flags"
+      }
+    ],
+    "check": "Visit a region before and after a stage flag.",
+    "note": ""
+  },
+  {
+    "id": "flow.52-secret-passage-key",
+    "category": "flow",
+    "title": "Gate: Secret Passage Key",
+    "summary": "The Secret Passage Key (goods 9404, lot 62306) opens the passage to the Reservoir finale.",
+    "values": "goods 9404; lot 62306",
+    "how": "ItemLotParam row; NPC award",
+    "sources": [
+      {
+        "kind": "data",
+        "ref": "extracted/json/params/ItemLotParam.json"
+      },
+      {
+        "kind": "data",
+        "ref": "extracted/json/params/EquipParamGoods.json"
+      }
+    ],
+    "confidence": "data",
+    "ours": {
+      "has": "no",
+      "where": ""
+    },
+    "his": {
+      "has": "no",
+      "where": ""
+    },
+    "needs": [
+      {
+        "id": "flow.50-post-dragon-castle-night",
+        "why": "after the Dragon"
+      }
+    ],
+    "check": "Get the key from Kuro's room and open the castle's secret passage.",
+    "note": ""
+  },
+  {
+    "id": "flow.53-reservoir-return",
+    "category": "flow",
+    "title": "Return to the Reservoir",
+    "summary": "Through the Secret Passage the player enters the Ashina Reservoir (idols 1118 and 1119). It is now in its final stage.",
+    "values": "idol rows 1118, 1119; entities 1121951, 1121950",
+    "how": "BonfireWarpParam rows; m11_02 events",
+    "sources": [
+      {
+        "kind": "data",
+        "ref": "extracted/event/m11_02_00_00.emevd"
+      },
+      {
+        "kind": "data",
+        "ref": "extracted/json/params/BonfireWarpParam.json"
+      }
+    ],
+    "confidence": "data",
+    "ours": {
+      "has": "partial",
+      "where": "src/idol.rs (BonfireWarpParam idol list and Travel menu; no unlock flags)"
+    },
+    "his": {
+      "has": "no",
+      "where": ""
+    },
+    "needs": [
+      {
+        "id": "flow.52-secret-passage-key",
+        "why": "the key"
+      },
+      {
+        "id": "map.idol-registration",
+        "why": "idols"
+      }
+    ],
+    "check": "Walk through the passage and see the Near Secret Passage idol.",
+    "note": ""
+  },
+  {
+    "id": "flow.54-genichiro-way-of-tomoe",
+    "category": "flow",
+    "title": "Genichiro, Way of Tomoe (Reservoir)",
+    "summary": "Bar 907110, entity 1120830; event 11125830 uses cutscene 11020040 and event 11125840 cutscene 11020030. Defeat sets 9311.",
+    "values": "bar nameId 907110; entity 1120830; flag 9311; cutscenes 11020040, 11020030; events 11125830, 11125840",
+    "how": "m11_02 events",
+    "sources": [
+      {
+        "kind": "data",
+        "ref": "extracted/event/m11_02_00_00.emevd"
+      },
+      {
+        "kind": "recording",
+        "ref": "docs/kb/clips.md (All 57 Bosses run, https://www.youtube.com/watch?v=oS_gJf8ur8M)"
+      }
+    ],
+    "confidence": "data",
+    "ours": {
+      "has": "partial",
+      "where": "src/enemy/script.rs; extracted/enemies/boss_scripts.json (the fight's own events run in a flat arena, no story flow)"
+    },
+    "his": {
+      "has": "no",
+      "where": ""
+    },
+    "needs": [
+      {
+        "id": "bosses.genichiro-tomoe",
+        "why": "same fight type"
+      },
+      {
+        "id": "flow.53-reservoir-return",
+        "why": "area"
+      }
+    ],
+    "check": "Fight in the silvergrass field.",
+    "note": ""
+  },
+  {
+    "id": "flow.55-isshin-sword-saint",
+    "category": "flow",
+    "title": "Isshin, the Sword Saint",
+    "summary": "Entity 1120860, bar 905400, events 11125860/70. Defeat sets 9312 and flag 11125706, plays achievement 13, and pays lots 2130 (Dragon Flash, goods 2460) and 2131 (Memory: Saint Isshin, goods 5211).",
+    "values": "bar nameId 905400; flags 9312, 11125706; ItemLotParam 2130, 2131; achievement 13",
+    "how": "m11_02 events 11125860, 11125870; common event 300",
+    "sources": [
+      {
+        "kind": "data",
+        "ref": "extracted/event/m11_02_00_00.emevd"
+      },
+      {
+        "kind": "data",
+        "ref": "extracted/event/common.emevd"
+      },
+      {
+        "kind": "data",
+        "ref": "extracted/json/params/ItemLotParam.json"
+      },
+      {
+        "kind": "recording",
+        "ref": "docs/kb/clips.md (All 57 Bosses run, https://www.youtube.com/watch?v=oS_gJf8ur8M)"
+      }
+    ],
+    "confidence": "data",
+    "ours": {
+      "has": "partial",
+      "where": "src/enemy/script.rs; extracted/enemies/boss_scripts.json (the fight's own events run in a flat arena, no story flow)"
+    },
+    "his": {
+      "has": "yes",
+      "where": "crates/sim/src/isshin.rs"
+    },
+    "needs": [
+      {
+        "id": "bosses.isshin-sword-saint",
+        "why": "the fight"
+      },
+      {
+        "id": "flow.54-genichiro-way-of-tomoe",
+        "why": "before"
+      }
+    ],
+    "check": "Fight Isshin after Genichiro.",
+    "note": ""
+  },
+  {
+    "id": "flow.56-final-offering-prompt",
+    "category": "flow",
+    "title": "The final choice and offering",
+    "summary": "After 9312, talk flags 11125707, 11125708 and 11125709 pick the ending cutscene in event 11120110 of m11_02. What decides the branch is what the player offers.",
+    "values": "flags 11125706-09; event 11120110; ending flags 6830-6833",
+    "how": "m11_02 event 11120110",
+    "sources": [
+      {
+        "kind": "data",
+        "ref": "extracted/event/m11_02_00_00.emevd"
+      },
+      {
+        "kind": "web",
+        "ref": "https://www.gamespot.com/articles/sekiro-endings-guide-heres-how-to-get-them-all/1100-6465988/"
+      }
+    ],
+    "confidence": "data",
+    "ours": {
+      "has": "no",
+      "where": ""
+    },
+    "his": {
+      "has": "no",
+      "where": ""
+    },
+    "needs": [
+      {
+        "id": "flow.55-isshin-sword-saint",
+        "why": "9312"
+      },
+      {
+        "id": "dialogue.flags-in-esd",
+        "why": "talk flags"
+      }
+    ],
+    "check": "Beat Isshin and see the choice prompt.",
+    "note": ""
+  },
+  {
+    "id": "flow.57-ending-immortal-severance",
+    "category": "flow",
+    "title": "Ending: Immortal Severance",
+    "summary": "Dragon's Tears alone with the Immortal Severance text: cutscene 11020100, flag 22, ending flag 6832, achievement 11.",
+    "values": "cutscene 11020100; flag 22; flag 6832; achievement 11",
+    "how": "m11_02 event 11120110",
+    "sources": [
+      {
+        "kind": "data",
+        "ref": "extracted/event/m11_02_00_00.emevd"
+      },
+      {
+        "kind": "data",
+        "ref": "extracted/json/params/ItemLotParam.json"
+      }
+    ],
+    "confidence": "data",
+    "ours": {
+      "has": "no",
+      "where": ""
+    },
+    "his": {
+      "has": "no",
+      "where": ""
+    },
+    "needs": [
+      {
+        "id": "flow.56-final-offering-prompt",
+        "why": "the choice"
+      },
+      {
+        "id": "frontend.ending-reservoir",
+        "why": "the ending event"
+      },
+      {
+        "id": "frontend.credits-movie",
+        "why": "credits"
+      }
+    ],
+    "check": "Choose to sever; the carving cutscene plays.",
+    "note": ""
+  },
+  {
+    "id": "flow.58-ending-purification",
+    "category": "flow",
+    "title": "Ending: Purification",
+    "summary": "Dragon's Tears plus Aromatic Flower (Owl Father memory). Likely one of the two cutscene branches (11020110 flag 20 or 11020120/21 flag 21).",
+    "values": "goods 9000, 2503; flags 20 or 21; ending flags 6830 or 6831",
+    "how": "m11_02 event 11120110",
+    "sources": [
+      {
+        "kind": "data",
+        "ref": "extracted/event/m11_02_00_00.emevd"
+      },
+      {
+        "kind": "web",
+        "ref": "https://www.gamespot.com/articles/sekiro-endings-guide-heres-how-to-get-them-all/1100-6465988/"
+      }
+    ],
+    "confidence": "open-question",
+    "ours": {
+      "has": "no",
+      "where": ""
+    },
+    "his": {
+      "has": "no",
+      "where": ""
+    },
+    "needs": [
+      {
+        "id": "flow.56-final-offering-prompt",
+        "why": "the choice"
+      },
+      {
+        "id": "frontend.ending-reservoir",
+        "why": "the ending event"
+      },
+      {
+        "id": "frontend.credits-movie",
+        "why": "credits"
+      }
+    ],
+    "check": "Offer the Aromatic Flower and watch which scene plays.",
+    "note": "Which of flags 20 and 21 maps to Purification is not proven from data."
+  },
+  {
+    "id": "flow.59-ending-return",
+    "category": "flow",
+    "title": "Ending: Return",
+    "summary": "Needs Frozen Tears, Rice for Kuro and the Divine Child questline done before the Dragon dies. Cutscene is one of 11020110 or 11020120/21.",
+    "values": "goods 9091, 9090; flags 20 or 21; ending flags 6830 or 6831",
+    "how": "m11_02 event 11120110",
+    "sources": [
+      {
+        "kind": "data",
+        "ref": "extracted/event/m11_02_00_00.emevd"
+      },
+      {
+        "kind": "web",
+        "ref": "https://www.gamespot.com/articles/sekiro-endings-guide-heres-how-to-get-them-all/1100-6465988/"
+      }
+    ],
+    "confidence": "open-question",
+    "ours": {
+      "has": "no",
+      "where": ""
+    },
+    "his": {
+      "has": "no",
+      "where": ""
+    },
+    "needs": [
+      {
+        "id": "flow.25b-return-quest-items",
+        "why": "items"
+      },
+      {
+        "id": "flow.56-final-offering-prompt",
+        "why": "the choice"
+      },
+      {
+        "id": "frontend.ending-reservoir",
+        "why": "the ending event"
+      },
+      {
+        "id": "frontend.credits-movie",
+        "why": "credits"
+      }
+    ],
+    "check": "Offer Frozen Tears.",
+    "note": "Branch to cutscene mapping open."
+  },
+  {
+    "id": "flow.60-ng-plus-start",
+    "category": "flow",
+    "title": "After the credits: New Game Plus",
+    "summary": "Clear flag 6901 triggers common event 50 to reset key items and quest flags. Events 295/297/298 award Another's Memory (goods 9810 Ashina, 9800 Shura, 9820 Tengu) on NG+.",
+    "values": "flag 6901; goods 9800/9810/9820; lots 5730/5740/5750; events 50, 295, 297, 298",
+    "how": "common.emevd events 50, 295, 297, 298",
+    "sources": [
+      {
+        "kind": "data",
+        "ref": "extracted/event/common.emevd"
+      },
+      {
+        "kind": "data",
+        "ref": "extracted/json/params/ItemLotParam.json"
+      }
+    ],
+    "confidence": "data",
+    "ours": {
+      "has": "no",
+      "where": ""
+    },
+    "his": {
+      "has": "no",
+      "where": ""
+    },
+    "needs": [
+      {
+        "id": "progression.new-game-counter",
+        "why": "counter"
+      },
+      {
+        "id": "progression.ng-plus-clear-count-correct",
+        "why": "clear"
+      },
+      {
+        "id": "frontend.after-credits-ng",
+        "why": "the post-credits offer"
+      },
+      {
+        "id": "frontend.ng-cycle-reset",
+        "why": "the reset"
+      },
+      {
+        "id": "frontend.ending-rewards",
+        "why": "ending rewards"
+      }
+    ],
+    "check": "Clear the game, begin NG+.",
+    "note": ""
+  },
+  {
+    "id": "flow.61-required-bosses",
+    "category": "flow",
+    "title": "Required bosses by ending",
+    "summary": "Every ending needs Gyoubu, Lady Butterfly, Genichiro (castle) and the Great Shinobi Owl on the main road. Shura then needs Emma and Isshin Ashina. The other three endings need the True Corrupted Monk, the Divine Dragon, the Genichiro duel in the Reservoir and Isshin the Sword Saint. The Mortal Blade, Lotus and Shelter Stone gates pull in the Folding Screen Monkeys and Guardian Ape on the way.",
+    "values": "Common: 9301 Gyoubu, 9302 Butterfly, 9303 Genichiro, 9308 Owl. Shura: 9315 Emma, 9316 Isshin Ashina. Others: 9309 True Monk, 9310 Divine Dragon, 9311 Genichiro Tomoe, 9312 Isshin Sword Saint",
+    "how": "boss defeat flags set by per-map events and read in common event 300 (rewards); ending events 11110100 (m11_01) and 11120110 (m11_02)",
+    "sources": [
+      {
+        "kind": "data",
+        "ref": "extracted/event/common.emevd"
+      },
+      {
+        "kind": "data",
+        "ref": "extracted/event/m11_01_00_00.emevd"
+      },
+      {
+        "kind": "data",
+        "ref": "extracted/event/m11_02_00_00.emevd"
+      },
+      {
+        "kind": "data",
+        "ref": "tools/boss_events.py"
+      }
+    ],
+    "confidence": "data",
+    "ours": {
+      "has": "partial",
+      "where": "src/enemy/script.rs; extracted/enemies/boss_scripts.json (the fight's own events run in a flat arena, no story flow)"
+    },
+    "his": {
+      "has": "partial",
+      "where": "crates/sim/src/ (one file per boss; no required/optional flow)"
+    },
+    "needs": [
+      {
+        "id": "flow.11-gyoubu-oniwa",
+        "why": "required"
+      },
+      {
+        "id": "flow.14-lady-butterfly",
+        "why": "required"
+      },
+      {
+        "id": "flow.19-genichiro-tomoe-handover",
+        "why": "required"
+      },
+      {
+        "id": "flow.38-great-shinobi-owl",
+        "why": "required"
+      },
+      {
+        "id": "flow.40-shura-emma",
+        "why": "Shura only"
+      },
+      {
+        "id": "flow.41-shura-isshin-ashina",
+        "why": "Shura only"
+      },
+      {
+        "id": "flow.46-true-corrupted-monk",
+        "why": "other endings"
+      },
+      {
+        "id": "flow.48-old-dragons-divine-dragon",
+        "why": "other endings"
+      },
+      {
+        "id": "flow.54-genichiro-way-of-tomoe",
+        "why": "other endings"
+      },
+      {
+        "id": "flow.55-isshin-sword-saint",
+        "why": "other endings"
+      },
+      {
+        "id": "bosses.defeat-handler",
+        "why": "defeat flags"
+      }
+    ],
+    "check": "Tick each flag in the list while playing.",
+    "note": "Whether the Guardian Ape, Monkeys and Corrupted Monk are 'required' depends on the gate they guard; the data only forces the three castle-invasion items (step 36)."
+  },
+  {
+    "id": "flow.62-optional-bosses",
+    "category": "flow",
+    "title": "Optional bosses",
+    "summary": "Optional: the Headless Ape (9307), the Demon of Hatred (9313), the Owl Father memory fight (9317), the Corrupted Monk if the Shelter Stone can be reached without it, and all mini-bosses. The Inner bosses (Inner Genichiro, Inner Father, Inner Isshin) belong to New Game Plus.",
+    "values": "flags 9307, 9313, 9317; NG+ lots 5770 (goods 5220), 5780 (goods 5221), 5790 (goods 5222)",
+    "how": "per-map boss events; ItemLotParam rows 5770, 5780, 5790",
+    "sources": [
+      {
+        "kind": "data",
+        "ref": "extracted/event/common.emevd"
+      },
+      {
+        "kind": "data",
+        "ref": "extracted/json/params/ItemLotParam.json"
+      },
+      {
+        "kind": "recording",
+        "ref": "docs/kb/clips.md (All 57 Bosses run, https://www.youtube.com/watch?v=oS_gJf8ur8M)"
+      }
+    ],
+    "confidence": "data",
+    "ours": {
+      "has": "partial",
+      "where": "src/enemy/script.rs; extracted/enemies/boss_scripts.json (the fight's own events run in a flat arena, no story flow)"
+    },
+    "his": {
+      "has": "no",
+      "where": ""
+    },
+    "needs": [
+      {
+        "id": "flow.30b-headless-ape",
+        "why": "optional"
+      },
+      {
+        "id": "flow.50b-demon-of-hatred",
+        "why": "optional"
+      },
+      {
+        "id": "flow.15b-father-bell-charm-owl-memory",
+        "why": "optional"
+      },
+      {
+        "id": "bosses.mini-vs-boss",
+        "why": "mini-boss rule"
+      },
+      {
+        "id": "flow.63-prayer-beads-and-memories",
+        "why": "rewards"
+      }
+    ],
+    "check": "Skip them and finish an ending; none of their flags is read by the ending events.",
+    "note": ""
+  },
+  {
+    "id": "flow.63-prayer-beads-and-memories",
+    "category": "flow",
+    "title": "Prayer Beads and boss memories",
+    "summary": "Each boss pays a named Memory (goods 5200-5213) through lot x1 and a generic Memory (goods 5400) at x2; four Memories make one attack power point. Prayer Beads (goods 4000) come from lots such as 2015 and 2016 (Headless Ape) and from mini-bosses; four beads make a vitality necklace.",
+    "values": "Memories: 5200 Gyoubu (lot 2001), 5201 Butterfly (2031), 5202 Genichiro (2081), 5203 Monkeys (2021), 5204 Guardian Ape (2011), 5205 Corrupted Monk (2051), 5206 Owl (2091), 5207 Owl Father (2101), 5208 True Monk (2061), 5209 Divine Dragon (2071), 5210 Demon of Hatred (2041), 5211 Isshin Sword Saint (2131), 5212 Isshin Ashina (2121), 5213 Headless Ape (2017); Prayer Bead 4000; Gourd Seed 4400",
+    "how": "common.emevd event 300 (boss reward lots); ItemLotParam rows",
+    "sources": [
+      {
+        "kind": "data",
+        "ref": "extracted/event/common.emevd"
+      },
+      {
+        "kind": "data",
+        "ref": "extracted/json/params/ItemLotParam.json"
+      },
+      {
+        "kind": "data",
+        "ref": "extracted/json/params/EquipParamGoods.json"
+      }
+    ],
+    "confidence": "data",
+    "ours": {
+      "has": "no",
+      "where": ""
+    },
+    "his": {
+      "has": "partial",
+      "where": "crates/sim/src/progression.rs (beads and memory counters only; no area flow)"
+    },
+    "needs": [
+      {
+        "id": "progression.prayer-beads-necklaces",
+        "why": "bead rule"
+      },
+      {
+        "id": "progression.attack-power-memories",
+        "why": "memory rule"
+      },
+      {
+        "id": "items.healing-gourd",
+        "why": "gourd seeds"
+      },
+      {
+        "id": "flow.61-required-bosses",
+        "why": "which bosses"
+      },
+      {
+        "id": "flow.62-optional-bosses",
+        "why": "optional bosses"
+      }
+    ],
+    "check": "Count Memories and Beads on the status screen after each boss.",
+    "note": ""
+  },
+  {
+    "id": "flow.64-world-stage-flags",
+    "category": "flow",
+    "title": "World-state change table",
+    "summary": "The story is held in a few stage flags: 8306 prologue, 8301 castle invaded, 8305 castle after Genichiro, 8302 Divine Dragon down, 8303 Headless appears, 8304 second Hirata memory, 8307 Burrow idol off. Common events 910, 911, 912 and 920 set them from the items and boss flags.",
+    "values": "8301 (event 910: goods 2400+2500+2501), 8302 (event 911: 9310), 8303 (event 912: 9304 on, 9314 off), 8304 (event 11105631 on talk flag 71100599), 8305 (m11_01 event 11115800), 8306 (event 50, cleared by 11100100), 8307 (event 920)",
+    "how": "common.emevd events 50, 910-912, 920; m11_00 events 11100100, 11105631",
+    "sources": [
+      {
+        "kind": "data",
+        "ref": "extracted/event/common.emevd"
+      },
+      {
+        "kind": "data",
+        "ref": "extracted/event/m11_00_00_00.emevd"
+      }
+    ],
+    "confidence": "data",
+    "ours": {
+      "has": "no",
+      "where": ""
+    },
+    "his": {
+      "has": "no",
+      "where": ""
+    },
+    "needs": [
+      {
+        "id": "npcs.story-flags-8301",
+        "why": "flag explanation"
+      },
+      {
+        "id": "progression.event-flags",
+        "why": "flag system"
+      },
+      {
+        "id": "flow.36-castle-invasion-trigger",
+        "why": "8301"
+      },
+      {
+        "id": "flow.50-post-dragon-castle-night",
+        "why": "8302"
+      },
+      {
+        "id": "flow.30b-headless-ape",
+        "why": "8303"
+      },
+      {
+        "id": "flow.15-hirata-burning-return",
+        "why": "8304 return"
+      }
+    ],
+    "check": "Look the flag up in the list while loading each story step.",
+    "note": ""
+  },
+  {
+    "id": "flow.65-key-item-gates",
+    "category": "flow",
+    "title": "Key items that gate progress",
+    "summary": "Gate items and where each is paid: Gun Fort Shrine Key (9405, lot 1110860), Mortal Blade (2400, lot 3020 and 62200), Lotus of the Palace (2500, lot 1700000), Shelter Stone (2501, lot 1500050 / 3030), Secret Passage Key (9404, lot 62306), Hidden Temple Key (9403, lot 61200), Gatehouse Key (9402, lot 10101400), Dragon's Tears (9000, lot 2070), Aromatic Flower (2503, lot 2100), Frozen Tears (9091, lot 62212), Rice for Kuro (9090, lot 62210), Water of the Palace (9070, lot 2500650).",
+    "values": "goods and lots as listed; common event 910 reads 2400, 2500, 2501",
+    "how": "EquipParamGoods; ItemLotParam; common event 910",
+    "sources": [
+      {
+        "kind": "data",
+        "ref": "extracted/json/params/EquipParamGoods.json"
+      },
+      {
+        "kind": "data",
+        "ref": "extracted/json/params/ItemLotParam.json"
+      },
+      {
+        "kind": "data",
+        "ref": "extracted/event/common.emevd"
+      }
+    ],
+    "confidence": "data",
+    "ours": {
+      "has": "no",
+      "where": ""
+    },
+    "his": {
+      "has": "no",
+      "where": ""
+    },
+    "needs": [
+      {
+        "id": "flow.21-gun-fort-shrine-key",
+        "why": "key"
+      },
+      {
+        "id": "flow.26-mortal-blade",
+        "why": "key"
+      },
+      {
+        "id": "flow.29-lotus-gate",
+        "why": "key"
+      },
+      {
+        "id": "flow.34-shelter-stone-gate",
+        "why": "key"
+      },
+      {
+        "id": "flow.52-secret-passage-key",
+        "why": "key"
+      },
+      {
+        "id": "flow.49-dragon-tears-gate",
+        "why": "key"
+      },
+      {
+        "id": "flow.12-young-lords-bell-charm",
+        "why": "bell charm"
+      }
+    ],
+    "check": "Search the goods name in the key item screen.",
+    "note": ""
+  },
+  {
+    "id": "flow.66-endings-table",
+    "category": "flow",
+    "title": "The four endings in one table",
+    "summary": "Shura: 9316 then cutscene 11010070 (flag 6833, achievement 12). Immortal Severance: Tears alone, cutscene 11020100 (6832, ach 11). Purification: Tears plus Aromatic Flower. Return: Tears plus Frozen Tears and the Child questline. The latter two use cutscenes 11020110 or 11020120 and 11020121 (6830 or 6831, ach 9 or 10).",
+    "values": "flags 6830-6833; achievements 9-12; offerings: goods 9000, 2503, 9091; cutscenes 11010070, 11020100, 11020110, 11020120, 11020121",
+    "how": "m11_01 event 11110100; m11_02 event 11120110",
+    "sources": [
+      {
+        "kind": "data",
+        "ref": "extracted/event/m11_01_00_00.emevd"
+      },
+      {
+        "kind": "data",
+        "ref": "extracted/event/m11_02_00_00.emevd"
+      },
+      {
+        "kind": "web",
+        "ref": "https://www.gamespot.com/articles/sekiro-endings-guide-heres-how-to-get-them-all/1100-6465988/"
+      }
+    ],
+    "confidence": "data",
+    "ours": {
+      "has": "no",
+      "where": ""
+    },
+    "his": {
+      "has": "no",
+      "where": ""
+    },
+    "needs": [
+      {
+        "id": "flow.42-shura-ending",
+        "why": "Shura"
+      },
+      {
+        "id": "flow.57-ending-immortal-severance",
+        "why": "Severance"
+      },
+      {
+        "id": "flow.58-ending-purification",
+        "why": "Purification"
+      },
+      {
+        "id": "flow.59-ending-return",
+        "why": "Return"
+      },
+      {
+        "id": "frontend.ending-shura",
+        "why": "Shura event"
+      },
+      {
+        "id": "frontend.ending-reservoir",
+        "why": "other endings"
+      },
+      {
+        "id": "frontend.credits-movie",
+        "why": "credits"
+      }
+    ],
+    "check": "Match the cutscene id you see against the table.",
+    "note": "Which of 6830 and 6831 is Purification is not proven from the data (open)."
+  },
+  {
+    "id": "flow.67-free-region-order",
+    "category": "flow",
+    "title": "The four regions can be done in a free order",
+    "summary": "Senpou, Sunken Valley, Ashina Depths and Mibu are not forced into order by flags. Each gives one castle item or key; the data only requires all three items at once for the invasion (8301). The recorded run does them in one order and many players use others.",
+    "values": "gate items 2400, 2500, 2501; no region flag read by the others",
+    "how": "common event 910; region events",
+    "sources": [
+      {
+        "kind": "data",
+        "ref": "extracted/event/common.emevd"
+      },
+      {
+        "kind": "recording",
+        "ref": "docs/kb/clips.md (All 57 Bosses run, https://www.youtube.com/watch?v=oS_gJf8ur8M)"
+      },
+      {
+        "kind": "web",
+        "ref": "https://sekiroshadowsdietwice.wiki.fextralife.com/Walkthrough"
+      }
+    ],
+    "confidence": "recorded",
+    "ours": {
+      "has": "no",
+      "where": ""
+    },
+    "his": {
+      "has": "no",
+      "where": ""
+    },
+    "needs": [
+      {
+        "id": "flow.36-castle-invasion-trigger",
+        "why": "all items together"
+      },
+      {
+        "id": "flow.65-key-item-gates",
+        "why": "item list"
+      }
+    ],
+    "check": "Try a different order in a test save and watch event 910.",
+    "note": ""
+  },
+  {
+    "id": "flow.68-inner-bosses-ng-plus",
+    "category": "flow",
+    "title": "Inner bosses in New Game Plus",
+    "summary": "The Inner Genichiro, Inner Father and Inner Isshin fights replace the earlier versions in New Game Plus. Their rewards are lots 5770, 5780 and 5790 (Memories goods 5220-5222).",
+    "values": "ItemLotParam 5770, 5780, 5790 and generic 5771/5781/5791",
+    "how": "ItemLotParam; boss events with NG+ checks",
+    "sources": [
+      {
+        "kind": "data",
+        "ref": "extracted/json/params/ItemLotParam.json"
+      },
+      {
+        "kind": "recording",
+        "ref": "docs/kb/clips.md (All 57 Bosses run, https://www.youtube.com/watch?v=oS_gJf8ur8M)"
+      }
+    ],
+    "confidence": "data",
+    "ours": {
+      "has": "no",
+      "where": ""
+    },
+    "his": {
+      "has": "no",
+      "where": ""
+    },
+    "needs": [
+      {
+        "id": "flow.60-ng-plus-start",
+        "why": "NG+"
+      },
+      {
+        "id": "progression.new-game-counter",
+        "why": "NG counter"
+      }
+    ],
+    "check": "Start NG+ and fight one inner boss.",
+    "note": ""
+  },
+  {
+    "id": "flow.69-hub-visit-order",
+    "category": "flow",
+    "title": "When the player can return to the temple hub",
+    "summary": "The idol at the temple is always usable; stage 8302 turns off the Outskirts idols, and the Sculptor moves with 8306 and the later story. The hub's sky follows the clock.",
+    "values": "idol flag 11100000; stage flags 8306, 8302",
+    "how": "BonfireWarpParam; common events 50, 911",
+    "sources": [
+      {
+        "kind": "data",
+        "ref": "extracted/event/common.emevd"
+      },
+      {
+        "kind": "data",
+        "ref": "extracted/json/params/BonfireWarpParam.json"
+      }
+    ],
+    "confidence": "data",
+    "ours": {
+      "has": "partial",
+      "where": "src/idol.rs (BonfireWarpParam idol list and Travel menu; no unlock flags)"
+    },
+    "his": {
+      "has": "no",
+      "where": ""
+    },
+    "needs": [
+      {
+        "id": "flow.09-hub-story-clock",
+        "why": "sky"
+      },
+      {
+        "id": "npcs.sculptor",
+        "why": "Sculptor placement"
+      },
+      {
+        "id": "map.idol-travel",
+        "why": "Travel"
+      }
+    ],
+    "check": "Visit the temple after each stage flag.",
+    "note": ""
+  }
+]

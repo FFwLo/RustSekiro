@@ -158,6 +158,9 @@ pub struct Actor {
     /// (`run_sp_effect_chains`): (SpEffect id, seconds left).
     pub tae_prev: Vec<i64>,
     pub sp_chained: Vec<(i64, f32)>,
+    /// The team a map script set (EMEVD 2004[2] Set Character Team Type), over NpcParam teamType
+    /// (combat::team_of).
+    pub team: Option<i64>,
     /// Hit stop (`HitStop`, started by combat.rs start_hit_stop): scales this actor's clock.
     pub hit_stop: HitStop,
     /// This frame's step of the character's own clock (`advance`: the hit-stop-scaled dt, 0 in the
@@ -343,6 +346,7 @@ impl Actor {
             regen_carry: 0.0,
             tae_prev: Vec::new(),
             sp_chained: Vec::new(),
+            team: None,
             hit_stop: HitStop::default(),
             clock_dt: None,
             no_posture: false,
@@ -944,6 +948,26 @@ pub(crate) fn run_sp_effect_chains(data: &crate::data::CharData, a: &mut Actor, 
     a.tae_prev = now;
 }
 
+/// StaminaControlParam staminaMinRatio / staminaMaxRatio_forType<T> while TAE 960 sets type T
+/// (exe bd4e20, ported after sekiro-rs posture.rs ControlRange): the remaining posture is held
+/// between the two ratios of the max, in whole points. An enemy's collapse a000_008300 holds it
+/// empty (type 5: 0 / 0) for the deathblow window, then sets 30 % left (type 6: 30 / 30) as it
+/// rises; type 7 (100 / 100) refills it in the throw and deathblow anims; Wolf's row 0 refills
+/// it in his break anims (type 5: 100 / 100). A range that would empty a meter not already broken
+/// is left alone: the exe reports a break only on a hit (b6e6a0), ours on an empty meter.
+pub fn hold_posture_range(a: &mut Actor, ty: i64) {
+    let row = crate::items::param("StaminaControlParam", a.stamina_ctrl_row);
+    let ratio = |k: &str| row[format!("stamina{k}Ratio_forType{ty:03}")].as_i64();
+    let (Some(hi), Some(lo)) = (ratio("Max"), ratio("Min")) else { return };
+    let max = a.posture_max as i64;
+    let (hi, lo) = ((hi * max / 100) as f32, (lo * max / 100) as f32);
+    let remaining = a.posture_max - a.posture;
+    let held = remaining.clamp(lo.min(hi), lo.max(hi));
+    if held != remaining && (held >= 1.0 || a.posture_broken()) {
+        a.posture = a.posture_max - held;
+    }
+}
+
 /// Posture recovery, as in the exe's ChrIns update (FUN_140a04850):
 ///   points/s = baseRecover x (ratio(type) / 100 if a StaminaControlParam type is set) x level multiplier
 /// added in whole points each frame with the fraction carried over.
@@ -973,12 +997,16 @@ pub fn regen_posture(time: Res<Time>, combat: Res<Combat>, config: Res<GameConfi
                 a.super_armor.tick(dt, reacting, instant, bonus);
             }
         }
+        let data = data_for(&combat, &a);
+        let tae_ty = if a.anim.is_empty() { None } else { data.stamina_ratio_type(&a.anim, a.t) };
+        if let Some(ty) = tae_ty {
+            hold_posture_range(&mut a, ty);
+        }
         if a.posture <= 0.0 || a.since_posture_damage < config.posture.regen_delay {
             a.regen_carry = 0.0;
             continue;
         }
-        let data = data_for(&combat, &a);
-        let ty = if a.anim.is_empty() { None } else { data.stamina_ratio_type(&a.anim, a.t) };
+        let ty = tae_ty;
         let ty = ty.unwrap_or(config.posture.default_ratio_type);
         let row = combat.param("StaminaControlParam", a.stamina_ctrl_row);
         // (A row the export missed read as 100 % silently: c1180's 1070000 gives 0 % in a swing.)

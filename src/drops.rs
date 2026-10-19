@@ -9,9 +9,12 @@
 //! - resourceItemLotParamId2 (category 5): Resurrective Power, taken at once while a node is
 //!   used; `RES_POWER_NODE` of it lights one again. The Mibu Balloon of Soul (3611, stateInfo 345,
 //!   "acquire more Resurrective Power") weights its entries up as its siblings do (x1.5).
-//! gap: the exe's lot draw, its luck formula, the Balloon of Soul's rate and a node's cost in
-//! Resurrective Power are not traced (each lot one draw, base x (1 + rate), 100 a node); the
-//! deathblow lots (ninsatsuResourceItemLotId) and the drops' fall from the body.
+//! - ninsatsuResourceItemLotId_1 / _2: drawn once for each deathblow whose Ninsatsu hit lands
+//!   (Enemy::ninsatsu_landed), dead or not. _2 is 10005800 (10 Resurrective Power) on 277 rows,
+//!   190 of them the marked enemies; _1 (10000800) holds nothing.
+//! gap: the exe's lot draw, its luck formula, the Balloon of Soul's rate, a node's cost in
+//! Resurrective Power and the moment the deathblow lots are drawn are not traced (each lot one
+//! draw, base x (1 + rate), 100 a node, at the Ninsatsu hit); the drops' fall from the body.
 
 use std::collections::HashSet;
 
@@ -117,8 +120,10 @@ pub(crate) fn drop_loot(
     mut log: Option<ResMut<crate::hud::CombatLog>>,
     mut done: Local<HashSet<Entity>>,
     mut rng: Local<u32>,
+    mut landed: Local<std::collections::HashMap<Entity, u32>>,
 ) {
     done.retain(|e| enemies.get(*e).is_ok_and(|(_, en, ..)| en.is_dead()));
+    landed.retain(|e, _| enemies.get(*e).is_ok());
     let Ok(mut p) = wolf.single_mut() else { return };
     let worn: Vec<i64> = p.timed.iter().map(|t| t.0).collect();
     let item_rate = worn_rate(&worn, "itemDropRate");
@@ -130,7 +135,10 @@ pub(crate) fn drop_loot(
         }
     };
     for (e, en, a, tf) in &enemies {
-        if !en.is_dead() || !done.insert(e) {
+        let seen = landed.insert(e, en.ninsatsu_landed).unwrap_or(0);
+        let deathblows = en.ninsatsu_landed.saturating_sub(seen);
+        let died = en.is_dead() && done.insert(e);
+        if !died && deathblows == 0 {
             continue;
         }
         let mut r = || {
@@ -152,24 +160,46 @@ pub(crate) fn drop_loot(
             spot += 1;
             crate::items::drop_pickup(commands, goods, n, feet + side * (0.35 * spot as f32 - 0.5));
         };
-        for k in ["itemLotId_1", "itemLotId_2", "itemLotId_3", "itemLotId_4", "itemLotId_5", "itemLotId_6"] {
-            if let Some((goods, n)) = lot(k).and_then(|id| roll_item_lot(id, item_rate, r())) {
-                place(&mut commands, goods, n);
-            }
-        }
-        if let Some((cat, n)) = lot("resourceItemLotParamId").and_then(|id| roll_resource_lot(id, emblem_rate, r())) {
+        // A resource lot's draw: Resurrective Power taken at once; Spirit Emblems returned to drop.
+        let mut grant = |p: &mut crate::player::Player, (cat, n): (i64, u32)| {
             if cat == RESOURCE_EMBLEMS {
-                place(&mut commands, crate::items::SPIRIT_EMBLEM, n);
+                return Some(n);
             }
-        }
-        if let Some((cat, n)) = lot("resourceItemLotParamId2").and_then(|id| roll_resource_lot(id, if soul { SOUL_RATE } else { 0.0 }, r())) {
             if cat == RESOURCE_POWER && p.resurrections < config.player.resurrections {
-                let p = &mut *p;
                 let lit = gain_power(&mut p.resurrections, &mut p.res_power, config.player.resurrections, n);
                 say(format!("Resurrective Power +{n} ({} / {RES_POWER_NODE})", p.res_power));
                 if lit > 0 {
                     say("a resurrection node is lit".to_string());
                 }
+            }
+            None
+        };
+        let mut emblems = 0;
+        let power_rate = if soul { SOUL_RATE } else { 0.0 };
+        for _ in 0..deathblows {
+            for k in ["ninsatsuResourceItemLotId_1", "ninsatsuResourceItemLotId_2"] {
+                if let Some(draw) = lot(k).and_then(|id| roll_resource_lot(id, power_rate, r())) {
+                    emblems += grant(&mut p, draw).unwrap_or(0);
+                }
+            }
+        }
+        if died {
+            if let Some(draw) = lot("resourceItemLotParamId").and_then(|id| roll_resource_lot(id, emblem_rate, r())).filter(|d| d.0 == RESOURCE_EMBLEMS) {
+                emblems += grant(&mut p, draw).unwrap_or(0);
+            }
+            if let Some(draw) = lot("resourceItemLotParamId2").and_then(|id| roll_resource_lot(id, power_rate, r())).filter(|d| d.0 == RESOURCE_POWER) {
+                grant(&mut p, draw);
+            }
+        }
+        if emblems > 0 {
+            place(&mut commands, crate::items::SPIRIT_EMBLEM, emblems);
+        }
+        if !died {
+            continue;
+        }
+        for k in ["itemLotId_1", "itemLotId_2", "itemLotId_3", "itemLotId_4", "itemLotId_5", "itemLotId_6"] {
+            if let Some((goods, n)) = lot(k).and_then(|id| roll_item_lot(id, item_rate, r())) {
+                place(&mut commands, goods, n);
             }
         }
     }

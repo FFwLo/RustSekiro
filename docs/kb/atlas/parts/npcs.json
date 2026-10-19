@@ -1,0 +1,1080 @@
+[
+ {
+  "id": "npcs.roster-names",
+  "category": "npcs",
+  "title": "Friendly NPC name list",
+  "summary": "The game keeps 90 NPC display names in one text file. The friendly ones sit in the 9370xx to 9375xx range.",
+  "values": "937010 Sculptor, 937200 Kuro, 937300 Divine Child, 937400 Emma, 937420 Anayama, 937430 Fujioka, 937431-937436 six Memorial Mobs, 937437 Harunaga, 937438 Koremori, 937500 Shosuke, 937510 Blackhat Badger, 931012 Hanbei",
+  "how": "NPC name text (NPC名.fmg) is looked up by the name id in NpcParam.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/msg/engus/item.msgbnd.d/NPC名.fmg"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/NpcParam.json"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Talk to an NPC and compare the name plate with the id list.",
+  "note": "",
+  "needs": [
+   {
+    "id": "dialogue.subtitle-text-fmg",
+    "why": "name plates and lines come from the msg files"
+   }
+  ]
+ },
+ {
+  "id": "npcs.npcparam-rows",
+  "category": "npcs",
+  "title": "NPC model and variant rows",
+  "summary": "Each friendly NPC is a model number c7xxx. NpcParam has several rows per model for different story states, such as sick or post-raid variants. Row ids start with 7 and the model number.",
+  "values": "c7010 Sculptor, c7200 Kuro, c7300 Divine Child, c7400 Emma, c7410 Hanbei, c7420 Anayama, c7430 Fujioka, c7450 Suzu-baba, c7460 her son, c7500 Shosuke, c7510 Badger, c7540-7600 Memorial Mobs; rows like 70100080, 74200082",
+  "how": "NpcParam row picked by the MSB enemy part; row ids are named in Paramdex.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/NpcParam.json"
+   },
+   {
+    "kind": "web",
+    "ref": "reference/Paramdex/SDT/Names/NpcParam.txt"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "fireguy-rustsekiro/src/sculptor.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Open the MSB of m11_00 and see c7010 with NpcParam 70100080.",
+  "note": "Variant meaning (sick, post-raid) comes from Paramdex names, which are community translations.",
+  "needs": [
+   {
+    "id": "npcs.msb-flag-gating",
+    "why": "variants are switched by part flags"
+   }
+  ]
+ },
+ {
+  "id": "npcs.msb-flag-gating",
+  "category": "npcs",
+  "title": "NPC presence gated by MSB event flag",
+  "summary": "An NPC part in the map file carries an event flag and a compare state. The NPC is only enabled when the flag matches. So one NPC can stand at several places, one part per story state.",
+  "values": "enemy part fields: +0x40 EventFlagID, +0x44 compare state; Sculptor 70100080 at m11_00 entity 1100720 pos (122.87,-47.23,-190.63) flag 8302; 70100000 at m11_02 entity 1120721 flag 8306",
+  "how": "MSB part flags read by the map loader; 140 NPC parts were dumped.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/map/mapstudio/m11_00_00_00.msb"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/map/mapstudio/m11_02_00_00.msb"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "fireguy-rustsekiro/src/sculptor.rs"
+  },
+  "his": {
+   "has": "partial",
+   "where": "sekiro-rs/crates/game/src/map_story.rs"
+  },
+  "check": "Change the story flag and see which Sculptor part appears.",
+  "note": "",
+  "needs": [
+   {
+    "id": "map.story-state-flags",
+    "why": "8301-8307 select which parts exist"
+   }
+  ]
+ },
+ {
+  "id": "npcs.story-flags-8301",
+  "category": "npcs",
+  "title": "Story state flags 8301 to 8307",
+  "summary": "A set of story flags decides which version of the map and its NPCs is active. Common events set them from item ownership and other flags.",
+  "values": "event 910: 8301 when player has item 2400, 2500 or 2501; event 911: 8302 when flag 9310 on; event 912: 8303 when 9304 on and 9314 off; event 920: 8307 when 9314 or map 17, and items 79000/79100; 8306 set in common events 0/50",
+  "how": "EMEVD common.emevd conditional event flag sets.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/event/common.emevd"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "partial",
+   "where": "sekiro-rs/crates/game/src/map_story.rs"
+  },
+  "check": "Read flag 8302 after the Hirata burning and check the Sculptor part in the Outskirts.",
+  "note": "What each flag means in story words is inferred from what it gates.",
+  "needs": [
+   {
+    "id": "map.story-state-flags",
+    "why": "same flags drive map parts"
+   }
+  ]
+ },
+ {
+  "id": "npcs.sculptor",
+  "category": "npcs",
+  "title": "Sculptor placement and role",
+  "summary": "The Sculptor stands at the Dilapidated Temple and at later spots as the story moves. His ESD offers talk, prosthetic upgrades and tool transposition. Placement uses events 11105720 and 11105721 and flags in the 71100xxx range.",
+  "values": "NpcParam 70100000 / 70100080; entities 1100720 (m11_00), 1120721 (m11_02); ESD t110100 (77 TalkParams, group 10); death flag 1019",
+  "how": "MSB part with flag, EMEVD placement events, talk ESD t110100.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/map/mapstudio/m11_00_00_00.msb"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/event/m11_00_00_00.emevd"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/sculptor.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "fireguy-rustsekiro/src/sculptor.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Visit the Temple at game start and after raids and note his position.",
+  "note": "Ours has the service only. No ESD story talk, no gifts, no sake progression.",
+  "needs": [
+   {
+    "id": "npcs.sculptor-services",
+    "why": "what the ESD offers"
+   },
+   {
+    "id": "npcs.death-flag-event",
+    "why": "his death flag"
+   }
+  ]
+ },
+ {
+  "id": "npcs.sculptor-services",
+  "category": "npcs",
+  "title": "Sculptor services",
+  "summary": "The Sculptor's ESD opens the prosthetic upgrade menu and the transposition shop.",
+  "values": "OpenTranspositionShop(1101000,1101009); UpgradeProstheticsMenu; ShopLineupParam 1101000-1101009 transposition (Loaded Shuriken 70000 to Finger Whistle 79000, mtrl 100000-100090, release flags 6500-6509)",
+  "how": "ESD t110100 commands plus ShopLineupParam rows.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/script/talk/m11_00_00_00.talkesdbnd.d/t110100.esd"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/ShopLineupParam.json"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "fireguy-rustsekiro/src/workshop.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Open the Sculptor talk menu and check the two service entries.",
+  "note": "",
+  "needs": [
+   {
+    "id": "items.prosthetic-upgrade",
+    "why": "the menu changes prosthetics"
+   },
+   {
+    "id": "npcs.shop-lineup-structure",
+    "why": "uses ShopLineupParam"
+   }
+  ]
+ },
+ {
+  "id": "npcs.shop-lineup-structure",
+  "category": "npcs",
+  "title": "ShopLineupParam structure",
+  "summary": "A shop is a list of rows. Each row gives an item, a price, a stock count, a flag that records the sale and a flag that releases the row. A group at +0 to +49 is the normal price. +50 to +99 is the discounted copy.",
+  "values": "373 rows; fields equipId, equipType (0 weapon, 1 protector, 2 accessory, 3 goods), value, value_Magnification, sellQuantity, eventFlag, flagId_forRelease, mtrlId; discount lineup = id+50 (about x0.9)",
+  "how": "ESD OpenRegularShop(a,b) names the id range.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/ShopLineupParam.json"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Buy from a Memorial Mob, then enable flag 6020 and compare prices.",
+  "note": "",
+  "needs": [
+   {
+    "id": "items.currency-sen",
+    "why": "prices are in sen"
+   }
+  ]
+ },
+ {
+  "id": "npcs.shop-discount-flag",
+  "category": "npcs",
+  "title": "Shop discount flag 6020",
+  "summary": "When flag 6020 is on, Memorial Mob clerks use the lineup id plus 50. That is the roughly 10 percent discount lineup.",
+  "values": "flag 6020; lineup +50",
+  "how": "ESD branch in t*800 shop clerks.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/script/talk/m11_01_00_00.talkesdbnd.d/t111800.esd"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/ShopLineupParam.json"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Set flag 6020 and open a Memorial Mob shop.",
+  "note": "What earns the flag in game is not traced here.",
+  "needs": [
+   {
+    "id": "npcs.shop-lineup-structure",
+    "why": "uses +50 lineups"
+   }
+  ]
+ },
+ {
+  "id": "npcs.memorial-mobs",
+  "category": "npcs",
+  "title": "Memorial Mob shop clerks",
+  "summary": "Six clerks in Memorial Mob form run shops. Each uses a 46452-byte ESD named t*800 and calls OpenRegularShop.",
+  "values": "NPC names 937431-937436; ESDs t110800, t111800, t112800, t130800, t150800, t170800, t200800; TalkParam 15000010; models c7540, c7550, c7560, c7590, c7600",
+  "how": "ESD shop clerk with a flag-gated discount.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/script/talk/"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/msg/engus/item.msgbnd.d/NPC名.fmg"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Find the clerks near idols in each area.",
+  "note": "The map of clerk to idol is not listed here. Seven ESDs exist for six names, so one name may serve two areas.",
+  "needs": [
+   {
+    "id": "npcs.shop-lineup-structure",
+    "why": "each clerk opens a lineup"
+   },
+   {
+    "id": "npcs.shop-discount-flag",
+    "why": "discount branch"
+   }
+  ]
+ },
+ {
+  "id": "npcs.pot-nobles",
+  "category": "npcs",
+  "title": "Pot Nobles and the scale shop",
+  "summary": "Two clerks, Harunaga and Koremori, sell for Treasure Carp Scales in the Fountainhead Palace. They use their own lineups. Their scale events use flags 1620 to 1639.",
+  "values": "names 937437, 937438; models c1300 / c1321; TalkParam rows 13002080/81, 13003080/81, 13210000, 13211000; OpenScalesShop (2 uses); lineup 2500000; events 20006126/20006127; item 10000 Treasure Carp Scale; SpEffect 30202 scale shop clerk",
+  "how": "ESD OpenScalesShop plus carp events in common_func.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/event/common_func.emevd"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/ShopLineupParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/msg/engus/item.msgbnd.d/NPC名.fmg"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Bring a scale to the clerk and watch the flags.",
+  "note": "",
+  "needs": [
+   {
+    "id": "items.treasure-carp-scale",
+    "why": "currency item"
+   }
+  ]
+ },
+ {
+  "id": "npcs.kuro",
+  "category": "npcs",
+  "title": "Kuro, the Divine Heir",
+  "summary": "Kuro appears as an adult-form model (c7200) and a child model (c7210). Rows include phantom conversation variants. Rice for Kuro is item 9090.",
+  "values": "model c7200 rows 72000xxx, 72001xxx; c7210 child; c7300 Divine Child; name 937200; TalkParam group 29 (t111290 with 27 rows); item 9090",
+  "how": "NpcParam rows with phantom conversation variants and ESD t111290.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/NpcParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/msg/engus/item.msgbnd.d/NPC名.fmg"
+   },
+   {
+    "kind": "web",
+    "ref": "reference/Paramdex/SDT/Names/NpcParam.txt"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Talk to Kuro in his room and read his line choices.",
+  "note": "Name ids 937200 and 937300 both exist, so which model is shown as which is unclear.",
+  "needs": [
+   {
+    "id": "dialogue.talk-menu-choices",
+    "why": "he uses choice menus"
+   }
+  ]
+ },
+ {
+  "id": "npcs.emma",
+  "category": "npcs",
+  "title": "Emma",
+  "summary": "Emma uses model c7400. A second model c7401 is used in cutscenes. She handles the Dragonrot blood sample.",
+  "values": "c7400, c7401; name 937400; item 9560 Dragonrot Blood Sample; ESD t110110/t110112 group 11 for Hirata talk",
+  "how": "NpcParam rows and talk ESDs.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/NpcParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/msg/engus/item.msgbnd.d/NPC名.fmg"
+   },
+   {
+    "kind": "web",
+    "ref": "https://sekiroshadowsdietwice.wiki.fextralife.com/Dragonrot"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Take the blood sample to Emma at the Temple.",
+  "note": "Cure delivery timing is described by the wiki only.",
+  "needs": [
+   {
+    "id": "npcs.dragonrot-cure",
+    "why": "she brews the cure"
+   }
+  ]
+ },
+ {
+  "id": "npcs.hanbei",
+  "category": "npcs",
+  "title": "Hanbei the Undying variants",
+  "summary": "Hanbei uses model c7410 (called Fascinated Samurai in Paramdex) in several places: the Hidden Prison, the Dungeon and the Mibu entrance. He also has dragonrot variants.",
+  "values": "c7410; name 931012; places Hidden Prison, Abandoned Dungeon (m13), Mibu entry; lineups 1000000-1000007 trade",
+  "how": "Multiple NpcParam rows plus placement flags.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/NpcParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/msg/engus/item.msgbnd.d/NPC名.fmg"
+   },
+   {
+    "kind": "web",
+    "ref": "reference/Paramdex/SDT/Names/NpcParam.txt"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Find him in each location in order of the quest.",
+  "note": "Which flag moves him between places was not traced.",
+  "needs": [
+   {
+    "id": "npcs.msb-flag-gating",
+    "why": "placement flags"
+   }
+  ]
+ },
+ {
+  "id": "npcs.anayama",
+  "category": "npcs",
+  "title": "Anayama the peddler",
+  "summary": "Anayama sells items near the Temple. He has plain, dragonrot and post-raid versions. A hit counter turns him hostile after three hits.",
+  "values": "c7420 rows 74200080, 74200081 (post-Tokugawa-raid survivor), 74200082 (dragon-cough), 74201080; warn/hostile flags 1215/1216; swap entities 1100704 to 1100732; ESD t110260 (20 TalkParams); lineups 1100400/1100500",
+  "how": "Common events 20006001 and 20006207, ESD t110260.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/event/common_func.emevd"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/NpcParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/ShopLineupParam.json"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Hit him three times and read flags 1215 and 1216.",
+  "note": "",
+  "needs": [
+   {
+    "id": "npcs.hostility-hit-counter",
+    "why": "hit rule"
+   },
+   {
+    "id": "npcs.dragon-cough-swap",
+    "why": "variant switch"
+   }
+  ]
+ },
+ {
+  "id": "npcs.fujioka",
+  "category": "npcs",
+  "title": "Fujioka the Info Broker",
+  "summary": "Fujioka uses model c7430 with variants 74300082 and 74305081.",
+  "values": "c7430; name 937430; rows 74300082, 74305081; ESD group 26 or nearby not confirmed",
+  "how": "NpcParam rows and ESD.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/NpcParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/msg/engus/item.msgbnd.d/NPC名.fmg"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Visit him at the Castle.",
+  "note": "Row meanings from Paramdex only.",
+  "needs": []
+ },
+ {
+  "id": "npcs.blackhat-badger",
+  "category": "npcs",
+  "title": "Blackhat Badger",
+  "summary": "A traveling NPC with rows in the 7510xxxx range. His name id is 937510.",
+  "values": "c7510; rows 7510xxxx; name 937510",
+  "how": "NpcParam rows.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/NpcParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/msg/engus/item.msgbnd.d/NPC名.fmg"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Look for him in the Senpou area.",
+  "note": "Placement was not traced.",
+  "needs": []
+ },
+ {
+  "id": "npcs.shosuke",
+  "category": "npcs",
+  "title": "Basket Wearer Shosuke",
+  "summary": "Shosuke uses model c7500 with a talk ESD that uses 22 TalkParams.",
+  "values": "c7500; name 937500; ESD t150270 (22 TalkParams, group 27)",
+  "how": "ESD t150270.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/NpcParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/msg/engus/item.msgbnd.d/NPC名.fmg"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Find him in the Mibu area.",
+  "note": "Group-to-NPC link is by line text.",
+  "needs": []
+ },
+ {
+  "id": "npcs.suzu-baba",
+  "category": "npcs",
+  "title": "Inosuke's mother and her son",
+  "summary": "The mother uses c7450 and her son c7460. Row 74600081 is the version after his aunt is killed. Her ESD t110160 has a line where she mistakes the player for her son.",
+  "values": "c7450, c7460, row 74600081; ESD t110160 (16 TalkParams, group 16)",
+  "how": "Rows and ESD.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/NpcParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/script/talk/m11_00_00_00.talkesdbnd.d/t110160.esd"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Talk to her at the Outskirts.",
+  "note": "Group 16 is tied to her by line text.",
+  "needs": [
+   {
+    "id": "npcs.msb-flag-gating",
+    "why": "placement flag"
+   }
+  ]
+ },
+ {
+  "id": "npcs.minor-models",
+  "category": "npcs",
+  "title": "Nun, servant, priest, doctor and aunts",
+  "summary": "Smaller NPCs have their own models: c7440 nun, c7470 kidnapped servant, c7480 Mibu priest, c7490 immortal-experiment doctor, c7520 and c7530 handmaiden aunts.",
+  "values": "c7440, c7470, c7480, c7490, c7520, c7530; common event 20006090 flag 71110119 with SpEffect 32901",
+  "how": "NpcParam and common events.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/NpcParam.json"
+   },
+   {
+    "kind": "web",
+    "ref": "reference/Paramdex/SDT/Names/NpcParam.txt"
+   }
+  ],
+  "confidence": "community",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Identify each in its map.",
+  "note": "Exact identities come from Paramdex only.",
+  "needs": []
+ },
+ {
+  "id": "npcs.hostility-hit-counter",
+  "category": "npcs",
+  "title": "Hostility hit counter",
+  "summary": "Hitting a friendly NPC counts. After the set hit count the NPC warns, then turns hostile. The common event takes the NPC id, two flags and the counter.",
+  "values": "common event 20006001 (entity, flagA, flagB, flag, hitCount, flag); damage type from player 10000; up to 9 hits; Anayama 1215/1216 with 3 hits",
+  "how": "Common event with Damage Type condition.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/event/common_func.emevd"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Hit a peddler and watch the flags.",
+  "note": "",
+  "needs": [
+   {
+    "id": "npcs.hostile-switch",
+    "why": "sets team type"
+   }
+  ]
+ },
+ {
+  "id": "npcs.hostile-switch",
+  "category": "npcs",
+  "title": "Hostile switch for NPCs",
+  "summary": "Hostility sets the NPC team type to 27 and clears the conversation SpEffects. Then the warn and hostile flags are set.",
+  "values": "events 20006000 and 20006007; Team Type 27; clears SpEffects 30200, 30601, 5301, 3742000",
+  "how": "EMEVD team change.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/event/common_func.emevd"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "After hitting an NPC check its team in the debug view.",
+  "note": "",
+  "needs": [
+   {
+    "id": "ai.npc-hostile-behaviour",
+    "why": "combat AI takes over"
+   }
+  ]
+ },
+ {
+  "id": "npcs.death-flag-event",
+  "category": "npcs",
+  "title": "NPC death flag",
+  "summary": "When an NPC is dead or has SpEffect 220020, the event sets its death flag in the save and requests a save.",
+  "values": "event 20006002 (entity, deadFlag); example Sculptor 1019; SpEffect 220020",
+  "how": "Common event with a network flag set.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/event/common_func.emevd"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Kill the Sculptor in a test and read flag 1019.",
+  "note": "",
+  "needs": []
+ },
+ {
+  "id": "npcs.dragon-cough-swap",
+  "category": "npcs",
+  "title": "Dragonrot variant swap",
+  "summary": "A common event swaps which of two entities is enabled, based on an appear flag and a dead flag. It puts a sick copy in place of a healthy NPC.",
+  "values": "event 20006207 (entityA, entityB, appearFlag, deadFlag, flag, 0); Anayama 1100704 to 1100732",
+  "how": "Enable state swap.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/event/common_func.emevd"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "fireguy-rustsekiro/src/enemy/events.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Cause dragonrot and watch the model change.",
+  "note": "Ours has a similar enable swap for Genichiro, not for NPCs.",
+  "needs": [
+   {
+    "id": "status.dragonrot",
+    "why": "disease counter"
+   }
+  ]
+ },
+ {
+  "id": "npcs.placement-event",
+  "category": "npcs",
+  "title": "NPC placement event",
+  "summary": "One common event places or hides an NPC by flag, resets its position and forces an animation. Appear flags are in the 7000200x range.",
+  "values": "event 20006206 (entity, anim, appearFlag, deadFlag, flagA, flagB); related 20006061 hide, 20006040 warp copy floor",
+  "how": "Common event.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/event/common_func.emevd"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Watch an NPC arrive when its flag turns on.",
+  "note": "",
+  "needs": []
+ },
+ {
+  "id": "npcs.talk-speffects",
+  "category": "npcs",
+  "title": "Conversation SpEffects",
+  "summary": "Special effects mark the NPC and player during talk. They stop turning, block throws and mark dead state.",
+  "values": "30100 treated as dead; 30200 throw invalid; 30202 scale shop clerk; 30600 quick turn at start; 30601 do not turn to nest; 30700 judgment during conversation; 32901 prayer; 220020 puppeteer",
+  "how": "SpEffectParam names from Paramdex.",
+  "sources": [
+   {
+    "kind": "web",
+    "ref": "reference/Paramdex/SDT/Names/SpEffectParam.txt"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/event/common_func.emevd"
+   }
+  ],
+  "confidence": "community",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Talk to an NPC and list player SpEffects.",
+  "note": "Names are translated by the community.",
+  "needs": []
+ },
+ {
+  "id": "npcs.talk-range-cmd",
+  "category": "npcs",
+  "title": "Talk range and NPC talk object",
+  "summary": "The exe has an NPC talk object with an angle range, an untalk timer and a first-talk flag. EMEVD has a talk range instruction.",
+  "values": "EMEVD 2004[55]; exe strings Npc Talk Ins, Talkable Ang Range, Max UnTalk Time, m_isFirstTalk",
+  "how": "Exe object and EMEVD instruction.",
+  "sources": [
+   {
+    "kind": "exe",
+    "ref": "sekiro.exe.unpacked.exe strings"
+   },
+   {
+    "kind": "data",
+    "ref": "reference/DarkScript3/DarkScript3/Resources/sekiro-common.emedf.json"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Walk up to an NPC at different angles.",
+  "note": "Exact use of 2004[55] is not traced.",
+  "needs": [
+   {
+    "id": "dialogue.esd-format",
+    "why": "the talk runs in an ESD"
+   }
+  ]
+ },
+ {
+  "id": "npcs.talk-id-binding",
+  "category": "npcs",
+  "title": "Binding a talk ESD to an NPC",
+  "summary": "The debug text shows TalkID and EntityId. The ESD file name is t plus six digits. How the engine picks the ESD for a placed NPC is not shown by data alone.",
+  "values": "exe strings: TalkID:%06d | EntityId:%07d; t%06d",
+  "how": "Exe string only.",
+  "sources": [
+   {
+    "kind": "exe",
+    "ref": "sekiro.exe.unpacked.exe strings"
+   }
+  ],
+  "confidence": "open-question",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Check the MSB talk field against the ESD file names.",
+  "note": "Likely an NpcParam or MSB talk field. Not confirmed.",
+  "needs": []
+ },
+ {
+  "id": "npcs.dragonrot-cure",
+  "category": "npcs",
+  "title": "Dragonrot cure items and shop rows",
+  "summary": "Cure items come from a blood sample and a droplet. The droplet is also sold in some shop rows when flags allow.",
+  "values": "item 9560 Dragonrot Blood Sample, 5600 Dragon's Blood Droplet, 9000 Divine Dragon's Tears; ShopLineupParam 1100104, 1100112, 1100411, 1100417, 1110007, 1110013, 1700005, 2000008, 2000014 with release flags 9090-9099; EMEVD 2003[94] Reset Dragonrot Counter",
+  "how": "Shop release flags plus a counter reset instruction.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/ShopLineupParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "reference/DarkScript3/DarkScript3/Resources/sekiro-common.emedf.json"
+   },
+   {
+    "kind": "web",
+    "ref": "https://sekiroshadowsdietwice.wiki.fextralife.com/Dragonrot"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Use a droplet at an idol and check sick NPCs clear.",
+  "note": "The wiki says the cure comes from Emma. Shop rows suggest droplets are also sold. Both kept; the shop path is open-question.",
+  "needs": [
+   {
+    "id": "status.dragonrot",
+    "why": "the disease"
+   }
+  ]
+ },
+ {
+  "id": "npcs.dragonrot-cause",
+  "category": "npcs",
+  "title": "Dragonrot spread",
+  "summary": "Wiki text says the disease spreads as the player dies and respawns at idols, about every ten deaths. The Sculptor falls ill first. Sick NPCs refuse normal talk and their quests pause. Merchants still sell.",
+  "values": "about 10 deaths per case; Unseen Aid chance drops with cases",
+  "how": "Death counter and a flag per NPC.",
+  "sources": [
+   {
+    "kind": "web",
+    "ref": "https://sekiroshadowsdietwice.wiki.fextralife.com/Dragonrot"
+   }
+  ],
+  "confidence": "community",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Die ten times and look for Rot Essence.",
+  "note": "Not confirmed in data.",
+  "needs": [
+   {
+    "id": "status.dragonrot",
+    "why": "disease system"
+   },
+   {
+    "id": "progression.death-counter",
+    "why": "counts deaths"
+   }
+  ]
+ },
+ {
+  "id": "npcs.genichiro-npc-forms",
+  "category": "npcs",
+  "title": "Genichiro NPC forms",
+  "summary": "Genichiro has talk forms c7100 and c7110 called Rival in Paramdex. An event swaps his enabled forms during the castle story.",
+  "values": "c7100, c7110; entity 1110800 off, 1110801 on in event 11115820",
+  "how": "Event enable swap.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/NpcParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/event/m11_01_00_00.emevd"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "fireguy-rustsekiro/src/enemy/events.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Reach the castle gate and see which Genichiro stands.",
+  "note": "",
+  "needs": []
+ },
+ {
+  "id": "npcs.spirit-emblem-shop",
+  "category": "npcs",
+  "title": "Spirit Emblem trading",
+  "summary": "Spirit Emblem lineups use price multipliers.",
+  "values": "ShopLineupParam 1000-1030 (x10/20/30/50), release 6205; 9000000 and 9100000 emblem x50",
+  "how": "Lineup rows.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/ShopLineupParam.json"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Open the shop with and without flag 6205.",
+  "note": "",
+  "needs": [
+   {
+    "id": "npcs.shop-lineup-structure",
+    "why": "rows"
+   }
+  ]
+ },
+ {
+  "id": "npcs.coverage-note",
+  "category": "npcs",
+  "title": "NPC coverage in our rebuild and sekiro-rs",
+  "summary": "Our rebuild has one friendly NPC, the Sculptor service. sekiro-rs does not code NPCs or talk.",
+  "values": "",
+  "how": "grep of both source trees.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "fireguy-rustsekiro/src/sculptor.rs"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "sekiro-rs/docs/PROGRESS.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "fireguy-rustsekiro/src/sculptor.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Look at the PROGRESS table row for cutscenes and dialogue.",
+  "note": "",
+  "needs": []
+ }
+]

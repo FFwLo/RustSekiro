@@ -1,0 +1,818 @@
+[
+ {
+  "id": "visuals.gparam-layer-stack",
+  "verdict": "corrected",
+  "reason": "The exe priority table at 0x142b54500 and the bank formula match, but src/map_lights.rs only places BTL lamps; ours reads the gparam set in src/map.rs and src/grading.rs.",
+  "fix": {
+   "ours": {
+    "has": "partial",
+    "where": "src/map.rs (light set and fog from one gparam set per arena); src/grading.rs"
+   }
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "visuals.lightset-per-collision",
+  "verdict": "corrected",
+  "reason": "sekiro-rs lighting_selection.rs exists and does this, but ours has no fixed ids per arena: src/map.rs already takes the light set from the collision under the enemy (GparamConfig LightSetID).",
+  "fix": {
+   "ours": {
+    "has": "partial",
+    "where": "src/map.rs (light set chosen by the collision under the enemy)"
+   }
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "visuals.lightset-fields",
+  "verdict": "corrected",
+  "reason": "LIGHTING.md and the LightSet census show four slots with two local-enable switches (slots 2 and 3 take the local branch), not four plain directional slots; ours lives in src/map.rs, not map_lights.rs.",
+  "fix": {
+   "summary": "A light set holds four light slots (slots 0 and 1 directional, slots 2 and 3 switchable to local lights by two enable switches), hemisphere ambient colours, shadow settings and sky colour terms. Colours are stored as rgb with a separate intensity W and are uploaded squared.",
+   "values": "Light and hemisphere colours upload as rgb*rgb*W. Four slots; only slot 0 gets the sun-shadow factor; slots 1 to 3 are unattenuated by the sun shadow.",
+   "ours": {
+    "has": "partial",
+    "where": "src/map.rs (MapLighting light set rows)"
+   }
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "visuals.time-of-day-variants",
+  "verdict": "corrected",
+  "reason": "Common event 820 only raises flags 9800 and 9801 from the boss flags 9303 to 9306 and event 100 reads 9800 to 9803 as a cumulative story ladder, so there is no clock; ours already has hours and a sky reader.",
+  "fix": {
+   "summary": "A map's lighting comes in variants for a time of day: environment variants 0 to 5 map to hours 0, 6, 12, 18, 22 and 2. The variant follows the story, not a running clock: flags 9800 to 9803 rise as bosses fall and common event 100 picks the variant and the sky from them.",
+   "values": "Story-time flags 9800 to 9803 are cumulative (none on = morning, variant 1; 9800 afternoon; 9800 and 9801 evening; up to 9802 night). Event 820 raises 9800 when one of the boss flags 9303 to 9306 is on and 9800 plus 9801 when three are on. Variants 0 to 5 = 0 h, 6 h, 12 h, 18 h, 22 h, 2 h. The hour of variant 1 is not in the data.",
+   "check": "Set flags 9800 and 9801 together and compare the Outskirts sky colour with the unset state.",
+   "ours": {
+    "has": "partial",
+    "where": "src/map.rs (ENV_HOURS, DayCycle); src/sky.rs (reads 9800-9803)"
+   },
+   "his": {
+    "has": "yes",
+    "where": "crates/game/src/map_story.rs; crates/sim/src/story.rs"
+   }
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "visuals.story-state-lighting",
+  "verdict": "corrected",
+  "reason": "The 2003[88] and 2003[81] counts and the castle sub ids hold, but flag 8302 selects the Ashina fire branch with sub id 20 (m11_xx_0020, sky m900095), not a castle fight id.",
+  "fix": {
+   "values": "Set Area Gparam Sub ID 2003[88] (43 uses), Set Lighting 2003[81] (42 uses), Set Area Envmap 2003[80]. Castle fight sub ids 0740 and 0750 (sub 40 and 50). Flag 8302 gives event 100's Ashina fire branch: sub id 20 and sky m900095. Set Ceremony 12 uses (m15 and m25).",
+   "check": "Load m11_01 with flag 8302 set and check that the gparam file with sub id 20 (m11_01_0020) and sky m900095 are used."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "visuals.light-unit-bridge",
+  "verdict": "corrected",
+  "reason": "sekiro-rs lighting.rs:402 and EXPOSURE.md:163 give 3135.61, but ours src/map.rs:53 still uses the older 4500 calibration, so ours has its own number.",
+  "fix": {
+   "values": "SCENE_TO_BEVY = pi / exposure = 3135.61 (sekiro-rs). Ours still uses the older folded 4500.",
+   "ours": {
+    "has": "partial",
+    "where": "src/map.rs (SCENE_TO_BEVY 4500, ENV_PER_UNIT)"
+   }
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "visuals.row100-excess",
+  "verdict": "confirmed",
+  "reason": "EXPOSURE.md:308 shows the noon row-100 sun at 4.4, 4.1 and 3.8 times row 0 and the audit found no rule that dims it, so it stays open.",
+  "fix": {},
+  "needs_recording": false
+ },
+ {
+  "id": "visuals.native-point-light",
+  "verdict": "corrected",
+  "reason": "Ours src/map_lights.rs places the BTL lamps as Bevy point and spot lights but without the native window falloff and wrap term, so ours is partial, not none.",
+  "fix": {
+   "ours": {
+    "has": "partial",
+    "where": "src/map_lights.rs (Bevy point and spot lights, no native falloff)"
+   }
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "visuals.btl-local-lights",
+  "verdict": "confirmed",
+  "reason": "src/map_lights.rs header and tools/map_lights.py place the BTL bank 0000 lamps with the map offset; the native unit and specular are listed as gaps, so partial fits.",
+  "fix": {},
+  "needs_recording": false
+ },
+ {
+  "id": "visuals.shadows",
+  "verdict": "corrected",
+  "reason": "The slot 0 only sun factor is in LIGHTING.md, and ours uses Bevy cascades in src/map.rs (SHINOBI_MAP_SHADOW, default 2 cascades to 60 m), which the record names too loosely.",
+  "fix": {
+   "ours": {
+    "has": "partial",
+    "where": "src/map.rs (Bevy sun cascades, default 2 cascades to 60 m)"
+   }
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "visuals.volumetric-fog",
+  "verdict": "confirmed",
+  "reason": "src/height_fog.rs and height_fog.wesl exist and sekiro-rs fog.rs and LIGHTING.md carry the froxel fog terms.",
+  "fix": {},
+  "needs_recording": false
+ },
+ {
+  "id": "visuals.height-fog-profile",
+  "verdict": "confirmed",
+  "reason": "LIGHTING.md lines 184 to 236 give the same primitive pair -exp(-k*h)/k above zero and 2*h-exp(k*h)/k below it.",
+  "fix": {},
+  "needs_recording": false
+ },
+ {
+  "id": "visuals.fog-colour-packing",
+  "verdict": "confirmed",
+  "reason": "COLOUR.md and fog.rs use pow(byte/255, 2.2) * W and src/height_fog.rs follows it.",
+  "fix": {},
+  "needs_recording": false
+ },
+ {
+  "id": "visuals.sky-dome-selection",
+  "verdict": "corrected",
+  "reason": "Common event 100 deactivates 13 sky groups (8907000, 010, 015, 020, 030, 040, 050, 060, 070, 075, 080, 081, 085), not eight, and picks one from flags 9800 to 9803 and area state.",
+  "fix": {
+   "summary": "The m89 library map holds the sky domes. Common event 100 chooses a group from the story-time flags 9800 to 9803 (a cumulative ladder) and the area state, and activates it.",
+   "values": "Groups 8907000, 8907010, 8907015, 8907020, 8907030, 8907040, 8907050, 8907060, 8907070, 8907075, 8907080, 8907081, 8907085 (13 groups) in m89_00_00_99.",
+   "check": "Set the story-time flags 9800 and 9801 and watch the dome swap to the evening group."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "visuals.skydome-shader",
+  "verdict": "confirmed",
+  "reason": "docs/kb/sky_shader.md, SHADERS.md and both sky.rs files use pow(rgb, 2.2) times Intensity for the HDR colour.",
+  "fix": {},
+  "needs_recording": false
+ },
+ {
+  "id": "visuals.gi-irradiance-volumes",
+  "verdict": "corrected",
+  "reason": "Ours decodes and samples the Env_Box volumes in src/map.rs (up to 16 boxes, priority ordered, GIIV_MAX) and src/map_material.wesl, not in map_lights.rs; each box has four volumes (x, y, z, w).",
+  "fix": {
+   "summary": "Global illumination uses BC7 3D irradiance volumes (GIIV): each Env_Box has four volumes (x, y, z, w) giving diffuse ambient per spot. Boxes blend by priority and fade distance.",
+   "ours": {
+    "has": "yes",
+    "where": "src/map.rs (apply_giiv, GIIV_MAX 16); src/map_material.wesl"
+   }
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "visuals.gi-probe-cubes",
+  "verdict": "corrected",
+  "reason": "Ours src/map.rs loads the per-hour probe cube maps (map_<id>_env_<v>.dds and _envd_) and blends them, so ours has this.",
+  "fix": {
+   "ours": {
+    "has": "yes",
+    "where": "src/map.rs (probe cube maps by hour, blended)"
+   }
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "visuals.env-box-priority",
+  "verdict": "corrected",
+  "reason": "Ours src/map.rs sorts the GIIV boxes by priority and treats a box without a fade distance as cut off at its faces, so ours has it.",
+  "fix": {
+   "ours": {
+    "has": "yes",
+    "where": "src/map.rs (priority order, fade distance)"
+   }
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "visuals.tonemap",
+  "verdict": "corrected",
+  "reason": "COLOUR.md:40 and tonemap.wesl show c is the GPARAM field FilmicContrast (GS Presents - ToneMap-Contrast), not a fixed 0.5; ours src/grading.rs implements the curve through GameToneCurve.",
+  "fix": {
+   "values": "A = 1 - 2^(-1.442695*x); B = 1 - 2^(-4.456669*x); out = A + c*(B^3 - A), c = FilmicContrast from the draw params (0.5 when a map has none). Post order: tone, colour matrix, vignette, output power 1/2.2, LUT.",
+   "ours": {
+    "has": "yes",
+    "where": "src/grading.rs (GameToneCurve); src/grading_lut.wesl"
+   }
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "visuals.exposure-adaption",
+  "verdict": "confirmed",
+  "reason": "EXPOSURE.md and tonemap.rs (FreezeAdaptionFade and the other Tone Map fields) match; ours takes the exposure from Bevy's auto exposure in src/grading.rs, which is partial.",
+  "fix": {},
+  "needs_recording": false
+ },
+ {
+  "id": "visuals.bloom",
+  "verdict": "corrected",
+  "reason": "The bloom weights are in sekiro-rs SHADER-INPUTS.md, but ours builds Bevy's bloom in src/map.rs map_bloom, not in grading.rs.",
+  "fix": {
+   "ours": {
+    "has": "partial",
+    "where": "src/map.rs (map_bloom maps Bloom[Yebis] to Bevy bloom)"
+   }
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "visuals.lut-colour-grade",
+  "verdict": "confirmed",
+  "reason": "grading.rs, grading_lut.wesl and COLOUR.md agree on the 16x256 strip and the hue, saturation, value, contrast matrix; vignette is unimplemented in both.",
+  "fix": {},
+  "needs_recording": false
+ },
+ {
+  "id": "visuals.map-shaders-multiple",
+  "verdict": "corrected",
+  "reason": "Ours has src/map_material.wesl in addition to the standard material, so the where line is stale.",
+  "fix": {
+   "ours": {
+    "has": "partial",
+    "where": "src/map.rs; src/map_material.wesl"
+   }
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "visuals.emissive-shaders",
+  "verdict": "corrected",
+  "reason": "Ours emissive lamps go through src/map_material.wesl as well as src/map.rs.",
+  "fix": {
+   "ours": {
+    "has": "partial",
+    "where": "src/map.rs; src/map_material.wesl"
+   }
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "visuals.character-shaders",
+  "verdict": "corrected",
+  "reason": "src/render.rs does not exist and sekiro-rs has no char_material.rs; ours has the Character_AMSN DetailBlend and the coat fresnel_layers in src/sekiro_material.wesl, while sekiro-rs only extracts textures.",
+  "fix": {
+   "ours": {
+    "has": "yes",
+    "where": "src/sekiro_material.wesl; src/model.rs"
+   },
+   "his": {
+    "has": "no",
+    "where": ""
+   },
+   "check": "Look at Wolf's coat in a lit scene: the rim (color_2) and the layer tints show."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "visuals.fxr-format-player",
+  "verdict": "confirmed",
+  "reason": "src/fxr.rs, src/ffx.rs and crates/game/src/fxr.rs exist and handle the listed appearance actions.",
+  "fix": {},
+  "needs_recording": false
+ },
+ {
+  "id": "visuals.fxr-colour-open",
+  "verdict": "confirmed",
+  "reason": "docs/kb/fxr.md lines 157 to 163 keep the sqrt 3 after A/B shots and sekiro-rs removed it, so the disagreement is real and stays open.",
+  "fix": {},
+  "needs_recording": false
+ },
+ {
+  "id": "visuals.fxr-light-609",
+  "verdict": "confirmed",
+  "reason": "The map_lights.rs header and fxr.rs both name builder FUN_1403892e0 that squares the colour.",
+  "fix": {},
+  "needs_recording": false
+ },
+ {
+  "id": "visuals.map-fx-placements",
+  "verdict": "confirmed",
+  "reason": "MAP-FX.md:16 gives 312 placements in Outskirts and 287 in Castle, and src/map_fx.rs, tools/map_fx.py and crates/sim/src/map_effects.rs exist.",
+  "fix": {},
+  "needs_recording": false
+ },
+ {
+  "id": "visuals.cloth",
+  "verdict": "corrected",
+  "reason": "sekiro-rs has crates/game/src/cloth.rs (Havok cloth from the cloth.bin, adapted from ours), so his is yes; the record also had the two projects swapped.",
+  "fix": {
+   "his": {
+    "has": "yes",
+    "where": "crates/game/src/cloth.rs"
+   },
+   "values": "Havok cloth data from each model's *_c.hkx; Verlet with the cloth's own gravity and damping, constraint sets in order, fixed particles follow the skinned bones.",
+   "sources": [
+    {
+     "kind": "ours-kb",
+     "ref": "docs/kb/visuals.md"
+    },
+    {
+     "kind": "sekiro-rs-doc",
+     "ref": "crates/game/src/cloth.rs header"
+    }
+   ]
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "visuals.blood-decals",
+  "verdict": "corrected",
+  "reason": "sekiro-rs has crates/game/src/decals.rs with the same 600000000 + material*1000 + base + size id and the TAE 138 stains, so his is yes.",
+  "fix": {
+   "his": {
+    "has": "yes",
+    "where": "crates/game/src/decals.rs; crates/sim/src/hit_fx.rs"
+   }
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "visuals.water-shader",
+  "verdict": "corrected",
+  "reason": "src/map.rs:2677 gives water surfaces the shared m99_water_n ripple normal on a translucent material and marks the water shader as a gap, so the stand-in is not a plain dark plane.",
+  "fix": {
+   "summary": "The water surface is a special material with flow, reflection and refraction. Neither project has it. Ours draws a translucent plane with the shared m99_water_n ripple normal.",
+   "ours": {
+    "has": "partial",
+    "where": "src/map.rs (water surfaces, ripple normal stand-in)"
+   }
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "visuals.grass-render",
+  "verdict": "confirmed",
+  "reason": "GrassLodRangeParam row 0 reads 40, 120, 160 m and shadow 1000 m with 9 rows, and both map_grass.rs files leave the LOD ranges undone.",
+  "fix": {},
+  "needs_recording": false
+ },
+ {
+  "id": "visuals.mesh-lod",
+  "verdict": "confirmed",
+  "reason": "LodParam row 0 has lv01 30 m, lv12 60 m and crossfade 0.2 s; sekiro-rs map_lod.rs reads it and ours only picks a fixed LOD in tools/sekiro-extract/src/flver.rs.",
+  "fix": {},
+  "needs_recording": false
+ },
+ {
+  "id": "map.collision-raycast",
+  "verdict": "corrected",
+  "reason": "Ours map::raycast (src/map.rs) feeds the sight check at src/stealth.rs:152 and the path line test in src/ai.rs, and sekiro-rs CollisionWorld::raycast does the same query; the Havok call itself is not traced.",
+  "fix": {
+   "summary": "A line query against the map hit collision. The enemy sight check uses it as its last step: a hit before the target means the line is blocked. The hit collision is a triangle soup whose triangles carry a HitMtrlParam id.",
+   "values": "Ours: triangle soup in a 4 m grid (CELL 4.0). A hit closer than the target blocks the sight.",
+   "how": "Ours: crate::map::raycast(origin, dir, max) returns the hit distance; stealth.rs line 152 tests a clear line and ai.rs mesh_line_dist uses it for step lines. sekiro-rs: CollisionWorld::raycast in crates/sim/src/collision.rs.",
+   "sources": [
+    {
+     "kind": "ours-kb",
+     "ref": "docs/kb/map.md"
+    },
+    {
+     "kind": "ours-kb",
+     "ref": "docs/kb/enemy.md"
+    }
+   ],
+   "confidence": "data",
+   "ours": {
+    "has": "yes",
+    "where": "src/map.rs (raycast); src/stealth.rs; src/ai.rs"
+   },
+   "his": {
+    "has": "yes",
+    "where": "crates/sim/src/collision.rs (raycast, camera_raycast)"
+   },
+   "check": "Stand behind a wall in front of an enemy: it does not notice you; step out and the sight line is clear. Sim test: map::raycast between two points across a wall returns Some.",
+   "note": ""
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "map.msb-placement-group",
+  "verdict": "corrected",
+  "reason": "tools/placement_groups.py documents MSBS event type 21 PlacementGroup and the exe fill at FUN_140a42c70, and src/enemy.rs msb_groups reads it for the call-friend sounds; sekiro-rs msb.rs keeps only the platoon id.",
+  "fix": {
+   "summary": "Each MSBS event of type 21 PlacementGroup lists up to 32 enemy parts; a group is the event's ordinal among type 21 events. An AiSoundParam row with bRestrictSamePlacementGroup (call-friend sounds) reaches a listener only through a shared group. Platoons (type 15 PlatoonInfo) are a separate list.",
+   "values": "Type data: 32 x i32 part indices, -1 unused. The exe fills ChrSet+0xb8 (8 bytes per enemy slot, 0xFF empty) in FUN_140a42c70; the sound test is FUN_140610810.",
+   "how": "Ours: tools/placement_groups.py writes extracted/enemies/placement_groups.json and src/enemy.rs msb_groups / ai_sound_heard read it. sekiro-rs reads only the part's platoon_id (crates/formats/src/msb.rs).",
+   "sources": [
+    {
+     "kind": "data",
+     "ref": "extracted/enemies/placement_groups.json"
+    },
+    {
+     "kind": "exe",
+     "ref": "FUN_140a42c70, FUN_140610810"
+    },
+    {
+     "kind": "data",
+     "ref": "reference/SoulsFormatsNEXT MSBS EventParam.cs PlacementGroup"
+    }
+   ],
+   "confidence": "exe",
+   "ours": {
+    "has": "yes",
+    "where": "src/enemy.rs (msb_groups, ai_sound_heard); tools/placement_groups.py"
+   },
+   "his": {
+    "has": "partial",
+    "where": "crates/formats/src/msb.rs (platoon_id only)"
+   },
+   "check": "Shout near an MSB enemy: only enemies sharing its placement group answer. Sim test: msb_groups on a map returns the same group for two grouped enemies.",
+   "note": ""
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "map.msb-routes",
+  "verdict": "corrected",
+  "reason": "tools/patrols.py documents MSBS type 14 PatrolInfo and the part's WalkRouteIndex, and src/enemy.rs msb_patrol_on gives the route to ai::Patrol; sekiro-rs reads only walk_route_index.",
+  "fix": {
+   "summary": "Ordered region lists stored in the MSB as type 14 PatrolInfo events; an enemy part points to its route by WalkRouteIndex. Enemies that are not in battle walk the route by its patrol type.",
+   "values": "PatrolInfo: PatrolType i32, 32 x i16 walk region indices (-1 unused), 5 arrival entries {region, arrival anim, arrival wait}. The exe reads the low byte of PatrolType (FUN_1405c2080) and steps by the table at 0x143af9550.",
+   "how": "Ours: tools/patrols.py writes extracted/enemies/patrols.json; src/enemy.rs msb_patrol_on builds PatrolRoute and src/ai.rs Patrol steps it. sekiro-rs: Part::walk_route_index in crates/formats/src/msb.rs, no route walk.",
+   "sources": [
+    {
+     "kind": "data",
+     "ref": "extracted/enemies/patrols.json"
+    },
+    {
+     "kind": "exe",
+     "ref": "FUN_1405c2080, FUN_1405c1ac0, table 0x143af9550"
+    },
+    {
+     "kind": "data",
+     "ref": "reference/SoulsFormatsNEXT MSBS EventParam.cs PatrolInfo"
+    }
+   ],
+   "confidence": "exe",
+   "ours": {
+    "has": "yes",
+    "where": "src/enemy.rs (msb_patrol_on, PatrolRoute); src/ai.rs (Patrol); tools/patrols.py"
+   },
+   "his": {
+    "has": "partial",
+    "where": "crates/formats/src/msb.rs (walk_route_index only)"
+   },
+   "check": "Watch an unaware Ashina soldier on a patrol map: it walks its route and waits at the arrival points. Sim test: a PatrolRoute enemy moves between its first two points.",
+   "note": ""
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "map.msb-regions",
+  "verdict": "corrected",
+  "reason": "Ours src/enemy.rs tests regions through EMEVD 3[2] (a 1.2 m sphere at a route end) and src/fog_wall.rs handles gates, while sekiro-rs msb.rs keeps region identity and shapes for map effects.",
+  "fix": {
+   "summary": "Regions are named shapes (sphere, box and others) stored in the MSB with an entity id. EMEVD events test the player or an enemy inside a region (instruction 3[2]); this starts AI hold release, boss arenas, warps and fog walls.",
+   "values": "3[2] Area Test; 2004[1] Set Character AI State holds an enemy until released. Ours treats a route end as a 1.2 m sphere.",
+   "how": "Ours: src/enemy.rs evaluates 3[2] for the events it runs; src/fog_wall.rs switches fog gates by MSB entity. sekiro-rs: MapRegion in crates/formats/src/msb.rs keeps identity, shape and SFX settings for map effects.",
+   "sources": [
+    {
+     "kind": "data",
+     "ref": "extracted/event/*.emevd"
+    },
+    {
+     "kind": "ours-kb",
+     "ref": "docs/kb/enemy.md"
+    },
+    {
+     "kind": "sekiro-rs-doc",
+     "ref": "docs/MAP-FX.md"
+    }
+   ],
+   "confidence": "data",
+   "ours": {
+    "has": "partial",
+    "where": "src/enemy.rs (3[2] area test); src/fog_wall.rs"
+   },
+   "his": {
+    "has": "partial",
+    "where": "crates/formats/src/msb.rs (MapRegion)"
+   },
+   "check": "Walk into a boss arena region: the fog wall closes and the fight starts. Sim test: an area test for a point inside the sphere returns true.",
+   "note": ""
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "map.navmesh",
+  "verdict": "corrected",
+  "reason": "src/ai.rs lines 1277 and 1284 say there is no navmesh and the map collision stands in, and sekiro-rs runtime.rs:1162 says the arenas are open, so neither project has it.",
+  "fix": {
+   "summary": "Per block navigation meshes that enemy path moves query; the row flags decide which edges, jumps, drops and ladders a path may use. Neither project loads them.",
+   "values": "Ours: a path is a straight step line checked with the map collision (mesh_line_dist). sekiro-rs: open arenas, no navmesh probe.",
+   "how": "Ours src/ai.rs MoveToSomewhere and LeaveTarget use crate::map::raycast as a stand-in; sekiro-rs lua_ai/runtime.rs skips the probe.",
+   "sources": [
+    {
+     "kind": "ours-kb",
+     "ref": "docs/kb/enemy.md"
+    },
+    {
+     "kind": "sekiro-rs-doc",
+     "ref": "docs/AI.md"
+    }
+   ],
+   "confidence": "open-question",
+   "ours": {
+    "has": "no",
+    "where": "src/ai.rs (collision stand-in)"
+   },
+   "his": {
+    "has": "no",
+    "where": "crates/sim/src/lua_ai/runtime.rs (open arenas)"
+   },
+   "check": "Lead an enemy around a pillar: it should path around it; today it walks the straight line and slides along the collision.",
+   "note": ""
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "combat.posture-gauge",
+  "verdict": "corrected",
+  "reason": "Ours Actor has posture, posture_max, posture_debt and posture_regen (src/actor.rs) and sekiro-rs has PostureMeter and StaminaControl in crates/sim/src/combat/posture.rs, so both cover it.",
+  "fix": {
+   "summary": "Posture is one per character gauge (stamina in the engine, ChrDataModule +0x148 current, +0x14c max, +0x258 debt): a current value clamped to a maximum that hits reduce, regeneration refills each frame and a full gauge breaks. NpcParam stamina, staminaRecoverBaseVel, maxDebtStamina and staminaControlParamId set it per enemy.",
+   "values": "NpcParam fields: stamina, staminaRecoverBaseVel, maxDebtStamina, staminaControlParamId, ninsatuNum (deathblow marks).",
+   "how": "Ours: Actor::posture / posture_max / posture_debt / posture_regen in src/actor.rs. sekiro-rs: PostureMeter::project and ControlRange in crates/sim/src/combat/posture.rs.",
+   "sources": [
+    {
+     "kind": "data",
+     "ref": "extracted/json/params/NpcParam.json"
+    },
+    {
+     "kind": "exe",
+     "ref": "ChrDataModule +0x148 / +0x14c / +0x258"
+    },
+    {
+     "kind": "ours-kb",
+     "ref": "docs/kb/damage.md"
+    }
+   ],
+   "confidence": "exe",
+   "ours": {
+    "has": "yes",
+    "where": "src/actor.rs; src/combat.rs"
+   },
+   "his": {
+    "has": "yes",
+    "where": "crates/sim/src/combat/posture.rs"
+   },
+   "check": "Block a few hits: the posture bar fills and regenerates; at full the guard breaks. Sim test: repeated hits raise posture to max and break.",
+   "note": ""
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "progression.sen-wallet",
+  "verdict": "corrected",
+  "reason": "Ours src/experience.rs pays NpcParam getSoul as Sen on kills, scales it by the Mibu Balloon soulRate and halves it on death (TentativePlayerParam MoneyLostRate 50, confirmed in the param); sekiro-rs has no Sen wallet in sim.",
+  "fix": {
+   "summary": "Sen is the carried money integer: kills (NpcParam getSoul), purses and balloons add to it, shops and Sen Throw spend it, and a death without resurrection loses half (MoneyLostRate 50).",
+   "values": "TentativePlayerParam MoneyLostRate 50, SkillPointLostRate 50. NpcParam getSoul is the Sen reward, skillPoint the experience.",
+   "how": "Ours: src/experience.rs reward_kills adds getSoul times the balloon rate to config.player.sen; the HUD and the shops show it. sekiro-rs has no wallet in crates/sim.",
+   "sources": [
+    {
+     "kind": "data",
+     "ref": "extracted/json/params/TentativePlayerParam.json"
+    },
+    {
+     "kind": "data",
+     "ref": "extracted/json/params/NpcParam.json"
+    },
+    {
+     "kind": "ours-kb",
+     "ref": "docs/kb/damage.md"
+    }
+   ],
+   "confidence": "data",
+   "ours": {
+    "has": "yes",
+    "where": "src/experience.rs; src/items.rs (sen_rate); src/hud.rs"
+   },
+   "his": {
+    "has": "no",
+    "where": ""
+   },
+   "check": "Kill an enemy: the Sen counter rises by its getSoul; die with no resurrection: the Sen is halved. Sim test: reward() of an NpcParam row returns (skillPoint, getSoul).",
+   "note": ""
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "items.item-lots",
+  "verdict": "corrected",
+  "reason": "ItemLotParam has 1926 rows and ResourceItemLotParam 261, and Spirit Emblem drops come from NpcParam resourceItemLotParamId (category 1) and Regenerative Power from resourceItemLotParamId2 (category 5), not from ItemLotParam; ours src/drops.rs reads both.",
+  "fix": {
+   "summary": "ItemLotParam rows (NpcParam itemLotId_1 to 6) are the lots that kills, treasure and events hand out. Spirit Emblem drops come from ResourceItemLotParam through NpcParam resourceItemLotParamId, Regenerative Power from resourceItemLotParamId2.",
+   "values": "ItemLotParam 1926 rows, ResourceItemLotParam 261 rows. NpcParam fields: itemLotId_1..6, resourceItemLotParamId, resourceItemLotParamId2, ninsatsuResourceItemLotId_1 and _2 (deathblow drops).",
+   "how": "Ours: src/drops.rs rolls itemLotId_1..6 as pickups at the body and the resource lots for emblems and Regenerative Power. sekiro-rs has no drop code.",
+   "sources": [
+    {
+     "kind": "data",
+     "ref": "extracted/json/params/ItemLotParam.json"
+    },
+    {
+     "kind": "data",
+     "ref": "extracted/json/params/ResourceItemLotParam.json"
+    },
+    {
+     "kind": "data",
+     "ref": "extracted/json/params/NpcParam.json"
+    }
+   ],
+   "confidence": "data",
+   "ours": {
+    "has": "yes",
+    "where": "src/drops.rs"
+   },
+   "his": {
+    "has": "no",
+    "where": ""
+   },
+   "check": "Kill an Ashina soldier several times: pickups drop at the body at the lot's rates and Spirit Emblems arrive through the resource lot. Sim test in src/drops.rs.",
+   "note": ""
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "npcs.enemy-npcparam-row",
+  "verdict": "corrected",
+  "reason": "The NpcParam row (1279 rows) has hp, stamina, resistances, ninsatuNum, getSoul, skillPoint, item lots and spEffectID0 to 31 but no model id or AI id; the model comes from the MSB part and the AI from the part's think id.",
+  "fix": {
+   "summary": "One NpcParam row per enemy type and variant holds its HP, posture (stamina), resistances, deathblow marks (ninsatuNum), rewards (getSoul, skillPoint), item lots, spEffectID0 to 31 and hit sizes. The model and the AI are not in the row: the MSB part names the model and the think and event ids; many other records read from the row.",
+   "values": "1279 rows. Fields: hp, stamina, staminaRecoverBaseVel, ninsatuNum, getSoul, skillPoint, itemLotId_1..6, resourceItemLotParamId, spEffectID0..31, def_* and *DamageCutRate. No model or AI field (normalChangeModelId only swaps a model).",
+   "how": "Ours: Combat::npc(a) in src/data.rs hands the row to enemy.rs, experience.rs and drops.rs. sekiro-rs reads typed params in crates/formats/src/param/typed.rs.",
+   "sources": [
+    {
+     "kind": "data",
+     "ref": "extracted/json/params/NpcParam.json"
+    },
+    {
+     "kind": "ours-kb",
+     "ref": "docs/kb/enemy.md"
+    }
+   ],
+   "confidence": "data",
+   "ours": {
+    "has": "yes",
+    "where": "src/data.rs (Combat::npc); src/enemy.rs"
+   },
+   "his": {
+    "has": "yes",
+    "where": "crates/formats/src/param/typed.rs"
+   },
+   "check": "Print the NpcParam row of an Ashina soldier and compare its hp and stamina with the enemy's in-game HP and posture bars.",
+   "note": ""
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "progression.event-flags",
+  "verdict": "corrected",
+  "reason": "Ours src/enemy/script.rs and src/emevd.rs evaluate and set event flags and sekiro-rs sim/events.rs has flag() and set_flag(), so both cover it; the record also listed no source.",
+  "fix": {
+   "summary": "Saved on/off and counter bits that EMEVD, ESD and params read and set; they carry story state, boss defeats, idol unlocks and talk gates. Flag ranges also drive visuals, such as the 9800 to 9803 story-time ladder.",
+   "values": "Examples: boss flags 9303 to 9306, story-time ladder 9800 to 9803 (event 820), fire branch 8302. EMEVD 2003[2] sets a flag, 3[0] and 3[1] test one or a range, 3[10] counts a range.",
+   "how": "Ours: enemy/script.rs holds the flag set the events read and write; emevd.rs reads events generically from the files. sekiro-rs: Events::flag / set_flag in crates/sim/src/events.rs and the story presets in crates/sim/src/story.rs.",
+   "sources": [
+    {
+     "kind": "data",
+     "ref": "extracted/event/common.emevd"
+    },
+    {
+     "kind": "sekiro-rs-doc",
+     "ref": "docs/LIGHTING.md"
+    },
+    {
+     "kind": "ours-kb",
+     "ref": "docs/kb/enemy.md"
+    }
+   ],
+   "confidence": "data",
+   "ours": {
+    "has": "yes",
+    "where": "src/enemy/script.rs; src/emevd.rs"
+   },
+   "his": {
+    "has": "yes",
+    "where": "crates/sim/src/events.rs; crates/sim/src/story.rs"
+   },
+   "check": "Kill a boss and check its defeat flag is set and its fog wall stays open. Sim test: set_flag(9303) then event 820 raises 9800.",
+   "note": ""
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "arts.shinobi-ninjutsu",
+  "verdict": "corrected",
+  "reason": "ThrowKindParam rows 201 to 203, 41201 to 41203 and 500201 (12 rows in all) carry throwSkillId 2100, 2110 and 2120 (blood smoke, puppet, Encha), but neither project implements ninjutsu; ours only lists the menu category.",
+  "fix": {
+   "summary": "Equipped ninjutsu arts such as Bloodsmoke, Puppeteer and Encha: the equipped art picks the special stealth deathblow throw row (ThrowKindParam throwSkillId 2100, 2110, 2120) and applies its effect after the stab.",
+   "values": "EquipParamGoods rows 2100, 2110, 2120. ThrowKindParam rows 201, 202, 203 (behind), 41201 to 41203 (break), 500201 (roof) carry the matching throwSkillId; 12 rows have one.",
+   "how": "Neither project: ours only has the Ninjutsu Techniques menu tab (src/game_menu.rs); sekiro-rs has no ninjutsu code.",
+   "sources": [
+    {
+     "kind": "data",
+     "ref": "extracted/json/params/ThrowKindParam.json"
+    },
+    {
+     "kind": "data",
+     "ref": "extracted/json/params/EquipParamGoods.json"
+    }
+   ],
+   "confidence": "data",
+   "ours": {
+    "has": "no",
+    "where": "src/game_menu.rs (menu tab only)"
+   },
+   "his": {
+    "has": "no",
+    "where": ""
+   },
+   "check": "Equip Bloodsmoke and stab an unaware enemy from behind: the special throw plays and the smoke effect follows. Not testable until the art exists.",
+   "note": ""
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "combat.hit-effects",
+  "verdict": "corrected",
+  "reason": "Ours src/vfx.rs hit_sfx and src/data.rs read HitEffectSfxConcept(JustGuard)Param and HitEffectSfxAngleParam, and sekiro-rs sim/hit_fx.rs and decals.rs do the same, so both cover it.",
+  "fix": {
+   "summary": "HitEffectSfxConceptParam (HitEffectSfxConceptJustGuardParam for a deflect) column groups are indexed by the attacker's atkMaterial_forSfx; the HitEffectSfxParam row picks the spark FXR, the decal and the sound by the target's materialSfx; HitEffectSfxAngleParam picks the turn row (1 upper, 2 bottom, 3 left, 4 right).",
+   "values": "Concept group column per material (0 iron, 3 body); angle rows 1 to 4; blood decal id 600000000 + materialSfx1*1000 + decalBaseId + atkPow.",
+   "how": "Ours: vfx::hit_sfx picks the FXR and fxr.rs plays it; gore.rs places the decal. sekiro-rs: crates/sim/src/hit_fx.rs resolves the rows and crates/game/src/decals.rs places the stain.",
+   "sources": [
+    {
+     "kind": "data",
+     "ref": "extracted/json/params/HitEffectSfxParam.json"
+    },
+    {
+     "kind": "data",
+     "ref": "extracted/json/params/HitEffectSfxAngleParam.json"
+    },
+    {
+     "kind": "ours-kb",
+     "ref": "docs/kb/damage.md"
+    }
+   ],
+   "confidence": "data",
+   "ours": {
+    "has": "yes",
+    "where": "src/vfx.rs (hit_sfx); src/data.rs; src/gore.rs"
+   },
+   "his": {
+    "has": "yes",
+    "where": "crates/sim/src/hit_fx.rs; crates/game/src/decals.rs"
+   },
+   "check": "Hit an armoured enemy and then a bare one: the spark and sound differ by material; a deflect shows the just-guard sparks.",
+   "note": ""
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "map.story-clock",
+  "verdict": "corrected",
+  "reason": "Common events 820 and 100 show there is no running clock: 820 raises flags 9800 and 9801 from boss flags 9303 to 9306 and 100 reads 9800 to 9803 as a cumulative ladder to pick the variant, sky and sub id.",
+  "fix": {
+   "summary": "The world time stage is a cumulative story ladder (flags 9800 to 9803) raised as bosses fall; it picks the lighting variant, the sky dome and the gparam sub id. It is not a running clock. Enemy scaling rows are separate.",
+   "values": "None on = morning (variant 1); 9800 afternoon; 9800 and 9801 evening; up to 9802 night; 9803 is the last step. Event 820: one of 9303 to 9306 raises 9800; three raise 9800 and 9801. 9802 and 9803 are not set by any common event.",
+   "how": "Ours: src/sky.rs reads 9800 to 9803 and src/map.rs has the hours and a debug DayCycle. sekiro-rs: crates/sim/src/story.rs (StoryTime::from_flags) and crates/game/src/map_story.rs.",
+   "sources": [
+    {
+     "kind": "data",
+     "ref": "extracted/event/common.emevd"
+    },
+    {
+     "kind": "sekiro-rs-doc",
+     "ref": "docs/LIGHTING.md"
+    },
+    {
+     "kind": "ours-kb",
+     "ref": "docs/kb/sky_shader.md"
+    }
+   ],
+   "confidence": "data",
+   "ours": {
+    "has": "partial",
+    "where": "src/sky.rs; src/map.rs (ENV_HOURS, DayCycle)"
+   },
+   "his": {
+    "has": "yes",
+    "where": "crates/sim/src/story.rs; crates/game/src/map_story.rs"
+   },
+   "check": "Set flag 9800 and then 9801 in the Outskirts: the sky and the light move from morning to afternoon to evening.",
+   "note": ""
+  },
+  "needs_recording": false
+ }
+]

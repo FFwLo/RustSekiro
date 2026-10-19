@@ -42,7 +42,7 @@ fn arena_fx(source_map: &str, origin: Vec3, arena_yaw: f32) -> Vec<(i64, Transfo
             let p = &e["pos"];
             let pos = crate::fog_wall::map_to_arena(origin, arena_yaw, Vec3::new(f(&p[0]), f(&p[1]), f(&p[2])));
             let follows = e["name"].as_str().is_some_and(|n| n.contains("カメラ"));
-            if !follows && Vec2::new(pos.x, pos.z).length() > REACH {
+            if !follows && (pos - crate::map::frame().offset).xz().length() > REACH {
                 return None;
             }
             let r = &e["rot"];

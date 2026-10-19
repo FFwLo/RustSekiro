@@ -5,7 +5,7 @@ Usage: python tools/boss_audit.py [--run] [--secs 240] [row ...]   (no rows: eve
 --run first plays each fight headless (sim_tests boss_audit: real models, an unkillable Wolf who
 walks up, every phase via break + deathblow) into <out>/<row>.tsv and its script trace into
 <out>/<row>.err. Then, per fight, it compares with the recordings (docs/kb/recordings.md,
-C:\\DeadlockModding\\memscope-data\\logs\\rec_*\\rec.db):
+../memscope-data/logs/rec_*/rec.db):
 - characters: the rows that fought near the boss in Sekiro, and whether Sv1 has their model,
   cloth and character data;
 - attacks per phase: a000_003xxx-005xxx anims Sekiro played and Sv1 never did (and the other
@@ -27,7 +27,7 @@ import sys
 from collections import Counter, defaultdict
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-LOGS = r'C:\DeadlockModding\memscope-data\logs'
+LOGS = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'memscope-data', 'logs')
 OUT = os.path.join(os.environ.get('TEMP', '.'), 'sv1_boss_audit')
 EXT = os.path.join(ROOT, 'extracted')
 

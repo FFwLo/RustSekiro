@@ -139,7 +139,7 @@ pub(crate) fn a_hit_under_flag_24_keeps_wolfs_grapple() {
     assert_eq!(a.kb_vel, Vec3::ZERO, "no knockback under flag 24");
 }
 
-/// Wolf's cut that plays no reaction (mid-swing: the enemy_mid_swing setup, live) still marks
+/// Wolf's cut that plays no reaction (a swing under ChrActionFlag 24: the enemy_mid_swing setup) still marks
 /// the map AI hold's damage wake: it is set where Wolf's HP damage lands, not only by a reaction
 /// (react_from), so a held MSB enemy cut this way wakes (EMEVD 4[1] / 3[23]; 2026-10-12 round 16).
 #[test]
@@ -149,7 +149,7 @@ pub(crate) fn a_cut_with_no_reaction_still_wakes_a_held_enemy() {
         let world = app.world_mut();
         let mut q = world.query::<(&mut Enemy, &mut Actor)>();
         let (mut e, mut a) = q.single_mut(world).unwrap();
-        e.force_anim(&mut a, "a000_003000");
+        e.force_anim(&mut a, "a000_003003");
         a.t = 7.0 / TAE_FPS;
         a.prev_t = a.t;
         a.yaw = std::f32::consts::PI;
@@ -163,7 +163,7 @@ pub(crate) fn a_cut_with_no_reaction_still_wakes_a_held_enemy() {
         }
     }
     assert!(log_text(&app).contains("you hit"), "{}", log_text(&app));
-    assert_eq!(enemy_state(&mut app).1, "a000_003000", "it reacted: not the no-reaction case");
+    assert_eq!(enemy_state(&mut app).1, "a000_003003", "it reacted: not the no-reaction case");
     let world = app.world_mut();
     assert!(world.query::<&Enemy>().single(world).unwrap().hurt_by_wolf, "no damage wake");
 }

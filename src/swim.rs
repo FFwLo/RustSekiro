@@ -227,6 +227,9 @@ fn kicks(a: &mut Actor, d: &CharData, c: &Controls, under: bool, moving: bool, e
     }
 }
 
+/// c0000_define FALL_HEIGHT_LONG_STIFF_LAND_WATER (m).
+const FALL_HEIGHT_LONG_STIFF_LAND_WATER: f32 = 20.0;
+
 /// The swim's input step, in player.rs decide before the hug / hang: true while Wolf swims (the
 /// rest of decide does not run).
 #[allow(clippy::too_many_arguments)]
@@ -256,7 +259,11 @@ pub fn tick(p: &mut Player, a: &mut Actor, d: &CharData, tf: &Transform, c: Cont
             // Into the water: a swim jump lands back in it (LandWaterSwimKickMoveJump), a fall
             // lands in place or swimming on (LandWaterFreeFallInSitu / SwimMoveStartFromLandWater;
             // the HKS's LandWaterFreeFall has no clip), a walk wades in (StandMoveToSwim).
-            let state = if a.state.starts_with("SwimKickMoveJump") {
+            // From FALL_HEIGHT_LONG_STIFF_LAND_WATER (20 m, c0000_define) first: the long stiff
+            // water landing (BEH_R_LAND_WATER 2131, a000_210011; atlas movement.landing-stiffness).
+            let state = if falling && p.air_top - tf.translation.y >= FALL_HEIGHT_LONG_STIFF_LAND_WATER {
+                "LandWaterFreeFallLongStiff"
+            } else if a.state.starts_with("SwimKickMoveJump") {
                 "LandWaterSwimKickMoveJump"
             } else if falling && stick.length_squared() > 0.01 {
                 "SwimMoveStartFromLandWater"
@@ -324,7 +331,7 @@ pub fn tick(p: &mut Player, a: &mut Actor, d: &CharData, tf: &Transform, c: Cont
     if (a.state.contains("ItemGourdDrink") || a.state.contains("ItemReturnStatue")) && !ended {
         return Held;
     }
-    let landing = matches!(a.state.as_str(), "LandWaterSwimKickMoveJump" | "LandWaterFreeFallInSitu" | "SwimMoveStartFromLandWater");
+    let landing = matches!(a.state.as_str(), "LandWaterSwimKickMoveJump" | "LandWaterFreeFallInSitu" | "LandWaterFreeFallLongStiff" | "SwimMoveStartFromLandWater");
     let busy = (matches!(a.state.as_str(), "StandMoveToSwim" | "SwimToDive" | "DiveToSwim" | JUMP_READY) || landing) && !ended;
     if !swim.diving {
         // Out where it gets shallow: SwimToStandMove (SwimToStandMoveInSitu standing still).

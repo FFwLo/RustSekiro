@@ -1,0 +1,1700 @@
+[
+ {
+  "id": "frontend.boot-logos",
+  "category": "frontend",
+  "title": "Logo sprites at launch",
+  "summary": "The title sprite sheet carries the logos shown before the title: FromSoftware, Activision and two CubeGame frames, plus a pop-up plate. The order and timing of the logo screens are not in the extracted data.",
+  "values": "SB_Title sprites: MENU_FROMSOFTWARE_Logo, MENU_Activision_Logo, MENU_CubeGame_01, MENU_CubeGame_02, MENU_Pop_up. Footer text 401001 carries the FromSoftware copyright and the Activision trademark line. Menu screens 01_900_Black and 01_910_Fade exist.",
+  "how": "Scaleform FE screens in the menu movie; the exe names 01_900_Black, 01_910_Fade, 05_000_Title.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/menu_sprites/sb_title"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/msg/engus/menu.msgbnd.d/NTC_メニューテキスト.fmg"
+   },
+   {
+    "kind": "exe",
+    "ref": "extracted/sekiro_steamless_dearxan.exe strings"
+   }
+  ],
+  "confidence": "open-question",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "needs": [
+   {
+    "id": "frontend.boot-opening-movie",
+    "why": "the logos run before the opening movie and title"
+   }
+  ],
+  "check": "Launch the exe and time the logo screens with a screen capture; compare with the sprite list.",
+  "note": "Order is not settled: nothing in the data gives it. Needs one recording of a cold start."
+ },
+ {
+  "id": "frontend.boot-eula",
+  "category": "frontend",
+  "title": "Licence agreement and online terms screen",
+  "summary": "On a first start (or after an update) the title flow can show a licence agreement and an online-services terms page that the player accepts or declines. These are menu texts and a screen named 05_041_EULA.",
+  "values": "Texts 401500 'ACTIVISION SOFTWARE LICENSE AND SERVICE AGREEMENT', 401508 'Sekiro: Shadows Die Twice Online Services Terms of Use', 401510 Accept, 401511 Decline; long legal body texts 601001 to 608024 in the system message file. Exe debug flags MenuMan.EnableTitleFlowEULADebug and EnableTitleFlowTosDebug.",
+  "how": "TitleFlowStep shows 05_041_EULA before the title menu when the profile has not accepted the terms yet.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/msg/engus/menu.msgbnd.d/NTC_メニューテキスト.fmg"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/msg/engus/menu.msgbnd.d/NTC_システムメッセージ_win64.fmg"
+   },
+   {
+    "kind": "exe",
+    "ref": "extracted/sekiro_steamless_dearxan.exe strings"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "needs": [],
+  "check": "Delete the save and settings and start: the agreement page should come before PRESS ANY BUTTON.",
+  "note": "When exactly it shows (once per profile, per version) is not traced."
+ },
+ {
+  "id": "frontend.boot-opening-movie",
+  "category": "frontend",
+  "title": "Movie files and the wait before the opening movie",
+  "summary": "The exe has movie slots for Advertise, Title, Opening, StaffRoll, EndingBad, EndingGood and OldTale, played through the Bink 2 player. MenuParam waits 3.5 s before the opening movie starts.",
+  "values": "MenuParam PreOpeningMovie_WaitSec 3.5 (Paramdex: wait before the OP movie, SEQ 15261). Install holds only openingmovie.bk2 (314346532 bytes) and stafflistmovie.bk2 (598104408 bytes); path format movie:/%s%s.bk2; classes CSMovie, CSMovieIns (steps Init, Wait_Request, Wait_Setup, Wait_Play, Finish), screen 01_920_Movie.",
+  "how": "CSMovieIns is a step machine: request, setup, play, finish. Subtitles come from the movie subtitle text file (ids 8000000 to 8000070).",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/MenuParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "../reference/Paramdex/SDT/Defs/MenuParam.xml"
+   },
+   {
+    "kind": "exe",
+    "ref": "extracted/sekiro_steamless_dearxan.exe strings"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/mechanics-atlas.json cutscenes.movies-bk2"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "needs": [
+   {
+    "id": "cutscenes.movies-bk2",
+    "why": "the movie file list is recorded there"
+   },
+   {
+    "id": "dialogue.movie-subtitles",
+    "why": "subtitle ids"
+   }
+  ],
+  "check": "Start a new game and time from the frame the opening movie begins to the 3.5 s wait before it.",
+  "note": "Which of the unused slots (Advertise, Title, EndingBad, EndingGood, OldTale) ever play is not known; no files for them are installed."
+ },
+ {
+  "id": "frontend.boot-press-any-button",
+  "category": "frontend",
+  "title": "Press any button screen",
+  "summary": "After the logos the title screen shows PRESS ANY BUTTON over the Sekiro logo. Any key or pad button moves on to the title menu.",
+  "values": "Texts 101000 and 401000 'PRESS ANY BUTTON'; menu screen 05_000_Title; icon token 401100 (kgicon 2203). Exe step GamesComTitleStep / TitleStep, flag IsTitleStart.",
+  "how": "TitleFlowStep waits for any input, then opens the menu list.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/msg/engus/menu.msgbnd.d/NTC_メニューテキスト.fmg"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/msg/engus/menu.msgbnd.d/NTC_システムメッセージ_win64.fmg"
+   },
+   {
+    "kind": "exe",
+    "ref": "extracted/sekiro_steamless_dearxan.exe strings"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "partial",
+   "where": "src/menu.rs (Screen::Title shows the choices at once, no press-any-button step)"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "needs": [
+   {
+    "id": "frontend.title-screen",
+    "why": "the same screen"
+   }
+  ],
+  "check": "Launch and press a key at the title: the choices should appear only after it.",
+  "note": ""
+ },
+ {
+  "id": "frontend.boot-save-check",
+  "category": "frontend",
+  "title": "Save data check and load errors at start",
+  "summary": "While the title flow starts it shows Checking for save data, Creating save data or Updating save data. Version mismatch, corrupt data and failed saves each have their own dialog.",
+  "values": "Texts 401110 Checking for save data, 401111 Creating save data, 401112 Updating save data; 401113 and 401114 game/save version mismatch (apply the Steam update); 401102, 401103, 401106, 401107 (offer to delete corrupt data), 401721, 401991; in-game 4191 to 4193 failed save (YES retries, NO returns to title).",
+  "how": "SaveLoad2 library plus CreateSaveDataBrokenDialogJob in MenuMan.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/msg/engus/menu.msgbnd.d/NTC_システムメッセージ_win64.fmg"
+   },
+   {
+    "kind": "exe",
+    "ref": "extracted/sekiro_steamless_dearxan.exe strings"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "needs": [],
+  "check": "Start with a damaged save file: the corrupt-data dialog should offer to delete it.",
+  "note": ""
+ },
+ {
+  "id": "frontend.boot-autosave-notice",
+  "category": "frontend",
+  "title": "Autosave notice and the save icon",
+  "summary": "No dedicated 'this game autosaves' notice text is in the menu files. The game shows a small save icon in a corner whenever it writes, drawn from 30 frames in the SB_SaveIcon sheet.",
+  "values": "AutoSaveIcon exe symbol; SB_SaveIcon sprites MENU_SaveIcon_00001 to 00030 (31 files with the base). Text search for autosave, do not turn off, saving found nothing. The icon is a blue flame per the Prima guide.",
+  "how": "The menu system shows the icon while FrpgSaveLoadMan writes the profile.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/menu_sprites/sb_saveicon"
+   },
+   {
+    "kind": "exe",
+    "ref": "extracted/sekiro_steamless_dearxan.exe strings"
+   },
+   {
+    "kind": "web",
+    "ref": "https://primagames.com/tips/save-your-progress-sekiro-shadows-die-twice"
+   }
+  ],
+  "confidence": "community",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "needs": [],
+  "check": "Rest at an idol and watch the corner of the screen for the flame icon.",
+  "note": "Whether a notice shows at first boot is open: a message that asks players not to power off may sit in a gfx file, not in the FMG files."
+ },
+ {
+  "id": "frontend.loading-screens",
+  "category": "frontend",
+  "title": "Loading screens",
+  "summary": "Loading shows a black screen with art and a tip. The exe has screens NowLoading, NowLoading2, NowLoading3, NowLoading_Thanks and NowLoading_UserGuide, a KnowledgeLoadingScreen class for tips and a CSFakeLoadingScreen. No load time number is in the data; the wait depends on disk and map size.",
+  "values": "Menu names 04_NowLoading, 02_903_NowLoading2, 02_904_NowLoading3, 02_905_NowLoading_Thanks, 02_990_NowLoading_UserGuide; classes CSNowLoadingHelper, KnowledgeLoadingScreen, CSFakeLoadingScreen; debug text 'Nowloading Screen ID:%d' / 'State:%d'; flag Game.DisableNowLoading.",
+  "how": "CSNowLoadingHelper picks the screen id while the map streams. CSFakeLoadingScreen looks like a cover shown for short transitions such as an idol warp.",
+  "sources": [
+   {
+    "kind": "exe",
+    "ref": "extracted/sekiro_steamless_dearxan.exe strings"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "partial",
+   "where": "crates/game/src/play_gate.rs (waits for the whole map and steady frames before play)"
+  },
+  "needs": [
+   {
+    "id": "map.idol-travel",
+    "why": "idol warps cut to the loading screen"
+   }
+  ],
+  "check": "Warp between idols and capture the loading frame; note which art and tip it shows.",
+  "note": "The loading art images are inside the menu movie data, not extracted yet. Load times need a stopwatch on a recording (open question)."
+ },
+ {
+  "id": "frontend.loading-tips",
+  "category": "frontend",
+  "title": "Loading tips text and unlock flags",
+  "summary": "There are 86 tip titles and 86 tip bodies. KnowledgeLoadScreenItemParam has 85 rows that point at a tip; 77 are unlocked by an event flag (many by 6341 and 6342) so tips appear as the player meets the matching mechanic.",
+  "values": "Files ローディングタイトル / ローディングテキスト ids 50 to 316 (50 Lock On to target, 53 Mikiri Counter, 123 Finisher Deathblow, 125 Unseen Aid Chance, 135 Free Combat, 153 Healing Gourd). KnowledgeLoadScreenItemParam fields unlockFlagId, invalidFlagId (all -1), msgId; row 1 msgId 51 unlock 6341. Common events 810 and 811 call Disable Loading Screen Tips 2003[76].",
+  "how": "The tip pool is the rows whose unlock flag is on; the screen draws one at random. After each ending cutscene branch the event sets Disable Loading Screen Tips to 1 so the next load shows none.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/msg/engus/menu.msgbnd.d/ローディングテキスト.fmg"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/msg/engus/menu.msgbnd.d/ローディングタイトル.fmg"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/KnowledgeLoadScreenItemParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/event/common.emevd event 810, 811"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "needs": [
+   {
+    "id": "progression.event-flags",
+    "why": "the unlock flags"
+   }
+  ],
+  "check": "Rest at an idol early and late in a run: the tip list should grow as flags 6341 and later turn on.",
+  "note": "How the random pick is made is not traced."
+ },
+ {
+  "id": "frontend.title-screen",
+  "category": "frontend",
+  "title": "Title screen look",
+  "summary": "The title is a dark screen with the large brush kanji for Sekiro behind the SEKIRO letters, SHADOWS DIE TWICE under them and the menu list. A GOTY variant (05_002 and 05_003) exists in the menu names.",
+  "values": "SB_Title: MENU_Title_SEKIRO; SB_Title_02: MENU_Title_S, E, K, I, R, O; MENU_Shadows, MENU_DieTwice. Menu screens 05_000_Title, 05_001_Title_Logo, 05_002_Title_GOTY, 05_003_Title_Logo_GOTY.",
+  "how": "Scaleform title movie; TitleFlowStep drives it.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/menu_sprites/sb_title"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/menu_sprites/sb_title_02"
+   },
+   {
+    "kind": "exe",
+    "ref": "extracted/sekiro_steamless_dearxan.exe strings"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "src/menu.rs doc comment"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/menu.rs (build_title)"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "needs": [],
+  "check": "Open the title in our build next to the game and compare the letter sizes.",
+  "note": "Ours: sizes by eye from the user's reference; the title movie behind is not decoded."
+ },
+ {
+  "id": "frontend.title-menu-items",
+  "category": "frontend",
+  "title": "Title menu items",
+  "summary": "The title list has CONTINUE, LOAD GAME, NEW GAME, SYSTEM, INFORMATION, LOG IN, SWITCH PROFILE and QUIT GAME, with ONLINE and OFFLINE labels and an App Ver. line. Which of them show depends on the save state; the data has the labels, not the rules.",
+  "values": "Texts 401301 CONTINUE, 401302 LOAD GAME, 401303 NEW GAME, 401304 SYSTEM, 401305 INFORMATION, 401306 LOG IN, 401307 SWITCH PROFILE, 401309 QUIT GAME, 401310 ONLINE, 401311 OFFLINE, 401320 App Ver. 'SETTINGS' 401350, 'LANGUAGE' 401351 (title language page).",
+  "how": "TitleFlowStep builds the list. With no save the Continue and Load Game entries have nothing to open; community play shows New Game, System and Quit first.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/msg/engus/menu.msgbnd.d/NTC_メニューテキスト.fmg"
+   },
+   {
+    "kind": "exe",
+    "ref": "extracted/sekiro_steamless_dearxan.exe strings"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "src/menu.rs (Start, Fight, Options, Quit)"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "needs": [
+   {
+    "id": "frontend.save-slots",
+    "why": "Continue and Load Game depend on the profile list"
+   }
+  ],
+  "check": "Start with no save file and note the items; then with a save and note again.",
+  "note": "The no-save item set is not in the data. Ours shows Start, Fight, Options, Quit."
+ },
+ {
+  "id": "frontend.title-load-game",
+  "category": "frontend",
+  "title": "Continue and Load Game",
+  "summary": "Continue opens the last used profile at once. Load Game opens a profile list showing the last saved time and the play time, and asks before starting the chosen profile.",
+  "values": "Texts 406000 LOAD GAME, 406010 Last Saved, 406020 Play Time, 406011 'Start with selected profile?'; menu 05_010_ProfileSelect; class MenuSaveDataSummary and ProfileSummary in the save.",
+  "how": "The profile summary (SaveDataProfileSummary) is read for every slot without loading the whole save.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/msg/engus/menu.msgbnd.d/NTC_メニューテキスト.fmg"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/msg/engus/menu.msgbnd.d/NTC_ダイアログ.fmg"
+   },
+   {
+    "kind": "exe",
+    "ref": "extracted/sekiro_steamless_dearxan.exe strings"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "needs": [],
+  "check": "With one save, press Load Game and read the row: last saved date and play time.",
+  "note": ""
+ },
+ {
+  "id": "frontend.title-new-game",
+  "category": "frontend",
+  "title": "New Game",
+  "summary": "New Game with an existing profile asks to delete it and start over. A new game then goes through a short wizard for brightness and controls before the opening movie. The character creator screens (04_ChrMake) are left from the engine and not used.",
+  "values": "Texts 406001 NEW GAME, 406012 'Delete the selected profile and start a new game?', 406013 'This will delete the selected profile. Are you sure?', 401701 'Unable to create any more Profiles ... You may create up to 10 Profiles'. Screens 02_040_NewGameWizard, 02_041_NewGameWizardBase, 05_031_NewGame_BrightnessSetting, 05_032_NewGame_ControlSetting; class CSNewGameWizardTop. Flag <NEWGAME in the title step.",
+  "how": "The wizard writes brightness and the control scheme, then the title flow starts the game at the opening movie.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/msg/engus/menu.msgbnd.d/NTC_メニューテキスト.fmg"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/msg/engus/menu.msgbnd.d/NTC_ダイアログ.fmg"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/msg/engus/menu.msgbnd.d/NTC_システムメッセージ_win64.fmg"
+   },
+   {
+    "kind": "exe",
+    "ref": "extracted/sekiro_steamless_dearxan.exe strings"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "partial",
+   "where": "src/menu.rs (Start begins at once)"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "needs": [
+   {
+    "id": "frontend.boot-opening-movie",
+    "why": "the movie that follows"
+   },
+   {
+    "id": "progression.chara-init-area-presets",
+    "why": "row 10000 New game sets the kit"
+   }
+  ],
+  "check": "Choose New Game over a save and read the dialogs in order.",
+  "note": ""
+ },
+ {
+  "id": "frontend.title-information",
+  "category": "frontend",
+  "title": "INFORMATION page",
+  "summary": "The title has an INFORMATION page for news. When nothing is new it says so. It also shows the default spoken language notice.",
+  "values": "Texts 401400 INFORMATION, 401402 'There is nothing new in INFORMATION', 401401 'This title's default spoken language is Japanese.', 401601 'Failed to update INFORMATION'; screen 05_020_TitleInformation.",
+  "how": "Fetched from the Sekiro game server when online.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/msg/engus/menu.msgbnd.d/NTC_メニューテキスト.fmg"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/msg/engus/menu.msgbnd.d/NTC_システムメッセージ_win64.fmg"
+   },
+   {
+    "kind": "exe",
+    "ref": "extracted/sekiro_steamless_dearxan.exe strings"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "needs": [],
+  "check": "Open INFORMATION offline and read the page.",
+  "note": ""
+ },
+ {
+  "id": "frontend.save-file-location",
+  "category": "frontend",
+  "title": "Save file name and place",
+  "summary": "On Windows the save is one .sl2 file with a .bak copy in a folder named by the Steam ID, under AppData Roaming Sekiro. Steam Cloud can sync it.",
+  "values": "%AppData%\\Sekiro\\<SteamID>\\S0000.sl2 and S0000.sl2.bak.",
+  "how": "FrpgSaveLoadMan reads and writes the file; SaveLoad2.Title.EncryptionKey is the file key name in the exe.",
+  "sources": [
+   {
+    "kind": "web",
+    "ref": "https://attackofthefanboy.com/guides/where-to-find-the-sekiro-save-file-location-on-pc/"
+   },
+   {
+    "kind": "exe",
+    "ref": "extracted/sekiro_steamless_dearxan.exe strings"
+   }
+  ],
+  "confidence": "community",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "needs": [],
+  "check": "Open the folder after a rest and watch the file time change.",
+  "note": ""
+ },
+ {
+  "id": "frontend.save-data-chunks",
+  "category": "frontend",
+  "title": "Save data layout",
+  "summary": "The exe names the pieces the save holds: game data, player data, event flags, inventory (Gaitem), equipment history, trophy equip data, option, PC option, PC key config, menu system, profile summary and start point info.",
+  "values": "Classes SaveDataGameDataMan, SaveDataPlayerGameData, SaveDataEvent, SaveDataGaitem, SaveDataEquipHistory, SaveDataEquipMagicData, SaveDataEquipThrowSkillData, SaveDataTrophyEquipData, SaveDataOption, SaveDataPcOption, SaveDataPcKeyConfig, SaveDataMenuSystem, SaveDataProfileSummary, SaveDataStartPointInfo, SaveDataChrInitState, SaveDataObjInitState, SaveDataDecalInitState, SaveDataRematchEvent, SaveDataGhost, SaveDataNetwork, SaveDataFaceData, SaveDataGestureGameData. CSMenuSystemSaveLoad chunks MENU_TITLEFLOW_SAVEDATA and DETAIL_STATUS_VIEW_STATE_SAVEDATA.",
+  "how": "SaveDataInterface.cpp writes each chunk; the event flag chunk is the story state that EMEVD tests.",
+  "sources": [
+   {
+    "kind": "exe",
+    "ref": "extracted/sekiro_steamless_dearxan.exe strings"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "needs": [
+   {
+    "id": "progression.event-flags",
+    "why": "the flag chunk is what the events read"
+   },
+   {
+    "id": "progression.new-game-counter",
+    "why": "GameDataMan holds the cycle count"
+   }
+  ],
+  "check": "Diff two save files taken before and after resting at one idol.",
+  "note": "Byte layout inside each chunk is not mapped here; SekiroTool has offsets for the live copy."
+ },
+ {
+  "id": "frontend.save-slots",
+  "category": "frontend",
+  "title": "Profiles and save slots",
+  "summary": "The menu text allows up to 10 profiles, but the PC game reads one save file, so in practice there is one save per Steam account. New Game replaces it after a confirm.",
+  "values": "Text 401701 'You may create up to 10 Profiles'; screen 05_010_ProfileSelect; 406012 delete and start new. Community: the game reads only one .sl2.",
+  "how": "Profile list code is shared with other platforms; the PC build keeps the single S0000 file.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/msg/engus/menu.msgbnd.d/NTC_システムメッセージ_win64.fmg"
+   },
+   {
+    "kind": "web",
+    "ref": "https://attackofthefanboy.com/guides/where-to-find-the-sekiro-save-file-location-on-pc/"
+   }
+  ],
+  "confidence": "open-question",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "needs": [
+   {
+    "id": "frontend.save-file-location",
+    "why": "the file"
+   }
+  ],
+  "check": "Open Load Game with a fresh install and a save and count the rows.",
+  "note": "Data says 10, community says one. Needs a live look."
+ },
+ {
+  "id": "frontend.autosave-triggers",
+  "category": "frontend",
+  "title": "What triggers an autosave",
+  "summary": "The game saves by itself all the time. In the event scripts a Save Request runs at 32 places: after boss and mini-boss deaths, after story cutscenes and when a respawn point is set. Resting at an idol and Quit Game also save, and item pick-ups are written to the save as they happen.",
+  "values": "Save Request 2000[5] call sites: common 1 (event 910 with Set Player Respawn Point 1112955), common_func 5 (20006000, 20006002, 20006003, 20006004, 20006007: enemy death events), m10 3, m11_00 4, m11_01 1, m11_02 9 (for example 11120100 after the intro cutscene, 11125800 around the Reservoir boss), m13 1, m15 3, m20 2 (plus 2 in the 12_60 copy), m25 1.",
+  "how": "Save Request tells FrpgSaveLoadMan to write the profile. Idols, Quit Game and pick-ups save through the menu and item code, not EMEVD.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/event/common.emevd, common_func.emevd, m*_*.emevd (2000[5])"
+   },
+   {
+    "kind": "web",
+    "ref": "https://primagames.com/tips/save-your-progress-sekiro-shadows-die-twice"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/mechanics-atlas.json map.idol-rest"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "needs": [
+   {
+    "id": "map.idol-rest",
+    "why": "idol rest saves"
+   },
+   {
+    "id": "map.respawn-checkpoint",
+    "why": "respawn points"
+   }
+  ],
+  "check": "Kill a mini-boss and watch for the save icon at its death.",
+  "note": "The idol, item and quit triggers are community only."
+ },
+ {
+  "id": "frontend.save-quit-game",
+  "category": "frontend",
+  "title": "Quit Game from the pause menu",
+  "summary": "Options in the pause menu has Quit Game. It asks to save and return to the title menu, and writing the save there is what keeps the latest progress. Closing the window instead can lose the newest progress and shows a warning on the next start.",
+  "values": "Texts 115002 and 110500 Quit Game; dialog 110500 'This will save the game and return to the Title menu. Are you sure?', 110501 'Quit game and return to title menu?'; 400003 warning shown when the game last ended without Quit Game; help 110500 'Save the game and return to the Title Menu.' Exe Check_ReturnTitle, RegistReturnTitle, OnReturnTitle.",
+  "how": "Quit Game runs the save, then the return-to-title step.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/msg/engus/menu.msgbnd.d/NTC_ダイアログ.fmg"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/msg/engus/menu.msgbnd.d/NTC_システムメッセージ_win64.fmg"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/msg/engus/menu.msgbnd.d/インゲームメニュー.fmg"
+   },
+   {
+    "kind": "exe",
+    "ref": "extracted/sekiro_steamless_dearxan.exe strings"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "src/game_menu.rs (Options list has Return to Title and Quit Game; no save to write)"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "needs": [
+   {
+    "id": "interface.pause-menu",
+    "why": "where the entry lives"
+   }
+  ],
+  "check": "Choose Quit Game, then Continue: you should stand where you quit.",
+  "note": ""
+ },
+ {
+  "id": "frontend.reload-position",
+  "category": "frontend",
+  "title": "Where a reload puts you",
+  "summary": "After Quit Game the web guides say you resume where you quit. After a crash or after dying the game puts you at the last rested idol (or an event respawn point). The data holds the respawn rule; the quit position is not shown in the data.",
+  "values": "Set Player Respawn Point 2003[23] 19 uses (map.respawn-checkpoint); SaveDataStartPointInfo in the save; web: Quit Game acts as a quick save, forced close restarts at the nearest idol without refilling.",
+  "how": "StartPointInfo holds the position written by Quit Game; the respawn point is the idol.",
+  "sources": [
+   {
+    "kind": "exe",
+    "ref": "extracted/sekiro_steamless_dearxan.exe strings"
+   },
+   {
+    "kind": "web",
+    "ref": "https://primagames.com/tips/save-your-progress-sekiro-shadows-die-twice"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/mechanics-atlas.json map.respawn-checkpoint"
+   }
+  ],
+  "confidence": "community",
+  "ours": {
+   "has": "partial",
+   "where": "src/idol.rs (checkpoint idol for death respawn)"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "needs": [
+   {
+    "id": "map.respawn-checkpoint",
+    "why": "the idol and event respawn rule"
+   }
+  ],
+  "check": "Quit Game away from an idol, then Continue; then kill the game process, Continue again and compare spots.",
+  "note": "The StartPointInfo link is inferred from the class name."
+ },
+ {
+  "id": "frontend.newgame-flags",
+  "category": "frontend",
+  "title": "New game flags set at the first load",
+  "summary": "On a fresh save the common start event (event 50) sets flags 8306 and 6001 on and 6000 off, then starts the common events (820 clock, 100 sky, 6930, 6935, 700, 702). Flag 8306 is the story state that places the Sculptor in the Dilapidated Temple.",
+  "values": "common.emevd event 50: SKIP IF 9890 on, SKIP IF 11120100 on, then Set Event Flag 8306=1, 6000=0, 6001=1 and Initialize Event 820, 100, 6930 (twice), 6935, 700, 702. NpcParam 70100000 (Sculptor) stands at m11_02 entity 1120721 while flag 8306 is on.",
+  "how": "Event 0 starts event 50 on every load; the SKIP IF lines make the flag block run only until the intro cutscene flag 11120100 is set.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/event/common.emevd event 50"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/mechanics-atlas.json npcs.story-flags-8301"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "needs": [
+   {
+    "id": "npcs.story-flags-8301",
+    "why": "flag 8306 is one of the story state flags"
+   },
+   {
+    "id": "progression.event-flags",
+    "why": "flag list"
+   }
+  ],
+  "check": "Start a new game and read flags 8306, 6000, 6001 with memscope.",
+  "note": "What 6000 and 6001 mean is not known."
+ },
+ {
+  "id": "frontend.opening-movie-narration",
+  "category": "frontend",
+  "title": "Opening movie narration lines",
+  "summary": "The movie subtitle file holds 71 lines (ids 8000000 to 8000070). They read as the opening narration: the end of the Sengoku era, the war in Ashina, Isshin's coup, the boy taken from the battlefield and trained as a shinobi, and the oath to protect the master. Many ids are blank spacers for pauses.",
+  "values": "ムービー字幕.fmg 8000000 to 8000070; first line 'In the closing years of the Sengoku Era,'; blank spacer lines at 8000005 to 8000008, 8000010 to 8000022 and others; the line 8000063 begins the Shinobi Code speech.",
+  "how": "CSMovieIns shows the line by timecode over the Bink 2 movie.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/msg/engus/menu.msgbnd.d/ムービー字幕.fmg"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/mechanics-atlas.json dialogue.movie-subtitles"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "needs": [
+   {
+    "id": "dialogue.movie-subtitles",
+    "why": "same file, scene link still open"
+   },
+   {
+    "id": "frontend.boot-opening-movie",
+    "why": "the movie that carries them"
+   }
+  ],
+  "check": "Play the opening movie with subtitles on and match the line count to 71 ids.",
+  "note": "Linking the lines to the opening rather than another movie is by content only; no id-to-movie table was found."
+ },
+ {
+  "id": "frontend.intro-cutscene",
+  "category": "frontend",
+  "title": "The first in-engine cutscene",
+  "summary": "After the opening movie the first scene is cutscene 11020020, played by map m11_02 event 11120100 on a fresh game. When it ends the event stores the first respawn point, writes a save and sets the intro-done flag.",
+  "values": "Event 11120100 (m11_02): END IF 8306 off; Play Cutscene to Player 2002[3] (11020020, 16, player 10000); wait for 3[31] Ongoing Cutscene Finished; Set Player Respawn Point 1122102; Save Request; Set Event Flag 11120100. Map sounds 1124120 to 1124125 and SFX 1124130 to 1124140 are set before and after. Event 11120120 then waits 3 s after the flag and awards item lot 3300 only if flag 6910 is on.",
+  "how": "EMEVD runs the cutscene through the Remo player; the flag stops it from playing again.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/event/m11_02_00_00.emevd event 11120100, 11120120"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/mechanics-atlas.json cutscenes.m11-02-list"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "needs": [
+   {
+    "id": "cutscenes.m11-02-list",
+    "why": "scene ids of this map"
+   },
+   {
+    "id": "map.respawn-checkpoint",
+    "why": "respawn point 1122102"
+   }
+  ],
+  "check": "New game: after the movie, the scene plays once and a save icon shows at its end.",
+  "note": "Web: the game starts with the Sculptor's temple scene. Respawn point 1122102 is the temple area per the m11_02 numbering."
+ },
+ {
+  "id": "frontend.first-control",
+  "category": "frontend",
+  "title": "The first controllable moment",
+  "summary": "Control starts in the Dilapidated Temple after the intro scene. Wolf has no sword yet: the first prompt tells him to use stealth and reach the Moon-view Tower. The first Sculptor's Idol is in the temple.",
+  "values": "Show Tutorial Text in m11_02 event 11127305: title 10024500 'Stealth', body 10024501 ('You do not have a sword at the moment ... head to the Moon-view Tower'), image id 220. Web: the Sculptor greets Wolf, the grappling hook is the first thing taught.",
+  "how": "Tutorial text is raised by EMEVD 2007[17] when Wolf reaches the trigger region.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/event/m11_02_00_00.emevd event 11127305"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/msg/engus/menu.msgbnd.d/イベントテキスト.fmg"
+   },
+   {
+    "kind": "web",
+    "ref": "https://sekiroshadowsdietwice.wiki.fextralife.com/Dilapidated+Temple"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "needs": [
+   {
+    "id": "stealth.deathblow-unaware",
+    "why": "the stealth section teaches this"
+   },
+   {
+    "id": "interface.action-guide",
+    "why": "the bottom hints"
+   }
+  ],
+  "check": "New game: the first thing after the scene is walking in the temple with no sword.",
+  "note": ""
+ },
+ {
+  "id": "frontend.menu-tutorial-param",
+  "category": "frontend",
+  "title": "MenuTutorialParam: unlock pop-ups",
+  "summary": "MenuTutorialParam has 30 rows that pop up a help page the first time a menu tab or an idol option is unlocked. Each row has a start flag, an end flag, a view type, a title and a body.",
+  "values": "Fields beginEventFlagId, endEventFlagId, viewType, titleMessageId, descMessageId, textureId (all -1 here). Row 1 flags 6050/6051 'Equipment Menu: Quick Items'; row 7 6074/6075 'Sculptor's Idol Menu'; row 12 6086/6087 'Acquiring Skills'; row 20 6038/6039 'Reflection of Strength'. viewType 0 to 17 groups them by tab (0 equipment, 1 inventory, 2 skills, 5 idol).",
+  "how": "When a tab is opened and the begin flag is on and the end flag off, the page shows and the end flag is set.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/MenuTutorialParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "../reference/Paramdex/SDT/Defs/MenuTutorialParam.xml"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/msg/engus/menu.msgbnd.d/イベントテキスト.fmg"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "needs": [],
+  "check": "Unlock the prosthetic slots and open Equipment: the page for row 2 should appear once.",
+  "note": "The viewType enum has no name list in Paramdex; the tab meaning is from the row order."
+ },
+ {
+  "id": "frontend.tutorial-text-events",
+  "category": "frontend",
+  "title": "Show Tutorial Text from events",
+  "summary": "Event scripts show a titled help box with 2007[17] Show Tutorial Text at 50 call sites: 24 in common events and the rest in map events (the first area teaches stealth, quick items, posture, deflection, lock-on, counter-slash and multi-deathblow bosses). Hanbei's training adds a 'Begin Combat Tutorial?' prompt (event text 11000020) and a Swordplay Training (Elementary) lesson (10020840).",
+  "values": "Arguments (pre-title id 0, title text id, body text id, image texture id). Common events 250 to 299: 10024680 Resurrection (id 208), 10024560 Fitting Prosthetic Tools (222), 10024800 Loss upon Death (241), 10024810 Unseen Aid (242), 10024820 Dragonrot (243), 10024880 Remnants (300). m11_02: 10024500 Stealth (220), 10024510 Using Quick Items (203), 10024750 Posture and Deathblows (234), 10024760 Deflection (205), 10024770 Lock-on (235), 10024520 Counter-slash (236), 10024530 Deathblow Against Strong Enemies (206). m11_00 event 11105275 runs the training lessons (ids 250 to 259).",
+  "how": "The fourth argument is the Image Texture ID; it picks the picture in SB_Tutorial (43 sprites).",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/event/common.emevd 250-299, m10/m11 events (2007[17])"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/msg/engus/menu.msgbnd.d/イベントテキスト.fmg"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/menu_sprites/sb_tutorial_02"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "needs": [
+   {
+    "id": "npcs.hanbei",
+    "why": "the combat tutorial trainer"
+   }
+  ],
+  "check": "Walk through the first area: the Stealth page appears first, then Quick Items.",
+  "note": "Which event flag makes each page appear once is in each event's first lines; not tabulated."
+ },
+ {
+  "id": "frontend.tutorial-hints",
+  "category": "frontend",
+  "title": "One-line control hints",
+  "summary": "Besides pop-up pages there are one-line hints with key icons (Control Camera, Jump, Wall Hug, Lock-on, Attack, Deflect, Sprint and others) in the event text. They show at the bottom as the player meets each move.",
+  "values": "イベントテキスト 10021000 to 10021560 are the hints, for example 10021120 'Toggle Target Lock-on', 10021150 'Deflect' (press as the enemy attack lands), 10021560 'Sprint'; 10020051 combat box; 10021500 'Commune' at an idol. Icons are tokens like <?kgiconKc@12?> from the key guide table.",
+  "how": "The action guide shows the line for the move the player is allowed to do.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/msg/engus/menu.msgbnd.d/イベントテキスト.fmg"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/mechanics-atlas.json interface.action-guide"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "src/action_guide.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "needs": [
+   {
+    "id": "interface.action-guide",
+    "why": "same bottom text"
+   },
+   {
+    "id": "interface.key-icons",
+    "why": "icon tokens"
+   }
+  ],
+  "check": "Open the hints in our action guide and compare the strings with 10021000 to 10021560.",
+  "note": ""
+ },
+ {
+  "id": "frontend.options-camera",
+  "category": "frontend",
+  "title": "Options: camera and controller",
+  "summary": "Game Options holds camera items: Y and X axis direction, reset Y axis, camera speed, auto lock-on toggle, auto target, camera auto wall recovery and controller vibration.",
+  "values": "NTC menu ids 110000 Game Options, 110001 Camera Options, 110010 Camera Y-axis, 110011 X-axis, 110012 Reset Y-axis, 110013 Camera speed, 110014 Toggle auto lock-on, 110015 Auto-target, 110016 Camera auto wall recovery, 110017 Controller vibration; vibration help 3000; values Standard/Inverted 40310/40311, On/Off 40300/40301, Weak/Medium/Strong 40450 to 40452.",
+  "how": "SaveDataOption holds the values.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/msg/engus/menu.msgbnd.d/NTC_メニューテキスト.fmg"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/msg/engus/menu.msgbnd.d/インゲームメニュー.fmg"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "src/menu.rs (Opt: CameraSpeed, InvertY, Gamepad)"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "needs": [
+   {
+    "id": "camera.lock-on-acquire",
+    "why": "auto lock-on and auto target change which enemy is chosen"
+   }
+  ],
+  "check": "Open Options, Game Options and list the rows against these ids.",
+  "note": ""
+ },
+ {
+  "id": "frontend.options-sound-display",
+  "category": "frontend",
+  "title": "Options: sound and display",
+  "summary": "Sound and Display holds blood, subtitles, HUD, music, sound effects and voice volumes, and the brightness pages (with HDR pages for HDR screens).",
+  "values": "NTC 110100 Sound and Display, 110110 Blood, 110111 Subtitles, 110112 HUD, 110114 Music, 110115 Sound effects, 110116 Voice, 110200 Brightness with 110201 to 110213 (picture adjust, maximum brightness, saturation, HDR); HUD choices 40303 Auto Hide All, 40304 Auto Hide Partial, 40305 Always show, 40306 Always hide.",
+  "how": "SaveDataOption; the brightness page is also shown in the new game wizard.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/msg/engus/menu.msgbnd.d/NTC_メニューテキスト.fmg"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "src/menu.rs (Opt: Volume, Music, Se, Voice, Fullscreen, Vsync)"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "needs": [
+   {
+    "id": "interface.volume-options",
+    "why": "the three volume sliders"
+   },
+   {
+    "id": "sound.fmod-categories",
+    "why": "what the sliders scale"
+   }
+  ],
+  "check": "Set HUD to Auto Hide All and fight; the bars should hide when idle.",
+  "note": "No brightness page in ours."
+ },
+ {
+  "id": "frontend.options-graphics",
+  "category": "frontend",
+  "title": "Options: graphics (PC)",
+  "summary": "Graphics Options holds screen mode, resolution, automatic rendering adjustment, quality presets and an Advanced Settings page.",
+  "values": "NTC 111100 Graphics Options, 111110 Screen Mode (40400 Fullscreen, 40401 Windowed), 111111 Screen Resolution, 111112 Automatic Rendering Adjustment, 111113 Quality Settings (40420 Custom, 40421 Low, 40422 Medium, 40423 High, 40424 Max), advanced 111210 to 111221: Texture Quality, Antialiasing, SSAO, Depth of Field, Motion Blur, Shadow, Lighting, Effects, Volumetric, Reflections, Water Surface, Shader Quality. Dialogs 111100 revert in <?remainingSec?> s, 111103 apply on reboot.",
+  "how": "A 15 s style revert dialog follows a resolution change; settings are saved in the PC option block.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/msg/engus/menu.msgbnd.d/NTC_メニューテキスト.fmg"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/msg/engus/menu.msgbnd.d/NTC_ダイアログ.fmg"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "src/menu.rs (Fullscreen, Vsync)"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "needs": [],
+  "check": "Change resolution and watch the revert countdown dialog.",
+  "note": ""
+ },
+ {
+  "id": "frontend.options-input",
+  "category": "frontend",
+  "title": "Options: input and key config",
+  "summary": "Input Device Options picks the on-screen prompt device (controller or keyboard and mouse), mouse sensitivity, and opens Key Config and Controller Config pages with groups for movement, camera, equipment, attacks and menu.",
+  "values": "NTC 111000 Input Device Options, 111010 Device For On Screen Prompts (40350 Controller, 40351 Keyboard/Mouse), 111020 to 111023 mouse, 111024 Key Config, 111030 Controller Config; groups 280010 Movement, 280020 Camera Controls, 280030 Change Equipment, 280040 Attack Action, 280050 Menu Controls, 280070 Remnants; dialogs 280000 'The binding for this cannot be removed.', 280002 overlap warning, 280004 reset when the device changes.",
+  "how": "SaveDataPcKeyConfig stores the bindings; DefaultKeyAssignParam00 to 04 give the defaults.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/msg/engus/menu.msgbnd.d/NTC_メニューテキスト.fmg"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/msg/engus/menu.msgbnd.d/NTC_ダイアログ.fmg"
+   },
+   {
+    "kind": "exe",
+    "ref": "extracted/sekiro_steamless_dearxan.exe strings"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "src/config.rs (key table in config.toml)"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "needs": [
+   {
+    "id": "interface.default-key-assign",
+    "why": "default bindings"
+   }
+  ],
+  "check": "Rebind attack to an already used key and read the overlap warning.",
+  "note": ""
+ },
+ {
+  "id": "frontend.options-language",
+  "category": "frontend",
+  "title": "Options: language and subtitles",
+  "summary": "Language Options splits Text and Voice language, lists 14 languages, and applies the change when leaving the page. Subtitles are a separate switch in Sound and Display.",
+  "values": "NTC 110400 Language Options, 110410 Text, 110411 Voice, 110420 'Settings will be applied after leaving this screen', 110430 Japanese, 110432 French, 110433 Italian, 110434 German, 110435 Spanish, 110437 Brazilian Portuguese, 110438 English, 110440 Polish, 110441 Russian, 110448 Traditional Chinese, 110449 Korean, 110450 Simplified Chinese, 110451 Thai, 110498 Default (Japanese). Subtitles 110111 and 114102 with help 110102.",
+  "how": "The text language picks the msgbnd folder (engus here).",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/msg/engus/menu.msgbnd.d/NTC_メニューテキスト.fmg"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/msg/engus/menu.msgbnd.d/インゲームメニュー.fmg"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "needs": [],
+  "check": "Change Text language to French in Options and return: the menus should be French.",
+  "note": ""
+ },
+ {
+  "id": "frontend.pause-menu-tabs",
+  "category": "frontend",
+  "title": "In-game menu tabs and Quit entry",
+  "summary": "The Esc menu has Equipment, Inventory, Skills, Antique Map and Options tabs. Options lists Game Options, Camera, Sound and Display, Graphics, Language, Key Config and Quit Game.",
+  "values": "NTC 100010 Equipment, 100020 Inventory, 100030 Options, 100040 Antique Map, 100050 Skills; in-game 115000 Options, 115002 Quit Game, 110005 Options, 110006 System; the menu tab keys are the L1/R1 switch tokens 100001 to 100003.",
+  "how": "GameFlowInGame_InGameMenu owns the screen.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/msg/engus/menu.msgbnd.d/NTC_メニューテキスト.fmg"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/msg/engus/menu.msgbnd.d/インゲームメニュー.fmg"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/mechanics-atlas.json interface.pause-menu"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/game_menu.rs (Equipment, Inventory, Skills, Options)"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "needs": [
+   {
+    "id": "interface.pause-menu",
+    "why": "shared record"
+   }
+  ],
+  "check": "Press Esc in game and note the tab names.",
+  "note": "Ours has no Antique Map tab."
+ },
+ {
+  "id": "frontend.ending-shura",
+  "category": "frontend",
+  "title": "Shura ending event (Isshin Ashina route)",
+  "summary": "The castle event for Isshin Ashina waits for the boss flag 9316, fades out, plays cutscene 11010070 with its lighting and warp, then awards the boss item lot, sets the ending flag and the achievement.",
+  "values": "m11_01 event 11110100: IF flag 9316 on; SpEffects 4700 and 4701 on the player; invincible; wait for the player to be alive; fade out; SpEffect 4702; scene 2002[13] (cutscene 11010070, play mode 16, warp point 1112812, area 11 block 1, player 10000, time of day 3, state on); wait Finished; Set Event Flag 9530; Set 6900 off, 6901 on; Award Item Lot 54300000; Disable Loading Screen Tips; flags 23 and 6833; Award Achievement 12.",
+  "how": "EMEVD only; the credits movie is started by the exe ending step after the scene.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/event/m11_01_00_00.emevd event 11110100"
+   },
+   {
+    "kind": "web",
+    "ref": "https://sekiroshadowsdietwice.wiki.fextralife.com/Endings"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "needs": [
+   {
+    "id": "cutscenes.m11-01-list",
+    "why": "scene 11010070"
+   },
+   {
+    "id": "frontend.ending-sequence",
+    "why": "the shared fade and warp pattern"
+   }
+  ],
+  "check": "Take the Shura route and kill Isshin Ashina: the scene plays and then the credits.",
+  "note": "Web calls this the Shura ending; the data names the boss row 54300000 as Isshin Ashina."
+ },
+ {
+  "id": "frontend.ending-reservoir",
+  "category": "frontend",
+  "title": "Three endings in the Reservoir event",
+  "summary": "Event 11120110 in map m11_02 handles the other endings. After the final boss flag 9312 and Wolf alive, it reads three choice flags (11125707, 11125708, 11125709) and plays one branch. Each branch sets its own ending flag (6830, 6831, 6832) and an achievement (9, 10, 11).",
+  "values": "Branch A: scene 11020110, flags 20 and 6830, achievement 9. Branch B: scenes 11020120 then 11020121, flags 21 and 6831, achievement 10. Branch C: scene 11020100, flags 22 and 6832, achievement 11. All branches set 6900 off, 6901 on. Setters of 11125707 to 11125709 are not in the EMEVD files.",
+  "how": "The choice flags are set by the last talk (ESD) before the fight.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/event/m11_02_00_00.emevd event 11120110"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/event/common.emevd event 295"
+   },
+   {
+    "kind": "web",
+    "ref": "https://sekiroshadowsdietwice.wiki.fextralife.com/Endings"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "needs": [
+   {
+    "id": "cutscenes.m11-02-list",
+    "why": "scenes 11020100, 11020110, 11020120, 11020121"
+   },
+   {
+    "id": "frontend.achievements",
+    "why": "ids 9 to 11"
+   }
+  ],
+  "check": "Reach the final fight three times with different choices and note the scene ids.",
+  "note": "Which branch is Immortal Severance, Purification or Return is not stated in the data. Achievement order 9, 10, 11 follows the trophy order, so A, B, C may match that order (inferred)."
+ },
+ {
+  "id": "frontend.ending-sequence",
+  "category": "frontend",
+  "title": "Ending cutscene sequence pattern",
+  "summary": "Every ending branch follows one script: fade the menu out in 0.5 s, put the player in the ending SpEffect 4702 and make him immortal, swap the map parts for the ending set, fade in, play the cutscene with its lighting, wait for it, then restore and set flags.",
+  "values": "Calls: Set Menu Fade 2003[82] (1, 0.5 s); SpEffect 4702 on 10000; Set Character Immortality 1; Force Animation Playback map animation 8901000 id 51 then 1; Activate Map Part 8907050 on and 8907000 to 8907100 off; Set Area Gparam Sub ID (11, 2); Menu Fade 0; Play Cutscene and Warp Player With Lighting 2002[13] (cutscene, play mode 16, warp point 1122800, area 11 block 2, player 10000, time of day 5 or 1); IF Ongoing Cutscene Finished; Set 9530; clear 4702; immortality 0.",
+  "how": "The castle branch uses the same pattern with warp point 1112812, block 1 and time of day 3.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/event/m11_02_00_00.emevd event 11120110"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/event/m11_01_00_00.emevd event 11110100"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "needs": [
+   {
+    "id": "cutscenes.warp-fade",
+    "why": "Fade Out and Warp family"
+   },
+   {
+    "id": "cutscenes.playback-method",
+    "why": "play mode 16"
+   }
+  ],
+  "check": "Play to an ending and watch the fade before the scene.",
+  "note": ""
+ },
+ {
+  "id": "frontend.ending-rewards",
+  "category": "frontend",
+  "title": "Rewards after any ending",
+  "summary": "Common event 295 waits for any ending flag (6830, 6831, 6832 or 6833), then 3 s later gives an armor piece (lot 5710, id 400000) and Another's Memory: Ashina (lot 5740, goods 9810) when the Sculptor flag 8306 is off.",
+  "values": "Event 295: skip if goods 9810 owned; IF flag 6830 or 6831 or 6832 or 6833; IF 8306 off; wait 3.0 s; Award Item Lot 5710; Award Item Lot 5740.",
+  "how": "Memory 9810 lets Wolf change appearance at an idol.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/event/common.emevd event 295"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/ItemLotParam.json"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "needs": [
+   {
+    "id": "dialogue.memories-remnants",
+    "why": "Memory items"
+   }
+  ],
+  "check": "After any ending, rest at an idol and open Change Form.",
+  "note": "The armor name for id 400000 was not looked up."
+ },
+ {
+  "id": "frontend.credits-movie",
+  "category": "frontend",
+  "title": "Credits roll movie",
+  "summary": "The credits are the staff list movie stafflistmovie.bk2 (598104408 bytes, Bink 2), started by the exe ending step. The data has no length, and whether the player can skip is not recorded.",
+  "values": "File stafflistmovie.bk2; enum Movie_StaffRoll; classes EndingStep, GamesComEndingStep, E3EndingStep; flag bRequestToEnding; the movie subtitle file has no credits lines. Slots Movie_EndingBad and Movie_EndingGood exist but no files ship.",
+  "how": "EndingStep requests the movie, plays it, then calls the return flow. No EMEVD instruction starts a movie.",
+  "sources": [
+   {
+    "kind": "exe",
+    "ref": "extracted/sekiro_steamless_dearxan.exe strings"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/mechanics-atlas.json cutscenes.movies-bk2"
+   }
+  ],
+  "confidence": "open-question",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "needs": [
+   {
+    "id": "cutscenes.movies-bk2",
+    "why": "file list"
+   },
+   {
+    "id": "cutscenes.skip",
+    "why": "skip rules for scenes"
+   }
+  ],
+  "check": "Time the credits on a recording and hold a button to see if it skips.",
+  "note": "Needs a recording for length and skip."
+ },
+ {
+  "id": "frontend.after-credits-ng",
+  "category": "frontend",
+  "title": "After the credits: NG+ prompt",
+  "summary": "When the credits end the game asks whether to start playthrough N+1 now. If the player says no, the game returns to play and the same offer stays at the large Sculptor's Idol in the Dilapidated Temple. Saying yes starts the next cycle.",
+  "values": "Dialog 450000 'Start playthrough #<?nextLoopCount?> now?' (adds: later via the large Sculptor's Idol in the Dilapidated Temple) and 450001 warns that the current playthrough cannot be returned to. The dialog is built in exe function FUN_1411d9a10. Cycle count lives at GameDataMan +0x70.",
+  "how": "A menu job builds the two-line confirm; on yes it increments the cycle and reloads.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/msg/engus/menu.msgbnd.d/NTC_ダイアログ.fmg"
+   },
+   {
+    "kind": "exe",
+    "ref": "extracted/decomp/1411d.c FUN_1411d9a10"
+   },
+   {
+    "kind": "web",
+    "ref": "https://sekiroshadowsdietwice.wiki.fextralife.com/New+Game+Plus"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "needs": [
+   {
+    "id": "progression.new-game-counter",
+    "why": "cycle count"
+   },
+   {
+    "id": "progression.ng-plus-clear-count-correct",
+    "why": "scaling per cycle"
+   }
+  ],
+  "check": "Finish an ending and watch for the prompt after the credits.",
+  "note": "The 'Journey onward' wording from the task is not in the English text; the wording is playthrough #N."
+ },
+ {
+  "id": "frontend.ng-cycle-reset",
+  "category": "frontend",
+  "title": "What the new cycle resets and keeps",
+  "summary": "When a new cycle starts, common event 50 strips about 70 goods from the player (including the Bell Demon 3730 to 3733 and Kuro's Charm 9003), forces the starting armor, clears the Charmless flag 6911, flag 6901 and 9530, and restarts the world events. Skills, gourd, prosthetics and levels are kept.",
+  "values": "Event 50 when 6901 is on and 11120100 is off: Remove Item From Player for 0:5700, 0:7300, 0:680000 and 3:2000, 2300, 2310, 2930, 2400, 2500 to 2503, 3730 to 3733, 3990, 9000 to 9012, 9020, 9052, 9070 to 9091, 9181 to 9228, 9400 to 9405, 9500 to 9516, 9560, 12600 to 12620; Force Player Armor Equip (1, 141000) and (2, 112000); then IF Game Cycle 3[17]; Set Flag 6910 If Game Completed On Any Save; 6911 off; 6901 off; 9530 off; clear SpEffect 400; remove 3 of goods 500.",
+  "how": "Web: items, skills, levels and gourd carry; NPC and world state reset; the Bell Demon does not carry; Kuro's Charm is given again after a completed game (event 11120120 awards lot 3300 = goods 9003 when 6910 is on).",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/event/common.emevd event 50"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/event/m11_02_00_00.emevd event 11120120"
+   },
+   {
+    "kind": "web",
+    "ref": "https://sekiroshadowsdietwice.wiki.fextralife.com/New+Game+Plus"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "needs": [
+   {
+    "id": "progression.demon-bell",
+    "why": "the bell is removed at cycle start"
+   },
+   {
+    "id": "progression.kuro-charm",
+    "why": "charm is removed and re-awarded"
+   },
+   {
+    "id": "progression.ng-plus-sen-xp-rate",
+    "why": "rewards in the new cycle"
+   }
+  ],
+  "check": "Finish with the Bell Demon and Kuro's Charm owned, start NG+, open the key item list.",
+  "note": "Which goods ids are key items was not looked up for each of the removed ids."
+ },
+ {
+  "id": "frontend.game-clear-flags",
+  "category": "frontend",
+  "title": "Game clear and ending flags",
+  "summary": "A small set of flags tracks clears: 6900 and 6901 flip after each major ending, 6830 to 6833 mark which ending was seen, 6910 is set from any save with a cleared game, 6911 is Charmless mode, and 6912 to 6919 count Charmless clears.",
+  "values": "6900=0 and 6901=1 set in m11_01 11110100 and m11_02 11120110 branches. 6830/6831/6832 (Reservoir branches), 6833 (castle). 6910 set by 2003[86] Set Flag 6910 If Game Completed On Any Save (common event 50). 6911 read by event 800 (applies SpEffect 8610 when on) and by the area scaling events; at the ending when 6911 is on the first unset flag of 6912 to 6919 is set (11110100 and 11120110 tails). CharaInitParam row 10160 Game clear.",
+  "how": "EMEVD tests the flags; the exe writes the cycle count; the achievements come with the same events.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/event/common.emevd events 50, 800, 295"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/event/m11_01_00_00.emevd event 11110100"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/event/m11_02_00_00.emevd event 11120110"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "needs": [
+   {
+    "id": "progression.event-flags",
+    "why": "flag list"
+   },
+   {
+    "id": "progression.kuro-charm",
+    "why": "6911 is Charmless"
+   },
+   {
+    "id": "progression.chara-init-area-presets",
+    "why": "Game clear preset"
+   }
+  ],
+  "check": "Read flags 6830 to 6833 and 6910 to 6919 with memscope after finishing.",
+  "note": "The meaning of 6900 and 6901 is read from where they are set, not from a name."
+ },
+ {
+  "id": "frontend.achievements",
+  "category": "frontend",
+  "title": "Achievement awards in the scripts",
+  "summary": "Event scripts call Award Achievement at 26 places with ids 1, 2, 9 to 13, 16, 17 and 19 to 33. Most are boss defeats, four are endings and one is the first resurrection. The web list has 34 trophies, so the other ids come from the exe or from talk scripts.",
+  "values": "Ids by event: 1 common 170 (all of flags 6800 to 6817, the boss clears); 2 common 190 (flags 132 and 140); 9, 10, 11 m11_02 11120110 (endings); 12 m11_01 11110100 (Shura ending); 13 m11_02 11125860; 16 m11_02 11120201; 17 m11_00 11100100; 19 common 250 (resurrection used, with the Resurrection tutorial); 20 m11_00 11105800; 21 m10 11005800; 22 m11_01 11115800; 23 m17 11705800; 24 m17 11705873; 25 m20 12005800; 26 m11_01 11115850; 27 m10 11005900; 28 m25 12505950; 29 m25 12505880; 30 m11_01 11115920; 31 m11_00 11105900; 32 m17 11705614; 33 m17 11705535. Web trophies (PS4 and Steam): 1 platinum, 4 gold, 11 silver, 18 bronze.",
+  "how": "2003[28] Award Achievement forwards the id to Steam through SteamUserStats (exe).",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/event/*.emevd (2003[28])"
+   },
+   {
+    "kind": "exe",
+    "ref": "extracted/sekiro_steamless_dearxan.exe strings"
+   },
+   {
+    "kind": "web",
+    "ref": "https://www.powerpyx.com/sekiro-shadows-die-twice-trophy-list-revealed/"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "needs": [
+   {
+    "id": "frontend.ending-reservoir",
+    "why": "ids 9 to 11"
+   }
+  ],
+  "check": "Open the Steam achievement page and compare ids 1 and 19 with the first resurrection and 17 bosses.",
+  "note": "The name for each id was not tied here; only 1, 9 to 12 and 19 are matched by context. Total ids are 26 call sites over 25 ids."
+ },
+ {
+  "id": "frontend.death-banners",
+  "category": "frontend",
+  "title": "Banner texts: DEATH, SHINOBI EXECUTION and others",
+  "summary": "The big center banners are event texts: SHINOBI EXECUTION, SCULPTOR'S IDOL FOUND, DEATH, IMMORTALITY SEVERED, then GRACIOUS GIFT OF TEARS, SINISTER BURDEN, BURDEN DISPELLED, UNSEEN AID, DRAGONROT HEALED and INNER REFLECTION CONQUERED. DEATH is drawn with the brush kanji 死.",
+  "values": "イベントテキスト 10010900 SHINOBI EXECUTION, 10010901 SCULPTOR'S IDOL FOUND, 10010902 DEATH, 10010903 IMMORTALITY SEVERED, 10010950 to 10010955; sprites MENU_Death and MENU_Death_02 (extracted/hud); MenuParam SoloPlayDeath_ToFadeOutTime 2.5 s (Paramdex: seconds after the death banner shows before the fade out starts).",
+  "how": "Display Banner 2007[2] shows an event text by id; the death banner is raised by the player death code.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/msg/engus/menu.msgbnd.d/イベントテキスト.fmg"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/MenuParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/hud/MENU_Death.png"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/mechanics-atlas.json interface.death-screen"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/menu.rs (death overlay, 死 mark)"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "needs": [
+   {
+    "id": "interface.death-screen",
+    "why": "fade timing"
+   },
+   {
+    "id": "camera.death-camera",
+    "why": "camera pulls out on death"
+   }
+  ],
+  "check": "Die once: DEATH shows and the screen fades about 2.5 s later.",
+  "note": ""
+ },
+ {
+  "id": "frontend.revive-prompt",
+  "category": "frontend",
+  "title": "Resurrect or Die prompt",
+  "summary": "When Wolf has a node left the death screen offers two choices with key icons: Resurrect and Die. If he takes no node, or gives up, the death is final and the game reloads at the checkpoint.",
+  "values": "Event text 10010390 '<?kgiconKc@16?>: Resurrect' (attack key), 10010391 '<?kgiconKc@18?>: Die' (guard key); delay 1.8 s and 15 s window per deathblows.true-death-flow.",
+  "how": "The prompt is the action panel; the reload goes through the respawn point and a fade.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/msg/engus/menu.msgbnd.d/イベントテキスト.fmg"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/mechanics-atlas.json deathblows.true-death-flow"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/menu.rs (RMB / K Die, LMB / J Resurrect)"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "needs": [
+   {
+    "id": "deathblows.true-death-flow",
+    "why": "timing"
+   },
+   {
+    "id": "deathblows.resurrection-sequence",
+    "why": "what resurrection does"
+   },
+   {
+    "id": "map.respawn-checkpoint",
+    "why": "reload place"
+   }
+  ],
+  "check": "Die with a node: the two prompts show at the bottom after 1.8 s.",
+  "note": ""
+ },
+ {
+  "id": "frontend.unseen-aid-text",
+  "category": "frontend",
+  "title": "Loss on death and Unseen Aid text",
+  "summary": "Death halves skill experience and sen. A rare Unseen Aid spares that loss and shows the UNSEEN AID banner. The chance can be read in the pause menu. Two tutorial pages explain this, and Rot Essence items lower the chance.",
+  "values": "Tutorials 10024800/10024801 'Loss upon Death' (halved, gone for good), 10024810/10024811 'Unseen Aid' (chance shown in the Pause Menu); banner 10010953 UNSEEN AID; stat label 10110 Unseen Aid; loading tip 125 'Unseen Aid Chance'; Rot Essence items 9500 to 9526 reduce the chance.",
+  "how": "Unseen Aid is rolled when Wolf dies; the pages show the first time the matching flag is met.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/msg/engus/menu.msgbnd.d/イベントテキスト.fmg"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/msg/engus/item.msgbnd.d"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/mechanics-atlas.json deathblows.unseen-aid"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "needs": [
+   {
+    "id": "deathblows.unseen-aid",
+    "why": "the chance rule"
+   },
+   {
+    "id": "deathblows.death-penalty",
+    "why": "half sen and XP"
+   },
+   {
+    "id": "progression.sen-xp-loss-on-death",
+    "why": "penalty record"
+   }
+  ],
+  "check": "Die with sen in hand and read the banner and the sen total.",
+  "note": ""
+ }
+]

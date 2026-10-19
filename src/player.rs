@@ -544,6 +544,17 @@ const FALL_HEIGHT_SHORT_STIFF_LAND: f32 = 5.0;
 /// fallDeathDist stands in for the exe's void rule).
 const FALL_VOID_DROP: f32 = 40.0;
 const FALL_HEIGHT_SHORT_STIFF_LAND_FROM_JUMP: f32 = 3.0;
+/// HKS BEH_R_FALL (c0000_transition 5685): while moving (GetLocomotionType MOVE / SWIM_MOVE, the
+/// TAE refs SP_EF_REF_TAE_MOVING_WALK / RUN / SPRINT 90-92) the fall state starts only once
+/// env(224), the height fallen, is 30 cm. Shallower drops are walked down.
+pub const FALL_START_DROP: f32 = 0.30;
+const REF_MOVING: [i64; 3] = [90, 91, 92];
+
+/// GetLocomotionType() == LOCOMOTION_TYPE_MOVE: the move loop (procedural here) or a clip with a
+/// moving ref up (the sprint loop, move starts).
+fn moving_locomotion(d: &CharData, a: &Actor) -> bool {
+    a.state == "Locomotion" || (!a.anim.is_empty() && REF_MOVING.iter().any(|&r| d.has_ref(&a.anim, a.t, r)))
+}
 /// SP_EF_REF_TAE_ENABLE_SUB_ATTACK_DERIVE_ATTACK (c0000_define 666).
 pub const REF_SUB_ATTACK_DERIVE_ATTACK: i64 = 301;
 /// SP_EF_REF_TAE_ENABLE_DEFLECT_GUARD_ATTACK / _TRANSITION_STEP_ATTACK.
@@ -591,7 +602,7 @@ impl Plugin for PlayerPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<PadInput>()
             .init_resource::<LockOn>()
-            .add_systems(Startup, spawn_player)
+            .add_systems(Startup, spawn_player.after(crate::map::load_map))
             .add_systems(Update, read_input.run_if(resource_exists::<ButtonInput<KeyCode>>.and_then(not(resource_exists::<crate::autoboss::AutoBossOn>))))
             .init_resource::<ActiveThrow>()
             .add_systems(FixedUpdate, (sync_art_variation, decide, apply_refresh_effects, record_state).chain().in_set(ActorSet::Decide))
@@ -685,10 +696,10 @@ fn kill_anim(anim: &str) -> Option<String> {
 
 /// HKS _SetJumpDirection sectors (PRM_GROUND_JUMP_*_STICK_RANGE, degrees from the facing, + right):
 /// (ready state, raw anim for the side jumps, landing state).
-/// The states the jump tilt turns: the positioning ground jumps (Ready / Start / their lands) and
-/// the kick jump.
+/// The states the jump tilt turns: the positioning ground jumps (Ready / Start / their lands),
+/// the kick jump and the step out of a knockdown (_execDamageStep's _set4DirJumpTilt).
 fn jump_tilted(state: &str) -> bool {
-    (state.contains("GroundJump") && !state.starts_with("Vertical") && !state.starts_with("Sprint")) || state.starts_with("LandGroundPositioningJump") || state.starts_with("AirKickEnemyJump")
+    (state.contains("GroundJump") && !state.starts_with("Vertical") && !state.starts_with("Sprint")) || state.starts_with("LandGroundPositioningJump") || state.starts_with("AirKickEnemyJump") || state.starts_with("StandStepFromDown_")
 }
 
 /// _setPositioningJumpTilt (HKS 5114-5140): the stick angle minus the jump sector's centre
@@ -1438,8 +1449,8 @@ fn sync_art_variation(config: Res<GameConfig>, player: Query<&Player>, mut comba
 /// Wolf's facing at the start (and on a retry): toward the enemies' line-up (enemy.rs
 /// spawn_lineup: the first enemy at x 0, z -4), the way the game lets him walk into an arena
 /// facing the boss.
-fn start_yaw() -> f32 {
-    yaw_of((Vec3::new(0.0, 0.0, -4.0) - crate::map::player_start()).with_y(0.0))
+pub(crate) fn start_yaw() -> f32 {
+    yaw_of((crate::map::frame().point(Vec3::new(0.0, 0.0, -4.0)) - crate::map::player_start()).with_y(0.0))
 }
 
 /// Graphs 500 / 501 / 504 = max HP / max posture / posture regen by level (exe: FUN_140a368f0
@@ -1808,8 +1819,21 @@ pub const SP_REF_IN_STORM_JUMP_WEAK_AREA: i64 = 110004;
 const SP_REF_ENABLE_STORM_JUMP: i64 = 101;
 
 /// A behaviorRefId on Wolf: his anim's SpEffects or a timed one (bullets, items).
+/// SP_EF_REF_IN_NON_COMBAT_AREA (c0000_define 748; SpEffect 100298 / 100308 / 108900 carry it).
+const SP_REF_IN_NON_COMBAT_AREA: i64 = 600;
+
+/// The weapon state the area wants (HKS BEH_A_GROUND_JUMP 6148, BEH_A_WALL_JUMP 6023,
+/// BEH_A_ITEM_USE 6240, BEH_A_ADD_SUB_WEAPON_CHANGE 6394): sheathed (env 207 ARM_STYLE_SAFE)
+/// inside a non-combat area, drawn outside it. Otherwise these actions are refused.
+/// gap: only the drawn sword inside a non-combat area refuses here. Sheathed outside one is the
+/// X sheathe, which the game does not have (its BEH_R_NON_COMBAT_AREA_LEAVE draws at once), so
+/// refusing there only swallowed jumps.
+fn arm_style_matches(d: &CharData, a: &Actor, p: &Player) -> bool {
+    a.sheathed || !wolf_ref(d, a, p, SP_REF_IN_NON_COMBAT_AREA)
+}
+
 fn wolf_ref(d: &CharData, a: &Actor, p: &Player, behavior_ref: i64) -> bool {
-    sp_ref_active(d, a, behavior_ref) || p.timed.iter().any(|(id, _)| d.sp_effects.get(&id.to_string()).is_some_and(|s| s.behavior_ref_id == behavior_ref))
+    sp_ref_active(d, a, behavior_ref) || p.timed.iter().any(|(id, _)| d.sp_effects.get(&id.to_string()).map_or_else(|| crate::data::sp_effect_behavior_ref(*id), |s| s.behavior_ref_id) == behavior_ref)
 }
 
 /// The storm jump inside an updraft (HKS 2779-2783 on the ground, 2855-2862 in the air): the
@@ -2431,12 +2455,20 @@ fn decide(
     mut snap: Option<ResMut<crate::camera::CameraSnap>>,
     (wire_aim, grapples, ledges, mut used, mut picked): (Option<Res<crate::wire::WireAim>>, Option<Res<crate::enemy::grapple::EnemyGrapples>>, Option<Res<crate::map::LedgeEdges>>, Option<ResMut<crate::items::Used>>, Option<ResMut<crate::items::Picked>>),
 ) {
+    // UFO (ufo.rs): Wolf is flown, not played; presses dropped.
+    if crate::ufo::on() {
+        pad.hold();
+        return;
+    }
     let dt = time.delta_secs();
     let d = &combat.player;
     let (pe, p, a, tf) = &mut *player;
     // The quick items' worn effects (items.rs): Wolf's damage rates and the regeneration.
     let [atk, stam, cut, posture_cut] = crate::items::wolf_rates(&p.timed);
-    (a.atk_rate, a.stam_atk_rate, a.dmg_cut, a.posture_cut) = (atk, stam, cut, posture_cut);
+    // And his Attack Power (combat::growth_sp): every hit's HP and posture damage.
+    let growth = crate::items::param("SpEffectParam", crate::combat::growth_sp(&config));
+    let rate = |k: &str| growth[k].as_f64().unwrap_or(1.0) as f32;
+    (a.atk_rate, a.stam_atk_rate, a.dmg_cut, a.posture_cut) = (atk * rate("physicsAttackRate"), stam * rate("staminaAttackRate"), cut, posture_cut);
     a.item_sp.clear();
     a.item_sp.extend(p.timed.iter().map(|t| t.0));
     // Their maxHpRate (Yashariku's Sugar halves the max HP for its 30 s; the user, 2026-10-18:
@@ -3136,7 +3168,10 @@ fn decide(
         } else {
             a.last_move_vel.with_y(0.0)
         };
-        a.play_state(d, "FreeFall");
+        // BEH_R_FALL: on the move the move state goes on until FALL_START_DROP (the air branch).
+        if !moving_locomotion(d, a) {
+            a.play_state(d, "FreeFall");
+        }
     }
 
     let cam_pitch = camera.as_ref().map_or(0.26, |c| c.pitch);
@@ -3202,7 +3237,9 @@ fn decide(
             }
         }
     } else if let Some(ee) = p.throw_target {
-        let dead = enemies.get(ee).map(|(_, ea, _, _)| ea.state.starts_with("ThrowDefDeath"));
+        // A boss without a ThrowDefDeath (c5080 Gyoubu, c5100) by its own flag 69 once dead, as
+        // the wire landing's above.
+        let dead = enemies.get(ee).map(|(_, ea, en, _)| ea.state.starts_with("ThrowDefDeath") || (en.is_dead() && !ea.anim.is_empty() && combat.data_of(ea).flag(&ea.anim, ea.t, 69)));
         if a.state != "Deathblow" || dead.is_err() {
             p.throw_target = None;
         } else if dead == Ok(true) {
@@ -3603,7 +3640,7 @@ fn decide(
     // Healing Gourd: drink (again from a drink: Repeat), or the empty-gourd shake. Crouched, the
     // Crouch ones (HKS STYLE_TYPE_CROUCH: W_CrouchItemGourdDrink / ...Repeat / ...Failed,
     // a000_250010 / 250011 / 250015), and Wolf stays crouched (crouch_ok).
-    if p.requests.contains_key(&Action::UseItem) && accepts(d, a, Action::UseItem) {
+    if p.requests.contains_key(&Action::UseItem) && accepts(d, a, Action::UseItem) && arm_style_matches(d, a, p) {
         p.requests.remove(&Action::UseItem);
         // Another quick item than the gourd (items.rs): its use state, if any is held. An empty
         // slot or an empty stack does nothing.
@@ -3700,9 +3737,11 @@ fn decide(
     // by the hit's side); out of a knockdown / its get-up while DOWN_JUMP_CANCEL (504: 100346, 53
     // anims) is up, W_StandStepFromDown by the prone side and _set4DirJumpDir (stick angle from
     // the facing, +-45 / 135; no stick = N), a000_2061xx (round 31: a plain jump or step played).
-    // gap: _set4DirJumpTilt (act 3025) is not applied; the prone side is read from the state.
+    // _set4DirJumpTilt (act 3025, HKS 5159): the stick angle minus the direction's centre
+    // (PRM_4DIR_JUMP_ANGLE_CENTER F 0 / L -90 / R 90 / B 180, c0000_define 248-251), as the
+    // positioning jumps' tilt (atlas movement.damage-step). gap: the prone side is read from the state.
     for act in [Action::Step, Action::Jump] {
-        if !p.requests.contains_key(&act) || a.anim.is_empty() || !accepts(d, a, act) {
+        if !p.requests.contains_key(&act) || a.anim.is_empty() || !accepts(d, a, act) || (act == Action::Jump && !arm_style_matches(d, a, p)) {
             continue;
         }
         let state = if sp_ref_active(d, a, SP_REF_TAE_ENABLE_HIT_JUMP_CANCEL) {
@@ -3710,17 +3749,16 @@ fn decide(
         } else if sp_ref_active(d, a, SP_REF_TAE_ENABLE_DOWN_JUMP_CANCEL) {
             let break_blow_up = a.state.starts_with("StandDamageBreakSmallBlow") && !a.hit_back_quadrant;
             let prone = if a.state.contains("FaceUp") || a.state == "StandDamageSmallBlow_F" || break_blow_up { "FaceUp" } else { "FaceDown" };
-            let dir = if stick == Vec3::ZERO {
-                "N"
-            } else {
-                let local = Quat::from_rotation_y(-a.yaw) * stick;
-                match local.x.atan2(-local.z).to_degrees() {
-                    x if x > -45.0 && x < 45.0 => "F",
-                    x if x > -135.0 && x < -45.0 => "L",
-                    x if (45.0..135.0).contains(&x) => "R",
-                    _ => "B",
-                }
+            let local = Quat::from_rotation_y(-a.yaw) * stick;
+            let angle = local.x.atan2(-local.z).to_degrees();
+            let (dir, centre) = match angle {
+                _ if stick == Vec3::ZERO => ("N", angle),
+                x if x > -45.0 && x < 45.0 => ("F", 0.0),
+                x if x > -135.0 && x < -45.0 => ("L", -90.0),
+                x if (45.0..135.0).contains(&x) => ("R", 90.0),
+                x => ("B", if x > 0.0 { 180.0 } else { -180.0 }),
             };
+            p.jump_tilt = (-(angle - centre)).to_radians();
             Some(format!("StandStepFromDown_{prone}_{dir}"))
         } else {
             None
@@ -3735,8 +3773,9 @@ fn decide(
         }
     }
 
-    // Jump
-    if p.requests.contains_key(&Action::Jump) && accepts(d, a, Action::Jump) {
+    // Jump (BEH_A_GROUND_JUMP: also the weapon state, `arm_style_matches`; atlas
+    // movement.jump-weapon-state). gap: g_forceCrouch (low ceilings) is not modelled.
+    if p.requests.contains_key(&Action::Jump) && accepts(d, a, Action::Jump) && arm_style_matches(d, a, p) {
         p.requests.remove(&Action::Jump);
         p.jump_forward = stick != Vec3::ZERO;
         p.jump_land = None;
@@ -3863,7 +3902,7 @@ fn decide(
     // HKS 6393: not while ref 316 SP_EF_REF_TAE_ENABLE_SUB_GUARD_RELEASE_CONNECT is up (the
     // umbrella's guard / release clips: a mid-clip switch resolved its later judges and costs
     // with the new tool) nor before the last change's expand (g_EndSubWeaponChange) (round 68).
-    if p.requests.remove(&Action::SwitchTool).is_some() && config.player.prosthetics.len() > 1 && !switching && !sp_ref_active(d, a, 316) && !p.expand_pending {
+    if p.requests.remove(&Action::SwitchTool).is_some() && config.player.prosthetics.len() > 1 && !switching && !sp_ref_active(d, a, 316) && !p.expand_pending && arm_style_matches(d, a, p) {
         p.tool_slot = (p.tool_slot + 1) % config.player.prosthetics.len();
         if let Some(k) = d.anim_key("AddSubWeaponChange") {
             a.add_anim = k.to_string();
@@ -4499,6 +4538,13 @@ fn decide(
             return;
         }
     }
+    // BEH_R_FALL on the move: W_SelfFallStart once he has fallen FALL_START_DROP (env 224 is the
+    // height fallen, Smithbox HKS list "GetFallHeight"); a shallower drop lands still moving.
+    // gap: the crouch (W_SelfCrouchFreeFallStart) and sub-guard falls have no clip of their own here.
+    let walked_off = a.airborne && moving_locomotion(d, a);
+    if walked_off && p.air_top - tf.translation.y >= FALL_START_DROP {
+        a.play_state(d, "FreeFall");
+    }
     if a.airborne {
         // Air actions open on the jump/air anims' own cancel flags. The fall loops (FreeFall,
         // *GroundJumpFall: STATE_TYPE_STANDBY in g_paramHkbState) carry none and take every input,
@@ -4810,6 +4856,11 @@ fn decide(
             a.vel_y = 0.0;
             a.move_vel = Vec3::ZERO;
             a.air_base = Vec3::ZERO;
+            // Down before BEH_R_FALL fired (under FALL_START_DROP): still the move state, and
+            // BEH_R_LAND is only for the air styles (g_behaviorTable column 7), so no landing.
+            if moving_locomotion(d, a) {
+                return;
+            }
             // BEH_R_LAND_WIRE (HKS 2076, the wire-fall style): out of the wire air attack
             // W_LandWireFallAttackCombo1 at the same time, out of the wire guard
             // W_LandAirDeflectGuard; with the stick held (MoveSpeedLevel > 0)
@@ -4823,8 +4874,8 @@ fn decide(
                 }
                 // Breaking wire 1 (ThrowKind 180100, throwCheckSituation 1: on the landing, no
                 // button): ThrowParam <chr>0171, Wolf 511610 / the enemy ThrowDef13610, held as a
-                // pair (ThrowHold). Its hit is a deathblow: 511610 TAE 304 judge 660 = AtkParam_Pc
-                // 5000660 "右手刀_忍殺本体_落下" (throwFlag 2, atkPhysCorrection 60000); 13610 ends in
+                // pair (ThrowHold). Its hit is a deathblow: 511610 TAE 304 judge 680 = AtkParam_Pc
+                // 5000680 "右手刀_忍殺本体_ワイヤー" (throwFlag 2, atkPhysCorrection 60000); 13610 ends in
                 // SpEffect 300610 "HP reset" (changeHpRate -100) and 13611 is its death - one
                 // life bar off, or the kill on the last (Enemy::deathblow; Bosses' reading).
                 if a.state == "WireThrow" {
@@ -4898,9 +4949,8 @@ fn decide(
             // BEH_R_LAND 1908: from FALL_HEIGHT_LONG_STIFF_LAND (20 m, c0000_define 213; env(224)
             // = the fall height) Wolf lands long-stiff (Selector_LandStiff LONG: LandFreeFall's
             // a000_200021, 2.5 s), after the guard-break / special-attack lands and before the air
-            // combo, electro and tool ones. gap: env(224)'s measure in the exe (here: from the
-            // flight's highest point); the 3 / 5 m short-stiff lands differ only by the sprint /
-            // step out (`_fireGroundStep`), not done.
+            // combo, electro and tool ones. env(224) is the height fallen (Smithbox HKS list
+            // GetFallHeight), here from the flight's highest point.
             let long_fall = p.air_top - tf.translation.y >= FALL_HEIGHT_LONG_STIFF_LAND && d.anim(LAND_LONG_STIFF).is_some();
             // BEH_R_LAND 2026: from 5 m (3 m out of a positioning jump, EnablePositioningJumpLand)
             // the jump's own landings are skipped: stick -> W_StandMoveStartFromFreeFallShortStiff,
@@ -4992,6 +5042,22 @@ fn decide(
                 // W_StandMoveStartFromFreeFallShortStiff, the stick arm below; round 31). From 20 m
                 // the long-stiff land, stick or not (`long_fall`).
                 _ if long_fall => a.play("LandFreeFall", LAND_LONG_STIFF),
+                // BEH_R_LAND 2027 / 2044: the dodge pressed or held (env 1106 / 1108 SP_MOVE) with
+                // the sword drawn outside a non-combat area (_isNonCombatMode false) steps out of the
+                // landing (_fireGroundStep -> W_GroundStep), before the stick and the land clips; a
+                // positioning jump under the stiff heights lands as one first (atlas
+                // movement.landing-stiffness). gap: the step fires on the next tick here; the
+                // tool / art / air-attack lands keep their own branches.
+                _ if (p.requests.contains_key(&Action::Step) || pad.dodge_held)
+                    && !a.sheathed
+                    && !wolf_ref(d, a, p, SP_REF_IN_NON_COMBAT_AREA)
+                    && (a.state == "FreeFall" || a.state.contains("GroundJump") || a.state.starts_with("SprintJump") || a.state.starts_with("WallJump"))
+                    && (short_fall || p.jump_land.is_none()) =>
+                {
+                    p.jump_land = None;
+                    p.requests.insert(Action::Step, 0.0);
+                    a.play_state(d, "StandIdle");
+                }
                 _ if a.state == "FreeFall" && stick == Vec3::ZERO && a.play_state(d, "LandFreeFall") => {}
                 // The air tool states land into their Land versions (`hks::air_land`, HKS 1888-1970):
                 // while ref 201 is up from the same time, the loops from their start.
@@ -5122,7 +5188,10 @@ fn decide(
                 }
             }
         } else if ended {
-            if a.state == "SprintJumpStart" {
+            if walked_off {
+                // The move loop runs on over the first FALL_START_DROP of a walk-off.
+                a.t %= len.max(1e-3);
+            } else if a.state == "SprintJumpStart" {
                 // No sprint-jump fall CMSG in the behaviour (statemap_c0000.json): its last frame
                 // holds until the landing. gap: the graph's blend after 201210 is not traced.
                 a.t = len;
@@ -5461,7 +5530,7 @@ fn dock_step_tick(
         return true;
     }
     // Jump in the air with a wall at the chest, once per flight.
-    if jump && a.airborne && p.dock.is_none() && p.wire.is_none() && p.plunge.is_none() && p.wall_jumps < dk::wall_jump_limit() {
+    if jump && a.airborne && p.dock.is_none() && p.wire.is_none() && p.plunge.is_none() && p.wall_jumps < dk::wall_jump_limit() && arm_style_matches(d, a, p) {
         let air_ok = a.state == "FreeFall" || a.state.contains("GroundJump") || a.state.starts_with("SprintJump") || a.state.starts_with("WallJumpStart");
         if air_ok {
             // Chained (the parkour map's lifted limit), each jump needs another wall: more than
@@ -5534,8 +5603,11 @@ fn dock_step_tick(
             return true;
         }
         // The hug / hang deathblows (dock_deathblow): the start throw, then decide's
-        // DeathblowStart runs the main one at the start anim's judge.
-        if attack && !dk::is_start(&st) {
+        // DeathblowStart runs the main one at the start anim's judge. The wall ones only from the
+        // peek: _UpdateNextThrowInfo sets ThrowGrabType COVER_LOOK and the WALL_L / R_NINSATSU
+        // SpEffects (109304 / 109305) only in STYLE_TYPE_COVER_LOOK; a plain hug grabs as standing
+        // (atlas movement.docking-deathblows). gap: the stand deathblows from a plain hug.
+        if attack && !dk::is_start(&st) && (!dock.hug() || dk::is_peek(&st)) {
             let fwd = Quat::from_rotation_y(a.yaw) * Vec3::NEG_Z;
             // Hanging, the reach and height are taken from the hands on the lip (the rows' 1.35 m
             // height window could never reach an enemy on the top from the hanging body 1.6 m
@@ -5572,15 +5644,17 @@ fn dock_step_tick(
             }
         } else {
             let foot = dock.edge.variation == 1;
-            // Jump with the stick away from the wall: the kick off it (HangJumpReady, held at the
-            // edge until it ends, then WallJumpStart_F_<type>).
-            let away = stick.length_squared() > 0.01 && stick.dot(dock.out) > 0.7 * stick.length();
-            if jump && away && a.play_state(d, if foot { "HangFootHoldJumpReady" } else { "HangJumpReady" }) {
+            // Jump: the kick off the wall (BEH_A_HANG_END_CONNECT comes before BEH_A_HANG_CLIMB in
+            // g_behaviorValidateOrder, so the jump never climbs; HKS 3171: HangJumpReady, held at
+            // the edge until it ends, then WallJumpStart_F_<type> by the stick, and
+            // g_wallJumpCount = WALL_JUMP_COUNT_MAX). Atlas movement.hang-climb-drop.
+            if jump && a.play_state(d, if foot { "HangFootHoldJumpReady" } else { "HangJumpReady" }) {
                 p.wall_contact = Some('F');
-                p.wall_jumps += 1;
+                p.wall_jumps = dk::wall_jump_limit();
                 return true;
             }
-            if interact || jump {
+            // The hang button (ACTION_ARM_WALL_HANG) climbs. gap: env 3050 (room to stand up).
+            if interact {
                 if let Some(dd) = p.dock.as_mut() {
                     dd.climb_from = None;
                 }

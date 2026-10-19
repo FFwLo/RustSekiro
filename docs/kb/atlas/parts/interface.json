@@ -1,0 +1,1101 @@
+[
+ {
+  "id": "interface.action-request-buffer",
+  "category": "interface",
+  "title": "Action request buffer model",
+  "summary": "Button presses are latched by the engine and used when the current animation lets that action run. The latch has no timer; it only clears when the engine says so.",
+  "values": "33 action bits (HKS ACTION_ARM_*). Per frame: pressed = held & ~prevHeld; pending |= pressed & acceptMask (+0xd0); requested (+0x30, env 1106) |= pending & executeMask (+0xe0). Masks are rebuilt every frame and zeroed at the end of the update. Per-action hold timers at +0xe8 (env 1108).",
+  "how": "SprjChrActionRequestModule (RTTI vtable 0x142a729d8), update FUN_140b2c190; setters FUN_140b2be00 (accept), FUN_140b2bdc0 (execute).",
+  "sources": [
+   {
+    "kind": "exe",
+    "ref": "FUN_140b2c190, FUN_140b2be00, FUN_140b2bdc0, FUN_140b2b6d0"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "fireguy-rustsekiro/docs/kb/input-buffer.md"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "yes",
+   "where": "fireguy-rustsekiro/src/player.rs (buffers, keeps_buffer)"
+  },
+  "his": {
+   "has": "yes",
+   "where": "sekiro-rs/crates/sim/src/input.rs (accept_flags, accepts)"
+  },
+  "check": "Mash attack before the swing opens its accept window: the presses are dropped; a press inside the window chains.",
+  "note": "",
+  "needs": [
+   {
+    "id": "interface.accept-flags",
+    "why": ""
+   },
+   {
+    "id": "interface.execute-flags",
+    "why": ""
+   }
+  ]
+ },
+ {
+  "id": "interface.accept-flags",
+  "category": "interface",
+  "title": "Accept flags (what a press latches)",
+  "summary": "A TAE ChrActionFlag opens a window in which a press of a given action is remembered.",
+  "values": "Accept ids: 87 all actions, 1 attack, 9/150 guard, 25 step, 151 jump, 30 item, 136 prosthetic tool. Bits: 0 attack, 1 sub (tool), 2 guard, 4 jump, 5/13/14 step, 7 item, 18 shinobi tool. Example: tap slash buffers from frame 6, Combo1 hold from frame 21; guard, jump and step get early windows (frames 3-15).",
+  "how": "TAE dispatcher FUN_140b59170 case 0 ChrActionFlag -> FUN_140b51b70 (a u16 id switch, gated by an SpEffect check on arg[7]).",
+  "sources": [
+   {
+    "kind": "exe",
+    "ref": "FUN_140b59170, FUN_140b51b70"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "fireguy-rustsekiro/docs/kb/input-buffer.md"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "yes",
+   "where": "fireguy-rustsekiro/src/player.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "sekiro-rs/crates/sim/src/input.rs accept_flags"
+  },
+  "check": "Record a press at frame 5 and frame 7 of Combo1: only the second is remembered.",
+  "note": "Animations without any action flags (idle, locomotion loops) accept and execute everything.",
+  "needs": [
+   {
+    "id": "interface.action-request-buffer",
+    "why": ""
+   }
+  ]
+ },
+ {
+  "id": "interface.execute-flags",
+  "category": "interface",
+  "title": "Execute flags (when a remembered press fires)",
+  "summary": "A second set of ChrActionFlags opens the cancel window in which a remembered press actually starts the action.",
+  "values": "Execute ids: 4 and 115 attack, 116 sub attack, 16 and 117 guard, 26 step, 119 jump, 31 item, 137 tool. The flags the player code gated on before were the execute ones.",
+  "how": "Same dispatcher; execute mask +0xe0 via FUN_140b2bdc0.",
+  "sources": [
+   {
+    "kind": "exe",
+    "ref": "FUN_140b51b70, FUN_140b2bdc0"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "fireguy-rustsekiro/docs/kb/input-buffer.md"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "yes",
+   "where": "fireguy-rustsekiro/src/player.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "sekiro-rs/crates/sim/src/input.rs accept_flags"
+  },
+  "check": "Attack twice quickly: the second slash starts at the cancel frame (about 15 for the tap slash).",
+  "note": "",
+  "needs": [
+   {
+    "id": "interface.action-request-buffer",
+    "why": ""
+   }
+  ]
+ },
+ {
+  "id": "interface.buffer-reset",
+  "category": "interface",
+  "title": "Which transitions clear the buffer",
+  "summary": "Most transitions clear every remembered press. Locomotion, quick turns, falls and landings keep them.",
+  "values": "HKS FireEvent calls ResetRequest -> act(9101) -> FUN_140b2afd0 (+0x188 bit 0), dropping all pending presses; FireEventNoReset keeps them. FireEvent used 891 times, FireEventNoReset 203 times in the player set.",
+  "how": "HKS wrappers; exe FUN_140b2afd0.",
+  "sources": [
+   {
+    "kind": "exe",
+    "ref": "FUN_140b2afd0"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "sekiro-rs/docs/HKS-INTERFACE.md"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "fireguy-rustsekiro/docs/kb/input-buffer.md"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "yes",
+   "where": "fireguy-rustsekiro/src/player.rs keeps_buffer"
+  },
+  "his": {
+   "has": "yes",
+   "where": "sekiro-rs/crates/sim/src/input.rs"
+  },
+  "check": "Press jump during a hit reaction, then recover: jump is not performed after the reaction.",
+  "note": "Pending is also cleared when combat puts the player in a damage state.",
+  "needs": []
+ },
+ {
+  "id": "interface.buffer-latency",
+  "category": "interface",
+  "title": "Buffered input fires one game frame late",
+  "summary": "A remembered press fires about one TAE frame (two game frames) after the cancel flag starts, because the script sees the flags set by the previous update.",
+  "values": "Live: attack flag 115: 16.0 vs flag at 15, 9.9 vs 9, 13 vs 12, 19 vs 18; guard flag 117: about 7.0 vs 6. A fresh press makes the anim change in about 1 game frame.",
+  "how": "HKS reads env flags from the previous frame TAE update.",
+  "sources": [
+   {
+    "kind": "recording",
+    "ref": "rec_20261008_041541 (kb/input-buffer.md)"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "fireguy-rustsekiro/docs/kb/input-buffer.md"
+   }
+  ],
+  "confidence": "recorded",
+  "ours": {
+   "has": "yes",
+   "where": "fireguy-rustsekiro/src/player.rs accepts"
+  },
+  "his": {
+   "has": "partial",
+   "where": "sekiro-rs/crates/sim/src/input.rs"
+  },
+  "check": "Time a buffered slash against the execute flag in the TAE view.",
+  "note": "",
+  "needs": [
+   {
+    "id": "interface.execute-flags",
+    "why": ""
+   }
+  ]
+ },
+ {
+  "id": "interface.guard-held",
+  "category": "interface",
+  "title": "Guard must still be held when the press fires",
+  "summary": "A tapped guard that was let go before its window opened is dropped. Attack presses survive release.",
+  "values": "Exceptions that keep released guard taps: the deflect spam chain (ref 212, StandToDeflectGuard*) and the additive deflect (ref 228) with guard cancel 412 (f9, e.g. StandDeflectHardSmall: press f1.5, release f4 gives StandToDeflectGuard at f9.5).",
+  "how": "HKS env 1108 duration check on guard plus TAE refs.",
+  "sources": [
+   {
+    "kind": "recording",
+    "ref": "rec_20261008_041541"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "fireguy-rustsekiro/docs/kb/input-buffer.md"
+   }
+  ],
+  "confidence": "recorded",
+  "ours": {
+   "has": "yes",
+   "where": "fireguy-rustsekiro/src/player.rs pressed_guard"
+  },
+  "his": {
+   "has": "yes",
+   "where": "sekiro-rs/crates/sim/src/input.rs"
+  },
+  "check": "Tap and release guard during a slash recovery before the guard window: no guard.",
+  "note": "",
+  "needs": [
+   {
+    "id": "interface.action-request-buffer",
+    "why": ""
+   }
+  ]
+ },
+ {
+  "id": "interface.attack-release",
+  "category": "interface",
+  "title": "Hold and release on attacks",
+  "summary": "Releasing the attack button before a TAE window opens triggers a release slash at that window.",
+  "values": "Release before ref 208 starts Release at TAE frame 6.0-6.5 (matches the 208 window at f6).",
+  "how": "HKS BEH_A_GROUND_RELEASE_ATTACK and TAE refs.",
+  "sources": [
+   {
+    "kind": "recording",
+    "ref": "rec_20261008_041541"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "fireguy-rustsekiro/docs/kb/input-buffer.md"
+   },
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/hks_src/c0000_transition.lua"
+   }
+  ],
+  "confidence": "recorded",
+  "ours": {
+   "has": "yes",
+   "where": "fireguy-rustsekiro/src/player.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "sekiro-rs/crates/sim/src/input.rs"
+  },
+  "check": "Tap attack and let go before frame 6: Release slash starts at frame 6.",
+  "note": "",
+  "needs": [
+   {
+    "id": "interface.action-request-buffer",
+    "why": ""
+   }
+  ]
+ },
+ {
+  "id": "interface.add-action-input",
+  "category": "interface",
+  "title": "Additive action input (buffer for the next move)",
+  "summary": "Certain moves open \"add action input\" windows in which a button press is stored in a separate layer and replayed when the cancel window comes. Each action has an enable and a cancel SpEffect ref.",
+  "values": "Refs (enable/cancel): jump 403/404, use item 405/406, crouch 407/408, attack 409/410, guard 411/412, sub attack 413/414, wire 415/416, wall hang 417/418, kick(dodge) 419/420, sub weapon change 421/422, resend 423, wall jump 425, special attack 429/430. HKS BEH_A_ADD_ACTION_INPUT_* fire on env(1106, ...) of the matching arm. Clip example AddActionInputWireShoot a000_299026 (0.4 s).",
+  "how": "HKS BEH_A_ADD_ACTION_INPUT_*; BEH_ADD_R_ADD_ACTION_INPUT_RESEND (40); TAE SpEffects 403-430.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/hks_src/c0000_transition.lua"
+   },
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/hks_src/c0000_define.lua"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "fireguy-rustsekiro/docs/kb/grapple.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "fireguy-rustsekiro/src/player.rs (wire, jump, kick, crouch; no additive layer)"
+  },
+  "his": {
+   "has": "partial",
+   "where": "sekiro-rs/crates/sim/src/input.rs"
+  },
+  "check": "Press jump while the previous state is still in a jump-cancel window and see AddActionInputJump play.",
+  "note": "Ours plays no additive layers anywhere, so some presses are dropped (grapple notes).",
+  "needs": [
+   {
+    "id": "interface.action-request-buffer",
+    "why": ""
+   }
+  ]
+ },
+ {
+  "id": "interface.action-duration-hold",
+  "category": "interface",
+  "title": "Hold time of a button",
+  "summary": "Several actions depend on how long a button has been held, not just pressed. env 1108 returns the hold time in milliseconds.",
+  "values": "Used: sprint if SP_MOVE > 0; step by press-hold with ENABLE_PRESS_STEP and > 0; swamp run if SP_MOVE > 200; air hang grab with the hang button held > 0; env 333 is the frame time in ms.",
+  "how": "HKS env(1108, ACTION_ARM_*); action module +0xe8.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/hks_src/c0000_transition.lua"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "sekiro-rs/docs/HKS-INTERFACE.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "fireguy-rustsekiro/src/player.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "sekiro-rs/crates/sim/src/input.rs"
+  },
+  "check": "Hold dodge 0.1 s vs 0.3 s in a swamp.",
+  "note": "",
+  "needs": [
+   {
+    "id": "movement.sprint",
+    "why": ""
+   }
+  ]
+ },
+ {
+  "id": "interface.sp-move-press-vs-hold",
+  "category": "interface",
+  "title": "Dodge button: tap steps, hold sprints",
+  "summary": "The same button gives a step on press and a sprint on hold, depending on the state.",
+  "values": "BEH_A_GROUND_STEP uses env(1106) (press) or buffered kick input or ENABLE_PRESS_STEP with env(1108) > 0; BEH_A_SPRINT uses env(1108) > 0 with the TAE sprint-transition or running states; no sprint or step in waterside. PRM_RUN_STICK values apply to walk/run only.",
+  "how": "HKS Validate tables.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/hks_src/c0000_transition.lua"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "fireguy-rustsekiro/src/player.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "sekiro-rs/crates/sim/src/input.rs"
+  },
+  "check": "Tap Shift while running (step) and hold it (sprint).",
+  "note": "",
+  "needs": [
+   {
+    "id": "movement.ground-step",
+    "why": ""
+   },
+   {
+    "id": "movement.sprint",
+    "why": ""
+   }
+  ]
+ },
+ {
+  "id": "interface.action-arms",
+  "category": "interface",
+  "title": "Action arms (input channels)",
+  "summary": "The script talks to 18 input channels called action arms, each tied to a game action.",
+  "values": "ACTION_ARM_ATTACK 0, SUB_ATTACK 1, GUARD 2, WIRE_SHOOT 3, JUMP 4, SP_MOVE 5 (dodge/sprint), USE_ITEM 7, CHANGE_WEAPON_L 10, WALL_HANG 12, BACKSTEP 13, ROLLING 14, CROUCH 15, SHINOBI_WEP_ACTION 18, SWIM_ACCELERATION 28, SWIM_UP 29, SWIM_DOWN 30, EAVESDROP 31, SPECIAL_ATTACK 32. env 1106 is used at 142 sites with 18 distinct arms.",
+  "how": "HKS c0000_define.lua; exe action module.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/hks_src/c0000_define.lua"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "sekiro-rs/docs/HKS-INTERFACE.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "fireguy-rustsekiro/src/player.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "sekiro-rs/crates/sim/src/input.rs (arm module)"
+  },
+  "check": "List the arms in the sim input.",
+  "note": "",
+  "needs": []
+ },
+ {
+  "id": "interface.default-key-assign",
+  "category": "interface",
+  "title": "Default key and pad bindings",
+  "summary": "DefaultKeyAssignParam rows bind each game action to a keyboard code, mouse button and pad button. Keyboard ids are DirectInput scan code plus 69.",
+  "values": "DefaultKeyAssignParam00 (5 presets): move W/S/A/D = 86/100/99/101 with pad 3003/3003/3002/3002 (stick axes); action 5 step/sprint kb 111 (Shift) pad 2005; 6 jump kb 126 (Space) pad 2004; 7 crouch kb 85 (Q) pad 2010; 20 interact/hug/hang kb 87 (E) pad 2006; 21 use item kb 88 (R) pad 2000; 19 grapple kb 102 (F) pad 3000; mouse ids 1/2/8 = right/left/middle. Pad 2000-2003 are the d-pad.",
+  "how": "DefaultKeyAssignParam.gameAction rows; DirectInput scan code + 69.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/json/params/DefaultKeyAssignParam00.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "fireguy-rustsekiro/docs/kb/docking.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "fireguy-rustsekiro/src/player.rs read_input"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Reset keybinds and compare with the table; note pad ids are mapped to buttons by the exe, not in the param.",
+  "note": "Pad ids 2006-2013 are not decoded to button names.",
+  "needs": []
+ },
+ {
+  "id": "interface.stick-input",
+  "category": "interface",
+  "title": "Stick and camera-relative movement vector",
+  "summary": "Movement input is the left stick turned by the camera yaw. Its length is the stick level; walking halves it and releasing zeros it.",
+  "values": "ChrManipulator (PadManipulator for Wolf) +0xc0 = move stick (-x, 0, -y) rotated by camera yaw, unnormalised, halved on walk (FUN_1407f0f50); +0x80 right stick (camera), +0xd0 mouse. HKS reads MoveSpeedLevel, MoveAngle (locked) and TurnAngle (free).",
+  "how": "FUN_1409efea0 (manipulator), FUN_1407f0f50.",
+  "sources": [
+   {
+    "kind": "exe",
+    "ref": "FUN_1409efea0, FUN_1407f0f50"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "fireguy-rustsekiro/docs/kb/camera.md"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "yes",
+   "where": "fireguy-rustsekiro/src/player.rs read_input"
+  },
+  "his": {
+   "has": "yes",
+   "where": "sekiro-rs/crates/sim/src/input.rs"
+  },
+  "check": "Push the stick at 50 percent while walking: MoveSpeedLevel is about 0.5.",
+  "note": "Dead zone shape not traced.",
+  "needs": []
+ },
+ {
+  "id": "interface.action-prompts",
+  "category": "interface",
+  "title": "World action prompts (ActionButtonParam)",
+  "summary": "Prompts for talking, opening, picking up and similar actions appear when Wolf is within a small cylinder in front of the spot. Each row has size, angle and a 3 s lockout after use.",
+  "values": "ActionButtonParam 305 rows. Defaults: radius 1.5 m, height 1.0, baseHeightOffset -0.25, angle 180, priority 10, execInvalidTime 3.0 s. Pickup/gesture rows 3000/3010: radius 2.0, height 4.0, offset -2.0, gameKey 1. Object rows 4200-4220: radius 2-3 m, raycastType 1. Sliding rows 5000/5010: angle 90, allowAngle 45, dummypoly 195/194, height 0.5.",
+  "how": "Map ActionButton regions + ObjAct; menu text ids in textId.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/json/params/ActionButtonParam.json"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "fireguy-rustsekiro/src/map.rs (ObjAct)"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Walk to a lamp idol: prompt appears inside 1.5 m.",
+  "note": "Only some prompts are implemented in either project.",
+  "needs": []
+ },
+ {
+  "id": "interface.action-guide",
+  "category": "interface",
+  "title": "Action guide text at the bottom",
+  "summary": "Context hints (hug wall, ledge hang, climb, drop, talk) appear from act(3030) and list a key icon. 16 ActionGuideParam rows give the text id and priority.",
+  "values": "act(3030, guide, button): ids 10 stick/hug, 11 leave hug, 20 ledge hang (priority 2), 21 climb, 22 drop (priority 2), 1 and 2 and 3 base prompts, 30, 40-43, 90, 91. Text ids 10010103...10010391 in the menu FMG; icon token <?kgiconKc@N?> where N is a DefaultKeyAssignParam gameAction.",
+  "how": "HKS act 3030; ActionGuideParam; menu.msgbnd FMG.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/json/params/ActionGuideParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/hks_src/c0000_transition.lua"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "fireguy-rustsekiro/docs/kb/docking.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "fireguy-rustsekiro/src/action_guide.rs"
+  },
+  "his": {
+   "has": "partial",
+   "where": "sekiro-rs/crates/sim/src/player.rs (act 3030)"
+  },
+  "check": "Walk to a ledge: \"Ledge Hang\" appears with the interact key icon.",
+  "note": "",
+  "needs": [
+   {
+    "id": "interface.default-key-assign",
+    "why": ""
+   }
+  ]
+ },
+ {
+  "id": "interface.objact-reach",
+  "category": "interface",
+  "title": "Object action reach",
+  "summary": "Interactions with objects (doors, levers) work inside 0.7 m and within 60 degrees of facing both ways.",
+  "values": "ObjActParam 149 rows; typical validDist 70 (cm), validPlayerAngle 60, validObjAngle 60 (30 on a few rows with 150 cm); playerAnimId 60xxx / 70xxxx; spQualifiedType requires an SpEffect or flag.",
+  "how": "ObjActParam fields; ActionButtonParam id in actionButtonParamId.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/json/params/ObjActParam.json"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "fireguy-rustsekiro/src/map.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Stand at a door from 1 m off-axis: no prompt; at 0.5 m facing it: prompt.",
+  "note": "Units cm assumed from 70 and 150 values.",
+  "needs": []
+ },
+ {
+  "id": "interface.hp-bar",
+  "category": "interface",
+  "title": "Vitality bar",
+  "summary": "Wolf vitality sits bottom left; its length scales with maximum HP up to a cap, and the lost part drains as a lighter trail.",
+  "values": "MenuParam PlayerMaxHpLimit 1920 (bar length = share of the resource gauge), PlayerMaxAddHp 0, PlayerQuarterHp 20. Layout clip r_000230 960x540: x 5.7-15.2 %, y 90.7-92.2 %. Fill colour about (180, 70, 48), trail (165, 130, 120). Health icon thresholds (for phantoms): 300 uninjured, 250 light, 100 heavy, 1 dying, 0 dead.",
+  "how": "Scaleform FE movie 01_000_fe.gfx, atlases 01_common.tpf (SB_FE), MenuParam.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/json/params/MenuParam.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "fireguy-rustsekiro/docs/kb/visuals.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "fireguy-rustsekiro/src/hud.rs hp_bar_vw"
+  },
+  "his": {
+   "has": "yes",
+   "where": "sekiro-rs/crates/game/src/combat_hud.rs"
+  },
+  "check": "Gain vitality upgrades and compare bar length.",
+  "note": "Trail timing not in the data.",
+  "needs": []
+ },
+ {
+  "id": "interface.posture-bar",
+  "category": "interface",
+  "title": "Posture bar and its states",
+  "summary": "The posture gauge fills outward from the centre and changes colour in three states; it stays visible at least 0.5 s after the damage is gone.",
+  "values": "State 0 normal, 1 about to break (posture at 70 percent), 2 breakable (full), 3 break reaction. MenuParam SpMinimumDispTime 0.5, PlayerDangerSp 35, PlayerMaxAddSp 17, PlayerMaxSpLimit 1920. Exe FUN_140a02a10 -> chr+0x1a40; threshold DAT_143b06724 = 30 percent left. Fill colours (142,123,60) normal, (154,116,0), (168,107,0), (182,96,0).",
+  "how": "Exe FUN_140a02a10; HUD Bar clip labels State_0..3 in 01_000_fe.gfx.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/json/params/MenuParam.json"
+   },
+   {
+    "kind": "exe",
+    "ref": "FUN_140a02a10"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "fireguy-rustsekiro/docs/kb/visuals.md"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "yes",
+   "where": "fireguy-rustsekiro/src/hud.rs posture_state"
+  },
+  "his": {
+   "has": "yes",
+   "where": "sekiro-rs/crates/game/src/combat_hud.rs"
+  },
+  "check": "Raise an enemy posture to 70 percent: bar turns from dull to warm orange.",
+  "note": "Frame art MENU_Taikan_ST1-3 not drawn exactly.",
+  "needs": [
+   {
+    "id": "combat.posture-bar",
+    "why": "posture value"
+   }
+  ]
+ },
+ {
+  "id": "interface.lock-cursor-colour",
+  "category": "interface",
+  "title": "Lock-on cursor colour by enemy posture",
+  "summary": "The lock-on cursor on an enemy changes colour with how much of its posture is left: white to orange to red to dark red.",
+  "values": "MenuParam LockStamina thresholds (percent of posture remaining): NoDamage 100 white, Light 75 pale yellow, Middle 51 yellow, Heavy 25 orange, Critical 1 red, Fatal 0 dark red.",
+  "how": "MenuParam LockStamina*; lock cursor in the FE movie.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/json/params/MenuParam.json"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Lock a boss and wear its posture down: the cursor warms up.",
+  "note": "Not used by either project; the lock mark is a plain white disc.",
+  "needs": [
+   {
+    "id": "combat.posture-bar",
+    "why": ""
+   },
+   {
+    "id": "camera.lock-anchor",
+    "why": ""
+   }
+  ]
+ },
+ {
+  "id": "interface.lock-mark",
+  "category": "interface",
+  "title": "Lock-on marker animation",
+  "summary": "The marker is a small white disc that scales in, pulses and fades out when the lock ends.",
+  "values": "MENU_Lockon01 64x32 BC7 disc ~10 px centred (16,16); clip Lockon_Ani_297: FadeIn f1-16 scale 3 to 1 alpha 0 to 1; Loop f16-83 alpha 1 to 0.738 (f50) to 0.992; FadeOut f84-89 alpha -0.2 per frame. Drawn at the target dummy 220.",
+  "how": "Scaleform clip in menu/01_000_fe.gfx; sprite in 01_common.tpf.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "fireguy-rustsekiro/docs/kb/visuals.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "fireguy-rustsekiro/src/hud.rs lock_clip"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Lock on and watch the marker shrink in over 0.5 s.",
+  "note": "",
+  "needs": [
+   {
+    "id": "camera.lock-anchor",
+    "why": ""
+   }
+  ]
+ },
+ {
+  "id": "interface.deathblow-mark",
+  "category": "interface",
+  "title": "Deathblow mark",
+  "summary": "When a deathblow can be performed a red mark glows on the enemy chest.",
+  "values": "MENU_ninsatu_02 (405 px red glow, white core) + MENU_ninsatu_01 (128 px) from SB_FE; clip MenuVFX State_1; placed on dummy 220.",
+  "how": "Scaleform FE sprites; shown when posture broken or sneak kill possible.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "fireguy-rustsekiro/docs/kb/visuals.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "fireguy-rustsekiro/src/hud.rs DeathblowMark"
+  },
+  "his": {
+   "has": "partial",
+   "where": "sekiro-rs/crates/game/src/combat_hud.rs"
+  },
+  "check": "Break posture: the mark appears on the chest.",
+  "note": "",
+  "needs": [
+   {
+    "id": "deathblows.mark-condition",
+    "why": ""
+   }
+  ]
+ },
+ {
+  "id": "interface.wire-markers",
+  "category": "interface",
+  "title": "Grapple point markers and distance",
+  "summary": "Grapple points show a circle: grey when only found, green when in range, a ring with an arrow for no-ride points, with sizes scaled by distance and off-screen points clamped to the edge.",
+  "values": "MENU_Wire_Marker, _Cursor, _Distance, _NG. MenuParam WirePointMinSize 0.45, MaxSize 0.58 (scale vs the Flash size), WireOffScreenRange X 20 percent / Y 15, Display X 20 / Y 15, fixed OffScreenScale 0.5 (WireOffScreenScaleEnable 0).",
+  "how": "SB_FE sprites; MenuParam Wire*.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/json/params/MenuParam.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "fireguy-rustsekiro/docs/kb/grapple.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "fireguy-rustsekiro/src/hud.rs WireMark (no off-screen clamp)"
+  },
+  "his": {
+   "has": "yes",
+   "where": "sekiro-rs/crates/game/src/grapple_hud.rs"
+  },
+  "check": "Face a grapple point at 20 m and then off-screen: grey marker, then edge arrow.",
+  "note": "",
+  "needs": [
+   {
+    "id": "movement.grapple-search",
+    "why": ""
+   }
+  ]
+ },
+ {
+  "id": "interface.stealth-markers",
+  "category": "interface",
+  "title": "Found and about-to-be-found markers",
+  "summary": "Enemy awareness shows icons over the enemy: MENU_Find_01/02 for noticing and a watch marker at the screen edge when something is about to spot Wolf.",
+  "values": "MENU_Find_01, MENU_Find_02 sprites; MenuParam WatchTargetOffScrDisplay X 3 / Y 8; WatchTargetPointRate 10 (unused).",
+  "how": "SB_FE sprites; MenuParam.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/json/params/MenuParam.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "fireguy-rustsekiro/docs/kb/visuals.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "fireguy-rustsekiro/src/hud.rs update_stealth"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Sneak near an enemy: the icon fills.",
+  "note": "",
+  "needs": [
+   {
+    "id": "stealth.visibility-gauge",
+    "why": ""
+   }
+  ]
+ },
+ {
+  "id": "interface.resource-counters",
+  "category": "interface",
+  "title": "Resurrection nodes and item counts",
+  "summary": "Resurrection nodes sit over the vitality bar and gourd and emblem counts sit bottom left.",
+  "values": "Nodes MENU_HP_base_2 frame with fills; gourd charges and spirit emblem numbers bottom-left; poison and fire build-up icons MENU_Resist_Poison/Fire filled from the bottom over the vitality bar.",
+  "how": "SB_FE sprites; PlayerGameData.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "fireguy-rustsekiro/docs/kb/visuals.md"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "fireguy-rustsekiro/docs/kb/skills.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "fireguy-rustsekiro/src/hud.rs ResNode, WolfBuildUp"
+  },
+  "his": {
+   "has": "partial",
+   "where": "sekiro-rs/crates/game/src/combat_hud.rs"
+  },
+  "check": "Use a resurrection: a node empties.",
+  "note": "",
+  "needs": [
+   {
+    "id": "combat.resurrection",
+    "why": ""
+   }
+  ]
+ },
+ {
+  "id": "interface.item-icons",
+  "category": "interface",
+  "title": "Prosthetic and item icons",
+  "summary": "The equipped combat art and prosthetic tool show bottom right with their icons and names.",
+  "values": "hud/MENU_ItemIcon_<iconId:05>.png from SB_Icon*; EquipParamWeapon iconId (art), Prosthetic.icon (tool); quick-item cluster bottom right.",
+  "how": "EquipParamGoods/Weapon icon ids; sprites cut by export_hud.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "fireguy-rustsekiro/docs/kb/skills.md"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "fireguy-rustsekiro/docs/kb/visuals.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "fireguy-rustsekiro/src/hud.rs ItemIcon"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Switch prosthetic with the tool key: icon changes.",
+  "note": "",
+  "needs": [
+   {
+    "id": "interface.prosthetic-switch",
+    "why": ""
+   }
+  ]
+ },
+ {
+  "id": "interface.prosthetic-switch",
+  "category": "interface",
+  "title": "Switching prosthetic tools",
+  "summary": "The tool switch button cycles the prosthetic slot, but only to tool categories 70-79 and not while swimming, in forced states or in the wrong weapon style.",
+  "values": "BEH_A_ADD_SUB_WEAPON_CHANGE: env(1106, ARM_CHANGE_WEAPON_L 10) or buffered 421/422, nextSubWeaponCategory in 70..79, not DISABLE_SUB_WEAPON_CHANGE, not ENABLE_SUB_GUARD_RELEASE_CONNECT, style sheathed only in non-combat area. SUB_WEAPON_EXPAND blocked in waterside.",
+  "how": "HKS g_ValidateActionTable; env 3027.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/hks_src/c0000_transition.lua"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "fireguy-rustsekiro/src/player.rs tool_slot, prosthetic.rs"
+  },
+  "his": {
+   "has": "partial",
+   "where": "sekiro-rs/crates/sim/src/input.rs"
+  },
+  "check": "Press the tool switch in a pond: no change.",
+  "note": "",
+  "needs": [
+   {
+    "id": "items.prosthetic-tools",
+    "why": ""
+   }
+  ]
+ },
+ {
+  "id": "interface.boss-bar",
+  "category": "interface",
+  "title": "Boss and enemy bars",
+  "summary": "Bosses show a top-left vitality bar with deathblow orbs and a top-centre posture bar; regular enemies show small bars over the head and deathblow dots.",
+  "values": "Boss bar put up by map events; posture grows from the centre with arrows at each end while damaged; enemy bars at the Head bone.",
+  "how": "Scaleform FE sprites; EMEVD boss bar events.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "fireguy-rustsekiro/docs/kb/visuals.md"
+   }
+  ],
+  "confidence": "recorded",
+  "ours": {
+   "has": "yes",
+   "where": "fireguy-rustsekiro/src/hud.rs BossRoot, EnemyRoot"
+  },
+  "his": {
+   "has": "yes",
+   "where": "sekiro-rs/crates/game/src/combat_hud.rs, ape_hud.rs"
+  },
+  "check": "Fight a boss and a soldier and compare bar placement with a clip.",
+  "note": "Layout from the user captures.",
+  "needs": [
+   {
+    "id": "bosses.boss-bar-event",
+    "why": "event that shows it"
+   }
+  ]
+ },
+ {
+  "id": "interface.item-log",
+  "category": "interface",
+  "title": "Item pickup log",
+  "summary": "Items picked up are listed on screen, each line staying 10 seconds.",
+  "values": "MenuParam GetItemViewTime 10.0 s per line.",
+  "how": "MenuParam.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/json/params/MenuParam.json"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "fireguy-rustsekiro/src/items.rs (pickups; no log)"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Pick up two items quickly.",
+  "note": "",
+  "needs": [
+   {
+    "id": "items.pickup",
+    "why": ""
+   }
+  ]
+ },
+ {
+  "id": "interface.death-screen",
+  "category": "interface",
+  "title": "Death screen timing",
+  "summary": "After the death banner appears, the screen fades out 2.5 s later in solo play.",
+  "values": "MenuParam SoloPlayDeath_ToFadeOutTime 2.5 s; PartyGhostDeath_ToFadeOutTime 2.0 s. Wolf with no resurrection shows the death character 死 with Retry/Title in ours.",
+  "how": "MenuParam; FE movie.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/json/params/MenuParam.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "fireguy-rustsekiro/docs/kb/visuals.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "fireguy-rustsekiro/src/menu.rs (Screen::Dead)"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Die and time the fade after the banner.",
+  "note": "Fade start time vs the banner animation not compared with a recording.",
+  "needs": [
+   {
+    "id": "combat.player-death",
+    "why": ""
+   }
+  ]
+ },
+ {
+  "id": "interface.pause-menu",
+  "category": "interface",
+  "title": "In-game menu (Equipment, Inventory, Skills, Options)",
+  "summary": "The pause menu is a four-tab board on a wooden background; it stops the game clock.",
+  "values": "Tabs Equipment / Inventory / Skills / Options switched with Z and X in ours; sections Prosthetic Tools (3 slots), Combat Arts, Quick Items (5), Ninjutsu; Inventory and Skills use a list with scroll bar and a parchment description. Sprites MENU_Base_00, MENU_Caption_01/02, MENU_Cursor_01/03, MENU_IconBase_02.",
+  "how": "Scaleform menu movie and SB_in_game atlas.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "fireguy-rustsekiro/docs/kb/visuals.md"
+   }
+  ],
+  "confidence": "recorded",
+  "ours": {
+   "has": "yes",
+   "where": "fireguy-rustsekiro/src/game_menu.rs"
+  },
+  "his": {
+   "has": "partial",
+   "where": "sekiro-rs/crates/game/src/menu.rs (launcher-style start/pause menu)"
+  },
+  "check": "Open the menu in each project and compare with the game.",
+  "note": "Built from the user captures; the real input mapping per tab was not read from data.",
+  "needs": []
+ },
+ {
+  "id": "interface.volume-options",
+  "category": "interface",
+  "title": "Volume options",
+  "summary": "Music, effects and voice volume each have a 0-10 slot; menu sounds follow their own category.",
+  "values": "GameDataMan options +0x50: bytes 4/5/6 (Bgm/Se/Voice) default 10/10/10, FUN_1407bc470; FMOD categories (master > music, Menu, SE, Voice, Default) get slot * menu * InGameMaster.",
+  "how": "Exe FUN_1407bc470, FUN_141c7b1d0.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "fireguy-rustsekiro/docs/kb/sound.md"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "partial",
+   "where": "fireguy-rustsekiro/src/config.rs AudioConfig"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Set music to 0 and listen to effects.",
+  "note": "",
+  "needs": [
+   {
+    "id": "sound.mixer-categories",
+    "why": ""
+   }
+  ]
+ },
+ {
+  "id": "interface.camera-input",
+  "category": "interface",
+  "title": "Camera input devices",
+  "summary": "The camera reads the right stick and mouse movement as separate inputs with their own speeds; mouse counts per poll are used for target switching.",
+  "values": "Right stick +0x80, mouse +0xd0 in the manipulator; DirectInput mouse relative counts raw (no scale); invert options byte DAT_143d5a988 +0x715/+0x716 (likely camera invert X/Y).",
+  "how": "Exe FUN_141a8f540, FUN_140960650, FUN_140965bd0/80.",
+  "sources": [
+   {
+    "kind": "exe",
+    "ref": "FUN_141a8f540, FUN_140960650"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "fireguy-rustsekiro/docs/kb/camera.md"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "partial",
+   "where": "fireguy-rustsekiro/src/camera.rs"
+  },
+  "his": {
+   "has": "partial",
+   "where": "sekiro-rs/crates/sim/src/camera.rs"
+  },
+  "check": "Move the mouse 5 counts and 60 counts per frame.",
+  "note": "Binding table for action 0x54/0x55 not found.",
+  "needs": [
+   {
+    "id": "camera.stick-turn-speed",
+    "why": ""
+   }
+  ]
+ },
+ {
+  "id": "interface.key-icons",
+  "category": "interface",
+  "title": "Key icon tokens in help text",
+  "summary": "Menu and prompt texts embed a token naming a game action; the game replaces it with the bound key or button icon.",
+  "values": "Token <?kgiconKc@N?> N = DefaultKeyAssignParam gameAction (e.g. Kc@20 hug/hang, Kc@5 drop). Help text 10010310 \"Hug wall\", 10010311 \"Stop hugging wall\", 10010320 \"Ledge Hang\", 10010321 \"Climb\", 10010322 \"Drop down\".",
+  "how": "menu.msgbnd FMG text.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "fireguy-rustsekiro/docs/kb/docking.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "fireguy-rustsekiro/src/action_guide.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Change the bound key and watch the prompt icon change.",
+  "note": "",
+  "needs": [
+   {
+    "id": "interface.action-guide",
+    "why": ""
+   }
+  ]
+ }
+]

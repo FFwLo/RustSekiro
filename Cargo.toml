@@ -4,16 +4,27 @@ version = "0.2.1"
 edition = "2024"
 
 [dependencies]
-bevy = { version = "0.19.1", features = ["dds"] }
+bevy = { version = "0.20.0", features = ["dds"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "1"
 libloading = "0.8"
-# The window icon (src/icon.rs); the version Bevy 0.19 itself uses.
+# AKJama's sekiro-rs as a library (local clone next to this repo, branch local/game-lib): its
+# streaming map, lighting, sky and fog under `SHINOBI_SR_MAP=1` (src/sr_map.rs).
+sekiro-game = { path = "../sekiro-rs/crates/game" }
+sekiro-sim = { path = "../sekiro-rs/crates/sim" }
+# Its file readers (the draw params' GPARAM for the tests that check his lighting).
+sekiro-formats = { path = "../sekiro-rs/crates/formats" }
+# The window icon (src/icon.rs); the version Bevy 0.20 itself uses.
 winit = "0.30"
 # Release build (main.rs): attach the parent console, the "Sv1 stopped" dialog on a panic.
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_System_Console", "Win32_UI_WindowsAndMessaging"] }
+
+# The shader tests (src/shader_tests.rs) validate the composed shaders with naga, through the
+# wgpu Bevy 0.20 already uses.
+[dev-dependencies]
+wgpu = { version = "30", default-features = false }
 
 # Light optimization for our own code, so rebuilds stay fast.
 [profile.dev]

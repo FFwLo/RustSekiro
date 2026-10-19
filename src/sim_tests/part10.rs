@@ -1340,24 +1340,27 @@ pub(crate) fn attack_occurrence_follows_the_hit_category() {
 /// its AtkParam's AppearAiSoundId goes out at the bullet, owned by its shooter. The c1190
 /// archer's arrow 11900100 (AtkParam 11900100: 2000025, 10 m) fired 6 m off is heard there, not
 /// at the archer; a dummy row (AtkParam 8) makes none.
-/// The c1180 servants' all-round armour guard: their anims carry ShieldBlock ArgB 800 under
-/// StateInfo 957, which 220062 (put on by the map's armour-part event) opens; without it the arc
-/// is the default 90 deg (combat.rs guard_half_angle on the live gates).
+/// The c1180 servants' armour guard: their idle anims carry ShieldBlock judge 800 under
+/// StateInfo 957, which 220062 (put on by the map's armour-part event) opens. Without it there
+/// is no guard; with it a sword blow (repel power 30) is blocked by the row 11800800 (repel 20,
+/// guard type 1). The arc is NpcParam guardAngle (60), not the judge (combat.rs guard_contact).
 #[test]
-pub(crate) fn the_armour_guard_arc_follows_its_worn_effect() {
+pub(crate) fn the_armour_guard_follows_its_worn_effect() {
     let mut app = app_with("c1180");
     app.world_mut().resource_scope(|world, combat: Mut<Combat>| {
         let mut q = world.query_filtered::<&mut Actor, (With<Enemy>, Without<crate::enemy::Cast>)>();
         let mut a = q.iter_mut(world).next().unwrap();
-        a.guard_angle = 0.0;
         a.resident.retain(|&id| id != 220062);
         a.play("Idle", "a000_000000");
         a.t = 0.5;
         let d = combat.data_of(&a);
-        let arc = |a: &Actor| crate::combat::guard_half_angle(d, a, crate::combat::event_gates(&combat, a, &[]).as_deref());
-        assert_eq!(arc(&a), 90.0, "without 220062");
+        let blow = crate::data::Attack { guard_atk_rate_correction: 300.0, ..Default::default() };
+        let guard = |a: &Actor| crate::combat::guard_contact(&combat, d, a, None, ("a000_000000", 0.5), None, true, &blow, 5000);
+        assert_eq!(guard(&a).guarded, crate::guard::Guarded::Hit, "without 220062");
         a.sp_chained.push((220062, 1e6));
-        assert_eq!(arc(&a), 800.0, "with 220062");
+        let g = guard(&a);
+        assert_eq!(g.guarded, crate::guard::Guarded::Block, "with 220062");
+        assert_eq!(g.half_angle, 60.0);
     });
 }
 

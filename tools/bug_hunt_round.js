@@ -4,7 +4,8 @@ export const meta = {
   phases: [{ title: 'Find' }, { title: 'Verify' }],
 }
 
-const ROOT = 'C:\\DeadlockModding\\shinobi-combat'
+// The Sv1 folder: pass its path as the workflow's args.root (a workflow script has no require / __dirname).
+const ROOT = (typeof args === 'object' && args && args.root) || 'the shinobi-combat folder next to this repo'
 const COMMON = `Project: Sv1 at ${ROOT}, a Rust/Bevy 0.19 recreation of Sekiro's combat built from the game's files (read docs/HANDOFF.md sections 4.19 to 4.38 for the earlier rounds' fixes so you do not report them again, and docs/kb/*.md for intended behaviour). READ-ONLY: do not edit any file, do not build, do not run sv1.exe. You may run "cargo test --release <name>" only if a test binary already exists and only for a quick check (no rebuild needed is not guaranteed; skip if it would rebuild).
 Scope: shared engine and regular enemies only. Ignore anything specific to the 57 boss/mini-boss rows listed in extracted/enemies/npc_names.json (they belong to someone else) and ignore performance-only issues.
 Report only REAL defects you can tie to exact code (file:line) with a concrete trigger: wrong behaviour, crash/panic, state that leaks across resets, wrong sign/units, a value contradicting the cited game data. No style, no TODO wishes, no "could be cleaner". Return at most 2 findings, the most important first; return an empty list if nothing solid.

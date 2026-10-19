@@ -2,9 +2,9 @@
 //! (tools/map_lights.py -> extracted/map_lights.json, in MSB space with the MapOffset applied),
 //! placed in the loaded arena as Bevy point / spot lights.
 //! After sekiro-rs (MIT / Apache-2.0, AKJama) crates/game/src/map_lights.rs: the exe squares the
-//! light's RGB before its power (FUN_1403892e0), the intensity shares the sun's unit
-//! (`map::SCENE_TO_BEVY`, x 4 pi for a point light's lumens), the range is the authored one, a
-//! spot's cone is its full angle in degrees, and its turn is Euler YXZ (-ry, rx, -rz) then
+//! light's RGB before its power (FUN_1403892e0), the intensity shares the sun's unit (sekiro-rs
+//! `lighting::LOCAL_LUMENS_PER_UNIT`, x 4 pi for a point light's lumens), the range is the
+//! authored one, a spot's cone is its full angle in degrees, and its turn is Euler YXZ (-ry, rx, -rz) then
 //! half a turn (Bevy's spot shines along -Z).
 //! gap: the BTL's native unit, its specular colour / power and sharpness, and which bank a story
 //! state loads (only bank 0000, a first visit's) are not traced; shadows stay off (no Ashina
@@ -56,7 +56,7 @@ fn arena_lights(source_map: &str, origin: Vec3, arena_yaw: f32) -> Vec<Placed> {
             let pos = Vec3::new(-(d.x * c + d.z * s), d.y, -d.x * s + d.z * c);
             let range = f(&l["range"]);
             let intensity = f(&l["intensity"]);
-            if intensity <= 0.0 || range <= 0.0 || Vec2::new(pos.x, pos.z).length() > REACH + range {
+            if intensity <= 0.0 || range <= 0.0 || (pos - crate::map::frame().offset).xz().length() > REACH + range {
                 return None;
             }
             let rgb = Vec3::new(f(&l["color"][0]), f(&l["color"][1]), f(&l["color"][2])) / 255.0;
@@ -85,7 +85,7 @@ fn place(mut commands: Commands, lighting: Res<MapLighting>, old: Query<Entity, 
     }
     let Some(origin) = lighting.map_origin else { return };
     let lights = arena_lights(&lighting.source_map, origin, lighting.arena_yaw);
-    let lumens = crate::map::SCENE_TO_BEVY * 4.0 * std::f32::consts::PI;
+    let lumens = sekiro_rs::lighting::LOCAL_LUMENS_PER_UNIT;
     for l in &lights {
         let mut e = commands.spawn((MapLight, crate::map::MapPiece, Name::new("map light")));
         match l.spot {

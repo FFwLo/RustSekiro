@@ -21,9 +21,9 @@
 //! - **Hang**: from the ground at the top of a hang edge (button): StandToHang1* -> 2* by
 //!   HangStartEdgeAngle; in the air near one with the button held (env 1108 > 0):
 //!   FreeFallToHang(LongRange)(Left / Right); HangIdle (HangFootHold* on foothold edges,
-//!   variation 1); HangMove{Start_L/R, L/R, End_L/R}; button or jump -> HangToStand (climb),
-//!   a step -> HangToFreeFall; jump with the stick away from the wall -> HangJumpReady ->
-//!   WallJumpStart_F_<type> (the kick off it).
+//!   variation 1); HangMove{Start_L/R, L/R, End_L/R}; button -> HangToStand (climb),
+//!   a step -> HangToFreeFall; jump (any stick) -> HangJumpReady -> WallJumpStart_F_<type>
+//!   (the kick off it; BEH_A_HANG_END_CONNECT is validated before BEH_A_HANG_CLIMB).
 //! - **Wall jump** (BEH_A_WALL_JUMP): jump in the air with a wall within reach of the chest,
 //!   once per flight (WALL_JUMP_COUNT_MAX 1): WallJumpReady_<contact F/B/L/R> ->
 //!   WallJumpStart_<contact>_<type N/F/B/L/R>, whose own TAE 920 launches (decide's generic

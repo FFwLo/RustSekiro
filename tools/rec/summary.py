@@ -171,7 +171,7 @@ def enemies(db, rec, title="enemies"):
     return L
 
 
-CHR_DIR = Path(r"C:\DeadlockModding\shinobi-combat\extracted\chr")
+CHR_DIR = Path(__file__).resolve().parents[3] / "shinobi-combat" / "extracted" / "chr"
 
 
 def _siblings(rec):

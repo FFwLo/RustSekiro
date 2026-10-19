@@ -1,0 +1,1216 @@
+[
+ {
+  "id": "visuals.gparam-layer-stack",
+  "category": "visuals",
+  "title": "GPARAM layer stack and priorities",
+  "summary": "Lighting, fog, post and sky values come from GPARAM files stacked in priority layers. Later layers override earlier ones key by key, where the key is (bank, row). A bank number is ((area+100)*100+block)*10000.",
+  "values": "Exe priorities: default 1, templates 2, MDLVW 3, MapBase 4, block layers 5 to 9, MapOverride 10, remo / dying / eclipse 11 and up. Record defaults come from the (0,1) or (1,0) template. Ceremony rows pick the sub id (gparamId) of the file.",
+  "how": "Draw param loader merges files by priority, then the per-frame blend applies the ids chosen by the collision part and events.",
+  "sources": [
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "docs/LIGHTING.md"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/visuals.md"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/Ceremony.json"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "partial",
+   "where": "src/map_lights.rs; src/grading.rs (reads one gparam set per arena)"
+  },
+  "his": {
+   "has": "yes",
+   "where": "crates/formats/src/gparam.rs; crates/formats/src/map_layers.rs; crates/game/src/lighting.rs"
+  },
+  "check": "Dump the layer list for m11_00 and check that the MapOverride (10) value wins over MapBase (4) for the same key.",
+  "note": "Whether remo/dying layers sit at fixed priorities above 11 comes from the exe only.",
+  "needs": [
+   {
+    "id": "map.ceremony-param",
+    "why": "ceremony picks the gparam sub id"
+   },
+   {
+    "id": "map.player-hit-collision-selects-map",
+    "why": "the collision picks the ids"
+   }
+  ]
+ },
+ {
+  "id": "visuals.lightset-per-collision",
+  "category": "visuals",
+  "title": "Light set, fog and envmap chosen by the standing collision",
+  "summary": "Each collision part stores four ids at MSB +0x70: LightSetID, FogParamID, LightScatteringID, EnvMapID. The part under the player picks the lighting for the whole scene, using the same sticky collision that chooses the visible map.",
+  "values": "gparam config = [LightSetID, FogParamID, LightScatteringID, EnvMapID]. Collisions carry light set rows 100 / 110 / 120 / 130 and map pieces row 0. SetHitCollision copies the draw params from the part.",
+  "how": "ChrIns::SetHitCollision 0x1409f5820 copies the part's draw param block; frames then blend toward the new ids.",
+  "sources": [
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "docs/LIGHTING.md"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "docs/MAP-COMPLETENESS.md"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "partial",
+   "where": "src/map_lights.rs (fixed ids per arena)"
+  },
+  "his": {
+   "has": "yes",
+   "where": "crates/game/src/lighting_selection.rs"
+  },
+  "check": "Walk from the Castle roof into the interior: the light set row changes with the collision.",
+  "note": "The exact link from a map piece's own draw params (row 0) to the collision rows 100 to 130 is open.",
+  "needs": [
+   {
+    "id": "map.player-hit-collision-selects-map",
+    "why": "same sticky collision"
+   },
+   {
+    "id": "visuals.gparam-layer-stack",
+    "why": "ids are keys in the stack"
+   }
+  ]
+ },
+ {
+  "id": "visuals.lightset-fields",
+  "category": "visuals",
+  "title": "LightSet record fields",
+  "summary": "A light set holds four directional light slots, hemisphere ambient colours, shadow settings and sky colour terms. Colours are stored as rgb with a separate intensity W and are uploaded squared.",
+  "values": "Light and hemisphere colours upload as rgb*rgb*W. Four light slots; only slot 0 gets the sun-shadow factor.",
+  "how": "Per-frame light constants buffer, then the deferred directional pass.",
+  "sources": [
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "docs/LIGHTING.md"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "docs/COLOUR.md"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/visuals.md"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "partial",
+   "where": "src/map_lights.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "crates/game/src/lighting.rs"
+  },
+  "check": "Print one LightSet row and compare slot 0 colour times W with the lit result of a white surface.",
+  "note": "Row-100 excess is unresolved (see visuals.row100-excess).",
+  "needs": [
+   {
+    "id": "visuals.gparam-layer-stack",
+    "why": "source of values"
+   }
+  ]
+ },
+ {
+  "id": "visuals.time-of-day-variants",
+  "category": "visuals",
+  "title": "Time of day variants of a map's lighting",
+  "summary": "A map's lighting comes in variants for a time of day: environment variants 0 to 5 map to hours 0, 6, 12, 18, 22 and 2. Events and a clock flag choose the variant, so the same place can show dusk or night.",
+  "values": "Story clock flags 9800 to 9803 set by common event 820 (clock) and event 100 (sky and envmap selection). Variants 0 to 5 = 0 h, 6 h, 12 h, 18 h, 22 h, 2 h.",
+  "how": "EMEVD events pick a Gparam Sub ID and envmap; blending is the draw param fade.",
+  "sources": [
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "docs/LIGHTING.md"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/event/common.emevd"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "yes",
+   "where": "crates/game/src/map_story.rs"
+  },
+  "check": "Set flag 9801 and compare the Outskirts sky colour.",
+  "note": "The meaning of flags 9800 to 9803 is read from event structure, not from a recording.",
+  "needs": [
+   {
+    "id": "map.emevd-instruction-map",
+    "why": "events set the ids"
+   },
+   {
+    "id": "visuals.sky-dome-selection",
+    "why": "sky follows the variant"
+   }
+  ]
+ },
+ {
+  "id": "visuals.story-state-lighting",
+  "category": "visuals",
+  "title": "Story state lighting (burning Castle, fights)",
+  "summary": "Event instructions set the area lighting and gparam sub id for story states. The burning Castle, the castle boss fights and the late game fires use their own sub ids.",
+  "values": "Set Area Gparam Sub ID 2003[88] (43 uses), Set Lighting 2003[81] (42 uses), Set Area Envmap 2003[80]. Castle fight sub ids 0740 and 0750 (sub 40 and 50). Set Ceremony 12 uses (m15 and m25).",
+  "how": "EMEVD layer: the event sets a map's sub id, the draw param loader loads that variant.",
+  "sources": [
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "docs/LIGHTING.md"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/event/*.emevd"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "partial",
+   "where": "crates/game/src/map_story.rs"
+  },
+  "check": "Load m11_01 with flag 8302 set and check which sub id is used.",
+  "note": "Gating of the burning state by flag 8302 is an open-question.",
+  "needs": [
+   {
+    "id": "map.first-visit-object-states",
+    "why": "same flags"
+   },
+   {
+    "id": "map.ceremony-param",
+    "why": "related story state"
+   }
+  ]
+ },
+ {
+  "id": "visuals.light-unit-bridge",
+  "category": "visuals",
+  "title": "Scene light units to engine units",
+  "summary": "The game's lights are in a scene unit. To show them in Bevy a constant is applied that makes the pre-exposure agree.",
+  "values": "SCENE_TO_BEVY = pi / exposure = 3135.61.",
+  "how": "Fixed multiplier in the light upload.",
+  "sources": [
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "docs/EXPOSURE.md"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "docs/LIGHTING.md"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "partial",
+   "where": "src/map_lights.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "crates/game/src/lighting.rs"
+  },
+  "check": "Compare a grey card under the sun in game and in the clone.",
+  "note": "Scenes read 2 to 5 times retail brightness, cause unresolved.",
+  "needs": [
+   {
+    "id": "visuals.exposure-adaption",
+    "why": "the pre-exposure"
+   }
+  ]
+ },
+ {
+  "id": "visuals.row100-excess",
+  "category": "visuals",
+  "title": "Unexplained brightness of the sun in row 100",
+  "summary": "The sun in light-set row 100 reads about 4.4 times row 0, and sekiro-rs scenes end up 2 to 5 times brighter than retail frames. The reason is not found.",
+  "values": "Ratio 4.4 (row 100 over row 0).",
+  "how": "Possibly a missing factor in the deferred light pass or the auto-exposure target.",
+  "sources": [
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "docs/LIGHTING.md"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "docs/EXPOSURE.md"
+   }
+  ],
+  "confidence": "open-question",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "partial",
+   "where": "crates/game/src/lighting.rs"
+  },
+  "check": "Compare an in-game and clone screenshot of a white wall at noon.",
+  "note": "Open in the sekiro-rs docs.",
+  "needs": [
+   {
+    "id": "visuals.light-unit-bridge",
+    "why": "constant"
+   },
+   {
+    "id": "visuals.exposure-adaption",
+    "why": "exposure"
+   }
+  ]
+ },
+ {
+  "id": "visuals.native-point-light",
+  "category": "visuals",
+  "title": "Point light falloff",
+  "summary": "Native point lights in the lit pass use a window falloff, a wrap term on N.L and a quadratic fade. The result is a soft light that wraps a little around surfaces.",
+  "values": "fall = saturate(1 - d^2/R^2); t = 1.4/(1.4 + d*b); wrap = t^2 + (1 - t^2)*N.L; diffuse = Diff*fall*wrap/(1 + 0.7*(d*b)^2).",
+  "how": "Deferred local light pass from the disassembled shader.",
+  "sources": [
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "docs/LIGHTING.md"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "docs/SHADERS.md"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "yes",
+   "where": "crates/game/src/map_lights.rs"
+  },
+  "check": "Place a light by a wall and read the brightness profile.",
+  "note": "",
+  "needs": [
+   {
+    "id": "visuals.btl-local-lights",
+    "why": "the lights it applies to"
+   }
+  ]
+ },
+ {
+  "id": "visuals.btl-local-lights",
+  "category": "visuals",
+  "title": "BTL map point and spot lights",
+  "summary": "BTL files hold the placed local lights of a map (lamps, fire, windows). Colours and radii are converted at load, and the map offset is applied before the X mirror.",
+  "values": "Outskirts map offset (90, 3, -40) with a 20 degree Y rotation is applied to BTL coordinates.",
+  "how": "Light list per block sent to the local light pass.",
+  "sources": [
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "docs/LIGHTING.md"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "docs/MAP-COMPLETENESS.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "src/map_lights.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "crates/formats/src/btl.rs; crates/game/src/map_lights.rs"
+  },
+  "check": "Walk to a lantern and see a warm local pool of light.",
+  "note": "",
+  "needs": [
+   {
+    "id": "map.map-offset-ancillary",
+    "why": "offset"
+   },
+   {
+    "id": "visuals.native-point-light",
+    "why": "falloff"
+   }
+  ]
+ },
+ {
+  "id": "visuals.shadows",
+  "category": "visuals",
+  "title": "Sun shadow factor",
+  "summary": "Only light slot 0 (the sun) casts the shadow; the shadow factor from the cascaded map multiplies its contribution. The other slots are unshadowed.",
+  "values": "Four light slots, shadow factor on slot 0 only.",
+  "how": "Shadow pass then the deferred light combine.",
+  "sources": [
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "docs/LIGHTING.md"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "partial",
+   "where": "Bevy cascaded shadows with the arena sun"
+  },
+  "his": {
+   "has": "yes",
+   "where": "crates/game/src/lighting.rs"
+  },
+  "check": "Stand in a doorway: sun on the floor cuts at the shadow edge, torch light does not.",
+  "note": "Cascade distances were not traced.",
+  "needs": [
+   {
+    "id": "visuals.lightset-fields",
+    "why": "slot 0"
+   }
+  ]
+ },
+ {
+  "id": "visuals.volumetric-fog",
+  "category": "visuals",
+  "title": "Volumetric froxel fog",
+  "summary": "Fog is computed in a camera frustum grid (froxels) with geometric depth slices, using the FogParam rows picked by the light set. It scales by GameScale and includes a height term and a fixed density option.",
+  "values": "Terms: GameScale, HeightFogOffset, FixedDensity; EnableAnalyticalFog defaults to false.",
+  "how": "A compute pass fills froxel scattering, the lit pass reads it.",
+  "sources": [
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "docs/LIGHTING.md"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/visuals.md"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "partial",
+   "where": "src/height_fog.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "crates/game/src/fog.rs"
+  },
+  "check": "Look across a valley: far objects fade into the fog colour.",
+  "note": "",
+  "needs": [
+   {
+    "id": "visuals.height-fog-profile",
+    "why": "height term"
+   },
+   {
+    "id": "visuals.lightset-per-collision",
+    "why": "FogParamID"
+   }
+  ]
+ },
+ {
+  "id": "visuals.height-fog-profile",
+  "category": "visuals",
+  "title": "Height fog profile",
+  "summary": "The height term uses an exponential profile above the fog height and a mirrored curve below it, so density goes smoothly through the fog plane.",
+  "values": "profile(q) = exp(-q) for q >= 0, else 2 - exp(q).",
+  "how": "Evaluated per froxel in the fog pass.",
+  "sources": [
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "docs/LIGHTING.md"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "partial",
+   "where": "src/height_fog.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "crates/game/src/fog.rs"
+  },
+  "check": "Fly through a valley fog layer and check there is no jump at the plane.",
+  "note": "",
+  "needs": [
+   {
+    "id": "visuals.volumetric-fog",
+    "why": "parent"
+   }
+  ]
+ },
+ {
+  "id": "visuals.fog-colour-packing",
+  "category": "visuals",
+  "title": "Fog colour encoding",
+  "summary": "Fog colours are stored as bytes, quantised, then raised to the power 2.2 and scaled by W, so the editor value is a gamma-space colour.",
+  "values": "colour = pow(byte/255, 2.2) * W.",
+  "how": "Loader converts GPARAM fog entries.",
+  "sources": [
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "docs/COLOUR.md"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "docs/LIGHTING.md"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "partial",
+   "where": "src/height_fog.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "crates/game/src/fog.rs"
+  },
+  "check": "Compare a fog colour sample in a still with the converted value.",
+  "note": "",
+  "needs": [
+   {
+    "id": "visuals.volumetric-fog",
+    "why": "consumer"
+   }
+  ]
+ },
+ {
+  "id": "visuals.sky-dome-selection",
+  "category": "visuals",
+  "title": "Sky dome choice",
+  "summary": "The m89 library map holds the sky domes. Common event 100 chooses a group (8907000 to 8907070) from the story clock and area state, and activates it.",
+  "values": "Groups 8907000, 8907010 ... 8907070 (eight domes) in m89_00_00_99.",
+  "how": "EMEVD 2012[1] activates the map part group; the dome follows the camera.",
+  "sources": [
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "docs/LIGHTING.md"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/sky_shader.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/sky.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "crates/game/src/sky.rs"
+  },
+  "check": "Change the story clock and watch the dome swap at dusk.",
+  "note": "",
+  "needs": [
+   {
+    "id": "visuals.time-of-day-variants",
+    "why": "clock"
+   },
+   {
+    "id": "map.emevd-instruction-map",
+    "why": "2012[1]"
+   }
+  ]
+ },
+ {
+  "id": "visuals.skydome-shader",
+  "category": "visuals",
+  "title": "SkyDome_Ver2 shader",
+  "summary": "The sky material has a switch selecting layers and packs colours like HDR colours: rgb^2.2 times Intensity (GXMaterialParam_HDRColor).",
+  "values": "Switch 0 or 1; colour = pow(rgb,2.2) * Intensity.",
+  "how": "Decoded material and shader code.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/sky_shader.md"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "docs/SHADERS.md"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "yes",
+   "where": "src/sky.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "crates/game/src/sky.rs"
+  },
+  "check": "Render a dome material with and without the 2.2 pow: the sun disc is wrong without it.",
+  "note": "",
+  "needs": [
+   {
+    "id": "visuals.sky-dome-selection",
+    "why": "which dome"
+   }
+  ]
+ },
+ {
+  "id": "visuals.gi-irradiance-volumes",
+  "category": "visuals",
+  "title": "GIIV irradiance volumes",
+  "summary": "Global illumination uses BC7 3D irradiance volumes (GIIV), one for each Env_Box, giving diffuse ambient per spot. Boxes blend by priority and fade distance.",
+  "values": "Decode: 2*(rgb-0.5) * 2^(20*(a-0.5)).",
+  "how": "Env_Box parts in the MSB point to the volume textures; sampled in the lit pass.",
+  "sources": [
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "docs/LIGHTING.md"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "docs/SHADER-INPUTS.md"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "partial",
+   "where": "src/map_lights.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "crates/game/src/lighting.rs"
+  },
+  "check": "Walk from a lit courtyard into a shaded eave: ambient colour changes smoothly.",
+  "note": "",
+  "needs": [
+   {
+    "id": "visuals.gi-probe-cubes",
+    "why": "specular side"
+   },
+   {
+    "id": "visuals.env-box-priority",
+    "why": "blending"
+   }
+  ]
+ },
+ {
+  "id": "visuals.gi-probe-cubes",
+  "category": "visuals",
+  "title": "GILM reflection probes",
+  "summary": "Each Env_Box also has a 128 by 128 BC6H cube map (GILM) for specular reflection.",
+  "values": "128^2 BC6H cubes, one per Env_Box.",
+  "how": "Cube sampled by reflection vector in the lit pass.",
+  "sources": [
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "docs/LIGHTING.md"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "docs/SHADER-INPUTS.md"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "yes",
+   "where": "crates/game/src/lighting.rs"
+  },
+  "check": "Look at a metal surface: the reflection shows the local environment.",
+  "note": "",
+  "needs": [
+   {
+    "id": "visuals.gi-irradiance-volumes",
+    "why": "same boxes"
+   }
+  ]
+ },
+ {
+  "id": "visuals.env-box-priority",
+  "category": "visuals",
+  "title": "Env box blending",
+  "summary": "Overlapping Env_Boxes blend by priority; a box fades in over a border so lighting does not pop at the edges.",
+  "values": "Priority and fade fields on the Env_Box region.",
+  "how": "Evaluated in the lit pass.",
+  "sources": [
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "docs/LIGHTING.md"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "yes",
+   "where": "crates/game/src/lighting.rs"
+  },
+  "check": "Cross a box border and look for a seam.",
+  "note": "",
+  "needs": [
+   {
+    "id": "visuals.gi-irradiance-volumes",
+    "why": "users"
+   }
+  ]
+ },
+ {
+  "id": "visuals.tonemap",
+  "category": "visuals",
+  "title": "Tone mapping (mode 7 Sensitometric)",
+  "summary": "The final colour is tone mapped with a film-like curve built from two exponentials, mixed by a constant.",
+  "values": "A = 1 - 2^(-1.442695*x); B = 1 - 2^(-4.456669*x); out = A + c*(B^3 - A) with c = 0.5.",
+  "how": "Post chain pass before grading and LUT.",
+  "sources": [
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "docs/COLOUR.md"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "docs/EXPOSURE.md"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "partial",
+   "where": "src/grading.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "crates/game/src/tonemap.rs"
+  },
+  "check": "Render a grey ramp and fit the curve.",
+  "note": "",
+  "needs": [
+   {
+    "id": "visuals.exposure-adaption",
+    "why": "input scale"
+   }
+  ]
+ },
+ {
+  "id": "visuals.exposure-adaption",
+  "category": "visuals",
+  "title": "Auto exposure and adaption",
+  "summary": "Exposure is 2^Exposure. MiddleGray is a log2 target, and the adaption moves exposure toward it with soft Min and Max limits.",
+  "values": "Exposure scale 2^E; MiddleGray in log2; adaption soft limits Min/Max.",
+  "how": "Luminance average, then eye adaption each frame.",
+  "sources": [
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "docs/EXPOSURE.md"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "partial",
+   "where": "src/grading.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "crates/game/src/tonemap.rs; crates/game/src/lighting.rs"
+  },
+  "check": "Step from a dark cave into sun: the screen starts bright and settles.",
+  "note": "Adaption speeds not traced.",
+  "needs": [
+   {
+    "id": "visuals.tonemap",
+    "why": "next stage"
+   }
+  ]
+ },
+ {
+  "id": "visuals.bloom",
+  "category": "visuals",
+  "title": "Bloom",
+  "summary": "Bloom blurs bright parts with a 7 tap Gaussian across a few levels and adds them back.",
+  "values": "gain = Alpha*Luminance / sum(Smooth^i); 7 taps.",
+  "how": "Post chain after exposure, before tone mapping.",
+  "sources": [
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "docs/COLOUR.md"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "docs/EXPOSURE.md"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "partial",
+   "where": "src/grading.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "crates/game/src/grading.rs"
+  },
+  "check": "Look at the sun disc glow.",
+  "note": "",
+  "needs": [
+   {
+    "id": "visuals.exposure-adaption",
+    "why": "input"
+   }
+  ]
+ },
+ {
+  "id": "visuals.lut-colour-grade",
+  "category": "visuals",
+  "title": "LUT and colour matrix",
+  "summary": "The grade uses a 16 by 256 strip LUT (layout x = r, y = 16*b + g) and a colour matrix applied in hue, saturation, value, contrast order. Vignette is a field that neither project implements.",
+  "values": "Strip size 16x256; matrix order hue/sat/value/contrast.",
+  "how": "Final grading pass with GPARAM post records.",
+  "sources": [
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "docs/COLOUR.md"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "yes",
+   "where": "src/grading.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "crates/game/src/grading.rs"
+  },
+  "check": "Toggle the LUT and compare skin colour.",
+  "note": "Vignette is missing in both.",
+  "needs": [
+   {
+    "id": "visuals.tonemap",
+    "why": "previous stage"
+   }
+  ]
+ },
+ {
+  "id": "visuals.map-shaders-multiple",
+  "category": "visuals",
+  "title": "Layered map material shaders (M[Multiple])",
+  "summary": "Map materials blend two or three texture layers with a mask, in M[Multiple] and M[MultipleGround] shaders. Static switch variants (GXFT_SATStaticSwitch) pick which layer features compile.",
+  "values": "Materials: M[Multiple], M[MultipleGround]; sat switch variants.",
+  "how": "Material parameter blocks read from the FLVER material and the MTD.",
+  "sources": [
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "docs/SHADERS.md"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "docs/SHADER-INPUTS.md"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "partial",
+   "where": "src/map.rs standard material only"
+  },
+  "his": {
+   "has": "yes",
+   "where": "crates/game/src/map_material.rs"
+  },
+  "check": "Look at ground blends of mud and grass.",
+  "note": "",
+  "needs": [
+   {
+    "id": "map.msb-parts-models",
+    "why": "materials on pieces"
+   }
+  ]
+ },
+ {
+  "id": "visuals.emissive-shaders",
+  "category": "visuals",
+  "title": "Emissive and lamp shaders",
+  "summary": "Lamps, fire bowls and glowing props use emissive material shaders with an HDR colour and intensity.",
+  "values": "Emission colour rgb^2.2 times intensity.",
+  "how": "Same HDR colour packing as the sky.",
+  "sources": [
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "docs/SHADERS.md"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "partial",
+   "where": "src/map.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "crates/game/src/map_material.rs"
+  },
+  "check": "Look at a lantern: the glass glows over the lit scene.",
+  "note": "",
+  "needs": [
+   {
+    "id": "visuals.skydome-shader",
+    "why": "colour packing"
+   }
+  ]
+ },
+ {
+  "id": "visuals.character-shaders",
+  "category": "visuals",
+  "title": "Character shaders (DetailBlend and Fresnel)",
+  "summary": "Characters use a skin and cloth shader with detail blend and Fresnel rim terms from the material.",
+  "values": "Params from the MTD of c-prefixed models.",
+  "how": "Forward lit with the same lights.",
+  "sources": [
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "docs/SHADERS.md"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "partial",
+   "where": "src/render.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "crates/game/src/char_material.rs"
+  },
+  "check": "Check Wolf's rim light in the Castle.",
+  "note": "",
+  "needs": [
+   {
+    "id": "visuals.lightset-fields",
+    "why": "lights"
+   }
+  ]
+ },
+ {
+  "id": "visuals.fxr-format-player",
+  "category": "visuals",
+  "title": "FXR effect format and player",
+  "summary": "Particle effects are FXR files: a tree of emitters and appearance actions. The player runs them with soft particles, distortion, tracers and lights.",
+  "values": "Appearance actions 603, 604, 606, 607, 608, 609 and 10012.",
+  "how": "FXR files from the sfxbnd; ours is a clean-room player, sekiro-rs adds more fields.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/fxr.md"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "docs/FORMATS.md"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "docs/SHADERS.md"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "yes",
+   "where": "src/fxr.rs; src/ffx.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "crates/game/src/fxr.rs"
+  },
+  "check": "Spawn a sparks effect on a deflect.",
+  "note": "",
+  "needs": [
+   {
+    "id": "combat.hit-effects",
+    "why": "where effects fire"
+   },
+   {
+    "id": "visuals.fxr-colour-open",
+    "why": "colour"
+   }
+  ]
+ },
+ {
+  "id": "visuals.fxr-colour-open",
+  "category": "visuals",
+  "title": "FXR colour handling (disagreement)",
+  "summary": "Two readings of the effect colour path exist. Our kb keeps the sqrt 3 factor in hue_squared because A/B tests against clips match. Sekiro-rs removed it because the disassembly shows no such factor.",
+  "values": "sqrt 3 in hue_squared (ours) versus none (sekiro-rs). Also contested: the sign of node X rotation, and emitter direction 6.",
+  "how": "FXR colour shader.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/fxr.md"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "docs/SHADERS.md"
+   }
+  ],
+  "confidence": "open-question",
+  "ours": {
+   "has": "yes",
+   "where": "src/fxr.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "crates/game/src/fxr.rs"
+  },
+  "check": "Render the same effect in both and compare to a clip.",
+  "note": "Keep both readings until the exe settles it.",
+  "needs": [
+   {
+    "id": "visuals.fxr-format-player",
+    "why": "parent"
+   }
+  ]
+ },
+ {
+  "id": "visuals.fxr-light-609",
+  "category": "visuals",
+  "title": "Effect lights (action 609)",
+  "summary": "Action 609 creates a light bound to the effect. Its colour is squared when the light is built.",
+  "values": "Colour squared (builder 3892e0).",
+  "how": "FXR light builder.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/fxr.md"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "docs/SHADERS.md"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "yes",
+   "where": "src/fxr.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "crates/game/src/fxr.rs"
+  },
+  "check": "Fire a spark effect in a dark room: the walls light up.",
+  "note": "",
+  "needs": [
+   {
+    "id": "visuals.fxr-format-player",
+    "why": "parent"
+   }
+  ]
+ },
+ {
+  "id": "visuals.map-fx-placements",
+  "category": "visuals",
+  "title": "Placed map effects",
+  "summary": "Maps place SFX with MSB regions (type 5 SFX, type 6 wind SFX) and with events. ModelSfxParam maps a model plus a relative id to an effect id, covering torches, smoke and idol glows.",
+  "values": "ModelSfxParam row = model*1000 + relative id; 312 placements in Outskirts and 287 in Castle.",
+  "how": "Map loader spawns effects from regions; EMEVD 2006[1,2,3] spawn and delete them.",
+  "sources": [
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "docs/MAP-FX.md"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/visuals.md"
+   },
+   {
+    "kind": "data",
+    "ref": "reference/DarkScript3 emedf bank 2006"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/map_fx.rs; tools/map_fx.py"
+  },
+  "his": {
+   "has": "yes",
+   "where": "crates/game/src/map_fx.rs; crates/sim/src/map_effects.rs"
+  },
+  "check": "Stand near an Outskirts torch and see the fire effect.",
+  "note": "",
+  "needs": [
+   {
+    "id": "visuals.fxr-format-player",
+    "why": "player"
+   },
+   {
+    "id": "map.emevd-instruction-map",
+    "why": "2006 bank"
+   }
+  ]
+ },
+ {
+  "id": "visuals.cloth",
+  "category": "visuals",
+  "title": "Cloth simulation",
+  "summary": "Wolf's scarf, banners and hair use Havok cloth on the character skeleton. It is pinned at the root and reacts to gravity, wind and simple collision capsules.",
+  "values": "Havok cloth data in the cloth binder; gravity and wind from the engine.",
+  "how": "Per frame solver after animation.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/visuals.md"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "partial",
+   "where": "src/cloth.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Run in a circle: the scarf trails behind.",
+  "note": "Ours uses its own approximate solver.",
+  "needs": [
+   {
+    "id": "movement.locomotion",
+    "why": "motion drives the cloth"
+   }
+  ]
+ },
+ {
+  "id": "visuals.blood-decals",
+  "category": "visuals",
+  "title": "Blood and decals",
+  "summary": "Hits stain the world: a decal id is built from the hit material and the attack power. HitEffectSfx tables give the effect and HitEffectSfxAngleParam chooses by angle.",
+  "values": "DecalParam hit-stain id = 600000000 + materialSfx1*1000 + decalBaseId + atkPow.",
+  "how": "Hit effect system after damage.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/damage.md"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/DecalParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/HitEffectSfxParam.json"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "src/gore.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Kill a basic enemy: a blood decal appears on the ground.",
+  "note": "",
+  "needs": [
+   {
+    "id": "combat.hit-effects",
+    "why": "trigger"
+   }
+  ]
+ },
+ {
+  "id": "visuals.water-shader",
+  "category": "visuals",
+  "title": "Water surface shader",
+  "summary": "The water surface is a special material with flow, reflection and refraction. Neither project has it. Ours draws a dark translucent plane.",
+  "values": "",
+  "how": "Gap in both projects.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/map.md"
+   }
+  ],
+  "confidence": "community",
+  "ours": {
+   "has": "partial",
+   "where": "src/map.rs stand-in plane"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Look at a pond: ripples are missing.",
+  "note": "Gap. Description of the target look is from play, not data.",
+  "needs": [
+   {
+    "id": "map.water-areas",
+    "why": "surface plane"
+   }
+  ]
+ },
+ {
+  "id": "visuals.grass-render",
+  "category": "visuals",
+  "title": "Grass and foliage rendering",
+  "summary": "Grass blades are batched patches using GrassLodRangeParam distances for LOD and shadows.",
+  "values": "9 rows; row 0 LOD0 40 m, LOD1 120 m, LOD2 160 m, shadow 1000 m.",
+  "how": "Grass sidecar from the map export.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/GrassLodRangeParam.json"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "src/map_grass.rs"
+  },
+  "his": {
+   "has": "partial",
+   "where": "crates/game/src/map_grass.rs"
+  },
+  "check": "Step back from a grass field and watch the blades thin out.",
+  "note": "",
+  "needs": [
+   {
+    "id": "map.grass-and-foliage-data",
+    "why": "data"
+   }
+  ]
+ },
+ {
+  "id": "visuals.mesh-lod",
+  "category": "visuals",
+  "title": "Mesh LOD display",
+  "summary": "Distance LOD for map pieces uses LodParam rows with a crossfade. Characters use their own LOD.",
+  "values": "Row 0: 30 / 60 m, crossfade 0.2 s.",
+  "how": "See map.lod-bank-selection.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/LodParam.json"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "docs/MAP-COMPLETENESS.md"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "partial",
+   "where": "tools/sekiro-extract fixed LOD"
+  },
+  "his": {
+   "has": "yes",
+   "where": "crates/game/src/map_lod.rs"
+  },
+  "check": "Walk away from a building and watch the roof detail drop.",
+  "note": "",
+  "needs": [
+   {
+    "id": "map.lod-bank-selection",
+    "why": "data"
+   }
+  ]
+ }
+]

@@ -192,6 +192,8 @@ fn main() {
             }
         }
         Some("dds2png") if args.len() >= 4 => dds2png(Path::new(&args[2]), Path::new(&args[3]), args.get(4).is_some_and(|a| a == "alpha")),
+        // Whole maps' grapple points and ledges (`edges extracted m11_00_00_00 m11_01_00_00`).
+        Some("edges") if args.len() >= 4 => map::export_edges(Path::new(&args[2]), &args[3..]),
         // Map pieces around an MSB part (e.g. `map extracted m11_01_00_00 c1020_0004 60`).
         Some("map") if args.len() == 6 => map::export(Path::new(&args[2]), &args[3], &args[4], args[5].parse().expect("radius")),
         // Split binder (.tpfbhd / .hkxbhd + its .*bdt) -> <out>/<file name>.

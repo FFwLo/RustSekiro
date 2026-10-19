@@ -76,7 +76,7 @@ The plan below is still the reference, with these changes on 2026-10-12:
 
 ## Context
 
-Sv1 (`C:\DeadlockModding\shinobi-combat`) recreates Sekiro's combat from the game's own files in Rust/Bevy. Three Claude sessions share one working tree: **Map** (this one: map, lighting, sandbox, cloth), **Bosses** (enemies, bosses, AI, stealth) and **VXf** (the skills/tools session: skills, prosthetics, status, HUD, sound, and all VFX: FXR effects, clash/hit effects, gore, blood decals, weapon trails). Decisions (2026-10-10):
+Sv1 (`..\shinobi-combat`) recreates Sekiro's combat from the game's own files in Rust/Bevy. Three Claude sessions share one working tree: **Map** (this one: map, lighting, sandbox, cloth), **Bosses** (enemies, bosses, AI, stealth) and **VXf** (the skills/tools session: skills, prosthetics, status, HUD, sound, and all VFX: FXR effects, clash/hit effects, gore, blood decals, weapon trails). Decisions (2026-10-10):
 
 - "Finished" = a **playable game**: close the fidelity gaps, then add what a game needs (title, pause, options, gamepad, enemy picker without relaunch, death/victory flow, clean release build).
 - **Fighters only**: the 86 kinds that pass the every-phase check are the target; the 16 non-fighters/scripted set pieces only need to stand and not crash.

@@ -1,0 +1,875 @@
+[
+ {
+  "id": "dialogue.esd-format",
+  "category": "dialogue",
+  "title": "Talk ESD file format",
+  "summary": "Talk scripts are state machines in .esd files. The file starts with fSSL. It holds state groups, states, conditions and a small expression bytecode.",
+  "values": "magic fSSL, data start 0x6C, 32-bit varints; 194 ESDs in 10 talkesdbnd binders (m00, m10, m11_00, m11_01, m11_02, m13, m15, m17, m20, m25)",
+  "how": "Own parser written for this atlas.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/script/talk/"
+   },
+   {
+    "kind": "exe",
+    "ref": "sekiro.exe.unpacked.exe strings"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Parse t000001.esd and count machines.",
+  "note": "",
+  "needs": []
+ },
+ {
+  "id": "dialogue.esd-expr",
+  "category": "dialogue",
+  "title": "ESD expression bytecode",
+  "summary": "Conditions are small programs. Bytes 0 to 0x7F are small ints, 0x80 float, 0x82 int32, 0xA5 text. 0x84 to 0x8A are function calls with 0 to 6 args. 0x8C to 0x9A are operators. 0xA1 ends.",
+  "values": "0xB8 StateGroupArg; 0xB9/0xBA PARENT0/PARENT1 results",
+  "how": "Own decoder.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/script/talk/"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Decode a known condition and compare with the SDT names.",
+  "note": "Some functions have no name in the SDT file: f113, f114, f116, f124, f126.",
+  "needs": [
+   {
+    "id": "dialogue.esd-format",
+    "why": "bytecode lives in it"
+   }
+  ]
+ },
+ {
+  "id": "dialogue.esd-names",
+  "category": "dialogue",
+  "title": "ESD naming",
+  "summary": "File name is t plus block (3 digits), group (2) and variant (1). Groups 00 to 06 per block are the idol menu.",
+  "values": "t110100 = block 110, group 10, variant 0 ... ; talk binder m11_00_00_00.talkesdbnd",
+  "how": "File names.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/script/talk/"
+   },
+   {
+    "kind": "exe",
+    "ref": "sekiro.exe.unpacked.exe strings"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "List a binder.",
+  "note": "",
+  "needs": []
+ },
+ {
+  "id": "dialogue.command-banks",
+  "category": "dialogue",
+  "title": "ESD command banks",
+  "summary": "Commands are grouped by bank. Bank 1 is talk commands, 5 is misc, 6 calls another machine, 7 returns.",
+  "values": "bank 1, 5, 6 CALL (id & 0xffffffff), 7 RETURN",
+  "how": "Own decoder plus SDT names.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/script/talk/"
+   },
+   {
+    "kind": "web",
+    "ref": "reference/ESDLang/dist/ESDScriptingDocumentation_Talk.json"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Dump a state and see the banks.",
+  "note": "Some commands are unnamed: cmd1_116/117/120/130, cmd5_11/19/100/116/117/120/128.",
+  "needs": [
+   {
+    "id": "dialogue.esd-format",
+    "why": "commands live in ESD states"
+   }
+  ]
+ },
+ {
+  "id": "dialogue.command-frequency",
+  "category": "dialogue",
+  "title": "Most used ESD commands",
+  "summary": "Counts over all 194 ESDs show what talk scripts do most.",
+  "values": "RETURN 4885; SetEventFlag 1634; GiveSpEffectToPlayer 627; TalkToPlayer 528; AddTalkListData 502; OpenGenericDialog 173; OpenConversationChoicesMenu 108 (36 files); OpenRegularShop 87; OfferHumanity 91; AwardItemLot 50; OpenSellShop 16; OpenScalesShop 2; OpenTranspositionShop 2; UpgradeProstheticsMenu 2",
+  "how": "Counted from dumps.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/script/talk/"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Re-count with grep over dumped text.",
+  "note": "",
+  "needs": []
+ },
+ {
+  "id": "dialogue.talkparam-fields",
+  "category": "dialogue",
+  "title": "TalkParam row",
+  "summary": "One row is one spoken line. It points to the text id and up to 8 voice ids with animations and look targets.",
+  "values": "7380 rows; textId; soundId0..7 (+_female, soundId_pc); talkAnimation0..7 and _pc (100 default); lookAtTarget0..7 and _pc; lipSyncStart/Time; timeout",
+  "how": "Param.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/TalkParam.json"
+   },
+   {
+    "kind": "web",
+    "ref": "reference/Paramdex/SDT/Names/TalkParam.txt"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "fireguy-rustsekiro/src/enemy/talk.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Read a row and match its text.",
+  "note": "",
+  "needs": [
+   {
+    "id": "dialogue.voice-banks",
+    "why": "voice events"
+   },
+   {
+    "id": "dialogue.subtitle-text-fmg",
+    "why": "text"
+   }
+  ]
+ },
+ {
+  "id": "dialogue.talkparam-groups",
+  "category": "dialogue",
+  "title": "TalkParam id groups",
+  "summary": "The first two digits of an 8-digit id name the speaker group. 7-digit ids are older or special.",
+  "values": "7026 eight-digit and 354 seven-digit ids; 10 Sculptor, 11 Wolf talk, 12 Hirata/Owl pre-fight, 13 idol, 16 Suzu-baba, 19 Anayama's servant, 24 Genichiro area, 26 Kotaro/Anayama talk, 34-36 shops (36 scales), 41-46 Memorial Mobs, 60 guards and moon-viewing, 65 ambient, 70 groaning victims",
+  "how": "Row id and text matches.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/TalkParam.json"
+   },
+   {
+    "kind": "web",
+    "ref": "reference/Paramdex/SDT/Names/TalkParam.txt"
+   }
+  ],
+  "confidence": "community",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Read the first line of each group.",
+  "note": "Groups 17 and 47 are not identified. Group names are partly inferred from text.",
+  "needs": []
+ },
+ {
+  "id": "dialogue.subtitle-text-fmg",
+  "category": "dialogue",
+  "title": "Dialogue text file",
+  "summary": "Lines are in 会話.fmg with 6700 entries. Menu choices and talk list text sit in the event text file.",
+  "values": "msg/engus/menu.msgbnd.d/会話.fmg; イベントテキスト.fmg (1032 ids): talk menu 15xxxxxx, choices 14xxxxxx; ダイアログ.fmg (161)",
+  "how": "FMG text files.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/msg/engus/menu.msgbnd.d/会話.fmg"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "fireguy-rustsekiro/src/enemy/talk.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Look up textId 12030000.",
+  "note": "",
+  "needs": []
+ },
+ {
+  "id": "dialogue.voice-banks",
+  "category": "dialogue",
+  "title": "Voice lines",
+  "summary": "A line plays an FMOD event named v0 plus the sound id. Events live in per-map voice banks.",
+  "values": "event v0<soundId>; bank example vm10",
+  "how": "TalkParam soundId plus FMOD banks.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/TalkParam.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/sound.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "fireguy-rustsekiro/src/enemy/talk.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Play the Owl line and check the bank.",
+  "note": "Ours does not play voice length or lip sync.",
+  "needs": [
+   {
+    "id": "sound.fmod-events",
+    "why": "bank system"
+   }
+  ]
+ },
+ {
+  "id": "dialogue.talk-menu-list",
+  "category": "dialogue",
+  "title": "Talk menu entries",
+  "summary": "A talk offers a menu. Each entry is added by AddTalkListData with a text id and a result code. The menu closes on pick or cancel.",
+  "values": "AddTalkListData 502 uses; menu text range 15xxxxxx",
+  "how": "ESD commands.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/script/talk/"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Open the Sculptor menu.",
+  "note": "",
+  "needs": [
+   {
+    "id": "interface.menu-system",
+    "why": "screen"
+   }
+  ]
+ },
+ {
+  "id": "dialogue.talk-menu-choices",
+  "category": "dialogue",
+  "title": "Choice menus",
+  "summary": "A choice menu uses OpenConversationChoicesMenu. Text for options is in the 14xxxxxx range.",
+  "values": "108 uses in 36 files",
+  "how": "ESD command.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/script/talk/"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Talk to Kuro and watch the options.",
+  "note": "",
+  "needs": [
+   {
+    "id": "dialogue.talk-menu-list",
+    "why": "entries"
+   }
+  ]
+ },
+ {
+  "id": "dialogue.talk-to-player",
+  "category": "dialogue",
+  "title": "TalkToPlayer line",
+  "summary": "TalkToPlayer plays one TalkParam row and waits for it to end or a timeout.",
+  "values": "528 uses; args are the row and state machine ids",
+  "how": "ESD command.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/script/talk/"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "fireguy-rustsekiro/src/enemy/talk.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Trace one in t110100.",
+  "note": "",
+  "needs": [
+   {
+    "id": "dialogue.talkparam-fields",
+    "why": "row data"
+   }
+  ]
+ },
+ {
+  "id": "dialogue.generic-dialog",
+  "category": "dialogue",
+  "title": "Generic dialog boxes",
+  "summary": "OpenGenericDialog opens a small message box, such as a yes or no.",
+  "values": "173 uses; text from ダイアログ.fmg",
+  "how": "ESD command.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/script/talk/"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/msg/engus/menu.msgbnd.d/ダイアログ.fmg"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "fireguy-rustsekiro/src/items.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Find one in an idol menu.",
+  "note": "",
+  "needs": []
+ },
+ {
+  "id": "dialogue.shop-from-esd",
+  "category": "dialogue",
+  "title": "Opening shops from talk",
+  "summary": "The ESD opens shops with a lineup id range. Several shop types exist.",
+  "values": "OpenRegularShop(a,b) 87; OpenSellShop 16; OpenScalesShop 2; OpenTranspositionShop 2",
+  "how": "ESD command.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/script/talk/"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Open a Memorial Mob menu.",
+  "note": "",
+  "needs": [
+   {
+    "id": "npcs.shop-lineup-structure",
+    "why": "rows"
+   }
+  ]
+ },
+ {
+  "id": "dialogue.flags-in-esd",
+  "category": "dialogue",
+  "title": "Flags set by talk",
+  "summary": "Talk scripts set event flags heavily to record story steps. 1634 SetEventFlag uses exist.",
+  "values": "SetEventFlag 1634; GiveSpEffectToPlayer 627",
+  "how": "ESD command.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/script/talk/"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Watch flags while talking.",
+  "note": "",
+  "needs": [
+   {
+    "id": "progression.event-flags",
+    "why": "save flags"
+   }
+  ]
+ },
+ {
+  "id": "dialogue.progress-gated-lines",
+  "category": "dialogue",
+  "title": "Lines gated by progress",
+  "summary": "Conditions test flags and items to pick the line. One NPC may use 100 or more TalkParam rows for story stages.",
+  "values": "t110230 109 rows; t111230 109; t111110 97; t110100 77; t110171 62",
+  "how": "ESD conditions.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/script/talk/"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Talk at several story points.",
+  "note": "",
+  "needs": [
+   {
+    "id": "npcs.story-flags-8301",
+    "why": "state flags"
+   }
+  ]
+ },
+ {
+  "id": "dialogue.idol-menu",
+  "category": "dialogue",
+  "title": "Idol menu ESD",
+  "summary": "Idols open a menu from a shared ESD family. Groups 00 to 06 per block call TalkParam 13030000.",
+  "values": "26414-byte ESDs t*00 to t*06; t000001 in m00 has 38 machines",
+  "how": "ESD.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/script/talk/"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "fireguy-rustsekiro/src/idol.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Open an idol.",
+  "note": "",
+  "needs": [
+   {
+    "id": "progression.idol-bonfire",
+    "why": "menu"
+   }
+  ]
+ },
+ {
+  "id": "dialogue.memories-remnants",
+  "category": "dialogue",
+  "title": "Memories and Remnants",
+  "summary": "The idol ESD checks item ranges for Memory and Remnant goods and offers their use.",
+  "values": "Memory 5200-5213, 5220-5222; Remnant 5300-5313, 5320-5322; tutorial text 10024890/10024891 (flag 6280), 10024910/10024911 (flag 6286); flags 6038, 6040, 6070, 6072",
+  "how": "ESD t000001 and common.emevd.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/script/talk/"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/event/common.emevd"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Hold a Memory and open an idol.",
+  "note": "",
+  "needs": [
+   {
+    "id": "progression.memory-remnant",
+    "why": "skill points"
+   }
+  ]
+ },
+ {
+  "id": "dialogue.ambient-proximity",
+  "category": "dialogue",
+  "title": "Ambient overheard talks",
+  "summary": "Guards talk when the player comes near. The script calls a machine with trigger distance, cancel distance, a done flag and a TalkParam row. It gives the player SpEffect 30700.",
+  "values": "t111650: machine 2147483641(13.5, 22.5, 71118500, 65000900); TalkParam group 65 and 60",
+  "how": "ESD.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/script/talk/"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Walk near a guard group.",
+  "note": "",
+  "needs": [
+   {
+    "id": "ai.npc-ambient",
+    "why": "ambient guards trigger the talk"
+   }
+  ]
+ },
+ {
+  "id": "dialogue.eavesdrop-player",
+  "category": "dialogue",
+  "title": "Eavesdrop player states",
+  "summary": "The player has special states when listening in. They are crouch, stand, cover, cover-look and hang variants.",
+  "values": "STATE_TYPE_EVENT_EAVESDROP_LOOP 98, _END 99; HKB 19210-19212 crouch, 19213-19215 stand, 19220-19222 cover, 19223-19225 cover-look, 19230-19232 hang",
+  "how": "Player HKS and exe action name.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "reference/SekiroHKS/c0000_cmsg.hks"
+   },
+   {
+    "kind": "exe",
+    "ref": "sekiro.exe.unpacked.exe strings"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "sekiro-rs/docs/MOBILITY.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Find an eavesdrop point and enter it.",
+  "note": "sekiro-rs lists eavesdrop as a gap. Which ESDs use the state is open-question.",
+  "needs": [
+   {
+    "id": "movement.eavesdrop",
+    "why": "state"
+   }
+  ]
+ },
+ {
+  "id": "dialogue.eavesdrop-esd",
+  "category": "dialogue",
+  "title": "Eavesdrop ESDs",
+  "summary": "Some ESD text uses the word dummy for eavesdrop. t112500 holds a placeholder for a scene about the Imperial Prince. The wiki list was not available.",
+  "values": "t112500 row 90000050",
+  "how": "Row text.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/script/talk/"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/TalkParam.json"
+   }
+  ],
+  "confidence": "open-question",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Find the spot in the Castle.",
+  "note": "The Fandom page could not be fetched, so the wiki list is missing.",
+  "needs": []
+ },
+ {
+  "id": "dialogue.owl-pre-fight",
+  "category": "dialogue",
+  "title": "Owl pre-fight talk",
+  "summary": "Our rebuild plays the Owl talk from t100121 with a flag check.",
+  "values": "state group 2147483619; flag 71000137; TalkParam 12030000-12030005; flag 71000130; FMOD event v0<id> in vm10",
+  "how": "ESD t100121.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/script/talk/"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/sound.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "fireguy-rustsekiro/src/enemy/talk.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Walk up to Owl.",
+  "note": "No subtitles, lip sync or voice length in ours.",
+  "needs": [
+   {
+    "id": "bosses.owl-intro",
+    "why": "fight follows"
+   }
+  ]
+ },
+ {
+  "id": "dialogue.hostile-talks",
+  "category": "dialogue",
+  "title": "Hostile NPC talks",
+  "summary": "Talk ESDs for bosses and enemies exist too. Rows such as 33160000 and 24060000 are fight chat.",
+  "values": "t111330, t111331, t112330, t112331 (Genichiro); t100340, t100341 (Lady Butterfly area)",
+  "how": "ESD.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/script/talk/"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Hear boss taunts.",
+  "note": "",
+  "needs": [
+   {
+    "id": "bosses.taunts",
+    "why": "boss fight chat"
+   }
+  ]
+ },
+ {
+  "id": "dialogue.groaning-victims",
+  "category": "dialogue",
+  "title": "Dying soldiers",
+  "summary": "Many 70xxxxxx rows are groans and short lines of wounded.",
+  "values": "TalkParam 70000000 and up; t100700, t100701, t110700, t111700-704, t170700",
+  "how": "ESD.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/script/talk/"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/TalkParam.json"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Find wounded soldiers.",
+  "note": "",
+  "needs": []
+ },
+ {
+  "id": "dialogue.timeouts-lipsync",
+  "category": "dialogue",
+  "title": "Line timing",
+  "summary": "Each row holds a timeout and a lip sync start and length.",
+  "values": "timeout, lipSyncStart, lipSyncTime",
+  "how": "Param.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/TalkParam.json"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "fireguy-rustsekiro/src/enemy/talk.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Compare with audio length.",
+  "note": "",
+  "needs": []
+ },
+ {
+  "id": "dialogue.exe-talk-system",
+  "category": "dialogue",
+  "title": "Engine talk classes",
+  "summary": "The exe has talk classes for characters and the world.",
+  "values": "SprjChrTalkModule, SprjWorldTalkMan, Npc Talk Ins, EzState Talk Env/Event, talkscript:/%s.talkesdbnd, data1:/script/talk, TalkMsg",
+  "how": "Exe strings.",
+  "sources": [
+   {
+    "kind": "exe",
+    "ref": "sekiro.exe.unpacked.exe strings"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Grep the exe.",
+  "note": "",
+  "needs": [
+   {
+    "id": "npcs.talk-range-cmd",
+    "why": "talk object in the exe"
+   }
+  ]
+ },
+ {
+  "id": "dialogue.movie-subtitles",
+  "category": "dialogue",
+  "title": "Movie subtitles",
+  "summary": "Subtitles for movies are a separate text file with 71 ids.",
+  "values": "ids 8000000-8000070",
+  "how": "FMG.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/msg/engus/menu.msgbnd.d/ムービー字幕.fmg"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Play the opening.",
+  "note": "See cutscenes.movie-subtitles-link.",
+  "needs": []
+ },
+ {
+  "id": "dialogue.ours-his-coverage",
+  "category": "dialogue",
+  "title": "Dialogue coverage",
+  "summary": "Our rebuild has the Owl pre-fight talk and item dialogs. sekiro-rs has none.",
+  "values": "",
+  "how": "grep.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "fireguy-rustsekiro/src/enemy/talk.rs"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "sekiro-rs/docs/PROGRESS.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "fireguy-rustsekiro/src/enemy/talk.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Read the files.",
+  "note": "",
+  "needs": []
+ }
+]

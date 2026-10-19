@@ -119,8 +119,8 @@ pub(crate) fn a_fall_past_a_lip_catches_it_with_the_button_held_and_climbs_up() 
     assert!((along.x - pos.x).abs() > 0.2, "no shimmy: {along:?}");
     app.world_mut().resource_mut::<PadInput>().stick = Vec2::ZERO;
     run(&mut app, 40);
-    // Climb.
-    app.world_mut().resource_mut::<PadInput>().press(Action::Jump);
+    // Climb: the hang button (a jump kicks off the wall instead, atlas movement.hang-climb-drop).
+    app.world_mut().resource_mut::<PadInput>().press(Action::Interact);
     let mut climb = Vec::new();
     let mut top = Vec3::ZERO;
     for _ in 0..150 {
@@ -136,6 +136,32 @@ pub(crate) fn a_fall_past_a_lip_catches_it_with_the_button_held_and_climbs_up() 
     println!("climb: {climb:?} to {top:?}");
     assert!(climb.iter().any(|s| s == "HangToStand"), "{climb:?}");
     assert!((top.y - crate::player::CAPSULE_HALF_HEIGHT - 4.0).abs() < 0.1 && top.z < 0.0, "not on top: {top:?}");
+}
+
+/// Atlas movement.hang-climb-drop: a jump in the hang, with no stick, is the kick off the wall
+/// (BEH_A_HANG_END_CONNECT -> HangJumpReady), never the climb.
+#[test]
+pub(crate) fn atlas_hang_jump_kicks_off_instead_of_climbing() {
+    let mut app = app();
+    move_enemy_far(&mut app);
+    app.world_mut().insert_resource(edges(2, 4.0));
+    run(&mut app, 10);
+    place_wolf(&mut app, Vec3::new(0.0, 3.2, 0.6), 0.0, true);
+    app.world_mut().resource_mut::<PadInput>().interact_held = true;
+    run(&mut app, 240);
+    app.world_mut().resource_mut::<PadInput>().interact_held = false;
+    assert_eq!(player_actor(&mut app).0, "HangIdle");
+    app.world_mut().resource_mut::<PadInput>().press(Action::Jump);
+    let mut seen = Vec::new();
+    for _ in 0..60 {
+        app.update();
+        let s = player_actor(&mut app).0;
+        if seen.last() != Some(&s) {
+            seen.push(s);
+        }
+    }
+    assert!(seen.iter().any(|s| s == "HangJumpReady"), "{seen:?}");
+    assert!(!seen.iter().any(|s| s == "HangToStand"), "{seen:?}");
 }
 
 #[test]
@@ -339,44 +365,64 @@ fn place_enemy(app: &mut App, at: Vec3, yaw: f32) {
     e.make_unaware(&mut a);
 }
 
-/// Hugging, an unaware Ochimusha passing at Wolf's side: the wall deathblow (ThrowParam 11010070
-/// -> 0071 on his right: a200_500700 -> 510700, the enemy ThrowDef12700).
+/// Peeking round a wall's end, an unaware Ochimusha passing at Wolf's side: the wall deathblow
+/// (ThrowParam 11010060 -> 0061 on his left: a200_500600 -> 510600, the enemy ThrowDef12600); in a
+/// plain hug there is none (atlas movement.docking-deathblows: the wall kills need the peek).
 #[test]
-pub(crate) fn an_unaware_enemy_passing_the_hugging_wolf_takes_the_wall_deathblow() {
+pub(crate) fn an_unaware_enemy_passing_the_peeking_wolf_takes_the_wall_deathblow() {
     if !std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/extracted/anim_c1010.bin")).exists() {
         return;
     }
-    let mut app = app_with("c1010");
-    move_enemy_far(&mut app);
-    app.world_mut().insert_resource(edges(3, 0.0));
-    run(&mut app, 10);
-    place_wolf(&mut app, Vec3::new(0.0, 0.0, 1.0), 0.0, false);
-    run(&mut app, 2);
-    app.world_mut().resource_mut::<PadInput>().press(Action::Interact);
-    run(&mut app, 90);
-    assert_eq!(player_actor(&mut app).0, "CoverIdle");
-    // Hugging, Wolf faces +Z; his right is -X. The enemy 1.2 m to his right, walking on away
-    // from him (facing -X: yaw +90 deg).
-    place_enemy(&mut app, Vec3::new(-1.2, 0.0, 1.2), std::f32::consts::FRAC_PI_2);
-    app.update();
-    app.world_mut().resource_mut::<PadInput>().press(Action::Attack);
-    let (mut seen, mut enemy_seen) = (Vec::new(), Vec::new());
-    for _ in 0..200 {
-        app.update();
-        let (s, an) = { let (s, _, _, _) = player_actor(&mut app); (s, player_state(&mut app).1) };
-        let tag = format!("{s} {an}");
-        if seen.last() != Some(&tag) {
-            seen.push(tag);
+    for peek in [false, true] {
+        let mut app = app_with("c1010");
+        move_enemy_far(&mut app);
+        let mut e = edges(3, 0.0);
+        e.0[0].variation = 1;
+        app.world_mut().insert_resource(e);
+        run(&mut app, 10);
+        place_wolf(&mut app, Vec3::new(2.0, 0.0, 1.0), 0.0, false);
+        run(&mut app, 2);
+        app.world_mut().resource_mut::<PadInput>().press(Action::Interact);
+        run(&mut app, 90);
+        assert_eq!(player_actor(&mut app).0, "CoverIdle");
+        if peek {
+            app.world_mut().resource_mut::<PadInput>().stick = Vec2::new(1.0, 0.0);
+            for _ in 0..200 {
+                app.update();
+                if player_actor(&mut app).0.starts_with("CoverActionLoop") {
+                    break;
+                }
+            }
+            app.world_mut().resource_mut::<PadInput>().stick = Vec2::ZERO;
+            assert!(player_actor(&mut app).0.starts_with("CoverActionLoop"), "{:?}", player_actor(&mut app).0);
         }
-        let es = enemy_state(&mut app).0;
-        if enemy_seen.last() != Some(&es) {
-            enemy_seen.push(es);
+        // Hugging, Wolf faces +Z; the +X end is on his left. The enemy 1.2 m past it, walking
+        // on away from him (facing +X: yaw -90 deg).
+        let at = player_actor(&mut app).3;
+        place_enemy(&mut app, Vec3::new(at.x + 1.2, 0.0, 1.2), -std::f32::consts::FRAC_PI_2);
+        app.update();
+        app.world_mut().resource_mut::<PadInput>().press(Action::Attack);
+        let (mut seen, mut enemy_seen) = (Vec::new(), Vec::new());
+        for _ in 0..200 {
+            app.update();
+            let (s, an) = { let (s, _, _, _) = player_actor(&mut app); (s, player_state(&mut app).1) };
+            let tag = format!("{s} {an}");
+            if seen.last() != Some(&tag) {
+                seen.push(tag);
+            }
+            let es = enemy_state(&mut app).0;
+            if enemy_seen.last() != Some(&es) {
+                enemy_seen.push(es);
+            }
+        }
+        println!("wall deathblow (peek {peek}): {seen:?} / enemy {enemy_seen:?}");
+        let killed = seen.iter().any(|s| s.starts_with("DeathblowStart a200_5006"));
+        assert_eq!(killed, peek, "{seen:?}");
+        if peek {
+            assert!(seen.iter().any(|s| s.starts_with("Deathblow a200_5106")), "{seen:?}");
+            assert!(enemy_seen.iter().any(|s| s.starts_with("ThrowDef126")), "{enemy_seen:?}");
         }
     }
-    println!("wall deathblow: {seen:?} / enemy {enemy_seen:?}");
-    assert!(seen.iter().any(|s| s.starts_with("DeathblowStart a200_500700")), "{seen:?}");
-    assert!(seen.iter().any(|s| s.starts_with("Deathblow a200_510700")), "{seen:?}");
-    assert!(enemy_seen.iter().any(|s| s.starts_with("ThrowDef12700") || s.starts_with("ThrowDefDeath12701")), "{enemy_seen:?}");
 }
 
 /// Hanging under a lip with an unaware Ochimusha standing at it, facing away: the ledge
@@ -499,7 +545,8 @@ pub(crate) fn a_run_reversed_quick_turns_instead_of_circling() {
     assert!(turn_between(yaw, std::f32::consts::PI).abs() < 0.1, "yaw {yaw}");
 }
 
-/// Off a ledge at a run Wolf carries his speed into the fall (it was zeroed: straight down).
+/// Off a ledge at a run Wolf carries his speed into the fall (it was zeroed: straight down). The
+/// fall state starts after 30 cm (atlas movement.fall-state-entry), about 10 ticks in.
 #[test]
 pub(crate) fn a_run_off_a_ledge_carries_on_into_the_fall() {
     let mut app = app();
@@ -515,10 +562,10 @@ pub(crate) fn a_run_off_a_ledge_carries_on_into_the_fall() {
         q.single_mut(w).unwrap().translation.y += 3.0;
     }
     let before = player_actor(&mut app).3;
-    run(&mut app, 6);
+    run(&mut app, 12);
     let (s, _, airborne, at) = player_actor(&mut app);
     let moved = (at - before).with_y(0.0).length();
-    println!("walk-off: {s} airborne {airborne}, {moved:.2} m in 0.1 s");
+    println!("walk-off: {s} airborne {airborne}, {moved:.2} m in 0.2 s");
     assert!(airborne && s == "FreeFall", "{s} {airborne}");
     assert!(moved > 0.3, "fell straight down: {moved:.2} m");
 }
@@ -572,8 +619,8 @@ pub(crate) fn wolf_kneels_at_an_idol_rests_and_travels() {
     let mut app = app();
     move_enemy_far(&mut app);
     run(&mut app, 10);
-    let a = Idol { name: "A".into(), pos: Vec3::new(600.0, 0.0, 0.0), out: Vec3::X };
-    let b = Idol { name: "B".into(), pos: Vec3::new(600.0, 0.0, 10.0), out: Vec3::NEG_Z };
+    let a = Idol { name: "A".into(), pos: Vec3::new(600.0, 0.0, 0.0), out: Vec3::X, ..Default::default() };
+    let b = Idol { name: "B".into(), pos: Vec3::new(600.0, 0.0, 10.0), out: Vec3::NEG_Z, ..Default::default() };
     let (spot_a, spot_b) = (a.spot(), b.spot());
     *IDOLS.write().unwrap() = vec![a, b];
     place_wolf(&mut app, spot_a + Vec3::X * 0.5, 0.0, false);
@@ -728,43 +775,19 @@ fn a_courtyard_guard_walks_its_round() {
     assert!(!states.iter().any(|s| s.starts_with("RunFront")), "not running: {states:?}");
 }
 
-/// A c1010 swing without ChrActionFlag 73 (3002) can be cut off mid-swing; one with it (3001)
-/// is closed between its spans (0.03-0.33 s, 0.73 s on) and open inside them (the user: "i
-/// cannot interrupt any of their attack").
+/// Atlas armor.flag73-parry-gate: a soldier's swing keeps its hit level between and inside its
+/// ChrActionFlag 73 spans (3001 at 0.5 s and 1.0 s, 3002 at 1.0 s); only a spCategory 1001
+/// window lowers it (test super_armour_swaps_the_damage_level_in_its_window).
 #[test]
 fn a_soldiers_plain_swing_can_be_interrupted() {
     let app = app_cfg("c1010", None, Vec::new());
     let combat = app.world().resource::<crate::data::Combat>();
     let d = &combat.kind(0).data;
     let mut a = Actor::new(crate::actor::Side::Enemy, 100.0, 100.0, 1.0, 0);
-    let at = |a: &mut Actor, anim: &str, t: f32| {
+    for (anim, t, level) in [("a000_003001", 0.5, 2), ("a000_003001", 1.0, 2), ("a000_003002", 1.0, 2)] {
         a.anim = anim.to_string();
         a.t = t;
-    };
-    at(&mut a, "a000_003002", 1.0);
-    assert!(crate::combat::swing_can_flinch(d, &a), "3002 mid-swing");
-    at(&mut a, "a000_003001", 0.5);
-    assert!(!crate::combat::swing_can_flinch(d, &a), "3001 between its flag-73 spans");
-    at(&mut a, "a000_003001", 1.0);
-    assert!(crate::combat::swing_can_flinch(d, &a), "3001 in its recovery span");
-    // Past its hit (0.47-0.6 s), before the recovery span opens at 0.73 s: open too.
-    at(&mut a, "a000_003001", 0.65);
-    assert!(crate::combat::swing_can_flinch(d, &a), "3001 after its hit");
-}
-
-/// The General's recovery after the blade has passed takes a flinch; his wind-up does not (the
-/// user: "General's recovery move still has hyperarmor").
-#[test]
-fn the_generals_recovery_is_open() {
-    let app = app_cfg("c1020", None, Vec::new());
-    let combat = app.world().resource::<crate::data::Combat>();
-    let d = &combat.kind(0).data;
-    let mut a = Actor::new(crate::actor::Side::Enemy, 100.0, 100.0, 1.0, 0);
-    a.anim = "a000_003000".to_string();
-    // Hit 0.6-0.8 s, flag 73 spans 0.03-0.3 and 1.8 on.
-    for (t, open) in [(0.1, true), (0.5, false), (0.7, false), (1.0, true), (1.5, true), (2.0, true)] {
-        a.t = t;
-        assert_eq!(crate::combat::swing_can_flinch(d, &a), open, "3000 at {t} s");
+        assert_eq!(crate::combat::damage_motion_level(d, &a, 2), level, "{anim} at {t} s");
     }
 }
 

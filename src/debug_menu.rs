@@ -106,6 +106,7 @@ enum Item {
     Refill,
     FlowingWater,
     Sheathe,
+    Ufo,
     DropHeight,
     DropNow,
     HookHeight,
@@ -125,7 +126,7 @@ const SECTIONS: [(&str, &[Item]); 7] = [
     ("ENEMY", &[Item::AiMode, Item::Attack, Item::Interval, Item::EnemyType, Item::Outfit, Item::EnemyHeal]),
     ("DEATHBLOW", &[Item::BreakPosture, Item::DeathblowNow, Item::DeathblowBehind, Item::PlungeNow, Item::KickDownNow, Item::VaultNow, Item::StealthSetup, Item::StealthFar]),
     ("SKILLS", &[Item::Art, Item::Tool1, Item::Tool2, Item::Tool3]),
-    ("PLAYER", &[Item::God, Item::NoPosture, Item::InfiniteEmblems, Item::Refill, Item::FlowingWater, Item::Sheathe]),
+    ("PLAYER", &[Item::God, Item::NoPosture, Item::InfiniteEmblems, Item::Refill, Item::FlowingWater, Item::Sheathe, Item::Ufo]),
     ("MOVEMENT TESTS", &[Item::DropHeight, Item::DropNow, Item::HookHeight, Item::HookNow, Item::HookClear]),
     ("MAP", &[Item::Map, Item::Hour, Item::DayCycle, Item::Weather, Item::Sky]),
     ("SIMULATION", &[Item::Speed, Item::Hitboxes, Item::Reset]),
@@ -514,6 +515,7 @@ fn menu_input(
             }
         }
         Item::God => menu.god = !menu.god,
+        Item::Ufo => crate::ufo::set(!crate::ufo::on()),
         Item::NoPosture => menu.no_posture = !menu.no_posture,
         Item::InfiniteEmblems => menu.infinite_emblems = !menu.infinite_emblems,
         Item::Refill if enter => {
@@ -824,6 +826,7 @@ fn draw_menu(
                 format!("prosthetic slot {}: {}", n + 1, if id == 0 { "empty".to_string() } else { format!("{} ({id})", combat.weapon_name(id)) })
             }
             Item::God => format!("god mode (no HP loss): {}", on(menu.god)),
+            Item::Ufo => format!("UFO / no clip (WASD along the view, Space up, Ctrl down, Shift fast): {}", on(crate::ufo::on())),
             Item::NoPosture => format!("no posture damage: {}", on(menu.no_posture)),
             Item::InfiniteEmblems => format!("infinite Spirit Emblems: {}", on(menu.infinite_emblems)),
             Item::Refill => "refill gourds / emblems / resurrections".into(),

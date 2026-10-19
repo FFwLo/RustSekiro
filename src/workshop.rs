@@ -246,7 +246,7 @@ pub(crate) fn build_tree(root: &mut ChildSpawnerCommands, assets: &AssetServer, 
             root.spawn((Node { border: UiRect::all(Val::Px(3.0)), border_radius: BorderRadius::all(Val::Percent(18.0)), ..abs(x - gw / 2.0, y - gh / 2.0, gw, gh) }, BorderColor::all(ORANGE), BackgroundColor(ORANGE.with_alpha(0.3))));
         }
         let tint = if has || check(config, u).is_ok() { Color::WHITE } else if tool_owned { Color::srgb(0.6, 0.6, 0.6) } else { Color::srgb(0.3, 0.3, 0.3) };
-        root.spawn((Button, abs(x - NODE_W / 2.0, y - NODE_H / 2.0, NODE_W, NODE_H), image(assets, sprite("sb_in_game/MENU_IconBase_02")), UpgradeButton(i))).with_children(|b| {
+        root.spawn((crate::menu::ui_button(), abs(x - NODE_W / 2.0, y - NODE_H / 2.0, NODE_W, NODE_H), image(assets, sprite("sb_in_game/MENU_IconBase_02")), UpgradeButton(i))).with_children(|b| {
             b.spawn((Node { position_type: PositionType::Absolute, left: Val::Percent(6.0), top: Val::Percent(6.0), width: Val::Percent(88.0), height: Val::Percent(88.0), ..default() }, image(assets, weapon_icon(tables, u.weapon)).with_color(tint)));
             if has {
                 b.spawn((Node { position_type: PositionType::Absolute, left: Val::Percent(68.0), top: Val::Percent(-6.0), width: Val::Percent(36.0), height: Val::Percent(36.0), ..default() }, image(assets, sprite("sb_remodeling/MENU_BanArm"))));

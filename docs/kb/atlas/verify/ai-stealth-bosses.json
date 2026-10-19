@@ -1,0 +1,800 @@
+[
+ {
+  "id": "ai.lua-scripts-compiled",
+  "verdict": "confirmed",
+  "reason": "NpcThinkParam has 771 rows, 154 distinct battleGoalID, logicId 101000 x91, 150000 x48, 155000 x45, and row 10100000 names logic and battle 101000; extracted/ai_src holds 104 common_* chunks plus the per-map copies.",
+  "needs_recording": false
+ },
+ {
+  "id": "ai.goal-kinds-lifecycle",
+  "verdict": "confirmed",
+  "reason": "common_goal_list.lua has GOAL_COMMON_CommonAttack = 2200 and common_ai_define.lua has AI_TIMING_SET__ACTIVATE 0 and UPDATE_SUCCESS 1, as recorded.",
+  "needs_recording": false
+ },
+ {
+  "id": "ai.goal-life-end",
+  "verdict": "confirmed",
+  "reason": "FUN_1405d06c0 (1405d.c) turns a goal whose life is in (-1,0] into result 1 only when its flag 0x20 or a parent goal flag is set, else -1; the setter 1405faa20 is a vtable label, not a normal function.",
+  "needs_recording": false
+ },
+ {
+  "id": "ai.logic-to-battle",
+  "verdict": "confirmed",
+  "reason": "101000_battle.lua lines 88-100: distance >= 7 and IsTargetGuard gives act3 = 100 and act5 = 200, and _COMMON_SetBattleActLogic in common_common_logic_func.lua picks battle, caution or non-battle goals as described.",
+  "needs_recording": false
+ },
+ {
+  "id": "ai.target-state-machine",
+  "verdict": "confirmed",
+  "reason": "common_ai_define.lua defines AI_TARGET_STATE__NONE..BATTLE 0-3 and the target types 3-7 as recorded, and SpEffectParam 200000/200001/200002/200004 carry the AI state names.",
+  "needs_recording": false
+ },
+ {
+  "id": "ai.sight-normal-cone",
+  "verdict": "confirmed",
+  "reason": "NpcThinkParam rows 10100000, 10200000, 10800000, 50600000, 54000000, 13500000 and 70000000 match every cone value, and the eye_dist counts (25 x169, 20 x150, 120 x48) match.",
+  "needs_recording": false
+ },
+ {
+  "id": "ai.sight-around-meter",
+  "verdict": "corrected",
+  "reason": "Row 10100000 (around dist 40, +-30, 25 per second) and the counts 491/239/11 match, but the 1000-point instant rows are nine (50101050-54 and 50103050-53), not only 50101050-54.",
+  "fix": {
+   "values": "Soldier row 10100000: around dist 40 m, yaw +-30, +25 points/s so 4.0 s to fill (trace: full at 4.0 s). 491 rows use 25/s, 239 rows 0 (no around sense: bosses, Shichimen), 9 rows 1000 (instant: rows 50101050-54 and 50103050-53), 11 rows 40. Indication target forgotten after IndicationTargetForgetTime (150 s for most). Wolf's stealth SpEffects 3391/3441/150000 multiply the fill by aroundSightPointAddRate 0.5."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "ai.sight-perceive-set",
+  "verdict": "confirmed",
+  "reason": "Row 10100000 has eye_dist_perceive 40 against eye_dist_normal 20, yaw +-30, as recorded.",
+  "needs_recording": false
+ },
+ {
+  "id": "ai.sight-search-timing-raycast",
+  "verdict": "corrected",
+  "reason": "The search interval rand * DAT_143afb48c + DAT_143afb488 (0.2 to 0.4 s, FUN_140623ca0 area) is consistent, but the 0.5 to 3 s detection-time sentence is stale: stealth.detection-speed says the exe trace replaced it and damage.md no longer has it.",
+  "fix": {
+   "values": "Interval = rand*0.2 + 0.2 s (DAT_143afb488 / 48c). Ray: FUN_14061c8a0, filter 0x32, through FUN_14094e310."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "ai.dark-map-visibility",
+  "verdict": "confirmed",
+  "reason": "disableDark = 1 is set on exactly 20 NpcThinkParam rows including 10100330 and 13400000, and SpEffectParam mapVisibilityOverride* fields exist; the per-map collision part counts were not re-derived here.",
+  "needs_recording": false
+ },
+ {
+  "id": "ai.battle-start-dist",
+  "verdict": "confirmed",
+  "reason": "NpcThinkParam BattleStartDist counts match (12 x215, 25 x78, 30 x72, 20 x67, 50 x57, 15 x44, 45 x33, 9999 x23) and rows 10100000, 10200000, 10800000 give 12, 15 and 50.",
+  "needs_recording": false
+ },
+ {
+  "id": "ai.forget-times",
+  "verdict": "confirmed",
+  "reason": "NpcThinkParam counts for Sight/Memory/Sound/Indication/Corpse forget times match, and row 10100000 has 15 s sight and 150 s memory; General 10200000 has 3600 s.",
+  "needs_recording": false
+ },
+ {
+  "id": "ai.hearing-model",
+  "verdict": "confirmed",
+  "reason": "AiSoundParam has 90 rows, NpcThinkParam ear_dist counts match (0.1 x633, 0 x117, 6 x16, plus 18 x2, 30, 25, 3), and hearingSearchEnemyCut is 100 on 220011, 200130, 200110 and 200140.",
+  "needs_recording": false
+ },
+ {
+  "id": "ai.wolf-footstep-noise",
+  "verdict": "confirmed",
+  "reason": "AiSoundParam radii and lives match for ids 1000-1330, and TAE event 237 counts in extracted/json/tae/c0000 match (walk 29, run 35, crouch walk 12, hang shimmy 20, free fall 71, jump 54).",
+  "needs_recording": false
+ },
+ {
+  "id": "ai.wolf-combat-noise",
+  "verdict": "corrected",
+  "reason": "AtkParam_Pc Appear ids (2010 x224, 2000 x44, 2020 x37, 2150 x8, 2140 x4) and Hit ids (2110 x223, 2100 x42, 2120 x26) match, but no AtkParam_Pc row uses hit id 2130, and 2140 and 3500 are rank 0, not rank 1.",
+  "fix": {
+   "values": "Appear ids: 2010 (224 rows, radius 2), 2000 (44, 1), 2020 (37, 4), 2150 (8, 12), 2140 (4, 6). Hit ids: 2110 (223, 4 m), 2100 (42, 2), 2120 (26, 8), 2130 (16 m, exists in AiSoundParam but no AtkParam_Pc row uses it), 3500. Deflect 2030 (8 m). Exe emits Appear once per attack at the attacker (FUN_1409a1290) and Hit once per target (FUN_1409e68e0).",
+   "summary": "Wolf's attacks announce themselves: each AtkParam_Pc has an AppearAiSoundId (when the attack is issued) and a HitAiSoundId (on each target hit, guarded or not). They are mostly rank 1 'important' sounds (2140 and 3500 are rank 0) with wider radii than footsteps."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "ai.sound-rank-important",
+  "verdict": "corrected",
+  "reason": "The 7900/7910 (0.4 m), 3501 (0.2 m) and 7700 branches are in common_common_logic_func.lua lines 274-293 and rank 3 on 7400 is in AiSoundParam, but id 4000 is not friend-only (friendlyTarget 0); 4020 and up are.",
+  "fix": {
+   "values": "Rank 1 rows: Wolf deflect 2030, combat sounds, call sounds 4000 (30 m, anyone) and 4020-4100 (30-200 m, friends only), 5000-5400 (4-20 m), 7400 rank 3. Special ids in the logic: 7900 and 7910 stop the approach at 0.4 m, 3501 at 0.2 m, 7700 forces a confirm-caution look."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "ai.alert-spread-call-sounds",
+  "verdict": "confirmed",
+  "reason": "AtkParam_Npc has AppearAiSoundId 2000025 on 1243 rows and HitAiSoundId 2000020 on 1223 rows, and the AiSoundParam radii and bCallFriend/placement-group flags of the listed call sounds match.",
+  "needs_recording": false
+ },
+ {
+  "id": "ai.callhelp-unused",
+  "verdict": "confirmed",
+  "reason": "callHelp_MyPeerId, callHelp_CallPeerId and callHelp_CallValidRange are 0 on all 771 NpcThinkParam rows, and platoonReplyTime/AddRandomTime is (1.0, 2.0) on 734 rows.",
+  "needs_recording": false
+ },
+ {
+  "id": "ai.platoon-states",
+  "verdict": "confirmed",
+  "reason": "common_ai_define.lua has PLATOON_STATE 0-4 and INTERUPT_PlatoonAiOrder = 42, and common_common_platoon_func.lua uses move rates 0.7 to 1.5, distances 5 and 10 and command 5 as recorded.",
+  "needs_recording": false
+ },
+ {
+  "id": "ai.team-roles",
+  "verdict": "confirmed",
+  "reason": "common_ai_define.lua has ROLE_TYPE Attack 0, Torimaki 1, Kankyaku 2, 101000_battle.lua reads the role with thinkAttr_doAdmirer, TeamAttackEffectivity counts match (34 x323, 0 x134, 100 x74), and FUN_140640b80 runs a role timer; the 1 and 1 tunables are exe data that was not re-read.",
+  "needs_recording": false
+ },
+ {
+  "id": "ai.caution-confirm-search",
+  "verdict": "confirmed",
+  "reason": "common_common_logic_func.lua lines 262-345 add ConfirmCautionTarget (goal 5100) with look anims 600/610 (400600/400610 in alert state), waits of 3-8 s, radius 2.5 and the 0.4/0.2 m stops for 7900/7910 and 3501.",
+  "needs_recording": false
+ },
+ {
+  "id": "ai.notice-anim-by-state",
+  "verdict": "confirmed",
+  "reason": "_COMMON_AddStateTransitionGoal (common_common_logic_func.lua lines 392-475) plays 401040 with 200004, 201040 with 200002, 101040 with 200001, 401020 or 1010 for memory targets, and 1040 by default.",
+  "needs_recording": false
+ },
+ {
+  "id": "ai.goal-action-flags",
+  "verdict": "corrected",
+  "reason": "The combo counts match (148/110/98/55 rows) but the data only uses 0 to 4, never 5; value 5 (LeaveTarget, keep away) exists in the Lua but no NpcThinkParam row sets it.",
+  "fix": {
+   "summary": "Six NpcThinkParam columns pick how an enemy reacts to each state change: to caution, to important caution, to find, to a corpse, to an indication position and to disappear. Values in the data are 0 to 4; the Lua also knows 5 (keep away) but no row uses it."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "ai.leash-home-return",
+  "verdict": "confirmed",
+  "reason": "_COMMON_SetBattleActLogic (lines 81-120) has exactly the recorded maxBackhomeDist / backhomeDist / backhomeBattleDist rule, and row 10100000 has 48, 64, 8 and BackHomeLife_OnHitEneWal 6.",
+  "needs_recording": false
+ },
+ {
+  "id": "ai.back-home-look",
+  "verdict": "confirmed",
+  "reason": "Row 10100000 has BackHome_LookTargetTime 9 and BackHome_LookTargetDist 16, and BackHome_GuardActId is 0 on all 771 rows.",
+  "needs_recording": false
+ },
+ {
+  "id": "ai.nonbattle-act",
+  "verdict": "confirmed",
+  "reason": "nonBattleActLife is 9 on 729 rows, common_non_battle_act.lua uses POINT_MOVE_POINT and WalkAround, and common_back_to_home_with_parry.lua registers BackToHome_With_Parry.",
+  "needs_recording": false
+ },
+ {
+  "id": "ai.patrol-route-types",
+  "verdict": "confirmed",
+  "reason": "extracted/enemies/patrols.json has 152 routes on 9 maps with types 0 x101, 1 x27 and 5 x24.",
+  "needs_recording": false
+ },
+ {
+  "id": "ai.patrol-wake-hold",
+  "verdict": "confirmed",
+  "reason": "Decoding common_func.emevd event 20005110 shows 2004[1] AI off at start followed by region, damage-type and AI-state conditions, as recorded.",
+  "needs_recording": false
+ },
+ {
+  "id": "ai.navigation-flags",
+  "verdict": "corrected",
+  "reason": "NpcThinkParam flag counts match except disablePathMove, which is set on 27 rows, not 24.",
+  "fix": {
+   "values": "Counts of 771 rows: Edge 767, Jump 123, Underfloor 35, Edge_Ordinary 53, LargeSpace 12, Ladder 2, Door 3, Hole 0, InSideWall 0. useWanderedOffPathInterrupt 28, disableLocalSteering 27, disablePathMove 27."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "ai.parry-rank",
+  "verdict": "confirmed",
+  "reason": "Common_Parry in common_common_func_NTC.lua (lines 333-435) has the 0.1 s timer, the 90 degree cone tests, rank A/B/C from 221000/221001/221002, the 109970 thrust and 109980 spin-step branches and the Consecutive*50 deflect chance; NpcParam rank counts 201/374/605 match.",
+  "needs_recording": false
+ },
+ {
+  "id": "ai.consecutive-guard-count",
+  "verdict": "confirmed",
+  "reason": "Set_ConsecutiveGuardCount in common_common_func_NTC.lua adds 1 on 200215/200216, resets on 200210/200211 and uses timer 13 for 1 s, as recorded.",
+  "needs_recording": false
+ },
+ {
+  "id": "ai.guard-stance",
+  "verdict": "corrected",
+  "reason": "The values hold (9910 guard, 9920 stance, 3100/3101) but ACTION_TYPE_GUARD and ACTION_TYPE_GENERAL_STANCE are defined in reference/SekiroHKS/c9997.hks lines 258-259, not in common_ai_define.lua.",
+  "fix": {
+   "sources": [
+    {
+     "kind": "hks",
+     "ref": "reference/SekiroHKS/c9997.hks"
+    },
+    {
+     "kind": "data",
+     "ref": "extracted/ai_src/common_common_func_NTC.lua"
+    },
+    {
+     "kind": "ours-kb",
+     "ref": "docs/kb/enemy.md"
+    }
+   ]
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "ai.pc-attack-reach-table",
+  "verdict": "confirmed",
+  "reason": "common_ai_define.lua lines 505-532 hold every PC_ATTACK_DIST value listed (the Lv2 lance 7.42 is the only one not listed).",
+  "needs_recording": false
+ },
+ {
+  "id": "ai.enemy-healing",
+  "verdict": "corrected",
+  "reason": "SpEffectParam 300610 and 401000 (-100), 310999 and 3101999 (-10 with category 20), 3500021 (-719 points), 3120050 (-40 points), 110015, 106065 and 106066 match, but row 3500020 has no HP field at all.",
+  "fix": {
+   "values": "ThrowDef anim of a non-final deathblow adds 300610 'HP reset' (changeHpRate -100) via TAE 67. 401000 full recovery (c5100 revival a000_020000). 310999 and 3101999 are always-regenerate rows on NTC Ochimusha (changeHpRate -10, endurance -1). 3500021 monk heal row (changeHpPoint -719; row 3500020 carries no HP field) and 3120050 Sokushinbutsu drain -40. Wolf's own recoveries: 110015, 106065/6. UseItem goal exists but only changes the equip item."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "ai.interrupt-events",
+  "verdict": "confirmed",
+  "reason": "common_ai_define.lua lines 74-117 define INTERUPT_FindAttack 1, Damaged 2, Inside_ObserveArea 16, ParryTiming 24, PlatoonAiOrder 42, ActivateSpecialEffect 43 and InactivateSpecialEffect 44.",
+  "needs_recording": false
+ },
+ {
+  "id": "ai.observe-speffect-owner",
+  "verdict": "confirmed",
+  "reason": "AiState::observes exists in src/ai.rs, and the scripts watch specific owners (for example AddObserveSpecialEffectAttribute(TARGET_ENE_0, 109220) in 101000_battle.lua).",
+  "needs_recording": false
+ },
+ {
+  "id": "ai.event-request-slots",
+  "verdict": "confirmed",
+  "reason": "The EMEDF names 2004[17] Request Character AI Command and 2004[19] Set Character AI ID, and boss_scripts.json sends commands 0, 1, 2, 10, 11 as recorded.",
+  "needs_recording": false
+ },
+ {
+  "id": "ai.turn-in-place",
+  "verdict": "confirmed",
+  "reason": "c9997.hks ExecTurn (lines 1908-1947) turns for |TurnAngle| >= 45 (smaller only when an emergency turn is allowed), uses the 90 clip below 135 degrees and the 180 clip above.",
+  "needs_recording": false
+ },
+ {
+  "id": "ai.pacing-recorded",
+  "verdict": "confirmed",
+  "reason": "docs/kb/enemy.md lines 285-290 give General 30.4 attacks/min with 1.54 s and 0.52 s medians and Ochimusha 28.3 live against 24.7 sim (12.7 percent slower).",
+  "needs_recording": false
+ },
+ {
+  "id": "ai.death-noise-ours",
+  "verdict": "confirmed",
+  "reason": "AiSoundParam row 4060 exists (20 m, rank 1, same placement group, friendly target) but no AtkParam, TAE or Lua reference to it was found, and src/enemy.rs:1807 marks it as a gap; whether the real game has a death noise stays open.",
+  "needs_recording": true
+ },
+ {
+  "id": "ai.ignore-stealth-time",
+  "verdict": "confirmed",
+  "reason": "ignoreStealthTime is 0 on all 771 NpcThinkParam rows.",
+  "needs_recording": false
+ },
+ {
+  "id": "ai.corpse-detection",
+  "verdict": "confirmed",
+  "reason": "corpse_eye_dist_rate is 0 on 349 rows, 20 on 100 and 25 on 97, and CorpseTargetForgetTime is 150 on 718 rows.",
+  "needs_recording": false
+ },
+ {
+  "id": "ai.ranged-when-no-path",
+  "verdict": "confirmed",
+  "reason": "101000_battle.lua lines 83-85 set acts 7 and 27 to 100 when CheckDoesExistPath is false or the target has 109220/109221.",
+  "needs_recording": false
+ },
+ {
+  "id": "ai.sight-tuning-distributions",
+  "verdict": "confirmed",
+  "reason": "Every count (eye_dist_normal, left angle, BattleStartDist, SightTargetForgetTime, backhomeDist, ear_dist) matches the NpcThinkParam rows.",
+  "needs_recording": false
+ },
+ {
+  "id": "bosses.mark-bars",
+  "verdict": "confirmed",
+  "reason": "boss_scripts.json events use 4[37] with (group, entity, cmp, count) as recorded (cmp 0 is ==, 5 is <=), and NpcParam ninsatuNum is 2/1/3/3/3/2/1/0 for Genichiro, Tomoe, Isshin, Demon, Monk, Owl Father, Butterfly bodies, Dragons.",
+  "needs_recording": false
+ },
+ {
+  "id": "bosses.health-bar-display",
+  "verdict": "confirmed",
+  "reason": "The EMEDF names 2003[11] Display Boss Health Bar, 2003[87] Display Miniboss Health Bar and 2004[30] HP Bar Display; boss_scripts.json shows name ids 905090, 907110, 905061, 907021, 905081 and 901260, and npc_names.json holds 57 rows.",
+  "needs_recording": false
+ },
+ {
+  "id": "bosses.phase-handover-pattern",
+  "verdict": "corrected",
+  "reason": "The hand-over order matches the Isshin, Genichiro and Butterfly events, but the check names a test (enemy_event_trace) that does not exist.",
+  "fix": {
+   "check": "Run the sim tests the_corrupted_monks_phase_events_run_on_her_deathblows and the_demon_of_hatreds_last_phase_swaps_its_sp_effects and compare their event order with the list."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "bosses.genichiro-tomoe",
+  "verdict": "corrected",
+  "reason": "Event 11115820 (bars == 0, 2 s, fade, cutscene 11010020, region 1112813, entity swap, bar 907110) matches, but events 11115830 and 11115800 test Tomoe at bars == 0 (condition groups 1 and 2), not bars == 1 and 2.",
+  "fix": {
+   "values": "Event 11115820: bars == 0 + 2 s + Wolf HP check, fade, Wolf immortal and SpEffects 4700-4702, fog SFX 1114832 / 35 / 36. Event 11115800 handles Tomoe bars == 0 (group 2) as defeat (achievement 22, flags 9303 / 6803). 11115830 sends Tomoe 20200 and Wolf 710204 on bars == 0 (group 1) with message 10. 11115831 keeps Tomoe immortal until message 20. Genichiro HP 1598."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "bosses.prologue-genichiro",
+  "verdict": "corrected",
+  "reason": "Event 11125800 on m11_02 plays cutscenes 11020001 and 11020000 and sets respawn 1102621, but 1102631 is the respawn that the Hirata burning event 11005800 sets, so the Lady Butterfly sentence is wrong.",
+  "fix": {
+   "summary": "On map m11_02 the first Genichiro fight cannot be won: event 11125800 plays cutscenes 11020001 and 11020000 and Wolf respawns at 1102621. The respawn point 1102631 belongs to the Hirata burning scene (event 11005800)."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "bosses.lady-butterfly",
+  "verdict": "corrected",
+  "reason": "Event 11005812 swaps body 1000800 for 1000810 and shows bar 905090 again, and 11005820 sends illusions command 10, but 11005855 sends the kneel at bars == 0 of body 1000810, not bars == 1.",
+  "fix": {
+   "values": "HP 2073, posture 600. Event 11005812: bars == 0 on 1000800, camera 500, wait Wolf in region 1002830 and SpEffect 5028, send AI command 10, bar 905090 again. 11005855: kneel 20200 and Wolf 710205 at bars == 0 of 1000810. 11005820 gives the illusions command 10."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "bosses.owl-castle-phase2",
+  "verdict": "confirmed",
+  "reason": "Event 11115870 hides bar 905060, sets EzState 506000 and SpEffect 200051, waits 3 s and raises message 60 unless SpEffect 3506080 is on, and flag 11115852 starts the second track in boss_bgm.json; the get-up clip frame times were not re-read.",
+  "needs_recording": false
+ },
+ {
+  "id": "bosses.owl-father",
+  "verdict": "corrected",
+  "reason": "Event 11005910 (immortal, bar 905061) matches, but 11005920 sends the kneel 20200 and Wolf 710201 at bars == 0, not bars == 1; HP 2552 and 2 marks match NpcParam.",
+  "fix": {
+   "summary": "Owl Father 50601010 has 2 marks and HP 2552. Event 11005910 makes him immortal and shows bar 905061; 11005920 on bars == 0 sends kneel 20200 and Wolf 710201. Helper c5070 (1000901) receives AI commands."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "bosses.guardian-ape",
+  "verdict": "corrected",
+  "reason": "NpcParam shows HP 3520 and 1 mark for 51000000, event 11705820 sends kneel 20200 and Wolf 710203 at bars == 0 (not 1), and 11705821 sends 20000 and swaps the AI id to 51000100; 11705880 at bars == 1 of the Headless Ape sends commands 10, 11 and 0.",
+  "fix": {
+   "summary": "Guardian Ape 51000000 (HP 3520) has a two-stage kill: on bars == 0 event 11705820 sends kneel 20200 and Wolf 710203; 11705821 sends 20000 and swaps the AI id to 51000100. Headless Ape 51000100 (HP 2240, 2 marks) appears with its mate 1700852 (51000010)."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "bosses.gyoubu",
+  "verdict": "corrected",
+  "reason": "Events 11105810, 11105812 and 11105820 match, but the recorded perilous rate is 0 to 1 in about 110 s in docs/kb/enemy.md; 0.7 per minute is the sim value.",
+  "fix": {
+   "values": "Perilous: recorded 0 to 1 in about 110 s; sim about 0.7 per minute."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "bosses.isshin-sword-saint",
+  "verdict": "corrected",
+  "reason": "Events 11125872 (bars <= 2 then <= 1), 11125873, 11125874 and 11125875 match, but Final Tomoe hides her bar in 11125830 at bars == 0, and 3.7 per minute perilous is the sim value (recorded about 3 to 4 in 90 s).",
+  "fix": {
+   "values": "Final Tomoe 71101000 (event 11125830 hides the bar at bars == 0 after cutscene 11020040). Isshin finish ThrowParam 15400590. Perilous: recorded about 3 to 4 in 90 s (2.0 to 2.7 per minute); sim 3.7 per minute."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "bosses.isshin-ashina",
+  "verdict": "confirmed",
+  "reason": "NpcParam 54300000 has HP 1600 and 2 marks, and events 11115941 (bars == 0, kneel 20200, Wolf 710206) and 11115942 (immortality toggle) match.",
+  "needs_recording": false
+ },
+ {
+  "id": "bosses.emma",
+  "verdict": "confirmed",
+  "reason": "NpcParam 74000010 has 1 mark, and event 11115900 waits for bars == 0 on entity 1110900 then runs 2003[12] Handle Boss Defeat.",
+  "needs_recording": false
+ },
+ {
+  "id": "bosses.demon-of-hatred",
+  "verdict": "confirmed",
+  "reason": "NpcParam 70200000 has HP 3195 and 3 marks, events 11105910 (immortal, command 10, team 28, bar 907021), 11105912 (bars == 2 and 1), 11105921 (bars == 0, Wolf 710207) and 11105923/924 (team 6) match, and ThrowParam 17020180 exists.",
+  "needs_recording": false
+ },
+ {
+  "id": "bosses.corrupted-monk",
+  "verdict": "confirmed",
+  "reason": "Events 12505961/62/63 test bars == 2, 1, 0 and send AI command 1, AI command 2 with EzState 20010, and kneel 20200 with Wolf 710200; NpcParam shows 50000000 HP 2555 with 3 marks and 50001000 HP 3513 with 1.",
+  "needs_recording": false
+ },
+ {
+  "id": "bosses.dragons",
+  "verdict": "confirmed",
+  "reason": "NpcParam shows 52000000 HP 3600, 1 mark, ninsatsuDamageRate 5.0 and 53000000 with 0 marks, and event 12505885 hides bar entity 2500810 and shows 2500800.",
+  "needs_recording": false
+ },
+ {
+  "id": "bosses.folding-screen-monkeys",
+  "verdict": "confirmed",
+  "reason": "NpcParam 12600050 has HP 100 and 0 marks, event 12005810 shows bar 901260, and SpEffect 3126010 has changeHpRate 26, giving 100, 74, 48, 22, 0.",
+  "needs_recording": false
+ },
+ {
+  "id": "bosses.ai-id-swap",
+  "verdict": "corrected",
+  "reason": "Event 11125872 sets AI id 54000100 once Isshin has 2 bars left, which is after the first deathblow, not at the second mark; event 11705821 also swaps the Guardian Ape to 51000100.",
+  "fix": {
+   "summary": "EMEVD 2004[19] Set Character AI ID changes the think row mid fight. Isshin does it when his bars fall to 2 (after the first deathblow, 54000100) for a new moveset; the Guardian Ape swaps to 51000100 for its Headless form.",
+   "values": "Isshin 54000000 to 54000100 (event 11125872); Guardian Ape 51000000 to 51000100 (event 11705821)."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "bosses.ai-command-slots",
+  "verdict": "confirmed",
+  "reason": "boss_scripts.json sends command 10 to the Butterfly illusions and 1000810, 1 and 2 to the Monk, 10 to the Demon, 10/11/0 to the Ape mate and 1 to Gyoubu via 2004[17].",
+  "needs_recording": false
+ },
+ {
+  "id": "bosses.immortality-toggles",
+  "verdict": "confirmed",
+  "reason": "2004[12] and 2004[15] appear around the hand-overs in Gyoubu 11105820, Tomoe 11115831 and Isshin 11125873, each cleared by a message 20 or 50 condition.",
+  "needs_recording": false
+ },
+ {
+  "id": "bosses.team-type-flips",
+  "verdict": "confirmed",
+  "reason": "Event 11105910 calls 2004[2] with team 28 on the Demon and 11105923/24 reset it to 6; the Puppeteer rows 220040 and 220041 also change the team type (15 and 29).",
+  "needs_recording": false
+ },
+ {
+  "id": "bosses.kneel-todome",
+  "verdict": "confirmed",
+  "reason": "Events 12505963, 11005920, 11705820, 11115830, 11125874, 11105921 and 11005855 send 20200 with Wolf 710200 to 710207 as listed, and docs/kb/enemy.md lines 647-651 give the 0.8 to 1.8 s and 1.0 to 5.0 s windows.",
+  "needs_recording": false
+ },
+ {
+  "id": "bosses.defeat-handler",
+  "verdict": "confirmed",
+  "reason": "Event 11115800 runs 2003[12] on 1110801, 2003[28] with 22 and sets flags 9303 and 6803; event 11115900 runs 2003[12] on Emma.",
+  "needs_recording": false
+ },
+ {
+  "id": "bosses.fog-walls",
+  "verdict": "confirmed",
+  "reason": "extracted/enemies/fog_walls.json has 47 walls on 25 maps, and tools/fog_walls.py documents the 20005820 and 20005825 argument orders.",
+  "needs_recording": false
+ },
+ {
+  "id": "bosses.boss-music-flags",
+  "verdict": "confirmed",
+  "reason": "boss_bgm.json tracks match the listed examples (Butterfly m100000003/4, Gyoubu m110000001/2, Genichiro m110100001/2, Owl m110102003/4, Isshin m110200002/3, Apes m170000003/4, Monkeys m200000001, Dragons m250000003/4/5, Monk m250000001/2, Demon m110000007/8).",
+  "needs_recording": false
+ },
+ {
+  "id": "bosses.area-battle-music",
+  "verdict": "confirmed",
+  "reason": "docs/kb/sound.md lines 190-203 describe common.emevd event 410, the +0x11fc state, regions 2680/2688/2689/2690 and flags 9200, 9201-9204, 9207, 9208, 9209 as recorded, and event 20005830 sets flags 9200/9207.",
+  "needs_recording": false
+ },
+ {
+  "id": "bosses.mini-vs-boss",
+  "verdict": "confirmed",
+  "reason": "NpcParam 10200000 has ninsatuNum 2 and 10203010 has 0, 2003[87] exists in the EMEDF, and the music flags agree with sound.md.",
+  "needs_recording": false
+ },
+ {
+  "id": "bosses.perilous-rates",
+  "verdict": "corrected",
+  "reason": "docs/kb/enemy.md shows that Gyoubu 0.7, Butterfly 1.3, Genichiro 4.7, Tomoe 6.3 and Isshin 3.7 are sim values; the clip counts are Gyoubu 0 to 1 in 110 s, Butterfly 1 in 110 s, Genichiro about 4 in 75 s, Tomoe about 5 in 55 s, Isshin about 3 to 4 in 90 s.",
+  "fix": {
+   "values": "Recorded (clip): Owl castle 0; Owl Father about 4.7 per minute (sim 5.0); Monk about 4 (sim 5.3); Demon about 0.9 (sim 0.7); Gyoubu 0 to 1 in 110 s (sim 0.7); Butterfly 1 in 110 s (sim 1.3); Genichiro about 4 in 75 s (sim 4.7); Tomoe about 5 in 55 s (sim 6.3); Isshin about 3 to 4 in 90 s (sim 3.7)."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "bosses.terror-rules",
+  "verdict": "confirmed",
+  "reason": "SpEffectParam 9200-9223 have stateInfo 5 and changeHpRate 100, and registIllness matches the listed values (9211 36, 9212 125, 9213-15 73/114/160, 9216 125, 9218 50, 9219 50, 9220 18, 9221 21, 9222 70, 9223 4).",
+  "needs_recording": false
+ },
+ {
+  "id": "bosses.ghost-barrier",
+  "verdict": "confirmed",
+  "reason": "SpEffectParam 230640/230641/230642 carry damage cut rates 0.10, 0.33 and 0.67 in category 1002, and the NpcParam rows listed (Headless, Shichimen, Musician) set them.",
+  "needs_recording": false
+ },
+ {
+  "id": "bosses.divine-confetti",
+  "verdict": "corrected",
+  "reason": "SpEffectParam 3451 (20 magic, spAttribute 3, 60 s, 104016) chains by cycleOccurrenceSpEffectId to 3452, 3453 and 3454 as recorded, but row 3450 is only a vfx row with no chain, and the setter of 3451 was not found.",
+  "fix": {
+   "summary": "Divine Confetti (goods 3450) is an item that enchants Wolf's weapon against apparitions. Goods 3450 itself points to a vfx-only SpEffect; the effects 3451 spirit enchant, 3452 anti-spirit guard, 3453 anti-spirit deflect and 3454 spirit damage reduction chain through cycleOccurrenceSpEffectId.",
+   "note": "What applies 3451 after the use animation was not found in params or TAE."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "bosses.boss-sight-cones",
+  "verdict": "confirmed",
+  "reason": "NpcThinkParam 50600000 and 54000000 have eye_dist 120, begin and back offset 80, yaw +-15, up 4, down 15, and 48 rows use 120.",
+  "needs_recording": false
+ },
+ {
+  "id": "bosses.arena-activation",
+  "verdict": "confirmed",
+  "reason": "fog_walls.json carries a start flag and end flag per arena, and boss events such as 11105810 wait for the entry flags before showing the bar; region ids come from the same files.",
+  "needs_recording": false
+ },
+ {
+  "id": "stealth.wolf-sight-cuts",
+  "verdict": "confirmed",
+  "reason": "SpEffectParam sight and hearing cuts match every listed id (109200 20, 109201 100, 109202 100 for 3 s, 109203 80, 109220/21 100, 109230 100, 109250 20, 530 90, 1500 100, 96 100, 2111 70, 3391/3441 50 with 0.5 around rate, 150000 20 with 0.5, 200130 all angles and hearing 100).",
+  "needs_recording": false
+ },
+ {
+  "id": "stealth.bush-hiding",
+  "verdict": "corrected",
+  "reason": "Decoding common.emevd event 701 shows 109203 is given for 4200 plus crouch 109200, or 4201 plus a swim-state condition (4[34]), or 100210 plus 109200; the water branch needs swimming, not crouching.",
+  "fix": {
+   "values": "Conditions: SpEffect 4200 (bush, ObjectParam InsideHit, 0.5 s renewed) AND 109200 crouch; or 4201 (water bush) AND the player swim-state check (4[34]); or 100210 (forced crouch area) AND 109200. Bush objects o007001/2, o007280-7287, o007330, o007360, o007501/2. 109203 -> sightSearchEnemyCut 80, so a 20 m cone becomes 4 m."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "stealth.detection",
+  "verdict": "confirmed",
+  "reason": "The overview agrees with the ai.target-state-machine, ai.sight-* and ai.battle-start-dist records that were re-derived from NpcThinkParam and the Lua; exe function 14061ff40 exists.",
+  "needs_recording": false
+ },
+ {
+  "id": "stealth.detection-state",
+  "verdict": "confirmed",
+  "reason": "common_ai_define.lua has the states 0-3 and SpEffectParam 200000/200001/200002/200004 are the AI state effects; the notice clips 401040, 201040, 101040 and 1040 match the Lua.",
+  "needs_recording": false
+ },
+ {
+  "id": "stealth.enemy-sight",
+  "verdict": "confirmed",
+  "reason": "NpcThinkParam rows 10100000, 10200000, 10800000, 13500000, 70000000, 51000000 (40 m, begin and back offset 10), 50600000 and 54000000 match, as do the common eye_dist and yaw counts.",
+  "needs_recording": false
+ },
+ {
+  "id": "stealth.visible-range-table",
+  "verdict": "confirmed",
+  "reason": "src/stealth.rs scales eye offset and distance by the SpEffect cut and adds Wolf radius 0.4, which gives 13.2 m crouched and 3.6 m in a bush, matching the table; SpEffect values 109200/109203/109220/109210/150000/3391/200130 match.",
+  "needs_recording": false
+ },
+ {
+  "id": "stealth.visibility-gauge",
+  "verdict": "confirmed",
+  "reason": "NpcThinkParam aroundTargetIncrementPoint counts (25 x491, 0 x239, 1000 x9, 40 x11) and the 0.5 around rate on 3391/3441/150000 match; the HUD colours and fade frames come from the gfx file and were not re-read.",
+  "needs_recording": false
+ },
+ {
+  "id": "stealth.detection-speed",
+  "verdict": "confirmed",
+  "reason": "FUN_140623ca0 uses rand * DAT_143afb48c + DAT_143afb488 for the search interval (0.2 to 0.4 s), the around meter is 25 per second to 100, and the damage reason sets BATTLE.",
+  "needs_recording": false
+ },
+ {
+  "id": "stealth.crouch-sneak",
+  "verdict": "confirmed",
+  "reason": "SpEffectParam 109200 has sightSearchEnemyCut 20 and stateInfo 949, AiSoundParam 1001/1011 are 0.25/0.5 m against 0.5/2 m, and anims a000_216000 (CrouchStart), 216100 and a050_301000 exist in the TAE dumps.",
+  "needs_recording": false
+ },
+ {
+  "id": "stealth.noise-radius",
+  "verdict": "confirmed",
+  "reason": "AiSoundParam radii match for every listed id, and TAE event 237 clip counts (walk 29, run 35, crouch walk 12, hang shimmy 20, free fall 71, jump 54) match extracted/json/tae/c0000.",
+  "needs_recording": false
+ },
+ {
+  "id": "stealth.noise-jump-landing",
+  "verdict": "confirmed",
+  "reason": "AiSoundParam 1300 (2 m), 1304, 1310 (2 m), 1314 (2 m), 1320 (0.5 m) and 1330 (1 m) match, with TAE clip counts 54 for 1300, 71 for 1310 and 7 for 1330.",
+  "needs_recording": false
+ },
+ {
+  "id": "stealth.noise-combat",
+  "verdict": "corrected",
+  "reason": "AtkParam_Pc and AiSoundParam match (start 2010 x224, 2000, 2020, 2140, 2150; hit 2110 x223, 2100, 2120; deflect 2030 in 12 clips; 5000 in 4 clips), but hit id 2130 is not used by any AtkParam_Pc row, and 2140 is rank 0.",
+  "fix": {
+   "values": "Attack start 2010 = 2 m (224 attacks), 2000 = 1 m, 2020 = 4 m, 2140 = 6 m, 2150 = 12 m. Hit 2110 = 4 m (223 attacks), 2100 = 2 m, 2120 = 8 m, 2130 = 16 m (row exists, no player attack uses it). Deflect 2030 = 8 m rank 1 (12 clips). Guard-break sound 5000 = 20 m rank 1 (a50_190100, 4 clips). Enemy attacks call friends: start 2000025 = 10 m, hit 2000020 = 20 m."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "stealth.mist-raven-noise",
+  "verdict": "confirmed",
+  "reason": "AiSoundParam 7400 is 10 m, rank 3, life 1 s, and TAE event 237 with 7400 sits at frames 10 to 13 (0.33 to 0.43 s) in 5 a074 clips.",
+  "needs_recording": false
+ },
+ {
+  "id": "stealth.hearing",
+  "verdict": "confirmed",
+  "reason": "AiSoundParam ranks and radii, NpcThinkParam ear_dist counts and SpEffectParam hearing cuts (220011, 200130, 200110, 200140 at 100; 150010 rate 0.5) match.",
+  "needs_recording": false
+ },
+ {
+  "id": "stealth.dogs-ear",
+  "verdict": "confirmed",
+  "reason": "NpcThinkParam ear_dist is 6 on 16 rows and 18, 25 and 30 on four more.",
+  "needs_recording": false
+ },
+ {
+  "id": "stealth.wall-hug-cover",
+  "verdict": "confirmed",
+  "reason": "SpEffectParam 109210 has left and right angle cuts 90, sightCutLimitType 2 and stateInfo 949, and src/stealth.rs skips every SpEffect with a non-zero limit type, so ours does not model it.",
+  "needs_recording": false
+ },
+ {
+  "id": "stealth.ledge-hang-hide",
+  "verdict": "confirmed",
+  "reason": "SpEffectParam 109220 has cut 100 with limit type 1 and 109221 has cut 100 with limit type 0, and 101000_battle.lua lines 83-85 switch to acts 7 and 27.",
+  "needs_recording": false
+ },
+ {
+  "id": "stealth.shadow-crouch-open",
+  "verdict": "confirmed",
+  "reason": "SpEffectParam 109201 exists with cut 100 and life -1, and no setter was found in the Lua, HKS, TAE or any decoded EMEVD file.",
+  "needs_recording": true
+ },
+ {
+  "id": "stealth.dark-areas",
+  "verdict": "confirmed",
+  "reason": "disableDark = 1 is set on 20 NpcThinkParam rows and the visibility factors are documented in docs/kb/enemy.md; the per-map collision part counts were not re-derived here.",
+  "needs_recording": false
+ },
+ {
+  "id": "stealth.temporary-covers",
+  "verdict": "confirmed",
+  "reason": "SpEffectParam 109202 (3 s, 100), 109230 (0.5 s, 100), 1500 (100), 530 (30 s, 90), 2111 (70), 96 (100), 3391/3441 (60 s, 50 with 0.5), 150000 (20 with 0.5) and 150010 (hearing rate 0.5) match.",
+  "needs_recording": false
+ },
+ {
+  "id": "stealth.bush-grass-note",
+  "verdict": "confirmed",
+  "reason": "docs/kb/enemy.md lines 143-147 give the same bush object list and placements (2 x o007001 in m11_02, 1 x o007281 in m17), and event 701 uses the 0.5 s 4200/4201 effects.",
+  "needs_recording": false
+ },
+ {
+  "id": "stealth.alert-spread-group",
+  "verdict": "confirmed",
+  "reason": "AiSoundParam 2000025 (10 m) and 2000020 (20 m) are call sounds with the same-group flag, used on about 1240 AtkParam_Npc rows, and the callHelp_* fields are 0 on all rows.",
+  "needs_recording": false
+ },
+ {
+  "id": "stealth.search-behaviour",
+  "verdict": "confirmed",
+  "reason": "common_common_logic_func.lua lines 262-345 match the look clips 600/610, 3 to 8 s wait, 2.5 m radius and the 0.4/0.2 m stops.",
+  "needs_recording": false
+ },
+ {
+  "id": "stealth.losing-wolf",
+  "verdict": "confirmed",
+  "reason": "NpcThinkParam SightTargetForgetTime counts (15 x317, 10 x126, 3 x49, 3600 x69, 99999 x95) and the 150 s defaults match; the last-seen search step is only partly modelled in ours as noted.",
+  "needs_recording": false
+ },
+ {
+  "id": "stealth.leash-home-return",
+  "verdict": "confirmed",
+  "reason": "NpcThinkParam values backhomeDist 48 (563 rows, 9999 on 115), maxBackhomeDist 64, backhomeBattleDist 8, BackHome_LookTargetTime 9 and Dist 16 match row 10100000.",
+  "needs_recording": false
+ },
+ {
+  "id": "stealth.patrol-sight-gap",
+  "verdict": "confirmed",
+  "reason": "patrols.json has 152 routes on 9 maps (type 0 x101, 1 x27, 5 x24) and nonBattleActLife is 9 on 729 rows.",
+  "needs_recording": false
+ },
+ {
+  "id": "stealth.corpse-discovery",
+  "verdict": "confirmed",
+  "reason": "corpse_eye_dist_rate is 0 on 349 rows, 20 on 100 and 25 on 97, and CorpseTargetForgetTime is 150 on 718 rows.",
+  "needs_recording": false
+ },
+ {
+  "id": "stealth.death-noise-gap",
+  "verdict": "confirmed",
+  "reason": "AiSoundParam 4060 exists (20 m, rank 1, same-group, friendly) but nothing references it as a death sound, and src/enemy.rs:1807 flags it as a gap; the open question needs a recording.",
+  "needs_recording": true
+ },
+ {
+  "id": "stealth.deathblow-unaware",
+  "verdict": "corrected",
+  "reason": "ThrowParam 11020020/11020021/11010021 match (2.1 m, 90 degrees, +-1.26 m, atk 500200/510200, def 12200, throwKind 100), but sekiro-rs does have an unaware deathblow in crates/sim/src/deathblow.rs (Situation::Unaware, pair 20/21).",
+  "fix": {
+   "his": {
+    "has": "partial",
+    "where": "crates/sim/src/deathblow.rs (Situation::Unaware tries ThrowParam suffix pair 20/21)"
+   }
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "stealth.deathblow-plunge",
+  "verdict": "confirmed",
+  "reason": "ThrowParam 11020030/11020031 match (Dist 20 and 10, upper 3, lower 15, orbit range 1.5, height limit 3, time limit 2000, atk 510300/510310, def 12300/12310) and 65 rows have throwKind 70000.",
+  "needs_recording": false
+ },
+ {
+  "id": "stealth.deathblow-hang-wall",
+  "verdict": "corrected",
+  "reason": "ThrowParam throwKind 110000 has 98 rows (Dist 2.25, 49 right-side rows with atk 500800 and 49 left-side rows with atk 501000), 90000 and 100000 have 49 rows each with Dist 1.8, and the rows cover 49 character kinds, not 48.",
+  "fix": {
+   "values": "Hang start rows (throwKind 110000): Dist 2.25 m, height +-1.35 m, 98 rows in two halves: angle 0 to 90 with atk anim 500800 and angle 90 to 180 with atk anim 501000 (49 each). Wall left (90000) and right (100000): Dist 1.8 m, angle 0 to 180, height +-1.08 m, atk 500600 / 500700 (49 rows each). 49 common enemy kinds have them; no boss."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "stealth.deathblow-ninjutsu",
+  "verdict": "confirmed",
+  "reason": "ThrowParam 11020022/23/24 are throwKind 201/202/203 with Dist 10, angle 180, height +-6.0, atk 510210/20/30 and def 12210/20/30, and each kind has 46 rows (138 in all), with broken versions 41201-41203.",
+  "needs_recording": false
+ },
+ {
+  "id": "stealth.puppeteer-vision",
+  "verdict": "confirmed",
+  "reason": "SpEffectParam 220021 has around eye angles 180/180/90/90 and sightSearchRate 2, 220030/31/32 are immortality for 45 s, 90 s and forever, 220040 and 220041 change team type (15 and 29), and 220022 applies 100 percent HP loss.",
+  "needs_recording": false
+ },
+ {
+  "id": "stealth.hit-forces-battle",
+  "verdict": "confirmed",
+  "reason": "Exe function 14061d140 calls the target-record setter with the reason argument, consistent with enemy.md; the reason 4 to state 3 mapping follows the recorded trace.",
+  "needs_recording": false
+ },
+ {
+  "id": "stealth.always-aware-enemies",
+  "verdict": "confirmed",
+  "reason": "NpcThinkParam 13500000 and 70000000 have yaw 180 and pitch 90, 10800000 has eye_dist 50 and BattleStartDist 50, 23 rows have BattleStartDist 9999 and 95 rows have SightTargetForgetTime 99999.",
+  "needs_recording": false
+ },
+ {
+  "id": "stealth.ignored-fields",
+  "verdict": "confirmed",
+  "reason": "ignoreStealthTime, callHelp_* and BackHome_GuardActId are 0 on all 771 NpcThinkParam rows.",
+  "needs_recording": false
+ },
+ {
+  "id": "ai.enemy-blind",
+  "verdict": "corrected",
+  "reason": "The record was empty; SpEffectParam and the AI Lua show the blind states: 220010 (blood smoke) and 220011 (firecracker) reaction effects, the 200130 smoke-ball blindness, and a mini-boss branch that sets AI number 60.",
+  "fix": {
+   "summary": "A blind effect on an enemy cuts its senses for a short time. Blood-smoke blind 220010 makes fodder (SpEffect 241000/241010) drop its target at once; mini-bosses (241100) set a blind flag and later wait with a search clip before turning back. Firecracker blind 220011 and the smoke-ball blindness 200130 cut hearing and, for 200130, all sight angles.",
+   "values": "220010 blood smoke blind (COMMON_SP_EFFECT_BLOOD_SMOKE), 220011 firecracker blind (0.5 s, hearingSearchEnemyCut 100), 220012-220016 related blinds (0.5 to 2 s, hearing cut 100), 200130 smoke-ball blindness (2 s, all four sight angle cuts and hearing 100), 107712 enemy-turn short blind (0.5 s, left angle cut 100). Reaction classes in NpcParam: 241000 fodder (960 rows), 241100 mini-boss (94), 241200 boss (102). Lua: table_ai_common ActivateSpecialEffect 220010 in FIND/BATTLE: fodder ClearEnemyTarget, 241100 sets AI_NUMBER_BLOOD_SMOKE_BLINDNESS = 1; _COMMON_AddBattleGoal then queues WaitWithAnime 400600 or 400610 (up to 30 s) and AttackTunableSpin 401040. While 220010 or 220011 is on, the caution approach goals skip MoveToSomewhere and run ConfirmCautionTarget instead. Per-enemy reaction cool-down rows exist for firecracker and ash (for example 251070/251071 Shura Samurai 15 s, 251080/251081 Seven-sided Warrior 30 s).",
+   "how": "The reaction SpEffect is applied by the item hit; the AI table handler reads it as an interrupt and either drops the target (fodder), starts the blind search sequence (mini-boss) or ignores it (boss).",
+   "sources": [
+    {
+     "kind": "data",
+     "ref": "extracted/json/params/SpEffectParam.json"
+    },
+    {
+     "kind": "data",
+     "ref": "extracted/ai_src/common_table_ai_common.lua"
+    },
+    {
+     "kind": "data",
+     "ref": "extracted/ai_src/common_common_logic_func.lua"
+    },
+    {
+     "kind": "data",
+     "ref": "extracted/json/params/NpcParam.json"
+    }
+   ],
+   "confidence": "data",
+   "check": "Throw a firecracker or smoke ball at a fodder soldier in FIND: it loses its target; do the same to a mini-boss (General) and see the 400600/400610 search clip.",
+   "note": "The fistful-of-ash blind row itself was not identified; only its per-enemy cool-down rows were found. Needs a recording to compare durations."
+  },
+  "needs_recording": true
+ }
+]

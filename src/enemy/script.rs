@@ -351,6 +351,14 @@ enum Act {
     /// warp request (2004[41]), the target character's dummy poly (-1: its root).
     Warp(i64, i64, i64, bool, i64),
     Immortal(i64, bool),
+    /// 2004[2] Set Character Team Type (entity, TEAM_TYPE): Genichiro's 26 "Friendly NPC" and the
+    /// Demon of Hatred's 28 "Coop NPC" through their entrances, 6 "Enemy" once they fight
+    /// (m11_01 11115810, m11_00 11105910 / 11105923 / 11105924).
+    Team(i64, i64),
+    /// 2004[11] Set Character Event Target (entity, target): the AI's TARGET_EVENT (ai.rs
+    /// EventView). The Headless Ape and its partner name each other (m17 11705880), Lady
+    /// Butterfly's illusions her (m10 11005820), the Old Dragons' parts their body (m25 12505803).
+    EventTarget(i64, i64),
     Death(i64),
     /// The defeat with its Text Banner Type.
     BossDefeat(i64),
@@ -455,11 +463,23 @@ impl Run {
         Some(super::events::place(self.start, &at, &serde_json::json!(yaw)))
     }
 
+    /// Where a character stands for the area checks: on the field, where it is; a disabled one
+    /// stays where it was disabled, one not enabled yet at its warp or MSB spot (the game keeps a
+    /// disabled character in place: Owl (Father)'s bird 1000901 waits inside 1002800, so m10
+    /// 11005923, "outside it: warp it back onto him", stays quiet until it flies off).
+    fn pos_in(&self, w: &World, id: i64) -> Option<Vec3> {
+        if let Some(c) = w.get(id) {
+            return Some(c.pos);
+        }
+        self.disabled.get(&id).or(self.pending_warp.get(&id)).map(|p| p.0).or_else(|| self.place_of(id).map(|p| p.0))
+    }
+
     /// Is the world point inside the MSB region? Heights count on the boss's own arena only.
     fn inside(&self, region: i64, p: Vec3) -> bool {
         let (Some(pl), Some(sh)) = (self.def.places.get(&region), self.def.regions.get(&region)) else { return false };
         // Into the boss frame (see events::place).
-        let (x, z) = (self.start.x - p.x, p.z - self.start.z);
+        let d = crate::map::frame().rot.inverse() * (p - self.start);
+        let (x, z) = (-d.x, d.z);
         let y = super::on_own_arena().then(|| p.y - self.start.y);
         if sh.shape == 6 {
             return sh.parts.iter().any(|k| shape_contains(k.shape, &k.size, k.at, k.yaw, x, y, z));
@@ -577,12 +597,12 @@ fn pred(run: &Run, ev: usize, w: &World, ins: &(i32, i32, Vec<f64>), since: f32)
         // in: m25's 12505960 waits for him in 2502850 only after 12505990 posed the Monk).
         (3, 2) | (3, 3) if run.frame == 0 && (i(2) == PLAYER || i(3) == PLAYER) => i(1) == 0,
         (3, 2) => {
-            let inside = chr(2).is_some_and(|c| run.inside(i(3), c.pos));
+            let inside = run.pos_in(w, i(2)).is_some_and(|p| run.inside(i(3), p));
             inside == (i(1) == 1)
         }
         (3, 3) => {
-            let (Some(a), Some(b)) = (chr(2), chr(3)) else { return false };
-            let inside = a.pos.distance(b.pos) <= f(4) as f32;
+            let (Some(a), Some(b)) = (run.pos_in(w, i(2)), run.pos_in(w, i(3))) else { return false };
+            let inside = a.distance(b) <= f(4) as f32;
             inside == (i(1) == 1)
         }
         (3, 8) => i(1) == 1,
@@ -873,6 +893,8 @@ fn step(run: &mut Run, ev: usize, w: &World, dt: f32, acts: &mut Vec<Act>) {
             (2004, 6) => acts.push(Act::EzState(i(0), i(1))),
             (2004, 8) => acts.push(Act::SetSp(i(0), i(1))),
             (2004, 12) => acts.push(Act::Immortal(i(0), i(1) == 1)),
+            (2004, 2) => acts.push(Act::Team(i(0), i(1))),
+            (2004, 11) => acts.push(Act::EventTarget(i(0), i(1))),
             (2004, 17) => acts.push(Act::AiCommand(i(0), i(1), i(2))),
             (2004, 19) => acts.push(Act::AiId(i(0), i(1))),
             (2004, 20) => acts.push(Act::Replan(i(0))),
@@ -1323,6 +1345,16 @@ pub(super) fn run_scripts(
                 }
             }
             Act::Immortal(PLAYER, on) => run.wolf_immortal = on,
+            Act::EventTarget(who, target) => {
+                // Wolf as the event target reads as the current target (None).
+                let to = if target == PLAYER { None } else { ent_of(run, target) };
+                let Some(ent) = ent_of(run, who) else { continue };
+                match q.get_mut(ent) {
+                    Ok((_, mut e, ..)) => e.event_target = to,
+                    // Spawned this frame.
+                    Err(_) => run.pending.push(act),
+                }
+            }
             Act::ScriptedLoss => {
                 warn!("boss script: {} scripted loss", run.row);
                 fight.0 = true;
@@ -1373,7 +1405,7 @@ pub(super) fn run_scripts(
             _ => {
                 let id = match &act {
                     Act::SetSp(i, _) | Act::ClearSp(i, _) | Act::AiCommand(i, _, _) | Act::Replan(i) | Act::AiId(i, _) | Act::AiState(i, _) => *i,
-                    Act::ForceAnim(i, _, _) | Act::EzState(i, _) | Act::Immortal(i, _) | Act::Death(i) => *i,
+                    Act::ForceAnim(i, _, _) | Act::EzState(i, _) | Act::Immortal(i, _) | Act::Team(i, _) | Act::Death(i) => *i,
                     _ => continue,
                 };
                 let Some(ent) = ent_of(run, id) else { continue };
@@ -1571,6 +1603,7 @@ fn apply(combat: &Combat, brains: &mut super::Brains, ent: Entity, e: &mut Enemy
             }
         }
         Act::Immortal(_, on) => e.immortal = on,
+        Act::Team(_, team) => a.team = Some(team),
         Act::Death(_) => {
             if !(e.is_dead() && a.hp <= 0.0) {
                 a.hp = 0.0;

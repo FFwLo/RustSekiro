@@ -5,7 +5,7 @@ the files their packet lists, and hand back a report. The lead reviews, merges a
 game. Give a helper this whole file plus the packet ID ("do task V1").
 
 ## 1. What the project is
-A Rust + Bevy 0.19 prototype at `C:\DeadlockModding\shinobi-combat` that recreates Sekiro's
+A Rust + Bevy 0.19 prototype at `..\shinobi-combat` that recreates Sekiro's
 combat 1:1. Every number comes from the game's own files (TAE events, HKS behaviour
 scripts, params, behaviour graphs) or from a static decompile of the exe. Nothing is tuned by
 feel when the game has the real value.
@@ -59,7 +59,7 @@ sekiro-extract selectors <hkx>     # behaviour-graph selectors: variable -> chil
 sekiro-extract objects <hkx> <HavokType>   # dump every object of a type (fields, arrays)
 sekiro-extract clips|transitions|blenders <hkx>
 powershell -ExecutionPolicy Bypass -File tools/screenshot.ps1 -Out shot.png   # while the game runs
-rg "<pattern>" extracted/decomp           # exe research; gamedb at C:\DeadlockModding\tools\gamedb\target\release\gamedb.exe -r extracted/decomp
+rg "<pattern>" extracted/decomp           # exe research; gamedb at ..\tools\gamedb\target\release\gamedb.exe -r extracted/decomp
 ```
 Sekiro install: `C:\Program Files (x86)\Steam\steamapps\common\Sekiro`. Build the extractor
 with `cargo build` inside `tools/sekiro-extract`.

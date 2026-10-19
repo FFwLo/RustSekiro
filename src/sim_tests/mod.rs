@@ -26,6 +26,10 @@ pub(crate) use crate::player::{Action, PadInput, Player, PlayerPlugin, CAPSULE_H
 // part09: 47 tests, a_blocked_hit_does_not_wake_a_held_enemy .. an_attack_out_of_a_run_keeps_the_runs_momentum
 // part10: 38 tests, an_attack_at_the_run_loops_wrap_keeps_the_momentum_too .. hit_stop_holds_posture_regen_and_sp_effect_timers
 // part12: 12 tests, wall hug, ledge hang and wall jumps (docking.rs)
+// part13: atlas movement pass tests (atlas ids in the names)
+// part14: atlas combat pass tests (atlas ids in the names)
+// part15: atlas vfx + lighting pass tests (atlas ids in the names)
+// part16: atlas bosses pass tests (atlas ids in the names)
 // part11: 15 tests, a_mid_stride_loop_swap_does_not_burst_its_sounds .. throw_direction_effects_come_from_the_material_row
 
 mod part01;
@@ -40,6 +44,10 @@ mod part09;
 mod part10;
 mod part11;
 mod part12;
+mod part13;
+mod part14;
+mod part15;
+mod part16;
 pub(crate) use part01::*;
 pub(crate) use part02::*;
 pub(crate) use part03::*;

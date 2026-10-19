@@ -269,8 +269,8 @@ const ROWS: usize = 3;
 /// The key icon's height (px): about the label's cap height again, as in the capture.
 const KEY_PX: f32 = 22.0;
 
-fn spawn_guides(mut commands: Commands, mut fonts: ResMut<Assets<Font>>) {
-    let serif = std::fs::read("C:/Windows/Fonts/georgia.ttf").ok().map(|b| fonts.add(Font::from_bytes(b)));
+fn spawn_guides(mut commands: Commands, fonts: Res<crate::fonts::GameFonts>) {
+    let serif = fonts.ui.clone();
     let font = |size: f32| TextFont { font: serif.clone().map(bevy::text::FontSource::Handle).unwrap_or_default(), font_size: bevy::text::FontSize::Px(size), ..default() };
     commands
         .spawn((
