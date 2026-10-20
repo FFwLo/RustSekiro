@@ -169,6 +169,12 @@ pub struct Actor {
     /// per-character FD4Time chr+0x100 whose float chr+0x108 FUN_1409f78a0 writes from
     /// HitStop+0x18 (1409f.c:6757); only the fall / Havok take the raw dt (round 64).
     pub clock_dt: Option<f32>,
+    /// The exe's update level (WorldChrMan "omission update", FUN_140a4e8e0 sets chr+0x110):
+    /// the character updates once every `lod` ticks with `lod` ticks' time (FUN_140a4db20:
+    /// `idx % level == frame % level`, dt x level); `lod_due` this tick. 1 / true: every tick
+    /// (all but the open world's enemies, enemy/world.rs).
+    pub lod: u32,
+    pub lod_due: bool,
     /// Debug menu "no posture damage" (player_cheats sets it each tick): add_posture adds
     /// nothing, so one blocked hit can't fill the bar inside Resolve (round 65).
     pub no_posture: bool,
@@ -254,9 +260,16 @@ pub struct Actor {
     /// ... in the 4-way back sector (HKS damage_angle == B, |front| >= |side|): a small-blow
     /// posture break lands face down only then (c0000_transition 1678-1684).
     pub hit_back_quadrant: bool,
+    /// The damage the engine reports to the script this frame (enemy::DamageEnv), set where
+    /// combat.rs reacts; hks_lua's comparisons read and clear it (Wolf's and the enemies').
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub damage_env: Option<crate::enemy::DamageEnv>,
     /// The behaviorRefId of the status row whose damage emptied HP (status.rs): 590 terror,
     /// 500 a poison tick (damage level none); 0 otherwise. BEH_R_DEATH picks the death by it.
     pub death_ref: i64,
+    /// The source line of the last `play` (SHINOBI_HKS_AUDIT: hks_wolf compares player.rs's picks
+    /// with the graph's per call site).
+    pub played_at: Option<&'static std::panic::Location<'static>>,
     /// The killing direct hit's (HKS damage level env 236, element env 285 = spAttribute),
     /// set by combat.rs; BEH_R_DEATH picks Wolf's death start by it (player.rs death_starts).
     pub death_hit: Option<(i64, i64)>,
@@ -349,6 +362,8 @@ impl Actor {
             team: None,
             hit_stop: HitStop::default(),
             clock_dt: None,
+            lod: 1,
+            lod_due: true,
             no_posture: false,
             resident: Vec::new(),
             item_sp: Vec::new(),
@@ -385,7 +400,9 @@ impl Actor {
             attack_hit: false,
             hit_from_back: false,
             hit_back_quadrant: false,
+            damage_env: None,
             death_ref: 0,
+            played_at: None,
             death_hit: None,
             shock: None,
             aged: None,
@@ -404,7 +421,9 @@ impl Actor {
         }
     }
 
+    #[track_caller]
     pub fn play(&mut self, state: &str, anim: &str) {
+        self.played_at = Some(std::panic::Location::caller());
         // The transition keeps the source generator's motion through the blend-in (c0000.hkx
         // TaeBlend) or drops it (TaeBlend_NoSrcMotion): see `advance`.
         // A clip restarted on its own key is the generator looping (hkbClipGenerator
@@ -445,6 +464,7 @@ impl Actor {
     }
 
     /// Plays a behavior state through the data's state -> anim table.
+    #[track_caller]
     pub fn play_state(&mut self, data: &CharData, state: &str) -> bool {
         match data.anim_key(state) {
             Some(key) => {
@@ -520,19 +540,32 @@ impl Actor {
         format!("{group}_{:06}", base + self.move_dir.min(3) as u32)
     }
 
-    /// The clip a player shows and its time: the TAE anim, else the procedural idle (StandIdle
-    /// a000_000000 / CrouchIdle a000_005000) or locomotion clip. For reading the TAE of what is
-    /// on screen (crouch's stealth SpEffect 109200 rides on the crouch idle / move clips).
+    /// The clip a procedural state (no TAE anim) shows and the time in it, before looping:
+    /// Wolf's locomotion = the move start, then the loop (move_clip), his idle a000_000000 /
+    /// crouch idle a000_005000; an enemy's battle idle a000_400000 (PostureBroken 008550) in its
+    /// anim set (grouped: the spear / matchlock / eight-phase soldiers' a200 / a300 / a100).
+    pub fn proc_clip(&self, t: f32) -> (String, f32) {
+        let key = match (self.side, self.state.as_str()) {
+            (Side::Player, "Locomotion") => {
+                let (key, t, _) = self.locomotion_clip_at(t);
+                return (key, t);
+            }
+            (Side::Player, _) if self.crouch => "a000_005000".to_string(),
+            (Side::Player, _) => "a000_000000".to_string(),
+            (Side::Enemy, "PostureBroken") => self.grouped("a000_008550"),
+            (Side::Enemy, _) => self.grouped("a000_400000"),
+        };
+        (key, t)
+    }
+
+    /// The clip on screen and its time: the TAE anim, else the procedural one (proc_clip). For
+    /// reading the TAE of what is on screen (crouch's stealth SpEffect 109200 rides on the crouch
+    /// idle / move clips, the walk's MOVING_WALK ref on the walk).
     pub fn shown_clip(&self, d: &CharData) -> (String, f32) {
         if !self.anim.is_empty() {
             return (self.anim.clone(), self.t);
         }
-        let (key, t) = if self.state == "Locomotion" {
-            let (key, t, _) = self.locomotion_clip_at(self.t);
-            (key, t)
-        } else {
-            ((if self.crouch { "a000_005000" } else { "a000_000000" }).to_string(), self.t)
-        };
+        let (key, t) = self.proc_clip(self.t);
         let len = d.length(&key);
         (key, if len > 0.0 { t.rem_euclid(len) } else { t })
     }
@@ -681,9 +714,16 @@ impl HitStop {
 
 /// Advances clocks, applies root motion and procedural motion.
 pub fn advance(time: Res<Time>, combat: Res<Combat>, mut q: Query<(&mut Actor, &mut Transform)>) {
-    let real_dt = time.delta_secs();
+    let _prof = crate::perf::span("advance");
+    let tick_dt = time.delta_secs();
     for (mut a, mut tf) in &mut q {
         a.prev_t = a.t;
+        // Not due this tick (its update level): no time passes for it.
+        if !a.lod_due {
+            a.clock_dt = Some(0.0);
+            continue;
+        }
+        let real_dt = tick_dt * a.lod as f32;
         // The hit stop scales the whole step (clip, TAE, root motion, pushes), as the exe runs
         // every module on the character's own time (FUN_140b9d1b0 -> FUN_1409f78a0).
         let dt = a.hit_stop.split(real_dt);
@@ -1100,6 +1140,7 @@ fn proxy_off(combat: &Combat, a: &Actor) -> bool {
 /// head kick) is left alone: an enemy spans its feet to NpcParam hitHeight, Wolf his capsule
 /// (2 x CAPSULE_HALF_HEIGHT; gap: his proxy height is not traced).
 fn separate(combat: Res<Combat>, mut last: Local<std::collections::HashMap<Entity, Vec3>>, mut q: Query<(Entity, &mut Actor, &mut Transform)>) {
+    let _prof = crate::perf::span("separate");
     let radius = |a: &Actor| {
         if a.side == Side::Player {
             PLAYER_BODY_RADIUS
@@ -1118,11 +1159,18 @@ fn separate(combat: Res<Combat>, mut last: Local<std::collections::HashMap<Entit
         }
     };
     let mut items: Vec<_> = q.iter_mut().collect();
+    // Each body's radius once (an NpcParam read), and pairs too far apart to touch skipped before
+    // the throw / TAE checks: the open world has dozens of bodies (enemy/world.rs).
+    let radii: Vec<f32> = items.iter().map(|x| radius(&x.1)).collect();
     for i in 0..items.len() {
         for j in i + 1..items.len() {
             let (l, r) = items.split_at_mut(j);
             let (ea, a, ta) = &mut l[i];
             let (eb, b, tb) = &mut r[0];
+            let min = radii[i] + radii[j];
+            if (tb.translation - ta.translation).with_y(0.0).length_squared() >= min * min {
+                continue;
+            }
             // Throw pairs pass through each other (the game's throws drop the character proxies).
             if a.hp <= 0.0 || b.hp <= 0.0 || in_throw(a) || in_throw(b) || proxy_off(&combat, a) || proxy_off(&combat, b) {
                 continue;
@@ -1131,7 +1179,6 @@ fn separate(combat: Res<Combat>, mut last: Local<std::collections::HashMap<Entit
             if a0 >= b1 || b0 >= a1 {
                 continue;
             }
-            let min = radius(a) + radius(b);
             let d = (tb.translation - ta.translation).with_y(0.0);
             let len = d.length();
             if len < min {

@@ -5,6 +5,8 @@
 `src/ai/lua50.rs` (the Lua 5.0 loader and interpreter) is adapted from
 [sekiro-rs](https://github.com/AKJama/sekiro-rs), `crates/sim/src/lua_ai/lua50.rs`,
 which is dual-licensed MIT or Apache-2.0.
+The HKS bytecode VM (`crates/hks`, `sekiro-hks`) is used unchanged as a dev-dependency
+(`src/hks_lua.rs` tests).
 Rules also ported from it (no code copied verbatim): the Owl's 3506080 deathblow gate
 (`player.rs`, its docs/OWL.md) the bullet decay past range (`data.rs` `Attack::decayed`,
 its `bullets.rs`) and the deathblow absorb giving way at walls (`player.rs` `follow_throw`,

@@ -18,7 +18,7 @@ pub(crate) use crate::player::{Action, PadInput, Player, PlayerPlugin, CAPSULE_H
 // part01: 49 tests, timed_guard_deflects_and_bounces_the_enemy .. posture_break_staggers_then_a_second_hit_knocks_wolf_down
 // part02: 45 tests, locked_slash_lunges_toward_a_far_target .. a_jump_press_leaves_the_hold_art
 // part03: 44 tests, hold_art_sheathes_and_releases .. a_feigning_wolf_is_dropped_by_the_enemy
-// part04: 23 tests, crouching_cuts_how_far_enemies_see_wolf .. a_blocked_shuriken_plays_the_guard_reaction
+// part04: 24 tests, crouching_cuts_how_far_enemies_see_wolf .. a_blocked_shuriken_plays_the_guard_reaction
 // part05: 35 tests, a_guarding_enemy_takes_its_npc_posture_rate .. blue_lightning_leaves_an_air_art_going
 // part06: 35 tests, lightning_on_the_ground_shocks_wolf .. the_bandits_torch_sets_wolf_on_fire
 // part07: 43 tests, reigniting_a_burn_refreshes_it .. no_gourd_while_guarding_and_a_tool_switch_in_the_air

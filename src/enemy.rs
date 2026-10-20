@@ -22,6 +22,7 @@ use crate::player::Player;
 use crate::stealth::{self, Targeting};
 
 mod events;
+pub mod world;
 pub mod grapple;
 pub mod script;
 pub mod talk;
@@ -53,7 +54,7 @@ const PC_ATTACK_DIST_STAND: f32 = 3.4;
 const STATE_INFO_COLLAPSED: i64 = 352;
 
 #[derive(Clone, Copy, PartialEq, Debug)]
-enum Mode {
+pub(crate) enum Mode {
     /// Driven by the AI (or the passive / fallback behaviour).
     Ai,
     Broken(f32),
@@ -66,11 +67,6 @@ enum Mode {
     Held(bool),
 }
 
-/// A forced one-shot event anim (Event200xx) that ends into its loop Event21000: the SpEffects
-/// it holds to its last frame are held for good there (the Divine Dragon's collapse 20002 ->
-/// 21000, both with 3520011 "collapsed" and 5026; also c1250 / c1260 / c1010 pairs).
-/// gap: what starts the loop in the game is not traced (no EMEVD, HKS or AI request for the
-/// dragon's 21000); by that data match.
 /// changeHpRate recovery (% of max HP) of the instant SpEffects (effectEndurance 0) the anim's
 /// TAE AddSpEffect (66 / 67) adds in (from, to] seconds, plus one at 0 on the anim's first
 /// frame (from == 0): an event on a frame edge counts once, not in both frames.
@@ -85,25 +81,40 @@ pub(crate) fn instant_hp_rate(d: &crate::data::CharData, key: &str, from: f32, t
         .sum()
 }
 
-fn loop_after(d: &crate::data::CharData, a: &Actor) -> Option<String> {
-    if !a.state.starts_with("Event200") {
-        return None;
-    }
-    let key = format!("{}021000", a.anim.get(..5)?);
-    let (one, lp) = (d.anim(&a.anim)?, d.anim(&key)?);
-    let len = d.length(&a.anim);
-    let sp = |e: &crate::data::Event| (e.kind == 67).then(|| e.arg_i64("SpEffectID")).flatten();
-    let held: HashSet<i64> = lp.events.iter().filter(|e| e.end > 1e30).filter_map(sp).collect();
-    one.events.iter().filter(|e| e.end < 1e30 && e.end >= len - 0.05).filter_map(sp).any(|id| held.contains(&id)).then_some(key)
-}
-
 /// ChrActionFlag 69 "ThrowType5": on ThrowDef reactions, where a killed defender switches to
 /// its ThrowDefDeath anim.
 const FLAG_THROW_TYPE5: i64 = 69;
 
+/// A hit as c9997 ExecDamage reads it: env 202 damage type (DAMAGE_TYPE_GUARD 3, GUARD_BREAK
+/// 1001; a plain hit 99999, FUN_140b6bd40: docs/kb/hks-graph.md), 236 damage level, 222 direction (0 left, 1 right,
+/// 2 front, 3 back: GetDamageDirectionOffset onto DamageSmall a000_008000 front / 1 back / 2 left
+/// / 3 right), 3056 / 3057 the guard / deflect direction (GUARD_DIR_RIGHT 1, LEFT 2, else -1).
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(not(test), allow(dead_code))]
+pub struct DamageEnv {
+    pub kind: i64,
+    pub level: i64,
+    pub dir: i64,
+    pub guard_dir: i64,
+    pub just_dir: i64,
+    /// Its attack blocked / deflected: env 3018 / 3019 the bound side (BOUND_RIGHT 1, LEFT 2,
+    /// ADD01-04 11-14), with type GUARDED_NO_BOUND_ENEMYn 1018 + n / GUARDED_BOUND_ENEMYn
+    /// 1007 + n / GUARDED_STAM_ZERO 1033.
+    pub bound: i64,
+    pub just_bound: i64,
+    /// In the air at the hit (combat::enemy_is_aerial; the script's IsDamagedAerial: env 201 off).
+    pub aerial: bool,
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+impl DamageEnv {
+    /// No damage this frame (DAMAGE_TYPE_NONE).
+    pub const NONE: Self = Self { kind: 99999, level: 0, dir: 2, guard_dir: -1, just_dir: -1, bound: 0, just_bound: 0, aerial: false };
+}
+
 #[derive(Component)]
 pub struct Enemy {
-    mode: Mode,
+    pub(crate) mode: Mode,
     /// Deathblow kill pending: the death state that follows the ThrowDef reaction
     /// (ThrowDefDeath<def + 1>, or a boss's Event20200).
     throw_death: Option<String>,
@@ -174,6 +185,9 @@ pub struct Enemy {
     event_prev_sp: HashSet<i64>,
     /// Active goal chain, for the debug panel.
     pub ai_desc: String,
+    /// The AI's request this frame (what the shared NPC script reads as env 106 / 9910 / 9920
+    /// and the move variables; hks_lua's enemy comparison feeds it to the game's script).
+    pub ai_cmd: crate::ai::Command,
     /// Fallback combo when no AI scripts are available: (combo, step).
     fallback: Option<(usize, usize)>,
     /// What it knows of Wolf (stealth.rs): NONE / CAUTION / FIND / BATTLE and the target slots.
@@ -378,8 +392,10 @@ pub fn phase_events(npc_row: i64) -> &'static [PhaseEvent] {
     .map_or(&[], |v| v.as_slice())
 }
 
-/// The AI-state SpEffects (c9997 SP_EFFECT_REF_AI_* refs 1000000-1000003).
-const AI_STATE_SP: [i64; 4] = [200000, 200001, 200002, 200004];
+/// The AI-state SpEffects (c9997 SP_EFFECT_REF_AI_* refs 1000000-1000003). One slot: all
+/// spCategory 100 at categoryPriority 1, so the AI's state replaces a NpcParam resident one
+/// (the 51 rows wearing 200000 from spawn, e.g. the piranha c1320).
+pub(crate) const AI_STATE_SP: [i64; 4] = [200000, 200001, 200002, 200004];
 
 impl Enemy {
     /// Its NpcThinkParam row: the map's (MSB ThinkParamID, Set Character AI ID), else its kind's.
@@ -431,13 +447,26 @@ impl Enemy {
     /// (W_DeathStartBlast, 10120) for a blow / ex-blast / breath level, DeathStartSpecialPoison
     /// (10370), DeathStartFire (10200, a fire hit when the chr has no physical-type death clip:
     /// none of the regular rows checked has one), else W_DeathStartDefault: DeathDefault<0-1>
-    /// (IndexDeathVariation, GetRandomIndex 0-1). gap: the land / aerial / event-20000 / hide /
-    /// back-reality / upper / fling / weak / physical-type branches are not modelled.
+    /// (IndexDeathVariation, GetRandomIndex 0-1). Before those, a worn SpEffect's ref picks:
+    /// SP_EFFECT_REF_TO_DEATH_EVENT20000 + n (1020000-1020020) the one-shot Event200nn,
+    /// SP_EFFECT_REF_TO_DEATH_UNIQUE_CASE (1000180) DeathStartUniqueCase (10160: the zombie c1500
+    /// killed as it lets Wolf go). gap: the land / aerial / hide / back-reality / upper / fling /
+    /// weak / physical-type branches are not modelled.
     pub(crate) fn die_at_zero_hp(&mut self, a: &mut Actor, combat: &Combat) {
         let d = combat.data_of(a);
         let (level, fire, poison) = self.last_hit;
         let has = |s: &str| d.anim_key(s).is_some();
-        let pick = if matches!(level, 4 | 10 | 11) && has("DeathBlast") {
+        let mut worn: Vec<i64> = crate::combat::worn_sp(a, &self.clash);
+        if !a.anim.is_empty() {
+            worn.extend(d.sp_effects_at(&a.anim, a.t).iter().map(|(id, _)| *id));
+        }
+        let refs: Vec<i64> = worn.iter().map(|id| d.sp_effects.get(&id.to_string()).map_or_else(|| crate::data::sp_effect_behavior_ref(*id), |s| s.behavior_ref_id)).collect();
+        let event = (0..=20).find(|n| refs.contains(&(1_020_000 + n))).map(|n| format!("Event{}", 20_000 + n)).filter(|s| has(s));
+        let pick = if let Some(ev) = event {
+            ev
+        } else if refs.contains(&1_000_180) && has("DeathStartUniqueCase") {
+            "DeathStartUniqueCase".to_string()
+        } else if matches!(level, 4 | 10 | 11) && has("DeathBlast") {
             "DeathBlast".to_string()
         } else if poison && has("DeathStartSpecialPoison") {
             "DeathStartSpecialPoison".to_string()
@@ -558,6 +587,12 @@ impl Enemy {
         }
         let len = d.length(&a.anim);
         self.mode = Mode::Dead(len + 2.0);
+    }
+
+    /// The AI-state SpEffect it wears (200000 default .. 200004 battle; c9997's
+    /// SP_EFFECT_REF_AI_* refs 1000000-1000003).
+    pub fn ai_state_sp(&self) -> i64 {
+        self.ai_sp
     }
 
     /// Deathblows left as the game reads them (GetNinsatsuNum, 4[37]): the count less the
@@ -1028,6 +1063,7 @@ impl Plugin for EnemyPlugin {
             .add_message::<SpawnEncounter>()
             .add_message::<grapple::WireHit>()
             .init_resource::<BossScript>()
+            .init_resource::<world::WorldScripts>()
             .init_resource::<talk::Talk>()
             .add_systems(Update, talk::hold_input.after(crate::player::read_input))
             .init_resource::<script::WolfImmortal>()
@@ -1035,7 +1071,7 @@ impl Plugin for EnemyPlugin {
             .add_systems(Startup, spawn_enemy.after(crate::map::load_map))
             .add_systems(
                 FixedUpdate,
-                (spawn_encounter, reset_fight, stealth_env_start, start_unaware, ai_hold, route_end_anim, parry_interrupt, think, grapple::on_wire_hit, ninsatsu_hit, deathblow_flinch, death_noise, todome_message, events::messages, script::run_scripts, talk::run_talk, events::apply_event_warp).chain().in_set(ActorSet::Decide),
+                (spawn_encounter, reset_fight, stealth_env_start, start_unaware, ai_hold, route_end_anim, parry_interrupt, world::update_lod, think, grapple::on_wire_hit, ninsatsu_hit, deathblow_flinch, death_noise, todome_message, events::messages, script::run_scripts, world::run_world, talk::run_talk, events::apply_event_warp).chain().in_set(ActorSet::Decide),
             )
             .add_systems(Update, toggle_aggression.run_if(resource_exists::<ButtonInput<KeyCode>>))
             .init_resource::<grapple::EnemyGrapples>()
@@ -1599,14 +1635,20 @@ pub fn msb_groups(entity: i64) -> Vec<i64> {
 
 /// [`msb_patrol`] on the exported map `stem` (extracted/map_<stem>.json).
 pub fn msb_patrol_on(stem: &str, entity: i64) -> Option<MsbSpot> {
+    let map: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(crate::paths::extracted().join(format!("map_{stem}.json"))).ok()?).ok()?;
+    let (origin, yaw) = crate::map::json_frame(&map)?;
+    msb_spot_in(map["map"].as_str()?, origin, yaw, entity)
+}
+
+/// The patrol of MSB enemy `entity` of game map `map` (patrols.json), minus `origin`, turned by
+/// `yaw`, X mirrored (origin 0 and no turn: the open world's absolute place, sekiro-rs's map).
+pub fn msb_spot_in(map: &str, origin: Vec3, yaw: f32, entity: i64) -> Option<MsbSpot> {
     static PATROLS: std::sync::OnceLock<serde_json::Value> = std::sync::OnceLock::new();
     let patrols = PATROLS.get_or_init(|| {
         std::fs::read_to_string(crate::paths::extracted().join("enemies/patrols.json")).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
     });
-    let map: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(crate::paths::extracted().join(format!("map_{stem}.json"))).ok()?).ok()?;
-    let p = &patrols[map["map"].as_str()?][entity.to_string()];
+    let p = patrols.get(map)?.get(entity.to_string())?;
     let f = |v: &serde_json::Value| v.as_f64().unwrap_or(0.0) as f32;
-    let (origin, yaw) = crate::map::json_frame(&map)?;
     let (s, c) = yaw.sin_cos();
     let turn = |x: f32, z: f32| Vec3::new(-(x * c + z * s), 0.0, -x * s + z * c);
     let point = |v: &serde_json::Value| -> Option<Vec3> {
@@ -1908,6 +1950,7 @@ fn reset_fight(
         return;
     }
     reset.0 = false;
+    bs.resets += 1;
     ai_flags.0.clear();
     *wolf_msg = WolfMessage::default();
     // Wolf's poison / burn gauges and afflictions end with the fight, and the old line-up's
@@ -2024,6 +2067,7 @@ pub fn spawn_one(commands: &mut Commands, combat: &Combat, config: &GameConfig, 
             event_target: None,
             event_prev_sp: HashSet::new(),
             ai_desc: String::new(),
+            ai_cmd: crate::ai::Command::default(),
             fallback: None,
             // The duel: it starts already fighting Wolf (a battle target, AI state 200004).
             // The debug menu's stealth setup (make_unaware) starts it from nothing instead.
@@ -2431,6 +2475,7 @@ fn think(
     mut statuses: Option<ResMut<crate::status::Statuses>>,
     lock: Option<Res<crate::camera::LockOn>>,
 ) {
+    let _prof = crate::perf::span("think");
     let dt = time.delta_secs();
     let (pent, pa, ptf, pp) = *player;
     // The afflictions' SpEffects are on their wearer too (HasSpecialEffectId sees every active
@@ -2530,6 +2575,11 @@ fn think(
         if phantom.is_some_and(|p| p.parked()) || e.disabled || e.stand_in {
             continue;
         }
+        // Its update level (Actor::lod): due ticks only, with their time.
+        if !a.lod_due {
+            continue;
+        }
+        let dt = dt * a.lod as f32;
         let d = combat.data_of(&a);
         let foe = combat.foe_of(&a);
         let npc = combat.npc(&a);
@@ -2726,11 +2776,6 @@ fn think(
                 continue;
             }
             Mode::Rising(t) => {
-                if t - dt <= 0.0 && let Some(key) = loop_after(d, &a) {
-                    a.play("Event21000", &key);
-                    e.mode = Mode::Held(true);
-                    continue;
-                }
                 if t - dt <= 0.0 {
                     e.mode = Mode::Ai;
                     e.cooldown = 0.5;
@@ -2876,25 +2921,53 @@ fn think(
             }
             _ => d.length(&a.anim),
         };
-        let ended = !a.anim.is_empty() && a.t >= len;
-        // The Divine Dragon's trees (c5310 HKS Event20000 / 20002 / 20004 _onUpdate: at the
-        // anim's end ExecEventAllBody W_Event21000 / 21001 / 21002): each bloom stays open in
-        // its loop clip (TAE 66 5025 / 5026 / 5027 over all of it), which m25 12505906 reads to
-        // activate that point's grapple object; the loop repeats until the next event request
-        // (AI 531001 request 10 / 20 / 30, its AttackImmediateAction) or the re-warp.
-        if ended && combat.foe_of(&a).chr == "c5310" {
-            let next = match a.state.as_str() {
-                "Ez20000" | "Event21000" => Some(21000),
-                "Ez20002" | "Event21001" => Some(21001),
-                "Ez20004" | "Event21002" => Some(21002),
-                _ => None,
-            };
-            if let Some(id) = next {
-                let k = a.grouped(&format!("a000_{id:06}"));
-                if d.anim(&k).is_some() {
-                    a.play(&format!("Event{id}"), &k);
+        let mut ended = !a.anim.is_empty() && a.t >= len;
+        // An event state as the chr's own HKS runs it (data::hks_events, Event<n>_onUpdate): at the
+        // clip's end (env 339, before a held pose's TAE runs out) it goes on to the next event
+        // (the zombie c1500's held 20010 -> 21015, c1020 20002 -> 21001), back to the idle
+        // (W_Idle), into the death pose (ExecTransToDeathIdle: c1020's sting death 20005), or,
+        // with no end for the refs it wears, holds in its loop clip (c1020 21000, the Divine
+        // Dragon's trees c5310 21000-21002, whose open blooms m25 12505906 reads) until something
+        // else takes it. Some fire before the end: with no talk running (c1020 21007 -> 21005,
+        // c1070 21000 -> 20001) or once on the ground (c1100 21005 -> 20005), the Divine Dragon's
+        // collapse 20002 -> 21000 at its end. EventCommonFunction's ExecActiveTransition runs with
+        // is_on_cancel TRUE: the AI acts only through the clip's cancel windows (env 107 / 120 /
+        // 118) and turns or moves at flag 78 (env 2000), as in any other clip.
+        // Without the chr's decompiled HKS the clip's end goes back to the AI.
+        let ev = a.state.strip_prefix("Ez").or(a.state.strip_prefix("Event")).and_then(|n| n.parse::<i64>().ok());
+        let hks = ev.map(|_| crate::data::hks_events(&combat.foe_of(&a).chr));
+        let in_event = ev.zip(hks.as_ref()).and_then(|(n, h)| h.states.contains_key(&n).then_some(n));
+        if let (Some(from), Some(h)) = (in_event, hks.as_ref()) {
+            let at_end = !a.anim.is_empty() && a.t >= d.length(&a.anim);
+            let refs: Vec<i64> = crate::combat::worn_sp(&a, &e.clash)
+                .into_iter()
+                .chain(d.sp_effects_at(&a.anim, a.t).iter().map(|(id, _)| *id))
+                .chain([e.ai_sp])
+                .chain((a.anim_group > 0).then_some(200030 + a.anim_group as i64))
+                .map(|id| d.sp_effects.get(&id.to_string()).map_or_else(|| crate::data::sp_effect_behavior_ref(id), |s| s.behavior_ref_id))
+                .collect();
+            match h.next(from, &refs, !a.airborne, at_end) {
+                Some(crate::data::EndTo::Event(id)) => {
+                    let k = a.grouped(&format!("a000_{id:06}"));
+                    if d.anim(&k).is_some() {
+                        a.play(&format!("Event{id}"), &k);
+                        continue;
+                    }
+                }
+                Some(crate::data::EndTo::Idle) => ended = true,
+                Some(crate::data::EndTo::DeathIdle) => {
+                    // Down in the clip's last pose, out of the AI (gap: DeathIdle's ragdoll).
+                    a.move_vel = Vec3::ZERO;
+                    e.cur_ez = None;
+                    e.mode = Mode::Held(false);
                     continue;
                 }
+                None if at_end => {
+                    let (state, key) = (a.state.clone(), a.anim.clone());
+                    a.play(&state, &key);
+                    ended = false;
+                }
+                None => {}
             }
         }
         // c9997 DamageLightningStart / Loop _onUpdate (7972-8010): the start into a loop clip
@@ -2913,9 +2986,7 @@ fn think(
             }
             continue;
         }
-        // The trees' bloom loops take the next event request at any frame (531001's
-        // AttackImmediateAction).
-        let free = a.anim.is_empty() || ended || is_free_state(&a.state) || (a.state.starts_with("Event2100") && combat.foe_of(&a).chr == "c5310");
+        let free = a.anim.is_empty() || ended || is_free_state(&a.state);
         // Perilous warning when the attack's TAE fires it: the combat log line. The HUD kanji is
         // its warning bullet's hit on Wolf (enemy_bullet.rs fly).
         if d.perilous_warning(&a.anim, a.prev_t, a.t).is_some() {
@@ -3145,6 +3216,7 @@ fn think(
             }
         }
         e.ai_desc = brain.describe();
+        e.ai_cmd = cmd.clone();
         let c = cmd.clear;
         if c & crate::ai::CLEAR_ENEMY != 0 {
             e.targeting.clear_enemy();
@@ -3166,6 +3238,10 @@ fn think(
 
         // Carry out the request.
         let move_ok = free || d.flag(&a.anim, a.t, FLAG_AI_MOVE);
+        // A turn clip does not chain into another turn: c9997 TurnCommonFunction passes
+        // enable_turn FALSE, so its end goes to idle (IdleTransition) and the next turn comes from
+        // the idle a frame later.
+        let turn_ok = move_ok && !(ended && a.state.starts_with("Turn"));
         let mut turned_first = false;
         let cur = stance_of(&a.state);
         let want = Stance::wanted(&cmd).filter(|s| d.anim_key(s.idle()).is_some());
@@ -3210,7 +3286,7 @@ fn think(
             // point, FUN_14060c7d0) the TurnTo target, so a point 45 deg or more off plays the
             // turn clip first and the run starts from its AI flag 78. (A runner that only
             // steered at turnVellocity 135 deg/s circled a patrol point behind it for ever.)
-            if cmd.face && free && start_turn(&e, &mut a, d, goal_yaw, cmd.emergency) {
+            if cmd.face && turn_ok && start_turn(&e, &mut a, d, goal_yaw, cmd.emergency) {
                 turned_first = true;
             } else {
                 let state = loco_state(d, e.ai_sp, mv, cmd.walk);
@@ -3237,7 +3313,9 @@ fn think(
             a.move_vel = Vec3::ZERO;
             e.cur_ez = None;
         }
-        let turned = turned_first || (cmd.turn && cmd.anim.is_none() && cmd.mv.is_none() && free && start_turn(&e, &mut a, d, goal_yaw, cmd.emergency));
+        // A turn too from the clip's move window (c9997 ExecTurn on a cancel: env 2000, as a move):
+        // a broken soldier's TrunkCollapse turned to Wolf behind it at its flag 78, not its end.
+        let turned = turned_first || (cmd.turn && cmd.anim.is_none() && cmd.mv.is_none() && turn_ok && start_turn(&e, &mut a, d, goal_yaw, cmd.emergency));
         if (cmd.face || cmd.turn) && (free || cmd.mv.is_some()) && !turned && !(a.state.starts_with("Turn") && !ended) {
             a.yaw = turn_toward(a.yaw, goal_yaw, turn_rate.to_radians() * dt);
         }

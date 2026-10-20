@@ -31,7 +31,8 @@ def fr(e):
 
 
 def ref_of(c, e):
-    sid = str(e["args"].get("SpEffectID", ""))
+    args = e["args"] if isinstance(e["args"], dict) else {}
+    sid = str(args.get("SpEffectID", ""))
     return c["spEffects"][sid]["behaviorRefId"] if sid in c["spEffects"] else None
 
 

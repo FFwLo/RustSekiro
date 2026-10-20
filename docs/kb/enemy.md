@@ -725,3 +725,59 @@ and 6.7 attacks/min in 3 min; after, 8 backsteps and 11.3/min. Test
   and DeathblowStart; HKS ends a throw into a fall only at its end,
   HKB_STATE_THROW_ATK_TO_FREE_FALL). On the Demon of Hatred's field his leap left Wolf above the
   ground, the fall cut the deathblow and the Demon stood in ThrowDef12000 for good.
+
+## The open world's map events (2026-10-20, src/enemy/world.rs)
+Behind `SHINOBI_WORLD_ENEMIES=1`, on sekiro-rs's map started at an idol. tools/world_scripts.py
+exports every base map (m*_00_00) as a script in the boss-script layout with `world: true`:
+every enemy part but the boss rows and the c1000 / c1001 dummies (chr, NpcParam row, Part.Enemy
+ThinkParamID, raw MSB place), all of the map's event instances (event 50 / 0 and the common_func
+events they start), and the places / regions they name -> extracted/enemies/world_scripts.json
+(m11_01: 284 enemies, 479 events). script.rs runs them unchanged in world mode (place_of and
+inside take raw MSB space, X mirrored; Run::new_world has no boss). world.rs runs one script per
+play block (sr_map::blocks: m11_00, m11_01, m11_02, m13, m17, m20 from the castle idol):
+- an enemy is on the map unless its events disabled (2004[5]) or unloaded (2004[29]) it or it
+  died; within SPAWN (60 m, `SHINOBI_WORLD_RADIUS` to test) it is spawned at its MSB spot on the
+  floor, unaware, on its patrols.json route, with its own think row; past SPAWN + 20 m it goes;
+- the streaming check runs every 0.2 s (the exe's WorldBackRead promotion interval, constructor
+  0x14081d460, from sekiro-rs docs/MAP-COMPLETENESS.md), at most 4 spawns and one new kind
+  (Combat::ensure_kind, AnimLib::sync_kinds) per tick;
+- the events' SpEffects, AI commands, forced anims, deaths go to the spawned ones (script.rs
+  apply); a death of one not spawned marks it dead;
+- dead ones stay dead (no practice respawn) until a rest: BossScript::resets (reset_fight)
+  clears the dead, Restart events (rest 1) start over, End ones (rest 2) end, flags stay.
+The exe's update levels (re-scout, static): WorldChrMan's "omission update" (FUN_140a4e8e0,
+140a4.c:9828) gives each character a level each frame, by distance to the player, on-screen and
+a budget (WorldChrManDbgImp FUN_140a51800: Lv1 10, Lv2 15, splits 10 / 20 / 50 m); FUN_140a4db20
+(140a4.c:9661) runs a level-N character when `idx % N == frame % N`, with N x dt. world.rs
+update_lod sets Actor::lod / lod_due for the world's enemies (within 10 m: nearest 10 every tick,
+next 15 every 2nd, rest every 5th; farther: on screen within 50 m every 5th, else every 30th);
+actor.rs advance, enemy.rs think, map.rs bodies_on_terrain and anim.rs pose_skeletons skip a
+character that is not due. NpcParam activateBorderDist / deactivateIntervalDist are 0 in all rows;
+LodParam is draw distance only; NpcThinkParam has no think interval. The WorldBackRead 0/1 m and
+80/90 m sets stream map blocks by navmesh demand, not characters.
+Cost (SHINOBI_SYS_PROF=1, perf.rs `span`): the VM about 1 ms per tick for the six blocks (1900
+events). Fixed with it: actor.rs separate reads each body's radius once and skips far pairs first
+(112 -> 2 ms/s with 64 bodies); combat.rs resolve reads each body's team once per tick. sekiro-rs
+main 705a30f (his whole-map population, taken 2026-10-20) rejects triangles by bounding box in
+slide: 0.6 -> 0.09 ms a call. Castle idol: no world 57 fps; 64 enemies (60 m) 9 fps, the rest
+now in the frame's Update / render side (models, skinning, sounds per enemy; not yet measured per
+system) and resolve's Wolf x enemy windows (2.7 ms per tick). gaps: no story flags (a new game's world), objects / SFX / warps /
+cutscenes / bullets of these events not run, the game streams by block and backread, not by
+distance; enemies leave routes without a navmesh.
+
+## The game's enemy script beside enemy.rs (2026-10-20)
+
+hks_lua::enemy_lockstep runs c9997 + c1020 on the soldier's graph with the engine's answers from
+the sim (docs/kb/hks-graph.md, Enemy script). Enemy::damage_env is the hit as ExecDamage reads it
+(combat.rs fills it); Enemy::ai_cmd the AI's request. All six runs (alone, hit, blocked,
+deflected, mixed, posture break + deathblow) match the script frame by frame.
+
+Survey of 30 regular chrs (each with its own c<chr>.hks): 28 match on every frame; c1000 / c1460
+are props. enemy.rs changes from it:
+- A turn starts in the clip's move window (flag 78) too, not only when free; a turn clip's end
+  does not chain into another turn.
+- The chr's own HKS end chains (data::hks_end_chains: Event<n> -> W_Event<m> at the clip's end,
+  under env(3036, ref) checks), e.g. the zombie's held 20010 -> 21015; replaced the c5310-only
+  chain.
+- Death by worn SpEffect ref first: 1020000 + n -> Event200nn, 1000180 -> DeathStartUniqueCase.
+- AI_STATE_SP (200000 / 1 / 2 / 4) is one slot replacing a resident 200000 (51 NpcParam rows).

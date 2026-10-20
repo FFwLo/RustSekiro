@@ -645,6 +645,7 @@ fn simulate(
     config: Option<Res<crate::config::GameConfig>>,
     shown: Query<&Visibility>,
 ) {
+    let _prof = crate::perf::span("cloth");
     let t0 = std::time::Instant::now();
     let dt = time.delta_secs().min(1.0 / 20.0);
     let range = cloth_range(config.map_or(Default::default(), |c| c.video.cloth));

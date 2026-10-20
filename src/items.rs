@@ -62,20 +62,18 @@ pub(crate) const HOMEWARD_IDOL: i64 = 3980;
 /// Quick-item slots.
 pub(crate) const SLOTS: usize = 5;
 
-/// The use state of a goodsUseAnim: the behaviour's Item* states, whose clips run in goodsUseAnim
-/// order (40-44 the sugars -> a000_250800, 250900, 251000, 251100, 251200). Matched by what the
-/// items are: the Ceremonial Tanto (80) trades HP for Spirit Emblems, katashiro ("paper dolls"):
-/// ItemPaperDollExchangeWhite (a000_250600, the stab, its castSfxId / fireSfxId windows);
-/// ItemSuicide (a000_250400, the collapse) is Bite Down's (82) feigned death (the user,
-/// 2026-10-18: "Wolf plays death animation when using tanto").
-/// gap: 83 (Nightjar Monocular: the telescope's Start / Loop / End) and 84 (Snap Seed) have none.
+/// The use state of a goodsUseAnim, as the game's player script picks it (c0000_transition
+/// BEH_A_ITEM_USE, itemAnimeType = env 231): the sugars 40-44 -> a000_250800 .. 251200; the
+/// Ceremonial Tanto (80, and the red doll 81) the stab ItemPaperDollExchangeWhite (a000_250600);
+/// Bite Down (82) the feigned death ItemSuicide (a000_250400); the poison powder 34 shares the
+/// cure's ItemPowderMedicineRecoverPoison; the Snap Seed (84, ITEM_ILLUSION_BREAK)
+/// ItemAntiHallucinogen. gap: 83 (Nightjar Monocular: the telescope's Start / Loop / End).
 pub(crate) fn use_state(goods_use_anim: i64) -> Option<&'static str> {
     Some(match goods_use_anim {
         4 => "ItemColoredRice",
         14 => "ItemColoredRiceEmpty",
         20 | 22 => "ItemPillTonic",
-        30 => "ItemPowderMedicineRecoverPoison",
-        34 => "ItemAntiHallucinogen",
+        30 | 34 => "ItemPowderMedicineRecoverPoison",
         40 => "ItemCandyAttackBuff",
         41 => "ItemCandyAttackBuffSacrifice",
         42 => "ItemCandyC",
@@ -86,8 +84,9 @@ pub(crate) fn use_state(goods_use_anim: i64) -> Option<&'static str> {
         60 => "ItemCoinBag",
         70 => "ItemPottery",
         71 => "ItemStone",
-        80 => "ItemPaperDollExchangeWhite",
+        80 | 81 => "ItemPaperDollExchangeWhite",
         82 => "ItemSuicide",
+        84 => "ItemAntiHallucinogen",
         85 => "ItemRedoBell",
         86 => "ItemStoneStatue",
         87 => "ItemReturnStatue",

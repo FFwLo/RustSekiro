@@ -11,6 +11,8 @@ recreation in Rust. From their work:
 
 - **Enemy AI:** the Lua 5.0 loader and interpreter (`src/ai/lua50.rs`) that runs the game's own
   compiled enemy battle scripts.
+- **Player script:** the HKS bytecode VM (`sekiro-hks`, used as a library in tests) that runs the
+  game's own compiled player script beside ours.
 - **Combat rules:** hit stop, the Owl's deathblow gate, bullets fading past their range,
   deathblow positioning giving way at walls, enemy super armour, enemies' reactions to hits in
   the air, guarded bullets leaving their shooter alone, how prosthetic tool hits cause

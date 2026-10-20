@@ -45,6 +45,12 @@ mod items;
 mod gore;
 mod guard;
 mod grading;
+mod hks;
+mod hks_enemy;
+mod hks_wolf;
+#[cfg(test)]
+mod hks_lua;
+mod hkb_runtime;
 mod hud;
 mod icon;
 mod interp;
@@ -102,6 +108,8 @@ fn main() {
     let defaults = if sr { defaults.set(sekiro_rs::map::layered_gltf_plugin()) } else { defaults };
     app.add_plugins(defaults)
         .add_plugins(cloth::ClothPlugin)
+        .add_plugins(hks_wolf::HksWolfPlugin)
+        .add_plugins(hks_enemy::HksEnemyPlugin)
         .add_plugins(action_guide::ActionGuidePlugin)
         .add_plugins(shot::ShotPlugin)
         .add_plugins(fonts::FontsPlugin)

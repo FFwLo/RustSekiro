@@ -34,16 +34,27 @@ pub(crate) fn crouching_cuts_how_far_enemies_see_wolf() {
 
 /// An Ashina soldier (c1010 10100000, resident 241000) already in CAUTION that hears a new Wolf
 /// sound plays ListenSound a000_000700: the new AiSoundParam id raises INTERUPT_ChangeSoundTarget
-/// (46) and common_table_ai_common.lua:247 answers it after a 0-0.3 s wait. The run that first
-/// alerted it (1010) goes through its caution start (EndureAttack 1010), not 46; the landing
-/// (1310) afterwards is the new id. Once, not every tick (HANDOFF 4.47 round 25).
+/// (46) and common_table_ai_common.lua:247 answers it after a 0-0.3 s wait. The first sound (1010)
+/// goes through its caution start (EndureAttack 1010), not 46; a landing (1310) afterwards is the
+/// new id. Once, not every tick (HANDOFF 4.47 round 25).
 /// (It was lost before: ConfirmCautionTarget's terminate cleared the sound when the 46 reaction
 /// replaced the plan, so the same sound was "new" again next frame and replanned it away;
 /// FUN_1405c3770 skips the clear on a 46 frame - round 26.)
+/// The sounds come from ahead of it, Wolf stands behind: it turns to a sound inside its 1010's
+/// move window (c9997 AttackCommonFunction -> ExecTurn on a cancel), so a sound at Wolf finds him
+/// (`running_behind_an_unaware_enemy_turns_it_to_wolf`).
 #[test]
 pub(crate) fn a_cautious_enemy_listens_to_a_new_sound() {
     let mut app = app_cfg("c1010", Some(10100000), Vec::new());
     make_enemy_unaware(&mut app, 1.8, true);
+    let at = {
+        let world = app.world_mut();
+        let mut q = world.query_filtered::<&Transform, (With<Enemy>, Without<Player>)>();
+        q.single(world).unwrap().translation
+    };
+    let emit = |app: &mut App, id: i64, pos: Vec3| {
+        app.world_mut().resource_scope(|w, mut s: Mut<crate::enemy::AiSounds>| s.emit(w.resource::<Combat>(), id, pos, None, None));
+    };
     let (mut listens, mut last, mut seen) = (0, String::new(), Vec::new());
     let mut step = |app: &mut App, listens: &mut u32| {
         app.update();
@@ -62,25 +73,44 @@ pub(crate) fn a_cautious_enemy_listens_to_a_new_sound() {
         }
         last = anim;
     };
-    // Run by: heard (1010), CAUTION. (12 ticks: the run start and its stop carry Wolf about
-    // 1.7 m, inside the landing sound's 2 m; 20 ran him out to 3 m once the stop kept the run's
-    // momentum through its blend-in.)
-    app.world_mut().resource_mut::<PadInput>().stick = Vec2::new(1.0, 0.0);
-    for _ in 0..12 {
-        step(&mut app, &mut listens);
-    }
-    app.world_mut().resource_mut::<PadInput>().stick = Vec2::ZERO;
+    // A run's sound ahead of it: heard (1010), CAUTION.
+    emit(&mut app, 1010, at + Vec3::new(0.6, 0.0, 1.2));
     for _ in 0..60 * 3 {
         step(&mut app, &mut listens);
     }
-    assert_eq!(enemy_info(&mut app).0, crate::stealth::CAUTION);
-    assert_eq!(listens, 0, "listened to the run that alerted it");
-    // A jump: the landing's 1310 is a new sound id.
-    app.world_mut().resource_mut::<PadInput>().press(Action::Jump);
+    assert_eq!(enemy_info(&mut app).0, crate::stealth::CAUTION, "{seen:#?}");
+    assert_eq!(listens, 0, "listened to the sound that alerted it");
+    // A landing's 1310: a new sound id.
+    emit(&mut app, 1310, at + Vec3::new(-0.6, 0.0, 1.2));
     for _ in 0..60 * 3 {
         step(&mut app, &mut listens);
     }
     assert_eq!(listens, 1, "ListenSound after the landing: {seen:#?}");
+}
+
+/// Running behind an unaware soldier's back: it hears the run (1010), turns to the sound inside
+/// its 1010's move window (flag 78, c9997 AttackCommonFunction -> ExecActiveTransition(TRUE) ->
+/// ExecTurn) and sees Wolf there.
+#[test]
+pub(crate) fn running_behind_an_unaware_enemy_turns_it_to_wolf() {
+    let mut app = app_cfg("c1010", Some(10100000), Vec::new());
+    make_enemy_unaware(&mut app, 1.8, true);
+    app.world_mut().resource_mut::<PadInput>().stick = Vec2::new(1.0, 0.0);
+    for _ in 0..12 {
+        app.update();
+    }
+    app.world_mut().resource_mut::<PadInput>().stick = Vec2::ZERO;
+    let mut seen = Vec::new();
+    for _ in 0..60 * 3 {
+        app.update();
+        let (_, _, anim, desc, _) = enemy_info(&mut app);
+        let line = format!("{anim} | {desc}");
+        if seen.last() != Some(&line) {
+            seen.push(line);
+        }
+    }
+    assert!(seen.iter().any(|l| l.starts_with("a000_1054")), "turned to the sound: {seen:#?}");
+    assert_eq!(enemy_info(&mut app).0, crate::stealth::BATTLE, "{seen:#?}");
 }
 
 #[test]

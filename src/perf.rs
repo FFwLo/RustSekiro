@@ -218,6 +218,34 @@ fn run_bench(mut perf: ResMut<Perf>, all: Query<()>, mut exit: MessageWriter<App
     exit.write(AppExit::Success);
 }
 
+/// `SHINOBI_SYS_PROF=1`: the time spent in the systems that open a [`span`] (ms per second,
+/// calls per second), logged every 5 s. Nothing when unset.
+pub fn span(name: &'static str) -> Option<Span> {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    ON.get_or_init(|| std::env::var_os("SHINOBI_SYS_PROF").is_some()).then(|| Span(name, Instant::now()))
+}
+
+pub struct Span(&'static str, Instant);
+
+impl Drop for Span {
+    fn drop(&mut self) {
+        static SPANS: std::sync::Mutex<Option<(Instant, std::collections::HashMap<&'static str, (f64, u32)>)>> = std::sync::Mutex::new(None);
+        let Ok(mut g) = SPANS.lock() else { return };
+        let (since, m) = g.get_or_insert_with(|| (Instant::now(), Default::default()));
+        let e = m.entry(self.0).or_default();
+        e.0 += self.1.elapsed().as_secs_f64() * 1e3;
+        e.1 += 1;
+        let secs = since.elapsed().as_secs_f64();
+        if secs >= 5.0 {
+            let mut v: Vec<_> = m.drain().collect();
+            v.sort_by(|a, b| b.1 .0.total_cmp(&a.1 .0));
+            let line: Vec<String> = v.iter().map(|(n, (ms, c))| format!("{n} {:.1} ms/s ({:.0}/s)", ms / secs, *c as f64 / secs)).collect();
+            info!("sys prof: {}", line.join(", "));
+            *since = Instant::now();
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::stats;

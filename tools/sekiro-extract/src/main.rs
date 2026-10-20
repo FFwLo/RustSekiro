@@ -284,6 +284,32 @@ fn main() {
                 println!("{b}");
             }
         }
+        Some("behavior") if args.len() == 4 => {
+            let graph = hkx::behavior_graph(&std::fs::read(&args[2]).unwrap());
+            std::fs::write(&args[3], serde_json::to_string(&graph).unwrap()).unwrap();
+        }
+        // Every clip's length (seconds) in a character's anibnds (<chr>.anibnd.d, <chr>_*.anibnd.d):
+        // what the behaviour graph needs to end the clips the combat export leaves out.
+        Some("clip-lengths") if args.len() == 5 => {
+            let mut out = std::collections::BTreeMap::new();
+            for e in std::fs::read_dir(&args[2]).unwrap().flatten() {
+                let dir = e.path();
+                let name = dir.file_name().unwrap().to_string_lossy().to_string();
+                if !(name == format!("{}.anibnd.d", args[3]) || name.starts_with(&format!("{}_", args[3]))) || !name.ends_with(".anibnd.d") {
+                    continue;
+                }
+                let files: Vec<_> = std::fs::read_dir(&dir).unwrap().flatten().map(|f| f.path()).collect();
+                let types = files.iter().find(|f| f.extension().is_some_and(|x| x == "compendium")).map(|f| hkx::read_types(&std::fs::read(f).unwrap())).unwrap_or_default();
+                for f in files.iter().filter(|f| f.extension().is_some_and(|x| x == "hkx")) {
+                    let key = f.file_stem().unwrap().to_string_lossy().to_string();
+                    if let Some(d) = hkx::clip_duration(&std::fs::read(f).unwrap(), &types) {
+                        out.entry(key).or_insert(d);
+                    }
+                }
+            }
+            println!("{} clip lengths", out.len());
+            std::fs::write(&args[4], serde_json::to_string(&out).unwrap()).unwrap();
+        }
         Some("transitions") if args.len() == 3 => {
             for (ty, n, dur, flags, end_mode, curve) in hkx::transition_effects(&std::fs::read(&args[2]).unwrap()) {
                 println!("{ty} {n} duration={dur} flags={flags} endMode={end_mode} blendCurve={curve}");

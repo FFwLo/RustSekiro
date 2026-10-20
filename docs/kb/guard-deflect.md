@@ -51,6 +51,7 @@ Dated findings, oldest first. Append new entries at the end.
   throwFlag 2, 192 phys) lands at frame 45 (combat::resolve_throws). Exporter now resolves type-304 judges + throwFlag.
   Gaps: player grabbed anim a210_600000 has a TAE but no clip in the archives (player held still); kick-target
   test (1.4 m / body height); kick posture damage; multi-life deathblows.
+  Ends (BEH_A_AIR_DEFLECT_END): the guard let go while ref 207 (SP_EF_REF_TAE_CANCEL_DEFLECT_GUARD_END) is up ends AirDeflectGuardStart early, not only at its clip's end (2026-10-19, found by the hks_lua lockstep test).
 - 2026-10-06: feel pass. Enemy super armour: NpcParam toughness/superArmorDurability are 0, AtkParam atkSuperArmor 0;
   NPC HKS ExecDamage passes rank NONE in attacks, so the engine's damage level gates flinching. TAE ChrActionFlag 73
   ("SetBool32_0x7C_10") is on in idle/reactions and only in the first ~9-13 windup frames + recovery of every attack,

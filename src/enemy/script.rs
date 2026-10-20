@@ -40,6 +40,9 @@ pub struct CharDef {
     pub npc: i64,
     pub at: [f32; 3],
     pub yaw: f32,
+    /// Its MSB part's NpcThinkParam row (world scripts; 0: the NpcParam row's own).
+    #[serde(default)]
+    pub think: i64,
 }
 
 /// An object the script attaches to a character (2003[58]), with the grapple records of its
@@ -133,6 +136,10 @@ pub struct EventDef {
 pub struct ScriptDef {
     pub map: String,
     pub boss: i64,
+    /// A whole map's events in the open world (tools/world_scripts.py, src/enemy/world.rs):
+    /// positions are raw MSB space, no boss frame.
+    #[serde(default)]
+    pub world: bool,
     pub chars: HashMap<i64, CharDef>,
     #[serde(default)]
     pub places: HashMap<i64, Place>,
@@ -243,7 +250,7 @@ enum Cond {
 }
 
 #[derive(Clone, Debug, Default)]
-struct EvState {
+pub(super) struct EvState {
     pc: usize,
     groups: HashMap<i8, Vec<Cond>>,
     compiled: HashMap<i8, bool>,
@@ -252,21 +259,21 @@ struct EvState {
     wait: f32,
     /// Event time (runs while it is alive).
     t: f32,
-    done: bool,
+    pub(super) done: bool,
 }
 
 /// A running boss script.
 pub struct Run {
     pub row: i64,
-    def: Arc<ScriptDef>,
+    pub(super) def: Arc<ScriptDef>,
     /// The boss part's spot in the arena (the boss's start).
     start: Vec3,
-    flags: HashMap<i64, bool>,
-    events: Vec<EvState>,
+    pub(super) flags: HashMap<i64, bool>,
+    pub(super) events: Vec<EvState>,
     /// Map entity id -> bevy entity of the characters on the field.
     pub ents: HashMap<i64, Entity>,
     /// HP last frame, for "damaged" checks.
-    prev_hp: HashMap<i64, f32>,
+    pub(super) prev_hp: HashMap<i64, f32>,
     rng: u32,
     /// Time since the script handled the boss's defeat.
     pub defeated: Option<f32>,
@@ -282,18 +289,18 @@ pub struct Run {
     /// Wolf's Set Character Immortality (mirrored into WolfImmortal).
     pub wolf_immortal: bool,
     /// Characters seen dead (still dead once gone).
-    dead_ids: HashSet<i64>,
+    pub(super) dead_ids: HashSet<i64>,
     /// Warps of characters not on the field yet (they come in there).
     pending_warp: HashMap<i64, (Vec3, f32)>,
     /// Requests for characters spawned this frame (applied next frame).
-    pending: Vec<Act>,
+    pub(super) pending: Vec<Act>,
     /// Disabled characters (Change Character Enable State off) and where they stood.
-    disabled: HashMap<i64, (Vec3, f32)>,
+    pub(super) disabled: HashMap<i64, (Vec3, f32)>,
     /// Characters hidden by 2004[29] Set Character Backread State (removed); only these come
     /// back on its "not removed".
-    unloaded: HashSet<i64>,
+    pub(super) unloaded: HashSet<i64>,
     /// Frames run.
-    frame: u32,
+    pub(super) frame: u32,
     /// The event message (`Enemy::msg_serial`) each character's last short warp came on.
     warp_serial: HashMap<i64, u32>,
     /// Objects attached to characters (2003[58] Attach Object to Character): object -> (the
@@ -308,32 +315,34 @@ pub struct BossScript {
     pub run: Option<Run>,
     /// Fights won (a defeat handled before the duel started over).
     pub defeats: u32,
+    /// Fight resets so far (rests too): the world scripts (world.rs) follow them.
+    pub resets: u32,
 }
 
 /// One character as the conditions see it this frame.
 #[derive(Clone, Debug, Default)]
-struct Snap {
-    pos: Vec3,
-    hp: f32,
-    hp_max: f32,
-    posture_ratio: f32,
-    bars: u32,
+pub(super) struct Snap {
+    pub(super) pos: Vec3,
+    pub(super) hp: f32,
+    pub(super) hp_max: f32,
+    pub(super) posture_ratio: f32,
+    pub(super) bars: u32,
     /// NpcParam ninsatuNum: 0 on the Old Dragons' shared bar body 2500810 (53000000), whose
     /// `bars` is 0 from the first frame.
-    bars_max: u32,
-    dead: bool,
-    sp: HashSet<i64>,
+    pub(super) bars_max: u32,
+    pub(super) dead: bool,
+    pub(super) sp: HashSet<i64>,
     /// Its event messages (an enemy's one, Wolf's several: his Todome sends 10-13 together).
-    msg: Vec<i64>,
-    ai_state: i64,
-    damaged: bool,
+    pub(super) msg: Vec<i64>,
+    pub(super) ai_state: i64,
+    pub(super) damaged: bool,
     /// Wolf only: on the ground (not airborne).
-    grounded: bool,
+    pub(super) grounded: bool,
 }
 
 /// What an event asked for this frame (applied after all events ran).
 #[derive(Clone, Debug)]
-enum Act {
+pub(super) enum Act {
     SetSp(i64, i64),
     ClearSp(i64, i64),
     AiCommand(i64, i64, i64),
@@ -444,7 +453,14 @@ impl Run {
         }
     }
 
-    fn rand(&mut self) -> u32 {
+    /// A map's world script (src/enemy/world.rs): no boss on the field.
+    pub(super) fn new_world(def: Arc<ScriptDef>, rng: u32) -> Run {
+        let mut run = Run::new(0, def, Vec3::ZERO, Entity::PLACEHOLDER, rng);
+        run.ents.clear();
+        run
+    }
+
+    pub(super) fn rand(&mut self) -> u32 {
         self.rng ^= self.rng << 13;
         self.rng ^= self.rng >> 17;
         self.rng ^= self.rng << 5;
@@ -459,6 +475,10 @@ impl Run {
             let p = self.def.places.get(&id)?;
             (p.at, p.yaw)
         };
+        // The open world: MSB space with X mirrored (sekiro-rs's map), facing as msb_patrol.
+        if self.def.world {
+            return Some((Vec3::new(-at[0], at[1], at[2]), std::f32::consts::PI - yaw.to_radians()));
+        }
         let at = serde_json::json!(at);
         Some(super::events::place(self.start, &at, &serde_json::json!(yaw)))
     }
@@ -477,10 +497,13 @@ impl Run {
     /// Is the world point inside the MSB region? Heights count on the boss's own arena only.
     fn inside(&self, region: i64, p: Vec3) -> bool {
         let (Some(pl), Some(sh)) = (self.def.places.get(&region), self.def.regions.get(&region)) else { return false };
-        // Into the boss frame (see events::place).
-        let d = crate::map::frame().rot.inverse() * (p - self.start);
-        let (x, z) = (-d.x, d.z);
-        let y = super::on_own_arena().then(|| p.y - self.start.y);
+        // Into the boss frame (see events::place); in the open world MSB space, heights counted.
+        let (x, y, z) = if self.def.world {
+            (-p.x, Some(p.y), p.z)
+        } else {
+            let d = crate::map::frame().rot.inverse() * (p - self.start);
+            (-d.x, super::on_own_arena().then(|| p.y - self.start.y), d.z)
+        };
         if sh.shape == 6 {
             return sh.parts.iter().any(|k| shape_contains(k.shape, &k.size, k.at, k.yaw, x, y, z));
         }
@@ -563,8 +586,8 @@ fn batch(run: &Run, op: i64, first: i64, last: i64) -> bool {
     }
 }
 
-struct World<'a> {
-    chars: &'a HashMap<i64, Snap>,
+pub(super) struct World<'a> {
+    pub(super) chars: &'a HashMap<i64, Snap>,
 }
 
 impl World<'_> {
@@ -661,7 +684,7 @@ fn is_condition(bank: i32) -> bool {
 }
 
 /// Runs one event until it blocks; pushes its actions.
-fn step(run: &mut Run, ev: usize, w: &World, dt: f32, acts: &mut Vec<Act>) {
+pub(super) fn step(run: &mut Run, ev: usize, w: &World, dt: f32, acts: &mut Vec<Act>) {
     if run.events[ev].done {
         return;
     }
@@ -950,6 +973,7 @@ pub(super) fn run_scripts(
     wolf_immortal: Option<ResMut<WolfImmortal>>,
     (dummies, markers, wolf_msg): (Query<&crate::model::Dummies>, Query<&GlobalTransform>, Res<super::WolfMessage>),
 ) {
+    let _prof = crate::perf::span("run_scripts");
     let dt = time.delta_secs();
     // (Last frame's: Wolf's immortality as the script left it.)
     if let Some(mut w) = wolf_immortal {
@@ -1469,7 +1493,7 @@ pub(super) fn run_scripts(
 }
 
 /// A script request on one of its characters.
-fn apply(combat: &Combat, brains: &mut super::Brains, ent: Entity, e: &mut Enemy, a: &mut Actor, ph: Option<Mut<Phantom>>, act: Act) {
+pub(super) fn apply(combat: &Combat, brains: &mut super::Brains, ent: Entity, e: &mut Enemy, a: &mut Actor, ph: Option<Mut<Phantom>>, act: Act) {
     let d = combat.data_of(a);
     match act {
         Act::SetSp(_, sp) => {
@@ -1647,7 +1671,7 @@ fn death_flag_at(d: &crate::data::CharData, key: &str) -> Option<f32> {
     d.anim(key)?.events.iter().filter(|ev| ev.kind == 0 && ev.flag_type() == Some(12)).map(|ev| ev.start).reduce(f32::min)
 }
 
-fn play_event(d: &crate::data::CharData, a: &mut Actor, id: i64) -> bool {
+pub(crate) fn play_event(d: &crate::data::CharData, a: &mut Actor, id: i64) -> bool {
     let state = format!("Event{id}");
     if a.play_state(d, &state) {
         return true;

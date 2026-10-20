@@ -1068,6 +1068,20 @@ impl Combat {
         self.kinds.iter().position(|k| k.foe.is(chr, npc_row))
     }
 
+    /// The kind of `chr` with NpcParam `row`, loaded now when it is not yet (the open world's
+    /// enemies come and go with Wolf, src/enemy/world.rs); AnimLib::sync_kinds must follow a new
+    /// one. None when the chr has no exported data (extracted/enemies/<chr>.json).
+    pub fn ensure_kind(&mut self, chr: &str, row: i64) -> Option<usize> {
+        if let Some(k) = self.kind_index(chr, Some(row)) {
+            return Some(k);
+        }
+        let kind = self.with_params_file(|f| load_kind(f, chr, Some(row)));
+        (kind.foe.chr == chr).then(|| {
+            self.kinds.push(kind);
+            self.kinds.len() - 1
+        })
+    }
+
     /// The official English name of a weapon row (art, tool, skill entry), else its id.
     pub fn weapon_name(&self, id: i64) -> String {
         self.names.weapon.get(&id.to_string()).cloned().unwrap_or_else(|| id.to_string())
@@ -1573,6 +1587,212 @@ pub fn sp_effect_behavior_ref(id: i64) -> i64 {
     static REFS: std::sync::OnceLock<HashMap<i64, i64>> = std::sync::OnceLock::new();
     let refs = REFS.get_or_init(|| full_param("SpEffectParam").iter().filter_map(|(id, r)| Some((*id, r["behaviorRefId"].as_i64().filter(|&v| v > 0)?))).collect());
     refs.get(&id).copied().unwrap_or(0)
+}
+
+/// How an event state ends in a chr's HKS, at the anim's end (`env(339, 1) == TRUE`):
+/// `Fire("W_Event<n>")` goes on to that event, `Fire("W_Idle")` back to the AI's idle,
+/// `ExecTransToDeathIdle` (its own 339 check) into the death pose (c1020's sting death 20005).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum EndTo {
+    Event(i64),
+    Idle,
+    DeathIdle,
+}
+
+/// An end in a chr's own HKS: Event<from>_onUpdate's end under the enclosing
+/// `if env(3036, ref) == TRUE` checks (`(ref, true)`; an `else` gives `(ref, false)`). The zombie
+/// c1500's held pose 20010 -> 21015, c1020 20002 -> 21001 / 20004 -> 21007, the Divine Dragon's
+/// trees c5310 20000 -> 21000. `at_end`: under the clip's end (env 339); else it fires at any
+/// frame, `grounded` (env 201) when it asks (c1100 21005 -> 20005 once on the ground). No talk ESD
+/// runs here: `env(3054) ~= ref` holds and `env(3054) == ref` never (c1020 21007 -> 21005), and
+/// ExecTalkTransitionIndividual's NOT_TALKING moves are taken (c1070 21000 -> 20001).
+#[derive(Clone, Debug, PartialEq)]
+pub struct EndChain {
+    pub from: i64,
+    pub to: EndTo,
+    pub refs: Vec<(i64, bool)>,
+    pub at_end: bool,
+    pub grounded: Option<bool>,
+}
+
+/// A chr's event states as its HKS runs them (extracted/hks_src/<chr>.lua, DSLuaDecompiler on
+/// the behbnd's c<chr>.hks, over c9997.lua's for the states the chr leaves out).
+#[derive(Clone, Debug, Default)]
+pub struct HksEvents {
+    pub ends: Vec<EndChain>,
+    /// Event<n>_onUpdate exists; true when it calls EventCommonFunction, whose
+    /// ExecActiveTransition(TRUE, ...) takes the AI's cancel-slot requests (the clip's TAE
+    /// windows), ExecPassiveTransition the hits and ExecTalkTransition the talk. A state whose
+    /// update fires no end for the refs worn holds: its loop clip plays on (c1020 21000, the
+    /// Divine Dragon's trees c5310 21000-21002).
+    pub states: HashMap<i64, bool>,
+}
+
+impl HksEvents {
+    /// Where event state `from` goes now, for the behaviour refs worn, on the ground or not, at
+    /// its clip's end or before; None: it stays.
+    pub fn next(&self, from: i64, refs: &[i64], grounded: bool, at_end: bool) -> Option<EndTo> {
+        self.ends
+            .iter()
+            .find(|c| c.from == from && (at_end || !c.at_end) && c.grounded.is_none_or(|g| g == grounded) && c.refs.iter().all(|(r, w)| refs.contains(r) == *w))
+            .map(|c| c.to)
+    }
+}
+
+/// `hks_events` for a chr; empty without its decompiled HKS (then enemy.rs keeps its own rule).
+pub fn hks_events(chr: &str) -> std::sync::Arc<HksEvents> {
+    static T: std::sync::OnceLock<std::sync::Mutex<HashMap<String, std::sync::Arc<HksEvents>>>> = std::sync::OnceLock::new();
+    let mut t = T.get_or_init(Default::default).lock().unwrap_or_else(|p| p.into_inner());
+    t.entry(chr.to_string())
+        .or_insert_with(|| {
+            let read = |c: &str| std::fs::read_to_string(crate::paths::extracted().join(format!("hks_src/{c}.lua"))).ok();
+            let Some(own) = read(chr) else { return Default::default() };
+            let (mut ev, talk) = parse_hks_events(&own);
+            if let Some(common) = read("c9997") {
+                let (base, _) = parse_hks_events(&common);
+                for (n, c) in base.states {
+                    if let std::collections::hash_map::Entry::Vacant(v) = ev.states.entry(n) {
+                        v.insert(c);
+                        ev.ends.extend(base.ends.iter().filter(|e| e.from == n).cloned());
+                    }
+                }
+            }
+            // c9997 EventCommonFunction runs ExecTalkTransition(anim_id) first.
+            for (from, to) in talk {
+                if ev.states.get(&from) == Some(&true) {
+                    ev.ends.insert(0, EndChain { from, to: EndTo::Event(to), refs: Vec::new(), at_end: false, grounded: None });
+                }
+            }
+            std::sync::Arc::new(ev)
+        })
+        .clone()
+}
+
+/// The end chains of a chr's own HKS (`hks_events`).
+#[cfg(test)]
+pub fn hks_end_chains(chr: &str) -> Vec<EndChain> {
+    hks_events(chr).ends.clone()
+}
+
+/// The parse behind `hks_events`, with ExecTalkTransitionIndividual's not-talking moves (from,
+/// to). An end under any other condition (a random `fate`, an `elseif` after a live branch,
+/// another env) is left out, and so is one to a state other than W_Event<n> / W_Idle (c1190's
+/// W_GuardIdle).
+pub(crate) fn parse_hks_events(text: &str) -> (HksEvents, Vec<(i64, i64)>) {
+    #[derive(Clone, Copy)]
+    enum C {
+        End,
+        Ref(i64, bool),
+        Grounded(bool),
+        Always,
+        Never,
+        Other,
+    }
+    let cond = |c: &str| {
+        match c {
+            "env(201) == TRUE" => return C::Grounded(true),
+            "env(201) == FALSE" => return C::Grounded(false),
+            _ if c.starts_with("env(3054) == ") => return C::Never,
+            _ if c.starts_with("env(3054) ~= ") => return C::Always,
+            _ => {}
+        }
+        let (ref_, want) = match c.strip_prefix("env(3036, ") {
+            Some(r) => match (r.strip_suffix(") == TRUE"), r.strip_suffix(") == FALSE")) {
+                (Some(r), _) => (r, true),
+                (_, Some(r)) => (r, false),
+                _ => return C::Other,
+            },
+            None => return if c == "env(339, 1) == TRUE" { C::End } else { C::Other },
+        };
+        // c9997 SP_EFFECT_REF_WEAPON_0-4 = 1000020-1000024 (the anim-set SpEffects 200030-4).
+        let id = ref_.parse().ok().or_else(|| ref_.strip_prefix("SP_EFFECT_REF_WEAPON_")?.parse::<i64>().ok().map(|n| 1_000_020 + n));
+        id.map_or(C::Other, |id| C::Ref(id, want))
+    };
+    // `a and b`: one stack entry per part (c1500 21008's `env(3036, 1000021) == TRUE and
+    // env(3054) ~= ...`); a part that never holds kills it, one that always does drops out.
+    let conds = |c: &str| {
+        let parts: Vec<C> = if c.contains(" or ") { vec![C::Other] } else { c.split(" and ").map(cond).collect() };
+        if parts.iter().any(|p| matches!(p, C::Never)) {
+            return vec![C::Never];
+        }
+        let parts: Vec<C> = parts.into_iter().filter(|p| !matches!(p, C::Always)).collect();
+        if parts.is_empty() { vec![C::Always] } else { parts }
+    };
+    let mut out = HksEvents::default();
+    let mut talk = Vec::new();
+    let mut from: Option<i64> = None;
+    let (mut in_talk, mut talk_from, mut talk_anim) = (false, None::<i64>, None::<i64>);
+    let mut stack: Vec<(usize, C)> = Vec::new();
+    let refs_of = |stack: &[(usize, C)]| stack.iter().filter_map(|(_, c)| if let C::Ref(r, w) = c { Some((*r, *w)) } else { None }).collect::<Vec<_>>();
+    let grounded_of = |stack: &[(usize, C)]| stack.iter().rev().find_map(|(_, c)| if let C::Grounded(g) = c { Some(*g) } else { None });
+    // 81 of the decompiled files start with a BOM, which hid their first function.
+    for line in text.trim_start_matches('\u{feff}').lines() {
+        let s = line.trim();
+        if line.starts_with("function") {
+            from = line.strip_prefix("function Event").and_then(|r| r.strip_suffix("_onUpdate()")).and_then(|n| n.parse().ok());
+            if let Some(f) = from {
+                out.states.insert(f, false);
+            }
+            (in_talk, talk_from, talk_anim) = (line.starts_with("function ExecTalkTransitionIndividual("), None, None);
+            stack.clear();
+            continue;
+        }
+        // `anim_id == <n> and (... talk_ref_Id == TALK_BEH_IDENTIFIER__NOT_TALKING)` then
+        // Fire("W_Event<m>"), or the talk check nested under `if anim_id == <n> then` (c1110).
+        if in_talk {
+            if s.starts_with("if ") || s.starts_with("elseif ") {
+                if let Some(r) = s.split("anim_id == ").nth(1) {
+                    talk_anim = r.split(|ch: char| !ch.is_ascii_digit()).next().and_then(|n| n.parse().ok());
+                }
+                talk_from = s.contains("talk_ref_Id == TALK_BEH_IDENTIFIER__NOT_TALKING").then_some(talk_anim).flatten();
+            } else if let (Some(n), Some(m)) = (talk_from, s.strip_prefix("Fire(\"W_Event").and_then(|r| r.strip_suffix("\")")).and_then(|m| m.parse().ok())) {
+                talk.push((n, m));
+                talk_from = None;
+            }
+            continue;
+        }
+        let Some(f) = from else { continue };
+        let ind = line.len() - line.trim_start().len();
+        let dead = stack.iter().any(|(_, c)| matches!(c, C::Other | C::Never));
+        if s.contains("EventCommonFunction(") {
+            out.states.insert(f, true);
+        }
+        if s.contains("ExecTransToDeathIdle(") && !dead {
+            out.ends.push(EndChain { from: f, to: EndTo::DeathIdle, refs: refs_of(&stack), at_end: true, grounded: grounded_of(&stack) });
+        }
+        if s == "end" || s == "else" || s.starts_with("elseif ") {
+            let n = stack.iter().rev().take_while(|(i, _)| *i == ind).count();
+            if n > 0 {
+                // An `a and b` group's else is an `or`: left out.
+                let c = if n == 1 { stack.pop().unwrap().1 } else { stack.truncate(stack.len() - n); C::Other };
+                let next = match (s, c) {
+                    ("end", _) => vec![],
+                    ("else", C::Ref(r, w)) => vec![C::Ref(r, !w)],
+                    ("else", C::Grounded(g)) => vec![C::Grounded(!g)],
+                    ("else", C::Never) => vec![C::Always],
+                    // After a branch that never runs the elseif is a plain if; after one that
+                    // always runs nothing else does.
+                    (_, C::Never) => s.strip_prefix("elseif ").and_then(|c| c.strip_suffix(" then")).map_or(vec![C::Other], conds),
+                    (_, C::Always) => vec![C::Never],
+                    _ => vec![C::Other],
+                };
+                stack.extend(next.into_iter().map(|c| (ind, c)));
+            }
+        } else if let Some(c) = s.strip_prefix("if ").and_then(|c| c.strip_suffix(" then")) {
+            stack.extend(conds(c).into_iter().map(|c| (ind, c)));
+        } else if let Some(name) = s.strip_prefix("Fire(\"W_").and_then(|r| r.strip_suffix("\")")) {
+            let to = match name.strip_prefix("Event").and_then(|n| n.parse().ok()) {
+                Some(n) => EndTo::Event(n),
+                None if name == "Idle" => EndTo::Idle,
+                None => continue,
+            };
+            if !dead {
+                let at_end = stack.iter().any(|(_, c)| matches!(c, C::End));
+                out.ends.push(EndChain { from: f, to, refs: refs_of(&stack), at_end, grounded: grounded_of(&stack) });
+            }
+        }
+    }
+    (out, talk)
 }
 
 fn full_param(name: &str) -> HashMap<i64, Value> {
@@ -2300,5 +2520,20 @@ mod tests {
         let step = d.anim_key("GroundStep_F").unwrap();
         let (p, _) = d.root_at(step, d.length(step)).unwrap();
         assert!((p.length() - 3.99).abs() < 0.02, "step {}", p.length());
+    }
+
+    #[test]
+    fn the_chr_scripts_end_chains_parse() {
+        if !crate::paths::extracted().join("hks_src/c1500.lua").exists() {
+            return;
+        }
+        // The zombie's held pose 20010 -> 21015; 20004 -> 21008 only with ref 1000021 (a100).
+        let z = hks_end_chains("c1500");
+        assert!(z.contains(&EndChain { from: 20010, to: EndTo::Event(21015), refs: vec![], at_end: true, grounded: None }));
+        assert!(z.contains(&EndChain { from: 20004, to: EndTo::Event(21008), refs: vec![(1_000_021, true)], at_end: true, grounded: None }));
+        // c1190 20000 -> 21001 under ref 1000023; its else (W_GuardIdle) is no event chain.
+        assert_eq!(hks_end_chains("c1190").iter().filter(|c| c.from == 20000).collect::<Vec<_>>(), vec![&EndChain { from: 20000, to: EndTo::Event(21001), refs: vec![(1_000_023, true)], at_end: true, grounded: None }]);
+        // An else of an env check: c1010 20010 -> 21001 without ref 1000024.
+        assert!(hks_end_chains("c1010").contains(&EndChain { from: 20010, to: EndTo::Event(21001), refs: vec![(1_000_024, false)], at_end: true, grounded: None }));
     }
 }

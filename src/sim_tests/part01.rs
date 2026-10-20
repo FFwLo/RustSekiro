@@ -43,7 +43,7 @@ pub(crate) fn app_build(chr: &str, npc_row: Option<i64>, group: Vec<crate::confi
         config.posture.player_level = 1.0;
         config.enemy.group = group;
     }
-    app.add_plugins((DataPlugin, ActorPlugin, CombatPlugin, PlayerPlugin, EnemyPlugin, crate::prosthetic::ProstheticPlugin, crate::status::StatusPlugin, crate::enemy_bullet::EnemyBulletPlugin));
+    app.add_plugins((DataPlugin, ActorPlugin, CombatPlugin, PlayerPlugin, EnemyPlugin, crate::prosthetic::ProstheticPlugin, crate::status::StatusPlugin, crate::enemy_bullet::EnemyBulletPlugin, crate::hks_wolf::HksWolfPlugin, crate::hks_enemy::HksEnemyPlugin));
     if geometry {
         app.add_plugins((bevy::transform::TransformPlugin, crate::anim::AnimPlugin, crate::model::GeometryPlugin));
     }

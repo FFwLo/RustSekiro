@@ -30,6 +30,7 @@ static Ghidra decompile of the exe. The crate and exe are `sv1`. GitHub: `FFwLo/
 | Sound, music | `src/sound.rs`, `src/fmod.rs`, `src/area_music.rs`, `docs/kb/sound.md` |
 | HUD, menus | `src/hud.rs`, `src/menu.rs` |
 | Extractor | `tools/sekiro-extract/src/`, `docs/kb/tools-exe.md` |
+| The game's HKS script + behaviour graph run as the game does (live by default, SHINOBI_HKS=0 off; tests) | `src/hks_wolf.rs`, `src/hks.rs`, `src/hks_lua.rs`, `src/hkb_runtime.rs`, `docs/kb/hks-graph.md` |
 | How any Sekiro mechanic works (values, sources, coverage, needs) | `docs/kb/mechanics-atlas.json` (filter by id/category with python; `mechanics-atlas.md` is generated from it) |
 | The playthrough start to finish, gates, endings | `docs/kb/game-flow.md` |
 | Reference clips | `docs/kb/clips.md` (check before asking for a new recording) |

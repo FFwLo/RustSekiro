@@ -281,6 +281,11 @@ pub fn travel(entity: i64) -> ! {
 /// The play world's maps (sekiro-rs `play_blocks`, set up by [`install`]).
 static BLOCKS: OnceLock<Vec<String>> = OnceLock::new();
 
+/// The play world's maps (none outside sekiro-rs's map).
+pub fn blocks() -> Vec<String> {
+    BLOCKS.get().cloned().unwrap_or_default()
+}
+
 /// The play world's wire points and hang / hug edges: every block's whole-map export
 /// (`sekiro-extract edges`, `extracted/map_edges_<map>.json`, MSB space, X mirrored on load
 /// like an arena's). None outside sekiro-rs's map or when no block has one (then the arena's).

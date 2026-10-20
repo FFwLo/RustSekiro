@@ -38,7 +38,7 @@ pub struct Player {
     pub(crate) wall_contact: Option<char>,
     /// HKS MoveSpeedLevel: 0 idle, 1 walk, 2 run (converges at 3/s).
     pub(crate) speed_level: f32,
-    requests: HashMap<Action, f32>,
+    pub(crate) requests: HashMap<Action, f32>,
     /// State after the last decide; a different state at the next decide was set by combat.
     last_state: String,
     /// Healing Gourd uses left (config player.gourd_charges; goods 3000 maxNum 10).
@@ -585,6 +585,11 @@ pub struct PadInput {
 
 impl PadInput {
     /// Queue a button press (used by input reading and by the simulation tests).
+    /// This frame's presses not yet taken by player.rs (hks_wolf reads them first).
+    pub fn pressed(&self) -> &[Action] {
+        &self.pressed
+    }
+
     pub fn press(&mut self, a: Action) {
         self.pressed.push(a);
     }
@@ -1832,7 +1837,7 @@ fn arm_style_matches(d: &CharData, a: &Actor, p: &Player) -> bool {
     a.sheathed || !wolf_ref(d, a, p, SP_REF_IN_NON_COMBAT_AREA)
 }
 
-fn wolf_ref(d: &CharData, a: &Actor, p: &Player, behavior_ref: i64) -> bool {
+pub(crate) fn wolf_ref(d: &CharData, a: &Actor, p: &Player, behavior_ref: i64) -> bool {
     sp_ref_active(d, a, behavior_ref) || p.timed.iter().any(|(id, _)| d.sp_effects.get(&id.to_string()).map_or_else(|| crate::data::sp_effect_behavior_ref(*id), |s| s.behavior_ref_id) == behavior_ref)
 }
 
@@ -1864,9 +1869,12 @@ const SP_REF_SP_ATK_HIT_JUMP_DERIVE_ACTION: i64 = 226;
 const SP_REF_UNLOCK_109_FALL_ATTACK: i64 = 286;
 const SP_REF_ORIGINAL_LAND_ACTION_SP_ATK_110: i64 = 288;
 
-/// env(3036, ref): is an SpEffect with this behaviorRefId applied by the current anim's TAE?
+/// env(3036, ref): is an SpEffect with this behaviorRefId applied by the TAE of the clip on screen?
 fn sp_ref_active(d: &CharData, a: &Actor, behavior_ref: i64) -> bool {
-    !a.anim.is_empty() && d.sp_effects_at(&a.anim, a.t).iter().any(|(_, s)| s.behavior_ref_id == behavior_ref)
+    // The clip on screen's TAE, the procedural walk / run / idle clips' too (the walk's
+    // SP_EF_REF_TAE_MOVING_WALK 90 is what the script's GetLocomotionType reads).
+    let (key, t) = a.shown_clip(d);
+    d.sp_effects_at(&key, t).iter().any(|(_, s)| s.behavior_ref_id == behavior_ref)
 }
 
 /// Plunge deathblow start (ThrowParam 崩し落下0, suffix 150: Dist 20 m, defender within upperYRange
@@ -2138,7 +2146,7 @@ fn buffer_flags(action: Action) -> &'static [i64] {
 
 /// Is a press latched right now? (pending |= pressed & acceptMask in FUN_140b2c190.) A
 /// press outside every accept window is dropped, not queued.
-fn buffers(d: &CharData, a: &Actor, action: Action) -> bool {
+pub(crate) fn buffers(d: &CharData, a: &Actor, action: Action) -> bool {
     // A break pose reads attack / jump for its throw directly (decide, "ThrowBreak").
     if a.state == "ThrowBreak" && matches!(action, Action::Attack | Action::Jump) {
         return true;
@@ -2244,7 +2252,7 @@ fn is_guard_reaction(state: &str) -> bool {
 /// Execute flags: a pending request fires while one is up (requested |= pending & the
 /// execute mask +0xe0, set by FUN_140b2bdc0): 115 attack (bits 0,25), 117 guard (2),
 /// 26 step (5,13,14), 119 jump (4), 31 item (7), 137 shinobi tool (18).
-fn accept_flag(action: Action) -> &'static [i64] {
+pub(crate) fn accept_flag(action: Action) -> &'static [i64] {
     match action {
         Action::Attack => &[FLAG_ACCEPT_ATTACK],
         Action::Guard => &[FLAG_ACCEPT_GUARD],
@@ -2269,7 +2277,7 @@ fn is_guard_style(s: &str) -> bool {
         || matches!(s, "StandDeflectGuardFromDamage" | "EasyDeflectDmg" | "LandAirDeflectGuard")
 }
 
-fn accepts(d: &CharData, a: &Actor, action: Action) -> bool {
+pub(crate) fn accepts(d: &CharData, a: &Actor, action: Action) -> bool {
     if a.airborne {
         return false;
     }
@@ -3623,20 +3631,6 @@ fn decide(
         }
     }
 
-    // Jump arts: the ready ends into the leap (TAE 920 launches it; the air branch takes it on).
-    // Without the emblems GroundSpecialAttackJumpStartNoResource: only Sakura Dance ships it
-    // (a110_316711, 316710's clip with its own TAE events); others fall back to the plain leap.
-    if ended && (a.state.starts_with("GroundSpecialAttackJumpReady") || a.state.starts_with("SprintSpecialAttackJumpReady")) {
-        if let Some((cat, _)) = art_kind(&combat, &config) {
-            let nr = if a.state.ends_with("NoResource") { "NoResource" } else { "" };
-            let want = format!("GroundSpecialAttackJumpStart{nr}");
-            if let Some((state, k)) = [want.as_str(), "GroundSpecialAttackJumpStart"].into_iter().find_map(|s| art_key(d, cat, s).map(|k| (s, k))) {
-                a.play(state, &k);
-                return;
-            }
-        }
-    }
-
     // Healing Gourd: drink (again from a drink: Repeat), or the empty-gourd shake. Crouched, the
     // Crouch ones (HKS STYLE_TYPE_CROUCH: W_CrouchItemGourdDrink / ...Repeat / ...Failed,
     // a000_250010 / 250011 / 250015), and Wolf stays crouched (crouch_ok).
@@ -4496,28 +4490,15 @@ fn decide(
         p.vel_scale = None;
     }
 
-    // Jumps: Ready -> Start (TAE 920 launches) -> Fall loop -> land. The storm jumps'
-    // GroundStormJump(Weak|Back)Ready likewise into their Start (TAE 922 row 980 / 981 / 982
-    // launches).
-    if ended && a.state.starts_with("GroundStormJump") && a.state.ends_with("Ready") {
-        let start = a.state.replace("Ready", "Start");
-        a.play_state(d, &start);
+    // Jumps: Ready -> Start (TAE 920 launches) -> Fall loop -> land. The graph takes the ground,
+    // sprint and storm jumps on at their clip ends (hks_wolf::graph_chains). Side jumps have no
+    // behaviour-graph clip (CMSG anim 0): their raw anims a000_20111x.
+    if ended && a.state == "LeftsideGroundJumpReady" {
+        a.play("LeftsideGroundJumpStart", "a000_201112");
         return;
     }
-    if ended && a.state == "SprintJumpReady" {
-        a.play_state(d, "SprintJumpStart");
-        return;
-    }
-    if ended && a.state.contains("GroundJumpReady") {
-        // Side jumps have no behaviour-graph clip (CMSG anim 0): their raw anims a000_20111x.
-        match a.state.as_str() {
-            "LeftsideGroundJumpReady" => a.play("LeftsideGroundJumpStart", "a000_201112"),
-            "RightsideGroundJumpReady" => a.play("RightsideGroundJumpStart", "a000_201113"),
-            _ => {
-                let start = a.state.replace("Ready", "Start");
-                a.play_state(d, &start);
-            }
-        }
+    if ended && a.state == "RightsideGroundJumpReady" {
+        a.play("RightsideGroundJumpStart", "a000_201113");
         return;
     }
     p.air_top = if a.airborne { p.air_top.max(tf.translation.y) } else { tf.translation.y };
@@ -4766,7 +4747,11 @@ fn decide(
             }
         }
         let in_air_guard = is_air_guard(&a.state);
-        if a.state == "AirDeflectGuardLoop" && !pad.guard_held {
+        // BEH_A_AIR_DEFLECT_END (c0000_transition.lua 6066): the guard let go while
+        // SP_EF_REF_TAE_CANCEL_DEFLECT_GUARD_END (207) is up ends the start early too, not only at
+        // its clip's end (hks_lua lockstep test: the script ended it 12 frames sooner).
+        let air_guard_end = !pad.guard_held && (a.state == "AirDeflectGuardLoop" || (a.state == "AirDeflectGuardStart" && d.has_ref(&a.anim, a.t, REF_GUARD_CAN_END)));
+        if air_guard_end {
             a.play_state(d, "AirDeflectGuardEnd");
         }
 
@@ -5158,13 +5143,9 @@ fn decide(
         }
         let art_cat = art_kind(&combat, &config).map(|(c, _)| c);
         if ended && a.state.starts_with("GroundSpecialAttackJump") {
-            // The jump art's leap ends into its fall loop (316730), which loops until the landing.
-            let nr = if a.state.ends_with("NoResource") { "NoResource" } else { "" };
-            let fall = format!("GroundSpecialAttackJumpFallLoop{nr}");
-            match art_cat.and_then(|c| art_key(d, c, &fall)) {
-                Some(k) if a.state != fall => a.play(&fall, &k),
-                _ => a.t %= len.max(1e-3),
-            }
+            // The jump art's fall loop (316730) loops until the landing; the graph takes the
+            // ready into the leap and the leap into the loop (hks_wolf::graph_chains).
+            a.t %= len.max(1e-3);
         } else if ended && crate::wire::is_wire_state(&a.state) {
             // The wire moves fall on in WireMove (a000_202020, loops) until BEH_R_LAND_WIRE; the
             // wire guard holds its loop while guard is held, then W_WireMoveDeflectGuardEnd
@@ -5196,10 +5177,9 @@ fn decide(
                 // holds until the landing. gap: the graph's blend after 201210 is not traced.
                 a.t = len;
             } else if a.state.ends_with("GroundJumpStart") {
-                let fall = a.state.replace("Start", "Fall");
-                if !a.play_state(d, &fall) {
-                    a.t = len;
-                }
+                // The graph goes on into the fall loop (hks_wolf::graph_chains); a side jump's
+                // last frame holds.
+                a.t = len;
             } else if a.state.ends_with("GroundJumpFall") || a.state == "FreeFall" {
                 a.t %= len.max(1e-3); // loop
             } else if matches!(a.state.as_str(), "AirSpecialAttackStart" | "AirSpecialAttackHoldStart") {
@@ -5296,14 +5276,6 @@ fn decide(
             if a.play_state(d, &next) {
                 return;
             }
-        }
-    }
-    // The slide's end (HKS state-end of HKB_STATE_SPRINT_TO_CROUCH_READY): TurnAngle > 0 ->
-    // W_SprintToCrouchLeft, else Right (the stick's angle from the facing, + = left).
-    if ended && a.state == "SprintToCrouchReady" {
-        let left = stick != Vec3::ZERO && stick.dot(a.forward().cross(Vec3::Y)) < 0.0;
-        if a.play_state(d, if left { "SprintToCrouchLeft" } else { "SprintToCrouchRight" }) {
-            return;
         }
     }
     if ended {

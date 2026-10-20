@@ -2764,12 +2764,17 @@ pub struct OnTerrain {
 /// the floor (following it up to STEP_HEIGHT up and FALL_START_DROP down; a bigger drop leaves them in the air,
 /// which player.rs turns into FreeFall; enemies stay put, they have no fall of their own).
 pub(crate) fn bodies_on_terrain(combat: Res<crate::data::Combat>, mut commands: Commands, mut q: Query<(Entity, &Actor, &mut Transform, Option<&mut OnTerrain>)>) {
+    let _prof = crate::perf::span("bodies_on_terrain");
     let Some(t) = terrain() else { return };
     for (e, a, mut tf, state) in &mut q {
         let Some(mut state) = state else {
             commands.entity(e).insert(OnTerrain { prev: tf.translation });
             continue;
         };
+        // Not due this tick (Actor::lod): the next due tick takes the whole move.
+        if !a.lod_due {
+            continue;
+        }
         // Held at an edge (docking.rs hold places the body): no slide, no floor snap.
         if a.docked {
             state.prev = tf.translation;
@@ -2784,6 +2789,7 @@ pub(crate) fn bodies_on_terrain(combat: Res<crate::data::Combat>, mut commands: 
         // Folding Screen Monkeys arena stalled one frame for about 33 s, then stopped at the
         // first wall and undid the warp (the fight's "3 fps", 2026-10-12 bug hunt).
         if delta.length_squared() > 1e-10 && delta.length_squared() <= TELEPORT * TELEPORT {
+            let _p = crate::perf::span("terrain_slide");
             let moved = t.slide(feet_prev, delta);
             tf.translation.x = prev.x + moved.x;
             tf.translation.z = prev.z + moved.y;
@@ -2793,7 +2799,9 @@ pub(crate) fn bodies_on_terrain(combat: Res<crate::data::Combat>, mut commands: 
         // An enemy coming down from a SetNoGravity lift (actor.rs) lands by itself.
         if !a.airborne && !lifted && a.lift_ground.is_none() {
             let feet = tf.translation.y - CAPSULE_HALF_HEIGHT;
+            let pf = crate::perf::span("terrain_floor");
             let floor = t.floor(tf.translation.x, tf.translation.z, feet + STEP_HEIGHT);
+            drop(pf);
             // Wolf follows the floor down only FALL_START_DROP (HKS BEH_R_FALL: a smaller drop
             // never leaves the move state, so following it is the same); a deeper one falls.
             let down = if a.side == Side::Enemy { f32::INFINITY } else { crate::player::FALL_START_DROP };

@@ -38,6 +38,15 @@ Copy-Item (Join-Path $Sekiro "sound\mixer.fev") (Join-Path $out "sound")
 # (menu/hi/01_common -> extracted/hud): the export cuts both.
 & $exe unpack $Sekiro $out '^/(other/decaltex|menu/hi/01_common)'
 & $exe export $out
+# The player's behaviour graph (states, transitions, selectors, clips) as JSON, for reading.
+& $exe behavior (Join-Path $out "chr\c0000.behbnd.d\c0000.hkx") (Join-Path $out "behavior_c0000.json")
+# Every clip's length per character (extracted/clip_lengths/<chr>.json): what the behaviour graph
+# runtime (src/hkb_runtime.rs) ends clips by, the ones the combat export leaves out too.
+New-Item -ItemType Directory -Force (Join-Path $out "clip_lengths") | Out-Null
+Get-ChildItem (Join-Path $out "chr") -Directory -Filter "c*.behbnd.d" | ForEach-Object {
+    $chr = $_.Name -replace '\.behbnd\.d$', ''
+    & $exe clip-lengths (Join-Path $out "chr") $chr (Join-Path $out "clip_lengths\$chr.json") | Out-Null
+}
 # extracted/enemies/roster.json (every placed chr, its MSB placements) and <chr>.json each.
 # The roster reads every map's MSB (and its events): unpacked here, not only with the map block
 # further down (a fresh checkout found 0 characters, so no enemy data or models were written).

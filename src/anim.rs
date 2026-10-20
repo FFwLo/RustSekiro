@@ -362,7 +362,7 @@ fn src_of(lib: &Lib, d: &CharData, a: &Actor, t: f32) -> Option<(String, f32, bo
     let (key, t, looping) = if a.side == Side::Player && a.state == "Locomotion" {
         a.locomotion_clip_at(t)
     } else {
-        let (k, t) = proc_clip(a, t);
+        let (k, t) = a.proc_clip(t);
         (k, t, true)
     };
     if lib.clips.contains_key(&key) {
@@ -376,7 +376,7 @@ fn clip_for<'a>(lib: &'a Lib, d: &CharData, a: &Actor, t: f32) -> Option<(&'a Cl
     if let Some(c) = lib.clips.get(d.clip_key(&a.anim)) {
         return Some((c, t));
     }
-    let (key, t) = proc_clip(a, t);
+    let (key, t) = a.proc_clip(t);
     // A grouped key without a clip in the lib falls back to the a000 one.
     let c = lib.clips.get(&key).or_else(|| lib.clips.get(&format!("a000{}", key.get(4..).unwrap_or(""))))?;
     Some((c, c.wrap(t)))
@@ -391,25 +391,6 @@ impl Clip {
     }
 }
 
-/// Anim time drawn this frame: between the last two simulated steps, like the actor's position
-/// (interp.rs), so poses move every screen frame instead of in 60 Hz steps.
-/// The clip a procedural state shows and the time in it (before looping): locomotion = the move
-/// start, then the loop (Actor::move_clip), else idle.
-fn proc_clip(a: &Actor, t: f32) -> (String, f32) {
-    let key = match (a.side, a.state.as_str()) {
-        (Side::Player, "Locomotion") => {
-            let (key, t, _) = a.locomotion_clip_at(t);
-            return (key, t);
-        }
-        (Side::Player, _) if a.crouch => "a000_005000",
-        (Side::Player, _) => "a000_000000",
-        // In the enemy's anim set (Actor::grouped: the spear / matchlock / eight-phase soldiers'
-        // a200 / a300 / a100_400000); they all stood in the sword idle (2026-10-12 round 23).
-        (Side::Enemy, "PostureBroken") => return (a.grouped("a000_008550"), t),
-        (Side::Enemy, _) => return (a.grouped("a000_400000"), t),
-    };
-    (key.to_string(), t)
-}
 
 /// Upper-body layer mask (c0000.hkx StandMoveOverwrite LayerGenerator): the StandMoveUpper_SM
 /// layer's boneWeights are 0 for the first 39 bones (Master, foot targets, RootPos, Pelvis, both
@@ -418,7 +399,7 @@ const LOWER_BODY_BONES: usize = 39;
 
 /// Key of the clip being shown: the TAE anim, or the procedural state's clip.
 fn clip_key(lib: &Lib, d: &CharData, a: &Actor, t: f32) -> String {
-    if lib.clips.contains_key(d.clip_key(&a.anim)) { a.anim.clone() } else { proc_clip(a, t).0 }
+    if lib.clips.contains_key(d.clip_key(&a.anim)) { a.anim.clone() } else { a.proc_clip(t).0 }
 }
 
 fn pose_skeletons(
@@ -427,7 +408,12 @@ fn pose_skeletons(
     mut actors: Query<(&Actor, &mut Skeleton, Has<SnapPose>)>,
     mut tfs: Query<&mut Transform>,
 ) {
+    let _prof = crate::perf::span("pose_skeletons");
     for (a, mut skel, snap) in &mut actors {
+        // Not due (Actor::lod): it keeps its last pose.
+        if !a.lod_due && !snap {
+            continue;
+        }
         if snap {
             // No fade from the previous life's pose (an empty `shown` snaps in, blend = 1).
             skel.shown.clear();
@@ -940,11 +926,11 @@ mod proc_clip_tests {
         a.anim_keys = Some(std::sync::Arc::new(["a000_400000", "a200_400000", "a000_008550"].iter().map(|s| s.to_string()).collect()));
         a.anim_group = 2;
         a.procedural("IdleBattle");
-        assert_eq!(proc_clip(&a, 0.0).0, "a200_400000");
+        assert_eq!(a.proc_clip(0.0).0, "a200_400000");
         a.procedural("PostureBroken");
-        assert_eq!(proc_clip(&a, 0.0).0, "a000_008550", "no grouped clip: the a000 one");
+        assert_eq!(a.proc_clip(0.0).0, "a000_008550", "no grouped clip: the a000 one");
         a.anim_group = 0;
         a.procedural("IdleBattle");
-        assert_eq!(proc_clip(&a, 0.0).0, "a000_400000");
+        assert_eq!(a.proc_clip(0.0).0, "a000_400000");
     }
 }

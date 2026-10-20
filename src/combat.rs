@@ -745,6 +745,21 @@ pub(crate) fn enemy_damage_state_air(d: &crate::data::CharData, level: i64, defe
     }
 }
 
+/// env 222, the side a hit comes from (c9997 GetDamageDirectionOffset): 0 left, 1 right, 2 front,
+/// 3 back, by the same split as enemy_damage_state.
+pub(crate) fn damage_dir(defender: &Actor, from: Vec3, at: Vec3) -> i64 {
+    let fwd = defender.forward();
+    let to = (from - at).with_y(0.0).normalize_or_zero();
+    let (f, r) = (to.dot(fwd), to.dot(fwd.cross(Vec3::Y)));
+    if f.abs() >= r.abs() {
+        if f >= 0.0 { 2 } else { 3 }
+    } else if r > 0.0 {
+        1
+    } else {
+        0
+    }
+}
+
 pub(crate) fn enemy_damage_state(level: i64, defender: &Actor, from: Vec3, at: Vec3) -> Option<String> {
     let fwd = defender.forward();
     let to = (from - at).with_y(0.0).normalize_or_zero();
@@ -1428,6 +1443,7 @@ fn resolve(
     mut statuses: ResMut<crate::status::Statuses>,
     mut ai_sounds: Option<ResMut<crate::enemy::AiSounds>>,
 ) {
+    let _prof = crate::perf::span("resolve");
     // The equipped prosthetic (group, enough Spirit Emblems for a use): the umbrella's guard
     // reactions and the Mist Raven's atemi.
     let equipped = players.iter().next().and_then(|p| crate::player::equipped_tool(&combat, &config, p.tool_slot).map(|t| (t, p.emblems)));
@@ -1456,6 +1472,8 @@ fn resolve(
             }
         }
     }
+    // Each body's team once per tick (an NpcParam read): the pairs below ask for every enemy pair.
+    let teams: std::collections::HashMap<Entity, i64> = q.iter().map(|x| (x.0, team_of(&combat, &x.1))).collect();
     let mut pairs = q.iter_combinations_mut();
     while let Some([mut x, mut y]) = pairs.fetch_next() {
         for flip in [false, true] {
@@ -1465,7 +1483,7 @@ fn resolve(
             let defender_dead = de.as_ref().is_some_and(|e| e.is_dead());
             // Enemies are on one side, unless their teams are hostile (teams_hostile: the
             // invaders against Ashina). AtkParam friendlyTarget rows are for objects.
-            if aa.side == da.side && !(aa.side == Side::Enemy && teams_hostile(team_of(&combat, aa), team_of(&combat, da))) {
+            if aa.side == da.side && !(aa.side == Side::Enemy && teams_hostile(teams[&att_e], teams[&def_e])) {
                 continue;
             }
             if aa.hp <= 0.0 || (da.hp <= 0.0 && da.side == Side::Player) || defender_dead {
@@ -1833,6 +1851,9 @@ fn resolve(
                                 umbrella_reaction(dd, da, level, true, aa.posture_broken(), atf.translation, dtf.translation);
                             }
                             Side::Player => {
+                                // The exe's answers (FUN_140b6bd40): a deflect is DAMAGE_TYPE_GUARD,
+                                // GUARDATTACKER_STAMZERO at full posture; 3057 its justDeflectAction.
+                                da.damage_env = Some(crate::enemy::DamageEnv { kind: if full { 1028 } else { 3 }, level, dir: damage_dir(da, atf.translation, dtf.translation), guard_dir: -1, just_dir: atk.just_deflect_action, aerial: da.airborne, ..crate::enemy::DamageEnv::NONE });
                                 let dir = lr(atk.just_deflect_action);
                                 if full {
                                     da.play_state(dd, &format!("HardDeflectStagger_{dir}"));
@@ -1852,6 +1873,7 @@ fn resolve(
                                     let glv = combat.npc(&da)["guardLevel"].as_i64().unwrap_or(4);
                                     let aerial = enemy_is_aerial(&combat, da, e, dtf.translation.y);
                                     let pick = enemy_guard_block(dd, &refs, level, glv, atk.just_deflect_action == 2, aerial);
+                                    da.damage_env = Some(crate::enemy::DamageEnv { kind: 3, level, dir: damage_dir(da, atf.translation, dtf.translation), guard_dir: -1, just_dir: atk.just_deflect_action, aerial, ..crate::enemy::DamageEnv::NONE });
                                     guard_pick(dd, da, e, &combat, aa.side == Side::Player, pick, atf.translation, dtf.translation, level, aerial, part);
                                     clash_after(dd, da, e, if atk.just_deflect_action == 1 { 200211 } else { 200210 });
                                 }
@@ -1863,6 +1885,11 @@ fn resolve(
                             _ if bullet => {}
                             Side::Enemy => {
                                 if let Some(e) = ae.as_deref_mut() {
+                                    let var = combat.npc(aa)["behaviorVariationId"].as_i64().unwrap_or(0);
+                                    let n = crate::data::bound_clip_no(crate::data::behavior_category(200_000_000 + var * 1000 + judge));
+                                    let kind = if attacker_broken { 1033 } else { 1007 + n };
+                                    // Its own swing was met: no damage level of its own (gap: the exe's env 236 then).
+                                    aa.damage_env = Some(crate::enemy::DamageEnv { kind, dir: damage_dir(aa, dtf.translation, atf.translation), just_bound: jd, ..crate::enemy::DamageEnv::NONE });
                                     // A deflect that empties the enemy's posture plays the break pose
                                     // pair 弾き0 (ThrowParam 0010: Wolf a20x_510100, enemy ThrowDef12100,
                                     // held on Wolf's dummy atkSorbDmyId); player.rs takes it on to the
@@ -1926,6 +1953,9 @@ fn resolve(
                                 }
                             }
                             Side::Player => {
+                                // FUN_140b698d0: his swing deflected is DAMAGE_TYPE_GUARDED, 3019 the
+                                // AtkParam's justDeflectedAction.
+                                aa.damage_env = Some(crate::enemy::DamageEnv { kind: 1000, dir: damage_dir(aa, dtf.translation, atf.translation), just_bound: jd, ..crate::enemy::DamageEnv::NONE });
                                 if jd == 1 || jd == 2 {
                                     aa.play_state(ad, if jd == 1 { "HardDeflectedR" } else { "HardDeflectedL" });
                                     aa.move_vel = Vec3::ZERO;
@@ -2011,6 +2041,8 @@ fn resolve(
                         }
                         match da.side {
                             Side::Player => {
+                                // A block is DAMAGE_TYPE_GUARD (3056 the deflectAction), a break 1001.
+                                da.damage_env = Some(crate::enemy::DamageEnv { kind: if broken { 1001 } else { 3 }, level, dir: damage_dir(da, atf.translation, dtf.translation), guard_dir: atk.deflect_action, aerial: da.airborne, ..crate::enemy::DamageEnv::NONE });
                                 if broken {
                                     let gb = player_guard_break_state(umbrella, da.airborne);
                                     // The umbrella's breaks resolve to a070_405400 / 421400 in the
@@ -2043,6 +2075,7 @@ fn resolve(
                             Side::Enemy => {
                                 if let Some(e) = de.as_deref_mut() {
                                     if broken {
+                                        da.damage_env = Some(crate::enemy::DamageEnv { kind: 1001, level, dir: damage_dir(da, atf.translation, dtf.translation), guard_dir: atk.deflect_action, ..crate::enemy::DamageEnv::NONE });
                                         e.react_from(da, &combat, aa.side == Side::Player, if atk.deflect_action == 2 { "GuardBreakLeft" } else { "GuardBreakRight" });
                                     } else if !debuffed {
                                         // guard_damage_table[damage level][NpcParam guardLevel] (c9997.lua).
@@ -2050,6 +2083,7 @@ fn resolve(
                                         let glv = combat.npc(&da)["guardLevel"].as_i64().unwrap_or(4);
                                         let aerial = enemy_is_aerial(&combat, da, e, dtf.translation.y);
                                     let pick = enemy_guard_block(dd, &refs, level, glv, atk.deflect_action == 2, aerial);
+                                        da.damage_env = Some(crate::enemy::DamageEnv { kind: 3, level, dir: damage_dir(da, atf.translation, dtf.translation), guard_dir: atk.deflect_action, aerial, ..crate::enemy::DamageEnv::NONE });
                                         guard_pick(dd, da, e, &combat, aa.side == Side::Player, pick, atf.translation, dtf.translation, level, aerial, part);
                                     }
                                     clash_after(dd, da, e, if atk.deflect_action == 1 { 200216 } else { 200215 });
@@ -2062,10 +2096,11 @@ fn resolve(
                             _ if bullet => {}
                             Side::Enemy => {
                                 if let Some(e) = ae.as_deref_mut() {
+                                    let var = combat.npc(aa)["behaviorVariationId"].as_i64().unwrap_or(0);
+                                    let n = crate::data::bound_clip_no(crate::data::behavior_category(200_000_000 + var * 1000 + judge));
+                                    aa.damage_env = Some(crate::enemy::DamageEnv { kind: 1018 + n, dir: damage_dir(aa, dtf.translation, atf.translation), bound: dact, ..crate::enemy::DamageEnv::NONE });
                                     if dact == 1 || dact == 2 {
                                         // c9997 ExecAttackBound: the clip number by category, as the bound's.
-                                        let var = combat.npc(aa)["behaviorVariationId"].as_i64().unwrap_or(0);
-                                        let n = crate::data::bound_clip_no(crate::data::behavior_category(200_000_000 + var * 1000 + judge));
                                         let s = format!("AttackNoBoundEnemy{n}_{}", if dact == 1 { "Right" } else { "Left" });
                                         if ad.anim_key(&s).is_some() {
                                             e.react_from(aa, &combat, da.side == Side::Player, &s);
@@ -2074,6 +2109,8 @@ fn resolve(
                                 }
                             }
                             Side::Player => {
+                                // Blocked: GUARDED_NO_DEFLECT_RIGHT (1017), 3018 the deflectedAction.
+                                aa.damage_env = Some(crate::enemy::DamageEnv { kind: 1017, dir: damage_dir(aa, dtf.translation, atf.translation), bound: dact, ..crate::enemy::DamageEnv::NONE });
                                 if dact == 1 || dact == 2 {
                                     aa.play_state(ad, if dact == 1 { "EasyDeflectedR" } else { "EasyDeflectedL" });
                                     aa.move_vel = Vec3::ZERO;
@@ -2180,6 +2217,9 @@ fn resolve(
                                 // break poses, 100401 in the grapple, 100400 in the tool anims make a
                                 // hit minimum (an additive flinch), so he is not re-staggered (round 29).
                                 let level = if no_motion { 0 } else { damage_motion_level(dd, da, level) };
+                                // A plain hit (DAMAGE_TYPE_NONE 99999), its break 1027.
+                                let kind = if da.posture_broken() { 1027 } else { 99999 };
+                                da.damage_env = Some(crate::enemy::DamageEnv { kind, level, dir: damage_dir(da, atf.translation, dtf.translation), aerial: da.airborne, ..crate::enemy::DamageEnv::NONE });
                                 if (da.posture_broken() || hks_broken(&da.state)) && !broken_takes_normal_damage(level, da) {
                                     let state = player_break_state(&combat, level, da, atf.translation, dtf.translation);
                                     if da.posture_broken() {
@@ -2231,6 +2271,7 @@ fn resolve(
                                         e.hurt_by_wolf = true;
                                     }
                                     let level = if no_motion { 0 } else { damage_motion_level(dd, da, level) };
+                                    da.damage_env = Some(crate::enemy::DamageEnv { kind: 99999, level, dir: damage_dir(da, atf.translation, dtf.translation), ..crate::enemy::DamageEnv::NONE });
                                     {
                                         let refs = crate::prosthetic::enemy_refs(&combat, da, e);
                                         let hit_ref = |r: i64| atk.sp_effects().iter().any(|id| combat.player.sp_effects.get(&id.to_string()).is_some_and(|s| s.behavior_ref_id == r));
@@ -2256,6 +2297,9 @@ fn resolve(
                                         refs.contains(&1000040) && !refs.contains(&1000240)
                                     } && crate::prosthetic::rank_allows(crate::prosthetic::transition_rank(&da.state), 3);
                                     let aerial = enemy_is_aerial(&combat, da, e, dtf.translation.y);
+                                    if let Some(d) = da.damage_env.as_mut() {
+                                        d.aerial = aerial;
+                                    }
                                     let mut rejected = false;
                                     let reaction = if special_poison_reaction(&combat, dd, da, e, poisoned, &atk.sp_effects()) {
                                         Some("SpecialPoisonReaction".to_string())
@@ -2327,6 +2371,10 @@ fn resolve(
                             continue;
                         }
                         let why = if a.hp <= 0.0 { "VITALITY EMPTY" } else { "POSTURE BROKEN" };
+                        // The script hears a hit's break as DAMAGE_TYPE_DAMAGE_BREAK (1027, ExecDamageBreak).
+                        if let Some(d) = a.damage_env.as_mut().filter(|d| d.kind == 99999) {
+                            d.kind = 1027;
+                        }
                         e.on_posture_break(a, &combat, from_behind, config.enemy.broken_time);
                         log.push(format!("{why} - deathblow!"), Color::srgb(1.0, 0.15, 0.15));
                     }

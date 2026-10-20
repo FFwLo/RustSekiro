@@ -15,6 +15,9 @@ sekiro-game = { path = "../sekiro-rs/crates/game" }
 sekiro-sim = { path = "../sekiro-rs/crates/sim" }
 # Its file readers (the draw params' GPARAM for the tests that check his lighting).
 sekiro-formats = { path = "../sekiro-rs/crates/formats" }
+# AKJama's HavokScript VM (sekiro-rs crates/hks): runs the game's compiled scripts from
+# extracted/action/script, the bytecode the game itself runs (src/hks.rs HksVm).
+sekiro-hks = { path = "../sekiro-rs/crates/hks" }
 # The window icon (src/icon.rs); the version Bevy 0.20 itself uses.
 winit = "0.30"
 # Release build (main.rs): attach the parent console, the "Sv1 stopped" dialog on a panic.
@@ -25,6 +28,9 @@ windows-sys = { version = "0.59", features = ["Win32_System_Console", "Win32_UI_
 # wgpu Bevy 0.20 already uses.
 [dev-dependencies]
 wgpu = { version = "30", default-features = false }
+# Standard Lua 5.1 (built from source) for the game's own player script, decompiled HKS
+# (src/hks_lua.rs, a trial run by the tests only for now).
+mlua = { version = "0.12.2", features = ["lua51", "vendored"] }
 
 # Light optimization for our own code, so rebuilds stay fast.
 [profile.dev]
