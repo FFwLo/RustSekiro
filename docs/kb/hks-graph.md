@@ -278,9 +278,195 @@ batches.
   chains no longer run.
 - **Shared clips.** Several CMSGs can hold one clip generator (VerticalGroundJumpFall and
   HorizontalWallJumpFall share a000_201030's): hkb_runtime::owner names it by the active CMSG.
-- **Not yet: knockdowns.** The posture-break reactions start in player.rs and have no event in
-  the graph (it stands aside), so their chains stay. The Ape grab's face-down landing is the
-  script's own (c0000_transition 386-395 sets Selector_ProneDirection at the grab's end; the land
-  state is STATE_TYPE_REACTION_DEATH_START, which the 3036 ref-512 check does not touch): it needs
-  the script to end the grab rather than combat.rs's grab_end. Hits through the script come first.
-
+- **Knockdowns** (graph-led too): the posture-break reactions are the script's (BEH_R_BREAK_DAMAGE
+  on env 202 = 1027 with the level; it sets Selector_ProneDirection from env 222), and the graph
+  takes the break's damage / blow landings into StandDamageBreakDown and its get-up. Fixes it
+  needed: `shows` counts the same clip as the same state (one CMSG holds StandDamageBreak_F / _B);
+  a hit's reaction and what follows a clip the graph played out (the Ape grab's blow-away) are
+  the script's first, synced after the tick only where the graph did not get there; env 3032 is
+  the back half (DamageEnv::back_half from combat.rs), not the back quarter.
+- **CMSG clips (extractor).** The exe plays a CMSG's clip named a<group>_<animId>, else
+  a000_<animId>, else its last clip (FUN_1411e6b90). 55 c0000 CMSGs have no clip named after
+  their animId; export.rs now maps Wolf's plain states (offsetType 0 / 11) by that rule: 31
+  changed, among them the get-ups (StandDamageLargeDownWakeUp_* a000_10032x, not the knockdown's
+  10031x), the air and fall death blows (112xxx, not 121xxx), the jump falls (201030),
+  GroundFallReturn (700110), GroundJumpLandReady_F (201055), SprintStopQuickTurnLeftBack (1513).
+- **Every graph clip exported.** export.rs also exports every clip of Wolf's graph's CMSGs that
+  has a TAE (anims 1739 -> 2206, anim_c0000.bin 388 -> 525 MB); 19 more effects came with them
+  (tools/fxr_extract.py). Missing clips made the graph stand aside where it led.
+- **Locomotion (free) audit.** sync_clip logs "free" rows where both sides stand or move and the
+  clips differ. Fixed from it:
+  - crouch start: the script fires W_CrouchStart itself; the free-state sync no longer sends
+    W_CrouchIdle over it where the graph already shows Wolf's state (923 rows -> 16);
+  - move starts: Locomotion shows the graph's own start clip where it picks another
+    (Actor::move_start_clip: StandMoveStartFromLandGroundPositioningJump a000_00041x,
+    StandMoveStartFromFreeFall a000_000110, a start player.rs skipped); quick-turn starts not
+    (their clips turn Wolf, player.rs turns him itself);
+  - walk vs run stop by the shown clip's TAE ref 91 (MOVING_RUN), as BEH_A_GROUND_MOVE_STOP
+    reads it, not player.rs's lagging speed level;
+  - the quick-turn side at a full reverse: Left only where TwistLowerRootAngle > 0
+    (BEH_A_QUICK_TURN_MOVE_START), so a reverse turns right; in the move Right where
+    TurnAngle > 0 (BEH_A_STAND_MOVE_QUICK_TURN);
+  - the turns' clips play out: Locomotion shows the rest of a quick turn's clip after
+    player.rs hands over (the graph runs it to its end, then the loop); where the graph goes
+    straight into the loop, Locomotion drops its move start;
+  - the in-move 180 turn only from a stop's first 9 frames: BEH_A_STAND_MOVE_QUICK_TURN needs
+    TAE ref 14 ENABLE_GROUND_QUICK_TURN, which only StandWalkStop_F / StandRunStopF carry (no
+    exe path sets SpEffect 100313). Let go, then the stick back: the turn. Thrown straight
+    back, the run swings round at 720 deg/s (FUN_1407da540's default; TAE 224 SetTurnSpeed
+    overrides), about 0.25 s; test a_run_thrown_straight_back_swings_round_at_the_turn_rate;
+  - sheathed, the turn clips' a010 copies: offsetType 11 is the idle category, 10 sheathed
+    (AnimOffsets::idle; the exe's array at chr+0x120 slot 2 is not read).
+- **MoveDirection (exe):** slot 3 of the per-frame table is NS_SPRJ::WalkTwist+0x50
+  (FUN_1407f7550): the stick in 60 deg cones with 5 deg hysteresis, held at rest, -1 (written 0,
+  F) while the twist is off. The twist runs locked on (FUN_1407f6ff0 / FUN_1407e7900); unlocked
+  Wolf faces the stick, so F, and the 180 turns pick their *_F clips. The guard walk keeps
+  the cones unlocked (inferred: the twist's on flag +0x58 is not traced). TwistLowerRootAngle
+  is ~0 while running unlocked.
+- **Exe answers fixed on the way:**
+  - MoveDirection written per frame (the _MoveDirectionUpdate cones); the keyboard walk key
+    caps MoveSpeedLevel at 0.5;
+  - env 224 GetFallHeight is whole centimetres (FUN_140b97880: peak Y minus Y x 100; the
+    script multiplies it by 0.01). We fed metres, so every landing read as a tiny fall;
+  - env 200 (falling, FUN_140b97970): off the ground, with the physics' ground contact held
+    while a probe (P+0x920) reads 1.0 or less, or after 1 s airborne under a flag (P+0x100).
+    BEH_R_FALL's env 224 >= 30 cm test is in the aged branch only (Lua `and` before `or`). The
+    probe is not identified: player.rs's 30 cm walk-off stands in for it;
+  - env 200 is off in a throw's clip (the a2xx ThrowParam groups): the plunge deathblow was
+    taken into SelfFallStart;
+  - numbered exe events (W_ThrowAtk / ThrowDef / ThrowKill / Event + anim number) only where
+    that state's CMSG plays that number (hkb_runtime::cmsg_anim_id): W_Event390000 plays
+    a000_710000, the aged attack is W_AgingGroundAttack.
+- **Input picks taken from the graph (hks_wolf take functions).** When the script fires an
+  event for a press, tick_script plays the graph's state and clip and spends the press
+  (Player::requests and PadInput::take); player.rs runs the on-enter effects (aim, stop) off
+  `a.state != p.last_state`. Deleted from player.rs:
+  - crouch start / end (take_crouch: crouch from the graph's style, Crouch* / SprintToCrouch*);
+  - the step (W_GroundStep; the tilt is the script's act(3025) angle, recorded in
+    Host::act_values; unlocked, Wolf faces the stick as act 2019 does);
+  - items and the gourd (take_item; W_ItemGourdDrinkMove plays its *Move copy). An empty
+    gourd is goods 3001 (goodsUseAnim 10 ITEM_GOURD_RECOVER_EMPTY), usable (env 233), so the
+    script plays the empty swig itself;
+  - the guard start, the held-button start (ref 221) and the spam chain (W_StandToDeflectGuard*,
+    W_SprintToDeflectGuard). player.rs keeps the rule that drops a tap let go before its
+    window (the script's start wants env 1108).
+- **Prosthetic presses and releases taken from the graph** (hks_wolf::sub_press_event: the
+  tool's opener, combos, guard and leap starts, the failed swing; W_*SubAttack*Release on
+  let-go). player.rs keeps the held repeat, the attack-button derives, the walking upper-body
+  moves and the clip-end chains. Found on the way: the equipped tool's resident SpEffect
+  (the upgraded Flame Vent's hold, the level-1 quick use) was missing from env 3036.
+- **Ground jumps and the damage / down steps taken from the graph** (W_GroundJumpReady /
+  Start, W_SprintJump*, W_GroundStormJump*, W_SwampJump*; W_StandStepFromDamage / FromDown, tilt
+  from act 3025). The side jumps' CMSGs have anim 0: the graph sits in GroundJumpReady over
+  a000_201102 / 201103, named Leftside / RightsideGroundJumpReady for player.rs. On entering,
+  player.rs sets the launch, landing and tilt bookkeeping. The jump-over throw (ThrowParam 0200)
+  goes first (throw_check's jump_throw_ready). player.rs's ground jump block is gone.
+- **Air actions taken from the graph** (BEH_A_AIR_*: W_AirKick, W_AirStormJump(Weak)Start,
+  W_AirSpecialAttack*, W_AirComboAttack*, the lightning thrown back, the Mist Raven's and
+  Shadowfall's derives, W_AirDeflectGuardStart; W_AddHardDeflectGuard on the ground and in the
+  air sets the additive layer; W_StandDeflectGuardFromDamage). Not on the wire (wire.rs). The
+  plunge throw goes first (throw_check's plunge_ready); the wall jump is docking.rs's
+  (player::wall_jump_open: env 3020 wall contact is not answered, so the kick is left alone
+  there). Found on the way: the lightning charge's SpEffect (9495 / 9490, refs 151 / 356) was
+  missing from env 3036. The air counters (g_airSpecialAttackCount, g_airSubAttackCount) are the
+  script's; player.rs's air_art_state / storm_jump / hks::air_press are gone.
+- **Recoils the graph names by selector.** player.rs's StandDeflectEasySmall_V1_F has no graph
+  state: it is W_StandDeflectEasySmall with Selector_DeflectVariation 0 and Selector_DeflectDir
+  0. engine_sync points every manual selector above `<state>_CMSG` at it
+  (HkbRuntime::select_path) and fires the bare name, so the graph is in the recoil and the
+  script's spam chain and additive deflect run there.
+- **Attacks taken from the graph.** The attack button's events (W_GroundAttackCombo*,
+  W_GroundStepAttack, W_SprintAttack, W_CrouchAttackTo*, W_HardDeflectAtk, W_EasyDeflectedAtk,
+  W_DeflectGuardAttack) and their W_*Release on let-go play the graph's state and clip;
+  player.rs's attack_route / release_of are gone, it aims (_StartAutoAim) on entering. The
+  exe's throw check goes first: player::throw_check runs before tick_script and, with a
+  deathblow in reach, the press stays for decide's deathblow.
+- **Combat arts taken from the graph.** The art's openers (sprint, step, leap, hold start,
+  NoResource), its combos and finishers (_FireSpAttackCombo) are the script's events
+  (hks_wolf::art_press_event); the art key's or the attack press is spent, and the paired
+  guard tap. On entering an opener player.rs records the emblem state for the hit jump and
+  Sakura Dance's air use. art_start_states / art_combo_next / art_combo_pick are gone. The art
+  let go (its Release, the hold's draw and end, the forced releases of base Mortal Draw /
+  Praying Strikes) is the script's too (take_graph); the hold's start runs into its loop by
+  the graph's clip end (graph_chains).
+- **The additive layer's SpEffects count** (env 3036 and sp_ref_active): AddHardDeflectGuard's
+  411 with the hard recoil's 412 starts the guard with the tap spent (HKS 6161).
+- **Deflect end taken from the graph** (BEH_A_DEFLECT_GUARD_END, W_DeflectGuardToStand*: the
+  plain end, or over the walk / run DeflectGuardToStandMoveWalk / Run by MoveSpeedIndex);
+  player.rs only sets the move index and speed level on entering the move end.
+- **Sprint taken from the graph.** The held step's ref 15 window is W_SprintStartFromStep: the
+  graph's Selector_GroundJumpType picks the start by the step's direction (a000_001150-154);
+  graph_state names it by its CMSG (SprintStartFromStep_R) when that clip is Wolf's. The start
+  runs into SprintLoop and the loop restarts at its clip end (graph_chains; a loop on the same
+  clip wraps our clock to the graph's). W_SprintQuickTurnReady, then at its end Left / Right180
+  by TurnAngle; W_SprintStopReady, then at its end SprintStopQuickTurn* by TurnAngle
+  (transition.lua 569-592). Dodge let go while the stick is still pushed runs on
+  (W_StandMoveStartFromSprint, BEH_A_GROUND_MOVE_STOP): that needs env 1105 true in SprintLoop
+  (g_paramHkbState: STATE_TYPE_STANDBY). Past the quick turn's move window the held dodge
+  steps into a new sprint start, as BEH_A_SPRINT does without ref 15 (_fireGroundStep).
+  player.rs only steers the start and the loop and feeds the run's held-dodge step.
+- **Landings taken from the graph** (BEH_R_LAND). player.rs finds the ground inside decide,
+  after the script, so hks_wolf::land_script ticks the script again on that frame (no time
+  passes), as the exe's ground check comes before its HKS update; tick_script and land_script
+  share run_script. The landing tick answers with the last airborne pose (state, clip, time),
+  so ref 201 and env 3063 (the clip's time in ms, which the script copies to StartTime_00, the
+  Land clip's start) are the air clip's. A landing counts as the script's when it fires a land
+  event, the move start out of a fall, or the step out of it (that spends the press). Not
+  taken: the exe's lands (the plunge deathblow, the fall-death return), ledge catches, the aged
+  form and a state set outside decide. player.rs keeps the fall death, the lightning shock,
+  the dodge request, and fallbacks: a blow-away the graph is not in (the hit did not reach the
+  script as a blow), the jump arts' lands while ref 103 holds BEH_R_LAND off (Sakura Dance
+  without emblems; env 3008 not traced), else LandFreeFall / Locomotion. engine_sync also fires
+  the graph state holding a CMSG-named state (VerticalGroundJumpFall in GroundJumpFall,
+  HkbRuntime::holding_state). The long-stiff land is named LandFreeFallLongStiff (its CMSG).
+  A sprint jump keeps the step's Selector_GroundJumpType (only the ground jump sets it), which
+  picks its LandForward / LandVertical.
+- **Fall starts taken from the graph** (BEH_R_FALL on env 200: W_SelfFallStart,
+  W_SelfCrouchFreeFallStart, W_SubGuardEndSelfFallStart). The game's fall start (SelfFallStart,
+  a000_200000) now plays before FreeFall, which the graph's clip end leads to (graph_chains).
+  player.rs keeps the walk-off's carried move and the void fall.
+- **Prosthetic ends, derives and releases taken from the graph.** Every tool state's clip end
+  is the graph's (graph_chains: the held loops and their ends, the Mist Raven's leap by the
+  stick through the script's _SetJumpDirection, the air falls). The flat leaps end on the floor:
+  env 248 is answered for them (HKS 557 W_LandAirSubAttackMove); the upward one goes on in
+  the air (player.rs lifts Wolf off on entering AirSubAttackMoveStartToLoop). The attack button
+  out of a tool move is the script's BEH_A_GROUND_ATTACK derive (hks_wolf::sub_derive_event,
+  the attack press spent); the let-go is the existing sub release take. Removed from
+  prosthetic::hks: derive_attack, derive_unlock, release(s), jump_start, air_move_start.
+  The held repeat (flame) still goes through player.rs's press.
+- **Air clip ends taken from the graph.** Airborne (not on the wire, hanging or aged), every
+  clip end is the graph's end transition (hks_wolf, `air_chain`): the jumps' and the storm
+  jumps' fall loops, the air art's start into its loop, the electro charge's loops, the blows'
+  fall loops, the air guard's loop. The air guard let go is W_AirDeflectGuardEnd (taken).
+  player.rs's air clip-end picks are gone; it keeps the walk-off's move loop, the exe's grab
+  blow-away, else the last frame holds until the landing.
+- **Ground clip ends taken from the graph.** On the ground, every clip end is the graph's end
+  transition too (hks_wolf, `ground_chain`), except in the exe's own states (throws, deathblows,
+  events, deaths, the idol, the hang, swim, wire, cover, docking, revival, falls, the aged form).
+  A graph idle (StandIdle / CrouchIdle) becomes the procedural StandIdle; a free graph move with
+  the stick pushed becomes the procedural Locomotion. player.rs's generic ground end
+  (DeflectGuardIdle / Locomotion / StandIdle) stays as the fallback for the excluded states.
+- **Guard idle and walk taken from the graph.** A guard start or reaction ending with the guard
+  held goes to the graph's DeflectGuardIdle, which is player.rs's guard idle (it picks the walk's
+  side). Moving or stopping in the guard style is the script's W_DeflectGuardMove /
+  W_DeflectGuardIdle (HKS 2340 / 2421), taken the same way. player.rs's to_guard end and its
+  guard-move pick are gone; its ground clip end is only StandIdle for the exe's own states. Out
+  of an upper action, the chain's Locomotion keeps the legs' phase.
+- **The run out of a sprint.** When the graph reaches its own move loop (StandMoveLoop /
+  CrouchMoveLoop) out of a graph-led clip (StandMoveLoopFromSprint's end), Wolf goes to
+  player.rs's Locomotion on the graph's clock, before player.rs moves him that step. Shown as
+  the graph's clip, the stick did not steer and Wolf ran on one way for the clip's whole length
+  (test the_run_out_of_a_sprint_steers_and_stops).
+- **Engine answers from the script's own tables (2026-10-21).** env 1105 is any STATE_TYPE_STANDBY*
+  state of g_paramHkbState (c0000's onUpdate calls act(9100) in each; player::is_standby): the
+  sprint's walk-out StandMoveStartFromSprint / LoopFromSprint are ones, so letting go there runs
+  BEH_A_GROUND_MOVE_STOP. env 3036 also counts the lasting SpEffects (exe FUN_140b32410 case 0xbdc
+  walks the chr's active SpEffect list): a TAE row's replaceSpEffectId after its window, when the
+  row's behaviorRefFlag_checkAliveFlagForBehavior is 0 (data::sp_effect_lingering_ref). The
+  sprint's 100304 (ref 1 ENABLE_SPRINT_ACTION) ends into 100303 (ref 1, 0.2 s), so the first
+  frames of the walk-out still stop as a sprint (W_SprintStopReady). Wolf's own residents (the
+  aged form's ref 591 row) count too. The one named env, the strict aging check
+  ("特殊効果発動中か_Behavior参照ID_寿命延長を厳密に取得"), is env 3036 (hks.rs). env 3063 takes a layer:
+  0 the shown clip, 1 the upper body (an upper action's clip, else the full-body one: the stop of
+  the guard's run-out, W_StandMoveableAction, goes on in DeflectGuardToStand at its time through
+  StartTime_01, so it ends soon after), 2 the legs' loop.

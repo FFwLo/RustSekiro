@@ -1595,3 +1595,26 @@ pub(crate) fn posture_break_staggers_then_a_second_hit_knocks_wolf_down() {
     assert!(seen.iter().any(|s| s.starts_with("StandDamageBreakDown_")), "{seen:?}");
     assert!(seen.iter().any(|s| s.starts_with("StandDamageLargeDownWakeUp_")), "{seen:?}");
 }
+
+/// The upper-action states come from the script's own table (c0000_cmsg g_paramHkbState
+/// STATE_TYPE_UPPER_ACTION*): the tools' release-on-the-move too (its legs' run counts for
+/// GetLocomotionType, so W_StandMoveLowerStart fires once, not every frame).
+#[test]
+pub(crate) fn upper_action_states_are_the_scripts() {
+    if !crate::paths::extracted().join("hks_src/c0000_cmsg.lua").exists() {
+        return;
+    }
+    for s in ["GroundSubAttackCombo1ReleaseMove", "GroundSubAttackLockOnReleaseMove", "ItemGourdDrinkMove", "CrouchSubAttackCombo1Move", "DeflectGuardToStandMoveRun"] {
+        assert!(crate::player::is_upper_action(s), "{s}");
+    }
+    for s in ["GroundSubAttackCombo1", "StandIdle", "ItemGourdDrink", "Locomotion"] {
+        assert!(!crate::player::is_upper_action(s), "{s}");
+    }
+    // env 1105, the STATE_TYPE_STANDBY* states: the sprint's walk-out stops on letting go.
+    for s in ["StandMoveStartFromSprint", "StandMoveLoopFromSprint", "SprintLoop", "StandIdle", "GroundSpacialAttackHoldLoop"] {
+        assert!(crate::player::is_standby(s), "{s}");
+    }
+    for s in ["SprintStartFromStep_F", "GroundStep_F", "GroundAttackCombo1", "ItemGourdDrinkMove"] {
+        assert!(!crate::player::is_standby(s), "{s}");
+    }
+}

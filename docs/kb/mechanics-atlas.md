@@ -11,7 +11,7 @@ The ordered playthrough is also written up in `game-flow.md`.
 |---|---|---|---|
 | [flow](#flow) | 88 | 0/44/44 | 11/6/71 |
 | [frontend](#frontend) | 44 | 4/10/30 | 0/1/43 |
-| [movement](#movement) | 62 | 53/4/5 | 32/18/12 |
+| [movement](#movement) | 62 | 53/5/4 | 32/18/12 |
 | [combat](#combat) | 55 | 51/2/2 | 39/11/5 |
 | [armor](#armor) | 38 | 34/1/3 | 22/7/9 |
 | [deathblows](#deathblows) | 43 | 30/10/3 | 16/9/18 |
@@ -1767,17 +1767,17 @@ Most ground states ask the engine to stop Wolf at a ledge. Walking or standing n
 - Sources: data: fireguy-rustsekiro/extracted/hks_src/c0000_transition.lua; data: fireguy-rustsekiro/extracted/hks_src/c0000_cmsg.lua
 
 ### When walking off a ledge becomes a fall
-`movement.fall-state-entry` · data · confirmed · ours yes · his yes
+`movement.fall-state-entry` · exe · confirmed · ours partial · his yes
 
-Wolf enters the fall state only if airborne and, when walking or swimming, the fall height is at least 30 cm. Small steps down are walked.
-- Values: BEH_R_FALL: env(200) and g_beforeFireLand == -1 and (not moving or env(224) >= 30). env 224 is fall height in centimetres.
-- How: HKS g_ValidateReactionTable[BEH_R_FALL]; engine env 200/224.
+Wolf enters the fall state once the engine says he is falling (env 200). The script's 30 cm on-the-move test applies only to the aged form; for the normal Wolf the exe's ground contact decides, which keeps him grounded over a small drop.
+- Values: BEH_R_FALL: env(200) and g_beforeFireLand == -1 and (not aged, or aged and (not moving or env(224) >= 30)) - Lua `and` binds before `or`. env 224 = (peak Y - Y) x 100, whole cm (FUN_140b97880). env 200 (FUN_140b97970): not grounded (P+0xa2, held while probe P+0x920 <= 1.0) and (P+0x100 == 0 or airborne >= 1.0 s) and not F+0x88 bit 5.
+- How: HKS g_ValidateReactionTable[BEH_R_FALL]; exe env switch FUN_140b36410 case 200 -> FUN_140b97970, case 224 -> FUN_140b97880.
 - Check: Step off a 20 cm kerb: no fall animation. Off a 60 cm ledge: SelfFallStart plays.
-- Note: 2026-10-19 movement pass: ours keeps the move state over the first 30 cm of a walk-off (env 224 = height fallen, Smithbox HKS list GetFallHeight) and Wolf follows the floor down only 30 cm. sekiro-rs feeds env 224 from the last landing, which is not the fall in progress; not taken. Test atlas_fall_state_entry_needs_thirty_centimetres_on_the_move.
-- ours: `fireguy-rustsekiro/src/player.rs moving_locomotion, FALL_START_DROP; src/map.rs bodies_on_terrain`
+- Note: 2026-10-20: the earlier reading (30 cm on the move for everyone) missed the operator precedence. The ground probe P+0x920 is not identified; ours keeps 30 cm on the move as its stand-in (player.rs FALL_START_DROP, hks_wolf env 200).
+- ours: `fireguy-rustsekiro/src/player.rs moving_locomotion, FALL_START_DROP; src/hks_wolf.rs env 200 / 224; src/map.rs bodies_on_terrain`
 - his: `sekiro-rs/crates/sim/src/player.rs (env 224 cm)`
 - Needed by: `deathblows.plunge`, `stealth.deathblow-plunge`
-- Sources: data: fireguy-rustsekiro/extracted/hks_src/c0000_transition.lua; sekiro-rs-doc: sekiro-rs/docs/MOBILITY.md
+- Sources: data: fireguy-rustsekiro/extracted/hks_src/c0000_transition.lua; exe: FUN_140b97970, FUN_140b97880, FUN_140b36410
 
 ### Foot IK and generator callbacks
 `movement.foot-ik` · data · corrected · ours no · his no
@@ -2054,13 +2054,14 @@ The player script has no ladder state and no free climbing. Four objects carry a
 - Sources: data: fireguy-rustsekiro/extracted/json/params/ObjectParam.json; data: fireguy-rustsekiro/extracted/json/params/ObjActParam.json; sekiro-rs-doc: sekiro-rs/docs/MOBILITY.md
 
 ### Land-ready states on fast falls
-`movement.land-ready` · data · confirmed · ours no · his partial
+`movement.land-ready` · data · confirmed · ours yes · his partial
 
 A fast fall into the ground enters a land-ready pose first, for jumps and wire flights.
 - Values: LAND_READY_ENABLE_FALL_SPEED = -2000 cm/s (jump types 0 and 1 from jump, fall, wall-jump or free-fall states); LAND_WIRE_READY_ENABLE_FALL_SPEED = -1000 cm/s (wire move states).
 - How: HKS BEH_R_LAND_READY, BEH_R_LAND_WIRE_READY using env 3003 vertical speed (cm/s).
 - Check: Fall 15 m and watch for the ready pose before the land clip.
-- Note: Wire version is built in ours; jump version not separately verified. 2026-10-19 movement pass: neither ready pose plays in ours (GroundJumpLandReady_F / WireFallLandReady are exported but unused). env 248, which the validate needs, is not traced (sekiro-rs reads it as ground within one tick of the fall, not from game data); left out.
+- Note: Wire version is built in ours; jump version not separately verified. 2026-10-21: both ready poses play in ours from the script: env 248 = the exe's ground probe (physics +0x929, FUN_140bce730; feet within 0.3 m attach + probe radius, 0.4 m from the movement recording), env 3003 = vy x 1000 (mm/s). Replay of rec movement_clean: 5/5 land-ready events within a tick.
+- ours: `src/hks_wolf.rs answers (env 248, 3003)`
 - his: `sekiro-rs/crates/sim/src/player.rs (runs c0000 HKS)`
 - Needed by: `movement.grapple-landing`
 - Sources: data: fireguy-rustsekiro/extracted/hks_src/c0000_transition.lua; data: fireguy-rustsekiro/extracted/hks_src/c0000_define.lua

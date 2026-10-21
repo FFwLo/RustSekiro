@@ -152,18 +152,19 @@ pub(crate) fn grabs_with_a_blow_away_end_throw_wolf_down() {
     ] {
         let mut app = app();
         move_enemy_far(&mut app);
-        {
+        // The whole grab plays: the script's own grab end sets the landing's side
+        // (Selector_ProneDirection, c0000_transition 386-395).
+        let len = {
             let world = app.world_mut();
             world.resource_scope(|world, combat: Mut<Combat>| {
                 let mut a = world.query_filtered::<&mut Actor, With<Player>>().single_mut(world).unwrap();
                 a.play("Grabbed", grab);
-                a.t = (combat.player.length(grab) - 0.02).max(0.0);
-                a.prev_t = a.t;
                 a.hp = hp;
-            });
-        }
+                combat.player.length(grab)
+            })
+        };
         let mut seen = Vec::<String>::new();
-        for _ in 0..60 * 6 {
+        for _ in 0..(60.0 * (len + 6.0)) as usize {
             app.update();
             let s = player_state(&mut app).0;
             if seen.last() != Some(&s) {
@@ -290,7 +291,8 @@ pub(crate) fn resurrection_returns_wolf_at_half_hp() {
 }
 
 /// A small-blow posture break lands face down only from the back sector (HKS 1678-1684, the
-/// 4-way damage_angle): hit from behind the shoulder (its _B clip) it is still face up.
+/// 4-way damage_angle): hit from behind the shoulder (its _B clip) it is still face up. The
+/// script picks the side from the hit (env 222), as combat.rs hands it over.
 #[test]
 pub(crate) fn a_break_small_blow_from_the_side_lands_face_up() {
     for (back_sector, want) in [(false, "StandDamageBreakDown_FaceUp"), (true, "StandDamageBreakDown_FaceDown")] {
@@ -304,6 +306,8 @@ pub(crate) fn a_break_small_blow_from_the_side_lands_face_up() {
                 assert!(a.play_state(&combat.player, "StandDamageBreakSmallBlow_B"));
                 a.hit_from_back = true;
                 a.hit_back_quadrant = back_sector;
+                // DAMAGE_TYPE_DAMAGEBREAK, DAMAGE_LEVEL_SMALL_BLOW; DAMAGE_DIR_BACK or LEFT.
+                a.damage_env = Some(crate::enemy::DamageEnv { kind: 1027, level: 7, dir: if back_sector { 3 } else { 0 }, back_half: true, ..crate::enemy::DamageEnv::NONE });
             });
         }
         let mut next = None;
@@ -797,6 +801,40 @@ pub(crate) fn releasing_guard_while_moving_plays_the_move_run_end() {
     assert!(states.iter().any(|s| s == "DeflectGuardToStandMoveRun"), "{states:?}");
 }
 
+/// Stopping in the guard's run-out (W_StandMoveableAction) goes on in the standing end at the
+/// run-out's time (StartTime_01 = env 3063 1), so it ends soon after: pushing the stick again
+/// after that is a plain W_StandMoveStart, as in the recordings (rec 082459 @22340-22362), not
+/// a second run-out (W_StandMoveLowerStart) from a standing end that had restarted at 0.
+#[test]
+pub(crate) fn a_stop_late_in_the_guard_run_out_ends_with_its_clip() {
+    let mut app = app();
+    move_enemy_far(&mut app);
+    {
+        let mut pad = app.world_mut().resource_mut::<PadInput>();
+        pad.press(Action::Guard);
+        pad.guard_held = true;
+    }
+    for _ in 0..40 {
+        app.update();
+    }
+    app.world_mut().resource_mut::<PadInput>().stick = Vec2::new(0.0, -1.0);
+    app.world_mut().resource_mut::<PadInput>().guard_held = false;
+    let mut log = Vec::<String>::new();
+    for i in 0..90 {
+        // Let go 0.6 s into the run-out (40 ticks long), push again 0.4 s later.
+        app.world_mut().resource_mut::<PadInput>().stick = if (36..60).contains(&i) { Vec2::ZERO } else { Vec2::new(0.0, -1.0) };
+        app.update();
+        let s = player_state(&mut app).0;
+        let ev = app.world().get_non_send::<crate::hks_wolf::WolfScript>().map_or(String::new(), |w| w.fired.join(";"));
+        if !ev.is_empty() {
+            log.push(format!("{i} {s} {ev}"));
+        }
+    }
+    assert!(log.iter().any(|l| l.contains("W_StandMoveableAction")), "{log:?}");
+    let after: Vec<_> = log.iter().skip_while(|l| !l.contains("W_StandMoveableAction")).skip(1).collect();
+    assert!(after.first().is_some_and(|l| l.contains("W_StandMoveStart")), "{log:?}");
+}
+
 /// Runs a sprint and presses attack the first frame the sprint start is up, steering `stick`.
 pub(crate) fn sprint_attack_states(stick: Vec2) -> Vec<String> {
     let mut app = app();
@@ -1061,7 +1099,16 @@ pub(crate) fn a_sprint_jump_is_the_fast_long_jump() {
         pad.stick = Vec2::new(0.0, 1.0);
         pad.dodge_held = true;
     }
-    force_player(&mut app, "SprintLoop", 3.0);
+    // Into the sprint by a forward step, as in play: the landing's Selector_GroundJumpType is
+    // the step's (a sprint jump does not set it, HKS _SetJumpDirection is the ground jump's).
+    app.world_mut().resource_mut::<PadInput>().press(Action::Step);
+    for _ in 0..120 {
+        app.update();
+        if player_state(&mut app).0 == "SprintLoop" {
+            break;
+        }
+    }
+    assert_eq!(player_state(&mut app).0, "SprintLoop");
     app.world_mut().resource_mut::<PadInput>().press(Action::Jump);
     let mut seen = Vec::<String>::new();
     let mut fastest = 0.0f32;

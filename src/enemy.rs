@@ -104,12 +104,15 @@ pub struct DamageEnv {
     pub just_bound: i64,
     /// In the air at the hit (combat::enemy_is_aerial; the script's IsDamagedAerial: env 201 off).
     pub aerial: bool,
+    /// From behind the shoulder line (env 3032, the exe's 8-way sectors 2-5: the back half), set
+    /// with Wolf's plain hits; otherwise the back quarter (dir 3).
+    pub back_half: bool,
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
 impl DamageEnv {
     /// No damage this frame (DAMAGE_TYPE_NONE).
-    pub const NONE: Self = Self { kind: 99999, level: 0, dir: 2, guard_dir: -1, just_dir: -1, bound: 0, just_bound: 0, aerial: false };
+    pub const NONE: Self = Self { kind: 99999, level: 0, dir: 2, guard_dir: -1, just_dir: -1, bound: 0, just_bound: 0, aerial: false, back_half: false };
 }
 
 #[derive(Component)]

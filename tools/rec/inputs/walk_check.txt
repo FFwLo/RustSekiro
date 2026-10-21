@@ -1,0 +1,7 @@
+# First injection check: run forward 2 s, stop 1 s, right 1 s (confirms the stick's right sign), stop.
+0 stick 0 1
+120 stick 0 0
+180 stick 1 0
+240 stick 0 0
+270 free
+271 end

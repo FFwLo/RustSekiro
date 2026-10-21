@@ -153,12 +153,15 @@ pub struct AnimOffsets {
     /// offsetType 15: the chr's anim category (an NPC's anim group, its SpEffect's
     /// animIdOffset: a100 for the ground-grab zombie c1500; 0 = a000).
     pub anim: i64,
+    /// offsetType 11: the idle category (Wolf sheathed: a010, his CMSGs' second clip set).
+    pub idle: i64,
 }
 
 impl AnimOffsets {
     /// The offset an offsetType resolves to for this anim id (FUN_1409f1830): a hand's
     /// spAtkcategory when the chr has that anim (`has`), else its wepmotionCategory; idle and
-    /// none are a000. gap: the idle category array (chr+0x120 slot 2) and its +300 candidate.
+    /// none a000. gap: the idle category array (chr+0x120 slot 2) is not read: `idle` is 10
+    /// sheathed (the CMSGs' a010 clips), else 0; nor its +300 candidate.
     pub fn offset(&self, offset_type: i64, anim_id: i64, has: &mut dyn ClipDurations) -> Option<i64> {
         match offset_type {
             13 | 14 => {
@@ -170,6 +173,7 @@ impl AnimOffsets {
             }
             17 => self.throw,
             15 => Some(self.anim),
+            11 => Some(self.idle),
             _ => Some(0),
         }
     }
@@ -988,6 +992,63 @@ impl BehaviorRuntime {
 
     pub fn active_node_names(&self) -> HashSet<String> {
         self.graph.nodes.iter().enumerate().filter(|(i, _)| self.active[*i]).map(|(_, n)| n.name.clone()).collect()
+    }
+
+    /// The animId of the CMSG named `name` (`Event390000_CMSG`: 710000).
+    pub fn cmsg_anim_id(&self, name: &str) -> Option<i64> {
+        match &self.graph.nodes[self.graph.node_by_name(name)?].kind {
+            NodeKind::Cmsg(c) => Some(c.anim_id as i64),
+            _ => None,
+        }
+    }
+
+    /// Points the manual selectors above `name` at it (StandDeflectEasySmall_V1_F_CMSG: the
+    /// direction selector's Selector_DeflectDir to 0, the variation selector's
+    /// Selector_DeflectVariation to 0), as the exe sets them before the state's event. Returns the
+    /// variables set; empty when no selector holds it.
+    pub fn select_path(&mut self, name: &str) -> Vec<(String, f32)> {
+        let mut set = Vec::new();
+        let Some(mut child) = self.graph.node_by_name(name) else { return set };
+        loop {
+            let graph = self.graph.clone();
+            let parent = graph.nodes.iter().find_map(|n| match &n.kind {
+                NodeKind::ManualSelector(m) => m.generators.iter().position(|g| *g == Some(child)).map(|i| (n, i)),
+                _ => None,
+            });
+            let Some((node, index)) = parent else { break };
+            let Some(var) = node.bindings.iter().find(|b| b.member_path == "selectedGeneratorIndex" && b.binding_type == 0).map(|b| b.variable as usize) else { break };
+            if let Some(v) = self.variables.get_mut(var) {
+                if *v != index as f32 {
+                    *v = index as f32;
+                    self.dirty = true;
+                }
+                if let Some((name, _)) = self.var_ids.iter().find(|(_, i)| **i == var) {
+                    set.push((name.clone(), index as f32));
+                }
+            }
+            match graph.node_by_name(&node.name) {
+                Some(id) => child = id,
+                None => break,
+            }
+        }
+        set
+    }
+
+    /// The graph state that holds `name` through its manual selectors (VerticalGroundJumpFall_CMSG:
+    /// GroundJumpFall), for a state the graph names only by its CMSG.
+    pub fn holding_state(&self, name: &str) -> Option<String> {
+        let mut child = self.graph.node_by_name(name)?;
+        loop {
+            let up = self.graph.nodes.iter().find_map(|n| match &n.kind {
+                NodeKind::ManualSelector(m) if m.generators.contains(&Some(child)) => Some(Err(n)),
+                NodeKind::StateMachine(sm) => sm.states.iter().find(|s| s.generator == Some(child)).map(|s| Ok(s.name.clone())),
+                _ => None,
+            })?;
+            match up {
+                Ok(state) => return Some(state),
+                Err(node) => child = self.graph.node_by_name(&node.name)?,
+            }
+        }
     }
 
     pub fn is_node_active(&self, name: &str) -> bool {

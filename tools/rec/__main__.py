@@ -8,6 +8,9 @@
   ingest <rec> [--force]    build <rec>/rec.db (done automatically by summary / query)
   summary <rec> --cat <c>   movement combat enemies bosses skills items camera sound effects script all  (<= 60 lines)
   query <rec> <preset> [args] [--limit N]   presets: see `query <rec> help`
+  replay all [--cached]     every recording: the events that differ most (also in logs/replay_all.md)
+  replay <rec> [--from T --to T]   our sim plays the recorded inputs; HKS events matched + anim timeline (tools/rec/replay.py)
+  play <rec> <script>       scripted input while recording (tools/rec/inputs/<script>.txt; hook DLL with pad_play)
   compare <rec> --sim <sv1 trace csv>
   list                      rewrite docs/kb/recordings.md (one line per recording)
 
@@ -139,7 +142,12 @@ def cmd_list(_args):
              "   F7 speed 1/0.5/0.25, F3/F4 save/teleport position).",
              "4. memscope: attach sekiro.exe, scripts run rec2 with args {dir: <full folder path>, seconds: N}, timeout N + 60.",
              "5. `python -m tools.rec summary <rec> --cat every`, then `python -m tools.rec list` to refresh this file.",
-             "Turn SekiroTool's infinite items / emblems off for item tests (the summaries warn when they were on).", "",
+             "Turn SekiroTool's infinite items / emblems off for item tests (the summaries warn when they were on).",
+             "Our sim against a recording: `python -m tools.rec replay <rec> [--from T --to T]` plays its stick and buttons",
+             "into the sim, with the art and prosthetic Wolf had (their resident SpEffects) and, while locked on, a",
+             "stand-in at the lock target's place (the recorded enemy the camera looks at), and matches the W_ events",
+             "both HKS scripts fired; enemy, swim, teleport and recorder-stall stretches are left out (until both sides",
+             "play the same clip again, started within 2 ticks).", "",
              "| recording | date | what | categories | length | summaries |", "|---|---|---|---|---|---|"]
     for d in sorted(LOGS.glob("rec_*")):
         if not d.is_dir() or not (d / "frames.bin").exists():
@@ -164,7 +172,7 @@ def cmd_list(_args):
         lines.append(f"| {d.name} | {date} | {what} | {','.join(m.get('cats', []))} | {f'{secs:.0f} s' if secs else '-'} | {' '.join(sums) or '-'} |")
     out = REPO / "docs" / "kb" / "recordings.md"
     out.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    print(f"{out} ({len(lines) - 9} recordings)")
+    print(f"{out} ({len(lines) - 11} recordings)")
 
 
 def main():
@@ -201,6 +209,23 @@ def main():
         limit = int(opt(args, "--limit", 40))
         for line in run(resolve(args[0]), args[1] if len(args) > 1 else "help", args[2:], limit):
             print(line)
+        return
+    if cmd == "replay" and args and args[0] == "all":
+        from .replay import replay_all
+        lines = replay_all(LOGS, int(opt(args, "--limit", 25)), "--cached" in args)
+        (LOGS / "replay_all.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+        for line in lines:
+            print(line)
+        return
+    if cmd == "replay":
+        from .replay import replay
+        t0, t1 = opt(args, "--from"), opt(args, "--to")
+        for line in replay(resolve(args[0]), int(t0) if t0 else None, int(t1) if t1 else None, int(opt(args, "--limit", 12))):
+            print(line)
+        return
+    if cmd == "play":
+        from .play import play
+        print(play(resolve(args[0]), args[1]))
         return
     if cmd == "compare":
         from .compare import compare

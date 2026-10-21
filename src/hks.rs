@@ -25,6 +25,8 @@ pub struct Host {
     pub events: Vec<String>,
     /// The `act` ids called this frame.
     pub acts: Vec<i64>,
+    /// Their first number argument, the last call's (act(3025, angle): the step's tilt).
+    pub act_values: HashMap<i64, f64>,
     /// The env ids asked but not answered, since the last `clear_frame`.
     pub unanswered: BTreeSet<i64>,
     /// The behaviour graph's active nodes (`hkbIsNodeActive`), from `ScriptChr`'s graph.
@@ -37,6 +39,7 @@ impl Host {
     pub(crate) fn clear_frame(&mut self) {
         self.events.clear();
         self.acts.clear();
+        self.act_values.clear();
         self.unanswered.clear();
     }
 }
@@ -61,9 +64,12 @@ fn vnum(v: Option<&sekiro_hks::Value>) -> Option<f64> {
 
 impl sekiro_hks::Host for VmHost<'_> {
     fn env(&mut self, id: sekiro_hks::CommandId<'_>, args: &[sekiro_hks::Value]) -> sekiro_hks::Value {
-        // A named command (the aging check) is not answered: -1, as in `HksPlayer`.
+        // The one named command, the aging check "is an SpEffect with this behaviour ref on, its
+        // lasting time counted strictly" (c0000 BEH_R_CURE_AGING, the aged idle's end), is the
+        // ref check env 3036; any other name is not answered: -1, as in `HksPlayer`.
         let id = match id {
             sekiro_hks::CommandId::Number(n) => n as i64,
+            sekiro_hks::CommandId::Name("特殊効果発動中か_Behavior参照ID_寿命延長を厳密に取得") => 3036,
             sekiro_hks::CommandId::Name(_) => -1,
         };
         let arg = vnum(args.first()).map(|a| a as i64);
@@ -81,6 +87,9 @@ impl sekiro_hks::Host for VmHost<'_> {
             sekiro_hks::CommandId::Name(_) => -1,
         };
         self.0.acts.push(id);
+        if let Some(v) = vnum(args.first()) {
+            self.0.act_values.insert(id, v);
+        }
         if id == ACT_SET_VARIABLE
             && let (Some(name), Some(v)) = (args.first().and_then(|a| a.as_str()), vnum(args.get(1)))
         {
@@ -157,6 +166,15 @@ impl HksVm {
         vm.call_global(&mut vh, &format!("{state}_onUpdate"), &[])?;
         drop(vh);
         Ok(h.events.clone())
+    }
+
+    /// A script global's number (g_airSpecialAttackCount ...).
+    #[cfg(test)]
+    pub fn global_number(&self, name: &str) -> Option<f32> {
+        match self.vm.borrow().get_global(name) {
+            sekiro_hks::Value::Number(n) => Some(n),
+            _ => None,
+        }
     }
 
     /// Calls a script global if the script has it; false if not.

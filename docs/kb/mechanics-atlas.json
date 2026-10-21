@@ -18492,30 +18492,30 @@
   "id": "movement.fall-state-entry",
   "category": "movement",
   "title": "When walking off a ledge becomes a fall",
-  "summary": "Wolf enters the fall state only if airborne and, when walking or swimming, the fall height is at least 30 cm. Small steps down are walked.",
-  "values": "BEH_R_FALL: env(200) and g_beforeFireLand == -1 and (not moving or env(224) >= 30). env 224 is fall height in centimetres.",
-  "how": "HKS g_ValidateReactionTable[BEH_R_FALL]; engine env 200/224.",
+  "summary": "Wolf enters the fall state once the engine says he is falling (env 200). The script's 30 cm on-the-move test applies only to the aged form; for the normal Wolf the exe's ground contact decides, which keeps him grounded over a small drop.",
+  "values": "BEH_R_FALL: env(200) and g_beforeFireLand == -1 and (not aged, or aged and (not moving or env(224) >= 30)) - Lua `and` binds before `or`. env 224 = (peak Y - Y) x 100, whole cm (FUN_140b97880). env 200 (FUN_140b97970): not grounded (P+0xa2, held while probe P+0x920 <= 1.0) and (P+0x100 == 0 or airborne >= 1.0 s) and not F+0x88 bit 5.",
+  "how": "HKS g_ValidateReactionTable[BEH_R_FALL]; exe env switch FUN_140b36410 case 200 -> FUN_140b97970, case 224 -> FUN_140b97880.",
   "sources": [
    {
     "kind": "data",
     "ref": "fireguy-rustsekiro/extracted/hks_src/c0000_transition.lua"
    },
    {
-    "kind": "sekiro-rs-doc",
-    "ref": "sekiro-rs/docs/MOBILITY.md"
+    "kind": "exe",
+    "ref": "FUN_140b97970, FUN_140b97880, FUN_140b36410"
    }
   ],
-  "confidence": "data",
+  "confidence": "exe",
   "ours": {
-   "has": "yes",
-   "where": "fireguy-rustsekiro/src/player.rs moving_locomotion, FALL_START_DROP; src/map.rs bodies_on_terrain"
+   "has": "partial",
+   "where": "fireguy-rustsekiro/src/player.rs moving_locomotion, FALL_START_DROP; src/hks_wolf.rs env 200 / 224; src/map.rs bodies_on_terrain"
   },
   "his": {
    "has": "yes",
    "where": "sekiro-rs/crates/sim/src/player.rs (env 224 cm)"
   },
   "check": "Step off a 20 cm kerb: no fall animation. Off a 60 cm ledge: SelfFallStart plays.",
-  "note": "2026-10-19 movement pass: ours keeps the move state over the first 30 cm of a walk-off (env 224 = height fallen, Smithbox HKS list GetFallHeight) and Wolf follows the floor down only 30 cm. sekiro-rs feeds env 224 from the last landing, which is not the fall in progress; not taken. Test atlas_fall_state_entry_needs_thirty_centimetres_on_the_move.",
+  "note": "2026-10-20: the earlier reading (30 cm on the move for everyone) missed the operator precedence. The ground probe P+0x920 is not identified; ours keeps 30 cm on the move as its stand-in (player.rs FALL_START_DROP, hks_wolf env 200).",
   "needs": [],
   "verdict": "confirmed",
   "verify_reason": "BEH_R_FALL validate: env(200), g_beforeFireLand == -1, and for move or swim-move locomotion env(224) must be >= 30 (not < 30); the aging exclusion is the only extra."
@@ -18580,15 +18580,15 @@
   ],
   "confidence": "data",
   "ours": {
-   "has": "no",
-   "where": ""
+   "has": "yes",
+   "where": "src/hks_wolf.rs answers (env 248, 3003)"
   },
   "his": {
    "has": "partial",
    "where": "sekiro-rs/crates/sim/src/player.rs (runs c0000 HKS)"
   },
   "check": "Fall 15 m and watch for the ready pose before the land clip.",
-  "note": "Wire version is built in ours; jump version not separately verified. 2026-10-19 movement pass: neither ready pose plays in ours (GroundJumpLandReady_F / WireFallLandReady are exported but unused). env 248, which the validate needs, is not traced (sekiro-rs reads it as ground within one tick of the fall, not from game data); left out.",
+  "note": "Wire version is built in ours; jump version not separately verified. 2026-10-21: both ready poses play in ours from the script: env 248 = the exe's ground probe (physics +0x929, FUN_140bce730; feet within 0.3 m attach + probe radius, 0.4 m from the movement recording), env 3003 = vy x 1000 (mm/s). Replay of rec movement_clean: 5/5 land-ready events within a tick.",
   "needs": [],
   "verdict": "confirmed",
   "verify_reason": "LAND_READY_ENABLE_FALL_SPEED -2000 and LAND_WIRE_READY_ENABLE_FALL_SPEED -1000 are in c0000_define.lua and the two validate functions use env(3003) against them for jump/fall and wire-move states."

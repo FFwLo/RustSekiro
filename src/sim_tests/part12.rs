@@ -513,8 +513,9 @@ fn wolf_yaw(app: &mut App) -> f32 {
     q.single(w).unwrap().yaw
 }
 
-/// Running, the stick thrown back: the run quick turn (StandRunQuickTurn*180) turns Wolf on the
-/// spot instead of a wide circle at run speed, and he runs on the other way.
+/// Running, let go and the stick back inside the stop's first 9 frames: the run quick turn
+/// (StandRunQuickTurn*180) turns Wolf on the spot instead of a wide circle at run speed, and he
+/// runs on the other way.
 #[test]
 pub(crate) fn a_run_reversed_quick_turns_instead_of_circling() {
     let mut app = app();
@@ -524,6 +525,9 @@ pub(crate) fn a_run_reversed_quick_turns_instead_of_circling() {
     // Run along -Z.
     app.world_mut().resource_mut::<PadInput>().stick = Vec2::new(0.0, 1.0);
     run(&mut app, 90);
+    // Let go for a frame (the stop opens the turn, its TAE ref 14), then the stick back.
+    app.world_mut().resource_mut::<PadInput>().stick = Vec2::ZERO;
+    run(&mut app, 2);
     let start = player_actor(&mut app).3;
     app.world_mut().resource_mut::<PadInput>().stick = Vec2::new(0.0, -1.0);
     let mut states = Vec::new();
@@ -566,8 +570,38 @@ pub(crate) fn a_run_off_a_ledge_carries_on_into_the_fall() {
     let (s, _, airborne, at) = player_actor(&mut app);
     let moved = (at - before).with_y(0.0).length();
     println!("walk-off: {s} airborne {airborne}, {moved:.2} m in 0.2 s");
-    assert!(airborne && s == "FreeFall", "{s} {airborne}");
+    // The graph's BEH_R_FALL: W_SelfFallStart (a000_200000), then FreeFall.
+    assert!(airborne && (s == "FreeFall" || s == "SelfFallStart"), "{s} {airborne}");
     assert!(moved > 0.3, "fell straight down: {moved:.2} m");
+}
+
+/// Running, the stick thrown straight back with no let-go: no quick turn (the script's in-move turn
+/// needs a stop's TAE ref 14); the run swings round at the exe's 720 deg/s (FUN_1407da540), a
+/// half turn in about 0.25 s.
+#[test]
+pub(crate) fn a_run_thrown_straight_back_swings_round_at_the_turn_rate() {
+    let mut app = app();
+    move_enemy_far(&mut app);
+    run(&mut app, 10);
+    place_wolf(&mut app, Vec3::ZERO, 0.0, false);
+    app.world_mut().resource_mut::<PadInput>().stick = Vec2::new(0.0, 1.0);
+    run(&mut app, 120);
+    app.world_mut().resource_mut::<PadInput>().stick = Vec2::new(0.0, -1.0);
+    let mut states = Vec::new();
+    let mut turned_at = None;
+    for i in 0..40 {
+        app.update();
+        let s = player_actor(&mut app).0;
+        if states.last() != Some(&s) {
+            states.push(s);
+        }
+        if turned_at.is_none() && turn_between(wolf_yaw(&mut app), std::f32::consts::PI).abs() < 0.05 {
+            turned_at = Some(i + 1);
+        }
+    }
+    println!("thrown back: {states:?}, turned after {turned_at:?} ticks");
+    assert!(!states.iter().any(|s| s.contains("QuickTurn")), "{states:?}");
+    assert!(turned_at.is_some_and(|n| (12..=20).contains(&n)), "turned after {turned_at:?} ticks");
 }
 
 fn turn_between(from: f32, to: f32) -> f32 {
@@ -586,6 +620,8 @@ pub(crate) fn a_walk_reversed_turns_in_place_then_walks_on() {
     app.world_mut().resource_mut::<PadInput>().walk = true;
     app.world_mut().resource_mut::<PadInput>().stick = Vec2::new(0.0, 1.0);
     run(&mut app, 90);
+    app.world_mut().resource_mut::<PadInput>().stick = Vec2::ZERO;
+    run(&mut app, 2);
     let start = player_actor(&mut app).3;
     app.world_mut().resource_mut::<PadInput>().stick = Vec2::new(0.0, -1.0);
     let mut states = Vec::new();
@@ -1429,7 +1465,8 @@ pub(crate) fn divine_confetti_erases_the_ghost_barrier() {
     let world = app.world_mut();
     let a = world.query_filtered::<&Actor, Without<Player>>().iter(world).next().unwrap().clone();
     let combat = world.resource::<Combat>();
-    let atk = combat.player.attacks.values().next().unwrap().clone();
+    // One fixed attack (the map's order is random; not every row is a plain sword hit).
+    let atk = combat.player.attacks.iter().min_by_key(|(k, _)| k.as_str()).unwrap().1.clone();
     let (hp, posture) = crate::combat::ghost_barrier(combat, &a, &atk, &[]);
     assert!((hp - 0.33).abs() < 0.01 && posture == 1.0, "{hp} {posture}");
     let (hp, posture) = crate::combat::ghost_barrier(combat, &a, &atk, &[3451]);

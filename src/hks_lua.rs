@@ -79,6 +79,9 @@ impl HksPlayer {
                 let id = int(args.first()).unwrap_or(-1);
                 let host = &mut *h.borrow_mut();
                 host.acts.push(id);
+                if let Some(v) = num(args.get(1)) {
+                    host.act_values.insert(id, v);
+                }
                 if id == ACT_SET_VARIABLE
                     && let (Some(Value::String(name)), Some(v)) = (args.get(1), num(args.get(2)))
                 {
@@ -405,13 +408,14 @@ mod lockstep {
             let world = app.world_mut();
             world.query_filtered::<&mut Actor, With<Player>>().single_mut(world).unwrap().damage_env.take()
         };
-        let mut q = app.world_mut().query_filtered::<(&Actor, &Player), With<Player>>();
+        let mut q = app.world_mut().query_filtered::<(&Actor, &Player, &Transform), With<Player>>();
         let world = app.world();
-        let (a, p) = q.single(world).unwrap();
+        let (a, p, tf) = q.single(world).unwrap();
+        let feet = tf.translation.y - crate::player::CAPSULE_HALF_HEIGHT - crate::map::ground_y(tf.translation);
         let combat = world.resource::<Combat>();
         let config = world.resource::<crate::config::GameConfig>();
         let locked = world.resource::<crate::camera::LockOn>().target.is_some();
-        crate::hks_wolf::answers(h, a, p, combat, config, locked, pad, damage);
+        crate::hks_wolf::answers(h, a, p, combat, config, locked, pad, damage, Some(feet));
     }
 
     /// The behaviour graph c0000.hkx for the graph runtime (hkb_runtime).

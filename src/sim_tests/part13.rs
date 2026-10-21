@@ -23,7 +23,8 @@ fn lift(app: &mut App, drop: f32) -> f32 {
     t.translation.y
 }
 
-/// Atlas movement.fall-state-entry (HKS BEH_R_FALL: on the move, env 224 >= 30 cm): running off
+/// Atlas movement.fall-state-entry (env 200 keeps ground contact over a small walk-off; 30 cm
+/// stands in for the exe's ground probe, player.rs FALL_START_DROP): running off
 /// a 20 cm step stays in the move loop and lands without a fall; off 60 cm the fall starts once
 /// he has dropped 30 cm; standing still, any drop falls at once.
 #[test]
@@ -45,7 +46,7 @@ pub(crate) fn atlas_fall_state_entry_needs_thirty_centimetres_on_the_move() {
             app.update();
             let world = app.world_mut();
             let (a, t) = world.query_filtered::<(&Actor, &Transform), With<Player>>().single(world).unwrap();
-            if a.state == "FreeFall" && fell_at.is_none() {
+            if (a.state == "FreeFall" || a.state == "SelfFallStart") && fell_at.is_none() {
                 fell_at = Some(top - t.translation.y);
             }
             if !a.airborne {

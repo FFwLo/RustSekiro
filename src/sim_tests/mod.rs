@@ -30,6 +30,7 @@ pub(crate) use crate::player::{Action, PadInput, Player, PlayerPlugin, CAPSULE_H
 // part14: atlas combat pass tests (atlas ids in the names)
 // part15: atlas vfx + lighting pass tests (atlas ids in the names)
 // part16: atlas bosses pass tests (atlas ids in the names)
+// part17: replay_recording (ignored; tools/rec/replay.py drives it)
 // part11: 15 tests, a_mid_stride_loop_swap_does_not_burst_its_sounds .. throw_direction_effects_come_from_the_material_row
 
 mod part01;
@@ -48,6 +49,7 @@ mod part13;
 mod part14;
 mod part15;
 mod part16;
+mod part17;
 pub(crate) use part01::*;
 pub(crate) use part02::*;
 pub(crate) use part03::*;

@@ -20,8 +20,21 @@ FIELDS = {
     "posture": ("data", 0x48, "i32", True, "remaining posture 0x148 (counts down on damage)"),
     "posture_max": ("data", 0x4C, "i32", True, "MaxPosture 0x14C"),
     # pad (PlayerIns +0x58 PadManipulator for Wolf; ComManipulator for enemies)
-    "btn_attack": ("pad", 0xF4, "u8", True, "rec_windows.py"),
-    "btn_guard": ("pad", 0xF5, "u8", True, "rec_windows.py"),
+    # checked alone on rec_20261016_094418_buttons_calib_atk_guard: guard hold 330-530 and taps 994 /
+    # 1075 / 1169, attack 1699 / 1809 / 2216 / 2429 (same ticks as action_request +0x10 bits 0x04 / 0x01)
+    "btn_attack": ("pad", 0xF4, "u8", True, "rec_windows.py; action_request +0x10 bit 0x01"),
+    "btn_guard": ("pad", 0xF5, "u8", True, "rec_windows.py; action_request +0x10 bit 0x04"),
+    # action request module (block 8, module +0x80): input bits, decoded in ingest into btn_* columns.
+    # Calibrated on rec_20261016_093314_buttons_calib (one press per button, matched to HKS
+    # W_AddActionInput* / W_GroundStep / W_CrouchStart / W_ItemGourdDrink / W_GroundSubAttack ticks):
+    # +0x10 held bits (+0x20 pressed this tick, +0x28 released this tick): 0x01 attack, 0x02 prosthetic, 0x04 guard,
+    # 0x10 jump, 0x20 step / sprint button, 0x80 item, 0x8000 crouch (1-tick pulse); +0x14 0x01 combat art
+    "ar_held": ("action_request", 0x10, "u32", True, "input held bits (see above)"),
+    "ar_held2": ("action_request", 0x14, "u32", True, "0x01 combat art"),
+    "move_state": ("action_request", 0x184, "u32", True, "0x01 move input, 0x04 sprinting"),
+    # pad +0x10 / +0x18: move input as a world-space unit vector (x, z), 0 when the stick is idle
+    "move_x": ("pad", 0x10, "f32", True, "world x of the move input"),
+    "move_z": ("pad", 0x18, "f32", True, "world z of the move input"),
     # AiThink [[ChrIns+0x58]+0x340], block starts at +0xB740
     "ai_force_act": ("ai_think", 0x1, "u8", False, "ForceAct 0xB741"),
     "ai_act": ("ai_think", 0x2, "u8", False, "LastAct 0xB742 (battle script act)"),
@@ -30,6 +43,7 @@ FIELDS = {
     "lock_flag": ("chr_lock", 0x70, "u8", True, "ChrIns +0x1070 lock-on byte (move_log.lua; 0/1 toggles live 2026-10-15)"),
     "lock_target": ("chr_lock", 0x1E4, "u32", False, "PlayerIns +0x11E4 target handle? stayed 0xFFFFFFFF while locked (rec_20261015_191200) - use lock_flag"),
     "handle": ("chr_head", 0x8, "u32", True, "ChrIns +0x8"),
+    "rm_scale": ("chr_rm", 0xC, "f32", False, "ChrIns +0x2fc root-motion scale (FUN_1407f0a70, TAE 760); 1 = normal"),
     # resist module (+0x20)
     "poison": ("resist", 0x10, "f32", False, "ChrResistOffsets"),
     "burn": ("resist", 0x18, "f32", False, ""),

@@ -79,10 +79,69 @@ def movement(db, rec):
     if pairs:
         L += ["", "Falls (vertical speed below -3 m/s): start tick, anim at start / end, ms, drop m"]
         L += _table(["tick", "start anim", "end anim", "ms", "drop"], pairs)
+    # HKS FireEvent rows carry the lua state, not the character: Wolf's state is the one firing input / stand events
+    wl = db.execute("SELECT raw FROM fx WHERE kind = 'hks' AND (other LIKE 'W_AddActionInput%' OR other LIKE 'W_Stand%') GROUP BY raw ORDER BY count(*) DESC LIMIT 1").fetchone()
+    if wl:
+        ev = db.execute("SELECT tick, event FROM hks_events WHERE lua = ? ORDER BY tick", (wl[0],)).fetchall()
+        cnt = defaultdict(int)
+        for r in ev:
+            cnt[r["event"]] += 1
+        L += ["", f"Wolf HKS events (hkbFireEvent, {len(ev)} total; view hks_events): "
+              + ", ".join(f"{k} x{n}" for k, n in sorted(cnt.items(), key=lambda x: -x[1])[:24])]
+        # airborne = from a jump / fall start event until the next landing / stand event (Wolf's lua state)
+        air, up = [], None
+        for r in ev:
+            e = r["event"]
+            if e.startswith(("W_Land", "W_Stand", "W_Sprint", "W_Idle")) or "LandReady" in e:
+                if up is not None:
+                    air.append((up, r["tick"]))
+                up = None
+            elif up is None and (("Jump" in e and "Ready" in e and "Land" not in e) or "FallStart" in e or e == "W_AirKick"):
+                up = r["tick"]
+        pr = db.execute("SELECT tick, text FROM events WHERE kind = 'press' AND slot = 0 ORDER BY tick").fetchall()
+        if pr:
+            pc = defaultdict(int)
+            for r in pr:
+                pc[r["text"]] += 1
+            aj = [r["tick"] for r in pr if r["text"] == "jump" and any(a + 6 < r["tick"] <= b for a, b in air)]
+            L += [f"- presses per button (events kind press/release): " + ", ".join(f"{k} x{n}" for k, n in sorted(pc.items(), key=lambda x: -x[1])),
+                  f"- jump presses while airborne (> 0.1 s after a jump / fall start, before landing): {len(aj)}" + (f" at {' '.join(map(str, aj[:20]))}" if aj else "")]
+        for label, pat in (("air kick", "W_AirKick"), ("jump input", "W_AddActionInputJump"), ("step", "W_GroundStep"), ("deflect start", "%ToDeflectGuard%")):
+            ts = [r["tick"] for r in ev if (r["event"] == pat if "%" not in pat else pat.strip("%") in r["event"])]
+            if ts:
+                L.append(f"- {label} ticks ({len(ts)}): " + " ".join(map(str, ts[:30])) + (" ..." if len(ts) > 30 else ""))
+    L += _movement_hooks(db)
     gs = db.execute("SELECT DISTINCT round(game_speed, 3) FROM globals WHERE game_speed IS NOT NULL").fetchall()
     if gs and any(abs(g[0] - 1) > 1e-3 for g in gs):
         L += ["", f"Game speed values seen: {[g[0] for g in gs]} (timings above are wall-clock; slow-mo stretches them)"]
     return L
+
+
+def _movement_hooks(db):
+    """Fall tests, TAE 920 launches, homing solves, root-motion scale (newer hooks; empty when absent)."""
+    L = []
+    fl = db.execute("""SELECT tick, who, id, sub, other FROM fx WHERE kind = 'fall' ORDER BY tick""").fetchall()
+    if fl:
+        L += [f"- fall kill tests (fall hook FUN_14084e5d0: tick who height HitMtrl kill), {len(fl)}: "
+              + "; ".join(f"{r['tick']} {r['who']} {float(r['other']):.2f} m mtrl {r['id']} {'KILL' if r['sub'] else 'ok'}"
+                          for r in fl[:12])]
+    fd = db.execute("SELECT tick, who, other FROM fx WHERE kind = 'falldmg' ORDER BY tick LIMIT 8").fetchall()
+    if fd:
+        L += ["- fall damage calls (falldmg hook FUN_1408433f0, outputs p1..p5): "
+              + "; ".join(f"{r['tick']} {r['who']} {r['other'][:70]}" for r in fd)]
+    t9 = db.execute("""SELECT who, id, count(*) n, group_concat(DISTINCT anim) an FROM fx WHERE kind = 'tae920'
+                       GROUP BY who, id ORDER BY n DESC LIMIT 10""").fetchall()
+    if t9:
+        L += ["- TAE 920 velocity-change rows applied (who row xN anims): "
+              + "; ".join(f"{r['who']} {r['id']} x{r['n']} ({(r['an'] or '-')[:40]})" for r in t9)]
+    hm = db.execute("SELECT tick, who, id, sub, other FROM fx WHERE kind = 'homing' ORDER BY tick LIMIT 6").fetchall()
+    if hm:
+        L += ["- homing solves (tick who mode ok from/to/vel): " + "; ".join(f"{r['tick']} {r['who']} m{r['id']} ok{r['sub']} {r['other'][:90]}" for r in hm)]
+    rm = db.execute("""SELECT slot, count(*) n, min(rm_scale) lo, max(rm_scale) hi FROM frames
+                       WHERE rm_scale IS NOT NULL AND abs(rm_scale - 1) > 0.001 GROUP BY slot""").fetchall()
+    if rm:
+        L += ["- root-motion scale != 1 (ChrIns +0x2fc, TAE 760): " + "; ".join(f"slot {r['slot']} {r['n']} ticks {r['lo']:.2f}..{r['hi']:.2f}" for r in rm)]
+    return ["", "Movement hooks:"] + L if L else []
 
 
 def combat(db, rec):
@@ -171,7 +230,7 @@ def enemies(db, rec, title="enemies"):
     return L
 
 
-CHR_DIR = Path(__file__).resolve().parents[3] / "shinobi-combat" / "extracted" / "chr"
+CHR_DIR = Path(__file__).resolve().parents[2] / "extracted" / "chr"
 
 
 def _siblings(rec):
@@ -400,6 +459,30 @@ def script(db, rec):
     return L
 
 
+def _sp_events(db):
+    """Event-driven SpEffect adds / removes (sp_add / sp_del hooks): the short ones polling misses."""
+    rows = db.execute("SELECT tick, kind, who, id, other FROM fx WHERE kind IN ('sp_add', 'sp_del') ORDER BY tick").fetchall()
+    if not rows:
+        return []
+    on, short, n = {}, defaultdict(list), defaultdict(int)
+    for r in rows:
+        k = (r["who"], r["id"])
+        if r["kind"] == "sp_add":
+            on[k] = r["tick"]
+            n[k] += 1
+        elif k in on:
+            d = r["tick"] - on.pop(k)
+            if d <= 6:
+                short[k].append(d)
+    from .names import speffect
+    L = ["", f"SpEffect add / remove events (sp_add / sp_del hooks, {len(rows)} rows); applied <= 6 ticks (who, id, times, ticks):"]
+    L += [f"- {k[0]} {speffect(k[1])} x{len(v)} ({','.join(map(str, v[:6]))})" for k, v in sorted(short.items(), key=lambda x: -len(x[1]))[:12]]
+    wolf = sorted(((c, k[1]) for k, c in n.items() if k[0] == "wolf"), reverse=True)[:12]
+    if wolf:
+        L.append("- Wolf adds (id x times): " + ", ".join(f"{i} x{c}" for c, i in wolf))
+    return L
+
+
 def effects(db, rec):
     L = _head(db, rec, "effects (VFX, bullets, TAE events, HKS events)")
     rows = db.execute("""SELECT who, anim, id, count(*) n, avg(at_ms) at FROM fx WHERE kind = 'vfx'
@@ -422,6 +505,7 @@ def effects(db, rec):
     h = db.execute("SELECT other, count(*) n FROM fx WHERE kind = 'hks' GROUP BY other ORDER BY n DESC LIMIT 30").fetchall()
     if h:
         L += ["", "HKS events fired (hkbFireEvent, all characters): " + ", ".join(f"{r['other']} x{r['n']}" for r in h)]
+    L += _sp_events(db)
     if len(L) <= 3:
         L.append("No effect hook data (record with the hit / tae / bullet / vfx / hks hooks).")
     return L

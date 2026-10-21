@@ -238,6 +238,9 @@ pub struct Actor {
     pub move_index: u8,
     pub move_dir: u8,
     pub move_start: f32,
+    /// The graph's own move start where it picks another than move_clip(true): the landing's
+    /// (StandMoveStartFromLand* a000_00041x), the free fall's (a000_000110). Cleared by play.
+    pub move_start_clip: Option<String>,
     /// Weapon style None (TAE 32 SetWeaponStyle): the sword is sheathed.
     pub sheathed: bool,
     /// Crouching (HKS STYLE_TYPE_CROUCH): idle and locomotion use the Crouch* clips, the stand
@@ -392,6 +395,7 @@ impl Actor {
             move_index: 0,
             move_dir: 0,
             move_start: 0.0,
+            move_start_clip: None,
             sheathed: false,
             crouch: false,
             twist: 0.0,
@@ -438,6 +442,7 @@ impl Actor {
         }
         self.state = state.to_string();
         self.anim = to;
+        self.move_start_clip = None;
         self.t = 0.0;
         self.prev_t = 0.0;
         self.hits_done.clear();
@@ -516,7 +521,7 @@ impl Actor {
     /// the loop on the action's clock.
     pub fn locomotion_clip_at(&self, t: f32) -> (String, f32, bool) {
         if self.state == "Locomotion" && t < self.move_start {
-            (self.move_clip(true), t, false)
+            (self.move_start_clip.clone().unwrap_or_else(|| self.move_clip(true)), t, false)
         } else if self.state == "Locomotion" {
             (self.move_clip(false), t - self.move_start, true)
         } else {
@@ -562,10 +567,15 @@ impl Actor {
     /// reading the TAE of what is on screen (crouch's stealth SpEffect 109200 rides on the crouch
     /// idle / move clips, the walk's MOVING_WALK ref on the walk).
     pub fn shown_clip(&self, d: &CharData) -> (String, f32) {
+        self.shown_clip_at(d, self.t)
+    }
+
+    /// The clip on screen at clip time `t` (the last frame's: `prev_t`).
+    pub fn shown_clip_at(&self, d: &CharData, t: f32) -> (String, f32) {
         if !self.anim.is_empty() {
-            return (self.anim.clone(), self.t);
+            return (self.anim.clone(), t);
         }
-        let (key, t) = self.proc_clip(self.t);
+        let (key, t) = self.proc_clip(t);
         let len = d.length(&key);
         (key, if len > 0.0 { t.rem_euclid(len) } else { t })
     }

@@ -398,6 +398,8 @@ pub(crate) fn a_wire_landing_with_the_stick_held_runs_on() {
     println!("{seen:?}");
     assert!(!seen.iter().any(|s| s == "LandWireMove"), "{seen:?}");
     let i = seen.iter().position(|s| s.contains("WireMoveStart")).expect("no move start");
+    // The script's land-ready pose (BEH_R_LAND_WIRE_READY, env 248's probe) comes first.
+    let i = i + usize::from(seen.get(i + 1).is_some_and(|s| s == "WireFallLandReady"));
     assert_eq!(seen.get(i + 1).map(|s| s.as_str()), Some("Locomotion"), "{seen:?}");
 }
 
@@ -427,7 +429,8 @@ pub(crate) fn a_free_fall_with_the_stick_held_runs_on() {
             }
             app.update();
             let (s, ..) = player_state(&mut app);
-            if s != "FreeFall" {
+            // (the land-ready pose, BEH_R_LAND_READY, is still the fall)
+            if s != "FreeFall" && !s.contains("LandReady") {
                 landed = Some(s);
                 break;
             }
@@ -462,13 +465,14 @@ pub(crate) fn a_twenty_metre_fall_lands_long_stiff() {
             app.update();
             let world = app.world_mut();
             let a = world.query_filtered::<&Actor, With<Player>>().single(world).unwrap();
-            if a.state != "FreeFall" {
+            if a.state != "FreeFall" && !a.state.contains("LandReady") {
                 landed = Some((a.state.clone(), a.anim.clone()));
                 break;
             }
         }
         let (state, anim) = landed.expect("landed");
-        assert_eq!(state, "LandFreeFall", "drop {drop} held {held}");
+        // The graph names the long-stiff one by its CMSG (Selector_LandStiff LONG).
+        assert_eq!(state, if want == "a000_200021" { "LandFreeFallLongStiff" } else { "LandFreeFall" }, "drop {drop} held {held}");
         assert_eq!(anim, want, "drop {drop} held {held}");
     }
 }

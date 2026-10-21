@@ -253,10 +253,6 @@ pub(crate) fn the_mist_raven_leap_rises_and_falls() {
 pub(crate) fn tools_work_in_the_air() {
     use crate::prosthetic::hks;
     let none = |_: i64| false;
-    assert_eq!(hks::air_press(71, true, 1, false, &none), None);
-    assert_eq!(hks::air_press(70, true, 1, false, &none), Some(("AirSubAttackCombo1", false)));
-    // Divine Abduction without ref 309: the "071 or 077" branch (HKS 3083), counted (round 49).
-    assert_eq!(hks::air_press(77, true, 0, false, &none), Some(("AirSubAttackCombo1", true)));
     // Validate 6220's flamethrower clause (round 50): inside ref 329 only a 072 with ref 325.
     let r329 = |r: i64| r == hks::REF_ONLY_FLAMETHROWER_CANCEL;
     let r329_325 = |r: i64| r == hks::REF_ONLY_FLAMETHROWER_CANCEL || r == hks::REF_WEP_ENABLE_SUB_ATTACK_HOLD;
@@ -266,12 +262,6 @@ pub(crate) fn tools_work_in_the_air() {
     let r311 = |r: i64| r == hks::REF_ENABLE_PRESS_SUB_ATTACK;
     assert!(hks::held_press(76, true, true, &r311));
     assert!(!hks::held_press(76, false, true, &r311) && !hks::held_press(70, true, true, &r311));
-    assert_eq!(hks::air_press(72, false, 0, false, &none), Some(("SubAttackFailedAir", false)));
-    // The start lands as the game's misspelt LandAirSubAttacStart (403050) from the same time
-    // while ref 201 is up, else from the loop's landing.
-    assert_eq!(hks::air_land(73, "AirSubAttackStart", true), Some(("LandAirSubAttacStart", true)));
-    assert_eq!(hks::air_land(73, "AirSubAttackStart", false), Some(("LandAirSubAttackLoop", false)));
-    assert_eq!(hks::air_land(70, "AirSubAttackLoop", false), Some(("LandAirSubAttackLoop", false)));
     for (tool, want) in [(70000, "AirSubAttackCombo1"), (73000, "AirSubAttackStart"), (74000, "AirSubAttackMoveAtemiReady"), (76000, "AirSubAttackGuardStart"), (79000, "AirSubAttackCombo1")] {
         let mut app = app();
         {
@@ -600,7 +590,7 @@ pub(crate) fn shadowrush_jumps_off_the_hit() {
     assert_eq!(spent, 2, "{states:?}");
 }
 
-/// The art pressed in a jump (BEH_A_AIR_SP_ATTACK, `air_art_state` / `air_art_land`): Whirlwind
+/// The art pressed in a jump (BEH_A_AIR_SP_ATTACK, the script's): Whirlwind
 /// Slash (100) AirSpecialAttack -> LandAirSpecialAttack; Nightjar Slash (101) AirSpecialAttackStart
 /// -> its landing; One Mind (104) the air hold, let go -> AirSpacialAttackHoldEnd; Sakura Dance (110)
 /// bounces off the floor (ref 288: AirSpecialAttackLandingJumpReady -> ...LandingJumpStart ->
@@ -675,8 +665,6 @@ pub(crate) fn arts_in_the_air() {
     let seen = run_with(7700, None, 1, 0);
     assert!(has(&seen, "AirSpecialAttackStartNoResource"), "7700 no emblems: {seen:?}");
     assert!(seen.iter().any(|s| s.ends_with("NoResource") && s != "AirSpecialAttackStartNoResource"), "7700 no emblems lands: {seen:?}");
-    // Once per jump (g_airSpecialAttackCount, also counted by the ground leap).
-    assert_eq!(crate::player::air_art_state(110, 0, true, 1, false), None);
     for seen in [run(5100, None, 1), run(7700, None, 1)] {
         assert_eq!(seen.last().map(String::as_str), Some("StandIdle"), "{seen:?}");
     }
@@ -752,11 +740,11 @@ pub(crate) fn sakura_dances_ground_leap_counts_its_air_use() {
     for _ in 0..30 {
         app.update();
         if player_state(&mut app).0 == "GroundSpecialAttackJumpReady" {
-            count = Some(app.world_mut().query::<&Player>().single(app.world()).unwrap().air_art_count);
+            count = app.world().get_non_send::<crate::hks_wolf::WolfScript>().and_then(|s| s.global_number("g_airSpecialAttackCount"));
             break;
         }
     }
-    assert_eq!(count, Some(1));
+    assert_eq!(count, Some(1.0));
 }
 
 /// One art use from idle: equips `art` with `emblems` Spirit Emblems, presses attack + guard and
@@ -1386,28 +1374,6 @@ pub(crate) fn monk_phantoms_come_and_go() {
         }
     }
     assert!(left, "message 70 did not end its turn");
-}
-
-/// The Mist Raven's leap direction (_SetJumpDirection, PRM_GROUND_JUMP_*_STICK_RANGE): forward is
-/// +-18.75 deg, an exact border between the side sectors falls to B, no stick = V.
-#[test]
-pub(crate) fn mist_raven_leap_sectors_follow_the_hks() {
-    use crate::prosthetic::hks::jump_start;
-    for (a, want) in [
-        (None, "SubAttackJumpStart_V"),
-        (Some(18.75), "SubAttackJumpStart_F"),
-        (Some(-18.0), "SubAttackJumpStart_F"),
-        (Some(20.0), "SubAttackJumpStart_FR"),
-        (Some(90.0), "SubAttackJumpStart_R"),
-        (Some(67.5), "SubAttackJumpStart_B"),
-        (Some(150.0), "SubAttackJumpStart_BR"),
-        (Some(180.0), "SubAttackJumpStart_B"),
-        (Some(-150.0), "SubAttackJumpStart_BL"),
-        (Some(-90.0), "SubAttackJumpStart_L"),
-        (Some(-40.0), "SubAttackJumpStart_FL"),
-    ] {
-        assert_eq!(jump_start(a), want, "{a:?}");
-    }
 }
 
 /// env(3033) through the data (`combat::action_unlocked`): with `unlock_all_moves` off only the

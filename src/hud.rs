@@ -356,7 +356,7 @@ fn res_fill(player: Query<&crate::player::Player>, config: Res<crate::config::Ga
         if *v != want {
             *v = want;
         }
-        let h = Val::Percent(if on { share.clamp(0.0, 1.0) * 100.0 } else { 0.0 });
+        let h = Val::Percent(if on { share.clamp(0.0, 1.0).max(0.0) * 100.0 } else { 0.0 });
         if n.height != h {
             n.height = h;
         }
@@ -429,7 +429,7 @@ fn update_player_hud(
     mut frames: Query<&mut Node, (Without<HpFill>, Without<HpTrail>, Without<PostureFill>, Without<ResNode>)>,
 ) {
     let Some((a, p)) = player.iter().next() else { return };
-    let f = (a.hp / a.hp_max).clamp(0.0, 1.0);
+    let f = share(a.hp, a.hp_max);
     step_trail(&mut trail, f, time.delta_secs());
     let shown = &trail.0;
     for mut n in &mut hp {
@@ -448,7 +448,7 @@ fn update_player_hud(
             }
         }
     }
-    let pf = (a.posture / a.posture_max).clamp(0.0, 1.0);
+    let pf = share(a.posture, a.posture_max);
     for (pfl, mut n, mut bg) in &mut posture {
         if pfl.0 == Side::Player {
             n.width = Val::Percent(pf * 100.0);
@@ -668,7 +668,7 @@ fn update_boss_hud(
         *trail = (1.0, 0.0);
         return;
     };
-    let f = (a.hp / a.hp_max).clamp(0.0, 1.0);
+    let f = share(a.hp, a.hp_max);
     *boss_posture_hold = if a.posture > 0.005 * a.posture_max { SP_MIN_DISP_TIME } else { (*boss_posture_hold - time.delta_secs()).max(0.0) };
     for mut v in &mut posture_rows {
         let want = if *boss_posture_hold > 0.0 { Visibility::Inherited } else { Visibility::Hidden };
@@ -683,7 +683,7 @@ fn update_boss_hud(
     for mut n in &mut hp_trail {
         n.width = Val::Percent(trail.0 * 100.0);
     }
-    let pf = (a.posture / a.posture_max).clamp(0.0, 1.0);
+    let pf = share(a.posture, a.posture_max);
     for (mut n, mut img) in &mut posture {
         n.width = Val::Percent(pf * 100.0);
         img.color = posture_tint(pf);
@@ -900,7 +900,7 @@ fn update_enemy_hud(
     }
     for (f, mut n) in &mut hp {
         if let Ok((_, a, ..)) = enemies.get(f.0) {
-            n.width = Val::Percent((a.hp / a.hp_max).clamp(0.0, 1.0) * 100.0);
+            n.width = Val::Percent(share(a.hp, a.hp_max) * 100.0);
         }
     }
     for (d, mut n, mut img) in &mut dots {
@@ -925,7 +925,7 @@ fn update_enemy_hud(
     }
     for (f, mut n, mut bg) in &mut posture {
         if let Ok((_, a, ..)) = enemies.get(f.0) {
-            let pf = (a.posture / a.posture_max).clamp(0.0, 1.0);
+            let pf = share(a.posture, a.posture_max);
             n.width = Val::Percent(pf * 100.0);
             bg.0 = posture_color(pf);
         }
@@ -1083,7 +1083,7 @@ fn flash_counters(
             t.0 = s;
         }
     }
-    let w = Val::Percent(100.0 * crate::experience::fill(&config.player).clamp(0.0, 1.0));
+    let w = Val::Percent(100.0 * crate::experience::fill(&config.player).clamp(0.0, 1.0).max(0.0));
     for mut n in &mut fill {
         if n.width != w {
             n.width = w;
@@ -1292,6 +1292,11 @@ impl MarkClip {
 }
 
 /// A linear key track (frame, value) at frame `f`.
+/// A bar's filled share, 0 to 1; 0 for a max of 0 (a NaN UI size panics in bevy_ui's layout).
+fn share(v: f32, max: f32) -> f32 {
+    (v / max).clamp(0.0, 1.0).max(0.0)
+}
+
 fn keys(track: &[(f32, f32)], f: f32) -> f32 {
     let i = track.iter().rposition(|k| k.0 <= f).unwrap_or(0);
     match track.get(i + 1) {
@@ -1712,7 +1717,7 @@ fn update_stealth(
         let color = color.with_alpha(color.alpha() * fade);
         for (f, mut fnode) in &mut fills {
             if f.0 == m.enemy {
-                fnode.height = Val::Percent(w.clamp(0.0, 1.0) * 100.0);
+                fnode.height = Val::Percent(w.clamp(0.0, 1.0).max(0.0) * 100.0);
             }
         }
         for (b, mut bnode, mut img) in &mut brushes {

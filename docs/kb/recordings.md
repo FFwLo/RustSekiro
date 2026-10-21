@@ -5,7 +5,7 @@ One line per recording: `python -m tools.rec list` rewrites this file. Read a su
 (cached in `<rec>/summary/<cat>.md`); drill down with `python -m tools.rec query <rec> help`.
 Folder: `..\memscope-data\logs`. Recorder: `tools/memscope/rec2.lua` (v1: recorder.lua).
 
-How to record (one person plays, the session records):
+How to record (the user plays, the session records):
 1. Start Sekiro with the hook DLL: from `..\me3` run `bin\me3.exe launch -p sekiro-rec.me3`;
    `me3\sekiro-rec\sv1_rec_hooks.log` lists the installed hooks.
 2. `python -m tools.rec install`, then `python -m tools.rec new <name> --note "..." --cats a,b` (prints the folder).
@@ -14,14 +14,19 @@ How to record (one person plays, the session records):
 4. memscope: attach sekiro.exe, scripts run rec2 with args {dir: <full folder path>, seconds: N}, timeout N + 60.
 5. `python -m tools.rec summary <rec> --cat every`, then `python -m tools.rec list` to refresh this file.
 Turn SekiroTool's infinite items / emblems off for item tests (the summaries warn when they were on).
+Our sim against a recording: `python -m tools.rec replay <rec> [--from T --to T]` plays its stick and buttons
+into the sim, with the art and prosthetic Wolf had (their resident SpEffects) and, while locked on, a
+stand-in at the lock target's place (the recorded enemy the camera looks at), and matches the W_ events
+both HKS scripts fired; enemy, swim, teleport and recorder-stall stretches are left out (until both sides
+play the same clip again, started within 2 ticks).
 
 | recording | date | what | categories | length | summaries |
 |---|---|---|---|---|---|
-| rec_20261008_041541 | 2026-10-08 | v1 recorder |  | 330 s | - |
-| rec_20261008_044802 | 2026-10-08 | v1 recorder |  | 330 s | - |
-| rec_20261008_050912 | 2026-10-08 | v1 recorder |  | 330 s | - |
-| rec_20261008_051450 | 2026-10-08 | v1 recorder |  | 330 s | - |
-| rec_20261008_054259 | 2026-10-08 | v1 recorder |  | 330 s | - |
+| rec_20261008_041541 | 2026-10-08 | v1 recorder |  | 330 s | movement |
+| rec_20261008_044802 | 2026-10-08 | v1 recorder |  | 330 s | movement |
+| rec_20261008_050912 | 2026-10-08 | v1 recorder |  | 330 s | movement |
+| rec_20261008_051450 | 2026-10-08 | v1 recorder |  | 330 s | movement |
+| rec_20261008_054259 | 2026-10-08 | v1 recorder |  | 330 s | combat movement |
 | rec_20261015_181643_first_test | 2026-10-15 18:16 | first live test: walk, hits, guard, gourd, F9 | movement,combat,items | 60 s | all bosses camera combat enemies items movement skills sound |
 | rec_20261015_182811_combat_regular | 2026-10-15 18:28 | combat vs one regular enemy: attacks, guard, deflect, hits taken, mikiri/jump, deathblow | combat,enemies,movement | 164 s | all bosses camera combat enemies items movement skills sound |
 | rec_20261015_184118_skills_tools | 2026-10-15 18:41 | prosthetics + combat arts, each used several times near an enemy | skills,combat,items | 600 s | all bosses camera combat enemies items movement skills sound |
@@ -48,6 +53,16 @@ Turn SekiroTool's infinite items / emblems off for item tests (the summaries war
 | rec_20261016_001225_boss_owl | 2026-10-16 00:12 | boss: Great Shinobi Owl (c5060_0000, row 50600000), all hooks | bosses,combat,effects,sound,script | 594 s | all bosses camera combat effects enemies items movement script skills sound |
 | rec_20261016_002433_boss_true_monk | 2026-10-16 00:24 | boss: True Corrupted Monk (c5000_0000, row 50000000), all hooks | bosses,combat,effects,sound,script | 859 s | all bosses camera combat effects enemies items movement script skills sound |
 | rec_20261016_004230_boss_headless_ape | 2026-10-16 00:42 | boss: Headless Guardian Ape (c5100_0100) + its mate (c5100_0010), win, all hooks | bosses,combat,effects,sound,script | 417 s | all bosses camera combat effects enemies items movement script skills sound |
+| rec_20261016_070725_boss_divine_dragon | 2026-10-16 | boss: Old Dragons (c5300) + tree tentacles (c5310) + Divine Dragon (c5200), win, all hooks; stopped via inbox (no key helper) |  | 578 s | all bosses camera combat effects enemies items movement script skills sound |
+| rec_20261016_072651_boss_demon_of_hatred | 2026-10-16 | boss: Demon of Hatred (c7020), win, all 3 phases, all hooks |  | 952 s | all bosses camera combat effects enemies items movement script skills sound |
+| rec_20261016_074559_boss_owl_father | 2026-10-16 | boss: Owl (Father) (c5060_1010), win, both phases, all hooks |  | 1008 s | all bosses camera combat effects enemies items movement script skills sound |
+| rec_20261016_080607_boss_tomoe_genichiro_isshin | 2026-10-16 | boss: Genichiro Way of Tomoe (c7110) then Isshin the Sword Saint (c5400), win, all phases, all hooks |  | 962 s | all bosses camera combat effects enemies items movement script skills sound |
+| rec_20261016_082459_boss_emma_isshin_ashina | 2026-10-16 | boss: Shura route - Emma (c7400) then Isshin Ashina (c5430, uses c5400 anims), win, both phases, all hooks |  | 600 s | all bosses camera combat effects enemies items movement script skills sound |
+| rec_20261016_083843_movement_hooks | 2026-10-16 08:38 | movement with all hooks: walk, run, sprint, jump, fall, grapple, crouch, locked-on strafe | movement,camera,effects | 236 s | all bosses camera combat effects enemies items movement script skills sound |
+| rec_20261016_092035_movement_clean | 2026-10-16 09:20 | clean per-move clips: walk, run, sprint, jump standing, jump running, lock strafe, sprint deflect, open-air double jump | movement,camera | 186 s | all bosses camera combat effects enemies items movement script skills sound |
+| rec_20261016_093314_buttons_calib | 2026-10-16 09:33 | button calibration: F9 then each button once (jump, step, crouch, sprint hold, item, prosthetic, art, stick 4 directions) | movement | 82 s | all bosses camera combat effects enemies items movement script skills sound |
+| rec_20261016_094418_buttons_calib_atk_guard | 2026-10-16 09:44 | button calibration 2: guard hold, guard taps x3, attack x3, attack hold (F9 before each) | movement,combat | 47 s | all bosses camera combat effects enemies items movement script skills sound |
+| rec_20261016_094717_lockturn_sprintdeflect | 2026-10-16 09:47 | lock-on turn (swing camera / switch targets, walk+run around locked enemy) and sprint then deflect next to an enemy, x5 each | movement,camera | 69 s | - |
 | rec_c1010_20261009 | 2026-10-09 | v1 recorder |  | 600 s | - |
 | rec_c1010_b_20261009 | 2026-10-09 | v1 recorder |  | 120 s | - |
 | rec_c1020_20261009 | 2026-10-09 | v1 recorder |  | 60 s | - |

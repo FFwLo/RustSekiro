@@ -2219,7 +2219,7 @@ fn resolve(
                                 let level = if no_motion { 0 } else { damage_motion_level(dd, da, level) };
                                 // A plain hit (DAMAGE_TYPE_NONE 99999), its break 1027.
                                 let kind = if da.posture_broken() { 1027 } else { 99999 };
-                                da.damage_env = Some(crate::enemy::DamageEnv { kind, level, dir: damage_dir(da, atf.translation, dtf.translation), aerial: da.airborne, ..crate::enemy::DamageEnv::NONE });
+                                da.damage_env = Some(crate::enemy::DamageEnv { kind, level, dir: damage_dir(da, atf.translation, dtf.translation), aerial: da.airborne, back_half: f < 0.0, ..crate::enemy::DamageEnv::NONE });
                                 if (da.posture_broken() || hks_broken(&da.state)) && !broken_takes_normal_damage(level, da) {
                                     let state = player_break_state(&combat, level, da, atf.translation, dtf.translation);
                                     if da.posture_broken() {

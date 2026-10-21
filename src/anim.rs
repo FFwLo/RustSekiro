@@ -449,7 +449,10 @@ fn pose_skeletons(
             // clip's own TAE Blend (walk/run 6 frames, idle 9). CROSSFADE only for clips with no TAE.
             let blend_len = if d.anim(&key).is_some() { d.blend_in(&key).unwrap_or(0.0) } else { CROSSFADE };
             // From a settled clip the source plays on; from the middle of a fade, the frozen pose.
-            skel.fade_src = if skel.blend >= 1.0 { skel.shown_src.clone() } else { None };
+            // (A blend summed from frame steps ends a hair under 1: the sprint's run-out switches
+            // clip on the very frame its blend completes, and faded each new clip from a frozen
+            // stride, the legs held apart while Wolf ran.)
+            skel.fade_src = if skel.blend >= 1.0 - 1e-3 { skel.shown_src.clone() } else { None };
             let left = skel.yaw_off * (1.0 - skel.blend * skel.blend * (3.0 - 2.0 * skel.blend));
             let jump = skel.yaw_seen.map_or(0.0, |y| (a.yaw - y + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI);
             skel.yaw_off = if blend_len > 0.0 && jump.abs() > 0.5 && !crate::player::quick_turn_kind(&a.state).is_some_and(|(_, spins)| spins) { left - jump } else { 0.0 };

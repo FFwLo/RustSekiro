@@ -49,7 +49,9 @@ pub struct UiStagePlugin;
 impl Plugin for UiStagePlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Startup, spawn)
-            .add_systems(PostUpdate, (target_roots, fit_stage).before(bevy::ui::UiSystems::Prepare));
+            .add_systems(PostUpdate, (target_roots, fit_stage).before(bevy::ui::UiSystems::Prepare))
+            .add_systems(PostUpdate, finite_nodes.before(bevy::ui::UiSystems::Prepare))
+            .add_systems(PostUpdate, guard_image_sizes.after(bevy::ui::UiSystems::Layout));
     }
 }
 
@@ -105,6 +107,43 @@ fn target_roots(
     }
 }
 
+/// The screen markers place themselves from the window's size and a projection: a minimized
+/// window (height 0) gave a NaN left / top, laid out as a NaN size, which panics Bevy's UI
+/// extraction ("Rect size must be positive"). A NaN place or size is 0 instead.
+fn finite_nodes(mut nodes: Query<&mut Node, Changed<Node>>) {
+    let fix = |v: &mut Val| {
+        if let Val::Px(x) | Val::Percent(x) | Val::Vw(x) | Val::Vh(x) | Val::VMin(x) | Val::VMax(x) = *v
+            && !x.is_finite()
+        {
+            *v = Val::Px(0.0);
+        }
+    };
+    for mut node in &mut nodes {
+        let n = node.bypass_change_detection();
+        for v in [&mut n.left, &mut n.top, &mut n.right, &mut n.bottom, &mut n.width, &mut n.height] {
+            fix(v);
+        }
+    }
+}
+
+/// The last guard: an image node laid out at a size that is not finite and non-negative panics
+/// the extraction before its visibility is read; its size is 0 for the frame, named once in the log.
+fn guard_image_sizes(mut nodes: Query<(Entity, &mut ComputedNode, &Node), With<ImageNode>>, mut told: Local<bool>) {
+    for (e, mut computed, node) in &mut nodes {
+        let size = computed.size;
+        if size.x >= 0.0 && size.y >= 0.0 && size.is_finite() && computed.unrounded_size.is_finite() {
+            continue;
+        }
+        if !*told {
+            *told = true;
+            warn!("UI image {e} laid out at {size}: width {:?} height {:?} left {:?} top {:?}; size 0", node.width, node.height, node.left, node.top);
+        }
+        computed.size = Vec2::ZERO;
+        computed.unrounded_size = Vec2::ZERO;
+        computed.content_size = Vec2::ZERO;
+    }
+}
+
 /// The stage's place in the window (physical px): `None` = the whole window.
 pub(crate) fn stage_rect(window: UVec2, aspect: HudAspect) -> Option<(UVec2, UVec2)> {
     if aspect == HudAspect::Stretch || window.x == 0 || window.y == 0 {
@@ -147,7 +186,9 @@ fn fit_stage(
         camera.viewport = viewport;
     }
     let playing = state.is_none_or(|s| *s.get() == Screen::Playing);
-    let bar = rect.map_or(0.0, |(at, _)| at.x as f32 / window.scale_factor());
+    // A window whose monitor went away can report a scale factor of 0: keep the width finite.
+    let bar = rect.map_or(0.0, |(at, _)| at.x as f32 / window.scale_factor()).min(1e5);
+    let bar = if bar.is_finite() { bar } else { 0.0 };
     for (mut node, mut vis) in &mut pillars {
         let want = if bar > 0.0 && !playing { Visibility::Inherited } else { Visibility::Hidden };
         vis.set_if_neq(want);

@@ -1589,6 +1589,21 @@ pub fn sp_effect_behavior_ref(id: i64) -> i64 {
     refs.get(&id).copied().unwrap_or(0)
 }
 
+/// An SpEffect's behaviorRefId while it lasts past its TAE window (behaviorRefFlag_checkAliveFlagForBehavior
+/// 0: the exe's env 3036, FUN_140b32410 case 0xbdc, counts the row for its whole effectEndurance;
+/// 1 only while the TAE window is open). The sprint's 100304 ends into 100303, ref 1 for 0.2 s.
+pub fn sp_effect_lingering_ref(id: i64) -> i64 {
+    static REFS: std::sync::OnceLock<HashMap<i64, i64>> = std::sync::OnceLock::new();
+    let refs = REFS.get_or_init(|| {
+        full_param("SpEffectParam")
+            .iter()
+            .filter(|(_, r)| r["behaviorRefFlag_checkAliveFlagForBehavior"].as_i64() == Some(0))
+            .filter_map(|(id, r)| Some((*id, r["behaviorRefId"].as_i64().filter(|&v| v > 0)?)))
+            .collect()
+    });
+    refs.get(&id).copied().unwrap_or(0)
+}
+
 /// How an event state ends in a chr's HKS, at the anim's end (`env(339, 1) == TRUE`):
 /// `Fire("W_Event<n>")` goes on to that event, `Fire("W_Idle")` back to the AI's idle,
 /// `ExecTransToDeathIdle` (its own 339 check) into the death pose (c1020's sting death 20005).

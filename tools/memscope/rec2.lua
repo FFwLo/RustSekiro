@@ -13,6 +13,8 @@ local args = args or {}
 local DIR = assert(args.dir, "args.dir missing: run `python -m tools.rec new` first")
 local SECONDS = tonumber(args.seconds) or 900
 local HZ = tonumber(args.hz) or 60
+-- enemies recorded per tick (slot 1 = lock-on target, then nearest); args.enemies (default 6, was 2)
+local ENEMIES = tonumber(args.enemies) or 6
 
 local WCM_PTR = addr("0x143d7a1e0")
 local ENEMY_VT = addr("0x142A27F28")
@@ -20,17 +22,21 @@ local DBG = addr("0x143D7A366")
 local FLIPPER = addr("0x143E9F748")
 local FIELD_AREA = addr("0x143D5C0A0")
 local GAMEDATA = addr("0x143D5AAC0")
+-- docs/kb/rec-research/*.md (static RE 2026-10-21)
+local WIRE_TGT = addr("0x143D8E058")   -- WireActionTarget: +0x10 grapple point, +0x28 handle
+local LOCK_MAN = addr("0x143D78058")   -- LockTgtManImp: +0x10 candidate list
+local DRAW_PARAM = addr("0x143D8DF18") -- CSWorldSceneDrawParamManager: [+0x20] area entries (GParam ids)
 
--- Per-character blocks {id, name, kind, offset, start, length, every n ticks (args.raw = every tick)}: kind "mod" = module bag slot,
--- "chr" = ChrIns field, "ptr" = object at [ChrIns+off], "ptr2" = [[ChrIns+a]+b]. Ids 1-22 = recorder.lua.
+-- Per-character blocks {id, name, kind, offset, start, length, every n ticks (args.raw = every tick), only "wolf" / "enemy"}:
+-- kind "mod" = module bag slot, "chr" = ChrIns field, "ptr" = object at [ChrIns+off], "ptr2" = [[ChrIns+a]+b]. Ids 1-22 = recorder.lua.
 local BLOCKS = {
   {1, "chr_head", "chr", nil, 0x0, 0x100, 6},
   {2, "chr_lock", "chr", nil, 0x1000, 0x200, 1},
   {3, "physics", "mod", 0x68, 0x0, 0x120, 1},
   {4, "timeact", "mod", 0x10, 0x0, 0x200, 1},
   {5, "data", "mod", 0x18, 0x100, 0x180, 1},
-  {6, "behavior", "mod", 0x28, 0x0, 0x200, 6},
-  {7, "action_flag", "mod", 0x00, 0x0, 0x200, 6},
+  {6, "behavior", "mod", 0x28, 0x0, 0x200, 1},
+  {7, "action_flag", "mod", 0x00, 0x0, 0x200, 1},
   {8, "action_request", "mod", 0x80, 0x0, 0x200, 1},
   {9, "throw", "mod", 0x88, 0x0, 0x100, 1},
   {10, "hitstop", "mod", 0x90, 0x0, 0x80, 1},
@@ -38,10 +44,10 @@ local BLOCKS = {
   {12, "knockback", "mod", 0xA8, 0x0, 0x100, 6},
   {13, "autohoming", "mod", 0x108, 0x0, 0x100, 6},
   {14, "behavior_script", "mod", 0x08, 0x0, 0x100, 6},
-  {15, "toughness", "mod", 0x48, 0x0, 0x80, 6},
-  {16, "super_armor", "mod", 0x40, 0x0, 0x80, 6},
+  {15, "toughness", "mod", 0x48, 0x0, 0x80, 1},
+  {16, "super_armor", "mod", 0x40, 0x0, 0x80, 1},
   {17, "sword_arts", "mod", 0xF8, 0x0, 0x100, 6},
-  {18, "pad", "ptr", 0x58, 0x0, 0x200, 1},
+  {18, "pad", "ptr", 0x58, 0x0, 0x450, 1, "wolf"}, -- PadManipulator 0x450 (rec-research/input-hks.md)
   {19, "tae_events", "ptr", 0x60, 0x0, 0x200, 6},
   {20, "speffect", "ptr", 0x11D0, 0x0, 0x100, 1},
   {21, "ai", "mod", 0x38, 0x0, 0x300, 6},
@@ -49,6 +55,19 @@ local BLOCKS = {
   {22, "ai_think", "ptr2", {0x58, 0x340}, 0xB740, 0x10, 1},
   {23, "resist", "mod", 0x20, 0x0, 0x40, 6},
   {24, "chr_flags", "chr", nil, 0x1F40, 0x10, 6},
+  -- ChrIns +0x2fc root-motion scale (set by FUN_1407f0a70 from TAE 760 BoostRootMotionToReachTarget)
+  {25, "chr_rm", "chr", nil, 0x2F0, 0x10, 1},
+  -- rec-research/physics-traversal.md: velocity +0x160, floor contact +0xA2, last grounded pos +0x850, air time +0x8D0,
+  -- floor material +0x940, slide +0xA50, wall +0xA84..; docking kind +0x10 (hang / wall hug / dive flags); ladder s8 +0x258
+  {43, "physics_ext", "mod", 0x68, 0x120, 0xC70, 1, "wolf"},
+  {44, "material", "mod", 0xA0, 0x0, 0x40, 1},
+  {45, "fall", "mod", 0x70, 0x0, 0x40, 6},
+  {46, "docking", "mod", 0x128, 0x0, 0x860, 1, "wolf"},
+  {47, "wire", "mod", 0x130, 0x0, 0x40, 1, "wolf"},
+  {40, "ladder", "ptr2", {0x50, 0x50}, 0x250, 0x2E0, 1, "wolf"},
+  -- rec-research/ai-world-fx.md A: targeting system AiThink+0x7B30 (+0x158 alert state, +0x40 sight meters), home ChrIns+0xE0
+  {41, "targeting", "ptr2", {0x58, 0x340}, 0x7B30, 0x170, 1, "enemy"},
+  {42, "home", "chr", nil, 0xE0, 0x20, 30},
 }
 -- Global blocks (slot 255) {id, name, chain from an absolute pointer, start, length}
 local GLOBALS = {
@@ -59,6 +78,12 @@ local GLOBALS = {
   {34, "debug_flags", nil, DBG, 0x20},
   -- current map block: [[[WorldChrMan]+0x20]+0x8] +0x8 = id 0xAABBCCDD -> mAA_BB_CC_DD (SekiroTool WorldBlockInfo/Id)
   {35, "worldblock", {WCM_PTR, 0x20, 0x8}, 0x0, 0x20},
+  {36, "wire_target", {WIRE_TGT}, 0x0, 0x90},
+  {37, "lockon", {LOCK_MAN}, 0x2830, 0x20},
+  -- PlayerGameData: sen +0x7C, XP +0x160, attack power +0x48, resurrection +0x148..+0x168 (ai-world-fx.md D)
+  {38, "pgd", {GAMEDATA, 0x8}, 0x0, 0x180, 6},
+  -- area GParam entries, 4 x 0x118 (+0x18 current ids; low confidence)
+  {39, "gparam", {DRAW_PARAM, 0x20}, 0x0, 0x460, 30},
 }
 
 -- Preferred: the me3 hook DLL (below, "me3 hook DLL") writes hooks.jsonl itself. These memscope hooks
@@ -126,7 +151,7 @@ local function find_enemies()
   event("scan", fmt('"enemies":%d,"chrs":"%s"', #enemy_list, table.concat(chrs, ",")))
 end
 
--- Slot 1 = lock-on target (PlayerIns +0x11E4 handle, ChrIns +0x8 handle), else nearest; slot 2 = next nearest.
+-- Slot 1 = lock-on target (PlayerIns +0x11E4 handle, ChrIns +0x8 handle), else nearest; slots 2..ENEMIES = next nearest.
 local function pick_enemies(player)
   local px, py, pz = pos(player)
   if not px then return {} end
@@ -148,7 +173,7 @@ local function pick_enemies(player)
   local out = {}
   if target then out[1] = target end
   for _, fe in ipairs(found) do
-    if #out >= 2 then break end
+    if #out >= ENEMIES then break end
     if fe[1] ~= target then out[#out + 1] = fe[1] end
   end
   return out
@@ -164,7 +189,7 @@ end
 local RAW = args.raw == true or args.raw == "true"
 local function write_chr(slot, chr)
   for _, b in ipairs(BLOCKS) do
-    if RAW or b[7] == 1 or tick % b[7] == 0 then
+    if (RAW or b[7] == 1 or tick % b[7] == 0) and (b[8] == nil or (b[8] == "wolf") == (slot == 0)) then
     local base
     if b[3] == "chr" then base = chr
     elseif b[3] == "ptr" then base = readPointer(chr + b[4])
@@ -182,13 +207,15 @@ end
 
 local function write_globals()
   for _, g in ipairs(GLOBALS) do
-    if g[3] == nil then put(255, g[1], g[4], 0, g[5])
+    if g[6] and not RAW and tick % g[6] ~= 0 then
+    elseif g[3] == nil then put(255, g[1], g[4], 0, g[5])
     else put(255, g[1], chain(g[3]), g[4], g[5]) end
   end
 end
 
 -- SpEffects: per slot, the set of active ids; events on add / remove (entry +0x0..+0x58 raw on add).
-local sp_prev = {{}, {}, {}}
+local sp_prev = {}
+for s = 0, ENEMIES do sp_prev[s + 1] = {} end
 local function speffects(slot, chr)
   local se = readPointer(chr + 0x11D0)
   local now = {}
@@ -212,12 +239,28 @@ local function speffects(slot, chr)
   sp_prev[slot + 1] = now
 end
 
+-- Lock-on candidates (LockTgtManImp list: node +0x78 handle, +0x90 flags 0x10 candidate / 0x20 current, +0x80 next):
+-- an event whenever the list changes
+local lock_prev = ""
+local function lock_cands()
+  local mgr = readPointer(LOCK_MAN)
+  if not valid(mgr) then return end
+  local n, out = readPointer(mgr + 0x10), {}
+  while valid(n) and #out < 32 do
+    out[#out + 1] = fmt("%d:%d", readInteger(n + 0x78) & 0xffffffff, readByte(n + 0x90) or 0)
+    n = readPointer(n + 0x80)
+  end
+  local s = table.concat(out, ",")
+  if s ~= lock_prev then lock_prev = s; event("lock_cands", '"list":"' .. s .. '"') end
+end
+
 -- Inbox commands (one per line, written by `python -m tools.rec keys`): test-setup writes only.
 local saved = {}
 for _, o in ipairs({0x0, 0x3, 0xB, 0x10}) do saved[o] = readByte(DBG + o) end
 local fl0 = readPointer(FLIPPER)
 local speed0 = valid(fl0) and readFloat(fl0 + 0x344) or 1.0
 local stop, inbox_pos, saved_pos = false, 0, nil
+local dll = {} -- the me3 hook DLL's exported variables (filled below)
 local DBG_CMD = {nodead = 0x0, noitems = 0x3, allnodead = 0xB, freezeai = 0x10}
 local function player_pos_ptr()
   -- practice tool chain [[[WorldChrMan]+0x48]+0x28]+0x80 (pointers.rs `position`)
@@ -236,6 +279,13 @@ local function command(line)
   elseif cmd == "savepos" then
     local p = player_pos_ptr()
     if p then saved_pos = {readFloat(p), readFloat(p + 4), readFloat(p + 8), readFloat(p + 12)} end
+  elseif cmd == "play" then
+    -- scripted input (tools/rec-hooks play.rs): hand the DLL the script path and start it
+    if not (dll and dll.SV1REC_PLAY and dll.SV1REC_PLAYFILE) then event("play", '"err":"hook DLL without pad_play"'); return end
+    local b = {string.byte(rest, 1, -1)}
+    b[#b + 1] = 0
+    writeBytes(dll.SV1REC_PLAYFILE, b)
+    writeInteger(dll.SV1REC_PLAY, 1)
   elseif cmd == "loadpos" then
     local p = player_pos_ptr()
     if p and saved_pos then for i = 1, 4 do writeFloat(p + (i - 1) * 4, saved_pos[i]) end end
@@ -309,10 +359,9 @@ local function export_of(base, name)
     end
   end
 end
-local dll = {}
 local okb, dbase = pcall(getModuleBase, "sv1_rec_hooks.dll")
 if okb and dbase and dbase ~= 0 then
-  for _, n in ipairs({"SV1REC_ON", "SV1REC_TICK", "SV1REC_COUNT", "SV1REC_DIR"}) do dll[n] = export_of(dbase, n) end
+  for _, n in ipairs({"SV1REC_ON", "SV1REC_TICK", "SV1REC_COUNT", "SV1REC_DIR", "SV1REC_PLAY", "SV1REC_PLAYFILE", "SV1REC_PLAYFRAME"}) do dll[n] = export_of(dbase, n) end
 end
 if dll.SV1REC_ON and dll.SV1REC_DIR and dll.SV1REC_TICK then
   local b = {string.byte(DIR, 1, -1)}
@@ -344,7 +393,7 @@ local ok, err = pcall(function()
       if tick > 0 and tick % (HZ * 30) == 0 or #enemy_list == 0 and tick % (HZ * 5) == 0 then find_enemies() end
       if tick % (HZ // 4) == 0 then
         local picked = pick_enemies(player)
-        for s = 1, 2 do
+        for s = 1, ENEMIES do
           if picked[s] ~= slots[s] then
             slots[s] = picked[s]
             local c = picked[s]
@@ -354,12 +403,14 @@ local ok, err = pcall(function()
           end
         end
       end
-      local chrs = {player, slots[1], slots[2]}
-      for s = 0, 2 do
+      local chrs = {player}
+      for s = 1, ENEMIES do chrs[s + 1] = slots[s] end
+      for s = 0, ENEMIES do
         local c = chrs[s + 1]
         if valid(c) then write_chr(s, c); speffects(s, c) end
       end
       write_globals()
+      if tick % 3 == 0 then lock_cands() end
     else
       missing = missing + 1
       if missing == HZ * 2 then event("no_player") end
