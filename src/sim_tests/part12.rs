@@ -665,6 +665,7 @@ pub(crate) fn wolf_kneels_at_an_idol_rests_and_travels() {
     let b = Idol { name: "B".into(), pos: Vec3::new(600.0, 0.0, 10.0), out: Vec3::NEG_Z, ..Default::default() };
     let (spot_a, spot_b) = (a.spot(), b.spot());
     *IDOLS.write().unwrap() = vec![a, b];
+    crate::idol::forget_found();
     place_wolf(&mut app, spot_a + Vec3::X * 0.5, 0.0, false);
     run(&mut app, 2);
     // Hurt, so the rest shows.
@@ -677,9 +678,15 @@ pub(crate) fn wolf_kneels_at_an_idol_rests_and_travels() {
     app.world_mut().resource_mut::<PadInput>().press(Action::Interact);
     run(&mut app, 2);
     assert_eq!(player_actor(&mut app).0, "StatueAttachStart");
+    // The first kneel lights the idol: the found banner plays (LIGHTING_SECS) and the menu
+    // waits for it, Wolf kneeling on in the loop.
+    assert!(wolf(&mut app, |p| p.seat.lighting.is_some()), "the idol was not lit");
     run(&mut app, 80);
+    assert!(!wolf(&mut app, |p| p.seat.open), "the menu opened over the found banner");
+    run(&mut app, (crate::idol::LIGHTING_SECS * 60.0) as usize - 80);
     let (s, _, _, at) = player_actor(&mut app);
     assert_eq!(s, "StatueAttachLoop");
+    assert!(wolf(&mut app, |p| p.seat.lighting.is_none()), "the banner did not end");
     assert!((at - spot_a).with_y(0.0).length() < 0.05, "{at:?}");
     {
         let w = app.world_mut();

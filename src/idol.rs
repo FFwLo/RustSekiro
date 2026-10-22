@@ -178,6 +178,29 @@ impl Idol {
 /// The map's idols.
 pub static IDOLS: RwLock<Vec<Idol>> = RwLock::new(Vec::new());
 
+/// The idols Wolf has lit (BonfireWarpParam entity; on the own map, the list index), which a
+/// respawn keeps (sekiro-rs `Kit::found_idols`).
+static FOUND: RwLock<std::collections::BTreeSet<i64>> = RwLock::new(std::collections::BTreeSet::new());
+
+/// Forgets the lit idols (tests: the list is global).
+#[cfg(test)]
+pub(crate) fn forget_found() {
+    if let Ok(mut f) = FOUND.write() {
+        f.clear();
+    }
+}
+
+/// How long Wolf kneels on while the found banner plays: its movie clip, frames 1 to 197 at 60
+/// a second (idol_found.rs; sekiro-rs `LIGHTING_SECS`).
+pub const LIGHTING_SECS: f32 = (197.0 - 1.0) / 60.0;
+
+/// Lights idol `i`: true the first time, unless it is the idol the run started at (lit already).
+fn light(i: usize, entity: i64) -> bool {
+    let key = if entity != 0 { entity } else { -(i as i64) - 1 };
+    let new = FOUND.write().is_ok_and(|mut f| f.insert(key));
+    new && start_index() != Some(i)
+}
+
 /// The Construct's idols: by the start, on the L platform, on the cliff, in the shaft, at the
 /// stealth courtyard's gate.
 pub fn parkour_idols() -> Vec<Idol> {
@@ -250,7 +273,8 @@ fn seat_tick(seat: &mut Seat, p: &mut crate::player::Player, a: &mut crate::acto
                         a.move_vel = Vec3::ZERO;
                         rest(p, a, config);
                         (hooks().rested)(idol.entity);
-                        *seat = Seat { idol: Some(i), phase: Phase::Kneeling, cmd: None, open: false, checkpoint: Some(i), respawn: false, sculptor: false };
+                        let lighting = light(i, idol.entity).then_some(0.0);
+                        *seat = Seat { idol: Some(i), phase: Phase::Kneeling, cmd: None, open: false, checkpoint: Some(i), respawn: false, sculptor: false, lighting };
                         return true;
                     }
                 }
@@ -283,9 +307,24 @@ fn seat_tick(seat: &mut Seat, p: &mut crate::player::Player, a: &mut crate::acto
         }
         return true;
     }
+    // The found banner's clock (one sim tick, actor.rs `Time::<Fixed>::from_hz(60.0)`).
+    seat.lighting = seat.lighting.map(|t| t + 1.0 / 60.0).filter(|t| *t < LIGHTING_SECS);
     match seat.phase {
+        // Lighting the idol: kneeling on in the loop until the found banner is over.
+        Phase::Kneeling if seat.lighting.is_some() && ended => {
+            if a.state == "StatueAttachLoop" {
+                a.t %= d.length(&a.anim).max(1e-3);
+            } else {
+                a.play_state(d, "StatueAttachLoop");
+            }
+        }
         Phase::Kneeling | Phase::Resting if ended => {
             a.play_state(d, "StatueAttachLoop");
+            seat.phase = Phase::Menu;
+            seat.open = true;
+        }
+        // The banner ended after the kneel: on to the menu.
+        Phase::Kneeling if seat.lighting.is_none() && a.state == "StatueAttachLoop" => {
             seat.phase = Phase::Menu;
             seat.open = true;
         }
@@ -306,6 +345,7 @@ fn seat_tick(seat: &mut Seat, p: &mut crate::player::Player, a: &mut crate::acto
                 a.yaw = idol.wolf_yaw();
                 rest(p, a, config);
                 (hooks().rested)(idol.entity);
+                light(to, idol.entity);
                 seat.idol = Some(to);
                 seat.checkpoint = Some(to);
             }

@@ -36,4 +36,7 @@ pub struct Seat {
     /// The enemies should come back (a rest; player.rs sets FightReset). Kneeling alone leaves
     /// them.
     pub respawn: bool,
+    /// Seconds since the first kneel at this idol lit it, while the "SCULPTOR'S IDOL FOUND"
+    /// banner plays (idol_found.rs draws it at this clock); the menu waits for it.
+    pub lighting: Option<f32>,
 }

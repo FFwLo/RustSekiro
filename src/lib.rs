@@ -62,6 +62,8 @@ mod fmod;
 mod game_menu;
 #[cfg(feature = "embed")]
 mod idol;
+#[cfg(feature = "embed")]
+mod idol_found;
 mod items;
 mod gore;
 mod guard;
@@ -206,7 +208,7 @@ pub struct MenuPlugins;
 #[cfg(feature = "embed")]
 impl Plugin for MenuPlugins {
     fn build(&self, app: &mut App) {
-        app.add_plugins((menu::MenuPlugin, game_menu::GameMenuPlugin, idol::IdolPlugin, pickups::PickupsPlugin, action_guide::ActionGuidePlugin));
+        app.add_plugins((menu::MenuPlugin, game_menu::GameMenuPlugin, idol::IdolPlugin, idol_found::IdolFoundPlugin, pickups::PickupsPlugin, action_guide::ActionGuidePlugin));
     }
 }
 pub use player::{Player, CAPSULE_HALF_HEIGHT};
@@ -263,6 +265,7 @@ mod host_app {
             .add_plugins(ui_stage::UiStagePlugin)
             .add_plugins(game_menu::GameMenuPlugin)
             .add_plugins(idol::IdolPlugin)
+            .add_plugins(idol_found::IdolFoundPlugin)
             .add_plugins(sculptor::SculptorPlugin)
             .add_plugins(items::ItemsPlugin)
             .add_plugins(pickups::PickupsPlugin)

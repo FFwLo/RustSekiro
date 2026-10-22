@@ -97,6 +97,11 @@ impl GuideTexts {
     }
 
     /// A guide as (key, label): "<?kgiconKc@20?>: Hug wall" -> ("E", "Hug wall").
+    /// A message text (イベントテキスト) by id.
+    pub fn text(&self, id: u32) -> Option<&str> {
+        self.texts.get(&id).map(String::as_str)
+    }
+
     pub fn guide(&self, id: u32) -> Option<(String, String)> {
         let t = self.texts.get(&id)?;
         // A plain menu word ("Rest", the idol's): the interact key's.
