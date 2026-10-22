@@ -280,6 +280,9 @@ pub(crate) fn shimmying_off_a_ledge_end_takes_the_corner_onto_the_next() {
     let (_, _, _, pos) = player_actor(&mut app);
     println!("corner: {states:?} at {pos:?}");
     assert!(states.iter().any(|s| s == "HangCornerMoveRight"), "{states:?}");
+    // The shimmy runs its loop: no stop while the stick holds (the script's docking stop reads
+    // DockingStickAngle / Selector_DockingMoveDir).
+    assert!(!states.iter().take_while(|s| !s.contains("Corner")).any(|s| s.contains("MoveEnd")), "{states:?}");
     assert!(clear > 0.5, "into the wall: clearance {clear:.2}");
     assert!(step < 0.12, "a {step:.3} m jump in one tick");
     // On the second face: out +X of x = 3.

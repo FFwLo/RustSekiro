@@ -735,6 +735,20 @@ fn build(commands: &mut Commands, assets: &AssetServer, menu: &IdolMenu, font: &
     }
 }
 
+/// The idol a run starts at is Wolf's checkpoint until he prays at another, so Retry after a
+/// death stands him up there (player.rs reset). The own map's start (map.rs) sets it too; a host
+/// game's map (embed) has only this.
+fn start_checkpoint(mut wolf: Query<&mut crate::player::Player>) {
+    for mut p in &mut wolf {
+        if p.seat.checkpoint.is_none() {
+            if let Some(i) = start_index() {
+                info!("checkpoint: the start idol {i}");
+                p.seat.checkpoint = Some(i);
+            }
+        }
+    }
+}
+
 /// Opens the menu when the seat asks (the kneel or the rest is done).
 fn open_menu(mut next: ResMut<NextState<Screen>>, mut menu: ResMut<IdolMenu>, mut wolf: Query<&mut crate::player::Player>) {
     let Ok(mut p) = wolf.single_mut() else { return };
@@ -1252,7 +1266,7 @@ impl Plugin for IdolPlugin {
         app.insert_resource(crate::form::FormTexts::load());
         app.insert_resource(IdolMenu { page, region: if page == Page::Travel { 1 } else { 0 }, tree, ..default() })
             .add_systems(Startup, spawn_idols)
-            .add_systems(Update, open_menu)
+            .add_systems(Update, (open_menu, start_checkpoint))
             .add_systems(PreUpdate, run_idol_menu.after(crate::menu::MenuInput));
     }
 }

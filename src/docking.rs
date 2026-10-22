@@ -89,10 +89,17 @@ pub struct Dock {
     pub from: (Vec3, f32),
     /// The hang's climb: feet where it began.
     pub climb_from: Option<Vec3>,
+    /// What decided the wall side (the log).
+    pub side_from: &'static str,
 }
 
 impl Dock {
     fn new(e: &LedgeEdge, feet: Vec3, yaw: f32) -> Option<Dock> {
+        Dock::new_hint(e, feet, yaw, None)
+    }
+    /// `hint`: the out of the edge Wolf comes from (the next edge along a ledge), taken when the
+    /// collision cannot tell the side.
+    fn new_hint(e: &LedgeEdge, feet: Vec3, yaw: f32, hint: Option<Vec3>) -> Option<Dock> {
         let d = (e.b - e.a).with_y(0.0);
         let len = d.length();
         if len < 2.0 * END_MARGIN {
@@ -102,10 +109,16 @@ impl Dock {
         let left = Vec3::Y.cross(along);
         let mid = (e.a + e.b) * 0.5;
         let side = (e.c - mid).dot(left);
-        // The wall is on c's side; out is the other way.
-        let out = if side >= 0.0 { -left } else { left };
+        // The wall is on c's side; out is the other way. The map's collision decides first:
+        // c's side was read off our gate map's edges and is not decoded, and on sekiro-rs's
+        // maps it put Wolf's hang inside the ledge, facing it the wrong way.
+        let (out, side_from) = match (wall_side(e, left), hint) {
+            (Some(w), _) => (-w, "collision"),
+            (None, Some(h)) => (if h.dot(left) >= 0.0 { left } else { -left }, "previous edge"),
+            (None, None) => (if side >= 0.0 { -left } else { left }, "edge c"),
+        };
         let s = ((feet - e.a).dot(along)).clamp(END_MARGIN, len - END_MARGIN);
-        Some(Dock { edge: *e, along, out, len, s, from: (feet, yaw), climb_from: None })
+        Some(Dock { edge: *e, along, out, len, s, from: (feet, yaw), climb_from: None, side_from })
     }
     pub fn hug(&self) -> bool {
         self.edge.kind == 3
@@ -154,6 +167,50 @@ impl Dock {
     }
 }
 
+/// The side of an edge its wall (hug) or ledge top (hang) is on, asked of the map's collision:
+/// the one side with a wall within reach of the chest (hug), or with a floor at the lip's
+/// height (hang). None without a map or when both or neither side answers.
+fn wall_side(e: &LedgeEdge, left: Vec3) -> Option<Vec3> {
+    let t = crate::terrain::terrain()?;
+    // One look at a point of the edge: +1 the wall / top is on `left`'s side, -1 the other, 0 unsure.
+    let look = |m: Vec3| -> i32 {
+        let side = |dir: Vec3| -> (bool, bool) {
+            if e.kind == 3 {
+                (crate::terrain::raycast(m + Vec3::Y * 1.0, dir, 0.6).is_some(), false)
+            } else {
+                // The top: a floor at the lip's height just in; the drop: none within 1 m under it.
+                let p = m + dir * 0.4;
+                let top = t.floor(p.x, p.z, m.y + 0.4).is_some_and(|h| (h - m.y).abs() < 0.4);
+                let q = m + dir * 0.6;
+                let drop = t.floor(q.x, q.z, m.y + 0.4).is_none_or(|h| h < m.y - 1.0);
+                (top, drop)
+            }
+        };
+        let ((l, ld), (r, rd)) = (side(left), side(-left));
+        match (l, r) {
+            (true, false) if e.kind == 3 || rd => 1,
+            (false, true) if e.kind == 3 || ld => -1,
+            (true, false) | (false, true) => if l { 1 } else { -1 },
+            _ if e.kind == 2 && ld != rd => if rd { 1 } else { -1 },
+            _ => 0,
+        }
+    };
+    let votes: i32 = [0.25, 0.5, 0.75].iter().map(|&k| look(e.a.lerp(e.b, k))).sum();
+    match votes.signum() {
+        1 => Some(left),
+        -1 => Some(-left),
+        _ => None,
+    }
+}
+
+/// Whether Wolf's feet are near enough an edge's segment to look at it (the finders run over
+/// every edge of the play world each tick; the collision is asked only for the near ones).
+fn near(e: &LedgeEdge, feet: Vec3, reach: f32) -> bool {
+    let ab = e.b - e.a;
+    let k = ((feet - e.a).dot(ab) / ab.length_squared().max(1e-6)).clamp(0.0, 1.0);
+    (e.a + ab * k).distance_squared(feet) < reach * reach
+}
+
 /// Signed angle (degrees) from `from` to `to` about +Y, positive to the right (gap: the exe's
 /// sign, see the module doc).
 fn angle_right(from: Vec3, to: Vec3) -> f32 {
@@ -170,7 +227,7 @@ fn forward(yaw: f32) -> Vec3 {
 pub fn find_hug(edges: &[LedgeEdge], feet: Vec3, yaw: f32) -> Option<Dock> {
     edges
         .iter()
-        .filter(|e| e.kind == 3)
+        .filter(|e| e.kind == 3 && near(e, feet, HUG_REACH + 1.0))
         .filter_map(|e| Dock::new(e, feet, yaw))
         .filter_map(|d| {
             let p = d.point(d.s);
@@ -186,7 +243,7 @@ pub fn find_hug(edges: &[LedgeEdge], feet: Vec3, yaw: f32) -> Option<Dock> {
 pub fn find_hang_top(edges: &[LedgeEdge], feet: Vec3, yaw: f32) -> Option<Dock> {
     edges
         .iter()
-        .filter(|e| e.kind == 2)
+        .filter(|e| e.kind == 2 && near(e, feet, AIR_HANG_LONG + AIR_HANG_BAND.1 + 1.0))
         .filter_map(|e| Dock::new(e, feet, yaw))
         .filter_map(|d| {
             let p = d.point(d.s);
@@ -203,7 +260,7 @@ pub fn find_hang_top(edges: &[LedgeEdge], feet: Vec3, yaw: f32) -> Option<Dock> 
 pub fn find_hang_air(edges: &[LedgeEdge], feet: Vec3, yaw: f32) -> Option<(Dock, bool)> {
     edges
         .iter()
-        .filter(|e| e.kind == 2)
+        .filter(|e| e.kind == 2 && near(e, feet, AIR_HANG_LONG + AIR_HANG_BAND.1 + 1.0))
         .filter_map(|e| Dock::new(e, feet, yaw))
         .filter_map(|d| {
             let p = d.point(d.s);
@@ -378,7 +435,9 @@ pub fn next_hang_edge(edges: &[LedgeEdge], d: &Dock, toward_b: bool) -> Option<(
             if da.min(db) > CORNER_JOIN {
                 return None;
             }
-            let mut nd = Dock::new(e, end, 0.0)?;
+            // The side carries over only along the same line (a corner's face turns).
+            let straight = (e.b - e.a).with_y(0.0).normalize_or_zero().dot(d.along).abs() > 0.9;
+            let mut nd = Dock::new_hint(e, end, 0.0, straight.then_some(d.out))?;
             nd.s = if da <= db { END_MARGIN } else { nd.len - END_MARGIN };
             // The new face's normal against the way Wolf was moving.
             let k = nd.out.dot(travel);
@@ -495,10 +554,21 @@ pub fn held_state(d: &Dock, a: &Actor, stick: Vec3, walk: bool, ended: bool) -> 
     }
 }
 
+/// The docked state changes in the log (SHINOBI_DOCK_LOG=0 off).
+pub fn debug_dock(state: &str) {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if *ON.get_or_init(|| std::env::var("SHINOBI_DOCK_LOG").map_or(true, |v| v != "0")) {
+        info!("dock: {state}");
+    }
+}
+
 /// Plays a docked state. HangMoveL has no clip in the CMSG (animId 0): its loop is a000_020202,
 /// the left twin of HangMoveR's a000_020203.
 pub fn play(a: &mut Actor, d: &CharData, state: &str) -> bool {
     let again = a.state == state;
+    if !again {
+        debug_dock(state);
+    }
     let ok = if state == "HangMoveL" && d.anim_key(state).is_none() && d.anim("a000_020202").is_some() {
         a.play(state, "a000_020202");
         true

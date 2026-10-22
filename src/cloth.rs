@@ -770,21 +770,28 @@ fn simulate(
                 let where_: Vec<String> = def.ref_bones.iter().zip(&ref_mats).map(|(n, m)| format!("{n} {:?}", m.map(|m| m.w_axis.truncate()))).collect();
                 info!("cloth {}: ref bones {}", def.name, where_.join("; "));
             }
-            // First frame or a teleport (a fixed particle jumped > 1 m): restart from the bind pose
+            // First frame or a jump (a fixed particle left its reference by > 1 m): restart from the bind pose
             // placed on the model root.
             // A particle count that no longer matches the definition (another cloth def took this slot)
             // restarts too.
             // The jump that counts as a teleport scales with the cloth (half its bind-pose
             // extent, 1 m at least): the Guardian Ape's fur, 4 m across, moved its fixed
             // particles more than 1 m in a frame just by turning and restarted every few frames.
+            // The jump is measured after the root's own motion this frame (the ride-along below
+            // carries the particles by it): a fast fall or the grapple at a low frame rate moved
+            // the root more than 1 m a frame and restarted Wolf's cloth every frame of a long
+            // fall (75 hair restarts in one run in sekiro-rs's world). A teleport moves the root
+            // too and is carried whole; what restarts is a reference that left its root.
+            let root_now = globals.get(c.root).ok().map(|g| havok(g.to_matrix()));
+            let carry_m = c.root_m.zip(root_now).map_or(Mat4::IDENTITY, |(old, m)| m * old.inverse());
             let jump = (0.5 * def.rest.iter().map(|p| p.length()).fold(0.0, f32::max)).max(1.0);
-            let jumped = c.started
-                && !culled
-                && (c.x.len() != def.rest.len() || def.moves.iter().any(|&(v, p)| refs.get(v).and_then(|r| *r).is_some_and(|(q, _)| c.x.get(p).is_none_or(|x| q.distance(*x) > jump))));
+            let gap = ref_gap(&c.x, &def.moves, &refs, carry_m);
+            let jumped = c.started && !culled && (c.x.len() != def.rest.len() || gap > jump);
             let restarted = !c.started || jumped || (culled && !hold);
             if restarted {
                 if jumped {
-                    info!("cloth {}: restart (fixed particle jumped)", def.name);
+                    let root_moved = carry_m.w_axis.truncate().length();
+                    info!("cloth {}: restart (fixed particle jumped {gap:.2} m > {jump:.2}; root moved {root_moved:.2} m, dt {:.1} ms, particles {}/{})", def.name, dt * 1000.0, c.x.len(), def.rest.len());
                 }
                 let Ok(root) = globals.get(c.root) else { continue };
                 let m = havok(root.to_matrix());
@@ -1372,6 +1379,15 @@ fn enemy_cloth_probe(time: Res<Time>, enemies: Query<(Entity, &Cloths, &GlobalTr
     }
 }
 
+/// How far the fixed particles sit from their references once carried by the root's motion
+/// this frame (`carry`, new root x old root inverse): the jump the restart compares.
+fn ref_gap(x: &[Vec3], moves: &[(usize, usize)], refs: &[Option<(Vec3, Vec3)>], carry: Mat4) -> f32 {
+    moves
+        .iter()
+        .filter_map(|&(v, p)| refs.get(v).and_then(|r| *r).map(|(q, _)| x.get(p).map_or(f32::INFINITY, |x| q.distance(carry.transform_point3(*x)))))
+        .fold(0.0, f32::max)
+}
+
 #[cfg(test)]
 mod tests {
     /// The exe's capsule collision (FUN_1415802d0): out along the nearest direction, and the
@@ -1421,6 +1437,22 @@ mod tests {
     /// Manual test #2: the sim runs in model space, so a model that runs or turns carries its
     /// cloth along with no velocity of its own (the game: no Transfer Motion), while motion relative
     /// to the model is kept.
+    #[test]
+    fn a_fast_root_is_no_jump_but_a_reference_leaving_it_is() {
+        use super::ref_gap;
+        use bevy::prelude::{Mat4, Vec3};
+        // Wolf falling 2 m in a frame: the references moved with the root, no restart.
+        let x = vec![Vec3::new(0.0, 1.5, 0.0)];
+        let fall = Mat4::from_translation(Vec3::new(0.0, -2.0, 0.0));
+        let refs = vec![Some((Vec3::new(0.0, -0.5, 0.0), Vec3::Y))];
+        assert!(ref_gap(&x, &[(0, 0)], &refs, fall) < 1e-5);
+        // Without the root's motion the same frame read as a 2 m jump (the old rule).
+        assert!((ref_gap(&x, &[(0, 0)], &refs, Mat4::IDENTITY) - 2.0).abs() < 1e-5);
+        // A reference 1.5 m off its carried particle still counts.
+        let off = vec![Some((Vec3::new(1.5, -0.5, 0.0), Vec3::Y))];
+        assert!((ref_gap(&x, &[(0, 0)], &off, fall) - 1.5).abs() < 1e-5);
+    }
+
     #[test]
     fn cloth_rides_with_the_model_root() {
         use bevy::prelude::{Mat4, Quat, Vec3};

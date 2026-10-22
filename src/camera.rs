@@ -479,6 +479,36 @@ pub(crate) fn acquirable(cam: &GlobalTransform, wolf: Vec3, wolf_fwd: Vec3, p: V
     chr_front || near || far
 }
 
+/// LockTgtMan's sight test (FUN_1409c5fe0 -> FUN_14094e310, the lock's own ray collector,
+/// filter 0xB1): a ray from the camera to the candidate; a hit hides it. A hidden enemy cannot be
+/// taken and a held one is let go after LOCK_HIDDEN_TIMEOUT. gap: the exe aims at the chr's
+/// position; here the body's centre (the feet's ray grazes the floor).
+fn in_sight(cam: Vec3, p: Vec3) -> bool {
+    let d = p - cam;
+    let len = d.length();
+    len < 1e-3 || crate::terrain::raycast(cam, d / len, len).is_none()
+}
+/// VisibleCheckIntervalTime (LockTgtManImp +0x2924): how often a candidate's ray runs.
+const LOCK_SIGHT_INTERVAL: f32 = 0.5;
+/// 不可視ロックタイムアウト時間 (+0x2928): how long a held target may stay hidden.
+const LOCK_HIDDEN_TIMEOUT: f32 = 2.0;
+
+/// The held target's sight clock: (next ray in, hidden for). Returns whether the lock holds.
+fn hold_hidden(clock: &mut (f32, f32), dt: f32, sight: impl FnOnce() -> bool) -> bool {
+    clock.0 -= dt;
+    if clock.0 <= 0.0 {
+        clock.0 = LOCK_SIGHT_INTERVAL;
+        if sight() {
+            clock.1 = 0.0;
+            return true;
+        }
+    } else if clock.1 == 0.0 {
+        return true;
+    }
+    clock.1 += if clock.1 == 0.0 { LOCK_SIGHT_INTERVAL } else { dt };
+    clock.1 < LOCK_HIDDEN_TIMEOUT
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn toggle_lock(
     _keys: Res<ButtonInput<KeyCode>>,
@@ -488,6 +518,7 @@ pub(crate) fn toggle_lock(
     time: Res<Time>,
     mut lock: ResMut<LockOn>,
     mut cooldown: Local<f32>,
+    mut sight: Local<(f32, f32)>,
     pads: Query<&Gamepad>,
     config: Res<GameConfig>,
     player: Single<(&Transform, &crate::actor::Actor), With<Player>>,
@@ -505,6 +536,17 @@ pub(crate) fn toggle_lock(
             lock.target = None;
         }
     }
+    // Out of sight behind a wall for LOCK_HIDDEN_TIMEOUT: the lock lets go.
+    let cam_pos = cams.iter().next().map(|(_, g)| g.translation());
+    if let (Some(t), Some(c)) = (lock.target, cam_pos) {
+        if let Ok((_, tf, _)) = enemies.get(t) {
+            if !hold_hidden(&mut sight, time.delta_secs(), || in_sight(c, tf.translation)) {
+                lock.target = None;
+            }
+        }
+    } else {
+        *sight = (LOCK_SIGHT_INTERVAL, 0.0);
+    }
     // Only in play: behind a menu (paused, the death screen) the mouse and stick are the menu's
     // and the game clock - the switch cooldown's - stands still.
     if in_menu(&screen) {
@@ -521,7 +563,7 @@ pub(crate) fn toggle_lock(
                 let cam = cams.iter().next().map(|(_, g)| *g);
                 enemies
                     .iter()
-                    .filter(|(_, tf, e)| lockable(tf, e) && cam.is_none_or(|c| acquirable(&c, wolf, wolf_fwd, tf.translation)))
+                    .filter(|(_, tf, e)| lockable(tf, e) && cam.is_none_or(|c| acquirable(&c, wolf, wolf_fwd, tf.translation) && in_sight(c.translation(), tf.translation)))
                     .min_by(|a, b| a.1.translation.distance(wolf).total_cmp(&b.1.translation.distance(wolf)))
                     .map(|(e, ..)| e)
             }
@@ -556,7 +598,7 @@ pub(crate) fn toggle_lock(
     let dir = flick / mag;
     let next = enemies
         .iter()
-        .filter(|(e, tf, en)| *e != cur && lockable(tf, en) && switchable(cam_tf, tf.translation))
+        .filter(|(e, tf, en)| *e != cur && lockable(tf, en) && switchable(cam_tf, tf.translation) && in_sight(cam_tf.translation(), tf.translation))
         .filter_map(|(e, tf, _)| {
             let d = camera.world_to_viewport(cam_tf, tf.translation).ok()? - at;
             let len2 = d.length_squared();
@@ -1355,5 +1397,28 @@ mod tests {
         assert!((p.with_y(0.0) - high.with_y(0.0)).length() < 1e-4, "{p}");
         let p = chase_position(high_near, high, focus, FREE, Some((-0.7, 1.5)), 0.0, 1.0 / 60.0);
         assert!((p.with_y(0.0).normalize() - high_near.with_y(0.0).normalize()).length() < 1e-4);
+    }
+}
+
+#[cfg(test)]
+mod lock_sight_tests {
+    use super::*;
+
+    /// LockTgtMan: a held target out of sight is let go after 2 s (the ray every 0.5 s); one
+    /// seen again in time keeps the lock.
+    #[test]
+    fn a_hidden_lock_target_is_let_go_after_two_seconds() {
+        let dt = 1.0 / 60.0;
+        let mut clock = (0.0, 0.0);
+        let mut held = 0.0;
+        while hold_hidden(&mut clock, dt, || false) {
+            held += dt;
+            assert!(held < 3.0);
+        }
+        assert!((1.4..=2.1).contains(&held), "held {held}");
+        let mut clock = (0.0, 0.0);
+        for i in 0..240 {
+            assert!(hold_hidden(&mut clock, dt, || i > 60), "dropped at tick {i}");
+        }
     }
 }

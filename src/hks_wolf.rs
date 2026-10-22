@@ -300,6 +300,25 @@ pub fn move_vars(h: &mut Host, a: &Actor, stick: Vec3, level: f32, target: Optio
     };
     h.vars.insert("MoveDirection".into(), dir as f64);
     h.vars.insert("TwistLowerRootAngle".into(), twist);
+    // Docked (BEH_A_DOCKING_MOVE_START / _STOP, c0000_transition 5851-5860): the stick's angle,
+    // positive = the clips' R side (hanging, Wolf's own right; hugging, his left: the hug clips
+    // are named from the front, docking.rs held_state), and the side of the move clip playing
+    // (SELECTOR_DOCKING_MOVE_DIR_L 0 / _R 1). Docking.rs picks the clips; unset, the stop's
+    // checks read angle 0 against selector R and stopped every shimmy each tick (start / end
+    // flicker, no move loop).
+    let hug = a.state.starts_with("Cover");
+    h.vars.insert("DockingStickAngle".into(), if hug { -rel } else { rel });
+    if (a.state.starts_with("Hang") || hug) && ["Move", "Walk", "Run"].iter().any(|k| a.state.contains(k)) {
+        match a.state.chars().last() {
+            Some('L') => {
+                h.vars.insert("Selector_DockingMoveDir".into(), 0.0);
+            }
+            Some('R') => {
+                h.vars.insert("Selector_DockingMoveDir".into(), 1.0);
+            }
+            _ => {}
+        }
+    }
     // The stick against the facing as the exe hands it to a step (act 2019), a jump, an attack and
     // a tool.
     h.vars.insert("MoveSpeedLevelReal".into(), level as f64);

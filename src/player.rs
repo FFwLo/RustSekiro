@@ -4552,9 +4552,16 @@ fn dock_step_tick(
         let st = a.state.clone();
         let climbing = st.starts_with("HangToStand") || st.starts_with("HangFootHoldToStand");
         if climbing {
+            // Off the edge once the clip's motion is done; the clip plays on (its stand-up was
+            // cut to a bare idle at 0.77 of its 1.4 s before) and ends or is cancelled as any
+            // standing clip.
             if dk::start_done(d, a, ended) {
                 p.dock = None;
-                a.play("StandIdle", "");
+                a.docked = false;
+                if ended {
+                    a.play("StandIdle", "");
+                }
+                return false;
             }
             return true;
         }
@@ -4648,6 +4655,7 @@ fn dock_step_tick(
                 }
                 a.play_state(d, if foot { "HangFootHoldToStand" } else { "HangToStand" });
                 log.push("climb up", Color::srgb(0.6, 0.8, 0.9));
+                dk::debug_dock(&format!("{} (climb, s {:.2} of {:.2})", a.state, dock.s, dock.len));
                 return true;
             }
             if step {
@@ -4671,7 +4679,9 @@ fn dock_step_tick(
                 let toward_b = right == (dock.right().dot(dock.along) > 0.0);
                 let at_end = if toward_b { dock.s >= dock.len - dk::END_MARGIN - 0.01 } else { dock.s <= dk::END_MARGIN + 0.01 };
                 if at_end {
-                    if let Some((mut nd, turn)) = dk::next_hang_edge(edges, &dock, toward_b) {
+                    let next = dk::next_hang_edge(edges, &dock, toward_b);
+                    dk::debug_dock(&format!("end of a {:.2} m edge: next {:?}", dock.len, next.as_ref().map(|(nd, t)| (t, nd.len, nd.side_from))));
+                    if let Some((mut nd, turn)) = next {
                         nd.from = (feet, a.yaw);
                         if turn == dk::Turn::Straight {
                             p.dock = Some(nd);
@@ -4710,6 +4720,7 @@ fn dock_step_tick(
             let st = dk::hang_start_best(d, &dock, (feet, a.yaw));
             dock.from = (feet, a.yaw);
             if dk::play(a, d, &st) {
+                dk::debug_dock(&format!("{st} (ledge hang, {:.2} m edge, side from {})", dock.len, dock.side_from));
                 a.crouch = false;
                 p.dock = Some(dock);
                 log.push("ledge hang", Color::srgb(0.6, 0.8, 0.9));
