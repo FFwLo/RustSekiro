@@ -85,7 +85,7 @@ fn init_pipeline(mut commands: Commands, device: Res<RenderDevice>, assets: Res<
         layout: vec![layout.clone()],
         vertex: fullscreen.to_vertex_state(),
         fragment: Some(FragmentState {
-            shader: assets.load("embedded://sv1/grading_lut.wesl"),
+            shader: assets.load("embedded://rustsekiro/grading_lut.wesl"),
             targets: vec![Some(ColorTargetState { format: TextureFormat::Rgba16Float, blend: None, write_mask: ColorWrites::ALL })],
             ..default()
         }),

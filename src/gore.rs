@@ -37,7 +37,7 @@ pub struct PlaceStain {
 
 /// The floor under `at`: the map's ground within `depth` m below (and a hand above), else y 0.
 fn floor_below(at: Vec3, depth: f32) -> f32 {
-    crate::map::raycast(at + Vec3::Y * 0.5, Vec3::NEG_Y, depth + 0.5).map_or(0.0, |d| at.y + 0.5 - d)
+    crate::terrain::raycast(at + Vec3::Y * 0.5, Vec3::NEG_Y, depth + 0.5).map_or(0.0, |d| at.y + 0.5 - d)
 }
 
 /// A hit's stains (combat.rs spawns it; `bleed` places them and despawns it): `at` the hit point,
@@ -178,7 +178,7 @@ fn bleed(
             let far = f("farDistance").max(0.0);
             let floor = floor_below(at, far);
             let plane = (ray.y < -1e-3).then(|| (at.y - floor) / -ray.y).filter(|d| *d <= far);
-            let Some(d) = crate::map::raycast(at, ray, far).or(plane) else { continue };
+            let Some(d) = crate::terrain::raycast(at, ray, far).or(plane) else { continue };
             let p = at + ray * d;
             if (p.y - floor_below(p + Vec3::Y * 0.05, 0.3)).abs() > 0.1 {
                 continue;

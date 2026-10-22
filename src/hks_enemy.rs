@@ -47,6 +47,10 @@ pub fn answers(h: &mut Host, a: &Actor, e: &Enemy, cmd: &crate::ai::Command, pos
     // On the ground: not airborne, nor lifted off it by a clip's root motion (a jump attack).
     let off_ground = a.airborne || a.lift_ground.is_some_and(|g| pos.y > g + 0.05) || damage.is_some_and(|d| d.aerial);
     set(201, None, (!off_ground) as i64 as f64);
+    // IsTrulyLanding (env 248, the physics module's ground probe; Wolf's in hks_wolf.rs): on the
+    // ground again. c9997 LandingDecision reads it for the jump attacks alone (W_JumpAttack32n2 out
+    // of 32n0 / the 32n1 fall loop); unanswered, Lady Butterfly's 3201 / 3291 looped for good.
+    set(248, None, (!off_ground) as i64 as f64);
     set(200, None, (a.airborne && a.vel_y < 0.0) as i64 as f64);
     set(333, None, 1000.0 / 60.0);
     // env 2000 (can cancel into movement): the TAE's "End If AI Move Queued" (flag 78), the
@@ -113,7 +117,7 @@ pub fn answers(h: &mut Host, a: &Actor, e: &Enemy, cmd: &crate::ai::Command, pos
     }
     set(1114, None, 0.0);
     // The AI's request: env 106 in idle / move states, the cancel slots while the TAE's AI
-    // cancel window for its kind is open (107 combo, 120 attack, 118 step).
+    // cancel window for its kind is open (107 combo, 120 attack, 118 step, 123 endure).
     let action = if cmd.guard { ACTION_TYPE_GUARD } else if cmd.general { ACTION_TYPE_GENERAL_STANCE } else { request.unwrap_or(0) as f64 };
     set(106, None, action);
     // env 330: RequestEmergencyQuickTurn (a turn clip under 45 degrees too).
@@ -129,6 +133,10 @@ pub fn answers(h: &mut Host, a: &Actor, e: &Enemy, cmd: &crate::ai::Command, pos
         }
         if open(FLAG_STEP) && step {
             set(118, None, n as f64);
+        }
+        // 123: an EndureAttack goal's request (Goal.Parry's guard / deflect), taken first.
+        if open(crate::ai::FLAG_ENDURE) && cmd.endure {
+            set(123, None, n as f64);
         }
     }
     h.env = env;

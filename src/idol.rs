@@ -172,42 +172,8 @@ pub fn near(feet: Vec3, _yaw: f32) -> Option<usize> {
     })
 }
 
-/// Where Wolf is in the idol's clips.
-#[derive(Clone, Copy, PartialEq, Debug, Default)]
-pub enum Phase {
-    #[default]
-    Kneeling,
-    /// The loop, with the menu open.
-    Menu,
-    Resting,
-    Warping(usize),
-    Leaving,
-}
-
-/// What the menu asks of the seat.
-#[derive(Clone, Copy, PartialEq, Debug)]
-pub enum Cmd {
-    Rest,
-    Warp(usize),
-    Leave,
-}
-
-/// The idol Wolf kneels at, the phase, the menu's command, the checkpoint.
-#[derive(Default, Clone)]
-pub struct Seat {
-    pub idol: Option<usize>,
-    /// Talking to the Sculptor uses the Workshop, without kneeling, healing or changing idols.
-    pub sculptor: bool,
-    pub phase: Phase,
-    pub cmd: Option<Cmd>,
-    /// The menu should open (the kneel or the rest clip is done).
-    pub open: bool,
-    /// The last idol prayed at.
-    pub checkpoint: Option<usize>,
-    /// The enemies should come back (a rest; player.rs sets FightReset). Kneeling alone leaves
-    /// them (the user: they came back as soon as Wolf sat).
-    pub respawn: bool,
-}
+// Wolf's seat at an idol or NPC is the core's (seat.rs, on Player).
+pub use crate::seat::{Cmd, Phase, Seat};
 
 
 /// Resting: full Vitality, the Healing Gourd and the resurrection back.
@@ -1168,10 +1134,17 @@ fn spawn_idols(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mat
 /// The model's front against `Idol::out` (rad): the carved face looks along its own -Z.
 const IDOL_FACING: f32 = std::f32::consts::PI;
 
+/// This game's world hooks for the core (encounter.rs): items on the ground (pickups.rs), the
+/// Sculptor (sculptor.rs) then the idols, the idols as checkpoints.
+pub fn world_hooks() -> crate::encounter::WorldHooks {
+    crate::encounter::WorldHooks { take_item: crate::pickups::take_item, interactions: &[crate::sculptor::tick, tick], respawn_at }
+}
+
 pub struct IdolPlugin;
 
 impl Plugin for IdolPlugin {
     fn build(&self, app: &mut App) {
+        crate::encounter::set_world(world_hooks());
         // SHINOBI_IDOL_PAGE=<0-6>: open on Main / Purchase / Travel / Acquire Skills / Change Form / Create Arm Tools / Tool Upgrades (SHINOBI_SHOT captures with
         // SHINOBI_TITLE=idol).
         let page = match std::env::var("SHINOBI_IDOL_PAGE").ok().as_deref() {

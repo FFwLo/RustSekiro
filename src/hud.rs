@@ -12,38 +12,10 @@ use crate::player::{
     REF_JUST_GUARD,
 };
 
-#[derive(Resource, Default)]
-pub struct CombatLog {
-    pub lines: Vec<(String, Color, f32)>,
-}
+// The log and the perilous warning are the combat's (combat.rs); the HUD draws them.
+pub use crate::combat::{CombatLog, Perilous};
+use crate::combat::PERILOUS_SHOW;
 
-impl CombatLog {
-    pub fn push(&mut self, text: impl Into<String>, color: Color) {
-        self.lines.push((text.into(), color, 0.0));
-        if self.lines.len() > 6 {
-            self.lines.remove(0);
-        }
-    }
-}
-
-/// Perilous-attack warning (the red 危 kanji), raised by the enemy when its TAE
-/// warning BulletBehavior (judge 980-983) reaches Wolf (enemy_bullet.rs fly).
-#[derive(Resource, Default)]
-pub struct Perilous {
-    pub timer: f32,
-    pub kind: i64,
-}
-
-impl Perilous {
-    /// A warning of `kind`; `text`: show the HUD 危 (off when its effect 600035 plays instead,
-    /// enemy_bullet.rs fly).
-    pub fn raise(&mut self, kind: i64, text: bool) {
-        self.timer = if text { PERILOUS_SHOW } else { 0.0 };
-        self.kind = kind;
-    }
-}
-
-const PERILOUS_SHOW: f32 = 0.8;
 
 #[derive(Component)]
 struct PerilousText;
@@ -993,7 +965,7 @@ fn spawn_item_icons(mut commands: Commands, fonts: Res<crate::fonts::GameFonts>,
     });
 }
 
-/// The combat art's mark (shown with an art equipped) and the ninjutsu's (gap: no ninjutsu yet).
+/// The combat art's mark (shown with an art equipped) and the ninjutsu's (one worn).
 #[derive(Component)]
 struct ArtMark;
 #[derive(Component)]
@@ -1028,7 +1000,8 @@ fn flash_counters(
     mut points: Query<&mut Text, (With<PointsText>, Without<GainText>)>,
     (earned, mut base, mut gains): (Res<crate::experience::Earned>, Local<Option<([u32; 2], [u32; 2])>>, Query<(&mut Text, &GainText)>),
     mut fill: Query<&mut Node, With<ExpFill>>,
-    mut art: Query<&mut Visibility, (With<ArtMark>, Without<Flash>)>,
+    mut art: Query<&mut Visibility, (With<ArtMark>, Without<Flash>, Without<NinjutsuMark>)>,
+    mut ninjutsu: Query<&mut Visibility, (With<NinjutsuMark>, Without<Flash>, Without<ArtMark>)>,
 ) {
     let sen = config.player.sen;
     let exp = (config.player.skill_exp, config.player.skill_points);
@@ -1089,8 +1062,8 @@ fn flash_counters(
             n.width = w;
         }
     }
-    for mut v in &mut art {
-        let want = if config.player.combat_art > 0 { Visibility::Inherited } else { Visibility::Hidden };
+    for (mut v, on) in art.iter_mut().map(|v| (v, config.player.combat_art > 0)).chain(ninjutsu.iter_mut().map(|v| (v, config.player.ninjutsu > 0))) {
+        let want = if on { Visibility::Inherited } else { Visibility::Hidden };
         if *v != want {
             *v = want;
         }

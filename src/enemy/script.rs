@@ -501,7 +501,7 @@ impl Run {
         let (x, y, z) = if self.def.world {
             (-p.x, Some(p.y), p.z)
         } else {
-            let d = crate::map::frame().rot.inverse() * (p - self.start);
+            let d = crate::place::frame().rot.inverse() * (p - self.start);
             (-d.x, super::on_own_arena().then(|| p.y - self.start.y), d.z)
         };
         if sh.shape == 6 {
@@ -1296,14 +1296,14 @@ pub(super) fn run_scripts(
             // its places are in its own map's frame, so warps to them land off the platform (Map's
             // probe: Wolf at the Owl's railing, (1.0, -11.4), 0.5 s in). Wolf keeps the arena's
             // line-up; an enemy warped to a place stays where it is.
-            Act::CutsceneWarp(_) if crate::map::on_boss_arena() && !super::on_own_arena() => {}
+            Act::CutsceneWarp(_) if crate::place::on_boss_arena() && !super::on_own_arena() => {}
             Act::CutsceneWarp(point) => {
                 if let Some(p) = run.place_of(point) {
                     warp.0 = Some(p);
                 }
 
             }
-            Act::Warp(_, ty, _, _, _) if ty != 2 && crate::map::on_boss_arena() && !super::on_own_arena() => {}
+            Act::Warp(_, ty, _, _, _) if ty != 2 && crate::place::on_boss_arena() && !super::on_own_arena() => {}
             Act::Warp(who, ty, target, short, dmy) => {
                 // Onto a character's dummy poly (2004[42] Warp Character and Copy Floor: the
                 // Divine Dragon's trees c5310 onto its dummies 50 / 53-56, m25 12505901), facing

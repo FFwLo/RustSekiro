@@ -781,3 +781,159 @@ are props. enemy.rs changes from it:
   chain.
 - Death by worn SpEffect ref first: 1020000 + n -> Event200nn, 1000180 -> DeathStartUniqueCase.
 - AI_STATE_SP (200000 / 1 / 2 / 4) is one slot replacing a resident 200000 (51 NpcParam rows).
+
+## Enemies against the recordings (2026-10-22, tools/rec/enemies.py)
+
+`python -m tools.rec enemies <rec> [--chr cXXXX]` / `enemies all` (logs/enemies_all.md): per kind,
+the game's attack starts (rec.db anims a\d{3}_003xxx on slots 1-2) against our AI on the same
+fight. Ours is the ignored test replay_recording in enemy mode (SHINOBI_REPLAY_ENEMY / _ROW / _AT
+/ _TODOME): Wolf plays the recorded inputs, the enemy (NpcParam row from its entity name, set
+aggressive, not the default deflect practice) starts at the game's offset from Wolf, both are
+topped up at half HP, and the game's Todomes (a\d{3}_0137xx) are replayed at the same tick so a
+boss's next phase comes (the Guardian Ape's a100, think 51000100).
+
+Read it per anim group (phase) and per Wolf distance band: attacks per minute while in the band
+and the picks. The replayed Wolf does not walk where the game's did and rarely lands hits or
+deflects in sync, so:
+- raw medians and close-range rates differ (the game's enemy spends close time in damage 009xxx);
+- Kengeki answers (after 8601, e.g. the Headless Ape's 3065-3069) and Wolf's hits on it are rare
+  in ours: open-loop, not an AI gap.
+
+More of the replay (same day):
+- Map events: the replay runs none, so the SpEffects the game's events put on the enemy (ids that
+  are a literal in an EMEVD 2004[8] SetSpEffect, less the AI states 200000-200029) are worn at the
+  recorded ticks (SHINOBI_REPLAY_ENEMY_SP), plus its anim set at the start (20003g from the game's
+  anim group; set before the recording began). The tutorial ronin (c1012, row 10120000) picks its
+  acts by the lesson SpEffects 3100xx of m11_00 11105275; without them its script waits (Act26).
+- Fix: `anim_group_of` reads an id outside the character's own SpEffect table from the whole
+  SpEffectParam. The ronin's 200030 (a000, from 11105275) never switched it off its resident
+  200034 (a400, whose 12000 deathblow is 15.8 s against the game's 5.5 s a000_012000), in the
+  world's map events too. Test a_map_events_anim_set_outside_the_chrs_table_switches_it.
+- Counting: the recorder logs an enemy's running anim again when it changes slot (1 <-> 2); those
+  are dropped (`_moved`). Rates are also given "unprompted" (no hit of Wolf's on it in the 45 ticks
+  before): guard counters (the Owl's 3100 / 3101 after Get_ConsecutiveGuardCount) and Kengeki
+  answers follow Wolf's hits, which the open-loop Wolf lands far less.
+- First pass (before these fixes), unprompted attacks / min game vs ours: Owl 21.2 / 22.3,
+  Corrupted Monk 13.9 / 15.4, Demon of Hatred 11.3 / 14.1, Owl Father 24.1 / 23.6, Ape 7.4 / 11.2,
+  Butterfly 24.7 / 19.5; c5310 is the Divine Dragon arena's Tentacle prop (not a fighter).
+- Game time counts only ticks the enemy was in slot 1 / 2 (nearest two); ours runs every tick of
+  its span, so compare the per-band rates, not the totals.
+- Fix: env 248 (IsTrulyLanding) answered for enemies (hks_enemy.rs, = on the ground like env 201).
+  c9997 LandingDecision reads it for the jump attacks alone; unanswered, every W_JumpAttack32n0
+  played its whole clip and then sat in the 32n1 fall loop (Lady Butterfly's 3201 about 10 s,
+  her 3291 for good after the threads opening 21000 -> 5028 -> Act38 3290). Now 3200 -> 3202 in
+  116 ticks on flat ground (the game's 28-54 from her threads, 3.3-4.5 m up). Test
+  lady_butterflys_jump_attack_lands.
+- After the fixes (logs/enemies_all.md), unprompted attacks / min game vs ours: Owl 21.2 / 22.3,
+  Corrupted Monk 13.9 / 13.4, Demon of Hatred 11.3 / 14.1, Owl Father 24.1 / 23.6, Butterfly
+  24.7 / 20.6, Emma-Isshin 17.4 / 19.6, Tomoe Isshin 17.1 / 14.1, Divine Dragon 9.4 / 12.2.
+  Open: the regular soldiers attack about half as often as the game's (c1010 15.1 / 8.5, c1020
+  14.6 / 8.8, c1700 16.8 / 10.2, c1150 31.6 / 16.8); Genichiro (c7100), Gyoubu (c5080) and
+  Emma (c7400) start more unprompted attacks than the game (the game's Wolf kept hitting them, so
+  its "unprompted" count is low).
+- Closed loop (`python -m tools.rec enemies pressure [--chr cXXXX]`, logs/enemies_pressure.md):
+  our Wolf, locked on and walking in, swings every 40 ticks for 120 s at each kind; compared with
+  every recorded hit of the game's Wolf's sword on it (his deflects left out), as the share the
+  enemy met with deflect (84xx) / guard (85xx) / damage / kept on (its attack, SABlend). Before:
+  c1020 0 / 0 / 86 / 9 against the game's 1 / 36 / 26 / 32; ours never guarded or deflected.
+- Fix: the hearing pass runs only while the enemy holds no character target (exe FUN_140624b70
+  14062.c:4204 -> FUN_1406296e0: no targeting-list entry of type 1, the chr-handle target made by
+  FUN_140629430; inferred: the normal target). Ours heard Wolf's footsteps and swings in a fight
+  and, with two sounds a frame, flipped the sound target every frame: ChangeSoundTarget (46) each
+  frame, whose common handler (common_table_ai_common.lua:247-267, zako / chuboss reaction)
+  replans once timer 12 runs, so Goal.Parry's EndureAttack 3100 / 3101 was dropped the frame it
+  was picked (176 replans in 400 ticks). The exe's 46 is a held sound record's serial changing
+  (FUN_14062a2a0 -> FUN_140612980 compares the record serial, FUN_14060f840's global counter;
+  read and cleared each tick by FUN_14061f0a0, bit 46). enemy.rs `listening`.
+- Fix: an EndureAttack goal's request (Goal.Parry's guard / deflect, the HKS's env 123, taken
+  first by c9997 ExecAIAction) starts while the clip's TAE flag 122 is on (exe FUN_140b36410: the
+  cancel slots 123-125 need flags 122-124). The hit reaction a000_008010 opens 122 at 0.23 s and
+  86 only at 0.5 s. ai.rs FLAG_ENDURE / Goal.parent_endure / Command.endure, hks_enemy env 123.
+  Tests the_parry_guard_cuts_a_hit_reaction_at_flag_122, a_soldier_under_wolfs_sword_guards_and_deflects.
+- After: c1020 8 / 32 / 26 / 30 (game 1 / 36 / 26 / 32); c1700 19 / 39 / 30 / 9 (7 / 32 / 21 /
+  32); c7100 Genichiro 10 / 46 / 17 / 25 (15 / 39 / 11 / 21); c5400 12 / 39 / 9 / 39 (20 / 33 /
+  17 / 16); c1010 0 / 41 / 41 / 0 (2 / 22 / 43 / 9); Owl c5090 10 / 37 / 29 / 8 (6 / 40 / 19 /
+  25). Not comparable: the game's Wolf picks his moments, ours swings blind on a beat. Open: c7400
+  (Emma) counts 852 hits (the counter or her clone summons), c5100 / c5200 get no hits (out of
+  reach in the empty arena).
+- Armour guard on c1180 (row 11801100): every clip carries ShieldBlock judge 800 (TAE stateInfo
+  957, row 211802800 -> AtkParam 11802800: guardBreakRate 20, guardRate 0); the flag opens with
+  220062 (stateInfo 957, behaviorRefId 1000105 GUARD_TO_ADD_DAMAGE) from the map event
+  (armor_parts.json), and c9997 ExecGuardBlock plays the SABlend_Add overlay (9500) for ref 1000105
+  so the attack goes on. 220062 is not in c1180.json's spEffects, so `prosthetic::enemy_refs` now
+  reads a row missing there from SpEffectParam. Pressure: ours 0 / 0 / 0 / 100 (deflect / guard /
+  damage / kept on), game 0 / 2 / 0 / 79. Test the_armour_guard_follows_its_worn_effect.
+- Kengeki rows after a block: the attacker's reaction clip carries its own "was repelled" row
+  (c1020 a000_008700 AttackNoBoundEnemy1_Right TAE 67 200205 from 0.03 s, 8701 _Left 200206;
+  8600 / 8601 carry 200200 / 200201 from 0.0 s). Which clip it gets follows Wolf's: DeflectHard
+  a050_130101 / 130102 -> 200200 / 200201; DeflectEasy (block) a050_120102 / 120101 -> 200205 /
+  200206. The game has the row from the clip's first tick; ours replans one tick in, before the
+  TAE event, so `combat::clash_after` bridges the clip's own row until it starts. The General's
+  Kengeki_Activate (102000_battle.lua) answers 200206 with 3056 (300) / 3003 (100), 200205 with
+  3051 / 3003 (+3054 with 200051, which test row 10202000 has and the game's 10200000 does not).
+  Test the_general_answers_wolfs_block_with_his_kengeki_cuts.
+- Attack goal at the cancel window: CommonAttack (exe FUN_1405c6d30) with a cancel flag on fails
+  (-1) when successDist < GetDist, there and then, not at the clip's end. Scripts that pass nil
+  successDist (0; 118020_battle.lua Act03's `DistToAtt1` is an undefined global) end every such
+  attack at flag 23 and replan while the clip's late TAE SpEffects still hold: c1180's a200_003004
+  puts 3118061 on 0.9-1.2 s, Act10 then plays 3007 (within 8.4 - radius + 2 m) or 3006. Live: 3007
+  started 55-57 ticks into all four of the game's 3004s (flag 23 at tick 56); ours ran 3004 to its
+  end and never played 3007. ai.rs Native::Attack. gap: which exe flag bit (0x8 / 0x100) is TAE
+  23 and which 86. Test the_armoured_mace_follows_its_long_swing_with_3007.
+- Checked against the 2026-10-22 runs, no change needed:
+  - Spacing in the open-loop replays: the replayed Wolf takes hits the user deflected and is
+    knocked back, and the enemy's home is its replay spawn (NpcThinkParam backhomeDist 48,
+    backhomeBattleDist 8 -> NonBattleAct BackToHomeWithParry), so its distance bands drift. Use
+    the closed-loop pressure run for spacing.
+  - Deflect share: pooled game 16 %, ours 19 %. Enemy aim matches.
+  - Nightjar c1450 (145010_battle.lua): with Wolf kept close ours plays every close act (3004-3009,
+    3012-3015) at 25 attacks / min (game 28.4); the replay's missing 3007 was one sample of ten,
+    and ours went to 10-20 m (shuriken) only because the replayed Wolf did not follow it.
+  - Mikiri vs c1050: the game's counter (forward step a000_213301, Wolf a216_511800, enemy
+    a000_013800 for 104-119 ticks, ThrowParam 11050190) lands 2-3 ticks before Wolf's clip starts.
+  - The dodge-through run does not answer whether a dodged hit is spent: Wolf's steps there last
+    0-1 ticks and every hit that landed was guarded.
+  - c1020 attack rate after the cancel-window fix (pressure replay): game 55.5 / min, ours 28.2,
+    but unprompted 17.1 / 18.2. The gap is the answers to Wolf's hits and deflects (Kengeki06 /
+    08 / 12: 3061 / 3063 on 200200, 3068 on 200201), and the open-loop Wolf landed 16 hits on ours
+    against the game's 45. Closed loop (pressure run, an attack start within 45 ticks of a hit of
+    Wolf's): game 139 / 223 (62 %), ours 39 / 72 (54 %); after damage 66 / 79 %, after a deflect
+    67 / 100 %, after a guard 83 / 49 %. The guard gap is the pressure beat: ours swings every 40
+    ticks for 120 s and fills the guarding General's posture, 13 of 35 guards end in GuardBreakRight
+    (a000_008550, 1.5 s, no answer), which the game's runs never show (0 of 77; 8500 / 8501 /
+    8502 / 8503). Without them ours answers 17 / 22 (77 %). No AI gap left for c1020.
+    c1180: game 20.3, ours 18.6 -> 19.8.
+  - Same check, c1010 (10100111): game 37 / 107 (35 %), ours 36 / 62 (58 %); c1700 (17002010):
+    game 244 / 450 (54 %), ours 46 / 57 (81 %). Ours answers more, mostly after damage (17 / 17,
+    16 / 17 against the game's 11 / 32, 26 / 93): the game's Wolf strings his hits, ours swings
+    on a 40-tick beat and the enemy is out of its hit reaction before the next one. So the
+    regular soldiers' half rate in the open-loop replays (above) is the replay, not their AI.
+- Bosses, closed loop (2026-10-22): share of Wolf's hits the boss answers with an attack start
+  within 45 ticks, game / ours: Owl c5060 80 / 80 %, Genichiro c7100 74 / 71 %, c7110 65 / 64 %,
+  Gyoubu c5080 23 / 25 %, Emma-Isshin c5430 48 / 52 %, Butterfly c5090 69 / 56 %, Isshin c5400
+  71 / 62 %, Corrupted Monk c5000 59 / 36 % (ours 36 hits). No AI gap; the open-loop rates
+  (enemies_all.md) are low for the same replay reason as the soldiers'.
+  - Tool fix: `REACT_AFTER` 8 -> 6 ticks, the tick the game's hit record reads the reaction at.
+    At 8, Isshin's counter (3071 / 3072 out of JustGuardDamage 8400 at flag 23, 0.1 s; the game's
+    too, 5-9 ticks) read as "kept on" and his deflects as 0 %. Now c5400 19 / 38 / 4 / 38 (game
+    20 / 33 / 17 / 16; the rest of "kept on" is ours swinging into his hyper-armoured 3072).
+  - Not measured: c5100 / c7020 / c5200 (the pressure Wolf does not reach them in the empty
+    arena), c7400 Emma (852 "hits": the counter takes her clones or summons).
+  - Test tool fixes (same day): the headless hit fallback (combat.rs `body_radius`) now uses the
+    defender's NpcParam hitRadius (Guardian Ape 2.2 m, Demon of Hatred 2.8 m) instead of 0.4 m
+    for every body, so the pressure Wolf reaches the big bosses; ours_reactions counts a streak of
+    HP / posture change once and skips ThrowDef* (Emma's 852 "hits" were her deathblow clip
+    zeroing the HP the sim tops up each tick: now 37). Demon of Hatred c7020: game 0 / 0 / 19 /
+    78, ours 0 / 0 / 19 / 65, answers 16 / 17 %. Emma c7400: ours 14 / 30 / 38 / 16 against the
+    game's 10 / 46 / 0 / 2 (41 game hits).
+  - Guardian Ape c5100 under the pressure beat stunlocks (DamageMiddle restarted every third hit
+    for 33 s, then TrunkCollapse). By design: its flinch clips put on 3510071 (a000_8000-8003,
+    "SA damage up at small damage", saReceiveDamageRate 6.0, 0-1.8 s) and 3510070 (8010-8013,
+    x4.5, 0-3.33 s), so Wolf's 40-point hits drain 180 of the 400 pool while it flinches. The
+    game's player struck in bursts (18 full flinches in 217 hits); not a gap.
+- 2026-10-22 A one-shot replacement's changeHpRate (actor.rs sp_chained expiry, added for the
+  Puppeteer's 220030 -> 220022) never lands on the dead: a ThrowDef clip's 3120000 "lag before the
+  full HP recovery" runs out into 5461 (-100 %, full HP) at the end of the death clip, which brought
+  a deathblown enemy back to 1273 HP and sent the game's script to W_ResurrectionIdleUpward
+  (enemy_lockstep posture-break test). The lockstep's LOCKSTEP_DEBUG line now prints HP, death and
+  the chained SpEffects.

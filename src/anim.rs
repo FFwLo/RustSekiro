@@ -68,7 +68,7 @@ impl AnimLib {
     }
 
     pub fn lib(&self, a: &crate::actor::Actor) -> &Lib {
-        if a.kind == crate::sculptor::KIND {
+        if a.kind == crate::data::NPC_KIND {
             if let Some(sculptor) = &self.sculptor {
                 return sculptor;
             }
@@ -284,7 +284,7 @@ fn build_skeletons(
     lib: Res<AnimLib>,
     combat: Res<Combat>,
     actors: Query<(Entity, &Actor, Option<&Children>), Without<Skeleton>>,
-    blades: Query<(), With<crate::world::Blade>>,
+    blades: Query<(), With<crate::model::Blade>>,
 ) {
     for (e, a, children) in &actors {
         let l = lib.lib(&a);
@@ -752,7 +752,7 @@ fn apply_twists(
     time: Res<Time>,
     lib: Res<AnimLib>,
     combat: Res<Combat>,
-    lock: Option<Res<crate::camera::LockOn>>,
+    lock: Option<Res<crate::view::LockOn>>,
     actors: Query<(Entity, &Actor, &Transform, &Skeleton)>,
     targets: Query<(Entity, &Transform, Has<crate::player::Player>), With<Actor>>,
     globals: Query<&GlobalTransform>,

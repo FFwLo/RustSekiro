@@ -423,8 +423,8 @@ pub(crate) fn wire_flight_attacks_are_no_art_and_throw_lightning_back() {
         move_enemy_far(&mut app);
         app.world_mut().resource_mut::<crate::config::GameConfig>().player.unlock_all_moves = true;
         app.world_mut().resource_mut::<crate::config::GameConfig>().player.combat_art = 7100;
-        let point = crate::map::GrapplePoint { hook: Vec3::new(0.0, 6.5, 12.0), land: Vec3::new(0.0, 6.0, 12.0), fwd: Vec3::NEG_Z, variation: 0 };
-        let target = crate::map::GrappleTarget { index: 0, point, dist: 12.0, in_action_range: true, ride: true };
+        let point = crate::traversal::GrapplePoint { hook: Vec3::new(0.0, 6.5, 12.0), land: Vec3::new(0.0, 6.0, 12.0), fwd: Vec3::NEG_Z, variation: 0 };
+        let target = crate::traversal::GrappleTarget { index: 0, point, dist: 12.0, in_action_range: true, ride: true };
         app.insert_resource(crate::wire::WireAim { target: Some(target), enemy: None });
         app.world_mut().resource_mut::<PadInput>().press(Action::Grapple);
         let mut flying = false;
@@ -516,8 +516,8 @@ pub(crate) fn a_pending_kick_beats_a_pending_air_guard() {
 /// Lands Wolf on a ridden grapple point from where he stands; returns the states and where he
 /// stands after `ticks`.
 pub(crate) fn grapple_to(app: &mut App, hook: Vec3, land: Vec3, ticks: usize) -> (Vec<String>, Vec3) {
-    let point = crate::map::GrapplePoint { hook, land, fwd: Vec3::NEG_Z, variation: 0 };
-    let target = crate::map::GrappleTarget { index: 0, point, dist: hook.length(), in_action_range: true, ride: true };
+    let point = crate::traversal::GrapplePoint { hook, land, fwd: Vec3::NEG_Z, variation: 0 };
+    let target = crate::traversal::GrappleTarget { index: 0, point, dist: hook.length(), in_action_range: true, ride: true };
     app.insert_resource(crate::wire::WireAim { target: Some(target), enemy: None });
     app.world_mut().resource_mut::<PadInput>().press(Action::Grapple);
     let mut seen = Vec::new();

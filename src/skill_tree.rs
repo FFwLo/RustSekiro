@@ -452,7 +452,7 @@ mod tests {
         let mut config = crate::config::GameConfig::load().unwrap();
         config.player.items.retain(|(id, _)| !TEXT_GOODS.contains(id));
         let (skills, points) = (config.player.skills.clone(), config.player.skill_points);
-        let pickups = crate::items::parkour_pickups();
+        let pickups = crate::pickups::parkour_pickups();
         let (solids, _) = crate::sandbox::parkour_course();
         for p in pickups.iter().filter(|p| TEXT_GOODS.contains(&p.goods)) {
             let ground = solids.iter().filter(|(lo, hi)| p.pos.x > lo.x && p.pos.x < hi.x && p.pos.z > lo.z && p.pos.z < hi.z)

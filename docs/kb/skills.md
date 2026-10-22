@@ -305,3 +305,59 @@ shot env vars or `tools/screenshot.ps1`.
 - Gap: these are Construct placements, not the story's gifts / temple loot. No game-save system
   is added: possession follows the existing in-memory inventory / config. The original menu's
   exact hiding behavior was not traced in the exe; the possession rule comes from item data.
+
+## 2026-10-22: Shinobi ninjutsu (src/ninjutsu.rs)
+- Worn in the Equipment's ninjutsu slot (config `player.ninjutsu`: 2100 Bloodsmoke, 2110 Puppeteer,
+  2120 Bestowal; EquipParamGoods goodsType 8). The menu lists those held, all three with
+  `unlock_all_moves`; the HUD's MENU_FE_Ninsatul mark shows while one is worn.
+- Trigger: a killing behind deathblow (unaware ThrowKind 100, broken-behind 41100) takes the
+  ninjutsu twin among the next three ThrowParam rows (ThrowKindParam `throwSkillId` = the worn
+  ninjutsu, `derivationSourceThrowKind` = the plain kind: Ochimusha 11010022-24 / 112-114). Paid
+  at the commit: consumeResourceItemA 6 / 5 / 7 emblems (Infinite Emblems pays none); without
+  them it is the plain deathblow. Not on a boss with marks left, not aged.
+- Bloodsmoke: a2xx_5x0210 TAE 2 at 40-43 fires v5000 bullets 300 (220010 blood reaction) and 301
+  (220014 blind 0.5 s, re-hit every 0.3 s for 4 s, radius 4 -> 6 m). enemy.rs `put_on_rates`
+  reads the enemy's clash / sp_chained sightSearchRate (sight distances) and hearingSearchEnemyCut
+  (Wolf's sounds), so an enemy in the smoke neither sees nor hears him.
+- Puppeteer: TAE 304 judge 400 at frame 27 -> BehaviorParam_PC 105000400 (refType 0) -> AtkParam_Pc
+  400: 220020 / 220021 / 220030 / 220040 on the enemy (ninjutsu::throw_effects, any of Wolf's
+  throw clips' 304 rows: the plain 790-792 put 110080-110082). ThrowDef12220 has no death; with
+  220030's NOT_TO_DEATH_ANIME (1000111) worn the enemy rises at the clip's end with full HP
+  (enemy.rs Mode::Dead), team 15 (`combat::TEAM_CHARMED`: hostile to every NPC team 29 fights,
+  not Wolf; a puppet and Wolf do not hit each other; it does not perceive Wolf). 220030 (stateInfo
+  143, immortal: `dies_at_zero_hp` now reads sp_chained) runs out after 45 s into 220022
+  (endurance 0, changeHpRate 100): actor.rs lands a one-shot replacement's changeHpRate, so it dies.
+- Bestowal: TAE 940 judge 500 at 12-13 -> 105000500 -> 106040 on Wolf for 30 s (prosthetic.rs's
+  TAE 940 pass now runs in the sword's clips with variation 5000; only these ten clips have one).
+- Tests (part17): the_bloodsmoke_ninjutsu_takes_the_stealth_deathblow_and_raises_the_smoke,
+  without_the_emblems_the_ninjutsu_is_the_plain_deathblow,
+  the_bestowal_ninjutsu_reddens_the_sword_for_thirty_seconds,
+  the_puppeteer_ninjutsu_raises_a_puppet_for_forty_five_seconds,
+  the_bloodsmokes_blindness_hides_wolf_from_an_enemy_facing_him.
+- gaps: the exe's pick of the twin and its emblem payment; team 15's table (by the row's name);
+  the puppet's 360 deg eye angles (220021); 109230 (bullet 301's second row) on Wolf; Wolf's and
+  the puppet's bullets still hit each other; 106040's blood-blade bullets ride on the existing
+  stateInfo gates (not checked in a test).
+
+## 2026-10-22: Snap Seed and the item-side gaps
+- Snap Seed (EquipParamGoods 3530, goodsUseAnim 84 ITEM_ILLUSION_BREAK -> ItemAntiHallucinogen):
+  at its consume event items.rs fires Bullet 3530 around Wolf (hitRadius 2 -> 16 m over 0.5 s,
+  life 1 s, penetrating). Its AtkParam_Pc 3530 "release illusion" deals nothing but carries
+  atkBehaviorId 6 (BEH_IDENTIFIER_BACK_REALITY). prosthetic.rs `hit_enemy`: on an enemy wearing
+  SP_EFFECT_REF_BACK_REALITY 1000043 (NpcParam 6023: Lady Butterfly's villager phantoms c1510,
+  3 HP, and the hidden dogs) it is c9997 ExecDeath's W_DeathStartBackReality (10360 / 10361); one
+  with ANIME_ID_BACK_REALITY_REACTION 20150 reels instead (none of the exported characters has it).
+  gap: the kill of a 0-damage hit is taken to be the exe's.
+- Butterfly's illusion (decoded): m10 11005820 spawns the 8 phantoms (1000820-27) while she wears
+  200060 (her anim 3018's TAE); bullet 50900920 puts 3530 (stateInfo 30, endless, no stat or vfx)
+  on Wolf and on her; 3019 / 3020's bullet 50900921 puts 3509070 -> 3531 "release illusion" on
+  both. Her AI plays combo 3210 with 5031 on her and 3531 on Wolf. No EMEVD touches 3530 / 3531,
+  and no row strips 3530 (3531 shares its category 163: the replacement is inferred).
+- Blocked, nothing in the data to run here: the Gourd Seed (goodsUseAnim 255; Emma's talk ESD
+  grows the gourd, CharaInitParam HpEstMax 1-10 per checkpoint), dragonrot (common.emevd 600 /
+  610-628 on the NPC flags 9500-9526, cured by Dragon's Blood Droplet 5600's EMEVD; the Unseen Aid
+  roll is not found in the exe). Divine Confetti stays combat::ghost_barrier (its Bullet 290 ->
+  230645 -> 104016 path is not traced).
+- Aged grabs: resolve_throws now takes Wolf's SpEffect cuts (npc_hit_damage), so the aged x99
+  reaches a grab too (the grabs are atkAttribute 1 / 2 / 9; defNinsatsuDmgRate is attribute 5).
+- Test the_snap_seed_undoes_a_phantom (part12).

@@ -32,7 +32,7 @@ effect visuals: sparks, blood, FXR/FFX, plus sekiro-rs's lighting for our own sc
   `extracted/` or `config.toml`. No git commit, no push.
 - Lighting: only by using sekiro-rs's lighting (above); no hand-tuned lighting of our own.
 - Build: `taskkill //IM sv1.exe //F` first, then `CARGO_TARGET_DIR=target/bevy20 cargo build --release --bin sv1`.
-  Tests: `CARGO_TARGET_DIR=target/bevy20 cargo test --profile quick --bin sv1 <filter>` (only the
+  Tests: `CARGO_TARGET_DIR=target/bevy20 cargo test --profile quick --lib <filter>` (only the
   covering tests per change; no full suite per change). The full suite runs once at the end of the
   whole area.
 - Small batches: one mechanic (or a few tightly linked ones) per batch. Build and run its tests after

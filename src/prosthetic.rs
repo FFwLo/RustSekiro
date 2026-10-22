@@ -20,7 +20,7 @@ use crate::anim::Hurtboxes;
 use crate::combat::{BODY_RADIUS, apply_knockback, damage_kb, segment_distance};
 use crate::data::{BulletSpec, Combat};
 use crate::enemy::Enemy;
-use crate::hud::CombatLog;
+use crate::combat::CombatLog;
 use crate::model::Dummies;
 use crate::player::Player;
 
@@ -49,6 +49,13 @@ pub struct Projectile {
     inherit_sfx: i64,
 }
 
+#[cfg(test)]
+impl Projectile {
+    pub(crate) fn bullet_id(&self) -> i64 {
+        self.spec.bullet_id
+    }
+}
+
 /// A one-shot game effect placed in the world (a bullet's sfxId_Hit / sfxId_Flick).
 fn spawn_fx_at(commands: &mut Commands, id: i64, pos: Vec3, dir: Vec3) {
     if id > 0 {
@@ -75,7 +82,7 @@ fn spawn_bullets(
     mut player: Query<(&Actor, &Transform, &mut Player, Option<&Dummies>)>,
     enemies: Query<(&Enemy, &Actor, &Transform), Without<Player>>,
     markers: Query<&GlobalTransform>,
-    lock: Option<Res<crate::camera::LockOn>>,
+    lock: Option<Res<crate::view::LockOn>>,
     mut log: Option<ResMut<CombatLog>>,
     time: Res<Time>,
     mut chain: Local<u32>,
@@ -134,8 +141,11 @@ fn spawn_bullets(
         }
         // TAE 940 BehaviorParam_AddSpEffect: the behaviour's cost, and its refType-2 SpEffect on Wolf
         // for its effectEndurance (Divine Abduction 107700100 -> 107700: ref 309 for 3 s).
-        for e in anim.events.iter().filter(|e| e.kind == 940 && tool_anim && crosses(e)) {
-            let Some(b) = e.arg_i64("BehaviorJudgeId").and_then(|j| d.behavior(var, j)).copied() else { continue };
+        // The sword's clips too (Kusabimaru's variation 5000): the Bestowal ninjutsu's
+        // a2xx_5xx230 judge 500 -> 105000500 -> 106040 (ninjutsu.rs), the only ones outside the tools.
+        for e in anim.events.iter().filter(|e| e.kind == 940 && !art_anim && crosses(e)) {
+            let v = if tool_anim { var } else { 5000 };
+            let Some(b) = e.arg_i64("BehaviorJudgeId").and_then(|j| d.behavior(v, j)).copied() else { continue };
             if b.wep_cost != 0 {
                 p.emblems = p.emblems.saturating_sub(cost);
                 if let Some(log) = log.as_mut() {
@@ -283,7 +293,7 @@ pub(crate) fn spawn_row(commands: &mut Commands, spec: &BulletSpec, pos: Vec3, d
 /// carriers are AtkParam "dummy bullet - do not hit the enemy" rows with none of them).
 fn hits_characters(spec: &BulletSpec) -> bool {
     let sp = [spec.sp_effect_id0, spec.sp_effect_id1, spec.sp_effect_id2, spec.sp_effect_id3, spec.sp_effect_id4].iter().any(|v| *v > 0);
-    sp || spec.attack.as_ref().is_some_and(deals_something)
+    sp || spec.attack.as_ref().is_some_and(|a| deals_something(a) || a.atk_behavior_id == BEH_BACK_REALITY)
 }
 
 /// An AtkParam row that does HP (any of the five elements) or posture damage. Magic / dark were
@@ -307,6 +317,10 @@ const REF_BURST_NONCRITICAL: i64 = 1000056;
 const REF_BURST_CRITICAL: i64 = 1000057;
 /// SP_EFFECT_REF_NO_BURST_REACTION (c9997.lua 548): the enemy's firecracker cool time.
 const REF_NO_BURST_REACTION: i64 = 1000044;
+/// AtkParam atkBehaviorId 6 (c0000_define BEH_IDENTIFIER_BACK_REALITY): the Snap Seed's.
+const BEH_BACK_REALITY: i64 = 6;
+/// SP_EFFECT_REF_BACK_REALITY (c9997.lua 547): an illusion the Snap Seed undoes.
+const REF_BACK_REALITY: i64 = 1_000_043;
 /// SpEffect 220018's behaviorRefId, "enemy reaction playback: blinding (ash bag)", and the ash's
 /// cool time row 3510 (30 s).
 const REF_BLINDING: i64 = 1000058;
@@ -331,10 +345,10 @@ fn fly_bullets(
     mut enemies: Query<(Entity, &mut Actor, &Transform, &mut Enemy, Option<&Hurtboxes>)>,
     markers: Query<&GlobalTransform>,
     mut log: Option<ResMut<CombatLog>>,
-    mut sounds: Option<ResMut<crate::sound::SoundQueue>>,
+    mut sounds: Option<ResMut<crate::sound_rules::SoundQueue>>,
     mut statuses: ResMut<crate::status::Statuses>,
     mut effects: Query<&mut crate::fxr::FxEffect>,
-    lock: Option<Res<crate::camera::LockOn>>,
+    lock: Option<Res<crate::view::LockOn>>,
     players: Query<&crate::player::Player>,
     mut ai_sounds: Option<ResMut<crate::enemy::AiSounds>>,
 ) {
@@ -380,7 +394,7 @@ fn fly_bullets(
         let mut landed = false;
         let step = to - from;
         if b.spec.is_penetrate_map == 0 && step.length() > 1e-5 {
-            if let Some(t) = crate::map::terrain() {
+            if let Some(t) = crate::terrain::terrain() {
                 if let Some(d) = t.raycast(from, step.normalize(), step.length()) {
                     to = from + step.normalize() * d;
                     landed = true;
@@ -628,7 +642,7 @@ fn hit_enemy(
     da: &mut Actor,
     dtf: &Transform,
     e: &mut Enemy,
-    mut sounds: Option<&mut crate::sound::SoundQueue>,
+    mut sounds: Option<&mut crate::sound_rules::SoundQueue>,
 ) -> Option<String> {
     let sps = [b.spec.sp_effect_id0, b.spec.sp_effect_id1, b.spec.sp_effect_id2, b.spec.sp_effect_id3, b.spec.sp_effect_id4];
     let sp_of = |id: i64| combat.player.sp_effects.get(&id.to_string()).or_else(|| crate::items::sp_row(id));
@@ -707,6 +721,25 @@ fn hit_enemy(
         return Some(if ash_cool { "ash: enemy is used to it (cool time)" } else { "ash: no effect" }.into());
     }
     let atk = b.spec.attack.as_ref()?;
+    // The Snap Seed (AtkParam_Pc 3530 "release illusion", atkBehaviorId 6 BEH_IDENTIFIER_BACK_REALITY)
+    // on an illusion (SP_EFFECT_REF_BACK_REALITY 1000043: NpcParam 6023 of Lady Butterfly's
+    // villager phantoms c1510): c9997 ExecDeath's W_DeathStartBackReality (10360 / 10361,
+    // IndexDeathStartBackReality 0-1); one with ANIME_ID_BACK_REALITY_REACTION 20150 alive only
+    // reels (ExecSpReactionLarge, rank 3). gap: the row deals no damage; the kill of the
+    // 3-HP phantoms is taken to be the exe's (not traced).
+    if atk.atk_behavior_id == BEH_BACK_REALITY && !e.is_dead() && enemy_refs(combat, da, e).contains(&REF_BACK_REALITY) {
+        let d = combat.data_of(da);
+        let deaths: Vec<&str> = ["DeathStartBackReality1", "DeathStartBackReality2"].into_iter().filter(|s| d.anim_key(s).is_some()).collect();
+        if !deaths.is_empty() {
+            let pick = deaths[(e.rand() * deaths.len() as f32) as usize % deaths.len()];
+            e.die_as(da, combat, pick);
+            return Some("snap seed: the illusion is gone".into());
+        }
+        if d.anim_key("BackRealityReaction").is_some() && !e.is_broken() && rank_allows(transition_rank(&da.state), 3) {
+            e.react(da, combat, "BackRealityReaction");
+            return Some("snap seed: the illusion reels".into());
+        }
+    }
     if !deals_something(atk) {
         // A bullet whose AtkParam deals nothing but whose Bullet row carries build-up still
         // lands it: the Kodachi LV3-B poison mist (Bullet 750300-750302, spEffectId0 9009
@@ -730,7 +763,7 @@ fn hit_enemy(
     let deflect = facing && contact.guarded == crate::guard::Guarded::Deflect;
     if deflect || (facing && contact.guarded == crate::guard::Guarded::Block) {
         if let Some(q) = sounds.as_mut() {
-            q.0.extend(crate::sound::guard_sounds(combat, atk, deflect).into_iter().map(|se| (se, to)));
+            q.0.extend(crate::sound_rules::guard_sounds(combat, atk, deflect).into_iter().map(|se| (se, to)));
         }
         let level = atk.level(false);
         let refs = enemy_refs(combat, da, e);
@@ -816,7 +849,7 @@ fn hit_enemy(
         }
     }
     if let Some(q) = sounds.as_mut() {
-        for se in crate::sound::hit_sounds(combat, atk, crate::sound::defender_materials(combat, da)) {
+        for se in crate::sound_rules::hit_sounds(combat, atk, crate::sound_rules::defender_materials(combat, da)) {
             q.0.push((se, to));
         }
     }
@@ -885,7 +918,12 @@ pub(crate) fn enemy_refs(combat: &Combat, a: &Actor, e: &Enemy) -> Vec<i64> {
         ids.extend(d.sp_effects_at(&a.anim, a.t).iter().map(|(id, _)| *id));
     }
     ids.extend(e.clash.iter().map(|c| c.0));
-    ids.iter().filter_map(|id| d.sp_effects.get(&id.to_string())).map(|s| s.behavior_ref_id).collect()
+    // A row outside the chr's own export (its map event's armour 220062, ref 1000105
+    // GUARD_TO_ADD_DAMAGE) is read from SpEffectParam.
+    ids.iter()
+        .filter_map(|id| d.sp_effects.get(&id.to_string()).map(|s| s.behavior_ref_id).or_else(|| crate::items::param("SpEffectParam", *id)["behaviorRefId"].as_i64()))
+        .filter(|&r| r > 0)
+        .collect()
 }
 
 /// Debug (H, with the hitboxes): bullets as lines, area bursts as their hit spheres.

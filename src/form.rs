@@ -75,7 +75,7 @@ pub(crate) struct FormTexts {
 impl FormTexts {
     pub(crate) fn load() -> Self {
         let dir = crate::paths::extracted().join("msg/engus/item.msgbnd.d");
-        let read = |f: &str| std::fs::read(dir.join(f)).ok().map(|d| crate::action_guide::read_fmg(&d)).unwrap_or_default();
+        let read = |f: &str| std::fs::read(dir.join(f)).ok().map(|d| crate::data::read_fmg(&d)).unwrap_or_default();
         FormTexts { name: read("防具名.fmg"), info: read("防具説明.fmg") }
     }
 }

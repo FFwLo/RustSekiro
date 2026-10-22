@@ -234,6 +234,10 @@ pub struct PlayerConfig {
     /// 5300 Ichimonji, 5200 / 5400-5900 the others (anim group a<spAtkcategory>).
     #[serde(default = "default_combat_art")]
     pub combat_art: i64,
+    /// Equipped Shinobi ninjutsu (EquipParamGoods, goodsType 8; 0 = none): 2100 Bloodsmoke,
+    /// 2110 Puppeteer, 2120 Bestowal (ninjutsu.rs).
+    #[serde(default)]
+    pub ninjutsu: i64,
     /// Prosthetic tool slots (EquipParamWeapon 70000-79200, up to 3 like the game; Z switches):
     /// 70000 Loaded Shuriken, 71000 Shinobi Firecracker, 72000 Flame Vent, 73000 Loaded Axe,
     /// 74000 Mist Raven, 75000 Sabimaru, 76000 Loaded Umbrella, 77000 Divine Abduction,
@@ -327,7 +331,7 @@ fn default_emblems() -> u32 {
 
 impl Default for PlayerConfig {
     fn default() -> Self {
-        Self { gourd_charges: 3, spirit_emblems: default_emblems(), infinite_emblems: false, resurrections: default_resurrections(), combat_art: default_combat_art(), prosthetics: default_prosthetics(), skills: Vec::new(), skill_points: 0, skill_exp: 0, skill_level: 0, form: 0, items: Vec::new(), quick_items: default_quick_items(), owned_tools: default_owned_tools(), upgrades: Vec::new(), unlock_all_moves: true, sen: default_sen(), attack_power: default_attack_power() }
+        Self { gourd_charges: 3, spirit_emblems: default_emblems(), infinite_emblems: false, resurrections: default_resurrections(), combat_art: default_combat_art(), ninjutsu: 0, prosthetics: default_prosthetics(), skills: Vec::new(), skill_points: 0, skill_exp: 0, skill_level: 0, form: 0, items: Vec::new(), quick_items: default_quick_items(), owned_tools: default_owned_tools(), upgrades: Vec::new(), unlock_all_moves: true, sen: default_sen(), attack_power: default_attack_power() }
     }
 }
 

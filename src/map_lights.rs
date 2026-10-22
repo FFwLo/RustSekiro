@@ -56,7 +56,7 @@ fn arena_lights(source_map: &str, origin: Vec3, arena_yaw: f32) -> Vec<Placed> {
             let pos = Vec3::new(-(d.x * c + d.z * s), d.y, -d.x * s + d.z * c);
             let range = f(&l["range"]);
             let intensity = f(&l["intensity"]);
-            if intensity <= 0.0 || range <= 0.0 || (pos - crate::map::frame().offset).xz().length() > REACH + range {
+            if intensity <= 0.0 || range <= 0.0 || (pos - crate::place::frame().offset).xz().length() > REACH + range {
                 return None;
             }
             let rgb = Vec3::new(f(&l["color"][0]), f(&l["color"][1]), f(&l["color"][2])) / 255.0;

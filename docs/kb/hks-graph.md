@@ -326,7 +326,7 @@ batches.
 - **Exe answers fixed on the way:**
   - MoveDirection written per frame (the _MoveDirectionUpdate cones); the keyboard walk key
     caps MoveSpeedLevel at 0.5;
-  - env 224 GetFallHeight is whole centimetres (FUN_140b97880: peak Y minus Y x 100; the
+  - env 224 GetFallHeight is whole centimetres (FUN_140b97880: last grounded Y (P+0x854) minus Y x 100, kb/movement.md 2026-10-22; the
     script multiplies it by 0.01). We fed metres, so every landing read as a tiny fall;
   - env 200 (falling, FUN_140b97970): off the ground, with the physics' ground contact held
     while a probe (P+0x920) reads 1.0 or less, or after 1 s airborne under a flag (P+0x100).

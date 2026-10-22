@@ -1,4 +1,4 @@
-//! Wall hug (cover) and ledge hang: Wolf docked to a map edge (`map::LedgeEdges`, kind 3 hug /
+//! Wall hug (cover) and ledge hang: Wolf docked to a map edge (`crate::traversal::LedgeEdges`, kind 3 hug /
 //! kind 2 hang). HKS c0000_transition.lua BEH_A_COVER_START / GROUND_HANG_START /
 //! AIR_HANG_START pick the start; the c0000.hkx CustomDockingGenerator nodes hold Wolf at the
 //! edge with the behavior variables DockingTranslationOffset_Cover (0, 0, 0.7), _Hang
@@ -49,7 +49,7 @@ use bevy::prelude::*;
 
 use crate::actor::Actor;
 use crate::data::CharData;
-use crate::map::LedgeEdge;
+use crate::traversal::LedgeEdge;
 use crate::player::CAPSULE_HALF_HEIGHT;
 
 /// DockingTranslationOffset_Cover z: the hugging Wolf's distance out from the edge line.
@@ -132,7 +132,7 @@ impl Dock {
         if self.hug() {
             let f = p + self.out * HUG_OUT;
             // On the floor there (the edge runs along the wall's foot, a little above it).
-            let y = crate::map::terrain().and_then(|t| t.floor(f.x, f.z, p.y + 0.5)).unwrap_or_else(|| crate::map::ground_y(f + Vec3::Y * CAPSULE_HALF_HEIGHT));
+            let y = crate::terrain::terrain().and_then(|t| t.floor(f.x, f.z, p.y + 0.5)).unwrap_or_else(|| crate::terrain::ground_y(f + Vec3::Y * CAPSULE_HALF_HEIGHT));
             f.with_y(y)
         } else {
             p + self.out * HANG_OUT - Vec3::Y * HANG_DOWN
@@ -604,7 +604,7 @@ pub fn wall_contact(chest: Vec3, yaw: f32) -> Option<f32> {
     (0..8)
         .filter_map(|k| {
             let d = Quat::from_rotation_y(-(k as f32) * std::f32::consts::FRAC_PI_4) * f;
-            crate::map::raycast(chest, d, WALL_REACH).or_else(|| test_wall_hit(chest, d)).map(|t| (angle_right(f, d), t))
+            crate::terrain::raycast(chest, d, WALL_REACH).or_else(|| test_wall_hit(chest, d)).map(|t| (angle_right(f, d), t))
         })
         .min_by(|x, y| x.1.total_cmp(&y.1))
         .map(|(a, _)| a)
@@ -616,7 +616,7 @@ pub fn wall_contact_dir(chest: Vec3, yaw: f32) -> Option<Vec3> {
     (0..8)
         .filter_map(|k| {
             let d = Quat::from_rotation_y(-(k as f32) * std::f32::consts::FRAC_PI_4) * f;
-            crate::map::raycast(chest, d, WALL_REACH).or_else(|| test_wall_hit(chest, d)).map(|t| (d, t))
+            crate::terrain::raycast(chest, d, WALL_REACH).or_else(|| test_wall_hit(chest, d)).map(|t| (d, t))
         })
         .min_by(|x, y| x.1.total_cmp(&y.1))
         .map(|(d, _)| d)
@@ -717,9 +717,9 @@ fn angle_delta(from: f32, to: f32) -> f32 {
 mod tests {
     use bevy::prelude::*;
 
-    fn edge(kind: u8) -> crate::map::LedgeEdge {
+    fn edge(kind: u8) -> crate::traversal::LedgeEdge {
         // A wall along +X at z = 0, c on its -Z side (the wall), the open side +Z.
-        crate::map::LedgeEdge { a: Vec3::new(-2.0, 0.0, 0.0), b: Vec3::new(2.0, 0.0, 0.0), c: Vec3::new(0.0, -0.2, -0.1), kind, variation: 0 }
+        crate::traversal::LedgeEdge { a: Vec3::new(-2.0, 0.0, 0.0), b: Vec3::new(2.0, 0.0, 0.0), c: Vec3::new(0.0, -0.2, -0.1), kind, variation: 0 }
     }
 
     #[test]
@@ -769,7 +769,7 @@ mod tests {
     fn edge_wall_side_probe() {
         let dir = crate::paths::extracted();
         let id = "m11_01_00_00";
-        let Some(t) = std::fs::read(dir.join(format!("map_{id}.hit"))).ok().and_then(|d| crate::map::Terrain::from_hit(&d)) else { return };
+        let Some(t) = std::fs::read(dir.join(format!("map_{id}.hit"))).ok().and_then(|d| crate::terrain::Terrain::from_hit(&d)) else { return };
         let json: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(dir.join(format!("map_{id}.json"))).unwrap()).unwrap();
         for e in crate::map::load_ledges(&json) {
             let mid = (e.a + e.b) * 0.5;

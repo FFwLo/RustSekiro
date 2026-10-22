@@ -18,8 +18,9 @@ fn run_until_moving(app: &mut App) {
 /// Lifts Wolf by `drop` over the flat test floor, as if the ground ended under him.
 fn lift(app: &mut App, drop: f32) -> f32 {
     let world = app.world_mut();
-    let mut t = world.query_filtered::<&mut Transform, With<Player>>().single_mut(world).unwrap();
+    let (mut p, mut t) = world.query::<(&mut Player, &mut Transform)>().single_mut(world).unwrap();
     t.translation.y += drop;
+    p.air_top = t.translation.y;
     t.translation.y
 }
 

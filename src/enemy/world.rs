@@ -59,7 +59,7 @@ struct WorldRun {
 }
 
 pub fn active() -> bool {
-    std::env::var("SHINOBI_WORLD_ENEMIES").is_ok_and(|v| v == "1") && crate::sr_map::world() && crate::sr_map::idol_start().is_some()
+    std::env::var("SHINOBI_WORLD_ENEMIES").is_ok_and(|v| v == "1") && (crate::encounter::hooks().open_world)() && (crate::encounter::hooks().idol_start)().is_some()
 }
 
 fn load(blocks: &[String]) -> Vec<WorldRun> {
@@ -99,7 +99,7 @@ pub(super) fn run_world(
         if !active() {
             return;
         }
-        let blocks = crate::sr_map::blocks();
+        let blocks = (crate::encounter::hooks().blocks)();
         ws.runs = load(&blocks);
         ws.resets = bs.resets;
     }
@@ -307,7 +307,7 @@ pub(super) fn run_world(
         };
         let Some((pos, yaw)) = wr.run.place_of(id) else { continue };
         // On the floor under its MSB height (a step up allowed).
-        let floor = crate::map::terrain().and_then(|t| t.floor(pos.x, pos.z, pos.y + crate::map::STEP_HEIGHT)).unwrap_or(pos.y);
+        let floor = crate::terrain::terrain().and_then(|t| t.floor(pos.x, pos.z, pos.y + crate::terrain::STEP_HEIGHT)).unwrap_or(pos.y);
         let at = pos.with_y(floor + crate::player::CAPSULE_HALF_HEIGHT + 0.05);
         let rng = wr.run.rand();
         let ent = super::spawn_one(&mut commands, &combat, &config, kind, at, yaw, true, rng);

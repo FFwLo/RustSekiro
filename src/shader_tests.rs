@@ -65,7 +65,7 @@ fn cache() -> (ShaderCache<(), ()>, Assets<Shader>) {
 /// Composes `name` (a file in src/) with each def set; panics with naga's message on an error.
 fn check(name: &str, source: &'static str, sets: &[Vec<ShaderDefVal>]) {
     let (mut cache, mut assets) = cache();
-    let shader = Shader::from_wesl(source, format!("embedded://sv1/{name}"));
+    let shader = Shader::from_wesl(source, format!("embedded://rustsekiro/{name}"));
     let id = assets.add(shader.clone()).id();
     cache.set_shader(id, shader);
     for (i, defs) in sets.iter().enumerate() {

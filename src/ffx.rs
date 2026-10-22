@@ -242,7 +242,7 @@ fn emit(
         let d = data_for(&combat, &a);
         // The TAE anim's step, or Wolf's procedural walk / run: the shown locomotion clip (its
         // foot dust, TAE 792 / 112) - the same windows as its footstep sounds.
-        let Some((clip, windows, _)) = crate::sound::sound_windows(a, d) else { continue };
+        let Some((clip, windows, _)) = crate::sound_rules::sound_windows(a, d) else { continue };
         let procedural = a.anim.is_empty();
         let Some(anim) = d.anim(&clip) else { continue };
         let mut states: Option<Vec<i64>> = None;
@@ -296,7 +296,7 @@ fn emit(
                 // (Mortal Draw's 993 gates its 440005-440008, which the skills recording plays with
                 // every 440001 / 440003) and the timed SpEffects'.
                 let active = states.get_or_insert_with(|| {
-                    let mut v = crate::sound::active_state_infos(&combat, a, Some(&config), tool);
+                    let mut v = crate::sound_rules::active_state_infos(&combat, a, Some(&config), tool);
                     if player.is_some() {
                         v.extend(combat.player.resident_gates.iter().copied());
                     }
@@ -422,7 +422,6 @@ fn skill_shots(
     mut pad: ResMut<crate::player::PadInput>,
     mut frame: Local<u32>,
     mut exit: MessageWriter<AppExit>,
-    mut cam: Query<&mut crate::camera::OrbitCamera>,
     wolf: Query<(&crate::actor::Actor, &Transform), With<crate::player::Player>>,
 ) {
     let (Ok(id), Ok(dir)) = (std::env::var("SHINOBI_SKILL"), std::env::var("SHINOBI_SKILL_SHOTS")) else { return };
@@ -441,14 +440,7 @@ fn skill_shots(
             config.player.combat_art = id;
         }
     }
-    // SHINOBI_SKILL_CAM="yaw,pitch" [deg]: hold the camera there.
-    if let Ok(v) = std::env::var("SHINOBI_SKILL_CAM") {
-        let v: Vec<f32> = v.split(',').filter_map(|x| x.parse().ok()).collect();
-        if let (Some(&y), Ok(mut oc)) = (v.first(), cam.single_mut()) {
-            oc.yaw = y.to_radians();
-            oc.pitch = v.get(1).copied().unwrap_or(10.0).to_radians();
-        }
-    }
+    // SHINOBI_SKILL_CAM="yaw,pitch" [deg] holds the camera there (camera.rs shot_knobs).
     let start = 180;
     // SHINOBI_SKILL_EVERY=<frames>: press again every so many frames (build-ups: the Flame Vent's burn).
     let every = std::env::var("SHINOBI_SKILL_EVERY").ok().and_then(|v| v.parse::<u32>().ok()).filter(|v| *v > 0);

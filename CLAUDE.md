@@ -2,13 +2,14 @@
 
 A 1:1 recreation of Sekiro's combat. Every number
 comes from the game's own files (TAE, HKS, params, behaviour graphs, FLVER, FMOD) or the
-static Ghidra decompile of the exe. The crate and exe are `sv1`. GitHub: `FFwLo/RustSekiro`, `main`.
+static Ghidra decompile of the exe. The package and exe are `sv1`; the game is the library `rustsekiro`
+(src/lib.rs, `rustsekiro::run()`), src/main.rs only starts it. GitHub: `FFwLo/RustSekiro`, `main`.
 
 ## Commands
 - Build: `cargo build --release` (game), `cargo build` (debug). One target folder per session
   (`CARGO_TARGET_DIR=target/<name>`); the extractor uses `tools/sekiro-extract/target`.
 - Tests: `tools/t.sh <filter>` (quiet: failures and totals only). Same as
-  `cargo test --profile quick --bin sv1 <filter>`. Run only the covering tests per change; the full
+  `cargo test --profile quick --lib <filter>`. Run only the covering tests per change; the full
   suite once at the end. "Done" = build and the covering tests pass.
 - Regenerate data: `powershell -ExecutionPolicy Bypass -File tools\extract.ps1`.
 - Exe research: `tools/fn.sh <addr>` prints a decompiled function; `extracted/rtti_vtables.txt`.
@@ -33,6 +34,7 @@ static Ghidra decompile of the exe. The crate and exe are `sv1`. GitHub: `FFwLo/
 | The game's HKS script + behaviour graph run as the game does (live by default, SHINOBI_HKS=0 off; tests) | `src/hks_wolf.rs`, `src/hks.rs`, `src/hks_lua.rs`, `src/hkb_runtime.rs`, `docs/kb/hks-graph.md` |
 | How any Sekiro mechanic works (values, sources, coverage, needs) | `docs/kb/mechanics-atlas.json` (filter by id/category with python; `mechanics-atlas.md` is generated from it) |
 | The playthrough start to finish, gates, endings | `docs/kb/game-flow.md` |
+| The combat core alone (`--no-default-features`), its hooks, and in sekiro-rs's game | `src/lib.rs` (CombatCorePlugin, re-exports), `tools/core_deps.py` (must stay 0), `examples/in-sekiro-rs/` |
 | Reference clips | `docs/kb/clips.md` (check before asking for a new recording) |
 | Live recordings of the real Sekiro | `docs/kb/recordings.md`: read `python -m tools.rec summary <rec> --cat <topic>`, never raw data |
 

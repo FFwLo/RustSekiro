@@ -1731,6 +1731,43 @@ pub(crate) fn a_quick_turn_out_of_a_run_stop_is_taken_once() {
     assert!(log.iter().filter(|l| l.contains("W_StandQuickTurn")).count() == 1, "{log:?}");
 }
 
+/// Locking onto a target behind in a run stop's first frames: the script's in-move 180 turn
+/// (BEH_A_STAND_MOVE_QUICK_TURN, TurnAngle the target's angle with the stick at rest) is taken
+/// once and turns Wolf to the target (rec 20261015_231740 @8327: ours fired it every frame).
+#[test]
+pub(crate) fn a_target_locked_behind_in_a_run_stop_turns_once() {
+    let mut app = app();
+    let enemy = {
+        let world = app.world_mut();
+        world.query::<&mut crate::enemy::Enemy>().single_mut(world).unwrap().ai_off = true;
+        world.query_filtered::<Entity, With<Enemy>>().single(world).unwrap()
+    };
+    move_enemy_far(&mut app);
+    let mut log = Vec::<String>::new();
+    let mut lock_at = None;
+    for i in 0..150 {
+        app.world_mut().resource_mut::<PadInput>().stick = if i < 40 { Vec2::new(0.0, -1.0) } else { Vec2::ZERO };
+        let s = player_state(&mut app).0;
+        if lock_at.is_none() && s.starts_with("StandRunStop") {
+            lock_at = Some(i);
+            // the target 8 m behind Wolf, out of reach above
+            let world = app.world_mut();
+            let (a, tf) = world.query_filtered::<(&Actor, &Transform), With<Player>>().single(world).unwrap();
+            let at = tf.translation - a.forward() * 8.0 + Vec3::Y * 40.0;
+            world.query_filtered::<&mut Transform, With<Enemy>>().single_mut(world).unwrap().translation = at;
+            world.resource_mut::<crate::camera::LockOn>().target = Some(enemy);
+        }
+        app.update();
+        let s = player_state(&mut app).0;
+        let ev = app.world().get_non_send::<crate::hks_wolf::WolfScript>().map_or(String::new(), |w| w.fired.join(";"));
+        if !ev.is_empty() || log.last().is_none_or(|l| !l.contains(&format!(" {s} "))) {
+            log.push(format!("{i} {s} {ev}"));
+        }
+    }
+    assert!(log.iter().any(|l| l.contains(" StandRunQuickTurn")), "{log:?}");
+    assert!(log.iter().filter(|l| l.contains("W_StandMoveQuickTurn")).count() == 1, "{log:?}");
+}
+
 /// The move out of a step let go 3 ticks in: the script's stop (BEH_A_GROUND_MOVE_STOP
 /// W_StandRunStop) is taken once, not fired every frame while the move's speed level is still
 /// low (rec 20261015_211958 @895: the game's W_StandMoveStart, W_StandRunStop 3 ticks later, once).

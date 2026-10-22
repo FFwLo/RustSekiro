@@ -373,7 +373,7 @@ fn fly(
     mut shooters: Query<&mut Actor, (With<Enemy>, Without<Player>)>,
     markers: Query<&GlobalTransform>,
     mut stains: MessageWriter<crate::gore::PlaceStain>,
-    (mut statuses, config, mut perilous): (ResMut<crate::status::Statuses>, Res<crate::config::GameConfig>, Option<ResMut<crate::hud::Perilous>>),
+    (mut statuses, config, mut perilous): (ResMut<crate::status::Statuses>, Res<crate::config::GameConfig>, Option<ResMut<crate::combat::Perilous>>),
     (mut fxr, wolf_dummies, mut effects): (Option<ResMut<crate::fxr::FxrLib>>, Query<&crate::model::Dummies, With<Player>>, Query<&mut crate::fxr::FxEffect>),
     // Each shot's hit on Wolf until when (its dmgHitRecordLifeTime; none: for good).
     (mut shared_hit, mut clock): (Local<std::collections::HashMap<u32, f32>>, Local<f32>),
@@ -423,7 +423,7 @@ fn fly(
         let mut landed = false;
         let step = to - from;
         if b.spec.is_penetrate_map == 0 && step.length() > 1e-5 {
-            if let Some(t) = crate::map::terrain() {
+            if let Some(t) = crate::terrain::terrain() {
                 if let Some(d) = t.raycast(from, step.normalize(), step.length()) {
                     to = from + step.normalize() * d;
                     landed = true;

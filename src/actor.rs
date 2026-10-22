@@ -619,7 +619,7 @@ pub fn data_for<'a>(combat: &'a Combat, a: &Actor) -> &'a CharData {
 /// player (or the rival it fights) for the enemy; unlocked, Wolf's attack auto-homing target (player.rs).
 fn boost_root_motion(
     combat: Res<Combat>,
-    lock: Option<Res<crate::camera::LockOn>>,
+    lock: Option<Res<crate::view::LockOn>>,
     mut q: Query<(Entity, &mut Actor, &Transform)>,
 ) {
     let positions: Vec<(Entity, Side, Vec3)> = q.iter().map(|(e, a, t)| (e, a.side, t.translation)).collect();
@@ -976,12 +976,23 @@ pub(crate) fn run_sp_effect_chains(data: &crate::data::CharData, a: &mut Actor, 
         }
     }
     let mut kept = Vec::new();
+    let mut hp_hits = Vec::new();
     for (id, left) in a.sp_chained.drain(..) {
         let left = left - dt;
         if left > 0.0 {
             kept.push((id, left));
         } else if let Some(r) = row(id).and_then(|s| row(s.replace_sp_effect_id).map(|r| (s.replace_sp_effect_id, r))).filter(|(_, r)| r.effect_endurance > 0.0) {
             add.push((r.0, r.1.effect_endurance));
+        } else if let Some(next) = crate::data::sp_cycle(id).map(|c| c.replace).filter(|n| *n > 0).and_then(crate::data::sp_cycle).filter(|r| r.endurance == 0.0) {
+            // A one-shot replacement lands its changeHpRate (% of max HP) once: the Puppeteer's
+            // 220030 runs out into 220022 "died over time", 100 %.
+            hp_hits.push(next.hp_rate);
+        }
+    }
+    // (Never on the dead: a ThrowDef clip's 3120000 runs out into 5461, -100 % = full HP.)
+    if a.hp > 0.0 {
+        for rate in hp_hits {
+            a.hp = (a.hp - a.hp_max * rate / 100.0).clamp(0.0, a.hp_max);
         }
     }
     for (id, secs) in add {

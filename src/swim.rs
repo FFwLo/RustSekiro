@@ -6,11 +6,11 @@
 //! and under it. Where the floor comes up near the surface he stands and walks out
 //! (SwimToStandMove).
 //!
-//! The water is boxes (`WATER`: low corner, high corner whose y is the surface) the map sets:
-//! the Construct's pool (sandbox.rs). Held in water the body is the swim's (`hold`): the clips'
+//! The water is boxes (`WATER`: low corner, high corner whose y is the surface) the map sets
+//! (the Construct's pool, sandbox.rs), and the map's own deep water planes (`water_at`). Held in water the body is the swim's (`hold`): the clips'
 //! vertical root motion moves it (the tracks of SwimToDive -1.5 m, DiveToSwim +1.6 m, the up /
 //! down loops 4.5 / 3.75 m/s), the surface keeps it at `SWIM_DEPTH`, the box and its floor bound
-//! it. gap: the game's water volumes (map hit material 20-24) and their depth rules, the fall
+//! it. gap: the exe's swim trigger and depth rule (deep planes by HitMtrlParam row here), the fall
 //! entry clips (FallToSwim / Swim have no clip in c0000's export), breath, underwater combat and
 //! the camera's underwater look are not done.
 
@@ -137,14 +137,24 @@ const DRIFT_SPEED: f32 = 3.0;
 /// taken along it.
 const DIVE_SPEED: f32 = 4.6;
 
-/// The water box `feet` is in (inside it across, under its surface).
+/// The water `feet` is in (inside it across, under its surface): a map box, else the map's own
+/// deep water plane over him (terrain::water_surface, HitMtrlParam 22 / 36 / 38), as a box
+/// without sides whose top is the plane (the shore ends it: the floor comes up to stand on).
 pub fn water_at(feet: Vec3) -> Option<(Vec3, Vec3)> {
-    WATER.read().ok()?.iter().copied().find(|(lo, hi)| feet.x > lo.x && feet.x < hi.x && feet.z > lo.z && feet.z < hi.z && feet.y < hi.y && feet.y > lo.y - 1.0)
+    WATER.read().ok()?.iter().copied().find(|(lo, hi)| feet.x > lo.x && feet.x < hi.x && feet.z > lo.z && feet.z < hi.z && feet.y < hi.y && feet.y > lo.y - 1.0).or_else(|| {
+        let (h, m) = crate::terrain::water_surface(feet.x, feet.z, feet.y + PLANE_REACH)?;
+        (crate::terrain::deep_water(m) && feet.y < h).then(|| (Vec3::new(feet.x - OPEN, f32::MIN, feet.z - OPEN), Vec3::new(feet.x + OPEN, h, feet.z + OPEN)))
+    })
 }
+
+/// How far over the feet a water plane is looked for [m] (the swim holds them 1.35 m under).
+const PLANE_REACH: f32 = 3.0;
+/// A water plane's box half-width [m]: open water has no sides.
+const OPEN: f32 = 1.0e4;
 
 /// The floor under `at` below the surface `surface` (the pool's bottom or its ramp).
 fn floor_under(at: Vec3, surface: f32) -> f32 {
-    crate::map::terrain().and_then(|t| t.floor(at.x, at.z, surface + 0.2)).unwrap_or(f32::NEG_INFINITY)
+    crate::terrain::terrain().and_then(|t| t.floor(at.x, at.z, surface + 0.2)).unwrap_or(f32::NEG_INFINITY)
 }
 
 fn yaw_of(dir: Vec3) -> f32 {
@@ -233,7 +243,7 @@ const FALL_HEIGHT_LONG_STIFF_LAND_WATER: f32 = 20.0;
 /// The swim's input step, in player.rs decide before the hug / hang: true while Wolf swims (the
 /// rest of decide does not run).
 #[allow(clippy::too_many_arguments)]
-pub fn tick(p: &mut Player, a: &mut Actor, d: &CharData, tf: &Transform, c: Controls, ended: bool, mibu: bool, dt: f32, log: &mut crate::hud::CombatLog) -> Step {
+pub fn tick(p: &mut Player, a: &mut Actor, d: &CharData, tf: &Transform, c: Controls, ended: bool, mibu: bool, dt: f32, log: &mut crate::combat::CombatLog) -> Step {
     use Step::{Free, Held};
     let stick = c.stick;
     let feet = tf.translation - Vec3::Y * CAPSULE_HALF_HEIGHT;
@@ -482,7 +492,7 @@ pub fn hold(time: Res<Time>, combat: Res<crate::data::Combat>, mut q: Query<(&Pl
         if swim.leaving {
             // Walking out on the ramp: the floor under him.
             let feet = tf.translation - Vec3::Y * CAPSULE_HALF_HEIGHT;
-            if let Some(floor) = crate::map::terrain().and_then(|t| t.floor(feet.x, feet.z, feet.y + 1.5)) {
+            if let Some(floor) = crate::terrain::terrain().and_then(|t| t.floor(feet.x, feet.z, feet.y + 1.5)) {
                 tf.translation.y = floor + CAPSULE_HALF_HEIGHT;
             }
             a.docked = false;

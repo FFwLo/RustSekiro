@@ -54,8 +54,7 @@ fn cycle(mut c: ResMut<Cycle>, mut spawn: MessageWriter<crate::enemy::SpawnEncou
 
 /// Only the test drives Wolf: player.rs read_input does not run (real keys and clicks are not
 /// read).
-#[derive(Resource)]
-pub struct AutoBossOn;
+pub use crate::player::ScriptedInput as AutoBossOn;
 
 #[derive(Resource)]
 struct Auto {

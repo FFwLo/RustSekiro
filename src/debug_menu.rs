@@ -300,7 +300,7 @@ fn menu_input(
     mut player: Query<(&mut Player, &mut Actor, &mut Transform), Without<Enemy>>,
     mut enemies: Query<(Entity, &mut Enemy, &mut Actor, &mut Transform, Option<&crate::enemy::Phantom>), Without<Player>>,
     mut statuses: Option<ResMut<crate::status::Statuses>>,
-    mut hooks: Option<ResMut<crate::map::GrapplePoints>>,
+    mut hooks: Option<ResMut<crate::traversal::GrapplePoints>>,
     mut exit: MessageWriter<AppExit>,
     (mut lighting, looks, mut day, mut sky, mut go): MapParams,
 ) {
@@ -327,7 +327,7 @@ fn menu_input(
         }
     }
     // A freshly loaded map starts on its own look and light set.
-    let loaded = crate::map::loaded_map();
+    let loaded = crate::place::loaded_map();
     if menu.weather_map != loaded {
         if let (Some(l), Some(lk)) = (lighting.as_deref(), looks.as_deref()) {
             menu.weather = weathers(lk).iter().position(|w| *w == (0, l.light_set)).unwrap_or(0);
@@ -594,7 +594,7 @@ fn menu_input(
             if let (Some(hooks), Ok((_, a, t))) = (hooks.as_mut(), player.single()) {
                 let fwd = Vec3::new(-a.yaw.sin(), 0.0, -a.yaw.cos());
                 let at = t.translation + fwd * HOOK_AHEAD + Vec3::Y * HOOK_HEIGHTS[menu.hook_height];
-                hooks.0.push(crate::map::GrapplePoint { hook: at, land: at - Vec3::Y * 1.0, fwd: -fwd, variation: 0 });
+                hooks.0.push(crate::traversal::GrapplePoint { hook: at, land: at - Vec3::Y * 1.0, fwd: -fwd, variation: 0 });
                 menu.hooks_added += 1;
                 menu.message = format!("test hook {} m ahead, {} m up", HOOK_AHEAD, HOOK_HEIGHTS[menu.hook_height]);
             }
@@ -841,7 +841,7 @@ fn draw_menu(
             Item::Hitboxes => format!("hitboxes / hurtboxes (H): {}", on(hurtboxes.0)),
             Item::Reset => "reset fight".into(),
             Item::Map => match maps().get(menu.map) {
-                Some((id, label)) => format!("map: {label}{}", if crate::map::loaded_map().as_deref() == Some(id.as_str()) { "  (here)" } else { "  - Enter: go" }),
+                Some((id, label)) => format!("map: {label}{}", if crate::place::loaded_map().as_deref() == Some(id.as_str()) { "  (here)" } else { "  - Enter: go" }),
                 None => "map: none exported".into(),
             },
             Item::Hour => match lighting.as_deref() {

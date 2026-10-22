@@ -32,16 +32,52 @@ use crate::actor::{Actor, ActorSet, Side, data_for};
 use crate::config::GameConfig;
 use crate::data::{Attack, Combat, STATE_INFO_JUST_GUARD, TAE_FPS};
 use crate::enemy::Enemy;
-use crate::hud::CombatLog;
 use crate::anim::Hurtboxes;
 use crate::model::Dummies;
 use crate::player::FLAG_SHIELD_BLOCK;
+
+/// The combat log lines (drawn by hud.rs).
+#[derive(Resource, Default)]
+pub struct CombatLog {
+    pub lines: Vec<(String, Color, f32)>,
+}
+
+impl CombatLog {
+    pub fn push(&mut self, text: impl Into<String>, color: Color) {
+        self.lines.push((text.into(), color, 0.0));
+        if self.lines.len() > 6 {
+            self.lines.remove(0);
+        }
+    }
+}
+
+/// Perilous-attack warning (the red 危 kanji; drawn by hud.rs), raised by the enemy when its TAE
+/// warning BulletBehavior (judge 980-983) reaches Wolf (enemy_bullet.rs fly).
+#[derive(Resource, Default)]
+pub struct Perilous {
+    pub timer: f32,
+    pub kind: i64,
+}
+
+impl Perilous {
+    /// A warning of `kind`; `text`: show the HUD 危 (off when its effect 600035 plays instead,
+    /// enemy_bullet.rs fly).
+    pub fn raise(&mut self, kind: i64, text: bool) {
+        self.timer = if text { PERILOUS_SHOW } else { 0.0 };
+        self.kind = kind;
+    }
+}
+
+/// How long the HUD shows the 危 for a warning.
+pub const PERILOUS_SHOW: f32 = 0.8;
 
 pub struct CombatPlugin;
 
 impl Plugin for CombatPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<CombatLog>()
+            .init_resource::<Perilous>()
+            .init_resource::<crate::sound_rules::SoundQueue>()
             .configure_sets(FixedUpdate, (ActorSet::Decide, ActorSet::Advance, ActorSet::Resolve).chain())
             .add_systems(FixedUpdate, (resolve, resolve_throws).chain().in_set(ActorSet::Resolve))
             .init_resource::<ShowHurtboxes>()
@@ -872,6 +908,16 @@ pub(crate) fn segment_distance(p1: Vec3, q1: Vec3, p2: Vec3, q2: Vec3) -> f32 {
 /// Fallback hurtbox when a character has no ragdoll capsules (headless tests): a body
 /// capsule from feet + 0.3 m to feet + 1.5 m, radius 0.4.
 pub(crate) const BODY_RADIUS: f32 = 0.4;
+
+/// The fallback body's radius: an enemy's NpcParam hitRadius when bigger (Guardian Ape 2.2 m,
+/// Demon of Hatred 2.8 m), else BODY_RADIUS. With 0.4 for every body the headless sims' Wolf
+/// never reached the big bosses (closed-loop pressure run, 2026-10-22: 0 hits on the Ape).
+fn body_radius(combat: &Combat, a: &Actor) -> f32 {
+    match a.side {
+        Side::Enemy => (combat.param("NpcParam", combat.foe_of(a).npc_row)["hitRadius"].as_f64().unwrap_or(0.0) as f32).max(BODY_RADIUS),
+        Side::Player => BODY_RADIUS,
+    }
+}
 /// ChrActionFlag 125 "MikiriCounter": on in the forward step (GroundStep_F, frames 0-12).
 const FLAG_MIKIRI: i64 = 125;
 // ThrowParam "見切り PC -> enemy" (mikiri, suffix 0190): player a201_511800, enemy ThrowDef13800.
@@ -1010,13 +1056,24 @@ pub(crate) fn guard_pick(d: &crate::data::CharData, da: &mut Actor, e: &mut crat
 /// pushed on top of the clip's row and won in ReturnKengekiSpecialEffect (200215 before 200225),
 /// so the Owl's Kengeki_Activate never saw its 200226 (boss bug hunt 2026-10-14).
 pub(crate) fn clash_after(d: &crate::data::CharData, a: &Actor, e: &mut crate::enemy::Enemy, fallback: i64) {
-    let own = d.anim(&a.anim).is_some_and(|an| {
-        an.events.iter().any(|ev| matches!(ev.kind, 66 | 67) && ev.start <= 0.05 && ev.arg_i64("SpEffectID").is_some_and(|id| (200200..=200229).contains(&id)))
+    let own = d.anim(&a.anim).and_then(|an| {
+        an.events.iter().find_map(|ev| {
+            let id = ev.arg_i64("SpEffectID").filter(|id| matches!(ev.kind, 66 | 67) && ev.start <= 0.05 && (200200..=200229).contains(id))?;
+            Some((id, ev.start))
+        })
     });
-    if own {
-        e.clash_count(fallback);
-    } else {
-        e.add_clash(fallback);
+    match own {
+        Some((id, start)) => {
+            e.clash_count(fallback);
+            // The game's row is on from the clip's first tick (live: c1020's AttackNoBoundEnemy1
+            // 8700 / 8701, TAE 200205 / 200206 from 0.03 s, show it on the same tick as the clip),
+            // so the AI's replan one tick in already reads it (Kengeki 3051 / 3056); bridged until
+            // the TAE event takes over.
+            if start > 0.0 {
+                e.clash.push((id, start + 1.0 / 60.0));
+            }
+        }
+        None => e.add_clash(fallback),
     }
 }
 
@@ -1338,6 +1395,11 @@ pub(crate) fn growth_sp(config: &GameConfig) -> i64 {
     160000 + config.player.attack_power.clamp(1, 99) as i64
 }
 
+/// The Puppeteer's changeTeamType 15 (220040 "team type change: fascination"; no Paramdex name):
+/// on Wolf's side, against every NPC team the indiscriminate 29 fights (ninjutsu.rs). gap: the
+/// exe's table for 15 is not traced.
+pub const TEAM_CHARMED: i64 = 15;
+
 /// NpcParam teamType hostility between two NPCs (both can hurt and target each other). Team 24
 /// ("Enemy 2", Paramdex TEAM_TYPE) holds the invaders, and their rows say whom they are for:
 /// 11502001 / 14701003 "hostile to the Ashina forces" (葦名勢敵対用), 11502100 "to the monkeys"
@@ -1348,6 +1410,7 @@ pub(crate) fn growth_sp(config: &GameConfig) -> i64 {
 pub fn teams_hostile(a: i64, b: i64) -> bool {
     match (a, b) {
         (29, x) | (x, 29) => !matches!(x, 0 | 26 | 30),
+        (TEAM_CHARMED, x) | (x, TEAM_CHARMED) => !matches!(x, 0 | 26 | 30 | TEAM_CHARMED),
         (6, 24) | (24, 6) => true,
         _ => false,
     }
@@ -1434,9 +1497,9 @@ fn resolve(
     config: Res<GameConfig>,
     mut log: ResMut<CombatLog>,
     mut commands: Commands,
-    mut q: Query<(Entity, &mut Actor, &Transform, Option<&mut Enemy>, Option<&Dummies>, Option<&Hurtboxes>), Without<crate::sculptor::Sculptor>>,
+    mut q: Query<(Entity, &mut Actor, &Transform, Option<&mut Enemy>, Option<&Dummies>, Option<&Hurtboxes>), Without<crate::encounter::Npc>>,
     dummy_tf: Query<&GlobalTransform>,
-    mut sounds: Option<ResMut<crate::sound::SoundQueue>>,
+    mut sounds: Option<ResMut<crate::sound_rules::SoundQueue>>,
     mut prev_dmy: Local<std::collections::HashMap<Entity, Vec3>>,
     mut throw: Option<ResMut<crate::player::ActiveThrow>>,
     players: Query<&crate::player::Player>,
@@ -1484,6 +1547,10 @@ fn resolve(
             // Enemies are on one side, unless their teams are hostile (teams_hostile: the
             // invaders against Ashina). AtkParam friendlyTarget rows are for objects.
             if aa.side == da.side && !(aa.side == Side::Enemy && teams_hostile(teams[&att_e], teams[&def_e])) {
+                continue;
+            }
+            // A charmed puppet (TEAM_CHARMED) and Wolf do not hurt each other.
+            if aa.side != da.side && [att_e, def_e].iter().any(|e| teams.get(e) == Some(&TEAM_CHARMED)) {
                 continue;
             }
             if aa.hp <= 0.0 || (da.hp <= 0.0 && da.side == Side::Player) || defender_dead {
@@ -1574,7 +1641,7 @@ fn resolve(
                         }),
                         None => {
                             let feet = dtf.translation - Vec3::Y * crate::player::CAPSULE_HALF_HEIGHT;
-                            segment_distance(p1, p2, feet + Vec3::Y * 0.3, feet + Vec3::Y * 1.5) <= radius + BODY_RADIUS
+                            segment_distance(p1, p2, feet + Vec3::Y * 0.3, feet + Vec3::Y * 1.5) <= radius + body_radius(&combat, da)
                         }
                     })),
                     None => {
@@ -1582,7 +1649,8 @@ fn resolve(
                         let reach = match aa.side {
                             Side::Player => config.combat.player_reach,
                             Side::Enemy => config.combat.enemy_reach,
-                        } + atk.hit0_radius;
+                        } + atk.hit0_radius
+                            + (body_radius(&combat, da) - BODY_RADIUS).max(0.0);
                         let in_arc = aa.forward().angle_between(to_def.normalize_or_zero()).to_degrees() <= config.combat.attack_arc / 2.0;
                         to_def.length() <= reach && in_arc
                     }
@@ -1974,7 +2042,7 @@ fn resolve(
                         let sfx = crate::vfx::hit_sfx_turned(&combat, &atk, crate::vfx::Kind::Deflect, [-1, -1]);
                         commands.spawn(crate::vfx::Clash::bundle(mid, (atf.translation - dtf.translation).with_y(0.0), sfx));
                         if let Some(q) = sounds.as_mut() {
-                            for se in crate::sound::guard_sounds(&combat, &atk, true) {
+                            for se in crate::sound_rules::guard_sounds(&combat, &atk, true) {
                                 q.0.push((se, mid));
                             }
                         }
@@ -1999,7 +2067,7 @@ fn resolve(
                             }
                         }
                         if let Some(q) = sounds.as_mut() {
-                            for se in crate::sound::guard_sounds(&combat, &atk, false) {
+                            for se in crate::sound_rules::guard_sounds(&combat, &atk, false) {
                                 q.0.push((se, mid));
                             }
                         }
@@ -2104,6 +2172,9 @@ fn resolve(
                                         let s = format!("AttackNoBoundEnemy{n}_{}", if dact == 1 { "Right" } else { "Left" });
                                         if ad.anim_key(&s).is_some() {
                                             e.react_from(aa, &combat, da.side == Side::Player, &s);
+                                            // Its own weak row (8700 200205, 8701 200206), which the
+                                            // General's Kengeki answers with 3051 / 3056.
+                                            clash_after(ad, aa, e, if dact == 1 { 200205 } else { 200206 });
                                         }
                                     }
                                 }
@@ -2340,7 +2411,7 @@ fn resolve(
                         commands.spawn(crate::vfx::Clash::bundle(mid, (atf.translation - dtf.translation).with_y(0.0), sfx));
                         commands.spawn(crate::gore::HitStains { ids: crate::gore::hit_stain_ids(&atk, def_mats[0]), at: mid, dir: dtf.translation - atf.translation });
                         if let Some(q) = sounds.as_mut() {
-                            for se in crate::sound::hit_sounds(&combat, &atk, crate::sound::defender_materials(&combat, da)) {
+                            for se in crate::sound_rules::hit_sounds(&combat, &atk, crate::sound_rules::defender_materials(&combat, da)) {
                                 q.0.push((se, mid));
                             }
                         }
@@ -2648,14 +2719,17 @@ fn resolve_throws(combat: Res<Combat>, mut log: Option<ResMut<CombatLog>>, mut q
         if let Some((atk, rate, stam_rate)) = lands.and_then(|(j, kind, r, sr)| combat.kind(kind).data.attacks.get(&j.to_string()).map(|atk| (atk, r, sr))) {
             // The thrower's area-doping rates, as resolve applies them to a hit.
             let pd = stam_rate * if atk.direct_atk_stam_damage > 0.0 { atk.direct_atk_stam_damage } else { atk.atk_stam };
-            a.hp = (a.hp - atk.atk_phys * rate).max(0.0);
+            // Wolf's SpEffect cuts as on any NPC hit: the aged Wolf takes x99 (the grabs' AtkParam_Npc
+            // rows are atkAttribute 1 / 2 / 9, not 5 defNinsatsuDmgRate).
+            let dmg = npc_hit_damage(&combat, atk, &a) * rate;
+            a.hp = (a.hp - dmg).max(0.0);
             a.add_posture(pd);
             // The grabbed clip already contains the throw and the fall; without it, a large hit.
             if a.anim.is_empty() {
                 a.play_state(&combat.player, "StandDamageLarge_F");
             }
             if let Some(log) = log.as_mut() {
-                log.push(format!("thrown: -{:.0} HP, +{pd:.0} posture", atk.atk_phys), Color::srgb(1.0, 0.45, 0.4));
+                log.push(format!("thrown: -{dmg:.0} HP, +{pd:.0} posture"), Color::srgb(1.0, 0.45, 0.4));
             }
         } else if cut || (a.anim.is_empty() && !throwing) {
             a.play("StandIdle", "");

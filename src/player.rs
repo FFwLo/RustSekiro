@@ -12,11 +12,11 @@ use bevy::prelude::*;
 use std::collections::HashMap;
 
 use crate::actor::{Actor, ActorSet, Side};
-use crate::camera::{LockOn, OrbitCamera};
+use crate::view::{LockOn, View};
 use crate::config::GameConfig;
 use crate::data::{CharData, Combat, FALL_TYPES, calc_correct};
 use crate::enemy::Enemy;
-use crate::hud::CombatLog;
+use crate::combat::CombatLog;
 
 #[derive(Component)]
 pub struct Player {
@@ -34,7 +34,7 @@ pub struct Player {
     /// The direction (from Wolf) of the wall the last chained wall jump left.
     pub(crate) last_wall: Option<Vec3>,
     /// At a Sculptor's Idol (idol.rs): which, the clip phase, the menu's command, the checkpoint.
-    pub(crate) seat: crate::idol::Seat,
+    pub(crate) seat: crate::seat::Seat,
     pub(crate) wall_contact: Option<char>,
     /// HKS MoveSpeedLevel: 0 idle, 1 walk, 2 run (converges at 3/s).
     pub(crate) speed_level: f32,
@@ -58,6 +58,8 @@ pub struct Player {
     /// The worn items' maxHpRate product now applied to hp_max (items.rs `max_hp_rate`;
     /// Yashariku's Sugar 3411: 0.5), so it comes off again when they end.
     pub item_hp_rate: f32,
+    /// The same for maxStaminaRate on posture_max (Yashariku's Sugar 3411: 0.5).
+    pub item_posture_rate: f32,
     /// Instant SpEffects whose looks show once (status.rs `sp_bursts`): the gourd's heal 3000.
     pub sp_bursts: Vec<i64>,
     /// Resurrective Power gathered toward the next used resurrection node (drops.rs).
@@ -133,8 +135,10 @@ pub struct Player {
     perch: Option<Vec3>,
     /// Attack pressed during the Grappling Hook Attack's landing (the Todome input).
     wire_todome: bool,
-    /// The highest point of the current flight (on the ground: the current height). The landing
-    /// reads the fall height from it (env(224), `FALL_HEIGHT_LONG_STIFF_LAND`).
+    /// The height of the last ground Wolf stood on (on the ground: the current height). The fall
+    /// height is this minus his height now, not from the flight's top (exe P+0x854, copied
+    /// every grounded update, 140bc.c:4720; FUN_140b97880; env(224)). gap: whether the
+    /// Grappling Hook's flight moves it is not traced (it does not here).
     pub(crate) air_top: f32,
     /// The last ground Wolf stood on (not water): where a fall-return death puts him back.
     safe_pos: Option<Vec3>,
@@ -366,6 +370,19 @@ const FALL_HEIGHT_LONG_STIFF_LAND: f32 = 20.0;
 const FALL_RETURN_COST: f32 = 1.0 / 3.0;
 /// Seconds of the fall-return clip (under the black cut) before Wolf is back on safe ground.
 const FALL_RETURN_HOLD: f32 = 1.0;
+/// The fall height (m) landings hurt and kill from while aged (exe DAT_143b01950/54).
+const FALL_DAMAGE_FROM_AGED: f32 = 5.0;
+/// stateInfo 341: aging (SpEffect 9620).
+const STATE_INFO_AGING: i64 = 341;
+/// stateInfo 47: no fall damage (SpEffects 640 / 4050 / 4053).
+const STATE_INFO_NO_FALL_DAMAGE: i64 = 47;
+
+/// Whether one of Wolf's SpEffects now (residents, TAE, timed) has this stateInfo.
+fn wolf_wears(a: &Actor, p: &Player, d: &crate::data::CharData, state_info: i64) -> bool {
+    let mut ids = crate::combat::worn_sp(a, &[]);
+    ids.extend(p.timed.iter().map(|t| t.0));
+    ids.iter().any(|id| d.sp_effects.get(&id.to_string()).map(|s| s.state_info).or_else(|| crate::data::sp_cycle(*id).map(|c| c.state_info)) == Some(state_info))
+}
 
 /// A fall-return death (W_FallDeadReturnStart / W_LandDeadReturnStart): Wolf out of the map, on
 /// his way back to safe ground.
@@ -433,20 +450,30 @@ impl PadInput {
     }
 }
 
+/// Wolf is flown, not played (ufo.rs): his presses are dropped.
+pub(crate) static FLOWN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Something else drives the pad (autoboss.rs): the keyboard and pad are not read.
+#[derive(Resource)]
+pub struct ScriptedInput;
+
 pub struct PlayerPlugin;
 
 impl Plugin for PlayerPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<PadInput>()
-            .init_resource::<LockOn>()
-            .add_systems(Startup, spawn_player.after(crate::map::load_map))
-            .add_systems(Update, read_input.run_if(resource_exists::<ButtonInput<KeyCode>>.and_then(not(resource_exists::<crate::autoboss::AutoBossOn>))))
+            .add_plugins(crate::view::ViewPlugin)
+            .add_systems(Startup, spawn_player.after(crate::place::MapLoad))
+            .add_systems(Update, read_input.run_if(resource_exists::<ButtonInput<KeyCode>>.and_then(not(resource_exists::<ScriptedInput>))))
             .init_resource::<ActiveThrow>()
             .add_systems(FixedUpdate, (sync_art_variation, decide, apply_refresh_effects, record_state).chain().in_set(ActorSet::Decide))
             .add_systems(FixedUpdate, follow_throw.after(ActorSet::Advance).before(crate::anim::PoseSet).before(ActorSet::Resolve))
             .add_systems(FixedUpdate, crate::docking::hold.after(ActorSet::Advance).before(crate::anim::PoseSet).before(ActorSet::Resolve))
-            .add_systems(FixedUpdate, crate::swim::hold.after(crate::docking::hold).before(crate::map::bodies_on_terrain).before(crate::anim::PoseSet).before(ActorSet::Resolve));
+            .add_systems(FixedUpdate, crate::swim::hold.after(crate::docking::hold).before(crate::terrain::bodies_on_terrain).before(crate::anim::PoseSet).before(ActorSet::Resolve));
+        // Bodies on the ground: wall slide and floor follow after the moves (terrain.rs).
+        app.add_systems(FixedUpdate, crate::terrain::bodies_on_terrain.after(ActorSet::Advance).before(crate::anim::PoseSet));
         app.add_systems(FixedUpdate, wolf_no_dead.before(ActorSet::Decide));
+        app.add_systems(FixedUpdate, crate::ninjutsu::throw_effects.after(ActorSet::Advance).before(ActorSet::Resolve));
         if std::env::var("SHINOBI_MOVE_LOG").is_ok() {
             app.add_systems(FixedUpdate, move_log.after(ActorSet::Resolve));
         }
@@ -806,7 +833,7 @@ fn aging_step(p: &mut Player, a: &mut Actor, combat: &Combat, config: &GameConfi
         let g = FALL_TYPES[(a.fall_type as usize).min(FALL_TYPES.len() - 1)].gravity();
         a.grav_y = g;
         a.vel_y += g * dt;
-        let floor = crate::map::ground_y(*pos) + CAPSULE_HALF_HEIGHT;
+        let floor = crate::terrain::ground_y(*pos) + CAPSULE_HALF_HEIGHT;
         if pos.y <= floor && a.vel_y < 0.0 {
             pos.y = floor;
             a.airborne = false;
@@ -814,6 +841,12 @@ fn aging_step(p: &mut Player, a: &mut Actor, combat: &Combat, config: &GameConfi
             a.vel_y = 0.0;
             a.air_base = Vec3::ZERO;
             a.move_vel = Vec3::ZERO;
+            // Aged (stateInfo 341) every landing from 5 m kills (exe FUN_14084e5d0, the main
+            // tick's rule): the fall-return death, BEH_R_DEATH before the aged landing.
+            if p.air_top - pos.y >= FALL_DAMAGE_FROM_AGED && crate::terrain::fall_death_dist(crate::terrain::floor_material(*pos)).is_some() && a.play_state(d, "LandDeadReturnStart") {
+                log.push("fall death - back to safe ground", Color::srgb(1.0, 0.4, 0.4));
+                return true;
+            }
             a.play_state(d, if jumping { "LandAgingGroundJump" } else { "LandAgingFreeFall" });
         }
         return true;
@@ -1149,7 +1182,7 @@ fn follow_throw(
     // the engine's handling is not traced). Returns that shortfall.
     let interp = h.model_interp;
     let slide = |at: Vec3, d: Vec3| -> Vec3 {
-        match crate::map::terrain() {
+        match crate::terrain::terrain() {
             Some(t) => {
                 let m = t.slide(at - Vec3::Y * CAPSULE_HALF_HEIGHT, Vec2::new(d.x, d.z));
                 Vec3::new(m.x, 0.0, m.y)
@@ -1241,7 +1274,7 @@ fn sync_art_variation(config: Res<GameConfig>, player: Query<&Player>, mut comba
     let var = combat.param("EquipParamWeapon", config.player.combat_art)["behaviorVariationId"].as_i64();
     // The resident SpEffects' StateInfos (sound::active_state_infos without the TAE SpEffects).
     let probe = Actor::new(crate::actor::Side::Player, 1.0, 1.0, 0.0, 0);
-    let mut gates = crate::sound::active_state_infos(&combat, &probe, Some(&config), tool.map(|t| t.0));
+    let mut gates = crate::sound_rules::active_state_infos(&combat, &probe, Some(&config), tool.map(|t| t.0));
     // The art's "has emblems" StateInfo (`art_emblem_gate`): Mortal Draw's emblem slash (judges
     // 220-231) and consumption dummy 999 (993), Spiral Cloud Passage's cost 999 (994) fire only with it.
     let emblems = player.iter().next().map_or(0, |p| p.emblems);
@@ -1270,7 +1303,7 @@ fn sync_art_variation(config: Res<GameConfig>, player: Query<&Player>, mut comba
 /// spawn_lineup: the first enemy at x 0, z -4), the way the game lets him walk into an arena
 /// facing the boss.
 pub(crate) fn start_yaw() -> f32 {
-    yaw_of((crate::map::frame().point(Vec3::new(0.0, 0.0, -4.0)) - crate::map::player_start()).with_y(0.0))
+    yaw_of((crate::place::frame().point(Vec3::new(0.0, 0.0, -4.0)) - (crate::encounter::hooks().player_start)()).with_y(0.0))
 }
 
 /// Graphs 500 / 501 / 504 = max HP / max posture / posture regen by level (exe: FUN_140a368f0
@@ -1296,7 +1329,7 @@ fn spawn_player(mut commands: Commands, combat: Res<Combat>, config: Res<GameCon
         }
     }
     commands.spawn((
-        Player { deathblow_ready: false, jump_throw_ready: false, plunge_ready: false, plunge: None, leap_homing: None, dock: None, wall_jumps: 0, last_wall: None, seat: Default::default(), wall_contact: None, speed_level: 0.0, requests: HashMap::new(), last_state: String::new(), gourd: config.player.gourd_charges, emblems: config.player.spirit_emblems, auto_aim: false, auto_aim_fresh: false, resurrections: config.player.resurrections, revive_queued: false, death_wait: 0.0, dead_for: 0.0, escape: None, aged_form: false, step_tilt: 0.0, jump_tilt: 0.0, throw_start: None, throw_target: None, tool_slot: 0, quick_slot: 0, item_use: None, vel_scale: None, expand_pending: false, sub_cat_before: 0, art_enable_jump: false, timed: Vec::new(), held: Vec::new(), wire: None, perch: None, wire_todome: false, air_top: 0.0, safe_pos: None, swim: None, revive_open: false, gave_up: false, revive_locked: false, item_hp_rate: 1.0, sp_bursts: Vec::new(), res_power: 0, refill_items: false },
+        Player { deathblow_ready: false, jump_throw_ready: false, plunge_ready: false, plunge: None, leap_homing: None, dock: None, wall_jumps: 0, last_wall: None, seat: Default::default(), wall_contact: None, speed_level: 0.0, requests: HashMap::new(), last_state: String::new(), gourd: config.player.gourd_charges, emblems: config.player.spirit_emblems, auto_aim: false, auto_aim_fresh: false, resurrections: config.player.resurrections, revive_queued: false, death_wait: 0.0, dead_for: 0.0, escape: None, aged_form: false, step_tilt: 0.0, jump_tilt: 0.0, throw_start: None, throw_target: None, tool_slot: 0, quick_slot: 0, item_use: None, vel_scale: None, expand_pending: false, sub_cat_before: 0, art_enable_jump: false, timed: Vec::new(), held: Vec::new(), wire: None, perch: None, wire_todome: false, air_top: 0.0, safe_pos: None, swim: None, revive_open: false, gave_up: false, revive_locked: false, item_hp_rate: 1.0, item_posture_rate: 1.0, sp_bursts: Vec::new(), res_power: 0, refill_items: false },
         actor,
         Name::new("Player"),
         Transform::from_xyz(0.0, CAPSULE_HALF_HEIGHT, 4.0),
@@ -1319,7 +1352,7 @@ pub fn player_visuals(
                 Mesh3d(meshes.add(Capsule3d::new(CAPSULE_RADIUS, CAPSULE_MIDDLE))),
                 MeshMaterial3d(materials.add(Color::srgb(0.85, 0.8, 0.72))),
             ))
-            .with_children(|p| crate::world::spawn_blade(p, &mut meshes, &mut materials, Color::srgb(0.8, 0.85, 0.9)));
+            .with_children(|p| crate::model::spawn_blade(p, &mut meshes, &mut materials, Color::srgb(0.8, 0.85, 0.9)));
     }
 }
 
@@ -1690,7 +1723,9 @@ fn sp_ref_active(d: &CharData, a: &Actor, behavior_ref: i64) -> bool {
     // The additive layer's TAE as well (AddHardDeflectGuard's ref 411, HKS 6161).
     let (key, t) = a.shown_clip(d);
     let has = |key: &str, t: f32| d.sp_effects_at(key, t).iter().any(|(_, s)| s.behavior_ref_id == behavior_ref);
-    has(&key, t) || (!a.add_anim.is_empty() && has(&a.add_anim, a.add_t)) || legs_clip(d, a).is_some_and(|(k, lt)| has(&k, lt))
+    // Seen one TAE frame after its window too (hks_wolf env 3036: the recordings' ref 231 cut-off).
+    let lag = 1.0 / crate::data::TAE_FPS;
+    has(&key, t) || (t >= lag && has(&key, t - lag)) || (!a.add_anim.is_empty() && has(&a.add_anim, a.add_t)) || legs_clip(d, a).is_some_and(|(k, lt)| has(&k, lt))
 }
 
 /// Under an upper action with the legs moving, the legs' locomotion clip (c0000.hkx
@@ -2175,9 +2210,12 @@ fn todome_input(d: &CharData, a: &Actor) -> bool {
 
 /// Ref 1 SP_EF_REF_ENABLE_SPRINT_ACTION (SprintStartFromStep_F, SprintLoop, SprintToDeflectGuard
 /// 6-15): sprinting is a free state for actions - SprintLoop has no ChrActionFlags at all, and
-/// the HKS picks SprintAttack / SprintToDeflectGuard from this ref.
+/// the HKS picks SprintAttack / SprintToDeflectGuard from this ref. The sprint's 100304 ends
+/// into 100303, ref 1 for 0.2 s more (`sp_chained`): the recordings' SprintAttack out of the
+/// first 12-15 ticks of StandMoveStartFromSprint, whose own TAE has no ref 1.
 fn sprint_window(d: &CharData, a: &Actor) -> bool {
-    !a.anim.is_empty() && d.has_ref(&a.anim, a.t, REF_ENABLE_SPRINT_ACTION)
+    (!a.anim.is_empty() && d.has_ref(&a.anim, a.t, REF_ENABLE_SPRINT_ACTION))
+        || a.sp_chained.iter().any(|(id, _)| crate::data::sp_effect_lingering_ref(*id) == REF_ENABLE_SPRINT_ACTION)
 }
 
 pub(crate) fn stick_world(stick: Vec2, cam_yaw: f32) -> Vec3 {
@@ -2309,24 +2347,29 @@ fn decide(
     lock: Res<LockOn>,
     mut pad: ResMut<PadInput>,
     mut log: ResMut<CombatLog>,
-    camera: Option<Single<&OrbitCamera>>,
+    view: Res<View>,
     mut player: Single<(Entity, &mut Player, &mut Actor, &mut Transform), Without<Enemy>>,
     mut enemies: Query<(Entity, &mut Actor, &mut Enemy, &Transform), Without<Player>>,
     enemy_dummies: Query<&crate::model::Dummies, With<Enemy>>,
     globals: Query<&GlobalTransform>,
     mut throw: ResMut<ActiveThrow>,
     mut fight: Option<ResMut<crate::enemy::FightReset>>,
-    mut snap: Option<ResMut<crate::camera::CameraSnap>>,
-    (wire_aim, grapples, ledges, mut used, mut picked): (Option<Res<crate::wire::WireAim>>, Option<Res<crate::enemy::grapple::EnemyGrapples>>, Option<Res<crate::map::LedgeEdges>>, Option<ResMut<crate::items::Used>>, Option<ResMut<crate::items::Picked>>),
+    mut snap: Option<ResMut<crate::view::CameraSnap>>,
+    (wire_aim, grapples, ledges, mut used): (Option<Res<crate::wire::WireAim>>, Option<Res<crate::enemy::grapple::EnemyGrapples>>, Option<Res<crate::traversal::LedgeEdges>>, Option<ResMut<crate::items::Used>>),
 ) {
     // UFO (ufo.rs): Wolf is flown, not played; presses dropped.
-    if crate::ufo::on() {
+    if FLOWN.load(std::sync::atomic::Ordering::Relaxed) {
         pad.hold();
         return;
     }
     let dt = time.delta_secs();
     let d = &combat.player;
     let (pe, p, a, tf) = &mut *player;
+    // The last ground's height (`air_top`, where the fall height starts) on every grounded tick,
+    // before the states that return early (aging, hangs, throws) skip the movement's update.
+    if !a.airborne {
+        p.air_top = tf.translation.y;
+    }
     // The quick items' worn effects (items.rs): Wolf's damage rates and the regeneration.
     let [atk, stam, cut, posture_cut] = crate::items::wolf_rates(&p.timed);
     // And his Attack Power (combat::growth_sp): every hit's HP and posture damage.
@@ -2343,6 +2386,15 @@ fn decide(
         a.hp_max *= hp_rate / p.item_hp_rate;
         a.hp = a.hp.min(a.hp_max);
         p.item_hp_rate = hp_rate;
+    }
+    // Its maxStaminaRate 0.5 halves the max posture the same way: the stamina left (max - the
+    // posture taken) is kept under the new max and not given back after.
+    let st_rate = crate::items::max_stamina_rate(&a.item_sp);
+    if (st_rate - p.item_posture_rate).abs() > 1e-6 {
+        let left = (a.posture_max - a.posture).max(0.0);
+        a.posture_max *= st_rate / p.item_posture_rate;
+        a.posture = (a.posture_max - left.min(a.posture_max)).max(0.0);
+        p.item_posture_rate = st_rate;
     }
     let regen_dt = a.clock(dt);
     crate::items::tick_regen(&p.timed, a, regen_dt);
@@ -2362,15 +2414,16 @@ fn decide(
             p.item_use = None;
         // At frame 0 too (Bite Down's, a000_250400): on the clip's first step.
         } else if d.anim(&a.anim).is_some_and(|an| an.events.iter().any(|e| e.kind == 65 && ((e.start > a.prev_t && e.start <= a.t) || (e.start == 0.0 && a.prev_t == 0.0 && a.t > 0.0)))) {
+            let extend = crate::items::extend_rate(crate::combat::skill_sp_ids(&combat, &config));
             for sp in crate::items::effects_of(goods) {
-                crate::items::wear(&mut p.timed, sp);
+                crate::items::wear(&mut p.timed, sp, extend);
             }
             if let Some(u) = used.as_deref_mut() {
                 u.0.push(goods);
             }
             // The Homeward Idol: back to the last idol prayed at (idol.rs).
             if goods == crate::items::HOMEWARD_IDOL {
-                if let Some((at, yaw)) = p.seat.checkpoint.and_then(crate::idol::respawn_at) {
+                if let Some((at, yaw)) = p.seat.checkpoint.and_then(crate::encounter::world().respawn_at) {
                     tf.translation = at + Vec3::Y * CAPSULE_HALF_HEIGHT;
                     a.yaw = yaw;
                     if let Some(s) = snap.as_deref_mut() {
@@ -2580,12 +2633,12 @@ fn decide(
         a.hp = a.hp_max;
         a.posture = 0.0;
         a.play("StandIdle", "");
-        tf.translation = crate::map::player_start();
+        tf.translation = (crate::encounter::hooks().player_start)();
         a.yaw = start_yaw();
         // Back at the last Sculptor's Idol prayed at, standing before it (idol.rs).
         let checkpoint = p.seat.checkpoint;
-        p.seat = crate::idol::Seat { checkpoint, ..Default::default() };
-        if let Some((at, yaw)) = checkpoint.and_then(crate::idol::respawn_at) {
+        p.seat = crate::seat::Seat { checkpoint, ..Default::default() };
+        if let Some((at, yaw)) = checkpoint.and_then(crate::encounter::world().respawn_at) {
             tf.translation = at + Vec3::Y * CAPSULE_HALF_HEIGHT;
             a.yaw = yaw;
         }
@@ -2754,11 +2807,7 @@ fn decide(
         // final death (FUN_1409eda50). The HKS revives from the death starts themselves too
         // (c0000_transition.lua 274-277), not only the stay loops. Before: the choice opened at
         // the loop (1.6-3.3 s late) and closed 6 s into it.
-        let holding = {
-            let mut ids = crate::combat::worn_sp(a, &[]);
-            ids.extend(p.timed.iter().map(|t| t.0));
-            ids.iter().any(|id| d.sp_effects.get(&id.to_string()).is_some_and(|s| s.state_info == 351))
-        };
+        let holding = wolf_wears(a, p, d, 351);
         if !(holding && p.dead_for < REVIVE_DELAY) {
             p.dead_for += dt;
         }
@@ -2846,7 +2895,7 @@ fn decide(
         // the killing blow's knockback or the clip's root motion falls (round 60: it floated;
         // the walk-off check is past this branch's return). Not in a grab's deaths (the
         // thrower places him) or a SetNoGravity window.
-        let mut floor = crate::map::ground_y(tf.translation) + CAPSULE_HALF_HEIGHT;
+        let mut floor = crate::terrain::ground_y(tf.translation) + CAPSULE_HALF_HEIGHT;
         if let Some(spot) = p.perch.filter(|s| (tf.translation - *s).with_y(0.0).length() < PERCH_RADIUS && tf.translation.y >= s.y + CAPSULE_HALF_HEIGHT - 0.3) {
             floor = floor.max(spot.y + CAPSULE_HALF_HEIGHT);
         }
@@ -2967,7 +3016,7 @@ fn decide(
     // IsAnimEnd). The Demon of Hatred's leap (a240_500000 / 510000) left Wolf above his field's
     // uneven ground and the fall cut the deathblow, so the Demon never fell (2026-10-17).
     let throwing = crate::actor::in_throw(&a) || a.state == "DeathblowStart";
-    if !a.airborne && !perched && !wiring && !docked && !throwing && tf.translation.y > crate::map::ground_y(tf.translation) + CAPSULE_HALF_HEIGHT + 0.05 && !(!a.anim.is_empty() && d.flag(&a.anim, a.t, FLAG_NO_GRAVITY)) {
+    if !a.airborne && !perched && !wiring && !docked && !throwing && tf.translation.y > crate::terrain::ground_y(tf.translation) + CAPSULE_HALF_HEIGHT + 0.05 && !(!a.anim.is_empty() && d.flag(&a.anim, a.t, FLAG_NO_GRAVITY)) {
         a.airborne = true;
         // A plain fall (fallType 0), not the last wire flight's (2026-10-12 bug hunt round 12).
         a.fall_type = 0;
@@ -2985,8 +3034,8 @@ fn decide(
         // the move state goes on until FALL_START_DROP (the air branch, env 200).
     }
 
-    let cam_pitch = camera.as_ref().map_or(0.26, |c| c.pitch);
-    let cam_yaw = camera.map_or(0.0, |c| c.yaw);
+    let cam_pitch = view.orbit.map_or(0.26, |o| o.1);
+    let cam_yaw = view.orbit.map_or(0.0, |o| o.0);
     let stick = stick_world(pad.stick, cam_yaw);
     // Aged, an attack in reach of an aging deathblow row takes the deathblow below.
     // Only where the attack is taken (an aged standby): pressed mid-onset, mid-attack or in an aged
@@ -3229,8 +3278,19 @@ fn decide(
         );
         if let Some((ee, mut ea, mut enemy, etf)) = pick.and_then(|e| enemies.get_mut(e).ok()) {
             if let Some(db) = deathblow_check(&combat, tf.translation, a.forward(), a.aged.is_some(), &ea, &enemy, etf.translation, &dmy_of(ee)) {
-                let (behind, suffix, th, start) = (db.behind, db.suffix, db.main, db.start);
+                let (behind, mut suffix, mut th, start) = (db.behind, db.suffix, db.main, db.start);
                 p.requests.remove(&Action::Attack);
+                // The worn ninjutsu's twin of a killing behind deathblow (ninjutsu.rs), paid now.
+                let foe = combat.foe_of(&ea);
+                let ninjutsu = config.player.ninjutsu;
+                let kills = enemy.ninsatsu.0 <= 1 && a.aged.is_none();
+                if let Some((s, t)) = crate::ninjutsu::pick(&combat, ninjutsu, p.emblems, config.player.infinite_emblems, |s| foe.throw_row(s), suffix, kills) {
+                    (suffix, th) = (s, t);
+                    if !config.player.infinite_emblems {
+                        p.emblems -= crate::ninjutsu::cost(ninjutsu);
+                    }
+                    log.push(format!("NINJUTSU ({} emblems)", p.emblems), Color::srgb(0.9, 0.3, 0.3));
+                }
                 // isTurnAtker: Wolf turns to the enemy at once (live: exactly).
                 a.yaw = yaw_of((etf.translation - tf.translation).with_y(0.0));
                 a.move_vel = Vec3::ZERO;
@@ -3375,12 +3435,11 @@ fn decide(
     // Wall hug / ledge hang (docking.rs, docs/kb/docking.md): held, nothing else runs.
     // At a Sculptor's Idol (idol.rs): E kneels; while kneeling only its clips run.
     // An item on the ground in reach (items.rs): E takes it, before the idol and the wall.
-    let picked = interact_pressed && !a.airborne && is_free(&a.state) && picked.as_deref_mut().is_some_and(|q| crate::items::take_near(tf.translation - Vec3::Y * CAPSULE_HALF_HEIGHT, q));
+    let world = crate::encounter::world();
+    let picked = interact_pressed && !a.airborne && is_free(&a.state) && (world.take_item)(tf.translation - Vec3::Y * CAPSULE_HALF_HEIGHT);
     let interact_pressed = interact_pressed && !picked;
-    if crate::sculptor::tick(p, a, d, tf, interact_pressed, ended, &config) {
-        return;
-    }
-    let at_idol = crate::idol::tick(p, a, d, tf, interact_pressed, ended, &config);
+    // The host's idols and NPCs (encounter.rs WorldHooks: this game's Sculptor, then its idols).
+    let at_idol = world.interactions.iter().any(|f| f(p, a, d, tf, interact_pressed, ended, &config));
     // Praying or resting at an idol brings the enemies back (the fight's line-up).
     if std::mem::take(&mut p.seat.respawn) {
         if let Some(f) = fight.as_mut() {
@@ -3646,7 +3705,7 @@ fn decide(
         // leaps (404011-404017) end on the floor; the upward one (V 404010: its root rises 3 m)
         // ends in the air, which the script reads (env 248 -> W_LandAirSubAttackMove, else
         // W_AirSubAttackMoveStartToLoop, HKS 557).
-        if a.state == "AirSubAttackMoveStartToLoop" && !a.airborne && tf.translation.y > crate::map::ground_y(tf.translation) + CAPSULE_HALF_HEIGHT + 0.05 {
+        if a.state == "AirSubAttackMoveStartToLoop" && !a.airborne && tf.translation.y > crate::terrain::ground_y(tf.translation) + CAPSULE_HALF_HEIGHT + 0.05 {
             a.airborne = true;
             a.vel_y = 0.0;
             a.air_base = Vec3::ZERO;
@@ -3826,14 +3885,16 @@ fn decide(
         a.play("RightsideGroundJumpStart", "a000_201113");
         return;
     }
-    p.air_top = if a.airborne { p.air_top.max(tf.translation.y) } else { tf.translation.y };
+    if !a.airborne {
+        p.air_top = tf.translation.y;
+    }
     if !a.airborne {
         // HitMtrlParam 20-24 / 35-38 / 45-47 are water, swamp and underwater floors (not a safe spot).
-        let water = crate::map::floor_material(tf.translation).is_some_and(|m| matches!(m, 20..=24 | 35..=38 | 45..=47));
+        let water = crate::terrain::floor_material(tf.translation).is_some_and(|m| matches!(m, 20..=24 | 35..=38 | 45..=47));
         if !water && a.state != "Grabbed" {
             p.safe_pos = Some(tf.translation);
         }
-    } else if p.air_top - tf.translation.y >= FALL_VOID_DROP && crate::map::floor_material(tf.translation).is_none() && crate::map::terrain().is_some() {
+    } else if p.air_top - tf.translation.y >= FALL_VOID_DROP && crate::terrain::floor_material(tf.translation).is_none() && crate::terrain::terrain().is_some() {
         // Falling with no ground below: HKS DAMAGE_TYPE_FALL_DEAD_RETURN -> W_FallDeadReturnStart
         // (a000_199120), then back at the safe spot. gap: the exe's kill height / return volume is
         // not traced; the default fallDeathDist (40 m) stands in.
@@ -3988,7 +4049,7 @@ fn decide(
             };
             if let Some(tp) = tp {
                 let g = ft.gravity();
-                let h = tf.translation.y - CAPSULE_HALF_HEIGHT - crate::map::ground_y(tf.translation);
+                let h = tf.translation.y - CAPSULE_HALF_HEIGHT - crate::terrain::ground_y(tf.translation);
                 // Time to the floor: h + vy t + g t^2 / 2 = 0 (g < 0).
                 let disc = a.vel_y * a.vel_y - 2.0 * g * h;
                 let t_land = if g < 0.0 && disc >= 0.0 { (-a.vel_y - disc.sqrt()) / g } else { 0.0 };
@@ -4010,7 +4071,7 @@ fn decide(
             w.steer(a, tf.translation, dt);
         }
         a.move_vel = a.air_base;
-        let mut floor = crate::map::ground_y(tf.translation) + CAPSULE_HALF_HEIGHT;
+        let mut floor = crate::terrain::ground_y(tf.translation) + CAPSULE_HALF_HEIGHT;
         // A ridden point is a floor once the arc is down to it (`Player::perch`).
         let ride_spot = p.wire.filter(|w| w.ride && w.flight.is_none()).map(|w| w.land);
         if let Some(spot) = ride_spot.filter(|s| (tf.translation - *s).with_y(0.0).length() < PERCH_RADIUS) {
@@ -4103,11 +4164,23 @@ fn decide(
             }
             // Landing from a height the ground's HitMtrlParam fallDeathDist (map::fall_death_dist)
             // kills: HKS DAMAGE_TYPE_LAND_DEAD_RETURN -> W_LandDeadReturnStart (a000_200909), then
-            // back at the safe spot (gap: whether the game returns or kills outright is not traced).
+            // back at the safe spot. The exe (FUN_14084e5d0) tests from 20 m, from 5 m while
+            // stateInfo 341 (aging) is worn, where every landing from there kills.
             let landing_drop = p.air_top - tf.translation.y;
-            if landing_drop >= FALL_HEIGHT_LONG_STIFF_LAND && crate::map::fall_death_dist(crate::map::floor_material(tf.translation)).is_some_and(|dist| landing_drop >= dist) && a.play_state(d, "LandDeadReturnStart") {
+            let floor = crate::terrain::floor_material(tf.translation);
+            let aged = wolf_wears(a, p, d, STATE_INFO_AGING);
+            let from = if aged { FALL_DAMAGE_FROM_AGED } else { FALL_HEIGHT_LONG_STIFF_LAND };
+            if landing_drop >= from && crate::terrain::fall_death_dist(floor).is_some_and(|dist| aged || landing_drop >= dist) && a.play_state(d, "LandDeadReturnStart") {
                 log.push("fall death - back to safe ground", Color::srgb(1.0, 0.4, 0.4));
                 return;
+            }
+            // Short of that: maxHP x terrain::fall_damage_share (FUN_140843660; none while
+            // stateInfo 47 is worn). No reaction of its own: the landing below plays as usual.
+            let share = crate::terrain::fall_damage_share(landing_drop, floor, from);
+            if share > 0.0 && !wolf_wears(a, p, d, STATE_INFO_NO_FALL_DAMAGE) {
+                let cost = (a.hp_max * share).floor();
+                a.hp = (a.hp - cost).max(0.0);
+                log.push(format!("fall: -{cost:.0} HP"), Color::srgb(1.0, 0.4, 0.4));
             }
             // Charged (HKS 1870-1875): landing in the charge states sets it off (the script lands
             // in W_LandAirDamageElectroCharge(Weak)). gap: the charge SpEffect is dropped on
@@ -4367,7 +4440,7 @@ fn dock_step_tick(
     a: &mut Actor,
     d: &CharData,
     tf: &Transform,
-    ledges: Option<&crate::map::LedgeEdges>,
+    ledges: Option<&crate::traversal::LedgeEdges>,
     stick: Vec3,
     walk: bool,
     interact_held: bool,
@@ -4381,7 +4454,7 @@ fn dock_step_tick(
     enemies: &Query<(Entity, &mut Actor, &mut Enemy, &Transform), Without<Player>>,
 ) -> bool {
     use crate::docking as dk;
-    let edges: &[crate::map::LedgeEdge] = ledges.map(|l| l.0.as_slice()).unwrap_or(&[]);
+    let edges: &[crate::traversal::LedgeEdge] = ledges.map(|l| l.0.as_slice()).unwrap_or(&[]);
     let feet = tf.translation - Vec3::Y * CAPSULE_HALF_HEIGHT;
     // Wall jumps (BEH_A_WALL_JUMP): the count comes back on the ground.
     if !a.airborne && p.dock.is_none() && !a.state.starts_with("WallJump") && !dk::is_jump_ready(&a.state) {
@@ -4657,7 +4730,9 @@ fn locomotion(
     // blend from the old facing (anim.rs Skeleton::yaw_off). Turned, he moves on in the loop; let
     // go mid-turn, the stop.
     if let Some((walk, _)) = quick_turn_kind(&a.state) {
-        if stick == Vec3::ZERO && a.play_state(d, if walk { "StandWalkStop_F" } else { "StandRunStopF" }) {
+        // Locked on, the turn is the target's (hks_wolf: the script's in-move 180 with the stick
+        // at rest), so letting go does not stop it.
+        if stick == Vec3::ZERO && target_dir.is_none() && a.play_state(d, if walk { "StandWalkStop_F" } else { "StandRunStopF" }) {
             a.move_vel = Vec3::ZERO;
             p.speed_level = 0.0;
             return;

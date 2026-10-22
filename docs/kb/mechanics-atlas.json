@@ -3969,15 +3969,15 @@
   ],
   "confidence": "data",
   "ours": {
-   "has": "no",
-   "where": ""
+   "has": "yes",
+   "where": "src/items.rs wear / extend_rate; player.rs"
   },
   "his": {
    "has": "no",
    "where": ""
   },
   "check": "Eat a sugar with the skill: 30 s should become 45 s.",
-  "note": "The data side is settled (30 s sugar becomes 45 s). Our code does not apply extendLifeRate anywhere (grep of src finds no extendLife/150600), so the skill has no effect yet.",
+  "note": "The learned skills' extendLifeRate (150600: 1.5) lengthens rows with isExtendSpEffectLife at wear: a 30 s sugar lasts 45 s (items.rs test).",
   "needs": [
    {
     "id": "items.sugar-ako",
@@ -4511,15 +4511,15 @@
   ],
   "confidence": "data",
   "ours": {
-   "has": "partial",
-   "where": "src/prosthetic.rs"
+   "has": "yes",
+   "where": "src/combat.rs timed_rates (9800 x1.125), prosthetic.rs"
   },
   "his": {
    "has": "no",
    "where": ""
   },
   "check": "Compare sparks length in the clip.",
-  "note": "The extra damage under 9800 is not numerically traced.",
+  "note": "",
   "needs": [],
   "verdict": "confirmed",
   "verify_reason": "Weapons 71100/71200/71300 use var 7100/7102/7103 (all resourceItemA 2); bullets 710203/710213/710303 carry 230110/230111, 104030, 107100 and 9800 (effectEndurance 2.0) on the Purple Fume bullet."
@@ -4596,15 +4596,15 @@
   ],
   "confidence": "data",
   "ours": {
-   "has": "partial",
-   "where": "src/prosthetic.rs"
+   "has": "yes",
+   "where": "src/prosthetic.rs deals_something (magic base x row correction)"
   },
   "his": {
    "has": "no",
    "where": ""
   },
   "check": "Use Lazulite on an apparition vs the base vent.",
-  "note": "Lazulite damage is the magic base times the row correction, not a spirit enchant.",
+  "note": "",
   "needs": [
    {
     "id": "status.terror",
@@ -5031,7 +5031,7 @@
    "where": ""
   },
   "check": "Give seeds to Emma and count the gourd icon.",
-  "note": "The max-uses per seed count is not in these rows (event script not read).",
+  "note": "Blocked: goodsUseAnim 255 (not usable); it grows the gourd through Emma's talk ESD, and there is no Emma.",
   "needs": [
    {
     "id": "npcs.emma",
@@ -5689,15 +5689,15 @@
   ],
   "confidence": "data",
   "ours": {
-   "has": "partial",
-   "where": "src/items.rs max_hp_rate"
+   "has": "yes",
+   "where": "src/items.rs max_hp_rate / max_stamina_rate; player.rs"
   },
   "his": {
    "has": "no",
    "where": ""
   },
   "check": "Eat it and watch max HP halve.",
-  "note": "Posture max is not halved in ours.",
+  "note": "Max HP and max posture both halve for its 30 s and come back after; HP and the stamina left are not given back (sim test yasharikus_sugar_halves_the_max_hp).",
   "needs": [
    {
     "id": "combat.hp-damage-formula",
@@ -5812,15 +5812,15 @@
   ],
   "confidence": "data",
   "ours": {
-   "has": "no",
-   "where": "src/items.rs (worn only)"
+   "has": "yes",
+   "where": "src/enemy.rs (Player::timed rows join the sight / hearing SpEffects)"
   },
   "his": {
    "has": "no",
    "where": ""
   },
   "check": "Walk near an enemy while buffed.",
-  "note": "Our enemy sight and hearing code (src/enemy.rs wolf_seen, wolf_sounds) takes clip and learned-skill SpEffects, never Actor::item_sp, so this sugar's stealth effect is not applied.",
+  "note": "Its 3441 rides with the skills into wolf_seen / wolf_sounds; works standing (sim test gachiins_sugar_halves_sight_standing).",
   "needs": [
    {
     "id": "stealth.detection",
@@ -6029,15 +6029,15 @@
   ],
   "confidence": "data",
   "ours": {
-   "has": "partial",
-   "where": "src/items.rs"
+   "has": "yes",
+   "where": "src/items.rs (goodsUseAnim 84), src/prosthetic.rs hit_enemy"
   },
   "his": {
    "has": "no",
    "where": ""
   },
   "check": "Use it inside Butterfly's illusion fight.",
-  "note": "Ours has no clip for use anim 84 (stated gap).",
+  "note": "Bullet 3530 around Wolf (2->16 m, 0.5 s); atkBehaviorId 6 on ref 1000043 (the c1510 phantoms' 6023) -> DeathStartBackReality. Gap: the 0-damage row's kill is taken to be the exe's.",
   "needs": [
    {
     "id": "bosses.lady-butterfly",
@@ -7021,7 +7021,7 @@
    "where": ""
   },
   "check": "Die repeatedly and check an NPC.",
-  "note": "Only texts were read; no event script was inspected.",
+  "note": "Blocked: flags 9500-9526 are set by common.emevd 610-628 on NPCs that are not in the game here; the Unseen Aid roll in the exe is not found.",
   "needs": [],
   "verdict": "confirmed",
   "verify_reason": "Item FMG and event texts: dying without resurrecting builds Stagnation of the Dragon's Blood, overflow sickens people, the Dragon's Blood Droplet (5600) with the Recovery Charm (2930) at an idol restores all."
@@ -13120,15 +13120,15 @@
   ],
   "confidence": "data",
   "ours": {
-   "has": "no",
-   "where": ""
+   "has": "yes",
+   "where": "src/ninjutsu.rs; player.rs deathblow commit; enemy.rs puppet; prosthetic.rs TAE 940"
   },
   "his": {
    "has": "no",
    "where": ""
   },
   "check": "Equip Bloodsmoke Ninjutsu and press attack behind an unaware enemy.",
-  "note": "",
+  "note": "Twin ThrowParam row by ThrowKindParam throwSkillId + derivationSourceThrowKind; emblems consumeResourceItemA. gap: exe pick/pay not traced; team 15 table inferred.",
   "needs": [
    {
     "id": "arts.shinobi-ninjutsu",
@@ -17419,14 +17419,14 @@
   "confidence": "data",
   "ours": {
    "has": "partial",
-   "where": "src/swim.rs; src/map.rs water stand-in (dark 60 % translucent)"
+   "where": "src/swim.rs; src/terrain.rs water_surface (sekiro-rs Ground::water_surface on the SR map); src/map.rs water stand-in"
   },
   "his": {
    "has": "partial",
    "where": "crates/sim/src/collision.rs; MOBILITY.md"
   },
   "check": "Wade the Ape arena pond: knee deep, then a dive.",
-  "note": "Neither project has the game's water shader (reflection, refraction, flow, foam).",
+  "note": "Deep planes (22/36/38) are surfaces, not floors.",
   "needs": [
    {
     "id": "map.hit-material-table",
@@ -18493,7 +18493,7 @@
   "category": "movement",
   "title": "When walking off a ledge becomes a fall",
   "summary": "Wolf enters the fall state once the engine says he is falling (env 200). The script's 30 cm on-the-move test applies only to the aged form; for the normal Wolf the exe's ground contact decides, which keeps him grounded over a small drop.",
-  "values": "BEH_R_FALL: env(200) and g_beforeFireLand == -1 and (not aged, or aged and (not moving or env(224) >= 30)) - Lua `and` binds before `or`. env 224 = (peak Y - Y) x 100, whole cm (FUN_140b97880). env 200 (FUN_140b97970): not grounded (P+0xa2, held while probe P+0x920 <= 1.0) and (P+0x100 == 0 or airborne >= 1.0 s) and not F+0x88 bit 5.",
+  "values": "BEH_R_FALL: env(200) and g_beforeFireLand == -1 and (not aged, or aged and (not moving or env(224) >= 30)) - Lua `and` binds before `or`. env 224 = (last grounded Y - Y) x 100, whole cm (FUN_140b97880). env 200 (FUN_140b97970): not grounded (P+0xa2, held while probe P+0x920 <= 1.0) and (P+0x100 == 0 or airborne >= 1.0 s) and not F+0x88 bit 5.",
   "how": "HKS g_ValidateReactionTable[BEH_R_FALL]; exe env switch FUN_140b36410 case 200 -> FUN_140b97970, case 224 -> FUN_140b97880.",
   "sources": [
    {
@@ -18661,15 +18661,15 @@
   ],
   "confidence": "exe",
   "ours": {
-   "has": "no",
-   "where": ""
+   "has": "yes",
+   "where": "src/terrain.rs fall_damage_share; src/player.rs landing (air_top = last ground)"
   },
   "his": {
    "has": "no",
    "where": ""
   },
   "check": "Drop Wolf from 25 m and record the HP loss; compare with a 21 m drop.",
-  "note": "Victim factors (a, b, c, d) are read from character data fields not yet identified, so the HP amount is not computed; graph meaning is inferred from the loader.",
+  "note": "Exe FUN_140843660: maxHP x h/100 from 20 m (5 m aged), x HitMtrl fallDamageRate; 0 under stateInfo 47 / disableFallDamage. Graphs 211/212 read flat 100, so FUN_1408433f0's inputs do not change it.",
   "needs": [],
   "verdict": "corrected",
   "verify_reason": "FUN_140843660 also drops its start threshold to 5 m (DAT_143b01954) under SpEffect type 0x155, and CalcCorrectGraph 211 and 212 output a flat 100 (stageMaxGrowVal all 100; 0,10,20,35,99 are their input steps), not a map to 0..99.",
@@ -19600,14 +19600,14 @@
   "confidence": "data",
   "ours": {
    "has": "partial",
-   "where": "fireguy-rustsekiro/src/swim.rs (boxes only)"
+   "where": "src/swim.rs (water boxes + the map's deep HitMtrl 22/36/38 planes), src/terrain.rs water_surface"
   },
   "his": {
    "has": "partial",
    "where": "sekiro-rs/crates/sim/tests/it/swim.rs"
   },
   "check": "Walk into a pond deeper than waist: StandMoveToSwim plays, then SwimIdle.",
-  "note": "Neither project reads the game water volumes from collision materials in play.",
+  "note": "Gap: the native swim-entry depth rule (BEH_R_STAND_MOVE_TO_SWIM 31) is not traced.",
   "needs": [
    {
     "id": "map.water-areas",
@@ -24707,15 +24707,15 @@
   ],
   "confidence": "data",
   "ours": {
-   "has": "no",
-   "where": ""
+   "has": "yes",
+   "where": "src/ninjutsu.rs; player.rs deathblow commit; enemy.rs puppet; prosthetic.rs TAE 940"
   },
   "his": {
    "has": "no",
    "where": ""
   },
   "check": "Use Bloodsmoke on an unaware soldier from 8 m behind.",
-  "note": "Which of the three arts matches Grant is by name only.",
+  "note": "Twin ThrowParam row by ThrowKindParam throwSkillId + derivationSourceThrowKind; emblems consumeResourceItemA. gap: exe pick/pay not traced; team 15 table inferred.",
   "needs": [
    {
     "id": "arts.shinobi-ninjutsu",
@@ -25947,15 +25947,15 @@
   ],
   "confidence": "exe",
   "ours": {
-   "has": "partial",
-   "where": "src/cloth.rs"
+   "has": "yes",
+   "where": "src/cloth.rs (each model's *_c.hkx: the hclClothState operator chain, Verlet, constraint sets, capsules, MeshMeshDeform)"
   },
   "his": {
    "has": "yes",
    "where": "crates/game/src/cloth.rs"
   },
   "check": "Run in a circle: the scarf trails behind.",
-  "note": "Ours uses its own approximate solver.",
+  "note": "Gap: transition sets.",
   "needs": [],
   "verdict": "corrected",
   "verify_reason": "sekiro-rs has crates/game/src/cloth.rs (Havok cloth from the cloth.bin, adapted from ours), so his is yes; the record also had the two projects swapped."
@@ -25983,15 +25983,15 @@
   ],
   "confidence": "data",
   "ours": {
-   "has": "partial",
-   "where": "src/gore.rs"
+   "has": "yes",
+   "where": "src/gore.rs (TAE 138 DecalParamID_DummyPoly, AtkParam decalId1/2, hit stains FUN_14088a7f0 / FUN_140888960)"
   },
   "his": {
    "has": "yes",
    "where": "crates/game/src/decals.rs; crates/sim/src/hit_fx.rs"
   },
   "check": "Kill a basic enemy: a blood decal appears on the ground.",
-  "note": "",
+  "note": "Gap: the engine's decal budget and projection details.",
   "needs": [
    {
     "id": "combat.hit-effects",
@@ -26050,14 +26050,14 @@
   "confidence": "data",
   "ours": {
    "has": "partial",
-   "where": "src/map_grass.rs"
+   "where": "src/map_grass.rs (own map; the SR map draws sekiro-rs's grass)"
   },
   "his": {
    "has": "partial",
    "where": "crates/game/src/map_grass.rs"
   },
   "check": "Step back from a grass field and watch the blades thin out.",
-  "note": "",
+  "note": "Gap: wind sway, colour shades, GrassLodRangeParam ranges, castShadow.",
   "needs": [
    {
     "id": "map.grass-and-foliage-data",
@@ -26512,8 +26512,8 @@
   ],
   "confidence": "data",
   "ours": {
-   "has": "no",
-   "where": "src/game_menu.rs (menu tab only)"
+   "has": "yes",
+   "where": "src/ninjutsu.rs; player.rs deathblow commit; enemy.rs puppet; prosthetic.rs TAE 940"
   },
   "his": {
    "has": "no",
@@ -26521,7 +26521,7 @@
   },
   "needs": [],
   "check": "Equip Bloodsmoke and stab an unaware enemy from behind: the special throw plays and the smoke effect follows. Not testable until the art exists.",
-  "note": "",
+  "note": "Twin ThrowParam row by ThrowKindParam throwSkillId + derivationSourceThrowKind; emblems consumeResourceItemA. gap: exe pick/pay not traced; team 15 table inferred.",
   "verdict": "corrected",
   "verify_reason": "ThrowKindParam rows 201 to 203, 41201 to 41203 and 500201 (12 rows in all) carry throwSkillId 2100, 2110 and 2120 (blood smoke, puppet, Encha), but neither project implements ninjutsu; ours only lists the menu category."
  },

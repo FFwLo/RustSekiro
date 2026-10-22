@@ -21,7 +21,7 @@ use std::collections::HashMap;
 use bevy::prelude::*;
 
 use crate::actor::{Actor, ActorSet};
-use crate::hud::CombatLog;
+use crate::combat::CombatLog;
 use crate::data::{Combat, SpEffect};
 
 /// SpEffect stateInfos of the build-ups (SP_EFFECT_TYPE: 2 poison, 6 burn).
@@ -447,8 +447,9 @@ impl Statuses {
 /// FUN_140c06b70 / FUN_140c06c60, summed by FUN_140bfe2c0 and added to the remaining posture at
 /// 140a0.c:5119), so the aged Wolf's posture stays drained to the floor (our full bar).
 /// gap: the player's floor in the clamp FUN_140bd4e20 (taken as empty, without a break
-/// reaction); defNinsatsuDmgRate (99, as the cut rates) is not applied; the exe's order of
-/// maxHpRate is not traced.
+/// reaction); the exe's order of maxHpRate is not traced. The grabs take the cut rates too
+/// (combat.rs resolve_throws; they are atkAttribute 1 / 2 / 9: defNinsatsuDmgRate, attribute 5,
+/// meets no enemy grab).
 pub(crate) fn set_aging(a: &mut Actor, combat: &Combat, aging: Option<i64>) {
     if let Some(rate) = aging.and_then(|id| sp(combat, id)).map(|s| s.change_stamina_rate).filter(|r| *r < 0.0) {
         a.posture = (a.posture - a.posture_max * rate / 100.0).min(a.posture_max);
@@ -848,10 +849,10 @@ fn vfx_se(vfx: i64) -> Option<i64> {
 fn heartbeat(
     time: Res<Time>,
     players: Query<(&crate::player::Player, &GlobalTransform)>,
-    mut sounds: Option<ResMut<crate::sound::SoundQueue>>,
-    mut fmod: Option<NonSendMut<crate::fmod::Fmod>>,
+    mut sounds: Option<ResMut<crate::sound_rules::SoundQueue>>,
+    mut tracked: Option<ResMut<crate::sound_rules::TrackedSounds>>,
     mut next: Local<HashMap<i64, f32>>,
-    mut beats: Local<Vec<(i64, f32, crate::fmod::EventHandle)>>,
+    mut beats: Local<Vec<(i64, f32, crate::sound_rules::TrackedSound)>>,
 ) {
     let now = time.elapsed_secs();
     let mut worn = Vec::new();
@@ -866,18 +867,16 @@ fn heartbeat(
             *at = now + every;
             let Some(se) = sp_vfx_ids(cycle).into_iter().find_map(vfx_se) else { continue };
             let key = format!("c{se:09}");
-            if let Some(fm) = fmod.as_mut() {
+            if let Some(fm) = tracked.as_mut() {
                 let lasts = param_endurance(cycle).filter(|e| *e > 0.0).unwrap_or(every);
-                if let Some(ev) = fm.play_tracked(&key, g.translation()) {
-                    beats.push((id, now + lasts, ev));
-                }
+                beats.push((id, now + lasts, fm.play(&key, g.translation())));
             } else if let Some(q) = sounds.as_mut() {
                 q.0.push((key, g.translation()));
             }
         }
     }
     next.retain(|id, _| worn.contains(id));
-    if let Some(fm) = fmod.as_mut() {
+    if let Some(fm) = tracked.as_mut() {
         beats.retain(|(id, until, ev)| {
             let on = now < *until && worn.contains(id);
             if !on {

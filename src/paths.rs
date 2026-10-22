@@ -34,3 +34,12 @@ pub fn sekiro_dir() -> String {
         .or_else(|| std::fs::read_to_string(extracted().join("sekiro_dir.txt")).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()))
         .unwrap_or_else(|| r"C:\Program Files (x86)\Steam\steamapps\common\Sekiro".to_string())
 }
+
+/// The asset source the core loads its textures from (`rustsekiro://tex/...`): extracted/, so they load whatever the host game's own asset folder is.
+pub const SOURCE: &str = "rustsekiro";
+
+/// Registers [`SOURCE`]; before `DefaultPlugins` (the `AssetPlugin`).
+pub fn register_assets(app: &mut bevy::prelude::App) {
+    use bevy::asset::AssetApp;
+    app.register_asset_source(SOURCE, bevy::asset::io::AssetSourceBuilder::platform_default(&extracted().to_string_lossy(), None));
+}

@@ -54,6 +54,9 @@ def show_state(c, inv, name, types):
     for e in an["events"]:
         if types and e["type"] not in types:
             continue
+        if not isinstance(e.get("args"), dict):
+            # Some events carry their args as one undecoded string.
+            e = {**e, "args": {}}
         r = ref_of(c, e)
         gated = " [gated]" if e["args"].get("StateInfo") else ""
         if r is not None:

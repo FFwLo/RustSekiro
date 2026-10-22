@@ -10,6 +10,8 @@
   query <rec> <preset> [args] [--limit N]   presets: see `query <rec> help`
   replay all [--cached]     every recording: the events that differ most (also in logs/replay_all.md)
   replay <rec> [--from T --to T]   our sim plays the recorded inputs; HKS events matched + anim timeline (tools/rec/replay.py)
+  enemies <rec> [--chr cXXXX] | all [--cached]   enemies' attacks and hit reactions, game vs our AI on the same fight (tools/rec/enemies.py)
+  enemies pressure [--chr cXXXX]   each kind under our Wolf's sword (closed loop): deflect / guard / damage shares vs the game's
   play <rec> <script>       scripted input while recording (tools/rec/inputs/<script>.txt; hook DLL with pad_play)
   compare <rec> --sim <sv1 trace csv>
   list                      rewrite docs/kb/recordings.md (one line per recording)
@@ -221,6 +223,20 @@ def main():
         from .replay import replay
         t0, t1 = opt(args, "--from"), opt(args, "--to")
         for line in replay(resolve(args[0]), int(t0) if t0 else None, int(t1) if t1 else None, int(opt(args, "--limit", 12))):
+            print(line)
+        return
+    if cmd == "enemies":
+        from .enemies import report_all, report_one
+        if args and args[0] == "all":
+            lines = report_all(LOGS, "--cached" in args)
+            (LOGS / "enemies_all.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+        elif args and args[0] == "pressure":
+            from .enemies import pressure
+            lines = pressure(LOGS, opt(args, "--chr"))
+            (LOGS / "enemies_pressure.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+        else:
+            lines = report_one(resolve(args[0]), opt(args, "--chr"), "--cached" in args)
+        for line in lines:
             print(line)
         return
     if cmd == "play":

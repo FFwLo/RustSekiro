@@ -149,7 +149,7 @@ fn sight_clear(me: Vec3, wolf: Vec3) -> bool {
     let (a, b) = (me + h, wolf + h);
     let d = b - a;
     let len = d.length();
-    len < 1e-4 || crate::map::raycast(a, d / len, len).is_none()
+    len < 1e-4 || crate::terrain::raycast(a, d / len, len).is_none()
 }
 
 fn in_range(a: f32, lo: f32, hi: f32) -> bool {

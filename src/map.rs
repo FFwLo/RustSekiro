@@ -21,7 +21,7 @@
 //! floor is the flat arena at y = 0 (`ground_y` returns 0): the sim tests stay as they were.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, OnceLock, RwLock};
+use std::sync::{Arc, OnceLock};
 
 use bevy::asset::RenderAssetUsages;
 use bevy::image::{CompressedImageFormats, ImageAddressMode, ImageFilterMode, ImageLoaderSettings, ImageSampler, ImageSamplerDescriptor, ImageType};
@@ -29,24 +29,14 @@ use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::post_process::auto_exposure::{AutoExposure, AutoExposureCompensationCurve, AutoExposurePlugin};
 use bevy::prelude::*;
 
-use crate::actor::{Actor, ActorSet, Side};
 use crate::config::GameConfig;
 use crate::grading::{ColorGradingLut, GameToneCurve, GradingPlugin};
 use crate::player::CAPSULE_HALF_HEIGHT;
+// The ground (collision, floor queries, bodies on it) is the core's: terrain.rs.
+use crate::terrain::{terrain, Terrain};
+use crate::traversal::*;
+use crate::place::{frame, json_frame, loaded_map, on_boss_arena, Frame};
 
-/// Body radius for wall contacts: Wolf's map-hit capsule, 1.5 m high, radius 0.4 (exe
-/// FUN_140bc3140, hard-coded for the player; NPCs read NpcParam hitHeight / hitRadius in
-/// FUN_140bc2e00). Live physics module +0xD0 = 1.5 / 0.4 agrees.
-pub const RADIUS: f32 = 0.4;
-/// Highest ledge a walking body steps onto (Wolf follows the floor down by
-/// player::FALL_START_DROP). gap: the character proxy's step-up is not traced (Havok sweep, no explicit value found).
-pub const STEP_HEIGHT: f32 = 0.5;
-/// hknpCharacterProxyCinfo maxSlope, set to 60 deg in FUN_14104d3d0 (0x3f860a92 = 1.0472 rad).
-const MAX_SLOPE_DEGREES: f32 = 60.0;
-/// Heights of the contact spheres' centres above the feet; the lowest sphere's bottom sits at
-/// the step height so stairs reach the floor query rather than the wall push.
-const SPHERES: [f32; 3] = [STEP_HEIGHT + RADIUS, 1.2, 1.55];
-const CELL: f32 = 4.0;
 /// Bevy lux per native light unit, from sekiro-rs's lighting (library): the exe's deferred
 /// accumulators store `Col * N.L` with no 1 / pi (GXLightAcc_DDirLight1, GXLightCmbAlbedo), so a
 /// white surface under `Col * N.L = 1` has native radiance 1; Bevy's diffuse is
@@ -64,28 +54,6 @@ const METER_EV: f32 = 2.6;
 /// constructor default (sekiro-rs docs/SHADER-INPUTS.md, function 24db30).
 const FILMIC_CONTRAST: f32 = 0.5;
 const BASE_EV: f32 = -0.8;
-
-/// The hit collision, shared with the systems that cannot take a resource (player.rs floor
-/// checks, camera.rs arm clamp, sound.rs floor material) through [`terrain`].
-pub struct Terrain {
-    verts: Vec<Vec3>,
-    tris: Vec<[u32; 3]>,
-    normals: Vec<Vec3>,
-    materials: Vec<u32>,
-    cells: HashMap<(i32, i32), Vec<u32>>,
-    min_walk_ny: f32,
-    /// Level triangles without a hit material dropped at load (see `from_tris`).
-    helper_planes: usize,
-    /// Under sekiro-rs's map: its whole play world's collision (sr_map.rs `collision`), which
-    /// answers the floor, ray and wall queries in place of the triangles above (left empty).
-    world: Option<Arc<sekiro_sim::collision::CollisionWorld>>,
-}
-
-static TERRAIN: OnceLock<RwLock<Option<Arc<Terrain>>>> = OnceLock::new();
-
-/// The fog-wall collision in force: the terrain it belongs to (held, so its address stays
-/// unique) and the gates standing on it ([`set_gates`]).
-static GATES_ON: OnceLock<RwLock<(Option<Arc<Terrain>>, Vec<Arc<Terrain>>)>> = OnceLock::new();
 
 /// Switches the loaded map's fog-wall collision (`map_<id>.gates`, sekiro-extract) to these MSB
 /// entities: the walls' objects and collision parts while their fight is on (fog_wall.rs).
@@ -108,20 +76,8 @@ pub(crate) fn set_gates(entities: &[i64]) -> usize {
     };
     let on: Vec<Arc<Terrain>> = entities.iter().filter_map(|e| all.get(&i32::try_from(*e).ok()?).cloned()).collect();
     let n = on.len();
-    *GATES_ON.get_or_init(Default::default).write().unwrap() = (base.filter(|_| n > 0), on);
+    crate::terrain::set_gates_on(base.filter(|_| n > 0), on);
     n
-}
-
-/// Set when the loaded map is a boss's own arena (boss_arena).
-static BOSS_ARENA: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
-/// Is the fight on the boss's own arena (its MSB surroundings, so script positions hold)?
-pub fn on_boss_arena() -> bool {
-    BOSS_ARENA.load(std::sync::atomic::Ordering::Relaxed) && terrain().is_some()
-}
-
-pub fn terrain() -> Option<Arc<Terrain>> {
-    TERRAIN.get_or_init(|| RwLock::new(None)).read().ok()?.clone()
 }
 
 /// The map id in force: config `[world] map`, overridden by `SHINOBI_MAP` ("" = none). With the
@@ -202,56 +158,6 @@ pub fn boss_arena(chr: &str, npc_row: Option<i64>) -> Option<String> {
         c.insert((chr.to_string(), npc_row), found.clone());
     }
     found
-}
-
-/// Floor height under an actor centre (its feet are CAPSULE_HALF_HEIGHT lower): the highest
-/// walkable surface at most STEP_HEIGHT above the feet, else the one below; 0 without a map.
-pub fn ground_y(centre: Vec3) -> f32 {
-    let Some(t) = terrain() else { return 0.0 };
-    let feet = centre.y - CAPSULE_HALF_HEIGHT;
-    t.floor(centre.x, centre.z, feet + STEP_HEIGHT).or_else(|| t.floor(centre.x, centre.z, f32::INFINITY)).unwrap_or(feet - 100.0)
-}
-
-/// HitMtrlParam id of the floor under an actor centre (None without a map or over nothing).
-pub fn floor_material(centre: Vec3) -> Option<u32> {
-    let t = terrain()?;
-    let top = centre.y - CAPSULE_HALF_HEIGHT + STEP_HEIGHT;
-    if let Some(w) = &t.world {
-        return w.floor_material(centre.x, centre.z, top);
-    }
-    t.floor_tri(centre.x, centre.z, top).map(|(_, tri)| t.materials[tri as usize])
-}
-
-/// HitMtrlParam fallDeathDist / disableFallDamage per material id (extracted/json/params).
-fn hit_mtrl_fall() -> &'static HashMap<u32, (f32, bool)> {
-    static T: std::sync::OnceLock<HashMap<u32, (f32, bool)>> = std::sync::OnceLock::new();
-    T.get_or_init(|| {
-        let path = crate::paths::extracted().join("json/params/HitMtrlParam.json");
-        let json: serde_json::Value = std::fs::read_to_string(path).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
-        let rows = json["rows"].as_array().cloned().unwrap_or_default();
-        rows.iter().filter_map(|r| Some((r["id"].as_u64()? as u32, (r["fallDeathDist"].as_f64()? as f32, r["disableFallDamage"].as_u64().unwrap_or(0) != 0)))).collect()
-    })
-}
-
-/// How far (m) Wolf may fall onto this ground before the landing kills him, None where fall
-/// damage is off. Exe: FUN_14084e5d0 (the kill test) is `fall height >= HitMtrlParam +0x4c
-/// (fallDeathDist)`, and only from 20 m up (DAT_143b01948 = 20.0 in the exe's data; 5 m while
-/// SpEffect type 0x155 is worn, DAT_143b01950/54). The row is the material under the landing
-/// (FUN_1408433f0 reads it from the fall module's material id); no ground = the table's default
-/// 40 (gap: the exe's void kill height is not traced). The height is metres (the same 20 as the
-/// long stiff landing, c0000_define 213). gap: the non-lethal HP loss (FUN_140843660's factors)
-/// is not traced.
-pub fn fall_death_dist(material: Option<u32>) -> Option<f32> {
-    match material.and_then(|m| hit_mtrl_fall().get(&m)) {
-        Some((_, true)) => None,
-        Some((dist, false)) => Some(*dist),
-        None => Some(40.0),
-    }
-}
-
-/// Distance along `dir` (unit) to the first collision triangle within `max`.
-pub fn raycast(origin: Vec3, dir: Vec3, max: f32) -> Option<f32> {
-    terrain()?.raycast(origin, dir, max)
 }
 
 /// Wolf's start (his centre): 4 m in front of the enemy, the player's spot of every arena
@@ -386,367 +292,6 @@ fn settle_player_start(mut wolf: Query<(&mut Transform, &mut crate::actor::Actor
     }
 }
 
-fn cell_of(x: f32, z: f32) -> (i32, i32) {
-    ((x / CELL).floor() as i32, (z / CELL).floor() as i32)
-}
-
-impl Terrain {
-    pub(crate) fn from_hit(d: &[u8]) -> Option<Self> {
-        if d.len() < 12 || &d[0..4] != b"SHMC" {
-            return None;
-        }
-        let u32_ = |o: usize| u32::from_le_bytes(d[o..o + 4].try_into().unwrap());
-        let f = |o: usize| f32::from_le_bytes(d[o..o + 4].try_into().unwrap());
-        let nv = u32_(8) as usize;
-        let mut o = 12;
-        // A truncated file: None (the loader warns) instead of a slice panic.
-        if d.len() < o + nv * 12 + 4 {
-            return None;
-        }
-        // X mirrored into Bevy space (as every model), then into the fight's space.
-        let fr = frame();
-        let verts: Vec<Vec3> = (0..nv).map(|i| fr.point(Vec3::new(-f(o + i * 12), f(o + i * 12 + 4), f(o + i * 12 + 8)))).collect();
-        o += nv * 12;
-        let nt = u32_(o) as usize;
-        o += 4;
-        if d.len() < o + nt * 16 {
-            return None;
-        }
-        Some(Self::from_tris(verts, (0..nt).map(|i| {
-            let k = o + i * 16;
-            ([u32_(k), u32_(k + 4), u32_(k + 8)], u32_(k + 12))
-        })))
-    }
-
-    /// Collision from triangles already in Bevy space (`(indices, material)` each): the hit
-    /// files and the sandbox map's generated floor and walls.
-    pub(crate) fn from_tris(verts: Vec<Vec3>, tris: impl Iterator<Item = ([u32; 3], u32)>) -> Self {
-        let nv = verts.len();
-        let mut t = Terrain { verts, tris: Vec::new(), normals: Vec::new(), materials: Vec::new(), cells: HashMap::new(), min_walk_ny: MAX_SLOPE_DEGREES.to_radians().cos(), helper_planes: 0, world: None };
-        for (tri, material) in tris {
-            if tri.iter().any(|&x| x as usize >= nv) {
-                continue;
-            }
-            let [a, b, c] = tri.map(|x| t.verts[x as usize]);
-            let n = (b - a).cross(c - a);
-            if n.length_squared() < 1e-12 {
-                continue;
-            }
-            // The h9xxxxx helper collisions without a hit material: their level planes (the
-            // Guardian Ape's h900702, a 66 m plane 0.4 m over the pond floor; the maps' kill
-            // planes far below) are not floors. Their walls (h900700, the arena's bounds) stay.
-            if material == u32::MAX && n.y.abs() >= t.min_walk_ny * n.length() {
-                t.helper_planes += 1;
-                continue;
-            }
-            let id = t.tris.len() as u32;
-            t.tris.push(tri);
-            t.normals.push(n.normalize());
-            t.materials.push(material);
-            let (x0, z0) = cell_of(a.x.min(b.x).min(c.x), a.z.min(b.z).min(c.z));
-            let (x1, z1) = cell_of(a.x.max(b.x).max(c.x), a.z.max(b.z).max(c.z));
-            for cx in x0..=x1 {
-                for cz in z0..=z1 {
-                    t.cells.entry((cx, cz)).or_default().push(id);
-                }
-            }
-        }
-        t
-    }
-
-    /// sekiro-rs's play world as the terrain (sr_map.rs `collision`).
-    pub(crate) fn from_world(world: Arc<sekiro_sim::collision::CollisionWorld>) -> Self {
-        let mut t = Self::from_tris(Vec::new(), std::iter::empty());
-        t.world = Some(world);
-        t
-    }
-
-    /// No terrain (the map switched to one without a `.hit`, or off).
-    pub(crate) fn clear() {
-        if let Ok(mut t) = TERRAIN.get_or_init(|| RwLock::new(None)).write() {
-            *t = None;
-        }
-    }
-
-    pub(crate) fn install(self) {
-        *TERRAIN.get_or_init(|| RwLock::new(None)).write().unwrap() = Some(Arc::new(self));
-    }
-
-    pub fn triangle_count(&self) -> usize {
-        self.world.as_ref().map_or(self.tris.len(), |w| w.triangle_count())
-    }
-
-    fn corners(&self, t: u32) -> [Vec3; 3] {
-        self.tris[t as usize].map(|i| self.verts[i as usize])
-    }
-
-    fn gather(&self, min: Vec2, max: Vec2, out: &mut Vec<u32>) {
-        out.clear();
-        let (x0, z0) = cell_of(min.x, min.y);
-        let (x1, z1) = cell_of(max.x, max.y);
-        for cx in x0..=x1 {
-            for cz in z0..=z1 {
-                if let Some(c) = self.cells.get(&(cx, cz)) {
-                    out.extend_from_slice(c);
-                }
-            }
-        }
-        if x0 != x1 || z0 != z1 {
-            out.sort_unstable();
-            out.dedup();
-        }
-    }
-
-    /// The highest walkable surface under (x, z) no higher than `top`: (height, triangle).
-    /// Feet are not a point: a few centimetres around count too, so seams between triangles
-    /// do not drop the body.
-    pub fn floor_tri(&self, x: f32, z: f32, top: f32) -> Option<(f32, u32)> {
-        if let Some(w) = &self.world {
-            return w.floor_hit(x, z, top);
-        }
-        const R: f32 = 0.08;
-        let mut best: Option<(f32, u32)> = None;
-        for (dx, dz) in [(0.0, 0.0), (R, 0.0), (-R, 0.0), (0.0, R), (0.0, -R)] {
-            let (px, pz) = (x + dx, z + dz);
-            let Some(cell) = self.cells.get(&cell_of(px, pz)) else { continue };
-            for &t in cell {
-                if self.normals[t as usize].y.abs() < self.min_walk_ny {
-                    continue;
-                }
-                let [a, b, c] = self.corners(t);
-                if let Some(h) = height_on(px, pz, a, b, c) {
-                    if h <= top && best.is_none_or(|(bh, _)| h > bh) {
-                        best = Some((h, t));
-                    }
-                }
-            }
-        }
-        best
-    }
-
-    pub fn floor(&self, x: f32, z: f32, top: f32) -> Option<f32> {
-        self.floor_tri(x, z, top).map(|(h, _)| h)
-    }
-
-    pub fn raycast(&self, origin: Vec3, dir: Vec3, max: f32) -> Option<f32> {
-        if let Some(w) = &self.world {
-            return w.raycast(origin, dir, max);
-        }
-        let end = origin + dir * max;
-        let mut tris = Vec::new();
-        self.gather(Vec2::new(origin.x.min(end.x), origin.z.min(end.z)), Vec2::new(origin.x.max(end.x), origin.z.max(end.z)), &mut tris);
-        let mut best: Option<f32> = None;
-        for t in tris {
-            let [a, b, c] = self.corners(t);
-            if let Some(d) = ray_triangle(origin, dir, a, b, c) {
-                if d <= max && best.is_none_or(|b| d < b) {
-                    best = Some(d);
-                }
-            }
-        }
-        best
-    }
-
-    /// Moves a body standing at `feet` by the horizontal `delta`, stopping at walls and
-    /// sliding along them. Returns the horizontal displacement actually made.
-    pub fn slide(&self, feet: Vec3, delta: Vec2) -> Vec2 {
-        let len = delta.length();
-        if len < 1e-6 {
-            return Vec2::ZERO;
-        }
-        // Sub-steps of at most half the radius so a thin post cannot be stepped over (a tick's
-        // move is centimetres; the cap only bounds a wild teleport).
-        let steps = ((len / (RADIUS * 0.5)).ceil() as usize).clamp(1, 512);
-        let gates = self.gates_on();
-        let gate_tris: Vec<Vec<u32>> = gates.iter().map(|g| (0..g.tris.len() as u32).collect()).collect();
-        // sekiro-rs's world slides the body; the fog walls on it push it back out after.
-        if let Some(w) = &self.world {
-            let moved = Vec2::from(w.slide(feet.to_array(), delta.to_array()));
-            let mut p = feet + Vec3::new(moved.x, 0.0, moved.y);
-            for _ in 0..4 {
-                let push = gates.iter().zip(&gate_tris).map(|(g, t)| g.push_out(p, t)).max_by(|a, b| a.length_squared().total_cmp(&b.length_squared())).unwrap_or(Vec2::ZERO);
-                if push == Vec2::ZERO {
-                    break;
-                }
-                p.x += push.x;
-                p.z += push.y;
-            }
-            return Vec2::new(p.x - feet.x, p.z - feet.z);
-        }
-        let mut p = feet;
-        let mut tris = Vec::new();
-        let reach = RADIUS + len / steps as f32 + 0.05;
-        self.gather(
-            Vec2::new(p.x.min(p.x + delta.x), p.z.min(p.z + delta.y)) - reach,
-            Vec2::new(p.x.max(p.x + delta.x), p.z.max(p.z + delta.y)) + reach,
-            &mut tris,
-        );
-        for _ in 0..steps {
-            p.x += delta.x / steps as f32;
-            p.z += delta.y / steps as f32;
-            for _ in 0..4 {
-                let mut push = self.push_out(p, &tris);
-                for (g, t) in gates.iter().zip(&gate_tris) {
-                    let gp = g.push_out(p, t);
-                    if gp.length_squared() > push.length_squared() {
-                        push = gp;
-                    }
-                }
-                if push == Vec2::ZERO {
-                    break;
-                }
-                p.x += push.x;
-                p.z += push.y;
-            }
-        }
-        Vec2::new(p.x - feet.x, p.z - feet.z)
-    }
-
-    /// The fog-wall collision switched on for this terrain ([`set_gates`]); none for any other
-    /// terrain (a test's, or a map loaded since).
-    fn gates_on(&self) -> Vec<Arc<Terrain>> {
-        GATES_ON.get().and_then(|g| g.read().ok()).filter(|g| g.0.as_ref().is_some_and(|t| std::ptr::eq(Arc::as_ptr(t), self))).map(|g| g.1.clone()).unwrap_or_default()
-    }
-
-    /// `map_<id>.gates` "SHMG" v1 (sekiro-extract map.rs): the fog walls' collision per MSB
-    /// entity, in the .hit's space.
-    pub(crate) fn gates_from(d: &[u8]) -> HashMap<i32, Terrain> {
-        let mut out = HashMap::new();
-        if d.len() < 12 || &d[0..4] != b"SHMG" {
-            return out;
-        }
-        let u32_ = |o: usize| d.get(o..o + 4).map(|b| u32::from_le_bytes(b.try_into().unwrap()));
-        let f = |o: usize| f32::from_le_bytes(d[o..o + 4].try_into().unwrap());
-        let mut o = 12;
-        for _ in 0..u32_(8).unwrap_or(0) {
-            let (Some(entity), Some(nv)) = (u32_(o), u32_(o + 4)) else { break };
-            let nv = nv as usize;
-            o += 8;
-            let Some(nt) = u32_(o + nv * 12).map(|n| n as usize) else { break };
-            if d.len() < o + nv * 12 + 4 + nt * 16 {
-                break;
-            }
-            let fr = frame();
-            let verts: Vec<Vec3> = (0..nv).map(|i| fr.point(Vec3::new(-f(o + i * 12), f(o + i * 12 + 4), f(o + i * 12 + 8)))).collect();
-            o += nv * 12 + 4;
-            let k = o;
-            let tris = (0..nt).map(|i| {
-                let t = k + i * 16;
-                ([u32_(t).unwrap(), u32_(t + 4).unwrap(), u32_(t + 8).unwrap()], u32_(t + 12).unwrap())
-            });
-            out.insert(entity as i32, Terrain::from_tris(verts, tris));
-            o += nt * 16;
-        }
-        out
-    }
-
-    fn push_out(&self, feet: Vec3, tris: &[u32]) -> Vec2 {
-        let mut total = Vec2::ZERO;
-        for h in SPHERES {
-            let centre = feet + Vec3::Y * h;
-            let mut push = Vec2::ZERO;
-            for &t in tris {
-                let [a, b, c] = self.corners(t);
-                let q = closest_on_triangle(centre, a, b, c);
-                let away = centre - q;
-                let dist = away.length();
-                if dist >= RADIUS {
-                    continue;
-                }
-                // Horizontal pushes only; a contact straight above or below (beam, floor) is
-                // left to the floor query.
-                let flat = Vec2::new(away.x, away.z);
-                let dir = if flat.length_squared() > 1e-8 {
-                    flat.normalize()
-                } else {
-                    let n = self.normals[t as usize];
-                    let nf = Vec2::new(n.x, n.z);
-                    if nf.length_squared() < 1e-4 {
-                        continue;
-                    }
-                    nf.normalize()
-                };
-                let needed = (RADIUS * RADIUS - away.y * away.y).max(0.0).sqrt();
-                let depth = needed - flat.dot(dir);
-                if depth > push.dot(dir) {
-                    push += dir * (depth - push.dot(dir));
-                }
-            }
-            if push.length_squared() > total.length_squared() {
-                total = push;
-            }
-        }
-        total
-    }
-}
-
-fn height_on(x: f32, z: f32, a: Vec3, b: Vec3, c: Vec3) -> Option<f32> {
-    let d = (b.z - c.z) * (a.x - c.x) + (c.x - b.x) * (a.z - c.z);
-    if d.abs() < 1e-9 {
-        return None;
-    }
-    let l1 = ((b.z - c.z) * (x - c.x) + (c.x - b.x) * (z - c.z)) / d;
-    let l2 = ((c.z - a.z) * (x - c.x) + (a.x - c.x) * (z - c.z)) / d;
-    let l3 = 1.0 - l1 - l2;
-    (l1 >= 0.0 && l2 >= 0.0 && l3 >= 0.0).then(|| l1 * a.y + l2 * b.y + l3 * c.y)
-}
-
-/// Moller-Trumbore, both faces.
-fn ray_triangle(o: Vec3, d: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Option<f32> {
-    let (e1, e2) = (b - a, c - a);
-    let p = d.cross(e2);
-    let det = e1.dot(p);
-    if det.abs() < 1e-9 {
-        return None;
-    }
-    let inv = 1.0 / det;
-    let t = o - a;
-    let u = t.dot(p) * inv;
-    if !(0.0..=1.0).contains(&u) {
-        return None;
-    }
-    let q = t.cross(e1);
-    let v = d.dot(q) * inv;
-    if v < 0.0 || u + v > 1.0 {
-        return None;
-    }
-    let dist = e2.dot(q) * inv;
-    (dist > 0.0).then_some(dist)
-}
-
-/// Closest point on triangle abc to p (Ericson, Real-Time Collision Detection 5.1.5).
-fn closest_on_triangle(p: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Vec3 {
-    let (ab, ac, ap) = (b - a, c - a, p - a);
-    let (d1, d2) = (ab.dot(ap), ac.dot(ap));
-    if d1 <= 0.0 && d2 <= 0.0 {
-        return a;
-    }
-    let bp = p - b;
-    let (d3, d4) = (ab.dot(bp), ac.dot(bp));
-    if d3 >= 0.0 && d4 <= d3 {
-        return b;
-    }
-    let vc = d1 * d4 - d3 * d2;
-    if vc <= 0.0 && d1 >= 0.0 && d3 <= 0.0 {
-        return a + ab * (d1 / (d1 - d3));
-    }
-    let cp = p - c;
-    let (d5, d6) = (ab.dot(cp), ac.dot(cp));
-    if d6 >= 0.0 && d5 <= d6 {
-        return c;
-    }
-    let vb = d5 * d2 - d1 * d6;
-    if vb <= 0.0 && d2 >= 0.0 && d6 <= 0.0 {
-        return a + ac * (d2 / (d2 - d6));
-    }
-    let va = d3 * d6 - d5 * d4;
-    if va <= 0.0 && (d4 - d3) >= 0.0 && (d5 - d6) >= 0.0 {
-        return b + (c - b) * ((d4 - d3) / ((d4 - d3) + (d5 - d6)));
-    }
-    let denom = 1.0 / (va + vb + vc);
-    a + ab * (vb * denom) + ac * (vc * denom)
-}
-
 // ---------------------------------------------------------------------------------------------
 // Map material: the game's layered map materials (map_material.wgsl, kb/map.md "Layers").
 
@@ -874,10 +419,10 @@ pub(crate) const ATTR_MAP_UV_SCALE: bevy::mesh::MeshVertexAttribute = bevy::mesh
 
 impl bevy::pbr::MaterialExtension for MapExt {
     fn vertex_shader() -> bevy::shader::ShaderRef {
-        "embedded://sv1/map_material.wesl".into()
+        "embedded://rustsekiro/map_material.wesl".into()
     }
     fn fragment_shader() -> bevy::shader::ShaderRef {
-        "embedded://sv1/map_material.wesl".into()
+        "embedded://rustsekiro/map_material.wesl".into()
     }
     /// The main pass reads the game path's two extra attributes when the mesh has them
     /// (MAP_GAME_ATTRS); the prepass keeps Bevy's own layout.
@@ -923,153 +468,6 @@ const GAME_DETAIL: u32 = 256;
 const GAME_MASK_L: u32 = 512;
 const GAME_WET: u32 = 1024;
 const GAME_ALBEDO: u32 = 2048;
-
-// ---------------------------------------------------------------------------------------------
-// Grapple points (docs/kb/grapple.md; the engine's "wire")
-
-/// One wire point of the map (json "grapple", tools/sekiro-extract map export): the hook the
-/// rope attaches to, the landing spot, the point's facing and its WireVariationParam row. Bevy
-/// space (X mirrored on load).
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct GrapplePoint {
-    pub hook: Vec3,
-    pub land: Vec3,
-    pub fwd: Vec3,
-    pub variation: i64,
-}
-
-/// The loaded map's wire points (empty without a map, in the sandbox, and on maps exported
-/// before the grapple export).
-#[derive(Resource, Default)]
-pub struct GrapplePoints(pub Vec<GrapplePoint>);
-
-/// A hang (kind 2) or wall-hug (kind 3) edge from the map's and objects' `.edge` files
-/// (kb/grapple.md section 1): the record's three vertices raw, in Bevy space. `a`-`b` is the
-/// edge's segment; what `c` means per kind is not decoded (gap). Data for the ledge hang and
-/// wall hug moves (HKS BEH_A_GROUND_HANG_START, COVER_*); nothing uses it yet but the gizmos.
-#[derive(Clone, Copy, Debug)]
-#[allow(dead_code)]
-pub struct LedgeEdge {
-    pub a: Vec3,
-    pub b: Vec3,
-    pub c: Vec3,
-    pub kind: u8,
-    pub variation: i64,
-}
-
-/// The loaded map's hang / hug edges (empty on maps exported before 2026-10-11's ledge export).
-#[derive(Resource, Default)]
-pub struct LedgeEdges(pub Vec<LedgeEdge>);
-
-/// The point the wire would fire at ([`grapple_target`]).
-#[derive(Clone, Copy, Debug)]
-#[allow(dead_code)] // read by the player move (VXf)
-pub struct GrappleTarget {
-    pub index: usize,
-    pub point: GrapplePoint,
-    /// Wolf's centre to the hook.
-    pub dist: f32,
-    /// Inside the row's action distance (the hook can be fired; outside it the marker is shown
-    /// as the grey `MENU_Wire_Distance` disc).
-    pub in_action_range: bool,
-    /// Rideable (landing on the point, LandWireMove) or a swing-through point (targetMarkerType
-    /// 1 ring with an arrow: rows 20/23/24 "can't ride", 41 kite).
-    pub ride: bool,
-}
-
-/// WirePointSearchParam row 0 (WireSetParam 0 = rows [0, 100], the default set).
-pub const WIRE_ACTION_NEAR: f32 = 3.0;
-pub const WIRE_ACTION_FAR: f32 = 15.0;
-pub const WIRE_FIND_FAR: f32 = 25.0;
-/// filteringDistanceHeightUpper / Lower 10.2 and filteringDistanceWidth 14.3: the rectangle in
-/// the camera's plane a point must be inside to be a candidate; softlockDistanceHeight 10.2 /
-/// Width 7.15 the smaller one the current target keeps itself inside. Taken as metres in the
-/// camera plane: the height values one-sided, the widths the full width (soft lock = half the
-/// filter width). // gap: the exe may scale them with depth (screen fractions); untraced.
-const WIRE_FILTER_HEIGHT_UPPER: f32 = 10.2;
-const WIRE_FILTER_HEIGHT_LOWER: f32 = 10.2;
-const WIRE_FILTER_WIDTH: f32 = 14.3;
-const WIRE_SOFTLOCK_HEIGHT: f32 = 10.2;
-const WIRE_SOFTLOCK_WIDTH: f32 = 7.15;
-
-/// WireVariationParam: recognitionAngleUp/Down/Left/Right (degrees, the player's side of the
-/// point's reference direction), extendWireActionDistance (m, added to actionDistanceFar) and
-/// whether the point is ridden (targetMarkerType 0) or swung through (1). Rows 0/3/20/23/24
-/// are 90/90/180/180, 1/2/21/22 and 5 (extend 10) 90 all round, 40 90/90/180/180 extend 30
-/// (swung through: targetMarkerType 1), 41 90/50/30/10 extend 30; enemy rows 10700..70210 are
-/// the SpEffect's (never map points).
-fn wire_variation(row: i64) -> ([f32; 4], f32, bool) {
-    match row {
-        1 | 2 | 21 | 22 => ([90.0, 90.0, 90.0, 90.0], 0.0, row < 20),
-        5 => ([90.0, 90.0, 90.0, 90.0], 10.0, true),
-        20 | 23 | 24 => ([90.0, 90.0, 180.0, 180.0], 0.0, false),
-        40 => ([90.0, 90.0, 180.0, 180.0], 30.0, false),
-        41 => ([90.0, 50.0, 30.0, 10.0], 30.0, false),
-        // gap: rows 45 (homing +53105) and the enemy rows: taken as row 0.
-        _ => ([90.0, 90.0, 180.0, 180.0], 0.0, true),
-    }
-}
-
-/// The wire point Wolf would fire at: of the points within findDistanceFar whose recognition
-/// angles admit him and that sit inside the camera-plane rectangle, the one nearest the view
-/// axis; `prev` (last frame's target) is kept while it stays inside the smaller soft-lock
-/// rectangle (WirePointSearchParam 0). A collision triangle between Wolf's chest and the hook
-/// hides the point. `cam_fwd` unit; `wolf` his centre.
-pub fn grapple_target(cam_pos: Vec3, cam_fwd: Vec3, wolf: Vec3, prev: Option<usize>, points: &[GrapplePoint]) -> Option<GrappleTarget> {
-    let right = cam_fwd.cross(Vec3::Y).try_normalize().unwrap_or(Vec3::X);
-    let up = right.cross(cam_fwd).normalize();
-    let chest = wolf + Vec3::Y * 0.3;
-    // (index, dist, lateral, vertical, depth, ride, action far) of every candidate.
-    let mut found: Vec<(usize, f32, f32, f32, f32, bool, f32)> = Vec::new();
-    for (i, p) in points.iter().enumerate() {
-        let to_hook = p.hook - wolf;
-        let dist = to_hook.length();
-        if dist > WIRE_FIND_FAR || dist < 1e-3 {
-            continue;
-        }
-        let (angles, extend, ride) = wire_variation(p.variation);
-        // Wolf in the point's frame: ahead = the reference direction, horizontal angle to the
-        // right positive, vertical angle up positive. // gap: which side "left" is (mirrored X)
-        // and whether the angles are read from the hook or from the landing point.
-        let fwd = p.fwd.try_normalize().unwrap_or(Vec3::Z);
-        let pright = fwd.cross(Vec3::Y).try_normalize().unwrap_or(Vec3::X);
-        let to_wolf = -to_hook / dist;
-        let horizontal = to_wolf.x.hypot(to_wolf.z).max(1e-4);
-        let h = pright.dot(to_wolf).atan2(fwd.dot(to_wolf)).to_degrees();
-        let v = (to_wolf.y / horizontal).atan().to_degrees();
-        let ok_v = if v >= 0.0 { v <= angles[0] } else { -v <= angles[1] };
-        let ok_h = if h >= 0.0 { h <= angles[3] } else { -h <= angles[2] };
-        if !ok_v || !ok_h {
-            continue;
-        }
-        // The camera-plane rectangle.
-        let rel = p.hook - cam_pos;
-        let depth = rel.dot(cam_fwd);
-        if depth <= 0.0 {
-            continue;
-        }
-        let lateral = rel.dot(right);
-        let vertical = rel.dot(up);
-        if lateral.abs() > WIRE_FILTER_WIDTH / 2.0 || vertical > WIRE_FILTER_HEIGHT_UPPER || -vertical > WIRE_FILTER_HEIGHT_LOWER {
-            continue;
-        }
-        // Nothing in the way (the rope has no collision: kb/grapple.md).
-        if let Some(t) = raycast(chest, (p.hook - chest).normalize(), (p.hook - chest).length() - 0.3) {
-            if t < (p.hook - chest).length() - 0.3 {
-                continue;
-            }
-        }
-        found.push((i, dist, lateral, vertical, depth, ride, WIRE_ACTION_FAR + extend));
-    }
-    if found.is_empty() {
-        return None;
-    }
-    let pick = prev
-        .and_then(|k| found.iter().find(|f| f.0 == k && f.2.abs() <= WIRE_SOFTLOCK_WIDTH / 2.0 && f.3.abs() <= WIRE_SOFTLOCK_HEIGHT))
-        .or_else(|| found.iter().min_by(|a, b| (a.2 / a.4).hypot(a.3 / a.4).total_cmp(&(b.2 / b.4).hypot(b.3 / b.4))))?;
-    let &(index, dist, _, _, _, ride, far) = pick;
-    Some(GrappleTarget { index, point: points[index], dist, in_action_range: (WIRE_ACTION_NEAR..=far).contains(&dist), ride })
-}
 
 /// Debug (H / the debug menu, with the hurtboxes): every wire point as a green hook sphere, a
 /// line to its landing spot and a short facing tick; the current target yellow with a line
@@ -1193,21 +591,9 @@ pub fn arena_to_map(origin: Vec3, arena_yaw: f32, p: Vec3) -> Vec3 {
     origin + Vec3::new(x * c + z * s, p.y, -x * s + z * c)
 }
 
-/// Arena-local space (the export's, boss at (0, y, -4)) -> the space the fight runs in.
-/// Identity, except under sekiro-rs's map (sr_map.rs): the source map's absolute Bevy space
-/// (MSB with X mirrored, as sekiro-rs exports it), i.e. `arena_to_map` then X mirrored. A turn
-/// about Y plus a shift.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Frame {
-    pub rot: Quat,
-    /// The turn's angle (`rot` = Ry(yaw)): added to an arena-local actor yaw.
-    pub yaw: f32,
-    pub offset: Vec3,
-}
-
+/// The arena at its place in the source map (sekiro-rs's absolute Bevy space): `arena_to_map`
+/// then X mirrored.
 impl Frame {
-    pub const IDENTITY: Self = Self { rot: Quat::IDENTITY, yaw: 0.0, offset: Vec3::ZERO };
-
     fn of_arena(origin: Vec3, arena_yaw: f32) -> Self {
         let abs = |p: Vec3| {
             let m = arena_to_map(origin, arena_yaw, p);
@@ -1218,32 +604,69 @@ impl Frame {
         let yaw = (-x.z).atan2(x.x);
         Self { rot: Quat::from_rotation_y(yaw), yaw, offset }
     }
-
-    pub fn point(&self, p: Vec3) -> Vec3 {
-        self.rot * p + self.offset
-    }
-
-    pub fn dir(&self, d: Vec3) -> Vec3 {
-        self.rot * d
-    }
 }
 
-static FRAME: RwLock<Frame> = RwLock::new(Frame::IDENTITY);
-
-/// The loaded map's [`Frame`].
-pub fn frame() -> Frame {
-    *FRAME.read().unwrap()
-}
-
-/// json "origin" / "arena_yaw" of an arena export as the readers turning MSB positions into
-/// the fight's space need them: under sekiro-rs's map origin 0 and no turn, so MSB points land
-/// at their absolute place (X mirrored) like the frame's.
-pub fn json_frame(json: &serde_json::Value) -> Option<(Vec3, f32)> {
-    let o = json["origin"].as_array().filter(|a| a.len() == 3)?;
-    if crate::sr_map::world() {
-        return Some((Vec3::ZERO, 0.0));
+/// The map's collision files (sekiro-extract `map_<id>.hit` / `.gates`), read into the core's
+/// terrain through the map's [`Frame`].
+impl Terrain {
+    pub(crate) fn from_hit(d: &[u8]) -> Option<Self> {
+        if d.len() < 12 || &d[0..4] != b"SHMC" {
+            return None;
+        }
+        let u32_ = |o: usize| u32::from_le_bytes(d[o..o + 4].try_into().unwrap());
+        let f = |o: usize| f32::from_le_bytes(d[o..o + 4].try_into().unwrap());
+        let nv = u32_(8) as usize;
+        let mut o = 12;
+        // A truncated file: None (the loader warns) instead of a slice panic.
+        if d.len() < o + nv * 12 + 4 {
+            return None;
+        }
+        // X mirrored into Bevy space (as every model), then into the fight's space.
+        let fr = frame();
+        let verts: Vec<Vec3> = (0..nv).map(|i| fr.point(Vec3::new(-f(o + i * 12), f(o + i * 12 + 4), f(o + i * 12 + 8)))).collect();
+        o += nv * 12;
+        let nt = u32_(o) as usize;
+        o += 4;
+        if d.len() < o + nt * 16 {
+            return None;
+        }
+        Some(Self::from_tris(verts, (0..nt).map(|i| {
+            let k = o + i * 16;
+            ([u32_(k), u32_(k + 4), u32_(k + 8)], u32_(k + 12))
+        })))
     }
-    Some((Vec3::from_array(std::array::from_fn(|i| o[i].as_f64().unwrap_or(0.0) as f32)), json["arena_yaw"].as_f64().unwrap_or(0.0) as f32))
+
+    /// `map_<id>.gates` "SHMG" v1 (sekiro-extract map.rs): the fog walls' collision per MSB
+    /// entity, in the .hit's space.
+    pub(crate) fn gates_from(d: &[u8]) -> HashMap<i32, Terrain> {
+        let mut out = HashMap::new();
+        if d.len() < 12 || &d[0..4] != b"SHMG" {
+            return out;
+        }
+        let u32_ = |o: usize| d.get(o..o + 4).map(|b| u32::from_le_bytes(b.try_into().unwrap()));
+        let f = |o: usize| f32::from_le_bytes(d[o..o + 4].try_into().unwrap());
+        let mut o = 12;
+        for _ in 0..u32_(8).unwrap_or(0) {
+            let (Some(entity), Some(nv)) = (u32_(o), u32_(o + 4)) else { break };
+            let nv = nv as usize;
+            o += 8;
+            let Some(nt) = u32_(o + nv * 12).map(|n| n as usize) else { break };
+            if d.len() < o + nv * 12 + 4 + nt * 16 {
+                break;
+            }
+            let fr = frame();
+            let verts: Vec<Vec3> = (0..nv).map(|i| fr.point(Vec3::new(-f(o + i * 12), f(o + i * 12 + 4), f(o + i * 12 + 8)))).collect();
+            o += nv * 12 + 4;
+            let k = o;
+            let tris = (0..nt).map(|i| {
+                let t = k + i * 16;
+                ([u32_(t).unwrap(), u32_(t + 4).unwrap(), u32_(t + 8).unwrap()], u32_(t + 12).unwrap())
+            });
+            out.insert(entity as i32, Terrain::from_tris(verts, tris));
+            o += nt * 16;
+        }
+        out
+    }
 }
 
 impl MapLighting {
@@ -1916,13 +1339,6 @@ pub(crate) fn tangents(pos: &[[f32; 3]], normal: &[[f32; 3]], uv: &[[f32; 2]], i
         .collect()
 }
 
-/// The map id loaded last (`load_map_id`): what the world shows now, after any encounter
-/// swap (`switch_map`). None before the first load or with the map off.
-static LOADED_MAP: RwLock<Option<String>> = RwLock::new(None);
-
-pub fn loaded_map() -> Option<String> {
-    LOADED_MAP.read().ok()?.clone()
-}
 
 pub(crate) fn load_map(config: Res<GameConfig>, mut commands: Commands, assets: Res<AssetServer>, mut meshes: ResMut<Assets<Mesh>>, mut materials: ResMut<Assets<MapMaterial>>) {
     let Some(map) = map_id(&config) else { return };
@@ -2144,9 +1560,7 @@ fn day_cycle(time: Res<Time<Real>>, mut cycle: ResMut<DayCycle>, mut lighting: R
 
 fn load_map_id(map: &str, config: &GameConfig, fight: Option<i64>, commands: &mut Commands, assets: &AssetServer, meshes: &mut Assets<Mesh>, materials: &mut Assets<MapMaterial>) {
     let map = map.to_string();
-    if let Ok(mut l) = LOADED_MAP.write() {
-        *l = Some(map.clone());
-    }
+    crate::place::set_loaded_map(Some(map.clone()));
     let dir = crate::paths::extracted();
     let t0 = std::time::Instant::now();
     // The sandbox (sandbox.rs): a generated arena under a real map's lighting and materials.
@@ -2155,7 +1569,7 @@ fn load_map_id(map: &str, config: &GameConfig, fight: Option<i64>, commands: &mu
     crate::sandbox::ON_CONSTRUCT.store(parkour, std::sync::atomic::Ordering::Relaxed);
     crate::docking::WALL_JUMP_LIMIT.store(if parkour { u8::MAX } else { crate::docking::WALL_JUMP_COUNT_MAX }, std::sync::atomic::Ordering::Relaxed);
     let id = if sandbox { crate::sandbox::source() } else { map.clone() };
-    BOSS_ARENA.store(id.starts_with("boss_"), std::sync::atomic::Ordering::Relaxed);
+    crate::place::set_boss_arena(id.starts_with("boss_"));
     // The fight's space (before anything baked in arena space loads): under sekiro-rs's map the
     // source map's absolute place, from the export's own origin and turn.
     let frame = if crate::sr_map::active() && !sandbox {
@@ -2172,7 +1586,7 @@ fn load_map_id(map: &str, config: &GameConfig, fight: Option<i64>, commands: &mu
         Frame::IDENTITY
     };
     info!("map {id}: fight space {frame:?}");
-    *FRAME.write().unwrap() = frame;
+    crate::place::set_frame(frame);
     // Hit collision.
     // Under sekiro-rs's map its whole play world's collision (sr_map.rs), so Wolf can leave the arena.
     let world = (!sandbox).then(crate::sr_map::collision).flatten();
@@ -2747,73 +2161,31 @@ impl MaterialCache {
     }
 }
 
-// ---------------------------------------------------------------------------------------------
-// Bodies on the map
-
-/// The longest step one fixed tick can take as a walk (2 m at 60 Hz is 120 m/s, past any dash
-/// or grapple pull); a longer one is a teleport and skips the wall slide.
-pub const TELEPORT: f32 = 2.0;
-
-/// Where the actor was before this tick's movement, for the wall slide.
-#[derive(Component)]
-pub struct OnTerrain {
-    pub(crate) prev: Vec3,
-}
-
-/// After the actors moved: push them out of walls along their step, then put grounded ones on
-/// the floor (following it up to STEP_HEIGHT up and FALL_START_DROP down; a bigger drop leaves them in the air,
-/// which player.rs turns into FreeFall; enemies stay put, they have no fall of their own).
-pub(crate) fn bodies_on_terrain(combat: Res<crate::data::Combat>, mut commands: Commands, mut q: Query<(Entity, &Actor, &mut Transform, Option<&mut OnTerrain>)>) {
-    let _prof = crate::perf::span("bodies_on_terrain");
-    let Some(t) = terrain() else { return };
-    for (e, a, mut tf, state) in &mut q {
-        let Some(mut state) = state else {
-            commands.entity(e).insert(OnTerrain { prev: tf.translation });
-            continue;
-        };
-        // Not due this tick (Actor::lod): the next due tick takes the whole move.
-        if !a.lod_due {
-            continue;
-        }
-        // Held at an edge (docking.rs hold places the body): no slide, no floor snap.
-        if a.docked {
-            state.prev = tf.translation;
-            continue;
-        }
-        let prev = state.prev;
-        let feet_prev = prev - Vec3::Y * CAPSULE_HALF_HEIGHT;
-        let delta = Vec2::new(tf.translation.x - prev.x, tf.translation.z - prev.z);
-        // A move longer than TELEPORT in one tick is a warp (script / event warps, the parking
-        // spot, fight resets), not a walk: no slide along the line. The slide gathered every
-        // triangle in the whole move's box and ran 512 substeps, so a 110 m script warp on the
-        // Folding Screen Monkeys arena stalled one frame for about 33 s, then stopped at the
-        // first wall and undid the warp (the fight's "3 fps", 2026-10-12 bug hunt).
-        if delta.length_squared() > 1e-10 && delta.length_squared() <= TELEPORT * TELEPORT {
-            let _p = crate::perf::span("terrain_slide");
-            let moved = t.slide(feet_prev, delta);
-            tf.translation.x = prev.x + moved.x;
-            tf.translation.z = prev.z + moved.y;
-        }
-        let data = crate::actor::data_for(&combat, &a);
-        let lifted = !a.anim.is_empty() && data.flag(&a.anim, a.t, crate::player::FLAG_NO_GRAVITY);
-        // An enemy coming down from a SetNoGravity lift (actor.rs) lands by itself.
-        if !a.airborne && !lifted && a.lift_ground.is_none() {
-            let feet = tf.translation.y - CAPSULE_HALF_HEIGHT;
-            let pf = crate::perf::span("terrain_floor");
-            let floor = t.floor(tf.translation.x, tf.translation.z, feet + STEP_HEIGHT);
-            drop(pf);
-            // Wolf follows the floor down only FALL_START_DROP (HKS BEH_R_FALL: a smaller drop
-            // never leaves the move state, so following it is the same); a deeper one falls.
-            let down = if a.side == Side::Enemy { f32::INFINITY } else { crate::player::FALL_START_DROP };
-            match floor {
-                Some(h) if h >= feet - down => tf.translation.y = h + CAPSULE_HALF_HEIGHT,
-                Some(_) => {}
-                None => {
-                    // Over nothing walkable within reach: the enemy keeps its height.
-                }
+/// The effects' scene light (fxr.rs `SceneLight`) from the map in force: 
+/// under sekiro-rs's map his light set in force (the collision under Wolf, the story's hour),
+/// looked up again only when it changes; else the own map's draw params.
+fn publish_scene_light(
+    mut commands: Commands,
+    map_light: Option<Res<MapLighting>>,
+    sr_light: Option<Res<sekiro_rs::lighting::MapLighting>>,
+    now: Option<Res<crate::fxr::SceneLight>>,
+    mut sr_cached: Local<Option<((i32, u32), (Vec3, Vec3, Vec3))>>,
+) {
+    let sr = sr_light.map(|l| {
+        let key = (l.light_set, l.hour.to_bits());
+        match *sr_cached {
+            Some((k, v)) if k == key => v,
+            _ => {
+                let v = crate::sr_map::particle_light(&l);
+                *sr_cached = Some((key, v));
+                v
             }
         }
-        state.prev = tf.translation;
+    });
+    let Some((amb, sun, to_sun)) = sr.or_else(|| map_light.as_deref().map(particle_light)) else { return };
+    let light = crate::fxr::SceneLight { ambient: amb * ENV_PER_UNIT, sun: sun * ENV_PER_UNIT, to_sun, lumens_per_unit: sekiro_rs::lighting::LOCAL_LUMENS_PER_UNIT };
+    if now.as_deref() != Some(&light) {
+        commands.insert_resource(light);
     }
 }
 
@@ -2821,6 +2193,16 @@ pub struct MapPlugin;
 
 impl Plugin for MapPlugin {
     fn build(&self, app: &mut App) {
+        // The combat core asks this game's maps through its hooks (encounter.rs).
+        crate::encounter::set(crate::encounter::MapHooks {
+            player_start,
+            player_start_local,
+            idol_start: crate::sr_map::idol_start,
+            open_world: crate::sr_map::world,
+            blocks: crate::sr_map::blocks,
+            ..crate::sandbox::map_hooks()
+        });
+        app.add_systems(PostUpdate, publish_scene_light.before(crate::fxr::FxDraw));
         // With sekiro-rs's map its post chain meters and grades the view (sr_map.rs).
         let own_post = !crate::sr_map::active();
         if own_post && !app.is_plugin_added::<AutoExposurePlugin>() {
@@ -2842,17 +2224,14 @@ impl Plugin for MapPlugin {
         }
         bevy::asset::embedded_asset!(app, "map_material.wesl");
         app.add_plugins(MaterialPlugin::<MapMaterial>::default());
-        app.init_resource::<GrapplePoints>();
-        app.init_resource::<LedgeEdges>();
         app.add_systems(Update, (draw_grapple_points, draw_ledges).run_if(resource_exists::<crate::combat::ShowHurtboxes>));
-        app.add_systems(Startup, (load_map, log_bindless))
+        app.add_systems(Startup, (load_map.in_set(crate::place::MapLoad), log_bindless))
             .add_systems(PostStartup, settle_player_start)
             .add_message::<GoToMap>()
             .init_resource::<DayCycle>()
             .add_systems(Update, (((hour_keys, day_cycle).chain(), (apply_lighting, apply_giiv).chain().run_if(|| !crate::sr_map::active())).chain().run_if(resource_exists::<MapLighting>), frame_rate_log, switch_map, go_to_map.after(switch_map)))
             .add_systems(Startup, (crate::sandbox::spawn_enemies, crate::sandbox::spawn_bushes).after(load_map))
-            .add_systems(Update, (crate::sandbox::place_wolf, crate::sandbox::watch, mesh_events, crate::sandbox::respawn_lineup, crate::sandbox::catalog_shots.run_if(resource_exists::<crate::sandbox::Catalog>)))
-            .add_systems(FixedUpdate, bodies_on_terrain.after(ActorSet::Advance).before(crate::anim::PoseSet));
+            .add_systems(Update, (crate::sandbox::place_wolf, crate::sandbox::watch, mesh_events, crate::sandbox::respawn_lineup, crate::sandbox::catalog_shots.run_if(resource_exists::<crate::sandbox::Catalog>)));
     }
 }
 
@@ -2922,6 +2301,7 @@ fn mesh_events(mut events: MessageReader<AssetEvent<Mesh>>, mut frame: Local<u32
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::terrain::{RADIUS, STEP_HEIGHT};
 
     /// The debug menu's map list and the castle top's weather choices (its light sets and the
     /// Owl's / Isshin's draw-param looks).
@@ -3032,7 +2412,7 @@ mod tests {
         };
         let (base, other) = (floor(0.0), floor(0.0));
         let walk = Vec2::new(-3.0, 0.0);
-        let set = |on: Option<&Arc<Terrain>>| *GATES_ON.get_or_init(Default::default).write().unwrap() = (on.cloned(), on.map(|_| vec![gate.clone()]).unwrap_or_default());
+        let set = |on: Option<&Arc<Terrain>>| crate::terrain::set_gates_on(on.cloned(), on.map(|_| vec![gate.clone()]).unwrap_or_default());
         set(Some(&base));
         let moved = base.slide(Vec3::ZERO, walk);
         assert!(moved.x > -1.0 + RADIUS - 0.05 && moved.x < -0.5, "the wall did not stop the walk: {moved}");

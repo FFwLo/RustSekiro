@@ -1024,6 +1024,22 @@ pub(crate) fn covert_a_cuts_sight_only_crouched() {
     assert!((crouched - 0.64).abs() < 1e-4, "crouched: {crouched}");
 }
 
+/// Gachiin's Sugar (3440 -> 3441: sightSearchEnemyCut 50, hearingSearchEnemyRate 0, 60 s) works
+/// standing too (no invocation condition): the timed row rides with the skills into the sight
+/// check (enemy.rs).
+#[test]
+pub(crate) fn gachiins_sugar_halves_sight_standing() {
+    let mut app = app();
+    app.update();
+    let world = app.world_mut();
+    let a = world.query_filtered::<&Actor, With<Player>>().single(world).unwrap();
+    let combat = world.resource::<Combat>();
+    let row: crate::data::SpEffect = serde_json::from_value(crate::items::param("SpEffectParam", 3441).clone()).unwrap();
+    assert_eq!(row.hearing_search_enemy_rate, 0.0);
+    let cut = crate::enemy::wolf_seen(combat, a, Vec3::ZERO, &[row]).cut;
+    assert!((cut - 0.5).abs() < 1e-4, "standing with the sugar: {cut}");
+}
+
 /// A hold art lets go only in its TAE windows (c0000_transition.lua 6198-6209 / 6048-6058):
 /// Ashina Cross tapped (attack up at once) still draws, but not before HoldStart's ref 222 opens
 /// (a104_316500 f21); in the air (a104_316200 / 316220: 230 only) letting go of attack keeps the

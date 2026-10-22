@@ -411,7 +411,7 @@ mod lockstep {
         let mut q = app.world_mut().query_filtered::<(&Actor, &Player, &Transform), With<Player>>();
         let world = app.world();
         let (a, p, tf) = q.single(world).unwrap();
-        let feet = tf.translation.y - crate::player::CAPSULE_HALF_HEIGHT - crate::map::ground_y(tf.translation);
+        let feet = tf.translation.y - crate::player::CAPSULE_HALF_HEIGHT - crate::terrain::ground_y(tf.translation);
         let combat = world.resource::<Combat>();
         let config = world.resource::<crate::config::GameConfig>();
         let locked = world.resource::<crate::camera::LockOn>().target.is_some();
@@ -894,7 +894,7 @@ mod enemy_lockstep {
                     let d = world.resource::<Combat>().data_of(a);
                     let fl: Vec<i64> = [23, 86, 79, 78].into_iter().filter(|&x| d.flag(&a.anim, a.t, x)).collect();
                     let sc = chr.rt.main_clip().map(|c| (c.animation.clone(), c.time));
-                    eprintln!("DBG f{f} {before}->{after} {} t {:.3} flags {fl:?} script {sc:?} desc {} cmd {:?} turn {:?} refs {:?} ai_sp {} worn {:?}", a.anim, a.t, e.ai_desc, e.ai_cmd, chr.vm.host.borrow().vars.get("TurnAngle"), chr.vm.host.borrow().env.keys().filter(|k| k.0 == 3036).filter_map(|k| k.1).collect::<Vec<_>>(), e.ai_state_sp(), crate::combat::worn_sp(a, &e.clash).iter().map(|id| (*id, d.sp_effects.get(&id.to_string()).map(|s| s.behavior_ref_id))).collect::<Vec<_>>());
+                    eprintln!("DBG f{f} hp {} dead {} chained {:?} {before}->{after} {} t {:.3} flags {fl:?} script {sc:?} desc {} cmd {:?} turn {:?} refs {:?} ai_sp {} worn {:?}", a.hp, e.is_dead(), a.sp_chained, a.anim, a.t, e.ai_desc, e.ai_cmd, chr.vm.host.borrow().vars.get("TurnAngle"), chr.vm.host.borrow().env.keys().filter(|k| k.0 == 3036).filter_map(|k| k.1).collect::<Vec<_>>(), e.ai_state_sp(), crate::combat::worn_sp(a, &e.clash).iter().map(|id| (*id, d.sp_effects.get(&id.to_string()).map(|s| s.behavior_ref_id))).collect::<Vec<_>>());
                 }
             }
             // enemy.rs's sandbox brings a dead enemy back (Approach): the game's would stay dead.

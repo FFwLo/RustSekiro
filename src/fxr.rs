@@ -289,7 +289,7 @@ pub struct FxEffect {
     root: Option<NodeInst>,
     age: f32,
     /// The nodeAudio sounds playing, moved with their node and stopped with the effect.
-    sounds: Vec<crate::fmod::EventHandle>,
+    sounds: Vec<crate::sound_rules::TrackedSound>,
 }
 
 impl FxEffect {
@@ -904,7 +904,7 @@ fn time_rate(def: &Value, age: f32) -> f32 {
     scalar(&def["root"]["unk10500"], "rateOfTime", age, &mut Rnd { seed: 0, k: 0 }, 1.0).max(0.0)
 }
 
-fn tick(mut commands: Commands, time: Res<Time>, mut lib: ResMut<FxrLib>, globals: Query<&GlobalTransform>, mut fx: Query<(Entity, &mut FxEffect)>, mut fmod: Option<NonSendMut<crate::fmod::Fmod>>, cams: Query<(&Camera, &GlobalTransform), With<Camera3d>>) {
+fn tick(mut commands: Commands, time: Res<Time>, mut lib: ResMut<FxrLib>, globals: Query<&GlobalTransform>, mut fx: Query<(Entity, &mut FxEffect)>, mut tracked: Option<ResMut<crate::sound_rules::TrackedSounds>>, cams: Query<(&Camera, &GlobalTransform), With<Camera3d>>) {
     let dt = time.delta_secs().min(1.0 / 15.0);
     lib.cam = cams.iter().filter(|(c, _)| c.is_active).min_by_key(|(c, _)| c.order).map(|(_, g)| g.compute_transform());
     // SHINOBI_FXR_LIVE=1: the playing effects (id, age, stopped, keyed) twice a second.
@@ -960,14 +960,12 @@ fn tick(mut commands: Commands, time: Res<Time>, mut lib: ResMut<FxrLib>, global
         let mut start = Vec::new();
         start_audio(root, &mut start);
         let done = root.finished || (!f.keep && f.age > 30.0);
-        if let Some(fm) = fmod.as_mut() {
+        if let Some(fm) = tracked.as_mut() {
             for (sound, at) in start {
                 if f.own_sound_played && sound == f.id {
                     continue;
                 }
-                if let Some(ev) = fm.play_tracked(&format!("s{sound:09}"), at) {
-                    f.sounds.push(ev);
-                }
+                f.sounds.push(fm.play(&format!("s{sound:09}"), at));
             }
             for ev in &f.sounds {
                 if done { fm.stop(*ev) } else { fm.set_position(*ev, place.translation) }
@@ -1030,10 +1028,10 @@ pub struct DistortMaterial {
 
 impl Material for DistortMaterial {
     fn vertex_shader() -> bevy::shader::ShaderRef {
-        "embedded://sv1/fx_distort.wesl".into()
+        "embedded://rustsekiro/fx_distort.wesl".into()
     }
     fn fragment_shader() -> bevy::shader::ShaderRef {
-        "embedded://sv1/fx_distort.wesl".into()
+        "embedded://rustsekiro/fx_distort.wesl".into()
     }
     fn alpha_mode(&self) -> AlphaMode {
         AlphaMode::Opaque
@@ -1158,10 +1156,10 @@ pub struct MultiMaterial {
 
 impl Material for MultiMaterial {
     fn vertex_shader() -> bevy::shader::ShaderRef {
-        "embedded://sv1/fx_multi.wesl".into()
+        "embedded://rustsekiro/fx_multi.wesl".into()
     }
     fn fragment_shader() -> bevy::shader::ShaderRef {
-        "embedded://sv1/fx_multi.wesl".into()
+        "embedded://rustsekiro/fx_multi.wesl".into()
     }
     fn alpha_mode(&self) -> AlphaMode {
         AlphaMode::Premultiplied
@@ -1210,7 +1208,7 @@ pub struct SoftExt {
 
 impl bevy::pbr::MaterialExtension for SoftExt {
     fn fragment_shader() -> bevy::shader::ShaderRef {
-        "embedded://sv1/fx_soft.wesl".into()
+        "embedded://rustsekiro/fx_soft.wesl".into()
     }
 }
 
@@ -1874,6 +1872,33 @@ fn grow_trails(n: &mut NodeInst, dt: f32) {
 #[derive(Component)]
 struct FxLight;
 
+/// The effects' draw (lit particles take the frame's `SceneLight`: set it before this).
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct FxDraw;
+
+/// The scene's light on lit particles, set by the host's map (this game's map.rs: its own draw
+/// params, or sekiro-rs's light set in force): ambient and sun radiance as the renderer takes them
+/// (the map's scale applied), the way toward the sun, and a particle point light's lumens per
+/// game unit. Without one, a plain midday.
+#[derive(Resource, Clone, Copy, PartialEq, Debug)]
+pub struct SceneLight {
+    pub ambient: Vec3,
+    pub sun: Vec3,
+    pub to_sun: Vec3,
+    pub lumens_per_unit: f32,
+}
+
+/// sekiro-rs's exe-traced scene unit (lighting.rs SCENE_TO_BEVY: pi / Bevy's default exposure),
+/// for the default only; the host's map gives its own.
+const SCENE_UNIT: f32 = 3_135.61;
+
+impl Default for SceneLight {
+    fn default() -> Self {
+        let env = SCENE_UNIT / std::f32::consts::PI;
+        Self { ambient: Vec3::splat(0.4 * env), sun: Vec3::splat(1.5 * env), to_sun: Vec3::new(0.3, 0.8, 0.5).normalize(), lumens_per_unit: SCENE_UNIT * 4.0 * std::f32::consts::PI }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn draw(
     mut commands: Commands,
@@ -1890,26 +1915,12 @@ fn draw(
     mut fx: Query<&mut FxEffect>,
     old_lights: Query<Entity, With<FxLight>>,
     mut lib: ResMut<FxrLib>,
-    (map_light, sr_light, soft_mats, mut uploads): (Option<Res<crate::map::MapLighting>>, Option<Res<sekiro_rs::lighting::MapLighting>>, Query<&MeshMaterial3d<SoftMaterial>>, ResMut<FxUploads>),
-    mut sr_cached: Local<Option<((i32, u32), (Vec3, Vec3, Vec3))>>,
+    (scene, soft_mats, mut uploads): (Option<Res<SceneLight>>, Query<&MeshMaterial3d<SoftMaterial>>, ResMut<FxUploads>),
 ) {
     let Some((cam, proj, view)) = camera.iter().next() else { return };
-    // Lit particles' light (game units -> the map's radiance scale, ENV_PER_UNIT): ambient, sun.
-    // Under sekiro-rs's map his light set in force (the collision under Wolf, the story's hour),
-    // looked up again only when it changes.
-    let sr = sr_light.map(|l| {
-        let key = (l.light_set, l.hour.to_bits());
-        match *sr_cached {
-            Some((k, v)) if k == key => v,
-            _ => {
-                let v = crate::sr_map::particle_light(&l);
-                *sr_cached = Some((key, v));
-                v
-            }
-        }
-    });
-    let (amb, sun, to_sun) = sr.or_else(|| map_light.as_deref().map(crate::map::particle_light)).unwrap_or((Vec3::splat(0.4), Vec3::splat(1.5), Vec3::new(0.3, 0.8, 0.5).normalize()));
-    let light = [(amb * crate::map::ENV_PER_UNIT).extend(0.0), (sun * crate::map::ENV_PER_UNIT).extend(0.0)];
+    // Lit particles' light: the host map's (SceneLight).
+    let scene = scene.as_deref().copied().unwrap_or_default();
+    let (to_sun, light) = (scene.to_sun, [scene.ambient.extend(0.0), scene.sun.extend(0.0)]);
     for m in &soft_mats {
         if materials.get(&m.0).is_some_and(|x| x.extension.light != light) {
             if let Some(mut x) = materials.get_mut(&m.0) {
@@ -1950,7 +1961,7 @@ fn draw(
                 if std::env::var("SHINOBI_FXR_LOG").is_ok() {
                     info!("fxr model {} albedo {:?}", MODEL_KEY - tex, m.as_ref().map(|m| m.albedo.clone()));
                 }
-                m.filter(|m| !m.albedo.is_empty()).map(|m| assets.load(format!("tex/{}.dds", m.albedo)))
+                m.filter(|m| !m.albedo.is_empty()).map(|m| assets.load(format!("rustsekiro://tex/{}.dds", m.albedo)))
             } else {
                 // U repeats (a tracer lays textureFraction of the width per segment, past 1), V
                 // clamps (flipbook rows stay apart).
@@ -1960,7 +1971,7 @@ fn draw(
                             address_mode_u: bevy::image::ImageAddressMode::Repeat,
                             ..bevy::image::ImageSamplerDescriptor::linear()
                         });
-                    }).load(format!("fxr_tex/{tex}.png"))
+                    }).load(format!("rustsekiro://fxr_tex/{tex}.png"))
                 })
             };
             // BlendMode: 0 / 4 / 7 additive, 1 opaque, 3 multiply, 2 / 6 normal (5 subtract: normal).
@@ -1996,7 +2007,7 @@ fn draw(
                 address_mode_v: bevy::image::ImageAddressMode::Repeat,
                 ..bevy::image::ImageSamplerDescriptor::linear()
             });
-        }).load(format!("fxr_tex/{tex}.png")) };
+        }).load(format!("rustsekiro://fxr_tex/{tex}.png")) };
         let mat = dist_materials.add(DistortMaterial { tex: image, depth: fx_depth.image.clone() });
         let mesh = meshes.add(Mesh::new(bevy::mesh::PrimitiveTopology::TriangleList, bevy::asset::RenderAssetUsages::default()));
         let e = commands.spawn((Mesh3d(mesh.clone()), MeshMaterial3d(mat), Transform::IDENTITY, bevy::light::NotShadowCaster, bevy::camera::visibility::NoFrustumCulling)).id();
@@ -2026,7 +2037,7 @@ fn draw(
             continue;
         }
         let &(l1, l2, l3, modes, blend) = key;
-        let tex = |id: i64| if id > 0 { assets.load(format!("fxr_tex/{id}.png")) } else { Handle::default() };
+        let tex = |id: i64| if id > 0 { assets.load(format!("rustsekiro://fxr_tex/{id}.png")) } else { Handle::default() };
         let mat = multi_materials.add(MultiMaterial {
             t0: tex(l1),
             t1: tex(l2),
@@ -2078,7 +2089,7 @@ fn draw(
     for (p, c, k, r) in lights.into_iter().take(8) {
         // Spawned after this frame's propagation: its GlobalTransform given, or it would light
         // from the origin.
-        commands.spawn((PointLight { color: c, intensity: k * sekiro_rs::lighting::LOCAL_LUMENS_PER_UNIT, range: r.max(0.5), shadow_maps_enabled: false, ..default() }, Transform::from_translation(p), GlobalTransform::from_translation(p), FxLight));
+        commands.spawn((PointLight { color: c, intensity: k * scene.lumens_per_unit, range: r.max(0.5), shadow_maps_enabled: false, ..default() }, Transform::from_translation(p), GlobalTransform::from_translation(p), FxLight));
     }
 }
 
@@ -2105,7 +2116,7 @@ impl Plugin for FxrPlugin {
             // After the transforms propagate: anchored effects read the pose the models are drawn
             // with this frame (anim.rs draws between the last two sim poses), and a bullet spawned
             // this frame already has its GlobalTransform.
-            .add_systems(PostUpdate, (tick, draw).chain().after(TransformSystems::Propagate).after(crate::model::WeaponLocation))
+            .add_systems(PostUpdate, (tick, draw.in_set(FxDraw)).chain().after(TransformSystems::Propagate).after(crate::model::WeaponLocation))
             .add_systems(Startup, |mut commands: Commands, mut images: ResMut<Assets<Image>>| {
                 commands.insert_resource(FxDepth { image: images.add(depth_image(UVec2::ONE)) });
             })
@@ -2235,15 +2246,12 @@ fn test_shots(
     mut commands: Commands,
     mut frame: Local<u32>,
     mut exit: MessageWriter<AppExit>,
-    mut cam: Query<&mut crate::camera::OrbitCamera>,
     wolf: Query<&GlobalTransform, With<crate::player::Player>>,
 ) {
     let Some(id) = std::env::var("SHINOBI_FXR_TEST").ok().and_then(|v| v.parse::<i64>().ok()) else { return };
     *frame += 1;
     let f = *frame;
-    if let Ok(mut oc) = cam.single_mut() {
-        oc.pitch = 5f32.to_radians();
-    }
+    // The camera looks 5 deg down (camera.rs shot_knobs).
     let start = 180;
     // SHINOBI_FXR_WARM=1: one more play 2 s before, so its textures and batches exist.
     if f == start || (f == start - 120 && std::env::var("SHINOBI_FXR_WARM").is_ok()) {
@@ -2568,7 +2576,7 @@ mod tests {
             };
             let mut tex = Vec::new();
             textures(&def, &mut tex);
-            tex.retain(|t| !crate::paths::extracted().join(format!("fxr_tex/{t}.png")).exists());
+            tex.retain(|t| !crate::paths::extracted().join(format!("rustsekiro://fxr_tex/{t}.png")).exists());
             tex.dedup();
             let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 let mut root = make_node(&mut lib, &def["root"], 7, 0)?;

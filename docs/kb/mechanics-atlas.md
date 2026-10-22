@@ -11,21 +11,21 @@ The ordered playthrough is also written up in `game-flow.md`.
 |---|---|---|---|
 | [flow](#flow) | 88 | 0/44/44 | 11/6/71 |
 | [frontend](#frontend) | 44 | 4/10/30 | 0/1/43 |
-| [movement](#movement) | 62 | 53/5/4 | 32/18/12 |
+| [movement](#movement) | 62 | 54/5/3 | 32/18/12 |
 | [combat](#combat) | 55 | 51/2/2 | 39/11/5 |
 | [armor](#armor) | 38 | 34/1/3 | 22/7/9 |
-| [deathblows](#deathblows) | 43 | 30/10/3 | 16/9/18 |
-| [arts](#arts) | 48 | 41/5/2 | 1/4/43 |
-| [items](#items) | 34 | 19/12/3 | 1/1/32 |
+| [deathblows](#deathblows) | 43 | 31/10/2 | 16/9/18 |
+| [arts](#arts) | 48 | 45/3/0 | 1/4/43 |
+| [items](#items) | 34 | 22/10/2 | 1/1/32 |
 | [status](#status) | 18 | 14/3/1 | 6/6/6 |
 | [progression](#progression) | 37 | 19/6/12 | 4/2/31 |
 | [ai](#ai) | 45 | 30/13/2 | 9/8/28 |
-| [stealth](#stealth) | 36 | 22/9/5 | 1/3/32 |
+| [stealth](#stealth) | 36 | 23/9/4 | 1/3/32 |
 | [bosses](#bosses) | 33 | 31/2/0 | 20/6/7 |
 | [camera](#camera) | 34 | 24/5/5 | 6/9/19 |
 | [interface](#interface) | 33 | 23/9/1 | 14/8/11 |
 | [map](#map) | 45 | 18/16/11 | 18/16/11 |
-| [visuals](#visuals) | 34 | 27/6/1 | 29/3/2 |
+| [visuals](#visuals) | 34 | 29/4/1 | 29/3/2 |
 | [sound](#sound) | 25 | 15/5/5 | 4/5/16 |
 | [npcs](#npcs) | 33 | 1/7/25 | 1/2/30 |
 | [cutscenes](#cutscenes) | 25 | 0/6/19 | 0/1/24 |
@@ -1709,13 +1709,14 @@ From the surface or dive a jump press launches a dolphin jump out of the water.
 - Sources: data: fireguy-rustsekiro/extracted/hks_src/c0000_transition.lua; sekiro-rs-doc: sekiro-rs/docs/MOBILITY.md
 
 ### Non-lethal fall damage
-`movement.fall-damage` · exe · corrected · ours no · his no · **needs a recording**
+`movement.fall-damage` · exe · corrected · ours yes · his no · **needs a recording**
 
 Between 20 m and the death distance a landing hurts. The result is a fraction scaled by height and several victim factors, not a flat number.
 - Values: FUN_140843660: 0 below 20 m (5 m while SpEffect type 0x155 is worn); result = a * g210(h) * 0.01 * b * c * d * e. CalcCorrectGraph 210 is the identity from 20 to 100 (x 20,40,60,80,100 -> y same); 211 (x 20..150) and 212 (x 0..99) both output a flat 100. e is HitMtrlParam fallDamageRate (0.5 on water planes 22, 36, 38). 1.0 is returned when the kill test passes.
 - How: Exe FUN_140843660 + FUN_1408433f0 + graph lookup FUN_140850b10 (CalcCorrectGraph ids 0xd2-0xd4).
 - Check: Drop Wolf from 25 m and record the HP loss; compare with a 21 m drop.
-- Note: Victim factors (a, b, c, d) are read from character data fields not yet identified, so the HP amount is not computed; graph meaning is inferred from the loader.
+- Note: Exe FUN_140843660: maxHP x h/100 from 20 m (5 m aged), x HitMtrl fallDamageRate; 0 under stateInfo 47 / disableFallDamage. Graphs 211/212 read flat 100, so FUN_1408433f0's inputs do not change it.
+- ours: `src/terrain.rs fall_damage_share; src/player.rs landing (air_top = last ground)`
 - Needed by: `movement.landing-stiffness`, `movement.fall-damage-reactions`
 - Sources: exe: FUN_140843660, FUN_1408433f0, FUN_140850b10; data: fireguy-rustsekiro/extracted/json/params/CalcCorrectGraph.json; data: fireguy-rustsekiro/extracted/json/params/HitMtrlParam.json
 
@@ -1770,7 +1771,7 @@ Most ground states ask the engine to stop Wolf at a ledge. Walking or standing n
 `movement.fall-state-entry` · exe · confirmed · ours partial · his yes
 
 Wolf enters the fall state once the engine says he is falling (env 200). The script's 30 cm on-the-move test applies only to the aged form; for the normal Wolf the exe's ground contact decides, which keeps him grounded over a small drop.
-- Values: BEH_R_FALL: env(200) and g_beforeFireLand == -1 and (not aged, or aged and (not moving or env(224) >= 30)) - Lua `and` binds before `or`. env 224 = (peak Y - Y) x 100, whole cm (FUN_140b97880). env 200 (FUN_140b97970): not grounded (P+0xa2, held while probe P+0x920 <= 1.0) and (P+0x100 == 0 or airborne >= 1.0 s) and not F+0x88 bit 5.
+- Values: BEH_R_FALL: env(200) and g_beforeFireLand == -1 and (not aged, or aged and (not moving or env(224) >= 30)) - Lua `and` binds before `or`. env 224 = (last grounded Y - Y) x 100, whole cm (FUN_140b97880). env 200 (FUN_140b97970): not grounded (P+0xa2, held while probe P+0x920 <= 1.0) and (P+0x100 == 0 or airborne >= 1.0 s) and not F+0x88 bit 5.
 - How: HKS g_ValidateReactionTable[BEH_R_FALL]; exe env switch FUN_140b36410 case 200 -> FUN_140b97970, case 224 -> FUN_140b97880.
 - Check: Step off a 20 cm kerb: no fall animation. Off a 60 cm ledge: SelfFallStart plays.
 - Note: 2026-10-20: the earlier reading (30 cm on the move for everyone) missed the operator precedence. The ground probe P+0x920 is not identified; ours keeps 30 cm on the move as its stand-in (player.rs FALL_START_DROP, hks_wolf env 200).
@@ -2225,8 +2226,8 @@ In deep water Wolf swims at the surface using swim clips. Entering and leaving t
 - Values: BEH_R_STAND_MOVE_TO_SWIM on env(3025) touching a swim volume (not debug dash); BEH_R_SWIM_TO_STAND_MOVE when off it; LAND_WATER landing; clips SwimIdle 30000, SwimMoveStart/Loop/End 30100/30200/30300, StandMoveToSwim 210000. Water hit materials 20/21 (walkable), 22 dive plane, 35 slope, 36 swim slope, 37/38 grass variants.
 - How: HKS reactions; engine env 3025; HitMtrlParam materials.
 - Check: Walk into a pond deeper than waist: StandMoveToSwim plays, then SwimIdle.
-- Note: Neither project reads the game water volumes from collision materials in play.
-- ours: `fireguy-rustsekiro/src/swim.rs (boxes only)`
+- Note: Gap: the native swim-entry depth rule (BEH_R_STAND_MOVE_TO_SWIM 31) is not traced.
+- ours: `src/swim.rs (water boxes + the map's deep HitMtrl 22/36/38 planes), src/terrain.rs water_surface`
 - his: `sekiro-rs/crates/sim/tests/it/swim.rs`
 - Needs: `map.water-areas`
 - Needed by: `movement.swim-kick`
@@ -3920,12 +3921,14 @@ Against an unaware enemy Wolf can press attack from behind. The start row needs 
 - Sources: data: extracted/json/params/ThrowParam.json; data: extracted/json/params/ThrowKindParam.json; ours-kb: docs/deathblow_groups.md; ours-kb: docs/kb/damage.md
 
 ### Behind-the-scenes ninjutsu throws
-`deathblows.stealth-ninjutsu` · data · corrected · ours no · his no
+`deathblows.stealth-ninjutsu` · data · corrected · ours yes · his no
 
 The three stealth Shinobi Arts (Bloodsmoke, Puppeteer, Bestowal) have their own behind rows with a long range, used when that ninjutsu is equipped. Both the unaware and the posture-broken-behind versions exist.
 - Values: ThrowKind 201/202/203 (behind) and 41201/41202/41203 (after a break), throwSkillId 2100/2110/2120, defAliveCheck 2, noThrowInputSpecialEffect_forDef 800010. 46 ThrowParam rows per kind: Dist 10.0, height +/-6.0 (one row 10.4); atkSorbDmyId 540 on 30 rows, 542 on 5, defSorbDmyId 251 on 11. Wolf clips <group>_510210 / 510220 / 510230 (511210-511230 after a break), group a200 on 30 rows, a201 on 11, a202 on 5.
 - How: ThrowKindParam throwSkillId must equal the equipped ninjutsu.
 - Check: Equip Bloodsmoke Ninjutsu and press attack behind an unaware enemy.
+- Note: Twin ThrowParam row by ThrowKindParam throwSkillId + derivationSourceThrowKind; emblems consumeResourceItemA. gap: exe pick/pay not traced; team 15 table inferred.
+- ours: `src/ninjutsu.rs; player.rs deathblow commit; enemy.rs puppet; prosthetic.rs TAE 940`
 - Needs: `arts.shinobi-ninjutsu`
 - Needed by: `stealth.deathblow-ninjutsu`
 - Sources: data: extracted/json/params/ThrowKindParam.json; data: extracted/json/params/ThrowParam.json; data: extracted/json/params/EquipParamGoods.json
@@ -4081,13 +4084,14 @@ Sheathed-stance art with a held stance to intercept. Costs 2 emblems and has no 
 - Sources: data: extracted/json/params/BehaviorParam_PC.json; ours-kb: docs/kb/skills.md
 
 ### Buff duration latent skill
-`arts.buff-duration-skill` · data · corrected · ours no · his no
+`arts.buff-duration-skill` · data · corrected · ours yes · his no
 
 A latent skill (370) multiplies the duration of buff effects that are flagged extendable.
 - Values: SpEffect 150600 extendLifeRate 1.5; applies to rows with isExtendSpEffectLife 1 (the sugars and spiritfalls 3351-3441 carry the flag).
 - How: SpEffectParam isExtendSpEffectLife / extendLifeRate.
 - Check: Eat a sugar with the skill: 30 s should become 45 s.
-- Note: The data side is settled (30 s sugar becomes 45 s). Our code does not apply extendLifeRate anywhere (grep of src finds no extendLife/150600), so the skill has no effect yet.
+- Note: The learned skills' extendLifeRate (150600: 1.5) lengthens rows with isExtendSpEffectLife at wear: a 30 s sugar lasts 45 s (items.rs test).
+- ours: `src/items.rs wear / extend_rate; player.rs`
 - Needs: `items.sugar-ako`
 - Sources: data: extracted/json/params/SpEffectParam.json; ours-kb: docs/kb/skills.md
 
@@ -4224,14 +4228,13 @@ The firecracker burst blinds and, on 'special-attack characters' (animals and be
 - Sources: data: extracted/json/params/Bullet.json; data: extracted/json/params/SpEffectParam.json; data: extracted/json/params/AtkParam_Pc.json; ours-kb: docs/kb/skills.md; clip: docs/kb/clips.md (sekiro_all_skills_rYcHlOgI7pg.mp4, arts and tools chapters); web: https://sekiroshadowsdietwice.wiki.fextralife.com/Shinobi+Firecracker
 
 ### Spring-load, Long Spark and Purple Fume Spark
-`arts.firecracker-upgrades` · data · confirmed · ours partial · his no
+`arts.firecracker-upgrades` · data · confirmed · ours yes · his no
 
 Upgrades change the spark pattern: Spring-load spreads to all sides when charged, Long Spark lingers, Purple Fume Spark leaves a debuff that makes blinded enemies take more damage for 2 s.
 - Values: 71100 var 7100 (quick 710050 3 shots); 71200 var 7102 SpEffects 104030, 107100, 230110/230111; 71300 var 7103 adds SpEffect 9800 (effectEndurance 2.0). All cost 2 emblems.
 - How: BehaviorParam_PC 1071xxxxx.
 - Check: Compare sparks length in the clip.
-- Note: The extra damage under 9800 is not numerically traced.
-- ours: `src/prosthetic.rs`
+- ours: `src/combat.rs timed_rates (9800 x1.125), prosthetic.rs`
 - Sources: data: extracted/json/params/EquipParamWeapon.json; data: extracted/json/params/SpEffectParam.json; data: extracted/msg/engus (item.msgbnd.d item/weapon FMGs, menu.msgbnd.d loading texts)
 
 ### Flame Vent (72000) burn tool
@@ -4248,14 +4251,13 @@ A short flame blast that deals fire damage and builds Burn. It is a held tool: H
 - Sources: data: extracted/json/params/EquipParamWeapon.json; data: extracted/json/params/BehaviorParam_PC.json; data: extracted/json/params/SpEffectParam.json; ours-kb: docs/kb/skills.md; clip: docs/kb/clips.md (sekiro_all_skills_rYcHlOgI7pg.mp4, arts and tools chapters)
 
 ### Spring-load, Okinaga's and Lazulite Sacred Flame
-`arts.flame-vent-upgrades` · data · corrected · ours partial · his no
+`arts.flame-vent-upgrades` · data · corrected · ours yes · his no
 
 Spring-load charges a big blast that throws opponents; Okinaga's sustains the stream; Lazulite Sacred Flame uses purple fire that hurts apparitions and does not burn.
 - Values: 72100 base fire 42, var 7200; 72200 fire 46; 72300 var 7203: no burn rows, attackBaseMagic 68 with atkMagCorrection 400 (charged), 200 (normal, air), 50 (flamethrower loop); bullets carry SpEffect 104016 (anti-spirit) and 230645; 106030 (spirit enchant) is not referenced by the 7203 rows; all cost 3.
 - How: Var 7200/7203.
 - Check: Use Lazulite on an apparition vs the base vent.
-- Note: Lazulite damage is the magic base times the row correction, not a spirit enchant.
-- ours: `src/prosthetic.rs`
+- ours: `src/prosthetic.rs deals_something (magic base x row correction)`
 - Needs: `status.terror`
 - Sources: data: extracted/json/params/EquipParamWeapon.json; data: extracted/json/params/SpEffectParam.json; data: extracted/msg/engus (item.msgbnd.d item/weapon FMGs, menu.msgbnd.d loading texts)
 
@@ -4488,13 +4490,14 @@ A thrust that vaults off the target; the 2 emblems are spent only when the thrus
 - Sources: data: extracted/json/params/BehaviorParam_PC.json; ours-kb: docs/kb/skills.md; clip: docs/kb/clips.md (sekiro_all_skills_rYcHlOgI7pg.mp4, arts and tools chapters)
 
 ### Shinobi ninjutsu arts
-`arts.shinobi-ninjutsu` · data · corrected · ours no · his no
+`arts.shinobi-ninjutsu` · data · corrected · ours yes · his no
 
 Equipped ninjutsu arts such as Bloodsmoke, Puppeteer and Encha: the equipped art picks the special stealth deathblow throw row (ThrowKindParam throwSkillId 2100, 2110, 2120) and applies its effect after the stab.
 - Values: EquipParamGoods rows 2100, 2110, 2120. ThrowKindParam rows 201, 202, 203 (behind), 41201 to 41203 (break), 500201 (roof) carry the matching throwSkillId; 12 rows have one.
 - How: Neither project: ours only has the Ninjutsu Techniques menu tab (src/game_menu.rs); sekiro-rs has no ninjutsu code.
 - Check: Equip Bloodsmoke and stab an unaware enemy from behind: the special throw plays and the smoke effect follows. Not testable until the art exists.
-- ours: `src/game_menu.rs (menu tab only)`
+- Note: Twin ThrowParam row by ThrowKindParam throwSkillId + derivationSourceThrowKind; emblems consumeResourceItemA. gap: exe pick/pay not traced; team 15 table inferred.
+- ours: `src/ninjutsu.rs; player.rs deathblow commit; enemy.rs puppet; prosthetic.rs TAE 940`
 - Needed by: `deathblows.throwkind-rules`, `deathblows.stealth-ninjutsu`, `stealth.deathblow-ninjutsu`, `stealth.puppeteer-vision`
 - Sources: data: extracted/json/params/ThrowKindParam.json; data: extracted/json/params/EquipParamGoods.json
 
@@ -4781,7 +4784,7 @@ A key item given to Emma to raise the Healing Gourd's maximum uses.
 - Values: Goods 4400 goodsType 1, maxNum 99, saleValue 100, usable in all vows. The Gourd's own cap row maxNum 10.
 - How: Menu action at Emma; adds one to the gourd's max.
 - Check: Give seeds to Emma and count the gourd icon.
-- Note: The max-uses per seed count is not in these rows (event script not read).
+- Note: Blocked: goodsUseAnim 255 (not usable); it grows the gourd through Emma's talk ESD, and there is no Emma.
 - Needs: `npcs.emma`
 - Needed by: `items.healing-gourd`, `progression.healing-gourd-uses`
 - Sources: data: extracted/json/params/EquipParamGoods.json; data: extracted/msg/engus (item.msgbnd.d item/weapon FMGs, menu.msgbnd.d loading texts)
@@ -4903,14 +4906,14 @@ Plain HP regeneration over 30 s; Fine Snow regenerates more.
 - Sources: data: extracted/json/params/EquipParamGoods.json; data: extracted/json/params/SpEffectParam.json; data: extracted/msg/engus (item.msgbnd.d item/weapon FMGs, menu.msgbnd.d loading texts)
 
 ### Snap Seed (3530)
-`items.snap-seed` · data · confirmed · ours partial · his no
+`items.snap-seed` · data · confirmed · ours yes · his no
 
 Breaks illusions: a snap noise releases Wolf from genjutsu effects within a radius.
 - Values: Bullet 3530: hitRadiusMax 16 m, spreadTime 0.5 s, life 1 s; AtkParam 3530 'illusion release / phantom drowning bullet' atkBehaviorId 6, unblockable. useLimit 948 (forced crouch area). maxNum 10.
 - How: Item Bullet; illusion break handled by atkBehaviorId 6.
 - Check: Use it inside Butterfly's illusion fight.
-- Note: Ours has no clip for use anim 84 (stated gap).
-- ours: `src/items.rs`
+- Note: Bullet 3530 around Wolf (2->16 m, 0.5 s); atkBehaviorId 6 on ref 1000043 (the c1510 phantoms' 6023) -> DeathStartBackReality. Gap: the 0-damage row's kill is taken to be the exe's.
+- ours: `src/items.rs (goodsUseAnim 84), src/prosthetic.rs hit_enemy`
 - Needs: `bosses.lady-butterfly`
 - Sources: data: extracted/json/params/EquipParamGoods.json; data: extracted/json/params/Bullet.json; data: extracted/msg/engus (item.msgbnd.d item/weapon FMGs, menu.msgbnd.d loading texts)
 
@@ -4952,14 +4955,14 @@ Attack buff for 30 s: damage x1.125 on all physical and element types and postur
 - Sources: data: extracted/json/params/EquipParamGoods.json; data: extracted/json/params/SpEffectParam.json; data: extracted/msg/engus (item.msgbnd.d item/weapon FMGs, menu.msgbnd.d loading texts)
 
 ### Gachiin's Sugar (3440)
-`items.sugar-gachiin` · data · corrected · ours no · his no
+`items.sugar-gachiin` · data · corrected · ours yes · his no
 
 Stealth buff for 60 s: sight reduced, nearby sight halved, hearing zeroed.
 - Values: 3441: sightSearchEnemyCut 50, aroundSightPointAddRate 0.5, hearingSearchEnemyRate 0.0, effectEndurance 60, spCategory 162. maxNum 3. Spiritfall 3391 identical.
 - How: Item Bullet 3440 -> 3441.
 - Check: Walk near an enemy while buffed.
-- Note: Our enemy sight and hearing code (src/enemy.rs wolf_seen, wolf_sounds) takes clip and learned-skill SpEffects, never Actor::item_sp, so this sugar's stealth effect is not applied.
-- ours: `src/items.rs (worn only)`
+- Note: Its 3441 rides with the skills into wolf_seen / wolf_sounds; works standing (sim test gachiins_sugar_halves_sight_standing).
+- ours: `src/enemy.rs (Player::timed rows join the sight / hearing SpEffects)`
 - Needs: `stealth.detection`
 - Sources: data: extracted/json/params/EquipParamGoods.json; data: extracted/json/params/SpEffectParam.json; data: extracted/msg/engus (item.msgbnd.d item/weapon FMGs, menu.msgbnd.d loading texts)
 
@@ -4988,14 +4991,14 @@ Reduces physical HP damage taken to 67 % for up to 30 s (the chain may end it af
 - Sources: data: extracted/json/params/EquipParamGoods.json; data: extracted/json/params/SpEffectParam.json; data: extracted/msg/engus (item.msgbnd.d item/weapon FMGs, menu.msgbnd.d loading texts)
 
 ### Yashariku's Sugar (3410)
-`items.sugar-yashariku` · data · confirmed · ours partial · his no
+`items.sugar-yashariku` · data · confirmed · ours yes · his no
 
 Big attack buff (x1.25 damage, x1.5 posture damage) for 30 s at the price of halving max HP and max posture.
 - Values: 3411: attack rates 1.25, stamina rates 1.5, maxHpRate 0.5, maxStaminaRate 0.5, bCurrHPIndependeMaxHP 1, 30 s. Ours applies the HP part; maxStaminaRate 0.5 is not applied.
 - How: Item Bullet 3410 -> 3411.
 - Check: Eat it and watch max HP halve.
-- Note: Posture max is not halved in ours.
-- ours: `src/items.rs max_hp_rate`
+- Note: Max HP and max posture both halve for its 30 s and come back after; HP and the stamina left are not given back (sim test yasharikus_sugar_halves_the_max_hp).
+- ours: `src/items.rs max_hp_rate / max_stamina_rate; player.rs`
 - Needs: `combat.hp-damage-formula`
 - Sources: data: extracted/json/params/EquipParamGoods.json; data: extracted/json/params/SpEffectParam.json; ours-kb: src/items.rs header comment (effects modelled and gaps)
 
@@ -5093,7 +5096,7 @@ Dragonrot is a world-state sickness tied to deaths, not a build-up. It is cured 
 - Values: Text: dying without resurrecting adds to a stagnation counter; Rot Essence items track victims; Dragon's Blood Droplet (5600) cures all; Recovery Charm 2930.
 - How: Event flags and idol menu; texts only here.
 - Check: Die repeatedly and check an NPC.
-- Note: Only texts were read; no event script was inspected.
+- Note: Blocked: flags 9500-9526 are set by common.emevd 610-628 on NPCs that are not in the game here; the Unseen Aid roll in the exe is not found.
 - Needed by: `npcs.dragon-cough-swap`, `npcs.dragonrot-cure`, `npcs.dragonrot-cause`, `flow.27b-serpent-viscera`, `flow.31-mibu-village`
 - Sources: data: extracted/msg/engus (item.msgbnd.d item/weapon FMGs, menu.msgbnd.d loading texts); data: extracted/msg/engus/menu.msgbnd.d (loading screen texts 105 Burn, 110 Poison, 111 Terror, 112 Shock)
 
@@ -6370,13 +6373,14 @@ Wolf can kill an enemy from a ledge hang below it or from a wall hug beside it. 
 - Sources: data: extracted/json/params/ThrowParam.json; ours-kb: docs/kb/enemy.md
 
 ### Stealth ninjutsu kills: Bloodsmoke, Puppeteer, Grant
-`stealth.deathblow-ninjutsu` · data · confirmed · ours no · his no
+`stealth.deathblow-ninjutsu` · data · confirmed · ours yes · his no
 
 From behind on an unaware enemy Wolf can use the shinobi arts as a kill. They reach far: 10 m with a 6 m height range, and need no melee grab.
 - Values: General rows 11020022 (Bloodsmoke, throwKind 201), 11020023 (Puppeteer, 202), 11020024 (Grant, 203): Dist 10 m, angle 180, height +-6 m; atk 510210 / 510220 / 510230, def 12210 / 12220 / 12230. Broken versions 41201 / 41202 / 41203. 138 rows across enemy kinds.
 - How: ThrowParam kinds 201 to 203 plus art-specific SpEffects (110080 smoke, 110081 puppet).
 - Check: Use Bloodsmoke on an unaware soldier from 8 m behind.
-- Note: Which of the three arts matches Grant is by name only.
+- Note: Twin ThrowParam row by ThrowKindParam throwSkillId + derivationSourceThrowKind; emblems consumeResourceItemA. gap: exe pick/pay not traced; team 15 table inferred.
+- ours: `src/ninjutsu.rs; player.rs deathblow commit; enemy.rs puppet; prosthetic.rs TAE 940`
 - Needs: `arts.shinobi-ninjutsu`, `deathblows.stealth-ninjutsu`
 - Sources: data: extracted/json/params/ThrowParam.json; data: extracted/json/params/SpEffectParam.json
 
@@ -8467,8 +8471,8 @@ Water is a mix of collision hit materials and a surface helper. Shallow material
 - Values: Hit materials 20/21/35/37 walk, 22/36/38 swim or dive, 23/24 swamp, 45-47 underwater floors. Surface helper filter 16 (group 46) is collided by enemies and the camera. Swim hit filter 27 (group 91) collides with player and enemies. Water pond bed is the floor; the surface plane is only a helper.
 - How: HitMtrlParam rows plus filter 27 swim collision; the water shader draws the surface.
 - Check: Wade the Ape arena pond: knee deep, then a dive.
-- Note: Neither project has the game's water shader (reflection, refraction, flow, foam).
-- ours: `src/swim.rs; src/map.rs water stand-in (dark 60 % translucent)`
+- Note: Deep planes (22/36/38) are surfaces, not floors.
+- ours: `src/swim.rs; src/terrain.rs water_surface (sekiro-rs Ground::water_surface on the SR map); src/map.rs water stand-in`
 - his: `crates/sim/src/collision.rs; MOBILITY.md`
 - Needs: `map.hit-material-table`
 - Needed by: `movement.swim-surface`, `movement.water-restrictions`, `visuals.water-shader`, `flow.45-fountainhead-route`
@@ -8490,13 +8494,14 @@ Which blocks stay resident is driven by navigation demand around the player thro
 ## visuals
 
 ### Blood and decals
-`visuals.blood-decals` · data · corrected · ours partial · his yes
+`visuals.blood-decals` · data · corrected · ours yes · his yes
 
 Hits stain the world: a decal id is built from the hit material and the attack power. HitEffectSfx tables give the effect and HitEffectSfxAngleParam chooses by angle.
 - Values: DecalParam hit-stain id = 600000000 + materialSfx1*1000 + decalBaseId + atkPow.
 - How: Hit effect system after damage.
 - Check: Kill a basic enemy: a blood decal appears on the ground.
-- ours: `src/gore.rs`
+- Note: Gap: the engine's decal budget and projection details.
+- ours: `src/gore.rs (TAE 138 DecalParamID_DummyPoly, AtkParam decalId1/2, hit stains FUN_14088a7f0 / FUN_140888960)`
 - his: `crates/game/src/decals.rs; crates/sim/src/hit_fx.rs`
 - Needs: `combat.hit-effects`
 - Sources: ours-kb: docs/kb/damage.md; data: extracted/json/params/DecalParam.json; data: extracted/json/params/HitEffectSfxParam.json
@@ -8537,14 +8542,14 @@ Characters use a skin and cloth shader with detail blend and Fresnel rim terms f
 - Sources: sekiro-rs-doc: docs/SHADERS.md
 
 ### Cloth simulation
-`visuals.cloth` · exe · corrected · ours partial · his yes
+`visuals.cloth` · exe · corrected · ours yes · his yes
 
 Wolf's scarf, banners and hair use Havok cloth on the character skeleton. It is pinned at the root and reacts to gravity, wind and simple collision capsules.
 - Values: Havok cloth data from each model's *_c.hkx; Verlet with the cloth's own gravity and damping, constraint sets in order, fixed particles follow the skinned bones.
 - How: Per frame solver after animation.
 - Check: Run in a circle: the scarf trails behind.
-- Note: Ours uses its own approximate solver.
-- ours: `src/cloth.rs`
+- Note: Gap: transition sets.
+- ours: `src/cloth.rs (each model's *_c.hkx: the hclClothState operator chain, Verlet, constraint sets, capsules, MeshMeshDeform)`
 - his: `crates/game/src/cloth.rs`
 - Sources: ours-kb: docs/kb/visuals.md; sekiro-rs-doc: crates/game/src/cloth.rs header
 
@@ -8680,7 +8685,8 @@ Grass blades are batched patches using GrassLodRangeParam distances for LOD and 
 - Values: 9 rows; row 0 LOD0 40 m, LOD1 120 m, LOD2 160 m, shadow 1000 m.
 - How: Grass sidecar from the map export.
 - Check: Step back from a grass field and watch the blades thin out.
-- ours: `src/map_grass.rs`
+- Note: Gap: wind sway, colour shades, GrassLodRangeParam ranges, castShadow.
+- ours: `src/map_grass.rs (own map; the SR map draws sekiro-rs's grass)`
 - his: `crates/game/src/map_grass.rs`
 - Needs: `map.grass-and-foliage-data`
 - Sources: data: extracted/json/params/GrassLodRangeParam.json

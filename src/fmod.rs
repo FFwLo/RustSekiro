@@ -751,6 +751,30 @@ impl Fmod {
 
 pub struct FmodPlugin;
 
+/// The core's held sounds (sound_rules.rs `TrackedSounds`: effect nodes, heartbeats) as FMOD
+/// events: started, moved and stopped under their ids.
+fn play_tracked(mut fmod: NonSendMut<Fmod>, mut tracked: ResMut<crate::sound_rules::TrackedSounds>, mut live: Local<HashMap<u64, EventHandle>>) {
+    for cmd in tracked.cmds.drain(..) {
+        match cmd {
+            crate::sound_rules::SoundCmd::Play(s, key, pos) => {
+                if let Some(ev) = fmod.play_tracked(&key, pos) {
+                    live.insert(s.0, ev);
+                }
+            }
+            crate::sound_rules::SoundCmd::Move(s, pos) => {
+                if let Some(ev) = live.get(&s.0) {
+                    fmod.set_position(*ev, pos);
+                }
+            }
+            crate::sound_rules::SoundCmd::Stop(s) => {
+                if let Some(ev) = live.remove(&s.0) {
+                    fmod.stop(ev);
+                }
+            }
+        }
+    }
+}
+
 impl Plugin for FmodPlugin {
     fn build(&self, app: &mut App) {
         let sekiro = crate::paths::sekiro_dir();
@@ -772,7 +796,10 @@ impl Plugin for FmodPlugin {
                 let probe = ["c000004010", "c000004011", "c000006510", "s000003010", "c000001113", "c000001004", "c102004001"];
                 let found: Vec<&str> = probe.iter().copied().filter(|k| f.has(k)).collect();
                 info!("FMOD events: {:?}; probe {}/{} found {:?}", f.projects, found.len(), probe.len(), found);
-                app.insert_non_send(f).add_systems(PostUpdate, (load_new_kinds, load_talk_bank, apply_volume, apply_reverb, boss_music, pause_off_screen, update_fmod).chain());
+                app.insert_non_send(f)
+                    .init_resource::<crate::sound_rules::TrackedSounds>()
+                    .add_systems(PostUpdate, (load_new_kinds, load_talk_bank, apply_volume, apply_reverb, boss_music, pause_off_screen, update_fmod).chain())
+                    .add_systems(PostUpdate, play_tracked.after(crate::fxr::FxDraw).before(update_fmod));
             }
             Err(e) => warn!("FMOD event system unavailable ({e}); using the PCM samples"),
         }

@@ -5,8 +5,8 @@ use super::*;
 
 /// A wall along X at z = 0 whose face looks to +Z (`c` on the -Z, wall side); `y` the edge
 /// height.
-fn edges(kind: u8, y: f32) -> crate::map::LedgeEdges {
-    crate::map::LedgeEdges(vec![crate::map::LedgeEdge { a: Vec3::new(-3.0, y, 0.0), b: Vec3::new(3.0, y, 0.0), c: Vec3::new(0.0, y - 0.2, -0.1), kind, variation: 0 }])
+fn edges(kind: u8, y: f32) -> crate::traversal::LedgeEdges {
+    crate::traversal::LedgeEdges(vec![crate::traversal::LedgeEdge { a: Vec3::new(-3.0, y, 0.0), b: Vec3::new(3.0, y, 0.0), c: Vec3::new(0.0, y - 0.2, -0.1), kind, variation: 0 }])
 }
 
 fn place_wolf(app: &mut App, feet: Vec3, yaw: f32, airborne: bool) {
@@ -243,9 +243,9 @@ pub(crate) fn shimmying_off_a_ledge_end_takes_the_corner_onto_the_next() {
     move_enemy_far(&mut app);
     // Two hang edges meeting at an outside corner at x = 3: the first along X (face +Z), the
     // second along Z from (3, 4, 0) to (3, 4, -6) (face +X, c on its -X side).
-    let e1 = crate::map::LedgeEdge { a: Vec3::new(-3.0, 4.0, 0.0), b: Vec3::new(3.0, 4.0, 0.0), c: Vec3::new(0.0, 3.8, -0.1), kind: 2, variation: 0 };
-    let e2 = crate::map::LedgeEdge { a: Vec3::new(3.0, 4.0, 0.0), b: Vec3::new(3.0, 4.0, -6.0), c: Vec3::new(2.9, 3.8, -3.0), kind: 2, variation: 0 };
-    app.world_mut().insert_resource(crate::map::LedgeEdges(vec![e1, e2]));
+    let e1 = crate::traversal::LedgeEdge { a: Vec3::new(-3.0, 4.0, 0.0), b: Vec3::new(3.0, 4.0, 0.0), c: Vec3::new(0.0, 3.8, -0.1), kind: 2, variation: 0 };
+    let e2 = crate::traversal::LedgeEdge { a: Vec3::new(3.0, 4.0, 0.0), b: Vec3::new(3.0, 4.0, -6.0), c: Vec3::new(2.9, 3.8, -3.0), kind: 2, variation: 0 };
+    app.world_mut().insert_resource(crate::traversal::LedgeEdges(vec![e1, e2]));
     run(&mut app, 10);
     place_wolf(&mut app, Vec3::new(1.5, 3.2, 0.6), 0.0, true);
     app.world_mut().resource_mut::<PadInput>().interact_held = true;
@@ -562,8 +562,10 @@ pub(crate) fn a_run_off_a_ledge_carries_on_into_the_fall() {
     // The floor drops away under him: lift him 3 m, still on his feet.
     {
         let w = app.world_mut();
-        let mut q = w.query_filtered::<&mut Transform, With<Player>>();
-        q.single_mut(w).unwrap().translation.y += 3.0;
+        let mut q = w.query::<(&mut Player, &mut Transform)>();
+        let (mut p, mut t) = q.single_mut(w).unwrap();
+        t.translation.y += 3.0;
+        p.air_top = t.translation.y;
     }
     let before = player_actor(&mut app).3;
     run(&mut app, 12);
@@ -1286,6 +1288,39 @@ pub(crate) fn thrown_ash_blinds_and_the_shard_flies() {
     assert!(flew, "the shard flies");
 }
 
+/// The Snap Seed (goods 3530) beside one of Lady Butterfly's phantoms (c1510, NpcParam 6023:
+/// ref 1000043): its Bullet 3530 undoes it (W_DeathStartBackReality, a000_010360 / 10361).
+#[test]
+pub(crate) fn the_snap_seed_undoes_a_phantom() {
+    let mut app = app_cfg("c1510", None, Vec::new());
+    app.add_systems(Update, crate::items::apply_used);
+    {
+        let world = app.world_mut();
+        let mut q = world.query_filtered::<&mut Transform, (With<crate::enemy::Enemy>, Without<Player>)>();
+        for mut t in q.iter_mut(world) {
+            t.translation = Vec3::new(0.0, t.translation.y, 6.0);
+        }
+    }
+    let mut died = None;
+    use_goods(&mut app, 3530, 1, 1);
+    for _ in 0..240 {
+        app.update();
+        let world = app.world_mut();
+        if let Some(a) = world.query_filtered::<&Actor, Without<Player>>().iter(world).find(|a| a.state.starts_with("DeathStartBackReality")) {
+            died = Some(a.anim.clone());
+            break;
+        }
+    }
+    assert!(matches!(died.as_deref(), Some("a000_010360" | "a000_010361")), "{died:?}");
+    // A real villager (c1500, no 6023) beside him is not touched.
+    let mut app = app_cfg("c1500", None, Vec::new());
+    app.add_systems(Update, crate::items::apply_used);
+    use_goods(&mut app, 3530, 1, 120);
+    let world = app.world_mut();
+    let a = world.query_filtered::<&Actor, Without<Player>>().single(world).unwrap();
+    assert!(a.hp > 0.0 && !a.state.starts_with("Death"), "{} {}", a.state, a.hp);
+}
+
 /// Every usable item of the starter bag (config.toml): its use state plays its clip to the end,
 /// back to standing, and one is spent (the Homeward Idol is not consumed; it warps in the game).
 /// The user, 2026-10-18: "make sure again every item works and has proper animations".
@@ -1339,16 +1374,17 @@ pub(crate) fn crouched_items_play_their_crouch_clips() {
     }
 }
 
-/// Yashariku's Sugar halves Wolf's max HP for its 30 s (3411 maxHpRate 0.5), HP held under it,
-/// and the max comes back when it ends (the user, 2026-10-18).
+/// Yashariku's Sugar halves Wolf's max HP and max posture for its 30 s (3411 maxHpRate and
+/// maxStaminaRate 0.5), HP held under it, and the max comes back when it ends.
 #[test]
 pub(crate) fn yasharikus_sugar_halves_the_max_hp() {
     let mut app = app();
     move_enemy_far(&mut app);
     app.add_systems(Update, crate::items::apply_used);
-    let full = {
+    let (full, full_posture) = {
         let world = app.world_mut();
-        world.query_filtered::<&Actor, With<Player>>().single(world).unwrap().hp_max
+        let a = world.query_filtered::<&Actor, With<Player>>().single(world).unwrap();
+        (a.hp_max, a.posture_max)
     };
     use_goods(&mut app, 3410, 1, 240);
     {
@@ -1356,6 +1392,9 @@ pub(crate) fn yasharikus_sugar_halves_the_max_hp() {
         let a = world.query_filtered::<&Actor, With<Player>>().single(world).unwrap();
         assert!((a.hp_max - full * 0.5).abs() < 0.01, "{} of {full}", a.hp_max);
         assert!(a.hp <= a.hp_max);
+        // maxStaminaRate 0.5: the posture bar halves too.
+        assert!((a.posture_max - full_posture * 0.5).abs() < 0.01, "{} of {full_posture}", a.posture_max);
+        assert!(a.posture <= a.posture_max);
     }
     // Its 30 s run out.
     {
@@ -1367,6 +1406,7 @@ pub(crate) fn yasharikus_sugar_halves_the_max_hp() {
     let world = app.world_mut();
     let a = world.query_filtered::<&Actor, With<Player>>().single(world).unwrap();
     assert!((a.hp_max - full).abs() < 0.01, "{} back to {full}", a.hp_max);
+    assert!((a.posture_max - full_posture).abs() < 0.01, "{} back to {full_posture}", a.posture_max);
     assert!(a.hp <= full * 0.5 + 0.01, "HP is not given back: {}", a.hp);
 }
 
@@ -1421,7 +1461,7 @@ pub(crate) fn a_kill_drops_emblems_and_resurrective_power() {
     for _ in 0..5 {
         app.update();
     }
-    let emblems = crate::items::PICKUPS.read().unwrap().iter().any(|p| p.goods == crate::items::SPIRIT_EMBLEM && matches!(p.count, 2 | 5) && !p.taken);
+    let emblems = crate::pickups::PICKUPS.read().unwrap().iter().any(|p| p.goods == crate::items::SPIRIT_EMBLEM && matches!(p.count, 2 | 5) && !p.taken);
     assert!(emblems, "no emblems lying");
     let world = app.world_mut();
     let p = world.query::<&Player>().single(world).unwrap();

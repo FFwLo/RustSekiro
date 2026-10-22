@@ -361,7 +361,7 @@ pub struct DetailUniform {
 
 impl bevy::pbr::MaterialExtension for SekiroExt {
     fn fragment_shader() -> bevy::shader::ShaderRef {
-        "embedded://sv1/sekiro_material.wesl".into()
+        "embedded://rustsekiro/sekiro_material.wesl".into()
     }
 }
 
@@ -649,11 +649,11 @@ fn attach_models(
                 Some(VertexAttributeValues::Float32x4(t)) => t.clone(),
                 _ => Vec::new(),
             };
-            let texture = (!md.albedo.is_empty()).then(|| assets.load(format!("tex/{}.dds", md.albedo)));
+            let texture = (!md.albedo.is_empty()).then(|| assets.load(format!("rustsekiro://tex/{}.dds", md.albedo)));
             // Normal maps and metallic masks are data, not colour: read linear.
             let linear = |stem: &str| {
                 (!stem.is_empty()).then(|| {
-                    assets.load_builder().with_settings(|s: &mut bevy::image::ImageLoaderSettings| s.is_srgb = false).load(format!("tex/{stem}.dds"))
+                    assets.load_builder().with_settings(|s: &mut bevy::image::ImageLoaderSettings| s.is_srgb = false).load(format!("rustsekiro://tex/{stem}.dds"))
                 })
             };
             // SHINOBI_NO_NORMALS=1: flat normals (visual checks of the normal-map decode).
@@ -662,7 +662,7 @@ fn attach_models(
             // DetailBlend layers: tiled (the group UV tiling runs far past 0..1), so repeating;
             // albedos sRGB, normals linear. `SHINOBI_NO_DETAIL=1` draws the base alone (before).
             let layer = |stem: &str, srgb: bool| -> Option<Handle<Image>> {
-                (!stem.is_empty() && crate::paths::extracted().join(format!("tex/{stem}.dds")).is_file()).then(|| {
+                (!stem.is_empty() && crate::paths::extracted().join(format!("rustsekiro://tex/{stem}.dds")).is_file()).then(|| {
                     assets
                         .load_builder()
                         .with_settings(move |s: &mut bevy::image::ImageLoaderSettings| {
@@ -677,7 +677,7 @@ fn attach_models(
                                 ..default()
                             });
                         })
-                        .load(format!("tex/{stem}.dds"))
+                        .load(format!("rustsekiro://tex/{stem}.dds"))
                 })
             };
             let detail = md.detail.as_ref().filter(|_| std::env::var("SHINOBI_NO_DETAIL").is_err());
@@ -815,7 +815,7 @@ fn attach_models(
 fn hide_placeholder_blades(
     with_model: Query<Entity, Or<(Added<HasWeapon>, (Added<HasModel>, With<Actor>))>>,
     actors: Query<(&Actor, Option<&HasWeapon>)>,
-    blades: Query<(Entity, &ChildOf), With<crate::world::Blade>>,
+    blades: Query<(Entity, &ChildOf), With<crate::model::Blade>>,
     parents: Query<&ChildOf>,
     mut vis: Query<&mut Visibility>,
 ) {
@@ -1089,4 +1089,20 @@ fn set_global(e: Entity, g: GlobalTransform, globals: &mut Query<&mut GlobalTran
             }
         }
     }
+}
+
+/// The stand-in blade a character without its weapon model holds (world.rs poses it).
+#[derive(Component)]
+pub struct Blade;
+
+pub fn spawn_blade(parent: &mut ChildSpawnerCommands, meshes: &mut Assets<Mesh>, materials: &mut Assets<StandardMaterial>, color: Color) {
+    parent
+        .spawn((Blade, Transform::from_xyz(0.35, 0.1, -0.2), Visibility::default(), Name::new("Blade")))
+        .with_children(|b| {
+            b.spawn((
+                Mesh3d(meshes.add(Cuboid::new(0.04, 0.06, 1.0))),
+                MeshMaterial3d(materials.add(StandardMaterial { base_color: color, metallic: 0.8, perceptual_roughness: 0.3, ..default() })),
+                Transform::from_xyz(0.0, 0.0, -0.5),
+            ));
+        });
 }

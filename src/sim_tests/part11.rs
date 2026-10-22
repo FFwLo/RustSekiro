@@ -262,23 +262,25 @@ pub(crate) fn an_immortal_wolf_stays_at_1_hp() {
 }
 
 /// Round 76: BEH_R_LAND 2026 - every non-sprint ground jump sets EnablePositioningJumpLand
-/// (HKS 2800), so a vertical jump off a 2.3 m ledge (plus its own rise: 3-5 m) lands stiff (LandFreeFall), not only the
+/// (HKS 2800), so a vertical jump off a 3.5 m ledge lands stiff (LandFreeFall: 3 m,
+/// FALL_HEIGHT_SHORT_STIFF_LAND_FROM_JUMP, from the ledge, not the jump's top), not only the
 /// locked-on jumps; and a sprint jump (SprintJumpStart lasts to the ground) from 6 m too.
 #[test]
 pub(crate) fn jumps_off_ledges_land_stiff() {
     // (how, extra drop, want)
-    for (sprint, drop) in [(false, 2.3f32), (true, 6.0)] {
+    for (sprint, drop) in [(false, 3.5f32), (true, 6.0)] {
         let mut app = app();
         move_enemy_far(&mut app);
         app.update();
         if sprint {
             let world = app.world_mut();
             world.resource_scope(|world, combat: Mut<Combat>| {
-                let (mut a, mut t) = world.query_filtered::<(&mut Actor, &mut Transform), With<Player>>().single_mut(world).unwrap();
+                let (mut a, mut p, mut t) = world.query::<(&mut Actor, &mut Player, &mut Transform)>().single_mut(world).unwrap();
                 assert!(a.play_state(&combat.player, "SprintJumpStart"));
                 a.airborne = true;
                 a.vel_y = 0.0;
                 t.translation.y += drop;
+                p.air_top = t.translation.y;
             });
         } else {
             app.world_mut().resource_mut::<PadInput>().press(Action::Jump);
@@ -286,9 +288,10 @@ pub(crate) fn jumps_off_ledges_land_stiff() {
             for _ in 0..60 {
                 app.update();
                 let world = app.world_mut();
-                let (a, mut t) = world.query_filtered::<(&Actor, &mut Transform), With<Player>>().single_mut(world).unwrap();
+                let (a, mut p, mut t) = world.query::<(&Actor, &mut Player, &mut Transform)>().single_mut(world).unwrap();
                 if a.airborne {
                     t.translation.y += drop;
+                    p.air_top += drop;
                     up = true;
                     break;
                 }

@@ -207,13 +207,13 @@ fn spawn_part(
             let _ = mesh.generate_tangents();
         }
         let linear = |stem: &str| {
-            (!stem.is_empty()).then(|| assets.load_builder().with_settings(|s: &mut bevy::image::ImageLoaderSettings| s.is_srgb = false).load(format!("tex/{stem}.dds")))
+            (!stem.is_empty()).then(|| assets.load_builder().with_settings(|s: &mut bevy::image::ImageLoaderSettings| s.is_srgb = false).load(format!("rustsekiro://tex/{stem}.dds")))
         };
         let (normal, metallic) = (linear(&md.normal_map), linear(&md.metallic));
         // As attach_models' character materials.
         let material = materials.add(SekiroMaterial {
             base: StandardMaterial {
-                base_color_texture: (!md.albedo.is_empty()).then(|| assets.load(format!("tex/{}.dds", md.albedo))),
+                base_color_texture: (!md.albedo.is_empty()).then(|| assets.load(format!("rustsekiro://tex/{}.dds", md.albedo))),
                 perceptual_roughness: 0.8,
                 alpha_mode: if md.alpha_test { AlphaMode::AlphaToCoverage } else { AlphaMode::Opaque },
                 double_sided: true,

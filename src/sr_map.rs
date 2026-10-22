@@ -289,7 +289,7 @@ pub fn blocks() -> Vec<String> {
 /// The play world's wire points and hang / hug edges: every block's whole-map export
 /// (`sekiro-extract edges`, `extracted/map_edges_<map>.json`, MSB space, X mirrored on load
 /// like an arena's). None outside sekiro-rs's map or when no block has one (then the arena's).
-pub fn edges() -> Option<(Vec<crate::map::GrapplePoint>, Vec<crate::map::LedgeEdge>)> {
+pub fn edges() -> Option<(Vec<crate::traversal::GrapplePoint>, Vec<crate::traversal::LedgeEdge>)> {
     let (mut grapple, mut ledges, mut read) = (Vec::new(), Vec::new(), Vec::new());
     for map in BLOCKS.get()? {
         let path = crate::paths::extracted().join(format!("map_edges_{map}.json"));
@@ -297,8 +297,8 @@ pub fn edges() -> Option<(Vec<crate::map::GrapplePoint>, Vec<crate::map::LedgeEd
             warn!("sekiro-rs map: no {} (sekiro-extract edges), its wire points and ledges are missing", path.display());
             continue;
         };
-        grapple.extend(crate::map::grapple_in(&json, crate::map::Frame::IDENTITY));
-        ledges.extend(crate::map::ledges_in(&json, crate::map::Frame::IDENTITY));
+        grapple.extend(crate::map::grapple_in(&json, crate::place::Frame::IDENTITY));
+        ledges.extend(crate::map::ledges_in(&json, crate::place::Frame::IDENTITY));
         read.push(map.as_str());
     }
     info!("sekiro-rs map: {} wire points, {} hang / hug edges over {read:?}", grapple.len(), ledges.len());
@@ -384,5 +384,27 @@ fn follow_wolf(mut commands: Commands, wolf: Query<(Entity, &crate::actor::Actor
                 commands.entity(e).insert((MapFocus, PlayerFocus { grounded }));
             }
         }
+    }
+}
+
+/// sekiro-rs's play world as the core's ground (terrain.rs).
+impl crate::terrain::WorldCollision for sekiro_sim::collision::CollisionWorld {
+    fn floor_hit(&self, x: f32, z: f32, top: f32) -> Option<(f32, u32)> {
+        sekiro_sim::collision::CollisionWorld::floor_hit(self, x, z, top)
+    }
+    fn floor_material(&self, x: f32, z: f32, top: f32) -> Option<u32> {
+        sekiro_sim::collision::CollisionWorld::floor_material(self, x, z, top)
+    }
+    fn raycast(&self, origin: Vec3, dir: Vec3, max: f32) -> Option<f32> {
+        sekiro_sim::collision::CollisionWorld::raycast(self, origin, dir, max)
+    }
+    fn slide(&self, feet: [f32; 3], delta: [f32; 2]) -> [f32; 2] {
+        sekiro_sim::collision::CollisionWorld::slide(self, feet, delta)
+    }
+    fn triangle_count(&self) -> usize {
+        sekiro_sim::collision::CollisionWorld::triangle_count(self)
+    }
+    fn water_surface(&self, x: f32, z: f32, top: f32) -> Option<(f32, u32)> {
+        sekiro_sim::body::Ground::water_surface(self, x, z, top).map(|w| (w.height, w.material))
     }
 }

@@ -3,7 +3,7 @@
 //! slides nothing: his last place is where he flies to). W A S D fly along the camera's view,
 //! Space up, Ctrl down, Shift fast. Switched off, he stands on the floor under him.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::Ordering;
 
 use bevy::prelude::*;
 
@@ -11,25 +11,23 @@ use crate::actor::Actor;
 use crate::camera::OrbitCamera;
 use crate::player::{CAPSULE_HALF_HEIGHT, Player};
 
-static ON: AtomicBool = AtomicBool::new(false);
-
 /// Flight speeds (m/s): normal and with Shift.
 const SPEED: f32 = 12.0;
 const FAST: f32 = 45.0;
 
 pub fn on() -> bool {
-    ON.load(Ordering::Relaxed)
+    crate::player::FLOWN.load(Ordering::Relaxed)
 }
 
 pub fn set(on: bool) {
-    ON.store(on, Ordering::Relaxed);
+    crate::player::FLOWN.store(on, Ordering::Relaxed);
 }
 
 pub struct UfoPlugin;
 
 impl Plugin for UfoPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(FixedUpdate, fly.after(crate::map::bodies_on_terrain).before(crate::anim::PoseSet));
+        app.add_systems(FixedUpdate, fly.after(crate::terrain::bodies_on_terrain).before(crate::anim::PoseSet));
     }
 }
 
@@ -39,14 +37,14 @@ fn fly(
     keys: Option<Res<ButtonInput<KeyCode>>>,
     combat: Res<crate::data::Combat>,
     camera: Query<&Transform, (With<OrbitCamera>, Without<Player>)>,
-    mut wolf: Query<(&mut Transform, &mut Actor, Option<&mut crate::map::OnTerrain>), With<Player>>,
+    mut wolf: Query<(&mut Transform, &mut Actor, Option<&mut crate::terrain::OnTerrain>), With<Player>>,
     mut at: Local<Option<Vec3>>,
 ) {
     let Ok((mut tf, mut a, terrain)) = wolf.single_mut() else { return };
     if !on() {
         // Landing: onto the floor under him, as from a standstill (no fall from the flight).
         if at.take().is_some() {
-            tf.translation.y = crate::map::ground_y(tf.translation) + CAPSULE_HALF_HEIGHT;
+            tf.translation.y = crate::terrain::ground_y(tf.translation) + CAPSULE_HALF_HEIGHT;
             (a.airborne, a.vel_y, a.air_base) = (false, 0.0, tf.translation);
             if let Some(mut t) = terrain {
                 t.prev = tf.translation;

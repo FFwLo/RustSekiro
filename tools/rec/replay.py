@@ -97,6 +97,32 @@ def tool_by_resident(db):
     return by_resident(db, {t["resident"]: t["id"] for t in tools if t.get("resident", 0) > 0})
 
 
+def hit_stop_scales(db):
+    """Per tick of a hit Wolf landed (hits, attacker slot 0): the victim's hit stop scale on Wolf,
+    NpcParam hitStopType (0 none, 1 half, 2 full; combat.rs start_hit_stop), the most common
+    type over its chr's rows (c5100 -> 5100xxxx). The replay keeps the enemy out of reach, so it
+    starts Wolf's hit stop itself at these ticks."""
+    path = REPO / "extracted" / "json" / "params" / "NpcParam.json"
+    try:
+        d = json.load(open(path, encoding="utf-8"))
+    except OSError:
+        return {}
+    rows = d.get("rows", d) if isinstance(d, dict) else d
+    pairs = rows.items() if isinstance(rows, dict) else ((r.get("ID", r.get("id")), r) for r in rows)
+    types = defaultdict(lambda: defaultdict(int))
+    for k, r in pairs:
+        if isinstance(r, dict) and str(k).isdigit():
+            types[int(k) // 10000][r.get("hitStopType") or 0] += 1
+    scale = {0: 0.0, 1: 0.5, 2: 1.0}
+    out = {}
+    for tick, victim in db.execute("SELECT tick, victim FROM hits WHERE attacker_slot = 0"):
+        m = re.match(r"\d+:c(\d{4})", victim or "")
+        if m and types.get(int(m[1])):
+            t = types[int(m[1])]
+            out[tick] = max(out.get(tick, 0.0), scale.get(max(t, key=t.get), 0.0))
+    return out
+
+
 LOCK_SWITCH_TICKS = 30
 
 
@@ -158,7 +184,7 @@ def timeline(events, ticks):
     return out
 
 
-def export(rec, t0=None, t1=None):
+def export(rec, t0=None, t1=None, name="replay_inputs.csv"):
     db = sqlite3.connect(ingest(rec))
     q = "SELECT tick, anim, x, z, yaw, move_x, move_z, lock_flag, " + ", ".join(BUTTONS) + " FROM frames WHERE slot = 0"
     rows = [r for r in db.execute(q + " ORDER BY tick") if (t0 is None or r[0] >= t0) and (t1 is None or r[0] <= t1)]
@@ -166,7 +192,7 @@ def export(rec, t0=None, t1=None):
         raise SystemExit("no Wolf frames in that range")
     x0, z0 = rows[0][2] or 0.0, rows[0][3] or 0.0
     events = wolf_events(db)
-    out = Path(rec) / "replay_inputs.csv"
+    out = Path(rec) / name
     last_anim = None
     inputs = {r[0]: r for r in rows}
     # the combat art Wolf had: its resident SpEffect's (art_by_resident), else the next art clip
@@ -182,10 +208,11 @@ def export(rec, t0=None, t1=None):
             held[t] = a
     tools = timeline(tool_by_resident(db), [r[0] for r in rows])
     targets = lock_targets(db)
+    stops = hit_stop_scales(db)
     art = None
     with open(out, "w", newline="", encoding="utf-8") as fh:
         w = csv.writer(fh)
-        w.writerow(["tick", "stick_x", "stick_y", *[b[4:] for b in BUTTONS], "lock", "anim", "x", "z", "yaw", "events", "art_id", "tool_id", "lock_dx", "lock_dz"])
+        w.writerow(["tick", "stick_x", "stick_y", *[b[4:] for b in BUTTONS], "lock", "anim", "x", "z", "yaw", "events", "art_id", "tool_id", "lock_dx", "lock_dz", "hit_stop"])
         for r in rows:
             tick, anim, x, z, yaw = r[:5]
             inp = inputs.get(tick + INPUT_LEAD, r)
@@ -197,14 +224,15 @@ def export(rec, t0=None, t1=None):
                         anim_name(last_anim) if last_anim is not None else "",
                         None if x is None else -(x - x0), None if z is None else z - z0,
                         None if yaw is None else -yaw, ";".join(events.get(tick, [])), art or "", tools[tick] or "",
-                        *(lambda d: ("", "") if d is None or not lock else (round(-d[0], 3), round(d[1], 3)))(targets.get(tick + INPUT_LEAD))])
+                        *(lambda d: ("", "") if d is None or not lock else (round(-d[0], 3), round(d[1], 3)))(targets.get(tick + INPUT_LEAD)),
+                        stops.get(tick, "")])
     return out
 
 
-def run_sim(inputs, out):
-    env = dict(os.environ, SHINOBI_REPLAY=str(inputs), SHINOBI_REPLAY_OUT=str(out))
+def run_sim(inputs, out, extra_env=None):
+    env = dict(os.environ, SHINOBI_REPLAY=str(inputs), SHINOBI_REPLAY_OUT=str(out), **(extra_env or {}))
     env.setdefault("CARGO_TARGET_DIR", str(REPO / "target" / "bevy20"))
-    r = subprocess.run(["cargo", "test", "--profile", "quick", "--bin", "sv1", "replay_recording", "--", "--ignored", "--nocapture"],
+    r = subprocess.run(["cargo", "test", "--profile", "quick", "--lib", "replay_recording", "--", "--ignored", "--nocapture"],
                        cwd=REPO, env=env, capture_output=True, text=True)
     if r.returncode != 0 or not Path(out).exists():
         raise SystemExit("sim replay failed:\n" + (r.stdout + r.stderr)[-3000:])
@@ -271,6 +299,17 @@ def diff(inputs, ours, limit=12):
 WORLD = re.compile(r"Damage|Down|Swim|Dive|Throw|Deathblow|Deflect(Hard|Easy|Normal|Weak)|AddHardDeflect|GuardBreak|"
                    r"Deflected|DeflectBreak|EnemyJump|Positioning|Hang|Wall|Ladder|Docking|Wire|Talk|Event|Death|Blow|Kawarimi|Water|Ride|Eavesdrop|Cover")
 MASK_BEFORE, MASK_AFTER = 10, 90
+# A throw's or deathblow's clip starts 2-3 ticks after the attack press, a boss's last deathblow
+# (its walk-up first) 18-30 (the recordings' press -> a2xx leads): masked from that press.
+THROW_BEFORE = 30
+
+
+def _press_before(real, t):
+    """How far before t the attack press that started a throw's clip came (MASK_BEFORE at least)."""
+    for back in range(1, THROW_BEFORE + 1):
+        if real.get(t - back, {}).get("attack") == "1" and real.get(t - back - 1, {}).get("attack") != "1":
+            return max(back, MASK_BEFORE)
+    return MASK_BEFORE
 
 
 STALL_EVENTS = 4
@@ -305,6 +344,7 @@ def masked_ticks(real, ticks, sim=None):
         # a stall: the game ran frames the recorder did not tick, their events land on one tick
         hit = any(WORLD.search(e) for e in evs) or len(evs) >= STALL_EVENTS
         # a throw's or deathblow's clip (ThrowParam groups a2xx): the exe starts those, no W_ event
+        throw = (r.get("anim") or "")[1:2] == "2" and (prev or {}).get("anim", "")[1:2] != "2"
         hit |= (r.get("anim") or "")[1:2] == "2"
         if r.get("x") and prev is not None and prev.get("x"):
             hit |= math.hypot(float(r["x"]) - float(prev["x"]), float(r["z"]) - float(prev["z"])) > 2.0
@@ -318,7 +358,7 @@ def masked_ticks(real, ticks, sim=None):
                         break
                     i += 1
                 end = ticks[i] if i is not None and i < len(ticks) else end
-            out.update(range(t - MASK_BEFORE, end + 1))
+            out.update(range(t - (_press_before(real, t) if throw else MASK_BEFORE), end + 1))
         prev = r
     return out
 

@@ -158,7 +158,7 @@ pub(crate) fn drop_loot(
         let mut spot = 0;
         let mut place = |commands: &mut Commands, goods: i64, n: u32| {
             spot += 1;
-            crate::items::drop_pickup(commands, goods, n, feet + side * (0.35 * spot as f32 - 0.5));
+            crate::pickups::drop_pickup(commands, goods, n, feet + side * (0.35 * spot as f32 - 0.5));
         };
         // A resource lot's draw: Resurrective Power taken at once; Spirit Emblems returned to drop.
         let mut grant = |p: &mut crate::player::Player, (cat, n): (i64, u32)| {

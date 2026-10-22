@@ -22,20 +22,8 @@ impl Plugin for WorldPlugin {
 const TILE_SIZE: f32 = 2.0;
 const TILES_PER_SIDE: i32 = 30;
 
-#[derive(Component)]
-pub struct Blade;
-
-pub fn spawn_blade(parent: &mut ChildSpawnerCommands, meshes: &mut Assets<Mesh>, materials: &mut Assets<StandardMaterial>, color: Color) {
-    parent
-        .spawn((Blade, Transform::from_xyz(0.35, 0.1, -0.2), Visibility::default(), Name::new("Blade")))
-        .with_children(|b| {
-            b.spawn((
-                Mesh3d(meshes.add(Cuboid::new(0.04, 0.06, 1.0))),
-                MeshMaterial3d(materials.add(StandardMaterial { base_color: color, metallic: 0.8, perceptual_roughness: 0.3, ..default() })),
-                Transform::from_xyz(0.0, 0.0, -0.5),
-            ));
-        });
-}
+// The stand-in blade is the core's (model.rs); its poses are drawn here.
+pub use crate::model::Blade;
 
 /// Rest: blade held low and forward. Wind-up: from the anim start the blade rises
 /// toward a raised pose, reaching it at the first hitbox frame (a stand-in telegraph

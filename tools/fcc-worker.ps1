@@ -140,7 +140,7 @@ You are an FCC worker on the Rust project in the current folder (Sv1, a Sekiro c
 - $editRule
 - Do not run git. Do not read anything under ..\extracted, ..\reference, ..\sekiro-rs or any decomp folder.
 - Never invent game values (frame counts, damage, speeds, ids). If the task needs a value it does not give you, stop and say so in NOTES.
-- Build and test only with: cargo test --profile quick --bin sv1 <filter>  (or cargo check / cargo clippy). CARGO_TARGET_DIR is already set; do not pass --target-dir. Never run the full test suite unless the task says so.
+- Build and test only with: cargo test --profile quick --lib <filter>  (or cargo check / cargo clippy). CARGO_TARGET_DIR is already set; do not pass --target-dir. Never run the full test suite unless the task says so.
 
 TASK $id
 $($T.body)

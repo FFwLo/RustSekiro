@@ -14,7 +14,7 @@ use crate::player::{Player, CAPSULE_HALF_HEIGHT};
 pub(crate) const CHR: &str = "c7010";
 pub(crate) const NPC_ROW: i64 = 70100080;
 /// Outside the replaceable enemy-kind indices: encounter changes must not turn him into a boss.
-pub(crate) const KIND: usize = usize::MAX;
+pub(crate) const KIND: usize = crate::data::NPC_KIND;
 pub(crate) const POS: Vec3 = Vec3::new(-7.0, 0.0, 3.0);
 /// His facing: toward the Construct's centre.
 const YAW: f32 = -1.1659045; // atan2(-7, 3)
@@ -28,8 +28,7 @@ const SITTING: &str = "Event711201";
 const GET_UP: &str = "Event711202";
 static PRESENT: AtomicBool = AtomicBool::new(false);
 
-#[derive(Component)]
-pub(crate) struct Sculptor;
+pub(crate) use crate::encounter::Npc as Sculptor;
 
 fn in_reach(feet: Vec3) -> bool {
     (feet - POS).with_y(0.0).length() < REACH && (feet.y - POS.y).abs() < HEIGHT
@@ -131,7 +130,7 @@ fn visit_animation(a: &mut Actor, data: &CharData, visiting: bool) {
 }
 
 fn carving(combat: Res<Combat>, wolf: Query<&Player>, mut npc: Query<(&mut Actor, &mut Transform, &mut Visibility), With<Sculptor>>) {
-    let visible = crate::map::loaded_map().as_deref().is_none_or(|id| id == crate::sandbox::CONSTRUCT_ID);
+    let visible = crate::place::loaded_map().as_deref().is_none_or(|id| id == crate::sandbox::CONSTRUCT_ID);
     let visiting = visible && wolf.iter().any(|p| p.seat.sculptor && p.seat.phase != Phase::Leaving);
     for (mut a, mut tf, mut visibility) in &mut npc {
         *visibility = if visible { Visibility::Inherited } else { Visibility::Hidden };
@@ -181,7 +180,7 @@ mod tests {
         assert!(in_reach(POS + Vec3::X));
         assert!(!in_reach(POS + Vec3::X * 3.0));
         assert!(!in_reach(POS + Vec3::Y * 1.0));
-        assert!(!crate::items::parkour_pickups().iter().any(|p| in_reach(p.pos)), "Talk must not compete with an item pickup");
+        assert!(!crate::pickups::parkour_pickups().iter().any(|p| in_reach(p.pos)), "Talk must not compete with an item pickup");
     }
 
     #[test]
@@ -189,6 +188,7 @@ mod tests {
         let mut app = App::new();
         let mut config = GameConfig::load().unwrap();
         config.world.map = Some("construct".into());
+        crate::encounter::set(crate::sandbox::map_hooks());
         app.insert_resource(config).add_plugins(crate::data::DataPlugin);
         let mut combat = app.world_mut().resource_mut::<Combat>();
         assert_eq!(combat.kind(KIND).foe.chr, CHR);

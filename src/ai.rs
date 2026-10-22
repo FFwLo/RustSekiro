@@ -204,7 +204,12 @@ pub struct Command {
     pub flags: Vec<(i64, bool)>,
     /// Trigger regions registered this frame (RegisterTriggerRegion), for enemy.rs's store.
     pub triggers: Vec<TriggerRegion>,
+    /// The anim request is an EndureAttack goal's (the HKS's env 123).
+    pub endure: bool,
 }
+
+/// TAE flag 122 (SetBool32_0x1E0): the window for an EndureAttack goal's request (env 123).
+pub(crate) const FLAG_ENDURE: i64 = 122;
 
 /// The guard request (c9997.lua:258 ACTION_TYPE_GUARD), GOAL_COMMON_Guard's usual action.
 const ACTION_TYPE_GUARD: f64 = 9910.0;
@@ -349,6 +354,9 @@ struct Goal {
     num: HashMap<i64, Value>,
     timing: Vec<Timing>,
     parent_combo: bool,
+    /// Under GOAL_COMMON_EndureAttack (SetEnableEndureCancel_forGoal): its action is the HKS's
+    /// endure request (env 123), taken while the clip's TAE flag 122 is on.
+    parent_endure: bool,
     // Native goal state.
     ez: Option<f64>,
     succ: f64,
@@ -612,7 +620,7 @@ pub(crate) fn mesh_line_dist(from: Vec3, dir: Vec3, dist: f32, radius: f32, floo
     while s < wall {
         let next = (s + STEP).min(wall);
         let f = floor((from + dir * next).with_y(last + half));
-        if (f - last).abs() > crate::map::STEP_HEIGHT {
+        if (f - last).abs() > crate::terrain::STEP_HEIGHT {
             return s;
         }
         last = f;
@@ -677,6 +685,7 @@ impl AiState {
             num: HashMap::new(),
             timing: Vec::new(),
             parent_combo: false,
+            parent_endure: false,
             ez: None,
             succ: 0.0,
             turn_time: 0.0,
@@ -1031,8 +1040,10 @@ impl AiState {
             "SetTargetRange" => vec![goal_obj(id)],
             "AddSubGoal" | "AddSubGoal_Front" => {
                 let combo = self.def(self.goal(id).kind).is_some_and(|d| d.combo);
+                let endure = self.def(self.goal(id).kind).is_some_and(|d| d.name.as_deref().is_some_and(|n| n.ends_with("EndureAttack")));
                 let g = self.goal_from_args(a);
                 self.goal_mut(g).parent_combo = combo;
+                self.goal_mut(g).parent_endure = endure;
                 let parent = self.goal_mut(id);
                 parent.had_sub = true;
                 if name == "AddSubGoal" {
@@ -1350,8 +1361,8 @@ impl AiState {
                 let free = if dir == Vec3::ZERO {
                     dist
                 } else {
-                    let floor = |c: Vec3| crate::map::ground_y(c);
-                    mesh_line_dist(from, dir, dist, radius, floor, crate::map::raycast)
+                    let floor = |c: Vec3| crate::terrain::ground_y(c);
+                    mesh_line_dist(from, dir, dist, radius, floor, crate::terrain::raycast)
                 };
                 num(free as f64)
             }
@@ -1495,7 +1506,7 @@ impl AiState {
     /// The requested -> run phases shared by the action goals; None while the anim runs.
     fn action_phase(&mut self, g: u32, flag: i64) -> Option<i32> {
         let goal = self.goal(g);
-        let ez = goal.ez;
+        let (ez, endure) = (goal.ez, goal.parent_endure);
         let w_ez = self.w.ez.map(|e| e as f64);
         match goal.phase {
             0 => {
@@ -1507,6 +1518,7 @@ impl AiState {
                     return Some(CONTINUE);
                 }
                 self.cmd.anim = ez.map(|e| e as i64);
+                self.cmd.endure = endure;
                 let goal = self.goal_mut(g);
                 goal.phase = 1;
                 goal.busy = true;
@@ -1519,6 +1531,7 @@ impl AiState {
                     return Some(FAILED);
                 } else {
                     self.cmd.anim = ez.map(|e| e as i64);
+                    self.cmd.endure = endure;
                 }
                 Some(CONTINUE)
             }
@@ -1530,14 +1543,23 @@ impl AiState {
     fn native_update(&mut self, g: u32, n: Native) -> i32 {
         match n {
             Native::Attack => {
-                let flag = if self.goal(g).parent_combo { 23 } else { 86 };
+                // An endure request (Goal.Parry's guard / deflect) also cuts a clip at flag 122:
+                // c9997 ExecAIAction takes env 123 first, and the exe posts it while that flag is
+                // on (FUN_140b36410; a000_008010's hit reaction opens it at 0.23 s, 86 at 0.5 s).
+                let flag = if self.goal(g).parent_endure && self.w.flags.contains(&FLAG_ENDURE) { FLAG_ENDURE } else if self.goal(g).parent_combo { 23 } else { 86 };
                 if let Some(r) = self.action_phase(g, flag) {
                     return r;
                 }
                 let succ = self.goal(g).succ;
                 let d = self.goal_dist(None);
-                if self.w.t > 0.1 && self.w.flags.contains(&23) && d <= succ {
-                    return SUCCESS;
+                // At the cancel window the exe decides both ways (FUN_1405c6d30: a cancel flag on
+                // and successDist < GetDist -> -1): out of range the goal fails there, not at the
+                // clip's end, and the replan sees the window's TAE SpEffects (c1180's a200_003004
+                // holds 3118061 0.9-1.2 s, 118020_battle.lua Act10 -> 3007; live: 3007 started
+                // 55-57 ticks into all four of the game's 3004s, flag 23 opens at 56).
+                // gap: which of the exe's flag bits (0x8 / 0x100) is TAE 23 and which 86 is not traced.
+                if self.w.t > 0.1 && self.w.flags.contains(&23) {
+                    return if d <= succ { SUCCESS } else { FAILED };
                 }
                 if self.w.anim_done {
                     return if d <= succ { SUCCESS } else { FAILED };
@@ -3021,6 +3043,23 @@ mod tests {
         s.sp_target.insert(109970);
         let c = b.tick(&s, 1.0 / 60.0);
         assert_eq!(c.anim, Some(3101), "{c:?}; goals: {}", b.describe());
+    }
+
+    #[test]
+    fn the_parry_guard_cuts_a_hit_reaction_at_flag_122() {
+        // In a hit reaction (not free): Goal.Parry's EndureAttack 3100 waits for TAE flag 122
+        // (a000_008010 opens it at 0.23 s, its attack window 86 only at 0.5 s), then is the
+        // HKS's endure request (env 123).
+        let Some(mut b) = brain() else { return };
+        let mut s = Snapshot { dist: 2.0, hp_rate: 1.0, target_hp_rate: 1.0, sp: 1000.0, sp_rate: 1.0, parry_timing: true, ..Snapshot::battle() };
+        s.sp_self.insert(200004);
+        s.sp_self.insert(221000);
+        let c = b.tick(&s, 1.0 / 60.0);
+        assert_eq!(c.anim, None, "no cancel window yet; goals: {}", b.describe());
+        s.parry_timing = false;
+        s.flags = vec![FLAG_ENDURE];
+        let c = b.tick(&s, 1.0 / 60.0);
+        assert_eq!((c.anim, c.endure), (Some(3100), true), "goals: {}", b.describe());
     }
 
     #[test]

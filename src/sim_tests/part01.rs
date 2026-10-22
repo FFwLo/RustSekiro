@@ -30,6 +30,9 @@ pub(crate) fn app_geom(chr: &str, npc_row: Option<i64>) -> App {
 }
 
 pub(crate) fn app_build(chr: &str, npc_row: Option<i64>, group: Vec<crate::config::GroupEnemy>, geometry: bool) -> App {
+    // The game's idols and Sculptor (the host's hooks; IdolPlugin sets them in the game). No items
+    // on the ground: the pickup list is global and other tests fill it.
+    crate::encounter::set_world(crate::encounter::WorldHooks { take_item: |_| false, ..crate::idol::world_hooks() });
     let mut app = App::new();
     app.add_plugins(MinimalPlugins)
         .insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_secs_f64(1.0 / 60.0)))

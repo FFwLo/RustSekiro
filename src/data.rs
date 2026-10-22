@@ -1025,10 +1025,14 @@ pub struct EnemyKind {
     pub data: CharData,
 }
 
+/// The NPC's kind index (`Combat::sculptor`), outside the replaceable enemy kinds: encounter
+/// changes must not turn it into a boss.
+pub const NPC_KIND: usize = usize::MAX;
+
 impl Combat {
     /// Enemy kind `i` (kind 0 when out of range).
     pub fn kind(&self, i: usize) -> &EnemyKind {
-        if i == crate::sculptor::KIND {
+        if i == NPC_KIND {
             if let Some(sculptor) = &self.sculptor {
                 return sculptor;
             }
@@ -2235,14 +2239,9 @@ impl Plugin for DataPlugin {
         for g in config.map(|c| c.enemy.group.clone()).unwrap_or_default() {
             wanted.push((g.chr, g.npc_row));
         }
-        // The Construct's courtyard guards (sandbox.rs construct_patrols).
-        if config.is_some_and(|c| crate::map::map_id(c).as_deref() == Some(crate::sandbox::CONSTRUCT_ID)) {
-            wanted.push((crate::sandbox::GUARD_CHR.to_string(), None));
-        }
-        // The sandbox map's enemy line-up (SHINOBI_SANDBOX_ENEMIES; sandbox.rs).
-        for chr in config.map(crate::sandbox::extra_kinds).unwrap_or_default() {
-            wanted.push((chr, None));
-        }
+        // The map's own characters (encounter.rs hooks: the Construct's courtyard guards, the
+        // sandbox map's line-up).
+        wanted.extend(config.map(crate::encounter::hooks().extra_chrs).unwrap_or_default());
         let mut kinds: Vec<EnemyKind> = Vec::new();
         for (chr, npc_row) in wanted {
             if kinds.iter().any(|k| k.foe.is(&chr, npc_row)) {
@@ -2253,9 +2252,9 @@ impl Plugin for DataPlugin {
             kinds.push(kind);
         }
         f.player.alias_missing_clips();
-        let sculptor = config.filter(|c| crate::map::map_id(c).as_deref() == Some(crate::sandbox::CONSTRUCT_ID)).and_then(|_| {
-            let kind = load_kind(&mut f, crate::sculptor::CHR, Some(crate::sculptor::NPC_ROW));
-            (kind.foe.chr == crate::sculptor::CHR).then_some(kind)
+        let sculptor = config.and_then(crate::encounter::hooks().npc).and_then(|(chr, row)| {
+            let kind = load_kind(&mut f, chr, Some(row));
+            (kind.foe.chr == chr).then_some(kind)
         });
         let mut combat = Combat { player: f.player, sculptor, kinds, params: f.params, rumble: f.rumble, twists: f.twists, names: f.names };
         combat.add_event_kinds();
@@ -2551,4 +2550,34 @@ mod tests {
         // An else of an env check: c1010 20010 -> 21001 without ref 1000024.
         assert!(hks_end_chains("c1010").contains(&EndChain { from: 20010, to: EndTo::Event(21001), refs: vec![(1_000_024, false)], at_end: true, grounded: None }));
     }
+}
+
+/// An FMG (Sekiro: version 2, little endian, UTF-16 strings): id -> text.
+pub fn read_fmg(d: &[u8]) -> HashMap<u32, String> {
+    let mut out = HashMap::new();
+    let i32_ = |o: usize| d.get(o..o + 4).map(|b| i32::from_le_bytes(b.try_into().unwrap()));
+    let i64_ = |o: usize| d.get(o..o + 8).map(|b| i64::from_le_bytes(b.try_into().unwrap()));
+    let (Some(groups), Some(offsets)) = (i32_(0x0C), i64_(0x18)) else { return out };
+    for g in 0..groups.max(0) as usize {
+        let at = 0x28 + g * 16;
+        let (Some(index), Some(first), Some(last)) = (i32_(at), i32_(at + 4), i32_(at + 8)) else { break };
+        for k in 0..=(last - first).max(-1) {
+            let Some(o) = i64_(offsets as usize + (index + k) as usize * 8) else { break };
+            if o <= 0 {
+                continue;
+            }
+            let mut e = o as usize;
+            let mut units = Vec::new();
+            while let Some(b) = d.get(e..e + 2) {
+                let u = u16::from_le_bytes([b[0], b[1]]);
+                if u == 0 {
+                    break;
+                }
+                units.push(u);
+                e += 2;
+            }
+            out.insert((first + k) as u32, String::from_utf16_lossy(&units));
+        }
+    }
+    out
 }

@@ -1348,8 +1348,8 @@ pub(crate) fn attack_occurrence_follows_the_hit_category() {
 pub(crate) fn the_armour_guard_follows_its_worn_effect() {
     let mut app = app_with("c1180");
     app.world_mut().resource_scope(|world, combat: Mut<Combat>| {
-        let mut q = world.query_filtered::<&mut Actor, (With<Enemy>, Without<crate::enemy::Cast>)>();
-        let mut a = q.iter_mut(world).next().unwrap();
+        let mut q = world.query_filtered::<(&mut Actor, &Enemy), Without<crate::enemy::Cast>>();
+        let (mut a, e) = q.iter_mut(world).next().unwrap();
         a.resident.retain(|&id| id != 220062);
         a.play("Idle", "a000_000000");
         a.t = 0.5;
@@ -1361,6 +1361,14 @@ pub(crate) fn the_armour_guard_follows_its_worn_effect() {
         let g = guard(&a);
         assert_eq!(g.guarded, crate::guard::Guarded::Block, "with 220062");
         assert_eq!(g.half_angle, 60.0);
+        // The block is no guard reaction: 220062's ref 1000105 GUARD_TO_ADD_DAMAGE turns it into
+        // the SABlend flinch (c9997 ExecGuardBlock), so he swings on as the game's servants do
+        // (live: 0 of their blocks of Wolf's sword played a guard clip). 220062 is in no c1180
+        // clip, so its ref comes from SpEffectParam.
+        a.resident.push(220062);
+        let refs = crate::prosthetic::enemy_refs(&combat, &a, e);
+        assert!(refs.contains(&1000105), "{refs:?}");
+        assert_eq!(crate::combat::enemy_guard_block(d, &refs, 1, 4, false, false), crate::combat::GuardPick::Add);
     });
 }
 

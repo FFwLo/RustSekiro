@@ -151,7 +151,7 @@ fn init_pipeline(mut commands: Commands, assets: Res<AssetServer>, fullscreen: R
                 layout: vec![layout.clone()],
                 vertex: fullscreen.to_vertex_state(),
                 fragment: Some(FragmentState {
-                    shader: assets.load("embedded://sv1/height_fog.wesl"),
+                    shader: assets.load("embedded://rustsekiro/height_fog.wesl"),
                     shader_defs: if multisampled { vec!["MULTISAMPLED_DEPTH".into()] } else { vec![] },
                     targets: vec![Some(ColorTargetState { format: TextureFormat::Rgba16Float, blend: None, write_mask: ColorWrites::ALL })],
                     ..default()

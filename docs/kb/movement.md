@@ -176,6 +176,35 @@ end). See HANDOFF 4.63 item 8.
 - Exe (static): FUN_14084e5d0 = the kill test: fall height >= HitMtrlParam +0x4c (`fallDeathDist`, 40 default, 80 on deep-water planes 22/36/38), and only from 20 m up (DAT_143b01948 = 20.0, read from sekiro.exe .data; 5 m while SpEffect type 0x155 is worn, DAT_143b01950/54). FUN_140843660 = the damage factor (not the kill); FUN_1408433f0 reads the row's +0x50 `fallDamageRate`. Debug-menu FUN_140a27c60 case 7 confirms the two fields. Same numbers as sekiro-rs (its source was the same table).
 - Sv1: `map::fall_death_dist` (HitMtrlParam, disableFallDamage rows = no death), landing in player.rs: fatal drop -> `LandDeadReturnStart` (a000_200909, HKS DAMAGE_TYPE_LAND_DEAD_RETURN) -> `GroundFallReturn` at `Player::safe_pos` (last dry ground), HP kept; falling 40 m with no ground below -> `FallDeadReturnStart` (a000_199120). Test `a_forty_metre_fall_returns_wolf_to_safe_ground`. The three states were added to tools/sekiro-extract/export_states.txt (re-export needed).
 - gap: the non-lethal HP loss (20 m up, FUN_140843660's factors), whether the game returns or kills outright, the void kill height / return volume. Needs a live drop test (recorder).
+- 2026-10-22 non-lethal fall damage and the fall height:
+  - The fall height is the last ground's Y minus Y now, not the flight's top: P+0x850 (Y +0x854) is
+    copied only on a grounded update with no TAE 920 velocity change (140bc.c:4720), and a warp
+    sets it (140bc.c:1208). `Player::air_top` is that, set at the top of player.rs decide on every
+    grounded tick. A jump off flat ground reads 0; a ledge reads its own height.
+  - Landing short of the kill: maxHP x `terrain::fall_damage_share` (FUN_140843660): 0 under 20 m,
+    CalcCorrectGraph 210 (identity 20-100) x 0.01, graphs 211 / 212 a flat 100 %, x HitMtrlParam
+    fallDamageRate (0.5 on 22 / 36 / 38), floored to whole HP; none on a disableFallDamage row or
+    while stateInfo 47 is worn (SpEffects 640 / 4050 / 4053). No reaction clip of its own.
+  - Aged (stateInfo 341): every landing from 5 m kills (the fall-return death), in the aged
+    movement's landing too.
+  - Kept: the fall return costs 1/3 of max HP (an earlier request); the exe's is 0.4 (DAT_143b01958),
+    dying when HP is at or under it.
+  - Tests: fall_damage_is_a_hundredth_of_max_hp_per_metre_from_twenty,
+    an_aged_wolf_dies_falling_five_metres, a_forty_metre_fall_returns_wolf_to_safe_ground (25 m now
+    costs 25 %); the jump-off-ledge tests set the ledge's height (2.3 m -> 3.5 m for the 3 m stiff
+    landing from a jump). gap: whether the Grappling Hook's flight moves P+0x850.
+- 2026-10-22 swimming in the map's own water:
+  - The water planes are HitMtrlParam rows 20-24 and 35-38; the deep ones (22 / 36 / 38, fallDamageRate
+    0.5, fallDeathDist 80) over a bed are surfaces, not floors (`Terrain::floor_tri` takes them only
+    with nothing under them: the Yasha Ape's pool, m11 51000000, is one), and `terrain::water_surface`
+    gives the highest water plane under a height (the cell's triangles, or sekiro-rs
+    `Ground::water_surface` on the SR map through `WorldCollision::water_surface`).
+  - swim.rs `water_at`: the boxes first, else a deep plane within 3 m above the feet makes the
+    water column below its height.
+  - gap: the native swim entry (BEH_R_STAND_MOVE_TO_SWIM 31) and its depth rule are not traced;
+    env 3025 is not a swim test. A long fall into deep water no longer reads material 22 for the
+    fall-death distance (the floor below is the bed).
+  - Test a_deep_water_plane_is_a_surface_not_a_floor (terrain.rs).
 - sekiro-rs hints checked 2026-10-16: gravity, air control, 720 deg/s, radius 0.4, input buffer, walk twist were already in Sv1 from the same exe tables. Its ledge hang / wall hug / swim numbers (HANG_DEPTH 1.5, OUTWARD 0.35, reach 1.0, 45 deg) are marked "placeholder, not traced" there, so they are no better than a guess.
 
 ## Recording check (2026-10-16, rec_20261016_083843_movement_hooks, m10, 236 s)

@@ -109,35 +109,8 @@ impl GuideTexts {
     }
 }
 
-/// An FMG (Sekiro: version 2, little endian, UTF-16 strings): id -> text.
-pub fn read_fmg(d: &[u8]) -> HashMap<u32, String> {
-    let mut out = HashMap::new();
-    let i32_ = |o: usize| d.get(o..o + 4).map(|b| i32::from_le_bytes(b.try_into().unwrap()));
-    let i64_ = |o: usize| d.get(o..o + 8).map(|b| i64::from_le_bytes(b.try_into().unwrap()));
-    let (Some(groups), Some(offsets)) = (i32_(0x0C), i64_(0x18)) else { return out };
-    for g in 0..groups.max(0) as usize {
-        let at = 0x28 + g * 16;
-        let (Some(index), Some(first), Some(last)) = (i32_(at), i32_(at + 4), i32_(at + 8)) else { break };
-        for k in 0..=(last - first).max(-1) {
-            let Some(o) = i64_(offsets as usize + (index + k) as usize * 8) else { break };
-            if o <= 0 {
-                continue;
-            }
-            let mut e = o as usize;
-            let mut units = Vec::new();
-            while let Some(b) = d.get(e..e + 2) {
-                let u = u16::from_le_bytes([b[0], b[1]]);
-                if u == 0 {
-                    break;
-                }
-                units.push(u);
-                e += 2;
-            }
-            out.insert((first + k) as u32, String::from_utf16_lossy(&units));
-        }
-    }
-    out
-}
+// The FMG text reader is the core's (data.rs).
+pub use crate::data::read_fmg;
 
 /// DirectInput scan code -> key name (the keys Sekiro's defaults use, and their neighbours).
 fn dik_name(code: i64) -> Option<&'static str> {
@@ -202,7 +175,7 @@ fn mouse_name(id: i64) -> Option<&'static str> {
 }
 
 /// The guides for Wolf's situation now (docking.rs edges and states).
-pub fn guides_for(p: &Player, a: &Actor, feet: Vec3, edges: &[crate::map::LedgeEdge]) -> Vec<u32> {
+pub fn guides_for(p: &Player, a: &Actor, feet: Vec3, edges: &[crate::traversal::LedgeEdge]) -> Vec<u32> {
     use crate::docking as dk;
     if a.hp <= 0.0 {
         return Vec::new();
@@ -225,7 +198,7 @@ pub fn guides_for(p: &Player, a: &Actor, feet: Vec3, edges: &[crate::map::LedgeE
         };
     }
     if !a.airborne && crate::player::is_free(&a.state) {
-        if crate::items::pickup_near(feet).is_some() {
+        if crate::pickups::pickup_near(feet).is_some() {
             return vec![PICK_UP];
         }
         if crate::sculptor::near(feet) {
@@ -309,7 +282,7 @@ fn spawn_guides(mut commands: Commands, fonts: Res<crate::fonts::GameFonts>) {
 fn update_guides(
     texts: Res<GuideTexts>,
     assets: Res<AssetServer>,
-    ledges: Option<Res<crate::map::LedgeEdges>>,
+    ledges: Option<Res<crate::traversal::LedgeEdges>>,
     screen: Option<Res<State<crate::menu::Screen>>>,
     wolf: Query<(&Player, &Actor, &Transform)>,
     mut rows: Query<(&GuideRow, &mut Visibility), (Without<GuideKeyIcon>, Without<GuideKeyBox>)>,
@@ -319,7 +292,7 @@ fn update_guides(
     mut labels: Query<(&GuideLabel, &mut Text), Without<GuideKey>>,
 ) {
     let playing = screen.is_none_or(|s| *s.get() == crate::menu::Screen::Playing);
-    let edges: &[crate::map::LedgeEdge] = ledges.as_deref().map(|l| l.0.as_slice()).unwrap_or(&[]);
+    let edges: &[crate::traversal::LedgeEdge] = ledges.as_deref().map(|l| l.0.as_slice()).unwrap_or(&[]);
     let shown: Vec<(String, String)> = match (playing, wolf.single()) {
         (true, Ok((p, a, tf))) => guides_for(p, a, tf.translation - Vec3::Y * CAPSULE_HALF_HEIGHT, edges).into_iter().filter_map(|id| texts.guide(id)).collect(),
         _ => Vec::new(),

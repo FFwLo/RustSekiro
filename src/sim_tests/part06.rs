@@ -339,9 +339,9 @@ pub(crate) fn the_divine_dragons_trees_open_grapple_points_when_they_bloom() {
         // Wolf takes it as a ridden map point: the search finds it from a camera looking at it.
         let p = &g[0];
         let wolf = p.hook + Vec3::new(0.0, -3.0, 8.0);
-        let pt = crate::map::GrapplePoint { hook: p.hook, land: p.land, fwd: (wolf - p.hook).with_y(0.0).normalize(), variation: p.variation };
+        let pt = crate::traversal::GrapplePoint { hook: p.hook, land: p.land, fwd: (wolf - p.hook).with_y(0.0).normalize(), variation: p.variation };
         let cam = wolf + Vec3::new(0.0, 1.5, 3.0);
-        let t = crate::map::grapple_target(cam, (p.hook - cam).normalize(), wolf, None, &[pt]).expect("the point is not found");
+        let t = crate::traversal::grapple_target(cam, (p.hook - cam).normalize(), wolf, None, &[pt]).expect("the point is not found");
         assert!(t.ride && t.in_action_range, "{t:?}");
         return;
     }

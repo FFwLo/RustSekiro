@@ -105,6 +105,14 @@ pub fn answers(h: &mut Host, a: &Actor, p: &Player, combat: &Combat, config: &cr
     set(276, None, a.hp <= 0.0 && a.state == "Grabbed" && anim && d.flag(&a.anim, a.t, crate::player::FLAG_THROW_TYPE5));
     // The SpEffects on Wolf (the anim's TAE ones and the timed ones) and their behaviour refs.
     let mut ids: Vec<i64> = d.sp_effects_at(&shown, t).into_iter().map(|(id, _)| id).collect();
+    // A TAE SpEffect is still seen one TAE frame (2 game ticks) after its window: the recordings'
+    // attack out of DeflectGuardToStand* (ref 231, frames 0-9 = 18 ticks) is GroundAttackCombo1Reverse
+    // up to 19 ticks after W_DeflectGuardToStand, Combo1 from 20 (as the buffered inputs' one TAE
+    // frame, docs/kb/input-buffer.md). gap: where the exe keeps the row on is not traced.
+    let lag = 1.0 / crate::data::TAE_FPS;
+    if t >= lag {
+        ids.extend(d.sp_effects_at(&shown, t - lag).into_iter().map(|(id, _)| id).filter(|id| !ids.contains(id)).collect::<Vec<_>>());
+    }
     // The additive layer's too (AddHardDeflectGuard's 411).
     if !a.add_anim.is_empty() {
         ids.extend(d.sp_effects_at(&a.add_anim, a.add_t).into_iter().map(|(id, _)| id));
@@ -476,23 +484,23 @@ impl WolfScript {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn tick_script(mut script: NonSendMut<WolfScript>, time: Res<Time>, combat: Res<Combat>, config: Res<crate::config::GameConfig>, lock: Res<crate::camera::LockOn>, pad: ResMut<crate::player::PadInput>, camera: Option<Single<&crate::camera::OrbitCamera>>, places: Query<&Transform>, wolf: Single<(Entity, &mut Actor, &mut Player)>) {
+fn tick_script(mut script: NonSendMut<WolfScript>, time: Res<Time>, combat: Res<Combat>, config: Res<crate::config::GameConfig>, lock: Res<crate::view::LockOn>, pad: ResMut<crate::player::PadInput>, view: Res<crate::view::View>, places: Query<&Transform>, wolf: Single<(Entity, &mut Actor, &mut Player)>) {
     script.fired.clear();
-    run_script(script, time.delta_secs(), false, combat, config, lock, pad, camera, places, wolf);
+    run_script(script, time.delta_secs(), false, combat, config, lock, pad, view, places, wolf);
 }
 
 /// The landing player.rs's decide found this frame (its ground check runs after the script):
 /// the script ticks again at once (no time passes), as the exe's ground check comes before its
 /// HKS update, so BEH_R_LAND picks the landing on the same frame.
-fn land_script(script: NonSendMut<WolfScript>, combat: Res<Combat>, config: Res<crate::config::GameConfig>, lock: Res<crate::camera::LockOn>, pad: ResMut<crate::player::PadInput>, camera: Option<Single<&crate::camera::OrbitCamera>>, places: Query<&Transform>, wolf: Single<(Entity, &mut Actor, &mut Player)>) {
+fn land_script(script: NonSendMut<WolfScript>, combat: Res<Combat>, config: Res<crate::config::GameConfig>, lock: Res<crate::view::LockOn>, pad: ResMut<crate::player::PadInput>, view: Res<crate::view::View>, places: Query<&Transform>, wolf: Single<(Entity, &mut Actor, &mut Player)>) {
     if !(script.air && !wolf.1.airborne) {
         return;
     }
-    run_script(script, 0.0, true, combat, config, lock, pad, camera, places, wolf);
+    run_script(script, 0.0, true, combat, config, lock, pad, view, places, wolf);
 }
 
 #[allow(clippy::too_many_arguments)]
-fn run_script(mut script: NonSendMut<WolfScript>, dt: f32, land_tick: bool, combat: Res<Combat>, config: Res<crate::config::GameConfig>, lock: Res<crate::camera::LockOn>, mut pad: ResMut<crate::player::PadInput>, camera: Option<Single<&crate::camera::OrbitCamera>>, places: Query<&Transform>, mut wolf: Single<(Entity, &mut Actor, &mut Player)>) {
+fn run_script(mut script: NonSendMut<WolfScript>, dt: f32, land_tick: bool, combat: Res<Combat>, config: Res<crate::config::GameConfig>, lock: Res<crate::view::LockOn>, mut pad: ResMut<crate::player::PadInput>, view: Res<crate::view::View>, places: Query<&Transform>, mut wolf: Single<(Entity, &mut Actor, &mut Player)>) {
     let (me, a, p) = &mut *wolf;
     let target = lock.target.and_then(|t| Some((places.get(t).ok()?.translation - places.get(*me).ok()?.translation).with_y(0.0).normalize_or_zero()));
     let mut damage = a.damage_env.take();
@@ -506,7 +514,7 @@ fn run_script(mut script: NonSendMut<WolfScript>, dt: f32, land_tick: bool, comb
     s.chr.rt.offsets.throw = throw;
     s.chr.rt.offsets.idle = if a.sheathed { 10 } else { 0 };
     let locked = lock.target.is_some();
-    let stick = crate::player::stick_world(input.stick, camera.map_or(0.0, |c| c.yaw));
+    let stick = crate::player::stick_world(input.stick, view.orbit.map_or(0.0, |o| o.0));
     // The game starts Wolf with the map entry (InitState: W_GroundMapEnter); the sim starts him
     // standing: the script's side plays it out first, with no buttons.
     if !s.started {
@@ -570,7 +578,7 @@ fn run_script(mut script: NonSendMut<WolfScript>, dt: f32, land_tick: bool, comb
             (a.t, a.prev_t) = (t, t);
             landed
         });
-        let feet = places.get(*me).ok().map(|t| t.translation.y - crate::player::CAPSULE_HALF_HEIGHT - crate::map::ground_y(t.translation));
+        let feet = places.get(*me).ok().map(|t| t.translation.y - crate::player::CAPSULE_HALF_HEIGHT - crate::terrain::ground_y(t.translation));
         answers(&mut h, a, p, &combat, &config, locked, &input, damage, feet);
         if let Some((st, an, t, prev_t)) = landed {
             (a.state, a.anim, a.t, a.prev_t) = (st, an, t, prev_t);
@@ -587,7 +595,7 @@ fn run_script(mut script: NonSendMut<WolfScript>, dt: f32, land_tick: bool, comb
             h.env.insert((200, None), 0.0);
         }
         // A Mist Raven leap ending on the floor is on it (HKS 557: W_LandAirSubAttackMove).
-        let on_floor = places.get(*me).is_ok_and(|t| t.translation.y <= crate::map::ground_y(t.translation) + crate::player::CAPSULE_HALF_HEIGHT + 0.05);
+        let on_floor = places.get(*me).is_ok_and(|t| t.translation.y <= crate::terrain::ground_y(t.translation) + crate::player::CAPSULE_HALF_HEIGHT + 0.05);
         let leap_down = on_floor && (a.state.starts_with("SubAttackJumpStart_") || a.state.starts_with("AirSubAttackMoveStart_")) && !a.anim.is_empty() && a.t >= d.length(&a.anim);
         // env 248: answers' probe, and the touchdown itself.
         let near = h.env.get(&(248, None)) == Some(&1.0);
@@ -737,11 +745,38 @@ fn run_script(mut script: NonSendMut<WolfScript>, dt: f32, land_tick: bool, comb
             }
         }
     }
+    // The 180 turn in a stop's first 9 frames (BEH_A_STAND_MOVE_QUICK_TURN: ref 14 and |TurnAngle|
+    // > 135, checked every frame with no input needed): locked on, TurnAngle is the target's
+    // angle (exe FUN_1407f0f50, stick or not), so a target behind turns him with the stick at
+    // rest. player.rs turns only by the stick, so the event was never taken and fired every frame
+    // (the replays: 18 of ours, 3 of the game's). Its clip's root carries no turn: the heading
+    // takes the target's way at once, as player.rs does with the stick's.
+    if !landing && a.hp > 0.0 && fired && (a.state.starts_with("StandRunStop") || a.state.starts_with("StandWalkStop")) {
+        let side = events.iter().find_map(|e| match e.as_str() {
+            "W_StandMoveQuickTurnRight180" => Some("Right"),
+            "W_StandMoveQuickTurnLeft180" => Some("Left"),
+            _ => None,
+        });
+        if let (Some(side), Some(to)) = (side, target.filter(|t| *t != Vec3::ZERO)) {
+            let kind = if a.state.starts_with("StandWalkStop") { "StandWalkQuickTurn" } else { "StandRunQuickTurn" };
+            // (its clip: the CMSG's front variant, as player.rs picks it)
+            if let Some(key) = d.anim_key(&format!("{kind}{side}180_F_CMSG_Anime")).map(str::to_string) {
+                a.play(&format!("{kind}{side}180"), &key);
+                a.yaw = crate::player::yaw_of(to);
+                a.move_vel = Vec3::ZERO;
+                s.state_before = a.state.clone();
+                s.anim_before = a.anim.clone();
+            }
+        }
+    }
     // The move's stop (BEH_A_GROUND_MOVE_STOP: W_StandRunStop / W_StandWalkStop, crouched
     // W_CrouchRunStop / W_CrouchWalkStop): player.rs stopped only past its own speed level, so a
     // short tap stayed in the move and the script fired the stop every frame (the replays: 216
     // W_StandRunStop of ours, 167 of the game's).
-    if !landing && a.hp > 0.0 && fired && a.state == "Locomotion" && !a.airborne {
+    // In a quick turn's clip too (its run refs 91 count as the move: the locked turn with the
+    // stick at rest stopped in the script, ours ran it out firing the stop every frame).
+    let turning = crate::player::quick_turn_kind(&a.state).is_some();
+    if !landing && a.hp > 0.0 && fired && (a.state == "Locomotion" || turning) && !a.airborne {
         let stop = events.iter().find_map(|e| match e.as_str() {
             "W_StandRunStop" | "W_CrouchRunStop" => Some(true),
             "W_StandWalkStop" | "W_CrouchWalkStop" => Some(false),

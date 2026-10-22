@@ -134,7 +134,7 @@ fn slots(config: &crate::config::GameConfig) -> Vec<Slot> {
         let id = crate::items::in_slot(config, k);
         v.push(if id > 0 { Slot::Goods(id, crate::items::count(config, id)) } else { Slot::Empty });
     }
-    v.push(Slot::Empty);
+    v.push(if config.player.ninjutsu > 0 { Slot::Goods(config.player.ninjutsu, 0) } else { Slot::Empty });
     v
 }
 
@@ -534,7 +534,8 @@ fn skills(cat: usize, config: &crate::config::GameConfig, texts: &ItemTexts, tab
 /// The Equipped Items picker (Enter on an Equipment slot): what can go in the slot. Tools: the
 /// prosthetic tools the combat data has (combat player.prosthetics, upgrades included); the art:
 /// the combat arts (EquipParamWeapon 5100-7700 with a name); quick items: the Healing Gourd and
-/// the Homeward Idol; Ninjutsu: none yet.
+/// the Homeward Idol; Ninjutsu: the three held (ninjutsu::NINJUTSU, all with
+/// `unlock_all_moves`).
 fn equip_choices(slot: usize, config: &crate::config::GameConfig, combat: &crate::data::Combat, texts: &ItemTexts) -> Vec<Slot> {
     match slot {
         0..=2 => {
@@ -556,6 +557,7 @@ fn equip_choices(slot: usize, config: &crate::config::GameConfig, combat: &crate
             }
             v
         }
+        9 => crate::ninjutsu::NINJUTSU.iter().filter(|&&id| config.player.unlock_all_moves || crate::items::count(config, id) > 0).map(|&id| Slot::Goods(id, 0)).collect(),
         _ => Vec::new(),
     }
 }
@@ -566,6 +568,7 @@ fn is_equipped(slot: usize, choice: &Slot, config: &crate::config::GameConfig) -
         (0..=2, Slot::Weapon(id)) => config.player.prosthetics.contains(id),
         (3, Slot::Weapon(id)) => config.player.combat_art == *id,
         (4..=8, Slot::Goods(id, _)) => config.player.quick_items.contains(id),
+        (9, Slot::Goods(id, _)) => config.player.ninjutsu == *id,
         _ => false,
     }
 }
@@ -589,6 +592,8 @@ fn equip(slot: usize, choice: &Slot, config: &mut crate::config::GameConfig) {
             }
         }
         (3, Slot::Weapon(id)) => config.player.combat_art = *id,
+        // The ninjutsu slot: on, or off when it is the one worn.
+        (9, Slot::Goods(id, _)) => config.player.ninjutsu = if config.player.ninjutsu == *id { 0 } else { *id },
         // A quick item goes in this slot (out of any other); the slot's own comes off.
         (4..=8, Slot::Goods(id, _)) => {
             let q = &mut config.player.quick_items;

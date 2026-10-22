@@ -28,7 +28,8 @@ use bevy::prelude::*;
 
 use crate::config::GameConfig;
 use crate::data::Combat;
-use crate::map::{self, BinBatch, MapMaterial, MapPiece, MaterialCache, MaterialKey, MaterialOptions, Terrain};
+use crate::map::{self, BinBatch, MapMaterial, MapPiece, MaterialCache, MaterialKey, MaterialOptions};
+use crate::terrain::Terrain;
 use bevy::render::view::screenshot::{save_to_disk, Screenshot};
 
 use crate::actor::Actor;
@@ -758,7 +759,7 @@ impl Outpost {
         (Vec3::new(x0, 0.0, z0), Vec3::new(x1 - x0, 0.0, 0.0), Vec3::new(0.0, Self::TERRACE.1.y, z1 - z0))
     }
 
-    fn edges() -> Vec<map::LedgeEdge> {
+    fn edges() -> Vec<crate::traversal::LedgeEdge> {
         let mut e = Vec::new();
         let all = [Vec3::X, Vec3::NEG_X, Vec3::Z, Vec3::NEG_Z];
         for side in all {
@@ -787,7 +788,7 @@ impl Outpost {
 /// A hang edge round box `b`'s top on its `side` face (outward normal), or with `hang` false a
 /// hug edge along its foot; `span` limits it along the face (x for the Z faces, z for the X).
 /// The edge runs along (n.z, 0, -n.x), as the course's outline does.
-fn lip(e: &mut Vec<map::LedgeEdge>, b: (Vec3, Vec3), n: Vec3, hang: bool, span: Option<(f32, f32)>) {
+fn lip(e: &mut Vec<crate::traversal::LedgeEdge>, b: (Vec3, Vec3), n: Vec3, hang: bool, span: Option<(f32, f32)>) {
     let (lo, hi) = b;
     let y = if hang { hi.y } else { lo.y };
     let (p, q) = if n.z != 0.0 {
@@ -807,8 +808,8 @@ fn lip(e: &mut Vec<map::LedgeEdge>, b: (Vec3, Vec3), n: Vec3, hang: bool, span: 
 /// The outpost's grapple points (variation 1, as the gate map's roofs and branches): the hook on
 /// a roof's lip, the landing just inside it, `fwd` the face's outward normal (Wolf fires from
 /// that side). The two houses, the terrace front and the watchtower.
-pub fn construct_grapple() -> Vec<map::GrapplePoint> {
-    let point = |x: f32, top: f32, z: f32, fwd: Vec3| map::GrapplePoint { hook: Vec3::new(x, top - 0.2, z), land: Vec3::new(x, top, z) - fwd * 0.7, fwd, variation: 1 };
+pub fn construct_grapple() -> Vec<crate::traversal::GrapplePoint> {
+    let point = |x: f32, top: f32, z: f32, fwd: Vec3| crate::traversal::GrapplePoint { hook: Vec3::new(x, top - 0.2, z), land: Vec3::new(x, top, z) - fwd * 0.7, fwd, variation: 1 };
     vec![
         point(Outpost::HOUSE.0.x, Outpost::HOUSE.1.y, 22.0, Vec3::NEG_X),
         point(11.0, Outpost::HOUSE.1.y, Outpost::HOUSE.0.z, Vec3::NEG_Z),
@@ -981,10 +982,32 @@ const DOOR_HALF: f32 = 3.0;
 pub const ARENA_SPOT: Vec3 = Vec3::new(0.0, 0.0, -2.0 * HALF);
 pub const ARENA_YAW: f32 = std::f32::consts::PI;
 
-/// An outpost guard (`construct_patrols`): always the real AI (T leaves it be), so it fights
-/// once it finds Wolf.
-#[derive(Component)]
-pub struct CourtyardGuard;
+// The outpost guards (`construct_patrols`) are encounter.rs `PatrolGuard`s.
+
+/// The combat core's map hooks (encounter.rs) for this game's test maps: the Construct's
+/// guards, duel spot, Sculptor, bushes and passive enemy; the sandbox map's line-up.
+pub fn map_hooks() -> crate::encounter::MapHooks {
+    fn on_construct(c: &GameConfig) -> bool {
+        crate::map::map_id(c).as_deref() == Some(CONSTRUCT_ID)
+    }
+    fn extra_chrs(c: &GameConfig) -> Vec<(String, Option<i64>)> {
+        let guards = on_construct(c).then(|| (GUARD_CHR.to_string(), None));
+        guards.into_iter().chain(extra_kinds(c).into_iter().map(|k| (k, None))).collect()
+    }
+    fn patrols(c: &GameConfig) -> Option<(&'static str, Vec<(Vec3, f32, crate::ai::Patrol)>)> {
+        on_construct(c).then(|| (GUARD_CHR, construct_patrols()))
+    }
+    fn duel_spot(c: &GameConfig) -> Option<(Vec3, f32)> {
+        on_construct(c).then_some((ARENA_SPOT, ARENA_YAW))
+    }
+    fn npc(c: &GameConfig) -> Option<(&'static str, i64)> {
+        on_construct(c).then_some((crate::sculptor::CHR, crate::sculptor::NPC_ROW))
+    }
+    fn hold() -> bool {
+        ON_CONSTRUCT.load(std::sync::atomic::Ordering::Relaxed)
+    }
+    crate::encounter::MapHooks { extra_chrs, patrols, duel_spot, npc, hidden: in_bush, hold, ..crate::encounter::NONE }
+}
 
 /// The outpost's guards (chr `GUARD_CHR`): where each starts (its height on the ground or the
 /// terrace / tower), facing, and its round (ai::Patrol; a 2 s look-around wait at each point).
@@ -1035,15 +1058,15 @@ impl Patch {
 /// A hug edge along a wall's foot from `p0` to `p1` (on the floor, at the face), `n` the face's
 /// outward normal: 0.1 m out and 0.15 m up, as the game's records sit, `c` on the wall side
 /// (docking.rs: the wall is on c's side). Variation 1: peek at both ends.
-fn hug_edge(p0: Vec3, p1: Vec3, n: Vec3) -> map::LedgeEdge {
+fn hug_edge(p0: Vec3, p1: Vec3, n: Vec3) -> crate::traversal::LedgeEdge {
     let (a, b) = (p0 + n * 0.1 + Vec3::Y * 0.15, p1 + n * 0.1 + Vec3::Y * 0.15);
-    map::LedgeEdge { a, b, c: (a + b) * 0.5 - n * 0.2 - Vec3::Y * 0.17, kind: 3, variation: 1 }
+    crate::traversal::LedgeEdge { a, b, c: (a + b) * 0.5 - n * 0.2 - Vec3::Y * 0.17, kind: 3, variation: 1 }
 }
 
 /// A hang edge along a lip from `p0` to `p1` (at the top), `n` the face's outward normal; `c` on
 /// the wall side, under the lip.
-fn hang_edge(p0: Vec3, p1: Vec3, n: Vec3) -> map::LedgeEdge {
-    map::LedgeEdge { a: p0, b: p1, c: (p0 + p1) * 0.5 - n * 0.3 - Vec3::Y * 0.5, kind: 2, variation: 0 }
+fn hang_edge(p0: Vec3, p1: Vec3, n: Vec3) -> crate::traversal::LedgeEdge {
+    crate::traversal::LedgeEdge { a: p0, b: p1, c: (p0 + p1) * 0.5 - n * 0.3 - Vec3::Y * 0.5, kind: 2, variation: 0 }
 }
 
 /// The stairs up the L platform's west side (x -1.5 .. 2, z -12 .. -10), 7 steps of 0.43 m:
@@ -1068,7 +1091,7 @@ pub fn parkour_stairs() -> Vec<(Vec3, Vec3)> {
 ///    wall-to-wall chained wall jumps (the map lifts the one-a-flight limit:
 ///    docking::WALL_JUMP_LIMIT).
 /// The arena's own walls (5 m) take wall jumps anywhere.
-pub fn parkour_course() -> (Vec<(Vec3, Vec3)>, Vec<map::LedgeEdge>) {
+pub fn parkour_course() -> (Vec<(Vec3, Vec3)>, Vec<crate::traversal::LedgeEdge>) {
     let mut boxes = Vec::new();
     let mut edges = Vec::new();
     // The chasm's lips (hang ledges facing into it) and its grapple posts.

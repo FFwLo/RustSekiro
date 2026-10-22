@@ -57,7 +57,7 @@ fn store_sim_pose(mut q: Query<(&Transform, &mut SimPose), With<Actor>>) {
         pose.cur = Some((tf.translation, tf.rotation));
         // A teleport inside the step (Wolf's reset, an event or script warp) is drawn as one,
         // not as a slide across the map (map::TELEPORT: longer than any one-tick move).
-        if pose.prev.is_none_or(|p| p.0.distance(tf.translation) > crate::map::TELEPORT) {
+        if pose.prev.is_none_or(|p| p.0.distance(tf.translation) > crate::terrain::TELEPORT) {
             pose.prev = pose.cur;
         }
     }

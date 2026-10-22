@@ -252,7 +252,7 @@ pub(crate) fn a_dead_wolf_above_the_floor_falls() {
     let floor = {
         let world = app.world_mut();
         let (mut a, mut tf) = world.query_filtered::<(&mut Actor, &mut Transform), With<Player>>().single_mut(world).unwrap();
-        let floor = crate::map::ground_y(tf.translation) + crate::player::CAPSULE_HALF_HEIGHT;
+        let floor = crate::terrain::ground_y(tf.translation) + crate::player::CAPSULE_HALF_HEIGHT;
         tf.translation.y = floor + 2.0;
         a.hp = 0.0;
         floor
@@ -1055,6 +1055,42 @@ pub(crate) fn attack_out_of_a_sprint_loop_is_a_sprint_attack() {
     assert!(seen.iter().any(|s| s.starts_with("SprintAttack_")), "{seen:?}");
 }
 
+#[test]
+pub(crate) fn attack_just_after_the_sprint_ends_is_still_a_sprint_attack() {
+    // The sprint's SpEffect 100304 ends into 100303 (ref 1 for 0.2 s): an attack in the first
+    // ticks of StandMoveStartFromSprint is a SprintAttack, as in rec_20261015_234913 @488.
+    let mut app = app();
+    move_enemy_far(&mut app);
+    {
+        let mut pad = app.world_mut().resource_mut::<PadInput>();
+        pad.dodge_held = true;
+        pad.stick = Vec2::new(0.0, -1.0);
+        pad.press(Action::Step);
+    }
+    let mut seen = Vec::<String>::new();
+    let mut since = None;
+    for _ in 0..240 {
+        app.update();
+        let s = player_state(&mut app).0;
+        if seen.last() != Some(&s) {
+            seen.push(s.clone());
+        }
+        if s == "SprintLoop" || s == "SprintStartFromStep_F" {
+            app.world_mut().resource_mut::<PadInput>().dodge_held = s != "SprintLoop";
+        }
+        if since.is_none() && s == "StandMoveStartFromSprint" {
+            since = Some(0);
+        }
+        if let Some(n) = since.as_mut() {
+            *n += 1;
+            if *n == 4 {
+                app.world_mut().resource_mut::<PadInput>().press(Action::Attack);
+            }
+        }
+    }
+    assert!(seen.iter().any(|s| s.starts_with("SprintAttack_")), "{seen:?}");
+}
+
 /// Round 26: the sliding sprint deflect only with ref 1 up (c0000_transition.lua 4443-4458):
 /// out of SprintLoop it is SprintToDeflectGuard; out of a sprint attack's recovery (a050_302011,
 /// guard accepted at frames 33-68, no ref 1) the plain StandToDeflectGuard.
@@ -1556,4 +1592,51 @@ pub(crate) fn a_jump_press_leaves_the_hold_art() {
         }
     }
     assert!(seen.iter().any(|s| s.contains("Jump")), "{seen:?}");
+}
+
+/// The attack out of DeflectGuardToStandMoveRun (ref 231, TAE frames 0-9 = 18 ticks) is
+/// GroundAttackCombo1Reverse until 19 ticks after the release, Combo1 from 20 on, as in the
+/// recordings: the HKS sees a TAE SpEffect one TAE frame after its window (hks_wolf env 3036).
+fn attack_after_deflect_release(k: usize) -> Vec<String> {
+    let mut app = app();
+    move_enemy_far(&mut app);
+    {
+        let mut pad = app.world_mut().resource_mut::<PadInput>();
+        pad.press(Action::Guard);
+        pad.guard_held = true;
+    }
+    for _ in 0..40 {
+        app.update();
+    }
+    {
+        let mut pad = app.world_mut().resource_mut::<PadInput>();
+        pad.stick = Vec2::new(0.0, -1.0);
+        pad.guard_held = false;
+    }
+    let (mut seen, mut n) = (Vec::<String>::new(), None);
+    for _ in 0..40 {
+        app.update();
+        let s = player_state(&mut app).0;
+        if seen.last() != Some(&s) {
+            seen.push(s.clone());
+        }
+        if n.is_none() && s.starts_with("DeflectGuardToStand") {
+            n = Some(0);
+        }
+        if let Some(i) = n.as_mut() {
+            *i += 1;
+            if *i == k {
+                app.world_mut().resource_mut::<PadInput>().press(Action::Attack);
+            }
+        }
+    }
+    seen
+}
+
+#[test]
+pub(crate) fn attack_late_in_the_deflect_release_is_still_the_reverse_combo() {
+    let late = attack_after_deflect_release(19);
+    assert!(late.iter().any(|s| s == "GroundAttackCombo1Reverse"), "{late:?}");
+    let after = attack_after_deflect_release(21);
+    assert!(after.iter().any(|s| s == "GroundAttackCombo1") && !after.iter().any(|s| s == "GroundAttackCombo1Reverse"), "{after:?}");
 }

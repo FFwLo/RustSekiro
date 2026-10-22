@@ -66,7 +66,7 @@ mod imp {
         }
         text += &format!("\n{}", std::backtrace::Backtrace::force_capture());
         eprintln!("{text}");
-        if let Ok(mut f) = std::fs::OpenOptions::new().append(true).create(true).open(super::super::log_path()) {
+        if let Ok(mut f) = std::fs::OpenOptions::new().append(true).create(true).open(crate::host_app::log_path()) {
             use std::io::Write;
             let _ = writeln!(f, "{text}");
         }

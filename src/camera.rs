@@ -277,15 +277,9 @@ fn cam_slot(combat: &Combat, slot: i64) -> (i64, i64, f32, f32) {
     (n("lockParamId") as i64, n("camParamId") as i64, n("beginTime") as f32, n("endTime") as f32)
 }
 
-#[derive(Resource, Default)]
-pub struct LockOn {
-    pub target: Option<Entity>,
-}
-
-/// Set when Wolf is placed (the first frame, a retry): the camera jumps behind him at the
-/// starting pitch instead of chasing there from where it was.
-#[derive(Resource)]
-pub struct CameraSnap(pub bool);
+// The lock target and the snap are the combat core's (view.rs); the camera sets them and fills
+// `View` after it moves (`publish_view`).
+pub use crate::view::{CameraSnap, LockOn};
 
 /// The camera's pitch when it is placed behind Wolf.
 /// gap: hand-set; the game's starting camera angle (on load / at a checkpoint) is not traced.
@@ -315,14 +309,39 @@ pub(crate) fn add_shakes(app: &mut App) {
 impl Plugin for CameraPlugin {
     fn build(&self, app: &mut App) {
         add_shakes(app);
-        app.init_resource::<LockOn>()
-            .insert_resource(CameraSnap(true))
-            .add_systems(Startup, spawn_camera)
+        app.add_plugins(crate::view::ViewPlugin)
+            .add_systems(Startup, (spawn_camera, publish_view).chain())
             .add_systems(
 
                 PostUpdate,
-                (capture_mouse, toggle_lock, orbit_with_mouse, orbit_with_stick, follow_player, apply_shakes, fade_player).chain().before(TransformSystems::Propagate),
+                (shot_knobs, capture_mouse, toggle_lock, orbit_with_mouse, orbit_with_stick, follow_player, apply_shakes, fade_player, publish_view).chain().before(TransformSystems::Propagate),
             );
+    }
+}
+
+/// The camera as the combat core reads it (view.rs `View`): the orbit and the camera's place.
+fn publish_view(cam: Query<(&OrbitCamera, &Transform)>, mut view: ResMut<crate::view::View>) {
+    *view = match cam.single() {
+        Ok((oc, t)) => crate::view::View { orbit: Some((oc.yaw, oc.pitch)), eye: Some((t.translation, t.rotation)) },
+        Err(_) => crate::view::View::default(),
+    };
+}
+
+/// Screenshot knobs that hold the camera: SHINOBI_SKILL_CAM="yaw,pitch" [deg] (ffx.rs's skill
+/// shots), SHINOBI_FXR_TEST (fxr.rs's effect shots: pitch 5 deg).
+fn shot_knobs(mut cam: Query<&mut OrbitCamera>) {
+    let Ok(mut oc) = cam.single_mut() else { return };
+    if std::env::var("SHINOBI_SKILL").is_ok() {
+        if let Ok(v) = std::env::var("SHINOBI_SKILL_CAM") {
+            let v: Vec<f32> = v.split(',').filter_map(|x| x.parse().ok()).collect();
+            if let Some(&y) = v.first() {
+                oc.yaw = y.to_radians();
+                oc.pitch = v.get(1).copied().unwrap_or(10.0).to_radians();
+            }
+        }
+    }
+    if std::env::var("SHINOBI_FXR_TEST").is_ok() {
+        oc.pitch = 5f32.to_radians();
     }
 }
 
@@ -1007,10 +1026,10 @@ pub(crate) fn follow_player(
     let mut dist = (pos - orbit.focus).length();
     // The exe's cast keeps max(hit, 1e-5) of the arm (14073.c 12318-12395): no minimum distance
     // (it was 0.3 m here); Wolf fades instead (`cam_fade_step`).
-    if let Some(hit) = crate::map::raycast(orbit.focus, arm, dist + radius) {
+    if let Some(hit) = crate::terrain::raycast(orbit.focus, arm, dist + radius) {
         // The map's walls and floors (camCastSphereRadius stand-in: the ray stops short by it).
         dist = dist.min((hit - radius).max(1e-5));
-    } else if arm.y < -1e-3 && crate::map::terrain().is_none() {
+    } else if arm.y < -1e-3 && crate::terrain::terrain().is_none() {
         let room = (orbit.focus.y - radius) / -arm.y;
         dist = dist.min(room.max(1e-5));
     }
