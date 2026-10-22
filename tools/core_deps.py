@@ -12,7 +12,7 @@ import sys
 CORE = {
     "actor", "ai", "anim", "cloth", "combat", "config", "data", "docking", "emevd", "encounter", "enemy",
     "enemy_bullet", "ffx", "form", "fxr", "gore", "guard", "hkb_runtime", "hks", "hks_enemy",
-    "hks_wolf", "interp", "items", "model", "ninjutsu", "paths", "player", "prosthetic", "seat", "sound_rules", "status", "stealth", "swim", "terrain", "traversal",
+    "hks_wolf", "interp", "items", "model", "navmesh", "ninjutsu", "paths", "player", "prosthetic", "seat", "sound_rules", "status", "stealth", "swim", "terrain", "traversal",
     "perf", "place", "vfx", "view", "wire",
 }
 # Test-only modules (#[cfg(test)] in lib.rs) are not links.

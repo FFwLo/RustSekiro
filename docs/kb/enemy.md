@@ -54,7 +54,7 @@ Dated findings, oldest first. Append new entries at the end.
   Observed (headless trace): SidewayMove, backstep 5211, 3014 charge, step-in 5200 -> 3008>3009, 3007, 3006, 3008>3067.
   Character push-out added (NpcParam hitRadius 0.5 + player 0.4 gap). T toggles real AI; passive = practice partner.
   Goal.Parry stays in Rust (tested); Goal.Interrupt runs for observed SpEffects (90, 109220/1, 200210/1/50).
-  Gaps: GetNinsatsuNum (1), observe areas, team/platoon, navmesh queries (open floor assumed).
+  Gaps: GetNinsatsuNum (1), observe areas, team/platoon, navmesh queries (open floor assumed; read from the navmesh on sekiro-rs maps since 2026-10-23).
 - 2026-10-06: Healing Gourd (E): goods 3000 -> SpEffect 3000 changeHpEstusFlaskRate -40 = 40 % max HP, applied at the
   drink's TAE 65 ConsumeCurrentGoods (ItemGourdDrink frame 21, Repeat frame 9); walk while drinking (flag 90),
   item cancel flag 31, empty gourd -> ItemGourdDrinkFailed; config player.gourd_charges (3). INTERUPT_UseItem is fed
@@ -763,7 +763,7 @@ slide: 0.6 -> 0.09 ms a call. Castle idol: no world 57 fps; 64 enemies (60 m) 9 
 now in the frame's Update / render side (models, skinning, sounds per enemy; not yet measured per
 system) and resolve's Wolf x enemy windows (2.7 ms per tick). gaps: no story flags (a new game's world), objects / SFX / warps /
 cutscenes / bullets of these events not run, the game streams by block and backread, not by
-distance; enemies leave routes without a navmesh.
+distance; enemies leave routes without a navmesh (on sekiro-rs maps they walk it since 2026-10-23, Navmesh below).
 
 ## The game's enemy script beside enemy.rs (2026-10-20)
 
@@ -937,3 +937,29 @@ More of the replay (same day):
   a deathblown enemy back to 1273 HP and sent the game's script to W_ResurrectionIdleUpward
   (enemy_lockstep posture-break test). The lockstep's LOCKSTEP_DEBUG line now prints HP, death and
   the chained SpEffects.
+
+## Navmesh (2026-10-23, src/navmesh.rs, sr_map.rs navmesh)
+The game's own navmesh on sekiro-rs's map: each block's `nvmhktbnd` holds one Havok
+`hkaiNavMesh` per piece (`n<area>_<model:06>.hkx`; vertices, edges with `oppositeFace`, faces
+with `startEdgeIndex` / `numEdges`), placed by the MSB map offset (FromSoftware space mirrored
+across X, the offset's yaw negated; m11_00 has (90, 3, -40) at 20 deg). The block's NVA (NVMA v5)
+lists the pieces it uses (section 0, 0x60-byte rows: NameID +0x30, ModelID +0x34; the bundle
+also holds pieces no row names, and 3 rows around the Outskirts name a piece it does not hold)
+and joins them: section 4 connectors (main NameID, target NameID, point count, condition count,
+point index, condition index), section 5 points (main face, main edge, target face, target
+edge; the edges sit on each other in the world), section 6 conditions (not read, all open).
+No connector names another block, and many pieces have none (m11_00: 61 of 166): islands, as in
+the game. Outskirts neighbourhood: 129,998 polygons, built in 0.3-0.6 s at map load; 176 of the
+block's 188 enemies stand on it, 155 on areas over 200 polygons; a path search ~0.3 ms.
+Search: A* over shared edges (each step the distance between edge middles), then the simple
+stupid funnel; a connected-area id per polygon ends searches between areas at once.
+AI (ai.rs): CheckDoesExistPath(WithSetPoint) is `path(me, spot)` (spot = target + AI_DIR
+offset; off the mesh = no path); IsExistMeshOnLine is the mesh line length >= dist;
+GetExistMeshOnLineDistSpecifyAngle(Ex) reads the mesh line. AI_DIR_TYPE ToF / ToB / ToL / ToR
+are about the line from the AI chr to the target (ToB back at the AI chr), inferred from
+102000_battle.lua. Forward moves (MoveToSomewhere, KeepDist forward) and BackToHome head for
+the next corner of the walk, found again every 0.5 s or when the spot moves 1 m. Without a
+navmesh (own map, arenas) or with the AI chr off it, everything answers as before.
+gaps: edge flags and user edges (jumps, ladders), connector conditions, the cluster graph,
+`onav` object meshes, the exe's path costs and refresh rule, WithSetPoint's kept point,
+cross-block links.

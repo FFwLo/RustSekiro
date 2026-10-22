@@ -462,7 +462,22 @@ struct AiState {
     trigger_observers: Vec<i64>,
     trigger_in: Vec<(u64, i64, i64)>,
     trigger_changed: (Vec<(i64, i64)>, Vec<(i64, i64)>),
+    /// The navmesh walk the last forward move steered along (AiState::steer).
+    route: Option<Route>,
 }
+
+/// A navmesh walk to a move's spot `to`: the corners still ahead (empty: no walk there) and how
+/// long ago it was found.
+struct Route {
+    to: Vec3,
+    corners: Vec<Vec3>,
+    age: f64,
+}
+
+/// How often a moving AI chr finds its walk again, and how far its spot may move before it does.
+/// gap: the exe's path refresh rule is not traced.
+const REPLAN_SECS: f64 = 0.5;
+const REPLAN_MOVE: f32 = 1.0;
 
 /// An enemy's MSB patrol route in world space (enemy.rs PatrolRoute) and where it is on it:
 /// the exe keeps it in AiMovePointCtrl (AiThink +0x9060): the current point at +0x9078 and the
@@ -600,6 +615,46 @@ impl AiState {
     fn event_of(&self, id: Option<&Value>) -> Option<&EventView> {
         if is(id, self.k.target_event) { self.w.event.as_ref() } else { None }
     }
+
+    /// The level direction an AI_DIR_TYPE names at `from` facing `fwd` (common_ai_define.lua:
+    /// CENTER 0, F 1, B 2, L 3, R 4 about the facing; ToF 5, ToB 6, ToL 7, ToR 8 about the line
+    /// from the AI chr to `from`, so ToB points back at the AI chr). Inferred from the scripts:
+    /// 102000_battle.lua's IsExistMeshOnLine(TARGET_ENE_0, ToB, GetDist(TARGET_ENE_0)) asks
+    /// whether ground joins the target and the AI chr. Zero for CENTER, Top or no facing.
+    fn dir_axis(&self, from: Vec3, fwd: Vec3, dir: f64) -> Vec3 {
+        let toward = (from - self.w.me).with_y(0.0).normalize_or_zero();
+        let toward = if toward == Vec3::ZERO { (self.w.target - self.w.me).with_y(0.0).normalize_or_zero() } else { toward };
+        let (base, k) = if dir >= 5.0 { (toward, dir - 4.0) } else { (fwd.with_y(0.0).normalize_or_zero(), dir) };
+        let right = base.cross(Vec3::Y);
+        match k as i64 {
+            1 => base,
+            2 => -base,
+            3 => -right,
+            4 => right,
+            _ => Vec3::ZERO,
+        }
+    }
+
+    /// Where a forward move toward `to` heads: the next corner of the navmesh walk there, found
+    /// again every [`REPLAN_SECS`] or when `to` moves [`REPLAN_MOVE`]; `to` itself without a
+    /// navmesh, off it, or with no walk (the move then heads straight, as before).
+    fn steer(&mut self, to: Vec3) -> Vec3 {
+        let Some(mesh) = crate::navmesh::current() else { return to };
+        let me = self.w.me;
+        if self.route.as_ref().is_none_or(|r| r.age >= REPLAN_SECS || r.to.distance(to) > REPLAN_MOVE) {
+            let corners = mesh.path(me, to).unwrap_or_default();
+            self.route = Some(Route { to, corners, age: 0.0 });
+        }
+        let Some(r) = self.route.as_mut() else { return to };
+        // Corners reached drop off; the last one is `to`'s spot on the mesh.
+        while r.corners.len() > 1 && (r.corners[0] - me).with_y(0.0).length() < 0.5 {
+            r.corners.remove(0);
+        }
+        match r.corners.as_slice() {
+            [next, _, ..] => *next,
+            _ => to,
+        }
+    }
 }
 
 fn key(v: Option<&Value>) -> i64 {
@@ -610,7 +665,7 @@ fn key(v: Option<&Value>) -> i64 {
 /// first collision `ray` hits at centre height less `radius`, or the first 0.5 m step whose
 /// `floor` (feet height under a centre) jumps more than map::STEP_HEIGHT up or down (a ledge
 /// or a cliff face ends the navmesh there). Inferred: the exe walks the navmesh
-/// (GetExistMeshOnLineDistSpecifyAngle), which we do not have.
+/// (GetExistMeshOnLineDistSpecifyAngle); this stands in where none is installed.
 pub(crate) fn mesh_line_dist(from: Vec3, dir: Vec3, dist: f32, radius: f32, floor: impl Fn(Vec3) -> f32, ray: impl Fn(Vec3, Vec3, f32) -> Option<f32>) -> f32 {
     const STEP: f32 = 0.5;
     let wall = ray(from, dir, dist + radius).map_or(dist, |h| (h - radius).clamp(0.0, dist));
@@ -1340,16 +1395,42 @@ impl AiState {
             // keeps its distance then, 115000_battle.lua:281, 101000_logic.lua:6); no NPC locks on.
             "IsLockOnTarget" => boolean(!is(a.first(), self.k.target_self) && is(a.get(1), self.k.target_self) && w.locked_on),
             "IsChangeInitialPosition" => boolean(self.patrol.as_ref().is_some_and(|p| p.new_home.is_some())),
-            // CheckDoesExistPath too: the fallback's number 0 is neither `== true` nor `== false` in Lua
-            // (126000 Act16, 720000 approach branches never ran). gap: no navmesh, so a path always
-            // exists; 101000 / 136000_battle.lua's no-path branch (acts 7 / 27) still runs for Wolf
-            // hanging or perched through its SpEffect twins 109220 / 109221.
-            "IsExistMeshOnLine" | "CheckDoesExistPath" | "CheckDoesExistPathWithSetPoint" | "IsFinishAttackCoolTime" => boolean(true),
+            // Booleans, never the fallback's number 0, which is neither `== true` nor `== false` in
+            // Lua (126000 Act16, 720000 approach branches never ran).
+            "IsFinishAttackCoolTime" => boolean(true),
+            // (from, AI_DIR_TYPE, dist): whether the navmesh runs `dist` from `from` along the
+            // direction. Without a navmesh, or with `from` off it (Wolf in the air), true as before.
+            "IsExistMeshOnLine" => {
+                let (from, fwd) = self.frame_of(a.first());
+                let dir = self.dir_axis(from, fwd, n(1));
+                let dist = n(2) as f32;
+                let mesh = crate::navmesh::current();
+                boolean(match mesh.as_deref() {
+                    Some(m) if dir != Vec3::ZERO && m.locate(from).is_some() => m.line_dist(from, dir, dist, 0.0) >= dist - 0.01,
+                    _ => true,
+                })
+            }
+            // (target, AI_DIR_TYPE, dist, _): whether the AI chr can walk to the spot `dist` from
+            // the target along the direction (the scripts pass F, 0: the target itself). With the
+            // spot off the navmesh (Wolf hanging or perched) there is none; 101000 /
+            // 136000_battle.lua's no-path branch (acts 7 / 27) also runs through the SpEffect twins
+            // 109220 / 109221. Without a navmesh, or with the AI chr off it, true as before.
+            // gap: WithSetPoint's set point (the spot the next move heads for) is not kept.
+            "CheckDoesExistPath" | "CheckDoesExistPathWithSetPoint" => {
+                let (from, fwd) = self.frame_of(a.first());
+                let spot = from + self.dir_axis(from, fwd, n(1)) * n(2) as f32;
+                let mesh = crate::navmesh::current();
+                boolean(match mesh.as_deref() {
+                    Some(m) if m.locate(self.w.me).is_some() => m.path(self.w.me, spot).is_some(),
+                    _ => true,
+                })
+            }
             // (from, angle, dist, AI_SPA_DIR_TYPE[, radius, _]): how far the walkable ground goes from
             // `from` along the angle off the direction to the target (TargetF / ToTarget; Absolute
             // off +z). SpaceCheck (common_common_func_FDP.lua:43-50) compares it with 0.95 x the
-            // step / LeaveTarget distance. gap: no navmesh; the map collision stands in
-            // (mesh_line_dist), and without a map the whole distance is free.
+            // step / LeaveTarget distance. Read along the navmesh; without one, or with `from` off
+            // it, the map collision stands in (mesh_line_dist), and without a map the whole
+            // distance is free.
             "GetExistMeshOnLineDistSpecifyAngleEx" | "GetExistMeshOnLineDistSpecifyAngle" => {
                 let (from, fwd) = self.frame_of(a.first());
                 let to_t = (self.w.target - from).with_y(0.0).normalize_or_zero();
@@ -1358,8 +1439,11 @@ impl AiState {
                 let dir = (base * ang.cos() + base.cross(Vec3::Y) * ang.sin()).normalize_or_zero();
                 let radius = if name.ends_with("Ex") { n(4) as f32 } else { 0.0 };
                 let dist = n(2) as f32;
+                let mesh = crate::navmesh::current();
                 let free = if dir == Vec3::ZERO {
                     dist
+                } else if let Some(m) = mesh.as_deref().filter(|m| m.locate(from).is_some()) {
+                    m.line_dist(from, dir, dist, radius)
                 } else {
                     let floor = |c: Vec3| crate::terrain::ground_y(c);
                     mesh_line_dist(from, dir, dist, radius, floor, crate::terrain::raycast)
@@ -1662,6 +1746,11 @@ impl AiState {
                 if !self.can_act(78) {
                     return CONTINUE;
                 }
+                // A forward move toward its spot walks the navmesh around what is in the way (a
+                // LeaveTarget turned away heads off, not to a spot).
+                if mv == 'F' && n != Native::Leave {
+                    at = Some(self.steer(at.unwrap_or(self.w.target)));
+                }
                 self.cmd.mv = Some(mv);
                 self.cmd.walk = walk;
                 self.cmd.face = true;
@@ -1677,7 +1766,7 @@ impl AiState {
                     self.cmd.mv = Some('F');
                     self.cmd.walk = true;
                     self.cmd.face = true;
-                    self.cmd.at = Some(self.w.home);
+                    self.cmd.at = Some(self.steer(self.w.home));
                 }
                 CONTINUE
             }
@@ -2158,6 +2247,7 @@ impl Brain {
             trigger_observers: Vec::new(),
             trigger_in: Vec::new(),
             trigger_changed: (Vec::new(), Vec::new()),
+            route: None,
             k: Consts {
                 target_self: -1.0,
                 target_ene_0: 0.0,
@@ -2251,6 +2341,9 @@ impl Brain {
         }
         for v in st.id_timers.values_mut().chain(st.atk_passed.values_mut()) {
             *v += dt;
+        }
+        if let Some(r) = st.route.as_mut() {
+            r.age += dt;
         }
         if let Some(ez) = s.ez_started {
             st.atk_passed.insert(ez, 0.0);
@@ -2683,6 +2776,42 @@ mod tests {
         assert!(matches!(ex(&mut b, &ene, &me, &f), Value::Bool(true)), "Wolf faces me");
         let path = b.st.ai_method_raw("CheckDoesExistPath", &[ene.clone(), f.clone(), Value::Num(0.0), Value::Num(0.0)]);
         assert!(matches!(path.first(), Some(Value::Bool(true))));
+    }
+
+    /// With a navmesh (an L of unit squares, its inside corner at (5, 0, 1)): CheckDoesExistPath
+    /// answers whether the target's spot can be walked to, IsExistMeshOnLine and
+    /// GetExistMeshOnLineDistSpecifyAngle read how far the ground runs, and a forward move to the
+    /// far end of the L heads for the corner first.
+    #[test]
+    fn the_mesh_queries_and_moves_read_the_navmesh() {
+        let Some(mut b) = load(10100000, 1.0, 3) else { return };
+        let (pieces, joins) = crate::navmesh::ell(4);
+        crate::navmesh::install_here(Some(crate::navmesh::NavMesh::build(&pieces, &joins)));
+        let goal = Vec3::new(5.5, 0.0, 5.5);
+        b.st.w = Snapshot { me: Vec3::new(0.5, 0.0, 0.5), fwd: Vec3::X, target: goal, target_fwd: Vec3::NEG_Z, ..Snapshot::battle() };
+        let (me, ene) = (Value::Num(b.st.k.target_self), Value::Num(0.0));
+        let ask = |b: &mut Brain, f: &str, a: &[f64], who: &Value| {
+            let args: Vec<Value> = std::iter::once(who.clone()).chain(a.iter().map(|&x| Value::Num(x))).collect();
+            b.st.ai_method_raw(f, &args).into_iter().next().unwrap()
+        };
+        assert!(matches!(ask(&mut b, "CheckDoesExistPath", &[1.0, 0.0, 0.0], &ene), Value::Bool(true)));
+        // Along the strip (F) the ground runs 5.5 m; to the left (-Z here) half a metre.
+        assert!(matches!(ask(&mut b, "IsExistMeshOnLine", &[1.0, 5.0], &me), Value::Bool(true)));
+        assert!(matches!(ask(&mut b, "IsExistMeshOnLine", &[1.0, 6.0], &me), Value::Bool(false)));
+        assert!(matches!(ask(&mut b, "IsExistMeshOnLine", &[3.0, 2.0], &me), Value::Bool(false)));
+        // (from, angle, dist, Absolute): straight +X, as far as the mesh goes.
+        let free = ask(&mut b, "GetExistMeshOnLineDistSpecifyAngle", &[-90.0, 20.0, 2.0], &me).num().unwrap();
+        assert!((free - 5.5).abs() < 1e-3, "{free}");
+        // The move heads for the corner, then once there for the goal.
+        assert!(b.st.steer(goal).distance(Vec3::new(5.0, 0.0, 1.0)) < 1e-3);
+        b.st.w.me = Vec3::new(5.2, 0.0, 1.2);
+        b.st.route.as_mut().unwrap().age = REPLAN_SECS;
+        assert_eq!(b.st.steer(goal), goal);
+        // Wolf off the mesh: no path to him.
+        b.st.w.target = Vec3::new(20.0, 0.0, 20.0);
+        assert!(matches!(ask(&mut b, "CheckDoesExistPath", &[1.0, 0.0, 0.0], &ene), Value::Bool(false)));
+        crate::navmesh::install_here(None);
+        assert!(matches!(ask(&mut b, "CheckDoesExistPath", &[1.0, 0.0, 0.0], &ene), Value::Bool(true)), "no navmesh: as before");
     }
 
     /// An observed SpEffect that ends raises INTERUPT_InactivateSpecialEffect with its id

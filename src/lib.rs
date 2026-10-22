@@ -102,6 +102,7 @@ mod shot;
 #[cfg(feature = "embed")]
 mod skill_tree;
 mod model;
+mod navmesh;
 mod paths;
 mod perf;
 #[cfg(feature = "embed")]

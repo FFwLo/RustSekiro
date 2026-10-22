@@ -150,6 +150,10 @@ pub fn install(app: &mut App) {
             }
             Err(e) => warn!("sekiro-rs map {id}: no play-world collision ({e}); the arena's kept"),
         }
+        let t0 = std::time::Instant::now();
+        let nav = navmesh(&cache, &layouts);
+        info!("sekiro-rs map {id}: navmesh, {} polygons, in {:.1} s", nav.polygon_count(), t0.elapsed().as_secs_f32());
+        crate::navmesh::install(Some(nav));
         app.insert_resource(sekiro_rs::map::upload_budget());
         sekiro_rs::map::add_map(
             app,
@@ -182,6 +186,127 @@ pub fn install(app: &mut App) {
     } else {
         app.add_systems(Update, follow_wolf);
     }
+}
+
+/// One navmesh piece (`hkaiNavMesh` tagfile) in its block's FromSoftware space: vertices, each
+/// face's corners (its edges' `a` in order) and the face across each edge (`oppositeFace`, all
+/// ones on the piece's boundary), and every edge's ends (`a`, `b`) for the NVA connectors, which
+/// name edges by index. sekiro-rs's `hkx::navmesh` reads the vertices and corners only.
+fn navmesh_piece(bytes: &[u8]) -> Result<(crate::navmesh::Piece, Vec<[u32; 2]>), String> {
+    use sekiro_formats::hkx::tagfile::TagFile;
+    let e = |e: sekiro_formats::Error| e.to_string();
+    let file = TagFile::parse(bytes, None).map_err(e)?;
+    let nav = file.first("hkaiNavMesh").map_err(e)?;
+    let raw = nav.get("vertices").and_then(|v| v.array_bytes()).map_err(e)?;
+    let f = |c: &[u8], i: usize| f32::from_le_bytes(c[i * 4..i * 4 + 4].try_into().unwrap());
+    let vertices: Vec<Vec3> = raw.chunks_exact(16).map(|c| Vec3::new(f(c, 0), f(c, 1), f(c, 2))).collect();
+    let edges = nav
+        .get("edges")
+        .and_then(|v| v.elements())
+        .map_err(e)?
+        .iter()
+        .map(|edge| Ok(([edge.get("a")?.int()? as u32, edge.get("b")?.int()? as u32], edge.get("oppositeFace")?.int()?)))
+        .collect::<Result<Vec<_>, sekiro_formats::Error>>()
+        .map_err(e)?;
+    let mut faces = Vec::new();
+    let mut opposite = Vec::new();
+    let face_rows = nav.get("faces").and_then(|v| v.elements()).map_err(e)?;
+    for face in &face_rows {
+        let start = face.get("startEdgeIndex").and_then(|v| v.int()).map_err(e)? as usize;
+        let count = face.get("numEdges").and_then(|v| v.int()).map_err(e)? as usize;
+        let own = edges.get(start..start + count).ok_or_else(|| format!("face edges {start} + {count} past {}", edges.len()))?;
+        faces.push(own.iter().map(|&(ab, _)| ab[0]).collect());
+        opposite.push(own.iter().map(|&(_, o)| u32::try_from(o).ok().filter(|&o| (o as usize) < face_rows.len())).collect());
+    }
+    Ok((crate::navmesh::Piece { vertices, faces, opposite }, edges.iter().map(|&(ab, _)| ab).collect()))
+}
+
+/// A block's NVA (`NVMA`, SoulsFormats NVA.cs, Sekiro's version 5): the navmeshes it places
+/// (name id, model id; section 0, 0x60-byte entries whose position, rotation and scale are
+/// identity in every Sekiro block, so not applied) and its connectors (section 4: name ids of
+/// the two navmeshes and their points, section 5: face, edge, opposite face, opposite edge).
+/// The connectors' conditions (section 6) are not read.
+struct Nva {
+    navmeshes: Vec<(i32, i32)>,
+    connectors: Vec<(i32, i32, Vec<[i32; 4]>)>,
+}
+
+fn nva(bytes: &[u8]) -> Option<Nva> {
+    let int = |at: usize| Some(i32::from_le_bytes(bytes.get(at..at + 4)?.try_into().ok()?));
+    if bytes.get(..4)? != b"NVMA" {
+        return None;
+    }
+    // Sections: index, version, byte length, count, then the entries.
+    let mut sections = std::collections::HashMap::new();
+    let mut at = 16;
+    for _ in 0..int(12)? {
+        let (index, version, length, count) = (int(at)?, int(at + 4)?, int(at + 8)? as usize, int(at + 12)? as usize);
+        sections.insert(index, (version, at + 16, count));
+        at += 16 + length;
+    }
+    let &(version, start, count) = sections.get(&0)?;
+    let size = if version >= 4 { 0x60 } else { 0x80 };
+    let navmeshes = (0..count).map(|i| Some((int(start + i * size + 0x30)?, int(start + i * size + 0x34)?))).collect::<Option<_>>()?;
+    let &(_, points, _) = sections.get(&5)?;
+    let &(_, start, count) = sections.get(&4)?;
+    let connectors = (0..count)
+        .map(|i| {
+            let c = start + i * 32;
+            let (n, first) = (int(c + 8)? as usize, int(c + 16)? as usize);
+            let points = (first..first + n).map(|p| Some([0, 4, 8, 12].map(|o| int(points + p * 16 + o).unwrap_or(-1)))).collect::<Option<_>>()?;
+            Some((int(c)?, int(c + 4)?, points))
+        })
+        .collect::<Option<_>>()?;
+    Some(Nva { navmeshes, connectors })
+}
+
+/// The play world's navmesh: the pieces each block's NVA places (`n<area>_<model:06>.hkx` of its
+/// `nvmhktbnd`, `cache/raw/map/<block>/`; the bundle also holds pieces no entry names), joined by
+/// its connectors, and placed by the block's map offset as sekiro-rs places them
+/// (sekiro_sim::navmesh::NavMesh::from_pieces: FromSoftware's space mirrored across X, the
+/// offset's yaw negated). A block without the files adds nothing.
+fn navmesh(cache: &std::path::Path, layouts: &std::collections::BTreeMap<String, serde_json::Value>) -> crate::navmesh::NavMesh {
+    let mut pieces = Vec::new();
+    let mut joins = Vec::new();
+    for (block, layout) in layouts {
+        let offset = &layout["map_offsets"][0];
+        let f = |v: &serde_json::Value| v.as_f64().unwrap_or(0.0) as f32;
+        let p = &offset["position"];
+        let translation = Vec3::new(-f(&p[0]), f(&p[1]), f(&p[2]));
+        let rotation = Quat::from_rotation_y(-f(&offset["rotation_y"]).to_radians());
+        let raw = cache.join(format!("raw/map/{block}"));
+        let Some(nva) = std::fs::read(raw.join(format!("{block}.nva"))).ok().and_then(|b| nva(&b)) else { continue };
+        let area = block.strip_prefix('m').unwrap_or(block);
+        // Name id -> (index into `pieces`, the piece's edge ends).
+        let mut placed = HashMap::new();
+        for (name, model) in nva.navmeshes {
+            let path = raw.join(format!("{block}.nvmhktbnd.d/n{area}_{model:06}.hkx"));
+            let (piece, edges) = match std::fs::read(&path).map_err(|e| e.to_string()).and_then(|b| navmesh_piece(&b)) {
+                Ok(piece) => piece,
+                // A few entries name a piece the bundle does not hold (3 around the Outskirts).
+                Err(e) => {
+                    debug!("navmesh {}: {e}", path.display());
+                    continue;
+                }
+            };
+            placed.insert(name, (pieces.len(), edges));
+            pieces.push(crate::navmesh::Piece {
+                vertices: piece.vertices.iter().map(|v| translation + rotation * Vec3::new(-v.x, v.y, v.z)).collect(),
+                ..piece
+            });
+        }
+        for (main, target, points) in nva.connectors {
+            let (Some((from, edges)), Some(&(to, _))) = (placed.get(&main), placed.get(&target)) else { continue };
+            for [face, edge, other, _] in points {
+                let Some(&[a, b]) = edges.get(edge as usize) else { continue };
+                let v = &pieces[*from].vertices;
+                if let (Some(&a), Some(&b)) = (v.get(a as usize), v.get(b as usize)) {
+                    joins.push(crate::navmesh::Join { from: (*from, face as u32), to: (to, other as u32), a, b });
+                }
+            }
+        }
+    }
+    crate::navmesh::NavMesh::build(&pieces, &joins)
 }
 
 static WORLD: OnceLock<Arc<sekiro_sim::collision::CollisionWorld>> = OnceLock::new();
@@ -408,3 +533,55 @@ impl crate::terrain::WorldCollision for sekiro_sim::collision::CollisionWorld {
         sekiro_sim::body::Ground::water_surface(self, x, z, top).map(|w| (w.height, w.material))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_outskirts_enemies_stand_on_a_joined_navmesh() {
+        let cache = cache();
+        if !cache.join("raw/map/m11_00_00_00/m11_00_00_00.nva").is_file() {
+            return;
+        }
+        let layouts = sekiro_rs::map::world::play_blocks(&cache, "m11_00_00_00").unwrap();
+        let t0 = std::time::Instant::now();
+        let nav = navmesh(&cache, &layouts);
+        let built = t0.elapsed().as_secs_f32();
+        // The block's enemies (layout `enemies`, placed in the world already).
+        let enemies: Vec<Vec3> = layouts["m11_00_00_00"]["enemies"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|e| Some(Vec3::new(e["translation"][0].as_f64()? as f32, e["translation"][1].as_f64()? as f32, e["translation"][2].as_f64()? as f32)))
+            .collect();
+        let on: Vec<(Vec3, u32)> = enemies.iter().filter_map(|&e| Some((e, nav.locate(e)?))).collect();
+        let reach: Vec<usize> = on.iter().map(|&(_, p)| nav.reach(p)).collect();
+        let joined = reach.iter().filter(|&&r| r > 200).count();
+        // Paths between enemies on the same joined area, with the search time.
+        let t1 = std::time::Instant::now();
+        let (mut found, mut tried, mut longest) = (0, 0, 0.0f32);
+        for (k, &(a, _)) in on.iter().enumerate().step_by(7) {
+            for &(b, _) in on.iter().skip(k + 1).step_by(11).take(4) {
+                tried += 1;
+                if let Some(path) = nav.path(a, b) {
+                    found += 1;
+                    let length: f32 = std::iter::once(a).chain(path.iter().copied()).collect::<Vec<_>>().windows(2).map(|w| w[0].distance(w[1])).sum();
+                    assert!(length >= a.distance(b) - 0.01, "{a} -> {b}: {length} m");
+                    longest = longest.max(length);
+                }
+            }
+        }
+        eprintln!(
+            "navmesh {} polygons in {built:.2} s; {} of {} enemies on it, {joined} on an area over 200 polygons; {found} of {tried} paths ({longest:.0} m longest) in {:.1} ms",
+            nav.polygon_count(),
+            on.len(),
+            enemies.len(),
+            t1.elapsed().as_secs_f64() * 1e3
+        );
+        assert!(on.len() * 10 >= enemies.len() * 8, "most enemies stand on the navmesh");
+        assert!(joined * 2 >= on.len(), "most of them on joined ground");
+        assert!(found > 0);
+    }
+}
+
