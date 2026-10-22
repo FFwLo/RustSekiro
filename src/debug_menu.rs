@@ -106,6 +106,7 @@ enum Item {
     Refill,
     FlowingWater,
     Sheathe,
+    #[cfg(feature = "host")]
     Ufo,
     DropHeight,
     DropNow,
@@ -115,28 +116,51 @@ enum Item {
     Speed,
     Hitboxes,
     Reset,
+    #[cfg(feature = "host")]
     Map,
+    #[cfg(feature = "host")]
     Hour,
+    #[cfg(feature = "host")]
     DayCycle,
+    #[cfg(feature = "host")]
     Weather,
+    #[cfg(feature = "host")]
     Sky,
 }
 
-const SECTIONS: [(&str, &[Item]); 7] = [
-    ("ENEMY", &[Item::AiMode, Item::Attack, Item::Interval, Item::EnemyType, Item::Outfit, Item::EnemyHeal]),
-    ("DEATHBLOW", &[Item::BreakPosture, Item::DeathblowNow, Item::DeathblowBehind, Item::PlungeNow, Item::KickDownNow, Item::VaultNow, Item::StealthSetup, Item::StealthFar]),
-    ("SKILLS", &[Item::Art, Item::Tool1, Item::Tool2, Item::Tool3]),
+/// The menu's sections (the Map section and UFO are the whole game's: `host`).
+#[cfg(feature = "host")]
+const SECTIONS: &[(&str, &[Item])] = &[
+    ("ENEMY", ENEMY),
+    ("DEATHBLOW", DEATHBLOW),
+    ("SKILLS", SKILLS),
     ("PLAYER", &[Item::God, Item::NoPosture, Item::InfiniteEmblems, Item::Refill, Item::FlowingWater, Item::Sheathe, Item::Ufo]),
-    ("MOVEMENT TESTS", &[Item::DropHeight, Item::DropNow, Item::HookHeight, Item::HookNow, Item::HookClear]),
+    ("MOVEMENT TESTS", MOVEMENT_TESTS),
     ("MAP", &[Item::Map, Item::Hour, Item::DayCycle, Item::Weather, Item::Sky]),
-    ("SIMULATION", &[Item::Speed, Item::Hitboxes, Item::Reset]),
+    ("SIMULATION", SIMULATION),
 ];
+#[cfg(not(feature = "host"))]
+const SECTIONS: &[(&str, &[Item])] = &[
+    ("ENEMY", ENEMY),
+    ("DEATHBLOW", DEATHBLOW),
+    ("SKILLS", SKILLS),
+    ("PLAYER", &[Item::God, Item::NoPosture, Item::InfiniteEmblems, Item::Refill, Item::FlowingWater, Item::Sheathe]),
+    ("MOVEMENT TESTS", MOVEMENT_TESTS),
+    ("SIMULATION", SIMULATION),
+];
+const ENEMY: &[Item] = &[Item::AiMode, Item::Attack, Item::Interval, Item::EnemyType, Item::Outfit, Item::EnemyHeal];
+const DEATHBLOW: &[Item] = &[Item::BreakPosture, Item::DeathblowNow, Item::DeathblowBehind, Item::PlungeNow, Item::KickDownNow, Item::VaultNow, Item::StealthSetup, Item::StealthFar];
+const SKILLS: &[Item] = &[Item::Art, Item::Tool1, Item::Tool2, Item::Tool3];
+const MOVEMENT_TESTS: &[Item] = &[Item::DropHeight, Item::DropNow, Item::HookHeight, Item::HookNow, Item::HookClear];
+const SIMULATION: &[Item] = &[Item::Speed, Item::Hitboxes, Item::Reset];
 
 /// Day-night cycle speeds: game hours per real second (map::DayCycle).
+#[cfg(feature = "host")]
 const DAY_SPEEDS: [(f32, &str); 4] = [(0.0, "off"), (1.0 / 60.0, "1 game hour a minute"), (0.1, "1 game hour in 10 s"), (0.5, "1 game hour in 2 s")];
 
 /// The castle top's story looks (map.rs FIGHT_LIGHTING, m11_01_00_00.emevd): the Owl's sub 50
 /// and Emma / Isshin Ashina's sub 40.
+#[cfg(feature = "host")]
 fn look_name(v: &str) -> String {
     match v {
         "base" => "map's own".into(),
@@ -146,18 +170,21 @@ fn look_name(v: &str) -> String {
     }
 }
 
+#[cfg(feature = "host")]
 fn maps() -> &'static [(String, String)] {
     static LIST: std::sync::OnceLock<Vec<(String, String)>> = std::sync::OnceLock::new();
     LIST.get_or_init(crate::map::exported_maps)
 }
 
 /// The map's weather choices: each draw-param look with each of its light sets.
+#[cfg(feature = "host")]
 fn weathers(looks: &crate::map::MapLooks) -> Vec<(usize, i32)> {
     let sets = if looks.light_sets.is_empty() { vec![0] } else { looks.light_sets.clone() };
     (0..looks.looks.len().max(1)).flat_map(|l| sets.iter().map(move |&id| (l, id))).collect()
 }
 
 /// The map-section resources, one parameter (a system takes 16 at most).
+#[cfg(feature = "host")]
 type MapParams<'w> = (
     Option<ResMut<'w, crate::map::MapLighting>>,
     Option<Res<'w, crate::map::MapLooks>>,
@@ -231,9 +258,13 @@ pub struct DebugMenu {
     seen_enemy: Option<(String, Option<i64>)>,
     /// Map section: the picked map (index into maps()), the day-cycle speed, the weather (index
     /// into weathers()) and the map it was set on.
+    #[cfg(feature = "host")]
     map: usize,
+    #[cfg(feature = "host")]
     day_speed: usize,
+    #[cfg(feature = "host")]
     weather: usize,
+    #[cfg(feature = "host")]
     weather_map: Option<String>,
     message: String,
 }
@@ -302,6 +333,7 @@ fn menu_input(
     mut statuses: Option<ResMut<crate::status::Statuses>>,
     mut hooks: Option<ResMut<crate::traversal::GrapplePoints>>,
     mut exit: MessageWriter<AppExit>,
+    #[cfg(feature = "host")]
     (mut lighting, looks, mut day, mut sky, mut go): MapParams,
 ) {
     if keys.just_pressed(KeyCode::F1) {
@@ -327,6 +359,8 @@ fn menu_input(
         }
     }
     // A freshly loaded map starts on its own look and light set.
+    #[cfg(feature = "host")]
+    {
     let loaded = crate::place::loaded_map();
     if menu.weather_map != loaded {
         if let (Some(l), Some(lk)) = (lighting.as_deref(), looks.as_deref()) {
@@ -336,6 +370,7 @@ fn menu_input(
             menu.map = i;
         }
         menu.weather_map = loaded;
+    }
     }
     if !menu.open {
         return;
@@ -515,6 +550,7 @@ fn menu_input(
             }
         }
         Item::God => menu.god = !menu.god,
+        #[cfg(feature = "host")]
         Item::Ufo => crate::ufo::set(!crate::ufo::on()),
         Item::NoPosture => menu.no_posture = !menu.no_posture,
         Item::InfiniteEmblems => menu.infinite_emblems = !menu.infinite_emblems,
@@ -617,6 +653,7 @@ fn menu_input(
             pad.reset = true;
             menu.message = "reset".into();
         }
+        #[cfg(feature = "host")]
         Item::Map if !maps().is_empty() => {
             menu.map = cycle(menu.map, maps().len());
             if enter {
@@ -630,18 +667,21 @@ fn menu_input(
                 }
             }
         }
+        #[cfg(feature = "host")]
         Item::Hour => {
             if let Some(l) = lighting.as_mut() {
                 l.hour = ((l.hour + step as f32).round()).rem_euclid(24.0);
                 l.applied = false;
             }
         }
+        #[cfg(feature = "host")]
         Item::DayCycle => {
             menu.day_speed = cycle(menu.day_speed, DAY_SPEEDS.len());
             if let Some(d) = day.as_mut() {
                 d.hours_per_sec = DAY_SPEEDS[menu.day_speed].0;
             }
         }
+        #[cfg(feature = "host")]
         Item::Weather => {
             if let (Some(l), Some(lk)) = (lighting.as_mut(), looks.as_deref()) {
                 let ws = weathers(lk);
@@ -654,6 +694,7 @@ fn menu_input(
                 l.applied = false;
             }
         }
+        #[cfg(feature = "host")]
         Item::Sky => {
             if let Some(c) = sky.as_mut() {
                 // None (the map's and hour's own), then each dome.
@@ -772,6 +813,7 @@ fn draw_menu(
     time: Res<Time<Virtual>>,
     hurtboxes: Res<crate::combat::ShowHurtboxes>,
     mut text: Query<(&mut Text, &mut Node), With<MenuText>>,
+    #[cfg(feature = "host")]
     (lighting, looks, sky): (Option<Res<crate::map::MapLighting>>, Option<Res<crate::map::MapLooks>>, Option<Res<crate::sky::SkyChoice>>),
 ) {
     let Ok((mut t, mut node)) = text.single_mut() else { return };
@@ -826,6 +868,7 @@ fn draw_menu(
                 format!("prosthetic slot {}: {}", n + 1, if id == 0 { "empty".to_string() } else { format!("{} ({id})", combat.weapon_name(id)) })
             }
             Item::God => format!("god mode (no HP loss): {}", on(menu.god)),
+            #[cfg(feature = "host")]
             Item::Ufo => format!("UFO / no clip (WASD along the view, Space up, Ctrl down, Shift fast): {}", on(crate::ufo::on())),
             Item::NoPosture => format!("no posture damage: {}", on(menu.no_posture)),
             Item::InfiniteEmblems => format!("infinite Spirit Emblems: {}", on(menu.infinite_emblems)),
@@ -840,10 +883,12 @@ fn draw_menu(
             Item::Speed => format!("game speed: x{}", time.relative_speed()),
             Item::Hitboxes => format!("hitboxes / hurtboxes (H): {}", on(hurtboxes.0)),
             Item::Reset => "reset fight".into(),
+            #[cfg(feature = "host")]
             Item::Map => match maps().get(menu.map) {
                 Some((id, label)) => format!("map: {label}{}", if crate::place::loaded_map().as_deref() == Some(id.as_str()) { "  (here)" } else { "  - Enter: go" }),
                 None => "map: none exported".into(),
             },
+            #[cfg(feature = "host")]
             Item::Hour => match lighting.as_deref() {
                 Some(l) => {
                     let h = l.hour.rem_euclid(24.0);
@@ -851,7 +896,9 @@ fn draw_menu(
                 }
                 None => "time of day: no map".into(),
             },
+            #[cfg(feature = "host")]
             Item::DayCycle => format!("day-night cycle: {}", DAY_SPEEDS[menu.day_speed].1),
+            #[cfg(feature = "host")]
             Item::Weather => match (lighting.as_deref(), looks.as_deref()) {
                 (Some(l), Some(lk)) => {
                     let ws = weathers(lk);
@@ -862,6 +909,7 @@ fn draw_menu(
                 }
                 _ => "weather: no map".into(),
             },
+            #[cfg(feature = "host")]
             Item::Sky => match sky.as_deref().and_then(|c| c.0) {
                 Some(d) => format!("sky: {} ({d})", crate::sky::DOMES.iter().find(|x| x.0 == d).map_or("?", |x| x.1)),
                 None => "sky: by map and hour".into(),
@@ -872,7 +920,7 @@ fn draw_menu(
     let mut i = 0;
     for (title, its) in SECTIONS {
         s += &format!("\n{title}\n");
-        for &it in its {
+        for &it in its.iter() {
             let cur = if i == menu.cursor { "> " } else { "  " };
             s += &format!("{cur}{}\n", value(it));
             i += 1;

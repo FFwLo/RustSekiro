@@ -196,7 +196,7 @@ fn spawn_hud(mut commands: Commands, fonts: Res<crate::fonts::GameFonts>, assets
             let have = crate::paths::extracted().join(&file).exists();
             r.spawn((
                 Node { width: Val::Vw(size), height: Val::Vw(size), ..default() },
-                if have { ImageNode::new(assets.load(file)) } else { ImageNode::default() },
+                if have { ImageNode::new(assets.load(crate::paths::asset(file))) } else { ImageNode::default() },
                 if have { Visibility::Inherited } else { Visibility::Hidden },
             ));
             r.spawn((
@@ -211,7 +211,7 @@ fn spawn_hud(mut commands: Commands, fonts: Res<crate::fonts::GameFonts>, assets
     let _ = counter;
     let art = |file: &str| -> (ImageNode, Visibility) {
         let f = format!("hud/{file}.png");
-        if crate::paths::extracted().join(&f).exists() { (ImageNode::new(assets.load(f)), Visibility::Inherited) } else { (ImageNode::default(), Visibility::Hidden) }
+        if crate::paths::extracted().join(&f).exists() { (ImageNode::new(assets.load(crate::paths::asset(f))), Visibility::Inherited) } else { (ImageNode::default(), Visibility::Hidden) }
     };
     let number = |s: &str, px: f32| {
         (
@@ -297,7 +297,7 @@ fn spawn_hud(mut commands: Commands, fonts: Res<crate::fonts::GameFonts>, assets
 /// fill (a sweep with MENU_Revive_Needle, taken as a rise from the bottom) and the Temp (charm)
 /// node art.
 fn res_node_bundle(i: u32, assets: Option<&AssetServer>) -> impl Bundle {
-    let img = |f: &str| assets.map_or_else(ImageNode::default, |a| ImageNode::new(a.load(f.to_string())));
+    let img = |f: &str| assets.map_or_else(ImageNode::default, |a| ImageNode::new(a.load(crate::paths::asset(f.to_string()))));
     (
         Node { width: Val::Vw(2.66), height: Val::Vw(2.76), margin: UiRect::left(Val::Vw(if i > 0 { -0.22 } else { 0.0 })), ..default() },
         img("hud/MENU_Revive_Window_2.png"),
@@ -321,7 +321,7 @@ fn res_node_bundle(i: u32, assets: Option<&AssetServer>) -> impl Bundle {
 /// The Resurrective Power fill on the node that lights next (node `left`, while one is used).
 fn res_fill(player: Query<&crate::player::Player>, config: Res<crate::config::GameConfig>, mut fills: Query<(&ResFill, &mut Node, &mut Visibility)>) {
     let Some(p) = player.iter().next() else { return };
-    let share = p.res_power as f32 / crate::drops::RES_POWER_NODE as f32;
+    let share = p.res_power as f32 / crate::player::RES_POWER_NODE as f32;
     for (f, mut n, mut v) in &mut fills {
         let on = f.0 == p.resurrections && p.resurrections < config.player.resurrections && p.res_power > 0;
         let want = if on { Visibility::Inherited } else { Visibility::Hidden };
@@ -494,13 +494,13 @@ fn sprite_bar(parent: &mut ChildSpawnerCommands, assets: &AssetServer, width: Va
     parent
         .spawn((
             Node { width, height, justify_content: if center { JustifyContent::Center } else { JustifyContent::FlexStart }, ..default() },
-            ImageNode::new(assets.load(base)).with_mode(bevy::ui::widget::NodeImageMode::Stretch),
+            ImageNode::new(assets.load(crate::paths::asset(base))).with_mode(bevy::ui::widget::NodeImageMode::Stretch),
         ))
         .with_children(|b| {
             if let Some(t) = trail {
-                b.spawn((Node { position_type: PositionType::Absolute, left: Val::Px(0.0), width: Val::Percent(100.0), height: Val::Percent(100.0), ..default() }, ImageNode::new(assets.load("hud/MENU_HP_bar.png")).with_color(TRAIL).with_mode(bevy::ui::widget::NodeImageMode::Stretch), t));
+                b.spawn((Node { position_type: PositionType::Absolute, left: Val::Px(0.0), width: Val::Percent(100.0), height: Val::Percent(100.0), ..default() }, ImageNode::new(assets.load(crate::paths::asset("hud/MENU_HP_bar.png"))).with_color(TRAIL).with_mode(bevy::ui::widget::NodeImageMode::Stretch), t));
             }
-            b.spawn((Node { width: Val::Percent(100.0), height: Val::Percent(100.0), ..default() }, ImageNode::new(assets.load(bar)).with_color(tint).with_mode(bevy::ui::widget::NodeImageMode::Stretch), fill));
+            b.spawn((Node { width: Val::Percent(100.0), height: Val::Percent(100.0), ..default() }, ImageNode::new(assets.load(crate::paths::asset(bar))).with_color(tint).with_mode(bevy::ui::widget::NodeImageMode::Stretch), fill));
             // The posture bars' "<" ">" at their outer ends (MENU_Taikan_Arrow, 78 x 36 against
             // the 1274 x 34 base: 6.1 % of the bar's width; clip r_000130 x 31.5 % / 68 %).
             if center {
@@ -510,7 +510,7 @@ fn sprite_bar(parent: &mut ChildSpawnerCommands, assets: &AssetServer, width: Va
                     let side = if right { UiRect { left: Val::Auto, right: Val::Percent(-6.1), ..default() } } else { UiRect { left: Val::Percent(-6.1), right: Val::Auto, ..default() } };
                     b.spawn((
                         Node { position_type: PositionType::Absolute, left: side.left, right: side.right, top: Val::Percent(-3.0), width: Val::Percent(6.1), height: Val::Percent(106.0), ..default() },
-                        ImageNode { flip_x: !right, image_mode: bevy::ui::widget::NodeImageMode::Stretch, ..ImageNode::new(assets.load("hud/MENU_Taikan_Arrow.png")) },
+                        ImageNode { flip_x: !right, image_mode: bevy::ui::widget::NodeImageMode::Stretch, ..ImageNode::new(assets.load(crate::paths::asset("hud/MENU_Taikan_Arrow.png"))) },
                         PostureArrow,
                     ));
                 }
@@ -556,7 +556,7 @@ fn spawn_boss_hud(commands: &mut Commands, assets: &AssetServer, serif: Option<H
         .with_children(|c| {
             c.spawn(Node { position_type: PositionType::Absolute, left: Val::Percent(5.5), top: Val::Percent(4.6), flex_direction: FlexDirection::Row, column_gap: Val::Vw(0.05), align_items: AlignItems::Center, ..default() }).with_children(|r| {
                 for i in 0..4 {
-                    r.spawn((Node { width: Val::Vw(1.6), height: Val::Vw(1.6), display: Display::None, ..default() }, ImageNode::new(assets.load("hud/MENU_HP_Boss.png")), BossOrb(i)));
+                    r.spawn((Node { width: Val::Vw(1.6), height: Val::Vw(1.6), display: Display::None, ..default() }, ImageNode::new(assets.load(crate::paths::asset("hud/MENU_HP_Boss.png"))), BossOrb(i)));
                 }
             });
             c.spawn(Node { position_type: PositionType::Absolute, left: Val::Percent(5.7), top: Val::Percent(8.3), ..default() })
@@ -572,13 +572,13 @@ fn spawn_boss_hud(commands: &mut Commands, assets: &AssetServer, serif: Option<H
                 BossName,
             ));
             c.spawn(Node { position_type: PositionType::Absolute, top: Val::Percent(4.2), width: Val::Percent(100.0), justify_content: JustifyContent::Center, ..default() }).with_children(|r| {
-                r.spawn((Node { width: Val::Vw(21.1), height: Val::Vh(4.1), ..default() }, ImageNode::new(assets.load("hud/MENU_Taikan_ST1.png")).with_mode(bevy::ui::widget::NodeImageMode::Stretch), Visibility::Hidden, BossGlow));
+                r.spawn((Node { width: Val::Vw(21.1), height: Val::Vh(4.1), ..default() }, ImageNode::new(assets.load(crate::paths::asset("hud/MENU_Taikan_ST1.png"))).with_mode(bevy::ui::widget::NodeImageMode::Stretch), Visibility::Hidden, BossGlow));
             });
             c.spawn((Node { position_type: PositionType::Absolute, top: Val::Percent(5.4), width: Val::Percent(100.0), justify_content: JustifyContent::Center, ..default() }, Visibility::Hidden, BossPostureRow)).with_children(|r| {
                 sprite_bar(r, assets, Val::Vw(38.4), Val::Vh(1.8), "hud/MENU_Taikan_base.png", "hud/MENU_Taikan_bar.png", true, Color::WHITE, BossPostureFill, None::<()>);
             });
             c.spawn((Node { position_type: PositionType::Absolute, top: Val::Percent(4.6), width: Val::Percent(100.0), justify_content: JustifyContent::Center, ..default() }, Visibility::Hidden, BossPostureRow)).with_children(|r| {
-                r.spawn((Node { width: Val::Vh(2.6), height: Val::Vh(3.1), ..default() }, ImageNode::new(assets.load("hud/MENU_Sp_Center.png"))));
+                r.spawn((Node { width: Val::Vh(2.6), height: Val::Vh(3.1), ..default() }, ImageNode::new(assets.load(crate::paths::asset("hud/MENU_Sp_Center.png")))));
             });
         });
 }
@@ -672,7 +672,7 @@ fn update_boss_hud(
         *v = if st == 0 { Visibility::Hidden } else { Visibility::Inherited };
         let file = ["", "hud/MENU_Taikan_ST1.png", "hud/MENU_Taikan_ST2.png", "hud/MENU_Taikan_ST3.png"][st];
         if st > 0 && img.image.path().is_none_or(|p| p.path().to_str() != Some(file)) {
-            img.image = assets.load(file);
+            img.image = assets.load(crate::paths::asset(file));
         }
     }
     // As the game counts them (GetNinsatsuNum): the dot goes dark at Wolf's Ninsatsu hit, not at
@@ -688,7 +688,7 @@ fn update_boss_hud(
             n.display = display;
             n.width = size;
             n.height = size;
-            img.image = assets.load(if lit { "hud/MENU_HP_Boss.png" } else { "hud/MENU_HP_Boss_base.png" });
+            img.image = assets.load(crate::paths::asset(if lit { "hud/MENU_HP_Boss.png" } else { "hud/MENU_HP_Boss_base.png" }));
         }
     }
     let want = boss_name(combat.foe_of(a).npc_row);
@@ -720,7 +720,7 @@ fn spawn_build_up(parent: &mut ChildSpawnerCommands, assets: &AssetServer, ty: u
     parent
         .spawn((
             Node { width: Val::Px(BUILD_UP_W), height: Val::Px(BUILD_UP_H), display: Display::None, ..default() },
-            ImageNode::new(assets.load(file)).with_color(Color::srgba(0.45, 0.45, 0.45, 0.6)),
+            ImageNode::new(assets.load(crate::paths::asset(file))).with_color(Color::srgba(0.45, 0.45, 0.45, 0.6)),
             WolfBuildUp(ty),
         ))
         .with_children(|c| {
@@ -731,7 +731,7 @@ fn spawn_build_up(parent: &mut ChildSpawnerCommands, assets: &AssetServer, ty: u
             .with_children(|c| {
                 c.spawn((
                     Node { position_type: PositionType::Absolute, left: Val::Px(0.0), bottom: Val::Px(0.0), width: Val::Px(BUILD_UP_W), height: Val::Px(BUILD_UP_H), ..default() },
-                    ImageNode::new(assets.load(file)),
+                    ImageNode::new(assets.load(crate::paths::asset(file))),
                     WolfBuildUpBright(ty),
                 ));
             });
@@ -787,7 +787,7 @@ fn spawn_enemy_bars(commands: &mut Commands, assets: &AssetServer, enemy: Entity
         .with_children(|c| {
             c.spawn(Node { flex_direction: FlexDirection::Row, column_gap: stage_w(0.15), margin: UiRect { left: stage_w(-0.2), bottom: Val::Vh(0.1), ..default() }, ..default() }).with_children(|r| {
                 for i in 0..3 {
-                    r.spawn((Node { width: stage_w(1.15), height: stage_w(1.15), display: Display::None, ..default() }, ImageNode::new(assets.load("hud/MENU_HP_Boss.png")), EnemyDot(enemy, i)));
+                    r.spawn((Node { width: stage_w(1.15), height: stage_w(1.15), display: Display::None, ..default() }, ImageNode::new(assets.load(crate::paths::asset("hud/MENU_HP_Boss.png"))), EnemyDot(enemy, i)));
                 }
             });
             framed(c, Val::Percent(100.0), Val::Vh(0.75), false, (BackgroundColor(VITALITY), EnemyHpFill(enemy)), None::<()>);
@@ -883,7 +883,7 @@ fn update_enemy_hud(
             }
             let file = if d.1 < e.ninsatsu_left() { "hud/MENU_HP_Boss.png" } else { "hud/MENU_HP_Boss_base.png" };
             if img.image.path().is_none_or(|p| !p.to_string().ends_with(&file[4..])) {
-                img.image = assets.load(file);
+                img.image = assets.load(crate::paths::asset(file));
             }
         }
     }
@@ -923,7 +923,7 @@ fn spawn_item_icons(mut commands: Commands, fonts: Res<crate::fonts::GameFonts>,
         let file = ["hud", "menu_sprites/sb_fe"].iter().map(|d| format!("{d}/{f}.png")).find(|p| crate::paths::extracted().join(p).exists());
         match file {
             Some(p) => {
-                let mut i = ImageNode::new(assets.load(p));
+                let mut i = ImageNode::new(assets.load(crate::paths::asset(p)));
                 i.image_mode = bevy::ui::widget::NodeImageMode::Stretch;
                 (i, Visibility::Inherited)
             }
@@ -1085,11 +1085,11 @@ fn update_quick_icon(
     }
     *shown = Some(goods);
     let icon = if goods == crate::items::GOURD { 151 } else { crate::items::param("EquipParamGoods", goods)["iconId"].as_i64().unwrap_or(-1) };
-    let file = crate::game_menu::any_icon(icon).filter(|_| goods > 0 && icon >= 0);
+    let file = any_icon(icon).filter(|_| goods > 0 && icon >= 0);
     for (mut img, mut vis) in &mut q {
         match &file {
             Some(f) => {
-                img.image = assets.load(f.clone());
+                img.image = assets.load(crate::paths::asset(f.clone()));
                 *vis = Visibility::Inherited;
             }
             None => *vis = Visibility::Hidden,
@@ -1120,7 +1120,7 @@ fn update_item_icons(
         shown[i] = id;
         let file = format!("hud/MENU_ItemIcon_{id:05}.png");
         if id > 0 && crate::paths::extracted().join(&file).exists() {
-            img.image = assets.load(file);
+            img.image = assets.load(crate::paths::asset(file));
             *vis = Visibility::Inherited;
         } else {
             *vis = Visibility::Hidden;
@@ -1137,7 +1137,7 @@ fn update_item_icons(
 const DEATHBLOW_SIDE: f32 = 405.0 * 0.45;
 
 fn spawn_deathblow_mark(mut commands: Commands, assets: Res<AssetServer>) {
-    commands.spawn((Node { position_type: PositionType::Absolute, ..default() }, ImageNode::new(assets.load("hud/MENU_ninsatu_02.png")), Visibility::Hidden, DeathblowMark, crate::ui_stage::WorldUi));
+    commands.spawn((Node { position_type: PositionType::Absolute, ..default() }, ImageNode::new(assets.load(crate::paths::asset("hud/MENU_ninsatu_02.png"))), Visibility::Hidden, DeathblowMark, crate::ui_stage::WorldUi));
 }
 
 /// The deathblow clip's alpha `t` s after FadeIn, `gone` s into FadeOut.
@@ -1301,7 +1301,7 @@ struct LockMark;
 const LOCK_SIDE: f32 = 32.0;
 
 fn spawn_lock_mark(mut commands: Commands, assets: Res<AssetServer>) {
-    let mut img = ImageNode::new(assets.load("hud/MENU_Lockon01.png"));
+    let mut img = ImageNode::new(assets.load(crate::paths::asset("hud/MENU_Lockon01.png")));
     img.rect = Some(Rect::new(0.0, 0.0, LOCK_SIDE, LOCK_SIDE));
     commands.spawn((Node { position_type: PositionType::Absolute, ..default() }, img, Visibility::Hidden, LockMark, crate::ui_stage::WorldUi));
 }
@@ -1382,7 +1382,7 @@ fn wire_clamp(p: Vec2) -> (Vec2, bool) {
 
 fn spawn_wire_mark(mut commands: Commands, assets: Res<AssetServer>) {
     commands.spawn((Node { position_type: PositionType::Absolute, ..default() }, ImageNode::default(), Visibility::Hidden, WireMark, crate::ui_stage::WorldUi));
-    commands.spawn((Node { position_type: PositionType::Absolute, ..default() }, ImageNode::new(assets.load("hud/MENU_Wire_Cursor.png")), UiTransform::IDENTITY, Visibility::Hidden, WireArrow, crate::ui_stage::WorldUi));
+    commands.spawn((Node { position_type: PositionType::Absolute, ..default() }, ImageNode::new(assets.load(crate::paths::asset("hud/MENU_Wire_Cursor.png"))), UiTransform::IDENTITY, Visibility::Hidden, WireArrow, crate::ui_stage::WorldUi));
 }
 
 fn update_wire_mark(
@@ -1400,7 +1400,7 @@ fn update_wire_mark(
     *vis = Visibility::Hidden;
     *avis = Visibility::Hidden;
     let busy = wolf.iter().any(|p| p.wire.is_some());
-    let (Some(t), Ok((cam, ct))) = (aim.and_then(|a| a.target), camera.single()) else { return };
+    let (Some(t), Ok((cam, ct))) = (aim.filter(|a| !a.host).and_then(|a| a.target), camera.single()) else { return };
     if busy {
         return;
     }
@@ -1408,7 +1408,7 @@ fn update_wire_mark(
     let Ok(p) = cam.world_to_viewport(ct, t.point.hook) else { return };
     if *shown != Some(t.in_action_range) {
         *shown = Some(t.in_action_range);
-        img.image = assets.load(if t.in_action_range { "hud/MENU_Wire_Marker.png" } else { "hud/MENU_Wire_Distance.png" });
+        img.image = assets.load(crate::paths::asset(if t.in_action_range { "hud/MENU_Wire_Marker.png" } else { "hud/MENU_Wire_Distance.png" }));
     }
     let view = window.single().map_or(Vec2::new(1280.0, 720.0), |w| Vec2::new(w.width(), w.height()));
     let stage = Vec2::new(1920.0, 1080.0);
@@ -1590,7 +1590,7 @@ fn spawn_stealth(commands: &mut Commands, assets: &AssetServer, enemy: Entity) {
     commands
         .spawn((
             Node { position_type: PositionType::Absolute, width: Val::Px(STEALTH_PX), height: Val::Px(STEALTH_PX), ..default() },
-            ImageNode::new(assets.load("hud/MENU_Find_02.png")),
+            ImageNode::new(assets.load(crate::paths::asset("hud/MENU_Find_02.png"))),
             UiTransform::IDENTITY,
             Visibility::Hidden,
             StealthMark { enemy, found_t: 0.0, clip: MarkClip::default() },
@@ -1604,7 +1604,7 @@ fn spawn_stealth(commands: &mut Commands, assets: &AssetServer, enemy: Entity) {
             .with_children(|c| {
                 c.spawn((
                     Node { position_type: PositionType::Absolute, left: Val::Px(0.0), bottom: Val::Px(0.0), width: Val::Px(STEALTH_PX), height: Val::Px(STEALTH_PX), ..default() },
-                    ImageNode::new(assets.load("hud/MENU_Find_01.png")),
+                    ImageNode::new(assets.load(crate::paths::asset("hud/MENU_Find_01.png"))),
                     StealthBrush(enemy),
                 ));
             });
@@ -1814,4 +1814,24 @@ fn hold_posture(f: Res<HoldPosture>, mut actors: Query<&mut Actor>) {
     for mut a in &mut actors {
         a.posture = a.posture_max * f.0;
     }
+}
+
+/// A menu sprite file (`menu_sprites/<atlas>/<name>.png`), if extracted.
+pub(crate) fn sprite(file: &str) -> Option<String> {
+    let f = format!("menu_sprites/{file}.png");
+    crate::paths::extracted().join(&f).exists().then_some(f)
+}
+
+/// A menu icon file for an iconId: the HUD's copy, else the menu atlases' (sb_icon*; the
+/// memories' 750-756 sit in sb_boss).
+pub(crate) fn any_icon(icon: i64) -> Option<String> {
+    let hud = format!("hud/MENU_ItemIcon_{icon:05}.png");
+    if crate::paths::extracted().join(&hud).exists() {
+        return Some(hud);
+    }
+    ["sb_icon", "sb_icon_02", "sb_icon_03", "sb_icon_04", "sb_boss"].iter().find_map(|a| sprite(&format!("{a}/MENU_ItemIcon_{icon:05}"))).or_else(|| {
+        // A few sit in other atlases (Divine Grass's 15 in sb_texteffect_02): any of them.
+        let dir = crate::paths::extracted().join("menu_sprites");
+        std::fs::read_dir(dir).ok()?.flatten().find_map(|e| sprite(&format!("{}/MENU_ItemIcon_{icon:05}", e.file_name().to_string_lossy())))
+    })
 }

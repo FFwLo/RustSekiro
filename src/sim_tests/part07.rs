@@ -175,7 +175,7 @@ pub(crate) fn a_grapple_lands_on_the_point_in_the_move_start_time() {
     move_enemy_far(&mut app);
     let point = crate::traversal::GrapplePoint { hook: Vec3::new(0.0, 3.5, 9.0), land: Vec3::new(0.0, 3.0, 9.0), fwd: Vec3::NEG_Z, variation: 0 };
     let target = crate::traversal::GrappleTarget { index: 0, point, dist: 9.0, in_action_range: true, ride: true };
-    app.insert_resource(crate::wire::WireAim { target: Some(target), enemy: None });
+    app.insert_resource(crate::wire::WireAim { target: Some(target), enemy: None, host: false });
     app.world_mut().resource_mut::<PadInput>().press(Action::Grapple);
     let mut seen = Vec::new();
     let mut launch = None;
@@ -233,7 +233,7 @@ pub(crate) fn a_wire_landing_ends_the_wire_fall_type() {
     move_enemy_far(&mut app);
     let point = crate::traversal::GrapplePoint { hook: Vec3::new(0.0, 3.5, 9.0), land: Vec3::new(0.0, 3.0, 9.0), fwd: Vec3::NEG_Z, variation: 0 };
     let target = crate::traversal::GrappleTarget { index: 0, point, dist: 9.0, in_action_range: true, ride: true };
-    app.insert_resource(crate::wire::WireAim { target: Some(target), enemy: None });
+    app.insert_resource(crate::wire::WireAim { target: Some(target), enemy: None, host: false });
     app.world_mut().resource_mut::<PadInput>().press(Action::Grapple);
     let mut wired = false;
     for _ in 0..240 {
@@ -264,7 +264,7 @@ pub(crate) fn the_grappling_hook_attack_throws_the_ogre() {
     };
     let point = crate::traversal::GrapplePoint { hook: Vec3::new(0.0, 2.0, 9.0), land: Vec3::new(0.0, 0.0, 9.0), fwd: Vec3::NEG_Z, variation: 50200 };
     let target = crate::traversal::GrappleTarget { index: 0, point, dist: 9.0, in_action_range: true, ride: false };
-    app.insert_resource(crate::wire::WireAim { target: Some(target), enemy: Some((ogre, 300_050_200)) });
+    app.insert_resource(crate::wire::WireAim { target: Some(target), enemy: Some((ogre, 300_050_200)), host: false });
     app.world_mut().resource_mut::<PadInput>().press(Action::Grapple);
     let mut seen = Vec::new();
     let mut foe = Vec::new();
@@ -348,7 +348,7 @@ pub(crate) fn the_grappling_hook_attack_todome_on_gyoubus_last_bar() {
     };
     let point = crate::traversal::GrapplePoint { hook: Vec3::new(0.0, 2.0, 9.0), land: Vec3::new(0.0, 0.0, 9.0), fwd: Vec3::NEG_Z, variation: 80200 };
     let target = crate::traversal::GrappleTarget { index: 0, point, dist: 9.0, in_action_range: true, ride: false };
-    app.insert_resource(crate::wire::WireAim { target: Some(target), enemy: Some((gyoubu, 300_080_200)) });
+    app.insert_resource(crate::wire::WireAim { target: Some(target), enemy: Some((gyoubu, 300_080_200)), host: false });
     app.world_mut().resource_mut::<PadInput>().press(Action::Grapple);
     let mut seen = Vec::new();
     let mut foe = Vec::new();
@@ -382,7 +382,7 @@ pub(crate) fn a_wire_landing_with_the_stick_held_runs_on() {
     move_enemy_far(&mut app);
     let point = crate::traversal::GrapplePoint { hook: Vec3::new(0.0, 0.5, 9.0), land: Vec3::new(0.0, 0.0, 9.0), fwd: Vec3::NEG_Z, variation: 0 };
     let target = crate::traversal::GrappleTarget { index: 0, point, dist: 9.0, in_action_range: true, ride: true };
-    app.insert_resource(crate::wire::WireAim { target: Some(target), enemy: None });
+    app.insert_resource(crate::wire::WireAim { target: Some(target), enemy: None, host: false });
     app.world_mut().resource_mut::<PadInput>().press(Action::Grapple);
     let mut seen = Vec::new();
     for i in 0..240 {

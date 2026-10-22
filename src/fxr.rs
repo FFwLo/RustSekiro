@@ -2576,7 +2576,7 @@ mod tests {
             };
             let mut tex = Vec::new();
             textures(&def, &mut tex);
-            tex.retain(|t| !crate::paths::extracted().join(format!("rustsekiro://fxr_tex/{t}.png")).exists());
+            tex.retain(|t| !crate::paths::extracted().join(format!("fxr_tex/{t}.png")).exists());
             tex.dedup();
             let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 let mut root = make_node(&mut lib, &def["root"], 7, 0)?;

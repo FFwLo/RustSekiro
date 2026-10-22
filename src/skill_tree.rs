@@ -348,7 +348,7 @@ pub(crate) fn build(root: &mut ChildSpawnerCommands, assets: &AssetServer, font:
         let art = tables.weapon_icon.get(&s.weapon).and_then(|i| sprite(&format!("sb_icon_skill/MENU_SkillStory_{i:05}")).or_else(|| sprite(&format!("sb_icon_skill_02/MENU_SkillStory_{i:05}"))));
         if let (true, Some(art)) = (shown, art) {
             root.spawn((abs(62.7, 24.6, 29.2, 18.0), BackgroundColor(frame_color(&info)))).with_children(|f| {
-                f.spawn((Node { position_type: PositionType::Absolute, left: Val::Percent(1.6), top: Val::Percent(3.0), width: Val::Percent(96.8), height: Val::Percent(94.0), ..default() }, ImageNode::new(assets.load(art))));
+                f.spawn((Node { position_type: PositionType::Absolute, left: Val::Percent(1.6), top: Val::Percent(3.0), width: Val::Percent(96.8), height: Val::Percent(94.0), ..default() }, ImageNode::new(assets.load(crate::paths::asset(art)))));
             });
         }
         let mut r = 46.8;

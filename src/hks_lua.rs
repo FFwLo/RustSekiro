@@ -82,6 +82,9 @@ impl HksPlayer {
                 if let Some(v) = num(args.get(1)) {
                     host.act_values.insert(id, v);
                 }
+                if id == crate::hks::ACT_FALL_PROTECT {
+                    host.note_fall_protect(num(args.get(1)));
+                }
                 if id == ACT_SET_VARIABLE
                     && let (Some(Value::String(name)), Some(v)) = (args.get(1), num(args.get(2)))
                 {

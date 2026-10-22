@@ -4,7 +4,9 @@
 //!
 //! Without the default `host` feature the library is the combat core alone (Wolf, enemies,
 //! combat, the HKS scripts, animation, effects): another Bevy game adds [`CombatCorePlugin`] and
-//! plugs its map, camera and sound in through the hooks re-exported below.
+//! plugs its map, camera and sound in through the hooks re-exported below. With `embed` it can
+//! also take RustSekiro's camera (`CameraPlugin`, on the game's camera marked `HostCamera`) and
+//! debug menu (sekiro-rs's `--rustsekiro` mode).
 //!
 //! Each `mod` line pulls in one file from `src/`. Each file provides a
 //! "plugin", a bundle of systems (functions that run every frame).
@@ -15,14 +17,14 @@
 
 use bevy::prelude::*;
 
-#[cfg(feature = "host")]
+#[cfg(feature = "embed")]
 mod action_guide;
 mod actor;
 mod ai;
 mod anim;
-#[cfg(feature = "host")]
+#[cfg(feature = "embed")]
 mod area_music;
-#[cfg(feature = "host")]
+#[cfg(feature = "embed")]
 mod camera;
 mod cloth;
 #[cfg(feature = "host")]
@@ -30,7 +32,7 @@ mod crash;
 mod combat;
 mod config;
 mod data;
-#[cfg(feature = "host")]
+#[cfg(feature = "embed")]
 mod debug_menu;
 #[cfg(feature = "host")]
 mod drops;
@@ -41,24 +43,24 @@ mod emevd;
 mod encounter;
 mod enemy;
 mod enemy_bullet;
-#[cfg(feature = "host")]
+#[cfg(feature = "embed")]
 mod experience;
 mod ffx;
 mod fxr;
 #[cfg(feature = "host")]
 mod fog_wall;
-#[cfg(feature = "host")]
+#[cfg(feature = "embed")]
 mod fonts;
 mod form;
 #[cfg(feature = "host")]
 mod height_fog;
 #[cfg(feature = "host")]
 mod sky;
-#[cfg(feature = "host")]
+#[cfg(feature = "embed")]
 mod fmod;
-#[cfg(feature = "host")]
+#[cfg(feature = "embed")]
 mod game_menu;
-#[cfg(feature = "host")]
+#[cfg(feature = "embed")]
 mod idol;
 mod items;
 mod gore;
@@ -71,7 +73,7 @@ mod hks_wolf;
 #[cfg(all(test, feature = "host"))]
 mod hks_lua;
 mod hkb_runtime;
-#[cfg(feature = "host")]
+#[cfg(feature = "embed")]
 mod hud;
 #[cfg(feature = "host")]
 mod icon;
@@ -84,7 +86,7 @@ mod map_fx;
 mod map_grass;
 #[cfg(feature = "host")]
 mod map_lights;
-#[cfg(feature = "host")]
+#[cfg(feature = "embed")]
 mod menu;
 #[cfg(feature = "host")]
 mod sandbox;
@@ -95,12 +97,12 @@ mod seat;
 mod showcase;
 #[cfg(feature = "host")]
 mod shot;
-#[cfg(feature = "host")]
+#[cfg(feature = "embed")]
 mod skill_tree;
 mod model;
 mod paths;
 mod perf;
-#[cfg(feature = "host")]
+#[cfg(feature = "embed")]
 mod pickups;
 mod place;
 #[cfg(feature = "host")]
@@ -112,7 +114,7 @@ mod prosthetic;
 mod shader_tests;
 #[cfg(all(test, feature = "host"))]
 mod sim_tests;
-#[cfg(feature = "host")]
+#[cfg(feature = "embed")]
 mod sound;
 mod sound_rules;
 #[cfg(feature = "host")]
@@ -126,7 +128,7 @@ mod traversal;
 mod throw_trace;
 #[cfg(feature = "host")]
 mod trace;
-#[cfg(feature = "host")]
+#[cfg(feature = "embed")]
 mod ui_stage;
 #[cfg(feature = "host")]
 mod ufo;
@@ -135,7 +137,7 @@ mod autoboss;
 mod vfx;
 mod view;
 mod wire;
-#[cfg(feature = "host")]
+#[cfg(feature = "embed")]
 mod workshop;
 #[cfg(feature = "host")]
 mod world;
@@ -170,11 +172,59 @@ impl Plugin for CombatCorePlugin {
 }
 
 pub use config::GameConfig;
-pub use paths::register_assets;
-pub use player::Player;
+pub use paths::{extracted, register_assets, set_root};
+pub use traversal::{GrapplePoint, GrapplePoints, GrappleTarget, LedgeEdge, LedgeEdges};
+pub use wire::WireAim;
+#[cfg(feature = "embed")]
+pub use camera::CameraPlugin;
+#[cfg(all(feature = "embed", not(feature = "host")))]
+pub use camera::HostCamera;
+#[cfg(feature = "embed")]
+pub use debug_menu::DebugMenuPlugin;
+
+/// The HUD for another game (`embed`): Wolf's and the enemy's bars, posture, the lock and
+/// deathblow marks, item icons, Sen and experience, on RustSekiro's 16:9 UI stage.
+#[cfg(feature = "embed")]
+pub struct HudPlugin;
+
+#[cfg(feature = "embed")]
+impl Plugin for HudPlugin {
+    fn build(&self, app: &mut App) {
+        app.add_plugins((fonts::FontsPlugin, ui_stage::UiStagePlugin, experience::ExperiencePlugin, hud::HudPlugin));
+    }
+}
+pub use actor::Actor;
+#[cfg(feature = "embed")]
+pub use idol::{set_idol_hooks, IdolHooks};
+
+/// The menus for another game (`embed`): the pause and death screens, the in-game menu, the
+/// Sculptor's Idols (rest, travel, skills, emblems; the host places them with
+/// `set_idol_hooks`), items on the ground and the action guide.
+#[cfg(feature = "embed")]
+pub struct MenuPlugins;
+
+#[cfg(feature = "embed")]
+impl Plugin for MenuPlugins {
+    fn build(&self, app: &mut App) {
+        app.add_plugins((menu::MenuPlugin, game_menu::GameMenuPlugin, idol::IdolPlugin, pickups::PickupsPlugin, action_guide::ActionGuidePlugin));
+    }
+}
+pub use player::{Player, CAPSULE_HALF_HEIGHT};
 pub use encounter::{hooks as map_hooks, set as set_map_hooks, set_world as set_world_hooks, world as world_hooks, Interaction, MapHooks, WorldHooks, NONE as NO_MAP_HOOKS};
 pub use place::{set_boss_arena, set_frame, set_loaded_map, Frame, MapLoad};
-pub use sound_rules::{SoundCmd, SoundQueue, TrackedSound, TrackedSounds};
+pub use sound_rules::{MapSpace, SoundCmd, SoundPlace, SoundQueue, TrackedSound, TrackedSounds};
+
+/// The sound for another game (`embed`): FMOD from the Sekiro install (the cues, footsteps,
+/// voices and reverb) and the area and boss music. The host sets the [`SoundPlace`].
+#[cfg(feature = "embed")]
+pub struct SoundPlugins;
+
+#[cfg(feature = "embed")]
+impl Plugin for SoundPlugins {
+    fn build(&self, app: &mut App) {
+        app.add_plugins((sound::SoundPlugin, fmod::FmodPlugin, area_music::AreaMusicPlugin));
+    }
+}
 pub use terrain::{Terrain, WorldCollision};
 pub use view::{CameraSnap, LockOn, View};
 

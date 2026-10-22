@@ -99,7 +99,9 @@ pub struct ExperiencePlugin;
 
 impl Plugin for ExperiencePlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<Earned>().add_systems(Update, reward_kills).add_systems(OnEnter(crate::menu::Screen::Dead), death_penalty);
+        app.init_resource::<Earned>().add_systems(Update, reward_kills);
+        #[cfg(feature = "host")]
+        app.add_systems(OnEnter(crate::menu::Screen::Dead), death_penalty);
     }
 }
 

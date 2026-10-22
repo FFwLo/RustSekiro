@@ -85,6 +85,47 @@ fn page_name(page: usize) -> String {
     }
 }
 
+/// What the map tells the idols: this game's sekiro-rs map (sr_map.rs), or under `embed` the
+/// host game's own map ([`set_idol_hooks`]).
+#[derive(Clone, Copy)]
+pub struct IdolHooks {
+    /// The game's idols stand on this map (it draws them and their light): placed by entity.
+    pub world: fn() -> bool,
+    /// An idol of this play world: its base on the floor and the way it faces.
+    pub spot: fn(i64) -> Option<(Vec3, Vec3)>,
+    /// Travel can reach this idol of another map (a new run there).
+    pub can_travel: fn(i64) -> bool,
+    /// The idol a run starts at.
+    pub start: fn() -> Option<i64>,
+    /// Travel to an idol of another map: a new run there, which ends this one.
+    pub travel: fn(i64),
+    /// Wolf knelt at this idol (by entity): the host's map lights it (its flame).
+    pub rested: fn(i64),
+}
+
+#[cfg(feature = "host")]
+const DEFAULT_HOOKS: IdolHooks = IdolHooks {
+    world: crate::sr_map::world,
+    spot: crate::sr_map::idol_spot,
+    can_travel: |e| crate::sr_map::arena_on(&crate::sr_map::map_of(e)).is_some(),
+    start: crate::sr_map::idol_start,
+    travel: |e| crate::sr_map::travel(e),
+    rested: |_| {},
+};
+#[cfg(not(feature = "host"))]
+const DEFAULT_HOOKS: IdolHooks = IdolHooks { world: || false, spot: |_| None, can_travel: |_| false, start: || None, travel: |_| {}, rested: |_| {} };
+
+static IDOL_HOOKS: std::sync::OnceLock<IdolHooks> = std::sync::OnceLock::new();
+
+/// Sets the idol hooks (the first call wins).
+pub fn set_idol_hooks(hooks: IdolHooks) {
+    let _ = IDOL_HOOKS.set(hooks);
+}
+
+fn hooks() -> IdolHooks {
+    *IDOL_HOOKS.get().unwrap_or(&DEFAULT_HOOKS)
+}
+
 /// Under sekiro-rs's map: every idol of the game, one per entity, those of this play world at
 /// their place, the rest away (sr_map.rs).
 fn sr_idols() -> Vec<Idol> {
@@ -94,7 +135,7 @@ fn sr_idols() -> Vec<Idol> {
             i.pages.push(r.page);
             continue;
         }
-        let spot = crate::sr_map::idol_spot(r.entity);
+        let spot = (hooks().spot)(r.entity);
         let (pos, out_dir) = spot.unwrap_or((Vec3::ZERO, Vec3::Z));
         out.push(Idol { name: r.name.clone(), pos, out: out_dir, entity: r.entity, pages: vec![r.page], away: spot.is_none() });
     }
@@ -103,12 +144,12 @@ fn sr_idols() -> Vec<Idol> {
 
 /// Whether Travel can go to idol `i`: here, or on a map a new run can start on.
 fn reachable(i: &Idol) -> bool {
-    !i.away || crate::sr_map::arena_on(&crate::sr_map::map_of(i.entity)).is_some()
+    !i.away || (hooks().can_travel)(i.entity)
 }
 
 /// The idol a run starts at (`SHINOBI_IDOL`, idol travel), as an index of [`IDOLS`].
 pub fn start_index() -> Option<usize> {
-    let e = crate::sr_map::idol_start()?;
+    let e = (hooks().start)()?;
     IDOLS.read().ok()?.iter().position(|i| i.entity == e && !i.away)
 }
 
@@ -208,6 +249,7 @@ fn seat_tick(seat: &mut Seat, p: &mut crate::player::Player, a: &mut crate::acto
                         a.yaw = idol.wolf_yaw();
                         a.move_vel = Vec3::ZERO;
                         rest(p, a, config);
+                        (hooks().rested)(idol.entity);
                         *seat = Seat { idol: Some(i), phase: Phase::Kneeling, cmd: None, open: false, checkpoint: Some(i), respawn: false, sculptor: false };
                         return true;
                     }
@@ -257,12 +299,13 @@ fn seat_tick(seat: &mut Seat, p: &mut crate::player::Player, a: &mut crate::acto
             let idol = IDOLS.read().ok().and_then(|v| v.get(to).cloned());
             // In another map: a new run there (sr_map.rs), which ends this one.
             if let Some(idol) = idol.as_ref().filter(|i| i.away) {
-                crate::sr_map::travel(idol.entity);
+                (hooks().travel)(idol.entity);
             }
             if let Some(idol) = idol {
                 tf.translation = idol.spot() + Vec3::Y * crate::player::CAPSULE_HALF_HEIGHT;
                 a.yaw = idol.wolf_yaw();
                 rest(p, a, config);
+                (hooks().rested)(idol.entity);
                 seat.idol = Some(to);
                 seat.checkpoint = Some(to);
             }
@@ -584,7 +627,7 @@ fn build(commands: &mut Commands, assets: &AssetServer, menu: &IdolMenu, font: &
                         });
                     });
                     if let Some(pic) = crate::form::picture(f) {
-                        root.spawn((abs(57.7, 19.7, 33.0, 33.8), ImageNode::new(assets.load(pic))));
+                        root.spawn((abs(57.7, 19.7, 33.0, 33.8), ImageNode::new(assets.load(crate::paths::asset(pic)))));
                     }
                     let mut r = 57.2;
                     while r < 85.5 {
@@ -1013,7 +1056,7 @@ fn idol_mesh(meshes: &mut Assets<Mesh>, mats: &mut Assets<StandardMaterial>, ass
     let floats = |v: &serde_json::Value| v.as_array().map(|a| a.iter().filter_map(|x| x.as_f64().map(|f| f as f32)).collect::<Vec<f32>>()).unwrap_or_default();
     let tex = |stem: &str, srgb: bool| -> Option<Handle<Image>> {
         (!stem.is_empty() && crate::paths::extracted().join(format!("tex/{stem}.dds")).is_file()).then(|| {
-            assets.load_builder().with_settings(move |s: &mut bevy::image::ImageLoaderSettings| s.is_srgb = srgb).load(format!("tex/{stem}.dds"))
+            assets.load_builder().with_settings(move |s: &mut bevy::image::ImageLoaderSettings| s.is_srgb = srgb).load(crate::paths::asset(format!("tex/{stem}.dds")))
         })
     };
     let mut out = Vec::new();
@@ -1093,7 +1136,7 @@ fn flame_without_mist(lib: &mut crate::fxr::FxrLib) -> i64 {
 /// model is not exported), with the idol's blue light.
 fn spawn_idols(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mats: ResMut<Assets<StandardMaterial>>, assets: Res<AssetServer>, config: Res<crate::config::GameConfig>, fxr: Option<ResMut<crate::fxr::FxrLib>>) {
     // Under sekiro-rs's map the game's idols: its map draws them (and their light) itself.
-    if crate::sr_map::world() {
+    if (hooks().world)() {
         let idols = sr_idols();
         info!("idols: {} of the game's, {} in this play world", idols.len(), idols.iter().filter(|i| !i.away).count());
         if let Ok(mut v) = IDOLS.write() {
@@ -1101,7 +1144,10 @@ fn spawn_idols(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mat
         }
         return;
     }
+    #[cfg(feature = "host")]
     let idols = if crate::map::map_id(&config).as_deref() == Some(crate::sandbox::CONSTRUCT_ID) { parkour_idols() } else { Vec::new() };
+    #[cfg(not(feature = "host"))]
+    let idols: Vec<Idol> = { let _ = &config; Vec::new() };
     let model = if idols.is_empty() { Vec::new() } else { idol_mesh(&mut meshes, &mut mats, &assets) };
     let flame = fxr.map_or(IDOL_SFX, |mut lib| flame_without_mist(&mut lib));
     let wood = mats.add(StandardMaterial { base_color: Color::srgb(0.32, 0.2, 0.11), perceptual_roughness: 0.85, ..default() });
@@ -1137,7 +1183,11 @@ const IDOL_FACING: f32 = std::f32::consts::PI;
 /// This game's world hooks for the core (encounter.rs): items on the ground (pickups.rs), the
 /// Sculptor (sculptor.rs) then the idols, the idols as checkpoints.
 pub fn world_hooks() -> crate::encounter::WorldHooks {
-    crate::encounter::WorldHooks { take_item: crate::pickups::take_item, interactions: &[crate::sculptor::tick, tick], respawn_at }
+    #[cfg(feature = "host")]
+    let interactions: &'static [crate::encounter::Interaction] = &[crate::sculptor::tick, tick];
+    #[cfg(not(feature = "host"))]
+    let interactions: &'static [crate::encounter::Interaction] = &[tick];
+    crate::encounter::WorldHooks { take_item: crate::pickups::take_item, interactions, respawn_at }
 }
 
 pub struct IdolPlugin;

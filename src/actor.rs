@@ -175,6 +175,11 @@ pub struct Actor {
     /// (all but the open world's enemies, enemy/world.rs).
     pub lod: u32,
     pub lod_due: bool,
+    /// Ticks since its last due tick (0 on one): how far into its `lod` window a frame is drawn.
+    pub lod_phase: u32,
+    /// The fall-prevention walls Wolf's script asks for (hks.rs `Host::fall_protect`): the host's
+    /// world stops him at its ledge walls while he walks (terrain.rs `slide_protected`).
+    pub fall_protect: u8,
     /// Debug menu "no posture damage" (player_cheats sets it each tick): add_posture adds
     /// nothing, so one blocked hit can't fill the bar inside Resolve (round 65).
     pub no_posture: bool,
@@ -367,6 +372,8 @@ impl Actor {
             clock_dt: None,
             lod: 1,
             lod_due: true,
+            lod_phase: 0,
+            fall_protect: 0,
             no_posture: false,
             resident: Vec::new(),
             item_sp: Vec::new(),
@@ -939,7 +946,14 @@ pub fn advance(time: Res<Time>, combat: Res<Combat>, mut q: Query<(&mut Actor, &
 /// building on real time, so an air hit's arc came out lower and shorter.
 fn fall(a: &mut Actor, tf: &mut Transform, dt: f32) {
     if a.airborne {
+        let from = tf.translation.y;
         tf.translation.y += (a.vel_y - 0.5 * a.grav_y * dt) * dt;
+        // A rise stops where the head meets a ceiling (the host's world: sekiro-rs sim body.rs
+        // `stop_rise_at_ceiling`), and the rise is spent.
+        if let Some(y) = crate::terrain::ceiling_stop(tf.translation, from) {
+            tf.translation.y = y;
+            a.vel_y = a.vel_y.min(0.0);
+        }
     }
 }
 

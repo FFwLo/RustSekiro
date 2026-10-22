@@ -17,7 +17,10 @@ required-features = ["host"]
 # The whole game (window, map, HUD, menus, sound; the `sv1` program). Off, the library is the
 # combat core alone for another Bevy game (lib.rs `CombatCorePlugin`).
 default = ["host"]
-host = ["dep:sekiro-game", "dep:sekiro-sim", "dep:libloading", "dep:winit", "dep:windows-sys"]
+# The camera and the debug menu for another Bevy game that hosts the core (sekiro-rs's
+# `--rustsekiro` mode): no map, HUD, menus or sound of ours.
+embed = ["dep:libloading"]
+host = ["embed", "dep:sekiro-game", "dep:sekiro-sim", "dep:libloading", "dep:winit", "dep:windows-sys"]
 
 [dependencies]
 bevy = { version = "0.20.0", features = ["dds"] }
@@ -25,15 +28,16 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "1"
 libloading = { version = "0.8", optional = true }
-# AKJama's sekiro-rs as a library (local clone next to this repo, branch local/game-lib): its
-# streaming map, lighting, sky and fog under `SHINOBI_SR_MAP=1` (src/sr_map.rs).
-sekiro-game = { path = "../sekiro-rs/crates/game", optional = true }
-sekiro-sim = { path = "../sekiro-rs/crates/sim", optional = true }
+# AKJama's sekiro-rs as a library: its streaming map, lighting, sky and fog under
+# `SHINOBI_SR_MAP=1` (src/sr_map.rs). Built from the local clone next to this repo (branch
+# local/game-lib, [patch] below); the git source lets sekiro-rs's game take this crate in.
+sekiro-game = { git = "https://github.com/AKJama/sekiro-rs", optional = true }
+sekiro-sim = { git = "https://github.com/AKJama/sekiro-rs", optional = true }
 # Its file readers (the draw params' GPARAM for the tests that check his lighting).
-sekiro-formats = { path = "../sekiro-rs/crates/formats" }
+sekiro-formats = { git = "https://github.com/AKJama/sekiro-rs" }
 # AKJama's HavokScript VM (sekiro-rs crates/hks): runs the game's compiled scripts from
 # extracted/action/script, the bytecode the game itself runs (src/hks.rs HksVm).
-sekiro-hks = { path = "../sekiro-rs/crates/hks" }
+sekiro-hks = { git = "https://github.com/AKJama/sekiro-rs" }
 # The window icon (src/icon.rs); the version Bevy 0.20 itself uses.
 winit = { version = "0.30", optional = true }
 # Release build (main.rs): attach the parent console, the "Sv1 stopped" dialog on a panic.
@@ -47,6 +51,14 @@ wgpu = { version = "30", default-features = false }
 # Standard Lua 5.1 (built from source) for the game's own player script, decompiled HKS
 # (src/hks_lua.rs, a trial run by the tests only for now).
 mlua = { version = "0.12.2", features = ["lua51", "vendored"] }
+
+# This repo built on its own takes sekiro-rs from the clone next to it (a game that takes this
+# crate in uses its own copy).
+[patch."https://github.com/AKJama/sekiro-rs"]
+sekiro-game = { path = "../sekiro-rs/crates/game" }
+sekiro-sim = { path = "../sekiro-rs/crates/sim" }
+sekiro-formats = { path = "../sekiro-rs/crates/formats" }
+sekiro-hks = { path = "../sekiro-rs/crates/hks" }
 
 # Light optimization for our own code, so rebuilds stay fast.
 [profile.dev]

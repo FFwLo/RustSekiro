@@ -110,7 +110,10 @@ fn spawn_pickups(mut commands: Commands, config: Res<crate::config::GameConfig>,
     if let Some(id) = std::env::var("SHINOBI_ITEM_DIALOG").ok().and_then(|v| v.parse::<i64>().ok()) {
         picked.0.push((usize::MAX, id, 1));
     }
+    #[cfg(feature = "host")]
     let list = if crate::map::map_id(&config).as_deref() == Some(crate::sandbox::CONSTRUCT_ID) { parkour_pickups() } else { Vec::new() };
+    #[cfg(not(feature = "host"))]
+    let list: Vec<Pickup> = { let _ = &config; Vec::new() };
     for (i, p) in list.iter().enumerate() {
         let mut fx = crate::fxr::FxEffect::new(GLINT_SFX, None, false, Transform::from_translation(p.pos + Vec3::Y * 0.1));
         fx.keep = true;
@@ -186,7 +189,7 @@ fn collect(
         }
         let name = texts.as_ref().and_then(|t| t.goods_name.get(&(goods as u32)).cloned()).unwrap_or_else(|| goods.to_string());
         let info = texts.as_ref().and_then(|t| t.goods_info.get(&(goods as u32)).cloned()).unwrap_or_default();
-        let icon = crate::game_menu::any_icon(param("EquipParamGoods", goods)["iconId"].as_i64().unwrap_or(-1));
+        let icon = crate::hud::any_icon(param("EquipParamGoods", goods)["iconId"].as_i64().unwrap_or(-1));
         if first && up.0.is_none() {
             let key_item = param("EquipParamGoods", goods)["goodsType"].as_i64() == Some(1);
             spawn_dialog(&mut commands, &assets, &font, &name, &info, icon, key_item);

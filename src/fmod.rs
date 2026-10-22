@@ -883,7 +883,7 @@ impl ParamEase {
     }
 }
 
-fn apply_reverb(mut fmod: NonSendMut<Fmod>, map: Option<Res<crate::map::MapLighting>>, time: Res<Time>, mut ease: Local<ParamEase>) {
+fn apply_reverb(mut fmod: NonSendMut<Fmod>, map: Option<Res<crate::sound_rules::SoundPlace>>, time: Res<Time>, mut ease: Local<ParamEase>) {
     let v = std::env::var("SHINOBI_REVERB").ok().and_then(|v| v.parse().ok()).unwrap_or(map.map_or(0, |m| m.sound_space));
     if ease.target != Some(v) {
         info!("FMOD: reverb sd_reverb_size -> {v}");

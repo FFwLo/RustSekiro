@@ -1,13 +1,20 @@
 //! Where the game's files are: the folder holding `extracted/` (the data generated from the
 //! player's copy of Sekiro) and `config.toml`. A development build uses the project folder; a
 //! release build, run from its own folder, uses the folder the exe sits in. `SHINOBI_ROOT`
-//! overrides both.
+//! overrides both; a game that takes the core in sets it with [`set_root`].
 
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
+static ROOT: OnceLock<PathBuf> = OnceLock::new();
+
+/// The RustSekiro folder (its `extracted/` and `config.toml`), before anything reads a file;
+/// false when the root was already taken.
+pub fn set_root(dir: PathBuf) -> bool {
+    ROOT.set(dir).is_ok()
+}
+
 pub fn root() -> PathBuf {
-    static ROOT: OnceLock<PathBuf> = OnceLock::new();
     ROOT.get_or_init(|| {
         if let Some(r) = std::env::var_os("SHINOBI_ROOT") {
             return PathBuf::from(r);
@@ -37,6 +44,11 @@ pub fn sekiro_dir() -> String {
 
 /// The asset source the core loads its textures from (`rustsekiro://tex/...`): extracted/, so they load whatever the host game's own asset folder is.
 pub const SOURCE: &str = "rustsekiro";
+
+/// An `extracted/` file as an asset path in [`SOURCE`] (the host game's own asset folder is elsewhere).
+pub fn asset(rel: impl AsRef<str>) -> String {
+    format!("{SOURCE}://{}", rel.as_ref())
+}
 
 /// Registers [`SOURCE`]; before `DefaultPlugins` (the `AssetPlugin`).
 pub fn register_assets(app: &mut bevy::prelude::App) {

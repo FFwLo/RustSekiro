@@ -20,8 +20,7 @@ use std::collections::HashSet;
 
 use bevy::prelude::*;
 
-/// Resurrective Power that lights one used resurrection node.
-pub(crate) const RES_POWER_NODE: u32 = 100;
+use crate::player::RES_POWER_NODE;
 /// ResourceItemLotParam resourceItemCategory: Spirit Emblems, Resurrective Power.
 const RESOURCE_EMBLEMS: i64 = 1;
 const RESOURCE_POWER: i64 = 5;

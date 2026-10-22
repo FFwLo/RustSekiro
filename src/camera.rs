@@ -2,6 +2,8 @@
 //! player, and turns toward the lock-on target (Q or middle mouse).
 //!
 //! Click in the window to capture the mouse; press Esc to release it.
+//! In another game (`embed` without `host`) it takes over that game's camera instead of spawning
+//! one, keeping its lights, fog and post.
 
 use bevy::input::mouse::AccumulatedMouseMotion;
 use bevy::prelude::*;
@@ -310,13 +312,28 @@ impl Plugin for CameraPlugin {
     fn build(&self, app: &mut App) {
         add_shakes(app);
         app.add_plugins(crate::view::ViewPlugin)
-            .add_systems(Startup, (spawn_camera, publish_view).chain())
+            .add_systems(CAMERA_START, (spawn_camera, publish_view).chain())
             .add_systems(
 
                 PostUpdate,
                 (shot_knobs, capture_mouse, toggle_lock, orbit_with_mouse, orbit_with_stick, follow_player, apply_shakes, fade_player, publish_view).chain().before(TransformSystems::Propagate),
             );
     }
+}
+
+/// The whole game spawns its camera at the start; in another game that game's camera is taken
+/// over once it exists.
+#[cfg(feature = "host")]
+const CAMERA_START: Startup = Startup;
+#[cfg(not(feature = "host"))]
+const CAMERA_START: Update = Update;
+
+/// The pause / death screens and the idol menu (menu.rs).
+type Screen<'w> = Option<Res<'w, State<crate::menu::Screen>>>;
+
+/// Behind a menu (paused, the death screen).
+fn in_menu(_screen: &Screen) -> bool {
+    _screen.as_ref().is_some_and(|s| *s.get() != crate::menu::Screen::Playing)
 }
 
 /// The camera as the combat core reads it (view.rs `View`): the orbit and the camera's place.
@@ -345,6 +362,34 @@ fn shot_knobs(mut cam: Query<&mut OrbitCamera>) {
     }
 }
 
+/// Put by another game on its main camera, the one this camera takes over (needed when it has
+/// more than one, e.g. probe or effect cameras).
+#[cfg(not(feature = "host"))]
+#[derive(Component)]
+pub struct HostCamera;
+
+#[cfg(not(feature = "host"))]
+fn spawn_camera(
+    mut commands: Commands,
+    combat: Res<Combat>,
+    mut cams: Query<(Entity, &mut Projection, Has<HostCamera>), (With<Camera3d>, Without<OrbitCamera>)>,
+    done: Query<(), With<OrbitCamera>>,
+) {
+    if !done.is_empty() {
+        return;
+    }
+    // The marked camera, else the only one.
+    let marked = cams.iter().any(|c| c.2);
+    let mut pick = cams.iter_mut().filter(|c| c.2 || !marked);
+    let (Some((e, mut projection, _)), None) = (pick.next(), pick.next()) else { return };
+    let lc = lock_cam(&combat);
+    if let Projection::Perspective(p) = &mut *projection {
+        p.fov = lc.fov_y.to_radians();
+    }
+    commands.entity(e).insert(OrbitCamera { yaw: 0.0, pitch: start_pitch(), focus: Vec3::ZERO, cam: CamState::new(&lc) });
+}
+
+#[cfg(feature = "host")]
 fn spawn_camera(mut commands: Commands, combat: Res<Combat>) {
     let lc = lock_cam(&combat);
     commands.spawn((
@@ -448,7 +493,7 @@ pub(crate) fn toggle_lock(
     player: Single<(&Transform, &crate::actor::Actor), With<Player>>,
     enemies: Query<(Entity, &Transform, &Enemy)>,
     cams: Query<(&Camera, &GlobalTransform), With<OrbitCamera>>,
-    (screen, cursor): (Option<Res<State<crate::menu::Screen>>>, Option<Single<&CursorOptions, With<PrimaryWindow>>>),
+    (screen, cursor): (Screen, Option<Single<&CursorOptions, With<PrimaryWindow>>>),
 ) {
     let range = lock_cam(&combat).lock_range;
     let (wolf, wolf_fwd) = (player.0.translation, player.1.forward());
@@ -462,7 +507,7 @@ pub(crate) fn toggle_lock(
     }
     // Only in play: behind a menu (paused, the death screen) the mouse and stick are the menu's
     // and the game clock - the switch cooldown's - stands still.
-    if screen.is_some_and(|s| *s.get() != crate::menu::Screen::Playing) {
+    if in_menu(&screen) {
         return;
     }
     let pad_lock = config.input.gamepad && pads.iter().any(|g| g.just_pressed(GamepadButton::RightThumb));
@@ -1026,7 +1071,7 @@ pub(crate) fn follow_player(
     let mut dist = (pos - orbit.focus).length();
     // The exe's cast keeps max(hit, 1e-5) of the arm (14073.c 12318-12395): no minimum distance
     // (it was 0.3 m here); Wolf fades instead (`cam_fade_step`).
-    if let Some(hit) = crate::terrain::raycast(orbit.focus, arm, dist + radius) {
+    if let Some(hit) = crate::terrain::camera_raycast(orbit.focus, arm, dist + radius) {
         // The map's walls and floors (camCastSphereRadius stand-in: the ray stops short by it).
         dist = dist.min((hit - radius).max(1e-5));
     } else if arm.y < -1e-3 && crate::terrain::terrain().is_none() {

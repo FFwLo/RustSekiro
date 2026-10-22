@@ -140,6 +140,8 @@ pub struct Player {
     /// every grounded update, 140bc.c:4720; FUN_140b97880; env(224)). gap: whether the
     /// Grappling Hook's flight moves it is not traced (it does not here).
     pub(crate) air_top: f32,
+    /// Wolf's centre at the last fall check (the path tested against the fall-return walls).
+    fall_from: Option<Vec3>,
     /// The last ground Wolf stood on (not water): where a fall-return death puts him back.
     safe_pos: Option<Vec3>,
     /// Swimming or diving (swim.rs).
@@ -168,6 +170,9 @@ pub enum Action {
     /// Talk / examine / wall hug / ledge hang (ACTION_ARM_WALL_HANG, key guide Kc@20; docking.rs).
     Interact,
 }
+
+/// Resurrective Power that lights one used resurrection node again (drops, HUD).
+pub(crate) const RES_POWER_NODE: u32 = 100;
 
 pub const CAPSULE_RADIUS: f32 = 0.4;
 /// How far from a wire perch's landing spot Wolf still stands on it (gap: the object's own
@@ -384,6 +389,26 @@ fn wolf_wears(a: &Actor, p: &Player, d: &crate::data::CharData, state_info: i64)
     ids.iter().any(|id| d.sp_effects.get(&id.to_string()).map(|s| s.state_info).or_else(|| crate::data::sp_cycle(*id).map(|c| c.state_info)) == Some(state_info))
 }
 
+/// The map's fall-return walls (hit filter 15, under its ravines and off its cliffs): Wolf's body
+/// passing one this tick (off the wire; the sim's contact takes any move) starts the fall return
+/// at once, as in the game (sekiro-rs sim duel.rs: the wall's fade, then back on safe ground),
+/// well before the void drop (`FALL_VOID_DROP`). Checked after the tick's move (any state's), on its whole path.
+fn fall_return_walls(combat: Res<crate::data::Combat>, mut log: ResMut<CombatLog>, mut wolf: Query<(&mut Actor, &mut Player, &Transform)>) {
+    let d = &combat.player;
+    for (mut a, mut p, tf) in &mut wolf {
+        let from = p.fall_from.replace(tf.translation);
+        if p.wire.is_some() || a.hp <= 0.0 || is_fall_return(&a.state) {
+            continue;
+        }
+        if from.is_some_and(|f| crate::terrain::fall_return_wall(f, tf.translation)) && a.play_state(d, "FallDeadReturnStart") {
+            a.airborne = false;
+            a.vel_y = 0.0;
+            info!("fall return: Wolf passed a fall-return wall at {}", tf.translation);
+            log.push("fell into the void", Color::srgb(1.0, 0.4, 0.4));
+        }
+    }
+}
+
 /// A fall-return death (W_FallDeadReturnStart / W_LandDeadReturnStart): Wolf out of the map, on
 /// his way back to safe ground.
 pub fn is_fall_return(state: &str) -> bool {
@@ -457,6 +482,13 @@ pub(crate) static FLOWN: std::sync::atomic::AtomicBool = std::sync::atomic::Atom
 #[derive(Resource)]
 pub struct ScriptedInput;
 
+impl Player {
+    /// A wire move (shoot, flight, landing) is under way.
+    pub fn in_wire(&self) -> bool {
+        self.wire.is_some()
+    }
+}
+
 pub struct PlayerPlugin;
 
 impl Plugin for PlayerPlugin {
@@ -472,6 +504,7 @@ impl Plugin for PlayerPlugin {
             .add_systems(FixedUpdate, crate::swim::hold.after(crate::docking::hold).before(crate::terrain::bodies_on_terrain).before(crate::anim::PoseSet).before(ActorSet::Resolve));
         // Bodies on the ground: wall slide and floor follow after the moves (terrain.rs).
         app.add_systems(FixedUpdate, crate::terrain::bodies_on_terrain.after(ActorSet::Advance).before(crate::anim::PoseSet));
+        app.add_systems(FixedUpdate, fall_return_walls.after(crate::terrain::bodies_on_terrain).before(crate::anim::PoseSet));
         app.add_systems(FixedUpdate, wolf_no_dead.before(ActorSet::Decide));
         app.add_systems(FixedUpdate, crate::ninjutsu::throw_effects.after(ActorSet::Advance).before(ActorSet::Resolve));
         if std::env::var("SHINOBI_MOVE_LOG").is_ok() {
@@ -1329,10 +1362,10 @@ fn spawn_player(mut commands: Commands, combat: Res<Combat>, config: Res<GameCon
         }
     }
     commands.spawn((
-        Player { deathblow_ready: false, jump_throw_ready: false, plunge_ready: false, plunge: None, leap_homing: None, dock: None, wall_jumps: 0, last_wall: None, seat: Default::default(), wall_contact: None, speed_level: 0.0, requests: HashMap::new(), last_state: String::new(), gourd: config.player.gourd_charges, emblems: config.player.spirit_emblems, auto_aim: false, auto_aim_fresh: false, resurrections: config.player.resurrections, revive_queued: false, death_wait: 0.0, dead_for: 0.0, escape: None, aged_form: false, step_tilt: 0.0, jump_tilt: 0.0, throw_start: None, throw_target: None, tool_slot: 0, quick_slot: 0, item_use: None, vel_scale: None, expand_pending: false, sub_cat_before: 0, art_enable_jump: false, timed: Vec::new(), held: Vec::new(), wire: None, perch: None, wire_todome: false, air_top: 0.0, safe_pos: None, swim: None, revive_open: false, gave_up: false, revive_locked: false, item_hp_rate: 1.0, item_posture_rate: 1.0, sp_bursts: Vec::new(), res_power: 0, refill_items: false },
+        Player { deathblow_ready: false, jump_throw_ready: false, plunge_ready: false, plunge: None, leap_homing: None, dock: None, wall_jumps: 0, last_wall: None, seat: Default::default(), wall_contact: None, speed_level: 0.0, requests: HashMap::new(), last_state: String::new(), gourd: config.player.gourd_charges, emblems: config.player.spirit_emblems, auto_aim: false, auto_aim_fresh: false, resurrections: config.player.resurrections, revive_queued: false, death_wait: 0.0, dead_for: 0.0, escape: None, aged_form: false, step_tilt: 0.0, jump_tilt: 0.0, throw_start: None, throw_target: None, tool_slot: 0, quick_slot: 0, item_use: None, vel_scale: None, expand_pending: false, sub_cat_before: 0, art_enable_jump: false, timed: Vec::new(), held: Vec::new(), wire: None, perch: None, wire_todome: false, air_top: 0.0, fall_from: None, safe_pos: None, swim: None, revive_open: false, gave_up: false, revive_locked: false, item_hp_rate: 1.0, item_posture_rate: 1.0, sp_bursts: Vec::new(), res_power: 0, refill_items: false },
         actor,
         Name::new("Player"),
-        Transform::from_xyz(0.0, CAPSULE_HALF_HEIGHT, 4.0),
+        Transform::from_translation((crate::encounter::hooks().player_start)()),
         Visibility::default(),
     ));
 }
@@ -3016,7 +3049,9 @@ fn decide(
     // IsAnimEnd). The Demon of Hatred's leap (a240_500000 / 510000) left Wolf above his field's
     // uneven ground and the fall cut the deathblow, so the Demon never fell (2026-10-17).
     let throwing = crate::actor::in_throw(&a) || a.state == "DeathblowStart";
-    if !a.airborne && !perched && !wiring && !docked && !throwing && tf.translation.y > crate::terrain::ground_y(tf.translation) + CAPSULE_HALF_HEIGHT + 0.05 && !(!a.anim.is_empty() && d.flag(&a.anim, a.t, FLAG_NO_GRAVITY)) {
+    // Over a drop his capsule's rim still rests on, he stands (terrain.rs `rim_floor`).
+    let on_rim = || crate::terrain::rim_floor(tf.translation).is_some_and(|h| tf.translation.y <= h + CAPSULE_HALF_HEIGHT + 0.05);
+    if !a.airborne && !perched && !wiring && !docked && !throwing && tf.translation.y > crate::terrain::ground_y(tf.translation) + CAPSULE_HALF_HEIGHT + 0.05 && !on_rim() && !(!a.anim.is_empty() && d.flag(&a.anim, a.t, FLAG_NO_GRAVITY)) {
         a.airborne = true;
         // A plain fall (fallType 0), not the last wire flight's (2026-10-12 bug hunt round 12).
         a.fall_type = 0;

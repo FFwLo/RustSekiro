@@ -297,19 +297,19 @@ fn build_title(commands: &mut Commands, assets: &AssetServer, fonts: &crate::fon
         // The calligraphy, faint, behind everything.
         if sprite("sb_title/MENU_Title_SEKIRO") {
             c.spawn(full()).with_children(|k| {
-                k.spawn((Node { height: Val::Vh(92.0), ..default() }, ImageNode::new(assets.load("menu_sprites/sb_title/MENU_Title_SEKIRO.png")).with_color(Color::srgb(0.16, 0.16, 0.16))));
+                k.spawn((Node { height: Val::Vh(92.0), ..default() }, ImageNode::new(assets.load(crate::paths::asset("menu_sprites/sb_title/MENU_Title_SEKIRO.png"))).with_color(Color::srgb(0.16, 0.16, 0.16))));
             });
         }
         c.spawn(Node { flex_direction: FlexDirection::Column, align_items: AlignItems::Center, ..full() }).with_children(|col| {
             col.spawn(Node { column_gap: Val::Vh(1.8), align_items: AlignItems::Center, ..default() }).with_children(|r| {
                 for l in letters {
-                    r.spawn((Node { height: Val::Vh(11.0), ..default() }, ImageNode::new(assets.load(format!("menu_sprites/sb_title_02/MENU_Title_{l}.png")))));
+                    r.spawn((Node { height: Val::Vh(11.0), ..default() }, ImageNode::new(assets.load(crate::paths::asset(format!("menu_sprites/sb_title_02/MENU_Title_{l}.png"))))));
                 }
             });
             if sprite("sb_title/MENU_Shadows") && sprite("sb_title/MENU_DieTwice") {
                 col.spawn(Node { column_gap: Val::Vh(1.4), margin: UiRect::top(Val::Vh(2.2)), ..default() }).with_children(|r| {
                     for f in ["MENU_Shadows", "MENU_DieTwice"] {
-                        r.spawn((Node { height: Val::Vh(2.6), ..default() }, ImageNode::new(assets.load(format!("menu_sprites/sb_title/{f}.png"))).with_color(Color::srgb(0.78, 0.74, 0.68))));
+                        r.spawn((Node { height: Val::Vh(2.6), ..default() }, ImageNode::new(assets.load(crate::paths::asset(format!("menu_sprites/sb_title/{f}.png")))).with_color(Color::srgb(0.78, 0.74, 0.68))));
                     }
                 });
             }
@@ -319,7 +319,7 @@ fn build_title(commands: &mut Commands, assets: &AssetServer, fonts: &crate::fon
                     .with_children(|b| {
                         b.spawn((
                             Node { position_type: PositionType::Absolute, width: Val::Percent(100.0), height: Val::Percent(100.0), ..default() },
-                            ImageNode::new(assets.load("menu_sprites/sb_in_game/MENU_Cursor_03.png")).with_color(TITLE_BRUSH),
+                            ImageNode::new(assets.load(crate::paths::asset("menu_sprites/sb_in_game/MENU_Cursor_03.png"))).with_color(TITLE_BRUSH),
                             if i == index { Visibility::Inherited } else { Visibility::Hidden },
                             TitleBrush(i),
                         ));
@@ -379,7 +379,8 @@ impl Plugin for MenuPlugin {
             Some("picker") => Screen::Picker,
             Some("options") => Screen::Options,
             Some(_) => Screen::Title,
-            None if automated => Screen::Playing,
+            // In another game (`embed`) its own start: straight into play.
+            None if automated || !cfg!(feature = "host") => Screen::Playing,
             None => Screen::Title,
         };
         // The Won screen stays up until Retry / Title instead of the duel's old restart 5 s after
@@ -428,7 +429,7 @@ fn spawn_death_overlay(mut commands: Commands, assets: Res<AssetServer>, fonts: 
     let serif = fonts.ui.clone();
     commands.spawn((full, BackgroundColor(Color::NONE), GlobalZIndex(90), Visibility::Hidden, DeathOverlay, crate::ui_stage::ScreenUi)).with_children(|c| {
         if art {
-            c.spawn((Node { height: Val::Vh(30.0), ..default() }, ImageNode::new(assets.load("hud/MENU_Death.png")).with_color(Color::NONE), DeathKanji));
+            c.spawn((Node { height: Val::Vh(30.0), ..default() }, ImageNode::new(assets.load(crate::paths::asset("hud/MENU_Death.png"))).with_color(Color::NONE), DeathKanji));
         } else {
             let f = if kanji_font.is_some() { font(&kanji_font, 150.0) } else { font(&serif, 56.0) };
             c.spawn((Text::new(if kanji_font.is_some() { "死" } else { "DEATH" }), f, TextColor(Color::NONE), DeathKanji));
@@ -626,13 +627,13 @@ fn build(commands: &mut Commands, assets: &AssetServer, s: Screen, fonts: &crate
         .with_children(|c| {
             if art_ok {
                 for (file, h, tint) in art {
-                    c.spawn((Node { height: Val::Vh(*h), ..default() }, ImageNode::new(assets.load(format!("hud/{file}.png"))).with_color(*tint)));
+                    c.spawn((Node { height: Val::Vh(*h), ..default() }, ImageNode::new(assets.load(crate::paths::asset(format!("hud/{file}.png")))).with_color(*tint)));
                 }
                 // The title's SHADOWS DIE TWICE line (SB_Title MENU_Shadows / MENU_DieTwice).
                 if s == Screen::Title && have("MENU_Shadows") && have("MENU_DieTwice") {
                     c.spawn(Node { column_gap: Val::Vh(1.6), ..default() }).with_children(|r| {
                         for f in ["MENU_Shadows", "MENU_DieTwice"] {
-                            r.spawn((Node { height: Val::Vh(4.0), ..default() }, ImageNode::new(assets.load(format!("hud/{f}.png")))));
+                            r.spawn((Node { height: Val::Vh(4.0), ..default() }, ImageNode::new(assets.load(crate::paths::asset(format!("hud/{f}.png"))))));
                         }
                     });
                 }
@@ -1217,6 +1218,7 @@ fn watch_fight(
         }
     }
     // The Construct is for practice: its guards all down is no victory.
+    #[cfg(feature = "host")]
     if crate::sandbox::ON_CONSTRUCT.load(std::sync::atomic::Ordering::Relaxed) && boss.run.is_none() {
         *down_for = 0.0;
         return;
@@ -1226,6 +1228,8 @@ fn watch_fight(
         // the banner to play out (`defeat_banner`, after the finisher).
         Some(run) if run.banner > 0 && run.defeated.is_some() && !banner_done.0 => return,
         Some(run) => (run.defeated.is_some(), 0.0),
+        // In the open world (an idol start) the map's enemies down is no victory either.
+        None if (crate::encounter::hooks().open_world)() => (false, WON_HOLD),
         None => (!enemies.is_empty() && enemies.iter().all(|(e, _)| e.is_dead()), WON_HOLD),
     };
     *down_for = if all_down { *down_for + time.delta_secs() } else { 0.0 };
@@ -1324,7 +1328,7 @@ fn defeat_banner(
         .with_children(|c| match art {
             // The clip: the brush kanji over y 24-52 %, the name in small spaced caps at y 59 %.
             Some(f) => {
-                c.spawn((Node { height: Val::Vh(30.0), ..default() }, ImageNode::new(assets.load(format!("hud/{f}.png"))).with_color(Color::WHITE.with_alpha(0.0)), DefeatBannerPart));
+                c.spawn((Node { height: Val::Vh(30.0), ..default() }, ImageNode::new(assets.load(crate::paths::asset(format!("hud/{f}.png")))).with_color(Color::WHITE.with_alpha(0.0)), DefeatBannerPart));
                 c.spawn((Text::new(text), font(&serif, 26.0), TextColor(Color::srgba(0.92, 0.88, 0.8, 0.0)), DefeatBannerPart));
             }
             None => {

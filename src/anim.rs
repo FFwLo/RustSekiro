@@ -601,17 +601,28 @@ fn pose_skeletons(
 /// Keeps this tick's pose (bones, then the root) for drawing, and updates the skeleton's
 /// GlobalTransforms by hand from the actor down (transform propagation runs only after Update),
 /// so FixedUpdate readers of bones and dummy polys see this tick (model.rs then moves the TAE 715
-/// weapon parts, as after the normal propagation).
+/// weapon parts, as after the normal propagation). An actor off its due tick (Actor::lod) was not
+/// posed: its bones hold the drawn in-between pose, so its last pose is put back and kept (read as
+/// this tick's, the drawn pose flipped the window back and forth: the far enemies twitched).
 pub(crate) fn store_sim_poses(
     mut commands: Commands,
-    mut actors: Query<(Entity, &Transform, &mut GlobalTransform, &mut Skeleton, Has<SnapPose>), With<Actor>>,
-    mut nodes: Query<(&Transform, &mut GlobalTransform, Option<&Children>), Without<Actor>>,
+    mut actors: Query<(Entity, &Actor, &Transform, &mut GlobalTransform, &mut Skeleton, Has<SnapPose>)>,
+    mut nodes: Query<(&mut Transform, &mut GlobalTransform, Option<&Children>), Without<Actor>>,
 ) {
     let mut stack: Vec<(Entity, GlobalTransform)> = Vec::new();
-    for (e, tf, mut g, mut skel, snap) in &mut actors {
-        let now: Vec<Transform> = skel.bones.iter().chain([&skel.root]).map(|&b| nodes.get(b).map(|n| *n.0).unwrap_or_default()).collect();
-        let prev = std::mem::replace(&mut skel.sim[1], now);
-        skel.sim[0] = if prev.len() == skel.sim[1].len() && !snap { prev } else { skel.sim[1].clone() };
+    for (e, a, tf, mut g, mut skel, snap) in &mut actors {
+        let bones: Vec<Entity> = skel.bones.iter().chain([&skel.root]).copied().collect();
+        if !a.lod_due && !snap && skel.sim[1].len() == bones.len() {
+            for (&b, t) in bones.iter().zip(&skel.sim[1]) {
+                if let Ok((mut local, ..)) = nodes.get_mut(b) {
+                    *local = *t;
+                }
+            }
+        } else {
+            let now: Vec<Transform> = bones.iter().map(|&b| nodes.get(b).map(|n| *n.0).unwrap_or_default()).collect();
+            let prev = std::mem::replace(&mut skel.sim[1], now);
+            skel.sim[0] = if prev.len() == skel.sim[1].len() && !snap { prev } else { skel.sim[1].clone() };
+        }
         if snap {
             commands.entity(e).remove::<SnapPose>();
         }
@@ -628,9 +639,9 @@ pub(crate) fn store_sim_poses(
 
 /// Draws each skeleton between its last two sim ticks' poses (interp.rs DrawAlpha; the latest
 /// pose without one), as the actors' capsules are.
-fn draw_poses(alpha: Option<Res<crate::interp::DrawAlpha>>, actors: Query<&Skeleton>, mut tfs: Query<&mut Transform, Without<Actor>>) {
-    let k = alpha.map_or(1.0, |a| a.0.clamp(0.0, 1.0));
-    for skel in &actors {
+fn draw_poses(alpha: Option<Res<crate::interp::DrawAlpha>>, actors: Query<(&Actor, &Skeleton)>, mut tfs: Query<&mut Transform, Without<Actor>>) {
+    for (a, skel) in &actors {
+        let k = alpha.as_ref().map_or(1.0, |al| crate::interp::draw_fraction(al.0.clamp(0.0, 1.0), a));
         let [prev, cur] = &skel.sim;
         for ((&e, p), c) in skel.bones.iter().chain([&skel.root]).zip(prev).zip(cur) {
             if let Ok(mut tf) = tfs.get_mut(e) {

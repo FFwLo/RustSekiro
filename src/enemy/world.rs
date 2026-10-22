@@ -307,7 +307,7 @@ pub(super) fn run_world(
         };
         let Some((pos, yaw)) = wr.run.place_of(id) else { continue };
         // On the floor under its MSB height (a step up allowed).
-        let floor = crate::terrain::terrain().and_then(|t| t.floor(pos.x, pos.z, pos.y + crate::terrain::STEP_HEIGHT)).unwrap_or(pos.y);
+        let floor = crate::terrain::terrain().and_then(|t| t.enemy_floor(pos.x, pos.z, pos.y + crate::terrain::STEP_HEIGHT)).unwrap_or(pos.y);
         let at = pos.with_y(floor + crate::player::CAPSULE_HALF_HEIGHT + 0.05);
         let rng = wr.run.rand();
         let ent = super::spawn_one(&mut commands, &combat, &config, kind, at, yaw, true, rng);
@@ -394,6 +394,8 @@ pub(super) fn update_lod(
     for (_, mut a, wc) in &mut q {
         let level = levels.get(&wc.id).copied().unwrap_or(1);
         a.lod = level;
-        a.lod_due = (wc.id as u64) % level as u64 == *tick % level as u64;
+        let level = level as u64;
+        a.lod_phase = ((*tick % level + level - wc.id as u64 % level) % level) as u32;
+        a.lod_due = a.lod_phase == 0;
     }
 }

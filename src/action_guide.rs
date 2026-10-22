@@ -201,6 +201,7 @@ pub fn guides_for(p: &Player, a: &Actor, feet: Vec3, edges: &[crate::traversal::
         if crate::pickups::pickup_near(feet).is_some() {
             return vec![PICK_UP];
         }
+        #[cfg(feature = "host")]
         if crate::sculptor::near(feet) {
             return vec![TALK];
         }
@@ -316,7 +317,7 @@ fn update_guides(
                 if node.width != w {
                     node.width = w;
                 }
-                let h = assets.load(f);
+                let h = assets.load(crate::paths::asset(f));
                 if img.image != h {
                     img.image = h;
                 }

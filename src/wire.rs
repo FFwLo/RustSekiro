@@ -59,6 +59,9 @@ pub struct WireAim {
     pub target: Option<GrappleTarget>,
     /// The target is this enemy, with its arc row (ChrPhysicsHomingParam 3000<variation>).
     pub enemy: Option<(Entity, i64)>,
+    /// A host game aims the wire with its own search and marker: it sets `target` itself, and
+    /// this crate's search and HUD wire mark stand aside.
+    pub host: bool,
 }
 
 /// A wire move in progress.
@@ -100,7 +103,7 @@ impl Plugin for WirePlugin {
             .init_resource::<WireRope>()
             .add_systems(FixedUpdate, aim_wire.before(crate::actor::ActorSet::Decide))
             .add_systems(FixedUpdate, hook_enemy.after(crate::actor::ActorSet::Decide))
-            .add_systems(Update, draw_rope);
+            .add_systems(PostUpdate, draw_rope.after(bevy::transform::TransformSystems::Propagate));
     }
 }
 
@@ -111,8 +114,8 @@ fn aim_wire(
     wolf: Query<&Transform, With<Player>>,
     mut aim: ResMut<WireAim>,
 ) {
-    // Without a camera (the sim tests) the aim is left as set.
-    let (Some((pos, rot)), Ok(w)) = (view.eye, wolf.single()) else { return };
+    // Without a camera (the sim tests) or with the host aiming, the aim is left as set.
+    let (Some((pos, rot)), Ok(w), false) = (view.eye, wolf.single(), aim.host) else { return };
     let prev = aim.target.map(|t| t.index);
     // The enemies join the map's points: the hook on their wire dummy, recognised from every
     // side (gap: the enemy rows' recognition angles are not read; taken as all round).

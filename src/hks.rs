@@ -33,6 +33,21 @@ pub struct Host {
     pub nodes: HashSet<String>,
     /// The variables the compiled script set since `ScriptChr` last sent them to the graph.
     pub var_writes: Vec<String>,
+    /// The fall-prevention walls the script asked for this frame (act 3016, arg 0 / 1: bit
+    /// `1 << arg`, as the exe's handler FUN_140b32410 keeps them): 1 the movement walls, 2 the
+    /// ground actions' (c0000 `_UpdateFallProtection`, ENABLE_FALL_PROTECT_WALL_STRONG / _WEAK).
+    pub fall_protect: u8,
+}
+
+/// SetFallProtection (act 3016).
+pub(crate) const ACT_FALL_PROTECT: i64 = 3016;
+
+impl Host {
+    pub(crate) fn note_fall_protect(&mut self, arg: Option<f64>) {
+        if let Some(bit) = arg.filter(|a| (0.0..=1.0).contains(a)) {
+            self.fall_protect |= 1 << bit as u8;
+        }
+    }
 }
 
 impl Host {
@@ -40,6 +55,7 @@ impl Host {
         self.events.clear();
         self.acts.clear();
         self.act_values.clear();
+        self.fall_protect = 0;
         self.unanswered.clear();
     }
 }
@@ -89,6 +105,9 @@ impl sekiro_hks::Host for VmHost<'_> {
         self.0.acts.push(id);
         if let Some(v) = vnum(args.first()) {
             self.0.act_values.insert(id, v);
+        }
+        if id == ACT_FALL_PROTECT {
+            self.0.note_fall_protect(vnum(args.first()));
         }
         if id == ACT_SET_VARIABLE
             && let (Some(name), Some(v)) = (args.first().and_then(|a| a.as_str()), vnum(args.get(1)))

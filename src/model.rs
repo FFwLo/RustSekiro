@@ -307,6 +307,13 @@ impl DrawMask {
 
 /// Sekiro "Character_AMSN" materials: StandardMaterial (albedo, alpha mask) + the normal map with
 /// shininess in its blue channel and the metallic mask (sekiro_material.wgsl).
+/// A character cutout's alpha mode. In another game (`embed`) a hard 0.5 cut: the host's depth
+/// prepass and depth-read passes (sekiro-rs's fog) see that cut, so soft coverage edges drew the
+/// model's colour over the background's depth and took the far fog (white rims).
+pub(crate) fn cutout() -> AlphaMode {
+    if cfg!(feature = "host") { AlphaMode::AlphaToCoverage } else { AlphaMode::Mask(0.5) }
+}
+
 pub type SekiroMaterial = bevy::pbr::ExtendedMaterial<StandardMaterial, SekiroExt>;
 
 #[derive(Asset, bevy::render::render_resource::AsBindGroup, Reflect, Debug, Clone, Default)]
@@ -662,7 +669,7 @@ fn attach_models(
             // DetailBlend layers: tiled (the group UV tiling runs far past 0..1), so repeating;
             // albedos sRGB, normals linear. `SHINOBI_NO_DETAIL=1` draws the base alone (before).
             let layer = |stem: &str, srgb: bool| -> Option<Handle<Image>> {
-                (!stem.is_empty() && crate::paths::extracted().join(format!("rustsekiro://tex/{stem}.dds")).is_file()).then(|| {
+                (!stem.is_empty() && crate::paths::extracted().join(format!("tex/{stem}.dds")).is_file()).then(|| {
                     assets
                         .load_builder()
                         .with_settings(move |s: &mut bevy::image::ImageLoaderSettings| {
@@ -693,7 +700,7 @@ fn attach_models(
             let alpha_mode = if md.detail.as_ref().is_some_and(|d| d.variant == GHOST) {
                 AlphaMode::Blend
             } else if md.alpha_test {
-                AlphaMode::AlphaToCoverage
+                cutout()
             } else {
                 AlphaMode::Opaque
             };

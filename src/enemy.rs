@@ -1397,7 +1397,7 @@ fn spawn_lineup(commands: &mut Commands, combat: &Combat, config: &GameConfig, a
     // ahead of Wolf's start is 1.3 m higher); the start's height without a map or over nothing.
     let at = |x: f32, z: f32| {
         let p = frame.point(Vec3::new(x, 0.0, z));
-        let floor = crate::terrain::terrain().and_then(|t| t.floor(p.x, p.z, start.y + 3.0)).unwrap_or(frame.offset.y);
+        let floor = crate::terrain::terrain().and_then(|t| t.enemy_floor(p.x, p.z, start.y + 3.0)).unwrap_or(frame.offset.y);
         p.with_y(floor + crate::player::CAPSULE_HALF_HEIGHT + 0.05)
     };
     // Facing Wolf's start (the export's enemy faces +Z; forward = Ry(yaw) * -Z).
@@ -1412,7 +1412,7 @@ fn spawn_lineup(commands: &mut Commands, combat: &Combat, config: &GameConfig, a
         if let Some(kind) = combat.kind_index(chr, None) {
             for (i, (at, yaw, route)) in spots.into_iter().enumerate() {
                 // On whatever is under its point: the ground, the terrace, the tower.
-                let floor = crate::terrain::terrain().and_then(|t| t.floor(at.x, at.z, at.y + 1.0)).unwrap_or(at.y);
+                let floor = crate::terrain::terrain().and_then(|t| t.enemy_floor(at.x, at.z, at.y + 1.0)).unwrap_or(at.y);
                 let at = at.with_y(floor + crate::player::CAPSULE_HALF_HEIGHT + 0.05);
                 let e = spawn_one(commands, combat, config, kind, at, yaw, true, 0x2545_F491 ^ 0x85EB_CA6B_u32.wrapping_mul(i as u32 + 1));
                 commands.entity(e).insert((PatrolRoute(route), StartUnaware, crate::encounter::PatrolGuard));
@@ -1434,7 +1434,7 @@ fn spawn_lineup(commands: &mut Commands, combat: &Combat, config: &GameConfig, a
         if let Some(spot) = g.msb.and_then(msb_patrol) {
             // On the floor under its own MSB height (a step up allowed), not the line-up's search
             // from Wolf's start: the gate's MSB enemies stand from 5 m below to 11 m above it.
-            let floor = crate::terrain::terrain().and_then(|t| t.floor(spot.at.x, spot.at.z, spot.at.y + crate::terrain::STEP_HEIGHT)).unwrap_or(spot.at.y);
+            let floor = crate::terrain::terrain().and_then(|t| t.enemy_floor(spot.at.x, spot.at.z, spot.at.y + crate::terrain::STEP_HEIGHT)).unwrap_or(spot.at.y);
             let at = Vec3::new(spot.at.x, floor + crate::player::CAPSULE_HALF_HEIGHT + 0.05, spot.at.z);
             let e = spawn_one(commands, combat, config, kind, at, spot.yaw, aggressive, 0x9E37_79B9 ^ 0x85EB_CA6B_u32.wrapping_mul(i as u32 + 1));
             let think = msb_think(combat, &spot);
@@ -2445,7 +2445,7 @@ fn respawn_spot(start: Vec3, yaw: f32, back: f32, terrain: Option<&crate::terrai
     let behind = Quat::from_rotation_y(yaw) * Vec3::Z * back;
     let (x, z) = (start.x + behind.x, start.z + behind.z);
     let feet = start.y - crate::player::CAPSULE_HALF_HEIGHT;
-    let floor = terrain.and_then(|t| t.floor(x, z, feet + crate::terrain::STEP_HEIGHT + 2.0));
+    let floor = terrain.and_then(|t| t.enemy_floor(x, z, feet + crate::terrain::STEP_HEIGHT + 2.0));
     Vec3::new(x, floor.map_or(start.y, |h| h + crate::player::CAPSULE_HALF_HEIGHT), z)
 }
 

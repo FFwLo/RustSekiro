@@ -22,6 +22,15 @@ struct SimPose {
     drawn: Option<(Vec3, Quat)>,
 }
 
+/// How far from the actor's previous simulated pose to its latest a frame is drawn. An actor on
+/// an update level (Actor::lod: the open world's far enemies step once every 5 or 30 ticks with
+/// that many ticks' time) is drawn across its whole window, so it moves every frame instead of
+/// holding still and jumping (they twitched); every tick's actors take the fixed clock's overstep.
+pub(crate) fn draw_fraction(alpha: f32, a: &Actor) -> f32 {
+    let lod = a.lod.max(1);
+    ((a.lod_phase.min(lod - 1) as f32 + alpha) / lod as f32).clamp(0.0, 1.0)
+}
+
 pub struct InterpPlugin;
 
 impl Plugin for InterpPlugin {
@@ -41,20 +50,34 @@ fn restore_sim_pose(mut commands: Commands, mut q: Query<(Entity, &mut Transform
             continue;
         };
         let now = (tf.translation, tf.rotation);
-        if let (Some(cur), Some(drawn)) = (pose.cur, pose.drawn) {
-            if now == drawn {
+        match (pose.cur, pose.drawn) {
+            (Some(cur), Some(drawn)) if now == drawn => {
                 tf.translation = cur.0;
                 tf.rotation = cur.1;
             }
+            (Some(cur), _) if now == cur => {}
+            _ => {
+                pose.prev = Some(now);
+                pose.cur = Some(now);
+            }
         }
-        pose.prev = Some((tf.translation, tf.rotation));
         pose.drawn = None;
     }
 }
 
-fn store_sim_pose(mut q: Query<(&Transform, &mut SimPose), With<Actor>>) {
-    for (tf, mut pose) in &mut q {
-        pose.cur = Some((tf.translation, tf.rotation));
+/// The step's pose: on an actor's due tick the window moves on (the latest pose becomes the one
+/// it is drawn from); between them nothing it does changes.
+fn store_sim_pose(mut q: Query<(&Transform, &Actor, &mut SimPose)>) {
+    for (tf, a, mut pose) in &mut q {
+        let now = (tf.translation, tf.rotation);
+        if a.lod_due || pose.cur.is_none() {
+            pose.prev = pose.cur.or(Some(now));
+            pose.cur = Some(now);
+        } else if pose.cur != Some(now) {
+            // Moved off its due tick (a script warp): drawn there at once.
+            pose.prev = Some(now);
+            pose.cur = Some(now);
+        }
         // A teleport inside the step (Wolf's reset, an event or script warp) is drawn as one,
         // not as a slide across the map (map::TELEPORT: longer than any one-tick move).
         if pose.prev.is_none_or(|p| p.0.distance(tf.translation) > crate::terrain::TELEPORT) {
@@ -63,17 +86,18 @@ fn store_sim_pose(mut q: Query<(&Transform, &mut SimPose), With<Actor>>) {
     }
 }
 
-fn draw_between(mut commands: Commands, time: Res<Time<Fixed>>, mut q: Query<(&mut Transform, &mut SimPose), With<Actor>>) {
+fn draw_between(mut commands: Commands, time: Res<Time<Fixed>>, mut q: Query<(&mut Transform, &Actor, &mut SimPose)>) {
     let alpha = time.overstep_fraction();
     commands.insert_resource(DrawAlpha(alpha));
-    for (mut tf, mut pose) in &mut q {
+    for (mut tf, a, mut pose) in &mut q {
         let (Some(prev), Some(cur)) = (pose.prev, pose.cur) else { continue };
         // Only when the simulated pose is still what the last step left (nothing moved it since).
         if (tf.translation, tf.rotation) != cur && pose.drawn.map_or(true, |d| (tf.translation, tf.rotation) != d) {
             continue;
         }
-        tf.translation = prev.0.lerp(cur.0, alpha);
-        tf.rotation = prev.1.slerp(cur.1, alpha);
+        let k = draw_fraction(alpha, a);
+        tf.translation = prev.0.lerp(cur.0, k);
+        tf.rotation = prev.1.slerp(cur.1, k);
         pose.drawn = Some((tf.translation, tf.rotation));
     }
 }

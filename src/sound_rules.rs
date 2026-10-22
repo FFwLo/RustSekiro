@@ -7,6 +7,41 @@ use bevy::prelude::*;
 use crate::actor::{Actor, data_for};
 use crate::data::Combat;
 
+/// Where the sound plays: the source map (its area and boss music, the indoor regions) and the
+/// floor's reverb (MSB SoundSpaceType). Set by the map (map.rs) or the host.
+#[derive(Resource, Clone, Default)]
+pub struct SoundPlace {
+    pub source_map: String,
+    pub sound_space: u8,
+    pub space: MapSpace,
+}
+
+/// How a Bevy point maps to the source map's MSB space.
+#[derive(Clone, Copy, Default)]
+pub enum MapSpace {
+    /// A generated map: none.
+    #[default]
+    None,
+    /// An exported arena: its export origin and turn (map.rs `arena_to_map`).
+    Arena { origin: Vec3, yaw: f32 },
+    /// The whole map at its own place (sekiro-rs's absolute space): X mirrored.
+    Absolute,
+}
+
+impl SoundPlace {
+    pub fn to_map(&self, p: Vec3) -> Option<Vec3> {
+        match self.space {
+            MapSpace::None => None,
+            MapSpace::Arena { origin, yaw } => {
+                let (s, c) = (-yaw).sin_cos();
+                let (x, z) = (-p.x, p.z);
+                Some(origin + Vec3::new(x * c + z * s, p.y, -x * s + z * c))
+            }
+            MapSpace::Absolute => Some(Vec3::new(-p.x, p.y, p.z)),
+        }
+    }
+}
+
 /// Sounds requested by gameplay code (base keys, e.g. "s000003010").
 #[derive(Resource, Default)]
 pub struct SoundQueue(pub Vec<(String, Vec3)>);

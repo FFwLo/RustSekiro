@@ -42,6 +42,36 @@ pub trait WorldCollision: Send + Sync {
     fn water_surface(&self, _x: f32, _z: f32, _top: f32) -> Option<(f32, u32)> {
         None
     }
+    /// Whether a body's feet moving `from` -> `to` pass through an event wall that starts the
+    /// fall return (the map's hit filter 15 collision over drops into the void).
+    fn fall_return_wall(&self, _from: Vec3, _to: Vec3) -> bool {
+        false
+    }
+    /// [`WorldCollision::slide`] that also keeps to the fall-prevention walls `protect` asks for
+    /// (Actor::fall_protect bits).
+    fn slide_protected(&self, feet: [f32; 3], delta: [f32; 2], _protect: u8) -> [f32; 2] {
+        self.slide(feet, delta)
+    }
+    /// The camera's ray: the world's camera collision (its own hit filters: camera-only walls,
+    /// no player-only ones), else the body's.
+    fn camera_raycast(&self, origin: Vec3, dir: Vec3, max: f32) -> Option<f32> {
+        self.raycast(origin, dir, max)
+    }
+    /// The highest the feet of a body at `feet` can rise straight up, by at most `rise`, before
+    /// its head meets a ceiling (`None`: nothing stops it that soon). No ceilings by default.
+    fn ceiling(&self, _feet: [f32; 3], _rise: f32) -> Option<f32> {
+        None
+    }
+    /// The floor as the enemies stand on it: the world's enemy collision (enemy-only floors and
+    /// water surfaces), else the body's.
+    fn enemy_floor(&self, x: f32, z: f32, top: f32) -> Option<f32> {
+        self.floor_hit(x, z, top).map(|h| h.0)
+    }
+    /// A slide as the enemies take it: stopped by the enemy-only walls too (the ones that keep
+    /// them off cliffs and in their areas), else the body's.
+    fn enemy_slide(&self, feet: [f32; 3], delta: [f32; 2]) -> [f32; 2] {
+        self.slide(feet, delta)
+    }
 }
 
 /// HitMtrlParam's water planes (Paramdex names): 20 puddle, 21 walkable, 22 dive, 23 / 24 poison
@@ -97,10 +127,37 @@ pub fn terrain() -> Option<Arc<Terrain>> {
 
 /// Floor height under an actor centre (its feet are CAPSULE_HALF_HEIGHT lower): the highest
 /// walkable surface at most STEP_HEIGHT above the feet, else the one below; 0 without a map.
+/// How far from the centre the capsule's rim rests on a ledge (sekiro-rs sim body.rs
+/// RIM_SUPPORT: the radius x 0.866).
+const RIM_SUPPORT: f32 = RADIUS * 0.866;
+
+/// The floor Wolf's capsule rim still rests on when the floor under his centre has dropped away
+/// (sim body.rs `rim_support`): the highest under eight points round the feet that is no higher
+/// than them and within the walk-down (`FALL_START_DROP`); he stands on a ledge's edge as the
+/// game's capsule does, instead of dropping once his centre is past it.
+pub fn rim_floor(centre: Vec3) -> Option<f32> {
+    let t = terrain()?;
+    let feet = centre.y - CAPSULE_HALF_HEIGHT;
+    (0..8)
+        .filter_map(|i| {
+            let (s, c) = (i as f32 * std::f32::consts::FRAC_PI_4).sin_cos();
+            t.floor(centre.x + RIM_SUPPORT * c, centre.z + RIM_SUPPORT * s, feet + 0.05)
+        })
+        .filter(|h| feet - h < crate::player::FALL_START_DROP)
+        .reduce(f32::max)
+}
+
 pub fn ground_y(centre: Vec3) -> f32 {
     let Some(t) = terrain() else { return 0.0 };
     let feet = centre.y - CAPSULE_HALF_HEIGHT;
     t.floor(centre.x, centre.z, feet + STEP_HEIGHT).or_else(|| t.floor(centre.x, centre.z, f32::INFINITY)).unwrap_or(feet - 100.0)
+}
+
+/// Whether an actor centre moving `from` -> `to` passes a fall-return event wall (the host's
+/// world only; the own map has none).
+pub fn fall_return_wall(from: Vec3, to: Vec3) -> bool {
+    let feet = Vec3::Y * CAPSULE_HALF_HEIGHT;
+    terrain().and_then(|t| t.world.clone()).is_some_and(|w| w.fall_return_wall(from - feet, to - feet))
 }
 
 /// HitMtrlParam id of the floor under an actor centre (None without a map or over nothing).
@@ -161,6 +218,26 @@ pub fn fall_damage_share(h: f32, material: Option<u32>, from: f32) -> f32 {
 /// Distance along `dir` (unit) to the first collision triangle within `max`.
 pub fn raycast(origin: Vec3, dir: Vec3, max: f32) -> Option<f32> {
     terrain()?.raycast(origin, dir, max)
+}
+
+/// The camera arm's ray ([`WorldCollision::camera_raycast`] under the host's world).
+pub fn camera_raycast(origin: Vec3, dir: Vec3, max: f32) -> Option<f32> {
+    let t = terrain()?;
+    match &t.world {
+        Some(w) => w.camera_raycast(origin, dir, max),
+        None => t.raycast(origin, dir, max),
+    }
+}
+
+/// Where a body whose centre rose from `from_y` to `to.y` this step stops under a ceiling: the
+/// centre height its head meets one at (the host's world only).
+pub fn ceiling_stop(to: Vec3, from_y: f32) -> Option<f32> {
+    let rise = to.y - from_y;
+    if rise <= 0.0 {
+        return None;
+    }
+    let w = terrain()?.world.clone()?;
+    w.ceiling([to.x, from_y - CAPSULE_HALF_HEIGHT, to.z], rise).map(|top| top.max(from_y - CAPSULE_HALF_HEIGHT) + CAPSULE_HALF_HEIGHT)
 }
 
 fn cell_of(x: f32, z: f32) -> (i32, i32) {
@@ -278,6 +355,14 @@ impl Terrain {
         best.or(wet)
     }
 
+    /// [`Terrain::floor`] as the enemies stand on it ([`WorldCollision::enemy_floor`]).
+    pub fn enemy_floor(&self, x: f32, z: f32, top: f32) -> Option<f32> {
+        match &self.world {
+            Some(w) => w.enemy_floor(x, z, top),
+            None => self.floor(x, z, top),
+        }
+    }
+
     pub fn floor(&self, x: f32, z: f32, top: f32) -> Option<f32> {
         self.floor_tri(x, z, top).map(|(h, _)| h)
     }
@@ -320,6 +405,18 @@ impl Terrain {
     /// Moves a body standing at `feet` by the horizontal `delta`, stopping at walls and
     /// sliding along them. Returns the horizontal displacement actually made.
     pub fn slide(&self, feet: Vec3, delta: Vec2) -> Vec2 {
+        self.slide_protected(feet, delta, 0)
+    }
+
+    /// [`Terrain::slide`] keeping to the fall-prevention walls `protect` asks for (the host's
+    /// world has them; the own map's collision does not).
+    pub fn slide_protected(&self, feet: Vec3, delta: Vec2, protect: u8) -> Vec2 {
+        self.slide_as(feet, delta, protect, false)
+    }
+
+    /// The slide for a body of either side: an enemy's keeps to the world's enemy-only walls
+    /// ([`WorldCollision::enemy_slide`]), Wolf's to the fall-prevention walls `protect` asks for.
+    pub fn slide_as(&self, feet: Vec3, delta: Vec2, protect: u8, enemy: bool) -> Vec2 {
         let len = delta.length();
         if len < 1e-6 {
             return Vec2::ZERO;
@@ -331,7 +428,7 @@ impl Terrain {
         let gate_tris: Vec<Vec<u32>> = gates.iter().map(|g| (0..g.tris.len() as u32).collect()).collect();
         // sekiro-rs's world slides the body; the fog walls on it push it back out after.
         if let Some(w) = &self.world {
-            let moved = Vec2::from(w.slide(feet.to_array(), delta.to_array()));
+            let moved = Vec2::from(if enemy { w.enemy_slide(feet.to_array(), delta.to_array()) } else { w.slide_protected(feet.to_array(), delta.to_array(), protect) });
             let mut p = feet + Vec3::new(moved.x, 0.0, moved.y);
             for _ in 0..4 {
                 let push = gates.iter().zip(&gate_tris).map(|(g, t)| g.push_out(p, t)).max_by(|a, b| a.length_squared().total_cmp(&b.length_squared())).unwrap_or(Vec2::ZERO);
@@ -525,7 +622,7 @@ pub(crate) fn bodies_on_terrain(combat: Res<crate::data::Combat>, mut commands: 
         // first wall and undid the warp (the fight's "3 fps", 2026-10-12 bug hunt).
         if delta.length_squared() > 1e-10 && delta.length_squared() <= TELEPORT * TELEPORT {
             let _p = crate::perf::span("terrain_slide");
-            let moved = t.slide(feet_prev, delta);
+            let moved = t.slide_as(feet_prev, delta, a.fall_protect, a.side == Side::Enemy);
             tf.translation.x = prev.x + moved.x;
             tf.translation.z = prev.z + moved.y;
         }
@@ -535,11 +632,17 @@ pub(crate) fn bodies_on_terrain(combat: Res<crate::data::Combat>, mut commands: 
         if !a.airborne && !lifted && a.lift_ground.is_none() {
             let feet = tf.translation.y - CAPSULE_HALF_HEIGHT;
             let pf = crate::perf::span("terrain_floor");
-            let floor = t.floor(tf.translation.x, tf.translation.z, feet + STEP_HEIGHT);
+            let floor = if a.side == Side::Enemy { t.enemy_floor(tf.translation.x, tf.translation.z, feet + STEP_HEIGHT) } else { t.floor(tf.translation.x, tf.translation.z, feet + STEP_HEIGHT) };
             drop(pf);
             // Wolf follows the floor down only FALL_START_DROP (HKS BEH_R_FALL: a smaller drop
             // never leaves the move state, so following it is the same); a deeper one falls.
             let down = if a.side == Side::Enemy { f32::INFINITY } else { crate::player::FALL_START_DROP };
+            // Wolf over a drop his rim still rests on: held at its edge (`rim_floor`).
+            let floor = match floor {
+                Some(h) if h >= feet - down => Some(h),
+                _ if a.side != Side::Enemy => rim_floor(tf.translation).or(floor),
+                _ => floor,
+            };
             match floor {
                 Some(h) if h >= feet - down => tf.translation.y = h + CAPSULE_HALF_HEIGHT,
                 Some(_) => {}

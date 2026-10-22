@@ -34,7 +34,7 @@ static Ghidra decompile of the exe. The package and exe are `sv1`; the game is t
 | The game's HKS script + behaviour graph run as the game does (live by default, SHINOBI_HKS=0 off; tests) | `src/hks_wolf.rs`, `src/hks.rs`, `src/hks_lua.rs`, `src/hkb_runtime.rs`, `docs/kb/hks-graph.md` |
 | How any Sekiro mechanic works (values, sources, coverage, needs) | `docs/kb/mechanics-atlas.json` (filter by id/category with python; `mechanics-atlas.md` is generated from it) |
 | The playthrough start to finish, gates, endings | `docs/kb/game-flow.md` |
-| The combat core alone (`--no-default-features`), its hooks, and in sekiro-rs's game | `src/lib.rs` (CombatCorePlugin, re-exports), `tools/core_deps.py` (must stay 0), `examples/in-sekiro-rs/` |
+| The combat core alone (`--no-default-features`), its hooks; in sekiro-rs's game (`embed`: camera + debug menu, his `--rustsekiro` mode) | `src/lib.rs` (CombatCorePlugin, re-exports), `tools/core_deps.py` (must stay 0), FFwLo/sekiro-rs branch `rustsekiro-combat` (`crates/game/src/rustsekiro_mode.rs`) |
 | Reference clips | `docs/kb/clips.md` (check before asking for a new recording) |
 | Live recordings of the real Sekiro | `docs/kb/recordings.md`: read `python -m tools.rec summary <rec> --cat <topic>`, never raw data |
 

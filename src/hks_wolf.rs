@@ -507,6 +507,8 @@ fn run_script(mut script: NonSendMut<WolfScript>, dt: f32, land_tick: bool, comb
     let held = [(pad.attack_held, Action::Attack), (pad.dodge_held, Action::Step), (pad.prosthetic_held, Action::Prosthetic)].into_iter().filter_map(|(h, a)| h.then_some(a)).collect();
     let input = Pad { press: pad.pressed().to_vec(), held, guard_held: pad.guard_held, stick: pad.stick };
     let s = &mut *script;
+    // The last tick's request (cleared when this one runs).
+    a.fall_protect = s.chr.vm.host.borrow().fall_protect;
     let d = &combat.player;
     let tool = crate::player::equipped_tool(&combat, &config, p.tool_slot).map_or(-1, |t| t.id);
     let throw = s.chr.rt.offsets.throw;

@@ -23,6 +23,7 @@ use std::collections::HashMap;
 
 use bevy::prelude::*;
 
+pub(crate) use crate::hud::{any_icon, sprite};
 use crate::menu::Screen;
 
 const TABS: [&str; 4] = ["Equipment", "Inventory", "Skills", "Options"];
@@ -101,25 +102,6 @@ enum Slot {
     Weapon(i64),
     Goods(i64, u32),
     Empty,
-}
-
-pub(crate) fn sprite(file: &str) -> Option<String> {
-    let f = format!("menu_sprites/{file}.png");
-    crate::paths::extracted().join(&f).exists().then_some(f)
-}
-
-/// A menu icon file for an iconId: the HUD's copy, else the menu atlases' (sb_icon*; the
-/// memories' 750-756 sit in sb_boss).
-pub(crate) fn any_icon(icon: i64) -> Option<String> {
-    let hud = format!("hud/MENU_ItemIcon_{icon:05}.png");
-    if crate::paths::extracted().join(&hud).exists() {
-        return Some(hud);
-    }
-    ["sb_icon", "sb_icon_02", "sb_icon_03", "sb_icon_04", "sb_boss"].iter().find_map(|a| sprite(&format!("{a}/MENU_ItemIcon_{icon:05}"))).or_else(|| {
-        // A few sit in other atlases (Divine Grass's 15 in sb_texteffect_02): any of them.
-        let dir = crate::paths::extracted().join("menu_sprites");
-        std::fs::read_dir(dir).ok()?.flatten().find_map(|e| sprite(&format!("{}/MENU_ItemIcon_{icon:05}", e.file_name().to_string_lossy())))
-    })
 }
 
 /// The Equipment slots in cursor order: tools 0-2, the art, quick items 0-4, ninjutsu.
@@ -241,7 +223,7 @@ pub(crate) fn text(t: &str, px: f32, color: Color, font: &Option<Handle<Font>>) 
 
 /// A sprite stretched over its box (the plates and brushes are laid out to the captures' boxes).
 pub(crate) fn image(assets: &AssetServer, file: Option<String>) -> ImageNode {
-    let mut i = file.map_or_else(ImageNode::default, |f| ImageNode::new(assets.load(f)));
+    let mut i = file.map_or_else(ImageNode::default, |f| ImageNode::new(assets.load(crate::paths::asset(f))));
     i.image_mode = bevy::ui::widget::NodeImageMode::Stretch;
     i
 }
@@ -366,7 +348,7 @@ pub(crate) fn parchment(root: &mut ChildSpawnerCommands, assets: &AssetServer, f
     });
     let mut y = 22.0;
     if let Some(art) = &d.art {
-        root.spawn((abs(61.0, 20.6, 27.0, 16.5), ImageNode::new(assets.load(art.clone()))));
+        root.spawn((abs(61.0, 20.6, 27.0, 16.5), ImageNode::new(assets.load(crate::paths::asset(art.clone())))));
         y = 38.0;
     } else if d.icon.is_some() {
         root.spawn((abs(81.3, 20.8, 9.4, 16.2), image(assets, sprite("sb_in_game/MENU_IconBase_01")))).with_children(|b| {
@@ -765,7 +747,7 @@ fn equipment(root: &mut ChildSpawnerCommands, assets: &AssetServer, menu: &GameM
                 s.spawn((Node { position_type: PositionType::Absolute, left: Val::Percent(-8.0), top: Val::Percent(-8.0), width: Val::Percent(116.0), height: Val::Percent(116.0), ..default() }, image(assets, sprite("sb_in_game/MENU_Cursor_TB")).with_color(ORANGE.with_alpha(0.55))));
             }
             if let Some(icon) = slot_icon(tables, slot) {
-                s.spawn((Node { position_type: PositionType::Absolute, left: Val::Percent(4.0), top: Val::Percent(4.0), width: Val::Percent(92.0), height: Val::Percent(92.0), ..default() }, ImageNode::new(assets.load(icon))));
+                s.spawn((Node { position_type: PositionType::Absolute, left: Val::Percent(4.0), top: Val::Percent(4.0), width: Val::Percent(92.0), height: Val::Percent(92.0), ..default() }, ImageNode::new(assets.load(crate::paths::asset(icon)))));
             }
             if let Slot::Goods(_, n) = slot {
                 s.spawn((Node { position_type: PositionType::Absolute, right: Val::Percent(6.0), bottom: Val::Percent(2.0), ..default() },)).with_children(|c| {

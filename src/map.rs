@@ -1633,6 +1633,14 @@ fn load_map_id(map: &str, config: &GameConfig, fight: Option<i64>, commands: &mu
         info!("map {id}: probe cube maps off (SHINOBI_MAP_NO_ENV)");
     }
     commands.insert_resource(MapLooks::from_json(&json));
+    commands.insert_resource(crate::sound_rules::SoundPlace {
+        sound_space: json["sound_space_type"].as_u64().unwrap_or(0).min(8) as u8,
+        source_map: json["map"].as_str().unwrap_or_default().to_string(),
+        space: match (sandbox, json_frame(&json)) {
+            (false, Some((origin, yaw))) => crate::sound_rules::MapSpace::Arena { origin, yaw },
+            _ => crate::sound_rules::MapSpace::None,
+        },
+    });
     commands.insert_resource(MapLighting {
         drawparam,
         light_set: std::env::var("SHINOBI_LIGHT_SET").ok().and_then(|v| v.parse().ok()).unwrap_or(json["light_set"].as_i64().unwrap_or(0) as i32),

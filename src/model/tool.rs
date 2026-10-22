@@ -53,8 +53,11 @@ struct ToolPart {
 }
 
 pub(super) fn plugin(app: &mut App) {
-    app.add_systems(Update, (equip_tool_models, pose_tool_models.after(crate::wire::draw_rope)).chain())
-        .add_systems(PostUpdate, place_tool_models.after(bevy::transform::TransformSystems::Propagate))
+    // Drawn: posed and placed after this frame's propagation, with the rope's ends taken from it
+    // (wire.rs draw_rope): the stretch read last frame's hand, so in a fast wire flight the hook
+    // end overshot and fell short of the hook frame by frame (the rope wobbled).
+    app.add_systems(Update, equip_tool_models)
+        .add_systems(PostUpdate, (pose_tool_models, place_tool_models).chain().after(crate::wire::draw_rope).after(bevy::transform::TransformSystems::Propagate))
         // The sim pose too (as model.rs does for the sword): the tool hit test reads the
         // 21100-21130 dummies in FixedUpdate, which were a rendered frame old (two ticks a
         // frame at 30 fps tested the stale blade).
@@ -215,7 +218,7 @@ fn spawn_part(
             base: StandardMaterial {
                 base_color_texture: (!md.albedo.is_empty()).then(|| assets.load(format!("rustsekiro://tex/{}.dds", md.albedo))),
                 perceptual_roughness: 0.8,
-                alpha_mode: if md.alpha_test { AlphaMode::AlphaToCoverage } else { AlphaMode::Opaque },
+                alpha_mode: if md.alpha_test { crate::model::cutout() } else { AlphaMode::Opaque },
                 double_sided: true,
                 cull_mode: None,
                 ..default()
@@ -249,14 +252,12 @@ fn spawn_part(
 /// The part's clip for Wolf's current anim at Wolf's clock (else a999_000000 at 0), sampled
 /// like pose_skeletons (linear between frames).
 /// The wire's clips keep the rope at its modelled length (only its shape moves); here its chain
-/// is lengthened to reach the hook (each bone's offset from its parent times the hand-to-tip
-/// distance over the bind length), the kunai on the last bones keeping its shape. gap: the
-/// exe's own rope placement (TAE 717 WireModelEventUnk / 900 / 901) is not traced.
+/// is laid out to reach the hook ([`lay_rope`]). gap: the exe's own rope placement (TAE 717
+/// WireModelEventUnk / 900 / 901) is not traced.
 fn pose_tool_models(combat: Res<crate::data::Combat>, rope: Option<Res<crate::wire::WireRope>>, wolf: Query<(&Actor, &ToolModel)>, mut tfs: Query<&mut Transform>) {
     let reach = rope.and_then(|r| r.ends).map(|(hand, tip)| hand.distance(tip));
     for (a, tm) in &wolf {
         let d = crate::actor::data_for(&combat, a);
-        let stretch = reach.filter(|_| tm.wire_len > 0.0).map(|r| (r / tm.wire_len).max(0.02));
         for (part, wire) in tm.parts.iter().map(|p| (p, false)).chain(tm.wire.iter().map(|p| (p, true))) {
             let (clip, t) = match part.lib.clips.get(&a.anim).or_else(|| part.lib.clips.get(d.clip_key(&a.anim))) {
                 Some(c) => (c, a.t),
@@ -276,13 +277,12 @@ fn pose_tool_models(combat: Res<crate::data::Combat>, rope: Option<Res<crate::wi
             for (track, &bone) in clip.track_to_bone.iter().enumerate() {
                 let Some(slot) = usize::try_from(bone).ok().and_then(|b| local.get_mut(b)) else { continue };
                 let (p, q) = (&clip.data[i0 * tracks + track], &clip.data[i1 * tracks + track]);
-                let mut tf = Transform { translation: p.translation.lerp(q.translation, k), rotation: p.rotation.slerp(q.rotation, k), scale: p.scale.lerp(q.scale, k) };
-                if let (true, Some(s), true) = (wire, stretch, bone > 0) {
-                    tf.translation *= s;
-                }
-                *slot = Some(tf);
+                *slot = Some(Transform { translation: p.translation.lerp(q.translation, k), rotation: p.rotation.slerp(q.rotation, k), scale: p.scale.lerp(q.scale, k) });
             }
             havok_locals(&part.lib.bones, &mut local);
+            if let (true, Some(r)) = (wire, reach.filter(|_| tm.wire_len > 0.0)) {
+                lay_rope(&part.lib.bones, &mut local, r);
+            }
             for (b, tf) in local.into_iter().enumerate() {
                 if let (Some(tf), Some(&Some(j))) = (tf, part.joints.get(b))
                     && let Ok(mut t) = tfs.get_mut(j)
@@ -292,6 +292,63 @@ fn pose_tool_models(combat: Res<crate::data::Combat>, rope: Option<Res<crate::wi
             }
         }
     }
+}
+
+/// The rope's chain (BornLook down to BornEnd, 75 links of 5.3 cm; the kunai rides the last,
+/// zero-length one) laid out `reach` m along the model's -Y, which place_tool_models aims at the
+/// hook's tip. Each node goes to its share of the clip's chain length along that line, keeping its
+/// sideways offset from it shrunk by the stretch: a rope as short as the clip's keeps the clip's
+/// slack coil, a long one is drawn taut. Before, every link's offset was multiplied by the
+/// stretch, so the clip's coil (up to 1.1 m sideways in a 1-2.6 m rope, a000_2020xx-2027xx)
+/// flared out by metres on a long throw. A chain the clip has reeled in (under 5 cm: the wire
+/// clips' last frames) stays as the clip has it. False then.
+fn lay_rope(bones: &[crate::anim::BoneDef], local: &mut [Option<Transform>], reach: f32) -> bool {
+    let n = bones.len();
+    let parent = |i: usize| usize::try_from(bones[i].parent).ok().filter(|&p| p < i);
+    let Some(start) = bones.iter().position(|b| b.name == "BornLook") else { return false };
+    let mut chain = vec![false; n];
+    chain[start] = true;
+    for i in start + 1..n {
+        chain[i] = parent(i).is_some_and(|p| chain[p]);
+    }
+    let mut world: Vec<(Vec3, Quat)> = Vec::with_capacity(n);
+    for i in 0..n {
+        let l = local[i].unwrap_or(bones[i].pose);
+        world.push(match parent(i).map(|p| world[p]) {
+            Some((t, r)) => (t + r * l.translation, r * l.rotation),
+            None => (l.translation, l.rotation),
+        });
+    }
+    let mut arc = vec![0.0f32; n];
+    let mut total = 0.0f32;
+    for i in start + 1..n {
+        if let (true, Some(p)) = (chain[i], parent(i)) {
+            arc[i] = arc[p] + world[i].0.distance(world[p].0);
+            total = total.max(arc[i]);
+        }
+    }
+    if total < 0.05 || reach < 1e-3 {
+        return false;
+    }
+    let origin = world[start].0;
+    let slack = (total / reach).min(1.0);
+    let placed: Vec<Vec3> = (0..n)
+        .map(|i| {
+            if !chain[i] {
+                return world[i].0;
+            }
+            let v = world[i].0 - origin;
+            origin + Vec3::NEG_Y * (arc[i] / total * reach) + Vec3::new(v.x, 0.0, v.z) * slack
+        })
+        .collect();
+    for i in start + 1..n {
+        if let (true, Some(p)) = (chain[i], parent(i)) {
+            let mut l = local[i].unwrap_or(bones[i].pose);
+            l.translation = world[p].1.inverse() * (placed[i] - placed[p]);
+            local[i] = Some(l);
+        }
+    }
+    true
 }
 
 /// Havok composes a pose without scaling a child's offset by its parent's scale
@@ -378,6 +435,46 @@ fn place_tool_models(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The rope laid to a hook 20 m off in every wire clip: its end is at the hook, along the
+    /// model's -Y, and it bows at most a few dozen cm (the clips' coil, up to 1.1 m sideways in a
+    /// rope of 1-2.6 m, flared to metres when every link was scaled by the stretch).
+    #[test]
+    fn the_rope_reaches_the_hook_without_flaring() {
+        let lib = crate::anim::load_lib(&tool_dir().join("anim_wp_a_9500.bin"));
+        if lib.bones.is_empty() {
+            return;
+        }
+        let n = lib.bones.len();
+        let tip = lib.bones.iter().position(|b| b.name == "BornEnd").unwrap();
+        let model = |local: &[Option<Transform>]| -> Vec<Vec3> {
+            let mut w: Vec<Mat4> = Vec::new();
+            for (i, b) in lib.bones.iter().enumerate() {
+                let p = usize::try_from(b.parent).ok().filter(|&p| p < i).map(|p| w[p]).unwrap_or(Mat4::IDENTITY);
+                w.push(p * local[i].unwrap_or(b.pose).to_matrix());
+            }
+            w.iter().map(|m| m.w_axis.truncate()).collect()
+        };
+        for (k, c) in &lib.clips {
+            let tracks = c.track_to_bone.len();
+            for f in [0, c.frames / 2, c.frames.saturating_sub(1)] {
+                let mut local: Vec<Option<Transform>> = vec![None; n];
+                for (t, &b) in c.track_to_bone.iter().enumerate() {
+                    if let Ok(b) = usize::try_from(b) {
+                        local[b] = Some(c.data[f * tracks + t]);
+                    }
+                }
+                if !lay_rope(&lib.bones, &mut local, 20.0) {
+                    continue;
+                }
+                let p = model(&local);
+                let end = p[tip] - p[0];
+                assert!((end.y + 20.0).abs() < 0.3 && end.with_y(0.0).length() < 0.3, "{k} frame {f}: rope end at {end}");
+                let bow = p.iter().map(|q| (*q - p[0]).with_y(0.0).length()).fold(0.0, f32::max);
+                assert!(bow < 0.3, "{k} frame {f}: bows {bow:.2} m");
+            }
+        }
+    }
 
     /// The tool parts are posed and placed in the sim's own pose pass (FixedUpdate), not only
     /// for drawing (round 17).

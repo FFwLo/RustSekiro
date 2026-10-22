@@ -643,11 +643,15 @@ pub(crate) fn a_walk_reversed_turns_in_place_then_walks_on() {
     assert!(turn_between(yaw, std::f32::consts::PI).abs() < 0.1, "yaw {yaw}");
 }
 
+/// The idol tests set the global idol list (idol.rs IDOLS): one at a time.
+static IDOL_LIST: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// At a Sculptor's Idol: E kneels Wolf (StatueAttachStart -> Loop, resting him and asking for
 /// the menu); the menu's Rest plays the rest clip, Travel the warp and stands him up at the
 /// other idol. The test idols stand far off (x 600) as the idol list is global.
 #[test]
 pub(crate) fn wolf_kneels_at_an_idol_rests_and_travels() {
+    let _list = IDOL_LIST.lock().unwrap_or_else(|e| e.into_inner());
     use crate::idol::{Cmd, Idol, IDOLS};
     fn wolf<R>(app: &mut App, f: impl FnOnce(&mut crate::player::Player) -> R) -> R {
         let w = app.world_mut();
@@ -711,6 +715,55 @@ pub(crate) fn wolf_kneels_at_an_idol_rests_and_travels() {
     let (want, _) = crate::idol::respawn_at(1).unwrap();
     assert!((at - want).with_y(0.0).length() < 0.1, "{s} at {at:?}, the idol's spot {want:?}");
     IDOLS.write().unwrap().clear();
+}
+
+/// Up from an idol (E, then the menu's Leave): the stick moves and turns Wolf every way again,
+/// back included.
+#[test]
+pub(crate) fn up_from_an_idol_the_stick_moves_wolf_every_way() {
+    let _list = IDOL_LIST.lock().unwrap_or_else(|e| e.into_inner());
+    use crate::idol::{Cmd, Idol, IDOLS};
+    let mut app = app();
+    move_enemy_far(&mut app);
+    run(&mut app, 10);
+    let a = Idol { name: "A".into(), pos: Vec3::new(600.0, 0.0, 0.0), out: Vec3::X, ..Default::default() };
+    let spot = a.spot();
+    *IDOLS.write().unwrap() = vec![a];
+    place_wolf(&mut app, spot + Vec3::X * 0.5, 0.0, false);
+    run(&mut app, 2);
+    app.world_mut().resource_mut::<PadInput>().press(Action::Interact);
+    run(&mut app, 90);
+    assert_eq!(player_actor(&mut app).0, "StatueAttachLoop");
+    {
+        let w = app.world_mut();
+        let mut q = w.query::<&mut crate::player::Player>();
+        q.single_mut(w).unwrap().seat.cmd = Some(Cmd::Leave);
+    }
+    for _ in 0..300 {
+        app.update();
+        if player_actor(&mut app).0 == "StandIdle" {
+            break;
+        }
+    }
+    run(&mut app, 10);
+    let mut moves = Vec::new();
+    for stick in [Vec2::new(0.0, -1.0), Vec2::new(0.0, 1.0), Vec2::new(1.0, 0.0), Vec2::new(-1.0, 0.0)] {
+        let start = player_actor(&mut app).3;
+        app.world_mut().resource_mut::<PadInput>().stick = stick;
+        run(&mut app, 90);
+        app.world_mut().resource_mut::<PadInput>().stick = Vec2::ZERO;
+        run(&mut app, 40);
+        moves.push((stick, player_actor(&mut app).3 - start, wolf_yaw(&mut app)));
+    }
+    IDOLS.write().unwrap().clear();
+    println!("up from the idol: {moves:?}");
+    for (stick, m, yaw) in moves {
+        // Stick up is -Z (the camera looks down -Z), right +X; Wolf turns to face his way.
+        let want = Vec3::new(stick.x, 0.0, -stick.y);
+        assert!(m.with_y(0.0).normalize_or_zero().dot(want) > 0.7, "stick {stick}: moved {m}");
+        let facing = Quat::from_rotation_y(yaw) * Vec3::NEG_Z;
+        assert!(facing.dot(want) > 0.7, "stick {stick}: faces {facing} (yaw {yaw})");
+    }
 }
 
 /// Standing, the stick pushed behind Wolf: the quick-turn move start (StandQuickTurnRunStart*180,
