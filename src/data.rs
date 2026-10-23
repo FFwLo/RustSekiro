@@ -1501,12 +1501,7 @@ pub fn atk_ai_sounds(pc: bool, id: i64) -> (i64, i64) {
     static T: std::sync::OnceLock<[HashMap<i64, (i64, i64)>; 2]> = std::sync::OnceLock::new();
     let t = T.get_or_init(|| {
         ["AtkParam_Pc", "AtkParam_Npc"].map(|name| {
-            let path = crate::paths::extracted().join(format!("json/params/{name}.json"));
-            let v: Value = std::fs::read_to_string(path).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
-            v["rows"]
-                .as_array()
-                .map(|rows| rows.iter().filter_map(|r| Some((r["id"].as_i64()?, (r["AppearAiSoundId"].as_i64().unwrap_or(0), r["HitAiSoundId"].as_i64().unwrap_or(0))))).collect())
-                .unwrap_or_default()
+            param_table(name).iter().map(|(id, r)| (*id, (r["AppearAiSoundId"].as_i64().unwrap_or(0), r["HitAiSoundId"].as_i64().unwrap_or(0)))).collect()
         })
     });
     t[if pc { 0 } else { 1 }].get(&id).copied().unwrap_or((0, 0))
@@ -1542,21 +1537,14 @@ pub struct SpCycle {
 /// EquipParamGoods useLimitSpEffectType0-4 of a goods row: the stateInfos that refuse its use
 /// (goods 3000, the Healing Gourd: 341 aging, 910 the Owl's recovery seal).
 pub fn goods_use_limits(goods: i64) -> Vec<i64> {
-    static T: std::sync::OnceLock<HashMap<i64, Value>> = std::sync::OnceLock::new();
-    let t = T.get_or_init(|| full_param("EquipParamGoods"));
+    let t = param_table("EquipParamGoods");
     t.get(&goods).map_or(Vec::new(), |r| (0..5).filter_map(|i| r[format!("useLimitSpEffectType{i}")].as_i64()).filter(|v| *v > 0).collect())
 }
 
 pub fn sp_cycle(id: i64) -> Option<SpCycle> {
     static T: std::sync::OnceLock<HashMap<i64, SpCycle>> = std::sync::OnceLock::new();
     let t = T.get_or_init(|| {
-        let path = crate::paths::extracted().join("json/params/SpEffectParam.json");
-        let v: Value = std::fs::read_to_string(path).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
-        let rows: Vec<&Value> = match &v["rows"] {
-            Value::Array(a) => a.iter().collect(),
-            Value::Object(o) => o.values().collect(),
-            _ => Vec::new(),
-        };
+        let rows: Vec<&Value> = param_table("SpEffectParam").values().collect();
         let n = |r: &Value, k: &str| r[k].as_i64().unwrap_or(0);
         rows.iter()
             .filter_map(|r| {
@@ -1589,7 +1577,7 @@ pub fn sp_cycle(id: i64) -> Option<SpCycle> {
 /// exported set (map area effects such as 108900 or the storm-jump areas); 0 for none.
 pub fn sp_effect_behavior_ref(id: i64) -> i64 {
     static REFS: std::sync::OnceLock<HashMap<i64, i64>> = std::sync::OnceLock::new();
-    let refs = REFS.get_or_init(|| full_param("SpEffectParam").iter().filter_map(|(id, r)| Some((*id, r["behaviorRefId"].as_i64().filter(|&v| v > 0)?))).collect());
+    let refs = REFS.get_or_init(|| param_table("SpEffectParam").iter().filter_map(|(id, r)| Some((*id, r["behaviorRefId"].as_i64().filter(|&v| v > 0)?))).collect());
     refs.get(&id).copied().unwrap_or(0)
 }
 
@@ -1599,7 +1587,7 @@ pub fn sp_effect_behavior_ref(id: i64) -> i64 {
 pub fn sp_effect_lingering_ref(id: i64) -> i64 {
     static REFS: std::sync::OnceLock<HashMap<i64, i64>> = std::sync::OnceLock::new();
     let refs = REFS.get_or_init(|| {
-        full_param("SpEffectParam")
+        param_table("SpEffectParam")
             .iter()
             .filter(|(_, r)| r["behaviorRefFlag_checkAliveFlagForBehavior"].as_i64() == Some(0))
             .filter_map(|(id, r)| Some((*id, r["behaviorRefId"].as_i64().filter(|&v| v > 0)?)))
@@ -1814,15 +1802,43 @@ pub(crate) fn parse_hks_events(text: &str) -> (HksEvents, Vec<(i64, i64)>) {
     (out, talk)
 }
 
-fn full_param(name: &str) -> HashMap<i64, Value> {
-    let path = crate::paths::extracted().join(format!("json/params/{name}.json"));
-    let v: Value = std::fs::read_to_string(path).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
-    let rows: Vec<Value> = match v["rows"].clone() {
-        Value::Array(a) => a,
-        Value::Object(o) => o.into_iter().map(|(_, r)| r).collect(),
-        _ => Vec::new(),
-    };
-    rows.into_iter().filter_map(|r| Some((r["id"].as_i64()?, r))).collect()
+/// Parsed once and shared by every reader: SpEffectParam.json is 40 MB, about 0.3 s a parse, and
+/// each lookup built from it used to parse it again on its first use.
+pub fn param_table(name: &str) -> &'static HashMap<i64, Value> {
+    type Slot = std::sync::OnceLock<HashMap<i64, Value>>;
+    static TABLES: std::sync::OnceLock<std::sync::Mutex<HashMap<String, &'static Slot>>> = std::sync::OnceLock::new();
+    // The lock covers only the slot lookup, so a table being parsed by warm_params does not hold
+    // up a reader of another table.
+    let slot: &'static Slot = TABLES.get_or_init(Default::default).lock().unwrap().entry(name.to_string()).or_insert_with(|| Box::leak(Box::default()));
+    slot.get_or_init(|| {
+        let path = crate::paths::extracted().join(format!("json/params/{name}.json"));
+        let mut v: Value = std::fs::read_to_string(path).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+        let rows: Vec<Value> = match v["rows"].take() {
+            Value::Array(a) => a,
+            Value::Object(o) => o.into_iter().map(|(_, r)| r).collect(),
+            _ => Vec::new(),
+        };
+        rows.into_iter().filter_map(|r| Some((r["id"].as_i64()?, r))).collect()
+    })
+}
+
+/// Builds the big param tables and the lookups made from them on a worker thread at start.
+/// Built on first use instead, the first hit on Wolf parsed them on the main thread: a 0.3 s
+/// stall in combat::resolve.
+#[cfg(not(test))]
+fn warm_params() {
+    std::thread::spawn(|| {
+        for t in ["SpEffectParam", "AtkParam_Pc", "AtkParam_Npc", "Bullet", "EquipParamGoods"] {
+            param_table(t);
+        }
+        sp_cycle(0);
+        sp_effect_behavior_ref(0);
+        sp_effect_lingering_ref(0);
+        atk_occurrence(&[0], HIT_CAT_SWORD, false, false);
+        prediction_observe_time(0);
+        atk_ai_sounds(true, 0);
+        crate::status::warm();
+    });
 }
 
 /// A hit's super-armour damage before the defender's rates (FUN_140bdb470): an NPC attack's
@@ -1869,7 +1885,7 @@ pub fn atk_occurrence(worn: &[i64], cat: i64, throw_hit: bool, charge_hit: bool)
     static ROWS: std::sync::OnceLock<HashMap<i64, Row>> = std::sync::OnceLock::new();
     let rows = ROWS.get_or_init(|| {
         let i = |r: &Value, k: &str| r[k].as_i64().unwrap_or(-1);
-        full_param("SpEffectParam")
+        param_table("SpEffectParam")
             .iter()
             .map(|(id, r)| {
                 (*id, Row {
@@ -1910,7 +1926,7 @@ pub fn atk_occurrence(worn: &[i64], cat: i64, throw_hit: bool, charge_hit: bool)
 /// leaves it out, so it is read from the full table.
 pub fn prediction_observe_time(bullet_id: i64) -> f32 {
     static ROWS: std::sync::OnceLock<HashMap<i64, f32>> = std::sync::OnceLock::new();
-    ROWS.get_or_init(|| full_param("Bullet").iter().map(|(id, r)| (*id, r["predictionShootObserveTime"].as_f64().unwrap_or(0.0) as f32)).filter(|(_, t)| *t > 0.0).collect())
+    ROWS.get_or_init(|| param_table("Bullet").iter().map(|(id, r)| (*id, r["predictionShootObserveTime"].as_f64().unwrap_or(0.0) as f32)).filter(|(_, t)| *t > 0.0).collect())
         .get(&bullet_id)
         .copied()
         .unwrap_or(0.0)
@@ -2222,6 +2238,8 @@ pub struct DataPlugin;
 
 impl Plugin for DataPlugin {
     fn build(&self, app: &mut App) {
+        #[cfg(not(test))]
+        app.add_systems(Startup, warm_params);
         let path = crate::paths::root().join("extracted/combat_data.json");
         let text = std::fs::read_to_string(&path).unwrap_or_else(|_| {
             panic!(

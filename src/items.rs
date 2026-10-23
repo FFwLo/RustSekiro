@@ -44,16 +44,8 @@ use bevy::prelude::*;
 /// A param table's rows by id, read once from extracted/json/params (the combat data carries
 /// only the tables the fights use).
 pub(crate) fn param(table: &'static str, id: i64) -> &'static serde_json::Value {
-    static TABLES: OnceLock<std::sync::Mutex<HashMap<&'static str, &'static HashMap<i64, serde_json::Value>>>> = OnceLock::new();
     static NULL: serde_json::Value = serde_json::Value::Null;
-    let mut tables = TABLES.get_or_init(Default::default).lock().unwrap();
-    let rows = *tables.entry(table).or_insert_with(|| {
-        let path = crate::paths::extracted().join(format!("json/params/{table}.json"));
-        let v: serde_json::Value = std::fs::read_to_string(path).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
-        let rows: HashMap<i64, serde_json::Value> = v["rows"].as_array().into_iter().flatten().filter_map(|r| Some((r["id"].as_i64()?, r.clone()))).collect();
-        Box::leak(Box::new(rows))
-    });
-    rows.get(&id).unwrap_or(&NULL)
+    crate::data::param_table(table).get(&id).unwrap_or(&NULL)
 }
 
 /// The Healing Gourd (its own refill and drinks in player.rs).

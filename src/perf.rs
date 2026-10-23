@@ -181,7 +181,13 @@ fn refresh_overlay(mut perf: ResMut<Perf>, mut text: Query<&mut Text, With<PerfT
     }
 }
 
-fn run_bench(mut perf: ResMut<Perf>, all: Query<()>, mut exit: MessageWriter<AppExit>) {
+#[allow(clippy::type_complexity)]
+fn run_bench(
+    mut perf: ResMut<Perf>,
+    all: Query<()>,
+    mut exit: MessageWriter<AppExit>,
+    nodes: Query<(Entity, &Node, Option<&InheritedVisibility>, Option<&ChildOf>, Option<&Name>)>,
+) {
     let now = Instant::now();
     let (launched, first) = (perf.launched, perf.first_frame);
     let Some(b) = perf.bench.as_mut() else { return };
@@ -217,8 +223,45 @@ fn run_bench(mut perf: ResMut<Perf>, all: Query<()>, mut exit: MessageWriter<App
     for (name, ms) in PHASES.iter().zip(phase_avgs(&b.samples)) {
         r += &format!("  {name}: {ms:.2}\n");
     }
+    // The hitches: the five worst frames, when (s into the recording) and by phase.
+    let mut worst5: Vec<&Sample> = b.samples.iter().collect();
+    worst5.sort_by(|x, y| y.frame.total_cmp(&x.frame));
+    r += "worst frames (s, ms, then the phases above):\n";
+    for s in worst5.into_iter().take(5) {
+        let phases: Vec<String> = s.phases.iter().map(|ms| format!("{ms:.1}")).collect();
+        r += &format!("  {:.2} s: {:.1} ms = {}\n", s.at.duration_since(start).as_secs_f32(), s.frame, phases.join(" / "));
+    }
     let ents = &b.entities;
     r += &format!("entities: {} average\n", ents.iter().sum::<usize>() / ents.len().max(1));
+    // UI nodes the layout still runs over: not under a Display::None, though maybe hidden.
+    let mut by_root: std::collections::HashMap<String, (usize, usize)> = std::collections::HashMap::new();
+    let (mut laid, mut total) = (0, 0);
+    for (e, node, vis, ..) in &nodes {
+        total += 1;
+        let (mut at, mut cut, mut root) = (e, node.display == Display::None, e);
+        while let Ok((_, n, _, parent, _)) = nodes.get(at) {
+            cut |= n.display == Display::None;
+            root = at;
+            match parent {
+                Some(p) => at = p.parent(),
+                None => break,
+            }
+        }
+        if cut {
+            continue;
+        }
+        laid += 1;
+        let name = nodes.get(root).ok().and_then(|n| n.4).map_or_else(|| format!("{root}"), |n| n.as_str().to_string());
+        let slot = by_root.entry(name).or_default();
+        slot.0 += 1;
+        slot.1 += usize::from(vis.is_some_and(|v| !v.get()));
+    }
+    let mut roots: Vec<_> = by_root.into_iter().collect();
+    roots.sort_by(|x, y| y.1.0.cmp(&x.1.0));
+    r += &format!("ui nodes: {total}, laid out {laid}; biggest roots (laid out, of them hidden):\n");
+    for (name, (n, hidden)) in roots.into_iter().take(10) {
+        r += &format!("  {name}: {n} ({hidden})\n");
+    }
     let path = crate::paths::root().join("perf_report.txt");
     let _ = std::fs::write(&path, &r);
     info!("{r}wrote {}", path.display());
@@ -284,8 +327,13 @@ fn record(name: &'static str, start: Instant) {
         let Ok(mut g) = SPANS.lock() else { return };
         let (since, m) = g.get_or_insert_with(|| (Instant::now(), Default::default()));
         let e = m.entry(name).or_default();
-        e.0 += start.elapsed().as_secs_f64() * 1e3;
+        let ms = start.elapsed().as_secs_f64() * 1e3;
+        e.0 += ms;
         e.1 += 1;
+        // A hitch: one run this slow is logged at once.
+        if ms > 30.0 {
+            info!("sys prof: slow {name} {ms:.0} ms");
+        }
         let secs = since.elapsed().as_secs_f64();
         if secs >= 5.0 {
             let mut v: Vec<_> = m.drain().collect();

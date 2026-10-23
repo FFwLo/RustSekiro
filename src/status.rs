@@ -160,15 +160,7 @@ impl ResistRules {
     }
 
     fn load() -> Self {
-        let read = |name: &str| -> Vec<serde_json::Value> {
-            let path = crate::paths::extracted().join(format!("json/params/{name}.json"));
-            let Some(v) = std::fs::read_to_string(path).ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()) else { return Vec::new() };
-            match &v["rows"] {
-                serde_json::Value::Array(a) => a.clone(),
-                serde_json::Value::Object(o) => o.values().cloned().collect(),
-                _ => Vec::new(),
-            }
-        };
+        let read = |name: &str| -> Vec<&'static serde_json::Value> { crate::data::param_table(name).values().collect() };
         let tent = read("TentativePlayerParam");
         let row = tent.iter().find(|r| r["id"].as_i64() == Some(0));
         let f = |k: &str| row.and_then(|r| r[k].as_f64()).unwrap_or(0.0) as f32;
@@ -198,7 +190,7 @@ impl ResistRules {
             })
             .collect();
         let power = |r: &serde_json::Value| (r["registFreeze"].as_f64().unwrap_or(0.0) * r["registFreezeChangeRate"].as_f64().unwrap_or(1.0)) as f32;
-        let by_id: HashMap<i64, &serde_json::Value> = sps.iter().filter_map(|r| Some((r["id"].as_i64()?, r))).collect();
+        let by_id: HashMap<i64, &serde_json::Value> = sps.iter().filter_map(|&r| Some((r["id"].as_i64()?, r))).collect();
         let freeze = sps
             .iter()
             .filter_map(|r| {
@@ -625,13 +617,7 @@ pub(crate) struct VfxRows(pub(crate) HashMap<i64, [i64; 4]>);
 
 impl VfxRows {
     fn load() -> Self {
-        let path = crate::paths::extracted().join("json/params/SpEffectVfxParam.json");
-        let Some(v) = std::fs::read_to_string(path).ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()) else { return Self::default() };
-        let rows: Vec<&serde_json::Value> = match &v["rows"] {
-            serde_json::Value::Array(a) => a.iter().collect(),
-            serde_json::Value::Object(o) => o.values().collect(),
-            _ => Vec::new(),
-        };
+        let rows: Vec<&serde_json::Value> = crate::data::param_table("SpEffectVfxParam").values().collect();
         let n = |r: &serde_json::Value, k: &str| r[k].as_i64().unwrap_or(-1);
         Self(rows.iter().filter_map(|r| Some((r["id"].as_i64()?, [n(r, "initSfxId"), n(r, "initDmyId"), n(r, "midstSfxId"), n(r, "midstDmyId")]))).collect())
     }
@@ -703,16 +689,18 @@ struct ParamRow {
     endurance: f32,
 }
 
+/// Builds the lookups made from the param tables ahead of their first use (data::warm_params).
+#[cfg(not(test))]
+pub(crate) fn warm() {
+    ResistRules::get();
+    param_row(0);
+    vfx_se(0);
+}
+
 fn param_row(id: i64) -> Option<&'static ParamRow> {
     static T: std::sync::OnceLock<HashMap<i64, ParamRow>> = std::sync::OnceLock::new();
     let t = T.get_or_init(|| {
-        let path = crate::paths::extracted().join("json/params/SpEffectParam.json");
-        let v: serde_json::Value = std::fs::read_to_string(path).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
-        let rows: Vec<&serde_json::Value> = match &v["rows"] {
-            serde_json::Value::Array(a) => a.iter().collect(),
-            serde_json::Value::Object(o) => o.values().collect(),
-            _ => Vec::new(),
-        };
+        let rows: Vec<&serde_json::Value> = crate::data::param_table("SpEffectParam").values().collect();
         let n = |r: &serde_json::Value, k: &str| r[k].as_i64().unwrap_or(-1);
         let f = |r: &serde_json::Value, k: &str| r[k].as_f64().unwrap_or(0.0) as f32;
         rows.iter()
@@ -827,13 +815,7 @@ fn sp_bursts(
 fn vfx_se(vfx: i64) -> Option<i64> {
     static T: std::sync::OnceLock<HashMap<i64, i64>> = std::sync::OnceLock::new();
     let t = T.get_or_init(|| {
-        let path = crate::paths::extracted().join("json/params/SpEffectVfxParam.json");
-        let v: serde_json::Value = std::fs::read_to_string(path).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
-        let rows: Vec<&serde_json::Value> = match &v["rows"] {
-            serde_json::Value::Array(a) => a.iter().collect(),
-            serde_json::Value::Object(o) => o.values().collect(),
-            _ => Vec::new(),
-        };
+        let rows: Vec<&serde_json::Value> = crate::data::param_table("SpEffectVfxParam").values().collect();
         rows.iter().filter_map(|r| Some((r["id"].as_i64()?, r["midstSeId"].as_i64().unwrap_or(0)))).filter(|(_, se)| *se > 0).collect()
     });
     t.get(&vfx).copied()

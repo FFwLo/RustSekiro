@@ -345,8 +345,14 @@ impl FxrLib {
         self.cache
             .entry(id)
             .or_insert_with(|| {
+                let t0 = std::time::Instant::now();
                 let p = crate::paths::extracted().join(format!("fxr/{id}.json"));
                 let v = std::fs::read_to_string(p).ok().and_then(|s| serde_json::from_str::<Value>(&s).ok());
+                // A first use read here stalls the frame (a hitch when it is big).
+                let ms = t0.elapsed().as_secs_f32() * 1000.0;
+                if ms > 10.0 {
+                    info!("fxr: {id} read in {ms:.0} ms on first use");
+                }
                 if let Some(v) = &v {
                     screen_textures(v, &mut self.screen_tex);
                 }

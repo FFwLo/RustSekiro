@@ -2199,6 +2199,22 @@ fn script_order(dir: &Path, battle_goal: i64, logic_id: i64) -> Result<Vec<PathB
     Ok(out)
 }
 
+/// A script file compiled once per thread (or its parse error): every brain runs the same 106
+/// aicommon files, and opening them was 8 of a brain's 10.5 ms, so an area's enemies first
+/// thinking on one tick stalled it 0.4 s.
+fn chunk(path: &Path) -> Result<Result<Rc<lua50::Proto>, String>, String> {
+    thread_local! {
+        static CHUNKS: std::cell::RefCell<HashMap<PathBuf, Result<Rc<lua50::Proto>, String>>> = Default::default();
+    }
+    if let Some(c) = CHUNKS.with_borrow(|m| m.get(path).cloned()) {
+        return Ok(c);
+    }
+    let data = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let c = load_chunk(&data).map_err(|e| e.to_string());
+    CHUNKS.with_borrow_mut(|m| m.insert(path.to_path_buf(), c.clone()));
+    Ok(c)
+}
+
 impl Brain {
     /// `dir` is extracted/script (the unpacked luabnd folders).
     /// `think` is the NpcThinkParam row `think_id` (its battleGoalID / logicId pick the scripts).
@@ -2272,8 +2288,7 @@ impl Brain {
         };
         for path in &files {
             let name = path.file_name().unwrap().to_string_lossy().into_owned();
-            let data = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
-            let r = load_chunk(&data).and_then(|p| vm.exec_chunk(&mut st, p));
+            let r = chunk(path)?.and_then(|p| vm.exec_chunk(&mut st, p).map(|_| ()).map_err(|e| e.to_string()));
             if let Err(e) = r {
                 st.log.push(format!("{name}: {e}"));
             }
