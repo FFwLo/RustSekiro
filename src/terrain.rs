@@ -170,6 +170,75 @@ pub fn ground_y(centre: Vec3) -> f32 {
     t.floor(centre.x, centre.z, feet + STEP_HEIGHT).or_else(|| t.floor(centre.x, centre.z, f32::INFINITY)).unwrap_or(feet - 100.0)
 }
 
+/// An enemy falling: the feet's height when it left the ground.
+#[derive(Component)]
+pub struct EnemyFall {
+    top: f32,
+}
+
+/// Enemies fall off ledges as Wolf does (knocked, pushed or walked off a drop deeper than
+/// FALL_START_DROP that `bodies_on_terrain` left them over): gravity as fall type 0, landing on
+/// the enemy floor ([`Terrain::landing`]'s look-up), and death on landing from fallDeathDist of
+/// the ground's HitMtrlParam row or more ([`fall_death_dist`], the exe's kill test for every
+/// character). Before, they were put on the floor below in one tick, however far down.
+pub(crate) fn enemy_falls(
+    combat: Res<crate::data::Combat>,
+    time: Res<Time>,
+    mut commands: Commands,
+    mut q: Query<(Entity, &mut Actor, &mut Transform, &mut crate::enemy::Enemy, Option<&EnemyFall>)>,
+) {
+    let Some(t) = terrain() else { return };
+    let dt = time.delta_secs();
+    for (e, mut a, mut tf, mut enemy, fall) in &mut q {
+        let feet = tf.translation.y - CAPSULE_HALF_HEIGHT;
+        let lifted = !a.anim.is_empty() && crate::actor::data_for(&combat, &a).flag(&a.anim, a.t, crate::player::FLAG_NO_GRAVITY);
+        let Some(fall) = fall else {
+            if !a.lod_due || a.airborne || lifted || a.lift_ground.is_some() || enemy.is_dead() {
+                continue;
+            }
+            let (x, z) = (tf.translation.x, tf.translation.z);
+            let held = t.enemy_floor(x, z, feet + STEP_HEIGHT).is_some_and(|h| h >= feet - crate::player::FALL_START_DROP) || rim_floor(tf.translation).is_some();
+            if !held {
+                commands.entity(e).insert(EnemyFall { top: feet });
+                a.airborne = true;
+                a.vel_y = 0.0;
+                a.grav_y = crate::data::FALL_TYPES[0].gravity();
+            }
+            continue;
+        };
+        if lifted {
+            continue;
+        }
+        a.vel_y += a.grav_y * dt;
+        let fell = (-a.vel_y * dt).max(0.0);
+        let floor = t.enemy_floor(tf.translation.x, tf.translation.z, feet + STEP_HEIGHT.max(fell + 0.05));
+        match floor.filter(|h| feet <= *h) {
+            Some(h) => {
+                tf.translation.y = h + CAPSULE_HALF_HEIGHT;
+                a.airborne = false;
+                a.vel_y = 0.0;
+                commands.entity(e).remove::<EnemyFall>();
+                let deadly = fall_death_dist(floor_material(tf.translation)).is_some_and(|dist| fall.top - h >= dist);
+                if deadly && !enemy.is_dead() && enemy.dies_at_zero_hp(&a, &combat) {
+                    a.hp = 0.0;
+                    enemy.die_at_zero_hp(&mut a, &combat);
+                }
+            }
+            // Into the void, far past any floor: dead where it is.
+            None if fall.top - feet > 200.0 => {
+                commands.entity(e).remove::<EnemyFall>();
+                a.airborne = false;
+                a.vel_y = 0.0;
+                if !enemy.is_dead() && enemy.dies_at_zero_hp(&a, &combat) {
+                    a.hp = 0.0;
+                    enemy.die_at_zero_hp(&mut a, &combat);
+                }
+            }
+            None => {}
+        }
+    }
+}
+
 /// The floor a falling body lands on: the highest one no higher than its feet plus what it fell
 /// in a tick (`fell`, at least STEP_HEIGHT). A fast fall (30 m/s is 0.5 m a tick) no longer
 /// passes a thin floor between two ticks' checks, and with no floor below there is none: it
@@ -701,21 +770,17 @@ pub(crate) fn bodies_on_terrain(combat: Res<crate::data::Combat>, mut commands: 
             let pf = crate::perf::span("terrain_floor");
             let floor = if a.side == Side::Enemy { t.enemy_floor(tf.translation.x, tf.translation.z, feet + STEP_HEIGHT) } else { t.floor(tf.translation.x, tf.translation.z, feet + STEP_HEIGHT) };
             drop(pf);
-            // Wolf follows the floor down only FALL_START_DROP (HKS BEH_R_FALL: a smaller drop
-            // never leaves the move state, so following it is the same); a deeper one falls.
-            let down = if a.side == Side::Enemy { f32::INFINITY } else { crate::player::FALL_START_DROP };
-            // Wolf over a drop his rim still rests on: held at its edge (`rim_floor`).
+            // A body follows the floor down only FALL_START_DROP (HKS BEH_R_FALL: a smaller drop
+            // never leaves the move state, so following it is the same); a deeper one falls
+            // (Wolf: player.rs; an enemy: `enemy_falls`). Over a drop its rim still rests on, it
+            // is held at the edge (`rim_floor`).
+            let down = crate::player::FALL_START_DROP;
             let floor = match floor {
                 Some(h) if h >= feet - down => Some(h),
-                _ if a.side != Side::Enemy => rim_floor(tf.translation).or(floor),
-                _ => floor,
+                _ => rim_floor(tf.translation).or(floor),
             };
-            match floor {
-                Some(h) if h >= feet - down => tf.translation.y = h + CAPSULE_HALF_HEIGHT,
-                Some(_) => {}
-                None => {
-                    // Over nothing walkable within reach: the enemy keeps its height.
-                }
+            if let Some(h) = floor.filter(|h| *h >= feet - down) {
+                tf.translation.y = h + CAPSULE_HALF_HEIGHT;
             }
         }
         state.prev = tf.translation;

@@ -552,6 +552,7 @@ impl Plugin for PlayerPlugin {
         // Bodies on the ground: wall slide and floor follow after the moves (terrain.rs).
         app.add_systems(FixedUpdate, crate::terrain::bodies_on_terrain.after(ActorSet::Advance).before(crate::anim::PoseSet));
         app.add_systems(FixedUpdate, fall_return_walls.after(crate::terrain::bodies_on_terrain).before(crate::anim::PoseSet));
+        app.add_systems(FixedUpdate, crate::terrain::enemy_falls.after(crate::terrain::bodies_on_terrain).before(crate::anim::PoseSet));
         app.add_systems(FixedUpdate, wolf_no_dead.before(ActorSet::Decide));
         app.add_systems(FixedUpdate, crate::ninjutsu::throw_effects.after(ActorSet::Advance).before(ActorSet::Resolve));
         if std::env::var("SHINOBI_MOVE_LOG").is_ok() {
