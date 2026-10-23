@@ -446,12 +446,12 @@ fn attach_models(
     mut meshes: Option<ResMut<Assets<Mesh>>>,
     mut materials: Option<ResMut<Assets<SekiroMaterial>>>,
     mut bindposes: Option<ResMut<Assets<SkinnedMeshInverseBindposes>>>,
-    actors: Query<(Entity, &Actor, &Skeleton), Without<ModelTried>>,
+    actors: Query<(Entity, &Actor, &Skeleton, Option<&crate::enemy::Enemy>, Has<crate::enemy::StartUnaware>), Without<ModelTried>>,
     roots: Query<(Entity, &ChildOf, &Name)>,
     mut share: Local<ModelShare>,
 ) {
     let dir = crate::paths::root().join("extracted");
-    for (actor_e, a, skel) in &actors {
+    for (actor_e, a, skel, enemy, start_unaware) in &actors {
         let chr = match a.side {
             Side::Player => "c0000",
             Side::Enemy => combat.foe_of(a).chr.as_str(),
@@ -580,35 +580,16 @@ fn attach_models(
         // 1. c1020 10203010 "Honjo, Tokugawa invasion, no camp haori" draws 6,7,10,11,13,14,15,20,
         // 25,27 - armour, helmet, sheath #07 and the sheathed blade #06, and not the haori #12 (the
         // "with haori" rows add 12). (The Ashina Shitenno rows, 8/14/17/24, are another outfit.)
-        // The enemy starts in battle, so TransToBattleFromDefault's TAE 233 ChangeChrDrawMask (draw
-        // the sword: c1020 #04# on, #06# off; 255 = unchanged) applies from the start, then
-        // IdleBattle's, where that transition ends: Emma's (c7400 a000_001040) turns all five
-        // sword parts #00#-#04# on and her a000_400000 keeps #00# and #04# only (without it her
-        // attacks' TAE 711 / 713 drew the extra parts: a handle held up with no blade, a000_003004).
         let npc = combat.npc(a);
-        let mut draw_mask: HashMap<u32, bool> = HashMap::new();
-        for an in ["TransToBattleFromDefault", "IdleBattle"].into_iter().filter_map(|s| combat.data_of(a).anim_key(s).and_then(|k| combat.data_of(a).anim(k))) {
-            for e in an.events.iter().filter(|e| e.kind == 233) {
-                for n in 0..32u32 {
-                    match e.arg_i64(&format!("Mask{n}")) {
-                        Some(0) => drop(draw_mask.insert(n, false)),
-                        Some(1) => drop(draw_mask.insert(n, true)),
-                        _ => {}
-                    }
-                }
-            }
-        }
+        let unaware = start_unaware || enemy.is_some_and(|e| e.starts_unaware());
+        let draw_mask = spawn_draw_mask(&combat, a, unaware);
         let visible = |md: &MeshData| {
             if a.side != Side::Enemy {
                 return true;
             }
             let Some(rest) = md.material.strip_prefix('#') else { return true };
-            let group = rest.split('#').next().and_then(|n| n.parse::<u32>().ok());
-            if let Some(&on) = group.and_then(|n| draw_mask.get(&n)) {
-                return on;
-            }
-            match group {
-                Some(n) => npc[format!("modelDispMask{n}")].as_i64().unwrap_or(0) == 1,
+            match rest.split('#').next().and_then(|n| n.parse::<u32>().ok()) {
+                Some(n) => group_shown(npc, &draw_mask, n),
                 None => true,
             }
         };
@@ -893,6 +874,41 @@ fn hide_placeholder_blades(
         }
         let _ = &mut parent;
     }
+}
+
+/// An NPC's draw-mask groups set at spawn over its NpcParam modelDispMaskNN. The line-up starts
+/// in battle, so TransToBattleFromDefault's TAE 233 ChangeChrDrawMask (draw the sword: c1020 #04#
+/// on, #06# off; 255 = unchanged) applies from the start, then IdleBattle's, where that transition
+/// ends: Emma's (c7400 a000_001040) turns all five sword parts #00#-#04# on and her a000_400000
+/// keeps #00# and #04# only (without it her attacks' TAE 711 / 713 drew the extra parts: a handle
+/// held up with no blade, a000_003004). An enemy that starts unaware (an MSB enemy, StartUnaware)
+/// keeps NpcParam's own look, the sword sheathed (c1010 10100000 modelDispMask0 = 0, Mask1 = 1;
+/// c1020 10200000 Mask4 = 0, Mask6 = 1, as TransToDefaultFromBattle a000_401000's 233 sets):
+/// IdleDefault a000_000000 has no 233, and its TransToBattleFromDefault draws the sword when it
+/// spots Wolf.
+pub(crate) fn spawn_draw_mask(combat: &crate::data::Combat, a: &Actor, unaware: bool) -> HashMap<u32, bool> {
+    let mut draw_mask: HashMap<u32, bool> = HashMap::new();
+    if unaware {
+        return draw_mask;
+    }
+    for an in ["TransToBattleFromDefault", "IdleBattle"].into_iter().filter_map(|s| combat.data_of(a).anim_key(s).and_then(|k| combat.data_of(a).anim(k))) {
+        for e in an.events.iter().filter(|e| e.kind == 233) {
+            for n in 0..32u32 {
+                match e.arg_i64(&format!("Mask{n}")) {
+                    Some(0) => drop(draw_mask.insert(n, false)),
+                    Some(1) => drop(draw_mask.insert(n, true)),
+                    _ => {}
+                }
+            }
+        }
+    }
+    draw_mask
+}
+
+/// Whether NPC mesh group #NN# is drawn at spawn: the spawn draw mask, else NpcParam
+/// modelDispMaskNN.
+pub(crate) fn group_shown(npc: &serde_json::Value, draw_mask: &HashMap<u32, bool>, n: u32) -> bool {
+    draw_mask.get(&n).copied().unwrap_or_else(|| npc[format!("modelDispMask{n}")].as_i64().unwrap_or(0) == 1)
 }
 
 /// Records TAE 233 ChangeChrDrawMask (Mask0-31: 0 hide, 1 show, 255 keep) on the tick it starts -

@@ -177,6 +177,10 @@ pub struct Actor {
     pub lod_due: bool,
     /// Ticks since its last due tick (0 on one): how far into its `lod` window a frame is drawn.
     pub lod_phase: u32,
+    /// Put somewhere by a warp since its last terrain step (a respawn, a map script's warp): the
+    /// terrain (terrain.rs `bodies_on_terrain`) takes the move as a teleport, however short, and
+    /// clears it, so a body on a slow update level is not slid back from its new spot.
+    pub warped: bool,
     /// The fall-prevention walls Wolf's script asks for (hks.rs `Host::fall_protect`): the host's
     /// world stops him at its ledge walls while he walks (terrain.rs `slide_protected`).
     pub fall_protect: u8,
@@ -382,6 +386,7 @@ impl Actor {
             lod: 1,
             lod_due: true,
             lod_phase: 0,
+            warped: false,
             fall_protect: 0,
             no_posture: false,
             resident: Vec::new(),

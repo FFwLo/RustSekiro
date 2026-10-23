@@ -1222,6 +1222,7 @@ pub(super) fn run_scripts(
                     };
                     e.disabled = false;
                     tf.translation = pos;
+                    a.warped = true;
                     a.yaw = yaw;
                     if let Some(mut vis) = vis {
                         *vis = Visibility::Inherited;
@@ -1302,6 +1303,7 @@ pub(super) fn run_scripts(
                 };
                 e.disabled = false;
                 tf.translation = pos;
+                a.warped = true;
                 a.yaw = yaw;
                 if let Some(mut vis) = vis {
                     *vis = Visibility::Inherited;
@@ -1365,6 +1367,7 @@ pub(super) fn run_scripts(
                 // The target's own height: the place's MSB height on the boss's own arena
                 // (events::place; off it the place is at start.y anyway) or the character's.
                 tf.translation = pos;
+                a.warped = true;
                 // A warp onto another character's root faces Wolf (gap: not traced).
                 let to_p = (player.1.translation - tf.translation).with_y(0.0);
                 a.yaw = if ty == 2 && on_dummy.is_none() && to_p.length_squared() > 1e-4 { f32::atan2(-to_p.x, -to_p.z) } else { yaw };

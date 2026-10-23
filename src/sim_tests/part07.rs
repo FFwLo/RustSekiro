@@ -1321,6 +1321,29 @@ pub(crate) fn a_draw_mask_change_is_kept_when_a_frame_runs_two_ticks() {
     assert_eq!(hidden, 1, "the TAE 233 at 0 s was missed");
 }
 
+/// An enemy that starts unaware walks with its sword sheathed (NpcParam: c1010 10100000
+/// modelDispMask0 = 0, Mask1 = 1; c1020 10200000 Mask4 = 0, Mask6 = 1); only the line-up, which
+/// starts in battle, spawns with TransToBattleFromDefault's 233 drawn sword (2026-10-23 bug hunt:
+/// every MSB enemy patrolled with the katana out and the scabbard empty).
+#[test]
+pub(crate) fn an_unaware_enemy_spawns_with_its_sword_sheathed() {
+    for (chr, drawn, sheathed) in [("c1010", 0u32, 1u32), ("c1020", 4, 6)] {
+        let mut app = app_with(chr);
+        let world = app.world_mut();
+        let e = world.query_filtered::<Entity, With<Enemy>>().single(world).unwrap();
+        let world = app.world();
+        let a = world.get::<Actor>(e).unwrap();
+        let combat = world.resource::<crate::data::Combat>();
+        let npc = combat.npc(a);
+        let unaware = crate::model::spawn_draw_mask(combat, a, true);
+        assert!(!crate::model::group_shown(npc, &unaware, drawn), "{chr} unaware draws its sword #{drawn:02}#");
+        assert!(crate::model::group_shown(npc, &unaware, sheathed), "{chr} unaware hides its sheathed blade #{sheathed:02}#");
+        let battle = crate::model::spawn_draw_mask(combat, a, false);
+        assert!(crate::model::group_shown(npc, &battle, drawn), "{chr} in battle hides its sword #{drawn:02}#");
+        assert!(!crate::model::group_shown(npc, &battle, sheathed), "{chr} in battle draws its sheathed blade #{sheathed:02}#");
+    }
+}
+
 /// Where the sim's hit test sees Wolf's dummy polys during a swing (FixedUpdate, before Resolve)
 /// and where they are drawn for the same tick (after transform propagation). Only dummies near
 /// Wolf: one effect dummy of his (2483) swings metres out and would swamp the numbers.

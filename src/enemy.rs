@@ -522,6 +522,12 @@ impl Enemy {
         matches!(self.mode, Mode::Ai) && self.targeting.state < stealth::FIND
     }
 
+    /// It started unaware (StartUnaware) and so starts every new life (model.rs spawn_draw_mask:
+    /// its sword sheathed).
+    pub(crate) fn starts_unaware(&self) -> bool {
+        self.unaware0
+    }
+
     /// Back to never having noticed Wolf: no targets, the default AI state (200000) and its
     /// idle a000_000000; home is where it stands now.
     pub fn make_unaware(&mut self, a: &mut Actor) {
@@ -2807,6 +2813,7 @@ fn think(
                     // unaware on its map spot) at the spot itself, which stays its home.
                     let back = if e.unaware0 { 0.0 } else { 2.0 };
                     tf.translation = respawn_spot(e.start, e.start_yaw, back, crate::terrain::terrain().as_deref());
+                    a.warped = true;
                     // Its new pose at once: no crossfade from the death pose, no deathblow ModelLag.
                     commands.entity(entity).insert(crate::anim::SnapPose);
                     // Its poison / burn and their flames stay with the old life.

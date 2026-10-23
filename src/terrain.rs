@@ -712,6 +712,17 @@ fn closest_on_triangle(p: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Vec3 {
 /// or grapple pull); a longer one is a teleport and skips the wall slide.
 pub const TELEPORT: f32 = 2.0;
 
+/// Whether a body's move since its last update (`delta`, flat) is a walk the wall slide follows,
+/// not a warp. A body on a slow update level (Actor::lod) moves `lod` ticks' time at once
+/// (actor.rs `advance`), so its walk may be up to TELEPORT per tick of that: an off-screen
+/// enemy at every 30th tick running 6 m/s steps 3 m, which a flat TELEPORT took for a warp and
+/// let through walls. A warp marked by its writer (Actor::warped: a respawn or a map script's
+/// warp) is never a walk, however short.
+pub(crate) fn walks(delta: Vec2, lod: u32, warped: bool) -> bool {
+    let walk = TELEPORT * lod.max(1) as f32;
+    !warped && delta.length_squared() > 1e-10 && delta.length_squared() <= walk * walk
+}
+
 /// The floor a body that moved from `prev_feet` to `now_feet` in one go stands on, walked along
 /// the move with the per-tick rule (each sample's floor at most STEP_HEIGHT over the last, at
 /// most FALL_START_DROP under it); `None` where the walk stops on a rise or drop past that.
@@ -744,18 +755,20 @@ pub struct OnTerrain {
 /// After the actors moved: push them out of walls along their step, then put grounded ones on
 /// the floor (following it up to STEP_HEIGHT up and FALL_START_DROP down; a bigger drop leaves them in the air,
 /// which player.rs turns into FreeFall; enemies stay put, they have no fall of their own).
-pub(crate) fn bodies_on_terrain(combat: Res<crate::data::Combat>, mut commands: Commands, mut q: Query<(Entity, &Actor, &mut Transform, Option<&mut OnTerrain>)>) {
+pub(crate) fn bodies_on_terrain(combat: Res<crate::data::Combat>, mut commands: Commands, mut q: Query<(Entity, &mut Actor, &mut Transform, Option<&mut OnTerrain>)>) {
     let _prof = crate::perf::span("bodies_on_terrain");
     let Some(t) = terrain() else { return };
-    for (e, a, mut tf, state) in &mut q {
+    for (e, mut a, mut tf, state) in &mut q {
         let Some(mut state) = state else {
             commands.entity(e).insert(OnTerrain { prev: tf.translation });
+            a.warped = false;
             continue;
         };
         // Not due this tick (Actor::lod): the next due tick takes the whole move.
         if !a.lod_due {
             continue;
         }
+        let warped = std::mem::take(&mut a.warped);
         // Held at an edge (docking.rs hold places the body): no slide, no floor snap.
         if a.docked {
             state.prev = tf.translation;
@@ -764,12 +777,12 @@ pub(crate) fn bodies_on_terrain(combat: Res<crate::data::Combat>, mut commands: 
         let prev = state.prev;
         let feet_prev = prev - Vec3::Y * CAPSULE_HALF_HEIGHT;
         let delta = Vec2::new(tf.translation.x - prev.x, tf.translation.z - prev.z);
-        // A move longer than TELEPORT in one tick is a warp (script / event warps, the parking
-        // spot, fight resets), not a walk: no slide along the line. The slide gathered every
-        // triangle in the whole move's box and ran 512 substeps, so a 110 m script warp on the
-        // Folding Screen Monkeys arena stalled one frame for about 33 s, then stopped at the
+        // A move longer than TELEPORT a tick (`walks`) is a warp (script / event warps, the
+        // parking spot, fight resets), not a walk: no slide along the line. The slide gathered
+        // every triangle in the whole move's box and ran 512 substeps, so a 110 m script warp on
+        // the Folding Screen Monkeys arena stalled one frame for about 33 s, then stopped at the
         // first wall and undid the warp (the fight's "3 fps", 2026-10-12 bug hunt).
-        if delta.length_squared() > 1e-10 && delta.length_squared() <= TELEPORT * TELEPORT {
+        if walks(delta, a.lod, warped) {
             let _p = crate::perf::span("terrain_slide");
             // An enemy's map body: its NpcParam hitRadius / hitHeight (Wolf's size for a row
             // without one).
@@ -795,7 +808,7 @@ pub(crate) fn bodies_on_terrain(combat: Res<crate::data::Combat>, mut commands: 
             let single = || if enemy { t.enemy_floor(tf.translation.x, tf.translation.z, feet + STEP_HEIGHT) } else { t.floor(tf.translation.x, tf.translation.z, feet + STEP_HEIGHT) };
             // A body on a slow update level walks its whole move's floor (`follow_floor`); a
             // warp (longer than TELEPORT a tick) keeps the single query at its end.
-            let walked = a.lod > 1 && delta.length() <= TELEPORT * a.lod as f32;
+            let walked = a.lod > 1 && !warped && delta.length() <= TELEPORT * a.lod as f32;
             let floor = if walked { follow_floor(&t, feet_prev.with_y(feet), tf.translation - Vec3::Y * CAPSULE_HALF_HEIGHT, enemy).or_else(single) } else { single() };
             drop(pf);
             // A body follows the floor down only FALL_START_DROP (HKS BEH_R_FALL: a smaller drop
@@ -818,6 +831,28 @@ pub(crate) fn bodies_on_terrain(combat: Res<crate::data::Combat>, mut commands: 
 #[cfg(test)]
 mod fall_tests {
     use super::*;
+
+    /// An off-screen enemy (update level 30, enemy/world.rs) running 6 m/s moves 3 m in one due
+    /// tick: still a walk the wall slide follows, not a warp that passes through walls; a
+    /// 60 m+ move on that level and a 3 m one at every tick stay warps.
+    #[test]
+    fn a_slow_update_levels_run_still_slides_on_walls() {
+        let run = Vec2::new(3.0, 0.0);
+        assert!(walks(run, crate::actor::ASLEEP, false));
+        assert!(!walks(run, 1, false));
+        assert!(walks(Vec2::new(1.5, 0.0), 1, false));
+        assert!(!walks(Vec2::new(0.0, 61.0), crate::actor::ASLEEP, false));
+        assert!(!walks(Vec2::ZERO, crate::actor::ASLEEP, false));
+    }
+
+    /// A respawn or map-script warp a few metres away on a slow level is still a warp (no slide
+    /// back toward where it was), and a level of 0 counts as every tick.
+    #[test]
+    fn a_marked_warp_never_slides() {
+        assert!(!walks(Vec2::new(3.0, 0.0), crate::actor::ASLEEP, true));
+        assert!(!walks(Vec2::new(0.5, 0.0), 1, true));
+        assert!(walks(Vec2::new(1.0, 0.0), 0, false));
+    }
 
     /// Atlas movement.fall-damage: exe FUN_140843660 - nothing under 20 m, then h / 100 of max HP
     /// (CalcCorrectGraph 210), all of it from 100 m; half on the deep-water planes (HitMtrlParam
