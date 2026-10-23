@@ -251,6 +251,22 @@ struct NodeInst {
     offset: Vec3,
     /// Its nodeAudio (75) has been started.
     audio: bool,
+    /// A LevelsOfDetail node's (2002) level distances: its 1002 config's thresholds, one per child.
+    lod: Option<Vec<f32>>,
+    /// The level this child is under its LevelsOfDetail parent.
+    level: Option<usize>,
+    /// Not its parent's level for the camera's distance: neither stepped nor drawn.
+    hidden: bool,
+}
+
+/// The level of a LevelsOfDetail node (2002) `dist` metres from the camera: child i covers
+/// [threshold i, threshold i + 1) (reference/fxr LevelsOfDetailThresholds "distance threshold for
+/// child node i"). In the extracted effects threshold 0 is always 1 and the detailed child the
+/// first; the far children are mostly empty (800140's ground fire: detail to 165 m, a lighter
+/// level to 200 m, nothing past), and a few are far glows only (811052: from 400 m). Nearer than
+/// the first threshold is the first level.
+fn lod_level(thresholds: &[f32], dist: f32) -> usize {
+    thresholds.iter().rposition(|&t| dist >= t).unwrap_or(0)
 }
 
 /// What an effect rides on.
@@ -410,13 +426,25 @@ fn make_node(lib: &mut FxrLib, node: &Value, seed: u32, depth: u32) -> Option<No
     }
     let is_node_emitter = cfg.as_ref().is_some_and(|c| c["type"].as_i64() == Some(1005) || c["type"].as_str() == Some("1005"));
     let kids: Vec<Value> = node["nodes"].as_array().cloned().unwrap_or_default();
-    // Levels of detail (LevelsOfDetail 2002): the closest (first) child only. (2202 is the
-    // NodeEmitter, reference/fxr src/fxr.ts NodeType: all its children are templates.)
-    let kids: Vec<Value> = if ty == 2002 { kids.into_iter().take(1).collect() } else { kids };
+    // Levels of detail (LevelsOfDetail 2002): every child, one shown at a time by the camera's
+    // distance (`lod_level`, step_node). (2202 is the NodeEmitter, reference/fxr src/fxr.ts
+    // NodeType: all its children are templates.)
+    let lod: Option<Vec<f32>> = (ty == 2002).then(|| {
+        let th = cfg.as_ref().and_then(|c| c["thresholds"].as_array().map(|a| a.iter().filter_map(Value::as_f64).map(|t| t as f32).collect()));
+        th.unwrap_or_else(|| vec![0.0])
+    });
     let (children, templates) = if is_node_emitter {
         (Vec::new(), kids.into_iter().map(Arc::new).collect())
     } else {
-        (kids.iter().enumerate().filter_map(|(i, k)| make_node(lib, k, seed.wrapping_mul(31).wrapping_add(i as u32 + 1), depth + 1)).collect(), Vec::new())
+        let mut ch: Vec<NodeInst> = Vec::new();
+        for (i, k) in kids.iter().enumerate() {
+            if let Some(mut c) = make_node(lib, k, seed.wrapping_mul(31).wrapping_add(i as u32 + 1), depth + 1) {
+                c.level = lod.is_some().then_some(i);
+                c.hidden = lod.is_some() && i > 0;
+                ch.push(c);
+            }
+        }
+        (ch, Vec::new())
     };
     Some(NodeInst {
         cfg,
@@ -436,6 +464,9 @@ fn make_node(lib: &mut FxrLib, node: &Value, seed: u32, depth: u32) -> Option<No
         detached: None,
         offset: Vec3::ZERO,
         audio: false,
+        lod,
+        level: None,
+        hidden: false,
     })
 }
 
@@ -602,9 +633,15 @@ fn step_node(n: &mut NodeInst, lib: &mut FxrLib, parent: Transform, dt: f32, sto
         Some(w) => w * n.local,
         None => parent * n.local,
     };
+    if let Some(th) = &n.lod {
+        let level = lod_level(th, lib.cam.map_or(0.0, |c| c.translation.distance(n.world.translation)));
+        for c in &mut n.children {
+            c.hidden = c.level != Some(level);
+        }
+    }
     if n.time < n.delay {
         n.time += dt;
-        for c in &mut n.children {
+        for c in n.children.iter_mut().filter(|c| !c.hidden) {
             step_node(c, lib, n.world, dt, stop);
         }
         return;
@@ -837,8 +874,12 @@ fn step_node(n: &mut NodeInst, lib: &mut FxrLib, parent: Transform, dt: f32, sto
     }
     n.time += dt;
     let world = n.world;
-    for ch in &mut n.children {
+    for ch in n.children.iter_mut().filter(|c| !c.hidden) {
         step_node(ch, lib, world, dt, stop || !alive);
+    }
+    // A stopped effect's other levels end with it.
+    if stop || !alive {
+        n.children.retain(|c| !c.hidden);
     }
     n.children.retain(|c| !c.finished);
     let emitting = alive && n.cfg.is_some();
@@ -1740,7 +1781,7 @@ fn collect(
             }
         }
     }
-    for ch in &n.children {
+    for ch in n.children.iter().filter(|c| !c.hidden) {
         collect(ch, lib, cam, out, dist, multi, lights, px, to_sun);
     }
 }
@@ -2321,7 +2362,7 @@ mod tests {
     /// NodeTranslation (15) offsets the node by its `translation` curve (300169: (0, -0.4, 0) ->
     /// 0 over 0.3 s); NodeSpeed (120) moves it along Z at speedZ x speedMultiplierZ.
     /// A NodeEmitter (2202) keeps every child as a template (the perilous kanji 600035 and 65
-    /// other effects have several); LevelsOfDetail (2002) draws only its first child.
+    /// other effects have several); LevelsOfDetail (2002) keeps every level.
     #[test]
     fn node_emitters_keep_all_children_levels_of_detail_one() {
         let mut lib = FxrLib::default();
@@ -2330,7 +2371,30 @@ mod tests {
         let n = make_node(&mut lib, &emitter, 1, 0).unwrap();
         assert_eq!((n.templates.len(), n.children.len()), (3, 0));
         let lod = serde_json::json!({"type": 2002, "nodes": [kid, kid]});
-        assert_eq!(make_node(&mut lib, &lod, 1, 0).unwrap().children.len(), 1);
+        assert_eq!(make_node(&mut lib, &lod, 1, 0).unwrap().children.len(), 2);
+    }
+
+    /// AKJama/sekiro-rs#273: the ground fire 800140's LevelsOfDetail node (thresholds 1, 165,
+    /// 200, 1000, 1000) shows its detailed first level near, its second from 165 m and its empty
+    /// third from 200 m, by the camera's distance; one level at a time.
+    #[test]
+    fn the_ground_fires_level_follows_the_camera_distance() {
+        assert_eq!([0.0, 50.0, 170.0, 250.0, 1500.0].map(|d| lod_level(&[1.0, 165.0, 200.0, 1000.0, 1000.0], d)), [0, 0, 1, 2, 4]);
+        let Ok(text) = std::fs::read_to_string(crate::paths::extracted().join("fxr/800140.json")) else { return };
+        let def: Value = serde_json::from_str(&text).unwrap();
+        let mut lib = FxrLib::default();
+        let mut root = make_node(&mut lib, &def["root"], 1, 0).unwrap();
+        fn shown(n: &NodeInst) -> Option<Vec<usize>> {
+            if n.lod.is_some() {
+                return Some(n.children.iter().filter(|c| !c.hidden).filter_map(|c| c.level).collect());
+            }
+            n.children.iter().find_map(shown)
+        }
+        for (d, want) in [(20.0, 0), (180.0, 1), (400.0, 2)] {
+            lib.cam = Some(Transform::from_xyz(0.0, 0.0, d));
+            step_node(&mut root, &mut lib, Transform::IDENTITY, 1.0 / 30.0, false);
+            assert_eq!(shown(&root), Some(vec![want]), "at {d} m");
+        }
     }
 
     /// Manual test #5: a tracer samples one flipbook cell across the trail. Genichiro's lightning
