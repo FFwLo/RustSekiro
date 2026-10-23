@@ -875,17 +875,6 @@ fn draw_hitboxes(
     }
 }
 
-/// Whether map collision stands between two body centres: both a chest-high and a head-high line
-/// are cut short of the other body, so the edge of a stair or a low rail under one line keeps
-/// the hit.
-pub(crate) fn wall_between(a: Vec3, b: Vec3) -> bool {
-    [0.3, 0.7].into_iter().all(|up| {
-        let (from, to) = (a + Vec3::Y * up, b + Vec3::Y * up);
-        let len = from.distance(to);
-        len > 0.6 && crate::terrain::raycast(from, (to - from) / len, len - 0.3).is_some()
-    })
-}
-
 /// Closest distance between segments p1-q1 and p2-q2.
 pub(crate) fn segment_distance(p1: Vec3, q1: Vec3, p2: Vec3, q2: Vec3) -> f32 {
     let (d1, d2, r) = (q1 - p1, q2 - p2, p1 - p2);
@@ -1680,11 +1669,6 @@ fn resolve(
                     }
                 };
                 if !connects {
-                    continue;
-                }
-                // The map between them stops a blade (a bullet flies its own path): a cut that
-                // reaches through a wall or a floor is no hit.
-                if !bullet && wall_between(atf.translation, dtf.translation) {
                     continue;
                 }
                 // A counter dummy lands only on a MikiriCounter window (not consumed: the step

@@ -1725,43 +1725,9 @@ pub fn msb_spot_in(map: &str, origin: Vec3, yaw: f32, entity: i64) -> Option<Msb
     })
 }
 
-/// The loaded map's MSB regions by entity id (`map_regions_on`); in the host's open world
-/// (no exported map loaded) every play block's ([`world_regions`]).
+/// The loaded map's MSB regions by entity id (`map_regions_on`).
 pub fn map_regions() -> Option<std::sync::Arc<HashMap<i64, WakeRegion>>> {
-    match crate::place::loaded_map() {
-        Some(stem) => map_regions_on(&stem),
-        None => world_regions(),
-    }
-}
-
-/// The open world's regions: every play block's ([`crate::encounter::MapHooks::blocks`]) MSB
-/// regions in the space its world scripts place characters in (MSB with X mirrored,
-/// script.rs `place_of`). Built once the blocks are known; none outside the open world.
-fn world_regions() -> Option<std::sync::Arc<HashMap<i64, WakeRegion>>> {
-    static CACHE: std::sync::Mutex<Option<std::sync::Arc<HashMap<i64, WakeRegion>>>> = std::sync::Mutex::new(None);
-    let mut cache = CACHE.lock().ok()?;
-    if let Some(r) = cache.as_ref() {
-        return Some(r.clone());
-    }
-    let blocks = (crate::encounter::hooks().blocks)();
-    if blocks.is_empty() {
-        return None;
-    }
-    let all: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(crate::paths::extracted().join("enemies/regions.json")).ok()?).ok()?;
-    let f = |v: &serde_json::Value| v.as_f64().unwrap_or(0.0) as f32;
-    let mirror = |x: f32, z: f32| Vec3::new(-x, 0.0, z);
-    let mut out = HashMap::new();
-    for block in &blocks {
-        for (id, r) in all[block.as_str()].as_object().into_iter().flatten() {
-            let (Ok(id), Some(a)) = (id.parse(), r["pos"].as_array()) else { continue };
-            let (sy, cy) = f(&r["yaw"]).to_radians().sin_cos();
-            let size = r["size"].as_array().into_iter().flatten().map(f).collect();
-            out.insert(id, WakeRegion { shape: r["shape"].as_i64().unwrap_or(-1), at: mirror(f(&a[0]), f(&a[2])).with_y(f(&a[1])), x: mirror(cy, -sy), z: mirror(sy, cy), size });
-        }
-    }
-    let r = std::sync::Arc::new(out);
-    *cache = Some(r.clone());
-    Some(r)
+    map_regions_on(&crate::place::loaded_map()?)
 }
 
 /// Every region with an entity id of the exported map `stem`'s MSB (extracted/enemies/

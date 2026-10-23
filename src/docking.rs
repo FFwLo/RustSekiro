@@ -160,35 +160,6 @@ impl Dock {
     pub fn top(&self, s: f32) -> Vec3 {
         self.point(s) - self.out * 0.5
     }
-    /// Room to stand on top at `s` (the climb's env 3050): a floor near the lip's height and no
-    /// ceiling over it below Wolf's head. True without a map to ask.
-    pub fn room_to_stand(&self, s: f32) -> bool {
-        crate::terrain::terrain().is_none_or(|t| self.room_on(&t, s))
-    }
-    fn room_on(&self, t: &crate::terrain::Terrain, s: f32) -> bool {
-        let top = self.top(s);
-        let Some(floor) = t.floor(top.x, top.z, top.y + crate::terrain::STEP_HEIGHT).filter(|h| top.y - h < crate::terrain::STEP_HEIGHT) else {
-            return false;
-        };
-        // The head swept from a step over the floor up to standing height.
-        let stand = floor + CAPSULE_HALF_HEIGHT;
-        t.ceiling_stop(top.with_y(stand), stand - (2.0 * CAPSULE_HALF_HEIGHT - crate::terrain::STEP_HEIGHT)).is_none()
-    }
-    /// The held position `s` moved toward `to`, stopped where the body meets a wall, pillar or
-    /// object along the line (the map's slide); `to` without a map.
-    pub fn slid(&self, s: f32, to: f32) -> f32 {
-        crate::terrain::terrain().map_or(to, |t| self.slid_on(&t, s, to))
-    }
-    fn slid_on(&self, t: &crate::terrain::Terrain, s: f32, to: f32) -> f32 {
-        let (from, goal) = (self.feet(s), self.feet(to));
-        let delta = Vec2::new(goal.x - from.x, goal.z - from.z);
-        let len2 = delta.length_squared();
-        if len2 < 1e-8 {
-            return to;
-        }
-        let moved = t.slide_as(from, delta, 0, None);
-        s + (to - s) * (moved.dot(delta) / len2).clamp(0.0, 1.0)
-    }
     /// Wolf's right in the docked facing.
     pub fn right(&self) -> Vec3 {
         let f = if self.hug() { self.out } else { -self.out };
@@ -798,10 +769,8 @@ pub fn hold(combat: Res<crate::data::Combat>, mut q: Query<(&mut crate::player::
         } else if is_start(&state) {
             guided(d, &a.anim, a.t, dock.from, (dock.feet(dock.s), dock.yaw()))
         } else {
-            // Held: keep the motion along the line, clamp to the edge, and stop at anything on
-            // the line (a pillar, a drainpipe, a crate).
-            let to = (feet - dock.edge.a).dot(dock.along).clamp(END_MARGIN, dock.len - END_MARGIN);
-            dock.s = dock.slid(dock.s, to);
+            // Held: keep the motion along the line, clamp to the edge.
+            dock.s = (feet - dock.edge.a).dot(dock.along).clamp(END_MARGIN, dock.len - END_MARGIN);
             (dock.feet(dock.s), dock.yaw())
         };
         tf.translation = target + Vec3::Y * CAPSULE_HALF_HEIGHT;
@@ -821,27 +790,6 @@ mod tests {
     fn edge(kind: u8) -> crate::traversal::LedgeEdge {
         // A wall along +X at z = 0, c on its -Z side (the wall), the open side +Z.
         crate::traversal::LedgeEdge { a: Vec3::new(-2.0, 0.0, 0.0), b: Vec3::new(2.0, 0.0, 0.0), c: Vec3::new(0.0, -0.2, -0.1), kind, variation: 0 }
-    }
-
-    /// A ledge 2 m up along +X (the top on -Z, see `edge`): a pillar face at x 0.6 across the hang
-    /// line stops the shimmy at it, and the climb needs a floor on top.
-    #[test]
-    fn a_pillar_stops_the_shimmy_and_the_climb_needs_a_floor() {
-        use crate::terrain::Terrain;
-        let e = crate::traversal::LedgeEdge { a: Vec3::new(-2.0, 2.0, 0.0), b: Vec3::new(2.0, 2.0, 0.0), c: Vec3::new(0.0, 1.8, -0.1), kind: 2, variation: 0 };
-        let d = super::Dock::new(&e, Vec3::new(0.0, 0.0, 1.0), 0.0).unwrap();
-        // The top: a slab at y 2 over z -3..0. The pillar: a face at x 0.6 across the hang line.
-        let mut v = vec![Vec3::new(-5.0, 2.0, -3.0), Vec3::new(5.0, 2.0, -3.0), Vec3::new(5.0, 2.0, 0.0), Vec3::new(-5.0, 2.0, 0.0)];
-        v.extend([Vec3::new(0.6, -1.0, -1.0), Vec3::new(0.6, -1.0, 2.0), Vec3::new(0.6, 2.0, 2.0), Vec3::new(0.6, 2.0, -1.0)]);
-        let tris = [([0, 2, 1], 0), ([0, 3, 2], 0), ([4, 6, 5], 0), ([4, 7, 6], 0)];
-        let t = Terrain::from_tris(v.clone(), tris.into_iter());
-        let s0 = d.len * 0.5 - 1.0;
-        // From x -1 toward x 2: the body (radius 0.4) stops by x 0.2.
-        let s = d.slid_on(&t, s0, s0 + 3.0);
-        assert!(s > s0 + 0.8 && s < s0 + 1.4, "the pillar at x 0.6: {s0} -> {s}");
-        assert!(d.room_on(&t, s0));
-        let bare = Terrain::from_tris(v[4..].to_vec(), [([0, 2, 1], 0), ([0, 3, 2], 0)].into_iter());
-        assert!(!d.room_on(&bare, s0), "no floor on top");
     }
 
     #[test]

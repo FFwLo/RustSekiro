@@ -552,7 +552,6 @@ impl Plugin for PlayerPlugin {
         // Bodies on the ground: wall slide and floor follow after the moves (terrain.rs).
         app.add_systems(FixedUpdate, crate::terrain::bodies_on_terrain.after(ActorSet::Advance).before(crate::anim::PoseSet));
         app.add_systems(FixedUpdate, fall_return_walls.after(crate::terrain::bodies_on_terrain).before(crate::anim::PoseSet));
-        app.add_systems(FixedUpdate, crate::terrain::enemy_falls.after(crate::terrain::bodies_on_terrain).before(crate::anim::PoseSet));
         app.add_systems(FixedUpdate, wolf_no_dead.before(ActorSet::Decide));
         app.add_systems(FixedUpdate, crate::ninjutsu::throw_effects.after(ActorSet::Advance).before(ActorSet::Resolve));
         if std::env::var("SHINOBI_MOVE_LOG").is_ok() {
@@ -914,7 +913,7 @@ fn aging_step(p: &mut Player, a: &mut Actor, combat: &Combat, config: &GameConfi
         let g = FALL_TYPES[(a.fall_type as usize).min(FALL_TYPES.len() - 1)].gravity();
         a.grav_y = g;
         a.vel_y += g * dt;
-        let floor = crate::terrain::landing_y(*pos, -a.vel_y * dt) + CAPSULE_HALF_HEIGHT;
+        let floor = crate::terrain::ground_y(*pos) + CAPSULE_HALF_HEIGHT;
         if pos.y <= floor && a.vel_y < 0.0 {
             pos.y = floor;
             a.airborne = false;
@@ -2976,7 +2975,7 @@ fn decide(
         // the killing blow's knockback or the clip's root motion falls (round 60: it floated;
         // the walk-off check is past this branch's return). Not in a grab's deaths (the
         // thrower places him) or a SetNoGravity window.
-        let mut floor = if a.airborne { crate::terrain::landing_y(tf.translation, -a.vel_y * dt) } else { crate::terrain::ground_y(tf.translation) } + CAPSULE_HALF_HEIGHT;
+        let mut floor = crate::terrain::ground_y(tf.translation) + CAPSULE_HALF_HEIGHT;
         if let Some(spot) = p.perch.filter(|s| (tf.translation - *s).with_y(0.0).length() < PERCH_RADIUS && tf.translation.y >= s.y + CAPSULE_HALF_HEIGHT - 0.3) {
             floor = floor.max(spot.y + CAPSULE_HALF_HEIGHT);
         }
@@ -4157,7 +4156,7 @@ fn decide(
             w.steer(a, tf.translation, dt);
         }
         a.move_vel = a.air_base;
-        let mut floor = crate::terrain::landing_y(tf.translation, -a.vel_y * dt) + CAPSULE_HALF_HEIGHT;
+        let mut floor = crate::terrain::ground_y(tf.translation) + CAPSULE_HALF_HEIGHT;
         // A ridden point is a floor once the arc is down to it (`Player::perch`).
         let ride_spot = p.wire.filter(|w| w.ride && w.flight.is_none()).map(|w| w.land);
         if let Some(spot) = ride_spot.filter(|s| (tf.translation - *s).with_y(0.0).length() < PERCH_RADIUS) {
@@ -4699,9 +4698,8 @@ fn dock_step_tick(
                 p.wall_jumps = dk::wall_jump_limit();
                 return true;
             }
-            // The hang button (ACTION_ARM_WALL_HANG) climbs when there is room to stand on top
-            // (env 3050, `Dock::room_to_stand`).
-            if interact && dock.room_to_stand(dock.s) {
+            // The hang button (ACTION_ARM_WALL_HANG) climbs. gap: env 3050 (room to stand up).
+            if interact {
                 if let Some(dd) = p.dock.as_mut() {
                     dd.climb_from = None;
                 }

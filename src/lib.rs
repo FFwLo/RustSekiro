@@ -229,7 +229,6 @@ impl Plugin for SoundPlugins {
         app.add_plugins((sound::SoundPlugin, fmod::FmodPlugin, area_music::AreaMusicPlugin));
     }
 }
-pub use fxr::SceneLight;
 pub use terrain::{Terrain, WorldCollision};
 pub use view::{CameraSnap, LockOn, View};
 

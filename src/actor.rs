@@ -874,13 +874,7 @@ pub fn advance(time: Res<Time>, combat: Res<Combat>, mut q: Query<(&mut Actor, &
                 // vertical root motion lifts it (the vault 511900 goes 1.5 m up; live: Wolf's
                 // height +1.53 m, landing 1.4 s in).
                 if a.side != Side::Enemy && !a.airborne && data.flag(&a.anim, a.t, crate::player::FLAG_NO_GRAVITY) {
-                    let from = tf.translation.y;
                     tf.translation.y += data.root_y_at(&a.anim, a.t) - data.root_y_at(&a.anim, a.prev_t);
-                    // The lift stops at a ceiling, as a jump's rise does (`fall`): a vault under a
-                    // low roof went up through it.
-                    if let Some(y) = crate::terrain::ceiling_stop(tf.translation, from) {
-                        tf.translation.y = y;
-                    }
                 }
             }
         }
