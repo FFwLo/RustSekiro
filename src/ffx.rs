@@ -199,6 +199,7 @@ fn emit(
     mut playing: Query<&mut crate::fxr::FxEffect>,
     foot: Res<FootSfx>,
 ) {
+    let _prof = crate::perf::span("ffx_emit");
     // Slotted / held effects end with their TAE event (after its length on their own clock,
     // FxEffect::window), when the anim changes, or when a looping anim (an idle, started over at
     // t 0 under the same key) starts over.
@@ -206,7 +207,7 @@ fn emit(
         if let Some((owner, anim, idx)) = f.key.clone() {
             let window = f.window;
             let age = f.age();
-            let alive = actors.iter().zip(actor_e.iter()).find(|(_, e)| *e == owner).is_some_and(|((a, _, _), _)| {
+            let alive = actors.get(owner).is_ok_and(|(a, _, _)| {
                 // The event's end on the clip's own clock (round 96: the effect's age kept running
                 // through a hit stop that froze the clip, ending it before its end frame); the
                 // age window stays as a backstop.
@@ -248,8 +249,11 @@ fn emit(
         let mut states: Option<Vec<i64>> = None;
         let foot_row = if player.is_some() { foot.player_row } else { combat.npc(a)["footEffectSfxId"].as_i64() };
         // TAE 117: Wolf's throw target's material (an enemy's own 117s have no partner here).
-        let throw_material = player.and_then(|p| p.throw_target).and_then(|t| actors.iter().zip(actor_e.iter()).find(|(_, e)| *e == t)).map(|((ta, _, _), _)| combat.npc(ta)["materialSfx1"].as_i64().unwrap_or(-1));
-        for (idx, e) in anim.events.iter().enumerate().filter(|(_, e)| matches!(e.kind, 96 | 112 | 114 | 117 | 118 | 792)) {
+        let throw_material = player.and_then(|p| p.throw_target).and_then(|t| actors.get(t).ok()).map(|(ta, _, _)| combat.npc(ta)["materialSfx1"].as_i64().unwrap_or(-1));
+        // Foot dust of an asleep character (actor::ASLEEP: off screen, or on screen past 50 m)
+        // is not spawned: unseen or a few pixels, it was most of the castle's live effects.
+        let feet = !a.asleep();
+        for (idx, e) in anim.events.iter().enumerate().filter(|(_, e)| matches!(e.kind, 96 | 114 | 117 | 118) || (feet && matches!(e.kind, 112 | 792))) {
             // gap: SpawnFFX_ByFloor (112) has no case in the TAE dispatcher (FUN_140b59170) and
             // its handler is not found; its FFXIDs (Wolf: 0 / 1 / 11 / 111 on the feet 5 / 6)
             // are FootSfxParam columns (column 0 = column 1 there), so it is read as 792 is.

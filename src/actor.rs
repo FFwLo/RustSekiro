@@ -316,7 +316,16 @@ pub struct Actor {
     pub anim_keys: Option<std::sync::Arc<std::collections::HashSet<String>>>,
 }
 
+/// The update level of a character nobody watches (enemy/world.rs: off screen, or on screen
+/// past 50 m): drawn at its latest pose instead of between its ticks.
+pub const ASLEEP: u32 = 30;
+
 impl Actor {
+    /// On the [`ASLEEP`] update level.
+    pub fn asleep(&self) -> bool {
+        self.lod >= ASLEEP
+    }
+
     /// Starts a knockback of `dist` metres along `dir` with KnockBackParam times
     /// (`cont` at full speed, then linear to 0 over `dec`): v = dist / (cont + dec / 2).
     /// A negative `dist` pulls: the Spear's Combo2 pull (v7800 judges 115-117,

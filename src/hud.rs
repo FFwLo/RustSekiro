@@ -625,14 +625,17 @@ fn update_boss_hud(
     mut arrows: Query<(&ChildOf, &mut Visibility), (With<PostureArrow>, Without<BossRoot>, Without<BossGlow>)>,
     boss_frame: Query<&ChildOf, With<BossPostureFill>>,
     script: Option<Res<crate::enemy::BossScript>>,
-    (mut posture_rows, mut boss_posture_hold): (Query<&mut Visibility, (With<BossPostureRow>, Without<BossRoot>, Without<BossGlow>, Without<PostureArrow>)>, Local<f32>),
+    (mut posture_rows, mut boss_posture_hold, world_bar): (Query<&mut Visibility, (With<BossPostureRow>, Without<BossRoot>, Without<BossGlow>, Without<PostureArrow>)>, Local<f32>, Option<Res<crate::enemy::world::WorldBar>>),
 ) {
     // The map script's 2003[11] bar body first (the Old Dragons' 2500810 has no deathblow dots
-    // and would never pass is_boss_bar), else the ninsatsu rule.
-    let scripted = scripted_bar(script.as_deref()).and_then(|ent| enemies.get(ent).ok()).filter(|(_, e, ph)| !e.is_dead() && !e.is_disabled() && !ph.is_some_and(|p| p.parked()));
+    // and would never pass is_boss_bar; in the open world, world.rs), else the ninsatsu rule.
+    let world = crate::enemy::world::active();
+    let bar_body = scripted_bar(script.as_deref()).or_else(|| world_bar.and_then(|b| b.0));
+    let scripted = bar_body.and_then(|ent| enemies.get(ent).ok()).filter(|(_, e, ph)| !e.is_dead() && !e.is_disabled() && !ph.is_some_and(|p| p.parked()));
     // Only bosses and mini-bosses: named (the bar's NPC名) or with two deathblows or more. A
-    // plain enemy with one dot keeps only its over-head bars (the user's captures).
-    let boss = scripted.or_else(|| enemies.iter().find(|(a, e, ph)| is_boss_bar(e, *ph) && (e.ninsatsu.1 >= 2 || !boss_name(combat.foe_of(a).npc_row).is_empty())));
+    // plain enemy with one dot keeps only its over-head bars (the user's captures). In the open
+    // world only one fighting Wolf (many named ones stand around the map).
+    let boss = scripted.or_else(|| enemies.iter().find(|(a, e, ph)| is_boss_bar(e, *ph) && (e.ninsatsu.1 >= 2 || !boss_name(combat.foe_of(a).npc_row).is_empty()) && (!world || e.targeting.state >= crate::stealth::BATTLE)));
     for mut v in &mut root {
         *v = if boss.is_some() { Visibility::Inherited } else { Visibility::Hidden };
     }
@@ -833,6 +836,7 @@ fn update_enemy_hud(
     mut posture: Query<(&EnemyPostureFill, &mut Node, &mut BackgroundColor), (Without<EnemyRoot>, Without<EnemyHpFill>)>,
     script: Option<Res<crate::enemy::BossScript>>,
 ) {
+    let _prof = crate::perf::span("hud_enemy");
     let scripted = scripted_bar(script.as_deref());
     // A set of bars per enemy: new enemies get theirs, removed ones lose them.
     let have: HashSet<Entity> = roots.iter().map(|(_, r, ..)| r.0).collect();
@@ -861,18 +865,25 @@ fn update_enemy_hud(
         }
         let top = heads.get(&root.0).and_then(|h| bones.get(*h).ok()).map(|(_, hg)| hg.translation().with_x(g.translation().x).with_z(g.translation().z) + Vec3::Y * OVERHEAD_ABOVE_HEAD).unwrap_or(g.translation() + Vec3::Y * 1.9);
         let at = cam.and_then(|(cam, ct)| cam.world_to_viewport(ct, top).ok());
+        // Written only when they change: a changed node is laid out again, and a hidden one
+        // (Visibility) still is, so hidden bars leave the layout (Display::None).
         let Some(p) = at.filter(|_| show) else {
-            *vis = Visibility::Hidden;
+            vis.set_if_neq(Visibility::Hidden);
+            if node.display != Display::None {
+                node.display = Display::None;
+            }
             continue;
         };
-        *vis = Visibility::Inherited;
-        node.left = Val::Px(p.x);
+        vis.set_if_neq(Visibility::Inherited);
         // The bars' bottom at that point.
-        node.top = Val::Px(p.y - 26.0);
+        node.set_if_neq(Node { display: Display::Flex, left: Val::Px(p.x), top: Val::Px(p.y - 26.0), ..node.clone() });
     }
     for (f, mut n) in &mut hp {
         if let Ok((_, a, ..)) = enemies.get(f.0) {
-            n.width = Val::Percent(share(a.hp, a.hp_max) * 100.0);
+            let width = Val::Percent(share(a.hp, a.hp_max) * 100.0);
+            if n.width != width {
+                n.width = width;
+            }
         }
     }
     for (d, mut n, mut img) in &mut dots {
@@ -898,8 +909,11 @@ fn update_enemy_hud(
     for (f, mut n, mut bg) in &mut posture {
         if let Ok((_, a, ..)) = enemies.get(f.0) {
             let pf = share(a.posture, a.posture_max);
-            n.width = Val::Percent(pf * 100.0);
-            bg.0 = posture_color(pf);
+            let width = Val::Percent(pf * 100.0);
+            if n.width != width {
+                n.width = width;
+            }
+            bg.set_if_neq(BackgroundColor(posture_color(pf)));
         }
     }
 }
@@ -1161,6 +1175,7 @@ fn update_deathblow_mark(
     mut mark: Query<(&mut Node, &mut ImageNode, &mut Visibility), With<DeathblowMark>>,
     mut clip: Local<MarkClip>,
 ) {
+    let _prof = crate::perf::span("hud_deathblow");
     let Ok((mut node, mut img, mut vis)) = mark.single_mut() else { return };
     let at = deathblow_mark_at(&combat, &wolf, &enemies, &dummies, &camera, lock.as_ref().and_then(|l| l.target));
     let Some((t, gone, p)) = clip.step(at, time.delta_secs(), 15.0 / 60.0) else {
@@ -1625,6 +1640,7 @@ fn update_stealth(
     mut fills: Query<(&StealthFill, &mut Node), (Without<StealthMark>, Without<StealthBrush>)>,
     mut brushes: Query<(&StealthBrush, &mut Node, &mut ImageNode), (Without<StealthMark>, Without<StealthFill>)>,
 ) {
+    let _prof = crate::perf::span("hud_stealth");
     let have: HashSet<Entity> = marks.iter().map(|(_, m, ..)| m.enemy).collect();
     let k = window.single().map_or(720.0, |w| w.height()) / 1080.0;
     for (e, ..) in &enemies {
@@ -1668,18 +1684,26 @@ fn update_stealth(
             turn.rotation = Rot2::radians(angle);
         }
         let Some((t, gone, p)) = m.clip.step(pos, time.delta_secs(), 22.0 / 60.0) else {
-            *vis = Visibility::Hidden;
+            // Out of the UI layout while hidden (update_enemy_hud).
+            vis.set_if_neq(Visibility::Hidden);
+            if node.display != Display::None {
+                node.display = Display::None;
+            }
             continue;
         };
         let fade = match gone {
             Some(g) => (1.0 - g * 60.0 / 22.0).max(0.0),
             None => (t * 60.0 / 15.0).min(1.0),
         };
-        *vis = Visibility::Inherited;
-        node.width = Val::Px(side);
-        node.height = Val::Px(side);
-        node.left = Val::Px(p.x - side / 2.0);
-        node.top = Val::Px(p.y - STEALTH_LIFT * k - side / 2.0);
+        vis.set_if_neq(Visibility::Inherited);
+        node.set_if_neq(Node {
+            display: Display::Flex,
+            width: Val::Px(side),
+            height: Val::Px(side),
+            left: Val::Px(p.x - side / 2.0),
+            top: Val::Px(p.y - STEALTH_LIFT * k - side / 2.0),
+            ..node.clone()
+        });
         let rgb = |r: u8, g: u8, b: u8| Color::srgb_u8(r, g, b);
         let (w, frame_color, color) = match level {
             2 => (1.0, rgb(163, 64, 57).with_alpha(0.85), rgb(200, 60, 50).with_alpha(0.95)),

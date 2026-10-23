@@ -4,7 +4,7 @@
 //!   the last 2 s), the main world's time per schedule phase and the entity count. "render wait"
 //!   is what is left of the frame after the main world's schedules: Last, and the wait for the
 //!   render thread when the frame is GPU / render bound.
-//! - `SHINOBI_BENCH=<seconds>` (empty = 20): after 5 s of warm-up, records that many seconds,
+//! - `SHINOBI_BENCH=<seconds>` (empty = 20): after 5 s of warm-up (`SHINOBI_BENCH_WARMUP=<s>`), records that many seconds,
 //!   writes `perf_report.txt` next to `config.toml` (`paths::root`), logs it and quits. Run it
 //!   the same way before and after a change to compare.
 
@@ -29,6 +29,12 @@ struct AfterPostUpdate;
 const PHASES: [&str; 5] = ["first + pre-update", "fixed update", "update", "post-update", "render wait + last"];
 const WINDOW: Duration = Duration::from_secs(2);
 const WARM_UP: Duration = Duration::from_secs(5);
+
+/// The warm-up before a bench records: `SHINOBI_BENCH_WARMUP=<seconds>` (a big map's load),
+/// else [`WARM_UP`].
+fn warm_up() -> Duration {
+    std::env::var("SHINOBI_BENCH_WARMUP").ok().and_then(|v| v.trim().parse().ok()).map_or(WARM_UP, Duration::from_secs_f32)
+}
 
 #[derive(Clone, Copy)]
 struct Sample {
@@ -65,6 +71,7 @@ pub struct PerfPlugin;
 impl Plugin for PerfPlugin {
     fn build(&self, app: &mut App) {
         let bench = std::env::var("SHINOBI_BENCH").ok().map(|v| Bench { secs: v.trim().parse().unwrap_or(20.0), start: None, samples: Vec::new(), entities: Vec::new() });
+        engine_spans(app);
         app.insert_resource(Perf { launched: Instant::now(), first_frame: None, frame_start: None, marks: [None; 4], recent: VecDeque::new(), bench, shown: false, refreshed: None });
         for (label, i) in [(AfterPreUpdate.intern(), 0usize), (AfterFixed.intern(), 1), (AfterUpdate.intern(), 2), (AfterPostUpdate.intern(), 3)] {
             app.init_schedule(label);
@@ -181,7 +188,7 @@ fn run_bench(mut perf: ResMut<Perf>, all: Query<()>, mut exit: MessageWriter<App
     let Some(first) = first else { return };
     let start = match b.start {
         Some(s) => s,
-        None if now.duration_since(first) >= WARM_UP => {
+        None if now.duration_since(first) >= warm_up() => {
             info!("bench: recording {} s", b.secs);
             b.start = Some(now);
             return;
@@ -198,7 +205,7 @@ fn run_bench(mut perf: ResMut<Perf>, all: Query<()>, mut exit: MessageWriter<App
     let (avg, fps, p99, worst, low) = stats(&frames);
     let mut r = String::from("Sv1 performance report (src/perf.rs, SHINOBI_BENCH)\n");
     r += &format!("launch to first frame: {:.1} s\n", first.duration_since(launched).as_secs_f32());
-    r += &format!("recorded: {} frames over {:.1} s after {} s warm-up\n", frames.len(), b.secs, WARM_UP.as_secs());
+    r += &format!("recorded: {} frames over {:.1} s after {} s warm-up\n", frames.len(), b.secs, warm_up().as_secs_f32());
     r += &format!("fps: {fps:.1} average, {low:.1} 1% low\n");
     r += &format!("frame ms: {avg:.2} average, {p99:.2} p99, {worst:.2} worst\n");
     let mut sorted = frames.clone();
@@ -218,6 +225,43 @@ fn run_bench(mut perf: ResMut<Perf>, all: Query<()>, mut exit: MessageWriter<App
     exit.write(AppExit::Success);
 }
 
+/// `SHINOBI_SYS_PROF=1`: the wall time between a stamp before and one after each of Bevy's own
+/// PostUpdate passes (transform propagation, UI layout, visibility), as spans; other systems may
+/// run in between on other threads.
+fn engine_spans(app: &mut App) {
+    if std::env::var_os("SHINOBI_SYS_PROF").is_none() {
+        return;
+    }
+    use bevy::camera::visibility::VisibilitySystems;
+    use bevy::transform::TransformSystems;
+    use bevy::ui::UiSystems;
+    #[derive(Resource, Default)]
+    struct Marks(std::collections::HashMap<&'static str, Instant>);
+    fn begin(name: &'static str) -> impl FnMut(ResMut<Marks>) {
+        move |mut m: ResMut<Marks>| {
+            m.0.insert(name, Instant::now());
+        }
+    }
+    fn end(name: &'static str) -> impl FnMut(Res<Marks>) {
+        move |m: Res<Marks>| {
+            if let Some(&t) = m.0.get(name) {
+                record(name, t);
+            }
+        }
+    }
+    app.init_resource::<Marks>().add_systems(
+        PostUpdate,
+        (
+            begin("propagate").before(TransformSystems::Propagate),
+            end("propagate").after(TransformSystems::Propagate),
+            begin("ui_layout").before(UiSystems::Layout),
+            end("ui_layout").after(UiSystems::Layout),
+            begin("visibility").before(VisibilitySystems::CheckVisibility),
+            end("visibility").after(VisibilitySystems::CheckVisibility),
+        ),
+    );
+}
+
 /// `SHINOBI_SYS_PROF=1`: the time spent in the systems that open a [`span`] (ms per second,
 /// calls per second), logged every 5 s. Nothing when unset.
 pub fn span(name: &'static str) -> Option<Span> {
@@ -229,11 +273,18 @@ pub struct Span(&'static str, Instant);
 
 impl Drop for Span {
     fn drop(&mut self) {
+        record(self.0, self.1);
+    }
+}
+
+/// Adds the time since `start` to `name`'s total, and logs the totals every 5 s.
+fn record(name: &'static str, start: Instant) {
+    {
         static SPANS: std::sync::Mutex<Option<(Instant, std::collections::HashMap<&'static str, (f64, u32)>)>> = std::sync::Mutex::new(None);
         let Ok(mut g) = SPANS.lock() else { return };
         let (since, m) = g.get_or_insert_with(|| (Instant::now(), Default::default()));
-        let e = m.entry(self.0).or_default();
-        e.0 += self.1.elapsed().as_secs_f64() * 1e3;
+        let e = m.entry(name).or_default();
+        e.0 += start.elapsed().as_secs_f64() * 1e3;
         e.1 += 1;
         let secs = since.elapsed().as_secs_f64();
         if secs >= 5.0 {

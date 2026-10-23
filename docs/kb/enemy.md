@@ -729,8 +729,9 @@ and 6.7 attacks/min in 3 min; after, 8 backsteps and 11.3/min. Test
 ## The open world's map events (2026-10-20, src/enemy/world.rs)
 Behind `SHINOBI_WORLD_ENEMIES=1`, on sekiro-rs's map started at an idol. tools/world_scripts.py
 exports every base map (m*_00_00) as a script in the boss-script layout with `world: true`:
-every enemy part but the boss rows and the c1000 / c1001 dummies (chr, NpcParam row, Part.Enemy
-ThinkParamID, raw MSB place), all of the map's event instances (event 50 / 0 and the common_func
+every enemy part but the c1000 / c1001 dummies, the NPCs, named enemies and bosses included
+since 2026-10-23 (chr, NpcParam row, Part.Enemy ThinkParamID, raw MSB place; their map's
+events enable or disable each one, new-game flags), all of the map's event instances (event 50 / 0 and the common_func
 events they start), and the places / regions they name -> extracted/enemies/world_scripts.json
 (m11_01: 284 enemies, 479 events). script.rs runs them unchanged in world mode (place_of and
 inside take raw MSB space, X mirrored; Run::new_world has no boss). world.rs runs one script per
@@ -743,6 +744,9 @@ play block (sr_map::blocks: m11_00, m11_01, m11_02, m13, m17, m20 from the castl
   (Combat::ensure_kind, AnimLib::sync_kinds) per tick;
 - the events' SpEffects, AI commands, forced anims, deaths go to the spawned ones (script.rs
   apply); a death of one not spawned marks it dead;
+- a map event's 2003[11] Display Boss Health Bar picks the character whose boss bars the HUD
+  shows (world.rs WorldBar); otherwise a named or multi-deathblow enemy gets them only while it
+  fights Wolf (stealth BATTLE), not every named one standing on the map;
 - dead ones stay dead (no practice respawn) until a rest: BossScript::resets (reset_fight)
   clears the dead, Restart events (rest 1) start over, End ones (rest 2) end, flags stay.
 The exe's update levels (re-scout, static): WorldChrMan's "omission update" (FUN_140a4e8e0,
@@ -761,9 +765,40 @@ events). Fixed with it: actor.rs separate reads each body's radius once and skip
 main 705a30f (his whole-map population, taken 2026-10-20) rejects triangles by bounding box in
 slide: 0.6 -> 0.09 ms a call. Castle idol: no world 57 fps; 64 enemies (60 m) 9 fps, the rest
 now in the frame's Update / render side (models, skinning, sounds per enemy; not yet measured per
-system) and resolve's Wolf x enemy windows (2.7 ms per tick). gaps: no story flags (a new game's world), objects / SFX / warps /
+system) and resolve's Wolf x enemy windows (2.7 ms per tick); measured and cut since (Character
+cost, below). gaps: no story flags (a new game's world), objects / SFX / warps /
 cutscenes / bullets of these events not run, the game streams by block and backread, not by
 distance; enemies leave routes without a navmesh (on sekiro-rs maps they walk it since 2026-10-23, Navmesh below).
+
+### Character cost (2026-10-23, castle idol, sekiro-rs's world, embed)
+Bench: `SHINOBI_BENCH=20 SHINOBI_BENCH_WARMUP=75` (perf.rs; the warm-up skips the load and the
+first spawns), `SHINOBI_SYS_PROF=1` for our spans, and sekiro-rs's `--features profile-spans`
+build for every Bevy system (main and render world). No world enemies: 38 fps. With them:
+5.5 fps at first, 28.5 fps now. In order of what it bought:
+- Each character drew its own mesh and material per FLVER mesh (~900 render bins at the castle):
+  Bevy's bins, instance buffers and preprocess bind groups grew with them (render thread
+  ~75 ms a frame). model.rs attach_models now shares one mesh, material and inverse-bind-pose
+  set per FLVER mesh between characters of a model (ModelShare); a fading character
+  (update_opacity) draws a copy of the material until it is opaque again. Cloth display meshes
+  stay per character. The model files and each kind's file list are read once. 13 -> 28 fps.
+- Shadows: an ASLEEP character (actor::ASLEEP: off screen, or on screen past 50 m) casts none
+  (model.rs shadow_awake): 6.6 -> 13 fps before the sharing; with it, all casting is 23 fps.
+- Characters not due this tick (Actor::lod): no walk twist / twists (store_sim_poses puts the
+  last pose back; a due tick eases twists over the level's ticks), no root write in
+  apply_model_lag unless it differs, draw_poses writes only changed bones, and an asleep one
+  is not drawn between ticks: store_sim_poses 80 -> 22 ms/s.
+- Cloth (cloth.rs): a culled cloth whose reference bones are where they were writes nothing;
+  the per-cloth cost lines are built only on the log frame (520 cloths formatted every frame);
+  cloth meshes are culled by their written bounds (NoFrustumCulling drew them in every shadow
+  view).
+- Foot dust (TAE 112 / 792) of asleep characters is not spawned (ffx.rs): 48 of 54 live effects.
+- combat.rs resolve skips pairs past HIT_REACH (30 m) with no bullets; ai sounds only for due
+  characters; hud.rs writes nodes only on change and hidden bars leave the layout
+  (Display::None); fxr.rs reads its env knobs once.
+Left (main thread, per frame at 28 fps): cloth simulate ~3.4 ms (reference matrices of 520
+cloths every frame), fxr draw ~3 ms, Bevy reset_view_visibility ~2.9 ms (the bone entities
+carry Visibility), the world scripts ~1.3 ms and hks_enemy ~1 ms per tick, resolve ~0.9 ms per
+tick; ~2 fixed ticks a frame.
 
 ## The game's enemy script beside enemy.rs (2026-10-20)
 

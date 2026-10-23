@@ -357,6 +357,9 @@ pub struct ClothInst {
     /// (references, restart, solve, bones, skinning, cloth vertices + tangents).
     cost_us: u64,
     phase_us: [u64; 6],
+    /// The reference bones' matrices when a culled cloth's outputs were last written (empty
+    /// after a simulated frame): unchanged, the culled cloth writes nothing again.
+    culled_refs: Vec<Option<Mat4>>,
     /// Frames in a row the sim blew up (a particle > 3 m from the root) and restarted; at
     /// `GIVE_UP` the cloth is carried rigidly for good (one such cloth, c1040's fur, cost
     /// 24 ms a frame restarting).
@@ -386,7 +389,7 @@ struct ClothOut {
 
 impl ClothInst {
     pub fn new(def: ClothDef, root: Entity, bones: HashMap<String, Entity>) -> Self {
-        ClothInst { def, root, bones, displays: Vec::new(), x: Vec::new(), prev: Vec::new(), started: false, last_h: 0.0, out: ClothOut::default(), cost_us: 0, phase_us: [0; 6], blowups: 0, rigid: false, root_m: None, caps_prev: Vec::new(), off_anim: (0.0, 0.0, 0.0) }
+        ClothInst { def, root, bones, displays: Vec::new(), x: Vec::new(), prev: Vec::new(), started: false, last_h: 0.0, out: ClothOut::default(), cost_us: 0, phase_us: [0; 6], culled_refs: Vec::new(), blowups: 0, rigid: false, root_m: None, caps_prev: Vec::new(), off_anim: (0.0, 0.0, 0.0) }
     }
 }
 
@@ -705,6 +708,17 @@ fn simulate(
             let bone_h = |name: &str| c.bones.get(name).and_then(|&e| globals.get(e).ok()).map(|g| havok(g.to_matrix()));
             // One world matrix per bone: the reference bones by index, the collidables' by name.
             let ref_mats: Vec<Option<Mat4>> = c.def.ref_bones.iter().map(|n| bone_h(n)).collect();
+            // Culled with its bones where they were when its outputs were last written (an
+            // asleep enemy between its ticks, Actor::lod; one standing still): its mesh and
+            // cloth bones already show this, so nothing is skinned or uploaded again.
+            if culled && !hold {
+                if c.culled_refs == ref_mats {
+                    continue;
+                }
+                c.culled_refs = ref_mats.clone();
+            } else {
+                c.culled_refs.clear();
+            }
             let bone_mats: HashMap<&str, Mat4> = c.def.collidables.iter().filter_map(|k| Some((k.bone.as_str(), bone_h(&k.bone)?))).collect();
             // Capsules in Havok world space: (a, b, ra, rb).
             let capsules: Vec<Option<(Vec3, Vec3, f32, f32)>> = c
@@ -1153,15 +1167,21 @@ fn write_cloth_uploads(mut ups: ResMut<ClothUploads>, allocator: Res<bevy::rende
 }
 
 fn apply(mut actors: Query<&mut Cloths>, mut globals: Query<&mut GlobalTransform>, transforms: Query<&Transform>, children: Query<&Children>, meshes: Res<Assets<Mesh>>, mut packed: Local<HashMap<AssetId<Mesh>, Packed>>, mut uploads: ResMut<ClothUploads>) {
+    let _prof = crate::perf::span("cloth_apply");
     // Cost probe: SHINOBI_CLOTH_NO_UPLOAD=1 keeps the bones but leaves the meshes alone.
     let no_upload = std::env::var("SHINOBI_CLOTH_NO_UPLOAD").is_ok();
     let t0 = std::time::Instant::now();
+    use std::sync::atomic::Ordering::Relaxed;
+    // The cost log's frame (below): only then are the per-cloth lines built.
+    let log_frame = (COST[2].load(Relaxed) + 1) % 3600 == 300;
     let mut pieces = 0;
     let mut costs: Vec<(u64, String)> = Vec::new();
     for mut cloths in &mut actors {
         for c in cloths.0.iter_mut() {
-            let ph: Vec<String> = c.phase_us.iter().map(|us| format!("{:.2}", *us as f64 / 300.0 / 1000.0)).collect();
-            costs.push((c.cost_us, format!("{} ({} particles, {} substeps x {} iterations{}; refs/restart/solve/bones/skin/verts {})", c.def.name, c.def.rest.len(), c.def.substeps, c.def.iterations, if c.rigid { ", rigid" } else { "" }, ph.join("/"))));
+            if log_frame {
+                let ph: Vec<String> = c.phase_us.iter().map(|us| format!("{:.2}", *us as f64 / 300.0 / 1000.0)).collect();
+                costs.push((c.cost_us, format!("{} ({} particles, {} substeps x {} iterations{}; refs/restart/solve/bones/skin/verts {})", c.def.name, c.def.rest.len(), c.def.substeps, c.def.iterations, if c.rigid { ", rigid" } else { "" }, ph.join("/"))));
+            }
             for (e, g) in c.out.bones.drain(..) {
                 set_global(e, g, &mut globals, &transforms, &children);
             }
@@ -1181,7 +1201,6 @@ fn apply(mut actors: Query<&mut Cloths>, mut globals: Query<&mut GlobalTransform
             }
         }
     }
-    use std::sync::atomic::Ordering::Relaxed;
     COST[1].fetch_add(t0.elapsed().as_micros() as u64, Relaxed);
     let frames = COST[2].fetch_add(1, Relaxed) + 1;
     if frames % 300 == 0 {
@@ -1190,7 +1209,7 @@ fn apply(mut actors: Query<&mut Cloths>, mut globals: Query<&mut GlobalTransform
         let top: Vec<String> = costs.iter().take(3).map(|(us, n)| format!("{n} {:.2}", *us as f64 / 300.0 / 1000.0)).collect();
         // Once a minute at 60 fps, more than a frame's worth only. Phases per cloth: references,
         // restart, solve, bones, skinning, cloth vertices + tangents.
-        if sim as f64 / 300.0 > 1000.0 && frames % 3600 == 300 {
+        if sim as f64 / 300.0 > 1000.0 && log_frame {
             info!("cloth cost: simulate {:.2} ms, apply {:.2} ms per frame over 300 frames ({} cloths, {pieces} display meshes); top ms: {}", sim as f64 / 300.0 / 1000.0, app as f64 / 300.0 / 1000.0, costs.len(), top.join(", "));
         }
         for mut cloths in &mut actors {

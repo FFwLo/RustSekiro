@@ -285,6 +285,25 @@ pub struct MeshGroup {
 pub struct ModelMesh {
     owner: Entity,
     alpha: AlphaMode,
+    /// Its kind's shared material (attach_models); a fading character draws a copy.
+    shared: Handle<SekiroMaterial>,
+}
+
+/// One FLVER mesh's assets, shared by every character of its model (attach_models).
+struct SharedMesh {
+    mesh: Handle<Mesh>,
+    material: Handle<SekiroMaterial>,
+    alpha: AlphaMode,
+    skin_bounds: bool,
+    inv: Handle<SkinnedMeshInverseBindposes>,
+}
+
+/// Models read once per run: each kind's files, their contents and their shared mesh assets.
+#[derive(Default)]
+struct ModelShare {
+    files: HashMap<String, Vec<std::path::PathBuf>>,
+    models: HashMap<std::path::PathBuf, Option<std::sync::Arc<Model>>>,
+    meshes: HashMap<(std::path::PathBuf, usize), SharedMesh>,
 }
 
 /// Groups switched by TAE 233 ChangeChrDrawMask (FUN_140b54330 -> FDPChrPrimDispMask): kept
@@ -381,7 +400,7 @@ impl Plugin for ModelPlugin {
         app.add_systems(PostStartup, attach_models.after(crate::anim::AnimSet))
             // Characters spawned later (a fight reset's line-up, the encounter picker).
             .add_systems(Update, attach_models.after(crate::anim::AnimSet))
-            .add_systems(Update, (hide_placeholder_blades, update_draw_masks, update_opacity, follow_owner.after(update_draw_masks), crate::form::show_form.after(follow_owner)))
+            .add_systems(Update, (hide_placeholder_blades, update_draw_masks, update_opacity, shadow_awake, follow_owner.after(update_draw_masks), crate::form::show_form.after(follow_owner)))
             // TAE 233 is an edge: caught on the tick it starts (a frame can run two ticks).
             .add_systems(FixedUpdate, apply_draw_mask_events.after(crate::actor::ActorSet::Advance))
             // TAE 715 in the sim pose too (anim.rs PoseSet propagates by hand, from the rest dummies).
@@ -429,6 +448,7 @@ fn attach_models(
     mut bindposes: Option<ResMut<Assets<SkinnedMeshInverseBindposes>>>,
     actors: Query<(Entity, &Actor, &Skeleton), Without<ModelTried>>,
     roots: Query<(Entity, &ChildOf, &Name)>,
+    mut share: Local<ModelShare>,
 ) {
     let dir = crate::paths::root().join("extracted");
     for (actor_e, a, skel) in &actors {
@@ -437,17 +457,24 @@ fn attach_models(
             Side::Enemy => combat.foe_of(a).chr.as_str(),
         };
         // Every model_<chr>*.bin: the whole character (NPCs) or equipment parts (player).
-        let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(&dir)
-            .into_iter()
-            .flatten()
-            .flatten()
-            .map(|e| e.path())
-            .filter(|p| {
-                let n = p.file_name().unwrap_or_default().to_string_lossy().to_string();
-                n.starts_with(&format!("model_{chr}")) && n.ends_with(".bin")
+        let mut files: Vec<std::path::PathBuf> = share
+            .files
+            .entry(chr.to_string())
+            .or_insert_with(|| {
+                let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(&dir)
+                    .into_iter()
+                    .flatten()
+                    .flatten()
+                    .map(|e| e.path())
+                    .filter(|p| {
+                        let n = p.file_name().unwrap_or_default().to_string_lossy().to_string();
+                        n.starts_with(&format!("model_{chr}")) && n.ends_with(".bin")
+                    })
+                    .collect();
+                files.sort();
+                files
             })
-            .collect();
-        files.sort();
+            .clone();
         // Wolf's other forms (form.rs): attached after his own parts (so his own dummies win)
         // and shown only when chosen.
         if a.side == Side::Player {
@@ -466,7 +493,7 @@ fn attach_models(
         let mut weapon_parts = WeaponParts::default();
         let mut cloths = crate::cloth::Cloths::default();
         for file in files {
-        let Some(model) = load(&file) else { continue };
+        let Some(model) = share.models.entry(file.clone()).or_insert_with(|| load(&file).map(std::sync::Arc::new)).clone() else { continue };
         // Havok cloth (model_<x>.cloth.json): its display meshes are drawn from CPU vertices.
         let headless = meshes.is_none() || materials.is_none() || bindposes.is_none() || assets.is_none();
         let mut cloth_defs = if headless { Vec::new() } else { crate::cloth::load(&file) };
@@ -626,112 +653,127 @@ fn attach_models(
                 warn!("{chr}: mesh uses {} joints (>256), skipped", mesh_joints.len());
                 continue;
             }
-            // Cloth meshes keep a main-world copy: their vertices are rewritten every frame.
-            let usage = if cloth.is_some() { RenderAssetUsages::all() } else { RenderAssetUsages::RENDER_WORLD };
-            let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, usage);
-            mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, md.pos.clone());
-            mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, md.normal.clone());
-            mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, md.uv.clone());
-            // Cloth meshes are skinned on the CPU (cloth.rs): joint attributes would make the GPU
-            // skin them again with no joints bound.
-            if cloth.is_none() {
-                mesh.insert_attribute(Mesh::ATTRIBUTE_JOINT_INDEX, VertexAttributeValues::Uint16x4(idx.clone()));
-                mesh.insert_attribute(Mesh::ATTRIBUTE_JOINT_WEIGHT, md.weights.clone());
-            }
-            // C[Shell]: the shell opacity rides in the vertex colour alpha (the shader's v4.w).
-            if let Some(d) = md.detail.as_ref().filter(|d| d.variant == SHELL && d.vert_alpha.len() == md.pos.len()) {
-                mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, d.vert_alpha.iter().map(|&a| [1.0, 1.0, 1.0, a]).collect::<Vec<[f32; 4]>>());
-            }
-            mesh.insert_indices(Indices::U32(md.indices.clone()));
-            // Culling bounds that follow the joints: the bind-pose box left a part that moved far
-            // from it culled while in view (Gyoubu's face in his deathblow, falling off the horse:
-            // the user, 2026-10-16).
-            let skin_bounds = cloth.is_none() && mesh.generate_skinned_mesh_bounds().is_ok();
-            // Normal mapping needs tangents (sekiro_material.wgsl builds the TBN from them).
-            if !md.normal_map.is_empty() {
-                let _ = mesh.generate_tangents();
-            }
-            // Bind-pose tangents for cloth meshes (cloth.rs carries them with the deformation).
-            let bind_tangents: Vec<[f32; 4]> = match mesh.attribute(Mesh::ATTRIBUTE_TANGENT) {
-                Some(VertexAttributeValues::Float32x4(t)) => t.clone(),
-                _ => Vec::new(),
-            };
-            let texture = (!md.albedo.is_empty()).then(|| assets.load(format!("rustsekiro://tex/{}.dds", md.albedo)));
-            // Normal maps and metallic masks are data, not colour: read linear.
-            let linear = |stem: &str| {
-                (!stem.is_empty()).then(|| {
-                    assets.load_builder().with_settings(|s: &mut bevy::image::ImageLoaderSettings| s.is_srgb = false).load(format!("rustsekiro://tex/{stem}.dds"))
-                })
-            };
-            // SHINOBI_NO_NORMALS=1: flat normals (visual checks of the normal-map decode).
-            let normal = if std::env::var("SHINOBI_NO_NORMALS").is_ok() { None } else { linear(&md.normal_map) };
-            let metallic = linear(&md.metallic);
-            // DetailBlend layers: tiled (the group UV tiling runs far past 0..1), so repeating;
-            // albedos sRGB, normals linear. `SHINOBI_NO_DETAIL=1` draws the base alone (before).
-            let layer = |stem: &str, srgb: bool| -> Option<Handle<Image>> {
-                (!stem.is_empty() && crate::paths::extracted().join(format!("tex/{stem}.dds")).is_file()).then(|| {
-                    assets
-                        .load_builder()
-                        .with_settings(move |s: &mut bevy::image::ImageLoaderSettings| {
-                            s.is_srgb = srgb;
-                            s.sampler = bevy::image::ImageSampler::Descriptor(bevy::image::ImageSamplerDescriptor {
-                                address_mode_u: bevy::image::ImageAddressMode::Repeat,
-                                address_mode_v: bevy::image::ImageAddressMode::Repeat,
-                                mag_filter: bevy::image::ImageFilterMode::Linear,
-                                min_filter: bevy::image::ImageFilterMode::Linear,
-                                mipmap_filter: bevy::image::ImageFilterMode::Linear,
-                                anisotropy_clamp: 8,
-                                ..default()
-                            });
+            // Same-kind characters share one mesh, material and bind-pose set per FLVER mesh: one
+            // render bin each, drawn together (a mesh and material per character made ~900 bins
+            // at the castle idol). A fading character takes a material copy (update_opacity);
+            // cloth meshes are rewritten per character and stay their own.
+            let key = (file.clone(), mi);
+            let (handle, material, alpha_mode, skin_bounds, bind_tangents, inv_handle) = match share.meshes.get(&key).filter(|_| cloth.is_none()) {
+                Some(s) => (s.mesh.clone(), s.material.clone(), s.alpha, s.skin_bounds, Vec::new(), Some(s.inv.clone())),
+                None => {
+                    // Cloth meshes keep a main-world copy: their vertices are rewritten every frame.
+                    let usage = if cloth.is_some() { RenderAssetUsages::all() } else { RenderAssetUsages::RENDER_WORLD };
+                    let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, usage);
+                    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, md.pos.clone());
+                    mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, md.normal.clone());
+                    mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, md.uv.clone());
+                    // Cloth meshes are skinned on the CPU (cloth.rs): joint attributes would make the GPU
+                    // skin them again with no joints bound.
+                    if cloth.is_none() {
+                        mesh.insert_attribute(Mesh::ATTRIBUTE_JOINT_INDEX, VertexAttributeValues::Uint16x4(idx.clone()));
+                        mesh.insert_attribute(Mesh::ATTRIBUTE_JOINT_WEIGHT, md.weights.clone());
+                    }
+                    // C[Shell]: the shell opacity rides in the vertex colour alpha (the shader's v4.w).
+                    if let Some(d) = md.detail.as_ref().filter(|d| d.variant == SHELL && d.vert_alpha.len() == md.pos.len()) {
+                        mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, d.vert_alpha.iter().map(|&a| [1.0, 1.0, 1.0, a]).collect::<Vec<[f32; 4]>>());
+                    }
+                    mesh.insert_indices(Indices::U32(md.indices.clone()));
+                    // Culling bounds that follow the joints: the bind-pose box left a part that moved far
+                    // from it culled while in view (Gyoubu's face in his deathblow, falling off the horse:
+                    // the user, 2026-10-16).
+                    let skin_bounds = cloth.is_none() && mesh.generate_skinned_mesh_bounds().is_ok();
+                    // Normal mapping needs tangents (sekiro_material.wgsl builds the TBN from them).
+                    if !md.normal_map.is_empty() {
+                        let _ = mesh.generate_tangents();
+                    }
+                    // Bind-pose tangents for cloth meshes (cloth.rs carries them with the deformation).
+                    let bind_tangents: Vec<[f32; 4]> = match mesh.attribute(Mesh::ATTRIBUTE_TANGENT) {
+                        Some(VertexAttributeValues::Float32x4(t)) => t.clone(),
+                        _ => Vec::new(),
+                    };
+                    let texture = (!md.albedo.is_empty()).then(|| assets.load(format!("rustsekiro://tex/{}.dds", md.albedo)));
+                    // Normal maps and metallic masks are data, not colour: read linear.
+                    let linear = |stem: &str| {
+                        (!stem.is_empty()).then(|| {
+                            assets.load_builder().with_settings(|s: &mut bevy::image::ImageLoaderSettings| s.is_srgb = false).load(format!("rustsekiro://tex/{stem}.dds"))
                         })
-                        .load(format!("rustsekiro://tex/{stem}.dds"))
-                })
+                    };
+                    // SHINOBI_NO_NORMALS=1: flat normals (visual checks of the normal-map decode).
+                    let normal = if std::env::var("SHINOBI_NO_NORMALS").is_ok() { None } else { linear(&md.normal_map) };
+                    let metallic = linear(&md.metallic);
+                    // DetailBlend layers: tiled (the group UV tiling runs far past 0..1), so repeating;
+                    // albedos sRGB, normals linear. `SHINOBI_NO_DETAIL=1` draws the base alone (before).
+                    let layer = |stem: &str, srgb: bool| -> Option<Handle<Image>> {
+                        (!stem.is_empty() && crate::paths::extracted().join(format!("tex/{stem}.dds")).is_file()).then(|| {
+                            assets
+                                .load_builder()
+                                .with_settings(move |s: &mut bevy::image::ImageLoaderSettings| {
+                                    s.is_srgb = srgb;
+                                    s.sampler = bevy::image::ImageSampler::Descriptor(bevy::image::ImageSamplerDescriptor {
+                                        address_mode_u: bevy::image::ImageAddressMode::Repeat,
+                                        address_mode_v: bevy::image::ImageAddressMode::Repeat,
+                                        mag_filter: bevy::image::ImageFilterMode::Linear,
+                                        min_filter: bevy::image::ImageFilterMode::Linear,
+                                        mipmap_filter: bevy::image::ImageFilterMode::Linear,
+                                        anisotropy_clamp: 8,
+                                        ..default()
+                                    });
+                                })
+                                .load(format!("rustsekiro://tex/{stem}.dds"))
+                        })
+                    };
+                    let detail = md.detail.as_ref().filter(|_| std::env::var("SHINOBI_NO_DETAIL").is_err());
+                    let layers: [Option<Handle<Image>>; 8] = std::array::from_fn(|k| detail.and_then(|d| layer(&d.names[k], k % 2 == 0)));
+                    let detail_u = detail.map_or_else(DetailUniform::default, |d| DetailUniform {
+                        flags: UVec4::new(match d.variant { FRESNEL => 2, GHOST => 3, SHELL => 4, _ => 1 }, d.bits as u32, layers.iter().enumerate().fold(0, |f, (k, l)| f | ((l.is_some() as u32) << k)), 0),
+                        p: std::array::from_fn(|k| Vec4::from_slice(&d.params[k * 4..k * 4 + 4])),
+                    });
+                    let [layer_a, layer_a_n, layer_b, layer_b_n, layer_c, layer_c_n, layer_d, layer_d_n] = layers;
+                    // Cutouts as alpha-to-coverage (with the camera's 4x MSAA): a hard 0.5 mask made
+                    // the torn edges of Wolf's coat shimmer frame to frame whenever it moved a little.
+                    // The ghost fire (c7020_arm_test.mtd g_BlendMode 2) is alpha blended.
+                    let alpha_mode = if md.detail.as_ref().is_some_and(|d| d.variant == GHOST) {
+                        AlphaMode::Blend
+                    } else if md.alpha_test {
+                        cutout()
+                    } else {
+                        AlphaMode::Opaque
+                    };
+                    let material = materials.add(SekiroMaterial {
+                        base: StandardMaterial {
+                            base_color_texture: texture,
+                            perceptual_roughness: 0.8,
+                            alpha_mode,
+                            double_sided: true,
+                            cull_mode: None,
+                            ..default()
+                        },
+                        extension: SekiroExt {
+                            flags: UVec4::new(normal.is_some() as u32, metallic.is_some() as u32, 0, 0),
+                            normal,
+                            metallic,
+                            layer_a,
+                            layer_a_n,
+                            layer_b,
+                            layer_b_n,
+                            layer_c,
+                            layer_c_n,
+                            layer_d,
+                            layer_d_n,
+                            detail: detail_u,
+                        },
+                    });
+                    let handle = meshes.add(mesh);
+                    let inv_handle = cloth.is_none().then(|| bindposes.add(SkinnedMeshInverseBindposes::from(inv.clone())));
+                    if let Some(ih) = &inv_handle {
+                        share.meshes.insert(key, SharedMesh { mesh: handle.clone(), material: material.clone(), alpha: alpha_mode, skin_bounds, inv: ih.clone() });
+                    }
+                    (handle, material, alpha_mode, skin_bounds, bind_tangents, inv_handle)
+                }
             };
-            let detail = md.detail.as_ref().filter(|_| std::env::var("SHINOBI_NO_DETAIL").is_err());
-            let layers: [Option<Handle<Image>>; 8] = std::array::from_fn(|k| detail.and_then(|d| layer(&d.names[k], k % 2 == 0)));
-            let detail_u = detail.map_or_else(DetailUniform::default, |d| DetailUniform {
-                flags: UVec4::new(match d.variant { FRESNEL => 2, GHOST => 3, SHELL => 4, _ => 1 }, d.bits as u32, layers.iter().enumerate().fold(0, |f, (k, l)| f | ((l.is_some() as u32) << k)), 0),
-                p: std::array::from_fn(|k| Vec4::from_slice(&d.params[k * 4..k * 4 + 4])),
-            });
-            let [layer_a, layer_a_n, layer_b, layer_b_n, layer_c, layer_c_n, layer_d, layer_d_n] = layers;
-            // Cutouts as alpha-to-coverage (with the camera's 4x MSAA): a hard 0.5 mask made
-            // the torn edges of Wolf's coat shimmer frame to frame whenever it moved a little.
-            // The ghost fire (c7020_arm_test.mtd g_BlendMode 2) is alpha blended.
-            let alpha_mode = if md.detail.as_ref().is_some_and(|d| d.variant == GHOST) {
-                AlphaMode::Blend
-            } else if md.alpha_test {
-                cutout()
-            } else {
-                AlphaMode::Opaque
-            };
-            let material = materials.add(SekiroMaterial {
-                base: StandardMaterial {
-                    base_color_texture: texture,
-                    perceptual_roughness: 0.8,
-                    alpha_mode,
-                    double_sided: true,
-                    cull_mode: None,
-                    ..default()
-                },
-                extension: SekiroExt {
-                    flags: UVec4::new(normal.is_some() as u32, metallic.is_some() as u32, 0, 0),
-                    normal,
-                    metallic,
-                    layer_a,
-                    layer_a_n,
-                    layer_b,
-                    layer_b_n,
-                    layer_c,
-                    layer_c_n,
-                    layer_d,
-                    layer_d_n,
-                    detail: detail_u,
-                },
-            });
             let base = visible(md);
             let vis = if base { Visibility::default() } else { Visibility::Hidden };
-            let handle = meshes.add(mesh);
-            let e = commands.spawn((Mesh3d(handle.clone()), MeshMaterial3d(material), Transform::default(), vis, ModelMesh { owner: actor_e, alpha: alpha_mode })).id();
+            let e = commands.spawn((Mesh3d(handle.clone()), MeshMaterial3d(material.clone()), Transform::default(), vis, ModelMesh { owner: actor_e, alpha: alpha_mode, shared: material })).id();
             if let Some(group) = group_of(md) {
                 commands.entity(e).insert(MeshGroup { owner: actor_e, group, base });
             }
@@ -739,9 +781,12 @@ fn attach_models(
                 commands.entity(e).insert(crate::form::FormMesh { form, own: vis });
             }
             match cloth {
-                // World-space CPU vertices (cloth.rs): no GPU skin, no parent, no stale bounds.
+                // World-space CPU vertices (cloth.rs): no GPU skin, no parent. Bevy recomputes the
+                // bounds from each write (calculate_bounds), so the cloth is culled like any mesh:
+                // unculled, every enemy's cloth drew into every shadow view (the sun's cascades,
+                // each shadowed lamp's six faces).
                 Some(ci) => {
-                    commands.entity(e).insert((bevy::camera::visibility::NoFrustumCulling, FreeMesh::default()));
+                    commands.entity(e).insert(FreeMesh::default());
                     cloth_insts[ci].displays.push(crate::cloth::DisplayMesh {
                         handle,
                         entity: e,
@@ -757,7 +802,7 @@ fn attach_models(
                     });
                 }
                 None => {
-                    let skin = SkinnedMesh { inverse_bindposes: bindposes.add(SkinnedMeshInverseBindposes::from(inv)), joints: mesh_joints };
+                    let skin = SkinnedMesh { inverse_bindposes: inv_handle.unwrap_or_else(|| bindposes.add(SkinnedMeshInverseBindposes::from(inv))), joints: mesh_joints };
                     commands.entity(e).insert(skin);
                     if skin_bounds {
                         commands.entity(e).insert(bevy::camera::visibility::DynamicSkinnedMeshBounds);
@@ -879,23 +924,28 @@ pub(crate) fn update_draw_masks(
     mut groups: Query<(&MeshGroup, &mut Visibility, Option<&crate::form::FormMesh>)>,
     config: Option<Res<crate::config::GameConfig>>,
 ) {
+    let _prof = crate::perf::span("draw_masks");
     let form = config.map_or(0, |c| crate::form::current(&c));
+    // Each actor's running TAE 711 / 713 masks, read once per actor (the later event wins).
+    let mut held: HashMap<Entity, [Option<bool>; 32]> = HashMap::new();
     for (g, mut vis, fm) in &mut groups {
         let Ok((a, dm)) = actors.get(g.owner) else { continue };
         // A part of a form not worn (form.rs) stays hidden whatever its mask.
         let worn = fm.is_none_or(|f| f.form == form);
-        let mut on = dm.0.get(&g.group).copied().unwrap_or(g.base);
-        if !a.anim.is_empty() {
-            let key = format!("Mask{}", g.group);
-            for e in crate::actor::data_for(&combat, &a).events_at(&a.anim, a.t) {
-                let set = e.args.get(&key).and_then(|v| v.as_bool()) == Some(true);
-                match e.kind {
-                    711 if set => on = false,
-                    713 if set => on = true,
-                    _ => {}
+        let over = held.entry(g.owner).or_insert_with(|| {
+            let mut over = [None; 32];
+            if !a.anim.is_empty() {
+                for e in crate::actor::data_for(&combat, &a).events_at(&a.anim, a.t).filter(|e| matches!(e.kind, 711 | 713)) {
+                    for (n, o) in over.iter_mut().enumerate() {
+                        if e.args.get(&format!("Mask{n}")).and_then(|v| v.as_bool()) == Some(true) {
+                            *o = Some(e.kind == 713);
+                        }
+                    }
                 }
             }
-        }
+            over
+        });
+        let on = over.get(g.group as usize).copied().flatten().unwrap_or_else(|| dm.0.get(&g.group).copied().unwrap_or(g.base));
         let want = if on && worn { Visibility::Inherited } else { Visibility::Hidden };
         if *vis != want {
             *vis = want;
@@ -930,16 +980,51 @@ fn follow_owner(mut commands: Commands, owners: Query<Option<&InheritedVisibilit
     }
 }
 
+/// A character mesh whose shadow [`shadow_awake`] took away.
+#[derive(Component)]
+struct AsleepShadow;
+
+/// Asleep characters (actor::ASLEEP: off screen, or on screen past 50 m) cast no shadow: every
+/// shadow caster draws once per sun cascade, and the castle's off-screen enemies cost more
+/// than the rest of the frame (the castle idol: 6.6 fps with them, 18.9 with none casting).
+fn shadow_awake(
+    mut commands: Commands,
+    actors: Query<&Actor>,
+    meshes: Query<(Entity, &ModelMesh, Has<bevy::light::NotShadowCaster>, Has<AsleepShadow>)>,
+) {
+    for (e, m, off, ours) in &meshes {
+        let asleep = actors.get(m.owner).is_ok_and(Actor::asleep);
+        if asleep && !off {
+            commands.entity(e).insert((bevy::light::NotShadowCaster, AsleepShadow));
+        } else if !asleep && ours {
+            commands.entity(e).remove::<(bevy::light::NotShadowCaster, AsleepShadow)>();
+        }
+    }
+}
+
 /// TAE 193 opacity (Actor::opacity) times the camera's fade (Actor::cam_alpha) on the actor's
 /// materials: blended below 1, its own alpha mode again at 1.
 fn update_opacity(
     actors: Query<&Actor>,
-    meshes: Query<(&ModelMesh, &MeshMaterial3d<SekiroMaterial>)>,
+    mut meshes: Query<(&ModelMesh, &mut MeshMaterial3d<SekiroMaterial>)>,
     mut materials: ResMut<Assets<SekiroMaterial>>,
 ) {
+    let _prof = crate::perf::span("opacity");
     let mut seen: HashMap<Entity, f32> = HashMap::new();
-    for (m, mat) in &meshes {
+    for (m, mut mat) in &mut meshes {
         let op = *seen.entry(m.owner).or_insert_with(|| actors.get(m.owner).map_or(1.0, |a| a.opacity * a.cam_alpha));
+        // Opaque again: back to the kind's shared material (the copy goes with its handle).
+        // Fading: a copy of its own, so the rest of the kind stays solid.
+        if mat.0 == m.shared {
+            if op >= 1.0 {
+                continue;
+            }
+            let Some(copy) = materials.get(&m.shared).cloned() else { continue };
+            mat.0 = materials.add(copy);
+        } else if op >= 1.0 && materials.contains(&m.shared) {
+            mat.0 = m.shared.clone();
+            continue;
+        }
         let Some(cur) = materials.get(&mat.0) else { continue };
         let mode = if op < 1.0 { AlphaMode::Blend } else { m.alpha };
         if (cur.base.base_color.alpha() - op).abs() < 0.004 && cur.base.alpha_mode == mode {
@@ -1002,7 +1087,7 @@ mod tests {
         let mut app = App::new();
         app.add_systems(Update, super::follow_owner);
         let owner = app.world_mut().spawn(InheritedVisibility::VISIBLE).id();
-        let coat = app.world_mut().spawn((super::ModelMesh { owner, alpha: AlphaMode::Opaque }, super::FreeMesh::default(), Visibility::Inherited)).id();
+        let coat = app.world_mut().spawn((super::ModelMesh { owner, alpha: AlphaMode::Opaque, shared: Handle::default() }, super::FreeMesh::default(), Visibility::Inherited)).id();
         app.update();
         assert_eq!(app.world().get::<Visibility>(coat), Some(&Visibility::Inherited));
         app.world_mut().entity_mut(owner).insert(InheritedVisibility::HIDDEN);
@@ -1050,6 +1135,7 @@ fn override_weapon_location(
     children: Query<&Children>,
     mut vis: Query<&mut Visibility>,
 ) {
+    let _prof = crate::perf::span("weapon_location");
     for (a, wp) in &actors {
         let d = crate::actor::data_for(&combat, &a);
         let of_type = |t: char| {

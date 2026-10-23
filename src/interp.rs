@@ -87,10 +87,15 @@ fn store_sim_pose(mut q: Query<(&Transform, &Actor, &mut SimPose)>) {
 }
 
 fn draw_between(mut commands: Commands, time: Res<Time<Fixed>>, mut q: Query<(&mut Transform, &Actor, &mut SimPose)>) {
+    let _prof = crate::perf::span("draw_between");
     let alpha = time.overstep_fraction();
     commands.insert_resource(DrawAlpha(alpha));
     for (mut tf, a, mut pose) in &mut q {
         let (Some(prev), Some(cur)) = (pose.prev, pose.cur) else { continue };
+        // Asleep (actor::ASLEEP): drawn where its last tick left it.
+        if a.asleep() {
+            continue;
+        }
         // Only when the simulated pose is still what the last step left (nothing moved it since).
         if (tf.translation, tf.rotation) != cur && pose.drawn.map_or(true, |d| (tf.translation, tf.rotation) != d) {
             continue;

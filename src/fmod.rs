@@ -1020,6 +1020,7 @@ pub(crate) fn pause_off_screen(mut fmod: NonSendMut<Fmod>, screen: Option<Res<St
 }
 
 fn update_fmod(mut fmod: NonSendMut<Fmod>, camera: Query<&GlobalTransform, With<Camera3d>>) {
+    let _prof = crate::perf::span("update_fmod");
     if let Ok(cam) = camera.single() {
         let t = cam.compute_transform();
         let (pos, vel, fwd, up) = (FVec::from(t.translation), FVec::from(Vec3::ZERO), FVec::from(*t.forward()), FVec::from(*t.up()));

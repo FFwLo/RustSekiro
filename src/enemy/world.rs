@@ -40,6 +40,11 @@ pub struct WorldChar {
     pub id: i64,
 }
 
+/// The character whose boss bars the HUD shows, set by its map's events (2003[11] Display Boss
+/// Health Bar), as BossScript's `bar` is in a boss fight.
+#[derive(Resource, Default)]
+pub struct WorldBar(pub Option<Entity>);
+
 #[derive(Resource, Default)]
 pub struct WorldScripts {
     runs: Vec<WorldRun>,
@@ -48,6 +53,8 @@ pub struct WorldScripts {
     resets: u32,
     /// Time to the next streaming check.
     stream_in: f32,
+    /// The map and entity id of the shown boss bar ([`WorldBar`]).
+    bar: Option<(usize, i64)>,
 }
 
 struct WorldRun {
@@ -92,6 +99,7 @@ pub(super) fn run_world(
     wolf_msg: Res<super::WolfMessage>,
     mut q: Query<(Entity, &mut Enemy, &mut Actor, &Transform, &WorldChar), Without<Player>>,
     mut brains: NonSendMut<super::Brains>,
+    mut bar: ResMut<WorldBar>,
 ) {
     let _prof = crate::perf::span("run_world");
     if !ws.started {
@@ -124,6 +132,7 @@ pub(super) fn run_world(
                 }
             }
         }
+        ws.bar = None;
         info!("world scripts: rest");
     }
     let dt = time.delta_secs();
@@ -214,6 +223,8 @@ pub(super) fn run_world(
     }
     drop(prof_ev);
     // Their requests.
+    let ws_bar = ws.bar;
+    let mut bars = Vec::new();
     for (map, acts) in acts_of.into_iter().enumerate() {
         let wr = &mut ws.runs[map];
         for act in acts {
@@ -236,6 +247,14 @@ pub(super) fn run_world(
                         wr.run.unloaded.remove(id);
                     }
                     *id
+                }
+                Act::BossBar(id, on) => {
+                    if *on {
+                        bars.push(Some((map, *id)));
+                    } else if ws_bar == Some((map, *id)) {
+                        bars.push(None);
+                    }
+                    continue;
                 }
                 // Killed while away: dead when it would come in.
                 Act::Death(id) if !wr.run.ents.contains_key(id) => {
@@ -262,6 +281,13 @@ pub(super) fn run_world(
             };
             script::apply(&combat, &mut brains, ent, &mut e, &mut a, None, act);
         }
+    }
+    if let Some(&b) = bars.last() {
+        ws.bar = b;
+    }
+    let shown = ws.bar.and_then(|(m, id)| ws.runs.get(m)?.run.ents.get(&id).copied());
+    if bar.0 != shown {
+        bar.0 = shown;
     }
     // Streaming in, the nearest first.
     ws.stream_in -= dt;
@@ -387,7 +413,7 @@ pub(super) fn update_lod(
             }
         } else {
             let seen = cam.is_some_and(|(c, f, half)| f.angle_between(pos + Vec3::Y - c) <= half);
-            if seen && d2 < ON_SCREEN_FAR * ON_SCREEN_FAR { 5 } else { 30 }
+            if seen && d2 < ON_SCREEN_FAR * ON_SCREEN_FAR { 5 } else { crate::actor::ASLEEP }
         };
         levels.insert(id, level);
     }

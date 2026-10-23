@@ -229,6 +229,7 @@ fn play_tae_sounds(
     mut fmod: Option<NonSendMut<crate::fmod::Fmod>>,
     mut slotted: ResMut<SlottedSounds>,
 ) {
+    let _prof = crate::perf::span("tae_sounds");
     let slotted = &mut slotted.0;
     // Sounds of slotted FFX (SpawnOneShotFFX with a SlotID >= 0, e.g. the Mortal Blade's aura
     // 440000 on slot 0, frames 5-100 of a106_316000): the effect lives while its TAE event runs and

@@ -8,8 +8,9 @@ boss frame: src/enemy/script.rs Run::place_of turns them into the world's Bevy s
 mirrored).
 
 Output, keyed by map: {"map", "boss": 0, "world": true,
-  "chars": {entity: {"chr", "npc", "think", "at": [x, y, z], "yaw"}} (every enemy part but the
-           boss rows of boss_scripts.json / npc_names.json and the c1000 / c1001 event dummies),
+  "chars": {entity: {"chr", "npc", "think", "at": [x, y, z], "yaw"}} (every enemy part: the
+           NPCs, the named enemies and the bosses too, at their own places, enabled or not by
+           their map's events; not the c1000 / c1001 event dummies),
   "places": {entity: {"at", "yaw"}}, "regions": {entity: {"shape", "size", "parts"}},
   "events": [{"id", "slot", "rest", "ins"}], "flags_on": []}
 Usage: python tools/world_scripts.py
@@ -54,15 +55,6 @@ def thinks(path):
 def main():
     types = bs.emedf()
     common = bs.emevd(os.path.join(bs.ROOT, 'event', 'common_func.emevd'))
-    bosses = set()
-    p = os.path.join(bs.ROOT, 'enemies', 'boss_scripts.json')
-    if os.path.exists(p):
-        scripts = json.load(open(p, encoding='utf-8'))
-        bosses |= {int(r) for r in scripts}
-        bosses |= {c['npc'] for s in scripts.values() for c in s['chars'].values()}
-    p = os.path.join(bs.ROOT, 'enemies', 'npc_names.json')
-    if os.path.exists(p):
-        bosses |= {int(r) for r in json.load(open(p, encoding='utf-8')).get('rows', {})}
     out = {}
     for f in sorted(os.listdir(os.path.join(bs.ROOT, 'event'))):
         if not (f.startswith('m') and f.endswith('_00_00.emevd')):
@@ -77,7 +69,7 @@ def main():
         think = thinks(msb)
         chars = {}
         for eid, model, npc in be.msb_parts(msb):
-            if npc in bosses or model in DUMMIES or eid not in places:
+            if model in DUMMIES or eid not in places:
                 continue
             (x, y, z), yaw = places[eid]
             chars[eid] = {'chr': model, 'npc': npc, 'think': think.get(eid, npc), 'at': [round(x, 3), round(y, 3), round(z, 3)], 'yaw': round(yaw, 2)}

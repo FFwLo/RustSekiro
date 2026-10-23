@@ -905,6 +905,7 @@ fn time_rate(def: &Value, age: f32) -> f32 {
 }
 
 fn tick(mut commands: Commands, time: Res<Time>, mut lib: ResMut<FxrLib>, globals: Query<&GlobalTransform>, mut fx: Query<(Entity, &mut FxEffect)>, mut tracked: Option<ResMut<crate::sound_rules::TrackedSounds>>, cams: Query<(&Camera, &GlobalTransform), With<Camera3d>>) {
+    let _prof = crate::perf::span("fxr_tick");
     let dt = time.delta_secs().min(1.0 / 15.0);
     lib.cam = cams.iter().filter(|(c, _)| c.is_active).min_by_key(|(c, _)| c.order).map(|(_, g)| g.compute_transform());
     // SHINOBI_FXR_LIVE=1: the playing effects (id, age, stopped, keyed) twice a second.
@@ -942,7 +943,7 @@ fn tick(mut commands: Commands, time: Res<Time>, mut lib: ResMut<FxrLib>, global
             }
         }
         let place = f.at;
-        if std::env::var("SHINOBI_FXR_WHERE").ok().and_then(|v| v.parse::<i64>().ok()) == Some(f.id) {
+        if *WHERE == Some(f.id) {
             info!("fxr {} age {:.2} at {:.2} anchored {}", f.id, f.age, place.translation, anchor.is_some());
         }
         let stop = f.stop;
@@ -1294,6 +1295,11 @@ const LIT_UNLIT: f32 = 0.125;
 
 /// SHINOBI_FX_LIT=1: the ported lit shading (sprites / GPU particles). Off by default until the
 /// light scale (g_ps_envCbColScale, g_vLightMask.x: writers not found, HANDOFF 4.58) is read live.
+/// `SHINOBI_FXR_WHERE=<id>`: log where that effect is each frame. Read once (it was read per
+/// effect per frame).
+static WHERE: std::sync::LazyLock<Option<i64>> = std::sync::LazyLock::new(|| std::env::var("SHINOBI_FXR_WHERE").ok().and_then(|v| v.parse().ok()));
+/// `SHINOBI_FXR_LOG`: log the quads drawn and the model albedos.
+static FXR_LOG: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::env::var("SHINOBI_FXR_LOG").is_ok());
 static LIT_PORT: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::env::var("SHINOBI_FX_LIT").is_ok());
 /// SHINOBI_FX_ORIENT=1: the exe's orientation modes 4 / 6 / 7 (FUN_140440a60). Off by default
 /// until its runtime constants and mode 7's per-particle vector are read live (HANDOFF 4.58).
@@ -1917,6 +1923,7 @@ fn draw(
     mut lib: ResMut<FxrLib>,
     (scene, soft_mats, mut uploads): (Option<Res<SceneLight>>, Query<&MeshMaterial3d<SoftMaterial>>, ResMut<FxUploads>),
 ) {
+    let _prof = crate::perf::span("fxr_draw");
     let Some((cam, proj, view)) = camera.iter().next() else { return };
     // Lit particles' light: the host map's (SceneLight).
     let scene = scene.as_deref().copied().unwrap_or_default();
@@ -1944,7 +1951,7 @@ fn draw(
             collect(root, &mut lib, cam, &mut bufs, &mut dist, &mut multi, &mut lights, px, to_sun);
         }
     }
-    if std::env::var("SHINOBI_FXR_LOG").is_ok() && !(bufs.is_empty() && dist.is_empty() && multi.is_empty()) {
+    if *FXR_LOG && !(bufs.is_empty() && dist.is_empty() && multi.is_empty()) {
         let mut v: Vec<String> = bufs.iter().map(|(k, b)| format!("{}/{}:{}", k.0, k.1, b.pos.len() / 6)).collect();
         v.extend(dist.iter().map(|(k, b)| format!("screen {k}:{}", b.pos.len() / 6)));
         v.extend(multi.iter().map(|(k, b)| format!("multi {}+{}+{}/{}:{}", k.0, k.1, k.2, k.4, b.pos.len() / 6)));
@@ -1958,7 +1965,7 @@ fn draw(
             let image = if tex <= MODEL_KEY {
                 // A Model appearance: its mesh's albedo (extracted/tex, written by the model export).
                 let m = lib.model(MODEL_KEY - tex);
-                if std::env::var("SHINOBI_FXR_LOG").is_ok() {
+                if *FXR_LOG {
                     info!("fxr model {} albedo {:?}", MODEL_KEY - tex, m.as_ref().map(|m| m.albedo.clone()));
                 }
                 m.filter(|m| !m.albedo.is_empty()).map(|m| assets.load(format!("rustsekiro://tex/{}.dds", m.albedo)))

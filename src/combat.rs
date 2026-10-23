@@ -1492,6 +1492,11 @@ pub fn team_of(combat: &Combat, a: &Actor) -> i64 {
     changed.or(a.team).unwrap_or_else(|| combat.npc(a)["teamType"].as_i64().unwrap_or(6))
 }
 
+/// Past this distance between two bodies no swing's hit shapes reach. gap: measured from no
+/// row; the longest blades and sweeps seen (the Demon of Hatred's, the Guardian Ape's) stay
+/// well inside it.
+const HIT_REACH: f32 = 30.0;
+
 fn resolve(
     combat: Res<Combat>,
     config: Res<GameConfig>,
@@ -1524,7 +1529,9 @@ fn resolve(
     // record (its Appear sound) is not emitted.
     if let Some(s) = ai_sounds.as_mut() {
         for (ent, a, tf, e, ..) in q.iter() {
-            if a.anim.is_empty() || a.prev_t >= a.t || e.is_some_and(|e| e.is_dead()) {
+            // Off its update level's tick (Actor::lod) its clip stood still: its windows opened
+            // on its due tick.
+            if !a.lod_due || a.anim.is_empty() || a.prev_t >= a.t || e.is_some_and(|e| e.is_dead()) {
                 continue;
             }
             let pc = a.side == Side::Player;
@@ -1561,6 +1568,12 @@ fn resolve(
                 continue;
             }
             if aa.anim.is_empty() && aa.bullet_hits.is_empty() {
+                continue;
+            }
+            // Too far apart for any swing to reach (bullets that arrived come as bullet_hits):
+            // the open world's enemies are many, and reading every attacker's windows against
+            // every defender was most of this system's time.
+            if aa.bullet_hits.is_empty() && atf.translation.distance_squared(dtf.translation) > HIT_REACH * HIT_REACH {
                 continue;
             }
             let ad = data_for(&combat, &aa);

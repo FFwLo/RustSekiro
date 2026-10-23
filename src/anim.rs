@@ -609,14 +609,20 @@ pub(crate) fn store_sim_poses(
     mut actors: Query<(Entity, &Actor, &Transform, &mut GlobalTransform, &mut Skeleton, Has<SnapPose>)>,
     mut nodes: Query<(&mut Transform, &mut GlobalTransform, Option<&Children>), Without<Actor>>,
 ) {
+    let _prof = crate::perf::span("store_sim_poses");
     let mut stack: Vec<(Entity, GlobalTransform)> = Vec::new();
     for (e, a, tf, mut g, mut skel, snap) in &mut actors {
         let bones: Vec<Entity> = skel.bones.iter().chain([&skel.root]).copied().collect();
         if !a.lod_due && !snap && skel.sim[1].len() == bones.len() {
+            let mut moved = false;
             for (&b, t) in bones.iter().zip(&skel.sim[1]) {
                 if let Ok((mut local, ..)) = nodes.get_mut(b) {
-                    *local = *t;
+                    moved |= local.set_if_neq(*t);
                 }
+            }
+            // Asleep and not drawn since its last tick: its bones and their globals are as left.
+            if !moved && *g == GlobalTransform::from(*tf) {
+                continue;
             }
         } else {
             let now: Vec<Transform> = bones.iter().map(|&b| nodes.get(b).map(|n| *n.0).unwrap_or_default()).collect();
@@ -640,12 +646,19 @@ pub(crate) fn store_sim_poses(
 /// Draws each skeleton between its last two sim ticks' poses (interp.rs DrawAlpha; the latest
 /// pose without one), as the actors' capsules are.
 fn draw_poses(alpha: Option<Res<crate::interp::DrawAlpha>>, actors: Query<(&Actor, &Skeleton)>, mut tfs: Query<&mut Transform, Without<Actor>>) {
+    let _prof = crate::perf::span("draw_poses");
     for (a, skel) in &actors {
+        // Asleep: its bones keep the latest sim pose.
+        if a.asleep() {
+            continue;
+        }
         let k = alpha.as_ref().map_or(1.0, |al| crate::interp::draw_fraction(al.0.clamp(0.0, 1.0), a));
         let [prev, cur] = &skel.sim;
         for ((&e, p), c) in skel.bones.iter().chain([&skel.root]).zip(prev).zip(cur) {
+            // Written only when it differs: a changed bone is propagated again (and its cloth's
+            // bones with it, cloth.rs).
             if let Ok(mut tf) = tfs.get_mut(e) {
-                *tf = Transform { translation: p.translation.lerp(c.translation, k), rotation: p.rotation.slerp(c.rotation, k), scale: p.scale.lerp(c.scale, k) };
+                tf.set_if_neq(Transform { translation: p.translation.lerp(c.translation, k), rotation: p.rotation.slerp(c.rotation, k), scale: p.scale.lerp(c.scale, k) });
             }
         }
     }
@@ -662,8 +675,12 @@ fn apply_model_lag(
 ) {
     for (e, tf, skel, lag, snap) in &mut actors {
         let Some(mut lag) = lag.filter(|_| !snap) else {
-            if let Ok(mut r) = roots.get_mut(skel.root) {
-                r.translation = Vec3::new(0.0, -CAPSULE_HALF_HEIGHT, 0.0);
+            // Written only when it differs: a changed root re-propagates the whole skeleton.
+            let rest = Vec3::new(0.0, -CAPSULE_HALF_HEIGHT, 0.0);
+            if let Ok(mut r) = roots.get_mut(skel.root)
+                && r.translation != rest
+            {
+                r.translation = rest;
             }
             if snap {
                 commands.entity(e).remove::<ModelLag>();
@@ -720,7 +737,8 @@ fn draw_skeletons(
 /// the chain, so the legs run along the move direction while the chest keeps facing the target.
 fn apply_walk_twist(lib: Res<AnimLib>, actors: Query<(&Actor, &Skeleton)>, mut bones: Query<&mut Transform, Without<Actor>>) {
     for (a, skel) in &actors {
-        if a.twist.abs() < 1e-4 {
+        // Off its due tick (Actor::lod) it was not posed: store_sim_poses puts the last pose back.
+        if a.twist.abs() < 1e-4 || !a.lod_due {
             continue;
         }
         let l = lib.lib(&a);
@@ -771,9 +789,15 @@ fn apply_twists(
     mut state: Local<HashMap<(Entity, usize), (f32, f32)>>,
     mut last_chains: Local<HashMap<Entity, Vec<(crate::data::TwistChain, [f32; 4])>>>,
 ) {
-    let dt = time.delta_secs();
-    let step = |gain: f32| 1.0 - (1.0 - gain.clamp(0.0, 1.0)).powf(dt * 30.0);
+    let _prof = crate::perf::span("twists");
     for (e, a, tf, skel) in &actors {
+        // Off its due tick (Actor::lod) it was not posed: store_sim_poses puts the last pose
+        // back. A due tick runs the level's ticks of time (as actor.rs `advance`).
+        if !a.lod_due {
+            continue;
+        }
+        let dt = time.delta_secs() * a.lod.max(1) as f32;
+        let step = |gain: f32| 1.0 - (1.0 - gain.clamp(0.0, 1.0)).powf(dt * 30.0);
         let l = lib.lib(&a);
         // The active TAE 700 event and its modifiers.
         let data = crate::actor::data_for(&combat, &a);

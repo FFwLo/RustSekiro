@@ -1077,6 +1077,7 @@ impl Plugin for EnemyPlugin {
             .add_message::<grapple::WireHit>()
             .init_resource::<BossScript>()
             .init_resource::<world::WorldScripts>()
+            .init_resource::<world::WorldBar>()
             .init_resource::<talk::Talk>()
             .add_systems(Update, talk::hold_input.after(crate::player::read_input))
             .init_resource::<script::WolfImmortal>()
