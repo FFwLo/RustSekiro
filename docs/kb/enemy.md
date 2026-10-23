@@ -744,6 +744,16 @@ play block (sr_map::blocks: m11_00, m11_01, m11_02, m13, m17, m20 from the castl
   (Combat::ensure_kind, AnimLib::sync_kinds) per tick;
 - the events' SpEffects, AI commands, forced anims, deaths go to the spawned ones (script.rs
   apply); a death of one not spawned marks it dead;
+- story state (2026-10-23): each Enemy part's MSB EventFlagID / EventFlagCompareState
+  (typedata +0x40 / +0x44) leaves it out while the flag equals the state (CharDef::gate,
+  Run::gated: not spawned, despawned if it turns). All flags start off, which is the state after
+  the prologue: the Demon of Hatred (8302 off: burnt Outskirts only) and the castle's prologue
+  parts (8306 off) stay out; 8301 is the castle invasion, 8306 the prologue (common.emevd 50
+  sets it at boot, m11_00 11100100 clears it), 9313 Hatred defeated. A part with no flag whose
+  entity groups' flagged members share one gate takes it (19 parts: Hatred's c7021 helpers in
+  1105610 and the Outskirts' soldier group 1105600, which m11_00_70_10's event 50 hides by the
+  same flags; that event file is not run). gap: the exe check is not traced (inferred from the
+  data and 20004111's arguments);
 - a map event's 2003[11] Display Boss Health Bar picks the character whose boss bars the HUD
   shows (world.rs WorldBar); otherwise a named or multi-deathblow enemy gets them only while it
   fights Wolf (stealth BATTLE), not every named one standing on the map;

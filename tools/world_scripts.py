@@ -8,9 +8,11 @@ boss frame: src/enemy/script.rs Run::place_of turns them into the world's Bevy s
 mirrored).
 
 Output, keyed by map: {"map", "boss": 0, "world": true,
-  "chars": {entity: {"chr", "npc", "think", "at": [x, y, z], "yaw"}} (every enemy part: the
-           NPCs, the named enemies and the bosses too, at their own places, enabled or not by
-           their map's events; not the c1000 / c1001 event dummies),
+  "chars": {entity: {"chr", "npc", "think", "at": [x, y, z], "yaw", "gate"?: [flag, on]}} (every
+           enemy part: the NPCs, the named enemies and the bosses too, at their own places,
+           enabled or not by their map's events; "gate" leaves the part out while that flag is
+           `on`, e.g. the Demon of Hatred until the burnt Outskirts' 8302; not the c1000 / c1001
+           event dummies),
   "places": {entity: {"at", "yaw"}}, "regions": {entity: {"shape", "size", "parts"}},
   "events": [{"id", "slot", "rest", "ins"}], "flags_on": []}
 Usage: python tools/world_scripts.py
@@ -28,8 +30,10 @@ import boss_scripts as bs  # noqa: E402
 DUMMIES = {'c1000', 'c1001'}
 
 
-def thinks(path):
-    """{entity: NpcThinkParam row} of the enemy parts (Part.Enemy +0x8 ThinkParamID)."""
+def typedata(path):
+    """{entity: (NpcThinkParam row, EventFlagID, EventFlagCompareState, entity groups)} of the
+    enemy parts (Part.Enemy typedata +0x8 ThinkParamID, +0x40 / +0x44: the part is left out
+    while that flag equals the state; entity data +0x1C, 8 EntityGroupIDs)."""
     d = open(path, 'rb').read()
     tables, o = {}, 0x10
     while True:
@@ -48,7 +52,25 @@ def thinks(path):
         eo, tdo = struct.unpack_from('<qq', d, o + 0x60)
         eid = struct.unpack_from('<i', d, o + eo)[0]
         if eid > 0:
-            out[eid] = struct.unpack_from('<i', d, o + tdo + 0x8)[0]
+            groups = [g for g in struct.unpack_from('<8i', d, o + eo + 0x1C) if g > 0]
+            out[eid] = (struct.unpack_from('<i', d, o + tdo + 0x8)[0],) + struct.unpack_from('<ii', d, o + tdo + 0x40) + (groups,)
+    return out
+
+
+def group_gates(td):
+    """{entity: (flag, state)} for the parts with no flag of their own whose entity groups'
+    flagged members all share one (EventFlagID, CompareState): the Outskirts' Demon of Hatred
+    group 1105610 (his eight c7021 helpers, two burnt-state soldiers) and soldier group 1105600,
+    which m11_00_70_10's event 50 hides by the same flags (common_func 20004111)."""
+    of_group = {}
+    for flag, state, groups in ((f, s, g) for _, f, s, g in td.values()):
+        for g in groups:
+            of_group.setdefault(g, set()).add((flag, state) if flag > 0 else None)
+    out = {}
+    for eid, (_, flag, _, groups) in td.items():
+        shared = set().union(*(of_group[g] - {None} for g in groups)) if groups else set()
+        if flag <= 0 and len(shared) == 1:
+            out[eid] = shared.pop()
     return out
 
 
@@ -66,13 +88,18 @@ def main():
         evs = bs.instances(bs.emevd(os.path.join(bs.ROOT, 'event', f)), common, types)
         places = be.msb_places(msb)
         regs = bs.shapes(msb)
-        think = thinks(msb)
+        td = typedata(msb)
+        inherited = group_gates(td)
         chars = {}
         for eid, model, npc in be.msb_parts(msb):
             if model in DUMMIES or eid not in places:
                 continue
             (x, y, z), yaw = places[eid]
-            chars[eid] = {'chr': model, 'npc': npc, 'think': think.get(eid, npc), 'at': [round(x, 3), round(y, 3), round(z, 3)], 'yaw': round(yaw, 2)}
+            think, flag, state, _ = td.get(eid, (npc, -1, 0, []))
+            flag, state = inherited.get(eid, (flag, state))
+            chars[eid] = {'chr': model, 'npc': npc, 'think': think, 'at': [round(x, 3), round(y, 3), round(z, 3)], 'yaw': round(yaw, 2)}
+            if flag > 0:
+                chars[eid]['gate'] = [flag, state == 1]
         named = set().union(*(bs.names(ev) for ev in evs)) if evs else set()
         pl, rg = {}, {}
         for eid in sorted(named):

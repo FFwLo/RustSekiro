@@ -152,7 +152,7 @@ pub(super) fn run_world(
         if run.ents.get(&wc.id) != Some(&ent) {
             continue;
         }
-        if tf.translation.distance(wolf_pos) > spawn_radius() + DESPAWN - SPAWN {
+        if tf.translation.distance(wolf_pos) > spawn_radius() + DESPAWN - SPAWN || run.gated(wc.id) {
             if trace_on() {
                 eprintln!("world despawn {} {} at {} (wolf {wolf_pos})", run.def.map, wc.id, tf.translation);
             }
@@ -301,7 +301,7 @@ pub(super) fn run_world(
         let run = &wr.run;
         for &(id, pos) in &wr.spots {
             let d2 = pos.distance_squared(wolf_pos);
-            if d2 > r2 || run.ents.contains_key(&id) || wr.off.contains(&id) || run.unloaded.contains(&id) || run.dead_ids.contains(&id) {
+            if d2 > r2 || run.ents.contains_key(&id) || wr.off.contains(&id) || run.unloaded.contains(&id) || run.dead_ids.contains(&id) || run.gated(id) {
                 continue;
             }
             want.push((d2, m, id));

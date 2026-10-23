@@ -43,6 +43,12 @@ pub struct CharDef {
     /// Its MSB part's NpcThinkParam row (world scripts; 0: the NpcParam row's own).
     #[serde(default)]
     pub think: i64,
+    /// Its MSB part's EventFlagID and EventFlagCompareState (world scripts; Part.Enemy typedata
+    /// +0x40 / +0x44): the part is left out while the flag is `on`. The Demon of Hatred's
+    /// (8302, off) keeps him out until the burnt Outskirts; the castle's prologue parts are
+    /// (8306, off), the ones after it (8306, on).
+    #[serde(default)]
+    pub gate: Option<(i64, bool)>,
 }
 
 /// An object the script attaches to a character (2003[58]), with the grapple records of its
@@ -519,6 +525,11 @@ impl Run {
 
     pub(crate) fn flag(&self, id: i64) -> bool {
         self.flags.get(&id).copied().unwrap_or(false)
+    }
+
+    /// Character `id`'s MSB flag leaves it out now ([`CharDef::gate`]).
+    pub(crate) fn gated(&self, id: i64) -> bool {
+        self.def.chars.get(&id).and_then(|c| c.gate).is_some_and(|(f, on)| self.flag(f) == on)
     }
 
     /// An event flag the AI set (SetEventFlag; enemy.rs think).
@@ -1690,6 +1701,22 @@ pub(crate) fn play_event(d: &crate::data::CharData, a: &mut Actor, id: i64) -> b
 #[cfg(test)]
 mod tests {
     use super::shape_contains;
+
+    /// The Outskirts' MSB flags (tools/world_scripts.py `gate`): in a new game the Demon of
+    /// Hatred (1100900, 8302 off) and his c7021 helper (1100910, by his entity group) are out
+    /// and the soldiers (1100200, 8302 on) are in; once the burnt state's 8302 is set, the other
+    /// way round.
+    #[test]
+    fn the_outskirts_msb_flags_keep_hatred_out_of_a_new_game() {
+        let path = crate::paths::extracted().join("enemies").join("world_scripts.json");
+        let Ok(text) = std::fs::read_to_string(&path) else { return };
+        let mut all: std::collections::HashMap<String, super::ScriptDef> = serde_json::from_str(&text).unwrap();
+        let def = std::sync::Arc::new(all.remove("m11_00_00_00").unwrap());
+        let mut run = super::Run::new_world(def, 1);
+        assert!(run.gated(1100900) && run.gated(1100910) && !run.gated(1100200));
+        run.set_flag(8302, true);
+        assert!(!run.gated(1100900) && !run.gated(1100910) && run.gated(1100200));
+    }
 
     #[test]
     fn regions_have_heights_on_the_own_arena() {
