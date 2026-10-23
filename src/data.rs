@@ -1822,6 +1822,15 @@ pub fn param_table(name: &str) -> &'static HashMap<i64, Value> {
     })
 }
 
+/// How far from the camera a character of NpcParam row `npc_row` is drawn: its
+/// defaultLodParamId's LodParam draw_BorderDist (10 "small" 50 m, 11 "medium" 80 m, 12 "large"
+/// 120 m, 13 "oversized" 200 m). None for no row or a row drawn at any distance (9999).
+pub fn npc_draw_dist(npc_row: i64) -> Option<f32> {
+    let lod = param_table("NpcParam").get(&npc_row)?["defaultLodParamId"].as_i64()?;
+    let dist = param_table("LodParam").get(&lod)?["draw_BorderDist"].as_f64()? as f32;
+    (dist > 0.0 && dist < 9000.0).then_some(dist)
+}
+
 /// Builds the big param tables and the lookups made from them on a worker thread at start.
 /// Built on first use instead, the first hit on Wolf parsed them on the main thread: a 0.3 s
 /// stall in combat::resolve.
@@ -2483,6 +2492,19 @@ mod tests {
     fn load() -> File {
         let path = crate::paths::root().join("extracted/combat_data.json");
         serde_json::from_str(&std::fs::read_to_string(path).expect("run tools/extract.ps1 first")).unwrap()
+    }
+
+    /// An Ashina soldier (10100000, LodParam 11 "medium") is drawn to 80 m, a Ninja (11000000,
+    /// LodParam 10 "small") to 50 m; the Chained Ogre's row (50000000, 13) to 200 m.
+    #[test]
+    fn characters_draw_to_their_lod_param_distance() {
+        if param_table("LodParam").is_empty() {
+            return;
+        }
+        assert_eq!(npc_draw_dist(10_100_000), Some(80.0));
+        assert_eq!(npc_draw_dist(11_000_000), Some(50.0));
+        assert_eq!(npc_draw_dist(50_000_000), Some(200.0));
+        assert_eq!(npc_draw_dist(-1), None);
     }
 
     /// Frames (30 fps) during which the deflect window (behaviour ref 203) is up.

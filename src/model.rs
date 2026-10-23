@@ -400,7 +400,7 @@ impl Plugin for ModelPlugin {
         app.add_systems(PostStartup, attach_models.after(crate::anim::AnimSet))
             // Characters spawned later (a fight reset's line-up, the encounter picker).
             .add_systems(Update, attach_models.after(crate::anim::AnimSet))
-            .add_systems(Update, (hide_placeholder_blades, update_draw_masks, update_opacity, shadow_awake, follow_owner.after(update_draw_masks), crate::form::show_form.after(follow_owner)))
+            .add_systems(Update, (hide_placeholder_blades, update_draw_masks, update_opacity, shadow_awake, draw_ranges, follow_owner.after(update_draw_masks), crate::form::show_form.after(follow_owner)))
             // TAE 233 is an edge: caught on the tick it starts (a frame can run two ticks).
             .add_systems(FixedUpdate, apply_draw_mask_events.after(crate::actor::ActorSet::Advance))
             // TAE 715 in the sim pose too (anim.rs PoseSet propagates by hand, from the rest dummies).
@@ -976,6 +976,28 @@ fn follow_owner(mut commands: Commands, owners: Query<Option<&InheritedVisibilit
             }
         } else if let Some(v) = free.hidden.take() {
             *vis = v;
+        }
+    }
+}
+
+/// A character mesh [`draw_ranges`] has looked at.
+#[derive(Component)]
+struct DrawRangeSet;
+
+/// An enemy is drawn only within its LodParam draw distance of the camera
+/// ([`crate::data::npc_draw_dist`]): past it a mesh is out of every view, so it is neither
+/// drawn nor skinned (every map enemy was skinned and drawn at any distance,
+/// AKJama/sekiro-rs#312). A cloth's world-space mesh measures from its bounds' centre.
+fn draw_ranges(mut commands: Commands, combat: Res<crate::data::Combat>, actors: Query<&Actor>, meshes: Query<(Entity, &ModelMesh, Has<FreeMesh>), Without<DrawRangeSet>>) {
+    for (e, m, free) in &meshes {
+        let Ok(a) = actors.get(m.owner) else { continue };
+        let mut mesh = commands.entity(e);
+        mesh.insert(DrawRangeSet);
+        if a.side != Side::Enemy {
+            continue;
+        }
+        if let Some(d) = crate::data::npc_draw_dist(combat.foe_of(a).npc_row) {
+            mesh.insert(bevy::camera::visibility::VisibilityRange { start_margin: 0.0..0.0, end_margin: d..d, use_aabb: free });
         }
     }
 }
