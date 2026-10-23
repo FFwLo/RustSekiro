@@ -63,6 +63,44 @@ struct WorldRun {
     off: HashSet<i64>,
     /// Every enemy's MSB spot in the world.
     spots: Vec<(i64, Vec3)>,
+    /// The standing requests of its events per enemy, spawned or not ([`remember`]), given again
+    /// when it streams in: the opening instructions of the map's events (common_func 20005110's
+    /// 2004[1] AI off, 2003[18] looping idles 401 / 411 / 421..., 2004[8] SpEffects, 2004[12]
+    /// immortality, 2004[2] teams) run on the first frame, before anyone is spawned.
+    held: HashMap<i64, Vec<Act>>,
+}
+
+impl WorldRun {
+    /// Enemy `id` is spawned as `ent`: its held requests go through script.rs `apply` next frame.
+    fn streamed_in(&mut self, id: i64, ent: Entity) {
+        self.run.ents.insert(id, ent);
+        self.run.pending.extend(self.held.get(&id).into_iter().flatten().cloned());
+    }
+}
+
+/// What a held request replaces: one AI state, immortality, team and forced anim, one entry per
+/// SpEffect (set or cleared).
+fn held_key(act: &Act) -> Option<(u8, i64)> {
+    match act {
+        Act::AiState(..) => Some((0, 0)),
+        Act::Immortal(..) => Some((1, 0)),
+        Act::Team(..) => Some((2, 0)),
+        Act::SetSp(_, sp) | Act::ClearSp(_, sp) => Some((3, *sp)),
+        Act::ForceAnim(..) => Some((4, 0)),
+        _ => None,
+    }
+}
+
+/// Keeps `act` in one enemy's held requests, the last of each kind winning. A forced anim is kept
+/// only while it loops (2003[18] Should Loop); -1 or a one-shot ends the held one. Forced anims go
+/// last: script.rs `apply` holds a looping one only with the AI already off.
+fn remember(v: &mut Vec<Act>, act: &Act) {
+    let Some(k) = held_key(act) else { return };
+    v.retain(|a| held_key(a) != Some(k));
+    if !matches!(act, Act::ForceAnim(_, anim, looped) if !*looped || *anim < 0) {
+        v.push(act.clone());
+    }
+    v.sort_by_key(|a| matches!(a, Act::ForceAnim(..)));
 }
 
 pub fn active() -> bool {
@@ -81,7 +119,7 @@ fn load(blocks: &[String]) -> Vec<WorldRun> {
         info!("world scripts: {map} ({} enemies, {} events)", def.chars.len(), def.events.len());
         let run = Run::new_world(Arc::new(def), 0x5EED_0000 ^ (i as u32 + 1).wrapping_mul(0x9E37_79B9));
         let spots = run.def.chars.keys().filter_map(|&id| Some((id, run.place_of(id)?.0))).collect();
-        runs.push(WorldRun { run, off: HashSet::new(), spots });
+        runs.push(WorldRun { run, off: HashSet::new(), spots, held: HashMap::new() });
     }
     runs
 }
@@ -265,6 +303,8 @@ pub(super) fn run_world(
                 Act::ForceAnim(i, _, _) | Act::EzState(i, _) | Act::Immortal(i, _) | Act::Team(i, _) | Act::Death(i, _) => *i,
                 _ => continue,
             };
+            // Kept whether it is spawned or not (streamed_in gives them again).
+            remember(wr.held.entry(id).or_default(), &act);
             let Some(&ent) = wr.run.ents.get(&id) else { continue };
             if matches!(act, Act::Enable(..) | Act::Unload(..)) {
                 if wr.off.contains(&id) || wr.run.unloaded.contains(&id) {
@@ -352,7 +392,7 @@ pub(super) fn run_world(
         if trace_on() {
             eprintln!("world spawn {} {id} {} at {at} (wolf {wolf_pos})", wr.run.def.map, c.chr);
         }
-        wr.run.ents.insert(id, ent);
+        wr.streamed_in(id, ent);
     }
 }
 
@@ -423,5 +463,44 @@ pub(super) fn update_lod(
         let level = level as u64;
         a.lod_phase = ((*tick % level + level - wc.id as u64 % level) % level) as u32;
         a.lod_due = a.lod_phase == 0;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn remember_keeps_the_last_of_each_kind() {
+        let mut v = Vec::new();
+        remember(&mut v, &Act::AiState(1, false));
+        remember(&mut v, &Act::AiState(1, true));
+        assert!(matches!(v[..], [Act::AiState(1, true)]));
+        let mut v = Vec::new();
+        remember(&mut v, &Act::SetSp(1, 5000));
+        remember(&mut v, &Act::SetSp(1, 30200));
+        remember(&mut v, &Act::ClearSp(1, 5000));
+        assert_eq!(v.len(), 2);
+        assert!(v.iter().any(|a| matches!(a, Act::ClearSp(1, 5000))));
+        assert!(!v.iter().any(|a| matches!(a, Act::SetSp(1, 5000))));
+    }
+
+    #[test]
+    fn remember_holds_looping_anims_after_the_ai_state() {
+        let mut v = Vec::new();
+        remember(&mut v, &Act::ForceAnim(1, 401, true));
+        remember(&mut v, &Act::AiState(1, false));
+        assert!(matches!(v[..], [Act::AiState(1, false), Act::ForceAnim(1, 401, true)]));
+        remember(&mut v, &Act::ForceAnim(1, -1, false));
+        assert!(matches!(v[..], [Act::AiState(1, false)]));
+    }
+
+    #[test]
+    fn streamed_in_gives_its_held_requests() {
+        let def: ScriptDef = serde_json::from_str(r#"{"map":"m10_00_00_00","boss":0,"world":true,"chars":{},"events":[]}"#).unwrap();
+        let mut wr = WorldRun { run: Run::new_world(Arc::new(def), 1), off: HashSet::new(), spots: Vec::new(), held: HashMap::new() };
+        remember(wr.held.entry(1000201).or_default(), &Act::AiState(1000201, false));
+        wr.streamed_in(1000201, Entity::PLACEHOLDER);
+        assert!(matches!(wr.run.pending[..], [Act::AiState(1000201, false)]));
     }
 }
