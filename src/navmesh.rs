@@ -274,6 +274,61 @@ impl NavMesh {
     /// `None` when either end is off the mesh or no link joins them.
     pub fn path(&self, from: Vec3, to: Vec3) -> Option<Vec<Vec3>> {
         let (start, goal) = (self.locate(from)?, self.locate(to)?);
+        self.walk(start, goal, from, to)
+    }
+
+    /// A walk from `from` toward `to` that, when none reaches `to` (off the mesh, another area,
+    /// no link), ends at the spot of `from`'s own area nearest `to`: the end of the reachable
+    /// mesh, where the exe's move raises INTERUPT_MovedEnd_OnFailedPath. The corners and
+    /// whether the walk reaches `to`; `None` off the mesh at `from`.
+    /// gap: the exe's own pick of the failed path's end is not traced; nearest in 3D here.
+    pub fn path_toward(&self, from: Vec3, to: Vec3) -> Option<(Vec<Vec3>, bool)> {
+        let start = self.locate(from)?;
+        if let Some(goal) = self.locate(to)
+            && let Some(walk) = self.walk(start, goal, from, to)
+        {
+            return Some((walk, true));
+        }
+        let (end_poly, end) = self.nearest_in_area(self.area[start as usize], to)?;
+        self.walk(start, end_poly, from, end).map(|walk| (walk, false))
+    }
+
+    /// The polygon of `area` nearest `p` and its spot nearest `p` (the point under `p` when it
+    /// is over the polygon, else the nearest point of its edges in XZ, at the edge's height).
+    fn nearest_in_area(&self, area: u32, p: Vec3) -> Option<(u32, Vec3)> {
+        let q = p.xz();
+        let mut best: Option<(f32, u32, Vec3)> = None;
+        for (i, poly) in self.polys.iter().enumerate() {
+            if self.area[i] != area {
+                continue;
+            }
+            // Its box's XZ distance is a lower bound of its spot's distance.
+            if best.is_some_and(|(d, _, _)| (poly.min - q).max(q - poly.max).max(Vec2::ZERO).length() >= d) {
+                continue;
+            }
+            let spot = match self.height_at(i as u32, q) {
+                Some(y) => Vec3::new(p.x, y, p.z),
+                None => poly
+                    .corners
+                    .iter()
+                    .zip(poly.corners.iter().cycle().skip(1))
+                    .map(|(&a, &b)| {
+                        let ab = (b - a).xz();
+                        let t = if ab.length_squared() > 0.0 { ((q - a.xz()).dot(ab) / ab.length_squared()).clamp(0.0, 1.0) } else { 0.0 };
+                        a + (b - a) * t
+                    })
+                    .min_by(|a, b| (*a - p).xz().length_squared().total_cmp(&(*b - p).xz().length_squared()))?,
+            };
+            let d = spot.distance(p);
+            if best.is_none_or(|(b, _, _)| d < b) {
+                best = Some((d, i as u32, spot));
+            }
+        }
+        best.map(|(_, i, spot)| (i, spot))
+    }
+
+    /// The walk from polygon `start` (at `from`) to polygon `goal` (at `to`).
+    fn walk(&self, start: u32, goal: u32, from: Vec3, to: Vec3) -> Option<Vec<Vec3>> {
         if self.area[start as usize] != self.area[goal as usize] {
             return None;
         }
@@ -630,5 +685,26 @@ mod tests {
         assert!(mesh.path(Vec3::new(0.5, 0.0, 0.5), Vec3::new(5.5, 0.0, 5.5)).is_none());
         assert_eq!(mesh.line_dist(Vec3::new(0.5, 0.0, 0.5), Vec3::X, 20.0, 0.0), 2.5);
         assert!(mesh.locate(Vec3::new(0.5, 20.0, 0.5)).is_none(), "far above the mesh");
+    }
+
+    /// With no walk to the spot (an island beyond, or the spot far above the mesh, as Wolf on a
+    /// roof), the walk toward it ends at the nearest spot of the start's own area; with one, it
+    /// reaches the spot as `path` does.
+    #[test]
+    fn a_failed_walk_ends_at_the_reachable_mesh_nearest_the_spot() {
+        let (pieces, joins) = ell(3);
+        let (from, goal) = (Vec3::new(0.5, 0.0, 0.5), Vec3::new(5.5, 0.0, 5.5));
+        let (walk, reaches) = NavMesh::build(&pieces, &joins).path_toward(from, goal).unwrap();
+        assert!(reaches);
+        assert_eq!(walk.last(), Some(&goal));
+        let islands = NavMesh::build(&pieces, &[]);
+        let (walk, reaches) = islands.path_toward(from, goal).unwrap();
+        assert!(!reaches);
+        // The first piece is the squares x 0-3 along z 0-1: its corner (3, 0, 1) is nearest.
+        assert!(walk.last().unwrap().distance(Vec3::new(3.0, 0.0, 1.0)) < 1e-4, "{walk:?}");
+        let (walk, reaches) = islands.path_toward(from, Vec3::new(1.5, 10.0, 0.5)).unwrap();
+        assert!(!reaches);
+        assert!(walk.last().unwrap().distance(Vec3::new(1.5, 0.0, 0.5)) < 1e-4, "{walk:?}");
+        assert!(islands.path_toward(Vec3::new(0.5, 20.0, 0.5), goal).is_none(), "off the mesh at the start");
     }
 }

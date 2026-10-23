@@ -282,6 +282,10 @@ fn native(id: i64) -> Option<Native> {
         2017 => Native::Sideway,
         2018 => Native::Keep,
         2000 => Native::Wait,
+        // Wait_On_FailedPath(life, ?): the stand at the end of a walk that falls short
+        // (COMMON_Interrupt, InterruptTableLogic_Common). gap: its own class and its param are
+        // not traced; read as Wait.
+        2700 => Native::Wait,
         2101 => Native::Guard,
         2 => Native::Stay,
         4 => Native::BackToHome,
@@ -464,14 +468,21 @@ struct AiState {
     trigger_changed: (Vec<(i64, i64)>, Vec<(i64, i64)>),
     /// The navmesh walk the last forward move steered along (AiState::steer).
     route: Option<Route>,
+    /// A move reached the end of a walk that falls short of its spot: next frame raises
+    /// INTERUPT_MovedEnd_OnFailedPath (45).
+    failed_path_end: bool,
 }
 
-/// A navmesh walk to a move's spot `to`: the corners still ahead (empty: no walk there) and how
-/// long ago it was found.
+/// A navmesh walk to a move's spot `to`: the corners still ahead (empty: no walk there), how
+/// long ago it was found, whether it reaches `to` (else it ends at the reachable mesh nearest
+/// `to`), whether it was searched to stop short so, and whether its end was reached.
 struct Route {
     to: Vec3,
     corners: Vec<Vec3>,
     age: f64,
+    reaches: bool,
+    stops_short: bool,
+    ended: bool,
 }
 
 /// How often a moving AI chr finds its walk again, and how far its spot may move before it does.
@@ -637,22 +648,36 @@ impl AiState {
 
     /// Where a forward move toward `to` heads: the next corner of the navmesh walk there, found
     /// again every [`REPLAN_SECS`] or when `to` moves [`REPLAN_MOVE`]; `to` itself without a
-    /// navmesh, off it, or with no walk (the move then heads straight, as before).
-    fn steer(&mut self, to: Vec3) -> Vec3 {
-        let Some(mesh) = crate::navmesh::current() else { return to };
+    /// navmesh or off it (the move then heads straight, as before). With no walk to `to` (Wolf
+    /// on a roof or across a gap without a link), a move that `stops_short` walks to the end of
+    /// the reachable mesh nearest `to` and stands there (`None`), raising
+    /// INTERUPT_MovedEnd_OnFailedPath once per walk found: the scripts then run NpcThinkParam
+    /// actTypeOnFailedPath (common_common_logic_func.lua:505 COMMON_Interrupt,
+    /// common_table_ai_common.lua:141). One that does not heads straight, as before.
+    fn steer(&mut self, to: Vec3, stops_short: bool) -> Option<Vec3> {
+        let Some(mesh) = crate::navmesh::current() else { return Some(to) };
         let me = self.w.me;
-        if self.route.as_ref().is_none_or(|r| r.age >= REPLAN_SECS || r.to.distance(to) > REPLAN_MOVE) {
-            let corners = mesh.path(me, to).unwrap_or_default();
-            self.route = Some(Route { to, corners, age: 0.0 });
+        if self.route.as_ref().is_none_or(|r| r.age >= REPLAN_SECS || r.to.distance(to) > REPLAN_MOVE || r.stops_short != stops_short) {
+            let (corners, reaches) = if stops_short { mesh.path_toward(me, to).unwrap_or_default() } else { (mesh.path(me, to).unwrap_or_default(), true) };
+            self.route = Some(Route { to, corners, age: 0.0, reaches, stops_short, ended: false });
         }
-        let Some(r) = self.route.as_mut() else { return to };
-        // Corners reached drop off; the last one is `to`'s spot on the mesh.
+        let Some(r) = self.route.as_mut() else { return Some(to) };
+        // Corners reached drop off; the last one is `to`'s spot on the mesh, or the walk's end.
         while r.corners.len() > 1 && (r.corners[0] - me).with_y(0.0).length() < 0.5 {
             r.corners.remove(0);
         }
         match r.corners.as_slice() {
-            [next, _, ..] => *next,
-            _ => to,
+            [next, _, ..] => Some(*next),
+            [end] if !r.reaches => {
+                if (*end - me).with_y(0.0).length() >= 0.5 {
+                    return Some(*end);
+                }
+                if !std::mem::replace(&mut r.ended, true) {
+                    self.failed_path_end = true;
+                }
+                None
+            }
+            _ => Some(to),
         }
     }
 }
@@ -1248,6 +1273,11 @@ impl AiState {
             // NonBattleAct / _COMMON_SetBattleActLogic compare with the back-home distances.
             "GetMovePointEffectRange" => num((w.home - w.me).with_y(0.0).length() as f64),
             "GetActTypeOnNonBattleFailedPathEnd" => num(self.think["actTypeOnNonBtlFailedPath"].as_f64().unwrap_or(0.0)),
+            // INTERUPT_MovedEnd_OnFailedPath's reaction (0 none, 1 / 2 Wait_On_FailedPath, 3 walk
+            // around, 4 back home): 2 in all but 14 NpcThinkParam rows, 0 in those.
+            "GetActTypeOnFailedPathEnd" => num(self.think["actTypeOnFailedPath"].as_f64().unwrap_or(0.0)),
+            // gap: the walk-around spot only act type 3 reads; no NpcThinkParam row uses 3.
+            "DecideWalkAroundPos" => vec![],
             "GetToTargetAngle" => num(self.angle_to(a.first())),
             "IsInsideTarget" => boolean(angle_in(self.dir_center(a.get(1)), n(2), self.angle_to(a.first()))),
             // IsInsideTargetEx(observer, target, dir, angle, dist): is `target` inside the
@@ -1747,9 +1777,16 @@ impl AiState {
                     return CONTINUE;
                 }
                 // A forward move toward its spot walks the navmesh around what is in the way (a
-                // LeaveTarget turned away heads off, not to a spot).
+                // LeaveTarget turned away heads off, not to a spot); with no walk there it stands
+                // at the end of the reachable mesh, turned to the spot (AiState::steer).
                 if mv == 'F' && n != Native::Leave {
-                    at = Some(self.steer(at.unwrap_or(self.w.target)));
+                    let spot = at.unwrap_or(self.w.target);
+                    let Some(next) = self.steer(spot, true) else {
+                        self.cmd.turn = self.w.free;
+                        self.cmd.at = Some(spot);
+                        return CONTINUE;
+                    };
+                    at = Some(next);
                 }
                 self.cmd.mv = Some(mv);
                 self.cmd.walk = walk;
@@ -1766,7 +1803,9 @@ impl AiState {
                     self.cmd.mv = Some('F');
                     self.cmd.walk = true;
                     self.cmd.face = true;
-                    self.cmd.at = Some(self.steer(self.w.home));
+                    // gap: BackToHome keeps heading straight when no walk reaches home (a home
+                    // just off the mesh is still reached); the exe's rule there is not traced.
+                    self.cmd.at = self.steer(self.w.home, false);
                 }
                 CONTINUE
             }
@@ -2264,6 +2303,7 @@ impl Brain {
             trigger_in: Vec::new(),
             trigger_changed: (Vec::new(), Vec::new()),
             route: None,
+            failed_path_end: false,
             k: Consts {
                 target_self: -1.0,
                 target_ene_0: 0.0,
@@ -2424,6 +2464,14 @@ impl Brain {
         // (FUN_1405d3fd0: the Divine Dragon's trees, 531001_logic.lua request 10 -> a bloom).
         if s.event_req_new && !interrupt_goals(vm, st, 39.0, 0.0)? {
             interrupt_logic(vm, st, 39.0)?;
+        }
+        // Last frame's move reached the end of a walk short of its spot (AiState::steer):
+        // INTERUPT_MovedEnd_OnFailedPath (45). The goals' Interrupt (NonBattleAct_Interupt's
+        // replan), then the logic chain (COMMON_Interrupt / InterruptTableLogic_Common:
+        // actTypeOnFailedPath 2 -> Wait_On_FailedPath). gap: the exe's order for 45 is not
+        // traced; read as 39's.
+        if std::mem::take(&mut st.failed_path_end) && !interrupt_goals(vm, st, 45.0, 0.0)? {
+            interrupt_logic(vm, st, 45.0)?;
         }
         // A target-state change drops the plan (FUN_1405ab7d0 -> FUN_14061f500).
         if std::mem::take(&mut st.replan) || s.t_replan {
@@ -2818,15 +2866,50 @@ mod tests {
         let free = ask(&mut b, "GetExistMeshOnLineDistSpecifyAngle", &[-90.0, 20.0, 2.0], &me).num().unwrap();
         assert!((free - 5.5).abs() < 1e-3, "{free}");
         // The move heads for the corner, then once there for the goal.
-        assert!(b.st.steer(goal).distance(Vec3::new(5.0, 0.0, 1.0)) < 1e-3);
+        assert!(b.st.steer(goal, true).unwrap().distance(Vec3::new(5.0, 0.0, 1.0)) < 1e-3);
         b.st.w.me = Vec3::new(5.2, 0.0, 1.2);
         b.st.route.as_mut().unwrap().age = REPLAN_SECS;
-        assert_eq!(b.st.steer(goal), goal);
+        assert_eq!(b.st.steer(goal, true), Some(goal));
         // Wolf off the mesh: no path to him.
         b.st.w.target = Vec3::new(20.0, 0.0, 20.0);
         assert!(matches!(ask(&mut b, "CheckDoesExistPath", &[1.0, 0.0, 0.0], &ene), Value::Bool(false)));
         crate::navmesh::install_here(None);
         assert!(matches!(ask(&mut b, "CheckDoesExistPath", &[1.0, 0.0, 0.0], &ene), Value::Bool(true)), "no navmesh: as before");
+    }
+
+    /// Wolf where no walk reaches (a roof far above, on two navmesh islands): the move walks to
+    /// the end of its own island nearest him and stands there instead of running straight at
+    /// him, raising INTERUPT_MovedEnd_OnFailedPath (45) once; an Ashina soldier's
+    /// actTypeOnFailedPath 2 then waits there (Wait_On_FailedPath 2700, common_table_ai_common.lua:151
+    /// / common_common_logic_func.lua:513).
+    #[test]
+    fn a_move_with_no_walk_waits_at_the_end_of_the_mesh() {
+        let Some(mut b) = load(10100000, 1.0, 3) else { return };
+        let (pieces, _) = crate::navmesh::ell(3);
+        crate::navmesh::install_here(Some(crate::navmesh::NavMesh::build(&pieces, &[])));
+        let roof = Vec3::new(5.5, 6.0, 5.5);
+        b.st.w = Snapshot { me: Vec3::new(0.5, 0.0, 0.5), target: roof, dist: 9.0, free: true, hp_rate: 1.0, target_hp_rate: 1.0, sp: 600.0, sp_rate: 1.0, ..Snapshot::battle() };
+        let end = Vec3::new(3.0, 0.0, 1.0);
+        assert!(b.st.steer(roof, true).is_some_and(|p| p.distance(end) < 1e-3), "heads for its island's end, not Wolf");
+        assert!(!b.st.failed_path_end);
+        b.st.w.me = Vec3::new(2.8, 0.0, 0.8);
+        assert_eq!(b.st.steer(roof, true), None, "stands at the end");
+        assert!(std::mem::take(&mut b.st.failed_path_end));
+        assert_eq!(b.st.steer(roof, true), None);
+        assert!(!b.st.failed_path_end, "raised once per walk");
+        assert_eq!(b.st.ai_method_raw("GetActTypeOnFailedPathEnd", &[]).first().and_then(Value::num), Some(2.0));
+        // The next frame raises 45: the plan becomes the wait.
+        b.st.failed_path_end = true;
+        let s = b.st.w.clone();
+        b.tick(&s, 1.0 / 60.0);
+        crate::navmesh::install_here(None);
+        let errors: Vec<_> = b.log.iter().filter(|l| !l.starts_with("stub:")).cloned().collect();
+        assert!(errors.is_empty(), "{errors:#?}");
+        let mut ids = HashSet::new();
+        for &g in &b.st.tops.clone() {
+            b.st.active_ids(g, &mut ids);
+        }
+        assert!(ids.contains(&2700), "{ids:?}");
     }
 
     /// An observed SpEffect that ends raises INTERUPT_InactivateSpecialEffect with its id
