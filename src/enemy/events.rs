@@ -92,7 +92,12 @@ pub(super) fn messages(combat: Res<Combat>, mut q: Query<(&mut Enemy, &Actor)>, 
 pub(super) fn apply_event_warp(mut warp: ResMut<EventWarp>, player: Single<(&mut Transform, &mut Actor), With<Player>>) {
     let Some((pos, yaw)) = warp.0.take() else { return };
     let (mut tf, mut a) = player.into_inner();
-    tf.translation = Vec3::new(pos.x, tf.translation.y, pos.z);
+    // On the floor at the warp point (its height first, then Wolf's): keeping his old height
+    // put him inside or under a higher floor, which the terrain's 0.5 m step-up never reaches.
+    let feet = crate::terrain::terrain()
+        .and_then(|t| t.floor(pos.x, pos.z, pos.y + crate::terrain::STEP_HEIGHT).or_else(|| t.floor(pos.x, pos.z, tf.translation.y)))
+        .unwrap_or(tf.translation.y - crate::player::CAPSULE_HALF_HEIGHT);
+    tf.translation = Vec3::new(pos.x, feet + crate::player::CAPSULE_HALF_HEIGHT, pos.z);
     a.yaw = yaw;
     a.move_vel = Vec3::ZERO;
 }
