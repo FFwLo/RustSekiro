@@ -258,12 +258,7 @@ pub fn camera_raycast(origin: Vec3, dir: Vec3, max: f32) -> Option<f32> {
 /// Where a body whose centre rose from `from_y` to `to.y` this step stops under a ceiling: the
 /// centre height its head meets one at (the host's world only).
 pub fn ceiling_stop(to: Vec3, from_y: f32) -> Option<f32> {
-    let rise = to.y - from_y;
-    if rise <= 0.0 {
-        return None;
-    }
-    let w = terrain()?.world.clone()?;
-    w.ceiling([to.x, from_y - CAPSULE_HALF_HEIGHT, to.z], rise).map(|top| top.max(from_y - CAPSULE_HALF_HEIGHT) + CAPSULE_HALF_HEIGHT)
+    terrain()?.ceiling_stop(to, from_y)
 }
 
 fn cell_of(x: f32, z: f32) -> (i32, i32) {
@@ -323,6 +318,16 @@ impl Terrain {
 
     pub fn install(self) {
         *TERRAIN.get_or_init(|| RwLock::new(None)).write().unwrap() = Some(Arc::new(self));
+    }
+
+    /// [`ceiling_stop`] on this terrain.
+    pub fn ceiling_stop(&self, to: Vec3, from_y: f32) -> Option<f32> {
+        let rise = to.y - from_y;
+        if rise <= 0.0 {
+            return None;
+        }
+        let w = self.world.as_ref()?;
+        w.ceiling([to.x, from_y - CAPSULE_HALF_HEIGHT, to.z], rise).map(|top| top.max(from_y - CAPSULE_HALF_HEIGHT) + CAPSULE_HALF_HEIGHT)
     }
 
     /// [`landing_y`] on this terrain.

@@ -4698,8 +4698,9 @@ fn dock_step_tick(
                 p.wall_jumps = dk::wall_jump_limit();
                 return true;
             }
-            // The hang button (ACTION_ARM_WALL_HANG) climbs. gap: env 3050 (room to stand up).
-            if interact {
+            // The hang button (ACTION_ARM_WALL_HANG) climbs when there is room to stand on top
+            // (env 3050, `Dock::room_to_stand`).
+            if interact && dock.room_to_stand(dock.s) {
                 if let Some(dd) = p.dock.as_mut() {
                     dd.climb_from = None;
                 }
