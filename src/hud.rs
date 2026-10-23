@@ -75,7 +75,7 @@ impl Plugin for HudPlugin {
         app.init_resource::<CombatLog>()
             .init_resource::<Perilous>()
             .add_systems(Startup, (spawn_hud, spawn_perilous, spawn_deathblow_mark, spawn_lock_mark, spawn_item_icons, spawn_wire_mark))
-            .add_systems(Update, (sync_res_nodes, res_fill, update_player_hud, update_enemy_hud, update_debug, update_log, debug_only, update_perilous, update_stealth, update_deathblow_mark, update_lock_mark, update_item_icons, update_quick_icon, update_wolf_build_up, hud_shots, update_wire_mark, update_boss_hud, flash_counters));
+            .add_systems(Update, (sync_res_nodes, res_fill, update_player_hud, update_enemy_hud, update_debug.run_if(debug_open), update_log, debug_only, update_perilous, update_stealth, update_deathblow_mark, update_lock_mark, update_item_icons, update_quick_icon, update_wolf_build_up, hud_shots, update_wire_mark, update_boss_hud, flash_counters));
         if let Some(f) = std::env::var("SHINOBI_HUD_POSTURE").ok().and_then(|v| v.parse::<f32>().ok()) {
             app.insert_resource(HoldPosture(f)).add_systems(Update, hold_posture);
         }
@@ -404,11 +404,12 @@ fn update_player_hud(
     let f = share(a.hp, a.hp_max);
     step_trail(&mut trail, f, time.delta_secs());
     let shown = &trail.0;
+    // Written only when they change: a changed node is laid out again (see set_width).
     for mut n in &mut hp {
-        n.width = Val::Percent(f * 100.0);
+        set_width(&mut n, Val::Percent(f * 100.0));
     }
     for mut n in &mut tr {
-        n.width = Val::Percent(*shown * 100.0);
+        set_width(&mut n, Val::Percent(*shown * 100.0));
     }
     // The bar's length follows the maximum Vitality, as the game's grows with each Vitality level
     // (9.5 % of the width at level 1's 320; the user's capture at Vitality 20, 1120: 32.7 %).
@@ -423,15 +424,15 @@ fn update_player_hud(
     let pf = share(a.posture, a.posture_max);
     for (pfl, mut n, mut bg) in &mut posture {
         if pfl.0 == Side::Player {
-            n.width = Val::Percent(pf * 100.0);
-            bg.color = posture_tint(pf);
+            set_width(&mut n, Val::Percent(pf * 100.0));
+            set_color(&mut bg, posture_tint(pf));
         }
     }
     // The gauge stays SP_MIN_DISP_TIME after the posture is back to 0 (exe 140e3.c:7637-7661).
     *posture_hold = if pf > 0.005 { SP_MIN_DISP_TIME } else { (*posture_hold - time.delta_secs()).max(0.0) };
     for (r, mut v) in &mut root {
         if r.0 == Side::Player {
-            *v = if *posture_hold > 0.0 { Visibility::Inherited } else { Visibility::Hidden };
+            v.set_if_neq(if *posture_hold > 0.0 { Visibility::Inherited } else { Visibility::Hidden });
         }
     }
     for (rn, mut n) in &mut nodes {
@@ -462,6 +463,22 @@ fn update_player_hud(
         if text.0 != want {
             text.0 = want;
         }
+    }
+}
+
+/// Sets a bar's width only when it differs: bevy_ui lays out again every node whose Node
+/// changed (it upserts each into taffy, which dirties the layout up to the HUD root), so an
+/// unconditional write would re-lay out the HUD every frame.
+fn set_width(n: &mut Mut<Node>, w: Val) {
+    if n.width != w {
+        n.width = w;
+    }
+}
+
+/// Sets an image's tint only when it differs (a changed ImageNode is re-extracted for drawing).
+fn set_color(img: &mut Mut<ImageNode>, c: Color) {
+    if img.color != c {
+        img.color = c;
     }
 }
 
@@ -637,7 +654,7 @@ fn update_boss_hud(
     // world only one fighting Wolf (many named ones stand around the map).
     let boss = scripted.or_else(|| enemies.iter().find(|(a, e, ph)| is_boss_bar(e, *ph) && (e.ninsatsu.1 >= 2 || !boss_name(combat.foe_of(a).npc_row).is_empty()) && (!world || e.targeting.state >= crate::stealth::BATTLE)));
     for mut v in &mut root {
-        *v = if boss.is_some() { Visibility::Inherited } else { Visibility::Hidden };
+        v.set_if_neq(if boss.is_some() { Visibility::Inherited } else { Visibility::Hidden });
     }
     let Some((a, e, _)) = boss else {
         *trail = (1.0, 0.0);
@@ -653,26 +670,26 @@ fn update_boss_hud(
     }
     step_trail(&mut trail, f, time.delta_secs());
     for mut n in &mut hp {
-        n.width = Val::Percent(f * 100.0);
+        set_width(&mut n, Val::Percent(f * 100.0));
     }
     for mut n in &mut hp_trail {
-        n.width = Val::Percent(trail.0 * 100.0);
+        set_width(&mut n, Val::Percent(trail.0 * 100.0));
     }
     let pf = share(a.posture, a.posture_max);
     for (mut n, mut img) in &mut posture {
-        n.width = Val::Percent(pf * 100.0);
-        img.color = posture_tint(pf);
+        set_width(&mut n, Val::Percent(pf * 100.0));
+        set_color(&mut img, posture_tint(pf));
     }
     for (parent, mut v) in &mut arrows {
         if boss_frame.iter().any(|f| f.parent() == parent.parent()) {
-            *v = if pf > 0.005 { Visibility::Inherited } else { Visibility::Hidden };
+            v.set_if_neq(if pf > 0.005 { Visibility::Inherited } else { Visibility::Hidden });
         }
     }
     // State 3 (MENU_Taikan_ST3) is the break itself: the HUD movie's State_3 holds while the
     // chr's ChrActionFlag 0x160 (the posture-break reaction) is up, i.e. Enemy::is_broken.
     let st = if e.is_broken() { 3 } else { posture_state(pf) };
     for (mut v, mut img) in &mut glow {
-        *v = if st == 0 { Visibility::Hidden } else { Visibility::Inherited };
+        v.set_if_neq(if st == 0 { Visibility::Hidden } else { Visibility::Inherited });
         let file = ["", "hud/MENU_Taikan_ST1.png", "hud/MENU_Taikan_ST2.png", "hud/MENU_Taikan_ST3.png"][st];
         if st > 0 && img.image.path().is_none_or(|p| p.path().to_str() != Some(file)) {
             img.image = assets.load(crate::paths::asset(file));
@@ -758,19 +775,26 @@ fn update_wolf_build_up(
         let gauge = if ty == 0 { s.poison } else { s.burn };
         ((gauge / crate::status::WOLF_RESIST).clamp(0.0, 1.0), s.afflicted(&combat, refs[ty]))
     };
+    // Written only when they change (see set_width): with no build-up nothing is touched.
     for (i, mut n) in &mut icons {
         let (f, on) = state(i.0);
-        n.display = if f > 0.0 || on { Display::Flex } else { Display::None };
+        let display = if f > 0.0 || on { Display::Flex } else { Display::None };
+        if n.display != display {
+            n.display = display;
+        }
     }
     for (i, mut n) in &mut fills {
         let (f, on) = state(i.0);
-        n.height = Val::Percent(if on { 100.0 } else { f * 100.0 });
+        let height = Val::Percent(if on { 100.0 } else { f * 100.0 });
+        if n.height != height {
+            n.height = height;
+        }
     }
     // While afflicted the icon pulses (gap: the game's own animation is in the FE movie).
     let pulse = 0.8 + 0.2 * (time.elapsed_secs() * 4.0).sin();
     for (i, mut img) in &mut bright {
         let (_, on) = state(i.0);
-        img.color = if on { Color::srgb(pulse, pulse, pulse) } else { Color::WHITE };
+        set_color(&mut img, if on { Color::srgb(pulse, pulse, pulse) } else { Color::WHITE });
     }
 }
 
@@ -1468,11 +1492,17 @@ mod wire_mark_tests {
     }
 }
 
+/// Whether the debug menu (F1) is open. The readout and log text are rebuilt only then: bevy_ui
+/// re-measures and lays out a changed Text even while it is hidden.
+fn debug_open(menu: Option<Res<crate::debug_menu::DebugMenu>>) -> bool {
+    menu.is_some_and(|m| m.open)
+}
+
 /// The controls line, state readout and combat log show only with the debug menu (F1) open.
 fn debug_only(menu: Option<Res<crate::debug_menu::DebugMenu>>, mut q: Query<&mut Visibility, Or<(With<DebugText>, With<LogText>)>>) {
-    let open = menu.is_some_and(|m| m.open);
+    let open = debug_open(menu);
     for mut v in &mut q {
-        *v = if open { Visibility::Inherited } else { Visibility::Hidden };
+        v.set_if_neq(if open { Visibility::Inherited } else { Visibility::Hidden });
     }
 }
 
@@ -1507,13 +1537,21 @@ fn update_debug(
     text.0 = s;
 }
 
-fn update_log(time: Res<Time>, mut log: ResMut<CombatLog>, mut text: Single<&mut Text, With<LogText>>) {
+/// The log lines age out whether or not the menu is open; the text is rewritten only while it
+/// shows and only when the lines differ.
+fn update_log(time: Res<Time>, menu: Option<Res<crate::debug_menu::DebugMenu>>, mut log: ResMut<CombatLog>, mut text: Single<&mut Text, With<LogText>>) {
     let dt = time.delta_secs();
     log.lines.retain_mut(|l| {
         l.2 += dt;
         l.2 < 6.0
     });
-    text.0 = log.lines.iter().map(|l| l.0.clone()).collect::<Vec<_>>().join("\n");
+    if !debug_open(menu) {
+        return;
+    }
+    let s = log.lines.iter().map(|l| l.0.as_str()).collect::<Vec<_>>().join("\n");
+    if text.0 != s {
+        text.0 = s;
+    }
 }
 
 /// The kanji needs a Japanese font (`GameFonts::kanji`); without one the warning falls back to "!!".
@@ -1565,18 +1603,21 @@ fn update_perilous(time: Res<Time>, mut p: ResMut<Perilous>, mut q: Query<(&mut 
 /// An enemy off the screen (or behind the camera) gets the same mark beside Wolf instead, turned
 /// so its tip points the way to it, as if seen from above: behind the camera it sits below him
 /// (the user's captures). gap: the game's ring radius is not read from the movie.
-/// One enemy's stealth mark (`found_t`: seconds it has been fighting, for FOUND_SHOW).
+/// One enemy's stealth mark (`found_t`: seconds it has been fighting, for FOUND_SHOW), with its
+/// own fill and brush children (looked up directly, not by scanning every enemy's).
 #[derive(Component)]
 struct StealthMark {
     enemy: Entity,
     found_t: f32,
     clip: MarkClip,
+    fill: Entity,
+    brush: Entity,
 }
 /// The clip box that reveals the brush triangle (height = the meter).
 #[derive(Component)]
-struct StealthFill(Entity);
+struct StealthFill;
 #[derive(Component)]
-struct StealthBrush(Entity);
+struct StealthBrush;
 
 /// The mark's side at 1080p [px] (MENU_Find_02's 128 px at 0.2193) and its centre's height
 /// over the anchor.
@@ -1602,28 +1643,44 @@ fn ring_mark(wolf: Vec2, to: Vec3, cam_right: Vec3, cam_fwd: Vec3, ring: f32) ->
 const FOUND_SHOW: f32 = 1.5;
 
 fn spawn_stealth(commands: &mut Commands, assets: &AssetServer, enemy: Entity) {
+    let brush = commands
+        .spawn((
+            Node { position_type: PositionType::Absolute, left: Val::Px(0.0), bottom: Val::Px(0.0), width: Val::Px(STEALTH_PX), height: Val::Px(STEALTH_PX), ..default() },
+            ImageNode::new(assets.load(crate::paths::asset("hud/MENU_Find_01.png"))),
+            StealthBrush,
+        ))
+        .id();
+    let fill = commands
+        .spawn((
+            Node { position_type: PositionType::Absolute, left: Val::Px(0.0), bottom: Val::Px(0.0), width: Val::Percent(100.0), height: Val::Percent(0.0), overflow: Overflow::clip(), ..default() },
+            StealthFill,
+        ))
+        .add_child(brush)
+        .id();
     commands
         .spawn((
             Node { position_type: PositionType::Absolute, width: Val::Px(STEALTH_PX), height: Val::Px(STEALTH_PX), ..default() },
             ImageNode::new(assets.load(crate::paths::asset("hud/MENU_Find_02.png"))),
             UiTransform::IDENTITY,
             Visibility::Hidden,
-            StealthMark { enemy, found_t: 0.0, clip: MarkClip::default() },
+            StealthMark { enemy, found_t: 0.0, clip: MarkClip::default(), fill, brush },
             crate::ui_stage::WorldUi,
         ))
-        .with_children(|c| {
-            c.spawn((
-                Node { position_type: PositionType::Absolute, left: Val::Px(0.0), bottom: Val::Px(0.0), width: Val::Percent(100.0), height: Val::Percent(0.0), overflow: Overflow::clip(), ..default() },
-                StealthFill(enemy),
-            ))
-            .with_children(|c| {
-                c.spawn((
-                    Node { position_type: PositionType::Absolute, left: Val::Px(0.0), bottom: Val::Px(0.0), width: Val::Px(STEALTH_PX), height: Val::Px(STEALTH_PX), ..default() },
-                    ImageNode::new(assets.load(crate::paths::asset("hud/MENU_Find_01.png"))),
-                    StealthBrush(enemy),
-                ));
-            });
-        });
+        .add_child(fill);
+}
+
+/// Writes a shown mark's meter (`w`: the fill's share), size and brush tint, each only when it
+/// differs (a rewritten Node is laid out again by bevy_ui, see set_width).
+fn paint_stealth(fill: &mut Mut<Node>, brush: &mut Mut<Node>, img: &mut Mut<ImageNode>, w: f32, side: f32, color: Color) {
+    let h = Val::Percent(w.clamp(0.0, 1.0) * 100.0);
+    if fill.height != h {
+        fill.height = h;
+    }
+    if brush.width != Val::Px(side) || brush.height != Val::Px(side) {
+        brush.width = Val::Px(side);
+        brush.height = Val::Px(side);
+    }
+    set_color(img, color);
 }
 
 #[allow(clippy::type_complexity)]
@@ -1637,8 +1694,8 @@ fn update_stealth(
     camera: Query<(&Camera, &GlobalTransform), With<crate::camera::OrbitCamera>>,
     wolf: Query<&GlobalTransform, (With<crate::player::Player>, Without<crate::enemy::Enemy>)>,
     mut marks: Query<(Entity, &mut StealthMark, &mut Node, &mut ImageNode, &mut UiTransform, &mut Visibility), (Without<StealthFill>, Without<StealthBrush>)>,
-    mut fills: Query<(&StealthFill, &mut Node), (Without<StealthMark>, Without<StealthBrush>)>,
-    mut brushes: Query<(&StealthBrush, &mut Node, &mut ImageNode), (Without<StealthMark>, Without<StealthFill>)>,
+    mut fills: Query<&mut Node, (With<StealthFill>, Without<StealthMark>, Without<StealthBrush>)>,
+    mut brushes: Query<(&mut Node, &mut ImageNode), (With<StealthBrush>, Without<StealthMark>, Without<StealthFill>)>,
 ) {
     let _prof = crate::perf::span("hud_stealth");
     let have: HashSet<Entity> = marks.iter().map(|(_, m, ..)| m.enemy).collect();
@@ -1680,7 +1737,7 @@ fn update_stealth(
             _ => (None, 0.0),
         };
         let pos = pos.filter(|_| show);
-        if pos.is_some() {
+        if pos.is_some() && turn.rotation != Rot2::radians(angle) {
             turn.rotation = Rot2::radians(angle);
         }
         let Some((t, gone, p)) = m.clip.step(pos, time.delta_secs(), 22.0 / 60.0) else {
@@ -1710,19 +1767,10 @@ fn update_stealth(
             1 => (1.0, rgb(154, 134, 70).with_alpha(0.95), Color::srgb(0.719, 0.629, 0.238)),
             _ => (ratio, Color::BLACK.with_alpha(0.65), Color::WHITE.with_alpha(0.95)),
         };
-        frame.color = frame_color.with_alpha(frame_color.alpha() * fade);
+        set_color(&mut frame, frame_color.with_alpha(frame_color.alpha() * fade));
         let color = color.with_alpha(color.alpha() * fade);
-        for (f, mut fnode) in &mut fills {
-            if f.0 == m.enemy {
-                fnode.height = Val::Percent(w.clamp(0.0, 1.0).max(0.0) * 100.0);
-            }
-        }
-        for (b, mut bnode, mut img) in &mut brushes {
-            if b.0 == m.enemy {
-                bnode.width = Val::Px(side);
-                bnode.height = Val::Px(side);
-                img.color = color;
-            }
+        if let (Ok(mut fnode), Ok((mut bnode, mut img))) = (fills.get_mut(m.fill), brushes.get_mut(m.brush)) {
+            paint_stealth(&mut fnode, &mut bnode, &mut img, w, side, color);
         }
     }
 }
@@ -1790,6 +1838,60 @@ mod mark_tests {
 }
 
 #[cfg(test)]
+mod debug_text_tests {
+    use bevy::prelude::*;
+
+    fn log_app(open: bool) -> App {
+        let mut app = App::new();
+        app.init_resource::<Time>().init_resource::<super::CombatLog>().add_systems(Update, (super::update_log, super::debug_only));
+        let mut menu = crate::debug_menu::DebugMenu::default();
+        menu.open = open;
+        app.insert_resource(menu);
+        app.world_mut().spawn((Text::new(""), Visibility::Hidden, super::LogText));
+        app.world_mut().resource_mut::<super::CombatLog>().push("Deflect", Color::WHITE);
+        app
+    }
+
+    fn ticks(app: &mut App) -> (bevy::ecs::change_detection::Tick, bevy::ecs::change_detection::Tick) {
+        let (t, v) = app.world_mut().query_filtered::<(Ref<Text>, Ref<Visibility>), With<super::LogText>>().single(app.world()).unwrap();
+        (t.last_changed(), v.last_changed())
+    }
+
+    fn log_text(app: &mut App) -> String {
+        app.world_mut().query_filtered::<&Text, With<super::LogText>>().single(app.world()).unwrap().0.clone()
+    }
+
+    /// With the debug menu closed the hidden log Text and its Visibility are never rewritten, so
+    /// bevy_ui does not re-measure and lay out the invisible node every frame.
+    #[test]
+    fn hidden_log_text_is_not_rewritten_each_frame() {
+        let mut app = log_app(false);
+        app.update();
+        let before = ticks(&mut app);
+        app.update();
+        app.update();
+        assert_eq!(ticks(&mut app), before);
+        assert_eq!(log_text(&mut app), "");
+        assert!(!super::debug_open(None));
+    }
+
+    /// With the menu open the log shows its lines, and an unchanged log leaves the Text untouched.
+    #[test]
+    fn open_log_text_is_written_only_when_the_lines_change() {
+        let mut app = log_app(true);
+        app.update();
+        assert_eq!(log_text(&mut app), "Deflect");
+        let before = ticks(&mut app);
+        app.update();
+        assert_eq!(ticks(&mut app), before);
+        app.world_mut().resource_mut::<super::CombatLog>().push("Hit", Color::WHITE);
+        app.update();
+        assert_ne!(ticks(&mut app).0, before.0);
+        assert_eq!(log_text(&mut app), "Deflect\nHit");
+    }
+}
+
+#[cfg(test)]
 mod res_node_tests {
     use bevy::prelude::*;
 
@@ -1826,6 +1928,121 @@ mod posture_tests {
         assert_eq!([0.0, 0.69, 0.7, 0.99, 1.0].map(super::posture_state), [0, 0, 1, 1, 2]);
         assert_eq!(super::posture_color(0.5), Color::srgb_u8(142, 123, 60));
         assert_eq!(super::posture_color(1.0), Color::srgb_u8(168, 107, 0));
+    }
+}
+
+#[cfg(test)]
+mod unchanged_write_tests {
+    use bevy::ecs::change_detection::Tick;
+    use bevy::ecs::system::RunSystemOnce;
+    use bevy::prelude::*;
+
+    fn app() -> App {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, AssetPlugin::default(), crate::data::DataPlugin));
+        app
+    }
+
+    fn node_ticks<M: Component>(app: &mut App) -> Vec<Tick> {
+        app.world_mut().query_filtered::<Ref<Node>, With<M>>().iter(app.world()).map(|n| n.last_changed()).collect()
+    }
+
+    /// With no poison or burn on Wolf the build-up icons are left untouched frame after frame:
+    /// a rewritten Node is laid out again by bevy_ui even while it shows nothing.
+    #[test]
+    fn idle_build_up_icons_are_not_rewritten() {
+        let mut app = app();
+        app.add_systems(Update, super::update_wolf_build_up);
+        for ty in 0..2 {
+            app.world_mut().spawn((Node { display: Display::None, ..default() }, super::WolfBuildUp(ty)));
+            app.world_mut().spawn((Node { height: Val::Percent(0.0), ..default() }, super::WolfBuildUpFill(ty)));
+            app.world_mut().spawn((ImageNode::default(), super::WolfBuildUpBright(ty)));
+        }
+        app.update();
+        let before = (node_ticks::<super::WolfBuildUp>(&mut app), node_ticks::<super::WolfBuildUpFill>(&mut app));
+        let img = |app: &mut App| app.world_mut().query::<Ref<ImageNode>>().iter(app.world()).map(|i| i.last_changed()).collect::<Vec<_>>();
+        let img_before = img(&mut app);
+        app.update();
+        app.update();
+        assert_eq!((node_ticks::<super::WolfBuildUp>(&mut app), node_ticks::<super::WolfBuildUpFill>(&mut app)), before);
+        assert_eq!(img(&mut app), img_before);
+    }
+
+    /// With no boss the boss bars' root keeps its Visibility untouched, and a bar width written
+    /// with the value it already has does not mark the Node changed.
+    #[test]
+    fn hidden_boss_bars_and_unchanged_widths_are_not_rewritten() {
+        let mut app = app();
+        app.add_systems(Update, super::update_boss_hud);
+        app.world_mut().spawn((Node::default(), Visibility::Hidden, super::BossRoot));
+        app.update();
+        let vis = |app: &mut App| app.world_mut().query_filtered::<Ref<Visibility>, With<super::BossRoot>>().single(app.world()).unwrap().last_changed();
+        let before = vis(&mut app);
+        app.update();
+        app.update();
+        assert_eq!(vis(&mut app), before);
+
+        let e = app.world_mut().spawn(Node { width: Val::Percent(40.0), ..default() }).id();
+        app.update();
+        let tick = |app: &mut App| app.world().entity(e).get_ref::<Node>().unwrap().last_changed();
+        let t0 = tick(&mut app);
+        let set = |app: &mut App, w: Val| app.world_mut().run_system_once(move |mut q: Query<&mut Node>| for mut n in &mut q { super::set_width(&mut n, w) }).unwrap();
+        set(&mut app, Val::Percent(40.0));
+        assert_eq!(tick(&mut app), t0);
+        set(&mut app, Val::Percent(30.0));
+        assert_ne!(tick(&mut app), t0);
+    }
+
+    /// Each stealth mark knows its own fill and brush (its child and grandchild), so a shown mark
+    /// touches only those and not every other enemy's.
+    #[test]
+    fn a_stealth_mark_links_its_own_fill_and_brush() {
+        let mut app = app();
+        app.init_asset::<Image>();
+        let (a, b) = (app.world_mut().spawn_empty().id(), app.world_mut().spawn_empty().id());
+        app.world_mut()
+            .run_system_once(move |mut c: Commands, assets: Res<AssetServer>| {
+                super::spawn_stealth(&mut c, &assets, a);
+                super::spawn_stealth(&mut c, &assets, b);
+            })
+            .unwrap();
+        let marks: Vec<(Entity, Entity, Entity)> = app.world_mut().query::<(Entity, &super::StealthMark)>().iter(app.world()).map(|(e, m)| (e, m.fill, m.brush)).collect();
+        assert_eq!(marks.len(), 2);
+        assert_ne!(marks[0].1, marks[1].1);
+        for (me, fill, brush) in marks {
+            let w = app.world();
+            assert!(w.entity(fill).contains::<super::StealthFill>() && w.entity(brush).contains::<super::StealthBrush>());
+            assert_eq!(w.entity(fill).get::<ChildOf>().map(|c| c.parent()), Some(me));
+            assert_eq!(w.entity(brush).get::<ChildOf>().map(|c| c.parent()), Some(fill));
+        }
+    }
+
+    /// A shown mark whose meter, size and tint did not change leaves its fill and brush alone.
+    #[test]
+    fn an_unchanged_stealth_meter_is_not_rewritten() {
+        let mut app = app();
+        let fill = app.world_mut().spawn(Node::default()).id();
+        let brush = app.world_mut().spawn((Node::default(), ImageNode::default())).id();
+        let paint = move |app: &mut App, w: f32| {
+            app.world_mut()
+                .run_system_once(move |mut q: Query<(&mut Node, Option<&mut ImageNode>)>| {
+                    let [(mut f, _), (mut b, Some(mut img))] = q.get_many_mut([fill, brush]).unwrap() else { panic!("brush has no image") };
+                    super::paint_stealth(&mut f, &mut b, &mut img, w, 44.9, Color::WHITE.with_alpha(0.95));
+                })
+                .unwrap()
+        };
+        paint(&mut app, 0.5);
+        app.update();
+        let ticks = |app: &mut App| {
+            let w = app.world();
+            (w.entity(fill).get_ref::<Node>().unwrap().last_changed(), w.entity(brush).get_ref::<Node>().unwrap().last_changed(), w.entity(brush).get_ref::<ImageNode>().unwrap().last_changed())
+        };
+        let t0 = ticks(&mut app);
+        paint(&mut app, 0.5);
+        assert_eq!(ticks(&mut app), t0);
+        paint(&mut app, 0.75);
+        assert_ne!(ticks(&mut app).0, t0.0);
+        assert_eq!(app.world().entity(fill).get::<Node>().unwrap().height, Val::Percent(75.0));
     }
 }
 
