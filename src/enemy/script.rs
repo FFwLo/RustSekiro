@@ -984,7 +984,7 @@ pub(super) fn run_scripts(
     mut q: Query<(Entity, &mut Enemy, &mut Actor, &mut Transform, Option<&Scripted>, Option<&mut Phantom>, Option<&mut Visibility>), Without<Player>>,
     mut brains: NonSendMut<super::Brains>,
     wolf_immortal: Option<ResMut<WolfImmortal>>,
-    (dummies, markers, wolf_msg): (Query<&crate::model::Dummies>, Query<&GlobalTransform>, Res<super::WolfMessage>),
+    (dummies, markers, wolf_msg, world_chars): (Query<&crate::model::Dummies>, Query<&GlobalTransform>, Res<super::WolfMessage>, Query<(), With<super::world::WorldChar>>),
 ) {
     let _prof = crate::perf::span("run_scripts");
     let dt = time.delta_secs();
@@ -996,7 +996,9 @@ pub(super) fn run_scripts(
     if bs.run.is_none() {
         let mut stand_in = None;
         for (ent, e, a, _, s, _, _) in &q {
-            if s.is_some() {
+            // (An open-world enemy's map events already run in world.rs's run of its map, the
+            // same EMEVD the boss script holds: a second run would play them twice.)
+            if s.is_some() || world_chars.contains(ent) {
                 continue;
             }
             let row = combat.foe_of(&a).npc_row;

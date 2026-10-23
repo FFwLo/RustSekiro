@@ -868,6 +868,38 @@ pub(crate) fn lady_butterfly_changes_into_her_second_part() {
     assert_eq!(w.resource::<crate::enemy::BossScript>().defeats, 0);
 }
 
+/// Lady Butterfly (50900000) with her boss script taken back, then `world` marks her an
+/// open-world enemy (world.rs WorldChar, her MSB entity 1000800): 30 ticks on, whether a boss
+/// script runs and whether she is Scripted.
+fn butterfly_script_after(world: bool) -> Option<(bool, bool)> {
+    if !std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/extracted/enemies/c5090.json")).exists() {
+        return None;
+    }
+    let mut app = app_cfg("c5090", Some(50900000), Vec::new());
+    let w = app.world_mut();
+    let b = boss_in_play(w);
+    w.resource_mut::<crate::enemy::BossScript>().run = None;
+    w.entity_mut(b).remove::<crate::enemy::script::Scripted>();
+    if world {
+        w.entity_mut(b).insert(crate::enemy::world::WorldChar { map: 0, id: 1000800 });
+    }
+    for _ in 0..30 {
+        app.update();
+    }
+    let w = app.world();
+    Some((w.resource::<crate::enemy::BossScript>().run.is_some(), w.get::<crate::enemy::script::Scripted>(b).is_some()))
+}
+
+/// A boss the open world streams in from the MSB (world.rs) gets no boss-arena script: m10's
+/// events (11005812 bringing in 1000810, Handle Boss Defeat) already run in the map's world run.
+#[test]
+pub(crate) fn open_world_boss_starts_no_boss_script() {
+    let Some(got) = butterfly_script_after(true) else { return };
+    assert_eq!(got, (false, false), "(boss script runs, Scripted)");
+    // The arena fight still starts hers.
+    assert_eq!(butterfly_script_after(false), Some((true, true)));
+}
+
 /// Manual test #5 (timing side): when the Way of Tomoe casts his lightning. 711000_battle.lua
 /// forces Act18 (3043, weight 1e12) while Wolf wears 109031 or 110125: his knockdowns and
 /// get-ups (StandDamageLarge*, *BlowLand, BreakDown, a000_1003xx-1027xx / 1900xx TAE 67), not
