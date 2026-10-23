@@ -117,30 +117,74 @@ fn aim_wire(
     // Without a camera (the sim tests) or with the host aiming, the aim is left as set.
     let (Some((pos, rot)), Ok(w), false) = (view.eye, wolf.single(), aim.host) else { return };
     let prev = aim.target.map(|t| t.index);
+    let foes = enemies.as_ref().map_or(&[][..], |e| &e.0[..]);
+    (aim.target, aim.enemy) = aim_points(&points.0, foes, pos, rot * Vec3::NEG_Z, w.translation, prev);
+}
+
+/// `crate::traversal::grapple_target` over the map's `points` and the enemies and objects open
+/// to the wire (`foes`, appended after the points): the pick, and the enemy the hook hits.
+fn aim_points(
+    points: &[crate::traversal::GrapplePoint],
+    foes: &[crate::enemy::grapple::EnemyGrapple],
+    cam_pos: Vec3,
+    cam_fwd: Vec3,
+    wolf: Vec3,
+    prev: Option<usize>,
+) -> (Option<GrappleTarget>, Option<(Entity, i64)>) {
     // The enemies join the map's points: the hook on their wire dummy, recognised from every
     // side (gap: the enemy rows' recognition angles are not read; taken as all round).
-    let mut pts = points.0.clone();
+    let mut pts = points.to_vec();
     let n = pts.len();
-    let foes = enemies.as_ref().map_or(&[][..], |e| &e.0[..]);
     for g in foes {
-        let fwd = (w.translation - g.hook).with_y(0.0).try_normalize().unwrap_or(Vec3::Z);
+        let fwd = (wolf - g.hook).with_y(0.0).try_normalize().unwrap_or(Vec3::Z);
         pts.push(crate::traversal::GrapplePoint { hook: g.hook, land: g.land, fwd, variation: 0 });
     }
-    aim.target = crate::traversal::grapple_target(pos, rot * Vec3::NEG_Z, w.translation, prev, &pts);
-    aim.enemy = None;
-    if let Some(t) = aim.target.as_mut().filter(|t| t.index >= n) {
-        let g = &foes[t.index - n];
-        // An object's point (the Divine Dragon's trees, o259920-922): ridden like a map point
-        // (WireVariationParam 45 / 0: targetMarkerType 0), its row's arc, nothing hit.
-        if g.object {
-            t.point.variation = g.variation;
-            return;
-        }
-        // An enemy is not ridden: the arc ends by him and Wolf falls on.
-        t.ride = false;
-        t.point.variation = g.variation;
-        aim.enemy = Some((g.entity, g.homing_row));
+    let mut target = crate::traversal::grapple_target(cam_pos, cam_fwd, wolf, prev, &pts);
+    let Some(t) = target.as_mut().filter(|t| t.index >= n) else { return (target, None) };
+    let g = &foes[t.index - n];
+    t.point.variation = g.variation;
+    // An object's point (the Divine Dragon's trees, o259920-922): ridden like a map point
+    // (WireVariationParam 45 / 0: targetMarkerType 0), its row's arc, nothing hit.
+    if g.object {
+        return (target, None);
     }
+    // An enemy is not ridden: the arc ends by him and Wolf falls on.
+    t.ride = false;
+    (target, Some((g.entity, g.homing_row)))
+}
+
+/// A host's hook search (it set `aim.target` to its best map hook) joined by the enemies and
+/// objects open to the wire (`EnemyGrapples`), which only this crate knows: the two picks are
+/// ranked as the game's search ranks its hooks (comparator 0x140efeb60: usable first, then
+/// nearest the screen centre, then nearest Wolf). `last`: the foe aimed the frame before, held
+/// while it stays usable (the search's soft lock). Returns the foe when its point won; the aim
+/// then holds it (`target`, and `enemy` for an enemy as `aim_wire` sets it).
+pub fn host_aim_foes(
+    aim: &mut WireAim,
+    foes: &[crate::enemy::grapple::EnemyGrapple],
+    cam_pos: Vec3,
+    cam_fwd: Vec3,
+    wolf: Vec3,
+    last: Option<Entity>,
+) -> Option<Entity> {
+    let prev = last.and_then(|e| foes.iter().position(|g| g.entity == e));
+    let (Some(t), enemy) = aim_points(&[], foes, cam_pos, cam_fwd, wolf, prev) else { return None };
+    let held = prev == Some(t.index) && t.in_action_range;
+    // The screen distance as the search measures it: the view angles' tangents.
+    let right = cam_fwd.cross(Vec3::Y).try_normalize().unwrap_or(Vec3::X);
+    let up = right.cross(cam_fwd);
+    let rank = |t: &GrappleTarget| {
+        let rel = t.point.hook - cam_pos;
+        let depth = rel.dot(cam_fwd).max(1e-3);
+        (!t.in_action_range, (rel.dot(right) / depth).hypot(rel.dot(up) / depth), t.dist)
+    };
+    let wins = held || aim.target.as_ref().is_none_or(|h| rank(&t).partial_cmp(&rank(h)).is_some_and(|o| o.is_lt()));
+    if !wins {
+        return None;
+    }
+    aim.target = Some(t);
+    aim.enemy = enemy;
+    Some(foes[t.index].entity)
 }
 
 /// Wolf's hook stuck in the enemy (the move start: TAE 901 keeps the rope on the hook) ->
@@ -456,5 +500,49 @@ mod tests {
         assert_eq!(start_index(wolf, Vec3::new(0.0, 15.0, -5.0)), 1);
         assert_eq!(move_start("GroundWireShoot", 1), "GroundWireMoveStart_Up");
         assert_eq!(move_start("AirWireShoot", 2), "AirWireMoveStart_Vertical");
+    }
+
+    fn foe(entity: Entity, hook: Vec3, object: bool) -> crate::enemy::grapple::EnemyGrapple {
+        crate::enemy::grapple::EnemyGrapple { entity, hook, land: hook, variation: 50200, homing_row: 300_050_200, sp_effect: 0, object }
+    }
+
+    /// The host's map hook, usable, `side` metres right of the look at 10 m ahead.
+    fn host_hook(side: f32) -> WireAim {
+        let hook = Vec3::new(side, 2.0, -10.0);
+        let point = crate::traversal::GrapplePoint { hook, land: hook, fwd: Vec3::Z, variation: 0 };
+        let target = GrappleTarget { index: 7, point, dist: hook.length(), in_action_range: true, ride: true };
+        WireAim { target: Some(target), enemy: None, host: true }
+    }
+
+    /// Under a host's search an enemy open to the wire still takes the aim when it is nearer the
+    /// screen centre than the host's hook (the Ogre straight ahead, the map hook off to the side),
+    /// and the hook then hits him (not ridden, his arc row).
+    #[test]
+    fn host_aim_takes_an_enemy_nearer_the_centre() {
+        let ogre = Entity::from_raw_u32(5).unwrap();
+        let mut aim = host_hook(5.0);
+        let won = host_aim_foes(&mut aim, &[foe(ogre, Vec3::new(0.0, 1.5, -8.0), false)], Vec3::new(0.0, 1.5, 4.0), Vec3::NEG_Z, Vec3::ZERO, None);
+        assert_eq!(won, Some(ogre));
+        assert_eq!(aim.enemy, Some((ogre, 300_050_200)));
+        let t = aim.target.unwrap();
+        assert!(t.in_action_range && !t.ride && t.point.variation == 50200);
+        assert!(aim.host);
+    }
+
+    /// The host's hook nearer the centre keeps the aim; an object's point (the Divine Dragon's
+    /// trees) that wins is aimed without an enemy to hit.
+    #[test]
+    fn host_aim_keeps_its_hook_and_objects_hit_nothing() {
+        let ogre = Entity::from_raw_u32(5).unwrap();
+        let mut aim = host_hook(0.0);
+        let won = host_aim_foes(&mut aim, &[foe(ogre, Vec3::new(5.0, 1.5, -8.0), false)], Vec3::new(0.0, 1.5, 4.0), Vec3::NEG_Z, Vec3::ZERO, None);
+        assert_eq!(won, None);
+        assert_eq!(aim.target.unwrap().index, 7);
+        assert_eq!(aim.enemy, None);
+        let tree = Entity::from_raw_u32(6).unwrap();
+        let mut aim = host_hook(5.0);
+        let won = host_aim_foes(&mut aim, &[foe(tree, Vec3::new(0.0, 1.5, -8.0), true)], Vec3::new(0.0, 1.5, 4.0), Vec3::NEG_Z, Vec3::ZERO, None);
+        assert_eq!(won, Some(tree));
+        assert_eq!(aim.enemy, None);
     }
 }

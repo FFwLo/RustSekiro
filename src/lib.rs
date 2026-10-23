@@ -177,7 +177,8 @@ impl Plugin for CombatCorePlugin {
 pub use config::GameConfig;
 pub use paths::{extracted, register_assets, set_root};
 pub use traversal::{GrapplePoint, GrapplePoints, GrappleTarget, LedgeEdge, LedgeEdges};
-pub use wire::WireAim;
+pub use enemy::grapple::{EnemyGrapple, EnemyGrapples};
+pub use wire::{WireAim, host_aim_foes};
 #[cfg(feature = "embed")]
 pub use camera::CameraPlugin;
 #[cfg(all(feature = "embed", not(feature = "host")))]
