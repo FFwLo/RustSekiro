@@ -776,6 +776,49 @@ pub(crate) fn up_from_an_idol_the_stick_moves_wolf_every_way() {
     }
 }
 
+/// Up from an idol with the stick held: the stand-up (StatueAttachEnd, 40 frames) gives way to
+/// the move when its move window opens at frame 24, not at its end (#277).
+#[test]
+pub(crate) fn up_from_an_idol_the_held_stick_moves_at_the_stand_ups_window() {
+    let _list = IDOL_LIST.lock().unwrap_or_else(|e| e.into_inner());
+    use crate::idol::{Cmd, Idol, IDOLS};
+    let mut app = app();
+    move_enemy_far(&mut app);
+    run(&mut app, 10);
+    let a = Idol { name: "A".into(), pos: Vec3::new(600.0, 0.0, 0.0), out: Vec3::X, ..Default::default() };
+    let spot = a.spot();
+    *IDOLS.write().unwrap() = vec![a];
+    place_wolf(&mut app, spot + Vec3::X * 0.5, 0.0, false);
+    run(&mut app, 2);
+    app.world_mut().resource_mut::<PadInput>().press(Action::Interact);
+    run(&mut app, 90);
+    assert_eq!(player_actor(&mut app).0, "StatueAttachLoop");
+    {
+        let w = app.world_mut();
+        let mut q = w.query::<&mut crate::player::Player>();
+        q.single_mut(w).unwrap().seat.cmd = Some(Cmd::Leave);
+    }
+    app.world_mut().resource_mut::<PadInput>().stick = Vec2::new(0.0, 1.0);
+    let mut states = Vec::new();
+    let mut up_for = 0;
+    for _ in 0..120 {
+        app.update();
+        let s = player_actor(&mut app).0;
+        if s == "StatueAttachEnd" {
+            up_for += 1;
+        }
+        if states.last() != Some(&s) {
+            states.push(s);
+        }
+    }
+    IDOLS.write().unwrap().clear();
+    println!("up from the idol, stick held: {states:?}, {up_for} ticks standing up");
+    assert!(states.contains(&"StatueAttachEnd".to_string()), "{states:?}");
+    // Frame 24 at 30 fps is 48 ticks; the window's one-frame latch adds two. The whole clip is 80.
+    assert!((48..=56).contains(&up_for), "stood up for {up_for} ticks: {states:?}");
+    assert!(!states.last().is_some_and(|s| s.starts_with("Statue") || s == "StandIdle"), "{states:?}");
+}
+
 /// Standing, the stick pushed behind Wolf: the quick-turn move start (StandQuickTurnRunStart*180,
 /// or with walk held StandQuickTurnWalkStart*180) turns him and he moves off the other way.
 #[test]

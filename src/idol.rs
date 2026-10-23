@@ -352,9 +352,13 @@ fn seat_tick(seat: &mut Seat, p: &mut crate::player::Player, a: &mut crate::acto
             a.play_state(d, "StatueAttachEnd");
             seat.phase = Phase::Leaving;
         }
-        Phase::Leaving if ended => {
+        // The stand-up's cancel windows (StatueAttachEnd: move, attack, jump, step and guard from
+        // frame 24 of 40) hand Wolf back to the player code, which cancels the rest or plays it out.
+        Phase::Leaving if ended || d.flag(&a.anim, a.t, crate::player::FLAG_ACCEPT_MOVE) => {
             seat.idol = None;
-            a.play("StandIdle", "");
+            if ended {
+                a.play("StandIdle", "");
+            }
             return false;
         }
         _ => {}
