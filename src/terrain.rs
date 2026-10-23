@@ -83,6 +83,12 @@ pub trait WorldCollision: Send + Sync {
     fn enemy_slide(&self, feet: [f32; 3], delta: [f32; 2]) -> [f32; 2] {
         self.slide(feet, delta)
     }
+    /// [`WorldCollision::enemy_slide`] for a body `radius` wide and `height` tall: an NPC's map
+    /// proxy is its NpcParam hitRadius / hitHeight (the exe's FUN_140bc2e00 -> FUN_140bc1b20,
+    /// row +0x14 / +0x10), not Wolf's 0.4 by 1.5. Wolf's size by default.
+    fn enemy_slide_sized(&self, feet: [f32; 3], delta: [f32; 2], _radius: f32, _height: f32) -> [f32; 2] {
+        self.enemy_slide(feet, delta)
+    }
 }
 
 /// HitMtrlParam's water planes (Paramdex names): 20 puddle, 21 walkable, 22 dive, 23 / 24 poison
@@ -438,12 +444,13 @@ impl Terrain {
     /// [`Terrain::slide`] keeping to the fall-prevention walls `protect` asks for (the host's
     /// world has them; the own map's collision does not).
     pub fn slide_protected(&self, feet: Vec3, delta: Vec2, protect: u8) -> Vec2 {
-        self.slide_as(feet, delta, protect, false)
+        self.slide_as(feet, delta, protect, None)
     }
 
-    /// The slide for a body of either side: an enemy's keeps to the world's enemy-only walls
-    /// ([`WorldCollision::enemy_slide`]), Wolf's to the fall-prevention walls `protect` asks for.
-    pub fn slide_as(&self, feet: Vec3, delta: Vec2, protect: u8, enemy: bool) -> Vec2 {
+    /// The slide for a body of either side: an enemy's (`enemy`: its map body's radius and
+    /// height) keeps to the world's enemy-only walls ([`WorldCollision::enemy_slide_sized`]),
+    /// Wolf's to the fall-prevention walls `protect` asks for.
+    pub fn slide_as(&self, feet: Vec3, delta: Vec2, protect: u8, enemy: Option<[f32; 2]>) -> Vec2 {
         let len = delta.length();
         if len < 1e-6 {
             return Vec2::ZERO;
@@ -455,7 +462,10 @@ impl Terrain {
         let gate_tris: Vec<Vec<u32>> = gates.iter().map(|g| (0..g.tris.len() as u32).collect()).collect();
         // sekiro-rs's world slides the body; the fog walls on it push it back out after.
         if let Some(w) = &self.world {
-            let moved = Vec2::from(if enemy { w.enemy_slide(feet.to_array(), delta.to_array()) } else { w.slide_protected(feet.to_array(), delta.to_array(), protect) });
+            let moved = Vec2::from(match enemy {
+                Some([radius, height]) => w.enemy_slide_sized(feet.to_array(), delta.to_array(), radius, height),
+                None => w.slide_protected(feet.to_array(), delta.to_array(), protect),
+            });
             let mut p = feet + Vec3::new(moved.x, 0.0, moved.y);
             for _ in 0..4 {
                 let push = gates.iter().zip(&gate_tris).map(|(g, t)| g.push_out(p, t)).max_by(|a, b| a.length_squared().total_cmp(&b.length_squared())).unwrap_or(Vec2::ZERO);
@@ -649,7 +659,17 @@ pub(crate) fn bodies_on_terrain(combat: Res<crate::data::Combat>, mut commands: 
         // first wall and undid the warp (the fight's "3 fps", 2026-10-12 bug hunt).
         if delta.length_squared() > 1e-10 && delta.length_squared() <= TELEPORT * TELEPORT {
             let _p = crate::perf::span("terrain_slide");
-            let moved = t.slide_as(feet_prev, delta, a.fall_protect, a.side == Side::Enemy);
+            // An enemy's map body: its NpcParam hitRadius / hitHeight (Wolf's size for a row
+            // without one).
+            let enemy = (a.side == Side::Enemy).then(|| {
+                let row = combat.param("NpcParam", combat.foe_of(&a).npc_row);
+                let size = |k: &str, or: f32| row[k].as_f64().map_or(or, |v| v as f32);
+                match [size("hitRadius", 0.0), size("hitHeight", 0.0)] {
+                    [r, h] if r > 0.0 && h > 0.0 => [r, h],
+                    _ => [RADIUS, 2.0 * CAPSULE_HALF_HEIGHT],
+                }
+            });
+            let moved = t.slide_as(feet_prev, delta, a.fall_protect, enemy);
             tf.translation.x = prev.x + moved.x;
             tf.translation.z = prev.z + moved.y;
         }
