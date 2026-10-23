@@ -1640,3 +1640,36 @@ pub(crate) fn attack_late_in_the_deflect_release_is_still_the_reverse_combo() {
     let after = attack_after_deflect_release(21);
     assert!(after.iter().any(|s| s == "GroundAttackCombo1") && !after.iter().any(|s| s == "GroundAttackCombo1Reverse"), "{after:?}");
 }
+
+/// AKJama/sekiro-rs#32: the game's script (c0000 `_UpdateFallProtection`) keeps the strong
+/// fall-prevention wall up while Wolf walks or runs, and asks for none in SprintLoop
+/// (g_paramHkbState 90110 = {0, 0}): a sprint into a trunk's edge holds Wolf only until the
+/// sprint loop starts, then he runs off. No timer in the exe (FUN_140bc58b0 / FUN_140bc68d0).
+#[test]
+pub(crate) fn the_sprint_loop_drops_the_fall_prevention_wall() {
+    let mut app = app();
+    move_enemy_far(&mut app);
+    let protect = |app: &mut App| {
+        let world = app.world_mut();
+        let mut q = world.query_filtered::<&Actor, With<Player>>();
+        let a = q.single(world).unwrap();
+        (a.state.clone(), a.fall_protect)
+    };
+    app.world_mut().resource_mut::<PadInput>().stick = Vec2::new(0.0, 1.0);
+    let mut walking = Vec::new();
+    for _ in 0..90 {
+        app.update();
+        walking.push(protect(&mut app));
+    }
+    assert!(walking.iter().filter(|(s, _)| s == "Locomotion").count() > 30, "{walking:?}");
+    assert!(walking[1..].iter().all(|(_, p)| p & 1 != 0), "{walking:?}");
+    app.world_mut().resource_mut::<PadInput>().dodge_held = true;
+    let mut sprint = Vec::new();
+    for _ in 0..240 {
+        app.update();
+        sprint.push(protect(&mut app));
+    }
+    let looping: Vec<_> = sprint.iter().filter(|(s, _)| s == "SprintLoop").collect();
+    assert!(looping.len() > 30, "{sprint:?}");
+    assert!(looping.iter().all(|(_, p)| *p == 0), "{sprint:?}");
+}
