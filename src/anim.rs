@@ -709,40 +709,56 @@ fn apply_model_lag(
 /// feet's height difference, 0, TAE 944's limit) at 0.2 per 30 fps frame (DAT_143b01378,
 /// FUN_1407dc180), on RootPos, never while TAE flag 113 (HeightCorrection) is up; with no 944
 /// (standing, walking, running) it is 0. On the ground only, not hanging, swimming or on the wire.
-/// gaps: which 944 float goes with which foot, the sign of the exe's RootPos term (a drop here),
-/// the ankle pitch / roll (ankleRotationGain 0.2, +-30 deg) and enemies' foot IK (44 of 74
-/// behaviors carry it). `SHINOBI_FOOT_IK=0` turns it off (to compare).
+/// gaps: which 944 float goes with which foot, the sign of the exe's RootPos term (a drop here)
+/// and the ankle pitch / roll (ankleRotationGain 0.2, +-30 deg). Enemies whose behaviour carries
+/// foot IK ([`enemy_foot_ik`]) get the same, with their own values, cast on the detailed ground
+/// near Wolf ([`crate::terrain::Terrain::enemy_foot_floor`]). `SHINOBI_FOOT_IK=0` turns it off
+/// (to compare).
 #[allow(clippy::type_complexity)]
 fn foot_ik(
     time: Res<Time>,
     lib: Res<AnimLib>,
     combat: Res<Combat>,
-    actors: Query<(Entity, &Actor, &Transform, &Skeleton, &crate::player::Player)>,
+    actors: Query<(Entity, &Actor, &Transform, &Skeleton, Option<&crate::player::Player>)>,
     mut bones: Query<&mut Transform, Without<Actor>>,
     mut state: Local<HashMap<Entity, FootIk>>,
-    mut ids: Local<Option<Option<[usize; 7]>>>,
+    mut ids: Local<HashMap<(usize, usize), Option<[usize; 7]>>>,
 ) {
-    const RAY: f32 = 0.8;
-    const ANKLE_RANGE: f32 = 0.5;
     static OFF: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::env::var("SHINOBI_FOOT_IK").is_ok_and(|v| v == "0"));
     if *OFF {
         return;
     }
     let Some(terrain) = crate::terrain::terrain() else { return };
-    let l = &lib.player;
-    // RootPos, then thigh, calf, foot of each leg.
-    let Some([root_pos, lt, lc, lf, rt, rc, rf]) = *ids.get_or_insert_with(|| {
-        let at = |n: &str| l.bones.iter().position(|b| b.name == n);
-        Some([at("RootPos")?, at("L_Thigh")?, at("L_Calf")?, at("L_Foot")?, at("R_Thigh")?, at("R_Calf")?, at("R_Foot")?])
-    }) else {
-        return;
-    };
-    let dt = time.delta_secs();
-    let step = |gain: f32| 1.0 - (1.0 - gain).powf(dt * 30.0);
+    state.retain(|e, _| actors.contains(*e));
     for (e, a, tf, skel, p) in &actors {
+        // Off its due tick (Actor::lod) it was not posed (apply_twists).
+        if !a.lod_due {
+            continue;
+        }
+        let dt = time.delta_secs() * a.lod.max(1) as f32;
+        let step = |gain: f32| 1.0 - (1.0 - gain).powf(dt * 30.0);
+        let setup = match p {
+            Some(_) => WOLF_FOOT_IK,
+            None => match combat.kinds.get(a.kind).and_then(|k| enemy_foot_ik(&k.foe.chr).or_else(|| enemy_foot_ik(&k.foe.anim_chr))) {
+                Some(s) => s,
+                None => continue,
+            },
+        };
+        let l = lib.lib(a);
+        // The body's root (Wolf's RootPos, the enemies' Root), then thigh, calf, foot of each leg;
+        // per skeleton.
+        let Some([root_pos, lt, lc, lf, rt, rc, rf]) = *ids.entry((std::ptr::from_ref(l) as usize, l.bones.len())).or_insert_with(|| {
+            let at = |n: &str| l.bones.iter().position(|b| b.name == n);
+            Some([at("RootPos").or_else(|| at("Root"))?, at("L_Thigh")?, at("L_Calf")?, at("L_Foot")?, at("R_Thigh")?, at("R_Calf")?, at("R_Foot")?])
+        }) else {
+            continue;
+        };
+        if skel.bones.len() < l.bones.len() {
+            continue;
+        }
         let st = state.entry(e).or_default();
-        let on = !a.airborne && p.dock.is_none() && p.swim.is_none() && p.wire.is_none() && a.hp > 0.0;
-        st.weight += (f32::from(u8::from(on)) - st.weight) * step(0.2);
+        let on = !a.airborne && a.hp > 0.0 && a.lift_ground.is_none() && p.is_none_or(|p| p.dock.is_none() && p.swim.is_none() && p.wire.is_none());
+        st.weight += (f32::from(u8::from(on)) - st.weight) * step(setup.on_off);
         if st.weight < 1e-3 {
             st.offset = [0.0; 2];
             st.drop = 0.0;
@@ -766,11 +782,13 @@ fn foot_ik(
         let mut want = [0.0f32; 2];
         for (k, &foot) in [lf, rf].iter().enumerate() {
             let Some(f) = global(&bones, foot) else { continue };
-            let hit = terrain.foot_floor(f.translation.x, f.translation.z, f.translation.y.max(ground) + RAY).filter(|h| *h >= f.translation.y.min(ground) - RAY);
-            want[k] = hit.map_or(0.0, |h| (h - ground).clamp(-ANKLE_RANGE, ANKLE_RANGE));
+            let (x, z, top) = (f.translation.x, f.translation.z, f.translation.y.max(ground) + setup.ray_up);
+            let hit = if p.is_some() { terrain.foot_floor(x, z, top) } else { terrain.enemy_foot_floor(x, z, top) };
+            let hit = hit.filter(|h| *h >= f.translation.y.min(ground) - setup.ray_down);
+            want[k] = hit.map_or(0.0, |h| (h - ground).clamp(setup.ankle_min, setup.ankle_max));
         }
         for k in 0..2 {
-            let gain = if want[k] > st.offset[k] { 0.2 } else { 1.0 };
+            let gain = if want[k] > st.offset[k] { setup.ascending } else { setup.descending };
             st.offset[k] += (want[k] - st.offset[k]) * step(gain);
         }
         // The pelvis drop (TAE 944's limits; none without one or under flag 113).
@@ -812,6 +830,50 @@ fn foot_ik(
             }
         }
     }
+}
+
+/// One behaviour's foot IK values: the hkbFootIkDriverInfo's ray lengths (raycastDistanceUp /
+/// Down) and ankle limits (minAnkleHeightMS / maxAnkleHeightMS), and the
+/// hkbFootIkControlsModifier's gains (groundAscendingGain, groundDescendingGain, onOffGain).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct FootIkSetup {
+    pub ray_up: f32,
+    pub ray_down: f32,
+    pub ankle_min: f32,
+    pub ankle_max: f32,
+    pub ascending: f32,
+    pub descending: f32,
+    pub on_off: f32,
+}
+
+/// Wolf's (c0000.hkx).
+pub(crate) const WOLF_FOOT_IK: FootIkSetup = FootIkSetup { ray_up: 0.8, ray_down: 0.8, ankle_min: -0.5, ankle_max: 0.5, ascending: 0.2, descending: 1.0, on_off: 0.2 };
+
+/// An enemy's foot IK, from its behaviour (chr/c####.behbnd: Behaviors_c####.hkx's
+/// hkbFootIkControlsModifier, Characters_c####.hkx's hkbFootIkDriverInfo): the two-leg ones
+/// whose legs end in the Foot_Target chains, as Wolf's. None for the 27 without a driver info
+/// (c1000, the soldiers' c1200 family, most bosses' helpers ...), the two with a controls
+/// modifier only (c1040, c1140: no driver, no IK) and, for now, the four-legged c1100, c1150,
+/// c1370 and c5080 (toe and hand chains). Every one has `enable` 1 with no binding (always on),
+/// onOffGain 0.2 and groundDescendingGain 1.
+pub(crate) fn enemy_foot_ik(chr: &str) -> Option<FootIkSetup> {
+    // (raycastDistanceUp, raycastDistanceDown, minAnkleHeightMS, maxAnkleHeightMS,
+    //  groundAscendingGain, groundDescendingGain, onOffGain)
+    let (ray_up, ray_down, ankle_min, ankle_max, ascending, descending, on_off) = match chr {
+        "c1010" | "c1020" | "c1050" | "c1060" | "c1190" | "c1220" | "c1400" | "c1500" | "c1550" => (0.7, 0.7, -0.7, 0.7, 0.5, 1.0, 0.2),
+        "c1030" | "c1080" | "c1130" | "c1300" | "c1700" | "c5000" | "c5060" | "c5090" | "c5400" | "c7000" | "c7010" | "c7100" | "c7110" | "c7200" => (0.7, 0.7, -0.7, 0.7, 1.0, 1.0, 0.2),
+        "c1070" => (0.7, 1.2, -0.7, 0.7, 1.0, 1.0, 0.2),
+        "c1110" | "c1120" => (0.5, 0.5, -0.5, 0.5, 0.5, 1.0, 0.2),
+        "c1180" => (0.7, 1.2, -0.7, 0.7, 0.5, 1.0, 0.2),
+        "c1240" | "c1250" | "c1310" | "c1360" | "c1450" | "c1470" => (0.7, 0.7, -0.7, 0.7, 0.2, 1.0, 0.2),
+        "c1350" => (0.7, 1.0, -0.7, 0.7, 1.0, 1.0, 0.2),
+        "c5020" => (0.7, 1.2, -0.1, 0.7, 1.0, 1.0, 0.2),
+        "c5100" | "c7020" => (0.8, 2.0, -0.8, 0.8, 1.0, 1.0, 0.2),
+        "c7300" => (0.5, 0.8, -0.1, 0.7, 1.0, 1.0, 0.2),
+        "c7400" => (0.5, 0.8, -0.7, 0.7, 1.0, 1.0, 0.2),
+        _ => return None,
+    };
+    Some(FootIkSetup { ray_up, ray_down, ankle_min, ankle_max, ascending, descending, on_off })
 }
 
 /// Foot IK's per-character state: each foot's eased ground offset, the pelvis drop and the fade.
@@ -1143,5 +1205,29 @@ mod foot_ik_tests {
         let knee2 = hip + thigh * (knee - hip);
         let ankle2 = knee2 + calf * (thigh * (ankle - knee));
         assert!(ankle2.y < 0.0 && ankle2.x.abs() < 1e-3, "{ankle2}");
+    }
+
+    /// Enemies' foot IK comes from their behaviours: the Ashina soldier family (c1010) eases up at
+    /// 0.5 with 0.7 m rays, c1000 and the four-legged ones have none; each two-leg one's skeleton
+    /// has the leg chain the solve turns.
+    #[test]
+    fn enemy_foot_ik_follows_each_behaviour() {
+        let c1010 = enemy_foot_ik("c1010").unwrap();
+        assert_eq!((c1010.ray_up, c1010.ray_down, c1010.ankle_max, c1010.ascending), (0.7, 0.7, 0.7, 0.5));
+        assert_eq!(enemy_foot_ik("c5020").map(|s| s.ankle_min), Some(-0.1));
+        for none in ["c1000", "c1040", "c1100", "c1200", "c0000"] {
+            assert_eq!(enemy_foot_ik(none), None, "{none}");
+        }
+        let dir = crate::paths::root().join("extracted");
+        for chr in ["c1010", "c1050", "c1300", "c5000"] {
+            let path = dir.join(format!("anim_{chr}.bin"));
+            if !path.exists() {
+                continue;
+            }
+            let lib = load(&path);
+            for bone in ["Root", "L_Thigh", "L_Calf", "L_Foot", "R_Thigh", "R_Calf", "R_Foot"] {
+                assert!(lib.bones.iter().any(|b| b.name == bone), "{chr} {bone}");
+            }
+        }
     }
 }

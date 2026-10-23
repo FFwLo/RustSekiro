@@ -72,6 +72,12 @@ pub trait WorldCollision: Send + Sync {
     fn enemy_floor(&self, x: f32, z: f32, top: f32) -> Option<f32> {
         self.floor_hit(x, z, top).map(|h| h.0)
     }
+    /// The ground an enemy's foot IK casts onto: [`WorldCollision::foot_floor`]'s detailed ground
+    /// where the world keeps it (around Wolf; an enemy's feet never move where that is kept),
+    /// else the enemy floor.
+    fn enemy_foot_floor(&self, x: f32, z: f32, top: f32) -> Option<f32> {
+        self.enemy_floor(x, z, top)
+    }
     /// A slide as the enemies take it: stopped by the enemy-only walls too (the ones that keep
     /// them off cliffs and in their areas), else the body's.
     fn enemy_slide(&self, feet: [f32; 3], delta: [f32; 2]) -> [f32; 2] {
@@ -376,6 +382,14 @@ impl Terrain {
     pub fn foot_floor(&self, x: f32, z: f32, top: f32) -> Option<f32> {
         match &self.world {
             Some(w) => w.foot_floor(x, z, top),
+            None => self.floor(x, z, top),
+        }
+    }
+
+    /// [`WorldCollision::enemy_foot_floor`] on this collision.
+    pub fn enemy_foot_floor(&self, x: f32, z: f32, top: f32) -> Option<f32> {
+        match &self.world {
+            Some(w) => w.enemy_foot_floor(x, z, top),
             None => self.floor(x, z, top),
         }
     }
