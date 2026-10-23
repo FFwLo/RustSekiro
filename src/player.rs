@@ -418,9 +418,49 @@ pub fn is_fall_return(state: &str) -> bool {
 /// The exe's fall-return point (FUN_140a75f00 every frame, CSGame update): a ring of the last 5
 /// grounded positions, and CSFallDeadStep::STEP_WarpPlayer (FUN_1411d70e0, via FUN_140a71020)
 /// puts Wolf at the oldest, so a ledge or wall he only touched on the way down is not where he
-/// comes back (AKJama/sekiro-rs#201). gap: its other gates (the ground probe's slope test, a
-/// collision's MSB UnkT17, none set on m11_00) are not modelled.
+/// comes back (AKJama/sekiro-rs#201). Its spot gate is `safe_spot`. gap: the collision's MSB
+/// UnkT17 gate (none set on m11_00) is not modelled.
 const SAFE_RING: usize = 5;
+
+/// Whether Wolf's spot can enter the fall-return ring: a walkable floor (the 60 degree slope
+/// limit, `Terrain::floor`) right under his feet. The exe's ring takes a frame only while
+/// FUN_140a00b40 holds (chr +0x1a12 bit 7): the physics module's ground contact without its slide
+/// flag (+0xa48) and a map collision hit under the feet, so resting against a slope too steep to
+/// stand on below a cliff is no return point (#201). Without a map every grounded spot is.
+fn safe_spot(centre: Vec3, terrain: Option<&crate::terrain::Terrain>) -> bool {
+    const GAP: f32 = 0.25;
+    let Some(t) = terrain else { return true };
+    let feet = centre.y - CAPSULE_HALF_HEIGHT;
+    t.floor(centre.x, centre.z, feet + GAP).is_some_and(|y| feet - y <= GAP)
+}
+
+#[cfg(test)]
+mod safe_spot_tests {
+    use super::*;
+
+    /// A 70 degree slope (too steep to stand on) under a cliff is no return point; the walkable
+    /// floor above it is, and so is any spot without a map.
+    #[test]
+    fn a_slope_too_steep_to_stand_on_is_no_return_point() {
+        // A flat top at y 0 (x < 0), then a 70 degree face falling toward +x.
+        let drop = 10.0;
+        let run = drop / 70f32.to_radians().tan();
+        let verts = vec![
+            Vec3::new(-10.0, 0.0, -5.0),
+            Vec3::new(0.0, 0.0, -5.0),
+            Vec3::new(0.0, 0.0, 5.0),
+            Vec3::new(-10.0, 0.0, 5.0),
+            Vec3::new(run, -drop, -5.0),
+            Vec3::new(run, -drop, 5.0),
+        ];
+        let t = crate::terrain::Terrain::from_tris(verts, [([0, 1, 2], 0), ([0, 2, 3], 0), ([1, 4, 5], 0), ([1, 5, 2], 0)].into_iter());
+        let on = |x: f32, y: f32| Vec3::new(x, y + CAPSULE_HALF_HEIGHT, 0.0);
+        assert!(safe_spot(on(-3.0, 0.0), Some(&t)), "the cliff top");
+        let x = run / 2.0;
+        assert!(!safe_spot(on(x, -drop / 2.0), Some(&t)), "half way down the face");
+        assert!(safe_spot(on(x, -drop / 2.0), None), "no map");
+    }
+}
 /// Falling this far with no ground below ends in the fall-return death (gap: HitMtrlParam's default
 /// fallDeathDist stands in for the exe's void rule).
 const FALL_VOID_DROP: f32 = 40.0;
@@ -3933,7 +3973,7 @@ fn decide(
     if !a.airborne {
         // HitMtrlParam 20-24 / 35-38 / 45-47 are water, swamp and underwater floors (not a safe spot).
         let water = crate::terrain::floor_material(tf.translation).is_some_and(|m| matches!(m, 20..=24 | 35..=38 | 45..=47));
-        if !water && a.state != "Grabbed" && a.hp > 0.0 {
+        if !water && a.state != "Grabbed" && a.hp > 0.0 && safe_spot(tf.translation, crate::terrain::terrain().as_deref()) {
             p.safe_ring.push_back(tf.translation);
             if p.safe_ring.len() > SAFE_RING {
                 p.safe_ring.pop_front();
