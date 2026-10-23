@@ -712,6 +712,29 @@ fn closest_on_triangle(p: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Vec3 {
 /// or grapple pull); a longer one is a teleport and skips the wall slide.
 pub const TELEPORT: f32 = 2.0;
 
+/// The floor a body that moved from `prev_feet` to `now_feet` in one go stands on, walked along
+/// the move with the per-tick rule (each sample's floor at most STEP_HEIGHT over the last, at
+/// most FALL_START_DROP under it); `None` where the walk stops on a rise or drop past that.
+/// An enemy on a slow update level (Actor::lod, up to every 30th tick) takes up to 30 ticks'
+/// move at once, 2-2.5 m when running, so one query at the end looked only 0.5 m over its old
+/// feet: up a slope or stairs it found no floor, fell inside the hill and died "into the void".
+/// The sub-step keeps the rise under STEP_HEIGHT and the drop under FALL_START_DROP on the
+/// steepest walkable slope (MAX_SLOPE_DEGREES), so a body never snaps up onto a bridge or
+/// balcony over it, as scaling STEP_HEIGHT by the level would.
+pub(crate) fn follow_floor(t: &Terrain, prev_feet: Vec3, now_feet: Vec3, enemy: bool) -> Option<f32> {
+    let sub = crate::player::FALL_START_DROP.min(STEP_HEIGHT) / MAX_SLOPE_DEGREES.to_radians().tan();
+    let delta = Vec2::new(now_feet.x - prev_feet.x, now_feet.z - prev_feet.z);
+    let n = (delta.length() / sub).ceil().max(1.0) as u32;
+    let mut h = now_feet.y;
+    for i in 1..=n {
+        let p = Vec2::new(prev_feet.x, prev_feet.z) + delta * (i as f32 / n as f32);
+        let top = h + STEP_HEIGHT;
+        let floor = if enemy { t.enemy_floor(p.x, p.y, top) } else { t.floor(p.x, p.y, top) };
+        h = floor.filter(|f| *f >= h - crate::player::FALL_START_DROP)?;
+    }
+    Some(h)
+}
+
 /// Where the actor was before this tick's movement, for the wall slide.
 #[derive(Component)]
 pub struct OnTerrain {
@@ -768,7 +791,12 @@ pub(crate) fn bodies_on_terrain(combat: Res<crate::data::Combat>, mut commands: 
         if !a.airborne && !lifted && a.lift_ground.is_none() {
             let feet = tf.translation.y - CAPSULE_HALF_HEIGHT;
             let pf = crate::perf::span("terrain_floor");
-            let floor = if a.side == Side::Enemy { t.enemy_floor(tf.translation.x, tf.translation.z, feet + STEP_HEIGHT) } else { t.floor(tf.translation.x, tf.translation.z, feet + STEP_HEIGHT) };
+            let enemy = a.side == Side::Enemy;
+            let single = || if enemy { t.enemy_floor(tf.translation.x, tf.translation.z, feet + STEP_HEIGHT) } else { t.floor(tf.translation.x, tf.translation.z, feet + STEP_HEIGHT) };
+            // A body on a slow update level walks its whole move's floor (`follow_floor`); a
+            // warp (longer than TELEPORT a tick) keeps the single query at its end.
+            let walked = a.lod > 1 && delta.length() <= TELEPORT * a.lod as f32;
+            let floor = if walked { follow_floor(&t, feet_prev.with_y(feet), tf.translation - Vec3::Y * CAPSULE_HALF_HEIGHT, enemy).or_else(single) } else { single() };
             drop(pf);
             // A body follows the floor down only FALL_START_DROP (HKS BEH_R_FALL: a smaller drop
             // never leaves the move state, so following it is the same); a deeper one falls
@@ -835,5 +863,27 @@ mod fall_tests {
         let centre = |feet: f32| Vec3::new(0.0, feet + CAPSULE_HALF_HEIGHT, 0.0);
         assert_eq!(t.landing(centre(9.4), 0.7), 10.0);
         assert!(t.landing(centre(5.0), 0.7) < -50.0);
+    }
+
+    /// An enemy on update level 30 (enemy/world.rs, 0.5 s a step) running 4.5 m/s up a 30 deg
+    /// ramp moves 2.25 m at once: walking the move puts it on the ramp 1.3 m up (2.25 x tan 30),
+    /// not on a ledge 2.5 m over it, where the one query at the end found no floor at all (it
+    /// fell inside the hill and died).
+    #[test]
+    fn a_slow_update_body_follows_a_slope_it_ran_up_in_one_step() {
+        let rise = 30f32.to_radians().tan();
+        let end = 2.25 * rise;
+        let mut verts = vec![Vec3::new(0.0, 0.0, -5.0), Vec3::new(10.0, 10.0 * rise, -5.0), Vec3::new(10.0, 10.0 * rise, 5.0), Vec3::new(0.0, 0.0, 5.0)];
+        let y = end + 2.5;
+        verts.extend([Vec3::new(1.5, y, -1.0), Vec3::new(3.0, y, -1.0), Vec3::new(3.0, y, 1.0), Vec3::new(1.5, y, 1.0)]);
+        let t = Terrain::from_tris(verts, [([0, 2, 1], 45), ([0, 3, 2], 45), ([4, 6, 5], 45), ([4, 7, 6], 45)].into_iter());
+        let (from, to) = (Vec3::ZERO, Vec3::new(2.25, 0.0, 0.0));
+        let h = follow_floor(&t, from, to, true).expect("the ramp");
+        // (floor_tri's 0.08 m foot spread reads the ramp up to 0.05 m higher)
+        assert!((h - end).abs() < 0.06, "{h} vs {end}");
+        assert!(t.enemy_floor(to.x, to.z, to.y + STEP_HEIGHT).is_none(), "the single query finds nothing");
+        // Down the same ramp in one step too, and a full-rate step is the single query.
+        assert!((follow_floor(&t, Vec3::new(2.25, end, 0.0), Vec3::new(0.5, end, 0.0), true).unwrap() - 0.5 * rise).abs() < 0.06);
+        assert!((follow_floor(&t, Vec3::ZERO, Vec3::new(0.1, 0.0, 0.0), false).unwrap() - 0.1 * rise).abs() < 0.06);
     }
 }
