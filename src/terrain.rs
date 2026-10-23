@@ -170,6 +170,15 @@ pub fn ground_y(centre: Vec3) -> f32 {
     t.floor(centre.x, centre.z, feet + STEP_HEIGHT).or_else(|| t.floor(centre.x, centre.z, f32::INFINITY)).unwrap_or(feet - 100.0)
 }
 
+/// The floor a falling body lands on: the highest one no higher than its feet plus what it fell
+/// in a tick (`fell`, at least STEP_HEIGHT). A fast fall (30 m/s is 0.5 m a tick) no longer
+/// passes a thin floor between two ticks' checks, and with no floor below there is none: it
+/// keeps falling instead of [`ground_y`]'s snap up onto the highest floor overhead (a bridge
+/// over the void it fell past).
+pub fn landing_y(centre: Vec3, fell: f32) -> f32 {
+    terrain().map_or(0.0, |t| t.landing(centre, fell))
+}
+
 /// Whether an actor centre moving `from` -> `to` passes a fall-return event wall (the host's
 /// world only; the own map has none).
 pub fn fall_return_wall(from: Vec3, to: Vec3) -> bool {
@@ -314,6 +323,12 @@ impl Terrain {
 
     pub fn install(self) {
         *TERRAIN.get_or_init(|| RwLock::new(None)).write().unwrap() = Some(Arc::new(self));
+    }
+
+    /// [`landing_y`] on this terrain.
+    fn landing(&self, centre: Vec3, fell: f32) -> f32 {
+        let feet = centre.y - CAPSULE_HALF_HEIGHT;
+        self.floor(centre.x, centre.z, feet + STEP_HEIGHT.max(fell + 0.05)).unwrap_or(feet - 100.0)
     }
 
     pub fn triangle_count(&self) -> usize {
@@ -738,5 +753,17 @@ mod fall_tests {
         // With no bed under it the plane is the floor.
         let t = Terrain::from_tris(quad(3.0).to_vec(), [([0, 2, 1], 22), ([0, 3, 2], 22)].into_iter());
         assert_eq!(t.floor(0.0, 0.0, 10.0), Some(3.0));
+    }
+
+    /// A body falling 0.7 m a tick (about 42 m/s) whose feet passed 0.6 m below a thin floor
+    /// lands on it; one that fell past a bridge into the void keeps falling instead of being put
+    /// back on top of it.
+    #[test]
+    fn a_fast_fall_lands_on_a_thin_floor_and_never_snaps_up_onto_one() {
+        let quad = [Vec3::new(-5.0, 10.0, -5.0), Vec3::new(5.0, 10.0, -5.0), Vec3::new(5.0, 10.0, 5.0), Vec3::new(-5.0, 10.0, 5.0)];
+        let t = Terrain::from_tris(quad.to_vec(), [([0, 2, 1], 45), ([0, 3, 2], 45)].into_iter());
+        let centre = |feet: f32| Vec3::new(0.0, feet + CAPSULE_HALF_HEIGHT, 0.0);
+        assert_eq!(t.landing(centre(9.4), 0.7), 10.0);
+        assert!(t.landing(centre(5.0), 0.7) < -50.0);
     }
 }

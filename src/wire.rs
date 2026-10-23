@@ -277,7 +277,9 @@ impl Wire {
         let left = left - dt;
         let to = (self.dest - pos).with_y(0.0);
         if left > 1e-3 {
-            a.air_base = to / left;
+            // Under the wall slide's TELEPORT step: a body a wall held back would otherwise
+            // cover the rest in the last tick, skip the slide and go through the wall.
+            a.air_base = (to / left).clamp_length_max(0.9 * crate::terrain::TELEPORT / dt.max(1e-3));
             self.flight = Some(left);
         } else {
             self.flight = None;

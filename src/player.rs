@@ -913,7 +913,7 @@ fn aging_step(p: &mut Player, a: &mut Actor, combat: &Combat, config: &GameConfi
         let g = FALL_TYPES[(a.fall_type as usize).min(FALL_TYPES.len() - 1)].gravity();
         a.grav_y = g;
         a.vel_y += g * dt;
-        let floor = crate::terrain::ground_y(*pos) + CAPSULE_HALF_HEIGHT;
+        let floor = crate::terrain::landing_y(*pos, -a.vel_y * dt) + CAPSULE_HALF_HEIGHT;
         if pos.y <= floor && a.vel_y < 0.0 {
             pos.y = floor;
             a.airborne = false;
@@ -2975,7 +2975,7 @@ fn decide(
         // the killing blow's knockback or the clip's root motion falls (round 60: it floated;
         // the walk-off check is past this branch's return). Not in a grab's deaths (the
         // thrower places him) or a SetNoGravity window.
-        let mut floor = crate::terrain::ground_y(tf.translation) + CAPSULE_HALF_HEIGHT;
+        let mut floor = if a.airborne { crate::terrain::landing_y(tf.translation, -a.vel_y * dt) } else { crate::terrain::ground_y(tf.translation) } + CAPSULE_HALF_HEIGHT;
         if let Some(spot) = p.perch.filter(|s| (tf.translation - *s).with_y(0.0).length() < PERCH_RADIUS && tf.translation.y >= s.y + CAPSULE_HALF_HEIGHT - 0.3) {
             floor = floor.max(spot.y + CAPSULE_HALF_HEIGHT);
         }
@@ -4156,7 +4156,7 @@ fn decide(
             w.steer(a, tf.translation, dt);
         }
         a.move_vel = a.air_base;
-        let mut floor = crate::terrain::ground_y(tf.translation) + CAPSULE_HALF_HEIGHT;
+        let mut floor = crate::terrain::landing_y(tf.translation, -a.vel_y * dt) + CAPSULE_HALF_HEIGHT;
         // A ridden point is a floor once the arc is down to it (`Player::perch`).
         let ride_spot = p.wire.filter(|w| w.ride && w.flight.is_none()).map(|w| w.land);
         if let Some(spot) = ride_spot.filter(|s| (tf.translation - *s).with_y(0.0).length() < PERCH_RADIUS) {

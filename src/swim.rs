@@ -499,7 +499,12 @@ pub fn hold(time: Res<Time>, combat: Res<crate::data::Combat>, mut q: Query<(&Pl
             continue;
         }
         a.docked = true;
-        tf.translation += swim.drift * time.delta_secs();
+        // The swim slides along walls as a walk does (terrain.rs leaves a docked body alone):
+        // rocks, posts and the banks hold him.
+        let step = swim.drift * time.delta_secs();
+        let feet = tf.translation - Vec3::Y * CAPSULE_HALF_HEIGHT;
+        let moved = crate::terrain::terrain().map_or(Vec2::new(step.x, step.z), |t| t.slide_as(feet, Vec2::new(step.x, step.z), 0, None));
+        tf.translation += Vec3::new(moved.x, step.y, moved.y);
         a.airborne = false;
         a.vel_y = 0.0;
         let feet = tf.translation - Vec3::Y * CAPSULE_HALF_HEIGHT;
