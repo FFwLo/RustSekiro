@@ -268,7 +268,7 @@ impl Plugin for AnimPlugin {
             // Characters spawned later (a fight reset's line-up, the encounter picker).
             .add_systems(Update, build_skeletons.in_set(AnimSet).before(draw_poses))
             .configure_sets(FixedUpdate, PoseSet.after(crate::actor::ActorSet::Advance).before(crate::actor::ActorSet::Resolve))
-            .add_systems(FixedUpdate, (pose_skeletons, apply_walk_twist, apply_twists, apply_model_lag, store_sim_poses).chain().in_set(PoseSet))
+            .add_systems(FixedUpdate, (pose_skeletons, apply_walk_twist, apply_twists, apply_model_lag, foot_ik, store_sim_poses).chain().in_set(PoseSet))
             .add_systems(
                 Update,
                 // (No gizmos headless: sim tests with the real geometry, model.rs GeometryPlugin.)
@@ -699,6 +699,153 @@ fn apply_model_lag(
 }
 
 /// Bone lines, computed from local transforms (GlobalTransform lags a frame here).
+/// Wolf's foot IK (c0000.hkx hkbFootIkDriverInfo / hkbFootIkControlsModifier "FootIKControlsModifier",
+/// always on in the graph): each foot's ankle follows the ground under it, cast 0.8 m up and down
+/// (raycastDistanceUp / Down) on the collision, its offset from the ground under the body clamped
+/// to minAnkleHeightMS / maxAnkleHeightMS (-0.5 / 0.5) and eased by groundAscendingGain 0.2 /
+/// groundDescendingGain 1, faded in and out by onOffGain 0.2; the thigh and calf turn to put the
+/// ankle there in the knee's own plane (the graph's leg HandIK on L/R_Thigh, Calf, Foot), the foot
+/// keeps its animated turn. The pelvis drop is the exe's (FUN_140b3f920): toward clamp(the two
+/// feet's height difference, 0, TAE 944's limit) at 0.2 per 30 fps frame (DAT_143b01378,
+/// FUN_1407dc180), on RootPos, never while TAE flag 113 (HeightCorrection) is up; with no 944
+/// (standing, walking, running) it is 0. On the ground only, not hanging, swimming or on the wire.
+/// gaps: which 944 float goes with which foot, the sign of the exe's RootPos term (a drop here),
+/// the ankle pitch / roll (ankleRotationGain 0.2, +-30 deg) and enemies' foot IK (44 of 74
+/// behaviors carry it). `SHINOBI_FOOT_IK=0` turns it off (to compare).
+#[allow(clippy::type_complexity)]
+fn foot_ik(
+    time: Res<Time>,
+    lib: Res<AnimLib>,
+    combat: Res<Combat>,
+    actors: Query<(Entity, &Actor, &Transform, &Skeleton, &crate::player::Player)>,
+    mut bones: Query<&mut Transform, Without<Actor>>,
+    mut state: Local<HashMap<Entity, FootIk>>,
+    mut ids: Local<Option<Option<[usize; 7]>>>,
+) {
+    const RAY: f32 = 0.8;
+    const ANKLE_RANGE: f32 = 0.5;
+    static OFF: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::env::var("SHINOBI_FOOT_IK").is_ok_and(|v| v == "0"));
+    if *OFF {
+        return;
+    }
+    let Some(terrain) = crate::terrain::terrain() else { return };
+    let l = &lib.player;
+    // RootPos, then thigh, calf, foot of each leg.
+    let Some([root_pos, lt, lc, lf, rt, rc, rf]) = *ids.get_or_insert_with(|| {
+        let at = |n: &str| l.bones.iter().position(|b| b.name == n);
+        Some([at("RootPos")?, at("L_Thigh")?, at("L_Calf")?, at("L_Foot")?, at("R_Thigh")?, at("R_Calf")?, at("R_Foot")?])
+    }) else {
+        return;
+    };
+    let dt = time.delta_secs();
+    let step = |gain: f32| 1.0 - (1.0 - gain).powf(dt * 30.0);
+    for (e, a, tf, skel, p) in &actors {
+        let st = state.entry(e).or_default();
+        let on = !a.airborne && p.dock.is_none() && p.swim.is_none() && p.wire.is_none() && a.hp > 0.0;
+        st.weight += (f32::from(u8::from(on)) - st.weight) * step(0.2);
+        if st.weight < 1e-3 {
+            st.offset = [0.0; 2];
+            st.drop = 0.0;
+            continue;
+        }
+        // Model space -> world: the actor, then the skeleton root, then the bone chain.
+        let Ok(root) = bones.get(skel.root).copied() else { continue };
+        let base = tf.mul_transform(root);
+        let global = |bones: &Query<&mut Transform, Without<Actor>>, i: usize| -> Option<Transform> {
+            let mut chain = vec![i];
+            while let Some(&j) = chain.last() {
+                match l.bones.get(j).map(|b| b.parent) {
+                    Some(p) if p >= 0 => chain.push(p as usize),
+                    _ => break,
+                }
+            }
+            chain.iter().rev().try_fold(base, |acc, &j| Some(acc.mul_transform(*bones.get(*skel.bones.get(j)?).ok()?)))
+        };
+        let ground = tf.translation.y - CAPSULE_HALF_HEIGHT;
+        // Each foot's ground offset, eased.
+        let mut want = [0.0f32; 2];
+        for (k, &foot) in [lf, rf].iter().enumerate() {
+            let Some(f) = global(&bones, foot) else { continue };
+            let hit = terrain.foot_floor(f.translation.x, f.translation.z, f.translation.y.max(ground) + RAY).filter(|h| *h >= f.translation.y.min(ground) - RAY);
+            want[k] = hit.map_or(0.0, |h| (h - ground).clamp(-ANKLE_RANGE, ANKLE_RANGE));
+        }
+        for k in 0..2 {
+            let gain = if want[k] > st.offset[k] { 0.2 } else { 1.0 };
+            st.offset[k] += (want[k] - st.offset[k]) * step(gain);
+        }
+        // The pelvis drop (TAE 944's limits; none without one or under flag 113).
+        let data = crate::actor::data_for(&combat, a);
+        let limit = if a.anim.is_empty() || data.flag(&a.anim, a.t, 113) {
+            0.0
+        } else {
+            data.events_at(&a.anim, a.t).find(|ev| ev.kind == 944).map_or(0.0, |ev| {
+                let arg = |k: &str| ev.args.get(k).and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
+                if st.offset[0] > st.offset[1] { arg("unk0") } else { arg("unk1") }
+            })
+        };
+        let target = (st.offset[0] - st.offset[1]).abs().clamp(0.0, limit);
+        st.drop += 0.2 * (target - st.drop) * (dt * 30.0).clamp(0.5, 2.0);
+        let (w, drop, offset) = (st.weight, st.drop, st.offset);
+        if drop > 1e-4
+            && let Some(&b) = skel.bones.get(root_pos)
+            && let Ok(mut t) = bones.get_mut(b)
+        {
+            t.translation.y -= drop * w;
+        }
+        for (k, (thigh, calf, foot)) in [(lt, lc, lf), (rt, rc, rf)].into_iter().enumerate() {
+            let (Some(h), Some(kn), Some(an)) = (global(&bones, thigh), global(&bones, calf), global(&bones, foot)) else { continue };
+            let parent = l.bones[thigh].parent;
+            let Some(pt) = (if parent >= 0 { global(&bones, parent as usize) } else { Some(base) }) else { continue };
+            // The ankle's target: its animated height over the body's ground, on the foot's ground.
+            let target = an.translation + Vec3::Y * ((offset[k] + drop) * w);
+            let Some((thigh_rot, calf_rot)) = two_bone(h.translation, kn.translation, an.translation, target) else { continue };
+            // New world turns -> locals: the thigh under its parent, the calf under the new thigh,
+            // the foot keeping its world turn under the new calf.
+            let thigh_g = thigh_rot * h.rotation;
+            let calf_g = calf_rot * thigh_rot * kn.rotation;
+            for (i, g, parent_g) in [(thigh, thigh_g, pt.rotation), (calf, calf_g, thigh_g), (foot, an.rotation, calf_g)] {
+                if let Some(&b) = skel.bones.get(i)
+                    && let Ok(mut t) = bones.get_mut(b)
+                {
+                    t.rotation = (parent_g.inverse() * g).normalize();
+                }
+            }
+        }
+    }
+}
+
+/// Foot IK's per-character state: each foot's eased ground offset, the pelvis drop and the fade.
+#[derive(Default)]
+struct FootIk {
+    offset: [f32; 2],
+    drop: f32,
+    weight: f32,
+}
+
+/// A two-bone chain hip -> knee -> ankle turned so the ankle reaches `target` (as near as the
+/// leg's length lets), the knee bending in its own plane: the world rotations to put on the thigh
+/// and, after it, on the calf.
+fn two_bone(hip: Vec3, knee: Vec3, ankle: Vec3, target: Vec3) -> Option<(Quat, Quat)> {
+    let (l1, l2) = (hip.distance(knee), knee.distance(ankle));
+    if l1 < 1e-4 || l2 < 1e-4 || ankle.distance(target) < 1e-4 {
+        return None;
+    }
+    let to = target - hip;
+    let axis = to.normalize_or_zero();
+    // The knee's side of the hip -> target line, from the animated knee.
+    let side = (knee - hip).reject_from_normalized(axis).normalize_or_zero();
+    if axis == Vec3::ZERO || side == Vec3::ZERO {
+        return None;
+    }
+    let d = to.length().clamp((l1 - l2).abs() + 1e-3, l1 + l2 - 1e-3);
+    let a = (l1 * l1 - l2 * l2 + d * d) / (2.0 * d);
+    let knee_new = hip + axis * a + side * (l1 * l1 - a * a).max(0.0).sqrt();
+    let thigh = Quat::from_rotation_arc((knee - hip).normalize(), (knee_new - hip).normalize());
+    let ankle_moved = knee_new + thigh * (ankle - knee);
+    let calf = Quat::from_rotation_arc((ankle_moved - knee_new).normalize(), (hip + axis * d - knee_new).normalize());
+    Some((thigh, calf))
+}
+
 fn draw_skeletons(
     lib: Res<AnimLib>,
     actors: Query<(&Actor, &Skeleton, &Transform), Without<HasModel>>,
@@ -970,5 +1117,31 @@ mod proc_clip_tests {
         a.anim_group = 0;
         a.procedural("IdleBattle");
         assert_eq!(a.proc_clip(0.0).0, "a000_400000");
+    }
+}
+
+#[cfg(test)]
+mod foot_ik_tests {
+    use super::*;
+
+    /// The leg solve (foot_ik's two_bone): a foot raised 0.2 m onto a step reaches it, the knee
+    /// bends forward in its own plane, and the thigh and calf keep their lengths.
+    #[test]
+    fn a_raised_foot_reaches_the_step_with_the_knee_forward() {
+        let (hip, knee, ankle) = (Vec3::new(0.0, 0.9, 0.0), Vec3::new(0.0, 0.47, 0.05), Vec3::ZERO);
+        for target in [Vec3::new(0.0, 0.2, 0.0), Vec3::new(0.0, 0.05, -0.05)] {
+            let (thigh, calf) = two_bone(hip, knee, ankle, target).unwrap();
+            let knee2 = hip + thigh * (knee - hip);
+            let ankle2 = knee2 + calf * (thigh * (ankle - knee));
+            assert!(ankle2.distance(target) < 0.01, "{target}: ankle at {ankle2}");
+            assert!((knee2.distance(hip) - knee.distance(hip)).abs() < 1e-4);
+            assert!((ankle2.distance(knee2) - ankle.distance(knee)).abs() < 1e-4);
+            assert!(knee2.z > 0.0 && knee2.x.abs() < 1e-4, "knee {knee2}");
+        }
+        // Out of reach: the leg straightens toward it.
+        let (thigh, calf) = two_bone(hip, knee, ankle, Vec3::new(0.0, -1.0, 0.0)).unwrap();
+        let knee2 = hip + thigh * (knee - hip);
+        let ankle2 = knee2 + calf * (thigh * (ankle - knee));
+        assert!(ankle2.y < 0.0 && ankle2.x.abs() < 1e-3, "{ankle2}");
     }
 }

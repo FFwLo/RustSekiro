@@ -57,6 +57,11 @@ pub trait WorldCollision: Send + Sync {
     fn camera_raycast(&self, origin: Vec3, dir: Vec3, max: f32) -> Option<f32> {
         self.raycast(origin, dir, max)
     }
+    /// The ground foot IK casts onto (anim.rs `foot_ik`): the game casts the feet on the detailed
+    /// `h` collision while the body stands on the flat `l` one. The floor by default.
+    fn foot_floor(&self, x: f32, z: f32, top: f32) -> Option<f32> {
+        self.floor_hit(x, z, top).map(|(h, _)| h)
+    }
     /// The highest the feet of a body at `feet` can rise straight up, by at most `rise`, before
     /// its head meets a ceiling (`None`: nothing stops it that soon). No ceilings by default.
     fn ceiling(&self, _feet: [f32; 3], _rise: f32) -> Option<f32> {
@@ -365,6 +370,14 @@ impl Terrain {
 
     pub fn floor(&self, x: f32, z: f32, top: f32) -> Option<f32> {
         self.floor_tri(x, z, top).map(|(h, _)| h)
+    }
+
+    /// [`WorldCollision::foot_floor`] on this collision.
+    pub fn foot_floor(&self, x: f32, z: f32, top: f32) -> Option<f32> {
+        match &self.world {
+            Some(w) => w.foot_floor(x, z, top),
+            None => self.floor(x, z, top),
+        }
     }
 
     /// `water_surface` on this collision.
