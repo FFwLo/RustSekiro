@@ -132,6 +132,9 @@ pub struct Enemy {
     /// Deathblows whose Ninsatsu hit has landed: drops.rs draws the NpcParam
     /// ninsatsuResourceItemLotId_1 / _2 lots once for each.
     pub(crate) ninsatsu_landed: u32,
+    /// Killed by a map event's 2004[4] ForceCharacterDeath with shouldReceiveSouls off: no
+    /// experience, Sen or drops (experience.rs, drops.rs).
+    pub(crate) unrewarded: bool,
     /// NpcParam ninsatuNum is 0: nothing holds its HP at 1 (exe IsNoDead FUN_140bd5df0), so 0 HP
     /// kills it outright (die_at_zero_hp) instead of opening the deathblow.
     pub(crate) mortal: bool,
@@ -2067,6 +2070,7 @@ pub fn spawn_one(commands: &mut Commands, combat: &Combat, config: &GameConfig, 
             },
             ninsatsu_unhit: 0,
             ninsatsu_landed: 0,
+            unrewarded: false,
             phase_done: HashSet::new(),
             phase_flags: HashSet::new(),
             event_req: Vec::new(),

@@ -34,7 +34,7 @@ mod config;
 mod data;
 #[cfg(feature = "embed")]
 mod debug_menu;
-#[cfg(feature = "host")]
+#[cfg(feature = "embed")]
 mod drops;
 mod docking;
 #[cfg(any(feature = "host", feature = "embed"))]
@@ -202,7 +202,7 @@ pub use idol::{set_idol_hooks, IdolHooks};
 
 /// The menus for another game (`embed`): the pause and death screens, the in-game menu, the
 /// Sculptor's Idols (rest, travel, skills, emblems; the host places them with
-/// `set_idol_hooks`), items on the ground and the action guide; `SHINOBI_SHOT` (shot.rs) and
+/// `set_idol_hooks`), items on the ground, the enemies' drops and the action guide; `SHINOBI_SHOT` (shot.rs) and
 /// `SHINOBI_DUEL_CAM` (duel.rs) for checks.
 #[cfg(feature = "embed")]
 pub struct MenuPlugins;
@@ -210,7 +210,7 @@ pub struct MenuPlugins;
 #[cfg(feature = "embed")]
 impl Plugin for MenuPlugins {
     fn build(&self, app: &mut App) {
-        app.add_plugins((menu::MenuPlugin, game_menu::GameMenuPlugin, idol::IdolPlugin, idol_found::IdolFoundPlugin, pickups::PickupsPlugin, action_guide::ActionGuidePlugin, shot::ShotPlugin, duel::DuelPlugin));
+        app.add_plugins((menu::MenuPlugin, game_menu::GameMenuPlugin, idol::IdolPlugin, idol_found::IdolFoundPlugin, pickups::PickupsPlugin, drops::DropsPlugin, action_guide::ActionGuidePlugin, shot::ShotPlugin, duel::DuelPlugin));
     }
 }
 pub use player::{Player, CAPSULE_HALF_HEIGHT};

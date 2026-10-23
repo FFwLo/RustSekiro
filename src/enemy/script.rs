@@ -368,7 +368,9 @@ pub(super) enum Act {
     /// EventView). The Headless Ape and its partner name each other (m17 11705880), Lady
     /// Butterfly's illusions her (m10 11005820), the Old Dragons' parts their body (m25 12505803).
     EventTarget(i64, i64),
-    Death(i64),
+    /// 2004[4] ForceCharacterDeath: the character and whether Wolf is paid for it
+    /// (shouldReceiveSouls).
+    Death(i64, bool),
     /// The defeat with its Text Banner Type.
     BossDefeat(i64),
     /// 2003[11] Display Boss Health Bar: the character whose bar the HUD shows (on / off).
@@ -910,7 +912,7 @@ pub(super) fn step(run: &mut Run, ev: usize, w: &World, dt: f32, acts: &mut Vec<
             (2003, 18) => acts.push(Act::ForceAnim(i(0), i(1), i(2) == 1)),
             (2002, 4) | (2002, 13) => acts.push(Act::CutsceneWarp(i(2))),
             (2004, 1) => acts.push(Act::AiState(i(0), i(1) == 1)),
-            (2004, 4) => acts.push(Act::Death(i(0))),
+            (2004, 4) => acts.push(Act::Death(i(0), i(1) == 1)),
             (2004, 5) => acts.push(Act::Enable(i(0), i(1) == 1)),
             (2004, 29) => acts.push(Act::Unload(i(0), i(1) == 1)),
             (2004, 6) => acts.push(Act::EzState(i(0), i(1))),
@@ -1429,7 +1431,7 @@ pub(super) fn run_scripts(
             _ => {
                 let id = match &act {
                     Act::SetSp(i, _) | Act::ClearSp(i, _) | Act::AiCommand(i, _, _) | Act::Replan(i) | Act::AiId(i, _) | Act::AiState(i, _) => *i,
-                    Act::ForceAnim(i, _, _) | Act::EzState(i, _) | Act::Immortal(i, _) | Act::Team(i, _) | Act::Death(i) => *i,
+                    Act::ForceAnim(i, _, _) | Act::EzState(i, _) | Act::Immortal(i, _) | Act::Team(i, _) | Act::Death(i, _) => *i,
                     _ => continue,
                 };
                 let Some(ent) = ent_of(run, id) else { continue };
@@ -1628,8 +1630,9 @@ pub(super) fn apply(combat: &Combat, brains: &mut super::Brains, ent: Entity, e:
         }
         Act::Immortal(_, on) => e.immortal = on,
         Act::Team(_, team) => a.team = Some(team),
-        Act::Death(_) => {
+        Act::Death(_, paid) => {
             if !(e.is_dead() && a.hp <= 0.0) {
+                e.unrewarded = !paid;
                 a.hp = 0.0;
                 e.ninsatsu.0 = 0;
                 e.ninsatsu_unhit = 0;

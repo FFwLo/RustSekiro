@@ -1574,6 +1574,29 @@ pub(crate) fn a_kill_drops_emblems_and_resurrective_power() {
     assert_eq!((p.resurrections, p.res_power), (0, 12));
 }
 
+/// A death a map event forces with shouldReceiveSouls off (2004[4], Enemy::unrewarded) pays
+/// nothing: the General's 100 % Resurrective Power lot is not drawn.
+#[test]
+pub(crate) fn an_unpaid_event_death_drops_nothing() {
+    let mut app = app();
+    app.add_systems(Update, crate::drops::drop_loot);
+    {
+        let world = app.world_mut();
+        let mut p = world.query::<&mut Player>().single_mut(world).unwrap();
+        p.resurrections = 0;
+        p.res_power = 0;
+        world.query::<&mut crate::enemy::Enemy>().single_mut(world).unwrap().unrewarded = true;
+    }
+    let (_, died) = break_and_deathblow_died(&mut app, 200);
+    assert!(died);
+    for _ in 0..5 {
+        app.update();
+    }
+    let world = app.world_mut();
+    let p = world.query::<&Player>().single(world).unwrap();
+    assert_eq!((p.resurrections, p.res_power), (0, 0));
+}
+
 /// Five-color Rice: a use lets its rice fall (Bullet 3580) and spends one of five; run out, the
 /// empty shake; an idol rest fills it again.
 #[test]

@@ -76,6 +76,9 @@ fn reward_kills(
             continue;
         }
         paid.insert(e);
+        if en.unrewarded {
+            continue;
+        }
         let (exp, sen) = reward(combat.npc(a));
         let sen = (sen as f32 * rate).round() as u32;
         earned.exp = earned.exp.wrapping_add(exp);

@@ -257,12 +257,12 @@ pub(super) fn run_world(
                     continue;
                 }
                 // Killed while away: dead when it would come in.
-                Act::Death(id) if !wr.run.ents.contains_key(id) => {
+                Act::Death(id, _) if !wr.run.ents.contains_key(id) => {
                     wr.run.dead_ids.insert(*id);
                     continue;
                 }
                 Act::SetSp(i, _) | Act::ClearSp(i, _) | Act::AiCommand(i, _, _) | Act::Replan(i) | Act::AiId(i, _) | Act::AiState(i, _) => *i,
-                Act::ForceAnim(i, _, _) | Act::EzState(i, _) | Act::Immortal(i, _) | Act::Team(i, _) | Act::Death(i) => *i,
+                Act::ForceAnim(i, _, _) | Act::EzState(i, _) | Act::Immortal(i, _) | Act::Team(i, _) | Act::Death(i, _) => *i,
                 _ => continue,
             };
             let Some(&ent) = wr.run.ents.get(&id) else { continue };

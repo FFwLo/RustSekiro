@@ -136,7 +136,7 @@ pub(crate) fn drop_loot(
     for (e, en, a, tf) in &enemies {
         let seen = landed.insert(e, en.ninsatsu_landed).unwrap_or(0);
         let deathblows = en.ninsatsu_landed.saturating_sub(seen);
-        let died = en.is_dead() && done.insert(e);
+        let died = en.is_dead() && done.insert(e) && !en.unrewarded;
         if !died && deathblows == 0 {
             continue;
         }
