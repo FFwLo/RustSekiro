@@ -384,7 +384,7 @@ const GIVE_UP: u32 = 5;
 struct ClothOut {
     bones: Vec<(Entity, GlobalTransform)>,
     #[allow(clippy::type_complexity)]
-    meshes: Vec<(Handle<Mesh>, Vec<[f32; 3]>, Vec<[f32; 3]>, Vec<[f32; 4]>)>,
+    meshes: Vec<(Handle<Mesh>, Entity, Vec<[f32; 3]>, Vec<[f32; 3]>, Vec<[f32; 4]>)>,
 }
 
 impl ClothInst {
@@ -1028,7 +1028,7 @@ fn simulate(
                             .collect()
                     })
                     .unwrap_or_default();
-                c.out.meshes.push((dm.handle.clone(), pos, nrm, tangents));
+                c.out.meshes.push((dm.handle.clone(), dm.entity, pos, nrm, tangents));
                 lap(5, &mut tp, &mut phase);
             }
             c.phase_us = phase;
@@ -1141,6 +1141,14 @@ impl Packed {
     }
 }
 
+/// The bounds of a cloth display mesh's world-space vertices (none for no vertices).
+fn cloth_bounds(pos: &[[f32; 3]]) -> Option<bevy::camera::primitives::Aabb> {
+    let mut it = pos.iter().map(|p| Vec3::from(*p));
+    let first = it.next()?;
+    let (min, max) = it.fold((first, first), |(lo, hi), p| (lo.min(p), hi.max(p)));
+    Some(bevy::camera::primitives::Aabb::from_min_max(min, max))
+}
+
 /// This frame's cloth vertex writes: (mesh, vertex size, interleaved bytes). Filled by `apply`,
 /// moved to the render world by `extract_cloth_uploads`.
 #[derive(Resource, Default)]
@@ -1166,7 +1174,8 @@ fn write_cloth_uploads(mut ups: ResMut<ClothUploads>, allocator: Res<bevy::rende
     }
 }
 
-fn apply(mut actors: Query<&mut Cloths>, mut globals: Query<&mut GlobalTransform>, transforms: Query<&Transform>, children: Query<&Children>, meshes: Res<Assets<Mesh>>, mut packed: Local<HashMap<AssetId<Mesh>, Packed>>, mut uploads: ResMut<ClothUploads>) {
+#[allow(clippy::too_many_arguments)]
+fn apply(mut actors: Query<&mut Cloths>, mut globals: Query<&mut GlobalTransform>, transforms: Query<&Transform>, children: Query<&Children>, meshes: Res<Assets<Mesh>>, mut packed: Local<HashMap<AssetId<Mesh>, Packed>>, mut uploads: ResMut<ClothUploads>, mut bounds: Query<&mut bevy::camera::primitives::Aabb>) {
     let _prof = crate::perf::span("cloth_apply");
     // Cost probe: SHINOBI_CLOTH_NO_UPLOAD=1 keeps the bones but leaves the meshes alone.
     let no_upload = std::env::var("SHINOBI_CLOTH_NO_UPLOAD").is_ok();
@@ -1185,10 +1194,19 @@ fn apply(mut actors: Query<&mut Cloths>, mut globals: Query<&mut GlobalTransform
             for (e, g) in c.out.bones.drain(..) {
                 set_global(e, g, &mut globals, &transforms, &children);
             }
-            for (handle, pos, nrm, tangents) in c.out.meshes.drain(..) {
+            for (handle, entity, pos, nrm, tangents) in c.out.meshes.drain(..) {
                 pieces += 1;
                 if no_upload {
                     continue;
+                }
+                // The Mesh asset never changes (its vertices go straight to the GPU), so Bevy
+                // keeps the bounds of the spawn-time vertices: away from where the character
+                // spawned, the cloth was culled whenever that spot left the view (Wolf's cape
+                // vanishing and coming back on sekiro-rs's map). The bounds follow the write.
+                if let Ok(mut aabb) = bounds.get_mut(entity) {
+                    if let Some(b) = cloth_bounds(&pos) {
+                        *aabb = b;
+                    }
                 }
                 let id = handle.id();
                 if !packed.contains_key(&id) {
@@ -1546,6 +1564,16 @@ mod tests {
         assert!(defs[feathers].moves.iter().all(|&(v, _)| verts.iter().any(|(rv, _)| *rv == v)));
         assert_eq!(defs[feathers].display_meshes().collect::<Vec<_>>(), vec![4]);
         assert!(!coat.display_meshes().any(|m| m == 4));
+    }
+
+    /// The cape's culling bounds are those of the vertices written this frame, wherever the
+    /// character is, not the spawn-time mesh's.
+    #[test]
+    fn cloth_bounds_follow_the_written_vertices() {
+        let b = super::cloth_bounds(&[[100.0, 2.0, -50.0], [101.0, 3.0, -49.0], [100.5, 1.0, -51.0]]).unwrap();
+        assert_eq!(bevy::math::Vec3::from(b.min()), bevy::math::Vec3::new(100.0, 1.0, -51.0));
+        assert_eq!(bevy::math::Vec3::from(b.max()), bevy::math::Vec3::new(101.0, 3.0, -49.0));
+        assert!(super::cloth_bounds(&[]).is_none());
     }
 
     #[test]

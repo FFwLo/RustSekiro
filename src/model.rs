@@ -781,8 +781,8 @@ fn attach_models(
                 commands.entity(e).insert(crate::form::FormMesh { form, own: vis });
             }
             match cloth {
-                // World-space CPU vertices (cloth.rs): no GPU skin, no parent. Bevy recomputes the
-                // bounds from each write (calculate_bounds), so the cloth is culled like any mesh:
+                // World-space CPU vertices (cloth.rs): no GPU skin, no parent. cloth.rs `apply`
+                // sets the bounds from each write, so the cloth is culled like any mesh:
                 // unculled, every enemy's cloth drew into every shadow view (the sun's cascades,
                 // each shadowed lamp's six faces).
                 Some(ci) => {
