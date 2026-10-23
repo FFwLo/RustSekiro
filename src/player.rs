@@ -142,8 +142,9 @@ pub struct Player {
     pub(crate) air_top: f32,
     /// Wolf's centre at the last fall check (the path tested against the fall-return walls).
     fall_from: Option<Vec3>,
-    /// The last ground Wolf stood on (not water): where a fall-return death puts him back.
-    safe_pos: Option<Vec3>,
+    /// The ground Wolf stood on these last `SAFE_RING` ticks (not water), oldest first: a
+    /// fall-return death puts him back at the oldest.
+    pub(crate) safe_ring: std::collections::VecDeque<Vec3>,
     /// Swimming or diving (swim.rs).
     pub(crate) swim: Option<crate::swim::Swim>,
 }
@@ -414,6 +415,12 @@ fn fall_return_walls(combat: Res<crate::data::Combat>, mut log: ResMut<CombatLog
 pub fn is_fall_return(state: &str) -> bool {
     matches!(state, "LandDeadReturnStart" | "FallDeadReturnStart")
 }
+/// The exe's fall-return point (FUN_140a75f00 every frame, CSGame update): a ring of the last 5
+/// grounded positions, and CSFallDeadStep::STEP_WarpPlayer (FUN_1411d70e0, via FUN_140a71020)
+/// puts Wolf at the oldest, so a ledge or wall he only touched on the way down is not where he
+/// comes back (AKJama/sekiro-rs#201). gap: its other gates (the ground probe's slope test, a
+/// collision's MSB UnkT17, none set on m11_00) are not modelled.
+const SAFE_RING: usize = 5;
 /// Falling this far with no ground below ends in the fall-return death (gap: HitMtrlParam's default
 /// fallDeathDist stands in for the exe's void rule).
 const FALL_VOID_DROP: f32 = 40.0;
@@ -1362,7 +1369,7 @@ fn spawn_player(mut commands: Commands, combat: Res<Combat>, config: Res<GameCon
         }
     }
     commands.spawn((
-        Player { deathblow_ready: false, jump_throw_ready: false, plunge_ready: false, plunge: None, leap_homing: None, dock: None, wall_jumps: 0, last_wall: None, seat: Default::default(), wall_contact: None, speed_level: 0.0, requests: HashMap::new(), last_state: String::new(), gourd: config.player.gourd_charges, emblems: config.player.spirit_emblems, auto_aim: false, auto_aim_fresh: false, resurrections: config.player.resurrections, revive_queued: false, death_wait: 0.0, dead_for: 0.0, escape: None, aged_form: false, step_tilt: 0.0, jump_tilt: 0.0, throw_start: None, throw_target: None, tool_slot: 0, quick_slot: 0, item_use: None, vel_scale: None, expand_pending: false, sub_cat_before: 0, art_enable_jump: false, timed: Vec::new(), held: Vec::new(), wire: None, perch: None, wire_todome: false, air_top: 0.0, fall_from: None, safe_pos: None, swim: None, revive_open: false, gave_up: false, revive_locked: false, item_hp_rate: 1.0, item_posture_rate: 1.0, sp_bursts: Vec::new(), res_power: 0, refill_items: false },
+        Player { deathblow_ready: false, jump_throw_ready: false, plunge_ready: false, plunge: None, leap_homing: None, dock: None, wall_jumps: 0, last_wall: None, seat: Default::default(), wall_contact: None, speed_level: 0.0, requests: HashMap::new(), last_state: String::new(), gourd: config.player.gourd_charges, emblems: config.player.spirit_emblems, auto_aim: false, auto_aim_fresh: false, resurrections: config.player.resurrections, revive_queued: false, death_wait: 0.0, dead_for: 0.0, escape: None, aged_form: false, step_tilt: 0.0, jump_tilt: 0.0, throw_start: None, throw_target: None, tool_slot: 0, quick_slot: 0, item_use: None, vel_scale: None, expand_pending: false, sub_cat_before: 0, art_enable_jump: false, timed: Vec::new(), held: Vec::new(), wire: None, perch: None, wire_todome: false, air_top: 0.0, fall_from: None, safe_ring: Default::default(), swim: None, revive_open: false, gave_up: false, revive_locked: false, item_hp_rate: 1.0, item_posture_rate: 1.0, sp_bursts: Vec::new(), res_power: 0, refill_items: false },
         actor,
         Name::new("Player"),
         Transform::from_translation((crate::encounter::hooks().player_start)()),
@@ -2809,7 +2816,7 @@ fn decide(
     if is_fall_return(&a.state) {
         a.move_vel = Vec3::ZERO;
         if a.anim.is_empty() || a.t >= d.length(&a.anim).min(FALL_RETURN_HOLD) {
-            if let Some(safe) = p.safe_pos {
+            if let Some(&safe) = p.safe_ring.front() {
                 tf.translation = safe;
             }
             a.airborne = false;
@@ -3926,8 +3933,11 @@ fn decide(
     if !a.airborne {
         // HitMtrlParam 20-24 / 35-38 / 45-47 are water, swamp and underwater floors (not a safe spot).
         let water = crate::terrain::floor_material(tf.translation).is_some_and(|m| matches!(m, 20..=24 | 35..=38 | 45..=47));
-        if !water && a.state != "Grabbed" {
-            p.safe_pos = Some(tf.translation);
+        if !water && a.state != "Grabbed" && a.hp > 0.0 {
+            p.safe_ring.push_back(tf.translation);
+            if p.safe_ring.len() > SAFE_RING {
+                p.safe_ring.pop_front();
+            }
         }
     } else if p.air_top - tf.translation.y >= FALL_VOID_DROP && crate::terrain::floor_material(tf.translation).is_none() && crate::terrain::terrain().is_some() {
         // Falling with no ground below: HKS DAMAGE_TYPE_FALL_DEAD_RETURN -> W_FallDeadReturnStart

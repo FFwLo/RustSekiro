@@ -1752,7 +1752,7 @@ A fall out of the world or a fatal landing can be routed to return damage types:
 - How: HKS BEH_R_DEATH routing, env 3061; engine kill volume and safe position.
 - Check: Walk into a pit on the Hirata or Ashina maps: Wolf reappears at the pit edge.
 - Note: The void kill height, which fall picks which damage type, and whether HP is kept are not in the scripts and not traced in the exe.
-- ours: `fireguy-rustsekiro/src/player.rs (safe_pos, LandDeadReturnStart)`
+- ours: `fireguy-rustsekiro/src/player.rs (safe_ring, LandDeadReturnStart)`
 - his: `sekiro-rs/crates/sim/src/duel.rs fall_respawn_depth`
 - Needed by: `movement.fall-death`
 - Sources: data: fireguy-rustsekiro/extracted/hks_src/c0000_transition.lua; ours-kb: fireguy-rustsekiro/docs/kb/movement.md; sekiro-rs-doc: sekiro-rs/docs/MOBILITY.md

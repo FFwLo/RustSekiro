@@ -534,6 +534,52 @@ pub(crate) fn a_forty_metre_fall_returns_wolf_to_safe_ground() {
     }
 }
 
+/// A fall that grazes a ledge for a moment and then lands to its death comes back where Wolf
+/// stood before the graze, not on the ledge: the exe's return point is the oldest of the last 5
+/// grounded frames (player.rs SAFE_RING; AKJama/sekiro-rs#201).
+#[test]
+pub(crate) fn a_ledge_grazed_on_the_way_down_is_not_the_return_point() {
+    let mut app = app();
+    move_enemy_far(&mut app);
+    for _ in 0..30 {
+        app.update();
+    }
+    let start = {
+        let world = app.world_mut();
+        world.query_filtered::<&Transform, With<Player>>().single(world).unwrap().translation
+    };
+    let ledge = start + Vec3::new(6.0, 0.0, 0.0);
+    {
+        let world = app.world_mut();
+        world.query_filtered::<&mut Transform, With<Player>>().single_mut(world).unwrap().translation = ledge;
+    }
+    app.update();
+    app.update();
+    {
+        let world = app.world_mut();
+        world.resource_scope(|world, combat: Mut<Combat>| {
+            let (mut a, mut p, mut t) = world.query::<(&mut Actor, &mut Player, &mut Transform)>().single_mut(world).unwrap();
+            assert!(a.play_state(&combat.player, "FreeFall"));
+            a.airborne = true;
+            a.vel_y = 0.0;
+            t.translation = ledge + Vec3::Y * 60.0;
+            p.air_top = t.translation.y;
+        });
+    }
+    let mut seen: Vec<String> = Vec::new();
+    for _ in 0..600 {
+        app.update();
+        let s = player_state(&mut app).0;
+        if seen.last() != Some(&s) {
+            seen.push(s);
+        }
+    }
+    let world = app.world_mut();
+    let at = world.query_filtered::<&Transform, With<Player>>().single(world).unwrap().translation;
+    assert!(seen.iter().any(|s| s == "LandDeadReturnStart"), "{seen:?}");
+    assert!((at - start).with_y(0.0).length() < 0.5, "back at {at}, stood at {start}, grazed {ledge}: {seen:?}");
+}
+
 /// Atlas movement.fall-damage: aged (stateInfo 341, SpEffect 9620) every landing from 5 m kills
 /// (exe FUN_14084e5d0: DAT_143b01950/54), so a 6 m drop is the fall-return death; unaged it is a
 /// plain landing with no HP lost.
