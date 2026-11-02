@@ -648,3 +648,26 @@ pub(crate) fn zz_boss_moveset_trace() {
     let mins = secs as f32 / 60.0;
     eprintln!("BOSS SUMMARY {spec}: {attacks} attacks ({:.1}/min), {perilous} perilous ({:.0}%)", attacks as f32 / mins, 100.0 * perilous as f32 / attacks.max(1) as f32);
 }
+
+/// A key pressed this frame reaches this frame's fixed step: input is read right before the
+/// fixed loop. Read in Update (which Bevy runs after it), every press waited one frame
+/// (16.7 ms at 60 fps) - the extra input lag found on 2026-11-03.
+#[test]
+pub(crate) fn a_key_press_reaches_the_same_frames_fixed_step() {
+    let mut app = app();
+    app.insert_resource(ButtonInput::<KeyCode>::default()).insert_resource(ButtonInput::<MouseButton>::default());
+    app.world_mut().spawn((Window::default(), bevy::window::CursorOptions::default(), bevy::window::PrimaryWindow));
+    for _ in 0..5 {
+        app.update();
+    }
+    let state = |app: &mut App| {
+        let world = app.world_mut();
+        world.query_filtered::<&Actor, With<Player>>().single(world).unwrap().state.clone()
+    };
+    let before = state(&mut app);
+    app.world_mut().resource_mut::<ButtonInput<KeyCode>>().press(KeyCode::KeyJ);
+    app.update();
+    let after = state(&mut app);
+    assert!(app.world().resource::<PadInput>().pressed.is_empty(), "the press is still queued after the frame");
+    assert_ne!(after, before, "Wolf did not start the attack in the frame the key went down");
+}

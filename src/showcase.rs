@@ -34,7 +34,7 @@ impl Plugin for ShowcasePlugin {
         let Ok(mode) = std::env::var("SHINOBI_SHOWCASE") else { return };
         let seed = std::env::var("SHINOBI_SHOWCASE_SEED").ok().and_then(|v| v.parse().ok()).unwrap_or(1u64);
         app.insert_resource(Director { mode, rng: seed.max(1), next_art: WARMUP + 6.0, next_tool: WARMUP + 9.0, ..default() })
-            .add_systems(Update, direct.after(crate::player::read_input));
+            .add_systems(RunFixedMainLoop, direct.after(crate::player::read_input).in_set(bevy::app::RunFixedMainLoopSystems::BeforeFixedMainLoop));
     }
 }
 

@@ -284,7 +284,8 @@ impl Plugin for FfxPlugin {
             .add_systems(Startup, setup)
             // emit reads the TAE edges (prev_t, t), which move once per fixed step.
             .add_systems(FixedUpdate, emit.after(crate::actor::ActorSet::Advance).after(crate::anim::PoseSet))
-            .add_systems(Update, (animate_puffs, weapon_trail, skill_shots.after(crate::player::read_input), tae_sp_vfx));
+            .add_systems(Update, (animate_puffs, weapon_trail, tae_sp_vfx))
+            .add_systems(RunFixedMainLoop, skill_shots.after(crate::player::read_input).in_set(bevy::app::RunFixedMainLoopSystems::BeforeFixedMainLoop));
         // Skill shots: every frame is 1/60 s of game time, so a shot lands on the same anim time
         // however slow the frame (the first press loads the art's effects and hitches).
         if std::env::var("SHINOBI_SKILL_SHOTS").is_ok() {

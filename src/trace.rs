@@ -63,7 +63,7 @@ impl Plugin for TracePlugin {
         let mut out = std::fs::File::create(&path).expect("trace file");
         let _ = writeln!(out, "clock,dt,step,state,anim,t,shown,blend,x,z,yaw,{}", BONES.iter().map(|b| format!("{b}_x,{b}_y,{b}_z")).collect::<Vec<_>>().join(","));
         app.insert_resource(Trace { out, clock: 0.0, step: 0 })
-            .add_systems(Update, drive.after(crate::player::read_input))
+            .add_systems(RunFixedMainLoop, drive.after(crate::player::read_input).in_set(bevy::app::RunFixedMainLoopSystems::BeforeFixedMainLoop))
             .add_systems(PostUpdate, log.after(TransformSystems::Propagate));
     }
 }

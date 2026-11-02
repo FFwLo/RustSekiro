@@ -156,9 +156,9 @@ pub const FLAG_ACCEPT_JUMP: i64 = 119;
 const FLAG_THROW_START2: i64 = 67;
 /// EquipParamGoods row of the Healing Gourd.
 const GOURD_GOODS: i64 = 3000;
-/// PlayerIns +0x2134 (FUN_140a217a0, 140a2.c:4246): death -> the resurrection choice opens.
+/// PlayerIns +0x2134 (FUN_140a217a0, <decomp ref>): death -> the resurrection choice opens.
 const REVIVE_DELAY: f32 = 1.8;
-/// PlayerIns +0x2128 (140a2.c:4244, 15.0): how long the choice stays open.
+/// PlayerIns +0x2128 (<decomp ref>, 15.0): how long the choice stays open.
 const REVIVE_WINDOW: f32 = 15.0;
 /// ChrActionFlag 31 "AnimCancelEnd_UseItem" / 90 "Limit Move Speed To Walk".
 const FLAG_ACCEPT_ITEM: i64 = 31;
@@ -515,7 +515,7 @@ pub struct PadInput {
     pub guard_held: bool,
     pub dodge_held: bool,
     pub prosthetic_held: bool,
-    pressed: Vec<Action>,
+    pub(crate) pressed: Vec<Action>,
     pub reset: bool,
     /// Sheathe / draw the sword (X).
     pub sheathe: bool,
@@ -541,7 +541,9 @@ impl Plugin for PlayerPlugin {
         app.init_resource::<PadInput>()
             .init_resource::<LockOn>()
             .add_systems(Startup, spawn_player)
-            .add_systems(Update, read_input.run_if(resource_exists::<ButtonInput<KeyCode>>))
+            // Input is read right before the frame's fixed steps: Bevy runs them before Update, so a press
+            // read in Update reached the simulation one frame (16.7 ms at 60 fps) late.
+            .add_systems(RunFixedMainLoop, read_input.run_if(resource_exists::<ButtonInput<KeyCode>>).in_set(bevy::app::RunFixedMainLoopSystems::BeforeFixedMainLoop))
             .init_resource::<ActiveThrow>()
             .add_systems(FixedUpdate, (sync_art_variation, decide, apply_refresh_effects, record_state).chain().in_set(ActorSet::Decide))
             .add_systems(FixedUpdate, follow_throw.after(ActorSet::Advance).before(crate::anim::PoseSet).before(ActorSet::Resolve));
@@ -578,7 +580,7 @@ fn move_log(q: Query<(&Actor, &Transform), With<Player>>, time: Res<Time>, mut l
 pub struct ActiveThrow(pub Option<ThrowHold>);
 
 /// A grab's escape meter (exe throw state +0x1a): ThrowParam escHp, lowered by 1 each
-/// selfEscCycleTime window with at least selfEscCycleCnt presses (FUN_140808640 14080.c:2740 ->
+/// selfEscCycleTime window with at least selfEscCycleCnt presses (FUN_140808640 <decomp ref> ->
 /// FUN_140802c30 -> FUN_140bdf220(-1)).
 #[derive(Clone, Copy, Debug)]
 struct GrabEscape {
@@ -2420,7 +2422,7 @@ fn decide(
     // defAnimOffset of his clip, AtkChrId of the grabber) gives escHp; presses in each
     // selfEscCycleTime window (read as ms) take 1 off it. Once it is 0, the grabber's next TAE
     // ChrActionFlag 70 pulse (c1500 4120: every 15 frames) with Wolf in throw state 3/4 is
-    // env 277 (FUN_140b39e90 140b3.c:2669): BEH_R_THROW_ESCAPE -> W_ThrowEscape<ThrowId>
+    // env 277 (FUN_140b39e90 <decomp ref>): BEH_R_THROW_ESCAPE -> W_ThrowEscape<ThrowId>
     // (ThrowEscape600350 / 600370 = the grab clip + 2: a223_600352 / 600372). gaps: which buttons
     // FUN_140807eb0 counts (here any press; its stick shake is not modelled). The damage path
     // (FUN_140b68ff0: a hit while the victim's TAE flag 68 bit is set takes the damage off escHp)
@@ -2735,9 +2737,9 @@ fn decide(
     // emptied the revived 1 HP before 110015's +50 % let Wolf get up at 0 and act; the revive
     // tick itself sets 1 HP).
     if a.hp <= 0.0 {
-        // The resurrection choice (round 66, static): at death FUN_140a2cc30 (140a2.c:8272-8278)
+        // The resurrection choice (round 66, static): at death FUN_140a2cc30 (<decomp ref>)
         // arms +0x2138 = 1.8 s (+0x2134) when a resurrection is allowed and no stateInfo 341
-        // (aging) / 359 is worn; FUN_140a36a60 (140a3.c:3351-3380) counts it down (held at 0
+        // (aging) / 359 is worn; FUN_140a36a60 (<decomp ref>) counts it down (held at 0
         // while stateInfo 351 is worn), then opens +0x212c = 15 s (+0x2128); its end is the
         // final death (FUN_1409eda50). The HKS revives from the death starts themselves too
         // (c0000_transition.lua 274-277), not only the stay loops. Before: the choice opened at
@@ -3857,7 +3859,7 @@ fn decide(
                 return;
             }
             // The other air tool moves ending in the air fall: their CMSGs' animeEndEventType 0
-            // (FireNextStateEvent; exe FUN_1411e4f20, 1411e.c:6587, fires the event of the
+            // (FireNextStateEvent; exe FUN_1411e4f20, <decomp ref>, fires the event of the
             // state's highest-priority TransitionInfo) leads Master_SM's AirSubAttackCombo1/2/3,
             // Combo1Variation, SpecialEffect, GuardEnd, LockOn, MoveAtemiReady and
             // SubAttackFailedAir to FreeFall (sekiro-extract sms). A tool with no 403100 anim

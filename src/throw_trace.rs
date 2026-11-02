@@ -28,7 +28,7 @@ impl Plugin for ThrowTracePlugin {
         let dist = std::env::var("SHINOBI_THROW_DIST").ok().and_then(|d| d.parse().ok()).unwrap_or(1.0);
         app.insert_resource(ThrowTrace { kind, dist, frame: 0, started: None, kicked: false })
             .add_systems(FixedPostUpdate, step)
-            .add_systems(Update, hold_stick.after(crate::player::read_input))
+            .add_systems(RunFixedMainLoop, hold_stick.after(crate::player::read_input).in_set(bevy::app::RunFixedMainLoopSystems::BeforeFixedMainLoop))
             .add_systems(PostUpdate, render_cam.after(bevy::transform::TransformSystems::Propagate));
     }
 }
