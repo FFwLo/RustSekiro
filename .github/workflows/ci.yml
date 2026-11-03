@@ -5,6 +5,11 @@ on:
   pull_request:
     branches: [main]
 
+# A newer push to the same branch or pull request cancels the older run (the Windows build is long).
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   guard:
     runs-on: ubuntu-latest
