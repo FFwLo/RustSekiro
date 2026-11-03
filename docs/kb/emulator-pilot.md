@@ -23,7 +23,19 @@ Run: `tools/emu-cases/target/release/emu-cases.exe <image/sekiro.exe> extracted/
 |---|---|---|---|
 | 1 | FUN_140bdb470 super armour hit (488 B) | 1,152 in 0.6 s, 23 blocks | Normal path identical. Fixed: the pool is cut to its full size before the hit (a bonus that ended left extra posture), and a broken pool still drains and restarts its timer. Test `super_armor_hit_matches_the_exe` passes. |
 | 2 | FUN_140b9cd90 attacker hit stop (544 B) | 160 in 0.4 s, 29 blocks | Sv1's table is exact for component mode 0/3 with the engine switch off. Found: mode 1 makes type-0 defenders give full hit stop, mode 2 none at all, the switch makes type 0 full, and the type-3 action state is the chr's +0x1ff8 module [0]+0x54 bit 3. Which mode Wolf and enemies carry is not traced. |
-| 3 | FUN_14073c260 camera update (22,857 B), FUN_140734790 (3,119 B) | probe | Stop after 7 and 2 blocks: they need the game's global objects (singletons) set up; on empty state they fall into the assertion logger. |
+| 3 | FUN_140734790 follow camera frame (3,119 B, calls FUN_14073c260 22,857 B) | 2 frames on the snapshot, 6.5 s | On empty state it stopped after 7 blocks (needs the game's singletons). On the 2026-11-03 snapshot it runs to the end: 48 blocks, only locks, TLS and error-code imports hit. Standing still with no input only its timers move (+0x414 = dt, +0x410 counts down); input and motion cases are the next step. |
+| 4 | Hit-stop mode (+0x2d of `SprjPlayerHitStopModule`, [[chr+0x1ff8]+0x90]) | snapshot read | Wolf and all 89 enemies of the scene: mode 0, WorldChrManDbg +0x11c/+0x11d off, +0x124 0.5. The constructor (FUN_140b9c8b0) zeroes it and no method of the module writes it, so Sv1's mode 0 table is the game's. Not done: a whole-exe search for another writer. |
+
+## Snapshot (2026-11-03)
+
+`emu-cases snapshot <pid> extracted/snapshot` waits until a save is loaded ([WorldChrMan 0x143d7a1e0]+0x88
+non-null), waits 15 s, pauses the game, copies every committed readable region (`memory.bin`, about
+10 GB, 6,057 regions) and the threads' TEBs (`regions.json`), and resumes it. `--snapshot <dir>` then
+loads it: the exe image from the snapshot (globals as they were; import slots still stubs), other
+memory a 64 KB window at a time on first touch, GS = the first thread's TEB, `TlsGetValue` read from
+that TEB, and the CRT's use-FMA flag (DAT_143f336f4) cleared because Unicorn has no FMA (its SSE2
+maths may differ by one ulp). Zero pages made up for stray reads are no longer executable, so a jump
+through a null pointer stops the run. The snapshot is game memory: it stays in `extracted/` (ignored).
 
 ## What it costs and where it fits
 

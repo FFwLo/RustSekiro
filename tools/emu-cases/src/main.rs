@@ -16,6 +16,8 @@ use std::path::Path;
 
 use serde_json::{json, Value};
 
+mod snapshot;
+
 /// The few calls of Unicorn's C API the tool needs (unicorn.h), linked from unicorn.dll.
 mod uc {
     use std::ffi::c_void;
@@ -23,6 +25,7 @@ mod uc {
     pub const ARCH_X86: i32 = 4;
     pub const MODE_64: i32 = 8;
     pub const PROT_ALL: u32 = 7;
+    pub const PROT_RW: u32 = 3;
     pub const HOOK_CODE: i32 = 4;
     pub const HOOK_BLOCK: i32 = 8;
     pub const HOOK_MEM_UNMAPPED: i32 = 112;
@@ -35,6 +38,7 @@ mod uc {
     pub const R8: i32 = 106;
     pub const R9: i32 = 107;
     pub const XMM0: i32 = 122;
+    pub const GS_BASE: i32 = 251;
     extern "C" {
         pub fn uc_open(arch: i32, mode: i32, uc: *mut Engine) -> i32;
         pub fn uc_mem_map(uc: Engine, address: u64, size: usize, perms: u32) -> i32;
@@ -75,6 +79,11 @@ struct State {
     wild: BTreeSet<u64>,
     blocks: BTreeSet<u64>,
     func: u64,
+    size: u64,
+    /// The last blocks run (any function), for where a run went wrong.
+    trail: Vec<u64>,
+    /// The game's memory, mapped a 64 KB window at a time on first touch.
+    snap: Option<snapshot::Snap>,
 }
 
 #[allow(dead_code)]
@@ -106,9 +115,10 @@ extern "C" fn on_stub(uc: uc::Engine, addr: u64, _size: u32, data: *mut c_void) 
     if !st.running {
         return;
     }
+    let rax = if s.name == "TlsGetValue" { tls_get_value(uc, st) } else { s.rax };
     st.calls.push(s.name);
     unsafe {
-        uc::uc_reg_write(uc, uc::RAX, &s.rax as *const u64 as _);
+        uc::uc_reg_write(uc, uc::RAX, &rax as *const u64 as _);
         if let Some(x) = s.xmm0 {
             let b = f32_bits(x);
             uc::uc_reg_write(uc, uc::XMM0, b.as_ptr() as _);
@@ -116,19 +126,69 @@ extern "C" fn on_stub(uc: uc::Engine, addr: u64, _size: u32, data: *mut c_void) 
     }
 }
 
+/// Reads 8 bytes, mapping them from the snapshot first when the run has not touched them.
+fn read_u64(uc: uc::Engine, st: &mut State, at: u64) -> u64 {
+    let mut v = 0u64;
+    unsafe {
+        if uc::uc_mem_read(uc, at, &mut v as *mut u64 as _, 8) != 0 {
+            if let Some((from, bytes)) = st.snap.as_mut().and_then(|s| s.window(at)) {
+                uc::uc_mem_map(uc, from, bytes.len(), uc::PROT_ALL);
+                uc::uc_mem_write(uc, from, bytes.as_ptr() as _, bytes.len());
+                uc::uc_mem_read(uc, at, &mut v as *mut u64 as _, 8);
+            }
+        }
+    }
+    v
+}
+
+/// TlsGetValue(index) from the snapshot's main-thread TEB: its 64 slots at +0x1480, then the
+/// expansion slots behind the pointer at +0x1780.
+fn tls_get_value(uc: uc::Engine, st: &mut State) -> u64 {
+    let (mut index, mut teb) = (0u64, 0u64);
+    unsafe {
+        uc::uc_reg_read(uc, uc::RCX, &mut index as *mut u64 as _);
+        uc::uc_reg_read(uc, uc::GS_BASE, &mut teb as *mut u64 as _);
+    }
+    let index = index & 0xffff_ffff;
+    if teb == 0 {
+        return 0;
+    }
+    if index < 64 {
+        read_u64(uc, st, teb + 0x1480 + 8 * index)
+    } else {
+        let more = read_u64(uc, st, teb + 0x1780);
+        if more == 0 { 0 } else { read_u64(uc, st, more + 8 * (index - 64)) }
+    }
+}
+
 extern "C" fn on_block(_uc: uc::Engine, addr: u64, _size: u32, data: *mut c_void) {
     let st = unsafe { &mut *(data as *mut State) };
-    st.blocks.insert(addr - st.func);
+    if (st.func..st.func + st.size).contains(&addr) {
+        st.blocks.insert(addr - st.func);
+    }
+    if st.trail.len() == 16 {
+        st.trail.remove(0);
+    }
+    st.trail.push(addr);
 }
 
 extern "C" fn on_unmapped(uc: uc::Engine, kind: i32, addr: u64, _size: i32, _value: i64, data: *mut c_void) -> bool {
     let st = unsafe { &mut *(data as *mut State) };
     // UC_MEM_FETCH_UNMAPPED: a jump through a null or unset pointer stops the run.
-    if !st.running || kind == 21 {
+    if !st.running {
+        return false;
+    }
+    if let Some((from, bytes)) = st.snap.as_mut().and_then(|s| s.window(addr)) {
+        unsafe {
+            return uc::uc_mem_map(uc, from, bytes.len(), uc::PROT_ALL) == 0 && uc::uc_mem_write(uc, from, bytes.as_ptr() as _, bytes.len()) == 0;
+        }
+    }
+    if kind == 21 {
         return false;
     }
     st.wild.insert(addr);
-    unsafe { uc::uc_mem_map(uc, addr & !(PAGE - 1), PAGE as usize, uc::PROT_ALL) == 0 }
+    // Read/write only: a later jump into this zero page stops the run instead of running zeros.
+    unsafe { uc::uc_mem_map(uc, addr & !(PAGE - 1), PAGE as usize, uc::PROT_RW) == 0 }
 }
 
 extern "C" fn on_read(_uc: uc::Engine, _kind: i32, addr: u64, size: i32, _value: i64, data: *mut c_void) -> bool {
@@ -146,7 +206,7 @@ fn f32_bits(v: f32) -> [u8; 16] {
 }
 
 impl Emu {
-    fn new(exe: &Path) -> Emu {
+    fn new(exe: &Path, snap: Option<snapshot::Snap>) -> Emu {
         let img = std::fs::read(exe).expect("sekiro.exe");
         let u32at = |o: usize| u32::from_le_bytes(img[o..o + 4].try_into().unwrap());
         let pe = u32at(0x3c) as usize;
@@ -156,6 +216,7 @@ impl Emu {
         let base = u64::from_le_bytes(img[opt + 24..opt + 32].try_into().unwrap());
         let mut handle: uc::Engine = std::ptr::null_mut();
         ok(unsafe { uc::uc_open(uc::ARCH_X86, uc::MODE_64, &mut handle) }, "open");
+        let mut image_end = base;
         let mut e = Emu { uc: handle, st: Box::new(State { heap_next: HEAP, ..Default::default() }), next_stub: STUBS, sizes: functions_json() };
         e.map(base, PAGE);
         for i in 0..nsec {
@@ -164,6 +225,25 @@ impl Emu {
             e.map(base + va, (vsize.max(rsize as u64) + PAGE - 1) & !(PAGE - 1));
             let n = rsize.min(vsize as usize).min(img.len().saturating_sub(roff));
             e.raw_write(base + va, &img[roff..roff + n]);
+            image_end = image_end.max(base + va + vsize);
+        }
+        // With a snapshot the image is the game's own copy (its globals as they were); the import
+        // slots below still become stubs.
+        if let Some(mut s) = snap {
+            for (lo, size) in s.within(base, image_end) {
+                let mut at = lo;
+                while at < lo + size {
+                    let (from, bytes) = s.window(at).unwrap();
+                    e.raw_write(from, &bytes);
+                    at = from + bytes.len() as u64;
+                }
+            }
+            assert!(!s.overlaps(HEAP, STUBS + 0x10000), "the snapshot uses the emulator's heap/stack range");
+            e.set_reg(uc::GS_BASE, s.main_teb);
+            // The CRT picked its FMA3 maths at startup (this CPU has it); Unicorn has no FMA, so
+            // clear the CRT's use-FMA flag and the maths takes its SSE2 path (may differ by 1 ulp).
+            e.raw_write(0x1_43f3_36f4, &0u32.to_le_bytes());
+            e.st.snap = Some(s);
         }
         // Windows fills the import table at load; here every slot becomes a stub named after its import.
         let imports = u32at(opt + 112 + 8) as u64;
@@ -253,6 +333,18 @@ impl Emu {
         ok(unsafe { uc::uc_mem_read(self.uc, at, b.as_mut_ptr() as _, N) }, "mem_read");
         b
     }
+    /// Reads memory the run has not touched yet, mapping it from the snapshot first.
+    fn peek<const N: usize>(&mut self, at: u64) -> [u8; N] {
+        let mut b = [0u8; N];
+        if unsafe { uc::uc_mem_read(self.uc, at, b.as_mut_ptr() as _, N) } != 0 {
+            let (from, bytes) = self.st.snap.as_mut().and_then(|s| s.window(at)).expect("address not in the snapshot");
+            self.map(from, bytes.len() as u64);
+            self.raw_write(from, &bytes);
+            b = self.read(at);
+        }
+        b
+    }
+    fn peek_u64(&mut self, at: u64) -> u64 { u64::from_le_bytes(self.peek(at)) }
     fn rf32(&self, at: u64) -> f32 { f32::from_le_bytes(self.read(at)) }
     fn ru8(&self, at: u64) -> u8 { self.read::<1>(at)[0] }
 
@@ -307,7 +399,9 @@ impl Emu {
         self.st.unset.clear();
         self.st.wild.clear();
         self.st.blocks.clear();
-        let h = self.hook(uc::HOOK_BLOCK, on_block as *const c_void, va, va + size - 1);
+        self.st.size = size;
+        self.st.trail.clear();
+        let h = self.hook(uc::HOOK_BLOCK, on_block as *const c_void, 1, 0);
         let r = unsafe { uc::uc_emu_start(self.uc, va, RETURN, 0, 5_000_000) };
         unsafe { uc::uc_hook_del(self.uc, h) };
         self.st.running = false;
@@ -499,6 +593,39 @@ fn hit_stop(emu: &mut Emu, out: &Path) {
     rep.write(out, "hit_stop", F, emu);
 }
 
+/// Pilot 3: the follow camera's frame update (FUN_140734790 -> FUN_14073c260) on the game's own
+/// memory (--snapshot): ChrCam found by its vtable, the player and the pad state as the game's
+/// caller FUN_140a6cf00 passes them. Reports how far it runs and which camera fields change.
+fn camera(emu: &mut Emu, out: &Path) {
+    const F: u64 = 0x1_4073_4790;
+    const CHR_CAM_VT: u64 = 0x1_429a_6d40;
+    let snap = emu.st.snap.as_mut().expect("camera needs --snapshot");
+    let player = snap.player;
+    let cam = snap.find_u64(CHR_CAM_VT).expect("no ChrCam in the snapshot");
+    let follow = emu.peek_u64(cam + 0x60);
+    let pad_man = emu.peek_u64(0x1_43d6_d640);
+    let pad = emu.peek_u64(pad_man + 0x98);
+    let size = 0x800;
+    let before: Vec<[u8; 4]> = (0..size / 4).map(|i| emu.peek(follow + 4 * i)).collect();
+    let mut rep = Report::new();
+    for dt in [1.0f32 / 60.0, 1.0 / 30.0] {
+        let r = emu.call(F, &[cam, 0, player, pad, 0], &[0.0, dt]);
+        let changed: Vec<Value> = (0..size / 4)
+            .filter_map(|i| {
+                let now: [u8; 4] = emu.read(follow + 4 * i);
+                (now != before[i as usize]).then(|| json!({"off": 4 * i, "before": f32::from_le_bytes(before[i as usize]), "after": f32::from_le_bytes(now)}))
+            })
+            .collect();
+        if r.stopped.is_some() {
+            println!("  calls {:?}
+  last blocks {:x?}", r.calls, emu.st.trail);
+        }
+        println!("camera dt {dt:.4}: {} blocks, stopped {:?}, {} follow-cam fields changed, {} stubs hit", r.blocks.len(), r.stopped.map(|(a, e)| (format!("{a:#x}"), e)), changed.len(), r.calls.len());
+        rep.add(&r, json!({"dt": dt, "changed": changed}), None);
+    }
+    rep.write(out, "camera", F, emu);
+}
+
 /// probe <addr>: runs a function on zeroed objects (rcx, rdx, r8, r9 each 0x4000 bytes) and lists
 /// the fields it reads, how far it gets and what it calls: the setup a comparison test needs.
 fn probe(emu: &mut Emu, va: u64) {
@@ -518,7 +645,19 @@ fn probe(emu: &mut Emu, va: u64) {
 }
 
 fn main() {
-    let args: Vec<String> = std::env::args().collect();
+    let mut args: Vec<String> = std::env::args().collect();
+    if args.get(1).map(String::as_str) == Some("snapshot") {
+        let pid = args.get(2).and_then(|p| p.parse().ok()).expect("usage: emu-cases snapshot <pid> <dir>");
+        snapshot::take(pid, Path::new(args.get(3).expect("snapshot dir")));
+        return;
+    }
+    // --snapshot <dir>: run on the game's memory from `snapshot`.
+    let snap_dir = args.iter().position(|a| a == "--snapshot").map(|i| {
+        let d = args.remove(i + 1);
+        args.remove(i);
+        d
+    });
+    let snap = || snap_dir.as_deref().map(|d| snapshot::Snap::open(Path::new(d)));
     let exe = Path::new(args.get(1).expect("usage: emu-cases <sekiro.exe> <out dir> [pilot ...]"));
     let out = Path::new(args.get(2).expect("out dir"));
     std::fs::create_dir_all(out).unwrap();
@@ -526,18 +665,22 @@ fn main() {
     let on = |n: &str| want.is_empty() || want.contains(&n);
     let t = std::time::Instant::now();
     if want.first() == Some(&"probe") {
-        let mut emu = Emu::new(exe);
+        let mut emu = Emu::new(exe, snap());
         for a in &want[1..] {
             probe(&mut emu, u64::from_str_radix(a.trim_start_matches("0x"), 16).unwrap());
         }
         return;
     }
     if on("super_armor_hit") {
-        let mut emu = Emu::new(exe);
+        let mut emu = Emu::new(exe, None);
         super_armor_hit(&mut emu, out);
     }
+    if want.contains(&"camera") {
+        let mut emu = Emu::new(exe, snap());
+        camera(&mut emu, out);
+    }
     if on("hit_stop") {
-        let mut emu = Emu::new(exe);
+        let mut emu = Emu::new(exe, None);
         hit_stop(&mut emu, out);
     }
     println!("done in {:.1} s", t.elapsed().as_secs_f32());
