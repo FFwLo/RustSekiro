@@ -39,13 +39,27 @@ use crate::player::CAPSULE_HALF_HEIGHT;
 /// FUN_140bc2e00). Live physics module +0xD0 = 1.5 / 0.4 agrees.
 pub const RADIUS: f32 = 0.4;
 /// Highest ledge a walking body steps onto, and how far it follows the floor down.
-/// gap: the character proxy's step-up is not traced (Havok sweep, no explicit value found).
+/// The exe moves the proxy lifted by the physics module's +0x188 (0.3 m, set in FUN_140bbb010;
+/// FUN_140bcac10, the proxy at last frame's feet + 0.3 each frame in the emulator, topic proxy
+/// 2026-11-03), and hknpCharacterProxy climbs a contact whose normal is within maxSlope 60 deg of
+/// up: a sharp ledge edge touching the lifted capsule's bottom sphere (r 0.4, centre 0.7 m) is
+/// walkable up to 0.7 - 0.4 cos 60 = 0.5 m. gap: derived, not run against a ledge (the snapshot's
+/// arena has none between 0.3 and 0.6 m in reach); how far the post-step (FUN_140bca6d0) follows
+/// the floor down is not traced either.
 pub const STEP_HEIGHT: f32 = 0.5;
 /// hknpCharacterProxyCinfo maxSlope, set to 60 deg in FUN_14104d3d0 (0x3f860a92 = 1.0472 rad).
 const MAX_SLOPE_DEGREES: f32 = 60.0;
 /// Heights of the contact spheres' centres above the feet; the lowest sphere's bottom sits at
-/// the step height so stairs reach the floor query rather than the wall push.
-const SPHERES: [f32; 3] = [STEP_HEIGHT + RADIUS, 1.2, 1.55];
+/// the step height so stairs reach the floor query rather than the wall push. The top one's top
+/// is the exe proxy's: the 1.5 m capsule (proxy +0x90 / +0xa0) lifted 0.3 m, 1.8 m over the feet
+/// (was 1.55 + 0.4 = 1.95: a beam 1.8-1.95 m up stopped Wolf where the exe walks under it).
+const SPHERES: [f32; 3] = [STEP_HEIGHT + RADIUS, 1.15, 1.8 - RADIUS];
+/// How far past its radius a body stays off a wall: hknpCharacterProxy keepDistance, 0.05 in
+/// Wolf's proxy (the float after its shape). In the emulator (topic proxy, 2026-11-03) Wolf
+/// walking into the arena's rock face rests 0.05-0.06 m further out than a 0.4 m sphere touching
+/// it (0.082 m off the 1 m cast's contact head-on, of which 0.02 is the face's lean at the
+/// capsule's lower sphere); RSekiro pushed to the bare radius.
+const KEEP_DISTANCE: f32 = 0.05;
 const CELL: f32 = 4.0;
 /// Bevy lux per native light unit (the game has no photometric unit: `rgb * rgb * W` goes to
 /// the shaders as is). sekiro-rs `crates/game/src/lighting.rs` SCENE_TO_BEVY: 4500 folds its
@@ -479,7 +493,7 @@ impl Terrain {
         let gates = self.gates_on();
         let gate_tris: Vec<Vec<u32>> = gates.iter().map(|g| (0..g.tris.len() as u32).collect()).collect();
         let mut tris = Vec::new();
-        let reach = RADIUS + len / steps as f32 + 0.05;
+        let reach = RADIUS + KEEP_DISTANCE + len / steps as f32 + 0.05;
         self.gather(
             Vec2::new(p.x.min(p.x + delta.x), p.z.min(p.z + delta.y)) - reach,
             Vec2::new(p.x.max(p.x + delta.x), p.z.max(p.z + delta.y)) + reach,
@@ -545,6 +559,7 @@ impl Terrain {
 
     fn push_out(&self, feet: Vec3, tris: &[u32]) -> Vec2 {
         let mut total = Vec2::ZERO;
+        let r = RADIUS + KEEP_DISTANCE;
         for h in SPHERES {
             let centre = feet + Vec3::Y * h;
             let mut push = Vec2::ZERO;
@@ -553,7 +568,7 @@ impl Terrain {
                 let q = closest_on_triangle(centre, a, b, c);
                 let away = centre - q;
                 let dist = away.length();
-                if dist >= RADIUS {
+                if dist >= r {
                     continue;
                 }
                 // Horizontal pushes only; a contact straight above or below (beam, floor) is
@@ -569,7 +584,7 @@ impl Terrain {
                     }
                     nf.normalize()
                 };
-                let needed = (RADIUS * RADIUS - away.y * away.y).max(0.0).sqrt();
+                let needed = (r * r - away.y * away.y).max(0.0).sqrt();
                 let depth = needed - flat.dot(dir);
                 if depth > push.dot(dir) {
                     push += dir * (depth - push.dot(dir));
