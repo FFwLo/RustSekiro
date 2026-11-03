@@ -7,8 +7,9 @@
 //!   nothing -> NONE. These are AI_TARGET_STATE__NONE/CAUTION/FIND/BATTLE (ai_define.lua).
 //!
 //! Sight (FUN_14061bb70 "normal", FUN_14061c2a0 "around"): a cone from an eye pushed
-//! eye_BackOffsetDist behind the enemy's feet, from eye_BeginDist out to eye_dist, within
-//! eye_ang_left/right (yaw) and eye_ang_upper/bottom (elevation), every NpcThinkParam row.
+//! eye_BackOffsetDist behind the enemy's dummy 500 (at its feet height), from eye_BeginDist out
+//! to eye_dist, within eye_ang_left/right (yaw) and eye_ang_upper/bottom (elevation), every
+//! NpcThinkParam row. Checked against the exe on 52,554 placements (aicpp, 2026-11-03).
 //! Wolf's SpEffects shrink it: distances x prod(1 - sightSearchEnemyCut / 100) (FUN_140bfe8a0),
 //! angles x prod(1 - sightSearch<Dir>AngleCut / 100) (FUN_140bfea80 ...).
 //! - In the normal cone (the "perceive" set once in FIND/BATTLE) Wolf becomes a normal target
@@ -55,6 +56,8 @@ pub struct Cone {
     pub down: f32,
     pub left: f32,
     pub right: f32,
+    /// NpcThinkParam disableDark (row +0x53): the light factor is 1 whatever Wolf's light.
+    pub disable_dark: bool,
 }
 
 impl Cone {
@@ -67,6 +70,7 @@ impl Cone {
             down: f(think, &format!("eye_ang_bottom_{set}")),
             left: f(think, &format!("eye_ang_left_{set}")),
             right: f(think, &format!("eye_ang_right_{set}")),
+            disable_dark: f(think, "disableDark") != 0.0,
         }
     }
 }
@@ -84,6 +88,9 @@ pub struct Seen {
     pub ang: [f32; 4],
     /// Meter fill factor from aroundSightPointAddRate (FUN_140bfc050).
     pub around_rate: f32,
+    /// Light factor: Wolf's light level (ChrIns +0x1acd & 0xf -> ctx +0x79) picks Good / Dark /
+    /// PitchDark 1 / 0.5 / 0.3 (DAT_143afb490..8 -> ctx +0x58). gap: no map lighting, always Good.
+    pub light: f32,
 }
 
 impl Seen {
@@ -91,7 +98,7 @@ impl Seen {
     /// apply only when the observer's geometry bits hold (FUN_140616f50); gap: those bits are
     /// not traced, so such effects (hanging 109220, wall hug 109210) are left out.
     pub fn new(pos: Vec3, radius: f32, sp: &[&crate::data::SpEffect]) -> Seen {
-        let mut s = Seen { pos, radius, cut: 1.0, ang: [1.0; 4], around_rate: 1.0 };
+        let mut s = Seen { pos, radius, cut: 1.0, ang: [1.0; 4], around_rate: 1.0, light: 1.0 };
         for e in sp.iter().filter(|e| e.sight_cut_limit_type == 0) {
             let cut = |pct: f32| if pct > 0.0 { 1.0 - pct * 0.01 } else { 1.0 };
             s.cut *= cut(e.sight_search_enemy_cut);
@@ -107,16 +114,38 @@ impl Seen {
     }
 }
 
-/// Is `wolf` inside `cone` seen from an enemy at `me` facing `fwd` (FUN_14061bb70 /
-/// FUN_14061c2a0), with nothing of the map between them (`sight_clear`)?
-pub fn in_cone(cone: &Cone, me: Vec3, fwd: Vec3, wolf: &Seen) -> bool {
+/// Is `wolf` inside `cone` seen from an enemy whose eye point is `eye` facing `fwd`
+/// (FUN_14061bb70 / FUN_14061c2a0), with nothing of the map between them (`sight_clear`)?
+pub fn in_cone(cone: &Cone, eye: Vec3, fwd: Vec3, wolf: &Seen) -> bool {
+    in_cone_shape(cone, eye, fwd, wolf) && sight_clear(eye, wolf.pos)
+}
+
+/// The enemy's sight origin (observer vfunc 0x20, FUN_14060e7e0 -> 0x28 FUN_14060e6b0): its
+/// dummy 500 when the model has one, else the root pushed forward by its physics radius
+/// (FUN_1409efb80), both at the root's height. On the snapshot dummy 500 sat 0.15-1.0 m ahead
+/// of the root (six enemies, aicpp 2026-11-03).
+pub fn eye_point(feet: Vec3, fwd: Vec3, dmy500: Option<Vec3>, radius: f32) -> Vec3 {
+    match dmy500 {
+        Some(d) => d.with_y(feet.y),
+        None => feet + fwd.with_y(0.0).normalize_or_zero() * radius,
+    }
+}
+
+/// The cone test alone (FUN_14061bb70 / FUN_14061c2a0 without the ray, FUN_14061c8a0). The
+/// observer side: `eye` (ctx +0x20, `eye_point`) and the body facing (ctx +0x40, flattened);
+/// gap: ctx +0x50 (observer vfunc 0xe0, 1.0 on the snapshot) and ctx +0x78 (skips the far
+/// test) are taken as 1 and off.
+pub fn in_cone_shape(cone: &Cone, eye: Vec3, fwd: Vec3, wolf: &Seen) -> bool {
     let fwd = fwd.with_y(0.0).normalize_or_zero();
-    // Eye: the enemy's feet pushed back along its facing (FUN_14061af30 / ae40 / b030).
-    let eye = me - fwd * cone.back * wolf.cut;
+    let light = if cone.disable_dark { 1.0 } else { wolf.light };
+    // The eye pushed back along the facing (FUN_14061af30 / ae40 / b030).
+    let cut = wolf.cut * light;
+    let eye = eye - fwd * cone.back * cut;
     let d = wolf.pos - eye;
     let d2 = d.length_squared();
-    let begin = cone.begin * wolf.cut;
-    let gate = wolf.radius + cone.dist;
+    let begin = cone.begin * cut;
+    // The outer gate before the angles has the light but not the cut.
+    let gate = wolf.radius + cone.dist * light;
     if !(begin * begin <= d2 && d2 < gate * gate) {
         return false;
     }
@@ -134,16 +163,17 @@ pub fn in_cone(cone: &Cone, me: Vec3, fwd: Vec3, wolf: &Seen) -> bool {
     if !in_range(elev, -down, up) {
         return false;
     }
-    let far = wolf.radius + cone.dist * wolf.cut;
-    d2 < far * far && sight_clear(me, wolf.pos)
+    let far = wolf.radius + cone.dist * cut;
+    d2 < far * far
 }
 
 /// The sight ray (FUN_14061c8a0, last step of both checks): from the sight context's +0x30 to
 /// +0xa0 through the collision (FUN_14094e310, filter 0x32); a hit means not seen. The normal
 /// cone casts it unless ctx +0xc2 is set (FUN_140617280). gap: the two points - the target's is
-/// its position raised by its physics +0xd0 (FUN_1409f0890 / FUN_140bbf730) or a dummy poly
-/// when its ChrInfo +0x330 >= 0, the observer's is not traced - are taken as both capsule
-/// centres; which collision filter 0x32 skips is not known (our map has the hit collision only).
+/// its position raised by its physics +0xd0 (FUN_1409f0890 / FUN_140bbf730; Wolf's feet + 1.5 on
+/// the snapshot) or a dummy poly when its ChrInfo +0x330 >= 0, the observer's its dummy 500 (ctx
+/// +0x30, aicpp 2026-11-03) - are taken as the eye point and Wolf's feet raised by our capsule
+/// half height; which collision filter 0x32 skips is not known (our map has the hit collision only).
 fn sight_clear(me: Vec3, wolf: Vec3) -> bool {
     let h = Vec3::Y * crate::player::CAPSULE_HALF_HEIGHT;
     let (a, b) = (me + h, wolf + h);
@@ -271,7 +301,7 @@ impl Targeting {
     }
 
     /// An AI sound reached the enemy: a sound target at its source (SoundTargetForgetTime).
-    /// A held sound of a higher rank is kept: the exe listener (14062.c:4230-4257) takes rank 0
+    /// A held sound of a higher rank is kept: the exe listener (<decomp ref>) takes rank 0
     /// sounds only with no sound target or one of rank < 1, rank 1 only under rank 2, so Wolf's
     /// footsteps (rank 0) do not overwrite a guard break's IMPORTANT sound 5000 (round 25).
     pub fn hear(&mut self, think: &Value, pos: Vec3, id: i64, rank: i64) {
@@ -309,12 +339,12 @@ impl Targeting {
         *self = Targeting::new(rng);
     }
 
-    /// One frame. `me` / `fwd`: the enemy's feet and facing.
-    pub fn update(&mut self, think: &Value, me: Vec3, fwd: Vec3, wolf: &Seen, dt: f32) {
+    /// One frame. `me` / `fwd`: the enemy's feet and facing; `eye`: its sight origin (`eye_point`).
+    pub fn update(&mut self, think: &Value, me: Vec3, eye: Vec3, fwd: Vec3, wolf: &Seen, dt: f32) {
         let around = Cone::from(think, "around");
         // Meter (FUN_140626430, every frame).
         if let Some(mut m) = self.meter {
-            m.visible = in_cone(&around, me, fwd, wolf);
+            m.visible = in_cone(&around, eye, fwd, wolf);
             if m.visible {
                 m.points += f(think, "aroundTargetIncrementPoint") * dt * wolf.around_rate;
             } else {
@@ -334,7 +364,7 @@ impl Targeting {
         if self.search_timer <= 0.0 {
             self.search_timer = self.rand() * 0.2 + 0.2;
             let cone = Cone::from(think, if self.perceive { "perceive" } else { "normal" });
-            let seen = in_cone(&cone, me, fwd, wolf);
+            let seen = in_cone(&cone, eye, fwd, wolf);
             if seen {
                 // FUN_14062a5e0 -> FUN_140629250: a new normal target starts in FIND.
                 let forget = f(think, "SightTargetForgetTime");
@@ -346,7 +376,7 @@ impl Targeting {
                 if let Some(n) = self.normal.as_mut() {
                     n.visible = false;
                 }
-                if self.normal.is_none() && self.meter.is_none() && in_cone(&around, me, fwd, wolf) {
+                if self.normal.is_none() && self.meter.is_none() && in_cone(&around, eye, fwd, wolf) {
                     self.meter = Some(Meter { points: 0.0, visible: true });
                 }
             }
@@ -436,13 +466,13 @@ mod tests {
     }
 
     fn wolf(pos: Vec3) -> Seen {
-        Seen { pos, radius: 0.4, cut: 1.0, ang: [1.0; 4], around_rate: 1.0 }
+        Seen { pos, radius: 0.4, cut: 1.0, ang: [1.0; 4], around_rate: 1.0, light: 1.0 }
     }
 
     /// Enemy at the origin facing +Z.
     fn run(t: &mut Targeting, think: &Value, w: &Seen, secs: f32) {
         for _ in 0..(secs * 60.0) as usize {
-            t.update(think, Vec3::ZERO, Vec3::Z, w, 1.0 / 60.0);
+            t.update(think, Vec3::ZERO, Vec3::ZERO, Vec3::Z, w, 1.0 / 60.0);
         }
     }
 
