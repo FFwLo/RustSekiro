@@ -1,12 +1,10 @@
 //! Reviewed Hirata and Hall of Illusions staging, from the installed EMEVD and MSB.
 
-use std::collections::HashSet;
-use std::path::Path;
 
 use crate::arena::{ArenaSpec, BossEvents};
 use crate::enemy::EnemySpec;
 use crate::events::EventEntry;
-use sekiro_formats::{emevd::Emevd, hknp::CollisionMesh, msb};
+use sekiro_formats::hknp::CollisionMesh;
 
 const fn event(id: i64) -> EventEntry {
     EventEntry {
@@ -154,125 +152,6 @@ pub const SENPOU_SCREENS: ArenaSpec = ArenaSpec {
     beaten: &[9303],
 };
 
-pub fn owns(spec: &ArenaSpec) -> bool {
-    [
-        HIRATA_HALL.name,
-        HIRATA_FATHER.name,
-        HIRATA_INNER_FATHER.name,
-        SENPOU_SCREENS.name,
-    ]
-    .contains(&spec.name)
-}
-
-/// All required primary/support models are checked before constructing a Bevy session.
-pub fn missing_models(cache: &Path, spec: &ArenaSpec) -> Result<Vec<String>, String> {
-    if !owns(spec) {
-        return Ok(Vec::new());
-    }
-    let path = cache.join(format!("maps/{}/layout.json", spec.map));
-    let json: serde_json::Value = serde_json::from_slice(
-        &std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?,
-    )
-    .map_err(|e| e.to_string())?;
-    let boss =
-        crate::arena::boss_events(&spec.enemy_spec()).ok_or("arena has no boss event row")?;
-    let mut models = HashSet::new();
-    for row in json["enemies"].as_array().into_iter().flatten() {
-        let entity = row["entity_id"].as_i64().unwrap_or(-1) as i32;
-        if (entity == boss.boss_entity || simultaneous(boss.boss_entity, entity))
-            && let Some(model) = row["model"].as_str()
-        {
-            models.insert(format!("models/{model}.glb"));
-        }
-    }
-    let mut missing: Vec<_> = models
-        .into_iter()
-        .filter(|p| !cache.join(p).is_file())
-        .collect();
-    missing.sort();
-    Ok(missing)
-}
-
-/// These MSB actors coexist with the primary boss; enable commands must not replace it.
-pub fn simultaneous(boss: i32, entity: i32) -> bool {
-    match boss {
-        1_000_800 => matches!(entity, 1_000_810 | 1_000_820..=1_000_827),
-        1_000_810 => matches!(entity, 1_000_820..=1_000_827),
-        1_000_900 => entity == 1_000_901,
-        1_000_990 => entity == 1_000_991,
-        2_000_800 => matches!(entity, 2_000_801..=2_000_809 | 2_000_811..=2_000_814),
-        _ => false,
-    }
-}
-
-pub fn initially_enabled(entity: i32) -> Option<bool> {
-    match entity {
-        1_000_810 | 1_000_820..=1_000_827 | 1_000_901 | 1_000_991 => Some(false),
-        2_000_801..=2_000_804 => Some(true),
-        2_000_805..=2_000_809 | 2_000_811..=2_000_814 => Some(false),
-        _ => None,
-    }
-}
-
-/// The specific props named by the arena's events, rather than every object on the map.
-pub fn object_entities(cache: &Path, spec: &ArenaSpec) -> Result<HashSet<i32>, String> {
-    if !owns(spec) {
-        return Ok(HashSet::new());
-    }
-    let boss = crate::arena::boss_events(&spec.enemy_spec()).ok_or("arena has no events")?;
-    let path = cache.join(format!("raw/event/{}.emevd", boss.map));
-    let file = Emevd::parse(&std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?)
-        .map_err(|e| e.to_string())?;
-    let mut entities = HashSet::new();
-    for entry in boss.events {
-        let event = file.event(entry.id).ok_or("missing arena event")?;
-        for start in file.starts_of(entry.id) {
-            for instruction in event.resolve(&start.args) {
-                if instruction.bank == 2005
-                    && let Some(entity) = instruction.i32_at(0)
-                {
-                    entities.insert(entity);
-                }
-            }
-        }
-    }
-    Ok(entities)
-}
-
-/// 12005210 selects the illusion sky and room state before cutscene 20000000's warp.
-pub fn seed_scene(
-    cache: &Path,
-    boss: &BossEvents,
-    scripts: &mut crate::events::EventScripts,
-) -> Result<(), String> {
-    if boss.boss_entity != MONKEYS.boss_entity {
-        return Ok(());
-    }
-    let path = cache.join("raw/event/m20_00_00_00.emevd");
-    let file = Emevd::parse(&std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?)
-        .map_err(|e| e.to_string())?;
-    let event = file
-        .event(12_005_210)
-        .ok_or("missing illusion temple entrance event 12005210")?;
-    for ins in event.instructions.iter().skip(11).take(15) {
-        if matches!(ins.code(), (2012, 1) | (2005, 3)) {
-            let entity = ins
-                .i32_at(0)
-                .ok_or("short illusion temple scene instruction")?;
-            let on = ins
-                .u8_at(4)
-                .ok_or("short illusion temple scene instruction")?
-                != 0;
-            scripts.cast_scene.enabled.insert(entity, on);
-        }
-    }
-    Ok(())
-}
-
-pub fn sky_override(boss_entity: i32) -> Option<&'static str> {
-    (boss_entity == MONKEYS.boss_entity).then_some("m900085")
-}
-
 /// The shared NpcParam must not erase Inner Father's distinct MSB think identity.
 pub fn select_placed_think(spec: &ArenaSpec, enemy: &mut EnemySpec) {
     if spec.name == HIRATA_INNER_FATHER.name
@@ -302,10 +181,6 @@ pub fn arena_enemy(spec: &ArenaSpec) -> Option<EnemySpec> {
 pub fn identity_events(enemy: &EnemySpec) -> Option<&'static BossEvents> {
     (enemy.chr == "c5060" && enemy.npc_param == 50_601_010 && enemy.think == 50_630_000)
         .then_some(&INNER_FATHER)
-}
-
-pub fn retired_butterfly(boss: i32, entity: i32) -> bool {
-    boss == BUTTERFLY_SECOND.boss_entity && entity == BUTTERFLY.boss_entity
 }
 
 /// Entry instructions where the original event has no label at the post-intro boundary.
@@ -359,54 +234,6 @@ pub fn hp_ratio_condition(
         Some(5) => ratio <= value,
         _ => false,
     }
-}
-
-/// Initial display/collision alternatives from m10 constructor's common 20004114/15 calls.
-/// Read the raw MSB because layout.json omits piece entities and entity groups.
-pub fn hidden_parts(cache: &Path, spec: &ArenaSpec) -> Result<HashSet<String>, String> {
-    if spec.map != "m10_00_00_00" {
-        return Ok(HashSet::new());
-    }
-    let flags = if spec.name == HIRATA_HALL.name {
-        BUTTERFLY.flags
-    } else {
-        FATHER.flags
-    };
-    let read = |path: &Path| std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()));
-    let file = Emevd::parse(&read(&cache.join("raw/event/m10_00_00_00.emevd"))?)
-        .map_err(|e| e.to_string())?;
-    let map = msb::parse(&read(&cache.join("raw/map/mapstudio/m10_00_00_00.msb"))?)
-        .map_err(|e| e.to_string())?;
-    let mut inactive = HashSet::new();
-    for start in file
-        .starts()
-        .iter()
-        .filter(|s| s.common && s.from_event == 0)
-    {
-        if start.event == 20_004_115 {
-            let a = start.arg_i32(0).ok_or("short 20004115 start")?;
-            let b = start.arg_i32(1).ok_or("short 20004115 start")?;
-            let flag = start.arg_i32(2).ok_or("short 20004115 start")?;
-            inactive.insert(if flags.contains(&flag) { a } else { b });
-        } else if start.event == 20_004_114 {
-            let active = (0..4).any(|n| {
-                let flag = start.arg_i32(n + 1).unwrap_or(0);
-                flag != 0 && flags.contains(&flag) == (start.args.get(20 + n) == Some(&1))
-            });
-            if !active {
-                inactive.insert(start.arg_i32(0).ok_or("short 20004114 start")?);
-            }
-        }
-    }
-    Ok(map
-        .parts
-        .iter()
-        .filter(|p| {
-            inactive.contains(&p.entity_id)
-                || p.entity_group_ids.iter().any(|id| inactive.contains(id))
-        })
-        .map(|p| p.name.clone())
-        .collect())
 }
 
 /// Zeroes the triangles of the collision parts `hidden` names; returns how many parts it removed.

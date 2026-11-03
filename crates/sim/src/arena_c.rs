@@ -1,12 +1,9 @@
 //! Reservoir and Sunken Valley staging, reviewed against the installed EMEVDs.
 
-use std::path::Path;
 
-use glam::Vec3;
-use sekiro_formats::{emevd::Instruction, hknp::CollisionMesh};
-use serde_json::Value;
+use sekiro_formats::emevd::Instruction;
 
-use crate::arena::{ArenaLayout, ArenaSpec, BossEvents};
+use crate::arena::{ArenaSpec, BossEvents};
 use crate::events::EventEntry;
 #[path = "arena_c_regions.rs"]
 pub mod regions;
@@ -47,82 +44,6 @@ impl EventState {
         self.gparam = Some((area as i16, block as i16, sub, seconds));
         true
     }
-}
-
-/// The centipedes and summoned brown ape remain supporting actors, not sequential bosses.
-pub fn allow_handover(enemy: &crate::enemy::EnemySpec) -> bool {
-    enemy.chr != "c5100"
-}
-
-/// Fail before opening a window when a required staged character has no exported model.
-pub fn missing_models(cache: &Path, spec: &ArenaSpec) -> Vec<String> {
-    let characters: &[&str] = match spec.name {
-        "silvergrass-genichiro" => &["c7100"],
-        "silvergrass" => &["c7110", "c5400"],
-        "silvergrass-isshin" => &["c5400"],
-        "silvergrass-inner-isshin" => &["c5400"],
-        "watering-hole" | "apes-burrow" => &["c5100", "c5001"],
-        _ => &[],
-    };
-    characters
-        .iter()
-        .map(|chr| format!("models/{chr}.glb"))
-        .filter(|name| !cache.join(name).is_file())
-        .collect()
-}
-
-/// h900900 (1124860) is switched by Wolf's messages 90/100 in event 11125877. Returns its
-/// triangles and who collides with them ([`crate::hit_filter::mask`]: its hit filter 9 holds
-/// only the camera).
-pub fn take_event_collision(
-    spec: &ArenaSpec,
-    layout: &Value,
-    mesh: &mut CollisionMesh,
-) -> Option<(CollisionMesh, u8)> {
-    if spec.map != "m11_02_00_00" {
-        return None;
-    }
-    let row = layout["collisions"]
-        .as_array()?
-        .iter()
-        .find(|r| r["entity_id"].as_i64() == Some(1_124_860))?;
-    let first = row["triangles"][0].as_u64()? as usize;
-    let count = row["triangles"][1].as_u64()? as usize;
-    let mut part = CollisionMesh {
-        vertices: mesh.vertices.clone(),
-        ..Default::default()
-    };
-    for t in first..first + count {
-        let tri = &mut mesh.indices[t * 3..t * 3 + 3];
-        part.indices.extend_from_slice(tri);
-        part.materials
-            .push(mesh.materials.get(t).copied().unwrap_or(u32::MAX));
-        tri[1] = tri[0];
-        tri[2] = tri[0];
-    }
-    let who = crate::hit_filter::row_filter(row).map_or(
-        crate::hit_filter::PLAYER | crate::hit_filter::ENEMY | crate::hit_filter::CAMERA,
-        crate::hit_filter::mask,
-    );
-    Some((part, who))
-}
-
-/// Common event 100 and final intro 11125840 hide alternative sky groups.
-pub fn seed_scene(boss: i32, scene: &mut crate::arena::scene::SceneState) {
-    if ![1_120_800, 1_120_830, 1_120_860, 1_120_890].contains(&boss) {
-        return;
-    }
-    for id in [
-        8907000, 8907010, 8907015, 8907020, 8907030, 8907040, 8907050, 8907060, 8907070, 8907075,
-        8907080, 8907081, 8907085, 8907090, 8907100,
-    ] {
-        scene.enabled.insert(id, false);
-    }
-    scene
-        .enabled
-        .insert(if boss == 1_120_800 { 8907040 } else { 8907075 }, true);
-    scene.enabled.insert(1_127_820, true);
-    scene.enabled.insert(1_124_860, true);
 }
 
 const fn event(id: i64) -> EventEntry {
@@ -306,60 +227,4 @@ pub fn join_intro(id: i64, code: &mut Vec<Instruction>) -> Result<(), String> {
     }
     *code = joined;
     Ok(())
-}
-
-/// The silvergrass cutscenes place Wolf at MSB regions, not any exported player part.
-/// 11125810 uses 1122801; 11125840/830 use 1122800.
-pub fn story_start(cache: &Path, spec: &ArenaSpec, layout: &mut ArenaLayout) -> Result<(), String> {
-    let entity = match spec.name {
-        "silvergrass-genichiro" => 1_122_801,
-        "silvergrass" | "silvergrass-isshin" => 1_122_800,
-        _ => return Ok(()),
-    };
-    let point = crate::events::warp_point(cache, 11, 2, entity).ok_or_else(|| {
-        format!("cache/raw/map/MapStudio/m11_02_00_00.msb: missing story warp {entity}")
-    })?;
-    layout.wolf.position = Vec3::from_array(point.position);
-    layout.wolf.yaw = crate::arena::yaw_toward(layout.wolf.position, layout.boss.position);
-    layout.wolf_source = format!("story warp region {entity}");
-    Ok(())
-}
-
-/// Remove disabled collision alternatives in original triangle numbering, before fog splitting.
-/// Event 50 disables 1124460 and 1124420; opening 11125810 swaps 1124400-4 to 1124410-4.
-/// Final-game 11125840 does not perform that opening-only swap.
-pub fn filter_collision(spec: &ArenaSpec, layout: &Value, mesh: &mut CollisionMesh) {
-    if spec.map != "m11_02_00_00" {
-        return;
-    }
-    let opening = spec.name == "silvergrass-genichiro";
-    let disabled = |id: i64| {
-        id == 1_124_460
-            || id == 1_124_420
-            || if opening {
-                (1_124_400..=1_124_404).contains(&id)
-            } else {
-                (1_124_410..=1_124_414).contains(&id)
-            }
-    };
-    let ranges: Vec<_> = layout["collisions"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter(|r| r["entity_id"].as_i64().is_some_and(disabled))
-        .filter_map(|r| {
-            let first = r["triangles"][0].as_u64()? as usize;
-            Some(first..first + r["triangles"][1].as_u64()? as usize)
-        })
-        .collect();
-    // Degenerate placeholders preserve MSB triangle ranges until the shared fog splitter runs.
-    for range in ranges {
-        for tri in mesh.indices[range.start * 3..range.end * 3]
-            .as_chunks_mut::<3>()
-            .0
-        {
-            tri[1] = tri[0];
-            tri[2] = tri[0];
-        }
-    }
 }

@@ -10,12 +10,15 @@ not followed.
 |---|---|
 | `hks` | the HavokScript VM that runs the game's compiled scripts (src/hks.rs) |
 | `formats` | game file readers (behaviour graphs, GPARAM, ...) |
-| `sim` | collision world, navmesh, water surface |
-| `game` | the streaming map, lighting, sky and fog (`SHINOBI_SR_MAP=1`, src/sr_map.rs) |
-| `brain-net`, `fmod` | dependencies of `game` |
+| `sim` | collision world (`collision`, `body`'s ground queries, `hit_filter`, `lo_collision`), navmesh, and the arena, event and story state the map and its lighting read |
+| `game` (library `sekiro_rs`) | the streaming map, lighting, sky and fog (`SHINOBI_SR_MAP=1`, src/sr_map.rs) |
 | `extract` (package `sr-extract`) | builds the map cache `game` reads (`SEKIRO_CACHE`, else `../sekiro-rs/cache`); RSekiro's own data comes from `tools/sekiro-extract` |
 
-`brain-net` reads `brain-prices.toml` and `BRAIN.md` from its own folder (they sat at the sekiro-rs root).
+On 2026-11-04 everything RSekiro does not use was removed as unused: the `brain-net` and `fmod`
+crates; sekiro-rs's own game app in `game` (its `sekiro-rs` program, fights, bosses, arenas, duel,
+menus, HUD, brain overlay and stage, coach options, input replay scripts, the map viewer and sweep
+modes, and their tests); and in `sim` the characters, behaviour runtime, combat, bosses, brains,
+Lua AI, duel and its CLIs and examples, with their tests. Its git history has the removed code.
 
 Their rules were read from the exe, not run against it: treat them as unproven until the emulator
 checks (docs/kb/emulator-pilot.md) cover them.

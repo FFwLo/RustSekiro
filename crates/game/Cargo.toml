@@ -1,6 +1,6 @@
 [package]
 name = "sekiro-game"
-description = "The sekiro-rs Bevy app"
+description = "The sekiro-rs streaming map, lighting, sky and fog (a library for RSekiro)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -11,25 +11,13 @@ license.workspace = true
 name = "sekiro_rs"
 path = "src/lib.rs"
 
-[[bin]]
-name = "sekiro-rs"
-path = "src/main.rs"
-
 [dependencies]
 bevy = { version = "=0.20.0", default-features = false, features = ["3d", "png", "dds", "ui", "default_font", "bevy_audio", "wav"] }
 anyhow.workspace = true
 sekiro-formats.workspace = true
 sekiro-sim.workspace = true
-sekiro-brain-net.workspace = true
-sekiro-fmod.workspace = true
 serde_json.workspace = true
 wgpu = { version = "30", default-features = false }
-tracing = { version = "0.1", optional = true }
-bevy-ecs-trace = { package = "bevy_ecs", version = "=0.20.0", optional = true, default-features = false, features = ["trace", "debug"] }
-
-[features]
-# Times every Bevy system through its tracing span; see src/span_profile.rs.
-profile-spans = ["dep:tracing", "dep:bevy-ecs-trace"]
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62.2", features = ["Win32_Graphics_Dxgi"] }

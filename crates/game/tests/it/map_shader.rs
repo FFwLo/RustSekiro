@@ -125,7 +125,6 @@ fn layered_map_forward_depth_and_motion_shaders_validate() {
             include_str!("../../src/map_prepass.wesl"),
             true,
         ),
-        ("map_sweep", include_str!("../../src/map_sweep.wesl"), false),
         (
             "map_fog_surface",
             include_str!("../../src/map_fog_surface.wesl"),
@@ -133,30 +132,6 @@ fn layered_map_forward_depth_and_motion_shaders_validate() {
         ),
     ] {
         let id = super::shader_support::register(&mut cache, &mut assets, name, source);
-        if name == "map_sweep" {
-            // Collision has positions/normals but no UVs, tangents or colour streams.
-            let mut defs: Vec<ShaderDefVal> = [
-                "VERTEX_NORMALS",
-                "VERTEX_OUTPUT_INSTANCE_INDEX",
-                "SHADOW_FILTER_METHOD_HARDWARE_2X2",
-            ]
-            .into_iter()
-            .map(Into::into)
-            .collect();
-            for (key, n) in [
-                ("MATERIAL_BIND_GROUP", 3),
-                ("MAX_DIRECTIONAL_LIGHTS", 10),
-                ("MAX_CASCADES_PER_LIGHT", 4),
-                ("MAX_RECT_LIGHTS", 64),
-                ("AVAILABLE_STORAGE_BUFFER_BINDINGS", 8),
-                ("MSAA_SAMPLES", 1),
-            ] {
-                defs.push(ShaderDefVal::UInt(key.into(), n));
-            }
-            cache
-                .get(0, id, &defs)
-                .unwrap_or_else(|e| panic!("sweep collision shader: {e:?}"));
-        }
         for bindless in [false, true] {
             for game in [false, true] {
                 for msaa in [1, 4] {

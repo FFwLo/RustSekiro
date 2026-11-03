@@ -184,23 +184,6 @@ pub fn riding_walls(walls: u8, riding: bool) -> u8 {
     }
 }
 
-/// The fall-prevention walls the assist tests for HKS `act(3016, arg)`. The script
-/// (`_UpdateFallProtection`) sends arg 0 in states whose `ENABLE_FALL_PROTECT_WALL_STRONG` is
-/// set (standing, walking, running, dodges, landings) and arg 1 where
-/// `ENABLE_FALL_PROTECT_WALL_WEAK` is set (ground actions), every frame. The act's handler
-/// (`FUN_140b32410`, case 3016) sets bit `arg` of the request word (`1 << arg`, in the module
-/// `FUN_140b34de0` returns), and `FUN_140bc6800` picks the sphere cast's group from the two
-/// request bits: bit 0 alone casts with group 94, which meets only group 92 (filter 28, object
-/// type 6), bit 1 alone with 95, which meets only 93 (the `f` bands, object type 11), both with
-/// 96, which meets both.
-pub fn fall_assist_walls(arg: i32) -> u8 {
-    match arg {
-        0 => FALL_ASSIST_MOVE,
-        1 => FALL_ASSIST_ACTION,
-        _ => 0,
-    }
-}
-
 /// [`PLAYER`], [`ENEMY`], [`CAMERA`], fall-prevention and [`WALL_HUG`] bits for a Havok
 /// collision group.
 pub fn group_mask(group: u8) -> u8 {
@@ -222,16 +205,6 @@ pub fn player_collides(hit_filter: u8) -> bool {
     mask(hit_filter) & PLAYER != 0
 }
 
-/// Whether enemies and bosses stand on and bump into parts with this hit filter.
-pub fn enemy_collides(hit_filter: u8) -> bool {
-    mask(hit_filter) & ENEMY != 0
-}
-
-/// Whether the camera ray stops at parts with this hit filter.
-pub fn camera_collides(hit_filter: u8) -> bool {
-    mask(hit_filter) & CAMERA != 0
-}
-
 /// [`PLAYER`], [`ENEMY`], [`CAMERA`], fall-prevention and [`WALL_HUG`] bits for the parts with
 /// this hit filter.
 pub fn mask(hit_filter: u8) -> u8 {
@@ -250,8 +223,6 @@ pub fn is_event_wall(hit_filter: u8) -> bool {
 /// (`chr+0x1a48`, `chr+0x1a4c`), and when it reaches 0 sets the physics module's `0x92b`,
 /// which makes `FUN_140bcc420` set `0x92a` and hold the body still.
 pub const FALL_RETURN_FILTER: u8 = 15;
-/// Seconds of the fall return's model fade: 1.0 at -2.0 per second.
-pub const FALL_RETURN_FADE: f32 = 0.5;
 
 /// Havok group of a placed object's static and keyframed bodies, by its model's
 /// `ObjectParam.collisionType` (`FUN_140872b40` reads it through `FUN_1408705d0`, row `+0x57`,
@@ -408,18 +379,12 @@ mod tests {
         ] {
             assert!(!player_collides(f), "{f}");
         }
-        let camera: Vec<u8> = (8..30).filter(|&f| camera_collides(f)).collect();
-        assert_eq!(camera, [8, 9, 10, 16]);
-        let enemy: Vec<u8> = (8..30).filter(|&f| enemy_collides(f)).collect();
-        assert_eq!(enemy, [8, 10, 11, 16, 19, 22, 27]);
         assert_eq!(mask(8), PLAYER | ENEMY | CAMERA);
         assert_eq!(mask(16), ENEMY | CAMERA);
         assert_eq!(mask(15), 0);
         assert_eq!(mask(28), FALL_ASSIST_MOVE);
         // Only a wall-hugging body (group 86) meets the wall-hug parts (group 85).
         assert_eq!(mask(25), WALL_HUG);
-        assert_eq!(fall_assist_walls(0), FALL_ASSIST_MOVE);
-        assert_eq!(fall_assist_walls(1), FALL_ASSIST_ACTION);
         assert!(rideable(Some(808)) && !rideable(Some(8)) && !rideable(None));
         assert_eq!(
             riding_walls(FALL_ASSIST_MOVE, true),

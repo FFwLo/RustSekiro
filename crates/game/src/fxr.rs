@@ -7,9 +7,8 @@
 //! sprite meets the scene. The player, its batching and soft particles follow FwLo's RustSekiro
 //! (MIT, see `CREDITS.md`); the field layouts come from EvenTorset's FXR library (Unlicense).
 //!
-//! Effects are requested by the simulation: TAE events ([`FxrPlayer::observe`]), bullets, and hits
-//! (`sekiro_sim::hit_fx`, [`FxrPlayer::hits`]). `--no-fxr` turns the player off so the
-//! hand-made stand-ins draw instead; `--fxr-preview <id>` repeats one effect between the actors.
+//! Effects are requested by the map (`crate::map_fx`, [`FxrPlayer::map_effect`]). `--no-fxr` turns
+//! the player off.
 
 use std::{collections::HashMap, path::PathBuf};
 
@@ -23,7 +22,6 @@ use bevy::{
     },
     shader::ShaderRef,
 };
-use sekiro_sim::duel::{Duel, DuelReport};
 
 use crate::fxr_tree::{
     Action, Config, Field, FxrLib, NodeInst, Rnd, frame_uvs, grow_trails, int, make_node,
@@ -44,11 +42,6 @@ const EFFECT_DROP: f32 = 30.0;
 /// [`FxrPlayer::hold`], `(5, id, serial)` for map effects, `(IDOL_REST, id, n)` for
 /// [`FxrPlayer::one_shot`].
 type Key = (usize, i32, i32);
-/// [`FxrPlayer::hold`] namespaces: map entities (fog walls), and the map items' glints.
-pub const HELD: usize = 4;
-pub const GLINTS: usize = 6;
-/// [`FxrPlayer::one_shot`] namespace: the burst of a rest at an idol.
-pub const IDOL_REST: usize = 7;
 
 /// A plugin-supplied bridge keeps the simulation private to the play module.
 pub fn plugin(cache: PathBuf, bridge: impl Fn(&mut App) + Send + Sync + 'static) -> impl Plugin {
@@ -109,8 +102,6 @@ struct Effect {
     /// Where it is (and, while `follow`, where its dummy or bullet is).
     at: Transform,
     follow: bool,
-    /// Stops emitting when its event ends or its key is no longer requested.
-    stoppable: bool,
     stop: bool,
     /// A map effect held by [`FxrPlayer::hold`]: it neither times out nor is dropped by age
     /// while held.
@@ -119,9 +110,6 @@ struct Effect {
     age: f32,
     asleep: bool,
 }
-
-/// A stain a hit asks for: DecalParam row, contact point, blow direction on the floor plane.
-pub type StainRequest = (i32, [f32; 3], [f32; 2]);
 
 #[derive(Resource)]
 pub struct FxrPlayer {
@@ -132,19 +120,10 @@ pub struct FxrPlayer {
     multi_batches: HashMap<MultiKey, Batch>,
     distort_batches: HashMap<i64, Batch>,
     textures: HashMap<i64, Handle<Image>>,
-    bullets: HashMap<u64, i32>,
-    bullet_sfx: HashMap<i32, i32>,
-    last_cues: Vec<(usize, i32, i32, u32)>,
-    hit_fx: Option<sekiro_sim::hit_fx::HitFx>,
-    npc_param: i32,
-    hit_serial: i32,
     /// Particles alive after the last step, for logs and the frame budget.
     pub particles: usize,
     pub spawned: usize,
     pub rejected: usize,
-    preview: Option<i32>,
-    steps: usize,
-    cache: PathBuf,
 }
 
 impl FxrPlayer {
@@ -155,20 +134,6 @@ impl FxrPlayer {
         } else {
             FxrLib::default()
         };
-        let mut bullet_sfx = HashMap::new();
-        if enabled
-            && let Ok(params) = sekiro_formats::param::ParamSet::load(
-                &cache.join("raw/param/gameparam/gameparam.parambnd.d"),
-                &cache.join("refs/paramdex/Defs"),
-            )
-            && let Some(table) = params.get("Bullet")
-        {
-            for row in table.rows() {
-                if let Ok(sfx) = row.int("sfxId_Bullet") {
-                    bullet_sfx.insert(row.id(), sfx as i32);
-                }
-            }
-        }
         info!(
             "FXR: enabled={enabled}, indexed {} installed effects",
             lib.effect_count()
@@ -181,46 +146,10 @@ impl FxrPlayer {
             multi_batches: HashMap::new(),
             distort_batches: HashMap::new(),
             textures: HashMap::new(),
-            bullets: HashMap::new(),
-            bullet_sfx,
-            last_cues: Vec::new(),
-            hit_fx: None,
-            npc_param: -1,
-            hit_serial: 0,
             particles: 0,
             spawned: 0,
             rejected: 0,
-            preview: std::env::args()
-                .collect::<Vec<_>>()
-                .windows(2)
-                .find(|a| a[0] == "--fxr-preview")
-                .and_then(|a| a[1].parse().ok()),
-            steps: 0,
-            cache,
         }
-    }
-
-    /// Whether the player draws this bullet, so its stand-in should not. A bullet with its own
-    /// installed effect is drawn by it. The blinding area has none: the smoke the Owl throws is
-    /// FFX 650640 on its carrier, so the stand-in sphere is dropped when that effect exists.
-    pub fn covers_bullet(
-        &mut self,
-        bullet_row: i32,
-        look: sekiro_sim::bullets::BulletLook,
-    ) -> bool {
-        use sekiro_sim::bullets::BulletLook;
-        let id = i64::from(self.bullet_sfx.get(&bullet_row).copied().unwrap_or(-1));
-        // An effect with a model (an arrow's, a shuriken's) is only half drawn: the stand-in stays
-        // under it, except for lightning, whose bolt is the tracers.
-        let own = id > 0
-            && self.lib.has(id)
-            && (look == BulletLook::Lightning || !self.lib.has_model(id));
-        self.enabled && (own || (look == BulletLook::Smoke && self.lib.has(650640)))
-    }
-
-    /// Whether this effect id is installed and can play (a stand-in is used otherwise).
-    pub fn has(&mut self, id: i32) -> bool {
-        self.enabled && id > 0 && self.lib.has(i64::from(id))
     }
 
     pub(crate) fn map_actions(&mut self, id: i32) -> (bool, bool) {
@@ -230,37 +159,8 @@ impl FxrPlayer {
         )
     }
 
-    /// Loads the hit tables (effects, stains) for this fight's NPC when they are not loaded yet.
-    pub(crate) fn ensure_tables(&mut self, duel: &Duel) {
-        if self.enabled && (self.hit_fx.is_none() || self.npc_param != duel.spec.npc_param) {
-            self.npc_param = duel.spec.npc_param;
-            self.hit_fx =
-                sekiro_sim::hit_fx::HitFx::load_from_cache(&self.cache, duel.spec.npc_param);
-        }
-    }
-
-    /// A DecalParam row, once the tables are loaded.
-    pub fn decal(&self, id: i32) -> Option<&sekiro_sim::hit_fx::DecalRow> {
-        self.hit_fx.as_ref()?.decal(id)
-    }
-
-    /// Floor stains whose TAE event started this step: (DecalParam id, dummy position).
-    pub fn event_stains(&self, duel: &Duel) -> Vec<(i32, [f32; 3])> {
-        let mut out = Vec::new();
-        for (actor, c) in [&duel.player, &duel.enemy].into_iter().enumerate() {
-            for &(id, dummy) in &c.tae_frame().decals {
-                let at = i16::try_from(dummy)
-                    .ok()
-                    .and_then(|d| duel.dummy_position(actor, d))
-                    .unwrap_or(c.body.position);
-                out.push((id, at));
-            }
-        }
-        out
-    }
-
     /// Starts an effect (`start`) or moves the one already playing under `key`.
-    fn request(&mut self, id: i32, key: Key, at: Transform, start: bool, stoppable: bool) {
+    fn request(&mut self, id: i32, key: Key, at: Transform, start: bool) {
         if !self.enabled || id <= 0 {
             return;
         }
@@ -286,21 +186,12 @@ impl FxrPlayer {
             key,
             at,
             follow: true,
-            stoppable,
             stop: false,
             persistent: false,
             root: None,
             age: 0.0,
             asleep: false,
         });
-    }
-
-    pub(crate) fn live_counts(&self) -> (usize, usize, usize) {
-        (
-            self.effects.len(),
-            self.effects.iter().filter(|e| e.persistent).count(),
-            self.particles,
-        )
     }
 
     /// Live particles of the camera-relative map effects within `radius` m (horizontally) of
@@ -322,57 +213,6 @@ impl FxrPlayer {
             .filter_map(|e| e.root.as_ref())
             .map(|root| near(root, at, radius))
             .sum()
-    }
-
-    pub(crate) fn reset_fight(&mut self) {
-        self.effects.retain(|e| e.persistent);
-        self.bullets.clear();
-        self.last_cues.clear();
-        self.particles = self
-            .effects
-            .iter()
-            .filter_map(|e| e.root.as_ref())
-            .map(count_particles)
-            .sum();
-    }
-
-    /// Holds a map effect (a boss fog wall) at `at` while `on`, and lets it fade out once it is
-    /// off. `namespace` and `serial` tell apart effects with the same id; the effect does not
-    /// time out.
-    pub fn hold(&mut self, namespace: usize, id: i32, serial: i32, at: Transform, on: bool) {
-        let key = (namespace, id, serial);
-        let held = self
-            .effects
-            .iter_mut()
-            .find(|e| e.key == key && e.persistent);
-        match (on, held) {
-            (true, None) => {
-                let before = self.effects.len();
-                self.request(id, key, at, true, false);
-                if self.effects.len() > before
-                    && let Some(e) = self.effects.last_mut()
-                {
-                    e.persistent = true;
-                    e.follow = false;
-                }
-            }
-            (false, Some(e)) => {
-                e.persistent = false;
-                e.stop = true;
-                e.age = EFFECT_STOP;
-            }
-            _ => {}
-        }
-    }
-
-    /// Plays effect `id` once at `at`, to its own end, where it was started. `namespace` and
-    /// `serial` tell apart effects with the same id.
-    pub fn one_shot(&mut self, namespace: usize, id: i32, serial: i32, at: Transform) {
-        let key = (namespace, id, serial);
-        self.request(id, key, at, true, false);
-        if let Some(e) = self.effects.last_mut().filter(|e| e.key == key) {
-            e.follow = false;
-        }
     }
 
     /// Independent map namespace. Sleeping preserves the tree but submits no particles.
@@ -399,7 +239,7 @@ impl FxrPlayer {
                 self.effects.remove(i);
             }
             let before = self.effects.len();
-            self.request(id, key, at, true, false);
+            self.request(id, key, at, true);
             if self.effects.len() > before {
                 let e = self.effects.last_mut().unwrap();
                 e.persistent = true;
@@ -409,155 +249,6 @@ impl FxrPlayer {
 
     pub(crate) fn advance_map(&mut self, dt: f32) {
         self.advance_selected(dt, true);
-    }
-
-    /// Effects for the step's hits: sparks on a deflect or block, blood on a landed hit, at the
-    /// contact point and facing the attacker. Returns the hits' floor stains for the caller.
-    pub fn hits(&mut self, duel: &Duel, report: &DuelReport) -> Vec<StainRequest> {
-        let _timer = crate::perf_log::SystemTimer::start("fxr hits");
-        if !self.enabled || report.hits.is_empty() {
-            return Vec::new();
-        }
-        self.ensure_tables(duel);
-        let mut stains = Vec::new();
-        let mut requests = Vec::new();
-        if let Some(table) = &self.hit_fx {
-            for (hit, result) in &report.hits {
-                for id in table.stains(hit, result) {
-                    stains.push((id, hit.position, hit.direction));
-                }
-                // Facing the attacker: sparks bounce back toward where the blow came from.
-                let back =
-                    Vec3::new(-hit.direction[0], 0.0, -hit.direction[1]).normalize_or(Vec3::Z);
-                let body = if hit.defender == 0 {
-                    &duel.player.body
-                } else {
-                    duel.population
-                        .as_ref()
-                        .and_then(|p| p.foes.get(hit.defender - 1))
-                        .map_or(&duel.enemy.body, |f| &f.duel.enemy.body)
-                };
-                let at = Transform::from_translation(on_body(
-                    Vec3::from_array(hit.position),
-                    Vec3::from_array(body.position),
-                ))
-                .with_rotation(Quat::from_rotation_arc(Vec3::Z, back));
-                for id in table.effects(hit, result) {
-                    requests.push((id, at));
-                }
-            }
-        }
-        for (id, at) in requests {
-            self.hit_serial += 1;
-            let key = (3, id, self.hit_serial);
-            self.request(id, key, at, true, false);
-            if let Some(e) = self.effects.last_mut() {
-                e.follow = false;
-            }
-        }
-        stains
-    }
-
-    /// Called after each simulation step by the registration bridge.
-    /// Positions use the simulation's posed dummy polys, including body fallback.
-    pub fn observe(&mut self, duel: &Duel) {
-        let _timer = crate::perf_log::SystemTimer::start("fxr observe");
-        if !self.enabled {
-            return;
-        }
-        self.ensure_tables(duel);
-        let mut cues = Vec::new();
-        let mut keys = Vec::new();
-        self.steps += 1;
-        if let Some(id) = self.preview {
-            let key = (99, id, 0);
-            keys.push(key);
-            let position = (Vec3::from_array(duel.player.body.position)
-                + Vec3::from_array(duel.enemy.body.position))
-                * 0.5
-                + Vec3::Y;
-            if self.steps >= 60 {
-                let start = (self.steps - 60).is_multiple_of(120);
-                self.request(id, key, Transform::from_translation(position), start, true);
-            }
-            if self.steps.is_multiple_of(60) {
-                info!(
-                    "FXR preview step {}: particles={}, effects={}, spawned={}, rejected={}",
-                    self.steps,
-                    self.particles,
-                    self.effects.len(),
-                    self.spawned,
-                    self.rejected
-                );
-            }
-        }
-        for (actor, character) in [&duel.player, &duel.enemy].into_iter().enumerate() {
-            for cue in &character.tae_frame().effects {
-                let e = &cue.effect;
-                // Conditional and repeating variants need their own runtimes.
-                if e.extra_condition != 0 || e.repeat {
-                    continue;
-                }
-                let identity = (actor, e.id, e.dummy, cue.start.to_bits());
-                let start = !self.last_cues.contains(&identity);
-                cues.push(identity);
-                let frame = i16::try_from(e.dummy)
-                    .ok()
-                    .and_then(|d| duel.dummy_frame(actor, d));
-                if e.restrict_to_dummy && frame.is_none() {
-                    continue;
-                }
-                let at = match frame {
-                    Some((p, fwd, up)) if !e.ignore_dummy_angle => frame_transform(p, fwd, up),
-                    Some((p, ..)) => Transform::from_translation(Vec3::from_array(p)),
-                    None => Transform::from_translation(Vec3::from_array(character.body.position))
-                        .with_rotation(Quat::from_rotation_y(character.body.yaw)),
-                };
-                let key = (actor, e.id, e.dummy);
-                keys.push(key);
-                if start || e.follow_dummy {
-                    let stoppable = e.slot >= 0 || e.event_type == 118 || e.restrict_to_dummy;
-                    self.request(e.id, key, at, start, stoppable);
-                }
-            }
-        }
-        self.last_cues = cues;
-        for bullet in &duel.bullets.live {
-            let id = self.bullet_sfx.get(&bullet.def.id).copied().unwrap_or(-1);
-            let position = Vec3::from_array(bullet.position.to_array());
-            let start = !self.bullets.contains_key(&bullet.serial);
-            let key = (2, id, bullet.serial as i32);
-            keys.push(key);
-            let velocity = Vec3::from_array(bullet.velocity.to_array());
-            // A bullet that is not moving (a bang, flames, smoke on the floor) throws its effect
-            // upward; one in flight, along its flight.
-            let facing = if velocity.length() > 0.1 {
-                velocity.normalize()
-            } else {
-                Vec3::Y
-            };
-            self.request(
-                id,
-                key,
-                Transform::from_translation(position)
-                    .with_rotation(Quat::from_rotation_arc(Vec3::Z, facing)),
-                start,
-                true,
-            );
-            self.bullets.insert(bullet.serial, id);
-        }
-        self.bullets
-            .retain(|serial, _| duel.bullets.live.iter().any(|b| b.serial == *serial));
-        for e in &mut self.effects {
-            if e.stoppable && !keys.contains(&e.key) {
-                e.stop = true;
-            }
-        }
-        self.advance(1.0 / 60.0);
-    }
-
-    pub(crate) fn advance(&mut self, dt: f32) {
-        self.advance_selected(dt, false);
     }
 
     fn advance_selected(&mut self, dt: f32, map: bool) {
@@ -576,8 +267,7 @@ impl FxrPlayer {
                 };
                 let seed = (e.id as u32)
                     .wrapping_mul(97)
-                    .wrapping_add(e.key.2 as u32)
-                    .wrapping_add(self.steps as u32 * 31);
+                    .wrapping_add(e.key.2 as u32);
                 e.root = make_node(lib, &def, seed, 0);
                 if map
                     && dt == 0.
@@ -628,30 +318,8 @@ impl FxrPlayer {
     }
 }
 
-/// A contact point held on the defender's body: the sim reports where the two hit shapes are
-/// closest, which can be a metre off the body or above the head, so it is kept within the body's
-/// height (0.5 to 1.5 m above the feet) and 0.6 m of its axis.
-fn on_body(contact: Vec3, feet: Vec3) -> Vec3 {
-    let height = (contact.y - feet.y).clamp(0.5, 1.5);
-    let mut flat = Vec2::new(contact.x - feet.x, contact.z - feet.z);
-    if flat.length() > 0.6 {
-        flat = flat.normalize() * 0.6;
-    }
-    Vec3::new(feet.x + flat.x, feet.y + height, feet.z + flat.y)
-}
-
 fn count_particles(n: &NodeInst) -> usize {
     n.particles.len() + n.children.iter().map(count_particles).sum::<usize>()
-}
-
-/// A dummy's world frame as a transform: forward is +Z, up +Y; X completes a right-handed basis
-/// (the dummy axes arrive mirrored, which `game_vec` undoes in the effect's own offsets).
-pub fn frame_transform(position: [f32; 3], forward: [f32; 3], up: [f32; 3]) -> Transform {
-    let (z, y) = (Vec3::from_array(forward), Vec3::from_array(up));
-    let x = y.cross(z).normalize_or(Vec3::X);
-    let y = z.cross(x).normalize_or(Vec3::Y);
-    Transform::from_translation(Vec3::from_array(position))
-        .with_rotation(Quat::from_mat3(&Mat3::from_cols(x, y, z)))
 }
 
 // ---------------------------------------------------------------- drawing
@@ -1875,8 +1543,7 @@ fn render(
         );
         v.sort();
         info!(
-            "fxr quads (step {}, {} particles) {}",
-            player.steps,
+            "fxr quads ({} particles) {}",
             player.particles,
             v.join(" ")
         );
@@ -1913,14 +1580,8 @@ mod tests {
             1,
             serde_json::json!({"root": {"type": 2000, "nodes": nodes}}),
         );
-        player.request(
-            1,
-            (0, 1, 0),
-            Transform::from_xyz(0.0, 0.0, -3.0),
-            true,
-            true,
-        );
-        player.advance(0.0);
+        player.request(1, (0, 1, 0), Transform::from_xyz(0.0, 0.0, -3.0), true);
+        player.advance_selected(0.0, false);
         app.insert_resource(player);
         app.world_mut()
             .spawn((Camera3d::default(), GlobalTransform::IDENTITY));
@@ -1959,7 +1620,7 @@ mod tests {
         before.sort_unstable();
         let mut player = app.world_mut().resource_mut::<FxrPlayer>();
         player.effects[0].at.translation.x += 1.;
-        player.advance(0.);
+        player.advance_selected(0., false);
         app.update();
         assert_eq!(
             modified_meshes(&mut app),
@@ -1987,7 +1648,7 @@ mod tests {
         assert_eq!(modified_meshes(&mut app), 0);
         let mut player = app.world_mut().resource_mut::<FxrPlayer>();
         player.effects[0].at.translation.x += 1.0;
-        player.advance(0.0);
+        player.advance_selected(0.0, false);
         app.update();
         assert_eq!(
             modified_meshes(&mut app),
@@ -2031,28 +1692,6 @@ mod tests {
     }
 
     #[test]
-    fn hit_contacts_are_held_on_the_body() {
-        let feet = Vec3::new(10.0, 2.0, 10.0);
-        let p = on_body(Vec3::new(10.6, 4.1, 10.0), feet);
-        assert!((p.y - 3.5).abs() < 1e-5, "capped at 1.5 m");
-        assert!(((p.x - feet.x).powi(2) + (p.z - feet.z).powi(2)).sqrt() <= 0.6001);
-        let low = on_body(Vec3::new(10.1, 2.0, 10.0), feet);
-        assert!((low.y - 2.5).abs() < 1e-5, "at least 0.5 m up");
-        assert!((low.x - 10.1).abs() < 1e-5, "near contacts stay put");
-    }
-
-    #[test]
-    fn dummy_frames_keep_forward_and_up() {
-        let t = frame_transform([1.0, 2.0, 3.0], [0.0, 0.0, 1.0], [0.0, 1.0, 0.0]);
-        assert!((t.rotation * Vec3::Z - Vec3::Z).length() < 1e-5);
-        assert!((t.rotation * Vec3::Y - Vec3::Y).length() < 1e-5);
-        // A frame facing +X: forward +X, up +Y gives X to -Z (right-handed).
-        let t = frame_transform([0.0; 3], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]);
-        assert!((t.rotation * Vec3::Z - Vec3::X).length() < 1e-5);
-        assert!((t.rotation * Vec3::X - Vec3::NEG_Z).length() < 1e-5);
-    }
-
-    #[test]
     fn a_requested_effect_plays_out_and_is_dropped() {
         let mut player = FxrPlayer::new(PathBuf::from("missing-fxr-test-cache"));
         // A synthetic effect: a 0.1 s node emitting 2 billboards of 0.2 s every 0.05 s.
@@ -2066,12 +1705,12 @@ mod tests {
             "particleModifier": {"type": 131, "speed": 1.0},
             "appearance": {"type": 603}}]}});
         player.lib.insert_for_test(1, tree);
-        player.request(1, (0, 1, 0), Transform::IDENTITY, true, true);
-        player.advance(1.0 / 60.0);
+        player.request(1, (0, 1, 0), Transform::IDENTITY, true);
+        player.advance_selected(1.0 / 60.0, false);
         assert_eq!(player.effects.len(), 1);
         assert_eq!(player.particles, 2);
         for _ in 0..90 {
-            player.advance(1.0 / 60.0);
+            player.advance_selected(1.0 / 60.0, false);
         }
         assert!(player.effects.is_empty());
         assert_eq!(player.particles, 0);
@@ -2091,14 +1730,14 @@ mod tests {
             "particleModifier": {"type": 131, "speed": 0.0},
             "appearance": {"type": 603}}]}});
         player.lib.insert_for_test(2, tree);
-        player.request(2, (0, 2, 7), Transform::IDENTITY, true, true);
+        player.request(2, (0, 2, 7), Transform::IDENTITY, true);
         for _ in 0..30 {
-            player.advance(1.0 / 60.0);
+            player.advance_selected(1.0 / 60.0, false);
         }
         assert_eq!(player.effects.len(), 1);
         player.effects[0].stop = true;
         for _ in 0..30 {
-            player.advance(1.0 / 60.0);
+            player.advance_selected(1.0 / 60.0, false);
         }
         assert!(player.effects.is_empty());
     }
@@ -2124,60 +1763,4 @@ mod tests {
         assert!(c[0].z > corners[0].z, "pulled toward the camera");
     }
 
-    /// The native deferred point-light diffuse for a surface facing the light (N.L = 1), as
-    /// `native_clustered_light` in `map_material.wesl` computes it.
-    fn native_diffuse(light: &FxLight, d: f32) -> f32 {
-        let fall = (1. - (d / light.range).powi(2)).clamp(0., 1.);
-        let x = (d / light.falloff).powi(2);
-        light.intensity * fall / (1. + 0.7 * x)
-    }
-
-    /// #141: the item glint (FFX 61) lights a small spot, not a 1.5 m pool, while a typical
-    /// fire light (radius 5, falloff 2.5, the most common pair) still reaches the walls.
-    #[test]
-    fn item_glint_light_falls_off_within_half_a_metre() {
-        let cache = sekiro_sim::cache::root();
-        if !cache
-            .join("raw/sfx/sfxbnd_commoneffects.ffxbnd.d/f000000061.fxr")
-            .exists()
-        {
-            eprintln!("skipping: cache not extracted");
-            return;
-        }
-        let mut player = FxrPlayer::new(cache);
-        player.hold(GLINTS, 61, 0, Transform::IDENTITY, true);
-        for _ in 0..90 {
-            player.advance(1. / 60.);
-        }
-        let cam = GlobalTransform::from(Transform::from_xyz(0., 1.5, 3.));
-        let mut buffers = FrameBuffers::default();
-        let mut frame = Frame {
-            cam: &cam,
-            bufs: &mut buffers.bufs,
-            multi: &mut buffers.multi,
-            lights: &mut buffers.lights,
-            distort: &mut buffers.distort,
-            trail: &mut buffers.trail,
-        };
-        for e in &player.effects {
-            collect(e.root.as_ref().unwrap(), &mut frame);
-        }
-        let [glint] = buffers.lights[..] else {
-            panic!("one glint light, got {:?}", buffers.lights);
-        };
-        // Authored: radius 1.5, falloff 0.25, multiplier 0 to 6.4 over the first second.
-        assert!((glint.range - 1.5).abs() < 1e-4);
-        assert!((glint.falloff - 0.25).abs() < 1e-4);
-        assert!((glint.intensity - 6.4).abs() < 1e-3, "{}", glint.intensity);
-        assert_eq!(glint.point_light().radius, glint.falloff);
-        let centre = native_diffuse(&glint, 0.);
-        assert!(native_diffuse(&glint, 0.5) < 0.3 * centre);
-        assert!(native_diffuse(&glint, 1.0) < 0.1 * centre);
-        let fire = FxLight {
-            range: 5.,
-            falloff: 2.5,
-            ..glint
-        };
-        assert!(native_diffuse(&fire, 2.) > 0.5 * native_diffuse(&fire, 0.));
-    }
 }

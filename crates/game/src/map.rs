@@ -1,40 +1,28 @@
-//! `--map <id>`: walks a map area exported by `sekiro-extract map <id>` with a free-fly camera.
+//! A map area exported by `sr-extract map <id>`, streamed into a Bevy app.
 //!
 //! Map piece GLBs are spawned at their MSB instance transforms (already in Bevy space in
-//! `layout.json`). Controls: hold the right mouse button and move the mouse to look, WASD to
-//! fly, Space/E up, Q/Ctrl down, Shift for speed, mouse wheel to change the base speed, C to
-//! toggle the hit collision wireframe, P to print the camera pose.
-//!
-//! `--screenshot <png> [--at <seconds>]` waits until every piece and texture has loaded, then
-//! `--at` more seconds, saves a frame and exits. `--camera x,y,z,yaw,pitch` (degrees) places
-//! the camera; otherwise it starts at the first player start point.
-
-//!
-//! [`add_map`] puts the same map (pieces, draw-group culling around a [`MapFocus`] entity, sun,
-//! fog, collision view) into another mode; `--play --map` uses it.
+//! `layout.json`). [`add_map`] puts the map (pieces, draw-group culling around a [`MapFocus`]
+//! entity, sun, fog, collision view) into an app; RSekiro uses it (src/sr_map.rs).
 
 #[cfg(test)]
 #[path = "map_gate_tests.rs"]
 mod gate;
 
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 // Alias avoids Bevy 0.20 prelude ContextExt ambiguity.
 use anyhow::{Context as ContextExt, Result};
-use bevy::app::AppExit;
 use bevy::asset::RenderAssetUsages;
-use bevy::asset::{AssetPlugin, LoadState, UntypedAssetId};
+use bevy::asset::{LoadState, UntypedAssetId};
 use bevy::camera::primitives::Aabb;
 use bevy::camera::visibility::NoFrustumCulling;
 use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin};
-use bevy::input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll};
 use bevy::light::GlobalAmbientLight;
 use bevy::light::NotShadowCaster;
 use bevy::mesh::{Indices, PrimitiveTopology};
-use bevy::pbr::wireframe::{Wireframe, WireframeColor, WireframePlugin};
+use bevy::pbr::wireframe::{Wireframe, WireframeColor};
 use bevy::prelude::*;
-use bevy::render::view::screenshot::{Screenshot, save_to_disk};
 use bevy::world_serialization::WorldInstanceReady;
 use bevy::world_serialization::{WorldInstance, WorldInstanceSpawner};
 use serde_json::Value;
@@ -54,11 +42,9 @@ pub(crate) use map_material::batches::StaticBatches;
 mod mesh_merge;
 pub(crate) use mesh_merge::{merge_meshes, opaque};
 
-pub(crate) use map_material::{ATTR_MAP_BLEND2, LayeredMaterial, MaterialStats};
+pub(crate) use map_material::{ATTR_MAP_BLEND2, LayeredMaterial};
 #[path = "sky.rs"]
 pub(crate) mod sky;
-#[path = "map_sweep.rs"]
-pub(crate) mod sweep;
 #[path = "map_world.rs"]
 pub mod world;
 
@@ -66,52 +52,12 @@ pub mod world;
 mod local_lights;
 use local_lights::{LocalLights, update_local_lights};
 
-#[path = "map_capture.rs"]
-mod capture;
 #[path = "capture_ready.rs"]
 pub mod ready;
 
 use crate::lighting::{
     MapLighting, MapProbes, ProbeRegion, ShadowSettings, apply_lighting, apply_probes, spawn_lights,
 };
-
-/// Map assets, installed static batches and resident render pipelines are all ready.
-pub(crate) fn ready(
-    pending: Option<&Pending>,
-    batches: Option<&StaticBatches>,
-    warmup: Option<&crate::pipeline_warmup::PipelineWarmup>,
-) -> bool {
-    pending.is_none_or(Pending::loaded)
-        && batches.is_none_or(StaticBatches::ready)
-        && warmup.is_none_or(crate::pipeline_warmup::PipelineWarmup::ready)
-}
-
-pub struct Options {
-    pub cache: PathBuf,
-    pub id: String,
-    pub screenshot: Option<PathBuf>,
-    /// Seconds to wait after everything has loaded before the screenshot.
-    pub at: f32,
-    /// x, y, z, yaw, pitch (degrees).
-    pub camera: Option<[f32; 5]>,
-    /// Start with the collision wireframe visible.
-    pub collision: bool,
-    /// Hide the map pieces (collision only).
-    pub no_pieces: bool,
-    /// Player start point to begin at when `camera` is not given.
-    pub start: usize,
-    /// Skip map piece models whose name starts with any of these (e.g. `m9` for far models).
-    pub hide: Vec<String>,
-    /// Disable vsync, to measure frame rate.
-    pub uncapped: bool,
-    /// Draw-group culling: which collision group block selects the visible pieces.
-    pub groups: GroupMode,
-    /// Also spawn MSB objects on legacy maps. Ashina Explore includes ordinary Objects.
-    pub objects: bool,
-    /// Time of day (hours) and draw param override, see [`MapScene`].
-    pub hour: f32,
-    pub gparam: Option<String>,
-}
 
 /// How map pieces are culled by draw groups. In the game, the hit collision the player stands
 /// on selects which pieces draw, which swaps distant stand-ins for detailed geometry; `Display`
@@ -122,25 +68,6 @@ pub enum GroupMode {
     Off,
     Display,
     Draw,
-}
-
-impl GroupMode {
-    pub fn parse(s: Option<&str>) -> Result<Self> {
-        Ok(match s.unwrap_or("draw") {
-            "off" => Self::Off,
-            "display" => Self::Display,
-            "draw" => Self::Draw,
-            other => anyhow::bail!("--groups {other}: want off, display or draw"),
-        })
-    }
-
-    fn next(self) -> Self {
-        match self {
-            Self::Display => Self::Draw,
-            Self::Draw => Self::Off,
-            Self::Off => Self::Display,
-        }
-    }
 }
 
 /// The map part root (a [`DrawGroups`] entity) at or above `entity`, if it belongs to the map.
@@ -251,22 +178,12 @@ fn groups8(v: &Value) -> [u32; 8] {
     out
 }
 
-#[derive(Resource)]
-struct Fly {
-    yaw: f32,
-    pitch: f32,
-    speed: f32,
-}
-
 #[derive(Component)]
 struct CollisionView;
 
 /// Enemy and player start markers.
 #[derive(Component)]
 struct Marker;
-
-#[derive(Component)]
-struct Hud;
 
 /// Map GLBs requested at once while streaming. Each request counts until its textures have
 /// loaded too, so the nearest models and their textures finish before farther ones start.
@@ -368,16 +285,6 @@ impl Pending {
         if self.loaded_at.is_none() {
             self.instances += 1;
         }
-    }
-
-    /// Fraction of the map's GLBs (with textures) loaded and of its scene instances spawned.
-    pub fn progress(&self) -> f32 {
-        if self.loaded() {
-            return 1.0;
-        }
-        let glbs = (self.next - self.in_flight.len()) as f32 / self.stream.len().max(1) as f32;
-        let spawned = self.ready.min(self.instances) as f32 / self.instances.max(1) as f32;
-        (0.7 * glbs + 0.3 * spawned).min(0.99)
     }
 
     /// The GLB of stream request `index` once the stream has requested it, with its override.
@@ -501,15 +408,6 @@ fn placed_box(model: &Value, transform: &Transform) -> Option<(Vec2, Vec2)> {
     Some((lo, hi))
 }
 
-#[derive(Resource)]
-struct Capture {
-    path: PathBuf,
-    at: f32,
-    started: Instant,
-    requested: Option<Instant>,
-    ready_frames: u32,
-}
-
 pub(crate) struct Pose {
     pub translation: Vec3,
     pub rotation: Quat,
@@ -621,29 +519,6 @@ pub fn map_dir(cache: &Path, id: &str) -> Result<PathBuf> {
         .join(id)
         .canonicalize()
         .with_context(|| format!("cache/maps/{id} not found: run `sekiro-extract map {id}`"))
-}
-
-/// Bevy's IO threads overflow small stacks while loading a map's GLBs and DDS textures.
-/// The bounded Ashina neighbourhood also overflows 16 MiB; 64 MiB is verified with its warm
-/// asset set. Threads read this when spawned, so call
-/// it before the `App` is built.
-pub fn raise_io_stack() {
-    if std::env::var_os("RUST_MIN_STACK").is_none() {
-        // SAFETY: no other thread exists yet, so nothing reads the environment concurrently.
-        unsafe { std::env::set_var("RUST_MIN_STACK", (64usize << 20).to_string()) };
-    }
-}
-
-/// The player start `index` from `layout.json`: position and Bevy-space yaw in degrees.
-pub fn player_start(dir: &Path, index: usize) -> Result<(Vec3, f32)> {
-    let json: Value = serde_json::from_slice(
-        &std::fs::read(dir.join("layout.json")).context("reading layout.json")?,
-    )?;
-    let p = json["players"]
-        .get(index)
-        .with_context(|| format!("no player start {index}"))?;
-    let pos = vec3(&p["translation"]).context("player start without translation")?;
-    Ok((pos, p["yaw_degrees"].as_f64().unwrap_or(0.0) as f32))
 }
 
 /// Adds a map to an app built with `DefaultPlugins`: its pieces, draw-group culling around the
@@ -961,23 +836,6 @@ pub fn add_map(
     Ok(())
 }
 
-/// The map viewer's vertical field of view, degrees. Wolf's follow camera brings its own, the
-/// game's `camFovY` (#46).
-const VIEWER_FOV_DEG: f32 = 60.0;
-
-/// The free-fly map viewer's and sweep cameras' perspective.
-pub fn viewer_perspective() -> PerspectiveProjection {
-    PerspectiveProjection {
-        fov: VIEWER_FOV_DEG.to_radians(),
-        ..default()
-    }
-}
-
-/// [`viewer_perspective`] as a camera component.
-pub fn viewer_projection() -> Projection {
-    Projection::Perspective(viewer_perspective())
-}
-
 /// Near and far planes for every new 3D camera, keeping the field of view it was spawned with;
 /// lighting installs shader fog separately.
 fn camera_environment(mut cameras: Query<&mut Projection, Added<Camera3d>>) {
@@ -987,146 +845,6 @@ fn camera_environment(mut cameras: Query<&mut Projection, Added<Camera3d>>) {
             p.far = 20_000.0;
         }
     }
-}
-
-/// Keep a player's initial inspection camera on the near side of surrounding collision.
-fn viewer_eye(pos: Vec3, eye: Vec3, collision: &sekiro_formats::hknp::CollisionMesh) -> Vec3 {
-    let focus = pos + Vec3::Y * 1.4;
-    let delta = eye - focus;
-    let distance = delta.length();
-    if distance <= f32::EPSILON {
-        return eye;
-    }
-    let direction = delta / distance;
-    let nearby = sekiro_sim::arena::crop(collision, focus, distance + 1.0);
-    let world = sekiro_sim::collision::CollisionWorld::from_mesh(&nearby);
-    match world.raycast(focus, direction, distance) {
-        Some(hit) => focus + direction * (hit - 0.2).max(0.0),
-        None => eye,
-    }
-}
-
-/// Setup another crate adds to the `--map` app (a game library on top of the map): the first
-/// runs before `DefaultPlugins` (asset sources), the second after the map's own plugins.
-pub static APP_HOOKS: std::sync::OnceLock<(fn(&mut App), fn(&mut App))> =
-    std::sync::OnceLock::new();
-
-pub fn run(options: Options) -> Result<()> {
-    let dir = map_dir(&options.cache, &options.id)?;
-
-    // Start pose: --camera, else over the shoulder of a player start point.
-    let (mut start, yaw, pitch) = match options.camera {
-        Some([x, y, z, yaw, pitch]) => (Vec3::new(x, y, z), yaw, pitch),
-        None => {
-            let (pos, yaw) = player_start(&dir, options.start).unwrap_or((Vec3::ZERO, 0.0));
-            // 3.5 m behind and 2.2 m above the start point, so its marker shows. Forward at
-            // yaw 0 is -Z.
-            let back = Quat::from_rotation_y(yaw.to_radians()) * Vec3::Z * 3.5;
-            (pos + back + Vec3::new(0.0, 2.2, 0.0), yaw, -12.0)
-        }
-    };
-
-    raise_io_stack();
-    let mut app = App::new();
-    if let Some((before, _)) = APP_HOOKS.get() {
-        before(&mut app);
-    }
-    app.add_plugins((
-        DefaultPlugins
-            .set(crate::vram::render_plugin())
-            .set(layered_gltf_plugin())
-            .set(WindowPlugin {
-                primary_window: Some(Window {
-                    title: format!("sekiro-rs map - {}", options.id),
-                    resolution: (1600, 900).into(),
-                    present_mode: crate::presentation::mode(
-                        options.uncapped,
-                        bevy::window::PresentMode::AutoVsync,
-                    ),
-                    ..default()
-                }),
-                ..default()
-            })
-            .set(AssetPlugin {
-                file_path: if world::enabled(&options.id) {
-                    options.cache.to_string_lossy().into_owned()
-                } else {
-                    dir.to_string_lossy().into_owned()
-                },
-                ..default()
-            }),
-        FrameTimeDiagnosticsPlugin::default(),
-        bevy::render::diagnostic::RenderDiagnosticsPlugin,
-        // Only the viewer can show the collision wireframe (`--collision`, C). Play and sweeps
-        // never do, and the plugin's per-frame specialization check over every mesh cost
-        // about 1.8 ms of the main thread in the castle (#70).
-        WireframePlugin::default(),
-    ))
-    // Keep rendering at full rate when the window is not focused, so screenshots and
-    // `--uncapped` measurements from a terminal are not throttled to 60 Hz.
-    .insert_resource(bevy::winit::WinitSettings::continuous())
-    .insert_resource(upload_budget());
-    add_map(
-        &mut app,
-        &dir,
-        MapScene {
-            prefix: if world::enabled(&options.id) {
-                format!("maps/{}/", options.id)
-            } else {
-                String::new()
-            },
-            collision: options.collision,
-            no_pieces: options.no_pieces,
-            hide: options.hide,
-            objects: options.objects || world::enabled(&options.id),
-            groups: options.groups,
-            markers: true,
-            hour: options.hour,
-            gparam: options.gparam,
-            within: None,
-            focus: Some(start),
-        },
-        Default::default(),
-    )?;
-    if options.camera.is_none()
-        && let Ok((pos, _)) = player_start(&dir, options.start)
-        && let Some(collision) = &app.world().resource::<Layout>().collision
-    {
-        start = viewer_eye(pos, start, collision);
-    }
-    app.insert_resource(Fly {
-        yaw: yaw.to_radians(),
-        pitch: pitch.to_radians(),
-        speed: 12.0,
-    })
-    .add_systems(Startup, move |commands: Commands| {
-        setup_view(commands, start)
-    })
-    .add_systems(Update, (fly, apply_fly, hud).chain())
-    .add_systems(Update, (toggle_collision, cycle_groups.before(pick_groups)));
-    if let Some(path) = options.screenshot {
-        if path.exists() {
-            std::fs::remove_file(&path)?;
-        }
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        app.insert_resource(Capture {
-            path,
-            at: options.at,
-            started: Instant::now(),
-            requested: None,
-            ready_frames: 0,
-        })
-        .add_systems(Last, capture);
-    }
-    ready::install(&mut app);
-    app.add_plugins(crate::presentation::PresentationPlugin);
-    if let Some((_, after)) = APP_HOOKS.get() {
-        after(&mut app);
-    }
-    app.run();
-    Ok(())
 }
 
 const SKY: Color = Color::srgb(0.62, 0.68, 0.74);
@@ -1173,37 +891,10 @@ pub fn layered_gltf_plugin() -> bevy::gltf::GltfPlugin {
     )
 }
 
-fn setup_view(mut commands: Commands, start: Vec3) {
-    commands.spawn((
-        MapFocus,
-        Camera3d::default(),
-        viewer_projection(),
-        bevy::core_pipeline::prepass::DepthPrepass,
-        bevy::core_pipeline::prepass::MotionVectorPrepass,
-        Transform::from_translation(start),
-    ));
-    commands.spawn((
-        Hud,
-        Text::new(""),
-        TextFont {
-            font_size: bevy::text::FontSize::Px(15.0),
-            ..default()
-        },
-        TextColor(Color::WHITE),
-        Node {
-            position_type: PositionType::Absolute,
-            left: px(8),
-            top: px(6),
-            ..default()
-        },
-    ));
-}
-
 #[allow(clippy::too_many_arguments)]
 fn spawn_map(
-    arena_parts: Option<Res<crate::arena_b::Parts>>,
     mut commands: Commands,
-    assets: Res<AssetServer>,
+    _assets: Res<AssetServer>,
     layout: Res<Layout>,
     mut pending: ResMut<Pending>,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -1216,7 +907,7 @@ fn spawn_map(
     let scene = &layout.scene;
     let far_enabled = !std::env::args().any(|a| a == "--no-far-scenery");
     if let Some(mut connected) = connected {
-        world::spawn(&mut commands, &assets, &mut connected, scene, &mut pending);
+        world::spawn(&mut commands, &mut connected, scene, &mut pending);
     } else if !scene.no_pieces {
         let models = &layout.json["models"];
         let mut spawned = 0;
@@ -1287,12 +978,6 @@ fn spawn_map(
             }
             if let Some(part) = MsbPart::from_row(&layout.id, row) {
                 entity.insert(part);
-            }
-            if let Some(part) = arena_parts
-                .as_ref()
-                .and_then(|p| p.0.get(row["name"].as_str().unwrap_or_default()))
-            {
-                entity.insert(part.clone());
             }
             spawned += 1;
         }
@@ -1465,67 +1150,6 @@ fn solid_collision(c: &sekiro_formats::hknp::CollisionMesh) -> Mesh {
     .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, colors)
 }
 
-fn fly(
-    keys: Res<ButtonInput<KeyCode>>,
-    buttons: Res<ButtonInput<MouseButton>>,
-    motion: Res<AccumulatedMouseMotion>,
-    scroll: Res<AccumulatedMouseScroll>,
-    time: Res<Time>,
-    mut fly: ResMut<Fly>,
-    mut camera: Query<&mut Transform, With<Camera3d>>,
-) {
-    if buttons.pressed(MouseButton::Right) {
-        fly.yaw -= motion.delta.x * 0.003;
-        fly.pitch = (fly.pitch - motion.delta.y * 0.003).clamp(-1.55, 1.55);
-    }
-    if scroll.delta.y != 0.0 {
-        fly.speed = (fly.speed * (1.0 + scroll.delta.y * 0.15)).clamp(0.5, 2000.0);
-    }
-    let Ok(mut t) = camera.single_mut() else {
-        return;
-    };
-    let rotation = Quat::from_euler(EulerRot::YXZ, fly.yaw, fly.pitch, 0.0);
-    let forward = rotation * Vec3::NEG_Z;
-    let right = rotation * Vec3::X;
-    let mut dir = Vec3::ZERO;
-    for (key, d) in [
-        (KeyCode::KeyW, forward),
-        (KeyCode::KeyS, -forward),
-        (KeyCode::KeyD, right),
-        (KeyCode::KeyA, -right),
-        (KeyCode::Space, Vec3::Y),
-        (KeyCode::KeyE, Vec3::Y),
-        (KeyCode::KeyQ, -Vec3::Y),
-        (KeyCode::ControlLeft, -Vec3::Y),
-    ] {
-        if keys.pressed(key) {
-            dir += d;
-        }
-    }
-    let boost = if keys.pressed(KeyCode::ShiftLeft) {
-        6.0
-    } else {
-        1.0
-    };
-    t.translation += dir.normalize_or_zero() * fly.speed * boost * time.delta_secs();
-    if keys.just_pressed(KeyCode::KeyP) {
-        println!(
-            "--camera {:.2},{:.2},{:.2},{:.1},{:.1}",
-            t.translation.x,
-            t.translation.y,
-            t.translation.z,
-            fly.yaw.to_degrees(),
-            fly.pitch.to_degrees()
-        );
-    }
-}
-
-fn apply_fly(fly: Res<Fly>, mut camera: Query<&mut Transform, With<Camera3d>>) {
-    for mut t in &mut camera {
-        t.rotation = Quat::from_euler(EulerRot::YXZ, fly.yaw, fly.pitch, 0.0);
-    }
-}
-
 /// The four layer file indices of a collision's `SceneGparam` (-1 where absent).
 fn scene_layers(scene_gparam: &Value) -> [i8; 4] {
     std::array::from_fn(|i| {
@@ -1534,15 +1158,6 @@ fn scene_layers(scene_gparam: &Value) -> [i8; 4] {
             .and_then(|v| i8::try_from(v).ok())
             .unwrap_or(-1)
     })
-}
-
-/// Viewer key G: the next group mode.
-fn cycle_groups(keys: Res<ButtonInput<KeyCode>>, mut groups: ResMut<Groups>) {
-    if keys.just_pressed(KeyCode::KeyG) {
-        groups.mode = groups.mode.next();
-        groups.dirty = true;
-        groups.checked_at = None;
-    }
 }
 
 /// Reuse the row index only while the current layout still names the selected collision there.
@@ -1773,66 +1388,6 @@ fn budget_map_shadows(
     }
 }
 
-fn toggle_collision(
-    keys: Res<ButtonInput<KeyCode>>,
-    mut collision: Query<&mut Visibility, (With<CollisionView>, Without<Marker>)>,
-    mut markers: Query<&mut Visibility, (With<Marker>, Without<CollisionView>)>,
-) {
-    let flip = |v: &mut Visibility| {
-        *v = match *v {
-            Visibility::Hidden => Visibility::Visible,
-            _ => Visibility::Hidden,
-        };
-    };
-    if keys.just_pressed(KeyCode::KeyC) {
-        collision.iter_mut().for_each(|mut v| flip(&mut v));
-    }
-    if keys.just_pressed(KeyCode::KeyM) {
-        markers.iter_mut().for_each(|mut v| flip(&mut v));
-    }
-}
-
-fn hud(
-    diagnostics: Res<DiagnosticsStore>,
-    groups: Res<Groups>,
-    fly: Res<Fly>,
-    pending: Res<Pending>,
-    camera: Query<&Transform, With<Camera3d>>,
-    meshes: Query<(), With<Mesh3d>>,
-    mut text: Query<&mut Text, With<Hud>>,
-) {
-    let fps = diagnostics
-        .get(&FrameTimeDiagnosticsPlugin::FPS)
-        .and_then(|d| d.smoothed())
-        .unwrap_or(0.0);
-    let Ok(t) = camera.single() else { return };
-    let Ok(mut text) = text.single_mut() else {
-        return;
-    };
-    text.0 = format!(
-        "{fps:.0} fps | {} mesh entities | pos {:.1} {:.1} {:.1} yaw {:.0} pitch {:.0} | speed {:.0}{}\n\
-         groups {:?} from {} | RMB look, WASD fly, Space/Q up/down, Shift fast, wheel speed, \
-         C collision, G groups, M markers, P print pose",
-        meshes.iter().count(),
-        t.translation.x,
-        t.translation.y,
-        t.translation.z,
-        fly.yaw.to_degrees(),
-        fly.pitch.to_degrees(),
-        fly.speed,
-        if pending.loaded_at.is_none() {
-            " | loading"
-        } else {
-            ""
-        },
-        groups.mode,
-        groups
-            .current
-            .map(|i| groups.parts[i].name.as_str())
-            .unwrap_or("-"),
-    );
-}
-
 #[allow(clippy::type_complexity)]
 fn map_scene_ready(
     event: On<WorldInstanceReady>,
@@ -1883,102 +1438,10 @@ fn track_loading(
     }
 }
 
-/// What the screenshot log reports.
-#[derive(bevy::ecs::system::SystemParam)]
-struct CaptureStats<'w, 's> {
-    diagnostics: Res<'w, DiagnosticsStore>,
-    meshes: Query<'w, 's, (), With<Mesh3d>>,
-    pieces: Query<'w, 's, &'static Visibility, With<DrawGroups>>,
-    groups: Res<'w, Groups>,
-}
-
-fn capture(
-    mut commands: Commands,
-    pending: Res<Pending>,
-    mut capture: ResMut<Capture>,
-    stats: CaptureStats,
-    mut readiness: crate::map::ready::Ready,
-    mut exit: MessageWriter<AppExit>,
-) {
-    let CaptureStats {
-        diagnostics,
-        meshes,
-        pieces,
-        groups,
-    } = stats;
-    if capture.started.elapsed() > Duration::from_secs(300) {
-        error!("timed out waiting for the map to load");
-        exit.write(AppExit::error());
-        return;
-    }
-    let Some(loaded) = pending.loaded_at else {
-        return;
-    };
-    capture.ready_frames += 1;
-    match capture.requested {
-        None if loaded.elapsed().as_secs_f32() >= capture.at => {
-            // Residency becomes drawable after the prior render's probe was sampled.
-            // Let the visibility change reach specialization before trusting a zero queue.
-            if capture.ready_frames < 12 || !readiness.allow() {
-                return;
-            }
-            let fps = diagnostics
-                .get(&FrameTimeDiagnosticsPlugin::FPS)
-                .and_then(|d| d.smoothed())
-                .unwrap_or(0.0);
-            let shown = pieces.iter().filter(|v| **v != Visibility::Hidden).count();
-            println!(
-                "{fps:.1} fps, {} mesh entities, {shown}/{} pieces shown (groups {:?} from {}), loaded in {:.1} s",
-                meshes.iter().count(),
-                pieces.iter().count(),
-                groups.mode,
-                groups
-                    .current
-                    .map(|i| groups.parts[i].name.as_str())
-                    .unwrap_or("-"),
-                (loaded - capture.started).as_secs_f32()
-            );
-            // GPU time of the heaviest render passes (timestamp queries), when available.
-            let mut passes: Vec<(String, f64)> = diagnostics
-                .iter()
-                .filter(|d| d.path().as_str().ends_with("elapsed_gpu"))
-                .filter_map(|d| Some((d.path().as_str().to_string(), d.smoothed()?)))
-                .collect();
-            passes.sort_by(|a, b| b.1.total_cmp(&a.1));
-            for (path, ms) in passes.iter().take(6) {
-                println!("  gpu {ms:.2} ms  {path}");
-            }
-            commands
-                .spawn(Screenshot::primary_window())
-                .observe(save_to_disk(capture.path.clone()));
-            capture.requested = Some(Instant::now());
-        }
-        Some(at) if capture.path.is_file() && at.elapsed() > Duration::from_millis(500) => {
-            println!("screenshot saved to {}", capture.path.display());
-            exit.write(AppExit::Success);
-        }
-        _ => {}
-    }
-}
-
-/// Parses `--camera x,y,z,yaw,pitch`.
-pub fn parse_camera(arg: Option<&str>) -> Result<Option<[f32; 5]>> {
-    let Some(arg) = arg else { return Ok(None) };
-    let v: Vec<f32> = arg
-        .split(',')
-        .map(|s| s.trim().parse::<f32>())
-        .collect::<std::result::Result<_, _>>()
-        .with_context(|| format!("--camera {arg}"))?;
-    match v[..] {
-        [x, y, z, yaw, pitch] => Ok(Some([x, y, z, yaw, pitch])),
-        [x, y, z] => Ok(Some([x, y, z, 0.0, 0.0])),
-        _ => anyhow::bail!("--camera wants x,y,z,yaw,pitch"),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     #[test]
     fn cached_collision_selection_tracks_names_and_layout_changes() {
@@ -2265,21 +1728,6 @@ mod tests {
         );
         assert_eq!(cinematic_gparam("invalid"), None);
         assert_eq!(cinematic_gparam("m89_00_0x_99"), None);
-    }
-
-    #[test]
-    fn initial_viewer_camera_stays_in_front_of_wall() {
-        let wall = sekiro_formats::hknp::CollisionMesh {
-            vertices: vec![[-10.0, -10.0, 1.0], [10.0, -10.0, 1.0], [0.0, 10.0, 1.0]],
-            indices: vec![0, 1, 2],
-            materials: vec![0],
-        };
-        let eye = viewer_eye(Vec3::ZERO, Vec3::new(0.0, 2.2, 3.5), &wall);
-        assert!(eye.z > 0.0 && eye.z < 1.0);
-        assert!(eye.y >= 1.4);
-        let clear = sekiro_formats::hknp::CollisionMesh::default();
-        let requested = Vec3::new(0.0, 2.2, 3.5);
-        assert_eq!(viewer_eye(Vec3::ZERO, requested, &clear), requested);
     }
 
     #[test]

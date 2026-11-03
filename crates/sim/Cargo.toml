@@ -1,6 +1,6 @@
 [package]
 name = "sekiro-sim"
-description = "Bevy-free gameplay simulation: behaviour graph runtime and HKS-driven characters"
+description = "Bevy-free collision world, navmesh and map event state from sekiro-rs"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,16 +8,9 @@ license.workspace = true
 
 [dependencies]
 sekiro-formats.workspace = true
-sekiro-hks = { path = "../hks" }
-thiserror.workspace = true
 glam.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 
-[features]
-# Counts the grid entries queries visit (`collision::triangle_visits`), for the step cost tests.
-visit-count = []
-
 [dev-dependencies]
 rayon.workspace = true
-sekiro-sim = { path = ".", features = ["visit-count"] }

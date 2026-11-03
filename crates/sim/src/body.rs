@@ -94,12 +94,6 @@ fn air_velocity(mut v: Vec2, stick: Vec2, control: FallControl, dt: f32) -> Vec2
     v
 }
 
-/// Downward acceleration in m/s²: Havok world gravity (9.8) plus the extra vertical
-/// acceleration of the normal fall type (13.72) from the exe's fall-control table. Measured
-/// in the running game as a constant 23.52 m/s² over five jumps (traced by FwLo's
-/// RustSekiro, `docs/kb/movement.md`); a 9.64 m/s jump rises about 2 m and lands after 0.82 s.
-pub const GRAVITY: f32 = 9.8 + 13.72;
-
 /// How far past a floor's edge the capsule's rounded bottom still rests on it: the 0.4 m
 /// radius ([`crate::collision::RADIUS`]) touches the edge with a contact normal within the
 /// walkable slope (60 degrees, [`crate::collision::MAX_SLOPE_DEGREES`]) until the centre is
@@ -278,18 +272,6 @@ pub trait Ground {
             Some(inner) => inner.floor_with_material(x, z, top),
             None => self.floor(x, z, top).map(|h| (h, self.material(x, z, top))),
         }
-    }
-}
-
-/// An infinite flat plane.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct FlatGround {
-    pub height: f32,
-}
-
-impl Ground for FlatGround {
-    fn height(&self, _x: f32, _z: f32) -> Option<f32> {
-        Some(self.height)
     }
 }
 
@@ -674,6 +656,17 @@ impl Body {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Default)]
+    struct FlatGround {
+        height: f32,
+    }
+
+    impl Ground for FlatGround {
+        fn height(&self, _x: f32, _z: f32) -> Option<f32> {
+            Some(self.height)
+        }
+    }
 
     #[test]
     fn material_rows_drop_the_special_setting() {

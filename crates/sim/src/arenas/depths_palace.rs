@@ -1,10 +1,8 @@
 //! Reviewed Mibu and Fountainhead staging, read from the installed MSB and EMEVD.
 
-use std::path::Path;
 
-use serde_json::Value;
 
-use super::{ArenaLayout, ArenaSpec, BossEvents};
+use super::{ArenaSpec, BossEvents};
 use crate::events::EventEntry;
 
 const fn event(id: i64) -> EventEntry {
@@ -161,48 +159,6 @@ pub const SANCTUARY: ArenaSpec = ArenaSpec {
     hidden_models: &[],
     beaten: &[9303, 9304, 9305, 9306, 9800, 9801, 9802],
 };
-
-/// Sanctuary starts are cutscene warp regions, not player parts in layout.json.
-/// Augment an in-memory layout only, using the caller's cache and original MSB.
-pub fn layout(cache: &Path, spec: &ArenaSpec, json: &Value) -> Result<ArenaLayout, String> {
-    let Some(region) = spec.player_start.and_then(|s| s.strip_prefix("region:")) else {
-        return ArenaLayout::resolve(spec, json);
-    };
-    let entity: i32 = region
-        .parse()
-        .map_err(|_| format!("invalid region {region}"))?;
-    let fields: Vec<_> = spec.map.trim_start_matches('m').split('_').collect();
-    let area = fields[0].parse().map_err(|_| "invalid map area")?;
-    let block = fields[1].parse().map_err(|_| "invalid map block")?;
-    let spot = crate::events::warp_point(cache, area, block, entity).ok_or_else(|| {
-        format!(
-            "{}: missing MSB warp region {entity} in cache/raw/map/MapStudio",
-            spec.map
-        )
-    })?;
-    let mut json = json.clone();
-    json["players"]
-        .as_array_mut()
-        .ok_or("layout has no players")?
-        .push(serde_json::json!({
-            "name": spec.player_start, "translation": spot.position,
-            "yaw_degrees": spot.yaw.to_degrees(),
-        }));
-    let mut resolved = ArenaLayout::resolve(spec, &json)?;
-    resolved.wolf_source = format!("MSB warp region {entity}");
-    Ok(resolved)
-}
-
-/// These actors share an arena with its opponent; enabling one is not a boss hand-over.
-pub fn simultaneous(boss: i32, entity: i32) -> bool {
-    match boss {
-        2_500_850 => matches!(entity, 2_500_851..=2_500_854),
-        2_500_810 => {
-            matches!(entity, 2_500_800 | 2_500_811..=2_500_840 | 2_500_880..=2_500_888 | 2_500_930..=2_500_934)
-        }
-        _ => false,
-    }
-}
 
 /// Every placed slot of the phantom, Old Dragon and tree-prop events must run.
 pub fn all_slots(map: &str, id: i64) -> bool {

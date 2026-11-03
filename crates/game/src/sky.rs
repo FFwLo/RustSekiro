@@ -616,11 +616,10 @@ fn update(
     mut domes: Query<(&mut Mesh3d, &mut MeshMaterial3d<SkyMaterial>), With<Dome>>,
     mut clouds: Clouds<'_, '_>,
     mut horizons: Horizons<'_, '_>,
-    scene: Option<Res<crate::arena_b::Scene>>,
     story: Res<crate::lighting_selection::LightingSelection>,
     map_scene: Res<crate::lighting_selection::MapEventScene>,
 ) {
-    let scene = scene.as_deref().map_or(&map_scene.0, |s| &s.0);
+    let scene = &map_scene.0;
     let event_sky = {
         scene
             .enabled_order

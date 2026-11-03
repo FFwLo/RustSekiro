@@ -4,11 +4,6 @@ use std::collections::HashMap;
 use bevy::asset::{embedded_asset, embedded_path};
 use bevy::gltf::GltfMaterialExtras;
 
-/// Uploaded images may have retired their MAIN_WORLD assets and load-state entries.
-#[derive(Resource, Clone, Default)]
-pub(super) struct SweepImages(
-    pub std::sync::Arc<std::sync::Mutex<std::collections::HashSet<AssetId<Image>>>>,
-);
 use bevy::image::{ImageAddressMode, ImageLoaderSettings, ImageSampler, ImageSamplerDescriptor};
 use bevy::pbr::{ExtendedMaterial, MaterialExtension};
 use bevy::prelude::*;
@@ -25,7 +20,6 @@ pub(crate) type LayeredMaterial = ExtendedMaterial<StandardMaterial, MapLayers>;
 pub(crate) mod batches;
 
 /// Immutable map descriptors can be repeated in different GLBs (and at each LOD).
-/// Keep source identity for actors, whose tint is changed by gameplay.
 #[derive(Default)]
 struct MaterialInterner {
     buckets: HashMap<u64, Vec<Handle<LayeredMaterial>>>,
@@ -69,136 +63,16 @@ impl MaterialInterner {
 #[derive(Component)]
 pub(super) struct MaterialOrigin(pub bevy::asset::AssetPath<'static>);
 
-/// Retain the native base texture and alpha test in the sweep diagnostic pass.
-pub(super) struct SweepMaterial {
-    pub key: bevy::asset::UntypedAssetId,
-    pub base: StandardMaterial,
-    pub missing: bool,
-    pub pending: bool,
-    pub textures: Vec<Handle<Image>>,
-}
-
-pub(super) fn sweep_key(world: &World, entity: Entity) -> Option<bevy::asset::UntypedAssetId> {
-    world
-        .get::<MeshMaterial3d<LayeredMaterial>>(entity)
-        .map(|h| h.0.id().untyped())
-        .or_else(|| {
-            world
-                .get::<MeshMaterial3d<StandardMaterial>>(entity)
-                .map(|h| h.0.id().untyped())
-        })
-}
-
-pub(super) fn sweep_base(world: &World, entity: Entity) -> Option<SweepMaterial> {
-    let mut textures = Vec::new();
-    let (key, base) = if let Some(handle) = world.get::<MeshMaterial3d<LayeredMaterial>>(entity) {
-        let material = world.resource::<Assets<LayeredMaterial>>().get(&handle.0)?;
-        let layer = &material.extension;
-        textures.extend(
-            [
-                &layer.overlay,
-                &layer.snow,
-                &layer.c,
-                &layer.overlay_normal,
-                &layer.snow_normal,
-                &layer.c_normal,
-                &layer.mask,
-                &layer.base_normal,
-                &layer.detail,
-                &layer.mask_l,
-                &layer.wet,
-            ]
-            .into_iter()
-            .filter_map(|h| h.as_ref()),
-        );
-        (handle.0.id().untyped(), &material.base)
-    } else {
-        let handle = world.get::<MeshMaterial3d<StandardMaterial>>(entity)?;
-        (
-            handle.0.id().untyped(),
-            world
-                .resource::<Assets<StandardMaterial>>()
-                .get(&handle.0)?,
-        )
-    };
-    textures.extend(
-        [
-            &base.base_color_texture,
-            &base.normal_map_texture,
-            &base.emissive_texture,
-            &base.metallic_roughness_texture,
-            &base.occlusion_texture,
-        ]
-        .into_iter()
-        .filter_map(|h| h.as_ref()),
-    );
-    let images = world.resource::<Assets<Image>>();
-    let assets = world.resource::<AssetServer>();
-    let uploaded = world
-        .get_resource::<SweepImages>()
-        .map(|images| images.0.lock().unwrap());
-    let on_gpu = |h: &Handle<Image>| uploaded.as_ref().is_some_and(|ids| ids.contains(&h.id()));
-    let pending = textures.iter().any(|h| {
-        !on_gpu(h)
-            && (uploaded.is_some() || images.get(*h).is_none())
-            && matches!(
-                assets.get_load_state(h.id()),
-                None | Some(
-                    bevy::asset::LoadState::Loading
-                        | bevy::asset::LoadState::NotLoaded
-                        | bevy::asset::LoadState::Loaded
-                )
-            )
-    });
-    // A successfully uploaded RENDER_WORLD-only image may retire its CPU asset.
-    let missing = textures
-        .iter()
-        .any(|h| match assets.get_load_state(h.id()) {
-            Some(bevy::asset::LoadState::Failed(_)) => true,
-            None => images.get(*h).is_none() && !on_gpu(h),
-            _ => false,
-        });
-    Some(SweepMaterial {
-        key,
-        base: base.clone(),
-        missing: base.base_color_texture.is_none() || missing,
-        pending,
-        textures: textures.into_iter().cloned().collect(),
-    })
-}
-
-/// The map's material count; zero without a map, where the material is not registered.
-#[derive(bevy::ecs::system::SystemParam)]
-pub(crate) struct MaterialStats<'w> {
-    materials: Option<Res<'w, Assets<LayeredMaterial>>>,
-}
-
-impl MaterialStats<'_> {
-    pub(crate) fn count(&self) -> usize {
-        self.materials.as_ref().map_or(0, |m| m.len())
-    }
-}
-
 fn release_materials(
     mut events: MessageReader<AssetEvent<StandardMaterial>>,
-    mut removed_actors: RemovedComponents<ActorMaterialSource>,
-    active: Query<&MeshMaterial3d<LayeredMaterial>>,
     mut settings: ResMut<LayerSettings>,
 ) {
     for event in events.read() {
         if let AssetEvent::Removed { id } = event {
-            settings.materials.retain(|(source, _, _), _| source != id);
+            settings.materials.retain(|(source, _), _| source != id);
             let live = settings.materials.values().map(|h| h.id()).collect();
             settings.interned.retain(&live);
         }
-    }
-    // Scene assets can retain their source materials after the rig is gone.
-    // Drop unused wrappers on actor teardown, without scanning meshes on ordinary frames.
-    if removed_actors.read().next().is_some() {
-        removed_actors.clear();
-        let live: std::collections::HashSet<_> = active.iter().map(|h| h.0.id()).collect();
-        settings.materials.retain(|_, h| live.contains(&h.id()));
-        settings.interned.retain(&live);
     }
 }
 
@@ -471,50 +345,6 @@ mod tests {
     }
 
     #[test]
-    fn render_only_images_are_not_reported_as_missing() {
-        let mut app = App::new();
-        app.add_plugins((MinimalPlugins, bevy::asset::AssetPlugin::default()))
-            .init_asset::<Image>()
-            .init_asset::<StandardMaterial>()
-            .init_asset::<LayeredMaterial>()
-            .init_resource::<SweepImages>();
-        let image = app
-            .world_mut()
-            .resource_mut::<Assets<Image>>()
-            .add(Image::default());
-        app.world_mut()
-            .resource_mut::<Assets<Image>>()
-            .remove(image.id());
-        let material = app
-            .world_mut()
-            .resource_mut::<Assets<StandardMaterial>>()
-            .add(StandardMaterial {
-                base_color_texture: Some(image.clone()),
-                ..default()
-            });
-        let entity = app.world_mut().spawn(MeshMaterial3d(material)).id();
-        assert!(sweep_base(app.world(), entity).unwrap().pending);
-        // CPU availability alone must not allow either colour capture to start.
-        app.world_mut()
-            .resource_mut::<Assets<Image>>()
-            .insert(image.id(), Image::default())
-            .unwrap();
-        assert!(sweep_base(app.world(), entity).unwrap().pending);
-        app.world_mut()
-            .resource_mut::<Assets<Image>>()
-            .remove(image.id());
-        app.world()
-            .resource::<SweepImages>()
-            .0
-            .lock()
-            .unwrap()
-            .insert(image.id());
-        let status = sweep_base(app.world(), entity).unwrap();
-        assert!(!status.missing);
-        assert!(!status.pending);
-    }
-
-    #[test]
     fn layered_families_use_native_f0_and_mountain_is_fully_rough() {
         let base = StandardMaterial::default();
         let surface = |kind: u64, variant: u64| {
@@ -551,7 +381,7 @@ mod tests {
     }
 
     #[test]
-    fn hemisphere_wraps_unlayered_map_surfaces_but_preserves_actor_materials() {
+    fn hemisphere_wraps_unlayered_map_surfaces_but_not_other_meshes() {
         let mut app = App::new();
         app.add_plugins((MinimalPlugins, bevy::asset::AssetPlugin::default()))
             .init_asset::<StandardMaterial>()
@@ -573,8 +403,7 @@ mod tests {
                 interned: MaterialInterner::default(),
                 camera_fade: camera_fade::CameraFade::load(std::path::Path::new(""), false),
             })
-            .add_systems(Update, (release_materials, replace_materials).chain())
-            .add_systems(PostUpdate, sync_actor_materials);
+            .add_systems(Update, (release_materials, replace_materials).chain());
         let original = StandardMaterial {
             unlit: true,
             base_color: Color::srgb(0.2, 0.3, 0.4),
@@ -589,24 +418,11 @@ mod tests {
             .world_mut()
             .spawn((MeshMaterial3d(handle.clone()), ChildOf(root)))
             .id();
-        let actor = app.world_mut().spawn(MeshMaterial3d(handle.clone())).id();
-        let rig = app
-            .world_mut()
-            .spawn(crate::character::Rig::new(std::sync::Arc::new(
-                sekiro_formats::anim::Skeleton {
-                    name: String::new(),
-                    bones: vec![],
-                },
-            )))
-            .id();
-        let wolf = app
-            .world_mut()
-            .spawn((MeshMaterial3d(handle.clone()), ChildOf(rig)))
-            .id();
+        let other = app.world_mut().spawn(MeshMaterial3d(handle.clone())).id();
         app.update();
         assert_eq!(
             app.world()
-                .get::<MeshMaterial3d<StandardMaterial>>(actor)
+                .get::<MeshMaterial3d<StandardMaterial>>(other)
                 .unwrap()
                 .0,
             handle
@@ -632,70 +448,15 @@ mod tests {
         let mut blind = material.extension.clone();
         blind.camera_fade = Vec4::new(1., 1., 1. / 0.3, 0.);
         assert!(MapPipelineKey::from(&blind).camera_fade);
-        assert!(app.world().get::<ActorMaterialSource>(wolf).is_some());
+        assert_eq!(app.world().resource::<LayerSettings>().materials.len(), 1);
+        // Removing the source material drops its wrapper.
         app.world_mut()
             .resource_mut::<Assets<StandardMaterial>>()
-            .get_mut(&handle)
-            .unwrap()
-            .emissive = LinearRgba::rgb(0.15, 0.4, 0.9);
-        app.update();
-        let wrapped = &app
-            .world()
-            .get::<MeshMaterial3d<LayeredMaterial>>(wolf)
-            .unwrap()
-            .0;
-        assert_eq!(
-            app.world()
-                .resource::<Assets<LayeredMaterial>>()
-                .get(wrapped)
-                .unwrap()
-                .base
-                .emissive,
-            LinearRgba::rgb(0.15, 0.4, 0.9)
-        );
-        let mut proxies = app
-            .world_mut()
-            .query_filtered::<Entity, With<MaterialTintProxy>>();
-        assert_eq!(proxies.iter(app.world()).count(), 1);
-        app.update();
-        assert_eq!(proxies.iter(app.world()).count(), 1);
-        // The map and Wolf share one source but read different light buffers (#30).
-        let cached = app.world().resource::<LayerSettings>().materials.len();
-        assert_eq!(cached, 2);
-        for fight in 0..20 {
-            let source = app
-                .world_mut()
-                .resource_mut::<Assets<StandardMaterial>>()
-                .add(original.clone());
-            let root = app
-                .world_mut()
-                .spawn(crate::character::Rig::new(std::sync::Arc::new(
-                    sekiro_formats::anim::Skeleton {
-                        name: String::new(),
-                        bones: vec![],
-                    },
-                )))
-                .id();
-            app.world_mut()
-                .spawn((MeshMaterial3d(source.clone()), ChildOf(root)));
+            .remove(handle.id());
+        for _ in 0..3 {
             app.update();
-            assert_eq!(
-                app.world().resource::<LayerSettings>().materials.len(),
-                cached + 1
-            );
-            app.world_mut().despawn(root);
-            app.world_mut()
-                .resource_mut::<Assets<StandardMaterial>>()
-                .remove(source.id());
-            for _ in 0..3 {
-                app.update();
-            }
-            assert_eq!(
-                app.world().resource::<LayerSettings>().materials.len(),
-                cached,
-                "fight {fight}: wrapper survived source teardown"
-            );
         }
+        assert_eq!(app.world().resource::<LayerSettings>().materials.len(), 0);
     }
 
     #[test]
@@ -853,7 +614,7 @@ struct LayerSettings {
     enabled: bool,
     debug: bool,
     /// Wrappers by source material and whether they read the scene light buffer.
-    materials: HashMap<(AssetId<StandardMaterial>, bool, bool), Handle<LayeredMaterial>>,
+    materials: HashMap<(AssetId<StandardMaterial>, bool), Handle<LayeredMaterial>>,
     interned: MaterialInterner,
     camera_fade: camera_fade::CameraFade,
 }
@@ -863,35 +624,9 @@ struct MapEnvironment<'w, 's> {
     parents: Query<'w, 's, &'static ChildOf>,
     roots: Query<'w, 's, (), With<super::DrawGroups>>,
     scene_parts: Query<'w, 's, (), With<super::FollowsSceneLight>>,
-    actors: Query<'w, 's, (), With<crate::character::Rig>>,
     no_shadow: Query<'w, 's, (), With<super::world::AuthoredNoShadow>>,
     irradiance: Option<Res<'w, crate::lighting::MapIrradiance>>,
     light: Option<Res<'w, MapLightBuffer>>,
-}
-
-/// Retain actor material sources for gameplay tint, while drawing the native ambient wrapper.
-#[derive(Component)]
-struct ActorMaterialSource(Handle<StandardMaterial>);
-
-#[derive(Component)]
-struct MaterialTintProxy;
-
-fn sync_actor_materials(
-    sources: Res<Assets<StandardMaterial>>,
-    mut materials: ResMut<Assets<LayeredMaterial>>,
-    actors: Query<(&ActorMaterialSource, &MeshMaterial3d<LayeredMaterial>)>,
-) {
-    for (source, target) in &actors {
-        if let Some(base) = sources.get(&source.0)
-            && materials.get(&target.0).is_some_and(|target| {
-                target.base.base_color != base.base_color || target.base.emissive != base.emissive
-            })
-            && let Some(mut target) = materials.get_mut(&target.0)
-        {
-            target.base.base_color = base.base_color;
-            target.base.emissive = base.emissive;
-        }
-    }
 }
 
 pub(super) fn install(app: &mut App, prefix: &str, dir: &std::path::Path, args: &[String]) {
@@ -927,8 +662,7 @@ pub(super) fn install(app: &mut App, prefix: &str, dir: &std::path::Path, args: 
             .chain()
             .after(crate::lighting::apply_lighting)
             .after(crate::lighting::apply_probes),
-    )
-    .add_systems(PostUpdate, sync_actor_materials);
+    );
 }
 
 fn update_hemisphere(
@@ -997,7 +731,6 @@ fn replace_materials(
             Option<&GltfMaterialExtras>,
             Option<&bevy::gltf::GltfMaterialName>,
         ),
-        Without<MaterialTintProxy>,
     >,
     mut settings: ResMut<LayerSettings>,
     environment: MapEnvironment,
@@ -1007,26 +740,22 @@ fn replace_materials(
         parents,
         roots,
         scene_parts,
-        actors,
         no_shadow,
         irradiance,
         light,
     } = environment;
     for (entity, original, extras, name) in &meshes {
-        // Map and rig descendants share spatial lighting. Actor tint proxies retain
-        // the StandardMaterial handles used by gameplay; unrelated FX stay untouched.
+        // Map descendants share spatial lighting; unrelated FX stay untouched.
         let mut ancestor = entity;
         let mut map_surface = roots.contains(ancestor);
-        let mut actor_surface = actors.contains(ancestor);
-        while !map_surface && !actor_surface {
+        while !map_surface {
             let Ok(parent) = parents.get(ancestor) else {
                 break;
             };
             ancestor = parent.parent();
             map_surface = roots.contains(ancestor);
-            actor_surface = actors.contains(ancestor);
         }
-        if !map_surface && !actor_surface {
+        if !map_surface {
             continue;
         }
         if no_shadow.contains(ancestor) {
@@ -1038,9 +767,9 @@ fn replace_materials(
         let Some(base) = materials.get(&original.0) else {
             continue;
         };
-        // Characters and parts authoring their own set follow the collision row (#30).
-        let follows_scene = actor_surface || scene_parts.contains(ancestor);
-        let key = (original.0.id(), follows_scene, actor_surface);
+        // Parts authoring their own set follow the collision row (#30).
+        let follows_scene = scene_parts.contains(ancestor);
+        let key = (original.0.id(), follows_scene);
         let handle = if let Some(handle) = settings.materials.get(&key) {
             handle.clone()
         } else {
@@ -1048,13 +777,9 @@ fn replace_materials(
                 .and_then(|e| serde_json::from_str::<Value>(&e.value).ok())
                 .unwrap_or(Value::Null);
             let data = &extras["sekiro_layers"];
-            let camera_fade = if map_surface {
-                settings
-                    .camera_fade
-                    .material(name.map_or("", |name| name.0.as_str()))
-            } else {
-                Vec4::ZERO
-            };
+            let camera_fade = settings
+                .camera_fade
+                .material(name.map_or("", |name| name.0.as_str()));
             let load = |key: &str, srgb: bool| -> Option<Handle<Image>> {
                 if !settings.enabled {
                     return None;
@@ -1193,11 +918,7 @@ fn replace_materials(
                 base: native_surface(base, data),
                 extension,
             };
-            let handle = if actor_surface {
-                layered.add(material)
-            } else {
-                settings.interned.intern(material, &mut layered)
-            };
+            let handle = settings.interned.intern(material, &mut layered);
             settings.materials.insert(key, handle.clone());
             handle
         };
@@ -1209,16 +930,6 @@ fn replace_materials(
             commands
                 .entity(entity)
                 .insert(MaterialOrigin(path.into_owned()));
-        }
-        if actor_surface {
-            commands
-                .entity(entity)
-                .insert(ActorMaterialSource(original.0.clone()));
-            commands.spawn((
-                MaterialTintProxy,
-                MeshMaterial3d(original.0.clone()),
-                ChildOf(ancestor),
-            ));
         }
     }
 }
