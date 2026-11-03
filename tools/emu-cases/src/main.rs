@@ -10,13 +10,14 @@
 //! (a separate system whose value is an input of the port). Every case reports the basic blocks it
 //! reached (coverage), the fake-object fields read without being set, and reads outside memory.
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::ffi::c_void;
 use std::path::Path;
 
 use serde_json::{json, Value};
 
 mod snapshot;
+mod trace;
 
 /// The few calls of Unicorn's C API the tool needs (unicorn.h), linked from unicorn.dll.
 mod uc {
@@ -84,6 +85,12 @@ struct State {
     trail: Vec<u64>,
     /// The game's memory, mapped a 64 KB window at a time on first touch.
     snap: Option<snapshot::Snap>,
+    /// `trace`: function starts (functions.json) and how often each was entered.
+    starts: HashSet<u64>,
+    entered: BTreeMap<u64, u64>,
+    /// `trace`: (return address, function entered) pairs; the caller is the function holding the
+    /// return address.
+    edges: BTreeSet<(u64, u64)>,
 }
 
 #[allow(dead_code)]
@@ -103,6 +110,8 @@ struct Emu {
     st: Box<State>,
     next_stub: u64,
     sizes: HashMap<u64, u64>,
+    /// Instructions a call may run before it is stopped.
+    limit: usize,
 }
 
 fn ok(e: i32, what: &str) {
@@ -161,7 +170,7 @@ fn tls_get_value(uc: uc::Engine, st: &mut State) -> u64 {
     }
 }
 
-extern "C" fn on_block(_uc: uc::Engine, addr: u64, _size: u32, data: *mut c_void) {
+extern "C" fn on_block(uc: uc::Engine, addr: u64, _size: u32, data: *mut c_void) {
     let st = unsafe { &mut *(data as *mut State) };
     if (st.func..st.func + st.size).contains(&addr) {
         st.blocks.insert(addr - st.func);
@@ -170,6 +179,15 @@ extern "C" fn on_block(_uc: uc::Engine, addr: u64, _size: u32, data: *mut c_void
         st.trail.remove(0);
     }
     st.trail.push(addr);
+    if st.starts.contains(&addr) {
+        *st.entered.entry(addr).or_default() += 1;
+        let (mut sp, mut ret) = (0u64, 0u64);
+        unsafe {
+            uc::uc_reg_read(uc, uc::RSP, &mut sp as *mut u64 as _);
+            uc::uc_mem_read(uc, sp, &mut ret as *mut u64 as _, 8);
+        }
+        st.edges.insert((ret, addr));
+    }
 }
 
 extern "C" fn on_unmapped(uc: uc::Engine, kind: i32, addr: u64, _size: i32, _value: i64, data: *mut c_void) -> bool {
@@ -217,7 +235,7 @@ impl Emu {
         let mut handle: uc::Engine = std::ptr::null_mut();
         ok(unsafe { uc::uc_open(uc::ARCH_X86, uc::MODE_64, &mut handle) }, "open");
         let mut image_end = base;
-        let mut e = Emu { uc: handle, st: Box::new(State { heap_next: HEAP, ..Default::default() }), next_stub: STUBS, sizes: functions_json() };
+        let mut e = Emu { uc: handle, st: Box::new(State { heap_next: HEAP, ..Default::default() }), next_stub: STUBS, sizes: functions_json(), limit: 5_000_000 };
         e.map(base, PAGE);
         for i in 0..nsec {
             let s = opt + opt_size + 40 * i;
@@ -407,7 +425,7 @@ impl Emu {
         self.st.size = size;
         self.st.trail.clear();
         let h = self.hook(uc::HOOK_BLOCK, on_block as *const c_void, 1, 0);
-        let r = unsafe { uc::uc_emu_start(self.uc, va, RETURN, 0, 5_000_000) };
+        let r = unsafe { uc::uc_emu_start(self.uc, va, RETURN, 0, self.limit) };
         unsafe { uc::uc_hook_del(self.uc, h) };
         self.st.running = false;
         let rip = self.reg(uc::RIP);
@@ -785,6 +803,28 @@ fn main() {
         for a in &want[1..] {
             probe(&mut emu, u64::from_str_radix(a.trim_start_matches("0x"), 16).unwrap());
         }
+        return;
+    }
+    // trace <name> <va> [args...]: integer args in order ("player" = PlayerIns, "wcm" = WorldChrMan,
+    // or hex), "x<i>=<f>"
+    // for xmm<i>; writes trace_<name>.json.
+    if want.first() == Some(&"trace") {
+        let mut emu = Emu::new(exe, snap());
+        let player = emu.st.snap.as_ref().map(|s| s.player);
+        let (mut ints, mut xmm) = (Vec::new(), vec![0.0f32; 4]);
+        for a in &want[3..] {
+            if let Some((i, v)) = a.strip_prefix('x').and_then(|r| r.split_once('=')) {
+                xmm[i.parse::<usize>().unwrap()] = v.parse().unwrap();
+            } else if *a == "player" {
+                ints.push(player.expect("player needs --snapshot"));
+            } else if *a == "wcm" {
+                ints.push(emu.peek_u64(0x1_43d7_a1e0));
+            } else {
+                ints.push(u64::from_str_radix(a.trim_start_matches("0x"), 16).unwrap());
+            }
+        }
+        let va = u64::from_str_radix(want[2].trim_start_matches("0x"), 16).unwrap();
+        trace::trace(&mut emu, va, &ints, &xmm, out, want[1]);
         return;
     }
     if on("super_armor_hit") {
