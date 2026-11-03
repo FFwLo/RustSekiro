@@ -2344,12 +2344,13 @@ fn turn_toward(yaw: f32, target: f32, max_step: f32) -> f32 {
     yaw + diff.clamp(-max_step, max_step)
 }
 
-/// A one-shot TAE event (a motionInterval 999 recovery) starting in this tick's (prev_t, t]:
-/// windows touch end to end, so a start on a tick boundary is in exactly one; frame 0 counts on
-/// the first step (prev_t 0). The old `prev_t - 1e-4` slack overlapped the previous window and
-/// gave back the deathblow posture / Breath of Life twice (2026-10-12 bug hunt round 12).
+/// A one-shot TAE event (a motionInterval 999 recovery) entering in this tick: the exe's window
+/// (prev_t + 5e-7, t + 5e-7], every start up to t on the first step (`tae_window::starts`).
+/// Windows touch end to end, so a start on a tick boundary is in exactly one. The old
+/// `prev_t - 1e-4` slack overlapped the previous window and gave back the deathblow posture /
+/// Breath of Life twice (2026-10-12 bug hunt round 12).
 fn one_shot_starts(start: f32, prev_t: f32, t: f32) -> bool {
-    (start > prev_t || (prev_t == 0.0 && start == 0.0)) && start <= t
+    crate::tae_window::starts(start, prev_t, t)
 }
 
 
@@ -2690,7 +2691,7 @@ fn decide(
     // Weapon style (TAE 32 SetWeaponStyle): "0: None" = sheathed (the blade rests in the scabbard,
     // WepAbsorpPosParam rightHang_0), "1: Right Weapon One-Handed" = in the hand.
     if let Some(an) = d.anim(&a.anim).filter(|_| a.prev_t < a.t) {
-        let style = an.events.iter().filter(|e| e.kind == 32 && e.start > a.prev_t && e.start <= a.t).filter_map(|e| e.args.get("WeaponStyle")?.as_str()).last();
+        let style = an.events.iter().filter(|e| e.kind == 32 && one_shot_starts(e.start, a.prev_t, a.t)).filter_map(|e| e.args.get("WeaponStyle")?.as_str()).last();
         if let Some(style) = style {
             a.sheathed = style.starts_with('0');
         }
@@ -3473,7 +3474,7 @@ fn decide(
     }
     // ConsumeCurrentGoods (TAE 65, drink frame 21 / repeat frame 9): one charge, the heal.
     if matches!(a.state.trim_start_matches("Crouch"), "ItemGourdDrink" | "ItemGourdDrinkRepeat" | "ItemGourdDrinkMove" | "ItemGourdDrinkRepeatMove") {
-        let consumed = d.anim(&a.anim).is_some_and(|an| an.events.iter().any(|e| e.kind == 65 && e.start > a.prev_t && e.start <= a.t));
+        let consumed = d.anim(&a.anim).is_some_and(|an| an.events.iter().any(|e| e.kind == 65 && one_shot_starts(e.start, a.prev_t, a.t)));
         if consumed && p.gourd > 0 {
             p.gourd -= 1;
             let rate = d.sp_effects.get(GOURD_SPEFFECT).map_or(40.0, |s| -s.change_hp_estus_flask_rate);

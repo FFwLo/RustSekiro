@@ -1678,8 +1678,8 @@ fn start_shakes(
         let d = crate::actor::data_for(&combat, &a);
         let Some(anim) = d.anim(&a.anim) else { continue };
         for e in anim.events.iter().filter(|e| matches!(e.kind, 144..=147)) {
-            // An event at 0 fires in the anim's first step (as sound.rs sound_windows).
-            if !(e.start > a.prev_t && e.start <= a.t) && !(a.prev_t == 0.0 && e.start == 0.0 && a.t > 0.0 && a.t < 0.05) {
+            // An event at 0 fires in the anim's first step (`tae_window::starts`).
+            if !crate::tae_window::starts(e.start, a.prev_t, a.t) {
                 continue;
             }
             let Some(id) = e.arg_i64("RumbleCamID") else { continue };

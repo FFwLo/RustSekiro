@@ -216,7 +216,7 @@ fn bleed(
                     }
                 }
                 138 => {
-                    let started = (e.start > a.prev_t && e.start <= a.t) || (a.prev_t == 0.0 && e.start == 0.0 && a.t > 0.0 && a.t < 0.05);
+                    let started = crate::tae_window::starts(e.start, a.prev_t, a.t);
                     let (Some(id), Some(g)) = (e.arg_i64("DecalParamID"), e.arg_i64("DummyPolyID").and_then(dummy)) else { continue };
                     if started {
                         log(|| format!("{} {:.2}: stain {id} at {:.2}", a.anim, a.t, g.translation()));

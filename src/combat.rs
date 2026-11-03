@@ -1488,7 +1488,7 @@ fn resolve(
             }
             let pc = a.side == Side::Player;
             let gates = event_gates(&combat, a, e.map_or(&[][..], |e| &e.clash[..]));
-            for (_, atk, _) in data_for(&combat, a).attack_windows_on(&a.anim, gates.as_deref()).into_iter().filter(|(ev, ..)| ev.start > a.prev_t && ev.start <= a.t) {
+            for (_, atk, _) in data_for(&combat, a).attack_windows_on(&a.anim, gates.as_deref()).into_iter().filter(|(ev, ..)| crate::tae_window::starts(ev.start, a.prev_t, a.t)) {
                 let id = crate::data::atk_ai_sounds(pc, atk.atk_param_id).0;
                 s.emit(&combat, id, tf.translation, (!pc).then_some(ent), (!pc).then(|| team_of(&combat, a)));
             }
@@ -2605,7 +2605,7 @@ fn resolve_throws(combat: Res<Combat>, mut log: Option<ResMut<CombatLog>>, mut q
             lands = anim
                 .events
                 .iter()
-                .find(|e| e.kind == 304 && e.start > a.prev_t && e.start <= a.t)
+                .find(|e| e.kind == 304 && crate::tae_window::starts(e.start, a.prev_t, a.t))
                 .and_then(|e| e.arg_i64("BehaviorJudgeID"))
                 .map(|j| (j, a.kind, a.atk_rate, a.stam_atk_rate))
                 .or(lands);

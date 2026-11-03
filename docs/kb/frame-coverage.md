@@ -44,7 +44,7 @@ lookups) are counted in each branch that uses them. Wolf's trace unless marked.
 | `FUN_1407f3c90` PlayerCtrl::vf17 | Yaw turn controller | 61 / 14 KB / 3 | turn agent (2026-11-03) |
 | `FUN_1407e2400` | ChrCtrl movement and facing step | 71 / 17 KB / 5 | turn agent |
 | `FUN_140b45440`, `FUN_140b49d30` | Behaviour module before Havok: animation speed, hkb variables (TurnAngle) | 120 / 36 KB / 5 | partly (kb/behaviour-graph.md) |
-| `FUN_140b44980` → `FUN_140b5c730` | Behaviour module after Havok: TAE event dispatch over the frame's time window, root motion | 127 / 32 KB / 5 | TAE events ported by id; this dispatcher's window rules not checked |
+| `FUN_140b44980` → `FUN_140b5c730` | Behaviour module after Havok: replays the TAE windows queued during the multithreaded Havok step (the window rule is FUN_140654b70 -> FUN_1425e5640), root motion | 127 / 32 KB / 5 | window rule checked and ported (kb/taewin.md, `src/tae_window.rs`) |
 | `FUN_140a03340`, `FUN_140a02a10` ChrIns::vf44, `FUN_140a36cc0` PlayerIns::vf44 | SpEffect list tick and the state-info reactions | 74 / 12 KB / 5; 218 / 37 KB / 21; 253 / 44 KB / 22 | partly (kb/guard-deflect.md, skills.md) |
 | `FUN_140be1b50` | Throw module: grab and deathblow state machine (?) | 11 / 9 KB / 0 | deathblow from ThrowParam; this tick not |
 | `FUN_140a2e690` → `FUN_140a315e0`, `FUN_14083e060`, `FUN_140a31f30` | Player stats recompute: attack power per weapon and damage type, defence, equip load | 261 / 61 KB / 11 | damage agent checks amounts |

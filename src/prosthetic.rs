@@ -97,7 +97,7 @@ fn spawn_bullets(
         // Upgrade-gated throws (StateInfo 905-946: the tool level's resident) fire for their level.
         // An event fires when the anim time crosses its start (frame 0 on the anim's first step:
         // the Umbrella's consumption dummy 999).
-        let crosses = |e: &crate::data::Event| ((e.start > a.prev_t && e.start <= a.t) || (a.prev_t == 0.0 && e.start == 0.0)) && d.fires(e);
+        let crosses = |e: &crate::data::Event| crate::tae_window::starts(e.start, a.prev_t, a.t) && d.fires(e);
         // TAE 4 BulletBehavior_Midair: the sword's (the Lightning Reversal's a050_308900) and the
         // tools' air throws, whose anims (a070..a079_403000 / 403050) hold only TAE 4 bullets:
         // a071_403000 judge 120 -> BehaviorParam_PC 107100120 -> Bullet 710020 (wepCost 1). The

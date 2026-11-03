@@ -834,15 +834,15 @@ fn hide_placeholder_blades(
 }
 
 /// Records TAE 233 ChangeChrDrawMask (Mask0-31: 0 hide, 1 show, 255 keep) on the tick it starts -
-/// e.g. every death anim hides weapon groups 0-9. In FixedUpdate after the advance: (prev_t, t]
-/// is one tick's window, and Update would miss a start in the first of two ticks run in a frame.
+/// e.g. every death anim hides weapon groups 0-9. In FixedUpdate after the advance: the tick's
+/// TAE window (`tae_window::starts`) is one tick's, and Update would miss a start in the first of two ticks run in a frame.
 pub(crate) fn apply_draw_mask_events(combat: Res<crate::data::Combat>, mut actors: Query<(&Actor, &mut DrawMask)>) {
     for (a, mut dm) in &mut actors {
         if a.anim.is_empty() {
             continue;
         }
         let Some(an) = crate::actor::data_for(&combat, &a).anim(&a.anim) else { continue };
-        let started = |e: &crate::data::Event| (e.start > a.prev_t || (a.prev_t == 0.0 && e.start == 0.0)) && e.start <= a.t;
+        let started = |e: &crate::data::Event| crate::tae_window::starts(e.start, a.prev_t, a.t);
         for e in an.events.iter().filter(|e| e.kind == 233 && started(e)) {
             for n in 0..32u32 {
                 match e.arg_i64(&format!("Mask{n}")) {

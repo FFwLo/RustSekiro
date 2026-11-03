@@ -1918,23 +1918,23 @@ impl CharData {
         self.events_at(key, t).find(|e| e.kind == 960).and_then(|e| e.arg_i64("StaminaRatioType"))
     }
 
-    /// TAE 920 ChrPhysicsVelocityChange starting in (t0, t1] (or at 0 on the first tick).
+    /// TAE 920 ChrPhysicsVelocityChange entering in the tick t0 -> t1 (`tae_window::starts`).
     pub fn velocity_change(&self, key: &str, t0: f32, t1: f32) -> Option<i64> {
         self.anim(key)?
             .events
             .iter()
-            .find(|e| e.kind == 920 && ((e.start > t0 && e.start <= t1) || (t0 == 0.0 && e.start == 0.0)))
+            .find(|e| e.kind == 920 && crate::tae_window::starts(e.start, t0, t1))
             .and_then(|e| e.arg_i64("ChrPhysicsVelocityParam ID"))
     }
 
-    /// TAE 922 ChrPhysicsVelosityScale starting in (t0, t1], or at 0 on the first tick (its row:
-    /// arg ChrPhysicsVelocityParam ID).
+    /// TAE 922 ChrPhysicsVelosityScale entering in the tick t0 -> t1 (`tae_window::starts`; its
+    /// row: arg ChrPhysicsVelocityParam ID).
     pub fn velocity_scale(&self, key: &str, t0: f32, t1: f32) -> Option<&Event> {
-        self.anim(key)?.events.iter().find(|e| e.kind == 922 && ((e.start > t0 && e.start <= t1) || (t0 == 0.0 && e.start == 0.0 && t1 > 0.0)))
+        self.anim(key)?.events.iter().find(|e| e.kind == 922 && crate::tae_window::starts(e.start, t0, t1))
     }
 
     /// Perilous-attack warning (the red kanji): a TAE BulletBehavior (type 2) with
-    /// judge 980-989 starting in (t0, t1]. 980 sweep, 982 thrust, 983 grab.
+    /// judge 980-989 entering in the tick t0 -> t1. 980 sweep, 982 thrust, 983 grab.
     pub fn perilous_warning(&self, key: &str, t0: f32, t1: f32) -> Option<i64> {
         // By the bullet's SpEffect 211000 (the kanji), not the 980-989 suffix alone: the Guardian
         // Ape's phase-1 grabs a000_003008 / 003016 / 003027 fire Bullet 51000480, which carries
@@ -1943,7 +1943,7 @@ impl CharData {
         self.anim(key)?
             .events
             .iter()
-            .filter(|e| e.kind == 2 && ((e.start > t0 && e.start <= t1) || (t0 == 0.0 && e.start == 0.0)))
+            .filter(|e| e.kind == 2 && crate::tae_window::starts(e.start, t0, t1))
             .filter_map(|e| e.arg_i64("BehaviorJudgeID"))
             .find(|j| (980..990).contains(j) || kanji(*j))
     }

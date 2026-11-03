@@ -315,18 +315,19 @@ pub fn active_state_infos(combat: &Combat, a: &Actor, config: Option<&crate::con
 /// The clip whose TAE sounds play this step and the time windows (lo, hi] in it: the TAE anim
 /// from prev_t to t, or - Wolf's procedural walk / run / crouch-walk (Locomotion, no anim; their
 /// footsteps c00000100x / 200x and armour rustle are the clips' PlaySound events) - the shown
-/// locomotion clip (`locomotion_clip_at`), wrapping at the loop's end. A step that changes
-/// locomotion clip (the move start into the loop) starts the new clip at 0, as does the first
-/// step of Locomotion (round 55: before, its window was (0, dt] and a start clip's event at 0,
-/// e.g. a000_005100's PlaySound 2100, never played). gap: the rest of the clip left behind is
-/// not played, and a turn or a walk / run switch keeps the clip phase (locomotion_clip_at
+/// locomotion clip (`locomotion_clip_at`), wrapping at the loop's end. The windows are the exe's
+/// (`tae_window::windows`, FUN_140654b70): edges 5e-7 s after the clip times, (-1, t] on a
+/// clip's first step so its events at 0 play (the old 0.05 s cap is gone), both ends of a wrap.
+/// A step that changes locomotion clip (the move start into the loop) starts the new clip at 0,
+/// as does the first step of Locomotion (round 55: before, its window was (0, dt] and a start
+/// clip's event at 0, e.g. a000_005100's PlaySound 2100, never played). gap: the rest of the
+/// clip left behind is not played (the exe's selector does the same on a switch,
+/// FUN_1411e6de0), and a turn or a walk / run switch keeps the clip phase (locomotion_clip_at
 /// keys on the current move_dir / move_index). Also the clip time (the once-per-step key).
 pub(crate) fn sound_windows(a: &Actor, d: &crate::data::CharData) -> Option<(String, Vec<(f32, f32)>, f32)> {
-    const AT_ZERO: f32 = -1e-6;
     if !a.anim.is_empty() {
-        // An event at 0 fires in the anim's first step.
-        let lo = if a.prev_t == 0.0 && a.t > 0.0 && a.t < 0.05 { AT_ZERO } else { a.prev_t };
-        return Some((a.anim.clone(), vec![(lo, a.t)], a.t));
+        let w = if a.t >= a.prev_t { crate::tae_window::windows(a.prev_t, a.t, 0.0).collect() } else { Vec::new() };
+        return Some((a.anim.clone(), w, a.t));
     }
     if a.state != "Locomotion" {
         return None;
@@ -338,18 +339,17 @@ pub(crate) fn sound_windows(a: &Actor, d: &crate::data::CharData) -> Option<(Str
     if dt <= 0.0 {
         return Some((key, Vec::new(), now));
     }
-    if a.prev_t == 0.0 || a.locomotion_clip_at(a.prev_t).0 != key {
-        return Some((key, vec![(AT_ZERO, now)], now));
-    }
     let before = now - dt;
-    let windows = if before >= 0.0 {
-        vec![(before, now)]
+    let prev = if a.prev_t == 0.0 || a.locomotion_clip_at(a.prev_t).0 != key {
+        0.0
+    } else if before >= 0.0 {
+        before
     } else if looping && len > 0.0 {
-        vec![(before + len, len), (AT_ZERO, now)]
+        before + len
     } else {
-        vec![(AT_ZERO, now)]
+        0.0
     };
-    Some((key, windows, now))
+    Some((key, crate::tae_window::windows(prev, now, len).collect(), now))
 }
 
 /// A slotted FFX's sound (play_tae_sounds): its owner and SlotID, the anim and event end it

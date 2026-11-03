@@ -75,7 +75,7 @@ impl EnemyBullet {
 }
 
 /// A growing bullet's attack re-issue period: the countdown at bullet+0x20 is reset to
-/// 0x3e2aaaab (1/6 s) after each (140b0.c:8412 / 8631).
+/// 0x3e2aaaab (1/6 s) after each (<decomp ref> / 8631).
 const REISSUE_PERIOD: f32 = 1.0 / 6.0;
 
 /// A boss script's Shoot Bullet this frame: its first Bullet row, the owner (whose attack it is)
@@ -130,7 +130,7 @@ fn charge(spec: &BulletSpec) -> Option<i64> {
 }
 
 /// Wolf's recent moves for predictive shots: the exe keeps a 240-entry ring of {delta, dt} on
-/// each character (FUN_1405ac4e0 writes it; FUN_1405ac1b0, 1405a.c:9189, averages it).
+/// each character (FUN_1405ac4e0 writes it; FUN_1405ac1b0, <decomp ref>, averages it).
 #[derive(Resource, Default)]
 pub(crate) struct TargetTrack {
     last: Option<Vec3>,
@@ -166,7 +166,7 @@ fn track(time: Res<Time>, player: Query<&Transform, With<Player>>, mut track: Re
     }
 }
 
-/// The predictive aim (FUN_140b05b80, 140b0.c:3144): the target walks on at its average velocity
+/// The predictive aim (FUN_140b05b80, <decomp ref>): the target walks on at its average velocity
 /// in 1/30 s steps while a bullet flies its speed profile (initVellocity, accelIn / OutRange
 /// past `dist`, min / max), until the bullet has flown as far as the moved target is. No
 /// gravity; the plain target when the speed or the velocity is about zero.
@@ -205,7 +205,7 @@ fn fire(
         let Some(anim) = d.anim(&a.anim) else { continue };
         // Gated by its live SpEffects (combat::event_gates: Lady Butterfly's 3509200 -> 184).
         let gates = crate::combat::event_gates(&combat, a, &e.clash);
-        let crosses = |ev: &crate::data::Event| ((ev.start > a.prev_t && ev.start <= a.t) || (a.prev_t == 0.0 && ev.start == 0.0)) && d.fires_on(ev, gates.as_deref());
+        let crosses = |ev: &crate::data::Event| crate::tae_window::starts(ev.start, a.prev_t, a.t) && d.fires_on(ev, gates.as_deref());
         for ev in anim.events.iter().filter(|ev| ev.kind == 2 && crosses(ev)) {
             // Shifted by its worn SpEffects (data::shift_judge: the Nightjars' 3145040, 700 -> 701).
             let judge = crate::data::shift_judge(ev.arg_i64("BehaviorJudgeID").unwrap_or(-1), &crate::combat::worn_sp(a, &e.clash));
@@ -388,9 +388,9 @@ fn fly(
         let rows = script.as_ref().map_or(&combat.kind(b.kind).data.bullet_rows, |s| &s.bullet_rows);
         let row = |id: i64| if id > 0 { rows.get(&id.to_string()) } else { None };
         // AtkParam AppearAiSoundId: a bullet issues its own attack as it starts (FUN_140b0fc60 ->
-        // FUN_1409a1290's bullet branch, 1409a.c:2243-2276): at the bullet, owned by its shooter.
+        // FUN_1409a1290's bullet branch, <decomp ref>): at the bullet, owned by its shooter.
         // A growing one (spreadTime > 0, hitRadiusMax set and not hitRadius) re-issues it every
-        // 1/6 s while it grows and once more when it has (FUN_140b20b70 from 140b0.c:8408 /
+        // 1/6 s while it grows and once more when it has (FUN_140b20b70 from <decomp ref> /
         // 8627), each with the sound again.
         let growing = b.spec.spread_time > 0.0 && b.spec.hit_radius_max >= 0.0 && b.spec.hit_radius_max != b.spec.hit_radius;
         let reissue = growing && !b.reissued && b.age > 0.0 && (b.age > b.spec.spread_time || b.age >= b.reissue_at);
@@ -519,7 +519,7 @@ fn fly(
                             atk.bullet_fx = Some((b.spec.sfx_id_hit, b.spec.sfx_id_flick, to, dir));
                             // A bullet's hit takes its SpEffect slots from the Bullet row alone (applied
                             // below); its AtkParam's spEffectId0-4 are never read for it (exe
-                            // FUN_1410b7910 1410b.c:5026 -> FUN_1410b6880 1410b.c:8409-8417). Both
+                            // FUN_1410b7910 <decomp ref> -> FUN_1410b6880 <decomp ref>). Both
                             // applied twice the Demon of Hatred's 9116 burn (14 rows 70200xxx share it).
                             (atk.sp_effect_id0, atk.sp_effect_id1, atk.sp_effect_id2, atk.sp_effect_id3, atk.sp_effect_id4) = (charge(&b.spec).unwrap_or(-1), -1, -1, -1, -1);
                             sa.bullet_hits.push((we, atk));
