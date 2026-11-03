@@ -5,6 +5,18 @@ comes from the game's own files (TAE, HKS, params, behaviour graphs, FLVER, FMOD
 static Ghidra decompile of the exe. The package and exe are `sv1`; the game is the library `rustsekiro`
 (src/lib.rs, `rustsekiro::run()`), src/main.rs only starts it. GitHub: `FFwLo/RustSekiro`, `main`.
 
+**Agents start here:**
+1. `python tools/doctor.py` must end with `ready`; each missing item prints its fix.
+2. Read the rules and the board, which live on branch `agents-work-board`, not on `main` (a fork says `upstream`):
+   `git fetch origin && git show origin/agents-work-board:AGENTS.md`, then
+   `git show origin/agents-work-board:board.py | python - open`.
+3. Pick a row, claim it (`board.py claim <ID> <agent>`), and work in your own worktree
+   (`python tools/worktree.py add <agent> <row> <slug>`).
+
+The skill `tools/claude-skills/rsekiro-row` does all of this end to end ("do an RSekiro row"). Contributor rules:
+`docs/CONTRIBUTING.md`. The guard (`tools/guard.py`, hooks in `.githooks`) refuses game data, decompiled code and
+disassembly.
+
 ## Commands
 - Build: `cargo build --release` (game), `cargo build` (debug). One target folder per session
   (`CARGO_TARGET_DIR=target/<name>`); the extractor uses `tools/sekiro-extract/target`.

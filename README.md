@@ -99,6 +99,14 @@ Tests: `cargo test --release`.
 | `tools/sekiro-extract/` | Reads the game's files into `extracted/` |
 | `docs/` | Notes on every mechanic and where it was found |
 
+## Contributing
+
+Pull requests are welcome. You need your own copy of the game: set up as above, run
+`git config core.hooksPath .githooks`, then `python tools/doctor.py` until it says `ready`.
+No game files, extracted data or decompiled code go into the repository; function addresses are fine.
+Pick a row from the work board (`AGENTS.md` on the branch `agents-work-board`), claim it, and open a
+pull request from your fork. All of it is in [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md).
+
 ## License
 
 Code under the [MIT License](LICENSE.md). It covers this code only, not the
