@@ -19,6 +19,13 @@
 //! tools/emu-cases `hks_env`: 30 pokes, each moved the answer as written), and Sv1's source
 //! or `gap:`. `HksEnv::env` returns None where Sv1 has no such state; the test
 //! `hks_env_matches_the_exe` compares the rest with the exe on Wolf standing idle.
+//!
+//! Step 2 (tools/emu-cases `hks2`): `HksEnv::fields` mirrors the exe fields by module and offset;
+//! `env` is each case's rule on them and `act` what each act case writes. The rules are checked in
+//! 223 poses (the fields written on the snapshot's Wolf, test `hks_env_poses_match_the_exe`) and
+//! the acts by a byte diff of Wolf's modules (test `hks_act_matches_the_exe`). A `gap:` on an id
+//! below whose rule `env` has means Sv1 keeps no state for its field yet (`from_world` leaves it
+//! out); the ids without a rule in `env` are the ones still not ported.
 
 // Not wired yet: only the sim test calls it (the id constants document the exe).
 #![allow(dead_code)]
@@ -226,6 +233,74 @@ pub const GET_VARIABLE_CHANGE_VALUE: i32 = 3063;
 /// rule (approx).
 pub const GET_BEHAVIOR_REF_ID_STRICT: i32 = 3064;
 
+/// The `act(id, ...)` ids (exe dispatcher FUN_140b32410(ctx, id, lua_State), the same argument
+/// readers) whose writes land in the fields the env ids read or in Wolf's modules; what each writes
+/// was run in tools/emu-cases `hks2_act` (a byte diff of Wolf's modules around each call, test
+/// `hks_act_matches_the_exe`). The other act ids Wolf's scripts call write nothing in those
+/// modules on idle Wolf: menus (123, 127, 147), HUD (3030), AI notices (155), the throw anim (135,
+/// 136, 139: no throw running), the lock-on homing (2019, 3019: not locked on), the auto-homing
+/// module (156, 157), items (2024), 3004 (no lock target), 3041, 9000 (debug print), 148
+/// (SetHavokVariable, not run).
+/// Case 0x65: PlayerCtrl +0x258 bit 0 = bool (FUN_1407d74d0).
+pub const ACT_SWITCH_MOTION: i32 = 101;
+/// Case 0x8a: flags +0x10 bit 28.
+pub const ACT_SET_IS_EVENT_ACTION_POSSIBLE: i32 = 138;
+/// Case 0x8d: ctrl flags +0x51d = type; knockback module +0x44 = 0x101 (u16).
+pub const ACT_SET_DAMAGE_ANIM_TYPE: i32 = 141;
+/// Case 0x96: flags +0x10 bit 14.
+pub const ACT_SET_IS_ITEM_ANIMATION_PLAYING: i32 = 150;
+/// Case 0x9a: chr +0x11cc = hand.
+pub const ACT_WEAPON_PARAMETER_REFERENCE: i32 = 154;
+/// Case 0x9f: damage module FUN_140b65680: the hit direction (damage +0x50) normalised in place,
+/// physics yaw = atan2(x, z) + deg (rad), wrapped to [-pi, pi] (FUN_1407de0c0).
+pub const ACT_TURN_TOWARD_ATTACKER: i32 = 159;
+/// Case 0xa0 / 0xa1: throw module +0x79 / +0x7b = state.
+pub const ACT_SET_THROW_POSSIBILITY_STATE_ATTACKER: i32 = 160;
+pub const ACT_SET_THROW_POSSIBILITY_STATE_DEFENDER: i32 = 161;
+/// Case 0x7d2: FUN_1409e9c00(chr, id, chr): the SpEffect on Wolf (GetSpEffectID answers 1 after).
+pub const ACT_ADD_SP_EFFECT: i32 = 2002;
+/// Case 0x7df: BehaviorTurn ([PlayerCtrl +0x250]) +0x78 / +0x7c = a, b degrees in radians.
+pub const ACT_LOCKON_SYSTEM_UNABLE_TO_TURN_ANGLE: i32 = 2015;
+/// Case 0x7e2: flags +0x10 bit 16.
+pub const ACT_LOCKON_FIXED_ANGLE_CANCEL: i32 = 2018;
+/// Case 0xbc3: flags +0x10 bit 20; PlayerCtrl +0x350 = 2.
+pub const ACT_UNDERWATER: i32 = 3011;
+/// Case 0xbc8: flags +0x20 bit i.
+pub const ACT_SET_FALL_PREVENTION_ASSIST: i32 = 3016;
+/// Case 0xbca: flags +0x10 bit 21, and bit 22 for 0. gap: the physics homing (+0x248, its
+/// target pointer +0x288 moved) to the wire point.
+pub const ACT_WIRE_ACTION: i32 = 3018;
+/// Case 0xbcf: docking FUN_140b7d920: the anim of the type's slot, docking +0x7bc + 12 x type.
+/// gap: physics +0x3c0 (the anim) and +0x3d0 / +0x3e0 (fractions from the anim's root motion) for
+/// types 2-5; the wire hit-change module.
+pub const ACT_SET_MOVE_PRECALCULATION: i32 = 3023;
+/// Case 0xbd1: physics yaw += deg (rad), wrapped to [-pi, pi] (FUN_1407dcce0 -> FUN_1407de0c0).
+pub const ACT_TURN_TO_DIRECTION: i32 = 3025;
+/// Case 0xbd2 / 0xbd3 / 0xbd4: docking FUN_140b7d810(d, 1 / 2 / 0): the judgment request byte
+/// docking +0x8a0 (wall cover) / +0x8a1 (ground hang) / +0x8a2 (air hang) = 1.
+pub const ACT_WALL_COVER_START_JUDGMENT: i32 = 3026;
+pub const ACT_GROUND_HANG_START_JUDGMENT: i32 = 3027;
+pub const ACT_AIR_HANG_START_JUDGMENT: i32 = 3028;
+/// Case 0xbd5: talk module +0x14 = ref.
+pub const ACT_SET_TALK_ANIM_STATE: i32 = 3029;
+/// Case 0xbd8: flags +0x10 bit 26.
+pub const ACT_ADHESION_DISABLED: i32 = 3032;
+/// Case 0xbda: FUN_140b322f0: flags +0x28 bit type.
+pub const ACT_ACTION_BUTTON_EXECUTABLE: i32 = 3034;
+/// Case 0xbdb / 0xbdc / 0xbdd: flags +0x10 bit 29 / 30 / 31.
+pub const ACT_WIRE_EDGES_PRIORITIZE: i32 = 3035;
+pub const ACT_DISABLE_FLOOR_ADHESION_DURING_FAST_MOVEMENT: i32 = 3036;
+pub const ACT_ON_WATER: i32 = 3037;
+/// Case 0x238c: flags +0x10 bit 0 (the stay bit IsStayState reads).
+pub const ACT_WAIT: i32 = 9100;
+/// Case 0x238d: request module +0x188 bit 0 (FUN_140b2afd0, the flags list reset); FdpDataExModule
+/// (bag +0xc0) +0x11 = 0. Sv1: the buffered presses cleared.
+pub const ACT_RESET_INPUT_QUEUE: i32 = 9101;
+/// Case 0x238e: flags +0x10 bit 1.
+pub const ACT_SET_EVENT_ANIM_IN_PROGRESS: i32 = 9102;
+/// Case 0x238f: flags +0x14 = v.
+pub const ACT_SET_AI_ATTACK_STATE: i32 = 9103;
+
 /// HKS ACTION_ARM ids (c0000_define.lua) of Sv1's buffered actions.
 pub fn action_arm(a: Action) -> i32 {
     match a {
@@ -242,6 +317,29 @@ pub fn action_arm(a: Action) -> i32 {
     }
 }
 
+/// GetGuardLevelAction (case 0xed): FUN_140843820(level, guard) looks up a 12 x 5 table (level
+/// flags +0x38 < 12, guard flags +0x3c < 5; 0 outside). The values are the exe's answers for all
+/// 60 pairs (tools/emu-cases `hks2_env`), rows by damage level, columns by guard level.
+const GUARD_LEVEL_ACTION: [[i32; 5]; 12] = [
+    [0, 0, 0, 0, 0],
+    [0, 1, 1, 1, 1],
+    [0, 3, 1, 1, 1],
+    [0, 3, 3, 3, 1],
+    [0, 4, 3, 3, 3],
+    [0, 1, 1, 1, 1],
+    [0, 3, 3, 3, 3],
+    [0, 3, 3, 3, 3],
+    [0, 0, 0, 0, 0],
+    [0, 3, 3, 3, 3],
+    [0, 4, 4, 4, 4],
+    [0, 3, 3, 3, 3],
+];
+
+/// The fall drop FUN_140bc2210 calls deadly ([0x143b09efc], a debug variable registered by
+/// FUN_140795380 with range 0..10000; 1500 in the 2026-11-03 snapshot). GetFallHeight's 59 m cap
+/// applies to a Wolf who can't die only below it.
+pub const FALL_DEATH_DROP: f32 = 1500.0;
+
 /// What Sv1 knows of Wolf that the env ids read, gathered once per frame.
 #[derive(Clone, Debug, Default)]
 pub struct HksEnv {
@@ -252,15 +350,15 @@ pub struct HksEnv {
     pub sp_effects: Vec<(i64, i64)>,
     /// Buffered presses as ACTION_ARM ids (`Player::requests`).
     pub requests: Vec<i32>,
-    pub locked_on: bool,
-    /// Wolf's state name (`Actor::state`).
-    pub state: String,
-    pub hp: f32,
-    pub dt: f32,
-    pub vel_y: f32,
-    pub airborne: bool,
-    pub attack_hit: bool,
-    pub in_throw: bool,
+    /// The exe fields the handlers read, by module and offset ("flags+0x68": SprjChrActionFlagModule
+    /// +0x68; the names of tools/emu-cases `hks2.rs`): "flags", "data", "talk", "phys", "request",
+    /// "throw", "damage", "knockback", "fdp", "docking", "wire" (Wolf's module bag), "chr" (the
+    /// ChrIns), "ctrl" (PlayerCtrl), "ctrlflags" (PlayerCtrl +0x50 block), "turn" (BehaviorTurn,
+    /// PlayerCtrl +0x250), "weapons" ([chr +0x120]), "throw_entry" ([throw +0x10]), "life" ([[chr
+    /// +0x18] +0x30]), "wire_target" ([0x143d8e058]), "debug" (DebugFlags 0x143d7a366); "var[id]"
+    /// the flags +0x3c8 GetVariableChangeValue entries, "pos_y" the physics position's y. A field
+    /// Sv1 keeps no state for is absent (`gap:`), and the ids that need it answer None.
+    pub fields: std::collections::HashMap<String, f64>,
 }
 
 /// behaviorRefId of any SpEffectParam row: the combat export, else the full dump
@@ -282,8 +380,9 @@ impl HksEnv {
     /// Wolf's state in the sim world.
     pub fn from_world(world: &mut World) -> HksEnv {
         let locked_on = world.get_resource::<crate::camera::LockOn>().is_some_and(|l| l.target.is_some());
-        let mut q = world.query::<(&Player, &Actor)>();
-        let (p, a) = q.single(world).expect("one Wolf");
+        let immortal = world.get_resource::<crate::enemy::script::WolfImmortal>().is_some_and(|w| w.0);
+        let mut q = world.query::<(&Player, &Actor, &Transform)>();
+        let (p, a, tf) = q.single(world).expect("one Wolf");
         let combat = world.resource::<Combat>();
         let config = world.resource::<crate::config::GameConfig>();
         let d = combat.data_of(a);
@@ -309,43 +408,263 @@ impl HksEnv {
         let sp_effects = ids.iter().map(|&id| (id, behavior_ref(combat, id))).collect();
         let mut requests: Vec<i32> = p.requests.keys().map(|&k| action_arm(k)).collect();
         requests.sort_unstable();
-        HksEnv {
-            sp_effects,
-            requests,
-            locked_on,
-            state: a.state.clone(),
-            hp: a.hp,
-            dt: a.clock_dt.unwrap_or(1.0 / 60.0),
-            vel_y: if a.airborne { a.vel_y } else { -crate::data::WORLD_GRAVITY * a.clock_dt.unwrap_or(1.0 / 60.0) },
-            airborne: a.airborne,
-            attack_hit: a.attack_hit,
-            in_throw: crate::actor::in_throw(a),
+        let dt = a.clock_dt.unwrap_or(1.0 / 60.0);
+        let ground = !a.airborne as i32 as f64;
+        let mut fields: std::collections::HashMap<String, f64> = [
+            ("data+0x130", a.hp as f64),
+            // the frame's dt (flags +0xaf8)
+            ("flags+0xaf8", dt as f64),
+            // the stay bit (approx: which exe states set it is not traced)
+            ("flags+0x10", matches!(a.state.as_str(), "StandIdle" | "CrouchIdle") as i32 as f64),
+            ("flags+0x58", if a.attack_hit { 16.0 } else { 0.0 }),
+            ("chr+0x1070", locked_on as i32 as f64),
+            // physics +0xa2 / +0x929 on the ground, +0xa48 clear (approx: not `Actor::airborne`);
+            // +0x164 the vertical speed: on the ground one frame of gravity, -9.8 x dt (the
+            // 2026-11-03 snapshot, dt 0.0455: -0.446, as on the first one at 1/60: -0.163).
+            ("phys+0xa2", ground),
+            ("phys+0x929", ground),
+            ("phys+0xa48", 0.0),
+            ("phys+0x164", if a.airborne { a.vel_y as f64 } else { (-crate::data::WORLD_GRAVITY * dt) as f64 }),
+            // GetFallHeight: the fall's top (`Player::air_top`) over the feet.
+            ("phys+0x854", p.air_top as f64),
+            ("pos_y", tf.translation.y as f64),
+            // can't die: Set Character Immortality (approx: that it is data +0x228 bit 2 is
+            // inferred, not traced); Sv1 has no no-death debug flags.
+            ("data+0x228", if immortal { 4.0 } else { 0.0 }),
+            ("debug+0x0", 0.0),
+            ("debug+0xb", 0.0),
+            ("fall_death_drop", FALL_DEATH_DROP as f64),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v))
+        .collect();
+        // Out of a throw the throw module's entry has type 0; in one Sv1 has no type (gap).
+        if !crate::actor::in_throw(a) {
+            fields.insert("throw_entry+0x18".into(), 0.0);
         }
+        HksEnv { sp_effects, requests, fields }
     }
 
-    /// The exe's answer to `env(id, args...)` from Sv1's state; None where Sv1 has no such state
-    /// (the `gap:` ids above). `args` are the script's arguments after the id.
+    fn f(&self, name: &str) -> Option<f64> {
+        self.fields.get(name).copied()
+    }
+    fn i(&self, name: &str) -> Option<i64> {
+        self.f(name).map(|v| v as i64)
+    }
+
+    /// The exe's answer to `env(id, args...)` from the fields (FUN_140b36410's case for the id);
+    /// None where a field it needs is absent (the `gap:` ids above). `args` are the script's
+    /// arguments after the id.
     pub fn env(&self, id: i32, args: &[i64]) -> Option<i32> {
         let arg = |i: usize| args.get(i).copied().unwrap_or(0);
         let b = |v: bool| Some(v as i32);
-        let out_of_throw = |v: i32| if self.in_throw { None } else { Some(v) };
+        // floats come back as (int)(x * 1000.0f)
+        let milli = |v: f64| ((v as f32) * 1000.0) as i32;
+        let bit = |name: &str, n: u32| self.i(name).map(|v| (v >> n) & 1 != 0);
+        let in_throw = || self.i("throw_entry+0x18").map(|t| t != 0);
         match id {
             GET_BEHAVIOR_REF_ID | GET_BEHAVIOR_REF_ID_STRICT => b(self.sp_effects.iter().any(|&(_, r)| r != 0 && r == arg(0))),
             GET_SP_EFFECT_ID => b(self.sp_effects.iter().any(|&(i, _)| i == arg(0))),
             ACTION_REQUEST => b(self.requests.contains(&(arg(0) as i32))),
-            IS_LOCKED_ON => b(self.locked_on),
-            IS_STAY_STATE => b(matches!(self.state.as_str(), "StandIdle" | "CrouchIdle")),
-            GET_HP => Some(self.hp as i32),
-            GET_DT => Some((self.dt * 1000.0) as i32),
-            GET_VERTICAL_SPEED => Some((self.vel_y * 1000.0) as i32),
-            IS_LANDING | IS_TRULY_LANDING => b(!self.airborne),
-            IS_ATK_CONTACT_TARGET => b(self.attack_hit),
-            IS_COM_PLAYER | IS_DEBUG_DASH => Some(0),
-            GET_THROW_ANIM_ID => out_of_throw(-1),
-            IS_NORMAL_DMG_PASS_THROUGH_DURING_THROW | IS_THROWN | IS_OPPONENT_DEAD_FROM_THROW | IS_THROW_SELF_DEATH | IS_THROW_SUCCESS | IS_THROW_POS_REALIGN | IS_THROW_ACTIVE => {
-                out_of_throw(0)
+            IS_LOCKED_ON => b(self.i("chr+0x1070")? != 0),
+            IS_STAY_STATE => b(bit("flags+0x10", 0)?),
+            GET_HP => Some(self.i("data+0x130")? as i32),
+            GET_DT => Some(milli(self.f("flags+0xaf8")?)),
+            GET_VERTICAL_SPEED => Some(milli(self.f("phys+0x164")?)),
+            // gap: FUN_140bb14d0(physics +0x1c0) taken false.
+            IS_LANDING => b(self.i("phys+0xa2")? != 0),
+            IS_TRULY_LANDING => b(self.i("phys+0x929")? != 0 && self.i("phys+0xa48")? == 0),
+            // FUN_140b97970: not on the ground, then (FUN_140bb15c0 (gap: taken false) or physics
+            // +0x100 clear or +0x900 >= 1) and ctrl flags +0x88 bit 5 clear.
+            IS_FALLING => {
+                if self.i("phys+0xa2")? != 0 {
+                    return Some(0);
+                }
+                let free = self.i("phys+0x100")? == 0 || self.f("phys+0x900")? as f32 >= 1.0;
+                b(free && !bit("ctrlflags+0x88", 5)?)
             }
+            IS_ATK_CONTACT_TARGET => b(bit("flags+0x58", 4)?),
+            IS_COM_PLAYER | IS_DEBUG_DASH => Some(0),
+            GET_COMMAND_ID_FROM_EVENT => Some(self.i(&format!("ctrlflags+{:#x}", 0x4f8 + 4 * arg(0)))? as i32),
+            GET_RECEIVED_DAMAGE_TYPE => Some(self.i("flags+0x5c")? as i32),
+            GET_DAMAGE_LEVEL => Some(self.i("flags+0x38")? as i32),
+            GET_SPECIAL_ATTRIBUTE => Some(self.i("flags+0x4c")? as i32),
+            HAS_RECEIVED_ANY_DAMAGE => b(bit("flags+0x54", 2)?),
+            GET_BEHAVIOR_ID => b(self.i("flags+0x40")? == arg(0) || self.i("flags+0x44")? == arg(0)),
+            IS_ANIM_END => b(bit("flags+0xaf0", arg(0) as u32)?),
+            GET_GUARD_BOUNCE_BEHAVIOR => Some(self.i("flags+0x60")? as i32),
+            GET_JUST_GUARD_BOUNCE_BEHAVIOR => Some(self.i("flags+0x62")? as i32),
+            GET_GUARD_DEFLECT_BEHAVIOR => Some(self.i("flags+0x64")? as i32),
+            GET_JUST_GUARD_DEFLECT_BEHAVIOR => Some(self.i("flags+0x66")? as i32),
+            GET_DAMAGE_DIRECTION => Some(!matches!(self.i("flags+0x68")?, 0 | 1 | 6 | 7) as i32),
+            GET_RECEIVED_DAMAGE_DIRECTION => Some(match self.i("flags+0x68")? {
+                0 | 7 => 2,
+                1 | 2 => 1,
+                3 | 4 => 3,
+                _ => 0,
+            }),
+            GET_GUARD_LEVEL_ACTION => {
+                let (lvl, guard) = (self.i("flags+0x38")?, self.i("flags+0x3c")?);
+                Some(if (0..12).contains(&lvl) && (0..5).contains(&guard) { GUARD_LEVEL_ACTION[lvl as usize][guard as usize] } else { 0 })
+            }
+            IS_MOVE_CANCEL_POSSIBLE => b(bit("ctrlflags+0x88", 2)? && bit("ctrlflags+0x9c", 4)?),
+            IS_DAMAGE_MOTION_OFF => b(bit("ctrlflags+0x88", 16)?),
+            ACTION_DURATION => {
+                if !(0..0x21).contains(&arg(0)) {
+                    return Some(0);
+                }
+                Some(milli(self.f(&format!("request+{:#x}", 0xe8 + 4 * arg(0)))?))
+            }
+            GET_VARIABLE_CHANGE_VALUE => {
+                // the list is known when its count is
+                self.f("flags+0x9d0")?;
+                Some(self.f(&format!("var[{}]", arg(0))).map(milli).unwrap_or(0))
+            }
+            GET_WEAPON_SWITCH_TYPE => Some(self.i("weapons+0x0")? as i32),
+            GET_ATK_DIRECTION => Some(self.i("damage+0x60")? as i32),
+            GET_KNOCKBACK_DISTANCE => Some(self.f("knockback+0x10")? as f32 as i32),
+            GET_TALK_EZ_STATE_REF_ID => Some(self.i("talk+0x18")? as i32),
+            LIP_SYNC_REQUEST => Some(self.i("talk+0x28")? as i32),
+            GET_SAVE_STATE => Some(self.i("chr+0x2008")? as i32),
+            GET_SAFE_POSITION_RETURN_STATE => Some(self.i("chr+0x200c")? as i32),
+            GET_MAP_VISIBILITY_TYPE => Some((self.i("chr+0x1acd")? & 0xf) as i32),
+            IS_TRUE_DEATH => Some((self.i("life+0x8c")? & 1) as i32),
+            IS_WALL_JUMP_CONTACT => b(self.i("phys+0xab5")? != 0 || self.i("phys+0xab4")? != 0),
+            IS_CROUCH_EXIT_POSSIBLE => Some(self.i("phys+0x93a")? as i32),
+            IS_HANG_AND_CLIMB_POSSIBLE => Some(self.i(&format!("docking+{:#x}", 0x7c0 + 0xc * 0xb))? as i32),
+            IS_OBSTACLE_AT_DOCKING_START => Some(self.i("docking+0x84c")? as i32),
+            IS_OBSTACLE_AT_DOCKING_END => Some(self.i("docking+0x84d")? as i32),
+            // FUN_1409f3030: the player (Wolf: true), the wire module not busy, a wire point in reach.
+            IS_WIRE_POSSIBLE => b((self.i("wire+0x10")? == 0 || self.i("wire+0x11")? != 0) && self.i("wire_target+0x8")? == 1),
+            GET_FALL_HEIGHT => {
+                let (top, y) = (self.f("phys+0x854")? as f32, self.f("pos_y")? as f32);
+                let mut h = if bit("ctrlflags+0x9c", 1)? { 10000.0 } else { top - y };
+                // FUN_140a58a70: Wolf can't die (FUN_140bd7d00) and the drop is not deadly
+                // (FUN_140bc2210: physics +0x854 - y < FALL_DEATH_DROP and +0x8d0 < 30).
+                let immortal = bit("data+0x228", 2)? || self.i("debug+0xb")? != 0 || self.i("debug+0x0")? != 0;
+                if immortal && top - y < self.f("fall_death_drop")? as f32 && (self.f("phys+0x8d0")? as f32) < 30.0 && h > 59.0 {
+                    h = 59.0;
+                }
+                Some((h * 100.0) as i32)
+            }
+            IS_THROWN | HAS_THROW_REQUEST => b(in_throw()?),
+            IS_NORMAL_DMG_PASS_THROUGH_DURING_THROW => b(in_throw()? && bit("flags+0x70", 4)?),
+            IS_THROW_ACTIVE => Some(self.i("throw+0x63")? as i32),
+            GET_THROW_ANIM_ID => (!in_throw()?).then_some(-1),
+            IS_OPPONENT_DEAD_FROM_THROW | IS_THROW_SELF_DEATH | IS_THROW_SUCCESS | IS_THROW_POS_REALIGN => (!in_throw()?).then_some(0),
             _ => None,
         }
+    }
+
+    /// `act(id, args...)`: what the exe's act case writes, applied to the fields (and the SpEffect
+    /// and request lists). Returns false for the ids not ported (nothing they write is mirrored).
+    pub fn act(&mut self, id: i32, args: &[f64]) -> bool {
+        let arg = |i: usize| args.get(i).copied().unwrap_or(0.0);
+        let get = |s: &Self, n: &str| s.f(n).unwrap_or(0.0) as i64;
+        let set_bit = |s: &mut Self, n: &str, b: u32| {
+            let v = get(s, n) as u64 | (1u64 << b);
+            s.fields.insert(n.to_string(), v as f64);
+        };
+        // FUN_1407de0c0 keeps the yaw in [-pi, pi]
+        let wrap = |a: f32| {
+            use std::f32::consts::{PI, TAU};
+            if a > PI {
+                a - TAU
+            } else if a < -PI {
+                a + TAU
+            } else {
+                a
+            }
+        };
+        match id {
+            ACT_WAIT => set_bit(self, "flags+0x10", 0),
+            ACT_SET_EVENT_ANIM_IN_PROGRESS => set_bit(self, "flags+0x10", 1),
+            ACT_SET_IS_ITEM_ANIMATION_PLAYING => set_bit(self, "flags+0x10", 14),
+            ACT_LOCKON_FIXED_ANGLE_CANCEL => set_bit(self, "flags+0x10", 16),
+            ACT_UNDERWATER => {
+                set_bit(self, "flags+0x10", 20);
+                self.fields.insert("ctrl+0x350".into(), 2.0);
+            }
+            ACT_WIRE_ACTION => {
+                set_bit(self, "flags+0x10", 21);
+                if arg(0) == 0.0 {
+                    set_bit(self, "flags+0x10", 22);
+                }
+            }
+            ACT_ADHESION_DISABLED => set_bit(self, "flags+0x10", 26),
+            ACT_SET_IS_EVENT_ACTION_POSSIBLE => set_bit(self, "flags+0x10", 28),
+            ACT_WIRE_EDGES_PRIORITIZE => set_bit(self, "flags+0x10", 29),
+            ACT_DISABLE_FLOOR_ADHESION_DURING_FAST_MOVEMENT => set_bit(self, "flags+0x10", 30),
+            ACT_ON_WATER => set_bit(self, "flags+0x10", 31),
+            ACT_SET_FALL_PREVENTION_ASSIST => set_bit(self, "flags+0x20", arg(0) as u32),
+            ACT_ACTION_BUTTON_EXECUTABLE => set_bit(self, "flags+0x28", arg(0) as u32),
+            ACT_SET_AI_ATTACK_STATE => {
+                self.fields.insert("flags+0x14".into(), arg(0));
+            }
+            ACT_RESET_INPUT_QUEUE => {
+                set_bit(self, "request+0x188", 0);
+                self.fields.insert("fdp+0x11".into(), 0.0);
+                self.requests.clear();
+            }
+            ACT_SWITCH_MOTION => {
+                let v = (get(self, "ctrl+0x258") & !1) | (arg(0) != 0.0) as i64;
+                self.fields.insert("ctrl+0x258".into(), v as f64);
+            }
+            ACT_SET_DAMAGE_ANIM_TYPE => {
+                self.fields.insert("ctrlflags+0x51d".into(), arg(0));
+                self.fields.insert("knockback+0x44".into(), 0x101 as f64);
+            }
+            ACT_WEAPON_PARAMETER_REFERENCE => {
+                self.fields.insert("chr+0x11cc".into(), arg(0));
+            }
+            ACT_TURN_TOWARD_ATTACKER => {
+                let d: Vec<f32> = ["damage+0x50", "damage+0x54", "damage+0x58"].iter().map(|n| self.f(n).unwrap_or(0.0) as f32).collect();
+                let len = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+                let d: Vec<f32> = if len > 0.0 { d.iter().map(|v| v / len).collect() } else { vec![0.0; 3] };
+                for (n, v) in ["damage+0x50", "damage+0x54", "damage+0x58"].iter().zip(&d) {
+                    self.fields.insert(n.to_string(), *v as f64);
+                }
+                let yaw = wrap(d[0].atan2(d[2]) + (arg(0) as f32).to_radians());
+                self.fields.insert("phys+0x74".into(), yaw as f64);
+            }
+            ACT_TURN_TO_DIRECTION => {
+                let yaw = wrap(self.f("phys+0x74").unwrap_or(0.0) as f32 + (arg(0) as f32).to_radians());
+                self.fields.insert("phys+0x74".into(), yaw as f64);
+            }
+            ACT_SET_THROW_POSSIBILITY_STATE_ATTACKER => {
+                self.fields.insert("throw+0x79".into(), arg(0));
+            }
+            ACT_SET_THROW_POSSIBILITY_STATE_DEFENDER => {
+                self.fields.insert("throw+0x7b".into(), arg(0));
+            }
+            ACT_LOCKON_SYSTEM_UNABLE_TO_TURN_ANGLE => {
+                self.fields.insert("turn+0x78".into(), (arg(0) as f32).to_radians() as f64);
+                self.fields.insert("turn+0x7c".into(), (arg(1) as f32).to_radians() as f64);
+            }
+            ACT_SET_TALK_ANIM_STATE => {
+                self.fields.insert("talk+0x14".into(), arg(0));
+            }
+            ACT_WALL_COVER_START_JUDGMENT => {
+                self.fields.insert("docking+0x8a0".into(), 1.0);
+            }
+            ACT_GROUND_HANG_START_JUDGMENT => {
+                self.fields.insert("docking+0x8a1".into(), 1.0);
+            }
+            ACT_AIR_HANG_START_JUDGMENT => {
+                self.fields.insert("docking+0x8a2".into(), 1.0);
+            }
+            ACT_SET_MOVE_PRECALCULATION => {
+                self.fields.insert(format!("docking+{:#x}", 0x7bc + 12 * arg(0) as i64), arg(1));
+            }
+            ACT_ADD_SP_EFFECT => {
+                let id = arg(0) as i64;
+                if !self.sp_effects.iter().any(|&(i, _)| i == id) {
+                    // gap: its behaviorRefId (the param lookup is in `from_world`)
+                    self.sp_effects.push((id, 0));
+                }
+            }
+            _ => return false,
+        }
+        true
     }
 }

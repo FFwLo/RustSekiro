@@ -20,7 +20,7 @@ use serde_json::{json, Value};
 use super::{uc, Emu};
 
 /// The env dispatcher: FUN_140b36410(longlong *ctx, int id, lua_State *L); ctx[0] is the ChrIns.
-const ENV: u64 = 0x1_40b3_6410;
+pub(super) const ENV: u64 = 0x1_40b3_6410;
 /// Lua argument readers: (L, index) -> int, (L, index, default) -> int, (L, index) -> float,
 /// (L, index, default) -> float.
 const ARG_INT: u64 = 0x1_4101_0dc0;
@@ -28,8 +28,8 @@ const ARG_INT_OR: u64 = 0x1_4101_0dd0;
 const ARG_FLOAT: u64 = 0x1_4101_0d50;
 const ARG_FLOAT_OR: u64 = 0x1_4101_0d60;
 /// The name -> id maps of `env("name")` and `act("name")`.
-const ENV_NAMES: u64 = 0x1_43d8_5568;
-const ACT_NAMES: u64 = 0x1_43d8_5558;
+pub(super) const ENV_NAMES: u64 = 0x1_43d8_5568;
+pub(super) const ACT_NAMES: u64 = 0x1_43d8_5558;
 
 /// The arguments of the case being run (after the id) and the reads the handler made.
 static ARGS: Mutex<Vec<f64>> = Mutex::new(Vec::new());
@@ -62,14 +62,14 @@ extern "C" fn on_arg(uc_: uc::Engine, addr: u64, _size: u32, _data: *mut c_void)
 
 /// One `env(...)` / `act(...)` call site's id and arguments as written (constants resolved).
 #[derive(Default)]
-struct Calls {
-    count: usize,
+pub(super) struct Calls {
+    pub(super) count: usize,
     /// Argument lists as written -> how many call sites pass them.
-    shapes: BTreeMap<Vec<String>, usize>,
+    pub(super) shapes: BTreeMap<Vec<String>, usize>,
 }
 
 /// Every `env(` / `act(` call in Wolf's four script files: id -> calls.
-fn survey(hks: &Path) -> (BTreeMap<String, Calls>, BTreeMap<String, Calls>, BTreeMap<String, f64>) {
+pub(super) fn survey(hks: &Path) -> (BTreeMap<String, Calls>, BTreeMap<String, Calls>, BTreeMap<String, f64>) {
     let files = ["c0000.lua", "c0000_cmsg.lua", "c0000_define.lua", "c0000_transition.lua"];
     let texts: Vec<String> = files
         .iter()
@@ -148,14 +148,14 @@ fn wstring(emu: &mut Emu, at: u64) -> String {
 
 /// A string id as the lookup sees it: FUN_140b362d0 copies the name into a fixed string of 31
 /// UTF-16 units (DLFixedStdAllocator, 0x20 with the terminator), and the map's keys are cut the same.
-fn name_key(id_text: &str) -> String {
+pub(super) fn name_key(id_text: &str) -> String {
     let units: Vec<u16> = id_text.trim_matches('"').encode_utf16().take(31).collect();
     String::from_utf16_lossy(&units)
 }
 
 /// The exe's name -> id map at `global` (std::map: head at +8; nodes left +0, parent +8, right
 /// +0x10, is-nil +0x19; name at +0x68, id at +0x90).
-fn names(emu: &mut Emu, global: u64) -> BTreeMap<String, u32> {
+pub(super) fn names(emu: &mut Emu, global: u64) -> BTreeMap<String, u32> {
     let map = emu.peek_u64(global);
     let mut out = BTreeMap::new();
     if map == 0 {
@@ -176,7 +176,7 @@ fn names(emu: &mut Emu, global: u64) -> BTreeMap<String, u32> {
 }
 
 /// The class name (MSVC RTTI) of an object whose vtable lies in the image.
-fn class_name(emu: &mut Emu, obj: u64) -> Option<String> {
+pub(super) fn class_name(emu: &mut Emu, obj: u64) -> Option<String> {
     let vt = emu.peek_u64(obj);
     if !(0x1_4000_0000..0x1_4500_0000).contains(&vt) {
         return None;

@@ -18,6 +18,7 @@ use serde_json::{json, Value};
 
 mod camwall;
 mod hks;
+mod hks2;
 mod damage;
 mod snapshot;
 mod guard;
@@ -868,6 +869,9 @@ fn main() {
     }
     if want.iter().any(|w| w.starts_with("camwall")) {
         camwall::run(&|| Emu::new(exe, snap()), out, &want);
+    }
+    if want.iter().any(|w| w.starts_with("hks2")) {
+        hks2::run(&|| Emu::new(exe, snap()), out, &want);
     }
     if want.contains(&"hks_env") {
         hks::env_cases(&mut Emu::new(exe, snap()), out);

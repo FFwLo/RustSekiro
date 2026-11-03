@@ -33,7 +33,8 @@ pub(crate) fn hks_env_matches_the_exe() {
     }
     let mut env = HksEnv::from_world(app.world_mut());
     // The save's HP (548 of 1120 in the snapshot): GetHP is the current HP (data module +0x130).
-    env.hp = v["env"].as_array().unwrap().iter().find(|e| e["id"] == 1000).and_then(|e| e["cases"][0]["ret"].as_f64()).unwrap() as f32;
+    let hp = v["env"].as_array().unwrap().iter().find(|e| e["id"] == 1000).and_then(|e| e["cases"][0]["ret"].as_f64()).unwrap();
+    env.fields.insert("data+0x130".into(), hp);
 
     let (mut total, mut answered, mut compared) = (0u64, 0u64, 0usize);
     let mut diffs = Vec::new();

@@ -232,3 +232,68 @@ air, where most answered ids would move), then a Lua runtime.
 | 157 | ClearAutoCaptureTarget | 1 | 0x9d | auto-homing module FUN_140b2d9d0 | `Actor::homing` |
 | 3036 | DisableFloorAdhesionDuringFastMovement | 1 | 0xbdc | flags +0x10 bit 30 | none |
 | 3041 | (string) warp-type input reset | 1 | 0xbe1 | [chr vtable +0x308 object] slot +0xb0 | none |
+
+## HKS engine surface, step 2: poses and acts (2026-11-03, hks2)
+
+`tools/emu-cases <exe> extracted/emu hks2 --snapshot <dir>` (`src/hks2.rs`; `hks2_env`, `hks2_act`,
+`hks2_move` run one part) on the 2026-11-03 snapshot (AI live; Wolf standing, the frame's dt 0.0455).
+`src/hks_env.rs` now keeps a mirror of the exe fields the handlers read, by module and offset
+(`HksEnv::fields`, "flags+0x68" = SprjChrActionFlagModule +0x68, the generator's names):
+`from_world` fills the ones Sv1 has state for, `env(id)` is the dispatcher's rule on them (None when
+a field it needs is absent), `act(id)` writes what the exe's act case writes.
+
+- Env poses (`hks2_env.json`, test `hks_env_poses_match_the_exe`): 105 fields read on the snapshot
+  ("idle"), then 223 poses over 47 ids, each writing some fields, running FUN_140b36410 and
+  restoring them. All 223 (and their idle answers) equal the ported rules. 36 of the 60 gap ids
+  now have their rule ported (384 calls): 3063 GetVariableChangeValue (the flags +0x3c8 list by id,
+  x1000), 1108 ActionDuration (request +0xe8 + 4 arm, x1000, arm < 0x21), 2000 IsMoveCancelPossible
+  (ctrl flags +0x88 bit 2 and +0x9c bit 4), the hit record 285 / 202 / 236 / 256 / 3032 / 222 (the
+  two direction maps over 0..9), 237 GetGuardLevelAction (a 12 x 5 table, all 60 pairs + out of
+  range taken from the exe: `GUARD_LEVEL_ACTION`), 207, 334, 339, 349, 105, 1112, 1119, 1121
+  (truncated toward 0: 2.7 -> 2, -1.5 -> -1), 3000 (the wire module busy unless +0x11, [0x143d8e058]
+  +8 == 1 exactly), 3018 / 3019 / 3056 / 3057 (i16), 3020, 3028 (bit 0 of [[chr+0x18]+0x30]+0x8c),
+  3037, 3040 (low nibble), 3050 / 3051 / 3052 (docking +0x844 = +0x7c0 + 12 x 11, +0x84c, +0x84d),
+  3054 / 3058 / 3055 / 3061, 200 IsFalling (on the ground 0; in the air physics +0x100 clear or
+  +0x900 >= 1, and ctrl flags +0x88 bit 5 clear), 224 GetFallHeight. The ids Sv1 answered on idle
+  move with their fields in the other poses too (in the air: 201 / 248 0, 200 1, 3003 the speed;
+  1105, 1118, 2004, 333, 1000, the throw ids with an entry type).
+- GetFallHeight: physics +0x854 (the fall's top) minus the physics position's y (FUN_140bbfc00),
+  10000 with ctrl flags +0x9c bit 1, x100; capped at 59 m when Wolf can't die (FUN_140bd7d00: data
+  +0x228 bit 2, DebugFlags +0xb, or the player with DebugFlags +0x0 player-no-death, on in the
+  snapshot) and the drop is not deadly (FUN_140bc2210: drop < [0x143b09efc], a debug variable, 1500
+  in the snapshot, and physics +0x8d0 < 30). So with the snapshot's debug flag a 70 m fall reads 5900;
+  mortal 7000. Sv1: top `Player::air_top`, Set Character Immortality as data +0x228 bit 2 (inferred).
+- GetVerticalSpeed standing is -9.8 x dt on this snapshot too (-0.446 at dt 0.0455; -0.163 at 1/60
+  on the first one): Sv1's rule -WORLD_GRAVITY x dt holds at both frame times.
+- Sv1 has no state yet (the field is absent, the id answers None in the game) for: the hit record
+  (flags +0x38 / +0x3c / +0x4c / +0x54 / +0x5c / +0x60..+0x66 / +0x68), the TAE ctrl flags (+0x88,
+  +0x9c: also GetFallHeight's), the variable-change list, hold times, the behaviour ids, the
+  anim-end bits, docking, talk, wire reach, save states, the throw entry inside a throw. Each is one
+  `fields.insert` in `from_world` once Sv1 keeps it.
+- Not ported (24 ids, 176 calls): save / equipment (225, 345, 3027, 3033, 3035, 231, 233), item menu
+  (113, 115), the docking functions (3011, 3017, 3029, 3038, 3039, 3043-3046, 3048, 3049, 3059, 3060:
+  sub-objects at docking +0x20 / +0x290 / +0x4f0), 3025 swim contact, 3053 talk param.
+
+- Acts (`hks2_act.json`, test `hks_act_matches_the_exe`): every act id and argument list of the
+  scripts run on a fresh emulator (129 cases; 148 SetHavokVariable, 9000 and the 9103
+  hkbGetVariable call not run: string / call arguments), the fields the acts set cleared first (the
+  snapshot's flags +0x10 already holds bits 0, 28, 30), a byte diff of chr, the module bag, PlayerCtrl,
+  its +0x50 block and BehaviorTurn. `HksEnv::act` writes the same fields for 31 ids; Sv1 writes none
+  the exe left. What they do (corrections to the mapped table above in bold):
+  flags +0x10 bits: 9100 bit 0, 9102 bit 1, 150 bit 14, 2018 bit 16, 3011 bit 20 (+ PlayerCtrl +0x350
+  = 2), 3018 bit 21 (and 22 for 0; it also moves the physics homing target +0x288: gap), 3032 bit 26,
+  138 bit 28, 3035 bit 29, 3036 bit 30, 3037 bit 31; 3016 flags +0x20 bit i; **3034 flags +0x28 bit
+  type**; 9103 flags +0x14 = v; 9101 request +0x188 bit 0 and FdpDataEx +0x11 = 0; **101 PlayerCtrl
+  +0x258 bit 0 = bool**; 141 ctrl flags +0x51d = type, knockback +0x44 = 0x101; 154 chr +0x11cc;
+  160 / 161 throw +0x79 / +0x7b; 2015 BehaviorTurn +0x78 / +0x7c (deg -> rad); 3029 talk +0x14;
+  **3026 / 3027 / 3028 docking +0x8a0 / +0x8a1 / +0x8a2 = 1**; **3023 docking +0x7bc + 12 x type =
+  the anim** (types 2-5 also physics +0x3c0 = anim and +0x3d0 / +0x3e0 fractions from its root
+  motion: gap); **159 TurnTowardAttacker: damage +0x50 normalised in place, physics yaw =
+  atan2(x, z) + deg** (no hit direction: 0 + deg); **3025 TurnToDirection: physics yaw += deg**;
+  both wrapped to [-pi, pi] (pi stays pi); 2002 AddSpEffect: GetSpEffectID answers 1 after it.
+  Nothing in those modules on idle Wolf: 123, 127, 147 (menus), 3030 (HUD), 155, 156 / 157 (the
+  auto-homing module, bag +0x108), 135 / 136 / 139 (no throw), 2019 / 3019 (not locked on), 2024,
+  3004 (no lock target), 3041.
+- gap: the acts in other states (in a throw, locked on, a wire target), the SpEffect's
+  behaviorRefId in `act` (0; `from_world` looks it up), which act sites clear the bit words each
+  frame (the snapshot's bits stay set between frames in the emulator).
