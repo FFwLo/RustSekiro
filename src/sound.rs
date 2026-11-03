@@ -253,7 +253,7 @@ fn type_letter(t: &str) -> Option<char> {
 pub fn active_state_infos(combat: &Combat, a: &Actor, config: Option<&crate::config::GameConfig>, tool: Option<i64>) -> Vec<i64> {
     const NO_ENCHANTMENT: i64 = 914;
     let d = data_for(combat, &a);
-    let mut v: Vec<i64> = if a.anim.is_empty() { Vec::new() } else { d.sp_effects_at(&a.anim, a.t).iter().map(|(_, s)| s.state_info).collect() };
+    let mut v: Vec<i64> = if a.anim.is_empty() { Vec::new() } else { d.sp_effects_at(&a.anim, a.step()).iter().map(|(_, s)| s.state_info).collect() };
     // The live resident SpEffects too, every side (round 70: enemies' NpcParam residents such as
     // the anim-set rows 200030-200034 -> stateInfo 270-274, or 3107040 -> 950 / 951, gate
     // thousands of PlaySound / SpawnFFX events - c1180, c1220, c1260, c1700, ... - and only
@@ -261,7 +261,7 @@ pub fn active_state_infos(combat: &Combat, a: &Actor, config: Option<&crate::con
     // A TAE SpEffect of the same spCategory overwrites the resident (the anim-set rows 200030-34
     // are all category 100: a clip's 200031 replaces the resident 200030, HANDOFF ~367): its
     // stateInfo alone gates, not both sets.
-    let tae_cats: Vec<i64> = if a.anim.is_empty() { Vec::new() } else { d.sp_effects_at(&a.anim, a.t).iter().filter_map(|(id, _)| crate::data::sp_cycle(*id)).map(|c| c.category).filter(|c| *c > 0).collect() };
+    let tae_cats: Vec<i64> = if a.anim.is_empty() { Vec::new() } else { d.sp_effects_at(&a.anim, a.step()).iter().filter_map(|(id, _)| crate::data::sp_cycle(*id)).map(|c| c.category).filter(|c| *c > 0).collect() };
     for &id in &a.resident {
         if crate::data::sp_cycle(id).is_some_and(|c| c.category > 0 && tae_cats.contains(&c.category)) {
             continue;
@@ -706,7 +706,7 @@ impl DeathblowMix {
 /// byte; the export reads every field as f32, "unk0", missing when 0) and "unk1".."unk6".
 fn mix_request(combat: &Combat, a: &Actor) -> Option<(u8, [f32; 6])> {
     let anim = data_for(combat, a).anim(&a.anim)?;
-    let e = anim.events.iter().find(|e| e.kind == 970 && e.in_time(a.t))?;
+    let e = anim.events.iter().find(|e| e.kind == 970 && e.dispatched(a.step()))?;
     let f = |k: &str| e.args.get(k).and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
     let ty = (f("unk0").to_bits() & 0xff) as u8;
     Some((ty, [f("unk1"), f("unk2"), f("unk3"), f("unk4"), f("unk5"), f("unk6")]))

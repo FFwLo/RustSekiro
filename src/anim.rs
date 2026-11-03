@@ -698,7 +698,7 @@ fn apply_twists(
         let l = lib.lib(&a);
         // The active TAE 700 event and its modifiers.
         let data = crate::actor::data_for(&combat, &a);
-        let ev = if a.anim.is_empty() { None } else { data.events_at(&a.anim, a.t).find(|ev| ev.kind == 700) };
+        let ev = if a.anim.is_empty() { None } else { data.events_at(&a.anim, a.step()).find(|ev| ev.kind == 700) };
         // ModifierID "0: 0_Twist" -> modifier number 0; Wolf's graph names it "0_Twist", the NPC
         // graph (c9997) "00_Twist" (several modifiers may share a number: 02_Twist_Neck/_Spine).
         let id = ev

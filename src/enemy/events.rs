@@ -67,7 +67,7 @@ pub(super) fn messages(combat: Res<Combat>, mut q: Query<(&mut Enemy, &Actor)>, 
     if pa.prev_t == 0.0 && (pa.state.starts_with("Deathblow") || pa.state == "ThrowBreak") {
         wolf.msg = None;
     }
-    if let Some(ev) = combat.player.events_at(&pa.anim, pa.t).filter(|ev| ev.kind == super::TAE_EVENT_MESSAGE).max_by(|x, y| x.start.total_cmp(&y.start)) {
+    if let Some(ev) = combat.player.events_at(&pa.anim, pa.step()).filter(|ev| ev.kind == super::TAE_EVENT_MESSAGE).max_by(|x, y| x.start.total_cmp(&y.start)) {
         wolf.msg = ev.arg_i64("EzStateRequestID");
         if crate::tae_window::starts(ev.start, pa.prev_t, pa.t) {
             wolf.serial = wolf.serial.wrapping_add(1);
@@ -75,7 +75,7 @@ pub(super) fn messages(combat: Res<Combat>, mut q: Query<(&mut Enemy, &Actor)>, 
     }
     for (mut e, a) in &mut q {
         let d = combat.data_of(a);
-        if let Some(ev) = d.events_at(&a.anim, a.t).filter(|ev| ev.kind == super::TAE_EVENT_MESSAGE).max_by(|x, y| x.start.total_cmp(&y.start)) {
+        if let Some(ev) = d.events_at(&a.anim, a.step()).filter(|ev| ev.kind == super::TAE_EVENT_MESSAGE).max_by(|x, y| x.start.total_cmp(&y.start)) {
             e.msg = ev.arg_i64("EzStateRequestID");
             // A new one (it starts this step, or its anim just began).
             if crate::tae_window::starts(ev.start, a.prev_t, a.t) {

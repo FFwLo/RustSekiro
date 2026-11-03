@@ -399,7 +399,7 @@ impl Enemy {
         let d = combat.data_of(a);
         let mut ids: Vec<i64> = a.resident.clone();
         if !a.anim.is_empty() {
-            ids.extend(d.sp_effects_at(&a.anim, a.t).iter().map(|(id, _)| *id));
+            ids.extend(d.sp_effects_at(&a.anim, a.step()).iter().map(|(id, _)| *id));
         }
         ids.extend(self.clash.iter().map(|c| c.0));
         !ids.iter().any(|id| d.sp_effects.get(&id.to_string()).is_some_and(|s| s.state_info == 143))
@@ -410,7 +410,7 @@ impl Enemy {
     /// holds while the event is on: c1500's a000_020000-020002 and c1360's a000_020000 / 021000
     /// (from frame 0, about 3-4 s). HP then stays at 1 (SetHP FUN_140bd64e0).
     pub(crate) fn tae_no_dead(a: &Actor, combat: &Combat) -> bool {
-        !a.anim.is_empty() && combat.data_of(a).flag(&a.anim, a.t, TAE_FLAG_SET_IMMORTALITY)
+        !a.anim.is_empty() && combat.data_of(a).flag(&a.anim, a.step(), TAE_FLAG_SET_IMMORTALITY)
     }
 
     /// Death at 0 HP: c9997 ExecDeath's ground choice (1896-2120) from the last hit: DeathBlast
@@ -1447,7 +1447,7 @@ fn ai_hold(
         let has = |sp: i64| {
             a.resident.contains(&sp)
                 || timed.contains(&sp)
-                || (!a.anim.is_empty() && d.sp_effects_at(&a.anim, a.t).iter().any(|(id, _)| *id == sp))
+                || (!a.anim.is_empty() && d.sp_effects_at(&a.anim, a.step()).iter().any(|(id, _)| *id == sp))
                 || (!a.add_anim.is_empty() && d.sp_effects_at(&a.add_anim, a.add_t).iter().any(|(id, _)| *id == sp))
         };
         // 4[1] IF Character Damaged By Wolf / 3[23] IF Damage Type: the event's damage record is
@@ -2009,7 +2009,7 @@ fn parry_interrupt(
             continue;
         }
         // Rising edge of the notify flag on the player's current anim.
-        let notify = pd.events_at(&pa.anim, pa.t).find(|ev| ev.kind == 0 && ev.flag_type() == Some(FLAG_AI_NOTIFY)).map(|ev| ev.start);
+        let notify = pd.events_at(&pa.anim, pa.step()).find(|ev| ev.kind == 0 && ev.flag_type() == Some(FLAG_AI_NOTIFY)).map(|ev| ev.start);
         // Seen once per flag window: last_notify is cleared when no window is on, so the next
         // swing whose window starts at the same time (Combo1 and Combo2 both at 0.6) counts again.
         let Some(start) = notify else {
@@ -2035,7 +2035,7 @@ fn parry_interrupt(
         }
         e.parry_timer = 0.1;
         let dist = tf.translation.distance(ptf.translation);
-        let player_refs: Vec<i64> = pd.sp_effects_at(&pa.anim, pa.t).iter().map(|(id, _)| *id).collect();
+        let player_refs: Vec<i64> = pd.sp_effects_at(&pa.anim, pa.step()).iter().map(|(id, _)| *id).collect();
         let thrust = player_refs.contains(&109970);
         let r = e.rand100();
         let facing = in_front(&a, tf.translation, ptf.translation, 90.0) && in_front(pa, ptf.translation, tf.translation, 90.0);
@@ -2170,7 +2170,7 @@ fn wolf_sounds(combat: &Combat, pa: &Actor, wolf: Vec3, la: &Actor, listener: Ve
 pub(crate) fn hearing_rate(combat: &Combat, la: &Actor) -> f64 {
     let d = combat.data_of(la);
     let row = |id: i64| d.sp_effects.get(&id.to_string()).or_else(|| combat.player.sp_effects.get(&id.to_string()));
-    let clip: Vec<i64> = if la.anim.is_empty() { Vec::new() } else { d.sp_effects_at(&la.anim, la.t).into_iter().map(|(id, _)| id).collect() };
+    let clip: Vec<i64> = if la.anim.is_empty() { Vec::new() } else { d.sp_effects_at(&la.anim, la.step()).into_iter().map(|(id, _)| id).collect() };
     let r: f64 = la.resident.iter().chain(&clip).filter_map(|&id| row(id)).map(|e| 1.0 - (e.hearing_search_enemy_cut as f64).max(0.0) / 100.0).product();
     r.clamp(0.0, 1.0)
 }
@@ -2324,7 +2324,7 @@ fn think(
             fwd: a.forward(),
             hp_rate: a.hp / a.hp_max.max(1.0),
             guard: a.state.contains("Guard"),
-            sp: combat.data_of(a).sp_effects_at(&a.anim, a.t).iter().map(|(id, _)| *id).chain(afflictions(ent)).collect(),
+            sp: combat.data_of(a).sp_effects_at(&a.anim, a.step()).iter().map(|(id, _)| *id).chain(afflictions(ent)).collect(),
             posture_left: a.posture_max - a.posture,
             posture_rate: (1.0 - a.posture / a.posture_max.max(1.0)).max(0.0),
             radius: combat.npc(a)["hitRadius"].as_f64().unwrap_or(0.5) as f32,
@@ -2384,11 +2384,11 @@ fn think(
         // category rule (wear_for_good) overwrites: the Okami warriors' resident 200031 (a100,
         // their Act31 appearance 20001) gives way to 20001's 200030.
         if !a.anim.is_empty() {
-            let lasting: Vec<i64> = d.sp_effects_at(&a.anim, a.t).iter().filter(|(_, s)| s.effect_endurance == -1.0).map(|(id, _)| *id).collect();
+            let lasting: Vec<i64> = d.sp_effects_at(&a.anim, a.step()).iter().filter(|(_, s)| s.effect_endurance == -1.0).map(|(id, _)| *id).collect();
             for id in lasting {
                 wear_for_good(d, &mut a, id);
             }
-            if let Some(g) = anim_group_of(d, d.sp_effects_at(&a.anim, a.t).iter().map(|(id, _)| *id)) {
+            if let Some(g) = anim_group_of(d, d.sp_effects_at(&a.anim, a.step()).iter().map(|(id, _)| *id)) {
                 a.anim_group = g;
             }
         }
@@ -2407,7 +2407,7 @@ fn think(
         if !scripted && matches!(e.mode, Mode::Ai | Mode::Rising(_)) && !phase_events(foe.npc_row).is_empty() {
             let mut sp_now: HashSet<i64> = a.resident.iter().copied().collect();
             if !a.anim.is_empty() {
-                sp_now.extend(d.sp_effects_at(&a.anim, a.t).iter().map(|(id, _)| *id));
+                sp_now.extend(d.sp_effects_at(&a.anim, a.step()).iter().map(|(id, _)| *id));
             }
             sp_now.extend(e.clash.iter().map(|c| c.0));
             let forced = e.run_phase_events(&mut a, &combat, &sp_now);
@@ -2434,7 +2434,7 @@ fn think(
                 if let Some(death) = e.throw_death.clone() {
                     let switch = death != "Event20200"
                         && !a.anim.is_empty()
-                        && (a.t >= d.length(&a.anim) || d.flag(&a.anim, a.t, FLAG_THROW_TYPE5));
+                        && (a.t >= d.length(&a.anim) || d.flag(&a.anim, a.step(), FLAG_THROW_TYPE5));
                     if t - dt <= 0.0 || switch {
                         e.throw_death = None;
                         a.play_state(d, &death);
@@ -2456,11 +2456,11 @@ fn think(
                 // ThrowDef reaction -> its death anim on flag 69 (or when it ends).
                 if let Some(death) = e.throw_death.clone() {
                     let ended = a.t >= d.length(&a.anim);
-                    if (!a.anim.is_empty() && d.flag(&a.anim, a.t, FLAG_THROW_TYPE5)) || ended {
+                    if (!a.anim.is_empty() && d.flag(&a.anim, a.step(), FLAG_THROW_TYPE5)) || ended {
                         e.throw_death = None;
                         let mut sp_now: HashSet<i64> = a.resident.iter().copied().collect();
                         if !ended {
-                            sp_now.extend(d.sp_effects_at(&a.anim, a.t).iter().map(|(id, _)| *id));
+                            sp_now.extend(d.sp_effects_at(&a.anim, a.step()).iter().map(|(id, _)| *id));
                         }
                         let fallback = if death == "Event20200" { e.fallback_death(&a, &combat, &sp_now) } else { None };
                         if let Some((state, key)) = fallback {
@@ -2651,7 +2651,7 @@ fn think(
         // The AI-state SpEffect the playing anim's TAE sets (kept until replaced).
         if !a.anim.is_empty() {
             let set = d
-                .events_at(&a.anim, a.t)
+                .events_at(&a.anim, a.step())
                 .filter(|ev| matches!(ev.kind, 66 | 67 | 401))
                 .filter_map(|ev| ev.arg_i64("SpEffectID"))
                 .find(|id| AI_STATE_SP.contains(id));
@@ -2760,9 +2760,9 @@ fn think(
         // Track the player while the TAE allows turning (SetTurnSpeed), like NPC homing, except
         // inside TAE 703 FixedRotationDirection (each swing's active frames, e.g. 3000 f22-36).
         let fixed = !a.anim.is_empty()
-            && d.events_at(&a.anim, a.t).any(|e| e.kind == 703 && e.args.get("IsEnable").and_then(|v| v.as_bool()).unwrap_or(false));
+            && d.events_at(&a.anim, a.step()).any(|e| e.kind == 703 && e.args.get("IsEnable").and_then(|v| v.as_bool()).unwrap_or(false));
         if e.cur_ez.is_some() && !ended && !fixed {
-            if let Some(speed) = d.turn_speed(&a.anim, a.t, true) {
+            if let Some(speed) = d.turn_speed(&a.anim, a.step(), true) {
                 a.yaw = turn_toward(a.yaw, t_yaw, speed.to_radians() * dt);
             }
         }
@@ -2810,7 +2810,7 @@ fn think(
         // World snapshot for the brain.
         let fwd = a.forward();
         let mut sp_self: HashSet<i64> = a.resident.iter().copied().collect();
-        sp_self.extend(d.sp_effects_at(&a.anim, a.t).iter().map(|(id, _)| *id));
+        sp_self.extend(d.sp_effects_at(&a.anim, a.step()).iter().map(|(id, _)| *id));
         sp_self.extend(e.clash.iter().map(|c| c.0));
         // Its TAE SpEffects kept past their window and their replaceSpEffectId chains (actor.rs
         // run_sp_effect_chains), as Wolf's below.
@@ -2833,7 +2833,7 @@ fn think(
             // Before, the AI never saw them and the Owl kept re-sealing (boss bug hunt 2026-10-14).
             None => combat
                 .player
-                .sp_effects_at(&pa.anim, pa.t)
+                .sp_effects_at(&pa.anim, pa.step())
                 .iter()
                 .map(|(id, _)| *id)
                 .chain(pa.sp_chained.iter().map(|c| c.0))
@@ -2868,7 +2868,7 @@ fn think(
             target_sp: rival.map_or(pa.posture_max - pa.posture, |r| r.posture_left),
             target_sp_rate: rival.map_or((1.0 - pa.posture / pa.posture_max.max(1.0)).max(0.0), |r| r.posture_rate),
             free,
-            flags: AI_CANCEL_FLAGS.iter().copied().filter(|&f| !a.anim.is_empty() && d.flag(&a.anim, a.t, f)).collect(),
+            flags: AI_CANCEL_FLAGS.iter().copied().filter(|&f| !a.anim.is_empty() && d.flag(&a.anim, a.step(), f)).collect(),
             ez: playing_ez,
             t: a.t,
             anim_done: ended,
@@ -2985,7 +2985,7 @@ fn think(
         });
 
         // Carry out the request.
-        let move_ok = free || d.flag(&a.anim, a.t, FLAG_AI_MOVE);
+        let move_ok = free || d.flag(&a.anim, a.step(), FLAG_AI_MOVE);
         let mut turned_first = false;
         let cur = stance_of(&a.state);
         let want = Stance::wanted(&cmd).filter(|s| d.anim_key(s.idle()).is_some());
@@ -3233,7 +3233,7 @@ pub(crate) fn start_turn(e: &Enemy, a: &mut Actor, d: &crate::data::CharData, go
     let guard = a.state.starts_with("GuardIdle");
     let general = a.state.starts_with("GeneralStanceIdle");
     let no_turn = a.resident.iter().chain(e.clash.iter().map(|c| &c.0)).any(|id| d.sp_effects.get(&id.to_string()).is_some_and(|s| s.behavior_ref_id == 1000072))
-        || (!a.anim.is_empty() && d.sp_effects_at(&a.anim, a.t).iter().any(|(_, s)| s.behavior_ref_id == 1000072));
+        || (!a.anim.is_empty() && d.sp_effects_at(&a.anim, a.step()).iter().any(|(_, s)| s.behavior_ref_id == 1000072));
     // TurnAngle: right is positive; Bevy's yaw grows to the left.
     let angle = -(goal_yaw - a.yaw + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) + std::f32::consts::PI;
     let deg = angle.to_degrees();
@@ -3317,7 +3317,7 @@ fn drill(e: &mut Enemy, a: &mut Actor, d: &crate::data::CharData, config: &GameC
 #[allow(clippy::too_many_arguments)]
 fn passive_or_fallback(e: &mut Enemy, a: &mut Actor, d: &crate::data::CharData, config: &GameConfig, dist: f32, want_yaw: f32, dt: f32, free: bool, ended: bool) {
     if let Some((combo, step)) = e.fallback {
-        let chain_point = d.flag(&a.anim, a.t, FLAG_AI_COMBO) && a.t > 0.2;
+        let chain_point = d.flag(&a.anim, a.step(), FLAG_AI_COMBO) && a.t > 0.2;
         let next = step + 1;
         if (chain_point || ended) && next < COMBOS[combo].len() && dist < config.enemy.attack_range + 2.0 {
             a.play(&format!("Combo{combo}.{next}"), COMBOS[combo][next]);

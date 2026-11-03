@@ -152,6 +152,7 @@ pub struct Actor {
     /// Anim key into combat_data ("a050_300000"), or "" for procedural states.
     pub anim: String,
     pub t: f32,
+    /// The clip time before this step: the start of the TAE window (`step`).
     pub prev_t: f32,
     /// The generator the current clip blends in from while its TAE Blend lasts (the behaviour
     /// graph keeps playing it and mixes its world-from-model in): (clip key, its clock), the key
@@ -503,10 +504,33 @@ impl Actor {
             self.hits_done = hits;
             return false;
         }
-        self.t = t;
-        self.prev_t = t;
+        self.start_at(t);
         self.hits_done = hits;
         true
+    }
+
+    /// The clip just played starts at `t` (HKS StartTime, the land continuations): its TAE window
+    /// starts at t, so no event before t enters. gap: the selector's reset FUN_1411e6de0 followed
+    /// by its update passes (0, t) and enters them all (tools/emu-cases taestate); a preUpdate
+    /// between (FUN_1411e55e0) gives (t, t) as here. The game's land continuations do not
+    /// relaunch Wolf from the launch (TAE 920) before the offset, so the second is taken; the
+    /// order of activate / preUpdate in the graph is not traced.
+    pub fn start_at(&mut self, t: f32) {
+        self.t = t;
+        self.prev_t = t;
+    }
+
+    /// Starts a step of the clip's clock (`advance`): prev_t = t; returns the clip time before
+    /// the step.
+    pub fn begin_step(&mut self) -> f32 {
+        self.prev_t = self.t;
+        self.t
+    }
+
+    /// This update of the clip for its state events (`CharData::events_at`, `flag`, ...): the
+    /// exe dispatches every event whose window (prev_t, t] it overlaps (`tae_window::At`).
+    pub fn step(&self) -> crate::tae_window::At {
+        crate::tae_window::At::Step(self.prev_t, self.t)
     }
 
     pub fn procedural(&mut self, state: &str) {
@@ -634,7 +658,7 @@ fn boost_root_motion(
     let positions: Vec<(Entity, Side, Vec3)> = q.iter().map(|(e, a, t)| (e, a.side, t.translation)).collect();
     for (_, mut a, tf) in &mut q {
         let d = data_for(&combat, &a);
-        let ev = if a.anim.is_empty() { None } else { d.events_at(&a.anim, a.t).find(|e| e.kind == 760) };
+        let ev = if a.anim.is_empty() { None } else { d.events_at(&a.anim, a.step()).find(|e| e.kind == 760) };
         let Some(ev) = ev.filter(|e| e.args.get("IsEnable").and_then(|v| v.as_bool()).unwrap_or(false)) else {
             a.root_scale = 1.0;
             continue;
@@ -843,7 +867,7 @@ impl HitStop {
 pub fn advance(time: Res<Time>, combat: Res<Combat>, mut q: Query<(&mut Actor, &mut Transform)>) {
     let real_dt = time.delta_secs();
     for (mut a, mut tf) in &mut q {
-        a.prev_t = a.t;
+        let from = a.begin_step();
         // The hit stop scales the whole step (clip, TAE, root motion, pushes), as the exe runs
         // every module on the character's own time (FUN_140b9d1b0 -> FUN_1409f78a0).
         let dt = a.hit_stop.split(real_dt);
@@ -934,7 +958,7 @@ pub fn advance(time: Res<Time>, combat: Res<Combat>, mut q: Query<(&mut Actor, &
             a.yaw += from_yaw * (1.0 - w);
         }
         if !a.anim.is_empty() {
-            if let (Some((p0, y0)), Some((p1, y1))) = (data.root_at(&a.anim, a.prev_t), data.root_at(&a.anim, a.t)) {
+            if let (Some((p0, y0)), Some((p1, y1))) = (data.root_at(&a.anim, from), data.root_at(&a.anim, a.t)) {
                 // The root track is in the clip's start frame: the step turns with the facing the
                 // clip started from (current yaw minus the clip's own turn so far), not the current
                 // facing. Live (rec_c1010_20261009, behind deathblow a200_511200 / ThrowDef13200, both
@@ -955,7 +979,7 @@ pub fn advance(time: Res<Time>, combat: Res<Combat>, mut q: Query<(&mut Actor, &
                 // vertical root motion lifts it (the vault 511900 goes 1.5 m up; live: Wolf's
                 // height +1.53 m, landing 1.4 s in).
                 if a.side != Side::Enemy && !a.airborne && data.flag(&a.anim, a.t, crate::player::FLAG_NO_GRAVITY) {
-                    tf.translation.y += data.root_y_at(&a.anim, a.t) - data.root_y_at(&a.anim, a.prev_t);
+                    tf.translation.y += data.root_y_at(&a.anim, a.t) - data.root_y_at(&a.anim, from);
                 }
             }
         }
@@ -1058,7 +1082,7 @@ fn fall(a: &mut Actor, tf: &mut Transform, dt: f32) {
 /// from `held` by status.rs `heartbeat`.
 pub(crate) fn run_sp_effect_chains(data: &crate::data::CharData, a: &mut Actor, dt: f32) {
     let row = |id: i64| data.sp_effects.get(&id.to_string());
-    let now: Vec<i64> = if a.anim.is_empty() { Vec::new() } else { data.sp_effects_at(&a.anim, a.t).iter().map(|(id, _)| *id).collect() };
+    let now: Vec<i64> = if a.anim.is_empty() { Vec::new() } else { data.sp_effects_at(&a.anim, a.step()).iter().map(|(id, _)| *id).collect() };
     let mut add: Vec<(i64, f32)> = Vec::new();
     for &id in &now {
         if !a.tae_prev.contains(&id) {
@@ -1130,7 +1154,7 @@ pub fn regen_posture(time: Res<Time>, combat: Res<Combat>, config: Res<GameConfi
         worn.dedup();
         let bonus: f32 = worn.iter().filter_map(|id| crate::data::sp_cycle(*id)).filter(|c| c.state_info == 155).map(|c| c.sa_point).sum();
         if a.super_armor.max > 0.0 || bonus != 0.0 || a.super_armor.bonus != 0.0 {
-            let reacting = !a.anim.is_empty() && data_for(&combat, &a).flag(&a.anim, a.t, 71);
+            let reacting = !a.anim.is_empty() && data_for(&combat, &a).flag(&a.anim, a.step(), 71);
             let instant = worn.iter().any(|id| crate::data::sp_cycle(*id).is_some_and(|c| c.state_info == 331));
             if a.posture_broken() {
                 a.super_armor.bonus = bonus;
@@ -1145,7 +1169,7 @@ pub fn regen_posture(time: Res<Time>, combat: Res<Combat>, config: Res<GameConfi
             continue;
         }
         let data = data_for(&combat, &a);
-        let ty = if a.anim.is_empty() { None } else { data.stamina_ratio_type(&a.anim, a.t) };
+        let ty = if a.anim.is_empty() { None } else { data.stamina_ratio_type(&a.anim, a.step()) };
         let ty = ty.unwrap_or(config.posture.default_ratio_type);
         let row = combat.param("StaminaControlParam", a.stamina_ctrl_row);
         // (A row the export missed read as 100 % silently: c1180's 1070000 gives 0 % in a swing.)
@@ -1175,7 +1199,7 @@ pub fn regen_posture(time: Res<Time>, combat: Res<Combat>, config: Res<GameConfi
             .filter(|id| data.sp_effects.get(&id.to_string()).is_some_and(|s| s.condition_hp <= 0.0 || hp_pct <= s.condition_hp))
             .collect();
         if !a.anim.is_empty() {
-            ids.extend(data.sp_effects_at(&a.anim, a.t).iter().map(|(id, _)| *id));
+            ids.extend(data.sp_effects_at(&a.anim, a.step()).iter().map(|(id, _)| *id));
         }
         ids.extend(a.sp_chained.iter().map(|(id, _)| *id));
         let mut seen = Vec::new();
@@ -1188,7 +1212,7 @@ pub fn regen_posture(time: Res<Time>, combat: Res<Combat>, config: Res<GameConfi
         let tae_pct = if a.anim.is_empty() {
             100
         } else {
-            data.events_at(&a.anim, a.t).find(|e| e.kind == 225).and_then(|e| e.arg_i64("RegenRatePercent")).unwrap_or(100)
+            data.events_at(&a.anim, a.step()).find(|e| e.kind == 225).and_then(|e| e.arg_i64("RegenRatePercent")).unwrap_or(100)
         };
         a.posture_limits = stamina_limits(row, ty, a.posture_max as i32).map(|(lo, hi)| (a.posture_max - hi as f32, a.posture_max - lo as f32));
         let (whole, carry) = regen_frame(a.posture_regen + change, resident * hp_factor, tae_pct as f32, ratio, dt, a.regen_carry);
@@ -1264,7 +1288,7 @@ pub(crate) fn in_throw(a: &Actor) -> bool {
 const FLAG_PROXY_OFF: i64 = 39;
 
 fn proxy_off(combat: &Combat, a: &Actor) -> bool {
-    !a.anim.is_empty() && combat.data_of(a).flag(&a.anim, a.t, FLAG_PROXY_OFF)
+    !a.anim.is_empty() && combat.data_of(a).flag(&a.anim, a.step(), FLAG_PROXY_OFF)
 }
 
 /// Characters don't overlap: pairs closer than the sum of their radii are pushed

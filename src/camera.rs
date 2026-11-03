@@ -1180,7 +1180,7 @@ pub(crate) fn follow_player(
     let range = pitch_range(&combat, lock.target.is_some());
     // TAE 156 SetCameraAngle takes the place of the lock-on turning while it runs (14073.c 10606:
     // the lock chase only when FUN_140831ea0, "an angle event is set", is false).
-    let set_angle = if actor.anim.is_empty() { None } else { combat.player.events_at(&actor.anim, actor.t).find(|e| e.kind == 156) };
+    let set_angle = if actor.anim.is_empty() { None } else { combat.player.events_at(&actor.anim, actor.step()).find(|e| e.kind == 156) };
     // Locked on, the point the camera frames (+0x280): the target's DummyPoly 220 averaged over
     // 0.5 s in its own frame (`LockPointAverage`); the turning comes after the focus follow and
     // the fulcrum's drag (`lock_chase`, the exe's order). gap: DummyPoly 220 as the lock target
@@ -1216,7 +1216,7 @@ pub(crate) fn follow_player(
     // deathblow throws use dmy 142. gap: the exe's cast (FUN_14094cf90, its own hit filter) is
     // map::raycast here.
     let mut target_focus = target_focus;
-    let look = if actor.anim.is_empty() { None } else { combat.player.events_at(&actor.anim, actor.t).find(|e| e.kind == 151) };
+    let look = if actor.anim.is_empty() { None } else { combat.player.events_at(&actor.anim, actor.step()).find(|e| e.kind == 151) };
     let look = look.filter(|e| e.arg_i64("DummyPolyID").unwrap_or(-1) >= 0);
     let (mut look_limits, mut look_centre) = (None, None);
     match look {
@@ -1487,7 +1487,7 @@ fn tae_cam_slot(combat: &Combat, actor: &Actor) -> i64 {
     }
     combat
         .player
-        .events_at(&actor.anim, actor.t)
+        .events_at(&actor.anim, actor.step())
         .find(|e| e.kind == 155)
         .and_then(|e| e.arg_i64("LockParamID"))
         .filter(|&id| id > 0 && id < 0x2e)
@@ -1635,7 +1635,7 @@ pub(crate) fn cam_distance_step(cam: &mut CamState, ev: Option<DistEvent>, param
 /// `cam_distance_step` with Wolf's TAE 153 at his animation time. gap: SlowEnd (+0x85) is
 /// written by the handler but its reader (14073.c 12527) is not traced.
 pub(crate) fn update_cam_distance(combat: &Combat, actor: &Actor, cam: &mut CamState, param_dist: f32, param_rate: f32, dt: f32) {
-    let ev = if actor.anim.is_empty() { None } else { combat.player.events_at(&actor.anim, actor.t).find(|e| e.kind == 153) };
+    let ev = if actor.anim.is_empty() { None } else { combat.player.events_at(&actor.anim, actor.step()).find(|e| e.kind == 153) };
     let ev = ev.map(|e| {
         let f = |k: &str| e.args.get(k).and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
         let id = (actor.anim.clone(), e.start);

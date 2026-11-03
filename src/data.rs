@@ -10,6 +10,8 @@ use serde::Deserialize;
 use serde_json::Value;
 use std::collections::HashMap;
 
+use crate::tae_window::At;
+
 pub const TAE_FPS: f32 = 30.0;
 
 #[derive(Deserialize)]
@@ -23,11 +25,16 @@ pub struct Event {
 }
 
 impl Event {
-    pub fn active(&self, t: f32) -> bool {
-        self.in_time(t) && self.ungated()
+    pub fn active(&self, at: impl Into<At>) -> bool {
+        self.dispatched(at) && self.ungated()
     }
     pub fn in_time(&self, t: f32) -> bool {
         t >= self.start && t < self.end
+    }
+    /// Dispatched in this update (`At::dispatched`: the exe's TAE windows for a step, else the
+    /// point test `in_time`).
+    pub fn dispatched(&self, at: impl Into<At>) -> bool {
+        at.into().dispatched(self.start, self.end)
     }
     /// Events with a StateInfo apply only while the character has an SpEffect of that
     /// state (exe FUN_140bfebf0 in the TAE handlers): weapon enchantments (152/153/357/358/
@@ -1838,8 +1845,10 @@ impl CharData {
         a.duration.unwrap_or_else(|| a.events.iter().map(|e| e.end).fold(0.0, f32::max))
     }
 
-    pub fn events_at<'a>(&'a self, key: &str, t: f32) -> impl Iterator<Item = &'a Event> + 'a {
-        self.anim(key).into_iter().flat_map(|a| a.events.iter()).filter(move |e| e.in_time(t) && self.fires(e))
+    /// The state events dispatched at `at` (an actor's `step()`: the exe's windows; or a time).
+    pub fn events_at<'a>(&'a self, key: &str, at: impl Into<At>) -> impl Iterator<Item = &'a Event> + 'a {
+        let at = at.into();
+        self.anim(key).into_iter().flat_map(|a| a.events.iter()).filter(move |e| e.dispatched(at) && self.fires(e))
     }
 
     /// An event fires: ungated, or gated by a StateInfo of the equipment's resident SpEffects.
@@ -1857,8 +1866,9 @@ impl CharData {
     }
 
     /// `events_at` with live gates (`fires_on`).
-    pub fn events_at_on<'a>(&'a self, key: &str, t: f32, gates: Option<&'a [i64]>) -> impl Iterator<Item = &'a Event> + 'a {
-        self.anim(key).into_iter().flat_map(|a| a.events.iter()).filter(move |e| e.in_time(t) && self.fires_on(e, gates))
+    pub fn events_at_on<'a>(&'a self, key: &str, at: impl Into<At>, gates: Option<&'a [i64]>) -> impl Iterator<Item = &'a Event> + 'a {
+        let at = at.into();
+        self.anim(key).into_iter().flat_map(|a| a.events.iter()).filter(move |e| e.dispatched(at) && self.fires_on(e, gates))
     }
 
     /// The character's opacity from TAE 193 SetOpacityKeyframe (OpacityAtEventStart -> End over
@@ -1902,14 +1912,14 @@ impl CharData {
     }
 
     /// Is a ChrActionFlag (TAE type 0) of this FlagType active?
-    pub fn flag(&self, key: &str, t: f32, flag_type: i64) -> bool {
-        self.events_at(key, t).any(|e| e.kind == 0 && e.flag_type() == Some(flag_type))
+    pub fn flag(&self, key: &str, at: impl Into<At>, flag_type: i64) -> bool {
+        self.events_at(key, at).any(|e| e.kind == 0 && e.flag_type() == Some(flag_type))
     }
 
     /// SpEffects applied by the anim's TAE (type 67 AddSpEffect, 66 AddSpEffect_Multiplayer
     /// (the online-synced one: the Corrupted Monk's 5031 in her 3032 / 3033), and 401) at time t.
-    pub fn sp_effects_at(&self, key: &str, t: f32) -> Vec<(i64, &SpEffect)> {
-        self.events_at(key, t)
+    pub fn sp_effects_at(&self, key: &str, at: impl Into<At>) -> Vec<(i64, &SpEffect)> {
+        self.events_at(key, at)
             .filter(|e| e.kind == 67 || e.kind == 66 || e.kind == 401)
             .filter_map(|e| {
                 let id = e.arg_i64("SpEffectID")?;
@@ -1919,18 +1929,18 @@ impl CharData {
     }
 
     /// Is any TAE-applied SpEffect with this stateInfo active? (engine-side checks use stateInfo)
-    pub fn has_state_info(&self, key: &str, t: f32, state_info: i64) -> bool {
-        self.sp_effects_at(key, t).iter().any(|(_, s)| s.state_info == state_info)
+    pub fn has_state_info(&self, key: &str, at: impl Into<At>, state_info: i64) -> bool {
+        self.sp_effects_at(key, at).iter().any(|(_, s)| s.state_info == state_info)
     }
 
     /// HKS `env(3036, ref)`: is a SpEffect with this behaviorRefId active?
-    pub fn has_ref(&self, key: &str, t: f32, behavior_ref: i64) -> bool {
-        self.sp_effects_at(key, t).iter().any(|(_, s)| s.behavior_ref_id == behavior_ref)
+    pub fn has_ref(&self, key: &str, at: impl Into<At>, behavior_ref: i64) -> bool {
+        self.sp_effects_at(key, at).iter().any(|(_, s)| s.behavior_ref_id == behavior_ref)
     }
 
     /// TAE 960: StaminaControlParam ratio type for posture regen, if set at t.
-    pub fn stamina_ratio_type(&self, key: &str, t: f32) -> Option<i64> {
-        self.events_at(key, t).find(|e| e.kind == 960).and_then(|e| e.arg_i64("StaminaRatioType"))
+    pub fn stamina_ratio_type(&self, key: &str, at: impl Into<At>) -> Option<i64> {
+        self.events_at(key, at).find(|e| e.kind == 960).and_then(|e| e.arg_i64("StaminaRatioType"))
     }
 
     /// TAE 920 ChrPhysicsVelocityChange entering in the tick t0 -> t1 (`tae_window::starts`).
@@ -1971,8 +1981,8 @@ impl CharData {
     /// TAE 224 SetTurnSpeed (deg/s) if set at t.
     /// TAE 224 SetTurnSpeed [deg/s]. Events with IsLockOnCheck apply only while locked on
     /// (exe FUN_140b574b0 checks chr+0x1070).
-    pub fn turn_speed(&self, key: &str, t: f32, locked: bool) -> Option<f32> {
-        self.events_at(key, t)
+    pub fn turn_speed(&self, key: &str, at: impl Into<At>, locked: bool) -> Option<f32> {
+        self.events_at(key, at)
             .filter(|e| locked || !e.args.get("IsLockOnCheck").and_then(|v| v.as_bool()).unwrap_or(false))
             .find(|e| e.kind == 224)
             .and_then(|e| e.args.get("TurnSpeed")?.as_f64())

@@ -99,7 +99,7 @@ fn run_duel(
         // >= 10000 always as id % 10000).
         let d = combat.data_of(&a);
         for (ev, atk, judge) in d.attack_windows(&a.anim) {
-            if !ev.in_time(a.t) {
+            if !ev.dispatched(a.step()) {
                 continue;
             }
             let at = |id: i64| dummies.and_then(|dm| crate::combat::dmy_entity(dm, id)).and_then(|m| markers.get(m).ok()).map(|g| g.translation());

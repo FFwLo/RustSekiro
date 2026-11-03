@@ -336,7 +336,7 @@ fn place_tool_models(
     for (a, wp, tm) in &wolf {
         let d = crate::actor::data_for(&combat, a);
         let event = |ty: char| {
-            d.events_at(&a.anim, a.t).find(|e| e.kind == 715 && e.args.get("WeaponModelType").and_then(|v| v.as_str()).is_some_and(|s| s.starts_with(ty)))
+            d.events_at(&a.anim, a.step()).find(|e| e.kind == 715 && e.args.get("WeaponModelType").and_then(|v| v.as_str()).is_some_and(|s| s.starts_with(ty)))
         };
         let (ev, wire_ev) = (event('1'), event('3'));
         for (part, ev) in tm.parts.iter().map(|p| (p, ev)).chain(tm.wire.iter().map(|p| (p, wire_ev))) {

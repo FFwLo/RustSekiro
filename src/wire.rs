@@ -415,7 +415,7 @@ pub(crate) fn draw_rope(
     for (p, a, g, dm) in &wolf {
         let Some(w) = p.wire else { continue };
         let Some(an) = d.anim(&a.anim) else { continue };
-        if !an.events.iter().any(|e| e.kind == 717 && e.in_time(a.t)) {
+        if !an.events.iter().any(|e| e.kind == 717 && e.dispatched(a.step())) {
             continue;
         }
         let hand = dm.and_then(|dm| dm.0.get(&144)).and_then(|&m| dummies.get(m).ok()).map_or(g.translation() + Vec3::Y * 0.4, |h| h.translation());

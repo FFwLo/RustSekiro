@@ -45,9 +45,9 @@ fn pose_blades(combat: Res<Combat>, actors: Query<(&Actor, &Children)>, mut blad
         let d = data_for(&combat, &a);
         let windows = d.attack_windows(&a.anim);
         let damaging = |atk: &crate::data::Attack| atk.atk_stam > 0.0 || atk.atk_phys > 0.0;
-        let active = windows.iter().find(|(e, atk, _)| e.in_time(a.t) && damaging(atk));
+        let active = windows.iter().find(|(e, atk, _)| e.dispatched(a.step()) && damaging(atk));
         let upcoming = windows.iter().filter(|(e, atk, _)| e.start > a.t && damaging(atk)).map(|(e, _, _)| e.start).reduce(f32::min);
-        let guarding = !a.anim.is_empty() && d.flag(&a.anim, a.t, crate::player::FLAG_SHIELD_BLOCK);
+        let guarding = !a.anim.is_empty() && d.flag(&a.anim, a.step(), crate::player::FLAG_SHIELD_BLOCK);
         let rest = Transform::from_xyz(0.35, 0.1, -0.2).with_rotation(Quat::from_rotation_x(-0.5));
         let raised = Transform::from_xyz(0.25, 0.75, 0.05).with_rotation(Quat::from_rotation_y(1.2) * Quat::from_rotation_x(1.1));
         for c in children.iter() {

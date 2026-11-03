@@ -388,7 +388,7 @@ impl HksEnv {
         let d = combat.data_of(a);
         let mut ids: Vec<i64> = Vec::new();
         if !a.anim.is_empty() {
-            ids.extend(d.sp_effects_at(&a.anim, a.t).iter().map(|(id, _)| *id));
+            ids.extend(d.sp_effects_at(&a.anim, a.step()).iter().map(|(id, _)| *id));
         }
         ids.extend(a.resident.iter().copied());
         ids.extend(p.held.iter().copied());

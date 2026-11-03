@@ -792,7 +792,7 @@ fn hit_enemy(
 /// hit with only the additive flinch never woke.
 pub(crate) fn tool_hit_push(combat: &Combat, da: &mut Actor, e: &mut Enemy, from: Vec3, at: Vec3, knockback: f32, level: i64, dmg: f32) {
     let dd = combat.data_of(da);
-    let no_motion = !da.anim.is_empty() && dd.flag(&da.anim, da.t, crate::combat::FLAG_NO_DAMAGE_MOTION);
+    let no_motion = !da.anim.is_empty() && dd.flag(&da.anim, da.step(), crate::combat::FLAG_NO_DAMAGE_MOTION);
     if !no_motion {
         apply_knockback(combat, da, from, at, None, knockback, damage_kb(level), "knockbackRate_vsPlayer_DirectHit");
     }
@@ -807,8 +807,8 @@ pub(crate) fn tool_hit_push(combat: &Combat, da: &mut Actor, e: &mut Enemy, from
 /// for an enemy in the air (enemy_damage_state_air). None = the additive flinch.
 pub(crate) fn bullet_reaction(combat: &Combat, da: &Actor, e: &Enemy, level: i64, from: Vec3, at: Vec3) -> Option<String> {
     let dd = combat.data_of(da);
-    let level = if dd.flag(&da.anim, da.t, crate::combat::FLAG_NO_DAMAGE_MOTION) { 0 } else { crate::combat::damage_motion_level(dd, da, level) };
-    let can_flinch = !e.is_attacking() || dd.flag(&da.anim, da.t, crate::combat::FLAG_DAMAGE_MOTION);
+    let level = if dd.flag(&da.anim, da.step(), crate::combat::FLAG_NO_DAMAGE_MOTION) { 0 } else { crate::combat::damage_motion_level(dd, da, level) };
+    let can_flinch = !e.is_attacking() || dd.flag(&da.anim, da.step(), crate::combat::FLAG_DAMAGE_MOTION);
     // gap (as resolve): env 201 read as not lifted 5 cm above a SetNoGravity leap's start.
     let aerial = da.airborne || da.lift_ground.is_some_and(|g| at.y > g + 0.05) || enemy_refs(combat, da, e).contains(&crate::combat::SP_REF_AERIAL_DAMAGE);
     can_flinch.then(|| crate::combat::enemy_damage_state_air(dd, level, da, from, at, aerial)).flatten()
@@ -849,7 +849,7 @@ pub(crate) fn enemy_refs(combat: &Combat, a: &Actor, e: &Enemy) -> Vec<i64> {
     let d = combat.data_of(a);
     let mut ids: Vec<i64> = a.resident.clone();
     if !a.anim.is_empty() {
-        ids.extend(d.sp_effects_at(&a.anim, a.t).iter().map(|(id, _)| *id));
+        ids.extend(d.sp_effects_at(&a.anim, a.step()).iter().map(|(id, _)| *id));
     }
     ids.extend(e.clash.iter().map(|c| c.0));
     ids.iter().filter_map(|id| d.sp_effects.get(&id.to_string())).map(|s| s.behavior_ref_id).collect()
