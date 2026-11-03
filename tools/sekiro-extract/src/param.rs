@@ -80,6 +80,17 @@ fn read_scalar(r: &Reader, o: usize, ty: &str) -> Value {
     }
 }
 
+/// The key of a field: its name, or `<name>_<n>` for the n-th repeat when a def names several
+/// fields alike (CoolTimeParam's four limitationTime / observeTime pairs, NetworkParam's sets);
+/// before this the last one overwrote the others (checked against the exe's loaded rows,
+/// extracted/emu/params_rows.json).
+fn unique(out: &Map<String, Value>, name: &str) -> String {
+    if !out.contains_key(name) {
+        return name.to_string();
+    }
+    (1..).map(|n| format!("{name}_{n}")).find(|k| !out.contains_key(k)).unwrap()
+}
+
 /// Decodes one row's bytes into {fieldName: value}. Padding fields are skipped.
 fn decode_row(def: &ParamDef, r: &Reader, start: usize) -> Map<String, Value> {
     let mut out = Map::new();
@@ -106,7 +117,7 @@ fn decode_row(def: &ParamDef, r: &Reader, start: usize) -> Map<String, Value> {
             let v = (raw >> *used) & ((1u64 << bits) - 1) as u32;
             *used += bits;
             if !f.ty.starts_with("dummy") {
-                out.insert(f.name.clone(), json!(v));
+                out.insert(unique(&out, &f.name), json!(v));
             }
             continue;
         }
@@ -116,17 +127,17 @@ fn decode_row(def: &ParamDef, r: &Reader, start: usize) -> Map<String, Value> {
         match f.ty.as_str() {
             "dummy8" => {}
             "fixstr" => {
-                out.insert(f.name.clone(), json!(r.cstr(o)));
+                out.insert(unique(&out, &f.name), json!(r.cstr(o)));
             }
             "fixstrW" => {
-                out.insert(f.name.clone(), json!(r.utf16z(o)));
+                out.insert(unique(&out, &f.name), json!(r.utf16z(o)));
             }
             ty if f.count == 1 => {
-                out.insert(f.name.clone(), read_scalar(r, o, ty));
+                out.insert(unique(&out, &f.name), read_scalar(r, o, ty));
             }
             ty => {
                 let vals: Vec<Value> = (0..f.count).map(|i| read_scalar(r, o + i * size, ty)).collect();
-                out.insert(f.name.clone(), Value::Array(vals));
+                out.insert(unique(&out, &f.name), Value::Array(vals));
             }
         }
         o += size * f.count;

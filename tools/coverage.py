@@ -276,6 +276,50 @@ def replay_csvs():
 
 # ---------------------------------------------------------------- characters
 
+def data_checks(all_tests):
+    """chr -> the 'Data vs exe' cell: how many of its param rows (attacks, SpEffects, bullets, its
+    params tables; Wolf's also behaviours and tools) the test character_rows_match_the_exe
+    compares, field by field, with the game's loaded tables (extracted/emu/params_rows.json,
+    tools/emu-cases params). Counts only rows the dump holds; '-' without the dump or the test."""
+    if not any(t['name'] == 'character_rows_match_the_exe' and not t['ignored'] for t in all_tests):
+        return {}
+    dump = load_json(os.path.join(EX, 'emu', 'params_rows.json'))
+    if not dump:
+        return {}
+    have = {n: set(t['rows']) for n, t in dump['tables'].items()}
+
+    def count(d, pc):
+        atk = 'AtkParam_Pc' if pc else 'AtkParam_Npc'
+        n = collections.Counter()
+        for a in (d.get('attacks') or {}).values():
+            n[atk] += str(a.get('atkParamId')) in have.get(atk, ())
+        for i in d.get('spEffects') or {}:
+            n['SpEffectParam'] += i in have['SpEffectParam']
+        for g in ('bullets', 'bulletRows'):
+            for x in (d.get(g) or {}).values():
+                n['Bullet'] += str(x.get('bulletId')) in have['Bullet']
+                if isinstance(x.get('attack'), dict):
+                    n[atk] += str(x['attack'].get('atkParamId')) in have.get(atk, ())
+        for i in d.get('behaviors') or {}:
+            n['BehaviorParam_PC'] += i in have['BehaviorParam_PC']
+        for x in d.get('prosthetics') or []:
+            n['EquipParamWeapon'] += str(x.get('id')) in have['EquipParamWeapon']
+        for t, rows in (d.get('params') or {}).items():
+            n[t] += len([i for i in rows if i in have.get(t, ())])
+        return n
+
+    out = {}
+    cd = load_json(os.path.join(EX, 'combat_data.json')) or {}
+    srcs = [('c0000', cd.get('player') or {}, True)] + [
+        (os.path.basename(f)[:5], load_json(f) or {}, False) for f in glob.glob(os.path.join(EX, 'enemies', 'c[0-9][0-9][0-9][0-9].json'))]
+    for c, d, pc in srcs:
+        n = count(d, pc)
+        if sum(n.values()):
+            top = ', '.join('%s %d' % (k, v) for k, v in n.most_common(3))
+            out[c] = '%d rows the same (%s%s)' % (sum(n.values()), top, ', ...' if len(n) > 3 else '')
+    return out
+
+
 def characters(files, all_tests, kb):
     seen = chr_ids()
     bundles = chr_bundles()
@@ -293,6 +337,7 @@ def characters(files, all_tests, kb):
     press = enemies_pressure()
     ref = sorted(os.listdir(os.path.join(EX, 'ref_frames'))) if os.path.isdir(os.path.join(EX, 'ref_frames')) else []
     clips = read(os.path.join(REPO, 'docs', 'kb', 'clips.md')) or ''
+    data_exe = data_checks(all_tests)
 
     row_chr = collections.defaultdict(set)
     for e in roster:
@@ -483,7 +528,7 @@ def characters(files, all_tests, kb):
             level = 4
         rows.append({
             'chr': c, 'name': name, 'kind': kind or '', 'bnd': bnd, 'model': 'yes' if model else '-', 'anim': anim,
-            'ai': ai, 'hks': hks, 'loaded': '; '.join(loaded) or '-', 'rules': rules, 'sbs': '; '.join(sbs) or '-',
+            'ai': ai, 'hks': hks, 'loaded': '; '.join(loaded) or '-', 'data': data_exe.get(c, '-'), 'rules': rules, 'sbs': '; '.join(sbs) or '-',
             'notes': '; '.join(notes) or '-', 'level': LEVELS[level], 'nrules': len(ts),
         })
     return rows, bars is not None
@@ -706,10 +751,10 @@ def main():
     L.append('')
     L.append('## Characters')
     L.append('')
-    L.append('| chr | Name | Kind | Bundles | Model | Anim | AI Lua | HKS | Loaded by Sv1 | Rules checked (sim tests) | Side by side | Notes | Proof level |')
-    L.append('|---|---|---|---|---|---|---|---|---|---|---|---|---|')
+    L.append('| chr | Name | Kind | Bundles | Model | Anim | AI Lua | HKS | Loaded by Sv1 | Data vs exe | Rules checked (sim tests) | Side by side | Notes | Proof level |')
+    L.append('|---|---|---|---|---|---|---|---|---|---|---|---|---|---|')
     for c in chars:
-        L.append('| ' + ' | '.join(cell(c[k]) for k in ('chr', 'name', 'kind', 'bnd', 'model', 'anim', 'ai', 'hks', 'loaded', 'rules', 'sbs', 'notes', 'level')) + ' |')
+        L.append('| ' + ' | '.join(cell(c[k]) for k in ('chr', 'name', 'kind', 'bnd', 'model', 'anim', 'ai', 'hks', 'loaded', 'data', 'rules', 'sbs', 'notes', 'level')) + ' |')
     L.append('')
     L.append('## Systems')
     L.append('')

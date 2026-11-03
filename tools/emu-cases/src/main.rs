@@ -39,6 +39,7 @@ mod proxy;
 mod damagemod;
 mod camera2;
 mod collide;
+mod params;
 
 /// The few calls of Unicorn's C API the tool needs (unicorn.h), linked from unicorn.dll.
 mod uc {
@@ -860,6 +861,9 @@ fn main() {
         trace::trace(&mut emu, va, &ints, &xmm, out, want[1]);
         return;
     }
+    if want.first() == Some(&"params") {
+        return params::run(&mut Emu::new(exe, snap()), out);
+    }
     if on("super_armor_hit") {
         let mut emu = Emu::new(exe, None);
         super_armor_hit(&mut emu, out);
@@ -912,6 +916,7 @@ fn main() {
     }
     if want.contains(&"taestate") {
         taestate::run(&|| Emu::new(exe, snap()), out, &want);
+    }
     if want.iter().any(|w| w.starts_with("throw2")) {
         throw2::run(&|| Emu::new(exe, snap()), out, &want);
     }
