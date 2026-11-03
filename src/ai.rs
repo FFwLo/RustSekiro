@@ -124,6 +124,26 @@ pub struct Snapshot {
     pub sound_serial: i64,
     /// Every live trigger region (enemy.rs TriggerRegions, RegisterTriggerRegion).
     pub triggers: Vec<TriggerRegion>,
+    /// TARGET_EVENT: the character the map script named (EMEVD 2004[11] Set Character Event
+    /// Target; enemy/script.rs). None: not set, or Wolf (then it reads as the current target).
+    pub event: Option<EventView>,
+}
+
+/// What the AI sees of its TARGET_EVENT character (the Headless Ape's partner ape, m17 11705880;
+/// Lady Butterfly for her illusions, m10 11005820; the Old Dragons' body for their parts, m25
+/// 12505803).
+#[derive(Default, Clone, Debug)]
+pub struct EventView {
+    pub pos: Vec3,
+    pub fwd: Vec3,
+    pub hp_rate: f32,
+    /// Posture left and its rate (GetSp / GetSpRate).
+    pub sp_left: f32,
+    pub sp_rate: f32,
+    /// The SpEffects it wears, those new this frame and those gone (its observe interrupts).
+    pub sp: HashSet<i64>,
+    pub sp_new: Vec<i64>,
+    pub sp_gone: Vec<i64>,
 }
 
 /// RegisterTriggerRegion's sphere (exe FUN_1405e7280 -> FUN_140642110, <decomp ref>): keyed by
@@ -186,7 +206,12 @@ pub struct Command {
     pub flags: Vec<(i64, bool)>,
     /// Trigger regions registered this frame (RegisterTriggerRegion), for enemy.rs's store.
     pub triggers: Vec<TriggerRegion>,
+    /// The anim request is an EndureAttack goal's (the HKS's env 123).
+    pub endure: bool,
 }
+
+/// TAE flag 122 (SetBool32_0x1E0): the window for an EndureAttack goal's request (env 123).
+pub(crate) const FLAG_ENDURE: i64 = 122;
 
 /// The guard request (c9997.lua:258 ACTION_TYPE_GUARD), GOAL_COMMON_Guard's usual action.
 const ACTION_TYPE_GUARD: f64 = 9910.0;
@@ -331,6 +356,9 @@ struct Goal {
     num: HashMap<i64, Value>,
     timing: Vec<Timing>,
     parent_combo: bool,
+    /// Under GOAL_COMMON_EndureAttack (SetEnableEndureCancel_forGoal): its action is the HKS's
+    /// endure request (env 123), taken while the clip's TAE flag 122 is on.
+    parent_endure: bool,
     // Native goal state.
     ez: Option<f64>,
     succ: f64,
@@ -362,6 +390,7 @@ impl Goal {
 struct Consts {
     target_self: f64,
     target_ene_0: f64,
+    target_event: f64,
     dir_b: f64,
     dir_l: f64,
     dir_r: f64,
@@ -435,7 +464,22 @@ struct AiState {
     trigger_observers: Vec<i64>,
     trigger_in: Vec<(u64, i64, i64)>,
     trigger_changed: (Vec<(i64, i64)>, Vec<(i64, i64)>),
+    /// The navmesh walk the last forward move steered along (AiState::steer).
+    route: Option<Route>,
 }
+
+/// A navmesh walk to a move's spot `to`: the corners still ahead (empty: no walk there) and how
+/// long ago it was found.
+struct Route {
+    to: Vec3,
+    corners: Vec<Vec3>,
+    age: f64,
+}
+
+/// How often a moving AI chr finds its walk again, and how far its spot may move before it does.
+/// gap: the exe's path refresh rule is not traced.
+const REPLAN_SECS: f64 = 0.5;
+const REPLAN_MOVE: f32 = 1.0;
 
 /// An enemy's MSB patrol route in world space (enemy.rs PatrolRoute) and where it is on it:
 /// the exe keeps it in AiMovePointCtrl (AiThink +0x9060): the current point at +0x9078 and the
@@ -547,8 +591,8 @@ impl AiState {
     /// for 3510900, which its own a100_003007 scream (TAE AddSpEffect 3510900) also carries;
     /// fired from its own row it set Number 1 / Timer 5 = 14 s (Goal.Interrupt) and the battle
     /// goal's partner branch (Act24 backstep 400-500) ran all fight (boss fidelity 2026-10-15).
-    /// gap: TARGET_EVENT (the partner chr set by the map) is not modelled, so it never fires;
-    /// an ended SpEffect (`new` false) is not split by owner, any self / target watch counts.
+    /// A TARGET_EVENT watch (the partner chr the map set) is `observes_event`'s. gap: an ended
+    /// SpEffect (`new` false) is not split by owner, any self / target watch counts.
     fn observes(&self, id: i64, s: &Snapshot, new: bool) -> bool {
         let Some(watch) = self.observed.get(&id) else { return false };
         let me = self.k.target_self as i64;
@@ -557,6 +601,61 @@ impl AiState {
             return watch.iter().any(|t| *t == me || ene(t));
         }
         (watch.contains(&me) && s.sp_self.contains(&id)) || (watch.iter().any(ene) && s.sp_target.contains(&id))
+    }
+
+    fn watches_event(&self, id: i64) -> bool {
+        self.observed.get(&id).is_some_and(|w| w.contains(&(self.k.target_event as i64)))
+    }
+
+    /// An observed SpEffect on the TARGET_EVENT character came on (`new`) or went: the Headless
+    /// Ape's partner's 3510900 / 3510901 (510010_battle.lua:25-26).
+    fn observes_event(&self, id: i64, new: bool) -> bool {
+        self.watches_event(id) && self.w.event.as_ref().is_some_and(|e| if new { e.sp_new.contains(&id) } else { e.sp_gone.contains(&id) })
+    }
+
+    /// The TARGET_EVENT character when `id` names it and the map set one.
+    fn event_of(&self, id: Option<&Value>) -> Option<&EventView> {
+        if is(id, self.k.target_event) { self.w.event.as_ref() } else { None }
+    }
+
+    /// The level direction an AI_DIR_TYPE names at `from` facing `fwd` (common_ai_define.lua:
+    /// CENTER 0, F 1, B 2, L 3, R 4 about the facing; ToF 5, ToB 6, ToL 7, ToR 8 about the line
+    /// from the AI chr to `from`, so ToB points back at the AI chr). Inferred from the scripts:
+    /// 102000_battle.lua's IsExistMeshOnLine(TARGET_ENE_0, ToB, GetDist(TARGET_ENE_0)) asks
+    /// whether ground joins the target and the AI chr. Zero for CENTER, Top or no facing.
+    fn dir_axis(&self, from: Vec3, fwd: Vec3, dir: f64) -> Vec3 {
+        let toward = (from - self.w.me).with_y(0.0).normalize_or_zero();
+        let toward = if toward == Vec3::ZERO { (self.w.target - self.w.me).with_y(0.0).normalize_or_zero() } else { toward };
+        let (base, k) = if dir >= 5.0 { (toward, dir - 4.0) } else { (fwd.with_y(0.0).normalize_or_zero(), dir) };
+        let right = base.cross(Vec3::Y);
+        match k as i64 {
+            1 => base,
+            2 => -base,
+            3 => -right,
+            4 => right,
+            _ => Vec3::ZERO,
+        }
+    }
+
+    /// Where a forward move toward `to` heads: the next corner of the navmesh walk there, found
+    /// again every [`REPLAN_SECS`] or when `to` moves [`REPLAN_MOVE`]; `to` itself without a
+    /// navmesh, off it, or with no walk (the move then heads straight, as before).
+    fn steer(&mut self, to: Vec3) -> Vec3 {
+        let Some(mesh) = crate::navmesh::current() else { return to };
+        let me = self.w.me;
+        if self.route.as_ref().is_none_or(|r| r.age >= REPLAN_SECS || r.to.distance(to) > REPLAN_MOVE) {
+            let corners = mesh.path(me, to).unwrap_or_default();
+            self.route = Some(Route { to, corners, age: 0.0 });
+        }
+        let Some(r) = self.route.as_mut() else { return to };
+        // Corners reached drop off; the last one is `to`'s spot on the mesh.
+        while r.corners.len() > 1 && (r.corners[0] - me).with_y(0.0).length() < 0.5 {
+            r.corners.remove(0);
+        }
+        match r.corners.as_slice() {
+            [next, _, ..] => *next,
+            _ => to,
+        }
     }
 }
 
@@ -568,7 +667,7 @@ fn key(v: Option<&Value>) -> i64 {
 /// first collision `ray` hits at centre height less `radius`, or the first 0.5 m step whose
 /// `floor` (feet height under a centre) jumps more than map::STEP_HEIGHT up or down (a ledge
 /// or a cliff face ends the navmesh there). Inferred: the exe walks the navmesh
-/// (GetExistMeshOnLineDistSpecifyAngle), which we do not have.
+/// (GetExistMeshOnLineDistSpecifyAngle); this stands in where none is installed.
 pub(crate) fn mesh_line_dist(from: Vec3, dir: Vec3, dist: f32, radius: f32, floor: impl Fn(Vec3) -> f32, ray: impl Fn(Vec3, Vec3, f32) -> Option<f32>) -> f32 {
     const STEP: f32 = 0.5;
     let wall = ray(from, dir, dist + radius).map_or(dist, |h| (h - radius).clamp(0.0, dist));
@@ -578,7 +677,7 @@ pub(crate) fn mesh_line_dist(from: Vec3, dir: Vec3, dist: f32, radius: f32, floo
     while s < wall {
         let next = (s + STEP).min(wall);
         let f = floor((from + dir * next).with_y(last + half));
-        if (f - last).abs() > crate::map::STEP_HEIGHT {
+        if (f - last).abs() > crate::terrain::STEP_HEIGHT {
             return s;
         }
         last = f;
@@ -661,6 +760,7 @@ impl AiState {
             num: HashMap::new(),
             timing: Vec::new(),
             parent_combo: false,
+            parent_endure: false,
             ez: None,
             succ: 0.0,
             turn_time: 0.0,
@@ -735,6 +835,8 @@ impl AiState {
         let id = id.and_then(Value::num)?;
         if id == k.target_self {
             Some(w.me)
+        } else if id == k.target_event && w.event.is_some() {
+            w.event.as_ref().map(|e| e.pos)
         } else if id == k.point_move_point && self.patrol.as_ref().is_some_and(|p| p.cur >= 0) {
             let p = self.patrol.as_ref()?;
             p.points.get(p.cur as usize).copied()
@@ -758,6 +860,10 @@ impl AiState {
     }
 
     fn dist_to(&self, id: Option<&Value>) -> f64 {
+        // A character's distance is 3D, as the current target's (`Snapshot::dist`).
+        if let Some(e) = self.event_of(id) {
+            return (e.pos - self.w.me).length() as f64;
+        }
         match self.pos_of(id) {
             Some(_) if is(id, self.k.point_init_pose) => (self.w.home - self.w.me).with_y(0.0).length() as f64,
             Some(p) => (p - self.w.me).with_y(0.0).length() as f64,
@@ -791,6 +897,9 @@ impl AiState {
     fn frame_of(&self, id: Option<&Value>) -> (Vec3, Vec3) {
         if is(id, self.k.target_self) {
             return (self.w.me, self.w.fwd);
+        }
+        if let Some(e) = self.event_of(id) {
+            return (e.pos, e.fwd);
         }
         match self.pos_of(id) {
             Some(p) => (p, Vec3::ZERO),
@@ -926,7 +1035,13 @@ impl AiState {
     }
 
     fn sp_of(&self, target: Option<&Value>) -> &HashSet<i64> {
-        if is(target, self.k.target_self) { &self.w.sp_self } else { &self.w.sp_target }
+        if is(target, self.k.target_self) {
+            &self.w.sp_self
+        } else if let Some(e) = self.event_of(target) {
+            &e.sp
+        } else {
+            &self.w.sp_target
+        }
     }
 
     fn apply_timing(&mut self, g: u32, when: f64) {
@@ -1005,8 +1120,10 @@ impl AiState {
             "SetTargetRange" => vec![goal_obj(id)],
             "AddSubGoal" | "AddSubGoal_Front" => {
                 let combo = self.def(self.goal(id).kind).is_some_and(|d| d.combo);
+                let endure = self.def(self.goal(id).kind).is_some_and(|d| d.name.as_deref().is_some_and(|n| n.ends_with("EndureAttack")));
                 let g = self.goal_from_args(a);
                 self.goal_mut(g).parent_combo = combo;
+                self.goal_mut(g).parent_endure = endure;
                 let parent = self.goal_mut(id);
                 parent.had_sub = true;
                 if name == "AddSubGoal" {
@@ -1075,7 +1192,12 @@ impl AiState {
             // 106000's `GetDistY <= -1.8` never holds in the game either.
             "GetDistYSigned" => num((self.frame_of(a.first()).0.y - self.w.me.y) as f64),
             "GetDistY" => num((self.frame_of(a.first()).0.y - self.w.me.y).abs() as f64),
-            "GetDistAtoB" => num(self.dist()),
+            // Between the two named (the Old Dragons' parts: TARGET_EVENT to TARGET_ENE_0, 530010
+            // Act); one not modelled (TARGET_TEAM_LEADER) reads as the AI chr to its target.
+            "GetDistAtoB" => {
+                let known = |v: Option<&Value>| is(v, self.k.target_ene_0) || self.pos_of(v).is_some();
+                num(if known(a.first()) && known(a.get(1)) { (self.frame_of(a.first()).0 - self.frame_of(a.get(1)).0).length() as f64 } else { self.dist() })
+            }
             "GetMapHitRadius" => num(self.hit_radius as f64),
             "GetRandam_Int" => {
                 let (lo, hi) = (n(0).floor(), n(1).floor());
@@ -1096,9 +1218,9 @@ impl AiState {
             // common_common_func_NTC.lua:380, asks IsTargetGuard(TARGET_SELF); 140010_battle.lua
             // compares GetSpRate(TARGET_SELF) with (TARGET_ENE_0)).
             "IsTargetGuard" => boolean(if is(a.first(), self.k.target_self) { w.self_guard } else { w.target_guard }),
-            "GetSp" => num(if is(a.first(), self.k.target_self) { w.sp } else { w.target_sp } as f64),
-            "GetSpRate" => num(if is(a.first(), self.k.target_self) { w.sp_rate } else { w.target_sp_rate } as f64),
-            "GetHpRate" => num(if is(a.first(), self.k.target_self) { w.hp_rate } else { w.target_hp_rate } as f64),
+            "GetSp" => num(if is(a.first(), self.k.target_self) { w.sp } else { self.event_of(a.first()).map_or(w.target_sp, |e| e.sp_left) } as f64),
+            "GetSpRate" => num(if is(a.first(), self.k.target_self) { w.sp_rate } else { self.event_of(a.first()).map_or(w.target_sp_rate, |e| e.sp_rate) } as f64),
+            "GetHpRate" => num(if is(a.first(), self.k.target_self) { w.hp_rate } else { self.event_of(a.first()).map_or(w.target_hp_rate, |e| e.hp_rate) } as f64),
             "GetHp" => num(1.0),
             // The General (102000_battle.lua) goes all out on his last one (<= 1).
             "GetNinsatsuNum" => num(w.ninsatsu.max(1) as f64),
@@ -1307,16 +1429,42 @@ impl AiState {
             // keeps its distance then, 115000_battle.lua:281, 101000_logic.lua:6); no NPC locks on.
             "IsLockOnTarget" => boolean(!is(a.first(), self.k.target_self) && is(a.get(1), self.k.target_self) && w.locked_on),
             "IsChangeInitialPosition" => boolean(self.patrol.as_ref().is_some_and(|p| p.new_home.is_some())),
-            // CheckDoesExistPath too: the fallback's number 0 is neither `== true` nor `== false` in Lua
-            // (126000 Act16, 720000 approach branches never ran). gap: no navmesh, so a path always
-            // exists; 101000 / 136000_battle.lua's no-path branch (acts 7 / 27) still runs for Wolf
-            // hanging or perched through its SpEffect twins 109220 / 109221.
-            "IsExistMeshOnLine" | "CheckDoesExistPath" | "CheckDoesExistPathWithSetPoint" | "IsFinishAttackCoolTime" => boolean(true),
+            // Booleans, never the fallback's number 0, which is neither `== true` nor `== false` in
+            // Lua (126000 Act16, 720000 approach branches never ran).
+            "IsFinishAttackCoolTime" => boolean(true),
+            // (from, AI_DIR_TYPE, dist): whether the navmesh runs `dist` from `from` along the
+            // direction. Without a navmesh, or with `from` off it (Wolf in the air), true as before.
+            "IsExistMeshOnLine" => {
+                let (from, fwd) = self.frame_of(a.first());
+                let dir = self.dir_axis(from, fwd, n(1));
+                let dist = n(2) as f32;
+                let mesh = crate::navmesh::current();
+                boolean(match mesh.as_deref() {
+                    Some(m) if dir != Vec3::ZERO && m.locate(from).is_some() => m.line_dist(from, dir, dist, 0.0) >= dist - 0.01,
+                    _ => true,
+                })
+            }
+            // (target, AI_DIR_TYPE, dist, _): whether the AI chr can walk to the spot `dist` from
+            // the target along the direction (the scripts pass F, 0: the target itself). With the
+            // spot off the navmesh (Wolf hanging or perched) there is none; 101000 /
+            // 136000_battle.lua's no-path branch (acts 7 / 27) also runs through the SpEffect twins
+            // 109220 / 109221. Without a navmesh, or with the AI chr off it, true as before.
+            // gap: WithSetPoint's set point (the spot the next move heads for) is not kept.
+            "CheckDoesExistPath" | "CheckDoesExistPathWithSetPoint" => {
+                let (from, fwd) = self.frame_of(a.first());
+                let spot = from + self.dir_axis(from, fwd, n(1)) * n(2) as f32;
+                let mesh = crate::navmesh::current();
+                boolean(match mesh.as_deref() {
+                    Some(m) if m.locate(self.w.me).is_some() => m.path(self.w.me, spot).is_some(),
+                    _ => true,
+                })
+            }
             // (from, angle, dist, AI_SPA_DIR_TYPE[, radius, _]): how far the walkable ground goes from
             // `from` along the angle off the direction to the target (TargetF / ToTarget; Absolute
             // off +z). SpaceCheck (common_common_func_FDP.lua:43-50) compares it with 0.95 x the
-            // step / LeaveTarget distance. gap: no navmesh; the map collision stands in
-            // (mesh_line_dist), and without a map the whole distance is free.
+            // step / LeaveTarget distance. Read along the navmesh; without one, or with `from` off
+            // it, the map collision stands in (mesh_line_dist), and without a map the whole
+            // distance is free.
             "GetExistMeshOnLineDistSpecifyAngleEx" | "GetExistMeshOnLineDistSpecifyAngle" => {
                 let (from, fwd) = self.frame_of(a.first());
                 let to_t = (self.w.target - from).with_y(0.0).normalize_or_zero();
@@ -1325,11 +1473,14 @@ impl AiState {
                 let dir = (base * ang.cos() + base.cross(Vec3::Y) * ang.sin()).normalize_or_zero();
                 let radius = if name.ends_with("Ex") { n(4) as f32 } else { 0.0 };
                 let dist = n(2) as f32;
+                let mesh = crate::navmesh::current();
                 let free = if dir == Vec3::ZERO {
                     dist
+                } else if let Some(m) = mesh.as_deref().filter(|m| m.locate(from).is_some()) {
+                    m.line_dist(from, dir, dist, radius)
                 } else {
-                    let floor = |c: Vec3| crate::map::ground_y(c);
-                    mesh_line_dist(from, dir, dist, radius, floor, crate::map::raycast)
+                    let floor = |c: Vec3| crate::terrain::ground_y(c);
+                    mesh_line_dist(from, dir, dist, radius, floor, crate::terrain::raycast)
                 };
                 num(free as f64)
             }
@@ -1473,7 +1624,7 @@ impl AiState {
     /// The requested -> run phases shared by the action goals; None while the anim runs.
     fn action_phase(&mut self, g: u32, flag: i64) -> Option<i32> {
         let goal = self.goal(g);
-        let ez = goal.ez;
+        let (ez, endure) = (goal.ez, goal.parent_endure);
         let w_ez = self.w.ez.map(|e| e as f64);
         match goal.phase {
             0 => {
@@ -1485,6 +1636,7 @@ impl AiState {
                     return Some(CONTINUE);
                 }
                 self.cmd.anim = ez.map(|e| e as i64);
+                self.cmd.endure = endure;
                 let goal = self.goal_mut(g);
                 goal.phase = 1;
                 goal.busy = true;
@@ -1497,6 +1649,7 @@ impl AiState {
                     return Some(FAILED);
                 } else {
                     self.cmd.anim = ez.map(|e| e as i64);
+                    self.cmd.endure = endure;
                 }
                 Some(CONTINUE)
             }
@@ -1508,14 +1661,23 @@ impl AiState {
     fn native_update(&mut self, g: u32, n: Native) -> i32 {
         match n {
             Native::Attack => {
-                let flag = if self.goal(g).parent_combo { 23 } else { 86 };
+                // An endure request (Goal.Parry's guard / deflect) also cuts a clip at flag 122:
+                // c9997 ExecAIAction takes env 123 first, and the exe posts it while that flag is
+                // on (FUN_140b36410; a000_008010's hit reaction opens it at 0.23 s, 86 at 0.5 s).
+                let flag = if self.goal(g).parent_endure && self.w.flags.contains(&FLAG_ENDURE) { FLAG_ENDURE } else if self.goal(g).parent_combo { 23 } else { 86 };
                 if let Some(r) = self.action_phase(g, flag) {
                     return r;
                 }
                 let succ = self.goal(g).succ;
                 let d = self.goal_dist(None);
-                if self.w.t > 0.1 && self.w.flags.contains(&23) && d <= succ {
-                    return SUCCESS;
+                // At the cancel window the exe decides both ways (FUN_1405c6d30: a cancel flag on
+                // and successDist < GetDist -> -1): out of range the goal fails there, not at the
+                // clip's end, and the replan sees the window's TAE SpEffects (c1180's a200_003004
+                // holds 3118061 0.9-1.2 s, 118020_battle.lua Act10 -> 3007; live: 3007 started
+                // 55-57 ticks into all four of the game's 3004s, flag 23 opens at 56).
+                // gap: which of the exe's flag bits (0x8 / 0x100) is TAE 23 and which 86 is not traced.
+                if self.w.t > 0.1 && self.w.flags.contains(&23) {
+                    return if d <= succ { SUCCESS } else { FAILED };
                 }
                 if self.w.anim_done {
                     return if d <= succ { SUCCESS } else { FAILED };
@@ -1559,7 +1721,11 @@ impl AiState {
                             }
                             return SUCCESS;
                         }
-                        ('F', goal.p.get(4).is_some_and(|v| matches!(v, Value::Bool(true))))
+                        // A patrol walks its round: NonBattleAct passes walk false ([103, 0, 0,
+                        // -1, false, ..]) yet the game's guards walk between their points (the
+                        // user, 2026-10-17). gap: how the exe turns that false into a walk (the
+                        // HKS reads MoveSpeedLevel) is not traced.
+                        ('F', on_route || goal.p.get(4).is_some_and(|v| matches!(v, Value::Bool(true))))
                     }
                     Native::Leave => {
                         if d >= goal.raw(1, 0.0) {
@@ -1614,6 +1780,11 @@ impl AiState {
                 if !self.can_act(78) {
                     return CONTINUE;
                 }
+                // A forward move toward its spot walks the navmesh around what is in the way (a
+                // LeaveTarget turned away heads off, not to a spot).
+                if mv == 'F' && n != Native::Leave {
+                    at = Some(self.steer(at.unwrap_or(self.w.target)));
+                }
                 self.cmd.mv = Some(mv);
                 self.cmd.walk = walk;
                 self.cmd.face = true;
@@ -1629,7 +1800,7 @@ impl AiState {
                     self.cmd.mv = Some('F');
                     self.cmd.walk = true;
                     self.cmd.face = true;
-                    self.cmd.at = Some(self.w.home);
+                    self.cmd.at = Some(self.steer(self.w.home));
                 }
                 CONTINUE
             }
@@ -2062,6 +2233,22 @@ fn script_order(dir: &Path, battle_goal: i64, logic_id: i64) -> Result<Vec<PathB
     Ok(out)
 }
 
+/// A script file compiled once per thread (or its parse error): every brain runs the same 106
+/// aicommon files, and opening them was 8 of a brain's 10.5 ms, so an area's enemies first
+/// thinking on one tick stalled it 0.4 s.
+fn chunk(path: &Path) -> Result<Result<Rc<lua50::Proto>, String>, String> {
+    thread_local! {
+        static CHUNKS: std::cell::RefCell<HashMap<PathBuf, Result<Rc<lua50::Proto>, String>>> = Default::default();
+    }
+    if let Some(c) = CHUNKS.with_borrow(|m| m.get(path).cloned()) {
+        return Ok(c);
+    }
+    let data = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let c = load_chunk(&data).map_err(|e| e.to_string());
+    CHUNKS.with_borrow_mut(|m| m.insert(path.to_path_buf(), c.clone()));
+    Ok(c)
+}
+
 impl Brain {
     /// `dir` is extracted/script (the unpacked luabnd folders).
     /// `think` is the NpcThinkParam row `think_id` (its battleGoalID / logicId pick the scripts).
@@ -2110,9 +2297,11 @@ impl Brain {
             trigger_observers: Vec::new(),
             trigger_in: Vec::new(),
             trigger_changed: (Vec::new(), Vec::new()),
+            route: None,
             k: Consts {
                 target_self: -1.0,
                 target_ene_0: 0.0,
+                target_event: 20.0,
                 dir_b: 2.0,
                 dir_l: 3.0,
                 dir_r: 4.0,
@@ -2133,8 +2322,7 @@ impl Brain {
         };
         for path in &files {
             let name = path.file_name().unwrap().to_string_lossy().into_owned();
-            let data = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
-            let r = load_chunk(&data).and_then(|p| vm.exec_chunk(&mut st, p));
+            let r = chunk(path)?.and_then(|p| vm.exec_chunk(&mut st, p).map(|_| ()).map_err(|e| e.to_string()));
             if let Err(e) = r {
                 st.log.push(format!("{name}: {e}"));
             }
@@ -2145,6 +2333,7 @@ impl Brain {
         st.k = Consts {
             target_self: c("TARGET_SELF", -1.0),
             target_ene_0: c("TARGET_ENE_0", 0.0),
+            target_event: c("TARGET_EVENT", 20.0),
             dir_b: c("AI_DIR_TYPE_B", 2.0),
             dir_l: c("AI_DIR_TYPE_L", 3.0),
             dir_r: c("AI_DIR_TYPE_R", 4.0),
@@ -2202,6 +2391,9 @@ impl Brain {
         for v in st.id_timers.values_mut().chain(st.atk_passed.values_mut()) {
             *v += dt;
         }
+        if let Some(r) = st.route.as_mut() {
+            r.age += dt;
+        }
         if let Some(ez) = s.ez_started {
             st.atk_passed.insert(ez, 0.0);
         }
@@ -2226,6 +2418,16 @@ impl Brain {
         for &id in &s.sp_gone {
             if st.observes(id, s, false) {
                 interrupt_goals(vm, st, int_sp_off, id as f64)?;
+            }
+        }
+        // The same on the TARGET_EVENT character.
+        if let Some(e) = &s.event {
+            for (ids, new, int) in [(&e.sp_new, true, int_sp), (&e.sp_gone, false, int_sp_off)] {
+                for &id in ids {
+                    if st.observes_event(id, new) {
+                        interrupt_goals(vm, st, int, id as f64)?;
+                    }
+                }
             }
         }
         // Observe areas (AddObserveArea / AddObserveRegion) the target entered or left.
@@ -2625,6 +2827,42 @@ mod tests {
         assert!(matches!(path.first(), Some(Value::Bool(true))));
     }
 
+    /// With a navmesh (an L of unit squares, its inside corner at (5, 0, 1)): CheckDoesExistPath
+    /// answers whether the target's spot can be walked to, IsExistMeshOnLine and
+    /// GetExistMeshOnLineDistSpecifyAngle read how far the ground runs, and a forward move to the
+    /// far end of the L heads for the corner first.
+    #[test]
+    fn the_mesh_queries_and_moves_read_the_navmesh() {
+        let Some(mut b) = load(10100000, 1.0, 3) else { return };
+        let (pieces, joins) = crate::navmesh::ell(4);
+        crate::navmesh::install_here(Some(crate::navmesh::NavMesh::build(&pieces, &joins)));
+        let goal = Vec3::new(5.5, 0.0, 5.5);
+        b.st.w = Snapshot { me: Vec3::new(0.5, 0.0, 0.5), fwd: Vec3::X, target: goal, target_fwd: Vec3::NEG_Z, ..Snapshot::battle() };
+        let (me, ene) = (Value::Num(b.st.k.target_self), Value::Num(0.0));
+        let ask = |b: &mut Brain, f: &str, a: &[f64], who: &Value| {
+            let args: Vec<Value> = std::iter::once(who.clone()).chain(a.iter().map(|&x| Value::Num(x))).collect();
+            b.st.ai_method_raw(f, &args).into_iter().next().unwrap()
+        };
+        assert!(matches!(ask(&mut b, "CheckDoesExistPath", &[1.0, 0.0, 0.0], &ene), Value::Bool(true)));
+        // Along the strip (F) the ground runs 5.5 m; to the left (-Z here) half a metre.
+        assert!(matches!(ask(&mut b, "IsExistMeshOnLine", &[1.0, 5.0], &me), Value::Bool(true)));
+        assert!(matches!(ask(&mut b, "IsExistMeshOnLine", &[1.0, 6.0], &me), Value::Bool(false)));
+        assert!(matches!(ask(&mut b, "IsExistMeshOnLine", &[3.0, 2.0], &me), Value::Bool(false)));
+        // (from, angle, dist, Absolute): straight +X, as far as the mesh goes.
+        let free = ask(&mut b, "GetExistMeshOnLineDistSpecifyAngle", &[-90.0, 20.0, 2.0], &me).num().unwrap();
+        assert!((free - 5.5).abs() < 1e-3, "{free}");
+        // The move heads for the corner, then once there for the goal.
+        assert!(b.st.steer(goal).distance(Vec3::new(5.0, 0.0, 1.0)) < 1e-3);
+        b.st.w.me = Vec3::new(5.2, 0.0, 1.2);
+        b.st.route.as_mut().unwrap().age = REPLAN_SECS;
+        assert_eq!(b.st.steer(goal), goal);
+        // Wolf off the mesh: no path to him.
+        b.st.w.target = Vec3::new(20.0, 0.0, 20.0);
+        assert!(matches!(ask(&mut b, "CheckDoesExistPath", &[1.0, 0.0, 0.0], &ene), Value::Bool(false)));
+        crate::navmesh::install_here(None);
+        assert!(matches!(ask(&mut b, "CheckDoesExistPath", &[1.0, 0.0, 0.0], &ene), Value::Bool(true)), "no navmesh: as before");
+    }
+
     /// An observed SpEffect that ends raises INTERUPT_InactivateSpecialEffect with its id
     /// (GetSpecialEffectInactivateInterruptType); the activate getter stays 0 for it.
     #[test]
@@ -2661,6 +2899,30 @@ mod tests {
         b.tick(&s, 1.0 / 60.0);
         let n1 = b.st.numbers.get(&1).and_then(Value::num).unwrap_or(0.0);
         assert_eq!(n1, 0.0, "own 3510900 raised the partner interrupt");
+    }
+
+    /// Atlas flow.30b-headless-ape (sekiro-rs headless_ape.rs, TARGET_EVENT): the map names the
+    /// partner ape (m17 11705880, 2004[11]); its 3510900 coming on raises the Headless Ape's
+    /// interrupt (510010_battle.lua:25, Goal.Interrupt sets Number 1). GetDist /
+    /// GetHpRate(TARGET_EVENT) read the partner, not Wolf.
+    #[test]
+    fn atlas_headless_ape_answers_its_partners_call() {
+        let Some(mut b) = load(51000100, 1.0, 3) else { return };
+        let mut s = Snapshot { dist: 6.0, free: true, hp_rate: 1.0, target_hp_rate: 1.0, sp: 600.0, sp_rate: 1.0, ..Snapshot::battle() };
+        s.sp_self.insert(200004);
+        let mut partner = EventView { pos: Vec3::new(0.0, 0.0, 12.0), fwd: Vec3::Z, hp_rate: 0.5, sp_left: 400.0, sp_rate: 1.0, ..Default::default() };
+        s.event = Some(partner.clone());
+        b.tick(&s, 1.0 / 60.0);
+        let ev = Value::Num(b.st.k.target_event);
+        let d = b.st.ai_method_raw("GetDist", std::slice::from_ref(&ev))[0].num().unwrap();
+        assert!((d - (12.0 - 1.0)).abs() < 1e-3, "GetDist(TARGET_EVENT) {d}");
+        let hp = b.st.ai_method_raw("GetHpRate", std::slice::from_ref(&ev))[0].num().unwrap();
+        assert!((hp - 0.5).abs() < 1e-6, "GetHpRate(TARGET_EVENT) {hp}");
+        partner.sp.insert(3510900);
+        partner.sp_new = vec![3510900];
+        s.event = Some(partner.clone());
+        b.tick(&s, 1.0 / 60.0);
+        assert_eq!(b.st.numbers.get(&1).and_then(Value::num), Some(1.0), "the partner's 3510900 did not raise the interrupt");
     }
 
     /// Round 25: a new sound target raises INTERUPT_ChangeSoundTarget through the logic chain;
@@ -2962,6 +3224,23 @@ mod tests {
         s.sp_target.insert(109970);
         let c = b.tick(&s, 1.0 / 60.0);
         assert_eq!(c.anim, Some(3101), "{c:?}; goals: {}", b.describe());
+    }
+
+    #[test]
+    fn the_parry_guard_cuts_a_hit_reaction_at_flag_122() {
+        // In a hit reaction (not free): Goal.Parry's EndureAttack 3100 waits for TAE flag 122
+        // (a000_008010 opens it at 0.23 s, its attack window 86 only at 0.5 s), then is the
+        // HKS's endure request (env 123).
+        let Some(mut b) = brain() else { return };
+        let mut s = Snapshot { dist: 2.0, hp_rate: 1.0, target_hp_rate: 1.0, sp: 1000.0, sp_rate: 1.0, parry_timing: true, ..Snapshot::battle() };
+        s.sp_self.insert(200004);
+        s.sp_self.insert(221000);
+        let c = b.tick(&s, 1.0 / 60.0);
+        assert_eq!(c.anim, None, "no cancel window yet; goals: {}", b.describe());
+        s.parry_timing = false;
+        s.flags = vec![FLAG_ENDURE];
+        let c = b.tick(&s, 1.0 / 60.0);
+        assert_eq!((c.anim, c.endure), (Some(3100), true), "goals: {}", b.describe());
     }
 
     #[test]

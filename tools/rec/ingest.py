@@ -2,6 +2,7 @@
 import json
 import math
 import sqlite3
+from collections import defaultdict
 from pathlib import Path
 
 from . import raw
@@ -13,10 +14,12 @@ CREATE TABLE meta(k TEXT PRIMARY KEY, v TEXT);
 CREATE TABLE frames(tick INT, ms REAL, slot INT, who TEXT, anim INT, x REAL, y REAL, z REAL, yaw REAL,
   speed REAL, vy REAL, hp INT, hp_max INT, posture INT, posture_max INT, ai_act INT, ai_kengeki INT,
   ai_force_act INT, btn_attack INT, btn_guard INT, lock_flag INT, lock_target INT, poison REAL, burn REAL,
-  shock REAL, PRIMARY KEY(slot, tick));
+  shock REAL, btn_jump INT, btn_step INT, btn_crouch INT, btn_item INT, btn_prosthetic INT, btn_art INT,
+  sprint INT, move_x REAL, move_z REAL, stick_x REAL, stick_y REAL, rm_scale REAL, PRIMARY KEY(slot, tick));
 CREATE TABLE globals(tick INT PRIMARY KEY, ms REAL, game_speed REAL, igt INT, cam_follow_yaw REAL,
   cam_follow_pitch REAL, dbg_nodead INT, dbg_freezeai INT, dbg_no_goods INT, dbg_no_emblems INT, map_block INT,
-  cam_x REAL, cam_y REAL, cam_z REAL, cam_fwd_x REAL, cam_fwd_y REAL, cam_fwd_z REAL, cam_fov REAL);
+  cam_x REAL, cam_y REAL, cam_z REAL, cam_fwd_x REAL, cam_fwd_y REAL, cam_fwd_z REAL, cam_fov REAL,
+  cam_yaw REAL, cam_pitch REAL);
 CREATE TABLE events(tick INT, ms REAL, slot INT, who TEXT, kind TEXT, a INT, b INT, text TEXT);
 CREATE TABLE anims(slot INT, who TEXT, anim INT, name TEXT, start_tick INT, end_tick INT, start_ms REAL,
   dur_ms REAL, dist REAL, speed REAL, turn_deg REAL, dy REAL, prev TEXT, next TEXT, lock INT);
@@ -31,10 +34,14 @@ CREATE INDEX tae_type ON tae(type, who);
 CREATE INDEX fx_kind ON fx(kind, id);
 CREATE INDEX ev_kind ON events(kind, tick);
 CREATE INDEX an_name ON anims(name);
+CREATE TABLE clips(tick INT, ms REAL, name TEXT, anim INT, t REAL, w REAL, speed REAL, at_end INT, rm TEXT);
+CREATE INDEX cl_tick ON clips(tick);
+CREATE VIEW hks_events AS SELECT tick, ms, other AS event, raw AS lua FROM fx WHERE kind = 'hks';
 """
 
+BUTTON_BITS = {"btn_prosthetic": 0x02, "btn_jump": 0x10, "btn_step": 0x20, "btn_item": 0x80, "btn_crouch": 0x8000}
 PER_SLOT = [k for k in FIELDS if k != "handle"]
-SCHEMA_VERSION = "9"  # bump when tables change: older rec.db files are rebuilt automatically
+SCHEMA_VERSION = "14"  # bump when tables change: older rec.db files are rebuilt automatically
 
 
 def _current(db_path, rec):
@@ -76,7 +83,7 @@ def ingest(rec, force=False):
     events = _jsonl(rec / "events.jsonl")
 
     # who occupies slot 1/2 over time (rec2 "slot" events); old recordings: just the slot number
-    slot_changes = {1: [], 2: []}
+    slot_changes = defaultdict(list)  # slot 1.. (rec2 args.enemies, 6 since 2026-10-21)
     for e in events:
         if e.get("kind") == "slot":
             slot_changes[e["slot"]].append((e["tick"], f"{e['slot']}:c{e.get('chr_id', -1)}:{e.get('handle', -1)}"))
@@ -141,6 +148,7 @@ def ingest(rec, force=False):
 
     # frames + per-frame horizontal speed / vertical speed (central difference over +-3 ticks)
     out_rows = []
+    ev_btn, prev_btn = [], {}
     slots = sorted({s for s, _ in frames})
     per_slot = {s: sorted(t for ss, t in frames if ss == s) for s in slots}
     for s in slots:
@@ -157,16 +165,48 @@ def ingest(rec, force=False):
                     sp = None
                 vy = (rc["y"] - ra["y"]) / dt if None not in (ra.get("y"), rc.get("y")) else None
             r["speed"], r["vy"] = sp, vy
+            h, h2, ms_ = r.get("ar_held"), r.get("ar_held2"), r.get("move_state")
+            if h is not None:
+                for k, bit in BUTTON_BITS.items():
+                    r[k] = int(bool(h & bit))
+            if h2 is not None:
+                r["btn_art"] = h2 & 1
+            if ms_ is not None:
+                r["sprint"] = int(bool(ms_ & 4))
+            # stick = move input in camera space (y forward, x right), from the camera's forward row
+            g = globs.get(t) or {}
+            mx, mz, fx, fz = r.get("move_x"), r.get("move_z"), g.get("cam_fwd_x"), g.get("cam_fwd_z")
+            if None not in (mx, mz, fx, fz) and math.hypot(fx, fz) > 1e-6:
+                n = math.hypot(fx, fz)
+                fx, fz = fx / n, fz / n
+                r["stick_y"] = mx * fx + mz * fz
+                r["stick_x"] = mx * fz - mz * fx
+            if s == 0:
+                for k in (*BUTTON_BITS, "btn_art", "btn_attack", "btn_guard", "sprint"):
+                    v, pv = r.get(k), prev_btn.get(k)
+                    if v is not None and pv is not None and bool(v) != bool(pv):
+                        ev_btn.append((t, r["ms"], 0, "wolf", "press" if v else "release", None, None, k[4:] if k.startswith("btn_") else k))
+                    if v is not None:
+                        prev_btn[k] = v
             out_rows.append((t, r["ms"], s, who(s, t), *[r.get(k) for k in ("anim", "x", "y", "z", "yaw", "speed", "vy",
                              "hp", "hp_max", "posture", "posture_max", "ai_act", "ai_kengeki", "ai_force_act",
-                             "btn_attack", "btn_guard", "lock_flag", "lock_target", "poison", "burn", "shock")]))
-    db.executemany(f"INSERT INTO frames VALUES({','.join('?' * 25)})", out_rows)
-    db.executemany(f"INSERT INTO globals VALUES({','.join('?' * 18)})",
+                             "btn_attack", "btn_guard", "lock_flag", "lock_target", "poison", "burn", "shock",
+                             "btn_jump", "btn_step", "btn_crouch", "btn_item", "btn_prosthetic", "btn_art", "sprint",
+                             "move_x", "move_z", "stick_x", "stick_y", "rm_scale")]))
+    db.executemany(f"INSERT INTO frames VALUES({','.join('?' * 37)})", out_rows)
+    # camera yaw / pitch (degrees) from ChrCam's forward row: yaw 0 = +z, 90 = +x; pitch up > 0
+    for g in globs.values():
+        fx, fy, fz = g.get("cam_fwd_x"), g.get("cam_fwd_y"), g.get("cam_fwd_z")
+        if None not in (fx, fy, fz):
+            g["cam_yaw"] = math.degrees(math.atan2(fx, fz))
+            g["cam_pitch"] = math.degrees(math.asin(max(-1.0, min(1.0, fy))))
+    db.executemany(f"INSERT INTO globals VALUES({','.join('?' * 20)})",
                    [(t, g["ms"], g.get("game_speed"), g.get("igt"), g.get("cam_follow_yaw"), g.get("cam_follow_pitch"),
                      g.get("dbg_nodead"), g.get("dbg_freezeai"), g.get("dbg_no_goods"), g.get("dbg_no_emblems"), g.get("map_block"),
-                     *[g.get(k) for k in ("cam_x", "cam_y", "cam_z", "cam_fwd_x", "cam_fwd_y", "cam_fwd_z", "cam_fov")]) for t, g in sorted(globs.items())])
+                     *[g.get(k) for k in ("cam_x", "cam_y", "cam_z", "cam_fwd_x", "cam_fwd_y", "cam_fwd_z", "cam_fov",
+                                          "cam_yaw", "cam_pitch")]) for t, g in sorted(globs.items())])
 
-    ev_rows = []
+    ev_rows = list(ev_btn)
     # recorder events
     sp_open = {}
     sp_rows = []
@@ -257,7 +297,7 @@ def ingest(rec, force=False):
                 by_ptr.setdefault(int(ptr, 16), n)
                 by_handle.setdefault(int(hnd), n)
     slot_of_name = {}
-    for s in (1, 2):
+    for s in sorted(slot_changes):
         for t, w in slot_changes[s]:
             slot_of_name.setdefault(w.split(":", 1)[1], []).append((t, s))
     tick_ms = {t: r["ms"] for (s, t), r in frames.items() if s == 0}
@@ -278,7 +318,7 @@ def ingest(rec, force=False):
         a, ams = cur_anim.get(s, {}).get(t, (None, None))
         return anim_name(a) if a is not None else None, (ms_of(t) - ams) if ams is not None else None
 
-    tae_rows, fx_rows = [], []
+    tae_rows, fx_rows, clip_rows, rag_last = [], [], [], None
     hit_last = {}
     for h in _jsonl(rec / "hooks.jsonl"):
         name = h.get("name") or h.get("hook_name") or str(h.get("hook_id", "?"))
@@ -296,7 +336,7 @@ def ingest(rec, force=False):
                 import struct
                 pos = struct.unpack("<3f", bytes.fromhex(xf[:24]))
                 best = 4.0
-                for s in (0, 1, 2):
+                for s in range(max(slot_changes, default=2) + 1):
                     r = frames.get((s, t))
                     if r and None not in (r.get("x"), r.get("y"), r.get("z")):
                         d = math.dist(pos, (r["x"], r["y"], r["z"]))
@@ -342,13 +382,81 @@ def ingest(rec, force=False):
         if name == "flag":
             fx_rows.append((t, ms_of(t), name, None, h.get("flag"), h.get("value"), None, None, None, None))
             continue
+        if name in ("sp_add", "sp_del"):
+            # event-driven SpEffect add / remove (catches effects shorter than a tick); other = source
+            w = by_handle.get(h.get("owner")) or f"h:{h.get('owner')}"
+            an, at = anim_at(w, t)
+            fx_rows.append((t, ms_of(t), name, w, h.get("sp"), None, an, at,
+                            by_handle.get(h.get("source")) if name == "sp_add" else None, None))
+            continue
+        if name == "tae920":
+            w = by_handle.get(h.get("handle")) or f"h:{h.get('handle')}"
+            an, at = anim_at(w, t)
+            fx_rows.append((t, ms_of(t), name, w, h.get("row"), h.get("old"), an, at, None, None))
+            continue
+        if name in ("homing", "fall", "falldmg"):
+            w = by_handle.get(h.get("handle")) or f"h:{h.get('handle')}"
+            an, at = anim_at(w, t)
+            if name == "homing":
+                i, sub, other = h.get("mode"), h.get("ok"), json.dumps({k: h.get(k) for k in ("from", "to", "vel", "row")})
+            elif name == "fall":
+                i, sub, other = h.get("mtrl"), h.get("kill"), h.get("height")
+            else:
+                i, sub, other = None, None, json.dumps({k: h.get(k) for k in ("out", "h8fc", "p7", "p8")})
+            fx_rows.append((t, ms_of(t), name, w, i, sub, an, at, other, None))
+            continue
         if name == "hks":
             fx_rows.append((t, ms_of(t), name, None, None, None, None, None, h.get("event"), str(h.get("lua"))))
+            continue
+        if name == "hks_state":
+            # behaviour-graph script state on (id 1) / off (id 0); raw = graph context (one per character)
+            fx_rows.append((t, ms_of(t), name, None, 1 if h.get("kind") == "on" else 0, None, None, None, h.get("state"), str(h.get("ctx"))))
+            continue
+        if name == "anim":
+            # every active hkb clip of Wolf this frame (rec-hooks anim.rs); ragdoll state changes go to fx
+            for c in h.get("clips") or []:
+                clip_rows.append((t, ms_of(t), c.get("name"), c.get("anim"), c.get("t"), c.get("w"), c.get("speed"), c.get("end"), c.get("rm")))
+            rag = (h.get("rag_req"), h.get("rag_state"), h.get("rag"), h.get("pose_on"))
+            if rag != rag_last:
+                rag_last = rag
+                fx_rows.append((t, ms_of(t), "ragdoll", "wolf", h.get("rag_state"), h.get("rag"), *anim_at("wolf", t), json.dumps(rag), None))
+            continue
+        if name == "bullet_pos":
+            # [handle, x, y, z, metres flown, flags] per active bullet (rec-hooks anim.rs bullets)
+            for b in h.get("b") or []:
+                fx_rows.append((t, ms_of(t), name, None, b[0], b[5], None, b[4], f"{b[1]},{b[2]},{b[3]}", None))
+            continue
+        if name in ("obj_broken", "obj_destroy"):
+            # map object broken / destroy request (rec-hooks): id = object handle, sub = HP (destroy: level), other = position
+            fx_rows.append((t, ms_of(t), name, None, h.get("obj"), h.get("level", h.get("hp")), None, h.get("obj_state"),
+                            ",".join(str(v) for v in h.get("pos") or []), json.dumps(h)))
+            continue
+        if name == "objact":
+            # an ObjAct runs (door, lever, chest): id = area, sub = entry index, raw = ExecInfo bytes
+            fx_rows.append((t, ms_of(t), name, None, h.get("area"), h.get("entry"), None, None, None, h.get("exec")))
+            continue
+        if name in ("fmod_param", "fmod_param_i", "fmod_global"):
+            # FMOD Ex parameter write, logged on a change: other = parameter (name or index), at = value, raw = cue
+            fx_rows.append((t, ms_of(t), name, None, None, None, None, h.get("value"), str(h.get("param")), str(h.get("cue"))))
+            continue
+        if name == "noise":
+            # a noise for enemy hearing: other = source info bytes, raw = emit info bytes
+            fx_rows.append((t, ms_of(t), name, None, None, None, None, None, h.get("source"), h.get("emit")))
+            continue
+        if name == "stick":
+            # the pad's input frame before any deadzone (logged on change): at = forward/back, other = "side,look x,look y"
+            look = h.get("look") or [None, None]
+            fx_rows.append((t, ms_of(t), name, "wolf", None, None, None, h.get("fwd"), f"{h.get('side')},{look[0]},{look[1]}", None))
+            continue
+        if name == "play":
+            # scripted input (rec-hooks play.rs): start / end of an input script
+            fx_rows.append((t, ms_of(t), name, "wolf", h.get("frames"), None, *anim_at("wolf", t), h.get("play"), None))
             continue
         db.execute("INSERT INTO hooks VALUES(?,?,?,?,?,?,?,?)", (h.get("tick"), name, h.get("arg1"), h.get("arg2"), h.get("arg3"),
                    h.get("item"), h.get("count"), json.dumps(h)))
     db.executemany(f"INSERT INTO tae VALUES({','.join('?' * 9)})", tae_rows)
     db.executemany(f"INSERT INTO fx VALUES({','.join('?' * 10)})", fx_rows)
+    db.executemany(f"INSERT INTO clips VALUES({','.join('?' * 9)})", clip_rows)
     db.executemany("INSERT INTO events VALUES(?,?,?,?,?,?,?,?)", ev_rows)
     db.executemany(f"INSERT INTO anims VALUES({','.join('?' * 15)})", an_rows)
     db.executemany(f"INSERT INTO hits VALUES({','.join('?' * 14)})", hit_rows)

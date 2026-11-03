@@ -650,6 +650,13 @@ pub struct Clip {
 }
 
 /// Animation hkx: decoded spline animation plus its track -> bone binding.
+/// Animation hkx: the clip's length in seconds (hkaAnimation duration), without decoding it.
+pub fn clip_duration(d: &[u8], compendium: &Types) -> Option<f32> {
+    let tf = Tagfile::new(d, Some(compendium));
+    let &o = tf.objects_of("hkaSplineCompressedAnimation").first()?;
+    Some(Reader::new(d).f32(o + tf.field("hkaAnimation", "duration")))
+}
+
 pub fn clip(d: &[u8], compendium: &Types) -> Option<Clip> {
     let tf = Tagfile::new(d, Some(compendium));
     let r = Reader::new(d);
@@ -831,6 +838,103 @@ pub fn state_machines(d: &[u8]) -> Vec<String> {
         out.push(line);
     }
     out
+}
+
+/// The whole behavior graph as JSON (the `behavior` command -> extracted/behavior_<chr>.json):
+/// the event and variable names (hkbBehaviorGraphStringData), every state machine (its states:
+/// id, name, generator "Type Name", transitions [event name, to state id]; the wildcard
+/// transitions), every hkbManualSelectorGenerator (the variable bound to selectedGeneratorIndex
+/// and its generators in order) and every CustomManualSelectorGenerator (animId, offsetType, its
+/// generators). The script fires events by name (`hkbFireEvent("W_X")`) and sets the selectors'
+/// variables (SetVariable), so this is what turns its decisions into states and clips.
+pub fn behavior_graph(d: &[u8]) -> serde_json::Value {
+    use serde_json::{json, Map, Value};
+    let tf = Tagfile::new(d, None);
+    let r = Reader::new(d);
+    let sd = "hkbBehaviorGraphStringData";
+    let names = |member: &str| -> Vec<String> {
+        tf.objects_of(sd)
+            .first()
+            .and_then(|&o| tf.deref(o + tf.field(sd, member)))
+            .map(|(a, n)| (0..n).map(|i| tf.string(a + i * 8)).collect())
+            .unwrap_or_default()
+    };
+    let (events, variables) = (names("eventNames"), names("variableNames"));
+    let name_of = |t: &str, o: usize| tf.try_field(t, "name").map(|f| tf.string(o + f)).unwrap_or_default();
+    let gen_of = |at: usize| tf.deref_obj(at).map(|(gt, g)| format!("{gt} {}", name_of(&gt, g))).unwrap_or_default();
+    let event = |id: i32| events.get(id as usize).cloned().unwrap_or_else(|| id.to_string());
+    let transitions = |at: usize| -> Vec<Value> {
+        let Some((_, arr)) = tf.deref_obj(at) else { return Vec::new() };
+        let Some((a, n)) = tf.deref(arr + tf.field("hkbStateMachine::TransitionInfoArray", "transitions")) else { return Vec::new() };
+        let ti = "hkbStateMachine::TransitionInfo";
+        let f = |m: &str| tf.try_field(ti, m);
+        let (nested, flags, cond) = (f("toNestedStateId"), f("flags"), f("condition"));
+        // [event, to state, to nested state, flags (0x400 global wildcard: the parent switches to
+        // the state holding this machine first; 0x2000 the nested id is valid), has a condition]
+        (0..n)
+            .map(|i| {
+                let t = a + i * 72;
+                json!([event(r.i32(t + 48)), r.i32(t + 52), nested.map_or(-1, |o| r.i32(t + o)), flags.map_or(0, |o| r.u16(t + o)), cond.is_some_and(|o| r.u64(t + o) != 0)])
+            })
+            .collect()
+    };
+    let mut machines = Map::new();
+    let ty = "hkbStateMachine";
+    for o in tf.objects_of(ty) {
+        let mut states = Vec::new();
+        if let Some((a, n)) = tf.deref(o + tf.field(ty, "states")) {
+            for i in 0..n {
+                let Some((sty, s)) = tf.deref_obj(a + i * 8) else { continue };
+                states.push(json!({
+                    "id": r.i32(s + tf.field(&sty, "stateId")),
+                    "name": name_of(&sty, s),
+                    "gen": gen_of(s + tf.field(&sty, "generator")),
+                    "transitions": transitions(s + tf.field(&sty, "transitions")),
+                }));
+            }
+        }
+        let wildcard = tf.try_field(ty, "wildcardTransitions").map(|f| transitions(o + f)).unwrap_or_default();
+        machines.insert(name_of(ty, o), json!({ "states": states, "wildcard": wildcard }));
+    }
+    let gens = |ty: &str, o: usize| -> Vec<String> {
+        tf.try_field(ty, "generators").and_then(|f| tf.deref(o + f)).map(|(a, n)| (0..n).map(|i| gen_of(a + i * 8)).collect()).unwrap_or_default()
+    };
+    let bound = |ty: &str, o: usize, member: &str| -> Option<String> {
+        let (bs_ty, bs) = tf.deref_obj(o + tf.field(ty, "variableBindingSet"))?;
+        let (a, n) = tf.deref(bs + tf.field(&bs_ty, "bindings"))?;
+        let bty = "hkbVariableBindingSet::Binding";
+        let (mp, vi) = (tf.field(bty, "memberPath"), tf.field(bty, "variableIndex"));
+        (0..n).map(|i| a + i * 40).find(|&b| tf.string(b + mp) == member).map(|b| {
+            let v = r.i32(b + vi);
+            variables.get(v as usize).cloned().unwrap_or_else(|| v.to_string())
+        })
+    };
+    let mut selectors = Map::new();
+    let ty = "hkbManualSelectorGenerator";
+    if tf.types.index_of(ty).is_some() {
+        for o in tf.objects_of(ty) {
+            selectors.insert(name_of(ty, o), json!({ "var": bound(ty, o, "selectedGeneratorIndex"), "gens": gens(ty, o) }));
+        }
+    }
+    let mut cmsgs = Map::new();
+    let ty = "CustomManualSelectorGenerator";
+    if tf.types.index_of(ty).is_some() {
+        for o in tf.objects_of(ty) {
+            // Each clip generator's animationName (its own name can differ: "a070_400010_new").
+            let anims: Vec<String> = tf
+                .try_field(ty, "generators")
+                .and_then(|f| tf.deref(o + f))
+                .map(|(a, n)| {
+                    (0..n)
+                        .filter_map(|i| tf.deref_obj(a + i * 8))
+                        .filter_map(|(gt, g)| tf.try_field(&gt, "animationName").map(|f| tf.string(g + f)))
+                        .collect()
+                })
+                .unwrap_or_default();
+            cmsgs.insert(name_of(ty, o), json!({ "anim_id": r.i32(o + tf.field(ty, "animId")), "offset_type": r.i32(o + tf.field(ty, "offsetType")), "gens": gens(ty, o), "anims": anims }));
+        }
+    }
+    json!({ "events": events, "variables": variables, "machines": machines, "selectors": selectors, "cmsgs": cmsgs })
 }
 
 /// A state's (or the machine's wildcard) transitions: " [ev <event id> -> <state id> <effect>]"

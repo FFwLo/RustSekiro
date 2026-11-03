@@ -1,0 +1,1638 @@
+[
+ {
+  "id": "ai.lua-scripts-compiled",
+  "category": "ai",
+  "title": "Enemy AI is compiled Lua 5.0 shipped with each map",
+  "summary": "Every enemy thinks with compiled Lua 5.0 scripts: shared chunks in aicommon.luabnd plus a per-map copy of each enemy's logic and battle goal. NpcThinkParam names the pair by logicId and battleGoalID.",
+  "values": "aicommon.luabnd has 104 chunks (ai_define, goal_list, table_ai_common ...). Soldier row 10100000: logicId 101000, battleGoalID 101000 (files 101000_logic.lua, 101000_battle.lua). NpcThinkParam: 771 rows, 154 distinct battleGoalID; most used logicId 101000 (91 rows), 150000 (48), 155000 (45).",
+  "how": "The exe embeds the Lua VM and registers about 230 AI methods (IsBattleState, AddSubGoal, GetExcelParam ...). Scripts run the goal tree; native goal classes do the movement and attacks.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/ai_src"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/NpcThinkParam.json"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "docs/AI.md"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/enemy.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/ai.rs; src/ai/lua50.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "crates/sim/src/lua_ai/lua50.rs; crates/sim/src/lua_ai/runtime.rs"
+  },
+  "check": "Load m11_00 luabnd, run 101000_battle with a Wolf stand-in, and read the goal start/end log (tests ai_stubs, duel_trace).",
+  "note": "Both ports run the unchanged bytecode. Ours dropped the decompiler step on 2026-10-09 and uses Lua 5.0 bytecode directly.",
+  "needs": []
+ },
+ {
+  "id": "ai.goal-kinds-lifecycle",
+  "category": "ai",
+  "title": "Goal kinds: table goals, script goals, native goals",
+  "summary": "A goal is a table goal (REGISTER_GOAL, Goal.Activate/Update/Terminate/Interrupt), a script goal (<Name>_Activate ...) or a native engine class (Wait, Stay, MoveToSomewhere, Guard, SidewayMove, KeepDist, LeaveTarget, SpinStep, Parry, CommonAttack ...). Subgoals run front first; a failed subgoal fails its parent.",
+  "values": "CommonAttack 2200 has empty script callbacks, so it is the native class. TimingSetNumber/TimingSetTimer defer a SetNumber/SetTimer to AI_TIMING_SET__ACTIVATE (0) or UPDATE_SUCCESS (1).",
+  "how": "AddSubGoal/AddTopGoal build the queue; the engine updates the front subgoal, then the goal's own update. Interrupts offer events to the logic first, then goals from deepest up.",
+  "sources": [
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "docs/AI.md"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/enemy.md"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/ai_src/common_goal_list.lua"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "yes",
+   "where": "src/ai.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "crates/sim/src/lua_ai/runtime.rs"
+  },
+  "check": "Run a soldier fight and read the goal log: approach, CommonAttack, ComboFinal appear as nested goals.",
+  "note": "Update order and lifetime rules are ours in sekiro-rs (marked 'ours' in AI.md); RustSekiro traced the native classes in the exe.",
+  "needs": [
+   {
+    "id": "ai.lua-scripts-compiled",
+    "why": "needs the scripts loaded"
+   }
+  ]
+ },
+ {
+  "id": "ai.goal-life-end",
+  "category": "ai",
+  "title": "A goal whose life runs out fails unless SetLifeEndSuccess",
+  "summary": "When a goal's life reaches 0 while its update still says Continue it counts as Success only if it or a goal above it has SetLifeEndSuccess; otherwise it Fails, the parent fails and the queued subgoals are dropped.",
+  "values": "Exe: FUN_1405faa20 sets goal +0x4a0 bit 0x20; FUN_1405d06c0 and FUN_1405d1b50 (walk up) decide. Wait/Stay/Guard end by life as a success (updates not traced).",
+  "how": "Fixes the old assumption that every timed out goal succeeds: a timed out approach no longer lets the queued CommonAttack swing from out of reach.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/enemy.md"
+   },
+   {
+    "kind": "exe",
+    "ref": "tools/fn.sh 1405d06c0"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "yes",
+   "where": "src/ai.rs life_end; test a_timed_out_goal_fails_unless_life_end_success"
+  },
+  "his": {
+   "has": "partial",
+   "where": "crates/sim/src/lua_ai/runtime.rs (waiting-style goals succeed, others fail)"
+  },
+  "check": "Sim test a_timed_out_goal_fails_unless_life_end_success; in game watch an enemy whose approach times out: it replans instead of swinging.",
+  "note": "sekiro-rs rule: Wait/Stay/Guard/Sideway succeed at end of life, everything else fails. RustSekiro's rule is the exe one.",
+  "needs": [
+   {
+    "id": "ai.goal-kinds-lifecycle",
+    "why": "goal tree"
+   }
+  ]
+ },
+ {
+  "id": "ai.logic-to-battle",
+  "category": "ai",
+  "title": "Logic.Main picks the goal; battle goals roll weighted acts",
+  "summary": "When the top goal's queue is empty or Replanning was called, the engine runs the think row's logic. COMMON_EzSetup first handles alert-state transitions, then _COMMON_SetBattleActLogic chooses between a reply to help, a battle goal, the caution/find goals or a non-battle goal.",
+  "values": "Battle goals fill a 1..N odds table (defAct01..defActNN) from distance, target guard, SpEffects and cool-downs; Common_Battle_Activate rolls the table with the engine's random numbers (GetRandam_Int) and the chosen Act queues approach plus attack subgoals. Soldier example: distance >= 7 and target guarding gives acts 3 and 5 weights 100 and 200.",
+  "how": "Table goals: Goal.Activate scores acts, Goal.Update is Update_Default_NoSubGoal, so the battle goal ends when its subgoals do and the logic runs again.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/ai_src/common_common_logic_func.lua"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/ai_src/common_common_battle_func.lua"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/ai_src/101000_battle.lua"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "docs/AI.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/ai.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "crates/sim/src/lua_ai/brain.rs"
+  },
+  "check": "Dump the goal log for a soldier at 8 m vs a guarding Wolf and count the acts picked over 60 s; act 5 and 3 dominate.",
+  "note": "RNG is a seeded xorshift in ours and sekiro-rs, so act choices match in distribution only.",
+  "needs": [
+   {
+    "id": "ai.target-state-machine",
+    "why": "the logic reads the target state"
+   }
+  ]
+ },
+ {
+  "id": "ai.target-state-machine",
+  "category": "ai",
+  "title": "Target state: NONE, CAUTION, FIND, BATTLE",
+  "summary": "Each enemy keeps one target state derived from its target slots: a normal target is FIND and then BATTLE, while sound, corpse, indication position and last-memory targets give CAUTION; nothing gives NONE. The previous state is kept so scripts can detect a change.",
+  "values": "Names AI_TARGET_STATE__NONE 0 / CAUTION 1 / FIND 2 / BATTLE 3. Target types: NORMAL_ENEMY 3, SOUND 4, MEMORY_ENEMY 5, INDICATION_POS 6, CORPSE_POS 7. AI SpEffects: 200000 normal, 200001 non-combat caution, 200002 combat caution, 200004 find/battle. State at SprjTargetingSystem (AiThink +0x7b30), field +0x158, previous +0x15c.",
+  "how": "FUN_14061ff40 updates the slots; FUN_1406208c0 derives the state in priority order (normal, then sound 4, corpse 7, indication 6, memory 5 give CAUTION). A change replans unless the row's goalAction_ToCaution/ToFind is 0.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/enemy.md"
+   },
+   {
+    "kind": "exe",
+    "ref": "tools/fn.sh 1406208c0"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "docs/AI.md"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/ai_src/common_ai_define.lua"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "yes",
+   "where": "src/stealth.rs; src/ai.rs"
+  },
+  "his": {
+   "has": "partial",
+   "where": "crates/sim/src/lua_ai/runtime.rs (visible target -> FIND next run -> BATTLE; no sound/indication/memory slots)"
+  },
+  "check": "Walk into a soldier's cone in a sim: trace shows NONE -> FIND -> BATTLE and AI SpEffect 200004; throw a firecracker out of view for CAUTION.",
+  "note": "sekiro-rs fakes the state from visibility. RustSekiro ports the targeting system from the exe.",
+  "needs": [
+   {
+    "id": "ai.sight-normal-cone",
+    "why": "the main input"
+   },
+   {
+    "id": "ai.hearing-model",
+    "why": "sound targets"
+   }
+  ]
+ },
+ {
+  "id": "ai.sight-normal-cone",
+  "category": "ai",
+  "title": "Sight: the normal cone (eye_*_normal)",
+  "summary": "A soldier sees Wolf inside a cone: from eye_BeginDist to eye_dist away from an eye point pushed eye_BackOffsetDist behind its feet, inside left/right and upper/bottom angles. Seeing Wolf in this cone makes him a normal target (FIND).",
+  "values": "Soldier row 10100000: eye_dist 20 m, begin 4, back offset 4, yaw +-30 deg, pitch +10 up / -15 down, so about 16 m ahead of the body. General 10200000: yaw +-45, up 15. Shichimen 10800000: 50 m. Owl 50600000 / Isshin 54000000: dist 120, begin 80, back 80, yaw +-15, up 4, down 15 (about 0..40 m ahead). Headless 13500000 and Female Musician 70000000: yaw 180 pitch 90 (all around). 169 rows use 25 m, 150 use 20 m, 48 rows 120 m.",
+  "how": "Test FUN_14061bb70: eye = feet - facing*back*cut; begin*cut <= d < radius + dist*cut; yaw in [-left, right]; pitch in [-bottom, upper]; then a line-of-sight ray. Light factor 1 / 0.5 / 0.3 scales it. Target point is Wolf's feet, radius is his capsule radius.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/NpcThinkParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "reference/Paramdex/SDT/Defs/NpcThinkParam.xml"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/enemy.md"
+   },
+   {
+    "kind": "exe",
+    "ref": "tools/fn.sh 14061bb70"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "yes",
+   "where": "src/stealth.rs in_cone"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "In a sim place a soldier facing +Z and Wolf at 15 m, 25 deg off axis: seen. At 17 m or 35 deg: not seen. Tests in src/sim_tests/part04.rs.",
+  "note": "Wolf's capsule radius is taken as 0.4 (not traced). The exe check uses Wolf's feet point.",
+  "needs": [
+   {
+    "id": "stealth.crouch-sneak",
+    "why": "crouching shrinks the cone"
+   },
+   {
+    "id": "map.collision-raycast",
+    "why": "line of sight ray"
+   }
+  ]
+ },
+ {
+  "id": "ai.sight-around-meter",
+  "category": "ai",
+  "title": "Sight: the wide 'around' cone fills an alert meter",
+  "summary": "Outside the normal cone but inside a wider, shorter-range 'around' cone, a detection meter fills at aroundTargetIncrementPoint per second. At 100 the enemy gets an indication target at Wolf's spot and turns to CAUTION; the meter drains 20 per second outside the cone.",
+  "values": "Soldier row 10100000: around dist 40 m, yaw +-30, +25 points/s so 4.0 s to fill (trace: full at 4.0 s). 491 rows use 25/s, 239 rows 0 (no around sense: bosses, Shichimen), 9 rows 1000 (instant, row 50101050-54), 11 rows 40. Indication target forgotten after IndicationTargetForgetTime (150 s for most). Wolf's stealth SpEffects 3391/3441/150000 multiply the fill by aroundSightPointAddRate 0.5.",
+  "how": "FUN_140625340 adds IncrementPoint * dt * product(aroundSightPointAddRate); FUN_140612400 drains 20/s out of the cone; FUN_140626430 turns >= 100 into an IndicationPos slot (FUN_1406285c0).",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/NpcThinkParam.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/enemy.md"
+   },
+   {
+    "kind": "exe",
+    "ref": "tools/fn.sh 140612400"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "yes",
+   "where": "src/stealth.rs Meter"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Stand in a soldier's around cone for 4 s without entering the normal cone: it turns to caution and walks to your spot.",
+  "note": "HUD stealth bar is drawn over the enemy (hud.rs); art is a stand-in.",
+  "needs": [
+   {
+    "id": "ai.target-state-machine",
+    "why": "feeds CAUTION"
+   }
+  ]
+ },
+ {
+  "id": "ai.sight-perceive-set",
+  "category": "ai",
+  "title": "Sight: the 'perceive' set keeps a found target",
+  "summary": "Once an enemy is in FIND or BATTLE its normal-cone test switches to the larger 'perceive' set (flag 0x100000), so a found Wolf is held at a longer range than the range that first spotted him.",
+  "values": "Soldier row 10100000: perceive dist 40 m (normal 20), yaw +-30. The set uses the same offset/begin fields with _perceive suffix.",
+  "how": "FUN_14061bb70 picks the perceive set when the target state flag is set.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/enemy.md"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/NpcThinkParam.json"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "yes",
+   "where": "src/stealth.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Get found at 15 m, then back off to 30 m in the open: the soldier keeps tracking until SightTargetForgetTime runs out out of sight.",
+  "note": "",
+  "needs": [
+   {
+    "id": "ai.sight-normal-cone",
+    "why": "first detection"
+   }
+  ]
+ },
+ {
+  "id": "ai.sight-search-timing-raycast",
+  "category": "ai",
+  "title": "Sight search runs every 0.2-0.4 s and needs a clear line",
+  "summary": "The sight test is not run every frame: each enemy searches at a random 0.2-0.4 s interval. The final step is a collision ray between the enemy and Wolf; a hit means not seen. The meter update runs every frame.",
+  "values": "Interval = rand*0.2 + 0.2 s (DAT_143afb488 / 48c). Ray: FUN_14061c8a0, filter 0x32, through FUN_14094e310. Detection time at the cone edge is about 0.5 s at eye_BeginDist and up to 3 s at eye_dist (kb damage.md, not traced).",
+  "how": "FUN_140623ca0 schedules the search; the normal cone casts the ray unless ctx +0xc2 is set.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/enemy.md"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/damage.md"
+   },
+   {
+    "kind": "exe",
+    "ref": "tools/fn.sh 14061c8a0"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "partial",
+   "where": "src/stealth.rs sight_clear (both points taken as capsule centres)"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Stand behind a thin wall inside a soldier's cone: not seen. Step out and count frames until FIND (0.2-0.4 s granularity).",
+  "note": "Which collision filter bits 0x32 skip is unknown; ours raycasts the hit collision only.",
+  "needs": [
+   {
+    "id": "map.collision-raycast",
+    "why": "needs map collision"
+   }
+  ]
+ },
+ {
+  "id": "ai.dark-map-visibility",
+  "category": "ai",
+  "title": "Dark and pitch-dark collision halves vision",
+  "summary": "Each map collision part has a visibility (Good, Dark, Total Dark). The sight query scales distances by 1 / 0.5 / 0.3, remapped by Wolf's mapVisibilityOverride* SpEffect fields. NpcThinkParam disableDark = 1 skips it (20 rows).",
+  "values": "Factors DAT_143afb490..8 = 1.0 / 0.5 / 0.3. Collision type data +0x27: 0 Good, 1 Dark, 2 Total Dark. All 221 collision parts of m11_01 are Good. Dark ones: m11_00 has 2 Dark + 4 Total, m17 19 Total, m20 7. disableDark rows include 10100330, Headless 13400000.",
+  "how": "FUN_1409b5c80 writes the part's visibility into chr +0x1acd; FUN_140617150 puts it in the sight query; FUN_14061ae40 / FUN_14061c2a0 scale by query +0x58[type].",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/enemy.md"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/NpcThinkParam.json"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "partial",
+   "where": "src/stealth.rs (light level fixed at Good: map visibility not exported)"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Stand in a Dark-visibility cave on m11_00: soldier sight reach halves (20 m to 10 m).",
+  "note": "Visibility bytes are not exported by our map tools. 109201 may be driven by this (open question).",
+  "needs": [
+   {
+    "id": "map.collision-visibility",
+    "why": "per-collision visibility byte"
+   }
+  ]
+ },
+ {
+  "id": "ai.battle-start-dist",
+  "category": "ai",
+  "title": "FIND turns into BATTLE inside BattleStartDist",
+  "summary": "A found Wolf only starts a fight when he comes within BattleStartDist; farther away the enemy stays in FIND (alert, approaching). A hit on the enemy (reason 4) puts it in BATTLE at once.",
+  "values": "Soldier 12 m (215 rows), General 15 m, Shichimen 50 m. Common values: 12 m (215), 25 m (78), 30 m (72), 20 (67), 50 (57), 15 (44), 45 (33), 9999 (23 rows: always battle once found). The distance is dimmed by darkness unless disableDark.",
+  "how": "FUN_14062be40 FIND -> BATTLE; damage path FUN_14061d140. A platoon battle also forces it.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/enemy.md"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/NpcThinkParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "reference/Paramdex/SDT/Defs/NpcThinkParam.xml"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "yes",
+   "where": "src/stealth.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Get spotted at 18 m by a soldier: it plays the find reaction and closes in; at 12 m the fight starts. Hit it first: instant fight.",
+  "note": "Paramdex's Description for BattleStartDist is a copy of callHelp_MyPeerId (labelling slip), not trusted.",
+  "needs": [
+   {
+    "id": "ai.target-state-machine",
+    "why": "states"
+   }
+  ]
+ },
+ {
+  "id": "ai.forget-times",
+  "category": "ai",
+  "title": "How long enemies remember Wolf",
+  "summary": "Each target slot has its own forget time. The sight target is forgotten after SightTargetForgetTime while unseen, sound after SoundTargetForgetTime, memory after MemoryTargetForgetTime, indication position after IndicationTargetForgetTime, a corpse after CorpseTargetForgetTime.",
+  "values": "Sight: 15 s (317 rows incl. soldiers 10100000), 10 s (126), 99999 (95 bosses/never), 3600 (69, General), 3 s (49). Memory: 150 s default (542 rows), 5 s (53), 9 s (48), 99999 (75). Sound: 150 (555), 99999 (74), 9 (48), 5 (29). Indication: 150. Corpse: 150. Soldier-like: 15 s sight, 150 s memory.",
+  "how": "SightTargetForgetTime counts down while the normal target is unseen; reaching 0 clears the normal target and leaves the last-seen position as a memory target (CAUTION).",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/NpcThinkParam.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/enemy.md"
+   },
+   {
+    "kind": "data",
+    "ref": "reference/Paramdex/SDT/Defs/NpcThinkParam.xml"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "partial",
+   "where": "src/stealth.rs: forget runs on the normal target; LastSightPos bookkeeping missing"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Break line of sight to a soldier at 10 m and hide: it searches ~15 s and then walks home (trace SHINOBI_STEALTH_TRACE=lose).",
+  "note": "Memory vs sight handover is only partly modelled in ours.",
+  "needs": [
+   {
+    "id": "ai.target-state-machine",
+    "why": "slots"
+   }
+  ]
+ },
+ {
+  "id": "ai.hearing-model",
+  "category": "ai",
+  "title": "Hearing: AI sounds with a radius, a rank and a listener range",
+  "summary": "Noises are AI sounds (AiSoundParam rows with radius, rank, life and who can hear). A listener hears a sound when it is closer than hearing-rate times radius less ear_soundcut_dist, plus its ear_dist.",
+  "values": "reach = rate * radius - ear_soundcut_dist; heard while dist - radii < reach + ear_dist. rate = product(1 - hearingSearchEnemyCut/100) of the listener's SpEffects (FUN_140bfe590); sound rows flagged bSpEffectEnable also scale by the owner's hearingSearchEnemyRate. ear_dist: 0.1 m on 633 rows, 0 on 117, 6 m on 16 dog-type rows (c1150), 18/25/30 on four. Rows per AiSoundParam: 90.",
+  "how": "SprjAiSoundNormalListener, FUN_140610470 (flags selfTarget / opposeTarget / friendlyTarget), range FUN_140610a30 / b30; manager FUN_14064a5f0.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/AiSoundParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/NpcThinkParam.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/enemy.md"
+   },
+   {
+    "kind": "exe",
+    "ref": "tools/fn.sh 140610a30"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "yes",
+   "where": "src/enemy.rs ai_sound_heard / wolf_sounds / hearing_rate"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "A soldier with ear_dist 0.1 hears a walking Wolf (radius 0.5) only inside about 0.6 m, a running Wolf (2) inside 2.1 m; dogs add 6 m.",
+  "note": "Deaf SpEffects: hearingSearchEnemyCut 100 on firecracker, 200110 and 200140; test a_deafened_enemy_hears_nothing.",
+  "needs": [
+   {
+    "id": "ai.wolf-footstep-noise",
+    "why": "typical source"
+   }
+  ]
+ },
+ {
+  "id": "ai.wolf-footstep-noise",
+  "category": "ai",
+  "title": "Wolf's footsteps, sprint and landing noises",
+  "summary": "Wolf's movement clips carry CreateAISound (TAE 237) and make a sound whose radius depends on how he moves: crouched is quietest, sprint and swimming the loudest.",
+  "values": "Radius per AiSoundParam id (all rank 0): walk 1000 = 0.5 m, crouch walk 1001 = 0.25, crouch run 1011 = 0.5, run 1010 = 2 m, sprint 1020 = 4 m (SprintStartFromStep 1151, SprintLoop 1200, quick turn), cover/hang moves 1002/1003 = 0.25, jump start 1300 = 2, wall jump 1320 = 0.5, landing from a free fall 1310 = 2 (0.03 s event on the 'start from free fall' clips), step from damage 1100 = 4, grapple shot 1200 = 2, swim moves 1014/1015 = 2, swim kick 1024/1025 = 4, deflect 2030 = 8 (rank 1). Life 0.25 s for the 1000-1015 rows, 1 s for 1100+.",
+  "how": "TAE 237 on c0000 anims (70 distinct anims with 1310, 54 with 1300, 35 with 1010 ...). Walk/run sound events last the whole clip (2.77 s walk, 1.77 s run).",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/tae/c0000"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/AiSoundParam.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/enemy.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/enemy.rs wolf_sounds (read from the clip on screen)"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Sneak up behind a soldier: walking crouched (0.25 m) is silent, running (2 m) is heard from 2 m, sprinting from 4 m.",
+  "note": "Sound id names (walk, sprint, landing) were matched through statemap_c0000.json animId to state name; the AiSoundParam rows have no names.",
+  "needs": [
+   {
+    "id": "movement.crouch",
+    "why": "crouch walk"
+   },
+   {
+    "id": "movement.sprint",
+    "why": "sprint"
+   },
+   {
+    "id": "ai.hearing-model",
+    "why": "listener"
+   }
+  ]
+ },
+ {
+  "id": "ai.wolf-combat-noise",
+  "category": "ai",
+  "title": "Combat noise: Wolf's swings and hits are sounds too",
+  "summary": "Wolf's attacks announce themselves: each AtkParam_Pc has an AppearAiSoundId (when the attack is issued) and a HitAiSoundId (on each target hit, guarded or not). They are rank 1 'important' sounds with wider radii than footsteps.",
+  "values": "Appear ids: 2010 (224 rows, radius 2), 2000 (44, 1), 2020 (37, 4), 2150 (8, 12), 2140 (4, 6). Hit ids: 2110 (223, 4 m), 2100 (42, 2), 2120 (26, 8), 2130 (16 m), 3500. Deflect 2030 (8 m). Exe emits Appear once per attack at the attacker (FUN_1409a1290) and Hit once per target (FUN_1409e68e0).",
+  "how": "SprjAiSound entries live for AiSoundParam lifeFrame. rank 1 raises goalAction_ToCautionImportant instead of goalAction_ToCaution.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/AtkParam_Pc.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/AiSoundParam.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/enemy.md"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "yes",
+   "where": "src/combat.rs ai_sounds; src/enemy.rs AiSounds"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Swing near an unaware soldier behind a corner at 2 m: it notices. Heavy hit sounds reach 4 to 16 m.",
+  "note": "Hit emitter owner is inferred as the attacker.",
+  "needs": [
+   {
+    "id": "combat.attack-noise",
+    "why": "attack params"
+   }
+  ]
+ },
+ {
+  "id": "ai.sound-rank-important",
+  "category": "ai",
+  "title": "Normal vs important sounds change the caution reaction",
+  "summary": "A sound has rank 0 (normal) or 1 (important). Hearing an important sound runs the row's goalAction_ToCautionImportant instead of goalAction_ToCaution, and a few sound ids tune the approach distance.",
+  "values": "Rank 1 rows: Wolf deflect 2030, combat sounds, ape/ally calls 4000-4100 (30-200 m, friends only), 5000-5400 (4-20 m), 7400 rank 3. Special ids in the logic: 7900 and 7910 stop the approach at 0.4 m, 3501 at 0.2 m, 7700 forces a confirm-caution look.",
+  "how": "_COMMON_AddCautionAndFindGoal picks the action by GetLatestSoundTargetRank() == AI_SOUND_RANK__IMPORTANT.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/ai_src/common_common_logic_func.lua"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/AiSoundParam.json"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "src/ai.rs (rank answered; per-row actions via GetExcelParam)"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Compare the reaction to a thrown firecracker (important) vs a walk: the first approaches, the second only looks.",
+  "note": "",
+  "needs": [
+   {
+    "id": "ai.hearing-model",
+    "why": "sound targets"
+   }
+  ]
+ },
+ {
+  "id": "ai.alert-spread-call-sounds",
+  "category": "ai",
+  "title": "Alert spreads through friendly call sounds on attacks",
+  "summary": "When an enemy attacks, its attack emits a 'call friend' AI sound. Friends in the same placement group who hear it join the fight, so one alert pulls in the group. It only works while the caller is in BATTLE or FIND.",
+  "values": "NPC attack rows: AtkParam_Npc AppearAiSoundId 2000025 (1243 rows, 10 m) and HitAiSoundId 2000020 (1223 rows, 20 m); flags bCallFriend + bRestrictSamePlacementGroup + friendlyTarget, rank 1, life 0.1 s. Other call sounds: 2000000 (20 m, the spot-call), 2000010 (30), 2000100 (20), 2103000 (10), 2111000 (50), 2112000 and 2122000 (60), 2155000 (30). Rows 4020-4100 are friendly-only sounds.",
+  "how": "SprjAiSound with friendlyTarget heard by same-group listeners; the heard sound becomes a rank-1 sound target, then the row's goalAction_ToCautionImportant runs.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/AiSoundParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/AtkParam_Npc.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/enemy.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/enemy.rs SPOT_CALL_SOUND 2000000; ai_sound_heard"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Alert one soldier in a camp, hit him once: the others within 10 to 20 m with the same group turn to your position.",
+  "note": "Whether the group test uses MSB placement group or an AI group id is not traced.",
+  "needs": [
+   {
+    "id": "ai.hearing-model",
+    "why": "friends hear the call"
+   },
+   {
+    "id": "map.msb-placement-group",
+    "why": "same-group rule"
+   }
+  ]
+ },
+ {
+  "id": "ai.callhelp-unused",
+  "category": "ai",
+  "title": "NpcThinkParam call-for-help fields are unused",
+  "summary": "The TeamCallHelp / TeamReplyHelp goals exist in the Lua, but callHelp_MyPeerId, callHelp_CallPeerId and callHelp_CallValidRange are 0 on all 771 rows. In the shipped data no enemy shouts for help through that path.",
+  "values": "All 771 rows: callHelp_* = 0. platoonReplyTime = (1.0, 2.0) on 734 rows. The scripts common_team_call_help.lua / common_team_reply_help.lua are reachable only when peer ids are non-zero.",
+  "how": "_COMMON_SetBattleActLogic adds TeamReplyHelp only when a valid reply exists, which needs the peer id.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/NpcThinkParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/ai_src/common_team_call_help.lua"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/ai_src/common_team_reply_help.lua"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/ai.rs (lookups answered 0)"
+  },
+  "his": {
+   "has": "partial",
+   "where": "crates/sim/src/lua_ai/runtime.rs (answers 0)"
+  },
+  "check": "Dump NpcThinkParam callHelp_*: all zero. No sim needed.",
+  "note": "Alert spread comes from call sounds (ai.alert-spread-call-sounds) and platoon scripts, not this.",
+  "needs": []
+ },
+ {
+  "id": "ai.platoon-states",
+  "category": "ai",
+  "title": "Platoons: shared state and formation",
+  "summary": "Some groups act as a platoon with a leader script. The platoon has its own state (None 0, Caution 1, Find 2, ReplyHelp 3, Battle 4), a formation, and a catch-up speed so members keep together. Orders reach members as PlatoonAiOrder interrupts.",
+  "values": "common_000100_platoon.lua: formation, catch-up move rate 0.7 to 1.5, distances 5 and 10, command distance 5. maps/000120_platoon.lua is the map copy. AI_INTERRUPT_PlatoonAiOrder = 42.",
+  "how": "Platoon goals run on a leader object; members get AI orders through the interrupt and act in their battle goal.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/ai_src/common_000100_platoon.lua"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/ai_src/common_common_platoon_func.lua"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/enemy.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Find a platoon group in m11_00 (MSB platoon refs) and watch members hold formation while one patrols.",
+  "note": "Which enemies belong to platoons has not been listed (open question).",
+  "needs": [
+   {
+    "id": "map.msb-placement-group",
+    "why": "platoon membership"
+   }
+  ]
+ },
+ {
+  "id": "ai.team-roles",
+  "category": "ai",
+  "title": "Attack, surround and spectate roles",
+  "summary": "When several enemies fight, a manager hands out roles every 0.1 s: attackers, surrounders (Torimaki) and spectators (Kankyaku). Only attackers go in, so crowds do not all strike at once.",
+  "values": "ROLE_TYPE Attack 0, Torimaki 1, Kankyaku 2, None -1. Counts 1 attacker and 1 surrounder (tunables DAT_143afb990 / 994 / 998). TeamAttackEffectivity per row: 34 (323 rows), 0 (134), 100 (74). A weighted mode (DAT_143afb99c) is off. The 101000 and 102000 battle scripts read the role and use thinkAttr_doAdmirer to hang back.",
+  "how": "FUN_140640b80 calls FUN_140640050 every 0.1 s over the group.",
+  "sources": [
+   {
+    "kind": "exe",
+    "ref": "tools/fn.sh 140640b80"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/NpcThinkParam.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/enemy.md"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "yes",
+   "where": "src/enemy.rs TEAM_ATTACKERS / TEAM_SURROUNDERS"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Face 3 soldiers: one attacks and one circles at a time; the third stands back.",
+  "note": "Weighted mode never exercised; the role order inside a group is by distance (not traced).",
+  "needs": [
+   {
+    "id": "ai.logic-to-battle",
+    "why": "scripts read the role"
+   }
+  ]
+ },
+ {
+  "id": "ai.caution-confirm-search",
+  "category": "ai",
+  "title": "Caution: walk to the spot and look around (ConfirmCautionTarget)",
+  "summary": "On CAUTION the enemy runs ConfirmCautionTarget: it goes to the sound or last-seen spot, looks left and right, waits 3 to 8 s and, if nothing turns up, returns to non-battle behaviour.",
+  "values": "Goal 5100: look anims 600 and 610 (400600 / 400610 in alert state), wait 3 to 8 s (some paths 4 to 6), arrival radius 2.5 m. Sound ids 7900 / 7910 stop the approach at 0.4 m, 3501 at 0.2 m. After the search the SpEffect 200001 caution state ends.",
+  "how": "_COMMON_AddCautionAndFindGoal builds the goals from goalAction_* and the sound rank.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/ai_src/common_common_logic_func.lua"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/enemy.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "src/ai.rs (goal logic runs from the Lua; look anims are plain clips)"
+  },
+  "his": {
+   "has": "partial",
+   "where": "crates/sim/src/lua_ai (script runs, no sound slots to trigger it)"
+  },
+  "check": "Throw a loud object near a soldier out of sight: it walks over, looks around for 3 to 8 s, walks off.",
+  "note": "Wolf's SpEffect 220070 'damage not found' is tied to the same state but its setter is not traced.",
+  "needs": [
+   {
+    "id": "ai.target-state-machine",
+    "why": "CAUTION"
+   },
+   {
+    "id": "ai.hearing-model",
+    "why": "sound triggers it"
+   }
+  ]
+ },
+ {
+  "id": "ai.notice-anim-by-state",
+  "category": "ai",
+  "title": "Notice reactions: which clip and SpEffect play",
+  "summary": "The reaction to spotting Wolf depends on the state. A found Wolf plays notice clip 401040 with SpEffect 200004; combat caution plays 201040 with 200002; an unaware caution plays 101040 with 200001; a memory target plays 401020 or 1010.",
+  "values": "Default notice clip 1040. Notice clip lengths vary by chr. The reaction is skipped when the row's goalAction is 0.",
+  "how": "_COMMON_AddStateTransitionGoal, called from COMMON_EzSetup before the battle goal.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/ai_src/common_common_logic_func.lua"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/enemy.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "src/ai.rs (Lua path; clip availability per chr)"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Walk into a soldier's cone: it plays the 401040 notice (arm point) before it attacks.",
+  "note": "",
+  "needs": [
+   {
+    "id": "ai.target-state-machine",
+    "why": "state change"
+   }
+  ]
+ },
+ {
+  "id": "ai.goal-action-flags",
+  "category": "ai",
+  "title": "goalAction_* columns pick the reaction style",
+  "summary": "Six NpcThinkParam columns pick how an enemy reacts to each state change: to caution, to important caution, to find, to a corpse, to an indication position and to disappear. Values are small ints from 0 to 5.",
+  "values": "Common combos (ToCaution, ToCautionImportant, ToFind, ToCorpse, ToIndication, ToDisappear): (2,3,3,3,2,2) 148 rows, (2,2,2,2,2,2) 110, (1,1,1,1,1,1) 98, (0,0,0,0,0,0) 55. Meaning: 0 default turn then ConfirmCautionTarget; 1 turn and stay or look; 2 approach (path check, run); 3 approach with forced-walk region; 4 stay and look; 5 keep away 2.5 m.",
+  "how": "_COMMON_AddCautionAndFindGoal reads the column for the current trigger.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/NpcThinkParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/ai_src/common_common_logic_func.lua"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/ai.rs via GetExcelParam"
+  },
+  "his": {
+   "has": "partial",
+   "where": "crates/sim/src/lua_ai/runtime.rs (param lookup)"
+  },
+  "check": "Compare a row with 1s (stays and looks) and one with 2s (walks over) by making a noise.",
+  "note": "",
+  "needs": [
+   {
+    "id": "ai.caution-confirm-search",
+    "why": "action 0 leads there"
+   }
+  ]
+ },
+ {
+  "id": "ai.leash-home-return",
+  "category": "ai",
+  "title": "Leash: enemies give up and walk home",
+  "summary": "An enemy fights only while Wolf is near its post. If Wolf leaves the leash range the enemy stops and returns to its home point. Closer to home the leash is looser: it fights inside backhomeBattleDist and goes home otherwise.",
+  "values": "Soldier row 10100000: backhomeDist 48 m (563 rows; 115 rows have 9999 = no leash), maxBackhomeDist 64 m, backhomeBattleDist 8 m, BackHomeLife_OnHitEneWal 6 s. Rule in _COMMON_SetBattleActLogic: if target is searchable and maxBackhomeDist < movePointEffectRange go home; else if backhomeDist < range fight only when distance < backhomeBattleDist; else fight.",
+  "how": "Distance measured from the enemy's home (spawn) point to Wolf. NonBattleAct BackToHome follows.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/NpcThinkParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/ai_src/common_common_logic_func.lua"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/enemy.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/ai.rs; src/enemy.rs home point"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Run 50 m from a soldier's post: it quits and turns home, then patrols again.",
+  "note": "",
+  "needs": [
+   {
+    "id": "ai.nonbattle-act",
+    "why": "where it goes"
+   }
+  ]
+ },
+ {
+  "id": "ai.back-home-look",
+  "category": "ai",
+  "title": "Look-back pause before going home",
+  "summary": "Before walking home a soldier stops and watches Wolf for a few seconds if he is still close. The pause is BackHome_LookTargetTime and applies inside BackHome_LookTargetDist.",
+  "values": "Soldier row 10100000: BackHome_LookTargetTime 9 s, BackHome_LookTargetDist 16 m. BackHome_GuardActId is 0 on all rows.",
+  "how": "Non-battle logic BackToHome_With_Parry.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/NpcThinkParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/ai_src/common_non_battle_act.lua"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "src/ai.rs (script path; values read from the row)"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Break contact at 20 m and wait: the soldier faces your last spot for up to 9 s before heading back.",
+  "note": "",
+  "needs": [
+   {
+    "id": "ai.leash-home-return",
+    "why": "starts after the leash"
+   }
+  ]
+ },
+ {
+  "id": "ai.nonbattle-act",
+  "category": "ai",
+  "title": "Non-battle behaviour: route, small acts, wander",
+  "summary": "With no target the enemy runs NonBattleAct: walk its route points, stop at each for the arrival anim and wait time, do small idle acts or wander around the post. It can parry from here (BackToHome_With_Parry).",
+  "values": "nonBattleActLife is 9 s on 729 rows. Route moves use POINT_MOVE_POINT; small acts and WalkAround are goals in common_non_battle_act.lua.",
+  "how": "Logic falls through to the non-battle goal when there is no target and no caution state.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/ai_src/common_non_battle_act.lua"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/NpcThinkParam.json"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/ai.rs; src/enemy.rs patrol"
+  },
+  "his": {
+   "has": "yes",
+   "where": "crates/sim/src/lua_ai (Lua runs; no patrol points loaded)"
+  },
+  "check": "Watch an unalerted soldier in Ashina Outskirts walk, stop at points and idle.",
+  "note": "",
+  "needs": [
+   {
+    "id": "ai.patrol-route-types",
+    "why": "route data"
+   }
+  ]
+ },
+ {
+  "id": "ai.patrol-route-types",
+  "category": "ai",
+  "title": "Patrol routes and their types",
+  "summary": "Routes are MSB route lists with a patrol type that picks the order: loop, back and forth, random, slot loops and run-to-end.",
+  "values": "PatrolType (table 0x143af9550): 0 loop, 1 back and forth, 2 random, 3 loop over slots 0 to 15, 4 nearest of slots 16 to 31, 5 run to last point then -1, 6 and up never. 152 routes on 9 maps use only types 0 (101 routes), 1 (27) and 5 (24).",
+  "how": "Route points come from the MSB; the patrol goal reads PatrolType.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/enemy.md"
+   },
+   {
+    "kind": "exe",
+    "ref": "tools/fn.sh PatrolType 143af9550"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "yes",
+   "where": "src/enemy.rs patrol"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "A type-1 route: the soldier walks to the end, turns and walks back. A type-0 route loops.",
+  "note": "",
+  "needs": [
+   {
+    "id": "map.msb-routes",
+    "why": "route lists"
+   }
+  ]
+ },
+ {
+  "id": "ai.patrol-wake-hold",
+  "category": "ai",
+  "title": "Map AI hold: enemies sleep until Wolf is near",
+  "summary": "A map event can keep an enemy's AI off until Wolf enters a region or hurts it. Damage counts only if the final HP loss is above 0.",
+  "values": "common_func 20005110: uses 2004[1] (AI off) until Wolf is in the region or the character is damaged. Damage record needs final HP damage > 0.",
+  "how": "EMEVD per enemy placement; distant AI is idle to save work.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/enemy.md"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/event/common_func.emevd"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "src/enemy/script.rs (activation regions; HP damage rule)"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Stand outside an AI hold region: the enemy stays still. Cross the line: it starts patrolling.",
+  "note": "",
+  "needs": [
+   {
+    "id": "map.activation-regions",
+    "why": "regions"
+   }
+  ]
+ },
+ {
+  "id": "ai.navigation-flags",
+  "category": "ai",
+  "title": "Navigation: which path moves a row may use",
+  "summary": "Each enemy row says what the navmesh path may use: edges, jumps, drops (underfloor), large spaces, ladders, doors. Some rows turn local avoidance or path moves off.",
+  "values": "Counts of 771 rows: Edge 767, Jump 123, Underfloor 35, Edge_Ordinary 53, LargeSpace 12, Ladder 2, Door 3, Hole 0, InSideWall 0. useWanderedOffPathInterrupt 28, disableLocalSteering 27, disablePathMove 24.",
+  "how": "NpcThinkParam navigation block; the navmesh itself is in the map nvm file.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/NpcThinkParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "reference/Paramdex/SDT/Defs/NpcThinkParam.xml"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "src/enemy.rs (walk-mesh follow; no jump or ladder links)"
+  },
+  "his": {
+   "has": "partial",
+   "where": "crates/sim (navmesh in the nav module)"
+  },
+  "check": "A row with Jump 1 follows Wolf over a gap; a row without it stops at the edge.",
+  "note": "",
+  "needs": [
+   {
+    "id": "map.navmesh",
+    "why": "nvm geometry"
+   }
+  ]
+ },
+ {
+  "id": "ai.parry-rank",
+  "category": "ai",
+  "title": "Enemies deflect on a timer by rank A, B or C",
+  "summary": "Enemies decide to guard or deflect Wolf's attack by a rank set on the enemy: A deflects a thrust always, B half the time, C never. The check runs every 0.1 s and needs Wolf inside the front cone.",
+  "values": "Rank SpEffects: 221000 rank A (201 NpcParam rows: General 10200000/10203010, Genichiro 71001000, Isshin 54000000, Owl 50600000), 221001 rank B (374), 221002 rank C (605: Ochimusha 10100000). Common_Parry (common_common_func_NTC.lua:333): Wolf in 90 degree front cone and AI in Wolf's 90 degree cone within GetDist_Parry. Wolf thrust 109970: A 100 % deflect (3101), B 50 %, C 0. Wolf unguardable 109980 and rank A: spin step 5201/5211. Otherwise deflect 3101 with chance ConsecutiveGuardCount*50, else guard 3100. Wolf rush 109990 forces EndureAttack guard (off if self 220062 or Wolf 110450/110500/110501).",
+  "how": "Timer AI_TIMER_PARRY_INTERVAL 0.1 s; InterruptParryTiming 24 hands the decision to Common_Parry.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/ai_src/common_common_func_NTC.lua"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/NpcParam.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/enemy.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/combat.rs enemy parry; src/ai.rs"
+  },
+  "his": {
+   "has": "partial",
+   "where": "crates/sim/src/lua_ai (script runs)"
+  },
+  "check": "Attack a rank-C soldier repeatedly: guard and no deflect. Attack a General: he deflects about half your lunges early in a fight and more later.",
+  "note": "",
+  "needs": [
+   {
+    "id": "combat.deflect",
+    "why": "player deflect matched"
+   },
+   {
+    "id": "combat.guard",
+    "why": "guard"
+   }
+  ]
+ },
+ {
+  "id": "ai.consecutive-guard-count",
+  "category": "ai",
+  "title": "Consecutive-guard counter raises deflect chance",
+  "summary": "An enemy remembers how many of Wolf's attacks it guarded in a row. Each guard adds 1 and the deflect chance is that count times 50 percent, so a second guard in a row deflects. It resets after 1 s.",
+  "values": "SpEffects 200215 / 200216 add 1 (reset after 1 s by timer 13); 200210 / 200211 reset it; 200250 weak-guard counter.",
+  "how": "Read by Common_Parry (see ai.parry-rank).",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/ai_src/common_common_func_NTC.lua"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/combat.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Land two attacks within 1 s on a rank-C soldier: the second is guarded cleanly.",
+  "note": "",
+  "needs": [
+   {
+    "id": "ai.parry-rank",
+    "why": "reads the counter"
+   }
+  ]
+ },
+ {
+  "id": "ai.guard-stance",
+  "category": "ai",
+  "title": "Guard stance and 'AI is guarding' state",
+  "summary": "Enemies hold a guard stance by action id. 9910 is the guard action; 9920 is the general stance. A guarding enemy blocks front hits and spends posture; scripts check it to choose acts.",
+  "values": "ACTION_TYPE_GUARD = 9910; stance 9920. Guard anim 3100, deflect 3101.",
+  "how": "HKS ExecEvent from the Lua goal.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/enemy.md"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/ai_src/common_ai_define.lua"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/combat.rs"
+  },
+  "his": {
+   "has": "partial",
+   "where": "crates/sim"
+  },
+  "check": "Attack a guarding soldier: sparks and posture damage, no health loss.",
+  "note": "",
+  "needs": [
+   {
+    "id": "combat.guard",
+    "why": "guard rules"
+   },
+   {
+    "id": "combat.posture",
+    "why": "posture cost"
+   }
+  ]
+ },
+ {
+  "id": "ai.pc-attack-reach-table",
+  "category": "ai",
+  "title": "Enemies know Wolf's attack reach",
+  "summary": "The AI keeps a table of Wolf attack distances so it guards or steps back at the right moment. Distances are in metres.",
+  "values": "common_ai_define.lua PC_ATTACK_DIST: stand 3.4, crouch 4.4, thrust 5.8, tessen 2.5, axe 3.3, kodachi 3.8, lance 7.03 / 5.39, lance charge 11.61 / 12 / 7.5, spin 3.57, jump front / back 2.81 / 3.41, men 4.16 / 3.59, Kensei iai 3.45, iai 4.9, invisible iai 6.5 / 6.4, hassou 4.2, hushigiri 3.85 / 6.19 / 8.38, kick rush 2.7, punch 3, gatotsu 10.11.",
+  "how": "Used by GetDist_Parry and the back-step choice (one extra metre out it may step back instead).",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/ai_src/common_ai_define.lua"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/ai_src/common_common_func_NTC.lua"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "via the Lua constants"
+  },
+  "his": {
+   "has": "yes",
+   "where": "via the Lua constants"
+  },
+  "check": "A soldier backs off from a thrust at 5 m but not at 2 m.",
+  "note": "",
+  "needs": [
+   {
+    "id": "ai.parry-rank",
+    "why": "uses these"
+   }
+  ]
+ },
+ {
+  "id": "ai.enemy-healing",
+  "category": "ai",
+  "title": "Enemies do not heal except by reset effects",
+  "summary": "Regular enemies do not use items to heal. Health returns only by script effects: a non-final deathblow resets HP, a full-recovery effect runs at revival, and some rows regenerate by SpEffect.",
+  "values": "ThrowDef anim of a non-final deathblow adds 300610 'HP reset' (changeHpRate -100) via TAE 67. 401000 full recovery (c5100 revival a000_020000). 310999 and 3101999 are always-regenerate rows on NTC Ochimusha (changeHpRate -10, endurance -1). 3500020 / 3500021 monk heal rows and 3120050 Sokushinbutsu drain -40. Wolf's own recoveries: 110015, 106065/6. UseItem goal exists but only changes the equip item.",
+  "how": "SpEffect changeHpRate (negative = heal in this field's sign convention) from TAE 67 or an EMEVD request.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/ai_src/common_use_item.lua"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/enemy.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "src/status.rs; src/combat.rs deathblow reset"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Do a mark on a multi-mark boss: its HP bar refills. Hit a regular soldier and wait: no regen.",
+  "note": "Setter of 3500020/21 monk heal and 3120050 not found in Lua or boss scripts (open question).",
+  "needs": [
+   {
+    "id": "deathblows.mark-reset",
+    "why": "HP reset on a non-final deathblow"
+   }
+  ]
+ },
+ {
+  "id": "ai.interrupt-events",
+  "category": "ai",
+  "title": "AI interrupts: events the logic can react to",
+  "summary": "Besides replanning on timers, the engine offers named interrupts to the goals: Damaged, FindAttack, ParryTiming, Inside_ObserveArea, SpEffect on/off and platoon orders. Scripts return true to take them.",
+  "values": "INTERUPT_FindAttack 1, Damaged 2, Inside_ObserveArea 16, ParryTiming 24, PlatoonAiOrder 42, ActivateSpecialEffect 43, InactivateSpecialEffect 44, UseItem. Interrupts go to the logic first, then the goals from the deepest one up.",
+  "how": "Engine queues the interrupt; AddObserveSpecialEffectAttribute registers a SpEffect watch.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/ai_src/common_ai_define.lua"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "docs/AI.md"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/enemy.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/ai.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "crates/sim/src/lua_ai/runtime.rs"
+  },
+  "check": "Hit an enemy mid-approach: the Damaged interrupt cancels its goal and replans.",
+  "note": "",
+  "needs": [
+   {
+    "id": "ai.goal-kinds-lifecycle",
+    "why": "goals take interrupts"
+   }
+  ]
+ },
+ {
+  "id": "ai.observe-speffect-owner",
+  "category": "ai",
+  "title": "SpEffect watch fires only for the named character",
+  "summary": "AddObserveSpecialEffectAttribute fires only when the character named in the call gets or loses the SpEffect. Matching on any character fires scripts too often.",
+  "values": "Fix in ours: AiState::observes checks the owner.",
+  "how": "Interrupts 43 and 44 carry the owner.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/enemy.md"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "yes",
+   "where": "src/ai.rs AiState::observes"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Sim test: give an unrelated chr the watched SpEffect: the enemy does not react.",
+  "note": "",
+  "needs": [
+   {
+    "id": "ai.interrupt-events",
+    "why": "the interrupt"
+   }
+  ]
+ },
+ {
+  "id": "ai.event-request-slots",
+  "category": "ai",
+  "title": "Map events steer AI through request slots",
+  "summary": "EMEVD talks to AI with AI command slots: 2004[17] sets a command number, the AI reads it with GetEventRequest. Bosses use it for phase switches. 2004[19] swaps the AI id at runtime.",
+  "values": "GetEventRequest FUN_1405b36b0, command store FUN_1405b4730. Boss events send commands 0, 1, 2, 10, 11 (see bosses.* records).",
+  "how": "The Lua battle goal reads the request in its Activate or interrupt.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/enemy.md"
+   },
+   {
+    "kind": "exe",
+    "ref": "tools/fn.sh 1405b36b0"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/enemies/boss_scripts.json"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "yes",
+   "where": "src/enemy/script.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "crates/sim/src/events.rs"
+  },
+  "check": "Kill Corrupted Monk's first mark: the phantoms spawn (AI command 1).",
+  "note": "",
+  "needs": [
+   {
+    "id": "bosses.ai-command-slots",
+    "why": "boss use"
+   }
+  ]
+ },
+ {
+  "id": "ai.turn-in-place",
+  "category": "ai",
+  "title": "Turning on the spot uses 90 or 180 degree clips",
+  "summary": "When an enemy needs a big turn it plays a turn-in-place clip. A turn of 45 degrees or more picks 90 or 180; below 135 degrees gives the 90 clip.",
+  "values": "c9997 ExecTurn; |TurnAngle| >= 45 gives 90/180 clip; < 135 = 90.",
+  "how": "Engine turn action from the Lua Turn goal.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/enemy.md"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "partial",
+   "where": "src/enemy.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Walk behind a soldier fast: it plays the 180 turn.",
+  "note": "",
+  "needs": []
+ },
+ {
+  "id": "ai.pacing-recorded",
+  "category": "ai",
+  "title": "Real fight tempo of the General and Ochimusha",
+  "summary": "Recorded fights show how often enemies attack. The General swings about 30 times a minute, Ochimusha about 28.",
+  "values": "General 10203010 live: 30.4 attacks/min, start-to-start median 1.54 s, end-to-start 0.52 s. Ochimusha live 28.3/min vs sim 24.7/min.",
+  "how": "Pace is the odds tables plus cool-downs in the battle script.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/enemy.md"
+   },
+   {
+    "kind": "recording",
+    "ref": "docs/kb/recordings.md"
+   }
+  ],
+  "confidence": "recorded",
+  "ours": {
+   "has": "yes",
+   "where": "sim tests"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Run the sim for 5 minutes against a General and count attack starts: 150 plus or minus 15.",
+  "note": "Ochimusha sim runs 13 percent slower than recorded; a gap not closed.",
+  "needs": [
+   {
+    "id": "ai.logic-to-battle",
+    "why": "odds tables"
+   }
+  ]
+ },
+ {
+  "id": "ai.death-noise-ours",
+  "category": "ai",
+  "title": "Death noise is an invention in ours",
+  "summary": "Our enemies make a 20 m noise on death (sound 4060). It is not in Sekiro and is flagged as a gap.",
+  "values": "Sound id 4060, radius 20.",
+  "how": "Ours-only.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/enemy.md"
+   }
+  ],
+  "confidence": "open-question",
+  "ours": {
+   "has": "partial",
+   "where": "src/enemy.rs death_noise"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Kill a soldier next to another: ours alerts it; the real game may not.",
+  "note": "Verify against a recording of a silent kill.",
+  "needs": [
+   {
+    "id": "ai.hearing-model",
+    "why": "sound model"
+   }
+  ]
+ },
+ {
+  "id": "ai.ignore-stealth-time",
+  "category": "ai",
+  "title": "ignoreStealthTime is unused",
+  "summary": "NpcThinkParam has ignoreStealthTime but it is 0 on all rows, so it has no effect.",
+  "values": "771 rows = 0.",
+  "how": "Data only.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/NpcThinkParam.json"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "not needed"
+  },
+  "his": {
+   "has": "yes",
+   "where": "not needed"
+  },
+  "check": "Dump the column.",
+  "note": "",
+  "needs": []
+ },
+ {
+  "id": "ai.corpse-detection",
+  "category": "ai",
+  "title": "Enemies spot corpses of their friends",
+  "summary": "An enemy that sees a dead friend goes to CAUTION and walks to it. The corpse is seen inside corpse_eye_dist_rate times the normal sight distance and forgotten after CorpseTargetForgetTime.",
+  "values": "corpse_eye_dist_rate: 0 (no corpse sense) on 349 rows, 20 on 100 rows, 25 on 97 rows. Corpse forget time 150 s. Corpse targets give ToCautionCorpseTarget actions.",
+  "how": "Target type CORPSE_POS 7.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/NpcThinkParam.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/enemy.md"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "partial",
+   "where": "src/stealth.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Leave a killed soldier in view of another: it walks to the body and searches.",
+  "note": "Rate reading (percent of eye_dist vs raw metres) not traced.",
+  "needs": [
+   {
+    "id": "ai.target-state-machine",
+    "why": "CORPSE_POS slot"
+   }
+  ]
+ },
+ {
+  "id": "ai.ranged-when-no-path",
+  "category": "ai",
+  "title": "No path to a hanging or far target switches to ranged acts",
+  "summary": "If Wolf hangs from a ledge (109220 / 109221) or the enemy has no path, Ochimusha uses ranged attacks (acts 7 and 27) instead of walking up.",
+  "values": "101000_battle.lua: checks Wolf SpEffects 109220/109221 and path result.",
+  "how": "Battle goal uses IsPathExist and target SpEffect checks.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/ai_src/101000_battle.lua"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "via Lua"
+  },
+  "his": {
+   "has": "yes",
+   "where": "via Lua"
+  },
+  "check": "Hang below a ledge near an Ochimusha: it throws or shoots.",
+  "note": "",
+  "needs": [
+   {
+    "id": "movement.hang",
+    "why": "ledge hanging"
+   }
+  ]
+ },
+ {
+  "id": "ai.sight-tuning-distributions",
+  "category": "ai",
+  "title": "How sight tuning varies across 771 enemy rows",
+  "summary": "Most enemies share a few presets. Knowing them predicts how any enemy behaves.",
+  "values": "eye_dist_normal 25 (169 rows), 20 (150), 120 (48 bosses). Left angle 30 (323), 45 (114), 180 (34). BattleStartDist 12 (215), 9999 (23). SightTargetForgetTime 15 (317), 10 (126), 99999 (95), 3600 (69), 3 (49). backhomeDist 48 (563), 9999 (115). ear_dist 0.1 (633), 6 (16 dogs).",
+  "how": "NpcThinkParam column counts.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/NpcThinkParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "reference/Paramdex/SDT/Defs/NpcThinkParam.xml"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "reads the param"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Pick two rows with different presets and compare detection ranges.",
+  "note": "",
+  "needs": [
+   {
+    "id": "ai.sight-normal-cone",
+    "why": "fields"
+   }
+  ]
+ }
+]

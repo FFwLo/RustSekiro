@@ -1,0 +1,2035 @@
+[
+ {
+  "id": "combat.hit-resolution-order",
+  "category": "combat",
+  "title": "Order of one hit",
+  "summary": "When a hitbox touches a character the defender's damage module runs the guard test, the deflect test, then posture and HP numbers, then applies posture, break flags and deathblow readiness, then knockback, damage type and events. The attacker's own module runs in parallel for its recoil and posture cost.",
+  "values": "Defender: b6f690 calls b6c880 (guard, deflect, numbers), b6e6a0 (apply, break, deathblow ready), then b6bfe0 (knockback), b6bd40 (damage type), b6e5a0 (hit stop). Attacker: b698d0.",
+  "how": "Exe damage module per hit record; the record is built by 10b6880 from AtkParam and BehaviorParam.",
+  "sources": [
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "../sekiro-rs/docs/COMBAT-RULES.md"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/guard-deflect.md"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "partial",
+   "where": "src/combat.rs (resolve)"
+  },
+  "his": {
+   "has": "yes",
+   "where": "../sekiro-rs/crates/sim/src/combat/hit.rs"
+  },
+  "check": "Run the sim guard tests (guard_outcomes_against_the_soldier_slash) or watch one block in the game: HP, posture, knockback and the reaction all come from the same contact.",
+  "note": "Ours resolves the same stages in one function with some stages merged.",
+  "needs": [
+   {
+    "id": "combat.hitbox-contact",
+    "why": "a hit needs an active attack hitbox touching a hurtbox"
+   },
+   {
+    "id": "combat.atkparam-chain",
+    "why": "the numbers come from TAE judge, BehaviorParam, AtkParam"
+   }
+  ]
+ },
+ {
+  "id": "combat.atkparam-chain",
+  "category": "combat",
+  "title": "From animation to hit numbers",
+  "summary": "A TAE attack event carries a behavior judge id. BehaviorParam (NPC) or BehaviorParam_PC (Wolf) turns it into an AtkParam row, a bullet or a SpEffect. The AtkParam row holds every damage, posture, knockback, guard and hit stop number.",
+  "values": "NPC behavior id = 200000000 + behaviorVariationId x 1000 + judge. Example: soldier NpcParam 10100000 variation 10100, judge 100 -> BehaviorParam 210100100 -> AtkParam_Npc 10100100 (atkPhys 80, directAtkStamDamage 18, repelLostStamDamage 18, atkStam 9, repelLostStamDamage_Attacker 45).",
+  "how": "TAE event type 2 BulletBehavior / 307 PCBehavior; BehaviorParam; AtkParam_Npc / AtkParam_Pc.",
+  "sources": [
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "../sekiro-rs/docs/PARAMS.md"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/AtkParam_Npc.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/damage.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/data.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "../sekiro-rs/crates/formats/src/param/typed.rs"
+  },
+  "check": "Pick an enemy attack animation, read its judge id, and look the AtkParam row up in AtkParam_Npc.json.",
+  "note": "",
+  "needs": []
+ },
+ {
+  "id": "combat.hitbox-contact",
+  "category": "combat",
+  "title": "Hit shapes and swept contact",
+  "summary": "An attack row has up to 16 hit shapes. Each is a capsule between two dummy polys, or a sphere when DmyPoly2 is -1. A hit lands when a shape touches one of the defender's ragdoll hurt capsules while the TAE attack window is live.",
+  "values": "AtkParam hit0..hit15 DmyPoly1/2, Radius, hitType, Priority. 788 NPC and 210 PC rows use more than one shape. Hurt capsules: Wolf 18, every fighter has them. Reach examples: Wolf Combo1 4.2 m, General 3000 4.25 m, Ogre 5.25 m, dog 3.5 m.",
+  "how": "TAE attack windows; physics hkx hurtboxes; ours tests 4 interpolated poses per tick so fast slashes do not tunnel.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/damage.md"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/attacks.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/combat.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "../sekiro-rs/crates/sim/src/hits.rs"
+  },
+  "check": "Sim: enemy_reach_table (ignored test) prints first-contact frames and reaches.",
+  "note": "hitType 0/1 meaning and hitSourceType/Priority are not used; no data row needs them.",
+  "needs": [
+   {
+    "id": "combat.atkparam-chain",
+    "why": "the shape comes from the AtkParam row"
+   }
+  ]
+ },
+ {
+  "id": "combat.guard-arc",
+  "category": "combat",
+  "title": "Guard arc (which side blocks)",
+  "summary": "A guard or deflect only works when the attack comes from inside the guarder's front arc. The test runs before the block or deflect decision, so a perfectly timed press with your back to the attacker is still a direct hit. Wolf covers the whole front half; enemies cover 60 degrees on each side.",
+  "values": "Pass when dot(facing, direction to attacker) > cos(halfAngle). Wolf half-angle 90 (weapon guardAngle 0 means 90; TAE ShieldBlock ArgB 90 in every guard anim). NpcParam guardAngle 60 on 1249 of 1279 rows, 0 on 30. AtkParam isAllDirGuard=1 on 4 NPC rows skips the test.",
+  "how": "Exe b6c880 (ours: FUN_140b6ab40). NPCs read NpcParam, the player reads the weapon.",
+  "sources": [
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "../sekiro-rs/docs/COMBAT-RULES.md"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/guard-deflect.md"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/NpcParam.json"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "yes",
+   "where": "src/combat.rs (guard_half_angle)"
+  },
+  "his": {
+   "has": "yes",
+   "where": "../sekiro-rs/crates/sim/src/combat/hit.rs"
+  },
+  "check": "In game: deflect an enemy while running past so he ends up behind you; the hit lands. Sim: a_deflect_facing_away_is_still_hit.",
+  "note": "Ours reads the half-angle from the ShieldBlock TAE ArgB, his from the weapon guardAngle. Both give 90 for Wolf. Enemy 60 degrees is in ours since 2026-10-07.",
+  "needs": [
+   {
+    "id": "movement.facing-turn",
+    "why": "facing decides which hits are inside the arc"
+   }
+  ]
+ },
+ {
+  "id": "combat.block-vs-deflect-repel",
+  "category": "combat",
+  "title": "Block versus deflect (repel values)",
+  "summary": "The engine compares the defender's repel defence with the attack's repel power. Lower is a block, equal or higher is a deflect. The deflect window is a short SpEffect that raises Wolf's repel defence to 40 while ordinary guard is about 20.",
+  "values": "Attack repel power: NPC guardAtkRate 30 on 2154 of 2396 rows, 100 on 213 rows, 0 on 28. Wolf: weapon guardBaseRepel 20 (Kusabimaru), attackBaseRepel 10; SpEffect 105010 (stateInfo 158) defFlickPower 40. Player attack repel power = guardAtkRateCorrection/100 x attackBaseRepel (Combo1: 300% x 10 = 30). Rows with guardAtkRate 100 can never be deflected by the 40 override. SpEffect defFlickPower overrides when higher.",
+  "how": "Exe b6c880; repel defence for NPC = guard row guardBreakRate x product of guardDefFlickPowerRate over 158/204 effects (a137a0, 84cd80, bfccc0).",
+  "sources": [
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "../sekiro-rs/docs/COMBAT-RULES.md"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/EquipParamWeapon.json"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "partial",
+   "where": "src/combat.rs (window by SpEffect 105010 stateInfo 158)"
+  },
+  "his": {
+   "has": "yes",
+   "where": "../sekiro-rs/crates/sim/src/combat/hit.rs"
+  },
+  "check": "Check SpEffectParam 105010 defFlickPower 40 and Kusabimaru EquipParamWeapon 5100 guardBaseRepel 20 in the extracted json.",
+  "note": "Ours decides deflect by the 105010 window time, not by comparing numbers. Same outcome for guardAtkRate 30 attacks. Rows with 100 are an open difference.",
+  "needs": [
+   {
+    "id": "combat.guard-arc",
+    "why": "the arc test comes first"
+   }
+  ]
+ },
+ {
+  "id": "combat.deflect-window-first",
+  "category": "combat",
+  "title": "First deflect window (6 frames)",
+  "summary": "Pressing guard from standing gives a deflect window of 6 animation frames (0.2 s at 30 fps) at the start of StandToDeflectGuard. After that the same press is an ordinary block.",
+  "values": "a050_203000 StandToDeflectGuard: ref 203 (SpEffect 105010) frames 0-6; ShieldBlock flag 3 frames 0-18. Sprint variant a050_203001: ref 203 frames 0-12. Live: 41 of 42 deflects came at press-to-hit 0-6 frames; blocks from frame 6-7.",
+  "how": "TAE adds SpEffect 105010 (stateInfo 158, defFlickPower 40) via ref 203; exe compares repel values.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/tae/c0000/a50.json"
+   },
+   {
+    "kind": "recording",
+    "ref": "../memscope-data/logs/rec_20261008_051450"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/guard-deflect.md"
+   }
+  ],
+  "confidence": "recorded",
+  "ours": {
+   "has": "yes",
+   "where": "src/combat.rs + player.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "../sekiro-rs/crates/sim/src/combat/hit.rs"
+  },
+  "check": "In game: tap guard right before an enemy swing lands and count frames. Sim: guard tests in sim_tests (timed guard -> deflect, late guard -> block).",
+  "note": "",
+  "needs": [
+   {
+    "id": "combat.guard-input",
+    "why": "guard press starts the deflect state"
+   }
+  ]
+ },
+ {
+  "id": "combat.deflect-spam-chain",
+  "category": "combat",
+  "title": "Deflect spam chain (windows shrink)",
+  "summary": "Pressing guard again while already guarding restarts the guard in a shorter variant. Successive presses give deflect windows of 6, 3, 2 and then 0 frames, so mashing guard removes the deflect and leaves only blocks.",
+  "values": "StandToDeflectGuard 203000: ref 203 frames 0-6. 203005: frames 0-3. 203006: frames 0-2. 203007: no ref 203 (0 frames). Seconds: 0.200, 0.100, 0.067, 0. HKS: with ref 212 (guard combo window) a press steps variants 2, 3, 4.",
+  "how": "HKS Validate guard continue (ref 212) + per-variant TAE windows. Not an engine counter.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/tae/c0000/a50.json"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "../sekiro-rs/docs/HKS-COMBAT.md"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "../sekiro-rs/docs/COMBAT-RULES.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/player.rs + combat.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "../sekiro-rs/crates/sim/src/character.rs"
+  },
+  "check": "In game: mash guard against a slow attacker; only the first press deflects. Sim: 4th spammed press -> no deflect.",
+  "note": "Community (Discord) numbers 6, 3, 2, 0 agree with the TAE data.",
+  "needs": [
+   {
+    "id": "combat.guard-input",
+    "why": "each press must register as a fresh guard"
+   }
+  ]
+ },
+ {
+  "id": "combat.deflect-posture-decay",
+  "category": "combat",
+  "title": "Repeated deflects send back less posture",
+  "summary": "Each consecutive deflect multiplies the posture damage sent back to the attacker by 1, 0.5, 0.25 and 0.125. The soldier's slash returns 45, 22, 11 and 5. The chain resets when the SpEffect times out.",
+  "values": "SpEffects 105020 / 105021 / 105022 / 105023: defStaminaAttackRate 1 / 0.5 / 0.25 / 0.125, stateInfo 204, effectEndurance 0. Applied by the guard anims 203000 / 203005 / 203006 / 203007.",
+  "how": "Exe bfc490: repelLostStamDamage_Attacker x weapon rate x product of defStaminaAttackRate over the defender's stateInfo 204 effects.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "../sekiro-rs/docs/COMBAT-RULES.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/combat.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "../sekiro-rs/crates/sim/src/combat/effects.rs"
+  },
+  "check": "Deflect the same enemy slash four times in a row and watch his posture bar jump less each time. Sim: repeated_deflects_break_the_soldier.",
+  "note": "",
+  "needs": [
+   {
+    "id": "combat.deflect-spam-chain",
+    "why": "the decay follows the same guard variants"
+   }
+  ]
+ },
+ {
+  "id": "combat.posture-damage-to-defender",
+  "category": "combat",
+  "title": "Posture damage to the defender by outcome",
+  "summary": "The attack row stores one posture value for each outcome. A direct hit uses directAtkStamDamage, a block uses repelLostStamDamage, and a deflect uses atkStam (the smallest). Names are from the attacker's viewpoint: repelLost means the guarder won the push.",
+  "values": "Soldier slash 10100100: direct 18, block 18, deflect 9. Wolf Combo1 5000010: direct 30, block 30, deflect 15 (atkStam), all x growth. Wolf thrust 5000000: 20 / 20 / 10.",
+  "how": "Exe: record slots +0x3C direct (844070), +0x38 block, +0x34 deflect (8439a0); NPC attackers return the AtkParam value times the product of their SpEffect staminaAttackRate (bfe3b0); player weapon attacks use staminaAttackPowerRate and attackBaseStamina.",
+  "sources": [
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "../sekiro-rs/docs/COMBAT-RULES.md"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/guard-deflect.md"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/AtkParam_Npc.json"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "yes",
+   "where": "src/combat.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "../sekiro-rs/crates/sim/src/combat/posture.rs"
+  },
+  "check": "Compare a posture-bar drop in game with the three AtkParam fields of the attacking move.",
+  "note": "",
+  "needs": [
+   {
+    "id": "combat.posture-bar",
+    "why": "damage lands on the posture bar"
+   },
+   {
+    "id": "combat.atkparam-chain",
+    "why": "values come from the move's AtkParam row"
+   }
+  ]
+ },
+ {
+  "id": "combat.posture-damage-to-attacker",
+  "category": "combat",
+  "title": "Posture damage to the attacker",
+  "summary": "The attacker also loses posture. Nothing on a direct hit for most rows, repelVictoryStamDamage_Attacker when blocked, and repelLostStamDamage_Attacker when deflected, scaled down by repeated deflects. Wolf's own sword rows have 0 in all three, so Wolf pays nothing when an enemy deflects him.",
+  "values": "Soldier slash: deflect 45 (x1, 0.5, 0.25, 0.125). Wolf Combo1 rows: 0 / 0 / 0. doesBreakRepelStamDamage is 1 on 1954 of 2396 NPC rows and 0 on all 443 PC rows (both-sides break reaction when a deflect empties posture).",
+  "how": "Exe 842790 reads AtkParam +0x1B0 (block) and +0x1B2 (deflect) times weapon passiveStaminaAtkRate times defStaminaAttackRate.",
+  "sources": [
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "../sekiro-rs/docs/COMBAT-RULES.md"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/guard-deflect.md"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "yes",
+   "where": "src/combat.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "../sekiro-rs/crates/sim/src/combat/posture.rs"
+  },
+  "check": "Deflect an enemy slash: his bar rises by the _Attacker value times growth. Let an enemy deflect Wolf: Wolf's bar does not move in vanilla.",
+  "note": "Live check (2026-10-08): deflected attackers lost 163 posture on c1020 rows, consistent with the row x growth.",
+  "needs": [
+   {
+    "id": "combat.deflect-posture-decay",
+    "why": "the deflected value is scaled by the chain"
+   }
+  ]
+ },
+ {
+  "id": "combat.posture-attribute-rates",
+  "category": "combat",
+  "title": "Posture rates by attack attribute",
+  "summary": "After the base value the defender multiplies by a rate chosen by the attack's staminaPhysicsAttribute: 1 slash, 2 light hit, 3 thrust, 4 neutral, 5 deathblow, 6 heavy hit, 7 anti-ground, 8 anti-air, 9 light shoot, 10-12 attributes A-C. Which SpEffects count depends on the outcome.",
+  "values": "NPC rows: staminaPhysicsAttribute 1 x1520, 2 x361, 4 x242, 3 x147, 9 x99. Direct hit: all active SpEffect rates except stateInfo 158, 204, 110, 300. Block: only stateInfo 158 effects. Deflect: only 204 effects. Armored servant 400250 puts 0.5 on these.",
+  "how": "Exe 844660 (NpcParam +0x27C on), 10ce8d0 (SpEffect +0x328 on), bfafa0.",
+  "sources": [
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "../sekiro-rs/docs/COMBAT-RULES.md"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/NpcParam.json"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "partial",
+   "where": "src/combat.rs (stamina_rate_field)"
+  },
+  "his": {
+   "has": "yes",
+   "where": "../sekiro-rs/crates/sim/src/combat/posture.rs"
+  },
+  "check": "The jump kick (attribute 7) takes x8 posture on a perilous sweep because SpEffect 400200 sets defAntiGroundStaminaDmgRate 8.",
+  "note": "",
+  "needs": [
+   {
+    "id": "combat.posture-damage-to-defender",
+    "why": "the rate multiplies the base"
+   }
+  ]
+ },
+ {
+  "id": "combat.wolf-guard-posture-cut",
+  "category": "combat",
+  "title": "Wolf's guard cut on incoming posture",
+  "summary": "When Wolf blocks or deflects, incoming posture damage is cut. The exe formula adds 1 percent plus weapon and skill terms. Live recordings show x0.785 for slash attacks and x0.74 for strike attacks, which comes from the Flowing Water skill SpEffects.",
+  "values": "Formula: clamp((weaponDef x staminaGuardDefRate + stat bonus + 1) x (1 + guardRow.guardStaminaCutRate/100) x SpEffect guardStaminaCutRate, 0, 100) percent. Kusabimaru staminaGuardDef 0, so the base cut is 1 percent (soldier slash 18 -> 17 block, 9 -> 8 deflect). Flowing Water: SkillParam 280 -> SpEffect 150420 (deflect) / 150421 (block), def<Attr>StaminaDmgRate by attack attribute; live 27 -> 75 posture on a x3.75 area (0.74).",
+  "how": "Exe a24180 -> 840870 -> 845d80; latent skill SpEffect.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/damage.md"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "../sekiro-rs/docs/COMBAT-RULES.md"
+   }
+  ],
+  "confidence": "recorded",
+  "ours": {
+   "has": "yes",
+   "where": "src/combat.rs (guard_skill_rate)"
+  },
+  "his": {
+   "has": "partial",
+   "where": "../sekiro-rs/crates/sim/src/combat/posture.rs"
+  },
+  "check": "In game: with and without the skill, compare posture lost per deflect of the same attack.",
+  "note": "Disagreement: sekiro-rs models only the 1 percent cut (no skill rate); ours applies skill rates from config player.skills. Live data supports the skill.",
+  "needs": [
+   {
+    "id": "progression.flowing-water-skill",
+    "why": "the extra cut is the Flowing Water skill"
+   },
+   {
+    "id": "combat.posture-damage-to-defender",
+    "why": "cut applies to the base"
+   }
+  ]
+ },
+ {
+  "id": "combat.wolf-vitality-posture-graphs",
+  "category": "combat",
+  "title": "Wolf's vitality, posture and regen graphs",
+  "summary": "Wolf's maximum HP, maximum posture and base posture regen come from CalcCorrectGraph tables driven by Prayer Necklace and vitality growth. They are 320 / 120 / 30 at the start and top out at 1120 / 420 / 105.",
+  "values": "CalcCorrectGraph 500 (HP): 320 at 1, 1120 at 11. 501 (posture): 120 at 1, 420 at 11. 504 (regen per second): 30 at 1, 105 at 11. Graph 163 (guard stat bonus) is 0 everywhere. Debt floor for the player is TentativePlayerParam DebtSp 0.",
+  "how": "Player game data stat -> CalcCorrectGraph evaluator (exe 850b10).",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/CalcCorrectGraph.json"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "../sekiro-rs/docs/COMBAT-RULES.md"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/damage.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/data.rs"
+  },
+  "his": {
+   "has": "partial",
+   "where": "../sekiro-rs/crates/sim/src/progression.rs"
+  },
+  "check": "Read CalcCorrectGraph rows 500, 501, 504. Live save: 1120 HP / 420 posture.",
+  "note": "Which progression value feeds graph 504 is not identified (his doc). Ours uses a config value.",
+  "needs": [
+   {
+    "id": "progression.prayer-necklace",
+    "why": "growth items raise the graph input"
+   }
+  ]
+ },
+ {
+  "id": "combat.enemy-posture-capacity",
+  "category": "combat",
+  "title": "Enemy posture, regen and debt floor",
+  "summary": "Each NpcParam row sets maximum posture (stamina), base regen per second and a debt floor. Posture may go below zero by the debt amount before the break.",
+  "values": "Soldier 10100000: stamina 75, regen 20/s, maxDebtStamina -30. Samurai General 10203010: 480, 30/s. Honjo 71001000 and Owl 50600000: 660, 60/s. staminaGuardDef: Owl 50 (percent cut on posture while guarding).",
+  "how": "NpcParam stamina, staminaRecoverBaseVel, maxDebtStamina; posture setter bd6710/bd4e20 clamps to [floor, max] (floor = maxDebtStamina).",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/NpcParam.json"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "../sekiro-rs/docs/COMBAT-RULES.md"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/guard-deflect.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/enemy.rs + actor.rs (posture_debt)"
+  },
+  "his": {
+   "has": "yes",
+   "where": "../sekiro-rs/crates/sim/src/combat/posture.rs"
+  },
+  "check": "Read NpcParam rows; in game a posture bar can overshoot full slightly before the break.",
+  "note": "",
+  "needs": [
+   {
+    "id": "combat.posture-bar",
+    "why": "values fill the bar"
+   }
+  ]
+ },
+ {
+  "id": "combat.posture-regen-formula",
+  "category": "combat",
+  "title": "Posture regeneration formula",
+  "summary": "Posture regenerates every frame. Speed is the base, plus flat bonuses, times the product of SpEffect rates, times the animation percent, times the StaminaControl percent. Whole points are applied and the fraction is carried.",
+  "values": "points/s = prod(staminaRecoverSpeedRate) x (base + sum staminaRecoverChangeSpeed) x animPercent/100 x chr scale x StaminaControl ratio/100. Base: NPC staminaRecoverBaseVel, Wolf graph 504. The update is skipped only by HKS act(110), which no shipped script calls. Live: Wolf walking 85-110/s on the 1120/420 save, about 320/s in idle a000_000000.",
+  "how": "Exe ChrIns::Update a04850 (vtable slot 0xb0), carry at ChrDataModule +0x15c.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/enemy.md"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "../sekiro-rs/docs/COMBAT-RULES.md"
+   },
+   {
+    "kind": "recording",
+    "ref": "../memscope-data/logs/rec_20261008_054259"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "yes",
+   "where": "src/actor.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "../sekiro-rs/crates/sim/src/combat/recovery.rs"
+  },
+  "check": "Sim: posture_recovery_is_scaled_by_tae_225. In game: watch a bar refill idle versus mid-combo.",
+  "note": "Ours first assumed an HP curve; the exe shows none (hp_scales_regen off).",
+  "needs": [
+   {
+    "id": "combat.posture-bar",
+    "why": "what regenerates"
+   }
+  ]
+ },
+ {
+  "id": "combat.posture-regen-hp-gates",
+  "category": "combat",
+  "title": "Lower HP slows posture regen",
+  "summary": "Posture regen is cut at low HP by resident SpEffects with an HP condition. The effects multiply when several are active. The thresholds differ for enemies and Wolf.",
+  "values": "Enemies: 300600 / 300601 / 300602 at HP <= 80 / 60 / 40 percent, staminaRecoverSpeedRate 0.6 / 0.5 / 0.333 (soldier 20/s becomes 12, 6, 2). Wolf: armor residentSpEffect 5221 / 5222 / 5223 at HP 75 / 50 / 25 percent, rates 0.75 / 0.667 / 0.5 (products 0.75, 0.5, 0.25).",
+  "how": "SpEffect conditionHp + staminaRecoverSpeedRate, multiplied in a04850/bfe360. Wolf's rows come via EquipParamProtector 102000 residentSpEffectId.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/guard-deflect.md"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "../sekiro-rs/docs/COMBAT-RULES.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/enemy.rs + actor.rs"
+  },
+  "his": {
+   "has": "partial",
+   "where": "../sekiro-rs/crates/sim/src/combat/recovery.rs"
+  },
+  "check": "Drop an enemy below 40 percent HP and compare how slowly its bar refills.",
+  "note": "Community says 75/50/25 breakpoints for everyone. Data shows enemy gates at 80/60/40 and Wolf at 75/50/25. Inclusive or exclusive edge is unknown.",
+  "needs": [
+   {
+    "id": "combat.posture-regen-formula",
+    "why": "gates are multipliers inside the formula"
+   }
+  ]
+ },
+ {
+  "id": "combat.posture-regen-by-animation",
+  "category": "combat",
+  "title": "Regen depends on what the animation is doing",
+  "summary": "Each animation carries a StaminaControl type (TAE 960) and sometimes a regen percent (TAE 225). Wolf regens 0 percent during the first 39 frames of an attack, step and sprint start, and 200 percent while holding guard. Enemies use their own table.",
+  "values": "Wolf StaminaControlParam row 0: type 0 = 0 percent, type 1 = 67, type 10 = 200; type 5 pins posture. a050_300000 Combo1 type 0 frames 0-39; a000_213301 step type 0 frames 0-18; StandToDeflectGuard type 0 frames 0-12 then 10; DeflectGuardIdle a050_002000 type 10 for all 92 frames. Enemy row 1000100: type 2 = 33, 4 = 200, 6 = 1100 and pinned to 30 percent. TAE 225 on soldier guard 25 percent; General guard and deflect 33 percent.",
+  "how": "StaminaControlParam row from NpcParam.staminaControlParamId (Wolf row 0); TAE 960 and 225.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/StaminaControlParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/tae/c0000/a50.json"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "../sekiro-rs/docs/COMBAT-RULES.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/actor.rs + data.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "../sekiro-rs/crates/sim/src/combat/recovery.rs"
+  },
+  "check": "Guarding recovers about twice as fast as running; swinging recovers nothing for about a second.",
+  "note": "Community says guard doubles regen: matches type 10. His doc finds Owl's guard has no regen cut at all.",
+  "needs": [
+   {
+    "id": "combat.posture-regen-formula",
+    "why": "anim percent is one factor"
+   }
+  ]
+ },
+ {
+  "id": "combat.posture-break-rule",
+  "category": "combat",
+  "title": "What counts as a break",
+  "summary": "A direct hit that would take remaining posture below 1 is a posture break. A block that does so is a guard break. A deflect never records a break for the defender. HP below 2 with a deathblow left also counts as a break.",
+  "values": "Break flags: record +0x1C6 posture break, +0x1C4 guard break, +0x1CF attacker broken. The break test uses the projected value even when disableStaminaAttack zeroes the applied damage. Posture 'remaining' counts down: break when < 1.",
+  "how": "Exe b6e6a0.",
+  "sources": [
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "../sekiro-rs/docs/COMBAT-RULES.md"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "../sekiro-rs/docs/COMBAT-FUNDAMENTALS.md"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "yes",
+   "where": "src/combat.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "../sekiro-rs/crates/sim/src/combat/posture.rs"
+  },
+  "check": "Fill an enemy's bar with sword hits to get the trunk collapse; with deflect-only hits the bar fills but only the next block or hit breaks it.",
+  "note": "",
+  "needs": [
+   {
+    "id": "combat.posture-bar",
+    "why": "the break reads the bar"
+   },
+   {
+    "id": "deathblows.posture-break-opening",
+    "why": "a break opens a deathblow"
+   }
+  ]
+ },
+ {
+  "id": "combat.deflect-never-breaks",
+  "category": "combat",
+  "title": "A perfect deflect never breaks the deflector",
+  "summary": "Even with a full posture bar a successful deflect does not break Wolf or an enemy. The deflect plays a stagger instead and the next block or hit does the break. Damage type 1028 marks the deflect stagger.",
+  "values": "Damage type 3 deflected; 1028 deflected while the attacker's posture broke or when the deflector's bar is empty with doesBreakRepelStamDamage. HKS maps 1028 to a deflect stagger, not a break.",
+  "how": "Exe b6e6a0 plus b6bd40 damage type; HKS player script.",
+  "sources": [
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "../sekiro-rs/docs/COMBAT-RULES.md"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "../sekiro-rs/docs/HKS-COMBAT.md"
+   },
+   {
+    "kind": "web",
+    "ref": "https://sekiro-shadows-die-twice.fandom.com/wiki/Category:Combat"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "yes",
+   "where": "src/combat.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "../sekiro-rs/crates/sim/src/combat/damage_type.rs"
+  },
+  "check": "Let Wolf's posture fill by blocking, then deflect one more attack: no break. Sim: deflect_never_breaks_the_defender.",
+  "note": "",
+  "needs": [
+   {
+    "id": "combat.posture-break-rule",
+    "why": "this is the exception to the break rule"
+   }
+  ]
+ },
+ {
+  "id": "combat.hp-damage-formula",
+  "category": "combat",
+  "title": "HP damage formula",
+  "summary": "HP damage is the sum of five elements. Each element is the attack's base times growth rates times the defender's cut rates, floored at zero, and a positive total under 1 rounds up to 1. The attack-versus-defence curve is flat in the shipped game, so defence stats do nothing.",
+  "values": "Per element: attackPower + weapon attackBase x reinforce x correction/100 (Wolf) or AtkParam atkPhys (NPC), x SpEffect attack rates, x defender cut rates by attribute. Curve knots 0.12, 1, 2.5, 8 with output globals zero, so it returns the attack unchanged. Then x hit-part rate x repel cut, truncate. Soldier slash 80 on neutral defender deals 80. Wolf Combo1 at attack power 1: 80.",
+  "how": "Exe 840eb0 (sum), 840ce0 (curve), 841c80 (repel cut), b6c880.",
+  "sources": [
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "../sekiro-rs/docs/COMBAT-RULES.md"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/damage.md"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "yes",
+   "where": "src/combat.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "../sekiro-rs/crates/sim/src/combat/hp.rs"
+  },
+  "check": "Hit an unarmored enemy with Combo1 at low attack power and read the HP loss.",
+  "note": "The flat curve is inferred from the zero globals; the repel-cut source is not traced.",
+  "needs": [
+   {
+    "id": "combat.atkparam-chain",
+    "why": "attack base comes from AtkParam"
+   },
+   {
+    "id": "progression.attack-power",
+    "why": "growth multiplies it"
+   }
+  ]
+ },
+ {
+  "id": "combat.attack-power-growth",
+  "category": "combat",
+  "title": "Attack power growth (Memories)",
+  "summary": "Wolf's damage and posture damage are multiplied by a growth SpEffect, row 160000 plus the attack-power level. It rises by 0.25 per level to level 14 and slower after.",
+  "values": "AP1..14: M = 1 + 0.25 x (AP-1) (AP14 = 4.25). AP15..27: +0.10 each; AP28..51: +0.05; AP52 = 6.775; AP53..99: +0.01. Opening slash is 80 HP / 30 posture at AP1 and 340 HP at AP14. Live save AP15 = 4.35: Wolf's normal slash did 348 HP and 130 posture (80 x 4.35, 30 x 4.35).",
+  "how": "SpEffectParam 160000+N 'Player Growth_Core Level N' (physics/magic/fire/thunder/dark AttackRate and staminaAttackRate all equal, stateInfo 204).",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "../sekiro-rs/docs/COMBAT-RULES.md"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/damage.md"
+   },
+   {
+    "kind": "web",
+    "ref": "https://sekiro-shadows-die-twice.fandom.com/wiki/Attack_Power"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/data.rs (growth SpEffects)"
+  },
+  "his": {
+   "has": "yes",
+   "where": "../sekiro-rs/crates/sim/src/progression.rs"
+  },
+  "check": "Read SpEffect 160001..160015. In game: first slash damage at start vs after memories.",
+  "note": "How progression attaches AP to the effect is not traced in the exe (his doc).",
+  "needs": [
+   {
+    "id": "progression.attack-power",
+    "why": "memories raise the level"
+   }
+  ]
+ },
+ {
+  "id": "combat.area-growth-doping",
+  "category": "combat",
+  "title": "Enemy growth by area and time of day",
+  "summary": "Enemies get area SpEffects that multiply HP, posture, damage and regen. Each area has morning, day, evening, night and bell-evening rows, so later times in the same area hit harder. The Samurai Residence truth rows give x3.75 attack and posture attack in the recordings.",
+  "values": "Ashina Outskirts 7010-7014: base then x1.25 / 1.5 / 2 / 3 for the later rows (kb). Rows 7124 / 7820 Samurai Residence Truth: physicsAttackPowerRate 3.75, staminaAttackRate 3.75, maxHpRate 4.25-4.4. All-modes shared 7953: attack x3.25, HP and posture x3.75; hard-mode twin 7951: attack x4.25, HP x5.0. Live: unguarded Wolf HP loss = atkPhys x 3.75 (96 -> 360).",
+  "how": "SpEffectParam 'Growth Doping' rows applied by map/area; NPC attack uses the attacker's SpEffect product.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/attacks.md"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/damage.md"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   }
+  ],
+  "confidence": "recorded",
+  "ours": {
+   "has": "yes",
+   "where": "src/enemy.rs (area_doping)"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Fight the same samurai in two different areas and compare HP loss per hit.",
+  "note": "sekiro-rs has no area scaling (his duels use fixed rows).",
+  "needs": [
+   {
+    "id": "progression.new-game-plus-scaling",
+    "why": "later cycles stack more growth"
+   },
+   {
+    "id": "combat.hp-damage-formula",
+    "why": "scales the base"
+   }
+  ]
+ },
+ {
+  "id": "combat.block-hp-physical",
+  "category": "combat",
+  "title": "No HP chip on a physical block",
+  "summary": "Wolf's sword cuts all physical damage when blocking or deflecting, so a block costs posture but no HP in normal mode. An NPC that blocks Wolf also cuts everything, because its slash guard cut is 100 on a base of 100.",
+  "values": "Kusabimaru EquipParamWeapon 5100: physGuardCutRate 100, physJustGuardCutRate 100. NPC example 10100000: physGuardCutRate 100, slashGuardCutRate 100 (k = 2). Formula for Wolf: (100 - k x cut x reinforce x durability x (1 + guardRow.guardRate/100)) / 100.",
+  "how": "Exe 8460d0 / 845ed0.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/EquipParamWeapon.json"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "../sekiro-rs/docs/COMBAT-RULES.md"
+   },
+   {
+    "kind": "web",
+    "ref": "https://www.reddit.com/r/Sekiro/comments/shna5x/damage_from_deflection/"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/combat.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "../sekiro-rs/crates/sim/src/combat/hp.rs"
+  },
+  "check": "Block a normal slash: HP bar stays the same, posture bar rises.",
+  "note": "Charmless adds chip; see combat.charmless-block-chip.",
+  "needs": [
+   {
+    "id": "combat.block-vs-deflect-repel",
+    "why": "only guarded hits use the cut"
+   }
+  ]
+ },
+ {
+  "id": "combat.guard-elemental-chip",
+  "category": "combat",
+  "title": "Elements get through a guard",
+  "summary": "Guard cut rates are per element. Fire is cut 33 percent on a block and 50 percent on a deflect, 'magic' 25 and 50, dark 50 and 100. The thunder fields are 0, so thunder damage goes through a guard unreduced. Status build-up has its own guard resist values.",
+  "values": "Kusabimaru: fireGuardCutRate 33 / fireJustGuardCutRate 50; magGuardCutRate 25 / magJustGuardCutRate 50; darkGuardCutRate 50 / darkJustGuardCutRate 100; thunGuardCutRate 0 / thunJustGuardCutRate 0; bloodGuardResist 33 / 50; diseaseGuardResist 25 / 100; poison, curse, freeze 0. NPC defenders: fire 33, magic 25, dark 50.",
+  "how": "Exe 840eb0 per-element multiplier arrays; EquipParamWeapon fields.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/EquipParamWeapon.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/NpcParam.json"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "../sekiro-rs/docs/COMBAT-RULES.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "src/combat.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "../sekiro-rs/crates/sim/src/combat/hp.rs"
+  },
+  "check": "Block a fire attack and a lightning attack and compare HP lost.",
+  "note": "Which of mag and thun is the in-game lightning is not confirmed by data alone.",
+  "needs": [
+   {
+    "id": "status.fire",
+    "why": "fire damage uses these cuts"
+   },
+   {
+    "id": "combat.block-hp-physical",
+    "why": "same cut mechanism as physical"
+   }
+  ]
+ },
+ {
+  "id": "combat.charmless-enemy-scaling",
+  "category": "combat",
+  "title": "Charmless mode (Kuro's Charm returned): enemy scaling",
+  "summary": "Giving Kuro's Charm back raises enemy strength. First-playthrough hard mode growth rows multiply enemy attack and posture attack by 1.25 and HP, posture and posture regen by 1.2 in the first area, and hard mode correction rows add more HP and posture by enemy tier.",
+  "values": "SpEffect 7710 (Castle morning, 1 week hard mode): attack and staminaAttack x1.25, maxHp / maxStamina / staminaRecoverSpeed x1.2. 7900 small fish: maxHp, maxStamina, recover x1.5, souls and skill points x1.2; 7901 strong fish x1.2; 7902 mid boss x1.125; 7903 boss: souls and skill x1.2 only. Community: +25 percent damage taken, +20 percent XP and sen.",
+  "how": "Hard-mode flag selects the 1-week hard mode growth and correction SpEffects.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   },
+   {
+    "kind": "web",
+    "ref": "https://sekiroshadowsdietwice.wiki.fextralife.com/Kuro's+Charm"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Hand the charm to Kuro and compare a first enemy's HP with and without.",
+  "note": "The wiki's 'enemies have more vitality and posture' matches the x1.2 / x1.5 rows. The mapping from the mode flag to the rows is not traced.",
+  "needs": [
+   {
+    "id": "progression.kuros-charm",
+    "why": "the charm toggles the mode"
+   },
+   {
+    "id": "combat.area-growth-doping",
+    "why": "stacks on the area rows"
+   }
+  ]
+ },
+ {
+  "id": "combat.charmless-block-chip",
+  "category": "combat",
+  "title": "Charmless mode: chip damage and extra posture on block",
+  "summary": "Without Kuro's Charm a normal block costs HP (community measured about 30 percent of the hit) and much more posture, so only a perfect deflect avoids damage. In normal mode a block costs no HP.",
+  "values": "Community: chip about 30 percent, posture much higher on block than deflect, status build-up about 40 percent faster, enemy damage +25 percent. Data: no SpEffect or param field found that adds block chip; Wolf's phys guard cut stays 100. Hard mode SpEffect 8610 gives Wolf bleed and poison damage x1.5, curse and disease x1.2.",
+  "how": "Unknown: likely an engine branch on the hard-mode flag in the guard cut path (8460d0), not a param.",
+  "sources": [
+   {
+    "kind": "web",
+    "ref": "https://sekiroshadowsdietwice.wiki.fextralife.com/Kuro's+Charm"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "../sekiro-rs/docs/COMBAT-FUNDAMENTALS.md"
+   }
+  ],
+  "confidence": "open-question",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Charmless run: block a soldier slash and watch the HP bar.",
+  "note": "sekiro-rs also lists the chip state as unidentified. 8610 status x1.5 (bleed, poison) does not match the community 40 percent faster; units may differ.",
+  "needs": [
+   {
+    "id": "progression.kuros-charm",
+    "why": "needs the charm mode"
+   },
+   {
+    "id": "combat.block-hp-physical",
+    "why": "this is the normal-mode baseline it changes"
+   }
+  ]
+ },
+ {
+  "id": "combat.perilous-flags",
+  "category": "combat",
+  "title": "Perilous attacks are unblockable flags",
+  "summary": "A perilous attack is not a separate system. It is an AtkParam row whose disableGuard or disableJustGuard flags are set for Wolf's guard type. The same red kanji warning covers different counters, so the move shape tells you what to do.",
+  "values": "AtkParam_Npc counts of (disableGuard g0, g1, disableJustGuard g0, g1): (1,1,1,1) 238 rows = grabs, neither guard type works; (1,0,1,0) 60 rows = sweeps, katana can neither block nor deflect, Loaded Umbrella can block; (1,0,0,0) 111 rows = thrusts, katana cannot block but can deflect; 1987 rows all 0. Guard type 0 = Kusabimaru, 1 = Loaded Umbrella.",
+  "how": "Exe b6c880 tables at 0x142a7ce28 (block) and 0x142a7ce38 (deflect), indexed by the guard row's guardAttribute.",
+  "sources": [
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "../sekiro-rs/docs/COMBAT-RULES.md"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/AtkParam_Npc.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/guard-deflect.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/combat.rs + data.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "../sekiro-rs/crates/sim/src/perilous.rs"
+  },
+  "check": "Sim: perilous thrust breaks a block / can be deflected; sweep cannot be deflected. In game: only deflect or Mikiri the thrust.",
+  "note": "Which flag set means 'thrust' versus 'sweep' is inferred from the rows; every thrust in the audited characters fits.",
+  "needs": [
+   {
+    "id": "combat.block-vs-deflect-repel",
+    "why": "the flags override the repel comparison"
+   }
+  ]
+ },
+ {
+  "id": "combat.perilous-warning",
+  "category": "combat",
+  "title": "Perilous warning kanji",
+  "summary": "A short dummy bullet puts the red danger kanji on Wolf shortly before a perilous move. The kanji is made by a TAE BulletBehavior with a judge 980-989 that spawns a 2 m, 0.1 s zero-damage bullet applying SpEffect 211000.",
+  "values": "Judges: 980 sweep, 982 thrust, 983 grab on the General; the Owl uses 980, 985, 986 for sweeps and 987 for the stab. BehaviorParam 10001600 / 50601980-987, AtkParam 8, EmittePosType 7, generation max distance 5 m (soldier) or 9 m (Owl). SpEffect 211000 vfxId 48100, effect 600035 at Wolf's dummy 220. Sweep a000_003020 warns at 0.2 s, blade at 1.067 s.",
+  "how": "TAE BulletBehavior -> Bullet -> SpEffect with vfx 48100; shown only on the player.",
+  "sources": [
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "../sekiro-rs/docs/COMBAT-RULES.md"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/guard-deflect.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/hud.rs (Perilous)"
+  },
+  "his": {
+   "has": "yes",
+   "where": "../sekiro-rs/crates/game/src/combat_hud.rs"
+  },
+  "check": "Stand more than 5 m from a soldier doing a sweep: no kanji appears.",
+  "note": "Kanji timing and sound are not decoded (FXR). The judge-to-kind mapping is not general (FwLo's 980/982/983 fits only the General).",
+  "needs": [
+   {
+    "id": "interface.perilous-kanji",
+    "why": "the HUD shows the warning"
+   }
+  ]
+ },
+ {
+  "id": "combat.perilous-thrust",
+  "category": "combat",
+  "title": "Perilous thrust: deflect or Mikiri",
+  "summary": "A thrust cannot be blocked with the katana but can be deflected, or answered with the Mikiri Counter. Its AtkParam has atkType 2, disableGuard set for the katana and disableJustGuard clear.",
+  "values": "Soldier thrust AtkParam 10100230: atkType 2, atkPhys 48, atkStam 6, directAtkStam 12, disableGuard_vs0 = 1, guardAtkRate 30, repelLostStamDamage_Attacker 45, staminaDamageAttackHitParry 90. Wolf's own charged thrust 5000000 uses the same flags.",
+  "how": "AtkParam flags + exe tables.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/AtkParam_Npc.json"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "../sekiro-rs/docs/COMBAT-RULES.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/combat.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "../sekiro-rs/crates/sim/src/perilous.rs"
+  },
+  "check": "Deflect the soldier's thrust: no HP lost; try blocking late: you take the hit.",
+  "note": "",
+  "needs": [
+   {
+    "id": "combat.perilous-flags",
+    "why": "the flags define it"
+   }
+  ]
+ },
+ {
+  "id": "combat.perilous-sweep",
+  "category": "combat",
+  "title": "Perilous sweep: jump it",
+  "summary": "A sweep cannot be blocked or deflected with the katana. Wolf avoids it by jumping (type 1 i-frames from the first jump frame) and can stomp the attacker for large posture damage.",
+  "values": "Katana flags (1,0,1,0) on 60 NPC rows. Jump anims carry IFrameType 1 Sweeps (a000_201114 frames 0-38, a000_201110 0-38, air kick a000_213100 0-73).",
+  "how": "AtkParam flags; TAE 954 IFrameType 1.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/AtkParam_Npc.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/tae/c0000/a00.json"
+   },
+   {
+    "kind": "web",
+    "ref": "https://sekiro-shadows-die-twice.fandom.com/wiki/Category:Combat"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/combat.rs"
+  },
+  "his": {
+   "has": "partial",
+   "where": "../sekiro-rs/crates/sim/src/perilous.rs"
+  },
+  "check": "Jump when the kanji appears and press jump again over the enemy.",
+  "note": "",
+  "needs": [
+   {
+    "id": "combat.perilous-flags",
+    "why": "flags define it"
+   },
+   {
+    "id": "armor.iframes-954-sweep-jump",
+    "why": "jump i-frames avoid it"
+   }
+  ]
+ },
+ {
+  "id": "combat.perilous-grab",
+  "category": "combat",
+  "title": "Perilous grab: step away",
+  "summary": "A grab (throwFlag) cannot be guarded by either guard type. It is avoided with a timed dodge (grab i-frames) or by staying out of reach. A connected grab plays a paired throw.",
+  "values": "238 NPC rows (1,1,1,1). Step anims carry IFrameType 7 Grabs: forward step frames 0-9, back/left/right frames 0-6. General neck grab: Wolf anim a210_600000 (170 f), enemy ThrowAtk4100, ThrowAttackBehavior lands at frame 45.",
+  "how": "AtkParam throwFlag 1 -> ThrowParam; TAE 954 type 7.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/AtkParam_Npc.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/guard-deflect.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/combat.rs (resolve_throws)"
+  },
+  "his": {
+   "has": "partial",
+   "where": "../sekiro-rs/crates/sim/src/grab.rs"
+  },
+  "check": "Step at the grab: you pass through; stand still: you are thrown.",
+  "note": "Grab escape (mashing) is category deathblows/status; see the exe trace in enemy.md.",
+  "needs": [
+   {
+    "id": "armor.iframes-954-grab",
+    "why": "grab i-frames avoid it"
+   }
+  ]
+ },
+ {
+  "id": "combat.mikiri-window",
+  "category": "combat",
+  "title": "Mikiri Counter window",
+  "summary": "Stepping forward into a perilous thrust at the right moment counters it. The forward step carries ChrActionFlag 125 (MikiriCounter) for its first 12 frames. A thrust contact while the flag is on is intercepted before normal hit resolution.",
+  "values": "a000_213301 GroundStep_F (40 f): flag 125 frames 0-12 (0.4 s); neutral step a000_213300 is the same clip. SpEffect 100254 (ref 16) over the same span. Back and side steps have no flag 125. Enemy thrust contact windows: soldier 3013 judge 230 at 0.767-0.933 s; Owl 3033 judge 310 at 1.467-1.867 s. Flag 125 beats thrust i-frames.",
+  "how": "TAE ChrActionFlag 125 on Wolf + thrust hitbox with atkType 2 and katana disableGuard.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/tae/c0000/a00.json"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "../sekiro-rs/docs/COMBAT-RULES.md"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/guard-deflect.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/combat.rs (mikiri)"
+  },
+  "his": {
+   "has": "yes",
+   "where": "../sekiro-rs/crates/sim/src/perilous.rs"
+  },
+  "check": "Step forward 0-12 frames before the thrust connects. Sim: forward_step_counters_the_thrust, timed_step_dodges_through_the_slash.",
+  "note": "Exe reader of flag 125 is not traced. His forward-hemisphere gate for the enemy is inferred.",
+  "needs": [
+   {
+    "id": "movement.step",
+    "why": "the counter is a forward step"
+   },
+   {
+    "id": "combat.perilous-thrust",
+    "why": "needs a thrust"
+   }
+  ]
+ },
+ {
+  "id": "combat.mikiri-posture",
+  "category": "combat",
+  "title": "Mikiri posture damage and follow-up",
+  "summary": "A Mikiri puts a fixed 90 posture on the thrusting enemy (staminaDamageAttackHitParry), with no HP damage. It plays a throw pair: Wolf stomps the blade. If the posture breaks, a different pair plays that offers a deathblow.",
+  "values": "AtkParam staminaDamageAttackHitParry 90 on soldier 10100100/230, Owl 50600310/311, Genichiro 71000250. SpEffect attackHitParryStaminaAttackRate multiplies it (skill bonus). ThrowParam 11020190 surviving pair (Wolf a201_511800, enemy ThrowDef13800); break pair 11020120 (a201_511100 / 13100) then attack -> 11020121. Soldier 75 posture breaks, Owl 660 does not.",
+  "how": "Exe: contact parry path; throw rows chosen by the target's remaining posture.",
+  "sources": [
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "../sekiro-rs/docs/COMBAT-RULES.md"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/guard-deflect.md"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/damage.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/combat.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "../sekiro-rs/crates/sim/src/perilous.rs"
+  },
+  "check": "Mikiri a soldier: he collapses; Mikiri a boss: his bar rises by 90 only.",
+  "note": "Learned-skill posture bonus (attackHitParryStaminaAttackRate) not modelled in his sim. Live: 3 of 3 c1010 mikiri that emptied posture took the break pair.",
+  "needs": [
+   {
+    "id": "deathblows.mikiri-break-pair",
+    "why": "a broken target offers the pair"
+   },
+   {
+    "id": "arts.mikiri-skill",
+    "why": "skill raises the damage"
+   }
+  ]
+ },
+ {
+  "id": "combat.mikiri-dummy-hitbox",
+  "category": "combat",
+  "title": "Mikiri counter-only hitbox",
+  "summary": "Besides the real thrust, a perilous thrust fires a wider zero-damage 'counter dummy' hitbox that only exists to be countered. It carries the same 90 posture and is not a normal hit.",
+  "values": "Soldier judges 940 / 941 beside the real 230 (category 6, damage 0, wider capsule); Owl 311 beside 310; Wolf-side parallel hitbox AtkParam 940 'mikiri dummy'. They run from 0.767 to 0.933 s (soldier).",
+  "how": "BehaviorParam category 6 rows; the counter intercepts them before ordinary resolution.",
+  "sources": [
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "../sekiro-rs/docs/COMBAT-RULES.md"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/guard-deflect.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "src/combat.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "../sekiro-rs/crates/sim/src/perilous.rs"
+  },
+  "check": "Mikiri from slightly wider distance than the visible blade reach still works.",
+  "note": "Owl's zero-damage blinding hit (type 1, behaviour id 17) is not a counter dummy.",
+  "needs": [
+   {
+    "id": "combat.mikiri-window",
+    "why": "the dummy is what the flag 125 reads"
+   }
+  ]
+ },
+ {
+  "id": "combat.jump-counter-sweep",
+  "category": "combat",
+  "title": "Jump counter on a perilous sweep",
+  "summary": "A jump kick that lands during a perilous sweep deals 80 posture instead of 10, because the sweeping attacker wears a short SpEffect that multiplies posture taken from anti-ground attacks by 8. A kick outside that window is an ordinary 10.",
+  "values": "SpEffect 400200 'jump kick is effective when posture is low', stateInfo 912, defAntiGroundStaminaDmgRate 8 (40 on tutorial 310601), worn for most of the sweep clip (soldier 3020: 0.0-2.667 s; Owl 3004: 0.133-1.567 s). Kick AtkParam_Pc 901: directAtkStamDamage 10, attribute 7, so 10 x 8 = 80 at AP1; AP6 gives 180. Soldier posture 75 breaks.",
+  "how": "Exe per-attribute rate (bfafa0) x SpEffect 400200; the kick is Wolf's air press.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/AtkParam_Pc.json"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "../sekiro-rs/docs/COMBAT-RULES.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/combat.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "../sekiro-rs/crates/sim/src/perilous.rs"
+  },
+  "check": "Jump over a sweep and press jump again at the enemy; compare to kicking him idle.",
+  "note": "A report of reduced damage on a landed sweep counter was not reproduced.",
+  "needs": [
+   {
+    "id": "movement.air-kick",
+    "why": "the stomp is the air jump press"
+   },
+   {
+    "id": "combat.perilous-sweep",
+    "why": "needs a sweep"
+   }
+  ]
+ },
+ {
+  "id": "combat.air-kick-hit",
+  "category": "combat",
+  "title": "Air kick hitbox properties",
+  "summary": "Wolf's jump-press kick cannot be blocked or deflected, hits with three dummies, and pushes at damage level 5. The kick that bounces off an enemy needs an active hit on him and a short SpEffect.",
+  "values": "AtkParam_Pc 901: atkType 1, disableGuard_vs0 = 1, disableJustGuard_vs0 = 1, dmgLevel 5 (push), atkPhys 10, atkStam 5, directAtkStamDamage 10, dummies 612-614, knockbackDist 0.8. Enemy kick-off: HKS env 2004 'swing is hitting' with SpEffect 100334 (ref 204).",
+  "how": "TAE PCBehavior judge 901 in a000_213100.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/AtkParam_Pc.json"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "../sekiro-rs/docs/COMBAT-RULES.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/player.rs + combat.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "../sekiro-rs/crates/sim/src/perilous.rs"
+  },
+  "check": "Kick an enemy who is blocking: he cannot guard it.",
+  "note": "How long env 2004 stays true after a hit is inferred.",
+  "needs": [
+   {
+    "id": "movement.air-kick",
+    "why": "the kick is the action"
+   }
+  ]
+ },
+ {
+  "id": "combat.hit-stop",
+  "category": "combat",
+  "title": "Hit stop (freeze on contact)",
+  "summary": "Every contact (hit, block or deflect) can freeze the attacker and defender briefly. The time is stored in the attack row but scaled by the defender's NpcParam, so Wolf's sword stops almost no ordinary enemy. After the freeze the clock eases back.",
+  "values": "Attacker freeze = AtkParam hitStopTime x scale(defender hitStopType: 0 none, 1 half, 2 full). Defender freeze = hitStopTime_Defencer only if its hitStopType_Defencer is 1 (0 on all 1279 NpcParam rows; Wolf always). NpcParam hitStopType: 0 on 1258 rows, 1 on 14 (Guardian Ape, Okiryu), 2 on 7 (Great Serpent). Wolf sword rows 0.1 s. Hold 0.06 s then ease dt x (elapsed/length)^2, so 0.1 s costs ~0.127 s. TAE ChrActionFlag 41 forces full.",
+  "how": "Exe b9cd90 (attacker), b9cfb0 (defender), b9d1b0 (update); defaults at a51800.",
+  "sources": [
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "../sekiro-rs/docs/COMBAT-RULES.md"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/guard-deflect.md"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/NpcParam.json"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "yes",
+   "where": "src/combat.rs (start_hit_stop) + actor.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "../sekiro-rs/crates/sim/src/combat/knockback.rs"
+  },
+  "check": "Slash a regular enemy: no freeze. Slash a Great Serpent: full freeze. Sim: hit_stop_follows_the_defenders_type.",
+  "note": "Before 2026-10-10 both projects froze both sides 0.1 s on every direct hit, which was wrong.",
+  "needs": [
+   {
+    "id": "combat.hit-resolution-order",
+    "why": "started after the damage stages"
+   }
+  ]
+ },
+ {
+  "id": "combat.knockback-distance",
+  "category": "combat",
+  "title": "Knockback distance",
+  "summary": "Every contact pushes the defender by a distance stored on the attack row: one value for a hit, one for a block, one for a deflect. NPC defenders cut it by NpcParam percent and the push shrinks when the attacker faces away from the push direction.",
+  "values": "AtkParam knockbackDist_DirectHit / _Guard / _JustGuard: soldier slash 2.0 / 1.8 / 0.5 m; Wolf Combo1 1.0 / 1.0 / 0.4 m; Wolf thrust 0.8 / 0.8 / 0.4 m. NpcParam knockbackRate_vsPlayer_Guard and JustGuard: 0 on 1183 rows, 75 on 44, 90 on 7, 100 on 45. Facing factor f^2 where f = dot(push dir, attacker forward), but 0.4 when f < 0 or f^2 < 0.4 (range 0.4-1). Wolf armor knockBackCutRate_* are 0.",
+  "how": "Exe b6bfe0 / 140b6bfe0 (dist x facing factor), AtkParam fields, NpcParam cut.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/damage.md"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "../sekiro-rs/docs/COMBAT-RULES.md"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/AtkParam_Pc.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/NpcParam.json"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "yes",
+   "where": "src/combat.rs (apply_knockback, knockback_facing)"
+  },
+  "his": {
+   "has": "partial",
+   "where": "../sekiro-rs/crates/sim/src/combat/knockback.rs"
+  },
+  "check": "Block a soldier slash: Wolf slides about 1.8 m. Sim: knockback_scales_with_the_attackers_facing.",
+  "note": "His sim lacks the facing factor and the leftover-push hand-off. The exe push direction is the attack's motion vector, ours is root minus root.",
+  "needs": [
+   {
+    "id": "combat.hit-resolution-order",
+    "why": "applied after the damage stages"
+   }
+  ]
+ },
+ {
+  "id": "combat.knockback-timing",
+  "category": "combat",
+  "title": "Knockback speed profile",
+  "summary": "A push holds a constant speed for a short time then slows linearly to zero. The times come from a KnockBackParam row per class (damage S/M/L, guard S/L/LL, guard break).",
+  "values": "v = dist / (cont + dec/2). Row 0 (NPCs): damage_L 0.05 / 1.0 s, damage_M 0.03 / 0.69, guard_S 0.05 / 0.2, guard_L 0.02 / 0.7. Row 1 (Wolf, via EquipParamProtector knockbackParamId 1 on 38 outfit rows): damage Push 0.09 / 0.81, guard_S 0.06 / 0.30, guard_L 0.05 / 0.55, guard_LL 0.07 / 0.50, guardBrake 0.06 / 0.54. Row 10 also exists. Class by outcome and dmgLevel.",
+  "how": "KnockBackParam; the player's row is found through armor, not NpcParam.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/KnockBackParam.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/damage.md"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "../sekiro-rs/docs/COMBAT-RULES.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/actor.rs (a_knockback_covers_exactly_its_distance)"
+  },
+  "his": {
+   "has": "yes",
+   "where": "../sekiro-rs/crates/sim/src/combat/knockback.rs"
+  },
+  "check": "Compare how fast Wolf slides on a small versus a large guard.",
+  "note": "Class choice by dmgLevel is matched by name, the exe choice in b6bfe0 is not read.",
+  "needs": [
+   {
+    "id": "combat.knockback-distance",
+    "why": "gives the distance"
+   }
+  ]
+ },
+ {
+  "id": "combat.knockback-self-recoil",
+  "category": "combat",
+  "title": "Attacker's own recoil on contact",
+  "summary": "Wolf's sword swings carry TAE 226 (set knockback percent) and ChrActionFlag 72 (knockback value). When a hit lands on a target that barely moves, the leftover push goes back to Wolf, so he bounces off armored or knockback-resistant enemies.",
+  "values": "TAE 226 on Wolf: Combo1 0 percent at frames 23-25, Combo2 50, Combo3-5 30. Flag 72 ArgA 0.09 s on 133 Wolf anims: rest = dist - push goes to the attacker over ArgA. Example: c1180 knockbackRate_vsPlayer 75 gives Wolf about 0.75 m back.",
+  "how": "Exe FUN_140ba37e0 (push = dist x +0x40), 140b6bfe0 (hand-off).",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/damage.md"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "../sekiro-rs/docs/COMBAT-RULES.md"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "yes",
+   "where": "src/combat.rs (recoil)"
+  },
+  "his": {
+   "has": "partial",
+   "where": "../sekiro-rs/crates/sim/src/combat/knockback.rs"
+  },
+  "check": "Hit a club samurai (c1180): Wolf is pushed back.",
+  "note": "One-frame start delay and the deferred TAE-226 path are not modelled.",
+  "needs": [
+   {
+    "id": "combat.knockback-distance",
+    "why": "recoil is the leftover of the push"
+   }
+  ]
+ },
+ {
+  "id": "combat.deflect-recoil-attacker",
+  "category": "combat",
+  "title": "What the attacker does when deflected or blocked",
+  "summary": "The attacker gets a reaction code from the outcome and its attack's category, then HKS plays a recoil. Hard (deflect) and easy (block) recoils differ, and attack rows can request an additive recoil that lets the combo continue.",
+  "values": "Damage type for the attacker: blocked 1017 (category 2: 1018, 6: 1019, 7: 1020, 8: 1021); deflected 1000 (1003, 1008, 1009, 1010); clash path 1022-1026; deflect that breaks the attacker 1033. HKS: 1000/1003/1033 = hard deflected recoil, 1017/1018 = easy. AtkParam deflectedAction / justDeflectedAction: 1 = left recoil, 2 = right, 0 = front, 11-14 = additive recoil (AttackJustGuardBound_Add01-04, anim 9600+N-1).",
+  "how": "Exe b698d0 picks the code; HKS c0000 / c9997 pick the animation.",
+  "sources": [
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "../sekiro-rs/docs/COMBAT-RULES.md"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "../sekiro-rs/docs/HKS-COMBAT.md"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/enemy.md"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "yes",
+   "where": "src/combat.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "../sekiro-rs/crates/sim/src/combat/damage_type.rs"
+  },
+  "check": "Get deflected by an enemy: Wolf bounces to one side; the direction is the attack row's value.",
+  "note": "",
+  "needs": [
+   {
+    "id": "combat.posture-damage-to-attacker",
+    "why": "same contact feeds both"
+   }
+  ]
+ },
+ {
+  "id": "combat.guard-reaction-sizes",
+  "category": "combat",
+  "title": "Guard reaction size by damage level",
+  "summary": "How big Wolf's block or deflect recoil looks depends on the attack's damage level. Small and middle hits play small reactions, larger blows play large ones, and a minimum level plays an additive flinch.",
+  "values": "SMALL, MIDDLE, PUSH -> S; LARGE, SMALL_BLOW -> M; EXLARGE, FLING, UPPER -> L; MINIMUM -> XS (additive); EX_BLAST, BREATH -> XL. Knockback guard class: guard_L for levels 3, 4, 6, 7, 9; guard_LL for 10, 11; guard_S otherwise. Easy Small/Middle pick variation V1/V2 by coin flip (math.random() > 0.5).",
+  "how": "HKS c0000 guard reaction tables; exe knockback class.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/damage.md"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "../sekiro-rs/docs/HKS-COMBAT.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/combat.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "../sekiro-rs/crates/sim/src/character.rs"
+  },
+  "check": "Block a small slash and a heavy overhead: reactions and slide differ.",
+  "note": "",
+  "needs": [
+   {
+    "id": "armor.dmglv-levels",
+    "why": "levels select the size"
+   }
+  ]
+ },
+ {
+  "id": "combat.additive-deflect-window",
+  "category": "combat",
+  "title": "Extra deflect window inside a block recoil",
+  "summary": "If you are in a hard-deflect recoil and press guard again, an additive deflect window (ref 228, frames 0-9) lets a second perfectly timed press deflect during the recoil. Pressing guard in that recoil also restarts guard at frame 9-10.",
+  "values": "BEH_A_DEFLECT_GUARD_START ref 228 TAE_ENABLE_ADD_JUST_DEFLECT on StandDeflectEasy* frames 0-9; additive anim a000_299060 with ref 203 frames 0-9; ref 411 + 412 start guard. Live: deflects at press-to-hit 9.6-25 frames come during recoils.",
+  "how": "HKS Validate (ref 228, 411, 412) + additive animation layer.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/guard-deflect.md"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "../sekiro-rs/docs/HKS-COMBAT.md"
+   }
+  ],
+  "confidence": "recorded",
+  "ours": {
+   "has": "yes",
+   "where": "src/player.rs (add_guard) + combat.rs"
+  },
+  "his": {
+   "has": "partial",
+   "where": "../sekiro-rs/crates/sim/src/character.rs"
+  },
+  "check": "Block one hit then tap guard quickly as the next lands: it deflects.",
+  "note": "",
+  "needs": [
+   {
+    "id": "combat.deflect-spam-chain",
+    "why": "same system"
+   }
+  ]
+ },
+ {
+  "id": "combat.guard-from-damage",
+  "category": "combat",
+  "title": "Guard cancels a middle hit reaction",
+  "summary": "While recovering from a small or middle hit, pressing guard late in the reaction (from frame 12) starts a deflect guard with its own short deflect window, so Wolf can cancel stun into guard.",
+  "values": "ref 503 TAE_ENABLE_HIT_DEFLECT_CANCEL on StandDamageMiddle/Large from frame 12 -> StandDeflectGuardFromDamage_{F,B,L,R} (a050_2062xx, deflect frames 15-21).",
+  "how": "HKS ref 503 + direction selector on DamageDirection.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/guard-deflect.md"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "../sekiro-rs/docs/HKS-COMBAT.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/player.rs"
+  },
+  "his": {
+   "has": "partial",
+   "where": "../sekiro-rs/crates/sim/src/character.rs"
+  },
+  "check": "Take a small hit and mash guard from the middle of the stagger.",
+  "note": "",
+  "needs": []
+ },
+ {
+  "id": "combat.enemy-guard-decision",
+  "category": "combat",
+  "title": "How enemies guard and deflect Wolf",
+  "summary": "Enemies pick guard or deflect from their own Lua AI when they see Wolf's attack (TAE flag 63 sends a parry timing message). The choice depends on a parry rank, thrust handling, and a consecutive-guard count, so a typical swordsman blocks the first slashes then starts deflecting.",
+  "values": "Wolf TAE flag 63 'Flag AI for parry timing' -> INTERUPT_ParryTiming (24) when within range. Goal.Parry: guard multiplier per count (c1010 Common_Parry(ai, goal, 50, 25, 0, 3102): guard count x 50 percent chance to deflect, else guard; 25 percent step-back when Wolf is just outside reach). Enemy deflect anim 3101 applies SpEffect 200220 (stateInfo 158, behavior ref 1000090, window 12 f); guard 3100 blocks over frames 0-12. Clash counters: 200215/6 (weak) raise the count, 200210/1 (strong) reset it. Rank 109980 attacks -> back-step 5211. Sprint attacks 109990 answered by 3102.",
+  "how": "ai/102000_battle.lua Goal.Parry; resident SpEffects; c9997 HKS ExecGuardBlock.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/guard-deflect.md"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/enemy.md"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "../sekiro-rs/docs/COMBAT-FUNDAMENTALS.md"
+   },
+   {
+    "kind": "web",
+    "ref": "https://www.reddit.com/r/Sekiro/comments/ycdp3m"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "yes",
+   "where": "src/ai.rs + enemy.rs + ai/"
+  },
+  "his": {
+   "has": "partial",
+   "where": "../sekiro-rs/crates/sim/src/lua_ai"
+  },
+  "check": "Spam attack on a castle samurai: first hit blocked, next deflected, then a counter.",
+  "note": "Community says the block count varies per enemy (1 or 2) and is not an engine constant; data confirms it is per-AI. Window 0.1 s on the SpEffect row versus 12 frames in the anim: how they combine is not settled.",
+  "needs": [
+   {
+    "id": "ai.enemy-parry-goal",
+    "why": "the Lua goal makes the choice"
+   }
+  ]
+ },
+ {
+  "id": "combat.enemy-guard-block-reduction",
+  "category": "combat",
+  "title": "Enemy block reductions (what Wolf's hits do to a guard)",
+  "summary": "A guarding enemy cuts Wolf's HP damage with its guard row, and posture is cut by its staminaGuardDef. Shielded or armored enemies show the same rules with different rows.",
+  "values": "Blocking NPC physical multiplier = (100 - k x physGuardCutRate x (1 + guardRow.guardRate/100)) / 100 with k = 1 + attribute GuardCutRate/100 (soldier slash 100 -> k 2). Owl staminaGuardDef 50. Shield samurai 11807400 blocking Wolf takes 7-9 posture per hit (live).",
+  "how": "Exe 845ed0 / 10c60d0 (HP), 840550 (posture).",
+  "sources": [
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "../sekiro-rs/docs/COMBAT-RULES.md"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/damage.md"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "partial",
+   "where": "src/combat.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "../sekiro-rs/crates/sim/src/combat/hp.rs"
+  },
+  "check": "Hit a guarding soldier: no HP loss; hit a guarding Owl and note posture lost.",
+  "note": "",
+  "needs": [
+   {
+    "id": "combat.enemy-guard-decision",
+    "why": "he must be guarding"
+   }
+  ]
+ },
+ {
+  "id": "combat.deathblow-readiness",
+  "category": "combat",
+  "title": "HP, deathblow count and HP protection",
+  "summary": "HP is clamped to 0..max. If a hit would take HP under 1 while deathblows remain, HP stays at 1 and the enemy goes down for a deathblow. A deathblow hit spends one mark before HP is applied.",
+  "values": "NpcParam ninsatuNum = marks (1078 of 1279 rows 0, 76 rows 1, 107 rows 2, 18 rows 3; Owl 50600000: 2; rows with 0 die at 0 HP). HP drop below 1 is held at 1 while ninsatuNum > 0 or stateInfo 143 (IsNoDead) / player state 235 holds; HP < 2 with a mark left counts as a break. AtkParam excessDmgKeepHp caps overkill. Ghidra: damage >= 1.5 x max HP sets an extra flag.",
+  "how": "Exe bd64e0 / bd5df0 / b6e6a0.",
+  "sources": [
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "../sekiro-rs/docs/COMBAT-RULES.md"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/guard-deflect.md"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "yes",
+   "where": "src/enemy.rs + combat.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "../sekiro-rs/crates/sim/src/combat/hp.rs"
+  },
+  "check": "Drain a two-mark boss to 0: he stays at 1 HP until the last deathblow.",
+  "note": "ninsatuNum-0 rows die at 0 HP through ExecDeath.",
+  "needs": [
+   {
+    "id": "deathblows.deathblow-marks",
+    "why": "marks gate lethal damage"
+   }
+  ]
+ },
+ {
+  "id": "combat.broken-wolf-more-damage",
+  "category": "combat",
+  "title": "Wolf takes 1.5x damage while broken",
+  "summary": "While Wolf's posture is broken his collapse animations wear SpEffect 109400, which multiplies his incoming damage by 1.5 for every attribute. It is on the break anims and the follow-up knock-down animations.",
+  "values": "109400 'increased damage taken while being destroyed': slash, thrust, neutral, light hit, fire, lightning, dark, magic and other DamageCutRates = 1.5, anti-air / anti-ground / heavy / light shoot DmgRates 1.5. Added by TAE AddSpEffect on a000_190000/01, 190010/11, 190030/31, 190040/41, 190050, 190055 (frames 0-60..72) and 191000 (0-33). 110125 marks 'PC collapse'.",
+  "how": "TAE 67 AddSpEffect on the break animations.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/tae/c0000/a00.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/damage.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/combat.rs (109400)"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Let an enemy break Wolf then hit him again: damage is higher.",
+  "note": "Enemies do not get it from their TAEs (not found in c1020/c1180/c1470).",
+  "needs": [
+   {
+    "id": "armor.posture-break-reaction-wolf",
+    "why": "the effect rides the break anim"
+   }
+  ]
+ },
+ {
+  "id": "combat.projectile-guard",
+  "category": "combat",
+  "title": "Guarding projectiles",
+  "summary": "A bullet owns its guard contact. Wolf can block or deflect bullets with the same arc and repel rules, but the shooter takes no recoil, hit stop or posture from a guarded bullet. Some bullet rows disable guard entirely.",
+  "values": "Owl bullet 50601150 -> AtkParam_Npc 50600150: guardAtkRate 30, no disable flags, isDisableParry 1, attribute 9; Wolf posture 6 / 12 / 12 (deflect / block / hit) minus cuts gives 5 / 11. Genichiro arrow 71000500: 8 / 17. Attacker feedback fields all 0. Owl firecracker 50600160 and fan 50600131 carry repelLostStamDamage_Attacker 30 but do not redirect to a distant owner. Owl firecracker disables katana block and deflect.",
+  "how": "Bullet refType 1 -> AtkParam; isArrowAtk is 0 on all 249 bullet rows so it cannot identify projectiles.",
+  "sources": [
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "../sekiro-rs/docs/PROJECTILE-GUARD.md"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "../sekiro-rs/docs/COMBAT-RULES.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/enemy_bullet.rs + combat.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "../sekiro-rs/crates/sim/src/bullets.rs"
+  },
+  "check": "Deflect an archer's arrow: arrow vanishes, archer unaffected.",
+  "note": "Exe bullet-to-owner dispatch not traced; the no-recoil rule is inferred from zero rows.",
+  "needs": [
+   {
+    "id": "combat.guard-arc",
+    "why": "same arc"
+   },
+   {
+    "id": "ai.archer",
+    "why": "projectile users"
+   }
+  ]
+ },
+ {
+  "id": "combat.contact-parry-clash",
+  "category": "combat",
+  "title": "Weapon clash and contact parry",
+  "summary": "Some contacts take a 'clash path' instead of a plain block: the engine reports damage types 12 (blocked through clash) and 1022-1026 (attacker deflected through the clash path). The AtkParam flag isDisableParry disables the contact-parry check and is 1 on nearly all rows.",
+  "values": "AtkParam isDisableParry: NPC 1 on 2257 rows, 0 on 139; PC 1 on 442 of 443. The weak-clash AI SpEffects 200215/6 and strong 200210/1 last 0.1 s. Damage types 5, 1029, 1031 are 'parry' types routed to the break reaction in HKS.",
+  "how": "Exe b6bd40 / b698d0; precise trigger not traced.",
+  "sources": [
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "../sekiro-rs/docs/COMBAT-RULES.md"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "../sekiro-rs/docs/HKS-COMBAT.md"
+   },
+   {
+    "kind": "data",
+    "ref": "../reference/Paramdex/SDT/Defs/AtkParam.xml"
+   }
+  ],
+  "confidence": "open-question",
+  "ours": {
+   "has": "partial",
+   "where": "src/data.rs (isDisableParry parsed)"
+  },
+  "his": {
+   "has": "partial",
+   "where": "../sekiro-rs/crates/sim/src/combat/damage_type.rs"
+  },
+  "check": "In game: attack the same moment as an enemy swing and watch for spark clashes.",
+  "note": "No source gives the conditions of the clash path. Do not assume it equals a deflect.",
+  "needs": [
+   {
+    "id": "combat.hit-resolution-order",
+    "why": "alternative outcome of a contact"
+   }
+  ]
+ },
+ {
+  "id": "combat.recorded-hits-on-wolf",
+  "category": "combat",
+  "title": "Hits on Wolf: recorded posture and HP per attack",
+  "summary": "Real-game recordings of enemy attacks on Wolf give exact posture and HP lost, matching AtkParam values times the area growth. Unguarded HP = atkPhys x k, posture = directAtkStamDamage x k.",
+  "values": "k = 3.75 (area): hits of 96 / 112 / 128 / 32 / 48 phys cost 360 / 420 / 480 / 120 / 180 HP; posture 18 -> 67, 36 -> 135, 54 -> 202. Deflect posture 27 -> 75 and 21 -> 58 (x0.74), block 60 -> 167 (x0.74). General (attribute 1) guard factor 0.785. Wolf max 1120 HP / 420 posture.",
+  "how": "Hook recordings of ChrDataModule HP +0x130 and posture +0x148.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/damage.md"
+   },
+   {
+    "kind": "recording",
+    "ref": "../memscope-data/logs/rec_20261008_054259"
+   }
+  ],
+  "confidence": "recorded",
+  "ours": {
+   "has": "yes",
+   "where": "src/combat.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Compare a recorded hit to the AtkParam row x 3.75.",
+  "note": "",
+  "needs": [
+   {
+    "id": "combat.area-growth-doping",
+    "why": "supplies k"
+   }
+  ]
+ },
+ {
+  "id": "combat.wolf-posture-damage-to-enemy",
+  "category": "combat",
+  "title": "Wolf's posture damage on enemies",
+  "summary": "Wolf's sword attacks carry their own posture numbers: Combo1 does 30 on a hit, 30 into a block and 15 into a deflect, before attack power growth. Deflecting an enemy hits his bar for the enemy row's _Attacker value, not Wolf's.",
+  "values": "AtkParam_Pc 5000010 Combo1: directAtkStamDamage 30, repelLostStamDamage 30, atkStam 15. Thrust 5000000: 20 / 20 / 10. Kick 901: 10 / 10 / 5. Live at growth 4.35: Wolf slash 130 posture (30 x 4.35). Shield samurai blocking Wolf: 7-9 posture per hit.",
+  "how": "Exe 8439a0 player path: (staminaAttackPowerRate x field + correction/100 x attackBaseStamina x reinforce) x reinforce x staminaAttackRate effects.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/AtkParam_Pc.json"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "../sekiro-rs/docs/COMBAT-RULES.md"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/damage.md"
+   }
+  ],
+  "confidence": "recorded",
+  "ours": {
+   "has": "yes",
+   "where": "src/combat.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "../sekiro-rs/crates/sim/src/combat/posture.rs"
+  },
+  "check": "Slash an unguarding soldier once: his bar jumps by 30 x growth.",
+  "note": "",
+  "needs": [
+   {
+    "id": "combat.posture-damage-to-defender",
+    "why": "same formula, Wolf as attacker"
+   }
+  ]
+ },
+ {
+  "id": "combat.deflect-counter-attack",
+  "category": "combat",
+  "title": "Counter-attack out of a deflect",
+  "summary": "After a deflect Wolf can press attack to play a faster counter (HardDeflectAtk) than a normal combo start. After a block (easy deflect) the next slash starts from the other side.",
+  "values": "HKS ExecAttack routes: HardDeflectAtk{Small,Middle}{F,L,R} out of StandDeflectHard* / HardDeflectDmg*, EasyDeflectedAtk{L,R}, DeflectGuardAttack from guard (ref 213) only when no combat art is equipped. Reverse combo ref 231 (a050_300001) after every easy deflect. Combo refs 214-219.",
+  "how": "HKS attack routing + TAE refs.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/attacks.md"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "../sekiro-rs/docs/HKS-COMBAT.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/player.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "../sekiro-rs/crates/sim/src/character.rs"
+  },
+  "check": "Deflect then immediately attack: the slash starts quicker and from a different side.",
+  "note": "",
+  "needs": [
+   {
+    "id": "combat.deflect-window-first",
+    "why": "needs a deflect"
+   }
+  ]
+ }
+]

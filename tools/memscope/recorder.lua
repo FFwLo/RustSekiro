@@ -11,7 +11,7 @@ local args = args or {}
 local SECONDS = tonumber(args.seconds) or 330
 local HZ = tonumber(args.hz) or 60
 local stamp = os.date("%Y%m%d_%H%M%S")
-local DIR = args.dir or ("C:\\DeadlockModding\\memscope-data\\logs\\rec_" .. stamp)
+local DIR = args.dir or ((os.getenv("MEMSCOPE_HOME") or "memscope-data") .. "\\logs\\rec_" .. stamp)
 os.execute('mkdir "' .. DIR .. '" 2>nul')
 
 local WCM_PTR = addr("0x143d7a1e0")

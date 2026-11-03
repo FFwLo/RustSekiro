@@ -1,0 +1,956 @@
+[
+ {
+  "id": "arts.art-roster",
+  "verdict": "confirmed",
+  "reason": "EquipParamWeapon 5100-6100 and 7000-7700 give 19 rows; behaviorVariationId, residentSpEffectId, attackBasePhysics 40 and attackBaseRepel 10 all match, names match the item FMG.",
+  "needs_recording": false
+ },
+ {
+  "id": "arts.emblem-cost-table",
+  "verdict": "confirmed",
+  "reason": "resourceItemA of the 19 art rows matches every listed cost (5400/5500/6000/7600 2, 5700/7300/6100 3, 7200/7700 1, rest 0).",
+  "needs_recording": false
+ },
+ {
+  "id": "arts.emblem-payment-wepcost",
+  "verdict": "corrected",
+  "reason": "BehaviorParam_PC wepCost 1 judges match (5004 j200/220, 5005 j200/210, 5007 and 5021 j999, 5010 j215, 5030 j200), but the cost rows are not damage-free.",
+  "fix": {
+   "note": "The cost rows carry their damage in atkDarkCorrection (Dragon Flash 200, Ashina Cross 200, One Mind 200/400, Sakura Dance 75/150/225) on weapon attackBaseDark 40; the 'no form fee' twin carries the same hit as atkPhysCorrection. The gate SpEffect picks which row plays (arts.emblem-gate-speffects)."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "arts.emblem-gate-speffects",
+  "verdict": "confirmed",
+  "reason": "common.emevd event 0 starts 9900 and 9930-9934; 9900 copies goods 1000+1001 into value 9910; 9930-9934 set/clear 140310/140510/140610/140410/140910 with cost 2/1/3/3/2 and stateInfo 995/994/993/990 as listed.",
+  "needs_recording": false
+ },
+ {
+  "id": "arts.no-emblem-states",
+  "verdict": "confirmed",
+  "reason": "combat_data anims exist: a103_316201/316211 and a110_316201/316211/316261/316271/316711/316721; no other art has air NoResource clips (a101/a103/a104 only have the ground 316001).",
+  "needs_recording": false
+ },
+ {
+  "id": "arts.whirlwind-slash",
+  "verdict": "corrected",
+  "reason": "AtkParam_Pc 5001200/201 match for posture, stamina, dmgLevel and guardAtkRateCorrection 300, but atkPhysCorrection 0 is not the whole story: both rows have atkDarkCorrection 125 and 175.",
+  "fix": {
+   "summary": "A free spinning slash art. Both hits deal damage through atkDarkCorrection (125 and 175 on weapon attackBaseDark 40, about 50 and 70 before defence) plus posture and stamina damage; atkPhysCorrection is 0. guardAtkRateCorrection 300 so it damages guard.",
+   "note": "src/combat.rs player_attack_damage already uses the dark channel for arts. The earlier open question about HP damage is settled: it is the dark correction."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "arts.nightjar-slash",
+  "verdict": "confirmed",
+  "reason": "AtkParam_Pc 5002200/201: atkPhysCorrection 212/188, directAtkStamDamage 30, atkStam 15, dmgLevel 2; weapons 5200/7000 var 5002 res 140100/140101.",
+  "needs_recording": false
+ },
+ {
+  "id": "arts.ichimonji",
+  "verdict": "confirmed",
+  "reason": "AtkParam_Pc 5003200/201/210 match (phys 275/225/150, posture 75/60/30, atkStam 38/30/15, dmgLevel 3); SpEffect 140210 changeStaminaRate 12.5 exists and src/player.rs applies it from TAE 67 at the slash.",
+  "needs_recording": false
+ },
+ {
+  "id": "arts.dragon-flash",
+  "verdict": "corrected",
+  "reason": "Rows and bullets match the record (posture 45/60, bullets 500410/500415/500430, wepCost on j200/j220), but the cost rows deal dark damage, so the HP damage is not only on the 'no form fee' twins.",
+  "fix": {
+   "summary": "Sheathed-stance iai that can be charged to release shockwaves. Costs 2 emblems. The cost rows (j200, j220) deal atkDarkCorrection 200, the 'no form fee' twins (j201, j221) deal atkPhysCorrection 200, and the charge bullets deal atkDarkCorrection 300 (5004210, 5004230).",
+   "values": "Var 5004: j200 COST (charge) dark 200 posture 45; j201 no-fee phys 200 posture 45; j210/215 charge bullets 500410/500415 (500410 -> AtkParam 5004210 dark 300 posture 60, spAttribute 1; 500415 -> 5004219 no damage, HitBullet 500416); j220 COST dark 200 + j221 (phys 200) the plain draw; j230 bullet 500430 (dark 300 posture 60). Resident 140300, gate 140310 stateInfo 995."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "arts.ashina-cross",
+  "verdict": "corrected",
+  "reason": "BehaviorParam_PC 5005 j200-203 match, but the cost rows use the dark channel.",
+  "fix": {
+   "values": "Var 5005 shared with One Mind: j200 COST dark 200 posture 30 dmgLevel 1; j201 dark 400 posture 45 dmgLevel 3; j202 no-fee phys 133 posture 30; j203 no-fee phys 267 posture 45. Resident 140400."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "arts.one-mind",
+  "verdict": "corrected",
+  "reason": "BehaviorParam_PC 5005 j210-246 and their bullets 500510-500546 differ from the record in the details.",
+  "fix": {
+   "values": "Only j210 has wepCost 1 (the cost is paid once; j240 does not pay). j210 dark 200 posture 45 dmgLevel 3; j240 dark 400 posture 45. Sub-strike rows j211-213 and j241-243 posture 15 dmgLevel 8 (mag 100, phys 100 + poison 9002, mag 100 + white blood 106065); j214/215 and j244/245 phys 200, dmgLevel 8, no posture, SpEffects 107710-107712 and 230620 (the Divine Abduction turn tags); j216/j246 'no form' strikes phys 133/267 posture 45 dmgLevel 2. Hold -> VariationCombo2 (HKS 5379).",
+   "note": "The 107710-107712 / 230620 rows are the Divine Abduction enemy-turn reaction SpEffects; they look reused by the Orange-wind enchant rows (names '...Orange wind enchantment additional attack')."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "arts.floating-passage-spiral-cloud",
+  "verdict": "corrected",
+  "reason": "AtkParam_Pc 5020200-209 and 5021200-229 match for posture, but they deal damage through atkDarkCorrection, not 'phys correction 0 / no damage'.",
+  "fix": {
+   "values": "Var 5020: five hits (j200-203 posture 10, j209 finisher posture 20), atkDarkCorrection 75 (finisher 150), phys 0. Var 5021: eight hits j200-207 posture 10 (dark 75, 25, 50), finisher j208 posture 20 dark 150; shockwave rows j220-228 posture 5 (j228 posture 10) dark 50 dmgLevel 8; j229 empty; cost row j999 (dummy, wepCost 1). Residents 140500 / 140501, gate 140510 (994)."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "arts.mortal-draw",
+  "verdict": "corrected",
+  "reason": "BehaviorParam_PC 5007 matches on posture, but the hits are mixed phys and mag, and no attack row has wepCost.",
+  "fix": {
+   "values": "Var 5007: j200/210 (charged) phys 200 + mag 300, posture 75; j201/211 phys 150 + mag 225, posture 50; j220/230 (emblem rows) phys 0, mag 300, posture 75; j221/231 mag 225 posture 50; the cost is only on j999 (dummy). Residents 140600 / 140601, gate 140610 (993)."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "arts.senpou-kicks-high-monk",
+  "verdict": "confirmed",
+  "reason": "BehaviorParam_PC 5008 rows match (phys 40/80/60/60/80/80/100, posture 10-30, SpEffects 104011/104017/104018) and ChrPhysicsVelocityChangeParam 10010 is 6.4 m/s, 9.64 up with ChrPhysicsHomingParam 20000.",
+  "needs_recording": false
+ },
+ {
+  "id": "arts.praying-strikes",
+  "verdict": "confirmed",
+  "reason": "BehaviorParam_PC 5009 rows j200 175/60, j201 25/15, j210 75/30, j220 125/45, j251 25 match.",
+  "needs_recording": false
+ },
+ {
+  "id": "arts.shadowrush-shadowfall",
+  "verdict": "confirmed",
+  "reason": "BehaviorParam_PC 5010 matches (j200 phys 250, j210 200, j215 COST phys 100 posture 45, j220/221 posture 10/20, SpEffect 104010); the Shadowfall slashes use atkDarkCorrection 125/175.",
+  "needs_recording": false
+ },
+ {
+  "id": "arts.sakura-dance",
+  "verdict": "corrected",
+  "reason": "BehaviorParam_PC 5030: the ground rows use dark, and rows 265-267 are real thunder attacks, not dummies.",
+  "fix": {
+   "values": "Var 5030: ground rows j200-202 atkDarkCorrection 75/150/225 posture 10/20/30, wepCost on j200; no-form rows j205-207 phys 50/100/150; SFX bullet rows 210-262 have no damage; thunder rows j265-267 (AtkParam 5030210-212, atkThunCorrection 100/200/300, spAttribute 6) and j267 applies SpEffect 9400 (lightning return). Resident 141000. Air count env g_airSpecialAttackCount."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "arts.mid-air-arts",
+  "verdict": "confirmed",
+  "reason": "ActionUnlockParam 200500 has action25; SkillParam 6 virtualWeaponId 200500; BEH_A_AIR_SP_ATTACK at c0000_transition.lua 2905 handles spAtkType 104 hold, 109 off the hit and 103 NoResource.",
+  "needs_recording": false
+ },
+ {
+  "id": "arts.lightning-reversal",
+  "verdict": "confirmed",
+  "reason": "AtkParam 5000281 has spAttribute 6, spEffectId0 9400 and capsule 10120-10141 r 1.2; 9400 cycles 9420 (registFreeze 200, changeHpRate 67 + 320, stamina -5% -180); TAE a050_308910 behavior 280/281 at frames 4-8; GENICHIRO.md says 2556 to 524 HP.",
+  "needs_recording": false
+ },
+ {
+  "id": "arts.latent-posture-skills",
+  "verdict": "confirmed",
+  "reason": "SkillParam 70 -> 150400 attackHitParryStaminaAttackRate 1.25 (Mikiri) and 270 -> 150410 defStaminaAttackRate 1.25 (deflect).",
+  "needs_recording": false
+ },
+ {
+  "id": "arts.knowledge-of-medicine",
+  "verdict": "confirmed",
+  "reason": "SpEffect 150200 accumuOverVal 2 -> 150201..150204 with changeHpEstusFlaskCorrectRate 1.1 to 1.5; SkillParam 170/171/600/601/602 use 150200 + 150210.",
+  "needs_recording": false
+ },
+ {
+  "id": "arts.buff-duration-skill",
+  "verdict": "corrected",
+  "reason": "SpEffect 150600 extendLifeRate 1.5 (skill 370) and isExtendSpEffectLife on 43 rows including 3351-3441 are confirmed; src has no extend-life handling at all.",
+  "fix": {
+   "ours": {
+    "has": "no",
+    "where": ""
+   },
+   "confidence": "data",
+   "note": "The data side is settled (30 s sugar becomes 45 s). Our code does not apply extendLifeRate anywhere (grep of src finds no extendLife/150600), so the skill has no effect yet."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "arts.covert-skills",
+  "verdict": "confirmed",
+  "reason": "SpEffect 150000 sightSearchEnemyCut 20 + aroundSightPointAddRate 0.5 and 150010 hearingSearchEnemyRate 0.5; SkillParam 60/61 point to them.",
+  "needs_recording": false
+ },
+ {
+  "id": "arts.deathblow-recovery-skills",
+  "verdict": "confirmed",
+  "reason": "SpEffects 150300/150310/150320/150330 stateInfo 986/987/984/985 (skills 80/604/265/605), effects 150301/311 changeHpRate -10 and 150321/331 + 105050 stamina +34, blocked by priority-2 rows 150302-150332 and 105051.",
+  "needs_recording": false
+ },
+ {
+  "id": "arts.skill-unlock-actions",
+  "verdict": "confirmed",
+  "reason": "FUN_1407a7fe0 is the per-type unlock check; c0000_define.lua has ACTION_UNLOCK_TYPE 15, 16, 21, 23, 25, 26; ActionUnlockParam 301000 action20, 301100 action22, 200500 action25.",
+  "needs_recording": false
+ },
+ {
+  "id": "arts.esoteric-texts",
+  "verdict": "confirmed",
+  "reason": "EquipParamGoods 2920-2924 are goodsType 1 maxNum 1 and the item FMG names them Shinobi/Prosthetic/Ashina/Senpou/Mushin Esoteric Text.",
+  "needs_recording": false
+ },
+ {
+  "id": "arts.tool-families",
+  "verdict": "confirmed",
+  "reason": "EquipParamWeapon 70000-79200 give 10 wepmotionCategory families and 40 rows with the listed ids, variations and residents 127000-127920; names match the item FMG.",
+  "needs_recording": false
+ },
+ {
+  "id": "arts.tool-emblem-costs",
+  "verdict": "confirmed",
+  "reason": "resourceItemA per tool row matches the record; wepCost judges: 7000 100/110/150/160, 7500 seven judges, 7800 100/105; 7402 (Mist Raven LV3) really has no wepCost row.",
+  "needs_recording": false
+ },
+ {
+  "id": "arts.tool-switch-and-press",
+  "verdict": "confirmed",
+  "reason": "c0000_transition.lua has BEH_A_GROUND_SUB_ATTACK at 3523, its RELEASE at 3750 and the validate line at 6220.",
+  "needs_recording": false
+ },
+ {
+  "id": "arts.tool-air-use",
+  "verdict": "confirmed",
+  "reason": "c0000_transition.lua 3007 (BEH_A_AIR_SUB_ATTACK) gates on ACTION_UNLOCK_TYPE_AIR_SUB_ATTACK and AIR_SUB_ATTACK_COUNT_MAX 1 for categories 071/072/074/075/077/078/079.",
+  "needs_recording": false
+ },
+ {
+  "id": "arts.shuriken-loaded",
+  "verdict": "corrected",
+  "reason": "AtkParam_Pc 7000100-7000160 match, but the three-throw chain also has a 125 row.",
+  "fix": {
+   "values": "Var 7000: j100/j110 (reservoir 1/3, 2nd throw) bullets 700000/700010 phys 50 posture 2; bullets 700002/700012 phys 75 posture 3; bullets 700004/700014 phys 125 posture 5 dmgLevel 2; j150/j160 single throw phys 200 posture 5; first bullets carry SpEffect 104012 (stateInfo 917 'anti-air effective when jumping'). Base attack 20."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "arts.shuriken-upgrades",
+  "verdict": "corrected",
+  "reason": "Weapon rows and variations match, but SpEffect 104013 has no SpEffectParam row, and the Lazulite and Gouging Top rows add dark/mag channels.",
+  "fix": {
+   "values": "70100 base 20 var 7000; 70200 base 5 var 7002 (phys 50/200 plus dark 50/200, posture 2-5); 70300 base 10 var 7003 (j120 bullet 700320 numShoot 7 butterflies, mag 125; j170 numShoot 3, mag 200), emblem 2; 70500 base 0 var 7005 (phys + mag + dark 50/200 each) with 104012 on the bullets and 104013 named but absent from SpEffectParam, emblem 1.",
+   "note": "Lazulite HP damage comes from three channels at once (phys, mag, dark), not from one phys 200 row."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "arts.sen-throw",
+  "verdict": "corrected",
+  "reason": "Var 7004 has 16 wepCost judges and up to 11 bullets, but only four SpEffects carry a soul value and it is not -1.",
+  "fix": {
+   "values": "Emblem 2; var 7004 has 16 cost judges (101-104, 111-114, 151-154, 161-164), bullets 5/1/7/11 per throw (3/5 for the single throw); SpEffects 127074/127075 soul -8/-5 and 127076/127077 soul -15/-10 (LV2 and LV3 consumption), 127072/127073 have none. Base attack 15."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "arts.firecracker-effect",
+  "verdict": "confirmed",
+  "reason": "Bullets 710000-710003 (numShoot 8, life 0.15; quick 710050 numShoot 3), 710003 spEffects 230110 + 107100 (stateInfo 976, 30 s), 710013 spEffects 230111 + 104030 with atkStam 15 posture 30; c9997.lua has SP_DAMAGE_BURST 104 and refs 1000055/56/57; apparition part still unchecked.",
+  "needs_recording": false
+ },
+ {
+  "id": "arts.firecracker-beast-roster",
+  "verdict": "confirmed",
+  "reason": "NpcParam spEffectID0-31 containing 230100 gives exactly 104 rows with the listed families (shamo 7, fire cow 4, cavalry horse 5, Yasha Ape 6).",
+  "needs_recording": false
+ },
+ {
+  "id": "arts.firecracker-upgrades",
+  "verdict": "confirmed",
+  "reason": "Weapons 71100/71200/71300 use var 7100/7102/7103 (all resourceItemA 2); bullets 710203/710213/710303 carry 230110/230111, 104030, 107100 and 9800 (effectEndurance 2.0) on the Purple Fume bullet.",
+  "needs_recording": false
+ },
+ {
+  "id": "arts.flame-vent",
+  "verdict": "confirmed",
+  "reason": "attackBaseFire 42 (46 on 72200); burn SpEffects 9102/9103/9105/9109 registBlood 62/84/125/250; 106020 fire enchant 7.5 s; 104015 present; var 7200 judge 999 exists; cost 3.",
+  "needs_recording": false
+ },
+ {
+  "id": "arts.flame-vent-upgrades",
+  "verdict": "corrected",
+  "reason": "72300 has attackBaseMagic 68 and its rows use atkMagCorrection 400/200/50; 106030 is not on any 7203 bullet.",
+  "fix": {
+   "values": "72100 base fire 42, var 7200; 72200 fire 46; 72300 var 7203: no burn rows, attackBaseMagic 68 with atkMagCorrection 400 (charged), 200 (normal, air), 50 (flamethrower loop); bullets carry SpEffect 104016 (anti-spirit) and 230645; 106030 (spirit enchant) is not referenced by the 7203 rows; all cost 3.",
+   "note": "Lazulite damage is the magic base times the row correction, not a spirit enchant."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "arts.loaded-axe",
+  "verdict": "corrected",
+  "reason": "Weapon bases (45, 45, 30 + fire 21, 30 + mag 26) and SpEffects 104031/107300 match; posture of the tool's own rows peaks at 100, not 120.",
+  "fix": {
+   "values": "73000 base 45; 73100 same; 73200 base 30 + fire 21 (burn rows 9101, 9103, atkFireCorrection up to 250); 73300 base 30 + mag 26 (atkMagCorrection up to 250). Var 7300 phys correction up to 250, posture up to 100, emblems 2. SpEffect 104031 (stateInfo 928, 0.5 s), 107300 (0.1 s) on hit."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "arts.mist-raven",
+  "verdict": "corrected",
+  "reason": "Emblems 2/2/3, fire base 36 on 74200 and the HKS parts hold, but SpEffect 9102 is not on any Mist Raven row.",
+  "fix": {
+   "values": "Emblems 2 / 2 / 3. Atemi window ref 305 (a hit in it becomes W_SubAttackJumpReady); stick leaps 404011-404017 slide 5 m; no-stick leap rises (TAE 922 row 7401 +0.6 m/s); 74200 base fire 36 with the burst AtkParam 7402100 atkFireCorrection 75 (bullet 740201 r 1.0, 0.4 s) and a fear force 295/296 (bullet 740211 r 5.6). 7400 judge 999 is the cost dummy; 7402 has no wepCost row. Air derive attack 413000."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "arts.sabimaru",
+  "verdict": "confirmed",
+  "reason": "Poison SpEffects 9003-9005 poizonAttackPower 16/31/62 and Lazulite 9006-9009 6/12/25/31 replace 9045; 9020 changeHpRate 10 + 80 HP and stamina -10% -240; weapon bases 36/36/10/36; 7 wepCost judges; Piercing rows posture 16, atkStam 8.",
+  "needs_recording": false
+ },
+ {
+  "id": "arts.loaded-umbrella",
+  "verdict": "confirmed",
+  "reason": "Weapon rows 76000-76300: base phys 40 (also mag 40 and dark 42), Suzaku's fire 48, Phoenix's mag 52, resourceItemA 1; var 7600 has the 999 cost row and 7603 carries 230645.",
+  "needs_recording": false
+ },
+ {
+  "id": "arts.divine-abduction",
+  "verdict": "confirmed",
+  "reason": "SpEffects 107700 (behaviorRefId 309, 3 s, stateInfo 938), 107715 (0.8 s, 938), 107716 (0.8 s, 939), 107710 (0.5 s), 107711, 107712, 230620 (stateInfo 955), 230625 (970) match; costs 3/3/4.",
+  "needs_recording": false
+ },
+ {
+  "id": "arts.loaded-spear",
+  "verdict": "confirmed",
+  "reason": "Weapon bases 38/38/42/12 (+ dark 36)/27 + fire 30, cost 1 (78400: 2), wepCost judges 100 and 105, SpEffect 104010 on 7800-7804, burn 9100/9102 on 7804, phys correction up to 250.",
+  "needs_recording": false
+ },
+ {
+  "id": "arts.finger-whistle",
+  "verdict": "confirmed",
+  "reason": "SpEffects 107910-107925 have stateInfo 275, 230518/230519 are the enemy AI activations, costs 3/3/4; var 7900 has 8 cost judges incl. 999.",
+  "needs_recording": false
+ },
+ {
+  "id": "arts.tool-follow-ups",
+  "verdict": "confirmed",
+  "reason": "c0000_transition.lua 3199 is BEH_A_GROUND_ATTACK; ActionUnlockParam 301000 action20 and 301100 action22 match the 20-23 follow-up unlocks.",
+  "needs_recording": false
+ },
+ {
+  "id": "arts.tool-sa-gate-reactions",
+  "verdict": "confirmed",
+  "reason": "SpEffects 104030 stateInfo 924 (0.5 s), 104031 stateInfo 928 (0.5 s), 104012/104017/104018/400240/400244/400245 all key on state 917.",
+  "needs_recording": false
+ },
+ {
+  "id": "items.healing-gourd",
+  "verdict": "confirmed",
+  "reason": "EquipParamGoods 3000 maxNum 10, refCategory 2 refId 3000 with changeHpEstusFlaskRate -40, useLimit 341 and 910, empty twin 3001 (anim 10); TAE a000_250000 has event 65 at f21, repeat clip f9, and flag 90 walk limit.",
+  "needs_recording": false
+ },
+ {
+  "id": "items.gourd-seed",
+  "verdict": "confirmed",
+  "reason": "EquipParamGoods 4400 goodsType 1 maxNum 99 saleValue 100; the item FMG text says to give it to Emma to raise the Healing Gourd's maximum uses.",
+  "needs_recording": false
+ },
+ {
+  "id": "items.pellet",
+  "verdict": "confirmed",
+  "reason": "Goods 3020 maxNum 3 anim 20; Bullet 3020 -> 3021 SpEffect changeHpEstusFlaskRate -3, effectEndurance 9.9, motionInterval 1.0, spCategory 20.",
+  "needs_recording": false
+ },
+ {
+  "id": "items.divine-grass",
+  "verdict": "confirmed",
+  "reason": "Goods 3040 maxNum 1; bullets 3040-3046 carry changeHpEstusFlaskRate -100, changeStaminaRate +100, stateInfo 13, poizonAttackPower -99999 (stateInfo 2), spCategory 194, registBlood -99999 (6), registIllness -99999 (5, bullet life 0.5).",
+  "needs_recording": false
+ },
+ {
+  "id": "items.red-lump",
+  "verdict": "confirmed",
+  "reason": "Goods 3050-3053 (3053 Academics' Red Lump) share Bullet 3050 -> 3051: effectEndurance 30, stateInfo 359, spCategory 1001, priority 254, defBloodResistDamageRate 2.0, fireDamageCutRate 2.0, dmgLv_* collapsed to 2 with blows 6-12; the Resurrection ban is in the item text.",
+  "needs_recording": false
+ },
+ {
+  "id": "items.sweet-rice-ball",
+  "verdict": "confirmed",
+  "reason": "Goods 3060 and 3061 (refId 3065) chain to SpEffects 3061 changeHpEstusFlaskRate -7 and 3062 changeStaminaRate +20, both 29.9 s with motionInterval 1.0 and spCategory 20; maxNum 1.",
+  "needs_recording": false
+ },
+ {
+  "id": "items.persimmon",
+  "verdict": "confirmed",
+  "reason": "Goods 3070 -> SpEffect 3071 changeStaminaRate +10 (29.9 s, interval 1.0, spCategory 199); goods 3071 Taro Persimmon -> bullet 3075 -> 3076 +20; maxNum 3.",
+  "needs_recording": false
+ },
+ {
+  "id": "items.rice-fine-snow",
+  "verdict": "confirmed",
+  "reason": "Goods 3080 -> SpEffect 3081 changeHpEstusFlaskRate -5, goods 3081 Fine Snow -> bullet 3085 -> 3086 -7, both 29.9 s, spCategory 200, anim 30, maxNum 3.",
+  "needs_recording": false
+ },
+ {
+  "id": "items.antidote-powder",
+  "verdict": "confirmed",
+  "reason": "Goods 3200 maxNum 5; bullets give 3201 poizonAttackPower -99999 (stateInfo 2), 3202 spCategory 194, 3203 defPoisonResistDamageRate 0.55 for 30 s (spCategory 201), stateInfo 10 on the use row.",
+  "needs_recording": false
+ },
+ {
+  "id": "items.dousing-powder",
+  "verdict": "confirmed",
+  "reason": "Goods 3210 and 3211: registBlood -99999 (stateInfo 6), 3212 defBloodResistDamageRate 0.65 fireDamageCutRate 0.6, Ministry (bullet 3215-3217, SpEffect 3214) 0.55 and 0.4; 30 s, spCategory 202, maxNum 5.",
+  "needs_recording": false
+ },
+ {
+  "id": "items.pacifying-agent",
+  "verdict": "confirmed",
+  "reason": "Goods 3220: stateInfo 11 on the use row, 3221 registIllness -99999 (stateInfo 5), 3222 defDiseaseResistDamageRate 0.5 for 30 s (spCategory 203), maxNum 5.",
+  "needs_recording": false
+ },
+ {
+  "id": "items.eel-liver",
+  "verdict": "confirmed",
+  "reason": "Goods 3230 maxNum 5; SpEffect 3231 thunderDamageCutRate 0.5, freezeDamageRate 50, effectEndurance 30, isContractSpEffectLife 1, iconId 2104.",
+  "needs_recording": false
+ },
+ {
+  "id": "items.contact-medicine",
+  "verdict": "confirmed",
+  "reason": "Goods 3250 maxNum 3; shooter SpEffect 9000 poizonAttackPower 250 replaces with 9040 (39.9 s, changeHpRate 0.25 + 2 HP per 1.0 s).",
+  "needs_recording": false
+ },
+ {
+  "id": "items.bite-down",
+  "verdict": "confirmed",
+  "reason": "SpEffects 3290 and 3295 changeHpRate 100 replace 3291; goods 3290/3292 maxNum 3 and 3291 maxNum 1 with useLimit 341, 988, 948, 910; item text says 'Resurrection is not limited after use'.",
+  "needs_recording": false
+ },
+ {
+  "id": "items.cure-gourds",
+  "verdict": "corrected",
+  "reason": "Goods 3300/3310/3320 (maxNum 5, empty twins 3301/3311/3321, refill 2) match, and the resist rows can now be read.",
+  "fix": {
+   "values": "3300 Green Mossy: poizonAttackPower -99999 (stateInfo 2) then 3302 defPoisonResistDamageRate 0.55 for 30 s; 3310 Withered Red: registBlood -99999 then 3312 defBloodResistDamageRate 0.6 and fireDamageCutRate 0.5; 3320 Mottled Purple: registIllness -99999 then 3322 defDiseaseResistDamageRate 0.5. maxNum 5, replaceItemId 3301/3311/3321 empty twins, refill on rest.",
+   "note": "The resist multipliers are read: Withered Red (0.6 / fire 0.5) is stronger than Dousing Powder (0.65 / 0.6); the other two equal their powders."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "items.spiritfalls",
+  "verdict": "confirmed",
+  "reason": "consumeResourceItemA 2/3/2/1/3 on goods 3350/3360/3370/3380/3390; effects 3351/3361/3371/3381/3391 equal the sugars (Gachiin 60 s, Yashariku adds maxHpRate and maxStaminaRate 0.5); maxNum 1, anims 40-44.",
+  "needs_recording": false
+ },
+ {
+  "id": "items.sugar-ako",
+  "verdict": "confirmed",
+  "reason": "SpEffect 3401: all attack rates 1.125, staminaAttackRate, attackHitParryStaminaAttackRate and defStaminaAttackRate 1.25, 30 s, stateInfo 204, spCategory 162, isExtendSpEffectLife 1; goods 3400 maxNum 3.",
+  "needs_recording": false
+ },
+ {
+  "id": "items.sugar-yashariku",
+  "verdict": "confirmed",
+  "reason": "SpEffect 3411: attack rates 1.25, stamina rates 1.5, maxHpRate 0.5, maxStaminaRate 0.5, bCurrHPIndependeMaxHP 1, 30 s; src/items.rs header says maxStaminaRate is not applied.",
+  "needs_recording": false
+ },
+ {
+  "id": "items.sugar-ungo",
+  "verdict": "confirmed",
+  "reason": "SpEffects 3421-3423 all carry the 0.67 cuts; the row names are 'direct hit', 'when guarding' and 'at Jasuga' (invocation 978, isWaitModeDelete 1), so which stage ends the buff is still unread; the open question stays.",
+  "needs_recording": false
+ },
+ {
+  "id": "items.sugar-gokan",
+  "verdict": "confirmed",
+  "reason": "SpEffects 3431-3433 carry def*StaminaDmgRate 0.33, named direct hit, guarding and Jasuga, invocation 982 and isWaitModeDelete 1 on the later two; the hit-consume reading is still open.",
+  "needs_recording": false
+ },
+ {
+  "id": "items.sugar-gachiin",
+  "verdict": "corrected",
+  "reason": "SpEffect 3441 sightSearchEnemyCut 50, aroundSightPointAddRate 0.5, hearingSearchEnemyRate 0.0, 60 s match; but enemy stealth only reads TAE and skill SpEffects, not Actor::item_sp.",
+  "fix": {
+   "ours": {
+    "has": "no",
+    "where": "src/items.rs (worn only)"
+   },
+   "note": "Our enemy sight and hearing code (src/enemy.rs wolf_seen, wolf_sounds) takes clip and learned-skill SpEffects, never Actor::item_sp, so this sugar's stealth effect is not applied."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "items.divine-confetti",
+  "verdict": "confirmed",
+  "reason": "SpEffect 3451 magicAttackPower 20, spAttribute 3, wepParamChange 1, atkOccurrence 104016, stateInfo 64, 60 s; 3452 magicDamageCutRate 0.75; goods 3450 maxNum 5.",
+  "needs_recording": false
+ },
+ {
+  "id": "items.ceramic-shard",
+  "verdict": "confirmed",
+  "reason": "Goods 3500 maxNum 10 anim 70 with no refId; Bullet 3490 -> 3491 (40 m/s, life 4, AtkParam 3500 HitAiSoundId 3500) -> 3492 (radius 4.0, life 0.3, SpEffect 3500 stateInfo 275).",
+  "needs_recording": false
+ },
+ {
+  "id": "items.fistful-of-ash",
+  "verdict": "confirmed",
+  "reason": "Bullet 3510 -> 3511 (10 m/s, life 1, AtkParam 3511 atkBehaviorId 3) -> 3512 (life 0.3, SpEffects 220018 behaviorRefId 1000058 and 3510 stateInfo 977, 30 s); goods maxNum 10.",
+  "needs_recording": false
+ },
+ {
+  "id": "items.oil",
+  "verdict": "confirmed",
+  "reason": "Bullet 3520 -> 3521 (40 m/s, life 4, AtkParam 3520 atkPhys 1); SpEffect 3520 stateInfo 921, defBloodResistDamageRate 2.0, fireDamageCutRate 1.25, 30 s, isFireDamageCancel 1.",
+  "needs_recording": false
+ },
+ {
+  "id": "items.snap-seed",
+  "verdict": "confirmed",
+  "reason": "Bullet 3530 hitRadiusMax 16, spreadTime 0.5, life 1; AtkParam 3530 atkBehaviorId 6; goods 3530 useLimit 948, maxNum 10, anim 84.",
+  "needs_recording": false
+ },
+ {
+  "id": "items.five-color-rice",
+  "verdict": "confirmed",
+  "reason": "Goods 3580 maxNum 5, empty twin 3581 (anim 14), Bullet 3580 initVellocity 0.1, gravityOutRange 10, life 2.69, no AtkParam.",
+  "needs_recording": false
+ },
+ {
+  "id": "items.mibu-balloons",
+  "verdict": "confirmed",
+  "reason": "Goods 3600-3640: SpEffects stateInfo 76 (soulRate 1.5), 345, 66 (itemDropRate 0.5), 346 (resourceItemDropRate 0.5), all 150 s spCategory 20; 3640 carries all four, maxNum 1.",
+  "needs_recording": false
+ },
+ {
+  "id": "items.use-limit-states",
+  "verdict": "confirmed",
+  "reason": "SpEffects with stateInfo 341 = 9620 Aging, 988 = 108020 deep water, 948 = 100210 forced crouch area, 910 = 3506090 Recovery Seal; goods useLimit columns match (gourd 341+910, powders 341+988(+910), sugars/spiritfalls/balloons/confetti add 948).",
+  "needs_recording": false
+ },
+ {
+  "id": "items.recovery-seal",
+  "verdict": "confirmed",
+  "reason": "SpEffect 3506090 effectEndurance 30, stateInfo 910, spCategory 193; Bullet 50601710 (4 m/s) -> 50600711 (hitRadiusMax 3.2, spreadTime 1.0, life 1.7, SpEffects 3506090/3506091).",
+  "needs_recording": false
+ },
+ {
+  "id": "items.ceremonial-tanto",
+  "verdict": "confirmed",
+  "reason": "Goods 3800 maxNum 3, consumeHpRate 0.5, useGetItemId 1001, useGetItemNum 5, anim 80, replaceItemId 3801.",
+  "needs_recording": false
+ },
+ {
+  "id": "items.spirit-emblem",
+  "verdict": "confirmed",
+  "reason": "Goods 1000 maxNum 15 goodsType 7, 1001 maxNum 5; common.emevd 9900 sums them into 9910; FUN_140a26010 case 0x12 passes three counts to FUN_14084dd10 which compares summed pairs of item counts against thresholds.",
+  "needs_recording": false
+ },
+ {
+  "id": "items.coin-purses",
+  "verdict": "confirmed",
+  "reason": "Goods 3700/3704/3708 anim 60 sellValue 100/500/1000 saleValue 110/550/1100; Homeward Idol 3980 anim 87 isWarpProhibited 1 maxNum 1.",
+  "needs_recording": false
+ },
+ {
+  "id": "status.model",
+  "verdict": "confirmed",
+  "reason": "Decompile shows FUN_140bd9d30 (type < 5, sets an activation bit at +0x4c, refills to the max), FUN_140bda460 (per-frame recovery with the fraction carried), FUN_140bff7a0 (SpEffect list walk for the block flag) and FUN_1408457f0 (five resist maxes as int); stateInfo 2/5/6/116/260 match the SpEffect rows.",
+  "needs_recording": false
+ },
+ {
+  "id": "status.recovery-rates",
+  "verdict": "confirmed",
+  "reason": "TentativePlayerParam row 0: ResistRecoverPoint Poision 5, Blood 5, Desease 2.5, Curse 20, Freeze 5 for Player and Enemy, ToughnessRecoverCorrection 1.0; FUN_140bda460 truncates to whole points and carries the fraction.",
+  "needs_recording": false
+ },
+ {
+  "id": "status.wolf-resist",
+  "verdict": "confirmed",
+  "reason": "CalcCorrectGraph 110-114 stageMaxGrowVal is 200 at every stage (from stat 1), 120-124 are 0; FUN_1408457f0 sums two graph values per type and truncates; EquipParamProtector resist* is nonzero only on 901100 and 901200 (23/16/16).",
+  "needs_recording": false
+ },
+ {
+  "id": "status.npc-resists",
+  "verdict": "confirmed",
+  "reason": "NpcParam 1279 rows: resist_poison 100 x488, 999 x281, 300 x129, 150 x125, 200 x71, 25 x50, 50 x37; resist_blood 100 x588, 200 x233, 25 x149, 999 x135, 300 x115; resist_desease and resist_curse 999 on 1278 rows (0 on one); resist_freeze 100 on 1278; Butterfly 300/300; Rival 200/300.",
+  "needs_recording": false
+ },
+ {
+  "id": "status.guard-interaction",
+  "verdict": "confirmed",
+  "reason": "EquipParamWeapon 5000: bloodGuardResist 33, bloodJustGuardResist 50, diseaseGuardResist 25, diseaseJustGuardResist 100, poison 0/0; NpcParam poisonGuardResist is 0 on 1271 rows and 100 on 8.",
+  "needs_recording": false
+ },
+ {
+  "id": "status.poison",
+  "verdict": "confirmed",
+  "reason": "SpEffects 9011-9019 poizonAttackPower 10/20/50/10/80/120/10/200/30 replace 9050 (39.9 s, 0.25 % + 12 per 1.0 s, disablePoison, spCategory 194, ref 500); 9001/9002 42/62, 9045 (19.9 s, 0.75 % + 12), 9000 250 -> 9040 (0.25 % + 2).",
+  "needs_recording": false
+ },
+ {
+  "id": "status.poison-owl-floor",
+  "verdict": "corrected",
+  "reason": "Bullet.json rows 50600700-50600742 match the doc exactly (25, 11, 7 m/s, five drops, floor radius 2.0, life 18, dmgHitRecordLifeTime 0.15, SpEffect 9019 -> 9050; AtkParam_Npc 50600700 dmgLevel 0), so this is data, not only the sekiro-rs doc.",
+  "fix": {
+   "confidence": "data"
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "status.burn",
+  "verdict": "confirmed",
+  "reason": "SpEffects 9100-9109 registBlood 31/41/62/84/94/125/156/188/219/250 with 9.9 s, interval 1.0, changeHpRate 0.5 + 4 HP, ref 1000130, spCategory 10004; enemy rows 9111 42, 9112 42, 9114 62, 9115 62, 9116/9118/9119 125, 9124 250, 9125 31 (enemy rows are 0.5 % per 1.0 s).",
+  "needs_recording": false
+ },
+ {
+  "id": "status.burn-fire-cow",
+  "verdict": "confirmed",
+  "reason": "SpEffect 9121 registBlood 250 replaces 9122 (30 s, motionInterval 0.5, changeHpRate 100, disableBlood 1).",
+  "needs_recording": false
+ },
+ {
+  "id": "status.burn-enemy-reaction",
+  "verdict": "confirmed",
+  "reason": "SpEffect 6020 stateInfo 921 named 'play the flame reaction'; it is on 94 NpcParam rows incl. 10209800 but not on 10203010 or the Shamo row 12400000; c9997.lua 879/885/2090 gate SP_DAMAGE_FIRE on ref 1000040 and the NO_FIRE_FEAR flag.",
+  "needs_recording": false
+ },
+ {
+  "id": "status.terror",
+  "verdict": "confirmed",
+  "reason": "SpEffects 9200-9209 registIllness 25..250, stateInfo 5, ref 590, changeHpRate 100, replace 9250 (2 s); named rows 9211-9223 values match; 9280 stateInfo 900.",
+  "needs_recording": false
+ },
+ {
+  "id": "status.terror-scream",
+  "verdict": "confirmed",
+  "reason": "Bullet 51000580 has hitRadius 10, life 0.2, SpEffect 9220 (registIllness 18); the 4 m / 20 m outcome is from the sekiro-rs replay only.",
+  "needs_recording": false
+ },
+ {
+  "id": "status.shock",
+  "verdict": "confirmed",
+  "reason": "SpEffects 9420/9425 and 9430-9435 registFreeze 200, stateInfo 260, changeHpRate/Point and stamina values match the record; replace 9445 (1.5 s), cycle 9450 (ref 593) / 9451 (ref 592), reset 9440 -99999, 9461 freezeDamageRate 25.",
+  "needs_recording": false
+ },
+ {
+  "id": "status.electrified-charge",
+  "verdict": "confirmed",
+  "reason": "SpEffects 9490-9494 (stateInfo 356, ref 511) and 9495 (stateInfo 151, ref 510) cycle 9410-9415, 30 s, interval 0.1; 9505/9506 -> 9507/9508 replace 9440 and cycle 9500.",
+  "needs_recording": false
+ },
+ {
+  "id": "status.aging",
+  "verdict": "confirmed",
+  "reason": "SpEffect 9600 registCurse 40 stateInfo 116 cycle 9620; 9620 30 s, changeStaminaRate -100, maxHpRate 0.125, stateInfo 341, ref 591, damage cut 99; 9601 -99999; Bullet 13000200 carries 9600; event text 10010776 is 'Enfeebled'.",
+  "needs_recording": false
+ },
+ {
+  "id": "status.cures",
+  "verdict": "confirmed",
+  "reason": "Item bullet chains: 3201/3211/3221/3041-3045 clear with -99999; 3203 0.55, 3212 0.65 / fire 0.6, 3214 0.55 / 0.4, 3222 0.5, 3231 thunder 0.5 + freezeDamageRate 50; the three gourds clear the same types (3302 0.55, 3312 0.6 / fire 0.5, 3322 0.5).",
+  "needs_recording": false
+ },
+ {
+  "id": "status.hud",
+  "verdict": "confirmed",
+  "reason": "SpEffect icon rows 9250 (2 s) and 9445 (1.5 s) exist; the sprite names and the layout are not in the data I could open, so the HUD placement stays an inference.",
+  "needs_recording": false
+ },
+ {
+  "id": "status.dragonrot",
+  "verdict": "confirmed",
+  "reason": "Item FMG and event texts: dying without resurrecting builds Stagnation of the Dragon's Blood, overflow sickens people, the Dragon's Blood Droplet (5600) with the Recovery Charm (2930) at an idol restores all.",
+  "needs_recording": false
+ },
+ {
+  "id": "progression.sen-from-kills",
+  "verdict": "confirmed",
+  "reason": "NpcParam has getSoul > 0 on 478 of 1279 rows and the rows 10100000 (11), 10200000 (33), 10202000 (89), 10211000 (255) and 10701000 (312, the maximum) match; the three zero rows are boss or rival rows (50000000 is the Hakai Monk row).",
+  "needs_recording": false
+ },
+ {
+  "id": "progression.skill-xp-from-kills",
+  "verdict": "confirmed",
+  "reason": "NpcParam skillPoint > 0 on 605 rows and 10100000 21, 10200000 134, 10202000 280, 10211000 3890, 10701000 3310, 10801000 2905, 13401000 2840 match; the values 2640, 2840 and 2905 all occur on rows with getSoul 0.",
+  "needs_recording": false
+ },
+ {
+  "id": "progression.skill-xp-curve",
+  "verdict": "confirmed",
+  "reason": "src/experience.rs TO_NEXT holds exactly the quoted entries (500, 514 ... 893, then 1093, 1300, 1515, 1738 ... 83837 at index 127) and no param or script holds a formula, so it stays a community table.",
+  "needs_recording": false
+ },
+ {
+  "id": "progression.skill-points-spend",
+  "verdict": "confirmed",
+  "reason": "SkillParam has 89 rows split 43/12/7/7/7 over pages 0-4 plus 13 without a page, parent1 on 68 rows, parent2 on 25, unlockEventFlag on 32, spEffect1 on 18, and no cost field exists in the row.",
+  "needs_recording": false
+ },
+ {
+  "id": "progression.skill-tree-structure",
+  "verdict": "corrected",
+  "reason": "Row 2 matches (dispRow 2, dispCol 1, parent1 10, view links 10 and 4, virtualWeaponId 200100, unenforementWepId 690200, unreleaseWepId 699000), but virtualWeaponId is set on all 89 rows, acquireWeaponId on 52 rows and none of those 52 also has a SpEffect, and parent3 is never used.",
+  "fix": {
+   "summary": "Each SkillParam row has a screen cell (dispRow, dispCol), parent skills (parent1 on 68 rows, parent2 on 25, parent3 on none), view links (unlovkViewSkill0-7, set on 64 rows) and up to three SpEffects (spEffect1 on 18 rows). A combat art or prosthetic skill carries acquireWeaponId (52 rows) and never a SpEffect; virtualWeaponId, unenforementWepId and unreleaseWepId are set on every row and name the weapon shown in the menu.",
+   "note": "The 18 SpEffect rows and the 52 weapon rows are disjoint. The exact meaning of the view links is from the field name only."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "progression.latent-skill-effects",
+  "verdict": "corrected",
+  "reason": "The spEffect1 map is exact, but 150500 and 150300-150330 are only permit flags (stateInfo 983-987, no rates), the deflect posture rate is 150410 (defStaminaAttackRate 1.25) and 150420 cuts posture taken while guarding (0.75, slash 0.8), and our code applies Covert, Mikiri, deflect, guard and Medicine Knowledge but not Good Luck or Buff duration.",
+  "fix": {
+   "summary": "Passive skills add resident SpEffects. Covert A (150000) cuts sight (sightSearchEnemyCut 20, aroundSightPointAddRate 0.5) and Covert B (150010) halves the sound heard (hearingSearchEnemyRate 0.5). Mikiri posture UP (150400) is attackHitParryStaminaAttackRate 1.25, deflect posture UP (150410) is defStaminaAttackRate 1.25, Flowing Water (150420) cuts guard posture taken to 0.75 (slash 0.8), and 150500 and 150300-150330 are only permit flags for other code. Medicine Knowledge (rows 170, 171, 600-602, each 150200 plus 150210) raises the gourd 1.1 to 1.5 through a stack chain. Good Luck (365, 366) gives soulRate 1.125 and 1.25. Buff duration UP (150600) is extendLifeRate 1.5.",
+   "ours": {
+    "has": "partial",
+    "where": "src/combat.rs skill_sp_effects / skill_rate (Covert, Mikiri, deflect, guard), src/player.rs medicine_rate; Good Luck (sen_rate reads worn items only) and Buff duration are not applied"
+   },
+   "note": "English skill names were not matched row by row; SpEffect names were read from SpEffectParam."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "progression.esoteric-texts",
+  "verdict": "corrected",
+  "reason": "Goods 2920-2924 are goodsType 1, max 1, sale and sell -1 and the FMG names are Shinobi/Prosthetic/Ashina/Senpou/Mushin Esoteric Text in that order, but 2450 has saleValue 500, so only the five Esoteric Texts are unsold.",
+  "fix": {
+   "values": "goods 2920-2924 (goodsType 1, max 1, saleValue and sellValue -1, FMG: Shinobi, Prosthetic, Ashina, Senpou, Mushin Esoteric Text); other texts 2450 (saleValue 500), 2461, 9210, 9213 (saleValue -1)"
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "progression.sen-xp-loss-on-death",
+  "verdict": "confirmed",
+  "reason": "TentativePlayerParam row 0 has MoneyLostRate 50, SkillPointLostRate 50, DyingHp 120 and DeceasedThreshold 15; Paramdex says DyingHp is the HP at or below which Wolf is near death and DeceasedThreshold is the Unnatural Death level at which a death turns Wolf into a Deceased (dragonrot), and src/experience.rs death_penalty halves both.",
+  "needs_recording": false
+ },
+ {
+  "id": "progression.sen-boost-effects",
+  "verdict": "confirmed",
+  "reason": "SpEffects 3601 and 3641 soulRate 1.5 with effectEndurance 150, 2101 soulRate 1.2 (endurance -1, 'Get soul up'), 150100 1.125 and 150101 1.25 match; 3641 is the Mibu Pilgrimage Balloon (goods 3640, named White Rappa in the param), and no param, goods or EMEVD add instruction hands out 2101.",
+  "needs_recording": false
+ },
+ {
+  "id": "progression.sen-purses",
+  "verdict": "corrected",
+  "reason": "Goods 3700/3704/3708 (anim 60, max 99, sellValue 100/500/1000, saleValue 110/550/1100) and SpEffects 3700/3704/3708 soul 100/500/1000 with soulRate 1.0 match, and src/items.rs line 364 adds the sellValue to the purse.",
+  "fix": {
+   "ours": {
+    "has": "yes",
+    "where": "src/items.rs (coin purses add sellValue to sen)"
+   }
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "progression.attack-power-memories",
+  "verdict": "confirmed",
+  "reason": "Goods 5100 is goodsType 7 max 98 getGrowthType 3 and 5200-5213 plus 5220-5222 are the boss Memories (max 99), FMG names match; no EMEVD, HKS or param link from the counter to SpEffect 160000+N exists, so that step stays an exe-side inference from the sekiro-rs doc.",
+  "needs_recording": false
+ },
+ {
+  "id": "progression.attack-power-curve",
+  "verdict": "corrected",
+  "reason": "SpEffects 160000+N have identical rates in all eight fields (stateInfo 204) and the steps are +0.25 (2-14), +0.10 (15-27), +0.05 (28-51), but 52 is 6.775 and 53 is 6.77 (lower), so the rule for 53-99 is 6.75 + 0.01*(N-51), not 'add 0.01 to 52'.",
+  "fix": {
+   "summary": "Level N picks SpEffect 160000 + N (Player Growth_Core Level N). Its physical, elemental and posture attack rates all carry the same number. Levels 0 and 1 are 1.0, levels 2 to 14 add 0.25 each, 15 to 27 add 0.10, 28 to 51 add 0.05. Level 52 is 6.775 (the only row off the line), and levels 53 to 99 follow 6.75 + 0.01 * (N - 51), so 53 is 6.77 and 99 is 7.23.",
+   "check": "Compare the 99 rows to the formula: all match except level 52 (6.775 instead of 6.76)."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "progression.attack-power-posture",
+  "verdict": "confirmed",
+  "reason": "Rows 160000+N carry staminaAttackRate, defStaminaAttackRate and attackHitParryStaminaAttackRate equal to M, and 30 posture x 3.25 (AP10) is 97.5 which truncates to 97; our code has no Attack Power so ours stays no.",
+  "needs_recording": false
+ },
+ {
+  "id": "progression.dancing-dragon-mask",
+  "verdict": "confirmed",
+  "reason": "Goods 5500/5501/5502 and 5510 (max 1) exist and the item text says the mask exchanges Skill Points for Attack Power in the idol menu, but the cost of 5 and the cap of 98 come only from the wiki, so it stays community.",
+  "needs_recording": false
+ },
+ {
+  "id": "progression.prayer-beads-necklaces",
+  "verdict": "confirmed",
+  "reason": "Goods 4000 is max 99, necklaces 4100-4109 are getGrowthType 1 max 1 with First...Ninth and Final names, and the bead text says four beads are offered for one necklace; 40 beads is the wiki count only.",
+  "needs_recording": false
+ },
+ {
+  "id": "progression.vitality-posture-levels",
+  "verdict": "corrected",
+  "reason": "Graphs 500/501/504 hold only two points (stageMaxVal 1 and 11 giving 320/1120, 120/420, 30/105) and adjPt_maxGrowVal is 1.0, which the exe evaluator (FUN_140850b10, data.rs calc_correct) turns into a straight line, so the middle levels are not assumed.",
+  "fix": {
+   "note": "The straight line is settled: adjPt_maxGrowVal 1.0 gives t^1 in the exe curve (src/data.rs calc_correct), so level n is 320 + 80*(n-1), 120 + 30*(n-1) and 30 + 7.5*(n-1). Rows beyond stage 1 repeat the end value."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "progression.healing-gourd-uses",
+  "verdict": "corrected",
+  "reason": "CharaInitParam HpEstMax values match (1, 2, 3, 4, 4, 4, 4, 5, 6, 8, 8, 10, 9, 10), but the Gourd Seed text says to give the seed to Emma, not to offer it at an idol.",
+  "fix": {
+   "summary": "The gourd starts with 1 use on a new game and grows to 10. Each Gourd Seed is given to Emma and adds one use (resting refills the gourd). There are 9 seeds in one playthrough. Area presets also carry the number (2 at the castle start, 10 at game clear).",
+   "check": "Give a Gourd Seed to Emma, rest at an idol, and the gourd shows one more charge.",
+   "note": "RustSekiro defaults gourd_charges to 3 for testing; the real start is 1. Seeds going to Emma is from the item text; the 9 seeds is a wiki count (1 + 9 = max 10)."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "progression.gourd-heal-amount",
+  "verdict": "corrected",
+  "reason": "SpEffect 3000 is -40 and 150200-150204 are 1.1-1.5, and the chain the record guessed is in the data: each of the five skill rows adds 150210 (accumuVal 1) and 150200-150203 move up when accumuOverVal reaches 2, 3, 4, 5.",
+  "fix": {
+   "ours": {
+    "has": "yes",
+    "where": "src/items.rs, src/player.rs medicine_rate"
+   },
+   "note": "Rows 170, 171 and 600-602 all point at 150200 plus 150210; each learned one adds 1 stack and the accumuOverFireId chain 150201..150204 (accumuOverVal 2..5) picks the level, so five skills give 1.5. Sim test latent_skill_rates covers 1.1 and 1.2."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "progression.spirit-emblems",
+  "verdict": "confirmed",
+  "reason": "Goods 1000 (max 15) and 1001 (max 5) are goodsType 7, CharaInitParam MpEstMax is 5 on every story row 10000-10172, and src/drops.rs rolls ResourceItemLot category 1 (emblems).",
+  "needs_recording": false
+ },
+ {
+  "id": "progression.chara-init-area-presets",
+  "verdict": "corrected",
+  "reason": "CharaInitParam has 203 rows and the quoted HpEstMax/baseBody pairs match, but baseHeroPoint 4 and baseWil 18 hold only on the story rows (9000 and 9001 have baseWil 99 and other rows 0), and baseBody 3 on row 10030 gives vitality 480, not 400.",
+  "fix": {
+   "check": "Load row 10030 and compare vitality to 480 (baseBody 3 on the 320 + 80 per level line; 400 is row 10040).",
+   "note": "baseHeroPoint is 4 and baseWil 18 on the 23 story rows 10000-10172 only. Paramdex does not describe them. Attack Power is not stored in this row."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "progression.ng-plus-clear-count-correct",
+  "verdict": "corrected",
+  "reason": "The table values match, but the 'Row' column order in values is wrong (the third figure is SoulRate, not a posture attack rate; the attack rate starts at row 3), and NG+1 is not only poison resist because NpcParam.GameClearSpEffectID adds the Orbital Doping rows (base + 500) on 872 enemy rows.",
+  "fix": {
+   "summary": "ClearCountCorrectParam rows 1 to 7 hold the per-cycle multipliers (row n read as NG+n, an assumption). Row 1 only adds poison resist 1.1. From row 2 max HP, max posture and posture recovery rise and SkillPointRate and SoulRate go up, and super-armor damage taken falls. From row 3 attack and posture attack go up too. Row 7 is the top. NG+ is not this table alone: NpcParam.GameClearSpEffectID (base + 500, see orbital-doping) adds a large per-enemy bonus on top.",
+   "values": "Per row: MaxHp and MaxStamina rate, attack (physics, magic, fire, thunder, dark and stamina attack rate), SoulRate, SkillPointRate, SuperArmorDamageRate. 1: PoisionResistRate 1.1 only. 2: 1.2, none, 1.1, 1.5, 0.95. 3: 1.25, 1.05, 1.125, 2.0, 0.9. 4: 1.3, 1.05, 1.2, 2.5, 0.85. 5: 1.325, 1.05, 1.225, 3.0, 0.8. 6: 1.35, 1.05, 1.25, 3.5, 0.7. 7: 1.5, 1.1, 1.275, 4.5, 0.65. StaminaRevoverSpeedRate equals the max HP rate. Rows 100-107 are the harder table.",
+   "check": "Compare an enemy row's HP in NG+3 with the base: ClearCount 3 gives 1.25 on top of the area and Orbital Doping rows."
+  },
+  "needs_recording": true
+ },
+ {
+  "id": "progression.ng-plus-sen-xp-rate",
+  "verdict": "corrected",
+  "reason": "SkillPointRate 1.5/2/2.5/3/3.5/4.5 and SoulRate 1.1/1.125/1.2/1.225/1.25/1.275 for rows 2-7 match, but the soldier chk is wrong because the soldier's NpcParam row also has GameClearSpEffectID 7510 (haveSoulRate 5.0, haveSkillPointRate 15.0).",
+  "fix": {
+   "check": "Kill the same soldier in NG+1 and NG+7 and compare the XP; the NG+ values include the Orbital Doping 7510 multipliers (XP x15, sen x5 at the castle) as well as this table.",
+   "note": "How the table rates and the haveSoulRate/haveSkillPointRate of the Orbital Doping SpEffect combine (product or not) is not known; only a recording can settle it."
+  },
+  "needs_recording": true
+ },
+ {
+  "id": "progression.ng-plus-cap",
+  "verdict": "confirmed",
+  "reason": "ClearCountCorrectParam really stops at rows 0-7 and 100-107, but the clamp for cycles above 7 is not in any param, script or event and stays a wiki claim.",
+  "needs_recording": false
+ },
+ {
+  "id": "progression.new-game-counter",
+  "verdict": "confirmed",
+  "reason": "SekiroTool Offsets.cs has PlayerGameDataOffsets AttackPower = 0x48 and Experience = 0x160 and GameDataMan NewGame = 0x70; this is a community tool and nothing here checks it against this build.",
+  "needs_recording": false
+ },
+ {
+  "id": "progression.hard-mode-sen-xp",
+  "verdict": "corrected",
+  "reason": "SpEffects 7900-7903 match (haveSoulRate and haveSkillPointRate 1.2, HP/posture 1.5, 1.2, 1.125, none), and the application is now found: NpcParam.HardModeSpEffectID is 7900 on 456 rows, 7901 on 138, 7902 on 44 and 7903 on 36.",
+  "fix": {
+   "note": "Applied through NpcParam.HardModeSpEffectID (456/138/44/36 rows). Common event 800 adds the player SpEffect 8610 'Hard mode' while event flag 6911 is on, so 6911 is the Charmless flag; that the 79xx rows follow the same flag is not shown in the events.",
+   "how": "Each enemy row names its Hard mode SpEffect in HardModeSpEffectID; the exe applies it while Charmless mode is on (probable, same flag as common event 800)."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "progression.hard-mode-growth-doping",
+  "verdict": "corrected",
+  "reason": "The 77xx values match, and the link is in the data: every NpcParam growthDopingSpEffectID base (7000-7170) has a +700 row ('1 lap hard' in the names), so 7710 = 7010 + 700.",
+  "fix": {
+   "note": "The +700 ladder sits beside the +0 (normal) and +500 (NG+) ladders: 7010 -> 7510 -> 7710, 7120 -> 7620 -> 7820, all present for every NpcParam base. Which ladder is used when is not in the events (no 2004[8] adds them); '1 Week' likely means the first lap and the Charmless flag 6911 probably chooses it."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "progression.area-growth-doping-7010-7014",
+  "verdict": "confirmed",
+  "reason": "SpEffects 7010-7014 match (7010 none, 7011 1.25, 7012 1.5, 7013 2.0, 7014 3.0 on HP, attack, posture and recovery), NpcParam.growthDopingSpEffectID is 7010 on 139 enemy rows as the base, and src/enemy.rs line 1975 reads the row from config.enemy.area_doping.",
+  "needs_recording": false
+ },
+ {
+  "id": "progression.area-growth-doping-all-areas",
+  "verdict": "confirmed",
+  "reason": "All 18 families (7000, 7010 ... 7170) match the quoted HP lists and attack differs from HP in the quoted rows (for example 7033 2.5 HP and 2.25 attack); NpcParam.growthDopingSpEffectID holds the family base (7000 x19, 7010 x139, ... 7170 x7) and -1 on 406 rows.",
+  "needs_recording": false
+ },
+ {
+  "id": "progression.orbital-doping",
+  "verdict": "corrected",
+  "reason": "The record's guess is settled by data: Orbital Doping 00 (the Japanese name means playthrough doping) rows 7500-7674 are named in NpcParam.GameClearSpEffectID (Paramdex: 'SpEffect ID for the cycle bonus') on 872 enemy rows, always growthDopingSpEffectID + 500, so they are the NG+ bonus; 7954-7961 are the rematch and consecutive-battle rows and 7950-7953 are shared Growth Doping rows.",
+  "fix": {
+   "summary": "NG+ enemies get a second doping row from NpcParam.GameClearSpEffectID, always the area base + 500 (7510 for the castle morning: HP 4.35, attack 3.35, haveSoulRate 5.0, haveSkillPointRate 15.0; 7520 Samurai Residence: XP x10). The rows 7954-7961 ('Single Rematch + Story Consecutive Battles', 'For All Consecutive Battles') are separate rematch rows, and 7950-7953 are shared 'All Modes' Growth Doping rows.",
+   "values": "GameClearSpEffectID is 7500-7670 on 872 NpcParam rows (18 ids, always base + 500; soldier 10100000 -> 7510). 7510: hp 4.35, atk 3.35, haveSoulRate 5.0, haveSkillPointRate 15.0; 7514: hp 2.0, atk 1.35; 7520: XP 10.0. Rematch rows: 7954 hp 1.5 atk 1.165; 7955 1.65/1.2; 7958 1.65/1.2; 7959 1.75/1.3. Shared Growth Doping: 7950 hp 3.5 atk 3.0; 7951 5.0/4.25.",
+   "confidence": "data",
+   "note": "With haveSoulRate up to 5 and XP up to 15 means NG+ kills pay far more than the ClearCountCorrect table suggests. How it combines with that table is not known."
+  },
+  "needs_recording": true
+ },
+ {
+  "id": "progression.doping-emevd-assignment",
+  "verdict": "corrected",
+  "reason": "Event 11005201 does remove 7000..7903 (187 rows) from entity 1000900 and add the 7950-7961 pairs, but the flag test is on event flag 6911 (Charmless, see common event 800) and on owning goods 3730 (Bell Demon, IfPlayerHasItem type 3), and the area rows themselves are not added by EMEVD at all.",
+  "fix": {
+   "summary": "Per-map events (about 25 files, for example m10_00_50_60 event 11005201 and m11_01_71_00 events 11115201/11115202) first remove the area rows 7000-7903 from entity 1000900, then add one of four shared row pairs depending on the Charmless flag 6911 and on owning the Bell Demon item 3730. Across all maps 2004[8] adds only the shared rows 7930-7978; the per-area rows (70xx, 75xx, 77xx) come from NpcParam, not from events.",
+   "values": "2004[21] removes SpEffects 7000..7903 (187 rows) from 1000900; 2004[8] adds 7950/7958, 7951/7959, 7952/7960, 7953/7961 in the first block and 7950/7954, 7951/7955, 7952/7956, 7953/7957 in the second; the conditions are flag 6911 (3[0] with 257/258/260/261) and item 3730 owned (3[4] type 3 goods, state 1).",
+   "note": "Entity 1000900 and the exact condition order were not named. Common event 800 adds player SpEffect 8610 while 6911 is on."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "progression.enemy-scaling-apply",
+  "verdict": "corrected",
+  "reason": "The rows are right (7124 hp 4.25, atk 3.75; 7820 hp 4.4, atk 3.75) and the live 80 -> 300 and 18 -> 67 are the enemy's attack on Wolf times 3.75, but 1916 -> 4050 is a factor of 2.11, which no maxHpRate row gives (1916 x 4.25 = 8143), and Wolf's own damage uses the Attack Power rate, not 3.75.",
+  "fix": {
+   "summary": "An enemy's attack on Wolf is multiplied by the area row's physicsAttackPowerRate and staminaAttackRate (k = 3.75 on the Truth edition rows 7124 and 7820: 80 became 300 HP damage and 18 posture became 67). Its HP is the NpcParam hp times the row's maxHpRate. Wolf's damage to it uses Wolf's Attack Power rate (160000+N), not this row.",
+   "values": "7124: hp 4.25, atk 3.75; 7820: hp 4.4, atk 3.75; c1180 NpcParam hp 1916 became 4050 live (x2.11, not matching 4.25); Wolf attack x4.35 (AP15)",
+   "note": "The save used for the live checks had 7124 or 7820 as the row; which one was never settled, and the HP factor 2.11 fits neither, so the HP scaling is still open."
+  },
+  "needs_recording": true
+ },
+ {
+  "id": "progression.demon-bell",
+  "verdict": "corrected",
+  "reason": "Goods 3730 (max 1, refId 3730) matches, but the item text says the demon enlarges enemies and spoils and that using it only makes the demon leave, and the map events test owning goods 3730 (not a flag) to choose the harder shared rows.",
+  "fix": {
+   "summary": "The Bell Demon (goods 3730, max 1) is carried after ringing the Iron Bell of Senpou Temple. While Wolf owns it, the map events add the harder shared rows (7951/7953 and 7959/7961 with the Charmless variants); the item text says it strengthens enemies and gives slightly better spoils, and using it only makes the demon leave. SpEffects 3730-3733 are empty markers named [Consumption] Bell Demon Day, Evening, Night and Bell Evening; goods 3731-3733 do not exist.",
+   "note": "Owning 3730 is tested in common event 802 (sets flag 9830) and in the 11005201-style map events; event 831 clears 9830 when SpEffect 3730 is applied. The wiki reading (acts like Charmless) fits the shared rows being the same ones used for the Charmless flag."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "progression.kuro-charm",
+  "verdict": "corrected",
+  "reason": "Goods 9003 (goodsType 1, max 1) and its text match, ClearCountCorrect 101 (hp 1.2, atk 1.25, poison 1.35) and 107 (hp 1.9, atk 1.6, SA 0.6) match, and SpEffect 8610 is 'Hard mode' with iconId 2220 (blood and poison 1.5, curse and disease 1.2), and common event 800 adds 8610 exactly while flag 6911 is on.",
+  "fix": {
+   "how": "Event flag 6911 is the Charmless flag: common event 800 adds the player SpEffect 8610 while it is on and removes it otherwise, and common event 50 clears it at start. NpcParam.HardModeSpEffectID (79xx) and the +700 doping ladder are probably tied to the same flag; ClearCountCorrectParam rows 100-107 as the Charmless table is still a reading from the numbers.",
+   "note": "Who sets 6911 (giving the charm away) is not in the event files, so it is probably set from a talk script. The chip damage while blocking was not found in these rows."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "progression.clear-count-base-speffect",
+  "verdict": "confirmed",
+  "reason": "TentativePlayerParam 0 has ClearCountCorrectBaseSpEffectId 141000, SpEffect 141000 is 'Special Sword_New Technique' with no stats and only 141000 and 141001 exist near it, so base plus cycle number cannot be a lookup; the role is still unknown.",
+  "needs_recording": false
+ },
+ {
+  "id": "progression.skill-xp-vs-sen-in-ours",
+  "verdict": "corrected",
+  "reason": "src/experience.rs reward_kills pays reward(npc) = (skillPoint, getSoul), multiplies sen by items::sen_rate of the worn timed effects, and death_penalty halves sen and the gauge; it also ignores the Orbital Doping and Hard mode haveSoulRate/haveSkillPointRate multipliers.",
+  "fix": {
+   "summary": "RustSekiro pays NpcParam skillPoint to the XP gauge and getSoul to the purse at death, scaled by the Balloon of Wealth rate. A full gauge makes a skill point. It skips Unseen Aid, the NG+ table rows, the Orbital Doping and Hard mode haveSoulRate/haveSkillPointRate multipliers, and the Good Luck skill rate."
+  },
+  "needs_recording": false
+ }
+]

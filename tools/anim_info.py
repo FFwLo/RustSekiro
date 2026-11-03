@@ -31,7 +31,8 @@ def fr(e):
 
 
 def ref_of(c, e):
-    sid = str(e["args"].get("SpEffectID", ""))
+    args = e["args"] if isinstance(e["args"], dict) else {}
+    sid = str(args.get("SpEffectID", ""))
     return c["spEffects"][sid]["behaviorRefId"] if sid in c["spEffects"] else None
 
 
@@ -53,6 +54,9 @@ def show_state(c, inv, name, types):
     for e in an["events"]:
         if types and e["type"] not in types:
             continue
+        if not isinstance(e.get("args"), dict):
+            # Some events carry their args as one undecoded string.
+            e = {**e, "args": {}}
         r = ref_of(c, e)
         gated = " [gated]" if e["args"].get("StateInfo") else ""
         if r is not None:

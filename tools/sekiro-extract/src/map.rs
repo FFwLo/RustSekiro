@@ -125,7 +125,8 @@ fn export_grapple(root: &Path, map_id: &str, msb: &msb::Msb, arena: &Arena, orig
     // of kb/grapple.md) filters the rest as the game does. Drops points such as the Divine
     // Dragon's o255610 from the area 277 m under the arena (only the horizontal distance was checked).
     const WIRE_REACH_Y: f32 = 50.0 + 30.0;
-    let near = |p: [f32; 3]| (p[0] - origin[0]).hypot(p[2] - origin[2]) <= radius + 30.0 && (p[1] - origin[1]).abs() <= WIRE_REACH_Y;
+    // An infinite radius (`edges`, whole maps) keeps every height too.
+    let near = |p: [f32; 3]| (p[0] - origin[0]).hypot(p[2] - origin[2]) <= radius + 30.0 && (radius.is_infinite() || (p[1] - origin[1]).abs() <= WIRE_REACH_Y);
     // Hang / hug edges ("ledges"): the same files' type 2 / 3 records within the radius + 10 m,
     // raw ({a, b, c, kind, var, src}) for the ledge hang and wall hug moves later (HKS
     // BEH_A_GROUND_HANG_START, COVER_*); the game only draws them (map.rs LedgeEdges).
@@ -172,22 +173,24 @@ fn export_grapple(root: &Path, map_id: &str, msb: &msb::Msb, arena: &Arena, orig
             ledge(e, p);
         }
     }
-    // The map's own edge files (none with grapple edges on m11_01_00_00 or m10_00_00_00; kept
-    // for other maps).
+    // The map's own edge files (no grapple edges on the Ashina / Senpou maps; most of their
+    // hang / hug edges).
     let edge_dir = root.join(format!("map/{map_id}"));
     if let (Ok(bhd), Ok(bdt)) = (std::fs::read(edge_dir.join(format!("{map_id}.edgebhd"))), std::fs::read(edge_dir.join(format!("{map_id}.edgebdt")))) {
         for f in container::read_bxf4(&bhd, &bdt) {
-            let stem = f.name.rsplit(['\\', '/']).next().unwrap_or(&f.name).trim_end_matches(".edge");
-            let Some(id) = stem.rsplit('_').next() else { continue };
-            // MSB collision models are named h<id> (h003100), not h<map>_<id>: the old name never
-            // matched, so no map's own edge file was read (m25: 906 hang / 584 hug records).
-            let part_model = format!("h{id}");
-            let Some(p) = msb.parts.iter().find(|p| p.kind == 5 && p.model.eq_ignore_ascii_case(&part_model)) else { continue };
-            for (hook, land, var) in edge_grapples(&f.data) {
-                map_edges += entry(p.transform(hook), p.transform(land), msb::rotate(p.rot, [0.0, 0.0, 1.0]), var, p.name.clone()) as usize;
-            }
-            for e in edge_ledges(&f.data) {
-                ledge(&e, p);
+            // The owner collision model is the header's u32 at 8 (h<owner:06>), and every
+            // collision part of that model carries the edges (as sekiro-rs's extractor reads
+            // them, crates/extract/src/maps/edges.rs). Before, the id came from the file name
+            // and only the first such part was used.
+            let Some(owner) = f.data.get(8..12).map(|b| u32::from_le_bytes(b.try_into().unwrap())) else { continue };
+            let part_model = format!("h{owner:06}");
+            for p in msb.parts.iter().filter(|p| p.kind == 5 && p.model.eq_ignore_ascii_case(&part_model)) {
+                for (hook, land, var) in edge_grapples(&f.data) {
+                    map_edges += entry(p.transform(hook), p.transform(land), msb::rotate(p.rot, [0.0, 0.0, 1.0]), var, p.name.clone()) as usize;
+                }
+                for e in edge_ledges(&f.data) {
+                    ledge(&e, p);
+                }
             }
         }
     }
@@ -738,6 +741,38 @@ fn height_on(x: f32, z: f32, a: [f32; 3], b: [f32; 3], c: [f32; 3]) -> Option<f3
     let l2 = ((c[2] - a[2]) * (x - c[0]) + (a[0] - c[0]) * (z - c[2])) / d;
     let l3 = 1.0 - l1 - l2;
     (l1 >= 0.0 && l2 >= 0.0 && l3 >= 0.0).then(|| l1 * a[1] + l2 * b[1] + l3 * c[1])
+}
+
+/// `edges <extracted> <map id>...`: every grapple point and hang / hug edge of whole maps
+/// (export_grapple with no radius) in the map's own MSB space, as `map_edges_<map id>.json`
+/// ({map, grapple, ledges}, the arena json's fields; the game mirrors X on load like the
+/// arena's). For runs on sekiro-rs's map (the game's sr_map.rs), which spans several maps.
+/// Needs `map/<id>/<id>.edgebhd` and the maps' objects unpacked: lists the missing objects
+/// ("objects to unpack: ...") and writes nothing for that map then.
+pub fn export_edges(root: &Path, map_ids: &[String]) {
+    let arena = Arena { origin: [0.0; 3], yaw: 0.0 };
+    for map_id in map_ids {
+        let Ok(bytes) = std::fs::read(root.join(format!("map/mapstudio/{map_id}.msb"))) else {
+            println!("{map_id}: no msb");
+            continue;
+        };
+        let msb = msb::read(&bytes);
+        let missing: std::collections::BTreeSet<String> = msb
+            .parts
+            .iter()
+            .filter(|p| p.kind == 1 && !p.model.is_empty())
+            .map(|p| p.model.to_lowercase())
+            .filter(|m| !root.join("obj").join(format!("{m}.objbnd.d")).is_dir())
+            .collect();
+        if !missing.is_empty() {
+            println!("objects to unpack: ^/obj/({})\\.objbnd", missing.into_iter().collect::<Vec<_>>().join("|"));
+            continue;
+        }
+        print!("{map_id}: ");
+        let (grapple, ledges) = export_grapple(root, map_id, &msb, &arena, [0.0; 3], f32::INFINITY, &root.join("obj"));
+        let json = serde_json::json!({ "map": map_id, "grapple": grapple, "ledges": ledges });
+        std::fs::write(root.join(format!("map_edges_{map_id}.json")), serde_json::to_string(&json).unwrap()).unwrap();
+    }
 }
 
 /// `map <extracted> <map id> <centre part name> <radius m>`.

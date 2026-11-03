@@ -185,7 +185,9 @@ Dated findings, oldest first. Append new entries at the end.
 - 2026-10-08 scalings explained from data: enemy k = 3.75 = area SpEffect 7124 / 7820 "Growth Doping: Samurai
   Residence (Truth)" (physicsAttackPowerRate 3.75, staminaAttackRate 3.75, maxHpRate 4.25/4.4). Wolf's attack x4.35
   = "Player Growth_Core Level N" SpEffect 160000+N (Attack Power; level 15 = 4.35: physics/stamina/
-  attackHitParryStamina/defStamina rates all equal, stateInfo 204; L0-1 = 1.0, +0.25 per level to L10 = 3.25).
+  attackHitParryStamina/defStamina rates all equal, stateInfo 204; L0-1 = 1.0, +0.25 per level to L14 = 4.25,
+  then +0.10 to L27). 2026-10-19: wired as config player.attack_power (combat::growth_sp), folded into Wolf's
+  atk_rate / stam_atk_rate and skill_rate.
   Guard x0.74: one live call of FUN_140840870 (before the 2nd crash) = rdx BehaviorParam_PC 105000090 "Right
   hand sword_guard" -> AtkParam_Pc 5000090 (guardStaminaCutRate +0x6c = 0); weapon term EquipParamWeapon
   staminaGuardDef (+0xd4) x ReinforceParamWeapon staminaGuardDefRate (+0x4c) = 0 for the katana; graph 163 = 0.
@@ -215,6 +217,8 @@ Dated findings, oldest first. Append new entries at the end.
 - The guard posture factor (0.785 slash / 0.74 strike) is latent skill **Flowing Water**
   (SkillParam 280 -> SpEffect 150420 deflect / 150421 guard, def<Attr>StaminaDmgRate by AtkParam
   staminaPhysicsAttribute). Implemented (combat.rs guard_skill_rate, config player.skills).
+  2026-10-19: by the exe's families 150420 (stateInfo 158) counts on a block and 150421 (204) on a
+  deflect (ours had them swapped; same values). Now inside guard::guarded_posture.
 - 2026-10-09 LIVE (memscope-data/logs/rec_c1010_*, rec_c1020_*_20261009; chr id at chr_head +0x6C, NpcParam
   row at +0x68): deathblows checked against both enemies and fixed:
   * Kill follow-up (HKS BEH_R_THROW_KILL -> W_ThrowKill<id+1>): when the enemy switches ThrowDef ->

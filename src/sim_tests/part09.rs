@@ -139,7 +139,7 @@ pub(crate) fn a_hit_under_flag_24_keeps_wolfs_grapple() {
     assert_eq!(a.kb_vel, Vec3::ZERO, "no knockback under flag 24");
 }
 
-/// Wolf's cut that plays no reaction (mid-swing: the enemy_mid_swing setup, live) still marks
+/// Wolf's cut that plays no reaction (a swing under ChrActionFlag 24: the enemy_mid_swing setup) still marks
 /// the map AI hold's damage wake: it is set where Wolf's HP damage lands, not only by a reaction
 /// (react_from), so a held MSB enemy cut this way wakes (EMEVD 4[1] / 3[23]; 2026-10-12 round 16).
 #[test]
@@ -149,7 +149,7 @@ pub(crate) fn a_cut_with_no_reaction_still_wakes_a_held_enemy() {
         let world = app.world_mut();
         let mut q = world.query::<(&mut Enemy, &mut Actor)>();
         let (mut e, mut a) = q.single_mut(world).unwrap();
-        e.force_anim(&mut a, "a000_003000");
+        e.force_anim(&mut a, "a000_003003");
         a.t = 7.0 / TAE_FPS;
         a.prev_t = a.t;
         a.yaw = std::f32::consts::PI;
@@ -163,7 +163,7 @@ pub(crate) fn a_cut_with_no_reaction_still_wakes_a_held_enemy() {
         }
     }
     assert!(log_text(&app).contains("you hit"), "{}", log_text(&app));
-    assert_eq!(enemy_state(&mut app).1, "a000_003000", "it reacted: not the no-reaction case");
+    assert_eq!(enemy_state(&mut app).1, "a000_003003", "it reacted: not the no-reaction case");
     let world = app.world_mut();
     assert!(world.query::<&Enemy>().single(world).unwrap().hurt_by_wolf, "no damage wake");
 }
@@ -283,7 +283,7 @@ pub(crate) fn a_second_burn_row_replaces_the_first() {
     let weapon = world.resource::<crate::config::GameConfig>().player.combat_art;
     world.resource_scope(|_, combat: Mut<Combat>| {
         let mut s = Statuses::default();
-        let burning = |s: &mut Statuses, id: i64| (1..=10).find(|_| s.hit_wolf(&combat, wolf, weapon, &[id], Guard::None).iter().any(|l| l == "BURNING"));
+        let burning = |s: &mut Statuses, id: i64| (1..=10).find(|_| s.hit_wolf(&combat, wolf, weapon, &[], &[id], Guard::None).iter().any(|l| l == "BURNING"));
         assert!(burning(&mut s, 9117).is_some());
         let flames = Entity::PLACEHOLDER;
         s.0.get_mut(&wolf).unwrap().effects[0].fx_mut().push(flames);
@@ -425,9 +425,9 @@ pub(crate) fn wire_flight_attacks_are_no_art_and_throw_lightning_back() {
         move_enemy_far(&mut app);
         app.world_mut().resource_mut::<crate::config::GameConfig>().player.unlock_all_moves = true;
         app.world_mut().resource_mut::<crate::config::GameConfig>().player.combat_art = 7100;
-        let point = crate::map::GrapplePoint { hook: Vec3::new(0.0, 6.5, 12.0), land: Vec3::new(0.0, 6.0, 12.0), fwd: Vec3::NEG_Z, variation: 0 };
-        let target = crate::map::GrappleTarget { index: 0, point, dist: 12.0, in_action_range: true, ride: true };
-        app.insert_resource(crate::wire::WireAim { target: Some(target), enemy: None });
+        let point = crate::traversal::GrapplePoint { hook: Vec3::new(0.0, 6.5, 12.0), land: Vec3::new(0.0, 6.0, 12.0), fwd: Vec3::NEG_Z, variation: 0 };
+        let target = crate::traversal::GrappleTarget { index: 0, point, dist: 12.0, in_action_range: true, ride: true };
+        app.insert_resource(crate::wire::WireAim { target: Some(target), enemy: None, host: false });
         app.world_mut().resource_mut::<PadInput>().press(Action::Grapple);
         let mut flying = false;
         let mut path = Vec::<String>::new();
@@ -518,9 +518,9 @@ pub(crate) fn a_pending_kick_beats_a_pending_air_guard() {
 /// Lands Wolf on a ridden grapple point from where he stands; returns the states and where he
 /// stands after `ticks`.
 pub(crate) fn grapple_to(app: &mut App, hook: Vec3, land: Vec3, ticks: usize) -> (Vec<String>, Vec3) {
-    let point = crate::map::GrapplePoint { hook, land, fwd: Vec3::NEG_Z, variation: 0 };
-    let target = crate::map::GrappleTarget { index: 0, point, dist: hook.length(), in_action_range: true, ride: true };
-    app.insert_resource(crate::wire::WireAim { target: Some(target), enemy: None });
+    let point = crate::traversal::GrapplePoint { hook, land, fwd: Vec3::NEG_Z, variation: 0 };
+    let target = crate::traversal::GrappleTarget { index: 0, point, dist: hook.length(), in_action_range: true, ride: true };
+    app.insert_resource(crate::wire::WireAim { target: Some(target), enemy: None, host: false });
     app.world_mut().resource_mut::<PadInput>().press(Action::Grapple);
     let mut seen = Vec::new();
     for _ in 0..ticks {
@@ -708,7 +708,7 @@ pub(crate) fn a_bullet_burns_once_not_through_its_atk_param_too() {
         let we = world.query_filtered::<Entity, With<Player>>().single(world).unwrap();
         world.resource_scope(|world, combat: Mut<Combat>| {
             let art = world.resource::<crate::config::GameConfig>().player.combat_art;
-            world.resource_mut::<crate::status::Statuses>().hit_wolf(&combat, we, art, &[9116], crate::status::Guard::None);
+            world.resource_mut::<crate::status::Statuses>().hit_wolf(&combat, we, art, &[], &[9116], crate::status::Guard::None);
         });
         wolf_build_up(&mut app)
     };
@@ -1141,8 +1141,8 @@ pub(crate) fn attacks_make_ai_sounds_that_call_allies() {
         let team = crate::combat::team_of(&combat, a);
         let think = combat.param("NpcThinkParam", combat.foe_of(a).think_id);
         let at = tf.translation;
-        let npc = |id: i64, d: f32| AiSound { id, pos: at + Vec3::X * d, owner: Some(other), team: Some(team), life: 1.0, serial: 0, owner_alert: true, owner_groups: Vec::new() };
-        let wolf = |id: i64, d: f32| AiSound { id, pos: at + Vec3::X * d, owner: None, team: None, life: 1.0, serial: 0, owner_alert: true, owner_groups: Vec::new() };
+        let npc = |id: i64, d: f32| AiSound { id, pos: at + Vec3::X * d, owner: Some(other), team: Some(team), life: 1.0, serial: 0, owner_alert: true, owner_groups: Vec::new(), friends_only: false };
+        let wolf = |id: i64, d: f32| AiSound { id, pos: at + Vec3::X * d, owner: None, team: None, life: 1.0, serial: 0, owner_alert: true, owner_groups: Vec::new(), friends_only: false };
         let ai_sound_heard = |c: &Combat, s: &AiSound, me: Entity, team: i64, a: &Actor, at: Vec3, think: &serde_json::Value| ai_sound_heard(c, s, me, team, a, at, think, &[]);
         assert_eq!(ai_sound_heard(&combat, &npc(2000020, 15.0), me, team, a, at, think), Some((2000020, 1)), "an ally's hit at 15 m");
         assert_eq!(ai_sound_heard(&combat, &npc(2000020, 25.0), me, team, a, at, think), None, "beyond 20 m");

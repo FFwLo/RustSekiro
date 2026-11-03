@@ -3,7 +3,7 @@
 -- args: seconds (default 60). Output: memscope-data/logs/guardcut_<time>.txt
 local args = args or {}
 local SECONDS = tonumber(args.seconds) or 60
-local path = "C:\\DeadlockModding\\memscope-data\\logs\\guardcut_" .. os.date("%Y%m%d_%H%M%S") .. ".txt"
+local path = (os.getenv("MEMSCOPE_HOME") or "memscope-data") .. "\\logs\\guardcut_" .. os.date("%Y%m%d_%H%M%S") .. ".txt"
 local f = assert(io.open(path, "w"))
 pcall(destroyRingBuffer)
 createRingBuffer({entry_count = 512, max_data_size = 64})

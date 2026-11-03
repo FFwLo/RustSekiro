@@ -1,0 +1,178 @@
+[
+ {
+  "ids": [
+   "movement.fall-damage",
+   "movement.fall-damage-reactions"
+  ],
+  "found": false,
+  "clip": "C:/Medal/Clips/Screen Recording/MedalTVScreenRecording20261010013052179.mp4",
+  "at": "0:06.5-0:08 and 0:14-0:15",
+  "shows": "Only small drops are in the footage. Wolf steps down from a wooden plank onto a snow ledge (about 1 m) at 0:07.5-0:07.8 and hops from a snow rock onto a roof (about 1.5-2 m) at 0:14.5-0:14.8. He keeps running at once after both landings (no stagger clip, no hurt clip) and the vitality bar stays at full length over the whole clip (measured 538 px at every 0.5 s sample). This fits a 20 m damage start, but no medium-height drop (10-20 m) with damage was recorded.",
+  "settles": "no"
+ },
+ {
+  "ids": [
+   "movement.fall-death-return"
+  ],
+  "found": false,
+  "clip": "",
+  "at": "",
+  "shows": "No fall into a pit or off the map in any real Sekiro footage. The combat-flow clip (modded game) ends with Wolf leaping off a cliff at 6:55.6 and falling for at least 3.3 s toward the Ashina castle wall, but the video fades to black at 6:59 before any landing or death.",
+  "settles": "no"
+ },
+ {
+  "ids": [
+   "movement.fall-protection"
+  ],
+  "found": false,
+  "clip": "C:/Medal/Clips/Screen Recording/MedalTVScreenRecording20261010013052179.mp4",
+  "at": "0:06.4-0:07.7",
+  "shows": "Wolf walks down a wooden plank and steps off its end onto a snow ledge about 1 m lower; he does not stop at the edge, but the drop is too small to be a protected ledge. No slow walk to a high ledge edge in any clip.",
+  "settles": "no"
+ },
+ {
+  "ids": [
+   "camera.fall-look"
+  ],
+  "found": true,
+  "clip": "../clips/sekiro_combat_flow_ongbal_dReREg4Dtyc_1080p60.mp4",
+  "at": "6:55.6-6:59",
+  "shows": "Wolf jumps off a cliff edge toward the Ashina castle wall (modded game, camera assumed unchanged). The camera is level while he runs up to the edge, then pitches steeply down within about 0.3 s of the leap (6:55.9) and keeps looking down at him for the next 3 s of the fall, until the clip fades out. Same behaviour, shorter, in the user's Sekiro recording MedalTV...013052179 at 0:14.0-0:14.4 (hop from a rock onto a roof: camera tilts from level to looking down on the roof). A stick input by the player cannot be excluded in either case, and no pitch angle was measured.",
+  "settles": "partly"
+ },
+ {
+  "ids": [
+   "camera.lock-drop-dead"
+  ],
+  "found": true,
+  "clip": "C:/Medal/Clips/Screen Recording/MedalTVScreenRecording20261010013834205.mp4",
+  "at": "0:32.4-0:33.3",
+  "shows": "Wolf kills a red-armoured soldier with a deathblow while two more soldiers are near. The lock-on dot is on the dying soldier at 0:32.8 and on another, farther soldier at 0:33.0 (0.2 s later, as the kill lands), then stays on that soldier and the camera reframes onto him. So the lock jumps to another enemy at once instead of dropping. The same fight at 0:44.6-0:46 keeps the dot on a far soldier while the deathblow is on another. The out-of-range case is not shown.",
+  "settles": "yes"
+ },
+ {
+  "ids": [
+   "camera.obstacle-fade"
+  ],
+  "found": false,
+  "clip": "C:/Medal/Clips/Screen Recording/MedalTVScreenRecording20261010013052179.mp4",
+  "at": "0:02-0:03",
+  "shows": "No fade seen. A thick wooden post stands between the camera and Wolf at 0:02-0:03 and is drawn fully opaque (no lock-on in that moment), and wooden screens in the 0:29-0:31 part of ...013834205 stay opaque too. Neither case has a locked target behind the obstacle, so the lock-on fade is not tested.",
+  "settles": "no"
+ },
+ {
+  "ids": [
+   "camera.force-front-lock"
+  ],
+  "found": false,
+  "clip": "",
+  "at": "",
+  "shows": "No lock-on onset could be isolated. In ...013834205 the lock dot is already on an enemy at 0:00 and Wolf's input is not visible, so the first 0.4 s after pressing lock-on cannot be judged.",
+  "settles": "no"
+ },
+ {
+  "ids": [
+   "ai.death-noise-ours",
+   "stealth.death-noise-gap"
+  ],
+  "found": false,
+  "clip": "../clips/sekiro_all_skills_rYcHlOgI7pg.mp4",
+  "at": "13:15-13:20",
+  "shows": "No stealth kill with an unaware neighbour in view. The nearest case is the air deathblow on a roof at about 13:15-13:17 where soldiers within about 4 m are already facing Wolf with raised spears 0.5 s after the kill, but they could have seen him, so a death noise cannot be separated from sight.",
+  "settles": "no"
+ },
+ {
+  "ids": [
+   "stealth.shadow-crouch-open"
+  ],
+  "found": false,
+  "clip": "",
+  "at": "",
+  "shows": "No footage of Wolf crouching in a shadow near an enemy. The only shadow scene (MedalTV...014131548464) is the Sv1 clone with a passive test enemy, not Sekiro.",
+  "settles": "no"
+ },
+ {
+  "ids": [
+   "ai.enemy-blind"
+  ],
+  "found": true,
+  "clip": "../clips/sekiro_all_skills_rYcHlOgI7pg.mp4",
+  "at": "14:07-14:17",
+  "shows": "Bloodsmoke on a monk at the stone lanterns: the 煙 mark flashes on him at 14:07.4, a red cloud fills the screen from 14:08.5 to about 14:11 (3 s), Wolf then sneaks off. The monk is not seen again until a figure walks about at a distance at 14:15-14:17, so his behaviour and the blind time are not readable. The combat-flow clip (modded game) shows the same on a Seven Spears soldier: 煙 mark at 6:45.6, cloud 6:46-6:51, no enemy in view afterwards. Firecracker: the all-skills firecracker chapter (10:27-10:46) shows bursts but no enemy in frame.",
+  "settles": "no"
+ },
+ {
+  "ids": [
+   "armor.dodged-hit-not-spent"
+  ],
+  "found": false,
+  "clip": "C:/Medal/Clips/Screen Recording/MedalTVScreenRecording20261010013834205.mp4",
+  "at": "0:34-0:37 and 0:47-0:50",
+  "shows": "Two hits on Wolf were checked (0:36.0 and 0:49.4, from the vitality bar). Neither follows a step dodge through the same swing: at 0:36 Wolf is crouched beside the soldier when the slash lands, at 0:49.4 he is standing still after a perilous attack. The Demon Bell no-damage clip has no hits by design. No pass-through-then-hit case exists.",
+  "settles": "no"
+ },
+ {
+  "ids": [
+   "interface.death-screen"
+  ],
+  "found": false,
+  "clip": "../clips/sekiro_combat_flow_ongbal_dReREg4Dtyc_1080p60.mp4",
+  "at": "6:30-7:00",
+  "shows": "No death screen. The clips.md note that the combat-flow clip ends in a death screen at 6:40 is wrong: 6:40 is still a fight, 6:45-6:51 is a red Bloodsmoke cloud (with a Heavy Coin Purse popup), and the clip ends with Wolf falling off a cliff and a fade to black at 6:59. No Medal Sekiro clip contains a death either (vitality never reaches 0).",
+  "settles": "no"
+ },
+ {
+  "ids": [
+   "interface.pause-menu"
+  ],
+  "found": false,
+  "clip": "",
+  "at": "",
+  "shows": "No pause menu in real Sekiro footage. The Pause popups in MedalTV...011222656376 (1:16, 1:48) are the Sv1 clone's own menu.",
+  "settles": "no"
+ },
+ {
+  "ids": [
+   "map.idol-rest"
+  ],
+  "found": false,
+  "clip": "C:/Medal/Clips/Screen Recording/MedalTVScreenRecording20261009182637721.mp4",
+  "at": "0:00-0:14",
+  "shows": "Wolf walks around a burning castle gate next to a glowing idol-like lamp but never rests; no Rest prompt, no fade, no respawn.",
+  "settles": "no"
+ },
+ {
+  "ids": [
+   "cutscenes.skip",
+   "cutscenes.playback-method"
+  ],
+  "found": false,
+  "clip": "",
+  "at": "",
+  "shows": "No skip prompt or cutscene fade in the Medal recordings. The Demon Bell clip plays cutscenes in full (for example the Lady Butterfly one at 13:28-14:30) and was not scanned in full for a skip prompt.",
+  "settles": "no"
+ },
+ {
+  "ids": [
+   "progression.ng-plus-clear-count-correct",
+   "progression.ng-plus-sen-xp-rate",
+   "progression.ng-plus-cap",
+   "progression.enemy-scaling-apply"
+  ],
+  "found": false,
+  "clip": "",
+  "at": "",
+  "shows": "No New Game+ footage in any clip (the Medal fights are on the first playthrough HUD with 0-263 sen popups; the downloaded clips are boss and move showcases).",
+  "settles": "no"
+ },
+ {
+  "ids": [
+   "npcs.dragonrot-cause"
+  ],
+  "found": false,
+  "clip": "",
+  "at": "",
+  "shows": "No NPC with Dragonrot in any clip.",
+  "settles": "no"
+ }
+]

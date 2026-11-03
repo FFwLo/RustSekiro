@@ -357,6 +357,9 @@ pub struct ClothInst {
     /// (references, restart, solve, bones, skinning, cloth vertices + tangents).
     cost_us: u64,
     phase_us: [u64; 6],
+    /// The reference bones' matrices when a culled cloth's outputs were last written (empty
+    /// after a simulated frame): unchanged, the culled cloth writes nothing again.
+    culled_refs: Vec<Option<Mat4>>,
     /// Frames in a row the sim blew up (a particle > 3 m from the root) and restarted; at
     /// `GIVE_UP` the cloth is carried rigidly for good (one such cloth, c1040's fur, cost
     /// 24 ms a frame restarting).
@@ -381,12 +384,12 @@ const GIVE_UP: u32 = 5;
 struct ClothOut {
     bones: Vec<(Entity, GlobalTransform)>,
     #[allow(clippy::type_complexity)]
-    meshes: Vec<(Handle<Mesh>, Vec<[f32; 3]>, Vec<[f32; 3]>, Vec<[f32; 4]>)>,
+    meshes: Vec<(Handle<Mesh>, Entity, Vec<[f32; 3]>, Vec<[f32; 3]>, Vec<[f32; 4]>)>,
 }
 
 impl ClothInst {
     pub fn new(def: ClothDef, root: Entity, bones: HashMap<String, Entity>) -> Self {
-        ClothInst { def, root, bones, displays: Vec::new(), x: Vec::new(), prev: Vec::new(), started: false, last_h: 0.0, out: ClothOut::default(), cost_us: 0, phase_us: [0; 6], blowups: 0, rigid: false, root_m: None, caps_prev: Vec::new(), off_anim: (0.0, 0.0, 0.0) }
+        ClothInst { def, root, bones, displays: Vec::new(), x: Vec::new(), prev: Vec::new(), started: false, last_h: 0.0, out: ClothOut::default(), cost_us: 0, phase_us: [0; 6], culled_refs: Vec::new(), blowups: 0, rigid: false, root_m: None, caps_prev: Vec::new(), off_anim: (0.0, 0.0, 0.0) }
     }
 }
 
@@ -645,6 +648,7 @@ fn simulate(
     config: Option<Res<crate::config::GameConfig>>,
     shown: Query<&Visibility>,
 ) {
+    let _prof = crate::perf::span("cloth");
     let t0 = std::time::Instant::now();
     let dt = time.delta_secs().min(1.0 / 20.0);
     let range = cloth_range(config.map_or(Default::default(), |c| c.video.cloth));
@@ -704,6 +708,17 @@ fn simulate(
             let bone_h = |name: &str| c.bones.get(name).and_then(|&e| globals.get(e).ok()).map(|g| havok(g.to_matrix()));
             // One world matrix per bone: the reference bones by index, the collidables' by name.
             let ref_mats: Vec<Option<Mat4>> = c.def.ref_bones.iter().map(|n| bone_h(n)).collect();
+            // Culled with its bones where they were when its outputs were last written (an
+            // asleep enemy between its ticks, Actor::lod; one standing still): its mesh and
+            // cloth bones already show this, so nothing is skinned or uploaded again.
+            if culled && !hold {
+                if c.culled_refs == ref_mats {
+                    continue;
+                }
+                c.culled_refs = ref_mats.clone();
+            } else {
+                c.culled_refs.clear();
+            }
             let bone_mats: HashMap<&str, Mat4> = c.def.collidables.iter().filter_map(|k| Some((k.bone.as_str(), bone_h(&k.bone)?))).collect();
             // Capsules in Havok world space: (a, b, ra, rb).
             let capsules: Vec<Option<(Vec3, Vec3, f32, f32)>> = c
@@ -731,7 +746,7 @@ fn simulate(
                 })
                 .collect() };
             let mut tp = tc; // phase 0: the bone matrices, capsules and reference vertices above
-            let mut lap = |slot: usize, tp: &mut std::time::Instant, acc: &mut [u64; 6]| {
+            let lap = |slot: usize, tp: &mut std::time::Instant, acc: &mut [u64; 6]| {
                 let now = std::time::Instant::now();
                 acc[slot] += (now - *tp).as_micros() as u64;
                 *tp = now;
@@ -769,21 +784,28 @@ fn simulate(
                 let where_: Vec<String> = def.ref_bones.iter().zip(&ref_mats).map(|(n, m)| format!("{n} {:?}", m.map(|m| m.w_axis.truncate()))).collect();
                 info!("cloth {}: ref bones {}", def.name, where_.join("; "));
             }
-            // First frame or a teleport (a fixed particle jumped > 1 m): restart from the bind pose
+            // First frame or a jump (a fixed particle left its reference by > 1 m): restart from the bind pose
             // placed on the model root.
             // A particle count that no longer matches the definition (another cloth def took this slot)
             // restarts too.
             // The jump that counts as a teleport scales with the cloth (half its bind-pose
             // extent, 1 m at least): the Guardian Ape's fur, 4 m across, moved its fixed
             // particles more than 1 m in a frame just by turning and restarted every few frames.
+            // The jump is measured after the root's own motion this frame (the ride-along below
+            // carries the particles by it): a fast fall or the grapple at a low frame rate moved
+            // the root more than 1 m a frame and restarted Wolf's cloth every frame of a long
+            // fall (75 hair restarts in one run in sekiro-rs's world). A teleport moves the root
+            // too and is carried whole; what restarts is a reference that left its root.
+            let root_now = globals.get(c.root).ok().map(|g| havok(g.to_matrix()));
+            let carry_m = c.root_m.zip(root_now).map_or(Mat4::IDENTITY, |(old, m)| m * old.inverse());
             let jump = (0.5 * def.rest.iter().map(|p| p.length()).fold(0.0, f32::max)).max(1.0);
-            let jumped = c.started
-                && !culled
-                && (c.x.len() != def.rest.len() || def.moves.iter().any(|&(v, p)| refs.get(v).and_then(|r| *r).is_some_and(|(q, _)| c.x.get(p).is_none_or(|x| q.distance(*x) > jump))));
+            let gap = ref_gap(&c.x, &def.moves, &refs, carry_m);
+            let jumped = c.started && !culled && (c.x.len() != def.rest.len() || gap > jump);
             let restarted = !c.started || jumped || (culled && !hold);
             if restarted {
                 if jumped {
-                    info!("cloth {}: restart (fixed particle jumped)", def.name);
+                    let root_moved = carry_m.w_axis.truncate().length();
+                    info!("cloth {}: restart (fixed particle jumped {gap:.2} m > {jump:.2}; root moved {root_moved:.2} m, dt {:.1} ms, particles {}/{})", def.name, dt * 1000.0, c.x.len(), def.rest.len());
                 }
                 let Ok(root) = globals.get(c.root) else { continue };
                 let m = havok(root.to_matrix());
@@ -976,7 +998,7 @@ fn simulate(
             for dm in &c.displays {
                 let Some(disp) = def.displays.iter().find(|d| d.mesh == dm.mesh) else { continue };
                 let joint_m: Vec<Mat4> = dm.joints.iter().zip(&dm.inv).map(|(&j, inv)| overrides.get(&j).copied().or_else(|| globals.get(j).ok().copied()).map(|g| g.to_matrix() * *inv).unwrap_or(Mat4::IDENTITY)).collect();
-                let (mut pos, mut nrm, mut tan) = skin(dm, &joint_m);
+                let (mut pos, mut nrm, tan) = skin(dm, &joint_m);
                 lap(4, &mut tp, &mut phase);
                 deform_display(disp, &frames, &dm.tris, &mut pos, &mut nrm);
                 if debug_now(time) {
@@ -1006,7 +1028,7 @@ fn simulate(
                             .collect()
                     })
                     .unwrap_or_default();
-                c.out.meshes.push((dm.handle.clone(), pos, nrm, tangents));
+                c.out.meshes.push((dm.handle.clone(), dm.entity, pos, nrm, tangents));
                 lap(5, &mut tp, &mut phase);
             }
             c.phase_us = phase;
@@ -1119,6 +1141,14 @@ impl Packed {
     }
 }
 
+/// The bounds of a cloth display mesh's world-space vertices (none for no vertices).
+fn cloth_bounds(pos: &[[f32; 3]]) -> Option<bevy::camera::primitives::Aabb> {
+    let mut it = pos.iter().map(|p| Vec3::from(*p));
+    let first = it.next()?;
+    let (min, max) = it.fold((first, first), |(lo, hi), p| (lo.min(p), hi.max(p)));
+    Some(bevy::camera::primitives::Aabb::from_min_max(min, max))
+}
+
 /// This frame's cloth vertex writes: (mesh, vertex size, interleaved bytes). Filled by `apply`,
 /// moved to the render world by `extract_cloth_uploads`.
 #[derive(Resource, Default)]
@@ -1144,23 +1174,39 @@ fn write_cloth_uploads(mut ups: ResMut<ClothUploads>, allocator: Res<bevy::rende
     }
 }
 
-fn apply(mut actors: Query<&mut Cloths>, mut globals: Query<&mut GlobalTransform>, transforms: Query<&Transform>, children: Query<&Children>, meshes: Res<Assets<Mesh>>, mut packed: Local<HashMap<AssetId<Mesh>, Packed>>, mut uploads: ResMut<ClothUploads>) {
+#[allow(clippy::too_many_arguments)]
+fn apply(mut actors: Query<&mut Cloths>, mut globals: Query<&mut GlobalTransform>, transforms: Query<&Transform>, children: Query<&Children>, meshes: Res<Assets<Mesh>>, mut packed: Local<HashMap<AssetId<Mesh>, Packed>>, mut uploads: ResMut<ClothUploads>, mut bounds: Query<&mut bevy::camera::primitives::Aabb>) {
+    let _prof = crate::perf::span("cloth_apply");
     // Cost probe: SHINOBI_CLOTH_NO_UPLOAD=1 keeps the bones but leaves the meshes alone.
     let no_upload = std::env::var("SHINOBI_CLOTH_NO_UPLOAD").is_ok();
     let t0 = std::time::Instant::now();
+    use std::sync::atomic::Ordering::Relaxed;
+    // The cost log's frame (below): only then are the per-cloth lines built.
+    let log_frame = (COST[2].load(Relaxed) + 1) % 3600 == 300;
     let mut pieces = 0;
     let mut costs: Vec<(u64, String)> = Vec::new();
     for mut cloths in &mut actors {
         for c in cloths.0.iter_mut() {
-            let ph: Vec<String> = c.phase_us.iter().map(|us| format!("{:.2}", *us as f64 / 300.0 / 1000.0)).collect();
-            costs.push((c.cost_us, format!("{} ({} particles, {} substeps x {} iterations{}; refs/restart/solve/bones/skin/verts {})", c.def.name, c.def.rest.len(), c.def.substeps, c.def.iterations, if c.rigid { ", rigid" } else { "" }, ph.join("/"))));
+            if log_frame {
+                let ph: Vec<String> = c.phase_us.iter().map(|us| format!("{:.2}", *us as f64 / 300.0 / 1000.0)).collect();
+                costs.push((c.cost_us, format!("{} ({} particles, {} substeps x {} iterations{}; refs/restart/solve/bones/skin/verts {})", c.def.name, c.def.rest.len(), c.def.substeps, c.def.iterations, if c.rigid { ", rigid" } else { "" }, ph.join("/"))));
+            }
             for (e, g) in c.out.bones.drain(..) {
                 set_global(e, g, &mut globals, &transforms, &children);
             }
-            for (handle, pos, nrm, tangents) in c.out.meshes.drain(..) {
+            for (handle, entity, pos, nrm, tangents) in c.out.meshes.drain(..) {
                 pieces += 1;
                 if no_upload {
                     continue;
+                }
+                // The Mesh asset never changes (its vertices go straight to the GPU), so Bevy
+                // keeps the bounds of the spawn-time vertices: away from where the character
+                // spawned, the cloth was culled whenever that spot left the view (Wolf's cape
+                // vanishing and coming back on sekiro-rs's map). The bounds follow the write.
+                if let Ok(mut aabb) = bounds.get_mut(entity) {
+                    if let Some(b) = cloth_bounds(&pos) {
+                        *aabb = b;
+                    }
                 }
                 let id = handle.id();
                 if !packed.contains_key(&id) {
@@ -1173,7 +1219,6 @@ fn apply(mut actors: Query<&mut Cloths>, mut globals: Query<&mut GlobalTransform
             }
         }
     }
-    use std::sync::atomic::Ordering::Relaxed;
     COST[1].fetch_add(t0.elapsed().as_micros() as u64, Relaxed);
     let frames = COST[2].fetch_add(1, Relaxed) + 1;
     if frames % 300 == 0 {
@@ -1182,7 +1227,7 @@ fn apply(mut actors: Query<&mut Cloths>, mut globals: Query<&mut GlobalTransform
         let top: Vec<String> = costs.iter().take(3).map(|(us, n)| format!("{n} {:.2}", *us as f64 / 300.0 / 1000.0)).collect();
         // Once a minute at 60 fps, more than a frame's worth only. Phases per cloth: references,
         // restart, solve, bones, skinning, cloth vertices + tangents.
-        if sim as f64 / 300.0 > 1000.0 && frames % 3600 == 300 {
+        if sim as f64 / 300.0 > 1000.0 && log_frame {
             info!("cloth cost: simulate {:.2} ms, apply {:.2} ms per frame over 300 frames ({} cloths, {pieces} display meshes); top ms: {}", sim as f64 / 300.0 / 1000.0, app as f64 / 300.0 / 1000.0, costs.len(), top.join(", "));
         }
         for mut cloths in &mut actors {
@@ -1371,6 +1416,15 @@ fn enemy_cloth_probe(time: Res<Time>, enemies: Query<(Entity, &Cloths, &GlobalTr
     }
 }
 
+/// How far the fixed particles sit from their references once carried by the root's motion
+/// this frame (`carry`, new root x old root inverse): the jump the restart compares.
+fn ref_gap(x: &[Vec3], moves: &[(usize, usize)], refs: &[Option<(Vec3, Vec3)>], carry: Mat4) -> f32 {
+    moves
+        .iter()
+        .filter_map(|&(v, p)| refs.get(v).and_then(|r| *r).map(|(q, _)| x.get(p).map_or(f32::INFINITY, |x| q.distance(carry.transform_point3(*x)))))
+        .fold(0.0, f32::max)
+}
+
 #[cfg(test)]
 mod tests {
     /// The exe's capsule collision (FUN_1415802d0): out along the nearest direction, and the
@@ -1420,6 +1474,22 @@ mod tests {
     /// Manual test #2: the sim runs in model space, so a model that runs or turns carries its
     /// cloth along with no velocity of its own (the game: no Transfer Motion), while motion relative
     /// to the model is kept.
+    #[test]
+    fn a_fast_root_is_no_jump_but_a_reference_leaving_it_is() {
+        use super::ref_gap;
+        use bevy::prelude::{Mat4, Vec3};
+        // Wolf falling 2 m in a frame: the references moved with the root, no restart.
+        let x = vec![Vec3::new(0.0, 1.5, 0.0)];
+        let fall = Mat4::from_translation(Vec3::new(0.0, -2.0, 0.0));
+        let refs = vec![Some((Vec3::new(0.0, -0.5, 0.0), Vec3::Y))];
+        assert!(ref_gap(&x, &[(0, 0)], &refs, fall) < 1e-5);
+        // Without the root's motion the same frame read as a 2 m jump (the old rule).
+        assert!((ref_gap(&x, &[(0, 0)], &refs, Mat4::IDENTITY) - 2.0).abs() < 1e-5);
+        // A reference 1.5 m off its carried particle still counts.
+        let off = vec![Some((Vec3::new(1.5, -0.5, 0.0), Vec3::Y))];
+        assert!((ref_gap(&x, &[(0, 0)], &off, fall) - 1.5).abs() < 1e-5);
+    }
+
     #[test]
     fn cloth_rides_with_the_model_root() {
         use bevy::prelude::{Mat4, Quat, Vec3};
@@ -1494,6 +1564,16 @@ mod tests {
         assert!(defs[feathers].moves.iter().all(|&(v, _)| verts.iter().any(|(rv, _)| *rv == v)));
         assert_eq!(defs[feathers].display_meshes().collect::<Vec<_>>(), vec![4]);
         assert!(!coat.display_meshes().any(|m| m == 4));
+    }
+
+    /// The cape's culling bounds are those of the vertices written this frame, wherever the
+    /// character is, not the spawn-time mesh's.
+    #[test]
+    fn cloth_bounds_follow_the_written_vertices() {
+        let b = super::cloth_bounds(&[[100.0, 2.0, -50.0], [101.0, 3.0, -49.0], [100.5, 1.0, -51.0]]).unwrap();
+        assert_eq!(bevy::math::Vec3::from(b.min()), bevy::math::Vec3::new(100.0, 1.0, -51.0));
+        assert_eq!(bevy::math::Vec3::from(b.max()), bevy::math::Vec3::new(101.0, 3.0, -49.0));
+        assert!(super::cloth_bounds(&[]).is_none());
     }
 
     #[test]

@@ -20,7 +20,7 @@ use crate::anim::Hurtboxes;
 use crate::combat::{BODY_RADIUS, apply_knockback, damage_kb, segment_distance};
 use crate::data::{BulletSpec, Combat};
 use crate::enemy::Enemy;
-use crate::hud::CombatLog;
+use crate::combat::CombatLog;
 use crate::model::Dummies;
 use crate::player::Player;
 
@@ -31,6 +31,9 @@ pub struct Projectile {
     /// level's, or Kusabimaru 5000's for the Lightning Reversal bolt; 0 = none (20 physical).
     base: i64,
     vel: Vec3,
+    /// The way it was shot: its children's when it has no speed (the items' carriers 3490 /
+    /// 3510 / 3520 stand still for their life; their throw went world -Z whatever Wolf faced).
+    aim: Vec3,
     travelled: f32,
     age: f32,
     /// The throw it belongs to (its children share the hit list).
@@ -46,9 +49,11 @@ pub struct Projectile {
     inherit_sfx: i64,
 }
 
-/// Is the game's effect for this FFX id extracted (extracted/fxr/<id>.json)?
-fn has_fxr(id: i64) -> bool {
-    id > 0 && crate::paths::extracted().join(format!("fxr/{id}.json")).exists()
+#[cfg(test)]
+impl Projectile {
+    pub(crate) fn bullet_id(&self) -> i64 {
+        self.spec.bullet_id
+    }
 }
 
 /// A one-shot game effect placed in the world (a bullet's sfxId_Hit / sfxId_Flick).
@@ -77,7 +82,7 @@ fn spawn_bullets(
     mut player: Query<(&Actor, &Transform, &mut Player, Option<&Dummies>)>,
     enemies: Query<(&Enemy, &Actor, &Transform), Without<Player>>,
     markers: Query<&GlobalTransform>,
-    lock: Option<Res<crate::camera::LockOn>>,
+    lock: Option<Res<crate::view::LockOn>>,
     mut log: Option<ResMut<CombatLog>>,
     time: Res<Time>,
     mut chain: Local<u32>,
@@ -134,8 +139,11 @@ fn spawn_bullets(
         }
         // TAE 940 BehaviorParam_AddSpEffect: the behaviour's cost, and its refType-2 SpEffect on Wolf
         // for its effectEndurance (Divine Abduction 107700100 -> 107700: ref 309 for 3 s).
-        for e in anim.events.iter().filter(|e| e.kind == 940 && tool_anim && crosses(e)) {
-            let Some(b) = e.arg_i64("BehaviorJudgeId").and_then(|j| d.behavior(var, j)).copied() else { continue };
+        // The sword's clips too (Kusabimaru's variation 5000): the Bestowal ninjutsu's
+        // a2xx_5xx230 judge 500 -> 105000500 -> 106040 (ninjutsu.rs), the only ones outside the tools.
+        for e in anim.events.iter().filter(|e| e.kind == 940 && !art_anim && crosses(e)) {
+            let v = if tool_anim { var } else { 5000 };
+            let Some(b) = e.arg_i64("BehaviorJudgeId").and_then(|j| d.behavior(v, j)).copied() else { continue };
             if b.wep_cost != 0 {
                 p.emblems = p.emblems.saturating_sub(cost);
                 if let Some(log) = log.as_mut() {
@@ -243,22 +251,10 @@ fn spawn_bullets(
 
 /// Spawns one Bullet row at `pos`: numShoot bullets fanned from `dir` by shootAngle +
 /// i * shootAngleInterval (yaw, degrees) and tilted by shootAngleXZ (-90 = straight down).
-fn spawn_row(commands: &mut Commands, spec: &BulletSpec, pos: Vec3, dir: Vec3, chain: u32, base: i64, inherited: i64) {
+pub(crate) fn spawn_row(commands: &mut Commands, spec: &BulletSpec, pos: Vec3, dir: Vec3, chain: u32, base: i64, inherited: i64) {
     let flat = dir.with_y(0.0).normalize_or(Vec3::NEG_Z);
     let sfx = if spec.sfx_id_bullet > 0 { spec.sfx_id_bullet } else { inherited };
     let inherit_sfx = if spec.is_inherit_sfx_to_child != 0 { sfx } else { -1 };
-    // An area burst (standing still, >= 1 m: the firecracker's 710003) without its FXR extracted:
-    // sparks from vfx.rs stand in. Only for a row that names an effect: the 27 player area
-    // bullets with sfxId_Bullet -1 (BulletParam: the whistle's 790004 / 79001x, the axe's 730201,
-    // the umbrella's 760201 / 760300, the firecracker's 710013 ...) have nothing to draw, and
-    // drew these sparks around Wolf.
-    if spec.init_vellocity == 0.0 && spec.hit_radius >= 1.0 && sfx > 0 && !has_fxr(sfx) {
-        for k in 0..4 {
-            let a = k as f32 * std::f32::consts::FRAC_PI_2 + chain as f32;
-            let p = pos + Vec3::new(a.cos(), 0.3 + 0.2 * k as f32, a.sin()) * 0.5;
-            commands.spawn(crate::vfx::Clash::bundle(p, Vec3::new(a.cos(), 0.6, a.sin()), crate::vfx::Kind::Deflect));
-        }
-    }
     for i in 0..spec.num_shoot.max(1) {
         let yaw = (spec.shoot_angle + i as f32 * spec.shoot_angle_interval).to_radians();
         let mut d = if spec.shoot_angle == 0.0 && spec.shoot_angle_interval == 0.0 { dir } else { Quat::from_rotation_y(-yaw) * flat };
@@ -279,6 +275,7 @@ fn spawn_row(commands: &mut Commands, spec: &BulletSpec, pos: Vec3, dir: Vec3, c
             spec: spec.clone(),
             base,
             vel: d * spec.init_vellocity,
+            aim: d.normalize_or(Vec3::NEG_Z),
             travelled: 0.0,
             age: 0.0,
             chain,
@@ -294,7 +291,7 @@ fn spawn_row(commands: &mut Commands, spec: &BulletSpec, pos: Vec3, dir: Vec3, c
 /// carriers are AtkParam "dummy bullet - do not hit the enemy" rows with none of them).
 fn hits_characters(spec: &BulletSpec) -> bool {
     let sp = [spec.sp_effect_id0, spec.sp_effect_id1, spec.sp_effect_id2, spec.sp_effect_id3, spec.sp_effect_id4].iter().any(|v| *v > 0);
-    sp || spec.attack.as_ref().is_some_and(deals_something)
+    sp || spec.attack.as_ref().is_some_and(|a| deals_something(a) || a.atk_behavior_id == BEH_BACK_REALITY)
 }
 
 /// An AtkParam row that does HP (any of the five elements) or posture damage. Magic / dark were
@@ -318,6 +315,14 @@ const REF_BURST_NONCRITICAL: i64 = 1000056;
 const REF_BURST_CRITICAL: i64 = 1000057;
 /// SP_EFFECT_REF_NO_BURST_REACTION (c9997.lua 548): the enemy's firecracker cool time.
 const REF_NO_BURST_REACTION: i64 = 1000044;
+/// AtkParam atkBehaviorId 6 (c0000_define BEH_IDENTIFIER_BACK_REALITY): the Snap Seed's.
+const BEH_BACK_REALITY: i64 = 6;
+/// SP_EFFECT_REF_BACK_REALITY (c9997.lua 547): an illusion the Snap Seed undoes.
+const REF_BACK_REALITY: i64 = 1_000_043;
+/// SpEffect 220018's behaviorRefId, "enemy reaction playback: blinding (ash bag)", and the ash's
+/// cool time row 3510 (30 s).
+const REF_BLINDING: i64 = 1000058;
+const ASH_COOL_TIME: i64 = 3510;
 /// SP_EFFECT_REF_FIRE_ACTION_ENABLE / NO_FIRE_FIAR_REACTION (c9997.lua 544 / 589).
 const REF_FIRE_ACTION_ENABLE: i64 = 1000040;
 const REF_NO_FIRE_REACTION: i64 = 1000240;
@@ -338,10 +343,10 @@ fn fly_bullets(
     mut enemies: Query<(Entity, &mut Actor, &Transform, &mut Enemy, Option<&Hurtboxes>)>,
     markers: Query<&GlobalTransform>,
     mut log: Option<ResMut<CombatLog>>,
-    mut sounds: Option<ResMut<crate::sound::SoundQueue>>,
+    mut sounds: Option<ResMut<crate::sound_rules::SoundQueue>>,
     mut statuses: ResMut<crate::status::Statuses>,
     mut effects: Query<&mut crate::fxr::FxEffect>,
-    lock: Option<Res<crate::camera::LockOn>>,
+    lock: Option<Res<crate::view::LockOn>>,
     players: Query<&crate::player::Player>,
     mut ai_sounds: Option<ResMut<crate::enemy::AiSounds>>,
 ) {
@@ -365,7 +370,8 @@ fn fly_bullets(
         .and_then(|t| enemies.get(t).ok())
         .filter(|(_, a, _, e, _)| a.hp > 0.0 && !e.is_dead())
         .map(|(_, _, tf, ..)| tf.translation);
-    let row = |id: i64| if id > 0 { rows.get(&id.to_string()) } else { None };
+    // The exported rows, else a goods' (items.rs bullet_row: the throwables' chains).
+    let row = |id: i64| if id > 0 { rows.get(&id.to_string()).or_else(|| crate::items::bullet_row(id)) } else { None };
     for (be, mut b, mut btf) in &mut bullets {
         // Its AtkParam_Pc AppearAiSoundId as it starts, at the bullet (FUN_1409a1290's bullet
         // branch; enemy_bullet.rs fly).
@@ -378,7 +384,7 @@ fn fly_bullets(
         // The exe's bullet update, shared with the enemies' (enemy_bullet.rs): homing, then the
         // in / out of range accel and gravity held within min..maxVellocity.
         let from = btf.translation;
-        let facing = b.vel.normalize_or(Vec3::NEG_Z);
+        let facing = b.vel.normalize_or(b.aim);
         b.vel = crate::enemy_bullet::steer(&b.spec, b.vel, b.travelled, from, aim, dt);
         b.vel = crate::enemy_bullet::flight(&b.spec, b.vel, facing, b.travelled, dt);
         let mut to = from + b.vel * dt;
@@ -386,7 +392,7 @@ fn fly_bullets(
         let mut landed = false;
         let step = to - from;
         if b.spec.is_penetrate_map == 0 && step.length() > 1e-5 {
-            if let Some(t) = crate::map::terrain() {
+            if let Some(t) = crate::terrain::terrain() {
                 if let Some(d) = t.raycast(from, step.normalize(), step.length()) {
                     to = from + step.normalize() * d;
                     landed = true;
@@ -398,7 +404,7 @@ fn fly_bullets(
         }
         b.travelled += (to - from).length();
         btf.translation = to;
-        let dir = b.vel.normalize_or(Vec3::NEG_Z);
+        let dir = b.vel.normalize_or(b.aim);
         // intervalCreateBulletId: a child every intervalCreateTimeMin s while it flies.
         if let Some(child) = row(b.spec.interval_create_bullet_id) {
             while b.age >= b.next_interval && b.spec.interval_create_time_min > 0.0 {
@@ -408,6 +414,15 @@ fn fly_bullets(
         }
 
         let mut ended = landed || b.age > b.spec.life.max(0.0) + 1e-4;
+        // A carrier that hits nothing itself but turns into what does (the Fistful of Ash's
+        // throw 3511 -> its cloud 3512) bursts on reaching a body. gap: the exe's end condition
+        // for such a carrier is not traced; flying its whole second put the cloud past the enemy.
+        if !ended && !hits_characters(&b.spec) && row(b.spec.hit_bullet_id).is_some_and(hits_characters) {
+            ended = enemies.iter().any(|(_, da, dtf, e, _)| {
+                let feet = dtf.translation - Vec3::Y * crate::player::CAPSULE_HALF_HEIGHT;
+                da.hp > 0.0 && !e.is_dead() && segment_distance(from, to, feet + Vec3::Y * 0.3, feet + Vec3::Y * 1.5) <= b.spec.hit_radius.max(0.2) + BODY_RADIUS
+            });
+        }
         if hits_characters(&b.spec) {
             for (ee, mut da, dtf, mut e, hurt) in &mut enemies {
                 // A hit record runs out after dmgHitRecordLifeTime, as the enemies' (round 59:
@@ -514,6 +529,15 @@ fn fly_bullets(
                 }
             }
         }
+        // Landed on the map: its AtkParam HitAiSoundId there (the Ceramic Shard's 3500: the
+        // enemies hear where it broke).
+        if landed {
+            // Its sfxId_Hit where it struck the map (Five-color Rice's 310163 marking the ground).
+            spawn_fx_at(&mut commands, b.spec.sfx_id_hit, to, -dir);
+            if let (Some(s), Some(atk)) = (ai_sounds.as_mut(), b.spec.attack.as_ref()) {
+                s.emit(&combat, crate::data::atk_ai_sounds(true, atk.atk_param_id).1, to, None, None);
+            }
+        }
         if ended {
             // HitBulletID: what it turns into when it ends (the firecracker's spark -> burst).
             if let Some(child) = row(b.spec.hit_bullet_id) {
@@ -616,11 +640,13 @@ fn hit_enemy(
     da: &mut Actor,
     dtf: &Transform,
     e: &mut Enemy,
-    mut sounds: Option<&mut crate::sound::SoundQueue>,
+    mut sounds: Option<&mut crate::sound_rules::SoundQueue>,
 ) -> Option<String> {
     let sps = [b.spec.sp_effect_id0, b.spec.sp_effect_id1, b.spec.sp_effect_id2, b.spec.sp_effect_id3, b.spec.sp_effect_id4];
-    let sp_of = |id: i64| combat.player.sp_effects.get(&id.to_string());
+    let sp_of = |id: i64| combat.player.sp_effects.get(&id.to_string()).or_else(|| crate::items::sp_row(id));
     let refs: Vec<i64> = sps.iter().filter(|v| **v > 0).filter_map(|id| sp_of(*id)).map(|s| s.behavior_ref_id).collect();
+    // The Fistful of Ash's cool time (3510, 30 s, put on with the cloud): already blinded.
+    let ash_cool = e.clash.iter().any(|c| c.0 == ASH_COOL_TIME);
     // The bullet's SpEffects on the enemy for their effectEndurance (the reversal bolt's
     // 3520085 "Divine Dragon: Lightning Reversal hit", 1 s, which the dragon's map script
     // waits for), before any early return: the firecracker's 230110 / 230111 are in the map AI
@@ -682,7 +708,36 @@ fn hit_enemy(
         }
         return None;
     }
+    // The Fistful of Ash (220018, ref 1000058 "enemy reaction: blinding"): the enemy reels.
+    // gap: c9997's blinding reaction is not traced; the soldiers have no clip of their own for
+    // it, so the firecracker's flinch (W_AssassinationBloodReaction, rank 4) stands in.
+    if refs.contains(&REF_BLINDING) {
+        if !ash_cool && !e.is_broken() && rank_allows(transition_rank(&da.state), 4) && combat.data_of(da).states.contains_key("AssassinationBloodReaction") {
+            e.react(da, combat, "AssassinationBloodReaction");
+            return Some("ash: enemy blinded".into());
+        }
+        return Some(if ash_cool { "ash: enemy is used to it (cool time)" } else { "ash: no effect" }.into());
+    }
     let atk = b.spec.attack.as_ref()?;
+    // The Snap Seed (AtkParam_Pc 3530 "release illusion", atkBehaviorId 6 BEH_IDENTIFIER_BACK_REALITY)
+    // on an illusion (SP_EFFECT_REF_BACK_REALITY 1000043: NpcParam 6023 of Lady Butterfly's
+    // villager phantoms c1510): c9997 ExecDeath's W_DeathStartBackReality (10360 / 10361,
+    // IndexDeathStartBackReality 0-1); one with ANIME_ID_BACK_REALITY_REACTION 20150 alive only
+    // reels (ExecSpReactionLarge, rank 3). gap: the row deals no damage; the kill of the
+    // 3-HP phantoms is taken to be the exe's (not traced).
+    if atk.atk_behavior_id == BEH_BACK_REALITY && !e.is_dead() && enemy_refs(combat, da, e).contains(&REF_BACK_REALITY) {
+        let d = combat.data_of(da);
+        let deaths: Vec<&str> = ["DeathStartBackReality1", "DeathStartBackReality2"].into_iter().filter(|s| d.anim_key(s).is_some()).collect();
+        if !deaths.is_empty() {
+            let pick = deaths[(e.rand() * deaths.len() as f32) as usize % deaths.len()];
+            e.die_as(da, combat, pick);
+            return Some("snap seed: the illusion is gone".into());
+        }
+        if d.anim_key("BackRealityReaction").is_some() && !e.is_broken() && rank_allows(transition_rank(&da.state), 3) {
+            e.react(da, combat, "BackRealityReaction");
+            return Some("snap seed: the illusion reels".into());
+        }
+    }
     if !deals_something(atk) {
         // A bullet whose AtkParam deals nothing but whose Bullet row carries build-up still
         // lands it: the Kodachi LV3-B poison mist (Bullet 750300-750302, spEffectId0 9009
@@ -696,25 +751,28 @@ fn hit_enemy(
     // Projected Force's rows) go through a deflect / a block. The tool's own weapon row is the
     // attack's (all share attackBaseRepel 10).
     let gc = crate::combat::guard_check(combat, da, &e.clash, atk, true, 5000, 5000, dtf.translation - from);
+    // The guard's row and SpEffects for the guarded posture and chip (guard_posture,
+    // npc_guard_chip); the verdict above decides.
+    let contact = crate::combat::guard_contact(combat, dd, da, Some(&*e), (&da.anim, da.t), None, true, atk, 5000);
     // A guarding enemy takes the bullet as a sword's deflect / block (combat.rs resolve, `bullet`):
-    // the posture through its guard rates (enemy_guard_posture_rate x timed_rates, floored), the
+    // the posture through its guard (combat.rs guard_posture: staminaGuardDef, the guard family), the
     // c9997 ExecGuardBlock reaction (guard_damage_table by dmgLevel and guardLevel) and the clash
     // SpEffects the AI counts (200210/211 deflect, 200215/216 block). Round 35: the deflect did
     // nothing and the block added the raw repelLostStamDamage with no reaction. gap: the clash ids
     // on a bullet are the melee path's (inferred).
     let deflect = gc.verdict == crate::combat::Verdict::Deflect;
     if gc.verdict != crate::combat::Verdict::Hit {
+
         if let Some(q) = sounds.as_mut() {
-            q.0.extend(crate::sound::guard_sounds(combat, atk, deflect).into_iter().map(|se| (se, to)));
+            q.0.extend(crate::sound_rules::guard_sounds(combat, atk, deflect).into_iter().map(|se| (se, to)));
         }
-        let skill = crate::combat::enemy_guard_posture_rate(combat, da, atk) * crate::combat::timed_rates(combat, e, da, atk).1;
         let level = atk.level(false);
         let refs = enemy_refs(combat, da, e);
         let glv = combat.npc(da)["guardLevel"].as_i64().unwrap_or(4);
         let aerial = crate::combat::enemy_is_aerial(combat, da, e, dtf.translation.y);
         if deflect {
             // A deflect never breaks the defender (as the sword's).
-            let pd = (atk.atk_stam * skill).floor();
+            let pd = crate::combat::guard_posture(combat, da, &contact, None, &[], atk.atk_stam, true, atk);
             da.add_deflect_posture(pd);
             da.since_posture_damage = 0.0;
             let pick = crate::combat::enemy_guard_block(dd, &refs, level, glv, atk.just_deflect_action == 2, aerial);
@@ -722,8 +780,13 @@ fn hit_enemy(
             crate::combat::clash_after(dd, da, e, if atk.just_deflect_action == 1 { 200211 } else { 200210 });
             return Some(format!("enemy deflects the shuriken (+{pd:.0} posture)"));
         }
-        let pd = (atk.repel_lost_stam_damage * skill).floor();
+        let pd = crate::combat::guard_posture(combat, da, &contact, None, &[], atk.repel_lost_stam_damage, false, atk);
         da.add_posture(pd);
+        // The parts of a tool's damage the guard lets through (the Flame Vent's fire: 67 %).
+        if b.base > 0 {
+            let chip = crate::combat::npc_guard_chip(combat, da, &contact, atk, crate::combat::player_attack_elements(combat, atk, b.base, da, 0.0));
+            da.hp = (da.hp - chip).max(0.0);
+        }
         if da.posture_broken() {
             e.react_from(da, combat, true, if atk.deflect_action == 2 { "GuardBreakLeft" } else { "GuardBreakRight" });
         } else {
@@ -735,14 +798,23 @@ fn hit_enemy(
     }
     // The weapon row's attackBase* per element times the AtkParam corrections, each scaled by
     // the NPC's <element>DamageCutRate, as a sword hit (combat.rs player_attack_damage).
-    // Without a tool row: 20 physical.
-    let dmg = if b.base > 0 { crate::combat::player_attack_damage(combat, atk, b.base, da) } else { 20.0 * atk.atk_phys_correction / 100.0 };
+    // Without a tool row: 20 physical; a goods' bullet (base -1, items.rs) its AtkParam's flat
+    // atkPhys (Oil's and the Ceramic Shard's 1).
+    let dmg = if b.base > 0 {
+        crate::combat::player_attack_damage(combat, atk, b.base, da, 0.0)
+    } else if b.base < 0 {
+        atk.atk_phys
+    } else {
+        20.0 * atk.atk_phys_correction / 100.0
+    };
     let pd = if atk.direct_atk_stam_damage > 0.0 { atk.direct_atk_stam_damage } else { atk.atk_stam };
     // The armour part and the enemy's posture SpEffects, as on a sword hit (combat.rs resolve).
     let (armor_hp, armor_posture, _) = crate::combat::armor_rates(combat, e, da, atk, None);
     let def_rate = crate::combat::def_stamina_rate(combat, da, atk.stamina_physics_attribute) * armor_posture;
+    // An apparition's ghost barrier: the tools are not enchanted (Confetti is the sword's).
+    let (ghost_hp, _) = crate::combat::ghost_barrier(combat, da, atk, &[]);
     // Whole points, as the exe stores both (combat.rs hit_hp; FUN_1408439a0's (int)).
-    let (dmg, pd) = (crate::combat::hit_hp(dmg, armor_hp), (pd * def_rate).floor());
+    let (dmg, pd) = (crate::combat::hit_hp(dmg, armor_hp * ghost_hp), (pd * def_rate).floor());
     da.hp = (da.hp - dmg).max(0.0);
     da.add_posture(pd);
     // The super-armour drain, as a sword hit's (combat::super_armor_hit).
@@ -779,7 +851,7 @@ fn hit_enemy(
         }
     }
     if let Some(q) = sounds.as_mut() {
-        for se in crate::sound::hit_sounds(combat, atk, crate::sound::defender_materials(combat, da)) {
+        for se in crate::sound_rules::hit_sounds(combat, atk, crate::sound_rules::defender_materials(combat, da)) {
             q.0.push((se, to));
         }
     }
@@ -804,16 +876,12 @@ pub(crate) fn tool_hit_push(combat: &Combat, da: &mut Actor, e: &mut Enemy, from
 }
 
 /// A tool hit's reaction, as a sword hit's (combat.rs resolve): the damage level the HKS sees
-/// (0 under ChrActionFlag 24, else damage_motion_level's super-armour swap), no reaction
-/// mid-swing unless ChrActionFlag 73 (FLAG_DAMAGE_MOTION) allows it, and c9997's aerial table
-/// for an enemy in the air (enemy_damage_state_air). None = the additive flinch.
+/// (0 under ChrActionFlag 24, else damage_motion_level's super-armour swap) and c9997's aerial
+/// table for an enemy in the air (enemy_damage_state_air). None = the additive flinch.
 pub(crate) fn bullet_reaction(combat: &Combat, da: &Actor, e: &Enemy, level: i64, from: Vec3, at: Vec3) -> Option<String> {
     let dd = combat.data_of(da);
     let level = if dd.flag(&da.anim, da.step(), crate::combat::FLAG_NO_DAMAGE_MOTION) { 0 } else { crate::combat::damage_motion_level(dd, da, level) };
-    let can_flinch = !e.is_attacking() || dd.flag(&da.anim, da.step(), crate::combat::FLAG_DAMAGE_MOTION);
-    // gap (as resolve): env 201 read as not lifted 5 cm above a SetNoGravity leap's start.
-    let aerial = da.airborne || da.lift_ground.is_some_and(|g| at.y > g + 0.05) || enemy_refs(combat, da, e).contains(&crate::combat::SP_REF_AERIAL_DAMAGE);
-    can_flinch.then(|| crate::combat::enemy_damage_state_air(dd, level, da, from, at, aerial)).flatten()
+    crate::combat::enemy_damage_state_air(dd, level, da, from, at, crate::combat::enemy_is_aerial(combat, da, e, at.y))
 }
 
 /// A reaction clip's TAE SpEffects with the reaction's own block ref (SP_EFFECT_REF_NO_BURST_REACTION
@@ -854,7 +922,12 @@ pub(crate) fn enemy_refs(combat: &Combat, a: &Actor, e: &Enemy) -> Vec<i64> {
         ids.extend(d.sp_effects_at(&a.anim, a.step()).iter().map(|(id, _)| *id));
     }
     ids.extend(e.clash.iter().map(|c| c.0));
-    ids.iter().filter_map(|id| d.sp_effects.get(&id.to_string())).map(|s| s.behavior_ref_id).collect()
+    // A row outside the chr's own export (its map event's armour 220062, ref 1000105
+    // GUARD_TO_ADD_DAMAGE) is read from SpEffectParam.
+    ids.iter()
+        .filter_map(|id| d.sp_effects.get(&id.to_string()).map(|s| s.behavior_ref_id).or_else(|| crate::items::param("SpEffectParam", *id)["behaviorRefId"].as_i64()))
+        .filter(|&r| r > 0)
+        .collect()
 }
 
 /// Debug (H, with the hitboxes): bullets as lines, area bursts as their hit spheres.
@@ -880,7 +953,6 @@ pub mod hks {
     /// SpEffect behaviorRefIds (c0000_define.lua).
     pub const REF_ENABLE_SPRINT_ACTION: i64 = 1;
     pub const REF_SUB_ATTACK_COMBO: i64 = 300;
-    pub const REF_SUB_ATTACK_RELEASE: i64 = 302;
     pub const REF_ATEMI_KAWARIMI: i64 = 305;
     pub const REF_DAMAGE_AFTER_KAWARIMI_FROM_ADD_DAMAGE: i64 = 307;
     pub const REF_USED_TEKIMAWASHI: i64 = 309;
@@ -922,79 +994,6 @@ pub mod hks {
         pub refs: &'a dyn Fn(i64) -> bool,
         pub locked: bool,
         pub moving: bool,
-    }
-
-    /// BEH_A_GROUND_ATTACK out of a tool move (line 3199; ground 3251-3324, crouch 3211-3220): the
-    /// attack button inside SP_EF_REF_TAE_ENABLE_SUB_ATTACK_DERIVE_ATTACK (301) follows up with the
-    /// tool. `step` = the stick for the Sabimaru's directed cut (_SetStepAngle: None = neutral, else
-    /// degrees, + = right). None: an ordinary attack.
-    /// The Prosthetic Arts skill each follow-up asks for is `derive_unlock`.
-    pub fn derive_attack(cat: i64, state: &str, crouch: bool, enable_combo: bool, refs: &dyn Fn(i64) -> bool, step: Option<f32>) -> Option<&'static str> {
-        const REF_DERIVE_ATTACK: i64 = 301;
-        const REF_GIMMICK_AXE_DERIVE_ATTACK_HORIZONTAL: i64 = 308;
-        if !refs(REF_DERIVE_ATTACK) {
-            return None;
-        }
-        if crouch {
-            return match state {
-                "CrouchSubAttackGuardStart" | "CrouchSubAttackGuardEnd" => Some("GroundSubAttackDeriveAttackCombo1"),
-                "CrouchSubAttackCombo1Moveable" | "CrouchSubAttackLockOnMoveable" if cat == 79 => Some("GroundChargeSubAttackDeriveAttackCombo1"),
-                "CrouchSubAttackCombo1ReleaseMoveable" | "CrouchSubAttackLockOnReleaseMoveable" if cat == 79 => Some("GroundSubAttackDeriveAttackCombo1"),
-                _ => None,
-            };
-        }
-        if !enable_combo {
-            return None;
-        }
-        let combo2 = state == "GroundSubAttackCombo2";
-        Some(match cat {
-            70 | 71 => "GroundSubAttackDeriveAttackCombo1",
-            78 if !combo2 && refs(REF_WEP_ENABLE_SUB_ATTACK_VARIATION) => match state {
-                "GroundSubAttackVariationCombo1Release" | "SprintToSubAttackVariationRelease" | "LandAirSubAttackCombo1Variation" => "GroundSubAttackVariationDeriveAttackCombo1",
-                _ => "GroundChargeSubAttackVariationDeriveAttackCombo1",
-            },
-            78 if !combo2 => "GroundSubAttackDeriveAttackCombo1",
-            78 => "GroundSubAttackDeriveAttackCombo2",
-            73 if refs(REF_GIMMICK_AXE_DERIVE_ATTACK_HORIZONTAL) => "GroundSubAttackDeriveAttackHorizontal",
-            73 => "GroundSubAttackDeriveAttackCombo1",
-            74 if state == "LandAirSubAttackMove" => "LandAirSubAttackMoveDeriveAttack",
-            74 => "GroundSubAttackDeriveAttackCombo1",
-            75 if refs(REF_WEP_DISABLE_DERIVE_SUB_ATTACK_COMBO) => return None,
-            75 => {
-                // _SetStepAngle: neutral V, |angle| < 45 F, > 135 B, else L / R.
-                let dir = match step {
-                    None => 0,
-                    Some(a) if a.abs() < 45.0 => 1,
-                    Some(a) if a.abs() > 135.0 => 2,
-                    Some(a) if a < 0.0 => 3,
-                    Some(_) => 4,
-                };
-                let derived = state.starts_with("GroundDeriveSubAttackCombo");
-                match (derived, dir) {
-                    (true, 0) => "GroundDeriveSubAttackDeriveDirectivityAttack_V",
-                    (true, 1) => "GroundDeriveSubAttackDeriveDirectivityAttack_F",
-                    (true, 2) => "GroundDeriveSubAttackDeriveDirectivityAttack_B",
-                    (true, 3) => "GroundDeriveSubAttackDeriveDirectivityAttack_L",
-                    (true, _) => "GroundDeriveSubAttackDeriveDirectivityAttack_R",
-                    (false, 0) => "GroundSubAttackDeriveDirectivityAttack_V",
-                    (false, 1) => "GroundSubAttackDeriveDirectivityAttack_F",
-                    (false, 2) => "GroundSubAttackDeriveDirectivityAttack_B",
-                    (false, 3) => "GroundSubAttackDeriveDirectivityAttack_L",
-                    (false, _) => "GroundSubAttackDeriveDirectivityAttack_R",
-                }
-            }
-            76 => "GroundSubAttackDeriveAttackCombo1",
-            79 => match state {
-                "GroundSubAttackCombo1Moveable" | "GroundSubAttackCombo1Move" | "GroundSubAttackLockOnMoveable" | "GroundSubAttackLockOnMove" => "GroundChargeSubAttackDeriveAttackCombo1",
-                _ => "GroundSubAttackDeriveAttackCombo1",
-            },
-            72 => match state {
-                "GroundSubAttackCombo1" | "SprintSubAttack" | "GroundSubAttackHoldEnd" => "GroundChargeSubAttackDeriveAttackCombo1",
-                _ => "GroundSubAttackDeriveAttackCombo1",
-            },
-            77 => "GroundSubAttackDeriveAttackCombo1",
-            _ => return None,
-        })
     }
 
     /// The press's state (the W_ event without its prefix). "SubAttackFailed" /
@@ -1191,146 +1190,6 @@ pub mod hks {
         !refs(REF_ONLY_FLAMETHROWER_CANCEL) || (cat == 72 && refs(REF_WEP_ENABLE_SUB_ATTACK_HOLD))
     }
 
-    /// BEH_A_GROUND_SUB_ATTACK_RELEASE's validate (6225): inside SP_EF_REF_TAE_ENABLE_SUB_ATTACK_RELEASE
-    /// with the button up, or a tool that always releases (SP_EF_REF_WEP_FORCE_SUB_ATTACK_RELEASE).
-    pub fn releases(refs: &dyn Fn(i64) -> bool, held: bool) -> bool {
-        refs(REF_SUB_ATTACK_RELEASE) && (refs(REF_WEP_FORCE_SUB_ATTACK_RELEASE) || !held)
-    }
-
-    /// The release's state (line 3750) for the state it leaves.
-    pub fn release(cat: i64, state: &str, crouch: bool, moving: bool, locked: bool) -> Option<&'static str> {
-        // BEH_A_AIR_SUB_ATTACK_RELEASE (line 3087): in the air only the umbrella closes.
-        if state.starts_with("AirSubAttack") {
-            return (cat == 76).then_some("AirSubAttackGuardEnd");
-        }
-        let sprint = state == "SprintSubAttack";
-        match cat {
-            70 => match state {
-                "GroundSubAttackCombo1" => Some("GroundSubAttackCombo1Release"),
-                "GroundSubAttackCombo2" => Some("GroundSubAttackCombo2Release"),
-                "GroundSubAttackCombo3" => Some("GroundSubAttackCombo3Release"),
-                "CrouchSubAttackCombo1" => Some("CrouchSubAttackCombo1Release"),
-                "CrouchSubAttackCombo2" => Some("CrouchSubAttackCombo2Release"),
-                "CrouchSubAttackCombo3" => Some("CrouchSubAttackCombo3Release"),
-                "SprintSubAttack" => Some("SprintToSubAttackRelease"),
-                _ => None,
-            },
-            71 => match state {
-                "GroundSubAttackCombo1" => Some("GroundSubAttackCombo1Release"),
-                "CrouchSubAttackCombo1" => Some("CrouchSubAttackCombo1Release"),
-                "SprintSubAttack" => Some("SprintToSubAttackRelease"),
-                _ => None,
-            },
-            76 => Some("GroundSubAttackGuardEnd"),
-            79 => Some(match (crouch, moving, locked) {
-                (true, true, true) => "CrouchSubAttackLockOnReleaseMove",
-                (true, true, false) => "CrouchSubAttackCombo1ReleaseMove",
-                (true, false, true) => "CrouchSubAttackLockOnReleaseMoveable",
-                (true, false, false) => "CrouchSubAttackCombo1ReleaseMoveable",
-                (false, true, true) => "GroundSubAttackLockOnReleaseMove",
-                (false, true, false) => "GroundSubAttackCombo1ReleaseMove",
-                (false, false, true) => "GroundSubAttackLockOnReleaseMoveable",
-                (false, false, false) => "GroundSubAttackCombo1ReleaseMoveable",
-            }),
-            72 if sprint => Some("SprintToSubAttackRelease"),
-            72 if matches!(state, "GroundSubAttackHoldStart" | "GroundSubAttackHoldLoop" | "GroundSubAttackHoldMove") => Some("GroundSubAttackHoldEnd"),
-            72 => Some("GroundSubAttackCombo1Release"),
-            78 => match state {
-                "SprintSubAttack" => Some("SprintToSubAttackRelease"),
-                "SprintToSubAttackVariation" => Some("SprintToSubAttackVariationRelease"),
-                "GroundSubAttackVariationCombo1" => Some("GroundSubAttackVariationCombo1Release"),
-                "GroundSubAttackCombo1" => Some("GroundSubAttackCombo1Release"),
-                _ => None,
-            },
-            73 if sprint => Some("SprintToSubAttackRelease"),
-            73 => Some("GroundSubAttackCombo1Release"),
-            _ => None,
-        }
-    }
-
-    /// HKS AIR_SUB_ATTACK_COUNT_MAX (c0000_define 208): tool uses per jump for 071/072/074/075/077/078/079
-    /// (g_airSubAttackCount, back to 0 in _LandReset).
-    pub const AIR_SUB_ATTACK_COUNT_MAX: u32 = 1;
-
-    /// BEH_A_AIR_SUB_ATTACK (line 3007): the prosthetic pressed in the air. `count` = the uses so far
-    /// this jump. Returns the state and whether it counts as a use; None = the press is dropped
-    /// (W_AddActionInputSubAttack, the input blend).
-    /// ACTION_UNLOCK_TYPE_AIR_SUB_ATTACK (lines 2992 / 3026) is checked by the caller.
-    pub fn air_press(cat: i64, enable_action: bool, count: u32, locked: bool, refs: &dyn Fn(i64) -> bool) -> Option<(&'static str, bool)> {
-        let counted = matches!(cat, 71 | 72 | 74 | 75 | 77 | 78 | 79);
-        if counted && count >= AIR_SUB_ATTACK_COUNT_MAX {
-            return None;
-        }
-        let enable = (70..=79).contains(&cat) && (enable_action || (cat == 77 && refs(REF_USED_TEKIMAWASHI)));
-        if !enable {
-            return Some((if refs(REF_ENABLE_ADD_SUBATTACK_FAILED) { "AddSubAttackFailed" } else { "SubAttackFailedAir" }, false));
-        }
-        let state = match cat {
-            73 => "AirSubAttackStart",
-            74 if refs(REF_DAMAGE_AFTER_KAWARIMI_FROM_ADD_DAMAGE) || refs(REF_POISON) || refs(REF_BURN) => "AirSubAttackMoveReady",
-            74 => "AirSubAttackMoveAtemiReady",
-            76 => "AirSubAttackGuardStart",
-            77 if refs(REF_USED_TEKIMAWASHI) => "AirSubAttackSpecialEffect",
-            79 if locked => "AirSubAttackLockOn",
-            70 if refs(REF_TRANSITION_COMBO_2_WP070) && !refs(REF_TRANSITION_COMBO_1_WP070) => "AirSubAttackCombo2",
-            70 if refs(REF_TRANSITION_COMBO_3_WP070) && !refs(REF_TRANSITION_COMBO_1_WP070) && !refs(REF_TRANSITION_COMBO_2_WP070) => "AirSubAttackCombo3",
-            78 if refs(REF_WEP_ENABLE_SUB_ATTACK_VARIATION) => "AirSubAttackCombo1Variation",
-            // 077 without ref 309 takes the last branch, "071 or 077" (HKS 3083): Combo1, the air
-            // use a077_403000 (round 49; before, dropped as no event).
-            _ => "AirSubAttackCombo1",
-        };
-        Some((state, counted))
-    }
-
-    /// The ACTION_UNLOCK_TYPE a ground follow-up needs (lines 3257 / 3274 / 3308 / 3320): Chasing
-    /// Slice (070 / 071 / 078 but after Combo2), Fang and Blade (073 / 074 / 078 Combo2), Projected
-    /// Force (076 / 079), Living Force (072 / 077). None: the crouch ones and the Sabimaru (075)
-    /// check none.
-    pub fn derive_unlock(cat: i64, state: &str, crouch: bool) -> Option<u32> {
-        use crate::combat::*;
-        if crouch {
-            return None;
-        }
-        Some(match cat {
-            70 | 71 => UNLOCK_SUB_ATTACK_DIRAVE_ATTACK_1,
-            78 if state != "GroundSubAttackCombo2" => UNLOCK_SUB_ATTACK_DIRAVE_ATTACK_1,
-            73 | 74 | 78 => UNLOCK_SUB_ATTACK_DIRAVE_ATTACK_2,
-            76 | 79 => UNLOCK_SUB_ATTACK_SHOT_ATTACK,
-            72 | 77 => UNLOCK_SUB_ATTACK_ENCHANT,
-            _ => return None,
-        })
-    }
-
-    /// BEH_R_LAND for the air tool states (lines 1888-1970): while SP_EF_REF_TAE_ENABLE_ORIGINAL_LAND_ACTION
-    /// (201) is up the state goes on as its Land version from the same time (`true`); the loops land
-    /// from their start (`false`). None: the plain landing.
-    /// W_LandAirSubAttackStart's state is LandAirSubAttackStart, whose CMSG the game spells
-    /// "LandAirSubAttacStart_CMSG" (c0000.hkx; anim 403050), so that is its exported name.
-    /// Without ref 201 the start and the loop land as W_LandAirSubAttackLoop (lines 1892 / 1932).
-    /// gap: for the tools but the Firecracker (73) the HKS checks a fall of 20 m or more
-    /// (FALL_HEIGHT_LONG_STIFF_LAND, the free-fall landing) first; fall height is not tracked.
-    pub fn air_land(_cat: i64, state: &str, ref_201: bool) -> Option<(&'static str, bool)> {
-        Some(match state {
-            "AirSubAttackDeflectEasySmall" | "AirSubAttackGuardLoop" => ("LandAirSubAttackGuardLoop", false),
-            "AirSubAttackStart" if ref_201 => ("LandAirSubAttacStart", true),
-            "AirSubAttackStart" | "AirSubAttackLoop" => ("LandAirSubAttackLoop", false),
-            "AirSubAttackDeriveAttack" if ref_201 => ("LandAirSubAttackDeriveAttack", true),
-            "AirSubAttackDeriveAttackLoop" if ref_201 => ("LandAirSubAttackDeriveAttackLoop", false),
-            "AirSubAttackMoveReady" if ref_201 => ("LandAirSubAttackMoveReady", true),
-            s if s == "AirSubAttackMoveReady" || s.starts_with("AirSubAttackMoveStart_") => ("LandAirSubAttackMove", false),
-            "AirSubAttackCombo1" if ref_201 => ("LandAirSubAttackCombo1", true),
-            "AirSubAttackCombo2" if ref_201 => ("LandAirSubAttackCombo2", true),
-            "AirSubAttackCombo3" if ref_201 => ("LandAirSubAttackCombo3", true),
-            "AirSubAttackSpecialEffect" if ref_201 => ("LandAirSubAttackSpecialEffect", true),
-            "AirSubAttackLockOn" if ref_201 => ("LandAirSubAttackLockOn", true),
-            "AirSubAttackCombo1Variation" if ref_201 => ("LandAirSubAttackCombo1Variation", true),
-            "AirSubAttackGuardStart" if ref_201 => ("LandAirSubAttackGuardStart", true),
-            "AirSubAttackGuardEnd" if ref_201 => ("LandAirSubAttackGuardEnd", true),
-            "AirSubAttackMoveAtemiReady" if ref_201 => ("LandAirSubAttackMoveAtemiReady", true),
-            _ => return None,
-        })
-    }
-
     /// STATE_TYPE_*_SUB_GUARD states (c0000_cmsg.lua g_paramHkbState): the Loaded Umbrella is open.
     pub fn sub_guard(state: &str) -> bool {
         matches!(
@@ -1380,49 +1239,6 @@ pub mod hks {
         cat == 74 && enable_action && refs(REF_ATEMI_KAWARIMI)
     }
 
-    /// SubAttackJumpReady's end (FireStateEndEvent, line 536): SubAttackJumpStart_<dir> from the
-    /// stick's angle to the facing (degrees, + = right, as player::directional_jump); no stick = V.
-    /// _SetJumpDirection (c0000_transition.lua 4975, PRM_GROUND_JUMP_*_STICK_RANGE in
-    /// c0000_define.lua): F within +-18.75 (ends included), the others strictly inside their
-    /// ranges (FR 18.75-67.5, R -112.5, BR -157.5, mirrored for the left), anything else
-    /// (also an exact border such as 67.5) B.
-    pub fn jump_start(stick_angle: Option<f32>) -> &'static str {
-        let Some(a) = stick_angle else { return "SubAttackJumpStart_V" };
-        let inside = |lo: f32, hi: f32| a > lo && a < hi;
-        if (-18.75..=18.75).contains(&a) {
-            "SubAttackJumpStart_F"
-        } else if inside(18.75, 67.5) {
-            "SubAttackJumpStart_FR"
-        } else if inside(67.5, 112.5) {
-            "SubAttackJumpStart_R"
-        } else if inside(112.5, 157.5) {
-            "SubAttackJumpStart_BR"
-        } else if inside(-157.5, -112.5) {
-            "SubAttackJumpStart_BL"
-        } else if inside(-112.5, -67.5) {
-            "SubAttackJumpStart_L"
-        } else if inside(-67.5, -18.75) {
-            "SubAttackJumpStart_FL"
-        } else {
-            "SubAttackJumpStart_B"
-        }
-    }
-
-    /// AirSubAttackMoveReady's end (line 552): W_AirSubAttackMoveStart, the same eight ways
-    /// (AirSubAttackMoveStart_<dir>, a074_41901x).
-    pub fn air_move_start(stick_angle: Option<f32>) -> &'static str {
-        match jump_start(stick_angle) {
-            "SubAttackJumpStart_F" => "AirSubAttackMoveStart_F",
-            "SubAttackJumpStart_FR" => "AirSubAttackMoveStart_FR",
-            "SubAttackJumpStart_R" => "AirSubAttackMoveStart_R",
-            "SubAttackJumpStart_BR" => "AirSubAttackMoveStart_BR",
-            "SubAttackJumpStart_B" => "AirSubAttackMoveStart_B",
-            "SubAttackJumpStart_BL" => "AirSubAttackMoveStart_BL",
-            "SubAttackJumpStart_L" => "AirSubAttackMoveStart_L",
-            "SubAttackJumpStart_FL" => "AirSubAttackMoveStart_FL",
-            _ => "AirSubAttackMoveStart_V",
-        }
-    }
 }
 
 #[cfg(test)]

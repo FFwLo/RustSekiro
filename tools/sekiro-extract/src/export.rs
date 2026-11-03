@@ -328,10 +328,18 @@ fn export_character(
     let taes = load_taes(&chr_dir.join(format!("{chr_id}.anibnd.d")), tmpl);
     // The character's own behavior plus the shared NPC behavior (c9997.hkx) shipped in NPC behbnds.
     let mut cmsg = HashMap::new();
+    // Each CMSG's clips (its clip generators' animationName), for the exe's pick below.
+    let mut cmsg_clips: HashMap<String, Vec<String>> = HashMap::new();
     for file in ["c9997".to_string(), chr.anim_id.clone()] {
         let path = chr_dir.join(format!("{chr_id}.behbnd.d/{file}.hkx"));
         if let Ok(d) = std::fs::read(&path) {
             cmsg.extend(hkx::cmsg_map(&d));
+            if let Some(m) = hkx::behavior_graph(&d)["cmsgs"].as_object() {
+                for (name, c) in m {
+                    let clips = c["anims"].as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect()).unwrap_or_default();
+                    cmsg_clips.insert(name.trim_end_matches("_CMSG").to_string(), clips);
+                }
+            }
         }
     }
 
@@ -415,11 +423,28 @@ fn export_character(
         if !taes.contains_key(&key) && taes.contains_key(&format!("a{other:03}_{anim:06}")) {
             key = format!("a{other:03}_{anim:06}");
         }
+        // The exe plays the CMSG's clip named a<group>_<animId>, else a000_<animId>, else its last
+        // clip (FUN_1411e6b90): StandDamageLargeDownWakeUp_FaceDown (animId 100311) plays
+        // a000_100321, its only clip. Only Wolf's plain states: an art's, a tool's or an NPC anim
+        // set's CMSG holds one clip per group, picked by the group above.
+        if let Some(clips) = cmsg_clips.get(s).filter(|c| !c.is_empty() && chr.npc_row.is_none() && matches!(offset_type, 0 | 11)) {
+            let plain = format!("a000_{anim:06}");
+            if !clips.contains(&key) && !clips.contains(&plain) {
+                if let Some(last) = clips.last().filter(|c| taes.contains_key(*c)) {
+                    key = last.clone();
+                }
+            }
+        }
         keys.insert(key.clone());
         states.insert(s.clone(), key);
     }
     if state_names.is_empty() && chr.id != "c0000" {
         keys.extend(taes.keys().cloned());
+    }
+    // Wolf: every clip his behaviour graph can play (the graph runs live, docs/kb/hks-graph.md),
+    // not only those of the listed states: the landing's and the fall's move starts and the like.
+    if chr.npc_row.is_none() && !state_names.is_empty() {
+        keys.extend(cmsg_clips.values().flatten().filter(|c| taes.contains_key(*c)).cloned());
     }
 
     let mut anims = Map::new();
@@ -1168,6 +1193,45 @@ pub fn hud_icons(params: &Path) -> BTreeSet<String> {
     let goods = load_param(params, "EquipParamGoods");
     icons.extend([1000, 3000].iter().filter_map(|id| goods.get(id)).filter_map(icon).map(|i| format!("MENU_ItemIcon_{i:05}")));
     icons
+}
+
+/// `sekiro-extract hud-all <extracted>`: every sprite of the menu atlases (menu/hi/01_common) to
+/// extracted/menu_sprites/<atlas>/<name>.png, for finding the menu screens' art (2026-10-17).
+pub fn export_hud_all(root: &Path) {
+    let Ok(tpf) = std::fs::read(root.join("menu/hi/01_common.tpf")) else { return };
+    let tex: HashMap<String, Vec<u8>> = crate::flver::tpf(&tpf).into_iter().collect();
+    let Ok(dir) = std::fs::read_dir(root.join("menu/hi/01_common.sblytbnd.d")) else { return };
+    let attr = |line: &str, k: &str| -> Option<String> {
+        let i = line.find(&format!(" {k}=\""))? + k.len() + 3;
+        Some(line[i..].split('"').next()?.to_string())
+    };
+    let mut count = 0;
+    for f in dir.flatten() {
+        let Ok(text) = std::fs::read_to_string(f.path()) else { continue };
+        let Some(atlas) = text.lines().find_map(|l| attr(l, "imagePath")).map(|p| p.trim_end_matches(".png").to_lowercase()) else { continue };
+        let Some(dds) = tex.get(&atlas) else { continue };
+        let (w, _, px) = crate::decode_dds(dds);
+        let out = root.join("menu_sprites").join(&atlas);
+        let _ = std::fs::create_dir_all(&out);
+        for line in text.lines() {
+            let Some(name) = attr(line, "name").map(|n| n.trim_end_matches(".png").to_string()) else { continue };
+            let n = |k: &str| attr(line, k).and_then(|v| v.parse::<usize>().ok()).unwrap_or(0);
+            let (x, y, sw, sh) = (n("x"), n("y"), n("width"), n("height"));
+            if sw == 0 || sh == 0 {
+                continue;
+            }
+            let mut rgba = Vec::with_capacity(sw * sh * 4);
+            for yy in y..y + sh {
+                for xx in x..x + sw {
+                    let p = px.get(yy * w + xx).copied().unwrap_or(0);
+                    rgba.extend_from_slice(&[(p >> 16 & 0xff) as u8, (p >> 8 & 0xff) as u8, (p & 0xff) as u8, (p >> 24) as u8]);
+                }
+            }
+            crate::write_png(&out.join(format!("{name}.png")), sw, sh, &rgba);
+            count += 1;
+        }
+    }
+    println!("{count} sprites -> {}", root.join("menu_sprites").display());
 }
 
 pub fn export_hud(root: &Path, icons: &BTreeSet<String>) {

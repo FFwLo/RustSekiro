@@ -1,0 +1,2268 @@
+[
+ {
+  "id": "movement.walk-run-switch",
+  "category": "movement",
+  "title": "Walk to run switch by stick level",
+  "summary": "Walk or run is picked from how far the stick is pushed, with hysteresis so it does not flicker. Walking is a gentle push, running a firm one.",
+  "values": "MoveSpeedLevel > 0.9 switches walk to run, < 0.7 switches run to walk. PRM_RUN_STICK_LEVEL 0.75. Live loop speeds: walk 1.62-1.64 m/s, run 5.5-5.6 m/s.",
+  "how": "HKS _SpeedUpdate sets MoveSpeedIndex (0 walk, 1 run) from hkbVariable MoveSpeedLevel; speed is the clip root motion.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/hks_src/c0000_transition.lua"
+   },
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/hks_src/c0000_define.lua"
+   },
+   {
+    "kind": "recording",
+    "ref": "rec_20261016_092035_movement_clean (kb/movement.md)"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "fireguy-rustsekiro/docs/kb/movement.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "fireguy-rustsekiro/src/player.rs (MoveSpeedIndex, speed_level)"
+  },
+  "his": {
+   "has": "yes",
+   "where": "sekiro-rs/crates/sim/src/player.rs (runs c0000 HKS)"
+  },
+  "check": "Hold the stick at 60 percent then push to 95 percent and watch the clip change from walk to run; release to 65 percent to go back.",
+  "note": "",
+  "needs": [
+   {
+    "id": "interface.stick-input",
+    "why": "analog stick level feeds MoveSpeedLevel"
+   }
+  ]
+ },
+ {
+  "id": "movement.run-start-ramp",
+  "category": "movement",
+  "title": "Run start ramp and loop speed",
+  "summary": "A run from standstill accelerates through the run-start clip and settles at the run loop speed. The dips in speed are part of the clip data.",
+  "values": "From idle live speeds every 67 ms: 1.0 2.6 4.2 5.6 6.2 6.0 5.5 5.7 5.6 m/s. Run start a000_000400 peaks 6.4 m/s in 0.35 s. Loop a000_000500 5.58 live vs 5.61 clip.",
+  "how": "CMSG StandRunStart (a000_0004xx) then StandRunLoop (a000_0005xx); Havok root motion per clip.",
+  "sources": [
+   {
+    "kind": "recording",
+    "ref": "rec_20261016_083843_movement_hooks"
+   },
+   {
+    "kind": "recording",
+    "ref": "rec_20261016_092035_movement_clean"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "fireguy-rustsekiro/docs/kb/movement.md"
+   }
+  ],
+  "confidence": "recorded",
+  "ours": {
+   "has": "yes",
+   "where": "fireguy-rustsekiro/src/player.rs Actor::move_clip"
+  },
+  "his": {
+   "has": "yes",
+   "where": "sekiro-rs/crates/sim/src/player.rs (runs c0000 HKS)"
+  },
+  "check": "Record Wolf speed for 1 s after pushing the stick from idle and compare with the sequence above.",
+  "note": "Live and Sv1 agree within 0.2 m/s.",
+  "needs": [
+   {
+    "id": "movement.walk-run-switch",
+    "why": "run start follows the walk/run decision"
+   }
+  ]
+ },
+ {
+  "id": "movement.sprint",
+  "category": "movement",
+  "title": "Sprint is dodge held while running",
+  "summary": "Sprint starts when the dodge button is held down while running, not pressed. It needs the main weapon action allowed and is refused in swamp, near water and when forced to crouch.",
+  "values": "BEH_A_SPRINT needs MoveSpeedLevel > 0 and env(1108, ACTION_ARM_SP_MOVE) > 0, g_forceCrouch false, not IN_SWAMP_AREA (110002), not IN_WATERSIDE_AREA (110005). Sprint loop a000_001151 8.74 m/s clip, 8.68-8.80 live.",
+  "how": "HKS BEH_A_SPRINT / _hasSprint; SpEffect refs TAE_ENABLE_TRANSITION_SPRINT and TAE_MOVING_RUN gate the start.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/hks_src/c0000_transition.lua"
+   },
+   {
+    "kind": "recording",
+    "ref": "rec_20261016_092035_movement_clean"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "fireguy-rustsekiro/docs/kb/movement.md"
+   }
+  ],
+  "confidence": "recorded",
+  "ours": {
+   "has": "yes",
+   "where": "fireguy-rustsekiro/src/player.rs (sprint)"
+  },
+  "his": {
+   "has": "yes",
+   "where": "sekiro-rs/crates/sim/src/player.rs (runs c0000 HKS)"
+  },
+  "check": "Run, then hold the dodge key: sprint begins; release it and Wolf slows into SprintStopReady.",
+  "note": "",
+  "needs": [
+   {
+    "id": "interface.action-duration-hold",
+    "why": "sprint uses the dodge hold timer"
+   }
+  ]
+ },
+ {
+  "id": "movement.sprint-stop",
+  "category": "movement",
+  "title": "Sprint stop and quick-turn brake",
+  "summary": "Letting go of the stick or dodge stops the sprint, and pushing the stick more than 135 degrees away plays a 180 degree brake turn.",
+  "values": "SPRINT_BRAKE_ANGLE 135. Stop quick-turn ranges (deg): front -15..0, front-right -108..-15, front-left 0..108, back-right -180..-108, back-left 108..180; forced quick turn at +-157.5. Sprint quick turn needs not locked on and TAE ref ENABLE_SPRINT_QUICK_TURN.",
+  "how": "HKS BEH_A_SPRINT_QUICK_TURN, BEH_A_GROUND_MOVE_STOP, PRM_SPRINT_STOP_* constants; states SprintStopQuickTurn* and SprintQuickTurnReady.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/hks_src/c0000_transition.lua"
+   },
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/hks_src/c0000_define.lua"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "fireguy-rustsekiro/docs/kb/movement.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "fireguy-rustsekiro/src/player.rs (SprintQuickTurn)"
+  },
+  "his": {
+   "has": "yes",
+   "where": "sekiro-rs/crates/sim/src/player.rs (runs c0000 HKS)"
+  },
+  "check": "Sprint forward then flick the stick backward: SprintQuickTurn{Left,Right}180 plays, then SprintLoop resumes if dodge is still held.",
+  "note": "",
+  "needs": [
+   {
+    "id": "movement.sprint",
+    "why": "only applies during sprint"
+   }
+  ]
+ },
+ {
+  "id": "movement.stand-quick-turn",
+  "category": "movement",
+  "title": "Standing quick turns 90 and 180",
+  "summary": "When the target direction is far from the facing, Wolf plays a 90 or 180 degree turn clip. Over 120 degrees (turn or twist angle) it is the 180 version.",
+  "values": "smallTurnAngle = smallTwistAngle = 120 deg. Same split for stand, crouch and guard styles; locked-on idle triggers past 60 deg off the target. Clips a000_000010-13 have no root motion and no TAE 224, so the turn rate comes from the controller default.",
+  "how": "HKS _GroundQuickTurn (W_StandQuickTurn{Left,Right}{90,180}, W_Crouch..., W_DeflectGuard...); turn rate FUN_1407daa20.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/hks_src/c0000_transition.lua"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "fireguy-rustsekiro/docs/kb/movement.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "fireguy-rustsekiro/src/player.rs (StandQuickTurn)"
+  },
+  "his": {
+   "has": "yes",
+   "where": "sekiro-rs/crates/sim/src/player.rs (runs c0000 HKS)"
+  },
+  "check": "Stand still, aim the stick 150 degrees away: a 180 turn plays; 100 degrees plays a 90 turn.",
+  "note": "The exe turn request for these states is not traced.",
+  "needs": [
+   {
+    "id": "movement.turn-rate",
+    "why": "the turn itself is rate limited"
+   }
+  ]
+ },
+ {
+  "id": "movement.turn-rate",
+  "category": "movement",
+  "title": "Free turn rate 720 deg/s unless a clip says otherwise",
+  "summary": "Wolf turns toward the move direction at a default rate, which animations override with a TAE event.",
+  "values": "Default 720 deg/s (turn controller +0x28). TAE 224 SetTurnSpeed overrides (SprintLoop 360, sprint start 180 to 360, guard idle 0). IsLockOnCheck events apply only while locked on. Per-frame request clamped in FUN_1407dab40.",
+  "how": "Exe FUN_1407daa20 picks TAE +0x308 when >= 0, else module +0x16c, else 720; TAE 224 handler FUN_140b574b0.",
+  "sources": [
+   {
+    "kind": "exe",
+    "ref": "FUN_1407daa20, FUN_140b574b0, FUN_1407da540"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "fireguy-rustsekiro/docs/kb/movement.md"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "yes",
+   "where": "fireguy-rustsekiro/src/player.rs turn_rate"
+  },
+  "his": {
+   "has": "partial",
+   "where": "sekiro-rs/crates/sim/src/body.rs (turn_speed from TAE)"
+  },
+  "check": "Sprint and push the stick sideways: heading changes at about 360 deg/s, not instantly.",
+  "note": "",
+  "needs": []
+ },
+ {
+  "id": "movement.lock-strafe-twist",
+  "category": "movement",
+  "title": "Locked-on strafing uses a twist modifier",
+  "summary": "While locked on, diagonal moves use the forward or back clips and the legs are twisted toward the real move direction so the feet do not slide.",
+  "values": "MoveDirection by stick angle: |a| < 55 forward, > 125 back, else left/right. Exe classifier uses 60 deg cones with 5 deg hysteresis; TwistMasterAngle converges 0.1 rad per 1/30 s. Planted foot speed 0.01-0.08 m/s after the fix. Live locked run: F 5.54, B ~4.1, L 4.25, R 4.13 m/s.",
+  "how": "HKS _MoveDirectionUpdate; exe WalkTwist (FUN_1407f6ff0, FUN_1407f7550); hkbTwistModifier TwistMaster in c0000.hkx.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/hks_src/c0000_transition.lua"
+   },
+   {
+    "kind": "exe",
+    "ref": "FUN_1407f6ff0, FUN_1407f7550"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "fireguy-rustsekiro/docs/kb/movement.md"
+   },
+   {
+    "kind": "recording",
+    "ref": "rec_2026101x boss fights (kb/movement.md)"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "yes",
+   "where": "fireguy-rustsekiro/src/anim.rs apply_walk_twist"
+  },
+  "his": {
+   "has": "yes",
+   "where": "sekiro-rs/crates/sim/src/character.rs (locked strafe class)"
+  },
+  "check": "Lock on and run in a circle: feet stay planted, facing stays within 2 degrees of the enemy.",
+  "note": "Forward run loops still slip about 0.9 m/s in ours (no foot IK).",
+  "needs": [
+   {
+    "id": "camera.lock-on-acquire",
+    "why": "needs a lock target"
+   }
+  ]
+ },
+ {
+  "id": "movement.foot-ik",
+  "category": "movement",
+  "title": "Foot IK and generator callbacks",
+  "summary": "The player graph runs script callbacks that place feet on the ground and blend movement. Not rebuilt in either project.",
+  "values": "Callbacks Master_onGenerate, Move_onGenerate, SwimMove_onGenerate, ModifiersLayer_onGenerate; hkbFootIkControlsModifier with foot locking.",
+  "how": "HKS generator callbacks using hkbGetBoneModelSpace / hkbSetBoneModelSpace; Havok foot IK.",
+  "sources": [
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "sekiro-rs/docs/HKS-INTERFACE.md"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "fireguy-rustsekiro/docs/kb/movement.md"
+   }
+  ],
+  "confidence": "community",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Walk uphill and compare feet to the ground; the game bends legs to the slope.",
+  "note": "Confirmed to exist in the scripts; behaviour per frame not decoded.",
+  "needs": []
+ },
+ {
+  "id": "movement.ground-step",
+  "category": "movement",
+  "title": "Dodge step: press, four directions",
+  "summary": "A tap of the dodge button steps. Unlocked it steps forward along the facing; locked on it steps toward the stick in 45 degree sectors with a small tilt.",
+  "values": "BEH_A_GROUND_STEP on env(1106, SP_MOVE) or buffered kick input; refused in waterside, force crouch, or damage-step with item priority. 4-dir ranges F -45..45, B beyond +-135, L/R between. No tilt within +-18.75 of forward. GroundStep_L live 3.61 m/s.",
+  "how": "HKS _fireGroundStep, _set4DirStepDir, _set4DirStepTilt, act(2019) uses KickAngle when locked.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/hks_src/c0000_transition.lua"
+   },
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/hks_src/c0000_define.lua"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "fireguy-rustsekiro/docs/kb/movement.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "fireguy-rustsekiro/src/player.rs (GroundStep)"
+  },
+  "his": {
+   "has": "yes",
+   "where": "sekiro-rs/crates/sim/src/player.rs (runs c0000 HKS)"
+  },
+  "check": "Lock on, hold the stick left-forward and tap dodge: the step tilts toward the stick instead of snapping to a sector centre.",
+  "note": "",
+  "needs": [
+   {
+    "id": "interface.sp-move-press-vs-hold",
+    "why": "tap vs hold of the same button"
+   }
+  ]
+ },
+ {
+  "id": "movement.step-to-sprint",
+  "category": "movement",
+  "title": "Step flows into sprint",
+  "summary": "Holding dodge after a step continues into a sprint start that keeps the step speed.",
+  "values": "g_enableTransitSprint set by _fireGroundStep; TAE ref ENABLE_TRANSITION_SPRINT. SprintStartFromStep_F (a000_001151) runs 6.7-8.8 m/s for about 3.7 s; blend dips to about 3 m/s for 0.1 s in the clip data.",
+  "how": "HKS BEH_A_SPRINT; blend_src table from c0000.hkx TaeBlend_NoSrcMotion.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/hks_src/c0000_transition.lua"
+   },
+   {
+    "kind": "recording",
+    "ref": "rec 20261015 live auto-test (kb/movement.md)"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "fireguy-rustsekiro/docs/kb/movement.md"
+   }
+  ],
+  "confidence": "recorded",
+  "ours": {
+   "has": "yes",
+   "where": "fireguy-rustsekiro/src/player.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "sekiro-rs/crates/sim/src/player.rs (runs c0000 HKS)"
+  },
+  "check": "Tap-hold dodge at run: speed holds 6.7-8.8 m/s through the first second.",
+  "note": "",
+  "needs": [
+   {
+    "id": "movement.sprint",
+    "why": ""
+   }
+  ]
+ },
+ {
+  "id": "movement.ground-jump-direction",
+  "category": "movement",
+  "title": "Jump direction picked from stick angle",
+  "summary": "The jump variant depends on the stick angle: vertical when idle, forward within 18.75 degrees, and eight sectors around it. Locked-on forward becomes a positioning jump.",
+  "values": "Sector bounds deg: F +-18.75, F-R 18.75..67.5, R 67.5..112.5, B-R 112.5..157.5, back beyond +-157.5, mirrored on the left. Selector types 0 vertical, 1 forward, 2 backward, 3 left, 4 right, 5 forward lock-on, 6-9 diagonals.",
+  "how": "HKS _SetJumpDirection with PRM_GROUND_JUMP_*_STICK_RANGE; Selector_GroundJumpType picks the CMSG clip.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/hks_src/c0000_transition.lua"
+   },
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/hks_src/c0000_define.lua"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "fireguy-rustsekiro/src/player.rs (jump_forward, Selector)"
+  },
+  "his": {
+   "has": "yes",
+   "where": "sekiro-rs/crates/sim/src/player.rs (runs c0000 HKS)"
+  },
+  "check": "Jump with the stick at 0, 40, 90, 150 degrees and note the different take-off clips.",
+  "note": "",
+  "needs": [
+   {
+    "id": "interface.action-arms",
+    "why": "jump button ACTION_ARM_JUMP"
+   }
+  ]
+ },
+ {
+  "id": "movement.jump-launch",
+  "category": "movement",
+  "title": "Jump launch and gravity",
+  "summary": "A jump sets an upward velocity from a TAE event, then falls under world gravity plus the fall table gravity. A standing jump rises about 2 m and takes 0.8-1.0 s.",
+  "values": "ChrPhysicsVelocityChangeParam 100: up 9.64 m/s; 101 forward jump: up 9.64, forward 6.4 m/s (scale 0 means replace). Live: launch 9.4-9.8, rise 1.93-2.0 m, 0.82 s in the air, constant fall accel 23.52 m/s^2 (9.8 + 13.72). Forward jump a000_201100 rises 1.26 m, 0.65 s.",
+  "how": "TAE 920 ChrPhysicsVelocityChange on a000_201010/201011; fall module FUN_140bac120.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/json/params/ChrPhysicsVelocityChangeParam.json"
+   },
+   {
+    "kind": "recording",
+    "ref": "rec_20261008_041541"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "fireguy-rustsekiro/docs/kb/movement.md"
+   }
+  ],
+  "confidence": "recorded",
+  "ours": {
+   "has": "yes",
+   "where": "fireguy-rustsekiro/src/player.rs + fireguy-rustsekiro/src/actor.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "sekiro-rs/crates/sim/src/body.rs"
+  },
+  "check": "Jump on flat ground: apex 1.97 m, landing clip at about 1.0 s after the press.",
+  "note": "Table-only gravity (13.72) floats too long; the real value adds world gravity.",
+  "needs": [
+   {
+    "id": "movement.air-control-table",
+    "why": "fall type supplies gravity"
+   }
+  ]
+ },
+ {
+  "id": "movement.positioning-jump",
+  "category": "movement",
+  "title": "Locked-on positioning jumps",
+  "summary": "Jumping while locked on with a stick direction launches a fixed 7.68 m/s jump in one of eight directions, then a landing clip that returns to movement.",
+  "values": "Rows 111-118: horizontal 7.68 m/s at 0, +-45, +-90, +-135, 180 deg, up 7.712 m/s, fallType 1 (uncontrollable), row 111 homing 10000. Live: rise 1.26 m, 0.65 s. Landing LandGroundPositioningJump_* (201140-201147), air height threshold 3 m for stiff landing.",
+  "how": "HKS _SetJumpDirection (SELECTOR_GROUND_JUMP_TYPE_FORWARD_LOCKON, act 3019), TAE 920 rows 111-118.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/json/params/ChrPhysicsVelocityChangeParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/hks_src/c0000_transition.lua"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "fireguy-rustsekiro/docs/kb/movement.md"
+   }
+  ],
+  "confidence": "recorded",
+  "ours": {
+   "has": "yes",
+   "where": "fireguy-rustsekiro/src/player.rs (positioning_land)"
+  },
+  "his": {
+   "has": "partial",
+   "where": "sekiro-rs/crates/sim/src/character.rs (positioning)"
+  },
+  "check": "Lock on, jump with stick right: Wolf hops sideways and lands in LandGroundPositioningJump.",
+  "note": "Side jumps have no graph clip (anim 0); raw a000_201102/03 are used.",
+  "needs": [
+   {
+    "id": "camera.lock-on-acquire",
+    "why": "lock-on required"
+   }
+  ]
+ },
+ {
+  "id": "movement.sprint-jump",
+  "category": "movement",
+  "title": "Sprint jump",
+  "summary": "Jumping out of a sprint carries the sprint speed. The ready pose a000_201200 moves at about 8.9 m/s.",
+  "values": "SprintJumpReady a000_201200 8.91-8.95 m/s live; wall jump from a sprint uses SELECTOR_SPRINT_WALL_CONTACT_TYPE L/R.",
+  "how": "HKB state SPRINT_JUMP_START; TAE 920 launch; HKS _fireGroundStep reads MoveAngle for it.",
+  "sources": [
+   {
+    "kind": "recording",
+    "ref": "rec_20261008_041541"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "fireguy-rustsekiro/docs/kb/movement.md"
+   },
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/hks_src/c0000_transition.lua"
+   }
+  ],
+  "confidence": "recorded",
+  "ours": {
+   "has": "yes",
+   "where": "fireguy-rustsekiro/src/player.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "sekiro-rs/crates/sim/src/player.rs (runs c0000 HKS)"
+  },
+  "check": "Sprint and tap jump: horizontal speed stays near 8.9 m/s in the air.",
+  "note": "",
+  "needs": [
+   {
+    "id": "movement.sprint",
+    "why": ""
+   }
+  ]
+ },
+ {
+  "id": "movement.jump-weapon-state",
+  "category": "movement",
+  "title": "Jump needs matching weapon state",
+  "summary": "Wolf can jump only if the sheathed state matches the area: sheathed in a non-combat area, drawn elsewhere. Forced crouch blocks it.",
+  "values": "BEH_A_GROUND_JUMP: env(207) == SAFE and SpEffect IN_NON_COMBAT_AREA, or env(207) ~= SAFE and not in non-combat area; g_forceCrouch false.",
+  "how": "HKS g_ValidateActionTable[BEH_A_GROUND_JUMP]; env 207 weapon switch state.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/hks_src/c0000_transition.lua"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "fireguy-rustsekiro/src/player.rs (sheathing via X)"
+  },
+  "his": {
+   "has": "yes",
+   "where": "sekiro-rs/crates/sim/src/player.rs (runs c0000 HKS)"
+  },
+  "check": "Enter a non-combat area drawn: jump is refused until Wolf sheathes.",
+  "note": "",
+  "needs": []
+ },
+ {
+  "id": "movement.air-control-table",
+  "category": "movement",
+  "title": "Fall control table by fall type",
+  "summary": "The air behaviour of each launch is a row of an exe table: horizontal decay, gravity, stick acceleration and stick speed cap.",
+  "values": "Per fallType: 0 Normal and 3 Decelerating (-0.1 horizontal, -13.72 vertical, stick accel 10, stick max 2); 1 Uncontrollable same numbers but not steerable; 2 Wire (-15, -9.8, 9, 6). Table at 0x143b09ce0. Of 174 velocity rows, 63 use type 0, 108 type 1, 3 type 2.",
+  "how": "ChrPhysicsVelocityChangeParam.fallType; exe FUN_140bac120.",
+  "sources": [
+   {
+    "kind": "exe",
+    "ref": "0x143b09ce0, FUN_140bac120"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "sekiro-rs/docs/MOBILITY.md"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "fireguy-rustsekiro/docs/kb/movement.md"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "yes",
+   "where": "fireguy-rustsekiro/src/player.rs + fireguy-rustsekiro/src/data.rs FALL_TYPES"
+  },
+  "his": {
+   "has": "yes",
+   "where": "sekiro-rs/crates/sim/src/body.rs"
+  },
+  "check": "Jump and steer in the air: velocity changes by about 10 m/s^2 up to 2 m/s extra.",
+  "note": "Both projects derived this from the same research.",
+  "needs": []
+ },
+ {
+  "id": "movement.air-control-model",
+  "category": "movement",
+  "title": "How the stick steers in the air",
+  "summary": "One horizontal velocity decays along its direction and the stick adds acceleration split into along and across parts. A fast launch can be steered and braked, never pushed faster.",
+  "values": "decay = hAccel*dt; stick a = accel*stick*dt; across part always applies; along part applies fully when braking, and when accelerating only up to stickMax - |v|.",
+  "how": "Exe fall module FUN_140bac120 (table entries +0x78 h accel, +0x7c gravity, +0x80 stick accel, +0x84 stick max).",
+  "sources": [
+   {
+    "kind": "exe",
+    "ref": "FUN_140bac120"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "fireguy-rustsekiro/docs/kb/movement.md"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "yes",
+   "where": "fireguy-rustsekiro/src/player.rs / actor.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "sekiro-rs/crates/sim/src/body.rs air_velocity"
+  },
+  "check": "Run-jump and hold the opposite direction: speed drops about 10 m/s^2, then stops at zero.",
+  "note": "",
+  "needs": [
+   {
+    "id": "movement.air-control-table",
+    "why": ""
+   }
+  ]
+ },
+ {
+  "id": "movement.air-kick",
+  "category": "movement",
+  "title": "Air kick (jump press in the air)",
+  "summary": "Pressing jump in the air plays an air kick when the take-off frames are over and no kick happened in the last 0.4 s. The kick is a real attack.",
+  "values": "BEH_A_AIR_KICK refused by SpEffect behaviorRefId 108 (DISABLE_AIR_KICK). AirKick a000_213100 TAE 307 frames 9-21 -> BehaviorParam_PC 901 -> AtkParam_Pc 901 (10 phys, 10 posture, capsule dummies 612-613 r 0.4). Own SpEffects 100334 (kick-jump window f9-21) and 100247 (0.4-0.7 s re-kick lock). Live: 14 presses, 6 kicks, none within ~0.4 s of the last kick.",
+  "how": "HKS BEH_A_AIR_KICK; TAE 307 PCBehavior; SpEffect refs.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/hks_src/c0000_transition.lua"
+   },
+   {
+    "kind": "recording",
+    "ref": "rec_20261016_092035_movement_clean"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "fireguy-rustsekiro/docs/kb/movement.md"
+   }
+  ],
+  "confidence": "recorded",
+  "ours": {
+   "has": "yes",
+   "where": "fireguy-rustsekiro/src/player.rs (AirKick)"
+  },
+  "his": {
+   "has": "yes",
+   "where": "sekiro-rs/crates/sim/src/player.rs (runs c0000 HKS)"
+  },
+  "check": "Jump and mash jump: kicks appear no sooner than 0.4 s apart. Use SpEffect events, not the anim field, to detect them.",
+  "note": "The recorder anim field never shows a000_213100.",
+  "needs": [
+   {
+    "id": "combat.attack-hit",
+    "why": "the kick is an attack"
+   }
+  ]
+ },
+ {
+  "id": "movement.kick-jump",
+  "category": "movement",
+  "title": "Jumping off an enemy after a kick",
+  "summary": "If the air kick connects with a body during its window, Wolf bounces into an enemy jump. At sprint speed most kicks miss because the window opens after passing the enemy.",
+  "values": "BEH_R_ENEMY_JUMP = env(2004) (kick connected, action module +0x58 bit 4 set by FUN_1409e5fd0) and SpEffect TAE_ENABLE_KICK_ENEMY_JUMP (100334, f9-21). Live: sweep jumps hold 0.95-1.14 m from the enemy at ~0.7 m/s, kick lands 18-20 ticks after the press (19 of 19); 11 of 13 sprint-speed kicks missed. Kick jump rows 2002-2111, e.g. 2002 horizontal 7.04, up 7.712.",
+  "how": "HKS BEH_R_ENEMY_JUMP; exe hit processing; ChrPhysicsVelocityChange rows 2002-2111.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/hks_src/c0000_transition.lua"
+   },
+   {
+    "kind": "exe",
+    "ref": "FUN_1409e5fd0"
+   },
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/json/params/ChrPhysicsVelocityChangeParam.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "fireguy-rustsekiro/docs/kb/movement.md"
+   }
+  ],
+  "confidence": "recorded",
+  "ours": {
+   "has": "yes",
+   "where": "fireguy-rustsekiro/src/player.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "sekiro-rs/crates/sim/src/player.rs (runs c0000 HKS)"
+  },
+  "check": "Jump a perilous sweep locked on and kick: Wolf rebounds and can jump again.",
+  "note": "Havok character proxy response is not traced; ours zeroes launch velocity on body push.",
+  "needs": [
+   {
+    "id": "combat.perilous-sweep",
+    "why": "common target for kick jumps"
+   }
+  ]
+ },
+ {
+  "id": "movement.air-action-limits",
+  "category": "movement",
+  "title": "Per-flight limits for air actions",
+  "summary": "Some air actions can be used once per flight: air prosthetic attacks, air combat arts and wall jumps.",
+  "values": "AIR_SUB_ATTACK_COUNT_MAX = 1, AIR_SP_ATTACK_COUNT_MAX = 1, WALL_JUMP_COUNT_MAX = 1 (reset on landing by _LandReset).",
+  "how": "HKS constants and counters g_wallJumpCount etc.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/hks_src/c0000_define.lua"
+   },
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/hks_src/c0000_transition.lua"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "fireguy-rustsekiro/src/player.rs (air_sub_count, air_art_count, wall_jumps)"
+  },
+  "his": {
+   "has": "yes",
+   "where": "sekiro-rs/crates/sim/src/player.rs (runs c0000 HKS)"
+  },
+  "check": "Jump, use the prosthetic twice in the air: the second is refused.",
+  "note": "",
+  "needs": [
+   {
+    "id": "arts.air-combat-art",
+    "why": "shares the limit"
+   }
+  ]
+ },
+ {
+  "id": "movement.fall-state-entry",
+  "category": "movement",
+  "title": "When walking off a ledge becomes a fall",
+  "summary": "Wolf enters the fall state only if airborne and, when walking or swimming, the fall height is at least 30 cm. Small steps down are walked.",
+  "values": "BEH_R_FALL: env(200) and g_beforeFireLand == -1 and (not moving or env(224) >= 30). env 224 is fall height in centimetres.",
+  "how": "HKS g_ValidateReactionTable[BEH_R_FALL]; engine env 200/224.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/hks_src/c0000_transition.lua"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "sekiro-rs/docs/MOBILITY.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "fireguy-rustsekiro/src/player.rs (fall check)"
+  },
+  "his": {
+   "has": "yes",
+   "where": "sekiro-rs/crates/sim/src/player.rs (env 224 cm)"
+  },
+  "check": "Step off a 20 cm kerb: no fall animation. Off a 60 cm ledge: SelfFallStart plays.",
+  "note": "",
+  "needs": []
+ },
+ {
+  "id": "movement.landing-stiffness",
+  "category": "movement",
+  "title": "Landing stiffness by fall height",
+  "summary": "Landing from 5 m or more (3 m after a positioning jump) is a short stiff landing that can be cancelled by dodge or stick. 20 m or more is a long stiff landing.",
+  "values": "FALL_HEIGHT_SHORT_STIFF_LAND 5, ..._FROM_JUMP 3, LONG_STIFF_LAND 20, LONG_STIFF_LAND_WATER 20 (metres; env 224 x 0.01). Short stiff: dodge press or hold -> step, stick -> W_StandMoveStartFromFreeFallShortStiff; else LandFreeFall. Long: Selector_LandStiff LONG, clip LandFreeFallLongStiff 200021.",
+  "how": "HKS BEH_R_LAND (c0000_transition.lua ~1763-2045).",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/hks_src/c0000_transition.lua"
+   },
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/hks_src/c0000_define.lua"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "sekiro-rs/docs/MOBILITY.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "fireguy-rustsekiro/src/player.rs (landing)"
+  },
+  "his": {
+   "has": "partial",
+   "where": "sekiro-rs/crates/sim/src/player.rs (cm units fix)"
+  },
+  "check": "Drop from 6 m: brief stiff landing, cancellable by dodge; from 22 m: long stiff animation.",
+  "note": "sekiro-rs notes his stub had env 224 in metres before the fix.",
+  "needs": [
+   {
+    "id": "movement.fall-damage",
+    "why": "heights drive damage too"
+   }
+  ]
+ },
+ {
+  "id": "movement.land-ready",
+  "category": "movement",
+  "title": "Land-ready states on fast falls",
+  "summary": "A fast fall into the ground enters a land-ready pose first, for jumps and wire flights.",
+  "values": "LAND_READY_ENABLE_FALL_SPEED = -2000 cm/s (jump types 0 and 1 from jump, fall, wall-jump or free-fall states); LAND_WIRE_READY_ENABLE_FALL_SPEED = -1000 cm/s (wire move states).",
+  "how": "HKS BEH_R_LAND_READY, BEH_R_LAND_WIRE_READY using env 3003 vertical speed (cm/s).",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/hks_src/c0000_transition.lua"
+   },
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/hks_src/c0000_define.lua"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "fireguy-rustsekiro/src/player.rs (LandWire)"
+  },
+  "his": {
+   "has": "partial",
+   "where": "sekiro-rs/crates/sim/src/player.rs (runs c0000 HKS)"
+  },
+  "check": "Fall 15 m and watch for the ready pose before the land clip.",
+  "note": "Wire version is built in ours; jump version not separately verified.",
+  "needs": [
+   {
+    "id": "movement.grapple-landing",
+    "why": "wire flights land via this"
+   }
+  ]
+ },
+ {
+  "id": "movement.fall-death",
+  "category": "movement",
+  "title": "Fatal fall distance by surface",
+  "summary": "Falling from enough height onto a surface kills Wolf outright. The distance depends on the material under him and starts counting only from 20 m.",
+  "values": "Kill test FUN_14084e5d0: height >= HitMtrlParam.fallDeathDist (40 default, 80 on water planes 22, 36, 38) and height >= 20 m (DAT_143b01948); 5 m while SpEffect type 0x155 is worn. Material 40 \"cloud\" has disableFallDamage 1.",
+  "how": "HitMtrlParam fallDeathDist/disableFallDamage; exe FUN_14084e5d0, FUN_140843660.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/json/params/HitMtrlParam.json"
+   },
+   {
+    "kind": "exe",
+    "ref": "FUN_14084e5d0, FUN_140843660"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "fireguy-rustsekiro/docs/kb/movement.md"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "sekiro-rs/docs/MOBILITY.md"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "yes",
+   "where": "fireguy-rustsekiro/src/player.rs + map.rs fall_death_dist"
+  },
+  "his": {
+   "has": "yes",
+   "where": "sekiro-rs/crates/sim/src/duel.rs (FallMaterial)"
+  },
+  "check": "Use the F1 fall test: 45 m onto plain ground kills and returns Wolf; 30 m does not.",
+  "note": "",
+  "needs": [
+   {
+    "id": "movement.fall-death-return",
+    "why": "death routes into the return"
+   }
+  ]
+ },
+ {
+  "id": "movement.fall-damage",
+  "category": "movement",
+  "title": "Non-lethal fall damage",
+  "summary": "Between 20 m and the death distance a landing hurts. The result is a fraction scaled by height and several victim factors, not a flat number.",
+  "values": "FUN_140843660: 0 below 20 m; result = a * g210(h) * 0.01 * b * c * d * e. CalcCorrectGraph 210 is the identity from 20 to 100 (x 20,40,60,80,100 -> y same), 211 is flat 100, 212 maps 20..100 to 0,10,20,35,99; e is HitMtrlParam +0x50 fallDamageRate (0.5 on water planes). 1.0 is returned when the kill test passes.",
+  "how": "Exe FUN_140843660 + FUN_1408433f0 + graph lookup FUN_140850b10 (CalcCorrectGraph ids 0xd2-0xd4).",
+  "sources": [
+   {
+    "kind": "exe",
+    "ref": "FUN_140843660, FUN_1408433f0, FUN_140850b10"
+   },
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/json/params/CalcCorrectGraph.json"
+   },
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/json/params/HitMtrlParam.json"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Drop Wolf from 25 m and record the HP loss; compare with a 21 m drop.",
+  "note": "Victim factors (a, b, c, d) are read from character data fields not yet identified, so the HP amount is not computed; graph meaning is inferred from the loader.",
+  "needs": [
+   {
+    "id": "movement.fall-damage-reactions",
+    "why": "plays the hurt clips"
+   }
+  ]
+ },
+ {
+  "id": "movement.fall-damage-reactions",
+  "category": "movement",
+  "title": "Fall hurt and fall death clips",
+  "summary": "Fall damage animations are fired by the engine, not the script: small and large fall hit, fall death damage and the land variants.",
+  "values": "States FallHitDmgSmall (102100/102101), FallHitDmgLargeStart/Loop (102300/102310), LandFallHitDmgLarge (102320/102321), FallDeathDmgStart/Loop (121000-121011), LandFallDeathDmg (112020/112021), FallDeathStart/Loop (199100/199110). Fall-death clips use row 3810 (air speed kept, not steerable).",
+  "how": "HKS never fires FallHitDmg events; engine sends them from fall damage code. damageType 6 DEATH_FALLING routes to W_FallDeathStart.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/hks_src/c0000_transition.lua"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "sekiro-rs/docs/MOBILITY.md"
+   }
+  ],
+  "confidence": "community",
+  "ours": {
+   "has": "partial",
+   "where": "fireguy-rustsekiro/src/player.rs (return states only)"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Land from 30 m onto water or grass and watch which clip plays.",
+  "note": "Which engine function selects them is not traced.",
+  "needs": [
+   {
+    "id": "movement.fall-damage",
+    "why": ""
+   }
+  ]
+ },
+ {
+  "id": "movement.fall-death-return",
+  "category": "movement",
+  "title": "Fall death returns Wolf to safe ground",
+  "summary": "A fatal fall or falling out of the world does not end the run: Wolf plays a fall-dead-return animation and is placed on the last safe ground with HP kept.",
+  "values": "DAMAGE_TYPE_FALL_DEAD_RETURN 14 -> W_FallDeadReturnStart (a000_199120); LAND_DEAD_RETURN 15 -> LandDeadReturnStart (a000_200909); LAND_DEAD 16. After return GroundFallReturn at the safe position, SAFE_POS_RETURN_TYPE stand/crouch/swim/dive via env 3061. Falling 40 m with no ground triggers the void path.",
+  "how": "HKS BEH_R_DEATH routing, env 3061; engine kill volume and safe position.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/hks_src/c0000_transition.lua"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "fireguy-rustsekiro/docs/kb/movement.md"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "sekiro-rs/docs/MOBILITY.md"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "yes",
+   "where": "fireguy-rustsekiro/src/player.rs (safe_pos, LandDeadReturnStart)"
+  },
+  "his": {
+   "has": "partial",
+   "where": "sekiro-rs/crates/sim/src/duel.rs fall_respawn_depth"
+  },
+  "check": "Walk into a pit on the Hirata or Ashina maps: Wolf reappears at the pit edge.",
+  "note": "Void kill height and return volume are not traced.",
+  "needs": []
+ },
+ {
+  "id": "movement.fall-protection",
+  "category": "movement",
+  "title": "Edge stop assist on the ground",
+  "summary": "Most ground states ask the engine to stop Wolf at a ledge. Walking or standing next to an edge has \"fall prevention\" turned on per state.",
+  "values": "act(3016,0) strong wall protection for 860 of 1310 graph states, act(3016,1) weak for 770. Disabled by TAE SpEffect DISABLE_FALL_PROTECT (ref 6) and refs 11/12; never in cover, hang, wire fall, cling, swim, dive.",
+  "how": "HKS _UpdateFallProtection; engine act 3016 with state flags PARAM_HKB_STATE__ENABLE_FALL_PROTECT_WALL_STRONG/WEAK.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/hks_src/c0000_transition.lua"
+   },
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/hks_src/c0000_cmsg.lua"
+   }
+  ],
+  "confidence": "community",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Slowly walk into a cliff edge and check whether Wolf stops or drops; then sprint and jump.",
+  "note": "Exact effect (hard stop vs slide) lives in the engine and was not traced.",
+  "needs": []
+ },
+ {
+  "id": "movement.wall-jump",
+  "category": "movement",
+  "title": "Wall jump",
+  "summary": "Jumping in the air next to a wall while a TAE window is open kicks off the wall once per flight. The jump type follows the stick.",
+  "values": "BEH_A_WALL_JUMP: SpEffect ref ENABLE_WALL_JUMP_CANCEL (104), env(3020) wall contact, env(224) <= 2000 cm (20 m), falling, jump press, g_wallJumpCount < WALL_JUMP_COUNT_MAX (1). Contact type F/B/L/R by ContactWallAngle (-45..45 F, beyond +-135 B). Selector types vertical, horizontal F/B/L/R. Wall jump rows 1000-1011, 1111-1118, 1200-1218; ours uses 0.8 m chest reach (not traced).",
+  "how": "HKS BEH_A_WALL_JUMP; engine contact check env 3020.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/hks_src/c0000_transition.lua"
+   },
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/hks_src/c0000_define.lua"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "fireguy-rustsekiro/docs/kb/docking.md"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "sekiro-rs/docs/MOBILITY.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "fireguy-rustsekiro/src/docking.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "sekiro-rs/crates/sim/src/docking.rs wall_contact"
+  },
+  "check": "Jump toward a wall and press jump again at the TAE window: WallJumpReady then WallJumpStart plays.",
+  "note": "Contact reach 0.8 m is a placeholder in both projects.",
+  "needs": [
+   {
+    "id": "movement.air-action-limits",
+    "why": "one per flight"
+   }
+  ]
+ },
+ {
+  "id": "movement.hang-air-grab",
+  "category": "movement",
+  "title": "Catching a ledge from the air",
+  "summary": "Wolf can grab a ledge while falling or jumping if the edge type allows and the hang button is held or a TAE grab window is open.",
+  "values": "env(3045) air hang type: 0 off, 1 short range, 2 long range. Needs TAE refs ENABLE_AIR_HANG (105) or ENABLE_AIR_HANG_GRAB (5), or standby, with the hang button held (env 1108 > 0). Side by angle: -180..-45 left, 45..180 right. Ours: lip 1.0-2.6 m over the feet, up to 1 m (short) or 2 m (long) off the face.",
+  "how": "HKS BEH_A_AIR_HANG_START; engine search env 3045; act 3028.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/hks_src/c0000_transition.lua"
+   },
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/hks_src/c0000_define.lua"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "fireguy-rustsekiro/docs/kb/docking.md"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "sekiro-rs/docs/MOBILITY.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "fireguy-rustsekiro/src/docking.rs"
+  },
+  "his": {
+   "has": "partial",
+   "where": "sekiro-rs/crates/sim/src/docking.rs (placeholder reach)"
+  },
+  "check": "Jump at a hang edge holding the interact key: FreeFallToHang plays and Wolf hangs.",
+  "note": "Exe search box not traced (reach values from FwLo).",
+  "needs": [
+   {
+    "id": "movement.docking-edges",
+    "why": "needs edge data"
+   }
+  ]
+ },
+ {
+  "id": "movement.hang-ground-start",
+  "category": "movement",
+  "title": "Starting a ledge hang from the ground",
+  "summary": "At a hang edge Wolf can drop over the lip and hang. The start clip depends on which side of the edge he faces.",
+  "values": "env 3044 can start ground hang. HangStartEdgeAngle: -45..45 StandToHang1Back, 45..135 1Left, -135..-45 1Right, beyond StandToHang; FootHold variants when edge variation = 1. DockingTranslationOffset_Hang (0, 1.6, -0.7).",
+  "how": "HKS BEH_A_GROUND_HANG_START; act 3027 asks the engine for the test.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/hks_src/c0000_transition.lua"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "fireguy-rustsekiro/docs/kb/docking.md"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "sekiro-rs/docs/MOBILITY.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "fireguy-rustsekiro/src/docking.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "sekiro-rs/crates/sim/src/docking.rs"
+  },
+  "check": "Stand at a hang edge and press the hang key: a StandToHang clip plays.",
+  "note": "",
+  "needs": [
+   {
+    "id": "movement.docking-edges",
+    "why": ""
+   }
+  ]
+ },
+ {
+  "id": "movement.hang-shimmy-corner",
+  "category": "movement",
+  "title": "Shimmy and corner moves on a hang",
+  "summary": "With the stick sideways Wolf shimmies along the edge. At edge ends the corner moves wrap around outside and inside corners.",
+  "values": "DOCKING_MOVE_INPUT_ANGLE 30..150 degrees from the edge; blocked by env 3051/3052 (obstacle at start/end end). Corner checks env 3048/3049 outer left/right, 3059/3060 inner. Clips HangMove* (20202/20203), corners 20402-20433.",
+  "how": "HKS BEH_A_DOCKING_MOVE_START/STOP, BEH_A_HANG_CORNER_MOVE; engine corner tests.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/hks_src/c0000_transition.lua"
+   },
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/hks_src/c0000_define.lua"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "fireguy-rustsekiro/docs/kb/docking.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "fireguy-rustsekiro/src/docking.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Hang and push the stick left along a wall: HangMoveStart then loop; at an edge corner a HangCornerMove clip plays.",
+  "note": "Corner reach 0.6 m in ours is not traced.",
+  "needs": [
+   {
+    "id": "movement.hang-ground-start",
+    "why": ""
+   }
+  ]
+ },
+ {
+  "id": "movement.hang-climb-drop",
+  "category": "movement",
+  "title": "Hang: climb up, drop, jump",
+  "summary": "From a hang the interact or jump button climbs up (needs a clear top, env 3050), dodge drops, and a jump away from the wall wall-jumps.",
+  "values": "BEH_A_HANG_CLIMB (button or jump, env 3050) -> HangToStand 217500 or HangFootHoldToStand 217600 (root moves 1.10 m forward, 1.60 m up). BEH_A_HANG_FALL on dodge -> HangToFreeFall 217520/217620. HangJumpReady 201304/201305.",
+  "how": "HKS BEH_A_HANG_CLIMB/FALL; clip root motion.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/hks_src/c0000_transition.lua"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "fireguy-rustsekiro/docs/kb/docking.md"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "sekiro-rs/docs/MOBILITY.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "fireguy-rustsekiro/src/docking.rs"
+  },
+  "his": {
+   "has": "partial",
+   "where": "sekiro-rs/crates/sim/src/docking.rs (hang jump not built)"
+  },
+  "check": "Hang, press jump: HangToStand lifts Wolf onto the ledge top.",
+  "note": "",
+  "needs": [
+   {
+    "id": "movement.hang-ground-start",
+    "why": ""
+   }
+  ]
+ },
+ {
+  "id": "movement.hang-foothold",
+  "category": "movement",
+  "title": "Foothold hangs",
+  "summary": "Edges flagged foothold let Wolf hang with his feet on the wall, which changes the idle, climb and drop clips.",
+  "values": "HANG_EDGE_TYPE 0 no foothold, 1 foothold: HangFootHoldIdle 20010, climb 217600, drop 217620, catch 2172xx. On m11_01 880 hang edges are variation 0 and 83 variation 1.",
+  "how": "Edge record variation byte; HKS env 3046 and Selector_DockingTargetEdgeType.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/hks_src/c0000_define.lua"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "sekiro-rs/docs/MOBILITY.md"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "fireguy-rustsekiro/docs/kb/docking.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "fireguy-rustsekiro/src/docking.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "sekiro-rs/crates/sim/src/docking.rs"
+  },
+  "check": "Find a foothold edge and compare the idle with a plain hang.",
+  "note": "",
+  "needs": [
+   {
+    "id": "movement.docking-edges",
+    "why": ""
+   }
+  ]
+ },
+ {
+  "id": "movement.wall-hug",
+  "category": "movement",
+  "title": "Wall hug (cover) start",
+  "summary": "Pressing the hug button next to a hug edge flattens Wolf against the wall. The entry clip depends on the angle to the edge and the stick.",
+  "values": "env 3043 can start; not forced crouch, no SpEffect ref 9 (DISABLE_COVER_START). Stick idle: |angle| > 135 StandToCover2Back, <= 45 Right180/Left180, else Right/Left. Stick held: -150..-30 MoveToCoverLeft, 30..150 MoveToCoverRight. DockingTranslationOffset_Cover (0,0,0.7).",
+  "how": "HKS BEH_A_COVER_START and c0000_define COVER_START_ANGLE_*.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/hks_src/c0000_transition.lua"
+   },
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/hks_src/c0000_define.lua"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "fireguy-rustsekiro/docs/kb/docking.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "fireguy-rustsekiro/src/docking.rs"
+  },
+  "his": {
+   "has": "partial",
+   "where": "sekiro-rs/crates/sim/tests/it/cover.rs"
+  },
+  "check": "Walk to a wall edge and press the hug key from several angles.",
+  "note": "",
+  "needs": [
+   {
+    "id": "movement.docking-edges",
+    "why": ""
+   }
+  ]
+ },
+ {
+  "id": "movement.wall-peek",
+  "category": "movement",
+  "title": "Peeking around a hug edge",
+  "summary": "At the end of a hug edge Wolf can lean out and look. Edge variation decides which side is allowed and whether the peek-move version is used.",
+  "values": "COVER_EDGE_TYPE 0 no look, 1 free look, 2 left only, 3 right only, 10-13 peek-move versions. Look direction from env 3011 (1 left end, 2 right end). Clips CoverAction{Start,Loop,End}{L,R}; CoverEnd 218490, CoverEndFromCoverLook 218491. Peek move forces MoveSpeedIndex 0.",
+  "how": "HKS BEH_A_COVER_LOOK_START/END; edge variation byte.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/hks_src/c0000_transition.lua"
+   },
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/hks_src/c0000_define.lua"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "fireguy-rustsekiro/docs/kb/docking.md"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "sekiro-rs/docs/MOBILITY.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "fireguy-rustsekiro/src/docking.rs"
+  },
+  "his": {
+   "has": "partial",
+   "where": "sekiro-rs/crates/sim/tests/it/cover.rs"
+  },
+  "check": "Hug at a corner and push the stick past the end: peek clip plays only if the edge allows that side.",
+  "note": "",
+  "needs": [
+   {
+    "id": "movement.wall-hug",
+    "why": ""
+   }
+  ]
+ },
+ {
+  "id": "movement.docking-edges",
+  "category": "movement",
+  "title": "Hang and hug edge data",
+  "summary": "Ledge and wall points come from .edge records in the map and object files. Kind 2 is hang, kind 3 hug, kind 1 grapple.",
+  "values": "Record 64 bytes after a 16 byte header (u32 4, count, owner id, 0): two endpoints, third vertex (landing or stand spot), chain id, kind byte, variation byte. m11_00: 584 hang, 974 hug; m11_01: 963 hang, 1326 hug. Variation: hang 0/1, hug 0-3 and 10-13, grapple 0,1,3,5,20,24,40,41.",
+  "how": "Map .edgebhd/.edgebdt per collision part and object e<id>.edge.",
+  "sources": [
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "sekiro-rs/docs/MOBILITY.md"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "fireguy-rustsekiro/docs/kb/grapple.md"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "fireguy-rustsekiro/docs/kb/docking.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "fireguy-rustsekiro/src/map.rs LedgeEdges"
+  },
+  "his": {
+   "has": "yes",
+   "where": "sekiro-rs/crates/formats/src/edge.rs"
+  },
+  "check": "Open the H overlay in Sv1 on m11_01: orange hang and cyan hug edges.",
+  "note": "Which vertex is which is settled by the wall probe (wall is on the third vertex side) in ours only.",
+  "needs": []
+ },
+ {
+  "id": "movement.docking-hold",
+  "category": "movement",
+  "title": "Docking offsets and holds",
+  "summary": "While hugging or hanging, the docking generator pins Wolf to the edge with a fixed translation offset per state.",
+  "values": "Variables: DockingTranslationOffset_Cover (0,0,0.7), _Hang (0,1.6,-0.7), _HangStart (0,0,-0.4), _HangBackStart (0,0,0.4), _HangLeftStart (-0.4,0,0), _HangRightStart (0.4,0,0), HangWallAngle 90 (80-90). 105 CustomDockingGenerator nodes.",
+  "how": "c0000.hkx CustomDockingGenerator bound to behavior variables; exe docking search FUN_140b7d810 / FUN_140b89320 / FUN_140b76110.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "fireguy-rustsekiro/docs/kb/docking.md"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "sekiro-rs/docs/MOBILITY.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "fireguy-rustsekiro/src/docking.rs hold"
+  },
+  "his": {
+   "has": "partial",
+   "where": "sekiro-rs/crates/sim/src/docking.rs"
+  },
+  "check": "Hang: hands 1.56 m above the root, 0.62 m in front (probe in ours).",
+  "note": "Sign convention verified against clips in ours.",
+  "needs": [
+   {
+    "id": "movement.docking-edges",
+    "why": ""
+   }
+  ]
+ },
+ {
+  "id": "movement.docking-deathblows",
+  "category": "movement",
+  "title": "Deathblows from hang and hug",
+  "summary": "Attacking from a hug or hang against an unaware enemy plays a special deathblow pair: pull-down from a hang, wall-corner kills from a hug.",
+  "values": "Hug a20x_500600 -> 510600 (enemy left), 500700 -> 510700 (right); hang 500800 -> 510800 (facing away), 501000 -> 511000 (facing). ThrowKind 90000/100000/110000. HKS sets SpEffect ENABLE_PULL_DOWN_NINSATSU, WALL_L/R_NINSATSU.",
+  "how": "HKS _UpdateNextThrowInfo; ThrowParam rows; DockingTranslationOffset animation sync.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/hks_src/c0000_transition.lua"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "fireguy-rustsekiro/docs/kb/docking.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "fireguy-rustsekiro/src/player.rs dock_deathblow"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Hug a corner behind an unaware soldier and attack.",
+  "note": "",
+  "needs": [
+   {
+    "id": "deathblows.hang-pull-down",
+    "why": "deathblow category record"
+   }
+  ]
+ },
+ {
+  "id": "movement.grapple-search",
+  "category": "movement",
+  "title": "Grapple point search",
+  "summary": "Grapple points are shown within 25 m, usable between 3 m and 15 m, and stay selected inside a smaller rectangle.",
+  "values": "WirePointSearchParam 0: actionDistanceNear 3, actionDistanceFar 15, findDistanceFar 25 (grey point), filtering rectangle height +-10.2 width 14.3, softlock height +-10.2 width 7.15. Row 10200 finds to 50 m, 11020 acts to 20 m.",
+  "how": "WireSetParam picks up to 20 search rows per map state; env 3000 IsWirePossible, env 3017 WireObstacleJudgment raycast.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/json/params/WirePointSearchParam.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "fireguy-rustsekiro/docs/kb/grapple.md"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "sekiro-rs/docs/MOBILITY.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "fireguy-rustsekiro/src/wire.rs, map.rs grapple_target"
+  },
+  "his": {
+   "has": "yes",
+   "where": "sekiro-rs/crates/sim/src/wire.rs"
+  },
+  "check": "Walk toward a tree grapple point: marker appears grey at 25 m, green inside 15 m, disappears inside 3 m.",
+  "note": "Edge preference between overlapping points is not in the data.",
+  "needs": [
+   {
+    "id": "movement.docking-edges",
+    "why": "shares edge records"
+   }
+  ]
+ },
+ {
+  "id": "movement.grapple-variation",
+  "category": "movement",
+  "title": "Wire variations: ride vs swing-through",
+  "summary": "Each point has a variation that sets the marker, extra range and whether Wolf lands on it or swings through.",
+  "values": "WireVariationParam: targetMarkerType 0 filled circle, 1 ring with arrow (\"cannot ride\"); row 5 extendWireActionDistance +10 m; recognition angles rows 0/3/20/23: 90/90/180/180; homing offset rows 20 -> 300000020 (arc ends 7.5 m past and 2.5 m below), 24 -> (0,3,2), 40/41 kites (0,-30,30)/(0,-22,25).",
+  "how": "WireVariationParam + ChrPhysicsHomingParam 3000000xx.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/json/params/WireVariationParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/json/params/ChrPhysicsHomingParam.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "fireguy-rustsekiro/docs/kb/grapple.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "fireguy-rustsekiro/src/wire.rs"
+  },
+  "his": {
+   "has": "partial",
+   "where": "sekiro-rs/crates/sim/src/wire.rs"
+  },
+  "check": "Use the Guardian Ape pond hooks (variation 20): Wolf swings through without landing.",
+  "note": "",
+  "needs": [
+   {
+    "id": "movement.grapple-search",
+    "why": ""
+   }
+  ]
+ },
+ {
+  "id": "movement.grapple-fire",
+  "category": "movement",
+  "title": "Firing the grapple",
+  "summary": "The grapple fires from the ground (standing, crouching, hugging, guarding, sprinting, swimming) or in the air, if the prosthetic is unlocked and a target exists. Wolf can still be hit during the move.",
+  "values": "BEH_A_GROUND_WIRE_SHOOT (107) / AIR_WIRE_SHOOT (108): env(1106, WIRE_SHOOT) or buffered 415/416, env(3033, SUB_WEAPONE) unlocked, env(3000), not forced crouch. GroundWireShoot a000_202000 0.63 s with turn 1080 deg/s for 0.2 s, TAE 921 homing 300000000 target type 4, TAE 900 rope speed 50, 902 look at target.",
+  "how": "HKS; TAE 900-905, 921.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/hks_src/c0000_transition.lua"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "fireguy-rustsekiro/docs/kb/grapple.md"
+   },
+   {
+    "kind": "web",
+    "ref": "https://sekiroshadowsdietwice.wiki.fextralife.com/Grappling+Hook"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "fireguy-rustsekiro/src/wire.rs, player.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "sekiro-rs/crates/sim/src/wire.rs"
+  },
+  "check": "Press the grapple key at a green point: GroundWireShoot, then the move start, then flight.",
+  "note": "Fextralife says Wolf can be hurt during the animation and that landing from a crouch grapple breaks stealth; only the first is visible in the data.",
+  "needs": [
+   {
+    "id": "interface.wire-markers",
+    "why": "shows the target"
+   }
+  ]
+ },
+ {
+  "id": "movement.grapple-move-start",
+  "category": "movement",
+  "title": "Move start selected by elevation",
+  "summary": "The grapple pull animation is chosen by how steeply the target is above Wolf.",
+  "values": "WireDramaticAngle > 50 deg gives index 1 (WIRE_MOVE_START_INDEX_VERTICAL, clip _Up a000_202011), > 15 gives index 0 (UPSLOPE, _UpperSlope 202010), else index 2 (HORIZONTAL, clip named _Vertical 202012). Launch is TAE 920 row 1100 at 0.67 s (202010) or 0.5 s (202011/12); cancels open at 0.83 s for jump and R1/R2.",
+  "how": "HKS GetWireMoveStartIndex; WIRE_MOVE_START_INDEX constants; selectors on WireMoveStartIndex.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/hks_src/c0000_transition.lua"
+   },
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/hks_src/c0000_define.lua"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "fireguy-rustsekiro/docs/kb/grapple.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "fireguy-rustsekiro/src/wire.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "sekiro-rs/crates/sim/src/character.rs (WireDramaticAngle)"
+  },
+  "check": "Grapple a low and a high point and compare the pull clips.",
+  "note": "Clip names do not match the index names (index 2 plays the clip called _Vertical); the angle is taken as the hook elevation, the engine source of WireDramaticAngle is open.",
+  "needs": [
+   {
+    "id": "movement.grapple-fire",
+    "why": ""
+   }
+  ]
+ },
+ {
+  "id": "movement.grapple-flight",
+  "category": "movement",
+  "title": "Grapple flight arc",
+  "summary": "Launch is a velocity change with guaranteed arrival: the arc is solved so Wolf reaches the hook point in about 0.7-0.8 s under wire gravity.",
+  "values": "Row 1100 fallType 2 (h accel -15, gravity -9.8, stick 9/6) homing 300000000 (guarantee arrival, initial velocity correction); rows 1101 (30/30) and 1102 (0/0) applied by the engine. Flight about 0.68 s lands 0.16 m from the spot. TAE 904 slide blend with fixed curves.",
+  "how": "TAE 920 + ChrPhysicsHomingParam 300000000; exe FUN_140b54c90 / FUN_140bb1870.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/json/params/ChrPhysicsVelocityChangeParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/json/params/ChrPhysicsHomingParam.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "fireguy-rustsekiro/docs/kb/grapple.md"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "yes",
+   "where": "fireguy-rustsekiro/src/wire.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "sekiro-rs/crates/sim/src/wire.rs (solved flight)"
+  },
+  "check": "Grapple an 8 m point: lands in the move-start time (test a_grapple_lands_on_the_point_in_the_move_start_time).",
+  "note": "initialVelocityCorrection is not traced.",
+  "needs": [
+   {
+    "id": "movement.grapple-move-start",
+    "why": ""
+   }
+  ]
+ },
+ {
+  "id": "movement.grapple-landing",
+  "category": "movement",
+  "title": "Landing from a grapple",
+  "summary": "A ride point lands into LandWireMove; no-ride points and enemy hooks keep falling with a swing-through offset. Hard falls land ready.",
+  "values": "BEH_R_LAND_WIRE (22) / LAND_WIRE_READY (24, speed <= -1000 cm/s) only in wire-fall style. LandWireMove a000_202035 1.53 s, WireFallLandReady 202045 3.33 s. Moving landing with the stick held runs on.",
+  "how": "HKS reaction table; style WIRE_FALL.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/hks_src/c0000_transition.lua"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "fireguy-rustsekiro/docs/kb/grapple.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "fireguy-rustsekiro/src/player.rs"
+  },
+  "his": {
+   "has": "partial",
+   "where": "sekiro-rs/crates/sim/src/wire.rs"
+  },
+  "check": "Grapple a tree top and hold forward while landing.",
+  "note": "",
+  "needs": [
+   {
+    "id": "movement.land-ready",
+    "why": ""
+   }
+  ]
+ },
+ {
+  "id": "movement.grapple-chain",
+  "category": "movement",
+  "title": "Wire to wire and air actions",
+  "summary": "From a wire flight Wolf can fire again at the next point, attack, or guard in the air.",
+  "values": "WireMoveWireShoot 202600 (turn 2700 deg/s, launch 0.17 s) and WireMoveWire2Shoot 202700; WireFallAttackCombo1 (needs unlock 14); WireMoveDeflectGuardStart/Loop/End a050_203410-203420 land into LandAirDeflectGuard.",
+  "how": "HKS W_WireMoveWireShoot; ACTION_UNLOCK_TYPE_WIRE_MOVE_ATTACK 14.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/hks_src/c0000_transition.lua"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "fireguy-rustsekiro/docs/kb/grapple.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "fireguy-rustsekiro/src/wire.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Grapple, then press grapple again in flight at a second point.",
+  "note": "",
+  "needs": [
+   {
+    "id": "movement.grapple-fire",
+    "why": ""
+   }
+  ]
+ },
+ {
+  "id": "movement.grapple-enemy",
+  "category": "movement",
+  "title": "Enemies as grapple targets",
+  "summary": "An enemy becomes a grapple target only while it has a SpEffect that carries a wire variation. Its animation turns this on for specific moves.",
+  "values": "SpEffectParam chrWireVariationNo / chrWireTargetDmypolyId / chrWireLandingPointDmypolyId, 41 rows. Examples: Chained Ogre grab a100_003005 0.63-1.07 s; Gyoubu helmet a000_003009 1.77-3.93 s; Guardian Ape sword a000_003008 4.57-5.57 s. Dummies 650-652 on the body part, 260 landing at feet.",
+  "how": "Enemy TAE event 66 AddSpEffect_Multiplayer; ChrPhysicsHomingParam 3000<variation>.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/json/params/SpEffectParam.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "fireguy-rustsekiro/docs/kb/grapple.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "fireguy-rustsekiro/src/enemy/grapple.rs"
+  },
+  "his": {
+   "has": "partial",
+   "where": "sekiro-rs/crates/sim/src/wire.rs"
+  },
+  "check": "Fight the Chained Ogre: the prompt shows only inside the grab window.",
+  "note": "",
+  "needs": [
+   {
+    "id": "bosses.chained-ogre",
+    "why": "target boss"
+   }
+  ]
+ },
+ {
+  "id": "movement.grapple-attack",
+  "category": "movement",
+  "title": "Grappling hook attack",
+  "summary": "Attacking in the wire fall while hooked on an enemy throws it: a falling strike that is a deathblow-class hit.",
+  "values": "ThrowParam 15020170/71 (Akaoni), 15080170/71 (Gyoubu), 15080179 todome; anims a000_511600/511610/511690, ThrowDef 13600/13610/13690; dist 20, y +-12; deathblow AtkParam_Pc 5000660. The throw needs only the main weapon unlock; unlock 14 gates the extra combo.",
+  "how": "HKS ACTION_UNLOCK_TYPE_WIRE_MOVE_ATTACK 14; ThrowParam; c9997 SP_DAMAGE_WIRE.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "fireguy-rustsekiro/docs/kb/grapple.md"
+   },
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/json/params/ThrowParam.json"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "fireguy-rustsekiro/src/player.rs wire_throw"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Grapple Gyoubu helmet and attack: WireThrow, landing deathblow.",
+  "note": "",
+  "needs": [
+   {
+    "id": "deathblows.wire-throw",
+    "why": ""
+   }
+  ]
+ },
+ {
+  "id": "movement.swim-surface",
+  "category": "movement",
+  "title": "Swimming at the surface",
+  "summary": "In deep water Wolf swims at the surface using swim clips. Entering and leaving the water are state reactions on a water-contact flag.",
+  "values": "BEH_R_STAND_MOVE_TO_SWIM on env(3025) touching a swim volume (not debug dash); BEH_R_SWIM_TO_STAND_MOVE when off it; LAND_WATER landing; clips SwimIdle 30000, SwimMoveStart/Loop/End 30100/30200/30300, StandMoveToSwim 210000. Water hit materials 20/21 (walkable), 22 dive plane, 35 slope, 36 swim slope, 37/38 grass variants.",
+  "how": "HKS reactions; engine env 3025; HitMtrlParam materials.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/hks_src/c0000_transition.lua"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "sekiro-rs/docs/MOBILITY.md"
+   },
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/json/params/HitMtrlParam.json"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "fireguy-rustsekiro/src/swim.rs (boxes only)"
+  },
+  "his": {
+   "has": "partial",
+   "where": "sekiro-rs/crates/sim/tests/it/swim.rs"
+  },
+  "check": "Walk into a pond deeper than waist: StandMoveToSwim plays, then SwimIdle.",
+  "note": "Neither project reads the game water volumes from collision materials in play.",
+  "needs": [
+   {
+    "id": "map.water-volumes",
+    "why": "needs water data"
+   }
+  ]
+ },
+ {
+  "id": "movement.swim-kick",
+  "category": "movement",
+  "title": "Swim kick burst",
+  "summary": "Pressing the swim acceleration button while swimming kicks forward (or back-steps with no stick).",
+  "values": "BEH_A_KICK_MOVE with stick > 0, ACTION_ARM_SWIM_ACCELERATION 28; BEH_A_SWIM_BACK_STEP with stick 0. SwimKickMove1/2 a000_031400/031410, brake 031420. Camera slot 22 on the kick.",
+  "how": "HKS BEH_A_KICK_MOVE.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/hks_src/c0000_transition.lua"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "fireguy-rustsekiro/src/swim.rs kicks"
+  },
+  "his": {
+   "has": "partial",
+   "where": "sekiro-rs/crates/sim/src/player.rs (runs c0000 HKS)"
+  },
+  "check": "Swim and press the sprint key: kick chain plays.",
+  "note": "",
+  "needs": [
+   {
+    "id": "movement.swim-surface",
+    "why": ""
+   }
+  ]
+ },
+ {
+  "id": "movement.dive",
+  "category": "movement",
+  "title": "Diving needs the Mibu Breathing Technique",
+  "summary": "Wolf can dive only after learning the Mibu Breathing Technique (a key item). Down starts the dive; up and down move through the water; there is no breath timer.",
+  "values": "BEH_A_SWIM_TO_DIVE: ACTION_ARM_SWIM_DOWN 30, env 3038 can dive, ACTION_UNLOCK_TYPE_DIVE 0, not debug dash. Surface via env 3039 + TAE ENABLE_DIVE_TO_SWIM. EquipParamGoods 2420. Vertical speed up/down loops 4.5 / 3.75 m/s. No oxygen or breath field exists in any param definition.",
+  "how": "HKS; ACTION_ARM_SWIM_UP 29; DiveMove* clips 40100-40320.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/hks_src/c0000_transition.lua"
+   },
+   {
+    "kind": "web",
+    "ref": "https://sekiroshadowsdietwice.wiki.fextralife.com/Mibu+Breathing+Technique"
+   },
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/json/params/EquipParamGoods.json"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "fireguy-rustsekiro/src/swim.rs"
+  },
+  "his": {
+   "has": "partial",
+   "where": "sekiro-rs/crates/sim/src/character.rs (water answers)"
+  },
+  "check": "With the skill, swim down: no breath bar, Wolf can stay under indefinitely.",
+  "note": "Dive plane fall death is 80 m (HitMtrlParam 22).",
+  "needs": [
+   {
+    "id": "progression.mibu-breathing",
+    "why": "skill gate"
+   }
+  ]
+ },
+ {
+  "id": "movement.dolphin-jump",
+  "category": "movement",
+  "title": "Dolphin jump out of water",
+  "summary": "From the surface or dive a jump press launches a dolphin jump out of the water.",
+  "values": "BEH_A_SWIM_JUMP needs env 3039 can-surface when the ENABLE_DOLPHIN_JUMP TAE ref is on; swim kick jump chain SwimKickMoveJumpReady/Start/Loop a000_201600/201610/201630; LandSwimKickMoveJump 201640. Jump rows 221, 240, 241.",
+  "how": "HKS BEH_A_SWIM_JUMP.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/hks_src/c0000_transition.lua"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "sekiro-rs/docs/MOBILITY.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "fireguy-rustsekiro/src/swim.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Swim fast then jump: kick-jump arc out of the water.",
+  "note": "",
+  "needs": [
+   {
+    "id": "movement.dive",
+    "why": ""
+   }
+  ]
+ },
+ {
+  "id": "movement.water-restrictions",
+  "category": "movement",
+  "title": "Water and swamp restrictions",
+  "summary": "Near water and swamp Wolf cannot sprint, step or crouch, and cannot expand the prosthetic. Swamp slows running unless dodge is held 200 ms.",
+  "values": "IN_WATERSIDE_AREA (110005) blocks BEH_A_SPRINT, BEH_A_GROUND_STEP, BEH_A_CROUCH_START, SUB_WEAPON_EXPAND. IN_SWAMP_AREA (110002): run only when env(1108, SP_MOVE) > 200 and stick > 0.9 (0.7 to stay); sprint refused.",
+  "how": "HKS SpEffect refs 110002/110005 from area effects.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/hks_src/c0000_transition.lua"
+   },
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/hks_src/c0000_define.lua"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "fireguy-rustsekiro/src/player.rs (swamp)"
+  },
+  "his": {
+   "has": "partial",
+   "where": "sekiro-rs/crates/sim/src/character.rs"
+  },
+  "check": "Walk into the Ashina poison swamp: holding dodge moves faster after 0.2 s.",
+  "note": "",
+  "needs": [
+   {
+    "id": "map.swamp-areas",
+    "why": "area SpEffects"
+   }
+  ]
+ },
+ {
+  "id": "movement.crouch",
+  "category": "movement",
+  "title": "Crouching and forced crouch",
+  "summary": "Crouch toggles on a button press and ends on the next press unless forced. Low spaces force crouch with an area SpEffect.",
+  "values": "BEH_A_CROUCH_START on env(1106, CROUCH) or buffered 407/408, not waterside; BEH_A_CROUCH_END on press unless g_forceCrouch. SP_EF_REF_FORCE_CROUCH 110000. Crouch walk loop live 2.32 m/s (clip 2.36). Sprint then crouch plays the slide W_SprintToCrouchReady a000_216010. Camera slot 2 (CameraParam 100: chrOrgOffsetY 1.0).",
+  "how": "HKS; area SpEffect.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/hks_src/c0000_transition.lua"
+   },
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/hks_src/c0000_define.lua"
+   },
+   {
+    "kind": "recording",
+    "ref": "rec_20261016_083843_movement_hooks"
+   }
+  ],
+  "confidence": "recorded",
+  "ours": {
+   "has": "yes",
+   "where": "fireguy-rustsekiro/src/player.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "sekiro-rs/crates/sim/src/player.rs (runs c0000 HKS)"
+  },
+  "check": "Press crouch while sprinting: slide then crouch idle.",
+  "note": "",
+  "needs": [
+   {
+    "id": "stealth.crouch-stealth",
+    "why": "stealth relies on it"
+   }
+  ]
+ },
+ {
+  "id": "movement.damage-step",
+  "category": "movement",
+  "title": "Step out of damage or knockdown",
+  "summary": "During hit-stun or when downed a dodge press can cancel into a step or jump if the animation opened the cancel window.",
+  "values": "_execDamageStep: TAE ref ENABLE_HIT_JUMP_CANCEL -> W_StandStepFromDamage; ENABLE_DOWN_JUMP_CANCEL -> W_StandStepFromDown with 4-dir jump direction and tilt.",
+  "how": "HKS _execDamageStep; TAE SpEffect refs.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/hks_src/c0000_transition.lua"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "fireguy-rustsekiro/src/player.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "sekiro-rs/crates/sim/src/player.rs (runs c0000 HKS)"
+  },
+  "check": "Get hit and press dodge in the cancel window.",
+  "note": "",
+  "needs": [
+   {
+    "id": "combat.hit-reactions",
+    "why": ""
+   }
+  ]
+ },
+ {
+  "id": "movement.item-use-move",
+  "category": "movement",
+  "title": "Moving while using items",
+  "summary": "A TAE window lets Wolf walk while using a gourd or item.",
+  "values": "SP_EF_REF_TAE_ENABLE_ITEM_USE_MOVE enables BEH_A_GROUND_MOVE_START during item use; ITEM_USE_PRIORITIZE blocks damage-step cancels.",
+  "how": "HKS BEH_A_GROUND_MOVE_START.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/hks_src/c0000_transition.lua"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "fireguy-rustsekiro/src/player.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "sekiro-rs/crates/sim/src/player.rs (runs c0000 HKS)"
+  },
+  "check": "Drink the gourd while pushing the stick.",
+  "note": "",
+  "needs": [
+   {
+    "id": "items.gourd-use",
+    "why": ""
+   }
+  ]
+ },
+ {
+  "id": "movement.collision-capsule",
+  "category": "movement",
+  "title": "Wolf collision capsule and slope",
+  "summary": "Wolf collides with the map as a 1.5 m capsule with radius 0.4 m and walks slopes up to 60 degrees.",
+  "values": "Capsule height 1.5, radius 0.4 (hard-coded in FUN_140bc3140; NPCs use NpcParam hitHeight/hitRadius via FUN_140bc2e00); hknpCharacterProxy maxSlope 60 deg (0x3f860a92). Step-up height unknown (0.5 kept).",
+  "how": "Exe FUN_140bc3140, FUN_14104d3d0.",
+  "sources": [
+   {
+    "kind": "exe",
+    "ref": "FUN_140bc3140, FUN_140bc2e00, FUN_14104d3d0"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "fireguy-rustsekiro/docs/kb/movement.md"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "yes",
+   "where": "fireguy-rustsekiro/src/map.rs"
+  },
+  "his": {
+   "has": "partial",
+   "where": "sekiro-rs/crates/sim/src/body.rs (0.35 m placeholder)"
+  },
+  "check": "Walk up 55 and 65 degree ramps.",
+  "note": "His earlier 0.35 m / 50 deg were wrong per the exe.",
+  "needs": []
+ },
+ {
+  "id": "movement.bodies-block",
+  "category": "movement",
+  "title": "Bodies block, not shove",
+  "summary": "Characters stop each other rather than pushing. The one that walked in is stopped.",
+  "values": "Live: idle Wolf with an enemy within 1.3 m moved in 32 of 1267 ticks; running into an enemy gave both median 0.0 m/s along the line.",
+  "how": "Havok character proxies.",
+  "sources": [
+   {
+    "kind": "recording",
+    "ref": "rec_2026101x boss fights (kb/movement.md)"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "fireguy-rustsekiro/docs/kb/movement.md"
+   }
+  ],
+  "confidence": "recorded",
+  "ours": {
+   "has": "yes",
+   "where": "fireguy-rustsekiro/src/actor.rs separate"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Run into an idle soldier: Wolf stops, soldier does not slide.",
+  "note": "Havok response not traced.",
+  "needs": []
+ },
+ {
+  "id": "movement.root-motion-blend",
+  "category": "movement",
+  "title": "Root motion blends between states",
+  "summary": "State changes mix the world-from-model transforms with a smoothstep over the new clip TAE blend time. The old state keeps moving unless the effect says otherwise.",
+  "values": "w = smoothstep over TAE Blend (FUN_141408650 curve 0); flag 1 effects (TaeBlend_NoSrcMotion*) drop source motion at once. Attack out of a run keeps run speed for about 0.1 s (live ratio 0.7-1.0). Stop clips StandRunStop{F,B,L,R} keep no source; releasing the stick at a run slides 0.15-0.3 m.",
+  "how": "c0000.hkx TaeBlend effects, SELECTOR_USE_TE_TAE_BLEND_*; exe FUN_14140cfc0.",
+  "sources": [
+   {
+    "kind": "exe",
+    "ref": "FUN_141408650, FUN_14140cfc0, FUN_1413bf6c0"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "fireguy-rustsekiro/docs/kb/movement.md"
+   },
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/hks_src/c0000_define.lua"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "yes",
+   "where": "fireguy-rustsekiro/src/actor.rs advance"
+  },
+  "his": {
+   "has": "yes",
+   "where": "sekiro-rs/crates/sim/src/character.rs"
+  },
+  "check": "Release the stick at full run: Wolf slides about 0.3 m, not 1 m.",
+  "note": "Enemy graphs carry no loop flag (ours gap).",
+  "needs": []
+ },
+ {
+  "id": "movement.ladders-cling",
+  "category": "movement",
+  "title": "Ladders and cling climbing",
+  "summary": "The player script has no ladder state and no free climbing. Four objects carry an isLadder flag, so ladders may exist as object actions. STYLE_TYPE_CLING exists but no state uses it.",
+  "values": "ObjectParam.isLadder on rows 155200, 155210, 155500, 159100. DOCKING_TARGET_TYPE_CLING_POLYGON 3. No Ladder/Climb/Cling state in c0000 statemap. .wall files (190 on m11_01) are undecoded.",
+  "how": "Open: probably ObjActParam (playerAnimId 60xxx) like doors; .wall data for cling.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/json/params/ObjectParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/json/params/ObjActParam.json"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "sekiro-rs/docs/MOBILITY.md"
+   }
+  ],
+  "confidence": "open-question",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Search the game for a ladder object; check whether Wolf uses an ObjAct animation.",
+  "note": "Web search found no ladder mechanics page.",
+  "needs": []
+ },
+ {
+  "id": "movement.sheathed-mode",
+  "category": "movement",
+  "title": "Sheathed non-combat mode",
+  "summary": "Entering a non-combat area sheathes the sword and changes locomotion clips, jump rules and idle.",
+  "values": "BEH_R_NON_COMBAT_AREA_ENTER/LEAVE; env(207) ARM_STYLE_SAFE 0; forward clips from a010 (000100/200/400/500).",
+  "how": "HKS reactions; SpEffect IN_NON_COMBAT_AREA.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/hks_src/c0000_transition.lua"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "fireguy-rustsekiro/docs/kb/movement.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "fireguy-rustsekiro/src/player.rs (X toggle)"
+  },
+  "his": {
+   "has": "yes",
+   "where": "sekiro-rs/crates/sim/src/player.rs (runs c0000 HKS)"
+  },
+  "check": "Walk into a non-combat area and the sword sheathes.",
+  "note": "",
+  "needs": [
+   {
+    "id": "movement.jump-weapon-state",
+    "why": ""
+   }
+  ]
+ },
+ {
+  "id": "movement.traversal-camera-slots",
+  "category": "movement",
+  "title": "Camera slots set by traversal poses",
+  "summary": "Traversal poses set camera slots through TAE 155: crouch 2, cover 3, cover look 4/5, hang 6, wire shoot 7, wire move 18/19, swim 21/22, dive 31-35.",
+  "values": "Slots map to CameraSetParam row 0 pairs of (LockCamParam, CameraParam) ids. See camera.slot-table.",
+  "how": "TAE 155 SetLockParamID.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "fireguy-rustsekiro/extracted/json/params/CameraSetParam.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "fireguy-rustsekiro/docs/kb/camera.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "fireguy-rustsekiro/src/camera.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Hang and compare the camera: it swings behind with chrOrgOffsetY 2.0 and rotBaseY 180 deg.",
+  "note": "",
+  "needs": [
+   {
+    "id": "camera.slot-table",
+    "why": ""
+   }
+  ]
+ }
+]

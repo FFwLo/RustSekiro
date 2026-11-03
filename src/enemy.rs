@@ -22,6 +22,7 @@ use crate::player::Player;
 use crate::stealth::{self, Targeting};
 
 mod events;
+pub mod world;
 pub mod grapple;
 pub mod script;
 pub mod talk;
@@ -39,8 +40,8 @@ const COMBOS: &[&[&str]] = &[
 const FLAG_AI_COMBO: i64 = 23;
 /// ChrActionFlag 78: "End If AI Move Queued".
 const FLAG_AI_MOVE: i64 = 78;
-/// NPC AI cancel flags: 23 combo attack, 86 attack, 79 step, 78 move.
-const AI_CANCEL_FLAGS: [i64; 4] = [23, 86, 79, 78];
+/// NPC AI cancel flags: 23 combo attack, 86 attack, 79 step, 78 move, 122 endure (ai.rs FLAG_ENDURE).
+const AI_CANCEL_FLAGS: [i64; 5] = [23, 86, 79, 78, crate::ai::FLAG_ENDURE];
 /// ChrActionFlag 63 on the attacker: the AI notification that fires INTERUPT_ParryTiming (exe:
 /// dispatcher case 0x3f sets bit 8 of +0x8c; FUN_1407e14d0 sends AI message 7 with the sender
 /// (FUN_1405a5ae0); a hostile AI's handler FUN_1405a61f0 -> FUN_14061fad0 raises the interrupt
@@ -53,7 +54,7 @@ const PC_ATTACK_DIST_STAND: f32 = 3.4;
 const STATE_INFO_COLLAPSED: i64 = 352;
 
 #[derive(Clone, Copy, PartialEq, Debug)]
-enum Mode {
+pub(crate) enum Mode {
     /// Driven by the AI (or the passive / fallback behaviour).
     Ai,
     Broken(f32),
@@ -66,11 +67,6 @@ enum Mode {
     Held(bool),
 }
 
-/// A forced one-shot event anim (Event200xx) that ends into its loop Event21000: the SpEffects
-/// it holds to its last frame are held for good there (the Divine Dragon's collapse 20002 ->
-/// 21000, both with 3520011 "collapsed" and 5026; also c1250 / c1260 / c1010 pairs).
-/// gap: what starts the loop in the game is not traced (no EMEVD, HKS or AI request for the
-/// dragon's 21000); by that data match.
 /// changeHpRate recovery (% of max HP) of the instant SpEffects (effectEndurance 0) the anim's
 /// TAE AddSpEffect (66 / 67) entering in the tick from -> to (`tae_window::starts`, every start
 /// up to `to` on the anim's first tick): an event on a frame edge counts once, not in both frames.
@@ -85,25 +81,43 @@ pub(crate) fn instant_hp_rate(d: &crate::data::CharData, key: &str, from: f32, t
         .sum()
 }
 
-fn loop_after(d: &crate::data::CharData, a: &Actor) -> Option<String> {
-    if !a.state.starts_with("Event200") {
-        return None;
-    }
-    let key = format!("{}021000", a.anim.get(..5)?);
-    let (one, lp) = (d.anim(&a.anim)?, d.anim(&key)?);
-    let len = d.length(&a.anim);
-    let sp = |e: &crate::data::Event| (e.kind == 67).then(|| e.arg_i64("SpEffectID")).flatten();
-    let held: HashSet<i64> = lp.events.iter().filter(|e| e.end > 1e30).filter_map(sp).collect();
-    one.events.iter().filter(|e| e.end < 1e30 && e.end >= len - 0.05).filter_map(sp).any(|id| held.contains(&id)).then_some(key)
-}
-
 /// ChrActionFlag 69 "ThrowType5": on ThrowDef reactions, where a killed defender switches to
 /// its ThrowDefDeath anim.
 const FLAG_THROW_TYPE5: i64 = 69;
 
+/// A hit as c9997 ExecDamage reads it: env 202 damage type (DAMAGE_TYPE_GUARD 3, GUARD_BREAK
+/// 1001; a plain hit 99999, FUN_140b6bd40: docs/kb/hks-graph.md), 236 damage level, 222 direction (0 left, 1 right,
+/// 2 front, 3 back: GetDamageDirectionOffset onto DamageSmall a000_008000 front / 1 back / 2 left
+/// / 3 right), 3056 / 3057 the guard / deflect direction (GUARD_DIR_RIGHT 1, LEFT 2, else -1).
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(not(test), allow(dead_code))]
+pub struct DamageEnv {
+    pub kind: i64,
+    pub level: i64,
+    pub dir: i64,
+    pub guard_dir: i64,
+    pub just_dir: i64,
+    /// Its attack blocked / deflected: env 3018 / 3019 the bound side (BOUND_RIGHT 1, LEFT 2,
+    /// ADD01-04 11-14), with type GUARDED_NO_BOUND_ENEMYn 1018 + n / GUARDED_BOUND_ENEMYn
+    /// 1007 + n / GUARDED_STAM_ZERO 1033.
+    pub bound: i64,
+    pub just_bound: i64,
+    /// In the air at the hit (combat::enemy_is_aerial; the script's IsDamagedAerial: env 201 off).
+    pub aerial: bool,
+    /// From behind the shoulder line (env 3032, the exe's 8-way sectors 2-5: the back half), set
+    /// with Wolf's plain hits; otherwise the back quarter (dir 3).
+    pub back_half: bool,
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+impl DamageEnv {
+    /// No damage this frame (DAMAGE_TYPE_NONE).
+    pub const NONE: Self = Self { kind: 99999, level: 0, dir: 2, guard_dir: -1, just_dir: -1, bound: 0, just_bound: 0, aerial: false, back_half: false };
+}
+
 #[derive(Component)]
 pub struct Enemy {
-    mode: Mode,
+    pub(crate) mode: Mode,
     /// Deathblow kill pending: the death state that follows the ThrowDef reaction
     /// (ThrowDefDeath<def + 1>, or a boss's Event20200).
     throw_death: Option<String>,
@@ -115,6 +129,12 @@ pub struct Enemy {
     /// <decomp ref>; Wolf's ThrowAttackBehavior judge 800, a211_511700 at 1.23 s), not at the
     /// throw's start. Until then the AI, the map scripts (4[37]) and the phase rules see it.
     pub(crate) ninsatsu_unhit: u32,
+    /// Deathblows whose Ninsatsu hit has landed: drops.rs draws the NpcParam
+    /// ninsatsuResourceItemLotId_1 / _2 lots once for each.
+    pub(crate) ninsatsu_landed: u32,
+    /// Killed by a map event's 2004[4] ForceCharacterDeath with shouldReceiveSouls off: no
+    /// experience, Sen or drops (experience.rs, drops.rs).
+    pub(crate) unrewarded: bool,
     /// NpcParam ninsatuNum is 0: nothing holds its HP at 1 (exe IsNoDead FUN_140bd5df0), so 0 HP
     /// kills it outright (die_at_zero_hp) instead of opening the deathblow.
     pub(crate) mortal: bool,
@@ -166,8 +186,14 @@ pub struct Enemy {
     /// Player attack notify seen; the Lua brain runs Goal.Parry on its next tick.
     parry_timing: bool,
     pub(crate) prev_sp: HashSet<i64>,
+    /// TARGET_EVENT (enemy/script.rs Act::EventTarget) and its SpEffects last frame.
+    pub(crate) event_target: Option<Entity>,
+    event_prev_sp: HashSet<i64>,
     /// Active goal chain, for the debug panel.
     pub ai_desc: String,
+    /// The AI's request this frame (what the shared NPC script reads as env 106 / 9910 / 9920
+    /// and the move variables; hks_lua's enemy comparison feeds it to the game's script).
+    pub ai_cmd: crate::ai::Command,
     /// Fallback combo when no AI scripts are available: (combo, step).
     fallback: Option<(usize, usize)>,
     /// What it knows of Wolf (stealth.rs): NONE / CAUTION / FIND / BATTLE and the target slots.
@@ -215,6 +241,14 @@ pub struct Enemy {
     down: bool,
     /// Disabled by its map script (Change Character Enable State off): out of the fight.
     pub(crate) disabled: bool,
+    /// A hidden stand-in for the map script's main character when that is a c1000 dummy (the
+    /// Folding Screen Monkeys' HP-display dummy 2000800, NpcParam 12600050 "Chigo monkey boss HP
+    /// display dummy character" on c1000, m20 12005810 `2003[11](1, 2000800, 0, 901260)`): it
+    /// carries the boss bar and the script's HP checks (12005800) but is not on the field - no
+    /// body, no AI, no hits, parked away (script.rs). The fight is picked as c1260 / 12600050
+    /// (the row is in c1260's params too), so it stood in the arena as a fifth monkey that one
+    /// deathblow beat.
+    pub(crate) stand_in: bool,
 }
 
 /// SpEffect stateInfo 270-274: "Anime ID offset [0]-[4]" (SpEffect 200030-200034, effectEndurance -1).
@@ -273,9 +307,11 @@ pub(crate) fn wear_for_good(d: &crate::data::CharData, a: &mut Actor, id: i64) {
 /// TAE event 0 ChrActionFlag 96 "Set Immortality" (`Enemy::tae_no_dead`).
 pub(crate) const TAE_FLAG_SET_IMMORTALITY: i64 = 96;
 
-fn anim_group_of(d: &crate::data::CharData, ids: impl Iterator<Item = i64>) -> Option<u32> {
-    ids.filter_map(|id| d.sp_effects.get(&id.to_string()))
-        .map(|s| s.state_info)
+/// The anim set (a<g>00) of the last anim-offset SpEffect (stateInfo 270-274) among `ids`. An id
+/// outside the character's own table (a map event's, e.g. the tutorial ronin's 200030 from m11_00
+/// 11105275 over its resident 200034) is read from the whole SpEffectParam.
+pub(crate) fn anim_group_of(d: &crate::data::CharData, ids: impl Iterator<Item = i64>) -> Option<u32> {
+    ids.filter_map(|id| d.sp_effects.get(&id.to_string()).map(|s| s.state_info).or_else(|| crate::data::sp_cycle(id).map(|c| c.state_info)))
         .filter(|si| STATE_INFO_ANIM_OFFSET.contains(si))
         .last()
         .map(|si| (si - 270) as u32)
@@ -364,8 +400,10 @@ pub fn phase_events(npc_row: i64) -> &'static [PhaseEvent] {
     .map_or(&[], |v| v.as_slice())
 }
 
-/// The AI-state SpEffects (c9997 SP_EFFECT_REF_AI_* refs 1000000-1000003).
-const AI_STATE_SP: [i64; 4] = [200000, 200001, 200002, 200004];
+/// The AI-state SpEffects (c9997 SP_EFFECT_REF_AI_* refs 1000000-1000003). One slot: all
+/// spCategory 100 at categoryPriority 1, so the AI's state replaces a NpcParam resident one
+/// (the 51 rows wearing 200000 from spawn, e.g. the piranha c1320).
+pub(crate) const AI_STATE_SP: [i64; 4] = [200000, 200001, 200002, 200004];
 
 impl Enemy {
     /// Its NpcThinkParam row: the map's (MSB ThinkParamID, Set Character AI ID), else its kind's.
@@ -402,7 +440,8 @@ impl Enemy {
             ids.extend(d.sp_effects_at(&a.anim, a.step()).iter().map(|(id, _)| *id));
         }
         ids.extend(self.clash.iter().map(|c| c.0));
-        !ids.iter().any(|id| d.sp_effects.get(&id.to_string()).is_some_and(|s| s.state_info == 143))
+        ids.extend(a.sp_chained.iter().map(|c| c.0));
+        !ids.iter().any(|id| d.sp_effects.get(&id.to_string()).map(|s| s.state_info).or_else(|| crate::data::sp_cycle(*id).map(|c| c.state_info)) == Some(143))
     }
 
     /// IsNoDead's TAE input (re-scout): ChrActionFlag 96 "Set Immortality" sets ActionCtrl +0x90
@@ -417,13 +456,27 @@ impl Enemy {
     /// (W_DeathStartBlast, 10120) for a blow / ex-blast / breath level, DeathStartSpecialPoison
     /// (10370), DeathStartFire (10200, a fire hit when the chr has no physical-type death clip:
     /// none of the regular rows checked has one), else W_DeathStartDefault: DeathDefault<0-1>
-    /// (IndexDeathVariation, GetRandomIndex 0-1). gap: the land / aerial / event-20000 / hide /
-    /// back-reality / upper / fling / weak / physical-type branches are not modelled.
+    /// (IndexDeathVariation, GetRandomIndex 0-1). Before those, a worn SpEffect's ref picks:
+    /// SP_EFFECT_REF_TO_DEATH_EVENT20000 + n (1020000-1020020) the one-shot Event200nn,
+    /// SP_EFFECT_REF_TO_DEATH_UNIQUE_CASE (1000180) DeathStartUniqueCase (10160: the zombie c1500
+    /// killed as it lets Wolf go). The Snap Seed's back-reality death is prosthetic.rs
+    /// `hit_enemy`'s. gap: the land / aerial / hide / upper / fling / weak / physical-type
+    /// branches are not modelled.
     pub(crate) fn die_at_zero_hp(&mut self, a: &mut Actor, combat: &Combat) {
         let d = combat.data_of(a);
         let (level, fire, poison) = self.last_hit;
         let has = |s: &str| d.anim_key(s).is_some();
-        let pick = if matches!(level, 4 | 10 | 11) && has("DeathBlast") {
+        let mut worn: Vec<i64> = crate::combat::worn_sp(a, &self.clash);
+        if !a.anim.is_empty() {
+            worn.extend(d.sp_effects_at(&a.anim, a.t).iter().map(|(id, _)| *id));
+        }
+        let refs: Vec<i64> = worn.iter().map(|id| d.sp_effects.get(&id.to_string()).map_or_else(|| crate::data::sp_effect_behavior_ref(*id), |s| s.behavior_ref_id)).collect();
+        let event = (0..=20).find(|n| refs.contains(&(1_020_000 + n))).map(|n| format!("Event{}", 20_000 + n)).filter(|s| has(s));
+        let pick = if let Some(ev) = event {
+            ev
+        } else if refs.contains(&1_000_180) && has("DeathStartUniqueCase") {
+            "DeathStartUniqueCase".to_string()
+        } else if matches!(level, 4 | 10 | 11) && has("DeathBlast") {
             "DeathBlast".to_string()
         } else if poison && has("DeathStartSpecialPoison") {
             "DeathStartSpecialPoison".to_string()
@@ -433,13 +486,19 @@ impl Enemy {
             let i = (self.rand() * 2.0) as usize % 2;
             [format!("DeathDefault{i}"), "DeathDefault0".to_string()].into_iter().find(|s| has(s)).unwrap_or_default()
         };
+        self.die_as(a, combat, &pick);
+    }
+
+    /// Its death in state `pick` (none or missing: the procedural fall).
+    pub(crate) fn die_as(&mut self, a: &mut Actor, combat: &Combat, pick: &str) {
+        let d = combat.data_of(a);
         self.cur_ez = None;
         self.throw_death = None;
         self.ninsatsu.0 = 0;
         self.ninsatsu_unhit = 0;
         a.hp = 0.0;
         a.move_vel = Vec3::ZERO;
-        if pick.is_empty() || !a.play_state(d, &pick) {
+        if pick.is_empty() || !a.play_state(d, pick) {
             a.procedural("Dead");
         }
         self.mode = Mode::Dead(d.length(&a.anim) + 2.0);
@@ -544,6 +603,12 @@ impl Enemy {
         }
         let len = d.length(&a.anim);
         self.mode = Mode::Dead(len + 2.0);
+    }
+
+    /// The AI-state SpEffect it wears (200000 default .. 200004 battle; c9997's
+    /// SP_EFFECT_REF_AI_* refs 1000000-1000003).
+    pub fn ai_state_sp(&self) -> i64 {
+        self.ai_sp
     }
 
     /// Deathblows left as the game reads them (GetNinsatsuNum, 4[37]): the count less the
@@ -840,8 +905,7 @@ impl Enemy {
     }
 
     /// Playing one of its own attacks (EzState 3000-3099), not a guard/deflect.
-    /// An attack anim (3000-3099, or the general stance's 603000-603009: AttackCommonFunction,
-    /// with the same flag-73 flinch windows).
+    /// An attack anim (3000-3099, or the general stance's 603000-603009: AttackCommonFunction).
     pub fn is_attacking(&self) -> bool {
         matches!(self.cur_ez, Some(ez) if (3000..3100).contains(&ez) || (603000..=603009).contains(&ez))
     }
@@ -1018,14 +1082,16 @@ impl Plugin for EnemyPlugin {
             .add_message::<SpawnEncounter>()
             .add_message::<grapple::WireHit>()
             .init_resource::<BossScript>()
+            .init_resource::<world::WorldScripts>()
+            .init_resource::<world::WorldBar>()
             .init_resource::<talk::Talk>()
             .add_systems(RunFixedMainLoop, talk::hold_input.after(crate::player::read_input).in_set(bevy::app::RunFixedMainLoopSystems::BeforeFixedMainLoop))
             .init_resource::<script::WolfImmortal>()
             .init_resource::<WolfMessage>()
-            .add_systems(Startup, spawn_enemy)
+            .add_systems(Startup, spawn_enemy.after(crate::place::MapLoad))
             .add_systems(
                 FixedUpdate,
-                (spawn_encounter, reset_fight, stealth_env_start, start_unaware, ai_hold, route_end_anim, parry_interrupt, think, grapple::on_wire_hit, ninsatsu_hit, todome_message, events::messages, script::run_scripts, talk::run_talk, events::apply_event_warp).chain().in_set(ActorSet::Decide),
+                (spawn_encounter, reset_fight, stealth_env_start, start_unaware, ai_hold, route_end_anim, parry_interrupt, world::update_lod, think, grapple::on_wire_hit, ninsatsu_hit, deathblow_flinch, death_noise, todome_message, events::messages, script::run_scripts, world::run_world, talk::run_talk, events::apply_event_warp).chain().in_set(ActorSet::Decide),
             )
             .add_systems(Update, toggle_aggression.run_if(resource_exists::<ButtonInput<KeyCode>>))
             .init_resource::<grapple::EnemyGrapples>()
@@ -1070,7 +1136,59 @@ fn ninsatsu_hit(combat: Res<Combat>, player: Single<&Actor, (With<Player>, Witho
         for mut e in &mut q {
             if e.ninsatsu_unhit > 0 {
                 e.ninsatsu_unhit = 0;
+                e.ninsatsu_landed += 1;
             }
+        }
+    }
+}
+
+/// How near Wolf a fighting enemy must stand to flinch at his deathblow [m].
+const DEATHBLOW_FLINCH_RANGE: f32 = 10.0;
+/// Within this the near reaction plays, past it the far one [m].
+const THROW_NEAR_RANGE: f32 = 4.0;
+
+/// As Wolf's deathblow blade goes in (its atkAttribute 5 Ninsatsu hit, as `ninsatsu_hit`), the
+/// other enemies fighting him within DEATHBLOW_FLINCH_RANGE drop what they are doing and jump
+/// back: the HKS's own reaction to a deathblow nearby, W_ThrowNearReaction /
+/// W_ThrowFarReaction (c9997 IndexThrowNearReaction / IndexThrowFarReaction; c1010
+/// ThrowNearReaction0 / 1 a000_020100 / 020101, ThrowFarReaction0 / 1 020105 / 020106; c1020 one
+/// each), facing him (the user's capture; "they have special animation when they jump back").
+/// Near within THROW_NEAR_RANGE, a variation at random; a kind without them flinches as hit.
+/// gap: the exe's trigger, range and variation pick are not traced.
+fn deathblow_flinch(
+    combat: Res<Combat>,
+    player: Single<(&Actor, &Transform), (With<Player>, Without<Enemy>)>,
+    mut q: Query<(&mut Enemy, &mut Actor, &Transform), Without<Player>>,
+) {
+    let (pa, ptf) = *player;
+    let blade = pa.state.contains("Deathblow")
+        && combat.player.anim(&pa.anim).is_some_and(|an| {
+            an.events.iter().any(|ev| {
+                ev.start > pa.prev_t && ev.start <= pa.t && ev.arg_i64("BehaviorJudgeID").is_some_and(|j| combat.player.attacks.get(&j.to_string()).is_some_and(|atk| atk.atk_attribute == 5))
+            })
+        });
+    if !blade {
+        return;
+    }
+    for (mut e, mut a, tf) in &mut q {
+        if e.is_dead() || e.is_broken() || e.targeting.state != crate::stealth::BATTLE || tf.translation.distance(ptf.translation) > DEATHBLOW_FLINCH_RANGE {
+            continue;
+        }
+        let d = combat.data_of(&a);
+        let to = (ptf.translation - tf.translation).with_y(0.0);
+        let kind = if to.length() <= THROW_NEAR_RANGE { "ThrowNearReaction" } else { "ThrowFarReaction" };
+        let have: Vec<String> = (0..4).map(|i| format!("{kind}{i}")).filter(|s| d.anim_key(s).is_some()).collect();
+        let state = if have.is_empty() {
+            crate::combat::enemy_damage_state_air(d, 1, &a, ptf.translation, tf.translation, false)
+        } else {
+            let pick = (e.rand() * have.len() as f32) as usize % have.len();
+            Some(have[pick].clone())
+        };
+        if let Some(state) = state {
+            if to.length() > 0.01 {
+                a.yaw = f32::atan2(-to.x, -to.z);
+            }
+            e.react_from(&mut a, &combat, false, &state);
         }
     }
 }
@@ -1264,7 +1382,7 @@ impl Armor {
 /// map::loaded_map)? Elsewhere the map is a stranger's: its MSB heights and spots do not hold.
 pub fn on_own_arena() -> bool {
     let row = FIGHT_ROW.load(std::sync::atomic::Ordering::Relaxed);
-    crate::map::on_boss_arena() && own_arena_of(row).is_some_and(|a| crate::map::loaded_map().as_deref() == Some(a.as_str()))
+    crate::place::on_boss_arena() && own_arena_of(row).is_some_and(|a| crate::place::loaded_map().as_deref() == Some(a.as_str()))
 }
 
 /// The duel's enemies: config enemy.chr 4 m ahead of Wolf, then each config enemy.group entry
@@ -1272,26 +1390,58 @@ pub fn on_own_arena() -> bool {
 /// (after an encounter swap) the line-up keeps its 8 m from Wolf's start: that boss's spot can
 /// be in a cave (the Guardian Ape's grotto, map.rs player_start), out of sight.
 fn spawn_lineup(commands: &mut Commands, combat: &Combat, config: &GameConfig, aggressive: bool) {
-    let dz = if crate::map::on_boss_arena() && !on_own_arena() { crate::map::player_start().z - 4.0 } else { 0.0 };
+    // Idol travel's run roams the map: no arena fight, at the start or after a rest.
+    if (crate::encounter::hooks().idol_start)().is_some() {
+        info!("line-up: none (idol travel)");
+        return;
+    }
+    // Line-up spots are arena-local (x, z); `at` puts them in the fight's space (map.rs Frame:
+    // the source map's absolute place under sekiro-rs's map).
+    let frame = crate::place::frame();
+    let start = (crate::encounter::hooks().player_start)();
+    let dz = if crate::place::on_boss_arena() && !on_own_arena() { (crate::encounter::hooks().player_start_local)().z - 4.0 } else { 0.0 };
     // Standing on the ground under each spot (Isshin's shared field slopes 0.27 m per metre: 8 m
-    // ahead of Wolf's start is 1.3 m higher); y 0 without a map or over nothing.
-    let y = |x: f32, z: f32| {
-        let floor = crate::map::terrain().and_then(|t| t.floor(x, z, crate::map::player_start().y + 3.0)).unwrap_or(0.0);
-        floor + crate::player::CAPSULE_HALF_HEIGHT + 0.05
+    // ahead of Wolf's start is 1.3 m higher); the start's height without a map or over nothing.
+    let at = |x: f32, z: f32| {
+        let p = frame.point(Vec3::new(x, 0.0, z));
+        let floor = crate::terrain::terrain().and_then(|t| t.enemy_floor(p.x, p.z, start.y + 3.0)).unwrap_or(frame.offset.y);
+        p.with_y(floor + crate::player::CAPSULE_HALF_HEIGHT + 0.05)
     };
     // Facing Wolf's start (the export's enemy faces +Z; forward = Ry(yaw) * -Z).
     let facing = |x: f32, z: f32| {
-        let v = crate::map::player_start() - Vec3::new(x, 0.0, z);
+        let v = start - frame.point(Vec3::new(x, 0.0, z));
         f32::atan2(-v.x, -v.z)
     };
-    spawn_one(commands, combat, config, 0, Vec3::new(0.0, y(0.0, -4.0 + dz), -4.0 + dz), facing(0.0, -4.0 + dz), aggressive, 0x9E37_79B9);
+    let hooks = crate::encounter::hooks();
+    if let Some((chr, spots)) = (hooks.patrols)(config) {
+        // The map's guards walk their rounds (the Construct's courtyard), unaware of Wolf until
+        // they see or hear him.
+        if let Some(kind) = combat.kind_index(chr, None) {
+            for (i, (at, yaw, route)) in spots.into_iter().enumerate() {
+                // On whatever is under its point: the ground, the terrace, the tower.
+                let floor = crate::terrain::terrain().and_then(|t| t.enemy_floor(at.x, at.z, at.y + 1.0)).unwrap_or(at.y);
+                let at = at.with_y(floor + crate::player::CAPSULE_HALF_HEIGHT + 0.05);
+                let e = spawn_one(commands, combat, config, kind, at, yaw, true, 0x2545_F491 ^ 0x85EB_CA6B_u32.wrapping_mul(i as u32 + 1));
+                commands.entity(e).insert((PatrolRoute(route), StartUnaware, crate::encounter::PatrolGuard));
+            }
+        }
+    }
+    // Where the map puts the config's enemy (the Construct: the middle of the second section,
+    // facing its door), its group in a row beside it.
+    let spot = (hooks.duel_spot)(config);
+    let construct = spot.is_some();
+    let first = spot.map_or(Vec3::new(0.0, 0.0, -4.0 + dz), |s| s.0);
+    let first_yaw = spot.map_or_else(|| facing(first.x, first.z), |s| s.1);
+    let first_at = if construct { first.with_y(at(first.x, first.z).y) } else { at(first.x, first.z) };
+    info!("line-up: {} at {first_at} (Wolf's start {start}), yaw {first_yaw:.2}", config.enemy.chr);
+    spawn_one(commands, combat, config, 0, first_at, first_yaw, aggressive, 0x9E37_79B9);
     for (i, g) in config.enemy.group.iter().enumerate() {
         let Some(kind) = combat.kind_index(&g.chr, g.npc_row) else { continue };
         // An MSB enemy of the loaded map: at its spot, its way, on its patrol route.
         if let Some(spot) = g.msb.and_then(msb_patrol) {
             // On the floor under its own MSB height (a step up allowed), not the line-up's search
             // from Wolf's start: the gate's MSB enemies stand from 5 m below to 11 m above it.
-            let floor = crate::map::terrain().and_then(|t| t.floor(spot.at.x, spot.at.z, spot.at.y + crate::map::STEP_HEIGHT)).unwrap_or(spot.at.y);
+            let floor = crate::terrain::terrain().and_then(|t| t.enemy_floor(spot.at.x, spot.at.z, spot.at.y + crate::terrain::STEP_HEIGHT)).unwrap_or(spot.at.y);
             let at = Vec3::new(spot.at.x, floor + crate::player::CAPSULE_HALF_HEIGHT + 0.05, spot.at.z);
             let e = spawn_one(commands, combat, config, kind, at, spot.yaw, aggressive, 0x9E37_79B9 ^ 0x85EB_CA6B_u32.wrapping_mul(i as u32 + 1));
             let think = msb_think(combat, &spot);
@@ -1314,10 +1464,12 @@ fn spawn_lineup(commands: &mut Commands, combat: &Combat, config: &GameConfig, a
             continue;
         }
         let side = if i % 2 == 0 { 1.0 } else { -1.0 } * (3.0 * (i / 2 + 1) as f32);
-        let [x, z] = g.at.unwrap_or([side, -4.0]);
+        let [x, z] = g.at.unwrap_or(if construct { [first.x + side, first.z] } else { [side, -4.0] });
         let z = z + dz;
+        let yaw = if construct { first_yaw } else { facing(x, z) };
         // A different seed each, so the group does not move in lockstep.
-        spawn_one(commands, combat, config, kind, Vec3::new(x, y(x, z), z), facing(x, z), aggressive, 0x9E37_79B9 ^ 0x85EB_CA6B_u32.wrapping_mul(i as u32 + 1));
+        let spot = if construct { Vec3::new(x, at(x, z).y, z) } else { at(x, z) };
+        spawn_one(commands, combat, config, kind, spot, yaw, aggressive, 0x9E37_79B9 ^ 0x85EB_CA6B_u32.wrapping_mul(i as u32 + 1));
     }
 }
 
@@ -1373,7 +1525,7 @@ pub struct RouteEndAnim {
 /// Runs the [`RouteEndAnim`] events.
 fn route_end_anim(mut commands: Commands, combat: Res<Combat>, mut q: Query<(Entity, &mut Enemy, &mut Actor, &Transform, &RouteEndAnim)>) {
     for (entity, mut e, mut a, tf, re) in &mut q {
-        if e.is_dead() || e.disabled {
+        if e.is_dead() || e.disabled || e.stand_in {
             continue;
         }
         if e.targeting.state != stealth::NONE {
@@ -1486,7 +1638,7 @@ pub struct MsbSpot {
 /// X mirrored. Its yaw is the MSB rotation's +Z the same way, as an Actor yaw (forward =
 /// Ry(yaw) * -Z). None without a map, or when the entity has no route there.
 pub fn msb_patrol(entity: i64) -> Option<MsbSpot> {
-    msb_patrol_on(&crate::map::loaded_map()?, entity)
+    msb_patrol_on(&crate::place::loaded_map()?, entity)
 }
 
 /// The MSB placement groups of enemy `entity` on the loaded map (tools/placement_groups.py).
@@ -1495,7 +1647,7 @@ pub fn msb_groups(entity: i64) -> Vec<i64> {
     let groups = GROUPS.get_or_init(|| {
         std::fs::read_to_string(crate::paths::extracted().join("enemies/placement_groups.json")).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
     });
-    let Some(stem) = crate::map::loaded_map() else { return Vec::new() };
+    let Some(stem) = crate::place::loaded_map() else { return Vec::new() };
     let Some(map) = std::fs::read_to_string(crate::paths::extracted().join(format!("map_{stem}.json"))).ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()) else {
         return Vec::new();
     };
@@ -1505,19 +1657,25 @@ pub fn msb_groups(entity: i64) -> Vec<i64> {
 
 /// [`msb_patrol`] on the exported map `stem` (extracted/map_<stem>.json).
 pub fn msb_patrol_on(stem: &str, entity: i64) -> Option<MsbSpot> {
+    let map: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(crate::paths::extracted().join(format!("map_{stem}.json"))).ok()?).ok()?;
+    let (origin, yaw) = crate::place::json_frame(&map)?;
+    msb_spot_in(map["map"].as_str()?, origin, yaw, entity)
+}
+
+/// The patrol of MSB enemy `entity` of game map `map` (patrols.json), minus `origin`, turned by
+/// `yaw`, X mirrored (origin 0 and no turn: the open world's absolute place, sekiro-rs's map).
+pub fn msb_spot_in(map: &str, origin: Vec3, yaw: f32, entity: i64) -> Option<MsbSpot> {
     static PATROLS: std::sync::OnceLock<serde_json::Value> = std::sync::OnceLock::new();
     let patrols = PATROLS.get_or_init(|| {
         std::fs::read_to_string(crate::paths::extracted().join("enemies/patrols.json")).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
     });
-    let map: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(crate::paths::extracted().join(format!("map_{stem}.json"))).ok()?).ok()?;
-    let p = &patrols[map["map"].as_str()?][entity.to_string()];
+    let p = patrols.get(map)?.get(entity.to_string())?;
     let f = |v: &serde_json::Value| v.as_f64().unwrap_or(0.0) as f32;
-    let origin = map["origin"].as_array()?;
-    let (s, c) = f(&map["arena_yaw"]).sin_cos();
+    let (s, c) = yaw.sin_cos();
     let turn = |x: f32, z: f32| Vec3::new(-(x * c + z * s), 0.0, -x * s + z * c);
     let point = |v: &serde_json::Value| -> Option<Vec3> {
         let a = v.as_array()?;
-        Some(turn(f(&a[0]) - f(&origin[0]), f(&a[2]) - f(&origin[2])).with_y(f(&a[1]) - f(&origin[1])))
+        Some(turn(f(&a[0]) - origin.x, f(&a[2]) - origin.z).with_y(f(&a[1]) - origin.y))
     };
     let at = point(&p["pos"])?;
     let (sy, cy) = f(&p["yaw"]).to_radians().sin_cos();
@@ -1572,7 +1730,7 @@ pub fn msb_patrol_on(stem: &str, entity: i64) -> Option<MsbSpot> {
 
 /// The loaded map's MSB regions by entity id (`map_regions_on`).
 pub fn map_regions() -> Option<std::sync::Arc<HashMap<i64, WakeRegion>>> {
-    map_regions_on(&crate::map::loaded_map()?)
+    map_regions_on(&crate::place::loaded_map()?)
 }
 
 /// Every region with an entity id of the exported map `stem`'s MSB (extracted/enemies/
@@ -1593,8 +1751,8 @@ pub fn map_regions_on(stem: &str) -> Option<std::sync::Arc<HashMap<i64, WakeRegi
     let build = || -> Option<HashMap<i64, WakeRegion>> {
         let map: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(crate::paths::extracted().join(format!("map_{stem}.json"))).ok()?).ok()?;
         let f = |v: &serde_json::Value| v.as_f64().unwrap_or(0.0) as f32;
-        let origin = map["origin"].as_array()?;
-        let (s, c) = f(&map["arena_yaw"]).sin_cos();
+        let (origin, yaw) = crate::place::json_frame(&map)?;
+        let (s, c) = yaw.sin_cos();
         let turn = |x: f32, z: f32| Vec3::new(-(x * c + z * s), 0.0, -x * s + z * c);
         let regions = all[map["map"].as_str()?].as_object()?;
         Some(
@@ -1602,7 +1760,7 @@ pub fn map_regions_on(stem: &str) -> Option<std::sync::Arc<HashMap<i64, WakeRegi
                 .iter()
                 .filter_map(|(id, r)| {
                     let a = r["pos"].as_array()?;
-                    let at = turn(f(&a[0]) - f(&origin[0]), f(&a[2]) - f(&origin[2])).with_y(f(&a[1]) - f(&origin[1]));
+                    let at = turn(f(&a[0]) - origin.x, f(&a[2]) - origin.z).with_y(f(&a[1]) - origin.y);
                     let (sy, cy) = f(&r["yaw"]).to_radians().sin_cos();
                     let size = r["size"].as_array().into_iter().flatten().map(f).collect();
                     Some((id.parse().ok()?, WakeRegion { shape: r["shape"].as_i64().unwrap_or(-1), at, x: turn(cy, -sy), z: turn(sy, cy), size }))
@@ -1706,6 +1864,27 @@ pub struct AiSound {
     pub owner_alert: bool,
     /// The owner's MSB placement groups (`Enemy::placement`, refreshed with owner_alert).
     pub owner_groups: Vec<i64>,
+    /// Heard by the owner's side only (`AiSounds::call`: a spotter's shout to its comrades; not
+    /// a game flag).
+    pub friends_only: bool,
+}
+
+/// The call an enemy gives as it spots Wolf (think): AiSoundParam 2000000.
+const SPOT_CALL_SOUND: i64 = 2000000;
+/// The noise of an enemy's death (`death_noise`): AiSoundParam 4060 (20 m, heard by friends and
+/// foes, rank 1, not a call). gap: no row is tied to a death in the data; 4060 is picked by its
+/// range and listeners.
+const DEATH_NOISE_SOUND: i64 = 4060;
+
+/// An enemy's fall is heard by its comrades (the user: "should get aware when there is
+/// non-player noise"): `DEATH_NOISE_SOUND` where it dies, once per death.
+fn death_noise(combat: Res<Combat>, q: Query<(Entity, &Enemy, &Actor, &Transform)>, mut sounds: ResMut<AiSounds>, mut dead: Local<HashSet<Entity>>) {
+    dead.retain(|e| q.get(*e).is_ok_and(|(_, en, ..)| en.is_dead()));
+    for (ent, e, a, tf) in &q {
+        if e.is_dead() && dead.insert(ent) {
+            sounds.emit(&combat, DEATH_NOISE_SOUND, tf.translation, Some(ent), Some(crate::combat::team_of(&combat, a)));
+        }
+    }
 }
 
 /// The exe's sound-record counter (DAT_143d547b0, FUN_14060f840). Ours starts past every
@@ -1728,7 +1907,16 @@ impl AiSounds {
         let life = row["lifeFrame"].as_f64().unwrap_or(0.0).max(1.0 / 30.0) as f32;
         let old = self.0.iter().position(|s| s.owner == owner && s.id == id).map(|i| self.0.remove(i).serial);
         let serial = old.unwrap_or_else(|| SOUND_SERIAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
-        self.0.push(AiSound { id, pos, owner, team, life, serial, owner_alert: true, owner_groups: Vec::new() });
+        self.0.push(AiSound { id, pos, owner, team, life, serial, owner_alert: true, owner_groups: Vec::new(), friends_only: false });
+    }
+
+    /// `emit` for a call to the owner's comrades only (`think`'s spot call): its foes (a maddened
+    /// dog beside it, test a_maddened_dog_bites_the_soldier) do not take it as a sound target.
+    pub fn call(&mut self, combat: &Combat, id: i64, pos: Vec3, owner: Entity, team: i64) {
+        self.emit(combat, id, pos, Some(owner), Some(team));
+        if let Some(s) = self.0.iter_mut().rev().find(|s| s.owner == Some(owner) && s.id == id) {
+            s.friends_only = true;
+        }
     }
 }
 
@@ -1751,7 +1939,7 @@ pub(crate) fn ai_sound_heard(combat: &Combat, s: &AiSound, me: Entity, team: i64
     } else {
         "friendlyTarget"
     };
-    if row[flag].as_i64() != Some(1) || (row["bCallFriend"].as_i64() == Some(1) && !s.owner_alert) {
+    if row[flag].as_i64() != Some(1) || (row["bCallFriend"].as_i64() == Some(1) && !s.owner_alert) || (s.friends_only && flag != "friendlyTarget") {
         return None;
     }
     if row["bRestrictSamePlacementGroup"].as_i64() == Some(1) && !s.owner_groups.is_empty() && !s.owner_groups.iter().any(|g| mine.contains(g)) {
@@ -1768,7 +1956,7 @@ fn reset_fight(
     mut reset: ResMut<FightReset>,
     combat: Res<Combat>,
     config: Res<GameConfig>,
-    q: Query<(Entity, &Enemy)>,
+    q: Query<(Entity, &Enemy, Has<crate::encounter::PatrolGuard>)>,
     mut brains: NonSendMut<Brains>,
     mut warp: ResMut<events::EventWarp>,
     mut bs: ResMut<BossScript>,
@@ -1776,7 +1964,7 @@ fn reset_fight(
     swap: Res<SwapFrame>,
     frame: Option<Res<bevy::diagnostic::FrameCount>>,
     (mut statuses, bullets): (ResMut<crate::status::Statuses>, Query<Entity, With<crate::enemy_bullet::EnemyBullet>>),
-    perilous: Option<ResMut<crate::hud::Perilous>>,
+    perilous: Option<ResMut<crate::combat::Perilous>>,
     (wolf_bullets, mut effects): (Query<(Entity, &Transform), With<crate::prosthetic::Projectile>>, Query<&mut crate::fxr::FxEffect>),
     mut wolf_msg: ResMut<WolfMessage>,
 ) {
@@ -1784,6 +1972,7 @@ fn reset_fight(
         return;
     }
     reset.0 = false;
+    bs.resets += 1;
     ai_flags.0.clear();
     *wolf_msg = WolfMessage::default();
     // Wolf's poison / burn gauges and afflictions end with the fight, and the old line-up's
@@ -1813,8 +2002,9 @@ fn reset_fight(
     if bs.run.take().is_some_and(|r| r.defeated.is_some()) {
         bs.defeats += 1;
     }
-    let aggressive = q.iter().next().is_some_and(|(_, e)| e.aggressive);
-    for (ent, _) in &q {
+    // (The courtyard guards are always aggressive: the duel enemy's setting carries over.)
+    let aggressive = q.iter().find(|(_, _, guard)| !guard).is_some_and(|(_, e, _)| e.aggressive);
+    for (ent, ..) in &q {
         commands.entity(ent).despawn();
     }
     brains.map.clear();
@@ -1882,6 +2072,8 @@ pub fn spawn_one(commands: &mut Commands, combat: &Combat, config: &GameConfig, 
                 (n, n)
             },
             ninsatsu_unhit: 0,
+            ninsatsu_landed: 0,
+            unrewarded: false,
             phase_done: HashSet::new(),
             phase_flags: HashSet::new(),
             event_req: Vec::new(),
@@ -1895,7 +2087,10 @@ pub fn spawn_one(commands: &mut Commands, combat: &Combat, config: &GameConfig, 
             interrupted: false,
             parry_timing: false,
             prev_sp: HashSet::new(),
+            event_target: None,
+            event_prev_sp: HashSet::new(),
             ai_desc: String::new(),
+            ai_cmd: crate::ai::Command::default(),
             fallback: None,
             // The duel: it starts already fighting Wolf (a battle target, AI state 200004).
             // The debug menu's stealth setup (make_unaware) starts it from nothing instead.
@@ -1926,6 +2121,7 @@ pub fn spawn_one(commands: &mut Commands, combat: &Combat, config: &GameConfig, 
             immortal: false,
             down: false,
             disabled: false,
+            stand_in: false,
         },
         actor,
         Name::new(format!("Enemy {} {}", k.foe.chr, k.foe.npc_row)),
@@ -1947,7 +2143,7 @@ pub fn enemy_visuals(
         commands
             .entity(e)
             .insert((Mesh3d(meshes.add(Capsule3d::new(0.45, 1.1))), MeshMaterial3d(materials.add(Color::srgb(0.45, 0.2, 0.18)))))
-            .with_children(|p| crate::world::spawn_blade(p, &mut meshes, &mut materials, Color::srgb(0.9, 0.75, 0.6)));
+            .with_children(|p| crate::model::spawn_blade(p, &mut meshes, &mut materials, Color::srgb(0.9, 0.75, 0.6)));
     }
 }
 
@@ -2189,6 +2385,19 @@ pub(crate) fn hearing_rate(combat: &Combat, la: &Actor) -> f64 {
     r.clamp(0.0, 1.0)
 }
 
+/// The observer rates of the SpEffects put on an enemy in play (Enemy::clash, Actor::sp_chained):
+/// the product of their sightSearchRate, and of (1 - hearingSearchEnemyCut / 100).
+fn put_on_rates(e: &Enemy, a: &Actor) -> (f32, f64) {
+    let mut sight = 1.0f32;
+    let mut ear = 1.0f64;
+    for id in e.clash.iter().map(|c| c.0).chain(a.sp_chained.iter().map(|c| c.0)) {
+        let row = crate::items::param("SpEffectParam", id);
+        sight *= row["sightSearchRate"].as_f64().unwrap_or(1.0) as f32;
+        ear *= 1.0 - row["hearingSearchEnemyCut"].as_f64().unwrap_or(0.0).clamp(0.0, 100.0) / 100.0;
+    }
+    (sight.max(0.0), ear)
+}
+
 /// c9997's state-name suffix for the AI state (UpdateAIState -> IndexAiState).
 fn ai_suffix(ai_sp: i64) -> &'static str {
     match ai_sp {
@@ -2254,11 +2463,11 @@ fn warn_once(line: &str) {
 /// facing `yaw` (forward = Ry(yaw) * -Z), on the floor there found from its spawn height (a step
 /// up, plus up to 1 m per metre of those 2 m for a slope); the spawn height without a map or a
 /// floor.
-fn respawn_spot(start: Vec3, yaw: f32, back: f32, terrain: Option<&crate::map::Terrain>) -> Vec3 {
+fn respawn_spot(start: Vec3, yaw: f32, back: f32, terrain: Option<&crate::terrain::Terrain>) -> Vec3 {
     let behind = Quat::from_rotation_y(yaw) * Vec3::Z * back;
     let (x, z) = (start.x + behind.x, start.z + behind.z);
     let feet = start.y - crate::player::CAPSULE_HALF_HEIGHT;
-    let floor = terrain.and_then(|t| t.floor(x, z, feet + crate::map::STEP_HEIGHT + 2.0));
+    let floor = terrain.and_then(|t| t.enemy_floor(x, z, feet + crate::terrain::STEP_HEIGHT + 2.0));
     Vec3::new(x, floor.map_or(start.y, |h| h + crate::player::CAPSULE_HALF_HEIGHT), z)
 }
 
@@ -2272,7 +2481,7 @@ mod respawn_tests {
     fn a_respawn_stands_on_the_floor_at_its_start() {
         // A ramp rising 0.5 m per metre toward -z (z 10 -> -10: y -5 -> 5).
         let verts = vec![Vec3::new(-10.0, -5.0, 10.0), Vec3::new(10.0, -5.0, 10.0), Vec3::new(10.0, 5.0, -10.0), Vec3::new(-10.0, 5.0, -10.0)];
-        let t = crate::map::Terrain::from_tris(verts, [([0, 1, 2], 0), ([0, 2, 3], 0)].into_iter());
+        let t = crate::terrain::Terrain::from_tris(verts, [([0, 1, 2], 0), ([0, 2, 3], 0)].into_iter());
         let half = crate::player::CAPSULE_HALF_HEIGHT;
         let start = Vec3::new(1.0, 0.0 + half + 0.05, 0.0);
         // Facing +Z (yaw pi): behind is -Z, up the ramp.
@@ -2309,13 +2518,14 @@ fn think(
     mut fight: ResMut<FightReset>,
     mut brains: NonSendMut<Brains>,
     (routes, dummies, markers): (Query<&PatrolRoute>, Query<&crate::model::Dummies>, Query<&GlobalTransform>),
-    mut log: Option<ResMut<crate::hud::CombatLog>>,
+    mut log: Option<ResMut<crate::combat::CombatLog>>,
     mut debug: Option<ResMut<EnemyDebug>>,
     mut bs: ResMut<script::BossScript>,
     (mut ai_flags, mut ai_sounds, mut triggers): (ResMut<AiFlags>, ResMut<AiSounds>, ResMut<TriggerRegions>),
     mut statuses: Option<ResMut<crate::status::Statuses>>,
-    lock: Option<Res<crate::camera::LockOn>>,
+    lock: Option<Res<crate::view::LockOn>>,
 ) {
+    let _prof = crate::perf::span("think");
     let dt = time.delta_secs();
     let (pent, pa, ptf, pp) = *player;
     // The afflictions' SpEffects are on their wearer too (HasSpecialEffectId sees every active
@@ -2330,7 +2540,7 @@ fn think(
     // Every NPC in the fight, for the ones on a hostile team (combat::teams_hostile).
     let npcs: Vec<Rival> = q
         .iter()
-        .filter(|x| !x.1.disabled && !x.1.is_dead() && x.2.hp > 0.0 && !x.4.is_some_and(|p| p.parked()))
+        .filter(|x| !x.1.disabled && !x.1.stand_in && !x.1.is_dead() && x.2.hp > 0.0 && !x.4.is_some_and(|p| p.parked()))
         .map(|(ent, _, a, tf, ..)| Rival {
             ent,
             team: crate::combat::team_of(&combat, a),
@@ -2346,13 +2556,35 @@ fn think(
         .collect();
     // The search scheduler's frame step (the world task FUN_140a74560 -> FUN_140614dd0).
     brains.search_ring.advance();
+    // What a TARGET_EVENT reads of each character (Enemy::event_target), a dead one too (the
+    // Headless Ape drops its partner branch at the partner's HP rate 0, 510010_battle.lua:30):
+    // every SpEffect it wears, as an AI sees on itself.
+    // Only the characters some AI targets (usually none), not every enemy every frame.
+    let targeted: Vec<Entity> = q.iter().filter_map(|x| x.1.event_target).collect();
+    let event_views: HashMap<Entity, crate::ai::EventView> = q
+        .iter()
+        .filter(|x| !x.1.disabled && !x.1.stand_in && targeted.contains(&x.0))
+        .map(|(ent, e, a, tf, ..)| {
+            let sp = crate::combat::worn_sp(a, &e.clash).into_iter().chain(combat.data_of(a).sp_effects_at(&a.anim, a.step()).iter().map(|(id, _)| *id)).chain(afflictions(ent)).chain([e.ai_sp]).collect();
+            let view = crate::ai::EventView {
+                pos: tf.translation,
+                fwd: a.forward(),
+                hp_rate: (a.hp / a.hp_max.max(1.0)).max(0.0),
+                sp_left: a.posture_max - a.posture,
+                sp_rate: (1.0 - a.posture / a.posture_max.max(1.0)).max(0.0),
+                sp,
+                ..Default::default()
+            };
+            (ent, view)
+        })
+        .collect();
     // The AI team roles, from last frame's targets.
     brains.role_clock -= dt;
     if brains.role_clock <= 0.0 {
         brains.role_clock = TEAM_ORDER_INTERVAL;
         let members: Vec<_> = q
             .iter()
-            .filter(|x| !x.1.disabled && !x.1.is_dead() && x.2.hp > 0.0 && !x.4.is_some_and(|p| p.parked()))
+            .filter(|x| !x.1.disabled && !x.1.stand_in && !x.1.is_dead() && x.2.hp > 0.0 && !x.4.is_some_and(|p| p.parked()))
             .filter_map(|(ent, e, _, tf, ..)| {
                 let key = e.team_target?;
                 let at = match key {
@@ -2380,13 +2612,27 @@ fn think(
             s.owner_groups = alert.get(&o).map(|a| a.1.clone()).unwrap_or_default();
         }
     }
-    // Wolf's learned skills' SpEffects (Covert A / B) for the sight and hearing checks.
-    let skills = crate::combat::skill_sp_effect_rows(&combat, &config);
+    // Wolf's learned skills' SpEffects (Covert A / B) and his items' timed ones (Gachiin's Sugar
+    // 3441: sightSearchEnemyCut 50, aroundSightPointAddRate 0.5) for the sight and hearing checks.
+    let mut skills = crate::combat::skill_sp_effect_rows(&combat, &config);
+    skills.extend(pp.timed.iter().filter_map(|(id, _)| serde_json::from_value(crate::items::param("SpEffectParam", *id).clone()).ok()));
+    // Crouched in a bush (the Construct's outpost, sandbox.rs in_bush): SpEffect 109203, of the
+    // crouch family (109200 crouch, 109210 hug, 109220 hang) the grass one by its sight cut 80
+    // (gap: nothing in the params puts 109201-109203 on; the engine's grass rule is not traced,
+    // 80 picked over the 100 rows so a guard that walks right up still finds him).
+    if crate::player::crouch_ok(&pa.state) && (crate::encounter::hooks().hidden)(ptf.translation - Vec3::Y * (crate::player::CAPSULE_HALF_HEIGHT + 0.05)) {
+        skills.extend(serde_json::from_value(crate::items::param("SpEffectParam", 109203).clone()).ok());
+    }
     for (entity, mut e, mut a, mut tf, phantom, from_event, scripted, mut draw_mask) in &mut q {
         // A phantom out of the fight does nothing until its boss's script calls it.
-        if phantom.is_some_and(|p| p.parked()) || e.disabled {
+        if phantom.is_some_and(|p| p.parked()) || e.disabled || e.stand_in {
             continue;
         }
+        // Its update level (Actor::lod): due ticks only, with their time.
+        if !a.lod_due {
+            continue;
+        }
+        let dt = dt * a.lod as f32;
         let d = combat.data_of(&a);
         let foe = combat.foe_of(&a);
         let npc = combat.npc(&a);
@@ -2488,6 +2734,23 @@ fn think(
                     }
                     continue;
                 }
+                // The Puppeteer's puppet (ninjutsu.rs): its ThrowDef12220 played out with
+                // NOT_TO_DEATH_ANIME (220030) worn, it gets up and fights on Wolf's side (team 15)
+                // until that runs out (220022 empties its HP).
+                if crate::ninjutsu::wears_ref(&a, crate::ninjutsu::REF_NOT_TO_DEATH) {
+                    if a.anim.is_empty() || a.t >= d.length(&a.anim) {
+                        a.hp = a.hp_max;
+                        e.targeting.reset();
+                        e.ninsatsu.0 = e.ninsatsu.0.max(1);
+                        e.mode = Mode::Ai;
+                        e.cooldown = 0.5;
+                        e.interrupt();
+                        if let Some(log) = log.as_mut() {
+                            log.push("PUPPET", Color::srgb(0.9, 0.3, 0.3));
+                        }
+                    }
+                    continue;
+                }
                 if t - dt <= 0.0 && t.is_finite() && e.final_events(&a, &combat) {
                     // Its map event brings in the next character (Genichiro -> Tomoe): no reset.
                     if events::apply_requests(&mut commands, &combat, &config, &mut e, &mut warp) {
@@ -2529,7 +2792,7 @@ fn think(
                     // duel's faces +Z, the sandbox's past Wolf -Z); an MSB enemy (it started
                     // unaware on its map spot) at the spot itself, which stays its home.
                     let back = if e.unaware0 { 0.0 } else { 2.0 };
-                    tf.translation = respawn_spot(e.start, e.start_yaw, back, crate::map::terrain().as_deref());
+                    tf.translation = respawn_spot(e.start, e.start_yaw, back, crate::terrain::terrain().as_deref());
                     // Its new pose at once: no crossfade from the death pose, no deathblow ModelLag.
                     commands.entity(entity).insert(crate::anim::SnapPose);
                     // Its poison / burn and their flames stay with the old life.
@@ -2583,11 +2846,6 @@ fn think(
                 continue;
             }
             Mode::Rising(t) => {
-                if t - dt <= 0.0 && let Some(key) = loop_after(d, &a) {
-                    a.play("Event21000", &key);
-                    e.mode = Mode::Held(true);
-                    continue;
-                }
                 if t - dt <= 0.0 {
                     e.mode = Mode::Ai;
                     e.cooldown = 0.5;
@@ -2606,6 +2864,7 @@ fn think(
                     // anims' TAE 960 type: type 5 holds the bar at 0 (rows 1000000-1000200 min = max
                     // = 0 %), type 6 sets it to 30 %, type 7 full (docs/kb/damage.md 2026-11-03);
                     // the enemy keeps what that leaves.
+
                     // Emptied vitality: back at the brink, the next hit reopens the deathblow.
                     a.hp = a.hp.max(1.0);
                     e.mode = Mode::Ai;
@@ -2633,18 +2892,40 @@ fn think(
         let think_id = e.think_id(foe);
         let think_row = combat.param("NpcThinkParam", think_id);
         let (home, home_yaw) = *e.home.get_or_insert((tf.translation, a.yaw));
-        let seen = wolf_seen(&combat, pa, ptf.translation, &skills);
+        let mut seen = wolf_seen(&combat, pa, ptf.translation, &skills);
+        // What Wolf's bullets and throws put on it: the Bloodsmoke's 220014 (sightSearchRate 0,
+        // hearingSearchEnemyCut 100) blinds and deafens it in the smoke, the Puppeteer's 220021
+        // doubles its sight. A charmed puppet (team 15, ninjutsu.rs) does not hunt Wolf at all.
+        // gap: the observer rates' place in the exe's sight test is not traced (they scale the
+        // sight distances as Wolf's cut does); the puppet's 360 deg eye angles are not applied.
+        let (sight_rate, ear_rate) = put_on_rates(&e, &a);
+        let charmed = crate::combat::team_of(&combat, &a) == crate::combat::TEAM_CHARMED;
+        seen.cut = if charmed { 0.0 } else { seen.cut * sight_rate };
         let feet = tf.translation - Vec3::Y * (crate::player::CAPSULE_HALF_HEIGHT + 0.05);
         e.targeting.sound_new = false;
-        for (id, rank) in wolf_sounds(&combat, pa, ptf.translation, &a, tf.translation, think_row, &skills) {
+        // The listener's sound pass runs only while the targeting list holds no character target
+        // (exe FUN_140624b70 <decomp ref> -> FUN_1406296e0: no entry of type 1, the chr-handle
+        // target of FUN_140629430): an enemy that has Wolf takes no new sounds, so Wolf's own
+        // footsteps and swings in a fight raise no ChangeSoundTarget (46), whose common handler
+        // (common_table_ai_common.lua:247-267) replans and dropped the guard Goal.Parry had just
+        // picked. (Inferred: the normal target as the type-1 entry.)
+        let listening = e.targeting.normal.is_none();
+        let listening_wolf = listening && !charmed && ear_rate > 0.0;
+        for (id, rank) in wolf_sounds(&combat, pa, ptf.translation, &a, tf.translation, think_row, &skills).into_iter().filter(|_| listening_wolf) {
             e.targeting.hear(think_row, seen.pos, id, rank);
         }
         let my_team = crate::combat::team_of(&combat, &a);
-        for s in &ai_sounds.0 {
+        for s in ai_sounds.0.iter().filter(|_| listening) {
+            // A comrade's spot call is for those not yet fighting: one already in battle keeps its
+            // fight (a soldier at a maddened dog's throat, test a_maddened_dog_bites_the_soldier).
+            if s.friends_only && e.targeting.state >= stealth::FIND {
+                continue;
+            }
             if let Some((id, rank)) = ai_sound_heard(&combat, s, entity, my_team, &a, tf.translation, think_row, &e.placement) {
                 e.targeting.hear_record(think_row, s.pos, id, rank, s.serial);
             }
         }
+        let was = e.targeting.state;
         // The sight origin: dummy 500's spot at the feet height (stealth::eye_point; the
         // fallback pushes the root forward by NpcParam hitRadius, gap: the exe's physics radius).
         let dmy500 = dummies.get(entity).ok().and_then(|d| crate::combat::dmy_entity(d, 500)).and_then(|m| markers.get(m).ok()).map(|g| g.translation());
@@ -2655,6 +2936,14 @@ fn think(
         e.targeting.update(think_row, feet, eye, head, a.forward(), &seen, dt);
         if e.targeting.searched {
             e.targeting.search_timer = brains.search_ring.place(e.targeting.search_timer);
+        }
+        // Spotting Wolf it calls its comrades: AiSoundParam 2000000 (bCallFriend, 20 m, friends
+        // and foes; AtkParam 1500's AppearAiSoundId, the shout no c1010 / c1020 clip plays), heard
+        // by those of its side in range while it is alert (ai_sound_heard). The user: "enemies
+        // should hear their comrades spotting". gap: what in the game makes a finder call is not
+        // traced (no TAE 237 on c1010; its NpcThinkParam callHelp_* are 0).
+        if was < stealth::FIND && e.targeting.state >= stealth::FIND {
+            ai_sounds.call(&combat, SPOT_CALL_SOUND, tf.translation, entity, my_team);
         }
         if e.targeting.changed() {
             if let Some(log) = log.as_mut() {
@@ -2723,25 +3012,53 @@ fn think(
             }
             _ => d.length(&a.anim),
         };
-        let ended = !a.anim.is_empty() && a.t >= len;
-        // The Divine Dragon's trees (c5310 HKS Event20000 / 20002 / 20004 _onUpdate: at the
-        // anim's end ExecEventAllBody W_Event21000 / 21001 / 21002): each bloom stays open in
-        // its loop clip (TAE 66 5025 / 5026 / 5027 over all of it), which m25 12505906 reads to
-        // activate that point's grapple object; the loop repeats until the next event request
-        // (AI 531001 request 10 / 20 / 30, its AttackImmediateAction) or the re-warp.
-        if ended && combat.foe_of(&a).chr == "c5310" {
-            let next = match a.state.as_str() {
-                "Ez20000" | "Event21000" => Some(21000),
-                "Ez20002" | "Event21001" => Some(21001),
-                "Ez20004" | "Event21002" => Some(21002),
-                _ => None,
-            };
-            if let Some(id) = next {
-                let k = a.grouped(&format!("a000_{id:06}"));
-                if d.anim(&k).is_some() {
-                    a.play(&format!("Event{id}"), &k);
+        let mut ended = !a.anim.is_empty() && a.t >= len;
+        // An event state as the chr's own HKS runs it (data::hks_events, Event<n>_onUpdate): at the
+        // clip's end (env 339, before a held pose's TAE runs out) it goes on to the next event
+        // (the zombie c1500's held 20010 -> 21015, c1020 20002 -> 21001), back to the idle
+        // (W_Idle), into the death pose (ExecTransToDeathIdle: c1020's sting death 20005), or,
+        // with no end for the refs it wears, holds in its loop clip (c1020 21000, the Divine
+        // Dragon's trees c5310 21000-21002, whose open blooms m25 12505906 reads) until something
+        // else takes it. Some fire before the end: with no talk running (c1020 21007 -> 21005,
+        // c1070 21000 -> 20001) or once on the ground (c1100 21005 -> 20005), the Divine Dragon's
+        // collapse 20002 -> 21000 at its end. EventCommonFunction's ExecActiveTransition runs with
+        // is_on_cancel TRUE: the AI acts only through the clip's cancel windows (env 107 / 120 /
+        // 118) and turns or moves at flag 78 (env 2000), as in any other clip.
+        // Without the chr's decompiled HKS the clip's end goes back to the AI.
+        let ev = a.state.strip_prefix("Ez").or(a.state.strip_prefix("Event")).and_then(|n| n.parse::<i64>().ok());
+        let hks = ev.map(|_| crate::data::hks_events(&combat.foe_of(&a).chr));
+        let in_event = ev.zip(hks.as_ref()).and_then(|(n, h)| h.states.contains_key(&n).then_some(n));
+        if let (Some(from), Some(h)) = (in_event, hks.as_ref()) {
+            let at_end = !a.anim.is_empty() && a.t >= d.length(&a.anim);
+            let refs: Vec<i64> = crate::combat::worn_sp(&a, &e.clash)
+                .into_iter()
+                .chain(d.sp_effects_at(&a.anim, a.t).iter().map(|(id, _)| *id))
+                .chain([e.ai_sp])
+                .chain((a.anim_group > 0).then_some(200030 + a.anim_group as i64))
+                .map(|id| d.sp_effects.get(&id.to_string()).map_or_else(|| crate::data::sp_effect_behavior_ref(id), |s| s.behavior_ref_id))
+                .collect();
+            match h.next(from, &refs, !a.airborne, at_end) {
+                Some(crate::data::EndTo::Event(id)) => {
+                    let k = a.grouped(&format!("a000_{id:06}"));
+                    if d.anim(&k).is_some() {
+                        a.play(&format!("Event{id}"), &k);
+                        continue;
+                    }
+                }
+                Some(crate::data::EndTo::Idle) => ended = true,
+                Some(crate::data::EndTo::DeathIdle) => {
+                    // Down in the clip's last pose, out of the AI (gap: DeathIdle's ragdoll).
+                    a.move_vel = Vec3::ZERO;
+                    e.cur_ez = None;
+                    e.mode = Mode::Held(false);
                     continue;
                 }
+                None if at_end => {
+                    let (state, key) = (a.state.clone(), a.anim.clone());
+                    a.play(&state, &key);
+                    ended = false;
+                }
+                None => {}
             }
         }
         // c9997 DamageLightningStart / Loop _onUpdate (7972-8010): the start into a loop clip
@@ -2760,9 +3077,7 @@ fn think(
             }
             continue;
         }
-        // The trees' bloom loops take the next event request at any frame (531001's
-        // AttackImmediateAction).
-        let free = a.anim.is_empty() || ended || is_free_state(&a.state) || (a.state.starts_with("Event2100") && combat.foe_of(&a).chr == "c5310");
+        let free = a.anim.is_empty() || ended || is_free_state(&a.state);
         // Perilous warning when the attack's TAE fires it: the combat log line. The HUD kanji is
         // its warning bullet's hit on Wolf (enemy_bullet.rs fly).
         if d.perilous_warning(&a.anim, a.prev_t, a.t).is_some() {
@@ -2829,7 +3144,13 @@ fn think(
         // World snapshot for the brain.
         let fwd = a.forward();
         let mut sp_self: HashSet<i64> = a.resident.iter().copied().collect();
-        sp_self.extend(d.sp_effects_at(&a.anim, a.step()).iter().map(|(id, _)| *id));
+        // A move that has played out no longer runs its TAE, also an AddSpEffect that runs past
+        // the clip's end: Lady Butterfly's drop a100_003290 (3.0 s) holds 5028 to 3.2 s, and
+        // 509000_battle.lua:59 picks the drop again (Act38) while she wears 5028, so the next
+        // plan must not see it (she dropped over and over, 2026-10-17). 5028 has effectEndurance 0.
+        if !(a.state.starts_with("Ez") && a.t >= d.length(&a.anim)) {
+            sp_self.extend(d.sp_effects_at(&a.anim, a.step()).iter().map(|(id, _)| *id));
+        }
         sp_self.extend(e.clash.iter().map(|c| c.0));
         // Its TAE SpEffects kept past their window and their replaceSpEffectId chains (actor.rs
         // run_sp_effect_chains), as Wolf's below.
@@ -2866,6 +3187,12 @@ fn think(
         e.prev_sp = sp_self.iter().chain(sp_target.iter()).copied().collect();
         // (In any anim set: a100_003000 is EzState 3000 too.)
         let playing_ez = e.cur_ez.filter(|ez| ez_of(&a.anim) == Some(*ez));
+        let event = e.event_target.and_then(|t| event_views.get(&t)).map(|v| crate::ai::EventView {
+            sp_new: v.sp.iter().filter(|id| !e.event_prev_sp.contains(*id)).copied().collect(),
+            sp_gone: e.event_prev_sp.iter().filter(|id| !v.sp.contains(*id)).copied().collect(),
+            ..v.clone()
+        });
+        e.event_prev_sp = event.as_ref().map(|v| v.sp.clone()).unwrap_or_default();
         let tg = rival_view(&e.targeting, rival.map(|r| r.ent), e.rival_last);
         e.rival_last = rival.map(|r| r.ent);
         let snap = Snapshot {
@@ -2950,6 +3277,7 @@ fn think(
             me_id: entity.to_bits(),
             sound_serial: tg.sound.map_or(-1, |s| s.serial),
             triggers: triggers.0.clone(),
+            event,
         };
         let brain = brains.map.get_mut(&entity).unwrap();
         let cmd = brain.tick(&snap, dt);
@@ -2984,6 +3312,7 @@ fn think(
             }
         }
         e.ai_desc = brain.describe();
+        e.ai_cmd = cmd.clone();
         let c = cmd.clear;
         if c & crate::ai::CLEAR_ENEMY != 0 {
             e.targeting.clear_enemy();
@@ -3005,6 +3334,10 @@ fn think(
 
         // Carry out the request.
         let move_ok = free || d.flag(&a.anim, a.step(), FLAG_AI_MOVE);
+        // A turn clip does not chain into another turn: c9997 TurnCommonFunction passes
+        // enable_turn FALSE, so its end goes to idle (IdleTransition) and the next turn comes from
+        // the idle a frame later.
+        let turn_ok = move_ok && !(ended && a.state.starts_with("Turn"));
         let mut turned_first = false;
         let cur = stance_of(&a.state);
         let want = Stance::wanted(&cmd).filter(|s| d.anim_key(s.idle()).is_some());
@@ -3049,7 +3382,7 @@ fn think(
             // point, FUN_14060c7d0) the TurnTo target, so a point 45 deg or more off plays the
             // turn clip first and the run starts from its AI flag 78. (A runner that only
             // steered at turnVellocity 135 deg/s circled a patrol point behind it for ever.)
-            if cmd.face && free && start_turn(&e, &mut a, d, goal_yaw, cmd.emergency) {
+            if cmd.face && turn_ok && start_turn(&e, &mut a, d, goal_yaw, cmd.emergency) {
                 turned_first = true;
             } else {
                 let state = loco_state(d, e.ai_sp, mv, cmd.walk);
@@ -3076,7 +3409,9 @@ fn think(
             a.move_vel = Vec3::ZERO;
             e.cur_ez = None;
         }
-        let turned = turned_first || (cmd.turn && cmd.anim.is_none() && cmd.mv.is_none() && free && start_turn(&e, &mut a, d, goal_yaw, cmd.emergency));
+        // A turn too from the clip's move window (c9997 ExecTurn on a cancel: env 2000, as a move):
+        // a broken soldier's TrunkCollapse turned to Wolf behind it at its flag 78, not its end.
+        let turned = turned_first || (cmd.turn && cmd.anim.is_none() && cmd.mv.is_none() && turn_ok && start_turn(&e, &mut a, d, goal_yaw, cmd.emergency));
         if (cmd.face || cmd.turn) && (free || cmd.mv.is_some()) && !turned && !(a.state.starts_with("Turn") && !ended) {
             // A walk / run turns at its clip's SetTurnSpeed (ai_turn_rate); standing (Wait /
             // Stay turns under the turn clips' 45 deg) keeps turnVellocity. gap: the exe's turn
@@ -3362,7 +3697,10 @@ fn passive_or_fallback(e: &mut Enemy, a: &mut Actor, d: &crate::data::CharData, 
     }
     e.cooldown -= dt;
     a.yaw = turn_toward(a.yaw, want_yaw, std::f32::consts::PI * dt);
-    if dist > config.enemy.attack_range {
+    // On the Construct a passive enemy holds its spot (the user: "static unless AI toggle button
+    // is pressed"); elsewhere it walks into range for deflect practice.
+    let hold = (crate::encounter::hooks().hold)();
+    if dist > config.enemy.attack_range && !hold {
         // Battle walk speed from WalkFrontBattle's root motion.
         if a.state != "WalkFrontBattle" || ended {
             a.play_state(d, "WalkFrontBattle");
@@ -3380,7 +3718,7 @@ fn passive_or_fallback(e: &mut Enemy, a: &mut Actor, d: &crate::data::CharData, 
     }
 }
 
-fn toggle_aggression(keys: Res<ButtonInput<KeyCode>>, mut q: Query<&mut Enemy>, mut log: ResMut<crate::hud::CombatLog>) {
+fn toggle_aggression(keys: Res<ButtonInput<KeyCode>>, mut q: Query<&mut Enemy, Without<crate::encounter::PatrolGuard>>, mut log: ResMut<crate::combat::CombatLog>) {
     if keys.just_pressed(KeyCode::KeyT) {
         // All enemies switch together (the first one's state flipped).
         let Some(on) = q.iter().next().map(|e| !e.aggressive) else { return };

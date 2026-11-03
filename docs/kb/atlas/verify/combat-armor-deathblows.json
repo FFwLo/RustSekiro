@@ -1,0 +1,1110 @@
+[
+ {
+  "id": "armor.flag24-super-armor",
+  "verdict": "confirmed",
+  "reason": "Full c0000 TAE has flag 24 on exactly the 20 listed grapple and a074_4130xx clips with those frames, c1020 3003 frames 5-24, c5060 3044/3093 and c1010 3011/3080 windows match, and exe b51b70 case 0x18 sets +0x88 bit 0x10000 that bdbb40 reads; Smithbox names 24 'Super Armor', 8 'Invincible', 67 'Invincible excluding Throw Attacks'.",
+  "fix": {
+   "note": "Smithbox names flag 67 'Invincible excluding Throw Attacks' and 8 'Invincible'. The exe agrees: flag 8 sets action word +0x70 bit value 2 like TAE 950, flag 67 sets +0x70 bit 0x20 like TAE 952 (on 30 Wolf a2xx_600xxx clips). No Wolf anim uses flag 8 or 67. Our extractor's names (ThrowStart2 for 67) are wrong."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "armor.spcategory-1001-replace",
+  "verdict": "confirmed",
+  "reason": "SpEffectParam rows 5311/5320/5325 (cat 1001, prio 200), 5350/5355/5358/5359/3506001 (190) and 5375/5366 (150, stateInfo 120) / 5367 (140, stateInfo 120) match; exe 10cea20 reads the dmgLv byte at +0x150 + index and 10b5100 maps it through the table.",
+  "fix": {},
+  "needs_recording": false
+ },
+ {
+  "id": "armor.dmglv-enum-table",
+  "verdict": "confirmed",
+  "reason": "Exe 10b5100 indexes DAT_142b979e8 for 1..12; the bytes in sekiro.exe.unpacked.exe read 0,8,1,2,3,7,4,6,9,5,10,11, and 5350/5358/5311/5320 rows give the stated results.",
+  "fix": {},
+  "needs_recording": false
+ },
+ {
+  "id": "armor.dmglv-levels",
+  "verdict": "confirmed",
+  "reason": "c0000_define.lua DAMAGE_LEVEL_0..11 match the names; AtkParam_Npc counts (2:830, 3:470, 1:323, 0:273, 4:179, 6:121, 10:109, 9:48) and AtkParam_Pc counts match the export.",
+  "fix": {
+   "note": "Smaller tails omitted above: NPC level 8 on 37 rows, 11 on 4, 5 and 7 on 1 each; Wolf 6, 9, 10, 11 on 1 row each. dmgLevel_vsPlayer is 0 on 2387 of 2396 NPC rows."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "armor.resident-damage-tables",
+  "verdict": "corrected",
+  "reason": "SpEffectParam 5320/5325/5311 fields match the record, but NpcParam shows 5311 is worn by c5060 (Great Shinobi Owl) rows only, 5325 by c7100/c7110 (Genichiro), and 5320 by 810 rows.",
+  "fix": {
+   "values": "5320 'NTC standard' (enums): S 3, M 4, L 5, Push 10, Strike 5, BlowS 2, BlowM/BlowLL 7, Uppercut 7, Breath 5, Min 2, so small, middle, large and push stay, a small blow becomes minimum and blow-offs become ex-large. Worn by 810 NpcParam rows (most humanoids, also c5400 Isshin). 5325 rival (c7100/c7110 Genichiro, 10 rows) is the same but small hits become minimum (S 2). 5311 'Chief of the shinobi army' (c5060 Great Shinobi Owl, 9 rows): small and push become minimum, middle stays middle, large and heavier become large, small blow stays. Priority 200."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "armor.timed-windows-5350-5358-5359",
+  "verdict": "corrected",
+  "reason": "SpEffect rows and TAE windows (c7100 3025/3028/3030/3092, c5060 3003/3008, c1010 3031) match, but 5359 turns large hits into minimum too, so it lets only blow-offs through, not 'middle and below'.",
+  "fix": {
+   "summary": "Enemy attacks add short category-1001 SpEffects with TAE AddSpEffect. 5350 stops all flinching during a commitment, 5358 stops everything but large and blow-off hits, 5359 stops everything but blow-offs (large hits become minimum too).",
+   "values": "5350 all enums 2 (minimum) priority 190; 5358 L -> large, BlowM/LL -> exlarge, others minimum; 5359 same but L -> minimum; 5355 'medium or higher' (small and push hits are promoted to middle, fling stays fling). Examples (Genichiro is c7100, Owl c5060): Genichiro 3025 5358 0-0.867 s, 3028 0-4.733 s, 3030 5350 0.067-1.167 s, 3031 5355 0.4-1.067 s, 3092 5359 0-4.033 s; Owl 3008 5358 0-0.7 s, 3003 5350 0.3-0.967 s; soldier c1010 3031 5358 0-5.0 s; General c1020 3003 5350 frames 5-24, 3007 5358 0-1.6 s."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "armor.sa-pool-meter",
+  "verdict": "corrected",
+  "reason": "NpcParam has 137 rows with superArmorDurability > 0 and the 0.4 / 4.0 correction counts match; exe a12e90 x DAT_143b01b5c (5.0 in the exe bytes) gives 5 x (corr + 1) s; but several enemy names in the list were wrong.",
+  "fix": {
+   "values": "NpcParam superArmorDurability: 137 of 1279 rows. 80 Bandit heavy axe (c1550, 6) and Lady Butterfly (c5090, 7); 140 shield servant (c1180, 3) and Yasha Ape bride (c5100, 2); 160 Shichimen warrior (c1080, 5); 200 Shura samurai (c1070, 7), Nanban armor (c1130, 2), Fire cow (c1370/c1380, 4), Prisoner zombie (c1520, 2); 240 mallet / kanabo / bell servants (c1180/c1181, about 30), Yasha Ape before/after HU (c5100, 6), Okiryu large (c5320, 2), kidnapped servant (c7470, 6); 320 sick-village zombie servants (c1181, 4) and headless Yasha Ape (1); 360 Cavalry warrior (c5080, 5) and one kidnapped servant; 400 Headless on land (c1350, 7), Akaoni / Giants (c5020/c5021, 14) and Yasha Ape (1); 560 underwater Headless (c1340, 5); 640 Demon of Hatred / monk demon (c7020, 9); 10 one test row. superArmorRecoverCorrection 0.4 on 1188 rows and 4.0 on 91 (91 of the 137 SA rows use 4.0). Refill timer = 5 x (correction + 1) s: 7 s or 25 s; the pool snaps to full at the end. Rows 5375 / 5366 / 5367 (priority 150 / 150 / 140, stateInfo 120) apply only while it holds; 5366 is worn by the c1180/c1181/c7470 servants, 5375 by 130 rows (zombies, Owl, Isshin, Genichiro, Sculptor), 5367 by no NpcParam row."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "armor.sa-damage-values",
+  "verdict": "corrected",
+  "reason": "EquipParamWeapon 5000 saWeaponDamage 40 (65 rows 40, 108 rows 0) and AtkParam_Npc atkSuperArmor 999 x7 / 45 x2 match, but AtkParam_Pc atkSuperArmorCorrection runs from 25 to 999, not to 300; exe bdb470 drains atk+0x210 x atk+0xe0, x bfdd20 rate, x bfd040 factor.",
+  "fix": {
+   "values": "EquipParamWeapon 5000 saWeaponDamage 40 (65 weapons 40, 108 weapons 0). AtkParam_Pc atkSuperArmorCorrection: 0 on 125 rows, otherwise 25 to 999 percent (50 on 69, 100 on 51, 150 on 39, 200 on 32, 300 on 14, 400 on 8, 999 on 8, 800 on 2). Combo1-type 100 = 40 points; 200 percent = 80. AtkParam_Npc atkSuperArmor: 0 on 2387 rows, 999 on 7 (rows 3100, 3101, 3230, 50000980/981, 50001980/981), 45 on 2 (3111, 3112). SpEffect saReceiveDamageRate (default 1) scales the drain. A 200-pool Shura samurai takes five 40-point hits to break."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "armor.sa-capacity-bonus",
+  "verdict": "confirmed",
+  "reason": "SpEffect 2090 (stateInfo 155, changeSuperArmorPoint 40), 3510991 (+120) and 3540110 (+200) read as stated; exe bdb690 adds a positive change to the pool at once; no NpcParam row wears 2090.",
+  "fix": {},
+  "needs_recording": false
+ },
+ {
+  "id": "armor.toughness-unused",
+  "verdict": "corrected",
+  "reason": "NpcParam toughness 0 on 1279 rows, toughnessRecoverCorrection 0.4 / 0 on 1247 / 32, and no c0000 TAE clip (all 2209 read) has event 795; exe be4e30 returns early unless +0x70 bit 34 is set; but 3 weapon rows have toughnessCorrectRate 1.0.",
+  "fix": {
+   "values": "NpcParam toughness 0 x1279; toughnessRecoverCorrection 0.4 on 1247, 0 on 32; EquipParamWeapon toughnessCorrectRate 0 on 170 rows (5000 Kusabimaru included) and 1.0 on 3; SpEffect toughnessDamageCutRate default 1; ToughnessParam fields correctionRate, minToughness, spEffectId (player only). Exe be4e30 needs action flag +0x70 bit 34 plus positive toughness.",
+   "check": "Search all c0000 TAE json for event type 795 (none) and NpcParam toughness (all 0)."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "armor.flag73-parry-gate",
+  "verdict": "corrected",
+  "reason": "Exe b51b70 case 0x49 sets +0x8c bit 0x400 and 61fad0 is the only reader, and Smithbox names flag 73 'Parry Possible State'; but the TAE does not put flag 73 on every attack: c1020 has it on all 29 attacks off the hit frames, c1010 lacks it on 19 of 25, c7100 has it over the hit window on 8 of 47.",
+  "fix": {
+   "summary": "Many enemy attacks carry ChrActionFlag 73 (Smithbox 'Parry Possible State') outside their hit frames. It looks like armor but the exe uses it as the ParryTiming gate for other AIs. Our sim still uses it as a proxy for 'can flinch', which is the current gap.",
+   "values": "Flag 73 (SetBool32_0x7C_10). General c1020: on all 29 attacks, from frame 3-14 on, and in recovery, never on hit frames. Soldier c1010: absent on 19 of 25 attacks. Genichiro c7100: overlaps the hit window on 8 of 47 attacks. Owl c5060: overlaps on 2 of 43. Dispatcher FUN_140b51b70 case 0x49 sets bit 0x400 at (ChrIns+0x50)+0x50+0x8c, read only by FUN_14061fad0: an AI handling Wolf's flag-63 message 7 raises INTERUPT_ParryTiming (24) when the sender is within its +0x154 range and has this bit."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "armor.iframes-950-mistraven",
+  "verdict": "corrected",
+  "reason": "Exe 140b5.c case 0x3b6 sets action word +0x70 |= 2 and the clips listed carry 950 with those frames, but the full c0000 TAE has 950 on 280 clips (167 in a000), not 55.",
+  "fix": {
+   "values": "280 Wolf clips (167 in a000, 25 in a074, the rest in a2xx_600xxx): a000_100400 frames 0-18, a000_110030 (GroundRevival) frames 0-27, death a000_110000 0-103 / 110001 0-113; others 0-4..51. Flag word +0x70 bit value 2, the same bit ChrActionFlag 8 sets."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "armor.iframes-951-during-action",
+  "verdict": "confirmed",
+  "reason": "Exe case 0x3b7 sets +0x70 |= 1; a200_510000 has 951 frames 0-60 and 310 c0000 clips carry it (deathblows a200-a247, grapple, talk 700xxx).",
+  "fix": {},
+  "needs_recording": false
+ },
+ {
+  "id": "armor.iframes-954-types",
+  "verdict": "confirmed",
+  "reason": "c0000 TAE 954 IFrameType values are 1 Sweeps (247 events), 2 General (104), 6 Thrusts (3), 7 Grabs (104); exe case 0x3ba passes the byte to b29cb0.",
+  "fix": {
+   "note": "sekiro-rs lists the general and thrust types as not applied yet. Thrust i-frames exist on only three clips (back, left and right step)."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "armor.iframes-step-forward",
+  "verdict": "confirmed",
+  "reason": "a000_213301 has 954 Grabs and General 0-9, flag 125 0-12 and 960 type 0 0-18; a000_213300 has no events of its own and importFrom 213301.",
+  "fix": {},
+  "needs_recording": false
+ },
+ {
+  "id": "armor.iframes-step-back-side",
+  "verdict": "confirmed",
+  "reason": "a000_213302/213303/213304 each carry 954 Thrusts, Grabs and General frames 0-6.",
+  "fix": {},
+  "needs_recording": false
+ },
+ {
+  "id": "armor.iframes-954-sweep-jump",
+  "verdict": "confirmed",
+  "reason": "a000_201110 sweep 0-38, 201100 sweep 0-8, 201114 sweep 0-38 plus grab and general 0-3, 213100 sweep 0-73 in the c0000 TAE.",
+  "fix": {},
+  "needs_recording": false
+ },
+ {
+  "id": "armor.dodged-hit-not-spent",
+  "verdict": "corrected",
+  "reason": "The only sources are our guard-deflect.md note (a design choice tested by the sim test timed_step_dodges_through_the_slash) and sekiro-rs COMBAT-RULES, which cites our note and marks it community; no exe trace or recording backs it.",
+  "fix": {
+   "confidence": "open-question",
+   "note": "Our kb says 'as in game' but gives no recording or exe function; sekiro-rs copies the claim from our notes and labels it community (inferred for 950 / 951). The exe's per-attack hit list was not traced."
+  },
+  "needs_recording": true
+ },
+ {
+  "id": "armor.mikiri-beats-thrust-iframes",
+  "verdict": "corrected",
+  "reason": "In the full c0000 TAE flag 125 is only on a000_213301 frames 0-12 and thrust i-frames only on 213302/213303/213304; the neutral step 213300 imports 213301's events, so no Wolf clip has both and the rule never changes an outcome.",
+  "fix": {
+   "summary": "Our sim checks the Mikiri window before thrust i-frames. No Wolf clip carries both, so the order never matters with the game's data.",
+   "values": "Flag 125 only on a000_213301 (forward step) frames 0-12; thrust i-frames (954 type 6) only on the back, left and right steps 213302-213304 frames 0-6; the neutral step 213300 imports 213301's events.",
+   "confidence": "open-question"
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "armor.ignore-iframes-attack",
+  "verdict": "confirmed",
+  "reason": "Paramdex AtkParam isDisableNoDamage says it ignores step-type invincibility but not TAE full invincibility; the export has it on 30 of 2396 NPC rows and 8 of 443 PC rows; exe b6e6a0 passes hit record +0xED bit 0 to the defender check; src has no reader.",
+  "fix": {},
+  "needs_recording": false
+ },
+ {
+  "id": "armor.reaction-rank-interrupt",
+  "verdict": "confirmed",
+  "reason": "c9997.lua IsEnabledTransitionRank and ExecDamageDefault (rank 4), ExecDamageLargeBlow (rank 0) and ExecDamageBlow (no check) read as stated.",
+  "fix": {},
+  "needs_recording": false
+ },
+ {
+  "id": "armor.min-level-additive-flinch",
+  "verdict": "confirmed",
+  "reason": "c9997 ExecNoSyncAddDamage runs for minimum-level hits, aerial hits and rank-rejected hits, picks W_PartBlend_Add0N from env 1120 when the part clip exists, else W_SABlend_Add_<dir>.",
+  "fix": {},
+  "needs_recording": false
+ },
+ {
+  "id": "armor.reaction-prohibit-220500",
+  "verdict": "corrected",
+  "reason": "c9997.lua names ref 1000230 SP_EFFECT_REF_NO_ALL_REACTION and GetSpDamage skips every special reaction while it is on; the c1010/c1020/c7100 TAE adds 220500 together with 5359 over their collapse, guard-break and bound clips; the combat_regular recording shows it on 7 victim hits (1484 ms).",
+  "fix": {
+   "summary": "SpEffect 220500 'various reactions prohibited' gives behavior reference 1000230 (HKS SP_EFFECT_REF_NO_ALL_REACTION). Enemy break clips add it for their whole length, and while it is on c9997 GetSpDamage returns no special reaction, so firecracker, fire, push, finger whistle, throw-near and similar special reactions cannot interrupt a collapse. Normal damage levels are handled by 5359 in the same window.",
+   "values": "SpEffect 220500 behaviorRefId 1000230. TAE: c1010 8300/8301/8310/8550/8551 0-2.833 s, c1020 7620 0-2.333 s and 8300/8301 0-2.9 s, c7100 7620/8300/8301/8310, always beside 5359. GetSpDamage keeps only the wire-damage branch when the ref is on. Recorded on 7 victim hits (1484 ms) in the tutorial fight together with 5359 and 109450 (core recovery stop, spCategory 20).",
+   "note": "Ours has no reader for ref 1000230; only a comment in enemy.rs names 220500.",
+   "confidence": "data",
+   "check": "Break an enemy, then hit him with a firecracker during the collapse: no burst reaction plays."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "armor.aerial-reactions",
+  "verdict": "confirmed",
+  "reason": "c9997 IsDamagedAerial (env 201 false or ref 1000060 = SpEffect 5900), ExecDamageLargeBlow aerial 4/9/10 -> 8150 and ExecDamageDefault aerial -> 8140/8141 match; ExecDamageBlow runs first so 7 and 11 keep the blow clip; c7100 8140/8141 have hkxFrom 8010/8011.",
+  "fix": {},
+  "needs_recording": false
+ },
+ {
+  "id": "armor.knockback-resistance-npc",
+  "verdict": "corrected",
+  "reason": "NpcParam _Guard / _JustGuard counts match, but the direct-hit columns exist in the export (knockbackRate_vsPlayer_DirectHit 0 on 1176, 75 on 51, 100 on 45, 25 on 7) and the 90 rows are the Shura samurai.",
+  "fix": {
+   "values": "knockbackRate_vsPlayer_Guard / _JustGuard: 0 on 1183 rows, 100 on 45, 75 on 44, 90 on 7. 75 = c1180/c1181 servants, 90 = c1070 Shura samurai, 100 = c1140, Fire cow c1370/c1380, Akaoni c5020, Cavalry c5080, c5200, c5310, Okiryu c5320, c7010. knockbackRate_vsPlayer_DirectHit: 0 on 1176, 75 on 51, 100 on 45, 25 on 7 (the vsEnemy columns are similar). NpcParam knockbackParamId 0 on every row. Wolf armor knockBackCutRate_* 0 on all 39 protector rows."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "armor.knockback-skipped-flag24",
+  "verdict": "confirmed",
+  "reason": "Exe b6e6a0 sets hit record +0x1ca when bdbb40 sees flag 24 (+0x88 bit 0x10000), and b6bfe0 skips the knockback block when +0x1ca or +0x1cb is set.",
+  "fix": {
+   "values": "Exe b6e6a0: bdbb40 (flag 24) -> hit record +0x1ca = 1; b6bfe0 skips knockback and the attacker's leftover when +0x1ca or +0x1cb is set. Wolf GroundWireShoot keeps its grapple."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "armor.guard-break-reaction",
+  "verdict": "confirmed",
+  "reason": "c0000_define.lua DAMAGE_TYPE_GUARDBREAK 1001, _BLAST 1004, _FLING 1005; c9997 ExecGuardBlock fires W_GuardBreakRight / Left by guard dir; KnockBackParam row 1 guardBrake_ContTime 0.06, DecTime 0.54.",
+  "fix": {},
+  "needs_recording": false
+ },
+ {
+  "id": "armor.posture-break-reaction-wolf",
+  "verdict": "confirmed",
+  "reason": "c0000 TAE a000_190000 (90 f) has 960 type 5 0-60, flag 28 18-57, refs 304/504 45-60 and 109400 0-60; a000_191000 has 109400 0-33; SpEffect 109400 sets every damage cut rate to 1.5.",
+  "fix": {},
+  "needs_recording": false
+ },
+ {
+  "id": "armor.posture-break-reaction-enemy",
+  "verdict": "corrected",
+  "reason": "TAE confirms 220420 (stateInfo 352) frames 0-75 on c1010/c1020/c7100 collapse clips and the Genichiro counter reaction 13100 type 5 to 1.5 s; but StaminaControlParam type 6 has min and max 30 percent on every enemy row, so the end of the window does set the meter to 30 percent.",
+  "fix": {
+   "values": "SpEffect 220420 (stateInfo 352) added frames 0-75 of TrunkCollapseFront/Back/Large (a000_008300/8301/8310) and the guard-break and bound clips; window about 2.5 s (2.0 s on 7620/8320, 1.0-2.8 s on the 12100-13120 throw-defence clips). StaminaControl type 5 pins posture (max ratio 0), then type 6 (min = max = 30 percent) for 3 frames sets the stamina meter to 30 percent, so the enemy comes out with 70 percent of the posture bar filled. Genichiro's counter reaction (c7100 13100) holds type 5 until 1.5 s then type 6. Break anim for hit: TrunkCollapseFront / Back (HKS ExecDamageBreak); deflect / guard breaks keep AttackBoundEmptyStamina / GuardBreak.",
+   "note": "No post-window reset beyond the type 6 clamp; the community 'reset to 50 percent' is not found. Our enemy.rs comment says posture just regenerates through the collapse, which misses the type 6 clamp to 30 percent."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "armor.armored-servant-part",
+  "verdict": "confirmed",
+  "reason": "SpEffect 220061 (stateInfo 343, camouflageHitPartsGroup 2), 220062 (stateInfo 957, ref 1000105), 400250 (stateInfo 158, cut and stamina rates 0.5) and 230400/230401 read as stated; NpcParam 11807101 is the armored kanabo servant; damage.md traces 20005410 and the 0.7 body compensation.",
+  "fix": {
+   "note": "The part-HP break and one full hit are unexplained. Shuriken counts as Light Shoot (x0.35 HP). 348 -> 121 and 130 -> 65 are per-hit amounts from the live recording, not the row's HP (2076) or posture (540)."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "armor.part-guard-rule",
+  "verdict": "corrected",
+  "reason": "sekiro-rs COMBAT-RULES states the rule from exe b6c880 / 1058380 / 10c66a0, but NpcParam partsAtkParamId1..8 are -1 on every row except two NTC test rows with AtkParam 0 (a dummy bullet), so no real enemy uses it.",
+  "fix": {
+   "note": "The rule exists in the exe but Sekiro's data never feeds it: partsAtkParamId1..8 are -1 on 1277 rows, and 2 test rows (95211000, 95231000) point at AtkParam_Npc 0 '[System] Dummy bullets'. Armored parts in the game come from EMEVD NPC parts (see armor.armored-servant-part). Part damage-group rates are untraced. This is also the only path that sets hit record +0x1ce, which reports damage types 12 and 1022-1026 (the 'clash path'), so those types never occur in shipping data.",
+   "check": "Read NpcParam partsAtkParamId1..8 for all rows: none is set on a real enemy."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "armor.owl-transition-immunity",
+  "verdict": "corrected",
+  "reason": "c5060 TAE puts 3506080 on the transition clips 20005 (0-10.27 s), 20006-20008 and 21003, but 3506001 sits on attacks 3004, 3024 and 3090, not on the transition; the transition clips stop flinches with ChrActionFlag 24 for their whole length.",
+  "fix": {
+   "summary": "During the Owl's phase two transition a marker TAE SpEffect (3506080) rejects deathblows and ChrActionFlag 24 on the same clips removes the hit reaction. This is not the generic armor system but a state flag.",
+   "values": "c5060 TAE: SpEffect 3506080 'action judgment HU animation' on a000_020005 0-10.267 s, 020006/020007/020008 0-0.233 s, 021003 0-4.2 s; flag 24 on 020005 0-308 f, 020006-020008 0-46 f, 020200 and 021003. Separate: 3506001 category-1001 table (S 2, Min 2, M 4, Push 10, BlowS 6, the rest 5; priority 190) on attacks 3004 0.133-1.567 s, 3024 0.133-1.7 s and 3090 0-2.0 s. User real-game confirmation of the deathblow block noted in sekiro-rs FIDELITY."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "armor.hit-reaction-none-at-zero",
+  "verdict": "confirmed",
+  "reason": "Paramdex NpcParam isNoDamageMotion means 'no damage motion when damage is 0' and the export has it 0 on all 1279 rows.",
+  "fix": {},
+  "needs_recording": false
+ },
+ {
+  "id": "armor.wolf-sa-item",
+  "verdict": "corrected",
+  "reason": "SpEffect 3051 (cat 1001, priority 254, 30 s, stateInfo 359) is the Red Lump effect (goods 3050-3052 'Red Lump', refId 3050), but the dmgLv list was partly wrong and the effect also doubles fire damage taken.",
+  "fix": {
+   "values": "SpEffect 3051 'ochimizu clot effect: SA grant', spCategory 1001, categoryPriority 254, effectEndurance 30 s, stateInfo 359. Fields (enum -> level): None 1 -> none; S, M, L, Min 2 -> minimum; Push 10 -> push; BlowS 6 -> small blow; BlowM 7 -> ex-large; Strike 8 -> fling; Uppercut 9 -> upper; BlowLL 11 -> ex blast; Breath 12 -> breath. Also fireDamageCutRate 2.0 and defBloodResistDamageRate 2.0. Goods 3050-3052 'Red Lump' (refId 3050); the item text says it reduces flinching and prohibits Resurrection."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "armor.wolf-no-hyper-armor",
+  "verdict": "confirmed",
+  "reason": "EquipParamWeapon 5000 toughnessCorrectRate 0, AtkParam_Pc atkSuperArmor 0 on 443 rows, protector knockBackCutRate_* 0 on 39 rows, and flag 24 only on the 20 grapple and a074_4130xx clips.",
+  "fix": {},
+  "needs_recording": false
+ },
+ {
+  "id": "armor.enemy-trade-attack",
+  "verdict": "confirmed",
+  "reason": "The data examples match the TAE (c7100 3025 5358 0-0.867 s, c5060 3008 5358 0-0.7 s, c1010 3031 5358 0-5.0 s, c1020 3003 flag 24 and 5350 frames 5-24); the community part stays community.",
+  "fix": {
+   "note": "Community analysis is anecdotal; the windows in data are authoritative. Flag 73 is not armor in the game (see armor.flag73-parry-gate); 'c1010 attacks without flag 73 are cut off anywhere' describes our sim's proxy."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "armor.deflect-stagger-wolf",
+  "verdict": "corrected",
+  "reason": "c0000_transition.lua 5672 confirms codes 1000/1003/1033 (hard) and 1017/1018 (easy), but the gate is SpEffect ref 232 SP_EF_REF_TAE_DISABLE_DEFLECTED_FROM_ENCHANT, worn only by the 30 s blood enchantment 106040, not a TAE window.",
+  "fix": {
+   "values": "Codes 1000 / 1003 / 1033 hard, 1017 / 1018 easy (see combat.deflect-recoil-attacker). Additive variants (action 11-14) keep the combo going. SpEffect ref 232 (only on 106040 'red blood enchantment', 30 s, from BehaviorParam_PC 105000500) removes the hard and easy deflected recoil."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "armor.recoil-disable-ref232",
+  "verdict": "corrected",
+  "reason": "c0000_define.lua names ref 232 SP_EF_REF_TAE_DISABLE_DEFLECTED_FROM_ENCHANT; the only SpEffect with behaviorRefId 232 is 106040 'red blood enchantment' (30 s, spCategory 152), applied by BehaviorParam_PC 105000500, and no c0000 TAE clip adds it.",
+  "fix": {
+   "title": "Blood enchantment disables the deflected recoil (ref 232)",
+   "summary": "While Wolf wears the blood enchantment SpEffect 106040 (behavior reference 232), his attacks that are guarded or deflected do not play the hard or easy deflected recoil. It is a 30 s buff, not a TAE window on attack animations.",
+   "values": "SpEffect 106040 'red blood enchantment': behaviorRefId 232, effectEndurance 30 s, spCategory 152, stateInfo 153, vfx 6040. Set by BehaviorParam_PC 105000500 (refType 2, a ninjutsu row). HKS c0000_transition.lua ~5672: the hard (1000 / 1003 / 1033) and easy (1017 / 1018) deflected branches need env(3036, 232) == FALSE.",
+   "how": "HKS damage transition checks the behavior reference.",
+   "note": "Which ninjutsu or skill fires 105000500 in play was not traced.",
+   "check": "Cast the blood enchantment, then attack a guarding enemy: Wolf's swing is not knocked back."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "combat.hit-resolution-order",
+  "verdict": "corrected",
+  "reason": "Exe b6f690 calls b6c880, b6e6a0, then b6e5a0 (hit stop) right away, then toughness be4e30 / super armor bdbb80, b6c460 / b6f2a0, and b6bfe0 last; b6bd40 (damage type) is called from inside b6bfe0, so hit stop is not the last stage.",
+  "fix": {
+   "summary": "When a hitbox touches a character the defender's damage module runs the guard test, the deflect test and the posture and HP numbers, then applies posture, break flags and deathblow readiness, then the hit stop, the toughness and super armor drain, and last the knockback with the damage type. The attacker's own module runs in parallel for its recoil and posture cost.",
+   "values": "Defender: b6f690 calls b6c880 (guard, deflect, numbers), b6e6a0 (apply, break, deathblow ready), b6e5a0 (hit stop), be4e30 / bdbb80 (toughness, super armor pool), b6c460 / b6f2a0, then b6bfe0 (knockback), which calls b6bd40 (damage type). Attacker: b698d0."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "combat.atkparam-chain",
+  "verdict": "corrected",
+  "reason": "NpcParam 10100000 variation 10100, BehaviorParam 210100100 (refType 0, ref 10100100) and AtkParam_Npc 10100100 values match, but the soldier's attack window is TAE type 1 AttackBehavior (a000_003000 judge 100, frames 20-24), not type 2.",
+  "fix": {
+   "how": "TAE event type 1 AttackBehavior (also 2 BulletBehavior, 5 CommonBehavior, 307 PCBehavior for Wolf) carries the judge id; BehaviorParam / BehaviorParam_PC; AtkParam_Npc / AtkParam_Pc."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "combat.hitbox-contact",
+  "verdict": "confirmed",
+  "reason": "AtkParam has hit0..hit15 DmyPoly1/2, Radius, hitType; 788 NPC and 210 PC rows have more than one shape with a positive DmyPoly1.",
+  "fix": {},
+  "needs_recording": false
+ },
+ {
+  "id": "combat.guard-arc",
+  "verdict": "confirmed",
+  "reason": "NpcParam guardAngle 60 on 1249 rows and 0 on 30, AtkParam_Npc isAllDirGuard 1 on 4 rows, EquipParamWeapon 5000 guardAngle 0; the exe test is cited from sekiro-rs b6c880.",
+  "fix": {},
+  "needs_recording": false
+ },
+ {
+  "id": "combat.block-vs-deflect-repel",
+  "verdict": "confirmed",
+  "reason": "AtkParam_Npc guardAtkRate 30 x2154, 100 x213, 0 x28 (20 x1); EquipParamWeapon 5000/5100 guardBaseRepel 20, attackBaseRepel 10; SpEffect 105010 stateInfo 158 defFlickPower 40; Combo1 guardAtkRateCorrection 300.",
+  "fix": {},
+  "needs_recording": false
+ },
+ {
+  "id": "combat.deflect-window-first",
+  "verdict": "confirmed",
+  "reason": "c0000 TAE a050_203000 has 105010 (ref 203) frames 0-6 and flag 3 0-18; a050_203001 has 105010 frames 0-12.",
+  "fix": {},
+  "needs_recording": false
+ },
+ {
+  "id": "combat.deflect-spam-chain",
+  "verdict": "confirmed",
+  "reason": "105010 sits on a050_203000 0-6, 203005 0-3, 203006 0-2 and not on 203007; ref 212 (guard combo window) is on all four clips 0-18.",
+  "fix": {},
+  "needs_recording": false
+ },
+ {
+  "id": "combat.deflect-posture-decay",
+  "verdict": "corrected",
+  "reason": "SpEffect 105020-105023 rates 1 / 0.5 / 0.25 / 0.125 (stateInfo 204) match and exe bfc490 checks stateInfo 0xcc, but the c0000 TAE puts 105020 on 24 guard clips, 105021 only on 203005 and 105022 only on 203006; 203007 and every other clip carry none, so 105023 is never applied.",
+  "fix": {
+   "summary": "The posture sent back to the attacker by a deflect is multiplied by 1, 0.5 or 0.25 depending on which guard-spam variant Wolf is in (first, second or third press inside the guard combo window). The soldier's slash returns 45, 22 and 11. The fourth step 105023 (0.125) exists in the param but no animation applies it.",
+   "values": "SpEffects 105020 / 105021 / 105022 / 105023: defStaminaAttackRate 1 / 0.5 / 0.25 / 0.125, stateInfo 204, effectEndurance 0. TAE: 105020 on 24 guard-start clips (203000, 203001, 203002, 203100, 2033xx-2036xx), 105021 on 203005, 105022 on 203006; 203007 has no deflect window and no rate effect; 105023 is on no c0000 clip. The rate lasts as long as the guard clip.",
+   "check": "Deflect, press guard again inside the window and deflect the next slash: the attacker's bar rises half as much. Sim: repeated_deflects_break_the_soldier."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "combat.posture-damage-to-defender",
+  "verdict": "confirmed",
+  "reason": "AtkParam_Npc 10100100 directAtkStamDamage 18, repelLostStamDamage 18, atkStam 9; AtkParam_Pc 5000010 30 / 30 / 15 and 5000000 20 / 20 / 10.",
+  "fix": {},
+  "needs_recording": false
+ },
+ {
+  "id": "combat.posture-damage-to-attacker",
+  "verdict": "confirmed",
+  "reason": "10100100 repelLostStamDamage_Attacker 45, Wolf rows 0 / 0 / 0, doesBreakRepelStamDamage 1 on 1954 NPC and 0 on 443 PC rows; exe 842790 reads +0x1b0 and +0x1b2.",
+  "fix": {},
+  "needs_recording": false
+ },
+ {
+  "id": "combat.posture-attribute-rates",
+  "verdict": "confirmed",
+  "reason": "AtkParam_Npc staminaPhysicsAttribute 1 x1520, 2 x361, 4 x242, 3 x147, 9 x99 (0 x27); SpEffect 400200 defAntiGroundStaminaDmgRate 8 and 400250 0.5 rates read as stated.",
+  "fix": {},
+  "needs_recording": false
+ },
+ {
+  "id": "combat.wolf-guard-posture-cut",
+  "verdict": "corrected",
+  "reason": "SkillParam 280 gives spEffect1 150420 and spEffect2 150421; 150420 has stateInfo 158 (block) and 150421 stateInfo 204 (deflect), the reverse of the record; slash rate 0.8, other attributes 0.75.",
+  "fix": {
+   "values": "Formula: clamp((weaponDef x staminaGuardDefRate + stat bonus + 1) x (1 + guardRow.guardStaminaCutRate/100) x SpEffect guardStaminaCutRate, 0, 100) percent. Kusabimaru staminaGuardDef 0, so the base cut is 1 percent (soldier slash 18 -> 17 block, 9 -> 8 deflect). Flowing Water: SkillParam 280 -> SpEffect 150420 (block, stateInfo 158) / 150421 (deflect, stateInfo 204): defSlashStaminaDmgRate 0.8, thrust, heavy hit, light hit and anti-ground 0.75. With the 1 percent base cut that is about x0.79 and x0.74; live 27 -> 75 posture on a x3.75 area (0.74)."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "combat.wolf-vitality-posture-graphs",
+  "verdict": "confirmed",
+  "reason": "CalcCorrectGraph 500 (320 at 1, 1120 at 11), 501 (120, 420), 504 (30, 105) and 163 (all 0) read as stated.",
+  "fix": {},
+  "needs_recording": false
+ },
+ {
+  "id": "combat.enemy-posture-capacity",
+  "verdict": "corrected",
+  "reason": "NpcParam rows read as stated, but 71001000 is 'Rival Honjo', i.e. Genichiro at Ashina Castle, not a generic 'Honjo' enemy.",
+  "fix": {
+   "values": "Soldier 10100000: stamina 75, regen 20/s, maxDebtStamina -30. Samurai General 10203010: 480, 30/s. Genichiro 71001000 and Owl 50600000: 660, 60/s (both maxDebtStamina -30). staminaGuardDef: Owl 50 (percent cut on posture while guarding), Genichiro and the soldier 0."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "combat.posture-regen-formula",
+  "verdict": "confirmed",
+  "reason": "sekiro-rs traces a04850 and the kb ties it to rec_20261008_054259; StaminaControlParam and conditionHp rows used by the formula match the export.",
+  "fix": {},
+  "needs_recording": false
+ },
+ {
+  "id": "combat.posture-regen-hp-gates",
+  "verdict": "confirmed",
+  "reason": "SpEffect 300600/300601/300602 conditionHp 80/60/40 and rates 0.6/0.5/0.333; 5221/5222/5223 at 75/50/25 with 0.75/0.667/0.5; EquipParamProtector 102000 residentSpEffectId 5221/5222/5223.",
+  "fix": {},
+  "needs_recording": false
+ },
+ {
+  "id": "combat.posture-regen-by-animation",
+  "verdict": "confirmed",
+  "reason": "StaminaControlParam rows 0 and 1000100 match; c0000 TAE a050_300000 type 0 0-39, a000_213301 0-18, a050_203000 type 0 0-12 then 10, a050_002000 type 10 0-92; c1010 guard a100_003100 TAE 225 25 percent, c1020 guard and deflect 33 percent.",
+  "fix": {},
+  "needs_recording": false
+ },
+ {
+  "id": "combat.posture-break-rule",
+  "verdict": "confirmed",
+  "reason": "Exe b6e6a0 sets +0x1c6 when remaining posture < 1 or HP < 2 with a mark left on an unguarded hit, +0x1c4 on a guarded non-deflect hit, recomputes posture on a deflect (+0x1c7) without a break, and sets +0x1cf for the attacker.",
+  "fix": {},
+  "needs_recording": false
+ },
+ {
+  "id": "combat.deflect-never-breaks",
+  "verdict": "corrected",
+  "reason": "Exe b6e6a0 recomputes the defender's posture on a deflect (+0x1c7) through 8439a0 and never sets the break flag, which confirms the rule; but b6bd40 returns 1028 (0x404) only when the attacker's posture is emptied by the repel cost (+0x1cf, set in b6e6a0 from 842790) and the attack has doesBreakRepelStamDamage, not when the deflector's bar is empty.",
+  "fix": {
+   "summary": "Even with a full posture bar a successful deflect does not break Wolf or an enemy: the deflect path recomputes posture and skips the break flag, and the next block or hit does the break. Damage type 1028 is a different case: the guard or deflect emptied the attacker's posture with an attack that has doesBreakRepelStamDamage.",
+   "values": "Defender damage type (b6bd40): 3 for a plain block or deflect; 1028 (DAMAGE_TYPE_GUARDATTACKER_STAMZERO in c0000_define.lua) when hit record +0x1cf is set (attacker posture minus the repel cost below 1) and the attack's doesBreakRepelStamDamage bit is on. In c0000_transition.lua 1028 during a deflect window fires W_HardDeflectStagger (stand) or W_GroundSubAttackBreakDeflectAdd (sub-guard) instead of the normal hard deflect.",
+   "how": "Exe b6e6a0 (deflect branch through 8439a0, +0x1cf from 842790) and b6bd40; HKS c0000_transition.lua."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "combat.hp-damage-formula",
+  "verdict": "confirmed",
+  "reason": "The curve knots at DAT_143b01918 read 0.12, 1, 2.5 and 8, and the output globals DAT_143d5c100..114 lie in zero-initialised .data (file offset past raw size 0x25b000), so the curve returns the attack value unchanged as stated.",
+  "fix": {},
+  "needs_recording": false
+ },
+ {
+  "id": "combat.attack-power-growth",
+  "verdict": "corrected",
+  "reason": "SpEffectParam 160000+N read: AP14 4.25, AP15 4.35 and AP52 6.775 match, but AP53 is 6.77 (slightly below AP52) and the rates also cover defStaminaAttackRate and attackHitParryStaminaAttackRate.",
+  "fix": {
+   "values": "AP1..14: M = 1 + 0.25 x (AP-1) (AP14 = 4.25). AP15..27: +0.10 each; AP28..51: +0.05; AP52 = 6.775; AP53 = 6.77, then +0.01 per level to AP99 = 7.23. The same M is set on physics, magic, fire, thunder and dark AttackRate, staminaAttackRate, defStaminaAttackRate and attackHitParryStaminaAttackRate; physicsAttackPowerRate stays 1. Opening slash is 80 HP / 30 posture at AP1 and 340 HP at AP14. Live save AP15 = 4.35: Wolf's normal slash did 348 HP and 130 posture."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "combat.area-growth-doping",
+  "verdict": "confirmed",
+  "reason": "SpEffect 7010-7014 rates 1, 1.25, 1.5, 2, 3; 7124 and 7820 posture 3.75 with HP 4.25 and 4.4; 7953 3.25 / 3.75 and 7951 4.25 / 5.0 read as stated.",
+  "fix": {},
+  "needs_recording": false
+ },
+ {
+  "id": "combat.block-hp-physical",
+  "verdict": "confirmed",
+  "reason": "EquipParamWeapon 5000 and 5100 physGuardCutRate 100 and NpcParam 10100000 physGuardCutRate 100 with slashGuardCutRate 100 read as stated.",
+  "fix": {},
+  "needs_recording": false
+ },
+ {
+  "id": "combat.guard-elemental-chip",
+  "verdict": "confirmed",
+  "reason": "EquipParamWeapon 5000/5100 fire 33/50, magic 25/50, dark 50/100, lightning 0/0, blood 33/50, disease 25/100, and NpcParam 10100000 fire 33, magic 25, dark 50, lightning 0 match.",
+  "fix": {},
+  "needs_recording": false
+ },
+ {
+  "id": "combat.charmless-enemy-scaling",
+  "verdict": "confirmed",
+  "reason": "SpEffect 7710 and 7900-7903 read as stated; the extra skill-point gain is haveSoulRate 1.2 only, with no separate skill field.",
+  "fix": {},
+  "needs_recording": false
+ },
+ {
+  "id": "combat.charmless-block-chip",
+  "verdict": "confirmed",
+  "reason": "SpEffect 8610 sets bleed and poison guard rates 1.5 and curse and disease 1.2 as stated.",
+  "fix": {},
+  "needs_recording": false
+ },
+ {
+  "id": "combat.perilous-flags",
+  "verdict": "corrected",
+  "reason": "AtkParam_Npc counts of (disableGuard g0, g1, disableJustGuard g0, g1) are right, but row names show (1,1,1,1) is mostly sweeps and dummies and (1,0,1,0) mostly grabs, explosions and dog attacks, the reverse of the record.",
+  "fix": {
+   "values": "AtkParam_Npc (disableGuard g0, g1, disableJustGuard g0, g1): (1,1,1,1) 238 rows, neither guard type works: 71 named sweeps (下段), 39 mikiri dummy hitboxes, 15 system dummies, 15 thrusts, 5 grabs, 93 other. (1,0,1,0) 60 rows, katana can neither block nor deflect, Loaded Umbrella can: 19 grabs (General neck grab), explosions and dog attacks; 22 of them have throwFlag 1. (1,0,0,0) 111 rows, katana cannot block but can deflect: 100 named thrusts. 1987 rows all 0. Guard type 0 = Kusabimaru, 1 = Loaded Umbrella. throwFlag 1 and 2 appear in several patterns, so the flag set alone does not say grab.",
+   "note": "The move kind comes from row names; only the thrust pattern maps cleanly to one kind."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "combat.perilous-warning",
+  "verdict": "confirmed",
+  "reason": "c1010 judge 980 spawns bullet 10001600 (atk 8, SpEffect 211000, vfx 48100, life 0.1, radius 2, EmittePosType 7) and the sweep 3020 kanji comes at 0.2 s before the blade at 1.067-1.333 s; General and Owl judges 980-987 split into perilous and firecracker effects as stated.",
+  "fix": {},
+  "needs_recording": false
+ },
+ {
+  "id": "combat.perilous-thrust",
+  "verdict": "confirmed",
+  "reason": "AtkParam_Npc 10100230: atkType 2, phys 48, atkStam 6, direct 12, katana disableGuard 1, guardAtkRate 30, repel to attacker 45, staminaDamageAttackHitParry 90; 5000000 uses the same flag set.",
+  "fix": {},
+  "needs_recording": false
+ },
+ {
+  "id": "combat.perilous-sweep",
+  "verdict": "corrected",
+  "reason": "Named sweep rows (下段) are in the (1,1,1,1) pattern (71 rows), not (1,0,1,0), so the umbrella cannot guard them either; jump i-frame windows are as stated.",
+  "fix": {
+   "values": "Sweeps carry (1,1,1,1) on AtkParam_Npc (71 named sweep rows among 238), so neither the katana nor the Loaded Umbrella can block or deflect them. Jump anims carry IFrameType 1 Sweeps (a000_201114 frames 0-38, a000_201110 0-38, air kick a000_213100 0-73)."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "combat.perilous-grab",
+  "verdict": "corrected",
+  "reason": "Grab rows are mostly in the (1,0,1,0) pattern (19 rows) and only 5 in (1,1,1,1), so the Loaded Umbrella's flags allow a guard against most grabs; step i-frame windows and the General neck grab pair are as stated.",
+  "fix": {
+   "summary": "A grab cannot be blocked or deflected with the katana. It is avoided with a timed step (grab i-frames) or by staying out of reach. A connected grab plays a paired throw. Most grab rows leave the Loaded Umbrella's guard flags open.",
+   "values": "Grab rows: 19 in (1,0,1,0) (katana blocked, umbrella allowed), 5 in (1,1,1,1). Step anims carry IFrameType 7 Grabs: forward step frames 0-9, back/left/right frames 0-6. General neck grab: Wolf anim a210_600000 (170 f), enemy ThrowAtk4100, ThrowAttackBehavior lands at frame 45."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "combat.mikiri-window",
+  "verdict": "corrected",
+  "reason": "Flag 125 on a000_213301 frames 0-12 is right, but SpEffect 100254 is ref 16 'PC dash transition input', not a Mikiri marker, and the clip is 40 frames long.",
+  "fix": {
+   "values": "a000_213301 GroundStep_F (40 f): ChrActionFlag 125 frames 0-12 (0.4 s); neutral step a000_213300 is the same clip. SpEffect 100254 on the same span is ref 16 (PC dash transition input), not part of Mikiri. Back and side steps have no flag 125. Enemy thrust contact windows: soldier 3013 judge 230 at 0.767-0.933 s; Owl 3033 judge 310 at 1.467-1.867 s. No clip has both flag 125 and thrust i-frames."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "combat.mikiri-posture",
+  "verdict": "corrected",
+  "reason": "staminaDamageAttackHitParry is 90 on 2335 AtkParam rows as stated, but ThrowParam 11020190, 11020120 and 11020121 are Samurai General rows (DefChrId 1020); the soldier's pairs would be 11010xxx.",
+  "fix": {
+   "values": "AtkParam staminaDamageAttackHitParry 90 on 2335 rows, including soldier 10100100/230, Owl 50600310/311, Genichiro 71000250. SpEffect attackHitParryStaminaAttackRate multiplies it. ThrowParam for the General (DefChrId 1020): 11020190 surviving pair (needs SpEffect 200030 on the defender, throwKind 170000; Wolf a201_511800, enemy ThrowDef13800); break pair 11020120 (throwKind 30000; a201_511100 / 13100) then 11020121 (30100). Soldier 75 posture breaks, Owl 660 does not."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "combat.mikiri-dummy-hitbox",
+  "verdict": "confirmed",
+  "reason": "AtkParam_Npc 10100940/941 have guardAtkRate 100, zero damage and parry 90, active at 0.767-0.933 s; Owl 311 runs at 1.333-1.867 s beside 310 at 1.467-1.867 s.",
+  "fix": {},
+  "needs_recording": false
+ },
+ {
+  "id": "combat.jump-counter-sweep",
+  "verdict": "confirmed",
+  "reason": "SpEffect 400200 sits on c1010 3020 at 0-2.667 s and on c5060 3004 (0.133-1.567 s), 3024 and 3090; 310601 = 40; kick 901 direct 10, attribute 7.",
+  "fix": {},
+  "needs_recording": false
+ },
+ {
+  "id": "combat.air-kick-hit",
+  "verdict": "confirmed",
+  "reason": "AtkParam_Pc 901: atkType 1, flags 1/0/1, dmgLevel 5, atkPhys 10, atkStam 5, direct 10, dummies 612-614, knockback 0.8; ref 204 is SpEffect 100334 (env 2004).",
+  "fix": {},
+  "needs_recording": false
+ },
+ {
+  "id": "combat.hit-stop",
+  "verdict": "confirmed",
+  "reason": "NpcParam hitStopType 0 on 1258 rows, 1 on 14 (Yasha Ape c5100, Okiryu c5320, 2 General test rows), 2 on 7 (Great Serpent c5010 plus 1 test row); defender hit stop 0 everywhere and Wolf rows 0.1.",
+  "fix": {},
+  "needs_recording": false
+ },
+ {
+  "id": "combat.knockback-distance",
+  "verdict": "confirmed",
+  "reason": "AtkParam 10100100 knockback 2.0 / 1.8 / 0.5, AtkParam_Pc 5000010 1.0 / 1.0 / 0.4 and 5000000 0.8 / 0.8 / 0.4 read as stated.",
+  "fix": {},
+  "needs_recording": false
+ },
+ {
+  "id": "combat.knockback-timing",
+  "verdict": "confirmed",
+  "reason": "KnockBackParam rows 0, 1 and 10 match; protector knockbackParamId 1 is set on 38 rows.",
+  "fix": {},
+  "needs_recording": false
+ },
+ {
+  "id": "combat.knockback-self-recoil",
+  "verdict": "confirmed",
+  "reason": "c0000 TAE 226 gives 0 percent on a050_300000, 50 on 300001/300010/300011 and 30 on 300020/300030/300040; ChrActionFlag 72 is 133 events on 121 clips with ArgA 0.09.",
+  "fix": {},
+  "needs_recording": false
+ },
+ {
+  "id": "combat.deflect-recoil-attacker",
+  "verdict": "confirmed",
+  "reason": "Exe b698d0 maps guarded outcomes to 1017-1021 and 1000/1003/1008-1010 by BehaviorParam category as stated; the 1022-1026 column is the armored-part guard path (+0x1ce), which no shipping NpcParam row can reach.",
+  "fix": {
+   "note": "Types 1022-1026 come from the armored-part guard path (hit record +0x1ce), which needs partsAtkParamId rows that shipping data does not set."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "combat.guard-reaction-sizes",
+  "verdict": "confirmed",
+  "reason": "HKS c0000_transition.lua picks small, middle, large, minimum or extra-large block and deflect clips from damage level, with ref 202 turning small to large into minimum, as stated.",
+  "fix": {},
+  "needs_recording": false
+ },
+ {
+  "id": "combat.additive-deflect-window",
+  "verdict": "corrected",
+  "reason": "Ref 228 sits on the StandDeflectEasy (block recoil) clips, not the hard-deflect recoil: Small at frames 0-9 and Middle at 12-21 (some at 0-9); 411 is only on a000_299024 and 299060 and 412 sits at frames 9-10.",
+  "fix": {
+   "summary": "After a block (not a perfect deflect), pressing guard again in the block recoil opens an additive deflect window (ref 228), so a second well timed press deflects during the recoil. Pressing guard in that recoil also restarts guard at frame 9-10.",
+   "values": "Ref 228 TAE_ENABLE_ADD_JUST_DEFLECT on StandDeflectEasy* (block recoil): Small frames 0-9, Middle mostly 12-21 (some 0-9). Additive anim a000_299060 with ref 203 frames 0-9; ref 411 only on a000_299024 and a000_299060; ref 412 at frames 9-10 starts guard. Live: deflects at press-to-hit 9.6-25 frames come during recoils."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "combat.guard-from-damage",
+  "verdict": "corrected",
+  "reason": "Ref 503 is on StandDamageMiddle a000_100200-203 at frames 12-24 but on StandDamageLarge_F/B a000_100300/301 from frame 6 (6-51, 6-45) and on a000_191500/191511 at 9-81; a050_2062xx deflect frames 15-21 confirmed.",
+  "fix": {
+   "values": "ref 503 TAE_ENABLE_HIT_DEFLECT_CANCEL: StandDamageMiddle a000_100200-203 frames 12-24; StandDamageLarge_F/B a000_100300 frames 6-51 and a000_100301 6-45; a000_191500/191511 frames 9-81. It leads to StandDeflectGuardFromDamage_{F,B,L,R} (a050_2062xx, SpEffect 105010 deflect frames 15-21)."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "combat.enemy-guard-decision",
+  "verdict": "corrected",
+  "reason": "Common_Parry is in common_common_func_NTC.lua and is called from 101000_battle.lua line 813 (not 102000), and SpEffect 200220's window in the deflect clip differs per enemy (c1010 30 f, c1020 12 f, c7100 20 f, c5060 15 f).",
+  "fix": {
+   "values": "Wolf TAE flag 63 'Flag AI for parry timing' -> INTERUPT_ParryTiming (24) when within range. Common_Parry(ai, goal, 50, 25, 0, 3102) in common_common_func_NTC.lua: deflect if rand <= consecutiveGuardCount x 50, else guard 3100; 25 percent SpinStep 5211 when Wolf is just outside reach; rank 109980 -> 5211; COMMON_SP_EFFECT_PC_ATTACK_RUSH 109990 -> 3102. Enemy deflect anim applies SpEffect 200220 (stateInfo 158, ref 1000090, effectEndurance 0.1, defFlickPower 40) over 30 f on c1010, 12 f on c1020, 20 f on c7100, 15 f on c5060. Clash counters: 200215/6 (weak) raise the count, 200210/1 (strong) reset it.",
+   "how": "ai_src common_common_func_NTC.lua Common_Parry, called from 101000_battle.lua; resident SpEffects; c9997 HKS ExecGuardBlock.",
+   "note": "Community says the block count varies per enemy; data confirms it is per AI script. How the TAE span and the 0.1 s effectEndurance combine is not traced."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "combat.enemy-guard-block-reduction",
+  "verdict": "confirmed",
+  "reason": "Exe 845ed0 computes (100 - (1 + 10c60d0 attribute rate/100) x NpcParam +0x6c physGuardCutRate x (1 + guardRow +0x6e/100)) / 100; soldier physGuardCutRate 100 with slash 100 gives k 2, Owl staminaGuardDef 50, shield samurai 11807400 staminaGuardDef 25.",
+  "fix": {},
+  "needs_recording": false
+ },
+ {
+  "id": "combat.deathblow-readiness",
+  "verdict": "confirmed",
+  "reason": "NpcParam ninsatuNum 0 on 1078 rows, 1 on 76, 2 on 107, 3 on 18, with the Owl at 2, as stated.",
+  "fix": {},
+  "needs_recording": false
+ },
+ {
+  "id": "combat.broken-wolf-more-damage",
+  "verdict": "corrected",
+  "reason": "SpEffect 109400 rates (1.5) are right, but the c0000 TAE puts it on 19 clips including the guard-break clips a050_190100/120/130/150/155 and the a076 umbrella breaks, not only the posture-break clips; no enemy chr TAE has it.",
+  "fix": {
+   "summary": "While Wolf is posture broken or guard broken, his collapse animations wear SpEffect 109400, which multiplies his incoming damage by 1.5 for every attribute.",
+   "values": "109400 'increased damage taken while being destroyed': slash, thrust, neutral, light hit, fire, lightning, dark, magic and other DamageCutRates 1.5, anti-air / anti-ground / heavy / light shoot DmgRates 1.5. On 19 c0000 clips: a000_190000/01, 190010/11, 190030/31, 190040/41, 190050, 190055 (frames 0-60..72), 191000 (0-33), the guard-break clips a050_190100/120/130/150/155 and the Loaded Umbrella break clips (a076). 110125 marks 'PC collapse'.",
+   "note": "No enemy chr TAE applies 109400."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "combat.projectile-guard",
+  "verdict": "corrected",
+  "reason": "Owl bullet 50600150 values are right, but isArrowAtk is 0 on all 2396 NPC rows (248 of them bullet attack rows) and 1 on 16 PC rows, and Genichiro arrow 71000500 is 9 / 18 / 18 raw, which gives 8 / 17 only after the 1 percent cut.",
+  "fix": {
+   "values": "Owl bullet 50601150 -> AtkParam_Npc 50600150: guardAtkRate 30, no disable flags, isDisableParry 1, attribute 9; Wolf posture 6 / 12 / 12 (deflect / block / hit) gives 5 / 11 after the 1 percent cut. Genichiro arrow 71000500: 9 / 18 / 18 raw, 8 / 17 after the cut. Attacker feedback fields all 0. Owl firecracker 50600160 and fan 50600131 carry repelLostStamDamage_Attacker 30. Owl firecracker disables katana block and deflect.",
+   "how": "Bullet refType 1 -> AtkParam; isArrowAtk is 0 on all 2396 NPC rows (248 bullet attack rows) and 1 on 16 PC rows, so it cannot identify enemy projectiles."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "combat.contact-parry-clash",
+  "verdict": "corrected",
+  "reason": "Exe b6c880 sets hit record +0x1ce (damage type 12 in b6bd40, attacker 1022-1026 in b698d0) only in the armored-part guard test, which needs NpcParam partsAtkParamId rows; these are -1 on 1277 rows and 0 (a dummy AtkParam with guardBreakRate 0) on the two test rows 95211000 and 95231000, so the clash path never fires in shipping data.",
+  "fix": {
+   "summary": "The 'clash path' damage types 12 (defender) and 1022-1026 (attacker) belong to the armored-part guard: a hit on a body part whose part AtkParam has a higher guardBreakRate than the attack's guardAtkRate. No shipping enemy sets those part rows, so the path is dead. Contact parry (types 5, 1029-1032) is a separate rule whose trigger is still not traced; isDisableParry turns it off and is 1 on nearly all rows.",
+   "values": "Clash path: b6c880 calls c66a0, which reads NpcParam +0x1e4 partsAtkParamId[part-1]; if the attack's guardAtkRate (+0x62) is below that row's guardBreakRate (+0x64) it sets +0x1ce, giving type 12 and 1022-1026. partsAtkParamId1..8 = -1 on 1277 rows, 0 on test rows 95211000 and 95231000 (AtkParam 0 is a dummy bullet, guardBreakRate 0). No HKS script defines 12 or 1022-1026. Contact parry: AtkParam isDisableParry NPC 1 on 2257 rows, 0 on 139; PC 1 on 442 of 443. HKS: 5 PARRY and 1029/1031 DEF_CONTACT_PARRY(_STAMZERO) in c0000; 1030/1032 RECEIVE_ATTACK_PARRY(_STAM_ZERO) in c9997. Weak-clash AI SpEffects 200215/6 and strong 200210/1 last 0.1 s.",
+   "how": "Exe b6c880 / c66a0 (+0x1ce), b6bd40, b698d0; HKS define files. Contact-parry trigger not traced.",
+   "check": "Not visible in the shipped game; for contact parry, attack at the same moment as an enemy swing and watch for spark clashes.",
+   "confidence": "exe",
+   "note": "Clash path settled from exe and data. The contact-parry trigger (types 5, 1029-1032) is still open."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "combat.recorded-hits-on-wolf",
+  "verdict": "confirmed",
+  "reason": "docs/kb/damage.md lists the recorded hits as stated; the rec summary medians mix guarded and direct hits, so the per-hit table in damage.md is the source.",
+  "fix": {},
+  "needs_recording": false
+ },
+ {
+  "id": "combat.wolf-posture-damage-to-enemy",
+  "verdict": "confirmed",
+  "reason": "AtkParam_Pc 5000010 30 / 30 / 15, 5000000 20 / 20 / 10 and kick 901 direct 10 / 10 / 5 read as stated.",
+  "fix": {},
+  "needs_recording": false
+ },
+ {
+  "id": "combat.deflect-counter-attack",
+  "verdict": "confirmed",
+  "reason": "HKS HardDeflectAtk, EasyDeflectedAtk and DeflectGuardAttack branches use ref 213 ENABLE_DEFLECT_GUARD_ATTACK; ref 231 sits on a050_300001/300010 and the easy-deflect clips as stated.",
+  "fix": {},
+  "needs_recording": false
+ },
+ {
+  "id": "deathblows.posture-break-trigger",
+  "verdict": "confirmed",
+  "reason": "Exe b6e6a0 sets the break flag +0x1c6 on an unguarded hit when projected posture is below 1, the guard-break flag +0x1c4 on a block, and only recomputes posture on a deflect (+0x1c7), as stated.",
+  "fix": {},
+  "needs_recording": false
+ },
+ {
+  "id": "deathblows.collapse-window",
+  "verdict": "corrected",
+  "reason": "SpEffect 220420 (stateInfo 352) sits at frames 0-75 on a000_008300/008301/008310 for c1010 and most humanoids, and a000_008300 lasts 3.0 s, but the window differs for many enemies, so 'every collapse clip' is wrong.",
+  "fix": {
+   "summary": "Collapse reaction clips apply SpEffect 220420 (stateInfo 352, trunk display collapsed) from frame 0; that is the deathblow-ready state. On the soldier and most humanoids it lasts 75 frames (2.5 s) of a 3.0 s clip. Larger enemies have longer windows set in their own clips.",
+   "values": "SpEffect 220420 on a000_008300/008301 frames 0-75 on 77 chr TAEs (c1010, c1020, c1030 ...); 0-85 on c1150/c1151/c1180/c1181; 0-90 on c1340/c1350; 0-100 on c5000/c5005; 0-105 on c5080/c5100; 0-160 on c7020; 0-168 on c5020/c5021; 0-205 on c1370/c1380; 0-285 on c5320. a000_008310 is 0-75 on most, 0-60 on c1370/c1380/c5020/c5021, 0-80 on c5080. c1010 a000_008300 length 3.0 s.",
+   "note": "The SpEffect timing settles the window per enemy; sekiro-rs docs list it as unknown."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "deathblows.hp-zero-ready",
+  "verdict": "confirmed",
+  "reason": "Exe b6e6a0 treats HP below 2 with bd5870 (chr +0x25c marks) at least 1 as a break; bd64e0 holds HP at 1 when bd5df0 is true, which covers stateInfo 143 and marks above 0 (plus stateInfo 235 on the player and a chr flag).",
+  "fix": {},
+  "needs_recording": false
+ },
+ {
+  "id": "deathblows.ninsatu-num",
+  "verdict": "confirmed",
+  "reason": "NpcParam ninsatuNum is 0 on 1078 rows, 1 on 76, 2 on 107 and 3 on 18, and exe bd5870 returns chr +0x25c as the live counter.",
+  "fix": {},
+  "needs_recording": false
+ },
+ {
+  "id": "deathblows.multi-mark-bosses",
+  "verdict": "confirmed",
+  "reason": "NpcParam ninsatuNum reads 2 on 10200000, 10400000, 50601010, 71001000, 50800000, 54300000, the Shura, Seven-sided Warrior and Akaoni rows; 3 on 54000000, 50000000 and 70200000; 1 on 50001000, 50900000, 51000000, 74000000 and 71100000; 2 on 51000100.",
+  "fix": {
+   "note": "Row names checked: 51000000 / 51000100 are the Guardian Ape and the headless form, 71100000 is Genichiro Way of Tomoe ('Rival naked'), 54300000 is Isshin Ashina ('bedridden Sword Saint'), 53200000 Okiryu (Large) has 1 and the small Okiryu rows 0; 52000000 'mermaid dragon' has 1. Akaoni 50203000 (E3 build) has 1."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "deathblows.mark-spend-hp-reset",
+  "verdict": "confirmed",
+  "reason": "SpEffect 300610 'HP reset' has changeHpRate -100; c5060 a000_012000 adds it at 4.4 s (c1020 4.5 s, c7100 4.33 s); recoveRremainNinsatsuNum is a real SpEffect field, set to 99 only on 8010 'Refresh full recovery'.",
+  "fix": {},
+  "needs_recording": false
+ },
+ {
+  "id": "deathblows.final-mark-finisher",
+  "verdict": "corrected",
+  "reason": "ThrowParam has 9 Todome start/body pairs (throwKind 190000/190100) but for 8 chr models (5000, 5060, 5090, 5100, 5400 twice, 5430, 7020, 7110); body rows use defender dummies 231-235, not only 235.",
+  "fix": {
+   "summary": "On the last mark a boss that has a finishing pair (row suffix 180/181) uses it, and its defender clip is itself the death. ThrowKind 190000/190100 Todome rows exist as 9 pairs for 8 boss models.",
+   "values": "ThrowKind 190000 (start, Wolf 501700, Dist 20) and 190100 (body, Wolf 511700, defender 13700, Dist 10). Rows for c5000 (a211), c5060 (a221), c5090 (a244), c5100 (a230), c5400 (a242 and a243), c5430 (a242), c7020 (a240), c7110 (a228). defSorbDmyId 235 on c5000/c5060/c5090, 232 on c5100, 231 on c5400/c5430/c7020, 234 on c7110. ThrowKindParam 190000 has no extra condition beyond ActionUnlock 5."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "deathblows.throwparam-pairing",
+  "verdict": "confirmed",
+  "reason": "ThrowParam 11010000 (throwKind 40000, Wolf a200_500000, no defender clip) and 11010001 (40100, a200_510000 / 12000, sorb 267, interpolation 0.5) read as stated, and ThrowKindParam 40100 derives from 40000.",
+  "fix": {},
+  "needs_recording": false
+ },
+ {
+  "id": "deathblows.throwparam-rows-front",
+  "verdict": "confirmed",
+  "reason": "ThrowParam 11010000/01/05/06/20/21/110/111/030 match the stated Dist, angles, height ranges, clips and dummy 267.",
+  "fix": {},
+  "needs_recording": false
+ },
+ {
+  "id": "deathblows.throwkind-rules",
+  "verdict": "corrected",
+  "reason": "ThrowKindParam has 100 rows and the unlock, button and skill values match, but defAliveCheck 2 is on the ninjutsu kinds, the xx900 Todome kinds 20900/40900/180900/270900/540900 and 240000, while the finisher kinds 190000/190100 have 0.",
+  "fix": {
+   "values": "100 rows. checkAction_ActionUnlock_0 = 5 on all PC kinds; 20110, 30110, 200000 and 240000 also need unlock 13 and acceptableButton 1; anti-air 80000 needs unlock 18 (ActionUnlockParam row 2450 sets action18, i.e. goods 2450 Anti-air Deathblow Text); immortal slash 250000/250100 need unlock 3; throwSkillId 2100/2110/2120 for the three ninjutsu; defAliveCheck 2 on the ninjutsu kinds (201-203, 41201-41203 and roof copies), 20900, 40900, 180900, 270900, 540900 and 240000; throwCheckSituation 1 body, 2 deflect, 3 mikiri break, 4 enemy throw, 5 mikiri."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "deathblows.check-priority",
+  "verdict": "corrected",
+  "reason": "ThrowKindParam checkPriority values for the named kinds match except the wire kind 180000, which is 0 (130000 is 'break fall'); many kinds have 0, which the record does not mention.",
+  "fix": {
+   "values": "checkPriority: short-distance break 270000 1, break fall 130000 1, enemy special state 50000 1, mikiri 170000 1, aging and roof break kinds 1, breaking start 40000 2, anti-air 80000 2, fall 70000 3, break-back 200000 3, unlimited fall 60000 4, push-down 240000 4, stealth behind 0/100 10, large litter event 120000 100. Priority 0 on crouch behind 10000, deflect 20000, mikiri break 30000, break behind 41000, wall, hanging, kick 160000, wire 180000, Todome 190000, immortal slash 250000 and underwater 260000.",
+   "note": "If the smaller number is tried first, the 0 rows come before everything; whether 0 means 'first' or 'unsorted' is not traced. sekiro-rs and RustSekiro use a fixed order."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "deathblows.near-far-front",
+  "verdict": "confirmed",
+  "reason": "ThrowParam 11010005 (270000, Dist 1.2, priority 1) leads to a200_512500 / 14500 and 11010000 (40000, Dist 3.0, priority 2) to a200_510000 / 12000; the live sample count comes from damage.md.",
+  "fix": {},
+  "needs_recording": false
+ },
+ {
+  "id": "deathblows.lunge-grab-body-timeline",
+  "verdict": "confirmed",
+  "reason": "c0000 a200_500000 has CommonBehavior judge 600 at frames 8-10 (0.27 s); a200_510000 has ThrowAttackBehavior 600 at frame 27 (0.90 s) and lasts 2.67 s; c1010 a000_012000 has ChrActionFlag 69 at frames 50-53 (1.67 s).",
+  "fix": {},
+  "needs_recording": false
+ },
+ {
+  "id": "deathblows.absorb-dummies",
+  "verdict": "corrected",
+  "reason": "ThrowParam dummies 267, 249, 262/263, 264/265 and 293 are atkSorbDmyId as stated, but 233 is a defSorbDmyId on the fall body rows, the soldier's mikiri rows use 520-522 (523/524 are the boss mikiri rows), and Genichiro's body row uses 266.",
+  "fix": {
+   "values": "atkSorbDmyId (on Wolf): 267 front body, 249 behind, 262/263 wall left/right, 264/265 hanging rear/front, 293 deflect (kind 20000), 294/295 later deflect kinds, 520/521/522 soldier mikiri, 523/524 boss mikiri, 540/542 ninjutsu, 266 Genichiro body. defSorbDmyId (on the enemy, Wolf moves): 233 on the fall and break-fall body rows, 229 on the General's behind rows, 230 on the Owl body, 231-236 on boss rows. adsrobModelPosInterpolationTime 0.5 (0 on wall bodies and the kick body 11010161). throwFollowingType 1 on soldier front, deflect and mikiri bodies and on Genichiro body rows, 0 on Owl body rows."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "deathblows.damage-event",
+  "verdict": "confirmed",
+  "reason": "AtkParam_Pc 5000600 has throwFlag 2, atkPhysCorrection 60000, atkAttribute 5, staminaPhysicsAttribute 5, atkType 2, guardAtkRateCorrection 900, reached from BehaviorParam_PC 105000600; the grab is AtkParam_Pc 600 'Shinobi killing start_break' with throwFlag 1 and atkPhys 0.",
+  "fix": {},
+  "needs_recording": false
+ },
+ {
+  "id": "deathblows.defender-death-branch",
+  "verdict": "corrected",
+  "reason": "c1010 a000_012000 (5.5 s) has flag 69 at 1.67 s and a000_012001 exists, but the c0000 TAE has kill follow-ups in more sets than a201: a201 (510001, 510111, 510201, 510311, 511201, 511411, 511511), a216_512501, a225, a229, a235 and a239.",
+  "fix": {
+   "values": "c1010 a000_012000 (5.5 s) has ChrActionFlag 69 at frames 50-53 (1.67 s); 012001 (4.17 s) starts from the same pose. Wolf kill follow-ups (id+1): a201_510001, 510111, 510201, 510311, 511201, 511411, 511511; a216_512501; a225_510001, 510111, 511201; a229_510001; a235_510001, 511201; a239_510001, 510111, 511201, 511411, 511511. General front a201_510000 lasts 4.67 s."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "deathblows.stealth-behind",
+  "verdict": "confirmed",
+  "reason": "ThrowParam 11010020 (kind 0, a200_500200, Dist 2.0, angle 0..90, face 35) and 11010021 (kind 100, a200_510200 / 12200, atkSorb 249) match; the General's 11020021 uses defSorbDmyId 229 instead; kind 0 has 50 rows and no boss chr.",
+  "fix": {
+   "note": "The awareness condition comes from the AI target state, not from ThrowParam. The soldier snaps on Wolf's dummy 249 (atkSorbDmyId); the General uses the defender's dummy 229 (defSorbDmyId)."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "deathblows.stealth-ninjutsu",
+  "verdict": "corrected",
+  "reason": "ThrowKind 201-203 and 41201-41203 (throwSkillId 2100/2110/2120, noThrowInput 800010) and 46 rows each at Dist 10 and height 6.0 match, but 30 rows use atkSorbDmyId 540 (5 use 542) and only 11 use defSorbDmyId 251, and Wolf's clip group follows the enemy (a200 on 30 rows, a201 on 11, a202 on 5).",
+  "fix": {
+   "values": "ThrowKind 201/202/203 (behind) and 41201/41202/41203 (after a break), throwSkillId 2100/2110/2120, defAliveCheck 2, noThrowInputSpecialEffect_forDef 800010. 46 ThrowParam rows per kind: Dist 10.0, height +/-6.0 (one row 10.4); atkSorbDmyId 540 on 30 rows, 542 on 5, defSorbDmyId 251 on 11. Wolf clips <group>_510210 / 510220 / 510230 (511210-511230 after a break), group a200 on 30 rows, a201 on 11, a202 on 5."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "deathblows.behind-after-break",
+  "verdict": "confirmed",
+  "reason": "ThrowParam 11010110 (kind 41000, a200_501200, angle 0..90) and 11010111 (41100, a200_511200 / 13200, atkSorb 249) read as stated; the 229 dummy is the General's defSorbDmyId.",
+  "fix": {},
+  "needs_recording": false
+ },
+ {
+  "id": "deathblows.plunge",
+  "verdict": "confirmed",
+  "reason": "ThrowKindParam 70000 has checkPriority 3 and doesCheckNormalFallOrbit 1, 570000 has throwChangeId 1; ThrowParam 11010030/31 have Dist 20 / 10, Y 3 / 15, a200_510300 / 510310, defender 12300 / 12310, defSorbDmyId 233; 70000 has 65 rows; the body clip fires judge 660 -> AtkParam_Pc 5000660 'deathblow body, fall'.",
+  "fix": {},
+  "needs_recording": false
+ },
+ {
+  "id": "deathblows.unlimited-fall",
+  "verdict": "confirmed",
+  "reason": "ThrowKindParam 60000 ('制限なし落下', no-limit fall) has category 7, priority 4 and the fall-orbit check; 10 rows each for 60000/60100 on chr 1030, 1100, 1120, 5300, 7540, 7550, 7560, 7580, 7590, 7600; 11030040 'PC -> Centipede (Small)' Dist 20, a200_510400.",
+  "fix": {},
+  "needs_recording": false
+ },
+ {
+  "id": "deathblows.anti-air",
+  "verdict": "confirmed",
+  "reason": "ThrowKindParam 80000 needs unlock 18 with priority 2; ThrowParam 80000 has 6 rows (chr 1060, 1080, 1240, 1250, 1260, 1310); ActionUnlockParam row 2450 sets action18.",
+  "fix": {},
+  "needs_recording": false
+ },
+ {
+  "id": "deathblows.wall-hug",
+  "verdict": "confirmed",
+  "reason": "ThrowParam 11010060 'Wall-mounted (left) start' Dist 1.8 -> 11010061 Dist 2.0 (510600 / 12600, dummy 262) and 11010070/71 (500700 / 510700, 12700, dummy 263) match; kind 90000 has 49 rows, none on a boss chr.",
+  "fix": {},
+  "needs_recording": false
+ },
+ {
+  "id": "deathblows.hanging",
+  "verdict": "corrected",
+  "reason": "Values match, and the JP row names settle the open note: 11010080 is 'ぶら下がり（後）' (rear, angle 0..90) and 11010130 is 'ぶら下がり（前）' (front, angle 90..180).",
+  "fix": {
+   "summary": "Wolf hangs from a ledge and kills an enemy standing on the ledge above. Kind 110000 has two row pairs: a rear pair for an enemy facing away and a front pair for an enemy facing Wolf. The body snaps with dummy 264 (rear) or 265 (front).",
+   "values": "ThrowKind 110000 -> 110010; rear 11010080/81 'Hanging (after)' (Wolf 500800/510800, def 12800, Dist 2.25, diffAngMyToDef 22.5, DiffAng 0-90, dummy 264); front 11010130/31 'Hanging (front)' (501000/511000, def 13000, DiffAng 90-180, dummy 265). 98 rows of kind 110000.",
+   "note": ""
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "deathblows.mikiri-deathblow",
+  "verdict": "corrected",
+  "reason": "ThrowKindParam 170000's JP name is 見切り (mikiri) and 30000 is 見切り崩し (mikiri break); both have 33 rows, so 170000 is the plain mikiri pair and 30000 the break pair that kills, not one deathblow-class row.",
+  "fix": {
+   "summary": "A Mikiri Counter on a thrust plays a throw pair. Kind 170000 (mikiri) is the surviving pair; when the 90 posture breaks the enemy, kind 30000 (mikiri break) plays instead and leads to the deathblow. 33 enemy chr types have both kinds, so the others have no mikiri throw.",
+   "values": "ThrowKind 170000 '見切り' (check situation 5, checkPriority 1, noThrowInput 800000) and 30000 '見切り崩し' (check situation 3) -> 30100 / 30110; 33 rows each. Soldier 11010190 (170000): Dist 10, Wolf a200_511800, def 13800, dummy 522; 11010120 (30000): a200_511100 / 13100, dummy 520, then 11010121 (30100) dummy 521.",
+   "note": "The JP names settle the kind mapping."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "deathblows.kick-and-short",
+  "verdict": "corrected",
+  "reason": "The JP names show 130000 is 崩し落下 (break fall: a drop onto a broken enemy, Dist 20, Y 3/15 like the plunge) and not a kick; 160000 is 蹴り崩し (kick break) and 240000 is ダメ押し崩し裏回り (follow-up push, go behind).",
+  "fix": {
+   "summary": "Besides the main pair, the kind list has a short-distance break (270000, 1.2 m reach), a break fall (130000: dropping onto a posture-broken enemy), a kick break (160000/160100) and a follow-up push that circles behind (240000). AtkParam_Pc 740 'Shinobi killing start_breaking kick jump' is the kick-jump start.",
+   "values": "ThrowKind 270000/270100 Dist 1.2 / 2.0 (Wolf 502500/512500, def 14500, dummy 267, checkPriority 1); 130000 '崩し落下' (Wolf 511400, Dist 20, Y 3/15, priority 1) -> 130100 (511410, defSorb 233); 160000 '蹴り崩し' / 160100 (511500/511510, def 13500/13510); 240000 priority 4, unlock 13, defAliveCheck 2, acceptableButton 1."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "deathblows.wire-break",
+  "verdict": "corrected",
+  "reason": "Wire rows exist only for chr 5020, 5021 (Ogre) and 5080 (Gyoubu), and the Gyoubu wire body clip a225_511610 fires ThrowAttackBehavior judge 680, which is AtkParam_Pc 5000680 'deathblow body, wire', not 5000660 (the fall row).",
+  "fix": {
+   "values": "ThrowKind 180000 / 180100 / 180900 ('崩しワイヤートドメ'); rows 15020170/171, 15021170/171, 15080170/171 (Dist 20) and 15080179 (Dist 5); Wolf a<offset>_511600 / 511610 / 511690, defender 13600 / 13610 / 13690. Damage: judge 680 -> BehaviorParam_PC 105000680 -> AtkParam_Pc 5000680 (throwFlag 2, atkPhysCorrection 60000). Defender 13610 adds SpEffect 300610 (HP reset) at 6.23 s on c5020 and 3.9 s on c5080.",
+   "note": "Only the Ogre and Gyoubu have wire rows."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "deathblows.todome-kinds",
+  "verdict": "corrected",
+  "reason": "ThrowKindParam has no 30900; the Todome kinds are 20900, 40900, 41900, 70900, 180900, 190000/190100, 270900, 540900, 541900 and 570900, and only a few have rows (20900 and 180900 c5080; 40900 and 41900 c5080, c5100; 70900 c5010; 190000 nine rows).",
+  "fix": {
+   "values": "Todome kinds (トドメ in the JP names): 20900 deflect, 40900 break, 41900 behind a break, 70900 fall, 180900 wire, 190000/190100 finisher, 270900 short break, 540900 / 541900 / 570900 roof copies. Rows: 20900 and 180900 only c5080 (Gyoubu); 40900 and 41900 c5080 and c5100; 70900 c5010; 190000/190100 9 pairs on c5000, 5060, 5090, 5100, 5400 (two), 5430, 7020, 7110; 270900, 540900, 541900, 570900 none. defAliveCheck 2 on 20900, 40900, 180900, 270900, 540900 and 240000. Gyoubu wire Todome 15080179 (Wolf 511690, def 13690, Dist 5)."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "deathblows.groups-by-wolf-anim",
+  "verdict": "corrected",
+  "reason": "Counting ThrowParam front body rows (kind 40100) by atkAnimOffset gives a200 26 chr types, a202 16, a214 8, a229 6, a201 3, and 24 offsets overall; ThrowParam uses 36 offsets in all kinds, more than the 13 listed.",
+  "fix": {
+   "values": "Front body (40100) chr types per Wolf group: a200 26, a202 16, a214 8, a229 6, a201 3, a213 2, a238 2, a242 2, and one each for a211, a215, a217, a221, a225, a227, a228, a230, a231, a235, a239, a240, a243, a244, a246, a247. All ThrowParam rows use groups a200-a202, a210-a219, a221, a222, a225-a233, a235, a236, a238-a244, a246, a247.",
+   "note": "The table in deathblow_groups.md was generated 2026-10-09 and undercounts; recount from ThrowParam."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "deathblows.throw-search-input",
+  "verdict": "corrected",
+  "reason": "SpEffect 800000, 800010 and 800020 (spCategory 20) are as stated, but acceptableButton 1 is set only on 20110, 30110, 200000 and 240000, not on the Todome kinds (190000/190100 have 0 and -1).",
+  "fix": {
+   "values": "SpEffect 800000 'now accepting shinobi input' (spCategory 20, vfx 5100), 800010 ninjutsu input (vfx 5110), 800020 Large Snake event (vfx 3501001); ThrowKindParam noThrowInputSpecialEffect_forDef 800000 on most start kinds and 800010 on the ninjutsu kinds; acceptableButton 1 on 20110, 30110, 200000 and 240000, 0 or -1 elsewhere."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "deathblows.recovery-on-kill",
+  "verdict": "corrected",
+  "reason": "SpEffect 105050, 150301 and the prohibit copies read as stated, and 105050 / 150301 are added on 102 c0000 deathblow clips at the kill frame, but 105051 / 150302 (and 150312, 150322, 150332) are added by the event clips a000_710200-710207 and by a225_510001 / a235_510001, not by the Todome clips in general.",
+  "fix": {
+   "values": "105050 changeStaminaRate 34 (spCategory 179, priority 3, motionInterval 999); 150301 changeHpRate -10 with state 986 (A), 150311 with 987 (B); 150321 / 150331 changeStaminaRate 34 with 984 / 985. Prohibit copies 105051, 150302, 150312, 150322, 150332 share each category with priority 2 (lower wins), named 'recovery prohibited by Todome through'. They are added by TAE 401 on a000_710200-710207 (scripted event kills, HKS W_Event7102xx) and on the kill follow-ups a225_510001 and a235_510001.",
+   "how": "Wolf's deathblow clips add 105050 and 150301-150331 by TAE AddSpEffect at the kill frame (102 clips). The prohibit copies come from the event clips and two boss kill follow-ups."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "deathblows.ninsatsu-fields",
+  "verdict": "confirmed",
+  "reason": "NpcParam ninsatsuDamageRate 1.0 x1233, 0.0 x44, 5.0 x2 (the two 'mermaid dragon' rows), ninsatsuGuardCutRate 100 x1249 / 0 x30, ninsatuStaminaDmgRate 1 x1271 / 0 x8; def_ninsatsu is 0 on every row.",
+  "fix": {},
+  "needs_recording": false
+ },
+ {
+  "id": "deathblows.mark-drops",
+  "verdict": "corrected",
+  "reason": "ResourceItemLotParam 10005800 gives 10 of category 5 at 100 points, but NpcParam lot_2 10005800 is on 277 rows: 190 of the 201 rows with marks plus 87 rows with none, so it is not limited to marked enemies.",
+  "fix": {
+   "values": "NpcParam ninsatsuResourceItemLotId_2 = 10005800 on 277 rows (190 of the 201 rows with ninsatuNum above 0, and 87 rows with 0); lot_1 = 10000800 on 283 rows, which has no item. Lot 10005800: 10 of resource category 5 (Resurrective Power). Goods 1101 max 100; goods 1100 max 2."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "deathblows.true-death-flow",
+  "verdict": "confirmed",
+  "reason": "Exe a36a60 counts down +0x2138, holds it at 0 while stateInfo 0x15f (351) is on, then loads the window +0x212c from +0x2128 and counts that down; SpEffect 8200 has stateInfo 351. The 1.8 and 15 s start values are set elsewhere and were not re-read.",
+  "fix": {},
+  "needs_recording": false
+ },
+ {
+  "id": "deathblows.resurrection-sequence",
+  "verdict": "confirmed",
+  "reason": "SpEffect 110015 has stateInfo 326, changeHpRate -50, changeHpPoint 1, motionInterval 999 and replaceSpEffectId 3292; it is added at frames 0-3 of a000_110030/110031 and a000_111030/111031/113030; 2130 stateInfo 159 and 2131 stateInfo 160.",
+  "fix": {},
+  "needs_recording": false
+ },
+ {
+  "id": "deathblows.resurrection-recast-lock",
+  "verdict": "confirmed",
+  "reason": "SpEffect 8100 revivalRecastDamage 99999; 3292 same with spCategory 198 and state 936; 3291 stateInfo 936 for 30 s; 8105-8150 carry only names.",
+  "fix": {
+   "note": "Rows 8105-8150 are empty in this build. SpEffect 110015 (the resurrection) has replaceSpEffectId 3292, which ties the suicide recast cancel to the resurrection itself."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "deathblows.resurrection-nodes",
+  "verdict": "confirmed",
+  "reason": "EquipParamGoods 1100 maxNum 2, 1110 maxNum 1 and 2000 maxNum 1, as stated.",
+  "fix": {},
+  "needs_recording": false
+ },
+ {
+  "id": "deathblows.resurrection-recharge",
+  "verdict": "confirmed",
+  "reason": "SpEffect 3611 and 3643 have effectEndurance 150, stateInfo 345 and iconId 2112; the 100-per-node and 1.5x figures stay assumptions, so the record remains open-question.",
+  "fix": {},
+  "needs_recording": false
+ },
+ {
+  "id": "deathblows.unseen-aid",
+  "verdict": "confirmed",
+  "reason": "No param holds the chance, so it stays community; SpEffect 900300 'do not lose souls on death' and 2131 'resurrection from the curse' both use stateInfo 160 but no rate.",
+  "fix": {},
+  "needs_recording": false
+ },
+ {
+  "id": "deathblows.dragonrot",
+  "verdict": "confirmed",
+  "reason": "EquipParamGoods 9500-9526 and 9560 exist (maxNum 1); the spread rate is web-only, so the record stays community.",
+  "fix": {},
+  "needs_recording": false
+ },
+ {
+  "id": "deathblows.dragonrot-cure",
+  "verdict": "confirmed",
+  "reason": "EquipParamGoods 5600 has sellValue 80 and goodsUseAnim 86, 9560 exists; the quest and Unseen Aid reset stay community.",
+  "fix": {},
+  "needs_recording": false
+ },
+ {
+  "id": "deathblows.death-penalty",
+  "verdict": "confirmed",
+  "reason": "TentativePlayerParam row 0 has MoneyLostRate 50 and SkillPointLostRate 50.",
+  "fix": {},
+  "needs_recording": false
+ },
+ {
+  "id": "deathblows.enemy-grab-pairing",
+  "verdict": "confirmed",
+  "reason": "ThrowParam has 30 rows of kind 1000000, 10 of 1000010, 3 of 1000020 and 1 of 1000100, all with DefChrId 0 and AtkChrId set to the enemy chr (for example 1020).",
+  "fix": {},
+  "needs_recording": false
+ }
+]

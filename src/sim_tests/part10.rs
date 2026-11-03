@@ -192,7 +192,7 @@ pub(crate) fn an_aged_wolf_takes_the_aging_deathblow() {
     app.world_mut().resource_scope(|world, combat: Mut<Combat>| {
         let mut st = world.resource_mut::<crate::status::Statuses>();
         for _ in 0..8 {
-            st.hit_wolf(&combat, wolf, 0, &[9600], crate::status::Guard::None);
+            st.hit_wolf(&combat, wolf, 0, &[], &[9600], crate::status::Guard::None);
         }
     });
     for _ in 0..60 * 6 {
@@ -252,7 +252,7 @@ pub(crate) fn an_aged_wolf_plays_the_aged_form() {
     app.world_mut().resource_scope(|world, combat: Mut<Combat>| {
         let mut st = world.resource_mut::<crate::status::Statuses>();
         for _ in 0..8 {
-            st.hit_wolf(&combat, wolf, 0, &[9600], crate::status::Guard::None);
+            st.hit_wolf(&combat, wolf, 0, &[], &[9600], crate::status::Guard::None);
         }
     });
     let mut seen: Vec<String> = Vec::new();
@@ -325,7 +325,7 @@ pub(crate) fn an_aged_wolf_jumps() {
     app.world_mut().resource_scope(|world, combat: Mut<Combat>| {
         let mut st = world.resource_mut::<crate::status::Statuses>();
         for _ in 0..8 {
-            st.hit_wolf(&combat, wolf, 0, &[9600], crate::status::Guard::None);
+            st.hit_wolf(&combat, wolf, 0, &[], &[9600], crate::status::Guard::None);
         }
     });
     for _ in 0..60 * 6 {
@@ -593,8 +593,27 @@ pub(crate) fn deathblow_to_defeat(chr: &str, row: i64) -> (usize, Vec<i64>, Vec<
     }
     let mut seen = Vec::new();
     let mut flags = Vec::new();
+    // The Folding Screen Monkeys: the bar holder 2000800 is a stand-in; the win (m20 12005800)
+    // waits on the four c1260, not on the c1250 monkeys among them.
+    super::part01::BOSS_CHR.with(|c| c.set((row == 12600050).then_some("c1260")));
+    super::part01::BOSS_DONE.with(|d| d.borrow_mut().clear());
+    // The win stays (no restart 5 s after it while a deathblow still plays: the Monkeys' last
+    // catch wins at once, the bar holder's HP 22 -> 0 by 3126010).
+    app.world_mut().resource_mut::<crate::enemy::AutoRestart>().0 = false;
+    // (Its cast comes in a few frames after the bar holder.)
+    for _ in 0..60 {
+        if super::part01::try_boss_in_play(app.world_mut()).is_some() {
+            break;
+        }
+        app.update();
+    }
     for n in 1..=5 {
-        seen.extend(break_and_deathblow(&mut app, 600));
+        if let Some(b) = super::part01::try_boss_in_play(app.world_mut()) {
+            seen.extend(break_and_deathblow(&mut app, 600));
+            if row == 12600050 {
+                super::part01::BOSS_DONE.with(|d| d.borrow_mut().push(b));
+            }
+        }
         // The Owl (Father)'s second phase (m11_00 11005912: his first ThrowDef12000's message 20,
         // then his SpEffect 3506022 from the step his AI takes, a000_005201-5203, sets 11005902,
         // which his kneel 11005920 needs; 11005912 sets 200051 first). The sim's boss is
@@ -1327,23 +1346,39 @@ pub(crate) fn attack_occurrence_follows_the_hit_category() {
 /// The c1180 servants' armour guard: their anims carry ShieldBlock judge 800 under StateInfo
 /// 957, which 220062 (put on by the map's armour-part event) opens. The judge is the guard row
 /// (BehaviorParam 2118xx800 -> AtkParam_Npc 11800800, guardAttribute 1), not an arc: the arc
-/// stays NpcParam guardAngle's (FUN_140b6c880 run in tools/emu-cases; 0 = 90 deg).
+/// stays NpcParam guardAngle's (FUN_140b6c880 run in tools/emu-cases; 0 = 90 deg). Without it
+/// there is no guard; with it a sword blow (repel power 30) is blocked by the row 11800800
+/// (repel 20, guard type 1).
 #[test]
 pub(crate) fn the_armour_guard_follows_its_worn_effect() {
     let mut app = app_with("c1180");
     app.world_mut().resource_scope(|world, combat: Mut<Combat>| {
-        let mut q = world.query_filtered::<&mut Actor, (With<Enemy>, Without<crate::enemy::Cast>)>();
-        let mut a = q.iter_mut(world).next().unwrap();
+        let mut q = world.query_filtered::<(&mut Actor, &Enemy), Without<crate::enemy::Cast>>();
+        let (mut a, e) = q.iter_mut(world).next().unwrap();
         a.resident.retain(|&id| id != 220062);
         a.play("Idle", "a000_000000");
         a.t = 0.5;
         let d = combat.data_of(&a);
         let judge = |a: &Actor| crate::combat::shield_block(d, a, crate::combat::event_gates(&combat, a, &[]).as_deref());
+        let blow = crate::data::Attack { guard_atk_rate_correction: 300.0, ..Default::default() };
+        let guard = |a: &Actor| crate::combat::guard_contact(&combat, d, a, None, ("a000_000000", 0.5), None, true, &blow, 5000);
         assert_eq!(judge(&a), None, "without 220062");
+        assert_eq!(guard(&a).guarded, crate::guard::Guarded::Hit, "without 220062");
         a.sp_chained.push((220062, 1e6));
         assert_eq!(judge(&a), Some(800), "with 220062");
+        let g = guard(&a);
+        assert_eq!(g.guarded, crate::guard::Guarded::Block, "with 220062");
+        assert_eq!(g.half_angle, 60.0);
         let row = crate::combat::guard_row(&combat, &a, 800, 5000).expect("the armour guard's row");
         assert_eq!(row.guard_attribute, 1);
+        // The block is no guard reaction: 220062's ref 1000105 GUARD_TO_ADD_DAMAGE turns it into
+        // the SABlend flinch (c9997 ExecGuardBlock), so he swings on as the game's servants do
+        // (live: 0 of their blocks of Wolf's sword played a guard clip). 220062 is in no c1180
+        // clip, so its ref comes from SpEffectParam.
+        a.resident.push(220062);
+        let refs = crate::prosthetic::enemy_refs(&combat, &a, e);
+        assert!(refs.contains(&1000105), "{refs:?}");
+        assert_eq!(crate::combat::enemy_guard_block(d, &refs, 1, 4, false, false), crate::combat::GuardPick::Add);
         assert_eq!(crate::combat::guard_half_angle(&a), a.guard_angle);
         a.guard_angle = 0.0;
         assert_eq!(crate::combat::guard_half_angle(&a), 90.0);
@@ -1570,4 +1605,21 @@ pub(crate) fn hit_stop_holds_posture_regen_and_sp_effect_timers() {
     assert!(held_timer < free_timer * 0.25, "timer in hit stop {held_timer} vs {free_timer}");
 }
 
-
+/// The Folding Screen Monkeys as the menu picks them (c1260 / 12600050): the bar holder 2000800
+/// (a c1000 dummy in the MSB) is a hidden stand-in away from the field, not a fifth monkey one
+/// deathblow beat; the four c1260 are the fight.
+#[test]
+pub(crate) fn the_monkeys_bar_holder_is_off_the_field() {
+    if !std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/extracted/enemies/c1260.json")).exists() {
+        return;
+    }
+    let mut app = app_cfg("c1260", Some(12600050), Vec::new());
+    for _ in 0..60 {
+        app.update();
+    }
+    let w = app.world_mut();
+    let mut q = w.query::<(&Enemy, &Transform, &Visibility, Has<crate::enemy::Cast>)>();
+    let main: Vec<_> = q.iter(w).filter(|x| !x.3).map(|x| (x.0.stand_in, x.1.translation, *x.2)).collect();
+    assert!(main.len() == 1 && main[0].0 && main[0].1.z > 1000.0 && main[0].2 == Visibility::Hidden, "bar holder: {main:?}");
+    assert_eq!(q.iter(w).filter(|x| x.3).count(), 4, "the four monkeys");
+}

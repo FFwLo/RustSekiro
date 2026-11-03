@@ -1,0 +1,759 @@
+[
+ {
+  "id": "cutscenes.cutscenebnd-inventory",
+  "category": "cutscenes",
+  "title": "Cutscene file set",
+  "summary": "Cutscenes are stored as 54 binders named s<map>_<number>. The EMEVD cutscene id maps to the name by digits: 11010030 means s11_01_0030.",
+  "values": "/cutscene/sMM_BB_NNNN.cutscenebnd.dcx; loaded as cutscene:/%s.cutscenebnd; DLC paths game_dlc1:/remo and game_dlc2:/remo",
+  "how": "Archive dictionary listing plus exe path strings.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "Data0 archive dictionary /cutscene/"
+   },
+   {
+    "kind": "exe",
+    "ref": "sekiro.exe.unpacked.exe strings"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "List the archive paths and match an EMEVD id.",
+  "note": "",
+  "needs": [
+   {
+    "id": "cutscenes.emevd-play-cutscene",
+    "why": "EMEVD starts them"
+   }
+  ]
+ },
+ {
+  "id": "cutscenes.remo-engine",
+  "category": "cutscenes",
+  "title": "Cutscene runtime classes",
+  "summary": "The exe has a remo system. SprjRemoMan manages a cutscene instance. SprjRemoRes loads the binder, extra resources and the map texture set.",
+  "values": "SprjRemoIns steps: STEP_Init, Play_Init, Play_Wait, Finish, DummyForWarp_*; SprjRemoRes: LoadRemobnd, LoadExtraResource, LoadMapTpf; CutsceneGPARAM; remobase.gparam; name format %s#cut%04d#a%04d",
+  "how": "Exe strings.",
+  "sources": [
+   {
+    "kind": "exe",
+    "ref": "sekiro.exe.unpacked.exe strings"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Search the exe strings for SprjRemo.",
+  "note": "",
+  "needs": [
+   {
+    "id": "cutscenes.cutscenebnd-inventory",
+    "why": "the files it loads"
+   }
+  ]
+ },
+ {
+  "id": "cutscenes.dummy-for-warp",
+  "category": "cutscenes",
+  "title": "Warp-only cutscenes",
+  "summary": "Some cutscene files are tiny and only exist to warp the player with a fade. The exe has a DummyForWarp step for them.",
+  "values": "s11_02_0050 and 0060 (46392 bytes), s11_01_0090 (7096), s89_00_0099 (19260), s10_00_0020 (19392), s20_00_0030 (28096); fade-only calls 2002200, 2002201 (m20), 2502895 (m25)",
+  "how": "File size plus exe step names.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "Data0 archive dictionary /cutscene/"
+   },
+   {
+    "kind": "exe",
+    "ref": "sekiro.exe.unpacked.exe strings"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "fireguy-rustsekiro/src/enemy/script.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Play id 2502895 and see only a fade and a warp.",
+  "note": "Sizes show stubs. That they are used purely for warp is inferred from the exe step name.",
+  "needs": [
+   {
+    "id": "cutscenes.warp-fade",
+    "why": "how the warp is called"
+   }
+  ]
+ },
+ {
+  "id": "cutscenes.emevd-play-cutscene",
+  "category": "cutscenes",
+  "title": "EMEVD play-cutscene family",
+  "summary": "A family of instructions in bank 2002 starts a cutscene. Variants add a warp, a rotation, a time-of-day change or a ceremony.",
+  "values": "2002[1] Play Cutscene to All (id, playback); [2] and warp all; [3] to player; [4] and warp player (id, method, point entity, area, block, player); [5] rotate; [6] change time period; [7] Fade Out and Warp Player; [9]/[10] ceremony; [11] ongoing; [13] warp with lighting; 3[31] IF Ongoing Cutscene Finished",
+  "how": "EMEVD instruction table.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "reference/DarkScript3/DarkScript3/Resources/sekiro-common.emedf.json"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "fireguy-rustsekiro/src/enemy/script.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Search EMEVD dumps for 2002[4].",
+  "note": "Ours implements (2002,4) and (2002,13) as an instant warp. Playback is skipped.",
+  "needs": [
+   {
+    "id": "cutscenes.playback-method",
+    "why": "playback argument"
+   }
+  ]
+ },
+ {
+  "id": "cutscenes.playback-method",
+  "category": "cutscenes",
+  "title": "Playback method argument",
+  "summary": "The playback argument was seen with values 0 and 16. The meaning of the bit is not decoded.",
+  "values": "values 0 and 16 in 105 calls",
+  "how": "EMEVD argument.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/event/*.emevd"
+   }
+  ],
+  "confidence": "open-question",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Compare a 16-case cutscene with a 0-case one in game.",
+  "note": "Possibly a flag such as skippable or fade type. Not confirmed.",
+  "needs": []
+ },
+ {
+  "id": "cutscenes.warp-fade",
+  "category": "cutscenes",
+  "title": "Fade out and warp",
+  "summary": "A cutscene or a plain fade can be followed by a warp to a point entity in a map. The fade is a separate step from the cutscene file.",
+  "values": "2002[7] Fade Out and Warp Player (point, area, block); 2003[82] Set Menu Fade; 2003[71] Hide HUD",
+  "how": "EMEVD.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "reference/DarkScript3/DarkScript3/Resources/sekiro-common.emedf.json"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "fireguy-rustsekiro/src/enemy/script.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Walk through a warp trigger and watch the fade.",
+  "note": "",
+  "needs": [
+   {
+    "id": "interface.hud-hide",
+    "why": "HUD is hidden during scenes"
+   }
+  ]
+ },
+ {
+  "id": "cutscenes.ceremony",
+  "category": "cutscenes",
+  "title": "Map ceremony instructions",
+  "summary": "Ceremony instructions change the map version for a scene, such as the burned Hirata Estate.",
+  "values": "2003[57]/[59] Set Map Ceremony; 2002[9]/[10]",
+  "how": "EMEVD.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "reference/DarkScript3/DarkScript3/Resources/sekiro-common.emedf.json"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "partial",
+   "where": "sekiro-rs/crates/game/src/map_story.rs"
+  },
+  "check": "Trigger the Hirata burning and note the map set.",
+  "note": "",
+  "needs": [
+   {
+    "id": "map.ceremonies",
+    "why": "map variants"
+   }
+  ]
+ },
+ {
+  "id": "cutscenes.cutsceneparam",
+  "category": "cutscenes",
+  "title": "CutsceneParam rows",
+  "summary": "The param table has 28 rows. Fields mostly control music around a cutscene.",
+  "values": "fields bgmFadeinTime, bgmFadeoutTime (2.5), doPausePrevCutsceneBgm",
+  "how": "Param file with Paramdex names.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/CutsceneParam.json"
+   },
+   {
+    "kind": "web",
+    "ref": "reference/Paramdex/SDT/Names/CutsceneParam.txt"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Compare rows with the music change in scenes.",
+  "note": "",
+  "needs": [
+   {
+    "id": "sound.bgm-control",
+    "why": "music fades"
+   }
+  ]
+ },
+ {
+  "id": "cutscenes.hirata-burning",
+  "category": "cutscenes",
+  "title": "Hirata Estate burning",
+  "summary": "The first big scene. Event 11005800 plays 10000000 and warps to point 1102631 in the Outskirts, with lighting variants. A butterflies scene 10000010 follows (event 11005810).",
+  "values": "cutscene 10000000 (event 11005800, warp 1102631), 10000010 (11005810), 10000020 date display (event 50)",
+  "how": "EMEVD calls.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/event/m10_00_00_00.emevd"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "fireguy-rustsekiro/src/enemy/script.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Start a new game and watch.",
+  "note": "",
+  "needs": [
+   {
+    "id": "cutscenes.emevd-play-cutscene",
+    "why": "calls"
+   },
+   {
+    "id": "npcs.story-flags-8301",
+    "why": "state flag change"
+   }
+  ]
+ },
+ {
+  "id": "cutscenes.m11-00-list",
+  "category": "cutscenes",
+  "title": "Ashina Outskirts scenes",
+  "summary": "The Outskirts area has scenes 11000000 and 11000001 (events 11100100, 11105625) and the 11000030 to 11000036 group (event 11100628, warp 1002630).",
+  "values": "11000000/11000001; 11000030-36",
+  "how": "EMEVD calls.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/event/m11_00_00_00.emevd"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Trigger each event id.",
+  "note": "",
+  "needs": []
+ },
+ {
+  "id": "cutscenes.m11-01-list",
+  "category": "cutscenes",
+  "title": "Ashina Castle scenes",
+  "summary": "The Castle has the most scenes. Examples: 11010010/11 (event 11115810), 11010020 (11115820), 11010030/31 (11115800), 11010040 (11115720), 11010050 (11115860), 11010060 (11115910), 11010070 (11110100), 11010080 (11115930), 11010100 (11110717), 11010110 (11115740).",
+  "values": "cutscene ids 110100x0 to 11010110",
+  "how": "EMEVD calls.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/event/m11_01_00_00.emevd"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "fireguy-rustsekiro/src/enemy/events.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Trigger each event id.",
+  "note": "Scene content per id was not matched to story beats.",
+  "needs": [
+   {
+    "id": "bosses.genichiro-ashina",
+    "why": "fight hand-over"
+   }
+  ]
+ },
+ {
+  "id": "cutscenes.m11-02-list",
+  "category": "cutscenes",
+  "title": "Ashina Reservoir scenes",
+  "summary": "The Reservoir has scenes 11020000/01 (event 11125800, warp 1102621), 11020010 (11125810), 11020020 (11120100), 11020030 (11125840), 11020040 (11125830), 11020070 (11120201), 11020090 (11125202), and 11020100/110/120/121 (11120110).",
+  "values": "11020000 to 11020121",
+  "how": "EMEVD calls.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/event/m11_02_00_00.emevd"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Trigger each event id.",
+  "note": "",
+  "needs": []
+ },
+ {
+  "id": "cutscenes.other-areas",
+  "category": "cutscenes",
+  "title": "Mibu, Hirata interior, Senpou, Fountainhead and common scenes",
+  "summary": "Other areas hold fewer scenes. 15000000 (event 11505695, taken to a straw doll); Hirata 20000000 (12005210), 20000011/12 (12005906), 20000020 (12000700), 20000030 (12005704); 25000000 (12505801), 25000020 (12505885); 89000099 by common event 250.",
+  "values": "see listed ids",
+  "how": "EMEVD calls.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/event/*.emevd"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Trigger each event id.",
+  "note": "Map prefixes follow the file names, not always the area names.",
+  "needs": []
+ },
+ {
+  "id": "cutscenes.cutscene-call-inventory",
+  "category": "cutscenes",
+  "title": "Cutscene call inventory",
+  "summary": "105 calls to cutscene instructions exist across the EMEVD files.",
+  "values": "105 calls; ids spread over m10, m11_00, m11_01, m11_02, m15, m20, m25, m89",
+  "how": "Dumped with a script.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/event/*.emevd"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Grep the EMEVD dumps for the 2002 bank play instructions.",
+  "note": "",
+  "needs": []
+ },
+ {
+  "id": "cutscenes.fight-handover",
+  "category": "cutscenes",
+  "title": "Hand-over to a fight",
+  "summary": "A scene finishes and an event then enables the boss or gives control. EMEVD waits with 3[31] IF Ongoing Cutscene Finished before the next step.",
+  "values": "3[31] IF Ongoing Cutscene Finished; Genichiro 1110800 off / 1110801 on in event 11115820",
+  "how": "Event wait on cutscene end.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/event/m11_01_00_00.emevd"
+   },
+   {
+    "kind": "data",
+    "ref": "reference/DarkScript3/DarkScript3/Resources/sekiro-common.emedf.json"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "fireguy-rustsekiro/src/enemy/script.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Play to the boss gate and watch the sequence.",
+  "note": "",
+  "needs": [
+   {
+    "id": "bosses.boss-intro",
+    "why": "boss starts after the scene"
+   }
+  ]
+ },
+ {
+  "id": "cutscenes.skip",
+  "category": "cutscenes",
+  "title": "Skipping scenes",
+  "summary": "No skip rule was found in the EMEVD data. The fade and warp family suggests the skip is handled by the cutscene runtime.",
+  "values": "",
+  "how": "Not traced.",
+  "sources": [
+   {
+    "kind": "exe",
+    "ref": "sekiro.exe.unpacked.exe strings"
+   }
+  ],
+  "confidence": "open-question",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Press the skip input during a scene.",
+  "note": "Needs a recording to tell if skip exists.",
+  "needs": []
+ },
+ {
+  "id": "cutscenes.movies-bk2",
+  "category": "cutscenes",
+  "title": "Pre-rendered movies",
+  "summary": "Movies are Bink 2 files loaded from movie:/%s%s.bk2. Only two exist in the install: the opening and the staff list.",
+  "values": "openingmovie.bk2 (314346532 bytes); stafflistmovie.bk2 (598104408 bytes); enum names Movie_Advertise, Title, Opening, StaffRoll, EndingBad, EndingGood, OldTale; class CSMovieIns",
+  "how": "Exe class and file check.",
+  "sources": [
+   {
+    "kind": "exe",
+    "ref": "sekiro.exe.unpacked.exe strings"
+   },
+   {
+    "kind": "data",
+    "ref": "Sekiro install movie/ folder"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "List the movie folder.",
+  "note": "Ending and old tale movies are not shipped as files here. They may be cutscene binders instead (open-question).",
+  "needs": [
+   {
+    "id": "dialogue.movie-subtitles",
+    "why": "text under movies"
+   }
+  ]
+ },
+ {
+  "id": "cutscenes.movie-subtitles-link",
+  "category": "cutscenes",
+  "title": "Movie subtitle lines",
+  "summary": "The subtitle file has 71 ids from 8000000 to 8000070. Which movie or scene each belongs to is not known.",
+  "values": "MovieSubtitle category; ムービー字幕.fmg",
+  "how": "Text file.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/msg/engus/menu.msgbnd.d/ムービー字幕.fmg"
+   },
+   {
+    "kind": "exe",
+    "ref": "sekiro.exe.unpacked.exe strings"
+   }
+  ],
+  "confidence": "open-question",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Play the opening and compare line count.",
+  "note": "",
+  "needs": [
+   {
+    "id": "dialogue.movie-subtitles",
+    "why": "text"
+   }
+  ]
+ },
+ {
+  "id": "cutscenes.cutscene-bgm",
+  "category": "cutscenes",
+  "title": "Cutscene music handling",
+  "summary": "CutsceneParam holds fade times for the music. A flag can pause the previous cutscene's music.",
+  "values": "bgmFadeinTime, bgmFadeoutTime, doPausePrevCutsceneBgm",
+  "how": "Param.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/CutsceneParam.json"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Listen to the music fade at scene start and end.",
+  "note": "",
+  "needs": [
+   {
+    "id": "sound.bgm-control",
+    "why": "music system"
+   }
+  ]
+ },
+ {
+  "id": "cutscenes.cutscene-lighting",
+  "category": "cutscenes",
+  "title": "Lighting during scenes",
+  "summary": "A cutscene can set its own sky and light set by a remo base light file. A warp variant takes a time of day and lighting state.",
+  "values": "remobase.gparam; CutsceneGPARAM; 2002[13] warp with lighting (time of day, desired state)",
+  "how": "Exe plus EMEVD.",
+  "sources": [
+   {
+    "kind": "exe",
+    "ref": "sekiro.exe.unpacked.exe strings"
+   },
+   {
+    "kind": "data",
+    "ref": "reference/DarkScript3/DarkScript3/Resources/sekiro-common.emedf.json"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Compare lighting before and after a scene.",
+  "note": "",
+  "needs": [
+   {
+    "id": "visuals.gparam",
+    "why": "light sets"
+   }
+  ]
+ },
+ {
+  "id": "cutscenes.dlc-remo",
+  "category": "cutscenes",
+  "title": "DLC cutscene path",
+  "summary": "The exe names separate remo paths for the two DLC data sets.",
+  "values": "game_dlc1:/remo, game_dlc2:/remo",
+  "how": "Exe strings.",
+  "sources": [
+   {
+    "kind": "exe",
+    "ref": "sekiro.exe.unpacked.exe strings"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Check the paths in the exe.",
+  "note": "No DLC data is installed here to verify.",
+  "needs": []
+ },
+ {
+  "id": "cutscenes.ongoing-wait",
+  "category": "cutscenes",
+  "title": "Ongoing cutscene wait",
+  "summary": "Events wait for the end with a condition, so a following step can show a text or enable a boss.",
+  "values": "3[31] IF Ongoing Cutscene Finished",
+  "how": "EMEVD condition.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "reference/DarkScript3/DarkScript3/Resources/sekiro-common.emedf.json"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Search event dumps for the condition.",
+  "note": "",
+  "needs": []
+ },
+ {
+  "id": "cutscenes.ours-coverage",
+  "category": "cutscenes",
+  "title": "Cutscenes in our rebuild",
+  "summary": "Our script layer treats cutscenes as already done and just warps.",
+  "values": "Act::CutsceneWarp for (2002,4) and (2002,13)",
+  "how": "Source grep.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "fireguy-rustsekiro/src/enemy/script.rs"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "fireguy-rustsekiro/src/enemy/script.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Read script.rs.",
+  "note": "",
+  "needs": []
+ },
+ {
+  "id": "cutscenes.his-coverage",
+  "category": "cutscenes",
+  "title": "Cutscenes in sekiro-rs",
+  "summary": "sekiro-rs lists cutscenes as not started.",
+  "values": "PROGRESS.md line 165",
+  "how": "Doc.",
+  "sources": [
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "sekiro-rs/docs/PROGRESS.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Read the table.",
+  "note": "",
+  "needs": []
+ },
+ {
+  "id": "cutscenes.remo-resource-load",
+  "category": "cutscenes",
+  "title": "Cutscene resource load",
+  "summary": "Loading a scene pulls the binder, extra files and the map texture set.",
+  "values": "LoadRemobnd, LoadExtraResource, LoadMapTpf",
+  "how": "Exe strings.",
+  "sources": [
+   {
+    "kind": "exe",
+    "ref": "sekiro.exe.unpacked.exe strings"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Watch the load on entering a scene.",
+  "note": "",
+  "needs": [
+   {
+    "id": "cutscenes.remo-engine",
+    "why": "class"
+   }
+  ]
+ }
+]

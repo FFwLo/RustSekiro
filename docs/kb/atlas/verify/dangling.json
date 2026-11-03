@@ -1,0 +1,1262 @@
+[
+ {
+  "from": "ai.sight-normal-cone",
+  "id": "map.collision-raycast",
+  "why": "line of sight ray"
+ },
+ {
+  "from": "ai.sight-search-timing-raycast",
+  "id": "map.collision-raycast",
+  "why": "needs map collision"
+ },
+ {
+  "from": "ai.dark-map-visibility",
+  "id": "map.collision-visibility",
+  "why": "per-collision visibility byte"
+ },
+ {
+  "from": "ai.wolf-combat-noise",
+  "id": "combat.attack-noise",
+  "why": "attack params"
+ },
+ {
+  "from": "ai.alert-spread-call-sounds",
+  "id": "map.msb-placement-group",
+  "why": "same-group rule"
+ },
+ {
+  "from": "ai.platoon-states",
+  "id": "map.msb-placement-group",
+  "why": "platoon membership"
+ },
+ {
+  "from": "ai.patrol-route-types",
+  "id": "map.msb-routes",
+  "why": "route lists"
+ },
+ {
+  "from": "ai.patrol-wake-hold",
+  "id": "map.activation-regions",
+  "why": "regions"
+ },
+ {
+  "from": "ai.navigation-flags",
+  "id": "map.navmesh",
+  "why": "nvm geometry"
+ },
+ {
+  "from": "ai.parry-rank",
+  "id": "combat.deflect",
+  "why": "player deflect matched"
+ },
+ {
+  "from": "ai.parry-rank",
+  "id": "combat.guard",
+  "why": "guard"
+ },
+ {
+  "from": "ai.guard-stance",
+  "id": "combat.guard",
+  "why": "guard rules"
+ },
+ {
+  "from": "ai.guard-stance",
+  "id": "combat.posture",
+  "why": "posture cost"
+ },
+ {
+  "from": "ai.enemy-healing",
+  "id": "deathblows.mark-reset",
+  "why": "HP reset on a non-final deathblow"
+ },
+ {
+  "from": "ai.ranged-when-no-path",
+  "id": "movement.hang",
+  "why": "ledge hanging"
+ },
+ {
+  "from": "armor.iframes-951-during-action",
+  "id": "deathblows.deathblow-throw",
+  "why": "the throw carries the flag"
+ },
+ {
+  "from": "armor.reaction-rank-interrupt",
+  "id": "ai.enemy-states",
+  "why": "transition ranks belong to the AI states"
+ },
+ {
+  "from": "armor.posture-break-reaction-enemy",
+  "id": "deathblows.deathblow-window",
+  "why": "the window is this state"
+ },
+ {
+  "from": "armor.armored-servant-part",
+  "id": "map.npc-part-events",
+  "why": "created by map event 20005410"
+ },
+ {
+  "from": "armor.owl-transition-immunity",
+  "id": "bosses.owl-phases",
+  "why": "belongs to the fight"
+ },
+ {
+  "from": "armor.wolf-sa-item",
+  "id": "items.sa-grant",
+  "why": "the item applies it"
+ },
+ {
+  "from": "arts.art-roster",
+  "id": "progression.skill-tree",
+  "why": "arts are learned and equipped through the skill tree"
+ },
+ {
+  "from": "arts.whirlwind-slash",
+  "id": "combat.posture-bar",
+  "why": "posture damage is its job"
+ },
+ {
+  "from": "arts.ichimonji",
+  "id": "combat.posture-bar",
+  "why": "recovers own posture"
+ },
+ {
+  "from": "arts.senpou-kicks-high-monk",
+  "id": "movement.air-actions",
+  "why": "jump and landing chain"
+ },
+ {
+  "from": "arts.sakura-dance",
+  "id": "movement.air-actions",
+  "why": "leaps and air count"
+ },
+ {
+  "from": "arts.mid-air-arts",
+  "id": "movement.air-actions",
+  "why": "needs air state"
+ },
+ {
+  "from": "arts.latent-posture-skills",
+  "id": "combat.mikiri",
+  "why": "the counter it boosts"
+ },
+ {
+  "from": "arts.deathblow-recovery-skills",
+  "id": "deathblows.recovery",
+  "why": "what is recovered"
+ },
+ {
+  "from": "arts.skill-unlock-actions",
+  "id": "progression.skill-tree",
+  "why": "where skills are bought"
+ },
+ {
+  "from": "arts.esoteric-texts",
+  "id": "progression.skill-tree",
+  "why": "gates the menu"
+ },
+ {
+  "from": "arts.tool-families",
+  "id": "progression.sculptor-upgrades",
+  "why": "how levels are obtained"
+ },
+ {
+  "from": "arts.tool-air-use",
+  "id": "movement.air-actions",
+  "why": "air state"
+ },
+ {
+  "from": "arts.shuriken-loaded",
+  "id": "combat.enemy-airborne",
+  "why": "extra effect on jumpers"
+ },
+ {
+  "from": "arts.sen-throw",
+  "id": "progression.sen",
+  "why": "money spent"
+ },
+ {
+  "from": "arts.firecracker-effect",
+  "id": "ai.enemy-beast-type",
+  "why": "who counts as a beast"
+ },
+ {
+  "from": "arts.firecracker-beast-roster",
+  "id": "ai.enemy-beast-type",
+  "why": "tag source"
+ },
+ {
+  "from": "arts.mist-raven",
+  "id": "combat.hit-reaction",
+  "why": "triggers on being hit"
+ },
+ {
+  "from": "arts.loaded-umbrella",
+  "id": "combat.guard",
+  "why": "separate guard system"
+ },
+ {
+  "from": "arts.divine-abduction",
+  "id": "deathblows.backstab",
+  "why": "turned enemies take backstabs"
+ },
+ {
+  "from": "arts.finger-whistle",
+  "id": "ai.sound-alert",
+  "why": "what enemies do on hearing it"
+ },
+ {
+  "from": "items.red-lump",
+  "id": "combat.hit-reaction",
+  "why": "damage level remap"
+ },
+ {
+  "from": "items.sweet-rice-ball",
+  "id": "combat.posture-bar",
+  "why": "posture recovery"
+ },
+ {
+  "from": "items.persimmon",
+  "id": "combat.posture-bar",
+  "why": "recovery rule"
+ },
+ {
+  "from": "items.sugar-ako",
+  "id": "combat.attack-power",
+  "why": "multiplier"
+ },
+ {
+  "from": "items.sugar-yashariku",
+  "id": "combat.attack-power",
+  "why": "multiplier"
+ },
+ {
+  "from": "items.sugar-ungo",
+  "id": "combat.damage-cut",
+  "why": "multiplier"
+ },
+ {
+  "from": "items.sugar-gokan",
+  "id": "combat.posture-bar",
+  "why": "posture damage taken"
+ },
+ {
+  "from": "items.ceramic-shard",
+  "id": "ai.sound-alert",
+  "why": "AI hears it"
+ },
+ {
+  "from": "items.fistful-of-ash",
+  "id": "ai.enemy-blind",
+  "why": "enemy reaction"
+ },
+ {
+  "from": "items.snap-seed",
+  "id": "bosses.butterfly-illusions",
+  "why": "what it breaks"
+ },
+ {
+  "from": "items.five-color-rice",
+  "id": "interface.map-marks",
+  "why": "what the marker does"
+ },
+ {
+  "from": "items.mibu-balloons",
+  "id": "progression.sen",
+  "why": "money gain"
+ },
+ {
+  "from": "items.recovery-seal",
+  "id": "bosses.owl-fight",
+  "why": "the Owl's tool"
+ },
+ {
+  "from": "items.spirit-emblem",
+  "id": "progression.item-drops",
+  "why": "emblem drops"
+ },
+ {
+  "from": "items.coin-purses",
+  "id": "interface.map-travel",
+  "why": "warp"
+ },
+ {
+  "from": "status.model",
+  "id": "combat.hit-resolution",
+  "why": "a hit delivers the SpEffects"
+ },
+ {
+  "from": "status.npc-resists",
+  "id": "ai.npc-params",
+  "why": "where the row comes from"
+ },
+ {
+  "from": "status.guard-interaction",
+  "id": "combat.guard",
+  "why": "the guard state"
+ },
+ {
+  "from": "status.guard-interaction",
+  "id": "combat.deflect",
+  "why": "deflect factor"
+ },
+ {
+  "from": "status.poison-owl-floor",
+  "id": "bosses.owl-fight",
+  "why": "the boss uses it"
+ },
+ {
+  "from": "status.shock",
+  "id": "bosses.genichiro",
+  "why": "lightning source"
+ },
+ {
+  "from": "status.hud",
+  "id": "interface.hud",
+  "why": "the HUD layout"
+ },
+ {
+  "from": "status.dragonrot",
+  "id": "npcs.dragonrot",
+  "why": "who is afflicted"
+ },
+ {
+  "from": "bosses.mark-bars",
+  "id": "deathblows.mark-count",
+  "why": "marks are deathblow counts"
+ },
+ {
+  "from": "bosses.genichiro-tomoe",
+  "id": "cutscenes.genichiro-tomoe",
+  "why": "warp cutscene"
+ },
+ {
+  "from": "bosses.prologue-genichiro",
+  "id": "cutscenes.prologue-genichiro",
+  "why": "scripted cutscene"
+ },
+ {
+  "from": "bosses.owl-castle-phase2",
+  "id": "deathblows.boss-deathblow",
+  "why": "deathblow animation"
+ },
+ {
+  "from": "bosses.isshin-sword-saint",
+  "id": "visuals.boss-weather",
+  "why": "Gparam sub id"
+ },
+ {
+  "from": "bosses.dragons",
+  "id": "combat.lightning-reversal",
+  "why": "dragon lightning"
+ },
+ {
+  "from": "bosses.kneel-todome",
+  "id": "deathblows.boss-deathblow",
+  "why": "finisher"
+ },
+ {
+  "from": "bosses.defeat-handler",
+  "id": "progression.boss-flags",
+  "why": "flags"
+ },
+ {
+  "from": "bosses.fog-walls",
+  "id": "map.fog-wall-objects",
+  "why": "fog object"
+ },
+ {
+  "from": "bosses.perilous-rates",
+  "id": "combat.perilous-attacks",
+  "why": "attack type"
+ },
+ {
+  "from": "bosses.divine-confetti",
+  "id": "items.goods-use",
+  "why": "item use pipeline"
+ },
+ {
+  "from": "bosses.divine-confetti",
+  "id": "status.spirit-enchant",
+  "why": "weapon enchant"
+ },
+ {
+  "from": "bosses.arena-activation",
+  "id": "map.regions",
+  "why": "region triggers"
+ },
+ {
+  "from": "camera.lock-range",
+  "id": "map.visibility-type",
+  "why": "area darkness flag"
+ },
+ {
+  "from": "camera.auto-capture",
+  "id": "combat.attack-homing",
+  "why": ""
+ },
+ {
+  "from": "camera.distance-event",
+  "id": "arts.camera-moves",
+  "why": "arts use it"
+ },
+ {
+  "from": "camera.set-angle",
+  "id": "deathblows.camera",
+  "why": "deathblows use it"
+ },
+ {
+  "from": "camera.shake",
+  "id": "combat.hit-reactions",
+  "why": ""
+ },
+ {
+  "from": "camera.death-camera",
+  "id": "combat.player-death",
+  "why": ""
+ },
+ {
+  "from": "camera.deathblow-camera",
+  "id": "deathblows.camera",
+  "why": ""
+ },
+ {
+  "from": "combat.guard-arc",
+  "id": "movement.facing-turn",
+  "why": "facing decides which hits are inside the arc"
+ },
+ {
+  "from": "combat.deflect-window-first",
+  "id": "combat.guard-input",
+  "why": "guard press starts the deflect state"
+ },
+ {
+  "from": "combat.deflect-spam-chain",
+  "id": "combat.guard-input",
+  "why": "each press must register as a fresh guard"
+ },
+ {
+  "from": "combat.posture-damage-to-defender",
+  "id": "combat.posture-bar",
+  "why": "damage lands on the posture bar"
+ },
+ {
+  "from": "combat.wolf-guard-posture-cut",
+  "id": "progression.flowing-water-skill",
+  "why": "the extra cut is the Flowing Water skill"
+ },
+ {
+  "from": "combat.wolf-vitality-posture-graphs",
+  "id": "progression.prayer-necklace",
+  "why": "growth items raise the graph input"
+ },
+ {
+  "from": "combat.enemy-posture-capacity",
+  "id": "combat.posture-bar",
+  "why": "values fill the bar"
+ },
+ {
+  "from": "combat.posture-regen-formula",
+  "id": "combat.posture-bar",
+  "why": "what regenerates"
+ },
+ {
+  "from": "combat.posture-break-rule",
+  "id": "combat.posture-bar",
+  "why": "the break reads the bar"
+ },
+ {
+  "from": "combat.posture-break-rule",
+  "id": "deathblows.posture-break-opening",
+  "why": "a break opens a deathblow"
+ },
+ {
+  "from": "combat.hp-damage-formula",
+  "id": "progression.attack-power",
+  "why": "growth multiplies it"
+ },
+ {
+  "from": "combat.attack-power-growth",
+  "id": "progression.attack-power",
+  "why": "memories raise the level"
+ },
+ {
+  "from": "combat.area-growth-doping",
+  "id": "progression.new-game-plus-scaling",
+  "why": "later cycles stack more growth"
+ },
+ {
+  "from": "combat.guard-elemental-chip",
+  "id": "status.fire",
+  "why": "fire damage uses these cuts"
+ },
+ {
+  "from": "combat.charmless-enemy-scaling",
+  "id": "progression.kuros-charm",
+  "why": "the charm toggles the mode"
+ },
+ {
+  "from": "combat.charmless-block-chip",
+  "id": "progression.kuros-charm",
+  "why": "needs the charm mode"
+ },
+ {
+  "from": "combat.perilous-warning",
+  "id": "interface.perilous-kanji",
+  "why": "the HUD shows the warning"
+ },
+ {
+  "from": "combat.perilous-grab",
+  "id": "armor.iframes-954-grab",
+  "why": "grab i-frames avoid it"
+ },
+ {
+  "from": "combat.mikiri-window",
+  "id": "movement.step",
+  "why": "the counter is a forward step"
+ },
+ {
+  "from": "combat.mikiri-posture",
+  "id": "deathblows.mikiri-break-pair",
+  "why": "a broken target offers the pair"
+ },
+ {
+  "from": "combat.mikiri-posture",
+  "id": "arts.mikiri-skill",
+  "why": "skill raises the damage"
+ },
+ {
+  "from": "combat.enemy-guard-decision",
+  "id": "ai.enemy-parry-goal",
+  "why": "the Lua goal makes the choice"
+ },
+ {
+  "from": "combat.deathblow-readiness",
+  "id": "deathblows.deathblow-marks",
+  "why": "marks gate lethal damage"
+ },
+ {
+  "from": "combat.projectile-guard",
+  "id": "ai.archer",
+  "why": "projectile users"
+ },
+ {
+  "from": "cutscenes.warp-fade",
+  "id": "interface.hud-hide",
+  "why": "HUD is hidden during scenes"
+ },
+ {
+  "from": "cutscenes.ceremony",
+  "id": "map.ceremonies",
+  "why": "map variants"
+ },
+ {
+  "from": "cutscenes.cutsceneparam",
+  "id": "sound.bgm-control",
+  "why": "music fades"
+ },
+ {
+  "from": "cutscenes.m11-01-list",
+  "id": "bosses.genichiro-ashina",
+  "why": "fight hand-over"
+ },
+ {
+  "from": "cutscenes.fight-handover",
+  "id": "bosses.boss-intro",
+  "why": "boss starts after the scene"
+ },
+ {
+  "from": "cutscenes.cutscene-bgm",
+  "id": "sound.bgm-control",
+  "why": "music system"
+ },
+ {
+  "from": "cutscenes.cutscene-lighting",
+  "id": "visuals.gparam",
+  "why": "light sets"
+ },
+ {
+  "from": "deathblows.posture-break-trigger",
+  "id": "combat.posture-bar",
+  "why": "posture value and its drain by hits"
+ },
+ {
+  "from": "deathblows.posture-break-trigger",
+  "id": "combat.direct-hit",
+  "why": "the hit that empties the bar"
+ },
+ {
+  "from": "deathblows.collapse-window",
+  "id": "ai.enemy-reaction-graph",
+  "why": "the graph plays the collapse state"
+ },
+ {
+  "from": "deathblows.hp-zero-ready",
+  "id": "combat.vitality-bar",
+  "why": "HP reaching zero"
+ },
+ {
+  "from": "deathblows.ninsatu-num",
+  "id": "npcs.npc-param-rows",
+  "why": "where the value lives"
+ },
+ {
+  "from": "deathblows.multi-mark-bosses",
+  "id": "bosses.phase-rows",
+  "why": "each phase has its own NpcParam row"
+ },
+ {
+  "from": "deathblows.mark-spend-hp-reset",
+  "id": "ai.boss-phase-script",
+  "why": "bosses read the mark counter"
+ },
+ {
+  "from": "deathblows.final-mark-finisher",
+  "id": "bosses.death-sequence",
+  "why": "boss end of fight"
+ },
+ {
+  "from": "deathblows.throwparam-pairing",
+  "id": "npcs.chr-model-ids",
+  "why": "DefChrId is the enemy model number"
+ },
+ {
+  "from": "deathblows.throwkind-rules",
+  "id": "items.ninjutsu-items",
+  "why": "throwSkillId needs the equipped ninjutsu"
+ },
+ {
+  "from": "deathblows.lunge-grab-body-timeline",
+  "id": "movement.root-motion",
+  "why": "clips drive both bodies"
+ },
+ {
+  "from": "deathblows.absorb-dummies",
+  "id": "movement.root-motion",
+  "why": "each clip's own movement"
+ },
+ {
+  "from": "deathblows.absorb-dummies",
+  "id": "map.collision-walls",
+  "why": "pair needs clearance"
+ },
+ {
+  "from": "deathblows.damage-event",
+  "id": "combat.attack-param-pipeline",
+  "why": "hit becomes damage"
+ },
+ {
+  "from": "deathblows.defender-death-branch",
+  "id": "ai.enemy-death-states",
+  "why": "death clip states"
+ },
+ {
+  "from": "deathblows.stealth-behind",
+  "id": "stealth.target-state-none",
+  "why": "enemy must not be in caution, find or battle"
+ },
+ {
+  "from": "deathblows.stealth-behind",
+  "id": "movement.crouch-walk",
+  "why": "quiet approach"
+ },
+ {
+  "from": "deathblows.stealth-ninjutsu",
+  "id": "items.ninjutsu-items",
+  "why": "equipped ninjutsu gates the row"
+ },
+ {
+  "from": "deathblows.stealth-ninjutsu",
+  "id": "arts.shinobi-ninjutsu",
+  "why": "the art effect after the stab"
+ },
+ {
+  "from": "deathblows.behind-after-break",
+  "id": "movement.root-motion",
+  "why": "spinning clip"
+ },
+ {
+  "from": "deathblows.plunge",
+  "id": "movement.air-state",
+  "why": "the attacker must be falling"
+ },
+ {
+  "from": "deathblows.anti-air",
+  "id": "items.anti-air-text",
+  "why": "the item"
+ },
+ {
+  "from": "deathblows.wall-hug",
+  "id": "movement.wall-dock",
+  "why": "the dock state"
+ },
+ {
+  "from": "deathblows.hanging",
+  "id": "movement.hang-from-ledge",
+  "why": "the hang state"
+ },
+ {
+  "from": "deathblows.mikiri-deathblow",
+  "id": "combat.mikiri-counter",
+  "why": "the counter move that triggers it"
+ },
+ {
+  "from": "deathblows.wire-break",
+  "id": "movement.grapple",
+  "why": "the grapple hook"
+ },
+ {
+  "from": "deathblows.todome-kinds",
+  "id": "bosses.phase-rows",
+  "why": "last-mark logic"
+ },
+ {
+  "from": "deathblows.groups-by-wolf-anim",
+  "id": "npcs.chr-model-ids",
+  "why": "enemy ids"
+ },
+ {
+  "from": "deathblows.throw-search-input",
+  "id": "interface.deathblow-prompt",
+  "why": "the icon"
+ },
+ {
+  "from": "deathblows.throw-search-input",
+  "id": "combat.attack-input",
+  "why": "the button"
+ },
+ {
+  "from": "deathblows.recovery-on-kill",
+  "id": "arts.skill-heal-on-deathblow",
+  "why": "the skills"
+ },
+ {
+  "from": "deathblows.recovery-on-kill",
+  "id": "combat.posture-bar",
+  "why": "recovery target"
+ },
+ {
+  "from": "deathblows.ninsatsu-fields",
+  "id": "npcs.npc-param-rows",
+  "why": "the fields"
+ },
+ {
+  "from": "deathblows.true-death-flow",
+  "id": "combat.death-animations",
+  "why": "falls and loops"
+ },
+ {
+  "from": "deathblows.resurrection-nodes",
+  "id": "items.resurrection-goods",
+  "why": "the goods"
+ },
+ {
+  "from": "deathblows.resurrection-nodes",
+  "id": "interface.resurrection-hud",
+  "why": "node display"
+ },
+ {
+  "from": "deathblows.resurrection-recharge",
+  "id": "items.mibu-balloon-soul",
+  "why": "the booster"
+ },
+ {
+  "from": "deathblows.dragonrot",
+  "id": "npcs.npc-sickness-states",
+  "why": "NPC changes"
+ },
+ {
+  "from": "deathblows.enemy-grab-pairing",
+  "id": "ai.enemy-grab-attacks",
+  "why": "the attack that starts it"
+ },
+ {
+  "from": "dialogue.voice-banks",
+  "id": "sound.fmod-events",
+  "why": "bank system"
+ },
+ {
+  "from": "dialogue.talk-menu-list",
+  "id": "interface.menu-system",
+  "why": "screen"
+ },
+ {
+  "from": "dialogue.flags-in-esd",
+  "id": "progression.event-flags",
+  "why": "save flags"
+ },
+ {
+  "from": "dialogue.idol-menu",
+  "id": "progression.idol-bonfire",
+  "why": "menu"
+ },
+ {
+  "from": "dialogue.memories-remnants",
+  "id": "progression.memory-remnant",
+  "why": "skill points"
+ },
+ {
+  "from": "dialogue.ambient-proximity",
+  "id": "ai.npc-ambient",
+  "why": "ambient guards trigger the talk"
+ },
+ {
+  "from": "dialogue.eavesdrop-player",
+  "id": "movement.eavesdrop",
+  "why": "state"
+ },
+ {
+  "from": "dialogue.owl-pre-fight",
+  "id": "bosses.owl-intro",
+  "why": "fight follows"
+ },
+ {
+  "from": "dialogue.hostile-talks",
+  "id": "bosses.taunts",
+  "why": "boss fight chat"
+ },
+ {
+  "from": "interface.posture-bar",
+  "id": "combat.posture-bar",
+  "why": "posture value"
+ },
+ {
+  "from": "interface.lock-cursor-colour",
+  "id": "combat.posture-bar",
+  "why": ""
+ },
+ {
+  "from": "interface.deathblow-mark",
+  "id": "deathblows.mark-condition",
+  "why": ""
+ },
+ {
+  "from": "interface.resource-counters",
+  "id": "combat.resurrection",
+  "why": ""
+ },
+ {
+  "from": "interface.prosthetic-switch",
+  "id": "items.prosthetic-tools",
+  "why": ""
+ },
+ {
+  "from": "interface.boss-bar",
+  "id": "bosses.boss-bar-event",
+  "why": "event that shows it"
+ },
+ {
+  "from": "interface.item-log",
+  "id": "items.pickup",
+  "why": ""
+ },
+ {
+  "from": "interface.death-screen",
+  "id": "combat.player-death",
+  "why": ""
+ },
+ {
+  "from": "interface.volume-options",
+  "id": "sound.mixer-categories",
+  "why": ""
+ },
+ {
+  "from": "map.fall-damage-by-material",
+  "id": "movement.fall-and-land",
+  "why": "landing state machine"
+ },
+ {
+  "from": "map.object-destruction",
+  "id": "combat.object-damage",
+  "why": "damage to objects"
+ },
+ {
+  "from": "map.fog-walls",
+  "id": "bosses.fight-start-trigger",
+  "why": "walls close at fight start"
+ },
+ {
+  "from": "map.idol-rest",
+  "id": "combat.resurrection",
+  "why": "resurrection refill"
+ },
+ {
+  "from": "map.idol-travel",
+  "id": "progression.event-flags",
+  "why": "unlock flags"
+ },
+ {
+  "from": "map.respawn-checkpoint",
+  "id": "combat.resurrection",
+  "why": "resurrection avoids the return"
+ },
+ {
+  "from": "map.treasure-pickups",
+  "id": "items.item-lots",
+  "why": "lot rows"
+ },
+ {
+  "from": "map.water-areas",
+  "id": "movement.swim",
+  "why": "swim state"
+ },
+ {
+  "from": "map.grapple-edges",
+  "id": "movement.grapple-hook",
+  "why": "consumer"
+ },
+ {
+  "from": "movement.air-kick",
+  "id": "combat.attack-hit",
+  "why": "the kick is an attack"
+ },
+ {
+  "from": "movement.air-action-limits",
+  "id": "arts.air-combat-art",
+  "why": "shares the limit"
+ },
+ {
+  "from": "movement.docking-deathblows",
+  "id": "deathblows.hang-pull-down",
+  "why": "deathblow category record"
+ },
+ {
+  "from": "movement.grapple-enemy",
+  "id": "bosses.chained-ogre",
+  "why": "target boss"
+ },
+ {
+  "from": "movement.grapple-attack",
+  "id": "deathblows.wire-throw",
+  "why": ""
+ },
+ {
+  "from": "movement.swim-surface",
+  "id": "map.water-volumes",
+  "why": "needs water data"
+ },
+ {
+  "from": "movement.dive",
+  "id": "progression.mibu-breathing",
+  "why": "skill gate"
+ },
+ {
+  "from": "movement.water-restrictions",
+  "id": "map.swamp-areas",
+  "why": "area SpEffects"
+ },
+ {
+  "from": "movement.crouch",
+  "id": "stealth.crouch-stealth",
+  "why": "stealth relies on it"
+ },
+ {
+  "from": "movement.damage-step",
+  "id": "combat.hit-reactions",
+  "why": ""
+ },
+ {
+  "from": "movement.item-use-move",
+  "id": "items.gourd-use",
+  "why": ""
+ },
+ {
+  "from": "npcs.msb-flag-gating",
+  "id": "map.story-state-flags",
+  "why": "8301-8307 select which parts exist"
+ },
+ {
+  "from": "npcs.story-flags-8301",
+  "id": "map.story-state-flags",
+  "why": "same flags drive map parts"
+ },
+ {
+  "from": "npcs.sculptor-services",
+  "id": "items.prosthetic-upgrade",
+  "why": "the menu changes prosthetics"
+ },
+ {
+  "from": "npcs.shop-lineup-structure",
+  "id": "items.currency-sen",
+  "why": "prices are in sen"
+ },
+ {
+  "from": "npcs.pot-nobles",
+  "id": "items.treasure-carp-scale",
+  "why": "currency item"
+ },
+ {
+  "from": "npcs.hostile-switch",
+  "id": "ai.npc-hostile-behaviour",
+  "why": "combat AI takes over"
+ },
+ {
+  "from": "npcs.dragonrot-cause",
+  "id": "progression.death-counter",
+  "why": "counts deaths"
+ },
+ {
+  "from": "progression.sen-from-kills",
+  "id": "npcs.npc-param-rows",
+  "why": "where the numbers live"
+ },
+ {
+  "from": "progression.skill-tree-structure",
+  "id": "interface.skill-menu",
+  "why": "the screen"
+ },
+ {
+  "from": "progression.latent-skill-effects",
+  "id": "arts.latent-skills",
+  "why": "same set seen from the arts side"
+ },
+ {
+  "from": "progression.esoteric-texts",
+  "id": "items.key-items",
+  "why": "the texts are key items"
+ },
+ {
+  "from": "progression.sen-purses",
+  "id": "items.consumables",
+  "why": "the items"
+ },
+ {
+  "from": "progression.attack-power-memories",
+  "id": "bosses.boss-memories",
+  "why": "where they drop"
+ },
+ {
+  "from": "progression.attack-power-curve",
+  "id": "combat.player-damage-formula",
+  "why": "where the rate enters"
+ },
+ {
+  "from": "progression.attack-power-posture",
+  "id": "combat.posture-damage",
+  "why": "the formula"
+ },
+ {
+  "from": "progression.prayer-beads-necklaces",
+  "id": "items.prayer-beads",
+  "why": "the pickups"
+ },
+ {
+  "from": "progression.vitality-posture-levels",
+  "id": "combat.vitality-bar",
+  "why": "the bar it sets"
+ },
+ {
+  "from": "progression.vitality-posture-levels",
+  "id": "combat.posture-bar",
+  "why": "same"
+ },
+ {
+  "from": "progression.healing-gourd-uses",
+  "id": "interface.gourd-hud",
+  "why": "the display"
+ },
+ {
+  "from": "progression.gourd-heal-amount",
+  "id": "items.gourd",
+  "why": "the item"
+ },
+ {
+  "from": "progression.spirit-emblems",
+  "id": "arts.prosthetic-costs",
+  "why": "emblem cost"
+ },
+ {
+  "from": "progression.spirit-emblems",
+  "id": "items.spirit-emblems",
+  "why": "the item"
+ },
+ {
+  "from": "progression.area-growth-doping-7010-7014",
+  "id": "map.story-clock",
+  "why": "the time stage"
+ },
+ {
+  "from": "progression.area-growth-doping-all-areas",
+  "id": "map.area-list",
+  "why": "areas"
+ },
+ {
+  "from": "progression.orbital-doping",
+  "id": "bosses.rematch-modes",
+  "why": "where used"
+ },
+ {
+  "from": "progression.doping-emevd-assignment",
+  "id": "map.event-scripts",
+  "why": "event files"
+ },
+ {
+  "from": "progression.enemy-scaling-apply",
+  "id": "combat.player-damage-formula",
+  "why": "where the rate enters"
+ },
+ {
+  "from": "progression.demon-bell",
+  "id": "map.story-clock",
+  "why": "time stages"
+ },
+ {
+  "from": "sound.tae-sound-cues",
+  "id": "combat.attack-timing",
+  "why": "animation frames"
+ },
+ {
+  "from": "sound.armour-sounds",
+  "id": "armor.defense-material",
+  "why": "material"
+ },
+ {
+  "from": "sound.hit-sounds",
+  "id": "combat.deflect",
+  "why": "just guard"
+ },
+ {
+  "from": "sound.hit-sounds",
+  "id": "combat.hit-effects",
+  "why": "effects"
+ },
+ {
+  "from": "sound.fmod-categories",
+  "id": "interface.options-sound",
+  "why": "sliders"
+ },
+ {
+  "from": "sound.deathblow-mix",
+  "id": "deathblows.deathblow-animation",
+  "why": "timing"
+ },
+ {
+  "from": "sound.dummy-poly-placement",
+  "id": "camera.listener",
+  "why": "listener position"
+ },
+ {
+  "from": "sound.area-music",
+  "id": "ai.alert-states",
+  "why": "detection drives it"
+ },
+ {
+  "from": "sound.boss-music",
+  "id": "bosses.fight-start-trigger",
+  "why": "trigger"
+ },
+ {
+  "from": "sound.voice-events",
+  "id": "dialogue.voice-lines",
+  "why": "talk voice"
+ },
+ {
+  "from": "sound.menu-sounds",
+  "id": "interface.menu-navigation",
+  "why": "triggers"
+ },
+ {
+  "from": "sound.cutscene-sound",
+  "id": "cutscenes.remo-playback",
+  "why": "timeline"
+ },
+ {
+  "from": "stealth.bush-hiding",
+  "id": "map.grass",
+  "why": "bush objects"
+ },
+ {
+  "from": "stealth.enemy-sight",
+  "id": "map.collision-raycast",
+  "why": "line of sight"
+ },
+ {
+  "from": "stealth.visibility-gauge",
+  "id": "interface.stealth-mark",
+  "why": "HUD side"
+ },
+ {
+  "from": "stealth.noise-jump-landing",
+  "id": "movement.jump",
+  "why": "jump clips"
+ },
+ {
+  "from": "stealth.noise-combat",
+  "id": "combat.attack-noise",
+  "why": "attack params"
+ },
+ {
+  "from": "stealth.ledge-hang-hide",
+  "id": "movement.ledge-hang",
+  "why": "hang state"
+ },
+ {
+  "from": "stealth.dark-areas",
+  "id": "map.collision-visibility",
+  "why": "map byte"
+ },
+ {
+  "from": "stealth.temporary-covers",
+  "id": "status.speffect-sources",
+  "why": "who applies them"
+ },
+ {
+  "from": "stealth.bush-grass-note",
+  "id": "map.grass",
+  "why": "bush objects"
+ },
+ {
+  "from": "stealth.alert-spread-group",
+  "id": "map.msb-placement-group",
+  "why": "group data"
+ },
+ {
+  "from": "stealth.deathblow-unaware",
+  "id": "deathblows.stealth-deathblow",
+  "why": "deathblow system"
+ },
+ {
+  "from": "stealth.deathblow-plunge",
+  "id": "movement.fall",
+  "why": "fall orbit"
+ },
+ {
+  "from": "stealth.deathblow-hang-wall",
+  "id": "deathblows.hang-wall",
+  "why": "deathblow system"
+ },
+ {
+  "from": "stealth.deathblow-ninjutsu",
+  "id": "arts.bloodsmoke",
+  "why": "art"
+ },
+ {
+  "from": "stealth.deathblow-ninjutsu",
+  "id": "arts.puppeteer",
+  "why": "art"
+ },
+ {
+  "from": "stealth.deathblow-ninjutsu",
+  "id": "deathblows.ninjutsu-kill",
+  "why": "throw system"
+ },
+ {
+  "from": "stealth.puppeteer-vision",
+  "id": "arts.puppeteer",
+  "why": "art"
+ },
+ {
+  "from": "visuals.fxr-format-player",
+  "id": "combat.hit-effects",
+  "why": "where effects fire"
+ },
+ {
+  "from": "visuals.cloth",
+  "id": "movement.locomotion",
+  "why": "motion drives the cloth"
+ },
+ {
+  "from": "visuals.blood-decals",
+  "id": "combat.hit-effects",
+  "why": "trigger"
+ }
+]

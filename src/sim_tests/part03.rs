@@ -190,16 +190,23 @@ pub(crate) fn ichimonji_recovers_posture() {
 pub(crate) fn flowing_water_cuts_guarded_posture_damage_by_attack_attribute() {
     // Live 2026-10-08: Samurai General slash attacks (staminaPhysicsAttribute 1) cost x0.785 posture on
     // deflect / block, c1180 / c1470 strikes (2) x0.74 = SkillParam 280 "Flowing Water" -> SpEffect 150420
-    // (deflect, stateInfo 158) / 150421 (guard, 204): defSlashStaminaDmgRate 0.8, others 0.75 (+ int truncation).
+    // (block family, stateInfo 158) / 150421 (deflect family, 204): defSlashStaminaDmgRate 0.8, others
+    // 0.75, after the sword's 1 % guard cut, truncated (guard::guarded_posture).
     let app = app();
     let combat = app.world().resource::<Combat>();
     let mut config = app.world().resource::<crate::config::GameConfig>().clone();
+    let row = crate::guard::GuardRow::of(true, 5000, 90);
+    assert!(row.is_some(), "Wolf's guard row 105000090 -> 5000090");
+    let posture = |config: &crate::config::GameConfig, attribute: i64, deflect: bool| {
+        let skills: Vec<i64> = crate::combat::skill_sp_ids(combat, config).collect();
+        crate::guard::guarded_posture(18.0, &crate::guard::GuardDef::player(5000, deflect), row.as_ref(), &skills, deflect, attribute)
+    };
     config.player.skills = vec![];
-    assert_eq!(crate::combat::guard_skill_rate(combat, &config, 1, true), 1.0, "no skill = level-1 Wolf");
+    assert_eq!(posture(&config, 1, false), 17.0, "no skill = level-1 Wolf: 18 x 0.99");
     config.player.skills = vec![280];
     for deflect in [true, false] {
-        assert!((crate::combat::guard_skill_rate(combat, &config, 1, deflect) - 0.8).abs() < 1e-6);
-        assert!((crate::combat::guard_skill_rate(combat, &config, 2, deflect) - 0.75).abs() < 1e-6);
+        assert_eq!(posture(&config, 1, deflect), 14.0, "17.82 x 0.8");
+        assert_eq!(posture(&config, 2, deflect), 13.0, "17.82 x 0.75");
     }
 }
 
@@ -404,9 +411,9 @@ pub(crate) fn clash_effects_follow_the_hit_effect_tables() {
 
 #[test]
 pub(crate) fn guard_walk_keeps_facing_and_follows_the_stick() {
-    // Live (rec_20261008_051450, no lock-on): guard-walking, Wolf faces the camera's direction
-    // (strafes); a stick 45 deg off it plays DeflectGuardMoveF (|angle| < 55) and moves along the
-    // stick at ~1.5 m/s.
+    // Not locked on, guard-walking Wolf turns to the stick and walks forward (DeflectGuardMoveF)
+    // along it at ~1.5 m/s. (rec_20261008_051450 was read as facing the camera's direction, but
+    // that camera trails behind Wolf; the user, playing: he must not face the camera.)
     let mut app = app();
     move_enemy_far(&mut app);
     {
@@ -434,9 +441,11 @@ pub(crate) fn guard_walk_keeps_facing_and_follows_the_stick() {
     let yaw1 = world.query_filtered::<&Actor, With<Player>>().single(world).unwrap().yaw;
     assert!(state.starts_with("DeflectGuardMove"), "{state}");
     let _ = yaw0;
-    // Faces the camera's forward (yaw 0 in tests).
-    let off_cam = ((yaw1 + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI).to_degrees();
-    assert!(off_cam.abs() < 1.0, "facing {off_cam:.1} deg off the camera");
+    // Faces the stick.
+    let want = crate::player::stick_world(Vec2::new(0.7071, 0.7071), 0.0);
+    let facing = Quat::from_rotation_y(yaw1) * Vec3::NEG_Z;
+    let off_stick = facing.angle_between(want).to_degrees();
+    assert!(off_stick < 3.0, "facing {off_stick:.1} deg off the stick");
     let moved = (end - start).with_y(0.0);
     assert!(moved.length() > 0.8 && moved.length() < 2.2, "moved {:.2} m in 1 s", moved.length());
     let want = crate::player::stick_world(Vec2::new(0.7071, 0.7071), 0.0);
@@ -815,8 +824,9 @@ pub(crate) fn sheathe_walk_and_draw() {
         (a.sheathed, a.move_clip(false))
     };
     assert!(sheathed(&mut app).0, "not sheathed after the anim");
+    // Behind him: the sheathed turn-and-go (a010_000432 / 433) first, then the walk.
     app.world_mut().resource_mut::<PadInput>().stick = Vec2::new(0.0, 1.0);
-    for _ in 0..30 {
+    for _ in 0..45 {
         app.update();
     }
     assert_eq!(player_actor(&mut app).0, "Locomotion");
@@ -1606,6 +1616,238 @@ pub(crate) fn sprint_keeps_its_speed_into_the_loop() {
     assert!(min_in_loop > 6.0, "sprint loop dipped to {min_in_loop:.2} m/s");
 }
 
+/// The graph leads the sprint (hks_wolf): the stick pulled back past 135 deg turns it around
+/// (SprintQuickTurnReady, then Left/Right180 by the stick's side), and letting go stops it.
+/// Past the turn's move window the held dodge steps into a new sprint start, as the game's
+/// BEH_A_SPRINT does without ref 15 (_fireGroundStep).
+#[test]
+pub(crate) fn sprint_turns_around_and_stops_by_the_graph() {
+    let mut app = app();
+    move_enemy_far(&mut app);
+    let mut seen = Vec::<String>::new();
+    for i in 0..420 {
+        {
+            let mut pad = app.world_mut().resource_mut::<PadInput>();
+            pad.stick = if i < 200 { Vec2::new(0.0, 1.0) } else if i < 280 { Vec2::new(0.1, -1.0).normalize() } else { Vec2::ZERO };
+            if i == 30 {
+                pad.press(Action::Step);
+            }
+            pad.dodge_held = (30..280).contains(&i);
+        }
+        app.update();
+        let state = player_actor(&mut app).0;
+        if seen.last() != Some(&state) {
+            seen.push(state);
+        }
+    }
+    assert!(seen.iter().any(|s| s == "SprintLoop"), "never sprinted: {seen:?}");
+    assert!(seen.iter().any(|s| s.starts_with("SprintQuickTurn") && s.ends_with("180")), "no quick turn: {seen:?}");
+    assert!(seen.iter().any(|s| s.starts_with("SprintStop")), "no stop: {seen:?}");
+    assert!(!seen.last().unwrap().starts_with("Sprint"), "still sprinting: {seen:?}");
+}
+
+/// Letting go of dodge while still pushing the stick runs on (W_StandMoveStartFromSprint).
+#[test]
+pub(crate) fn sprint_let_go_while_moving_runs_on() {
+    let mut app = app();
+    move_enemy_far(&mut app);
+    let mut seen = Vec::<String>::new();
+    for i in 0..300 {
+        {
+            let mut pad = app.world_mut().resource_mut::<PadInput>();
+            pad.stick = Vec2::new(0.0, 1.0);
+            if i == 30 {
+                pad.press(Action::Step);
+            }
+            pad.dodge_held = (30..200).contains(&i);
+        }
+        app.update();
+        let state = player_actor(&mut app).0;
+        if seen.last() != Some(&state) {
+            seen.push(state);
+        }
+    }
+    assert!(seen.iter().any(|s| s == "SprintLoop"), "never sprinted: {seen:?}");
+    assert_eq!(seen.last().map(String::as_str), Some("Locomotion"), "{seen:?}");
+}
+
+/// Letting go of the stick early in the sprint's walk-out (StandMoveStartFromSprint, a STANDBY
+/// state: env 1105) stops the sprint (W_SprintStopReady), as the recordings do (33 of them), instead
+/// of running on into StandMoveLoopFromSprint.
+#[test]
+pub(crate) fn letting_go_in_the_sprint_walk_out_stops() {
+    let mut app = app();
+    move_enemy_far(&mut app);
+    let (mut seen, mut out) = (Vec::<String>::new(), None);
+    for i in 0..300 {
+        {
+            let mut pad = app.world_mut().resource_mut::<PadInput>();
+            pad.stick = if out.is_some_and(|o| i >= o + 2) { Vec2::ZERO } else { Vec2::new(0.0, 1.0) };
+            if i == 30 {
+                pad.press(Action::Step);
+            }
+            pad.dodge_held = (30..200).contains(&i);
+        }
+        app.update();
+        let state = player_actor(&mut app).0;
+        if state == "StandMoveStartFromSprint" && out.is_none() {
+            out = Some(i);
+        }
+        if seen.last() != Some(&state) {
+            seen.push(state);
+        }
+    }
+    assert!(out.is_some(), "never ran out of the sprint: {seen:?}");
+    assert!(seen.iter().any(|s| s.starts_with("SprintStop")), "no sprint stop: {seen:?}");
+    assert!(!seen.iter().any(|s| s == "StandMoveLoopFromSprint"), "ran on: {seen:?}");
+}
+
+/// Locked on, letting go of a run with the target 90 deg off: the script's run stop turns instead
+/// (BEH_A_GROUND_MOVE_STOP -> _GroundQuickTurn, W_StandQuickTurnRight90), taken once, not fired every frame (the replays with
+/// the lock target: 345 of ours, 18 of the game's).
+#[test]
+pub(crate) fn a_quick_turn_out_of_a_run_stop_is_taken_once() {
+    let mut app = app();
+    let enemy = {
+        let world = app.world_mut();
+        world.query::<&mut crate::enemy::Enemy>().single_mut(world).unwrap().ai_off = true;
+        world.query_filtered::<Entity, With<Enemy>>().single(world).unwrap()
+    };
+    let mut log = Vec::<String>::new();
+    for i in 0..150 {
+        app.world_mut().resource_mut::<PadInput>().stick = if i < 40 { Vec2::new(0.0, -1.0) } else { Vec2::ZERO };
+        if i == 40 {
+            // the target 8 m off Wolf's right, out of reach above
+            let world = app.world_mut();
+            let (a, tf) = world.query_filtered::<(&Actor, &Transform), With<Player>>().single(world).unwrap();
+            let at = tf.translation + a.forward().cross(Vec3::Y) * 8.0 + Vec3::Y * 40.0;
+            world.query_filtered::<&mut Transform, With<Enemy>>().single_mut(world).unwrap().translation = at;
+            world.resource_mut::<crate::camera::LockOn>().target = Some(enemy);
+        }
+        app.update();
+        let s = player_state(&mut app).0;
+        let ev = app.world().get_non_send::<crate::hks_wolf::WolfScript>().map_or(String::new(), |w| w.fired.join(";"));
+        if !ev.is_empty() || log.last().is_none_or(|l| !l.contains(&format!(" {s} "))) {
+            log.push(format!("{i} {s} {ev}"));
+        }
+    }
+    assert!(log.iter().any(|l| l.contains(" StandQuickTurnRight90 ")), "{log:?}");
+    assert!(log.iter().filter(|l| l.contains("W_StandQuickTurn")).count() == 1, "{log:?}");
+}
+
+/// Locking onto a target behind in a run stop's first frames: the script's in-move 180 turn
+/// (BEH_A_STAND_MOVE_QUICK_TURN, TurnAngle the target's angle with the stick at rest) is taken
+/// once and turns Wolf to the target (rec 20261015_231740 @8327: ours fired it every frame).
+#[test]
+pub(crate) fn a_target_locked_behind_in_a_run_stop_turns_once() {
+    let mut app = app();
+    let enemy = {
+        let world = app.world_mut();
+        world.query::<&mut crate::enemy::Enemy>().single_mut(world).unwrap().ai_off = true;
+        world.query_filtered::<Entity, With<Enemy>>().single(world).unwrap()
+    };
+    move_enemy_far(&mut app);
+    let mut log = Vec::<String>::new();
+    let mut lock_at = None;
+    for i in 0..150 {
+        app.world_mut().resource_mut::<PadInput>().stick = if i < 40 { Vec2::new(0.0, -1.0) } else { Vec2::ZERO };
+        let s = player_state(&mut app).0;
+        if lock_at.is_none() && s.starts_with("StandRunStop") {
+            lock_at = Some(i);
+            // the target 8 m behind Wolf, out of reach above
+            let world = app.world_mut();
+            let (a, tf) = world.query_filtered::<(&Actor, &Transform), With<Player>>().single(world).unwrap();
+            let at = tf.translation - a.forward() * 8.0 + Vec3::Y * 40.0;
+            world.query_filtered::<&mut Transform, With<Enemy>>().single_mut(world).unwrap().translation = at;
+            world.resource_mut::<crate::camera::LockOn>().target = Some(enemy);
+        }
+        app.update();
+        let s = player_state(&mut app).0;
+        let ev = app.world().get_non_send::<crate::hks_wolf::WolfScript>().map_or(String::new(), |w| w.fired.join(";"));
+        if !ev.is_empty() || log.last().is_none_or(|l| !l.contains(&format!(" {s} "))) {
+            log.push(format!("{i} {s} {ev}"));
+        }
+    }
+    assert!(log.iter().any(|l| l.contains(" StandRunQuickTurn")), "{log:?}");
+    assert!(log.iter().filter(|l| l.contains("W_StandMoveQuickTurn")).count() == 1, "{log:?}");
+}
+
+/// The move out of a step let go 3 ticks in: the script's stop (BEH_A_GROUND_MOVE_STOP
+/// W_StandRunStop) is taken once, not fired every frame while the move's speed level is still
+/// low (rec 20261015_211958 @895: the game's W_StandMoveStart, W_StandRunStop 3 ticks later, once).
+#[test]
+pub(crate) fn a_move_out_of_a_step_let_go_at_once_stops_once() {
+    let mut app = app();
+    move_enemy_far(&mut app);
+    for _ in 0..20 {
+        app.update();
+    }
+    let (mut log, mut start) = (Vec::<String>::new(), None);
+    for i in 0..90 {
+        {
+            let mut pad = app.world_mut().resource_mut::<PadInput>();
+            pad.stick = if start.is_some_and(|s| i >= s + 3) { Vec2::ZERO } else { Vec2::new(0.0, -1.0) };
+            if i == 2 {
+                pad.press(Action::Step);
+            }
+        }
+        app.update();
+        let s = player_state(&mut app).0;
+        let ev = app.world().get_non_send::<crate::hks_wolf::WolfScript>().map_or(String::new(), |w| w.fired.join(";"));
+        if ev.contains("W_StandMoveStart") && start.is_none() && i > 2 {
+            start = Some(i);
+        }
+        if !ev.is_empty() || log.last().is_none_or(|l| !l.contains(&format!(" {s} "))) {
+            log.push(format!("{i} {s} {ev}"));
+        }
+    }
+    let stops = log.iter().filter(|l| l.contains("W_StandRunStop") || l.contains("W_StandWalkStop")).count();
+    assert!(start.is_some(), "{log:?}");
+    assert_eq!(stops, 1, "{log:?}");
+    assert!(log.iter().any(|l| l.contains(" StandRunStop") || l.contains(" StandWalkStop")), "{log:?}");
+}
+
+/// Locked on, a step away from the target held into a sprint keeps sprinting: the sprint faces the
+/// stick, so TurnAngle (read by BEH_A_GROUND_MOVE_STOP in SprintStartFromStep) is the stick's, not
+/// the target's ~180 deg (the replays: 96 W_SprintStopReady of ours, 45 of the game's).
+#[test]
+pub(crate) fn a_locked_sprint_away_from_the_target_keeps_going() {
+    let mut app = app();
+    let enemy = {
+        let world = app.world_mut();
+        world.query::<&mut crate::enemy::Enemy>().single_mut(world).unwrap().ai_off = true;
+        world.query_filtered::<Entity, With<Enemy>>().single(world).unwrap()
+    };
+    let mut log = Vec::<String>::new();
+    for i in 0..160 {
+        {
+            let mut pad = app.world_mut().resource_mut::<PadInput>();
+            pad.stick = Vec2::new(0.0, 1.0);
+            if i == 30 {
+                pad.press(Action::Step);
+            }
+            pad.dodge_held = i >= 30;
+        }
+        if i == 20 {
+            // the target 10 m behind Wolf, out of reach above
+            let world = app.world_mut();
+            let (a, tf) = world.query_filtered::<(&Actor, &Transform), With<Player>>().single(world).unwrap();
+            let at = tf.translation - a.forward() * 10.0 + Vec3::Y * 40.0;
+            world.query_filtered::<&mut Transform, With<Enemy>>().single_mut(world).unwrap().translation = at;
+            world.resource_mut::<crate::camera::LockOn>().target = Some(enemy);
+        }
+        app.update();
+        let s = player_state(&mut app).0;
+        let ev = app.world().get_non_send::<crate::hks_wolf::WolfScript>().map_or(String::new(), |w| w.fired.join(";"));
+        if !ev.is_empty() || log.last().is_none_or(|l| !l.contains(&format!(" {s} "))) {
+            log.push(format!("{i} {s} {ev}"));
+        }
+    }
+    assert!(log.iter().any(|l| l.contains(" SprintStartFromStep")), "{log:?}");
+    assert!(log.iter().any(|l| l.contains(" SprintLoop ")), "{log:?}");
+    assert!(!log.iter().any(|l| l.contains("W_SprintStopReady")), "{log:?}");
+}
+
 /// Live (rec_20261016_094717_lockturn_sprintdeflect, 7 locked sprint deflects): the deflect does not
 /// snap to the enemy. Sprinting 90-150 deg off him, the facing is still ~100 deg off at the
 /// start, about 75 deg off 0.17 s in and square on by ~0.4 s (TAE turn 0 / 180 / 360, then 720 deg/s).
@@ -1691,4 +1933,42 @@ pub(crate) fn releasing_the_stick_at_a_run_stops_in_about_a_third_of_a_metre() {
             assert!(slid < 0.4, "slid {slid:.2} m");
         }
     }
+}
+
+/// Out of the sprint into the run (dodge let go, W_StandMoveStartFromSprint), the graph's own
+/// move loop is player.rs's Locomotion: the stick turned steers and let go stops (shown as the
+/// graph's StandMoveLoop clip, Wolf ran on one way for its whole clip).
+#[test]
+pub(crate) fn the_run_out_of_a_sprint_steers_and_stops() {
+    let mut app = app();
+    move_enemy_far(&mut app);
+    let mut seen = Vec::<String>::new();
+    let yaw = |app: &mut App| {
+        let w = app.world_mut();
+        w.query_filtered::<&crate::actor::Actor, With<Player>>().single(w).unwrap().yaw.to_degrees()
+    };
+    let mut turned = None;
+    for i in 0..260 {
+        {
+            let mut pad = app.world_mut().resource_mut::<PadInput>();
+            pad.stick = if i < 175 { Vec2::Y } else if i < 200 { -Vec2::X } else { Vec2::ZERO };
+            if i == 30 {
+                pad.press(Action::Step);
+            }
+            pad.dodge_held = (30..150).contains(&i);
+        }
+        app.update();
+        let state = player_actor(&mut app).0;
+        if i == 199 {
+            turned = Some(yaw(&mut app));
+        }
+        if seen.last() != Some(&state) {
+            seen.push(state);
+        }
+    }
+    assert!(seen.iter().any(|s| s == "StandMoveStartFromSprint"), "never ran out of the sprint: {seen:?}");
+    assert!((turned.unwrap().abs() - 90.0).abs() < 5.0, "the stick did not steer: yaw {turned:?}, {seen:?}");
+    assert!(!seen.iter().any(|s| s == "StandMoveLoop"), "{seen:?}");
+    let last = seen.last().unwrap();
+    assert!(last == "StandIdle" || last.starts_with("StandRunStop") || last.starts_with("StandWalkStop"), "did not stop: {seen:?}");
 }

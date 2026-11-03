@@ -51,7 +51,7 @@ per-boss status sheet: `docs/reports/bosses-handover.md`. Sessions renamed the s
 
 ## 1. The project
 - **Sv1** is a 1:1 recreation of Sekiro's combat in Rust and Bevy 0.19, at
-  `C:\DeadlockModding\shinobi-combat`. The crate and exe are both named `sv1`.
+  `..\shinobi-combat`. The crate and exe are both named `sv1`.
 - **The data is the source of truth:** the game's own files (TAE events, HKS scripts,
   params, Havok behaviour graphs and cloth, FLVER models, FMOD sound projects), plus a full
   static Ghidra decompile of the exe (`extracted/decomp/*.c`).
@@ -218,7 +218,7 @@ per-boss status sheet: `docs/reports/bosses-handover.md`. Sessions renamed the s
 - **Gameplay logic:** `cargo test --release`; add sim tests in `src/sim_tests/` (parts listed in its mod.rs).
 - **Geometry vs the real game:** compare `SHINOBI_THROW_TRACE` output with the memscope
   recordings.
-  - Recordings: `C:\DeadlockModding\memscope-data\logs\rec_*`. `index.txt` lists the blocks.
+  - Recordings: `..\memscope-data\logs\rec_*`. `index.txt` lists the blocks.
   - Slot 0 is Wolf, 1-2 are the nearest enemies.
   - physics +0x80 = position, +0x74 = yaw, +0x84 = y.
   - chr_head +0x68 = NpcParam id, +0x6C = chr id.

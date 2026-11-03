@@ -199,6 +199,9 @@ pub struct Actor {
     /// (`run_sp_effect_chains`): (SpEffect id, seconds left).
     pub tae_prev: Vec<i64>,
     pub sp_chained: Vec<(i64, f32)>,
+    /// The team a map script set (EMEVD 2004[2] Set Character Team Type), over NpcParam teamType
+    /// (combat::team_of).
+    pub team: Option<i64>,
     /// Hit stop (`HitStop`, started by combat.rs start_hit_stop): scales this actor's clock.
     pub hit_stop: HitStop,
     /// This frame's step of the character's own clock (`advance`: the hit-stop-scaled dt, 0 in the
@@ -207,6 +210,17 @@ pub struct Actor {
     /// per-character FD4Time chr+0x100 whose float chr+0x108 FUN_1409f78a0 writes from
     /// HitStop+0x18 (<decomp ref>); only the fall / Havok take the raw dt (round 64).
     pub clock_dt: Option<f32>,
+    /// The exe's update level (WorldChrMan "omission update", FUN_140a4e8e0 sets chr+0x110):
+    /// the character updates once every `lod` ticks with `lod` ticks' time (FUN_140a4db20:
+    /// `idx % level == frame % level`, dt x level); `lod_due` this tick. 1 / true: every tick
+    /// (all but the open world's enemies, enemy/world.rs).
+    pub lod: u32,
+    pub lod_due: bool,
+    /// Ticks since its last due tick (0 on one): how far into its `lod` window a frame is drawn.
+    pub lod_phase: u32,
+    /// The fall-prevention walls Wolf's script asks for (hks.rs `Host::fall_protect`): the host's
+    /// world stops him at its ledge walls while he walks (terrain.rs `slide_protected`).
+    pub fall_protect: u8,
     /// Debug menu "no posture damage" (player_cheats sets it each tick): add_posture adds
     /// nothing, so one blocked hit can't fill the bar inside Resolve (round 65).
     pub no_posture: bool,
@@ -218,6 +232,9 @@ pub struct Actor {
     pub posture_held: bool,
     /// Resident SpEffect ids (NpcParam spEffectID slots for enemies).
     pub resident: Vec<i64>,
+    /// Wolf's worn quick-item SpEffects (player.rs mirrors Player::timed each tick; items.rs):
+    /// the combat code reads them as his own (damage cuts, damage levels, build-up resist).
+    pub item_sp: Vec<i64>,
     /// AttackBehavior windows already resolved in the current anim, per defender: (defender,
     /// judge, start). One window hits each target once, so a swing through two enemies hurts both.
     pub hits_done: Vec<(Entity, i64, i32)>,
@@ -235,6 +252,8 @@ pub struct Actor {
     /// game's per-frame heights match the analytic arc).
     pub grav_y: f32,
     pub airborne: bool,
+    /// Held at a map edge (docking.rs hold): the terrain neither drops nor slides the body.
+    pub docked: bool,
     /// Wolf's Lightning Reversal charge: the SpEffect a lightning hit in the air put on him
     /// (9490 "charged enchantment [weak lightning]" stateInfo 356 / 9495 "[strong thunder]" 151,
     /// effectEndurance 30 s) and its time left. gap: the exe applies it (no param references
@@ -278,6 +297,9 @@ pub struct Actor {
     pub move_index: u8,
     pub move_dir: u8,
     pub move_start: f32,
+    /// The graph's own move start where it picks another than move_clip(true): the landing's
+    /// (StandMoveStartFromLand* a000_00041x), the free fall's (a000_000110). Cleared by play.
+    pub move_start_clip: Option<String>,
     /// Weapon style None (TAE 32 SetWeaponStyle): the sword is sheathed.
     pub sheathed: bool,
     /// Crouching (HKS STYLE_TYPE_CROUCH): idle and locomotion use the Crouch* clips, the stand
@@ -300,9 +322,16 @@ pub struct Actor {
     /// ... in the 4-way back sector (HKS damage_angle == B, |front| >= |side|): a small-blow
     /// posture break lands face down only then (c0000_transition 1678-1684).
     pub hit_back_quadrant: bool,
+    /// The damage the engine reports to the script this frame (enemy::DamageEnv), set where
+    /// combat.rs reacts; hks_lua's comparisons read and clear it (Wolf's and the enemies').
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub damage_env: Option<crate::enemy::DamageEnv>,
     /// The behaviorRefId of the status row whose damage emptied HP (status.rs): 590 terror,
     /// 500 a poison tick (damage level none); 0 otherwise. BEH_R_DEATH picks the death by it.
     pub death_ref: i64,
+    /// The source line of the last `play` (SHINOBI_HKS_AUDIT: hks_wolf compares player.rs's picks
+    /// with the graph's per call site).
+    pub played_at: Option<&'static std::panic::Location<'static>>,
     /// The killing direct hit's (HKS damage level env 236, element env 285 = spAttribute),
     /// set by combat.rs; BEH_R_DEATH picks Wolf's death start by it (player.rs death_starts).
     pub death_hit: Option<(i64, i64)>,
@@ -320,6 +349,9 @@ pub struct Actor {
     /// Attack multipliers from area scaling: HP damage, posture damage dealt.
     pub atk_rate: f32,
     pub stam_atk_rate: f32,
+    /// HP / posture damage taken x (Wolf's quick-item effects, items.rs: Ungo's / Gokan's Sugar).
+    pub dmg_cut: f32,
+    pub posture_cut: f32,
     /// Engine knockback (AtkParam knockbackDist_*, KnockBackParam times): horizontal
     /// velocity held for `kb_cont` seconds, then decelerated to 0 over `kb_dec_total`.
     pub kb_vel: Vec3,
@@ -346,7 +378,16 @@ pub struct Actor {
     pub anim_keys: Option<std::sync::Arc<std::collections::HashSet<String>>>,
 }
 
+/// The update level of a character nobody watches (enemy/world.rs: off screen, or on screen
+/// past 50 m): drawn at its latest pose instead of between its ticks.
+pub const ASLEEP: u32 = 30;
+
 impl Actor {
+    /// On the [`ASLEEP`] update level.
+    pub fn asleep(&self) -> bool {
+        self.lod >= ASLEEP
+    }
+
     /// Starts a knockback of `dist` metres along `dir` with KnockBackParam times
     /// (`cont` at full speed, then linear to 0 over `dec`): v = dist / (cont + dec / 2).
     /// A negative `dist` pulls: the Spear's Combo2 pull (v7800 judges 115-117,
@@ -401,11 +442,17 @@ impl Actor {
             posture_limits: None,
             tae_prev: Vec::new(),
             sp_chained: Vec::new(),
+            team: None,
             hit_stop: HitStop::default(),
             clock_dt: None,
+            lod: 1,
+            lod_due: true,
+            lod_phase: 0,
+            fall_protect: 0,
             no_posture: false,
             posture_held: false,
             resident: Vec::new(),
+            item_sp: Vec::new(),
             hits_done: Vec::new(),
             bullet_hits: Vec::new(),
             anim_group: 0,
@@ -415,6 +462,7 @@ impl Actor {
             vel_y: 0.0,
             grav_y: 0.0,
             airborne: false,
+            docked: false,
             electro: None,
             opacity: 1.0,
             cam_alpha: 1.0,
@@ -432,6 +480,7 @@ impl Actor {
             move_index: 0,
             move_dir: 0,
             move_start: 0.0,
+            move_start_clip: None,
             sheathed: false,
             crouch: false,
             twist: 0.0,
@@ -440,7 +489,9 @@ impl Actor {
             attack_hit: false,
             hit_from_back: false,
             hit_back_quadrant: false,
+            damage_env: None,
             death_ref: 0,
+            played_at: None,
             death_hit: None,
             shock: None,
             aged: None,
@@ -448,6 +499,8 @@ impl Actor {
             vel_change_done: false,
             atk_rate: 1.0,
             stam_atk_rate: 1.0,
+            dmg_cut: 1.0,
+            posture_cut: 1.0,
             kb_vel: Vec3::ZERO,
             kb_cont: 0.0,
             kb_dec: 0.0,
@@ -458,7 +511,9 @@ impl Actor {
         }
     }
 
+    #[track_caller]
     pub fn play(&mut self, state: &str, anim: &str) {
+        self.played_at = Some(std::panic::Location::caller());
         // The transition keeps the source generator's motion through the blend-in (c0000.hkx
         // TaeBlend) or drops it (TaeBlend_NoSrcMotion): see `advance`.
         // A clip restarted on its own key is the generator looping (hkbClipGenerator
@@ -473,6 +528,7 @@ impl Actor {
         }
         self.state = state.to_string();
         self.anim = to;
+        self.move_start_clip = None;
         self.t = 0.0;
         self.prev_t = 0.0;
         self.fresh = true;
@@ -500,6 +556,7 @@ impl Actor {
     }
 
     /// Plays a behavior state through the data's state -> anim table.
+    #[track_caller]
     pub fn play_state(&mut self, data: &CharData, state: &str) -> bool {
         match data.anim_key(state) {
             Some(key) => {
@@ -575,7 +632,7 @@ impl Actor {
     /// the loop on the action's clock.
     pub fn locomotion_clip_at(&self, t: f32) -> (String, f32, bool) {
         if self.state == "Locomotion" && t < self.move_start {
-            (self.move_clip(true), t, false)
+            (self.move_start_clip.clone().unwrap_or_else(|| self.move_clip(true)), t, false)
         } else if self.state == "Locomotion" {
             (self.move_clip(false), t - self.move_start, true)
         } else {
@@ -599,19 +656,37 @@ impl Actor {
         format!("{group}_{:06}", base + self.move_dir.min(3) as u32)
     }
 
-    /// The clip a player shows and its time: the TAE anim, else the procedural idle (StandIdle
-    /// a000_000000 / CrouchIdle a000_005000) or locomotion clip. For reading the TAE of what is
-    /// on screen (crouch's stealth SpEffect 109200 rides on the crouch idle / move clips).
-    pub fn shown_clip(&self, d: &CharData) -> (String, f32) {
-        if !self.anim.is_empty() {
-            return (self.anim.clone(), self.t);
-        }
-        let (key, t) = if self.state == "Locomotion" {
-            let (key, t, _) = self.locomotion_clip_at(self.t);
-            (key, t)
-        } else {
-            ((if self.crouch { "a000_005000" } else { "a000_000000" }).to_string(), self.t)
+    /// The clip a procedural state (no TAE anim) shows and the time in it, before looping:
+    /// Wolf's locomotion = the move start, then the loop (move_clip), his idle a000_000000 /
+    /// crouch idle a000_005000; an enemy's battle idle a000_400000 (PostureBroken 008550) in its
+    /// anim set (grouped: the spear / matchlock / eight-phase soldiers' a200 / a300 / a100).
+    pub fn proc_clip(&self, t: f32) -> (String, f32) {
+        let key = match (self.side, self.state.as_str()) {
+            (Side::Player, "Locomotion") => {
+                let (key, t, _) = self.locomotion_clip_at(t);
+                return (key, t);
+            }
+            (Side::Player, _) if self.crouch => "a000_005000".to_string(),
+            (Side::Player, _) => "a000_000000".to_string(),
+            (Side::Enemy, "PostureBroken") => self.grouped("a000_008550"),
+            (Side::Enemy, _) => self.grouped("a000_400000"),
         };
+        (key, t)
+    }
+
+    /// The clip on screen and its time: the TAE anim, else the procedural one (proc_clip). For
+    /// reading the TAE of what is on screen (crouch's stealth SpEffect 109200 rides on the crouch
+    /// idle / move clips, the walk's MOVING_WALK ref on the walk).
+    pub fn shown_clip(&self, d: &CharData) -> (String, f32) {
+        self.shown_clip_at(d, self.t)
+    }
+
+    /// The clip on screen at clip time `t` (the last frame's: `prev_t`).
+    pub fn shown_clip_at(&self, d: &CharData, t: f32) -> (String, f32) {
+        if !self.anim.is_empty() {
+            return (self.anim.clone(), t);
+        }
+        let (key, t) = self.proc_clip(t);
         let len = d.length(&key);
         (key, if len > 0.0 { t.rem_euclid(len) } else { t })
     }
@@ -632,7 +707,7 @@ impl Actor {
     pub fn add_posture(&mut self, amount: f32) {
         if amount > 0.0 && !self.no_posture {
             self.posture_held = false;
-            self.posture = self.bound_posture(self.posture + amount);
+            self.posture = self.bound_posture(self.posture + amount * self.posture_cut);
             self.since_posture_damage = 0.0;
         }
     }
@@ -677,7 +752,7 @@ pub fn data_for<'a>(combat: &'a Combat, a: &Actor) -> &'a CharData {
 /// player (or the rival it fights) for the enemy; unlocked, Wolf's attack auto-homing target (player.rs).
 fn boost_root_motion(
     combat: Res<Combat>,
-    lock: Option<Res<crate::camera::LockOn>>,
+    lock: Option<Res<crate::view::LockOn>>,
     mut q: Query<(Entity, &mut Actor, &Transform)>,
 ) {
     let positions: Vec<(Entity, Side, Vec3)> = q.iter().map(|(e, a, t)| (e, a.side, t.translation)).collect();
@@ -890,9 +965,16 @@ impl HitStop {
 
 /// Advances clocks, applies root motion and procedural motion.
 pub fn advance(time: Res<Time>, combat: Res<Combat>, mut q: Query<(&mut Actor, &mut Transform)>) {
-    let real_dt = time.delta_secs();
+    let _prof = crate::perf::span("advance");
+    let tick_dt = time.delta_secs();
     for (mut a, mut tf) in &mut q {
         let from = a.begin_step();
+        // Not due this tick (its update level): no time passes for it.
+        if !a.lod_due {
+            a.clock_dt = Some(0.0);
+            continue;
+        }
+        let real_dt = tick_dt * a.lod as f32;
         // The hit stop scales the whole step (clip, TAE, root motion, pushes), as the exe runs
         // every module on the character's own time (FUN_140b9d1b0 -> FUN_1409f78a0).
         let dt = a.hit_stop.split(real_dt);
@@ -965,6 +1047,20 @@ pub fn advance(time: Res<Time>, combat: Res<Combat>, mut q: Query<(&mut Actor, &
                     match (data.root_at(&k, t0), data.root_at(&k, len), data.root_at(&k, 0.0), data.root_at(&k, t0 + dt - len)) {
                         (Some((p0, y0)), Some((pe, ye)), Some((ps, ys)), Some((p1, y1))) => Some((p0, y0, pe - p0 + (p1 - ps), (ye - y0) + (y1 - ys))),
                         _ => None,
+                    }
+                } else if len > 0.0 && t0 + dt > len {
+                    // A from clip that ended (the transition fired at its end) carries on at its
+                    // last speed through the blend instead of standing still: the sprint start ->
+                    // loop (StateToStateBlendIgnoreToWorld: only the from motion moves) dropped
+                    // to 0 m/s at the hand-over (blend_src.json restored, 2026-10-17).
+                    match data.root_at(&k, t0.min(len)) {
+                        Some((p0, y0)) => {
+                            let v = data.root_velocity_at(&k, (len - 1.0 / 60.0).max(0.0), false);
+                            let in_clip = data.root_at(&k, len).map_or(Vec2::ZERO, |(pe, _)| pe - p0);
+                            let past = (t0 + dt - len.max(t0)).max(0.0);
+                            Some((p0, y0, in_clip + v * past, 0.0))
+                        }
+                        None => None,
                     }
                 } else {
                     match (data.root_at(&k, t0), data.root_at(&k, t0 + dt)) {
@@ -1096,7 +1192,14 @@ pub fn advance(time: Res<Time>, combat: Res<Combat>, mut q: Query<(&mut Actor, &
 /// building on real time, so an air hit's arc came out lower and shorter.
 fn fall(a: &mut Actor, tf: &mut Transform, dt: f32) {
     if a.airborne {
+        let from = tf.translation.y;
         tf.translation.y += (a.vel_y - 0.5 * a.grav_y * dt) * dt;
+        // A rise stops where the head meets a ceiling (the host's world: sekiro-rs sim body.rs
+        // `stop_rise_at_ceiling`), and the rise is spent.
+        if let Some(y) = crate::terrain::ceiling_stop(tf.translation, from) {
+            tf.translation.y = y;
+            a.vel_y = a.vel_y.min(0.0);
+        }
     }
 }
 
@@ -1136,11 +1239,22 @@ pub(crate) fn run_sp_effect_chains(data: &crate::data::CharData, a: &mut Actor, 
     // FUN_140c06b70's count (status::count_down): a run-out row stays the tick it is found out
     // and goes, handing on to its replace, the next; the new row counts on its add's tick (exe:
     // 109451 at 0.9667 s on its first frame, 31 frames at 30 fps; before, 30).
+    let mut hp_hits = Vec::new();
     for (id, mut left) in a.sp_chained.drain(..) {
         if crate::status::count_down(&mut left, dt) {
             kept.push((id, left));
         } else if let Some(r) = row(id).and_then(|s| row(s.replace_sp_effect_id).map(|r| (s.replace_sp_effect_id, r))).filter(|(_, r)| r.effect_endurance > 0.0) {
             add.push((r.0, r.1.effect_endurance));
+        } else if let Some(next) = crate::data::sp_cycle(id).map(|c| c.replace).filter(|n| *n > 0).and_then(crate::data::sp_cycle).filter(|r| r.endurance == 0.0) {
+            // A one-shot replacement lands its changeHpRate (% of max HP) once: the Puppeteer's
+            // 220030 runs out into 220022 "died over time", 100 %.
+            hp_hits.push(next.hp_rate);
+        }
+    }
+    // (Never on the dead: a ThrowDef clip's 3120000 runs out into 5461, -100 % = full HP.)
+    if a.hp > 0.0 {
+        for rate in hp_hits {
+            a.hp = (a.hp - a.hp_max * rate / 100.0).clamp(0.0, a.hp_max);
         }
     }
     for (id, mut secs) in add {
@@ -1156,6 +1270,28 @@ pub(crate) fn run_sp_effect_chains(data: &crate::data::CharData, a: &mut Actor, 
     kept.retain(|(id, _)| crate::data::sp_cycle(*id).is_none_or(|c| !c.wait_delete || c.gate.iter().filter(|g| **g > 0).all(|g| states.contains(g))));
     a.sp_chained = kept;
     a.tae_prev = now;
+}
+
+/// StaminaControlParam staminaMinRatio / staminaMaxRatio_forType<T> while TAE 960 sets type T
+/// (exe bd4e20, ported after sekiro-rs posture.rs ControlRange): the remaining posture is held
+/// between the two ratios of the max, in whole points. An enemy's collapse a000_008300 holds it
+/// empty (type 5: 0 / 0) for the deathblow window, then sets 30 % left (type 6: 30 / 30) as it
+/// rises; type 7 (100 / 100) refills it in the throw and deathblow anims; Wolf's row 0 refills
+/// it in his break anims (type 5: 100 / 100). A range that would empty a meter not already broken
+/// is left alone: the exe reports a break only on a hit (b6e6a0), ours on an empty meter.
+/// (Called by enemy.rs on a collapse's rise; the per-frame hold is `regen_posture`'s
+/// `posture_limits` through `Actor::bound_posture`, checked against the exe.)
+pub fn hold_posture_range(a: &mut Actor, ty: i64) {
+    let row = crate::items::param("StaminaControlParam", a.stamina_ctrl_row);
+    let ratio = |k: &str| row[format!("stamina{k}Ratio_forType{ty:03}")].as_i64();
+    let (Some(hi), Some(lo)) = (ratio("Max"), ratio("Min")) else { return };
+    let max = a.posture_max as i64;
+    let (hi, lo) = ((hi * max / 100) as f32, (lo * max / 100) as f32);
+    let remaining = a.posture_max - a.posture;
+    let held = remaining.clamp(lo.min(hi), lo.max(hi));
+    if held != remaining && (held >= 1.0 || a.posture_broken()) {
+        a.posture = a.posture_max - held;
+    }
 }
 
 /// Posture recovery, as in the exe's ChrIns update (FUN_140a04850, <decomp ref>; checked
@@ -1371,6 +1507,14 @@ fn proxy_off(combat: &Combat, a: &Actor) -> bool {
 /// gap: a moving enemy's proxy lift (the NPC's physics +0xb10 mode 3 moves it through
 /// FUN_14104da50) and his keepDistance are not traced; Wolf's 0.05 stands in for both.
 fn separate(combat: Res<Combat>, mut last: Local<std::collections::HashMap<Entity, Vec3>>, mut q: Query<(Entity, &mut Actor, &mut Transform)>) {
+    let _prof = crate::perf::span("separate");
+    let radius = |a: &Actor| {
+        if a.side == Side::Player {
+            PLAYER_BODY_RADIUS
+        } else {
+            combat.param("NpcParam", combat.foe_of(a).npc_row)["hitRadius"].as_f64().unwrap_or(0.5) as f32
+        }
+    };
     let half = crate::player::CAPSULE_HALF_HEIGHT;
     // Enemies stand 0.05 m higher (enemy.rs spawn_lineup).
     let body = |a: &Actor, t: &Transform| {
@@ -1387,11 +1531,19 @@ fn separate(combat: Res<Combat>, mut last: Local<std::collections::HashMap<Entit
         }
     };
     let mut items: Vec<_> = q.iter_mut().collect();
+    // Each body's radius once (an NpcParam read), and pairs too far apart to touch skipped before
+    // the throw / TAE checks: the open world has dozens of bodies (enemy/world.rs).
+    let radii: Vec<f32> = items.iter().map(|x| radius(&x.1)).collect();
     for i in 0..items.len() {
         for j in i + 1..items.len() {
             let (l, r) = items.split_at_mut(j);
             let (ea, a, ta) = &mut l[i];
             let (eb, b, tb) = &mut r[0];
+            // (keepDistance too: `contact_flat` stops a pair that far beyond the radii.)
+            let reach = radii[i] + radii[j] + PROXY_KEEP_DISTANCE;
+            if (tb.translation - ta.translation).with_y(0.0).length_squared() >= reach * reach {
+                continue;
+            }
             // Throw pairs pass through each other (the game's throws drop the character proxies).
             if a.hp <= 0.0 || b.hp <= 0.0 || in_throw(a) || in_throw(b) || proxy_off(&combat, a) || proxy_off(&combat, b) {
                 continue;

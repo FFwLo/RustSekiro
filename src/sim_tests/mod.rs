@@ -18,14 +18,20 @@ pub(crate) use crate::player::{Action, PadInput, Player, PlayerPlugin, CAPSULE_H
 // part01: 49 tests, timed_guard_deflects_and_bounces_the_enemy .. posture_break_staggers_then_a_second_hit_knocks_wolf_down
 // part02: 45 tests, locked_slash_lunges_toward_a_far_target .. a_jump_press_leaves_the_hold_art
 // part03: 44 tests, hold_art_sheathes_and_releases .. a_feigning_wolf_is_dropped_by_the_enemy
-// part04: 23 tests, crouching_cuts_how_far_enemies_see_wolf .. a_blocked_shuriken_plays_the_guard_reaction
+// part04: 24 tests, crouching_cuts_how_far_enemies_see_wolf .. a_blocked_shuriken_plays_the_guard_reaction
 // part05: 35 tests, a_guarding_enemy_takes_its_npc_posture_rate .. blue_lightning_leaves_an_air_art_going
 // part06: 35 tests, lightning_on_the_ground_shocks_wolf .. the_bandits_torch_sets_wolf_on_fire
 // part07: 43 tests, reigniting_a_burn_refreshes_it .. no_gourd_while_guarding_and_a_tool_switch_in_the_air
 // part08: 49 tests, a_jump_in_the_break_pose_vaults_without_killing .. a_patrol_point_with_a_zero_region_is_reached_by_is_arrived
 // part09: 47 tests, a_blocked_hit_does_not_wake_a_held_enemy .. an_attack_out_of_a_run_keeps_the_runs_momentum
 // part10: 38 tests, an_attack_at_the_run_loops_wrap_keeps_the_momentum_too .. hit_stop_holds_posture_regen_and_sp_effect_timers
-// part11: 21 tests, a_mid_stride_loop_swap_does_not_burst_its_sounds .. follow_camera_matches_the_exe
+// part11: tests from both lines, a_mid_stride_loop_swap_does_not_burst_its_sounds .. follow_camera_matches_the_exe / throw_direction_effects_come_from_the_material_row
+// part12: 12 tests, wall hug, ledge hang and wall jumps (docking.rs)
+// part13: atlas movement pass tests (atlas ids in the names)
+// part14: atlas combat pass tests (atlas ids in the names)
+// part15: atlas vfx + lighting pass tests (atlas ids in the names)
+// part16: atlas bosses pass tests (atlas ids in the names)
+// part17: replay_recording (ignored; tools/rec/replay.py and enemies.py drive it), a map event's anim set, a soldier under Wolf's sword guards
 
 mod part01;
 mod part02;
@@ -67,6 +73,12 @@ mod emu_air;
 mod emu_fxr2;
 mod emu_hits;
 mod emu_animstart;
+mod part12;
+mod part13;
+mod part14;
+mod part15;
+mod part16;
+mod part17;
 pub(crate) use part01::*;
 pub(crate) use part02::*;
 pub(crate) use part03::*;

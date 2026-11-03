@@ -13,7 +13,9 @@ data.
 ## What it does
 
 - **Wolf:** walking, running, sprinting, jumping, steps, lock-on, crouch,
-  grappling hook, healing gourd, death and resurrection.
+  grappling hook, healing gourd, swimming and diving, falls out of the map (back to safe
+  ground for a third of his health), death and resurrection (two nodes, the second locked
+  until a deathblow; the game's 死 death screen).
 - **Combat:** attacks, guard, deflect, posture, perilous attacks, Mikiri
   Counter, combat arts, prosthetic tools with their status effects, Lightning
   Reversal.
@@ -25,29 +27,46 @@ data.
   events and arena, from Genichiro to the Divine Dragon.
 - **Looks and sound:** the game's models, cloth, effects, blood, sky, fog,
   lighting, HUD and menus; the game's own sounds and music through FMOD.
+- **Skill trees:** find each Esoteric Text to open its school at an idol. On the Construct,
+  the five books are at Course Start, Platform Top, Cliff Top, Shaft Floor and the outpost's
+  watchtower. Learning still costs skill points and requires the earlier skills.
+- **Sculptor:** talk to him near Course Start on the Construct (E) to fit new Prosthetic Tools
+  and buy upgrades. The Workshop is reached through him rather than an idol.
 
 Values the files don't hold are marked `gap` in the code and in `config.toml`.
 Not included: the rest of the game (story, NPCs, saving, open world).
 
 ## Controls
 
-| Action | Key |
+The keyboard defaults are Sekiro's own (its `DefaultKeyAssignParam`, each action named by
+the game's key guide text). E (talk / wall hug / ledge hang) is reserved for those.
+
+| Action | Keyboard / mouse |
 |---|---|
 | Move / look | WASD / mouse |
 | Walk | Left Alt |
-| Attack | Left click |
-| Guard / deflect | Right click |
-| Combat art | Left + right click |
-| Step (hold: sprint) | Shift |
-| Jump | Space |
-| Lock on | Q |
-| Prosthetic / switch | F / Z |
-| Healing Gourd | E |
-| Crouch | C |
-| Sheathe | X |
+| Attack (hold for the thrust) | Left click or J |
+| Guard / deflect | Right click or K |
+| Combat art | Left and right click together |
+| Step (hold to sprint) | Shift |
+| Jump, kick in the air | Space |
+| Lock on | Middle mouse button |
+| Prosthetic tool | Left Ctrl |
+| Switch prosthetic tool | Z |
+| Grappling hook | F |
+| Use quick item (Healing Gourd, sugars, pellets ...) | R |
+| Next quick item | C |
+| Menus: OK / back / move | Enter or E / Esc or Q / arrows, mouse wheel; click a row |
+| Crouch | Q |
+| Swim: fast / dive and sink / rise (diving needs the Mibu Breathing Technique) | hold Shift / Ctrl / F |
+| Wall hug / ledge hang / climb up (hold in the air to catch a ledge) | E |
+| Wall jump (jump in the air against a wall, or jump while hugging / hanging) | Space |
+| Sheathe / draw | X |
+| Resurrect / die (when dead) | Left click / right click |
 
-`F1` debug menu (pick enemy, AI mode, cheats), `F3` frame rate, `R` reset,
-`[` `]` time of day, `F5` reload `config.toml`, `Esc` pause.
+Sandbox keys: `F3` shows the frame rate, `F1` opens the debug menu (enemy, AI mode, skills, tools,
+cheats), `T` turns the enemy's AI on or off, `H` shows hurtboxes, `Backspace` resets,
+`[` / `]` change the hour, `F5` reloads `config.toml`, `Esc` pauses (the game menu). Click the window to capture the mouse.
 
 ## Setup
 

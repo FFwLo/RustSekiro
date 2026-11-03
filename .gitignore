@@ -10,3 +10,4 @@
 /dist/
 /tools/fxr-dump/node_modules/
 sv1.log
+__pycache__/

@@ -1,14 +1,15 @@
 # Sv1 (Sekiro combat recreation in Rust + Bevy)
 
-Project at `C:\DeadlockModding\shinobi-combat`: a 1:1 recreation of Sekiro's combat. Every number
+A 1:1 recreation of Sekiro's combat. Every number
 comes from the game's own files (TAE, HKS, params, behaviour graphs, FLVER, FMOD) or the
-static Ghidra decompile of the exe. The crate and exe are `sv1`. GitHub: `FFwLo/RustSekiro`, `main`.
+static Ghidra decompile of the exe. The package and exe are `sv1`; the game is the library `rustsekiro`
+(src/lib.rs, `rustsekiro::run()`), src/main.rs only starts it. GitHub: `FFwLo/RustSekiro`, `main`.
 
 ## Commands
 - Build: `cargo build --release` (game), `cargo build` (debug). One target folder per session
   (`CARGO_TARGET_DIR=target/<name>`); the extractor uses `tools/sekiro-extract/target`.
 - Tests: `tools/t.sh <filter>` (quiet: failures and totals only). Same as
-  `cargo test --profile quick --bin sv1 <filter>`. Run only the covering tests per change; the full
+  `cargo test --profile quick --lib <filter>`. Run only the covering tests per change; the full
   suite once at the end. "Done" = build and the covering tests pass.
 - Regenerate data: `powershell -ExecutionPolicy Bypass -File tools\extract.ps1`.
 - Exe research: `tools/fn.sh <addr>` prints a decompiled function; `extracted/rtti_vtables.txt`.
@@ -30,10 +31,14 @@ static Ghidra decompile of the exe. The crate and exe are `sv1`. GitHub: `FFwLo/
 | Sound, music | `src/sound.rs`, `src/fmod.rs`, `src/area_music.rs`, `docs/kb/sound.md` |
 | HUD, menus | `src/hud.rs`, `src/menu.rs` |
 | Extractor | `tools/sekiro-extract/src/`, `docs/kb/tools-exe.md` |
+| The game's HKS script + behaviour graph run as the game does (live by default, SHINOBI_HKS=0 off; tests) | `src/hks_wolf.rs`, `src/hks.rs`, `src/hks_lua.rs`, `src/hkb_runtime.rs`, `docs/kb/hks-graph.md` |
+| How any Sekiro mechanic works (values, sources, coverage, needs) | `docs/kb/mechanics-atlas.json` (filter by id/category with python; `mechanics-atlas.md` is generated from it) |
+| The playthrough start to finish, gates, endings | `docs/kb/game-flow.md` |
+| The combat core alone (`--no-default-features`), its hooks; in sekiro-rs's game (`embed`: camera + debug menu, his `--rustsekiro` mode) | `src/lib.rs` (CombatCorePlugin, re-exports), `tools/core_deps.py` (must stay 0), FFwLo/sekiro-rs branch `rustsekiro-combat` (`crates/game/src/rustsekiro_mode.rs`) |
 | Reference clips | `docs/kb/clips.md` (check before asking for a new recording) |
 | Live recordings of the real Sekiro | `docs/kb/recordings.md`: read `python -m tools.rec summary <rec> --cat <topic>`, never raw data |
 
-Reference clones (read-only): `C:\DeadlockModding\reference` (SekiroHKS, SDT-HKS, Paramdex,
+Reference clones (read-only): `..\reference` (SekiroHKS, SDT-HKS, Paramdex,
 SekiroTool, SoulsFormatsNEXT, sekiro-rs, fxr, ...). Check them first for names and layouts.
 
 ## Do not read by default
@@ -47,3 +52,14 @@ SekiroTool, SoulsFormatsNEXT, sekiro-rs, fxr, ...). Check them first for names a
 2. Read only that item's kb file and source module (table above).
 3. Record what changed in the kb file for the topic and in `docs/PROGRESS.md`, not in
    `docs/HANDOFF.md` (that file is the current-state summary only).
+
+## Subagents and workflows
+- Project agents already pick their own model (`re-scout`, `screenshot-judge`: sonnet;
+  `cargo-check`: haiku). Prefer them over `general-purpose`.
+- When spawning `general-purpose` agents or workflow `agent()` calls, pass `model: "sonnet"`.
+  Use Opus only for hard reverse-engineering (TAE/HKX, AI scripts, exe research) and say why.
+- Subagents are for searches with a short answer; batch related shell commands into one call.
+
+## Ending a session
+Once the task is committed and `docs/PROGRESS.md` (plus the topic's kb file) is updated, tell the
+user to start a new session for the next item instead of continuing this one.

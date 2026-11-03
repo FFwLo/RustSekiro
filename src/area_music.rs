@@ -140,7 +140,7 @@ fn music_state(e: &crate::enemy::Enemy, parked: bool) -> u8 {
 
 fn area_music(
     fmod: Option<NonSendMut<Fmod>>,
-    map: Option<Res<crate::map::MapLighting>>,
+    map: Option<Res<crate::sound_rules::SoundPlace>>,
     script: Option<Res<crate::enemy::BossScript>>,
     screen: Option<Res<State<crate::menu::Screen>>>,
     enemies: Query<(&crate::enemy::Enemy, Option<&crate::enemy::Phantom>)>,
@@ -251,6 +251,7 @@ mod tests {
 
     /// arena_to_map undoes the export: an exported map's enemy stands 4 m behind the arena
     /// origin (Bevy (0, y, -4)), at its MSB position (json centre.pos).
+    #[cfg(feature = "host")]
     #[test]
     fn arena_points_back_to_map_space() {
         let Ok(text) = std::fs::read_to_string(crate::paths::extracted().join("map_m11_01_00_00.json")) else { return };

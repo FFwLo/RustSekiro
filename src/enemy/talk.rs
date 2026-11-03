@@ -91,7 +91,7 @@ pub(super) fn run_talk(
     combat: Res<Combat>,
     mut bs: ResMut<BossScript>,
     mut talk: ResMut<Talk>,
-    mut sounds: Option<ResMut<crate::sound::SoundQueue>>,
+    mut sounds: Option<ResMut<crate::sound_rules::SoundQueue>>,
     mut wolf: Single<(&mut Actor, &Transform), (With<Player>, Without<Enemy>)>,
     mut q: Query<(&mut Enemy, &mut Actor, &Transform), Without<Player>>,
 ) {

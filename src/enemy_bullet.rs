@@ -373,7 +373,7 @@ fn fly(
     mut shooters: Query<&mut Actor, (With<Enemy>, Without<Player>)>,
     markers: Query<&GlobalTransform>,
     mut stains: MessageWriter<crate::gore::PlaceStain>,
-    (mut statuses, config, mut perilous): (ResMut<crate::status::Statuses>, Res<crate::config::GameConfig>, Option<ResMut<crate::hud::Perilous>>),
+    (mut statuses, config, mut perilous): (ResMut<crate::status::Statuses>, Res<crate::config::GameConfig>, Option<ResMut<crate::combat::Perilous>>),
     (mut fxr, wolf_dummies, mut effects): (Option<ResMut<crate::fxr::FxrLib>>, Query<&crate::model::Dummies, With<Player>>, Query<&mut crate::fxr::FxEffect>),
     // Each shot's hit on Wolf until when (its dmgHitRecordLifeTime; none: for good).
     (mut shared_hit, mut clock): (Local<std::collections::HashMap<u32, f32>>, Local<f32>),
@@ -423,7 +423,7 @@ fn fly(
         let mut landed = false;
         let step = to - from;
         if b.spec.is_penetrate_map == 0 && step.length() > 1e-5 {
-            if let Some(t) = crate::map::terrain() {
+            if let Some(t) = crate::terrain::terrain() {
                 if let Some(d) = t.raycast(from, step.normalize(), step.length()) {
                     to = from + step.normalize() * d;
                     landed = true;
@@ -438,7 +438,8 @@ fn fly(
             b.out_of_range += dt;
         }
         btf.translation = to;
-        let dir = b.vel.normalize_or(Vec3::NEG_Z);
+        // A bullet standing still (a speed-0 carrier) hands on the way it was fired, not world -Z.
+        let dir = b.vel.normalize_or(b.facing);
         if let Some(child) = row(b.spec.interval_create_bullet_id) {
             while b.age >= b.next_interval && b.spec.interval_create_time_min > 0.0 {
                 b.next_interval += b.spec.interval_create_time_min;
@@ -529,7 +530,10 @@ fn fly(
                     // Its poison / burn build-up goes onto Wolf's gauges (status.rs; gap: whether his
                     // guard keeps some off a bullet's own SpEffects is not traced: all of it lands).
                     let (build, own): (Vec<i64>, Vec<i64>) = sp_effects(&b.spec).partition(|id| crate::status::Statuses::is_build_up(&combat, *id));
-                    statuses.hit_wolf_wearing(&combat, we, &crate::player::wolf_worn(&combat, &config, wa), config.player.combat_art, &build, crate::status::Guard::None);
+                    // His worn rows (`player::wolf_worn`) and his quick items' rows (Actor::item_sp).
+                    let mut worn = crate::player::wolf_worn(&combat, &config, wa);
+                    worn.extend(wa.item_sp.iter().copied());
+                    statuses.hit_wolf_wearing(&combat, we, &worn, config.player.combat_art, &build, crate::status::Guard::None);
                     // Its other SpEffects for their effectEndurance (one with none: a frame).
                     for id in own {
                         let key = id.to_string();

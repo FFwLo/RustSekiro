@@ -2,6 +2,8 @@
 //! player, and turns toward the lock-on target (Q or middle mouse).
 //!
 //! Click in the window to capture the mouse; press Esc to release it.
+//! In another game (`embed` without `host`) it takes over that game's camera instead of spawning
+//! one, keeping its lights, fog and post.
 
 use bevy::input::mouse::AccumulatedMouseMotion;
 use bevy::prelude::*;
@@ -258,9 +260,9 @@ fn map_cast(start: Vec3, v: Vec3, radius: f32) -> Option<f32> {
         return None;
     }
     let dir = v / len;
-    let hit = match crate::map::raycast(start, dir, len + radius + 1e-3) {
+    let hit = match crate::terrain::camera_raycast(start, dir, len + radius + 1e-3) {
         Some(h) => h - radius,
-        None if dir.y < -1e-3 && crate::map::terrain().is_none() => (start.y - radius) / -dir.y,
+        None if dir.y < -1e-3 && crate::terrain::terrain().is_none() => (start.y - radius) / -dir.y,
         None => return None,
     };
     (hit <= len + 1e-3).then(|| (hit / len).clamp(0.0, 1.0))
@@ -639,15 +641,9 @@ fn cam_slot(combat: &Combat, slot: i64) -> (i64, i64, f32, f32) {
     (n("lockParamId") as i64, n("camParamId") as i64, n("beginTime") as f32, n("endTime") as f32)
 }
 
-#[derive(Resource, Default)]
-pub struct LockOn {
-    pub target: Option<Entity>,
-}
-
-/// Set when Wolf is placed (the first frame, a retry): the camera jumps behind him at the
-/// starting pitch instead of chasing there from where it was.
-#[derive(Resource)]
-pub struct CameraSnap(pub bool);
+// The lock target and the snap are the combat core's (view.rs); the camera sets them and fills
+// `View` after it moves (`publish_view`).
+pub use crate::view::{CameraSnap, LockOn};
 
 /// The camera's pitch when it is placed behind Wolf.
 /// gap: hand-set; the game's starting camera angle (on load / at a checkpoint) is not traced.
@@ -677,17 +673,85 @@ pub(crate) fn add_shakes(app: &mut App) {
 impl Plugin for CameraPlugin {
     fn build(&self, app: &mut App) {
         add_shakes(app);
-        app.init_resource::<LockOn>()
-            .insert_resource(CameraSnap(true))
-            .add_systems(Startup, spawn_camera)
+        app.add_plugins(crate::view::ViewPlugin)
+            .add_systems(CAMERA_START, (spawn_camera, publish_view).chain())
             .add_systems(
 
                 PostUpdate,
-                (capture_mouse, toggle_lock, orbit_with_mouse, orbit_with_stick, follow_player, apply_shakes, fade_player).chain().before(TransformSystems::Propagate),
+                (shot_knobs, capture_mouse, toggle_lock, orbit_with_mouse, orbit_with_stick, follow_player, apply_shakes, fade_player, publish_view).chain().before(TransformSystems::Propagate),
             );
     }
 }
 
+/// The whole game spawns its camera at the start; in another game that game's camera is taken
+/// over once it exists.
+#[cfg(feature = "host")]
+const CAMERA_START: Startup = Startup;
+#[cfg(not(feature = "host"))]
+const CAMERA_START: Update = Update;
+
+/// The pause / death screens and the idol menu (menu.rs).
+type Screen<'w> = Option<Res<'w, State<crate::menu::Screen>>>;
+
+/// Behind a menu (paused, the death screen).
+fn in_menu(_screen: &Screen) -> bool {
+    _screen.as_ref().is_some_and(|s| *s.get() != crate::menu::Screen::Playing)
+}
+
+/// The camera as the combat core reads it (view.rs `View`): the orbit and the camera's place.
+fn publish_view(cam: Query<(&OrbitCamera, &Transform)>, mut view: ResMut<crate::view::View>) {
+    *view = match cam.single() {
+        Ok((oc, t)) => crate::view::View { orbit: Some((oc.yaw, oc.pitch)), eye: Some((t.translation, t.rotation)) },
+        Err(_) => crate::view::View::default(),
+    };
+}
+
+/// Screenshot knobs that hold the camera: SHINOBI_SKILL_CAM="yaw,pitch" [deg] (ffx.rs's skill
+/// shots), SHINOBI_FXR_TEST (fxr.rs's effect shots: pitch 5 deg).
+fn shot_knobs(mut cam: Query<&mut OrbitCamera>) {
+    let Ok(mut oc) = cam.single_mut() else { return };
+    if std::env::var("SHINOBI_SKILL").is_ok() {
+        if let Ok(v) = std::env::var("SHINOBI_SKILL_CAM") {
+            let v: Vec<f32> = v.split(',').filter_map(|x| x.parse().ok()).collect();
+            if let Some(&y) = v.first() {
+                oc.yaw = y.to_radians();
+                oc.pitch = v.get(1).copied().unwrap_or(10.0).to_radians();
+            }
+        }
+    }
+    if std::env::var("SHINOBI_FXR_TEST").is_ok() {
+        oc.pitch = 5f32.to_radians();
+    }
+}
+
+/// Put by another game on its main camera, the one this camera takes over (needed when it has
+/// more than one, e.g. probe or effect cameras).
+#[cfg(not(feature = "host"))]
+#[derive(Component)]
+pub struct HostCamera;
+
+#[cfg(not(feature = "host"))]
+fn spawn_camera(
+    mut commands: Commands,
+    combat: Res<Combat>,
+    mut cams: Query<(Entity, &mut Projection, Has<HostCamera>), (With<Camera3d>, Without<OrbitCamera>)>,
+    done: Query<(), With<OrbitCamera>>,
+) {
+    if !done.is_empty() {
+        return;
+    }
+    // The marked camera, else the only one.
+    let marked = cams.iter().any(|c| c.2);
+    let mut pick = cams.iter_mut().filter(|c| c.2 || !marked);
+    let (Some((e, mut projection, _)), None) = (pick.next(), pick.next()) else { return };
+    let lc = lock_cam(&combat);
+    if let Projection::Perspective(p) = &mut *projection {
+        p.fov = lc.fov_y.to_radians();
+    }
+    commands.entity(e).insert(OrbitCamera { yaw: 0.0, pitch: start_pitch(), focus: Vec3::ZERO, cam: CamState::new(&lc) });
+}
+
+#[cfg(feature = "host")]
 fn spawn_camera(mut commands: Commands, combat: Res<Combat>) {
     let lc = lock_cam(&combat);
     commands.spawn((
@@ -777,21 +841,52 @@ pub(crate) fn acquirable(cam: &GlobalTransform, wolf: Vec3, wolf_fwd: Vec3, p: V
     chr_front || near || far
 }
 
+/// LockTgtMan's sight test (FUN_1409c5fe0 -> FUN_14094e310, the lock's own ray collector,
+/// filter 0xB1): a ray from the camera to the candidate; a hit hides it. A hidden enemy cannot be
+/// taken and a held one is let go after LOCK_HIDDEN_TIMEOUT. gap: the exe aims at the chr's
+/// position; here the body's centre (the feet's ray grazes the floor).
+fn in_sight(cam: Vec3, p: Vec3) -> bool {
+    let d = p - cam;
+    let len = d.length();
+    len < 1e-3 || crate::terrain::raycast(cam, d / len, len).is_none()
+}
+/// VisibleCheckIntervalTime (LockTgtManImp +0x2924): how often a candidate's ray runs.
+const LOCK_SIGHT_INTERVAL: f32 = 0.5;
+/// 不可視ロックタイムアウト時間 (+0x2928): how long a held target may stay hidden.
+const LOCK_HIDDEN_TIMEOUT: f32 = 2.0;
+
+/// The held target's sight clock: (next ray in, hidden for). Returns whether the lock holds.
+fn hold_hidden(clock: &mut (f32, f32), dt: f32, sight: impl FnOnce() -> bool) -> bool {
+    clock.0 -= dt;
+    if clock.0 <= 0.0 {
+        clock.0 = LOCK_SIGHT_INTERVAL;
+        if sight() {
+            clock.1 = 0.0;
+            return true;
+        }
+    } else if clock.1 == 0.0 {
+        return true;
+    }
+    clock.1 += if clock.1 == 0.0 { LOCK_SIGHT_INTERVAL } else { dt };
+    clock.1 < LOCK_HIDDEN_TIMEOUT
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn toggle_lock(
-    keys: Res<ButtonInput<KeyCode>>,
+    _keys: Res<ButtonInput<KeyCode>>,
     mouse: Res<ButtonInput<MouseButton>>,
     motion: Res<AccumulatedMouseMotion>,
     combat: Res<Combat>,
     time: Res<Time>,
     mut lock: ResMut<LockOn>,
     mut cooldown: Local<f32>,
+    mut sight: Local<(f32, f32)>,
     pads: Query<&Gamepad>,
     config: Res<GameConfig>,
     player: Single<(&Transform, &crate::actor::Actor), With<Player>>,
     enemies: Query<(Entity, &Transform, &Enemy)>,
     cams: Query<(&Camera, &GlobalTransform), With<OrbitCamera>>,
-    (screen, cursor): (Option<Res<State<crate::menu::Screen>>>, Option<Single<&CursorOptions, With<PrimaryWindow>>>),
+    (screen, cursor): (Screen, Option<Single<&CursorOptions, With<PrimaryWindow>>>),
 ) {
     let range = lock_cam(&combat).lock_range;
     let (wolf, wolf_fwd) = (player.0.translation, player.1.forward());
@@ -803,13 +898,26 @@ pub(crate) fn toggle_lock(
             lock.target = None;
         }
     }
+    // Out of sight behind a wall for LOCK_HIDDEN_TIMEOUT: the lock lets go.
+    let cam_pos = cams.iter().next().map(|(_, g)| g.translation());
+    if let (Some(t), Some(c)) = (lock.target, cam_pos) {
+        if let Ok((_, tf, _)) = enemies.get(t) {
+            if !hold_hidden(&mut sight, time.delta_secs(), || in_sight(c, tf.translation)) {
+                lock.target = None;
+            }
+        }
+    } else {
+        *sight = (LOCK_SIGHT_INTERVAL, 0.0);
+    }
     // Only in play: behind a menu (paused, the death screen) the mouse and stick are the menu's
     // and the game clock - the switch cooldown's - stands still.
-    if screen.is_some_and(|s| *s.get() != crate::menu::Screen::Playing) {
+    if in_menu(&screen) {
         return;
     }
     let pad_lock = config.input.gamepad && pads.iter().any(|g| g.just_pressed(GamepadButton::RightThumb));
-    if keys.just_pressed(KeyCode::KeyQ) || mouse.just_pressed(MouseButton::Middle) || pad_lock {
+    // Lock on: the middle mouse button, the game's default (DefaultKeyAssignParam00, player.rs
+    // read_input); Q is the game's crouch key.
+    if mouse.just_pressed(MouseButton::Middle) || pad_lock {
         lock.target = match lock.target {
             Some(_) => None,
             // The nearest of those in front (acquirable); no camera (headless): any.
@@ -817,7 +925,7 @@ pub(crate) fn toggle_lock(
                 let cam = cams.iter().next().map(|(_, g)| *g);
                 enemies
                     .iter()
-                    .filter(|(_, tf, e)| lockable(tf, e) && cam.is_none_or(|c| acquirable(&c, wolf, wolf_fwd, tf.translation)))
+                    .filter(|(_, tf, e)| lockable(tf, e) && cam.is_none_or(|c| acquirable(&c, wolf, wolf_fwd, tf.translation) && in_sight(c.translation(), tf.translation)))
                     .min_by(|a, b| a.1.translation.distance(wolf).total_cmp(&b.1.translation.distance(wolf)))
                     .map(|(e, ..)| e)
             }
@@ -853,7 +961,7 @@ pub(crate) fn toggle_lock(
     let dir = flick / mag;
     let next = enemies
         .iter()
-        .filter(|(e, tf, en)| *e != cur && lockable(tf, en) && switchable(cam_tf, tf.translation))
+        .filter(|(e, tf, en)| *e != cur && lockable(tf, en) && switchable(cam_tf, tf.translation) && in_sight(cam_tf.translation(), tf.translation))
         .filter_map(|(e, tf, _)| {
             let d = camera.world_to_viewport(cam_tf, tf.translation).ok()? - at;
             let len2 = d.length_squared();
@@ -1211,7 +1319,7 @@ pub(crate) fn follow_player(
     mut camera: Single<(&mut Transform, &mut OrbitCamera, &mut Projection)>,
     mut snap: ResMut<CameraSnap>,
     pad: Option<Res<crate::player::PadInput>>,
-    config: Res<GameConfig>,
+    config: Option<Res<crate::config::GameConfig>>,
 ) {
     let (player, actor, dummies) = *player_q;
     let (transform, orbit, projection) = &mut *camera;
@@ -1285,7 +1393,16 @@ pub(crate) fn follow_player(
     if set_angle.is_none() && lock_point.is_none() {
         orbit.pitch = orbit.pitch.clamp(range.0, range.1);
     }
-    let target_focus = chr_focus(player.translation, orbit.cam.focus_y);
+    let mut target_focus = chr_focus(player.translation, orbit.cam.focus_y);
+    // The hug peek (docking.rs CoverAction*): the camera leans out round the wall end with Wolf,
+    // 1.2 m to the peek's side and 0.3 m forward (gap: the game's cover camera rows are not
+    // read). The clips' _R peeks to Wolf's own left (named from the front, as the hug moves).
+    if crate::docking::is_peek(&actor.state) {
+        let fwd = Quat::from_rotation_y(actor.yaw) * Vec3::NEG_Z;
+        let right = fwd.cross(Vec3::Y);
+        let side = if actor.state.ends_with('R') { -right } else { right };
+        target_focus += side * 1.2 + fwd * 0.3;
+    }
     // Focus follow (exe FUN_141155d20 from the ChrCam update FUN_14073c260, `FocusChase`) at the
     // working rates +0x220 / +0x224 as last frame left them (`working_rates_step`: eased toward
     // CameraParam chrTransChaseRateXZ_ForNormal 0.2 / _Y 0.3).
@@ -1299,7 +1416,7 @@ pub(crate) fn follow_player(
     // +0x1a0, until the event ends) the focus stays on Wolf at the normal rates. After the event
     // it chases Wolf at unk3 while unk2 seconds count down (FUN_140838b50). Big deflects and the
     // deathblow throws use dmy 142. gap: the exe's cast (FUN_14094cf90, its own hit filter) is
-    // map::raycast here.
+    // terrain::raycast here.
     let mut target_focus = target_focus;
     let look = if actor.anim.is_empty() { None } else { combat.player.events_at(&actor.anim, actor.step()).find(|e| e.kind == 151) };
     let look = look.filter(|e| e.arg_i64("DummyPolyID").unwrap_or(-1) >= 0);
@@ -1316,7 +1433,7 @@ pub(crate) fn follow_player(
                 if !orbit.cam.look_blocked {
                     let v = pos - target_focus;
                     let len = v.length();
-                    orbit.cam.look_blocked = len > 0.0 && crate::map::raycast(target_focus, v / len, len).is_some();
+                    orbit.cam.look_blocked = len > 0.0 && crate::terrain::raycast(target_focus, v / len, len).is_some();
                 }
                 if !orbit.cam.look_blocked {
                     target_focus = pos;
@@ -1359,7 +1476,7 @@ pub(crate) fn follow_player(
     let root = player.translation - Vec3::Y * crate::player::CAPSULE_HALF_HEIGHT + lift;
     let ray = |o: Vec3, v: Vec3| {
         let l = v.length();
-        l > 0.0 && crate::map::raycast(o, v / l, l).is_some()
+        l > 0.0 && crate::terrain::raycast(o, v / l, l).is_some()
     };
     orbit.focus = focus_pull_in(orbit.focus, chased, root, crate::player::CAPSULE_RADIUS, ray, map_cast);
     let pulled = orbit.focus - lift;
@@ -1427,7 +1544,13 @@ pub(crate) fn follow_player(
         // this frame's turning (the exe turns after the resync).
         let v = drag_fulcrum(f, moved, orbit.cam.trans_snap, fp) - orbit.focus;
         if v.with_y(0.0).length_squared() > 1e-6 {
-            orbit.yaw = f32::atan2(v.x, v.z) + turning.map_or(0.0, |d| d.0);
+            // config camera.follow_swing scales how far the camera swings round after a sideways
+            // run (1 = the CameraParam fulcrum's full swing: 68 deg/s at a run, 143 at a sprint,
+            // which ran Wolf in tight circles with the stick held sideways; the user: "spinning
+            // like a compass", the movement "feels off").
+            let swing = config.as_ref().map_or(1.0, |c| c.camera.follow_swing).clamp(0.0, 1.0);
+            let chased = f32::atan2(v.x, v.z);
+            orbit.yaw = orbit.yaw + angle_delta(chased, orbit.yaw) * swing + turning.map_or(0.0, |d| d.0);
             // The pitch too (FUN_140733e50; 14073.c 9840-9880) when `chases_pitch`: a climb
             // or a fall leaves the fulcrum behind in height, which tilts the camera.
             let stick = pad.as_ref().map_or(Vec2::ZERO, |p| p.stick);
@@ -1472,7 +1595,7 @@ pub(crate) fn follow_player(
     let rotation = Quat::from_euler(EulerRot::YXZ, orbit.yaw, -orbit.pitch, 0.0);
     // camCastSphereRadius (0.05 m): the radius of every collision cast below (`map_cast`).
     let radius = cf("camCastSphereRadius", 0.05);
-    let escape = config.input.escape_wall;
+    let escape = config.as_ref().is_some_and(|c| c.input.escape_wall);
     let fulcrum = {
         let arm = rotation * Vec3::Z;
         let cam_dist = if orbit.cam.pos.is_some() { (transform.translation - orbit.focus).length() } else { orbit.cam.dist };
@@ -1563,6 +1686,7 @@ pub(crate) fn follow_player(
     let hit = map_cast(orbit.focus, pos - orbit.focus, radius);
     if hit.is_some() {
         orbit.cam.wall.hit_time = cf("targetChaseDistRateTime", 2.0);
+
     }
     let post = cast_cut(orbit.focus, pos - orbit.focus, hit, CAST_CUT_MIN);
     orbit.cam.wall.post = Some(post);
@@ -1955,5 +2079,28 @@ mod tests {
         assert!((p.with_y(0.0) - high.with_y(0.0)).length() < 1e-4, "{p}");
         let p = chase_position(high_near, high, focus, FREE, Some((-0.7, 1.5)), 0.0, 1.0 / 60.0);
         assert!((p.with_y(0.0).normalize() - high_near.with_y(0.0).normalize()).length() < 1e-4);
+    }
+}
+
+#[cfg(test)]
+mod lock_sight_tests {
+    use super::*;
+
+    /// LockTgtMan: a held target out of sight is let go after 2 s (the ray every 0.5 s); one
+    /// seen again in time keeps the lock.
+    #[test]
+    fn a_hidden_lock_target_is_let_go_after_two_seconds() {
+        let dt = 1.0 / 60.0;
+        let mut clock = (0.0, 0.0);
+        let mut held = 0.0;
+        while hold_hidden(&mut clock, dt, || false) {
+            held += dt;
+            assert!(held < 3.0);
+        }
+        assert!((1.4..=2.1).contains(&held), "held {held}");
+        let mut clock = (0.0, 0.0);
+        for i in 0..240 {
+            assert!(hold_hidden(&mut clock, dt, || i > 60), "dropped at tick {i}");
+        }
     }
 }

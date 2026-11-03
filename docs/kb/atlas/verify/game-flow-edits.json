@@ -1,0 +1,29 @@
+{
+ "id": "game-flow.md",
+ "verdict": "corrected",
+ "reason": "Compared the markdown with the records and the EMEVD and ESD data; the listed passages disagree with the data or with each other.",
+ "fix": {
+  "edits": [
+   "Steps 57, 58, 59 and the endings table: Immortal Severance is Tears alone with cutscene 11020110, flags 20 and 6830, achievement 9; Purification is Tears with the Everblossom, cutscenes 11020120 then 11020121, flags 21 and 6831, achievement 10; Return is Tears with Frozen Tears, cutscene 11020100, flags 22 and 6832, achievement 11. Delete the sentence that says 6830 versus 6831 is not proven and the Open question marks on steps 58 and 59.",
+   "Step 59: the menu entry needs only goods 9091; the Rice for Kuro is needed only to get the Frozen Tears from the Divine Child.",
+   "Step 56: the three flags are set by Kuro's ESD t112111 (menu texts 14000100 to 14000102), not by the EMEVD.",
+   "Steps 01 to 03 and the first-control wording: the first control is in the Ashina Reservoir (m11_02), not the Dilapidated Temple; the temple is reached after the lost duel.",
+   "Step 12: the Young Lord's Bell Charm is given by ESD t110160 (lot 61600); lot 51600 is unused; the Buddha ESD t110101 sets 71100598. Step 15b: the Father's Bell Charm is given by Emma, and offering it needs 9302 on.",
+   "Step 17: castle idols are rows 1110 to 1117 with flags 11110000 to 11110007.",
+   "Step 21: the Gun Fort Shrine Key opens object 1701550 in m17 (event 11705202), a shrine door inside the Gun Fort.",
+   "Step 24: event 12005800 sets 9305; 9405 (the event 300 reward flag) is set later by event 12005906 after the post-fight cutscene.",
+   "Steps 25 and 26: the Divine Child's 'I do' answer sets 72000002 and event 12000700 gives the Mortal Blade at once as lot 62200; lot 3020 is unused; Mortal Draw lots 62202 and 62204 are weapons 5700 and 7300.",
+   "Step 30b: add lot 2200 (Bestowal Ninjutsu, goods 2120) for flag 9314, set by event 11705873 with achievement 24.",
+   "Step 32: lot 2050 exists (weapon 680000, Mibu Breathing Technique). Step 33: the technique is that lot, not a talk award.",
+   "Step 38: the Owl fight needs Emma's talk flag 71110021 as well as 8301, 9303 and the invasion scene.",
+   "Step 39: add the Kuro choice texts 14011020 and 14011021 with answer flags 71120120 and 71120121; the Obey answer leaves talk flag 71110055. Step 43: flag 8415 is set by Kuro's variant ESD t111111 after talks 11104700 and 11104750.",
+   "Steps 46 and 48 show 'Gate: none beyond the start of the game' but both need the Fountainhead arrival (step 44); step 50c also shows no predecessor and needs steps 36, 50, 28 and 15b.",
+   "Step 45: the Great White Whisker is a Sunken Valley pickup that needs flag 9370 (set by a Fountainhead talk); it is not a Fountainhead route item.",
+   "Step 52: the Secret Passage Key is given by Emma, not found in Kuro's room, and its door is object 1121711 in the Reservoir (event 11125295).",
+   "Key items table: Mortal Blade lot is 62200 (3020 is unused); add the Young Lord's and Father's Bell Charms, and mark the Gatehouse Key (9402) as an optional Reservoir door with no step. Add steps for the Gatehouse Key, Emma's talk before the Owl and Kuro's Dragon road talks (the MISSING entries).",
+   "World-state table: 8301 comes from common event 910 requiring all three goods (AND); the atlas record npcs.story-flags-8301 says 'or' and should read 'and'.",
+   "Numbering: steps 47 and 51 do not exist in the list although the numbers jump from 46b to 48 and 50c to 52."
+  ]
+ },
+ "needs_recording": false
+}

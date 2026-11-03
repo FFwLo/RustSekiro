@@ -301,9 +301,10 @@ pub const ACT_SET_EVENT_ANIM_IN_PROGRESS: i32 = 9102;
 /// Case 0x238f: flags +0x14 = v.
 pub const ACT_SET_AI_ATTACK_STATE: i32 = 9103;
 
-/// HKS ACTION_ARM ids (c0000_define.lua) of Sv1's buffered actions.
-pub fn action_arm(a: Action) -> i32 {
-    match a {
+/// HKS ACTION_ARM ids (c0000_define.lua) of Sv1's buffered actions; None for the ones whose id is
+/// not traced (the quick-item cycle is gameAction 13 / 14; ACTION_ARM_WALL_HANG's id).
+pub fn action_arm(a: Action) -> Option<i32> {
+    Some(match a {
         Action::Attack => 0,
         Action::Prosthetic => 1,
         Action::Guard => 2,
@@ -314,7 +315,8 @@ pub fn action_arm(a: Action) -> i32 {
         Action::SwitchTool => 10,
         Action::Crouch => 15,
         Action::CombatArt => 32,
-    }
+        Action::NextItem | Action::Interact => return None,
+    })
 }
 
 /// GetGuardLevelAction (case 0xed): FUN_140843820(level, guard) looks up a 12 x 5 table (level
@@ -406,7 +408,7 @@ impl HksEnv {
         ids.sort_unstable();
         ids.dedup();
         let sp_effects = ids.iter().map(|&id| (id, behavior_ref(combat, id))).collect();
-        let mut requests: Vec<i32> = p.requests.keys().map(|&k| action_arm(k)).collect();
+        let mut requests: Vec<i32> = p.requests.keys().filter_map(|&k| action_arm(k)).collect();
         requests.sort_unstable();
         let dt = a.clock_dt.unwrap_or(1.0 / 60.0);
         let ground = !a.airborne as i32 as f64;

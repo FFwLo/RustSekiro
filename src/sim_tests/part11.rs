@@ -262,10 +262,10 @@ pub(crate) fn an_immortal_wolf_stays_at_1_hp() {
 }
 
 /// Round 76: BEH_R_LAND 2026 - every non-sprint ground jump sets EnablePositioningJumpLand
-/// (HKS 2800), so a vertical jump off a 3.5 m ledge (3-5 m) lands stiff (LandFreeFall), not only the
-/// locked-on jumps; and a sprint jump (SprintJumpStart lasts to the ground) from 6 m too. The
-/// height is from the take-off (the fall top +0x854, tools/emu-cases `air`), not the jump's apex
-/// (before: a 2.3 m ledge plus the rise).
+/// (HKS 2800), so a vertical jump off a 3.5 m ledge (3-5 m) lands stiff (LandFreeFall: 3 m,
+/// FALL_HEIGHT_SHORT_STIFF_LAND_FROM_JUMP), not only the locked-on jumps; and a sprint jump
+/// (SprintJumpStart lasts to the ground) from 6 m too. The height is from the take-off (the fall
+/// top +0x854, tools/emu-cases `air`), not the jump's apex (before: a 2.3 m ledge plus the rise).
 #[test]
 pub(crate) fn jumps_off_ledges_land_stiff() {
     // (how, extra drop, want)
@@ -276,13 +276,12 @@ pub(crate) fn jumps_off_ledges_land_stiff() {
         if sprint {
             let world = app.world_mut();
             world.resource_scope(|world, combat: Mut<Combat>| {
-                let (mut a, mut t) = world.query_filtered::<(&mut Actor, &mut Transform), With<Player>>().single_mut(world).unwrap();
+                let (mut a, mut p, mut t) = world.query::<(&mut Actor, &mut Player, &mut Transform)>().single_mut(world).unwrap();
                 assert!(a.play_state(&combat.player, "SprintJumpStart"));
                 a.airborne = true;
                 a.vel_y = 0.0;
                 t.translation.y += drop;
-                let y = t.translation.y;
-                world.query::<&mut Player>().single_mut(world).unwrap().air_top = y;
+                p.air_top = t.translation.y;
             });
         } else {
             app.world_mut().resource_mut::<PadInput>().press(Action::Jump);
@@ -290,11 +289,10 @@ pub(crate) fn jumps_off_ledges_land_stiff() {
             for _ in 0..60 {
                 app.update();
                 let world = app.world_mut();
-                let (a, mut t) = world.query_filtered::<(&Actor, &mut Transform), With<Player>>().single_mut(world).unwrap();
+                let (a, mut p, mut t) = world.query::<(&Actor, &mut Player, &mut Transform)>().single_mut(world).unwrap();
                 if a.airborne {
                     t.translation.y += drop;
-                    let y = t.translation.y;
-                    world.query::<&mut Player>().single_mut(world).unwrap().air_top = y;
+                    p.air_top = t.translation.y;
                     up = true;
                     break;
                 }
@@ -574,7 +572,7 @@ pub(crate) fn zz_boss_moveset_trace() {
                 let (tf, pa) = world.query_filtered::<(&Transform, &Actor), With<Player>>().single(world).unwrap();
                 (tf.translation, format!("{} hp{:.0}", pa.state, pa.hp))
             };
-            let goals = world.get_non_send_resource::<crate::enemy::Brains>().and_then(|br| br.map.get(&b)).map(|br| br.describe()).unwrap_or_default();
+            let goals = world.get_non_send::<crate::enemy::Brains>().and_then(|br| br.map.get(&b)).map(|br| br.describe()).unwrap_or_default();
             let wolf = format!("{wolf} | {goals}");
             // The stick that walks Wolf at the boss (headless: no OrbitCamera, so the camera yaw is 0).
             let cam_yaw = world.query::<&crate::camera::OrbitCamera>().iter(world).next().map_or(0.0, |c| c.yaw);

@@ -240,8 +240,12 @@ there.
   - guard -> WireMoveDeflectGuardStart / Loop (held) / End;
   - the press again -> wire-to-wire.
 - **Enemy hook:** `wire::hook_enemy` sends `WireHit(enemy)` at the move start (Bosses' DamageWire).
-- **HUD:** MENU_Wire_Marker in range, MENU_Wire_NG when only found, at the hook (atlas size scaled
-  to the window; the FE movie is not decoded). The export cuts MENU_Wire_* now.
+- **HUD:** MENU_Wire_Marker in range, the grey MENU_Wire_Distance disc when only found (MENU_Wire_NG
+  is a slash), at the hook (atlas size scaled to the window). Off screen: the exe's ellipse
+  (FUN_140c6a590 from FUN_140e36df0: centre 960 / 540, width 1460, height 800 on the 1920 x 1080
+  stage) with MENU_Wire_Cursor turned toward the point. MenuParam WirePoint* / WireOffScreen* are
+  never read by the exe. The FE movie (size by distance percent, the no-ride variant) is not
+  decoded. The export cuts MENU_Wire_* now.
 - **Rope:** the wire is a model, not an FXR (no FFX event in the wire anims): EquipParamWeapon
   9500000 "ワイヤー武器" equipModelId 9500 = parts/WP_A_9500 (kunai hook + rope skinned on an
   80-bone chain Born00..79, 4.0 m along -Y in the bind pose; its anibnd has a clip per wire anim:

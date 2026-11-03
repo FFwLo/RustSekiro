@@ -339,9 +339,9 @@ pub(crate) fn the_divine_dragons_trees_open_grapple_points_when_they_bloom() {
         // Wolf takes it as a ridden map point: the search finds it from a camera looking at it.
         let p = &g[0];
         let wolf = p.hook + Vec3::new(0.0, -3.0, 8.0);
-        let pt = crate::map::GrapplePoint { hook: p.hook, land: p.land, fwd: (wolf - p.hook).with_y(0.0).normalize(), variation: p.variation };
+        let pt = crate::traversal::GrapplePoint { hook: p.hook, land: p.land, fwd: (wolf - p.hook).with_y(0.0).normalize(), variation: p.variation };
         let cam = wolf + Vec3::new(0.0, 1.5, 3.0);
-        let t = crate::map::grapple_target(cam, (p.hook - cam).normalize(), wolf, None, &[pt]).expect("the point is not found");
+        let t = crate::traversal::grapple_target(cam, (p.hook - cam).normalize(), wolf, None, &[pt]).expect("the point is not found");
         assert!(t.ride && t.in_action_range, "{t:?}");
         return;
     }
@@ -877,7 +877,7 @@ pub(crate) fn an_msb_enemy_walks_its_patrol_route() {
         app.update();
         let world = app.world_mut();
         let pos = world.get::<Transform>(patroller).unwrap().translation;
-        if let Some((cur, prev)) = world.non_send_resource::<crate::enemy::Brains>().map.get(&patroller).and_then(|b| b.patrol_points()) {
+        if let Some((cur, prev)) = world.non_send::<crate::enemy::Brains>().map.get(&patroller).and_then(|b| b.patrol_points()) {
             if prev >= 0 && reached.last() != Some(&prev) {
                 let d = (pos - points[prev as usize]).with_y(0.0).length();
                 reached.push(prev);
@@ -1461,13 +1461,13 @@ pub(crate) fn the_zombies_dumplings_build_up_terror() {
     world.resource_scope(|world, combat: Mut<Combat>| {
         assert!(Statuses::is_build_up(&combat, 9222), "9222 is not a build-up");
         let mut s = Statuses::default();
-        let n = (1..=5).find(|_| s.hit_wolf(&combat, wolf, weapon, &[9222], Guard::None).iter().any(|l| l == "TERROR"));
+        let n = (1..=5).find(|_| s.hit_wolf(&combat, wolf, weapon, &[], &[9222], Guard::None).iter().any(|l| l == "TERROR"));
         assert_eq!(n, Some(3));
         let mut s = Statuses::default();
-        assert!((1..=10).all(|_| !s.hit_wolf(&combat, wolf, weapon, &[9222], Guard::Deflect).iter().any(|l| l == "TERROR")));
+        assert!((1..=10).all(|_| !s.hit_wolf(&combat, wolf, weapon, &[], &[9222], Guard::Deflect).iter().any(|l| l == "TERROR")));
         let mut st = world.resource_mut::<Statuses>();
         for _ in 0..3 {
-            st.hit_wolf(&combat, wolf, weapon, &[9222], Guard::None);
+            st.hit_wolf(&combat, wolf, weapon, &[], &[9222], Guard::None);
         }
     });
     app.update();
@@ -1508,12 +1508,12 @@ pub(crate) fn the_bandits_torch_sets_wolf_on_fire() {
         assert!(Statuses::is_build_up(&combat, 9115), "9115 not found as a build-up");
         for (guard, hits) in [(Guard::None, 4), (Guard::Block, 5), (Guard::Deflect, 7)] {
             let mut s = Statuses::default();
-            let n = (1..=10).find(|_| s.hit_wolf(&combat, wolf, weapon, &[9115], guard).iter().any(|l| l == "BURNING"));
+            let n = (1..=10).find(|_| s.hit_wolf(&combat, wolf, weapon, &[], &[9115], guard).iter().any(|l| l == "BURNING"));
             assert_eq!(n, Some(hits), "{guard:?}");
         }
         let mut st = world.resource_mut::<Statuses>();
         for _ in 0..4 {
-            st.hit_wolf(&combat, wolf, weapon, &[9115], Guard::None);
+            st.hit_wolf(&combat, wolf, weapon, &[], &[9115], Guard::None);
         }
     });
     for _ in 0..(60 * 3) {

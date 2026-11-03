@@ -1,0 +1,1339 @@
+[
+ {
+  "id": "progression.sen-from-kills",
+  "category": "progression",
+  "title": "Sen paid for a kill (NpcParam getSoul)",
+  "summary": "Each regular enemy row pays a fixed amount of sen when it dies. An Ochimusha pays 11, a Samurai General pays 33 on the castle row and 89 on the Honjo row, and the richest rows pay about 255 to 312. Boss rows pay 0 here; their sen comes from somewhere else (drop lot or event).",
+  "values": "NpcParam getSoul > 0 on 478 of 1279 rows; 10100000 Ochimusha 11; 10200000 General 33; 10202000 General 89; 10211000 Ashina Shitenno 255; 10701000 Shura Samurai 312; bosses 50000000, 71001000, 54300000: 0; related fields isSoulGetByBoss, damageDropSoul",
+  "how": "The exe adds getSoul (times the enemy's haveSoulRate and the player's soulRate) to the purse at death.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/NpcParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "../reference/Paramdex/SDT/Defs/NpcParam.xml"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/enemy.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/experience.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Kill an Ochimusha and watch the purse rise by 11 (without a balloon).",
+  "note": "How bosses pay their sen was not traced. The meaning of isSoulGetByBoss and damageDropSoul is from field names only.",
+  "needs": [
+   {
+    "id": "npcs.npc-param-rows",
+    "why": "where the numbers live"
+   },
+   {
+    "id": "progression.sen-boost-effects",
+    "why": "multipliers"
+   }
+  ]
+ },
+ {
+  "id": "progression.skill-xp-from-kills",
+  "category": "progression",
+  "title": "Skill XP paid for a kill (NpcParam skillPoint)",
+  "summary": "Each enemy row also pays skill experience. A soldier pays 21, a General 134 on the castle row, the Samurai General of Ashina Shitenno 3890 and the Shura Samurai 3310. Several 'neckless' and Seven-sided rows pay 2640 to 2905 with no sen.",
+  "values": "NpcParam skillPoint > 0 on 605 rows; 10100000: 21; 10200000: 134; 10202000: 280; 10211000: 3890; 10701000: 3310; 10801000: 2905; 13401000: 2840",
+  "how": "Exe adds skillPoint times haveSkillPointRate to the XP gauge.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/NpcParam.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/skills.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/experience.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Kill a soldier: the gauge moves 21 points of the 500 needed for the first skill point.",
+  "note": "Why mini-boss rows are worth about 3000 XP and no sen was not explored.",
+  "needs": [
+   {
+    "id": "progression.skill-xp-curve",
+    "why": "how XP becomes points"
+   }
+  ]
+ },
+ {
+  "id": "progression.skill-xp-curve",
+  "category": "progression",
+  "title": "XP needed per skill point",
+  "summary": "Experience fills a gauge. The first skill point costs 500 XP. Each next point costs a bit more, 514, 528, 542 and so on, up to 893 for the 25th. After that the step climbs faster: 1093, 1300, 1515, 1738 and on to about 84000 per point near the 128th. The table is not in any param, so the exe computes it.",
+  "values": "TO_NEXT[0..24] = 500, 514, 528, 542, 557 ... 893; [25..] = 1093, 1300, 1515 ...; last entry 83837 (index 127)",
+  "how": "Community-measured table (Fextralife 'Skill Points and Experience'), used by RustSekiro. No formula was found in the data.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/skills.md"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "src/experience.rs"
+   }
+  ],
+  "confidence": "community",
+  "ours": {
+   "has": "yes",
+   "where": "src/experience.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Earn 500 XP from a new save: the first point appears at exactly 500.",
+  "note": "Table was copied as a measurement. The exe function that makes it was not decoded. First point at 500 matches the wiki; later entries were not re-measured in game.",
+  "needs": [
+   {
+    "id": "progression.skill-xp-from-kills",
+    "why": "XP source"
+   }
+  ]
+ },
+ {
+  "id": "progression.skill-points-spend",
+  "category": "progression",
+  "title": "Spending skill points at the Sculptor's Idol",
+  "summary": "At an idol the player spends skill points on skills in five pages: Shinobi Arts, Prosthetic Arts, Ashina Arts, Senpou Ninjutsu and Mushin Arts. A skill can be bought once its parent skill is owned. Some also need an event flag, and a few unlock only with an Esoteric Text.",
+  "values": "SkillParam: 89 rows, menuPageNo 0: 43 rows, 1: 12, 2: 7, 3: 7, 4: 7, no page: 13; parent1 set on 68 rows, parent2 on 25; unlockEventFlag on 32 rows; spEffect1 on 18 rows",
+  "how": "The idol menu reads SkillParam; buying sets a flag and the skill's weapon or SpEffect becomes active.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SkillParam.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/skills.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/skill_tree.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Open the skill menu on a new game: only the root of each page is buyable.",
+  "note": "Point costs are not in SkillParam; the cost per skill comes from the wiki or the exe. The page order and names follow the RustSekiro menu code.",
+  "needs": [
+   {
+    "id": "progression.skill-tree-structure",
+    "why": "prerequisites"
+   },
+   {
+    "id": "progression.esoteric-texts",
+    "why": "page unlocks"
+   }
+  ]
+ },
+ {
+  "id": "progression.skill-tree-structure",
+  "category": "progression",
+  "title": "Skill tree layout and prerequisites",
+  "summary": "Each SkillParam row has a screen cell (dispRow, dispCol), up to three parent skills (parent1-3), up to eight 'view' links (unlovkViewSkill0-7) and up to three SpEffects (spEffect1-3). A combat art or prosthetic skill uses acquireWeaponId or virtualWeaponId instead of a SpEffect.",
+  "values": "Row 2: dispRow 2, dispCol 1, parent1 10, unlovkViewSkill0 10, unlovkViewSkill1 4, virtualWeaponId 200100, unenforementWepId 690200, unreleaseWepId 699000",
+  "how": "Menu code draws the cells and checks the parent fields.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SkillParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "../reference/Paramdex/SDT/Defs/SkillParam.xml"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/skill_tree.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Compare the on-screen tree to dispRow and dispCol for 5 skills.",
+  "note": "The exact meaning of the view links is from the field name only.",
+  "needs": [
+   {
+    "id": "interface.skill-menu",
+    "why": "the screen"
+   }
+  ]
+ },
+ {
+  "id": "progression.latent-skill-effects",
+  "category": "progression",
+  "title": "Passive skills and the SpEffects they switch on",
+  "summary": "Passive skills turn on resident SpEffects. Examples: Covert A and B (150000, 150010) make Wolf quieter and smaller to see. Mikiri posture damage UP (150400) and the deflect rows (150410, 150420, 150500) change posture damage. Medicine Knowledge (rows 170, 171, 600-602) raises the gourd. Good Luck LV1 and LV2 (rows 365, 366) raise sen gain. Buff duration UP (150600) lengthens timed effects.",
+  "values": "SkillParam spEffect1: 60 -> 150000, 61 -> 150010, 70 -> 150400, 80 -> 150300, 170/171/600-602 -> 150200, 265 -> 150320, 270 -> 150410, 275 -> 150500, 280 -> 150420, 365 -> 150100, 366 -> 150101, 370 -> 150600, 604 -> 150310, 605 -> 150330",
+  "how": "A bought skill adds its spEffect1 permanently.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SkillParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "src/skill_tree.rs (pages), src/items.rs (sen rate)"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Buy one skill and check the effect list on Wolf.",
+  "note": "English skill names for these rows were not matched one by one.",
+  "needs": [
+   {
+    "id": "arts.latent-skills",
+    "why": "same set seen from the arts side"
+   }
+  ]
+ },
+ {
+  "id": "progression.esoteric-texts",
+  "category": "progression",
+  "title": "Esoteric Texts unlock skill pages",
+  "summary": "Five Esoteric Text key items unlock the five skill trees in the same order: Shinobi (goods 2920), Prosthetic (2921), Ashina (2922), Senpou (2923) and Mushin (2924). Other text items exist in the goods list: Anti-air Deathblow Text (2450), Floating Passage Text (2461), Immortal Severance Text (9210) and Okami's Ancient Text (9213).",
+  "values": "goods 2920-2924 (goodsType 1, max 1); other texts 2450, 2461, 9210, 9213; sale value -1 (not sold)",
+  "how": "Having the item sets the page flag in the skill menu.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/EquipParamGoods.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/skills.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/skill_tree.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Pick up the first text and see the page become available.",
+  "note": "Where each text is found was not checked. Only the unlock of 2450 (ActionUnlock 18) was checked.",
+  "needs": [
+   {
+    "id": "items.key-items",
+    "why": "the texts are key items"
+   },
+   {
+    "id": "deathblows.anti-air",
+    "why": "one single-move text"
+   }
+  ]
+ },
+ {
+  "id": "progression.sen-xp-loss-on-death",
+  "category": "progression",
+  "title": "Losing sen and skill XP on death",
+  "summary": "A final death halves the sen carried and halves the XP in the gauge that has not become a point yet. Whole skill points are kept. Unseen Aid may cancel the loss. A mid-fight resurrection loses nothing.",
+  "values": "TentativePlayerParam MoneyLostRate 50, SkillPointLostRate 50; DyingHp 120 and DeceasedThreshold 15 sit in the same row",
+  "how": "Final-death code applies both rates.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/TentativePlayerParam.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/skills.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/experience.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Die with 400 sen and 200 gauge XP: 200 sen and 100 gauge XP remain.",
+  "note": "The meaning of DyingHp 120 and DeceasedThreshold 15 was not checked.",
+  "needs": [
+   {
+    "id": "deathblows.death-penalty",
+    "why": "same rule from the death side"
+   },
+   {
+    "id": "deathblows.unseen-aid",
+    "why": "can cancel"
+   }
+  ]
+ },
+ {
+  "id": "progression.sen-boost-effects",
+  "category": "progression",
+  "title": "Effects that raise the sen you get",
+  "summary": "Mibu Balloon of Wealth gives 1.5 times sen for 150 s (SpEffect 3601). The White Rappa balloon does the same (3641). SpEffect 2101 gives 1.2 times with no end. The skill 'Good Luck' gives 1.125 (LV1) and 1.25 (LV2).",
+  "values": "3601 soulRate 1.5 effectEndurance 150; 3641 soulRate 1.5 effectEndurance 150; 2101 soulRate 1.2 (endurance -1); 150100 soulRate 1.125; 150101 soulRate 1.25; Mibu Balloon of Wealth goods 3600 (max 5)",
+  "how": "The player's soulRate multiplies every sen pickup including kills.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/EquipParamGoods.json"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/items.rs, src/experience.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Eat the balloon and kill a soldier: sen 11 becomes 17 (rounded).",
+  "note": "What gives 2101 (an item or a fixed bonus) is not known. Stacking rules between sources are not tested.",
+  "needs": [
+   {
+    "id": "items.mibu-balloons",
+    "why": "the items"
+   },
+   {
+    "id": "progression.latent-skill-effects",
+    "why": "Good Luck skill"
+   }
+  ]
+ },
+ {
+  "id": "progression.sen-purses",
+  "category": "progression",
+  "title": "Coin purses give fixed sen",
+  "summary": "Three coin purse items give sen when used: Light Coin Purse 100, Heavy Coin Purse 500, Bulging Coin Purse 1000. Their SpEffects do not scale with the balloon: soulRate stays 1.",
+  "values": "goods 3700 / 3704 / 3708 (max 99, sell value 100 / 500 / 1000); SpEffect 3700 soul 100, 3704 soul 500, 3708 soul 1000",
+  "how": "Use item adds the SpEffect's soul value.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/EquipParamGoods.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "src/items.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Use a Heavy Coin Purse: purse +500.",
+  "note": "The English names come from the FMG dump; the SpEffect names are Gold nugget small / medium / large.",
+  "needs": [
+   {
+    "id": "items.consumables",
+    "why": "the items"
+   }
+  ]
+ },
+ {
+  "id": "progression.attack-power-memories",
+  "category": "progression",
+  "title": "Attack Power grows with Memories",
+  "summary": "Boss Memories raise Attack Power by 1 each when offered at an idol. A Memory is a stackable item (goods 5100 is the generic stack, max 98). Boss specific Memories are goods 5200 to 5222. The cap is 99.",
+  "values": "goods 5100 getGrowthType 3 (max 98); Memory goods 5200-5213 (Gyoubu, Butterfly, Genichiro, Screen Monkeys, Guardian Ape, Corrupted Monk, Great Shinobi Owl, Foster Father, True Monk, Divine Dragon, Demon of Hatred, Sword Saint Isshin, Isshin Ashina, Headless Ape), 5220-5222 (Inner Genichiro, Inner Father, Inner Isshin)",
+  "how": "Offering a Memory adds 1 to the growth counter; the counter picks SpEffect 160000 + level.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/EquipParamGoods.json"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "../sekiro-rs/docs/COMBAT-RULES.md"
+   },
+   {
+    "kind": "web",
+    "ref": "https://sekiroshadowsdietwice.wiki.fextralife.com/Attack+Power"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "yes",
+   "where": "../sekiro-rs/crates/sim/src/progression.rs"
+  },
+  "check": "Offer the five Memories of the route to the castle roof: Attack Power 6.",
+  "note": "RustSekiro shows Attack Power as a constant 1 in the menu. The attachment from the counter to the SpEffect is from the sekiro-rs doc and was not traced in the exe.",
+  "needs": [
+   {
+    "id": "progression.attack-power-curve",
+    "why": "what the level does"
+   },
+   {
+    "id": "bosses.boss-memories",
+    "why": "where they drop"
+   }
+  ]
+ },
+ {
+  "id": "progression.attack-power-curve",
+  "category": "progression",
+  "title": "What each Attack Power level multiplies",
+  "summary": "Level N picks SpEffect 160000 + N (Player Growth_Core Level N). Its physical, elemental and posture attack rates all carry the same number. Levels 1 and 0 are 1.0. Levels 2 to 14 add 0.25 each, 15 to 27 add 0.10, 28 to 51 add 0.05. Level 52 is 6.775, then 53 to 99 add 0.01. Level 99 is 7.23.",
+  "values": "M(1)=1.0; M(2)=1.25; M(6)=2.25; M(14)=4.25; M(15)=4.35; M(27)=5.55; M(28)=5.6; M(51)=6.75; M(52)=6.775; M(53)=6.77; M(98)=7.22; M(99)=7.23. Opening slash 80 HP damage at AP1 and 340 at AP14.",
+  "how": "Resident SpEffect on Wolf: physicsAttackRate, magicAttackRate, fireAttackRate, thunderAttackRate, darkAttackRate, staminaAttackRate, defStaminaAttackRate and attackHitParryStaminaAttackRate; stateInfo 204.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "../sekiro-rs/docs/COMBAT-RULES.md"
+   },
+   {
+    "kind": "web",
+    "ref": "https://sekiroshadowsdietwice.wiki.fextralife.com/Attack+Power"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "docs/kb/damage.md (live check of level 15 = 4.35)"
+  },
+  "his": {
+   "has": "yes",
+   "where": "../sekiro-rs/crates/sim/src/progression.rs"
+  },
+  "check": "Compare 99 rows to the table: all match except level 52.",
+  "note": "The 52 row (6.775) breaks the +0.01 line; sekiro-rs flags it as a data exception. The wiki's per-point numbers agree with these rows (a 0.01 step is 0.8 damage).",
+  "needs": [
+   {
+    "id": "combat.player-damage-formula",
+    "why": "where the rate enters"
+   },
+   {
+    "id": "progression.attack-power-memories",
+    "why": "how the level rises"
+   }
+  ]
+ },
+ {
+  "id": "progression.attack-power-posture",
+  "category": "progression",
+  "title": "Attack Power also raises posture damage",
+  "summary": "The same row that scales HP damage also scales Wolf's posture damage and the deflect feedback. So a higher level breaks posture faster. Prayer Necklaces do not change attack, and Memories do not change the capacity graphs.",
+  "values": "staminaAttackRate, defStaminaAttackRate and attackHitParryStaminaAttackRate equal M on rows 160000+N",
+  "how": "Damage code multiplies the weapon base posture by the resident rate.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "../sekiro-rs/docs/COMBAT-RULES.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "yes",
+   "where": "../sekiro-rs/crates/sim/src/progression.rs"
+  },
+  "check": "At AP10 a first slash gives 97 posture to a soldier instead of 30.",
+  "note": "",
+  "needs": [
+   {
+    "id": "combat.posture-damage",
+    "why": "the formula"
+   },
+   {
+    "id": "progression.attack-power-curve",
+    "why": "the multiplier"
+   }
+  ]
+ },
+ {
+  "id": "progression.dancing-dragon-mask",
+  "category": "progression",
+  "title": "Dancing Dragon Mask trades skill points for Attack Power",
+  "summary": "After the mask is built from three fragments (right, left, dragon) a player can swap 5 skill points for 1 Attack Power over and over. It is a second source of Attack Power besides Memories. The wiki puts the mask's limit at 98, so the 99th level needs a saved Memory.",
+  "values": "Mask Fragment goods 5500 (right), 5501 (left), 5502 (dragon); Dancing Dragon Mask goods 5510 (max 1); cost 5 skill points per level (wiki)",
+  "how": "A menu action at the idol; the exe adds to the growth counter.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/EquipParamGoods.json"
+   },
+   {
+    "kind": "web",
+    "ref": "https://sekiroshadowsdietwice.wiki.fextralife.com/Attack+Power"
+   }
+  ],
+  "confidence": "community",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "With the mask, spend 5 points and see Attack Power rise by 1.",
+  "note": "The cost and the cap come from the wiki only. The menu action was not found in the data.",
+  "needs": [
+   {
+    "id": "progression.attack-power-memories",
+    "why": "alternate source"
+   },
+   {
+    "id": "progression.skill-points-spend",
+    "why": "points as currency"
+   }
+  ]
+ },
+ {
+  "id": "progression.prayer-beads-necklaces",
+  "category": "progression",
+  "title": "Prayer Beads and Necklaces",
+  "summary": "Four Prayer Beads (goods 4000, stack of 99) make one Prayer Necklace at the idol. There are ten necklaces: First to Ninth (4100 to 4108) and the Final (4109). Each necklace raises the vitality and posture level by one. The wiki counts 40 beads in the game.",
+  "values": "goods 4000 Prayer Bead (max 99); necklaces 4100-4109 getGrowthType 1, max 1",
+  "how": "Offering a necklace adds 1 to the growth counter that picks the capacity graph position.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/EquipParamGoods.json"
+   },
+   {
+    "kind": "web",
+    "ref": "https://sekiroshadowsdietwice.wiki.fextralife.com/Prayer+Bead"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "src/config.rs (posture.player_level), game_menu.rs (shows it)"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Offer the First Necklace: vitality 320 becomes 400.",
+  "note": "Four beads per necklace is from the wiki. Bead locations were not checked.",
+  "needs": [
+   {
+    "id": "progression.vitality-posture-levels",
+    "why": "what a level gives"
+   },
+   {
+    "id": "items.prayer-beads",
+    "why": "the pickups"
+   }
+  ]
+ },
+ {
+  "id": "progression.vitality-posture-levels",
+  "category": "progression",
+  "title": "Vitality and posture by necklace level",
+  "summary": "Three CalcCorrectGraph curves give Wolf's capacity from his growth level (1 to 11, with 11 = 10 necklaces). Vitality goes 320 to 1120, posture 120 to 420, posture recovery 30 to 105 per second. Each level adds 80, 30 and 7.5. The max of 1120 is 3.5 times the start, as the wiki says.",
+  "values": "Graph 500: x 1 -> 320, x 11 -> 1120; graph 501: 120 -> 420; graph 504: 30 -> 105; CharaInitParam baseBody 1 at new game and 11 at Game clear",
+  "how": "Interpolate on the graph with the level; the SpEffect then sets max HP and posture.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/CalcCorrectGraph.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/CharaInitParam.json"
+   },
+   {
+    "kind": "web",
+    "ref": "https://sekiroshadowsdietwice.wiki.fextralife.com/Prayer+Bead"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "src/config.rs"
+  },
+  "his": {
+   "has": "partial",
+   "where": "../sekiro-rs/docs/COMBAT-RULES.md (level 1 numbers)"
+  },
+  "check": "Equip all necklaces in a test save: HP 1120 and posture 420.",
+  "note": "The step between 1 and 11 was assumed straight from the end points; no middle point was read from the graph.",
+  "needs": [
+   {
+    "id": "combat.vitality-bar",
+    "why": "the bar it sets"
+   },
+   {
+    "id": "combat.posture-bar",
+    "why": "same"
+   }
+  ]
+ },
+ {
+  "id": "progression.healing-gourd-uses",
+  "category": "progression",
+  "title": "Healing Gourd uses",
+  "summary": "The gourd starts with 1 use on a new game and grows to 10. Each Gourd Seed adds one use after you rest. There are 9 seeds in one playthrough. Area presets also carry the number (2 at the castle start, 10 at game clear).",
+  "values": "CharaInitParam HpEstMax: new game 1, Castle 2, Samurai Residence 3, Honjo 4, Valley 5, Lower Valley 6, Sick Village 8, Truth edition 10, Submerged City 9, Game clear 10; goods 3000 Healing Gourd max 10; Gourd Seed goods 4400 (max 99)",
+  "how": "The idol uses seeds to raise the max and refills the gourd on rest.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/CharaInitParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/EquipParamGoods.json"
+   },
+   {
+    "kind": "web",
+    "ref": "https://sekiroshadowsdietwice.wiki.fextralife.com/Gourd+Seed"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/config.rs, src/items.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Rest at an idol with 1 seed: the gourd shows one more charge.",
+  "note": "RustSekiro defaults gourd_charges to 3 for testing; the real start is 1.",
+  "needs": [
+   {
+    "id": "items.gourd-seed",
+    "why": "pickup"
+   },
+   {
+    "id": "interface.gourd-hud",
+    "why": "the display"
+   }
+  ]
+ },
+ {
+  "id": "progression.gourd-heal-amount",
+  "category": "progression",
+  "title": "How much the gourd heals",
+  "summary": "One gourd use heals 40 percent of max HP (SpEffect 3000 changeHpEstusFlaskRate -40). The Medicine Knowledge skills multiply the heal by 1.1 to 1.5 in five levels (SpEffects 150200 to 150204). Regen items (3021, 3061, 3081) heal over time with the same field.",
+  "values": "SpEffect 3000 changeHpEstusFlaskRate -40; 150200-150204 changeHpEstusFlaskCorrectRate 1.1, 1.2, 1.3, 1.4, 1.5; Elixir 3040 -100; Regen 3021 -3; Ohagi 3061 -7; Chigo Rice 3081 -5",
+  "how": "Item use applies the SpEffect; the correct rate multiplies it.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SkillParam.json"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/items.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Drink at 50 percent HP with max 1000: HP goes to 900.",
+  "note": "Which skill row switches which level is partly guessed: rows 170, 171 and 600-602 all point at 150200. The higher levels (150201-150204) may be reached another way.",
+  "needs": [
+   {
+    "id": "items.gourd",
+    "why": "the item"
+   },
+   {
+    "id": "progression.latent-skill-effects",
+    "why": "Medicine Knowledge"
+   }
+  ]
+ },
+ {
+  "id": "progression.spirit-emblems",
+  "category": "progression",
+  "title": "Spirit Emblems carried",
+  "summary": "Emblems pay for prosthetic tool use. Wolf starts with a capacity of 5 and may hold up to 15 (goods 1000). Red Spirit Emblem (1001, max 5) is a separate item. Kills can drop emblems.",
+  "values": "goods 1000 max 15; 1001 max 5; CharaInitParam MpEstMax 5 at every area preset",
+  "how": "Tool use subtracts the tool's emblem cost; drops add.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/EquipParamGoods.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/CharaInitParam.json"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/items.rs, src/drops.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Use the Loaded Shuriken and watch the counter drop by its cost.",
+  "note": "How the capacity above 5 is earned (Spirit Emblem Purse items) was not looked up here.",
+  "needs": [
+   {
+    "id": "arts.prosthetic-costs",
+    "why": "emblem cost"
+   },
+   {
+    "id": "items.spirit-emblems",
+    "why": "the item"
+   }
+  ]
+ },
+ {
+  "id": "progression.chara-init-area-presets",
+  "category": "progression",
+  "title": "Starting kits per story point (CharaInitParam)",
+  "summary": "CharaInitParam holds 203 starting sets. Rows 10000 to 10172 are story checkpoints: New game, Castle, Samurai Residence, Honjo, Hidden Prison, Dungeon, Temple, Valley, Lower Valley, Sick Village, Submerged City, Game clear and more. Each sets gourd max, vitality level, items, skill-free stats. Rows 9000 and 9001 are the Blood Smoke and Puppet test starts.",
+  "values": "10000 New game: HpEstMax 1, baseBody 1; 10010 Castle: 2, 1; 10030 Honjo: 4, 3; 10090 Sick Village: 8, 6; 10110 Truth edition: 10, 9; 10160 Game clear: 10, 11; baseHeroPoint 4 and baseWil 18 on all; 9000 baseWil 99",
+  "how": "A debug or event load picks the row and sets the player's gear and levels.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/CharaInitParam.json"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "src/config.rs (hand-set)"
+  },
+  "his": {
+   "has": "partial",
+   "where": "../sekiro-rs/crates/sim/src/progression.rs (castle-roof preset)"
+  },
+  "check": "Load row 10030 and compare vitality to 400.",
+  "note": "The meaning of baseHeroPoint 4 and baseWil was not checked. Attack Power is not stored in this row.",
+  "needs": [
+   {
+    "id": "progression.healing-gourd-uses",
+    "why": "gourd max"
+   },
+   {
+    "id": "progression.vitality-posture-levels",
+    "why": "baseBody"
+   }
+  ]
+ },
+ {
+  "id": "progression.ng-plus-clear-count-correct",
+  "category": "progression",
+  "title": "NG+ enemy scaling per cycle (ClearCountCorrectParam)",
+  "summary": "ClearCountCorrectParam rows 1 to 7 hold how much stronger enemies get in each new cycle (row n is read as NG+n, which is an assumption). NG+1 only adds poison resist. From NG+2 enemy HP and posture rise and sen and XP rewards go up. From NG+3 attack goes up too. NG+7 is the top.",
+  "values": "Row: HP/posture, attack, posture-attack, sen, XP, super-armor damage taken. 1: poison 1.1. 2: 1.2, -, 1.1, 1.5, 0.95. 3: 1.25, 1.05, 1.125, 2.0, 0.9. 4: 1.3, 1.05, 1.2, 2.5, 0.85. 5: 1.325, 1.05, 1.225, 3.0, 0.8. 6: 1.35, 1.05, 1.25, 3.5, 0.7. 7: 1.5, 1.1, 1.275, 4.5, 0.65",
+  "how": "The exe picks the row from the cycle counter and multiplies the enemy's stats and rewards.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/ClearCountCorrectParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "../reference/Paramdex/SDT/Defs/ClearCountCorrectParam.xml"
+   },
+   {
+    "kind": "web",
+    "ref": "https://sekiroshadowsdietwice.wiki.fextralife.com/New+Game+Plus"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Start NG+3 and read an enemy's HP: 25 percent above the base.",
+  "note": "Which row NG+1 uses (row 1 or row 0) was not traced; the table has rows 0 to 7 and 100 to 107.",
+  "needs": [
+   {
+    "id": "progression.new-game-counter",
+    "why": "the cycle number"
+   },
+   {
+    "id": "progression.ng-plus-sen-xp-rate",
+    "why": "rewards"
+   }
+  ]
+ },
+ {
+  "id": "progression.ng-plus-sen-xp-rate",
+  "category": "progression",
+  "title": "NG+ raises sen and XP rewards",
+  "summary": "The same rows raise rewards. XP per kill rises from 1.5 times at NG+2 to 4.5 times at NG+7. Sen rises from 1.1 to 1.275. The wiki says NG+8 and later give the same as NG+7.",
+  "values": "SkillPointRate: NG+2 1.5, +3 2.0, +4 2.5, +5 3.0, +6 3.5, +7 4.5; SoulRate: 1.1, 1.125, 1.2, 1.225, 1.25, 1.275",
+  "how": "Reward code multiplies getSoul and skillPoint by the row's rates.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/ClearCountCorrectParam.json"
+   },
+   {
+    "kind": "web",
+    "ref": "https://sekiroshadowsdietwice.wiki.fextralife.com/New+Game+Plus"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Kill a soldier in NG+7: 21 XP becomes about 94.",
+  "note": "How the two rates mix with the area doping haveSoulRate values is not known.",
+  "needs": [
+   {
+    "id": "progression.ng-plus-clear-count-correct",
+    "why": "same rows"
+   }
+  ]
+ },
+ {
+  "id": "progression.ng-plus-cap",
+  "category": "progression",
+  "title": "NG+7 is the top cycle",
+  "summary": "The table stops at row 7 (and 107 for hard mode). The wiki says cycles above 7 keep the NG+7 numbers. So enemy strength is capped.",
+  "values": "Rows 0-7 and 100-107 only; NG+8 and later use row 7 (wiki)",
+  "how": "The cycle counter is clamped when it picks the row.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/ClearCountCorrectParam.json"
+   },
+   {
+    "kind": "web",
+    "ref": "https://sekiroshadowsdietwice.wiki.fextralife.com/New+Game+Plus"
+   }
+  ],
+  "confidence": "community",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Set the cycle counter to 9 in a save and check the enemy HP: same as NG+7.",
+  "note": "Clamp behaviour is from the wiki, not from code.",
+  "needs": [
+   {
+    "id": "progression.new-game-counter",
+    "why": "the counter"
+   }
+  ]
+ },
+ {
+  "id": "progression.new-game-counter",
+  "category": "progression",
+  "title": "Where the cycle number lives",
+  "summary": "The game keeps the NG+ cycle count in a global game-data object. SekiroTool reads it at offset 0x70 of GameDataMan. The player's Attack Power sits at 0x48 and skill experience at 0x160 of the player game data.",
+  "values": "GameDataMan +0x70 = NewGame count; PlayerGameData +0x48 = Attack Power; +0x160 = Experience (SekiroTool Offsets.cs)",
+  "how": "Read by the save and by the scaling code.",
+  "sources": [
+   {
+    "kind": "web",
+    "ref": "../reference/SekiroTool/SekiroTool/Memory/Offsets.cs"
+   }
+  ],
+  "confidence": "community",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Read the three offsets with a memory tool at a known state.",
+  "note": "Offsets are from a community tool and were not checked live in this build.",
+  "needs": [
+   {
+    "id": "progression.ng-plus-clear-count-correct",
+    "why": "uses the value"
+   }
+  ]
+ },
+ {
+  "id": "progression.hard-mode-sen-xp",
+  "category": "progression",
+  "title": "Charmless / hard mode pays 20 percent more",
+  "summary": "Four SpEffects named Hard mode correction (7900 small fish, 7901 strong fish, 7902 mid-boss, 7903 boss) all add 1.2 times sen and XP. This matches the wiki: giving back Kuro's Charm gives 20 percent more rewards. Small fish also get 1.5 times HP and posture, strong fish 1.2, mid-bosses 1.125; bosses get no HP change from these.",
+  "values": "7900: haveSoulRate 1.2, haveSkillPointRate 1.2, maxHpRate 1.5, maxStaminaRate 1.5, staminaRecoverSpeedRate 1.5; 7901: 1.2, 1.2, 1.2; 7902: 1.125; 7903: rewards only",
+  "how": "Applied to enemies by class when hard mode is on.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   },
+   {
+    "kind": "web",
+    "ref": "https://sekiroshadowsdietwice.wiki.fextralife.com/New+Game+Plus"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Turn on hard mode and kill a soldier: sen 11 becomes about 13.",
+  "note": "Which event or flag applies these four rows was not found.",
+  "needs": [
+   {
+    "id": "progression.kuro-charm",
+    "why": "the toggle"
+   },
+   {
+    "id": "progression.hard-mode-growth-doping",
+    "why": "other scaling"
+   }
+  ]
+ },
+ {
+  "id": "progression.hard-mode-growth-doping",
+  "category": "progression",
+  "title": "Hard mode area scaling (the 77xx rows)",
+  "summary": "Rows 7710 to 7874 repeat the area ladder as '1 Week Hard Mode'. At the castle morning they start at 1.2 HP and 1.25 attack and reach 4.0 HP and 3.5 attack at bell evening. Later areas such as Truth Edition use 4.4 HP and 3.75 attack.",
+  "values": "7710: hp 1.2, atk 1.25; 7711: 1.6, 1.5; 7712: 2.0, 1.75; 7713: 2.6, 2.4; 7714: 4.0, 3.5; 7820: 4.4, 3.75; 7952 All Modes Hard Default: 4.4, 3.75; 7953 Bell Evening: 3.75, 3.25",
+  "how": "A map event removes all area rows and adds the one for the current area, time of day and mode.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Compare 7710 and 7010: hard mode makes the castle morning stronger than the normal base.",
+  "note": "'1 Week' reads as first cycle (NG+1); not confirmed that the 77xx set needs both NG+ and hard mode.",
+  "needs": [
+   {
+    "id": "progression.area-growth-doping-all-areas",
+    "why": "normal ladder"
+   },
+   {
+    "id": "progression.doping-emevd-assignment",
+    "why": "who applies it"
+   }
+  ]
+ },
+ {
+  "id": "progression.area-growth-doping-7010-7014",
+  "category": "progression",
+  "title": "Castle area scaling by time of day (7010-7014)",
+  "summary": "Enemies in the Ashina Outskirts and Castle get one of five Growth Doping rows that follow the story clock. Morning (7010) is the base. Day (7011) is 1.25 times HP, attack and posture, Evening (7012) 1.5, Night (7013) 2.0 and Bell Evening (7014) 3.0.",
+  "values": "7010: no change; 7011: maxHpRate, physicsAttackPowerRate, maxStaminaRate 1.25; 7012: 1.5; 7013: 2.0; 7014: 3.0 (also staminaAttackRate and staminaRecoverSpeedRate follow)",
+  "how": "Applied to each enemy at spawn; RustSekiro keeps the row in [enemy] area_doping (default 7010).",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/attacks.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/enemy.rs (area_doping), src/data.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Spawn a soldier with area_doping 7014: HP is three times the base.",
+  "note": "Time of day uses names Morning, Day, Evening, Night, Bell Evening; the story clock event was not read.",
+  "needs": [
+   {
+    "id": "map.story-clock",
+    "why": "the time stage"
+   },
+   {
+    "id": "progression.doping-emevd-assignment",
+    "why": "who applies it"
+   }
+  ]
+ },
+ {
+  "id": "progression.area-growth-doping-all-areas",
+  "category": "progression",
+  "title": "Area scaling across the whole game",
+  "summary": "Eighteen families of Growth Doping rows (7000 to 7170) cover the areas in order of story. Each has 1 to 5 time stages. HP at bell evening goes 3.0 in the early areas and reaches 4.25 to 4.5 at the end. The tutorial row (7000) is 1.0.",
+  "values": "Max HP rate per family (stages): 7000 [1]; 7010 Castle [1,1.25,1.5,2,3]; 7020 Samurai Res first half [1,3]; 7030 second half [1.25,1.75,2,2.5,3]; 7040 Honjo [1.5,1.75,2,2.5,3]; 7050 Hidden Prison [1.5,1.5,1.75,2,3]; 7060 Dungeon same; 7070 Temple [1.75,1.75,2.25,2.5,3]; 7080 Valley [2,2,2.25,2.5,3]; 7090 Lower Valley [2.25,2.25,2.25,2.5,3]; 7100 Sick Village same; 7110 Honjo ninja invasion [2.75,3.75]; 7120 Truth edition [3.5,4.25]; 7130 Submerged City [3,3.75]; 7140 Honjo Tokugawa [3.5,4.25]; 7150 [3.75,4.25]; 7160 [3.75,4.25]; 7170 End [4.25,4.5]",
+  "how": "One row per enemy spawn picked by area and story stage.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "src/enemy.rs (one row set by hand)"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Read max HP of the same soldier type in two areas: the ratio matches the table.",
+  "note": "Attack rates differ slightly from HP in several rows (for example 2.25 attack with 2.5 HP).",
+  "needs": [
+   {
+    "id": "map.area-list",
+    "why": "areas"
+   },
+   {
+    "id": "progression.enemy-scaling-apply",
+    "why": "how the number reaches damage"
+   }
+  ]
+ },
+ {
+  "id": "progression.orbital-doping",
+  "category": "progression",
+  "title": "Orbital (repeat) doping rows",
+  "summary": "The 75xx rows (Orbital Doping 00) and shared rows 7950 to 7961 give strong scaling for repeat battles: boss rematches and chained fights. The castle morning row is 4.35 HP and 3.35 attack. These rows also multiply the sen and XP the enemy carries: sen 5 times and XP 15 times in the castle, XP 10 times in the Samurai Residence.",
+  "values": "7510: hp 4.35, atk 3.35, haveSoulRate 5.0, haveSkillPointRate 15.0; 7514: hp 2.0, atk 1.35; 7520: XP 10.0; 7954 Single Rematch + Story Consecutive: hp 1.5, atk 1.165; 7955: 1.65, 1.2; 7958 For all consecutive battles default: 1.65, 1.2; 7959: 1.75, 1.3; 7950 All Modes default: hp 3.5, atk 3.0; 7951 hard bell evening: 5.0, 4.25",
+  "how": "Applied by the repeat-battle events instead of the area rows.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   }
+  ],
+  "confidence": "open-question",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Start a boss rematch and read its HP against the base row.",
+  "note": "The match between the name 'Orbital' and NG+ is a guess. The high sen and XP rates could be for an early-game catch-up mode. Not tested.",
+  "needs": [
+   {
+    "id": "bosses.rematch-modes",
+    "why": "where used"
+   },
+   {
+    "id": "progression.doping-emevd-assignment",
+    "why": "events"
+   }
+  ]
+ },
+ {
+  "id": "progression.doping-emevd-assignment",
+  "category": "progression",
+  "title": "Who applies the scaling rows",
+  "summary": "Per-map event scripts clear and apply the scaling rows. In m10_00_50_60 event 11005201 first removes about 190 area rows (7000 to 7903) from entity 1000900, then adds the shared rows 7950 to 7961 by event flags 6911 and 3730. The same shape repeats in about 25 map files (m11_01_71_00 has events 11115201 and 11115202).",
+  "values": "EMEVD instruction 2004[21] (remove effect) over 7000..7903; 2004[8] (add effect) of 7950, 7958, 7951, 7959, 7952, 7960, 7953, 7961 in pairs; flag tests 3 with 6911 and 3730",
+  "how": "EMEVD events on map load.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "tools/boss_events.py (emevd_events reader)"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   }
+  ],
+  "confidence": "open-question",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Decode event 11005201 in DarkScript3 and read which flags pick which pair.",
+  "note": "The target entity 1000900 and the flags 6911/3730 were not named. The area-specific row (7010 etc.) was not seen being added here, so another event or the exe does that.",
+  "needs": [
+   {
+    "id": "map.event-scripts",
+    "why": "event files"
+   },
+   {
+    "id": "progression.area-growth-doping-all-areas",
+    "why": "the rows"
+   }
+  ]
+ },
+ {
+  "id": "progression.enemy-scaling-apply",
+  "category": "progression",
+  "title": "How the scaling reaches an enemy's numbers",
+  "summary": "An enemy's real HP is its NpcParam HP times the area row's maxHpRate. Wolf's damage to it uses the NpcParam defence and the same rate for attack. Live checks gave k = 3.75 on the Truth edition rows (7124 and 7820): a hit of 80 became 300 HP damage and 18 posture became 67.",
+  "values": "7124: hp 4.25, atk 3.75; 7820: hp 4.4, atk 3.75; c1180 NpcParam HP 1916 became 4050 live; Wolf attack x4.35 (AP15)",
+  "how": "Combat code multiplies base damage by Actor.atk_rate and stam_atk_rate; max HP by the row at spawn.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/damage.md"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   }
+  ],
+  "confidence": "recorded",
+  "ours": {
+   "has": "yes",
+   "where": "src/enemy.rs, src/combat.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Replay the live hit of 80 on a c1470 at k 3.75: 300 HP.",
+  "note": "The save used for the live checks had 7124 or 7820 as the row; which one was never settled.",
+  "needs": [
+   {
+    "id": "combat.player-damage-formula",
+    "why": "where the rate enters"
+   }
+  ]
+ },
+ {
+  "id": "progression.demon-bell",
+  "category": "progression",
+  "title": "Demon Bell and the Bell Demon item",
+  "summary": "The Bell Demon is a consumable (goods 3730, max 1) that triggers the Demon Bell mode. Four empty marker SpEffects (3730 Day, 3731 Evening, 3732 Night, 3733 Bell Evening) are consumed with it. The wiki says its effect on enemies matches the Kuro's Charm removal. The marker names follow the four time stages.",
+  "values": "goods 3730 refId 3730, goodsUseAnim 86; SpEffects 3730-3733 have no stat fields; Redo bell 3990 (Illusive Hall Bell) is a different item",
+  "how": "The effect rows only mark a state; the stage is read by map events.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/EquipParamGoods.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   },
+   {
+    "kind": "web",
+    "ref": "https://sekiroshadowsdietwice.wiki.fextralife.com/New+Game+Plus"
+   }
+  ],
+  "confidence": "open-question",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Use the Bell Demon and read which flag changes.",
+  "note": "Two readings disagree: the wiki says it acts like the charm; the data shows the four time stages. Not settled.",
+  "needs": [
+   {
+    "id": "map.story-clock",
+    "why": "time stages"
+   },
+   {
+    "id": "progression.kuro-charm",
+    "why": "similar toggle"
+   }
+  ]
+ },
+ {
+  "id": "progression.kuro-charm",
+  "category": "progression",
+  "title": "Kuro's Charm and Charmless mode",
+  "summary": "Kuro's Charm (goods 9003) is a key item. Giving it away turns on Charmless mode (the wiki says it unlocks after an NG+ clear): blocked hits chip HP, enemy posture is larger, rewards rise by 20 percent. The data shows the 20 percent in SpEffects 7900-7903, the table rows 101 to 107 for the harder scaling, and a player SpEffect 8610 'Hard mode' with iconId 2220.",
+  "values": "goods 9003 (max 1); ClearCountCorrectParam 101: hp 1.2, atk 1.25, poison 1.35; 107: hp 1.9, atk 1.6, posture-attack 1.6, SA 0.6; 8610: defBloodResist 1.5, defCurseResist 1.2, defDiseaseResist 1.2, defPoisonResist 1.5",
+  "how": "Charm flag picks rows 100 to 107 (probable), the 79xx and 77xx sets, and the 8610 player effect.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/EquipParamGoods.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/ClearCountCorrectParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   },
+   {
+    "kind": "web",
+    "ref": "https://sekiroshadowsdietwice.wiki.fextralife.com/New+Game+Plus"
+   }
+  ],
+  "confidence": "open-question",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Compare enemy HP with the charm given and kept.",
+  "note": "Rows 101 to 107 as the charmless table is a reading from the numbers. The chip damage while blocking was not found in these rows.",
+  "needs": [
+   {
+    "id": "progression.hard-mode-sen-xp",
+    "why": "reward rows"
+   },
+   {
+    "id": "progression.hard-mode-growth-doping",
+    "why": "scaling rows"
+   }
+  ]
+ },
+ {
+  "id": "progression.clear-count-base-speffect",
+  "category": "progression",
+  "title": "ClearCountCorrectBaseSpEffectId in TentativePlayerParam",
+  "summary": "TentativePlayerParam carries a field ClearCountCorrectBaseSpEffectId with the value 141000. The row at 141000 is a Special Sword (Mortal Blade) effect, not a scaling row, so the field does not give the NG+ effect directly.",
+  "values": "TentativePlayerParam 0: ClearCountCorrectBaseSpEffectId 141000; SpEffect 141000 'Special Sword_New Technique'",
+  "how": "Possibly an offset base for a block of 141xxx rows. Not traced.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/TentativePlayerParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   }
+  ],
+  "confidence": "open-question",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Search the exe for reads of this field.",
+  "note": "Role is unknown. Listed so nobody takes it as the NG+ link.",
+  "needs": [
+   {
+    "id": "progression.ng-plus-clear-count-correct",
+    "why": "the real table"
+   }
+  ]
+ },
+ {
+  "id": "progression.skill-xp-vs-sen-in-ours",
+  "category": "progression",
+  "title": "Reward flow in RustSekiro",
+  "summary": "RustSekiro pays NpcParam skillPoint to the XP gauge and getSoul to the purse at death, scaled by the Balloon of Wealth rate. A full gauge makes a skill point. It skips Unseen Aid, NG+ rates and area haveSoulRate multipliers.",
+  "values": "reward(npc) = (skillPoint, getSoul); sen x sen_rate(worn); death_penalty halves sen and gauge",
+  "how": "src/experience.rs reward_kills.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "src/experience.rs"
+   }
+  ],
+  "confidence": "recorded",
+  "ours": {
+   "has": "yes",
+   "where": "src/experience.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Run the experience unit tests: they pin the TO_NEXT steps and the half loss.",
+  "note": "Gaps named in the file header: Unseen Aid and the exe-computed XP table.",
+  "needs": [
+   {
+    "id": "progression.sen-from-kills",
+    "why": "source"
+   },
+   {
+    "id": "progression.skill-xp-from-kills",
+    "why": "source"
+   }
+  ]
+ }
+]

@@ -1,0 +1,1159 @@
+[
+ {
+  "id": "bosses.mark-bars",
+  "category": "bosses",
+  "title": "Boss 'bars' are deathblow marks left",
+  "summary": "The boss health bar count is the number of deathblow marks still needed. Phase hand-overs wait on this count with EMEVD 4[37], not on HP thresholds.",
+  "values": "Instruction 4[37] args [group, entity, cmp, count, cmp2, numChars]: cmp 0 means ==, 5 means <=. The count is NpcParam ninsatuNum. Examples: Genichiro 71001000 = 2, Tomoe 71100000 = 1, Isshin 54000000 = 3, Demon of Hatred 70200000 = 3, Corrupted Monk 50000000 = 3, Owl Father 50601010 = 2, Lady Butterfly = 1 per body, Dragons 53000000 = 0.",
+  "how": "The engine tracks marks per character; EMEVD events poll the count each frame.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/enemies/boss_scripts.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/NpcParam.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/enemy.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/enemy/script.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "crates/sim/src/events.rs"
+  },
+  "check": "Land one deathblow on Isshin 54000000: bars drops from 3 to 2 and event 11125872 fires.",
+  "note": "",
+  "needs": [
+   {
+    "id": "deathblows.mark-count",
+    "why": "marks are deathblow counts"
+   },
+   {
+    "id": "interface.boss-bar",
+    "why": "bar display"
+   }
+  ]
+ },
+ {
+  "id": "bosses.health-bar-display",
+  "category": "bosses",
+  "title": "Boss and mini-boss bars are different instructions",
+  "summary": "A boss shows its bar through EMEVD 2003[11] (enabled, entity, slot, nameId). A mini-boss uses 2003[87]. The name comes from the FMG name id, e.g. 905090 for Lady Butterfly, 907110 for Tomoe, 905061 for Owl Father, 907021 for Demon of Hatred.",
+  "values": "2003[11] Display Boss Health Bar; 2003[87] Display Miniboss Health Bar; 2004[30] HP Bar Display. npc_names.json holds 57 names (20 bosses plus mini-bosses). Monkeys holder: dummy c1000 12600050 bar 901260.",
+  "how": "The HUD bar follows the entity until the defeat handler hides it.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/enemies/boss_scripts.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/enemies/npc_names.json"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/hud.rs boss bars"
+  },
+  "his": {
+   "has": "yes",
+   "where": "crates/sim/src/events.rs BossBar"
+  },
+  "check": "Enter Gyoubu's arena: his bar shows after his intro (message 20 + 4 s).",
+  "note": "",
+  "needs": [
+   {
+    "id": "interface.boss-bar",
+    "why": "HUD side"
+   }
+  ]
+ },
+ {
+  "id": "bosses.phase-handover-pattern",
+  "category": "bosses",
+  "title": "How a boss phase hand-over runs",
+  "summary": "A phase switch is an EMEVD sequence: wait for the mark count, make the boss immortal, play a short fade or EzState, swap the body or AI id, send an AI command, and show the bar again. Most steps are gated by an animation message.",
+  "values": "Typical order: 4[37] bars check, 2004[12] immortality on, 2004[6] EzState or 2004[17] AI command, 2004[19] set AI id, SFX spawn, 2003[11] show bar, flag for music. Event message 4[8] = TAE 231.",
+  "how": "Each boss row has events in boss_scripts.json. DarkScript3 sekiro-common.emedf names the instructions.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/enemies/boss_scripts.json"
+   },
+   {
+    "kind": "data",
+    "ref": "reference/DarkScript3/DarkScript3/Resources/sekiro-common.emedf.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/enemy.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/enemy/script.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "crates/sim/src/events.rs"
+  },
+  "check": "Trace the events of any multi-phase boss in the sim (enemy_event_trace test) and compare to the list.",
+  "note": "",
+  "needs": [
+   {
+    "id": "bosses.mark-bars",
+    "why": "trigger"
+   }
+  ]
+ },
+ {
+  "id": "bosses.genichiro-tomoe",
+  "category": "bosses",
+  "title": "Genichiro (castle) hands over to Tomoe",
+  "summary": "Genichiro 71001000 has 2 marks. After the second mark and a 2 s wait the game fades, warps Wolf by cutscene 11010020 to region 1112813, swaps entity 1110800 for Tomoe 1110801 (71100000, 1 mark, HP 2556) and shows her bar (name 907110).",
+  "values": "Event 11115820: bars == 0 + 2 s + Wolf HP check, fade, Wolf immortal and SpEffects 4700-4702, fog SFX 1114832 / 35 / 36. Event 11115800 handles Tomoe bars == 2 as defeat (achievement 22, flags 9303 / 6803). 11115830 sends Tomoe 20200 and Wolf 710204 on bars == 1 with message 10. 11115831 keeps Tomoe immortal until message 20. Genichiro HP 1598.",
+  "how": "EMEVD events in boss_scripts.json row 71001000 / 71100000.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/enemies/boss_scripts.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/enemy.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/enemy/script.rs"
+  },
+  "his": {
+   "has": "partial",
+   "where": "crates/sim/src/bosses (Genichiro duel module)"
+  },
+  "check": "Beat Genichiro on m11_01 castle: second mark triggers the fade and Tomoe replaces him.",
+  "note": "Prologue Genichiro 71000000 is a different, scripted loss (see bosses.prologue-genichiro).",
+  "needs": [
+   {
+    "id": "cutscenes.genichiro-tomoe",
+    "why": "warp cutscene"
+   },
+   {
+    "id": "bosses.kneel-todome",
+    "why": "end sequence"
+   }
+  ]
+ },
+ {
+  "id": "bosses.prologue-genichiro",
+  "category": "bosses",
+  "title": "Prologue Genichiro is a scripted loss",
+  "summary": "On map m11_02 the first Genichiro fight cannot be won: cutscenes 11020000 and 11020001 play and Wolf respawns at 1102621. Lady Butterfly respawns at 1102631 after the win elsewhere.",
+  "values": "NpcParam 71000000, cutscenes 11020000 / 11020001, respawn point 1102621.",
+  "how": "EMEVD on m11_02 forces the defeat after an HP condition.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/enemies/boss_scripts.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/clips.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "src/enemy/script.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Start a new game and play to the Genichiro cutscene; you lose regardless.",
+  "note": "",
+  "needs": [
+   {
+    "id": "cutscenes.prologue-genichiro",
+    "why": "scripted cutscene"
+   }
+  ]
+ },
+ {
+  "id": "bosses.lady-butterfly",
+  "category": "bosses",
+  "title": "Lady Butterfly: two bodies, illusions and a re-shown bar",
+  "summary": "Butterfly has two bodies of 1 mark each (50900000 on entity 1000800 and 50900001 on 1000810). After the first, the game disables 1000800, enables 1000810, plays state 21000 and shows the bar again. Eight illusion bodies (c1510, 1000820 to 1000827) obey AI command 10.",
+  "values": "HP 2073, posture 600. Event 11005812: bars == 0 on 1000800, camera 500, wait Wolf in region 1002830 and SpEffect 5028, send AI command 10, bar 905090 again. 11005855: kneel 20200 and Wolf 710205 at bars == 1 of 1000810. 11005820 gives the illusions command 10.",
+  "how": "Entity swap with state 21000 (execution wait) and AI command slot.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/enemies/boss_scripts.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/enemy.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/enemy/script.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "crates/sim/src/bosses/butterfly.rs"
+  },
+  "check": "Fight Butterfly: after her first mark the 1000800 body goes and 1000810 arrives with a new bar.",
+  "note": "",
+  "needs": [
+   {
+    "id": "bosses.ai-command-slots",
+    "why": "command 10"
+   },
+   {
+    "id": "bosses.kneel-todome",
+    "why": "end"
+   }
+  ]
+ },
+ {
+  "id": "bosses.owl-castle-phase2",
+  "category": "bosses",
+  "title": "Owl (castle) phase 2 comes from the first deathblow's get-up clip",
+  "summary": "Owl has no HP threshold. His first deathblow's get-up clip a000_012000 raises message 20 at 2.833 to 2.933 s and event 11115870 starts phase 2: it hides the bar, sets EzState 506000, SpEffect 200051, waits 3 s then message 60 (or none if 3506080 blocks), and the music switches 1112871 to 1112872.",
+  "values": "3506080 blocks deathblow during phase 2 (heat-up a000_020005 takes 10.27 s, kneel 021003). Escape clips 20006 to 20008 (first 0.233 s): 20006 if Wolf is within 2 m after 2.5 s, 20007 on Wolf attack, 20008 after about 5 kneeling loops. Finish a000_013700 sends message 50 at 8.867 s. ThrowParam 15060xxx.",
+  "how": "The animation's message events drive EMEVD.",
+  "sources": [
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "docs/OWL.md"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/enemies/boss_scripts.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/enemy.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/enemy/script.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "crates/sim/src/bosses (Owl module)"
+  },
+  "check": "Fight castle Owl: after the first mark he gets up, the bar hides, and phase 2 music starts.",
+  "note": "Castle Owl has 0 perilous attacks (script's own odds tables are empty); the Owl Father does.",
+  "needs": [
+   {
+    "id": "deathblows.boss-deathblow",
+    "why": "deathblow animation"
+   },
+   {
+    "id": "sound.boss-music",
+    "why": "1112871 to 1112872"
+   }
+  ]
+ },
+ {
+  "id": "bosses.owl-father",
+  "category": "bosses",
+  "title": "Owl Father (Shinobi Hunter Owl, memory)",
+  "summary": "Owl Father 50601010 has 2 marks and HP 2552. Event 11005910 makes him immortal and shows bar 905061; 11005920 on bars == 1 sends kneel 20200 and Wolf 710201. Helper c5070 (1000901) receives AI commands.",
+  "values": "Perilous about 4.7 per minute recorded (sim 5.0).",
+  "how": "Helper character with AI command slots.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/enemies/boss_scripts.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/clips.md"
+   }
+  ],
+  "confidence": "recorded",
+  "ours": {
+   "has": "yes",
+   "where": "src/enemy/script.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "crates/sim/src/bosses/owl_father.rs"
+  },
+  "check": "Fight him in the memory: count perilous attacks per minute against 4.7.",
+  "note": "",
+  "needs": [
+   {
+    "id": "bosses.kneel-todome",
+    "why": "end"
+   }
+  ]
+ },
+ {
+  "id": "bosses.guardian-ape",
+  "category": "bosses",
+  "title": "Guardian Ape and its Headless revival",
+  "summary": "Guardian Ape 51000000 (HP 3520) has a two-stage kill: on bars == 1 event 11705820 sends kneel 20200 and Wolf 710203; 11705821 sends 20000. Headless Ape 51000100 (HP 2240, 2 marks) appears with its mate 1700852 (51000010).",
+  "values": "11705880: bars == 1 sends AI commands 10 / 11 / 0. 11705881: mate gets 20200 and Wolf 710203. Revival from the headless state uses 20020.",
+  "how": "Entity swap and EzState request.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/enemies/boss_scripts.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/enemy.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/enemy/script.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "crates/sim/src/bosses/guardian_ape.rs; headless_ape.rs"
+  },
+  "check": "Fight the Guardian Ape: kneel at bars == 1, then the headless revival.",
+  "note": "",
+  "needs": [
+   {
+    "id": "bosses.terror-rules",
+    "why": "roars cause terror"
+   },
+   {
+    "id": "bosses.kneel-todome",
+    "why": "end"
+   }
+  ]
+ },
+ {
+  "id": "bosses.gyoubu",
+  "category": "bosses",
+  "title": "Gyoubu Masataka Oniwa: intro, music and immortality",
+  "summary": "Gyoubu 50800000 (HP 2552, 2 marks) starts with 11105810: immortal, AI command 1, waits message 20 plus 4 s, then flags 11100801 / 11105801 and bar 905081. When bars <= 1, 11105812 sets flag 11105802 3 s later and the music track switches m110000001 to m110000002. 11105820 toggles immortality on messages 10 and 50.",
+  "values": "Perilous about 0.7 per minute recorded.",
+  "how": "Flag-driven music, message-driven immortality.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/enemies/boss_scripts.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/enemies/boss_bgm.json"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/enemy/script.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "crates/sim/src/bosses/gyoubu.rs"
+  },
+  "check": "Fight Gyoubu: the second music track starts 3 s after the first mark.",
+  "note": "",
+  "needs": [
+   {
+    "id": "sound.boss-music",
+    "why": "track switch"
+   }
+  ]
+ },
+ {
+  "id": "bosses.isshin-sword-saint",
+  "category": "bosses",
+  "title": "Isshin, the Sword Saint: 3 marks and phase effects",
+  "summary": "Isshin 54000000 (HP 2240, 3 marks) changes at bars <= 2 (event 11125872, SpEffect 200031): AI id 54000100, SFX 1124800 / 02 / 04, music state off 1124811 and on 1124812 / 14, Gparam sub id, flag 11125862. At bars <= 1 it swaps SFX and sets flag 11125872 after 5 s. 11125873 holds immortality until message 20. 11125874 at bars <= 0 gives 20200 and Wolf 710206; 11125875 gives 21000.",
+  "values": "Final Tomoe 71101000 (event 11125830 hides the bar on bars == 1). Isshin finish ThrowParam 15400590. Perilous about 3.7 per minute recorded.",
+  "how": "AI id swap changes the whole moveset while the NpcParam row stays.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/enemies/boss_scripts.json"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "docs/BOSSES-c.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/enemy/script.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "crates/sim/src/bosses/isshin.rs"
+  },
+  "check": "Fight Isshin: at the first mark the AI id swaps and the music and SFX states change.",
+  "note": "",
+  "needs": [
+   {
+    "id": "visuals.boss-weather",
+    "why": "Gparam sub id"
+   },
+   {
+    "id": "sound.boss-music",
+    "why": "music states"
+   }
+  ]
+ },
+ {
+  "id": "bosses.isshin-ashina",
+  "category": "bosses",
+  "title": "Isshin Ashina (Dragon's Homeland / Hirata, memory fight)",
+  "summary": "Isshin Ashina 54300000 (HP 1600, 2 marks): 11115941 on bars == 0 gives kneel 20200 and Wolf 710206; 11115942 toggles immortality.",
+  "values": "",
+  "how": "As other 2-mark bosses.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/enemies/boss_scripts.json"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/enemy/script.rs"
+  },
+  "his": {
+   "has": "partial",
+   "where": "crates/sim/src/bosses (brain)"
+  },
+  "check": "Fight him in the memory: first mark leads to his second phase.",
+  "note": "",
+  "needs": [
+   {
+    "id": "bosses.kneel-todome",
+    "why": "end"
+   }
+  ]
+ },
+ {
+  "id": "bosses.emma",
+  "category": "bosses",
+  "title": "Emma: single mark defeat",
+  "summary": "Emma 74000010 has 1 mark; event 11115900 handles bars == 0 as defeat.",
+  "values": "",
+  "how": "Plain 1-mark path.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/enemies/boss_scripts.json"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/enemy/script.rs"
+  },
+  "his": {
+   "has": "partial",
+   "where": "crates/sim/src/bosses"
+  },
+  "check": "Fight Emma: one mark ends it.",
+  "note": "",
+  "needs": [
+   {
+    "id": "bosses.mark-bars",
+    "why": "bars == 0"
+   }
+  ]
+ },
+ {
+  "id": "bosses.demon-of-hatred",
+  "category": "bosses",
+  "title": "Demon of Hatred: three marks and a team-type flip",
+  "summary": "Demon 70200000 (HP 3195, 3 marks): 11105910 makes it immortal, AI command 10, team type 28 and bar 907021. 11105912 handles bars == 2 and 1, 11105921 on bars == 0 sends kneel 20200 and Wolf 710207. 11105923 / 924 reset the team type to 6. Todome ThrowParam 17020180.",
+  "values": "Team type values 28 and 6 are as set by the events (their meaning is not decoded). Perilous about 0.9 per minute recorded (sim 0.7).",
+  "how": "EMEVD 2004[2] Team Type.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/enemies/boss_scripts.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/clips.md"
+   }
+  ],
+  "confidence": "recorded",
+  "ours": {
+   "has": "yes",
+   "where": "src/enemy/script.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "crates/sim/src/bosses/demon.rs"
+  },
+  "check": "Fight him and trace 2004[2] in the sim: team type 28 during the fight, 6 after.",
+  "note": "Meaning of team type 28 vs 6 is not decoded.",
+  "needs": [
+   {
+    "id": "bosses.team-type-flips",
+    "why": "team types"
+   }
+  ]
+ },
+ {
+  "id": "bosses.corrupted-monk",
+  "category": "bosses",
+  "title": "Corrupted Monk: phantoms at mark 2 and 3",
+  "summary": "Corrupted Monk 50000000 (HP 2555, 3 marks): 12505961 at bars == 2 sends AI command 1 (phantom summons c5005 / 50050000), 12505962 at bars == 1 sends AI command 2 plus EzState 20010, 12505963 at bars == 0 gives kneel 20200 and Wolf 710200. Mibu Illusion 50001000 (HP 3513, 1 mark, posture recovery 240) is a separate row.",
+  "values": "Perilous about 4 per minute recorded (sim 5.3).",
+  "how": "AI command slots 1 and 2.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/enemies/boss_scripts.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/clips.md"
+   }
+  ],
+  "confidence": "recorded",
+  "ours": {
+   "has": "yes",
+   "where": "src/enemy/script.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "crates/sim/src/bosses/monk_phantoms.rs"
+  },
+  "check": "Fight Monk: phantoms appear at bars == 2.",
+  "note": "",
+  "needs": [
+   {
+    "id": "bosses.ai-command-slots",
+    "why": "commands"
+   }
+  ]
+ },
+ {
+  "id": "bosses.dragons",
+  "category": "bosses",
+  "title": "Divine Dragon and the Old Dragons",
+  "summary": "Divine Dragon 52000000 has HP 3600, 1 mark and ninsatsuDamageRate 5.0. The Old Dragons share body 53000000 with 0 marks; event 12505885 swaps bars (2500810 off, 2500800 on).",
+  "values": "",
+  "how": "Swap event only.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/enemies/boss_scripts.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/NpcParam.json"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "src/enemy/script.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "crates/sim/src/bosses/old_dragons.rs"
+  },
+  "check": "Fight the Divine Dragon and check its mark count of 1.",
+  "note": "Divine Dragon's lightning/damage rules are not part of this record.",
+  "needs": [
+   {
+    "id": "combat.lightning-reversal",
+    "why": "dragon lightning"
+   }
+  ]
+ },
+ {
+  "id": "bosses.folding-screen-monkeys",
+  "category": "bosses",
+  "title": "Folding Screen Monkeys: a bar holder and catch steps",
+  "summary": "The monkeys' bar belongs to a dummy c1000 12600050 (HP 100, 0 marks, bar 901260). Each catch applies 3126010 and the bar drops 100 to 74 to 48 to 22 to 0.",
+  "values": "Bar name 901260.",
+  "how": "Dummy holder + SpEffect.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/enemies/boss_scripts.json"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/enemy/script.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "crates/sim/src/bosses/screen_monkeys.rs"
+  },
+  "check": "Catch a monkey: the shared bar drops by 26.",
+  "note": "",
+  "needs": [
+   {
+    "id": "interface.boss-bar",
+    "why": "dummy bar"
+   }
+  ]
+ },
+ {
+  "id": "bosses.ai-id-swap",
+  "category": "bosses",
+  "title": "A boss can swap its whole AI at runtime",
+  "summary": "EMEVD 2004[19] Set Character AI ID changes the think row mid fight. Isshin does it at the second mark (54000100) for a new moveset.",
+  "values": "Isshin 54000000 to 54000100.",
+  "how": "The new id selects a different battle goal.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/enemies/boss_scripts.json"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/enemy/script.rs AiId"
+  },
+  "his": {
+   "has": "yes",
+   "where": "crates/sim/src/events.rs AiId"
+  },
+  "check": "Watch Isshin's moveset change at the first mark.",
+  "note": "",
+  "needs": [
+   {
+    "id": "ai.event-request-slots",
+    "why": "AI command side"
+   }
+  ]
+ },
+ {
+  "id": "bosses.ai-command-slots",
+  "category": "bosses",
+  "title": "AI commands used by bosses",
+  "summary": "Bosses are told what to do by numeric AI commands (2004[17]): Butterfly illusions 10, Corrupted Monk 1 and 2, Demon 10, Guardian Ape 10 / 11 / 0, Gyoubu 1, Owl Father helper.",
+  "values": "",
+  "how": "Command slot read by GetEventRequest in the Lua.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/enemies/boss_scripts.json"
+   },
+   {
+    "kind": "exe",
+    "ref": "tools/fn.sh 1405b36b0"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "yes",
+   "where": "src/enemy/script.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "crates/sim/src/events.rs"
+  },
+  "check": "Trace AI commands during a fight in the sim.",
+  "note": "",
+  "needs": [
+   {
+    "id": "ai.event-request-slots",
+    "why": "engine side"
+   }
+  ]
+ },
+ {
+  "id": "bosses.immortality-toggles",
+  "category": "bosses",
+  "title": "Immortality and invincibility during hand-overs",
+  "summary": "A boss is made immortal (2004[12]) or invincible (2004[15]) around its hand-overs so Wolf cannot kill it before the script is ready. Messages end the state.",
+  "values": "Examples: Gyoubu messages 10 / 50, Tomoe until message 20, Isshin until message 20.",
+  "how": "EMEVD toggles.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/enemies/boss_scripts.json"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/enemy/script.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "crates/sim/src/events.rs"
+  },
+  "check": "Hit Tomoe in the hand-over: no damage.",
+  "note": "",
+  "needs": []
+ },
+ {
+  "id": "bosses.team-type-flips",
+  "category": "bosses",
+  "title": "Team type changes during boss fights",
+  "summary": "2004[2] changes a character's team type. The Demon of Hatred goes to type 28 while engaged and back to 6.",
+  "values": "Demon 70200000: 28 to 6.",
+  "how": "EMEVD 2004[2].",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/enemies/boss_scripts.json"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "src/enemy/script.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Compare who the Demon's fire damages before and after.",
+  "note": "Team meaning not decoded.",
+  "needs": []
+ },
+ {
+  "id": "bosses.kneel-todome",
+  "category": "bosses",
+  "title": "Boss end: kneel then Todome",
+  "summary": "The last mark is an ordinary deathblow. Message 10 sends the boss to kneel (EzState 20200) while Wolf walks up (7102xx). The Todome can start 0.8 to 1.8 s into the kneel; TAE 932 / 105 spans 1.0 to 5.0 s.",
+  "values": "Kneel is EzState 20200. Wolf walk-ups: 710200 Monk, 710201 Owl, 710203 Ape, 710204 Genichiro / Tomoe, 710205 Butterfly, 710206 Isshin / Ashina, 710207 Demon. 21000 is the execution-wait state.",
+  "how": "EMEVD plus ThrowParam by boss.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/enemies/boss_scripts.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/enemy.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/enemy/script.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "crates/sim/src/duel.rs"
+  },
+  "check": "Finish any boss: kneel, walk-up, Todome.",
+  "note": "",
+  "needs": [
+   {
+    "id": "deathblows.boss-deathblow",
+    "why": "finisher"
+   }
+  ]
+ },
+ {
+  "id": "bosses.defeat-handler",
+  "category": "bosses",
+  "title": "Boss defeat handler",
+  "summary": "2003[12] Handle Boss Defeat plays the victory, sets the defeat flags and may unlock an achievement. Tomoe's defeat sets achievement 22 and flags 9303 / 6803.",
+  "values": "",
+  "how": "EMEVD 2003[12].",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/enemies/boss_scripts.json"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "src/enemy/script.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Beat Tomoe and check the achievement.",
+  "note": "",
+  "needs": [
+   {
+    "id": "progression.boss-flags",
+    "why": "flags"
+   }
+  ]
+ },
+ {
+  "id": "bosses.fog-walls",
+  "category": "bosses",
+  "title": "Fog walls seal boss arenas",
+  "summary": "Fog walls appear when the fight starts and vanish at the end. common_func 20005820 shows an object while the start flag is on and the end flag off, with an SFX on dummy 101. 20005825 does the same for a collision. 47 walls on 25 maps.",
+  "values": "Args: 20005820 [end flag, object entity, SFX id, start flag]; 20005825 [end flag, collision entity, start flag]. fog_walls.json holds all.",
+  "how": "common_func EMEVD plus MSB objects.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/enemies/fog_walls.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/map.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/fog_wall.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "crates/sim/src/fogwall.rs"
+  },
+  "check": "Walk into a boss fog: you can enter but not leave until the fight ends.",
+  "note": "",
+  "needs": [
+   {
+    "id": "map.fog-wall-objects",
+    "why": "fog object"
+   }
+  ]
+ },
+ {
+  "id": "bosses.boss-music-flags",
+  "category": "bosses",
+  "title": "Boss music is flag driven",
+  "summary": "common_func 20005830 [defeat flag, arena region, start flag, BGM region, stop flag] starts boss music; 20005831 switches phase with two regions. Track ids are in boss_bgm.json.",
+  "values": "Examples: Butterfly m100000003 on flag 11005801, m100000004 after 11005802 until 11000800. Gyoubu m110000001 / 2. Genichiro 71001000 m110100001 / 2. Owl 50600000 m110102003 / 4. Emma m110102001. Ashina m110102002 / 005. 71000000 and 71101000 m110200001. Isshin m110200002 / 3. Mibu Monk m150000001. Apes m170000003 / 4. Monkeys m200000001. Dragons m250000003 / 4 / 5. Monk m250000001 / 2. Demon m110000007 / 8.",
+  "how": "FMOD tracks selected by flag.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/enemies/boss_bgm.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/sound.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/fmod.rs boss_music"
+  },
+  "his": {
+   "has": "partial",
+   "where": "sound is outside the sim"
+  },
+  "check": "Start any boss fight: music starts at the fog; the 2nd track starts on its flag.",
+  "note": "",
+  "needs": [
+   {
+    "id": "sound.boss-music",
+    "why": "audio side"
+   }
+  ]
+ },
+ {
+  "id": "bosses.area-battle-music",
+  "category": "bosses",
+  "title": "Area battle music for normal enemies",
+  "summary": "Normal combat music is driven by a world sound manager state: 0 none, 1 about to be found, 2 about to lose, 3 combat. Flags choose the track set.",
+  "values": "WorldSoundManImp +0x11fc; regions <area><block>2680 / 2688 / 2689 / 2690; flag 9200 boss music, 9201 to 9204 and 9207 mini-boss tracks, 9208 combat, 9209 silence. Each character requests a CSChrSoundModule byte via HKS act(3014).",
+  "how": "common.emevd event 410.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/sound.md"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/event/common.emevd"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/area_music.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Get spotted by a soldier: combat music fades in.",
+  "note": "",
+  "needs": [
+   {
+    "id": "sound.area-music",
+    "why": "audio"
+   }
+  ]
+ },
+ {
+  "id": "bosses.mini-vs-boss",
+  "category": "bosses",
+  "title": "Mini-boss vs boss differences",
+  "summary": "A mini-boss uses the 2003[87] bar and its own music flags (9201 to 9204, 9207); a boss uses 2003[11] and flag 9200. Mini-bosses have 2 marks on the named version; the plain version of the enemy (General 10203010) has 0.",
+  "values": "General 10200000 (mini-boss) ninsatuNum 2; regular General 10203010 has 0.",
+  "how": "Same enemy with two param rows.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/NpcParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/enemies/npc_names.json"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/enemy/script.rs"
+  },
+  "his": {
+   "has": "partial",
+   "where": "crates/sim"
+  },
+  "check": "Compare a mini-boss General to a random General.",
+  "note": "",
+  "needs": [
+   {
+    "id": "bosses.health-bar-display",
+    "why": "bar type"
+   }
+  ]
+ },
+ {
+  "id": "bosses.perilous-rates",
+  "category": "bosses",
+  "title": "How often each boss uses a perilous attack",
+  "summary": "Recorded fights give attacks per minute. The castle Owl has 0 because the script's own odds tables have none.",
+  "values": "Owl castle 0; Owl Father about 4.7 (sim 5.0); Monk about 4 (sim 5.3); Demon 0.9 (sim 0.7); Gyoubu about 0.7; Butterfly 1.3; Genichiro 4.7; Tomoe 6.3; Isshin 3.7.",
+  "how": "Odds tables in the boss's battle script.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/clips.md"
+   },
+   {
+    "kind": "recording",
+    "ref": "clips/"
+   }
+  ],
+  "confidence": "recorded",
+  "ours": {
+   "has": "yes",
+   "where": "src/hud.rs; tests"
+  },
+  "his": {
+   "has": "yes",
+   "where": "crates/sim/src/bosses/perilous.rs"
+  },
+  "check": "Count perilous warnings over a 3 minute fight.",
+  "note": "Sim vs recorded gaps up to 30 percent (Monk).",
+  "needs": [
+   {
+    "id": "combat.perilous-attacks",
+    "why": "attack type"
+   }
+  ]
+ },
+ {
+  "id": "bosses.terror-rules",
+  "category": "bosses",
+  "title": "Terror (fear) builds up and kills by full gauge",
+  "summary": "Terror attacks fill a resistance gauge. At full, a terror row applies once for 100 percent of max HP. Wolf's resistance caps at 200.",
+  "values": "SpEffects 9200 to 9223 (stateInfo 5, changeHpRate 100). Shichimen bullets 9211 (36), 9212 (125), field 9219 (50). Headless 9213 / 9214 / 9215 (73 / 114 / 160). Guardian Ape roar 9216 (125). Headless Ape mad roar 9220 (18). Monkeys 9218 (50). Underwater Headless hair 9221 (21). Zombies 9222 / 9223 (70 / 4). 9280 resistance shave permit.",
+  "how": "Status build-up engine.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/enemy.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/status.rs"
+  },
+  "his": {
+   "has": "partial",
+   "where": "crates/sim"
+  },
+  "check": "Take terror hits from Shichimen until the gauge fills.",
+  "note": "",
+  "needs": [
+   {
+    "id": "status.terror",
+    "why": "terror status"
+   }
+  ]
+ },
+ {
+  "id": "bosses.ghost-barrier",
+  "category": "bosses",
+  "title": "Apparitions are shielded by a ghost barrier",
+  "summary": "Headless, Shichimen Warrior and the Female Musician carry a resident ghost barrier that cuts normal damage. Divine Confetti removes it.",
+  "values": "SpEffects 230640 (Headless, x0.10), 230641 (Shichimen, x0.33), 230642 (Musician, x0.67). NpcParam rows Headless 13500000 / 13500100 / 13501000 / 13502000, Shichimen 10800000 / 10801000 / 10802000, Musician 70000000. spCategory 1002 priority 1.",
+  "how": "Resident SpEffect on the NPC.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/NpcParam.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/enemy.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/combat.rs ghost_barrier"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Hit a Shichimen with and without Confetti: damage per hit rises (barrier x0.33 gone).",
+  "note": "Erase effects 230645 (0.3 s) and 230646 (3 s) have no setter found; ours infers the spirit-enchant erase.",
+  "needs": [
+   {
+    "id": "items.divine-confetti",
+    "why": "removes the barrier"
+   }
+  ]
+ },
+ {
+  "id": "bosses.divine-confetti",
+  "category": "bosses",
+  "title": "Divine Confetti",
+  "summary": "Divine Confetti (goods 3450) is an item that enchants Wolf's weapon against apparitions. It chains 3450, 3451 spirit enchant, 3452 anti-spirit guard, 3453 anti-spirit deflect, 3454 spirit damage reduction.",
+  "values": "3451: magicAttackPower 20, spAttribute 3, 60 s, atkOccurrence 104016. 3452: magicDamageCutRate 0.75, stateInfo 158. 3453: stateInfo 204. 3454: reduction 0.75. Related effects 80 curse, 106030 to 106035 (20 s enchant, another source).",
+  "how": "Item use applies SpEffect 3450 which chains the rest.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/EquipParamGoods.json"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/items.rs; src/prosthetic.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Use the item before fighting Shichimen.",
+  "note": "",
+  "needs": [
+   {
+    "id": "items.goods-use",
+    "why": "item use pipeline"
+   },
+   {
+    "id": "status.spirit-enchant",
+    "why": "weapon enchant"
+   }
+  ]
+ },
+ {
+  "id": "bosses.boss-sight-cones",
+  "category": "bosses",
+  "title": "Boss sight is a narrow far cone",
+  "summary": "Boss NpcThinkParam rows use a long thin cone: dist 120, begin and back-offset 80, yaw +-15, so they see about 0 to 40 m in front.",
+  "values": "Owl 50600000 and Isshin 54000000 rows.",
+  "how": "NpcThinkParam eye_*.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/NpcThinkParam.json"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/stealth.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Approach a boss from the side before the fight.",
+  "note": "",
+  "needs": [
+   {
+    "id": "ai.sight-normal-cone",
+    "why": "same model"
+   }
+  ]
+ },
+ {
+  "id": "bosses.arena-activation",
+  "category": "bosses",
+  "title": "Boss arenas start on region entry",
+  "summary": "The fight begins when Wolf enters the arena region and the start flag is set. Fog, music and bar follow.",
+  "values": "Per boss region ids (fog_walls.json).",
+  "how": "EMEVD regions.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/enemies/fog_walls.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/enemies/boss_events.json"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/enemy/script.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "crates/sim/src/duel.rs"
+  },
+  "check": "Stand at the fog and step in.",
+  "note": "",
+  "needs": [
+   {
+    "id": "map.regions",
+    "why": "region triggers"
+   }
+  ]
+ }
+]

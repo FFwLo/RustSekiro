@@ -1,0 +1,860 @@
+[
+ {
+  "id": "sound.fsb-fmod-format",
+  "category": "sound",
+  "title": "Sound banks and the FMOD runtime",
+  "summary": "Game audio lives in FMOD Ex 4.4 banks: .fev event files with .fsb banks of Vorbis samples (FSB5). Both projects decode them with the game's own FMOD DLLs, so event playback behaves like the original.",
+  "values": "FSB5 with Vorbis; FMOD Ex 4.4.",
+  "how": "sound/*.fev + *.fsb loaded at start; events started by path.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/sound.md"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "docs/AUDIO.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/fmod.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "crates/fmod/src/lib.rs"
+  },
+  "check": "List the loaded banks and play main/main/c000004010.",
+  "note": "",
+  "needs": []
+ },
+ {
+  "id": "sound.event-path-keys",
+  "category": "sound",
+  "title": "Event paths and key letters",
+  "summary": "An event is addressed as project/group/event, for example main/main/c000004010. The leading letter of the event name tells the kind of sound, and the digits carry a model or a sound id.",
+  "values": "Letters: a environment, c character, f menu, o object, p cutscene, s SFX, m BGM, v voice, x floor, b armour, g ghost, z hit effect.",
+  "how": "Sound ids from TAE (PlaySound), params and EMEVD are turned into the event name.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/sound.md"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/sound_events.txt"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/sound.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "crates/sim/src/sound.rs"
+  },
+  "check": "Grep sound_events.txt for c000004010 and for x00 floors.",
+  "note": "",
+  "needs": [
+   {
+    "id": "sound.fsb-fmod-format",
+    "why": "banks"
+   }
+  ]
+ },
+ {
+  "id": "sound.tae-sound-cues",
+  "category": "sound",
+  "title": "Animation sound cues (TAE)",
+  "summary": "Animations carry sound events (PlaySound, floor, armour, slot sounds) at set frames. They fire when the animation time passes the marker, so sounds follow animation speed.",
+  "values": "TAE event types for sound; types 970 deathblow mix, 237 CreateAISound.",
+  "how": "TAE tracks read per animation; sounds placed on a dummy poly.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/sound.md"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "docs/AUDIO.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/sound.rs; src/tae.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "crates/sim/src/sound.rs"
+  },
+  "check": "Attack and listen for the swing sound on the animation frame.",
+  "note": "",
+  "needs": [
+   {
+    "id": "combat.attack-timing",
+    "why": "animation frames"
+   }
+  ]
+ },
+ {
+  "id": "sound.floor-footsteps",
+  "category": "sound",
+  "title": "Footsteps by floor material",
+  "summary": "A footstep plays the floor event whose id is the sound id rounded to 1000 plus the HitMtrl id of the surface under the foot. FootSfxParam holds the effect side of the same step.",
+  "values": "Floor event = sound id rounded to 1000 + HitMtrl id (e.g. tatami 28 -> ...028). FootSfxParam 46 rows.",
+  "how": "TAE footstep cue then material lookup of the ground triangle.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/sound.md"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/FootSfxParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/HitMtrlParam.json"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/sound.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "crates/sim/src/sound.rs"
+  },
+  "check": "Walk on stone, wood and water and hear the change.",
+  "note": "",
+  "needs": [
+   {
+    "id": "map.hit-material-table",
+    "why": "material id"
+   }
+  ]
+ },
+ {
+  "id": "sound.armour-sounds",
+  "category": "sound",
+  "title": "Armour and cloth movement sounds",
+  "summary": "Armour rustle is a b-event named by the sound id plus the defense material of the character. Wolf uses 113 or 139, NPCs 108 or 114.",
+  "values": "Armour event = id + defenseMaterial.",
+  "how": "TAE cue, then the character's defense material.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/sound.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/sound.rs"
+  },
+  "his": {
+   "has": "partial",
+   "where": "crates/sim/src/sound.rs"
+  },
+  "check": "Roll and listen for the cloth sound.",
+  "note": "",
+  "needs": [
+   {
+    "id": "armor.defense-material",
+    "why": "material"
+   }
+  ]
+ },
+ {
+  "id": "sound.hit-sounds",
+  "category": "sound",
+  "title": "Hit sounds by material",
+  "summary": "The sound of a hit comes from HitEffectSeParam rows chosen by the attacker and target materials. A deflect first looks in HitEffectSeJustGuardParam.",
+  "values": "Rows by (attack material, defense material); deflect uses the just-guard table first.",
+  "how": "Hit effect system after hit detect.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/damage.md"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/sound.md"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/HitEffectSeParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/HitEffectSeJustGuardParam.json"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/sound.rs; src/damage.rs"
+  },
+  "his": {
+   "has": "partial",
+   "where": "crates/sim/src/sound.rs"
+  },
+  "check": "Block, deflect and hit a wall: three different sounds.",
+  "note": "",
+  "needs": [
+   {
+    "id": "combat.deflect",
+    "why": "just guard"
+   },
+   {
+    "id": "combat.hit-effects",
+    "why": "effects"
+   }
+  ]
+ },
+ {
+  "id": "sound.fmod-categories",
+  "category": "sound",
+  "title": "Volume categories and master volume",
+  "summary": "FMOD categories split music, effects, voice and others. The master sits at 0.7 and the Options sliders write into SoundMan slots.",
+  "values": "Master category 0.7.",
+  "how": "SoundMan applies the sliders each frame.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/sound.md"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "partial",
+   "where": "src/fmod.rs"
+  },
+  "his": {
+   "has": "partial",
+   "where": "crates/fmod/src/lib.rs"
+  },
+  "check": "Move the Music slider and hear only music change.",
+  "note": "",
+  "needs": [
+   {
+    "id": "interface.options-sound",
+    "why": "sliders"
+   }
+  ]
+ },
+ {
+  "id": "sound.reverb-space-type",
+  "category": "sound",
+  "title": "Reverb size from collision sound space",
+  "summary": "The collision part under the player has a sound space type from 0 to 8. It sets sd_reverb_size, eased over 2.6 s. Most arenas are 0, the Ape grotto is 5.",
+  "values": "map_boss_50601010 and 50900000 are 3; map_boss_51000100 is 5.",
+  "how": "Global sound parameter feeding the reverb events.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/sound.md"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "yes",
+   "where": "src/fmod.rs set_reverb"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Fight inside the Ape grotto and listen to the longer tail.",
+  "note": "",
+  "needs": [
+   {
+    "id": "map.sound-space-type",
+    "why": "source value"
+   }
+  ]
+ },
+ {
+  "id": "sound.mixer-routing",
+  "category": "sound",
+  "title": "Mixer events and routing",
+  "summary": "The mixer.fev holds routing events that duck groups: ntc_rev, ntc_main, ntc_menu_rev, ntc_through, ntc_enemy_rev, ntc_battle_bgm, ntc_boss_bgm and ntc_ninsatsu1 to 3. The multimix.mix defines ten mixers.",
+  "values": "10 mixers in multimix.mix.",
+  "how": "Events triggered by the game when states change.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/sound.md"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "partial",
+   "where": "src/fmod.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Start a boss fight and hear the main mix duck.",
+  "note": "",
+  "needs": [
+   {
+    "id": "sound.boss-music",
+    "why": "boss bgm ducks"
+   }
+  ]
+ },
+ {
+  "id": "sound.deathblow-mix",
+  "category": "sound",
+  "title": "Deathblow audio mix",
+  "summary": "TAE 970 starts a special mix during a deathblow, with three bands (ninsatsu1 to 3) that filter the rest of the sound.",
+  "values": "Slots: ninsatsu2 445 Hz, ninsatsu1 1332 Hz, ninsatsu3 10 Hz.",
+  "how": "TAE 970 turns the mix on for the animation's length.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/sound.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/fmod.rs; src/sound.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Land a deathblow and hear the muffled world.",
+  "note": "",
+  "needs": [
+   {
+    "id": "deathblows.deathblow-animation",
+    "why": "timing"
+   }
+  ]
+ },
+ {
+  "id": "sound.occlusion-shahei",
+  "category": "sound",
+  "title": "Occlusion (Shahei) routing",
+  "summary": "Sound blocked by walls is handled by a voxel region and portal route search. Neither project ports it. The parameters room, deep and sd_dimension exist but are unused.",
+  "values": "room, deep and sd_dimension unused.",
+  "how": "Route search from listener to source through portals.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/sound.md"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Stand behind a thick wall from a fight and note the dull sound in the original.",
+  "note": "Gap.",
+  "needs": [
+   {
+    "id": "map.msb-parts-models",
+    "why": "region data"
+   }
+  ]
+ },
+ {
+  "id": "sound.dummy-poly-placement",
+  "category": "sound",
+  "title": "Sound placement on a dummy poly",
+  "summary": "A sound is placed at a dummy poly (a marker on the model), so it follows the weapon or foot. The event's own distance parameter gives 3D falloff.",
+  "values": "Measured play distances: swing 29 m, deflect 60 m, hit on Wolf 40 m.",
+  "how": "Position from the dummy poly, listener from the camera.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/sound.md"
+   }
+  ],
+  "confidence": "recorded",
+  "ours": {
+   "has": "yes",
+   "where": "src/sound.rs"
+  },
+  "his": {
+   "has": "partial",
+   "where": "crates/sim/src/sound.rs"
+  },
+  "check": "Walk away from a swinging enemy and watch the sound fade at about 29 m.",
+  "note": "",
+  "needs": [
+   {
+    "id": "camera.listener",
+    "why": "listener position"
+   }
+  ]
+ },
+ {
+  "id": "sound.slot-sounds",
+  "category": "sound",
+  "title": "Slot sounds",
+  "summary": "A PlaySound_BySlot sound lives only while the animation that started it runs. It stops when the state ends.",
+  "values": "",
+  "how": "Per-slot handle on the character.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/sound.md"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "partial",
+   "where": "src/sound.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Cancel an animation and the looping sound stops.",
+  "note": "",
+  "needs": [
+   {
+    "id": "sound.tae-sound-cues",
+    "why": "trigger"
+   }
+  ]
+ },
+ {
+  "id": "sound.area-music",
+  "category": "sound",
+  "title": "Area music state machine (event 410)",
+  "summary": "Field music follows a state sent from the character sound module: 0 to 3 map states. Regions are numbered 2680 combat, 2688 found soon, 2689 losing and 2690 field. Flag 9100 marks being outside all indoor regions.",
+  "values": "Fades 3.0 s, 1.7 s, 1.8 s. After combat a 2.0 s hold, then up to 1.0 s fade.",
+  "how": "Common event 410 plus EMEVD 2010[8] map sound state (118 uses).",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/sound.md"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/enemies/area_bgm.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/event/common.emevd"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/area_music.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Walk into a camp and let enemies see you: music rises in the combat state.",
+  "note": "Nine maps hold area tracks.",
+  "needs": [
+   {
+    "id": "ai.alert-states",
+    "why": "detection drives it"
+   },
+   {
+    "id": "stealth.detection-state",
+    "why": "detected state"
+   }
+  ]
+ },
+ {
+  "id": "sound.boss-music",
+  "category": "sound",
+  "title": "Boss music",
+  "summary": "Boss fights start a music track by common functions 20005830 and 20005831 and the 2010[8] map sound state. 17 boss tracks are mapped.",
+  "values": "17 tracks in boss_bgm.json.",
+  "how": "Boss events set the map sound state; the game plays m-prefixed BGM events.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/sound.md"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/enemies/boss_bgm.json"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/area_music.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Enter a boss arena and hear the track begin when the fog wall closes.",
+  "note": "",
+  "needs": [
+   {
+    "id": "bosses.fight-start-trigger",
+    "why": "trigger"
+   }
+  ]
+ },
+ {
+  "id": "sound.encrypted-banks",
+  "category": "sound",
+  "title": "Encrypted BGM banks (disagreement)",
+  "summary": "The sm*, vm* and xm* .fsb banks are encrypted with a bit-reversed XOR key found in the exe. Ours decrypts them (tools/bgm_decrypt.py). The sekiro-rs AUDIO doc says it leaves them silent.",
+  "values": "Key from the exe, bit reversed.",
+  "how": "Bank load decrypts before FMOD reads.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/sound.md"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "docs/AUDIO.md"
+   }
+  ],
+  "confidence": "open-question",
+  "ours": {
+   "has": "yes",
+   "where": "tools/bgm_decrypt.py"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Load a boss bank: with the key it plays, without it is silent.",
+  "note": "Both statements are consistent with different states; verify by decrypting one bank.",
+  "needs": [
+   {
+    "id": "sound.boss-music",
+    "why": "users"
+   }
+  ]
+ },
+ {
+  "id": "sound.stealth-noise",
+  "category": "sound",
+  "title": "Stealth noise radius (AiSoundParam)",
+  "summary": "Movement makes noise in metres for enemies to hear. AiSoundParam has 90 rows; a TAE event 237 (CreateAISound) creates the noise.",
+  "values": "Walk 1000 = 0.5 m, run 1010 = 2 m, crouch walk 1001 = 0.25 m, crouch run 1011 = 0.5 m.",
+  "how": "TAE 237 plus hit material aiVolumeRate (water 1.5).",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/AiSoundParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "reference/Paramdex/SDT/Defs/AiSoundParam.xml"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "src/stealth.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Sneak to an enemy at crouch walk and note the hearing range is 0.25 m.",
+  "note": "",
+  "needs": [
+   {
+    "id": "stealth.hearing",
+    "why": "enemy hearing"
+   },
+   {
+    "id": "map.hit-material-effects",
+    "why": "aiVolumeRate"
+   }
+  ]
+ },
+ {
+  "id": "sound.map-sound-instructions",
+  "category": "sound",
+  "title": "EMEVD sound instructions",
+  "summary": "Map scripts control music and ambience with a few instructions.",
+  "values": "2010[1] Play BGM, 2010[3] map sound state, 2010[4] boss map sound, 2010[5] door dampening, 2010[6] fade, 2010[8] state+, 2010[9] fade-out time.",
+  "how": "EMEVD bank 2010.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "reference/DarkScript3/DarkScript3/Resources/sekiro-common.emedf.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/event/*.emevd"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "src/emevd.rs"
+  },
+  "his": {
+   "has": "partial",
+   "where": "crates/sim/src/events.rs"
+  },
+  "check": "Count 2010[8] calls in m11_00: many.",
+  "note": "",
+  "needs": [
+   {
+    "id": "map.emevd-instruction-map",
+    "why": "bank"
+   }
+  ]
+ },
+ {
+  "id": "sound.object-material-sounds",
+  "category": "sound",
+  "title": "Object impact sounds",
+  "summary": "Objects such as crates and barrels use ObjectMaterialSfxParam to pick hit and break sounds and effects. There are 40 rows.",
+  "values": "40 rows.",
+  "how": "Object damage or contact looks up the object's material row.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/ObjectMaterialSfxParam.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/sound.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "src/sound.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Strike a barrel and a stone pillar and hear different sounds.",
+  "note": "Mapping of rows to events not verified.",
+  "needs": [
+   {
+    "id": "map.object-destruction",
+    "why": "break state"
+   }
+  ]
+ },
+ {
+  "id": "sound.door-dampening",
+  "category": "sound",
+  "title": "Door sound dampening",
+  "summary": "EMEVD 2010[5] lowers sound across a door while it is closed, so indoor rooms feel shut off.",
+  "values": "Instruction 2010[5].",
+  "how": "Event toggles a dampening state for a region pair.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "reference/DarkScript3/DarkScript3/Resources/sekiro-common.emedf.json"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Close a door in a fight room and hear the outside quiet down.",
+  "note": "Effect strength not measured.",
+  "needs": [
+   {
+    "id": "map.objact-doors",
+    "why": "door state"
+   },
+   {
+    "id": "sound.occlusion-shahei",
+    "why": "related"
+   }
+  ]
+ },
+ {
+  "id": "sound.ambient-env",
+  "category": "sound",
+  "title": "Ambient environment sounds",
+  "summary": "Area ambience such as wind, water and insects uses a-events placed by map regions or by map sound state. They loop while the player is in range.",
+  "values": "Event letter a.",
+  "how": "Map sound regions and EMEVD 2010 instructions.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/sound.md"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/sound_map.txt"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "src/area_music.rs ambience not separate"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Walk to a waterfall and hear it grow.",
+  "note": "",
+  "needs": [
+   {
+    "id": "sound.map-sound-instructions",
+    "why": "control"
+   },
+   {
+    "id": "map.msb-parts-models",
+    "why": "regions"
+   }
+  ]
+ },
+ {
+  "id": "sound.voice-events",
+  "category": "sound",
+  "title": "Voice and grunt events",
+  "summary": "Characters play v-events for grunts, calls and lines; TAE or ESD triggers them by sound id.",
+  "values": "Event letter v.",
+  "how": "TAE PlaySound and ESD talk scripts.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/sound.md"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/sound_events.txt"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "src/sound.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Hit Wolf and hear the pain grunt.",
+  "note": "",
+  "needs": [
+   {
+    "id": "dialogue.voice-lines",
+    "why": "talk voice"
+   }
+  ]
+ },
+ {
+  "id": "sound.menu-sounds",
+  "category": "sound",
+  "title": "Menu and UI sounds",
+  "summary": "UI clicks, tabs and prompts are f-events played by the menu system.",
+  "values": "Event letter f; menu reverb ntc_menu_rev.",
+  "how": "Menu code starts events by id.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/sound.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "src/fmod.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Open the menu and hear the confirm sound.",
+  "note": "",
+  "needs": [
+   {
+    "id": "interface.menu-navigation",
+    "why": "triggers"
+   }
+  ]
+ },
+ {
+  "id": "sound.cutscene-sound",
+  "category": "sound",
+  "title": "Cutscene audio",
+  "summary": "Cutscenes use p-events and their own music tracks, aligned to the movie timeline.",
+  "values": "Event letter p.",
+  "how": "Remo timeline starts events.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/sound.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Play the opening cutscene with sound on.",
+  "note": "Not ported by either project.",
+  "needs": [
+   {
+    "id": "cutscenes.remo-playback",
+    "why": "timeline"
+   }
+  ]
+ },
+ {
+  "id": "sound.bgm-fades",
+  "category": "sound",
+  "title": "Music fade rules",
+  "summary": "Music changes use fade times: 3.0 s into field music, 1.7 s and 1.8 s for state changes, and after combat a 2.0 s hold then up to 1.0 s.",
+  "values": "3.0 / 1.7 / 1.8 s, hold 2.0 s, fade 1.0 s.",
+  "how": "Common event 410 sets 2010[9] fade-out time.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/sound.md"
+   }
+  ],
+  "confidence": "recorded",
+  "ours": {
+   "has": "yes",
+   "where": "src/area_music.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Win a fight and time the music return: two seconds then a fade.",
+  "note": "",
+  "needs": [
+   {
+    "id": "sound.area-music",
+    "why": "state machine"
+   }
+  ]
+ }
+]

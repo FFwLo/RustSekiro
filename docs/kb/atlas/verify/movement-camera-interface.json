@@ -1,0 +1,849 @@
+[
+ {
+  "id": "camera.basic-framing",
+  "verdict": "confirmed",
+  "reason": "LockCamParam row 0 shows camDistTarget 4.5, camFovY 43, chrOrgOffset_Y 1.5, lockRotXShiftRatio 0.45; CameraParam row 0 chrOrgOffsetY 1.5; row 100 offset Y 1.0 and LockCamParam 100 distance 3.5.",
+  "needs_recording": false
+ },
+ {
+  "id": "camera.slot-table",
+  "verdict": "confirmed",
+  "reason": "CameraSetParam row 0 lock/cam ids and begin/end times match every listed slot (index = slot-1), 117 rows, and a TAE 155 event scan shows the same slot numbers on crouch, cover, hang, death (136 anims), air, swim, dive and deathblow (255) clips; dispatcher case 0x9b = 155.",
+  "needs_recording": false
+ },
+ {
+  "id": "camera.pitch-limits",
+  "verdict": "confirmed",
+  "reason": "CameraParam row 0 rotRangeXMin/Max -40/80 deg, AtLock +-30, lerp heights 0.5/3.0; LockCamParam rotRangeMinX overrides read -60 (500), -20 (2000), -80 (3000), 0 (4300/4400) as listed.",
+  "needs_recording": false
+ },
+ {
+  "id": "camera.stick-turn-speed",
+  "verdict": "corrected",
+  "reason": "Param values and the speed = lerp(min,max,s squared) formula check out (FUN_14073c260 writes +0x250/+0x260 from +0x270 squared), but the hi-speed blend takes over after 0.6 s so a full push gives about 434 deg/s yaw then, not 210.",
+  "fix": {
+   "check": "Push the right stick fully sideways: yaw starts near 210 deg/s and rises to about 434 deg/s after 0.6 s of holding.",
+   "note": "s curve confirmed in the exe (FUN_14073c260 lerp by +0x270 squared; blend between the two speed sets by the +0x160 ramp). Units assumed radians per second."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "camera.rotation-control-release",
+  "verdict": "corrected",
+  "reason": "CameraParam row 0 has rotCtrlEndWaitTime 2.0 and ReleaseTime 1.0, but transChaseByControlEndWaitTime is 0.0 (only its ReleaseTime is 1.0), so the position chase has no wait.",
+  "fix": {
+   "values": "CameraParam row 0: rotCtrlEndWaitTime 2.0, rotCtrlEndReleaseTime 1.0; transChaseByControlEndWaitTime 0.0, transChaseByControlEndReleaseTime 1.0 (position chase resumes at once and releases over 1 s). Camera object +0x150 = 1 on input, counts down +0x154."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "camera.follow-chase",
+  "verdict": "confirmed",
+  "reason": "CameraParam row 0 chrTransChaseRateXZ_ForNormal 0.2, Y 0.3, targetChaseRateXZForNormal 0.1 and row 5000 = 1.0/1.0; camera.md traces FUN_14073c260 -> FUN_141155d20 with 1/30 s sub-steps.",
+  "needs_recording": false
+ },
+ {
+  "id": "camera.position-chase",
+  "verdict": "confirmed",
+  "reason": "Row 0 values match: targetChaseRateAtLockXZ 0.4 / Y 0.3, targetChaseRateY 0.4, AngMin/Max 10/20 deg, targetChaseDistRateXZ/Y 0.4, ForHitWall 1.0, targetChaseDistRateTime 2.0; the exe paths are as in camera.md.",
+  "needs_recording": false
+ },
+ {
+  "id": "camera.fulcrum",
+  "verdict": "confirmed",
+  "reason": "Row 0 shows targetTransChaseRateXZ/Y 0.4, fulcrumDistRate 0.5, fulcrumDistMin 2, ByLrMove Min/Max 0.1/0.99 over 0.3; the swing angles come from our own measured test, not re-run here.",
+  "needs_recording": false
+ },
+ {
+  "id": "camera.pitch-chase",
+  "verdict": "confirmed",
+  "reason": "CameraParam row 0 isEnableChrChaseRotX 1, chrChaseRotXInvalidAngle 1.396 rad (80 deg); rows 200, 300, 400, 500 have the angle 0.",
+  "needs_recording": false
+ },
+ {
+  "id": "camera.lock-range",
+  "verdict": "confirmed",
+  "reason": "LockCamParam row 0 chrLockRangeMaxRadius 30 / _forD 15 / _forPD 10; Paramdex defaults 15/-1/-1; c0000_define.lua MAP_VISIBILITY_TYPE 0/1/2 and env(3040) used in c0000_transition.lua.",
+  "needs_recording": false
+ },
+ {
+  "id": "camera.lock-on-acquire",
+  "verdict": "confirmed",
+  "reason": "The LockTgtManImp constructor in 1409c.c sets +0x2948 30 deg, +0x294c 5 m, +0x2960..+0x2984 as 60/30/60/30 deg, 8 m, 45/30/45/30 deg, 200 m.",
+  "needs_recording": false
+ },
+ {
+  "id": "camera.lock-switch-stick",
+  "verdict": "confirmed",
+  "reason": "FUN_1409ca2d0 re-arms below 0.5 and fires above 0.95 of the stick vector length, and FUN_1409ca480 sets +0x2844 and +0x2848 to 0x3f000000 (0.5 s); near/far half angles 60/45 deg, radius 8/200 match the constructor.",
+  "needs_recording": false
+ },
+ {
+  "id": "camera.lock-switch-mouse",
+  "verdict": "confirmed",
+  "reason": "FUN_1409ca120 negates the mouse delta, re-arms below 25 and fires above 50 on the vector length, with the same +0x2848 0.5 s cooldown.",
+  "needs_recording": false
+ },
+ {
+  "id": "camera.lock-anchor",
+  "verdict": "confirmed",
+  "reason": "CameraParam row 0 lockTgtPosRate 0.7; dummy 220 use is described in camera.md and visuals.md.",
+  "needs_recording": false
+ },
+ {
+  "id": "camera.lock-pitch-framing",
+  "verdict": "confirmed",
+  "reason": "LockCamParam 0 lockRotXShiftRatio 0.45, camFovY 43, CameraParam lockRotChaseRateX 0.6 (row 4000 0.4), LockCamParam 7000 shift 0.23 all match; derivation steps match camera.md.",
+  "needs_recording": false
+ },
+ {
+  "id": "camera.lock-yaw-chase",
+  "verdict": "confirmed",
+  "reason": "CameraParam row 0 lockRotChaseRateY 0.3, X 0.6, PlayAng X/Y 0; row 4000 0.2/0.4.",
+  "needs_recording": false
+ },
+ {
+  "id": "camera.lock-drop-dead",
+  "verdict": "confirmed",
+  "reason": "Record itself marks it unsettled; no exe or data source seen settles auto-retarget, so it stays an open question.",
+  "needs_recording": true
+ },
+ {
+  "id": "camera.auto-capture",
+  "verdict": "corrected",
+  "reason": "LockCamParam row 0 holds closeMaxRadius 3 (D/PD 3), closeAngRange 30, closeMaxHeight 1.0, closeMinHeight 3.0 (positive, a lower limit) and bullet 30/15/10, 15 deg; c0000_transition.lua _UpdateAutoAim calls act(156) for 0.1667 s when env(1118) is false.",
+  "fix": {
+   "values": "LockCamParam row 0: closeMaxRadius 3 m (forD 3, forPD 3), closeAngRange 30 deg, closeMaxHeight 1.0 and closeMinHeight 3.0 (stored positive; ours reads it as 3 m below); bulletMaxRadius 30 (forD 15, forPD 10), bulletAngRange 15 deg. HKS _UpdateAutoAim runs act 156 for the first 1/6 s (upper_limit 0.1667) while env 1118 is false."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "camera.distance-event",
+  "verdict": "confirmed",
+  "reason": "Dispatcher FUN_140b59170 case 0x99 calls FUN_140b51680; CameraParam lockCamParamLerpRate 0.05; TAE 153 events (237) carry CamDistTargetOverride and Start/EndInterpolationSpeed as described.",
+  "needs_recording": false
+ },
+ {
+  "id": "camera.look-limits",
+  "verdict": "corrected",
+  "reason": "CameraParam rotRangeY +-90 deg appears only on rows 200, 300, 400 (and their 10000xxx copies), not 500; TAE 151 events exist (56) with LookUp/Down/Left/Right limits.",
+  "fix": {
+   "values": "Limits = centre (view along DummyPoly matrix -row 2) + four event angles (TAE 151: LookUpLimit/LookDownLimit/LookLeftLimit/LookRightLimit); chased at lockCamParamLerpRate per call. Without event, pitch limits chase rotRangeMinX/MaxX and yaw rotRangeYMin/Max (full circle in most rows; +-90 deg in rows 200, 300, 400 and 10000200/300/400)."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "camera.set-angle",
+  "verdict": "corrected",
+  "reason": "anim_info --event 156 lists 212 events, 185 with OverrideVertical and 117 with OverrideHorizontal (record said 211/184/116); the a225_510090 angles (50/15, 90/-5, -30/-5) are readable from the TAE.",
+  "fix": {
+   "values": "TAE 156 SetCameraAngle: VerticalAngle, HorizontalAngle, InterpolationType, OverrideVertical/Horizontal. 212 events on Wolf anims (185 with vertical, 117 with horizontal override). Eases by w = 1 - (p - 1)^2; yaw = Horizontal + Wolf yaw. Lock turning is skipped meanwhile.",
+   "note": "Gyoubu final blow a225_510090 events: 50 deg yaw/15 pitch, 90/-5, -30/-5; how the exe applies them there is not traced."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "camera.wall-collision",
+  "verdict": "confirmed",
+  "reason": "CameraParam row 0 camCastSphereRadius 0.05, ForHitWall 1.0 for 2 s, escapeWallWingLen 0.01 and rotation fields 0.",
+  "needs_recording": false
+ },
+ {
+  "id": "camera.safe-margin",
+  "verdict": "confirmed",
+  "reason": "CameraParam row 0 camSafeMarginRate 0.1 and camSafeMarginMax 0.3 match.",
+  "needs_recording": false
+ },
+ {
+  "id": "camera.close-fade",
+  "verdict": "confirmed",
+  "reason": "CameraParam playerFadeDist 0.5; FUN_140b22000 falls at +0x34 and climbs at +0x30 toward a floor +0x2c, matching the 2.5/5 rates in camera.md.",
+  "needs_recording": false
+ },
+ {
+  "id": "camera.obstacle-fade",
+  "verdict": "confirmed",
+  "reason": "CameraParam camCastSphereRadiusForFade 0.3 matches; the Havok filter groups and AlphaMin 0.2 are as camera.md traced from FUN_14094ea80 / FUN_140933390 / FUN_140b21d40, not re-derived here.",
+  "needs_recording": true
+ },
+ {
+  "id": "camera.shake",
+  "verdict": "confirmed",
+  "reason": "combat_data.json rumble has 42 shakes; 61 = 0.17 s / 1.14 deg, 56 = 0.3 s / 4.0 deg, 377 = 3.33 s; TAE 145/146 appear on Wolf anims and 144/147 on enemy anims.",
+  "needs_recording": false
+ },
+ {
+  "id": "camera.wire-camera",
+  "verdict": "confirmed",
+  "reason": "CameraParam 1700/1800 and the boss copies (5200017/18, 10001700/1800, 15200017/18) show isEnableDefaultCamera 1, defaultRot 0.785, defaultAngX 0.262, wireRotX/Y 0.785, fallHeightMargine 10; docs/kb/grapple.md line 114 still says wireRot is 0 everywhere and is stale.",
+  "needs_recording": false
+ },
+ {
+  "id": "camera.default-camera",
+  "verdict": "confirmed",
+  "reason": "isEnableDefaultCamera is 1 exactly on 1700, 1800, 4300, 4400 and the boss copies; 4300/4400 have defaultRot 0.5236 (30 deg), pitch range 0, targetChaseRateY 1.0, and slots 44/45 map to them.",
+  "needs_recording": false
+ },
+ {
+  "id": "camera.fall-look",
+  "verdict": "confirmed",
+  "reason": "CameraParam row 0 isEnableFall 1, fallBaseHeight 5, fallHeightMargine 2, fallMinTime 0.2, fallMaxTime 0.3, directPitchAng 60 deg, directPitchRate 0.06; no consumer traced so it stays open.",
+  "needs_recording": true
+ },
+ {
+  "id": "camera.force-front-lock",
+  "verdict": "confirmed",
+  "reason": "CameraParam row 0 forceFrontLockTime 0.4; no consumer found, meaning remains a name-based guess.",
+  "needs_recording": true
+ },
+ {
+  "id": "camera.cover-look",
+  "verdict": "confirmed",
+  "reason": "CameraParam 300/400 offsetX +1/-1, offset Y 1.25, yaw +-90, resetBaseY 180, targetTransChaseRateY 0.8; LockCamParam 300 distance 1.5; 200 distance 3.5; TAE 155 values 4/5 are on a000_205010/205011/205020/205021.",
+  "needs_recording": false
+ },
+ {
+  "id": "camera.swim-dive",
+  "verdict": "confirmed",
+  "reason": "CameraParam 2000 offset Y 2.0, XZ 0.5, at-lock 0.8/0.6; 2100 XZ 0.1; 3000 rotRangeXMin -80 deg; LockCamParam 2000 -20, 3000 -80, 3200/3400 0; TAE slots 21/22/31-35 sit on swim and dive clips.",
+  "needs_recording": false
+ },
+ {
+  "id": "camera.death-camera",
+  "verdict": "corrected",
+  "reason": "Slot 8 maps to 700/700 with camDistTarget 7.5, offset Y 1.0, but beginTime 2.0 s is the blend-in time (the camera blends over 2 s), not a 2 s hold; 136 anims carry TAE 155 value 8.",
+  "fix": {
+   "summary": "On death the camera pulls out to 7.5 m, blending in over 2 s (blends back over 0.25 s).",
+   "check": "Die and watch the camera pull back to 7.5 m over about 2 s."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "camera.deathblow-camera",
+  "verdict": "confirmed",
+  "reason": "CameraParam 4000 lockRotChaseRateX 0.4, Y 0.2, targetChaseRateAtLockXZ 0.2, Y 0.15; CameraSetParam slot 41 begin 0.0 / end 1.0; TAE 155 value 41 is on 255 a200_5xxxxx clips.",
+  "needs_recording": false
+ },
+ {
+  "id": "interface.action-request-buffer",
+  "verdict": "confirmed",
+  "reason": "FUN_140b2c190 computes pressed = ~prev & held (+0x20), latches pending (+0x38) only where accept (+0xd0) and pressed overlap, sets requested (+0x30) where execute (+0xe0) and pending overlap, zeroes both masks at the end, and keeps hold timers at +0xe8; pending clears only through the +0x188 bit 0 flag.",
+  "needs_recording": false
+ },
+ {
+  "id": "interface.accept-flags",
+  "verdict": "confirmed",
+  "reason": "FUN_140b59170 sends case 0 to FUN_140b51b70, whose cases 1, 9, 0x19, 0x1e, 0x57, 0x88, 0x96, 0x97 call the accept setter FUN_140b2be00 with bits 0/1/25/26 (attack), 2 (guard), 5/13/14 (step), 4 (jump), 7 (item), 18 (tool) as listed.",
+  "needs_recording": false
+ },
+ {
+  "id": "interface.execute-flags",
+  "verdict": "confirmed",
+  "reason": "FUN_140b51b70 cases 4, 0x73, 0x74, 0x10, 0x75, 0x1a, 0x77, 0x1f, 0x89 call the execute setter FUN_140b2bdc0 with attack bits 0/1/25/26, guard bit 2, jump bit 4, item bit 7, tool bit 18, matching ids 4/115/116/16/117/26/119/31/137.",
+  "needs_recording": false
+ },
+ {
+  "id": "interface.buffer-reset",
+  "verdict": "confirmed",
+  "reason": "c0000.lua FireEvent calls hkbFireEvent then ResetRequest (act 9101) and FireEventNoReset does not; counting call sites in all c0000 scripts gives 891 FireEvent and 203 FireEventNoReset; FUN_140b2afd0 sets +0x188 bit 0.",
+  "needs_recording": false
+ },
+ {
+  "id": "interface.buffer-latency",
+  "verdict": "confirmed",
+  "reason": "docs/kb/input-buffer.md (2026-10-08 live recording rec_20261008_041541) lists the same paired values (16.0 vs 15, 9.9 vs 9, 13 vs 12, 19 vs 18; guard about 7.0 vs 6); raw v1 data was not re-read.",
+  "needs_recording": false
+ },
+ {
+  "id": "interface.guard-held",
+  "verdict": "confirmed",
+  "reason": "docs/kb/input-buffer.md records guard taps dropped when released before the window and the ref 212 / ref 228 + 412 exceptions from rec_20261008_041541; raw v1 data was not re-read.",
+  "needs_recording": false
+ },
+ {
+  "id": "interface.attack-release",
+  "verdict": "confirmed",
+  "reason": "docs/kb/input-buffer.md records the release slash at TAE f6.0-6.5 matching the ref 208 window; BEH_A_GROUND_RELEASE_ATTACK exists in the validate table.",
+  "needs_recording": false
+ },
+ {
+  "id": "interface.add-action-input",
+  "verdict": "confirmed",
+  "reason": "c0000_define.lua SP_EF_REF_TAE_ENABLE_ADD_ACTION_INPUT_* values 403-430 match the listed pairs exactly, and the recording lists a000_299026 at about 416 ms.",
+  "needs_recording": false
+ },
+ {
+  "id": "interface.action-duration-hold",
+  "verdict": "confirmed",
+  "reason": "c0000_transition.lua: _hasSprint needs env(1108, SP_MOVE) > 0, BEH_A_GROUND_STEP uses ENABLE_PRESS_STEP and 1108 > 0, _SpeedUpdate swamp run needs 1108 > 200, and env(333) * 0.001 is added as seconds in _UpdateAutoAim.",
+  "needs_recording": false
+ },
+ {
+  "id": "interface.sp-move-press-vs-hold",
+  "verdict": "confirmed",
+  "reason": "Validate functions for BEH_A_GROUND_STEP (env 1106, kick add-input or PRESS_STEP with 1108 > 0, refused in waterside) and BEH_A_SPRINT (_hasSprint, TAE_ENABLE_TRANSITION_SPRINT or MOVING_RUN, not swamp or waterside) read as described.",
+  "needs_recording": false
+ },
+ {
+  "id": "interface.action-arms",
+  "verdict": "confirmed",
+  "reason": "c0000_define.lua lists exactly the 18 ACTION_ARM_* values given, and the scripts contain 142 env(1106 uses.",
+  "needs_recording": false
+ },
+ {
+  "id": "interface.default-key-assign",
+  "verdict": "confirmed",
+  "reason": "DefaultKeyAssignParam00 rows 1-4 (86/100/99/101, pads 3003/3003/3002/3002), 5 (111, 2005), 6 (126, 2004), 7 (85, 2010), 19 (102, 3000), 20 (87, 2006), 21 (88, 2000), mouse ids 1/2/8 match; scan code + 69 holds for W, S, A, D, Shift, Space, Q, E, R, F; files 00-04 exist.",
+  "needs_recording": false
+ },
+ {
+  "id": "interface.stick-input",
+  "verdict": "confirmed",
+  "reason": "FUN_1407f0f50 stores the right-stick pair at +0x80 and the second pair at +0xd0, triggers camera control on |axis| > 0.1, and builds the move vector; the halving on walk was taken from camera.md and not re-derived.",
+  "needs_recording": false
+ },
+ {
+  "id": "interface.action-prompts",
+  "verdict": "confirmed",
+  "reason": "ActionButtonParam has 305 rows; row 1000 shows radius 1.5, height 1.0, offset -0.25, angle 180, priority 10, execInvalidTime 3.0; rows 3000/3010 radius 2, height 4, offset -2, gameKey 1; 4200-4220 radius 2-3 with raycastType 1; 5000/5010 angle 90, allowAngle 45, dummy 195/194, height 0.5.",
+  "needs_recording": false
+ },
+ {
+  "id": "interface.action-guide",
+  "verdict": "confirmed",
+  "reason": "ActionGuideParam has 16 rows with the listed ids, priorities (20 and 22 = 2) and text ids; act(3030) calls sit in c0000.lua; the English event text holds <?kgiconKc@20?> and Kc@5 tokens for hug, climb and drop.",
+  "needs_recording": false
+ },
+ {
+  "id": "interface.objact-reach",
+  "verdict": "corrected",
+  "reason": "ObjActParam has 149 rows, validDist 70 on 142, validPlayerAngle 60 on 145, validObjAngle 60 on 141, but 30 deg appears on four rows (0 and 10000 with 150 cm, 1011 and 1012 with 70 cm), not only on 150 cm rows.",
+  "fix": {
+   "values": "ObjActParam 149 rows; typical validDist 70 (cm), validPlayerAngle 60, validObjAngle 60 (30 on four rows: ids 0 and 10000 with 150 cm, ids 1011 and 1012 with 70 cm); playerAnimId 60xxx / 70xxxx; spQualifiedType requires an SpEffect or flag."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "interface.hp-bar",
+  "verdict": "confirmed",
+  "reason": "MenuParam holds PlayerMaxHpLimit 1920, PlayerMaxAddHp 0, PlayerQuarterHp 20 and HealthHp NoDamage 300 / Light 250 / Heavy 100 / Dying 1 / Dead 0; layout percentages and colours come from the kb capture notes and were not re-measured.",
+  "needs_recording": false
+ },
+ {
+  "id": "interface.posture-bar",
+  "verdict": "confirmed",
+  "reason": "MenuParam SpMinimumDispTime 0.5, PlayerDangerSp 35, PlayerMaxAddSp 17, PlayerMaxSpLimit 1920; the exe constant at 0x143b06724 reads 30.0; the exe file read gives the 30 percent threshold used by FUN_140a02a10.",
+  "needs_recording": false
+ },
+ {
+  "id": "interface.lock-cursor-colour",
+  "verdict": "confirmed",
+  "reason": "MenuParam LockStamina NoDamage 100, Light 75, Middle 51, Heavy 25, Critical 1, Fatal 0 match; the colour names are not in the param.",
+  "needs_recording": false
+ },
+ {
+  "id": "interface.lock-mark",
+  "verdict": "confirmed",
+  "reason": "extracted/hud/MENU_Lockon01.png is 64x32 RGBA as stated; the clip frame timings come only from docs/kb/visuals.md and were not re-read from the gfx.",
+  "needs_recording": false
+ },
+ {
+  "id": "interface.deathblow-mark",
+  "verdict": "confirmed",
+  "reason": "extracted/hud has MENU_ninsatu_02 (405 px) and MENU_ninsatu_01 (128 px); placement on dummy 220 is from docs/kb/visuals.md.",
+  "needs_recording": false
+ },
+ {
+  "id": "interface.wire-markers",
+  "verdict": "confirmed",
+  "reason": "MenuParam WirePointMinSize 0.45, MaxSize 0.58, WireOffScreenRange X 20 / Y 15, Display X 20 / Y 15, OffScreenScale 0.5, ScaleEnable 0; MENU_Wire_Marker, _Cursor, _Distance, _NG sprites exist.",
+  "needs_recording": false
+ },
+ {
+  "id": "interface.stealth-markers",
+  "verdict": "confirmed",
+  "reason": "MenuParam WatchTargetOffScrDisplayX 3 / Y 8 and WatchTargetPointRate 10; MENU_Find_01 and MENU_Find_02 exist in extracted/hud.",
+  "needs_recording": false
+ },
+ {
+  "id": "interface.resource-counters",
+  "verdict": "confirmed",
+  "reason": "extracted/hud has MENU_HP_base_2, MENU_Revive_* and MENU_Resist_Poison / Fire sprites; the layout is from docs/kb/visuals.md only.",
+  "needs_recording": false
+ },
+ {
+  "id": "interface.item-icons",
+  "verdict": "confirmed",
+  "reason": "extracted/hud holds MENU_ItemIcon_<5 digit id>.png files matching the stated naming; icon id links are from kb skills.md.",
+  "needs_recording": false
+ },
+ {
+  "id": "interface.prosthetic-switch",
+  "verdict": "corrected",
+  "reason": "The BEH_A_ADD_SUB_WEAPON_CHANGE validate has no swim or waterside test and its g_behaviorTable row is 1 for styles 1-12 including swim and dive; only BEH_R_SUB_WEAPON_EXPAND (using the tool) excludes swim, dive and waterside.",
+  "fix": {
+   "summary": "The tool switch button cycles the prosthetic slot when the prosthetic is unlocked, the next tool is category 70-79, no TAE disables the change and the sheathed state matches the area. Expanding the tool is what water blocks.",
+   "values": "BEH_A_ADD_SUB_WEAPON_CHANGE: env(1106, ARM_CHANGE_WEAPON_L) or buffered 421/422, env(3033) sub weapon unlocked, nextSubWeaponCategory (env 3027) in 70..79, not DISABLE_SUB_WEAPON_CHANGE, not ENABLE_SUB_GUARD_RELEASE_CONNECT, env(207) SAFE only in a non-combat area. Allowed in styles 1-12 (stand to dive). BEH_R_SUB_WEAPON_EXPAND is refused in swim, dive and waterside.",
+   "check": "Press the tool switch while standing near water: the slot cycles; try to use the tool in the water: it does not expand."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "interface.boss-bar",
+  "verdict": "confirmed",
+  "reason": "Only docs/kb/visuals.md backs this (layout from user captures); MENU_HP_Boss, MENU_HP_bar_Enemy and MENU_Taikan sprites exist, but placement was not re-measured.",
+  "needs_recording": false
+ },
+ {
+  "id": "interface.item-log",
+  "verdict": "confirmed",
+  "reason": "MenuParam GetItemViewTime is 10.0.",
+  "needs_recording": false
+ },
+ {
+  "id": "interface.death-screen",
+  "verdict": "confirmed",
+  "reason": "MenuParam SoloPlayDeath_ToFadeOutTime 2.5 and PartyGhostDeath_ToFadeOutTime 2.0.",
+  "needs_recording": true
+ },
+ {
+  "id": "interface.pause-menu",
+  "verdict": "confirmed",
+  "reason": "Only docs/kb/visuals.md (user captures) backs this; no data or recording check was possible, so the layout stays as documented.",
+  "needs_recording": true
+ },
+ {
+  "id": "interface.volume-options",
+  "verdict": "confirmed",
+  "reason": "FUN_1407bc470 initialises the options block with bytes 4, 5, 6 = 10, 10, 10 (words 0x10a0a0a at +4); the category mapping is from sound.md.",
+  "needs_recording": false
+ },
+ {
+  "id": "interface.camera-input",
+  "verdict": "confirmed",
+  "reason": "FUN_141a8f540 reads DirectInput GetDeviceState of 0x14 bytes and stores the three relative axes as raw floats with no scale; options bytes +0x715 and +0x716 of DAT_143d5a988 are read in 14096.c (lines 586, 615).",
+  "needs_recording": false
+ },
+ {
+  "id": "interface.key-icons",
+  "verdict": "confirmed",
+  "reason": "The English event-text FMG holds <?kgiconKc@20?> for hug / ledge hang / climb and Kc@5 for drop down; ActionGuideParam text ids 10010310-10010322 exist.",
+  "needs_recording": false
+ },
+ {
+  "id": "movement.walk-run-switch",
+  "verdict": "confirmed",
+  "reason": "c0000_define.lua has PRM_RUN_STICK_LEVEL 0.75, WALK_TO_RUN 0.9 and RUN_TO_WALK 0.7, and _SpeedUpdate sets MoveSpeedIndex with that hysteresis (swamp and crouch-aging branches differ); live speeds match kb/movement.md and the movement_clean summary (walk 1.62, run 5.58).",
+  "needs_recording": false
+ },
+ {
+  "id": "movement.run-start-ramp",
+  "verdict": "confirmed",
+  "reason": "kb/movement.md lists the same 67 ms speed series and the movement_clean summary shows a000_000500 at 5.58 m/s and a000_000400 at 5.45; the 6.4 m/s peak in 0.35 s is the kb clip figure, not re-measured.",
+  "needs_recording": false
+ },
+ {
+  "id": "movement.sprint",
+  "verdict": "corrected",
+  "reason": "BEH_A_SPRINT and its refusals match c0000_transition.lua, but a000_001151 is the SprintStartFromStep_F clip (the recording shows it for 3.8 s at 8.80 m/s), while the HKB SprintLoop state is a000_001200.",
+  "fix": {
+   "values": "BEH_A_SPRINT needs _hasSprint (env 1108 SP_MOVE > 0 and MoveSpeedLevel > 0), the main weapon action unlocked, g_forceCrouch false, not IN_SWAMP_AREA (110002), not IN_WATERSIDE_AREA (110005), and TAE_ENABLE_TRANSITION_SPRINT or TAE_MOVING_RUN. The clip a000_001151 (SprintStartFromStep_F) runs 8.74 m/s in the clip and 8.68-8.80 live; the HKB SprintLoop state is a000_001200 (not seen in the clean recording)."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "movement.sprint-stop",
+  "verdict": "confirmed",
+  "reason": "c0000_define.lua has SPRINT_BRAKE_ANGLE 135, the PRM_SPRINT_STOP_QUICK_TURN ranges (-15..0, -108..-15, 0..108, -180..-108, 108..180) and the forced quick turn at +-157.5; line 5834 gates the sprint quick turn on ENABLE_SPRINT_QUICK_TURN.",
+  "needs_recording": false
+ },
+ {
+  "id": "movement.stand-quick-turn",
+  "verdict": "confirmed",
+  "reason": "_GroundQuickTurn sets smallTurnAngle and smallTwistAngle to 120 for the stand, crouch and guard styles, and the lock-on idle versions at lines 2350-2471 use 60 degrees.",
+  "needs_recording": false
+ },
+ {
+  "id": "movement.turn-rate",
+  "verdict": "confirmed",
+  "reason": "FUN_1407daa20 starts from the controller default at +0x28, replaces it with the module value at +0x16c when it is >= 0, then uses the TAE-set fields at +0x308..0x318 (converted to radians); 720 deg/s is the +0x28 default per kb/movement.md.",
+  "needs_recording": false
+ },
+ {
+  "id": "movement.lock-strafe-twist",
+  "verdict": "confirmed",
+  "reason": "_MoveDirectionUpdate uses |angle| < 55 forward and > 125 back as stated; the exe twist figures and the live locked speeds are from kb/movement.md, not re-derived.",
+  "needs_recording": false
+ },
+ {
+  "id": "movement.foot-ik",
+  "verdict": "corrected",
+  "reason": "The four callbacks are not foot IK: Move_onGenerate shifts RootPos sideways to lean into a turn, SwimMove_onGenerate twists head and spine, Master_onGenerate calls both and ModifiersLayer_onGenerate is empty.",
+  "fix": {
+   "summary": "The player graph runs script callbacks every frame that lean the body into a turn and twist the head and spine while swimming. They are not foot IK. Neither project rebuilds them.",
+   "values": "Master_onGenerate calls Move_onGenerate and SwimMove_onGenerate; ModifiersLayer_onGenerate is empty. Move_onGenerate moves RootPos sideways by up to 0.1 m times the speed index when |TurnAngle| > 2 deg (converge 0.3) and sets MoveTwistAngle_Roll = offset x 80 and _Yaw = offset x 160. SwimMove_onGenerate sets SwimMoveTwistAngle_Head up to 20 deg and _Spine up to 50 deg, converging at 240 deg/s. A foot IK modifier in the HKX graph was not checked here.",
+   "how": "HKS c0000_define.lua Move_onGenerate, SwimMove_onGenerate, Master_onGenerate (uses hkbGetBoneModelSpace and hkbSetBoneModelSpace on RootPos); c0000.lua ModifiersLayer_onGenerate.",
+   "confidence": "data",
+   "check": "Run and turn the stick: the body leans a little into the turn (MoveTwistAngle variables); swim and turn: head and spine twist toward the turn.",
+   "note": "The sekiro-rs HKS-INTERFACE label foot IK for these callbacks is wrong. The hkbFootIkControlsModifier remark in kb/movement.md comes from the graph file and was not re-checked."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "movement.ground-step",
+  "verdict": "confirmed",
+  "reason": "PRM_4DIR_STEP ranges in c0000_define.lua (F -45..45, B beyond +-135, no tilt within +-18.75) and _set4DirStepDir/_set4DirStepTilt match; BEH_A_GROUND_STEP validate reads env 1106 SP_MOVE, kick add-input or PRESS_STEP with 1108 > 0.",
+  "needs_recording": false
+ },
+ {
+  "id": "movement.step-to-sprint",
+  "verdict": "confirmed",
+  "reason": "_fireGroundStep sets g_enableTransitSprint (line 5281) and BEH_A_SPRINT accepts it with TAE_ENABLE_TRANSITION_SPRINT; the movement_clean summary shows a000_001151 at 8.80 m/s for 3.8 s.",
+  "needs_recording": false
+ },
+ {
+  "id": "movement.ground-jump-direction",
+  "verdict": "confirmed",
+  "reason": "PRM_GROUND_JUMP_*_STICK_RANGE values (+-18.75, 67.5, 112.5, 157.5) and SELECTOR_GROUND_JUMP_TYPE 0-9 in c0000_define.lua match the record.",
+  "needs_recording": false
+ },
+ {
+  "id": "movement.jump-launch",
+  "verdict": "confirmed",
+  "reason": "ChrPhysicsVelocityChangeParam row 100 has up 9.64 and row 101 adds horizontal 6.4; 9.64 squared over 2 x 23.52 gives 1.975 m and 0.82 s, matching the kb recording figures.",
+  "needs_recording": false
+ },
+ {
+  "id": "movement.positioning-jump",
+  "verdict": "confirmed",
+  "reason": "Rows 111-118 have horizontal 7.68, up 7.712, fallType 1, row 111 homing 10000, and 7.712 squared over 2 x 23.52 gives 1.26 m and 0.66 s; FALL_HEIGHT_SHORT_STIFF_LAND_FROM_JUMP is 3.",
+  "needs_recording": false
+ },
+ {
+  "id": "movement.sprint-jump",
+  "verdict": "confirmed",
+  "reason": "The 8.91-8.95 m/s ready pose comes from rec_20261008_041541 via kb/movement.md and matches the sprint clip speed seen in movement_clean (8.80); wall-jump contact selectors exist in c0000_define.lua.",
+  "needs_recording": false
+ },
+ {
+  "id": "movement.jump-weapon-state",
+  "verdict": "confirmed",
+  "reason": "BEH_A_GROUND_JUMP validate (line 6147) has the SAFE plus IN_NON_COMBAT_AREA pairing and g_forceCrouch false exactly as stated.",
+  "needs_recording": false
+ },
+ {
+  "id": "movement.air-control-table",
+  "verdict": "confirmed",
+  "reason": "Read from sekiro.exe at 0x143b09ce0: entries 0, 1 and 3 hold -0.1, -13.72, 10, 2 and entry 2 holds -15, -9.8, 9, 6; the 174-row ChrPhysicsVelocityChangeParam has fallType counts 63 / 108 / 3.",
+  "needs_recording": false
+ },
+ {
+  "id": "movement.air-control-model",
+  "verdict": "confirmed",
+  "reason": "The table layout read from the exe matches the field offsets named; the along/across steering split is the kb/movement.md reading of FUN_140bac120 and was not re-traced.",
+  "needs_recording": false
+ },
+ {
+  "id": "movement.air-kick",
+  "verdict": "corrected",
+  "reason": "AirKick a000_213100 carries TAE refs 204 (SpEffect 100334, f9-21) and 431 (SpEffect 100247, f12-21), where 431 means only the buffered jump input is allowed; DISABLE_AIR_KICK (108) is on SpEffect 100271, not 100247.",
+  "fix": {
+   "values": "BEH_A_AIR_KICK (jump press, or the buffered jump input) is refused by SpEffect behaviorRefId 108 (DISABLE_AIR_KICK, SpEffect 100271). AirKick a000_213100 TAE 307 frames 9-21 -> BehaviorParam_PC 901 -> AtkParam_Pc 901 (10 phys, 10 stamina damage, hit capsules on dummies 612-613 and 612-614, r 0.4). Its own TAE refs: 204 (SpEffect 100334, kick-jump window f9-21) and 431 (ONLY_ADD_ACTION_INPUT_JUMP, SpEffect 100247, f12-21 = 0.4-0.7 s) during which a jump press only fires the additive jump input and no new kick. Live: 14 presses, 6 kicks, none within ~0.4 s of the last kick."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "movement.kick-jump",
+  "verdict": "confirmed",
+  "reason": "BEH_R_ENEMY_JUMP validate is env(2004) and TAE_ENABLE_KICK_ENEMY_JUMP (ref 204, SpEffect 100334); ChrPhysicsVelocityChangeParam row 2002 has horizontal 7.04, angle 180, up 7.712; the live numbers are from kb/movement.md.",
+  "needs_recording": false
+ },
+ {
+  "id": "movement.air-action-limits",
+  "verdict": "confirmed",
+  "reason": "c0000_define.lua sets WALL_JUMP_COUNT_MAX, AIR_SUB_ATTACK_COUNT_MAX and AIR_SP_ATTACK_COUNT_MAX to 1 and _LandReset zeroes the counters.",
+  "needs_recording": false
+ },
+ {
+  "id": "movement.fall-state-entry",
+  "verdict": "confirmed",
+  "reason": "BEH_R_FALL validate: env(200), g_beforeFireLand == -1, and for move or swim-move locomotion env(224) must be >= 30 (not < 30); the aging exclusion is the only extra.",
+  "needs_recording": false
+ },
+ {
+  "id": "movement.landing-stiffness",
+  "verdict": "confirmed",
+  "reason": "FALL_HEIGHT_SHORT_STIFF_LAND 5, ..._FROM_JUMP 3, LONG 20 and LONG_WATER 20 are in c0000_define.lua, and the branches at transition lines 1908, 2026 and 2131 use them with the positioning-jump flag.",
+  "needs_recording": false
+ },
+ {
+  "id": "movement.land-ready",
+  "verdict": "confirmed",
+  "reason": "LAND_READY_ENABLE_FALL_SPEED -2000 and LAND_WIRE_READY_ENABLE_FALL_SPEED -1000 are in c0000_define.lua and the two validate functions use env(3003) against them for jump/fall and wire-move states.",
+  "needs_recording": false
+ },
+ {
+  "id": "movement.fall-death",
+  "verdict": "confirmed",
+  "reason": "FUN_14084e5d0 returns true when height >= DAT_143b01948 (20.0 read from the exe) and >= HitMtrlParam +0x4c fallDeathDist, or >= DAT_143b01950 (5.0) while SpEffect type 0x155 is worn; HitMtrlParam has 40 on 47 rows, 80 on ids 22, 36, 38 and disableFallDamage on id 40.",
+  "needs_recording": false
+ },
+ {
+  "id": "movement.fall-damage",
+  "verdict": "corrected",
+  "reason": "FUN_140843660 also drops its start threshold to 5 m (DAT_143b01954) under SpEffect type 0x155, and CalcCorrectGraph 211 and 212 output a flat 100 (stageMaxGrowVal all 100; 0,10,20,35,99 are their input steps), not a map to 0..99.",
+  "fix": {
+   "values": "FUN_140843660: 0 below 20 m (5 m while SpEffect type 0x155 is worn); result = a * g210(h) * 0.01 * b * c * d * e. CalcCorrectGraph 210 is the identity from 20 to 100 (x 20,40,60,80,100 -> y same); 211 (x 20..150) and 212 (x 0..99) both output a flat 100. e is HitMtrlParam fallDamageRate (0.5 on water planes 22, 36, 38). 1.0 is returned when the kill test passes."
+  },
+  "needs_recording": true
+ },
+ {
+  "id": "movement.fall-damage-reactions",
+  "verdict": "corrected",
+  "reason": "The graph states exist in c0000_cmsg.lua, but BEH_R_DEATH does fire W_FallDeathDmgStart (and the NaturalDeath variant) and BEH_R_LAND fires W_LandFallHitDmgLarge and W_LandFallDeathDmg; only the small and large fall-hit starts are never fired by the scripts.",
+  "fix": {
+   "summary": "Fall hurt and fall death clips exist as graph states. The script fires the fall-death start and the landing variants; the small and large fall-hit starts are not fired from the scripts.",
+   "how": "HKS BEH_R_DEATH fires W_FallDeathStart (damageType 6), W_FallDeathDmgStart or W_FallDeathDmgStartNaturalDeath; BEH_R_LAND fires W_LandFallHitDmgLarge and W_LandFallDeathDmg from the fall states; no script code fires W_FallHitDmgSmall or W_FallHitDmgLargeStart.",
+   "confidence": "data",
+   "note": "Which engine code picks the fall-hit start states is not traced."
+  },
+  "needs_recording": true
+ },
+ {
+  "id": "movement.fall-death-return",
+  "verdict": "corrected",
+  "reason": "The damage types and clips match c0000_transition.lua and c0000.lua (env 3061 in InitState), but nothing in the data supports the 40 m void trigger or HP kept, and kb/movement.md lists the void kill height as untraced.",
+  "fix": {
+   "summary": "A fall out of the world or a fatal landing can be routed to return damage types: Wolf plays a fall-dead-return or land-dead-return clip and is placed on the last safe ground. Landing death type 16 has no return.",
+   "values": "DAMAGE_TYPE_FALL_DEAD_RETURN 14 -> W_FallDeadReturnStart (a000_199120); LAND_DEAD_RETURN 15 -> W_LandDeadReturnStart (a000_200909, water: LandWaterDeathReturnStart); LAND_DEAD 16 -> LandDeathNoRevivalStart (no return). After the return GroundFallReturn at the safe position, SAFE_POS_RETURN_TYPE stand/crouch/swim/dive via env 3061 in InitState (c0000.lua 175).",
+   "note": "The void kill height, which fall picks which damage type, and whether HP is kept are not in the scripts and not traced in the exe."
+  },
+  "needs_recording": true
+ },
+ {
+  "id": "movement.fall-protection",
+  "verdict": "corrected",
+  "reason": "Counting g_paramHkbState gives 860 strong and 770 weak of 1310 states and _UpdateFallProtection matches the exclusions, so the HKS data backs the claim; confidence should be data, not community.",
+  "fix": {
+   "confidence": "data"
+  },
+  "needs_recording": true
+ },
+ {
+  "id": "movement.wall-jump",
+  "verdict": "confirmed",
+  "reason": "BEH_A_WALL_JUMP validate has ENABLE_WALL_JUMP_CANCEL (104), env(3020), env(224) <= WALL_JUMP_ENABLE_FALL_HEIGHT 2000, a jump press or buffered input, count < 1 (a bounce SpEffect lifts the limit), falling, and a weapon-style check.",
+  "needs_recording": false
+ },
+ {
+  "id": "movement.hang-air-grab",
+  "verdict": "confirmed",
+  "reason": "BEH_A_AIR_HANG_START validate: env 3045 non-zero with ENABLE_AIR_HANG_GRAB (5), or standby / ENABLE_AIR_HANG (105) with the hang button held (1108 > 0); HANG_START_ANGLE_FREE_FALL left -180..-45 and right 45..180 are in c0000_define.lua.",
+  "needs_recording": false
+ },
+ {
+  "id": "movement.hang-ground-start",
+  "verdict": "confirmed",
+  "reason": "BEH_A_GROUND_HANG_START needs env 3044 and the hang button; lines 4577-4600 split StandToHang1Back/Left/Right by HANG_START_ANGLE_STAND_* (-45..45, 45..135, -135..-45) with foothold variants from env 3046.",
+  "needs_recording": false
+ },
+ {
+  "id": "movement.hang-shimmy-corner",
+  "verdict": "confirmed",
+  "reason": "DOCKING_MOVE_INPUT_ANGLE_MIN/MAX 30 and 150 are in c0000_define.lua and BEH_A_HANG_CORNER_MOVE reads env 3048/3049/3059/3060 with the stick angle sign as described.",
+  "needs_recording": false
+ },
+ {
+  "id": "movement.hang-climb-drop",
+  "verdict": "corrected",
+  "reason": "In the validate order BEH_A_HANG_END_CONNECT (guard, jump, crouch, wire, prosthetic) is checked before BEH_A_HANG_CLIMB, so the jump button gives HangJumpReady and a wall jump, not a climb; the climb comes from the hang button and needs env 3050.",
+  "fix": {
+   "summary": "From a hang the hang (interact) button climbs up when the top is clear (env 3050), dodge drops, and the jump button kicks off the wall as a wall jump.",
+   "values": "Hang button -> BEH_A_HANG_CLIMB (needs env 3050) -> HangToStand 217500 or HangFootHoldToStand 217600 (root moves 1.10 m forward, 1.60 m up). Dodge -> BEH_A_HANG_FALL -> HangToFreeFall 217520/217620. Jump -> BEH_A_HANG_END_CONNECT (earlier in the validate order, which takes the first valid behaviour) -> HangJumpReady 201304 / HangFootHoldJumpReady, which sets g_wallJumpCount to its maximum and continues as a wall jump. BEH_A_HANG_CLIMB also lists the jump button but END_CONNECT wins.",
+   "check": "Hang, press the hang key: HangToStand lifts Wolf onto the ledge top; press jump instead: HangJumpReady, then a wall jump away."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "movement.hang-foothold",
+  "verdict": "confirmed",
+  "reason": "HANG_EDGE_TYPE_DISABLE/ENABLE_HOLD_FOOT 0/1 are in c0000_define.lua, a000_020010 is HangFootHoldIdle, and the 880 / 83 variation split on m11_01 matches sekiro-rs MOBILITY.md (edge file counts not re-read).",
+  "needs_recording": false
+ },
+ {
+  "id": "movement.wall-hug",
+  "verdict": "confirmed",
+  "reason": "BEH_A_COVER_START validate uses env 3043, g_forceCrouch false and TAE_DISABLE_COVER_START (ref 9); COVER_START_ANGLE_* constants (+-45, +-135, +-30..150) are in c0000_define.lua.",
+  "needs_recording": false
+ },
+ {
+  "id": "movement.wall-peek",
+  "verdict": "confirmed",
+  "reason": "COVER_EDGE_TYPE 0-3 and 10-13 and DOCKING_TGT_END_TYPE left 1 / right 2 are in c0000_define.lua; BEH_A_COVER_LOOK_START reads env 3011 and the edge type; a000_218490 and 218491 are CoverEnd and CoverEndFromCoverLook; _SpeedUpdate forces MoveSpeedIndex 0 for peek-move edges.",
+  "needs_recording": false
+ },
+ {
+  "id": "movement.docking-edges",
+  "verdict": "confirmed",
+  "reason": "The per-map edge counts (m11_00 584 hang, 974 hug; m11_01 963 hang, 1326 hug) match the sekiro-rs MOBILITY.md table; the .edge files themselves were not re-parsed here.",
+  "needs_recording": false
+ },
+ {
+  "id": "movement.docking-hold",
+  "verdict": "confirmed",
+  "reason": "docs/kb/docking.md lists the same DockingTranslationOffset_* values and HangWallAngle 90 from the graph variables and sekiro-rs MOBILITY.md agrees they are the offsets; the HKX itself was not re-read.",
+  "needs_recording": false
+ },
+ {
+  "id": "movement.docking-deathblows",
+  "verdict": "corrected",
+  "reason": "_UpdateNextThrowInfo sets the wall left/right ninsatsu SpEffects only in the cover-look (peek) state and a plain hug uses the stand grab type; the hang pull-down and ThrowKind 90000/100000/110000 match ThrowKindParam.",
+  "fix": {
+   "summary": "Attacking from a hang against an unaware enemy plays a pull-down deathblow; attacking from the peek state at a hug edge plays a wall-corner kill. A plain hug gives a normal stand deathblow.",
+   "values": "Wall kills a200_500600 -> 510600 (enemy left), 500700 -> 510700 (right); hang 500800 -> 510800 (ThrowParam Hanging after, enemy facing away), 501000 -> 511000 (Hanging front). ThrowKind 90000 left wall, 100000 right wall, 110000 hanging. _UpdateNextThrowInfo: COVER_LOOK sets ThrowGrabType COVER_LOOK and SpEffect WALL_L/R_NINSATSU (109304/109305); HANG sets PULL_DOWN_NINSATSU (109306); COVER uses the stand grab type.",
+   "note": "Sv1 dock_deathblow starts from any hug; the game needs the peek state for the wall kill. Not checked whether Sv1 requires the peek."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "movement.grapple-search",
+  "verdict": "confirmed",
+  "reason": "WirePointSearchParam row 0 read in this pass: near 3, far 15, find far 25, filter rectangle +-10.2 by 14.3 and softlock 7.15 as stated.",
+  "needs_recording": false
+ },
+ {
+  "id": "movement.grapple-variation",
+  "verdict": "confirmed",
+  "reason": "WireVariationParam and ChrPhysicsHomingParam rows read in this pass match the marker types, +10 m extend on row 5, recognition angles and homing offsets listed.",
+  "needs_recording": false
+ },
+ {
+  "id": "movement.grapple-fire",
+  "verdict": "confirmed",
+  "reason": "BEH_A_GROUND_WIRE_SHOOT (107) / AIR_WIRE_SHOOT (108) validate use env 1106 or buffered input, env(3033) sub-weapon unlock, env(3000) and g_forceCrouch; a000_202000 TAE shows turn 1080 for frames 0-6, 921 homing 300000000 type 4, 900 speed 50 and 902 look-at.",
+  "needs_recording": false
+ },
+ {
+  "id": "movement.grapple-move-start",
+  "verdict": "confirmed",
+  "reason": "GetWireMoveStartIndex uses WireDramaticAngle > 50 vertical, > 15 upslope, else horizontal; a000_202010 has TAE 920 row 1100 at f20 (0.67 s), 202011/12 at f15 (0.5 s), and cancel flags open at f25 (0.83 s).",
+  "needs_recording": false
+ },
+ {
+  "id": "movement.grapple-flight",
+  "verdict": "confirmed",
+  "reason": "ChrPhysicsVelocityChangeParam 1100 is fallType 2 with homing 300000000 type 4, 1101 has 30/30, 1102 is fallType 2 only; homing 300000000 has guaranteeArrival 2 and initialVelocityCorrection 1, and the exe table row 2 holds -15, -9.8, 9, 6.",
+  "needs_recording": false
+ },
+ {
+  "id": "movement.grapple-landing",
+  "verdict": "confirmed",
+  "reason": "BEH_R_LAND_WIRE = 22 and LAND_WIRE_READY = 24 exist in c0000_transition.lua with the -1000 threshold; LandWireMove a000_202035 and WireFallLandReady 202045 exist; the 1.53 s and 3.33 s lengths come from kb/grapple.md.",
+  "needs_recording": false
+ },
+ {
+  "id": "movement.grapple-chain",
+  "verdict": "confirmed",
+  "reason": "WireMoveWireShoot a000_202600 and WireMoveWire2Shoot 202700 exist, ACTION_UNLOCK_TYPE_WIRE_MOVE_ATTACK is 14, and the WireMoveDeflectGuard states are in c0000_cmsg.lua (clips a050_203410/203420 per kb/grapple.md).",
+  "needs_recording": false
+ },
+ {
+  "id": "movement.grapple-enemy",
+  "verdict": "confirmed",
+  "reason": "SpEffectParam has 41 rows with chrWireVariationNo set (not -1), with target dummies 650-652 and landing dummy 260 on the grapple rows; the example move windows come from kb/grapple.md.",
+  "needs_recording": false
+ },
+ {
+  "id": "movement.grapple-attack",
+  "verdict": "confirmed",
+  "reason": "ThrowParam 15020170/71 and 15080170/71/79 have atk anims 511600/511610/511690, ThrowKind 180000, Dist 20 and y range +-12.0, def anim 13600; AtkParam_Pc 5000660 is the ninja body fall deathblow with atkPhysCorrection 60000.",
+  "needs_recording": false
+ },
+ {
+  "id": "movement.swim-surface",
+  "verdict": "confirmed",
+  "reason": "Clips 030000, 030100, 030200, 030300 and 210000 exist as SwimIdle, SwimMoveStart/Loop/End and StandMoveToSwim; the stand-to-swim and swim-to-stand reactions are in the behaviour table; HitMtrlParam ids 22, 36, 38 have fallDeathDist 80.",
+  "needs_recording": false
+ },
+ {
+  "id": "movement.swim-kick",
+  "verdict": "corrected",
+  "reason": "BEH_A_KICK_MOVE and SWIM_BACK_STEP match, but TAE 155 on the kick clips sets camera slot 22 only for frames 0-15 and slot 21 after that.",
+  "fix": {
+   "values": "BEH_A_KICK_MOVE with stick > 0 and BEH_A_SWIM_BACK_STEP with stick 0, both on ACTION_ARM_SWIM_ACCELERATION 28 (blocked while the dolphin-jump TAE ref is on unless env 3039 can-surface). SwimKickMove1/2 a000_031400/031410, brake 031420. Camera slot 22 for the first 0.5 s (frames 0-15) of the kick, then slot 21."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "movement.dive",
+  "verdict": "confirmed",
+  "reason": "BEH_A_SWIM_TO_DIVE validate is ACTION_ARM_SWIM_DOWN, env 3038, ACTION_UNLOCK_TYPE_DIVE (0) and env 3008 false; EquipParamGoods 2420 is Mibu Breathing Technique in the English item names; the 4.5 / 3.75 m/s speeds come from clip root motion noted in swim.rs and were not recomputed.",
+  "needs_recording": false
+ },
+ {
+  "id": "movement.dolphin-jump",
+  "verdict": "confirmed",
+  "reason": "BEH_A_SWIM_JUMP validate needs a jump press and, while TAE ENABLE_DOLPHIN_JUMP is on, env 3039; clips a000_201600/201610/201630/201640 exist and ChrPhysicsVelocityChangeParam rows 221, 240, 241 exist.",
+  "needs_recording": false
+ },
+ {
+  "id": "movement.water-restrictions",
+  "verdict": "confirmed",
+  "reason": "BEH_A_CROUCH_START, BEH_R_SUB_WEAPON_EXPAND and the sprint and step validates all test IN_WATERSIDE_AREA (110005), and _SpeedUpdate's swamp branch needs env(1108) > 200 with 0.9 / 0.7 stick levels.",
+  "needs_recording": false
+ },
+ {
+  "id": "movement.crouch",
+  "verdict": "confirmed",
+  "reason": "BEH_A_CROUCH_START is env 1106 CROUCH (or buffered) and not waterside, BEH_A_CROUCH_END needs g_forceCrouch false, SP_EF_REF_FORCE_CROUCH is 110000, a000_216010 is SprintToCrouchReady and CrouchIdle sets camera slot 2; the 2.32 m/s live walk is from kb/movement.md.",
+  "needs_recording": false
+ },
+ {
+  "id": "movement.damage-step",
+  "verdict": "confirmed",
+  "reason": "_execDamageStep fires W_StandStepFromDamage on ENABLE_HIT_JUMP_CANCEL and W_StandStepFromDown on ENABLE_DOWN_JUMP_CANCEL with the 4-dir jump direction; it is called from both the jump and the dodge behaviours.",
+  "needs_recording": false
+ },
+ {
+  "id": "movement.item-use-move",
+  "verdict": "confirmed",
+  "reason": "BEH_A_GROUND_MOVE_START validate accepts TAE ENABLE_ITEM_USE_MOVE with a stick push, and ITEM_USE_PRIORITIZE (ref 111, SpEffect 100237) is used by the jump validate against the damage-step states.",
+  "needs_recording": false
+ },
+ {
+  "id": "movement.collision-capsule",
+  "verdict": "confirmed",
+  "reason": "FUN_140bc3140 holds 1.5 (0x3fc00000) and 0.4 (0x3ecccccd) and 0x3f860a92 (60 degrees) as stated.",
+  "needs_recording": false
+ },
+ {
+  "id": "movement.bodies-block",
+  "verdict": "confirmed",
+  "reason": "kb/movement.md records the same 32 of 1267 tick count and zero median speed along the line from the boss-fight recordings; raw recording data was not re-read.",
+  "needs_recording": false
+ },
+ {
+  "id": "movement.root-motion-blend",
+  "verdict": "confirmed",
+  "reason": "FUN_141408650 curve 0 computes 3t^2 - 2t^3 (smoothstep) clamped to 0..1; the 0.7-1.0 ratio and 0.15-0.3 m slide are kb/movement.md recording figures.",
+  "needs_recording": false
+ },
+ {
+  "id": "movement.ladders-cling",
+  "verdict": "confirmed",
+  "reason": "ObjectParam isLadder is set on exactly rows 155200, 155210, 155500, 159100; c0000 scripts contain no ladder text and STYLE_TYPE_CLING appears in no state row; the .wall files were not decoded.",
+  "needs_recording": false
+ },
+ {
+  "id": "movement.sheathed-mode",
+  "verdict": "confirmed",
+  "reason": "BEH_R_NON_COMBAT_AREA_ENTER/LEAVE exist, ARM_STYLE_SAFE is 0 and the a010_000100/200/400/500 clips exist.",
+  "needs_recording": false
+ },
+ {
+  "id": "movement.traversal-camera-slots",
+  "verdict": "confirmed",
+  "reason": "TAE 155 reads crouch 2, cover 3, cover look 4/5, hang 6, wire shoot 7, wire move 19, swim 21/22, dive 31 on the named states; the slot to CameraSetParam mapping was checked in the camera group.",
+  "needs_recording": false
+ }
+]

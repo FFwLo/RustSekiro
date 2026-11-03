@@ -4,7 +4,7 @@
 //!   the last 2 s), the main world's time per schedule phase and the entity count. "render wait"
 //!   is what is left of the frame after the main world's schedules: Last, and the wait for the
 //!   render thread when the frame is GPU / render bound.
-//! - `SHINOBI_BENCH=<seconds>` (empty = 20): after 5 s of warm-up, records that many seconds,
+//! - `SHINOBI_BENCH=<seconds>` (empty = 20): after 5 s of warm-up (`SHINOBI_BENCH_WARMUP=<s>`), records that many seconds,
 //!   writes `perf_report.txt` next to `config.toml` (`paths::root`), logs it and quits. Run it
 //!   the same way before and after a change to compare.
 
@@ -29,6 +29,12 @@ struct AfterPostUpdate;
 const PHASES: [&str; 5] = ["first + pre-update", "fixed update", "update", "post-update", "render wait + last"];
 const WINDOW: Duration = Duration::from_secs(2);
 const WARM_UP: Duration = Duration::from_secs(5);
+
+/// The warm-up before a bench records: `SHINOBI_BENCH_WARMUP=<seconds>` (a big map's load),
+/// else [`WARM_UP`].
+fn warm_up() -> Duration {
+    std::env::var("SHINOBI_BENCH_WARMUP").ok().and_then(|v| v.trim().parse().ok()).map_or(WARM_UP, Duration::from_secs_f32)
+}
 
 #[derive(Clone, Copy)]
 struct Sample {
@@ -65,6 +71,7 @@ pub struct PerfPlugin;
 impl Plugin for PerfPlugin {
     fn build(&self, app: &mut App) {
         let bench = std::env::var("SHINOBI_BENCH").ok().map(|v| Bench { secs: v.trim().parse().unwrap_or(20.0), start: None, samples: Vec::new(), entities: Vec::new() });
+        engine_spans(app);
         app.insert_resource(Perf { launched: Instant::now(), first_frame: None, frame_start: None, marks: [None; 4], recent: VecDeque::new(), bench, shown: false, refreshed: None });
         for (label, i) in [(AfterPreUpdate.intern(), 0usize), (AfterFixed.intern(), 1), (AfterUpdate.intern(), 2), (AfterPostUpdate.intern(), 3)] {
             app.init_schedule(label);
@@ -174,14 +181,20 @@ fn refresh_overlay(mut perf: ResMut<Perf>, mut text: Query<&mut Text, With<PerfT
     }
 }
 
-fn run_bench(mut perf: ResMut<Perf>, all: Query<()>, mut exit: MessageWriter<AppExit>) {
+#[allow(clippy::type_complexity)]
+fn run_bench(
+    mut perf: ResMut<Perf>,
+    all: Query<()>,
+    mut exit: MessageWriter<AppExit>,
+    nodes: Query<(Entity, &Node, Option<&InheritedVisibility>, Option<&ChildOf>, Option<&Name>)>,
+) {
     let now = Instant::now();
     let (launched, first) = (perf.launched, perf.first_frame);
     let Some(b) = perf.bench.as_mut() else { return };
     let Some(first) = first else { return };
     let start = match b.start {
         Some(s) => s,
-        None if now.duration_since(first) >= WARM_UP => {
+        None if now.duration_since(first) >= warm_up() => {
             info!("bench: recording {} s", b.secs);
             b.start = Some(now);
             return;
@@ -198,7 +211,7 @@ fn run_bench(mut perf: ResMut<Perf>, all: Query<()>, mut exit: MessageWriter<App
     let (avg, fps, p99, worst, low) = stats(&frames);
     let mut r = String::from("Sv1 performance report (src/perf.rs, SHINOBI_BENCH)\n");
     r += &format!("launch to first frame: {:.1} s\n", first.duration_since(launched).as_secs_f32());
-    r += &format!("recorded: {} frames over {:.1} s after {} s warm-up\n", frames.len(), b.secs, WARM_UP.as_secs());
+    r += &format!("recorded: {} frames over {:.1} s after {} s warm-up\n", frames.len(), b.secs, warm_up().as_secs_f32());
     r += &format!("fps: {fps:.1} average, {low:.1} 1% low\n");
     r += &format!("frame ms: {avg:.2} average, {p99:.2} p99, {worst:.2} worst\n");
     let mut sorted = frames.clone();
@@ -210,12 +223,126 @@ fn run_bench(mut perf: ResMut<Perf>, all: Query<()>, mut exit: MessageWriter<App
     for (name, ms) in PHASES.iter().zip(phase_avgs(&b.samples)) {
         r += &format!("  {name}: {ms:.2}\n");
     }
+    // The hitches: the five worst frames, when (s into the recording) and by phase.
+    let mut worst5: Vec<&Sample> = b.samples.iter().collect();
+    worst5.sort_by(|x, y| y.frame.total_cmp(&x.frame));
+    r += "worst frames (s, ms, then the phases above):\n";
+    for s in worst5.into_iter().take(5) {
+        let phases: Vec<String> = s.phases.iter().map(|ms| format!("{ms:.1}")).collect();
+        r += &format!("  {:.2} s: {:.1} ms = {}\n", s.at.duration_since(start).as_secs_f32(), s.frame, phases.join(" / "));
+    }
     let ents = &b.entities;
     r += &format!("entities: {} average\n", ents.iter().sum::<usize>() / ents.len().max(1));
+    // UI nodes the layout still runs over: not under a Display::None, though maybe hidden.
+    let mut by_root: std::collections::HashMap<String, (usize, usize)> = std::collections::HashMap::new();
+    let (mut laid, mut total) = (0, 0);
+    for (e, node, vis, ..) in &nodes {
+        total += 1;
+        let (mut at, mut cut, mut root) = (e, node.display == Display::None, e);
+        while let Ok((_, n, _, parent, _)) = nodes.get(at) {
+            cut |= n.display == Display::None;
+            root = at;
+            match parent {
+                Some(p) => at = p.parent(),
+                None => break,
+            }
+        }
+        if cut {
+            continue;
+        }
+        laid += 1;
+        let name = nodes.get(root).ok().and_then(|n| n.4).map_or_else(|| format!("{root}"), |n| n.as_str().to_string());
+        let slot = by_root.entry(name).or_default();
+        slot.0 += 1;
+        slot.1 += usize::from(vis.is_some_and(|v| !v.get()));
+    }
+    let mut roots: Vec<_> = by_root.into_iter().collect();
+    roots.sort_by(|x, y| y.1.0.cmp(&x.1.0));
+    r += &format!("ui nodes: {total}, laid out {laid}; biggest roots (laid out, of them hidden):\n");
+    for (name, (n, hidden)) in roots.into_iter().take(10) {
+        r += &format!("  {name}: {n} ({hidden})\n");
+    }
     let path = crate::paths::root().join("perf_report.txt");
     let _ = std::fs::write(&path, &r);
     info!("{r}wrote {}", path.display());
     exit.write(AppExit::Success);
+}
+
+/// `SHINOBI_SYS_PROF=1`: the wall time between a stamp before and one after each of Bevy's own
+/// PostUpdate passes (transform propagation, UI layout, visibility), as spans; other systems may
+/// run in between on other threads.
+fn engine_spans(app: &mut App) {
+    if std::env::var_os("SHINOBI_SYS_PROF").is_none() {
+        return;
+    }
+    use bevy::camera::visibility::VisibilitySystems;
+    use bevy::transform::TransformSystems;
+    use bevy::ui::UiSystems;
+    #[derive(Resource, Default)]
+    struct Marks(std::collections::HashMap<&'static str, Instant>);
+    fn begin(name: &'static str) -> impl FnMut(ResMut<Marks>) {
+        move |mut m: ResMut<Marks>| {
+            m.0.insert(name, Instant::now());
+        }
+    }
+    fn end(name: &'static str) -> impl FnMut(Res<Marks>) {
+        move |m: Res<Marks>| {
+            if let Some(&t) = m.0.get(name) {
+                record(name, t);
+            }
+        }
+    }
+    app.init_resource::<Marks>().add_systems(
+        PostUpdate,
+        (
+            begin("propagate").before(TransformSystems::Propagate),
+            end("propagate").after(TransformSystems::Propagate),
+            begin("ui_layout").before(UiSystems::Layout),
+            end("ui_layout").after(UiSystems::Layout),
+            begin("visibility").before(VisibilitySystems::CheckVisibility),
+            end("visibility").after(VisibilitySystems::CheckVisibility),
+        ),
+    );
+}
+
+/// `SHINOBI_SYS_PROF=1`: the time spent in the systems that open a [`span`] (ms per second,
+/// calls per second), logged every 5 s. Nothing when unset.
+pub fn span(name: &'static str) -> Option<Span> {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    ON.get_or_init(|| std::env::var_os("SHINOBI_SYS_PROF").is_some()).then(|| Span(name, Instant::now()))
+}
+
+pub struct Span(&'static str, Instant);
+
+impl Drop for Span {
+    fn drop(&mut self) {
+        record(self.0, self.1);
+    }
+}
+
+/// Adds the time since `start` to `name`'s total, and logs the totals every 5 s.
+fn record(name: &'static str, start: Instant) {
+    {
+        static SPANS: std::sync::Mutex<Option<(Instant, std::collections::HashMap<&'static str, (f64, u32)>)>> = std::sync::Mutex::new(None);
+        let Ok(mut g) = SPANS.lock() else { return };
+        let (since, m) = g.get_or_insert_with(|| (Instant::now(), Default::default()));
+        let e = m.entry(name).or_default();
+        let ms = start.elapsed().as_secs_f64() * 1e3;
+        e.0 += ms;
+        e.1 += 1;
+        // A hitch: one run this slow is logged at once.
+        if ms > 30.0 {
+            info!("sys prof: slow {name} {ms:.0} ms");
+        }
+        let secs = since.elapsed().as_secs_f64();
+        if secs >= 5.0 {
+            let mut v: Vec<_> = m.drain().collect();
+            v.sort_by(|a, b| b.1 .0.total_cmp(&a.1 .0));
+            let line: Vec<String> = v.iter().map(|(n, (ms, c))| format!("{n} {:.1} ms/s ({:.0}/s)", ms / secs, *c as f64 / secs)).collect();
+            info!("sys prof: {}", line.join(", "));
+            *since = Instant::now();
+        }
+    }
 }
 
 #[cfg(test)]

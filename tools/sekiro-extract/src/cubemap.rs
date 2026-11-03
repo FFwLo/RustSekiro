@@ -270,7 +270,7 @@ pub fn write_rgba16f(mips: &[Cube]) -> Vec<u8> {
     put(&mut out, 10); // R16G16B16A16_FLOAT
     put(&mut out, 3); // 2D
     put(&mut out, 0x4); // cube
-    put(&mut out, 6); // array size: the faces (Bevy's loader takes its layer count from here)
+    put(&mut out, 1); // array size: one cube (Bevy 0.20's loader multiplies cubes by 6 itself)
     put(&mut out, 0);
     for f in 0..6 {
         for m in mips {

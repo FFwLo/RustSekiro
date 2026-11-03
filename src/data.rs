@@ -574,17 +574,19 @@ pub struct Attack {
     pub deflected_action: i64,
     #[serde(default)]
     pub just_deflected_action: i64,
+    /// AtkParam guardAtkRate: an NPC attack's repel power against a guard (guard.rs); 30 / 300
+    /// when the export lacks it (combat::attack_flick).
+    #[serde(rename = "guardAtkRate", default = "thirty")]
+    pub guard_atk_rate: i64,
+    /// AtkParam guardAtkRateCorrection [%]: a Wolf weapon attack's repel power, on the weapon's
+    /// attackBaseRepel (guard.rs).
+    #[serde(rename = "guardAtkRateCorrection", default = "three_hundred")]
+    pub guard_atk_rate_correction: f32,
     /// Perilous attacks: cannot be blocked (1) / cannot be deflected either (1).
     #[serde(rename = "disableGuard_vsGuardAttribute0", default)]
     pub disable_guard: i64,
     #[serde(rename = "disableJustGuard_vsGuardAttribute0", default)]
     pub disable_just_guard: i64,
-    /// guardAtkRate / guardAtkRateCorrection: the attack's flick power (combat::attack_flick),
-    /// used when the full AtkParam row is missing.
-    #[serde(default = "thirty")]
-    pub guard_atk_rate: i64,
-    #[serde(default = "three_hundred")]
-    pub guard_atk_rate_correction: f32,
     /// 0 slash, 1 strike, 2 thrust.
     #[serde(default)]
     pub atk_type: i64,
@@ -834,10 +836,6 @@ pub struct Prosthetic {
     /// EquipParamWeapon iconId: the HUD's MENU_ItemIcon_<icon> (hud.rs).
     #[serde(default)]
     pub icon: i64,
-    #[serde(default, rename = "attackBasePhysics")]
-    pub attack_base_physics: f32,
-    #[serde(default, rename = "attackBaseFire")]
-    pub attack_base_fire: f32,
 }
 
 /// A Bullet param row (projectile) and its AtkParam.
@@ -1057,6 +1055,9 @@ pub struct TwistChain {
 #[derive(Resource)]
 pub struct Combat {
     pub player: CharData,
+    /// The Construct's friendly Sculptor, kept outside encounter kinds so boss swaps cannot
+    /// change his model or animations. He has no Enemy component or combat target.
+    pub sculptor: Option<EnemyKind>,
     /// The enemy kinds in play (a chr with one NpcParam row each): kind 0 is config enemy.chr,
     /// then config enemy.group's and the ones the boss map events bring in. An enemy actor's
     /// `Actor::kind` indexes it.
@@ -1076,9 +1077,18 @@ pub struct EnemyKind {
     pub data: CharData,
 }
 
+/// The NPC's kind index (`Combat::sculptor`), outside the replaceable enemy kinds: encounter
+/// changes must not turn it into a boss.
+pub const NPC_KIND: usize = usize::MAX;
+
 impl Combat {
     /// Enemy kind `i` (kind 0 when out of range).
     pub fn kind(&self, i: usize) -> &EnemyKind {
+        if i == NPC_KIND {
+            if let Some(sculptor) = &self.sculptor {
+                return sculptor;
+            }
+        }
         self.kinds.get(i).unwrap_or(&self.kinds[0])
     }
 
@@ -1112,6 +1122,20 @@ impl Combat {
     /// The kind index of (chr, NpcParam row), if loaded.
     pub fn kind_index(&self, chr: &str, npc_row: Option<i64>) -> Option<usize> {
         self.kinds.iter().position(|k| k.foe.is(chr, npc_row))
+    }
+
+    /// The kind of `chr` with NpcParam `row`, loaded now when it is not yet (the open world's
+    /// enemies come and go with Wolf, src/enemy/world.rs); AnimLib::sync_kinds must follow a new
+    /// one. None when the chr has no exported data (extracted/enemies/<chr>.json).
+    pub fn ensure_kind(&mut self, chr: &str, row: i64) -> Option<usize> {
+        if let Some(k) = self.kind_index(chr, Some(row)) {
+            return Some(k);
+        }
+        let kind = self.with_params_file(|f| load_kind(f, chr, Some(row)));
+        (kind.foe.chr == chr).then(|| {
+            self.kinds.push(kind);
+            self.kinds.len() - 1
+        })
     }
 
     /// The official English name of a weapon row (art, tool, skill entry), else its id.
@@ -1235,27 +1259,13 @@ impl EnemyFile {
 }
 
 /// BehaviorParam `category` of an NPC hit's behaviour row (200000000 + behaviorVariationId *
-/// 1000 + judge), read once from extracted/json/params/BehaviorParam.json (the per-chr export
-/// carries no NPC behaviour rows). The exe's damage type for a guarded NPC attack comes from
+/// 1000 + judge), from the full param table (the per-chr export carries no NPC behaviour rows). The exe's damage type for a guarded NPC attack comes from
 /// it (FUN_140b698d0, <decomp ref>: category 6 -> GUARDED_BOUND_ENEMY1 1008 / NO_BOUND 1019,
 /// 7 -> ENEMY2 1009 / 1020, 8 -> ENEMY3 1010 / 1021), which c9997 ExecAttackJustBound /
 /// ExecAttackBound turn into the AttackBoundEnemy1-3 / AttackNoBoundEnemy1-3 clips. 0 when
 /// the row is missing.
 pub fn behavior_category(row: i64) -> i64 {
-    static CATS: std::sync::OnceLock<HashMap<i64, i64>> = std::sync::OnceLock::new();
-    CATS.get_or_init(|| {
-        let path = crate::paths::extracted().join("json/params/BehaviorParam.json");
-        let Some(v) = std::fs::read_to_string(path).ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()) else { return HashMap::new() };
-        let rows: Vec<serde_json::Value> = match &v["rows"] {
-            serde_json::Value::Array(a) => a.clone(),
-            serde_json::Value::Object(o) => o.values().cloned().collect(),
-            _ => Vec::new(),
-        };
-        rows.iter().filter_map(|r| Some((r["id"].as_i64()?, r["category"].as_i64()?))).collect()
-    })
-    .get(&row)
-    .copied()
-    .unwrap_or(0)
+    crate::items::param("BehaviorParam", row)["category"].as_i64().unwrap_or(0)
 }
 
 /// Wolf's BehaviorParam_PC row for a TAE judge through a hand's weapon (PlayerIns vfunc 0x1c0
@@ -1623,12 +1633,7 @@ pub fn atk_ai_sounds(pc: bool, id: i64) -> (i64, i64) {
     static T: std::sync::OnceLock<[HashMap<i64, (i64, i64)>; 2]> = std::sync::OnceLock::new();
     let t = T.get_or_init(|| {
         ["AtkParam_Pc", "AtkParam_Npc"].map(|name| {
-            let path = crate::paths::extracted().join(format!("json/params/{name}.json"));
-            let v: Value = std::fs::read_to_string(path).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
-            v["rows"]
-                .as_array()
-                .map(|rows| rows.iter().filter_map(|r| Some((r["id"].as_i64()?, (r["AppearAiSoundId"].as_i64().unwrap_or(0), r["HitAiSoundId"].as_i64().unwrap_or(0))))).collect())
-                .unwrap_or_default()
+            param_table(name).iter().map(|(id, r)| (*id, (r["AppearAiSoundId"].as_i64().unwrap_or(0), r["HitAiSoundId"].as_i64().unwrap_or(0)))).collect()
         })
     });
     t[if pc { 0 } else { 1 }].get(&id).copied().unwrap_or((0, 0))
@@ -1663,31 +1668,18 @@ pub struct SpCycle {
     pub flick: i64,
 }
 
-/// A full EquipParamWeapon row (the combat export leaves out the tools' rows, e.g. the
-/// umbrellas 76000-76300).
-pub fn weapon_row(id: i64) -> Option<Value> {
-    static T: std::sync::OnceLock<HashMap<i64, Value>> = std::sync::OnceLock::new();
-    T.get_or_init(|| full_param("EquipParamWeapon")).get(&id).cloned()
-}
 
 /// EquipParamGoods useLimitSpEffectType0-4 of a goods row: the stateInfos that refuse its use
 /// (goods 3000, the Healing Gourd: 341 aging, 910 the Owl's recovery seal).
 pub fn goods_use_limits(goods: i64) -> Vec<i64> {
-    static T: std::sync::OnceLock<HashMap<i64, Value>> = std::sync::OnceLock::new();
-    let t = T.get_or_init(|| full_param("EquipParamGoods"));
+    let t = param_table("EquipParamGoods");
     t.get(&goods).map_or(Vec::new(), |r| (0..5).filter_map(|i| r[format!("useLimitSpEffectType{i}")].as_i64()).filter(|v| *v > 0).collect())
 }
 
 pub fn sp_cycle(id: i64) -> Option<SpCycle> {
     static T: std::sync::OnceLock<HashMap<i64, SpCycle>> = std::sync::OnceLock::new();
     let t = T.get_or_init(|| {
-        let path = crate::paths::extracted().join("json/params/SpEffectParam.json");
-        let v: Value = std::fs::read_to_string(path).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
-        let rows: Vec<&Value> = match &v["rows"] {
-            Value::Array(a) => a.iter().collect(),
-            Value::Object(o) => o.values().collect(),
-            _ => Vec::new(),
-        };
+        let rows: Vec<&Value> = param_table("SpEffectParam").values().collect();
         let n = |r: &Value, k: &str| r[k].as_i64().unwrap_or(0);
         rows.iter()
             .filter_map(|r| {
@@ -1717,15 +1709,283 @@ pub fn sp_cycle(id: i64) -> Option<SpCycle> {
 }
 
 /// A full param table from extracted/json/params (rows by id), for fields the export leaves out.
-fn full_param(name: &str) -> HashMap<i64, Value> {
-    let path = crate::paths::extracted().join(format!("json/params/{name}.json"));
-    let v: Value = std::fs::read_to_string(path).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
-    let rows: Vec<Value> = match v["rows"].clone() {
-        Value::Array(a) => a,
-        Value::Object(o) => o.into_iter().map(|(_, r)| r).collect(),
-        _ => Vec::new(),
+/// SpEffectParam behaviorRefId of any row (the HKS env 3036 ref), for effects outside Wolf's
+/// exported set (map area effects such as 108900 or the storm-jump areas); 0 for none.
+pub fn sp_effect_behavior_ref(id: i64) -> i64 {
+    static REFS: std::sync::OnceLock<HashMap<i64, i64>> = std::sync::OnceLock::new();
+    let refs = REFS.get_or_init(|| param_table("SpEffectParam").iter().filter_map(|(id, r)| Some((*id, r["behaviorRefId"].as_i64().filter(|&v| v > 0)?))).collect());
+    refs.get(&id).copied().unwrap_or(0)
+}
+
+/// An SpEffect's behaviorRefId while it lasts past its TAE window (behaviorRefFlag_checkAliveFlagForBehavior
+/// 0: the exe's env 3036, FUN_140b32410 case 0xbdc, counts the row for its whole effectEndurance;
+/// 1 only while the TAE window is open). The sprint's 100304 ends into 100303, ref 1 for 0.2 s.
+pub fn sp_effect_lingering_ref(id: i64) -> i64 {
+    static REFS: std::sync::OnceLock<HashMap<i64, i64>> = std::sync::OnceLock::new();
+    let refs = REFS.get_or_init(|| {
+        param_table("SpEffectParam")
+            .iter()
+            .filter(|(_, r)| r["behaviorRefFlag_checkAliveFlagForBehavior"].as_i64() == Some(0))
+            .filter_map(|(id, r)| Some((*id, r["behaviorRefId"].as_i64().filter(|&v| v > 0)?)))
+            .collect()
+    });
+    refs.get(&id).copied().unwrap_or(0)
+}
+
+/// How an event state ends in a chr's HKS, at the anim's end (`env(339, 1) == TRUE`):
+/// `Fire("W_Event<n>")` goes on to that event, `Fire("W_Idle")` back to the AI's idle,
+/// `ExecTransToDeathIdle` (its own 339 check) into the death pose (c1020's sting death 20005).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum EndTo {
+    Event(i64),
+    Idle,
+    DeathIdle,
+}
+
+/// An end in a chr's own HKS: Event<from>_onUpdate's end under the enclosing
+/// `if env(3036, ref) == TRUE` checks (`(ref, true)`; an `else` gives `(ref, false)`). The zombie
+/// c1500's held pose 20010 -> 21015, c1020 20002 -> 21001 / 20004 -> 21007, the Divine Dragon's
+/// trees c5310 20000 -> 21000. `at_end`: under the clip's end (env 339); else it fires at any
+/// frame, `grounded` (env 201) when it asks (c1100 21005 -> 20005 once on the ground). No talk ESD
+/// runs here: `env(3054) ~= ref` holds and `env(3054) == ref` never (c1020 21007 -> 21005), and
+/// ExecTalkTransitionIndividual's NOT_TALKING moves are taken (c1070 21000 -> 20001).
+#[derive(Clone, Debug, PartialEq)]
+pub struct EndChain {
+    pub from: i64,
+    pub to: EndTo,
+    pub refs: Vec<(i64, bool)>,
+    pub at_end: bool,
+    pub grounded: Option<bool>,
+}
+
+/// A chr's event states as its HKS runs them (extracted/hks_src/<chr>.lua, DSLuaDecompiler on
+/// the behbnd's c<chr>.hks, over c9997.lua's for the states the chr leaves out).
+#[derive(Clone, Debug, Default)]
+pub struct HksEvents {
+    pub ends: Vec<EndChain>,
+    /// Event<n>_onUpdate exists; true when it calls EventCommonFunction, whose
+    /// ExecActiveTransition(TRUE, ...) takes the AI's cancel-slot requests (the clip's TAE
+    /// windows), ExecPassiveTransition the hits and ExecTalkTransition the talk. A state whose
+    /// update fires no end for the refs worn holds: its loop clip plays on (c1020 21000, the
+    /// Divine Dragon's trees c5310 21000-21002).
+    pub states: HashMap<i64, bool>,
+}
+
+impl HksEvents {
+    /// Where event state `from` goes now, for the behaviour refs worn, on the ground or not, at
+    /// its clip's end or before; None: it stays.
+    pub fn next(&self, from: i64, refs: &[i64], grounded: bool, at_end: bool) -> Option<EndTo> {
+        self.ends
+            .iter()
+            .find(|c| c.from == from && (at_end || !c.at_end) && c.grounded.is_none_or(|g| g == grounded) && c.refs.iter().all(|(r, w)| refs.contains(r) == *w))
+            .map(|c| c.to)
+    }
+}
+
+/// `hks_events` for a chr; empty without its decompiled HKS (then enemy.rs keeps its own rule).
+pub fn hks_events(chr: &str) -> std::sync::Arc<HksEvents> {
+    static T: std::sync::OnceLock<std::sync::Mutex<HashMap<String, std::sync::Arc<HksEvents>>>> = std::sync::OnceLock::new();
+    let mut t = T.get_or_init(Default::default).lock().unwrap_or_else(|p| p.into_inner());
+    t.entry(chr.to_string())
+        .or_insert_with(|| {
+            let read = |c: &str| std::fs::read_to_string(crate::paths::extracted().join(format!("hks_src/{c}.lua"))).ok();
+            let Some(own) = read(chr) else { return Default::default() };
+            let (mut ev, talk) = parse_hks_events(&own);
+            if let Some(common) = read("c9997") {
+                let (base, _) = parse_hks_events(&common);
+                for (n, c) in base.states {
+                    if let std::collections::hash_map::Entry::Vacant(v) = ev.states.entry(n) {
+                        v.insert(c);
+                        ev.ends.extend(base.ends.iter().filter(|e| e.from == n).cloned());
+                    }
+                }
+            }
+            // c9997 EventCommonFunction runs ExecTalkTransition(anim_id) first.
+            for (from, to) in talk {
+                if ev.states.get(&from) == Some(&true) {
+                    ev.ends.insert(0, EndChain { from, to: EndTo::Event(to), refs: Vec::new(), at_end: false, grounded: None });
+                }
+            }
+            std::sync::Arc::new(ev)
+        })
+        .clone()
+}
+
+/// The end chains of a chr's own HKS (`hks_events`).
+#[cfg(test)]
+pub fn hks_end_chains(chr: &str) -> Vec<EndChain> {
+    hks_events(chr).ends.clone()
+}
+
+/// The parse behind `hks_events`, with ExecTalkTransitionIndividual's not-talking moves (from,
+/// to). An end under any other condition (a random `fate`, an `elseif` after a live branch,
+/// another env) is left out, and so is one to a state other than W_Event<n> / W_Idle (c1190's
+/// W_GuardIdle).
+pub(crate) fn parse_hks_events(text: &str) -> (HksEvents, Vec<(i64, i64)>) {
+    #[derive(Clone, Copy)]
+    enum C {
+        End,
+        Ref(i64, bool),
+        Grounded(bool),
+        Always,
+        Never,
+        Other,
+    }
+    let cond = |c: &str| {
+        match c {
+            "env(201) == TRUE" => return C::Grounded(true),
+            "env(201) == FALSE" => return C::Grounded(false),
+            _ if c.starts_with("env(3054) == ") => return C::Never,
+            _ if c.starts_with("env(3054) ~= ") => return C::Always,
+            _ => {}
+        }
+        let (ref_, want) = match c.strip_prefix("env(3036, ") {
+            Some(r) => match (r.strip_suffix(") == TRUE"), r.strip_suffix(") == FALSE")) {
+                (Some(r), _) => (r, true),
+                (_, Some(r)) => (r, false),
+                _ => return C::Other,
+            },
+            None => return if c == "env(339, 1) == TRUE" { C::End } else { C::Other },
+        };
+        // c9997 SP_EFFECT_REF_WEAPON_0-4 = 1000020-1000024 (the anim-set SpEffects 200030-4).
+        let id = ref_.parse().ok().or_else(|| ref_.strip_prefix("SP_EFFECT_REF_WEAPON_")?.parse::<i64>().ok().map(|n| 1_000_020 + n));
+        id.map_or(C::Other, |id| C::Ref(id, want))
     };
-    rows.into_iter().filter_map(|r| Some((r["id"].as_i64()?, r))).collect()
+    // `a and b`: one stack entry per part (c1500 21008's `env(3036, 1000021) == TRUE and
+    // env(3054) ~= ...`); a part that never holds kills it, one that always does drops out.
+    let conds = |c: &str| {
+        let parts: Vec<C> = if c.contains(" or ") { vec![C::Other] } else { c.split(" and ").map(cond).collect() };
+        if parts.iter().any(|p| matches!(p, C::Never)) {
+            return vec![C::Never];
+        }
+        let parts: Vec<C> = parts.into_iter().filter(|p| !matches!(p, C::Always)).collect();
+        if parts.is_empty() { vec![C::Always] } else { parts }
+    };
+    let mut out = HksEvents::default();
+    let mut talk = Vec::new();
+    let mut from: Option<i64> = None;
+    let (mut in_talk, mut talk_from, mut talk_anim) = (false, None::<i64>, None::<i64>);
+    let mut stack: Vec<(usize, C)> = Vec::new();
+    let refs_of = |stack: &[(usize, C)]| stack.iter().filter_map(|(_, c)| if let C::Ref(r, w) = c { Some((*r, *w)) } else { None }).collect::<Vec<_>>();
+    let grounded_of = |stack: &[(usize, C)]| stack.iter().rev().find_map(|(_, c)| if let C::Grounded(g) = c { Some(*g) } else { None });
+    // 81 of the decompiled files start with a BOM, which hid their first function.
+    for line in text.trim_start_matches('\u{feff}').lines() {
+        let s = line.trim();
+        if line.starts_with("function") {
+            from = line.strip_prefix("function Event").and_then(|r| r.strip_suffix("_onUpdate()")).and_then(|n| n.parse().ok());
+            if let Some(f) = from {
+                out.states.insert(f, false);
+            }
+            (in_talk, talk_from, talk_anim) = (line.starts_with("function ExecTalkTransitionIndividual("), None, None);
+            stack.clear();
+            continue;
+        }
+        // `anim_id == <n> and (... talk_ref_Id == TALK_BEH_IDENTIFIER__NOT_TALKING)` then
+        // Fire("W_Event<m>"), or the talk check nested under `if anim_id == <n> then` (c1110).
+        if in_talk {
+            if s.starts_with("if ") || s.starts_with("elseif ") {
+                if let Some(r) = s.split("anim_id == ").nth(1) {
+                    talk_anim = r.split(|ch: char| !ch.is_ascii_digit()).next().and_then(|n| n.parse().ok());
+                }
+                talk_from = s.contains("talk_ref_Id == TALK_BEH_IDENTIFIER__NOT_TALKING").then_some(talk_anim).flatten();
+            } else if let (Some(n), Some(m)) = (talk_from, s.strip_prefix("Fire(\"W_Event").and_then(|r| r.strip_suffix("\")")).and_then(|m| m.parse().ok())) {
+                talk.push((n, m));
+                talk_from = None;
+            }
+            continue;
+        }
+        let Some(f) = from else { continue };
+        let ind = line.len() - line.trim_start().len();
+        let dead = stack.iter().any(|(_, c)| matches!(c, C::Other | C::Never));
+        if s.contains("EventCommonFunction(") {
+            out.states.insert(f, true);
+        }
+        if s.contains("ExecTransToDeathIdle(") && !dead {
+            out.ends.push(EndChain { from: f, to: EndTo::DeathIdle, refs: refs_of(&stack), at_end: true, grounded: grounded_of(&stack) });
+        }
+        if s == "end" || s == "else" || s.starts_with("elseif ") {
+            let n = stack.iter().rev().take_while(|(i, _)| *i == ind).count();
+            if n > 0 {
+                // An `a and b` group's else is an `or`: left out.
+                let c = if n == 1 { stack.pop().unwrap().1 } else { stack.truncate(stack.len() - n); C::Other };
+                let next = match (s, c) {
+                    ("end", _) => vec![],
+                    ("else", C::Ref(r, w)) => vec![C::Ref(r, !w)],
+                    ("else", C::Grounded(g)) => vec![C::Grounded(!g)],
+                    ("else", C::Never) => vec![C::Always],
+                    // After a branch that never runs the elseif is a plain if; after one that
+                    // always runs nothing else does.
+                    (_, C::Never) => s.strip_prefix("elseif ").and_then(|c| c.strip_suffix(" then")).map_or(vec![C::Other], conds),
+                    (_, C::Always) => vec![C::Never],
+                    _ => vec![C::Other],
+                };
+                stack.extend(next.into_iter().map(|c| (ind, c)));
+            }
+        } else if let Some(c) = s.strip_prefix("if ").and_then(|c| c.strip_suffix(" then")) {
+            stack.extend(conds(c).into_iter().map(|c| (ind, c)));
+        } else if let Some(name) = s.strip_prefix("Fire(\"W_").and_then(|r| r.strip_suffix("\")")) {
+            let to = match name.strip_prefix("Event").and_then(|n| n.parse().ok()) {
+                Some(n) => EndTo::Event(n),
+                None if name == "Idle" => EndTo::Idle,
+                None => continue,
+            };
+            if !dead {
+                let at_end = stack.iter().any(|(_, c)| matches!(c, C::End));
+                out.ends.push(EndChain { from: f, to, refs: refs_of(&stack), at_end, grounded: grounded_of(&stack) });
+            }
+        }
+    }
+    (out, talk)
+}
+
+/// A full EquipParamWeapon row (the combat export leaves out the tools' rows, e.g. the
+/// umbrellas 76000-76300).
+pub fn weapon_row(id: i64) -> Option<Value> {
+    param_table("EquipParamWeapon").get(&id).cloned()
+}
+
+/// A full param table from extracted/json/params (rows by id), for fields the export leaves out.
+fn full_param(name: &str) -> HashMap<i64, Value> {
+    param_table(name).clone()
+}
+
+/// Parsed once and shared by every reader: SpEffectParam.json is 40 MB, about 0.3 s a parse, and
+/// each lookup built from it used to parse it again on its first use.
+pub fn param_table(name: &str) -> &'static HashMap<i64, Value> {
+    type Slot = std::sync::OnceLock<HashMap<i64, Value>>;
+    static TABLES: std::sync::OnceLock<std::sync::Mutex<HashMap<String, &'static Slot>>> = std::sync::OnceLock::new();
+    // The lock covers only the slot lookup, so a table being parsed by warm_params does not hold
+    // up a reader of another table.
+    let slot: &'static Slot = TABLES.get_or_init(Default::default).lock().unwrap().entry(name.to_string()).or_insert_with(|| Box::leak(Box::default()));
+    slot.get_or_init(|| {
+        let path = crate::paths::extracted().join(format!("json/params/{name}.json"));
+        let mut v: Value = std::fs::read_to_string(path).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+        let rows: Vec<Value> = match v["rows"].take() {
+            Value::Array(a) => a,
+            Value::Object(o) => o.into_iter().map(|(_, r)| r).collect(),
+            _ => Vec::new(),
+        };
+        rows.into_iter().filter_map(|r| Some((r["id"].as_i64()?, r))).collect()
+    })
+}
+
+/// Builds the big param tables and the lookups made from them on a worker thread at start.
+/// Built on first use instead, the first hit on Wolf parsed them on the main thread: a 0.3 s
+/// stall in combat::resolve.
+#[cfg(not(test))]
+fn warm_params() {
+    std::thread::spawn(|| {
+        for t in ["SpEffectParam", "AtkParam_Pc", "AtkParam_Npc", "Bullet", "EquipParamGoods"] {
+            param_table(t);
+        }
+        sp_cycle(0);
+        sp_effect_behavior_ref(0);
+        sp_effect_lingering_ref(0);
+        atk_occurrence(&[0], HIT_CAT_SWORD, false, false);
+        prediction_observe_time(0);
+        atk_ai_sounds(true, 0);
+        crate::status::warm();
+    });
 }
 
 /// A hit's super-armour damage before the defender's rates (FUN_140bdb470): an NPC attack's
@@ -1772,7 +2032,7 @@ pub fn atk_occurrence(worn: &[i64], cat: i64, throw_hit: bool, charge_hit: bool)
     static ROWS: std::sync::OnceLock<HashMap<i64, Row>> = std::sync::OnceLock::new();
     let rows = ROWS.get_or_init(|| {
         let i = |r: &Value, k: &str| r[k].as_i64().unwrap_or(-1);
-        full_param("SpEffectParam")
+        param_table("SpEffectParam")
             .iter()
             .map(|(id, r)| {
                 (*id, Row {
@@ -1813,7 +2073,7 @@ pub fn atk_occurrence(worn: &[i64], cat: i64, throw_hit: bool, charge_hit: bool)
 /// leaves it out, so it is read from the full table.
 pub fn prediction_observe_time(bullet_id: i64) -> f32 {
     static ROWS: std::sync::OnceLock<HashMap<i64, f32>> = std::sync::OnceLock::new();
-    ROWS.get_or_init(|| full_param("Bullet").iter().map(|(id, r)| (*id, r["predictionShootObserveTime"].as_f64().unwrap_or(0.0) as f32)).filter(|(_, t)| *t > 0.0).collect())
+    ROWS.get_or_init(|| param_table("Bullet").iter().map(|(id, r)| (*id, r["predictionShootObserveTime"].as_f64().unwrap_or(0.0) as f32)).filter(|(_, t)| *t > 0.0).collect())
         .get(&bullet_id)
         .copied()
         .unwrap_or(0.0)
@@ -1831,18 +2091,19 @@ pub fn atk_guard_cut_cancel(atk_param_id: i64) -> f32 {
 }
 
 pub fn super_armor_damage(pc: bool, atk_param_id: i64) -> f32 {
-    static NPC: std::sync::OnceLock<HashMap<i64, f32>> = std::sync::OnceLock::new();
-    static PC: std::sync::OnceLock<(f32, HashMap<i64, f32>)> = std::sync::OnceLock::new();
     let f = |r: &Value, k: &str| r[k].as_f64().unwrap_or(0.0) as f32;
     if pc {
-        let (weapon, corr) = PC.get_or_init(|| {
-            let w = full_param("EquipParamWeapon").get(&5000).map_or(0.0, |r| f(r, "saWeaponDamage"));
-            (w, full_param("AtkParam_Pc").iter().map(|(id, r)| (*id, f(r, "atkSuperArmorCorrection"))).collect())
-        });
-        weapon * corr.get(&atk_param_id).copied().unwrap_or(0.0) / 100.0
+        f(crate::items::param("EquipParamWeapon", 5000), "saWeaponDamage") * f(atk_row(true, atk_param_id), "atkSuperArmorCorrection") / 100.0
     } else {
-        NPC.get_or_init(|| full_param("AtkParam_Npc").iter().map(|(id, r)| (*id, f(r, "atkSuperArmor"))).collect()).get(&atk_param_id).copied().unwrap_or(0.0)
+        f(atk_row(false, atk_param_id), "atkSuperArmor")
     }
+}
+
+/// A whole AtkParam row (AtkParam_Pc for Wolf's attacks, else AtkParam_Npc) for the fields the
+/// combat export does not carry (isDisableNoDamage, guardAtkRate, guardBreakRate ...). Null when
+/// the row is missing.
+pub fn atk_row(pc: bool, atk_param_id: i64) -> &'static Value {
+    crate::items::param(if pc { "AtkParam_Pc" } else { "AtkParam_Npc" }, atk_param_id)
 }
 
 /// An NPC's behaviour judge as its worn SpEffects shift it (exe FUN_140a12b80, <decomp ref>,
@@ -2152,6 +2413,8 @@ pub struct DataPlugin;
 
 impl Plugin for DataPlugin {
     fn build(&self, app: &mut App) {
+        #[cfg(not(test))]
+        app.add_systems(Startup, warm_params);
         let path = crate::paths::root().join("extracted/combat_data.json");
         let text = std::fs::read_to_string(&path).unwrap_or_else(|_| {
             panic!(
@@ -2169,10 +2432,9 @@ impl Plugin for DataPlugin {
         for g in config.map(|c| c.enemy.group.clone()).unwrap_or_default() {
             wanted.push((g.chr, g.npc_row));
         }
-        // The sandbox map's enemy line-up (SHINOBI_SANDBOX_ENEMIES; sandbox.rs).
-        for chr in config.map(crate::sandbox::extra_kinds).unwrap_or_default() {
-            wanted.push((chr, None));
-        }
+        // The map's own characters (encounter.rs hooks: the Construct's courtyard guards, the
+        // sandbox map's line-up).
+        wanted.extend(config.map(crate::encounter::hooks().extra_chrs).unwrap_or_default());
         let mut kinds: Vec<EnemyKind> = Vec::new();
         for (chr, npc_row) in wanted {
             if kinds.iter().any(|k| k.foe.is(&chr, npc_row)) {
@@ -2183,7 +2445,11 @@ impl Plugin for DataPlugin {
             kinds.push(kind);
         }
         f.player.alias_missing_clips();
-        let mut combat = Combat { player: f.player, kinds, params: f.params, rumble: f.rumble, twists: f.twists, names: f.names };
+        let sculptor = config.and_then(crate::encounter::hooks().npc).and_then(|(chr, row)| {
+            let kind = load_kind(&mut f, chr, Some(row));
+            (kind.foe.chr == chr).then_some(kind)
+        });
+        let mut combat = Combat { player: f.player, sculptor, kinds, params: f.params, rumble: f.rumble, twists: f.twists, names: f.names };
         combat.add_event_kinds();
         app.insert_resource(combat);
     }
@@ -2462,4 +2728,49 @@ mod tests {
         let (p, _) = d.root_at(step, d.length(step)).unwrap();
         assert!((p.length() - 3.99).abs() < 0.02, "step {}", p.length());
     }
+
+    #[test]
+    fn the_chr_scripts_end_chains_parse() {
+        if !crate::paths::extracted().join("hks_src/c1500.lua").exists() {
+            return;
+        }
+        // The zombie's held pose 20010 -> 21015; 20004 -> 21008 only with ref 1000021 (a100).
+        let z = hks_end_chains("c1500");
+        assert!(z.contains(&EndChain { from: 20010, to: EndTo::Event(21015), refs: vec![], at_end: true, grounded: None }));
+        assert!(z.contains(&EndChain { from: 20004, to: EndTo::Event(21008), refs: vec![(1_000_021, true)], at_end: true, grounded: None }));
+        // c1190 20000 -> 21001 under ref 1000023; its else (W_GuardIdle) is no event chain.
+        assert_eq!(hks_end_chains("c1190").iter().filter(|c| c.from == 20000).collect::<Vec<_>>(), vec![&EndChain { from: 20000, to: EndTo::Event(21001), refs: vec![(1_000_023, true)], at_end: true, grounded: None }]);
+        // An else of an env check: c1010 20010 -> 21001 without ref 1000024.
+        assert!(hks_end_chains("c1010").contains(&EndChain { from: 20010, to: EndTo::Event(21001), refs: vec![(1_000_024, false)], at_end: true, grounded: None }));
+    }
+}
+
+/// An FMG (Sekiro: version 2, little endian, UTF-16 strings): id -> text.
+pub fn read_fmg(d: &[u8]) -> HashMap<u32, String> {
+    let mut out = HashMap::new();
+    let i32_ = |o: usize| d.get(o..o + 4).map(|b| i32::from_le_bytes(b.try_into().unwrap()));
+    let i64_ = |o: usize| d.get(o..o + 8).map(|b| i64::from_le_bytes(b.try_into().unwrap()));
+    let (Some(groups), Some(offsets)) = (i32_(0x0C), i64_(0x18)) else { return out };
+    for g in 0..groups.max(0) as usize {
+        let at = 0x28 + g * 16;
+        let (Some(index), Some(first), Some(last)) = (i32_(at), i32_(at + 4), i32_(at + 8)) else { break };
+        for k in 0..=(last - first).max(-1) {
+            let Some(o) = i64_(offsets as usize + (index + k) as usize * 8) else { break };
+            if o <= 0 {
+                continue;
+            }
+            let mut e = o as usize;
+            let mut units = Vec::new();
+            while let Some(b) = d.get(e..e + 2) {
+                let u = u16::from_le_bytes([b[0], b[1]]);
+                if u == 0 {
+                    break;
+                }
+                units.push(u);
+                e += 2;
+            }
+            out.insert((first + k) as u32, String::from_utf16_lossy(&units));
+        }
+    }
+    out
 }

@@ -1,0 +1,8 @@
+# Sprint 3 s, let go of sprint while still holding forward, steer left after 0.5 s, stop.
+0 stick 0 1
+0 press sprint
+180 release sprint
+210 stick -1 0
+270 stick 0 0
+330 free
+331 end

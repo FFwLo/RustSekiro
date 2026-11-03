@@ -18,12 +18,13 @@ use bevy::render::{
     extract_component::{ComponentUniforms, DynamicUniformIndex, ExtractComponent, ExtractComponentPlugin, UniformComponentPlugin},
     render_resource::{binding_types::*, *},
     renderer::{RenderContext, ViewQuery},
-    view::{ViewDepthTexture, ViewTarget, ViewUniform, ViewUniformOffset, ViewUniforms},
+    view::{ViewDepthStencilTexture, ViewTarget, ViewUniform, ViewUniformOffset, ViewUniforms},
     RenderApp, RenderStartup,
 };
 
 /// The fog values the pass reads (height_fog.wgsl `GameFog`), in metres and scene radiance.
 #[derive(Component, Clone, ExtractComponent, ShaderType, Debug, PartialEq, Default)]
+#[extract_app(RenderApp)]
 pub struct GameFog {
     /// FixedDensity', kH, sH, the height offset: the arena origin's map Y - HeightFogOffset.
     pub density: Vec4,
@@ -94,7 +95,7 @@ pub struct HeightFogPlugin;
 
 impl Plugin for HeightFogPlugin {
     fn build(&self, app: &mut App) {
-        bevy::asset::embedded_asset!(app, "height_fog.wgsl");
+        bevy::asset::embedded_asset!(app, "height_fog.wesl");
         app.add_plugins((ExtractComponentPlugin::<GameFog>::default(), UniformComponentPlugin::<GameFog>::default()))
             .add_systems(Update, depth_binding);
         if let Some(render) = app.get_sub_app_mut(RenderApp) {
@@ -105,12 +106,23 @@ impl Plugin for HeightFogPlugin {
     }
 }
 
-/// Lets a fogged camera's depth buffer be sampled (keeping the usages others added).
-fn depth_binding(mut cams: Query<&mut Camera3d, With<GameFog>>) {
-    for mut c3 in &mut cams {
+/// The depth usage this module added (not one another system set).
+#[derive(Component)]
+struct FogDepthBinding;
+
+/// Lets a fogged camera's depth buffer be sampled (keeping the usages others added), and takes
+/// that back when the fog goes: a switch from a fogged map (the castle top) to one without
+/// (Hirata, VolumetricFog off) kept the sampled depth, and with the sun's shadows on the Vulkan
+/// driver lost the device 20-30 s later (2026-10-17; a fresh start on Hirata never did).
+fn depth_binding(mut commands: Commands, mut cams: Query<(Entity, &mut Camera3d, Has<GameFog>, Has<FogDepthBinding>)>) {
+    for (e, mut c3, fogged, ours) in &mut cams {
         let usage = TextureUsages::from(c3.depth_texture_usages);
-        if !usage.contains(TextureUsages::TEXTURE_BINDING) {
+        if fogged && !usage.contains(TextureUsages::TEXTURE_BINDING) {
             c3.depth_texture_usages = (usage | TextureUsages::TEXTURE_BINDING).into();
+            commands.entity(e).insert(FogDepthBinding);
+        } else if !fogged && ours {
+            c3.depth_texture_usages = (usage - TextureUsages::TEXTURE_BINDING).into();
+            commands.entity(e).remove::<FogDepthBinding>();
         }
     }
 }
@@ -139,7 +151,7 @@ fn init_pipeline(mut commands: Commands, assets: Res<AssetServer>, fullscreen: R
                 layout: vec![layout.clone()],
                 vertex: fullscreen.to_vertex_state(),
                 fragment: Some(FragmentState {
-                    shader: assets.load("embedded://sv1/height_fog.wgsl"),
+                    shader: assets.load("embedded://rustsekiro/height_fog.wesl"),
                     shader_defs: if multisampled { vec!["MULTISAMPLED_DEPTH".into()] } else { vec![] },
                     targets: vec![Some(ColorTargetState { format: TextureFormat::Rgba16Float, blend: None, write_mask: ColorWrites::ALL })],
                     ..default()
@@ -154,7 +166,7 @@ fn init_pipeline(mut commands: Commands, assets: Res<AssetServer>, fullscreen: R
 
 /// Skipped (ViewQuery) on views without a [`GameFog`].
 fn fog(
-    view: ViewQuery<(&ViewTarget, &ViewDepthTexture, &Msaa, &ViewUniformOffset, &DynamicUniformIndex<GameFog>)>,
+    view: ViewQuery<(&ViewTarget, &ViewDepthStencilTexture, &Msaa, &ViewUniformOffset, &DynamicUniformIndex<GameFog>)>,
     pipeline: Res<FogPipeline>,
     cache: Res<PipelineCache>,
     views: Res<ViewUniforms>,
@@ -162,15 +174,20 @@ fn fog(
     mut ctx: RenderContext,
 ) {
     let (target, depth, msaa, offset, index) = view.into_inner();
+    // Bevy 0.20: the depth attachment's depth-only view (0.19's ViewDepthTexture::view()).
+    let Some(depth_view) = depth.attachment.depth_stencil_views().depth_only_view() else {
+        return;
+    };
     let (layout, id) = &pipeline.0[usize::from(msaa.samples() > 1)];
     let (Some(pso), Some(view_binding), Some(fog_binding)) = (cache.get_render_pipeline(*id), views.uniforms.binding(), uniforms.uniforms().binding()) else {
         return;
     };
-    if target.main_texture_format() != TextureFormat::Rgba16Float {
+    // The frame the fog comes or goes, its depth usage (depth_binding) is a frame behind.
+    if target.main_texture_format() != TextureFormat::Rgba16Float || !depth.texture().usage().contains(TextureUsages::TEXTURE_BINDING) {
         return;
     }
     let post = target.post_process_write();
-    let bindings = ctx.render_device().create_bind_group("game fog", &cache.get_bind_group_layout(layout), &BindGroupEntries::sequential((post.source, depth.view(), view_binding, fog_binding)));
+    let bindings = ctx.render_device().create_bind_group("game fog", &cache.get_bind_group_layout(layout), &BindGroupEntries::sequential((post.source, depth_view, view_binding, fog_binding)));
     let mut pass = ctx.begin_tracked_render_pass(RenderPassDescriptor {
         label: Some("game fog"),
         color_attachments: &[Some(RenderPassColorAttachment { view: post.destination, depth_slice: None, resolve_target: None, ops: Operations { load: LoadOp::Load, store: StoreOp::Store } })],

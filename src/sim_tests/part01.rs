@@ -30,6 +30,9 @@ pub(crate) fn app_geom(chr: &str, npc_row: Option<i64>) -> App {
 }
 
 pub(crate) fn app_build(chr: &str, npc_row: Option<i64>, group: Vec<crate::config::GroupEnemy>, geometry: bool) -> App {
+    // The game's idols and Sculptor (the host's hooks; IdolPlugin sets them in the game). No items
+    // on the ground: the pickup list is global and other tests fill it.
+    crate::encounter::set_world(crate::encounter::WorldHooks { take_item: |_| false, ..crate::idol::world_hooks() });
     let mut app = App::new();
     app.add_plugins(MinimalPlugins)
         .insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_secs_f64(1.0 / 60.0)))
@@ -39,9 +42,11 @@ pub(crate) fn app_build(chr: &str, npc_row: Option<i64>, group: Vec<crate::confi
         let mut config = app.world_mut().resource_mut::<crate::config::GameConfig>();
         config.enemy.chr = chr.to_string();
         config.enemy.npc_row = npc_row;
+        // A fresh Wolf (Vitality 1), whatever config.toml plays at.
+        config.posture.player_level = 1.0;
         config.enemy.group = group;
     }
-    app.add_plugins((DataPlugin, ActorPlugin, CombatPlugin, PlayerPlugin, EnemyPlugin, crate::prosthetic::ProstheticPlugin, crate::status::StatusPlugin, crate::enemy_bullet::EnemyBulletPlugin));
+    app.add_plugins((DataPlugin, ActorPlugin, CombatPlugin, PlayerPlugin, EnemyPlugin, crate::prosthetic::ProstheticPlugin, crate::status::StatusPlugin, crate::enemy_bullet::EnemyBulletPlugin, crate::hks_wolf::HksWolfPlugin, crate::hks_enemy::HksEnemyPlugin));
     if geometry {
         app.add_plugins((bevy::transform::TransformPlugin, crate::anim::AnimPlugin, crate::model::GeometryPlugin));
     }
@@ -74,16 +79,34 @@ pub(crate) fn enemy_state(app: &mut App) -> (String, String, f32) {
     (a.state.clone(), a.anim.clone(), a.t)
 }
 
+thread_local! {
+    /// boss_in_play's chr filter for this test's thread (None: every chr).
+    pub(crate) static BOSS_CHR: std::cell::Cell<Option<&'static str>> = const { std::cell::Cell::new(None) };
+    /// Cast members already deathblown, passed over (the caught monkeys).
+    pub(crate) static BOSS_DONE: std::cell::RefCell<Vec<Entity>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
 /// The enemy the fight is about: the one character (the map script's cast aside), or, once the
 /// script has swapped it out (Lady Butterfly's 1000800 -> 1000810 at her change, m10 11005812),
-/// the enabled one with the largest HP pool.
+/// the enabled one with the largest HP pool. A main that is only a stand-in (Enemy::stand_in)
+/// is not it; with BOSS_CHR set, only that chr counts (the Folding Screen Monkeys' four c1260,
+/// not the ordinary c1250 monkeys of the same fight, whose larger HP would come first); those in
+/// BOSS_DONE are passed over.
 pub(crate) fn boss_in_play(world: &mut World) -> Entity {
+    try_boss_in_play(world).expect("an enemy")
+}
+
+/// boss_in_play, None when no one is left (all four monkeys caught).
+pub(crate) fn try_boss_in_play(world: &mut World) -> Option<Entity> {
+    let only = BOSS_CHR.with(|c| c.get());
     let mut q = world.query_filtered::<(Entity, &Enemy, &Actor, Has<crate::enemy::Cast>), With<Enemy>>();
-    let all: Vec<(Entity, bool, f32, bool)> = q.iter(world).map(|(ent, e, a, cast)| (ent, e.disabled, a.hp_max, cast)).collect();
+    let all: Vec<(Entity, bool, f32, bool, usize)> = q.iter(world).map(|(ent, e, a, cast)| (ent, e.disabled || e.stand_in || BOSS_DONE.with(|d| d.borrow().contains(&ent)), a.hp_max, cast, a.kind)).collect();
+    let combat = world.resource::<Combat>();
+    let all: Vec<(Entity, bool, f32, bool)> = all.into_iter().filter(|c| only.is_none_or(|chr| combat.kind(c.4).foe.chr == chr)).map(|c| (c.0, c.1, c.2, c.3)).collect();
     if let Some(main) = all.iter().find(|c| !c.3 && !c.1) {
-        return main.0;
+        return Some(main.0);
     }
-    all.iter().filter(|c| !c.1).max_by(|x, y| x.2.total_cmp(&y.2)).or(all.iter().find(|c| !c.3)).map(|c| c.0).expect("an enemy")
+    all.iter().filter(|c| !c.1).max_by(|x, y| x.2.total_cmp(&y.2)).or(all.iter().find(|c| !c.3)).map(|c| c.0)
 }
 
 pub(crate) fn player_state(app: &mut App) -> (String, String, f32, f32) {
@@ -395,7 +418,7 @@ pub(crate) fn stepping_into_a_perilous_thrust_is_a_mikiri() {
 }
 
 /// A step's TAE 954 IFrames dodge by the attack's AtkParam trackType (FUN_140b68a50 bit test,
-/// 140b6.c:4234-4241): the side / back steps are types 6 / 7 / 2, the jump start type 1. A side
+/// <decomp ref>): the side / back steps are types 6 / 7 / 2, the jump start type 1. A side
 /// step through the General's perilous sweep (judge 140, trackType 1) is hit; a back step through
 /// his perilous thrust (150, trackType 6) passes; a jump clears the sweep. Round 31: type 2 was
 /// "everything", so a step dodged the sweep too.
@@ -888,17 +911,19 @@ pub(crate) fn guard_walk_uses_the_guard_move_anims() {
         app.update();
     }
     let (_, _, _, p0) = player_actor(&mut app);
-    // Stick toward +Z = toward the camera (camera yaw 0 looks along -Z): the free guard walk faces
-    // the camera's direction, so this is walking backward.
+    // Stick toward +Z = toward the camera (camera yaw 0 looks along -Z): the free guard walk turns
+    // to the stick and walks forward (2026-10-17, the user: before, it faced the camera's
+    // direction and walked backward).
     app.world_mut().resource_mut::<PadInput>().stick = Vec2::new(0.0, -1.0);
     for _ in 0..60 {
         app.update();
     }
     let (state, _, _, p1) = player_actor(&mut app);
-    assert_eq!(state, "DeflectGuardMoveB");
-    // DeflectGuardMoveF root motion: 2.0 m over 40 frames = 1.5 m/s.
+    assert_eq!(state, "DeflectGuardMoveF");
+    // DeflectGuardMoveF root motion: 2.0 m over 40 frames = 1.5 m/s, less the turn.
     let moved = (p1 - p0).with_y(0.0).length();
-    assert!((moved - 1.5).abs() < 0.3, "moved {moved}");
+    assert!(moved > 0.9 && moved < 1.8, "moved {moved}");
+    assert!(p1.z > p0.z + 0.8, "{p0:?} -> {p1:?}");
 }
 
 #[test]
@@ -998,30 +1023,40 @@ pub(crate) fn neck_grab_holds_then_throws() {
     assert!(thrown, "{}", log_text(&app));
 }
 
+/// Atlas armor.flag73-parry-gate: an enemy swing has no armour of its own. The General's
+/// a000_003000 (ChrActionFlag 73 at frames 1-9 and 54-80, nothing else) flinches from Wolf's
+/// slash mid-swing; his 3003 swings on through frames 5-24, where ChrActionFlag 24 and the
+/// spCategory 1001 SpEffect 5350 hold.
 #[test]
 pub(crate) fn enemy_mid_swing_takes_the_hit_without_flinching() {
-    let mut app = app();
-    {
-        // a000_003000 at frame 7: flag 73 (damage motion) is off from frame 9 until the recovery.
-        let world = app.world_mut();
-        let mut q = world.query::<(&mut Enemy, &mut Actor)>();
-        let (mut e, mut a) = q.single_mut(world).unwrap();
-        e.force_anim(&mut a, "a000_003000");
-        a.t = 7.0 / TAE_FPS;
-        a.prev_t = a.t;
-        // Swinging away from the player, so only the player's cut lands.
-        a.yaw = std::f32::consts::PI;
-    }
-    app.world_mut().resource_mut::<PadInput>().press(Action::Attack);
-    for _ in 0..40 {
-        app.update();
-        if log_text(&app).contains("you hit") {
-            break;
+    for (anim, ez, armoured) in [("a000_003003", "Ez3003", true), ("a000_003000", "Ez3000", false)] {
+        let mut app = app();
+        {
+            let world = app.world_mut();
+            let mut q = world.query::<(&mut Enemy, &mut Actor)>();
+            let (mut e, mut a) = q.single_mut(world).unwrap();
+            e.force_anim(&mut a, anim);
+            a.t = 7.0 / TAE_FPS;
+            a.prev_t = a.t;
+            // Swinging away from the player, so only the player's cut lands.
+            a.yaw = std::f32::consts::PI;
+        }
+        app.world_mut().resource_mut::<PadInput>().press(Action::Attack);
+        for _ in 0..40 {
+            app.update();
+            if log_text(&app).contains("you hit") {
+                break;
+            }
+        }
+        let (state, got, t) = enemy_state(&mut app);
+        assert!(log_text(&app).contains("you hit"), "{anim}: {}", log_text(&app));
+        if armoured {
+            assert!(t * TAE_FPS <= 24.0, "{anim}: the hit landed after the armour, frame {:.1}", t * TAE_FPS);
+            assert_eq!((state.as_str(), got.as_str()), (ez, anim), "{}", log_text(&app));
+        } else {
+            assert!(state.starts_with("Damage"), "{anim} flinches: {state} {got} {}", log_text(&app));
         }
     }
-    let (state, anim, _) = enemy_state(&mut app);
-    assert!(log_text(&app).contains("you hit"), "{}", log_text(&app));
-    assert_eq!((state.as_str(), anim.as_str()), ("Ez3000", "a000_003000"), "{}", log_text(&app));
 }
 
 #[test]
@@ -1562,4 +1597,27 @@ pub(crate) fn posture_break_staggers_then_a_second_hit_knocks_wolf_down() {
     }
     assert!(seen.iter().any(|s| s.starts_with("StandDamageBreakDown_")), "{seen:?}");
     assert!(seen.iter().any(|s| s.starts_with("StandDamageLargeDownWakeUp_")), "{seen:?}");
+}
+
+/// The upper-action states come from the script's own table (c0000_cmsg g_paramHkbState
+/// STATE_TYPE_UPPER_ACTION*): the tools' release-on-the-move too (its legs' run counts for
+/// GetLocomotionType, so W_StandMoveLowerStart fires once, not every frame).
+#[test]
+pub(crate) fn upper_action_states_are_the_scripts() {
+    if !crate::paths::extracted().join("hks_src/c0000_cmsg.lua").exists() {
+        return;
+    }
+    for s in ["GroundSubAttackCombo1ReleaseMove", "GroundSubAttackLockOnReleaseMove", "ItemGourdDrinkMove", "CrouchSubAttackCombo1Move", "DeflectGuardToStandMoveRun"] {
+        assert!(crate::player::is_upper_action(s), "{s}");
+    }
+    for s in ["GroundSubAttackCombo1", "StandIdle", "ItemGourdDrink", "Locomotion"] {
+        assert!(!crate::player::is_upper_action(s), "{s}");
+    }
+    // env 1105, the STATE_TYPE_STANDBY* states: the sprint's walk-out stops on letting go.
+    for s in ["StandMoveStartFromSprint", "StandMoveLoopFromSprint", "SprintLoop", "StandIdle", "GroundSpacialAttackHoldLoop"] {
+        assert!(crate::player::is_standby(s), "{s}");
+    }
+    for s in ["SprintStartFromStep_F", "GroundStep_F", "GroundAttackCombo1", "ItemGourdDrinkMove"] {
+        assert!(!crate::player::is_standby(s), "{s}");
+    }
 }

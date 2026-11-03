@@ -426,3 +426,62 @@ varied); the 5 m threshold under SpEffect type 0x155; a non-lethal fall that tak
 reached it); an air art in the air (none started from the jump: the ground art ran, 107316700, and Wolf fell off
 the cliff); the head kick (no enemy under Wolf); NoGravity with a horizontal velocity (all four windows on a
 vertical jump); the void fall (FallDeadReturn) cost.
+
+## From the public repo (2026-10-19 to 10-23, merged 2026-11-03)
+
+- 2026-10-15 LIVE auto-test (Sekiro via me3 `..\me3\sekiro-research.me3`, keys sent by
+- Foot IK (2026-10-23, anim.rs `foot_ik`, Wolf only): c0000.hkx's hkbFootIkDriverInfo / FootIKControlsModifier values (rays 0.8 m up / down, ankle offset -0.5..0.5 m, ascending gain 0.2, descending 1, on/off 0.2) on a two-bone thigh / calf solve per leg, the foot keeping its animated turn; the pelvis drop is the exe's FUN_140b3f920 (clamp(feet height difference, 0, TAE 944 limit), 0.2 per 30 fps frame, not under TAE flag 113), so only crouch and the 944 clips lower the body. The player's capsule stands on the flat lo collision where the game has one (the Stairway platform's l-layer is a flat slab 0.2 m over the drawn craters, #276); the feet are cast on the collision the floor query uses. Gaps: ankle pitch / roll, which 944 float is which foot, the RootPos sign. `SHINOBI_FOOT_IK=0` turns it off.
+- Enemy foot IK (2026-10-23, anim.rs `enemy_foot_ik`): 43 of the 73 enemy behaviours carry an hkbFootIkDriverInfo (Characters_c####.hkx) and an always-on hkbFootIkControlsModifier (Behaviors_c####.hkx); the 39 two-leg ones (legs ending in Foot_Target chains) run Wolf's solve with their own rays (0.5-0.8 m up, 0.5-2.0 down), ankle limits (mostly +-0.7; c5020 / c7300 -0.1..0.7) and ascending gain (0.2, 0.5 or 1; descending 1, on/off 0.2 everywhere), the pelvis drop on their Root bone. None: the 27 without a driver (c1000, the c1200 family, ...), c1040 / c1140 (controls modifier only). Cast through `Terrain::enemy_foot_floor`: on sekiro-rs's map the `h` ground kept around Wolf, else the enemy floor. Off-tick characters (Actor::lod) are skipped. Gaps: the four-legged c1100, c1150, c1370, c5080 (toe and hand chains), the driver's Foot_Target helper chains (the solve turns L_Thigh / Calf / Foot).
+- Sv1: `map::fall_death_dist` (HitMtrlParam, disableFallDamage rows = no death), landing in player.rs: fatal drop -> `LandDeadReturnStart` (a000_200909, HKS DAMAGE_TYPE_LAND_DEAD_RETURN) -> back at the oldest of `Player::safe_ring` (the last 5 grounded ticks on dry ground, as the exe's ring: FUN_140a75f00 pushes every grounded frame, CSFallDeadStep::STEP_WarpPlayer FUN_1411d70e0 takes the oldest via FUN_140a71020; a ledge only grazed on the way down is not the return point, #201; a spot enters only over a walkable floor within 0.25 m of the feet, `player::safe_spot`, as the exe's FUN_140a00b40 gate (ground contact, no slide flag, a map hit under the feet), so resting against a too-steep face below a cliff is no return point; gap: MSB Collision UnkT17); falling 40 m with no ground below -> `FallDeadReturnStart` (a000_199120). Test `a_forty_metre_fall_returns_wolf_to_safe_ground`. The three states were added to tools/sekiro-extract/export_states.txt (re-export needed).
+- 2026-10-22 non-lethal fall damage and the fall height:
+  - The fall height is the last ground's Y minus Y now, not the flight's top: P+0x850 (Y +0x854) is
+    copied only on a grounded update with no TAE 920 velocity change (<decomp ref>), and a warp
+    sets it (<decomp ref>). `Player::air_top` is that, set at the top of player.rs decide on every
+    grounded tick. A jump off flat ground reads 0; a ledge reads its own height.
+  - Landing short of the kill: maxHP x `terrain::fall_damage_share` (FUN_140843660): 0 under 20 m,
+    CalcCorrectGraph 210 (identity 20-100) x 0.01, graphs 211 / 212 a flat 100 %, x HitMtrlParam
+    fallDamageRate (0.5 on 22 / 36 / 38), floored to whole HP; none on a disableFallDamage row or
+    while stateInfo 47 is worn (SpEffects 640 / 4050 / 4053). No reaction clip of its own.
+  - Aged (stateInfo 341): every landing from 5 m kills (the fall-return death), in the aged
+    movement's landing too.
+  - Kept: the fall return costs 1/3 of max HP (an earlier request); the exe's is 0.4 (DAT_143b01958),
+    dying when HP is at or under it.
+  - Tests: fall_damage_is_a_hundredth_of_max_hp_per_metre_from_twenty,
+    an_aged_wolf_dies_falling_five_metres, a_forty_metre_fall_returns_wolf_to_safe_ground (25 m now
+    costs 25 %); the jump-off-ledge tests set the ledge's height (2.3 m -> 3.5 m for the 3 m stiff
+    landing from a jump). gap: whether the Grappling Hook's flight moves P+0x850.
+- 2026-10-22 swimming in the map's own water:
+  - The water planes are HitMtrlParam rows 20-24 and 35-38; the deep ones (22 / 36 / 38, fallDamageRate
+    0.5, fallDeathDist 80) over a bed are surfaces, not floors (`Terrain::floor_tri` takes them only
+    with nothing under them: the Yasha Ape's pool, m11 51000000, is one), and `terrain::water_surface`
+    gives the highest water plane under a height (the cell's triangles, or sekiro-rs
+    `Ground::water_surface` on the SR map through `WorldCollision::water_surface`).
+  - swim.rs `water_at`: the boxes first, else a deep plane within 3 m above the feet makes the
+    water column below its height.
+  - gap: the native swim entry (BEH_R_STAND_MOVE_TO_SWIM 31) and its depth rule are not traced;
+    env 3025 is not a swim test. A long fall into deep water no longer reads material 22 for the
+    fall-death distance (the floor below is the bed).
+  - Test a_deep_water_plane_is_a_surface_not_a_floor (terrain.rs).
+
+## Atlas movement pass (2026-10-19)
+
+- Walk-off: HKS BEH_R_FALL starts the fall only once env 224 (the height fallen) is 30 cm while
+  moving (TAE refs 90-92 or the move loop). Ours keeps the move loop over the first 30 cm and
+  lands without a land clip under it; Wolf follows the floor down 30 cm (`FALL_START_DROP`).
+- Weapon state: BEH_A_GROUND_JUMP / WALL_JUMP / ITEM_USE / ADD_SUB_WEAPON_CHANGE need sheathed
+  inside a non-combat area (ref 600: SpEffect 100298 / 100308 / 108900) and drawn outside it
+  (`arm_style_matches`). With X sheathing anywhere, a sheathed Wolf outside such an area cannot
+  jump, use items or switch tools.
+- Landing: dodge pressed or held (env 1106 / 1108 SP_MOVE) with the sword drawn steps out of the
+  landing before the stick and land clips (BEH_R_LAND 2027 / 2044). Into deep water from 20 m:
+  LandWaterFreeFallLongStiff (a000_210011).
+- Knockdown step: StandStepFromDown_* turns by the stick minus PRM_4DIR_JUMP_ANGLE_CENTER.
+- Hang: a jump is always HangJumpReady (BEH_A_HANG_END_CONNECT before BEH_A_HANG_CLIMB); the hang
+  button climbs. Wall kills only from the peek (ThrowGrabType COVER_LOOK).
+- Land-ready poses (2026-10-21): env 248 = the exe's ground probe (physics +0x929 from FUN_140bce730: feet within the 0.3 m attach + probe radius; LAND_PROBE 0.4 m from the movement recording, 0.33-0.47 m), env 3003 = vy x 1000 (mm/s, gate -2 m/s). Replay match 5/5.
+- Not done: crouch landings, swamp / waterside limits
+  (floor material SpEffects are not applied), the turn lean of Move_onGenerate.
+- Move window latch (2026-10-21): env 2000 = flag 11 now and last frame (exe FUN_140b36410 + FUN_1407d8ce0), so moves out of actions start a tick after the window's first frame (player::accept_move). Jump gap seen in the recordings: the vertical jump rises from tick ~11 after W_GroundJumpReady (y 0.16 at tick 12, peak 1.98 m at 36, touchdown ~60, land event 61-62); ours takes off ~2 ticks earlier (peak at 33, land event 60).
+- Locked quick turn out of the run / walk stop (2026-10-21): locked on, letting go of the stick with the target more than 60 deg off runs the script's _GroundQuickTurn from BEH_A_GROUND_MOVE_STOP (W_StandQuickTurn{Right,Left}{90,180}); player.rs only turned from StandIdle, so the event fired every frame from StandRunStop*. hks_wolf now takes it from any state (test a_quick_turn_out_of_a_run_stop_is_taken_once). Open from the lock replays: after a locked sprint our walk-out turns to the target at once and the short way; the game keeps the sprint's facing through a000_000450 and turns in 000460 (rec 210505 @3076-3091).
+- 2026-10-21 Locked sprint and TurnAngle: the stop validator / branch read TurnAngle in SprintStartFromStep even when locked (elsewhere MoveAngle when env 1118). In STYLE_TYPE_SPRINT states TurnAngle is the stick's angle, not the lock target's (hks_wolf move_vars; inferred from the game keeping a locked back-step sprint going, the exe's TurnAngle source manip+0x24 is not traced). Test a_locked_sprint_away_from_the_target_keeps_going.
+- 2026-10-21 The move's stop is the script's: BEH_A_GROUND_MOVE_STOP's W_StandRunStop / W_StandWalkStop (by TAE ref 91 MOVING_RUN on the shown clip) is taken out of Locomotion whatever player.rs's speed level (hks_wolf, player::play_move_stop). Test a_move_out_of_a_step_let_go_at_once_stops_once.

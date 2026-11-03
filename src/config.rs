@@ -70,6 +70,29 @@ pub struct VideoConfig {
     /// `SHINOBI_CLOTH_RANGE` overrides it for one run.
     #[serde(default)]
     pub cloth: ClothSetting,
+    /// The HUD and menus on a centred 16:9 stage ("16:9", ui_stage.rs) or across the whole
+    /// window ("stretch"); only matters on a window wider than 16:9.
+    #[serde(default)]
+    pub hud_aspect: HudAspect,
+}
+
+#[derive(serde::Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum HudAspect {
+    #[default]
+    #[serde(rename = "16:9")]
+    Stage,
+    #[serde(rename = "stretch")]
+    Stretch,
+}
+
+impl HudAspect {
+    /// The config.toml spelling.
+    pub fn name(self) -> &'static str {
+        match self {
+            HudAspect::Stage => "16:9",
+            HudAspect::Stretch => "stretch",
+        }
+    }
 }
 
 #[derive(serde::Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -102,7 +125,7 @@ impl ClothSetting {
 
 impl Default for VideoConfig {
     fn default() -> Self {
-        VideoConfig { fullscreen: false, vsync: true, resolution: None, shadow_res: None, cloth: ClothSetting::On }
+        VideoConfig { fullscreen: false, vsync: true, resolution: None, shadow_res: None, cloth: ClothSetting::On, hud_aspect: HudAspect::Stage }
     }
 }
 
@@ -178,6 +201,14 @@ fn default_hour() -> f32 {
 #[derive(Deserialize, Clone, Debug)]
 pub struct CameraConfig {
     pub mouse_sensitivity: f32,
+    /// How far the free camera swings round after Wolf's sideways move, 0-1 (1 = the
+    /// CameraParam fulcrum's full swing; camera.rs).
+    #[serde(default = "default_follow_swing")]
+    pub follow_swing: f32,
+}
+
+fn default_follow_swing() -> f32 {
+    0.5
 }
 
 #[derive(Deserialize, Clone, Debug)]
@@ -195,13 +226,18 @@ pub struct PlayerConfig {
     /// Testing cheat: the Spirit Emblems never run out (also the F1 menu's toggle).
     #[serde(default)]
     pub infinite_emblems: bool,
-    /// Resurrection nodes (the game starts with 1).
+    /// Resurrection nodes (the user, 2026-10-18: "2 ressurection nodes just like in base game, one
+    /// base and one extra").
     #[serde(default = "default_resurrections")]
     pub resurrections: u32,
     /// Equipped combat art = its virtual weapon (EquipParamWeapon): 5100 Whirlwind Slash,
     /// 5300 Ichimonji, 5200 / 5400-5900 the others (anim group a<spAtkcategory>).
     #[serde(default = "default_combat_art")]
     pub combat_art: i64,
+    /// Equipped Shinobi ninjutsu (EquipParamGoods, goodsType 8; 0 = none): 2100 Bloodsmoke,
+    /// 2110 Puppeteer, 2120 Bestowal (ninjutsu.rs).
+    #[serde(default)]
+    pub ninjutsu: i64,
     /// Prosthetic tool slots (EquipParamWeapon 70000-79200, up to 3 like the game; Z switches):
     /// 70000 Loaded Shuriken, 71000 Shinobi Firecracker, 72000 Flame Vent, 73000 Loaded Axe,
     /// 74000 Mist Raven, 75000 Sabimaru, 76000 Loaded Umbrella, 77000 Divine Abduction,
@@ -212,6 +248,32 @@ pub struct PlayerConfig {
     /// Empty = level-1 Wolf.
     #[serde(default)]
     pub skills: Vec<i64>,
+    /// Skill points to spend at a Sculptor's Idol (Acquire Skills, src/skill_tree.rs); defeated
+    /// enemies' experience adds more (src/experience.rs).
+    #[serde(default)]
+    pub skill_points: u32,
+    /// Experience towards the next skill point.
+    #[serde(default)]
+    pub skill_exp: u32,
+    /// Skill points earned from experience so far, spent or not (the next costs more).
+    #[serde(default)]
+    pub skill_level: u32,
+    /// Wolf's look (Change Form at an idol, src/form.rs): 0 Wolf, 1 Shura, 2 Ashina, 3 Tengu.
+    #[serde(default)]
+    pub form: u32,
+    /// Goods held besides the gourd and the emblems: [EquipParamGoods id, count] (src/items.rs).
+    #[serde(default)]
+    pub items: Vec<(i64, u32)>,
+    /// The five quick-item slots (goods ids, 0 empty); R uses the one in hand, C moves on.
+    #[serde(default = "default_quick_items")]
+    pub quick_items: Vec<i64>,
+    /// Base prosthetic tools made (EquipParamWeapon 7X000; the Sculptor's Workshop,
+    /// src/workshop.rs). Default: all ten.
+    #[serde(default = "default_owned_tools")]
+    pub owned_tools: Vec<i64>,
+    /// Prosthetic tool upgrades bought (SkillParam 700+, workshop.rs).
+    #[serde(default)]
+    pub upgrades: Vec<i64>,
     /// Every move the game locks behind a skill (`combat::action_unlocked`: mid-air deflect / tools
     /// / arts, the sprint slide, the Prosthetic Arts follow-ups) is open, as for a Wolf with the
     /// whole tree. false = only those the `skills` list unlocks.
@@ -225,6 +287,23 @@ pub struct PlayerConfig {
     /// x1.5 poison / burn and x1.2 terror build-up (`player::wolf_worn`). Default off.
     #[serde(default)]
     pub hard_mode: bool,
+    /// Attack Power (1 at the start; each Memory offered adds 1, up to 99): Wolf wears SpEffect
+    /// 160000 + it, "Player Growth_Core Level N" (combat::growth_sp).
+    #[serde(default = "default_attack_power")]
+    pub attack_power: u32,
+}
+
+fn default_attack_power() -> u32 {
+    1
+}
+
+fn default_owned_tools() -> Vec<i64> {
+    (70000..80000).step_by(1000).collect()
+}
+
+fn default_quick_items() -> Vec<i64> {
+    vec![3000, 0, 0, 0, 0]
+
 }
 
 fn default_sen() -> u32 {
@@ -248,7 +327,7 @@ fn default_enemy_chr() -> String {
 }
 
 fn default_resurrections() -> u32 {
-    1
+    2
 }
 
 fn default_emblems() -> u32 {
@@ -257,7 +336,7 @@ fn default_emblems() -> u32 {
 
 impl Default for PlayerConfig {
     fn default() -> Self {
-        Self { gourd_charges: 3, spirit_emblems: default_emblems(), infinite_emblems: false, resurrections: default_resurrections(), combat_art: default_combat_art(), prosthetics: default_prosthetics(), skills: Vec::new(), unlock_all_moves: true, sen: default_sen(), hard_mode: false }
+        Self { gourd_charges: 3, spirit_emblems: default_emblems(), infinite_emblems: false, resurrections: default_resurrections(), combat_art: default_combat_art(), ninjutsu: 0, prosthetics: default_prosthetics(), skills: Vec::new(), skill_points: 0, skill_exp: 0, skill_level: 0, form: 0, items: Vec::new(), quick_items: default_quick_items(), owned_tools: default_owned_tools(), upgrades: Vec::new(), unlock_all_moves: true, sen: default_sen(), hard_mode: false, attack_power: default_attack_power() }
     }
 }
 
@@ -348,7 +427,7 @@ impl GameConfig {
         crate::paths::root().join("config.toml")
     }
 
-    fn load() -> Result<Self, String> {
+    pub(crate) fn load() -> Result<Self, String> {
         let path = Self::path();
         let text = std::fs::read_to_string(&path)
             .map_err(|e| format!("Could not read {}: {e}", path.display()))?;

@@ -751,6 +751,30 @@ impl Fmod {
 
 pub struct FmodPlugin;
 
+/// The core's held sounds (sound_rules.rs `TrackedSounds`: effect nodes, heartbeats) as FMOD
+/// events: started, moved and stopped under their ids.
+fn play_tracked(mut fmod: NonSendMut<Fmod>, mut tracked: ResMut<crate::sound_rules::TrackedSounds>, mut live: Local<HashMap<u64, EventHandle>>) {
+    for cmd in tracked.cmds.drain(..) {
+        match cmd {
+            crate::sound_rules::SoundCmd::Play(s, key, pos) => {
+                if let Some(ev) = fmod.play_tracked(&key, pos) {
+                    live.insert(s.0, ev);
+                }
+            }
+            crate::sound_rules::SoundCmd::Move(s, pos) => {
+                if let Some(ev) = live.get(&s.0) {
+                    fmod.set_position(*ev, pos);
+                }
+            }
+            crate::sound_rules::SoundCmd::Stop(s) => {
+                if let Some(ev) = live.remove(&s.0) {
+                    fmod.stop(ev);
+                }
+            }
+        }
+    }
+}
+
 impl Plugin for FmodPlugin {
     fn build(&self, app: &mut App) {
         let sekiro = crate::paths::sekiro_dir();
@@ -772,7 +796,10 @@ impl Plugin for FmodPlugin {
                 let probe = ["c000004010", "c000004011", "c000006510", "s000003010", "c000001113", "c000001004", "c102004001"];
                 let found: Vec<&str> = probe.iter().copied().filter(|k| f.has(k)).collect();
                 info!("FMOD events: {:?}; probe {}/{} found {:?}", f.projects, found.len(), probe.len(), found);
-                app.insert_non_send(f).add_systems(PostUpdate, (load_new_kinds, load_talk_bank, apply_volume, apply_reverb, boss_music, pause_off_screen, update_fmod).chain());
+                app.insert_non_send(f)
+                    .init_resource::<crate::sound_rules::TrackedSounds>()
+                    .add_systems(PostUpdate, (load_new_kinds, load_talk_bank, apply_volume, apply_reverb, boss_music, pause_off_screen, update_fmod).chain())
+                    .add_systems(PostUpdate, play_tracked.after(crate::fxr::FxDraw).before(update_fmod));
             }
             Err(e) => warn!("FMOD event system unavailable ({e}); using the PCM samples"),
         }
@@ -856,7 +883,7 @@ impl ParamEase {
     }
 }
 
-fn apply_reverb(mut fmod: NonSendMut<Fmod>, map: Option<Res<crate::map::MapLighting>>, time: Res<Time>, mut ease: Local<ParamEase>) {
+fn apply_reverb(mut fmod: NonSendMut<Fmod>, map: Option<Res<crate::sound_rules::SoundPlace>>, time: Res<Time>, mut ease: Local<ParamEase>) {
     let v = std::env::var("SHINOBI_REVERB").ok().and_then(|v| v.parse().ok()).unwrap_or(map.map_or(0, |m| m.sound_space));
     if ease.target != Some(v) {
         info!("FMOD: reverb sd_reverb_size -> {v}");
@@ -906,7 +933,7 @@ pub(crate) fn fight_screen(screen: Option<&crate::menu::Screen>, from_fight: &mu
     use crate::menu::Screen;
     match screen {
         None => true,
-        Some(Screen::Playing | Screen::Paused) => {
+        Some(Screen::Playing | Screen::Paused | Screen::Idol) => {
             *from_fight = true;
             true
         }
@@ -982,9 +1009,10 @@ fn boss_music(
 }
 
 /// The game's sounds pause while the screen is not Playing (Fmod::set_paused): the menus stop
-/// the sim, and a looping effect sound kept going behind Paused, Title and the picker.
+/// the sim, and a looping effect sound kept going behind Paused, Title and the picker. The idol
+/// menu leaves the world running, so its sounds go on (the user: muted at an idol).
 pub(crate) fn pause_off_screen(mut fmod: NonSendMut<Fmod>, screen: Option<Res<State<crate::menu::Screen>>>, mut last: Local<Option<bool>>) {
-    let paused = screen.is_some_and(|s| *s.get() != crate::menu::Screen::Playing);
+    let paused = screen.is_some_and(|s| !matches!(*s.get(), crate::menu::Screen::Playing | crate::menu::Screen::Idol));
     if *last != Some(paused) {
         fmod.set_paused(paused);
         *last = Some(paused);
@@ -992,6 +1020,7 @@ pub(crate) fn pause_off_screen(mut fmod: NonSendMut<Fmod>, screen: Option<Res<St
 }
 
 fn update_fmod(mut fmod: NonSendMut<Fmod>, camera: Query<&GlobalTransform, With<Camera3d>>) {
+    let _prof = crate::perf::span("update_fmod");
     if let Ok(cam) = camera.single() {
         let t = cam.compute_transform();
         let (pos, vel, fwd, up) = (FVec::from(t.translation), FVec::from(Vec3::ZERO), FVec::from(*t.forward()), FVec::from(*t.up()));

@@ -1,0 +1,1224 @@
+[
+ {
+  "id": "frontend.boot-logos",
+  "verdict": "confirmed",
+  "reason": "The SB_Title sprite names and the menu screens 01_900_Black and 01_910_Fade exist and the footer text 401001 carries the copyright line; it stays an open question as no recording was opened.",
+  "needs_recording": false
+ },
+ {
+  "id": "frontend.boot-eula",
+  "verdict": "confirmed",
+  "reason": "Texts 401500, 401508, 401510 and 401511 read as quoted in the system message file and the long body texts 601001 onward exist.",
+  "needs_recording": false
+ },
+ {
+  "id": "frontend.boot-opening-movie",
+  "verdict": "confirmed",
+  "reason": "MenuParam PreOpeningMovie_WaitSec is 3.5 and the install holds openingmovie.bk2 (314346532 bytes) and stafflistmovie.bk2 (598104408 bytes).",
+  "needs_recording": false
+ },
+ {
+  "id": "frontend.boot-press-any-button",
+  "verdict": "confirmed",
+  "reason": "Texts 101000 and 401000 read PRESS ANY BUTTON and the exe holds the TitleStep strings quoted; ours shows the title choices in src/menu.rs Screen::Title.",
+  "needs_recording": false
+ },
+ {
+  "id": "frontend.boot-save-check",
+  "verdict": "confirmed",
+  "reason": "Texts 401110 to 401114 and the save-error texts match and the wide strings are in the exe.",
+  "needs_recording": false
+ },
+ {
+  "id": "frontend.boot-autosave-notice",
+  "verdict": "confirmed",
+  "reason": "The AutoSaveIcon exe symbol and the SaveIcon sprite files exist; the colour of the icon is web only, so it stays community.",
+  "needs_recording": false
+ },
+ {
+  "id": "frontend.loading-screens",
+  "verdict": "confirmed",
+  "reason": "The menu names 04_NowLoading and 02_903 to 02_990 and the loading classes are present as exe wide strings, and play_gate.rs in sekiro-rs exists and waits for load.",
+  "needs_recording": false
+ },
+ {
+  "id": "frontend.loading-tips",
+  "verdict": "confirmed",
+  "reason": "The tip files hold 86 titles and bodies, KnowledgeLoadScreenItemParam has 85 rows and 77 carry an unlock flag (49 on flag 6341, 19 on flag 6342).",
+  "needs_recording": false
+ },
+ {
+  "id": "frontend.title-screen",
+  "verdict": "confirmed",
+  "reason": "The title sprite and screen names exist and ours has build_title in src/menu.rs.",
+  "needs_recording": false
+ },
+ {
+  "id": "frontend.title-menu-items",
+  "verdict": "confirmed",
+  "reason": "Texts 401301 to 401320 and 401350 and 401351 read as quoted, and src/menu.rs has Start, Fight, Options and Quit only, so partial is right.",
+  "needs_recording": false
+ },
+ {
+  "id": "frontend.title-load-game",
+  "verdict": "confirmed",
+  "reason": "Texts 406000, 406010, 406011 and 406020 and the screen 05_010_ProfileSelect exist.",
+  "needs_recording": false
+ },
+ {
+  "id": "frontend.title-new-game",
+  "verdict": "confirmed",
+  "reason": "Texts 406001, 406012, 406013 and 401701 read as quoted and ours starts at once, so partial is right.",
+  "needs_recording": false
+ },
+ {
+  "id": "frontend.title-information",
+  "verdict": "confirmed",
+  "reason": "Texts 401400 to 401402 and 401601 exist and screen 05_020_TitleInformation is present.",
+  "needs_recording": false
+ },
+ {
+  "id": "frontend.save-file-location",
+  "verdict": "confirmed",
+  "reason": "Only web sources give the path, so it stays community.",
+  "needs_recording": false
+ },
+ {
+  "id": "frontend.save-data-chunks",
+  "verdict": "confirmed",
+  "reason": "All the SaveData class names are present as UTF-16 strings in the exe.",
+  "needs_recording": false
+ },
+ {
+  "id": "frontend.save-slots",
+  "verdict": "confirmed",
+  "reason": "Text 401701 says up to 10 profiles; the one-file claim is web only, so it stays an open question.",
+  "needs_recording": false
+ },
+ {
+  "id": "frontend.autosave-triggers",
+  "verdict": "confirmed",
+  "reason": "Counting 2000[5] Save Request in the EMEVD gives 32 call sites with the per-map split in the record (common 1, common_func 5, m11_02 9 and so on).",
+  "needs_recording": false
+ },
+ {
+  "id": "frontend.save-quit-game",
+  "verdict": "confirmed",
+  "reason": "Texts 115002, 110500, 110501 and 400003 read as quoted and src/game_menu.rs has a Return to Title entry in the options list.",
+  "needs_recording": false
+ },
+ {
+  "id": "frontend.reload-position",
+  "verdict": "confirmed",
+  "reason": "There are 19 Set Player Respawn Point 2003[23] uses and the quick-save behaviour is web only, so community is right; src/idol.rs exists.",
+  "needs_recording": false
+ },
+ {
+  "id": "frontend.newgame-flags",
+  "verdict": "corrected",
+  "reason": "Common event 50 sets 8306 on, 6000 off and 6001 on and starts 820, 100, 6930, 6935, 700 and 702 as quoted, but flag 8306 is the prologue state of the Reservoir, not a flag that places the Sculptor in the temple.",
+  "fix": {
+   "summary": "On a fresh save the common start event (event 50) sets flags 8306 and 6001 on and 6000 off, then starts the common events (820 clock, 100 sky, 6930, 6935, 700, 702). Flag 8306 is the prologue state: while it is on the Sculptor stands in the Ashina Reservoir (entity 1120721), and event 11100100 clears it when Wolf wakes in the Dilapidated Temple, where the Sculptor is entity 1100720.",
+   "note": "What 6000 and 6001 mean is not known. The Sculptor has two placements: m11_02 entity 1120721 (NpcParam 70100000) and m11_00 entity 1100720 (NpcParam 70100080)."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "frontend.opening-movie-narration",
+  "verdict": "confirmed",
+  "reason": "The subtitle file holds ids 8000000 to 8000070, the first line is as quoted, the blank spacer ids match and 8000063 begins the Shinobi Code speech.",
+  "needs_recording": false
+ },
+ {
+  "id": "frontend.intro-cutscene",
+  "verdict": "corrected",
+  "reason": "Event 11120100 matches the record (cutscene 11020020, respawn 1122102, Save Request, flag 11120100, then a 3 s wait and lot 3300 only when 6910 is on) but m11_02 is the Reservoir, so respawn point 1122102 is a Reservoir point and not the temple.",
+  "fix": {
+   "note": "Web: the game starts with the Sculptor's temple scene. The data disagrees: map m11_02 is the Ashina Reservoir (the Dilapidated Temple is m11_00), so respawn point 1122102 is in the Reservoir."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "frontend.first-control",
+  "verdict": "corrected",
+  "reason": "Event 11127305 is in m11_02, the Ashina Reservoir, so the first control is in the Reservoir and not in the Dilapidated Temple; the temple is reached after the lost duel.",
+  "fix": {
+   "summary": "Control starts in the Ashina Reservoir (m11_02) after the intro scene. Wolf has no sword yet: the first prompt (tutorial 'Stealth') tells him to use stealth and reach the Moon-view Tower. The first Sculptor's Idol is later, in the Dilapidated Temple (m11_00), after the lost duel.",
+   "check": "New game: after the scene Wolf stands in the Reservoir with no sword and the Stealth tutorial shows."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "frontend.menu-tutorial-param",
+  "verdict": "confirmed",
+  "reason": "MenuTutorialParam holds 30 real rows (ids 1 to 30) plus a placeholder row 0 with viewType 0 to 17, and rows 1, 7, 12 and 20 carry the flags and texts quoted.",
+  "needs_recording": false
+ },
+ {
+  "id": "frontend.tutorial-text-events",
+  "verdict": "confirmed",
+  "reason": "There are 50 Show Tutorial Text call sites in the EMEVD, 24 of them in common, and the quoted ids 10024680, 10024560, 10024800, 10024810 and 10024820 are in the common events.",
+  "needs_recording": false
+ },
+ {
+  "id": "frontend.tutorial-hints",
+  "verdict": "confirmed",
+  "reason": "Event texts 10021000 to 10021560 and 10020051 exist as quoted and src/action_guide.rs holds the hints in part.",
+  "needs_recording": false
+ },
+ {
+  "id": "frontend.options-camera",
+  "verdict": "confirmed",
+  "reason": "Menu ids 110000 to 110017 read as quoted and src/menu.rs has CameraSpeed, InvertY and Gamepad options.",
+  "needs_recording": false
+ },
+ {
+  "id": "frontend.options-sound-display",
+  "verdict": "confirmed",
+  "reason": "Menu ids 110100 to 110213 and the HUD choices 40303 onward read as quoted and src/menu.rs has the volume and fullscreen options.",
+  "needs_recording": false
+ },
+ {
+  "id": "frontend.options-graphics",
+  "verdict": "confirmed",
+  "reason": "Menu ids 111100 to 111113 and choices 40400 to 40424 read as quoted and src/menu.rs has Fullscreen and Vsync.",
+  "needs_recording": false
+ },
+ {
+  "id": "frontend.options-input",
+  "verdict": "confirmed",
+  "reason": "Menu ids 111000 to 111030 and the key groups 280010 onward read as quoted and src/config.rs plus config.toml hold the key table.",
+  "needs_recording": false
+ },
+ {
+  "id": "frontend.options-language",
+  "verdict": "confirmed",
+  "reason": "Menu ids 110400 to 110440 read as quoted and ours has no language option.",
+  "needs_recording": false
+ },
+ {
+  "id": "frontend.pause-menu-tabs",
+  "verdict": "confirmed",
+  "reason": "Menu ids 100010 to 100050 and 115000 to 115002 read as quoted and src/game_menu.rs has Equipment, Inventory, Skills and Options.",
+  "needs_recording": false
+ },
+ {
+  "id": "frontend.ending-shura",
+  "verdict": "confirmed",
+  "reason": "Event 11110100 requires 9316, plays cutscene 11010070 (warp 1112812), sets 9530, 6900 off and 6901 on, awards lot 54300000 (no row in ItemLotParam), sets 23 and 6833, awards achievement 12 and runs the 6912 to 6919 Charmless tail.",
+  "needs_recording": false
+ },
+ {
+  "id": "frontend.ending-reservoir",
+  "verdict": "corrected",
+  "reason": "Event 11120110 branches on talk flags set by Kuro's ESD t112111: 11125707 (Dragon Tears alone) falls through to scene 11020110 with flags 20 and 6830, 11125708 (with the Everblossom) goes to 11020120 then 11020121 with 21 and 6831, and 11125709 (with Frozen Tears) goes to 11020100 with 22 and 6832.",
+  "fix": {
+   "summary": "Event 11120110 in map m11_02 handles the other three endings. After the final boss flag 9312 and Wolf alive, it reads three choice flags (11125707, 11125708, 11125709), set by Kuro's talk script t112111, and plays one branch. Each branch sets its own ending flag (6830, 6831, 6832) and an achievement (9, 10, 11).",
+   "values": "Branch A (flag 11125707, menu text 14000100 'Give Divine Dragon's Tears', always offered): scene 11020110, flags 20 and 6830, achievement 9. This is Immortal Severance. Branch B (flag 11125708, text 14000101 'Give Dragon's Tears and Everblossom', offered only if goods 2503 is held): scenes 11020120 then 11020121, flags 21 and 6831, achievement 10. This is Purification. Branch C (flag 11125709, text 14000102 'Give Dragon Tears and Frozen Tears', offered only if goods 9091 is held): scene 11020100, flags 22 and 6832, achievement 11. This is Return. All branches set 6900 off, 6901 on, 9530 and 8305, and run the 6912 to 6919 tail.",
+   "note": "The setters of 11125707 to 11125709 are in ESD t112111 (Kuro, Reservoir), not in the EMEVD. Item texts agree: goods 2503 says one who seeks Purification may impart the Dragon Tears and these flowers, and goods 9091 mentions the Cradling ritual.",
+   "check": "Reach the final choice three times: Tears alone plays 11020110, Tears with the Everblossom plays 11020120 then 11020121, Tears with Frozen Tears plays 11020100."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "frontend.ending-sequence",
+  "verdict": "confirmed",
+  "reason": "The calls named (menu fade 2003[82], SpEffect 4702, map animation 8901000, map parts 8907050 and 8907000 to 8907100, Gparam sub id 11) appear in 11110100 and 11120110 in that pattern.",
+  "needs_recording": false
+ },
+ {
+  "id": "frontend.ending-rewards",
+  "verdict": "confirmed",
+  "reason": "Common event 295 ends if goods 9810 is held, waits for 6830, 6831, 6832 or 6833, needs 8306 off, waits 3 s, then awards lots 5710 (armor 400000) and 5740 (goods 9810).",
+  "needs_recording": false
+ },
+ {
+  "id": "frontend.credits-movie",
+  "verdict": "confirmed",
+  "reason": "stafflistmovie.bk2 exists, the Movie_StaffRoll and EndingStep strings are in the exe and the subtitle file has no credits lines.",
+  "needs_recording": false
+ },
+ {
+  "id": "frontend.after-credits-ng",
+  "verdict": "confirmed",
+  "reason": "Dialog texts 450000 and 450001 read as quoted in the menu text files.",
+  "needs_recording": false
+ },
+ {
+  "id": "frontend.ng-cycle-reset",
+  "verdict": "corrected",
+  "reason": "Event 50 with 6901 on and 11120100 off removes 76 individual item entries (75 ids plus a count of 3 of goods 500), not ranges, and the list includes 2000, 2300 and 2310 which lots 3010, 3001 and 3060 award again.",
+  "fix": {
+   "summary": "When a new cycle starts, common event 50 strips 76 item entries from the player (single ids, including the Bell Demon 3730 to 3733, Kuro's Charm 9003 and the starting items 2000, 2300 and 2310 that are given again), forces the starting armor, clears the Charmless flag 6911, flag 6901 and 9530, and restarts the world events. Skills, gourd, prosthetics and levels are kept.",
+   "note": "The removal is a list of single ids, not ranges; the 'a to b' spans in the values are shorthand for ids the event names one by one."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "frontend.game-clear-flags",
+  "verdict": "confirmed",
+  "reason": "6900 off and 6901 on are set in 11110100 and in the three branches of 11120110, 6830 to 6833 are set as stated and 6911 gates the 6912 to 6919 tail.",
+  "needs_recording": false
+ },
+ {
+  "id": "frontend.achievements",
+  "verdict": "corrected",
+  "reason": "There are 26 Award Achievement call sites over 24 distinct ids, and common event 170 covers the flags 6800 to 6817 except 6807, so the record's 25 ids note is wrong.",
+  "fix": {
+   "note": "Total is 26 call sites over 24 distinct ids (13 and 28 each appear in two map copies). Common event 170 awards id 1 when the boss flags 6800 to 6817 except 6807 are all set. Only 1, 9 to 12 and 19 are matched to a trophy name by context."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "frontend.death-banners",
+  "verdict": "confirmed",
+  "reason": "Event texts 10010900 to 10010903 and 10010950 to 10010955 read as quoted and MenuParam SoloPlayDeath_ToFadeOutTime is 2.5.",
+  "needs_recording": false
+ },
+ {
+  "id": "frontend.revive-prompt",
+  "verdict": "confirmed",
+  "reason": "Event texts 10010390 and 10010391 read as quoted and src/menu.rs has the resurrect and die prompt.",
+  "needs_recording": false
+ },
+ {
+  "id": "frontend.unseen-aid-text",
+  "verdict": "confirmed",
+  "reason": "Tutorials 10024800/01 and 10024810/11 and banner 10010953 read as quoted.",
+  "needs_recording": false
+ },
+ {
+  "id": "flow.00-route-overview",
+  "verdict": "confirmed",
+  "reason": "Boss flags 9300 to 9318, 8301 from goods 2400, 2500 and 2501, 8302 from 9310 and the ending flags 6830 to 6833 all match the EMEVD events named.",
+  "needs_recording": false
+ },
+ {
+  "id": "flow.01-reservoir-start",
+  "verdict": "confirmed",
+  "reason": "Common event 50 sets 8306 while 11120100 is off, and m11_02 event 11120100 plays cutscene 11020020, sets respawn 1122102 and saves.",
+  "needs_recording": false
+ },
+ {
+  "id": "flow.01b-kuros-charm",
+  "verdict": "confirmed",
+  "reason": "Lot 3300 awards goods 9003 after the 3 s wait in event 11120120 only when 6910 is on, and lot 61006 (flag 50006106) is given by Kuro's ESD t110100.",
+  "needs_recording": false
+ },
+ {
+  "id": "flow.02-reservoir-ornamental-letter",
+  "verdict": "confirmed",
+  "reason": "Lot 1120000 awards goods 9020 Ornamental Letter with flag 51120000.",
+  "needs_recording": false
+ },
+ {
+  "id": "flow.03-reservoir-kusabimaru-scene",
+  "verdict": "confirmed",
+  "reason": "Event 11120201 plays cutscene 11020070 with warp 1122201, lots 3001 (goods 2300) and 3080 (armor 131000) match, and achievement 16 is awarded.",
+  "needs_recording": false
+ },
+ {
+  "id": "flow.04-reservoir-gate-yamauchi",
+  "verdict": "confirmed",
+  "reason": "Event 11125202 uses the action button on object 1121711, generic dialog 10010700 and cutscene 11020090 with warp 1122202, as the record says.",
+  "needs_recording": false
+ },
+ {
+  "id": "flow.05-prologue-genichiro-loss",
+  "verdict": "confirmed",
+  "reason": "Events 11125810 and 11125800 show bar 907101, play cutscenes 11020010, 11020001 or 11020000, set 9300 and 6800 and respawn at 1102621.",
+  "needs_recording": false
+ },
+ {
+  "id": "flow.06-dilapidated-temple-wake",
+  "verdict": "confirmed",
+  "reason": "Event 11100100 plays cutscene 11000000, awards lots 3070 (armor 102000) and 3060 (goods 2310), clears 8306 and awards achievement 17.",
+  "needs_recording": false
+ },
+ {
+  "id": "flow.07-shinobi-prosthetic",
+  "verdict": "confirmed",
+  "reason": "Lot 3060 awards goods 2310 Shinobi Prosthetic with flag 50003060.",
+  "needs_recording": false
+ },
+ {
+  "id": "flow.08-resurrection-tutorial",
+  "verdict": "confirmed",
+  "reason": "Common event 250 awards lot 3010 (goods 2000), sets 9207, 250, 6250 and 8250 and awards achievement 19.",
+  "needs_recording": false
+ },
+ {
+  "id": "flow.09-hub-story-clock",
+  "verdict": "confirmed",
+  "reason": "Common event 820 sets 9800 when one of 9303 to 9306 is set and 9801 when three are set; 9802 and 9803 are set elsewhere and only cleared in the events read.",
+  "needs_recording": false
+ },
+ {
+  "id": "flow.10-outskirts-entry",
+  "verdict": "confirmed",
+  "reason": "BonfireWarpParam rows 1101 to 1107 exist with the entity ids and flags listed (for example 1101 entity 1101956 flag 11100006).",
+  "needs_recording": false
+ },
+ {
+  "id": "flow.10b-outskirts-mini-bosses",
+  "verdict": "confirmed",
+  "reason": "Common_func 20005330 holds the Display Miniboss Health Bar calls; the recording chapters were not opened.",
+  "needs_recording": false
+ },
+ {
+  "id": "flow.11-gyoubu-oniwa",
+  "verdict": "confirmed",
+  "reason": "Event 11105800 / lots 2000 (goods 2910), 2001 (goods 5200) and 2002 (goods 5400) match and event 300 pays them on flag 9301.",
+  "needs_recording": false
+ },
+ {
+  "id": "flow.12-young-lords-bell-charm",
+  "verdict": "corrected",
+  "reason": "No EMEVD gives the Young Lord's Bell Charm, but the ESD t110160 awards lot 61600 (goods 9010, flag 50006160) and lot 51600 is referenced nowhere; Gyoubu is not required by any flag check.",
+  "fix": {
+   "summary": "The Young Lord's Bell Charm (goods 9010, lot 61600, flag 50006160) is given by the ESD talk script t110160 (command 6 2147483643 with lot 61600); lot 51600 has no user. Holding it lets the Buddha's ESD t110101 set talk flag 71100598, which starts m11_00 event 11105630 and then 11100628 (the warp to Hirata).",
+   "values": "goods 9010; ItemLotParam 61600 (flag 50006160) given by ESD t110160; ItemLotParam 51600 unused; Buddha ESD t110101 sets talk flag 71100598 when goods 9010 is held",
+   "how": "ESD t110160 awards lot 61600; ESD t110101 sets 71100598; m11_00 event 11105630",
+   "confidence": "data",
+   "note": "No flag check ties the giver to Gyoubu (9301), so the Gyoubu first order comes from the game layout and community only. The Father's Bell Charm needs 9302 (see step 15b).",
+   "check": "Talk to the Young Lord's Bell Charm giver at the temple, then use the Buddha with the charm in the key items."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "flow.13-hirata-entry-warp",
+  "verdict": "corrected",
+  "reason": "Event 11105630 reacts to talk flag 71100598 set by the Buddha ESD t110101 when goods 9010 is held and runs 11100628, which plays the 11000030 to 11000036 scene chosen by 9800 to 9802 and 8302 and warps to 1002630.",
+  "fix": {
+   "note": "Gate in data: Buddha ESD t110101 sets 71100598 only while goods 9010 is held; the same Buddha sets 71100599 for the Father's Bell Charm (goods 9011) and only when 9302 is on (event 11105631, which runs 11100629 and warps to 1000631)."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "flow.13b-hirata-optional-rooms",
+  "verdict": "confirmed",
+  "reason": "Rows 1000 to 1005 give idol entities 1001950 to 1001955 with flags 11000000 to 11000005 and goods 9403 (lot 61200) is given by Hirata ESD t100120 and used in m10 events 11005400 and 11005610.",
+  "needs_recording": false
+ },
+ {
+  "id": "flow.14-lady-butterfly",
+  "verdict": "confirmed",
+  "reason": "Event 11005800 sets 9302, 6802, 9261 and 9402, plays cutscene 10000000, awards achievement 21, and lots 2030 (goods 9009) and 2031 (goods 5201) match.",
+  "needs_recording": false
+ },
+ {
+  "id": "flow.15-hirata-burning-return",
+  "verdict": "confirmed",
+  "reason": "Event 11005800 plays 10000000 with four lighting variants plus a default, warps to 1102631 and sets flag 11000805 and respawn 1102631.",
+  "needs_recording": false
+ },
+ {
+  "id": "flow.15b-father-bell-charm-owl-memory",
+  "verdict": "corrected",
+  "reason": "The Father's Bell Charm (lot 62302) is given by Emma's ESD (t110230 and t111230, talk range 23111600 to 23111650), and event 11105631 needs both goods 9011 held and 9302 on before it sets 71100599, 8304 and disables idols 1001953 to 1001955.",
+  "fix": {
+   "summary": "The Father's Bell Charm (goods 9011, lot 62302, flag 50006232) is given by Emma (ESD t110230 and t111230). Offering it at the Buddha works only after Lady Butterfly (9302): event 11105631 then sets stage 8304, disables three Hirata idols and runs 11100629, the second visit with the estate burning. Owl (Father) (bar 905061, event 11005910, needs 8304 on and 9317 off) is fought for Memory: Foster Father and the Aromatic Flower (lot 2100, goods 2503) the Purification ending needs.",
+   "values": "goods 9011; ItemLotParam 62302 given by Emma ESD t110230/t111230; Buddha ESD t110101 sets 71100599 when goods 9011 is held and 9302 is on; m11_00 event 11105631 sets 8304 and disables idols 1001953-55; boss entity 1000900, bar 905061, flag 9317, 6817, achievement 27; lots 2100 (Aromatic Flower 2503), 2101 (Memory: Foster Father 5207)",
+   "note": "Emma's own state gate for giving the charm was not traced.",
+   "needs": [
+    {
+     "id": "flow.15-hirata-burning-return",
+     "why": "first memory done"
+    },
+    {
+     "id": "bosses.owl-father",
+     "why": "the fight"
+    },
+    {
+     "id": "dialogue.owl-pre-fight",
+     "why": "pre-fight talk"
+    },
+    {
+     "id": "flow.13-hirata-entry-warp",
+     "why": "same warp"
+    },
+    {
+     "id": "npcs.emma",
+     "why": "Emma gives the charm"
+    }
+   ]
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "flow.16-outskirts-to-castle",
+  "verdict": "confirmed",
+  "reason": "Event 11115810 at the castle top gates on area 1112811 and 9303, and no flag check ties the castle road to Hirata or Butterfly.",
+  "needs_recording": false
+ },
+ {
+  "id": "flow.17-ashina-castle-ascent",
+  "verdict": "corrected",
+  "reason": "BonfireWarpParam rows 1110 to 1117 (eight idols) carry flags 11110000 to 11110007, not 1110 to 1116 and 11110006 as the record says.",
+  "fix": {
+   "values": "idols 1110-1117 (flags 11110000-11110007: 1112 is flag 11110007, 1117 is 11110005, Kuro's Room 1114 is 11110003); cutscenes 11010100 (event 11110717), 11010110 (event 11115740); mini-bosses chapters 11 to 15"
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "flow.17b-elites-lone-shadows",
+  "verdict": "confirmed",
+  "reason": "No data event is cited; the recording chapters were not opened, so this stays recorded.",
+  "needs_recording": false
+ },
+ {
+  "id": "flow.18-genichiro-castle-top",
+  "verdict": "confirmed",
+  "reason": "Event 11115810 shows bar 907100 and plays cutscene 11010010 or 11010011 by the clock flags, and sets 11115801, 11115809 and 11110676.",
+  "needs_recording": false
+ },
+ {
+  "id": "flow.19-genichiro-tomoe-handover",
+  "verdict": "confirmed",
+  "reason": "Event 11115820 swaps the bars 907100 to 907110 after cutscene 11010020, event 11115800 sets 9303, 6803 and awards achievement 22, and lots 2080 (goods 2100) and 2081 (goods 5202) match.",
+  "needs_recording": false
+ },
+ {
+  "id": "flow.20-castle-after-genichiro",
+  "verdict": "confirmed",
+  "reason": "Event 11115800 sets 8305, picks cutscene 11010030 or 11010031 by how many of 9304 to 9306 are set (with a plain 11010030 default), warps to 1112814 and finally sets 9403; row 101 has flag 11110003.",
+  "needs_recording": false
+ },
+ {
+  "id": "flow.21-gun-fort-shrine-key",
+  "verdict": "corrected",
+  "reason": "The lot 1110860 is a treasure in the m11_01 map file, but the key is used on object 1701550 in m17 (event 11705202, flag 61700551, dialog 'Gun Fort Shrine Key used'), which is a shrine door inside the Gun Fort and not a door on the way into the Valley.",
+  "fix": {
+   "summary": "The Gun Fort Shrine Key (goods 9405, lot 1110860, flag 51110860) is a treasure in Ashina Castle. It opens the shrine door (object 1701550, m17 event 11705202) inside the Gun Fort of the Sunken Valley, behind which Under-Shrine Valley idol 1700 lies.",
+   "values": "goods 9405; ItemLotParam 1110860 flag 51110860 (treasure in m11_01); door object 1701550 in m17 event 11705202 (flag 61700551); idol 1700 Under-Shrine Valley flag 11700007"
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "flow.22-abandoned-dungeon",
+  "verdict": "confirmed",
+  "reason": "BonfireWarpParam rows 1117 (flag 11110005), 1300 and 1301 exist and the map m13 is the Abandoned Dungeon.",
+  "needs_recording": false
+ },
+ {
+  "id": "flow.23-senpou-temple",
+  "verdict": "confirmed",
+  "reason": "Rows 2000 to 2006 give entities 2001950 to 2001956, event 12005218 awards lot 2000010 (goods 9209) on talk flag 72000015, and the Bell Demon lot 3400 is in event 12005200.",
+  "needs_recording": false
+ },
+ {
+  "id": "flow.23b-illusive-hall-bell",
+  "verdict": "confirmed",
+  "reason": "Event 12005210 uses the action button on object 2001200, plays cutscene 20000000 warping to 2002200 and awards lot 2000060 (goods 3990).",
+  "needs_recording": false
+ },
+ {
+  "id": "flow.23c-bell-demon",
+  "verdict": "confirmed",
+  "reason": "Event 12005200 needs 12000205 and the object action 12000660, shows banner 16, sets 9830 and awards lot 3400 (goods 3730).",
+  "needs_recording": false
+ },
+ {
+  "id": "flow.23d-senpou-mini-bosses",
+  "verdict": "confirmed",
+  "reason": "Common_func 20005330 holds the mini-boss bar calls; the recording was not opened.",
+  "needs_recording": false
+ },
+ {
+  "id": "flow.24-folding-screen-monkeys",
+  "verdict": "corrected",
+  "reason": "Event 12005800 sets 9305, 6805 and 12005805 and awards achievement 25, but 9405 is set later by event 12005906 after the post-fight cutscene 20000011 or 20000012, and event 300 pays lot 2020 on flag 9405.",
+  "fix": {
+   "summary": "Entering the Inner Sanctum arena starts event 12005810. Defeat runs event 12005800: it sets 9305, 6805 and 12005805 and awards achievement 25. Event 12005906 then plays cutscene 20000011 or 20000012 (chosen by the 9800 to 9802 clock), sets respawn 2002957, saves and sets 9405. Event 300 pays lot 2020 (Puppeteer Ninjutsu, goods 2110) and lot 2021 (Memory: Screen Monkeys, goods 5203) on flag 9405.",
+   "values": "boss bar nameId 901260; flags 9305 (event 12005800) and 9405 (event 12005906, the event 300 reward flag); ItemLotParam 2020 (flag 6746), 2021; events 12005810, 12005800, 12005906"
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "flow.25-inner-sanctum-divine-child",
+  "verdict": "corrected",
+  "reason": "Event 12000700 reacts at once to talk flag 72000002 (the Child's 'I do' answer): it plays cutscene 20000020, gives lot 3090 (armor 101000), then lot 62200 (the Mortal Blade) and the Mortal Draw lots, so the Blade is not given later.",
+  "fix": {
+   "summary": "After the Monkeys the Divine Child of Rejuvenation waits in the Inner Sanctum. Her ESD t200220 asks 'Why do you seek this place?'; the answer 'I do' sets talk flag 72000002. Event 12000700 then plays cutscene 20000020, awards lot 3090 (armor 101000, forced equip), lot 62200 (the Mortal Blade, goods 2400) and, if flags 6703 and 6704 are on, the Mortal Draw lots 62202 and 62204. She also gives Rice for Kuro (lot 62210) and Frozen Tears (lot 62212) later in the Return questline.",
+   "values": "event 12000700; cutscene 20000020; talk flag 72000002 (menu 14022000 'I do' / 14022001 'Never mind', flags 72000025/26); lots 3090 (armor 101000), 62200 (goods 2400, flag 50006224), 62202 (weapon 5700, needs 6703), 62204 (weapon 7300, needs 6704); idol Inner Sanctum 2001954"
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "flow.25b-return-quest-items",
+  "verdict": "confirmed",
+  "reason": "Lots 62210 (goods 9090), 62212 (goods 9091), 2000010 (goods 9209), 63200 (goods 9215), 2000820 (goods 9228), 2000030 (goods 9080) and 2000170 (goods 9081) all match; 62210 and 62212 are given by ESD t200220.",
+  "needs_recording": false
+ },
+ {
+  "id": "flow.26-mortal-blade",
+  "verdict": "corrected",
+  "reason": "Lot 3020 (goods 2400, flag -1) is referenced by no EMEVD or ESD, and the Mortal Blade is awarded by event 12000700 as lot 62200; lots 62202 and 62204 are weapons 5700 and 7300 (category 0) and not goods.",
+  "fix": {
+   "summary": "The Mortal Blade (goods 2400) is awarded by lot 62200 (flag 50006224) in event 12000700 when the Divine Child talk flag 72000002 is set; lot 3020 holds the same item but nothing uses it. Mortal Draw is lot 62202 (weapon 5700) and Empowered Mortal Draw lot 62204 (weapon 7300), given there when flags 6703 and 6704 are on. It is the first of three castle-invasion key items; the other two are the Lotus (2500) and the Shelter Stone (2501).",
+   "values": "goods 2400; lot 62200 (flag 50006224) in m20 event 12000700; lot 3020 unused; lots 62202 (weapon 5700), 62204 (weapon 7300)"
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "flow.27-sunken-valley",
+  "verdict": "confirmed",
+  "reason": "BonfireWarpParam rows 1700 to 1705 exist (1700 entity 1701957 flag 11700007, 1704 entity 1701958).",
+  "needs_recording": false
+ },
+ {
+  "id": "flow.27b-serpent-viscera",
+  "verdict": "confirmed",
+  "reason": "Event 11705614 ends if 9351 is set, awards achievement 32 and lot 50100000 (goods 9192), and lot 1700810 gives goods 9193.",
+  "needs_recording": false
+ },
+ {
+  "id": "flow.28-guardian-ape",
+  "verdict": "confirmed",
+  "reason": "Event 11705800 sets 9304 and 6804 with achievement 23, event 11705810 shows bar 905100, lot 2010 gives goods 9790, and common event 912 sets 8303 while 9304 is on and 9314 off.",
+  "needs_recording": false
+ },
+ {
+  "id": "flow.29-lotus-gate",
+  "verdict": "confirmed",
+  "reason": "Event 11705200 awards lot 1700000 (goods 2500) from the action button on object 1701200, and no flag check ties it to 9304.",
+  "needs_recording": false
+ },
+ {
+  "id": "flow.29b-bodhisattva-valley",
+  "verdict": "confirmed",
+  "reason": "BonfireWarpParam row 1704 has entity 1701958 and flag 11700008.",
+  "needs_recording": false
+ },
+ {
+  "id": "flow.30-ashina-depths",
+  "verdict": "confirmed",
+  "reason": "Rows 1500 to 1502 use entities 1701955, 1701954 and 1701956 in m17 and 1301 is the Dungeon idol.",
+  "needs_recording": false
+ },
+ {
+  "id": "flow.30b-headless-ape",
+  "verdict": "corrected",
+  "reason": "Event 11705850 sets 9307 (lots 2015 and 2016 are Prayer Beads, 2017 is the memory) and ends if 9314 is on, while event 11705873 needs 8303 on and sets 9314, banner 5 and achievement 24, and event 300 pays lot 2200 (Bestowal Ninjutsu, goods 2120, flag 6747) on 9314.",
+  "fix": {
+   "summary": "After the Guardian Ape (9304) and before 9314 is set, stage 8303 is on and the Headless Ape (entity 1700850) can be fought. Event 11705850 sets 9307 and pays lots 2015 and 2016 (a Prayer Bead each, goods 4000) and 2017 (Memory: Headless Ape, goods 5213); it ends if 9314 is already on. Event 11705873 (8303 on) sets 9314, shows banner 5 and awards achievement 24; event 300 then pays lot 2200 (Bestowal Ninjutsu, goods 2120). Idol 1701956 is disabled by 8307 (event 920) when no 79000/79100 item is held.",
+   "values": "entity 1700850; flags 9307 (event 11705850), 9314 (event 11705873), 8303, 8307; ItemLotParam 2015, 2016, 2017, 2200; events 11705850, 11705873, 11705826"
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "flow.30c-depths-mini-bosses",
+  "verdict": "confirmed",
+  "reason": "Common_func 20005330 holds the mini-boss bar calls; the recording was not opened.",
+  "needs_recording": false
+ },
+ {
+  "id": "flow.31-mibu-village",
+  "verdict": "confirmed",
+  "reason": "BonfireWarpParam rows 1503 to 1506 use entities 1501950 to 1501953 in m15.",
+  "needs_recording": false
+ },
+ {
+  "id": "flow.32-corrupted-monk",
+  "verdict": "corrected",
+  "reason": "Lot 2050 does have a row (weapon 680000, Mibu Breathing Technique, flag 50002050) and event 300 pays it on 9306 together with lot 2051.",
+  "fix": {
+   "summary": "In the Water Mill area event 11505810 starts the fight. Event 11505800 sets 9306 and 6806 on defeat, and event 300 pays lot 2050 (weapon 680000, the Mibu Breathing Technique) and lot 2051 (Memory: Corrupted Monk, goods 5205).",
+   "values": "bar nameId 905000; flag 9306; ItemLotParam 2050 (weapon 680000, flag 50002050) and 2051 (goods 5205); events 11505810, 11505800"
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "flow.33-mibu-breathing-gate",
+  "verdict": "corrected",
+  "reason": "The Mibu Breathing Technique does have an item lot: lot 2050 (weapon 680000), paid by common event 300 for the Corrupted Monk, and common event 50 removes weapon 680000 on a new cycle; goods 2420 is a separate skill-type row.",
+  "fix": {
+   "summary": "The Mibu Breathing Technique is weapon 680000 (item lot 2050), paid by common event 300 when the Corrupted Monk dies (flag 9306). Goods 2420 is a separate skill-style row. Wolf can dive only after learning it. It is not a castle gate by itself.",
+   "values": "weapon 680000; ItemLotParam 2050 (flag 50002050); goods 2420 (separate row); common event 50 removes 680000 on NG+",
+   "how": "common event 300 pays lot 2050 on flag 9306; common event 50 removes weapon 680000",
+   "confidence": "data",
+   "needs": [
+    {
+     "id": "flow.31-mibu-village",
+     "why": "area"
+    },
+    {
+     "id": "movement.dive",
+     "why": "diving needs it"
+    },
+    {
+     "id": "flow.32-corrupted-monk",
+     "why": "the lot is paid when the Monk dies"
+    }
+   ]
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "flow.34-shelter-stone-gate",
+  "verdict": "confirmed",
+  "reason": "Event 11505290 awards lot 1500050 (goods 2501) from the action button on object 1501220 in m15, and lot 3030 also gives 2501.",
+  "needs_recording": false
+ },
+ {
+  "id": "flow.35-time-bosses-clock",
+  "verdict": "confirmed",
+  "reason": "Common events 820, 830 and 901 behave as the record says (counts of 9303 to 9306, mirror to 9820 to 9823, first-time boss flags 8405 to 8408).",
+  "needs_recording": false
+ },
+ {
+  "id": "flow.36-castle-invasion-trigger",
+  "verdict": "confirmed",
+  "reason": "Common event 910 needs goods 2400, 2500 and 2501 together and sets 8301, 11110005 and respawn 1112955; m11_01 event 11115720 plays cutscene 11010040 and warps to 1112722 when 8301 is on.",
+  "needs_recording": false
+ },
+ {
+  "id": "flow.36b-castle-idol-changes",
+  "verdict": "confirmed",
+  "reason": "Common event 911 disables six castle idols plus the Outskirts idols 1101951 to 1101956 and the Reservoir idols 1121950 and 1121951 when 9310 is on.",
+  "needs_recording": false
+ },
+ {
+  "id": "flow.37-invaded-castle-ascent",
+  "verdict": "confirmed",
+  "reason": "BonfireWarpParam rows 1110 to 1117 exist; the invaded roster itself was not opened, so it stays community.",
+  "needs_recording": false
+ },
+ {
+  "id": "flow.38-great-shinobi-owl",
+  "verdict": "corrected",
+  "reason": "Event 11115860 starts the fight only when 8301 and 9303 are on, the invasion scene flag 11110720 is set and Emma's talk flag 71110021 (ESD t111120, talk 12100350) is set, then plays cutscene 11010050; event 11115850 sets 9308, 6808 and achievement 26.",
+  "fix": {
+   "summary": "Event 11115860 waits for 8301 and 9303, the invasion scene (flag 11110720) and Emma's talk (flag 71110021, ESD t111120 talk 12100350), then plays cutscene 11010050 and shows bar 905060. Event 11115850 sets 9308 and 6808 on defeat and awards achievement 26; event 300 pays lot 2090 (goods 2502) and lot 2091 (the memory).",
+   "values": "bar nameId 905060; flag 9308; start needs 8301, 9303, 11110720 and talk flag 71110021; cutscene 11010050; ItemLotParam 2090 -> goods 2502; events 11115860, 11115850, 11115870",
+   "needs": [
+    {
+     "id": "bosses.owl-castle-phase2",
+     "why": "second phase"
+    },
+    {
+     "id": "bosses.fog-walls",
+     "why": "arena fog"
+    },
+    {
+     "id": "flow.36-castle-invasion-trigger",
+     "why": "stage 8301"
+    },
+    {
+     "id": "npcs.emma",
+     "why": "her talk flag 71110021 starts the fight"
+    }
+   ]
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "flow.39-iron-code-choice",
+  "verdict": "corrected",
+  "reason": "Kuro's ESD t111110 offers 'Help Kuro' (14011020) and 'Obey the Iron Code, protect Kuro' (14011021) through machine 2147483603 with answer flags 71120120 and 71120121, and the Obey branch leaves talk flag 71110055 after the line 'I cannot.'.",
+  "fix": {
+   "summary": "After the Owl (9308), Kuro's talk script t111110 asks for a choice with the menu texts 'Help Kuro' (14011020) and 'Obey the Iron Code, protect Kuro' (14011021). The answer flags 71120120 and 71120121 are cleared right after the answer. 'Obey' plays talk 11110600 ('I cannot.') and leaves talk flag 71110055; 'Help Kuro' plays talk 11110500 and reopens the menu. Kuro's variant script t111111 later sets 8415 (with 71120149) after talks 11104700 and 11104750, which opens the Wedding Cave Door. Emma's fight talk 12100550 sets 71110020, which starts the Shura fight (event 11115910).",
+   "values": "flags 9308, 71120120 (Help Kuro), 71120121 (Obey), 71110055 (persistent Obey talk), 8415 (Dragon road, set by ESD t111111 state 2), 71110020 (Emma fight talk, event 11115910), 8301",
+   "note": "Which of the two answers is the exact switch to the Shura fight was not proven; the full flag chain through Emma's script (flag 8300 set in m11_01_54_10 event 11115200) was not traced. Flag 8415 is read by m15 event 11505695, by m11_01 event 11115710 and by common_func 20006111.",
+   "confidence": "data"
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "flow.40-shura-emma",
+  "verdict": "confirmed",
+  "reason": "Event 11115910 waits for talk flag 71110020 (Emma's talk 12100550), plays cutscene 11010060 and shows bar 907400, and event 11115900 sets 9315 and 6815; common event 300 has no entry for 9315, so no reward.",
+  "needs_recording": false
+ },
+ {
+  "id": "flow.41-shura-isshin-ashina",
+  "verdict": "confirmed",
+  "reason": "Event 11115920 sets 9316 and 6816 with achievement 30, event 11115930 shows bar 905401 after cutscene 11010080, and lots 2120 (goods 2462) and 2121 (goods 5212) match.",
+  "needs_recording": false
+ },
+ {
+  "id": "flow.42-shura-ending",
+  "verdict": "confirmed",
+  "reason": "Event 11110100 plays cutscene 11010070, sets 6833, 23 and awards achievement 12; lot 54300000 has no ItemLotParam row.",
+  "needs_recording": false
+ },
+ {
+  "id": "flow.43-wedding-cave-door",
+  "verdict": "corrected",
+  "reason": "Event 11505695 ends if 8415 is off, then needs the action button 9810 on object 1500805 before respawn 2502822, cutscene 15000000 and the warp, and 8415 is set by Kuro's variant ESD t111111 after talks 11104700 and 11104750.",
+  "fix": {
+   "summary": "On the non-Shura path the Wedding Cave Door in Mibu (idol 1501953, object 1500805) opens to a palanquin ride to Fountainhead. Event 11505695 (m15) ends while 8415 is off; with 8415 on and the action button 9810 pressed it sets respawn 2502822, plays cutscene 15000000 and warps to m25. Flag 8415 is set by Kuro's variant ESD t111111 (state group 2147483638, state 2) after talks 11104700 and 11104750.",
+   "values": "idol 1501953; object 1500805; flag 8415 (set by ESD t111111); cutscene 15000000; respawn and warp m25 point 2502822; event 11505695",
+   "needs": [
+    {
+     "id": "flow.39-iron-code-choice",
+     "why": "the other branch"
+    },
+    {
+     "id": "map.idol-travel",
+     "why": "warp points"
+    },
+    {
+     "id": "cutscenes.warp-fade",
+     "why": "warp scene"
+    },
+    {
+     "id": "npcs.kuro",
+     "why": "Kuro's talk sets 8415"
+    }
+   ]
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "flow.44-fountainhead-arrival",
+  "verdict": "confirmed",
+  "reason": "BonfireWarpParam rows 2500 to 2508 exist and lot 2500650 gives goods 9070 Water of the Palace.",
+  "needs_recording": false
+ },
+ {
+  "id": "flow.45-fountainhead-route",
+  "verdict": "corrected",
+  "reason": "The Great White Whisker (goods 9071, lot 50500000, flag 51700925) is in the Sunken Valley (m17 event 11705535) and needs flag 9370, which is set by a Fountainhead talk in ESD t250010; no Fountainhead route gate exists in the events.",
+  "fix": {
+   "summary": "The Fountainhead Palace is a long climb with water areas and many elites; no event flag gates the route. The Great White Whisker (goods 9071, lot 50500000) is a side item in the Sunken Valley (m17 event 11705535, achievement 33) that is only available after flag 9370, which a Fountainhead NPC talk (ESD t250010) sets.",
+   "values": "goods 9071; lot 50500000 (flag 51700925); event 11705535 needs 9370 on; 9370 set by m25 ESD t250010",
+   "needs": [
+    {
+     "id": "flow.44-fountainhead-arrival",
+     "why": "area"
+    },
+    {
+     "id": "map.water-areas",
+     "why": "water"
+    },
+    {
+     "id": "flow.27-sunken-valley",
+     "why": "the whisker lies in the Valley"
+    }
+   ]
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "flow.46-true-corrupted-monk",
+  "verdict": "corrected",
+  "reason": "The True Corrupted Monk events 12505950 and 12505960 live in m25 and are reached only through the Fountainhead, so the record needs a Fountainhead predecessor, and event 12505950 also awards achievement 28.",
+  "fix": {
+   "needs": [
+    {
+     "id": "bosses.corrupted-monk",
+     "why": "same character, tougher fight"
+    },
+    {
+     "id": "bosses.fog-walls",
+     "why": "arena fog"
+    },
+    {
+     "id": "flow.44-fountainhead-arrival",
+     "why": "the Monk is in Fountainhead"
+    }
+   ],
+   "values": "entity bar 2500850; flag 9309, 6809; achievement 28; ItemLotParam 2060 -> goods 9060; events 12505960, 12505950"
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "flow.46b-palace-mini-bosses",
+  "verdict": "confirmed",
+  "reason": "The mini-boss bar is a common_func 20005330 call; the entity was not opened.",
+  "needs_recording": false
+ },
+ {
+  "id": "flow.48-old-dragons-divine-dragon",
+  "verdict": "corrected",
+  "reason": "Event 12505801 needs 9310 off and the action button 9821 on object 2500806, 12505885 sets 9318 and 6818, and 12505880 sets 9310, 6810 and 9410 with achievement 29, so the record needs a Fountainhead predecessor and event 300 pays lot 2070 on flag 9410.",
+  "fix": {
+   "needs": [
+    {
+     "id": "bosses.dragons",
+     "why": "the fights"
+    },
+    {
+     "id": "bosses.fog-walls",
+     "why": "arena fog"
+    },
+    {
+     "id": "flow.44-fountainhead-arrival",
+     "why": "the dragons are in Fountainhead"
+    }
+   ],
+   "values": "bars 905300, 905200; flags 9310 and 6810 (event 12505880), 9410 (event 300 reward flag), 9318 and 6818 (event 12505885); achievement 29; cutscenes 25000000, 25000020; warp 1110799 respawn 1112953; lots 2070 (goods 9000)"
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "flow.49-dragon-tears-gate",
+  "verdict": "confirmed",
+  "reason": "Lot 2070 gives goods 9000 Divine Dragon's Tears and event 300 pays it on flag 9410.",
+  "needs_recording": false
+ },
+ {
+  "id": "flow.50-post-dragon-castle-night",
+  "verdict": "confirmed",
+  "reason": "Common event 911 sets 8302 once 9310 is on, disables the castle idols, and event 12505880 sets respawn 1112953.",
+  "needs_recording": false
+ },
+ {
+  "id": "flow.50b-demon-of-hatred",
+  "verdict": "confirmed",
+  "reason": "Events 11105900 and 11105910 need 8302, show bar 907021, set 9313 and 6813 and award achievement 31, and lot 2040 gives goods 6400 times 2.",
+  "needs_recording": false
+ },
+ {
+  "id": "flow.50c-enemy-swaps",
+  "verdict": "corrected",
+  "reason": "The enemy-swap flags come from the common stage events, so the record needs the invasion, dragon and Hirata predecessors.",
+  "fix": {
+   "needs": [
+    {
+     "id": "npcs.story-flags-8301",
+     "why": "stage flags"
+    },
+    {
+     "id": "flow.36-castle-invasion-trigger",
+     "why": "8301"
+    },
+    {
+     "id": "flow.50-post-dragon-castle-night",
+     "why": "8302"
+    },
+    {
+     "id": "flow.28-guardian-ape",
+     "why": "8303 needs 9304"
+    },
+    {
+     "id": "flow.15b-father-bell-charm-owl-memory",
+     "why": "8304"
+    }
+   ]
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "flow.52-secret-passage-key",
+  "verdict": "corrected",
+  "reason": "The Secret Passage Key (lot 62306, flag 50006236) is given by Emma's ESD (t110230 and t111230, talk range 23002000 to 23002050), not found in Kuro's room, and it is used on the Reservoir object 1121711 in m11_02 event 11125295 (needs 8306 off).",
+  "fix": {
+   "summary": "The Secret Passage Key (goods 9404, lot 62306) is given by Emma in the castle after the Dragon. It opens the secret passage door (object 1121711) in the Ashina Reservoir through m11_02 event 11125295, which sets flag 11120295 and shows 'Secret Passage Key used'.",
+   "values": "goods 9404; lot 62306 (flag 50006236) given by Emma ESD t110230/t111230; door object 1121711, m11_02 event 11125295, flag 11120295",
+   "check": "Talk to Emma in the castle after the Dragon, then use the key at the Reservoir door.",
+   "needs": [
+    {
+     "id": "flow.50-post-dragon-castle-night",
+     "why": "after the Dragon"
+    },
+    {
+     "id": "npcs.emma",
+     "why": "Emma gives the key"
+    }
+   ]
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "flow.53-reservoir-return",
+  "verdict": "confirmed",
+  "reason": "BonfireWarpParam rows 1118 (entity 1121951) and 1119 (entity 1121950) exist.",
+  "needs_recording": false
+ },
+ {
+  "id": "flow.54-genichiro-way-of-tomoe",
+  "verdict": "confirmed",
+  "reason": "Event 11125830 plays cutscene 11020040 and sets 9311 and 6811, event 11125840 needs 8302 and plays 11020030, and bar 907110 is used; event 300 has no entry for 9311.",
+  "needs_recording": false
+ },
+ {
+  "id": "flow.55-isshin-sword-saint",
+  "verdict": "confirmed",
+  "reason": "Event 11125860 sets 9312, 6812 and 11125706 and awards achievement 13, event 11125870 shows bar 905400, and lots 2130 (goods 2460) and 2131 (goods 5211) match.",
+  "needs_recording": false
+ },
+ {
+  "id": "flow.56-final-offering-prompt",
+  "verdict": "corrected",
+  "reason": "The three flags are set by menu answers in Kuro's ESD t112111 (texts 14000100 to 14000102), where the Everblossom and Frozen Tears choices are shown only while goods 2503 or 9091 is held.",
+  "fix": {
+   "summary": "After 9312, Kuro's ESD t112111 offers the offering menu: 'Give Divine Dragon's Tears' (always, sets 11125707), 'Give Dragon's Tears and Everblossom' (only if goods 2503 is held, sets 11125708) and 'Give Dragon Tears and Frozen Tears' (only if goods 9091 is held, sets 11125709). Event 11120110 of m11_02 plays the scene for the flag that was set.",
+   "values": "flags 11125706-09; menu texts 14000100, 14000101, 14000102; ESD t112111; event 11120110; ending flags 6830-6833"
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "flow.57-ending-immortal-severance",
+  "verdict": "corrected",
+  "reason": "Flag 11125707 (Tears alone) falls through to scene 11020110 with flags 20 and 6830 and achievement 9, so the record's 11020100, 22, 6832 and 11 belong to Return.",
+  "fix": {
+   "summary": "Dragon's Tears alone (menu text 'Give Divine Dragon's Tears', flag 11125707): cutscene 11020110, flag 20, ending flag 6830, achievement 9.",
+   "values": "cutscene 11020110; flag 20; flag 6830; achievement 9; talk flag 11125707",
+   "confidence": "data"
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "flow.58-ending-purification",
+  "verdict": "corrected",
+  "reason": "Flag 11125708 (Tears and Everblossom, shown only with goods 2503) goes to scenes 11020120 then 11020121 with flags 21 and 6831 and achievement 10, which settles the open item.",
+  "fix": {
+   "summary": "Dragon's Tears plus the Aromatic Flower (Everblossom, from the Owl Father memory): talk flag 11125708, cutscenes 11020120 then 11020121, flag 21, ending flag 6831, achievement 10.",
+   "values": "goods 9000, 2503; talk flag 11125708; cutscenes 11020120 and 11020121; flag 21; ending flag 6831; achievement 10",
+   "note": "Item text of goods 2503 says one who seeks Purification may impart the Dragon Tears and these flowers.",
+   "confidence": "data"
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "flow.59-ending-return",
+  "verdict": "corrected",
+  "reason": "Flag 11125709 (Tears and Frozen Tears, shown only with goods 9091) goes to scene 11020100 with flags 22 and 6832 and achievement 11, and the menu checks only goods 9091 and not the Rice for Kuro.",
+  "fix": {
+   "summary": "Dragon's Tears plus Frozen Tears (talk flag 11125709): cutscene 11020100, flag 22, ending flag 6832, achievement 11. The menu entry appears only while goods 9091 is held; Rice for Kuro (9090) is needed only to obtain the Frozen Tears from the Divine Child.",
+   "values": "goods 9091 (lot 62212); talk flag 11125709; cutscene 11020100; flag 22; ending flag 6832; achievement 11",
+   "note": "Item text of goods 9091 mentions the Cradling ritual.",
+   "confidence": "data"
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "flow.60-ng-plus-start",
+  "verdict": "confirmed",
+  "reason": "Common event 50 resets on 6901, event 295 awards lots 5710 and 5740 (goods 9810), and events 297 and 298 award 5730 and 5750 (goods 9800 and 9820).",
+  "needs_recording": false
+ },
+ {
+  "id": "flow.61-required-bosses",
+  "verdict": "confirmed",
+  "reason": "The flags and the missing event 300 entries for 9311 and 9315 match; events show no flag gate between the True Monk and the Dragon.",
+  "needs_recording": false
+ },
+ {
+  "id": "flow.62-optional-bosses",
+  "verdict": "confirmed",
+  "reason": "Flags 9307, 9313 and 9317 and lots 5770, 5780 and 5790 (goods 5220, 5221, 5222) match.",
+  "needs_recording": false
+ },
+ {
+  "id": "flow.63-prayer-beads-and-memories",
+  "verdict": "confirmed",
+  "reason": "Lots 2001, 2031, 2081, 2021, 2011, 2051, 2101, 2061, 2071, 2041, 2121 and 2131 give the memories 5200 to 5212 as listed.",
+  "needs_recording": false
+ },
+ {
+  "id": "flow.64-world-stage-flags",
+  "verdict": "confirmed",
+  "reason": "Events 910 (AND of three goods), 911 (9310), 912 (9304 on and 9314 off), 11105631, 11115800 and 920 and event 50 clearing 8306 in 11100100 all match.",
+  "needs_recording": false
+ },
+ {
+  "id": "flow.65-key-item-gates",
+  "verdict": "corrected",
+  "reason": "Lot 3020 is unused (the Blade comes from lot 62200), the Young Lord's Bell Charm lot is 61600 from ESD t110160, the Secret Passage Key and Father's Bell Charm come from Emma, and the Gatehouse Key opens an optional Reservoir door.",
+  "fix": {
+   "summary": "Gate items and where each is paid: Gun Fort Shrine Key (9405, lot 1110860; door in m17 event 11705202), Mortal Blade (2400, lot 62200 in event 12000700; lot 3020 unused), Lotus of the Palace (2500, lot 1700000), Shelter Stone (2501, lot 1500050; lot 3030 also gives it), Secret Passage Key (9404, lot 62306 from Emma; door in m11_02 event 11125295), Hidden Temple Key (9403, lot 61200 from Hirata ESD t100120), Gatehouse Key (9402, lot 10101400, optional Reservoir door in event 11125291), Young Lord's Bell Charm (9010, lot 61600 from ESD t110160), Father's Bell Charm (9011, lot 62302 from Emma, needs 9302), Dragon's Tears (9000, lot 2070), Aromatic Flower (2503, lot 2100), Frozen Tears (9091, lot 62212), Rice for Kuro (9090, lot 62210), Water of the Palace (9070, lot 2500650).",
+   "values": "goods and lots as listed; common event 910 reads 2400, 2500 and 2501 together (AND)"
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "flow.67-free-region-order",
+  "verdict": "confirmed",
+  "reason": "Common event 910 reads only the three goods and no region flag is read by the other regions' events I opened.",
+  "needs_recording": false
+ },
+ {
+  "id": "flow.68-inner-bosses-ng-plus",
+  "verdict": "confirmed",
+  "reason": "Lots 5770, 5780 and 5790 give goods 5220, 5221 and 5222 and the generic lots follow at +1.",
+  "needs_recording": false
+ },
+ {
+  "id": "flow.69-hub-visit-order",
+  "verdict": "confirmed",
+  "reason": "Idol row 100 uses flag 11100000 and the temple changes with 8306 and 8302 as the record says.",
+  "needs_recording": false
+ },
+ {
+  "id": "flow.66-endings-table",
+  "verdict": "corrected",
+  "reason": "The endings table has Immortal Severance and Return swapped in cutscene, flag and achievement, and the 6830 versus 6831 note is settled by event 11120110.",
+  "fix": {
+   "summary": "Shura: 9316 then cutscene 11010070 (flag 6833, achievement 12). Immortal Severance: Tears alone, cutscene 11020110 (flag 20, 6830, achievement 9). Purification: Tears plus Aromatic Flower, cutscenes 11020120 then 11020121 (flag 21, 6831, achievement 10). Return: Tears plus Frozen Tears, cutscene 11020100 (flag 22, 6832, achievement 11).",
+   "note": "Settled from event 11120110 and the offering menu in Kuro's ESD t112111; the setters of 11125707 to 11125709 are in that ESD.",
+   "values": "flags 6830-6833; achievements 9-12; offerings: goods 9000, 2503, 9091; cutscenes 11010070, 11020100, 11020110, 11020120, 11020121"
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "flow.MISSING-gatehouse-key",
+  "verdict": "corrected",
+  "reason": "The Gatehouse Key is listed in key items but the playthrough has no step for it.",
+  "fix": {
+   "id": "flow.MISSING-gatehouse-key",
+   "category": "flow",
+   "title": "Gatehouse Key (optional Reservoir door)",
+   "summary": "The Gatehouse Key (goods 9402) is a treasure in Ashina Castle (lot 10101400, flag 51110984, in the m11_01 map file). It opens the gatehouse door (object 1121712) in the Ashina Reservoir through m11_02 event 11125291, which shows 'Gatehouse Key used' and sets flag 11120500. Without the key the dialog 'Locked.' shows. The event ends while 8306 is on, so it works only after the prologue. This step is optional.",
+   "values": "goods 9402; ItemLotParam 10101400 (flag 51110984); m11_02 event 11125291; object 1121712; flag 11120500; dialog 10010150 and 10010162",
+   "how": "m11_02_00_00 event 11125291 (3[4] item check, 2003[?] generic dialog); ItemLotParam row; m11_01 map treasure",
+   "sources": [
+    {
+     "kind": "data",
+     "ref": "extracted/event/m11_02_00_00.emevd"
+    },
+    {
+     "kind": "data",
+     "ref": "extracted/json/params/ItemLotParam.json"
+    },
+    {
+     "kind": "data",
+     "ref": "extracted/msg/engus/item.msgbnd.d/アイテム説明.fmg"
+    }
+   ],
+   "confidence": "data",
+   "ours": {
+    "has": "no",
+    "where": ""
+   },
+   "his": {
+    "has": "no",
+    "where": ""
+   },
+   "needs": [
+    {
+     "id": "flow.17-ashina-castle-ascent",
+     "why": "the key lies in the castle"
+    },
+    {
+     "id": "flow.53-reservoir-return",
+     "why": "the door is in the Reservoir"
+    }
+   ],
+   "check": "Find the key in Ashina Castle, then use the door in the Reservoir; the key item list shows Gatehouse Key.",
+   "note": "The item text says Gyoubu's Broken Horn is guarded behind this gatehouse. The record flow.65 lists the key already, but no step covers it."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "flow.MISSING-emma-owl-talk",
+  "verdict": "corrected",
+  "reason": "The Owl fight cannot start without Emma's talk flag 71110021, and no step covers the talk.",
+  "fix": {
+   "id": "flow.MISSING-emma-owl-talk",
+   "category": "flow",
+   "title": "Emma's talk before the Owl",
+   "summary": "Event 11115860 starts the Great Shinobi Owl only after four things: 8301 and 9303 are on, the invasion scene flag 11110720 is set (event 11115720), and talk flag 71110021 is set. Emma's ESD t111120 sets 71110021 in her talk 12100350. Then cutscene 11010050 plays and bar 905060 shows.",
+   "values": "flags 8301, 9303, 11110720, 71110021; ESD t111120 talk 12100350; cutscene 11010050; bar 905060",
+   "how": "m11_01 event 11115860 (3[0] waits on 11110720 and 71110021); ESD t111120 state 16",
+   "sources": [
+    {
+     "kind": "data",
+     "ref": "extracted/event/m11_01_00_00.emevd"
+    },
+    {
+     "kind": "data",
+     "ref": "extracted/script/talk/m11_00_00_00.talkesdbnd (t111120)"
+    }
+   ],
+   "confidence": "data",
+   "ours": {
+    "has": "no",
+    "where": ""
+   },
+   "his": {
+    "has": "no",
+    "where": ""
+   },
+   "needs": [
+    {
+     "id": "flow.36-castle-invasion-trigger",
+     "why": "the invasion scene must have played"
+    },
+    {
+     "id": "npcs.emma",
+     "why": "her talk sets the flag"
+    }
+   ],
+   "check": "After the invasion scene talk to Emma in the castle; the Owl fight then starts.",
+   "note": "Flow step 38 needs this talk as a predecessor."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "flow.MISSING-kuro-dragon-road-talk",
+  "verdict": "corrected",
+  "reason": "Flag 8415 is set by Kuro's talk and gates the Wedding Cave Door, with no step between the choice and the door.",
+  "fix": {
+   "id": "flow.MISSING-kuro-dragon-road-talk",
+   "category": "flow",
+   "title": "Kuro's talks that open the Dragon road",
+   "summary": "On the non-Shura path Kuro's variant ESD t111111 (state group 2147483638, state 2) sets flag 8415 and talk flag 71120149 after talks 11104700 and 11104750. Flag 8415 is read by m15 event 11505695 (the Wedding Cave Door), by m11_01 event 11115710 (Kuro's placement) and by common_func 20006111.",
+   "values": "ESD t111111; talks 11104700 and 11104750; flags 8415, 71120149; events 11505695, 11115710",
+   "how": "ESD t111111 SetEventFlag(8415); m15 event 11505695 ends if 8415 is off",
+   "sources": [
+    {
+     "kind": "data",
+     "ref": "extracted/script/talk/m11_00_00_00.talkesdbnd (t111111)"
+    },
+    {
+     "kind": "data",
+     "ref": "extracted/event/m15_00_00_00.emevd"
+    }
+   ],
+   "confidence": "data",
+   "ours": {
+    "has": "no",
+    "where": ""
+   },
+   "his": {
+    "has": "no",
+    "where": ""
+   },
+   "needs": [
+    {
+     "id": "flow.39-iron-code-choice",
+     "why": "the choice comes first"
+    },
+    {
+     "id": "npcs.kuro",
+     "why": "Kuro's talk sets the flag"
+    }
+   ],
+   "check": "Talk to Kuro until the Wedding Cave Door answers; read flag 8415 with memscope.",
+   "note": "Which choice leads to this variant script was not proven."
+  },
+  "needs_recording": false
+ },
+ {
+  "id": "game-flow.md",
+  "verdict": "corrected",
+  "reason": "Compared the markdown with the records and the EMEVD and ESD data; the listed passages disagree with the data or with each other.",
+  "fix": {
+   "edits": [
+    "Steps 57, 58, 59 and the endings table: Immortal Severance is Tears alone with cutscene 11020110, flags 20 and 6830, achievement 9; Purification is Tears with the Everblossom, cutscenes 11020120 then 11020121, flags 21 and 6831, achievement 10; Return is Tears with Frozen Tears, cutscene 11020100, flags 22 and 6832, achievement 11. Delete the sentence that says 6830 versus 6831 is not proven and the Open question marks on steps 58 and 59.",
+    "Step 59: the menu entry needs only goods 9091; the Rice for Kuro is needed only to get the Frozen Tears from the Divine Child.",
+    "Step 56: the three flags are set by Kuro's ESD t112111 (menu texts 14000100 to 14000102), not by the EMEVD.",
+    "Steps 01 to 03 and the first-control wording: the first control is in the Ashina Reservoir (m11_02), not the Dilapidated Temple; the temple is reached after the lost duel.",
+    "Step 12: the Young Lord's Bell Charm is given by ESD t110160 (lot 61600); lot 51600 is unused; the Buddha ESD t110101 sets 71100598. Step 15b: the Father's Bell Charm is given by Emma, and offering it needs 9302 on.",
+    "Step 17: castle idols are rows 1110 to 1117 with flags 11110000 to 11110007.",
+    "Step 21: the Gun Fort Shrine Key opens object 1701550 in m17 (event 11705202), a shrine door inside the Gun Fort.",
+    "Step 24: event 12005800 sets 9305; 9405 (the event 300 reward flag) is set later by event 12005906 after the post-fight cutscene.",
+    "Steps 25 and 26: the Divine Child's 'I do' answer sets 72000002 and event 12000700 gives the Mortal Blade at once as lot 62200; lot 3020 is unused; Mortal Draw lots 62202 and 62204 are weapons 5700 and 7300.",
+    "Step 30b: add lot 2200 (Bestowal Ninjutsu, goods 2120) for flag 9314, set by event 11705873 with achievement 24.",
+    "Step 32: lot 2050 exists (weapon 680000, Mibu Breathing Technique). Step 33: the technique is that lot, not a talk award.",
+    "Step 38: the Owl fight needs Emma's talk flag 71110021 as well as 8301, 9303 and the invasion scene.",
+    "Step 39: add the Kuro choice texts 14011020 and 14011021 with answer flags 71120120 and 71120121; the Obey answer leaves talk flag 71110055. Step 43: flag 8415 is set by Kuro's variant ESD t111111 after talks 11104700 and 11104750.",
+    "Steps 46 and 48 show 'Gate: none beyond the start of the game' but both need the Fountainhead arrival (step 44); step 50c also shows no predecessor and needs steps 36, 50, 28 and 15b.",
+    "Step 45: the Great White Whisker is a Sunken Valley pickup that needs flag 9370 (set by a Fountainhead talk); it is not a Fountainhead route item.",
+    "Step 52: the Secret Passage Key is given by Emma, not found in Kuro's room, and its door is object 1121711 in the Reservoir (event 11125295).",
+    "Key items table: Mortal Blade lot is 62200 (3020 is unused); add the Young Lord's and Father's Bell Charms, and mark the Gatehouse Key (9402) as an optional Reservoir door with no step. Add steps for the Gatehouse Key, Emma's talk before the Owl and Kuro's Dragon road talks (the MISSING entries).",
+    "World-state table: 8301 comes from common event 910 requiring all three goods (AND); the atlas record npcs.story-flags-8301 says 'or' and should read 'and'.",
+    "Numbering: steps 47 and 51 do not exist in the list although the numbers jump from 46b to 48 and 50c to 52."
+   ]
+  },
+  "needs_recording": false
+ }
+]

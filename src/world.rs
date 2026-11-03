@@ -22,20 +22,8 @@ impl Plugin for WorldPlugin {
 const TILE_SIZE: f32 = 2.0;
 const TILES_PER_SIDE: i32 = 30;
 
-#[derive(Component)]
-pub struct Blade;
-
-pub fn spawn_blade(parent: &mut ChildSpawnerCommands, meshes: &mut Assets<Mesh>, materials: &mut Assets<StandardMaterial>, color: Color) {
-    parent
-        .spawn((Blade, Transform::from_xyz(0.35, 0.1, -0.2), Visibility::default(), Name::new("Blade")))
-        .with_children(|b| {
-            b.spawn((
-                Mesh3d(meshes.add(Cuboid::new(0.04, 0.06, 1.0))),
-                MeshMaterial3d(materials.add(StandardMaterial { base_color: color, metallic: 0.8, perceptual_roughness: 0.3, ..default() })),
-                Transform::from_xyz(0.0, 0.0, -0.5),
-            ));
-        });
-}
+// The stand-in blade is the core's (model.rs); its poses are drawn here.
+pub use crate::model::Blade;
 
 /// Rest: blade held low and forward. Wind-up: from the anim start the blade rises
 /// toward a raised pose, reaching it at the first hitbox frame (a stand-in telegraph
@@ -73,6 +61,8 @@ fn pose_blades(combat: Res<Combat>, actors: Query<(&Actor, &Children)>, mut blad
 
 fn spawn_world(config: Res<crate::config::GameConfig>, mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut materials: ResMut<Assets<StandardMaterial>>) {
     // The game's own map (map.rs) brings its floor, walls and draw-param lighting.
+    // Everything here is a MapPiece: a map picked in the debug menu (map.rs go_to_map) clears it
+    // with the old map (the floor, pillars and the two lights stayed under every map).
     if crate::map::map_id(&config).is_some() {
         return;
     }
@@ -84,6 +74,7 @@ fn spawn_world(config: Res<crate::config::GameConfig>, mut commands: Commands, m
         for z in -half..half {
             let material = if (x + z) % 2 == 0 { &light_tile } else { &dark_tile };
             commands.spawn((
+                crate::map::MapPiece,
                 Mesh3d(tile.clone()),
                 MeshMaterial3d(material.clone()),
                 Transform::from_xyz((x as f32 + 0.5) * TILE_SIZE, 0.0, (z as f32 + 0.5) * TILE_SIZE),
@@ -95,16 +86,18 @@ fn spawn_world(config: Res<crate::config::GameConfig>, mut commands: Commands, m
     let stone = materials.add(Color::srgb(0.55, 0.5, 0.45));
     for i in 0..8 {
         let angle = i as f32 / 8.0 * std::f32::consts::TAU;
-        commands.spawn((Mesh3d(pillar.clone()), MeshMaterial3d(stone.clone()), Transform::from_xyz(angle.cos() * 14.0, 2.0, angle.sin() * 14.0)));
+        commands.spawn((crate::map::MapPiece, Mesh3d(pillar.clone()), MeshMaterial3d(stone.clone()), Transform::from_xyz(angle.cos() * 14.0, 2.0, angle.sin() * 14.0)));
     }
 
     // Key light (warm, shadows), a cool fill from the opposite side and a sky-coloured ambient
     // so the dark cloth and armour textures keep their detail in the shade.
     commands.spawn((
+        crate::map::MapPiece,
         DirectionalLight { illuminance: 12_000.0, color: Color::srgb(1.0, 0.95, 0.88), shadow_maps_enabled: true, ..default() },
         Transform::from_xyz(8.0, 15.0, 6.0).looking_at(Vec3::ZERO, Vec3::Y),
     ));
     commands.spawn((
+        crate::map::MapPiece,
         DirectionalLight { illuminance: 2_000.0, color: Color::srgb(0.75, 0.82, 1.0), shadow_maps_enabled: false, ..default() },
         Transform::from_xyz(-6.0, 6.0, -8.0).looking_at(Vec3::ZERO, Vec3::Y),
     ));

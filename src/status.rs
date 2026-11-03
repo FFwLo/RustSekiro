@@ -21,7 +21,7 @@ use std::collections::HashMap;
 use bevy::prelude::*;
 
 use crate::actor::{Actor, ActorSet};
-use crate::hud::CombatLog;
+use crate::combat::CombatLog;
 use crate::data::{Combat, SpEffect};
 
 /// SpEffect stateInfos of the build-ups (SP_EFFECT_TYPE: 2 poison, 6 burn).
@@ -168,15 +168,7 @@ impl ResistRules {
     }
 
     fn load() -> Self {
-        let read = |name: &str| -> Vec<serde_json::Value> {
-            let path = crate::paths::extracted().join(format!("json/params/{name}.json"));
-            let Some(v) = std::fs::read_to_string(path).ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()) else { return Vec::new() };
-            match &v["rows"] {
-                serde_json::Value::Array(a) => a.clone(),
-                serde_json::Value::Object(o) => o.values().cloned().collect(),
-                _ => Vec::new(),
-            }
-        };
+        let read = |name: &str| -> Vec<&'static serde_json::Value> { crate::data::param_table(name).values().collect() };
         let tent = read("TentativePlayerParam");
         let row = tent.iter().find(|r| r["id"].as_i64() == Some(0));
         let f = |k: &str| row.and_then(|r| r[k].as_f64()).unwrap_or(0.0) as f32;
@@ -206,7 +198,7 @@ impl ResistRules {
             })
             .collect();
         let power = |r: &serde_json::Value| (r["registFreeze"].as_f64().unwrap_or(0.0) * r["registFreezeChangeRate"].as_f64().unwrap_or(1.0)) as f32;
-        let by_id: HashMap<i64, &serde_json::Value> = sps.iter().filter_map(|r| Some((r["id"].as_i64()?, r))).collect();
+        let by_id: HashMap<i64, &serde_json::Value> = sps.iter().filter_map(|&r| Some((r["id"].as_i64()?, r))).collect();
         let freeze = sps
             .iter()
             .filter_map(|r| {
@@ -309,6 +301,29 @@ impl Statuses {
         stop.extend(all.drain().flat_map(|(_, s)| s.effects.into_iter().flat_map(|a| a.fx)));
     }
 
+    /// A cure (items.rs: Antidote Powder, Dousing Powder, Pacifying Agent, Divine Grass): the
+    /// gauges of `types` (0 poison, 1 burn, 2 terror) empty and their afflictions end.
+    pub fn cure(&mut self, e: Entity, types: [bool; 3]) {
+        let Statuses(all, stop) = self;
+        let Some(status) = all.get_mut(&e) else { return };
+        for (ty, gauge) in [&mut status.poison, &mut status.burn, &mut status.terror].into_iter().enumerate() {
+            if types[ty] {
+                *gauge = 0.0;
+            }
+        }
+        let info = [STATE_INFO_POISON, STATE_INFO_BURN, STATE_INFO_TERROR];
+        let mut kept = Vec::new();
+        for a in std::mem::take(&mut status.effects) {
+            let s = crate::items::param("SpEffectParam", a.id)["stateInfo"].as_i64().unwrap_or(0);
+            if (0..3).any(|t| types[t] && s == info[t]) {
+                stop.extend(a.fx);
+            } else {
+                kept.push(a);
+            }
+        }
+        status.effects = kept;
+    }
+
     /// A character's new life (an enemy's in-place respawn): its gauges and afflictions go,
     /// their effects on the body stop.
     pub fn clear(&mut self, e: Entity) {
@@ -333,7 +348,8 @@ impl Statuses {
 
     /// An enemy's hit (or bullet) on Wolf: as `hit`, against WOLF_RESIST, the guard's share kept
     /// off by his sword `weapon` (EquipParamWeapon, the equipped combat art's row), with his worn
-    /// rows (`player::wolf_worn`: Hard mode's 8610 x1.5 burn, 110010 Pretending Dead's disables).
+    /// rows (`player::wolf_worn`: Hard mode's 8610 x1.5 burn, 110010 Pretending Dead's disables;
+    /// plus his quick items' rows, Actor::item_sp: their resist rates and freezeDamageRate).
     pub fn hit_wolf_wearing(&mut self, combat: &Combat, wolf: Entity, worn: &[i64], weapon: i64, sps: &[i64], guard: Guard) -> Vec<String> {
         let w = combat.param("EquipParamWeapon", weapon);
         let num = |k: &str| w[k].as_f64().unwrap_or(0.0) as f32;
@@ -345,9 +361,10 @@ impl Statuses {
         self.build_up(combat, wolf, worn, sps, [WOLF_RESIST; 5], kept)
     }
 
-    /// `hit_wolf_wearing` with no worn rows (the sim tests' bare Wolf).
-    pub fn hit_wolf(&mut self, combat: &Combat, wolf: Entity, weapon: i64, sps: &[i64], guard: Guard) -> Vec<String> {
-        self.hit_wolf_wearing(combat, wolf, &[], weapon, sps, guard)
+    /// `hit_wolf_wearing` with the worn rows after the weapon (the sim tests pass `&[]` for a
+    /// bare Wolf, or his quick items' rows).
+    pub fn hit_wolf(&mut self, combat: &Combat, wolf: Entity, weapon: i64, worn: &[i64], sps: &[i64], guard: Guard) -> Vec<String> {
+        self.hit_wolf_wearing(combat, wolf, worn, weapon, sps, guard)
     }
 
     /// Whether SpEffect `id` is a build-up (poison / burn) rather than an effect of its own.
@@ -473,8 +490,9 @@ fn build_up_one(combat: &Combat, status: &mut Status, worn: &[i64], id: i64, res
 /// the remaining posture at <decomp ref>; emulator speffect2 cat150_aging: 420 -> 0 at once), so
 /// the aged Wolf's posture stays drained to the floor (our full bar).
 /// gap: the player's floor in the clamp FUN_140bd4e20 (taken as empty, without a break
-/// reaction); defNinsatsuDmgRate (99, as the cut rates) is not applied; the exe's order of
-/// maxHpRate is not traced.
+/// reaction); the exe's order of maxHpRate is not traced. The grabs take the cut rates too
+/// (combat.rs resolve_throws; they are atkAttribute 1 / 2 / 9: defNinsatsuDmgRate, attribute 5,
+/// meets no enemy grab).
 pub(crate) fn set_aging(a: &mut Actor, combat: &Combat, aging: Option<i64>) {
     if a.aged == aging {
         return;
@@ -933,13 +951,7 @@ pub(crate) struct VfxRows(pub(crate) HashMap<i64, [i64; 4]>);
 
 impl VfxRows {
     fn load() -> Self {
-        let path = crate::paths::extracted().join("json/params/SpEffectVfxParam.json");
-        let Some(v) = std::fs::read_to_string(path).ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()) else { return Self::default() };
-        let rows: Vec<&serde_json::Value> = match &v["rows"] {
-            serde_json::Value::Array(a) => a.iter().collect(),
-            serde_json::Value::Object(o) => o.values().collect(),
-            _ => Vec::new(),
-        };
+        let rows: Vec<&serde_json::Value> = crate::data::param_table("SpEffectVfxParam").values().collect();
         let n = |r: &serde_json::Value, k: &str| r[k].as_i64().unwrap_or(-1);
         Self(rows.iter().filter_map(|r| Some((r["id"].as_i64()?, [n(r, "initSfxId"), n(r, "initDmyId"), n(r, "midstSfxId"), n(r, "midstDmyId")]))).collect())
     }
@@ -1011,16 +1023,18 @@ struct ParamRow {
     endurance: f32,
 }
 
+/// Builds the lookups made from the param tables ahead of their first use (data::warm_params).
+#[cfg(not(test))]
+pub(crate) fn warm() {
+    ResistRules::get();
+    param_row(0);
+    vfx_se(0);
+}
+
 fn param_row(id: i64) -> Option<&'static ParamRow> {
     static T: std::sync::OnceLock<HashMap<i64, ParamRow>> = std::sync::OnceLock::new();
     let t = T.get_or_init(|| {
-        let path = crate::paths::extracted().join("json/params/SpEffectParam.json");
-        let v: serde_json::Value = std::fs::read_to_string(path).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
-        let rows: Vec<&serde_json::Value> = match &v["rows"] {
-            serde_json::Value::Array(a) => a.iter().collect(),
-            serde_json::Value::Object(o) => o.values().collect(),
-            _ => Vec::new(),
-        };
+        let rows: Vec<&serde_json::Value> = crate::data::param_table("SpEffectParam").values().collect();
         let n = |r: &serde_json::Value, k: &str| r[k].as_i64().unwrap_or(-1);
         let f = |r: &serde_json::Value, k: &str| r[k].as_f64().unwrap_or(0.0) as f32;
         rows.iter()
@@ -1092,17 +1106,50 @@ fn lasting_glow(
     }
 }
 
+/// Instant SpEffects (effectEndurance 0) put on a character this frame, shown once: their
+/// SpEffectVfx init effects (the Pellet's 3020 -> 310021 / 310022 sparkle), and a midst one, if
+/// any (the Red Lump's 3050 -> 310461), for `BURST_MIDST` s. items.rs `apply_used` fills it.
+#[derive(Resource, Default)]
+pub(crate) struct SpBursts(pub(crate) Vec<(Entity, i64)>);
+const BURST_MIDST: f32 = 1.5;
+
+#[allow(clippy::too_many_arguments)]
+fn sp_bursts(
+    mut commands: Commands,
+    time: Res<Time>,
+    combat: Res<Combat>,
+    rows: Res<VfxRows>,
+    mut bursts: ResMut<SpBursts>,
+    mut players: Query<(Entity, &mut crate::player::Player)>,
+    dummies: Query<&crate::model::Dummies>,
+    tfs: Query<&GlobalTransform>,
+    mut fx: Query<&mut crate::fxr::FxEffect>,
+    mut held: Local<Vec<(Entity, f32)>>,
+) {
+    let now = time.elapsed_secs();
+    let mut queued = std::mem::take(&mut bursts.0);
+    for (e, mut p) in &mut players {
+        queued.extend(p.sp_bursts.drain(..).map(|id| (e, id)));
+    }
+    for (owner, id) in queued {
+        held.extend(spawn_vfx(&mut commands, &combat, &rows, id, owner, &dummies, &tfs).into_iter().map(|e| (e, now + BURST_MIDST)));
+    }
+    held.retain(|(e, until)| {
+        if now < *until {
+            return true;
+        }
+        if let Ok(mut f) = fx.get_mut(*e) {
+            f.stop = true;
+        }
+        false
+    });
+}
+
 /// SpEffectVfxParam midstSeId of a vfx row (5010, the resurrection's heart sound: 200001).
 fn vfx_se(vfx: i64) -> Option<i64> {
     static T: std::sync::OnceLock<HashMap<i64, i64>> = std::sync::OnceLock::new();
     let t = T.get_or_init(|| {
-        let path = crate::paths::extracted().join("json/params/SpEffectVfxParam.json");
-        let v: serde_json::Value = std::fs::read_to_string(path).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
-        let rows: Vec<&serde_json::Value> = match &v["rows"] {
-            serde_json::Value::Array(a) => a.iter().collect(),
-            serde_json::Value::Object(o) => o.values().collect(),
-            _ => Vec::new(),
-        };
+        let rows: Vec<&serde_json::Value> = crate::data::param_table("SpEffectVfxParam").values().collect();
         rows.iter().filter_map(|r| Some((r["id"].as_i64()?, r["midstSeId"].as_i64().unwrap_or(0)))).filter(|(_, se)| *se > 0).collect()
     });
     t.get(&vfx).copied()
@@ -1118,10 +1165,10 @@ fn vfx_se(vfx: i64) -> Option<i64> {
 fn heartbeat(
     time: Res<Time>,
     players: Query<(&crate::player::Player, &GlobalTransform)>,
-    mut sounds: Option<ResMut<crate::sound::SoundQueue>>,
-    mut fmod: Option<NonSendMut<crate::fmod::Fmod>>,
+    mut sounds: Option<ResMut<crate::sound_rules::SoundQueue>>,
+    mut tracked: Option<ResMut<crate::sound_rules::TrackedSounds>>,
     mut next: Local<HashMap<i64, f32>>,
-    mut beats: Local<Vec<(i64, f32, crate::fmod::EventHandle)>>,
+    mut beats: Local<Vec<(i64, f32, crate::sound_rules::TrackedSound)>>,
 ) {
     let now = time.elapsed_secs();
     let mut worn = Vec::new();
@@ -1136,18 +1183,16 @@ fn heartbeat(
             *at = now + every;
             let Some(se) = sp_vfx_ids(cycle).into_iter().find_map(vfx_se) else { continue };
             let key = format!("c{se:09}");
-            if let Some(fm) = fmod.as_mut() {
+            if let Some(fm) = tracked.as_mut() {
                 let lasts = param_endurance(cycle).filter(|e| *e > 0.0).unwrap_or(every);
-                if let Some(ev) = fm.play_tracked(&key, g.translation()) {
-                    beats.push((id, now + lasts, ev));
-                }
+                beats.push((id, now + lasts, fm.play(&key, g.translation())));
             } else if let Some(q) = sounds.as_mut() {
                 q.0.push((key, g.translation()));
             }
         }
     }
     next.retain(|id, _| worn.contains(id));
-    if let Some(fm) = fmod.as_mut() {
+    if let Some(fm) = tracked.as_mut() {
         beats.retain(|(id, until, ev)| {
             let on = now < *until && worn.contains(id);
             if !on {
@@ -1206,7 +1251,7 @@ pub struct StatusPlugin;
 
 impl Plugin for StatusPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<Statuses>().insert_resource(VfxRows::load()).add_systems(FixedUpdate, tick.after(ActorSet::Resolve).after(crate::combat::resolve_throws)).add_systems(Update, (show, electro_glow, lasting_glow, heartbeat));
+        app.init_resource::<Statuses>().init_resource::<SpBursts>().insert_resource(VfxRows::load()).add_systems(FixedUpdate, tick.after(ActorSet::Resolve).after(crate::combat::resolve_throws)).add_systems(Update, (show, electro_glow, lasting_glow, heartbeat, sp_bursts));
     }
 }
 

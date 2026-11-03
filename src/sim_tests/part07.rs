@@ -17,7 +17,7 @@ pub(crate) fn reigniting_a_burn_refreshes_it() {
     let weapon = world.resource::<crate::config::GameConfig>().player.combat_art;
     world.resource_scope(|_, combat: Mut<Combat>| {
         let mut s = Statuses::default();
-        let burning = |s: &mut Statuses| (1..=10).find(|_| s.hit_wolf(&combat, wolf, weapon, &[9115], Guard::None).iter().any(|l| l == "BURNING"));
+        let burning = |s: &mut Statuses| (1..=10).find(|_| s.hit_wolf(&combat, wolf, weapon, &[], &[9115], Guard::None).iter().any(|l| l == "BURNING"));
         assert!(burning(&mut s).is_some());
         let flames = Entity::PLACEHOLDER;
         let a = &mut s.0.get_mut(&wolf).unwrap().effects[0];
@@ -175,9 +175,9 @@ pub(crate) fn deflects_arts_and_tools_chain_on_the_cancel_frame() {
 pub(crate) fn a_grapple_lands_on_the_point_in_the_move_start_time() {
     let mut app = app();
     move_enemy_far(&mut app);
-    let point = crate::map::GrapplePoint { hook: Vec3::new(0.0, 3.5, 9.0), land: Vec3::new(0.0, 3.0, 9.0), fwd: Vec3::NEG_Z, variation: 0 };
-    let target = crate::map::GrappleTarget { index: 0, point, dist: 9.0, in_action_range: true, ride: true };
-    app.insert_resource(crate::wire::WireAim { target: Some(target), enemy: None });
+    let point = crate::traversal::GrapplePoint { hook: Vec3::new(0.0, 3.5, 9.0), land: Vec3::new(0.0, 3.0, 9.0), fwd: Vec3::NEG_Z, variation: 0 };
+    let target = crate::traversal::GrappleTarget { index: 0, point, dist: 9.0, in_action_range: true, ride: true };
+    app.insert_resource(crate::wire::WireAim { target: Some(target), enemy: None, host: false });
     app.world_mut().resource_mut::<PadInput>().press(Action::Grapple);
     // The press reaches decide the tick after (player::hks_pad_in).
     app.update();
@@ -235,9 +235,9 @@ pub(crate) fn a_grapple_lands_on_the_point_in_the_move_start_time() {
 pub(crate) fn a_wire_landing_ends_the_wire_fall_type() {
     let mut app = app();
     move_enemy_far(&mut app);
-    let point = crate::map::GrapplePoint { hook: Vec3::new(0.0, 3.5, 9.0), land: Vec3::new(0.0, 3.0, 9.0), fwd: Vec3::NEG_Z, variation: 0 };
-    let target = crate::map::GrappleTarget { index: 0, point, dist: 9.0, in_action_range: true, ride: true };
-    app.insert_resource(crate::wire::WireAim { target: Some(target), enemy: None });
+    let point = crate::traversal::GrapplePoint { hook: Vec3::new(0.0, 3.5, 9.0), land: Vec3::new(0.0, 3.0, 9.0), fwd: Vec3::NEG_Z, variation: 0 };
+    let target = crate::traversal::GrappleTarget { index: 0, point, dist: 9.0, in_action_range: true, ride: true };
+    app.insert_resource(crate::wire::WireAim { target: Some(target), enemy: None, host: false });
     app.world_mut().resource_mut::<PadInput>().press(Action::Grapple);
     let mut wired = false;
     for _ in 0..240 {
@@ -266,9 +266,9 @@ pub(crate) fn the_grappling_hook_attack_throws_the_ogre() {
         t.translation = Vec3::new(0.0, 0.0, 9.0);
         e
     };
-    let point = crate::map::GrapplePoint { hook: Vec3::new(0.0, 2.0, 9.0), land: Vec3::new(0.0, 0.0, 9.0), fwd: Vec3::NEG_Z, variation: 50200 };
-    let target = crate::map::GrappleTarget { index: 0, point, dist: 9.0, in_action_range: true, ride: false };
-    app.insert_resource(crate::wire::WireAim { target: Some(target), enemy: Some((ogre, 300_050_200)) });
+    let point = crate::traversal::GrapplePoint { hook: Vec3::new(0.0, 2.0, 9.0), land: Vec3::new(0.0, 0.0, 9.0), fwd: Vec3::NEG_Z, variation: 50200 };
+    let target = crate::traversal::GrappleTarget { index: 0, point, dist: 9.0, in_action_range: true, ride: false };
+    app.insert_resource(crate::wire::WireAim { target: Some(target), enemy: Some((ogre, 300_050_200)), host: false });
     app.world_mut().resource_mut::<PadInput>().press(Action::Grapple);
     let mut seen = Vec::new();
     let mut foe = Vec::new();
@@ -350,9 +350,9 @@ pub(crate) fn the_grappling_hook_attack_todome_on_gyoubus_last_bar() {
         en.ninsatsu.0 = 1;
         e
     };
-    let point = crate::map::GrapplePoint { hook: Vec3::new(0.0, 2.0, 9.0), land: Vec3::new(0.0, 0.0, 9.0), fwd: Vec3::NEG_Z, variation: 80200 };
-    let target = crate::map::GrappleTarget { index: 0, point, dist: 9.0, in_action_range: true, ride: false };
-    app.insert_resource(crate::wire::WireAim { target: Some(target), enemy: Some((gyoubu, 300_080_200)) });
+    let point = crate::traversal::GrapplePoint { hook: Vec3::new(0.0, 2.0, 9.0), land: Vec3::new(0.0, 0.0, 9.0), fwd: Vec3::NEG_Z, variation: 80200 };
+    let target = crate::traversal::GrappleTarget { index: 0, point, dist: 9.0, in_action_range: true, ride: false };
+    app.insert_resource(crate::wire::WireAim { target: Some(target), enemy: Some((gyoubu, 300_080_200)), host: false });
     app.world_mut().resource_mut::<PadInput>().press(Action::Grapple);
     let mut seen = Vec::new();
     let mut foe = Vec::new();
@@ -384,9 +384,9 @@ pub(crate) fn the_grappling_hook_attack_todome_on_gyoubus_last_bar() {
 pub(crate) fn a_wire_landing_with_the_stick_held_runs_on() {
     let mut app = app();
     move_enemy_far(&mut app);
-    let point = crate::map::GrapplePoint { hook: Vec3::new(0.0, 0.5, 9.0), land: Vec3::new(0.0, 0.0, 9.0), fwd: Vec3::NEG_Z, variation: 0 };
-    let target = crate::map::GrappleTarget { index: 0, point, dist: 9.0, in_action_range: true, ride: true };
-    app.insert_resource(crate::wire::WireAim { target: Some(target), enemy: None });
+    let point = crate::traversal::GrapplePoint { hook: Vec3::new(0.0, 0.5, 9.0), land: Vec3::new(0.0, 0.0, 9.0), fwd: Vec3::NEG_Z, variation: 0 };
+    let target = crate::traversal::GrappleTarget { index: 0, point, dist: 9.0, in_action_range: true, ride: true };
+    app.insert_resource(crate::wire::WireAim { target: Some(target), enemy: None, host: false });
     app.world_mut().resource_mut::<PadInput>().press(Action::Grapple);
     let mut seen = Vec::new();
     for i in 0..240 {
@@ -402,6 +402,8 @@ pub(crate) fn a_wire_landing_with_the_stick_held_runs_on() {
     println!("{seen:?}");
     assert!(!seen.iter().any(|s| s == "LandWireMove"), "{seen:?}");
     let i = seen.iter().position(|s| s.contains("WireMoveStart")).expect("no move start");
+    // The script's land-ready pose (BEH_R_LAND_WIRE_READY, env 248's probe) comes first.
+    let i = i + usize::from(seen.get(i + 1).is_some_and(|s| s == "WireFallLandReady"));
     assert_eq!(seen.get(i + 1).map(|s| s.as_str()), Some("Locomotion"), "{seen:?}");
 }
 
@@ -431,7 +433,8 @@ pub(crate) fn a_free_fall_with_the_stick_held_runs_on() {
             }
             app.update();
             let (s, ..) = player_state(&mut app);
-            if s != "FreeFall" {
+            // (the land-ready pose, BEH_R_LAND_READY, is still the fall)
+            if s != "FreeFall" && !s.contains("LandReady") {
                 landed = Some(s);
                 break;
             }
@@ -451,13 +454,13 @@ pub(crate) fn a_twenty_metre_fall_lands_long_stiff() {
         {
             let world = app.world_mut();
             world.resource_scope(|world, combat: Mut<Combat>| {
-                let (mut a, mut t) = world.query_filtered::<(&mut Actor, &mut Transform), With<Player>>().single_mut(world).unwrap();
+                let (mut a, mut p, mut t) = world.query::<(&mut Actor, &mut Player, &mut Transform)>().single_mut(world).unwrap();
                 assert!(a.play_state(&combat.player, "FreeFall"));
                 a.airborne = true;
                 a.vel_y = 0.0;
                 t.translation.y += drop;
-                let y = t.translation.y;
-                world.query::<&mut Player>().single_mut(world).unwrap().air_top = y;
+                // A ledge of that height under the take-off (the fall height is from the last ground).
+                p.air_top = t.translation.y;
             });
         }
         let mut landed = None;
@@ -468,13 +471,14 @@ pub(crate) fn a_twenty_metre_fall_lands_long_stiff() {
             app.update();
             let world = app.world_mut();
             let a = world.query_filtered::<&Actor, With<Player>>().single(world).unwrap();
-            if a.state != "FreeFall" {
+            if a.state != "FreeFall" && !a.state.contains("LandReady") {
                 landed = Some((a.state.clone(), a.anim.clone()));
                 break;
             }
         }
         let (state, anim) = landed.expect("landed");
-        assert_eq!(state, "LandFreeFall", "drop {drop} held {held}");
+        // The graph names the long-stiff one by its CMSG (Selector_LandStiff LONG).
+        assert_eq!(state, if want == "a000_200021" { "LandFreeFallLongStiff" } else { "LandFreeFall" }, "drop {drop} held {held}");
         assert_eq!(anim, want, "drop {drop} held {held}");
     }
 }
@@ -482,10 +486,10 @@ pub(crate) fn a_twenty_metre_fall_lands_long_stiff() {
 /// A fall past HitMtrlParam fallDeathDist (40 m, the default row) ends in the fall-return death
 /// (HKS DAMAGE_TYPE_LAND_DEAD_RETURN, a000_200909) costing 40% of max HP, then Wolf stands at the
 /// last safe ground; a 25 m fall is the long stiff landing and costs 25% (exe FUN_140b97b30,
-/// emu_air).
+/// emu_air). With too little HP left for the cost, the fall kills him (`low`).
 #[test]
 pub(crate) fn a_forty_metre_fall_returns_wolf_to_safe_ground() {
-    for (drop, dies) in [(45.0, true), (25.0, false)] {
+    for (drop, dies, low) in [(45.0, true, false), (25.0, false, false), (45.0, true, true)] {
         let mut app = app();
         move_enemy_far(&mut app);
         for _ in 0..30 {
@@ -499,31 +503,144 @@ pub(crate) fn a_forty_metre_fall_returns_wolf_to_safe_ground() {
         {
             let world = app.world_mut();
             world.resource_scope(|world, combat: Mut<Combat>| {
-                let (mut a, mut t) = world.query_filtered::<(&mut Actor, &mut Transform), With<Player>>().single_mut(world).unwrap();
+                let (mut a, mut p, mut t) = world.query::<(&mut Actor, &mut Player, &mut Transform)>().single_mut(world).unwrap();
                 assert!(a.play_state(&combat.player, "FreeFall"));
                 a.airborne = true;
                 a.vel_y = 0.0;
+                if low {
+                    a.hp = a.hp_max * 0.3;
+                }
                 t.translation += Vec3::new(3.0, drop, 0.0);
-                let y = t.translation.y;
-                world.query::<&mut Player>().single_mut(world).unwrap().air_top = y;
+                p.air_top = t.translation.y;
             });
         }
         let mut saw = false;
+        let mut dead = false;
         let mut seen: Vec<String> = Vec::new();
         for _ in 0..900 {
             app.update();
             let world = app.world_mut();
             let a = world.query_filtered::<&Actor, With<Player>>().single(world).unwrap();
             saw |= a.state == "LandDeadReturnStart";
+            dead |= a.state.contains("Death");
             if seen.last() != Some(&a.state) { seen.push(a.state.clone()); }
         }
         let world = app.world_mut();
         let (a, t) = world.query_filtered::<(&Actor, &Transform), With<Player>>().single(world).unwrap();
         assert_eq!(saw, dies, "drop {drop} {seen:?}");
         let share: f32 = if dies { 0.4 } else { 0.25 };
-        assert_eq!(a.hp, (hp - (hp_max * share).floor()).max(0.0), "drop {drop}: the fall's HP cost");
-        if dies {
+        let want = if dies && low { 0.0 } else { (hp - (hp_max * share).floor()).max(0.0) };
+        assert_eq!(a.hp, want, "drop {drop} low {low}: the fall's HP cost");
+        assert_eq!(dead, low, "drop {drop} low {low}: {seen:?}");
+        assert!(!seen.iter().any(|s| s == "GroundFallReturn"), "back standing, no get-up clip: {seen:?}");
+        if dies && !low {
             assert!((t.translation - start).length() < 0.5, "back at the safe ground: {:?} vs {:?}", t.translation, start);
+        }
+    }
+}
+
+/// A fall that grazes a ledge for a moment and then lands to its death comes back where Wolf
+/// stood before the graze, not on the ledge: the exe's return point is the oldest of the last 5
+/// grounded frames (player.rs SAFE_RING; AKJama/sekiro-rs#201).
+#[test]
+pub(crate) fn a_ledge_grazed_on_the_way_down_is_not_the_return_point() {
+    let mut app = app();
+    move_enemy_far(&mut app);
+    for _ in 0..30 {
+        app.update();
+    }
+    let start = {
+        let world = app.world_mut();
+        world.query_filtered::<&Transform, With<Player>>().single(world).unwrap().translation
+    };
+    let ledge = start + Vec3::new(6.0, 0.0, 0.0);
+    {
+        let world = app.world_mut();
+        world.query_filtered::<&mut Transform, With<Player>>().single_mut(world).unwrap().translation = ledge;
+    }
+    app.update();
+    app.update();
+    {
+        let world = app.world_mut();
+        world.resource_scope(|world, combat: Mut<Combat>| {
+            let (mut a, mut p, mut t) = world.query::<(&mut Actor, &mut Player, &mut Transform)>().single_mut(world).unwrap();
+            assert!(a.play_state(&combat.player, "FreeFall"));
+            a.airborne = true;
+            a.vel_y = 0.0;
+            t.translation = ledge + Vec3::Y * 60.0;
+            p.air_top = t.translation.y;
+        });
+    }
+    let mut seen: Vec<String> = Vec::new();
+    for _ in 0..600 {
+        app.update();
+        let s = player_state(&mut app).0;
+        if seen.last() != Some(&s) {
+            seen.push(s);
+        }
+    }
+    let world = app.world_mut();
+    let at = world.query_filtered::<&Transform, With<Player>>().single(world).unwrap().translation;
+    assert!(seen.iter().any(|s| s == "LandDeadReturnStart"), "{seen:?}");
+    assert!((at - start).with_y(0.0).length() < 0.5, "back at {at}, stood at {start}, grazed {ledge}: {seen:?}");
+}
+
+/// Atlas movement.fall-damage: aged (stateInfo 341, SpEffect 9620) every landing from 5 m kills
+/// (exe FUN_14084e5d0: DAT_143b01950/54), so a 6 m drop is the fall-return death; unaged it is a
+/// plain landing with no HP lost.
+#[test]
+pub(crate) fn an_aged_wolf_dies_falling_five_metres() {
+    if !std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/extracted/enemies/c1300.json")).exists() {
+        return;
+    }
+    for aged in [true, false] {
+        // The aging rows (9600 / 9620) come with an aging enemy's data (the Okami c1300).
+        let mut app = app_cfg("c1300", None, Vec::new());
+        move_enemy_far(&mut app);
+        for _ in 0..30 {
+            app.update();
+        }
+        if aged {
+            // The aging build-up (Bullet 13000200's 9600) filled: 9620 on.
+            let wolf = app.world_mut().query_filtered::<Entity, With<Player>>().single(app.world()).unwrap();
+            app.world_mut().resource_scope(|world, combat: Mut<Combat>| {
+                let mut st = world.resource_mut::<crate::status::Statuses>();
+                for _ in 0..8 {
+                    st.hit_wolf(&combat, wolf, 0, &[], &[9600], crate::status::Guard::None);
+                }
+            });
+            for _ in 0..30 {
+                app.update();
+            }
+        }
+        let hp = {
+            let world = app.world_mut();
+            world.resource_scope(|world, combat: Mut<Combat>| {
+                let (mut a, mut p, mut t) = world.query::<(&mut Actor, &mut Player, &mut Transform)>().single_mut(world).unwrap();
+                assert!(a.play_state(&combat.player, "FreeFall"));
+                a.airborne = true;
+                a.vel_y = 0.0;
+                t.translation += Vec3::new(3.0, 6.0, 0.0);
+                p.air_top = t.translation.y;
+                assert_eq!(a.aged.is_some(), aged, "aging on: {:?} {:?}", a.aged, a.resident);
+                a.hp
+            })
+        };
+        let mut saw = false;
+        let mut seen: Vec<String> = Vec::new();
+        for _ in 0..300 {
+            app.update();
+            let s = player_state(&mut app).0;
+            saw |= s == "LandDeadReturnStart";
+            if seen.last() != Some(&s) {
+                seen.push(s);
+            }
+        }
+        assert_eq!(saw, aged, "aged {aged} {seen:?}");
+        if !aged {
+            let world = app.world_mut();
+            let a = world.query_filtered::<&Actor, With<Player>>().single(world).unwrap();
+            assert!((a.hp - hp).abs() < 0.5, "6 m costs nothing: {} vs {hp}", a.hp);
         }
     }
 }
@@ -539,13 +656,13 @@ pub(crate) fn a_jump_off_a_five_metre_ledge_lands_stiff() {
         {
             let world = app.world_mut();
             world.resource_scope(|world, combat: Mut<Combat>| {
-                let (mut a, mut t) = world.query_filtered::<(&mut Actor, &mut Transform), With<Player>>().single_mut(world).unwrap();
+                let (mut a, mut p, mut t) = world.query::<(&mut Actor, &mut Player, &mut Transform)>().single_mut(world).unwrap();
                 assert!(a.play_state(&combat.player, "VerticalGroundJumpFall"));
                 a.airborne = true;
                 a.vel_y = 0.0;
                 t.translation.y += drop;
-                let y = t.translation.y;
-                world.query::<&mut Player>().single_mut(world).unwrap().air_top = y;
+                // A ledge of that height under the take-off (the fall height is from the last ground).
+                p.air_top = t.translation.y;
             });
         }
         let mut landed = None;

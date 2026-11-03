@@ -12,11 +12,11 @@ use bevy::prelude::*;
 use std::collections::HashMap;
 
 use crate::actor::{wrap_angle, Actor, ActorSet, ShownYaw, Side};
-use crate::camera::{LockOn, OrbitCamera};
+use crate::view::{LockOn, View};
 use crate::config::GameConfig;
 use crate::data::{CharData, Combat, FALL_TYPES, calc_correct};
 use crate::enemy::Enemy;
-use crate::hud::CombatLog;
+use crate::combat::CombatLog;
 
 #[derive(Component)]
 pub struct Player {
@@ -26,6 +26,16 @@ pub struct Player {
     /// A launch homing on a character (ChrPhysicsVelocityChangeParam homingId other than the
     /// wire's: the jump arts' 10010 -> ChrPhysicsHomingParam 20000), until he lands.
     leap_homing: Option<LeapHoming>,
+    /// Docked to a map edge: wall hug or ledge hang (docking.rs).
+    pub(crate) dock: Option<crate::docking::Dock>,
+    /// Wall jumps this flight (WALL_JUMP_COUNT_MAX 1) and the wall-contact side of the ready pose
+    /// in progress (docking.rs).
+    pub(crate) wall_jumps: u8,
+    /// The direction (from Wolf) of the wall the last chained wall jump left.
+    pub(crate) last_wall: Option<Vec3>,
+    /// At a Sculptor's Idol (idol.rs): which, the clip phase, the menu's command, the checkpoint.
+    pub(crate) seat: crate::seat::Seat,
+    pub(crate) wall_contact: Option<char>,
     /// HKS MoveSpeedLevel: 0 idle, 1 walk, 2 run (converges at 3/s).
     pub(crate) speed_level: f32,
     /// The pad manipulator's stick gate and yaw request (`Turn`).
@@ -39,6 +49,25 @@ pub struct Player {
     pub resurrections: u32,
     /// Attack pressed on the death loop before its f0 refresh was read: revive once it is.
     revive_queued: bool,
+    /// The resurrection choice is open (menu.rs's death screen shows ": Die" / ": Resurrect").
+    pub revive_open: bool,
+    /// Die chosen there (guard): no resurrection, the death screen fades out to the final death.
+    pub gave_up: bool,
+    /// After a resurrection the nodes left are locked until Wolf lands a deathblow (the game's
+    /// rule; the user, 2026-10-18: "second ressurection should be locked away in game after you
+    /// resurrect until you land a deathblow"). Resting and a reset unlock them too.
+    pub revive_locked: bool,
+    /// The worn items' maxHpRate product now applied to hp_max (items.rs `max_hp_rate`;
+    /// Yashariku's Sugar 3411: 0.5), so it comes off again when they end.
+    pub item_hp_rate: f32,
+    /// The same for maxStaminaRate on posture_max (Yashariku's Sugar 3411: 0.5).
+    pub item_posture_rate: f32,
+    /// Instant SpEffects whose looks show once (status.rs `sp_bursts`): the gourd's heal 3000.
+    pub sp_bursts: Vec<i64>,
+    /// Resurrective Power gathered toward the next used resurrection node (drops.rs).
+    pub res_power: u32,
+    /// Rested at an idol: the refilled goods (Five-color Rice) are topped up (items.rs).
+    pub refill_items: bool,
     /// Seconds in the death / revival-wait loop. Those clips are one frame long and loop, so
     /// their time wraps and their f0-4 TAE (110010 Pretending Dead, iframes) stays on; the revive
     /// choice and the timeout run on this instead of the clip time (round 27).
@@ -59,24 +88,22 @@ pub struct Player {
     /// event script clears them): they last until Wolf is rebuilt (death respawn, rest, load),
     /// which the fight reset stands in for.
     pub(crate) held: Vec<i64>,
-    /// Last ground jump was forward (HKS Selector_GroundJumpType): picks its land anim.
-    jump_forward: bool,
-    /// Landing of a directional (positioning) jump, which takes priority over moving on.
-    jump_land: Option<&'static str>,
-    /// HKS EnablePositioningJumpLand (c0000_transition.lua 2800): set by every non-sprint ground
-    /// jump, vertical too; BEH_R_LAND 2026 takes the stiff landing from 3 m with it (round 76:
-    /// only the locked-on jumps had it, via jump_land).
-    positioning_land: bool,
     /// Aged and past W_StandAging: the form comes back as W_AgingIdle after a throw or a
     /// reaction (HKS 381), not with the onset again.
     aged_form: bool,
     /// Locked-on step tilt (HKS _set4DirStepTilt -> act 3025): root-motion yaw offset for the step.
-    step_tilt: f32,
+    pub(crate) step_tilt: f32,
+    /// A deathblow is in reach of the attack button (decide's throw check, read by hks_wolf).
+    pub(crate) deathblow_ready: bool,
+    /// The jump-over throw (崩し蹴りジャンプ) is in reach of the jump button.
+    pub(crate) jump_throw_ready: bool,
+    /// A plunge deathblow is in reach of the air attack.
+    pub(crate) plunge_ready: bool,
     /// The jump's root tilt (HKS act 3025 from _setPositioningJumpTilt / _set4DirJumpTilt: the
     /// stick's angle minus its sector's centre), radians, on the ground jumps and the kick jump;
     /// it turns their root motion and TAE 920 launch (round 76: they flew along the sector's
     /// fixed line, up to 22.5 / 45 deg off the stick).
-    jump_tilt: f32,
+    pub(crate) jump_tilt: f32,
     /// Deathblow start throw in progress: the enemy, the main ThrowParam row suffix and whether
     /// Wolf is behind it (deathblow_check). Round 37: `behind` was re-derived from the suffix
     /// (111 / 21) and missed the boss rows (Todome 181, HU 611 / 619, Gyoubu's 119), so the boss
@@ -86,6 +113,10 @@ pub struct Player {
     pub(crate) throw_target: Option<Entity>,
     /// Equipped prosthetic slot (index into config player.prosthetics; Z cycles it).
     pub tool_slot: usize,
+    /// The quick-item slot in hand (config player.quick_items; items.rs).
+    pub quick_slot: usize,
+    /// A quick item being used: its goods and use state, until the state ends.
+    pub item_use: Option<(i64, String)>,
     /// TAE 922 ChrPhysicsVelosityScale in progress (`VelScale`).
     vel_scale: Option<VelScale>,
     /// A switch is in progress: when its arm anim ends the new tool unfolds (SubWeaponExpand).
@@ -93,11 +124,6 @@ pub struct Player {
     /// The tool group of the last prosthetic use (HKS g_beforeSubAttackType): a combo follow-up
     /// needs the same tool.
     pub sub_cat_before: i64,
-    /// HKS g_airSubAttackCount: tool uses this jump (hks::AIR_SUB_ATTACK_COUNT_MAX), 0 on the ground.
-    pub air_sub_count: u32,
-    /// HKS g_airSpecialAttackCount: Sakura Dance (110) uses this jump (AIR_SP_ATTACK_COUNT_MAX 1),
-    /// also counted by its ground leap; 0 on the ground except in the jump readies (_LandReset).
-    pub air_art_count: u32,
     /// HKS g_enableSpAttaclkJump: the art had its emblems when pressed (env(3035) at
     /// BEH_A_GROUND_SP_ATTACK / BEH_A_AIR_SP_ATTACK); gates Shadowrush's hit jump.
     pub art_enable_jump: bool,
@@ -112,11 +138,17 @@ pub struct Player {
     /// Attack pressed during the Grappling Hook Attack's landing (the Todome input).
     wire_todome: bool,
     /// The fall top (physics +0x854): the height of the last grounded frame or SetNoGravity hold,
-    /// kept through the flight. The landing reads the fall height from it (env(224),
+    /// kept through the flight, not the flight's highest point (copied every grounded update,
+    /// <decomp ref>; FUN_140b97880). The landing reads the fall height from it (env(224),
     /// `FALL_HEIGHT_LONG_STIFF_LAND`, the fall damage).
     pub(crate) air_top: f32,
-    /// The last ground Wolf stood on (not water): where a fall-return death puts him back.
-    safe_pos: Option<Vec3>,
+    /// Wolf's centre at the last fall check (the path tested against the fall-return walls).
+    fall_from: Option<Vec3>,
+    /// The ground Wolf stood on these last `SAFE_RING` ticks (not water), oldest first: a
+    /// fall-return death puts him back at the oldest.
+    pub(crate) safe_ring: std::collections::VecDeque<Vec3>,
+    /// Swimming or diving (swim.rs).
+    pub(crate) swim: Option<crate::swim::Swim>,
     /// Grounded, the horizontal move of the last tick (m/s) and where it was measured from: the
     /// air velocity a walk-off starts with (physics +0x160).
     ground_vel: Vec3,
@@ -140,7 +172,14 @@ pub enum Action {
     SwitchTool,
     /// Grappling Hook (ACTION_ARM_WIRE_SHOOT; wire.rs).
     Grapple,
+    /// Next quick item (gameAction 13 / 14: C here, the pad's d-pad down; items.rs).
+    NextItem,
+    /// Talk / examine / wall hug / ledge hang (ACTION_ARM_WALL_HANG, key guide Kc@20; docking.rs).
+    Interact,
 }
+
+/// Resurrective Power that lights one used resurrection node again (drops, HUD).
+pub(crate) const RES_POWER_NODE: u32 = 100;
 
 pub const CAPSULE_RADIUS: f32 = 0.4;
 /// How far from a wire perch's landing spot Wolf still stands on it (gap: the object's own
@@ -162,7 +201,7 @@ pub const FLAG_ACCEPT_JUMP: i64 = 119;
 /// ChrActionFlag 67 "ThrowStart2" on a defender's break pose (ThrowDef12100 frames 0-45).
 const FLAG_THROW_START2: i64 = 67;
 /// EquipParamGoods row of the Healing Gourd.
-const GOURD_GOODS: i64 = 3000;
+pub(crate) const GOURD_GOODS: i64 = 3000;
 /// PlayerIns +0x2134 (FUN_140a217a0, <decomp ref>): death -> the resurrection choice opens.
 const REVIVE_DELAY: f32 = 1.8;
 /// PlayerIns +0x2128 (<decomp ref>, 15.0): how long the choice stays open.
@@ -174,9 +213,6 @@ const FLAG_ACCEPT_PROSTHETIC: i64 = 137;
 const FLAG_LIMIT_WALK: i64 = 90;
 /// SpEffect 3000 (goods 3000, the Healing Gourd): changeHpEstusFlaskRate -40 -> 40 % HP.
 const GOURD_SPEFFECT: &str = "3000";
-/// Whirlwind Slash: weapon 5100 (spAtkcategory 100 -> anim group a100, behavior
-/// variation 5001 -> judges 200/201, dark damage 125 %), GroundSpecialAttackCombo1 = 316000.
-const ART_WHIRLWIND: &str = "a100_316000";
 
 /// The equipped combat art's first anim: EquipParamWeapon[config player.combat_art]
 /// spAtkcategory -> group a<cat>, GroundSpecialAttackCombo1 = <group>_316000 (or 316001); the jump
@@ -184,18 +220,6 @@ const ART_WHIRLWIND: &str = "a100_316000";
 fn art_anim(d: &CharData, combat: &Combat, config: &GameConfig) -> Option<String> {
     let cat = combat.param("EquipParamWeapon", config.player.combat_art)["spAtkcategory"].as_i64()?;
     [316000, 316001, 316700].iter().map(|id| format!("a{cat:03}_{id}")).find(|k| d.anim(k).is_some_and(|a| a.duration.is_some()))
-}
-/// The art combo's next state and clip when its window (ref 223 SP_EF_REF_TAE_ENABLE_SP_ATK_COMBO)
-/// is up and the equipped art has one (`art_combo_next`), in the art's anim group.
-fn art_combo_pick(d: &CharData, a: &Actor, combat: &Combat, config: &GameConfig, emblems: u32) -> Option<(&'static str, String)> {
-    if a.anim.is_empty() || !d.has_ref(&a.anim, a.step(), REF_ENABLE_SP_ATK_COMBO) {
-        return None;
-    }
-    let (cat, unlock) = art_kind(combat, config)?;
-    let state = art_combo_next(&a.state, cat, emblems >= art_cost(combat, config), |r| r == unlock)?;
-    let id = d.states.get(state)?.rsplit('_').next()?.to_string();
-    let key = format!("a{cat:03}_{id}");
-    d.anim(&key).is_some_and(|an| an.duration.is_some()).then_some((state, key))
 }
 /// A state's anim id: the state table's, else for SprintSpecialAttackJumpReady (in c0000.hkx, but
 /// CMSG gives it no animId) its NoResource twin's 316770.
@@ -216,90 +240,8 @@ fn art_key(d: &CharData, cat: i64, state: &str) -> Option<String> {
     d.anim(&key).is_some_and(|an| an.duration.is_some()).then_some(key)
 }
 
-/// HKS _FireSpAttackCombo: the art state that follows `state` when the art is pressed again
-/// inside SP_EF_REF_TAE_ENABLE_SP_ATK_COMBO (223). `cat` = spAtkcategory (SP_ATK_TYPE_1xx);
-/// `unlocked(ref)` = the SP_EF_REF_WEP_SP_ATK_UNLOCK_* ref is up (the upgraded art's resident
-/// SpEffect, e.g. Ichimonji: Double 7100 -> 140201 -> ref 281).
-fn art_combo_next(state: &str, cat: i64, enable: bool, unlocked: impl Fn(i64) -> bool) -> Option<&'static str> {
-    const UNLOCK_102_COMBO: i64 = 281;
-    const UNLOCK_105_COMBO: i64 = 282;
-    const UNLOCK_107_COMBO: i64 = 284;
-    const UNLOCK_108_FINISH: i64 = 285;
-    match state {
-        // Line 5379: One Mind's hold action -> its second cut (W_GroundSpacialAttackVariationCombo2,
-        // *NoResource without the emblems).
-        "GroundSpacialAttackHoldAction" | "GroundSpacialAttackHoldActionNoResource" if cat == 104 => {
-            Some(if enable { "GroundSpacialAttackVariationCombo2" } else { "GroundSpacialAttackVariationCombo2NoResource" })
-        }
-        // Line 5406: out of the hold's end, the draw.
-        "GroundSpacialAttackHoldEnd" => Some("GroundSpecialAttackCombo1"),
-        // Line 5386: also out of the jump arts' landings (High Monk's kicks go on).
-        "GroundSpecialAttackCombo1"
-        | "GroundSpecialAttackCombo1Release"
-        | "SprintSpecialAttack"
-        | "SprintSpecialAttackRelease"
-        | "LandAirSpecialAttack"
-        | "LandAirSpecialAttackStart"
-        | "LandAirSpecialAttackLoop"
-        | "LandGroundSpecialAttackJumpStart"
-        | "LandGroundSpecialAttackJumpFallLoop" => match cat {
-            102 if !unlocked(UNLOCK_102_COMBO) => None,
-            107 if !unlocked(UNLOCK_107_COMBO) => Some("GroundSpecialAttackCombo2Finish"),
-            108 if !unlocked(UNLOCK_108_FINISH) => Some("GroundSpecialAttackCombo2Finish"),
-            _ => Some("GroundSpecialAttackCombo2"),
-        },
-        "GroundSpecialAttackCombo2" => match cat {
-            105 if !unlocked(UNLOCK_105_COMBO) => Some("GroundSpacialAttackVariationCombo3"),
-            107 if !unlocked(UNLOCK_107_COMBO) => None,
-            108 if !unlocked(UNLOCK_108_FINISH) => None,
-            _ => Some("GroundSpecialAttackCombo3"),
-        },
-        "GroundSpecialAttackCombo3" => Some("GroundSpecialAttackCombo4"),
-        "GroundSpecialAttackCombo4" => Some("GroundSpecialAttackCombo5"),
-        _ => None,
-    }
-}
 
-/// HKS BEH_A_AIR_SP_ATTACK (2906-2940): the art pressed in the air -> (state, counted). `enable` =
-/// env(3035) (the emblems), `count` = g_airSpecialAttackCount, `ref_226` = the hit jump's derive
-/// window. Sakura Dance (110) once per jump (else W_AddActionInputSpacialAttack, an additive: none
-/// here). Without ACTION_UNLOCK_TYPE_AIR_SP_ATTACK (25, line 2915) the caller drops the press.
-pub(crate) fn air_art_state(cat: i64, unlock: i64, enable: bool, count: u32, ref_226: bool) -> Option<(&'static str, bool)> {
-    const AIR_SP_ATTACK_COUNT_MAX: u32 = 1;
-    Some(match cat {
-        110 if count >= AIR_SP_ATTACK_COUNT_MAX => return None,
-        101 | 107 | 108 => ("AirSpecialAttackStart", false),
-        110 => (if enable { "AirSpecialAttackStart" } else { "AirSpecialAttackStartNoResource" }, true),
-        109 if unlock == SP_REF_UNLOCK_109_FALL_ATTACK && ref_226 => ("GroundSpecialAttackHitJumpDeriveAction", false),
-        104 => ("AirSpecialAttackHoldStart", false),
-        103 if !enable => ("AirSpecialAttackNoResource", false),
-        _ => ("AirSpecialAttack", false),
-    })
-}
 
-/// HKS BEH_R_LAND (1971-2015) for the air art states -> (land state, keep the time). `ref_201` =
-/// SP_EF_REF_TAE_ENABLE_ORIGINAL_LAND_ACTION, `ref_288` = ..._SP_ATK_110 (Sakura Dance's bounce,
-/// a110_316200 f0-37). None = the plain _LandFreeFall.
-fn air_art_land(cat: i64, state: &str, ref_201: bool, ref_288: bool) -> Option<(&'static str, bool)> {
-    Some(match state {
-        "AirSpecialAttack" if ref_201 => ("LandAirSpecialAttack", true),
-        "AirSpecialAttackNoResource" if ref_201 => ("LandAirSpecialAttackNoResource", true),
-        "AirSpecialAttackStart" if cat == 110 && ref_288 => ("AirSpecialAttackLandingJumpReady", true),
-        "AirSpecialAttackLandingJumpStart" if cat == 110 && ref_201 => ("LandGroundSpecialAttackJumpAfterJumpStart", true),
-        "AirSpecialAttackStart" if cat == 110 && ref_201 => ("LandGroundSpecialAttackJumpFallLoop", true),
-        "AirSpecialAttackStartNoResource" if cat == 110 && ref_288 => ("AirSpecialAttackLandingJumpReadyNoResource", true),
-        "AirSpecialAttackLandingJumpStartNoResource" if cat == 110 && ref_201 => ("LandGroundSpecialAttackJumpAfterJumpStartNoResource", true),
-        "AirSpecialAttackStartNoResource" if cat == 110 && ref_201 => ("LandGroundSpecialAttackJumpFallLoopNoResource", true),
-        "AirSpecialAttackStart" if ref_201 => ("LandAirSpecialAttackStart", true),
-        "AirSpecialAttackLoop" => ("LandAirSpecialAttackLoop", false),
-        "AirSpecialAttackLoopNoResource" => ("LandAirSpecialAttackLoopNoResource", false),
-        "AirSpacialAttackEnd" if ref_201 => ("LandAirSpacialAttackEnd", true),
-        "AirSpecialAttackHoldStart" if ref_201 => ("LandAirSpecialAttackHoldStart", true),
-        "AirSpecialAttackHoldLoop" => ("LandAirSpecialAttackHoldLoop", false),
-        "AirSpacialAttackHoldEnd" if ref_201 => ("LandAirSpacialAttackHoldEnd", true),
-        _ => return None,
-    })
-}
 
 /// ChrPhysicsHomingParam's target point on a character: its origin (targetBaseDmyPolyId -1) plus
 /// targetOffset in its own space (model forward is -Z, so 20000's (0, 0, -1) is 1 m in front of
@@ -370,51 +312,6 @@ impl LeapHoming {
     }
 }
 
-/// HKS BEH_A_GROUND_SP_ATTACK: the art's opening state by type. Out of a sprint (ref 1) the
-/// Sprint* variant; 101 steps (_set2DirStepDir: stick within +-90 deg of the facing -> F, no
-/// stick -> N, else B; without SP_EF_REF_WEP_SP_ATK_UNLOCK_101_BACK_ATTACK (280) always F);
-/// otherwise GroundSpecialAttackCombo1. Candidates in order; the first whose anim exists in the
-/// art's group wins; 104 opens its hold (GroundSpacialAttackHoldStart). `enable` = env(3035,
-/// ACTION_ARM_SPECIAL_ATTACK): Spirit Emblems held >= the art's resourceItemA (`art_cost`; the exe's
-/// FUN_140a26010, as for the tools): without, Dragon Flash (103) plays its *NoResource opening
-/// (a103_316001 / 316301).
-fn art_start_states(cat: i64, unlock: i64, sprint: bool, stick: Vec3, fwd: Vec3, enable: bool) -> Vec<String> {
-    let mut out = Vec::new();
-    let pre = if sprint { "Sprint" } else { "Ground" };
-    // 107 (Senpou Leaping Kicks / High Monk) and 110 (Sakura Dance) leap first (HKS 3437-3453):
-    // W_GroundSpecialAttackJumpReady (Sprint* out of a sprint; 110 without the emblems
-    // *NoResource; the sprint one plays 316770, `art_state_id`).
-    if cat == 107 || cat == 110 {
-        let nr = if cat == 110 && !enable { "NoResource" } else { "" };
-        if sprint {
-            out.push(format!("SprintSpecialAttackJumpReady{nr}"));
-        }
-        out.push(format!("GroundSpecialAttackJumpReady{nr}"));
-        out.push("GroundSpecialAttackJumpReady".to_string());
-        return out;
-    }
-    if cat == 103 && !enable {
-        out.push(if sprint { "SprintSpecialAttackNoResource" } else { "GroundSpecialAttackCombo1NoResource" }.to_string());
-    }
-    if cat == 101 {
-        let dir = if unlock != 280 || (stick != Vec3::ZERO && stick.dot(fwd) > 0.0) {
-            "F"
-        } else if stick == Vec3::ZERO {
-            "N"
-        } else {
-            "B"
-        };
-        out.push(format!("{pre}SpecialAttackStep_{dir}"));
-    }
-    if cat == 104 {
-        out.push(if sprint { "SprintSpecialAttackHoldStart" } else { "GroundSpacialAttackHoldStart" }.to_string());
-    }
-    if sprint && cat != 104 {
-        out.push("SprintSpecialAttack".to_string());
-    }
-    out.push("GroundSpecialAttackCombo1".to_string());
-    out
-}
 
 /// Knowledge of Medicine (SkillParam 170 / 171 / 600-602, each 150200 + 150210): every learned one
 /// adds 150210's accumuVal 1; the stacks climb 150200's accumuOverFireId chain (LV2 150201 at
@@ -562,23 +459,8 @@ pub const FLAG_DISABLE_TURN: i64 = 7;
 
 // SP_EF_REF_* behaviour refs (c0000_define.hks).
 pub const REF_ENABLE_SPRINT_ACTION: i64 = 1;
-pub const REF_TRANSITION_SPRINT: i64 = 15;
 pub const REF_JUST_GUARD: i64 = 203;
-pub const REF_GUARD_CAN_END: i64 = 207;
-pub const REF_RELEASE_ATTACK: i64 = 208;
 pub const REF_GUARD_COMBO: i64 = 212;
-/// In the HKS check order. 231 (COMBO_1_REVERSE) is up after deflects, left swings and
-/// DeflectGuardToStand: the next slash then starts from the other side.
-pub const REF_COMBO: [(i64, &str); 7] = [
-    (214, "GroundAttackCombo1"),
-    (215, "GroundAttackCombo2"),
-    (231, "GroundAttackCombo1Reverse"),
-    (219, "GroundAttackCombo2Reverse"),
-    (216, "GroundAttackCombo3"),
-    (217, "GroundAttackCombo4"),
-    (218, "GroundAttackCombo5"),
-];
-pub const REF_PRESS_GUARD: i64 = 221;
 /// SP_EF_REF_TAE_ENABLE_SP_ATK_RELEASE: letting go of attack here plays the art's Release
 /// (a106_316010 f6-18; live recording: let go at f2-3 -> a106_316110 at f6.5).
 pub const REF_SP_ATK_RELEASE: i64 = 222;
@@ -586,20 +468,16 @@ pub const REF_SP_ATK_RELEASE: i64 = 222;
 /// (a104_316500 HoldStart f21-33; the air hold a104_316220 f0-93).
 pub const REF_SP_ATK_HOLD_RELEASE: i64 = 230;
 /// SP_EF_REF_TAE_ENABLE_SP_ATK_COMBO: the art's follow-up window (SpEffect 100252).
+#[cfg(test)]
 pub const REF_ENABLE_SP_ATK_COMBO: i64 = 223;
-/// SP_EF_REF_TAE_ENABLE_ADD_JUST_DEFLECT / _ADD_ACTION_INPUT_GUARD_CANCEL / _HIT_DEFLECT_CANCEL.
-pub const REF_ADD_JUST_DEFLECT: i64 = 228;
+/// SP_EF_REF_TAE_ENABLE_ADD_ACTION_INPUT_GUARD_CANCEL.
 pub const REF_ADD_GUARD_CANCEL: i64 = 412;
 /// SP_EF_REF_TAE_ENABLE_ADD_ACTION_INPUT_GUARD: raised by the additive deflect (a000_299060 f0-9).
 pub const REF_ADD_INPUT_GUARD: i64 = 411;
-pub const REF_HIT_DEFLECT_CANCEL: i64 = 503;
 /// SP_EF_REF_TAE_ENABLE_ORIGINAL_LAND_ACTION: landing keeps the attack going (LandAir* anims).
 pub const REF_ORIGINAL_LAND_ACTION: i64 = 201;
-/// c0000_define FALL_HEIGHT_LONG_STIFF_LAND (m) and the long-stiff LandFreeFall clip.
-const FALL_HEIGHT_LONG_STIFF_LAND: f32 = 20.0;
-const LAND_LONG_STIFF: &str = "a000_200021";
-/// Fall damage starts here (m): DAT_143b01948 = 20.0, read by FUN_140b97b30 (5 m while SpEffect
-/// type 0x155 is worn, DAT_143b01950/54; gap: that SpEffect is not ported).
+/// Fall damage starts here (m): DAT_143b01948 = 20.0, read by FUN_140b97b30 (5 m while aged:
+/// `FALL_DAMAGE_FROM_AGED`).
 pub(crate) const FALL_DAMAGE_MIN: f32 = 20.0;
 /// The share of max HP a lethal landing (fall height >= fallDeathDist) costs before the return
 /// (DAT_143b01958 = 0.4 in FUN_140b97b30).
@@ -625,18 +503,114 @@ pub(crate) fn fall_hp_loss(hp_max: f32, drop: f32, dist: f32) -> Option<(f32, bo
     let factor = drop.min(100.0) * 0.01;
     Some(((hp_max * factor).floor(), false))
 }
-/// c0000_define 211-212: FALL_HEIGHT_SHORT_STIFF_LAND(_FROM_JUMP), metres.
-const FALL_HEIGHT_SHORT_STIFF_LAND: f32 = 5.0;
+/// The share of max HP a fall out of the map with no lethal landing costs (the fall-return walls,
+/// the void drop; the user, 2026-10-18: "the falls should take 1/3 of player's health every time
+/// wolf falls out of the map"). gap: the exe's cost for these is not traced.
+const FALL_VOID_RETURN_COST: f32 = 1.0 / 3.0;
+/// Seconds of the fall-return clip (under the black cut) before Wolf is back on safe ground.
+const FALL_RETURN_HOLD: f32 = 1.0;
+/// The fall height (m) landings hurt and kill from while aged (exe DAT_143b01950/54: SpEffect
+/// stateInfo 0x155 = 341 worn).
+const FALL_DAMAGE_FROM_AGED: f32 = 5.0;
+/// stateInfo 341: aging (SpEffect 9620).
+const STATE_INFO_AGING: i64 = 341;
+/// stateInfo 47: no fall damage (SpEffects 640 / 4050 / 4053).
+const STATE_INFO_NO_FALL_DAMAGE: i64 = 47;
+
+/// Whether one of Wolf's SpEffects now (residents, TAE, timed) has this stateInfo.
+fn wolf_wears(a: &Actor, p: &Player, d: &crate::data::CharData, state_info: i64) -> bool {
+    let mut ids = crate::combat::worn_sp(a, &[]);
+    ids.extend(p.timed.iter().map(|t| t.0));
+    ids.iter().any(|id| d.sp_effects.get(&id.to_string()).map(|s| s.state_info).or_else(|| crate::data::sp_cycle(*id).map(|c| c.state_info)) == Some(state_info))
+}
+
+/// The map's fall-return walls (hit filter 15, under its ravines and off its cliffs): Wolf's body
+/// passing one this tick (off the wire; the sim's contact takes any move) starts the fall return
+/// at once, as in the game (sekiro-rs sim duel.rs: the wall's fade, then back on safe ground),
+/// well before the void drop (`FALL_VOID_DROP`). Checked after the tick's move (any state's), on its whole path.
+fn fall_return_walls(combat: Res<crate::data::Combat>, mut log: ResMut<CombatLog>, mut wolf: Query<(&mut Actor, &mut Player, &Transform)>) {
+    let d = &combat.player;
+    for (mut a, mut p, tf) in &mut wolf {
+        let from = p.fall_from.replace(tf.translation);
+        if p.wire.is_some() || a.hp <= 0.0 || is_fall_return(&a.state) {
+            continue;
+        }
+        if from.is_some_and(|f| crate::terrain::fall_return_wall(f, tf.translation)) && a.play_state(d, "FallDeadReturnStart") {
+            a.airborne = false;
+            a.vel_y = 0.0;
+            info!("fall return: Wolf passed a fall-return wall at {}", tf.translation);
+            log.push("fell into the void", Color::srgb(1.0, 0.4, 0.4));
+        }
+    }
+}
+
+/// A fall-return death (W_FallDeadReturnStart / W_LandDeadReturnStart): Wolf out of the map, on
+/// his way back to safe ground.
+pub fn is_fall_return(state: &str) -> bool {
+    matches!(state, "LandDeadReturnStart" | "FallDeadReturnStart")
+}
+/// The exe's fall-return point (FUN_140a75f00 every frame, CSGame update): a ring of the last 5
+/// grounded positions, and CSFallDeadStep::STEP_WarpPlayer (FUN_1411d70e0, via FUN_140a71020)
+/// puts Wolf at the oldest, so a ledge or wall he only touched on the way down is not where he
+/// comes back (AKJama/sekiro-rs#201). Its spot gate is `safe_spot`. gap: the collision's MSB
+/// UnkT17 gate (none set on m11_00) is not modelled.
+const SAFE_RING: usize = 5;
+
+/// Whether Wolf's spot can enter the fall-return ring: a walkable floor (the 60 degree slope
+/// limit, `Terrain::floor`) right under his feet. The exe's ring takes a frame only while
+/// FUN_140a00b40 holds (chr +0x1a12 bit 7): the physics module's ground contact without its slide
+/// flag (+0xa48) and a map collision hit under the feet, so resting against a slope too steep to
+/// stand on below a cliff is no return point (#201). Without a map every grounded spot is.
+fn safe_spot(centre: Vec3, terrain: Option<&crate::terrain::Terrain>) -> bool {
+    const GAP: f32 = 0.25;
+    let Some(t) = terrain else { return true };
+    let feet = centre.y - CAPSULE_HALF_HEIGHT;
+    t.floor(centre.x, centre.z, feet + GAP).is_some_and(|y| feet - y <= GAP)
+}
+
+#[cfg(test)]
+mod safe_spot_tests {
+    use super::*;
+
+    /// A 70 degree slope (too steep to stand on) under a cliff is no return point; the walkable
+    /// floor above it is, and so is any spot without a map.
+    #[test]
+    fn a_slope_too_steep_to_stand_on_is_no_return_point() {
+        // A flat top at y 0 (x < 0), then a 70 degree face falling toward +x.
+        let drop = 10.0;
+        let run = drop / 70f32.to_radians().tan();
+        let verts = vec![
+            Vec3::new(-10.0, 0.0, -5.0),
+            Vec3::new(0.0, 0.0, -5.0),
+            Vec3::new(0.0, 0.0, 5.0),
+            Vec3::new(-10.0, 0.0, 5.0),
+            Vec3::new(run, -drop, -5.0),
+            Vec3::new(run, -drop, 5.0),
+        ];
+        let t = crate::terrain::Terrain::from_tris(verts, [([0, 1, 2], 0), ([0, 2, 3], 0), ([1, 4, 5], 0), ([1, 5, 2], 0)].into_iter());
+        let on = |x: f32, y: f32| Vec3::new(x, y + CAPSULE_HALF_HEIGHT, 0.0);
+        assert!(safe_spot(on(-3.0, 0.0), Some(&t)), "the cliff top");
+        let x = run / 2.0;
+        assert!(!safe_spot(on(x, -drop / 2.0), Some(&t)), "half way down the face");
+        assert!(safe_spot(on(x, -drop / 2.0), None), "no map");
+    }
+}
 /// Falling this far with no ground below ends in the fall-return death (gap: HitMtrlParam's default
 /// fallDeathDist stands in for the exe's void rule).
 const FALL_VOID_DROP: f32 = 40.0;
-const FALL_HEIGHT_SHORT_STIFF_LAND_FROM_JUMP: f32 = 3.0;
-/// SP_EF_REF_TAE_ENABLE_SUB_ATTACK_DERIVE_ATTACK (c0000_define 666).
-pub const REF_SUB_ATTACK_DERIVE_ATTACK: i64 = 301;
-/// SP_EF_REF_TAE_ENABLE_DEFLECT_GUARD_ATTACK / _TRANSITION_STEP_ATTACK.
-pub const REF_DEFLECT_GUARD_ATTACK: i64 = 213;
-pub const REF_STEP_ATTACK: i64 = 224;
-pub const REF_GUARD_REVERSE: i64 = 227;
+/// A walk-off on the move is walked down for its first 30 cm. HKS BEH_R_FALL (c0000_transition
+/// 5685) takes env 200 alone for the unaged Wolf (its env 224 >= 30 cm test sits in the aged
+/// branch: Lua `and` before `or`); the exe's env 200 (FUN_140b97970) holds ground contact while
+/// a physics probe (P+0x920) reads 1.0 or less. gap: that probe is not identified; this 30 cm
+/// (the aged branch's) stands in for it.
+pub const FALL_START_DROP: f32 = 0.30;
+const REF_MOVING: [i64; 3] = [90, 91, 92];
+
+/// GetLocomotionType() == LOCOMOTION_TYPE_MOVE: the move loop (procedural here) or a clip with a
+/// moving ref up (the sprint loop, move starts).
+pub(crate) fn moving_locomotion(d: &CharData, a: &Actor) -> bool {
+    a.state == "Locomotion" || (!a.anim.is_empty() && REF_MOVING.iter().any(|&r| d.has_ref(&a.anim, a.step(), r)))
+}
 
 /// Raw input sampled every frame; presses are latched until FixedUpdate reads them.
 #[derive(Resource, Default)]
@@ -649,6 +623,10 @@ pub struct PadInput {
     pub guard_held: bool,
     pub dodge_held: bool,
     pub prosthetic_held: bool,
+    /// The interact / hug / hang button held (env 1108: the air hang catch wants it held).
+    pub interact_held: bool,
+    /// The grappling hook key held (F): up under water (swim.rs).
+    pub grapple_held: bool,
     pub(crate) pressed: Vec<Action>,
     pub reset: bool,
     /// Sheathe / draw the sword (X).
@@ -657,14 +635,38 @@ pub struct PadInput {
 
 impl PadInput {
     /// Queue a button press (used by input reading and by the simulation tests).
+    /// This frame's presses not yet taken by player.rs (hks_wolf reads them first).
+    pub fn pressed(&self) -> &[Action] {
+        &self.pressed
+    }
+
     pub fn press(&mut self, a: Action) {
         self.pressed.push(a);
+    }
+
+    /// A press the script took itself (hks_wolf): player.rs does not see it.
+    pub fn take(&mut self, a: Action) {
+        self.pressed.retain(|&p| p != a);
     }
 
     /// No movement or presses this frame (a talk holds Wolf, enemy/talk.rs); the fight reset
     /// and the stick's walk / run history stay.
     pub fn hold(&mut self) {
         *self = PadInput { pad_running: self.pad_running, reset: self.reset, ..Default::default() };
+    }
+}
+
+/// Wolf is flown, not played (ufo.rs): his presses are dropped.
+pub(crate) static FLOWN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Something else drives the pad (autoboss.rs): the keyboard and pad are not read.
+#[derive(Resource)]
+pub struct ScriptedInput;
+
+impl Player {
+    /// A wire move (shoot, flight, landing) is under way.
+    pub fn in_wire(&self) -> bool {
+        self.wire.is_some()
     }
 }
 
@@ -704,7 +706,8 @@ fn set_held(pad: &mut PadInput, h: [bool; 4]) {
     [pad.attack_held, pad.guard_held, pad.dodge_held, pad.prosthetic_held] = h;
 }
 
-/// Before `decide`: the frame's buttons are kept for the next frame, the frame before's are put in.
+/// Before the script (hks_wolf) and `decide`: the frame's buttons are kept for the next frame, the
+/// frame before's are put in.
 fn hks_pad_in(mut pad: ResMut<PadInput>, mut late: ResMut<HksPad>) {
     let now = (std::mem::take(&mut pad.pressed), held_of(&pad));
     late.live = now.1;
@@ -729,16 +732,24 @@ impl Plugin for PlayerPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<PadInput>()
             .init_resource::<HksPad>()
-            .init_resource::<LockOn>()
-            .add_systems(Startup, spawn_player)
+            .add_plugins(crate::view::ViewPlugin)
+            .add_systems(Startup, spawn_player.after(crate::place::MapLoad))
             // Input is read right before the frame's fixed steps: Bevy runs them before Update, so a press
             // read in Update reached the simulation one frame (16.7 ms at 60 fps) late.
-            .add_systems(RunFixedMainLoop, read_input.run_if(resource_exists::<ButtonInput<KeyCode>>).in_set(bevy::app::RunFixedMainLoopSystems::BeforeFixedMainLoop))
+            .add_systems(RunFixedMainLoop, read_input.run_if(resource_exists::<ButtonInput<KeyCode>>.and_then(not(resource_exists::<ScriptedInput>))).in_set(bevy::app::RunFixedMainLoopSystems::BeforeFixedMainLoop))
             .init_resource::<ActiveThrow>()
-            .add_systems(FixedUpdate, (sync_art_variation, hks_pad_in, decide, hks_pad_out, apply_refresh_effects, record_state).chain().in_set(ActorSet::Decide))
+            .add_systems(FixedUpdate, hks_pad_in.before(throw_check).before(ActorSet::Decide))
+            .add_systems(FixedUpdate, (sync_art_variation, decide, apply_refresh_effects, record_state).chain().in_set(ActorSet::Decide))
+            .add_systems(FixedUpdate, hks_pad_out.after(ActorSet::Decide).before(ActorSet::Advance))
             .add_systems(FixedUpdate, follow_throw.after(ActorSet::Advance).before(crate::anim::PoseSet))
-            .add_systems(FixedUpdate, consume_goods.after(ActorSet::Advance));
+            .add_systems(FixedUpdate, consume_goods.after(ActorSet::Advance))
+            .add_systems(FixedUpdate, crate::docking::hold.after(ActorSet::Advance).before(crate::anim::PoseSet))
+            .add_systems(FixedUpdate, crate::swim::hold.after(crate::docking::hold).before(crate::terrain::bodies_on_terrain).before(crate::anim::PoseSet));
+        // Bodies on the ground: wall slide and floor follow after the moves (terrain.rs).
+        app.add_systems(FixedUpdate, crate::terrain::bodies_on_terrain.after(ActorSet::Advance).before(crate::anim::PoseSet));
+        app.add_systems(FixedUpdate, fall_return_walls.after(crate::terrain::bodies_on_terrain).before(crate::anim::PoseSet));
         app.add_systems(FixedUpdate, wolf_no_dead.before(ActorSet::Decide));
+        app.add_systems(FixedUpdate, crate::ninjutsu::throw_effects.after(ActorSet::Advance));
         if std::env::var("SHINOBI_MOVE_LOG").is_ok() {
             app.add_systems(FixedUpdate, move_log.after(ActorSet::Advance));
         }
@@ -799,23 +810,6 @@ impl ThrowHold {
     }
 }
 
-/// HKS land events of the air deflect reactions (W_LandAirDeflect*): the state whose anim is the
-/// air anim's id + 10 (AirDeflectHardSmall_L 132101 -> LandAirDeflectHardSmall_F 132111).
-fn land_air_deflect(state: &str) -> Option<&'static str> {
-    Some(match state {
-        "AirDeflectHard" | "AirDeflectHardSmall_L" => "LandAirDeflectHardSmall_F",
-        "AirDeflectHardSmall_R" => "LandAirDeflectHardSmall_B",
-        "AirDeflectHardLarge_L" => "LandAirDeflectHardLarge_L",
-        "AirDeflectHardLarge_R" => "LandAirDeflectHardLarge_R",
-        "AirDeflectHardExLarge" => "LandAirDeflectHardExLarge",
-        "AirDeflectEasy" | "AirDeflectEasySmall_L" => "LandAirDeflectEasySmall_L",
-        "AirDeflectEasySmall_R" => "LandAirDeflectEasySmall_R",
-        "AirDeflectEasyLarge_L" => "LandAirDeflectEasyLarge_L",
-        "AirDeflectEasyLarge_R" => "LandAirDeflectEasyLarge_R",
-        "AirDeflectEasyExLarge" => "LandAirDeflectEasyExLarge",
-        _ => return None,
-    })
-}
 
 /// The kill follow-up of a throw anim: "a201_510000" -> "a201_510001".
 fn kill_anim(anim: &str) -> Option<String> {
@@ -825,10 +819,10 @@ fn kill_anim(anim: &str) -> Option<String> {
 
 /// HKS _SetJumpDirection sectors (PRM_GROUND_JUMP_*_STICK_RANGE, degrees from the facing, + right):
 /// (ready state, raw anim for the side jumps, landing state).
-/// The states the jump tilt turns: the positioning ground jumps (Ready / Start / their lands) and
-/// the kick jump.
+/// The states the jump tilt turns: the positioning ground jumps (Ready / Start / their lands),
+/// the kick jump and the step out of a knockdown (_execDamageStep's _set4DirJumpTilt).
 fn jump_tilted(state: &str) -> bool {
-    (state.contains("GroundJump") && !state.starts_with("Vertical") && !state.starts_with("Sprint")) || state.starts_with("LandGroundPositioningJump") || state.starts_with("AirKickEnemyJump")
+    (state.contains("GroundJump") && !state.starts_with("Vertical") && !state.starts_with("Sprint")) || state.starts_with("LandGroundPositioningJump") || state.starts_with("AirKickEnemyJump") || state.starts_with("StandStepFromDown_")
 }
 
 /// _setPositioningJumpTilt (HKS 5114-5140): the stick angle minus the jump sector's centre
@@ -1167,7 +1161,7 @@ fn aging_step(p: &mut Player, a: &mut Actor, combat: &Combat, config: &GameConfi
         let g = FALL_TYPES[(a.fall_type as usize).min(FALL_TYPES.len() - 1)].gravity();
         a.grav_y = g;
         a.vel_y += g * dt;
-        let floor = crate::map::ground_y(*pos) + CAPSULE_HALF_HEIGHT;
+        let floor = crate::terrain::ground_y(*pos) + CAPSULE_HALF_HEIGHT;
         if pos.y <= floor && a.vel_y < 0.0 {
             pos.y = floor;
             a.airborne = false;
@@ -1175,6 +1169,12 @@ fn aging_step(p: &mut Player, a: &mut Actor, combat: &Combat, config: &GameConfi
             a.vel_y = 0.0;
             a.air_base = Vec3::ZERO;
             a.move_vel = Vec3::ZERO;
+            // Aged (stateInfo 341) every landing from 5 m kills (exe FUN_14084e5d0, the main
+            // tick's rule): the fall-return death, BEH_R_DEATH before the aged landing.
+            if p.air_top - pos.y >= FALL_DAMAGE_FROM_AGED && crate::terrain::fall_death_dist(crate::terrain::floor_material(*pos)).is_some() && a.play_state(d, "LandDeadReturnStart") {
+                log.push("fall death - back to safe ground", Color::srgb(1.0, 0.4, 0.4));
+                return true;
+            }
             a.play_state(d, if jumping { "LandAgingGroundJump" } else { "LandAgingFreeFall" });
         }
         return true;
@@ -1559,7 +1559,7 @@ pub(crate) fn map_sphere_cast(start: Vec3, delta: Vec3, radius: f32) -> Option<V
         return None;
     }
     let dir = delta / len;
-    crate::map::raycast(start, dir, len + radius).map(|d| start + dir * (d - radius).max(0.0))
+    crate::terrain::raycast(start, dir, len + radius).map(|d| start + dir * (d - radius).max(0.0))
 }
 
 /// The orbit FUN_140be3ba0 predicts (FUN_140baedb0 -> FUN_140bb2850): from `p0` with the chr's
@@ -1724,7 +1724,7 @@ fn follow_throw(
     // the engine's handling is not traced). Returns that shortfall.
     let interp = h.model_interp;
     let slide = |at: Vec3, d: Vec3| -> Vec3 {
-        match crate::map::terrain() {
+        match crate::terrain::terrain() {
             Some(t) => {
                 let m = t.slide(at - Vec3::Y * CAPSULE_HALF_HEIGHT, Vec2::new(d.x, d.z));
                 Vec3::new(m.x, 0.0, m.y)
@@ -1816,7 +1816,7 @@ fn sync_art_variation(config: Res<GameConfig>, player: Query<&Player>, mut comba
     let var = combat.param("EquipParamWeapon", config.player.combat_art)["behaviorVariationId"].as_i64();
     // The resident SpEffects' StateInfos (sound::active_state_infos without the TAE SpEffects).
     let probe = Actor::new(crate::actor::Side::Player, 1.0, 1.0, 0.0, 0);
-    let mut gates = crate::sound::active_state_infos(&combat, &probe, Some(&config), tool.map(|t| t.0));
+    let mut gates = crate::sound_rules::active_state_infos(&combat, &probe, Some(&config), tool.map(|t| t.0));
     // The art's "has emblems" StateInfo (`art_emblem_gate`): Mortal Draw's emblem slash (judges
     // 220-231) and consumption dummy 999 (993), Spiral Cloud Passage's cost 999 (994) fire only with it.
     let emblems = player.iter().next().map_or(0, |p| p.emblems);
@@ -1844,8 +1844,8 @@ fn sync_art_variation(config: Res<GameConfig>, player: Query<&Player>, mut comba
 /// Wolf's facing at the start (and on a retry): toward the enemies' line-up (enemy.rs
 /// spawn_lineup: the first enemy at x 0, z -4), the way the game lets him walk into an arena
 /// facing the boss.
-fn start_yaw() -> f32 {
-    yaw_of((Vec3::new(0.0, 0.0, -4.0) - crate::map::player_start()).with_y(0.0))
+pub(crate) fn start_yaw() -> f32 {
+    yaw_of((crate::place::frame().point(Vec3::new(0.0, 0.0, -4.0)) - (crate::encounter::hooks().player_start)()).with_y(0.0))
 }
 
 /// Graphs 500 / 501 / 504 = max HP / max posture / posture regen by level (exe: FUN_140a368f0
@@ -1871,10 +1871,10 @@ fn spawn_player(mut commands: Commands, combat: Res<Combat>, config: Res<GameCon
         }
     }
     commands.spawn((
-        Player { plunge: None, leap_homing: None, speed_level: 0.0, turn: Turn::default(), requests: HashMap::new(), last_state: String::new(), gourd: config.player.gourd_charges, emblems: config.player.spirit_emblems, auto_aim: false, auto_aim_fresh: false, resurrections: config.player.resurrections, revive_queued: false, death_wait: 0.0, dead_for: 0.0, escape: None, jump_forward: false, jump_land: None, positioning_land: false, aged_form: false, step_tilt: 0.0, jump_tilt: 0.0, throw_start: None, throw_target: None, tool_slot: 0, vel_scale: None, expand_pending: false, sub_cat_before: 0, air_sub_count: 0, air_art_count: 0, art_enable_jump: false, timed: Vec::new(), held: Vec::new(), wire: None, perch: None, wire_todome: false, air_top: 0.0, safe_pos: None, ground_vel: Vec3::ZERO, ground_pos: Vec3::ZERO },
+        Player { deathblow_ready: false, jump_throw_ready: false, plunge_ready: false, plunge: None, leap_homing: None, dock: None, wall_jumps: 0, last_wall: None, seat: Default::default(), wall_contact: None, speed_level: 0.0, turn: Turn::default(), requests: HashMap::new(), last_state: String::new(), gourd: config.player.gourd_charges, emblems: config.player.spirit_emblems, auto_aim: false, auto_aim_fresh: false, resurrections: config.player.resurrections, revive_queued: false, death_wait: 0.0, dead_for: 0.0, escape: None, aged_form: false, step_tilt: 0.0, jump_tilt: 0.0, throw_start: None, throw_target: None, tool_slot: 0, quick_slot: 0, item_use: None, vel_scale: None, expand_pending: false, sub_cat_before: 0, art_enable_jump: false, timed: Vec::new(), held: Vec::new(), wire: None, perch: None, wire_todome: false, air_top: 0.0, fall_from: None, safe_ring: Default::default(), swim: None, ground_vel: Vec3::ZERO, ground_pos: Vec3::ZERO, revive_open: false, gave_up: false, revive_locked: false, item_hp_rate: 1.0, item_posture_rate: 1.0, sp_bursts: Vec::new(), res_power: 0, refill_items: false },
         actor,
         Name::new("Player"),
-        Transform::from_xyz(0.0, CAPSULE_HALF_HEIGHT, 4.0),
+        Transform::from_translation((crate::encounter::hooks().player_start)()),
         Visibility::default(),
     ));
 }
@@ -1894,7 +1894,7 @@ pub fn player_visuals(
                 Mesh3d(meshes.add(Capsule3d::new(CAPSULE_RADIUS, CAPSULE_MIDDLE))),
                 MeshMaterial3d(materials.add(Color::srgb(0.85, 0.8, 0.72))),
             ))
-            .with_children(|p| crate::world::spawn_blade(p, &mut meshes, &mut materials, Color::srgb(0.8, 0.85, 0.9)));
+            .with_children(|p| crate::model::spawn_blade(p, &mut meshes, &mut materials, Color::srgb(0.8, 0.85, 0.9)));
     }
 }
 
@@ -1931,6 +1931,7 @@ pub(crate) fn read_pad(pads: &Query<&Gamepad>, enabled: bool, pad: &mut PadInput
         pad.attack_held |= g.pressed(GamepadButton::RightTrigger);
         pad.guard_held |= g.pressed(GamepadButton::LeftTrigger);
         pad.dodge_held |= g.pressed(GamepadButton::East);
+        pad.grapple_held |= g.pressed(GamepadButton::LeftTrigger2);
         pad.prosthetic_held |= g.pressed(GamepadButton::RightTrigger2);
         let mut press = |b: GamepadButton, a: Action| {
             if g.just_pressed(b) {
@@ -1947,6 +1948,7 @@ pub(crate) fn read_pad(pads: &Query<&Gamepad>, enabled: bool, pad: &mut PadInput
         press(GamepadButton::North, Action::SwitchTool);
         press(GamepadButton::DPadUp, Action::SwitchTool);
         press(GamepadButton::LeftTrigger2, Action::Grapple);
+        press(GamepadButton::DPadDown, Action::NextItem);
     }
     // Updated every frame (a released stick drops back to walk) so the hysteresis has a history.
     pad.pad_running = stick_runs(pad.pad_running, level);
@@ -1969,7 +1971,15 @@ pub(crate) fn read_input(
     if keys.pressed(KeyCode::KeyD) { stick.x += 1.0; }
     if keys.pressed(KeyCode::KeyA) { stick.x -= 1.0; }
     pad.stick = stick.normalize_or_zero();
-    pad.walk = keys.pressed(KeyCode::AltLeft) || keys.pressed(KeyCode::ControlLeft);
+    // Keyboard defaults are the game's own: param DefaultKeyAssignParam00 (keyboardKeyId =
+    // DirectInput scan code + 69) per gameAction, whose meaning is the key guide's
+    // <?kgiconKc@N?> text (menu.msgbnd キーガイド.fmg): 0 walk Left Alt, 1-4 WASD, 5 step / sprint
+    // Shift, 6 jump Space, 7 crouch Q, 12 lock-on middle mouse (camera.rs), 15 prosthetic tool
+    // switch Z, 16 attack LMB, 17 prosthetic Left Ctrl, 18 guard RMB, 19 grappling hook F,
+    // 20 talk / examine / wall hug / ledge hang E (docking.rs, not built yet), 21 use quick item
+    // R, 13 / 14 quick item next / previous X / C, 22 eavesdrop V. J / K stay as extra attack /
+    // guard keys.
+    pad.walk = keys.pressed(KeyCode::AltLeft);
     let captured = cursor.grab_mode != bevy::window::CursorGrabMode::None;
     // Mouse buttons only count once the mouse is captured (the first click captures it).
     let lmb = captured && mouse.pressed(MouseButton::Left);
@@ -1977,6 +1987,7 @@ pub(crate) fn read_input(
     pad.attack_held = lmb || keys.pressed(KeyCode::KeyJ);
     pad.guard_held = rmb || keys.pressed(KeyCode::KeyK);
     pad.dodge_held = keys.pressed(KeyCode::ShiftLeft);
+    pad.grapple_held = keys.pressed(KeyCode::KeyF);
     if (captured && mouse.just_pressed(MouseButton::Left)) || keys.just_pressed(KeyCode::KeyJ) {
         pad.pressed.push(Action::Attack);
     }
@@ -1986,32 +1997,41 @@ pub(crate) fn read_input(
     if keys.just_pressed(KeyCode::ShiftLeft) {
         pad.pressed.push(Action::Step);
     }
-    if keys.just_pressed(KeyCode::KeyE) {
+    if keys.just_pressed(KeyCode::KeyR) {
         pad.pressed.push(Action::UseItem);
     }
-    if keys.just_pressed(KeyCode::KeyF) {
+    if keys.just_pressed(KeyCode::ControlLeft) {
         pad.pressed.push(Action::Prosthetic);
     }
-    pad.prosthetic_held = keys.pressed(KeyCode::KeyF);
+    pad.prosthetic_held = keys.pressed(KeyCode::ControlLeft);
     if keys.just_pressed(KeyCode::Space) {
         pad.pressed.push(Action::Jump);
     }
-    if keys.just_pressed(KeyCode::KeyR) {
+    // Sandbox reset (not a game key; R is the game's switch-prosthetic key).
+    if keys.just_pressed(KeyCode::Backspace) {
         pad.reset = true;
     }
     if keys.just_pressed(KeyCode::KeyX) {
         pad.sheathe = true;
     }
-    if keys.just_pressed(KeyCode::KeyC) {
+    if keys.just_pressed(KeyCode::KeyQ) {
         pad.pressed.push(Action::Crouch);
     }
-    // gap: the game's PC binding for ACTION_ARM_CHANGE_WEAPON_L (DefaultKeyAssignParam's key ids
-    // are not decoded); Z is free here.
+    // Talk / examine / wall hug / ledge hang: E (gameAction 20; docking.rs).
+    if keys.just_pressed(KeyCode::KeyE) {
+        pad.pressed.push(Action::Interact);
+    }
+    pad.interact_held = keys.pressed(KeyCode::KeyE);
+    // Switch prosthetic tool: Z (gameAction 15).
     if keys.just_pressed(KeyCode::KeyZ) {
         pad.pressed.push(Action::SwitchTool);
     }
-    // Grappling Hook: G (gap: the game's PC key, as above); the pad's L2 as in the game.
-    if keys.just_pressed(KeyCode::KeyG) {
+    // Next quick item: C (gameAction 14's key; 13's X sheathes here).
+    if keys.just_pressed(KeyCode::KeyC) {
+        pad.pressed.push(Action::NextItem);
+    }
+    // Grappling Hook: F, the game's key for the pad's L2.
+    if keys.just_pressed(KeyCode::KeyF) {
         pad.pressed.push(Action::Grapple);
     }
     read_pad(&pads, config.input.gamepad, &mut pad);
@@ -2071,19 +2091,6 @@ fn throw_blow_step(a: &mut Actor, d: &CharData) -> bool {
     true
 }
 
-fn electro_loop(state: &str) -> Option<String> {
-    if !state.contains("ElectroCharge") || !state.starts_with("Air") {
-        return None;
-    }
-    if state.ends_with("Loop") {
-        Some(state.to_string())
-    } else if state.starts_with("AirDamage") {
-        Some(state.replace("Start", "Loop"))
-    } else {
-        Some(format!("{state}FallLoop"))
-    }
-}
-
 pub fn equipped_tool<'a>(combat: &'a Combat, config: &GameConfig, slot: usize) -> Option<&'a crate::data::Prosthetic> {
     let tools = &config.player.prosthetics;
     let id = *tools.get(slot % tools.len().max(1))?;
@@ -2128,7 +2135,7 @@ pub fn sub_anim(d: &CharData, state: &str, group: i64) -> Option<String> {
 }
 
 /// States that keep Wolf crouched: crouch idle / locomotion and its own starts, stops and turns.
-fn crouch_ok(state: &str) -> bool {
+pub(crate) fn crouch_ok(state: &str) -> bool {
     matches!(state, "StandIdle" | "Locomotion")
         || (state.starts_with("Crouch") && !state.starts_with("CrouchAttackToStand"))
         || state.starts_with("SprintToCrouch")
@@ -2140,6 +2147,7 @@ pub(crate) fn is_free(state: &str) -> bool {
     // CrouchStart too: HKS g_paramHkbState [HKB_STATE_CROUCH_START] = STATE_TYPE_STANDBY, like
     // StandIdle (Wolf can move or act at once); CrouchEnd is STATE_TYPE_ACTION.
     matches!(state, "StandIdle" | "Locomotion" | "CrouchStart")
+        || is_move_quick_turn(state)
         || state.starts_with("StandRunStop")
         || state.starts_with("StandWalkStop_")
         || state.starts_with("CrouchRunStop_")
@@ -2156,78 +2164,138 @@ fn is_guard_idle(state: &str) -> bool {
 /// 1/30 s frame (exe FUN_1407f65a0 / FUN_14072fdb0).
 const WALK_TWIST_RATE: f32 = 0.1 * 30.0;
 
-/// HKS STATE_TYPE_UPPER_ACTION states Wolf uses (c0000.hkx StandMoveUpper_SM): drawn over the
-/// walk/run by anim.rs, moved by lower_body_move. Also STATE_TYPE_UPPER_ACTION_ATK (c0000_cmsg
-/// g_paramHkbState): the Finger Whistle's standing *Moveable / walking *Move states.
-/// gap: the crouched ones (CrouchSubAttack*Moveable) keep still legs.
+/// HKS STATE_TYPE_UPPER_ACTION / _ATK / _ITEM_USE states (c0000_cmsg g_paramHkbState: the drinks
+/// and pills on the walk, the tools' *Moveable / *Move, the guard's run-out): drawn over the
+/// walk/run by anim.rs (c0000.hkx StandMoveUpper_SM), moved by lower_body_move; the crouched ones
+/// take the crouch walk (Actor::move_clip). Ours names the guard's run-out variants
+/// DeflectGuardToStandMove<speed>.
 pub(crate) fn is_upper_action(state: &str) -> bool {
-    state.starts_with("DeflectGuardToStandMove")
-        || matches!(
-            state,
-            "GroundSubAttackCombo1Moveable" | "GroundSubAttackCombo1Move" | "GroundSubAttackCombo1ReleaseMoveable" | "GroundSubAttackLockOnMoveable" | "GroundSubAttackLockOnMove" | "GroundSubAttackLockOnReleaseMoveable"
-        )
-        // The crouched whistle (CROUCH_SUB_ATTACK_*_MOVEABLE / _MOVE: STATE_TYPE_UPPER_ACTION_ATK);
-        // the legs take the crouch walk (Actor::move_clip).
-        || (state.starts_with("CrouchSubAttack") && (state.ends_with("Moveable") || state.ends_with("Move")))
-        // The walking gourd drinks (STATE_TYPE_UPPER_ACTION_ITEM_USE, HKB 14120 / 14121).
-        || matches!(state, "ItemGourdDrinkMove" | "ItemGourdDrinkRepeatMove")
+    state.starts_with("DeflectGuardToStandMove") || state_type(state).contains("STATE_TYPE_UPPER_ACTION")
 }
 
-/// The air guard's own states (Start / Loop / End), not its break pose AirDeflectGuardBreak:
-/// that one opens the guard only at its flag 117 (frame 69); a press there started a fresh guard
-/// at once (2026-10-12 bug hunt round 15).
-fn is_air_guard(state: &str) -> bool {
-    state.starts_with("AirDeflectGuard") && state != "AirDeflectGuardBreak"
+/// The move's stop by the move direction (BEH_A_GROUND_MOVE_STOP: W_StandRunStop /
+/// W_StandWalkStop; crouched W_CrouchRunStop / W_CrouchWalkStop, CrouchRunStop_F 5600,
+/// CrouchWalkStop_F 5300): the stop clips carry their own slide (root motion).
+pub(crate) fn play_move_stop(d: &CharData, a: &mut Actor, p: &mut Player, run: bool) -> bool {
+    let dir = ["F", "B", "L", "R"][a.move_dir.min(3) as usize];
+    let (stop, fallback) = match (a.crouch, run) {
+        (true, true) => (format!("CrouchRunStop_{dir}"), "CrouchRunStop_F"),
+        (true, false) => (format!("CrouchWalkStop_{dir}"), "CrouchWalkStop_F"),
+        (false, true) => (format!("StandRunStop{dir}"), "StandRunStopF"),
+        (false, false) => (format!("StandWalkStop_{dir}"), "StandWalkStop_F"),
+    };
+    if a.play_state(d, &stop) || a.play_state(d, fallback) {
+        a.move_vel = Vec3::ZERO;
+        p.speed_level = 0.0;
+        return true;
+    }
+    false
 }
 
-/// SpEffect behaviorRefIds the HKS reads with env(3036, ...) (c0000_define.lua SP_EF_REF_*).
-const SP_REF_DISABLE_AIR_KICK: i64 = 108;
-/// c0000_define SP_EF_REF_TAE_ONLY_ADD_ACTION_INPUT_JUMP (SpEffect 100247).
-const SP_REF_TAE_ONLY_ADD_ACTION_INPUT_JUMP: i64 = 431;
-/// SP_EF_REF_IN_STORM_JUMP_AREA / _WEAK_AREA (c0000_define.lua 775-776): inside an updraft (the
-/// Divine Dragon's bullets 52000660 / 53100640 give 106100, ref 110003; 106101, ref 110004).
-pub const SP_REF_IN_STORM_JUMP_AREA: i64 = 110003;
-pub const SP_REF_IN_STORM_JUMP_WEAK_AREA: i64 = 110004;
-/// SP_EF_REF_TAE_ENABLE_STORM_JUMP (101: 100328 "PC: storm jump transition possible", in the storm
-/// jumps from 1.0 s and StormJumpFall).
-const SP_REF_ENABLE_STORM_JUMP: i64 = 101;
+/// HKS env 1105: a STATE_TYPE_STANDBY* state (c0000 onUpdate calls act(9100) in each; the
+/// sprint's walk-out StandMoveStartFromSprint / LoopFromSprint and SprintLoop are ones, so letting
+/// go there stops: BEH_A_GROUND_MOVE_STOP W_SprintStopReady).
+pub(crate) fn is_standby(state: &str) -> bool {
+    is_free(state) || state_type(state).contains("STATE_TYPE_STANDBY")
+}
+
+/// A state's entry in the script's g_paramHkbState table (c0000_cmsg), by our state names
+/// (HKB_STATE_ITEM_GOURD_DRINK_MOVE -> ItemGourdDrinkMove; SprintStartFromStep_B ->
+/// SprintStartFromStep): its style and state types.
+fn state_type(state: &str) -> &'static str {
+    static MAP: std::sync::OnceLock<std::collections::HashMap<String, String>> = std::sync::OnceLock::new();
+    MAP.get_or_init(|| {
+        let src = std::fs::read_to_string(crate::paths::extracted().join("hks_src/c0000_cmsg.lua")).unwrap_or_default();
+        let Some(table) = src.lines().find(|l| l.starts_with("g_paramHkbState")) else {
+            return Default::default();
+        };
+        table
+            .split("[HKB_STATE_")
+            .skip(1)
+            .filter_map(|e| {
+                let (name, rest) = e.split_once(']')?;
+                let name = name.split('_').map(|w| w[..1].to_string() + &w[1..].to_lowercase()).collect();
+                Some((name, rest.get(..rest.find('}')?)?.to_string()))
+            })
+            .collect()
+    })
+    .get(state)
+    .or_else(|| MAP.get()?.get(state.rsplit_once('_')?.0))
+    .map_or("", String::as_str)
+}
+
+/// A STYLE_TYPE_SPRINT state (SprintLoop, SprintStartFromStep_*, the sprint jump / wire / sub
+/// attack): the sprint faces the stick, locked on or not.
+pub(crate) fn is_sprint_style(state: &str) -> bool {
+    state_type(state).contains("STYLE_TYPE_SPRINT")
+}
+
 
 /// A behaviorRefId on Wolf: his anim's SpEffects or a timed one (bullets, items).
-fn wolf_ref(d: &CharData, a: &Actor, p: &Player, behavior_ref: i64) -> bool {
-    sp_ref_active(d, a, behavior_ref) || p.timed.iter().any(|(id, _)| d.sp_effects.get(&id.to_string()).is_some_and(|s| s.behavior_ref_id == behavior_ref))
+/// SP_EF_REF_IN_NON_COMBAT_AREA (c0000_define 748; SpEffect 100298 / 100308 / 108900 carry it).
+const SP_REF_IN_NON_COMBAT_AREA: i64 = 600;
+
+/// The weapon state the area wants (HKS BEH_A_GROUND_JUMP 6148, BEH_A_WALL_JUMP 6023,
+/// BEH_A_ITEM_USE 6240, BEH_A_ADD_SUB_WEAPON_CHANGE 6394): sheathed (env 207 ARM_STYLE_SAFE)
+/// inside a non-combat area, drawn outside it. Otherwise these actions are refused.
+/// gap: only the drawn sword inside a non-combat area refuses here. Sheathed outside one is the
+/// X sheathe, which the game does not have (its BEH_R_NON_COMBAT_AREA_LEAVE draws at once), so
+/// refusing there only swallowed jumps.
+fn arm_style_matches(d: &CharData, a: &Actor, p: &Player) -> bool {
+    a.sheathed || !wolf_ref(d, a, p, SP_REF_IN_NON_COMBAT_AREA)
 }
 
-/// The storm jump inside an updraft (HKS 2779-2783 on the ground, 2855-2862 in the air): the
-/// full area first, then the weak one.
-fn storm_jump(d: &CharData, a: &Actor, p: &Player, ground: bool) -> Option<&'static str> {
-    if wolf_ref(d, a, p, SP_REF_IN_STORM_JUMP_AREA) {
-        Some(if ground { "GroundStormJumpReady" } else { "AirStormJumpStart" })
-    } else if wolf_ref(d, a, p, SP_REF_IN_STORM_JUMP_WEAK_AREA) {
-        Some(if ground { "GroundStormJumpWeakReady" } else { "AirStormJumpWeakStart" })
-    } else {
-        None
-    }
+pub(crate) fn wolf_ref(d: &CharData, a: &Actor, p: &Player, behavior_ref: i64) -> bool {
+    sp_ref_active(d, a, behavior_ref)
+        || p.timed.iter().any(|(id, _)| d.sp_effects.get(&id.to_string()).map_or_else(|| crate::data::sp_effect_behavior_ref(*id), |s| s.behavior_ref_id) == behavior_ref)
+        // The lasting rows (a TAE row's replaceSpEffectId after its window: actor::run_sp_effect_chains).
+        || a.sp_chained.iter().any(|(id, _)| crate::data::sp_effect_lingering_ref(*id) == behavior_ref)
 }
-/// SP_EF_REF_TAE_ENABLE_FAST_JUMP (c0000_define.lua:616).
-const SP_REF_TAE_ENABLE_FAST_JUMP: i64 = 107;
-/// SP_EF_REF_TAE_ENABLE_ITEM_REPEAT (c0000_define.lua:699).
-const SP_REF_TAE_ENABLE_ITEM_REPEAT: i64 = 400;
-/// SP_EF_REF_TAE_ENABLE_HIT_JUMP_CANCEL / DOWN_JUMP_CANCEL (c0000_define.lua): _execDamageStep.
-const SP_REF_TAE_ENABLE_HIT_JUMP_CANCEL: i64 = 502;
+
 /// SP_EF_REF_TAE_MOVING_RUN / DISABLE_PRESS_STEP (c0000_define.lua 604 / 726): BEH_A_SPRINT.
 const SP_REF_TAE_MOVING_RUN: i64 = 91;
 const SP_REF_TAE_DISABLE_PRESS_STEP: i64 = 427;
-const SP_REF_TAE_ENABLE_DOWN_JUMP_CANCEL: i64 = 504;
 const SP_REF_KICK_ENEMY_JUMP: i64 = 204;
 const SP_REF_SP_ATK_HIT_JUMP: i64 = 225;
-const SP_REF_SP_ATK_HIT_JUMP_DERIVE_ACTION: i64 = 226;
-/// SP_EF_REF_WEP_SP_ATK_UNLOCK_109_FALL_ATTACK: Shadowfall 7600's resident SpEffect 140901.
-const SP_REF_UNLOCK_109_FALL_ATTACK: i64 = 286;
-const SP_REF_ORIGINAL_LAND_ACTION_SP_ATK_110: i64 = 288;
 
-/// env(3036, ref): is an SpEffect with this behaviorRefId applied by the current anim's TAE?
+/// env(3036, ref): is an SpEffect with this behaviorRefId applied by the TAE of the clip on screen?
 fn sp_ref_active(d: &CharData, a: &Actor, behavior_ref: i64) -> bool {
-    !a.anim.is_empty() && d.sp_effects_at(&a.anim, a.step()).iter().any(|(_, s)| s.behavior_ref_id == behavior_ref)
+    // The clip on screen's TAE: the anim's in this update (`Actor::step`: the event's window is
+    // seen on the update its end falls in too, the recordings' ref 231 cut-off), the procedural
+    // walk / run / idle clips' at their time and one TAE frame after (the walk's
+    // SP_EF_REF_TAE_MOVING_WALK 90 is what the script's GetLocomotionType reads).
+    // The additive layer's TAE as well (AddHardDeflectGuard's ref 411, HKS 6161).
+    let has = |key: &str, at: crate::tae_window::At| d.sp_effects_at(key, at).iter().any(|(_, s)| s.behavior_ref_id == behavior_ref);
+    let shown = if a.anim.is_empty() {
+        let (key, t) = a.shown_clip(d);
+        let lag = 1.0 / crate::data::TAE_FPS;
+        has(&key, t.into()) || (t >= lag && has(&key, (t - lag).into()))
+    } else {
+        has(&a.anim, a.step())
+    };
+    shown || (!a.add_anim.is_empty() && has(&a.add_anim, a.add_t.into())) || legs_clip(d, a).is_some_and(|(k, lt)| has(&k, lt.into()))
+}
+
+/// Under an upper action with the legs moving, the legs' locomotion clip (c0000.hkx
+/// StandMoveOverwrite) and its time. Its TAE counts for env 3036 too: the run's
+/// SP_EF_REF_TAE_MOVING_RUN 91 is what GetLocomotionType reads, so the script's move start
+/// (BEH_A_GROUND_MOVE_START: W_StandMoveLowerStart) fires once, not every frame.
+/// IsMoveAcceptable (env 2000, exe FUN_140b36410 0x7d0): flag 11 set by this frame's TAE
+/// (ChrCtrl+0x88 bit 2) and latched from the last frame (+0x9c bit 4, FUN_1407d8ce0 before the
+/// graph step), so it opens a frame after the window does (recordings: the step's frame-18
+/// window, tick 36, W_StandMoveStart at tick 37).
+pub fn accept_move(d: &CharData, a: &Actor) -> bool {
+    let ((now, t), (last, lt)) = (a.shown_clip(d), a.shown_clip_at(d, a.prev_t));
+    d.flag(&now, t, FLAG_ACCEPT_MOVE) && d.flag(&last, lt, FLAG_ACCEPT_MOVE)
+}
+
+pub(crate) fn legs_clip(d: &CharData, a: &Actor) -> Option<(String, f32)> {
+    if !is_upper_action(&a.state) || Vec2::new(a.move_vel.x, a.move_vel.z).length() <= 0.05 {
+        return None;
+    }
+    let (legs, t, _) = a.locomotion_clip_at(a.t);
+    let len = d.length(&legs);
+    Some((legs, if len > 0.0 { t.rem_euclid(len) } else { t }))
 }
 
 /// Plunge deathblow start (ThrowParam 崩し落下0, suffix 150: Dist 20 m, defender within upperYRange
@@ -2263,6 +2331,50 @@ fn wire_throw(
     throw_fall_orbit_ok(combat, row_id, pos, pos.y, a.air_base.with_y(a.vel_y), etf.translation).then_some(th)
 }
 
+/// The plunge `ea` (at `epos`) would take from Wolf falling at `pos` now: its throw, landing
+/// row suffix and whether it is the stealth one. Shared by `start_plunge` and the HUD's
+/// deathblow mark (the user, 2026-10-18: "no indicator, sometimes works sometimes doesn't").
+pub(crate) fn plunge_on(combat: &Combat, a: &Actor, pos: Vec3, ea: &Actor, enemy: &crate::enemy::Enemy, epos: Vec3) -> Option<(crate::data::Throw, i64, bool)> {
+    plunge_from(combat, a, pos, pos.y, ea, enemy, epos)
+}
+
+/// `plunge_on` with the fall top the orbit test reads (physics +0x854, `Player::air_top`; the
+/// HUD's mark goes by Wolf's height now).
+pub(crate) fn plunge_from(combat: &Combat, a: &Actor, pos: Vec3, fall_top: f32, ea: &Actor, enemy: &crate::enemy::Enemy, epos: Vec3) -> Option<(crate::data::Throw, i64, bool)> {
+    let kick = a.state.starts_with("AirKickEnemyJumpStart");
+    if a.vel_y >= 0.0 && !kick {
+        return None;
+    }
+    let stealth = !enemy.is_broken() && enemy.is_unaware();
+    let (start, land) = if kick {
+        (160, 161)
+    } else if stealth {
+        (30, 31)
+    } else {
+        (150, 151)
+    };
+    if !(enemy.is_broken() || stealth) || enemy.is_dead() {
+        return None;
+    }
+    // Each enemy kind's own ThrowParam rows.
+    let row_id = combat.foe_of(ea).throw_row(start);
+    let row = combat.param("ThrowParam", row_id);
+    let th = combat.throw(row_id)?;
+    let f = |k: &str| row[k].as_f64().unwrap_or(0.0) as f32;
+    let (upper, lower) = (f("upperYRange"), f("lowerYRange"));
+    let dy = epos.y - pos.y;
+    if epos.distance(pos) >= th.dist || dy >= upper || dy <= -lower {
+        return None;
+    }
+    // The exe's orbit test (FUN_140be3ba0, throw_fall_orbit_ok): the fall top above the enemy
+    // over heightLimit, the predicted orbit's nearest point within range in time. Wolf's
+    // velocity: his air base and fall speed. gap: the exe's is the proxy's (FUN_140bbf7d0).
+    if !throw_fall_orbit_ok(combat, row_id, pos, fall_top.max(pos.y), a.air_base.with_y(a.vel_y), epos) || combat.player.anim(&th.atk_anim).is_none() {
+        return None;
+    }
+    Some((th, land, stealth))
+}
+
 fn start_plunge(
     p: &mut Player,
     a: &mut Actor,
@@ -2271,43 +2383,12 @@ fn start_plunge(
     enemies: &mut Query<(Entity, &mut Actor, &mut Enemy, &Transform), Without<Player>>,
     log: &mut CombatLog,
 ) -> bool {
-    let kick = a.state.starts_with("AirKickEnemyJumpStart");
-    if a.vel_y >= 0.0 && !kick {
-        return false;
-    }
     // An enemy that has not noticed Wolf takes the stealth plunge 落下0 / 落下1 (0030 / 0031:
     // a20x_510300 -> 510310, ThrowDef12300 -> 12310): live (General) 0.54 s + 1.69 s + 1.83 s.
     // The row is chosen per target (2026-10-12 bug hunt round 16: one broken enemy anywhere
     // used to turn off the stealth plunge on every unaware one).
     for (e, mut ea, mut enemy, etf) in enemies.iter_mut() {
-        let stealth = !enemy.is_broken() && enemy.is_unaware();
-        let (start, land) = if kick {
-            (160, 161)
-        } else if stealth {
-            (30, 31)
-        } else {
-            (150, 151)
-        };
-        // Each enemy kind's own ThrowParam rows.
-        let row_id = combat.foe_of(&ea).throw_row(start);
-        let row = combat.param("ThrowParam", row_id);
-        let Some(th) = combat.throw(row_id) else { continue };
-        let f = |k: &str| row[k].as_f64().unwrap_or(0.0) as f32;
-        let (upper, lower) = (f("upperYRange"), f("lowerYRange"));
-        if !(enemy.is_broken() || stealth) || etf.translation.distance(pos) >= th.dist {
-            continue;
-        }
-        let dy = etf.translation.y - pos.y;
-        if dy >= upper || dy <= -lower {
-            continue;
-        }
-        // The exe's orbit test (FUN_140be3ba0, throw_fall_orbit_ok): the fall top above the enemy
-        // over heightLimit, the predicted orbit's nearest point within range in time. Wolf's
-        // velocity: his air base and fall speed. gap: the exe's is the proxy's (FUN_140bbf7d0).
-        let hit = throw_fall_orbit_ok(combat, row_id, pos, p.air_top.max(pos.y), a.air_base.with_y(a.vel_y), etf.translation);
-        if !hit || combat.player.anim(&th.atk_anim).is_none() {
-            continue;
-        }
+        let Some((th, land, stealth)) = plunge_from(combat, a, pos, p.air_top, &ea, &enemy, etf.translation) else { continue };
         a.play("PlungeDeathblow", &th.atk_anim);
         p.plunge = Some((e, land));
         if enemy.is_broken() {
@@ -2331,10 +2412,6 @@ fn start_plunge(
     }
     false
 }
-
-/// HKS SPRINT_BRAKE_ANGLE and SP_EF_REF_TAE_ENABLE_SPRINT_QUICK_TURN (c0000_define.lua).
-const SPRINT_BRAKE_ANGLE: f32 = 135.0;
-const REF_ENABLE_SPRINT_QUICK_TURN: i64 = 2;
 
 /// HKS _UpdateAutoAim: the homing target is refreshed for this long after an attack starts.
 const AUTO_AIM_TIME: f32 = 1.0 / 6.0;
@@ -2454,16 +2531,18 @@ fn buffer_flags(action: Action) -> &'static [i64] {
         Action::Prosthetic => &[136],
         // gap: the ChrActionFlags behind ACTION_ARM_CROUCH (bit 15) are not traced; the crouch
         // toggle is only taken from standby (decide).
-        Action::Crouch | Action::SwitchTool => &[],
+        Action::Crouch | Action::SwitchTool | Action::NextItem => &[],
         // gap: the accept / execute bits of ACTION_ARM_WIRE_SHOOT are not traced; taken as the
         // jump's (151 / 119): the wire moves open their cancels together with the jump's.
         Action::Grapple => &[151],
+        // Read raw by decide's docking (docking.rs), not buffered.
+        Action::Interact => &[],
     }
 }
 
 /// Is a press latched right now? (pending |= pressed & acceptMask in FUN_140b2c190.) A
 /// press outside every accept window is dropped, not queued.
-fn buffers(d: &CharData, a: &Actor, action: Action) -> bool {
+pub(crate) fn buffers(d: &CharData, a: &Actor, action: Action) -> bool {
     // A break pose reads attack / jump for its throw directly (decide, "ThrowBreak").
     if a.state == "ThrowBreak" && matches!(action, Action::Attack | Action::Jump) {
         return true;
@@ -2483,72 +2562,86 @@ fn buffers(d: &CharData, a: &Actor, action: Action) -> bool {
     d.flag(&a.anim, a.step(), FLAG_BUFFER_ALL) || buffer_flags(action).iter().any(|&f| d.flag(&a.anim, a.step(), f))
 }
 
-/// HKS ExecAttack routing (c0000_transition.lua): combo refs 214-219, step attack (ref
-/// 224), sprint attack (ref 1), the counter out of a hard deflect (HardDeflectAtk) or
-/// from being lightly deflected (EasyDeflectedAtk), the guard attack (ref 213), else
-/// GroundAttackCombo1.
-fn attack_route(d: &CharData, a: &Actor, stick: Vec3, art_equipped: bool) -> String {
-    let has = |r: i64| !a.anim.is_empty() && d.has_ref(&a.anim, a.step(), r);
-    if let Some((_, s)) = REF_COMBO.iter().find(|(r, _)| has(*r)) {
-        return s.to_string();
+/// A jump press now would be a wall jump (BEH_A_WALL_JUMP, before the kick): in the air with a
+/// wall at the chest, once per flight; chained (the parkour map's lifted limit), each jump needs
+/// another wall, more than 90 deg from the last one's direction (spamming jump climbed one flat
+/// wall).
+pub(crate) fn wall_jump_open(d: &CharData, a: &Actor, p: &Player, feet: Vec3) -> bool {
+    use crate::docking as dk;
+    let air_ok = a.state == "FreeFall" || a.state.contains("GroundJump") || a.state.starts_with("SprintJump") || a.state.starts_with("WallJumpStart");
+    if !(air_ok && a.airborne && p.dock.is_none() && p.wire.is_none() && p.plunge.is_none() && p.wall_jumps < dk::wall_jump_limit() && arm_style_matches(d, a, p)) {
+        return false;
     }
-    if has(REF_STEP_ATTACK) {
-        let dir = a.state.rsplit('_').next().filter(|d| matches!(*d, "N" | "F" | "B" | "L" | "R")).unwrap_or("N");
-        return format!("GroundStepAttack_{dir}");
-    }
-    // STYLE_TYPE_CROUCH (HKS BEH_A_GROUND_ATTACK, after the combo / step refs): Wolf stands up
-    // attacking (CrouchAttackToStand a050_301000). gap: under a forced crouch (g_forceCrouch:
-    // env 3037 / SP_EF_REF_FORCE_CROUCH, low ceilings) it is CrouchAttackToCrouch; not modelled.
-    if a.crouch {
-        return "CrouchAttackToStand".into();
-    }
-    if has(REF_ENABLE_SPRINT_ACTION) {
-        // Selector_GroundJumpType 0 = SprintAttack_L, 1 = _R (c0000.hkx "SprintAttack Selector").
-        // AttackAngle = signed stick angle from the facing (> 0 right): L when steering right
-        // out of SprintLoop, or left / straight out of SprintStartFromStep_F.
-        let angle_right = stick.dot(a.forward().cross(Vec3::Y)) > 0.0;
-        let from_step = a.state == "SprintStartFromStep_F";
-        let left = if from_step { !angle_right } else { angle_right };
-        return format!("SprintAttack_{}", if left { "L" } else { "R" });
-    }
-    // Hard deflect reactions: StandDeflectHard{Minimum,Small,Middle}[_L/_R], HardDeflectDmg*.
-    if a.state.starts_with("StandDeflectHard") || a.state.starts_with("HardDeflectDmg") || a.state.starts_with("LandAirDeflectHard") {
-        let size = if a.state.contains("Middle") || a.state.contains("Large") { "Middle" } else { "Small" };
-        let dir = if a.state.ends_with("_L") || a.state.ends_with('L') && a.state.starts_with("HardDeflectDmg") {
-            "L"
-        } else if a.state.ends_with("_R") || a.state.ends_with('R') && a.state.starts_with("HardDeflectDmg") {
-            "R"
-        } else {
-            "F"
-        };
-        return format!("HardDeflectAtk{size}{dir}");
-    }
-    if let Some(side) = a.state.strip_prefix("EasyDeflected").filter(|s| *s == "L" || *s == "R") {
-        return format!("EasyDeflectedAtk{side}");
-    }
-    // Only without a combat art equipped (env(345, HAND_RIGHT) == SP_ATK_TYPE_NONE).
-    if has(REF_DEFLECT_GUARD_ATTACK) && !art_equipped {
-        return "DeflectGuardAttack".into();
-    }
-    "GroundAttackCombo1".into()
+    let chest = feet + Vec3::Y * 1.2;
+    let new_wall = match (p.last_wall, dk::wall_contact_dir(chest, a.yaw)) {
+        (Some(last), Some(now)) => last.angle_between(now) > std::f32::consts::FRAC_PI_2,
+        _ => true,
+    };
+    new_wall && dk::wall_contact(chest, a.yaw).is_some()
 }
 
-/// The release follow-up of a held attack state (attack let go while ref 208 is up).
-fn release_of(state: &str) -> Option<String> {
-    Some(match state {
-        "GroundAttackCombo1" | "GroundAttackCombo2" | "GroundAttackCombo1Reverse" | "GroundAttackCombo2Reverse"
-        | "DeflectGuardAttack" | "CrouchAttackToStand" => format!("{state}Release"),
-        s if s.starts_with("HardDeflectAtk") => {
-            // HardDeflectAtkSmallL -> HardDeflectAtkReleaseSmall_L
-            let rest = &s["HardDeflectAtk".len()..];
-            let (size, dir) = rest.split_at(rest.len() - 1);
-            format!("HardDeflectAtkRelease{size}_{dir}")
-        }
-        s if s.starts_with("EasyDeflectedAtk") => format!("EasyDeflectedAtkRelease_{}", &s[s.len() - 1..]),
-        s if s.starts_with("GroundStepAttack_") => s.replace("GroundStepAttack_", "GroundStepAttackRelease_"),
-        s if s.starts_with("SprintAttack_") => s.replace("SprintAttack_", "SprintAttackRelease_"),
-        _ => return None,
+/// 崩し蹴りジャンプ (ThrowParam 0200): a broken enemy facing Wolf within the row's Dist ->
+/// (enemy, its position, Wolf's start throw anim).
+fn jump_over<'a>(combat: &Combat, wolf: Vec3, enemies: impl Iterator<Item = (Entity, &'a Actor, &'a Enemy, &'a Transform)>) -> Option<(Entity, Vec3, String)> {
+    let d = &combat.player;
+    enemies.into_iter().find_map(|(ee, ea, en, etf)| {
+        // Each enemy kind's own 0200 row.
+        let st = combat.throw(combat.foe_of(ea).throw_row(200)).filter(|st| d.anim(&st.atk_anim).is_some())?;
+        let to_wolf = (wolf - etf.translation).with_y(0.0).normalize_or_zero();
+        let facing = ea.forward().angle_between(to_wolf).to_degrees() < 90.0;
+        (en.is_broken() && facing && etf.translation.distance(wolf) <= st.dist).then(|| (ee, etf.translation, st.atk_anim.clone()))
     })
+}
+
+/// The exe's throw check on the attack button (ThrowParam) goes before the script: while a
+/// deathblow is in reach, hks_wolf leaves the attack press to decide's deathblow (the jump's
+/// to the jump-over throw).
+pub(crate) fn throw_check(
+    combat: Res<Combat>,
+    mut wolf: Single<(&Actor, &mut Player, &Transform)>,
+    enemies: Query<(Entity, &Actor, &Enemy, &Transform), Without<Player>>,
+    enemy_dummies: Query<&crate::model::Dummies, With<Enemy>>,
+    globals: Query<&GlobalTransform>,
+) {
+    let (a, p, tf) = &mut *wolf;
+    let dmy_of = |ee: Entity| move |id: i16| enemy_dummies.get(ee).ok().and_then(|dm| dm.0.get(&id)).and_then(|m| globals.get(*m).ok()).map(|g| g.translation());
+    p.deathblow_ready = enemies.iter().any(|(ee, ea, en, etf)| {
+        etf.translation.distance(tf.translation) < 25.0 && deathblow_check(&combat, tf.translation, a.forward(), a.aged.is_some(), ea, en, etf.translation, &dmy_of(ee)).is_some_and(|db| db.in_reach)
+    });
+    p.jump_throw_ready = jump_over(&combat, tf.translation, enemies.iter()).is_some();
+    p.plunge_ready = a.airborne && enemies.iter().any(|(_, ea, en, etf)| plunge_from(&combat, a, tf.translation, p.air_top, ea, en, etf.translation).is_some());
+}
+
+/// The art's states a press starts (hks_wolf::art_press_event's).
+fn is_art_press(state: &str) -> bool {
+    ["GroundSpecialAttack", "GroundSpacialAttack", "SprintSpecialAttack"].iter().any(|k| state.starts_with(k))
+        && !["Release", "HoldEnd", "HoldLoop", "HoldAction", "HoldMove", "HoldQuickTurn", "HitJump"].iter().any(|k| state.contains(k))
+}
+
+/// The ground jump's first states (hks_wolf's jump events): the ready (or the fast jump's start)
+/// of the vertical, forward, lock-on, sprint, storm and swamp jumps.
+fn is_ground_jump_press(state: &str) -> bool {
+    !state.starts_with("Aging") && !state.contains("SpecialAttack") && !state.contains("SubAttack")
+        && (state.contains("GroundJumpReady") || state.contains("GroundJumpStart") || state.starts_with("SprintJump") || state.starts_with("GroundStormJump") || state.starts_with("SwampJump"))
+        && !state.contains("Back")
+}
+
+/// The prosthetic press's states (hks_wolf::sub_press_event's).
+fn is_sub_press(state: &str) -> bool {
+    (state.contains("SubAttack") && !["Add", "Land", "Hang", "Cover"].iter().any(|k| state.starts_with(k))
+        && !["Release", "DeriveAttack", "DeriveDirectivity", "Move", "Loop", "End", "Deflect", "Action"].iter().any(|k| state.contains(k)))
+        || matches!(state, "AirSubAttackMoveReady" | "AirSubAttackMoveAtemiReady")
+}
+
+/// An art's opening state (BEH_A_GROUND_SP_ATTACK), not a combo.
+fn is_art_opener(state: &str) -> bool {
+    is_art_press(state) && (state.contains("Combo1") || state.contains("Step") || state.contains("JumpReady") || state.contains("HoldStart") || state.starts_with("SprintSpecialAttack"))
+}
+
+/// The attack button's states (BEH_A_GROUND_ATTACK), not their releases.
+fn is_ground_attack(state: &str) -> bool {
+    !state.contains("Release")
+        && ["GroundAttackCombo", "GroundStepAttack_", "SprintAttack_", "CrouchAttackTo", "HardDeflectAtk", "EasyDeflectedAtk", "DeflectGuardAttack"].iter().any(|k| state.starts_with(k))
 }
 
 /// Turning rate [deg/s] where the turn controller clamps (locked on, actions): the anim's TAE
@@ -2565,14 +2658,10 @@ fn is_guard_start(state: &str) -> bool {
     state.starts_with("StandToDeflectGuard") || state == "SprintToDeflectGuard"
 }
 
-fn is_guard_reaction(state: &str) -> bool {
-    state.starts_with("StandDeflect") || state.starts_with("HardDeflectDmg") || state.starts_with("EasyDeflectDmg")
-}
-
 /// Execute flags: a pending request fires while one is up (requested |= pending & the
 /// execute mask +0xe0, set by FUN_140b2bdc0): 115 attack (bits 0,25), 117 guard (2),
 /// 26 step (5,13,14), 119 jump (4), 31 item (7), 137 shinobi tool (18).
-fn accept_flag(action: Action) -> &'static [i64] {
+pub(crate) fn accept_flag(action: Action) -> &'static [i64] {
     match action {
         Action::Attack => &[FLAG_ACCEPT_ATTACK],
         Action::Guard => &[FLAG_ACCEPT_GUARD],
@@ -2582,14 +2671,20 @@ fn accept_flag(action: Action) -> &'static [i64] {
         Action::CombatArt => &[FLAG_ACCEPT_ATTACK],
         Action::Prosthetic => &[FLAG_ACCEPT_PROSTHETIC],
         Action::Grapple => &[FLAG_ACCEPT_JUMP],
-        Action::Crouch | Action::SwitchTool => &[],
+        Action::Crouch | Action::SwitchTool | Action::Interact | Action::NextItem => &[],
     }
 }
 
 /// The engine's env(1106, button): is this input accepted right now?
 /// The STYLE_TYPE_GROUND_GUARD states (c0000_cmsg g_paramHkbState): the guard idle / move /
 /// turns, the guard starts, the easy deflects and their recoils.
-fn is_guard_style(s: &str) -> bool {
+/// A buffered guard press still counts: the button held, or pressed this frame (it is still
+/// down when it executes).
+pub(crate) fn guard_press_live(p: &Player, held: bool, dt: f32) -> bool {
+    held || p.requests.get(&Action::Guard).is_some_and(|&age| age <= dt * 1.5)
+}
+
+pub(crate) fn is_guard_style(s: &str) -> bool {
     s.starts_with("DeflectGuard")
         || s.contains("ToDeflectGuard")
         || s.starts_with("StandDeflectEasy")
@@ -2597,7 +2692,7 @@ fn is_guard_style(s: &str) -> bool {
         || matches!(s, "StandDeflectGuardFromDamage" | "EasyDeflectDmg" | "LandAirDeflectGuard")
 }
 
-fn accepts(d: &CharData, a: &Actor, action: Action) -> bool {
+pub(crate) fn accepts(d: &CharData, a: &Actor, action: Action) -> bool {
     if a.airborne {
         return false;
     }
@@ -2639,9 +2734,12 @@ fn todome_input(d: &CharData, a: &Actor) -> bool {
 
 /// Ref 1 SP_EF_REF_ENABLE_SPRINT_ACTION (SprintStartFromStep_F, SprintLoop, SprintToDeflectGuard
 /// 6-15): sprinting is a free state for actions - SprintLoop has no ChrActionFlags at all, and
-/// the HKS picks SprintAttack / SprintToDeflectGuard from this ref.
+/// the HKS picks SprintAttack / SprintToDeflectGuard from this ref. The sprint's 100304 ends
+/// into 100303, ref 1 for 0.2 s more (`sp_chained`): the recordings' SprintAttack out of the
+/// first 12-15 ticks of StandMoveStartFromSprint, whose own TAE has no ref 1.
 fn sprint_window(d: &CharData, a: &Actor) -> bool {
-    !a.anim.is_empty() && d.has_ref(&a.anim, a.step(), REF_ENABLE_SPRINT_ACTION)
+    (!a.anim.is_empty() && d.has_ref(&a.anim, a.step(), REF_ENABLE_SPRINT_ACTION))
+        || a.sp_chained.iter().any(|(id, _)| crate::data::sp_effect_lingering_ref(*id) == REF_ENABLE_SPRINT_ACTION)
 }
 
 pub(crate) fn stick_world(stick: Vec2, cam_yaw: f32) -> Vec3 {
@@ -2819,6 +2917,7 @@ fn consume_goods(combat: Res<Combat>, config: Res<GameConfig>, mut log: ResMut<C
         let rate = d.sp_effects.get(GOURD_SPEFFECT).map_or(40.0, |s| -s.change_hp_estus_flask_rate);
         let heal = estus_heal(a.hp_max, rate, medicine_rate(&combat, &config));
         a.hp = (a.hp + heal).min(a.hp_max);
+        p.sp_bursts.push(GOURD_GOODS);
         log.push(format!("gourd: +{heal:.0} HP ({} left)", p.gourd), Color::srgb(0.5, 1.0, 0.6));
     }
 }
@@ -2888,22 +2987,96 @@ fn decide(
     lock: Res<LockOn>,
     mut pad: ResMut<PadInput>,
     mut log: ResMut<CombatLog>,
-    camera: Option<Single<&OrbitCamera>>,
+    view: Res<View>,
     mut player: Single<(Entity, &mut Player, &mut Actor, &mut Transform), Without<Enemy>>,
     mut enemies: Query<(Entity, &mut Actor, &mut Enemy, &Transform), Without<Player>>,
     enemy_dummies: Query<&crate::model::Dummies, With<Enemy>>,
     globals: Query<&GlobalTransform>,
     mut throw: ResMut<ActiveThrow>,
-    fight: Option<ResMut<crate::enemy::FightReset>>,
-    snap: Option<ResMut<crate::camera::CameraSnap>>,
-    (wire_aim, grapples): (Option<Res<crate::wire::WireAim>>, Option<Res<crate::enemy::grapple::EnemyGrapples>>),
+    mut fight: Option<ResMut<crate::enemy::FightReset>>,
+    mut snap: Option<ResMut<crate::view::CameraSnap>>,
+    (wire_aim, grapples, ledges, mut used): (Option<Res<crate::wire::WireAim>>, Option<Res<crate::enemy::grapple::EnemyGrapples>>, Option<Res<crate::traversal::LedgeEdges>>, Option<ResMut<crate::items::Used>>),
 ) {
+    // UFO (ufo.rs): Wolf is flown, not played; presses dropped.
+    if FLOWN.load(std::sync::atomic::Ordering::Relaxed) {
+        pad.hold();
+        return;
+    }
     let dt = time.delta_secs();
     let d = &combat.player;
     let (pe, p, a, tf) = &mut *player;
     // The pad manipulator runs every frame, whatever Wolf does (FUN_1407f0a70).
     p.turn.new_tick();
     let gated_stick = p.turn.gate(pad.stick, lock.target.is_some());
+    // The last ground's height (`air_top`, where the fall height starts) on every grounded tick,
+    // before the states that return early (aging, hangs, throws) skip the movement's update.
+    if !a.airborne {
+        p.air_top = tf.translation.y;
+    }
+    // The quick items' worn effects (items.rs): Wolf's damage rates and the regeneration.
+    let [atk, stam, cut, posture_cut] = crate::items::wolf_rates(&p.timed);
+    // And his Attack Power (combat::growth_sp): every hit's HP and posture damage.
+    let growth = crate::items::param("SpEffectParam", crate::combat::growth_sp(&config));
+    let rate = |k: &str| growth[k].as_f64().unwrap_or(1.0) as f32;
+    (a.atk_rate, a.stam_atk_rate, a.dmg_cut, a.posture_cut) = (atk * rate("physicsAttackRate"), stam * rate("staminaAttackRate"), cut, posture_cut);
+    a.item_sp.clear();
+    a.item_sp.extend(p.timed.iter().map(|t| t.0));
+    // Their maxHpRate (Yashariku's Sugar halves the max HP for its 30 s; the user, 2026-10-18:
+    // "make yashariku's sugar limit max hp to half hp of wolf"): hp_max rescaled when it
+    // changes, HP kept under it and not given back after (bCurrHPIndependeMaxHP 1).
+    let hp_rate = crate::items::max_hp_rate(&a.item_sp);
+    if (hp_rate - p.item_hp_rate).abs() > 1e-6 {
+        a.hp_max *= hp_rate / p.item_hp_rate;
+        a.hp = a.hp.min(a.hp_max);
+        p.item_hp_rate = hp_rate;
+    }
+    // Its maxStaminaRate 0.5 halves the max posture the same way: the stamina left (max - the
+    // posture taken) is kept under the new max and not given back after.
+    let st_rate = crate::items::max_stamina_rate(&a.item_sp);
+    if (st_rate - p.item_posture_rate).abs() > 1e-6 {
+        let left = (a.posture_max - a.posture).max(0.0);
+        a.posture_max *= st_rate / p.item_posture_rate;
+        a.posture = (a.posture_max - left.min(a.posture_max)).max(0.0);
+        p.item_posture_rate = st_rate;
+    }
+    let regen_dt = a.clock(dt);
+    crate::items::tick_regen(&p.timed, a, regen_dt);
+    // Next quick item (C / d-pad down): the next filled slot.
+    if p.requests.remove(&Action::NextItem).is_some() {
+        let next = crate::items::next_slot(&config, p.quick_slot);
+        if next != p.quick_slot {
+            p.quick_slot = next;
+            let id = crate::items::in_slot(&config, next);
+            let name = crate::items::param("EquipParamGoods", id)["name"].as_str().unwrap_or("").to_string();
+            log.push(format!("quick item: {}", if name.is_empty() { id.to_string() } else { name }), Color::srgb(0.85, 0.85, 0.75));
+        }
+    }
+    // A quick item in use: spent and in effect at its ConsumeCurrentGoods (TAE 65).
+    if let Some((goods, state)) = p.item_use.clone() {
+        if a.state.trim_start_matches("Crouch") != state {
+            p.item_use = None;
+        // At frame 0 too (Bite Down's, a000_250400): on the clip's first step.
+        } else if d.anim(&a.anim).is_some_and(|an| an.events.iter().any(|e| e.kind == 65 && ((e.start > a.prev_t && e.start <= a.t) || (e.start == 0.0 && a.prev_t == 0.0 && a.t > 0.0)))) {
+            let extend = crate::items::extend_rate(crate::combat::skill_sp_ids(&combat, &config));
+            for sp in crate::items::effects_of(goods) {
+                crate::items::wear(&mut p.timed, sp, extend);
+            }
+            if let Some(u) = used.as_deref_mut() {
+                u.0.push(goods);
+            }
+            // The Homeward Idol: back to the last idol prayed at (idol.rs).
+            if goods == crate::items::HOMEWARD_IDOL {
+                if let Some((at, yaw)) = p.seat.checkpoint.and_then(crate::encounter::world().respawn_at) {
+                    tf.translation = at + Vec3::Y * CAPSULE_HALF_HEIGHT;
+                    a.yaw = yaw;
+                    if let Some(s) = snap.as_deref_mut() {
+                        s.0 = true;
+                    }
+                }
+            }
+            log.push(format!("used goods {goods}"), Color::srgb(0.5, 1.0, 0.6));
+        }
+    }
     // A wire on an enemy follows him (wire.rs track): the shoot's snapshot left Wolf flying to
     // where Gyoubu / the Ape stood a second before.
     if let (Some(w), Some(gs)) = (p.wire.as_mut(), grapples.as_deref()) {
@@ -2946,7 +3119,9 @@ fn decide(
     // pending, with no timer, until the action fires on its execute flag (accept_flag) or a
     // state change resets it (keeps_buffer). config input.buffer > 0 adds a timed expiry
     // for experiments.
-    if a.state != p.last_state {
+    let entered = a.state != p.last_state;
+    let prev_state = p.last_state.clone();
+    if entered {
         if !keeps_buffer(&a.state) {
             p.requests.clear();
         }
@@ -2955,13 +3130,23 @@ fn decide(
     }
     // Raw press (death screen choices are not TAE-buffered).
     let attack_pressed = pad.pressed.contains(&Action::Attack);
-    let crouch_pressed = pad.pressed.contains(&Action::Crouch);
+    let guard_pressed = pad.pressed.contains(&Action::Guard);
+    // Docking reads its presses raw (docking.rs: the hug / hang button, the climb and the drop).
+    let interact_pressed = pad.pressed.contains(&Action::Interact);
+    let dock_jump = pad.pressed.contains(&Action::Jump);
+    let dock_step = pad.pressed.contains(&Action::Step);
+    let item_pressed = pad.pressed.contains(&Action::UseItem);
     // Any other action stands Wolf up. Steps, guards and hit reactions from a crouch are the
     // standing ones in the HKS too (_fireGroundStep -> W_GroundStep, W_StandToDeflectGuard; the
     // Crouch{Damage,Death}* states only under a forced crouch, g_forceCrouch). The attack has
     // its own (attack_route: CrouchAttackToStand), the gourd too (CrouchItemGourdDrink*).
     if a.crouch && !crouch_ok(&a.state) {
         a.crouch = false;
+    }
+    // Swimming (swim.rs), Ctrl and F are the dive and the rise: no tool, no grappling hook.
+    let swim_dive = pad.pressed.contains(&Action::Prosthetic);
+    if p.swim.is_some() {
+        pad.pressed.retain(|act| !matches!(act, Action::Prosthetic | Action::Grapple));
     }
     let presses = pad.pressed.len() as u32;
     for act in pad.pressed.drain(..) {
@@ -3029,7 +3214,7 @@ fn decide(
     if pad.reset {
         pad.reset = false;
         // The whole fight starts over (the enemies' starting line-up).
-        if let Some(mut f) = fight {
+        if let Some(f) = fight.as_mut() {
             f.0 = true;
         }
         // Drawn at the start spot at once: no fade from the old pose, no deathblow model slide
@@ -3038,6 +3223,7 @@ fn decide(
         p.gourd = config.player.gourd_charges;
         p.emblems = config.player.spirit_emblems;
         p.resurrections = config.player.resurrections;
+        p.revive_locked = false;
         p.held.clear();
         // A reset mid-jump, mid-plunge or crouched starts the fight standing on the ground:
         // the air state, knockback and queued presses go too (2026-10-12 bug hunt).
@@ -3086,11 +3272,19 @@ fn decide(
         p.dead_for = 0.0;
         // config posture.player_level after F5 (it was read only at spawn; round 24).
         (a.hp_max, a.posture_max, a.posture_regen) = level_stats(&combat, config.posture.player_level);
+        p.item_hp_rate = 1.0;
         a.hp = a.hp_max;
         a.posture = 0.0;
         a.play("StandIdle", "");
-        tf.translation = crate::map::player_start();
+        tf.translation = (crate::encounter::hooks().player_start)();
         a.yaw = start_yaw();
+        // Back at the last Sculptor's Idol prayed at, standing before it (idol.rs).
+        let checkpoint = p.seat.checkpoint;
+        p.seat = crate::seat::Seat { checkpoint, ..Default::default() };
+        if let Some((at, yaw)) = checkpoint.and_then(crate::encounter::world().respawn_at) {
+            tf.translation = at + Vec3::Y * CAPSULE_HALF_HEIGHT;
+            a.yaw = yaw;
+        }
         if let Some(mut s) = snap {
             s.0 = true;
         }
@@ -3185,52 +3379,8 @@ fn decide(
             return;
         }
     }
-    // Crouch toggle (HKS BEH_A_CROUCH_START / BEH_A_CROUCH_END on ACTION_ARM_CROUCH): standing
-    // still -> W_CrouchStart (CrouchStart a000_216000) / W_CrouchEnd (CrouchEnd a000_216100);
-    // moving -> the move loop switches clips (W_CrouchMoveLoop / W_StandMoveLoop). The crouch
-    // clips carry SpEffect 109200 "Crouching stealth" (sightSearchEnemyCut 20: enemies see 20 %
-    // less far).
-    // Sprinting (ref 1 SP_EF_REF_ENABLE_SPRINT_ACTION) -> the slide W_SprintToCrouchReady
-    // (a000_216010, its root motion slides), then SprintToCrouchLeft / Right (216020 / 216021).
-    // Only with ACTION_UNLOCK_TYPE_SPRINT_TO_CROUCH (26, HKS 4498); else the plain crouch.
-    if crouch_pressed
-        && a.hp > 0.0
-        && !a.airborne
-        && !a.crouch
-        && sprint_window(d, a)
-        && crate::combat::action_unlocked(&combat, &config, crate::combat::UNLOCK_SPRINT_TO_CROUCH)
-        && a.play_state(d, "SprintToCrouchReady")
-    {
-        a.crouch = true;
-        p.requests.remove(&Action::Crouch);
-        return;
-    }
-    // Without unlock 26 the sprint's crouch is the plain one (HKS 4500-4509; BEH_A_CROUCH_START
-    // is on in the sprint style, g_behaviorTable 6450 column 9): idle -> W_CrouchStart, moving ->
-    // straight into W_CrouchMoveLoop (no start clip). Round 65: the press was dropped (SprintLoop
-    // is not a free state). AddActionInputBlend / W_AddDisableStep are not modelled.
-    if crouch_pressed && a.hp > 0.0 && !a.airborne && !a.crouch && sprint_window(d, a) {
-        a.crouch = true;
-        if pad.stick != Vec2::ZERO {
-            a.procedural("Locomotion");
-            a.move_start = 0.0;
-        } else if a.play_state(d, "CrouchStart") {
-            a.move_vel = Vec3::ZERO;
-        }
-        p.requests.remove(&Action::Crouch);
-        return;
-    }
-    if crouch_pressed && a.hp > 0.0 && !a.airborne && !is_guard_style(&a.state) && (is_free(&a.state) || matches!(a.state.as_str(), "CrouchStart" | "CrouchEnd")) {
-        a.crouch = !a.crouch;
-        if a.state != "Locomotion" {
-            let st = if a.crouch { "CrouchStart" } else { "CrouchEnd" };
-            if a.play_state(d, st) {
-                a.move_vel = Vec3::ZERO;
-            }
-        }
-        p.requests.remove(&Action::Crouch);
-        return;
-    }
+    // The crouch (BEH_A_CROUCH_START / _END, the sprint's W_SprintToCrouchReady) is the script's:
+    // hks_wolf::take_crouch.
     if a.sheathed {
         for k in [Action::Attack, Action::Guard, Action::CombatArt, Action::Prosthetic] {
             p.requests.remove(&k);
@@ -3260,21 +3410,27 @@ fn decide(
             }
         }
     }
-    // The fall-return deaths (HKS BEH_R_DEATH 769-776): the clip plays out, then Wolf stands at the
-    // last safe ground (GroundFallReturn a000_711210). They keep the resurrections; the lethal
-    // landing already took 40% of max HP (fall_hp_loss; gap: the void fall's cost is not traced).
-    if matches!(a.state.as_str(), "LandDeadReturnStart" | "FallDeadReturnStart") {
+    // The fall-return deaths (HKS BEH_R_DEATH 769-776): the screen cuts to black (menu.rs
+    // `fall_cut`) for `FALL_RETURN_HOLD` of the clip, then Wolf stands at the last safe ground.
+    // They keep the resurrections; the lethal landing already took 40% of max HP (`fall_hp_loss`),
+    // the void fall costs `FALL_VOID_RETURN_COST` here; emptied, he dies there (the death below,
+    // resurrections as usual). Standing, not the get-up GroundFallReturn (a000_711210: the user,
+    // "why does he have animation when he returns").
+    if is_fall_return(&a.state) {
         a.move_vel = Vec3::ZERO;
-        if a.anim.is_empty() || a.t >= d.length(&a.anim) {
-            if let Some(safe) = p.safe_pos {
+        if a.anim.is_empty() || a.t >= d.length(&a.anim).min(FALL_RETURN_HOLD) {
+            if let Some(&safe) = p.safe_ring.front() {
                 tf.translation = safe;
             }
             a.airborne = false;
             a.vel_y = 0.0;
             p.air_top = tf.translation.y;
-            if !a.play_state(d, "GroundFallReturn") {
-                a.play("StandIdle", "");
+            if a.state == "FallDeadReturnStart" {
+                let cost = (a.hp_max * FALL_VOID_RETURN_COST).floor();
+                a.hp = (a.hp - cost).max(0.0);
+                log.push(format!("fall: -{cost:.0} HP"), Color::srgb(1.0, 0.4, 0.4));
             }
+            a.play("StandIdle", "");
         }
         return;
     }
@@ -3296,11 +3452,7 @@ fn decide(
         // final death (FUN_1409eda50). The HKS revives from the death starts themselves too
         // (c0000_transition.lua 274-277), not only the stay loops. Before: the choice opened at
         // the loop (1.6-3.3 s late) and closed 6 s into it.
-        let holding = {
-            let mut ids = crate::combat::worn_sp(a, &[]);
-            ids.extend(p.timed.iter().map(|t| t.0));
-            ids.iter().any(|id| d.sp_effects.get(&id.to_string()).is_some_and(|s| s.state_info == 351))
-        };
+        let holding = wolf_wears(a, p, d, 351);
         if !(holding && p.dead_for < REVIVE_DELAY) {
             p.dead_for += dt;
         }
@@ -3388,7 +3540,7 @@ fn decide(
         // the killing blow's knockback or the clip's root motion falls (round 60: it floated;
         // the walk-off check is past this branch's return). Not in a grab's deaths (the
         // thrower places him) or a SetNoGravity window.
-        let mut floor = crate::map::ground_y(tf.translation) + CAPSULE_HALF_HEIGHT;
+        let mut floor = crate::terrain::ground_y(tf.translation) + CAPSULE_HALF_HEIGHT;
         if let Some(spot) = p.perch.filter(|s| (tf.translation - *s).with_y(0.0).length() < PERCH_RADIUS && tf.translation.y >= s.y + CAPSULE_HALF_HEIGHT - 0.3) {
             floor = floor.max(spot.y + CAPSULE_HALF_HEIGHT);
         }
@@ -3429,7 +3581,7 @@ fn decide(
         // HKS 275 / 277 / 285: the death starts W_GroundRevival / W_LandRevival /
         // W_ThrowDefRevival take (the blow and fall deaths' lands among them, death_done).
         let start_revivable = !start_done && (a.state.starts_with("GroundDeathStart") || a.state.starts_with("LandDeathStart") || a.state == "ThrowDefDeathStart" || death_done(&a.state).is_some());
-        let can_revive = p.resurrections > 0 && a.state != "AgingGroundDeathLoop";
+        let can_revive = !p.gave_up && !p.revive_locked && p.resurrections > 0 && a.state != "AgingGroundDeathLoop";
         let choosing = if can_revive { p.dead_for >= REVIVE_DELAY && (loop_ready || start_revivable) } else { loop_ready };
         if in_loop && attack_pressed && !choosing {
             p.revive_queued = true;
@@ -3437,8 +3589,21 @@ fn decide(
         // The queued press is spent whenever the choice opens (round 52: `||` skipped the take on a
         // fresh press, and the leftover revived the next death on its first tick, a second node).
         let queued = choosing && std::mem::take(&mut p.revive_queued);
+        p.revive_open = choosing && can_revive;
+        // Die (guard; the game's ": Die" beside ": Resurrect" under 死): the node is kept, the
+        // death screen fades to black and the final death follows (menu.rs watch_fight).
+        if p.revive_open && guard_pressed && !attack_pressed && !queued {
+            p.gave_up = true;
+            p.revive_open = false;
+            log.push("death", Color::srgb(1.0, 0.4, 0.4));
+            return;
+        }
+        if p.gave_up {
+            return;
+        }
         if choosing && (attack_pressed || queued) && can_revive {
             p.resurrections -= 1;
+            p.revive_locked = true;
             a.hp = 1.0; // the revival anim's SpEffect brings it to half
             // The same IndexDeath side: GroundRevival_B (a000_110031) gets up from face down; out
             // of a grab's loop the throw's own W_ThrowDefRevival (285: a000_<ThrowId>_Revival,
@@ -3458,6 +3623,7 @@ fn decide(
                     a.play_state(d, &format!("GroundRevival_{side}"));
                 }
             }
+            p.revive_open = false;
             log.push(format!("resurrection ({} left)", p.resurrections), Color::srgb(1.0, 0.5, 0.5));
             return;
         }
@@ -3470,14 +3636,13 @@ fn decide(
     }
 
     p.dead_for = 0.0;
-    // HKS _LandReset: the air tool uses count again once on the ground.
-    if !a.airborne {
-        p.air_sub_count = 0;
-        if !a.state.contains("JumpReady") {
-            p.air_art_count = 0;
-        }
+    p.revive_open = false;
+    p.gave_up = false;
+    // A deathblow landed: the resurrection unlocks.
+    if p.revive_locked && a.state == "Deathblow" {
+        p.revive_locked = false;
+        log.push("resurrection unlocked", Color::srgb(1.0, 0.5, 0.5));
     }
-
     // Left above the floor by a clip's vertical root motion (the vault 511900) once its
     // SetNoGravity ends: fall and land (live: FreeFall 200010 -> LandFreeFall 200020).
     // A wire perch holds him while he stays on it (`Player::perch`).
@@ -3488,7 +3653,17 @@ fn decide(
     // Not in a wire shot / move start: its launch fires on the tick SetNoGravity ends, after this
     // check, and a grapple from a perch fell off it instead (2026-10-12 bug hunt round 20).
     let wiring = p.wire.is_some() && crate::wire::is_wire_state(&a.state);
-    if !a.airborne && !perched && !wiring && tf.translation.y > crate::map::ground_y(tf.translation) + CAPSULE_HALF_HEIGHT + 0.05 && !no_gravity_hold(d, a) {
+    // Docked at an edge (docking.rs: hanging, or climbing up off it) is held, not over a floor.
+    // Swimming (swim.rs) is held by the water too.
+    let docked = p.dock.is_some() || p.swim.is_some() || crate::docking::is_jump_ready(&a.state) || a.state.starts_with("WallJumpReady_");
+    // Not in a deathblow either: the throw plays out and only its end falls (HKS
+    // c0000_transition.hks FireStateEndEvent: HKB_STATE_THROW_ATK_TO_FREE_FALL -> W_FreeFall on
+    // IsAnimEnd). The Demon of Hatred's leap (a240_500000 / 510000) left Wolf above his field's
+    // uneven ground and the fall cut the deathblow, so the Demon never fell (2026-10-17).
+    let throwing = crate::actor::in_throw(&a) || a.state == "DeathblowStart";
+    // Over a drop his capsule's rim still rests on, he stands (terrain.rs `rim_floor`).
+    let on_rim = || crate::terrain::rim_floor(tf.translation).is_some_and(|h| tf.translation.y <= h + CAPSULE_HALF_HEIGHT + 0.05);
+    if !a.airborne && !perched && !wiring && !docked && !throwing && tf.translation.y > crate::terrain::ground_y(tf.translation) + CAPSULE_HALF_HEIGHT + 0.05 && !on_rim() && !no_gravity_hold(d, a) {
         a.airborne = true;
         // A plain fall (fallType 0), not the last wire flight's (2026-10-12 bug hunt round 12).
         a.fall_type = 0;
@@ -3499,7 +3674,8 @@ fn decide(
         // Before: straight down from rest.
         a.vel_y = -crate::data::WORLD_GRAVITY * dt;
         a.air_base = p.ground_vel;
-        a.play_state(d, "FreeFall");
+        // BEH_R_FALL (W_SelfFallStart, then FreeFall) is the script's (hks_wolf); on the move
+        // the move state goes on until FALL_START_DROP (the air branch, env 200).
     }
     if !a.airborne && dt > 0.0 {
         // A warp (a reset, a placement) is not a move.
@@ -3511,7 +3687,8 @@ fn decide(
         a.ng_held = false;
     }
 
-    let cam_yaw = camera.map_or(0.0, |c| c.yaw);
+    let cam_pitch = view.orbit.map_or(0.26, |o| o.1);
+    let cam_yaw = view.orbit.map_or(0.0, |o| o.0);
     let stick = stick_world(pad.stick, cam_yaw);
     // The manipulator's move vector (`Turn::gate`) drives the walk / run and the free turn; the
     // actions read the stick as it is. gap: which stick the HKS's step / jump / attack angles read
@@ -3577,7 +3754,9 @@ fn decide(
             }
         }
     } else if let Some(ee) = p.throw_target {
-        let dead = enemies.get(ee).map(|(_, ea, _, _)| ea.state.starts_with("ThrowDefDeath"));
+        // A boss without a ThrowDefDeath (c5080 Gyoubu, c5100) by its own flag 69 once dead, as
+        // the wire landing's above.
+        let dead = enemies.get(ee).map(|(_, ea, en, _)| ea.state.starts_with("ThrowDefDeath") || (en.is_dead() && !ea.anim.is_empty() && combat.data_of(ea).flag(&ea.anim, ea.t, 69)));
         if a.state != "Deathblow" || dead.is_err() {
             p.throw_target = None;
         } else if dead == Ok(true) {
@@ -3711,14 +3890,7 @@ fn decide(
     // enemy ThrowDef13900. Live: c1010 0.30 s + 1.07 s, then a free-fall landing behind him; the
     // General 501900 -> 511900 -> attack -> the behind deathblow.
     if p.requests.contains_key(&Action::Jump) && accepts(d, a, Action::Jump) {
-        let over = enemies.iter().find_map(|(ee, ea, en, etf)| {
-                // Each enemy kind's own 0200 row.
-                let st = combat.throw(combat.foe_of(ea).throw_row(200)).filter(|st| d.anim(&st.atk_anim).is_some())?;
-                let to_wolf = (tf.translation - etf.translation).with_y(0.0).normalize_or_zero();
-                let facing = ea.forward().angle_between(to_wolf).to_degrees() < 90.0;
-                (en.is_broken() && facing && etf.translation.distance(tf.translation) <= st.dist).then(|| (ee, etf.translation, st.atk_anim.clone()))
-        });
-        if let Some((ee, epos, anim)) = over {
+        if let Some((ee, epos, anim)) = jump_over(&combat, tf.translation, enemies.iter().map(|(ee, ea, en, etf)| (ee, &*ea, &*en, etf))) {
             p.requests.remove(&Action::Jump);
             a.yaw = yaw_of((epos - tf.translation).with_y(0.0));
             a.move_vel = Vec3::ZERO;
@@ -3763,8 +3935,19 @@ fn decide(
         );
         if let Some((ee, mut ea, mut enemy, etf)) = pick.and_then(|e| enemies.get_mut(e).ok()) {
             if let Some(db) = deathblow_check(&combat, tf.translation, a.forward(), a.aged.is_some(), &ea, &enemy, etf.translation, &dmy_of(ee)) {
-                let (behind, suffix, th, start) = (db.behind, db.suffix, db.main, db.start);
+                let (behind, mut suffix, mut th, start) = (db.behind, db.suffix, db.main, db.start);
                 p.requests.remove(&Action::Attack);
+                // The worn ninjutsu's twin of a killing behind deathblow (ninjutsu.rs), paid now.
+                let foe = combat.foe_of(&ea);
+                let ninjutsu = config.player.ninjutsu;
+                let kills = enemy.ninsatsu.0 <= 1 && a.aged.is_none();
+                if let Some((s, t)) = crate::ninjutsu::pick(&combat, ninjutsu, p.emblems, config.player.infinite_emblems, |s| foe.throw_row(s), suffix, kills) {
+                    (suffix, th) = (s, t);
+                    if !config.player.infinite_emblems {
+                        p.emblems -= crate::ninjutsu::cost(ninjutsu);
+                    }
+                    log.push(format!("NINJUTSU ({} emblems)", p.emblems), Color::srgb(0.9, 0.3, 0.3));
+                }
                 // isTurnAtker: Wolf turns to the enemy at once (live: exactly).
                 a.yaw = yaw_of((etf.translation - tf.translation).with_y(0.0));
                 a.move_vel = Vec3::ZERO;
@@ -3788,6 +3971,72 @@ fn decide(
             a.yaw = yaw_of(stick);
         }
     };
+    // Entered a deflect start the script picked (hks_wolf::take_press): it faces the target or
+    // the stick. The sprint deflect turns to the lock target over its first half second instead
+    // (sprint_deflect_turn below).
+    if entered && (is_guard_start(&a.state) || a.state.starts_with("StandDeflectGuardFromDamage")) && a.state != "SprintToDeflectGuard" && a.t < 0.1 {
+        aim(a);
+        a.move_vel = Vec3::ZERO;
+    }
+    // Entered an attack the script picked: the homing target (_StartAutoAim), facing, stop.
+    if entered && (is_ground_attack(&a.state) || is_art_press(&a.state)) && a.t < 0.1 {
+        start_auto_aim(p, a, &combat, tf.translation, stick, &enemies);
+        aim(a);
+        a.move_vel = Vec3::ZERO;
+        // An art's opener: whether it had its emblems (g_enableSpAttaclkJump = env(3035), the
+        // hit jump's gate). The air uses (g_airSpecialAttackCount) are the script's.
+        if is_art_opener(&a.state) {
+            p.art_enable_jump = p.emblems >= art_cost(&combat, &config);
+        }
+    }
+    // Entered the guard's end over the walk / run: the walk or run underneath (the guard walk is
+    // the walk speed level).
+    if entered && a.state.starts_with("DeflectGuardToStandMove") {
+        a.move_index = if a.state.ends_with("Walk") { 0 } else { 1 };
+        if p.speed_level < 1.0 && stick != Vec3::ZERO {
+            p.speed_level = 1.0;
+        }
+    }
+    // Entered an air art the script picked (BEH_A_AIR_SP_ATTACK): the homing target and the
+    // emblem state for the hit jump.
+    if entered && a.t < 0.1 && a.state.starts_with("AirSpecialAttack") && !a.state.contains("Loop") {
+        start_auto_aim(p, a, &combat, tf.translation, stick, &enemies);
+        p.art_enable_jump = p.emblems >= art_cost(&combat, &config);
+    }
+    if entered && a.t < 0.1 && a.state.starts_with("AirStormJump") {
+        log.push(format!("storm jump ({})", a.state), Color::srgb(0.7, 0.9, 1.0));
+    }
+    // Entered a ground jump the script picked (BEH_A_GROUND_JUMP; hks_wolf takes the press):
+    // the launch, landing and tilt bookkeeping player.rs's jump block did. Not its own chain
+    // (ready -> start at the clip's end).
+    if entered && a.t < 0.1 && is_ground_jump_press(&a.state) && !prev_state.contains("JumpReady") {
+        let sprint = a.state.starts_with("Sprint");
+        let storm = a.state.contains("Storm");
+        p.jump_tilt = 0.0;
+        if storm {
+            log.push(format!("storm jump ({})", a.state), Color::srgb(0.7, 0.9, 1.0));
+        } else if stick != Vec3::ZERO && (sprint || lock.target.is_none()) {
+            a.yaw = yaw_of(stick);
+        } else if stick != Vec3::ZERO {
+            let local = Quat::from_rotation_y(-a.yaw) * stick;
+            let angle = local.x.atan2(-local.z).to_degrees();
+            let (ready, _, _) = directional_jump(angle);
+            if ready == a.state {
+                p.jump_tilt = jump_tilt(ready, angle);
+            }
+        }
+        a.move_vel = Vec3::ZERO;
+    }
+    // Entered a prosthetic move the script picked on the press: facing, stop, the tool's
+    // category for the next combo check (_isSubAttackCombo).
+    if entered && a.t < 0.1 && is_sub_press(&a.state) {
+        aim(a);
+        a.move_vel = Vec3::ZERO;
+        p.sub_cat_before = equipped_tool(&combat, &config, p.tool_slot).map_or(70, |t| t.group);
+        if a.state.starts_with("SubAttackFailed") {
+            log.push("no spirit emblems", Color::srgb(0.7, 0.7, 0.7));
+        }
+    }
 
     // Grappling Hook (wire.rs; docs/kb/grapple.md). A reaction or anything else that takes Wolf
     // out of the wire states ends the move.
@@ -3840,6 +4089,77 @@ fn decide(
         }
     }
 
+    // Wall hug / ledge hang (docking.rs, docs/kb/docking.md): held, nothing else runs.
+    // At a Sculptor's Idol (idol.rs): E kneels; while kneeling only its clips run.
+    // An item on the ground in reach (items.rs): E takes it, before the idol and the wall.
+    let world = crate::encounter::world();
+    let picked = interact_pressed && !a.airborne && is_free(&a.state) && (world.take_item)(tf.translation - Vec3::Y * CAPSULE_HALF_HEIGHT);
+    let interact_pressed = interact_pressed && !picked;
+    // The host's idols and NPCs (encounter.rs WorldHooks: this game's Sculptor, then its idols).
+    let at_idol = world.interactions.iter().any(|f| f(p, a, d, tf, interact_pressed, ended, &config));
+    // Praying or resting at an idol brings the enemies back (the fight's line-up).
+    if std::mem::take(&mut p.seat.respawn) {
+        if let Some(f) = fight.as_mut() {
+            f.0 = true;
+        }
+    }
+    if at_idol {
+        return;
+    }
+    // In deep water (swim.rs): the swim and the dive, nothing else.
+    let mibu = crate::items::count(&config, crate::swim::MIBU_BREATHING) > 0;
+    crate::swim::air(a, d, ended);
+    // In the water (swim.rs): the quick item, if it has a water clip (the gourd, the Homeward
+    // Idol); its TAE 65 is spent as on land (the gourd below, the others by `item_use` above).
+    if let Some(under) = p.swim.as_ref().map(|s| s.diving).filter(|_| item_pressed) {
+        p.requests.remove(&Action::UseItem);
+        let goods = crate::items::in_slot(&config, p.quick_slot);
+        let dry = if goods == GOURD_GOODS { Some("ItemGourdDrink") } else { crate::items::use_state(crate::items::param("EquipParamGoods", goods)["goodsUseAnim"].as_i64().unwrap_or(255)) };
+        let have = if goods == GOURD_GOODS { p.gourd > 0 } else { goods > 0 && crate::items::count(&config, goods) > 0 };
+        match dry.and_then(|s| crate::swim::item_state(s, under)) {
+            Some(state) if have && !a.state.contains("Item") && a.play_state(d, &state) => {
+                if goods != GOURD_GOODS {
+                    p.item_use = Some((goods, state));
+                }
+                return;
+            }
+            Some(_) => {}
+            None => log.push("this item cannot be used in the water", Color::srgb(0.8, 0.8, 0.8)),
+        }
+    }
+    if crate::swim::is_water_drink(&a.state) {
+        let consumed = d.anim(&a.anim).is_some_and(|an| an.events.iter().any(|e| e.kind == 65 && e.start > a.prev_t && e.start <= a.t));
+        if consumed && p.gourd > 0 {
+            p.gourd -= 1;
+            let rate = d.sp_effects.get(GOURD_SPEFFECT).map_or(40.0, |s| -s.change_hp_estus_flask_rate);
+            let heal = a.hp_max * rate / 100.0 * medicine_rate(&combat, &config);
+            a.hp = (a.hp + heal).min(a.hp_max);
+            p.sp_bursts.push(GOURD_GOODS);
+            log.push(format!("gourd: +{heal:.0} HP ({} left)", p.gourd), Color::srgb(0.5, 1.0, 0.6));
+        }
+    }
+    let swim = crate::swim::Controls { stick, rise_held: pad.grapple_held, sink_held: pad.prosthetic_held, dive_pressed: swim_dive, fast_held: pad.dodge_held, jump_pressed: dock_jump, pitch: cam_pitch, attack_pressed, attack_held: pad.attack_held };
+    match crate::swim::tick(p, a, d, tf, swim, ended, mibu, dt, &mut log) {
+        crate::swim::Step::Held => return,
+        // Out of the water: the swim jump's Start (swim.rs), launched by its row 221 along the
+        // facing (fallType 1) - onto the pool's edge.
+        crate::swim::Step::Jump => {
+            p.requests.remove(&Action::Jump);
+            let (h, v, fall) = combat.velocity_change_row(crate::swim::JUMP_VELOCITY_ROW).map_or((9.15, 6.82, 1), |r| (r.h_change, r.v_change, 1));
+            a.airborne = true;
+            a.fall_type = fall;
+            a.vel_y = v;
+            a.air_base = a.forward() * h;
+            a.play_state(d, crate::swim::JUMP_START);
+            log.push("jump out of the water", Color::srgb(0.5, 0.75, 1.0));
+            return;
+        }
+        crate::swim::Step::Free => {}
+    }
+    if dock_step_tick(p, a, d, tf, ledges.as_deref(), stick, pad.walk, pad.interact_held, interact_pressed, dock_jump, dock_step, ended, &mut log, attack_pressed, &combat, &enemies) {
+        return;
+    }
+
     // --- HKS g_behaviorValidateOrder (subset), highest priority first ---
 
     // Combat art (ACTION_ARM_SPECIAL_ATTACK): attack and guard pressed together, or attack
@@ -3889,73 +4209,8 @@ fn decide(
         }
     }
 
-    // Jump arts: the ready ends into the leap (TAE 920 launches it; the air branch takes it on).
-    // Without the emblems GroundSpecialAttackJumpStartNoResource: only Sakura Dance ships it
-    // (a110_316711, 316710's clip with its own TAE events); others fall back to the plain leap.
-    if ended && (a.state.starts_with("GroundSpecialAttackJumpReady") || a.state.starts_with("SprintSpecialAttackJumpReady")) {
-        if let Some((cat, _)) = art_kind(&combat, &config) {
-            let nr = if a.state.ends_with("NoResource") { "NoResource" } else { "" };
-            let want = format!("GroundSpecialAttackJumpStart{nr}");
-            if let Some((state, k)) = [want.as_str(), "GroundSpecialAttackJumpStart"].into_iter().find_map(|s| art_key(d, cat, s).map(|k| (s, k))) {
-                a.play(state, &k);
-                return;
-            }
-        }
-    }
-
-    // Healing Gourd: drink (again from a drink: Repeat), or the empty-gourd shake. Crouched, the
-    // Crouch ones (HKS STYLE_TYPE_CROUCH: W_CrouchItemGourdDrink / ...Repeat / ...Failed,
-    // a000_250010 / 250011 / 250015), and Wolf stays crouched (crouch_ok).
-    if p.requests.contains_key(&Action::UseItem) && accepts(d, a, Action::UseItem) {
-        p.requests.remove(&Action::UseItem);
-        // The repeat window counts only in the drinks (HKS 3986 / 3993: Drink, DrinkMove, Repeat,
-        // RepeatMove), not in the empty shakes (round 32).
-        let repeat_window = a.state.trim_start_matches("Crouch").starts_with("ItemGourdDrink") && !a.state.ends_with("Failed") && sp_ref_active(d, a, SP_REF_TAE_ENABLE_ITEM_REPEAT);
-        // itemUseEnable (env 233) FALSE: a worn SpEffect whose stateInfo is one of goods 3000's
-        // useLimitSpEffectType0-4 (910: the Great Shinobi Owl's recovery seal 3506090, 30 s,
-        // from his bullets onto p.timed) -> W_ItemFailed / W_CrouchItemFailed (HKS 3940-3951):
-        // no drink, no charge (round 66: he drank through it). Aged (341) the HKS resets first.
-        // gap: ItemFailed (a000_259000) and CrouchItemFailed are not in the export (no state, no
-        // clip): the press is only spent until they are. The exe's goods use check is not traced.
-        if a.aged.is_none() {
-            let limits = crate::data::goods_use_limits(GOURD_GOODS);
-            let worn = crate::combat::worn_sp(a, &p.timed);
-            if worn.iter().any(|id| crate::data::sp_cycle(*id).is_some_and(|c| limits.contains(&c.state_info))) {
-                if !a.crouch && a.play_state(d, "ItemFailed") {
-                    a.move_vel = Vec3::ZERO;
-                }
-                return;
-            }
-        }
-        let state = if p.gourd == 0 {
-            // c0000_transition.lua 4024-4033: empty inside the repeat window,
-            // W_ItemGourdDrinkRepeatFailed (a000_250006, 1.83 s), else the 2.33 s shake.
-            if repeat_window { "ItemGourdDrinkRepeatFailed" } else { "ItemGourdDrinkFailed" }
-        } else if repeat_window {
-            // c0000_transition.lua 3986-4008: Repeat only inside the TAE window of
-            // SP_EF_REF_TAE_ENABLE_ITEM_REPEAT (100315: a000_250000 1.1-1.3 s, 250001 0.7-0.9 s);
-            // a later press starts a fresh drink (round 26).
-            "ItemGourdDrinkRepeat"
-        } else {
-            "ItemGourdDrink"
-        };
-        // HKS 3993-4009: standing and moving (GetLocomotionType() == LOCOMOTION_TYPE_MOVE), a drink
-        // is W_ItemGourdDrinkMove / RepeatMove: STATE_TYPE_UPPER_ACTION_ITEM_USE with no clip of its
-        // own (CMSG animId 0), the standing drink on the upper body over the walk (round 32: the
-        // standing clip slid along). The crouched branch (3986-3992) never fires a Move.
-        // gap: StartTime_02 (env 3063, 2: the legs' loop time) - the legs restart their loop.
-        let moving = !a.crouch && stick != Vec3::ZERO && p.speed_level > 0.0 && matches!(state, "ItemGourdDrink" | "ItemGourdDrinkRepeat");
-        if moving {
-            if let Some(k) = d.anim_key(state).map(str::to_string) {
-                a.play(&format!("{state}Move"), &k);
-                return;
-            }
-        }
-        let state = if a.crouch { format!("Crouch{state}") } else { state.to_string() };
-        a.move_vel = Vec3::ZERO;
-        a.play_state(d, &state);
-        return;
-    }
+    // The quick item (the gourd's drink, repeat and empty shakes, the other goods' use states,
+    // crouched or moving) is the script's: hks_wolf::take_item.
     // The drink: ConsumeCurrentGoods (TAE 65) is `consume_goods`, after `advance`.
     if matches!(a.state.trim_start_matches("Crouch"), "ItemGourdDrink" | "ItemGourdDrinkRepeat" | "ItemGourdDrinkMove" | "ItemGourdDrinkRepeatMove") {
         // Flag 90: may walk while drinking (the Move ones walk on the legs: lower_body_move).
@@ -3971,150 +4226,18 @@ fn decide(
     // by the hit's side); out of a knockdown / its get-up while DOWN_JUMP_CANCEL (504: 100346, 53
     // anims) is up, W_StandStepFromDown by the prone side and _set4DirJumpDir (stick angle from
     // the facing, +-45 / 135; no stick = N), a000_2061xx (round 31: a plain jump or step played).
-    // gap: _set4DirJumpTilt (act 3025) is not applied; the prone side is read from the state.
-    for act in [Action::Step, Action::Jump] {
-        if !p.requests.contains_key(&act) || a.anim.is_empty() || !accepts(d, a, act) {
-            continue;
-        }
-        let state = if sp_ref_active(d, a, SP_REF_TAE_ENABLE_HIT_JUMP_CANCEL) {
-            Some(format!("StandStepFromDamage_{}", if a.state.ends_with("_B") { "B" } else { "F" }))
-        } else if sp_ref_active(d, a, SP_REF_TAE_ENABLE_DOWN_JUMP_CANCEL) {
-            let break_blow_up = a.state.starts_with("StandDamageBreakSmallBlow") && !a.hit_back_quadrant;
-            let prone = if a.state.contains("FaceUp") || a.state == "StandDamageSmallBlow_F" || break_blow_up { "FaceUp" } else { "FaceDown" };
-            let dir = if stick == Vec3::ZERO {
-                "N"
-            } else {
-                let local = Quat::from_rotation_y(-a.yaw) * stick;
-                match local.x.atan2(-local.z).to_degrees() {
-                    x if x > -45.0 && x < 45.0 => "F",
-                    x if x > -135.0 && x < -45.0 => "L",
-                    x if (45.0..135.0).contains(&x) => "R",
-                    _ => "B",
-                }
-            };
-            Some(format!("StandStepFromDown_{prone}_{dir}"))
-        } else {
-            None
-        };
-        if let Some(state) = state {
-            if a.play_state(d, &state) {
-                p.requests.remove(&Action::Step);
-                p.requests.remove(&Action::Jump);
-                a.move_vel = Vec3::ZERO;
-                return;
-            }
-        }
-    }
+    // _set4DirJumpTilt (act 3025, HKS 5159): the stick angle minus the direction's centre
+    // (PRM_4DIR_JUMP_ANGLE_CENTER F 0 / L -90 / R 90 / B 180, c0000_define 248-251), as the
+    // positioning jumps' tilt (atlas movement.damage-step). The script's: hks_wolf takes the
+    // press, the side and direction by the graph's selectors.
 
-    // Jump
-    if p.requests.contains_key(&Action::Jump) && accepts(d, a, Action::Jump) {
-        p.requests.remove(&Action::Jump);
-        p.jump_forward = stick != Vec3::ZERO;
-        p.jump_land = None;
-        p.positioning_land = false;
-        p.jump_tilt = 0.0;
-        if let Some(state) = storm_jump(d, a, p, true).filter(|s| a.play_state(d, s)) {
-            log.push(format!("storm jump ({state})"), Color::srgb(0.7, 0.9, 1.0));
-            a.move_vel = Vec3::ZERO;
-            return;
-        }
-        // c0000_transition.lua 2784-2789: with ref 1 up (sprinting) W_SprintJumpReady (a000_201200),
-        // or straight W_SprintJumpStart (a000_201210) under ref 107 SP_EF_REF_TAE_ENABLE_FAST_JUMP
-        // (100399: LandForwardGroundJump frames 0-6). 201210 launches by
-        // ChrPhysicsVelocityChangeParam 121 (9.15 m/s forward, 9.64 up) where the plain forward
-        // jump uses 101 (6.4 m/s); it lands as a ground jump (2057-2062: W_LandGroundJump) - round 26.
-        if sprint_window(d, a) {
-            let state = if sp_ref_active(d, a, SP_REF_TAE_ENABLE_FAST_JUMP) { "SprintJumpStart" } else { "SprintJumpReady" };
-            if stick != Vec3::ZERO {
-                a.yaw = yaw_of(stick);
-            }
-            if a.play_state(d, state) {
-                p.jump_forward = true;
-                a.move_vel = Vec3::ZERO;
-                return;
-            }
-        }
-        p.positioning_land = true;
-        match (stick != Vec3::ZERO, lock.target.is_some()) {
-            (false, _) => {
-                a.play_state(d, "VerticalGroundJumpReady");
-            }
-            // HKS _SetJumpDirection: locked on, the stick's angle to the facing (the target) picks
-            // the jump: |a| <= 18.75 lock-on forward, then 45-degree sectors F_R / R / B_R / B and
-            // mirrored. Each launches by its own ChrPhysicsVelocityChangeParam row (111-118) and
-            // lands in its LandGroundPositioningJump (live: lock-on forward 1.26 m, 0.65 s).
-            (true, true) => {
-                // No snap to the target: KickAngle / MoveAngle are the stick against the facing
-                // as it is (the lock-on turn keeps that near the target).
-                let local = Quat::from_rotation_y(-a.yaw) * stick;
-                let angle = local.x.atan2(-local.z).to_degrees();
-                let (ready, anim, land) = directional_jump(angle);
-                p.jump_tilt = jump_tilt(ready, angle);
-                let played = match anim {
-                    Some(k) if d.anim(k).is_some() => {
-                        a.play(ready, k);
-                        true
-                    }
-                    Some(_) => false,
-                    None => a.play_state(d, ready),
-                };
-                if played {
-                    p.jump_land = Some(land);
-                } else {
-                    a.play_state(d, "LockonForwardGroundJumpReady");
-                    p.jump_tilt = 0.0;
-                    p.jump_land = Some("LandGroundPositioningJump_LockOn_F");
-                }
-            }
-            (true, false) => {
-                a.yaw = yaw_of(stick);
-                a.play_state(d, "ForwardGroundJumpReady");
-            }
-        }
-        a.move_vel = Vec3::ZERO;
-        return;
-    }
+    // The ground jump (BEH_A_GROUND_JUMP: the storm, sprint, swamp, vertical, forward and
+    // lock-on directional jumps; atlas movement.jump-weapon-state) is the script's:
+    // hks_wolf takes the press, the bookkeeping runs on entering (above). gap: g_forceCrouch
+    // (low ceilings) is not answered.
 
-    // Step (dodge). Locked on: 4 directions relative to the target. Free: forward along the stick, or neutral.
-    if p.requests.contains_key(&Action::Step) && accepts(d, a, Action::Step) {
-        p.requests.remove(&Action::Step);
-        a.move_vel = Vec3::ZERO;
-        p.step_tilt = 0.0;
-        // Only a real lock-on is env(1118) IsLockedOn (HKS _fireGroundStep 5280-5300): the
-        // attack's auto-aim homing is not, so a dodge out of an unlocked swing is the free step
-        // (round 31: it took the locked 4-direction branch toward the auto-aim enemy).
-        let lock_dir = lock.target.and(target_dir);
-        let state = match (lock_dir, stick != Vec3::ZERO) {
-            (Some(_), true) => {
-                // No snap to the target: KickAngle is the stick against the facing as it is.
-                let local = Quat::from_rotation_y(-a.yaw) * stick;
-                // HKS _set4DirStepDir (PRM_4DIR_STEP_STICK_RANGE: 45-degree quadrants) and
-                // _set4DirStepTilt: the step is turned by the stick's offset from the quadrant
-                // centre (none within +-18.75 of forward), so it goes along the stick.
-                let angle = local.x.atan2(-local.z).to_degrees();
-                let (state, centre) = if angle.abs() < 45.0 {
-                    ("GroundStep_F", 0.0)
-                } else if angle > -135.0 && angle < -45.0 {
-                    ("GroundStep_L", -90.0)
-                } else if (45.0..135.0).contains(&angle) {
-                    ("GroundStep_R", 90.0)
-                } else {
-                    ("GroundStep_B", if angle > 0.0 { 180.0 } else { -180.0 })
-                };
-                let tilt = if state == "GroundStep_F" && angle.abs() < 18.75 { 0.0 } else { angle - centre };
-                p.step_tilt = (-tilt).to_radians();
-                state
-            }
-            (Some(_), false) => "GroundStep_N",
-            (None, true) => {
-                a.yaw = yaw_of(stick);
-                "GroundStep_F"
-            }
-            (None, false) => "GroundStep_N",
-        };
-        a.play_state(d, state);
-        return;
-    }
+    // The step (_fireGroundStep: GroundStep_F / _B / _L / _R locked on, _F along the stick or _N
+    // free) is the script's: hks_wolf::take_press.
 
     // Round 63: g_behaviorValidateOrder (HKS 6449) - item, jump, step, then the tool switch,
     // the art, its releases, the attack, its release, the tool, the deflect. Before, the art,
@@ -4134,7 +4257,7 @@ fn decide(
     // HKS 6393: not while ref 316 SP_EF_REF_TAE_ENABLE_SUB_GUARD_RELEASE_CONNECT is up (the
     // umbrella's guard / release clips: a mid-clip switch resolved its later judges and costs
     // with the new tool) nor before the last change's expand (g_EndSubWeaponChange) (round 68).
-    if p.requests.remove(&Action::SwitchTool).is_some() && config.player.prosthetics.len() > 1 && !switching && !sp_ref_active(d, a, 316) && !p.expand_pending {
+    if p.requests.remove(&Action::SwitchTool).is_some() && config.player.prosthetics.len() > 1 && !switching && !sp_ref_active(d, a, 316) && !p.expand_pending && arm_style_matches(d, a, p) {
         p.tool_slot = (p.tool_slot + 1) % config.player.prosthetics.len();
         if let Some(k) = d.anim_key("AddSubWeaponChange") {
             a.add_anim = k.to_string();
@@ -4157,140 +4280,19 @@ fn decide(
         }
     }
 
-    if p.requests.contains_key(&Action::CombatArt) && accepts(d, a, Action::CombatArt) && art_equipped {
-        p.requests.remove(&Action::CombatArt);
-        // AttackAngle is measured from the facing before the art turns Wolf.
-        let facing = a.forward();
-        start_auto_aim(p, a, &combat, tf.translation, stick, &enemies);
-        aim(a);
-        a.move_vel = Vec3::ZERO;
-        // Pressed again inside the art's combo window: its next state, in the art's anim group.
-        if let Some((state, key)) = art_combo_pick(d, a, &combat, &config, p.emblems) {
-            a.play(state, &key);
-            return;
-        }
-        p.art_enable_jump = p.emblems >= art_cost(&combat, &config);
-        // Opening state by art type (sprint / step variants), in the art's anim group.
-        let start = art_kind(&combat, &config).and_then(|(cat, unlock)| {
-            art_start_states(cat, unlock, sprint_window(d, a), stick, facing, p.emblems >= art_cost(&combat, &config)).into_iter().find_map(|state| {
-                let id = art_state_id(d, &state)?;
-                let key = format!("a{cat:03}_{id}");
-                d.anim(&key).is_some_and(|an| an.duration.is_some()).then_some((state, key))
-            })
-        });
-        match start {
-            Some((state, key)) => {
-                // Sakura Dance's leap from the ground counts as its air use (HKS 3413 / 3445:
-                // SP_ATK_TYPE_110 -> g_airSpecialAttackCount + 1, the NoResource leap too); before,
-                // only the air branch counted and a second one was taken in the leap (round 53).
-                if art_kind(&combat, &config).is_some_and(|(cat, _)| cat == 110) && state.contains("JumpReady") {
-                    p.air_art_count += 1;
-                }
-                a.play(&state, &key)
-            }
-            None => a.play("GroundSpecialAttackCombo1", art.as_deref().unwrap_or(ART_WHIRLWIND)),
-        }
-        return;
-    }
+    // The art's opener and its combos (BEH_A_GROUND_SP_ATTACK, _FireSpAttackCombo) are the
+    // script's: hks_wolf::art_press_event; aimed on entering (above).
 
-    // Hold art (spAtkType 104): GroundSpacialAttackHoldStart -> HoldLoop while the art is held.
-    // Letting go of attack = BEH_A_GROUND_SP_ATTACK_RELEASE: HoldAction with SP_EF_REF_WEP_SP_ATK_
-    // UNLOCK_104_VARIATION_ATTACK (287, art 6100) up, else GroundSpecialAttackCombo1 (the draw
-    // slash); letting go of guard = BEH_A_GROUND_SP_ATTACK_GUARD_RELEASE: HoldEnd.
-    if matches!(a.state.as_str(), "GroundSpacialAttackHoldStart" | "GroundSpacialAttackHoldLoop" | "SprintSpecialAttackHoldStart") {
-        if let Some((cat, unlock)) = art_kind(&combat, &config) {
-            // HKS 3476-3485: without the emblems (env 3035) the *NoResource draw.
-            let enable = p.emblems >= art_cost(&combat, &config);
-            // Each only while its TAE window is up (c0000_transition.lua 6198-6209, checked in
-            // that order every tick): the draw with 222 and attack up; HoldEnd with 230 and
-            // attack or guard up. Out of them the hold goes on, the buttons re-read next tick.
-            let release = !pad.attack_held && d.has_ref(&a.anim, a.step(), REF_SP_ATK_RELEASE);
-            let hold_release = (!pad.attack_held || !pad.guard_held) && d.has_ref(&a.anim, a.step(), REF_SP_ATK_HOLD_RELEASE);
-            let next = if release {
-                Some(match (unlock == 287, enable) {
-                    (true, true) => "GroundSpacialAttackHoldAction",
-                    (true, false) => "GroundSpacialAttackHoldActionNoResource",
-                    (false, true) => "GroundSpecialAttackCombo1",
-                    (false, false) => "GroundSpecialAttackCombo1NoResource",
-                })
-            } else if hold_release {
-                Some("GroundSpacialAttackHoldEnd")
-            } else if ended {
-                Some("GroundSpacialAttackHoldLoop")
-            } else {
-                None
-            };
-            if let Some(state) = next {
-                if let Some(key) = d.states.get(state).and_then(|k| k.rsplit('_').next()).map(|id| format!("a{cat:03}_{id}")) {
-                    if state != "GroundSpacialAttackHoldEnd" {
-                        start_auto_aim(p, a, &combat, tf.translation, stick, &enemies);
-                    }
-                    a.play(state, &key);
-                }
-            }
-            return;
-        }
-    }
+    // The art let go (BEH_A_GROUND_SP_ATTACK_RELEASE / _GUARD_RELEASE: Combo1 -> Combo1Release,
+    // the hold's draw or end, the forced releases of base Mortal Draw / Praying Strikes) and the
+    // hold's loop are the script's (hks_wolf; the graph's clip-end transitions).
 
-    // Art release (HKS BEH_A_GROUND_SP_ATTACK_RELEASE): Combo1 -> Combo1Release, Combo2 ->
-    // Combo2Release, SprintSpecialAttack -> SprintSpecialAttackRelease, in the art's anim group.
-    // The HKS also forces the release without the art's unlock: base Mortal Draw (106 without
-    // ref 283 UNLOCK_106_CHARGE) and base Praying Strikes (108 without 285 UNLOCK_108_FINISH)
-    // never hold into Combo1 (c0000_transition.lua BEH_A_GROUND_SP_ATTACK_RELEASE; round 24).
-    let forced = matches!(art_kind(&combat, &config), Some((106, u)) if u != 283) || matches!(art_kind(&combat, &config), Some((108, u)) if u != 285);
-    if (!pad.attack_held || forced) && !a.anim.is_empty() && d.has_ref(&a.anim, a.step(), REF_SP_ATK_RELEASE) {
-        let rel = match a.state.as_str() {
-            "GroundSpecialAttackCombo1" => Some("GroundSpecialAttackCombo1Release"),
-            "GroundSpecialAttackCombo2" => Some("GroundSpecialAttackCombo2Release"),
-            "SprintSpecialAttack" => Some("SprintSpecialAttackRelease"),
-            "GroundSpecialAttackCombo1NoResource" => Some("GroundSpecialAttackCombo1ReleaseNoResource"),
-            "SprintSpecialAttackNoResource" => Some("SprintSpecialAttackReleaseNoResource"),
-            _ => None,
-        };
-        let next = rel.zip(art_kind(&combat, &config)).and_then(|(state, (cat, _))| {
-            let id = d.states.get(state)?.rsplit('_').next()?.to_string();
-            let key = format!("a{cat:03}_{id}");
-            d.anim(&key).is_some_and(|an| an.duration.is_some()).then_some((state, key))
-        });
-        if let Some((state, key)) = next {
-            a.play(state, &key);
-            return;
-        }
-    }
+    // The attack button (BEH_A_GROUND_ATTACK: the combo refs, the step / sprint / crouch / deflect
+    // follow-ups, the art's combos first) is the script's: hks_wolf::take_press; aimed on
+    // entering (above).
 
-    // Attack: routed by the combo refs active in the current anim.
-    if p.requests.contains_key(&Action::Attack) && accepts(d, a, Action::Attack) {
-        p.requests.remove(&Action::Attack);
-        // BEH_A_GROUND_ATTACK tries _FireSpAttackCombo first (HKS 3256 / 5367): the attack
-        // button alone continues an art in its ref 223 window (round 62: it was routed as a
-        // plain slash, e.g. Ichimonji: Double's second cut became GroundAttackCombo1Reverse).
-        // A combo not unlocked returns FALSE and the plain route goes on.
-        if let Some((state, key)) = art_combo_pick(d, a, &combat, &config, p.emblems) {
-            start_auto_aim(p, a, &combat, tf.translation, stick, &enemies);
-            aim(a);
-            a.move_vel = Vec3::ZERO;
-            a.play(state, &key);
-            return;
-        }
-        let next = attack_route(d, a, stick, art_equipped);
-        start_auto_aim(p, a, &combat, tf.translation, stick, &enemies);
-        aim(a);
-        a.move_vel = Vec3::ZERO;
-        if !a.play_state(d, &next) {
-            a.play_state(d, "GroundAttackCombo1");
-        }
-        return;
-    }
-
-    // Release attack: let go of attack while ref 208 is up (otherwise the hold becomes the charged thrust).
-    if !pad.attack_held && !a.anim.is_empty() && d.has_ref(&a.anim, a.step(), REF_RELEASE_ATTACK) {
-        if let Some(r) = release_of(&a.state).filter(|r| d.anim_key(r).is_some()) {
-            // The release clip starts from frame 0: its AI notify (flag 63) is at frame 3 and its
-            // hit at frames 7-11, so a quick slash lands 6 + 7 frames after the press.
-            a.play_state(d, &r);
-            return;
-        }
-    }
+    // Attack let go while ref 208 is up (BEH_A_GROUND_ATTACK_RELEASE): the release is the
+    // script's (hks_wolf, W_*Release); held on, the attack plays out.
 
     // Shinobi Prosthetic (prosthetic::hks, the HKS sub-attack branches): the press picks the equipped
     // tool's state, the release window lets go, and the hold / guard / leap states chain at their
@@ -4315,11 +4317,10 @@ fn decide(
             hks::Style::Stand
         };
         let held = pad.prosthetic_held;
-        let pressed = p.requests.contains_key(&Action::Prosthetic) && accepts(d, a, Action::Prosthetic);
         let in_sub = d.anim_key(&a.state).is_some_and(|k| k.starts_with("a070")) || a.anim.get(..4).is_some_and(|g| g.starts_with("a07"));
         let held_press = in_sub && hks::held_press(cat, held, enable_action, &refs);
-        // Refused, the press stays buffered as the HKS's failed validate leaves it.
-        if (pressed || held_press) && hks::flame_gate(cat, &refs) {
+        // The press is the script's (hks_wolf::sub_press_event); the held repeat stays here.
+        if held_press && hks::flame_gate(cat, &refs) {
             p.requests.remove(&Action::Prosthetic);
             let enable_combo = refs(hks::REF_SUB_ATTACK_COMBO) && p.sub_cat_before == cat;
             p.sub_cat_before = cat;
@@ -4333,7 +4334,7 @@ fn decide(
                 locked: lock.target.is_some(),
                 moving: stick != Vec3::ZERO,
             });
-            if !(held_press && !pressed && state == a.state) {
+            if state != a.state {
                 if state.ends_with("SubAttackFailed") {
                     log.push("no spirit emblems", Color::srgb(0.7, 0.7, 0.7));
                 }
@@ -4345,235 +4346,56 @@ fn decide(
                 }
             }
         }
-        // The attack button out of a tool move (Fang and Blade etc.): the tool's follow-up.
-        if in_sub && !a.anim.is_empty() && p.requests.contains_key(&Action::Attack) {
-            let step = (stick != Vec3::ZERO).then(|| {
-                let f = a.forward();
-                stick.dot(f.cross(Vec3::Y)).atan2(stick.dot(f)).to_degrees()
-            });
-            let follow = hks::derive_attack(cat, &a.state, a.crouch, p.sub_cat_before == cat, &refs, step)
-                .filter(|_| hks::derive_unlock(cat, &a.state, a.crouch).is_none_or(|u| crate::combat::action_unlocked(&combat, &config, u)));
-            if let Some((state, k)) = follow.and_then(|s| sub_anim(d, s, cat).map(|k| (s, k))) {
-                p.requests.remove(&Action::Attack);
-                aim(a);
-                a.move_vel = Vec3::ZERO;
-                a.play(state, &k);
-                return;
-            }
-        }
-        // Let go inside SP_EF_REF_TAE_ENABLE_SUB_ATTACK_RELEASE (302, e.g. SpEffect 100343: Shuriken
-        // f9-18, Firecracker f6-15), or a level-1 tool (resident ref 314: always the quick use).
-        if in_sub && !a.anim.is_empty() && hks::releases(&refs, held) {
-            if let Some(state) = hks::release(cat, &a.state, a.crouch, stick != Vec3::ZERO, lock.target.is_some()) {
-                if let Some(k) = sub_anim(d, state, cat).filter(|_| state != a.state) {
-                    a.play(state, &k);
-                    return;
-                }
-            }
-        }
-        // State ends (HKS FireStateEndEvent and the graph's end transitions).
-        if ended && in_sub {
-            let next = match a.state.as_str() {
-                // Line 563: still held -> the flame keeps spewing, else it stops.
-                "GroundSubAttackHoldStart" => Some(if held { "GroundSubAttackHoldLoop" } else { "GroundSubAttackHoldEnd" }),
-                // The loops (flame, open umbrella) play on while held.
-                "GroundSubAttackHoldLoop" if held => Some("GroundSubAttackHoldLoop"),
-                // The umbrella open in the air stays open while held (AirSubAttackGuardLoop).
-                "AirSubAttackGuardStart" | "AirSubAttackGuardLoop" | "AirSubAttackDeflectEasySmall" => Some(if held { "AirSubAttackGuardLoop" } else { "AirSubAttackGuardEnd" }),
-                s if hks::sub_guard(s) && !s.starts_with("GroundSubAttackGuardMoveLoop") => Some(if held { "GroundSubAttackGuardLoop" } else { "GroundSubAttackGuardEnd" }),
-                // AirSubAttackStart's graph end transition (SubAttack_SM ev 300) is
-                // AirSubAttackLoop: the Firecracker thrown in the air falls on in 403100. The loop
-                // (animeEndEventType 3, none) plays on until the landing.
-                "AirSubAttackStart" | "AirSubAttackLoop" => Some("AirSubAttackLoop"),
-                // Line 536: the Mist Raven's leap goes the stick's way (in the air: line 552).
-                "SubAttackJumpReady" | "SubAttackJumpPronReady_F" | "SubAttackJumpPronReady_B" | "AirSubAttackMoveReady" => {
-                    let angle = (stick != Vec3::ZERO).then(|| {
-                        let f = a.forward();
-                        let right = f.cross(Vec3::Y);
-                        stick.dot(right).atan2(stick.dot(f)).to_degrees()
-                    });
-                    Some(if a.state == "AirSubAttackMoveReady" { hks::air_move_start(angle) } else { hks::jump_start(angle) })
-                }
-                // Line 557: on the floor (env 248) -> W_LandAirSubAttackMove, else
-                // W_AirSubAttackMoveStartToLoop. The flat leaps (404011-404017, 5 m along the
-                // floor) end on it; the upward one (V 404010: SetNoGravity f0-13, its root rises
-                // 3 m) ends in the air and falls.
-                s if s.starts_with("SubAttackJumpStart_") || s.starts_with("AirSubAttackMoveStart_") => {
-                    if tf.translation.y > crate::map::ground_y(tf.translation) + CAPSULE_HALF_HEIGHT + 0.05 {
-                        a.airborne = true;
-                        a.vel_y = 0.0;
-                        a.air_base = Vec3::ZERO;
-                        Some("AirSubAttackMoveStartToLoop")
-                    } else {
-                        Some("LandAirSubAttackMove")
-                    }
-                }
-                // The graph's end transition: the fall loop plays on until the landing. gap:
-                // 419030's TAE 922 ChrPhysicsVelosityScale (7401: scale 0.5, f1-5) is not run; its
-                // 920 (7400: +0.6 m/s up) is.
-                "AirSubAttackMoveStartToLoop" | "AirSubAttackMoveLoop" => Some("AirSubAttackMoveLoop"),
-                // The air follow-up's dive (413000) goes into its falling loop (413100).
-                "AirSubAttackDeriveAttack" | "AirSubAttackDeriveAttackLoop" => Some("AirSubAttackDeriveAttackLoop"),
-                _ => None,
-            };
-            if let Some(k) = next.and_then(|s| sub_anim(d, s, cat).map(|k| (s, k))) {
-                a.play(k.0, &k.1);
-                return;
-            }
-            // The other air tool moves ending in the air fall: their CMSGs' animeEndEventType 0
-            // (FireNextStateEvent; exe FUN_1411e4f20, <decomp ref>, fires the event of the
-            // state's highest-priority TransitionInfo) leads Master_SM's AirSubAttackCombo1/2/3,
-            // Combo1Variation, SpecialEffect, GuardEnd, LockOn, MoveAtemiReady and
-            // SubAttackFailedAir to FreeFall (sekiro-extract sms). A tool with no 403100 anim
-            // falls the same way.
-            if next.is_none() && a.airborne && (a.state.starts_with("AirSubAttack") || a.state == "SubAttackFailedAir") && a.play_state(d, "FreeFall") {
-                return;
-            }
+        // The attack button out of a tool move (its derives) and the let-go inside ref 302 are
+        // the script's (hks_wolf: sub_derive_event, the sub releases).
+        // State ends (HKS FireStateEndEvent: the held loops and their ends, the Mist Raven's leap
+        // by the stick, the falls) are the graph's clip ends (hks_wolf::graph_chains). The flat
+        // leaps (404011-404017) end on the floor; the upward one (V 404010: its root rises 3 m)
+        // ends in the air, which the script reads (env 248 -> W_LandAirSubAttackMove, else
+        // W_AirSubAttackMoveStartToLoop, HKS 557).
+        if a.state == "AirSubAttackMoveStartToLoop" && !a.airborne && tf.translation.y > crate::terrain::ground_y(tf.translation) + CAPSULE_HALF_HEIGHT + 0.05 {
+            a.airborne = true;
+            a.vel_y = 0.0;
+            a.air_base = Vec3::ZERO;
         }
     }
 
-    // BEH_A_DEFLECT_GUARD_START, first branches (c0000_transition.lua:4438-4442):
-    // ref 228 TAE_ENABLE_ADD_JUST_DEFLECT (and not 412 ..._GUARD_CANCEL; StandDeflectEasy* frames
-    // 0-9) -> W_AddHardDeflectGuard: an additive deflect window (a000_299060, ref 203 frames 0-9)
-    // over the block recoil, which keeps playing. Ref 503 TAE_ENABLE_HIT_DEFLECT_CANCEL
-    // (StandDamageMiddle/Large from frame 12) -> StandDeflectGuardFromDamage, its direction the
-    // reaction's DamageDirection (hkx selector [0] F [1] B [2] L [3] R).
-    // START never runs in guard style (g_behaviorTable row {1,1,0,...}: STYLE_TYPE_GROUND_GUARD
-    // takes BEH_A_DEFLECT_GUARD_CONTINUE below), so the easy recoils' ref 228 opens nothing
-    // there (round 61: they kept the recoil under an added layer; the game plays
-    // StandToDeflectGuard1Reverse). The hard deflects (STYLE_TYPE_STAND) keep it.
-    if p.requests.contains_key(&Action::Guard) && accepts(d, a, Action::Guard) && !a.anim.is_empty() && !a.airborne && !is_guard_style(&a.state) {
-        if d.has_ref(&a.anim, a.step(), REF_ADD_JUST_DEFLECT) && !d.has_ref(&a.anim, a.step(), REF_ADD_GUARD_CANCEL) {
-            if let Some(k) = d.anim_key("AddHardDeflectGuard") {
-                p.requests.remove(&Action::Guard);
-                a.add_anim = k.to_string();
-                a.add_t = 0.0;
-                return;
-            }
-        }
-        if d.has_ref(&a.anim, a.step(), REF_HIT_DEFLECT_CANCEL) {
-            let dir = a.state.rsplit('_').next().filter(|s| matches!(*s, "F" | "B" | "L" | "R")).unwrap_or("F").to_string();
-            p.requests.remove(&Action::Guard);
-            aim(a);
-            a.move_vel = Vec3::ZERO;
-            if a.play_state(d, &format!("StandDeflectGuardFromDamage_{dir}")) {
-                return;
-            }
-        }
-    }
+    // BEH_A_DEFLECT_GUARD_START, first branches (c0000_transition.lua:4438-4442), the script's
+    // (hks_wolf): ref 228 TAE_ENABLE_ADD_JUST_DEFLECT without 412 -> W_AddHardDeflectGuard, an
+    // additive deflect window (a000_299060) over the recoil, which keeps playing; ref 503
+    // TAE_ENABLE_HIT_DEFLECT_CANCEL (StandDamageMiddle/Large from frame 12) ->
+    // StandDeflectGuardFromDamage by the reaction's DamageDirection.
 
-    // BEH_A_DEFLECT_GUARD_CONTINUE (c0000_transition 4460-4477, validate 6170): a press in a
-    // guard-style state (STYLE_TYPE_GROUND_GUARD: the guard starts, the easy recoils,
-    // LandAirDeflect*) - the executed press alone, no hold (round 61: a tap let go before the
-    // window was dropped there) - steps the spam chain with ref 212 (1 -> 2 -> 3 -> 4; round
-    // 61: LandAirDeflectGuard's 212 too), else ref 227's Reverse, else StandToDeflectGuard. Never
-    // the sprint deflect (round 61: a press in SprintToDeflectGuard's ref 1 frames restarted it,
-    // a fresh 12-frame window and slide, with no spam penalty).
-    if is_guard_style(&a.state) && !is_guard_idle(&a.state) && !a.airborne && p.requests.contains_key(&Action::Guard) && accepts(d, a, Action::Guard) {
-        p.requests.remove(&Action::Guard);
-        let has = |r: i64| !a.anim.is_empty() && d.has_ref(&a.anim, a.step(), r);
-        let next = if has(REF_GUARD_COMBO) {
-            match a.state.as_str() {
-                "StandToDeflectGuard2" => "StandToDeflectGuard3",
-                "StandToDeflectGuard3" | "StandToDeflectGuard4" => "StandToDeflectGuard4",
-                _ => "StandToDeflectGuard2",
-            }
-        } else if has(REF_GUARD_REVERSE) {
-            "StandToDeflectGuard1Reverse"
-        } else {
-            "StandToDeflectGuard"
-        };
-        aim(a);
-        a.move_vel = Vec3::ZERO;
-        a.play_state(d, next);
-        return;
-    }
-
-    // Deflect start: fresh press in a guard window, or holding guard while ref 221 is up.
-    // A buffered guard press only fires while guard is still held (live recording 2026-10-08:
+    // The deflect start (W_StandToDeflectGuard / 1Reverse / SprintToDeflectGuard, HKS 4443-4458),
+    // the spam chain (BEH_A_DEFLECT_GUARD_CONTINUE, 2 -> 3 -> 4 on ref 212) and the held-button
+    // start (ref 221) are the script's: hks_wolf::take_press; aimed on entering (above).
+    // A buffered guard press only counts while guard is still held (live recording 2026-10-08:
     // taps let go before the window opened were dropped out of GroundStep_N, HardDeflectedL,
-    // GroundAttackCombo1Release and Combo3; attack presses survive being let go). The spam chain
-    // (ref 212) and the additive deflect / guard cancel (228 / 412) above keep released taps.
-    // A press made this frame counts as held (the button is still down when it executes).
-    let fresh_guard = p.requests.get(&Action::Guard).is_some_and(|&age| age <= dt * 1.5);
-    let pressed_guard = p.requests.contains_key(&Action::Guard) && accepts(d, a, Action::Guard) && (pad.guard_held || fresh_guard);
-    // HKS guard start (c0000_transition.lua:6161): ADD_ACTION_INPUT_GUARD (411, from the additive
-    // deflect) together with the base's ADD_ACTION_INPUT_GUARD_CANCEL (412) starts the guard even
-    // with the button let go - live: StandDeflectHardSmall tap at f1.5-3.4 -> StandToDeflectGuard f9.4.
+    // GroundAttackCombo1Release and Combo3; attack presses survive being let go): the window
+    // reached with the tap let go drops it (the script's start wants env 1108 held too).
+    // HKS 6161: ADD_ACTION_INPUT_GUARD (411, the additive deflect) with the base's
+    // ADD_ACTION_INPUT_GUARD_CANCEL (412) starts the guard even let go - live:
+    // StandDeflectHardSmall tap at f1.5-3.4 -> StandToDeflectGuard f9.4.
     let add_guard = !a.add_anim.is_empty()
         && d.has_ref(&a.add_anim, a.add_t, REF_ADD_INPUT_GUARD)
         && !a.anim.is_empty()
         && d.has_ref(&a.anim, a.step(), REF_ADD_GUARD_CANCEL);
-    let pressed_guard = pressed_guard || add_guard;
-    // The window reached with the tap let go: the game drops it (it stayed queued for good).
-    if !pressed_guard && !pad.guard_held && !fresh_guard && p.requests.contains_key(&Action::Guard) && accepts(d, a, Action::Guard) {
+    if !add_guard && !guard_press_live(p, pad.guard_held, dt) && p.requests.contains_key(&Action::Guard) && accepts(d, a, Action::Guard) {
         p.requests.remove(&Action::Guard);
     }
-    let held_guard = pad.guard_held && !a.anim.is_empty() && d.has_ref(&a.anim, a.step(), REF_PRESS_GUARD);
-    if (pressed_guard || held_guard) && !is_guard_idle(&a.state) && !a.airborne {
-        p.requests.remove(&Action::Guard);
-        // c0000_transition.lua 4443-4458: W_SprintToDeflectGuard only with ref 1 up, not by the
-        // state's name: out of SprintAttack_L/R, a quick turn or SprintStopReady (no ref 1) it is
-        // the plain StandToDeflectGuard (0.2 s window, no 3 m slide; round 26).
-        let sprinting = sprint_window(d, a);
-        let state = if sprinting {
-            "SprintToDeflectGuard"
-        } else if !a.anim.is_empty() && d.has_ref(&a.anim, a.step(), REF_GUARD_REVERSE) {
-            "StandToDeflectGuard1Reverse"
-        } else {
-            "StandToDeflectGuard"
-        };
-        // The sprint deflect slides 3.0 m along its facing (a050_203001 root) and turns toward the
-        // lock-on target over its first half second (live, rec_20261016_094717_lockturn_sprintdeflect,
-        // 7 sprint deflects locked on: no turn for 0.1 s (flag 7), 180 deg/s to 0.2 s, 360 deg/s to
-        // 0.3 s, then the controller default 720 deg/s until the facing is 0 deg off the enemy; a
-        // sprint 90-150 deg off him was square on at +0.5 s. Not a snap: the sideways start the
-        // user saw). The turn runs in the sprint_deflect_turn block below. A standing deflect is
-        // already facing the target (live +-6 deg), so it keeps the aim. gap: the exe's target for
-        // that turn (HKS sets no facing) is taken as the lock target.
-        if !sprinting {
-            aim(a);
-        }
-        a.move_vel = Vec3::ZERO;
-        a.play_state(d, state);
-        return;
-    }
 
-    // Deflect end
-    // BEH_A_DEFLECT_GUARD_END (6176) runs in every guard-style state with ref 207 up (round 61:
-    // the easy recoils and LandAirDeflect* played on and snapped to idle).
-    let can_end = is_guard_idle(&a.state) || (is_guard_style(&a.state) && !a.anim.is_empty() && d.has_ref(&a.anim, a.step(), REF_GUARD_CAN_END));
-    if can_end && !pad.guard_held {
-        // BEH_A_DEFLECT_GUARD_END: idle -> DeflectGuardToStand; moving -> DeflectGuardToStandMove
-        // (hkx selector on MoveSpeedIndex: [0] Walk a050_203011, [1] Run a050_203012), an upper-body
-        // state over the walk/run (is_upper_action). Ref 220 picks the *Variation ends; no Wolf
-        // anim raises it.
-        let state = if stick == Vec3::ZERO {
-            "DeflectGuardToStand"
-        } else if pad.walk {
-            "DeflectGuardToStandMoveWalk"
-        } else {
-            "DeflectGuardToStandMoveRun"
-        };
-        a.move_index = if pad.walk { 0 } else { 1 };
-        if p.speed_level < 1.0 && stick != Vec3::ZERO {
-            // The guard walk is the walk speed level.
-            p.speed_level = 1.0;
-        }
-        a.play_state(d, state);
-        return;
-    }
+    // Deflect end (BEH_A_DEFLECT_GUARD_END, 6176: every guard-style state with ref 207 up; round
+    // 61: the easy recoils and LandAirDeflect* played on and snapped to idle) is the script's
+    // (hks_wolf): DeflectGuardToStand, or over the walk / run DeflectGuardToStandMoveWalk / Run
+    // (hkx selector on MoveSpeedIndex), an upper-body state (is_upper_action).
 
-    // Sprint: hold dodge through the step's ref 15 window, keep holding to keep sprinting.
+    // Sprint (BEH_A_SPRINT / _QUICK_TURN / _STOP) is the script's (hks_wolf): the held step's
+    // ref 15 window goes to SprintStartFromStep (graph selector by step direction), the loop,
+    // the quick turn by stick side and the stop. Here only the steering stays.
     let moving = stick != Vec3::ZERO;
-    if a.state.starts_with("GroundStep") && d.has_ref(&a.anim, a.step(), REF_TRANSITION_SPRINT) && pad.dodge_held && moving {
-        a.yaw = yaw_of(stick);
-        a.play_state(d, "SprintStartFromStep_F");
-        return;
-    }
     // HKS BEH_A_SPRINT (6113-6116, then _fireGroundStep at 2761-2771): dodge held while running
     // (ref 91 SP_EF_REF_TAE_MOVING_RUN on the run loop's clip, 100001; not ref 427
-    // DISABLE_PRESS_STEP, speed level > 0) steps, and the held step goes on into the sprint above.
+    // DISABLE_PRESS_STEP, speed level > 0) steps, and the held step goes on into the sprint.
     // Holding dodge and then pushing the stick only ran (round 31).
     if a.state == "Locomotion" && pad.dodge_held && moving && p.speed_level > 0.0 && !p.requests.contains_key(&Action::Step) {
         let (key, t) = a.shown_clip(d);
@@ -4581,39 +4403,11 @@ fn decide(
             p.requests.insert(Action::Step, 0.0);
         }
     }
-    // Sprint quick turn (HKS BEH_A_SPRINT_QUICK_TURN): SprintQuickTurnReady (1 frame) picks
-    // Right/Left180 by the side the stick points to; the clip's root motion turns Wolf around.
-    if a.state == "SprintQuickTurnReady" {
-        let side = if stick.dot(a.forward().cross(Vec3::Y)) > 0.0 { "SprintQuickTurnRight180" } else { "SprintQuickTurnLeft180" };
-        a.play_state(d, side);
-        return;
-    }
-    if a.state.starts_with("SprintQuickTurn") && ended {
-        a.play_state(d, if pad.dodge_held && moving { "SprintLoop" } else { "SprintStopReady" });
-        return;
-    }
-    if a.state == "SprintStartFromStep_F" || a.state == "SprintLoop" {
-        if !(pad.dodge_held && moving) {
-            a.play_state(d, "SprintStopReady");
-            return;
-        }
-        // Stick more than SPRINT_BRAKE_ANGLE (135 deg) from the facing while the TAE allows it
-        // (SpEffect ref 2 SP_EF_REF_TAE_ENABLE_SPRINT_QUICK_TURN), not locked on.
-        if lock.target.is_none()
-            && !a.anim.is_empty()
-            && d.has_ref(&a.anim, a.step(), REF_ENABLE_SPRINT_QUICK_TURN)
-            && a.forward().angle_between(stick).to_degrees() > SPRINT_BRAKE_ANGLE
-            && a.play_state(d, "SprintQuickTurnReady")
-        {
-            return;
-        }
+    if (a.state.starts_with("SprintStartFromStep") || a.state == "SprintLoop") && pad.dodge_held && moving {
         if lock.target.is_some() {
             a.yaw = turn_toward(a.yaw, yaw_of(stick), turn_rate(d, a, &config, true).to_radians() * dt);
         } else {
             free_turn(p, a, d, &config, move_stick, dt);
-        }
-        if ended {
-            a.play_state(d, "SprintLoop");
         }
         return;
     }
@@ -4733,28 +4527,15 @@ fn decide(
         p.vel_scale = None;
     }
 
-    // Jumps: Ready -> Start (TAE 920 launches) -> Fall loop -> land. The storm jumps'
-    // GroundStormJump(Weak|Back)Ready likewise into their Start (TAE 922 row 980 / 981 / 982
-    // launches).
-    if ended && a.state.starts_with("GroundStormJump") && a.state.ends_with("Ready") {
-        let start = a.state.replace("Ready", "Start");
-        a.play_state(d, &start);
+    // Jumps: Ready -> Start (TAE 920 launches) -> Fall loop -> land. The graph takes the ground,
+    // sprint and storm jumps on at their clip ends (hks_wolf::graph_chains). Side jumps have no
+    // behaviour-graph clip (CMSG anim 0): their raw anims a000_20111x.
+    if ended && a.state == "LeftsideGroundJumpReady" {
+        a.play("LeftsideGroundJumpStart", "a000_201112");
         return;
     }
-    if ended && a.state == "SprintJumpReady" {
-        a.play_state(d, "SprintJumpStart");
-        return;
-    }
-    if ended && a.state.contains("GroundJumpReady") {
-        // Side jumps have no behaviour-graph clip (CMSG anim 0): their raw anims a000_20111x.
-        match a.state.as_str() {
-            "LeftsideGroundJumpReady" => a.play("LeftsideGroundJumpStart", "a000_201112"),
-            "RightsideGroundJumpReady" => a.play("RightsideGroundJumpStart", "a000_201113"),
-            _ => {
-                let start = a.state.replace("Ready", "Start");
-                a.play_state(d, &start);
-            }
-        }
+    if ended && a.state == "RightsideGroundJumpReady" {
+        a.play("RightsideGroundJumpStart", "a000_201113");
         return;
     }
     // The fall top (physics +0x854, FUN_140bc3470): the height of the last grounded frame (and of
@@ -4766,11 +4547,14 @@ fn decide(
     }
     if !a.airborne {
         // HitMtrlParam 20-24 / 35-38 / 45-47 are water, swamp and underwater floors (not a safe spot).
-        let water = crate::map::floor_material(tf.translation).is_some_and(|m| matches!(m, 20..=24 | 35..=38 | 45..=47));
-        if !water && a.state != "Grabbed" {
-            p.safe_pos = Some(tf.translation);
+        let water = crate::terrain::floor_material(tf.translation).is_some_and(|m| matches!(m, 20..=24 | 35..=38 | 45..=47));
+        if !water && a.state != "Grabbed" && a.hp > 0.0 && safe_spot(tf.translation, crate::terrain::terrain().as_deref()) {
+            p.safe_ring.push_back(tf.translation);
+            if p.safe_ring.len() > SAFE_RING {
+                p.safe_ring.pop_front();
+            }
         }
-    } else if p.air_top - tf.translation.y >= FALL_VOID_DROP && crate::map::floor_material(tf.translation).is_none() && crate::map::terrain().is_some() {
+    } else if p.air_top - tf.translation.y >= FALL_VOID_DROP && crate::terrain::floor_material(tf.translation).is_none() && crate::terrain::terrain().is_some() {
         // Falling with no ground below: HKS DAMAGE_TYPE_FALL_DEAD_RETURN -> W_FallDeadReturnStart
         // (a000_199120), then back at the safe spot. gap: the exe's kill height / return volume is
         // not traced; the default fallDeathDist (40 m) stands in.
@@ -4781,6 +4565,9 @@ fn decide(
             return;
         }
     }
+    // BEH_R_FALL on the move: W_SelfFallStart once he has fallen FALL_START_DROP (env 224 is the
+    // height fallen, Smithbox HKS list "GetFallHeight"); a shallower drop lands still moving.
+    // gap: the crouch (W_SelfCrouchFreeFallStart) and sub-guard falls have no clip of their own here.
     if a.airborne {
         // Air actions open on the jump/air anims' own cancel flags. The fall loops (FreeFall,
         // *GroundJumpFall: STATE_TYPE_STANDBY in g_paramHkbState) carry none and take every input,
@@ -4815,44 +4602,6 @@ fn decide(
         // Round 63: g_behaviorValidateOrder (HKS 6449) - the kick (and storm jump) first, then
         // the art, the air attacks, the tool, the deflect last; before, guard, art, tool, kick,
         // attack (a pending guard beat a kick press when both opened at AirComboAttack's f12).
-        } else if p.requests.contains_key(&Action::Jump)
-            && (air_ok(a, FLAG_ACCEPT_JUMP) || storm_jump(d, a, p, false).is_some_and(|_| wolf_ref(d, a, p, SP_REF_ENABLE_STORM_JUMP)))
-        {
-            // BEH_A_AIR_STORM_JUMP first (validated before the kick, HKS g_behaviorValidateOrder):
-            // ref 101 up and inside an updraft -> W_AirStormJump(Weak)Start.
-            // BEH_A_AIR_KICK: a jump press in the air always kicks (AirKick, a000_213100) unless
-            // an SpEffect with behaviorRefId 108 (SP_EF_REF_DISABLE_AIR_KICK) is active. A press
-            // before the execute flag 119 (AirComboAttack frame 12, latched by 87 from frame 3)
-            // stays pending until it opens, as the air attack's does; it was dropped.
-            p.requests.remove(&Action::Jump);
-            if let Some(state) = storm_jump(d, a, p, false).filter(|_| wolf_ref(d, a, p, SP_REF_ENABLE_STORM_JUMP)).filter(|s| a.play_state(d, s)) {
-                log.push(format!("storm jump ({state})"), Color::srgb(0.7, 0.9, 1.0));
-            } else if air_ok(a, FLAG_ACCEPT_JUMP) && !sp_ref_active(d, a, SP_REF_DISABLE_AIR_KICK) && !sp_ref_active(d, a, SP_REF_TAE_ONLY_ADD_ACTION_INPUT_JUMP) {
-                a.play_state(d, "AirKick");
-            }
-            // HKS 2814-2823: under ref 431 (SP_EF_REF_TAE_ONLY_ADD_ACTION_INPUT_JUMP: SpEffect
-            // 100247, AirKick frames 12-21) the press only fires W_AddActionInputJump, an additive
-            // layer, and no new kick (it chained kicks). gap: that additive clip is not played.
-        } else if p.requests.contains_key(&Action::CombatArt) && air_ok(a, FLAG_ACCEPT_ATTACK) && art_equipped && p.wire.is_none() {
-            // BEH_A_AIR_SP_ATTACK (`air_art_state`), in the art's group (a1xx_3162xx).
-            p.requests.remove(&Action::CombatArt);
-            if let Some((cat, unlock)) = art_kind(&combat, &config) {
-                let enable = p.emblems >= art_cost(&combat, &config);
-                p.art_enable_jump = enable;
-                let picked = air_art_state(cat, unlock, enable, p.air_art_count, sp_ref_active(d, a, SP_REF_SP_ATK_HIT_JUMP_DERIVE_ACTION))
-                    .filter(|_| crate::combat::action_unlocked(&combat, &config, crate::combat::UNLOCK_AIR_SP_ATTACK));
-                match picked.map(|(state, counted)| (state, counted, art_key(d, cat, state))) {
-                    Some((state, counted, Some(k))) => {
-                        p.air_art_count += counted as u32;
-                        start_auto_aim(p, a, &combat, tf.translation, stick, &enemies);
-                        a.play(state, &k);
-                    }
-                    // The *NoResource air clips ship for 103 / 110 only (a103 / a110 316201, the
-                    // art's clip with its own TAE events); the other arts do nothing then.
-                    Some((_, _, None)) if !enable => log.push("no spirit emblems", Color::srgb(0.7, 0.7, 0.7)),
-                    _ => {}
-                }
-            }
         } else if p.requests.contains_key(&Action::Attack)
             && (air_ok(a, FLAG_ACCEPT_ATTACK) || (a.state.starts_with("AirKickEnemyJumpStart") && air_ok(a, FLAG_BUFFER_ALL)))
             && start_plunge(p, a, &combat, tf.translation, &mut enemies, &mut log)
@@ -4860,96 +4609,10 @@ fn decide(
             // Out of a head-kick jump the kick-down throw is checked from its buffer flag 87
             // (frame 9), not the air attack's 115 (frame 21): live 0.33 s into 213115.
             p.requests.remove(&Action::Attack);
-        } else if let Some(k) = (p.requests.contains_key(&Action::Attack)
-            && air_ok(a, FLAG_ACCEPT_ATTACK)
-            && matches!(a.state.as_str(), "AirSubAttackMoveStart" | "AirSubAttackMoveStartToLoop" | "AirSubAttackMoveLoop")
-            && d.has_ref(&a.anim, a.step(), REF_SUB_ATTACK_DERIVE_ATTACK)
-            && crate::combat::action_unlocked(&combat, &config, crate::combat::UNLOCK_SUB_ATTACK_DIRAVE_ATTACK_2))
-            .then(|| equipped_tool(&combat, &config, p.tool_slot).filter(|t| t.group == 74))
-            .flatten()
-            .and_then(|_| sub_anim(d, "AirSubAttackDeriveAttack", 74))
-        {
-            // HKS 2890: the attack button in the Mist Raven's fall while SP_EF_REF_TAE_ENABLE_
-            // SUB_ATTACK_DERIVE_ATTACK (301: 100342, 419030 f5-20, all of 419031) is up ->
-            // W_AirSubAttackDeriveAttack (a074_413000), with ACTION_UNLOCK_TYPE_SUB_ATTACK_
-            // DIRAVE_ATTACK_2 (Fang and Blade).
-            p.requests.remove(&Action::Attack);
-            a.play("AirSubAttackDeriveAttack", &k);
-        } else if let Some(k) = (p.requests.contains_key(&Action::Attack)
-            && air_ok(a, FLAG_ACCEPT_ATTACK)
-            && sp_ref_active(d, a, SP_REF_SP_ATK_HIT_JUMP_DERIVE_ACTION))
-            .then(|| art_kind(&combat, &config).filter(|&(c, unlock)| c == 109 && unlock == SP_REF_UNLOCK_109_FALL_ATTACK))
-            .flatten()
-            .and_then(|(c, _)| art_key(d, c, "GroundSpecialAttackHitJumpDeriveAction"))
-        {
-            // HKS 2893 (attack) / 2928 (the art): Shadowfall's spin-slash down out of the hit jump
-            // while SP_EF_REF_TAE_ENABLE_SP_ATK_HIT_JUMP_DERIVE_ACTION (226: 100267, a109_316600
-            // f24-39) and its unlock ref 286 are up -> W_GroundSpecialAttackHitJumpDeriveAction
-            // (a109_316650).
-            p.requests.remove(&Action::Attack);
-            p.requests.remove(&Action::Guard);
-            a.play("GroundSpecialAttackHitJumpDeriveAction", &k);
-        } else if let Some((id, _)) = a.electro.filter(|_| p.requests.contains_key(&Action::Attack) && air_ok(a, FLAG_ACCEPT_ATTACK)) {
-            // HKS 2884: charged (SP_EF_REF_ELECTRO_CHARGE 151 = 9495, SP_EF_REF_WEAK_ELECTRO_CHARGE
-            // 356 = 9490) the air attack throws the lightning back: W_AirElectroReceiveAttack
-            // (a050_308900: the bolt, BulletBehavior_Midair judge 184 -> Bullet 500184) /
-            // W_AirWeakElectroReceiveAttack (a050_308910: AttackBehavior 280 / 281). Their
-            // SpEffects 9505 / 9506 (f3-9) discharge him.
-            p.requests.remove(&Action::Attack);
-            a.play_state(d, if id == 9495 { "AirElectroReceiveAttack" } else { "AirWeakElectroReceiveAttack" });
-        } else if p.requests.contains_key(&Action::Attack) && air_ok(a, FLAG_ACCEPT_ATTACK) {
-            p.requests.remove(&Action::Attack);
-            // BEH_A_AIR_ATTACK: refs 214/215/216 pick AirComboAttack1/2/3 (1 -> 2 -> 3 -> 2 ...).
-            let has = |r: i64| !a.anim.is_empty() && d.has_ref(&a.anim, a.step(), r);
-            let next = if has(215) {
-                "AirComboAttack2"
-            } else if has(216) {
-                "AirComboAttack3"
-            } else {
-                "AirComboAttack1"
-            };
-            a.play_state(d, next);
-        } else if p.requests.contains_key(&Action::Prosthetic) && air_ok(a, FLAG_ACCEPT_PROSTHETIC) {
-            // BEH_A_AIR_SUB_ATTACK (HKS 3007, `hks::air_press`): the tool's air move.
-            p.requests.remove(&Action::Prosthetic);
-            if let Some(tool) = equipped_tool(&combat, &config, p.tool_slot) {
-                let resident_ref = d.sp_effects.get(&tool.resident.to_string()).map_or(0, |s| s.behavior_ref_id);
-                let timed_refs: Vec<i64> = p.timed.iter().filter_map(|(id, _)| d.sp_effects.get(&id.to_string())).map(|s| s.behavior_ref_id).collect();
-                let picked = {
-                    let refs = |r: i64| (resident_ref == r && r != 0) || sp_ref_active(d, a, r) || timed_refs.contains(&r);
-                    crate::prosthetic::hks::air_press(tool.group, p.emblems >= tool.emblems.max(1), p.air_sub_count, lock.target.is_some(), &refs)
-                        .filter(|_| crate::combat::action_unlocked(&combat, &config, crate::combat::UNLOCK_AIR_SUB_ATTACK))
-                };
-                if let Some((state, k, counted)) = picked.and_then(|(s, c)| sub_anim(d, s, tool.group).map(|k| (s, k, c))) {
-                    if state == "SubAttackFailedAir" {
-                        log.push("no spirit emblems", Color::srgb(0.7, 0.7, 0.7));
-                    }
-                    p.air_sub_count += counted as u32;
-                    p.sub_cat_before = tool.group;
-                    a.play(state, &k);
-                }
-            }
-        } else if p.requests.contains_key(&Action::Guard) && (air_ok(a, FLAG_ACCEPT_GUARD) || is_air_guard(&a.state) || !pad.guard_held) {
-            // BEH_A_AIR_DEFLECT_START (HKS 6061): ACTION_UNLOCK_TYPE_AIR_DEFLECT_GUARD. A press
-            // before the execute flag (117: AirComboAttack frame 12, AirKick 18) waits for it while
-            // held, as the ground guard does; a tap let go before it is dropped.
-            p.requests.remove(&Action::Guard);
-            if (air_ok(a, FLAG_ACCEPT_GUARD) || is_air_guard(&a.state)) && crate::combat::action_unlocked(&combat, &config, crate::combat::UNLOCK_AIR_DEFLECT_GUARD) {
-                // HKS 2968-2970: ref 228 without 412 (the air recoils AirDeflectEasy* / Hard*)
-                // adds AddHardDeflectGuard and the recoil plays on, as on the ground (round 61:
-                // it was cut into AirDeflectGuardStart, changing the landing).
-                let add = !a.anim.is_empty() && d.has_ref(&a.anim, a.step(), REF_ADD_JUST_DEFLECT) && !d.has_ref(&a.anim, a.step(), REF_ADD_GUARD_CANCEL);
-                match d.anim_key("AddHardDeflectGuard").filter(|_| add) {
-                    Some(k) => {
-                        a.add_anim = k.to_string();
-                        a.add_t = 0.0;
-                    }
-                    None => {
-                        a.play_state(d, "AirDeflectGuardStart");
-                    }
-                }
-            }
         }
+        // The kick and the storm jump, the art, the air attacks (the lightning thrown back, the
+        // Mist Raven's and Shadowfall's derives), the tool and the deflect are the script's
+        // (hks_wolf, BEH_A_AIR_*).
         // BEH_R_ENEMY_JUMP: env(2004) - the kick's own attack (TAE 307 PCBehavior 901 ->
         // AtkParam_Pc 901, frames 9-21) connected - while AirKick's SpEffect 100334
         // (behaviorRefId 204, frames 9-21) is up -> AirKickEnemyJumpStart (no gravity frames
@@ -5001,10 +4664,8 @@ fn decide(
                 a.play("AirSpacialAttackHoldEnd", &k);
             }
         }
-        let in_air_guard = is_air_guard(&a.state);
-        if a.state == "AirDeflectGuardLoop" && !pad.guard_held {
-            a.play_state(d, "AirDeflectGuardEnd");
-        }
+        // BEH_A_AIR_DEFLECT_END (c0000_transition.lua 6066: the guard let go, the start too while
+        // ref 207 is up) is the script's (hks_wolf, W_AirDeflectGuardEnd).
 
         let ft = FALL_TYPES[(a.fall_type as usize).min(FALL_TYPES.len() - 1)];
         // ChrActionFlag 27 SetNoGravity (FUN_140b51b70 case 0x1b sets physics +0x92c on every
@@ -5037,7 +4698,7 @@ fn decide(
             };
             if let Some(tp) = tp {
                 let g = ft.gravity();
-                let h = tf.translation.y - CAPSULE_HALF_HEIGHT - crate::map::ground_y(tf.translation);
+                let h = tf.translation.y - CAPSULE_HALF_HEIGHT - crate::terrain::ground_y(tf.translation);
                 // Time to the floor: h + vy t + g t^2 / 2 = 0 (g < 0).
                 let disc = a.vel_y * a.vel_y - 2.0 * g * h;
                 let t_land = if g < 0.0 && disc >= 0.0 { (-a.vel_y - disc.sqrt()) / g } else { 0.0 };
@@ -5059,7 +4720,7 @@ fn decide(
             w.steer(a, tf.translation, dt);
         }
         a.move_vel = a.air_base;
-        let mut floor = crate::map::ground_y(tf.translation) + CAPSULE_HALF_HEIGHT;
+        let mut floor = crate::terrain::ground_y(tf.translation) + CAPSULE_HALF_HEIGHT;
         // A ridden point is a floor once the arc is down to it (`Player::perch`).
         let ride_spot = p.wire.filter(|w| w.ride && w.flight.is_none()).map(|w| w.land);
         if let Some(spot) = ride_spot.filter(|s| (tf.translation - *s).with_y(0.0).length() < PERCH_RADIUS) {
@@ -5081,6 +4742,11 @@ fn decide(
             a.vel_y = 0.0;
             a.move_vel = Vec3::ZERO;
             a.air_base = Vec3::ZERO;
+            // Down before BEH_R_FALL fired (under FALL_START_DROP): still the move state, and
+            // BEH_R_LAND is only for the air styles (g_behaviorTable column 7), so no landing.
+            if moving_locomotion(d, a) {
+                return;
+            }
             // BEH_R_LAND_WIRE (HKS 2076, the wire-fall style): out of the wire air attack
             // W_LandWireFallAttackCombo1 at the same time, out of the wire guard
             // W_LandAirDeflectGuard; with the stick held (MoveSpeedLevel > 0)
@@ -5094,8 +4760,8 @@ fn decide(
                 }
                 // Breaking wire 1 (ThrowKind 180100, throwCheckSituation 1: on the landing, no
                 // button): ThrowParam <chr>0171, Wolf 511610 / the enemy ThrowDef13610, held as a
-                // pair (ThrowHold). Its hit is a deathblow: 511610 TAE 304 judge 660 = AtkParam_Pc
-                // 5000660 "右手刀_忍殺本体_落下" (throwFlag 2, atkPhysCorrection 60000); 13610 ends in
+                // pair (ThrowHold). Its hit is a deathblow: 511610 TAE 304 judge 680 = AtkParam_Pc
+                // 5000680 "右手刀_忍殺本体_ワイヤー" (throwFlag 2, atkPhysCorrection 60000); 13610 ends in
                 // SpEffect 300610 "HP reset" (changeHpRate -100) and 13611 is its death - one
                 // life bar off, or the kill on the last (Enemy::deathblow; Bosses' reading).
                 if a.state == "WireThrow" {
@@ -5145,232 +4811,95 @@ fn decide(
                     }
                 }
             }
-            // HKS 1884: the storm jumps and their fall land in W_LandStormJumpFall.
-            if (a.state.contains("StormJump") && !a.state.ends_with("Ready")) && a.play_state(d, "LandStormJumpFall") {
-                return;
-            }
-            // Blown away: the matching Land anim (StandDamage*Blow*/Upper*).
             // Landing from a height the ground's HitMtrlParam fallDeathDist (map::fall_death_dist)
             // kills: HKS DAMAGE_TYPE_LAND_DEAD_RETURN -> W_LandDeadReturnStart (a000_200909), then
             // back at the safe spot. The fall's HP cost (FUN_140b97a30 -> FUN_140b97b30, emulated
-            // in extracted/emu/air_drops_*.json, test emu_air): `fall_hp_loss`.
+            // in extracted/emu/air_drops_*.json, test emu_air): `fall_hp_loss`. The exe
+            // (FUN_14084e5d0) tests from 20 m, from 5 m while stateInfo 341 (aging) is worn.
             let landing_drop = p.air_top - tf.translation.y;
-            let death_dist = crate::map::fall_death_dist(crate::map::floor_material(tf.translation));
-            if let Some((loss, lethal)) = death_dist.and_then(|dist| fall_hp_loss(a.hp_max, landing_drop, dist)) {
+            let floor = crate::terrain::floor_material(tf.translation);
+            let death_dist = crate::terrain::fall_death_dist(floor);
+            // Aged (stateInfo 341 worn: DAT_143b01950/54) every landing from 5 m on a death floor
+            // is the lethal one.
+            let aged = wolf_wears(a, p, d, STATE_INFO_AGING);
+            let hit = if aged && landing_drop >= FALL_DAMAGE_FROM_AGED && death_dist.is_some() {
+                Some(((a.hp_max * FALL_RETURN_COST).floor(), true))
+            } else {
+                death_dist.and_then(|dist| fall_hp_loss(a.hp_max, landing_drop, dist))
+            };
+            let (loss, lethal) = hit.unwrap_or((0.0, false));
+            if lethal {
                 a.hp = (a.hp - loss).max(0.0);
-                if lethal && a.play_state(d, "LandDeadReturnStart") {
+                if a.play_state(d, "LandDeadReturnStart") {
                     log.push("fall death - back to safe ground", Color::srgb(1.0, 0.4, 0.4));
                     return;
                 }
             }
-            let falling_reaction = |st: &str| {
-                st.contains("BlowStart") || st.contains("BlowFallLoop") || st.contains("UpperStart") || st.contains("UpperFallLoop")
-                    || (st.starts_with("AirDamage") && (st.contains("Start") || st.contains("FallLoop")))
-            };
-            // Air posture breaks land into their LandAir versions (W_LandAirDamageBreak /
-            // W_LandAirDeflectGuardBreak).
-            // Landing mid air-slash while ref 201 (SP_EF_REF_TAE_ENABLE_ORIGINAL_LAND_ACTION) is
-            // up: LandAirComboAttackN continues from the same time (W_LandAirComboAttackN).
-            // BEH_R_LAND 1908: from FALL_HEIGHT_LONG_STIFF_LAND (20 m, c0000_define 213; env(224)
-            // = the fall height) Wolf lands long-stiff (Selector_LandStiff LONG: LandFreeFall's
-            // a000_200021, 2.5 s), after the guard-break / special-attack lands and before the air
-            // combo, electro and tool ones. gap: env(224)'s measure in the exe (here: from the
-            // flight's highest point); the 3 / 5 m short-stiff lands differ only by the sprint /
-            // step out (`_fireGroundStep`), not done.
-            let long_fall = p.air_top - tf.translation.y >= FALL_HEIGHT_LONG_STIFF_LAND && d.anim(LAND_LONG_STIFF).is_some();
-            // BEH_R_LAND 2026: from 5 m (3 m out of a positioning jump, EnablePositioningJumpLand)
-            // the jump's own landings are skipped: stick -> W_StandMoveStartFromFreeFallShortStiff,
-            // else _LandFreeFall (Selector_LandStiff NORMAL). Round 38: a jump off a ledge landed
-            // as LandVertical / ForwardGroundJump or the positioning land from any height.
-            let drop = p.air_top - tf.translation.y;
-            let positioning = std::mem::take(&mut p.positioning_land);
-            let short_fall = drop >= FALL_HEIGHT_SHORT_STIFF_LAND || (drop >= FALL_HEIGHT_SHORT_STIFF_LAND_FROM_JUMP && positioning);
-            if a.state.starts_with("AirComboAttack") && !long_fall && !a.anim.is_empty() && d.has_ref(&a.anim, a.step(), REF_ORIGINAL_LAND_ACTION) {
-                let land = format!("Land{}", a.state);
-                if a.continue_state(d, &land) {
-                    return;
-                }
+            // Short of that: maxHP x the fall's factor (`fall_hp_loss`) x the floor's HitMtrlParam
+            // fallDamageRate (`terrain::fall_damage_share`, FUN_140843660: 0 on a disableFallDamage
+            // floor), none while stateInfo 47 is worn (SpEffects 640 / 4050 / 4053). No reaction of
+            // its own: the landing below plays as usual.
+            let share = crate::terrain::fall_damage_share(landing_drop, floor, FALL_DAMAGE_MIN);
+            if hit.is_some() && !lethal && share > 0.0 && !wolf_wears(a, p, d, STATE_INFO_NO_FALL_DAMAGE) {
+                let cost = (a.hp_max * share).floor();
+                a.hp = (a.hp - cost).max(0.0);
+                log.push(format!("fall: -{cost:.0} HP"), Color::srgb(1.0, 0.4, 0.4));
             }
-            // Air deflect reactions likewise (HKS W_LandAirDeflect{Easy,Hard}{Small,Large,ExLarge},
-            // StartTime = the air anim's time): the land anim is the air one's id + 10. Live
-            // (rec_c1010_b_20261009): AirDeflectHardLarge_L -> LandAirDeflectHardLarge_L (132311),
-            // AirDeflectHardSmall_R -> LandAirDeflectHardSmall_B (132112); landing after ref 201
-            // ended (AirDeflectHard at 0.74 s) is a plain landing.
-            if let Some(land) = land_air_deflect(&a.state) {
-                if !a.anim.is_empty() && d.has_ref(&a.anim, a.step(), REF_ORIGINAL_LAND_ACTION) && a.continue_state(d, land) {
-                    return;
-                }
-            }
-            // Charged (HKS 1870-1875, before the fall-height rule): landing in the charge states
-            // sets it off, W_LandAirDamageElectroCharge(Weak). The HKS goes by the state, so a
-            // release that lands before its discharge (9505 / 9506 from 0.1 s) is no shock: it
-            // lands into its Land version from the same time while ref 201 is up (HKS 1920-1925).
-            // gap: the charge SpEffect is dropped on landing (its own end is not traced).
-            let charged = a.electro.take().filter(|_| a.state.starts_with("AirDamageElectroCharge"));
-            if let Some((id, _)) = charged {
-                let weak = id != 9495;
-                // The shock: the charge's chain (lightning_shock; round 43, before a fixed 160 +
-                // 10 / 20 %). gap: how the exe holds it off until the landing is not traced.
+            // Charged (HKS 1870-1875): landing in the charge states sets it off (the script lands
+            // in W_LandAirDamageElectroCharge(Weak)). gap: the charge SpEffect is dropped on
+            // landing (its own end is not traced); how the exe holds the shock off until the
+            // landing is not traced.
+            if let Some((id, _)) = a.electro.take().filter(|_| a.state.starts_with("AirDamageElectroCharge")) {
                 lightning_shock(&combat, a, id);
                 log.push("SHOCKED - landed charged", Color::srgb(0.6, 0.8, 1.0));
-                if a.play_state(d, if weak { "LandAirDamageElectroChargeWeak" } else { "LandAirDamageElectroCharge" }) {
-                    return;
-                }
             }
-            if matches!(a.state.as_str(), "AirElectroReceiveAttack" | "AirWeakElectroReceiveAttack") && !long_fall && !a.anim.is_empty() && d.has_ref(&a.anim, a.step(), REF_ORIGINAL_LAND_ACTION) {
-                let land = format!("Land{}", a.state);
-                if a.continue_state(d, &land) {
-                    return;
-                }
+            // The landing itself is the script's (BEH_R_LAND, hks_wolf::land_script on this frame:
+            // the stiffness by the fall height, the Land versions while ref 201 is up, the jump's
+            // own lands, the stick's move start). BEH_R_LAND 2027 / 2044: the dodge pressed or held
+            // steps out of it (_fireGroundStep), which the script takes as the press.
+            if pad.dodge_held && !a.sheathed {
+                p.requests.entry(Action::Step).or_insert(0.0);
             }
-            if a.state == "AirDamageBreak" {
-                let land = format!("Land{}", a.state);
-                if a.play_state(d, &land) {
-                    return;
-                }
-            }
-            // The guard breaks (sword and open umbrella) land into their Land versions only while
-            // ref 201 is up, from the same time (HKS 1862-1869, W_LandAirDeflectGuardBreak /
-            // W_LandAirSubGuardDeflectBreak; SpEffect 100302 at 0-2.0 s); later is a plain landing.
-            // The umbrella's clips are the Loaded Umbrella's a076 ones (`sub_anim`).
-            // The blinding hit in the air too (HKS 1876-1878, W_LandAirDamageBlinding a000_192611).
-            if matches!(a.state.as_str(), "AirDeflectGuardBreak" | "AirSubGuardDeflectBreak" | "AirDamageBlinding")
-                && !a.anim.is_empty()
-                && d.has_ref(&a.anim, a.step(), REF_ORIGINAL_LAND_ACTION)
-            {
-                let land = format!("Land{}", a.state);
-                let key = if a.state == "AirSubGuardDeflectBreak" { sub_anim(d, &land, 76) } else { d.anim_key(&land).map(str::to_string) };
-                if let Some(k) = key {
-                    let t = a.t;
+            // The jump arts' lands the script does not make (BEH_R_LAND held off by ref 103
+            // SP_EF_REF_TAE_NO_LAND_ANIM, Sakura Dance's leap without emblems f0-36: gap, env 3008
+            // not traced): the leap while ref 201 is up into LandGroundSpecialAttackJumpStart from
+            // the same time, the fall loop into LandGroundSpecialAttackJumpFallLoop (HKS 2016-2025).
+            if a.state.starts_with("GroundSpecialAttackJump") {
+                let no_res = if a.state.ends_with("NoResource") { "NoResource" } else { "" };
+                let ref_201 = !a.anim.is_empty() && d.has_ref(&a.anim, a.step(), REF_ORIGINAL_LAND_ACTION);
+                let land = if a.state.starts_with("GroundSpecialAttackJumpStart") { ref_201.then(|| format!("LandGroundSpecialAttackJumpStart{no_res}")) } else { Some(format!("LandGroundSpecialAttackJumpFallLoop{no_res}")) };
+                if let Some((land, k)) = land.and_then(|l| art_kind(&combat, &config).and_then(|(c, _)| art_key(d, c, &l)).map(|k| (l, k))) {
+                    let t = if land.contains("Start") { a.t } else { 0.0 };
                     a.play(&land, &k);
                     a.start_at(t);
                     return;
                 }
             }
+            // A blow-away the graph is not in (the hit did not reach the script as a blow: gap)
+            // lands in its Land anim (StandDamage*Blow* / Upper*).
+            let falling_reaction = |st: &str| {
+                st.contains("BlowStart") || st.contains("BlowFallLoop") || st.contains("UpperStart") || st.contains("UpperFallLoop")
+                    || (st.starts_with("AirDamage") && (st.contains("Start") || st.contains("FallLoop")))
+            };
             let blow_land = throw_blow(&a.state)
                 .map(|(_, land)| land.to_string())
                 .or_else(|| falling_reaction(&a.state).then(|| a.state.replace("FallLoop", "Land").replace("Start", "Land")));
-            match blow_land {
-                Some(land) if a.play_state(d, &land) => {}
-                _ if in_air_guard && pad.guard_held => {
-                    a.play_state(d, "LandAirDeflectGuard");
-                }
-                // c0000_transition.lua BEH_R_LAND: stick held -> straight into moving
-                // (W_StandMoveStartFromFreeFallShortStiff); else W_LandGroundJump by jump type
-                // (LandVerticalGroundJump a000_201040 / LandForwardGroundJump a000_201045).
-                // GroundJumpLandReady (a000_201050) is the pose just before touchdown, not a landing.
-                // Directional jumps: W_LandGroundPositioningJump comes before moving on.
-                // A free fall lands stiff only without the stick (HKS 2026-2056: stickLevel > 0 ->
-                // W_StandMoveStartFromFreeFallShortStiff, the stick arm below; round 31). From 20 m
-                // the long-stiff land, stick or not (`long_fall`).
-                _ if long_fall => a.play("LandFreeFall", LAND_LONG_STIFF),
-                _ if a.state == "FreeFall" && stick == Vec3::ZERO && a.play_state(d, "LandFreeFall") => {}
-                // The air tool states land into their Land versions (`hks::air_land`, HKS 1888-1970):
-                // while ref 201 is up from the same time, the loops from their start.
-                _ if a.state.starts_with("AirSubAttack") && {
-                    let cat = equipped_tool(&combat, &config, p.tool_slot).map_or(70, |t| t.group);
-                    let ref_201 = !a.anim.is_empty() && d.has_ref(&a.anim, a.step(), REF_ORIGINAL_LAND_ACTION);
-                    match crate::prosthetic::hks::air_land(cat, &a.state, ref_201).and_then(|(land, keep)| sub_anim(d, land, cat).map(|k| (land, k, keep))) {
-                        Some((land, k, keep)) => {
-                            let t = if keep { a.t } else { 0.0 };
-                            a.play(land, &k);
-                            a.start_at(t);
-                            true
-                        }
-                        None => false,
-                    }
-                } => {}
-                // The jump arts land (HKS 2016-2025): the leap while ref 201 is up into
-                // LandGroundSpecialAttackJumpStart from the same time, the fall loop into
-                // LandGroundSpecialAttackJumpFallLoop (a107 / a110 316740); the *NoResource lands
-                // where the art ships them (a110_316721), else the plain landing.
-                _ if a.state.starts_with("GroundSpecialAttackJumpStart") && !a.anim.is_empty() && d.has_ref(&a.anim, a.step(), REF_ORIGINAL_LAND_ACTION) && {
-                    let land = format!("LandGroundSpecialAttackJumpStart{}", if a.state.ends_with("NoResource") { "NoResource" } else { "" });
-                    match art_kind(&combat, &config).and_then(|(c, _)| art_key(d, c, &land)) {
-                        Some(k) => {
-                            let t = a.t;
-                            a.play(&land, &k);
-                            a.start_at(t);
-                            true
-                        }
-                        None => false,
-                    }
-                } => {}
-                _ if a.state.starts_with("GroundSpecialAttackJump") && {
-                    let land = format!("LandGroundSpecialAttackJumpFallLoop{}", if a.state.ends_with("NoResource") { "NoResource" } else { "" });
-                    match art_kind(&combat, &config).and_then(|(c, _)| art_key(d, c, &land)) {
-                        Some(k) => {
-                            a.play(&land, &k);
-                            true
-                        }
-                        None => stick == Vec3::ZERO && a.play_state(d, "LandFreeFall"),
-                    }
-                } => {}
-                // The air arts land (`air_art_land`).
-                _ if (a.state.starts_with("AirSpecialAttack") || a.state.starts_with("AirSpacialAttack")) && {
-                    let ref_201 = !a.anim.is_empty() && d.has_ref(&a.anim, a.step(), REF_ORIGINAL_LAND_ACTION);
-                    let ref_288 = sp_ref_active(d, a, SP_REF_ORIGINAL_LAND_ACTION_SP_ATK_110);
-                    let land = art_kind(&combat, &config).and_then(|(c, _)| {
-                        let (land, keep) = air_art_land(c, &a.state, ref_201, ref_288)?;
-                        Some((land, keep, art_key(d, c, land)?))
-                    });
-                    match land {
-                        Some((land, keep, k)) => {
-                            let t = if keep { a.t } else { 0.0 };
-                            a.play(land, &k);
-                            a.start_at(t);
-                            true
-                        }
-                        None => stick == Vec3::ZERO && a.play_state(d, "LandFreeFall"),
-                    }
-                } => {}
-                // HKS 2008: the spin-slash while ref 201 is up (100302, f0-45) lands into
-                // LandGroundSpecialAttackHitJumpDeriveAction (a109_316660) from the same time; the
-                // hit jump itself is not in BEH_R_LAND's list (the plain landing).
-                _ if a.state == "GroundSpecialAttackHitJumpDeriveAction" && !a.anim.is_empty() && d.has_ref(&a.anim, a.step(), REF_ORIGINAL_LAND_ACTION) && {
-                    match art_kind(&combat, &config).and_then(|(c, _)| art_key(d, c, "LandGroundSpecialAttackHitJumpDeriveAction")) {
-                        Some(k) => {
-                            let t = a.t;
-                            a.play("LandGroundSpecialAttackHitJumpDeriveAction", &k);
-                            a.start_at(t);
-                            true
-                        }
-                        None => false,
-                    }
-                } => {}
-                _ if a.state.starts_with("GroundSpecialAttackHitJump") && stick == Vec3::ZERO && a.play_state(d, "LandFreeFall") => {}
-                // The other air tool states (the Mist Raven's fall, the moves out of ref 201) are
-                // not in BEH_R_LAND's list: the plain _LandFreeFall.
-                _ if (a.state.starts_with("AirSubAttack") || a.state == "SubAttackFailedAir") && stick == Vec3::ZERO && a.play_state(d, "LandFreeFall") => {}
-                // The sprint jump too (round 76: SprintJumpStart lasts to the ground, and the 5 m
-                // check at 2026 comes before its W_LandGroundJump at 2057).
-                _ if short_fall && (a.state.contains("GroundJump") || a.state.starts_with("SprintJump") || a.state == "FreeFall") && {
-                    p.jump_land = None;
-                    stick == Vec3::ZERO && a.play_state(d, "LandFreeFall")
-                } => {}
-                _ if p.jump_land.is_some() && a.state.contains("GroundJump") => {
-                    let land = p.jump_land.take().unwrap_or("LandGroundPositioningJump_F");
-                    a.play_state(d, land);
-                }
-                _ if stick != Vec3::ZERO => {
-                    p.speed_level = if pad.walk { 1.0 } else { 2.0 };
-                    a.procedural("Locomotion");
-                }
-                _ => {
-                    a.play_state(d, if p.jump_forward { "LandForwardGroundJump" } else { "LandVerticalGroundJump" });
-                }
+            if blow_land.is_some_and(|land| a.play_state(d, &land)) {
+                return;
+            }
+            // Without the script (SHINOBI_HKS=0) the plain landing.
+            if stick != Vec3::ZERO {
+                p.speed_level = if pad.walk { 1.0 } else { 2.0 };
+                a.procedural("Locomotion");
+            } else {
+                a.play_state(d, "LandFreeFall");
             }
             return;
         }
-        let art_cat = art_kind(&combat, &config).map(|(c, _)| c);
         if ended && a.state.starts_with("GroundSpecialAttackJump") {
-            // The jump art's leap ends into its fall loop (316730), which loops until the landing.
-            let nr = if a.state.ends_with("NoResource") { "NoResource" } else { "" };
-            let fall = format!("GroundSpecialAttackJumpFallLoop{nr}");
-            match art_cat.and_then(|c| art_key(d, c, &fall)) {
-                Some(k) if a.state != fall => a.play(&fall, &k),
-                _ => a.t %= len.max(1e-3),
-            }
+            // The jump art's fall loop (316730) loops until the landing; the graph takes the
+            // ready into the leap and the leap into the loop (hks_wolf::graph_chains).
+            a.t %= len.max(1e-3);
         } else if ended && crate::wire::is_wire_state(&a.state) {
             // The wire moves fall on in WireMove (a000_202020, loops) until BEH_R_LAND_WIRE; the
             // wire guard holds its loop while guard is held, then W_WireMoveDeflectGuardEnd
@@ -5394,65 +4923,16 @@ fn decide(
                 }
             }
         } else if ended {
-            if a.state == "SprintJumpStart" {
-                // No sprint-jump fall CMSG in the behaviour (statemap_c0000.json): its last frame
-                // holds until the landing. gap: the graph's blend after 201210 is not traced.
-                a.t = len;
-            } else if a.state.ends_with("GroundJumpStart") {
-                let fall = a.state.replace("Start", "Fall");
-                if !a.play_state(d, &fall) {
-                    a.t = len;
-                }
-            } else if a.state.ends_with("GroundJumpFall") || a.state == "FreeFall" {
-                a.t %= len.max(1e-3); // loop
-            } else if matches!(a.state.as_str(), "AirSpecialAttackStart" | "AirSpecialAttackHoldStart") {
-                // The air art's start into its loop (a101 / 107 / 108 / 110 316220, a104's hold).
-                let next = a.state.replace("Start", "Loop");
-                match art_cat.and_then(|c| art_key(d, c, &next)) {
-                    Some(k) => a.play(&next, &k),
-                    None => {
-                        if !a.play_state(d, "FreeFall") {
-                            a.t = len;
-                        }
-                    }
-                }
-            } else if matches!(a.state.as_str(), "AirSpecialAttackLoop" | "AirSpecialAttackHoldLoop") {
-                a.t %= len.max(1e-3);
-            } else if a.state.starts_with("AirSpecialAttack") || a.state.starts_with("AirSpacialAttack") || a.state.starts_with("GroundSpecialAttackHitJump") {
-                // STYLE_TYPE_FREE_FALL states: the fall goes on.
-                if !a.play_state(d, "FreeFall") {
-                    a.t = len;
-                }
-            } else if (a.state.starts_with("GroundStormJump") || a.state.starts_with("AirStormJump") || a.state == "StormJumpFall") && a.state != "StormJumpFall" {
-                // The storm jumps fall on in StormJumpFall (HKS 1884: they land as W_LandStormJumpFall).
-                if !a.play_state(d, "StormJumpFall") {
-                    a.t = len;
-                }
-            } else if a.state == "StormJumpFall" {
+            // The air clip ends are the graph's (hks_wolf: its end transitions into the fall
+            // loops, the air art's loop, the guard's loop or end, the blows' fall loops; a loop
+            // on its own clip wraps). Left here: the walk-off's move loop over its first
+            // FALL_START_DROP, the exe's grab blow-away, else the last frame holds till the
+            // landing (SprintJumpStart has no fall CMSG; a side jump's start holds).
+            if moving_locomotion(d, a) {
                 a.t %= len.max(1e-3);
             } else if throw_blow(&a.state).is_some() {
                 throw_blow_step(a, d);
-            } else if let Some(next) = electro_loop(&a.state) {
-                // The charge's start into its loop (W_AirDamageElectroCharge(Weak)Loop, the
-                // deflects' FallLoop), which loops until he lands or throws it.
-                if a.state == next {
-                    a.t %= len.max(1e-3);
-                } else if !a.play_state(d, &next) {
-                    a.t = len;
-                }
-            } else if a.state.contains("BlowStart") || a.state.contains("UpperStart") || (a.state.starts_with("AirDamage") && a.state.contains("Start")) {
-                let fall = a.state.replace("Start", "FallLoop");
-                if !a.play_state(d, &fall) {
-                    a.t = len;
-                }
-            } else if a.state.contains("BlowFallLoop") || a.state.contains("UpperFallLoop") || (a.state.starts_with("AirDamage") && a.state.contains("FallLoop")) {
-                a.t %= len.max(1e-3);
-            } else if matches!(a.state.as_str(), "AirDamageBreak" | "AirDeflectGuardBreak" | "AirSubGuardDeflectBreak") {
-                a.t = len; // hold the broken pose until landing
-            } else if a.state == "AirDeflectGuardStart" || a.state == "AirDeflectGuardLoop" {
-                a.play_state(d, if pad.guard_held { "AirDeflectGuardLoop" } else { "AirDeflectGuardEnd" });
-            } else if !a.play_state(d, "ForwardGroundJumpFall") {
-                // Air reactions, kick, attack, guard end: fall.
+            } else {
                 a.t = len;
             }
         }
@@ -5464,65 +4944,11 @@ fn decide(
         throw_blow_step(a, d);
         return;
     }
-    // Anim ended: guard starts and guard reactions return to guard idle if guard is held.
-    // Knocked down out of a posture break (behavior graph transitions): BreakDamage and
-    // the break blows' landings -> StandDamageBreakDown -> StandDamageLargeDownWakeUp,
-    // face up only after a small blow from the front (Selector_ProneDirection).
+    // The clip ends are the graph's (hks_wolf: the guard's idle, the move out of an upper
+    // action, the knockdowns' get-ups by Selector_ProneDirection); the exe's own states (throws,
+    // deathblows, events, ...) end in the idle.
     if ended {
-        // The break small blow's side is the 4-way angle (HKS 1678-1684): face down only from the
-        // back sector; a hit from the side lands face up (round 33: any hit behind the shoulder
-        // line, its _B state, landed face down).
-        let down = if a.state.starts_with("StandDamageBreakSmallBlow") && !a.hit_back_quadrant { "FaceUp" } else { "FaceDown" };
-        // Unbroken knockdowns (graph: *BlowLand / LargeUpperLand / LargePound / SmallBlow ->
-        // StandDamageLargeDown): prone side per HKS _setProneDir - a small blow from the front
-        // lands face up, everything else face down. StandDamageLargeDown plays the get-up clip
-        // (a000_10031x, the same one the break chain ends with).
-        let normal_down = if a.state == "StandDamageSmallBlow_F" { "FaceUp" } else { "FaceDown" };
-        let next = if a.state == "StandDamageBreakDamage"
-            || a.state == "StandDamageBreakLargePound"
-            || (a.state.starts_with("StandDamageBreak") && (a.state.contains("Land") || a.state.contains("SmallBlow")))
-        {
-            Some(format!("StandDamageBreakDown_{down}"))
-        } else if !a.state.starts_with("StandDamageBreak")
-            && (a.state.starts_with("StandDamage") && (a.state.contains("BlowLand") || a.state.contains("UpperLand") || a.state.contains("SmallBlow"))
-                || a.state == "StandDamageLargePound")
-        {
-            Some(format!("StandDamageLargeDown_{normal_down}"))
-        } else if (a.state.starts_with("AirDamage") && a.state.contains("Land")) || a.state == "ThrowDefLargeBlowLand600380" {
-            // AirDamageLargeLand / LargePoundLand -> StandDamageLargeDown, face down; the Ape's
-            // grab landing too (ThrowDefLargeBlowLand600380_to_StandDamageLargeDown).
-            Some("StandDamageLargeDown_FaceDown".to_string())
-        } else {
-            a.state.strip_prefix("StandDamageBreakDown_").map(|dir| format!("StandDamageLargeDownWakeUp_{dir}"))
-        };
-        if let Some(next) = next {
-            if a.play_state(d, &next) {
-                return;
-            }
-        }
-    }
-    // The slide's end (HKS state-end of HKB_STATE_SPRINT_TO_CROUCH_READY): TurnAngle > 0 ->
-    // W_SprintToCrouchLeft, else Right (the stick's angle from the facing, + = left).
-    if ended && a.state == "SprintToCrouchReady" {
-        let left = stick != Vec3::ZERO && stick.dot(a.forward().cross(Vec3::Y)) < 0.0;
-        if a.play_state(d, if left { "SprintToCrouchLeft" } else { "SprintToCrouchRight" }) {
-            return;
-        }
-    }
-    if ended {
-        let to_guard = (is_guard_start(&a.state) || is_guard_reaction(&a.state) || is_guard_idle(&a.state) || a.state == "LandAirDeflectGuard")
-            && pad.guard_held;
-        if to_guard {
-            a.play_state(d, "DeflectGuardIdle");
-        } else if is_upper_action(&a.state) && moving {
-            // FireStateEndEvent: an upper action ends into W_StandMoveLoop while moving; the legs'
-            // loop keeps its phase (it ran on the action's clock).
-            let (t, prev_t) = (a.t, a.prev_t);
-            a.procedural("Locomotion");
-            (a.t, a.prev_t, a.move_start) = (t, prev_t, 0.0);
-        } else {
-            a.play("StandIdle", "");
-        }
+        a.play("StandIdle", "");
     }
 
     // Locked-on idle turn in place (HKS BEH_A_GROUND_QUICK_TURN / _GroundQuickTurn): standing
@@ -5545,14 +4971,8 @@ fn decide(
         }
     }
 
-    // Movement: free states, or the TAE move window.
-    let move_ok = is_free(&a.state) || (!a.anim.is_empty() && d.flag(&a.anim, a.step(), FLAG_ACCEPT_MOVE));
-    // Moving out of a guard start or a block/deflect reaction with guard held stays in the guard
-    // style: HKS BEH_A_GROUND_MOVE_START with STYLE_TYPE_GROUND_GUARD -> W_DeflectGuardMove (not
-    // the run - which also stood Wolf still through the reaction's tail before running off).
-    if moving && move_ok && pad.guard_held && !a.airborne && (is_guard_start(&a.state) || is_guard_reaction(&a.state)) {
-        a.play_state(d, "DeflectGuardIdle");
-    }
+    // Movement: free states, or the TAE move window (as the script sees it: accept_move).
+    let move_ok = is_free(&a.state) || (!a.anim.is_empty() && accept_move(d, a));
     // The in-place quick turns (Stand / Crouch / DeflectGuard QuickTurn*, a000_000010-13 and
     // kin) have no root motion and no TAE 224: the turn controller turns Wolf to the target at
     // its default rate (FUN_1407daa20: 720 deg/s when no TAE / module rate is set). Without it
@@ -5584,11 +5004,11 @@ fn decide(
             let rate = if rate > 0.0 { rate } else { config.movement.turn_speed };
             a.yaw = turn_toward(a.yaw, yaw_of(td), rate.to_radians() * dt);
         } else if moving {
-            // Free guard walk faces the camera's direction (Sekiro strafes while blocking; live:
-            // the facing drifts with the camera while walking, and holds while standing - guard
-            // idle's TAE SetTurnSpeed 0).
-            let cam_fwd = stick_world(Vec2::new(0.0, 1.0), cam_yaw);
-            a.yaw = turn_toward(a.yaw, yaw_of(cam_fwd), turn_rate(d, a, &config, false).to_radians() * dt);
+            // Free (not locked on) guard walk turns to the stick and walks forward, as the free
+            // walk does; the strafes are the lock-on's (the user, twice: "Wolf always faces the
+            // front of the camera when he guards"; before, it faced the camera's direction).
+            // Standing, the facing holds (guard idle's TAE SetTurnSpeed 0).
+            a.yaw = turn_toward(a.yaw, yaw_of(stick), turn_rate(d, a, &config, false).to_radians() * dt);
         }
         let local = Quat::from_rotation_y(-a.yaw) * stick;
         let angle = local.x.atan2(-local.z).to_degrees();
@@ -5623,7 +5043,7 @@ fn decide(
     if is_upper_action(&a.state) {
         // StandMoveOverwrite: the legs run the walk/run (StandMoveLower_SM carries the motion).
         lower_body_move(p, a, d, &config, move_stick, target_dir, pad.walk, dt);
-    } else if move_ok && (moving || a.state == "Locomotion") {
+    } else if move_ok && (moving || a.state == "Locomotion" || is_move_quick_turn(&a.state)) {
         locomotion(p, a, d, &config, move_stick, target_dir, pad.walk, dt);
     } else if let Some(td) = lock.target.and(target_dir).filter(|_| move_ok && a.state == "StandIdle") {
         // Locked on and standing: the lock-on manipulator (FUN_1407f1710) asks every frame for
@@ -5651,6 +5071,323 @@ fn decide(
     }
 }
 
+/// The hug / hang deathblows (ThrowParam "[PC] wall-mounted" / "hanging", per enemy: suffix
+/// 0060 -> 0061 hugging with the enemy on Wolf's left (Wolf a20x_500600 -> 510600, the enemy
+/// ThrowDef12600), 0070 -> 0071 on his right (500700 -> 510700, 12700), hanging 0080 -> 0081
+/// with the enemy facing away (500800 -> 510800, 12800) and 0130 -> 0131 facing Wolf (501000
+/// -> 511000, 13000)). The start row's reach (Dist), height window and facings decide, as the
+/// other deathblows' (throw_height_ok, throw_facing_ok); the enemy must not have found Wolf (or be
+/// posture-broken). Returns the enemy, the start and main suffixes and whether it faces away.
+/// gap: the exe's own pick between rows; the nearest that fits is taken.
+#[allow(clippy::type_complexity)]
+fn dock_deathblow(combat: &Combat, dock: &crate::docking::Dock, wolf: Vec3, wolf_fwd: Vec3, enemies: &Query<(Entity, &mut Actor, &mut Enemy, &Transform), Without<Player>>) -> Option<(Entity, i64, i64, bool)> {
+    let wolf_right = wolf_fwd.cross(Vec3::Y);
+    enemies
+        .iter()
+        .filter(|(_, ea, en, _)| ea.hp > 0.0 && !en.is_dead() && (en.is_unaware() || en.is_broken()))
+        .filter_map(|(ee, ea, _, etf)| {
+            let foe = combat.foe_of(ea);
+            let to = etf.translation - wolf;
+            let behind = ea.forward().dot(to.with_y(0.0).normalize_or_zero()) > 0.0;
+            let pairs: Vec<(i64, i64)> = if dock.hug() {
+                if to.dot(wolf_right) < 0.0 { vec![(60, 61)] } else { vec![(70, 71)] }
+            } else {
+                vec![(80, 81), (130, 131)]
+            };
+            pairs.into_iter().find_map(|(start, main)| {
+                let id = foe.throw_row(start);
+                let th = combat.throw(id)?;
+                let reach = to.with_y(0.0).length() <= th.dist;
+                let ok = reach && throw_height_ok(combat, id, wolf, etf.translation) && throw_facing_ok(combat, id, wolf, wolf_fwd, etf.translation, ea.forward());
+                ok.then_some((ee, start, main, behind, to.length()))
+            })
+        })
+        .min_by(|x, y| x.4.total_cmp(&y.4))
+        .map(|(ee, s, m, b, _)| (ee, s, m, b))
+}
+
+/// Wall hug and ledge hang (docking.rs): starts them on the button, runs the docked states and
+/// their ends. True while it owns Wolf this tick (decide returns).
+#[allow(clippy::too_many_arguments)]
+fn dock_step_tick(
+    p: &mut Player,
+    a: &mut Actor,
+    d: &CharData,
+    tf: &Transform,
+    ledges: Option<&crate::traversal::LedgeEdges>,
+    stick: Vec3,
+    walk: bool,
+    interact_held: bool,
+    interact: bool,
+    jump: bool,
+    step: bool,
+    ended: bool,
+    log: &mut CombatLog,
+    attack: bool,
+    combat: &Combat,
+    enemies: &Query<(Entity, &mut Actor, &mut Enemy, &Transform), Without<Player>>,
+) -> bool {
+    use crate::docking as dk;
+    let edges: &[crate::traversal::LedgeEdge] = ledges.map(|l| l.0.as_slice()).unwrap_or(&[]);
+    let feet = tf.translation - Vec3::Y * CAPSULE_HALF_HEIGHT;
+    // Wall jumps (BEH_A_WALL_JUMP): the count comes back on the ground.
+    if !a.airborne && p.dock.is_none() && !a.state.starts_with("WallJump") && !dk::is_jump_ready(&a.state) {
+        p.wall_jumps = 0;
+        p.last_wall = None;
+    }
+    // A ready pose (in the air, or out of a hug / hang) ends into its take-off; the take-off into
+    // the jump's fall loop (its TAE 920 launched it).
+    if let Some(contact) = p.wall_contact {
+        if (a.state.starts_with("WallJumpReady_") || dk::is_jump_ready(&a.state)) && ended {
+            let ty = dk::jump_type(contact, stick, a.yaw);
+            p.dock = None;
+            a.docked = false;
+            p.wall_contact = None;
+            // The take-off's TAE 920 launches along the facing (ChrPhysicsVelocityChangeParam 1001:
+            // 6.4 m/s at angle 0, 9.69 up): a horizontal one turns Wolf to the stick first (HKS
+            // _SetJumpDirection), or he jumped into the wall.
+            if ty != 'N' && stick.length_squared() > 0.01 {
+                a.yaw = yaw_of(stick);
+            }
+            if a.play_state(d, &dk::wall_jump_start(contact, ty)) {
+                log.push(format!("wall jump {contact}_{ty}"), Color::srgb(0.6, 0.8, 0.9));
+                return true;
+            }
+        }
+    }
+    if a.state.starts_with("WallJumpStart_") && ended {
+        let vertical = a.state.ends_with("_N");
+        a.play_state(d, if vertical { "VerticalGroundJumpFall" } else { "ForwardGroundJumpFall" });
+        return true;
+    }
+    if a.state.starts_with("WallJumpReady_") || dk::is_jump_ready(&a.state) {
+        return true;
+    }
+    // Jump in the air with a wall at the chest, once per flight.
+    if jump && wall_jump_open(d, a, p, feet) {
+        {
+            let wall_dir = dk::wall_contact_dir(feet + Vec3::Y * 1.2, a.yaw);
+            if let Some(angle) = dk::wall_contact(feet + Vec3::Y * 1.2, a.yaw) {
+                p.last_wall = wall_dir;
+                let contact = dk::contact_type(angle);
+                if a.play_state(d, &format!("WallJumpReady_{contact}")) {
+                    p.wall_jumps += 1;
+                    p.wall_contact = Some(contact);
+                    a.vel_y = a.vel_y.max(0.0);
+                    log.push("wall contact", Color::srgb(0.6, 0.8, 0.9));
+                    return true;
+                }
+            }
+        }
+    }
+    // The drop's push-off runs into the fall (HangToFreeFall, 0.33 s).
+    if a.state.starts_with("Hang") && a.state.ends_with("ToFreeFall") {
+        if ended {
+            a.play_state(d, "FreeFall");
+        }
+        return !ended;
+    }
+    if let Some(dock) = p.dock.clone() {
+        let st = a.state.clone();
+        let climbing = st.starts_with("HangToStand") || st.starts_with("HangFootHoldToStand");
+        if climbing {
+            // Off the edge once the clip's motion is done; the clip plays on (its stand-up was
+            // cut to a bare idle at 0.77 of its 1.4 s before) and ends or is cancelled as any
+            // standing clip.
+            if dk::start_done(d, a, ended) {
+                p.dock = None;
+                a.docked = false;
+                if ended {
+                    a.play("StandIdle", "");
+                }
+                return false;
+            }
+            return true;
+        }
+        // A hang deathblow keeps Wolf at the edge (the enemy is pulled down past him), then
+        // back to hanging.
+        if !dock.hug() && (st == "Deathblow" || st == "DeathblowStart") {
+            if st == "Deathblow" && ended {
+                dk::play(a, d, if dock.edge.variation == 1 { "HangFootHoldIdle" } else { "HangIdle" });
+            }
+            return true;
+        }
+        if !dk::is_docked_state(&st) {
+            // Something else (a hit, a death) took Wolf off the edge.
+            p.dock = None;
+            return false;
+        }
+        if dk::is_start(&st) {
+            if dk::start_done(d, a, ended) {
+                let next = if dock.hug() { None } else { dk::hang_start_next(&st) };
+                match next {
+                    Some(n) => {
+                        if let Some(dd) = p.dock.as_mut() {
+                            dd.from = (feet, a.yaw);
+                        }
+                        dk::play(a, d, &n);
+                    }
+                    None => {
+                        if let Some(n) = dk::held_state(&dock, a, Vec3::ZERO, walk, true) {
+                            dk::play(a, d, &n);
+                        }
+                    }
+                }
+            }
+            return true;
+        }
+        // The hug / hang deathblows (dock_deathblow): the start throw, then decide's
+        // DeathblowStart runs the main one at the start anim's judge. The wall ones only from the
+        // peek: _UpdateNextThrowInfo sets ThrowGrabType COVER_LOOK and the WALL_L / R_NINSATSU
+        // SpEffects (109304 / 109305) only in STYLE_TYPE_COVER_LOOK; a plain hug grabs as standing
+        // (atlas movement.docking-deathblows). gap: the stand deathblows from a plain hug.
+        if attack && !dk::is_start(&st) && (!dock.hug() || dk::is_peek(&st)) {
+            let fwd = Quat::from_rotation_y(a.yaw) * Vec3::NEG_Z;
+            // Hanging, the reach and height are taken from the hands on the lip (the rows' 1.35 m
+            // height window could never reach an enemy on the top from the hanging body 1.6 m
+            // under it). gap: the exe measures from judgeRangeBasePosDmyId1 (not traced).
+            let from = if dock.hug() { tf.translation } else { dock.point(dock.s) + Vec3::Y * CAPSULE_HALF_HEIGHT };
+            if let Some((ee, start, main, behind)) = dock_deathblow(combat, &dock, from, fwd, enemies) {
+                let foe_start = enemies.get(ee).ok().and_then(|q| combat.throw(combat.foe_of(&q.1).throw_row(start)));
+                if let Some(th) = foe_start.filter(|th| d.anim(&th.atk_anim).is_some()) {
+                    a.play("DeathblowStart", &th.atk_anim);
+                    a.move_vel = Vec3::ZERO;
+                    p.throw_start = Some((ee, main, behind));
+                    if dock.hug() {
+                        p.dock = None;
+                        a.docked = false;
+                    }
+                    log.push(if dock.hug() { "wall deathblow" } else { "ledge deathblow" }, Color::srgb(1.0, 0.2, 0.2));
+                    return true;
+                }
+            }
+        }
+        if dock.hug() {
+            if jump && a.play_state(d, "CoverToWallJumpReady") {
+                p.dock = None;
+                a.docked = false;
+                p.wall_contact = Some('B');
+                p.wall_jumps += 1;
+                return true;
+            }
+            if interact || step {
+                p.dock = None;
+                a.play_state(d, if dk::is_peek(&a.state) { "CoverEndFromCoverLook" } else { "CoverEnd" });
+                log.push("wall hug end", Color::srgb(0.6, 0.8, 0.9));
+                return true;
+            }
+        } else {
+            let foot = dock.edge.variation == 1;
+            // Jump: the kick off the wall (BEH_A_HANG_END_CONNECT comes before BEH_A_HANG_CLIMB in
+            // g_behaviorValidateOrder, so the jump never climbs; HKS 3171: HangJumpReady, held at
+            // the edge until it ends, then WallJumpStart_F_<type> by the stick, and
+            // g_wallJumpCount = WALL_JUMP_COUNT_MAX). Atlas movement.hang-climb-drop.
+            if jump && a.play_state(d, if foot { "HangFootHoldJumpReady" } else { "HangJumpReady" }) {
+                p.wall_contact = Some('F');
+                p.wall_jumps = dk::wall_jump_limit();
+                return true;
+            }
+            // The hang button (ACTION_ARM_WALL_HANG) climbs. gap: env 3050 (room to stand up).
+            if interact {
+                if let Some(dd) = p.dock.as_mut() {
+                    dd.climb_from = None;
+                }
+                a.play_state(d, if foot { "HangFootHoldToStand" } else { "HangToStand" });
+                log.push("climb up", Color::srgb(0.6, 0.8, 0.9));
+                dk::debug_dock(&format!("{} (climb, s {:.2} of {:.2})", a.state, dock.s, dock.len));
+                return true;
+            }
+            if step {
+                p.dock = None;
+                a.docked = false;
+                a.airborne = true;
+                a.fall_type = 0;
+                a.vel_y = 0.0;
+                a.air_base = Vec3::ZERO;
+                a.play_state(d, if foot { "HangFootHoldToFreeFall" } else { "HangToFreeFall" });
+                log.push("drop", Color::srgb(0.6, 0.8, 0.9));
+                return true;
+            }
+        }
+        // Hanging at an end with the stick on that way: the next edge carries on (the same face),
+        // or the corner move takes Wolf round onto it.
+        if !dock.hug() {
+            let along = stick.dot(dock.right());
+            if along.abs() > 0.3 {
+                let right = along > 0.0;
+                let toward_b = right == (dock.right().dot(dock.along) > 0.0);
+                let at_end = if toward_b { dock.s >= dock.len - dk::END_MARGIN - 0.01 } else { dock.s <= dk::END_MARGIN + 0.01 };
+                if at_end {
+                    let next = dk::next_hang_edge(edges, &dock, toward_b);
+                    dk::debug_dock(&format!("end of a {:.2} m edge: next {:?}", dock.len, next.as_ref().map(|(nd, t)| (t, nd.len, nd.side_from))));
+                    if let Some((mut nd, turn)) = next {
+                        nd.from = (feet, a.yaw);
+                        if turn == dk::Turn::Straight {
+                            p.dock = Some(nd);
+                        } else {
+                            let st = dk::corner_state(turn, right, dock.edge.variation == 1);
+                            if a.play_state(d, &st) {
+                                p.dock = Some(nd);
+                                log.push("hang corner", Color::srgb(0.6, 0.8, 0.9));
+                                return true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if let Some(n) = dk::held_state(&dock, a, stick, walk, ended) {
+            dk::play(a, d, &n);
+        }
+        return true;
+    }
+    // Ground starts on the button, from standby: the wall hug (BEH_A_COVER_START), else the
+    // hang over the lip Wolf stands at (BEH_A_GROUND_HANG_START).
+    if interact && !a.airborne && is_free(&a.state) && p.wire.is_none() {
+        if let Some(mut dock) = dk::find_hug(edges, feet, a.yaw) {
+            // Stick held: the moving starts by the stick's angle; else the clip whose own turn and
+            // path fit (hug_start_best).
+            let st = if stick.length_squared() > 0.01 { dk::hug_start_state(&dock, a.yaw, stick) } else { dk::hug_start_best(d, &dock, (feet, a.yaw)) };
+            dock.from = (feet, a.yaw);
+            if a.play_state(d, st) {
+                a.crouch = false;
+                p.dock = Some(dock);
+                log.push("wall hug", Color::srgb(0.6, 0.8, 0.9));
+                return true;
+            }
+        } else if let Some(mut dock) = dk::find_hang_top(edges, feet, a.yaw) {
+            let st = dk::hang_start_best(d, &dock, (feet, a.yaw));
+            dock.from = (feet, a.yaw);
+            if dk::play(a, d, &st) {
+                dk::debug_dock(&format!("{st} (ledge hang, {:.2} m edge, side from {})", dock.len, dock.side_from));
+                a.crouch = false;
+                p.dock = Some(dock);
+                log.push("ledge hang", Color::srgb(0.6, 0.8, 0.9));
+                return true;
+            }
+        }
+    }
+    // The air catch (BEH_A_AIR_HANG_START): falling past a lip with the button held (env 1108).
+    // gap: the TAE grab window (SP_EF_REF_TAE_ENABLE_AIR_HANG_GRAB) that catches without it.
+    // The air catch: the button held (env 1108), or inside a jump's TAE grab window
+    // (SpEffect ref 5 SP_EF_REF_TAE_ENABLE_AIR_HANG_GRAB) without it.
+    let grab_window = !a.anim.is_empty() && d.has_ref(&a.anim, a.step(), dk::REF_ENABLE_AIR_HANG_GRAB);
+    if (interact_held || interact || grab_window) && a.airborne && a.vel_y <= 0.0 && p.wire.is_none() && p.plunge.is_none() {
+        if let Some((mut dock, long)) = dk::find_hang_air(edges, feet, a.yaw) {
+            let st = dk::air_hang_state(&dock, a.yaw, long);
+            dock.from = (feet, a.yaw);
+            if dk::play(a, d, &st) {
+                p.dock = Some(dock);
+                a.airborne = false;
+                a.vel_y = 0.0;
+                log.push("ledge catch", Color::srgb(0.6, 0.8, 0.9));
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// Walk/run with speeds taken from the walk (a000_0001xx) and run (a000_0004xx)
 /// clips' root motion, blended by the HKS speed level.
 #[allow(clippy::too_many_arguments)]
@@ -5665,21 +5402,92 @@ fn locomotion(
     dt: f32,
 ) {
     converge_speed(p, stick, walk_held, dt);
+    // The 180 turns, the game's own clips (c0000.hkx *_F_CMSG_Anime; the user: "turning around
+    // animations when idle and walking"):
+    // - running: W_StandMoveQuickTurn{Left,Right}180 (StandRunQuickTurn*180, a000_000442 / 443);
+    // - from a standstill: BEH_A_QUICK_TURN_MOVE_START -> W_StandQuickTurnMoveStart*180, the run
+    //   start (StandQuickTurnRunStart*180, a000_000432 / 433) or with walk held the walk start
+    //   (StandQuickTurnWalkStart*180, a000_000132 / 133);
+    // - walking: the walk's quick turn (StandWalkQuickTurn*180, a000_000142 / 143).
+    // Their roots carry no turn and run on along the new heading, so the heading takes the stick
+    // at once. The run clips' hips spin from about 100 deg off it to straight by frame 16 (0.53 s);
+    // the walk clips only lean 50 deg into the turn, so the model swings round over the clip's
+    // blend from the old facing (anim.rs Skeleton::yaw_off). Turned, he moves on in the loop; let
+    // go mid-turn, the stop.
+    if let Some((walk, _)) = quick_turn_kind(&a.state) {
+        // Locked on, the turn is the target's (hks_wolf: the script's in-move 180 with the stick
+        // at rest), so letting go does not stop it.
+        if stick == Vec3::ZERO && target_dir.is_none() && a.play_state(d, if walk { "StandWalkStop_F" } else { "StandRunStopF" }) {
+            a.move_vel = Vec3::ZERO;
+            p.speed_level = 0.0;
+            return;
+        }
+        if a.t < if walk { WALK_QUICK_TURN_TURNED } else { QUICK_TURN_TURNED } {
+            a.move_vel = Vec3::ZERO;
+            return;
+        }
+        // The graph plays the turn's clip out before the loop (the turn-and-go is a move start,
+        // W_StandQuickTurnMoveStart*180; the in-move W_StandMoveQuickTurn*180 too), so
+        // Locomotion shows the rest of it.
+        let start = Some((a.anim.clone(), a.t));
+        a.procedural("Locomotion");
+        a.move_start = 0.0;
+        if let Some((clip, t)) = start {
+            a.move_start = d.length(&clip);
+            a.move_start_clip = Some(clip);
+            a.start_at(t);
+        }
+        p.speed_level = if walk { p.speed_level.max(1.0) } else { p.speed_level.max(2.0) };
+        move_velocity(p, a, d, config, stick, target_dir, dt);
+        return;
+    }
+    let behind = stick != Vec3::ZERO && a.forward().angle_between(stick).to_degrees() > QUICK_TURN_ANGLE;
+    // Sheathed, the a010 copy where the CMSG has one (offsetType 11's idle category).
+    if target_dir.is_none() && !a.crouch && behind {
+        let standing = a.state == "StandIdle" || (a.state == "Locomotion" && p.speed_level <= 0.3);
+        // On the move the 180 turn opens only in a stop's first 9 frames (BEH_A_STAND_MOVE_QUICK_TURN:
+        // TAE ref 14 ENABLE_GROUND_QUICK_TURN, on StandWalkStop_F / StandRunStopF alone): let go,
+        // then the stick back. Thrown straight back, the run turns at the exe's 720 deg/s.
+        let (shown, st) = a.shown_clip(d);
+        let stop_turn = d.has_ref(&shown, st, REF_ENABLE_GROUND_QUICK_TURN);
+        let kind = if standing {
+            Some(if walk_held { "StandQuickTurnWalkStart" } else { "StandQuickTurnRunStart" })
+        } else if stop_turn && a.state.starts_with("StandWalkStop") {
+            Some("StandWalkQuickTurn")
+        } else if stop_turn && a.state.starts_with("StandRunStop") {
+            Some("StandRunQuickTurn")
+        } else {
+            None
+        };
+        if let Some(kind) = kind {
+            // BEH_A_QUICK_TURN_MOVE_START: Left only where TwistLowerRootAngle (minus the turn,
+            // hks_wolf move_vars) is above 0, so a full reverse turns right.
+            // In the move, BEH_A_STAND_MOVE_QUICK_TURN: Right where TurnAngle > 0.
+            let turn = stick.dot(a.forward().cross(Vec3::Y)).atan2(stick.dot(a.forward()));
+            let right = if standing { -turn <= 0.0 } else { turn > 0.0 };
+            let side = if right { "Right" } else { "Left" };
+            if let Some(mut key) = d.anim_key(&format!("{kind}{side}180_F_CMSG_Anime")).map(str::to_string) {
+                let sheathed = format!("a010{}", &key[4..]);
+                if a.sheathed && key.starts_with("a000") && d.anim(&sheathed).is_some() {
+                    key = sheathed;
+                }
+                a.yaw = yaw_of(stick);
+                a.play(&format!("{kind}{side}180"), &key);
+                a.move_vel = Vec3::ZERO;
+                return;
+            }
+        }
+    }
     // Stick released: the stop anims carry their own slide (root motion), in the move direction
     // (HKS BEH_A_GROUND_MOVE_STOP: W_StandRunStop / W_StandWalkStop by MoveDirection).
     if stick == Vec3::ZERO && a.state == "Locomotion" && p.speed_level > 0.3 {
-        let dir = ["F", "B", "L", "R"][a.move_dir.min(3) as usize];
-        let run = p.speed_level > 1.2;
-        // Crouched: W_CrouchRunStop / W_CrouchWalkStop (CrouchRunStop_F 5600, CrouchWalkStop_F 5300).
-        let (stop, fallback) = match (a.crouch, run) {
-            (true, true) => (format!("CrouchRunStop_{dir}"), "CrouchRunStop_F"),
-            (true, false) => (format!("CrouchWalkStop_{dir}"), "CrouchWalkStop_F"),
-            (false, true) => (format!("StandRunStop{dir}"), "StandRunStopF"),
-            (false, false) => (format!("StandWalkStop_{dir}"), "StandWalkStop_F"),
+        // The run stop where the clip on screen is a run (TAE ref 91 MOVING_RUN, as the script's
+        // BEH_A_GROUND_MOVE_STOP reads it), not by the speed level, which lags behind the clip.
+        let run = {
+            let (key, t) = a.shown_clip(d);
+            d.has_ref(&key, t, SP_REF_TAE_MOVING_RUN)
         };
-        if a.play_state(d, &stop) || a.play_state(d, fallback) {
-            a.move_vel = Vec3::ZERO;
-            p.speed_level = 0.0;
+        if play_move_stop(d, a, p, run) {
             return;
         }
     }
@@ -5723,6 +5531,33 @@ fn lower_body_move(
     }
     move_velocity(p, a, d, config, stick, target_dir, dt);
 }
+
+/// The 180 turns: the stick more than this (deg) from the facing (BEH_A_QUICK_TURN_MOVE_START /
+/// BEH_A_STAND_MOVE_QUICK_TURN: |TwistLowerRootAngle| / |TurnAngle| > 135).
+const QUICK_TURN_ANGLE: f32 = 135.0;
+/// SP_EF_REF_TAE_ENABLE_GROUND_QUICK_TURN (c0000_define 594): the stops' first 9 frames.
+const REF_ENABLE_GROUND_QUICK_TURN: i64 = 14;
+/// When the quick turn's pose faces the run (the hips straight, frame 16 at 30 fps): the clip hands
+/// over to the run loop. gap: the hkb StandMoveQuickTurn*_to_StandMoveLoop condition is not read.
+const QUICK_TURN_TURNED: f32 = 0.53;
+
+pub(crate) fn is_move_quick_turn(state: &str) -> bool {
+    quick_turn_kind(state).is_some()
+}
+
+/// A 180 quick turn's kind: (a walk one, its pose spins round itself - the run ones).
+pub(crate) fn quick_turn_kind(state: &str) -> Option<(bool, bool)> {
+    if state.starts_with("StandRunQuickTurn") || state.starts_with("StandQuickTurnRunStart") {
+        Some((false, true))
+    } else if state.starts_with("StandWalkQuickTurn") || state.starts_with("StandQuickTurnWalkStart") {
+        Some((true, false))
+    } else {
+        None
+    }
+}
+
+/// When a walk quick turn hands over to the walk loop (s): its lean is out by about frame 15.
+const WALK_QUICK_TURN_TURNED: f32 = 0.5;
 
 /// HKS GetMoveSpeed: ConvergeValue(level, speed, inc 3, dec 3), inc 6 toward level 2.
 fn converge_speed(p: &mut Player, stick: Vec3, walk_held: bool, dt: f32) {

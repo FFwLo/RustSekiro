@@ -306,7 +306,6 @@ struct Particle {
 }
 
 struct NodeInst {
-    node: Arc<Value>,
     /// Active config (stateConfigMap[0]).
     cfg: Option<Arc<Value>>,
     local: Transform,
@@ -333,6 +332,22 @@ struct NodeInst {
     offset: Vec3,
     /// Its nodeAudio (75) has been started.
     audio: bool,
+    /// A LevelsOfDetail node's (2002) level distances: its 1002 config's thresholds, one per child.
+    lod: Option<Vec<f32>>,
+    /// The level this child is under its LevelsOfDetail parent.
+    level: Option<usize>,
+    /// Not its parent's level for the camera's distance: neither stepped nor drawn.
+    hidden: bool,
+}
+
+/// The level of a LevelsOfDetail node (2002) `dist` metres from the camera: child i covers
+/// [threshold i, threshold i + 1) (reference/fxr LevelsOfDetailThresholds "distance threshold for
+/// child node i"). In the extracted effects threshold 0 is always 1 and the detailed child the
+/// first; the far children are mostly empty (800140's ground fire: detail to 165 m, a lighter
+/// level to 200 m, nothing past), and a few are far glows only (811052: from 400 m). Nearer than
+/// the first threshold is the first level.
+fn lod_level(thresholds: &[f32], dist: f32) -> usize {
+    thresholds.iter().rposition(|&t| dist >= t).unwrap_or(0)
 }
 
 /// What an effect rides on.
@@ -373,7 +388,7 @@ pub struct FxEffect {
     /// Effect time not yet stepped (less than one 1/60 s game frame).
     acc: f32,
     /// The nodeAudio sounds playing, moved with their node and stopped with the effect.
-    sounds: Vec<crate::fmod::EventHandle>,
+    sounds: Vec<crate::sound_rules::TrackedSound>,
 }
 
 impl FxEffect {
@@ -429,14 +444,26 @@ impl FxrLib {
         self.cache
             .entry(id)
             .or_insert_with(|| {
+                let t0 = std::time::Instant::now();
                 let p = crate::paths::extracted().join(format!("fxr/{id}.json"));
                 let v = std::fs::read_to_string(p).ok().and_then(|s| serde_json::from_str::<Value>(&s).ok());
+                // A first use read here stalls the frame (a hitch when it is big).
+                let ms = t0.elapsed().as_secs_f32() * 1000.0;
+                if ms > 10.0 {
+                    info!("fxr: {id} read in {ms:.0} ms on first use");
+                }
                 if let Some(v) = &v {
                     screen_textures(v, &mut self.screen_tex);
                 }
                 v.map(Arc::new)
             })
             .clone()
+    }
+    /// An effect built here rather than read from extracted/fxr (a game effect with a node
+    /// removed: the idol's flame without its ground mist, idol.rs), under an id of its own.
+    pub fn put(&mut self, id: i64, v: Value) {
+        screen_textures(&v, &mut self.screen_tex);
+        self.cache.insert(id, Some(Arc::new(v)));
     }
     pub fn has(&mut self, id: i64) -> bool {
         self.get(id).is_some()
@@ -482,17 +509,28 @@ fn make_node(lib: &mut FxrLib, node: &Value, seed: u32, depth: u32) -> Option<No
     }
     let is_node_emitter = cfg.as_ref().is_some_and(|c| c["type"].as_i64() == Some(1005) || c["type"].as_str() == Some("1005"));
     let kids: Vec<Value> = node["nodes"].as_array().cloned().unwrap_or_default();
-    // Levels of detail (LevelsOfDetail 2002): the closest (first) child only. (2202 is the
-    // NodeEmitter, reference/fxr src/fxr.ts NodeType: all its children are templates.)
-    let kids: Vec<Value> = if ty == 2002 { kids.into_iter().take(1).collect() } else { kids };
+    // Levels of detail (LevelsOfDetail 2002): every child, one shown at a time by the camera's
+    // distance (`lod_level`, step_node). (2202 is the NodeEmitter, reference/fxr src/fxr.ts
+    // NodeType: all its children are templates.)
+    let lod: Option<Vec<f32>> = (ty == 2002).then(|| {
+        let th = cfg.as_ref().and_then(|c| c["thresholds"].as_array().map(|a| a.iter().filter_map(Value::as_f64).map(|t| t as f32).collect()));
+        th.unwrap_or_else(|| vec![0.0])
+    });
     let (children, templates) = if is_node_emitter {
         (Vec::new(), kids.into_iter().map(Arc::new).collect())
     } else {
-        (kids.iter().enumerate().filter_map(|(i, k)| make_node(lib, k, seed.wrapping_mul(31).wrapping_add(i as u32 + 1), depth + 1)).collect(), Vec::new())
+        let mut ch: Vec<NodeInst> = Vec::new();
+        for (i, k) in kids.iter().enumerate() {
+            if let Some(mut c) = make_node(lib, k, seed.wrapping_mul(31).wrapping_add(i as u32 + 1), depth + 1) {
+                c.level = lod.is_some().then_some(i);
+                c.hidden = lod.is_some() && i > 0;
+                ch.push(c);
+            }
+        }
+        (ch, Vec::new())
     };
     let cap = cfg.as_ref().map_or(0, |c| periodic_cap(c, seed));
     Some(NodeInst {
-        node: Arc::new(node.clone()),
         cfg,
         local,
         world: Transform::IDENTITY,
@@ -512,6 +550,9 @@ fn make_node(lib: &mut FxrLib, node: &Value, seed: u32, depth: u32) -> Option<No
         detached: None,
         offset: Vec3::ZERO,
         audio: false,
+        lod,
+        level: None,
+        hidden: false,
     })
 }
 
@@ -1014,9 +1055,15 @@ fn step_node(n: &mut NodeInst, lib: &mut FxrLib, parent: Transform, dt: f32, sto
         Some(w) => w * n.local,
         None => parent * n.local,
     };
+    if let Some(th) = &n.lod {
+        let level = lod_level(th, lib.cam.map_or(0.0, |c| c.translation.distance(n.world.translation)));
+        for c in &mut n.children {
+            c.hidden = c.level != Some(level);
+        }
+    }
     if n.time < n.delay {
         n.time += dt;
-        for c in &mut n.children {
+        for c in n.children.iter_mut().filter(|c| !c.hidden) {
             step_node(c, lib, n.world, dt, stop);
         }
         return;
@@ -1143,7 +1190,10 @@ fn step_node(n: &mut NodeInst, lib: &mut FxrLib, parent: Transform, dt: f32, sto
                 }
                 _ => {}
             }
-            if em["type"].as_i64() == Some(399) {
+            // A node with no emitter emits once as 399 does (the idol flame's root child 2002
+            // laid a particle every frame, never ending: the game slowed over minutes). The 399
+            // is spent on its first frame even when the pool was not empty (fxr2, exe-checked).
+            if !gpu && em["type"].as_i64().unwrap_or(399) == 399 {
                 n.emissions = 1;
             }
             let max_conc = int(em, "maxConcurrent", -1);
@@ -1242,8 +1292,12 @@ fn step_node(n: &mut NodeInst, lib: &mut FxrLib, parent: Transform, dt: f32, sto
     }
     n.time += dt;
     let world = n.world;
-    for ch in &mut n.children {
+    for ch in n.children.iter_mut().filter(|c| !c.hidden) {
         step_node(ch, lib, world, dt, stop || !alive);
+    }
+    // A stopped effect's other levels end with it.
+    if stop || !alive {
+        n.children.retain(|c| !c.hidden);
     }
     n.children.retain(|c| !c.finished);
     let emitting = alive && n.cfg.is_some();
@@ -1315,7 +1369,8 @@ fn time_rate(def: &Value, age: f32) -> f32 {
     scalar(&def["root"]["unk10500"], "rateOfTime", age, &mut Rnd { seed: 0, k: 0 }, 1.0).max(0.0)
 }
 
-fn tick(mut commands: Commands, time: Res<Time>, mut lib: ResMut<FxrLib>, globals: Query<&GlobalTransform>, mut fx: Query<(Entity, &mut FxEffect)>, mut fmod: Option<NonSendMut<crate::fmod::Fmod>>, cams: Query<(&Camera, &GlobalTransform), With<Camera3d>>) {
+fn tick(mut commands: Commands, time: Res<Time>, mut lib: ResMut<FxrLib>, globals: Query<&GlobalTransform>, mut fx: Query<(Entity, &mut FxEffect)>, mut tracked: Option<ResMut<crate::sound_rules::TrackedSounds>>, cams: Query<(&Camera, &GlobalTransform), With<Camera3d>>) {
+    let _prof = crate::perf::span("fxr_tick");
     let dt = time.delta_secs().min(1.0 / 15.0);
     lib.cam = cams.iter().filter(|(c, _)| c.is_active).min_by_key(|(c, _)| c.order).map(|(_, g)| g.compute_transform());
     // SHINOBI_FXR_LIVE=1: the playing effects (id, age, stopped, keyed) twice a second.
@@ -1353,7 +1408,7 @@ fn tick(mut commands: Commands, time: Res<Time>, mut lib: ResMut<FxrLib>, global
             }
         }
         let place = f.at;
-        if std::env::var("SHINOBI_FXR_WHERE").ok().and_then(|v| v.parse::<i64>().ok()) == Some(f.id) {
+        if *WHERE == Some(f.id) {
             info!("fxr {} age {:.2} at {:.2} anchored {}", f.id, f.age, place.translation, anchor.is_some());
         }
         let stop = f.stop;
@@ -1377,14 +1432,12 @@ fn tick(mut commands: Commands, time: Res<Time>, mut lib: ResMut<FxrLib>, global
         let mut start = Vec::new();
         start_audio(root, &mut start);
         let done = root.finished || (!f.keep && f.age > 30.0);
-        if let Some(fm) = fmod.as_mut() {
+        if let Some(fm) = tracked.as_mut() {
             for (sound, at) in start {
                 if f.own_sound_played && sound == f.id {
                     continue;
                 }
-                if let Some(ev) = fm.play_tracked(&format!("s{sound:09}"), at) {
-                    f.sounds.push(ev);
-                }
+                f.sounds.push(fm.play(&format!("s{sound:09}"), at));
             }
             for ev in &f.sounds {
                 if done { fm.stop(*ev) } else { fm.set_position(*ev, place.translation) }
@@ -1447,10 +1500,10 @@ pub struct DistortMaterial {
 
 impl Material for DistortMaterial {
     fn vertex_shader() -> bevy::shader::ShaderRef {
-        "embedded://sv1/fx_distort.wgsl".into()
+        "embedded://rustsekiro/fx_distort.wesl".into()
     }
     fn fragment_shader() -> bevy::shader::ShaderRef {
-        "embedded://sv1/fx_distort.wgsl".into()
+        "embedded://rustsekiro/fx_distort.wesl".into()
     }
     fn alpha_mode(&self) -> AlphaMode {
         AlphaMode::Opaque
@@ -1575,10 +1628,10 @@ pub struct MultiMaterial {
 
 impl Material for MultiMaterial {
     fn vertex_shader() -> bevy::shader::ShaderRef {
-        "embedded://sv1/fx_multi.wgsl".into()
+        "embedded://rustsekiro/fx_multi.wesl".into()
     }
     fn fragment_shader() -> bevy::shader::ShaderRef {
-        "embedded://sv1/fx_multi.wgsl".into()
+        "embedded://rustsekiro/fx_multi.wesl".into()
     }
     fn alpha_mode(&self) -> AlphaMode {
         AlphaMode::Premultiplied
@@ -1627,7 +1680,7 @@ pub struct SoftExt {
 
 impl bevy::pbr::MaterialExtension for SoftExt {
     fn fragment_shader() -> bevy::shader::ShaderRef {
-        "embedded://sv1/fx_soft.wgsl".into()
+        "embedded://rustsekiro/fx_soft.wesl".into()
     }
 }
 
@@ -1713,6 +1766,11 @@ const LIT_UNLIT: f32 = 0.125;
 
 /// SHINOBI_FX_LIT=1: the ported lit shading (sprites / GPU particles). Off by default until the
 /// light scale (g_ps_envCbColScale, g_vLightMask.x: writers not found, HANDOFF 4.58) is read live.
+/// `SHINOBI_FXR_WHERE=<id>`: log where that effect is each frame. Read once (it was read per
+/// effect per frame).
+static WHERE: std::sync::LazyLock<Option<i64>> = std::sync::LazyLock::new(|| std::env::var("SHINOBI_FXR_WHERE").ok().and_then(|v| v.parse().ok()));
+/// `SHINOBI_FXR_LOG`: log the quads drawn and the model albedos.
+static FXR_LOG: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::env::var("SHINOBI_FXR_LOG").is_ok());
 static LIT_PORT: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::env::var("SHINOBI_FX_LIT").is_ok());
 /// SHINOBI_FX_ORIENT=1: the exe's orientation modes 4 / 6 / 7 (FUN_140440a60). Off by default
 /// until its runtime constants and mode 7's per-particle vector are read live (HANDOFF 4.58).
@@ -1750,15 +1808,16 @@ fn particle_color(a: &Value, c: &Value, p: &Particle, active_t: f32, rnd: &mut R
 /// GXFfxsoftTracer.ppo, disassembled with d3dcompiler_47 D3DDisassemble) split the particle colour
 /// into its length and direction (`dp3` / `sqrt` / `div r3.xyz, v0.xyz, |v0|`), multiply the texture
 /// by the direction, square that (`mul r1.xyz, r1.xyz, r1.xyz`) and scale by the length: the hue is
-/// gamma 2, the brightness (rgbMultiplier included) linear. Here: c_i^2 / |c|, times sqrt 3 so a
-/// grey keeps its value. gap: that sqrt 3 stands for g_vColorScale (cb0[9], set by the exe, not
-/// traced); the texture's own square is left to the PNG's sRGB decode (~ x^2.2).
+/// gamma 2, the brightness (rgbMultiplier included) linear. Here: c_i^2 / |c|, with no further
+/// factor: the disassembly has none (sekiro-rs docs/MAP-FX.md "Fire brightness audit": an earlier
+/// sqrt 3 made every effect 1.73 times too bright). The texture's own square is left to the PNG's
+/// sRGB decode (~ x^2.2).
 fn hue_squared(c: [f32; 3]) -> [f32; 3] {
     let len = (c[0] * c[0] + c[1] * c[1] + c[2] * c[2]).sqrt();
     if len < 1e-5 {
         return [0.0; 3];
     }
-    c.map(|v| v * v / len * 3f32.sqrt())
+    c.map(|v| v * v / len)
 }
 
 /// Distortion / RadialBlur colour: `color` (clamped) x the node's particleModifier colour,
@@ -1846,8 +1905,16 @@ fn collect(
             let sy = if pmod["uniformScale"].as_bool() == Some(true) { sx } else { scalar(pmod, "scaleY", p.emit_t, &mut rnd, 1.0) };
             match at {
                 600 | 603 | 604 => {
-                    let w = scalar(a, "width", p.age, &mut rnd, 1.0) * sx;
-                    let h = if a["uniformScale"].as_bool() == Some(true) { w } else { scalar(a, "height", p.age, &mut rnd, 1.0) * sy };
+                    // A PointSprite (600) has one `size` (by the particle's age), no width / height:
+                    // read as both (it drew every point 1 m wide: Yashariku's Sugar's 2.5-10 cm
+                    // soot 310331 as black discs; the user, 2026-10-18).
+                    let (w, h) = if at == 600 {
+                        let s = scalar(a, "size", p.age, &mut rnd, 1.0);
+                        (s * sx, s * sy)
+                    } else {
+                        let w = scalar(a, "width", p.age, &mut rnd, 1.0) * sx;
+                        (w, if a["uniformScale"].as_bool() == Some(true) { w } else { scalar(a, "height", p.age, &mut rnd, 1.0) * sy })
+                    };
                     let off = game_vec(prop(a.get("offsetX").map(|_| a), 0.0, &mut rnd, [0.0; 4]));
                     let _ = off;
                     let rz = (scalar(a, "rotationZ", 0.0, &mut rnd, 0.0) + scalar(a, "angularSpeedZ", p.age, &mut rnd, 0.0) * scalar(a, "angularSpeedMultiplierZ", p.age, &mut rnd, 1.0) * p.age).to_radians();
@@ -1941,7 +2008,10 @@ fn collect(
                     let mut size = |k: &str| (num(&a[k]) + num(&a[format!("{k}Min")]) + (num(&a[format!("{k}Max")]) - num(&a[format!("{k}Min")])) * sr.next()) * mult;
                     let w = size("particleSizeX");
                     let h = if a["particleUniformScale"].as_bool() != Some(false) { w } else { size("particleSizeY") };
-                    let base = vec4(&a["color"]);
+                    // `color` is a property by particle age: a fixed value or keyframes (the
+                    // castle snow 839500 fades in over its first second and out over its last;
+                    // read as a plain number it was 0, every flake clear).
+                    let base = prop(a.get("color"), p.age, &mut Rnd { seed: p.seed ^ 0x51cf, k: 0 }, [1.0; 4]);
                     let rgbm = num(&a["rgbMultiplier"]) * if matches!(a["lighting"].as_i64(), Some(-2 | 0)) && !*LIT_PORT { LIT_UNLIT } else { 1.0 };
                     let hue = hue_squared([base[0], base[1], base[2]]);
                     let col = [hue[0] * rgbm, hue[1] * rgbm, hue[2] * rgbm, (base[3] * num(&a["alphaMultiplier"]) * fade).clamp(0.0, 1.0)];
@@ -2135,7 +2205,7 @@ fn collect(
             }
         }
     }
-    for ch in &n.children {
+    for ch in n.children.iter().filter(|c| !c.hidden) {
         collect(ch, lib, cam, out, dist, multi, lights, px, to_sun);
     }
 }
@@ -2279,6 +2349,33 @@ fn grow_trails(n: &mut NodeInst, dt: f32) {
 #[derive(Component)]
 struct FxLight;
 
+/// The effects' draw (lit particles take the frame's `SceneLight`: set it before this).
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct FxDraw;
+
+/// The scene's light on lit particles, set by the host's map (this game's map.rs: its own draw
+/// params, or sekiro-rs's light set in force): ambient and sun radiance as the renderer takes them
+/// (the map's scale applied), the way toward the sun, and a particle point light's lumens per
+/// game unit. Without one, a plain midday.
+#[derive(Resource, Clone, Copy, PartialEq, Debug)]
+pub struct SceneLight {
+    pub ambient: Vec3,
+    pub sun: Vec3,
+    pub to_sun: Vec3,
+    pub lumens_per_unit: f32,
+}
+
+/// sekiro-rs's exe-traced scene unit (lighting.rs SCENE_TO_BEVY: pi / Bevy's default exposure),
+/// for the default only; the host's map gives its own.
+const SCENE_UNIT: f32 = 3_135.61;
+
+impl Default for SceneLight {
+    fn default() -> Self {
+        let env = SCENE_UNIT / std::f32::consts::PI;
+        Self { ambient: Vec3::splat(0.4 * env), sun: Vec3::splat(1.5 * env), to_sun: Vec3::new(0.3, 0.8, 0.5).normalize(), lumens_per_unit: SCENE_UNIT * 4.0 * std::f32::consts::PI }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn draw(
     mut commands: Commands,
@@ -2295,12 +2392,13 @@ fn draw(
     mut fx: Query<&mut FxEffect>,
     old_lights: Query<Entity, With<FxLight>>,
     mut lib: ResMut<FxrLib>,
-    (map_light, soft_mats, mut uploads): (Option<Res<crate::map::MapLighting>>, Query<&MeshMaterial3d<SoftMaterial>>, ResMut<FxUploads>),
+    (scene, soft_mats, mut uploads): (Option<Res<SceneLight>>, Query<&MeshMaterial3d<SoftMaterial>>, ResMut<FxUploads>),
 ) {
+    let _prof = crate::perf::span("fxr_draw");
     let Some((cam, proj, view)) = camera.iter().next() else { return };
-    // Lit particles' light (game units -> the map's radiance scale, ENV_PER_UNIT): ambient, sun.
-    let (amb, sun, to_sun) = map_light.as_deref().map(crate::map::particle_light).unwrap_or((Vec3::splat(0.4), Vec3::splat(1.5), Vec3::new(0.3, 0.8, 0.5).normalize()));
-    let light = [(amb * crate::map::ENV_PER_UNIT).extend(0.0), (sun * crate::map::ENV_PER_UNIT).extend(0.0)];
+    // Lit particles' light: the host map's (SceneLight).
+    let scene = scene.as_deref().copied().unwrap_or_default();
+    let (to_sun, light) = (scene.to_sun, [scene.ambient.extend(0.0), scene.sun.extend(0.0)]);
     for m in &soft_mats {
         if materials.get(&m.0).is_some_and(|x| x.extension.light != light) {
             if let Some(mut x) = materials.get_mut(&m.0) {
@@ -2324,7 +2422,7 @@ fn draw(
             collect(root, &mut lib, cam, &mut bufs, &mut dist, &mut multi, &mut lights, px, to_sun);
         }
     }
-    if std::env::var("SHINOBI_FXR_LOG").is_ok() && !(bufs.is_empty() && dist.is_empty() && multi.is_empty()) {
+    if *FXR_LOG && !(bufs.is_empty() && dist.is_empty() && multi.is_empty()) {
         let mut v: Vec<String> = bufs.iter().map(|(k, b)| format!("{}/{}:{}", k.0, k.1, b.pos.len() / 6)).collect();
         v.extend(dist.iter().map(|(k, b)| format!("screen {k}:{}", b.pos.len() / 6)));
         v.extend(multi.iter().map(|(k, b)| format!("multi {}+{}+{}/{}:{}", k.0, k.1, k.2, k.4, b.pos.len() / 6)));
@@ -2338,10 +2436,10 @@ fn draw(
             let image = if tex <= MODEL_KEY {
                 // A Model appearance: its mesh's albedo (extracted/tex, written by the model export).
                 let m = lib.model(MODEL_KEY - tex);
-                if std::env::var("SHINOBI_FXR_LOG").is_ok() {
+                if *FXR_LOG {
                     info!("fxr model {} albedo {:?}", MODEL_KEY - tex, m.as_ref().map(|m| m.albedo.clone()));
                 }
-                m.filter(|m| !m.albedo.is_empty()).map(|m| assets.load(format!("tex/{}.dds", m.albedo)))
+                m.filter(|m| !m.albedo.is_empty()).map(|m| assets.load(format!("rustsekiro://tex/{}.dds", m.albedo)))
             } else {
                 // U repeats (a tracer lays textureFraction of the width per segment, past 1), V
                 // clamps (flipbook rows stay apart).
@@ -2351,7 +2449,7 @@ fn draw(
                             address_mode_u: bevy::image::ImageAddressMode::Repeat,
                             ..bevy::image::ImageSamplerDescriptor::linear()
                         });
-                    }).load(format!("fxr_tex/{tex}.png"))
+                    }).load(format!("rustsekiro://fxr_tex/{tex}.png"))
                 })
             };
             // BlendMode: 0 / 4 / 7 additive, 1 opaque, 3 multiply, 2 / 6 normal (5 subtract: normal).
@@ -2387,7 +2485,7 @@ fn draw(
                 address_mode_v: bevy::image::ImageAddressMode::Repeat,
                 ..bevy::image::ImageSamplerDescriptor::linear()
             });
-        }).load(format!("fxr_tex/{tex}.png")) };
+        }).load(format!("rustsekiro://fxr_tex/{tex}.png")) };
         let mat = dist_materials.add(DistortMaterial { tex: image, depth: fx_depth.image.clone() });
         let mesh = meshes.add(Mesh::new(bevy::mesh::PrimitiveTopology::TriangleList, bevy::asset::RenderAssetUsages::default()));
         let e = commands.spawn((Mesh3d(mesh.clone()), MeshMaterial3d(mat), Transform::IDENTITY, bevy::light::NotShadowCaster, bevy::camera::visibility::NoFrustumCulling)).id();
@@ -2417,7 +2515,7 @@ fn draw(
             continue;
         }
         let &(l1, l2, l3, modes, blend) = key;
-        let tex = |id: i64| if id > 0 { assets.load(format!("fxr_tex/{id}.png")) } else { Handle::default() };
+        let tex = |id: i64| if id > 0 { assets.load(format!("rustsekiro://fxr_tex/{id}.png")) } else { Handle::default() };
         let mat = multi_materials.add(MultiMaterial {
             t0: tex(l1),
             t1: tex(l2),
@@ -2459,9 +2557,9 @@ fn draw(
         m.insert_attribute(Mesh::ATTRIBUTE_NORMAL, vec![[0.0, 1.0, 0.0]; c]);
         uploads.put(&mut meshes, mesh, m);
     }
-    // Lights: rebuilt each frame, the brightest 8. They use the sun's bridge (map.rs SCENE_TO_BEVY lux
-    // per game unit). The unit is matched at 1 m, so 4 pi x 4500 lm per diffuseMultiplier;
-    // before, x 4000 lm, about 14x dimmer. gap: the game's falloff curve (Bevy's is 1/d^2 within range).
+    // Lights: rebuilt each frame, the brightest 8. They use the sun's bridge (sekiro-rs
+    // lighting LOCAL_LUMENS_PER_UNIT: SCENE_TO_BEVY lux per game unit x 4 pi lm), the same unit as
+    // the map's BTL lamps and his scene lights. gap: the game's falloff curve (Bevy's is 1/d^2 within range).
     for e in &old_lights {
         commands.entity(e).despawn();
     }
@@ -2469,17 +2567,24 @@ fn draw(
     for (p, c, k, r) in lights.into_iter().take(8) {
         // Spawned after this frame's propagation: its GlobalTransform given, or it would light
         // from the origin.
-        commands.spawn((PointLight { color: c, intensity: k * 4.0 * std::f32::consts::PI * crate::map::SCENE_TO_BEVY, range: r.max(0.5), shadow_maps_enabled: false, ..default() }, Transform::from_translation(p), GlobalTransform::from_translation(p), FxLight));
+        commands.spawn((PointLight { color: c, intensity: k * scene.lumens_per_unit, range: r.max(0.5), shadow_maps_enabled: false, ..default() }, Transform::from_translation(p), GlobalTransform::from_translation(p), FxLight));
     }
 }
 
 pub struct FxrPlugin;
 
 impl Plugin for FxrPlugin {
+    fn finish(&self, app: &mut App) {
+        // DistortMaterial reads the view transmission texture; Bevy 0.19 required
+        // ScreenSpaceTransmission on every Camera3d, 0.20 no longer does. sekiro-rs's effects
+        // (sr_map.rs) register the same requirement during build, so only when still missing.
+        let _ = app.try_register_required_components::<Camera3d, bevy::pbr::ScreenSpaceTransmission>();
+    }
+
     fn build(&self, app: &mut App) {
-        bevy::asset::embedded_asset!(app, "fx_distort.wgsl");
-        bevy::asset::embedded_asset!(app, "fx_multi.wgsl");
-        bevy::asset::embedded_asset!(app, "fx_soft.wgsl");
+        bevy::asset::embedded_asset!(app, "fx_distort.wesl");
+        bevy::asset::embedded_asset!(app, "fx_multi.wesl");
+        bevy::asset::embedded_asset!(app, "fx_soft.wesl");
         app.add_plugins((MaterialPlugin::<DistortMaterial>::default(), MaterialPlugin::<MultiMaterial>::default(), MaterialPlugin::<SoftMaterial>::default()));
         app.init_resource::<FxrLib>()
             .init_resource::<Batches>()
@@ -2489,7 +2594,7 @@ impl Plugin for FxrPlugin {
             // After the transforms propagate: anchored effects read the pose the models are drawn
             // with this frame (anim.rs draws between the last two sim poses), and a bullet spawned
             // this frame already has its GlobalTransform.
-            .add_systems(PostUpdate, (tick, draw).chain().after(TransformSystems::Propagate).after(crate::model::WeaponLocation))
+            .add_systems(PostUpdate, (tick, draw.in_set(FxDraw)).chain().after(TransformSystems::Propagate).after(crate::model::WeaponLocation))
             .add_systems(Startup, |mut commands: Commands, mut images: ResMut<Assets<Image>>| {
                 commands.insert_resource(FxDepth { image: images.add(depth_image(UVec2::ONE)) });
             })
@@ -2527,6 +2632,7 @@ impl Plugin for FxrPlugin {
 /// edges showed the clear colour.) Never written (SHINOBI_NO_SOFT=1, or a size / MSAA mismatch),
 /// it stays 0 = infinitely far and the particles keep hard edges.
 #[derive(Resource, Clone, bevy::render::extract_resource::ExtractResource)]
+#[extract_app(bevy::render::RenderApp)]
 pub struct FxDepth {
     image: Handle<Image>,
 }
@@ -2581,7 +2687,7 @@ fn soft_depth(
 /// Render world: the camera's depth (opaque pass done) into `FxDepth`, when size and sample
 /// count match (Bevy's own prepass copies its depth the same way, prepass/node.rs).
 fn copy_fx_depth(
-    view: bevy::render::renderer::ViewQuery<&bevy::render::view::ViewDepthTexture>,
+    view: bevy::render::renderer::ViewQuery<&bevy::render::view::ViewDepthStencilTexture>,
     fx: Option<Res<FxDepth>>,
     images: Res<bevy::render::render_asset::RenderAssets<bevy::render::texture::GpuImage>>,
     mut ctx: bevy::render::renderer::RenderContext,
@@ -2589,7 +2695,7 @@ fn copy_fx_depth(
     let depth = view.into_inner();
     let Some(fx) = fx else { return };
     let Some(dst) = images.get(&fx.image) else { return };
-    let (s, d) = (&depth.texture, &dst.texture);
+    let (s, d) = (depth.texture(), &dst.texture);
     if s.size() != d.size() || s.sample_count() != d.sample_count() || s.format() != d.format() {
         return;
     }
@@ -2618,15 +2724,12 @@ fn test_shots(
     mut commands: Commands,
     mut frame: Local<u32>,
     mut exit: MessageWriter<AppExit>,
-    mut cam: Query<&mut crate::camera::OrbitCamera>,
     wolf: Query<&GlobalTransform, With<crate::player::Player>>,
 ) {
     let Some(id) = std::env::var("SHINOBI_FXR_TEST").ok().and_then(|v| v.parse::<i64>().ok()) else { return };
     *frame += 1;
     let f = *frame;
-    if let Ok(mut oc) = cam.single_mut() {
-        oc.pitch = 5f32.to_radians();
-    }
+    // The camera looks 5 deg down (camera.rs shot_knobs).
     let start = 180;
     // SHINOBI_FXR_WARM=1: one more play 2 s before, so its textures and batches exist.
     if f == start || (f == start - 120 && std::env::var("SHINOBI_FXR_WARM").is_ok()) {
@@ -2683,7 +2786,7 @@ mod tests {
     /// NodeTranslation (15) offsets the node by its `translation` curve (300169: (0, -0.4, 0) ->
     /// 0 over 0.3 s); NodeSpeed (120) moves it along Z at speedZ x speedMultiplierZ.
     /// A NodeEmitter (2202) keeps every child as a template (the perilous kanji 600035 and 65
-    /// other effects have several); LevelsOfDetail (2002) draws only its first child.
+    /// other effects have several); LevelsOfDetail (2002) keeps every level.
     #[test]
     fn node_emitters_keep_all_children_levels_of_detail_one() {
         let mut lib = FxrLib::default();
@@ -2692,7 +2795,30 @@ mod tests {
         let n = make_node(&mut lib, &emitter, 1, 0).unwrap();
         assert_eq!((n.templates.len(), n.children.len()), (3, 0));
         let lod = serde_json::json!({"type": 2002, "nodes": [kid, kid]});
-        assert_eq!(make_node(&mut lib, &lod, 1, 0).unwrap().children.len(), 1);
+        assert_eq!(make_node(&mut lib, &lod, 1, 0).unwrap().children.len(), 2);
+    }
+
+    /// AKJama/sekiro-rs#273: the ground fire 800140's LevelsOfDetail node (thresholds 1, 165,
+    /// 200, 1000, 1000) shows its detailed first level near, its second from 165 m and its empty
+    /// third from 200 m, by the camera's distance; one level at a time.
+    #[test]
+    fn the_ground_fires_level_follows_the_camera_distance() {
+        assert_eq!([0.0, 50.0, 170.0, 250.0, 1500.0].map(|d| lod_level(&[1.0, 165.0, 200.0, 1000.0, 1000.0], d)), [0, 0, 1, 2, 4]);
+        let Ok(text) = std::fs::read_to_string(crate::paths::extracted().join("fxr/800140.json")) else { return };
+        let def: Value = serde_json::from_str(&text).unwrap();
+        let mut lib = FxrLib::default();
+        let mut root = make_node(&mut lib, &def["root"], 1, 0).unwrap();
+        fn shown(n: &NodeInst) -> Option<Vec<usize>> {
+            if n.lod.is_some() {
+                return Some(n.children.iter().filter(|c| !c.hidden).filter_map(|c| c.level).collect());
+            }
+            n.children.iter().find_map(shown)
+        }
+        for (d, want) in [(20.0, 0), (180.0, 1), (400.0, 2)] {
+            lib.cam = Some(Transform::from_xyz(0.0, 0.0, d));
+            step_node(&mut root, &mut lib, Transform::IDENTITY, 1.0 / 30.0, false);
+            assert_eq!(shown(&root), Some(vec![want]), "at {d} m");
+        }
     }
 
     /// Manual test #5: a tracer samples one flipbook cell across the trail. Genichiro's lightning
@@ -2811,6 +2937,38 @@ mod tests {
         assert!(ds.len() >= 10, "{} turning particles", ds.len());
         let spread = ds.iter().map(|d| d.angle_between(ds[0]).to_degrees()).fold(0.0, f32::max);
         assert!(spread > 20.0, "the bolts fly within {spread} deg of each other");
+    }
+
+    /// The castle's snowfall 839500 rides the camera (46, rotation off) and keeps about 40 flakes
+    /// a 1/30 s frame alive for 6 s round it, inside its 15 x 5 x 15 m box 3.75 m up, and its
+    /// keyframed colour is seen (alpha 1 between 1 and 5 s).
+    #[test]
+    fn the_castle_snow_falls_round_the_camera() {
+        let mut lib = FxrLib::default();
+        let Some(def) = lib.get(839500) else { return };
+        let cam = Transform::from_xyz(40.0, 10.0, -20.0).with_rotation(Quat::from_rotation_y(0.7));
+        lib.cam = Some(cam);
+        let mut n = make_node(&mut lib, &def["root"], 7, 0).unwrap();
+        for _ in 0..90 {
+            step_node(&mut n, &mut lib, Transform::from_xyz(-300.0, 0.0, 0.0), 1.0 / 30.0, false);
+        }
+        fn all(n: &NodeInst, out: &mut Vec<Vec3>, alphas: &mut Vec<f32>) {
+            if let Some(c) = n.cfg.as_ref().filter(|c| c["appearance"]["type"].as_i64() == Some(10000)) {
+                out.extend(n.particles.iter().map(|p| if p.attached { n.world.transform_point(p.pos) } else { p.pos }));
+                alphas.extend(n.particles.iter().map(|p| prop(c["appearance"].get("color"), p.age, &mut Rnd { seed: 0, k: 0 }, [1.0; 4])[3]));
+            }
+            for c in &n.children {
+                all(c, out, alphas);
+            }
+        }
+        let (mut ps, mut alphas) = (Vec::new(), Vec::new());
+        all(&n, &mut ps, &mut alphas);
+        assert!(ps.len() >= 40 * 85, "{} flakes", ps.len());
+        for p in &ps {
+            let d = *p - cam.translation;
+            assert!(d.x.abs() < 11.0 && d.z.abs() < 11.0 && d.y > -4.0 && d.y < 9.0, "{d}");
+        }
+        assert!(alphas.iter().any(|a| *a > 0.9), "flake alphas {:?}", &alphas[..5]);
     }
 
     #[test]

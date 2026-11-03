@@ -10,7 +10,7 @@ no FXR.
 **Pipeline (run once after `sekiro-extract export`):**
 - `sekiro-extract unpack <Sekiro dir> extracted 'sfxbnd_commoneffects'` (2349 FXRs + their TPFs).
 - `cd tools/fxr-dump && npm i` (@cccode/fxr, public domain, github.com/EvenTorset/fxr; a clone is
-  in `<work>/reference/fxr`), then `python tools/fxr_extract.py`: every FFX id the
+  in `../reference/fxr`), then `python tools/fxr_extract.py`: every FFX id the
   exported characters use (TAE, bullet sfxId_*, blood 220502/3/5/6) -> `extracted/fxr/<id>.json`,
   following ReferenceNode (2001 "sfx") chains; every texture they name -> `extracted/fxr_tex/<id>.png`
   (s<id:05>.tpf). ~280 effects.
@@ -350,3 +350,4 @@ rgbMultiplier / 8 (`particle_color`). Before, they were 8x too bright: the death
 - R97d: the banner now waits for the boss's death and Wolf's finisher to play out (menu::finisher_done, FINISHER_CAP fallback), as in the clip (Gyoubu: 9.5 s after the fatal deathblow). Won waits for the banner to finish (BannerDone).
 - R97d: the HP damage trail, measured at 60 fps on Gyoubu (4 trails): it holds 0.5 s from the first hit, later hits do not restart it, and it collapses in about 0.05 s. The colour is about RGB 165,130,120. This is now on both Wolf's bar and the boss bar (hud::step_trail). Test the_damage_trail_holds_then_collapses, mutation-checked on the hold and the collapse.
 - The combat_flow clip is HUD-off, so these stay open.
+- 2026-10-23 LevelsOfDetail (2002): its 1002 config's thresholds are distances in metres, child i shown from threshold i to threshold i + 1 (threshold 0 is always 1; the detailed level is child 0; far children are mostly empty, a few are far-only glows such as 811052 from 400 m). fxr.rs keeps every level and `lod_level` picks one per step by the camera's distance to the node; the others are neither stepped nor drawn, and end when the effect stops.

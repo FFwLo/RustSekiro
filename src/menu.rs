@@ -18,6 +18,7 @@ use bevy::input::InputSystems;
 use bevy::prelude::*;
 use bevy::ui::UiSystems;
 use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
+use crate::fonts::text_font as font;
 
 #[derive(States, Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum Screen {
@@ -31,6 +32,8 @@ pub enum Screen {
     Picker,
     /// Options (plan C3): camera, pad, sound, window; saved to config.toml on leaving.
     Options,
+    /// Kneeling at a Sculptor's Idol: its menu (idol.rs).
+    Idol,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -68,7 +71,7 @@ fn choices(s: Screen, picker: &Picker) -> Vec<Choice> {
         // Next: the encounter after the one fought, in its picker tab.
         Screen::Won if picker.current.is_some() => vec![Choice::Next, Choice::Retry, Choice::Title],
         Screen::Won => vec![Choice::Retry, Choice::Title],
-        Screen::Playing | Screen::Picker | Screen::Options => vec![],
+        Screen::Playing | Screen::Picker | Screen::Options | Screen::Idol => vec![],
     }
 }
 
@@ -85,10 +88,11 @@ enum Opt {
     Fullscreen,
     Vsync,
     Cloth,
+    HudAspect,
     Back,
 }
 
-const OPTS: [Opt; 11] = [Opt::CameraSpeed, Opt::InvertY, Opt::Gamepad, Opt::Volume, Opt::Music, Opt::Se, Opt::Voice, Opt::Fullscreen, Opt::Vsync, Opt::Cloth, Opt::Back];
+const OPTS: [Opt; 12] = [Opt::CameraSpeed, Opt::InvertY, Opt::Gamepad, Opt::Volume, Opt::Music, Opt::Se, Opt::Voice, Opt::Fullscreen, Opt::Vsync, Opt::Cloth, Opt::HudAspect, Opt::Back];
 
 impl Opt {
     fn label(self) -> &'static str {
@@ -103,6 +107,7 @@ impl Opt {
             Opt::Fullscreen => "Fullscreen",
             Opt::Vsync => "Vertical sync",
             Opt::Cloth => "Cloth physics",
+            Opt::HudAspect => "HUD on wide screens",
             Opt::Back => "Back",
         }
     }
@@ -123,6 +128,11 @@ impl Opt {
                 crate::config::ClothSetting::On => "On",
                 crate::config::ClothSetting::Near => "Near only",
                 crate::config::ClothSetting::Off => "Off",
+            }
+            .to_string(),
+            Opt::HudAspect => match c.video.hud_aspect {
+                crate::config::HudAspect::Stage => "16:9",
+                crate::config::HudAspect::Stretch => "Stretch",
             }
             .to_string(),
             Opt::Back => String::new(),
@@ -147,6 +157,10 @@ impl Opt {
                 let i = ORDER.iter().position(|s| *s == c.video.cloth).unwrap_or(2) as i32;
                 c.video.cloth = ORDER[(i + dir.signum() as i32).rem_euclid(3) as usize];
             }
+            Opt::HudAspect => {
+                use crate::config::HudAspect::*;
+                c.video.hud_aspect = if c.video.hud_aspect == Stage { Stretch } else { Stage };
+            }
             Opt::Back => {}
         }
     }
@@ -165,6 +179,7 @@ fn save_options(c: &crate::config::GameConfig) {
         ("video", "fullscreen", c.video.fullscreen.to_string()),
         ("video", "vsync", c.video.vsync.to_string()),
         ("video", "cloth", format!("\"{}\"", c.video.cloth.name())),
+        ("video", "hud_aspect", format!("\"{}\"", c.video.hud_aspect.name())),
     ];
     if let Err(e) = crate::config::save_keys(&keys) {
         warn!("options not saved: {e}");
@@ -265,6 +280,69 @@ struct MenuRoot;
 #[derive(Component)]
 struct MenuItem(usize);
 
+/// The title screen after the game's (2026-10-17, the user's reference): black, the 隻狼 brush
+/// calligraphy (SB_Title MENU_Title_SEKIRO) large and faint behind, SEKIRO in its brush letters
+/// (SB_Title_02 MENU_Title_S/E/K/I/R/O), SHADOWS DIE TWICE under it (MENU_Shadows /
+/// MENU_DieTwice), the choices in capitals with a brush stroke behind the cursor's (SB_InGame
+/// MENU_Cursor_03, tinted), and a footer. Without the extracted sprites: the old serif title.
+/// gap: sizes, places and tints by eye from the reference; the title's movie is not decoded.
+fn build_title(commands: &mut Commands, assets: &AssetServer, fonts: &crate::fonts::GameFonts, list: &[Choice], index: usize) -> bool {
+    let sprite = |f: &str| crate::paths::root().join(format!("extracted/menu_sprites/{f}.png")).exists();
+    let letters = ["S", "E", "K", "I", "R", "O"];
+    if !letters.iter().all(|l| sprite(&format!("sb_title_02/MENU_Title_{l}"))) || !sprite("sb_in_game/MENU_Cursor_03") {
+        return false;
+    }
+    let full = || Node { position_type: PositionType::Absolute, width: Val::Percent(100.0), height: Val::Percent(100.0), justify_content: JustifyContent::Center, align_items: AlignItems::Center, ..default() };
+    commands.spawn((full(), BackgroundColor(Color::BLACK), GlobalZIndex(100), MenuRoot)).with_children(|c| {
+        // The calligraphy, faint, behind everything.
+        if sprite("sb_title/MENU_Title_SEKIRO") {
+            c.spawn(full()).with_children(|k| {
+                k.spawn((Node { height: Val::Vh(92.0), ..default() }, ImageNode::new(assets.load(crate::paths::asset("menu_sprites/sb_title/MENU_Title_SEKIRO.png"))).with_color(Color::srgb(0.16, 0.16, 0.16))));
+            });
+        }
+        c.spawn(Node { flex_direction: FlexDirection::Column, align_items: AlignItems::Center, ..full() }).with_children(|col| {
+            col.spawn(Node { column_gap: Val::Vh(1.8), align_items: AlignItems::Center, ..default() }).with_children(|r| {
+                for l in letters {
+                    r.spawn((Node { height: Val::Vh(11.0), ..default() }, ImageNode::new(assets.load(crate::paths::asset(format!("menu_sprites/sb_title_02/MENU_Title_{l}.png"))))));
+                }
+            });
+            if sprite("sb_title/MENU_Shadows") && sprite("sb_title/MENU_DieTwice") {
+                col.spawn(Node { column_gap: Val::Vh(1.4), margin: UiRect::top(Val::Vh(2.2)), ..default() }).with_children(|r| {
+                    for f in ["MENU_Shadows", "MENU_DieTwice"] {
+                        r.spawn((Node { height: Val::Vh(2.6), ..default() }, ImageNode::new(assets.load(crate::paths::asset(format!("menu_sprites/sb_title/{f}.png")))).with_color(Color::srgb(0.78, 0.74, 0.68))));
+                    }
+                });
+            }
+            col.spawn(Node { height: Val::Vh(9.0), ..default() });
+            for (i, ch) in list.iter().enumerate() {
+                col.spawn((crate::menu::ui_button(), Node { width: Val::Px(320.0), height: Val::Px(46.0), justify_content: JustifyContent::Center, align_items: AlignItems::Center, ..default() }, BackgroundColor(Color::NONE), MenuItem(i)))
+                    .with_children(|b| {
+                        b.spawn((
+                            Node { position_type: PositionType::Absolute, width: Val::Percent(100.0), height: Val::Percent(100.0), ..default() },
+                            ImageNode::new(assets.load(crate::paths::asset("menu_sprites/sb_in_game/MENU_Cursor_03.png"))).with_color(TITLE_BRUSH),
+                            if i == index { Visibility::Inherited } else { Visibility::Hidden },
+                            TitleBrush(i),
+                        ));
+                        b.spawn((Text::new(ch.label().to_uppercase()), font(&fonts.ui, 24.0), TextColor(DIM)));
+                    });
+            }
+        });
+        c.spawn(Node { position_type: PositionType::Absolute, bottom: Val::Vh(3.0), width: Val::Percent(100.0), justify_content: JustifyContent::Center, ..default() }).with_children(|f| {
+            f.spawn((Text::new("Sv1  \u{00b7}  an unofficial Sekiro recreation        Enter  select        Esc  back"), font(&fonts.ui, 13.0), TextColor(Color::srgba(0.85, 0.82, 0.76, 0.35))));
+        });
+    });
+    true
+}
+
+/// The title's cursor stroke (MENU_Cursor_03 is orange; this darkens it toward the reference's
+/// brown).
+const TITLE_BRUSH: Color = Color::srgba(0.5, 0.42, 0.38, 0.9);
+
+/// The brush stroke behind title choice n (shown on the cursor's).
+#[derive(Component)]
+struct TitleBrush(usize);
+
+
 /// A picker tab button.
 #[derive(Component)]
 struct PickerTab(usize);
@@ -273,21 +351,20 @@ struct PickerTab(usize);
 #[derive(Component)]
 struct TitleHidden(Visibility);
 
-#[derive(Resource, Default)]
-struct MenuFonts {
-    serif: Option<Handle<Font>>,
-    kanji: Option<Handle<Font>>,
-}
 
 #[derive(Resource, Default)]
-struct Cursor {
+pub(crate) struct Cursor {
     index: usize,
     built: Option<Screen>,
     /// The screen Options goes back to (Title or Paused).
-    options_from: Option<Screen>,
+    pub(crate) options_from: Option<Screen>,
     /// Options rebuilds its overlay after a change.
     dirty: bool,
 }
+
+/// The screens' input (pad_to_menu_keys, run_menu): game_menu.rs runs after it.
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct MenuInput;
 
 pub struct MenuPlugin;
 
@@ -296,12 +373,14 @@ impl Plugin for MenuPlugin {
         let automated = std::env::vars().any(|(k, _)| k.starts_with("SHINOBI_") && !matches!(k.as_str(), "SHINOBI_MAP" | "SHINOBI_HOUR" | "SHINOBI_ROOT" | "SHINOBI_TITLE") && !k.starts_with("SHINOBI_MAP_"));
         let start = match std::env::var("SHINOBI_TITLE").ok().as_deref() {
             Some("paused") => Screen::Paused,
+            Some("idol") => Screen::Idol,
             Some("dead") => Screen::Dead,
             Some("won") => Screen::Won,
             Some("picker") => Screen::Picker,
             Some("options") => Screen::Options,
             Some(_) => Screen::Title,
-            None if automated => Screen::Playing,
+            // In another game (`embed`) its own start: straight into play.
+            None if automated || !cfg!(feature = "host") => Screen::Playing,
             None => Screen::Title,
         };
         // The Won screen stays up until Retry / Title instead of the duel's old restart 5 s after
@@ -312,24 +391,177 @@ impl Plugin for MenuPlugin {
         app.insert_state(start)
             .init_resource::<Cursor>()
             .init_resource::<Picker>()
-            .init_resource::<MenuFonts>()
             .init_resource::<BannerDone>()
-            .add_systems(Startup, load_fonts)
-            .add_systems(PreUpdate, (pad_to_menu_keys, run_menu).chain().after(UiSystems::Focus).after(InputSystems))
-            .add_systems(Update, (fight_from_env, apply_video, watch_fight.run_if(in_state(Screen::Playing)), defeat_banner))
+            .add_systems(Startup, (spawn_death_overlay, spawn_fall_cut))
+            .init_resource::<MenuMouse>()
+            .add_systems(PreUpdate, (menu_keys_and_wheel, pad_to_menu_keys, run_menu).chain().in_set(MenuInput).after(UiSystems::Focus).after(InputSystems))
+            .add_systems(Update, (fight_from_env, apply_video, watch_fight.run_if(in_state(Screen::Playing)), defeat_banner, death_overlay, fall_cut))
             .add_systems(PostUpdate, hide_hud_on_title.before(bevy::camera::visibility::VisibilitySystems::VisibilityPropagate));
     }
 }
 
-fn load_fonts(mut fonts: ResMut<Assets<Font>>, mut mf: ResMut<MenuFonts>) {
-    let read = |names: &[&str]| names.iter().find_map(|f| std::fs::read(std::path::Path::new("C:/Windows/Fonts").join(f)).ok());
-    mf.serif = read(&["georgia.ttf"]).map(|b| fonts.add(Font::from_bytes(b)));
-    mf.kanji = read(&["YuGothB.ttc", "msgothic.ttc", "meiryo.ttc"]).map(|b| fonts.add(Font::from_bytes(b)));
+/// The death screen while Wolf lies dead (the user, 2026-10-18, with the game's screen for
+/// reference): the 死 brush mark appears white with DEATH under it and slowly turns red while the
+/// screen darkens; with a resurrection left the choice shows under it (": Die" guard,
+/// ": Resurrect" attack, player.rs). The final death (no node left, or Die) fades to black in
+/// `FINAL_FADE`, then the Dead screen takes over with the same mark.
+#[derive(Component)]
+struct DeathOverlay;
+#[derive(Component)]
+struct DeathKanji;
+#[derive(Component)]
+struct DeathCaption;
+#[derive(Component)]
+struct DeathHints;
+
+/// Seconds: the mark's fade in, its white-to-red turn, the darkening during the choice (to
+/// `DEATH_SHADE`) and the final fade to black.
+const KANJI_IN: f32 = 0.8;
+const KANJI_RED: f32 = 4.0;
+const DEATH_DARKEN: f32 = 4.0;
+const DEATH_SHADE: f32 = 0.45;
+const FINAL_FADE: f32 = 2.5;
+
+fn spawn_death_overlay(mut commands: Commands, assets: Res<AssetServer>, fonts: Res<crate::fonts::GameFonts>) {
+    let full = Node { position_type: PositionType::Absolute, width: Val::Percent(100.0), height: Val::Percent(100.0), flex_direction: FlexDirection::Column, justify_content: JustifyContent::Center, align_items: AlignItems::Center, ..default() };
+    let art = have("MENU_Death");
+    let kanji_font = fonts.kanji.clone();
+    let serif = fonts.ui.clone();
+    commands.spawn((full, BackgroundColor(Color::NONE), GlobalZIndex(90), Visibility::Hidden, DeathOverlay, crate::ui_stage::ScreenUi)).with_children(|c| {
+        if art {
+            c.spawn((Node { height: Val::Vh(30.0), ..default() }, ImageNode::new(assets.load(crate::paths::asset("hud/MENU_Death.png"))).with_color(Color::NONE), DeathKanji));
+        } else {
+            let f = if kanji_font.is_some() { font(&kanji_font, 150.0) } else { font(&serif, 56.0) };
+            c.spawn((Text::new(if kanji_font.is_some() { "死" } else { "DEATH" }), f, TextColor(Color::NONE), DeathKanji));
+        }
+        c.spawn((Text::new("D E A T H"), font(&serif, 22.0), TextColor(Color::NONE), Node { margin: UiRect::top(Val::Vh(1.0)), ..default() }, DeathCaption));
+        c.spawn((
+            Node { position_type: PositionType::Absolute, bottom: Val::Vh(9.0), column_gap: Val::Vw(14.0), ..default() },
+            Visibility::Hidden,
+            DeathHints,
+        ))
+        .with_children(|r| {
+            for hint in ["RMB / K :  Die", "LMB / J :  Resurrect"] {
+                r.spawn((Text::new(hint), font(&serif, 20.0), TextColor(Color::srgba(0.92, 0.9, 0.86, 0.9))));
+            }
+        });
+    });
 }
 
-fn font(h: &Option<Handle<Font>>, px: f32) -> TextFont {
-    TextFont { font: h.clone().map(bevy::text::FontSource::Handle).unwrap_or_default(), font_size: bevy::text::FontSize::Px(px), ..default() }
+/// What Bevy 0.19's `Button` brought (its required FocusPolicy::Block and Interaction, which
+/// `ui_focus_system` still drives). Bevy 0.20 deprecated that `Button` and made it impossible to
+/// spawn outside bevy_ui; the menus keep reading Interaction as before.
+#[allow(deprecated)]
+pub(crate) fn ui_button() -> impl Bundle {
+    (Interaction::default(), bevy::ui::FocusPolicy::Block)
 }
+
+fn lerp_color(a: Color, b: Color, k: f32, alpha: f32) -> Color {
+    let (a, b) = (a.to_srgba(), b.to_srgba());
+    let m = |x: f32, y: f32| x + (y - x) * k.clamp(0.0, 1.0);
+    Color::srgba(m(a.red, b.red), m(a.green, b.green), m(a.blue, b.blue), alpha)
+}
+
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
+fn death_overlay(
+    time: Res<Time<Real>>,
+    screen: Option<Res<State<Screen>>>,
+    wolf: Query<(&crate::actor::Actor, &crate::player::Player)>,
+    mut since: Local<Option<f32>>,
+    mut final_since: Local<Option<f32>>,
+    mut root: Query<(&mut Visibility, &mut BackgroundColor), (With<DeathOverlay>, Without<DeathHints>)>,
+    mut hints: Query<&mut Visibility, (With<DeathHints>, Without<DeathOverlay>)>,
+    mut kanji_img: Query<&mut ImageNode, With<DeathKanji>>,
+    mut kanji_txt: Query<&mut TextColor, (With<DeathKanji>, Without<DeathCaption>)>,
+    mut caption: Query<&mut TextColor, (With<DeathCaption>, Without<DeathKanji>)>,
+) {
+    let now = time.elapsed_secs();
+    let playing = screen.is_none_or(|s| *s.get() == Screen::Playing);
+    let dead = wolf.single().ok().filter(|(a, _)| a.hp <= 0.0 && playing);
+    let Ok((mut vis, mut bg)) = root.single_mut() else { return };
+    let Some((_, p)) = dead else {
+        *vis = Visibility::Hidden;
+        *since = None;
+        *final_since = None;
+        return;
+    };
+    *vis = Visibility::Inherited;
+    let t = now - *since.get_or_insert(now);
+    let last = p.gave_up || p.resurrections == 0 || p.revive_locked;
+    let fin = if last { (now - *final_since.get_or_insert(now)) / FINAL_FADE } else { 0.0 };
+    let shade = DEATH_SHADE * (t / DEATH_DARKEN).min(1.0);
+    bg.0 = Color::srgba(0.0, 0.0, 0.0, shade + (1.0 - shade) * fin.min(1.0));
+    let alpha = (t / KANJI_IN).min(1.0);
+    let mark = lerp_color(Color::WHITE, RED, t / KANJI_RED, alpha);
+    for mut img in &mut kanji_img {
+        img.color = mark;
+    }
+    for mut c in &mut kanji_txt {
+        c.0 = mark;
+    }
+    for mut c in &mut caption {
+        c.0 = lerp_color(Color::WHITE, Color::srgb(0.85, 0.82, 0.76), t / KANJI_RED, alpha * 0.75);
+    }
+    for mut h in &mut hints {
+        *h = if p.revive_open { Visibility::Inherited } else { Visibility::Hidden };
+    }
+}
+
+/// A fall out of the map (player.rs's fall-return deaths; the user, 2026-10-18: "the screen
+/// should cut off black then back to where wolf was before he fell"): black at once while Wolf
+/// is out, then, back on safe ground, the camera snaps behind him and the black fades out in
+/// `FALL_CUT_FADE`.
+#[derive(Component)]
+struct FallCut;
+const FALL_CUT_FADE: f32 = 0.6;
+
+fn spawn_fall_cut(mut commands: Commands) {
+    commands.spawn((
+        Node { position_type: PositionType::Absolute, width: Val::Percent(100.0), height: Val::Percent(100.0), ..default() },
+        BackgroundColor(Color::NONE),
+        GlobalZIndex(95),
+        Visibility::Hidden,
+        FallCut,
+        crate::ui_stage::ScreenUi,
+    ));
+}
+
+fn fall_cut(
+    time: Res<Time<Real>>,
+    wolf: Query<&crate::actor::Actor, With<crate::player::Player>>,
+    mut cut: Query<(&mut Visibility, &mut BackgroundColor), With<FallCut>>,
+    mut snap: Option<ResMut<crate::camera::CameraSnap>>,
+    mut state: Local<(bool, Option<f32>)>,
+) {
+    let Ok((mut vis, mut bg)) = cut.single_mut() else { return };
+    let out = wolf.single().is_ok_and(|a| crate::player::is_fall_return(&a.state));
+    let now = time.elapsed_secs();
+    let (was_out, back_at) = &mut *state;
+    if out {
+        *was_out = true;
+        *back_at = None;
+        *vis = Visibility::Inherited;
+        bg.0 = Color::BLACK;
+        return;
+    }
+    if std::mem::take(was_out) {
+        *back_at = Some(now);
+        if let Some(s) = snap.as_mut() {
+            s.0 = true;
+        }
+    }
+    match *back_at {
+        Some(t0) if now - t0 < FALL_CUT_FADE => {
+            *vis = Visibility::Inherited;
+            bg.0 = Color::srgba(0.0, 0.0, 0.0, 1.0 - (now - t0) / FALL_CUT_FADE);
+        }
+        _ => {
+            *back_at = None;
+            *vis = Visibility::Hidden;
+        }
+    }
+}
+
 
 /// The game's brush mark for a screen (extracted/hud, from menu/hi/01_common SB_TextEffect /
 /// SB_Title; sekiro-extract export): file, height in % of the window height, tint.
@@ -348,7 +580,7 @@ fn have(file: &str) -> bool {
 }
 
 /// Builds the overlay of a screen: its big mark / title and the choices.
-fn build(commands: &mut Commands, assets: &AssetServer, s: Screen, fonts: &MenuFonts, picker: &mut Picker, config: &crate::config::GameConfig, index: usize) {
+fn build(commands: &mut Commands, assets: &AssetServer, s: Screen, fonts: &crate::fonts::GameFonts, picker: &mut Picker, config: &crate::config::GameConfig, index: usize) {
     if s == Screen::Picker {
         build_picker(commands, fonts, picker);
         return;
@@ -357,13 +589,20 @@ fn build(commands: &mut Commands, assets: &AssetServer, s: Screen, fonts: &MenuF
         build_options(commands, fonts, config, index);
         return;
     }
+    // Paused is the in-game menu (game_menu.rs: Sekiro's Equipment / Inventory / Skills / Options).
+    if s == Screen::Paused {
+        return;
+    }
     let list = choices(s, picker);
+    if s == Screen::Title && build_title(commands, assets, fonts, &list, index) {
+        return;
+    }
     let (mark, sub, mark_color, shade) = match s {
         Screen::Title => ("Sv1", "Sv1 · a Sekiro combat recreation", GOLD, 0.55),
         Screen::Paused => ("Paused", "", GOLD, 0.45),
-        Screen::Dead => ("死", "DEATH", RED, 0.35),
+        Screen::Dead => ("死", "D E A T H", RED, 1.0),
         Screen::Won => ("忍殺", "SHINOBI EXECUTION", RED, 0.25),
-        Screen::Playing | Screen::Picker | Screen::Options => return,
+        Screen::Playing | Screen::Picker | Screen::Options | Screen::Idol => return,
     };
     let art = marks(s);
     let art_ok = !art.is_empty() && art.iter().all(|(f, ..)| have(f));
@@ -388,28 +627,29 @@ fn build(commands: &mut Commands, assets: &AssetServer, s: Screen, fonts: &MenuF
         .with_children(|c| {
             if art_ok {
                 for (file, h, tint) in art {
-                    c.spawn((Node { height: Val::Vh(*h), ..default() }, ImageNode::new(assets.load(format!("hud/{file}.png"))).with_color(*tint)));
+                    c.spawn((Node { height: Val::Vh(*h), ..default() }, ImageNode::new(assets.load(crate::paths::asset(format!("hud/{file}.png")))).with_color(*tint)));
                 }
                 // The title's SHADOWS DIE TWICE line (SB_Title MENU_Shadows / MENU_DieTwice).
                 if s == Screen::Title && have("MENU_Shadows") && have("MENU_DieTwice") {
                     c.spawn(Node { column_gap: Val::Vh(1.6), ..default() }).with_children(|r| {
                         for f in ["MENU_Shadows", "MENU_DieTwice"] {
-                            r.spawn((Node { height: Val::Vh(4.0), ..default() }, ImageNode::new(assets.load(format!("hud/{f}.png")))));
+                            r.spawn((Node { height: Val::Vh(4.0), ..default() }, ImageNode::new(assets.load(crate::paths::asset(format!("hud/{f}.png"))))));
                         }
                     });
                 }
             } else {
-                let (text, f) = if kanji && has_kanji_font { (mark, font(&fonts.kanji, 150.0)) } else { (if kanji { sub } else { mark }, font(&fonts.serif, if s == Screen::Title { 72.0 } else { 56.0 })) };
+                let (text, f) = if kanji && has_kanji_font { (mark, font(&fonts.kanji, 150.0)) } else { (if kanji { sub } else { mark }, font(&fonts.ui, if s == Screen::Title { 72.0 } else { 56.0 })) };
                 c.spawn((Text::new(text), f, TextColor(mark_color)));
             }
-            // Under the brush 死 / 忍殺 the game shows no caption; the text stands in without them.
-            if !sub.is_empty() && !(art_ok && kanji) && (!kanji || has_kanji_font) {
-                c.spawn((Text::new(sub), font(&fonts.serif, 22.0), TextColor(DIM)));
+            // Under the brush 忍殺 the game shows no caption (the text stands in without it); under
+            // 死 it writes DEATH (the user's reference).
+            if !sub.is_empty() && !(art_ok && s == Screen::Won) && (!kanji || has_kanji_font) {
+                c.spawn((Text::new(sub), font(&fonts.ui, 22.0), TextColor(DIM)));
             }
             c.spawn(Node { height: Val::Px(30.0), ..default() });
             for (i, ch) in list.iter().enumerate() {
-                c.spawn((Button, Node { padding: UiRect::axes(Val::Px(18.0), Val::Px(4.0)), ..default() }, BackgroundColor(Color::NONE), MenuItem(i))).with_children(|b| {
-                    b.spawn((Text::new(ch.label()), font(&fonts.serif, 30.0), TextColor(DIM)));
+                c.spawn((crate::menu::ui_button(), Node { padding: UiRect::axes(Val::Px(18.0), Val::Px(4.0)), ..default() }, BackgroundColor(Color::NONE), MenuItem(i))).with_children(|b| {
+                    b.spawn((Text::new(ch.label()), font(&fonts.ui, 30.0), TextColor(DIM)));
                 });
             }
         });
@@ -417,7 +657,7 @@ fn build(commands: &mut Commands, assets: &AssetServer, s: Screen, fonts: &MenuF
 
 /// The picker overlay: the tabs, a window of PICKER_ROWS rows around the cursor (gold), each with
 /// its deathblow count as red dots, and the keys.
-fn build_picker(commands: &mut Commands, fonts: &MenuFonts, picker: &mut Picker) {
+fn build_picker(commands: &mut Commands, fonts: &crate::fonts::GameFonts, picker: &mut Picker) {
     let tab = picker.tab;
     let index = picker.index[tab];
     let list = picker.lists()[tab].clone();
@@ -441,27 +681,27 @@ fn build_picker(commands: &mut Commands, fonts: &MenuFonts, picker: &mut Picker)
         .with_children(|c| {
             c.spawn(Node { column_gap: Val::Px(40.0), margin: UiRect::bottom(Val::Px(14.0)), ..default() }).with_children(|r| {
                 for (t, name) in TABS.iter().enumerate() {
-                    r.spawn((Button, Node { padding: UiRect::axes(Val::Px(14.0), Val::Px(2.0)), border: UiRect::bottom(Val::Px(2.0)), ..default() }, BorderColor::all(if t == tab { GOLD } else { Color::NONE }), PickerTab(t)))
+                    r.spawn((crate::menu::ui_button(), Node { padding: UiRect::axes(Val::Px(14.0), Val::Px(2.0)), border: UiRect::bottom(Val::Px(2.0)), ..default() }, BorderColor::all(if t == tab { GOLD } else { Color::NONE }), PickerTab(t)))
                         .with_children(|b| {
-                            b.spawn((Text::new(*name), font(&fonts.serif, 26.0), TextColor(if t == tab { GOLD } else { DIM })));
+                            b.spawn((Text::new(*name), font(&fonts.ui, 26.0), TextColor(if t == tab { GOLD } else { DIM })));
                         });
                 }
             });
             if list.is_empty() {
-                c.spawn((Text::new("No encounters extracted (tools/extract.ps1 writes extracted/enemies)."), font(&fonts.serif, 22.0), TextColor(DIM)));
+                c.spawn((Text::new("No encounters extracted (tools/extract.ps1 writes extracted/enemies)."), font(&fonts.ui, 22.0), TextColor(DIM)));
             }
             for (i, e) in list.iter().enumerate().skip(start).take(PICKER_ROWS) {
-                c.spawn((Button, Node { width: Val::Px(640.0), justify_content: JustifyContent::SpaceBetween, padding: UiRect::axes(Val::Px(12.0), Val::Px(2.0)), ..default() }, BackgroundColor(if i == index { Color::srgba(0.85, 0.74, 0.52, 0.08) } else { Color::NONE }), MenuItem(i)))
+                c.spawn((crate::menu::ui_button(), Node { width: Val::Px(640.0), justify_content: JustifyContent::SpaceBetween, padding: UiRect::axes(Val::Px(12.0), Val::Px(2.0)), ..default() }, BackgroundColor(if i == index { Color::srgba(0.85, 0.74, 0.52, 0.08) } else { Color::NONE }), MenuItem(i)))
                     .with_children(|b| {
                         // One line each: a long placement name is cut.
                         let name = if e.name.chars().count() > 52 { format!("{}…", e.name.chars().take(51).collect::<String>()) } else { e.name.clone() };
-                        b.spawn((Text::new(name), TextLayout::no_wrap(), font(&fonts.serif, 18.0), TextColor(if i == index { GOLD } else { DIM })));
+                        b.spawn((Text::new(name), TextLayout::no_wrap(), font(&fonts.ui, 18.0), TextColor(if i == index { GOLD } else { DIM })));
                         b.spawn((Text::new("\u{25cf}".repeat(e.deathblows.clamp(0, 9) as usize)), font(&fonts.kanji, 13.0), TextColor(RED)));
                     });
             }
             c.spawn((
                 Text::new(format!("{} / {}    Up / Down choose    Left / Right tab    Enter fight    Esc back", if list.is_empty() { 0 } else { index + 1 }, list.len())),
-                font(&fonts.serif, 14.0),
+                font(&fonts.ui, 14.0),
                 TextColor(DIM),
                 Node { margin: UiRect::top(Val::Px(12.0)), ..default() },
             ));
@@ -470,7 +710,7 @@ fn build_picker(commands: &mut Commands, fonts: &MenuFonts, picker: &mut Picker)
 }
 
 /// The Options overlay: a row per option with its value ("<  5  >" on the cursor's row).
-fn build_options(commands: &mut Commands, fonts: &MenuFonts, config: &crate::config::GameConfig, index: usize) {
+fn build_options(commands: &mut Commands, fonts: &crate::fonts::GameFonts, config: &crate::config::GameConfig, index: usize) {
     commands
         .spawn((
             Node {
@@ -488,20 +728,20 @@ fn build_options(commands: &mut Commands, fonts: &MenuFonts, config: &crate::con
             MenuRoot,
         ))
         .with_children(|c| {
-            c.spawn((Text::new("Options"), font(&fonts.serif, 34.0), TextColor(GOLD), Node { margin: UiRect::bottom(Val::Px(16.0)), ..default() }));
+            c.spawn((Text::new("Options"), font(&fonts.ui, 34.0), TextColor(GOLD), Node { margin: UiRect::bottom(Val::Px(16.0)), ..default() }));
             for (i, o) in OPTS.iter().enumerate() {
                 let sel = i == index;
                 let color = if sel { GOLD } else { DIM };
-                c.spawn((Button, Node { width: Val::Px(520.0), justify_content: JustifyContent::SpaceBetween, padding: UiRect::axes(Val::Px(12.0), Val::Px(3.0)), ..default() }, BackgroundColor(if sel { Color::srgba(0.85, 0.74, 0.52, 0.08) } else { Color::NONE }), MenuItem(i)))
+                c.spawn((crate::menu::ui_button(), Node { width: Val::Px(520.0), justify_content: JustifyContent::SpaceBetween, padding: UiRect::axes(Val::Px(12.0), Val::Px(3.0)), ..default() }, BackgroundColor(if sel { Color::srgba(0.85, 0.74, 0.52, 0.08) } else { Color::NONE }), MenuItem(i)))
                     .with_children(|b| {
-                        b.spawn((Text::new(o.label()), font(&fonts.serif, 20.0), TextColor(color)));
+                        b.spawn((Text::new(o.label()), font(&fonts.ui, 20.0), TextColor(color)));
                         let v = o.value(config);
                         if !v.is_empty() {
-                            b.spawn((Text::new(if sel { format!("<  {v}  >") } else { v }), font(&fonts.serif, 20.0), TextColor(color)));
+                            b.spawn((Text::new(if sel { format!("<  {v}  >") } else { v }), font(&fonts.ui, 20.0), TextColor(color)));
                         }
                     });
             }
-            c.spawn((Text::new("Up / Down choose    Left / Right change    Esc back (saved)"), font(&fonts.serif, 14.0), TextColor(DIM), Node { margin: UiRect::top(Val::Px(14.0)), ..default() }));
+            c.spawn((Text::new("Up / Down choose    Left / Right change    Esc back (saved)"), font(&fonts.ui, 14.0), TextColor(DIM), Node { margin: UiRect::top(Val::Px(14.0)), ..default() }));
         });
 }
 
@@ -546,10 +786,10 @@ fn run_menu(
     mut time: ResMut<Time<Virtual>>,
     real: Res<Time<Real>>,
     mut cursor: ResMut<Cursor>,
-    fonts: Res<MenuFonts>,
+    fonts: Res<crate::fonts::GameFonts>,
     assets: Res<AssetServer>,
     roots: Query<Entity, With<MenuRoot>>,
-    (items, tabs, hovers): (Query<(&MenuItem, &Interaction, &Children)>, Query<(&PickerTab, &Interaction), Changed<Interaction>>, Query<&MenuItem, Changed<Interaction>>),
+    (items, tabs, hovers, mut brushes): (Query<(&MenuItem, &Interaction, &Children)>, Query<(&PickerTab, &Interaction), Changed<Interaction>>, Query<&MenuItem, Changed<Interaction>>, Query<(&TitleBrush, &mut Visibility)>),
     mut texts: Query<&mut TextColor>,
     mut window: Single<&mut CursorOptions, With<PrimaryWindow>>,
     (mut pad, mut exit, mut spawn, mut picker, mut config): (
@@ -632,7 +872,13 @@ fn run_menu(
         build(&mut commands, &assets, s, &fonts, &mut picker, &config, 0);
         cursor.built = Some(s);
         cursor.index = 0;
-        if s == Screen::Playing {
+        // The world runs on under the idol's menu, as in the game (the user: "the game pauses when
+        // I meditate at a Sculptor's Idol").
+        if s == Screen::Idol {
+            time.unpause();
+            window.grab_mode = CursorGrabMode::None;
+            window.visible = true;
+        } else if s == Screen::Playing {
             time.unpause();
             window.grab_mode = CursorGrabMode::Confined;
             window.visible = false;
@@ -648,7 +894,7 @@ fn run_menu(
         mouse.reset_all();
         return;
     }
-    if s != Screen::Playing && !time.is_paused() && real.elapsed_secs() >= WARMUP {
+    if s != Screen::Playing && s != Screen::Idol && !time.is_paused() && real.elapsed_secs() >= WARMUP {
         time.pause();
     }
     if s == Screen::Playing {
@@ -656,6 +902,10 @@ fn run_menu(
             next.set(Screen::Paused);
             keys.reset_all();
         }
+        return;
+    }
+    // game_menu.rs runs the in-game menu's input, idol.rs the idol's.
+    if s == Screen::Paused || s == Screen::Idol {
         return;
     }
     let list = choices(s, &picker);
@@ -682,6 +932,9 @@ fn run_menu(
                 tc.0 = if item.0 == cursor.index { GOLD } else { DIM };
             }
         }
+    }
+    for (b, mut vis) in &mut brushes {
+        *vis = if b.0 == cursor.index { Visibility::Inherited } else { Visibility::Hidden };
     }
     // Nothing reaches the game while a menu is up.
     keys.reset_all();
@@ -741,6 +994,70 @@ fn apply_video(config: Res<crate::config::GameConfig>, mut window: Single<&mut W
     if before.map(|b| b.2) != Some(want.2) && (!first || want.2.is_some()) {
         let [w, h] = want.2.unwrap_or([1024, 560]);
         window.resolution.set(w as f32, h as f32);
+    }
+}
+
+/// Whether the pointer moved this frame: a hover moves a menu's cursor only then, so a list
+/// rebuilt under a still pointer (the wheel, the arrows) does not snap back to the row under it.
+#[derive(Resource, Default)]
+pub(crate) struct MenuMouse {
+    pub(crate) moved: bool,
+    /// Whole wheel notches this frame (up positive); the in-game and idol menus move their
+    /// cursor by them, stopping at the list's ends.
+    pub(crate) wheel: i32,
+}
+
+/// The cursor moved by the wheel's notches (up = towards the top), stopping at the ends.
+pub(crate) fn wheel_step(index: usize, wheel: i32, n: usize) -> usize {
+    (index as i32 - wheel).clamp(0, n.max(1) as i32 - 1) as usize
+}
+
+/// Menu conveniences (the user): in every menu E is Enter (OK) and Q is Esc (back), and the
+/// mouse wheel moves the cursor: `MenuMouse::wheel` for the in-game and idol menus, an arrow
+/// press for the title screens' short lists. The keys it pressed are let go the next frame.
+fn menu_keys_and_wheel(
+    state: Res<State<Screen>>,
+    mut keys: ResMut<ButtonInput<KeyCode>>,
+    scroll: Option<Res<bevy::input::mouse::AccumulatedMouseScroll>>,
+    motion: Option<Res<bevy::input::mouse::AccumulatedMouseMotion>>,
+    mut mouse: ResMut<MenuMouse>,
+    mut notches: Local<f32>,
+    mut held: Local<Vec<KeyCode>>,
+) {
+    mouse.moved = motion.is_some_and(|m| m.delta != Vec2::ZERO);
+    mouse.wheel = 0;
+    for k in held.drain(..) {
+        keys.release(k);
+    }
+    if *state.get() == Screen::Playing {
+        *notches = 0.0;
+        return;
+    }
+    let mut press = |keys: &mut ButtonInput<KeyCode>, k: KeyCode| {
+        if !keys.pressed(k) {
+            keys.press(k);
+            held.push(k);
+        }
+    };
+    if keys.just_pressed(KeyCode::KeyE) {
+        press(&mut keys, KeyCode::Enter);
+    }
+    if keys.just_pressed(KeyCode::KeyQ) {
+        press(&mut keys, KeyCode::Escape);
+    }
+    *notches += scroll.map_or(0.0, |s| match s.unit {
+        bevy::input::mouse::MouseScrollUnit::Line => s.delta.y,
+        bevy::input::mouse::MouseScrollUnit::Pixel => s.delta.y / 40.0,
+    });
+    // Whole notches now; a fraction (a touchpad) waits for the rest, nothing carries over a
+    // fast spin (the old one-press-a-frame kept scrolling after the wheel stopped).
+    let whole = notches.trunc();
+    *notches -= whole;
+    let wheel = whole as i32;
+    if matches!(*state.get(), Screen::Paused | Screen::Idol) {
+        mouse.wheel = wheel;
+    } else if wheel != 0 {
+        press(&mut keys, if wheel > 0 { KeyCode::ArrowUp } else { KeyCode::ArrowDown });
     }
 }
 
@@ -877,6 +1194,7 @@ fn watch_fight(
     pad: Option<Res<crate::player::PadInput>>,
     banner_done: Res<BannerDone>,
     mut down_for: Local<f32>,
+    mut final_for: Local<f32>,
 ) {
     // Retry / Title -> Start asked for the fight over: the reset runs in the next fixed step
     // (player.rs), so until then Wolf still lies dead - not a new death.
@@ -885,16 +1203,33 @@ fn watch_fight(
         return;
     }
     if let Ok((a, p)) = wolf.single() {
-        if (a.state.starts_with("GroundDeathLoop") || a.state.starts_with("LandDeathLoop") || a.state == "ThrowDefDeathLoop") && p.resurrections == 0 || a.state == "AgingGroundDeathLoop" {
+        // Die chosen (player.rs): the death screen fades to black first (`FINAL_FADE`).
+        if p.gave_up {
+            *final_for += time.delta_secs();
+            if *final_for >= FINAL_FADE {
+                next.set(Screen::Dead);
+            }
+            return;
+        }
+        *final_for = 0.0;
+        if (a.state.starts_with("GroundDeathLoop") || a.state.starts_with("LandDeathLoop") || a.state == "ThrowDefDeathLoop") && (p.resurrections == 0 || p.revive_locked) || a.state == "AgingGroundDeathLoop" {
             next.set(Screen::Dead);
             return;
         }
+    }
+    // The Construct is for practice: its guards all down is no victory.
+    #[cfg(feature = "host")]
+    if crate::sandbox::ON_CONSTRUCT.load(std::sync::atomic::Ordering::Relaxed) && boss.run.is_none() {
+        *down_for = 0.0;
+        return;
     }
     let (all_down, hold) = match &boss.run {
         // Handle Boss Defeat is final: no hold for a phase change. With a banner, Won waits for
         // the banner to play out (`defeat_banner`, after the finisher).
         Some(run) if run.banner > 0 && run.defeated.is_some() && !banner_done.0 => return,
         Some(run) => (run.defeated.is_some(), 0.0),
+        // In the open world (an idol start) the map's enemies down is no victory either.
+        None if (crate::encounter::hooks().open_world)() => (false, WON_HOLD),
         None => (!enemies.is_empty() && enemies.iter().all(|(e, _)| e.is_dead()), WON_HOLD),
     };
     *down_for = if all_down { *down_for + time.delta_secs() } else { 0.0 };
@@ -936,7 +1271,7 @@ fn defeat_banner(
     state: Res<State<Screen>>,
     boss: Res<crate::enemy::BossScript>,
     assets: Res<AssetServer>,
-    fonts: Option<Res<MenuFonts>>,
+    fonts: Option<Res<crate::fonts::GameFonts>>,
     mut shown: Local<Option<(Entity, f32)>>,
     mut done: Local<bool>,
     mut banner_done: ResMut<BannerDone>,
@@ -983,7 +1318,7 @@ fn defeat_banner(
         3 => ("GRACIOUS GIFT OF TEARS", None),
         _ => ("SHINOBI EXECUTION", have("MENU_Ninsatsu").then_some("MENU_Ninsatsu")),
     };
-    let serif = fonts.as_ref().and_then(|f| f.serif.clone());
+    let serif = fonts.as_ref().and_then(|f| f.ui.clone());
     let e = commands
         .spawn((
             Node { position_type: PositionType::Absolute, width: Val::Percent(100.0), height: Val::Percent(100.0), justify_content: JustifyContent::Center, align_items: AlignItems::Center, flex_direction: FlexDirection::Column, row_gap: Val::Vh(4.0), ..default() },
@@ -993,7 +1328,7 @@ fn defeat_banner(
         .with_children(|c| match art {
             // The clip: the brush kanji over y 24-52 %, the name in small spaced caps at y 59 %.
             Some(f) => {
-                c.spawn((Node { height: Val::Vh(30.0), ..default() }, ImageNode::new(assets.load(format!("hud/{f}.png"))).with_color(Color::WHITE.with_alpha(0.0)), DefeatBannerPart));
+                c.spawn((Node { height: Val::Vh(30.0), ..default() }, ImageNode::new(assets.load(crate::paths::asset(format!("hud/{f}.png")))).with_color(Color::WHITE.with_alpha(0.0)), DefeatBannerPart));
                 c.spawn((Text::new(text), font(&serif, 26.0), TextColor(Color::srgba(0.92, 0.88, 0.8, 0.0)), DefeatBannerPart));
             }
             None => {
@@ -1009,9 +1344,10 @@ fn defeat_banner(
 fn hide_hud_on_title(
     mut commands: Commands,
     state: Res<State<Screen>>,
-    mut layers: Query<(Entity, &mut Visibility, Option<&mut TitleHidden>), (With<Node>, Without<ChildOf>, Without<MenuRoot>)>,
+    mut layers: Query<(Entity, &mut Visibility, Option<&mut TitleHidden>), (With<Node>, Without<ChildOf>, Without<MenuRoot>, Without<crate::idol::IdolMenuRoot>)>,
 ) {
-    let title = matches!(*state.get(), Screen::Title | Screen::Picker | Screen::Options);
+    // The idol's menu shows over the world without the HUD too (the game's capture).
+    let title = matches!(*state.get(), Screen::Title | Screen::Picker | Screen::Options | Screen::Idol);
     for (e, mut v, hidden) in &mut layers {
         match (title, hidden) {
             (true, Some(mut h)) => {

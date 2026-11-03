@@ -202,7 +202,7 @@ pub(crate) fn the_fall_top_stays_at_take_off() {
 /// flags cleared) lose the same.
 #[test]
 pub(crate) fn fall_damage_matches_the_exe() {
-    let dist = crate::map::fall_death_dist(None).unwrap();
+    let dist = crate::terrain::fall_death_dist(None).unwrap();
     let mut n = 0;
     for name in ["air_drops_1_2_2.9_3_4.9_5_10_15_19.9_20_22.json", "air_drops_25_30_35_39.9_40_45_60_80.json"] {
         let Some(v) = load(name) else { return };

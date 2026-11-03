@@ -76,6 +76,10 @@ fn main() {
         Some("tae") if args.len() == 4 => dump_tae(Path::new(&args[2]), Path::new(&args[3])),
         // Optional further args: extra texture binder folders (NpcParam normalChangeTexChrId, e.g.
         // c5430 -> chr/c5408.texbnd.d; materials may name a sibling pack, c5400 hair -> c5408).
+        // One object's FLVER as JSON for the game to draw on its own (src/idol.rs): its meshes'
+        // positions / normals / UVs / indices in FromSoftware space, the albedo and normal texture
+        // stems (extracted/tex), and its dummies.
+        Some("objmesh") if args.len() == 4 => export_objmesh(Path::new(&args[2]), Path::new(&args[3])),
         Some("model") if args.len() >= 6 => {
             let extra: Vec<&Path> = args[6..].iter().map(Path::new).collect();
             export_model(Path::new(&args[2]), Path::new(&args[3]), Path::new(&args[4]), Path::new(&args[5]), &extra)
@@ -191,6 +195,8 @@ fn main() {
             }
         }
         Some("dds2png") if args.len() >= 4 => dds2png(Path::new(&args[2]), Path::new(&args[3]), args.get(4).is_some_and(|a| a == "alpha")),
+        // Whole maps' grapple points and ledges (`edges extracted m11_00_00_00 m11_01_00_00`).
+        Some("edges") if args.len() >= 4 => map::export_edges(Path::new(&args[2]), &args[3..]),
         // Map pieces around an MSB part (e.g. `map extracted m11_01_00_00 c1020_0004 60`).
         Some("map") if args.len() == 6 => map::export(Path::new(&args[2]), &args[3], &args[4], args[5].parse().expect("radius")),
         // Split binder (.tpfbhd / .hkxbhd + its .*bdt) -> <out>/<file name>.
@@ -281,6 +287,32 @@ fn main() {
                 println!("{b}");
             }
         }
+        Some("behavior") if args.len() == 4 => {
+            let graph = hkx::behavior_graph(&std::fs::read(&args[2]).unwrap());
+            std::fs::write(&args[3], serde_json::to_string(&graph).unwrap()).unwrap();
+        }
+        // Every clip's length (seconds) in a character's anibnds (<chr>.anibnd.d, <chr>_*.anibnd.d):
+        // what the behaviour graph needs to end the clips the combat export leaves out.
+        Some("clip-lengths") if args.len() == 5 => {
+            let mut out = std::collections::BTreeMap::new();
+            for e in std::fs::read_dir(&args[2]).unwrap().flatten() {
+                let dir = e.path();
+                let name = dir.file_name().unwrap().to_string_lossy().to_string();
+                if !(name == format!("{}.anibnd.d", args[3]) || name.starts_with(&format!("{}_", args[3]))) || !name.ends_with(".anibnd.d") {
+                    continue;
+                }
+                let files: Vec<_> = std::fs::read_dir(&dir).unwrap().flatten().map(|f| f.path()).collect();
+                let types = files.iter().find(|f| f.extension().is_some_and(|x| x == "compendium")).map(|f| hkx::read_types(&std::fs::read(f).unwrap())).unwrap_or_default();
+                for f in files.iter().filter(|f| f.extension().is_some_and(|x| x == "hkx")) {
+                    let key = f.file_stem().unwrap().to_string_lossy().to_string();
+                    if let Some(d) = hkx::clip_duration(&std::fs::read(f).unwrap(), &types) {
+                        out.entry(key).or_insert(d);
+                    }
+                }
+            }
+            println!("{} clip lengths", out.len());
+            std::fs::write(&args[4], serde_json::to_string(&out).unwrap()).unwrap();
+        }
         Some("transitions") if args.len() == 3 => {
             for (ty, n, dur, flags, end_mode, curve) in hkx::transition_effects(&std::fs::read(&args[2]).unwrap()) {
                 println!("{ty} {n} duration={dur} flags={flags} endMode={end_mode} blendCurve={curve}");
@@ -317,6 +349,7 @@ fn main() {
         },
         Some("sounds-fmod") if args.len() == 4 => fsb::decode_with_fmod(Path::new(&args[2]), Path::new(&args[3])).unwrap_or_else(|e| eprintln!("{e}")),
         // `hud <extracted>`: only the HUD sprites (export_hud), without the full export.
+        Some("hud-all") if args.len() == 3 => export::export_hud_all(Path::new(&args[2])),
         Some("hud") if args.len() == 3 => export::export_hud(Path::new(&args[2]), &export::hud_icons(&Path::new(&args[2]).join("json/params"))),
         // `listsp <extracted>`: only the SpEffect rows the list puts on Wolf (WOLF_LIST_SP), added
         // to the combat_data.json there without a full export.
@@ -346,6 +379,7 @@ fn unpack(game: &Path, out: &Path, pattern: &str) {
         .map(|l| (bhd::path_hash(l), l))
         .collect();
     println!("{} dictionary paths match", wanted.len());
+    let only = std::env::var("SEKIRO_UNPACK_ONLY").ok();
     let mut found = 0;
     for n in 1..=5 {
         let pem = std::fs::read_to_string(format!("{}/Data{n}.pem", keys_dir())).unwrap();
@@ -361,7 +395,11 @@ fn unpack(game: &Path, out: &Path, pattern: &str) {
                 rel = rel.trim_end_matches(".dcx").to_string();
             }
             let dest = out.join(&rel);
-            write(&dest, &data);
+            // SEKIRO_UNPACK_ONLY=<regex>: of a binder, write only the inner files whose names
+            // match (the maps' .grass tables without their gigabytes of pieces).
+            if only.is_none() {
+                write(&dest, &data);
+            }
             println!("Data{n}: {rel} ({} bytes)", data.len());
             if data.starts_with(b"BND4") {
                 expand_bnd(&dest, &data);
@@ -390,7 +428,10 @@ fn expand_bnd(dest: &Path, data: &[u8]) {
             write(&dir.join(format!("{folder}_{name}")), &f.data);
         }
         let p = dir.join(&name);
-        write(&p, &f.data);
+        let only = std::env::var("SEKIRO_UNPACK_ONLY").ok().and_then(|r| regex::Regex::new(&r).ok());
+        if only.as_ref().is_none_or(|re| re.is_match(&name)) {
+            write(&p, &f.data);
+        }
         if f.data.starts_with(b"BND4") {
             expand_bnd(&p, &f.data);
         }
@@ -634,6 +675,29 @@ struct Detail {
     bits: u8,
     names: [String; 8],
     params: Vec<f32>,
+}
+
+fn export_objmesh(flver_path: &Path, out: &Path) {
+    let f = flver::read(&std::fs::read(flver_path).expect("read flver"));
+    let slot = |m: &flver::Mesh, kind: &str| m.textures.iter().find(|(s, t)| s.contains(kind) && s.ends_with("_0") && !t.is_empty()).or(m.textures.iter().find(|(s, t)| s.contains(kind) && !t.is_empty())).map(|(_, t)| t.clone()).unwrap_or_default();
+    let meshes: Vec<serde_json::Value> = f
+        .meshes
+        .iter()
+        .map(|m| {
+            let mut pos = Vec::with_capacity(m.vertices.len() * 3);
+            let mut nrm = Vec::with_capacity(m.vertices.len() * 3);
+            let mut uv = Vec::with_capacity(m.vertices.len() * 2);
+            for v in &m.vertices {
+                pos.extend_from_slice(&v.pos);
+                nrm.extend_from_slice(&v.normal);
+                uv.extend_from_slice(&v.uv);
+            }
+            serde_json::json!({ "mtd": m.mtd, "albedo": slot(m, "AlbedoMap"), "normal": slot(m, "NormalMap"), "cull": m.cull, "alpha_test": m.alpha_test, "pos": pos, "normal_vec": nrm, "uv": uv, "indices": m.indices })
+        })
+        .collect();
+    let dummies: Vec<serde_json::Value> = f.dummies.iter().map(|d| serde_json::json!({ "id": d.id, "pos": d.pos })).collect();
+    std::fs::write(out, serde_json::to_string(&serde_json::json!({ "meshes": meshes, "dummies": dummies })).unwrap()).expect("write");
+    println!("{} meshes -> {}", f.meshes.len(), out.display());
 }
 
 fn export_model(flver_path: &Path, tpf_path: &Path, out: &Path, tex_dir: &Path, extra_tex: &[&Path]) {

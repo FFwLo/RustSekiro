@@ -1,5 +1,5 @@
 //! The Grappling Hook (the engine's "wire"): Wolf's side of docs/kb/grapple.md (sections 3 and 5).
-//! The points and the search are map.rs (`map::grapple_target`); this is the move: the shoot, the
+//! The points and the search are map.rs (`crate::traversal::grapple_target`); this is the move: the shoot, the
 //! reel, the launch with guaranteed arrival and the landing.
 //!
 //! The states (c0000 behavior, HKS BEH_A_GROUND_WIRE_SHOOT 107 / BEH_A_AIR_WIRE_SHOOT 108):
@@ -31,7 +31,7 @@ use bevy::prelude::*;
 
 use crate::actor::Actor;
 use crate::data::{CharData, FALL_TYPES};
-use crate::map::{GrapplePoints, GrappleTarget};
+use crate::traversal::{GrapplePoints, GrappleTarget};
 use crate::player::{CAPSULE_HALF_HEIGHT, Player};
 
 /// ChrPhysicsHomingParam rows of the wire arc: 300000000 + the point's chrPhysicsHomingIdOffset
@@ -52,13 +52,16 @@ const DEFAULT_FLIGHT: f32 = 0.667;
 const SHOOT_TURN: [(&str, f32, f32); 4] =
     [("GroundWireShoot", 1080.0, 0.2), ("AirWireShoot", 1080.0, 0.2), ("WireMoveWireShoot", 2700.0, 0.1), ("WireMoveWire2Shoot", 2700.0, 0.1)];
 
-/// The point the hook would fire at this frame: `map::grapple_target` over the camera view, the
+/// The point the hook would fire at this frame: `crate::traversal::grapple_target` over the camera view, the
 /// map's points and the enemies open to the wire (enemy::grapple::EnemyGrapples).
 #[derive(Resource, Default)]
 pub struct WireAim {
     pub target: Option<GrappleTarget>,
     /// The target is this enemy, with its arc row (ChrPhysicsHomingParam 3000<variation>).
     pub enemy: Option<(Entity, i64)>,
+    /// A host game aims the wire with its own search and marker: it sets `target` itself, and
+    /// this crate's search and HUD wire mark stand aside.
+    pub host: bool,
 }
 
 /// A wire move in progress.
@@ -93,23 +96,26 @@ pub struct WirePlugin;
 
 impl Plugin for WirePlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<WireAim>()
+        // The map's wire points and ledge edges (empty until the host's map fills them).
+        app.init_resource::<crate::traversal::GrapplePoints>()
+            .init_resource::<crate::traversal::LedgeEdges>()
+            .init_resource::<WireAim>()
             .init_resource::<WireRope>()
             .add_systems(FixedUpdate, aim_wire.before(crate::actor::ActorSet::Decide))
             .add_systems(FixedUpdate, hook_enemy.after(crate::actor::ActorSet::Decide).before(crate::actor::ActorSet::Resolve))
-            .add_systems(Update, draw_rope);
+            .add_systems(PostUpdate, draw_rope.after(bevy::transform::TransformSystems::Propagate));
     }
 }
 
 fn aim_wire(
     points: Res<GrapplePoints>,
     enemies: Option<Res<crate::enemy::grapple::EnemyGrapples>>,
-    cams: Query<&GlobalTransform, With<crate::camera::OrbitCamera>>,
+    view: Res<crate::view::View>,
     wolf: Query<&Transform, With<Player>>,
     mut aim: ResMut<WireAim>,
 ) {
-    // Without a camera (the sim tests) the aim is left as set.
-    let (Ok(cam), Ok(w)) = (cams.single(), wolf.single()) else { return };
+    // Without a camera (the sim tests) or with the host aiming, the aim is left as set.
+    let (Some((pos, rot)), Ok(w), false) = (view.eye, wolf.single(), aim.host) else { return };
     let prev = aim.target.map(|t| t.index);
     // The enemies join the map's points: the hook on their wire dummy, recognised from every
     // side (gap: the enemy rows' recognition angles are not read; taken as all round).
@@ -118,10 +124,9 @@ fn aim_wire(
     let foes = enemies.as_ref().map_or(&[][..], |e| &e.0[..]);
     for g in foes {
         let fwd = (w.translation - g.hook).with_y(0.0).try_normalize().unwrap_or(Vec3::Z);
-        pts.push(crate::map::GrapplePoint { hook: g.hook, land: g.land, fwd, variation: 0 });
+        pts.push(crate::traversal::GrapplePoint { hook: g.hook, land: g.land, fwd, variation: 0 });
     }
-    let (_, rot, pos) = cam.to_scale_rotation_translation();
-    aim.target = crate::map::grapple_target(pos, rot * Vec3::NEG_Z, w.translation, prev, &pts);
+    aim.target = crate::traversal::grapple_target(pos, rot * Vec3::NEG_Z, w.translation, prev, &pts);
     aim.enemy = None;
     if let Some(t) = aim.target.as_mut().filter(|t| t.index >= n) {
         let g = &foes[t.index - n];
@@ -272,7 +277,9 @@ impl Wire {
         let left = left - dt;
         let to = (self.dest - pos).with_y(0.0);
         if left > 1e-3 {
-            a.air_base = to / left;
+            // Under the wall slide's TELEPORT step: a body a wall held back would otherwise
+            // cover the rest in the last tick, skip the slide and go through the wall.
+            a.air_base = (to / left).clamp_length_max(0.9 * crate::terrain::TELEPORT / dt.max(1e-3));
             self.flight = Some(left);
         } else {
             self.flight = None;

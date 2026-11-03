@@ -17,7 +17,10 @@ use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 
-use ilhook::x64::{hook_closure_jmp_back, CallbackOption, HookFlags, Registers};
+use ilhook::x64::{hook_closure_jmp_back, hook_closure_retn, CallbackOption, HookFlags, Registers};
+
+mod anim;
+mod play;
 
 #[no_mangle]
 pub static SV1REC_ON: AtomicU32 = AtomicU32::new(0);
@@ -77,8 +80,122 @@ const HOOKS: &[(&str, usize, &str, [u8; 6])] = &[
     // 1 / 2 (docs/kb/enemy.md "Grab escape"); node -> [ChrIns] +8 handle. Grabs and deathblows.
     ("throw", 0x1_407f_a680, "rcx ThrowMan, rdx thrower, r8 victim, r9d throw id", [0x40, 0x55, 0x56, 0x57, 0x41, 0x54]),
     ("flag", 0x1_406c_4520, "rcx EventFlagMan, edx flag, r8b value", [0x40, 0x55, 0x41, 0x54, 0x41, 0x55]),
+    // FUN_1414212c0 = the one runner of every hkbScriptGenerator state callback (docs/kb/rec-research/input-hks.md C):
+    // rcx state node (+0x48 state name), rdx = node + 0xA0 activate / 0xA8 onUpdate / 0xC0 deactivate (call string at
+    // [rdx]), r9 context. Only activate / deactivate are logged (the active set follows from them).
+    ("hks_state", 0x1_4142_12c0, "rcx state node, rdx script slot, r9 ctx", [0x48, 0x89, 0x5C, 0x24, 0x08, 0x48]),
+    // docs/kb/rec-research/physics-traversal.md C: FUN_140efaf40 commits the grapple target when the hook is shot
+    // (rcx = WireActionTarget [0x143D8E058]: +0x10 point vec4, +0x28 handle; dl = is player). Starts `test dl,dl; je`.
+    ("grapple", 0x1_40ef_af40, "rcx wire target, dl is player", [0x84, 0xD2, 0x74, 0x34, 0x80, 0x79]),
+    // docs/kb/rec-research/ai-world-fx.md C: cutscene start FUN_14067b4e0 (edx cutscene id, r8d mode)
+    ("cutscene", 0x1_4067_b4e0, "rcx, edx cutscene id, r8d mode", [0x40, 0x55, 0x56, 0x57, 0x48, 0x81]),
+    // talk line FUN_1411ca4c0 (rcx talk obj, edx TalkParam row)
+    ("talk", 0x1_411c_a4c0, "rcx talk obj, edx TalkParam row", [0x48, 0x89, 0x5C, 0x24, 0x08, 0x48]),
+    // effect end FUN_141d7beb0 (rcx = the effect wrapper = `out` of the vfx hook): ends match creates by pointer
+    ("vfx_end", 0x1_41d7_beb0, "rcx effect wrapper", [0x48, 0x89, 0x4C, 0x24, 0x08, 0x57]),
+    // map objects (kb/rec-research/objects-sound-input.md A): FUN_14087a090 sets an ObjIns's broken
+    // bits once its HP is gone (logged once per handle); FUN_14087d410 is the destroy request
+    // (EMEVD 2005[1] or a hit; r8d > 0 forces HP 0); FUN_1406bc1b0 runs an ObjAct (door, lever, chest)
+    ("obj_broken", 0x1_4087_a090, "rcx ObjIns", [0x40, 0x53, 0x48, 0x83, 0xEC, 0x50]),
+    ("obj_destroy", 0x1_4087_d410, "rcx ObjIns, rdx pos, r8d level", [0x40, 0x53, 0x55, 0x56, 0x57, 0x48]),
+    ("objact", 0x1_406b_c1b0, "rcx ObjAct container, rdx ExecInfo", [0x40, 0x55, 0x56, 0x57, 0x41, 0x54]),
+    // FMOD Ex parameter writes (B): per event by name / by index (rcx MOFmodCue, xmm2 value), the
+    // global mix / reverb / deathblow ones (rdx name, xmm2 value); logged on a change of value
+    ("fmod_param", 0x1_41ca_05b0, "rcx cue, rdx name, xmm2 value", [0x48, 0x83, 0xEC, 0x38, 0x48, 0x8B]),
+    ("fmod_param_i", 0x1_41ca_0600, "rcx cue, dx index, xmm2 value", [0x48, 0x83, 0xEC, 0x38, 0x48, 0x8B]),
+    ("fmod_global", 0x1_4093_12b0, "rcx SoundMan, rdx name, xmm2 value", [0x40, 0x53, 0x48, 0x83, 0xEC, 0x30]),
+    // a noise for enemy hearing (D): FUN_14064a5f0 (rcx WorldAiMan, rdx source info, r8 emit info 0x30)
+    ("noise", 0x1_4064_a5f0, "rcx WorldAiMan, rdx source, r8 emit info", [0x48, 0x89, 0x74, 0x24, 0x20, 0x41]),
+    // FUN_140c00130 SpEffect list add (list = [ChrIns +0x11d0], id, owner ChrIns, source ChrIns, ...);
+    // reached from FUN_1409f8320 (ChrIns add, called by SekiroTool's ApplySpEffect 1.06 0xA01720).
+    // Logged once per (list, id) until the matching remove: re-applies every frame are skipped.
+    ("sp_add", 0x1_40c0_0130, "rcx list, edx id, r8 owner, r9 source", [0x48, 0x89, 0x6C, 0x24, 0x18, 0x56]),
+    // FUN_140c01300 SpEffect list remove (list, entry: +0x58 id, ...); SekiroTool RemoveSpEffect
+    // 1.06 0xBFB6D0 finds the entry by id and calls it
+    ("sp_del", 0x1_40c0_1300, "rcx list, rdx entry", [0x48, 0x89, 0x54, 0x24, 0x10, 0x57]),
+    // FUN_140bb18f0 TAE 920 ChrPhysicsVelocityChange apply: stores the param row at physics +0x10
+    // (physics module: +0x8 owner ChrIns). Logged when the stored row changes.
+    ("tae920", 0x1_40bb_18f0, "rcx physics module, edx row", [0x40, 0x57, 0x48, 0x83, 0xEC, 0x40]),
+    // FUN_140bb3580 homing initial-velocity solver (module, ?, from xyz, to xyz, homing row, mode,
+    // out velocity, ?) -> bool. Function hook: logs the solved velocity and the result.
+    ("homing", 0x1_40bb_3580, "rcx module, r8 from, r9 to, s5 row, s6 mode, s7 out velocity", [0x48, 0x8B, 0xC4, 0x55, 0x41, 0x54]),
+    // FUN_14084e5d0 fall kill test (fall height, HitMtrlParam id, ChrIns) -> bool: kills from
+    // HitMtrlParam +0x4c fallDeathDist once height >= .data 0x143b01948. Function hook.
+    ("fall", 0x1_4084_e5d0, "xmm0 fall height, edx HitMtrl id, r8 ChrIns", [0x48, 0x89, 0x5C, 0x24, 0x08, 0x57]),
+    // FUN_1408433f0 fall damage (out ptrs p1..p5, p6 ChrIns: +0x8fc fall height?, p7, p8): reads
+    // HitMtrlParam +0x50 fallDamageRate. Function hook: logs the outputs after the call.
+    ("falldmg", 0x1_4084_33f0, "p1..p5 outputs, p6 ChrIns, p7, p8", [0x48, 0x8B, 0xC4, 0x48, 0x89, 0x58]),
 ];
+/// Function (retn) hooks: the original runs inside the callback, so results can be logged.
+const RETN: &[&str] = &["homing", "fall", "falldmg"];
 const DEFAULT_ON: &[&str] = &["items", "ai_goal", "music", "posture", "guardcut"];
+
+/// "pad_play" (scripted input, play.rs): pre-hook on the ActionRequest module update FUN_140b2c190
+/// (rcx = module; called from the Wolf pad FUN_1407ef960 and the enemy ComManipulator FUN_1407e6610)
+const PAD_PLAY: (usize, [u8; 6]) = (0x1_40b2_c190, [0x48, 0x89, 0x5C, 0x24, 0x18, 0x55]);
+/// Lines of the once-per-frame player hook (tick, hook name, extra JSON fields), written with the hook lines
+static FRAME_LOG: Mutex<Vec<(u32, &'static str, String)>> = Mutex::new(Vec::new());
+/// pose.bin records (anim.rs), appended by the writer
+static POSE: Mutex<Vec<u8>> = Mutex::new(Vec::new());
+static WANT_ANIM: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static WANT_POSE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static WANT_BULLETS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static WANT_STICK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// "stick": the pad's input frame before any deadzone (objects-sound-input.md C): pad manager
+/// [0x143F42850], pad = FUN_14066af40(manager, 0), frame = [pad + 0x38F8]; S+0 forward/back,
+/// S+4 left/right (walk halves both), S+8 / S+0xC the look stick. Logged when it changes.
+const PAD_MANAGER: u64 = 0x1_43F4_2850;
+const GET_PAD: usize = 0x1_4066_af40;
+static LAST_STICK: Mutex<[u32; 4]> = Mutex::new([0; 4]);
+
+/// Once per game frame for the player (pre-hook on its ActionRequest module update): scripted input, anim, pose
+fn on_player_frame(module: u64) {
+    let tick = SV1REC_TICK.load(Ordering::Relaxed);
+    if let Some(l) = unsafe { play::on_module_update(module) } {
+        if let Ok(mut q) = FRAME_LOG.lock() { q.push((tick, "play", l)) }
+    }
+    if SV1REC_ON.load(Ordering::Relaxed) == 0 || !play::is_player_module(module) {
+        return;
+    }
+    if WANT_ANIM.load(Ordering::Relaxed) {
+        if let Some(l) = anim::clips() {
+            if let Ok(mut q) = FRAME_LOG.lock() {
+                if q.len() < 100_000 { q.push((tick, "anim", l)) }
+            }
+        }
+    }
+    if WANT_BULLETS.load(Ordering::Relaxed) {
+        // [handle, x, y, z, metres flown, flags] of every active bullet
+        if let Some(l) = anim::bullets() {
+            if let Ok(mut q) = FRAME_LOG.lock() {
+                if q.len() < 100_000 { q.push((tick, "bullet_pos", l)) }
+            }
+        }
+    }
+    if WANT_STICK.load(Ordering::Relaxed) {
+        let pm = unsafe { rd64(PAD_MANAGER) };
+        if pm != 0 && unsafe { std::slice::from_raw_parts(GET_PAD as *const u8, 6) } == [0x44, 0x8B, 0xC2, 0x4C, 0x8B, 0xC9] {
+            let get: unsafe extern "win64" fn(u64, u32) -> u64 = unsafe { std::mem::transmute(GET_PAD) };
+            let pad = unsafe { get(pm, 0) };
+            let frame = if pad != 0 { unsafe { rd64(pad + 0x38f8) } } else { 0 };
+            if frame != 0 {
+                let v = [0u64, 4, 8, 0xc].map(|o| unsafe { rd32(frame + o) });
+                if let (Ok(mut last), Ok(mut q)) = (LAST_STICK.lock(), FRAME_LOG.lock()) {
+                    if *last != v && q.len() < 100_000 {
+                        *last = v;
+                        let f = v.map(f32::from_bits);
+                        q.push((tick, "stick", format!(",\"fwd\":{},\"side\":{},\"look\":[{},{}]", f[0], f[1], f[2], f[3])));
+                    }
+                }
+            }
+        }
+    }
+    if WANT_POSE.load(Ordering::Relaxed) {
+        if let (Some(r), Ok(mut q)) = (anim::pose(tick), POSE.lock()) {
+            if q.len() < 64 << 20 { q.extend_from_slice(&r) }
+        }
+    }
+}
 
 /// hksi_lua_tolstring (FUN_14147d940, called by hksi_luaL_checklstring FUN_1414394c0): no error on
 /// a non-string, returns null
@@ -111,6 +228,9 @@ static TAE: Mutex<Option<std::collections::HashMap<(u64, u64), Tae>>> = Mutex::n
 static TAE_DONE: Mutex<Vec<Tae>> = Mutex::new(Vec::new());
 static LAST_LOCK: AtomicU64 = AtomicU64::new(u64::MAX);
 static FLAGS: Mutex<Option<std::collections::HashMap<u32, u8>>> = Mutex::new(None);
+/// SpEffect lists: list -> owner handle, and the (list, id) pairs currently on
+static SP_OWNER: Mutex<Option<std::collections::HashMap<u64, u32>>> = Mutex::new(None);
+static SP_ON: Mutex<Option<std::collections::HashSet<(u64, u32)>>> = Mutex::new(None);
 
 /// Plausible user-mode pointer (the hooked code itself reads these).
 fn ptr_ok(p: u64) -> bool {
@@ -126,6 +246,39 @@ unsafe fn hex(p: u64, n: usize) -> String {
 
 unsafe fn rd32(p: u64) -> u32 {
     if ptr_ok(p) { (p as *const u32).read_unaligned() } else { 0 }
+}
+
+/// Printable C string at p (bit 0 of the pointer cleared, as the game's string slots tag it), max n
+unsafe fn cstr(p: u64, n: usize) -> String {
+    let p = p & !1;
+    if !ptr_ok(p) {
+        return String::new();
+    }
+    let mut out = String::new();
+    for i in 0..n {
+        let c = *((p + i as u64) as *const u8);
+        if c == 0 {
+            break;
+        }
+        if c.is_ascii_graphic() && c != b'"' && c != b'\\' {
+            out.push(c as char);
+        }
+    }
+    out
+}
+
+/// The last value logged per key (the FMOD parameter writes repeat every frame): true when it moved
+fn changed(key: u64, v: u32) -> bool {
+    let Ok(mut m) = LAST_VALUE.lock() else { return false };
+    m.get_or_insert_with(Default::default).insert(key, v) != Some(v)
+}
+static LAST_VALUE: Mutex<Option<std::collections::HashMap<u64, u32>>> = Mutex::new(None);
+
+/// An ObjIns's HP, state id and position (objects-sound-input.md A)
+unsafe fn obj_fields(o: u64) -> String {
+    let rf = |p: u64| f32::from_bits(rd32(p));
+    format!(",\"hp\":{},\"obj_state\":{},\"pos\":[{},{},{}]",
+        rd32(o + 0x124) as u16 as i16, rd32(o + 0x138) as i32, rf(o + 0x1cc), rf(o + 0x1dc), rf(o + 0x1ec))
 }
 
 unsafe fn rd64(p: u64) -> u64 {
@@ -172,8 +325,69 @@ unsafe fn extra_of(name: &str, reg: &Registers) -> Option<String> {
             format!(",\"event\":{},\"slot\":{},\"bank\":{},\"cmd\":{},\"args\":\"{}\"",
                 rd32(reg.r8 + 0x28), rd32(reg.r8 + 0x30), bank, rd32(ins + 4), hex(args, size))
         }
+        "hks_state" => {
+            let kind = match reg.rdx.wrapping_sub(reg.rcx) {
+                0xA0 => "on",
+                0xC0 => "off",
+                _ => return None,
+            };
+            format!(",\"state\":\"{}\",\"kind\":\"{kind}\",\"node\":{},\"ctx\":{}", cstr(rd64(reg.rcx + 0x48), 80), reg.rcx, reg.r9)
+        }
+        "grapple" => format!(",\"player\":{},\"wire\":\"{}\"", reg.rdx as u8, hex(reg.rcx, 0x90)),
+        "cutscene" => format!(",\"cutscene\":{},\"mode\":{}", reg.rdx as u32 as i32, reg.r8 as u32 as i32),
+        "talk" => format!(",\"talk\":{}", reg.rdx as u32 as i32),
+        "vfx_end" => format!(",\"wrapper\":{}", reg.rcx),
+        "obj_broken" => {
+            let handle = rd32(reg.rcx + 8);
+            if !changed(1 << 40 | handle as u64, 1) {
+                return None;
+            }
+            format!(",\"obj\":{handle}{}", obj_fields(reg.rcx))
+        }
+        "obj_destroy" => format!(",\"obj\":{},\"level\":{}{}", rd32(reg.rcx + 8), reg.r8 as u32 as i32, obj_fields(reg.rcx)),
+        "objact" => format!(",\"area\":{},\"entry\":{},\"container_area\":{},\"exec\":\"{}\"",
+            rd32(reg.rdx), rd32(reg.rdx + 4) as i32, rd32(reg.rcx + 0x20), hex(reg.rdx, 0x18)),
+        "fmod_param" | "fmod_param_i" | "fmod_global" => {
+            let v = f32::from_bits(reg.xmm2 as u32);
+            let (key, param) = match name {
+                "fmod_param_i" => (reg.rcx.wrapping_mul(31) ^ (reg.rdx & 0xffff), format!("{}", reg.rdx as u16)),
+                "fmod_param" => (reg.rcx.wrapping_mul(31) ^ reg.rdx, format!("\"{}\"", cstr(reg.rdx, 64))),
+                _ => (reg.rdx ^ 0x5eed, format!("\"{}\"", cstr(reg.rdx, 64))),
+            };
+            if !changed(key, v.to_bits()) {
+                return None;
+            }
+            format!(",\"cue\":{},\"param\":{param},\"value\":{v}", reg.rcx)
+        }
+        "noise" => format!(",\"source\":\"{}\",\"emit\":\"{}\"", hex(reg.rdx, 0x20), hex(reg.r8, 0x30)),
         "throw" => format!(",\"throw\":{},\"thrower\":{},\"victim\":{}",
             reg.r9 as u32 as i32, rd32(rd64(reg.rdx) + 8), rd32(rd64(reg.r8) + 8)),
+        "sp_add" => {
+            let (list, id) = (reg.rcx, reg.rdx as u32);
+            if let Ok(mut m) = SP_OWNER.lock() {
+                m.get_or_insert_with(Default::default).insert(list, rd32(reg.r8 + 8));
+            }
+            let Ok(mut on) = SP_ON.lock() else { return None };
+            if !on.get_or_insert_with(Default::default).insert((list, id)) {
+                return None;
+            }
+            format!(",\"sp\":{},\"owner\":{},\"source\":{},\"list\":{list}", id as i32, rd32(reg.r8 + 8), rd32(reg.r9 + 8))
+        }
+        "sp_del" => {
+            let (list, id) = (reg.rcx, rd32(reg.rdx + 0x58));
+            if let Ok(mut on) = SP_ON.lock() {
+                on.get_or_insert_with(Default::default).remove(&(list, id));
+            }
+            let owner = SP_OWNER.lock().ok().and_then(|m| m.as_ref().and_then(|m| m.get(&list).copied())).unwrap_or(0);
+            format!(",\"sp\":{},\"owner\":{owner},\"list\":{list}", id as i32)
+        }
+        "tae920" => {
+            let row = reg.rdx as u32;
+            if rd32(reg.rcx + 0x10) == row {
+                return None;
+            }
+            format!(",\"row\":{},\"handle\":{},\"old\":{}", row as i32, rd32(rd64(reg.rcx + 8) + 8), rd32(reg.rcx + 0x10) as i32)
+        }
         "flag" => {
             let (id, v) = (reg.rdx as u32, reg.r8 as u8);
             let Ok(mut m) = FLAGS.lock() else { return None };
@@ -309,6 +523,75 @@ fn on_call(hook: u8, reg: *mut Registers) {
     }
 }
 
+fn f3(p: u64) -> String {
+    unsafe {
+        if !ptr_ok(p) {
+            return "null".into();
+        }
+        let v = p as *const f32;
+        format!("[{},{},{}]", num(v.read_unaligned()), num(v.add(1).read_unaligned()), num(v.add(2).read_unaligned()))
+    }
+}
+
+/// Function hook: run the original, then queue a call line with the result fields.
+unsafe fn on_retn(hook: u8, reg: *mut Registers, ori: usize) -> usize {
+    let reg = &*reg;
+    let sp = reg.rsp as *const u64;
+    let s = |i: usize| sp.add(i).read_unaligned();
+    let name = HOOKS[hook as usize].0;
+    let (ret, extra) = match name {
+        "homing" => {
+            let f: unsafe extern "win64" fn(u64, u64, u64, u64, u64, u64, u64, u64) -> u64 = std::mem::transmute(ori);
+            let (s5, s6, s7, s8) = (s(5), s(6), s(7), s(8));
+            let r = f(reg.rcx, reg.rdx, reg.r8, reg.r9, s5, s6, s7, s8);
+            (r, format!(",\"ok\":{},\"handle\":{},\"from\":{},\"to\":{},\"mode\":{},\"vel\":{},\"row\":\"{}\"",
+                r as u8, rd32(rd64(reg.rcx + 8) + 8), f3(reg.r8), f3(reg.r9), s6 as u8, f3(s7), hex(s5, 0x20)))
+        }
+        "fall" => {
+            let f: unsafe extern "win64" fn(f32, u64, u64) -> u64 = std::mem::transmute(ori);
+            let h = f32::from_bits(reg.xmm0 as u32);
+            let r = f(h, reg.rdx, reg.r8);
+            (r, format!(",\"height\":{},\"mtrl\":{},\"handle\":{},\"kill\":{}", num(h), reg.rdx as u32 as i32, rd32(reg.r8 + 8), r as u8))
+        }
+        _ => {
+            // falldmg: void, outputs through p1..p5
+            let f: unsafe extern "win64" fn(u64, u64, u64, u64, u64, u64, u64, u64) -> u64 = std::mem::transmute(ori);
+            let (s5, s6, s7, s8) = (s(5), s(6), s(7), s(8));
+            let r = f(reg.rcx, reg.rdx, reg.r8, reg.r9, s5, s6, s7, s8);
+            let fv = |p: u64| if ptr_ok(p) { num((p as *const f32).read_unaligned()) } else { "null".into() };
+            (r, format!(",\"out\":[{},{},{},{},{}],\"handle\":{},\"h8fc\":{},\"p7\":{},\"p8\":{}",
+                fv(reg.rcx), fv(reg.rdx), fv(reg.r8), rd32(reg.r9) as i32, rd32(s5) as i32, rd32(s6 + 8),
+                if ptr_ok(s6) { num(((s6 + 0x8fc) as *const f32).read_unaligned()) } else { "null".into() }, s7, s8))
+        }
+    };
+    if SV1REC_ON.load(Ordering::Relaxed) != 0 {
+        let call = Call {
+            tick: SV1REC_TICK.load(Ordering::Relaxed),
+            hook,
+            tid: GetCurrentThreadId(),
+            r: [reg.rcx, reg.rdx, reg.r8, reg.r9],
+            f: [0.0; 4],
+            ret: s(0),
+            s5: s(5),
+            s6: s(6),
+            item: None,
+            extra,
+        };
+        if let Ok(mut q) = QUEUE.lock() {
+            if q.len() < 200_000 {
+                q.push(call);
+            }
+        }
+    }
+    ret as usize
+}
+
+fn rec_dir() -> Option<String> {
+    let d = unsafe { &*std::ptr::addr_of!(SV1REC_DIR) };
+    let n = d.iter().position(|&b| b == 0).unwrap_or(d.len());
+    (n > 0).then(|| String::from_utf8_lossy(&d[..n]).into_owned())
+}
+
 fn writer() {
     let mut file: Option<File> = None;
     loop {
@@ -325,9 +608,21 @@ fn writer() {
             }
         }
         let calls = std::mem::take(&mut *QUEUE.lock().unwrap());
+        let frames = std::mem::take(&mut *FRAME_LOG.lock().unwrap());
+        let pose = std::mem::take(&mut *POSE.lock().unwrap());
+        if !pose.is_empty() && file.is_some() {
+            if let Some(dir) = rec_dir() {
+                if let Ok(mut pf) = OpenOptions::new().create(true).append(true).open(PathBuf::from(dir).join("pose.bin")) {
+                    let _ = pf.write_all(&pose);
+                }
+            }
+        }
         let taes = tae_flush(SV1REC_TICK.load(Ordering::Relaxed), !on);
         if let Some(fh) = file.as_mut() {
             let mut out = String::with_capacity(calls.len() * 160 + taes.len() * 200);
+            for (t, name, l) in &frames {
+                out.push_str(&format!("{{\"tick\":{t},\"name\":\"{name}\"{l}}}\n"));
+            }
             for t in &taes {
                 out.push_str(&format!("{{\"tick\":{},\"end\":{},\"name\":\"tae\",\"tid\":{}{}}}\n", t.start, t.last, t.tid, t.extra));
             }
@@ -382,13 +677,38 @@ fn install() {
             continue;
         }
         let idx = i as u8;
-        let r = unsafe { hook_closure_jmp_back(*addr, move |reg| on_call(idx, reg), CallbackOption::None, HookFlags::empty()) };
+        // hooks stay for the whole game session
+        let r = if RETN.contains(name) {
+            unsafe { hook_closure_retn(*addr, move |reg, ori| on_retn(idx, reg, ori), CallbackOption::None, HookFlags::empty()) }
+                .map(std::mem::forget)
+        } else {
+            unsafe { hook_closure_jmp_back(*addr, move |reg| on_call(idx, reg), CallbackOption::None, HookFlags::empty()) }
+                .map(std::mem::forget)
+        };
         let msg = match r {
-            Ok(h) => {
-                std::mem::forget(h); // hooks stay for the whole game session
-                format!("ok {name} 0x{addr:x} ({what})\n")
-            }
+            Ok(()) => format!("ok {name} 0x{addr:x} ({what})\n"),
             Err(e) => format!("FAILED {name} 0x{addr:x}: {e:?}\n"),
+        };
+        if let Some(l) = log.as_mut() {
+            let _ = l.write_all(msg.as_bytes());
+        }
+    }
+    WANT_ANIM.store(want.iter().any(|w| w == "anim"), Ordering::Relaxed);
+    WANT_POSE.store(want.iter().any(|w| w == "pose"), Ordering::Relaxed);
+    WANT_BULLETS.store(want.iter().any(|w| w == "bullet_pos"), Ordering::Relaxed);
+    WANT_STICK.store(want.iter().any(|w| w == "stick"), Ordering::Relaxed);
+    if want.iter().any(|w| w == "pad_play" || w == "anim" || w == "pose" || w == "bullet_pos" || w == "stick") {
+        let (addr, bytes) = PAD_PLAY;
+        let msg = if !ready(addr, &bytes) {
+            format!("SKIPPED pad_play 0x{addr:x}: first bytes differ\n")
+        } else {
+            let r = unsafe {
+                hook_closure_jmp_back(addr, |reg| on_player_frame((*reg).rcx), CallbackOption::None, HookFlags::empty())
+            };
+            match r {
+                Ok(h) => { std::mem::forget(h); format!("ok pad_play 0x{addr:x} (once per player frame: scripted input, anim, pose)\n") }
+                Err(e) => format!("FAILED pad_play 0x{addr:x}: {e:?}\n"),
+            }
         };
         if let Some(l) = log.as_mut() {
             let _ = l.write_all(msg.as_bytes());

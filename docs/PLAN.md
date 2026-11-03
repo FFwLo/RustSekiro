@@ -76,7 +76,7 @@ The plan below is still the reference, with these changes on 2026-10-12:
 
 ## Context
 
-Sv1 (`C:\DeadlockModding\shinobi-combat`) recreates Sekiro's combat from the game's own files in Rust/Bevy. Three Claude sessions share one working tree: **Map** (this one: map, lighting, sandbox, cloth), **Bosses** (enemies, bosses, AI, stealth) and **VXf** (the skills/tools session: skills, prosthetics, status, HUD, sound, and all VFX: FXR effects, clash/hit effects, gore, blood decals, weapon trails). Decisions (2026-10-10):
+Sv1 (`..\shinobi-combat`) recreates Sekiro's combat from the game's own files in Rust/Bevy. Three Claude sessions share one working tree: **Map** (this one: map, lighting, sandbox, cloth), **Bosses** (enemies, bosses, AI, stealth) and **VXf** (the skills/tools session: skills, prosthetics, status, HUD, sound, and all VFX: FXR effects, clash/hit effects, gore, blood decals, weapon trails). Decisions (2026-10-10):
 
 - "Finished" = a **playable game**: close the fidelity gaps, then add what a game needs (title, pause, options, gamepad, enemy picker without relaunch, death/victory flow, clean release build).
 - **Fighters only**: the 86 kinds that pass the every-phase check are the target; the 16 non-fighters/scripted set pieces only need to stand and not crash.
@@ -214,6 +214,31 @@ Status 2026-10-11: no-console exe + sv1.log + panic dialog, `[profile.dist]` + p
 - Performance (back on 2026-10-13, see the update above): 60 fps with vsync on the gate map and the 20-enemy arena (today 59/48; the gate map measured 18-24 fps on 2026-10-13); cloth range, shadow cascades, FXR soft particles are the knobs. Measure with src/perf.rs (F3, SHINOBI_BENCH).
 - Quiet logs in release (info only for load lines), no per-frame warnings.
 - Feel check: three clips (fight the General, the Ogre, Genichiro) compared with the game, last tweaks.
+
+### C7 World map events (2026-10-20, next fresh session)
+Run each map's own EMEVD in the open world (the sekiro-rs map mode), not only in boss fights.
+Today the open world has no enemies: enemy.rs spawn_lineup returns "line-up: none (idol travel)".
+Steps, each behind `SHINOBI_WORLD_ENEMIES=1` until playtested:
+1. Exporter (tools/world_scripts.py, sibling of boss_scripts.py / patrols.py): per map, every MSB
+   enemy part (entity, chr, NpcParam row, think id, map-space pos / yaw, patrol, wake region) and
+   the events that enable / disable characters (event 0 and common_func initialisers expanded:
+   2004[5] Change Character Enable State, backread / unload, gated by flag sets and IfEventFlag),
+   with each event's rest behaviour -> extracted/enemies/world_<map>.json. patrols.json covers
+   only the patrolling ones (25 on m11_01).
+2. Placement in the sr_map frame (sekiro-rs world coordinates, not the own map's json_frame).
+3. A WorldScript resource beside BossScript, reusing script.rs's step / group / eval with an
+   entity table from the export (no boss-relative placement, no fight hand-over).
+4. Rest at an idol: re-instance the enemies, restart events by their rest behaviour, keep the
+   ones whose defeat flags are set off.
+5. Test on m11_01 at idol 1111950: rest, the same enemies come back; a killed one with a
+   defeat flag stays gone.
+Done = enemies stand where the MSB puts them, wake by their map events, respawn on rest, fps
+measured before / after at the Ashina Castle idol. Later: doors, items, NPCs (need sekiro-rs
+objects by entity id), the map flags the AI reads (kb/enemy.md: 11100850, 117006xx, ...).
+Depends on navmesh (list item 6) for enemies leaving their routes.
+Progress 2026-10-20: steps 1-4 in, parked for combat (tools/world_scripts.py, src/enemy/world.rs,
+kb/enemy.md "The open world's map events"). Open: fps with 64 enemies (9 fps: the per-frame
+side), the start point's story flags, a sim test, step 5's playtest.
 
 ## Order and ownership summary
 

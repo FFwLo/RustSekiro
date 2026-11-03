@@ -1,0 +1,1731 @@
+[
+ {
+  "id": "deathblows.posture-break-trigger",
+  "category": "deathblows",
+  "title": "Posture bar empty on a direct hit breaks the target",
+  "summary": "When a direct hit leaves the target with less than 1 posture, the hit records a posture break and the target plays a collapse reaction. A block that empties posture is a guard break instead, and a deflect never records a break for the defender.",
+  "values": "Projected remaining posture < 1 on a direct hit. Posture is clamped to [-100, max] after a change.",
+  "how": "Damage resolution order (exe fn at b6e6a0) then the enemy graph's TrunkCollapse state.",
+  "sources": [
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "../sekiro-rs/docs/COMBAT-RULES.md"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/guard-deflect.md"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/damage.md"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "yes",
+   "where": "src/combat.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "../sekiro-rs/crates/sim/src/combat/"
+  },
+  "check": "Hit an Ashina soldier (posture 75) until the bar empties and watch the collapse stagger begin; in a sim test assert a TrunkCollapse state after the last hit.",
+  "note": "The deathblow window length is not in this code; it comes from the reaction clip (see deathblows.collapse-window).",
+  "needs": [
+   {
+    "id": "combat.posture-bar",
+    "why": "posture value and its drain by hits"
+   },
+   {
+    "id": "combat.direct-hit",
+    "why": "the hit that empties the bar"
+   }
+  ]
+ },
+ {
+  "id": "deathblows.collapse-window",
+  "category": "deathblows",
+  "title": "Deathblow window length after a posture break",
+  "summary": "Every collapse reaction clip applies SpEffect 220420 (stateInfo 352, trunk display collapsed) for its first 75 frames. That is the deathblow-ready state. The soldier's stagger clip lasts 3.0 s, so the window is about 2.5 s and the recovery flags open at 2.5 s.",
+  "values": "SpEffect 220420 frames 0-75 = 2.5 s; a000_008300 length 3.0 s; pushes the enemy back 0.5 m",
+  "how": "Enemy behaviour graph TrunkCollapseFront/Back (a000_008300 / 008301, large 008310) plus TAE AddSpEffect.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/guard-deflect.md"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "../sekiro-rs/docs/DEATHBLOW.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/enemy.rs"
+  },
+  "his": {
+   "has": "partial",
+   "where": "../sekiro-rs/crates/game/src/deathblow_demo.rs"
+  },
+  "check": "Break an enemy and time how long the deathblow marker stays: about 2.5 s, then the enemy recovers and the marker goes.",
+  "note": "sekiro-rs docs list the window length as unknown; the SpEffect timing settles it for the soldier. Other enemies' break clips were not each measured.",
+  "needs": [
+   {
+    "id": "deathblows.posture-break-trigger",
+    "why": "a break must happen first"
+   },
+   {
+    "id": "ai.enemy-reaction-graph",
+    "why": "the graph plays the collapse state"
+   }
+  ]
+ },
+ {
+  "id": "deathblows.hp-zero-ready",
+  "category": "deathblows",
+  "title": "Empty vitality also opens the deathblow",
+  "summary": "If damage would take HP below 2 and the enemy still has deathblow marks left, it counts as a break and the enemy is held at 1 HP. Enemies with no marks and no no-death effect die at 0 HP normally.",
+  "values": "HP < 2 with marks > 0 -> deathblow ready; HP held at 1 while marks remain or SpEffect state 143 (IsNoDead) is on",
+  "how": "Exe damage code (b6e6a0, bd64e0, bd5df0).",
+  "sources": [
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "../sekiro-rs/docs/COMBAT-RULES.md"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/guard-deflect.md"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "yes",
+   "where": "src/enemy.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "../sekiro-rs/crates/sim/src/combat/hp.rs"
+  },
+  "check": "Hit a mini-boss until its health bar is empty: it stays at a sliver and shows the deathblow marker instead of dying.",
+  "note": "",
+  "needs": [
+   {
+    "id": "combat.vitality-bar",
+    "why": "HP reaching zero"
+   },
+   {
+    "id": "deathblows.ninsatu-num",
+    "why": "marks decide whether HP death is blocked"
+   }
+  ]
+ },
+ {
+  "id": "deathblows.ninsatu-num",
+  "category": "deathblows",
+  "title": "Deathblow marks per enemy (NpcParam ninsatuNum)",
+  "summary": "ninsatuNum is the number of deathblows needed to kill. Most enemies have 0 and die when their HP runs out. A few strong regular enemies have 1. Mini-bosses and bosses have 2 or 3.",
+  "values": "NpcParam ninsatuNum over 1279 rows: 0 = 1078 rows, 1 = 76, 2 = 107, 3 = 18",
+  "how": "Exe copies the value to a live counter at chr +0x25C at spawn; the HP guard and the break rule read it.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/NpcParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "../reference/Paramdex/SDT/Defs/NpcParam.xml"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "../sekiro-rs/docs/COMBAT-RULES.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/enemy.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "../sekiro-rs/crates/sim/src/deathblow.rs"
+  },
+  "check": "Look up NpcParam ninsatuNum for the row; in a duel test count the deathblows before the target dies.",
+  "note": "DISAGREEMENT: Paramdex says 0 means the enemy can be killed by HP alone. sekiro-rs reads 0 as one deathblow (deathblow_marks). RustSekiro settled it on 2026-10-13 from the exe: ninsatuNum-0 rows die at 0 HP through the normal death script, though a deathblow on a broken ninsatuNum-0 enemy still kills at once.",
+  "needs": [
+   {
+    "id": "npcs.npc-param-rows",
+    "why": "where the value lives"
+   }
+  ]
+ },
+ {
+  "id": "deathblows.multi-mark-bosses",
+  "category": "deathblows",
+  "title": "Which fights take more than one deathblow",
+  "summary": "From the NpcParam rows: Samurai General, Giant Centipede, Spear Monk, Shura Samurai, Seven-sided Warrior and Akaoni take 2. Owl, Genichiro, Gyoubu on horse and Isshin Ashina take 2. Corrupted Monk and Demon of Hatred take 3. Lady Butterfly, Emma, Okiryu, the dragon and Genichiro of Tomoe take 1.",
+  "values": "General c1020 row 10200000: 2; Centipede 10400000: 2; Owl 50601010: 2; Genichiro 71001000: 2; Gyoubu 50800000: 2; Isshin Ashina 54300000: 2; Sword Saint 54000000: 3; Corrupted Monk 50000000: 3 (Sick Village row 50001000: 1); Demon of Hatred 70200000: 3; Butterfly 50900000: 1; Guardian Ape 51000000: 1, headless 51000100: 2; Emma 74000000: 1; Tomoe 71100000: 1",
+  "how": "NpcParam rows per phase; phase scripts and EMEVD health-bar events switch rows or refill HP between marks.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/NpcParam.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/enemy.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/enemy.rs, src/autoboss.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "../sekiro-rs/docs/BOSSES-a.md"
+  },
+  "check": "Fight any 2-mark boss and count the red markers above the bar; in a sim test spend marks until death.",
+  "note": "Row to boss-phase mapping uses machine-translated names and was not checked row by row (for example which Guardian Ape row is which phase). Community wikis were not rechecked for the in-game mark counts.",
+  "needs": [
+   {
+    "id": "bosses.phase-rows",
+    "why": "each phase has its own NpcParam row"
+   },
+   {
+    "id": "deathblows.ninsatu-num",
+    "why": "base rule"
+   }
+  ]
+ },
+ {
+  "id": "deathblows.mark-spend-hp-reset",
+  "category": "deathblows",
+  "title": "Spending a mark and the HP refill between marks",
+  "summary": "A deathblow hit spends one mark before its HP damage is applied. On a non-final mark the defender plays its ThrowDef clip only, then recovers. Its reaction clip adds SpEffect 300610 (HP reset, changeHpRate -100) by a TAE AddSpEffect, which refills HP at the clip's own frame.",
+  "values": "SpEffect 300610 changeHpRate -100 (refill), effectEndurance 0; Owl clip a000_012000 adds it at 4.4 s; the General's last mark is all-out when marks <= 1; SpEffect field recoveRremainNinsatsuNum restores marks",
+  "how": "Exe hit code (marker 5 in the record) plus enemy ThrowDef states and TAE 67 AddSpEffect.",
+  "sources": [
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "../sekiro-rs/docs/COMBAT-RULES.md"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/enemy.md"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "../sekiro-rs/docs/DEATHBLOW.md"
+   },
+   {
+    "kind": "data",
+    "ref": "../reference/Paramdex/SDT/Defs/SpEffect.xml"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "yes",
+   "where": "src/enemy.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "../sekiro-rs/crates/sim/src/duel.rs"
+  },
+  "check": "Deathblow the Owl once: he gets up with a full bar after the clip, with one mark gone.",
+  "note": "The marker value 5 for 'this hit is a deathblow' is inferred (COMBAT-RULES marks it code, marker inferred).",
+  "needs": [
+   {
+    "id": "deathblows.multi-mark-bosses",
+    "why": "only multi-mark enemies refill"
+   },
+   {
+    "id": "ai.boss-phase-script",
+    "why": "bosses read the mark counter"
+   }
+  ]
+ },
+ {
+  "id": "deathblows.final-mark-finisher",
+  "category": "deathblows",
+  "title": "Last mark uses the finishing pair",
+  "summary": "On the last mark a boss that has a finishing pair (suffix 180/181) uses it, and its defender clip is itself the death. ThrowKind 190000/190100 Todome rows exist for 9 boss models.",
+  "values": "ThrowKind 190000 (start) and 190100 (body); ThrowParam Dist 20 (start) and 10 (body); Wolf offsets a211 (Corrupted Monk), a221 (Owl), a244 (Butterfly) and others; Owl finishing body 15060181 uses defender dummy 235",
+  "how": "Throw search picks the todome kinds when the defender has one mark left (inferred), then the defender's ThrowDef state sets death.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/ThrowParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/ThrowKindParam.json"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "../sekiro-rs/docs/DEATHBLOW.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/enemy.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "../sekiro-rs/docs/OWL.md"
+  },
+  "check": "Take the Owl's last mark and watch for the longer finishing animation; compare with the first mark's clip.",
+  "note": "That the last mark selects the finishing pair is inferred, not traced in the exe.",
+  "needs": [
+   {
+    "id": "deathblows.mark-spend-hp-reset",
+    "why": "previous marks"
+   },
+   {
+    "id": "bosses.death-sequence",
+    "why": "boss end of fight"
+   }
+  ]
+ },
+ {
+  "id": "deathblows.throwparam-pairing",
+  "category": "deathblows",
+  "title": "ThrowParam pairs a start row with a body row",
+  "summary": "A deathblow is two ThrowParam rows. The start row has only an attacker clip and decides if the throw may begin. The body row pairs the attacker and defender clips and is checked when the start clip's grab event fires. The body row's throwKind is the start row's plus 100.",
+  "values": "Fields: DefChrId, AtkChrId (0 = player), atkAnimOffset + atkAnimId (a200_510000 = Wolf), defAnimId (12000), Dist, upperYRange/lowerYRange, DiffAngMin/Max, diffAngMyToDef, atkSorbDmyId/defSorbDmyId, adsrobModelPosInterpolationTime 0.5, throwKind 40000 -> 40100; row id 11010001 = 11 + chr 010 + kind 001",
+  "how": "Exe throw search over ThrowParam rows filtered by ThrowKindParam.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/ThrowParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/ThrowKindParam.json"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "../sekiro-rs/docs/DEATHBLOW.md"
+   },
+   {
+    "kind": "data",
+    "ref": "../reference/Paramdex/SDT/Defs/ThrowParam.xml"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/data.rs, src/combat.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "../sekiro-rs/crates/sim/src/deathblow.rs"
+  },
+  "check": "Read ThrowParam 11010000 and 11010001 side by side: same Dist family, throwKind 40000 and 40100.",
+  "note": "",
+  "needs": [
+   {
+    "id": "npcs.chr-model-ids",
+    "why": "DefChrId is the enemy model number"
+   }
+  ]
+ },
+ {
+  "id": "deathblows.throwparam-rows-front",
+  "category": "deathblows",
+  "title": "Front deathblow rows for the Ashina soldier (c1010)",
+  "summary": "Each kind has its own row with its own range. Far front start is 3.0 m with the defender 90 to 180 degrees from Wolf's facing, near front start is 1.2 m. The body checks 2.0 m, any angle, and Wolf must face the target within 35 degrees at the start.",
+  "values": "11010000 start far Dist 3.0, angle 90..180, face 35, height +/-1.80; 11010001 body Dist 2.0, 0..180, height +/-1.20, sorb 267; 11010005 start near Dist 1.2; 11010006 body near a200_512500 / def 14500; 11010020 stealth start Dist 2.0 angle 0..90; 11010021 stealth body a200_510200 / def 12200; 11010110 behind-broken start; 11010111 body a200_511200 / def 13200; 11010030 plunge Dist 20",
+  "how": "ThrowParam rows 110100xx.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/ThrowParam.json"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "../sekiro-rs/docs/DEATHBLOW.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/data.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "../sekiro-rs/crates/sim/src/deathblow.rs (ThrowTable::select)"
+  },
+  "check": "In the arena break a soldier and step in at 2.5 m, then 1.0 m: far and near animations differ.",
+  "note": "",
+  "needs": [
+   {
+    "id": "deathblows.throwparam-pairing",
+    "why": "row structure"
+   }
+  ]
+ },
+ {
+  "id": "deathblows.throwkind-rules",
+  "category": "deathblows",
+  "title": "ThrowKindParam gates each kind",
+  "summary": "ThrowKindParam rows say when a kind may be tried: which action unlock must be on (ActionUnlock 5 for nearly all), the check situation (1 after a start, 2 playing, 3 parting out, 4 enemy throw, 5 closeout), derivation from the previous kind, alive checks and a ninjutsu skill id.",
+  "values": "100 rows. checkAction_ActionUnlock_0 = 5 on all PC kinds; kinds 200000 and 240000 also need unlock 13 and button 1; anti-air 80000 needs unlock 18 (Anti-air Deathblow Text, goods 2450); immortal slash 250000 needs unlock 3; throwSkillId 2100/2110/2120 for the three ninjutsu; defAliveCheck 2 on the Todome kinds",
+  "how": "Exe throw search reads these fields per candidate kind.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/ThrowKindParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "../reference/Paramdex/SDT/Defs/ThrowKindParam.xml"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/ActionUnlockParam.json"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "src/data.rs"
+  },
+  "his": {
+   "has": "partial",
+   "where": "../sekiro-rs/crates/formats/src/param/typed.rs"
+  },
+  "check": "Remove the Anti-air Deathblow Text (goods 2450) in a test save: the anti-air pair no longer starts.",
+  "note": "The numeric enums were read from the Paramdex field text and the unlock ids were not decoded to names here. The search algorithm itself is not reproduced by either project.",
+  "needs": [
+   {
+    "id": "progression.esoteric-texts",
+    "why": "some kinds need unlocks"
+   },
+   {
+    "id": "items.ninjutsu-items",
+    "why": "throwSkillId needs the equipped ninjutsu"
+   }
+  ]
+ },
+ {
+  "id": "deathblows.check-priority",
+  "category": "deathblows",
+  "title": "Which kind wins when several fit",
+  "summary": "Each kind has checkPriority. The smaller number is tried first. So the near break (1) beats the far break (2), and stealth behind (10) loses to everything else.",
+  "values": "checkPriority: short-distance break 1, break-down 1, wire 130000 1, enemy special 1, breaking start 2, anti-air 2, fall 3, break-back 3, unlimited fall 4, push-down 4, stealth behind 10, large litter event 100",
+  "how": "Exe throw search sorts candidates by checkPriority.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/ThrowKindParam.json"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "../sekiro-rs/docs/DEATHBLOW.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "src/combat.rs"
+  },
+  "his": {
+   "has": "partial",
+   "where": "../sekiro-rs/crates/sim/src/deathblow.rs"
+  },
+  "check": "Stand within 1.2 m of a broken soldier: the near row (priority 1) beats the far row (priority 2).",
+  "note": "sekiro-rs docs say it tries a fixed order and RustSekiro does the same. The priority field is data, but its full use (ties, equal priorities) is not traced.",
+  "needs": [
+   {
+    "id": "deathblows.throwkind-rules",
+    "why": "candidate list"
+   }
+  ]
+ },
+ {
+  "id": "deathblows.near-far-front",
+  "category": "deathblows",
+  "title": "Near and far front breaks pick different clips",
+  "summary": "A broken soldier within 1.2 m starts the near row (a200_502500 into a200_512500, defender 14500). Otherwise the far row (a200_500000 into a200_510000, defender 12000). The reach is the start row's Dist.",
+  "values": "Near: 11010005 Dist 1.2; far: 11010000 Dist 3.0; 3 of 4 live samples took the near clip when that close",
+  "how": "ThrowParam start rows (priorities 1 and 2).",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/ThrowParam.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/damage.md"
+   }
+  ],
+  "confidence": "recorded",
+  "ours": {
+   "has": "yes",
+   "where": "src/player.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "../sekiro-rs/crates/sim/src/deathblow.rs"
+  },
+  "check": "Recording rec_c1010 shows the near clip when Wolf is very close; repeat at 1 m and 2.5 m.",
+  "note": "",
+  "needs": [
+   {
+    "id": "deathblows.check-priority",
+    "why": "near row has priority 1"
+   }
+  ]
+ },
+ {
+  "id": "deathblows.lunge-grab-body-timeline",
+  "category": "deathblows",
+  "title": "Lunge, grab event, body clip, strike, kill",
+  "summary": "The start clip is a lunge. At its grab event (0.27 s) the body row is checked. If it holds, both play the paired clips; the enemy is slid onto Wolf's dummy over 0.5 s, the blade lands at 0.90 s, and a killed enemy branches to the death clip at 1.67 s.",
+  "values": "Grab event 0.27 s (CommonBehavior judge 600); ThrowAttackBehavior 0.90 s; death branch 1.67 s; Wolf clip a200_510000 ends 2.67 s; enemy get-up flags from 3.0 s; move cancel opens at 4.0 s on the Owl",
+  "how": "TAE events in Wolf's c0000 clips and the enemy ThrowDef clips.",
+  "sources": [
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "../sekiro-rs/docs/DEATHBLOW.md"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/damage.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/player.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "../sekiro-rs/crates/sim/src/deathblow.rs"
+  },
+  "check": "Frame-step a recording of a soldier deathblow: lunge, contact at about 0.27 s, strike at about 0.9 s.",
+  "note": "",
+  "needs": [
+   {
+    "id": "deathblows.throwparam-pairing",
+    "why": "body row check"
+   },
+   {
+    "id": "movement.root-motion",
+    "why": "clips drive both bodies"
+   }
+  ]
+ },
+ {
+  "id": "deathblows.absorb-dummies",
+  "category": "deathblows",
+  "title": "Absorb: the defender is snapped onto a dummy once",
+  "summary": "At the body clip's first frame the enemy is moved onto a dummy poly in Wolf's frame, sliding over 0.5 s. After that each side plays its own root motion and nobody is held. Dummy 267 is 1.2 m in front facing Wolf, 249 is 0.5 m in front facing away, 293 is the deflect-counter dummy.",
+  "values": "atkSorbDmyId 267 (front), 249 (behind), 262/263 (wall), 264/265 (hang), 523/524 (mikiri), 522, 233 on fall rows; adsrobModelPosInterpolationTime 0.5; throwFollowingType 1 on soldier and Genichiro body rows, 0 on Owl; Owl uses defSorbDmyId 230 (Wolf moves)",
+  "how": "Exe moves the throw pair at body start; the model slides to the animation position.",
+  "sources": [
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "../sekiro-rs/docs/DEATHBLOW.md"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/damage.md"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/ThrowParam.json"
+   }
+  ],
+  "confidence": "recorded",
+  "ours": {
+   "has": "yes",
+   "where": "src/player.rs (follow_throw), src/anim.rs (ModelLag)"
+  },
+  "his": {
+   "has": "yes",
+   "where": "../sekiro-rs/crates/sim/src/deathblow.rs (AbsorbSlide)"
+  },
+  "check": "Live trace: the soldier ends 0.59 m in front of Wolf, same facing, for the behind deathblow; sim test an_absorbed_enemy_model_slides_onto_the_throw_dummy.",
+  "note": "throwFollowingType meaning (continuous follow or not) is open. sekiro-rs first held the defender on Wolf every step, which was wrong and was fixed on 2026-10-10 following RustSekiro.",
+  "needs": [
+   {
+    "id": "movement.root-motion",
+    "why": "each clip's own movement"
+   },
+   {
+    "id": "map.collision-walls",
+    "why": "pair needs clearance"
+   }
+  ]
+ },
+ {
+  "id": "deathblows.damage-event",
+  "category": "deathblows",
+  "title": "The killing blow is a throw attack row",
+  "summary": "Wolf's clip fires ThrowAttackBehavior (judge 600) at 0.90 s. With the Kusabimaru it resolves to AtkParam_Pc 5000600 with throwFlag 2 and a physical correction of 60000, a multiplier no ordinary enemy survives. The grab event earlier is a CommonBehavior with throwFlag 1 and no damage.",
+  "values": "AtkParam_Pc 5000600: throwFlag 2, atkPhysCorrection 60000, atkAttribute 5, staminaPhysicsAttribute 5, atkType 2, guardAtkRateCorrection 900; BehaviorParam_PC 105000600",
+  "how": "Behavior judge id 600 in TAE; NpcParam multipliers apply after.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/AtkParam_Pc.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/BehaviorParam_PC.json"
+   },
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "../sekiro-rs/docs/DEATHBLOW.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/combat.rs (resolve_throws)"
+  },
+  "his": {
+   "has": "yes",
+   "where": "../sekiro-rs/crates/sim/src/deathblow.rs"
+  },
+  "check": "Deathblow a boss with marks: it loses a mark and refills instead of dying, showing the damage is not the whole story.",
+  "note": "Per-NPC rate fields are in deathblows.damage-rates-per-npc.",
+  "needs": [
+   {
+    "id": "combat.attack-param-pipeline",
+    "why": "hit becomes damage"
+   }
+  ]
+ },
+ {
+  "id": "deathblows.defender-death-branch",
+  "category": "deathblows",
+  "title": "Defender branches to the death clip mid-clip",
+  "summary": "The enemy's ThrowDef12000 plays to 1.67 s and, if the blow is lethal, switches to ThrowDefDeath12001 which starts from the same pose. A non-lethal deathblow plays 12000 to its end and the enemy gets up. Wolf's script follows with W_ThrowKill<id+1> where such a clip exists, which is only the a201 set.",
+  "values": "012000 has a ChrActionFlag 69 event at 1.67 s; 012001 first frame equals 012000 at 1.67 s; Wolf kill follow-ups exist for 510001, 510111, 510201, 511201, 511411, 511511; General front 510000 1.85 s -> 510001",
+  "how": "HKS ThrowDef / ThrowDefDeath states and env(273/274) in Wolf's script.",
+  "sources": [
+   {
+    "kind": "sekiro-rs-doc",
+    "ref": "../sekiro-rs/docs/DEATHBLOW.md"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/damage.md"
+   }
+  ],
+  "confidence": "recorded",
+  "ours": {
+   "has": "yes",
+   "where": "src/player.rs, src/enemy.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "../sekiro-rs/crates/sim/src/deathblow.rs"
+  },
+  "check": "Deathblow a soldier and then a 2-mark boss; the soldier drops into the death clip, the boss climbs back up.",
+  "note": "",
+  "needs": [
+   {
+    "id": "ai.enemy-death-states",
+    "why": "death clip states"
+   }
+  ]
+ },
+ {
+  "id": "deathblows.stealth-behind",
+  "category": "deathblows",
+  "title": "Stealth deathblow from behind",
+  "summary": "Against an unaware enemy Wolf can press attack from behind. The start row needs the defender's back within 0 to 90 degrees of Wolf, within about 2 m, and Wolf facing within 35 degrees. The body is the stealth pair, and the defender is placed on a dummy with its back to Wolf.",
+  "values": "11010020 start a200_500200 Dist 2.0 angle 0..90 face 35; 11010021 body a200_510200 / defender 12200, throwKind 100 (derived from 0); defender sorb 229 (General row) or 249 (soldier); Wolf group is a200 or a201 by enemy; some enemies have no stealth row (shop NPCs, bosses)",
+  "how": "ThrowKind 0 'Start behind' and 100 'Behind' with checkPriority 10; the target must not be aware (NpcThink targeting state NONE).",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/ThrowParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/ThrowKindParam.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/deathblow_groups.md"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/damage.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/stealth.rs, src/player.rs"
+  },
+  "his": {
+   "has": "partial",
+   "where": "../sekiro-rs/crates/sim/src/deathblow.rs (select, not-in-combat case)"
+  },
+  "check": "Sneak up on a patrolling soldier and press attack from behind inside 2 m.",
+  "note": "The awareness condition comes from the AI target state, not from ThrowParam.",
+  "needs": [
+   {
+    "id": "stealth.target-state-none",
+    "why": "enemy must not be in caution, find or battle"
+   },
+   {
+    "id": "movement.crouch-walk",
+    "why": "quiet approach"
+   }
+  ]
+ },
+ {
+  "id": "deathblows.stealth-ninjutsu",
+  "category": "deathblows",
+  "title": "Behind-the-scenes ninjutsu throws",
+  "summary": "The three stealth Shinobi Arts (Bloodsmoke, Puppeteer, Bestowal) have their own behind rows with a long range, used when that ninjutsu is equipped. Both the unaware and the posture-broken-behind versions exist.",
+  "values": "ThrowKind 201/202/203 (behind) and 41201/41202/41203 (after a break), throwSkillId 2100/2110/2120, Dist 10.0, height +/-6.0, defSorbDmyId 251, noThrowInputSpecialEffect_forDef 800010; Wolf clips a201_510210, 510220, 510230",
+  "how": "ThrowKindParam throwSkillId must equal the equipped ninjutsu.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/ThrowKindParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/ThrowParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/EquipParamGoods.json"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Equip Bloodsmoke Ninjutsu and press attack behind an unaware enemy.",
+  "note": "",
+  "needs": [
+   {
+    "id": "items.ninjutsu-items",
+    "why": "equipped ninjutsu gates the row"
+   },
+   {
+    "id": "arts.shinobi-ninjutsu",
+    "why": "the art effect after the stab"
+   }
+  ]
+ },
+ {
+  "id": "deathblows.behind-after-break",
+  "category": "deathblows",
+  "title": "Deathblow from behind a posture-broken enemy",
+  "summary": "If the broken enemy faces away, a second start row (angle 0 to 90) leads to the behind pair, where the enemy keeps facing away. Wolf spins during the clip; the live trace matches frame for frame once the yaw sign is correct.",
+  "values": "11010110 start a200_501200 angle 0..90; 11010111 body a200_511200 / def 13200 (ThrowDefDeath13201); throwKind 41000 / 41100; defender sorb 229/249; hold ends 0.90 m behind at about 145 deg in game convention",
+  "how": "ThrowKind 41000/41100 Breaking behind.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/ThrowParam.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/damage.md"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/guard-deflect.md"
+   }
+  ],
+  "confidence": "recorded",
+  "ours": {
+   "has": "yes",
+   "where": "src/player.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "../sekiro-rs/crates/sim/src/deathblow.rs (back-of-broken)"
+  },
+  "check": "Break a soldier then circle behind within 2 m; compare with recording rec_c1010_20261009.",
+  "note": "Early RustSekiro notes said no clip existed; later the clip was found through TAE imports (a201_500200 imports a200_500200).",
+  "needs": [
+   {
+    "id": "deathblows.collapse-window",
+    "why": "enemy must be broken"
+   },
+   {
+    "id": "movement.root-motion",
+    "why": "spinning clip"
+   }
+  ]
+ },
+ {
+  "id": "deathblows.plunge",
+  "category": "deathblows",
+  "title": "Plunge deathblow (falling attack)",
+  "summary": "Wolf can drop onto an enemy from above and kill it. The start row searches a tall box: up to 20 m away and 3 m above to 15 m below. The body row then pairs the two clips at 10 m reach. The enemy plays the fall defence clip 12300, then 12310. Enemies with no plunge row cannot be hit this way.",
+  "values": "ThrowKind 70000 start (checkPriority 3, doesCheckNormalFallOrbit 1) -> 70100 body; Ochimusha rows 11010030/31: Dist 20 and 10, upperYRange 3 / lowerYRange 15, Wolf a200_510300 and 510310, defAnimId 12300 / 12310, defSorbDmyId 233; rooftop copy 570000/570100 via throwChangeId 1",
+  "how": "Throw search in the air with the fall-orbit check; the Dist box is the search volume.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/ThrowParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/ThrowKindParam.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/deathblow_groups.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/player.rs, src/combat.rs"
+  },
+  "his": {
+   "has": "partial",
+   "where": "../sekiro-rs/crates/sim/src/deathblow.rs"
+  },
+  "check": "Jump from a roof onto an Ashina soldier below: the plunge prompt triggers and the soldier dies at once.",
+  "note": "The fall-orbit check is an exe routine, not read here. Mini-boss rows were not each checked for a plunge pair.",
+  "needs": [
+   {
+    "id": "movement.air-state",
+    "why": "the attacker must be falling"
+   },
+   {
+    "id": "deathblows.throwparam-pairing",
+    "why": "start and body rows"
+   },
+   {
+    "id": "deathblows.absorb-dummies",
+    "why": "dummy 233 snaps the body"
+   }
+  ]
+ },
+ {
+  "id": "deathblows.unlimited-fall",
+  "category": "deathblows",
+  "title": "Unrestricted-fall deathblow (kind 60000)",
+  "summary": "A second air kind is named 'Unlimited fall'. Only 10 enemy types have a row for it: the small centipede, gecko, lookout, c5300 and the six memorial shop mobs. It checks the fall orbit like the plunge, so it is probably a drop with no height limit onto enemies that sit high up.",
+  "values": "ThrowKind 60000 -> 60100 (10 rows each): checkPriority 4, doesCheckNormalFallOrbit 1, throwKindCategory 7 (plunge is 6); chr 1030, 1100, 1120, 5300, 7540-7600; sample row 11030040 Dist 20, Wolf a200_510400",
+  "how": "Same throw search as the plunge.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/ThrowKindParam.json"
+   }
+  ],
+  "confidence": "open-question",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Stand above a gecko or lookout and see which drop kind starts.",
+  "note": "Name is machine-translated. The difference from kind 70000 (65 rows) is inferred from the row owners, not traced.",
+  "needs": [
+   {
+    "id": "deathblows.plunge",
+    "why": "same family"
+   }
+  ]
+ },
+ {
+  "id": "deathblows.anti-air",
+  "category": "deathblows",
+  "title": "Anti-air deathblow (needs the text)",
+  "summary": "A third air kind kills an enemy that is jumping or in the air. Only 6 enemy types have the row: rotating spearman, Seven-sided Warrior, shamo chicken, two monkeys and the Genpei warrior. It is only allowed once the player has the Anti-air Deathblow Text, which unlocks ActionUnlock 18.",
+  "values": "ThrowKind 80000 -> 80100 (6 rows each; chr 1060, 1080, 1240, 1250, 1260, 1310): checkAction_ActionUnlock_1 = 18, checkPriority 2; Anti-air Deathblow Text is goods 2450",
+  "how": "ThrowKindParam gates the kind by the unlock number; the text sets the unlock.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/ThrowKindParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/ActionUnlockParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/EquipParamGoods.json"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "src/data.rs (names only)"
+  },
+  "his": {
+   "has": "partial",
+   "where": "../sekiro-rs/crates/formats/src/param/typed.rs"
+  },
+  "check": "Remove goods 2450 in a test save: kind 80000 should never start.",
+  "note": "The text is a Skill / Esoteric item in the game menu; the exact tree node name was not matched.",
+  "needs": [
+   {
+    "id": "progression.esoteric-texts",
+    "why": "the text unlocks it"
+   },
+   {
+    "id": "items.anti-air-text",
+    "why": "the item"
+   }
+  ]
+ },
+ {
+  "id": "deathblows.wall-hug",
+  "category": "deathblows",
+  "title": "Wall-hug deathblow (left and right)",
+  "summary": "Wolf can flatten against a wall and kill an enemy standing on the other side. There are separate kinds for the left wall and the right wall, each with a start row and a body row. The body uses dummy 262 or 263 to snap the enemy.",
+  "values": "ThrowKind 90000/90010 left, 100000/100010 right; Ochimusha 11010060/61 left (Dist 1.8 then 2.0, Wolf 500600/510600, def 12600), 11010070/71 right (500700/510700, 12700); atkSorbDmyId 262 / 263",
+  "how": "Throw search while docked on a wall (see movement wall-hug).",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/ThrowParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/ThrowKindParam.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/deathblow_groups.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/docking.rs, src/data.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Dock to a wall corner next to a patrol: the prompt shows only for the soldier on the open side.",
+  "note": "Rows exist for ordinary enemies only; bosses have none.",
+  "needs": [
+   {
+    "id": "movement.wall-dock",
+    "why": "the dock state"
+   },
+   {
+    "id": "deathblows.throwparam-pairing",
+    "why": "rows"
+   }
+  ]
+ },
+ {
+  "id": "deathblows.hanging",
+  "category": "deathblows",
+  "title": "Hanging deathblows from a ledge or beam",
+  "summary": "Wolf hangs from a ledge and kills an enemy that is above or in front. The 'hanging' kind (110000) kills the enemy standing behind the ledge. Another front pair, also kind 110000, uses a second set of clips. The body snaps with dummy 264 or 265.",
+  "values": "ThrowKind 110000 -> 110010; Ochimusha 11010080/81 (Wolf 500800/510800, def 12800, Dist 2.25, diffAngMyToDef 22.5, DiffAng 0-90, dummy 264) and 11010130/31 (501000/511000, def 13000, dummy 265)",
+  "how": "Throw search while hanging.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/ThrowParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/ThrowKindParam.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/deathblow_groups.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/data.rs, src/player.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Hang from a ledge near an enemy that walks along it and watch the prompt.",
+  "note": "Which of the two row pairs is front and which rear was not settled from the translated names.",
+  "needs": [
+   {
+    "id": "movement.hang-from-ledge",
+    "why": "the hang state"
+   }
+  ]
+ },
+ {
+  "id": "deathblows.mikiri-deathblow",
+  "category": "deathblows",
+  "title": "Mikiri Counter deathblow",
+  "summary": "The counter against a thrust attack ends in a deathblow-class throw on enemies that have the row. Only 33 ThrowParam rows use kind 170000, so many enemies have no mikiri deathblow.",
+  "values": "ThrowKind 170000 ('Closeout', check situation 5, checkPriority 1); Ochimusha 11010190: Dist 10, Wolf a200_511800, def 13800, dummy 522",
+  "how": "Wolf's mikiri clip reaches the throw event; the throw search finds the row of the thrusting enemy.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/ThrowParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/ThrowKindParam.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/deathblow_groups.md"
+   }
+  ],
+  "confidence": "recorded",
+  "ours": {
+   "has": "yes",
+   "where": "src/combat.rs"
+  },
+  "his": {
+   "has": "partial",
+   "where": "../sekiro-rs/crates/sim/src/deathblow.rs"
+  },
+  "check": "Counter a soldier's spear thrust: it takes a posture hit and a damage hit, while mikiri-vulnerable big enemies take the throw row.",
+  "note": "The 'closeout' translation is not proof that 170000 is the counter; the doc maps the 0190 row suffix to mikiri. Not checked against a mikiri recording here.",
+  "needs": [
+   {
+    "id": "combat.mikiri-counter",
+    "why": "the counter move that triggers it"
+   }
+  ]
+ },
+ {
+  "id": "deathblows.kick-and-short",
+  "category": "deathblows",
+  "title": "Kick-down and short-range break deathblows",
+  "summary": "Besides the main pair, the kind list has a short-distance break (270000, 1.2 m reach) and kick-based pairs: 'Breaking down 0/1/2' (130000-130200), 'Kicking down 0/1' (160000/160100) and 'Useless push-down' (240000). These are used by the jump-kick and the push-down on enemies with posture-broken flags.",
+  "values": "ThrowKind 270000/270100 Dist 1.2 / 2.0 (Wolf 502500/512500, def 14500, dummy 267, checkPriority 1); 130000 (Wolf 511400, Dist 20, priority 1); 160000/160100 (511500/511510, def 13500/13510); 240000 priority 4, defAliveCheck 2, acceptableButton 1",
+  "how": "Throw search per kind; the kicks start from the mid-air kick move.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/ThrowParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/ThrowKindParam.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/deathblow_groups.md"
+   }
+  ],
+  "confidence": "open-question",
+  "ours": {
+   "has": "partial",
+   "where": "src/player.rs, src/data.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Try the jump-kick on a soldier and watch whether the follow-up pair or the plain kick plays.",
+  "note": "Names are only machine translations. Which physical move maps to which kind is not confirmed.",
+  "needs": [
+   {
+    "id": "movement.kick-jump",
+    "why": "the move that begins the kick"
+   },
+   {
+    "id": "deathblows.throwparam-pairing",
+    "why": "rows"
+   }
+  ]
+ },
+ {
+  "id": "deathblows.wire-break",
+  "category": "deathblows",
+  "title": "Grappling-hook attack (wire break)",
+  "summary": "The grapple lets Wolf fly at an enemy and land with a deathblow hit. Two kinds make the pair: 180000 (the grab) and 180100 (the landing, no button). A third, 180900, is the finisher for the Gyoubu on horse.",
+  "values": "ThrowKind 180000 / 180100 / 180900; Wolf a<offset>_511600 / 511610 / 511690, defender 13600 / 13610 / 13690; AtkParam_Pc 5000660 'sword-hand deathblow body, fall' (throwFlag 2, atkPhysCorrection 60000); enemy ends in SpEffect 300610 (HP reset)",
+  "how": "Grapple lands; the landing throw row is looked up by the foe's chr number.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/ThrowParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/ThrowKindParam.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/grapple.md"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/AtkParam_Pc.json"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/player.rs, src/data.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Grapple to an Ogre or Gyoubu: one life bar comes off and it plays the throw reaction, then the next phase.",
+  "note": "Only the Ogre and Gyoubu rows were read; other targets' wire rows were not checked.",
+  "needs": [
+   {
+    "id": "movement.grapple",
+    "why": "the grapple hook"
+   },
+   {
+    "id": "deathblows.mark-spend-hp-reset",
+    "why": "the HP reset"
+   }
+  ]
+ },
+ {
+  "id": "deathblows.todome-kinds",
+  "category": "deathblows",
+  "title": "Todome (final blow) kinds",
+  "summary": "The last mark on a boss uses a separate 'Todome' kind in each family: 20900 playing, 30900 parting out, 41900 behind a break, 70900 falling, 180900 wire, 190000/190100 finisher, 570900 rooftop falling. The kind 190000 has 9 rows: the Haunting Monk, the Isshin forms and other bosses (chr 5000, 5060, 5090, 5100, 5400, 5430, 7020, 7110). The defender uses a death clip instead of the normal reaction.",
+  "values": "ThrowKind ids ending in 900 or 190000; defAliveCheck 2 on 240000; Gyoubu wire Todome 15080179 (Wolf 511690, def 13690)",
+  "how": "Same row pair, but the enemy's death branch (ThrowDefDeath) plays when HP is gone.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/ThrowKindParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/ThrowParam.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/deathblow_groups.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/enemy.rs, src/autoboss.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "../sekiro-rs/crates/sim/src/deathblow.rs"
+  },
+  "check": "Spend the last mark on a 2-mark enemy: the defender plays the death branch, not a stagger.",
+  "note": "The mapping of all Todome ids to moves was not walked through.",
+  "needs": [
+   {
+    "id": "deathblows.final-mark-finisher",
+    "why": "same idea"
+   },
+   {
+    "id": "bosses.phase-rows",
+    "why": "last-mark logic"
+   }
+  ]
+ },
+ {
+  "id": "deathblows.groups-by-wolf-anim",
+  "category": "deathblows",
+  "title": "Which enemies share Wolf's deathblow clip",
+  "summary": "Wolf's deathblow clip comes from the enemy's ThrowParam row, not from the weapon. The ordinary front deathblow is a200_510000 for 22 enemy types, a202 for 15, a214 for 6, a229 for 5, and unique clips for a few big enemies such as Isshin (a242), the Haunting Monk (a211), Akaoni (a213), the Large Centipede (a215) and the Earthen Wall soldier (a217). The enemy plays its own death clip.",
+  "values": "Offsets seen: a200, a201, a202, a211, a213, a214, a215, a216, a217, a229, a238, a241, a242; kinds listed per enemy: front, stealth, behind-after-break, plunge, mikiri",
+  "how": "Look up atkAnimOffset and atkAnimId in the enemy's ThrowParam rows.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "docs/deathblow_groups.md"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/ThrowParam.json"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/data.rs"
+  },
+  "his": {
+   "has": "partial",
+   "where": "../sekiro-rs/docs/DEATHBLOW.md"
+  },
+  "check": "For each enemy type compare the table row to its ThrowParam rows.",
+  "note": "Generated 2026-10-09; enemy names there are machine-translated.",
+  "needs": [
+   {
+    "id": "npcs.chr-model-ids",
+    "why": "enemy ids"
+   },
+   {
+    "id": "deathblows.throwparam-pairing",
+    "why": "rows"
+   }
+  ]
+ },
+ {
+  "id": "deathblows.throw-search-input",
+  "category": "deathblows",
+  "title": "Deathblow input and the throw search",
+  "summary": "A deathblow needs the defender to wear SpEffect 800000 ('now accepting shinobi input'). Ninjutsu deathblows use 800010 and the Large Snake event kill uses 800020. The kind must also be unlocked, then the Dist and angle test runs.",
+  "values": "SpEffect 800000 (spCategory 20), 800010 (ninjutsu input), 800020 (Large Snake event); ThrowKindParam noThrowInputSpecialEffect_forDef; acceptableButton 1 on the Todome kinds",
+  "how": "The defender wears the input-accepting effect; the exe checks it before searching.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/ThrowKindParam.json"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "src/player.rs"
+  },
+  "his": {
+   "has": "partial",
+   "where": "../sekiro-rs/crates/sim/src/deathblow.rs"
+  },
+  "check": "Break an enemy and check that 800000 is on it only while the prompt shows.",
+  "note": "How the prompt icon is drawn belongs to the interface category.",
+  "needs": [
+   {
+    "id": "interface.deathblow-prompt",
+    "why": "the icon"
+   },
+   {
+    "id": "combat.attack-input",
+    "why": "the button"
+   }
+  ]
+ },
+ {
+  "id": "deathblows.recovery-on-kill",
+  "category": "deathblows",
+  "title": "HP and posture given back by a deathblow",
+  "summary": "Landing a deathblow gives Wolf back posture and, with skills, some HP. A base effect (SpEffect 105050) gives 34 percent posture at the kill frame once. Skills add 10 percent HP (150301 and siblings) and 34 percent posture. After a Todome the 'recovery prohibited' copies (105051, 150302...) win, so no heal is given on the final blow.",
+  "values": "105050 changeStaminaRate 34 (motionInterval 999); 150301 changeHpRate -10 with invocation state 986; 105051 / 150302 prohibit versions share the category",
+  "how": "Wolf's deathblow clips have a TAE AddSpEffect at the kill frame. The prohibit copies are added by the Todome clips.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/skills.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/player.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Fight a 2-mark enemy: after the first mark you regain posture. After the Todome you do not.",
+  "note": "The skill names tied to 150301/150311 and 150321/150331 follow the RustSekiro comment, not this read.",
+  "needs": [
+   {
+    "id": "arts.skill-heal-on-deathblow",
+    "why": "the skills"
+   },
+   {
+    "id": "combat.posture-bar",
+    "why": "recovery target"
+   }
+  ]
+ },
+ {
+  "id": "deathblows.ninsatsu-fields",
+  "category": "deathblows",
+  "title": "Other NpcParam deathblow fields",
+  "summary": "Every enemy row has ninsatsuDamageRate (damage taken from a deathblow, 1 on almost all, 0 on 44 rows, 5 on two), ninsatsuGuardCutRate (100 on 1249 rows, 0 on 30), ninsatuStaminaDmgRate (1, 0 on 8 rows) and def_ninsatsu. The two drop lots are ninsatsuResourceItemLotId_1 and _2.",
+  "values": "ninsatsuDamageRate counts: 1.0 x1233, 0.0 x44, 5.0 x2; GuardCutRate: 100 x1249, 0 x30; StaminaDmgRate: 1 x1271, 0 x8",
+  "how": "Exe reads these when a deathblow hit lands on the defender.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/NpcParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "../reference/Paramdex/SDT/Defs/NpcParam.xml"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "src/enemy.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "List the rows with GuardCutRate 0 and test what a deathblow does to them.",
+  "note": "Meaning of GuardCutRate (a damage cut applied to blockers?) is not settled; the Paramdex text is short.",
+  "needs": [
+   {
+    "id": "npcs.npc-param-rows",
+    "why": "the fields"
+   }
+  ]
+ },
+ {
+  "id": "deathblows.mark-drops",
+  "category": "deathblows",
+  "title": "Deathblows drop Regenerative Power Fragments",
+  "summary": "Enemies with deathblow marks carry a second drop lot of 10 Regenerative Power Fragments (goods 1101). One fragment stack converts to a Regenerative Power node (goods 1100, max 2). So each deathblow-class kill refills part of the resurrection supply.",
+  "values": "NpcParam ninsatsuResourceItemLotId_2 = 10005800 (Corrupted Monk, General, Genichiro, Butterfly rows); lot gives 10 of goods 1101 (max 100); goods 1100 max 2",
+  "how": "ResourceItemLotParam category 5 is Resurrective Power; the lot is rolled at the kill.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/NpcParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/ResourceItemLotParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/EquipParamGoods.json"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/drops.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Kill a General and check the status bar: the fragment counter goes up by 10.",
+  "note": "RustSekiro assumes 100 fragments light one node and 1.5x from the Balloon of Soul; neither is traced in the exe.",
+  "needs": [
+   {
+    "id": "deathblows.resurrection-recharge",
+    "why": "where the points go"
+   }
+  ]
+ },
+ {
+  "id": "deathblows.true-death-flow",
+  "category": "deathblows",
+  "title": "From zero HP to final death",
+  "summary": "When HP reaches zero the player falls. After 1.8 s the choice opens if a resurrection node is left. The choice stays open for 15 s. If the player gives up, or the 15 s end, or no node is left, the death is final. A stateInfo 351 effect holds the 1.8 s count at zero (waiting for resurrection).",
+  "values": "Delay 1.8 s (+0x2138), window 15 s (+0x212c); SpEffect 8200 'waiting for resurrection, death notice continued' stateInfo 351; stateInfo 341 (aging) / 359 skip it",
+  "how": "PlayerIns death code FUN_140a2cc30 and FUN_140a36a60; HKS c0000_transition lines 274-285.",
+  "sources": [
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/guard-deflect.md"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   }
+  ],
+  "confidence": "exe",
+  "ours": {
+   "has": "yes",
+   "where": "src/player.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Die with a node and count the delay before the resurrect prompt: 1.8 s.",
+  "note": "RustSekiro derived the offsets in round 66, not re-verified from raw bytes here.",
+  "needs": [
+   {
+    "id": "combat.death-animations",
+    "why": "falls and loops"
+   },
+   {
+    "id": "interface.death-screen",
+    "why": "the prompt"
+   }
+  ]
+ },
+ {
+  "id": "deathblows.resurrection-sequence",
+  "category": "deathblows",
+  "title": "What a resurrection does",
+  "summary": "Choosing to resurrect plays the get-up clip. SpEffect 110015 'Resurrection Technique, HP half recovery' is added once, which sets HP to 50 percent of the maximum. The player gets up in the same facing. The node count falls by one, and the other nodes lock until a deathblow lands.",
+  "values": "SpEffect 110015 stateInfo 326, changeHpRate -50, changeHpPoint 1, motionInterval 999; SpEffect 2130 'Resurrection' stateInfo 159, 2131 from the curse stateInfo 160; get-up anims a000_110031 etc.",
+  "how": "Attack press during the choice window triggers the HKS revival state.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/damage.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/player.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Resurrect at low HP and verify HP is half of max after the get-up.",
+  "note": "Lock rule is from the user's reading of the game; the exe flag was not traced by us.",
+  "needs": [
+   {
+    "id": "deathblows.true-death-flow",
+    "why": "the choice window"
+   },
+   {
+    "id": "deathblows.resurrection-recast-lock",
+    "why": "node lock"
+   }
+  ]
+ },
+ {
+  "id": "deathblows.resurrection-recast-lock",
+  "category": "deathblows",
+  "title": "Resurrection recast (nodes locked until a deathblow)",
+  "summary": "After a resurrection the remaining nodes are held 'recast' until the player lands a deathblow, or rests at an idol. SpEffect 8100 refills the recast fully (revivalRecastDamage 99999). The sibling 3292 cancels the recast after a suicide resurrection.",
+  "values": "8100 revivalRecastDamage 99999; 3292 revivalRecastDamage 99999 (spCategory 198, needs state 936); 3291 remembers suicide death (30 s); steps 8105-8150 (5-point levels) have no values",
+  "how": "Resurrection code reads the recast from the revivalRecastDamage effect.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/damage.md"
+   }
+  ],
+  "confidence": "recorded",
+  "ours": {
+   "has": "yes",
+   "where": "src/player.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Resurrect twice in a row without a deathblow: the second node should not work.",
+  "note": "Rows 8105-8150 are empty in this build, so smaller recast steps are not data.",
+  "needs": [
+   {
+    "id": "deathblows.resurrection-sequence",
+    "why": "the first resurrection"
+   }
+  ]
+ },
+ {
+  "id": "deathblows.resurrection-nodes",
+  "category": "deathblows",
+  "title": "How many resurrection nodes Wolf has",
+  "summary": "The goods list has 'Regenerative Power' (1100, carry limit 2), 'Temporary Regenerative Power' (1110, limit 1) and 'Resurrection' (2000, limit 1). So the stock is capped at 2 nodes plus a temporary one. The status bar shows the used and total nodes.",
+  "values": "goods 1100 max 2; 1110 max 1; 2000 max 1",
+  "how": "Goods count drives the node HUD and the revival check.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/EquipParamGoods.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/skills.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "partial",
+   "where": "src/player.rs, src/idol.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Rest at an idol with 2 nodes and read the HUD count.",
+  "note": "How many nodes Wolf starts with and how a node is added were not decoded; the numbers here are the carry limits only.",
+  "needs": [
+   {
+    "id": "items.resurrection-goods",
+    "why": "the goods"
+   },
+   {
+    "id": "interface.resurrection-hud",
+    "why": "node display"
+   }
+  ]
+ },
+ {
+  "id": "deathblows.resurrection-recharge",
+  "category": "deathblows",
+  "title": "Recharging used nodes",
+  "summary": "Used nodes are lit again by Regenerative Power, which comes from kills (resource lot category 5) and deathblow marks. 100 power lights one node in RustSekiro. The hold effects Mibu Balloon of Soul (SpEffect 3611) raise the gain for 150 s.",
+  "values": "Balloon of Soul SpEffect 3611 effectEndurance 150, stateInfo 345, iconId 2112; White Rappa Balloon 3643 same; RES_POWER_NODE = 100 (ours, assumed)",
+  "how": "Drop lots add power; the game turns full power into a node.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/ResourceItemLotParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/enemy.md"
+   }
+  ],
+  "confidence": "open-question",
+  "ours": {
+   "has": "yes",
+   "where": "src/drops.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Kill 10 soldiers in a row and watch the counter; then eat the balloon and compare.",
+  "note": "100 per node and 1.5 times from the balloon are guesses; the exe lot draw was not traced.",
+  "needs": [
+   {
+    "id": "deathblows.mark-drops",
+    "why": "second source"
+   },
+   {
+    "id": "items.mibu-balloon-soul",
+    "why": "the booster"
+   }
+  ]
+ },
+ {
+  "id": "deathblows.unseen-aid",
+  "category": "deathblows",
+  "title": "Unseen Aid (chance to keep sen and XP)",
+  "summary": "When the player dies for good, a hidden roll can cancel the sen and skill XP loss. The base chance is 30 percent. Each Dragonrot-afflicted NPC lowers it; the community says the first infection drops it to 15 percent and later ones lower it less, down to a floor.",
+  "values": "Base 30 percent; first infection 15 percent; floor 3 percent (Fextralife) or 2 percent (earlier note)",
+  "how": "Exe roll at final death. SpEffects 900300 and 2131 may be tied to it (unverified).",
+  "sources": [
+   {
+    "kind": "web",
+    "ref": "https://sekiroshadowsdietwice.wiki.fextralife.com/Dragonrot"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/SpEffectParam.json"
+   }
+  ],
+  "confidence": "community",
+  "ours": {
+   "has": "partial",
+   "where": "src/experience.rs (comment only: not rolled)"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Die repeatedly with no NPC infected; compare the share of deaths that keep sen.",
+  "note": "Wikis disagree on the floor (2 vs 3 percent). No param holds the chance, so it is probably computed in the exe.",
+  "needs": [
+   {
+    "id": "deathblows.dragonrot",
+    "why": "reduces the chance"
+   },
+   {
+    "id": "deathblows.death-penalty",
+    "why": "what it cancels"
+   }
+  ]
+ },
+ {
+  "id": "deathblows.dragonrot",
+  "category": "deathblows",
+  "title": "Dragonrot spreading",
+  "summary": "Each death and respawn at an idol gives a chance that one NPC catches Dragonrot. About one in ten deaths in the community's counting. A resurrection in a fight does not spread it. Afflicted NPCs cough (the Sculptor has a cough clip, 20000).",
+  "values": "Rot Essence goods 9500-9526 (Sculptor, Newcomer, Black Hat, Lost Child, Charmed One, Surgeons, Fine Son, Thirsty One, Timid Maid, Faithful One and the Crow, Wartorn, Jail, Toxic, Pious, Drunk and Info-Broker mobs); Dragonrot Blood Sample goods 9560",
+  "how": "Death event sets a flag per NPC; EMEVD and the Rot Essence goods mark who has it.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/EquipParamGoods.json"
+   },
+   {
+    "kind": "web",
+    "ref": "https://sekiroshadowsdietwice.wiki.fextralife.com/Dragonrot"
+   }
+  ],
+  "confidence": "community",
+  "ours": {
+   "has": "no",
+   "where": ""
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Die ten times and see how many NPCs cough.",
+  "note": "The roll and the EMEVD flags were not decoded. ~10 percent per death is a wiki average only.",
+  "needs": [
+   {
+    "id": "npcs.npc-sickness-states",
+    "why": "NPC changes"
+   },
+   {
+    "id": "deathblows.unseen-aid",
+    "why": "effect on aid"
+   }
+  ]
+ },
+ {
+  "id": "deathblows.dragonrot-cure",
+  "category": "deathblows",
+  "title": "Curing Dragonrot",
+  "summary": "Take Dragonrot Blood Samples from the sick NPCs to Emma. She makes a Dragon's Blood Droplet. Using the droplet at an idol heals every sick NPC and restores Unseen Aid to its base.",
+  "values": "Dragon's Blood Droplet goods 5600 (sell 80); Dragonrot Blood Sample goods 9560; idol menu entry 'Dragonrot Restoration'",
+  "how": "Event flags clear when the droplet is used.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/EquipParamGoods.json"
+   },
+   {
+    "kind": "web",
+    "ref": "https://sekiroshadowsdietwice.wiki.fextralife.com/Dragonrot"
+   }
+  ],
+  "confidence": "community",
+  "ours": {
+   "has": "partial",
+   "where": "src/idol.rs (menu entry)"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Cure at the idol and open the status bar: Unseen Aid is back to 30 percent.",
+  "note": "The quest script path (Emma gives the droplet) was not decoded.",
+  "needs": [
+   {
+    "id": "npcs.emma",
+    "why": "she crafts the cure"
+   },
+   {
+    "id": "deathblows.dragonrot",
+    "why": "what it cures"
+   }
+  ]
+ },
+ {
+  "id": "deathblows.death-penalty",
+  "category": "deathblows",
+  "title": "Death penalty: half the sen and half the skill XP",
+  "summary": "On final death the player loses half of the sen carried and half of the skill XP that has not yet become a point. Unseen Aid can cancel it. Resurrection mid-fight loses nothing.",
+  "values": "TentativePlayerParam MoneyLostRate 50, SkillPointLostRate 50 (percent)",
+  "how": "Death code applies both rates at the final-death step.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/TentativePlayerParam.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/skills.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/experience.rs"
+  },
+  "his": {
+   "has": "no",
+   "where": ""
+  },
+  "check": "Die with 1000 sen: 500 stay.",
+  "note": "The rounding of the half is not checked. RustSekiro rounds the kept half up.",
+  "needs": [
+   {
+    "id": "progression.sen-xp-loss-on-death",
+    "why": "same rule from the progression view"
+   },
+   {
+    "id": "deathblows.unseen-aid",
+    "why": "can cancel"
+   }
+  ]
+ },
+ {
+  "id": "deathblows.enemy-grab-pairing",
+  "category": "deathblows",
+  "title": "Enemy grabs use the same pair system",
+  "summary": "Enemy throws are in the same ThrowParam list. The kinds start at 1000000 ('Enemy Throw 0' ... 'Throw 4'), with an underwater copy at 1000100. The attacker is the enemy chr (AtkChrId, for example 1020) and the defender is the player (DefChrId 0). There are 30 rows of kind 1000000.",
+  "values": "ThrowKind 1000000, 1000010, 1000020, 1000030, 1000040; underwater 1000100-1000140; 30 rows of 1000000, 10 of 1000010, 3 of 1000020",
+  "how": "Enemy AI calls the throw when a grab attack's TAE fires; the throw search finds the row by kind.",
+  "sources": [
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/ThrowKindParam.json"
+   },
+   {
+    "kind": "data",
+    "ref": "extracted/json/params/ThrowParam.json"
+   },
+   {
+    "kind": "ours-kb",
+    "ref": "docs/kb/attacks.md"
+   }
+  ],
+  "confidence": "data",
+  "ours": {
+   "has": "yes",
+   "where": "src/enemy.rs"
+  },
+  "his": {
+   "has": "yes",
+   "where": "../sekiro-rs/crates/sim/src/grab.rs"
+  },
+  "check": "Get grabbed by the Spear Monk or Ape and see Wolf's defence clip play.",
+  "note": "Grab rows per enemy were not individually checked.",
+  "needs": [
+   {
+    "id": "ai.enemy-grab-attacks",
+    "why": "the attack that starts it"
+   }
+  ]
+ }
+]
