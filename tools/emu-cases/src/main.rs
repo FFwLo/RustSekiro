@@ -23,6 +23,7 @@ mod snapshot;
 mod guard;
 mod trace;
 mod lockcam;
+mod turn;
 
 /// The few calls of Unicorn's C API the tool needs (unicorn.h), linked from unicorn.dll.
 mod uc {
@@ -809,6 +810,9 @@ fn main() {
             probe(&mut emu, u64::from_str_radix(a.trim_start_matches("0x"), 16).unwrap());
         }
         return;
+    }
+    if want.first() == Some(&"turn") {
+        return turn::main(&|| Emu::new(exe, snap()), out, &want[1..]);
     }
     // trace <name> <va> [args...]: integer args in order ("player" = PlayerIns, "wcm" = WorldChrMan,
     // or hex), "x<i>=<f>"

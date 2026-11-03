@@ -43,6 +43,7 @@ mod emu_camwall;
 mod emu_hks;
 mod emu_damage;
 mod emu_lockcam;
+mod emu_turn;
 pub(crate) use part01::*;
 pub(crate) use part02::*;
 pub(crate) use part03::*;

@@ -11,7 +11,7 @@
 use bevy::prelude::*;
 use std::collections::HashMap;
 
-use crate::actor::{Actor, ActorSet, Side};
+use crate::actor::{wrap_angle, Actor, ActorSet, ShownYaw, Side};
 use crate::camera::{LockOn, OrbitCamera};
 use crate::config::GameConfig;
 use crate::data::{CharData, Combat, FALL_TYPES, calc_correct};
@@ -28,6 +28,8 @@ pub struct Player {
     leap_homing: Option<LeapHoming>,
     /// HKS MoveSpeedLevel: 0 idle, 1 walk, 2 run (converges at 3/s).
     pub(crate) speed_level: f32,
+    /// The pad manipulator's stick gate and yaw request (`Turn`).
+    pub(crate) turn: Turn,
     pub(crate) requests: HashMap<Action, f32>,
     /// State after the last decide; a different state at the next decide was set by combat.
     last_state: String,
@@ -942,14 +944,8 @@ fn aging_step(p: &mut Player, a: &mut Actor, combat: &Combat, config: &GameConfi
         let next = if a.state == "AgingSprintStart" { "AgingSprintLoop" } else { "AgingIdle" };
         a.play_state(d, next);
     }
-    let turn = |a: &mut Actor| {
-        if stick != Vec3::ZERO {
-            let rate = turn_rate(d, a, config, false);
-            a.yaw = turn_toward(a.yaw, yaw_of(stick), rate.to_radians() * dt);
-        }
-    };
     if !free {
-        turn(a);
+        free_turn(p, a, d, config, stick, dt);
         return true;
     }
     let action = [Action::Guard, Action::Step, Action::Prosthetic, Action::Grapple, Action::CombatArt];
@@ -978,7 +974,7 @@ fn aging_step(p: &mut Player, a: &mut Actor, combat: &Combat, config: &GameConfi
         } else if a.state != "AgingStandMove_Walk_F" || ended {
             a.play_state(d, "AgingStandMove_Walk_F");
         }
-        turn(a);
+        free_turn(p, a, d, config, stick, dt);
     } else if a.state == "AgingStandMove_Walk_F" {
         a.play_state(d, "AgingStandWalkStop");
     } else if a.state.starts_with("AgingSprint") && a.state != "AgingSprintEnd" {
@@ -1414,7 +1410,7 @@ fn spawn_player(mut commands: Commands, combat: Res<Combat>, config: Res<GameCon
         }
     }
     commands.spawn((
-        Player { plunge: None, leap_homing: None, speed_level: 0.0, requests: HashMap::new(), last_state: String::new(), gourd: config.player.gourd_charges, emblems: config.player.spirit_emblems, auto_aim: false, auto_aim_fresh: false, resurrections: config.player.resurrections, revive_queued: false, death_wait: 0.0, dead_for: 0.0, escape: None, jump_forward: false, jump_land: None, positioning_land: false, aged_form: false, step_tilt: 0.0, jump_tilt: 0.0, throw_start: None, throw_target: None, tool_slot: 0, vel_scale: None, expand_pending: false, sub_cat_before: 0, air_sub_count: 0, air_art_count: 0, art_enable_jump: false, timed: Vec::new(), held: Vec::new(), wire: None, perch: None, wire_todome: false, air_top: 0.0, safe_pos: None },
+        Player { plunge: None, leap_homing: None, speed_level: 0.0, turn: Turn::default(), requests: HashMap::new(), last_state: String::new(), gourd: config.player.gourd_charges, emblems: config.player.spirit_emblems, auto_aim: false, auto_aim_fresh: false, resurrections: config.player.resurrections, revive_queued: false, death_wait: 0.0, dead_for: 0.0, escape: None, jump_forward: false, jump_land: None, positioning_land: false, aged_form: false, step_tilt: 0.0, jump_tilt: 0.0, throw_start: None, throw_target: None, tool_slot: 0, vel_scale: None, expand_pending: false, sub_cat_before: 0, air_sub_count: 0, air_art_count: 0, art_enable_jump: false, timed: Vec::new(), held: Vec::new(), wire: None, perch: None, wire_todome: false, air_top: 0.0, safe_pos: None },
         actor,
         Name::new("Player"),
         Transform::from_xyz(0.0, CAPSULE_HALF_HEIGHT, 4.0),
@@ -2121,9 +2117,12 @@ fn release_of(state: &str) -> Option<String> {
     })
 }
 
-/// Free turning rate [deg/s]: the anim's TAE SetTurnSpeed (e.g. SprintLoop 360) when it
-/// has one, else the engine default, config movement.turn_speed = 720 (exe: the turn
-/// controller's +0x28 = 720.0 in FUN_1407da540; FUN_1407daa20 uses the TAE value when >= 0).
+/// Turning rate [deg/s] where the turn controller clamps (locked on, actions): the anim's TAE
+/// SetTurnSpeed (e.g. SprintLoop 360) when it has one, else the engine default, config
+/// movement.turn_speed = 720 (exe: the turn controller's +0x28 = 720.0 in FUN_1407da540;
+/// FUN_1407daa20 uses the TAE value when >= 0). Live, locked on in the run a000_000500 (no TAE
+/// 224) the facing turns 12 deg a frame (rec_20261016_094717 ticks 357-363). Free turning from
+/// the stick has no default rate: `free_turn`.
 fn turn_rate(d: &CharData, a: &Actor, config: &GameConfig, locked: bool) -> f32 {
     if a.anim.is_empty() { None } else { d.turn_speed(&a.anim, a.t, locked) }.unwrap_or(config.movement.turn_speed)
 }
@@ -2257,8 +2256,87 @@ fn ease((kind, n): (u8, u8), x: f32) -> f32 {
     }
 }
 
-fn yaw_of(dir: Vec3) -> f32 {
+pub(crate) fn yaw_of(dir: Vec3) -> f32 {
     f32::atan2(-dir.x, -dir.z)
+}
+
+/// Wolf's turn from the move stick as the exe runs it each frame (PlayerIns update FUN_140a37560,
+/// emulated on a snapshot of the game: tools/emu-cases `turn`, src/sim_tests/emu_turn.rs):
+/// - the pad manipulator (PlayerCtrl's FUN_1407f0a70 -> FUN_1407f0f50) takes the stick only when
+///   last frame's raw stick (+0x340) was off centre too and within 45 deg of it (DAT_143289178,
+///   the cosine against the normalised dot product); otherwise the move vector (+0x10, +0xc0) is 0
+///   this frame: a press from rest counts one frame late, and a flick of more than 45 deg in one
+///   frame reads as a one-frame let-go (MoveSpeedLevel 0). No dead zone: 0.05 is taken as is;
+/// - MoveSpeedLevel (behaviour variable 2, FUN_140b4afd0 -> +0xbac) is the taken stick's length,
+///   not rescaled (1.2 reads 1.2; sprinting 2.0);
+/// - its yaw request (+0x24) is the stick's yaw (the camera yaw +0x94 plus the stick's angle)
+///   minus the facing, wrapped to [-pi, pi);
+/// - the next frame the turn controller (PlayerCtrl +0x250 BehaviorTurn, FUN_1407da6d0 ->
+///   FUN_1407dac80) adds that request to the physics yaw: whole when no rate is set (the player's
+///   BehaviorTurn +0x70 bit 0, FUN_1407da5f0, with no TAE 224 SetTurnSpeed and the module +0x16c
+///   rate < 0), else clamped to rate * dt (FUN_1407dab40). So free in the run loop the facing
+///   snaps to the stick a frame after it moves (live: rec_20261015_191200 tick 687 request 0.855,
+///   tick 688 the yaw +49 deg) and the drawn facing (`ShownYaw`) turns after it at 792 deg/s.
+/// gap: the module +0x16c rate and the PlayerCtrl +0x259 gate are not ported; the camera-yaw hold
+/// while the stick is held (+0x424 / +0x428, option DAT_143d5b49c) is not ported.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct Turn {
+    /// PadManipulator +0x340: last frame's raw stick.
+    pub last_stick: Vec2,
+    /// PadManipulator +0x24: the request made this frame, applied the next.
+    pub request: Option<f32>,
+    /// Last frame's request, for this frame's turn.
+    pub pending: Option<f32>,
+}
+
+impl Turn {
+    /// A new frame: last frame's request is the one to apply.
+    pub fn new_tick(&mut self) {
+        self.pending = self.request.take();
+    }
+
+    /// The stick the manipulator takes this frame (FUN_1407f0f50).
+    pub fn gate(&mut self, raw: Vec2) -> Vec2 {
+        let last = std::mem::replace(&mut self.last_stick, raw);
+        let near = last.length() > 0.0 && raw.length() > 0.0 && last.normalize().dot(raw.normalize()) >= std::f32::consts::FRAC_PI_4.cos();
+        if near { raw } else { Vec2::ZERO }
+    }
+
+    /// The turn controller's step: last frame's request onto `yaw` (whole, or clamped to `rate`
+    /// deg/s), then this frame's request toward `target` (None: the stick is centred, no request).
+    pub fn step(&mut self, yaw: f32, target: Option<f32>, rate: Option<f32>, dt: f32) -> f32 {
+        let want = self.pending.take().unwrap_or(0.0);
+        let yaw = yaw + rate.map_or(want, |r| want.clamp(-r.to_radians() * dt, r.to_radians() * dt));
+        self.request = target.map(|t| wrap_angle(t - yaw));
+        yaw
+    }
+
+    /// `step` on `yaw`, a turn engaging the drawn facing (`ShownYaw`) at 1.1x the rate in force
+    /// (`rate`, else `default_rate`).
+    pub fn turn(&mut self, yaw: &mut f32, shown: &mut Option<ShownYaw>, target: Option<f32>, rate: Option<f32>, default_rate: f32, dt: f32) {
+        let before = *yaw;
+        *yaw = self.step(before, target, rate, dt);
+        if *yaw != before && shown.is_none() {
+            *shown = Some(ShownYaw { yaw: before, ..default() });
+        }
+        if let Some(s) = shown.as_mut() {
+            s.rate = rate.unwrap_or(default_rate);
+        }
+    }
+}
+
+/// FUN_1407daa20's pick for a free turn: the shown clip's TAE 224 SetTurnSpeed (the move starts
+/// a000_000160-163 / 460-463 360 deg/s over 0.2 s, the sprint 180 / 360), None when it has none.
+fn free_turn_rate(d: &CharData, a: &Actor) -> Option<f32> {
+    let (key, t) = a.shown_clip(d);
+    d.turn_speed(&key, t, false)
+}
+
+/// Turns Wolf toward the (world) stick through the turn controller (`Turn`), drawing the turn
+/// through `ShownYaw` at 1.1x the rate in force (the TAE's, else movement.turn_speed 720).
+fn free_turn(p: &mut Player, a: &mut Actor, d: &CharData, config: &GameConfig, stick: Vec3, dt: f32) {
+    let rate = free_turn_rate(d, a);
+    p.turn.turn(&mut a.yaw, &mut a.shown, (stick != Vec3::ZERO).then(|| yaw_of(stick)), rate, config.movement.turn_speed, dt);
 }
 
 fn turn_toward(yaw: f32, target: f32, max_step: f32) -> f32 {
@@ -2353,6 +2431,9 @@ fn decide(
     let dt = time.delta_secs();
     let d = &combat.player;
     let (pe, p, a, tf) = &mut *player;
+    // The pad manipulator runs every frame, whatever Wolf does (FUN_1407f0a70).
+    p.turn.new_tick();
+    let gated_stick = p.turn.gate(pad.stick);
     // A wire on an enemy follows him (wire.rs track): the shoot's snapshot left Wolf flying to
     // where Gyoubu / the Ape stood a second before.
     if let (Some(w), Some(gs)) = (p.wire.as_mut(), grapples.as_deref()) {
@@ -2947,6 +3028,10 @@ fn decide(
 
     let cam_yaw = camera.map_or(0.0, |c| c.yaw);
     let stick = stick_world(pad.stick, cam_yaw);
+    // The manipulator's move vector (`Turn::gate`) drives the walk / run and the free turn; the
+    // actions read the stick as it is. gap: which stick the HKS's step / jump / attack angles read
+    // on a press frame is not traced (Sv1's tests press with the stick set that frame).
+    let move_stick = stick_world(gated_stick, cam_yaw);
     // Aged, an attack in reach of an aging deathblow row takes the deathblow below.
     // Only where the attack is taken (an aged standby): pressed mid-onset, mid-attack or in an aged
     // fall it skipped aging_step every tick and the plain tick ran the aged clips (round 52).
@@ -4045,7 +4130,11 @@ fn decide(
         {
             return;
         }
-        a.yaw = turn_toward(a.yaw, yaw_of(stick), turn_rate(d, a, &config, lock.target.is_some()).to_radians() * dt);
+        if lock.target.is_some() {
+            a.yaw = turn_toward(a.yaw, yaw_of(stick), turn_rate(d, a, &config, true).to_radians() * dt);
+        } else {
+            free_turn(p, a, d, &config, move_stick, dt);
+        }
         if ended {
             a.play_state(d, "SprintLoop");
         }
@@ -5055,9 +5144,9 @@ fn decide(
     }
     if is_upper_action(&a.state) {
         // StandMoveOverwrite: the legs run the walk/run (StandMoveLower_SM carries the motion).
-        lower_body_move(p, a, d, &config, stick, target_dir, pad.walk, dt);
+        lower_body_move(p, a, d, &config, move_stick, target_dir, pad.walk, dt);
     } else if move_ok && (moving || a.state == "Locomotion") {
-        locomotion(p, a, d, &config, stick, target_dir, pad.walk, dt);
+        locomotion(p, a, d, &config, move_stick, target_dir, pad.walk, dt);
     } else if !move_ok {
         a.move_vel = Vec3::ZERO;
         p.speed_level = 0.0;
@@ -5159,7 +5248,7 @@ fn converge_speed(p: &mut Player, stick: Vec3, walk_held: bool, dt: f32) {
 
 /// Walk/run velocity for the current speed level, turning toward the stick (free) or facing
 /// the target (locked on, strafing).
-fn move_velocity(p: &Player, a: &mut Actor, d: &CharData, config: &GameConfig, stick: Vec3, target_dir: Option<Vec3>, dt: f32) {
+fn move_velocity(p: &mut Player, a: &mut Actor, d: &CharData, config: &GameConfig, stick: Vec3, target_dir: Option<Vec3>, dt: f32) {
     // Locked on: the stick relative to the facing picks the directional clip; free: forward.
     let local = match target_dir {
         Some(td) => {
@@ -5170,9 +5259,7 @@ fn move_velocity(p: &Player, a: &mut Actor, d: &CharData, config: &GameConfig, s
             Quat::from_rotation_y(-a.yaw) * stick
         }
         None => {
-            if stick != Vec3::ZERO {
-                a.yaw = turn_toward(a.yaw, yaw_of(stick), turn_rate(d, a, &config, target_dir.is_some()).to_radians() * dt);
-            }
+            free_turn(p, a, d, config, stick, dt);
             Vec3::NEG_Z
         }
     };

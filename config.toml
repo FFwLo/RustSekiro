@@ -19,7 +19,7 @@ mouse_sensitivity = 0.15  # degrees of turn per pixel of mouse movement
 [movement]
 # Walk/run/sprint SPEEDS come from the animations' root motion (data).
 # The HKS converges the speed level at 3 per second (data: c0000.hks GetMoveSpeed).
-turn_speed = 720.0      # free-movement turn rate (deg/s): exe default 720 (FUN_1407da540). TAE SetTurnSpeed overrides it.
+turn_speed = 720.0      # turn controller default (deg/s, FUN_1407da540): locked-on turning; free turns from the stick snap and are drawn at 1.1x it. TAE SetTurnSpeed overrides it.
 
 [input]
 # exe: a press is latched only inside the anim's TAE accept window (flag 87 etc.), then
