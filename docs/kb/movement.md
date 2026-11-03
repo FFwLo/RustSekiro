@@ -251,7 +251,9 @@ scenarios / 440 frames (the stick written into the pad floats [pad +0x38f8]: [0]
 - Sv1 before: one yaw for logic and drawing, turned toward the stick at 720 deg/s (90 deg in 8 frames) the frame
   the stick moved; no 45 deg gate. Now (`player::Turn`, `actor::ShownYaw`): the gate on the pad stick, the request
   made one frame and applied the next (whole, or clamped at the shown clip's TAE 224 rate), the drawn facing
-  chasing at 1.1x.
+  chasing at 1.1x. The gate drives the walk / run and the free turn only; step, jump and attack
+  directions still read the stick as it is (gap: which stick the HKS's KickAngle / AttackAngle read on a press
+  frame is not traced; 10 sim tests press with the stick set that same frame).
 - gap: the drawn yaw is engaged only by the turn controller's free turns (a yaw other code sets is drawn at once);
   whether the exe's warps / SetRotation reset the delay controller, and that the model matrix (and the dummy-poly
   hit boxes) take GetRotation, are inferred, not traced. Not ported: the camera-yaw hold while the stick is held

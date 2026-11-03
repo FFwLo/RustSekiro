@@ -3027,7 +3027,11 @@ fn decide(
     }
 
     let cam_yaw = camera.map_or(0.0, |c| c.yaw);
-    let stick = stick_world(gated_stick, cam_yaw);
+    let stick = stick_world(pad.stick, cam_yaw);
+    // The manipulator's move vector (`Turn::gate`) drives the walk / run and the free turn; the
+    // actions read the stick as it is. gap: which stick the HKS's step / jump / attack angles read
+    // on a press frame is not traced (Sv1's tests press with the stick set that frame).
+    let move_stick = stick_world(gated_stick, cam_yaw);
     // Aged, an attack in reach of an aging deathblow row takes the deathblow below.
     // Only where the attack is taken (an aged standby): pressed mid-onset, mid-attack or in an aged
     // fall it skipped aging_step every tick and the plain tick ran the aged clips (round 52).
@@ -4129,7 +4133,7 @@ fn decide(
         if lock.target.is_some() {
             a.yaw = turn_toward(a.yaw, yaw_of(stick), turn_rate(d, a, &config, true).to_radians() * dt);
         } else {
-            free_turn(p, a, d, &config, stick, dt);
+            free_turn(p, a, d, &config, move_stick, dt);
         }
         if ended {
             a.play_state(d, "SprintLoop");
@@ -5140,9 +5144,9 @@ fn decide(
     }
     if is_upper_action(&a.state) {
         // StandMoveOverwrite: the legs run the walk/run (StandMoveLower_SM carries the motion).
-        lower_body_move(p, a, d, &config, stick, target_dir, pad.walk, dt);
+        lower_body_move(p, a, d, &config, move_stick, target_dir, pad.walk, dt);
     } else if move_ok && (moving || a.state == "Locomotion") {
-        locomotion(p, a, d, &config, stick, target_dir, pad.walk, dt);
+        locomotion(p, a, d, &config, move_stick, target_dir, pad.walk, dt);
     } else if !move_ok {
         a.move_vel = Vec3::ZERO;
         p.speed_level = 0.0;
