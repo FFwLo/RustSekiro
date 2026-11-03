@@ -98,8 +98,8 @@ itself. Branch names say what they are: `work-<ID>-<slug>-<github>-<agent>`, nev
   about 10 GB: delete them when done).
 - `P` rows: read the row's kb note first. If a rule can only be fitted to numbers, say so in the note.
 - Notes: a dated section in the topic's `docs/kb/<topic>.md` (what matched, what changed with numbers, what is not
-  covered); `E` rows add one row to the results table in `docs/kb/emulator-pilot.md`; one line at the top of
-  "## Recent" in `docs/PROGRESS.md`.
+  covered); `E` rows add one row to the results table in `docs/kb/emulator-pilot.md`. The board writes the
+  history line (`CHANGES.md`) on the merge.
 - Merge `upstream/main` into your branch at the start of each session.
 - Never commit or paste game files, extracted data, snapshots, emulator case JSON, hex dumps, disassembly or
   decompiled code, also not in issues and pull requests. Read decompiler output on your own screen and write the
