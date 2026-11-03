@@ -180,6 +180,12 @@ pub struct Actor {
     /// Debug menu "no posture damage" (player_cheats sets it each tick): add_posture adds
     /// nothing, so one blocked hit can't fill the bar inside Resolve (round 65).
     pub no_posture: bool,
+    /// A deflect filled the bar: posture full and no break (`posture_broken` false). The exe's
+    /// break is no value test but the hit record's flags set in FUN_140b6e6a0: +0x1c6 on an
+    /// unguarded hit and +0x1c4 on a block that leave posture < 1 with posture damage > 0; a
+    /// deflect sets neither, so it may drain the bar to 0 (guard resolution run, posture 1 -> 0).
+    /// The next posture damage (`add_posture`) breaks, as the exe's next hit does.
+    pub posture_held: bool,
     /// Resident SpEffect ids (NpcParam spEffectID slots for enemies).
     pub resident: Vec<i64>,
     /// AttackBehavior windows already resolved in the current anim, per defender: (defender,
@@ -351,6 +357,7 @@ impl Actor {
             hit_stop: HitStop::default(),
             clock_dt: None,
             no_posture: false,
+            posture_held: false,
             resident: Vec::new(),
             hits_done: Vec::new(),
             bullet_hits: Vec::new(),
@@ -549,6 +556,7 @@ impl Actor {
 
     pub fn add_posture(&mut self, amount: f32) {
         if amount > 0.0 && !self.no_posture {
+            self.posture_held = false;
             self.posture = self.bound_posture(self.posture + amount);
             self.since_posture_damage = 0.0;
         }
@@ -566,7 +574,17 @@ impl Actor {
     }
 
     pub fn posture_broken(&self) -> bool {
-        self.posture >= self.posture_max
+        self.posture >= self.posture_max && !self.posture_held
+    }
+
+    /// A deflect's posture damage (combat.rs, prosthetic.rs): it may fill the bar but never breaks
+    /// (FUN_140b6e6a0 sets no break flag on a deflect); `posture_held` until the next damage.
+    pub fn add_deflect_posture(&mut self, amount: f32) {
+        if self.posture_broken() {
+            return;
+        }
+        self.posture = (self.posture + amount).min(self.posture_max);
+        self.posture_held = self.posture >= self.posture_max;
     }
 }
 
@@ -1147,6 +1165,7 @@ pub fn regen_posture(time: Res<Time>, combat: Res<Combat>, config: Res<GameConfi
         let (whole, carry) = regen_frame(a.posture_regen + change, resident * hp_factor, tae_pct as f32, ratio, dt, a.regen_carry);
         a.regen_carry = carry;
         a.posture = a.bound_posture(a.posture - whole as f32);
+        a.posture_held &= a.posture >= a.posture_max;
     }
 }
 

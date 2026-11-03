@@ -47,6 +47,7 @@ mod emu_turn;
 mod emu_taecam;
 mod emu_modticks;
 mod emu_taewin;
+mod emu_throw;
 pub(crate) use part01::*;
 pub(crate) use part02::*;
 pub(crate) use part03::*;

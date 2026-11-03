@@ -220,15 +220,67 @@ General's attacks and the General against Wolf's, on the memory snapshot.
   now only its opening 105010 (0.4 s) does; NPC 1040 / 3372 the same.
 - A block that empties posture sets +0x1c4 (guard break) and hands the attacker reaction 99999
   instead of 1017: no bound for the attacker (fixed in combat.rs). A deflect never sets it, even
-  when it empties posture (posture 1 -> 0; RSekiro keeps it 1 short).
+  when it empties posture (posture 1 -> 0; RSekiro too since 2026-11-03, below).
 - Spam chain 105020-23 on a deflect: the attacker's 30 posture x 1 / 0.5 / 0.25 / 0.125 lands as
   30 / 15 / 7 / 3 (cut to an int; RSekiro now floors it too, 2026-11-03).
-- gap: a deflect that empties the defender's posture leaves it 1 short in RSekiro. The exe lets it reach
-  0 because its break is a separate flag (+0x1c4) that only a block or a hit sets; RSekiro reads
-  the break from the value (Actor::posture_broken), so a full deflect would break.
+- Fixed 2026-11-03 (topic throw): a deflect may empty the defender's posture without a break
+  (Actor::add_deflect_posture / posture_held; was kept 1 short). The flags are the hit record's,
+  not the chr data's: FUN_140b6e6a0 sets +0x1c6 on an unguarded hit and +0x1c4 on a block when
+  the posture setter FUN_140bd4e20 leaves posture < 1 (or the HP / lives test) and the posture
+  damage is > 0; a deflect sets neither. So the next posture damage breaks.
 - Test guard_resolution_matches_the_exe (sim_tests/emu_guard.rs): flick powers and verdicts
   equal on all 90 cases, the guard break and attacker reactions as above.
 - gap: the parts guard (a hit on a guarding body part, FUN_1410c66a0, +0x1ce) is not ported; the
   guardDefFlickPowerRate product and FUN_140bfccc0's NPC rates are taken as 1 (1 on every row
   that counts); the umbrella's 180 deg arc is read from its weapon row, not run (no umbrella
   equipped in the snapshot); strength is the snapshot's 10 (RSekiro has no stats).
+
+## Throw and deathblow checks, run on the snapshot (2026-11-03, player.rs deathblow_check)
+
+tools/emu-cases `throw` (throw.rs): Wolf as thrower, the General (c1020) as defender, on the
+Naomori-arena snapshot. extracted/emu/throw_kinds.json, throw_ranges.json.
+
+- FUN_140be1b50 is the throw module's per-frame tick (chr +0x1ff8 bag +0x88, CSChrThrowModule
+  vtable 0x142a8e8b0): it clears a pending request (+0x70 -> +0x68 / +0x6c), ticks its timer,
+  sets +0x7c and empties the candidate list at +0xb0 (count +0xd8). It decides nothing. The
+  search is FUN_140be2a30 (per ThrowKindParam kind: FUN_140be3810, then each ThrowParam row of
+  the pair: AtkChrId / DefChrId = chr +0x6c, then FUN_140be3a90).
+- FUN_140be3a90 = the additionalConditionSpecialEffect pair (+0x6c / +0x70), FUN_140be0270
+  range, FUN_140be3ba0 fall orbit (only kinds with doesCheckNormalFallOrbit), FUN_140be3da0 a
+  sight cast between the two. Row and kind refs are looked up by id with FUN_14095e0b0 /
+  FUN_1410d0200 (FUN_14095e0e0 / FUN_1410d0370 take a row index).
+- Range FUN_140be0270, 3,000 placements (5 rows x 600: random bearing, distance, height, both
+  yaws): the defender's chr flag +0x1a15 bit 0, then dy < upperYRange and dy > -lowerYRange,
+  then |d|^2 < Dist^2 (3D), then the angle between Wolf's forward and the 3D direction <=
+  diffAngMyToDef, then |wrap(defender yaw - thrower yaw)| in [DiffAngMin, DiffAngMax]. Yaws from
+  the throw module's +0x94 (= physics +0x74), positions FUN_140bbfc00 (physics +0x80, or the
+  rows' judgeRangeBasePosDmyId1 / 2, -1 on Wolf's rows). The forward for yaw y is
+  (-sin y, 0, -cos y), Actor::forward's. Sv1's facings matched as they were; fixed: Dist and the
+  height window are strict (were inclusive) and a row with neither height set takes no one (was
+  "no window"; only the empty row 0). New player.rs throw_range_ok; the plunge, wire and
+  combat.rs throw_in_reach starts made strict too. Strictness is from the code; no case sits
+  exactly on an edge. Test throw_range_matches_the_exe: all 3,000 equal.
+- The whole row: equal to the range but for the plunge row (no fall: the fall orbit is the
+  plunge's fall_reaches) and three placements with the General 0.7-0.8 m below Wolf (sunk in the
+  floor): the sight cast. gap: the cast and the SpEffect pair are not in throw_range_ok.
+- Throwable states FUN_140be0a40 (states 0-127 x categories 0-21 / 100 / 101: 52 pairs pass) and
+  the kind test FUN_140be3810 on the General (112 cases). The defender's state is its throw
+  module +0x7a, written each frame by TAE 932 (unk0; 931 writes the thrower's +0x78), else +0x7b
+  (101 on all 89 enemies, Wolf 1). 101 passes behind 0, crouch 1, play 2 / 3, falls 6 / 7, wall
+  and hang 9-11, 12, aging-behind 17; the break anims' 103 passes break 4, 7, 12, plunge 13,
+  kick 14, wire 15, aging break 18 / 19, push-down 20 (108, TrunkCollapseLarge: the same
+  without 20); 104 passes "enemy special state A" 5 (the finisher rows 250000) with 2 / 3 / 7 /
+  12; 105 the Todome 16 with 2 / 3 / 7 / 12. HP 0 changes nothing (defAliveCheck 0 on these
+  kinds); the main-throw kinds (throwKindCheckMethod 1) pass only out of their start throw.
+  Ported as throwable_state_allows and def_throw_state (finisher window, else 103 while
+  Mode::Broken, else 101). Fixed by it: a broken enemy that never noticed Wolf took the stealth
+  rows 0020 / 0021 (aged: 0270 / 0271) - the break rows now (103 does not pass 0 / 17); the
+  finisher row was taken in a 105 window without a Todome row - only in 104 now; a broken enemy
+  in a 104 / 105 window gets no break deathblow. Test throwable_states_match_the_exe.
+- TAE 932's 103 span equals Sv1's break window (collapse SpEffect 220420's end) on 868 of the
+  1,238 enemy anims with a 103 / 108. gap: the others are not opened as breaks in Sv1:
+  DeathDefault0 / 1 (0-45 f on most enemies), ThrowDef12120 / 13120 / 13900 / 14300, LandTrunk,
+  TrunkCollapseAerial (3-60 f vs the SpEffect's 0-60); whether a dying chr passes the kind
+  test's other gates (vfunc 0x550, the throw node's bits at +0x70) was not run.
+- gap: the pick among several passing rows (ThrowKindParam checkPriority: behind 10, break 2,
+  break-behind 0) is not traced; Sv1's deathblow_pick takes the lock target, else the nearest.

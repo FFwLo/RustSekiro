@@ -403,12 +403,12 @@ pub(crate) fn dodged(combat: &Combat, def: &Actor, _att: Option<&Actor>, atk: &A
 }
 
 /// A ThrowParam row's reach from the thrower at `from` to the other at `to`: within Dist, and
-/// the other's height within upperYRange above / lowerYRange below (as the plunge start checks).
+/// the other's height within upperYRange above / lowerYRange below, all strict (FUN_140be0270).
 fn throw_in_reach(combat: &Combat, row_id: i64, th: &crate::data::Throw, from: Vec3, to: Vec3) -> bool {
     let row = combat.param("ThrowParam", row_id);
     let f = |k: &str| row[k].as_f64().unwrap_or(0.0) as f32;
     let dy = to.y - from.y;
-    from.distance(to) <= th.dist && dy <= f("upperYRange") && dy >= -f("lowerYRange")
+    from.distance(to) < th.dist && dy < f("upperYRange") && dy > -f("lowerYRange")
 }
 
 /// AtkParam dummy id -> model dummy entity: 1<model><dummy> addresses a right-hand weapon
@@ -1853,8 +1853,9 @@ fn resolve(
                         // The attacker's area-doping posture rate counts here as on a block or a hit.
                         let pd = (atk.atk_stam * aa.stam_atk_rate * skill).floor();
                         let full = da.posture + pd >= da.posture_max;
-                        // A deflect never breaks the defender (HKS: GUARDATTACKER_STAMZERO -> stagger instead).
-                        da.posture = (da.posture + pd).min(da.posture_max - 1.0);
+                        // A deflect never breaks the defender (HKS: GUARDATTACKER_STAMZERO -> stagger instead);
+                        // it may empty the bar (FUN_140b6e6a0 sets no break flag, Actor::posture_held).
+                        da.add_deflect_posture(pd);
                         da.since_posture_damage = 0.0;
                         // Wolf's deflect: his latent skills' defStaminaAttackRate (270: x1.25).
                         let skill_atk = if da.side == Side::Player { skill_rate(&combat, &config, "defStaminaAttackRate") } else { 1.0 };

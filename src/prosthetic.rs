@@ -717,7 +717,7 @@ fn hit_enemy(
         if deflect {
             // A deflect never breaks the defender (as the sword's).
             let pd = (atk.atk_stam * skill).floor();
-            da.posture = (da.posture + pd).min(da.posture_max - 1.0);
+            da.add_deflect_posture(pd);
             da.since_posture_damage = 0.0;
             let pick = crate::combat::enemy_guard_block(dd, &refs, level, glv, atk.just_deflect_action == 2, aerial);
             crate::combat::guard_pick(dd, da, e, combat, true, pick, from, dtf.translation, level, aerial, part);
