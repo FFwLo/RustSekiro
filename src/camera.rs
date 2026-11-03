@@ -50,31 +50,44 @@ pub struct OrbitCamera {
 /// ChrCam distance and param-slot state (exe FUN_14073c260 / FUN_1407374e0).
 #[derive(Clone, Debug)]
 pub struct CamState {
-    /// TAE 155 SetLockParamID slot (1 = default), the slot it is blending from, and the
-    /// blend clock: CameraSetParam beginTime of the new slot (endTime of the old one when
-    /// going back to 1).
+    /// TAE 155 SetLockParamID slot (1 = default; CameraSetParam manager DAT_143d59938 +0x3ec),
+    /// the blend clock +0x3f4 and its length +0x3f0 (CameraSetParam beginTime of the new slot,
+    /// endTime of the old one when going back to 1), and +0x1e8: the blended CameraParam as it
+    /// was at the switch, which the blend starts from (`cam_param`).
     pub slot: i64,
-    prev_slot: i64,
-    blend_t: f32,
-    blend_len: f32,
-    /// +0x218 distance target being chased, +0x214 the smoothed distance used, +0x21c the
-    /// distance a SlowStart override eases from, +0x80 EndInterpolationSpeed (kept after the
-    /// event: the rate back to the param distance).
-    dist_raw: f32,
+    pub(crate) blend_t: f32,
+    pub(crate) blend_len: f32,
+    pub(crate) cam_from: std::sync::Arc<std::collections::HashMap<String, f32>>,
+    /// +0x218 the distance (+0x214, the one used, is set to it each frame), +0x21c the distance
+    /// a SlowStart override eases from, singleton +0x80 EndInterpolationSpeed and +0x7c the
+    /// time it still holds (TransitionKeyframe, counted down after the event).
+    pub(crate) dist_raw: f32,
     pub dist: f32,
-    dist_from: f32,
-    end_rate: f32,
+    pub(crate) dist_from: f32,
+    pub(crate) end_rate: f32,
+    pub(crate) end_time: f32,
     /// The 153 event seen last frame (anim key, start), to spot its first frame.
     last_153: Option<(String, f32)>,
-    /// TAE 156 SetCameraAngle: the event running (anim key, start) and the (yaw, pitch) at its
-    /// first frame (exe ChrCam +0x1f4 / +0x1f0).
-    angle_from: Option<((String, f32), (f32, f32))>,
+    /// TAE 156 SetCameraAngle: the event running (anim key, start), the (yaw, pitch) at its
+    /// first frame (exe ChrCam +0x1f4 / +0x1f0) and Wolf's yaw then (its target +0x1e0 is
+    /// taken once, at the first frame).
+    angle_from: Option<((String, f32), (f32, f32), f32)>,
+    /// TAE 151 after the event: the focus chases Wolf at singleton +0x48 (the event's unk3)
+    /// while +0x44 (unk2, seconds) counts down (FUN_140838b50): (time left, rate).
+    pub(crate) look_after: (f32, f32),
+    /// TAE 151: camera +0x1a0, the cast from Wolf's focus to the dummy hit something this
+    /// event, so the focus stays on Wolf at the normal rates and the look limits keep their
+    /// defaults; +0x240 the yaw (exe convention) the limits' centre is unwrapped near, taken
+    /// from the camera at the event's first frame (None between events).
+    pub(crate) look_blocked: bool,
+    pub(crate) look_ref: Option<f32>,
     /// +0x50 FOV (radians) and +0x204 focus height, lerped to the LockCamParam row.
     fov: f32,
     focus_y: f32,
-    /// TAE 151 CameraLookAtTarget look limits (exe camera +0x230..+0x23c):
-    /// [pitch_min, pitch_max, yaw_min, yaw_max] radians, absolute, chasing the event at
-    /// CameraParam.lockCamParamLerpRate. `None` while no look-at target is active.
+    /// The look limits (exe camera +0x230..+0x23c, FUN_140742230 `look_limits_step`):
+    /// [pitch_min, pitch_max, yaw_min, yaw_max] radians, the yaw ones in the exe's convention
+    /// (`exe_yaw`), chasing TAE 151's or the param defaults at CameraParam.lockCamParamLerpRate.
+    /// `None` until the first frame (then the defaults).
     look: Option<[f32; 4]>,
     /// +0x100 the camera position chasing the orbit's point (`chase_position`), before
     /// collision; `None` until the first frame.
@@ -308,15 +321,19 @@ impl CamState {
     fn new(lc: &LockCam) -> Self {
         Self {
             slot: 1,
-            prev_slot: 1,
             blend_t: 0.0,
             blend_len: 0.0,
+            cam_from: Default::default(),
             dist_raw: lc.dist,
             dist: lc.dist,
             dist_from: lc.dist,
             end_rate: 0.0,
+            end_time: 0.0,
             last_153: None,
             angle_from: None,
+            look_after: (0.0, 0.0),
+            look_blocked: false,
+            look_ref: None,
             fov: lc.fov_y.to_radians(),
             focus_y: lc.focus_y,
             look: None,
@@ -576,16 +593,15 @@ fn angle_delta(a: f32, b: f32) -> f32 {
     (a - b + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI
 }
 
-/// Clamp an angle into [lo, hi], picking the representative of `x` (mod 2pi) nearest the
-/// interval centre so a range that crosses +-pi still works (exe FUN_14073c260 yaw clamp).
-fn clamp_angle(x: f32, lo: f32, hi: f32) -> f32 {
-    // A full turn (e.g. LookLeft -180 / LookRight +180) is no limit at all.
-    if (hi - lo).abs() >= std::f32::consts::TAU - 1e-3 {
-        return x;
-    }
-    let span = angle_delta(hi, lo);
-    let center = lo + span * 0.5;
-    center + angle_delta(x, center).clamp(-span.abs() * 0.5, span.abs() * 0.5)
+/// An angle into [-pi, pi) (exe FUN_14073a320).
+fn wrap_pi(a: f32) -> f32 {
+    use std::f32::consts::{PI, TAU};
+    (a + PI).rem_euclid(TAU) - PI
+}
+
+/// A per-frame rate of the exe (applied once a frame at 60 fps, no dt in it) over `dt`.
+pub(crate) fn per_frame(rate: f32, dt: f32) -> f32 {
+    1.0 - (1.0 - rate.clamp(0.0, 1.0)).powf(dt * 60.0)
 }
 
 /// TAE 156 SetCameraAngle (exe FUN_140b51490 -> FUN_1408327a0 fills the camera singleton
@@ -626,44 +642,148 @@ pub(crate) fn set_camera_angle(from: (f32, f32), chr_yaw: f32, horizontal: (bool
     (yaw, pitch)
 }
 
-/// TAE 151 CameraLookAtTarget look limits. The handler FUN_140b517a0 writes four degrees into
-/// the camera singleton (+0x4c LookUp, +0x50 LookDown, +0x54 LookLeft, +0x58 LookRight);
-/// FUN_140742230 turns them into absolute limits around the DummyPolyID direction and stores
-/// them at +0x230..+0x23c, chasing at CameraParam.lockCamParamLerpRate. Pitch is bounded by
-/// LookUp/DownLimit and yaw by LookLeft/RightLimit (exe: +0x230..+0x23c clamp +0x170/+0x174).
-/// `dir` is player -> dummy. Returns the clamped (yaw, pitch).
-pub(crate) fn apply_look_limits(
-    yaw: f32,
-    pitch: f32,
-    look: &mut Option<[f32; 4]>,
-    dir: Vec3,
-    angles: [f32; 4],
+/// The param side of the look limits (FUN_140742230): LockCamParam rotRangeMinX (radians) and
+/// CameraParam rotRangeXMax for pitch, CameraParam rotRangeYMin / Max and rotBaseY for yaw.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct LookParams {
+    pub pitch: (f32, f32),
+    pub yaw: (f32, f32),
+    pub base_y: f32,
+}
+
+/// The look limits (camera +0x230..+0x23c: pitch min / max, yaw min / max; yaw in the exe's
+/// convention, `exe_yaw`) one frame on, as FUN_140742230 (from FUN_14073c260 each frame):
+/// - TAE 151 running (`event` = its LookUp / Down / Left / RightLimit, radians, singleton
+///   +0x4c..+0x58) and its cast not blocked: the limits are the event's around `centre`, the
+///   view along minus row 2 of the DummyPolyID's world matrix (FUN_14073a1e0; pitch
+///   FUN_140733d70 = -atan2(y, xz), yaw FUN_140733fb0 = atan2(x, z)), or around (0, 0) without a
+///   dummy. The event's yaw limits are used only when they are not the full circle;
+/// - no event (or the cast blocked: `blocked`, camera +0x1a0): the param's, absolute when its yaw
+///   range is the full circle (every row but 6), else around Wolf's facing (`chr`, chr matrix
+///   row 2) + rotBaseY. Blocked with the full circle, the event's pitch limits stay but around 0;
+/// - the centre's yaw is unwrapped to within pi of +0x240 (`look_ref`), which is the camera's
+///   yaw (+0x174, `cam_yaw`) when first needed and cleared between events;
+/// - each limit chases its target at CameraParam.lockCamParamLerpRate per frame (`rate`, already
+///   a per-frame step), but yaw limits that are not chased are set to the param's at once.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn look_limits_step(
+    look: &mut [f32; 4],
+    look_ref: &mut Option<f32>,
+    event: Option<[f32; 4]>,
+    blocked: bool,
+    centre: Option<(f32, f32)>,
+    chr: (f32, f32),
+    p: LookParams,
+    cam_yaw: f32,
     rate: f32,
-    dt: f32,
-) -> (f32, f32) {
-    // Center on the target: the lock-on chase yaw, and the lock-on pitch to frame it.
-    // gap: the exe's centre is the view along minus row 2 of the dummy's world matrix
-    // (FUN_14073a1e0 -> FUN_1409e6c90; pitch FUN_140733d70 = -atan2(y, xz), yaw FUN_140733fb0
-    // = atan2(x, z)), not the player -> dummy vector used here; whether that row is the FLVER
-    // dummy forward (Wolf's dummy 142 points forward, -Z in model space) is not settled.
-    let center_yaw = f32::atan2(-dir.x, -dir.z);
-    let center_pitch = -f32::atan2(dir.y, dir.x.hypot(dir.z).max(1e-3));
-    let target = [
-        center_pitch + angles[0].to_radians(),
-        center_pitch + angles[1].to_radians(),
-        center_yaw + angles[2].to_radians(),
-        center_yaw + angles[3].to_radians(),
-    ];
-    let step = 1.0 - (1.0 - rate.clamp(0.0, 1.0)).powf(dt * 30.0);
-    // gap: the exe keeps +0x230..+0x23c across the whole session and always chases the param
-    // defaults when no event runs; we start at the target and clear on event end.
-    let cur = look.unwrap_or(target);
-    let mut next = [0.0f32; 4];
-    for i in 0..4 {
-        next[i] = cur[i] + angle_delta(target[i], cur[i]) * step;
+) {
+    use std::f32::consts::{PI, TAU};
+    let mut chase_yaw = false;
+    let (mut c_pitch, mut c_yaw) = (0.0, 0.0);
+    let mut lim = event.unwrap_or([0.0; 4]);
+    let mut target = [p.pitch.0, p.pitch.1, p.yaw.0, p.yaw.1];
+    let full = p.yaw.0 <= -PI && PI <= p.yaw.1;
+    let unwrap = if event.is_none() || blocked {
+        if full {
+            event.is_some()
+        } else {
+            chase_yaw = true;
+            lim = target;
+            (c_pitch, c_yaw) = (chr.0, chr.1 + p.base_y);
+            true
+        }
+    } else {
+        chase_yaw = -PI < lim[2] || lim[3] < PI;
+        if let Some(c) = centre {
+            (c_pitch, c_yaw) = c;
+        }
+        true
+    };
+    if unwrap {
+        let r = *look_ref.get_or_insert(cam_yaw);
+        if (c_yaw + TAU - r).abs() < (c_yaw - r).abs() {
+            c_yaw += TAU;
+        } else if (c_yaw - TAU - r).abs() < (c_yaw - r).abs() {
+            c_yaw -= TAU;
+        }
+        target = [c_pitch + lim[0], c_pitch + lim[1], c_yaw + lim[2], c_yaw + lim[3]];
+    } else {
+        *look_ref = None;
     }
-    *look = Some(next);
-    (clamp_angle(yaw, next[2], next[3]), clamp_angle(pitch, next[0], next[1]))
+    look[0] += (target[0] - look[0]) * rate;
+    look[1] += (target[1] - look[1]) * rate;
+    if chase_yaw {
+        look[2] += (target[2] - look[2]) * rate;
+        look[3] += (target[3] - look[3]) * rate;
+    } else {
+        look[2] = p.yaw.0;
+        look[3] = p.yaw.1;
+    }
+}
+
+/// The free camera's yaw clamp (FUN_14073c260, 14073.c 10339-10378, the exe's convention): the
+/// wrapped yaw is compared with [lo, hi] shifted by a turn when it lies past the midpoint of the
+/// gap outside the range, so a range crossing +-pi still clamps to its nearer end.
+pub(crate) fn clamp_yaw_exe(yaw: f32, lo: f32, hi: f32) -> f32 {
+    use std::f32::consts::TAU;
+    let v = wrap_pi(yaw);
+    let r = if (lo + hi - TAU) * 0.5 <= v {
+        if v <= (lo + TAU + hi) * 0.5 {
+            if v < lo {
+                lo
+            } else if hi < v {
+                hi
+            } else {
+                v
+            }
+        } else if lo + TAU <= v {
+            v.min(hi + TAU)
+        } else {
+            lo + TAU
+        }
+    } else if lo - TAU <= v {
+        v.min(hi - TAU)
+    } else {
+        lo - TAU
+    };
+    wrap_pi(r)
+}
+
+/// The free camera's angles clamped by the look limits (`look_limits_step`; exe FUN_14073c260
+/// after the stick turn: pitch +0x170 plainly into [+0x230, +0x234], yaw +0x174 by
+/// `clamp_yaw_exe` into [+0x238, +0x23c]). `yaw` is ours (`exe_yaw` converts); returns ours,
+/// the yaw untouched when the clamp leaves it where it was.
+pub(crate) fn apply_look_limits(yaw: f32, pitch: f32, look: &[f32; 4]) -> (f32, f32) {
+    let pitch = if pitch < look[0] {
+        look[0]
+    } else if look[1] < pitch {
+        look[1]
+    } else {
+        pitch
+    };
+    let e = exe_yaw(yaw);
+    let c = clamp_yaw_exe(e, look[2], look[3]);
+    (if angle_delta(c, e).abs() < 1e-6 { yaw } else { exe_yaw(c) }, pitch)
+}
+
+/// Our camera yaw to the exe's (+0x174) and back: our map mirrors the game's x (map.md) and our
+/// yaw points from the focus to the camera, the exe's from the camera to the focus, so the exe's
+/// is pi - ours (the conversion is its own inverse).
+pub(crate) fn exe_yaw(yaw: f32) -> f32 {
+    wrap_pi(std::f32::consts::PI - yaw)
+}
+
+/// Which way of our dummy's local Z the exe's view along minus row 2 of the dummy's world
+/// matrix is (TAE 151's centre). Checked on Wolf's dummy 142 against the emulated exe (sim test
+/// `tae_camera_events_match_the_exe`).
+const DUMMY_VIEW: f32 = 1.0;
+
+/// TAE 151's centre for a dummy (FUN_140742230): its view's (pitch, yaw) in the exe's angles
+/// (pitch FUN_140733d70 = -atan2(y, xz), positive looking down as ours; yaw that of a camera
+/// looking along it, `exe_yaw`).
+pub(crate) fn dummy_look(g: &GlobalTransform) -> (f32, f32) {
+    let d = g.rotation() * Vec3::Z * DUMMY_VIEW;
+    (-f32::atan2(d.y, d.xz().length()), exe_yaw(f32::atan2(-d.x, -d.z)))
 }
 
 /// Camera pitch limits [rad] from CameraParam row 0: rotRangeXMin..rotRangeXMax (-40..80 deg),
@@ -817,19 +937,12 @@ pub(crate) fn follow_player(
         orbit.focus = chr_focus(player.translation, orbit.cam.focus_y);
     }
     update_cam_slot(&combat, actor, &mut orbit.cam, dt);
-    // The active CameraParam / LockCamParam rows, blended from the previous slot's.
-    let (pl, pc, _, _) = cam_slot(&combat, orbit.cam.prev_slot);
-    let (nl, nc, _, _) = cam_slot(&combat, orbit.cam.slot);
-    let w = if orbit.cam.blend_len > 0.0 { (orbit.cam.blend_t / orbit.cam.blend_len).clamp(0.0, 1.0) } else { 1.0 };
-    let blended = |table: &str, a: i64, b: i64, k: &str, d: f64| {
-        let get = |row: i64| {
-            let v = combat.param(table, row);
-            if v.is_null() { combat.param(table, 0)[k].as_f64().unwrap_or(d) } else { v[k].as_f64().unwrap_or(d) }
-        };
-        (get(a) + (get(b) - get(a)) * w as f64) as f32
-    };
-    let cf = |k: &str, d: f64| blended("CameraParam", pc, nc, k, d);
-    let lf = |k: &str, d: f64| blended("LockCamParam", pl, nl, k, d);
+    // The CameraParam the camera reads (the slot's row blended from the last switch, `CamBlend`)
+    // and the slot's LockCamParam row (not blended: its values are chased below).
+    let blend = orbit.cam.blend();
+    let lock_row = orbit.cam.lock_row(&combat);
+    let cf = |k: &str, d: f64| blend.get(&combat, k, d);
+    let lf = |k: &str, d: f64| lock_row[k].as_f64().unwrap_or(d) as f32;
     // +0x154 counts down, then +0x150 falls over rotCtrlEndReleaseTime (FUN_14073c260
     // 0x14073e8xx); turning the camera (the right stick / mouse, unlocked) sets it back to 1
     // and +0x154 to rotCtrlEndWaitTime.
@@ -847,11 +960,15 @@ pub(crate) fn follow_player(
     // Lock-on chase (FUN_14073c260): each frame the angle moves diff * rate * (dt / (1/30)),
     // yaw at lockRotChaseRateY (0.3), pitch at lockRotChaseRateX (0.6).
     let step = |rate: f32| (rate * dt * 30.0).min(1.0);
-    update_cam_distance(&combat, actor, &mut orbit.cam, lf("camDistTarget", 4.5), cf("lockCamParamLerpRate", 0.05), dt);
-    // +0x50 FOV and +0x204 focus height chase the LockCamParam row at lockCamParamLerpRate.
-    let lerp = 1.0 - (1.0 - cf("lockCamParamLerpRate", 0.05).clamp(0.0, 1.0)).powf(dt * 30.0);
-    orbit.cam.fov += (lf("camFovY", 43.0).clamp(0.0, 180.0).to_radians() - orbit.cam.fov) * lerp;
-    orbit.cam.focus_y += (lf("chrOrgOffset_Y", 1.5) - orbit.cam.focus_y) * lerp;
+    let lerp_rate = cf("lockCamParamLerpRate", 0.05);
+    update_cam_distance(&combat, actor, &mut orbit.cam, lf("camDistTarget", 4.5), lerp_rate, dt);
+    // +0x50 the FOV chases LockCamParam camFovY at lockCamParamLerpRate per frame; +0x204 the
+    // focus height is CameraParam chrOrgOffsetY moved that share toward LockCamParam
+    // chrOrgOffset_Y, anew each frame (FUN_14073c260, 14073.c 9056-9082). gap: +0x278
+    // (lockRotXShiftRatio, chased the same way) is read straight from the row by the lock-on pitch.
+    orbit.cam.fov += (lf("camFovY", 43.0).clamp(0.0, 180.0).to_radians() - orbit.cam.fov) * per_frame(lerp_rate, dt);
+    let org_y = cf("chrOrgOffsetY", 1.5);
+    orbit.cam.focus_y = org_y + (lf("chrOrgOffset_Y", 1.5) - org_y) * lerp_rate;
     if let Projection::Perspective(pp) = &mut **projection {
         pp.fov = orbit.cam.fov;
     }
@@ -913,50 +1030,72 @@ pub(crate) fn follow_player(
     // CameraParam chrTransChaseRateXZ_ForNormal (0.2) / _Y (0.3). gap: the exe eases its working
     // rates (+0x220 / +0x224) toward the row by dt each frame; the row's are used here.
     let mut rate = Vec3::new(cf("chrTransChaseRateXZ_ForNormal", 0.2), cf("chrTransChaseRateY_ForNormal", 0.3), cf("chrTransChaseRateXZ_ForNormal", 0.2));
-    // TAE 151 CameraLookAtTarget (exe FUN_140b517a0 -> camera singleton +0x3c dummy, +0x40 rate;
-    // FUN_14073c260): the focus chases that DummyPoly on Wolf at min(rate, 1) on every axis
-    // (the normal rates when the rate is <= 0). Big deflects and the deathblow throws use dmy 142.
+    // TAE 151 CameraLookAtTarget (handler FUN_140b517a0 -> camera singleton +0x3c DummyPolyID,
+    // +0x40 unk1, +0x44 unk2, +0x48 unk3, +0x4c.. the limits; FUN_14073c260, 14073.c 9434-9506):
+    // the focus chases that DummyPoly on Wolf at min(unk1, 1) on every axis (the normal rates
+    // when <= 0), unless the cast from Wolf's focus to the dummy hits something: then (camera
+    // +0x1a0, until the event ends) the focus stays on Wolf at the normal rates. After the event
+    // it chases Wolf at unk3 while unk2 seconds count down (FUN_140838b50). Big deflects and the
+    // deathblow throws use dmy 142. gap: the exe's cast (FUN_14094cf90, its own hit filter) is
+    // map::raycast here.
     let mut target_focus = target_focus;
     let look = if actor.anim.is_empty() { None } else { combat.player.events_at(&actor.anim, actor.t).find(|e| e.kind == 151) };
-    // The look limits share the event's DummyPolyID: the four Look*Limit degrees bound the
-    // camera pitch/yaw around the player -> dummy direction (exe FUN_140742230).
-    let mut look_angles: Option<[f32; 4]> = None;
-    let mut look_dir = Vec3::ZERO;
-    if let Some(e) = look {
-        let dmy = e.arg_i64("DummyPolyID").unwrap_or(-1);
-        let pos = dummies.and_then(|d| d.0.get(&(dmy as i16))).and_then(|&m| dummy_tf.get(m).ok()).map(|g| g.translation());
-        if let (true, Some(pos)) = (dmy >= 0, pos) {
-            target_focus = pos;
-            look_dir = pos - player.translation;
+    let look = look.filter(|e| e.arg_i64("DummyPolyID").unwrap_or(-1) >= 0);
+    let (mut look_limits, mut look_centre) = (None, None);
+    match look {
+        Some(e) => {
             let f = |k: &str| e.args.get(k).and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
-            look_angles = Some([f("LookUpLimit"), f("LookDownLimit"), f("LookLeftLimit"), f("LookRightLimit")]);
-            let look_rate = e.args.get("unk1").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
-            if look_rate > 0.0 {
-                rate = Vec3::splat(look_rate.min(1.0));
+            orbit.cam.look_after = (f("unk2"), f("unk3"));
+            look_limits = Some([f("LookUpLimit"), f("LookDownLimit"), f("LookLeftLimit"), f("LookRightLimit")].map(f32::to_radians));
+            let dmy = e.arg_i64("DummyPolyID").unwrap_or(-1) as i16;
+            if let Some(g) = dummies.and_then(|d| d.0.get(&dmy)).and_then(|&m| dummy_tf.get(m).ok()) {
+                look_centre = Some(dummy_look(g));
+                let pos = g.translation();
+                if !orbit.cam.look_blocked {
+                    let v = pos - target_focus;
+                    let len = v.length();
+                    orbit.cam.look_blocked = len > 0.0 && crate::map::raycast(target_focus, v / len, len).is_some();
+                }
+                if !orbit.cam.look_blocked {
+                    target_focus = pos;
+                    let r = f("unk1").min(1.0);
+                    if r > 0.0 {
+                        rate = Vec3::splat(r);
+                    }
+                }
+            }
+        }
+        None => {
+            orbit.cam.look_blocked = false;
+            if orbit.cam.look_after.1 > 0.0 {
+                rate = Vec3::splat(orbit.cam.look_after.1);
             }
         }
     }
-    if let Some(angles) = look_angles {
-        let (yaw, pitch) = apply_look_limits(orbit.yaw, orbit.pitch, &mut orbit.cam.look, look_dir, angles, cf("lockCamParamLerpRate", 0.05), dt);
-        orbit.yaw = yaw;
-        orbit.pitch = pitch;
-    } else if let Some(cur) = orbit.cam.look {
-        // FUN_140742230 without the event: the pitch limits chase back to LockCamParam
-        // rotRangeMinX (degrees) / CameraParam rotRangeXMax at lockCamParamLerpRate; the yaw
-        // limits take rotRangeYMin / Max at once (the full circle: no yaw limit). gap: the 6
-        // CameraParam rows with a +-90 deg yaw range centre it on Wolf's facing + rotBaseY.
-        let lerp = 1.0 - (1.0 - cf("lockCamParamLerpRate", 0.05).clamp(0.0, 1.0)).powf(dt * 30.0);
-        let def = [lf("rotRangeMinX", -40.0).to_radians(), cf("rotRangeXMax", 1.3963)];
-        let next = [cur[0] + angle_delta(def[0], cur[0]) * lerp, cur[1] + angle_delta(def[1], cur[1]) * lerp];
-        orbit.pitch = clamp_angle(orbit.pitch, next[0], next[1]);
-        let back = angle_delta(def[0], next[0]).abs() < 1e-3 && angle_delta(def[1], next[1]).abs() < 1e-3;
-        orbit.cam.look = (!back).then_some([next[0], next[1], -std::f32::consts::PI, std::f32::consts::PI]);
+    // The look limits, every frame (FUN_140742230, `look_limits_step`); they clamp the free
+    // camera after the resync below.
+    let lp = LookParams {
+        pitch: (lf("rotRangeMinX", -40.0).to_radians(), cf("rotRangeXMax", 1.3963)),
+        yaw: (cf("rotRangeYMin", -std::f32::consts::PI as f64), cf("rotRangeYMax", std::f32::consts::PI as f64)),
+        base_y: cf("rotBaseY", 0.0),
+    };
+    {
+        let (cam_yaw, chr_yaw) = (exe_yaw(orbit.yaw), exe_yaw(actor.yaw));
+        let cam = &mut orbit.cam;
+        let look = cam.look.get_or_insert([lp.pitch.0, lp.pitch.1, lp.yaw.0, lp.yaw.1]);
+        // gap: Wolf's chr matrix row 2 is taken as his facing, level (only the 6 CameraParam rows
+        // with a yaw range under the full circle read it; none was run in the emulator).
+        look_limits_step(look, &mut cam.look_ref, look_limits, cam.look_blocked, look_centre, (0.0, chr_yaw), lp, cam_yaw, per_frame(lerp_rate, dt));
     }
     // The exe chases Wolf's position (+0x90) and adds the focus height (+0x204) after.
     let lift = Vec3::Y * orbit.cam.focus_y;
     let start = orbit.focus - lift;
     let chase = orbit.cam.focus_chase.get_or_insert_with(|| FocusChase::at(start));
     orbit.focus = chase.update(target_focus - lift, rate, dt) + lift;
+    orbit.cam.look_after.0 -= dt;
+    if orbit.cam.look_after.0 <= 0.0 {
+        orbit.cam.look_after = (0.0, 0.0);
+    }
     // The fulcrum (camera +0xe0; CameraParam row values, FulcrumParams). +0x194 (14073.c
     // 9305-9397): 0 while the camera is being turned, 1 when the turning stops (held for
     // transChaseByControlEndWaitTime, then falling over transChaseByControlEndReleaseTime), 1
@@ -989,8 +1128,6 @@ pub(crate) fn follow_player(
     let moved = orbit.cam.fulcrum.map_or(Vec3::ZERO, |(_, last)| orbit.focus - last);
     // The resync runs under TAE 151 too (the unlocked branch, 14073.c 9832, has no test for it):
     // Gyoubu's deathblow then swings up over Wolf's shoulder as in the clip (2026-10-17).
-    // gap: where the exe's TAE 151 look limits (FUN_140742230) sit against the resync is not
-    // traced; here they clamp before it.
     if let (Some((f, _)), None) = (orbit.cam.fulcrum, lock.target) {
         // The free camera's yaw from the dragged fulcrum (FUN_140734070 of focus - fulcrum), plus
         // this frame's turning (the exe turns after the resync).
@@ -1006,20 +1143,25 @@ pub(crate) fn follow_player(
             }
         }
     }
+    // The free camera's turned angles go into the look limits (14073.c 10330-10500: the
+    // unlocked branch only, after the resync; TAE 156 below is not clamped).
+    if let (Some(l), None) = (orbit.cam.look, lock.target) {
+        (orbit.yaw, orbit.pitch) = apply_look_limits(orbit.yaw, orbit.pitch, &l);
+    }
     match set_angle {
         Some(e) => {
             let id = (actor.anim.clone(), e.start);
-            if orbit.cam.angle_from.as_ref().is_none_or(|(k, _)| *k != id) {
-                orbit.cam.angle_from = Some((id, (orbit.yaw, orbit.pitch)));
+            if orbit.cam.angle_from.as_ref().is_none_or(|(k, _, _)| *k != id) {
+                orbit.cam.angle_from = Some((id, (orbit.yaw, orbit.pitch), actor.yaw));
             }
-            let from = orbit.cam.angle_from.as_ref().map_or((orbit.yaw, orbit.pitch), |f| f.1);
+            let (from, chr_yaw) = orbit.cam.angle_from.as_ref().map_or(((orbit.yaw, orbit.pitch), actor.yaw), |f| (f.1, f.2));
             let arg = |k: &str| e.arg_i64(k).unwrap_or(0) as f32;
             let on = |k: &str| e.args.get(k).and_then(|v| v.as_bool()).unwrap_or(false);
             let interp = e.args.get("InterpolationType").and_then(|v| v.as_str()).and_then(|s| s.split(':').next()?.trim().parse().ok()).or(e.arg_i64("InterpolationType")).unwrap_or(0);
             let p = (actor.t - e.start) / (e.end - e.start).max(1e-4);
             let (yaw, pitch) = set_camera_angle(
                 from,
-                actor.yaw,
+                chr_yaw,
                 (on("OverrideHorizontal"), arg("HorizontalAngle").to_radians()),
                 (on("OverrideVertical"), arg("VerticalAngle").to_radians()),
                 interp,
@@ -1078,7 +1220,7 @@ pub(crate) fn follow_player(
             dist_y: cf("targetChaseDistRateY", 0.4),
         }
     };
-    // +0x230 / +0x234: the TAE 151 limits while they run, else the defaults they chase back to.
+    // +0x230 / +0x234: the look limits (`look_limits_step`).
     let pitch_lim = orbit.cam.look.map_or((lf("rotRangeMinX", -40.0).to_radians(), cf("rotRangeXMax", 1.3963)), |l| (l[0], l[1]));
     let pos = orbit.cam.pos.map_or(raw, |prev| chase_position(prev, raw, orbit.focus, chase, Some(pitch_lim), orbit.cam.ctrl_snap, dt));
     orbit.cam.pos = Some(pos);
@@ -1113,72 +1255,182 @@ fn fade_player(time: Res<Time>, mut camera: Single<&mut OrbitCamera>, mut wolf: 
 }
 
 /// TAE 155 SetLockParamID (exe FUN_140b51420 -> FUN_140737430: slot 1..45 written every
-/// frame the event runs, reset to 1 after each camera update in FUN_1407374e0). A slot
-/// change blends over the new slot's CameraSetParam beginTime, or the old one's endTime
-/// when going back to slot 1.
+/// frame the event runs, reset to 1 after each camera update in FUN_1407374e0): the slot this
+/// frame asks for.
+fn tae_cam_slot(combat: &Combat, actor: &Actor) -> i64 {
+    if actor.anim.is_empty() {
+        return 1;
+    }
+    combat
+        .player
+        .events_at(&actor.anim, actor.t)
+        .find(|e| e.kind == 155)
+        .and_then(|e| e.arg_i64("LockParamID"))
+        .filter(|&id| id > 0 && id < 0x2e)
+        .unwrap_or(1)
+}
+
 fn update_cam_slot(combat: &Combat, actor: &Actor, cam: &mut CamState, dt: f32) {
-    let want = if actor.anim.is_empty() {
-        1
-    } else {
-        combat
-            .player
-            .events_at(&actor.anim, actor.t)
-            .find(|e| e.kind == 155)
-            .and_then(|e| e.arg_i64("LockParamID"))
-            .filter(|&id| id > 0 && id < 0x2e)
-            .unwrap_or(1)
-    };
+    cam_slot_step(combat, cam, tae_cam_slot(combat, actor), dt);
+}
+
+/// The slot switch of FUN_1407374e0 (CameraSetParam manager DAT_143d59938, before the camera
+/// reads its blended CameraParam): when the slot asked for (`want`) differs from +0x3ec, the
+/// blended CameraParam as it is now is kept (+8 -> +0x1e8, `cam_from`), the blend length +0x3f0
+/// becomes the new slot's CameraSetParam beginTime (the old slot's endTime when going back to
+/// slot 1) and the clock +0x3f4 restarts at 0; the clock then advances by dt while below the
+/// length, clamped to it, before the weight is taken (`CamBlend`). The LockCamParam id (+0x3cc)
+/// is the new slot's at once (no blend: the camera chases its values, follow_player).
+pub(crate) fn cam_slot_step(combat: &Combat, cam: &mut CamState, want: i64, dt: f32) {
     if want != cam.slot {
+        let from = cam.blend().all(combat);
         cam.blend_len = if want == 1 { cam_slot(combat, cam.slot).3 } else { cam_slot(combat, want).2 };
-        cam.prev_slot = cam.slot;
+        cam.cam_from = std::sync::Arc::new(from);
         cam.slot = want;
         cam.blend_t = 0.0;
     }
-    cam.blend_t += dt;
+    if cam.blend_t < cam.blend_len {
+        cam.blend_t = (cam.blend_t + dt).min(cam.blend_len);
+    }
 }
 
-/// TAE 153 CameraModule3 (exe FUN_140b51680 -> FUN_140832810/830/7f0, consumed in
-/// FUN_14073c260; the override block is cleared every frame by FUN_140833e40):
-/// - the target distance is the LockCamParam camDistTarget, chased at
-///   CameraParam.lockCamParamLerpRate, or at the last EndInterpolationSpeed when > 0;
-/// - while an event runs, the target is CamDistTargetOverride, chased at
-///   StartInterpolationSpeed (the param rate when <= 0);
-/// - SlowStart instead eases from the distance at the event's first frame:
-///   from + (target - from) * (1 - (p - 1)^2), p = event progress;
-/// - the distance used then follows that target at 0.1 per frame (+0x214).
-pub(crate) fn update_cam_distance(combat: &Combat, actor: &Actor, cam: &mut CamState, param_dist: f32, param_rate: f32, dt: f32) {
-    let step = |rate: f32| 1.0 - (1.0 - rate.clamp(0.0, 1.0)).powf(dt * 30.0);
-    let ev = if actor.anim.is_empty() { None } else { combat.player.events_at(&actor.anim, actor.t).find(|e| e.kind == 153) };
-    let f = |e: &crate::data::Event, k: &str| e.args.get(k).and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
-    let mut rate = if cam.end_rate > 0.0 { cam.end_rate } else { param_rate };
-    let target;
-    match ev {
-        Some(e) => {
-            let id = (actor.anim.clone(), e.start);
-            let first = cam.last_153.as_ref() != Some(&id);
-            cam.last_153 = Some(id);
-            target = f(e, "CamDistTargetOverride");
-            cam.end_rate = f(e, "EndInterpolationSpeed");
-            let slow_start = e.args.get("SlowStart").and_then(|v| v.as_bool()).unwrap_or(false);
-            if slow_start {
-                if first {
-                    cam.dist_from = cam.dist_raw;
-                }
-                let p = ((actor.t - e.start) / (e.end - e.start).max(1e-4)).min(1.0);
-                cam.dist_raw = cam.dist_from + (target - cam.dist_from) * (1.0 - (p - 1.0) * (p - 1.0));
-            } else {
-                let start_rate = f(e, "StartInterpolationSpeed");
-                rate = if start_rate > 0.0 { start_rate } else { param_rate };
-                cam.dist_raw += (target - cam.dist_raw) * step(rate);
-            }
-        }
-        None => {
-            cam.last_153 = None;
-            target = param_dist;
-            cam.dist_raw += (target - cam.dist_raw) * step(rate);
-        }
+/// The CameraParam the camera reads this frame (CameraSetParam manager +8): the slot's
+/// camParamId row blended from `from` (+0x1e8) by FUN_1407381d0 at p = clock / length
+/// (1 for a length under 1.2e-7).
+#[derive(Clone)]
+pub(crate) struct CamBlend {
+    slot: i64,
+    p: f32,
+    from: std::sync::Arc<std::collections::HashMap<String, f32>>,
+}
+
+/// A param value as a number (the export keeps the b32 flags as booleans).
+fn param_num(v: &serde_json::Value) -> Option<f32> {
+    v.as_f64().map(|x| x as f32).or_else(|| v.as_bool().map(|b| b as u8 as f32))
+}
+
+/// FUN_1407381d0 for one CameraParam field: at p <= 1.2e-7 the whole row is `from`; otherwise
+/// w = 1 - (p - 1)^2 and each field is (1 - w) * from + w * to, but the three isEnable* flags
+/// are rounded ((int)(... + 0.5)) and rotBaseY / resetBaseY take the new row's value.
+pub(crate) fn blend_field(k: &str, from: Option<f32>, to: f32, p: f32) -> f32 {
+    let Some(from) = from else { return to };
+    if p <= 1.192_092_9e-7 {
+        return from;
     }
-    cam.dist += (cam.dist_raw - cam.dist) * step(0.1);
+    let w = 1.0 - (p - 1.0) * (p - 1.0);
+    match k {
+        "rotBaseY" | "resetBaseY" => to,
+        _ if k.starts_with("isEnable") => ((1.0 - w) * from.trunc() + w * to.trunc() + 0.5).trunc(),
+        _ => (1.0 - w) * from + w * to,
+    }
+}
+
+impl CamBlend {
+    fn row<'a>(&self, combat: &'a Combat) -> &'a serde_json::Value {
+        let r = combat.param("CameraParam", cam_slot(combat, self.slot).1);
+        if r.is_null() { combat.param("CameraParam", 0) } else { r }
+    }
+
+    pub(crate) fn get(&self, combat: &Combat, k: &str, d: f64) -> f32 {
+        let to = param_num(&self.row(combat)[k]).unwrap_or(d as f32);
+        blend_field(k, self.from.get(k).copied(), to, self.p)
+    }
+
+    /// Every field, for the next switch's `from`.
+    fn all(&self, combat: &Combat) -> std::collections::HashMap<String, f32> {
+        let row = self.row(combat).as_object().into_iter().flatten();
+        row.filter_map(|(k, v)| Some((k.clone(), blend_field(k, self.from.get(k).copied(), param_num(v)?, self.p)))).collect()
+    }
+}
+
+impl CamState {
+    pub(crate) fn blend(&self) -> CamBlend {
+        let p = if self.blend_len > 1.192_092_9e-7 { (self.blend_t / self.blend_len).clamp(0.0, 1.0) } else { 1.0 };
+        CamBlend { slot: self.slot, p, from: self.cam_from.clone() }
+    }
+
+    /// The LockCamParam row of the slot (+0x3cc; row 0 when missing).
+    pub(crate) fn lock_row<'a>(&self, combat: &'a Combat) -> &'a serde_json::Value {
+        let r = combat.param("LockCamParam", cam_slot(combat, self.slot).0);
+        if r.is_null() { combat.param("LockCamParam", 0) } else { r }
+    }
+}
+
+/// TAE 153 CameraModule3 as its handler (FUN_140b51680 -> FUN_140832810 / 830 / 7f0) leaves the
+/// camera singleton DAT_143d5c0d0 this frame: +0x70 CamDistTargetOverride (`target`; < 0 =
+/// none), +0x74 StartInterpolationSpeed, +0x78 the event's progress p and +0x84 its first frame
+/// (SlowStart only), +0x7c TransitionKeyframe and +0x80 EndInterpolationSpeed.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct DistEvent {
+    pub target: f32,
+    pub start_rate: f32,
+    pub slow: Option<(f32, bool)>,
+    pub transition: f32,
+    pub end_rate: f32,
+}
+
+/// The camera distance one frame on (FUN_14073c260, 14073.c 9083-9107; per-frame rates, ported
+/// with `per_frame`):
+/// - target LockCamParam camDistTarget (`param_dist`) at CameraParam.lockCamParamLerpRate
+///   (`param_rate`), or at EndInterpolationSpeed while its TransitionKeyframe time lasts
+///   (singleton +0x80 / +0x7c: set each frame of the event, counted down by dt after the camera
+///   and cleared together at 0 by FUN_140838b50);
+/// - a 153 override (>= 0) is the target instead, at StartInterpolationSpeed (the param rate
+///   when <= 0);
+/// - SlowStart: from + (target - from) * (1 - (p - 1)^2), `from` (+0x21c) the distance at the
+///   event's first frame.
+/// The distance used (+0x214) is set to this one (+0x218) each frame (14073.c 9751): no smoothing.
+pub(crate) fn cam_distance_step(cam: &mut CamState, ev: Option<DistEvent>, param_dist: f32, param_rate: f32, dt: f32) {
+    if let Some(e) = ev {
+        cam.end_time = e.transition;
+        cam.end_rate = e.end_rate;
+    }
+    let mut target = param_dist;
+    let mut rate = if cam.end_rate > 0.0 { cam.end_rate } else { param_rate };
+    if let Some(e) = ev.filter(|e| e.target >= 0.0) {
+        target = e.target;
+        rate = if e.start_rate > 0.0 { e.start_rate } else { param_rate };
+    }
+    match ev.and_then(|e| e.slow) {
+        Some((p, first)) => {
+            if first {
+                cam.dist_from = cam.dist_raw;
+            }
+            cam.dist_raw = cam.dist_from + (target - cam.dist_from) * (1.0 - (p - 1.0) * (p - 1.0));
+        }
+        None => cam.dist_raw += (target - cam.dist_raw) * per_frame(rate, dt),
+    }
+    cam.dist = cam.dist_raw;
+    cam.end_time -= dt;
+    if cam.end_time <= 0.0 {
+        cam.end_time = 0.0;
+        cam.end_rate = 0.0;
+    }
+}
+
+/// `cam_distance_step` with Wolf's TAE 153 at his animation time. gap: SlowEnd (+0x85) is
+/// written by the handler but its reader (14073.c 12527) is not traced.
+pub(crate) fn update_cam_distance(combat: &Combat, actor: &Actor, cam: &mut CamState, param_dist: f32, param_rate: f32, dt: f32) {
+    let ev = if actor.anim.is_empty() { None } else { combat.player.events_at(&actor.anim, actor.t).find(|e| e.kind == 153) };
+    let ev = ev.map(|e| {
+        let f = |k: &str| e.args.get(k).and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
+        let id = (actor.anim.clone(), e.start);
+        let first = cam.last_153.as_ref() != Some(&id);
+        cam.last_153 = Some(id);
+        let slow = e.args.get("SlowStart").and_then(|v| v.as_bool()).unwrap_or(false);
+        let p = ((actor.t - e.start) / (e.end - e.start).max(1e-4)).clamp(0.0, 1.0);
+        DistEvent {
+            target: f("CamDistTargetOverride"),
+            start_rate: if slow { 0.0 } else { f("StartInterpolationSpeed") },
+            slow: slow.then_some((p, first)),
+            transition: f("TransitionKeyframe"),
+            end_rate: f("EndInterpolationSpeed"),
+        }
+    });
+    if ev.is_none() {
+        cam.last_153 = None;
+    }
+    cam_distance_step(cam, ev, param_dist, param_rate, dt);
 }
 
 /// Active camera shakes: (RumbleCam id, time, gain).
