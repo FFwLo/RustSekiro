@@ -33,6 +33,12 @@ pub fn extracted() -> PathBuf {
     root().join("extracted")
 }
 
+/// The emulator's case files (tools/emu-cases): `SHINOBI_EMU` when set (`tools/row.py verify` points it at
+/// cases it has just made, so a check never reads or touches yours), else `extracted/emu`.
+pub fn emu() -> PathBuf {
+    std::env::var_os("SHINOBI_EMU").map(PathBuf::from).unwrap_or_else(|| extracted().join("emu"))
+}
+
 /// The Sekiro install (for its FMOD runtime): `SEKIRO_DIR`, else the folder tools/extract.ps1
 /// recorded in extracted/sekiro_dir.txt, else the default Steam location.
 pub fn sekiro_dir() -> String {

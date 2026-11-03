@@ -15,7 +15,7 @@ use crate::player::{stick_world, yaw_of, Turn};
 /// +1 the world's -X: our (-side, forward). Skipped when extracted/emu/turn_frames.json is missing.
 #[test]
 pub(crate) fn wolf_turn_matches_the_exe() {
-    let path = crate::paths::root().join("extracted/emu/turn_frames.json");
+    let path = crate::paths::emu().join("turn_frames.json");
     let Ok(text) = std::fs::read_to_string(&path) else { return };
     let v: serde_json::Value = serde_json::from_str(&text).unwrap();
     let scenarios = v["scenarios"].as_array().unwrap();

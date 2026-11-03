@@ -14,7 +14,7 @@ use crate::stealth::{in_cone_shape, Cone, Seen};
 /// extracted/emu/aicpp_sight.json is missing.
 #[test]
 pub(crate) fn sight_cones_match_the_exe() {
-    let Ok(text) = std::fs::read_to_string(crate::paths::extracted().join("emu/aicpp_sight.json")) else { return };
+    let Ok(text) = std::fs::read_to_string(crate::paths::emu().join("aicpp_sight.json")) else { return };
     let v: serde_json::Value = serde_json::from_str(&text).unwrap();
     let params: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(crate::paths::extracted().join("json/params/NpcThinkParam.json")).unwrap()).unwrap();
@@ -55,7 +55,7 @@ pub(crate) fn sight_cones_match_the_exe() {
 /// target (TARGET_ENE_0 in the snapshot) every query reads -1 and IsInsideTarget false.
 #[test]
 pub(crate) fn ai_distance_queries_match_the_exe() {
-    let Ok(text) = std::fs::read_to_string(crate::paths::extracted().join("emu/aicpp_query.json")) else { return };
+    let Ok(text) = std::fs::read_to_string(crate::paths::emu().join("aicpp_query.json")) else { return };
     let v: serde_json::Value = serde_json::from_str(&text).unwrap();
     let f = |v: &serde_json::Value| v.as_f64().unwrap() as f32;
     let mirror = |v: &serde_json::Value| Vec3::new(-f(&v[0]), f(&v[1]), f(&v[2]));

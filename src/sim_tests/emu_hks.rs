@@ -12,7 +12,7 @@ const KNOWN: &[(i32, i64, &str)] = &[];
 /// (one handler field written, the id run again) all moved the answer as the doc comments say.
 #[test]
 pub(crate) fn hks_env_matches_the_exe() {
-    let path = crate::paths::root().join("extracted/emu/hks_env.json");
+    let path = crate::paths::emu().join("hks_env.json");
     let Ok(text) = std::fs::read_to_string(&path) else { return };
     let v: serde_json::Value = serde_json::from_str(&text).unwrap();
 

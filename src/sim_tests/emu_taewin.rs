@@ -13,7 +13,7 @@ use crate::tae_window::{dispatch, starts};
 /// wherever the clock does not wrap. Skipped when extracted/emu/taewin_cases.json is missing.
 #[test]
 pub(crate) fn tae_window_matches_the_exe() {
-    let path = crate::paths::root().join("extracted/emu/taewin_cases.json");
+    let path = crate::paths::emu().join("taewin_cases.json");
     let Ok(text) = std::fs::read_to_string(&path) else { return };
     let v: serde_json::Value = serde_json::from_str(&text).unwrap();
     let f = |x: &serde_json::Value| x.as_f64().unwrap() as f32;

@@ -13,7 +13,7 @@ use crate::player::{air_frame, air_step, fall_hp_loss, LAUNCH_TIME};
 type Json = serde_json::Value;
 
 fn load(name: &str) -> Option<Json> {
-    let text = std::fs::read_to_string(crate::paths::root().join("extracted/emu").join(name)).ok()?;
+    let text = std::fs::read_to_string(crate::paths::emu().join(name)).ok()?;
     Some(serde_json::from_str(&text).unwrap())
 }
 

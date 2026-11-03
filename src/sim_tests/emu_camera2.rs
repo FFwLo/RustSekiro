@@ -21,7 +21,7 @@ pub(crate) fn camera_escape_wall_pull_in_and_lock_at_walls_match_the_exe() {
     use crate::camera::*;
     use std::cell::Cell;
     use std::f32::consts::{PI, TAU};
-    let path = crate::paths::root().join("extracted/emu/camera2_walls.json");
+    let path = crate::paths::emu().join("camera2_walls.json");
     let Ok(text) = std::fs::read_to_string(&path) else { return };
     let v: serde_json::Value = serde_json::from_str(&text).unwrap();
     let mut app = app();
@@ -239,7 +239,7 @@ pub(crate) fn camera_escape_wall_pull_in_and_lock_at_walls_match_the_exe() {
 pub(crate) fn lock_manipulator_matches_the_exe() {
     use crate::actor::{wrap_angle, ShownYaw};
     use crate::player::{stick_world, yaw_of, Turn};
-    let path = crate::paths::root().join("extracted/emu/camera2_manip.json");
+    let path = crate::paths::emu().join("camera2_manip.json");
     let Ok(text) = std::fs::read_to_string(&path) else { return };
     let v: serde_json::Value = serde_json::from_str(&text).unwrap();
     let mut worst: std::collections::BTreeMap<&str, (f32, String)> = Default::default();

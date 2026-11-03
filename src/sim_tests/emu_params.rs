@@ -19,7 +19,7 @@ struct Exe {
 
 impl Exe {
     fn load() -> Option<Exe> {
-        let path = crate::paths::extracted().join("emu/params_rows.json");
+        let path = crate::paths::emu().join("params_rows.json");
         let v: Value = serde_json::from_str(&std::fs::read_to_string(path).ok()?).unwrap();
         let mut tables = HashMap::new();
         for (name, t) in v["tables"].as_object().unwrap() {

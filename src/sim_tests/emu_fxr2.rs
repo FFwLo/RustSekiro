@@ -11,7 +11,7 @@ use bevy::prelude::Vec3;
 use serde_json::Value;
 
 fn emu_json(name: &str) -> Option<Value> {
-    let text = std::fs::read_to_string(crate::paths::root().join(format!("extracted/emu/{name}.json"))).ok()?;
+    let text = std::fs::read_to_string(crate::paths::emu().join(format!("{name}.json"))).ok()?;
     serde_json::from_str(&text).ok()
 }
 

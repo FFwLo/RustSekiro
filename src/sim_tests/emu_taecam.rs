@@ -50,7 +50,7 @@ fn camera_param_fields() -> Vec<(usize, String, String)> {
 pub(crate) fn tae_camera_events_match_the_exe() {
     use crate::camera::*;
     use std::f32::consts::{PI, TAU};
-    let path = crate::paths::root().join("extracted/emu/taecam_frames.json");
+    let path = crate::paths::emu().join("taecam_frames.json");
     let Ok(text) = std::fs::read_to_string(&path) else { return };
     let v: serde_json::Value = serde_json::from_str(&text).unwrap();
     // Our dummy 142 on Wolf standing still, with the real geometry (checked against the exe's at

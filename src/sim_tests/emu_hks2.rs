@@ -16,7 +16,7 @@ fn fields(idle: &serde_json::Value) -> HashMap<String, f64> {
 /// same from the ported rule (`HksEnv::env` on the same fields): 47 ids, 223 poses.
 #[test]
 pub(crate) fn hks_env_poses_match_the_exe() {
-    let path = crate::paths::root().join("extracted/emu/hks2_env.json");
+    let path = crate::paths::emu().join("hks2_env.json");
     let Ok(text) = std::fs::read_to_string(&path) else { return };
     let v: serde_json::Value = serde_json::from_str(&text).unwrap();
     let mut idle = fields(&v["idle"]);
@@ -58,7 +58,7 @@ const ACT_GAPS: &[(i64, &str, &str)] = &[
 /// AddSpEffect is seen by GetSpEffectID after it.
 #[test]
 pub(crate) fn hks_act_matches_the_exe() {
-    let root = crate::paths::root().join("extracted/emu");
+    let root = crate::paths::emu();
     let (Ok(env_text), Ok(text)) = (std::fs::read_to_string(root.join("hks2_env.json")), std::fs::read_to_string(root.join("hks2_act.json"))) else { return };
     let idle = fields(&serde_json::from_str::<serde_json::Value>(&env_text).unwrap()["idle"]);
     let v: serde_json::Value = serde_json::from_str(&text).unwrap();
@@ -118,7 +118,7 @@ pub(crate) fn move_stick_switches_match_the_exe() {
     use crate::actor::wrap_angle;
     use crate::player::{stick_world, yaw_of, Turn};
     use bevy::prelude::*;
-    let path = crate::paths::root().join("extracted/emu/hks2_move.json");
+    let path = crate::paths::emu().join("hks2_move.json");
     let Ok(text) = std::fs::read_to_string(&path) else { return };
     let v: serde_json::Value = serde_json::from_str(&text).unwrap();
     // The switches as the game ships them (the snapshot): hold off, bit 18 gated off.

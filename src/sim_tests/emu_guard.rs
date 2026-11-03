@@ -12,7 +12,7 @@
 #[test]
 pub(crate) fn guard_resolution_matches_the_exe() {
     use crate::combat::{attack_flick, guard_flick, guard_verdict, Verdict};
-    let path = crate::paths::root().join("extracted/emu/guard_resolution.json");
+    let path = crate::paths::emu().join("guard_resolution.json");
     let Ok(text) = std::fs::read_to_string(&path) else { return };
     let v: serde_json::Value = serde_json::from_str(&text).unwrap();
     let cases = v["cases"].as_array().unwrap();

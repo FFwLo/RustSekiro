@@ -3,7 +3,7 @@
 use serde_json::Value;
 
 fn load(name: &str) -> Option<Value> {
-    let path = crate::paths::root().join("extracted/emu").join(name);
+    let path = crate::paths::emu().join(name);
     let text = std::fs::read_to_string(path).ok()?;
     Some(serde_json::from_str(&text).unwrap())
 }

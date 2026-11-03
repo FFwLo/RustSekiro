@@ -11,7 +11,7 @@ use super::*;
 /// is missing.
 #[test]
 pub(crate) fn throw_range_matches_the_exe() {
-    let path = crate::paths::root().join("extracted/emu/throw_ranges.json");
+    let path = crate::paths::emu().join("throw_ranges.json");
     let Ok(text) = std::fs::read_to_string(&path) else { return };
     let v: serde_json::Value = serde_json::from_str(&text).unwrap();
     let cases = v["cases"].as_array().unwrap();
@@ -68,7 +68,7 @@ pub(crate) fn a_deflect_empties_posture_without_a_break() {
 /// the main throws) pass only out of their start throw, never here.
 #[test]
 pub(crate) fn throwable_states_match_the_exe() {
-    let path = crate::paths::root().join("extracted/emu/throw_kinds.json");
+    let path = crate::paths::emu().join("throw_kinds.json");
     let Ok(text) = std::fs::read_to_string(&path) else { return };
     let v: serde_json::Value = serde_json::from_str(&text).unwrap();
     let pairs: Vec<(u8, i64)> = v["table"].as_array().unwrap().iter().map(|p| (p[0].as_u64().unwrap() as u8, p[1].as_i64().unwrap())).collect();

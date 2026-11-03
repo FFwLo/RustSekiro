@@ -18,7 +18,7 @@ use crate::stealth::{in_cone_shape, in_nose, Cone, Seen, Targeting};
 /// extracted/emu/aiframe_targeting.json is missing.
 #[test]
 pub(crate) fn targeting_frames_match_the_exe() {
-    let Ok(text) = std::fs::read_to_string(crate::paths::extracted().join("emu/aiframe_targeting.json")) else { return };
+    let Ok(text) = std::fs::read_to_string(crate::paths::emu().join("aiframe_targeting.json")) else { return };
     let v: serde_json::Value = serde_json::from_str(&text).unwrap();
     let params: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(crate::paths::extracted().join("json/params/NpcThinkParam.json")).unwrap()).unwrap();
@@ -104,7 +104,7 @@ pub(crate) fn targeting_frames_match_the_exe() {
 /// +0xa0 = Wolf's feet + 1.5).
 #[test]
 pub(crate) fn nose_sphere_matches_the_exe() {
-    let Ok(text) = std::fs::read_to_string(crate::paths::extracted().join("emu/aiframe_ray.json")) else { return };
+    let Ok(text) = std::fs::read_to_string(crate::paths::emu().join("aiframe_ray.json")) else { return };
     let v: serde_json::Value = serde_json::from_str(&text).unwrap();
     let f = |v: &serde_json::Value| v.as_f64().unwrap() as f32;
     let mirror = |v: &serde_json::Value| Vec3::new(-f(&v[0]), f(&v[1]), f(&v[2]));

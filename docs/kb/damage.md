@@ -180,8 +180,8 @@ Dated findings, oldest first. Append new entries at the end.
 - 2026-10-08 the "odd" live hits are explained, no hidden mechanic: -400 / -220 = HP capped at death (Wolf at 0);
   -360 / -89 = normal 300 / 67 + a second contact 60 / 22 in the same tick; -180 / -45 = a smaller attack
   (atkPhys 48 / atkStam 12 equivalent) seen in many states - rec_attacks.py took the first of two active attack
-  events (tool ambiguity). Step / hit-reaction damage is NOT scaled. Remaining real gap: guard x0.74 (hook
-  script tools/memscope/posture_hook.lua ready: run while deflecting).
+  events (tool ambiguity). Step / hit-reaction damage is NOT scaled. Remaining real gap: guard x0.74 (inline
+  hooks crash this game: measure it from per-frame reads while deflecting).
 - 2026-10-08 scalings explained from data: enemy k = 3.75 = area SpEffect 7124 / 7820 "Growth Doping: Samurai
   Residence (Truth)" (physicsAttackPowerRate 3.75, staminaAttackRate 3.75, maxHpRate 4.25/4.4). Wolf's attack x4.35
   = "Player Growth_Core Level N" SpEffect 160000+N (Attack Power; level 15 = 4.35: physics/stamina/

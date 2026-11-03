@@ -9,7 +9,7 @@ use serde_json::Value;
 const DT: f32 = 1.0 / 60.0;
 
 fn load(name: &str) -> Option<Value> {
-    let path = crate::paths::extracted().join("emu").join(format!("hits_{name}.json"));
+    let path = crate::paths::emu().join(format!("hits_{name}.json"));
     let text = std::fs::read_to_string(path).ok()?;
     Some(serde_json::from_str(&text).unwrap())
 }

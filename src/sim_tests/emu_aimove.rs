@@ -9,7 +9,7 @@ use crate::stealth::SearchRing;
 /// extracted/emu/aimove_sched.json is missing.
 #[test]
 fn search_ring_matches_the_exe() {
-    let Ok(text) = std::fs::read_to_string(crate::paths::extracted().join("emu/aimove_sched.json")) else { return };
+    let Ok(text) = std::fs::read_to_string(crate::paths::emu().join("aimove_sched.json")) else { return };
     let v: serde_json::Value = serde_json::from_str(&text).unwrap();
     assert_eq!(v["snapshot"]["cap"][0].as_u64(), Some(3), "the snapshot's cap");
     let mut n = 0;
@@ -53,7 +53,7 @@ fn search_ring_stretches_only_crowded_frames() {
 /// The aimove frame runs (tools/emu-cases `aimove`: whole world frames, the General's AI on,
 /// Wolf 3-16 m away in front, beside, behind, walking off; the forced attack 3000), or None.
 fn frame_runs() -> Option<Vec<serde_json::Value>> {
-    let files = std::fs::read_dir(crate::paths::extracted().join("emu")).ok()?;
+    let files = std::fs::read_dir(crate::paths::emu()).ok()?;
     let mut runs: Vec<serde_json::Value> = Vec::new();
     for f in files.flatten() {
         let n = f.file_name().to_string_lossy().to_string();

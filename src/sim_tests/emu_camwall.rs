@@ -18,7 +18,7 @@ const FINAL_CAST: &str = "0x1407412b9";
 pub(crate) fn follow_camera_at_walls_matches_the_exe() {
     use crate::camera::*;
     use std::f32::consts::{PI, TAU};
-    let path = crate::paths::root().join("extracted/emu/camwall_frames.json");
+    let path = crate::paths::emu().join("camwall_frames.json");
     let Ok(text) = std::fs::read_to_string(&path) else { return };
     let v: serde_json::Value = serde_json::from_str(&text).unwrap();
     let mut app = app();

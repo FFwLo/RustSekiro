@@ -19,5 +19,5 @@ The standalone version that also takes a snapshot is `tools/emu-cases` `scene`.
 
 Scripts for each check are added here as `<check>.lua` once written and tested against the live game.
 
-WARNING (2026-10-08): inline hooks on FUN_1408439a0 crash sekiro.exe on the first call (posture_hook.lua). Use per-frame reads only.
-WARNING (2026-10-08): the PRE hook on FUN_140840870 (guardcut_hook.lua) also crashed sekiro.exe. memscope inline hooks are not usable on this game: per-frame reads only.
+WARNING (2026-10-08): inline hooks on FUN_1408439a0 crash sekiro.exe on the first call. Use per-frame reads only.
+WARNING (2026-10-08): the PRE hook on FUN_140840870 also crashed sekiro.exe. memscope inline hooks are not usable on this game: per-frame reads only.

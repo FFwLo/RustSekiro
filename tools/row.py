@@ -5,9 +5,13 @@
                                            # claim the row, make your worktree and test root, show what to read
   python tools/row.py check [<filter>]     # in your worktree: the guard, then the tests (all, or the filter);
                                            # a full run is remembered for submit
-  python tools/row.py submit "<one line>" [--part] [--dry]
+  python tools/row.py submit "<one line>" [--part] [--emu "<emu-cases command>" | --why "<reason>"] [--dry]
                                            # push to your fork and open the pull request, filled in
-                                           # (--dry prints it and changes nothing)
+                                           # (--dry prints it and changes nothing; E rows need --emu)
+  python tools/row.py verify <PR number> [--snapshot <dir>] [--dry]
+                                           # re-make an E row's emulator cases from YOUR exe, run its tests on
+                                           # them and say so on the pull request (it runs the PR's code: read
+                                           # the diff first)
   python tools/row.py drop <ID>            # give the row back and remove your worktree
 
 Your agent name (a short bird or animal word) is asked once and kept in git config `rsekiro.agent`.
@@ -17,6 +21,7 @@ Done by itself when the owner merges it. Rules: AGENTS.md on the board branch.
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -160,7 +165,26 @@ def check(filt):
     print(f"remembered for submit (commit {sha[:7]})")
 
 
-def submit(line, part, dry):
+def proof(top, rid, emu, why):
+    """An E row's value is trusted only when someone else can re-make it: the emulator command that made the cases,
+    a case generator under tools/emu-cases/src/ and a `_matches_the_exe` test in the diff."""
+    if not rid.startswith("E"):
+        return ""
+    if why:
+        return f"Emulator: none ({why})"
+    if not emu or not re.match(r"^\S*emu-cases(\.exe)?\s", emu.strip() + " "):
+        sys.exit('an E row needs --emu "emu-cases <sekiro.exe> <out dir> [--snapshot <dir>] <names>" '
+                 '(the command that made your cases), or --why "<reason>" when it has no emulator check')
+    files = git("diff", "--name-only", f"{remote()}/main...HEAD", cwd=top).splitlines()
+    gen = [f for f in files if f.startswith("tools/emu-cases/src/") and not f.endswith("main.rs")]
+    diff = git("diff", f"{remote()}/main...HEAD", "--", "src", "crates", cwd=top)
+    if not gen or not re.search(r"^\+.*fn \w*_matches_the_exe", diff, re.M):
+        sys.exit("an E row's diff needs its case generator (tools/emu-cases/src/<topic>.rs) and a test named "
+                 '`..._matches_the_exe`, so a reviewer can re-make the cases; else --why "<reason>"')
+    return "Emulator: `" + re.sub(r"^\S*emu-cases(\.exe)?", "emu-cases", emu.strip()) + "`"
+
+
+def submit(line, part, dry, emu=None, why=None):
     top, branch, rid = here()
     if not rid:
         sys.exit(f"branch {branch} is not a row branch (work-<ID>-...): start the row with row.py start")
@@ -175,7 +199,8 @@ def submit(line, part, dry):
     login, r = me(), remote()
     base = f"{r}/main"
     git("fetch", "-q", r, "main")
-    commits = git("log", "--format=- %s", f"{base}..HEAD", cwd=top)
+    emu_line = proof(top, rid, emu, why)
+    commits =git("log", "--format=- %s", f"{base}..HEAD", cwd=top)
     if not dry:
         git("push", "-q", "-u", "origin", f"HEAD:refs/heads/{branch}", cwd=top)
         exists = run(["gh", "pr", "list", "--repo", REPO, "--head", branch, "--json", "url", "--jq", ".[0].url"],
@@ -194,13 +219,15 @@ def submit(line, part, dry):
 ## Board
 
 Board: {rid} {kind}: {line}
+{emu_line}
 
 ## How it was checked
 
 - [x] `row.py check` at {rec['sha'][:7]}, full suite {data}: `{rec['result']}`
 - [x] `python tools/guard.py push` passed
 - [ ] New behaviour has a sim test; a unit test that reads game data carries `cfg_attr(not(shinobi_data), ignore)`
-- [ ] For an E row: the emulator run (functions, case count) and the kb / emulator-pilot.md notes
+- [ ] For an E row: the emulator run (functions, case count) and the kb / emulator-pilot.md notes; it counts as
+      checked once someone else runs `python tools/row.py verify <this PR>` on their own copy
 - [ ] The kb note says what is still not covered (`gap:`)
 
 ## Rules
@@ -220,6 +247,85 @@ Board: {rid} {kind}: {line}
     print(f"pull request: {url}\ntick the open boxes on it; the owner reviews and merges, and the board follows.")
 
 
+def main_checkout():
+    return os.path.dirname(os.path.normpath(git("rev-parse", "--path-format=absolute", "--git-common-dir")))
+
+
+def exe_path():
+    """Your own sekiro.exe: SEKIRO_EXE, else the main checkout's image/sekiro.exe, else the Steam install's."""
+    steam = os.environ.get("SEKIRO_DIR", r"C:\Program Files (x86)\Steam\steamapps\common\Sekiro")
+    for p in (os.environ.get("SEKIRO_EXE"), os.path.join(main_checkout(), "image", "sekiro.exe"),
+              os.path.join(steam, "sekiro.exe")):
+        if p and os.path.isfile(p):
+            return p
+    sys.exit("no sekiro.exe found: set SEKIRO_EXE to your copy")
+
+
+def verify(n, snapshot, dry):
+    pr = json.loads(run(["gh", "pr", "view", str(n), "--repo", REPO, "--json", "body,headRefOid,author"]))
+    if pr["author"]["login"] == me():
+        sys.exit("verify someone else's pull request: your own cases prove nothing new")
+    m = re.search(r"^Emulator:\s*`emu-cases\s+(.+?)`", pr["body"] or "", re.M)
+    if not m:
+        sys.exit(f"#{n} has no Emulator: `emu-cases ...` line: nothing to re-make")
+    words = m.group(1).split()
+    if "--snapshot" in words:
+        i = words.index("--snapshot")
+        del words[i:i + 2]
+        if not snapshot:
+            sys.exit("its cases come from a snapshot of the game's memory: make your own "
+                     "(emu-cases snapshot <pid> <dir>) and pass --snapshot <dir>")
+    names = words[2:]  # after the PR's own <exe> <out dir>
+    diff = run(["gh", "pr", "diff", str(n), "--repo", REPO])
+    tests = sorted(set(re.findall(r"^\+.*fn (\w+_matches_the_exe)", diff, re.M)))
+    if not tests:
+        sys.exit(f"#{n} adds no `..._matches_the_exe` test: nothing to run on the cases")
+    sha, exe = pr["headRefOid"], exe_path()
+    path = os.path.join(os.path.expanduser("~"), f"rsekiro-verify-{n}")
+    print(f"#{n} at {sha[:7]}: emu-cases {' '.join(names)}; tests {', '.join(tests)}")
+    print(f"this builds and runs the pull request's code on your PC: read it first (gh pr diff {n} --repo {REPO})")
+    if dry:
+        print(f"(dry run: would check it out in {path}, make the cases from {exe}, run the tests, comment)")
+        return
+    git("fetch", "-q", remote(), f"pull/{n}/head")
+    if os.path.isdir(path):
+        git("worktree", "remove", "--force", path, check=False)
+    git("worktree", "add", "-q", "--detach", path, sha)
+    try:
+        tool = os.path.join(path, "tools", "emu-cases")
+        run(["cargo", "build", "--release", "--manifest-path", os.path.join(tool, "Cargo.toml")], cwd=path)
+        built = os.path.join(tool, "target", "release")
+        dll = os.path.join(main_checkout(), "tools", "emu-cases", "target", "release", "unicorn.dll")
+        if not os.path.isfile(os.path.join(built, "unicorn.dll")) and os.path.isfile(dll):
+            shutil.copy2(dll, built)
+        out = os.path.join(path, "verify-cases")  # fresh: SHINOBI_EMU points the tests here, not at your own cases
+        cmd = [os.path.join(built, "emu-cases.exe"), exe, out] + (["--snapshot", snapshot] if snapshot else []) + names
+        r = subprocess.run(cmd, cwd=path, capture_output=True, text=True, encoding="utf-8", errors="replace")
+        made = sorted(f for f in os.listdir(out) if f.endswith(".json")) if os.path.isdir(out) else []
+        if r.returncode or not made:
+            sys.exit(f"emu-cases made no cases (exit {r.returncode}): {(r.stderr or r.stdout)[-600:]}")
+        print(f"made {len(made)} case files from your exe")
+        env = dict(os.environ, SHINOBI_EMU=out, SHINOBI_ROOT=os.environ.get("SHINOBI_ROOT", main_checkout()))
+        passed, failed = 0, []
+        for t in tests:
+            r = subprocess.run(["cargo", "test", "--profile", "quick", t], cwd=path, env=env, capture_output=True,
+                               text=True, encoding="utf-8", errors="replace")
+            ok = [int(x) for x in re.findall(r"test result: ok\. (\d+) passed", r.stdout)]
+            if r.returncode or not sum(ok):
+                failed.append(t)
+            passed += sum(ok)
+        what = f"FAILED: {', '.join(failed)}" if failed else f"passed on them ({passed} tests)"
+        result = (f"verified on my copy at {sha[:7]}: `emu-cases {' '.join(names)}` made {len(made)} case files from "
+                  f"my own exe{' and snapshot' if snapshot else ''}; {', '.join(tests)} {what}.")
+        print(result)
+        run(["gh", "pr", "comment", str(n), "--repo", REPO, "--body", result])
+        print(f"commented on #{n}")
+        if failed:
+            sys.exit(1)
+    finally:
+        git("worktree", "remove", "--force", path, check=False)
+
+
 def drop(rid):
     code, out = board("release", rid)
     print(out)
@@ -237,8 +343,12 @@ def main():
         return start(a[1], a[a.index("--agent") + 1] if "--agent" in a else None)
     if cmd == "check":
         return check(a[1] if len(a) > 1 else None)
+    def opt(k):
+        return a[a.index(k) + 1] if k in a and a.index(k) + 1 < len(a) else None
     if cmd == "submit" and len(a) >= 2:
-        return submit(a[1], "--part" in a, "--dry" in a)
+        return submit(a[1], "--part" in a, "--dry" in a, opt("--emu"), opt("--why"))
+    if cmd == "verify" and len(a) >= 2:
+        return verify(a[1], opt("--snapshot"), "--dry" in a)
     if cmd == "drop" and len(a) >= 2:
         return drop(a[1])
     sys.exit(__doc__)

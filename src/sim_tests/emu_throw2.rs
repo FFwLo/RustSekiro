@@ -4,7 +4,7 @@
 use super::*;
 
 fn load(name: &str) -> Option<serde_json::Value> {
-    let text = std::fs::read_to_string(crate::paths::root().join("extracted/emu").join(name)).ok()?;
+    let text = std::fs::read_to_string(crate::paths::emu().join(name)).ok()?;
     Some(serde_json::from_str(&text).unwrap())
 }
 

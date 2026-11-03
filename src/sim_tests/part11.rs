@@ -685,7 +685,7 @@ pub(crate) fn a_key_press_reaches_the_same_frames_fixed_step() {
 /// extracted/emu/super_armor_hit.json is missing.
 #[test]
 pub(crate) fn super_armor_hit_matches_the_exe() {
-    let path = crate::paths::root().join("extracted/emu/super_armor_hit.json");
+    let path = crate::paths::emu().join("super_armor_hit.json");
     let Ok(text) = std::fs::read_to_string(&path) else { return };
     let v: serde_json::Value = serde_json::from_str(&text).unwrap();
     let f = |c: &serde_json::Value, k: &str| c[k].as_f64().unwrap() as f32;
@@ -723,7 +723,7 @@ pub(crate) fn super_armor_hit_matches_the_exe() {
 pub(crate) fn follow_camera_matches_the_exe() {
     use crate::camera::*;
     use std::f32::consts::{PI, TAU};
-    let path = crate::paths::root().join("extracted/emu/camera_frames.json");
+    let path = crate::paths::emu().join("camera_frames.json");
     let Ok(text) = std::fs::read_to_string(&path) else { return };
     let v: serde_json::Value = serde_json::from_str(&text).unwrap();
     let mut app = app();

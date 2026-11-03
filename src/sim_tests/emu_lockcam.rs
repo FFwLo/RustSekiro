@@ -17,7 +17,7 @@ use super::*;
 pub(crate) fn lock_camera_matches_the_exe() {
     use crate::camera::*;
     use std::f32::consts::PI;
-    let path = crate::paths::root().join("extracted/emu/lockcam_frames.json");
+    let path = crate::paths::emu().join("lockcam_frames.json");
     let Ok(text) = std::fs::read_to_string(&path) else { return };
     let v: serde_json::Value = serde_json::from_str(&text).unwrap();
     let mut app = app();
@@ -148,7 +148,7 @@ pub(crate) fn lock_camera_matches_the_exe() {
 /// and looks up on stick up (pitch -= y). Skipped when extracted/emu/lockcam_pad.json is missing.
 #[test]
 pub(crate) fn pad_mapping_matches_the_exe() {
-    let path = crate::paths::root().join("extracted/emu/lockcam_pad.json");
+    let path = crate::paths::emu().join("lockcam_pad.json");
     let Ok(text) = std::fs::read_to_string(&path) else { return };
     let v: serde_json::Value = serde_json::from_str(&text).unwrap();
     let v4 = |x: &serde_json::Value| Vec3::new(x[0].as_f64().unwrap() as f32, x[1].as_f64().unwrap() as f32, x[2].as_f64().unwrap() as f32);

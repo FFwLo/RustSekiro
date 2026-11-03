@@ -33,6 +33,28 @@ jobs:
           GUARD_BLOCKED_WORDS: ${{ secrets.GUARD_BLOCKED_WORDS }}
         run: python -I tools/guard.py diff ${{ github.event.before }}
 
+  # A pull request that says "Board: <ID> done|part:" fails when someone else holds that row (or its whole row or
+  # one of its parts) on the claims issue, so nobody lands work on a row another person is doing.
+  claim:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v4
+      - run: git fetch -q origin agents-work-board:refs/remotes/origin/agents-work-board
+      - name: the row is free or this author's
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BODY: ${{ github.event.pull_request.body }}
+          AUTHOR: ${{ github.event.pull_request.user.login }}
+        run: |
+          ID=$(python -c "import os,re; m=re.search(r'^Board:\s*([A-Z]\d+[a-z]?)\s+(?:done|part)\b', os.environ.get('BODY') or '', re.M); print(m.group(1) if m else '')")
+          if [ -z "$ID" ]; then echo "no Board line: nothing to check"; exit 0; fi
+          git show origin/agents-work-board:board.py | python - holder "$ID" "$AUTHOR"
+
   build-and-test:
     runs-on: windows-latest
     env:

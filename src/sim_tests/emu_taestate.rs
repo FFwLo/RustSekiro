@@ -24,7 +24,7 @@ fn exe_hits(hits: &serde_json::Value) -> Vec<(u64, f32, f32, bool)> {
 /// Skipped when extracted/emu/taewin_cases.json is missing.
 #[test]
 pub(crate) fn state_events_follow_the_exe_windows() {
-    let path = crate::paths::root().join("extracted/emu/taewin_cases.json");
+    let path = crate::paths::emu().join("taewin_cases.json");
     let Ok(text) = std::fs::read_to_string(&path) else { return };
     let v: serde_json::Value = serde_json::from_str(&text).unwrap();
     let f = |x: &serde_json::Value| x.as_f64().unwrap() as f32;
@@ -73,7 +73,7 @@ pub(crate) fn state_events_follow_the_exe_windows() {
 /// when extracted/emu/taestate_cases.json is missing.
 #[test]
 pub(crate) fn selector_first_window_matches_the_exe() {
-    let path = crate::paths::root().join("extracted/emu/taestate_cases.json");
+    let path = crate::paths::emu().join("taestate_cases.json");
     let Ok(text) = std::fs::read_to_string(&path) else { return };
     let v: serde_json::Value = serde_json::from_str(&text).unwrap();
     let f = |x: &serde_json::Value| x.as_f64().unwrap() as f32;
