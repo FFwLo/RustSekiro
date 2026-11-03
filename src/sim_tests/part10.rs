@@ -344,7 +344,8 @@ pub(crate) fn an_aged_wolf_jumps() {
             seen.push(s);
         }
     }
-    assert_eq!(seen.first().map(String::as_str), Some("AgingGroundJumpReady_V"), "{seen:?} {}", log_text(&app));
+    // The press reaches the clip the next frame (exe frame order, animstart), so the first frame still idles.
+    assert_eq!(seen.iter().map(String::as_str).find(|s| *s != "AgingIdle"), Some("AgingGroundJumpReady_V"), "{seen:?} {}", log_text(&app));
     assert!(seen.iter().any(|s| s == "AgingGroundJumpStart_V"), "{seen:?}");
     assert!(top > y0 + 0.2, "rose {} {seen:?}", top - y0);
     assert!(seen.iter().any(|s| s == "LandAgingGroundJump"), "{seen:?}");

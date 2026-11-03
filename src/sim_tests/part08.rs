@@ -117,7 +117,9 @@ pub(crate) fn a_grab_pair_is_not_pushed_apart() {
         let (m, wt) = (dm.0[&173], wt.translation);
         let at = world.get::<GlobalTransform>(m).unwrap().translation();
         let et = world.query_filtered::<&Transform, With<Enemy>>().single(world).unwrap().translation;
-        if i == h + 2 {
+        // The absorb lands on the grab's own frame (the hit resolves before Advance, animstart);
+        // after it the two anims' root motion moves the pair.
+        if i == h {
             absorbed = (et - at).with_y(0.0).length();
         }
         closest = closest.min((et - wt).with_y(0.0).length());
