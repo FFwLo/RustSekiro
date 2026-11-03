@@ -43,6 +43,7 @@ mod params;
 mod fxr;
 mod acttrace;
 mod items;
+mod atkrec;
 
 /// The few calls of Unicorn's C API the tool needs (unicorn.h), linked from unicorn.dll.
 mod uc {
@@ -907,6 +908,9 @@ fn main() {
     }
     if want.first().is_some_and(|w| w.starts_with("acttrace")) {
         return acttrace::run(&|| Emu::new(exe, snap()), out, &want);
+    }
+    if want.first().is_some_and(|w| w.starts_with("atkrec")) {
+        return atkrec::run(&|| Emu::new(exe, snap()), out, &want);
     }
     if want.first().is_some_and(|w| w.starts_with("collide")) {
         return collide::run(&|| Emu::new(exe, snap()), out, &want);

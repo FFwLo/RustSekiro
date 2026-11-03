@@ -61,6 +61,7 @@ mod emu_collide;
 mod emu_params;
 mod emu_fxr;
 mod emu_items;
+mod emu_atkrec;
 pub(crate) use part01::*;
 pub(crate) use part02::*;
 pub(crate) use part03::*;

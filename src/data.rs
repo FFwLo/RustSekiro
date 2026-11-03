@@ -46,6 +46,19 @@ impl Event {
     pub fn arg_i64(&self, name: &str) -> Option<i64> {
         self.args.get(name)?.as_i64()
     }
+    /// AttackBehavior Source ("0: Default", "1: Force Right Hand", "2: Force Left Hand"): the
+    /// event's byte +0xd. FUN_140b50ae0 passes hand -1 / -2 for 1 / 2, else the chr's current
+    /// hand (vfunc 0x330), to vfunc 0x1c0 FUN_140a24560, which resolves the judge through that
+    /// hand's weapon (vfunc 0x338): the right hand's is the equipped combat art's virtual weapon
+    /// (EquipParamWeapon 5100-7700, attackBase* 40 like Kusabimaru), the left the prosthetic
+    /// (tools/emu-cases `atkrec_judges`).
+    pub fn source_hand(&self) -> i64 {
+        match self.args.get("Source") {
+            Some(Value::String(s)) => s.split(':').next().and_then(|n| n.trim().parse().ok()).unwrap_or(0),
+            Some(v) => v.as_i64().unwrap_or(0),
+            None => 0,
+        }
+    }
     /// ChrActionFlag FlagType is "87: Name" when the template knows it, else a bare number.
     pub fn flag_type(&self) -> Option<i64> {
         match self.args.get("FlagType")? {
@@ -500,6 +513,12 @@ pub struct Attack {
     pub atk_thun: f32,
     #[serde(default)]
     pub atk_dark: f32,
+    /// hitSourceType (AtkParam +0x84): 1 = the body, not the weapon. A player row with it deals
+    /// its own atkPhys .. atkDark instead of the weapon's attackBase* x the atk*Correction
+    /// (FUN_14084fc50 info +0x138 -> FUN_14083e060): the air kick 901 (atkPhys 10), the contact
+    /// rows 200-222, the deathblow rows 50100000-50400010 (tools/emu-cases `atkrec_rows`).
+    #[serde(rename = "hitSourceType", default)]
+    pub hit_source_type: i64,
     #[serde(default)]
     pub atk_stam: f32,
     #[serde(rename = "hit0_Radius", default)]
@@ -663,7 +682,9 @@ impl Attack {
     pub fn amounts_zero(&self, pc: bool) -> bool {
         let npc = [self.atk_phys, self.atk_mag, self.atk_fire, self.atk_thun, self.atk_dark];
         let pc_corr = [self.atk_phys_correction, self.atk_mag_correction, self.atk_fire_correction, self.atk_thun_correction, self.atk_dark_correction];
-        npc.iter().all(|v| *v <= 0.0) && (!pc || pc_corr.iter().all(|v| *v <= 0.0))
+        // A player's body row (hitSourceType 1) deals its own atk*, any other its corrections x
+        // the weapon (combat::player_amounts; tools/emu-cases `atkrec_rows`).
+        if pc && self.hit_source_type != 1 { pc_corr.iter().all(|v| *v <= 0.0) } else { npc.iter().all(|v| *v <= 0.0) }
     }
     /// spEffectId0-4 (the hit's SpEffects on the target: build-ups, reactions).
     pub fn sp_effects(&self) -> [i64; 5] {
@@ -1237,6 +1258,22 @@ pub fn behavior_category(row: i64) -> i64 {
     .unwrap_or(0)
 }
 
+/// Wolf's BehaviorParam_PC row for a TAE judge through a hand's weapon (PlayerIns vfunc 0x1c0
+/// FUN_140a24560): judges under 1000 only (else -1); the weapon's behaviorVariationId v:
+/// 100000000 + v x 1000 + judge when that row exists, else the variation family's
+/// 100000000 + (v / 100) x 100000 + judge. The right hand's weapon is the equipped art's virtual
+/// one (7400 -> 5008: its 200 / 201 / 210 / 211 / 220 / 221 / 230, the rest 105000xxx), the left
+/// the prosthetic (73000 -> 107300xxx). gap: the worn SpEffects' addBehaviorJudgeId shift
+/// (FUN_140bffb40; `shift_judge`) is left to the callers. Checked on 3,000 judges (tools/emu-cases
+/// `atkrec_judges`, test behaviour_rows_resolve_like_the_exe).
+pub fn pc_behavior_row(variation: i64, judge: i64) -> i64 {
+    if !(0..1000).contains(&judge) {
+        return -1;
+    }
+    let own = 100_000_000 + variation * 1000 + judge;
+    if behavior_ref(true, own).is_some() { own } else { 100_000_000 + variation / 100 * 100_000 + judge }
+}
+
 /// refId of a BehaviorParam_PC (`pc`) or BehaviorParam row: the AtkParam a guard judge stands
 /// for (Wolf's sword guard 105000090 -> 5000090, the umbrella's 107600100 -> 7600100, the
 /// General's 210200900 -> 10200900).
@@ -1268,6 +1305,8 @@ pub struct AtkGuard {
     pub all_dir: bool,
     /// isGhostAtk (+0x86 bit 6): no guard unless the defender wears stateInfo 157.
     pub ghost: bool,
+    /// hitSourceType 1 (+0x84, a body row): the attack info's "power" +0x138 (FUN_14084fc50).
+    pub body: bool,
 }
 
 pub fn atk_guard(pc: bool, id: i64) -> Option<AtkGuard> {
@@ -1289,6 +1328,7 @@ pub fn atk_guard(pc: bool, id: i64) -> Option<AtkGuard> {
                         disable_just_guard: [n("disableJustGuard_vsGuardAttribute0") != 0, n("disableJustGuard_vsGuardAttribute1") != 0],
                         all_dir: n("isAllDirGuard") != 0,
                         ghost: n("isGhostAtk") != 0,
+                        body: n("hitSourceType") == 1,
                     };
                     (id, g)
                 })
@@ -2019,7 +2059,11 @@ impl CharData {
                 let art = anim_key.get(1..4).and_then(|g| g.parse::<i64>().ok()).filter(|g| (100..=110).contains(g));
                 let var = self.art_variation.and_then(|v| self.attacks.get(&format!("v{v}:{j}")));
                 let tool = anim_key.get(1..4).and_then(|g| g.parse::<i64>().ok()).filter(|g| (70..=79).contains(g));
-                let tool_atk = tool.and(self.tool_variation).and_then(|v| self.attacks.get(&format!("v{v}:{j}")));
+                // A tool anim's "Force Right Hand" event resolves through the right hand's weapon
+                // (the sword's / art's rows, FUN_140a24560), not the tool's: the Sabimaru's a075
+                // right-hand slashes 140 / 141 are AtkParam_Pc 5000140 / 5000141, not the left
+                // kodachi's 7500140 (tools/emu-cases `atkrec`).
+                let tool_atk = tool.filter(|_| e.source_hand() != 1).and(self.tool_variation).and_then(|v| self.attacks.get(&format!("v{v}:{j}")));
                 // A PCBehavior judge is BehaviorParam_PC's own row, never the art's / tool's attack of
                 // the same number: the air Mortal Draw a106_316200's 16 contact windows (307 judge
                 // 210, pc210: no damage) hit as v5007:210 (the Mortal Draw slash, ~200 HP + 38

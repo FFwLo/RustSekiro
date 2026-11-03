@@ -31,7 +31,7 @@ const ARM_INPUT: u64 = 0x1_40b2_58d0;
 const TAE_UPDATE: u64 = 0x1_40b5_c920;
 const ENEMY_VT: u64 = 0x1_42a2_7f28;
 /// The menu state flags (FUN_1408c58e0).
-const MENU_STATE: u64 = 0x1_408c_58e0;
+pub(super) const MENU_STATE: u64 = 0x1_408c_58e0;
 const DT: f32 = 1.0 / 60.0;
 
 static ANIMS: Mutex<Vec<i64>> = Mutex::new(Vec::new());
@@ -43,18 +43,18 @@ extern "C" fn on_tae(uc: uc::Engine, _addr: u64, _size: u32, _data: *mut c_void)
 }
 
 /// HKS ACTION_ARM ids (c0000_define.lua).
-const ATTACK: u32 = 0;
-const SUB_ATTACK: u32 = 1;
-const GUARD: u32 = 2;
+pub(super) const ATTACK: u32 = 0;
+pub(super) const SUB_ATTACK: u32 = 1;
+pub(super) const GUARD: u32 = 2;
 const WIRE_SHOOT: u32 = 3;
-const JUMP: u32 = 4;
-const SP_MOVE: u32 = 5;
+pub(super) const JUMP: u32 = 4;
+pub(super) const SP_MOVE: u32 = 5;
 const USE_ITEM: u32 = 7;
 
 /// Pad state of one frame: arms held, move stick (forward, side).
-struct Input {
-    arms: &'static [u32],
-    stick: [f32; 2],
+pub(super) struct Input {
+    pub(super) arms: &'static [u32],
+    pub(super) stick: [f32; 2],
 }
 
 const NONE: Input = Input { arms: &[], stick: [0.0, 0.0] };
@@ -106,7 +106,7 @@ impl Tr {
     }
 }
 
-fn arm_inputs(emu: &mut Emu) -> BTreeMap<u32, i32> {
+pub(super) fn arm_inputs(emu: &mut Emu) -> BTreeMap<u32, i32> {
     (0..33u32).map(|arm| (arm, emu.call(ARM_INPUT, &[arm as u64], &[]).rax as u32 as i32)).collect()
 }
 
@@ -132,7 +132,7 @@ fn start_trace(emu: &mut Emu) {
 }
 
 /// Writes one frame's pad: every mapped input byte (+0x67 + id), the attack / guard held bytes, the stick.
-fn press(emu: &mut Emu, frame: u64, ids: &BTreeMap<u32, i32>, inp: &Input) {
+pub(super) fn press(emu: &mut Emu, frame: u64, ids: &BTreeMap<u32, i32>, inp: &Input) {
     for id in ids.values().filter(|&&i| (0..0x80).contains(&i)) {
         emu.raw_write(frame + 0x67 + *id as u64, &[0]);
     }
@@ -192,7 +192,7 @@ fn try_u64(emu: &mut Emu, at: u64) -> Option<u64> {
 }
 
 /// The General (chr +0x6c == 1020, as modticks / guard find him).
-fn general(emu: &mut Emu) -> u64 {
+pub(super) fn general(emu: &mut Emu) -> u64 {
     let wcm = emu.peek_u64(WORLD_CHR_MAN);
     for off in (0..0x2000).step_by(8) {
         let Some(p) = try_u64(emu, wcm + off) else { continue };
@@ -213,7 +213,7 @@ fn general(emu: &mut Emu) -> u64 {
 /// The General's AI object: manipulator [[chr+0x50]+0x358] (else +0x120), +0x340. Its +0x7430 is the
 /// AI's attack request (SetAttackRequest); the manipulator FUN_1407e6570 copies it (else +0x7414,
 /// StartGuard) to the ActionRequest module +0x170 every frame, AI on or off (kb/enemy.md).
-fn ai_of(emu: &mut Emu, chr: u64) -> u64 {
+pub(super) fn ai_of(emu: &mut Emu, chr: u64) -> u64 {
     let ctrl = emu.peek_u64(chr + 0x50);
     let m = match emu.peek_u64(ctrl + 0x358) {
         0 => emu.peek_u64(ctrl + 0x120),
@@ -231,12 +231,12 @@ const FORCED_ATTACK: i32 = 3000;
 
 /// The AI manipulator's request copy (runs only with the AI on, after the AI's think has set
 /// +0x7430 for the frame).
-const AI_REQUEST_COPY: u64 = 0x1_407e_6570;
+pub(super) const AI_REQUEST_COPY: u64 = 0x1_407e_6570;
 
 /// (AI object, attack request) written at AI_REQUEST_COPY's entry; request < 0 leaves the AI's own.
 static FORCE: Mutex<(u64, i32)> = Mutex::new((0, -1));
 
-extern "C" fn on_request_copy(uc: uc::Engine, _addr: u64, _size: u32, _data: *mut c_void) {
+pub(super) extern "C" fn on_request_copy(uc: uc::Engine, _addr: u64, _size: u32, _data: *mut c_void) {
     let (ai, v) = *FORCE.lock().unwrap();
     if ai != 0 && v >= 0 {
         unsafe { uc::uc_mem_write(uc, ai + 0x7430, v.to_le_bytes().as_ptr() as _, 4) };
@@ -246,12 +246,12 @@ extern "C" fn on_request_copy(uc: uc::Engine, _addr: u64, _size: u32, _data: *mu
 /// With the AI on, the General's attack request is FORCED_ATTACK for the first 3 frames (`f` from
 /// the run's start): SetAttackRequest's field, set where the manipulator copies it, so his HKS
 /// starts the attack the way the AI would. After that the AI's own requests stand.
-fn force_attack(ai: u64, f: usize) {
+pub(super) fn force_attack(ai: u64, f: usize) {
     *FORCE.lock().unwrap() = (ai, if f < 3 { FORCED_ATTACK } else { -1 });
 }
 
 /// The chr's current anim (TimeAct module [chr+0x1ff8]+0x10, +0xf8; as taestate reads it).
-fn anim(emu: &mut Emu, chr: u64) -> i64 {
+pub(super) fn anim(emu: &mut Emu, chr: u64) -> i64 {
     let bag = emu.peek_u64(chr + 0x1ff8);
     let m = emu.peek_u64(bag + 0x10);
     i32::from_le_bytes(emu.peek(m + 0xf8)) as i64
@@ -259,7 +259,7 @@ fn anim(emu: &mut Emu, chr: u64) -> i64 {
 
 /// chr +0x110: the update omission (30 / 5 for chrs 36-90 m off in the snapshot, as throw2 found);
 /// 0 updates the General every frame, as when he fights Wolf.
-fn every_frame(emu: &mut Emu, chr: u64) {
+pub(super) fn every_frame(emu: &mut Emu, chr: u64) {
     let _ = emu.peek::<4>(chr + 0x110);
     emu.raw_write(chr + 0x110, &0u32.to_le_bytes());
 }

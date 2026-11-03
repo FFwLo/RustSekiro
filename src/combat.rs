@@ -433,15 +433,35 @@ pub(crate) fn dmy_entity(d: &Dummies, id: i64) -> Option<Entity> {
 /// 0.6, others 1.0; NpcParam def_* are 0). Combat arts deal "dark" (Whirlwind Slash
 /// atkDarkCorrection 125 on attackBaseDark 40).
 pub(crate) fn player_attack_damage(combat: &Combat, atk: &Attack, weapon: i64, def: &Actor) -> f32 {
-    let w = combat.param("EquipParamWeapon", weapon);
+    let a = player_amounts(atk, combat.param("EquipParamWeapon", weapon));
     let npc = combat.npc(def);
-    let base = |k: &str| w[k].as_f64().unwrap_or(0.0) as f32;
     let cut = |k: &str| npc[k].as_f64().unwrap_or(1.0) as f32;
-    base("attackBasePhysics") * atk.atk_phys_correction / 100.0
-        + base("attackBaseMagic") * atk.atk_mag_correction / 100.0 * cut("magicDamageCutRate")
-        + base("attackBaseFire") * atk.atk_fire_correction / 100.0 * cut("fireDamageCutRate")
-        + base("attackBaseThunder") * atk.atk_thun_correction / 100.0 * cut("thunderDamageCutRate")
-        + base("attackBaseDark") * atk.atk_dark_correction / 100.0 * cut("darkDamageCutRate")
+    a[0] + a[1] * cut("magicDamageCutRate") + a[2] * cut("fireDamageCutRate") + a[3] * cut("thunderDamageCutRate") + a[4] * cut("darkDamageCutRate")
+}
+
+/// Wolf's hit's five amounts (hit entry floats 0-4: FUN_14083ddc0 -> PlayerIns vfunc 0x1d8
+/// FUN_140a23f40 -> FUN_14083e060) from the attack info FUN_14084fc50 builds: the hand's weapon
+/// row `w` (info +0x12c) attackBase* x AtkParam atk*Correction / 100, or, for a body row
+/// (hitSourceType 1, info +0x138), the row's own atkPhys .. atkDark. The other factors of
+/// FUN_14083e060 (the stat correction graphs FUN_140850160 / FUN_1408505c0, durability
+/// FUN_140841bd0, ReinforceParamWeapon, the info's SpEffect rates +0x70 / +0xa4-0xb0, flat
+/// adds) are all 1 / 0 for Wolf (tools/emu-cases `atkrec_rows`, test
+/// attack_rows_match_the_exe). Wolf's Attack Power (SpEffect 160000 + level, physicsAttackRate ..
+/// staminaAttackRate 1.0 at levels 0-1, 7.23 at 99) is not in the amounts: it lands in the info's
+/// +0xb4 / +0xe8-0xf4 and scales the posture amounts (entry +0x34 atkStam, +0x38 direct, +0x3c
+/// repel) here. gap: where it scales the HP is past the hit entry (the defender's sum), not traced.
+pub(crate) fn player_amounts(atk: &Attack, w: &serde_json::Value) -> [f32; 5] {
+    if atk.hit_source_type == 1 {
+        return [atk.atk_phys, atk.atk_mag, atk.atk_fire, atk.atk_thun, atk.atk_dark];
+    }
+    let base = |k: &str| w[k].as_f64().unwrap_or(0.0) as f32;
+    [
+        base("attackBasePhysics") * atk.atk_phys_correction / 100.0,
+        base("attackBaseMagic") * atk.atk_mag_correction / 100.0,
+        base("attackBaseFire") * atk.atk_fire_correction / 100.0,
+        base("attackBaseThunder") * atk.atk_thun_correction / 100.0,
+        base("attackBaseDark") * atk.atk_dark_correction / 100.0,
+    ]
 }
 
 /// The HP a hit takes, whole points as the exe stores them: FUN_140840eb0 lifts a positive
@@ -1065,8 +1085,8 @@ pub(crate) fn shield_block(d: &crate::data::CharData, a: &Actor, gates: Option<&
 pub(crate) fn guard_row(combat: &Combat, a: &Actor, judge: i64, weapon: i64) -> Option<crate::data::AtkGuard> {
     let pc = a.side == Side::Player;
     let var = if pc { crate::data::weapon_row(weapon).and_then(|w| w["behaviorVariationId"].as_i64()).unwrap_or(5000) } else { combat.npc(a)["behaviorVariationId"].as_i64().unwrap_or(0) };
-    let base = if pc { 100_000_000 } else { 200_000_000 };
-    crate::data::behavior_ref(pc, base + var * 1000 + judge).and_then(|r| crate::data::atk_guard(pc, r))
+    let row = if pc { crate::data::pc_behavior_row(var, judge) } else { 200_000_000 + var * 1000 + judge };
+    crate::data::behavior_ref(pc, row).and_then(|r| crate::data::atk_guard(pc, r))
 }
 
 /// The guard-relevant AtkParam fields of an attack: its full row when the param export has it,
@@ -1077,6 +1097,7 @@ pub(crate) fn atk_guard_of(atk: &Attack, pc: bool) -> crate::data::AtkGuard {
         guard_atk_rate_correction: atk.guard_atk_rate_correction,
         disable_guard: [atk.disable_guard != 0; 2],
         disable_just_guard: [atk.disable_just_guard != 0; 2],
+        body: atk.hit_source_type == 1,
         ..Default::default()
     })
 }
@@ -1090,9 +1111,11 @@ const WOLF_STRENGTH: i64 = 10;
 /// 2154 rows, 100 on 213 - the Demon's blasts, the serpent's body - 0 / 20 on a few templates);
 /// Wolf's (FUN_14084c7b0) (int)(guardAtkRateCorrection / 100 x the weapon's attackBaseRepel) +
 /// clamp(strength - overStrength, 0, 10): 300 x 10 = 30 on his sword, 900 -> 90 on the
-/// deathblow starts, 0 on the dummies.
+/// deathblow starts, 0 on the dummies. A body row (hitSourceType 1, info +0x138 set) takes the
+/// row's own guardAtkRate like an NPC's (0 on all 54 such Wolf rows: kicks, deathblows 600-806;
+/// atkrec, was 30 / 90). gap: FUN_14084e690's other branch (param 0x7e +0x34) is not ported.
 pub(crate) fn attack_flick(g: &crate::data::AtkGuard, pc: bool, weapon: i64) -> i32 {
-    if !pc {
+    if !pc || g.body {
         return g.guard_atk_rate as i32;
     }
     let w = crate::data::weapon_row(weapon);
@@ -1558,7 +1581,7 @@ fn resolve(
             // enchanted 105 / 107), with no fallback when the shifted row is missing.
             let worn = (aa.side != Side::Player).then(|| worn_sp(&aa, ae.as_ref().map_or(&[][..], |e| &e.clash[..])));
             let gates = event_gates(&combat, &aa, ae.as_ref().map_or(&[][..], |e| &e.clash[..]));
-            let mut windows: Vec<(i32, i64, Attack, bool)> = ad
+            let mut windows: Vec<(i32, i64, Attack, bool, bool)> = ad
                 .attack_windows_on(&aa.anim, gates.as_deref())
                 .into_iter()
                 .filter_map(|(e, atk, j)| match &worn {
@@ -1573,18 +1596,18 @@ fn resolve(
                 // the shock's 508 HP) never hit before (the user, 2026-10-16: "reversal dont stun
                 // him and dont do dmg as the game").
                 .filter(|(e, atk, _)| e.dispatched(aa.step()) && atk.oppose_target != 0 && (atk.atk_stam > 0.0 || atk.npc_damage() > 0.0 || atk.direct_atk_stam_damage > 0.0 || atk.sp_effects().iter().any(|&s| s > 0)))
-                .map(|(e, atk, j)| ((e.start * TAE_FPS).round() as i32, j, atk.clone(), false))
+                .map(|(e, atk, j)| ((e.start * TAE_FPS).round() as i32, j, atk.clone(), false, e.source_hand() == 1))
                 .collect();
             // The attacker's bullets that reached this defender (enemy_bullet.rs): already
             // connected, so only the dodge check and the outcome below apply.
             let (mine, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut aa.bullet_hits).into_iter().partition(|(t, _)| *t == def_e);
             aa.bullet_hits = rest;
-            windows.extend(mine.into_iter().map(|(_, atk)| (i32::MIN, -1, atk, true)));
+            windows.extend(mine.into_iter().map(|(_, atk)| (i32::MIN, -1, atk, true, false)));
             // The first swing window this tick's outcome: a second one landing on the same tick
             // (c1700 Attack3076's two blades, judges 160 + 161) meets the same guard, not the
             // deflect / damage reaction the first just started (play_state resets anim / t).
             let mut tick_outcome: Option<Outcome> = None;
-            for (start, judge, atk, bullet) in windows {
+            for (start, judge, atk, bullet, right_hand) in windows {
                 if !bullet && aa.hits_done.contains(&(def_e, judge, start)) {
                     continue;
                 }
@@ -1773,7 +1796,7 @@ fn resolve(
                 // 3372, flick 0) with no guard flag needed, and the perilous flags were always the
                 // vsGuardAttribute0 pair.
                 let def_weapon = if umbrella { tool_weapon.unwrap_or(UMBRELLA_WEAPON) } else { 5000 };
-                let atk_weapon = if crate::player::is_tool_anim(&aa.anim) { tool_weapon.unwrap_or(5000) } else { 5000 };
+                let atk_weapon = if crate::player::is_tool_anim(&aa.anim) && !right_hand { tool_weapon.unwrap_or(5000) } else { 5000 };
                 let gc = guard_check(&combat, &da, de.as_ref().map_or(&[][..], |e| &e.clash[..]), &atk, aa.side == Side::Player, atk_weapon, def_weapon, to_def);
                 let (verdict, deflectable) = (gc.verdict, gc.deflectable);
                 // The deflect window (for the log): the TAE SpEffect with a flick power, on the base
@@ -2195,7 +2218,10 @@ fn resolve(
                             && dd.states.contains_key("FireReaction")
                             && crate::prosthetic::rank_allows(crate::prosthetic::transition_rank(&da.state), 3);
                         // NpcParam def_* = 0; its per-attribute rates come with armor_rates below.
-                        let weapon = if crate::player::is_tool_anim(&aa.anim) { tool_weapon.unwrap_or(5000) } else { 5000 };
+                        // The attack info's weapon (FUN_14084fc50 +0x12c = vfunc 0x338 of the event's hand): a tool
+                        // anim's Force Right Hand slash scales the right hand's (the art's virtual weapon, attackBase*
+                        // 40 as Kusabimaru 5000), not the tool's (tools/emu-cases `atkrec_rows`).
+                        let weapon = if crate::player::is_tool_anim(&aa.anim) && !right_hand { tool_weapon.unwrap_or(5000) } else { 5000 };
                         let dmg = match aa.side {
                             Side::Player => player_attack_damage(&combat, &atk, weapon, &da),
                             Side::Enemy => npc_hit_damage(&combat, &atk, &da) * aa.atk_rate,
