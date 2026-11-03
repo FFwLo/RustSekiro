@@ -72,13 +72,13 @@ enum Mode {
 /// gap: what starts the loop in the game is not traced (no EMEVD, HKS or AI request for the
 /// dragon's 21000); by that data match.
 /// changeHpRate recovery (% of max HP) of the instant SpEffects (effectEndurance 0) the anim's
-/// TAE AddSpEffect (66 / 67) adds in (from, to] seconds, plus one at 0 on the anim's first
-/// frame (from == 0): an event on a frame edge counts once, not in both frames.
+/// TAE AddSpEffect (66 / 67) entering in the tick from -> to (`tae_window::starts`, every start
+/// up to `to` on the anim's first tick): an event on a frame edge counts once, not in both frames.
 pub(crate) fn instant_hp_rate(d: &crate::data::CharData, key: &str, from: f32, to: f32) -> f32 {
     let Some(an) = d.anim(key) else { return 0.0 };
     an.events
         .iter()
-        .filter(|ev| matches!(ev.kind, 66 | 67) && ((ev.start > from && ev.start <= to) || (from == 0.0 && ev.start == 0.0)))
+        .filter(|ev| matches!(ev.kind, 66 | 67) && crate::tae_window::starts(ev.start, from, to))
         .filter_map(|ev| d.sp_effects.get(&ev.arg_i64("SpEffectID").unwrap_or(0).to_string()))
         .filter(|s| s.effect_endurance == 0.0 && s.change_hp_rate < 0.0)
         .map(|s| -s.change_hp_rate)
@@ -1060,7 +1060,7 @@ fn ninsatsu_hit(combat: Res<Combat>, player: Single<&Actor, (With<Player>, Witho
     let hit = !pa.state.starts_with("Deathblow")
         || combat.player.anim(&pa.anim).is_some_and(|an| {
             an.events.iter().any(|ev| {
-                ev.start > pa.prev_t && ev.start <= pa.t && ev.arg_i64("BehaviorJudgeID").is_some_and(|j| combat.player.attacks.get(&j.to_string()).is_some_and(|atk| atk.atk_attribute == 5))
+                crate::tae_window::starts(ev.start, pa.prev_t, pa.t) && ev.arg_i64("BehaviorJudgeID").is_some_and(|j| combat.player.attacks.get(&j.to_string()).is_some_and(|atk| atk.atk_attribute == 5))
             })
         });
     if hit {
@@ -2148,7 +2148,7 @@ fn wolf_sounds(combat: &Combat, pa: &Actor, wolf: Vec3, la: &Actor, listener: Ve
     let Some(an) = combat.player.anim(&key) else { return Vec::new() };
     let active: Vec<&crate::data::SpEffect> = combat.player.sp_effects_at(&key, t).into_iter().map(|(_, e)| e).collect();
     let hearing: f64 = active.iter().copied().chain(skills_in_force(skills, &active)).map(|e| e.hearing_search_enemy_rate as f64).product();
-    let started = |e: &&crate::data::Event| !pa.anim.is_empty() && e.start > pa.prev_t && e.start <= pa.t;
+    let started = |e: &&crate::data::Event| !pa.anim.is_empty() && crate::tae_window::starts(e.start, pa.prev_t, pa.t);
     an.events
         .iter()
         .filter(|e| e.kind == 237 && (e.active(t) || started(e)))

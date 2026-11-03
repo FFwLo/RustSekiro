@@ -26,6 +26,7 @@ mod lockcam;
 mod turn;
 mod taecam;
 mod modticks;
+mod taewin;
 
 /// The few calls of Unicorn's C API the tool needs (unicorn.h), linked from unicorn.dll.
 mod uc {
@@ -878,6 +879,9 @@ fn main() {
     }
     if want.iter().any(|w| w.starts_with("modticks")) {
         modticks::run(&|| Emu::new(exe, snap()), out, &want);
+    }
+    if want.contains(&"taewin") {
+        taewin::run_cases(&|| Emu::new(exe, snap()), out);
     }
     if on("hit_stop") {
         let mut emu = Emu::new(exe, None);

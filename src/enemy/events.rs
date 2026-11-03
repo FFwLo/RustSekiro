@@ -69,7 +69,7 @@ pub(super) fn messages(combat: Res<Combat>, mut q: Query<(&mut Enemy, &Actor)>, 
     }
     if let Some(ev) = combat.player.events_at(&pa.anim, pa.t).filter(|ev| ev.kind == super::TAE_EVENT_MESSAGE).max_by(|x, y| x.start.total_cmp(&y.start)) {
         wolf.msg = ev.arg_i64("EzStateRequestID");
-        if (ev.start > pa.prev_t || pa.prev_t == 0.0) && ev.start <= pa.t {
+        if crate::tae_window::starts(ev.start, pa.prev_t, pa.t) {
             wolf.serial = wolf.serial.wrapping_add(1);
         }
     }
@@ -78,7 +78,7 @@ pub(super) fn messages(combat: Res<Combat>, mut q: Query<(&mut Enemy, &Actor)>, 
         if let Some(ev) = d.events_at(&a.anim, a.t).filter(|ev| ev.kind == super::TAE_EVENT_MESSAGE).max_by(|x, y| x.start.total_cmp(&y.start)) {
             e.msg = ev.arg_i64("EzStateRequestID");
             // A new one (it starts this step, or its anim just began).
-            if (ev.start > a.prev_t || a.prev_t == 0.0) && ev.start <= a.t {
+            if crate::tae_window::starts(ev.start, a.prev_t, a.t) {
                 e.msg_serial = e.msg_serial.wrapping_add(1);
             }
         }

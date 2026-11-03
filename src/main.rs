@@ -55,6 +55,7 @@ mod sim_tests;
 mod sound;
 mod status;
 mod stealth;
+mod tae_window;
 mod throw_trace;
 mod trace;
 mod vfx;
