@@ -819,6 +819,10 @@ fn main() {
                 ints.push(player.expect("player needs --snapshot"));
             } else if *a == "wcm" {
                 ints.push(emu.peek_u64(0x1_43d7_a1e0));
+            } else if let Some((at, v)) = a.strip_prefix('b').and_then(|r| r.split_once('=')) {
+                // set a byte in the emulator's copy before the call, e.g. b143d7a376=0 turns the
+                // snapshot's disable-AI debug flag (DebugFlags 0x143d7a366 +0x10) off
+                emu.raw_write(u64::from_str_radix(at, 16).unwrap(), &[v.parse().unwrap()]);
             } else if let Some(dt) = a.strip_prefix("dt=") {
                 // a task call's data block: frame time at +8 (WorldChrManImp's task methods read it there)
                 let at = emu.alloc(0x40);
