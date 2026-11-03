@@ -23,6 +23,8 @@ fn atlas_invincibility_bits_pass_only_their_exceptions() {
     assert!(crate::combat::dodged(combat, &wolf, None, &npc_attack(10100100, 0)), "950 stops a plain slash");
     assert!(!crate::combat::dodged(combat, &wolf, None, &npc_attack(10700360, 0)), "isDisableNoDamage goes through 950");
     wolf.t = 30.0 / TAE_FPS;
+    // A step's window (prev_t, t]: TAE state events are read on the update's window, not at t (tae_window, kb/taewin.md).
+    wolf.prev_t = wolf.t - 1.0 / 60.0;
     assert!(!crate::combat::dodged(combat, &wolf, None, &npc_attack(10100100, 0)), "after frame 18 the slash lands");
 
     let mut general = Actor::new(crate::actor::Side::Enemy, 100.0, 100.0, 1.0, 0);
@@ -52,11 +54,14 @@ fn atlas_block_or_deflect_follows_the_repel_values() {
     assert_eq!(guard(&wolf, None, &slash(30)), Guarded::Deflect, "window: 40 >= 30");
     assert_eq!(guard(&wolf, None, &slash(100)), Guarded::Block, "window: 40 < 100");
     wolf.t = 0.4;
+    // A step's window (prev_t, t]: TAE state events are read on the update's window, not at t (tae_window, kb/taewin.md).
+    wolf.prev_t = wolf.t - 1.0 / 60.0;
     assert_eq!(guard(&wolf, None, &slash(30)), Guarded::Block, "guard: 20 < 30");
     let grab = crate::data::Attack { atk_param_id: 10200220, throw_flag: 1, guard_atk_rate: 30, disable_guard: 1, disable_just_guard: 1, ..Default::default() };
     assert_eq!(guard(&wolf, None, &grab), Guarded::Hit, "the sword cannot guard a grab");
     wolf.anim = "a076_405020".into();
     wolf.t = 1.0;
+    wolf.prev_t = wolf.t - 1.0 / 60.0;
     assert_eq!(guard(&wolf, Some(76000), &grab), Guarded::Block, "the umbrella can");
 }
 

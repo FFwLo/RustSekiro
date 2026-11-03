@@ -104,7 +104,11 @@ pub fn answers(h: &mut Host, a: &Actor, p: &Player, combat: &Combat, config: &cr
     set(206, None, throw);
     set(276, None, a.hp <= 0.0 && a.state == "Grabbed" && anim && d.flag(&a.anim, a.t, crate::player::FLAG_THROW_TYPE5));
     // The SpEffects on Wolf (the anim's TAE ones and the timed ones) and their behaviour refs.
-    let mut ids: Vec<i64> = d.sp_effects_at(&shown, t).into_iter().map(|(id, _)| id).collect();
+    // An anim's on the window its last update took (`Actor::step`, tae_window: a row starting on
+    // the step's end counts; a point test at the f32 clock missed the Loaded Axe's release ref
+    // 302 for a frame, emu_items), a procedural clip's at its time.
+    let at: crate::tae_window::At = if anim { a.step() } else { t.into() };
+    let mut ids: Vec<i64> = d.sp_effects_at(&shown, at).into_iter().map(|(id, _)| id).collect();
     // A TAE SpEffect is still seen one TAE frame (2 game ticks) after its window: the recordings'
     // attack out of DeflectGuardToStand* (ref 231, frames 0-9 = 18 ticks) is GroundAttackCombo1Reverse
     // up to 19 ticks after W_DeflectGuardToStand, Combo1 from 20 (as the buffered inputs' one TAE
@@ -345,8 +349,11 @@ impl Plugin for HksWolfPlugin {
             warn!("SHINOBI_HKS: no extracted c0000.hkx / action/script / clip_lengths: player.rs alone");
             return;
         };
+        // The script's clip goes in with decide's, before `clear_fresh` and `resolve`: a clip it
+        // plays there takes its first step in this tick's advance (kb/frame-coverage.md "One
+        // frame's order"); after `clear_fresh` it waited a tick (Loaded Axe a frame late).
         app.insert_non_send(script)
-            .add_systems(FixedUpdate, ((crate::player::throw_check, tick_script).chain().before(crate::actor::ActorSet::Decide), (land_script, apply_script).chain().after(crate::actor::ActorSet::Decide).before(crate::actor::ActorSet::Advance)));
+            .add_systems(FixedUpdate, ((crate::player::throw_check, tick_script).chain().before(crate::actor::ActorSet::Decide), (land_script, apply_script).chain().after(crate::actor::ActorSet::Decide).before(crate::actor::clear_fresh).before(crate::actor::ActorSet::Resolve)));
     }
 }
 
