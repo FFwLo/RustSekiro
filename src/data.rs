@@ -1779,6 +1779,17 @@ pub fn prediction_observe_time(bullet_id: i64) -> f32 {
         .unwrap_or(0.0)
 }
 
+/// AtkParam_Npc guardCutCancelRate (+0x7c, s8) of an NPC attack: -30 on 2,017 of 2,396 rows, 0 on
+/// the rest. The defender's guard-cut multiplier is (100 + it) / 100 (EnemyIns FUN_140a12d60,
+/// PlayerIns FUN_140a24ba0 times the weapon's own guardCutCancelRate +0xf7).
+pub fn atk_guard_cut_cancel(atk_param_id: i64) -> f32 {
+    static NPC: std::sync::OnceLock<HashMap<i64, f32>> = std::sync::OnceLock::new();
+    NPC.get_or_init(|| full_param("AtkParam_Npc").iter().map(|(id, r)| (*id, r["guardCutCancelRate"].as_f64().unwrap_or(0.0) as f32)).collect())
+        .get(&atk_param_id)
+        .copied()
+        .unwrap_or(0.0)
+}
+
 pub fn super_armor_damage(pc: bool, atk_param_id: i64) -> f32 {
     static NPC: std::sync::OnceLock<HashMap<i64, f32>> = std::sync::OnceLock::new();
     static PC: std::sync::OnceLock<(f32, HashMap<i64, f32>)> = std::sync::OnceLock::new();

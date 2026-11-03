@@ -229,7 +229,7 @@ pub(crate) fn knockback_facing(dir: Vec3, attacker_forward: Vec3) -> f32 {
 /// with the reversed knockback direction and FUN_140ba3190(-1, leftover / ArgA, ArgA): the
 /// whole leftover over ArgA seconds). Only Wolf's sword attacks carry it (133 anims, ArgA 0.09);
 /// with NpcParam knockbackRate_vsPlayer_* 75 (c1180) or 100 (45 rows) Wolf bounces off.
-/// gap: the exe starts it one frame later (+0x45), and skips it for hits with the damage struct's
+/// The one-frame late start (+0x45) is `Actor::kb_wait`, as for every knockback. gap: the exe skips it for hits with the damage struct's
 /// +0x164 set (that path defers it through TAE 226) - neither is modelled.
 /// Hit stop on a contact (hit, block or deflect alike: the defender's damage module
 /// FUN_140b6f690 -> FUN_140b6e5a0 with no outcome test). Attacker (FUN_140b9cd90, read here):
@@ -1316,12 +1316,22 @@ pub(crate) fn damage_rates(combat: &Combat, atk: &Attack, da: &Actor) -> [f32; 5
 /// Lotus fire 100, the Lilac magic 100) when it guards, else the sword's (round 73: the umbrella
 /// leaked the sword's fire / dark / magic chip).
 /// `rates`: the defender's own damage cuts ([`damage_rates`]).
+/// A block's cut is times (100 + the attack's AtkParam_Npc guardCutCancelRate) / 100 x (100 +
+/// the guarding weapon's guardCutCancelRate) / 100 (PlayerIns FUN_140a24ba0): most NPC rows carry
+/// -30, so a blocked General slash (10200100, 686 phys at this save) costs 205 HP (tools/emu-cases
+/// `hits`, g_guard; the same run with the row's -30 set to 0 costs none). A deflect's
+/// JustGuardCutRate is not cut (the exe's deflect of the same slash: 0 HP).
 pub(crate) fn guard_chip(combat: &Combat, atk: &Attack, deflect: bool, weapon: i64, rates: [f32; 5]) -> f32 {
     let full = crate::data::weapon_row(weapon);
     let w = full.as_ref().unwrap_or_else(|| combat.param("EquipParamWeapon", weapon));
+    let cancel = if deflect {
+        1.0
+    } else {
+        (100.0 + crate::data::atk_guard_cut_cancel(atk.atk_param_id)) / 100.0 * (100.0 + w["guardCutCancelRate"].as_f64().unwrap_or(0.0) as f32) / 100.0
+    };
     let pass = |e: &str| {
         let key = if deflect { format!("{e}JustGuardCutRate") } else { format!("{e}GuardCutRate") };
-        (1.0 - w[key.as_str()].as_f64().unwrap_or(100.0) as f32 / 100.0).clamp(0.0, 1.0)
+        (1.0 - w[key.as_str()].as_f64().unwrap_or(100.0) as f32 / 100.0 * cancel).clamp(0.0, 1.0)
     };
     atk.atk_phys * pass("phys") * rates[0] + atk.atk_mag * pass("mag") * rates[1] + atk.atk_fire * pass("fire") * rates[2] + atk.atk_thun * pass("thun") * rates[3] + atk.atk_dark * pass("dark") * rates[4]
 }
@@ -2067,6 +2077,14 @@ fn resolve(
                             aa.add_posture(atk.repel_victory_stam_damage_attacker);
                         }
                         let broken = da.posture_broken();
+                        // A guard break (hit record +0x1c4) pushes with KnockBackParam guardBrake_*
+                        // (row 1: 0.06 / 0.54 s), not guard_*: the exe's g_break duel moves Wolf
+                        // 0.0544 m a frame decaying over 32 frames from the same 1.08 m as the block,
+                        // whose guard_S (0.06 / 0.3 s) gives 0.0854 over 18 (docs/kb/damage.md
+                        // "Landed hits"). gap: an enemy's guard break is not traced in the exe.
+                        if broken {
+                            apply_knockback(&combat, da, atf.translation, dtf.translation, Some(aa.forward()), atk.knockback_guard, "guardBrake", "knockbackRate_vsPlayer_Guard");
+                        }
                         // HKS ExecAttackAddBound: a blocked NPC attack with guard bound type BOUND_ADD01-04
                         // (11-14) flinches additively (AttackGuardBound_Add0N = anim 9700 + N - 1).
                         if aa.side == Side::Enemy && !bullet && (11..=14).contains(&atk.deflect_action) {
@@ -2511,6 +2529,11 @@ mod tests {
         assert_eq!(guard_chip(&c, &sword, false, 5000, [1.0; 5]), 0.0);
         let dark = Attack { atk_dark: 40.0, ..Default::default() };
         assert_eq!(guard_chip(&c, &dark, true, 5000, [1.0; 5]), 0.0);
+        // The General's slash 10200100 (guardCutCancelRate -30): a block lets 30 % of its
+        // physical damage through, a deflect none (tools/emu-cases `hits`).
+        let slash = Attack { atk_phys: 100.0, atk_param_id: 10200100, ..Default::default() };
+        assert!((guard_chip(&c, &slash, false, 5000, [1.0; 5]) - 30.0).abs() < 1e-3, "{}", guard_chip(&c, &slash, false, 5000, [1.0; 5]));
+        assert_eq!(guard_chip(&c, &slash, true, 5000, [1.0; 5]), 0.0);
         // Round 74: Wolf's own SpEffect cuts (damage_rates) apply through the guard too.
         let half_fire = guard_chip(&c, &fire, false, 5000, [1.0, 1.0, 0.5, 1.0, 1.0]);
         assert!((half_fire - 10.05).abs() < 1e-3, "{half_fire}");

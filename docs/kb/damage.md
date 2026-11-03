@@ -446,3 +446,69 @@ Not covered (gap):
   was not run; Sv1 keeps EquipParamWeapon base x AtkParam correction.
 - posture break itself (FUN_140bd4e20 threshold, what the HKS resets, timers) beyond the TAE 960
   clamp; the setter of the no-regen bit 21.
+
+## Landed hits (2026-11-03, topic hits)
+
+Emulator pilot `tools/emu-cases hits` (kb/emulator-pilot.md row "hits"): whole duel frames on the
+2026-11-03 snapshot with the hit manager stepped, writes `extracted/emu/hits_*.json`; test
+`landed_hits_match_the_exe` in `src/sim_tests/emu_hits.rs`.
+
+**Where the hit test runs.** The hit manager DAT_143d77ef0 is stepped by FUN_1409a0dc0(mgr, dt),
+called from MoveMapStep's task FUN_140a746f0 (task group 0x4b), outside the chr frames and the four
+WorldChrMan tasks (why the acttrace duel landed nothing). Per frame: attack records (list at +0)
+updated by FUN_14099c530, shape test FUN_14099b3f0, results FUN_14099b0e0, queue FUN_14099cbe0;
+delivery FUN_1409a1bc0 -> FUN_1409956d0 -> FUN_140b6f690: resolve FUN_140b6c880, apply
+FUN_140b6e6a0, stops FUN_140b6e5a0 (attacker FUN_140b9cd90, defender FUN_140b9cfb0). The harness
+runs, per frame: hit step, pre tasks, the General's chr frame, Wolf's, post tasks. So the hit of
+frame h sees the poses after frame h-1, and its reaction clip starts in frame h+1.
+
+**Hit record** (on the stack, read inside the hooks): +0..+0x10 the five amounts, +0x40 attack
+flick, +0x50 / +0x54 the AtkParam id pair, +0x68 knockback distance, +0x164 guarded, +0x1c4 guard
+break, +0x1c6 broken, +0x1c7 deflected, +0x1e0 HP damage (int), +0x1e4 posture damage, +0x150 /
++0x158 direction, +0x231 flags.
+
+**Cases** (22 duels, 1,440 frames): the General's forced slash 3000 (AtkParam_Npc 10200100) on Wolf idle, guard
+held, guard held at 40 of 420 posture, idle at 40, guard tapped 1-28 frames before contact (14
+taps), the slash with the row's guardCutCancelRate zeroed; Wolf's slash (AtkParam_Pc 5000010) on
+the General open, guarding, deflecting (SpEffect 200220). The save scales the General's attack by
+k = 686.08 / 128 = 5.36 (area SpEffect); Sv1 compares in unscaled points.
+
+| case | verdict | HP | posture | knockback | Wolf's / the General's reaction |
+|---|---|---|---|---|---|
+| slash on idle Wolf | hit | 686 | 192 | 1.20 m | a000_100202 |
+| guard held | block | 205 | 152 | 1.08 m | a050_120101 (V1/V2 random) |
+| guard held, posture 40 | guard break | 205 | 152 | 1.08 m | a050_190100, posture back to 420 two frames on |
+| idle, posture 40 | broken | 686 | 192 | | a000_190000 |
+| guard tapped, clip t 0.017-0.2 | deflect | 0 | 76 | 0.5 m | a050_130101 |
+| guard tapped, t >= 0.217, or gone on to a050_203010 | block | 205 | 152 | 1.08 m | a050_120101 |
+| tapped 1 frame before | hit (guard clip not yet started) | 686 | 192 | | a000_100202 |
+| Wolf on the open General | hit | 578 | 216 | 1.0 m | a000_008010 |
+| Wolf on the guarding General | block | 0 | 216 | 1.0 m | 8500 |
+| Wolf on the deflecting General | deflect | 0 | 108 | 0.4 m | |
+
+No hit stop in any case: the General's rows have hitStopTime 0 (Sv1's table agrees).
+
+Matched as it was: verdicts, reaction clips, HP / posture ratios (128 / 36 / 28 x k), knockback
+speeds and decay of a hit and a block (within 1 %), the deflect window's edges by guard clip time
+(deflect to 0.2, block from 0.217) and the late-tap block on a050_203010.
+
+Fixed in Sv1:
+- block chip: `combat::guard_chip` multiplies the guard cut by the attack's guardCutCancelRate
+  ((100 + atk) / 100; EnemyIns FUN_140a12d60, PlayerIns FUN_140a24ba0 also x the weapon's +0xf7):
+  10200100 has -30, so Wolf's 100 % physical guard lets 30 % through. Sv1 chip 0 -> 38 (x k = 205,
+  the exe's 205); the copy with the row's -30 zeroed blocks for 0, as Sv1 did.
+- knockback starts one frame after the reaction (exe h+2, Sv1 was h+1): `Actor::kb_wait`.
+- a guard break pushes with KnockBackParam guardBrake_* (row 1: 0.06 / 0.54 s) instead of guard_S
+  (0.06 / 0.3): from the same 1.08 m, 0.0544 m a frame decaying over 32 frames (Sv1 was 0.0856 over
+  18; now 0.0545).
+
+Not covered (gap):
+- input latency: the exe plays a pressed guard's first clip step the frame after the pad press,
+  Sv1 the same frame; so the earliest taps (guard t 0.017 / 0.033) have no Sv1 twin.
+- contact pose: the slash meets Wolf at clip time 0.683 idle / 0.667 guarding in the exe, 0.650 /
+  0.683 in Sv1 (hurt capsule geometry); the exe's damage and reaction come a frame later relative
+  to the contact pose than Sv1's (structural: the hit step runs before the chr frames).
+- the enemy-side numbers (Wolf -> General) are recorded but not tested; an enemy's guard break
+  knockback is not traced (Sv1 uses guardBrake for both sides).
+- the General's AI dodges Wolf's slash, and a moved General's ragdoll hurt shapes stay at the
+  snapshot spot, so these duels move the attacker and turn the defender's AI off.
