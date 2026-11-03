@@ -18,6 +18,7 @@ use serde_json::{json, Value};
 
 mod camwall;
 mod hks;
+mod damage;
 mod snapshot;
 mod trace;
 
@@ -854,6 +855,9 @@ fn main() {
     }
     if want.contains(&"hks_env") {
         hks::env_cases(&mut Emu::new(exe, snap()), out);
+    }
+    if want.iter().any(|w| w.starts_with("damage")) {
+        damage::run(&|| Emu::new(exe, snap()), out, &want);
     }
     if on("hit_stop") {
         let mut emu = Emu::new(exe, None);
