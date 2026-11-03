@@ -12,7 +12,8 @@
 //!     SpEffect rates (1.0 for these characters, not modelled).
 //!   HP: player = weapon attackBasePhysics x atkPhysCorrection / 100; enemy = atkPhys.
 //!
-//! Deflect = any SpEffect with stateInfo 158 active on the defender (player 105010, NPC 200220).
+//! Deflect = a guarded hit whose flick power the guard's flick defence matches (FUN_140b6c880,
+//! `guard_verdict`): the deflect SpEffects (player 105010, NPC 200220) lift it 20 -> 40.
 //!
 //! Reactions, from the HKS (c0000 player, c9997 shared NPC):
 //!   player guarding: deflect -> StandDeflectHard{Small|Middle|Large}_{L|R}, block ->
@@ -30,7 +31,7 @@ use bevy::prelude::*;
 
 use crate::actor::{Actor, ActorSet, Side, data_for};
 use crate::config::GameConfig;
-use crate::data::{Attack, Combat, STATE_INFO_JUST_GUARD, TAE_FPS};
+use crate::data::{Attack, Combat, TAE_FPS};
 use crate::enemy::Enemy;
 use crate::hud::CombatLog;
 use crate::anim::Hurtboxes;
@@ -978,19 +979,178 @@ pub(crate) fn no_sync_add_flinches(level: i64, aerial: bool, rejected: bool) -> 
     level == 8 || aerial || rejected
 }
 
-/// Guard arc half-angle [deg]: the active ShieldBlock flag's ArgB (exe FUN_140b6ab40: blocked
-/// when facing . attack dir < cos(ArgB + 180 deg); ArgB 0 acts like 90 = the front half).
-pub(crate) fn guard_half_angle(d: &crate::data::CharData, a: &Actor, gates: Option<&[i64]>) -> f32 {
-    // NPCs: NpcParam guardAngle (c1020 60) - the angle vfunc is per class (EnemyIns vs PlayerIns).
-    if a.side == Side::Enemy && a.guard_angle > 0.0 {
-        return a.guard_angle;
+/// Guard arc half-angle [deg] (FUN_140b6c880, 140b6.c: guarded when facing . attack dir <
+/// cos(angle + 180 deg), the angle from vfunc 0x258; 0 leaves the threshold at 0 = the front
+/// half). An NPC's vfunc reads NpcParam guardAngle (+0x110; c1020 60), Wolf's the weapon's
+/// EquipParamWeapon guardAngle: 0 on every katana, 180 on the Loaded Umbrella 76000-76300 (all
+/// round). Run in tools/emu-cases (guard_resolution.json): Wolf guards to 89 deg and not at 91,
+/// the General to 59 and not at 61. The ShieldBlock flag's ArgB is not an angle: it is the guard's
+/// behavior judge (+0xb08: Wolf 90, the umbrella 100, NPCs 900, the c1180 armour 800;
+/// `shield_block`). gap: the umbrella's 180 is read from its row, not run (the snapshot has no
+/// umbrella equipped).
+pub(crate) fn guard_half_angle(a: &Actor) -> f32 {
+    let angle = match a.side {
+        Side::Enemy => a.guard_angle,
+        Side::Player => {
+            let weapon = if crate::prosthetic::hks::sub_guard(&a.state) { UMBRELLA_WEAPON } else { 5000 };
+            crate::data::weapon_row(weapon).and_then(|w| w["guardAngle"].as_f64()).unwrap_or(0.0) as f32
+        }
+    };
+    if angle == 0.0 {
+        90.0
+    } else {
+        angle
     }
-    // The shield-block flag under the defender's live gates (`event_gates`).
-    d.events_at_on(&a.anim, a.t, gates)
-        .find(|e| e.kind == 0 && e.flag_type() == Some(FLAG_SHIELD_BLOCK))
-        .and_then(|e| e.arg_i64("ArgB"))
-        .filter(|&b| b != 0)
-        .map_or(90.0, |b| b as f32)
+}
+
+/// The Loaded Umbrella's EquipParamWeapon row (76000-76300 share guardAngle 180, guardBaseRepel
+/// 20 and behaviorVariationId 7600 but 76200 / 76300's 7602 / 7603).
+const UMBRELLA_WEAPON: i64 = 76000;
+
+/// The live ShieldBlock flag (TAE ChrActionFlag 3, base or additive layer, under the defender's
+/// gates): its ArgB, the guard's behavior judge FUN_140b51b70 case 3 stores at module0 +0xb08
+/// with bit 2 of +0x70 (Wolf's guard 90, the umbrella 100, NPCs 900).
+pub(crate) fn shield_block(d: &crate::data::CharData, a: &Actor, gates: Option<&[i64]>) -> Option<i64> {
+    let on = |key: &str, t: f32| d.events_at_on(key, t, gates).find(|e| e.kind == 0 && e.flag_type() == Some(FLAG_SHIELD_BLOCK)).map(|e| e.arg_i64("ArgB").unwrap_or(0));
+    if a.anim.is_empty() {
+        return None;
+    }
+    on(&a.anim, a.t).or_else(|| (!a.add_anim.is_empty()).then(|| on(&a.add_anim, a.add_t)).flatten())
+}
+
+/// The guard row a judge stands for (FUN_140b6c880 +0x1d0 = vfunc 0x1c0(chr, judge, slot)):
+/// BehaviorParam_PC 100000000 + the weapon's behaviorVariationId x 1000 + judge for Wolf
+/// (105000090 -> AtkParam_Pc 5000090, the umbrella's 107600100 -> 7600100), BehaviorParam
+/// 200000000 + NpcParam behaviorVariationId x 1000 + judge for an NPC (210200900 -> 10200900).
+pub(crate) fn guard_row(combat: &Combat, a: &Actor, judge: i64, weapon: i64) -> Option<crate::data::AtkGuard> {
+    let pc = a.side == Side::Player;
+    let var = if pc { crate::data::weapon_row(weapon).and_then(|w| w["behaviorVariationId"].as_i64()).unwrap_or(5000) } else { combat.npc(a)["behaviorVariationId"].as_i64().unwrap_or(0) };
+    let base = if pc { 100_000_000 } else { 200_000_000 };
+    crate::data::behavior_ref(pc, base + var * 1000 + judge).and_then(|r| crate::data::atk_guard(pc, r))
+}
+
+/// The guard-relevant AtkParam fields of an attack: its full row when the param export has it,
+/// else the combat export's (vsGuardAttribute0 for both attributes).
+pub(crate) fn atk_guard_of(atk: &Attack, pc: bool) -> crate::data::AtkGuard {
+    crate::data::atk_guard(pc, atk.atk_param_id).unwrap_or(crate::data::AtkGuard {
+        guard_atk_rate: atk.guard_atk_rate,
+        guard_atk_rate_correction: atk.guard_atk_rate_correction,
+        disable_guard: [atk.disable_guard != 0; 2],
+        disable_just_guard: [atk.disable_just_guard != 0; 2],
+        ..Default::default()
+    })
+}
+
+/// Strength against every weapon's overStrength in the flick sums: the snapshot's Wolf has 10
+/// (game data +0x260) and every weapon row 99, so clamp(10 - 99, 0, 10) adds 0. gap: RSekiro has
+/// no stats.
+const WOLF_STRENGTH: i64 = 10;
+
+/// The attack's flick power (hit +0x40, FUN_14084c650): an NPC row's guardAtkRate (+0x62: 30 on
+/// 2154 rows, 100 on 213 - the Demon's blasts, the serpent's body - 0 / 20 on a few templates);
+/// Wolf's (FUN_14084c7b0) (int)(guardAtkRateCorrection / 100 x the weapon's attackBaseRepel) +
+/// clamp(strength - overStrength, 0, 10): 300 x 10 = 30 on his sword, 900 -> 90 on the
+/// deathblow starts, 0 on the dummies.
+pub(crate) fn attack_flick(g: &crate::data::AtkGuard, pc: bool, weapon: i64) -> i32 {
+    if !pc {
+        return g.guard_atk_rate as i32;
+    }
+    let w = crate::data::weapon_row(weapon);
+    let repel = w.as_ref().and_then(|w| w["attackBaseRepel"].as_f64()).unwrap_or(10.0) as f32;
+    let over = w.as_ref().and_then(|w| w["overStrength"].as_i64()).unwrap_or(99);
+    (g.guard_atk_rate_correction / 100.0 * repel) as i32 + (WOLF_STRENGTH - over).clamp(0, 10) as i32
+}
+
+/// The guard's flick defence (FUN_140842fb0, guarded): the guard row's base - Wolf's
+/// (FUN_14084ce20) (int)(guardBreakCorrection / 100 x the weapon's guardBaseRepel) +
+/// clamp(strength - overStrength, 0, 10) = 100 x 20 = 20, an NPC's (FUN_14084cd80) its row's
+/// guardBreakRate (20 on 52 of the 57 x900 rows, 0 on 5) - raised to the largest defFlickPower
+/// of the SpEffects worn, whatever their stateInfo (FUN_140bfc440: 105010 / 200220 / 900001
+/// 40, 1130 65). gap: the base's product of guardDefFlickPowerRate (Wolf's stateInfo 158 / 204
+/// rows) and FUN_140bfccc0's NPC rates are taken as 1: every such row has 1 (only the test rows
+/// 0 / 1903 / 1905, stateInfo 0, differ). A missing guard row counts as the common 20.
+pub(crate) fn guard_flick(row: Option<&crate::data::AtkGuard>, pc: bool, weapon: i64, worn: impl IntoIterator<Item = i64>) -> i32 {
+    let base = match (row, pc) {
+        (None, _) => 20,
+        (Some(g), false) => g.guard_break_rate as i32,
+        (Some(g), true) => {
+            let w = crate::data::weapon_row(weapon);
+            let repel = w.as_ref().and_then(|w| w["guardBaseRepel"].as_f64()).unwrap_or(20.0) as f32;
+            let over = w.as_ref().and_then(|w| w["overStrength"].as_i64()).unwrap_or(99);
+            (g.guard_break_correction / 100.0 * repel) as i32 + (WOLF_STRENGTH - over).clamp(0, 10) as i32
+        }
+    };
+    worn.into_iter().filter_map(crate::data::sp_cycle).map(|c| c.flick as i32).fold(base, i32::max)
+}
+
+/// What a hit on a guard comes to.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Verdict {
+    Deflect,
+    Block,
+    Hit,
+}
+
+/// FUN_140b6c880's verdict (+0x164 guarded, +0x1c7 deflected): a guarded hit (the ShieldBlock
+/// flag, inside the arc or isAllDirGuard, not a ghost attack) whose flick power the guard's flick
+/// defence matches is deflected, unless the attack's disableJustGuard for the guard row's
+/// guardAttribute is set - then it lands; a stronger one is blocked unless disableGuard is set.
+/// guardAttribute 0 reads the vsGuardAttribute0 pair, 1 (the umbrella 7600100, the c1180 /
+/// c1070 armour guards, the shields) the vsGuardAttribute1 pair (60 sweeps and 111 thrusts that
+/// attribute 0 cannot block are 0 / 0 there), 2+ neither. So the deflect window is no stateInfo
+/// test: Wolf's 105010 lifts his flick defence 20 to 40, over an NPC slash's 30 but under the
+/// Demon's blast 100 (blocked in the window), and a 20 attack is deflected by any guard.
+pub(crate) fn guard_verdict(guarded: bool, flick_def: i32, flick_atk: i32, attribute: i64, g: &crate::data::AtkGuard) -> Verdict {
+    let (dis_guard, dis_just) = match attribute {
+        0 | 1 => (g.disable_guard[attribute as usize], g.disable_just_guard[attribute as usize]),
+        _ => (false, false),
+    };
+    match (guarded, flick_def >= flick_atk) {
+        (false, _) => Verdict::Hit,
+        (true, true) if dis_just => Verdict::Hit,
+        (true, true) => Verdict::Deflect,
+        (true, false) if dis_guard => Verdict::Hit,
+        (true, false) => Verdict::Block,
+    }
+}
+
+/// A hit's guard verdict, with what went into it.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct GuardCheck {
+    pub verdict: Verdict,
+    /// The attack's disableJustGuard for the guard's attribute is clear.
+    pub deflectable: bool,
+}
+
+/// FUN_140b6c880 on a hit travelling along `atk_dir` (attacker to defender) into `da`: guarded
+/// when the defender's ShieldBlock flag is live (`shield_block`, under its gates: the Shura /
+/// servant's armour guard under 957 / 220062, the shield's 956), the attack comes inside the
+/// guard arc (`guard_half_angle`) or is isAllDirGuard, and is no ghost attack (isGhostAtk, unless
+/// the defender wears stateInfo 157); then the flick contest (`guard_verdict`) between the guard
+/// row's flick defence with the SpEffects worn (TAE on the base and additive anims, `worn_sp`)
+/// and the attack's flick. `atk_weapon` / `def_weapon`: the EquipParamWeapon rows of Wolf's
+/// side. gap: the parts guard (a hit on a guarding part, FUN_1410c66a0, +0x1ce) is not ported.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn guard_check(combat: &Combat, da: &Actor, clash: &[(i64, f32)], atk: &Attack, pc_atk: bool, atk_weapon: i64, def_weapon: i64, atk_dir: Vec3) -> GuardCheck {
+    let dd = data_for(combat, da);
+    let gates = event_gates(combat, da, clash);
+    let judge = shield_block(dd, da, gates.as_deref());
+    let row = judge.and_then(|j| guard_row(combat, da, j, def_weapon));
+    let attribute = row.map_or(0, |g| g.guard_attribute);
+    let ag = atk_guard_of(atk, pc_atk);
+    let mut worn: Vec<i64> = dd.sp_effects_at(&da.anim, da.t).iter().map(|s| s.0).collect();
+    if !da.add_anim.is_empty() {
+        worn.extend(dd.sp_effects_at(&da.add_anim, da.add_t).iter().map(|s| s.0));
+    }
+    worn.extend(worn_sp(da, clash));
+    let ghost_ok = !ag.ghost || worn.iter().any(|&id| crate::data::sp_cycle(id).is_some_and(|c| c.state_info == 157));
+    // The guard arc gates deflects as well as blocks: an attack from behind lands.
+    let in_arc = ag.all_dir || da.forward().angle_between(-atk_dir.with_y(0.0).normalize_or_zero()).to_degrees() <= guard_half_angle(da);
+    let guarded = judge.is_some() && in_arc && ghost_ok;
+    let flick_def = guard_flick(row.as_ref(), da.side == Side::Player, def_weapon, worn);
+    let verdict = guard_verdict(guarded, flick_def, attack_flick(&ag, pc_atk, atk_weapon), attribute, &ag);
+    let deflectable = !matches!(attribute, 0 | 1) || !ag.disable_just_guard[attribute as usize];
+    GuardCheck { verdict, deflectable }
 }
 
 /// Samples of the attack capsule across one tick (previous position -> current).
@@ -1554,17 +1714,23 @@ fn resolve(
                     continue;
                 }
 
-                // Perilous attacks (AtkParam disableGuard / disableJustGuard) go through
-                // a block, and sweeps/grabs through a deflect too.
-                let deflectable = atk.disable_just_guard == 0;
-                let blockable = atk.disable_guard == 0;
-                // The guard arc gates deflects as well as blocks: an attack from behind lands.
-                let in_guard_arc = !da.anim.is_empty()
-                    && da.forward().angle_between(-to_def.normalize_or_zero()).to_degrees()
-                        <= guard_half_angle(dd, &da, event_gates(&combat, &da, de.as_ref().map_or(&[][..], |e| &e.clash[..])).as_deref());
-                // The deflect window comes from the base anim or the additive layer
-                // (AddHardDeflectGuard, HKS ref 228).
-                let (jk, jt) = if !da.add_anim.is_empty() && dd.has_state_info(&da.add_anim, da.add_t, STATE_INFO_JUST_GUARD) {
+                // FUN_140b6c880 (run in tools/emu-cases, guard_resolution.json): the hit is guarded
+                // when the defender's ShieldBlock flag is live (the Shura / servant's armour guard
+                // under 957 / 220062 and the shield's 956: gated by its live SpEffects), the
+                // attack comes inside the guard arc (or is isAllDirGuard) and is no ghost attack
+                // (isGhostAtk, unless the defender wears stateInfo 157). Then the flick contest
+                // (`guard_verdict`) picks deflect, block or hit. Before: a deflect was any
+                // stateInfo 158 SpEffect (also the umbrella hold's 107650 and the Shura's 1040 /
+                // 3372, flick 0) with no guard flag needed, and the perilous flags were always the
+                // vsGuardAttribute0 pair.
+                let def_weapon = if umbrella { tool_weapon.unwrap_or(UMBRELLA_WEAPON) } else { 5000 };
+                let atk_weapon = if crate::player::is_tool_anim(&aa.anim) { tool_weapon.unwrap_or(5000) } else { 5000 };
+                let gc = guard_check(&combat, &da, de.as_ref().map_or(&[][..], |e| &e.clash[..]), &atk, aa.side == Side::Player, atk_weapon, def_weapon, to_def);
+                let (verdict, deflectable) = (gc.verdict, gc.deflectable);
+                // The deflect window (for the log): the TAE SpEffect with a flick power, on the base
+                // anim or the additive layer (AddHardDeflectGuard, HKS ref 228).
+                let flick_at = |key: &str, t: f32| dd.events_at(key, t).find(|e| e.kind == 67 && crate::data::sp_cycle(e.arg_i64("SpEffectID").unwrap_or(0)).is_some_and(|c| c.flick > 0)).map(|e| (e.end - e.start, t - e.start));
+                let (jk, jt) = if !da.add_anim.is_empty() && flick_at(&da.add_anim, da.add_t).is_some() {
                     (da.add_anim.clone(), da.add_t)
                 } else {
                     (da.anim.clone(), da.t)
@@ -1576,32 +1742,22 @@ fn resolve(
                 let reuse = tick_outcome.filter(|o| !bullet && deflectable && matches!(o, Outcome::Deflect { .. }));
                 let outcome = if let Some(o) = reuse {
                     o
-                } else if defending && in_guard_arc && deflectable && dd.has_state_info(&jk, jt, STATE_INFO_JUST_GUARD) {
-                    let w = dd
-                        .events_at(&jk, jt)
-                        .find(|e| {
-                            e.kind == 67
-                                && dd.sp_effects.get(&e.arg_i64("SpEffectID").unwrap_or(0).to_string()).is_some_and(|s| s.state_info == STATE_INFO_JUST_GUARD)
-                        })
-                        .map(|e| (e.end - e.start, jt - e.start))
-                        .unwrap_or((0.0, 0.0));
-                    let rate = dd
-                        .sp_effects_at(&jk, jt)
-                        .iter()
-                        .find(|(id, _)| (105020..=105023).contains(id))
-                        .map(|(_, s)| if s.def_stamina_attack_rate > 0.0 { s.def_stamina_attack_rate } else { 1.0 })
-                        .unwrap_or(1.0);
-                    Outcome::Deflect { window: w.0, at: w.1, rate }
-                } else if defending
-                    && blockable
-                    // The Shura / servant's armour guard (957, 220062) and the shield's (956):
-                    // gated by the defender's live SpEffects.
-                    && dd.events_at_on(&da.anim, da.t, event_gates(&combat, &da, de.as_ref().map_or(&[][..], |e| &e.clash[..])).as_deref()).any(|e| e.kind == 0 && e.flag_type() == Some(FLAG_SHIELD_BLOCK))
-                    && in_guard_arc
-                {
-                    Outcome::Block
                 } else {
-                    Outcome::Hit
+                    match verdict {
+                        Verdict::Deflect => {
+                            let w = flick_at(&jk, jt).unwrap_or((0.0, 0.0));
+                            // The guard-spam chain's defStaminaAttackRate (FUN_140bfc490: stateInfo 204).
+                            let rate = dd
+                                .sp_effects_at(&jk, jt)
+                                .iter()
+                                .find(|(id, _)| (105020..=105023).contains(id))
+                                .map(|(_, s)| if s.def_stamina_attack_rate > 0.0 { s.def_stamina_attack_rate } else { 1.0 })
+                                .unwrap_or(1.0);
+                            Outcome::Deflect { window: w.0, at: w.1, rate }
+                        }
+                        Verdict::Block => Outcome::Block,
+                        Verdict::Hit => Outcome::Hit,
+                    }
                 };
                 // An enemy bullet's own effect (Bullet sfxId_Hit / sfxId_Flick): the repel one when
                 // guarded or deflected.
@@ -1914,7 +2070,10 @@ fn resolve(
                         }
                         let dact = atk.deflected_action;
                         match aa.side {
-                            _ if bullet => {}
+                            // A guard break bounces nobody: FUN_140b698d0 hands the attacker
+                            // reaction 99999 (hit) instead of 1017 (guarded) when the block
+                            // empties the guard (guard_resolution.json, posture 191 / 100 / 1).
+                            _ if bullet || broken => {}
                             Side::Enemy => {
                                 if let Some(e) = ae.as_deref_mut() {
                                     if dact == 1 || dact == 2 {

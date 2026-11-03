@@ -440,6 +440,14 @@ fn one_i64() -> i64 {
     1
 }
 
+fn thirty() -> i64 {
+    30
+}
+
+fn three_hundred() -> f32 {
+    300.0
+}
+
 #[derive(Deserialize, Clone, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct Attack {
@@ -542,6 +550,12 @@ pub struct Attack {
     pub disable_guard: i64,
     #[serde(rename = "disableJustGuard_vsGuardAttribute0", default)]
     pub disable_just_guard: i64,
+    /// guardAtkRate / guardAtkRateCorrection: the attack's flick power (combat::attack_flick),
+    /// used when the full AtkParam row is missing.
+    #[serde(default = "thirty")]
+    pub guard_atk_rate: i64,
+    #[serde(default = "three_hundred")]
+    pub guard_atk_rate_correction: f32,
     /// 0 slash, 1 strike, 2 thrust.
     #[serde(default)]
     pub atk_type: i64,
@@ -592,7 +606,7 @@ pub struct Attack {
     #[serde(default)]
     pub throw_flag: i64,
     /// AtkParam trackType (+0x193, "attack trajectory"): the exe's i-frame test FUN_140b68a50
-    /// (140b6.c:4234-4241) skips the hit when the defender's TAE 954 IFrameType bit of this value
+    /// (<decomp ref>) skips the hit when the defender's TAE 954 IFrameType bit of this value
     /// is set: 1 sweeps, 2 general, 6 thrusts, 7 grabs (round 31).
     #[serde(default)]
     pub track_type: i64,
@@ -1180,7 +1194,7 @@ impl EnemyFile {
 /// BehaviorParam `category` of an NPC hit's behaviour row (200000000 + behaviorVariationId *
 /// 1000 + judge), read once from extracted/json/params/BehaviorParam.json (the per-chr export
 /// carries no NPC behaviour rows). The exe's damage type for a guarded NPC attack comes from
-/// it (FUN_140b698d0, 140b6.c:5487-5534: category 6 -> GUARDED_BOUND_ENEMY1 1008 / NO_BOUND 1019,
+/// it (FUN_140b698d0, <decomp ref>: category 6 -> GUARDED_BOUND_ENEMY1 1008 / NO_BOUND 1019,
 /// 7 -> ENEMY2 1009 / 1020, 8 -> ENEMY3 1010 / 1021), which c9997 ExecAttackJustBound /
 /// ExecAttackBound turn into the AttackBoundEnemy1-3 / AttackNoBoundEnemy1-3 clips. 0 when
 /// the row is missing.
@@ -1199,6 +1213,67 @@ pub fn behavior_category(row: i64) -> i64 {
     .get(&row)
     .copied()
     .unwrap_or(0)
+}
+
+/// refId of a BehaviorParam_PC (`pc`) or BehaviorParam row: the AtkParam a guard judge stands
+/// for (Wolf's sword guard 105000090 -> 5000090, the umbrella's 107600100 -> 7600100, the
+/// General's 210200900 -> 10200900).
+pub fn behavior_ref(pc: bool, row: i64) -> Option<i64> {
+    static T: std::sync::OnceLock<[HashMap<i64, i64>; 2]> = std::sync::OnceLock::new();
+    let t = T.get_or_init(|| ["BehaviorParam_PC", "BehaviorParam"].map(|n| full_param(n).into_iter().filter_map(|(id, r)| Some((id, r["refId"].as_i64()?))).collect()));
+    t[if pc { 0 } else { 1 }].get(&row).copied()
+}
+
+/// The AtkParam fields of the guard and flick contest (FUN_140b6c880), from
+/// extracted/json/params (the export leaves the vsGuardAttribute1 pair, isAllDirGuard and
+/// isGhostAtk out).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct AtkGuard {
+    /// guardAtkRate (+0x62): an NPC attack's flick power.
+    pub guard_atk_rate: i64,
+    /// guardAtkRateCorrection: Wolf's attack flick, % of the weapon's attackBaseRepel.
+    pub guard_atk_rate_correction: f32,
+    /// guardBreakRate (+0x64): an NPC guard row's flick defence.
+    pub guard_break_rate: i64,
+    /// guardBreakCorrection: Wolf's guard row's, % of the weapon's guardBaseRepel.
+    pub guard_break_correction: f32,
+    /// guardAttribute (+0x1c4) of a guard row: which disable pair the attack is judged by.
+    pub guard_attribute: i64,
+    /// disableGuard / disableJustGuard _vsGuardAttribute0 and 1.
+    pub disable_guard: [bool; 2],
+    pub disable_just_guard: [bool; 2],
+    /// isAllDirGuard (+0x86 bit 0): guardable from any direction.
+    pub all_dir: bool,
+    /// isGhostAtk (+0x86 bit 6): no guard unless the defender wears stateInfo 157.
+    pub ghost: bool,
+}
+
+pub fn atk_guard(pc: bool, id: i64) -> Option<AtkGuard> {
+    static T: std::sync::OnceLock<[HashMap<i64, AtkGuard>; 2]> = std::sync::OnceLock::new();
+    let t = T.get_or_init(|| {
+        ["AtkParam_Pc", "AtkParam_Npc"].map(|name| {
+            full_param(name)
+                .into_iter()
+                .map(|(id, r)| {
+                    let n = |k: &str| r[k].as_i64().unwrap_or(0);
+                    let f = |k: &str| r[k].as_f64().unwrap_or(0.0) as f32;
+                    let g = AtkGuard {
+                        guard_atk_rate: n("guardAtkRate"),
+                        guard_atk_rate_correction: f("guardAtkRateCorrection"),
+                        guard_break_rate: n("guardBreakRate"),
+                        guard_break_correction: f("guardBreakCorrection"),
+                        guard_attribute: n("guardAttribute"),
+                        disable_guard: [n("disableGuard_vsGuardAttribute0") != 0, n("disableGuard_vsGuardAttribute1") != 0],
+                        disable_just_guard: [n("disableJustGuard_vsGuardAttribute0") != 0, n("disableJustGuard_vsGuardAttribute1") != 0],
+                        all_dir: n("isAllDirGuard") != 0,
+                        ghost: n("isGhostAtk") != 0,
+                    };
+                    (id, g)
+                })
+                .collect()
+        })
+    });
+    t[if pc { 0 } else { 1 }].get(&id).copied()
 }
 
 /// Does the behaviour graph keep the from generator's root motion through the blend into
@@ -1513,7 +1588,7 @@ pub struct SpCycle {
     /// changeSuperArmorPoint: a stateInfo-155 row's bonus to the super-armour pool's max.
     pub sa_point: f32,
     /// isWaitModeDelete (+0x275 bit 5): deleted the moment its gates fail instead of waiting
-    /// (FUN_140c04090, 140c0.c:2641).
+    /// (FUN_140c04090, <decomp ref>).
     pub wait_delete: bool,
     /// changeHpRate (% of max HP) and changeHpPoint: damage (negative = heal) as it lands.
     pub hp_rate: f32,
@@ -1521,6 +1596,9 @@ pub struct SpCycle {
     /// spCategory and replaceSpEffectId (the refresh chain 8002 -> 8007, player.rs).
     pub category: i64,
     pub replace: i64,
+    /// defFlickPower (+0x14d): the guard's flick (deflect) power while worn, whatever the
+    /// stateInfo (FUN_140bfc440 takes the largest; combat::guard_flick).
+    pub flick: i64,
 }
 
 /// A full EquipParamWeapon row (the combat export leaves out the tools' rows, e.g. the
@@ -1567,6 +1645,7 @@ pub fn sp_cycle(id: i64) -> Option<SpCycle> {
                         hp_point: n(r, "changeHpPoint") as f32,
                         category: n(r, "spCategory"),
                         replace: n(r, "replaceSpEffectId"),
+                        flick: n(r, "defFlickPower"),
                     },
                 ))
             })
@@ -1590,20 +1669,20 @@ fn full_param(name: &str) -> HashMap<i64, Value> {
 /// A hit's super-armour damage before the defender's rates (FUN_140bdb470): an NPC attack's
 /// AtkParam_Npc atkSuperArmor (+0x66: 0 on most, 999 / 45 on a few); Wolf's the weapon's
 /// EquipParamWeapon saWeaponDamage (+0xCE) x AtkParam_Pc atkSuperArmorCorrection (+0x56) / 100.
-/// The weapon is the hit's equip-slot weapon (FUN_14084fc50 hit+0x12c, 14084.c:8469; read in
-/// FUN_140848440, 14084.c:4836): a katana 5000-7700 or a tool 7xxxx, all 40, never a combat
+/// The weapon is the hit's equip-slot weapon (FUN_14084fc50 hit+0x12c, <decomp ref>; read in
+/// FUN_140848440, <decomp ref>): a katana 5000-7700 or a tool 7xxxx, all 40, never a combat
 /// art's 2xxxxx row (0). So 5000 stands for them all. ReinforceParamWeapon saWeaponAtkRate
 /// (+0x14) multiplies in, and it is 1 on every row. gap: the 110000 bare-hands fallback (hit
 /// flags & 0x60) and FUN_140841bd0's rate are not traced.
-/// The attack-occurrence SpEffect a hit adds (FUN_140bfc170, 140bf.c:8239, applied by the damage
-/// apply FUN_140b6e6a0 at 140b6.c:9012-9029): the first worn row of the attacker whose stateInfo
+/// The attack-occurrence SpEffect a hit adds (FUN_140bfc170, <decomp ref>, applied by the damage
+/// apply FUN_140b6e6a0 at <decomp ref>): the first worn row of the attacker whose stateInfo
 /// is 62 / 64 / 151-153 / 205 / 355-358 gives its atkOccurrenceSpEffectId. Wolf's enchantments:
 /// Flame Vent 106020 -> 106021 (endurance 0 -> its replace, burn 9100), Spirit 106030 -> 104016,
 /// poison-blood 106050 -> 9002, white-blood 106060 -> 106065 (HP +10 %, on the attacker); the
 /// Nightjars' 3145000 -> 9125. Returns (id, the ids that land: it and an endurance-0 row's
 /// replaceSpEffectId, on the attacker or not, changeHpRate).
-/// A row counts only for the hit's behaviour category (FUN_140c06240, 140c0.c:5288; the hit's
-/// +0xda = BehaviorParam category, 14084.c:8460): wepParamChange 0 passes every category, 1
+/// A row counts only for the hit's behaviour category (FUN_140c06240, <decomp ref>; the hit's
+/// +0xda = BehaviorParam category, <decomp ref>): wepParamChange 0 passes every category, 1
 /// (right hand) the sword and combat arts (`HIT_CAT_SWORD`), 2 the prosthetic tools
 /// (`HIT_CAT_TOOL`), 4 a combat art's bullets (9). throwAttackParamChange asks for a throw hit
 /// (AtkParam throwFlag 2) and chargeAttackParamChange for a charge attack (isChargeAtk). Every
@@ -1668,7 +1747,7 @@ pub fn atk_occurrence(worn: &[i64], cat: i64, throw_hit: bool, charge_hit: bool)
 }
 
 /// BulletParam predictionShootObserveTime (+0xB8, 0 = off): the window (s) over which a
-/// predictive shot averages its target's velocity (FUN_140b0acf0, 140b0.c:9107). The export
+/// predictive shot averages its target's velocity (FUN_140b0acf0, <decomp ref>). The export
 /// leaves it out, so it is read from the full table.
 pub fn prediction_observe_time(bullet_id: i64) -> f32 {
     static ROWS: std::sync::OnceLock<HashMap<i64, f32>> = std::sync::OnceLock::new();
@@ -1693,14 +1772,14 @@ pub fn super_armor_damage(pc: bool, atk_param_id: i64) -> f32 {
     }
 }
 
-/// An NPC's behaviour judge as its worn SpEffects shift it (exe FUN_140a12b80, 140a1.c:2191-2236,
+/// An NPC's behaviour judge as its worn SpEffects shift it (exe FUN_140a12b80, <decomp ref>,
 /// building BehaviorParam 200000000 + variation * 1000 + judge): every worn row whose
 /// addBehaviorJudgeId_condition is judge / 100 adds its addBehaviorJudgeId_add. A row counts
 /// while its invocationConditionsStateChange gate holds (a worn SpEffect of that stateInfo): the
 /// Shura samurai's a000_003014 adds both 3107010 (poison, +5, gate 950) and 3107011 (flame, +7,
 /// gate 951); its resident 3107040 (950) or 3107041 (951) picks one, so 100 -> 105 or 107 for
 /// 15 s. The Nightjars wear 3145040 (700 -> 701) for good. There is no fallback on a missing row
-/// (the shifted attack does nothing, 14084.c:8433). gap: the exe's "add 0 -> id 5" branch
+/// (the shifted attack does nothing, <decomp ref>). gap: the exe's "add 0 -> id 5" branch
 /// (only the test row 0 has condition 0) is not modelled.
 pub fn shift_judge(judge: i64, worn: &[i64]) -> i64 {
     let mut ids: Vec<i64> = worn.to_vec();

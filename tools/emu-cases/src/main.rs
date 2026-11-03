@@ -17,6 +17,7 @@ use std::path::Path;
 use serde_json::{json, Value};
 
 mod snapshot;
+mod guard;
 
 /// The few calls of Unicorn's C API the tool needs (unicorn.h), linked from unicorn.dll.
 mod uc {
@@ -797,6 +798,9 @@ fn main() {
     }
     if want.contains(&"camera_frames") {
         camera_frames(&|| Emu::new(exe, snap()), out);
+    }
+    if want.contains(&"guard") {
+        guard::run(&|| Emu::new(exe, snap()), out);
     }
     if on("hit_stop") {
         let mut emu = Emu::new(exe, None);
