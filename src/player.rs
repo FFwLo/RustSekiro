@@ -415,6 +415,15 @@ fn art_start_states(cat: i64, unlock: i64, sprint: bool, stick: Vec3, fwd: Vec3,
 /// adds 150210's accumuVal 1; the stacks climb 150200's accumuOverFireId chain (LV2 150201 at
 /// accumuOverVal 2, LV3 150202 at 3, ...) and the level's changeHpEstusFlaskCorrectRate (1.1 - 1.5)
 /// scales the gourd's heal (sim test `latent_skill_rates`: 1.1, 1.2).
+/// The gourd's HP (FUN_140c014f0 for a fired row's changeHpEstusFlaskRate): the rate % times
+/// the worn changeHpEstusFlaskCorrectRate product, held within 100 %, then whole points of max
+/// HP: (int)(max * rate * 0.01). Emulator (speffect_ticks gourd_3000): Wolf 1120 with Knowledge
+/// of Medicine LV5 (1.5) heals 672. Before: the float 672.0 (whole here, but a fraction for other
+/// max HPs).
+pub(crate) fn estus_heal(hp_max: f32, rate: f32, correct: f32) -> f32 {
+    (hp_max * (rate * correct).clamp(-100.0, 100.0) * 0.01).trunc()
+}
+
 pub fn medicine_rate(combat: &Combat, config: &GameConfig) -> f32 {
     let effects: Vec<&serde_json::Value> = crate::combat::skill_sp_effects(combat, config).collect();
     let stacks: i64 = effects.iter().filter_map(|se| se["accumuVal"].as_i64()).filter(|v| *v > 0).sum();
@@ -3531,7 +3540,7 @@ fn decide(
         if consumed && p.gourd > 0 {
             p.gourd -= 1;
             let rate = d.sp_effects.get(GOURD_SPEFFECT).map_or(40.0, |s| -s.change_hp_estus_flask_rate);
-            let heal = a.hp_max * rate / 100.0 * medicine_rate(&combat, &config);
+            let heal = estus_heal(a.hp_max, rate, medicine_rate(&combat, &config));
             a.hp = (a.hp + heal).min(a.hp_max);
             log.push(format!("gourd: +{heal:.0} HP ({} left)", p.gourd), Color::srgb(0.5, 1.0, 0.6));
         }

@@ -29,6 +29,7 @@ mod modticks;
 mod taewin;
 mod throw;
 mod aicpp;
+mod speffect;
 
 /// The few calls of Unicorn's C API the tool needs (unicorn.h), linked from unicorn.dll.
 mod uc {
@@ -890,6 +891,9 @@ fn main() {
     }
     if want.iter().any(|w| w.starts_with("throw")) {
         throw::run(&|| Emu::new(exe, snap()), out, &want);
+    }
+    if want.contains(&"speffect") {
+        speffect::run(&|| Emu::new(exe, snap()), out);
     }
     if on("hit_stop") {
         let mut emu = Emu::new(exe, None);

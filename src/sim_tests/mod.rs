@@ -49,6 +49,7 @@ mod emu_modticks;
 mod emu_taewin;
 mod emu_throw;
 mod emu_aicpp;
+mod emu_speffect;
 pub(crate) use part01::*;
 pub(crate) use part02::*;
 pub(crate) use part03::*;
