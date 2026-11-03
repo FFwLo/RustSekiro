@@ -230,10 +230,12 @@ General's attacks and the General against Wolf's, on the memory snapshot.
   damage is > 0; a deflect sets neither. So the next posture damage breaks.
 - Test guard_resolution_matches_the_exe (sim_tests/emu_guard.rs): flick powers and verdicts
   equal on all 90 cases, the guard break and attacker reactions as above.
-- gap: the parts guard (a hit on a guarding body part, FUN_1410c66a0, +0x1ce) is not ported; the
-  guardDefFlickPowerRate product and FUN_140bfccc0's NPC rates are taken as 1 (1 on every row
-  that counts); the umbrella's 180 deg arc is read from its weapon row, not run (no umbrella
-  equipped in the snapshot); strength is the snapshot's 10 (RSekiro has no stats).
+- gap: the guardDefFlickPowerRate product and FUN_140bfccc0's NPC rates are taken as 1 (1 on
+  every row that counts); strength is the snapshot's 10 (RSekiro has no stats).
+- 2026-11-03 (topic damagemod, kb/modticks.md): the umbrella's arc run with the umbrella put in
+  Wolf's hand in the emulator's copy: guarded to 179 deg, not from straight behind (the arc test
+  is strict, `combat::in_guard_arc`); the parts guard (FUN_1410c66a0, +0x1ce) never fires in
+  Sekiro's data (nothing to port).
 
 ## Throw and deathblow checks, run on the snapshot (2026-11-03, player.rs deathblow_check)
 

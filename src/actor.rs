@@ -20,7 +20,7 @@ pub enum Side {
 /// `timer` to 5 x (superArmorRecoverCorrection + 1) s (vfunc 0x2d8, FUN_140a12e90: 7 s at 0.4,
 /// 25 s at 4.0); when it runs out the pool snaps back to full (<decomp ref>, no gradual
 /// refill). Emptied, it breaks: the stateInfo-120 dmgLv rows drop out (FUN_140bdbaf0) for that
-/// hit, and the next tick refills it (the hold is TAE ChrActionFlag 71, which no Sekiro anim
+/// hit, and the second tick after it refills it (the hold is TAE ChrActionFlag 71, which no Sekiro anim
 /// has). While it holds, `combat::damage_motion_level` takes them.
 /// The worn stateInfo-155 rows add their changeSuperArmorPoint to the max (`bonus`,
 /// FUN_140bdb690 <decomp ref>: the sum kept at +0x24, a rise also added to the pool at
@@ -30,18 +30,26 @@ pub enum Side {
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct SuperArmor {
     pub max: f32,
+    /// +0x10
     pub cur: f32,
-    /// The stateInfo-155 bonus last seen.
+    /// +0x24: the stateInfo-155 bonus last seen.
     pub bonus: f32,
-    /// Seconds to the refill; <= 0 idle (the exe's -0.01).
+    /// +0x1c: seconds to the refill; < 0 idle (the exe's -0.01 after a break, -dt after a refill).
     pub timer: f32,
+    /// +0x20
     pub broken: bool,
+    /// vfunc 0x2d8: the wait before a drained pool refills.
     pub delay: f32,
+    /// +0x21: `broken` as the last tick left it (the tick acts on this one, so a break refills on
+    /// the second tick after it).
+    pub was_broken: bool,
+    /// +0x14: the full size the last tick saw.
+    pub last_full: f32,
 }
 
 impl SuperArmor {
     pub fn new(max: f32, recover_correction: f32) -> Self {
-        Self { max, cur: max, bonus: 0.0, timer: -0.01, broken: false, delay: 5.0 * (recover_correction + 1.0) }
+        Self { max, cur: max, bonus: 0.0, timer: -0.01, broken: false, delay: 5.0 * (recover_correction + 1.0), was_broken: false, last_full: max }
     }
 
     /// The pool's full size: NpcParam's plus the stateInfo-155 bonus.
@@ -54,20 +62,31 @@ impl SuperArmor {
         self.full() > 0.0 && self.cur > 0.0 && !self.broken
     }
 
-    /// FUN_140bdb660: back to full and unbroken (a posture break, a respawn).
+    /// FUN_140bdb660: back to full and unbroken (a posture break, a respawn); the timer runs on.
     pub fn refill(&mut self) {
         self.cur = self.full();
         self.broken = false;
-        self.timer = -0.01;
     }
 
-    /// The tick (FUN_140bdbcb0 -> <decomp ref>). `reacting`: the action flag that holds a
-    /// broken pool, (chr+0x50)+0x8c bit 9 (<decomp ref>), set only by TAE ChrActionFlag 71
-    /// "SetBool32_0x7C_9" (FUN_140b51b70 case 0x47, <decomp ref>); `instant`: a worn
-    /// stateInfo-331 SpEffect skips the wait (FUN_140bfdb20).
-    /// `bonus`: the worn stateInfo-155 rows' changeSuperArmorPoint sum.
+    /// The tick, ChrIns vf25 FUN_140a05060 -> FUN_140bdbcb0 -> FUN_140bdb690 (pool = module +0x18)
+    /// on the character's hit-stop clock. `reacting`: the action flag that holds a broken pool,
+    /// (chr+0x50)+0x50 +0x8c bit 9, set only by TAE ChrActionFlag 71 "SetBool32_0x7C_9"
+    /// (FUN_140b51b70 case 0x47, <decomp ref>); `instant`: a worn stateInfo-331 SpEffect skips the
+    /// wait (FUN_140bfdb20). `bonus`: the worn stateInfo-155 rows' changeSuperArmorPoint sum.
+    /// - The bonus: kept while |bonus| >= 2^-23, a rise added to the pool at once.
+    /// - Not broken as of the last tick (+0x21): a running timer (>= 0) counts down and the pool
+    ///   snaps to full when it reaches 0 (or under `instant`), the timer left at its value (about
+    ///   -dt); an idle timer in (-1, 0) is re-armed to `delay` when the full size changed since the
+    ///   last tick with no bonus on (a bonus that ended).
+    /// - Broken as of the last tick: full and unbroken unless `reacting` holds it.
+    /// Checked frame by frame against the exe (tools/emu-cases damagemod, test
+    /// super_armour_ticks_match_the_exe): a break refills on the second tick after it, not the
+    /// first, and the timer stands still while a hit stop holds the clock.
+    /// gap: the +0x18 reserve is set to 0 each tick while (chr+0x50)+0x50 +0x510 < 0 (-1 on the
+    /// General in the snapshot); its other source is not traced, Sv1 keeps none.
     pub fn tick(&mut self, dt: f32, reacting: bool, instant: bool, bonus: f32) {
-        if bonus.abs() >= 1.192_092_9e-7 {
+        let bonus_on = bonus.abs() >= 1.192_092_9e-7;
+        if bonus_on {
             let rise = bonus - self.bonus;
             self.bonus = bonus;
             if rise > 0.0 {
@@ -76,21 +95,28 @@ impl SuperArmor {
         } else {
             self.bonus = 0.0;
         }
-        if self.full() <= 0.0 {
-            return;
-        }
-        if self.broken {
-            if !reacting {
-                self.refill();
+        let full = self.full();
+        if !self.was_broken {
+            if self.timer < 0.0 {
+                if self.timer > -1.0 {
+                    if self.last_full != full && !bonus_on {
+                        self.timer = self.delay;
+                    }
+                } else {
+                    self.cur = full;
+                }
+            } else {
+                self.timer -= dt;
+                if self.timer <= 0.0 || instant {
+                    self.cur = full;
+                }
             }
-            return;
+        } else if !reacting {
+            self.broken = false;
+            self.cur = full;
         }
-        if self.timer > 0.0 {
-            self.timer -= dt;
-            if self.timer <= 0.0 || instant {
-                self.refill();
-            }
-        }
+        self.was_broken = self.broken;
+        self.last_full = full;
     }
 
     /// FUN_140bdb470: drain by `amount` from the pool cut to its full size (a bonus that ended

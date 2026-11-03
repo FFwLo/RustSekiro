@@ -687,7 +687,7 @@ pub(crate) fn super_armor_hit_matches_the_exe() {
     // timer: no effect) and the untraced +0x18 reserve.
     let cases: Vec<_> = cases.iter().filter(|c| f(c, "amount") > 0.0 && f(c, "max") + f(c, "bonus") > 0.0 && f(c, "reserve") == 0.0).collect();
     for c in &cases {
-        let mut sa = crate::actor::SuperArmor { max: f(c, "max"), cur: f(c, "cur"), bonus: f(c, "bonus"), timer: f(c, "timer"), broken: c["broken"].as_bool().unwrap(), delay: f(c, "delay") };
+        let mut sa = crate::actor::SuperArmor { max: f(c, "max"), cur: f(c, "cur"), bonus: f(c, "bonus"), timer: f(c, "timer"), broken: c["broken"].as_bool().unwrap(), delay: f(c, "delay"), ..Default::default() };
         sa.hit(f(c, "amount"));
         let o = &c["out"];
         for (field, ours, exe) in [("cur", sa.cur, f(o, "cur")), ("timer", sa.timer, f(o, "timer")), ("broken", sa.broken as u8 as f32, o["broken"].as_bool().unwrap() as u8 as f32)] {
