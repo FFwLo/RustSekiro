@@ -1407,6 +1407,12 @@ pub(crate) fn skills_unlock_their_moves() {
         pad.dodge_held = true;
         pad.press(Action::Crouch);
     }
+    // Sprinting, the stick was held the frame before too: the pad manipulator's 45 deg gate takes
+    // a stick from rest a frame late (player::Turn::gate, emu_turn), the forced state does not.
+    {
+        let world = app.world_mut();
+        world.query::<&mut Player>().single_mut(world).unwrap().turn.last_stick = Vec2::new(0.0, 1.0);
+    }
     app.update();
     assert_ne!(player_state(&mut app).0, "SprintToCrouchReady");
     // Round 65: it is the plain crouch instead (HKS 4500-4509): moving -> the crouch move loop.

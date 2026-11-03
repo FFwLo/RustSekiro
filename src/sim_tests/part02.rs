@@ -1639,23 +1639,20 @@ fn attack_after_deflect_release(k: usize) -> Vec<String> {
         pad.stick = Vec2::new(0.0, -1.0);
         pad.guard_held = false;
     }
-    let (mut seen, mut n) = (Vec::<String>::new(), None);
-    for _ in 0..40 {
+    // Counted from the release, as the recordings are: the clip it starts shows from the tick
+    // after (exe frame order, animstart), so its first tick is no longer the release's.
+    let mut seen = Vec::<String>::new();
+    for i in 1..=40 {
         app.update();
         let s = player_state(&mut app).0;
         if seen.last() != Some(&s) {
             seen.push(s.clone());
         }
-        if n.is_none() && s.starts_with("DeflectGuardToStand") {
-            n = Some(0);
-        }
-        if let Some(i) = n.as_mut() {
-            *i += 1;
-            if *i == k {
-                app.world_mut().resource_mut::<PadInput>().press(Action::Attack);
-            }
+        if i == k {
+            app.world_mut().resource_mut::<PadInput>().press(Action::Attack);
         }
     }
+    assert!(seen.iter().any(|s| s.starts_with("DeflectGuardToStand")), "{seen:?}");
     seen
 }
 
@@ -1663,6 +1660,6 @@ fn attack_after_deflect_release(k: usize) -> Vec<String> {
 pub(crate) fn attack_late_in_the_deflect_release_is_still_the_reverse_combo() {
     let late = attack_after_deflect_release(19);
     assert!(late.iter().any(|s| s == "GroundAttackCombo1Reverse"), "{late:?}");
-    let after = attack_after_deflect_release(21);
+    let after = attack_after_deflect_release(20);
     assert!(after.iter().any(|s| s == "GroundAttackCombo1") && !after.iter().any(|s| s == "GroundAttackCombo1Reverse"), "{after:?}");
 }

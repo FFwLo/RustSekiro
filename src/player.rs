@@ -721,8 +721,19 @@ fn hks_pad_in(mut pad: ResMut<PadInput>, mut late: ResMut<HksPad>) {
     set_held(&mut pad, before);
 }
 
+/// The pad manipulator (FUN_1407f0a70) runs every frame, whatever Wolf does, in ChrIns::vf22
+/// before the HKS: the stick it takes (the 45 deg gate, `Turn::gate`) is the move vector `decide`
+/// turns and moves by and the one the script's MoveSpeedLevel is the length of (hks_wolf, exe
+/// FUN_140b4afd0 -> +0xbac; emu_turn, emu_hks2 `level`).
+pub(crate) fn pad_manipulator(pad: Res<PadInput>, lock: Res<LockOn>, mut q: Query<&mut Player>) {
+    for mut p in &mut q {
+        p.turn.new_tick();
+        p.turn.taken = p.turn.gate(pad.stick, lock.target.is_some());
+    }
+}
+
 /// After `decide`: the held buttons are the frame's again for everything else.
-fn hks_pad_out(mut pad: ResMut<PadInput>, late: Res<HksPad>) {
+pub(crate) fn hks_pad_out(mut pad: ResMut<PadInput>, late: Res<HksPad>) {
     set_held(&mut pad, late.live);
 }
 
@@ -739,6 +750,7 @@ impl Plugin for PlayerPlugin {
             .add_systems(RunFixedMainLoop, read_input.run_if(resource_exists::<ButtonInput<KeyCode>>.and_then(not(resource_exists::<ScriptedInput>))).in_set(bevy::app::RunFixedMainLoopSystems::BeforeFixedMainLoop))
             .init_resource::<ActiveThrow>()
             .add_systems(FixedUpdate, hks_pad_in.before(throw_check).before(ActorSet::Decide))
+            .add_systems(FixedUpdate, pad_manipulator.after(hks_pad_in).before(throw_check).before(ActorSet::Decide))
             .add_systems(FixedUpdate, (sync_art_variation, decide, apply_refresh_effects, record_state).chain().in_set(ActorSet::Decide))
             .add_systems(FixedUpdate, hks_pad_out.after(ActorSet::Decide).before(ActorSet::Advance))
             .add_systems(FixedUpdate, follow_throw.after(ActorSet::Advance).before(crate::anim::PoseSet))
@@ -2266,12 +2278,15 @@ fn sp_ref_active(d: &CharData, a: &Actor, behavior_ref: i64) -> bool {
     // SP_EF_REF_TAE_MOVING_WALK 90 is what the script's GetLocomotionType reads).
     // The additive layer's TAE as well (AddHardDeflectGuard's ref 411, HKS 6161).
     let has = |key: &str, at: crate::tae_window::At| d.sp_effects_at(key, at).iter().any(|(_, s)| s.behavior_ref_id == behavior_ref);
+    // Seen one TAE frame after its window too (hks_wolf env 3036: the recordings' ref 231 cut-off,
+    // DeflectGuardToStand* frames 0-9: Combo1Reverse up to 19 ticks after the release, Combo1
+    // from 20; the step window alone cuts at 18). gap: where the exe keeps the row on is not traced.
+    let lag = 1.0 / crate::data::TAE_FPS;
     let shown = if a.anim.is_empty() {
         let (key, t) = a.shown_clip(d);
-        let lag = 1.0 / crate::data::TAE_FPS;
         has(&key, t.into()) || (t >= lag && has(&key, (t - lag).into()))
     } else {
-        has(&a.anim, a.step())
+        has(&a.anim, a.step()) || (a.t >= lag && has(&a.anim, (a.t - lag).into()))
     };
     shown || (!a.add_anim.is_empty() && has(&a.add_anim, a.add_t.into())) || legs_clip(d, a).is_some_and(|(k, lt)| has(&k, lt.into()))
 }
@@ -2819,6 +2834,9 @@ pub(crate) struct Turn {
     pub request: Option<f32>,
     /// Last frame's request, for this frame's turn.
     pub pending: Option<f32>,
+    /// The stick the manipulator took this frame (`pad_manipulator`): the move vector both
+    /// `decide` and the script's MoveSpeedLevel / MoveAngle read.
+    pub taken: Vec2,
 }
 
 impl Turn {
@@ -3005,9 +3023,8 @@ fn decide(
     let dt = time.delta_secs();
     let d = &combat.player;
     let (pe, p, a, tf) = &mut *player;
-    // The pad manipulator runs every frame, whatever Wolf does (FUN_1407f0a70).
-    p.turn.new_tick();
-    let gated_stick = p.turn.gate(pad.stick, lock.target.is_some());
+    // The stick the pad manipulator took this frame (`pad_manipulator`).
+    let gated_stick = p.turn.taken;
     // The last ground's height (`air_top`, where the fall height starts) on every grounded tick,
     // before the states that return early (aging, hangs, throws) skip the movement's update.
     if !a.airborne {
