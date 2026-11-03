@@ -37,7 +37,7 @@ lookups) are counted in each branch that uses them. Wolf's trace unless marked.
 
 | Function | What | Functions / bytes / cited | State in Sv1 |
 |---|---|---|---|
-| `FUN_1409f78a0` | ChrIns pre-update: per-chr dt from the hit-stop module, throw and +0xc8 module ticks | 86 / 21 KB / 5 | hit stop ported (pilots 2, 4); the module ticks not |
+| `FUN_1409f78a0` | ChrIns pre-update: per-chr dt from the hit-stop module, throw and +0xc8 module ticks | 86 / 21 KB / 5 | hit stop checked frame by frame (modticks, kb/modticks.md); the other ticks are bookkeeping |
 | `FUN_140a04850` ChrIns::vf22 | Update: posture and stamina regen, ChrCtrl update, modules 0x58/0x88/0x20/0x68 | 436 / 107 KB / 22 | regen ported (kb/enemy.md, damage.md) |
 | `FUN_140a37560` PlayerIns::vf22 | Player update around ChrIns::vf22 (weapon glow, player state) | 807 / 210 KB / 32 | partly |
 | `FUN_1407ef120` PadManipulator::vf9, `FUN_1407ef960` | Pad input to action requests | 116 / 23 KB / 9 | input buffer ported (kb/input-buffer.md) |
