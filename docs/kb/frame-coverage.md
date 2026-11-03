@@ -207,6 +207,55 @@ Ranked by uncited bytes of rule code (plumbing left out):
    thresholds (0.3 for the landing reaction).
 8. Ledge-hang probe `FUN_140b788d0` (4.5 KB): with the docking module, parked.
 
+## Item use and prosthetic bullets (2026-11-03, items)
+
+How: `emu-cases <exe> extracted/emu items [items_<case>...] --snapshot <dir>`
+(`tools/emu-cases/src/items.rs`) runs Wolf's whole chr frames from the snapshot as acttrace does
+(menu patch, pad written per frame), the item button (or the prosthetic) held on frames 0-2, with
+code hooks on the use chain; per frame it writes the TAE clips updated, HP, the SpEffects added /
+gone and every hooked call. The item is chosen through the inventory override `[chr+0x2000]+0x278
++0x358` (`FUN_14079e2a0`; `FUN_140a369b0` copies it to the quick item chr `+0x11c0` every frame,
+`FUN_140a28160` to the item in use `+0x11c4` when the HKS fixes it, act 2024). Inventory: list
+`+0x278+0x168`, `[+0x88]+1` slots, entry +4 id, +8 count (`FUN_1407aabf0`).
+
+The chain: TAE 65 `FUN_140b57740` (item `+0x11c4`, uses `+0x11c8`) -> `FUN_1407d5d50` (the bullet
+emitter ChrIns `+0x10e0`, goods id) -> launch `FUN_1409e4cd0`: EquipParamGoods refCategory (+0x3b)
+2 -> `FUN_1409e4fe0` -> SpEffect add `FUN_1409e9c00`; 1 -> `FUN_1409e4e60` -> spawn record
+`FUN_1409e4950` -> `FUN_1409e5660` -> BulletMan `FUN_140b1ad20` (record +0x10 BulletParam id,
++0x40 the emit matrix: rows x, y, z with the position in the 4th column). Then PlayerIns::vf125
+`FUN_140a262d0` -> `FUN_14079afa0` -> AdjustItemCount `FUN_14079ab70` (slot, -1). All on the
+event's frame. A TAE 2 BulletBehavior is `FUN_140b51110` -> emitter `FUN_1407d4fa0` (BehaviorParam
+id): skipped for the main player when the row's +0x18 cost is set and vf 0x378 (the resource held)
+is < 1.
+
+| Case (goods) | Clip | Use frame (t) | What the use does |
+|---|---|---|---|
+| gourd 3000 | a000_250000 from f1 | f42 (0.7 s) | SpEffect 3000 added, HP 548 -> 1120 (cap; +672 = 1120 x 40 % x 1.5) the same frame, slot 272 -1 |
+| pellet 3020 | a000_250300 | f48 (0.8 s) | Bullet 3020 at the hand (201.79, -24.73, 23.64), slot 489 -1; its 3021 / shooter 3020 not on Wolf within 90 frames (the bullet's own update is a world task, not run) |
+| Ako's sugar 3400 | a000_250800 | f66 (1.1 s) | Bullet 3400, -1 |
+| Gokan's sugar 3420 | a000_251000 | f66 (1.1 s) | Bullet 3420, -1 (and SpEffect 110140 at f1) |
+| spiritfall 3600 | a000_250500 | f54 (0.9 s) | Bullet 3600, -1 |
+| 3510 | a000_251400 (ItemStone) | f30 (0.5 s) | Bullet 3510, -1 |
+| ohagi 3060 (not held; written into slot 0) | a000_259000 ItemFailed | - | refused (IsItemUseable) |
+| Loaded Axe 73000 (the snapshot's tool), tap | a073_400000 f1-48, release a073_400100 from f49 | TAE 2 judge 297 (dummy 603) f66-68: no bullet (`FUN_1407d4fa0` not reached) | 2 Spirit Emblems (goods 1000, slot 293) at f74 = TAE 1 judge 102 (0.433 s) |
+
+Compared with RSekiro (`src/sim_tests/emu_items.rs`):
+- `gourd_use_matches_the_exe`: the heal and the charge on the exe's frame 42; matched as it was.
+- `loaded_axe_emblems_match_the_exe`: the payment 25 frames into the release and its 2 emblems
+  match; ours starts a073_400000 one frame early (t 0.8 on frame 47, the exe's 48), so the release
+  (exe 49) and payment (exe 74) are on 48 / 73. The exe's first TAE update of a clip the HKS
+  starts on frame N is on N + 1; ours steps it in the press frame. The gourd agrees only because
+  its press reaches ours' HKS a frame later. gap: not fixed (a change to every clip start).
+- gap: RSekiro uses only the gourd. Pellets, sugars, spiritfall and throwables (goods
+  refCategory 1: their Bullet row's shooter SpEffect / HitBulletID) are not in the player; the
+  table above gives their clips, use frames and Bullet rows for a port.
+- gap: the shuriken, firecracker, flame vent and umbrella were not run: writing the tool into
+  PlayerGameData +0x5ec (the snapshot's slots +0x5ec 73000, +0x5f4 78300, +0x5fc 72200) does not
+  change what Wolf swings (the chr's own equip copy is not found). So no prosthetic bullet spawn
+  was recorded and `enemy_bullet.rs` / `prosthetic.rs` spawn code is not compared.
+- gap: a written count of 0 did not stop the gourd (the drink and -1 ran on; the count's real
+  field is not found); the empty gourd is not checked.
+
 ### Gaps of the mid-action list
 
 - No hit lands (above): getting hit, block and deflect reactions, posture break, death not traced.
