@@ -10,7 +10,7 @@ no FXR.
 **Pipeline (run once after `sekiro-extract export`):**
 - `sekiro-extract unpack <Sekiro dir> extracted 'sfxbnd_commoneffects'` (2349 FXRs + their TPFs).
 - `cd tools/fxr-dump && npm i` (@cccode/fxr, public domain, github.com/EvenTorset/fxr; a clone is
-  in `C:/DeadlockModding/reference/fxr`), then `python tools/fxr_extract.py`: every FFX id the
+  in `<work>/reference/fxr`), then `python tools/fxr_extract.py`: every FFX id the
   exported characters use (TAE, bullet sfxId_*, blood 220502/3/5/6) -> `extracted/fxr/<id>.json`,
   following ReferenceNode (2001 "sfx") chains; every texture they name -> `extracted/fxr_tex/<id>.png`
   (s<id:05>.tpf). ~280 effects.
@@ -223,6 +223,63 @@ rgbMultiplier / 8 (`particle_color`). Before, they were 8x too bright: the death
 - Sound fix (Mortal Draw's sound kept playing): slotted FFX sounds s000440000/1/2/5/6 are
   FMOD loops; `sound.rs` now plays them tracked (`fmod.rs` EventHandle / play_tracked / stop) and
   stops them when the event ends or the anim changes. Ignored test `fmod_loops` lists the loops.
+
+## Emulator check of the FXR maths (2026-11-03, topic fxr)
+
+`tools/emu-cases` `fxr` / `fxr_shapes` on the Naomori-arena snapshot; test `src/sim_tests/emu_fxr.rs`
+(skips without `extracted/emu/fxr_props.json` / `fxr_shapes.json`).
+
+- **Properties.** The evaluators sit in a 44-entry table at [0x143f136b0] (entry 0x28 bytes: +0 id
+  `function << 4 | type | loop << 12`, +0x10 the evaluator (out, property, ctx)); a loaded property's
+  +4 (fxr.ts typeEnumB) is the entry's index. ctx = {object, argument +8, object's random +0xc}.
+  FUN_1403f7770 is the particle code's wrapper (evaluator, then each modifier from [0x143f13da0]).
+  Fields as fxr.ts writes them (count, min[n], max[n], positions, values, t1 / p1, t2 / p2).
+  274 properties (every keyframed or random one of 252001 deflect sparks, 201001 / 201002 hit
+  sparks, 220502 blood, 300071 firecracker, plus one of each of the 27 kinds in extracted/fxr),
+  6,801 evaluations at / between / before / past the keyframes, 8 object randoms each.
+  Matched as they were: Stepped, Linear, Bezier, Hermite (`game_hermite`), scalar to vec4, the
+  first value before the first keyframe, the last after. Fixed: a loop wraps with C fmodf
+  (FUN_141d99f30) - a negative argument stays before the first keyframe (was rem_euclid).
+- **Modifiers.** RandomDelta (0xd05x) / RandomFraction (0xf05x): value + r x max / value +
+  value x r x max, r in [-1, 1) = the modifier's seed (per component) and the object's random
+  (+0xcc, a xorshift draw when the object is made, FUN_141dbffc0) as signed 16-bit halves
+  multiplied and summed (pmaddwd), low 23 bits as a float in [1, 2), x2 - 3 (FUN_141d9d010).
+  Ported bit for bit (`fxr::game_random`): before, each call drew a fresh number from `Rnd`, so a
+  property re-read during a particle's life could differ from the first read; now it is fixed per
+  particle as in the game. All 23,030 seeds in the files give a uniform r (std 0.553-0.585), and no
+  two modifiers of one config share a seed. RandomRange has no evaluator in Sekiro's table (and no
+  file uses it). gap: the object random is `rnd.seed` (each call site's own per-particle seed), not
+  one random shared by all of a particle's properties; distributions are the same.
+- **Shapes and spreads.** Action handlers are registered per type by FUN_141d8a410 (400-405 via
+  FUN_141d7ca20 ..., 500-503 via FUN_141d7cd40 ...); the generators: 401 FUN_141db3800, 402
+  FUN_141db4160, 403 FUN_141db3ee0, 404 FUN_141db3220, 405 FUN_141db3ae0, 501 FUN_141db5cf0, 502
+  FUN_141db5fe0, 503 FUN_141db6740. Each was run on an action built in the binary layout (fields at
+  +0x20, properties at +0x30) with the FXR RNG's state (FUN_141dc67a0 +4..+0x14, xorshift stepped by
+  FUN_14014d6e0: `raw % 0x800001` as a [1, 2] mantissa - 1) set before each draw; 34 setups x 64
+  draws. `fxr::shape_point` / `spread_frame` redraw the same numbers with `fxr::ExeRng` and match
+  the point, the frame and the draw count (1e-4). Before -> after:
+  - 501 cone (6,636 uses, 1,500 with a distribution): RSekiro drew directions uniform on the
+    spherical cap and ignored `distribution`. The exe tilts by off + u^a x scale (d <= 0: a = d + 1,
+    scale = angle; d > 0: a = 1 - d, from the rim inward), so at d = 0 the tilt is uniform in
+    [0, angle] (denser near the axis than the cap), d = -1 always the rim, d = 1 none.
+  - 401 disk: `distribution` (r^2 = u^(d+1) / 1 - u^(1-d)) was ignored; the direction is the
+    emitter's Z, not radial.
+  - 402 rectangle: `distribution` ported (one axis pushed to the edge below 0, both to the centre
+    above).
+  - 403 sphere: the frame X(a) Z(d) X(b) Y(c) and the point along its Z (was a normalised cube draw).
+  - 404 box: a random face (0-5) and its frame (outward when direction 0, was always Z); emitInside
+    false (221 boxes) now emits on the face (was always the volume).
+  - 405 cylinder: Sekiro's action has no yAxis field: the cylinder is about Z (RSekiro defaulted to
+    Y); radial frame when direction 0.
+  - 503 rectangular spread: tilts angleX x c1 about X and angleY x c2 about Y, the smaller first
+    (was a cone of the larger angle).
+  gap: 502 elliptical (11 uses) is still a cone of the larger angle. Direction modes 1-6 keep
+  RSekiro's base vectors (the exe's frames from FUN_141db46a0 not checked); the azimuth reference of
+  a spread is RSekiro's frame, not the exe's (same distribution).
+- **Not covered:** emission timing / counts (emitters 300 / 301 / 399), particle movement
+  integration (e.g. FUN_1403f6320: speed x multiplier x dt along the matrix's Z), lifetime, and
+  the 30 / 60 fps step - the arguments are times, so the curves themselves do not depend on the
+  frame rate; the integrators were not run.
 
 ### R97 HUD pass (bug fixes, 2026-10-14)
 - hud.rs: boss bars added (an enemy with ninsatsu > 0): the HP bar top left (MENU_HP_base_Boss / MENU_HP_bar_Boss), deathblow orbs (MENU_HP_Boss lit, _base spent), the name from npc_names.json, and the posture top centre (MENU_Taikan_base / _bar, centre-out, State tint, MENU_Sp_Center). Positions are from clip r_000230. A boss gets no over-head bars.
