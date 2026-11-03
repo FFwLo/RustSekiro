@@ -16,6 +16,7 @@ use std::path::Path;
 
 use serde_json::{json, Value};
 
+mod hks;
 mod snapshot;
 
 /// The few calls of Unicorn's C API the tool needs (unicorn.h), linked from unicorn.dll.
@@ -797,6 +798,9 @@ fn main() {
     }
     if want.contains(&"camera_frames") {
         camera_frames(&|| Emu::new(exe, snap()), out);
+    }
+    if want.contains(&"hks_env") {
+        hks::env_cases(&mut Emu::new(exe, snap()), out);
     }
     if on("hit_stop") {
         let mut emu = Emu::new(exe, None);
