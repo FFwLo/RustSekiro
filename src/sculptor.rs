@@ -184,6 +184,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(shinobi_data), ignore = "needs extracted/")]
     fn encounter_changes_keep_the_sculptors_character_data() {
         let mut app = App::new();
         let mut config = GameConfig::load().unwrap();
@@ -201,6 +202,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(shinobi_data), ignore = "needs extracted/")]
     fn leaving_the_workshop_does_not_rest_wolf_or_change_his_checkpoint() {
         let mut app = crate::sim_tests::app();
         app.update();
@@ -241,6 +243,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(shinobi_data), ignore = "needs extracted/")]
     fn the_player_simulation_finishes_sitting_before_opening_the_workshop() {
         let mut app = crate::sim_tests::app();
         app.world_mut().resource_scope(|world, combat: Mut<Combat>| {
@@ -264,6 +267,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(shinobi_data), ignore = "needs extracted/")]
     fn sculptor_works_on_the_prosthetic_for_the_visit_and_returns_to_sitting() {
         let data: CharData = serde_json::from_str(&std::fs::read_to_string(crate::paths::extracted().join("enemies/c7010.json")).unwrap()).unwrap();
         let mut a = Actor::new(Side::Enemy, 1.0, 1.0, 0.0, -1);

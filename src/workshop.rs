@@ -344,6 +344,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[cfg_attr(not(shinobi_data), ignore = "needs extracted/")]
     fn the_upgrade_tree_matches_the_capture() {
         let all = upgrades();
         // 701 Spinning Shuriken at the top left (Scrap Iron x3, 200 Sen); six columns.
@@ -356,6 +357,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(shinobi_data), ignore = "needs extracted/")]
     fn an_upgrade_costs_its_sen_and_materials_after_its_parent() {
         let mut config = crate::config::GameConfig::load().expect("config.toml");
         config.player.owned_tools = vec![70000];

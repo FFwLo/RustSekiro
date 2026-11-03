@@ -2355,6 +2355,7 @@ mod tests {
     /// table: at most GIIV_MAX boxes in priority order, each one's kept voxels inside its grid
     /// and inside the atlas, the atlas of each variant as the json says.
     #[test]
+    #[cfg_attr(not(shinobi_data), ignore = "needs extracted/")]
     fn giiv_boxes_fit_their_atlas() {
         let dir = crate::paths::extracted();
         let mut seen = 0;
@@ -2494,6 +2495,7 @@ mod tests {
 
     /// The castle's fog at noon: FixedDensity 0.0015 over GameScale 2.5 (exe 39e7e0).
     #[test]
+    #[cfg_attr(not(shinobi_data), ignore = "needs extracted/")]
     fn fog_density_is_divided_by_game_scale() {
         let j: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(crate::paths::extracted().join("map_m11_01_00_00.json")).unwrap()).unwrap();
         let l = MapLighting {

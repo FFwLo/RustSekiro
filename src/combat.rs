@@ -2780,6 +2780,7 @@ mod tests {
     /// Round 75: a pull hit (negative knockback, env 1121 < 0) mirrors the 4-way small / middle
     /// reaction (HKS 1070-1079); the front/back levels keep their side.
     #[test]
+    #[cfg_attr(not(shinobi_data), ignore = "needs extracted/")]
     fn a_pull_hit_mirrors_the_small_reaction() {
         let c = combat();
         let wolf = Actor::new(Side::Player, 100.0, 100.0, 0.0, 0);
@@ -2794,6 +2795,7 @@ mod tests {
 
     /// Round 91: the air deflect / guard sizes follow the air handlers' own table (HKS 1285-1349).
     #[test]
+    #[cfg_attr(not(shinobi_data), ignore = "needs extracted/")]
     fn air_deflects_take_the_air_size_table() {
         let c = combat();
         let pick = |deflect: bool, level: i64| player_guard_state(&c, deflect, level, "L", false, true);
@@ -2839,6 +2841,7 @@ mod tests {
     /// 2.4 m): the dog spitting from 8 m or a Nightjar 3 m up on a roof is not pulled onto Wolf
     /// (2026-10-12 bug hunt round 6).
     #[test]
+    #[cfg_attr(not(shinobi_data), ignore = "needs extracted/")]
     fn a_deflect_break_pairs_only_in_reach() {
         let c = combat();
         let th = c.throw(11020010).unwrap();
@@ -2853,6 +2856,7 @@ mod tests {
     /// Round 25: Wolf's posture-break anim wears SpEffect 109400 (every DamageCutRate 1.5), so an
     /// NPC hit lands x1.5 while he is broken and x1 otherwise.
     #[test]
+    #[cfg_attr(not(shinobi_data), ignore = "needs extracted/")]
     fn a_broken_wolf_takes_half_again_the_damage() {
         let c = combat();
         let atk = Attack { atk_phys: 100.0, atk_fire: 20.0, atk_attribute: 1, ..Default::default() };
@@ -2868,6 +2872,7 @@ mod tests {
     /// deflect but lets 67 % / 50 % of fire, 75 % / 50 % of magic, 50 % / 0 % of dark and all
     /// lightning through.
     #[test]
+    #[cfg_attr(not(shinobi_data), ignore = "needs extracted/")]
     fn a_guarded_fire_hit_chips_wolf() {
         let c = combat();
         let fire = Attack { atk_phys: 100.0, atk_fire: 30.0, ..Default::default() };
@@ -2921,6 +2926,7 @@ mod tests {
     /// (most enemies, the General too) stops nobody; type 1 halves the attacker's, type 2 the
     /// full time; hitStopType_Defencer 1 stops the defender; an enemy hit on Wolf stops both.
     #[test]
+    #[cfg_attr(not(shinobi_data), ignore = "needs extracted/")]
     fn hit_stop_follows_the_defenders_type() {
         let mut c = combat();
         let row = c.kinds[0].foe.npc_row.to_string();
@@ -2954,6 +2960,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(shinobi_data), ignore = "needs extracted/")]
     fn every_guard_reaction_exists() {
         let c = combat();
         for level in 0..=11 {

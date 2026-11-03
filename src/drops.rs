@@ -220,6 +220,7 @@ mod tests {
     /// luck entry), a 50 % Spirit Emblem (10000000), a 30 % 5 Resurrective Power (10005000); the
     /// Possession Balloon's 0.5 lifts the shard to 150 / 1000 x 1.5 of the weight.
     #[test]
+    #[cfg_attr(not(shinobi_data), ignore = "needs extracted/")]
     fn the_soldier_lots_draw_as_their_weights() {
         let n = 10_000;
         let draws = |f: &dyn Fn(f32) -> bool| (0..n).filter(|i| f((*i as f32 + 0.5) / n as f32)).count() as f32 / n as f32;

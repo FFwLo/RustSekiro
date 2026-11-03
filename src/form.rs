@@ -92,6 +92,7 @@ mod tests {
 
     /// The table against the params: each form's four rows name these parts.
     #[test]
+    #[cfg_attr(not(shinobi_data), ignore = "needs extracted/")]
     fn the_forms_are_the_protector_sets() {
         let path = crate::paths::extracted().join("json/params/EquipParamProtector.json");
         let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(path).expect("EquipParamProtector")).unwrap();

@@ -2667,6 +2667,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(shinobi_data), ignore = "needs extracted/")]
     fn deflect_window_shrinks_with_spam() {
         let f = load();
         let d = &f.player;
@@ -2678,6 +2679,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(shinobi_data), ignore = "needs extracted/")]
     fn guard_chain_window_is_open_for_18_frames() {
         let f = load();
         let d = &f.player;
@@ -2688,6 +2690,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(shinobi_data), ignore = "needs extracted/")]
     fn deflects_and_left_swings_route_to_the_reverse_slash() {
         let f = load();
         let d = &f.player;
@@ -2702,6 +2705,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(shinobi_data), ignore = "needs extracted/")]
     fn release_attack_and_combo_routing() {
         let f = load();
         let d = &f.player;
@@ -2717,6 +2721,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(shinobi_data), ignore = "needs extracted/")]
     fn root_motion_speeds() {
         let f = load();
         let d = &f.player;

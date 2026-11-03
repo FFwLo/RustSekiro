@@ -70,7 +70,6 @@ only one that counts. Finished rows move to "Done" at the bottom; board history 
 
 | ID | Area | Needs | Who | Task | Notes |
 |----|------|-------|-----|------|-------|
-| B1 | any | | open | `cargo test` with no `extracted/` must pass: find every test that panics without the data and make it skip, like `super_armor_hit_matches_the_exe` | CI runs the tests with no data, so this keeps CI green |
 | B3 | any | | open | `cargo clippy` warnings: fix one module at a time, no behaviour change | one pull request per module |
 | B5 | any | | open | A PowerShell twin of `tools/t.sh` (quiet test run) for contributors without bash | |
 

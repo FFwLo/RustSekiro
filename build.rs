@@ -14,6 +14,15 @@ const SIZES: [u32; 6] = [16, 24, 32, 48, 64, 256];
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=src/icon_dot.rs");
+    // `shinobi_data`: the game's extracted data is there (SHINOBI_ROOT's, else this checkout's), so
+    // the tests that read it run; without it (CI, a fresh fork) they are ignored instead of failing.
+    println!("cargo::rustc-check-cfg=cfg(shinobi_data)");
+    println!("cargo:rerun-if-env-changed=SHINOBI_ROOT");
+    let root = std::env::var_os("SHINOBI_ROOT").map(std::path::PathBuf::from).unwrap_or_else(|| std::path::PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR")));
+    println!("cargo:rerun-if-changed={}", root.join("extracted").display());
+    if root.join("extracted").join("combat_data.json").exists() {
+        println!("cargo:rustc-cfg=shinobi_data");
+    }
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") || std::env::var("CARGO_CFG_TARGET_ENV").as_deref() != Ok("msvc") {
         return;
     }

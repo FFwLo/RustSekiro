@@ -441,6 +441,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[cfg_attr(not(shinobi_data), ignore = "needs extracted/")]
     fn a_sugar_wears_its_effect_and_raises_the_attack() {
         // Ako's Sugar: Bullet 3400 (SpEffect 3400, the trigger with its visual, no endurance) ->
         // its hit bullet 3401 (SpEffect 3401, the effect).
@@ -470,6 +471,7 @@ mod tests {
     /// The rows the module doc names: the cures' instants, the throwables' chains from the
     /// params, Divine Confetti's and the Balloon of Wealth's rates.
     #[test]
+    #[cfg_attr(not(shinobi_data), ignore = "needs extracted/")]
     fn the_items_read_their_rows() {
         // Divine Grass: full HP and posture, every cure.
         let grass: Vec<_> = effects_of(3040).into_iter().map(instant).collect();
@@ -500,6 +502,7 @@ mod tests {
     /// (TAE 114) effects (ffx.rs: castSfxId / fireSfxId / effectSfxId) and its SpEffects'
     /// SpEffectVfx effects are in the extracted FXRs (tools/fxr_extract.py).
     #[test]
+    #[cfg_attr(not(shinobi_data), ignore = "needs extracted/")]
     fn every_bag_item_has_its_effects() {
         let root = crate::paths::extracted();
         let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(root.join("combat_data.json")).unwrap()).unwrap();
@@ -539,6 +542,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(shinobi_data), ignore = "needs extracted/")]
     fn every_quick_item_state_is_exported() {
         let path = crate::paths::extracted().join("combat_data.json");
         let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();

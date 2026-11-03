@@ -733,6 +733,7 @@ mod fall_tests {
     /// 22 fallDamageRate 0.5); none on a disableFallDamage row; from 5 m when aged (the caller's
     /// `from`, graph 210 floors at 20 %).
     #[test]
+    #[cfg_attr(not(shinobi_data), ignore = "needs extracted/")]
     fn fall_damage_is_a_hundredth_of_max_hp_per_metre_from_twenty() {
         assert_eq!(fall_damage_share(19.9, None, 20.0), 0.0);
         assert!((fall_damage_share(25.0, None, 20.0) - 0.25).abs() < 1e-6);

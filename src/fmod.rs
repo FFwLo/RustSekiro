@@ -1082,6 +1082,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(shinobi_data), ignore = "needs extracted/")]
     fn sounds_pause_and_slots_stop_off_the_playing_screen() {
         use crate::menu::Screen;
         use crate::sound::{Slotted, SlottedSounds};
@@ -1139,6 +1140,7 @@ mod tests {
     /// A sound key looked up before its chr's project was loaded plays once that project loads
     /// (load_new_kinds: an enemy kind added mid-run). Needs the game's FMOD DLLs; skipped without.
     #[test]
+    #[cfg_attr(not(shinobi_data), ignore = "needs extracted/")]
     fn a_key_missing_before_its_project_loads_plays_after() {
         let root = crate::paths::root();
         let _one = FMOD_TEST.lock().unwrap_or_else(|e| e.into_inner());
@@ -1423,6 +1425,7 @@ mod tests {
     /// phase flag (11105812: <= 1 bar, 3 s), Genichiro's Way of Tomoe track once his 0-bars event
     /// (11115820) sets 11115803 / 11115802.
     #[test]
+    #[cfg_attr(not(shinobi_data), ignore = "needs extracted/")]
     fn boss_music_follows_the_phase_flags() {
         let bgm = boss_bgm();
         let track = |row: i64, on: &[i64]| bgm_track(&bgm[&row], &on.iter().copied().collect()).map(|t| t.event.clone());

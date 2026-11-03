@@ -383,6 +383,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(shinobi_data), ignore = "needs extracted/")]
     fn the_trees_match_the_captures() {
         let t = tree();
         let sizes: Vec<usize> = (0..5).map(|p| page(t, p).len()).collect();
@@ -398,6 +399,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(shinobi_data), ignore = "needs extracted/")]
     fn a_skill_is_revealed_and_bought_after_its_parent() {
         let t = tree();
         let (root, child) = (node(10), node(2));
@@ -412,6 +414,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(shinobi_data), ignore = "needs extracted/")]
     fn mushin_asks_for_both_last_skills_and_mirrors_them() {
         let t = tree();
         let shura = node(411);
@@ -436,6 +439,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(shinobi_data), ignore = "needs extracted/")]
     fn even_with_points_and_parents_a_skill_requires_its_text() {
         let t = tree();
         for school in 0..PAGES.len() {
@@ -448,6 +452,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(shinobi_data), ignore = "needs extracted/")]
     fn the_construct_books_are_permanent_key_items_and_do_not_teach_skills() {
         let mut config = crate::config::GameConfig::load().unwrap();
         config.player.items.retain(|(id, _)| !TEXT_GOODS.contains(id));
@@ -472,6 +477,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(shinobi_data), ignore = "needs extracted/")]
     fn the_cursor_steps_to_the_nearest_node_ahead() {
         let nodes = page(tree(), 0);
         let at = |id: i64| nodes.iter().position(|s| s.id == id).unwrap();
