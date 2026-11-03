@@ -50,6 +50,7 @@ disassembly.
 | Reference clips | `docs/kb/clips.md` (check before asking for a new recording) |
 | Checks against the exe (emulator) | `tools/emu-cases/src/<topic>.rs`, `src/sim_tests/emu_*.rs`, `docs/kb/emulator-pilot.md`, `docs/kb/frame-coverage.md` |
 | Streaming map, lighting, collision, script VM (copied from sekiro-rs) | `crates/`, `crates/README.md` |
+| Proof level per system and character; the work map page linked from the README | `tools/coverage.py` → `docs/kb/coverage.md`; `python tools/workmap/build.py --tests <n>` → `target/workmap.html` |
 | Live recordings of the real Sekiro | `docs/kb/recordings.md`: read `python -m tools.rec summary <rec> --cat <topic>`, never raw data |
 
 Community references worth cloning next to the repo (read-only): SekiroHKS, SDT-HKS, Paramdex, SekiroTool,

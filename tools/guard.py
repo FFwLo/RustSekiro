@@ -23,8 +23,8 @@ import re
 import subprocess
 import sys
 
-MAX_TEXT = 2 << 20     # mechanics-atlas.json is about 1.3 MB
-MAX_MEDIA = 10 << 20   # docs/media/preview.webp is about 6.7 MB
+MAX_TEXT = 2 << 20     # the biggest committed text file stays under this
+MAX_MEDIA = 10 << 20   # one image or clip in docs/media
 MEDIA_DIR = "docs/media/"
 MEDIA_EXT = (".png", ".jpg", ".jpeg", ".gif", ".webp")
 

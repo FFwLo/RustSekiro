@@ -1,116 +1,50 @@
-# Sv1
+# RSekiro
 
-A recreation of SEKIRO: SHADOWS DIE TWICE's combat, written in Rust on
-[Bevy](https://bevyengine.org). Every number comes from the game's own files
-(animations, params, scripts, models, sounds), not from guessing.
+SEKIRO: SHADOWS DIE TWICE's combat rebuilt in Rust on [Bevy](https://bevyengine.org), from the game's own
+files (animations, params, AI scripts, models, sounds) and checked against the game's code in an emulator.
 
-![Sv1 gameplay](docs/media/preview.webp)
+**[Open the work map](https://claude.ai/artifact/ReFjjAWUHZ8syNQPnJBKuu)**: what is proven to match the game,
+system by system and boss by boss, and which rows are open.
 
-A fan project for study, not affiliated with FromSoftware or Activision. No game
-files are in this repository: you need your own copy of the game to build the
-data.
+A fan project for study, not affiliated with FromSoftware or Activision. No game files are in this repository:
+you need your own copy of the game.
 
 ## What it does
 
-- **Wolf:** walking, running, sprinting, jumping, steps, lock-on, crouch,
-  grappling hook, healing gourd, swimming and diving, falls out of the map (back to safe
-  ground for a third of his health), death and resurrection (two nodes, the second locked
-  until a deathblow; the game's 死 death screen).
-- **Combat:** attacks, guard, deflect, posture, perilous attacks, Mikiri
-  Counter, combat arts, prosthetic tools with their status effects, Lightning
-  Reversal.
-- **Deathblows:** from the front, from behind, stealth and plunging, with the
-  game's own camera angles. Bosses kneel at their last mark and the Todome
-  finishes them.
-- **Enemies:** all 102 kinds the game places, each running its real AI script,
-  with stealth (sight, hearing, search). Every main boss with its phases, map
-  events and arena, from Genichiro to the Divine Dragon.
-- **Looks and sound:** the game's models, cloth, effects, blood, sky, fog,
-  lighting, HUD and menus; the game's own sounds and music through FMOD.
-- **Skill trees:** find each Esoteric Text to open its school at an idol. On the Construct,
-  the five books are at Course Start, Platform Top, Cliff Top, Shaft Floor and the outpost's
-  watchtower. Learning still costs skill points and requires the earlier skills.
-- **Sculptor:** talk to him near Course Start on the Construct (E) to fit new Prosthetic Tools
-  and buy upgrades. The Workshop is reached through him rather than an idol.
+Wolf's moves, the grappling hook and the healing gourd; guard, deflect, posture, Mikiri, combat arts, prosthetic
+tools and deathblows; all 102 enemy kinds running their own AI scripts, with stealth; every main boss from
+Genichiro to the Divine Dragon. Values the files don't hold are marked `gap`. Not included yet: story, NPCs,
+saves, the open world.
 
-Values the files don't hold are marked `gap` in the code and in `config.toml`.
-Not included: the rest of the game (story, NPCs, saving, open world).
+## Run it
 
-## Controls
+You need Windows, Sekiro from Steam (patch 1.06), Rust and Python 3.
 
-The keyboard defaults are Sekiro's own (its `DefaultKeyAssignParam`, each action named by
-the game's key guide text). E (talk / wall hug / ledge hang) is reserved for those.
+```powershell
+powershell -ExecutionPolicy Bypass -File tools\extract.ps1   # builds extracted/ from your game, once
+cargo run --release
+```
 
-| Action | Keyboard / mouse |
-|---|---|
-| Move / look | WASD / mouse |
-| Walk | Left Alt |
-| Attack (hold for the thrust) | Left click or J |
-| Guard / deflect | Right click or K |
-| Combat art | Left and right click together |
-| Step (hold to sprint) | Shift |
-| Jump, kick in the air | Space |
-| Lock on | Middle mouse button |
-| Prosthetic tool | Left Ctrl |
-| Switch prosthetic tool | Z |
-| Grappling hook | F |
-| Use quick item (Healing Gourd, sugars, pellets ...) | R |
-| Next quick item | C |
-| Menus: OK / back / move | Enter or E / Esc or Q / arrows, mouse wheel; click a row |
-| Crouch | Q |
-| Swim: fast / dive and sink / rise (diving needs the Mibu Breathing Technique) | hold Shift / Ctrl / F |
-| Wall hug / ledge hang / climb up (hold in the air to catch a ledge) | E |
-| Wall jump (jump in the air against a wall, or jump while hugging / hanging) | Space |
-| Sheathe / draw | X |
-| Resurrect / die (when dead) | Left click / right click |
+Keys: [docs/controls.md](docs/controls.md). Tests: `cargo test --release`.
 
-Sandbox keys: `F3` shows the frame rate, `F1` opens the debug menu (enemy, AI mode, skills, tools,
-cheats), `T` turns the enemy's AI on or off, `H` shows hurtboxes, `Backspace` resets,
-`[` / `]` change the hour, `F5` reloads `config.toml`, `Esc` pauses (the game menu). Click the window to capture the mouse.
+## Fine-tune it
 
-## Setup
+The few values Sekiro's files don't hold are in `config.toml`, each with a note on where the real value lives.
+Edit one while the game runs and press `F5`: no rebuild. `F1` opens the debug menu (enemy, AI, skills, cheats).
 
-You need Windows, Sekiro from Steam (patch 1.06), Rust and Python 3
-(Node.js optional, for the game's effect files).
+## Join
 
-1. Build the data from your game (takes a while):
-   ```powershell
-   powershell -ExecutionPolicy Bypass -File tools\extract.ps1
-   ```
-   Add `-Sekiro "D:\path\to\Sekiro"` if the game is not in the default Steam
-   folder.
-2. Run:
-   ```bash
-   cargo run --release
-   ```
+1. Fork, clone, and add `upstream`: `git remote add upstream https://github.com/FFwLo/RustSekiro.git`.
+2. Extract your data, run `git config core.hooksPath .githooks`, then `python tools/doctor.py` until it says `ready`.
+3. Pick an open row (`git show upstream/agents-work-board:board.py | python - open`; new here: a `B` row) and
+   claim it on the [claims issue](https://github.com/FFwLo/RustSekiro/issues/3).
+4. Open a pull request with the full suite's result. The owner reviews and merges.
 
-Tests: `cargo test --release`.
-
-## Where things are
-
-| Path | What |
-|---|---|
-| `src/player.rs` | Wolf |
-| `src/enemy.rs`, `src/ai.rs` | Enemies and their AI scripts |
-| `src/combat.rs` | Hits, posture, damage |
-| `src/anim.rs`, `src/model.rs`, `src/cloth.rs` | Animation, models, cloth |
-| `src/fxr.rs`, `src/sound.rs`, `src/hud.rs` | Effects, sound, HUD |
-| `src/map.rs`, `src/camera.rs` | Maps, camera |
-| `tools/sekiro-extract/` | Reads the game's files into `extracted/` |
-| `tools/emu-cases/` | Runs the game's own functions in an emulator to check a rule against the exe |
-| `crates/` | File formats, HKS scripts, sim and game crates copied from sekiro-rs ([crates/README.md](crates/README.md)) |
-| `docs/` | Notes on every mechanic and where it was found |
-
-## Contributing
-
-Pull requests are welcome. You need your own copy of the game: set up as above, run
-`git config core.hooksPath .githooks`, then `python tools/doctor.py` until it says `ready`.
-No game files, extracted data or decompiled code go into the repository; function addresses are fine.
-Pick a row from the work board (`AGENTS.md` on the branch `agents-work-board`), claim it, and open a
-pull request from your fork. All of it is in [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md).
+Everything else, including the emulator setup and the Claude Code skill, is in
+[docs/CONTRIBUTING.md](docs/CONTRIBUTING.md). No game files, extracted data or decompiled code go into the
+repository; function addresses are fine.
 
 ## License
 
-Code under the [MIT License](LICENSE.md). It covers this code only, not the
-game or anything generated from it. Please keep `extracted/` out of forks. The crates in `crates/`
-keep sekiro-rs's MIT / Apache-2.0 licence (`crates/CREDITS-sekiro-rs.md`).
+Code under the [MIT License](LICENSE.md); it covers this code only, not the game or anything generated from it.
+The crates in `crates/` keep sekiro-rs's MIT / Apache-2.0 licence ([credits](crates/CREDITS-sekiro-rs.md)).

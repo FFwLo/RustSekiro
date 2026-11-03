@@ -1,0 +1,310 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>RSekiro Work Map</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Shippori+Mincho+B1:wght@600;800&family=Zen+Kaku+Gothic+New:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: the DSekiro map's washi page and seal, for the Rust port. Totals, a treemap of the game's systems (sized by
+   RSekiro's code, colored by proof level), every character as a tile, then how to join and the open board rows. */
+:root {
+  --bg: #efe8da; --panel: #f7f2e8; --ink: #1d1a16; --muted: #6b6257; --line: #d6ccb9;
+  --l0: #ddd3c1; --l1: #b9ab93; --l2: #b08a3e; --l3: #3d5a80; --l4: #a3201c;
+  --accent: #a3201c; --seal-ink: #f7f2e8; --tip: #1d1a16; --tipink: #f1eadc; --on: #f7f2e8;
+  --display: "Shippori Mincho B1", "Yu Mincho", "Hiragino Mincho ProN", Georgia, serif;
+  --body: "Zen Kaku Gothic New", "Segoe UI", system-ui, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #14110e; --panel: #1b1713; --ink: #ece4d4; --muted: #a39886; --line: #3a332b;
+  --l0: #2a251f; --l1: #5a5045; --l2: #cfa75a; --l3: #6a8fc0; --l4: #d6402f;
+  --accent: #d6402f; --seal-ink: #14110e; --tip: #ece4d4; --tipink: #14110e; --on: #14110e;
+  color-scheme: dark } }
+:root[data-theme="dark"] {
+  --bg: #14110e; --panel: #1b1713; --ink: #ece4d4; --muted: #a39886; --line: #3a332b;
+  --l0: #2a251f; --l1: #5a5045; --l2: #cfa75a; --l3: #6a8fc0; --l4: #d6402f;
+  --accent: #d6402f; --seal-ink: #14110e; --tip: #ece4d4; --tipink: #14110e; --on: #14110e;
+  color-scheme: dark }
+body { background: var(--bg); color: var(--ink); font: 15px/1.6 var(--body); }
+.wrap { max-width: 1200px; margin: 0 auto; padding-block: 32px 56px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+  display: grid; grid-template-columns: minmax(0, 1fr); gap: 26px; }
+.wrap > * { min-width: 0; }
+header { display: flex; gap: 18px; align-items: flex-start; }
+header > div { min-width: 0; }
+.seal { flex: none; width: 64px; height: 64px; border-radius: 6px; background: var(--accent); color: var(--seal-ink);
+  display: grid; place-items: center; font: 800 25px/1 var(--display); writing-mode: vertical-rl;
+  transform: rotate(-4deg); box-shadow: inset 0 0 0 3px var(--accent), inset 0 0 0 5px var(--seal-ink); }
+h1 { font: 800 clamp(30px, 5vw, 48px)/1.05 var(--display); margin: 0; text-wrap: balance; }
+h1 span { color: var(--accent); }
+h2 { font: 600 22px/1.2 var(--display); margin: 0 0 6px; text-wrap: balance; }
+h3 { font: 700 13px var(--body); text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 0 0 8px; }
+p { margin: 0; }
+.sub { color: var(--muted); margin-top: 8px; max-width: 70ch; }
+.links { display: flex; flex-wrap: wrap; gap: 8px 18px; margin-top: 12px; font-weight: 500; }
+a { color: var(--accent); }
+a:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+code { font: 500 12.5px var(--mono); }
+.totals { display: flex; flex-wrap: wrap; gap: 12px 34px; font-variant-numeric: tabular-nums;
+  border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); padding-block: 14px; }
+.totals div { display: grid; }
+.totals b { font: 800 28px/1.1 var(--display); }
+.totals b.r { color: var(--l4); }
+.totals small { color: var(--muted); text-transform: uppercase; letter-spacing: .08em; font-size: 11px; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: 13px; color: var(--muted); }
+.legend i { display: inline-block; width: 12px; height: 12px; border-radius: 2px; vertical-align: -1px; margin-right: 6px; }
+.lead { color: var(--muted); max-width: 72ch; margin-bottom: 10px; }
+#tree { position: relative; height: min(64vh, 560px); min-height: 380px; border: 1px solid var(--line); border-radius: 4px;
+  background: var(--panel); overflow: hidden; }
+#tree button { position: absolute; border: 0; border-right: 2px solid var(--bg); border-bottom: 2px solid var(--bg);
+  padding: 6px 8px; text-align: left; overflow: hidden; cursor: pointer; font: 500 13px/1.25 var(--body); color: var(--ink);
+  display: flex; flex-direction: column; justify-content: flex-start; gap: 2px; }
+#tree button.dark { color: var(--on); }
+#tree button small { font: 400 11px var(--mono); opacity: .8; }
+#tree button[aria-pressed="true"] { box-shadow: inset 0 0 0 3px var(--ink); }
+.pick { min-height: 46px; font-size: 14px; color: var(--muted); max-width: 90ch; overflow-wrap: anywhere; margin-top: 10px; }
+.pick b { color: var(--ink); }
+.groups { display: grid; gap: 14px; }
+.tiles { display: flex; flex-wrap: wrap; gap: 4px; }
+.tiles button { width: 54px; height: 30px; border: 0; border-radius: 3px; cursor: pointer; font: 500 11px var(--mono); color: var(--ink); }
+.tiles button.dark { color: var(--on); }
+.tiles.big button { width: 128px; height: 46px; font: 500 12px/1.2 var(--body); padding: 4px 6px; text-align: left; overflow: hidden; }
+.tiles button[aria-pressed="true"] { box-shadow: 0 0 0 2px var(--ink); }
+.two { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 26px; align-items: start; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 4px; padding: 18px; display: grid; gap: 12px; min-width: 0; }
+ol.steps { list-style: none; counter-reset: s; margin: 0; padding: 0; display: grid; gap: 12px; }
+ol.steps li { counter-increment: s; display: grid; grid-template-columns: 28px minmax(0, 1fr); gap: 10px; }
+ol.steps li::before { content: counter(s); font: 800 20px/1.2 var(--display); color: var(--accent); }
+ol.steps p { color: var(--muted); font-size: 14px; }
+ol.steps strong { color: var(--ink); }
+.cmd { display: flex; gap: 6px; align-items: stretch; margin-top: 4px; min-width: 0; }
+.cmd pre { flex: 1; min-width: 0; margin: 0; padding: 6px 9px; background: var(--bg); border: 1px solid var(--line);
+  border-radius: 3px; overflow-x: auto; font: 500 12.5px/1.5 var(--mono); }
+.copy { flex: none; font: 500 12px var(--body); color: var(--muted); background: var(--panel); border: 1px solid var(--line);
+  border-radius: 3px; padding: 0 10px; cursor: pointer; }
+.copy:hover { color: var(--ink); }
+.bar { display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: end; justify-content: space-between; }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 4px; overflow: hidden; }
+.seg button { font: 500 13px var(--body); color: var(--muted); background: var(--panel); border: 0; padding: 6px 14px; cursor: pointer; }
+.seg button + button { border-left: 1px solid var(--line); }
+.seg button[aria-pressed="true"] { background: var(--ink); color: var(--panel); }
+.list { overflow-x: auto; border: 1px solid var(--line); border-radius: 4px; background: var(--panel); }
+table { border-collapse: collapse; width: 100%; font-size: 14px; }
+th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+tr:last-child td { border-bottom: 0; }
+th { font: 500 11px var(--body); text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }
+td.id { font: 500 13px var(--mono); white-space: nowrap; }
+td.task { min-width: 260px; }
+.pill { display: inline-block; font: 500 11px var(--body); padding: 1px 8px; border-radius: 999px; white-space: nowrap;
+  border: 1px solid var(--line); color: var(--muted); }
+.pill.any { background: var(--l2); border-color: var(--l2); color: var(--on); }
+.pill.emu { background: var(--l3); border-color: var(--l3); color: var(--on); }
+.note { color: var(--muted); font-size: 13px; max-width: 90ch; }
+#tip { position: fixed; z-index: 20; pointer-events: none; background: var(--tip); color: var(--tipink);
+  padding: 7px 10px; border-radius: 4px; font-size: 13px; max-width: 320px; box-shadow: 0 6px 20px rgba(0,0,0,.3); }
+@media (max-width: 860px) { .two { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 600px) { #tree { height: 620px; } .totals b { font-size: 23px; } .seal { width: 50px; height: 50px; font-size: 19px; } }
+@media (prefers-reduced-motion: no-preference) { #tree button, .tiles button { transition: filter .12s; } }
+#tree button:hover, .tiles button:hover { filter: brightness(1.08) saturate(1.1); }
+</style>
+
+<div class="wrap">
+  <header>
+    <div class="seal" aria-hidden="true">忍び</div>
+    <div>
+      <h1>RSekiro <span>work map</span></h1>
+      <p class="sub">Sekiro's combat rebuilt in Rust and Bevy from the game's own files. Each block below is a part of the game,
+        sized by its code in RSekiro and colored by how far it is proven to match the real game. Pick an open row and help close the gap.</p>
+      <div class="links">
+        <a href="https://github.com/FFwLo/RustSekiro">Repository</a>
+        <a href="https://github.com/FFwLo/RustSekiro/blob/main/docs/CONTRIBUTING.md">Contributing guide</a>
+        <a href="https://github.com/FFwLo/RustSekiro/issues/3">Claims issue</a>
+        <a href="https://github.com/FFwLo/RustSekiro/blob/agents-work-board/WORK.md">Full board</a>
+      </div>
+    </div>
+  </header>
+
+  <section class="totals" id="totals" aria-label="Totals"></section>
+
+  <section>
+    <h2>Systems</h2>
+    <p class="lead">Block size is RSekiro's lines of code for that system. Tap a block to read what is done and what is missing.</p>
+    <div class="legend" id="legend"></div>
+    <div id="tree" style="margin-top:10px" role="group" aria-label="Systems sized by code and colored by proof level"></div>
+    <p class="pick" id="syspick">Tap or hover a block.</p>
+  </section>
+
+  <section>
+    <h2>Characters</h2>
+    <p class="lead">Every character id the game's data names. Bosses and mini-bosses first; the plain tiles are ones RSekiro cannot load yet.</p>
+    <div class="groups" id="groups"></div>
+    <p class="pick" id="chrpick">Tap or hover a tile.</p>
+  </section>
+
+  <section class="two">
+    <div class="card">
+      <h2>Join in five steps</h2>
+      <ol class="steps">
+        <li><div><p><strong>Own the game.</strong> Sekiro from Steam (patch 1.06), Windows, Rust and Python 3. Nobody shares game files: you extract your own.</p></div></li>
+        <li><div><p><strong>Fork and clone,</strong> then add the project as <code>upstream</code>.</p>
+          <div class="cmd"><pre>git remote add upstream https://github.com/FFwLo/RustSekiro.git</pre><button class="copy">Copy</button></div></div></li>
+        <li><div><p><strong>Extract your data and check the setup</strong> until the doctor says <code>ready</code>.</p>
+          <div class="cmd"><pre>powershell -ExecutionPolicy Bypass -File tools\extract.ps1
+git config core.hooksPath .githooks
+python tools/doctor.py</pre><button class="copy">Copy</button></div></div></li>
+        <li><div><p><strong>Pick a row and claim it.</strong> New here? Take a <code>B</code> row. The claim is a comment on the claims issue, under your GitHub name.</p>
+          <div class="cmd"><pre>git fetch upstream
+git show upstream/agents-work-board:board.py | python - open
+git show upstream/agents-work-board:board.py | python - claim B3 &lt;agent&gt;</pre><button class="copy">Copy</button></div></div></li>
+        <li><div><p><strong>Open a pull request</strong> from a branch of your fork, with the full suite's <code>test result:</code> line. The owner reviews and merges.</p></div></li>
+      </ol>
+      <p class="note">Claude Code users: copy <code>tools/claude-skills/rsekiro-row</code> into <code>~/.claude/skills/</code> and say "do an RSekiro row".</p>
+    </div>
+    <div class="card">
+      <h2>Fine-tune it live</h2>
+      <p class="note" style="font-size:14px">Everything Sekiro's files hold is read from them. The few values they do not hold
+        live in <code>config.toml</code>, each with a note on where the real value is. Change one while the game runs and
+        press <code>F5</code>: no rebuild.</p>
+      <div class="cmd"><pre>cargo run --release
+# edit config.toml, save, press F5 in the game</pre><button class="copy">Copy</button></div>
+      <h3 style="margin-top:6px">Handy keys</h3>
+      <table><tbody>
+        <tr><td><code>F1</code></td><td>debug menu: enemy, AI mode, skills, tools, cheats</td></tr>
+        <tr><td><code>T</code> / <code>H</code></td><td>enemy AI on or off / show hurtboxes</td></tr>
+        <tr><td><code>F3</code> / <code>Backspace</code></td><td>frame rate / reset the fight</td></tr>
+        <tr><td><code>[</code> <code>]</code></td><td>change the hour</td></tr>
+      </tbody></table>
+      <p class="note">Found a value that feels closer to the game? Say how you compared it (side by side with the real game,
+        a recording, the emulator) and open a pull request.</p>
+    </div>
+  </section>
+
+  <section>
+    <div class="bar">
+      <div><h2>Open rows</h2><p class="lead" style="margin:0">Top rows in each kind change the feel the most. <code>emu</code> rows need the emulator setup.</p></div>
+      <div class="seg" role="group" aria-label="Kind">
+        <button data-k="" aria-pressed="true">All</button>
+        <button data-k="B" aria-pressed="false">B: first rows</button>
+        <button data-k="E" aria-pressed="false">E: emulator</button>
+        <button data-k="P" aria-pressed="false">P: ports</button>
+      </div>
+    </div>
+    <div class="list" style="margin-top:10px"><table>
+      <thead><tr><th>Row</th><th>Area</th><th>Task</th><th>Claim</th></tr></thead>
+      <tbody id="rows"></tbody>
+    </table></div>
+  </section>
+
+  <p class="note" id="foot"></p>
+</div>
+<div id="tip" hidden></div>
+
+<script>
+const D = /*DATA*/null;
+const LEVELS = ["none", "data loaded", "rules ported", "checked against the exe", "seen side by side"];
+const LABEL = ["not loaded yet", "data loaded", "rules ported", "checked against the exe", "seen side by side"];
+const lv = s => Math.max(0, LEVELS.indexOf(s));
+const dark = l => l >= 3;
+const $ = id => document.getElementById(id);
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const md = s => esc(s).replace(/`([^`]+)`/g, "<code>$1</code>");
+
+// totals
+const sysBy = [0, 0, 0, 0, 0], chrBy = [0, 0, 0, 0, 0];
+D.sys.forEach(s => sysBy[lv(s[2])]++);
+D.chr.forEach(c => chrBy[lv(c[3])]++);
+const bosses = D.chr.filter(c => c[2] === "boss");
+const tot = [
+  [D.tests ? D.tests.toLocaleString() : "?", "tests passing", ""],
+  [D.sys.length, "systems", ""],
+  [sysBy[3] + sysBy[4], "systems checked or seen", "r"],
+  [D.chr.length, "characters", ""],
+  [bosses.filter(c => lv(c[3]) === 4).length + " / " + bosses.length, "bosses seen side by side", "r"],
+  [D.rows.filter(r => r[3] === "open").length, "open rows", ""],
+];
+$("totals").innerHTML = tot.map(([v, k, c]) => `<div><b class="${c}">${v}</b><small>${k}</small></div>`).join("");
+$("legend").innerHTML = LABEL.map((n, i) => `<span><i style="background:var(--l${i})"></i>${n}</span>`).slice().reverse().join("");
+
+// systems treemap (squarified)
+function squarify(items, x, y, w, h, out) {
+  if (!items.length) return;
+  const total = items.reduce((a, b) => a + b.v, 0);
+  if (items.length === 1) { out.push({ ...items[0], x, y, w, h }); return; }
+  const short = Math.min(w, h), scale = (w * h) / total;
+  let row = [], best = Infinity, i = 0;
+  for (; i < items.length; i++) {
+    const t = row.concat(items[i]), s = t.reduce((a, b) => a + b.v * scale, 0);
+    const worst = Math.max(...t.map(r => Math.max((short * short * r.v * scale) / (s * s), (s * s) / (short * short * r.v * scale))));
+    if (worst > best) break;
+    best = worst; row = t;
+  }
+  const s = row.reduce((a, b) => a + b.v * scale, 0), thick = s / short;
+  let off = 0;
+  for (const r of row) {
+    const len = (r.v * scale) / thick;
+    out.push(w >= h ? { ...r, x, y: y + off, w: thick, h: len } : { ...r, x: x + off, y, w: len, h: thick });
+    off += len;
+  }
+  if (w >= h) squarify(items.slice(i), x + thick, y, w - thick, h, out);
+  else squarify(items.slice(i), x, y + thick, w, h - thick, out);
+}
+const sysItems = D.sys.map((s, i) => ({ i, v: Math.max(s[1], 400) })).sort((a, b) => b.v - a.v);
+let picked = null;
+function showSys(i) {
+  const s = D.sys[i];
+  $("syspick").innerHTML = `<b>${esc(s[0])}</b>: ${LABEL[lv(s[2])]}, ${s[1].toLocaleString()} lines. ${md(s[3])}`;
+}
+function drawTree() {
+  const box = $("tree"), W = box.clientWidth, H = box.clientHeight, out = [];
+  squarify(sysItems, 0, 0, W, H, out);
+  box.innerHTML = out.map(r => {
+    const s = D.sys[r.i], l = lv(s[2]);
+    return `<button data-i="${r.i}" class="${dark(l) ? "dark" : ""}" aria-pressed="${picked === r.i}"
+      style="left:${r.x}px;top:${r.y}px;width:${r.w}px;height:${r.h}px;background:var(--l${l})"
+      aria-label="${esc(s[0])}, ${LABEL[l]}">${r.w > 70 && r.h > 34 ? esc(s[0]) + `<small>${s[1].toLocaleString()} lines</small>` : ""}</button>`;
+  }).join("");
+}
+$("tree").addEventListener("click", e => { const b = e.target.closest("button"); if (!b) return; picked = +b.dataset.i; showSys(picked);
+  $("tree").querySelectorAll("button").forEach(x => x.setAttribute("aria-pressed", String(x === b))); });
+$("tree").addEventListener("mouseover", e => { const b = e.target.closest("button"); if (b) showSys(+b.dataset.i); });
+new ResizeObserver(drawTree).observe($("tree"));
+
+// characters
+const GROUPS = [["boss", "Bosses", true], ["mini-boss", "Mini-bosses", true], ["", "Other characters", false]];
+$("groups").innerHTML = GROUPS.map(([k, name, big]) => {
+  const cs = D.chr.map((c, i) => [c, i]).filter(([c]) => c[2] === k).sort((a, b) => lv(b[0][3]) - lv(a[0][3]));
+  return `<div><h3>${name} (${cs.length})</h3><div class="tiles${big ? " big" : ""}">` + cs.map(([c, i]) => {
+    const l = lv(c[3]);
+    return `<button data-i="${i}" class="${dark(l) ? "dark" : ""}" style="background:var(--l${l})" aria-pressed="false"
+      aria-label="${esc(c[0])} ${esc(c[1])}, ${LABEL[l]}">${big ? esc(c[1].replace(/^"|"$/g, "")) : c[0]}</button>`;
+  }).join("") + "</div></div>";
+}).join("");
+function showChr(i) { const c = D.chr[i]; $("chrpick").innerHTML = `<b>${esc(c[1])}</b> <code>${c[0]}</code>${c[2] ? " · " + c[2] : ""}: ${LABEL[lv(c[3])]}.`; }
+$("groups").addEventListener("click", e => { const b = e.target.closest("button"); if (!b) return; showChr(+b.dataset.i);
+  $("groups").querySelectorAll("button").forEach(x => x.setAttribute("aria-pressed", String(x === b))); });
+$("groups").addEventListener("mouseover", e => { const b = e.target.closest("button"); if (b) showChr(+b.dataset.i); });
+
+// open rows
+const claim = id => `git show upstream/agents-work-board:board.py | python - claim ${id} <agent>`;
+function drawRows(k) {
+  $("rows").innerHTML = D.rows.filter(r => r[3] === "open" && (!k || r[5] === k)).map(r => `<tr>
+    <td class="id">${esc(r[0])}</td><td><span class="pill ${esc(r[1])}">${esc(r[1])}</span></td>
+    <td class="task">${md(r[4])}${r[2] ? `<br><small class="note">needs ${esc(r[2])}</small>` : ""}</td>
+    <td><button class="copy" data-copy="${esc(claim(r[0]))}" style="padding:4px 10px">Copy claim</button></td></tr>`).join("");
+}
+document.querySelector(".seg").addEventListener("click", e => { const b = e.target.closest("button"); if (!b) return;
+  document.querySelectorAll(".seg button").forEach(x => x.setAttribute("aria-pressed", String(x === b))); drawRows(b.dataset.k); });
+drawRows("");
+
+// copy buttons
+document.addEventListener("click", async e => {
+  const b = e.target.closest(".copy"); if (!b) return;
+  const text = b.dataset.copy || b.previousElementSibling.textContent;
+  try { await navigator.clipboard.writeText(text); b.textContent = "Copied"; }
+  catch { const r = document.createRange(); r.selectNodeContents(b.previousElementSibling || b); getSelection().removeAllRanges(); getSelection().addRange(r); b.textContent = "Selected"; }
+  setTimeout(() => { b.textContent = b.dataset.copy ? "Copy claim" : "Copy"; }, 1600);
+});
+
+$("foot").innerHTML = `Snapshot of ${D.date}: proof levels from <code>docs/kb/coverage.md</code>, rows from the board branch.
+  Live claims are on the claims issue; <code>board.py open</code> always reads them fresh. Rebuild this page with
+  <code>python tools/workmap/build.py</code>. A fan project for study, not affiliated with FromSoftware or Activision; no game files anywhere.`;
+</script>
