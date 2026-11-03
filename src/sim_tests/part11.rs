@@ -804,7 +804,7 @@ pub(crate) fn follow_camera_matches_the_exe() {
             let right = v3(&b, 0x10);
             let sideways = (moved.x * right.x + moved.z * right.z).abs();
             let cam_dist = (v3(&b, 0x40) - focus).length();
-            check("fulcrum (+0xe0)", at.clone(), (place_fulcrum(focus, rotation * Vec3::Z, cam_dist, sideways, 1.0 / 60.0, fp) - v3(&a, 0xe0)).length(), 1e-4);
+            check("fulcrum (+0xe0)", at.clone(), (place_fulcrum(focus, rotation * Vec3::Z, cam_dist, sideways, dt, fp) - v3(&a, 0xe0)).length(), 1e-4);
             // The orbit's point, the position chase and the safe margin (no wall here).
             let raw = focus + rotation * Vec3::Z * f(&a, 0x214);
             check("orbit point (+0xf0)", at.clone(), (raw - v3(&a, 0xf0)).length(), 1e-4);

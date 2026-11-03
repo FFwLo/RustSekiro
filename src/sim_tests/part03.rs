@@ -652,7 +652,10 @@ pub(crate) fn locked_on_step_tilts_toward_the_stick() {
     let moved = (player_actor(&mut app).3 - start).with_y(0.0);
     let want = crate::player::stick_world(stick, 0.0);
     let off = moved.normalize().angle_between(want).to_degrees();
-    assert!(moved.length() > 0.5 && off < 8.0, "moved {:.2} m, {off:.1} deg off the stick", moved.length());
+    // 10 deg: a locked, standing Wolf now faces the target exactly before the step (camera2,
+    // lock-on manipulator; before he stood 3.7 deg off it, which put the path 5 deg nearer the
+    // stick); the rest is the step's own turn in its second half (8.7 deg).
+    assert!(moved.length() > 0.5 && off < 10.0,"moved {:.2} m, {off:.1} deg off the stick", moved.length());
 }
 
 /// Not locked on, an attack's auto-aim homing is no lock (HKS _fireGroundStep: only env(1118)

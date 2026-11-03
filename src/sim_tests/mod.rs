@@ -56,6 +56,7 @@ mod emu_aiframe;
 mod emu_speffect;
 mod emu_proxy;
 mod emu_damagemod;
+mod emu_camera2;
 pub(crate) use part01::*;
 pub(crate) use part02::*;
 pub(crate) use part03::*;

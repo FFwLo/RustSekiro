@@ -121,12 +121,11 @@ pub(crate) fn lock_camera_matches_the_exe() {
             let right = v3(&b, 0x10);
             let sideways = (moved.x * right.x + moved.z * right.z).abs();
             let cam_dist = (v3(&b, 0x40) - focus).length();
-            check("fulcrum (+0xe0)", at.clone(), (place_fulcrum(focus, rotation * Vec3::Z, cam_dist, sideways, 1.0 / 60.0, fp) - v3(&a, 0xe0)).length(), 1e-4);
+            check("fulcrum (+0xe0)", at.clone(), (place_fulcrum(focus, rotation * Vec3::Z, cam_dist, sideways, dt, fp) - v3(&a, 0xe0)).length(), 1e-4);
             check("orbit point (+0xf0)", at.clone(), (focus + rotation * Vec3::Z * f(&a, 0x214) - v3(&a, 0xf0)).length(), 1e-4);
-            // gap: the exe applies these rates once a frame with no time factor (at 30 fps it
-            // closes 0.4 a frame, matched exactly with dt 1/60 here); chase_position takes them
-            // per 1/60 s, so at 30 fps Sv1 closes 0.64 a frame.
-            let pos = chase_position(v3(&b, 0x100), v3(&a, 0xf0), focus, at_lock, Some(limits), f(&a, 0x150), 1.0 / 60.0);
+            // The exe applies these rates once a frame with no time factor: at 30 fps 0.4 a
+            // frame (`per_frame`; Sv1 closed 0.64 before).
+            let pos = chase_position(v3(&b, 0x100), v3(&a, 0xf0), focus, at_lock, Some(limits), f(&a, 0x150), dt);
             check("locked: position chase (+0x100)", at.clone(), (pos - v3(&a, 0x100)).length(), 1e-4);
             let d = (v3(&a, 0x110) - focus).length();
             let cam = focus + (v3(&a, 0x110) - focus) * safe_margin(d, p("camSafeMarginRate"), p("camSafeMarginMax")) / d;

@@ -279,8 +279,8 @@ Dated findings, oldest first. Append new entries at the end.
   sqrt((x² + z²) + y²), dot (x + y) + z). With AngAtLockMin 0 (cos 1.0) the exe stops the X / Z chase on
   frames where the f32 cosine of nearly parallel vectors rounds above 1.0 (82 of 85 such frames stopped,
   1,146 frames at or below 1.0 moved); glam's normalize rounded differently and kept chasing (up to
-  0.4 mm off on 81 frames). gap: the exe applies the chase rates once a frame with no time factor; at
-  30 fps it closes 0.4 a frame where `chase_position` (per 1/60 s) closes 0.64 (the test feeds it 1/60).
+  0.4 mm off on 81 frames). The exe applies the chase rates once a frame with no time factor; at
+  30 fps it closes 0.4 a frame where `chase_position` (per 1/60 s) closed 0.64 (fixed, camera2 below).
 - Pad (FUN_140960650 fills the frame at pad +0x38f8; FUN_1407f0f50 PadManipulator, emulated on made-up
   frames): frame +0x0 / +0x4 = move up / right (actions 0x4f / 0x51; 0x4d walk halves them) -> M+0xc0 =
   up * view + right * (view.z, 0, -view.x) (left-handed); +0x10 / +0x14 = lock switch (x, -y);
@@ -331,3 +331,45 @@ Dated findings, oldest first. Append new entries at the end.
 - Not covered: the cast blocked path (+0x1a0 never set in the arena), the 6 CameraParam rows with a yaw range
   under the full circle (chr row 2 taken as Wolf's facing), the CameraSetParam map row (snapshot 1100000 =
   row 0), SlowEnd (+0x85, read at 14073.c 12527, not traced), +0x278 into the lock-on pitch, 30 fps.
+
+## Escape wall, focus pull-in, lock-on at walls, 30 fps, lock-on manipulator (2026-11-03, camera2)
+- tools/emu-cases `camera2_walls` (14 scenarios, 2,730 frames checked: 1,000 with the escape-wall option, 470 at
+  30 fps, 761 locked on with a cast cut) and `camera2_manip` (9 scenarios, 360 frames of Wolf's PlayerIns update
+  with a lock point); tests `camera_escape_wall_pull_in_and_lock_at_walls_match_the_exe` and
+  `lock_manipulator_matches_the_exe` (src/sim_tests/emu_camera2.rs).
+- 30 fps, fixed: the exe takes the position chase rate once a frame with no time factor (0.4 of the remaining gap
+  a frame at 1/30 as at 1/60). `per_frame` now gives the rate itself for a frame of 1/60 s or longer (was
+  1 - (1 - r)^(dt*60): 0.64 at 30 fps; that was off by up to 1.35 m in these runs) and only scales shorter frames;
+  the fulcrum's sideways move is taken whole a frame (`per_exe_frame`). The camwall and lockcam tests now feed
+  the real dt.
+- Working rates +0x220 / +0x224 / +0x228 (focus follow X / Z, Y, position chase X / Z) ease by (row - cur) * dt
+  toward chrTransChaseRateXZ / Y_ForNormal and targetChaseRateXZForNormal, and are set to the _ForEscapeWall
+  values on a wing hit (`working_rates_step`). The focus follow reads last frame's rates, the position chase this
+  frame's. Ported as `CamState::rates`.
+- Escape wall (option byte 13 of [[0x143d5aac0]+0x50], copied to DAT_143d599c0, default 0 in FUN_1407bc470;
+  `input.escape_wall`): the fulcrum and orbit casts are skipped; two wing casts (sites 0x14073ffe5 / 0x140740025,
+  escapeWallWingRadius 0.01, length escapeWallWingLen 0.01) start beside Wolf's point +0xa0 and point along the
+  arm turned by -/+ escapeWallWingAngY (`escape_wings`, start within 5e-5 m: the exe's f32 rounding 200 m out).
+  No wing hit in 1,000 frames (0.01 m from Wolf's point sits inside his capsule). The camera rotation from the
+  wings (escapeWallRotAdd and others) is 0 in all 142 CameraParam rows, so not ported. gap: which menu entry
+  sets the option.
+- Focus pull-in (14073.c 9563-9664, `focus_pull_in`): a ray from last frame's focus to the chased one, |d| +
+  half Wolf's radius long; on a hit, a sphere of his radius 0.4 from his root toward the old focus; the focus goes
+  where it stops (min 1e-5 m). 8 pull-in frames (walked through the wall, put across it and back). Fixed: the next
+  frame's focus follow starts in X / Z from the pulled focus, not from the chase's own output (+0x1d0 keeps the
+  unpulled point that frame); before, the follow was off by up to 2.52 m on the 8 frames after. The Y is not
+  exercised (all pulls level).
+- Lock-on at walls matched as it was: the lock point average, the lock angles from the dragged fulcrum, the
+  fulcrum / orbit / final casts and cuts, the hit-wall distance rates, the chase at the AtLock rates, at 1/60
+  and 1/30.
+- Obstacle fade, gap (not ported): FUN_1408705a0 fades map objects only; a character needs byte +0x1f of
+  [[chr+0x18]] to be 2, and it is 0 for all 89 characters in the snapshot (the backing object is not known).
+  RSekiro draws map objects merged into the map, so there is nothing to fade; camCastSphereRadiusForFade unused.
+- Lock-on manipulator (FUN_1407f1710, from FUN_1407f0a70 when the lock module's bag +0x108 -> FUN_140b2dab0 gives
+  the lock point +0x38): no 45 deg gate; the move is the raw stick turned by the camera yaw (M+0x94) that frame;
+  M+0x40 = pitch and yaw (atan2(dx, dz) + pi) to the lock point, M+0x20 = their wrapped difference from Wolf's
+  angles, the yaw request +0x24. Standing, the physics yaw takes the request whole the next frame (no TAE 224
+  rate), the drawn yaw turns at 0.2304 rad a frame; walking locked the same. Fixed: `Turn::gate` takes the stick
+  as it is while locked (a press from rest moved a frame late, a 90 deg flick counted as a let-go), and a locked
+  Wolf standing still now turns to the target (before he never did). gap: RSekiro aims at the target's root, the
+  exe at the lock point; MoveAngle +0xbb0 is in the chr matrix frame (stale in the run), not checked.
