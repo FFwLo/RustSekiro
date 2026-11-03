@@ -145,7 +145,7 @@ end). See HANDOFF 4.63 item 8.
   NpcParam hitHeight / hitRadius in FUN_140bc2e00), hknpCharacterProxy maxSlope 60 deg
   (FUN_14104d3d0, 0x3f860a92). Were 0.35 / 50 deg from sekiro-rs. gap: step-up height (0.5 kept)
   and the ledge / support logic are not traced; the top wall sphere (1.55 + 0.4) sits above the
-  1.5 m capsule.
+  1.5 m capsule. (2026-11-03: checked in the emulator, "Character proxy against the exe" below.)
 - Open: jumping feel (details pending); foot IK on the run
   loop; _set4DirJumpTilt; wall jump (HKS BEH_A_WALL_JUMP, not in Sv1); ledge hang / climb (edges
   loaded, unused); swim.
@@ -262,3 +262,42 @@ scenarios / 440 frames (the stick written into the pad floats [pad +0x38f8]: [0]
   XInput scaling), the lock-on manipulator (FUN_1407f1710, needs a target in the snapshot). MoveSpeedLevelReal
   (HKS GetMoveSpeed) converges toward the stick level (2 only sprinting); Sv1's `speed_level` keeps its own 1 walk /
   2 run scale (it only picks the stop clip and the release slow-down).
+
+## Character proxy against the exe (2026-11-03, exe, emulator)
+`emu-cases <exe> extracted/emu proxy --snapshot <dir>` (tools/emu-cases/src/proxy.rs) runs Wolf's whole chr
+frame FUN_140a4b570 on the Naomori-arena snapshot, 13 scenarios / 810 frames (314 compared) at dt 1/60 and 1/30, with his
+requested velocity (x, z) written into the proxy at hknpCharacterProxy::integrate (FUN_1418f8b60, proxy +0xb0; the
+game's y kept), and records his feet (physics module +0x80) -> `proxy_frames.json`. Test
+`wolf_proxy_at_walls_and_on_open_ground_matches_the_exe` (src/sim_tests/emu_proxy.rs). The path each frame:
+behaviour world step FUN_141015fa0 -> CSHkBehCharaProxySceneModifier::vf3 FUN_140fe7310 -> per character the
+physics pre-step (FUN_141043cd0; FUN_140bcac10 puts the proxy at last frame's feet lifted by physics +0x140 =
++0x188, 0.3 m, or +0x18c 0.8 when [phys+0x9c8] == 2; constants from FUN_140bbb010), the world's proxy pass
+(FUN_14093bb50 -> FUN_14093cfd0: checkSupport FUN_1418f82a0, velocity, integrate with gravity (0, -9.8, 0)), the
+post-step (FUN_141044050 -> FUN_1407de780 -> FUN_140bc4390 -> FUN_140bca6d0: read back, lowered to the ground,
+copied to physics +0x80).
+- Wolf's proxy: capsule r 0.4, 1.5 m (proxy +0x90 (-0.4, 0, -0.4) / +0xa0 (0.4, 1.5, 0.4)), keepDistance 0.05.
+  Moved lifted 0.3 m, so the capsule spans 0.3-1.8 m over the feet while it moves.
+- Open ground: the requested horizontal velocity is realised whole (dx = v dt to 1e-4 over 120 frames on the
+  +-0.4 m bumps), y follows the floor; standing, the proxy's y velocity is one frame of gravity (-9.8 dt = -0.163)
+  each frame, reset by the frame. RSekiro (horizontal move, floor snap) matches.
+- Rock face (heading 60 deg, 7.7 m; normal (-0.93, 0.065, 0.363) from the exe's 0.4 m casts at 0.5 / 1 / 1.5 m):
+  Wolf stops 0.082 m further out than the 1 m cast's sphere (0.02 of it the face's lean at the capsule's lower
+  sphere, the rest keepDistance) and slides at the request's tangential part (1.549 m/s for 3 m/s at 30 deg; the
+  mesh turns 1 deg further on, 1.586). 30 and 60 fps end 0.3 mm apart. RSekiro had no keep distance: off the
+  wall 0.059 m worst head-on, 0.048 at 30 deg -> with `map::KEEP_DISTANCE` 0.05: 0.009 / 0.016 (along 0.03, the
+  face's own curve). The top wall sphere now ends at the proxy's 1.8 m (was 1.95).
+- Step-up: not run (no ledge 0.3-0.6 m in reach). Derived: the lifted capsule's bottom sphere (centre 0.7 m) climbs
+  a contact within maxSlope 60 deg, so a sharp ledge up to 0.7 - 0.4 cos 60 = 0.5 m: RSekiro's STEP_HEIGHT 0.5 kept.
+- Walking off the cliff edge (2.7 m along -Z): the capsule's rim holds him 0.10-0.15 m past the edge (y down 0.04 m
+  on the rounded bottom), physics +0xa2 / +0xa3 clear on frames 56 / 57, then the fall at 23.52 m/s^2 (0.392 m/s
+  a frame at 1/60; first air frame -0.359 = the ground frame's -0.163 - 0.196), semi-implicit (pos += v_new dt).
+  RSekiro's walk-off (floor sampled 0.08 m round the feet, vel_y 0, fall type 0 23.52) differs by under 3 mm in y
+  over the first 3 air frames; the edge distance depends on the mesh: gap, not compared.
+- gap: the push between characters. With the General placed 1.6 m ahead (his frame run too, AI off) Wolf's proxy
+  walks through his: the General's physics does not step in the snapshot (he stays where placed, 0.15 m over the
+  ground), so the proxy-proxy response (and Sv1's `separate` 0.9 m contact, live 0.95-1.14 m) is not checked here.
+- gap: map-mesh dependent, recorded but not compared: the post along +X 2.4 m (Wolf stops at 2.003, then slides
+  round it), the face beyond 1.3 m along (wall_60, wall_sprint_30 walk on where the plane stops), the cliff fall.
+- Emulator notes: a TB flush before each frame (else the host crashed on the 39th chr frame of one engine), the
+  CRT longjmp replaced by a plain one in the copy (its unwind path spun on the RtlUnwindEx stub; the HKS GC jumps
+  out every ~24 frames), __isa_available 1 (AVX2 strnlen).
