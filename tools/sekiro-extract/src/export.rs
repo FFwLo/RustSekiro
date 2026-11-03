@@ -127,6 +127,49 @@ const SP_EFFECT_FIELDS: &[&str] = &[
     "behaviorId", "dmypolyId",
 ];
 
+/// SpEffects the list (RSekiro status.rs) puts on Wolf from outside his anims and attacks, checked
+/// against the exe in the emulator (docs/kb/speffect.md): the floor fire 4011 (-> 4012's burn
+/// build-up), terror 9200 (-> 9250), the items (pellet 3021, ohagi 3061 / 3062, persimmon 3071,
+/// the fortifying blood 3051, the Elixir's 3044), Ako's 3401 and Ungo's 3421 (-> 3422) sugars, and rows of the add's
+/// "already on" categories: the puppet 220030 / 220031 and 5400 (100), resonance 41 / 42 (110),
+/// 5580 / 5581 (130), 6022 / 107712 / 230630 (141), the aging release 9640 (150), Knowledge of
+/// Medicine 150200-150204 (181), the bleed 6400 (stateInfo 6), the fire-at-add stateInfos 120 /
+/// 121 / 155 (5370, 1150, 2090) and the buff-duration skill 150600 (stateInfo 193).
+pub const WOLF_LIST_SP: [i64; 34] = [
+    4011, 4012, 9200, 9250, 3021, 3061, 3062, 3071, 3044, 3401, 3421, 3422, 220030, 220031, 5400, 41, 42, 5580, 5581, 6022, 107712, 230630, 9640, 150200, 150201,
+    150202, 150203, 150204, 6400, 5370, 1150, 2090, 150600, 3051,
+];
+
+/// Adds WOLF_LIST_SP (with their replace / cycle rows) to an existing
+/// <extracted>/combat_data.json's player spEffects without a full export (the export_states list
+/// of the file in use is not this checkout's). Rows already there are kept as they are.
+pub fn add_list_sp(root: &Path) {
+    let params = root.join("json/params");
+    let sp = load_param(&params, "SpEffectParam");
+    let path = root.join("combat_data.json");
+    let mut data: Value = serde_json::from_str(&std::fs::read_to_string(&path).expect("combat_data.json")).unwrap();
+    let rows = data["player"]["spEffects"].as_object_mut().expect("player.spEffects");
+    let mut todo: Vec<i64> = WOLF_LIST_SP.to_vec();
+    let mut added = 0;
+    while let Some(id) = todo.pop() {
+        let Some(r) = sp.get(&id) else { continue };
+        if rows.contains_key(&id.to_string()) {
+            continue;
+        }
+        rows.insert(id.to_string(), pick(r, SP_EFFECT_FIELDS));
+        added += 1;
+        for k in ["replaceSpEffectId", "cycleOccurrenceSpEffectId"] {
+            if let Some(n) = r.get(k).and_then(Value::as_i64).filter(|v| *v > 0) {
+                todo.push(n);
+            }
+        }
+    }
+    let tmp = root.join("combat_data.json.tmp");
+    std::fs::write(&tmp, serde_json::to_string(&data).unwrap()).unwrap();
+    std::fs::rename(&tmp, &path).unwrap();
+    println!("added {added} spEffects to {}", path.display());
+}
+
 /// Every Bullet field a prosthetic tool's bullet (70xxxx-79xxxx) sets.
 const BULLET_FIELDS: &[&str] = &[
     "initVellocity", "maxVellocity", "minVellocity", "accelInRange", "accelOutRange", "accelTime", "gravityInRange", "gravityOutRange", "dist",
@@ -559,7 +602,7 @@ fn export_character(
         }
     }
     let sp = load_param(params, "SpEffectParam");
-    // An NPC's worn SpEffect shifts its judges (exe FUN_140a12b80, 140a1.c:2191-2236): a row whose
+    // An NPC's worn SpEffect shifts its judges (exe FUN_140a12b80, <decomp ref>): a row whose
     // addBehaviorJudgeId_condition is judge / 100 adds its addBehaviorJudgeId_add (the Shura
     // samurai's enchantments 3107010 / 3107011: 100 -> 105 poison / 107 flame; the Nightjars'
     // 3145040: 700 -> 701), so those judges are exported too (rows that exist only).
@@ -792,6 +835,7 @@ fn export_character(
         // (refs 110003 / 110004, the Divine Dragon's updraft bullets 52000660 / 53100640) and the
         // Lightning Reversal charges 9490 / 9495.
         extra_sp.extend([106100, 106101, 9490, 9495]);
+        extra_sp.extend(WOLF_LIST_SP);
     }
     // Every exported attack's on-hit SpEffects (Sabimaru AtkParam_Pc 7500100 -> 9004 poison).
     for a in attacks.values().chain(bullet_rows.values().filter_map(|b| b.get("attack"))) {

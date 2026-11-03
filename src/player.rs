@@ -425,9 +425,14 @@ pub(crate) fn estus_heal(hp_max: f32, rate: f32, correct: f32) -> f32 {
 }
 
 pub fn medicine_rate(combat: &Combat, config: &GameConfig) -> f32 {
+    medicine_row(combat, config).map_or(1.0, |row| row["changeHpEstusFlaskCorrectRate"].as_f64().unwrap_or(1.0) as f32)
+}
+
+/// The Knowledge of Medicine level row the learned skills climb to (150200 LV1 .. 150204 LV5).
+fn medicine_row<'a>(combat: &'a Combat, config: &'a GameConfig) -> Option<&'a serde_json::Value> {
     let effects: Vec<&serde_json::Value> = crate::combat::skill_sp_effects(combat, config).collect();
     let stacks: i64 = effects.iter().filter_map(|se| se["accumuVal"].as_i64()).filter(|v| *v > 0).sum();
-    let Some(mut row) = effects.into_iter().find(|se| se["changeHpEstusFlaskCorrectRate"].as_f64().is_some_and(|r| r != 1.0)) else { return 1.0 };
+    let mut row = effects.into_iter().find(|se| se["changeHpEstusFlaskCorrectRate"].as_f64().is_some_and(|r| r != 1.0))?;
     for _ in 0..8 {
         let (next, need) = (row["accumuOverFireId"].as_i64().unwrap_or(-1), row["accumuOverVal"].as_i64().unwrap_or(0));
         let up = combat.param("SpEffectParam", next);
@@ -436,7 +441,35 @@ pub fn medicine_rate(combat: &Combat, config: &GameConfig) -> f32 {
         }
         row = up;
     }
-    row["changeHpEstusFlaskCorrectRate"].as_f64().unwrap_or(1.0) as f32
+    Some(row)
+}
+
+/// SpEffect 8610 "Hard mode" (the Demon Bell / Charmless): def{Poison,Blood}ResistDamageRate 1.5,
+/// defDiseaseResistDamageRate 1.2 on Wolf (`player.hard_mode`).
+pub const HARD_MODE_SP: i64 = 8610;
+
+/// The rows Wolf wears for the SpEffect list's rules (status.rs: build-up rates and disables, the
+/// regens' changeHpEstusFlaskCorrectRate, the buff-duration skill's extendLifeRate): his actor's
+/// (`combat::worn_sp`), the learned latent skills' SpEffects with Knowledge of Medicine at its
+/// level (150200 -> 150204, the accumulation 150210 left out), and Hard mode's 8610. The exe's
+/// list on the snapshot's Wolf holds 8610, 150204, 150600 the same way (speffect_ticks).
+pub(crate) fn wolf_worn(combat: &Combat, config: &GameConfig, a: &Actor) -> Vec<i64> {
+    let medicine = medicine_row(combat, config).and_then(|r| r["id"].as_i64());
+    let mut worn = crate::combat::worn_sp(a, &[]);
+    for &skill in &config.player.skills {
+        let row = combat.param("SkillParam", skill);
+        for id in ["spEffect1", "spEffect2", "spEffect3"].into_iter().filter_map(|f| row[f].as_i64().filter(|&i| i > 0)) {
+            let accumulates = combat.param("SpEffectParam", id)["accumuVal"].as_i64().is_some_and(|v| v > 0);
+            let id = if medicine.is_some() && combat.param("SpEffectParam", id)["changeHpEstusFlaskCorrectRate"].as_f64().is_some_and(|r| r != 1.0) { medicine.unwrap() } else { id };
+            if !accumulates && !worn.contains(&id) {
+                worn.push(id);
+            }
+        }
+    }
+    if config.player.hard_mode {
+        worn.push(HARD_MODE_SP);
+    }
+    worn
 }
 
 /// The equipped art's Spirit Emblem cost (EquipParamWeapon resourceItemA: Dragon Flash 5400 2,

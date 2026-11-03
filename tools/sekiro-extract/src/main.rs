@@ -19,6 +19,9 @@
 //!   sekiro-extract export <extracted_dir>
 //!       Writes <extracted_dir>/combat_data.json for the game (needs unpack + params first).
 //!
+//!   sekiro-extract listsp <extracted_dir>
+//!       Adds the SpEffects the list puts on Wolf (export::WOLF_LIST_SP) to its combat_data.json.
+//!
 //! Output is for local reference only: never commit or publish it.
 
 mod anims;
@@ -315,6 +318,9 @@ fn main() {
         Some("sounds-fmod") if args.len() == 4 => fsb::decode_with_fmod(Path::new(&args[2]), Path::new(&args[3])).unwrap_or_else(|e| eprintln!("{e}")),
         // `hud <extracted>`: only the HUD sprites (export_hud), without the full export.
         Some("hud") if args.len() == 3 => export::export_hud(Path::new(&args[2]), &export::hud_icons(&Path::new(&args[2]).join("json/params"))),
+        // `listsp <extracted>`: only the SpEffect rows the list puts on Wolf (WOLF_LIST_SP), added
+        // to the combat_data.json there without a full export.
+        Some("listsp") if args.len() == 3 => export::add_list_sp(Path::new(&args[2])),
         Some("npcs") if args.len() >= 3 => export::export_npcs(Path::new(&args[2]), Path::new(&defs_dir()), &args[3..]),
         Some("export") if args.len() == 3 => export::export(
             Path::new(&args[2]),

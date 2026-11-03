@@ -30,6 +30,7 @@ mod taewin;
 mod throw;
 mod aicpp;
 mod speffect;
+mod speffect2;
 mod proxy;
 
 /// The few calls of Unicorn's C API the tool needs (unicorn.h), linked from unicorn.dll.
@@ -898,6 +899,9 @@ fn main() {
     }
     if want.contains(&"speffect") {
         speffect::run(&|| Emu::new(exe, snap()), out);
+    }
+    if want.contains(&"speffect2") {
+        speffect2::run(&|| Emu::new(exe, snap()), out);
     }
     if on("hit_stop") {
         let mut emu = Emu::new(exe, None);

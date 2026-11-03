@@ -1830,7 +1830,7 @@ fn resolve(
                     Outcome::Deflect { window, at, rate } => {
                         // The enemy's poison / burn builds up on Wolf, less through his sword.
                         if aa.side == Side::Enemy && da.side == Side::Player {
-                            for m in statuses.hit_wolf(&combat, def_e, config.player.combat_art, &atk.sp_effects(), crate::status::Guard::Deflect) {
+                            for m in statuses.hit_wolf_wearing(&combat, def_e, &crate::player::wolf_worn(&combat, &config, da), config.player.combat_art, &atk.sp_effects(), crate::status::Guard::Deflect) {
                                 log.push(format!("Wolf: {m}"), Color::srgb(0.7, 0.55, 0.9));
                             }
                             let chip = hit_hp(guard_chip(&combat, &atk, true, if umbrella { tool_weapon.unwrap_or(5000) } else { 5000 }, damage_rates(&combat, &atk, da)) * aa.atk_rate, 1.0);
@@ -1989,7 +1989,7 @@ fn resolve(
                     }
                     Outcome::Block => {
                         if aa.side == Side::Enemy && da.side == Side::Player {
-                            for m in statuses.hit_wolf(&combat, def_e, config.player.combat_art, &atk.sp_effects(), crate::status::Guard::Block) {
+                            for m in statuses.hit_wolf_wearing(&combat, def_e, &crate::player::wolf_worn(&combat, &config, da), config.player.combat_art, &atk.sp_effects(), crate::status::Guard::Block) {
                                 log.push(format!("Wolf: {m}"), Color::srgb(0.7, 0.55, 0.9));
                             }
                             let chip = hit_hp(guard_chip(&combat, &atk, false, if umbrella { tool_weapon.unwrap_or(5000) } else { 5000 }, damage_rates(&combat, &atk, da)) * aa.atk_rate, 1.0);
@@ -2144,7 +2144,7 @@ fn resolve(
                         }
                         let (mut ignited, mut poisoned) = (false, false);
                         if aa.side == Side::Enemy && da.side == Side::Player {
-                            for m in statuses.hit_wolf(&combat, def_e, config.player.combat_art, &atk.sp_effects(), crate::status::Guard::None) {
+                            for m in statuses.hit_wolf_wearing(&combat, def_e, &crate::player::wolf_worn(&combat, &config, da), config.player.combat_art, &atk.sp_effects(), crate::status::Guard::None) {
                                 log.push(format!("Wolf: {m}"), Color::srgb(0.7, 0.55, 0.9));
                             }
                         }
