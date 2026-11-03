@@ -273,7 +273,57 @@ pub struct Targeting {
     /// starts again the next frame (aiframe 2026-11-03).
     around_seen: bool,
     pub(crate) search_timer: f32,
+    /// A sight search ran this frame and drew a new interval (SearchRing::place stretches it).
+    pub searched: bool,
     rng: u32,
+}
+
+/// The search scheduler every enemy's sight interval goes through (DAT_143d547d8 +0x28, made by
+/// FUN_1406142b0): 100 buckets of frames, at most `cap` searches per bucket (+0x68 = 3; +0x69, no
+/// limit, 0). FUN_140614be0 puts a new interval `t` in the bucket (cursor + (int)(t x 30)) % 100;
+/// a full one moves it k buckets on to the first with room and returns t + k / 30. The world
+/// task FUN_140a74560 -> FUN_140614dd0 clears the cursor's bucket and moves the cursor on once a
+/// frame. Checked against the exe on 400 rings (aimove 2026-11-03, `search_ring_matches_the_exe`).
+/// With a few enemies a bucket never fills, so the 0.2-0.4 s interval stays as drawn; the
+/// 0.62 s aiframe saw came from a ring the emulator never moved on (the task was not run).
+#[derive(Clone, Debug)]
+pub struct SearchRing {
+    pub counts: [u8; 100],
+    pub cursor: usize,
+    pub cap: u8,
+}
+
+impl Default for SearchRing {
+    fn default() -> Self {
+        SearchRing { counts: [0; 100], cursor: 0, cap: 3 }
+    }
+}
+
+impl SearchRing {
+    /// FUN_140614dd0's per-frame step.
+    pub fn advance(&mut self) {
+        self.counts[self.cursor] = 0;
+        self.cursor = (self.cursor + 1) % 100;
+    }
+
+    /// FUN_140614be0: the interval, stretched past full buckets.
+    pub fn place(&mut self, secs: f32) -> f32 {
+        let mut i = ((secs * 30.0) as i32 + self.cursor as i32) as u32 as usize % 100;
+        if self.counts[i] < self.cap {
+            self.counts[i] += 1;
+            return secs;
+        }
+        let mut k = 0;
+        for _ in 0..100 {
+            i = (i + 1) % 100;
+            k += 1;
+            if self.counts[i] < self.cap {
+                self.counts[i] += 1;
+                break;
+            }
+        }
+        k as f32 / 30.0 + secs
+    }
 }
 
 impl Targeting {
@@ -399,10 +449,11 @@ impl Targeting {
         // Sight search on its interval (FUN_140625f30 / FUN_1406250a0 / FUN_140624620): the
         // normal (or perceive) cone, else the nose sphere (FUN_140617280 result 2 / 1; both make
         // a normal target, FUN_14060e390, only sight marks it visible), else the around cone.
-        // gap: the exe stretches the 0.2-0.4 s interval when many searches fall on one frame
-        // (FUN_140614be0 on DAT_143d547d8; up to 0.62 s seen), not ported.
+        // The new interval is spread over the frames by the shared ring (FUN_140614be0, see
+        // SearchRing): `searched` tells the caller to place it there.
         self.search_timer -= dt;
-        if self.search_timer <= 0.0 {
+        self.searched = self.search_timer <= 0.0;
+        if self.searched {
             self.search_timer = self.rand() * 0.2 + 0.2;
             let cone = Cone::from(think, if self.perceive { "perceive" } else { "normal" });
             let seen = in_cone(&cone, eye, head, fwd, wolf);

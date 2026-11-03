@@ -127,3 +127,56 @@ Not covered: the search interval stretch (FUN_140614be0 on DAT_143d547d8; interv
 no effect on the state); the normal node's +0x34 timer (14 s down, purpose unknown); ray hits
 against Sv1's map; sound targets; the interrupts the Lua reads; which goal sets which move type
 and point (needs an animating chr), M +0x60 action requests.
+
+## 2026-11-03 Goals into moves, turns and actions; the search scheduler (aimove)
+
+How: `tools/emu-cases/src/aimove.rs`. `aimove_f_<name>` runs whole world frames as acttrace's
+duel (pre-update tasks, the General's chr frame FUN_140a4b570, Wolf's, post-update tasks) at
+1/30 s with the AI on (b143d7a376 = 0) and the General updated every frame (chr +0x110 = 0),
+about 2.5 s per frame (scenarios run as separate processes). Wolf's snapshot spot is a ledge
+10 m above the arena: the General put 6 m in front of him fell off it and walked home
+(BackToHome 4 -> MoveToSomewhere 2019, never found Wolf), so Wolf is put 3 / 4 / 6 / 10 / 16 m
+in front of the General instead (General facing him, 90 deg or 150 deg off; Wolf walking away),
+240 / 180 frames each; plus the forced attack 3000 (AI +0x7430 at FUN_1407e6570's entry) from
+1.6 / 2.6 m. Per frame: targeting state, AI +0x73d0 move point, +0x7410 move type, +0x73e0
+angles, the request at the copy, M +0x380, M +0x20, anim, position, yaw, physics +0xb10 and the
+proxy integrate calls; every AddSubGoal (hook at FUN_1405ce510: goal id rdx, life r8, params r9
+and the stack). JSON: extracted/emu/aimove_frames_<name>.json, aimove_sched.json.
+
+What the goals did (think 10200020, logic / battle 102000): at 3-10 m he was in BATTLE at once,
+played the battle start 1040, then 102000_battle's acts: ApproachTarget 2015 -> MoveToSomewhere
+2019 (+ engine 2025) with walk 1 -> move type 1, M +0x380 = flat unit direction x 0.5, the walk
+405000; walk 0 -> type 2, x 1.0, the run 405010 (~6 m/s); arrival then SpinStep 5200 / attack
+3004 (CommonAttack 2200 under AttackTunableSpin 2220 / 2260). SidewayMove 2017 (target, 0 = left,
+45 / 38 deg, true, walk true, -1) -> type 1, M +0x380 at 89 deg to his facing (left for 0), the
+side walks 405002 / 405003, facing Wolf. The AI angle +0x73e0 is the direction to the move point
+(MoveToSomewhere) or to the target (sideways, attack); M +0x20 = that minus his yaw. Move mode
+FUN_1406040b0 stayed 1 (2 in SidewayMove); mode 4 (path FUN_1409eeb40) never came up. Sv1's
+Native::Approach / Sideway map these the same (walk param 4 -> walk / run, 'L' for 0, face the
+target). With Wolf walking off 16 m, the run's move point left the straight line by up to 125 deg
+(a route round something; not modelled, Sv1 has no navmesh). When the target was behind him the
+walk turned in the walk / back walk clips (405001 at 120 deg/s) or a 180 turn clip (405403).
+
+Turn rate (fixed): his yaw goes to the AI angle at his clip's TAE 224 SetTurnSpeed, every frame
+the turn is not done: run 240, the walks 405000-405003 120, battle start 1040 135 / 0 by window,
+attack 3004 208 / 135 / 0 / 225, 3000 450 / 300 / 0 / 225, step 5200 90 / 0. Sv1 turned every walk
+and run at NpcParam turnVellocity (135); now `enemy::ai_turn_rate` (TAE SetTurnSpeed, else
+turnVellocity) for walks and runs. An idle turn keeps turnVellocity: the exe's idle turn is not
+traced, and with the idle clip's rate c1010 never closed a turn clip's leftover
+(`an_enemy_turns_in_place_with_its_turn_clip`). Test `general_turn_rates_match_the_exe`: 350 turn-limited frames (rates 0 / 120 /
+135 / 225 / 240 / 300 / 450) to 0.002 rad.
+
+The search scheduler (fixed, ported): FUN_140614be0 is a 100-bucket frame ring
+(DAT_143d547d8 +0x28; FUN_1406142b0 sets cap +0x68 = 3, no-limit +0x69 = 0, +0x20 = 5.0): a new
+interval t goes in bucket (cursor + (int)(t x 30)) % 100; a full one walks k buckets on and returns
+t + k / 30. The world task FUN_140a74560 -> FUN_140614dd0 clears the cursor's bucket and moves it on
+once a frame. The snapshot's ring was empty (cursor 82). The 0.62 s aiframe saw was the emulator
+never running that task, so one enemy's searches piled up in a few buckets; in play a few enemies
+never fill a bucket. `stealth::SearchRing` (in enemy.rs `Brains`, advanced once per think frame,
+`Targeting::searched` places the interval); tests `search_ring_matches_the_exe` (400 rings:
+stretched interval and the bucket bumped) and `search_ring_stretches_only_crowded_frames`.
+
+Not covered: sound targets and the interrupt flags the Lua reads (no sound or interrupt was
+raised in these runs); M +0x60 stayed empty; the run's route point off the straight line; which
+act 102000_battle picks (its GetRandam draws are the exe's); a clip with no SetTurnSpeed
+(turnVellocity kept as the fallback, untraced); SidewayMove with walk false (no script passes it).

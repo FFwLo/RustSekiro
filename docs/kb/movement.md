@@ -364,3 +364,17 @@ enemy with a proxy, 27 m from Wolf.
 - Slopes over maxSlope 60 deg: none walkable in reach (the steep faces the scan meets are walls, normal y 0.06).
 - Emulator notes: thousands of sphere casts need their buffers allocated once (the emulator heap is 1 MB; the
   cast allocated 80 bytes a call and the 58k-cast scan crashed) and a TB flush every 256 casts.
+
+## A moving enemy against Wolf (2026-11-03, exe, emulator, topic aimove)
+
+The General's forced attack 3000 from 1.6 / 2.6 m in front of Wolf, then his 1040 stepping in,
+whole world frames with the AI on (`aimove_f_push_ledge`, `push_ledge_far`). The moving General
+is in physics +0xb10 mode 2 and his proxy is integrated (FUN_1418f8b60) every frame with the
+clip's velocity; it stopped at 0.950 m flat from Wolf (0.4 + 0.5 + keepDistance 0.05, the two at
+the same height) for 30+ frames and Wolf (idle) did not move at all. That is `actor::contact_flat`
+with the enemy's proxy at his feet and Sv1's `separate` giving the push to the one that walked in
+(test `moving_enemy_stops_against_wolf_like_the_exe`). Emulator caveat: the Havok world step is
+not run, so bodies stay in the broadphase where the snapshot had them; with Wolf moved next to
+the General (the other aimove scenarios) the General's lunge passed right through him (0.05 m).
+Not covered: an enemy pushing a moving Wolf (both moving), a lift for the enemy's proxy (the
+same-height case cannot tell), the enemy against another enemy.
