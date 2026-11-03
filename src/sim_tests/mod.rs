@@ -38,6 +38,7 @@ mod part08;
 mod part09;
 mod part10;
 mod part11;
+mod emu_guard;
 mod emu_camwall;
 mod emu_hks;
 mod emu_damage;

@@ -20,6 +20,7 @@ mod camwall;
 mod hks;
 mod damage;
 mod snapshot;
+mod guard;
 mod trace;
 mod lockcam;
 
@@ -850,6 +851,9 @@ fn main() {
     }
     if want.contains(&"camera_frames") {
         camera_frames(&|| Emu::new(exe, snap()), out);
+    }
+    if want.contains(&"guard") {
+        guard::run(&|| Emu::new(exe, snap()), out);
     }
     if want.iter().any(|w| w.starts_with("camwall")) {
         camwall::run(&|| Emu::new(exe, snap()), out, &want);

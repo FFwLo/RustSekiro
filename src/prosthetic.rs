@@ -18,11 +18,11 @@ use bevy::prelude::*;
 use crate::actor::{Actor, ActorSet, data_for};
 use crate::anim::Hurtboxes;
 use crate::combat::{BODY_RADIUS, apply_knockback, damage_kb, segment_distance};
-use crate::data::{BulletSpec, Combat, STATE_INFO_JUST_GUARD};
+use crate::data::{BulletSpec, Combat};
 use crate::enemy::Enemy;
 use crate::hud::CombatLog;
 use crate::model::Dummies;
-use crate::player::{FLAG_SHIELD_BLOCK, Player};
+use crate::player::Player;
 
 #[derive(Component)]
 pub struct Projectile {
@@ -693,18 +693,19 @@ fn hit_enemy(
         return carries.then(|| "hit: build-up only".to_string());
     }
     let dd = combat.data_of(da);
-    // As a sword hit (combat.rs resolve): only inside the guard arc, and AtkParam
-    // disableJustGuard / disableGuard (the Flame Vent's and Projected Force's rows) go through
-    // a deflect / a block.
-    let facing = !da.anim.is_empty() && da.forward().angle_between((from - dtf.translation).with_y(0.0).normalize_or_zero()).to_degrees() <= crate::combat::guard_half_angle(dd, da, crate::combat::event_gates(combat, da, &[]).as_deref());
+    // As a sword hit (combat.rs resolve, guard_check): the ShieldBlock flag inside the guard arc,
+    // then the flick contest; AtkParam disableJustGuard / disableGuard (the Flame Vent's and
+    // Projected Force's rows) go through a deflect / a block. The tool's own weapon row is the
+    // attack's (all share attackBaseRepel 10).
+    let gc = crate::combat::guard_check(combat, da, &e.clash, atk, true, 5000, 5000, dtf.translation - from);
     // A guarding enemy takes the bullet as a sword's deflect / block (combat.rs resolve, `bullet`):
     // the posture through its guard rates (enemy_guard_posture_rate x timed_rates, floored), the
     // c9997 ExecGuardBlock reaction (guard_damage_table by dmgLevel and guardLevel) and the clash
     // SpEffects the AI counts (200210/211 deflect, 200215/216 block). Round 35: the deflect did
     // nothing and the block added the raw repelLostStamDamage with no reaction. gap: the clash ids
     // on a bullet are the melee path's (inferred).
-    let deflect = facing && atk.disable_just_guard == 0 && dd.has_state_info(&da.anim, da.t, STATE_INFO_JUST_GUARD);
-    if deflect || (facing && atk.disable_guard == 0 && dd.flag(&da.anim, da.t, FLAG_SHIELD_BLOCK)) {
+    let deflect = gc.verdict == crate::combat::Verdict::Deflect;
+    if gc.verdict != crate::combat::Verdict::Hit {
         if let Some(q) = sounds.as_mut() {
             q.0.extend(crate::sound::guard_sounds(combat, atk, deflect).into_iter().map(|se| (se, to)));
         }
