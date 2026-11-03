@@ -651,6 +651,23 @@ fn main() {
         snapshot::take(pid, Path::new(args.get(3).expect("snapshot dir")));
         return;
     }
+    // scene <dir> <idol> [x y z yaw] [ai-off]: warp, place Wolf, snapshot (finds sekiro.exe itself).
+    if args.get(1).map(String::as_str) == Some("scene") {
+        let usage = "usage: emu-cases scene <dir> <idol> [x y z yaw] [ai-off]";
+        let ai_off = args.iter().any(|a| a == "ai-off");
+        let rest: Vec<&str> = args[2..].iter().map(String::as_str).filter(|a| *a != "ai-off").collect();
+        let dir = Path::new(rest.first().expect(usage));
+        let idol = rest.get(1).and_then(|i| i.parse().ok()).expect(usage);
+        let f: Vec<f32> = rest[2..].iter().map(|v| v.parse().expect(usage)).collect();
+        let spot = match f.len() {
+            0 => None,
+            4 => Some([f[0], f[1], f[2], f[3]]),
+            _ => panic!("{usage}"),
+        };
+        let pid = snapshot::find_game().expect("sekiro.exe is not running");
+        snapshot::scene(pid, &snapshot::Scene { idol, spot, ai_off }, dir);
+        return;
+    }
     // --snapshot <dir>: run on the game's memory from `snapshot`.
     let snap_dir = args.iter().position(|a| a == "--snapshot").map(|i| {
         let d = args.remove(i + 1);

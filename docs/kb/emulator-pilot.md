@@ -37,6 +37,18 @@ that TEB, and the CRT's use-FMA flag (DAT_143f336f4) cleared because Unicorn has
 maths may differ by one ulp). Zero pages made up for stray reads are no longer executable, so a jump
 through a null pointer stops the run. The snapshot is game memory: it stays in `extracted/` (ignored).
 
+## Scenes: snapshots without the owner (2026-11-03)
+
+`emu-cases scene <dir> <idol> [x y z yaw] [ai-off]` finds sekiro.exe, turns the debug flag player
+no death on (0x143d7a366 +0), warps with the game's own idol travel FUN_14068e870(0, idol, 0) run on
+a thread of its own (a 30-byte stub), waits for the new area, holds Wolf at the spot until it
+sticks (the idol arrival puts him back for about a second), sets disable AI (+0x10) if asked, waits
+5 s and takes the snapshot. Idol ids and boss spots: SekiroTool's `Resources.resx` "Warps" (MIT,
+reference/SekiroTool). The same steps for live work without the tool: `tools/memscope/warp.lua`.
+The warp's area load moved the game window off the screen once (to 3334,1433); moving it back with
+SetWindowPos is enough. A save to load from the title screen still needs screen control (held keys,
+about 0.2 s; menu clicks only highlight, a key confirms).
+
 ## What it costs and where it fits
 
 - Small and medium functions with a clear object (pilots 1-2): one generator function and one sim

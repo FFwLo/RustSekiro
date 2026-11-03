@@ -41,6 +41,20 @@ struct ThreadEntry {
 }
 
 #[repr(C)]
+struct ProcessEntry {
+    size: u32,
+    usage: u32,
+    pid: u32,
+    heap: usize,
+    module: u32,
+    threads: u32,
+    parent: u32,
+    pri: i32,
+    flags: u32,
+    exe: [u16; 260],
+}
+
+#[repr(C)]
 #[derive(Default)]
 struct ThreadInfo {
     exit: i32,
@@ -57,6 +71,13 @@ extern "system" {
     fn CloseHandle(h: *mut c_void) -> i32;
     fn VirtualQueryEx(h: *mut c_void, at: u64, info: *mut MemInfo, len: usize) -> usize;
     fn ReadProcessMemory(h: *mut c_void, at: u64, buf: *mut c_void, len: usize, read: *mut usize) -> i32;
+    fn WriteProcessMemory(h: *mut c_void, at: u64, buf: *const c_void, len: usize, written: *mut usize) -> i32;
+    fn VirtualAllocEx(h: *mut c_void, at: u64, size: usize, kind: u32, protect: u32) -> u64;
+    fn VirtualFreeEx(h: *mut c_void, at: u64, size: usize, kind: u32) -> i32;
+    fn CreateRemoteThread(h: *mut c_void, attrs: *mut c_void, stack: usize, start: u64, param: *mut c_void, flags: u32, tid: *mut u32) -> *mut c_void;
+    fn WaitForSingleObject(h: *mut c_void, ms: u32) -> u32;
+    fn Process32FirstW(snap: *mut c_void, e: *mut ProcessEntry) -> i32;
+    fn Process32NextW(snap: *mut c_void, e: *mut ProcessEntry) -> i32;
     fn CreateToolhelp32Snapshot(flags: u32, pid: u32) -> *mut c_void;
     fn Thread32First(snap: *mut c_void, e: *mut ThreadEntry) -> i32;
     fn Thread32Next(snap: *mut c_void, e: *mut ThreadEntry) -> i32;
@@ -100,19 +121,59 @@ fn threads(pid: u32) -> Vec<(u32, u64)> {
     out
 }
 
+fn sleep_ms(ms: u64) {
+    std::thread::sleep(std::time::Duration::from_millis(ms));
+}
+
+/// The pid of the running sekiro.exe.
+pub fn find_game() -> Option<u32> {
+    unsafe {
+        let snap = CreateToolhelp32Snapshot(2, 0);
+        let mut e: ProcessEntry = std::mem::zeroed();
+        e.size = std::mem::size_of::<ProcessEntry>() as u32;
+        let mut more = Process32FirstW(snap, &mut e) != 0;
+        let mut found = None;
+        while more {
+            let len = e.exe.iter().position(|&c| c == 0).unwrap_or(260);
+            if String::from_utf16_lossy(&e.exe[..len]).eq_ignore_ascii_case("sekiro.exe") {
+                found = Some(e.pid);
+                break;
+            }
+            more = Process32NextW(snap, &mut e) != 0;
+        }
+        CloseHandle(snap);
+        found
+    }
+}
+
+fn player(h: *mut c_void) -> Option<u64> {
+    read_u64(h, WORLD_CHR_MAN).filter(|&m| m != 0).and_then(|m| read_u64(h, m + PLAYER_INS)).filter(|&p| p != 0)
+}
+
+/// The player's ChrIns once a save is loaded (polls every 2 s).
+fn wait_player(h: *mut c_void) -> u64 {
+    println!("waiting for a loaded save (player at [{WORLD_CHR_MAN:#x}]+{PLAYER_INS:#x})");
+    loop {
+        if let Some(p) = player(h) {
+            return p;
+        }
+        sleep_ms(2000);
+    }
+}
+
 pub fn take(pid: u32, dir: &Path) {
     // PROCESS_QUERY_INFORMATION | PROCESS_VM_READ | PROCESS_SUSPEND_RESUME
     let h = unsafe { OpenProcess(0x0400 | 0x0010 | 0x0800, 0, pid) };
     assert!(!h.is_null(), "cannot open process {pid}");
-    println!("waiting for a loaded save (player at [{WORLD_CHR_MAN:#x}]+{PLAYER_INS:#x})");
-    let player = loop {
-        if let Some(p) = read_u64(h, WORLD_CHR_MAN).filter(|&m| m != 0).and_then(|m| read_u64(h, m + PLAYER_INS)).filter(|&p| p != 0) {
-            break p;
-        }
-        std::thread::sleep(std::time::Duration::from_secs(2));
-    };
+    let player = wait_player(h);
     // The save is up; give streaming a moment to settle before the copy.
-    std::thread::sleep(std::time::Duration::from_secs(15));
+    sleep_ms(15_000);
+    copy(h, pid, player, dir);
+    unsafe { CloseHandle(h) };
+}
+
+/// Pauses the game, copies its memory and TEBs into `dir`, resumes it.
+fn copy(h: *mut c_void, pid: u32, player: u64, dir: &Path) {
     std::fs::create_dir_all(dir).unwrap();
     let mut data = std::io::BufWriter::new(File::create(dir.join("memory.bin")).unwrap());
     let mut regions = Vec::new();
@@ -148,14 +209,109 @@ pub fn take(pid: u32, dir: &Path) {
         }
         at = next;
     }
-    unsafe {
-        NtResumeProcess(h);
-        CloseHandle(h);
-    }
+    unsafe { NtResumeProcess(h) };
     data.flush().unwrap();
     let index = json!({"pid": pid, "player": player, "threads": tebs.iter().map(|(id, teb)| json!({"id": id, "teb": teb})).collect::<Vec<_>>(), "regions": regions});
     std::fs::write(dir.join("regions.json"), serde_json::to_string(&index).unwrap()).unwrap();
     println!("snapshot: {} regions, {} MB, {} threads, game paused {:.1} s", regions.len(), offset >> 20, tebs.len(), t.elapsed().as_secs_f32());
+}
+
+/// Debug flags (SekiroTool DebugFlags, 1.6.0): bytes at +0 player no death, +0x10 disable AI.
+const DEBUG_FLAGS: u64 = 0x1_43d7_a366;
+/// The game's idol travel (SekiroTool Functions.Warp, 1.6.0): FUN_14068e870(0, idol, 0).
+const WARP: u64 = 0x1_4068_e870;
+
+/// Where a scene puts Wolf: an idol, then optionally an exact spot (x, y, z, yaw).
+pub struct Scene {
+    pub idol: u32,
+    pub spot: Option<[f32; 4]>,
+    pub ai_off: bool,
+}
+
+fn write(h: *mut c_void, at: u64, bytes: &[u8]) {
+    let mut n = 0usize;
+    let ok = unsafe { WriteProcessMemory(h, at, bytes.as_ptr() as _, bytes.len(), &mut n) };
+    assert!(ok != 0 && n == bytes.len(), "write at {at:#x} failed");
+}
+
+fn read_f32s<const N: usize>(h: *mut c_void, at: u64) -> [f32; N] {
+    let mut v = [0f32; N];
+    let mut n = 0usize;
+    unsafe { ReadProcessMemory(h, at, v.as_mut_ptr() as _, 4 * N, &mut n) };
+    v
+}
+
+/// The player's physics module (position +0x80, yaw +0x74).
+fn physics(h: *mut c_void) -> Option<u64> {
+    player(h).and_then(|p| read_u64(h, p + 0x1ff8)).and_then(|bag| read_u64(h, bag + 0x68)).filter(|&ph| ph != 0)
+}
+
+/// Runs the game's idol warp on a thread of its own: a small stub in the game calls the warp
+/// function as the idol menu does.
+fn warp(h: *mut c_void, idol: u32) {
+    let mut code = vec![0x48, 0x83, 0xec, 0x28, 0x31, 0xc9, 0xba]; // sub rsp,0x28; xor ecx,ecx; mov edx,imm32
+    code.extend(idol.to_le_bytes());
+    code.extend([0x45, 0x31, 0xc0, 0x48, 0xb8]); // xor r8d,r8d; mov rax,imm64
+    code.extend(WARP.to_le_bytes());
+    code.extend([0xff, 0xd0, 0x48, 0x83, 0xc4, 0x28, 0xc3]); // call rax; add rsp,0x28; ret
+    unsafe {
+        let at = VirtualAllocEx(h, 0, 0x1000, 0x3000, 0x40); // MEM_COMMIT|MEM_RESERVE, PAGE_EXECUTE_READWRITE
+        assert!(at != 0, "VirtualAllocEx failed");
+        write(h, at, &code);
+        let t = CreateRemoteThread(h, std::ptr::null_mut(), 0, at, std::ptr::null_mut(), 0, std::ptr::null_mut());
+        assert!(!t.is_null(), "CreateRemoteThread failed");
+        WaitForSingleObject(t, 10_000);
+        CloseHandle(t);
+        VirtualFreeEx(h, at, 0, 0x8000);
+    }
+}
+
+/// Puts Wolf in a scene and takes the snapshot there: no death on, warp to the idol, wait for the
+/// new area, hold him at the spot until it sticks (the idol arrival puts him back for a while),
+/// AI off if asked, let it settle, copy.
+pub fn scene(pid: u32, sc: &Scene, dir: &Path) {
+    // QUERY_INFORMATION | VM_READ | VM_WRITE | VM_OPERATION | CREATE_THREAD | SUSPEND_RESUME
+    let h = unsafe { OpenProcess(0x0400 | 0x0010 | 0x0020 | 0x0008 | 0x0002 | 0x0800, 0, pid) };
+    assert!(!h.is_null(), "cannot open process {pid}");
+    wait_player(h);
+    write(h, DEBUG_FLAGS, &[1]);
+    let old: [f32; 3] = read_f32s(h, physics(h).unwrap() + 0x80);
+    let t = std::time::Instant::now();
+    warp(h, sc.idol);
+    let moved = |p: [f32; 3]| (0..3).map(|i| (p[i] - old[i]).abs()).sum::<f32>() > 0.5;
+    let ph = loop {
+        assert!(t.elapsed().as_secs() < 60, "the warp did not finish loading in 60 s");
+        sleep_ms(250);
+        if let Some(ph) = physics(h).filter(|&ph| moved(read_f32s(h, ph + 0x80))) {
+            break ph;
+        }
+    };
+    println!("warped to idol {} in {:.1} s", sc.idol, t.elapsed().as_secs_f32());
+    sleep_ms(1500);
+    if let Some([x, y, z, yaw]) = sc.spot {
+        let t1 = std::time::Instant::now();
+        loop {
+            for _ in 0..10 {
+                write(h, ph + 0x80, &[x, y, z].map(f32::to_le_bytes).concat());
+                write(h, ph + 0x74, &yaw.to_le_bytes());
+                sleep_ms(16);
+            }
+            sleep_ms(700);
+            let [px, py, pz]: [f32; 3] = read_f32s(h, ph + 0x80);
+            if (px - x).abs() + (pz - z).abs() < 1.0 && (py - y).abs() < 3.0 {
+                break;
+            }
+            assert!(t1.elapsed().as_secs() < 20, "the spot did not hold in 20 s");
+        }
+        println!("placed at {x:.2} {y:.2} {z:.2} yaw {yaw:.2}");
+    }
+    if sc.ai_off {
+        write(h, DEBUG_FLAGS + 0x10, &[1]);
+    }
+    sleep_ms(5000);
+    let player = player(h).unwrap();
+    copy(h, pid, player, dir);
+    unsafe { CloseHandle(h) };
 }
 
 /// A loaded snapshot: region index plus the open data file, for mapping pages on first touch.

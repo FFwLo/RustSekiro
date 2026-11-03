@@ -14,6 +14,9 @@ the live image with an AOB `scan` of the function's first bytes before hooking.
 | bend_stiffness | Field order / formula of hclBendStiffnessConstraintSet links | Any cloth movement |
 | twist_new_target | When does CustomLookAtTwist use newTargetGain instead of onGain? | Lock on, switch target |
 
+`warp.lua` (2026-11-03): idol warp plus an exact landing spot, no death on; args idol, x, y, z, yaw.
+The standalone version that also takes a snapshot is `tools/emu-cases` `scene`.
+
 Scripts for each check are added here as `<check>.lua` once written and tested against the live game.
 
 WARNING (2026-10-08): inline hooks on FUN_1408439a0 crash sekiro.exe on the first call (posture_hook.lua). Use per-frame reads only.
