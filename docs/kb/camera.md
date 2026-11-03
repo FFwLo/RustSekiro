@@ -197,3 +197,53 @@ Dated findings, oldest first. Append new entries at the end.
 - Not covered: the wall / ground handling (when the cast hits, the orbit point itself is pulled in: seen
   at a wall about 10 m along +X and when the stick pitched the camera to the ground), lock-on, TAE camera
   events, other frame rates.
+
+## Follow camera at walls and the ground, checked against the exe (2026-11-03, camwall)
+- tools/emu-cases `camwall` (src/camwall.rs) runs FUN_140734790 -> FUN_14073c260 on the Naomori-arena
+  snapshot with every cast of the update hooked (at entry its arguments, at its return site al and the
+  fraction): 10 scenarios, 2,345 frames in `extracted/emu/camwall_frames.json` (the stick pitching the
+  camera to the ground at 60 and 30 fps, down while turning, Wolf walking toward the wall about 9 m along
+  +X, the stick swinging the arm through that wall, wall and ground together, Wolf squeezing the arm
+  against the wall and walking back, the escape-wall option on). `camwall_probe` maps the walls around
+  the spot with the same cast. Sim test `follow_camera_at_walls_matches_the_exe` (src/sim_tests/
+  emu_camwall.rs) replays each frame from the exe's state before it with the exe's cast results.
+- The casts: FUN_14094dfc0 while ChrExFollowCam +0x3ad is set (1 in the snapshot), else FUN_14094dc70,
+  same arguments (physics world [[0x143d6d640]+0x98], filter [WorldChrMan +0x3550] = 0x30, &start,
+  &vector, radius, out point, out normal, &fraction of the vector): Havok linear sphere casts. In order:
+  1. fulcrum (14073.c 10993-11062): focus +0xc0 -> the placed fulcrum, camCastSphereRadius 0.05; a hit
+     puts the fulcrum at max(fraction * length, 0.01) (Game.IsUseSPChrExFollowCam on);
+  2. orbit point (11066-11251): +0xf0 = focus + the fulcrum's direction * +0x214, cast, cut to
+     max(fraction * length, 1e-5);
+  3. obstacle fade (11253-11320, FUN_14094ea80, group 0x76): from last frame's +0x100 toward the
+     midpoint of +0x90 / +0xa0, shortened by camCastSphereRadiusForFade 0.3 (matched within 7e-6 m);
+  4. final (12318-12411): focus -> the chased +0x100, cut the same way; any hit (also fraction 1.0 when
+     the camera rests on the cut point) sets +0x1e4 = targetChaseDistRateTime (2 s). +0x110 keeps the
+     result; the safe margin makes +0x40.
+  The position chase measures the distance it starts from at +0x110 (not +0x100) and chases it at
+  +0x1e8 / +0x1ec = lerp(targetChaseDistRateXZ / Y 0.4, _ForHitWall 1.0, clamp(2 * +0x1e4 / 2 s)), then
+  +0x1e4 -= dt (11948-11979): after a wall the arm snaps back for a second, then eases.
+- Ported (camera.rs follow_player, `cast_cut`, `hit_wall_rates`, `chase_position_from`, `WallCast`;
+  RSekiro's own collision behind `map_cast`: a ray over length + radius stopped short by the radius,
+  a touch within 1 mm past the end counts as the exe's fraction-1 hit). Before, only the final cast
+  cut the camera: the chase ran toward the uncut orbit point and the distance chase started from the
+  uncut +0x100 at 0.4; on these frames that put +0x100 up to 1.6 m off the exe's.
+- Matched (from the exe's state before each frame, 2,225 frames): yaw and pitch read back from the
+  cut fulcrum (not on the three first frames where Wolf is put by the wall), the fulcrum cast's
+  start / end / radius and the cut fulcrum, the orbit cast and cut point, the hit-wall rates and
+  clock, the position chase (60 fps frames), the final cast, +0x110 and +0x40, all within 1e-4.
+- Escape wall: option byte +0xd of GameDataMan [0x143d5aac0] +0x50 is copied every frame by
+  FUN_140734790 into UseEscapeWall (DAT_143d599c0); 0 in the user's save (which menu entry it is was
+  not checked). On, the fulcrum and orbit casts are skipped and two wing casts (escapeWallWing*) run;
+  a wing hit sets the working rates +0x220 / +0x224 / +0x228 to the _ForEscapeWall row values (0.15 /
+  0.3 / 0.1) and turns the yaw by +0x334 (escapeWallRotAdd*, 0 in row 0, wings 1 cm). Run once
+  (ground_pitch_down_escape: no fulcrum or orbit cast); not ported.
+- Focus pull-in (9580-9640): a ray (FUN_14094d140 / cf90) from Wolf's point (+0x200 offset) toward the
+  chased focus +0x90, half his radius (FUN_1409efb80, 0.4) longer; on a hit a 0.4 m sphere cast pulls
+  +0x90 in toward Wolf. It hit only on a 28 m teleport here; not ported.
+- Obstacle fade hits: map objects only (kind 6, objects 0x1017d and 0x101cd by the +X wall, 660
+  requests). A character fades only when byte +0x1f behind its ChrIns +0x18 is 2 (FUN_1408705a0):
+  0 for Wolf and all 89 enemies of the snapshot, either way the pointer is read, so ordinary enemies
+  do not fade. Not ported (RSekiro draws map objects merged into the map).
+- Not covered: the 1 cm fulcrum floor (smallest fulcrum fraction seen 0.44), the zero-length final
+  cast, the position chase at 30 fps (exe once a frame, RSekiro per 1/60 s), walls while locked on,
+  the TAE overrides of the distance rate (FUN_1408311a0) and of +0xf0 (FUN_140831190).

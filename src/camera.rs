@@ -79,6 +79,8 @@ pub struct CamState {
     /// +0x100 the camera position chasing the orbit's point (`chase_position`), before
     /// collision; `None` until the first frame.
     pos: Option<Vec3>,
+    /// +0x110 / +0x1e4: the camera after last frame's collision cast and the hit-wall clock.
+    wall: WallCast,
     /// +0x150 / +0x154: camera control snaps the position chase (rate 1), held for
     /// rotCtrlEndWaitTime and released over rotCtrlEndReleaseTime.
     ctrl_snap: f32,
@@ -121,6 +123,69 @@ pub(crate) fn cam_fade_step(alpha: f32, near: bool, dt: f32) -> f32 {
 /// min((d - 1e-5) * camSafeMarginRate, camSafeMarginMax) (0.1, 0.3 m in every CameraParam row).
 pub(crate) fn safe_margin(dist: f32, rate: f32, max: f32) -> f32 {
     if dist > 1e-5 { dist - ((dist - 1e-5) * rate).min(max) } else { dist }
+}
+
+/// The wall state of the ChrCam update (FUN_14073c260).
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct WallCast {
+    /// +0x110: last frame's camera after the collision cast, before the safe margin; the
+    /// distance chase starts from it (`chase_position_from`). `None` until the first frame.
+    pub post: Option<Vec3>,
+    /// +0x1e4: time left on the hit-wall distance rates, set to targetChaseDistRateTime by
+    /// every hit of the final cast (`hit_wall_rates`).
+    pub hit_time: f32,
+}
+
+/// The shortest cut of the fulcrum cast (FUN_14073c260 14073.c 11040-11060, with
+/// Game.IsUseSPChrExFollowCam on): a hit closer than 1 cm keeps the fulcrum 1 cm out.
+pub(crate) const FULCRUM_CUT_MIN: f32 = 0.01;
+/// The shortest cut of the orbit point and final casts (14073.c 11230-11250, 12350-12361).
+pub(crate) const CAST_CUT_MIN: f32 = 1e-5;
+
+/// A cast's end pulled in to its hit (FUN_14073c260 after FUN_14094dfc0 / FUN_14094dc70): the
+/// cast from `start` along `v` hit at `frac` of `v`, so the end moves to
+/// start + v * max(frac * |v|, min) / |v|; no hit leaves start + v. The exe's zero-length
+/// case (the final cast puts the camera 1e-5 m out along the orbit point) is left out.
+pub(crate) fn cast_cut(start: Vec3, v: Vec3, frac: Option<f32>, min: f32) -> Vec3 {
+    let len = v.length();
+    match frac {
+        Some(t) if len >= 1e-5 => start + v * ((t * len).max(min) / len),
+        _ => start + v,
+    }
+}
+
+/// The distance chase rates of the position chase (FUN_14073c260 14073.c 11948-11979): for
+/// targetChaseDistRateTime `time` after a hit of the final cast (`hit_time` = +0x1e4) the X / Z
+/// and Y rates (+0x1e8 / +0x1ec) are targetChaseDistRateXZ / Y_ForHitWall (`hit`, 1.0) for its
+/// first half, then fall linearly to the normal targetChaseDistRateXZ / Y (`normal`, 0.4):
+/// t = clamp(2 hit_time / time). The clock then counts down by dt. Returns the rates and the
+/// clock; so the arm grows back at once after a wall for a second, then eases.
+pub(crate) fn hit_wall_rates(hit_time: f32, time: f32, normal: Vec2, hit: Vec2, dt: f32) -> (Vec2, f32) {
+    if hit_time <= 0.0 || time <= 0.0 {
+        return (normal, 0.0);
+    }
+    let t = (2.0 * hit_time / time).clamp(0.0, 1.0);
+    (hit * t + normal * (1.0 - t), (hit_time - dt).max(0.0))
+}
+
+/// RSekiro's stand-in for the exe's camera sphere cast (FUN_14094dfc0 / FUN_14094dc70: a Havok
+/// linear cast of a `radius` sphere from `start` along `v`, returning the fraction of `v` where
+/// it first touches): a ray over |v| + radius on the map's collision, stopped short by the
+/// radius. A touch within 1 mm past the end counts (the exe's casts report the camera resting
+/// on a wall as a hit at fraction 1, which refreshes the hit-wall clock). With no map loaded
+/// the arena floor y = 0 stands in.
+fn map_cast(start: Vec3, v: Vec3, radius: f32) -> Option<f32> {
+    let len = v.length();
+    if len < 1e-5 {
+        return None;
+    }
+    let dir = v / len;
+    let hit = match crate::map::raycast(start, dir, len + radius + 1e-3) {
+        Some(h) => h - radius,
+        None if dir.y < -1e-3 && crate::map::terrain().is_none() => (start.y - radius) / -dir.y,
+        None => return None,
+    };
+    (hit <= len + 1e-3).then(|| (hit / len).clamp(0.0, 1.0))
 }
 
 /// CameraParam fulcrum values (`drag_fulcrum` / `place_fulcrum`).
@@ -200,11 +265,19 @@ pub(crate) struct PosChase {
 ///   outside its pitch range goes straight back.
 ///
 /// The exe applies the rates once a frame with no time factor; taken here as per 1/60 s (the
-/// game's frame cap). gap: the FUN_140831190 / 1408311b0 override (untraced); the exe measures the last
-/// distance from the post-collision point (+0x110) and lifts the distance rate to
-/// targetChaseDistRateXZ / Y_ForHitWall (1.0) for targetChaseDistRateTime after a wall hit,
-/// which the pre-collision point used here stands in for.
+/// game's frame cap). gap: the FUN_140831190 / 1408311b0 override (untraced). This form starts
+/// the distance chase from |prev - focus|; the follow camera uses `chase_position_from`.
 pub(crate) fn chase_position(prev: Vec3, raw: Vec3, focus: Vec3, r: PosChase, pitch: Option<(f32, f32)>, snap: f32, dt: f32) -> Vec3 {
+    chase_position_from(prev, (prev - focus).length(), raw, focus, r, pitch, snap, dt)
+}
+
+/// `chase_position` with the distance chase starting from `last_dist`: the exe's is the last
+/// camera after the collision cast (|+0x110 - focus|, 14073.c 11992-12030), so after a wall
+/// cut the arm grows back from the cut distance, at the `hit_wall_rates` (in `r.dist_xz` /
+/// `r.dist_y`). Checked on the emulated exe at walls and the ground (sim test
+/// `follow_camera_at_walls_matches_the_exe`).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn chase_position_from(prev: Vec3, last_dist: f32, raw: Vec3, focus: Vec3, r: PosChase, pitch: Option<(f32, f32)>, snap: f32, dt: f32) -> Vec3 {
     let step = |rate: f32| 1.0 - (1.0 - rate.clamp(0.0, 1.0)).powf(dt * 60.0);
     let (to_raw, to_prev) = (raw - focus, prev - focus);
     let cos = if to_raw.length() <= 1e-5 || to_prev.length() <= 1e-5 { 1.0 } else { to_raw.normalize().dot(to_prev.normalize()) };
@@ -226,7 +299,7 @@ pub(crate) fn chase_position(prev: Vec3, raw: Vec3, focus: Vec3, r: PosChase, pi
     let (xz, y) = (step(xz + (1.0 - xz) * snap), step(y + (1.0 - y) * snap));
     let d = raw - prev;
     let p = prev + Vec3::new(d.x * xz, d.y * y, d.z * xz);
-    let (raw_d, prev_d) = (to_raw.length(), to_prev.length());
+    let (raw_d, prev_d) = (to_raw.length(), last_dist);
     let dist_xz = prev_d + (raw_d - prev_d) * step(r.dist_xz);
     let dist_y = prev_d + (raw_d - prev_d) * step(r.dist_y);
     let v = p - focus;
@@ -321,6 +394,7 @@ impl CamState {
             focus_y: lc.focus_y,
             look: None,
             pos: None,
+            wall: WallCast::default(),
             ctrl_snap: 0.0,
             ctrl_hold: 0.0,
             fulcrum: None,
@@ -1034,7 +1108,9 @@ pub(crate) fn follow_player(
         None => orbit.cam.angle_from = None,
     }
     let rotation = Quat::from_euler(EulerRot::YXZ, orbit.yaw, -orbit.pitch, 0.0);
-    {
+    // camCastSphereRadius (0.05 m): the radius of every collision cast below (`map_cast`).
+    let radius = cf("camCastSphereRadius", 0.05);
+    let fulcrum = {
         let arm = rotation * Vec3::Z;
         let cam_dist = if orbit.cam.pos.is_some() { (transform.translation - orbit.focus).length() } else { orbit.cam.dist };
         // The right axis of last frame's camera (+0x10, the final matrix), not this frame's
@@ -1049,59 +1125,84 @@ pub(crate) fn follow_player(
             // fulcrumDistMin.
             orbit.focus + arm * (cam_dist * cf("fulcrumDistRate", 0.5)).max(fp.dist_min)
         };
+        // The fulcrum cast (14073.c 10993-11048, with the escape-wall option off as in the
+        // user's game): a wall or the ground between the focus and the fulcrum pulls the
+        // fulcrum in to it (1 cm at least), so a dragged fulcrum near a wall swings the camera
+        // faster.
+        let f = cast_cut(orbit.focus, f - orbit.focus, map_cast(orbit.focus, f - orbit.focus, radius), FULCRUM_CUT_MIN);
         orbit.cam.fulcrum = Some((f, orbit.focus));
-    }
-    // Camera collision (the game sphere-casts from the focus with CameraParam camCastSphereRadius):
-    // the arena floor (y = 0) cuts the arm short, so a camera looking up from below the focus
-    // stays above ground instead of going under it (the floor is one-sided: everything then
-    // looked to float).
-    let raw = orbit.focus + rotation * Vec3::Z * orbit.cam.dist;
+        f
+    };
+    // The orbit point (+0xf0, 14073.c 11066-11085): the camera distance (+0x214) along the
+    // fulcrum's direction; then the orbit cast (14073.c 11196-11251) pulls it in to a wall or
+    // the ground between it and the focus, so the position chase below runs toward the cut
+    // point, not through the wall.
+    let arm_dir = (fulcrum - orbit.focus).try_normalize().unwrap_or(rotation * Vec3::Z);
+    let raw = orbit.focus + arm_dir * orbit.cam.dist;
+    let raw = cast_cut(orbit.focus, raw - orbit.focus, map_cast(orbit.focus, raw - orbit.focus, radius), CAST_CUT_MIN);
     let locked = lock.target.is_some();
+    // The distance chase rates after a hit of the final cast (+0x1e4 / +0x1e8 / +0x1ec,
+    // `hit_wall_rates`).
+    let (dist_rate, hit_time) = hit_wall_rates(
+        orbit.cam.wall.hit_time,
+        cf("targetChaseDistRateTime", 2.0),
+        Vec2::new(cf("targetChaseDistRateXZ", 0.4), cf("targetChaseDistRateY", 0.4)),
+        Vec2::new(cf("targetChaseDistRateXZ_ForHitWall", 1.0), cf("targetChaseDistRateY_ForHitWall", 1.0)),
+        dt,
+    );
+    orbit.cam.wall.hit_time = hit_time;
     let chase = if locked {
         PosChase {
             xz: cf("targetChaseRateAtLockXZ", 0.4),
             y: cf("targetChaseRateAtLockY", 0.3),
             ang_min: cf("targetChaseRateAngAtLockMin", 0.0),
             ang_max: cf("targetChaseRateAngAtLockMax", 0.0),
-            dist_xz: cf("targetChaseDistRateXZ", 0.4),
-            dist_y: cf("targetChaseDistRateY", 0.4),
+            dist_xz: dist_rate.x,
+            dist_y: dist_rate.y,
         }
     } else {
-        // gap: the exe eases a working X / Z rate (+0x228) toward this by dt each frame, and
-        // snaps it to the _ForEscapeWall rates while escaping a wall.
+        // The exe eases a working X / Z rate (+0x228) toward this by dt each frame; with the
+        // escape-wall option off nothing moves it off the row's value (the option on sets it
+        // to targetChaseRateXZForEscapeWall while a wing cast hits: not ported).
         PosChase {
             xz: cf("targetChaseRateXZForNormal", 0.1),
             y: cf("targetChaseRateY", 0.4),
             ang_min: cf("targetChaseRateAngMin", 0.1745),
             ang_max: cf("targetChaseRateAngMax", 0.3491),
-            dist_xz: cf("targetChaseDistRateXZ", 0.4),
-            dist_y: cf("targetChaseDistRateY", 0.4),
+            dist_xz: dist_rate.x,
+            dist_y: dist_rate.y,
         }
     };
     // +0x230 / +0x234: the TAE 151 limits while they run, else the defaults they chase back to.
     let pitch_lim = orbit.cam.look.map_or((lf("rotRangeMinX", -40.0).to_radians(), cf("rotRangeXMax", 1.3963)), |l| (l[0], l[1]));
-    let pos = orbit.cam.pos.map_or(raw, |prev| chase_position(prev, raw, orbit.focus, chase, Some(pitch_lim), orbit.cam.ctrl_snap, dt));
+    let pos = match orbit.cam.pos {
+        Some(prev) => {
+            let last = orbit.cam.wall.post.unwrap_or(prev);
+            chase_position_from(prev, (last - orbit.focus).length(), raw, orbit.focus, chase, Some(pitch_lim), orbit.cam.ctrl_snap, dt)
+        }
+        None => raw,
+    };
     orbit.cam.pos = Some(pos);
     orbit.cam.seen = Some((orbit.yaw, orbit.pitch));
     let arm = (pos - orbit.focus).try_normalize().unwrap_or(rotation * Vec3::Z);
-    let radius = cf("camCastSphereRadius", 0.05);
-    let mut dist = (pos - orbit.focus).length();
-    // The exe's cast keeps max(hit, 1e-5) of the arm (14073.c 12318-12395): no minimum distance
-    // (it was 0.3 m here); Wolf fades instead (`cam_fade_step`).
-    if let Some(hit) = crate::map::raycast(orbit.focus, arm, dist + radius) {
-        // The map's walls and floors (camCastSphereRadius stand-in: the ray stops short by it).
-        dist = dist.min((hit - radius).max(1e-5));
-    } else if arm.y < -1e-3 && crate::map::terrain().is_none() {
-        let room = (orbit.focus.y - radius) / -arm.y;
-        dist = dist.min(room.max(1e-5));
+    // The final cast (14073.c 12318-12411) from the focus to the chased position: the camera
+    // stops at the hit, max(hit, 1e-5) of the arm (no minimum distance: Wolf fades instead,
+    // `cam_fade_step`), and the hit starts the hit-wall clock. +0x110 keeps the result.
+    let hit = map_cast(orbit.focus, pos - orbit.focus, radius);
+    if hit.is_some() {
+        orbit.cam.wall.hit_time = cf("targetChaseDistRateTime", 2.0);
     }
-    dist = safe_margin(dist, cf("camSafeMarginRate", 0.1), cf("camSafeMarginMax", 0.3));
+    let post = cast_cut(orbit.focus, pos - orbit.focus, hit, CAST_CUT_MIN);
+    orbit.cam.wall.post = Some(post);
+    let dist = safe_margin((post - orbit.focus).length(), cf("camSafeMarginRate", 0.1), cf("camSafeMarginMax", 0.3));
     transform.translation = orbit.focus + arm * dist;
     transform.look_at(orbit.focus, Vec3::Y);
     // CameraParam playerFadeDist (0.5 m) from the camera to Wolf's chased point (camera +0xa0).
-    // gap: +0xa0 is taken as the focus; the exe's obstacle fade (anything within
-    // camCastSphereRadiusForFade 0.3 m of the camera -> Wolf line, down to alpha 0.2) is not
-    // ported.
+    // gap: +0xa0 is taken as the focus. The obstacle fade (14073.c 11253-11320: a
+    // camCastSphereRadiusForFade 0.3 m cast from last frame's +0x100 toward Wolf fades what it
+    // hits to alpha 0.2) is not ported: in the emulated runs it hit only map objects (kind 6;
+    // RSekiro draws them merged into the map), and no enemy of the snapshot passes its
+    // character test.
     orbit.cam.near = dist < cf("playerFadeDist", 0.5);
 }
 
