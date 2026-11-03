@@ -111,11 +111,16 @@ pub struct Player {
     perch: Option<Vec3>,
     /// Attack pressed during the Grappling Hook Attack's landing (the Todome input).
     wire_todome: bool,
-    /// The highest point of the current flight (on the ground: the current height). The landing
-    /// reads the fall height from it (env(224), `FALL_HEIGHT_LONG_STIFF_LAND`).
+    /// The fall top (physics +0x854): the height of the last grounded frame or SetNoGravity hold,
+    /// kept through the flight. The landing reads the fall height from it (env(224),
+    /// `FALL_HEIGHT_LONG_STIFF_LAND`, the fall damage).
     pub(crate) air_top: f32,
     /// The last ground Wolf stood on (not water): where a fall-return death puts him back.
     safe_pos: Option<Vec3>,
+    /// Grounded, the horizontal move of the last tick (m/s) and where it was measured from: the
+    /// air velocity a walk-off starts with (physics +0x160).
+    ground_vel: Vec3,
+    ground_pos: Vec3,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -493,6 +498,64 @@ fn art_kind(combat: &Combat, config: &GameConfig) -> Option<(i64, i64)> {
 
 /// ChrActionFlag 27 "SetNoGravity".
 pub(crate) const FLAG_NO_GRAVITY: i64 = 27;
+
+/// The fall module's launch timer (FUN_140bb1670, physics +0x1c0 +0x180), set by a TAE 920 launch
+/// in the update it enters, before that update's air step: the step reads 0.251 there (0.25 s and
+/// a margin), so it runs on 16 updates, the launch's own included (air_ng_launch.json ng_rise).
+pub(crate) const LAUNCH_TIME: f32 = 0.251;
+
+/// SetNoGravity holds the body this update: the flag dispatched on the clip's step (the exe's
+/// window, `Actor::step`) and no launch timer running (FUN_140bccd50 / FUN_140bb14d0).
+pub(crate) fn no_gravity_hold(d: &CharData, a: &Actor) -> bool {
+    !a.anim.is_empty() && a.launch_left <= 0.0 && d.flag(&a.anim, a.step(), FLAG_NO_GRAVITY)
+}
+
+/// One airborne update of the physics step FUN_140bccd50: (held, air velocity, vertical speed,
+/// the gravity it ran). A SetNoGravity `flag` with no launch timer left holds (+0x160 zeroed, no
+/// air step); the update after a hold is a ground step (the body read grounded: world gravity
+/// only, -0.163 m/s) unless a launch came in; otherwise `air_step`, the stick only for a controllable fall type.
+/// air_ng_launch.json: ng_launch / ng_rise / ng_timer / ng_fall (test emu_air).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn air_frame(flag: bool, launch_left: f32, was_held: bool, h: Vec3, vy: f32, stick: Vec3, ft: crate::data::FallType, dt: f32) -> (bool, Vec3, f32, f32) {
+    if flag && launch_left <= 0.0 {
+        return (true, Vec3::ZERO, 0.0, 0.0);
+    }
+    // Not when a launch (TAE 920) came in after the hold: the launch velocity takes the air step
+    // (the head kick's relaunch at the end of its [0, 0.2] flag).
+    if was_held && launch_left <= 0.0 {
+        return (false, h, -crate::data::WORLD_GRAVITY * dt, -crate::data::WORLD_GRAVITY);
+    }
+    let (h, vy) = air_step(h, vy, if ft.controllable { stick } else { Vec3::ZERO }, ft, dt);
+    (false, h, vy, ft.gravity())
+}
+
+/// One air step of the fall module (FUN_140bccd50 -> FUN_140bacc10 / FUN_140bac120, physics
+/// +0x160): gravity (world 9.8 + the fall type's verticalAcceleration, fall +0x7c / +0x1c4) on the
+/// vertical speed; the horizontal velocity decays along its direction by HorizontalAcceleration
+/// (fall +0x78; left alone once slower than one step), then the world stick (FUN_1409efea0 +0xc0)
+/// adds StickAcceleration * stick * dt (fall +0x80) split along the velocity (or the stick when
+/// still): the across part always steers, the along part brakes in full but speeds up only to
+/// StickAccelerationMaxVelocity (+0x84). Checked frame by frame against the exe (test
+/// air_steps_match_the_exe). The position takes the mean of the old and new velocity
+/// (FUN_140bccd50's half step; actor.rs `fall`).
+pub(crate) fn air_step(h: Vec3, vy: f32, stick: Vec3, ft: crate::data::FallType, dt: f32) -> (Vec3, f32) {
+    let mut h = h;
+    let speed = h.length();
+    let decel = ft.h_accel * dt;
+    if speed > 0.0 && (decel >= 0.0 || -decel <= speed) {
+        h += h / speed * decel;
+    }
+    if stick != Vec3::ZERO {
+        let acc = stick * ft.stick_accel * dt;
+        let speed = h.length();
+        let dir = if speed > 0.0 { h / speed } else { stick.normalize() };
+        let along = dir.dot(acc);
+        let par = dir * along;
+        h += if along <= 0.0 { par } else { dir * along.min((ft.stick_max_vel - speed).max(0.0)) };
+        h += acc - par;
+    }
+    (h, vy + ft.gravity() * dt)
+}
 pub const FLAG_ACCEPT_MOVE: i64 = 11;
 pub const FLAG_SHIELD_BLOCK: i64 = 3;
 pub const FLAG_DISABLE_TURN: i64 = 7;
@@ -535,6 +598,33 @@ pub const REF_ORIGINAL_LAND_ACTION: i64 = 201;
 /// c0000_define FALL_HEIGHT_LONG_STIFF_LAND (m) and the long-stiff LandFreeFall clip.
 const FALL_HEIGHT_LONG_STIFF_LAND: f32 = 20.0;
 const LAND_LONG_STIFF: &str = "a000_200021";
+/// Fall damage starts here (m): DAT_143b01948 = 20.0, read by FUN_140b97b30 (5 m while SpEffect
+/// type 0x155 is worn, DAT_143b01950/54; gap: that SpEffect is not ported).
+pub(crate) const FALL_DAMAGE_MIN: f32 = 20.0;
+/// The share of max HP a lethal landing (fall height >= fallDeathDist) costs before the return
+/// (DAT_143b01958 = 0.4 in FUN_140b97b30).
+pub(crate) const FALL_RETURN_COST: f32 = 0.4;
+
+/// HP a landing from `drop` metres costs, and whether it is the lethal one (the return death),
+/// None under FALL_DAMAGE_MIN. Exe FUN_140b97a30 -> FUN_140b97b30 on the land frame, fall height
+/// = physics +0x854 (the fall top) - y: from 20 m the loss is (int)(maxHP x CalcCorrectGraph 210
+/// (h) / 100) (row 210 is the identity 20 -> 20 .. 100 -> 100), e.g. 25 m -> 280 of 1120; from
+/// HitMtrlParam fallDeathDist (`dist`, 40 m by default) it is (int)(maxHP x 0.4) instead and the
+/// land plays LandDeadReturnStart (40 m: 548 -> 100 HP). Emulated: extracted/emu/air_drops_*.json,
+/// test emu_air. gap: CalcCorrectGraph 211 / 212 (FUN_1408433f0's other factors, 1.0 here) and
+/// HitMtrlParam +0x50 fallDamageRate are not applied; what a non-lethal fall does when it takes
+/// the last HP is not traced (HP stops at 0 here).
+pub(crate) fn fall_hp_loss(hp_max: f32, drop: f32, dist: f32) -> Option<(f32, bool)> {
+    if drop < FALL_DAMAGE_MIN {
+        return None;
+    }
+    if drop >= dist {
+        return Some(((hp_max * FALL_RETURN_COST).floor(), true));
+    }
+    // The factor is rounded to f32 before the HP product: 20 m -> 0.19999999 -> 223 of 1120.
+    let factor = drop.min(100.0) * 0.01;
+    Some(((hp_max * factor).floor(), false))
+}
 /// c0000_define 211-212: FALL_HEIGHT_SHORT_STIFF_LAND(_FROM_JUMP), metres.
 const FALL_HEIGHT_SHORT_STIFF_LAND: f32 = 5.0;
 /// Falling this far with no ground below ends in the fall-return death (gap: HitMtrlParam's default
@@ -1006,6 +1096,7 @@ fn aging_step(p: &mut Player, a: &mut Actor, combat: &Combat, config: &GameConfi
             a.vel_y = a.vel_y * vc.v_scale + vc.v_change;
             a.fall_type = vc.fall_type;
             a.airborne = true;
+            a.launch_left = LAUNCH_TIME;
         }
     }
     if a.airborne {
@@ -1723,7 +1814,7 @@ fn spawn_player(mut commands: Commands, combat: Res<Combat>, config: Res<GameCon
         }
     }
     commands.spawn((
-        Player { plunge: None, leap_homing: None, speed_level: 0.0, turn: Turn::default(), requests: HashMap::new(), last_state: String::new(), gourd: config.player.gourd_charges, emblems: config.player.spirit_emblems, auto_aim: false, auto_aim_fresh: false, resurrections: config.player.resurrections, revive_queued: false, death_wait: 0.0, dead_for: 0.0, escape: None, jump_forward: false, jump_land: None, positioning_land: false, aged_form: false, step_tilt: 0.0, jump_tilt: 0.0, throw_start: None, throw_target: None, tool_slot: 0, vel_scale: None, expand_pending: false, sub_cat_before: 0, air_sub_count: 0, air_art_count: 0, art_enable_jump: false, timed: Vec::new(), held: Vec::new(), wire: None, perch: None, wire_todome: false, air_top: 0.0, safe_pos: None },
+        Player { plunge: None, leap_homing: None, speed_level: 0.0, turn: Turn::default(), requests: HashMap::new(), last_state: String::new(), gourd: config.player.gourd_charges, emblems: config.player.spirit_emblems, auto_aim: false, auto_aim_fresh: false, resurrections: config.player.resurrections, revive_queued: false, death_wait: 0.0, dead_for: 0.0, escape: None, jump_forward: false, jump_land: None, positioning_land: false, aged_form: false, step_tilt: 0.0, jump_tilt: 0.0, throw_start: None, throw_target: None, tool_slot: 0, vel_scale: None, expand_pending: false, sub_cat_before: 0, air_sub_count: 0, air_art_count: 0, art_enable_jump: false, timed: Vec::new(), held: Vec::new(), wire: None, perch: None, wire_todome: false, air_top: 0.0, safe_pos: None, ground_vel: Vec3::ZERO, ground_pos: Vec3::ZERO },
         actor,
         Name::new("Player"),
         Transform::from_xyz(0.0, CAPSULE_HALF_HEIGHT, 4.0),
@@ -3093,7 +3184,8 @@ fn decide(
         }
     }
     // The fall-return deaths (HKS BEH_R_DEATH 769-776): the clip plays out, then Wolf stands at the
-    // last safe ground (GroundFallReturn a000_711210). They keep HP and the resurrections.
+    // last safe ground (GroundFallReturn a000_711210). They keep the resurrections; the lethal
+    // landing already took 40% of max HP (fall_hp_loss; gap: the void fall's cost is not traced).
     if matches!(a.state.as_str(), "LandDeadReturnStart" | "FallDeadReturnStart") {
         a.move_vel = Vec3::ZERO;
         if a.anim.is_empty() || a.t >= d.length(&a.anim) {
@@ -3319,13 +3411,27 @@ fn decide(
     // Not in a wire shot / move start: its launch fires on the tick SetNoGravity ends, after this
     // check, and a grapple from a perch fell off it instead (2026-10-12 bug hunt round 20).
     let wiring = p.wire.is_some() && crate::wire::is_wire_state(&a.state);
-    if !a.airborne && !perched && !wiring && tf.translation.y > crate::map::ground_y(tf.translation) + CAPSULE_HALF_HEIGHT + 0.05 && !(!a.anim.is_empty() && d.flag(&a.anim, a.t, FLAG_NO_GRAVITY)) {
+    if !a.airborne && !perched && !wiring && tf.translation.y > crate::map::ground_y(tf.translation) + CAPSULE_HALF_HEIGHT + 0.05 && !no_gravity_hold(d, a) {
         a.airborne = true;
         // A plain fall (fallType 0), not the last wire flight's (2026-10-12 bug hunt round 12).
         a.fall_type = 0;
-        a.vel_y = 0.0;
-        a.air_base = Vec3::ZERO;
+        // The exe's air velocity (physics +0x160) is the last grounded frame's move: the walk /
+        // run's horizontal velocity, and one frame of world gravity down (the ground hold, -9.8
+        // dt); the first air step adds the fall's. tools/emu-cases `air` edge_run: off the cliff
+        // at a run Wolf keeps -5.56 m/s (decaying 0.1 m/s^2), y velocity -0.163 -> -0.555.
+        // Before: straight down from rest.
+        a.vel_y = -crate::data::WORLD_GRAVITY * dt;
+        a.air_base = p.ground_vel;
         a.play_state(d, "FreeFall");
+    }
+    if !a.airborne && dt > 0.0 {
+        // A warp (a reset, a placement) is not a move.
+        let moved = (tf.translation - p.ground_pos).with_y(0.0);
+        p.ground_vel = if moved.length() < 1.0 { moved / dt } else { Vec3::ZERO };
+    }
+    p.ground_pos = tf.translation;
+    if !a.airborne {
+        a.ng_held = false;
     }
 
     let cam_yaw = camera.map_or(0.0, |c| c.yaw);
@@ -4457,6 +4563,7 @@ fn decide(
             a.vel_y = a.vel_y * vc.v_scale + vc.v_change;
             a.fall_type = vc.fall_type;
             a.airborne = true;
+            a.launch_left = LAUNCH_TIME;
             a.move_vel = a.air_base;
             p.leap_homing = None;
             // Row 1100's homing (ChrPhysicsHomingParam 300000000): the wire's guaranteed arrival.
@@ -4581,7 +4688,13 @@ fn decide(
         }
         return;
     }
-    p.air_top = if a.airborne { p.air_top.max(tf.translation.y) } else { tf.translation.y };
+    // The fall top (physics +0x854, FUN_140bc3470): the height of the last grounded frame (and of
+    // a SetNoGravity hold, below), kept through the flight; not the flight's highest point. A jump
+    // landing where it left falls 0 m (tools/emu-cases `air`: +0x854 stays at the take-off over
+    // the whole jump). The HKS fall height env(224) and the fall damage read top - y.
+    if !a.airborne {
+        p.air_top = tf.translation.y;
+    }
     if !a.airborne {
         // HitMtrlParam 20-24 / 35-38 / 45-47 are water, swamp and underwater floors (not a safe spot).
         let water = crate::map::floor_material(tf.translation).is_some_and(|m| matches!(m, 20..=24 | 35..=38 | 45..=47));
@@ -4825,38 +4938,23 @@ fn decide(
         }
 
         let ft = FALL_TYPES[(a.fall_type as usize).min(FALL_TYPES.len() - 1)];
-        // ChrActionFlag 27 SetNoGravity holds the character in place. gap: read at t, not on the
-        // step (`Actor::step`): the exe's flag handler (FUN_140b51b70 case 0x1b, physics +0x92c)
-        // is set on the update the event ends in too, but this hold zeroes the velocity, which
-        // there would cancel a TAE 920 launch entering in the same update (the head kick's
-        // relaunch at 0.2 s); how the exe's physics reads +0x92c is not traced.
-        if !a.anim.is_empty() && d.flag(&a.anim, a.t, FLAG_NO_GRAVITY) {
-            a.vel_y = 0.0;
-            a.grav_y = 0.0;
-        } else {
-            a.grav_y = ft.gravity();
-            a.vel_y += ft.gravity() * dt;
+        // ChrActionFlag 27 SetNoGravity (FUN_140b51b70 case 0x1b sets physics +0x92c on every
+        // update its window overlaps, the one its end falls in too; FUN_140bcc420 turns it into
+        // +0x92a). The physics step FUN_140bccd50 then skips the air step and holds: the air
+        // velocity +0x160 is zeroed and the fall top +0x854 is the held height. Except while the
+        // fall module's launch timer runs (LAUNCH_TIME from a TAE 920, FUN_140bb14d0): a launch in the
+        // flag's last update (the head kick's [0, 0.2] flag and its 920 at 0.2, the wire's 2020x0)
+        // flies on (tools/emu-cases `air` ng_launch / ng_rise, test
+        // no_gravity_waits_for_the_launch_timer). gap: a flag new this update keeps +0x160 in
+        // the exe (zeroed the update after); unused, as the body does not move either way.
+        let flag = !a.anim.is_empty() && d.flag(&a.anim, a.step(), FLAG_NO_GRAVITY);
+        let (held, h, vy, g) = air_frame(flag, a.launch_left, a.ng_held, a.air_base, a.vel_y, stick, ft, dt);
+        (a.air_base, a.vel_y, a.grav_y) = (h, vy, g);
+        if held {
+            p.air_top = tf.translation.y;
         }
-        // One horizontal air velocity (exe FUN_140bac120, fall module). It decays along its
-        // direction by HorizontalAcceleration (left alone once slower than one step).
-        let speed = a.air_base.length();
-        let decel = ft.h_accel * dt;
-        if speed > 0.0 && (decel >= 0.0 || -decel <= speed) {
-            let step = a.air_base / speed * decel;
-            a.air_base += step;
-        }
-        // Stick: a = StickAcceleration * stick * dt, split along the current velocity (or the
-        // stick when still). The across part always steers; the along part brakes in full but
-        // only speeds up while under StickAccelerationMaxVelocity, which is all it caps.
-        if ft.controllable && stick != Vec3::ZERO {
-            let acc = stick * ft.stick_accel * dt;
-            let speed = a.air_base.length();
-            let dir = if speed > 0.0 { a.air_base / speed } else { stick.normalize() };
-            let along = dir.dot(acc);
-            let par = dir * along;
-            a.air_base += if along <= 0.0 { par } else { dir * along.min((ft.stick_max_vel - speed).max(0.0)) };
-            a.air_base += acc - par;
-        }
+        a.ng_held = held;
+        a.launch_left = (a.launch_left - dt).max(0.0);
         // Plunge deathblow: ChrPhysicsHomingParam 200000300 (TAE 920 row 8000 on the plunge anim):
         // fallCorrectionGuaranteeArrival 1 - the horizontal velocity is re-aimed every frame so
         // the fall ends on the target - and fallCorrectionTurn 1 (face it); no chase acceleration.
@@ -4985,11 +5083,16 @@ fn decide(
             // Blown away: the matching Land anim (StandDamage*Blow*/Upper*).
             // Landing from a height the ground's HitMtrlParam fallDeathDist (map::fall_death_dist)
             // kills: HKS DAMAGE_TYPE_LAND_DEAD_RETURN -> W_LandDeadReturnStart (a000_200909), then
-            // back at the safe spot (gap: whether the game returns or kills outright is not traced).
+            // back at the safe spot. The fall's HP cost (FUN_140b97a30 -> FUN_140b97b30, emulated
+            // in extracted/emu/air_drops_*.json, test emu_air): `fall_hp_loss`.
             let landing_drop = p.air_top - tf.translation.y;
-            if landing_drop >= FALL_HEIGHT_LONG_STIFF_LAND && crate::map::fall_death_dist(crate::map::floor_material(tf.translation)).is_some_and(|dist| landing_drop >= dist) && a.play_state(d, "LandDeadReturnStart") {
-                log.push("fall death - back to safe ground", Color::srgb(1.0, 0.4, 0.4));
-                return;
+            let death_dist = crate::map::fall_death_dist(crate::map::floor_material(tf.translation));
+            if let Some((loss, lethal)) = death_dist.and_then(|dist| fall_hp_loss(a.hp_max, landing_drop, dist)) {
+                a.hp = (a.hp - loss).max(0.0);
+                if lethal && a.play_state(d, "LandDeadReturnStart") {
+                    log.push("fall death - back to safe ground", Color::srgb(1.0, 0.4, 0.4));
+                    return;
+                }
             }
             let falling_reaction = |st: &str| {
                 st.contains("BlowStart") || st.contains("BlowFallLoop") || st.contains("UpperStart") || st.contains("UpperFallLoop")

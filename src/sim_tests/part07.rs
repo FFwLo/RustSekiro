@@ -454,6 +454,8 @@ pub(crate) fn a_twenty_metre_fall_lands_long_stiff() {
                 a.airborne = true;
                 a.vel_y = 0.0;
                 t.translation.y += drop;
+                let y = t.translation.y;
+                world.query::<&mut Player>().single_mut(world).unwrap().air_top = y;
             });
         }
         let mut landed = None;
@@ -476,8 +478,9 @@ pub(crate) fn a_twenty_metre_fall_lands_long_stiff() {
 }
 
 /// A fall past HitMtrlParam fallDeathDist (40 m, the default row) ends in the fall-return death
-/// (HKS DAMAGE_TYPE_LAND_DEAD_RETURN, a000_200909), then Wolf stands at the last safe ground with
-/// his HP; a 25 m fall is only the long stiff landing.
+/// (HKS DAMAGE_TYPE_LAND_DEAD_RETURN, a000_200909) costing 40% of max HP, then Wolf stands at the
+/// last safe ground; a 25 m fall is the long stiff landing and costs 25% (exe FUN_140b97b30,
+/// emu_air).
 #[test]
 pub(crate) fn a_forty_metre_fall_returns_wolf_to_safe_ground() {
     for (drop, dies) in [(45.0, true), (25.0, false)] {
@@ -486,10 +489,10 @@ pub(crate) fn a_forty_metre_fall_returns_wolf_to_safe_ground() {
         for _ in 0..30 {
             app.update();
         }
-        let (start, hp) = {
+        let (start, hp, hp_max) = {
             let world = app.world_mut();
             let (a, t) = world.query_filtered::<(&Actor, &Transform), With<Player>>().single(world).unwrap();
-            (t.translation, a.hp)
+            (t.translation, a.hp, a.hp_max)
         };
         {
             let world = app.world_mut();
@@ -499,6 +502,8 @@ pub(crate) fn a_forty_metre_fall_returns_wolf_to_safe_ground() {
                 a.airborne = true;
                 a.vel_y = 0.0;
                 t.translation += Vec3::new(3.0, drop, 0.0);
+                let y = t.translation.y;
+                world.query::<&mut Player>().single_mut(world).unwrap().air_top = y;
             });
         }
         let mut saw = false;
@@ -513,7 +518,8 @@ pub(crate) fn a_forty_metre_fall_returns_wolf_to_safe_ground() {
         let world = app.world_mut();
         let (a, t) = world.query_filtered::<(&Actor, &Transform), With<Player>>().single(world).unwrap();
         assert_eq!(saw, dies, "drop {drop} {seen:?}");
-        assert_eq!(a.hp, hp, "drop {drop}: the return keeps HP");
+        let share: f32 = if dies { 0.4 } else { 0.25 };
+        assert_eq!(a.hp, (hp - (hp_max * share).floor()).max(0.0), "drop {drop}: the fall's HP cost");
         if dies {
             assert!((t.translation - start).length() < 0.5, "back at the safe ground: {:?} vs {:?}", t.translation, start);
         }
@@ -536,6 +542,8 @@ pub(crate) fn a_jump_off_a_five_metre_ledge_lands_stiff() {
                 a.airborne = true;
                 a.vel_y = 0.0;
                 t.translation.y += drop;
+                let y = t.translation.y;
+                world.query::<&mut Player>().single_mut(world).unwrap().air_top = y;
             });
         }
         let mut landed = None;
