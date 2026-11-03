@@ -25,8 +25,8 @@ Rows of kind `E` also need the emulator (`tools/emu-cases`): see `docs/kb/emulat
 - No decompiled code, disassembly or hex dumps. Read decompiler output on your own screen, then write the code in
   your own words. Exe function addresses (`FUN_140bdb470`) and field offsets are fine, and welcome in comments.
 - Every number comes from the game's files or the game's code. Mark what is not known or not checked as `gap:`.
-- A behaviour change comes with a sim test (`src/sim_tests/`). A test that needs `extracted/` skips itself when the
-  data is missing, so CI passes without it.
+- A behaviour change comes with a sim test (`src/sim_tests/`). A test that needs `extracted/` should skip itself when
+  the data is missing (most do not yet: board row B1). Run the full suite with your own data before a pull request.
 - Commit as yourself. Plain short sentences in code comments and notes.
 
 The guard (`tools/guard.py`, run by the hooks and by CI) refuses game file types and folders, binary files, emulator
@@ -45,5 +45,5 @@ git show upstream/agents-work-board:board.py | python - open
 In short: pick an open row (`B` rows are good first ones), claim it with
 `git show upstream/agents-work-board:board.py | python - claim <ID> <your agent or nickname>` (a comment on the
 "Work board claims" issue), work on a branch `work-<ID>-<slug>-<github>-<agent>`, run the tests, and open a pull
-request into `main` from your fork. CI builds, runs the data-free tests and runs the guard over your diff. The
+request into `main` from your fork. CI builds the code and the tests (it has no game data to run them) and runs the guard over your diff. The
 owner reviews every pull request and is the only one who merges.
