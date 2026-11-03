@@ -44,4 +44,4 @@ jobs:
       # locally with their own data (docs/CONTRIBUTING.md). crates/game and crates/sim read the map cache
       # (SEKIRO_CACHE), so CI only builds their tests (board row B7).
       - run: cargo test --workspace --no-run
-      - run: cargo test -p sv1 -p sekiro-formats -p sekiro-hks -p sr-extract -- --skip sim_tests::
+      - run: "cargo test -p sv1 -p sekiro-formats -p sekiro-hks -p sr-extract -- --skip sim_tests::"
