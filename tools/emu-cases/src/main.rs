@@ -475,9 +475,10 @@ impl Emu {
     }
 }
 
-/// Function sizes from DSekiro's list when it is next to us (coverage ranges); else none.
+/// Function sizes from DSekiro's list (`DSEKIRO_FUNCTIONS`: its data/functions.json) for coverage
+/// ranges; else none.
 fn functions_json() -> HashMap<u64, u64> {
-    let path = std::env::var("DSEKIRO_FUNCTIONS").unwrap_or_else(|_| r"<dsekiro>\data\functions.json".into());
+    let Ok(path) = std::env::var("DSEKIRO_FUNCTIONS") else { return HashMap::new() };
     let Ok(text) = std::fs::read_to_string(path) else { return HashMap::new() };
     let v: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
     v.as_array()

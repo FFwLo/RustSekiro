@@ -53,11 +53,11 @@ Dated findings, oldest first. Append new entries at the end.
   -atan2(y, xz)); limits rotRangeXAtLock lerped to the free range by |P.y - focus.y| over
   rotRangeLerpBegin/EndHeight; chase lockRotChaseRateX * dt / (1/30) outside lockRotChasePlayAngX (0).
   Result: ~20-30 deg looking down in melee (was ~8, a guess), steep over the target on head kicks.
-- 2026-10-10 lock-on target switch (static, LockTgtManImp): update FUN_1409c5fe0 (decomp/<decomp ref>) calls
+- 2026-10-10 lock-on target switch (static, LockTgtManImp): update FUN_1409c5fe0 calls
   the stick switch FUN_1409ca2d0 (+0x29c0 flick mode off by default; FUN_1409c9d40 flick variant is debug only) and the
   mouse switch FUN_1409ca120 every frame. Stick: |axis| < 0.5 (@0x143289124) re-arms, > 0.95 (@0x14328918c) fires.
   Mouse: delta * -1 (@0x143289434), < 25 (@0x1432892d0) re-arms, > 50 (@0x1432892f0) fires. Each switch sets both
-  cooldowns (+0x2844 / +0x2848) to 0.5 s. Pick FUN_1409ca480 (<decomp ref>): screen-space d = cand - cur, score =
+  cooldowns (+0x2844 / +0x2848) to 0.5 s. Pick FUN_1409ca480: screen-space d = cand - cur, score =
   cos(angle(d, input)) / |d|, best above cos(+0x2854 = pi/2). Candidates while locked: CamFront{Near,Far}Range
   LockChangeHalfAng yaw 60 / 45 deg, pitch 30 / 30, radius 8 / 200 (+0x2968..+0x2984). LockCamParam is not involved.
   camera.rs toggle_lock. gap: mouse units, and the input y sign (exe uses d.x*in.x - d.y*in.y).
@@ -104,20 +104,20 @@ Dated findings, oldest first. Append new entries at the end.
   (FUN_14095fd40 / 50); the stick FUN_1409ca2d0 reads FUN_140960430 / 440 unnegated. The mouse state's writer is not
   found statically (scan for int->float stores at +0x20 / +0x24: none matching), so units and signs stay open.
 - 2026-10-13 lock switch mouse, units (static): +0x38f8 is the pad's current frame snapshot (ring of 0xec-byte
-  frames, set <decomp ref>), filled by FUN_140960650 (<decomp ref>): +0x20 = FUN_140965bd0 = analog action 0x54
+  frames, set), filled by FUN_140960650: +0x20 = FUN_140965bd0 = analog action 0x54
   * s, +0x24 = FUN_140965c80 = action 0x55 * s, s = +1 if option byte DAT_143d5a988 +0x715 / +0x716 else -1 (likely
   camera invert X / Y, not verified); FUN_1409ca120's -1 cancels the default, so the switch sees the raw axis.
-  Analog read FUN_1425e8150 (<decomp ref>, up to 4 bindings, type 2 = device float). The only DirectInput float
-  source: MouseDevice poll FUN_141a8f540 (<decomp ref>), GetDeviceState DIMOUSESTATE, +0x1b0 / +0x1b4 = (float)lX /
+  Analog read FUN_1425e8150 (up to 4 bindings, type 2 = device float). The only DirectInput float
+  source: MouseDevice poll FUN_141a8f540, GetDeviceState DIMOUSESTATE, +0x1b0 / +0x1b4 = (float)lX /
   lY, relative axis mode, no scale or accumulation: raw counts per poll, y down. So 50 / 25 are counts a frame,
   the same unit as Bevy's AccumulatedMouseMotion (camera.rs unchanged). Open: the 0x54 -> mouse binding table.
-  Screen d in FUN_1409ca480 is NDC (<decomp ref>, view then projection matrix from camera +0x10..+0x4c,
+  Screen d in FUN_1409ca480 is NDC (view then projection matrix from camera +0x10..+0x4c,
   divided by clip w, no viewport transform; +0x29c7 remaps d via FUN_1402b8e90, not read): y up, so in.y > 0
   favours lower candidates; mouse down (lY > 0) picks lower, matching camera.rs. Open: the binding's lY sign;
-  the stick (FUN_1409ca2d0 reads +0x10 / +0x14 unnegated, <decomp ref>) would pick lower on +y.
+  the stick (FUN_1409ca2d0 reads +0x10 / +0x14 unnegated) would pick lower on +y.
 - 2026-10-13 lockCamAdjustRot_MaxX / MaxY / ChaseRate (row +0x128..+0x130) are unused: FUN_1407374e0 copies /
-  blends whole LockCamParam rows (getter FUN_140737d80, <decomp ref>) via FUN_1407381d0 (<decomp ref> lerp
-  them like every field) into DAT_143d59938 +8; its readers (FUN_140741e70 callers <decomp ref> / 7434 / 8919)
+  blends whole LockCamParam rows (getter FUN_140737d80) via FUN_1407381d0 ( lerp
+  them like every field) into DAT_143d59938 +8; its readers (FUN_140741e70 callers)
   never load +0x128..+0x130. Not ported (nothing to port).
 - 2026-10-11 checked AKJama/sekiro-rs's camera / movement fixes (c1782f8, 502c9be, 8eaf879): locked diagonals with
   walk twist, the 4-dir step tilt and the dead-target lock drop were already here; the held-stick realign after a

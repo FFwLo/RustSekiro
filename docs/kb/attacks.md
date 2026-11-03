@@ -64,7 +64,7 @@ Dated findings, oldest first. Append new entries at the end.
   100/110/120/130_Attack (Freeaim, slashes) UD only, up 30-35 / down 25-35, bones 7-43 weight 1; 30/31_Throw on dmy 260.
   Not implemented: on flat ground the attack twists are ~0 (the lock-on idle twist is visual only).
 SWORDPLAY NEXT (for the next session): (a) TAE 700 twists (vertical aim of slashes at height differences, idle torso
-  twist to the lock target); (b) TAE 151 look limits (+0x4c..+0x58, used by FUN_140741?/14074.c:401); (c) user feedback.
+  twist to the lock target); (b) TAE 151 look limits (+0x4c..+0x58, used by FUN_140741?); (c) user feedback.
 - 2026-10-07 sprint actions: ref 1 SP_EF_REF_ENABLE_SPRINT_ACTION (SprintStartFromStep_F, SprintLoop, SprintToDeflectGuard
   6-15) opens every action (player.rs sprint_window in buffers/accepts): SprintLoop has no ChrActionFlags, so a sprint
   attack out of SprintLoop was unreachable (found by helper S3). Test attack_out_of_a_sprint_loop_is_a_sprint_attack.

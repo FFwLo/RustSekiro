@@ -8,7 +8,7 @@
   unused), 5 x WREntry {region i16, 0 i16, arrival anim i32, arrival wait i32}.
 Points are the regions' positions (map space), `regions` their region indices (a route may pass
 one region twice); the arrival entries are matched by region, as the exe does (FUN_1405c1ac0 /
-FUN_1405c1b90, 1405c.c:1056 / 1133). PatrolType (the exe reads its low byte, FUN_1405c2080) is
+FUN_1405c1b90). PatrolType (the exe reads its low byte, FUN_1405c2080) is
 stepped by src/ai.rs Patrol (the exe's table at 0x143af9550). The boss rows (npc_names.json
 "rows") are left out.
 `wake`: the map event that holds the enemy's AI (common_func 20005110: 2004[1] Set Character AI

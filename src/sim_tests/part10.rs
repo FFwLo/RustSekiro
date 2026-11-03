@@ -1135,7 +1135,7 @@ pub(crate) fn repeat_mode_plays_the_tomoe_lightning() {
 }
 
 /// The stateInfo-155 rows' changeSuperArmorPoint adds to the super-armour pool (FUN_140bdb690,
-/// <decomp ref>): a rise is added to the pool at once, and the refill fills to the larger
+///): a rise is added to the pool at once, and the refill fills to the larger
 /// max. Isshin's NpcParam pool is 0; the "revived Kensei" row 3540110 (+200), put on by hand
 /// here (nothing in Sekiro's data or exe puts it on), gives him one.
 #[test]
@@ -1170,7 +1170,7 @@ pub(crate) fn a_super_armour_bonus_grows_the_pool() {
 
 /// The whistle's madness 230515 (effectEndurance -1, gate 959, isWaitModeDelete) lasts while the
 /// beast wears its resident 230500 (stateInfo 959) and is deleted the moment that goes
-/// (FUN_140c04090, <decomp ref>).
+/// (FUN_140c04090).
 #[test]
 pub(crate) fn the_whistle_madness_goes_when_its_gate_does() {
     let mut app = app_with("c1000");
@@ -1450,7 +1450,7 @@ pub(crate) fn a_bullet_makes_its_appear_sound_where_it_starts() {
 }
 
 /// A growing bullet re-issues its attack (and so its AppearAiSoundId) every 1/6 s while it grows
-/// and once when it has (<decomp ref> / 8627): c1190's 11903311 (hitRadius 2.5 -> 3.4 over
+/// and once when it has: c1190's 11903311 (hitRadius 2.5 -> 3.4 over
 /// 0.5 s) issues 2000025 at 0, 1/6, 2/6 and about 0.5 s (3/6 and the final one fall on one frame
 /// or two); a bullet that does not grow (11900100) only at its start.
 #[test]

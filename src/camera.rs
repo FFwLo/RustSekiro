@@ -793,13 +793,13 @@ fn capture_mouse(
 /// movement repeats every 0.5 s. The exe reads the value from the pad object's mouse state
 /// (FUN_14095fd40 / 50: +0x38f8 -> +0x20 / +0x24), negates both axes and scores with
 /// d.x * in.x - d.y * in.y (the stick, FUN_1409ca2d0, is not negated). The state is the pad's
-/// frame snapshot (FUN_140960650, <decomp ref>): analog actions 0x54 / 0x55 times -1 unless the
+/// frame snapshot (FUN_140960650): analog actions 0x54 / 0x55 times -1 unless the
 /// option bytes +0x715 / +0x716 are set (likely the camera invert options, not verified), so with
 /// the defaults the switch sees the raw axis. The only DirectInput float source is the mouse poll
-/// FUN_141a8f540 (<decomp ref>): DIMOUSESTATE lX / lY as is, relative counts per poll, no scale
+/// FUN_141a8f540: DIMOUSESTATE lX / lY as is, relative counts per poll, no scale
 /// or accumulation found (the action 0x54 binding itself is not traced). Bevy's
 /// AccumulatedMouseMotion is the same unit (raw counts a frame, y down), so 50 / 25 apply as is.
-/// The pick's d is NDC (FUN_1409ca480, <decomp ref>: view x projection, / w, no viewport
+/// The pick's d is NDC (FUN_1409ca480: view x projection, / w, no viewport
 /// step), so y up: with in.y = +lY a flick down picks the lower target, as here. gap: the sign
 /// the 0x55 binding gives lY (not traced), and the stick, unnegated, would then pick downward on
 /// stick up unless its struct stores +y down; here stick up picks up.

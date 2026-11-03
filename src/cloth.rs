@@ -368,7 +368,7 @@ pub struct ClothInst {
     /// The model root last frame (Havok space): the sim runs in model space (`carry`).
     root_m: Option<Mat4>,
     /// Last frame's capsules (Havok space): the exe's Substep Collidables walks each collidable
-    /// from its old pose to its new one over the substeps (<decomp ref>).
+    /// from its old pose to its new one over the substeps.
     caps_prev: Vec<Option<(Vec3, Vec3, f32, f32)>>,
     /// SHINOBI_CLOTH_PROBE: the sim's swing off the animated cloth (deg, the LocalRange
     /// particles' centre from the fixed particles' centre, sim vs skinned references) and the

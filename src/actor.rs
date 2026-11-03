@@ -16,14 +16,14 @@ pub enum Side {
 
 /// The super-armour pool (exe CSSuperArmorDurability, re-scout 2026-10-13): max = NpcParam
 /// superArmorDurability (vfunc 0x2c8, FUN_140a12de0: +0x118), 0 = none (Wolf, most enemies).
-/// A hit drains it (FUN_140bdb470, <decomp ref>; `combat::super_armor_hit`) and re-arms
+/// A hit drains it (FUN_140bdb470; `combat::super_armor_hit`) and re-arms
 /// `timer` to 5 x (superArmorRecoverCorrection + 1) s (vfunc 0x2d8, FUN_140a12e90: 7 s at 0.4,
-/// 25 s at 4.0); when it runs out the pool snaps back to full (<decomp ref>, no gradual
+/// 25 s at 4.0); when it runs out the pool snaps back to full (no gradual
 /// refill). Emptied, it breaks: the stateInfo-120 dmgLv rows drop out (FUN_140bdbaf0) for that
 /// hit, and the second tick after it refills it (the hold is TAE ChrActionFlag 71, which no Sekiro anim
 /// has). While it holds, `combat::damage_motion_level` takes them.
 /// The worn stateInfo-155 rows add their changeSuperArmorPoint to the max (`bonus`,
-/// FUN_140bdb690 <decomp ref>: the sum kept at +0x24, a rise also added to the pool at
+/// FUN_140bdb690: the sum kept at +0x24, a rise also added to the pool at
 /// once): the headless Ape's 3510991 +120, "revived Kensei" 3540110 +200 (no source puts it on
 /// anyone: no TAE, NpcParam, EMEVD, AI or exe reference; likely unused), the
 /// "SA up" 2090 +40.
@@ -71,7 +71,7 @@ impl SuperArmor {
     /// The tick, ChrIns vf25 FUN_140a05060 -> FUN_140bdbcb0 -> FUN_140bdb690 (pool = module +0x18)
     /// on the character's hit-stop clock. `reacting`: the action flag that holds a broken pool,
     /// (chr+0x50)+0x50 +0x8c bit 9, set only by TAE ChrActionFlag 71 "SetBool32_0x7C_9"
-    /// (FUN_140b51b70 case 0x47, <decomp ref>); `instant`: a worn stateInfo-331 SpEffect skips the
+    /// (FUN_140b51b70 case 0x47); `instant`: a worn stateInfo-331 SpEffect skips the
     /// wait (FUN_140bfdb20). `bonus`: the worn stateInfo-155 rows' changeSuperArmorPoint sum.
     /// - The bonus: kept while |bonus| >= 2^-23, a rise added to the pool at once.
     /// - Not broken as of the last tick (+0x21): a running timer (>= 0) counts down and the pool
@@ -208,7 +208,7 @@ pub struct Actor {
     /// hold); None before the first advance. The exe runs posture regen (FUN_140a04850), status
     /// recovery (FUN_140bda460) and the SpEffect timers (FUN_140a02a10 -> FUN_140c06b70) on the
     /// per-character FD4Time chr+0x100 whose float chr+0x108 FUN_1409f78a0 writes from
-    /// HitStop+0x18 (<decomp ref>); only the fall / Havok take the raw dt (round 64).
+    /// HitStop+0x18; only the fall / Havok take the raw dt (round 64).
     pub clock_dt: Option<f32>,
     /// The exe's update level (WorldChrMan "omission update", FUN_140a4e8e0 sets chr+0x110):
     /// the character updates once every `lod` ticks with `lod` ticks' time (FUN_140a4db20:
@@ -1010,7 +1010,7 @@ pub fn advance(time: Res<Time>, combat: Res<Combat>, mut q: Query<(&mut Actor, &
             }
         }
         // The blend-in weight. Havok's blending transition (hkbBlendingTransitionEffectUtils::
-        // generateInternal FUN_14140cfc0 -> FUN_1413bf6c0, <decomp ref>) mixes the world-from-model
+        // generateInternal FUN_14140cfc0 -> FUN_1413bf6c0) mixes the world-from-model
         // too: from x (1 - w) + to x w over the clip's TAE Blend, w the smoothstep 3t^2 - 2t^3
         // (FUN_141408650, curve 0 on every c0000.hkx effect), the from generator still running.
         // TaeBlend_NoSrcMotion effects (Havok flag 1) take the to generator's at once (play()).
@@ -1188,7 +1188,7 @@ pub fn advance(time: Res<Time>, combat: Res<Combat>, mut q: Query<(&mut Actor, &
 /// The vertical fall step. Gravity and landing are handled by the owner (player.rs,
 /// data::FALL_TYPES). It runs on the RAW dt, hit stop or not, as the owner's gravity does: the exe
 /// gives the fall module FUN_140bac120 and the Havok step the unscaled time (FUN_1407e1e20,
-/// <decomp ref>). Round 58: before, the position took the hit-stop clock while vel_y kept
+///). Round 58: before, the position took the hit-stop clock while vel_y kept
 /// building on real time, so an air hit's arc came out lower and shorter.
 fn fall(a: &mut Actor, tf: &mut Transform, dt: f32) {
     if a.airborne {
@@ -1263,7 +1263,7 @@ pub(crate) fn run_sp_effect_chains(data: &crate::data::CharData, a: &mut Actor, 
         kept.push((id, secs));
     }
     // A lasting row whose invocationConditionsStateChange gate fails waits (stays on, inactive)
-    // or, with isWaitModeDelete, is deleted then (FUN_140c04090, <decomp ref>). The
+    // or, with isWaitModeDelete, is deleted then (FUN_140c04090). The
     // whistle's madness 230515 / 230516 (gate 959) is one: it lasts while the beast wears its
     // NpcParam resident 230500 (959), i.e. until it dies, and goes if that is cleared.
     let states: Vec<i64> = a.resident.iter().chain(kept.iter().map(|c| &c.0)).chain(now.iter()).filter_map(|id| crate::data::sp_cycle(*id)).map(|c| c.state_info).filter(|s| *s > 0).collect();
@@ -1294,7 +1294,7 @@ pub fn hold_posture_range(a: &mut Actor, ty: i64) {
     }
 }
 
-/// Posture recovery, as in the exe's ChrIns update (FUN_140a04850, <decomp ref>; checked
+/// Posture recovery, as in the exe's ChrIns update (FUN_140a04850; checked
 /// frame by frame in tools/emu-cases `damage_regen`, test posture_regen_matches_the_exe):
 ///   points/s = (int)(speed x (base x TAE 225 % / 100 x level multiplier x ratio(type) / 100))
 ///   (`regen_frame`), then this frame's whole points of carry + points/s x dt go in and the
@@ -1409,7 +1409,7 @@ pub fn regen_frame(base: f32, speed: f32, tae_pct: f32, ratio: Option<f32>, dt: 
 /// chr.f[0x10d0], the equip-load class (see `regen_posture`): 1.0 for every character.
 const EQUIP_LOAD_RATE: f32 = 1.0;
 
-/// The posture (stamina) limits of a StaminaControlParam type (exe FUN_140bd4e20, <decomp ref>):
+/// The posture (stamina) limits of a StaminaControlParam type (exe FUN_140bd4e20):
 /// staminaMaxRatio / staminaMinRatio (FUN_1410cf390 row +4 / FUN_1410cf4b0 +6) percent of `max`,
 /// cut to whole points; the setter keeps the remaining posture inside them while TAE 960 sets the
 /// type. Row 1000000-1000200: type 5 (the break anims, a000_008300 0-2.5 s) holds it at 0, type 6

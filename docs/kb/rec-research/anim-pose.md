@@ -10,7 +10,7 @@ Static only (decomp + vtable reads); not checked live.
   T+0x100 = id of the last SetAnim (FUN_140b5c0f0), hence face anims interleave there.
 - Active hkb clips (the real blend layers): W = [B+0x10], H = [W+0x28] hkbCharacter, G = [H+0x98] hkbBehaviorGraph,
   AN = [G+0xE0] hkArray<hkbNodeInfo*> ([AN] data, i32 [AN+8] count). nodeInfo+8 node, nodeInfo+0x3E bit 1 active;
-  node+0x53 == 4 = clip generator (dev debug display <decomp ref>). Clip: +0x98 name (hkStringPtr, low bit tag),
+  node+0x53 == 4 = clip generator (dev debug display). Clip: +0x98 name (hkStringPtr, low bit tag),
   +0xC6 i16 binding index (anim id = entry idx of R), +0x140 f32 localTime s, +0x144 accumulated, +0xC0 user time
   fraction, +0xC4 mode, +0x150 atEnd, +0x152 pingPong, +0x100..0x12F extracted motion (root motion) of this update.
   Control [clip+0xD8] hkaDefaultAnimationControl: +0x18 localTime, +0x1C masterWeight, +0x64 playbackSpeed.

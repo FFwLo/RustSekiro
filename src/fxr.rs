@@ -1919,7 +1919,7 @@ fn collect(
                     let _ = off;
                     let rz = (scalar(a, "rotationZ", 0.0, &mut rnd, 0.0) + scalar(a, "angularSpeedZ", p.age, &mut rnd, 0.0) * scalar(a, "angularSpeedMultiplierZ", p.age, &mut rnd, 1.0) * p.age).to_radians();
                     // Orientation, the exe's billboard builder (FUN_140440a60, the switch at
-                    // <decomp ref>; 600's twin <decomp ref>): 1 the camera's rows; 2 the node's
+                    //'s tw): 1 the camera's rows; 2 the node's
                     // rotation; 4 the camera's rows with the up row a constant (world up);
                     // 6 a look-at from the camera to the particle, rolled to world up; 7 a cylinder
                     // about the particle's own vector (pfVar10[2..4], node space, turned by the node:

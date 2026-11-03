@@ -354,7 +354,7 @@ const HP_BAR_VW: f32 = 9.5;
 const HP_BAR_BASE: f32 = 320.0;
 
 /// MenuParam SpMinimumDispTime (0.5, extracted/json/params/MenuParam.json; row offset 0xb4, read
-/// at exe <decomp ref>): the least time the posture gauge stays up once its damage is gone.
+/// at exe): the least time the posture gauge stays up once its damage is gone.
 const SP_MIN_DISP_TIME: f32 = 0.5;
 
 /// The posture gauge's state (exe FUN_140a02a10 -> chr+0x1a40): 0 normal, 1 about to break (at
@@ -427,7 +427,7 @@ fn update_player_hud(
             bg.color = posture_tint(pf);
         }
     }
-    // The gauge stays SP_MIN_DISP_TIME after the posture is back to 0 (exe <decomp ref>).
+    // The gauge stays SP_MIN_DISP_TIME after the posture is back to 0 (exe).
     *posture_hold = if pf > 0.005 { SP_MIN_DISP_TIME } else { (*posture_hold - time.delta_secs()).max(0.0) };
     for (r, mut v) in &mut root {
         if r.0 == Side::Player {

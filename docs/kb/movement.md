@@ -20,7 +20,7 @@ Dated findings, oldest first. Append new entries at the end.
   accelerating only up to stickMax - |v|. So a fast launch is steered and braked by the stick but never pushed
   faster; the separate capped stick velocity model is gone (Actor.air_stick removed).
 - 2026-10-07 WOLF: turning from the exe. TAE 224 SetTurnSpeed handler FUN_140b574b0 writes the action module +0x308
-  (reset to -1 each frame, FUN at <decomp ref>); IsLockOnCheck events only apply while locked on (chr+0x1070) - now
+  (reset to -1 each frame, FUN); IsLockOnCheck events only apply while locked on (chr+0x1070) - now
   honoured. FUN_1407daa20 picks the turn rate: TAE +0x308 when >= 0, else module(0xb8)+0x16c when >= 0, else the turn
   controller default +0x28 = 720 deg/s (FUN_1407da540). Config turn_speed 720 is therefore exe-confirmed (gap closed).
   Posture after an unused deathblow: not in the collapse TAE (only SpEffects 220420/5359/220500) or HKS; env(1001) /
@@ -160,7 +160,7 @@ end). See HANDOFF 4.63 item 8.
   mashed_air_kicks_kick_once_per_jump (a plain jump allowed only one kick already: jump start's
   119 opens at 0.1 s, the jump lands before AirKick's 0.7 s). gap: the additive clip; where the
   reported repeated kicks came from (off an enemy's head?) not reproduced.
-- 2026-10-15 LIVE auto-test (Sekiro via me3 `<work>\me3\sekiro-research.me3`, keys sent by
+- 2026-10-15 LIVE auto-test (Sekiro via me3 a local me3 profile, keys sent by
   scratchpad sk_input.py (SendInput scan codes reach DirectInput), memscope script move_log.lua: TimeAct
   +0x100 anim, physics +0x80 pos / +0x74 yaw). A pre hook on FUN_1407dab40 ran 335 calls, no crash.
   - Run a000_000400: 0 -> 6.4 m/s in 0.35 s, then 4.65-6.4 (the dips are real, as in Sv1).
@@ -435,8 +435,8 @@ vertical jump); the void fall (FallDeadReturn) cost.
 - Sv1: `map::fall_death_dist` (HitMtrlParam, disableFallDamage rows = no death), landing in player.rs: fatal drop -> `LandDeadReturnStart` (a000_200909, HKS DAMAGE_TYPE_LAND_DEAD_RETURN) -> back at the oldest of `Player::safe_ring` (the last 5 grounded ticks on dry ground, as the exe's ring: FUN_140a75f00 pushes every grounded frame, CSFallDeadStep::STEP_WarpPlayer FUN_1411d70e0 takes the oldest via FUN_140a71020; a ledge only grazed on the way down is not the return point, #201; a spot enters only over a walkable floor within 0.25 m of the feet, `player::safe_spot`, as the exe's FUN_140a00b40 gate (ground contact, no slide flag, a map hit under the feet), so resting against a too-steep face below a cliff is no return point; gap: MSB Collision UnkT17); falling 40 m with no ground below -> `FallDeadReturnStart` (a000_199120). Test `a_forty_metre_fall_returns_wolf_to_safe_ground`. The three states were added to tools/sekiro-extract/export_states.txt (re-export needed).
 - 2026-10-22 non-lethal fall damage and the fall height:
   - The fall height is the last ground's Y minus Y now, not the flight's top: P+0x850 (Y +0x854) is
-    copied only on a grounded update with no TAE 920 velocity change (<decomp ref>), and a warp
-    sets it (<decomp ref>). `Player::air_top` is that, set at the top of player.rs decide on every
+    copied only on a grounded update with no TAE 920 velocity change, and a warp
+    sets it. `Player::air_top` is that, set at the top of player.rs decide on every
     grounded tick. A jump off flat ground reads 0; a ledge reads its own height.
   - Landing short of the kill: maxHP x `terrain::fall_damage_share` (FUN_140843660): 0 under 20 m,
     CalcCorrectGraph 210 (identity 20-100) x 0.01, graphs 211 / 212 a flat 100 %, x HitMtrlParam

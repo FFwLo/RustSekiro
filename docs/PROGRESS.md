@@ -88,10 +88,7 @@ sekiro-extract export extracted                         # -> extracted/combat_da
 ```
 - HKS decompiled with DSLuaDecompiler (tools/DSLuaDecompiler, built from source, net10.0) -> extracted/hks_src.
 - Export list: tools/sekiro-extract/export_states.txt (behavior state names / anim keys).
-- Exe research: tools/ghidra.ps1 (DecompileRefs: fn/ref/callers/callees/range/orq) for targeted reads;
-  tools/decompile_all.ps1 (DecompileAll, resumable) dumps every function to extracted/decomp/<addr>>16>.c
-  (`// @ <entry>` before each). Search it with rg, or index with gamedb (tools/gamedb, github.com/smileybaal/gamedb):
-  older targeted dumps live in extracted/decomp_notes. `gamedb index -r extracted/decomp`, then `gamedb graph -r extracted/decomp FUN_xxx --direction callers`.
+- Exe research is done with your own reverse-engineering setup (none ships here); cite functions by address.
 
 ## Established from data (implemented)
 - TAE times are seconds on a 30 fps grid; clip playback speed is 1.0 for all 2566 player clips.
@@ -119,7 +116,7 @@ sekiro-extract export extracted                         # -> extracted/combat_da
 9. (done) Stick-vs-launch velocity mixing in the air (FUN_140bac120, log 2026-10-07).
 
 ## Ghidra notes
-Ghidra 12.1.4 at <home>\Desktop\ghidra_12.1.4_PUBLIC. sekiro.exe is Arxan-protected; work from a
+Ghidra 12.1.4. sekiro.exe is Arxan-protected; work from a
 dump of the running process plus community symbol names (souls modding wiki / Discord).
 
 ## Quick tools (use these instead of ad-hoc snippets; output is compact)
@@ -148,10 +145,6 @@ matching topic file, and one line to Recent below (keep the last 15).
 - [kb/enemy.md](kb/enemy.md) - Enemies: real Lua AI, NpcParam, c1020/c1010, enemy reactions, stealth (9 entries)
 - [kb/visuals.md](kb/visuals.md) - Models, textures, animation playback, blending, behaviour graph, lighting (12 entries)
 - [kb/sound.md](kb/sound.md) - Sound: FSB/FMOD decoding, sound events (4 entries)
-- [kb/tools-exe.md](kb/tools-exe.md) - Extractor, Ghidra/decompile, gamedb, RTTI, exe unpacking (9 entries)
-- [kb/next.md](kb/next.md) - NEXT list history and open items
-- [kb/log-archive.md](kb/log-archive.md) - the full pre-split log (grep it, don't read it whole)
-- [HANDOFF_PLAN.md](HANDOFF_PLAN.md) - task packets for helper models
 
 ## Recent
 - 2026-11-03 one frame's order checked in the exe (animstart: the HKS decides inside the behaviour step after the clip's TAE update, a pressed clip's first window is the next frame, the hit step runs before the chr frames): Sv1's decide reads the frame before's buttons, resolve runs before advance and its reactions start the tick after; the Loaded Axe release and payment now on the exe's frames 49 / 74 (were 48 / 73); 15 sim tests moved a tick with the exe's evidence (kb/frame-coverage.md "One frame's order").

@@ -141,7 +141,7 @@ the same pass. RSekiro: `tick_effects` sends a build-up replace through `build_u
   changeHpEstusFlaskRate / changeHpEstusFlaskPoint, a heal's estus rate times the worn
   changeHpEstusFlaskCorrectRate product and held within +-100 % per row (a heal's HP rate times
   hpRecoverRate). Pellet 3021 +50 (1120 x 4.5 %), ohagi 3061 +117, both on one tick +168.
-- Posture (FUN_140bfe2c0, applied at <decomp ref>): (int)(max x sum(changeStaminaRate) x 0.01 +
+- Posture (FUN_140bfe2c0, applied): (int)(max x sum(changeStaminaRate) x 0.01 +
   sum(changeStaminaPoint)) onto the posture left: persimmon 3071 +42, ohagi 3062 +84 (posture
   set to 100 first), aging 9620 -420 at once. RSekiro's posture is damage, so it is subtracted;
   aging's drain moved from `set_aging` into this path.

@@ -123,7 +123,7 @@ on the way (each was the harness, not enemy.rs):
   W_ThrowRelease<ThrowID>. env 273 follows the throw's state byte (case 0x111 ->
   FUN_140bdfb20): atkAnimId / defAnimId, and once escaped atkAnimId + 2 / defAnimId + 3, which
   sets ThrowID to the zombie's 4122 (its graph has W_ThrowRelease4122, not 4120).
-- IsExistAnime (case 0x45a, <decomp ref>): the exe tries the id plus each anim offset first
+- IsExistAnime (case 0x45a): the exe tries the id plus each anim offset first
   (FUN_140988510, animmgr +0x60..0x6c), then the raw id, so an a100 enemy's IsExistAnime(4120)
   is its a100_004120. gap: what fills the other offset slots.
 
@@ -166,7 +166,7 @@ shows its idle name. Not fighters.
 ## 2026-10-20 Hit answers in the exe (env 202, 236, 237, 222, 3032, 3056-3057, 3018-3019, 256)
 
 All read the chr's action-flag module D = *(ChrIns+0x1ff8) (env switch FUN_140b36410, 140b3.c);
-FUN_140b27c20 (<decomp ref>) resets them each frame before the script runs (D5c = 99999, the
+FUN_140b27c20 resets them each frame before the script runs (D5c = 99999, the
 directions -1; ordering inferred). Static research, not traced live.
 - 202 = D5c. Defender (FUN_140b6bd40, 140b6.c ~6480-6590), first match: dead in the air 9, dead
   2, rec+0x48 0x3f 1002; guard break 1001; guarded 3 (1028 GUARDATTACKER_STAMZERO when the

@@ -251,7 +251,7 @@ pub(crate) fn apply_knockback(combat: &Combat, da: &mut Actor, from: Vec3, at: V
     dist * cut / 100.0
 }
 
-/// FUN_140b6bfe0 (<decomp ref>): with an attacker, the push distance is times f * f, f the dot
+/// FUN_140b6bfe0: with an attacker, the push distance is times f * f, f the dot
 /// of the normalised knockback direction and the attacker's forward axis (FUN_1409eeb40 ->
 /// FUN_1407dcc90, its orientation's forward column), but 0.4 when f < 0 or f * f < 0.4: range
 /// [0.4, 1]. The leftover handed to the attacker is taken from the scaled distance too.
@@ -404,7 +404,7 @@ fn player_guard_state(combat: &Combat, deflect: bool, level: i64, dir: &str, var
 /// (rec_c1010_20261009) fires 980. The data's thrust marker, SpEffect 104000 "critical symbol,
 /// piercing" in AtkParam spEffectId4, is on 99 rows, all within this rule (the c1220 / c1470
 /// trackType-6 kicks among them). gap: the exe's acceptance test (flag 125 against the hit) is
-/// not found; <decomp ref> is the throw-on-hit pairing, not a Mikiri gate.
+/// not found; is the throw-on-hit pairing, not a Mikiri gate.
 /// A hit's SpEffects with the attacker's attack-occurrence one (data::atk_occurrence): the ids
 /// that land on the defender join the AtkParam's; one aimed at the attacker (white-blood
 /// 106065, changeHpRate -10) heals him.
@@ -437,7 +437,7 @@ pub(crate) fn counter_dummy(atk: &Attack) -> bool {
 }
 
 /// Is the defender in a TAE 954 IFrames window that covers this attack? 954 IFrameType n sets
-/// bit n (<decomp ref> -> FUN_140b29cb0) and the hit test FUN_140b68a50 (<decomp ref>)
+/// bit n ( -> FUN_140b29cb0) and the hit test FUN_140b68a50
 /// skips a hit whose AtkParam trackType (+0x193) bit is set: Wolf's steps are 7 / 2 (+6 sideways
 /// and back), his jump 1 (sweeps). Round 31: it judged by stand-ins (type 2 = everything, 6 =
 /// atkType 2, 7 = throwFlag, 1 = a 980 warning). A bullet (`_att` None) by its AtkParam's trackType.
@@ -553,9 +553,9 @@ pub(crate) fn player_amounts(atk: &Attack, w: &serde_json::Value) -> [f32; 5] {
 }
 
 /// The HP a hit takes, whole points as the exe stores them: FUN_140840eb0 lifts a positive
-/// element sum under 1 to 1 (ceilf, <decomp ref>), the later rates (`after`: the armour part's
+/// element sum under 1 to 1 (ceilf), the later rates (`after`: the armour part's
 /// 0.35, FUN_1406dba10 / the damage-level rate +0x210) multiply it, and FUN_140b6c880 keeps
-/// (int) of the result (param_3[0x78], <decomp ref>). Checked in tools/emu-cases
+/// (int) of the result (param_3[0x78]). Checked in tools/emu-cases
 /// `damage_hp` (test hit_hp_matches_the_exe). The element sum is Sv1's (attack x the defender's
 /// cuts): every defence of the snapshot's 90 characters is 0, where the attack / defence curve
 /// FUN_140840ce0 gives the attack back.
@@ -1795,7 +1795,7 @@ fn resolve(
     let wolf_skills: Vec<i64> = skill_sp_ids(&combat, &config).collect();
     // Wolf's spot: a posture break faces him (front / back collapse), whichever pair sees it.
     let wolf_at = q.iter().find(|x| x.1.side == Side::Player).map(|x| x.2.translation);
-    // AtkParam AppearAiSoundId: once per attack issued (FUN_1409a1290, <decomp ref>), at the
+    // AtkParam AppearAiSoundId: once per attack issued (FUN_1409a1290), at the
     // attacker: here each AttackBehavior window that opens this tick. gap: a bullet's own attack
     // record (its Appear sound) is not emitted.
     if let Some(s) = ai_sounds.as_mut() {
@@ -1955,7 +1955,7 @@ fn resolve(
                 aa.hits_done.push((def_e, judge, start));
                 aa.attack_hit = true;
                 // AtkParam HitAiSoundId: once per target the attack lands on, guarded or not
-                // (FUN_1409e68e0 after the damage call, <decomp ref>), at the hit (the defender here).
+                // (FUN_1409e68e0 after the damage call), at the hit (the defender here).
                 if let Some(s) = ai_sounds.as_mut() {
                     let pc = aa.side == Side::Player;
                     let hit = crate::data::atk_ai_sounds(pc, atk.atk_param_id).1;
@@ -2500,7 +2500,7 @@ fn resolve(
                     }
                     Outcome::Hit => {
                         // The super-armour drain comes first: the hit that empties the pool already
-                        // meets it broken (gap: the order of <decomp ref> against the dmgLv pick
+                        // meets it broken (gap: the order of that check against the dmgLv pick
                         // is not traced).
                         if da.side == Side::Enemy && super_armor_hit(da, de.as_ref().map_or(&[][..], |e| &e.clash[..]), aa.side == Side::Player, atk.atk_param_id) {
                             log.push("SUPER ARMOUR BROKEN", Color::srgb(1.0, 0.6, 0.2));
@@ -2583,7 +2583,7 @@ fn resolve(
                         }
                         let pd = aa.stam_atk_rate * if atk.direct_atk_stam_damage > 0.0 { atk.direct_atk_stam_damage } else { atk.atk_stam };
                         let def_rate = def_stamina_rate(&combat, da, atk.stamina_physics_attribute) * armor_posture * ghost_posture;
-                        // (int) like the exe's FUN_1408439a0 return (<decomp ref>) and the guard paths.
+                        // (int) like the exe's FUN_1408439a0 return and the guard paths.
                         da.add_posture((pd * def_rate).floor());
                         match da.side {
                             Side::Player => {
@@ -2985,7 +2985,7 @@ mod tests {
 pub(crate) fn resolve_throws(combat: Res<Combat>, mut log: Option<ResMut<CombatLog>>, mut q: Query<&mut Actor>, mut was: Local<Option<(String, f32, usize)>>) {
     // Wolf escaped the grab (player.rs: ThrowEscape on the grabber's flag-70 pulse): the grabber
     // lets go. c9997 ThrowAtkCommonFunction: env 275 (its own flag 70 + throw state 3/4,
-    // FUN_140b39e40 <decomp ref>) -> W_ThrowRelease<ThrowID> (c1500: ThrowRelease4112 / 4122,
+    // FUN_140b39e40) -> W_ThrowRelease<ThrowID> (c1500: ThrowRelease4112 / 4122,
     // the grab + 2). gap: one frame late when the player system runs after this one.
     if q.iter().any(|a| a.side == Side::Player && a.state == "ThrowEscape") {
         for mut a in &mut q {

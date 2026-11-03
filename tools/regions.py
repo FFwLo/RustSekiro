@@ -3,7 +3,7 @@
 {map: {entity id: {shape, pos, yaw, size, name}}} in map space, the shapes as tools/patrols.py
 reads them (0 point, 1 circle, 2 sphere, 3 cylinder, 4 rectangle, 5 box). The AI's
 IsInsideTargetRegion / SetEventMoveTarget look a region up by its entity id alone
-(FUN_1406d35d0, a tree keyed by the id; 1406d.c:2135): an id no MSB has is never inside.
+(FUN_1406d35d0, a tree keyed by the id): an id no MSB has is never inside.
 Usage: python tools/regions.py
 """
 import glob

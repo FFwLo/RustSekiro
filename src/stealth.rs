@@ -380,7 +380,7 @@ impl Targeting {
     }
 
     /// An AI sound reached the enemy: a sound target at its source (SoundTargetForgetTime).
-    /// A held sound of a higher rank is kept: the exe listener (<decomp ref>) takes rank 0
+    /// A held sound of a higher rank is kept: the exe listener takes rank 0
     /// sounds only with no sound target or one of rank < 1, rank 1 only under rank 2, so Wolf's
     /// footsteps (rank 0) do not overwrite a guard break's IMPORTANT sound 5000 (round 25).
     pub fn hear(&mut self, think: &Value, pos: Vec3, id: i64, rank: i64) {

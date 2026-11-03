@@ -7,12 +7,12 @@ intro and is kept; everything below it is regenerated.
 
 Inputs (read only):
   - the repo this script sits in: src/ (code, sim tests), docs/kb/ (notes);
-  - $SHINOBI_ROOT/extracted (default <repo>): chr/, model_c*.bin,
+  - $SHINOBI_ROOT/extracted (default: this repo): chr/, model_c*.bin,
     anim_c*.bin, hks_src/, script/*.luabnd.d (AI bytecode), ai_src/ (decompiled AI),
     enemies/ (roster, npc_names, boss_scripts), map_boss_arenas.json, json/params/NpcThinkParam,
     ref_frames/, emu/, event/ + map/mapstudio/ (boss vs mini-boss health bars, via
     tools/boss_events.py and tools/boss_scripts.py);
-  - $SHINOBI_REC_DIR (default <work>/memscope-data/logs): the live recordings of the
+  - $SHINOBI_REC_DIR (default $SHINOBI_ROOT/recordings): the live recordings of the
     real game (manifest.json), replay_all.md, enemies_all.md, enemies_pressure.md, the
     enemy_ours_c<row>.csv and pressure/ours_c<chr>_<row>.csv replays. Missing: shown as "?".
 
@@ -27,9 +27,9 @@ import sys
 import time
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SHINOBI_ROOT = os.environ.get('SHINOBI_ROOT', '<repo>')
+SHINOBI_ROOT = os.environ.get('SHINOBI_ROOT', REPO)
 EX = os.path.join(SHINOBI_ROOT, 'extracted')
-REC = os.environ.get('SHINOBI_REC_DIR', '<work>/memscope-data/logs')
+REC = os.environ.get('SHINOBI_REC_DIR', os.path.join(SHINOBI_ROOT, 'recordings'))
 OUT = os.path.join(REPO, 'docs', 'kb', 'coverage.md')
 MARKER = '<!-- Generated below by tools/coverage.py: edit the intro above, not the tables. -->'
 

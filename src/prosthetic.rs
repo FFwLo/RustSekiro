@@ -498,8 +498,8 @@ fn fly_bullets(
                 if let Some(m) = msg.filter(|m| m.starts_with("hit") || m.contains("blocks")) {
                     let mut sps: Vec<i64> = [b.spec.sp_effect_id0, b.spec.sp_effect_id1, b.spec.sp_effect_id2, b.spec.sp_effect_id3, b.spec.sp_effect_id4].to_vec();
                     // Only the Bullet row's: FUN_1410b7910 fills a bullet hit's slots 0-4 from
-                    // BulletParam +0x6c (FUN_1410b6880, <decomp ref>); the AtkParam's +0x20 ids
-                    // are read on melee hits only (<decomp ref>), as enemy_bullet.rs (R36 C).
+                    // BulletParam +0x6c (FUN_1410b6880); the AtkParam's +0x20 ids
+                    // are read on melee hits only, as enemy_bullet.rs (R36 C).
                     sps.extend(&occurrence);
                     let lines = statuses.hit(&combat, ee, &da, &sps, m.contains("blocks"));
                     // c9997 ExecDamage runs ExecDebuffReaction before ExecGuardBlock, and

@@ -23,7 +23,8 @@ from collections import defaultdict, deque
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
-DSEKIRO = Path(os.environ.get('DSEKIRO', r'<dsekiro>'))
+# A DSekiro checkout (its data/ and image/sekiro.exe): set DSEKIRO.
+DSEKIRO = Path(os.environ.get('DSEKIRO') or sys.exit('set DSEKIRO to a DSekiro checkout'))
 BASE = 0x140000000
 
 

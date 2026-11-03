@@ -55,13 +55,13 @@ pub fn hit_sfx(combat: &crate::data::Combat, atk: &crate::data::Attack, kind: Ki
 }
 
 /// `hit_sfx` with each effect's turn: the spark spawn (hit handler FUN_140888960 -> FXHGSfxCtrl
-/// FUN_140929dd0 -> FUN_14092b6c0, <decomp ref>) looks the HitEffectSfxParam row up in
+/// FUN_140929dd0 -> FUN_14092b6c0) looks the HitEffectSfxParam row up in
 /// HitEffectSfxAngleParam. Where that row exists, Euler(X, Y, Z) of the attack's atkDir_forSfx
 /// (1 Upper, 2 Bottom, 3 Left, 4 Right; else 0, 0, 0; degrees, FUN_1406cd620) **replaces** the
 /// look-at rotation as an absolute world rotation; only the position is kept. The event path
 /// FUN_140b63fe0 (character-relative) is the hit-sound dispatcher, not this. atkDir<Dir> swaps
 /// the row (210 -> 211, which does not exist: look-at). FUN_1406cd620 -> FUN_1401b9820
-/// (<decomp ref>) is DirectXMath XMMatrixRotationRollPitchYaw(X, Y, Z): row-vector
+/// is DirectXMath XMMatrixRotationRollPitchYaw(X, Y, Z): row-vector
 /// Rz Rx Ry (Z first), i.e. Qy Qx Qz, which is fxr::game_rot (its Y / Z negated for the X mirror).
 pub fn hit_sfx_turned(combat: &crate::data::Combat, atk: &crate::data::Attack, kind: Kind, def_materials: [i64; 2]) -> Vec<(i64, Option<Quat>)> {
     let turn = |row: i64| -> Option<Quat> {

@@ -126,7 +126,7 @@ pub struct Enemy {
     pub ninsatsu: (u32, u32),
     /// Deathblows taken whose hit has not landed yet: the exe lowers the count (chr module
     /// +0x25c) only when the throw's atkAttribute 5 (Ninsatsu) hit is applied (FUN_140b6e6a0,
-    /// <decomp ref>; Wolf's ThrowAttackBehavior judge 800, a211_511700 at 1.23 s), not at the
+    ///; Wolf's ThrowAttackBehavior judge 800, a211_511700 at 1.23 s), not at the
     /// throw's start. Until then the AI, the map scripts (4[37]) and the phase rules see it.
     pub(crate) ninsatsu_unhit: u32,
     /// Deathblows whose Ninsatsu hit has landed: drops.rs draws the NpcParam
@@ -256,7 +256,7 @@ const STATE_INFO_ANIM_OFFSET: std::ops::RangeInclusive<i64> = 270..=274;
 
 /// The anim set (0-4 = a000-a400) the last of these SpEffects picks, if any is an offset one.
 /// Puts a lasting (effectEndurance -1) SpEffect on an enemy as the exe's add does
-/// (FUN_140c02c50, <decomp ref>; match FUN_140c02000 / FUN_140c05a80, accept FUN_140c064c0,
+/// (FUN_140c02c50; match FUN_140c02000 / FUN_140c05a80, accept FUN_140c064c0,
 /// deletes FUN_140c05c10). Lower categoryPriority wins.
 ///   - spCategory 100: overwrites a row of the same category and priority (the AI states
 ///     200000 / 200001 at 1, the anim sets 200030-200034 at 3).
@@ -425,8 +425,8 @@ impl Enemy {
         matches!(self.mode, Mode::Dead(_))
     }
 
-    /// Exe SetHP (FUN_140bd64e0, <decomp ref>) holds HP at 1 while IsNoDead
-    /// (FUN_140bd5df0, <decomp ref>): deathblows left (NpcParam ninsatuNum > 0) or an active
+    /// Exe SetHP (FUN_140bd64e0) holds HP at 1 while IsNoDead
+    /// (FUN_140bd5df0): deathblows left (NpcParam ninsatuNum > 0) or an active
     /// stateInfo 143 SpEffect (5830 / 5831 / 220030-220032 / 3137015); else 0 HP is death (c9997
     /// IsDead, 966-977). The TAE ChrActionFlag 96 bit is `tae_no_dead`. gap: the debug bits and
     /// EMEVD 2004[12] on an enemy (hpmod +0x228 bit 0, inferred) are taken as off.
@@ -445,7 +445,7 @@ impl Enemy {
     }
 
     /// IsNoDead's TAE input (re-scout): ChrActionFlag 96 "Set Immortality" sets ActionCtrl +0x90
-    /// bit 1 (FUN_140b51b70 case 0x60, <decomp ref>), cleared every frame (FUN_1407d8ce0), so it
+    /// bit 1 (FUN_140b51b70 case 0x60), cleared every frame (FUN_1407d8ce0), so it
     /// holds while the event is on: c1500's a000_020000-020002 and c1360's a000_020000 / 021000
     /// (from frame 0, about 3-4 s). HP then stays at 1 (SetHP FUN_140bd64e0).
     pub(crate) fn tae_no_dead(a: &Actor, combat: &Combat) -> bool {
@@ -944,12 +944,12 @@ pub(crate) struct Brains {
     pub(crate) search_ring: stealth::SearchRing,
 }
 
-/// The exe's team-order update (FUN_140640b80 -> FUN_140640050, <decomp ref> / 207-528): every
-/// 0.1 s (tunable DAT_143afb998's registered default, <decomp ref>) the chrs on one target,
+/// The exe's team-order update (FUN_140640b80 -> FUN_140640050): every
+/// 0.1 s (tunable DAT_143afb998's registered default) the chrs on one target,
 /// nearest (3D) first, are ROLE_TYPE_Attack (0.0) for the first DAT_143afb990, Torimaki (1.0,
 /// surround) for the next DAT_143afb994, Kankyaku (2.0, spectate) for the rest; one without a
 /// target is ROLE_TYPE_None (-1.0). The counts are the tunables' registered defaults (1 / 1,
-/// <decomp ref>); gap: no shipped value overriding them was found, and the weighted mode
+///); gap: no shipped value overriding them was found, and the weighted mode
 /// (DAT_143afb99c, NpcThinkParam TeamAttackEffectivity?) is off by default and not modelled.
 pub(crate) const TEAM_ORDER_INTERVAL: f32 = 0.1;
 const TEAM_ATTACKERS: usize = 1;
@@ -1565,7 +1565,7 @@ impl WakeRegion {
         let (lx, ly, lz) = (d.dot(self.x), d.y, d.dot(self.z));
         let s = |i: usize| self.size.get(i).copied().unwrap_or(0.0);
         match self.shape {
-            // Strict radius tests, as FUN_1409825b0 / FUN_140983380 (<decomp ref> / ~2372).
+            // Strict radius tests, as FUN_1409825b0 / FUN_140983380 ( / ~2372).
             1 => lx * lx + lz * lz < s(0) * s(0),
             2 => d.length_squared() < s(0) * s(0),
             3 => lx * lx + lz * lz < s(0) * s(0) && (0.0..=s(1)).contains(&ly),
@@ -1606,7 +1606,7 @@ fn ai_hold(
         };
         // 4[1] IF Character Damaged By Wolf / 3[23] IF Damage Type: the event's damage record is
         // written only for a hit whose final HP damage is > 0 (FUN_1406d8950 from FUN_140b6e150,
-        // <decomp ref>; read by the EMEVD conditions at DAT_143d56058 +0x38): a guarded or
+        //; read by the EMEVD conditions at DAT_143d56058 +0x38): a guarded or
         // deflected hit with its HP fully cut leaves it held. Ours: HP lost since the last check
         // and a reaction Wolf caused (react_from) since then.
         let hurt = e.hurt_by_wolf && e.hp_last.is_some_and(|h| a.hp < h);
@@ -1736,7 +1736,7 @@ pub fn map_regions() -> Option<std::sync::Arc<HashMap<i64, WakeRegion>>> {
 /// Every region with an entity id of the exported map `stem`'s MSB (extracted/enemies/
 /// regions.json, tools/regions.py), turned into the arena like `msb_patrol_on`'s regions. The
 /// AI's IsInsideTargetRegion / SetEventMoveTarget look one up by the id alone (FUN_1406d35d0,
-/// <decomp ref>); point regions (shape 0) only give a spot. Cached per map.
+///); point regions (shape 0) only give a spot. Cached per map.
 pub fn map_regions_on(stem: &str) -> Option<std::sync::Arc<HashMap<i64, WakeRegion>>> {
     type Cache = std::sync::Mutex<HashMap<String, Option<std::sync::Arc<HashMap<i64, WakeRegion>>>>>;
     static ALL: std::sync::OnceLock<serde_json::Value> = std::sync::OnceLock::new();
@@ -1841,8 +1841,8 @@ impl Default for AutoRestart {
 pub struct AiFlags(pub HashMap<i64, bool>);
 
 /// AI sounds in the air (exe SprjAiSound entries, manager FUN_14064a5f0): the attacks'
-/// AtkParam AppearAiSoundId (once per attack, at the attacker: FUN_1409a1290, <decomp ref>) and
-/// HitAiSoundId (once per target it lands on, guarded or not: FUN_1409e68e0, <decomp ref>), each
+/// AtkParam AppearAiSoundId (once per attack, at the attacker: FUN_1409a1290) and
+/// HitAiSoundId (once per target it lands on, guarded or not: FUN_1409e68e0), each
 /// for its AiSoundParam lifeFrame. Wolf's TAE 237 sounds stay wolf_sounds. The owner is the
 /// attacker (inferred for Hit: the exe emits through the target's module).
 #[derive(Resource, Default)]
@@ -1860,7 +1860,7 @@ pub struct AiSound {
     /// The record's serial (GetLatestSoundTargetInstanceID), kept when the owner refreshes it.
     pub serial: i64,
     /// The owner NPC's AI is in Battle or Find (think refreshes it each frame): a bCallFriend
-    /// sound is heard only then (FUN_140610470, <decomp ref>). True for Wolf's (no AI).
+    /// sound is heard only then (FUN_140610470). True for Wolf's (no AI).
     pub owner_alert: bool,
     /// The owner's MSB placement groups (`Enemy::placement`, refreshed with owner_alert).
     pub owner_groups: Vec<i64>,
@@ -1921,7 +1921,7 @@ impl AiSounds {
 }
 
 /// Whether listener `me` (team `team`) at `at` hears `s` (exe SprjAiSoundNormalListener,
-/// FUN_140610470, <decomp ref>): the row's selfTarget / opposeTarget / friendlyTarget flag for
+/// FUN_140610470): the row's selfTarget / opposeTarget / friendlyTarget flag for
 /// the owner's relation to it (FUN_140c09760's team matrix, here combat::teams_hostile; Wolf is
 /// hostile to every NPC), then the range as wolf_sounds' (FUN_140610b30: hearing rate x radius
 /// less the cut, within the ear distance). A bCallFriend row is heard only while its NPC owner's
@@ -2904,7 +2904,7 @@ fn think(
         let feet = tf.translation - Vec3::Y * (crate::player::CAPSULE_HALF_HEIGHT + 0.05);
         e.targeting.sound_new = false;
         // The listener's sound pass runs only while the targeting list holds no character target
-        // (exe FUN_140624b70 <decomp ref> -> FUN_1406296e0: no entry of type 1, the chr-handle
+        // (exe FUN_140624b70 -> FUN_1406296e0: no entry of type 1, the chr-handle
         // target of FUN_140629430): an enemy that has Wolf takes no new sounds, so Wolf's own
         // footsteps and swings in a fight raise no ChangeSoundTarget (46), whose common handler
         // (common_table_ai_common.lua:247-267) replans and dropped the guard Goal.Parry had just
@@ -3576,11 +3576,11 @@ pub(crate) fn guard_stance(a: &mut Actor, d: &crate::data::CharData, cmd: &crate
 /// 0.4 s (90) / 0.6 s (180). The AI states pick Default / CautionNoBattle / CautionBattle /
 /// Battle (IndexAiState, ai_suffix); a state without the clip (c1010 has no 2054xx) turns as
 /// before (turnVellocity). The clip's turn is scaled to the asked angle: act(9105, 90 / 180)
-/// (FUN_140b32410 case 0x2391, <decomp ref> -> FUN_1407de170) and act(9104) (the corrected-turn
+/// (FUN_140b32410 case 0x2391 -> FUN_1407de170) and act(9104) (the corrected-turn
 /// flag) make FUN_1407db220 set the root-motion rate to |error| / 90 or 180. TurnAngle is the
 /// AI's desired facing (AI +0x73e4 from the TurnTo target +0x9050, FUN_14060c7d0) minus the
-/// chr's yaw, in degrees, right positive (FUN_140b4c600, <decomp ref>). gaps: the leftover error's
-/// 720 deg/s correction (FUN_1407dab40) and the 0xd branch (<decomp ref>); the General stance
+/// chr's yaw, in degrees, right positive (FUN_140b4c600). gaps: the leftover error's
+/// 720 deg/s correction (FUN_1407dab40) and the 0xd branch; the General stance
 /// turn and the flight / crouch Default rule are not run.
 pub(crate) fn start_turn(e: &Enemy, a: &mut Actor, d: &crate::data::CharData, goal_yaw: f32, emergency: bool) -> bool {
     if ["Turn", "Walk", "Run", "Guard", "GeneralStance", "Ez40106"].iter().any(|s| a.state.starts_with(s)) && !a.state.starts_with("GuardIdle") && !a.state.starts_with("GeneralStanceIdle") {
@@ -3610,7 +3610,7 @@ pub(crate) fn start_turn(e: &Enemy, a: &mut Actor, d: &crate::data::CharData, go
         return false;
     }
     // act(9105, 90 / 180) -> FUN_1407de170: BehaviorTurn +0x30 = the clip's angle; its first
-    // frame FUN_1407db220 (<decomp ref>) sets the root-motion rate (motion +0x904 / +0x90c)
+    // frame FUN_1407db220 sets the root-motion rate (motion +0x904 / +0x90c)
     // to |yaw error| / that angle.
     a.yaw_scale = deg.abs() / clip;
     a.move_vel = Vec3::ZERO;

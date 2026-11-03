@@ -1515,7 +1515,7 @@ pub(crate) fn the_general_stance_attacks_start_the_stance_first() {
     });
 }
 
-/// IsArrived runs before the region test (FUN_1405caa00 <decomp ref>; FUN_1405b9070: distance <
+/// IsArrived runs before the region test (FUN_1405caa00; FUN_1405b9070: distance <
 /// the chr's radius + the goal's 0): a point whose region is a zero sphere (2 in the game) or a
 /// point region (51) is still reached on top of it. It waited for the region forever before.
 #[test]

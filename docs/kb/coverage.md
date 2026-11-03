@@ -9,8 +9,8 @@ line is generated; this intro is hand-written and kept by the generator.
     python tools/coverage.py
 
 About 15-30 s. It reads the code and kb from this repo, the extracted data from
-`$SHINOBI_ROOT/extracted` (default `<repo>`) and the live recordings
-and their replays from `$SHINOBI_REC_DIR` (default `<work>/memscope-data/logs`). It
+`$SHINOBI_ROOT/extracted` (default: this repo) and the live recordings
+and their replays from `$SHINOBI_REC_DIR` (default `$SHINOBI_ROOT/recordings`). It
 writes this file with LF line ends. Re-run it after a merge; the counts follow the branch it runs on.
 
 ## Proof levels (lowest to highest; a row shows the highest it reached)
@@ -83,7 +83,7 @@ writes this file with LF line ends. Re-run it after a merge; the counts follow t
 
 <!-- Generated below by tools/coverage.py: edit the intro above, not the tables. -->
 
-Generated 2026-11-03 from <repo>/extracted and <work>/memscope-data/logs.
+Generated 2026-11-03 from the owner's extracted data and live recordings.
 
 ## Summary
 

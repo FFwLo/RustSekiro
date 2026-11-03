@@ -367,11 +367,11 @@ fn trace_on() -> bool {
     *ON.get_or_init(|| std::env::var_os("SHINOBI_WORLD_TRACE").is_some())
 }
 
-/// The exe's character update levels (WorldChrMan "omission update", FUN_140a4e8e0, <decomp ref>;
+/// The exe's character update levels (WorldChrMan "omission update", FUN_140a4e8e0;
 /// tunables WorldChrManDbgImp FUN_140a51800 and the exe's config defaults): within 10 m the
 /// nearest LV1_COUNT update every tick, the next LV2_COUNT every 2nd, the rest every 5th;
 /// farther on screen within ON_SCREEN_FAR every 5th, else every 30th. A character is due when
-/// its index and the tick agree modulo its level (FUN_140a4db20, <decomp ref>), and then runs
+/// its index and the tick agree modulo its level (FUN_140a4db20), and then runs
 /// that many ticks' time (actor.rs `advance`, enemy.rs `think`, map.rs `bodies_on_terrain`,
 /// anim.rs `pose_skeletons`). Only the open world's enemies. gaps: the not-drawn-last-frame and
 /// draw-group raises, the undecoded second budget flag (level 2), the budget's sort order

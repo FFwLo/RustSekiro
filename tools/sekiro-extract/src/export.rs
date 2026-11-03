@@ -627,7 +627,7 @@ fn export_character(
         }
     }
     let sp = load_param(params, "SpEffectParam");
-    // An NPC's worn SpEffect shifts its judges (exe FUN_140a12b80, <decomp ref>): a row whose
+    // An NPC's worn SpEffect shifts its judges (exe FUN_140a12b80): a row whose
     // addBehaviorJudgeId_condition is judge / 100 adds its addBehaviorJudgeId_add (the Shura
     // samurai's enchantments 3107010 / 3107011: 100 -> 105 poison / 107 flame; the Nightjars'
     // 3145040: 700 -> 701), so those judges are exported too (rows that exist only).

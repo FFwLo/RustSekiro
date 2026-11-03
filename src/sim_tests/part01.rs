@@ -418,7 +418,7 @@ pub(crate) fn stepping_into_a_perilous_thrust_is_a_mikiri() {
 }
 
 /// A step's TAE 954 IFrames dodge by the attack's AtkParam trackType (FUN_140b68a50 bit test,
-/// <decomp ref>): the side / back steps are types 6 / 7 / 2, the jump start type 1. A side
+///): the side / back steps are types 6 / 7 / 2, the jump start type 1. A side
 /// step through the General's perilous sweep (judge 140, trackType 1) is hit; a back step through
 /// his perilous thrust (150, trackType 6) passes; a jump clears the sweep. Round 31: type 2 was
 /// "everything", so a step dodged the sweep too.

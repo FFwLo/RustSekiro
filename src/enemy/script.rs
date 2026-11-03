@@ -1117,17 +1117,17 @@ pub(super) fn run_scripts(
         // the throw's first frame, so Gyoubu's Handle Boss Defeat (m11_00 11105800: IfDead, Wait
         // 0.7) and the Won timer came ~8 s before the game's (clips.md: the banner 9.5 s after
         // the fatal deathblow). The reaction's ChrActionFlag 12 "Death" (Gyoubu's a000_012090
-        // at 8.03 s) is not it: the exe's type-0 handler FUN_140b51b70 (<decomp ref>) has no
-        // case 12, so the flag does nothing; death stays HP / state based (<decomp ref> SetHp,
+        // at 8.03 s) is not it: the exe's type-0 handler FUN_140b51b70 has no
+        // case 12, so the flag does nothing; death stays HP / state based ( SetHp,
         // no-dead FUN_140bd5df0). gap: the clip's ~9.5 s banner vs the sim's 6.6 s is
         // unexplained (the EMEVD IfCharacterDead handler is not located).
         let pending = e.ninsatsu_unhit > 0;
         // A boss killed by its last deathblow dies for the map script when its reaction's
         // ChrActionFlag 12 "Death" starts (Gyoubu's a000_012090: f241 = 8.03 s; the all-bosses
         // clip's banner 9.5 s after the lunge = 8.03 + 11105800's Wait 0.7 + the banner's fade-in),
-        // not at the Ninsatsu hit: the exe's dead test is HP <= 0 (FUN_140bd5d40, <decomp ref>)
+        // not at the Ninsatsu hit: the exe's dead test is HP <= 0 (FUN_140bd5d40)
         // and SetHp clamps an immortal chr to 1, so only the kill routine FUN_1409fa0c0
-        // (<decomp ref>, the unclamped FUN_140bd5590) ends it. gap: its caller - the flag's
+        // (the unclamped FUN_140bd5590) ends it. gap: its caller - the flag's
         // consumer - is not located; the flag's start stands for that moment.
         let death_flag = d.anim(&a.anim).and_then(|an| an.events.iter().filter(|ev| ev.kind == 0 && ev.flag_type() == Some(12)).map(|ev| ev.start).reduce(f32::min));
         let dead = e.is_dead() && a.hp <= 0.0 && !pending && death_flag.is_none_or(|s| a.t >= s) && !run.dead_ids.insert(*id);

@@ -165,7 +165,7 @@ Dated findings, oldest first. Append new entries at the end.
     invasion" rows (Ochimusha 1010 1110248 / 1110236 / 1110252, Tokugawa 1700 x5); the default-state
     ones there (the General 1110414, c1010_0086) have none. Test an_msb_enemy_walks_its_patrol_route.
     Stepping (traced 2026-10-12, ai.rs Patrol): AiMovePointCtrl at AiThink +0x9060 (cur +0x9078,
-    prev +0x907c); FUN_1405afe20 (<decomp ref>) steps when a move goal to POINT_MOVE_POINT ends
+    prev +0x907c); FUN_1405afe20 steps when a move goal to POINT_MOVE_POINT ends
     in success (Terminate callbacks FUN_1405c7b80 / c8050 / ca9b0) or on Lua StepNextMovePoint, not
     by a distance check: prev = cur, cur = next by the PatrolType table 0x143af9550 (empty slots
     skipped, 64 tries, else -1): 0 loop, 1 back and forth, 2 random, 3 loop over slots 0-15, 4
@@ -175,28 +175,28 @@ Dated findings, oldest first. Append new entries at the end.
     "regions"). IsRouteEnd (FUN_1405c20c0) = no point after prev. With cur -1 NonBattleAct plays
     the last point's arrival anim and stays. Only types 0 / 1 / 5 occur (101 / 27 / 24). Test
     patrol_points_step_by_their_type. Type 5's end (FUN_1405c2710 -> chr vtable +0x168 =
-    FUN_1409f60c0, <decomp ref>) makes the last point (region pos +0x14, rot +0x20) the enemy's
+    FUN_1409f60c0) makes the last point (region pos +0x14, rot +0x20) the enemy's
     initial position / rotation (ChrIns +0xe0 / +0xf0, flag +0x1a15 bit 3 = IsChangeInitialPosition,
     FUN_1405e4fc0): Patrol::new_home -> enemy home (patrols.json "yaws"). Route-end anims (ported 2026-10-12): m11_01
     11115236 / 11115238 (1110236 / 1110252, both patrollers; 11115237's 1110296 has no route)
     wait for the enemy inside region 1112238 / 1112252 (3[2] on itself; MSB shape 2 = sphere
     r 1.2) OR its AI state 1 / 2 / 3 (4[9]); alerted it ends, else 2003[18] Force Animation
     Playback 20004 (Should Loop 1). The exe never reads that loop byte: 2003[18] (FUN_140904ef0
-    case 0x12, <decomp ref>) -> FUN_140bd84c0 keeps the anim id only, and the per-frame
-    FUN_140bd81b0 (<decomp ref>) fires W_Event20004 and clears it the same frame. The state runs
+    case 0x12) -> FUN_140bd84c0 keeps the anim id only, and the per-frame
+    FUN_140bd81b0 fires W_Event20004 and clears it the same frame. The state runs
     EventCommonFunction (c9997.lua:3884; damage / death / fall take it) to its end (cxxxx.lua:49
-    env(339) -> W_Idle); its AI cancels (env 107 / 118 / 120 / 123-125, FUN_140b36410 <decomp ref>-
+    env(339) -> W_Idle); its AI cancels (env 107 / 118 / 120 / 123-125, FUN_140b36410-
     9669) need TAE flags 23 / 79 / 86 / 122-124 (ActionCtrl +0x1f8, FUN_140b51b70), which
     a000_020004 lacks. enemy.rs RouteEndAnim / route_end_anim, patrols.json "route_end"; test
     a_patroller_plays_its_route_end_anim_once. MSB shapes are SoulsFormats' ShapeType (1 circle,
     2 sphere, 3 cylinder, 4 rectangle, 5 box): WakeRegion read 1 / 2 as sphere / cylinder before
     (test msb_region_shapes_follow_the_shape_type; the wake regions are all boxes). Patrol arrival (ported 2026-10-12): MoveToSomewhere(POINT_MOVE_POINT) succeeds when the
-    chr is inside the current point's MSB region (update FUN_1405caa00, <decomp ref> ->
-    IsInsideMovePoint FUN_1405e55c0 -> FUN_1405ae370 -> FUN_1409825b0, <decomp ref>: 1 circle XZ,
+    chr is inside the current point's MSB region (update FUN_1405caa00 ->
+    IsInsideMovePoint FUN_1405e55c0 -> FUN_1405ae370 -> FUN_1409825b0: 1 circle XZ,
     2 sphere 3D, 3 cylinder 0 <= dy <= h (FUN_140983380), 4 / 5 oriented box; radius tests are
     strict). The goal's distance param is 0 on patrols. Points are spheres (1313) or cylinders
     (122); 51 are point regions (exact equality: those end by IsArrived alone). IsArrived
-    (FUN_1405e4f20 -> FUN_1406052e0 -> FUN_1405b9070, <decomp ref>) runs first for every move
+    (FUN_1405e4f20 -> FUN_1406052e0 -> FUN_1405b9070) runs first for every move
     goal: distance < the chr's radius (vfunc 0x68, inferred) + the target's extent (+0x1c, 0 for
     POINT_MOVE_POINT) + the goal's distance for dir type 0 / 9 (0 on patrols), strict, 2D or
     3D by a flag (+0x20, gap: not mapped; read in XZ); a command with no target is arrived. patrols.json "areas", ai.rs
@@ -240,12 +240,12 @@ Dated findings, oldest first. Append new entries at the end.
     +0x9050) is the request. Test an_enemy_turns_in_place_with_its_turn_clip (150 degrees off
     home: TurnDefault_Right180, lands on the home facing). Scale (traced): act(9105, 90 / 180)
     (FUN_140b32410 case 0x2391 -> FUN_1407de170, BehaviorTurn +0x30) and act(9104) (corrected-turn
-    flag); FUN_1407db220 (<decomp ref>) sets the root-motion rate (motion +0x904 / +0x90c,
-    used at <decomp ref>) to |yaw error| / that angle: Actor::yaw_scale. TurnAngle = AI desired
+    flag); FUN_1407db220 sets the root-motion rate (motion +0x904 / +0x90c,
+    used) to |yaw error| / that angle: Actor::yaw_scale. TurnAngle = AI desired
     facing (+0x73e4 from the TurnTo target +0x9050, FUN_14060c7d0) minus the chr yaw, degrees,
-    right positive (FUN_140b4c600, <decomp ref>). env(106) = ActionCtrl +0x594 <- the AI's
+    right positive (FUN_140b4c600). env(106) = ActionCtrl +0x594 <- the AI's
     SetAttackRequest (+0x7430) else StartGuard (+0x7414). gaps: the leftover error's 720 deg/s
-    correction (FUN_1407dab40), the 0xd branch (<decomp ref>); the flight / crouch Default
+    correction (FUN_1407dab40), the 0xd branch; the flight / crouch Default
     rule not run (Guard / General stance turns: see Guard stance).
     2026-10-14: a move request from idle turns first. ExecActiveTransition's order is ExecAIAction,
     ExecTurn, then the move (env 3014), and the move goals set the turn target themselves: the
@@ -268,7 +268,7 @@ Dated findings, oldest first. Append new entries at the end.
     wake it (react_from by_wolf, 2026-10-12 round 14: a rival's blow did too).
   * Goal life end (2026-10-12 bug hunt): a goal whose life runs out while its update still
     says Continue is a Success only if it or a goal above it has SetLifeEndSuccess (0x1405faa20
-    sets goal +0x4a0 bit 0x20; FUN_1405d06c0 <decomp ref>, FUN_1405d1b50 walks up), else
+    sets goal +0x4a0 bit 0x20; FUN_1405d06c0, FUN_1405d1b50 walks up), else
     Failed (the parent fails, queued subgoals dropped). Was: every timed-out goal succeeded, so
     a timed-out approach let the queued CommonAttack swing from out of reach. Started Attack /
     SpinStep still run to their end; Wait / Stay / Guard end by life as a success (gap: their
@@ -397,7 +397,7 @@ Dated findings, oldest first. Append new entries at the end.
   Genichiro under its roof). Map asked to make player_start find room for both on a foreign arena.
 - 2026-10-11 B5 enemy bullet flight (enemy_bullet.rs) from the exe bullet update FUN_140b0ded0 (bullet
   0xd30 bytes, BulletParam at +8 of its slot): FollowType odd or 2 -> FUN_140b14b20 (attached; gap), else
-  FUN_140b11270 homing, FUN_140b14650 speed, then the move (decomp <decomp ref> adds the step
+  FUN_140b11270 homing, FUN_140b14650 speed, then the move (decomp adds the step
   length to +0xb60 = metres flown).
   * Homing `steer`: none if homingAngle (0x82) < 0 or flown <= homingBeginDist (0x40); target point +
     targetYOffsetRange (0xa0) in y; no turn while closer than hormingStopRange (0x24); else the flight turns
@@ -527,7 +527,7 @@ Dated findings, oldest first. Append new entries at the end.
   combat.rs enemy_guard_block (aerial: enemy_is_aerial); test a_blow_on_a_weak_guard_launches_the_enemy.
 - 2026-10-12 map AI hold, the damage wake: EMEVD 4[1] IF Character Damaged By / 3[23] IF Damage
   Type (only types 0-2 are evaluated) read the SprjEventDamageInfo list (DAT_143d56058 +0x38),
-  written by FUN_1406d8950 (from FUN_140b6e150, <decomp ref>) only when the hit's final HP damage
+  written by FUN_1406d8950 (from FUN_140b6e150) only when the hit's final HP damage
   (+0x1e0) > 0 and +0x1cb == 0. Guard / deflect hits run the same chain but a full guard cut
   leaves HP damage 0: no record, still held; a guard that chips HP would wake. enemy.rs ai_hold:
   HP lost since its last check + a reaction Wolf caused (react_from) since then. Test
@@ -544,26 +544,26 @@ Dated findings, oldest first. Append new entries at the end.
 
 ## Grab escape (exe trace, 2026-10-13, read-only; paths under extracted/decomp)
 
-- Throw state +0x18 (setter FUN_140803030 <decomp ref>): 1 thrower / 2 victim at start
-  (<decomp ref>, 6798), 3 / 4 = escaped (only FUN_1407fa530 <decomp ref>, from 1 / 2), 5 / 6 = death
-  pair (<decomp ref>), 0 at cleanup (<decomp ref>, not from 6).
-- escHp: ThrowParam +0x2c copied to state +0x1a (<decomp ref>; <decomp ref>; <decomp ref>).
-  FUN_140bdf220 (<decomp ref>) adds a delta, clamps >= 0, no-op unless the row's escHp > 0; under 1
-  -> FUN_140802b70 (<decomp ref>) -> FUN_1407fa530 -> state 3 / 4. FUN_140be15c0 (<decomp ref>) is the
+- Throw state +0x18 (setter FUN_140803030): 1 thrower / 2 victim at start
+, 3 / 4 = escaped (only FUN_1407fa530, from 1 / 2), 5 / 6 = death
+  pair, 0 at cleanup (not from 6).
+- escHp: ThrowParam +0x2c copied to state +0x1a.
+  FUN_140bdf220 adds a delta, clamps >= 0, no-op unless the row's escHp > 0; under 1
+  -> FUN_140802b70 -> FUN_1407fa530 -> state 3 / 4. FUN_140be15c0 is the
   network message path only.
-- Single-player decrements: the self-escape cycle FUN_140808640 (<decomp ref>; driven <decomp ref>-
-  10723 when escHp != 0): each cycle window, presses >= count -> FUN_140802c30 (<decomp ref>) ->
+- Single-player decrements: the self-escape cycle FUN_140808640 (driven-
+  10723 when escHp != 0): each cycle window, presses >= count -> FUN_140802c30 ->
   escHp -1. Window / count inferred as selfEscCycleTime (+0x2e) / selfEscCycleCnt (+0x39) (the init
   FUN_140808600's args are lost). Presses: FUN_140807eb0 (button count FUN_140960350 + a stick
-  shake with hysteresis; binding is a gap). Also damage on the victim: FUN_140b68ff0 <decomp ref>
+  shake with hysteresis; binding is a gap). Also damage on the victim: FUN_140b68ff0
   (-(int) of a float at +0xdc, victim flag +0x70 bit4; gap: unit / which hits).
-- env 277 BEH_R_THROW_ESCAPE = FUN_140b39e90 (<decomp ref>): the thrower's latched TAE flag 70
-  (+0xc24 bit1; set unconditionally <decomp ref>, latched <decomp ref>) AND own state 3 / 4
-  (FUN_140be08f0 <decomp ref>). HKS c0000_transition.lua:5597-5602 -> :759 W_ThrowEscape<ThrowId>
+- env 277 BEH_R_THROW_ESCAPE = FUN_140b39e90: the thrower's latched TAE flag 70
+  (+0xc24 bit1; set unconditionally, latched) AND own state 3 / 4
+  (FUN_140be08f0). HKS c0000_transition.lua:5597-5602 -> :759 W_ThrowEscape<ThrowId>
   (HKB 600355 / 600375, c0000_cmsg.lua:1284).
 - c1500: 21500100 (4110 / 600350) escHp 20, cnt 1, time 100; 21500200 (4120 / 600370) escHp 10,
   cnt 1, time 100; 21500000 (4100) and the 115000xx rows 0 (no escape).
-- Gaps: thrower-side anim on escape; <decomp ref> callers; the cycle time unit (100 read as ms).
+- Gaps: thrower-side anim on escape; callers; the cycle time unit (100 read as ms).
 
 ## Boss perilous rates vs the all-bosses clip (boss fidelity, 2026-10-15)
 Closes the two open items of history 4.62 / 4.63 (Owl perilous, Monk / Demon shares). No code
@@ -760,9 +760,9 @@ play block (sr_map::blocks: m11_00, m11_01, m11_02, m13, m17, m20 from the castl
 - dead ones stay dead (no practice respawn) until a rest: BossScript::resets (reset_fight)
   clears the dead, Restart events (rest 1) start over, End ones (rest 2) end, flags stay.
 The exe's update levels (re-scout, static): WorldChrMan's "omission update" (FUN_140a4e8e0,
-<decomp ref>) gives each character a level each frame, by distance to the player, on-screen and
+) gives each character a level each frame, by distance to the player, on-screen and
 a budget (WorldChrManDbgImp FUN_140a51800: Lv1 10, Lv2 15, splits 10 / 20 / 50 m); FUN_140a4db20
-(<decomp ref>) runs a level-N character when `idx % N == frame % N`, with N x dt. world.rs
+ runs a level-N character when `idx % N == frame % N`, with N x dt. world.rs
 update_lod sets Actor::lod / lod_due for the world's enemies (within 10 m: nearest 10 every tick,
 next 15 every 2nd, rest every 5th; farther: on screen within 50 m every 5th, else every 30th);
 actor.rs advance, enemy.rs think, map.rs bodies_on_terrain and anim.rs pose_skeletons skip a
@@ -882,7 +882,7 @@ More of the replay (same day):
   enemy met with deflect (84xx) / guard (85xx) / damage / kept on (its attack, SABlend). Before:
   c1020 0 / 0 / 86 / 9 against the game's 1 / 36 / 26 / 32; ours never guarded or deflected.
 - Fix: the hearing pass runs only while the enemy holds no character target (exe FUN_140624b70
-  <decomp ref> -> FUN_1406296e0: no targeting-list entry of type 1, the chr-handle target made by
+ -> FUN_1406296e0: no targeting-list entry of type 1, the chr-handle target made by
   FUN_140629430; inferred: the normal target). Ours heard Wolf's footsteps and swings in a fight
   and, with two sounds a frame, flipped the sound target every frame: ChangeSoundTarget (46) each
   frame, whose common handler (common_table_ai_common.lua:247-267, zako / chuboss reaction)

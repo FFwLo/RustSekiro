@@ -4,7 +4,7 @@
 use super::*;
 
 /// A map-held enemy wakes on Wolf's hit only when it takes HP (EMEVD 4[1] / 3[23] read a damage
-/// record written for final HP damage > 0, FUN_1406d8950 from FUN_140b6e150 <decomp ref>): one
+/// record written for final HP damage > 0, FUN_1406d8950 from FUN_140b6e150): one
 /// already cut (a rival's blow) that blocks Wolf's swing, its HP whole, stays held; it woke
 /// before (Wolf's guard reaction + HP below max).
 #[test]

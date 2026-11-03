@@ -487,7 +487,7 @@ fn build_up_one(combat: &Combat, status: &mut Status, worn: &[i64], id: i64, res
 /// npc_hit_damage takes its <attr>DamageCutRate 99 (x99). Its changeStaminaRate -100 applies
 /// every tick through `tick_effects`' posture (round 46: a timed row with motionInterval 0
 /// re-fires each tick, exe FUN_140c06b70 / FUN_140c06c60, summed by FUN_140bfe2c0 and added to
-/// the remaining posture at <decomp ref>; emulator speffect2 cat150_aging: 420 -> 0 at once), so
+/// the remaining posture; emulator speffect2 cat150_aging: 420 -> 0 at once), so
 /// the aged Wolf's posture stays drained to the floor (our full bar).
 /// gap: the player's floor in the clamp FUN_140bd4e20 (taken as empty, without a break
 /// reaction); the exe's order of maxHpRate is not traced. The grabs take the cut rates too
@@ -771,7 +771,7 @@ pub(crate) struct Ticked {
 
 /// One pass of a character's SpEffect list, FUN_140c005b0 with the entry tick FUN_140c06b70,
 /// then the HP sum of the fired rows (FUN_140b658b0 -> FUN_140bfd0a0 -> FUN_140c014f0) and their
-/// posture (FUN_140bfe2c0, <decomp ref>). Per entry, in list order:
+/// posture (FUN_140bfe2c0). Per entry, in list order:
 /// - one marked expired on an earlier tick goes (its body effects stop) and its
 ///   replaceSpEffectId is added through the whole add, build-up included (FUN_140c005b0 ->
 ///   FUN_1409e9c00): the floor's 4011 -> 4012 puts 22 into Wolf's burn gauge (15 x 1.5) and burns

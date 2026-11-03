@@ -1625,7 +1625,7 @@ pub(crate) fn the_reset_clears_the_last_lifes_death_pick() {
 }
 
 /// Round 58: a hit stop in the air freezes the clip but not the fall - the exe runs the fall
-/// module and Havok on the raw dt (<decomp ref>), as player.rs's gravity already did.
+/// module and Havok on the raw dt, as player.rs's gravity already did.
 #[test]
 pub(crate) fn a_hit_stop_in_the_air_does_not_freeze_the_fall() {
     let mut app = app();

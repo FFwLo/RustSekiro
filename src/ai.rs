@@ -146,7 +146,7 @@ pub struct EventView {
     pub sp_gone: Vec<i64>,
 }
 
-/// RegisterTriggerRegion's sphere (exe FUN_1405e7280 -> FUN_140642110, <decomp ref>): keyed by
+/// RegisterTriggerRegion's sphere (exe FUN_1405e7280 -> FUN_140642110): keyed by
 /// (registrant, category, unit id; a repeat replaces it), static at its centre, `life` seconds
 /// (FUN_140643250 counts it down each frame). The unit id is a tag the getters hand back.
 #[derive(Clone, Debug, PartialEq)]
@@ -160,7 +160,7 @@ pub struct TriggerRegion {
 }
 
 impl TriggerRegion {
-    /// FUN_1406424f0 (<decomp ref>): a sphere holds a point within its radius, in 3D.
+    /// FUN_1406424f0: a sphere holds a point within its radius, in 3D.
     pub fn contains(&self, p: Vec3) -> bool {
         p.distance_squared(self.at) < self.radius * self.radius
     }
@@ -190,7 +190,7 @@ pub struct Command {
     pub face: bool,
     pub turn: bool,
     /// RequestEmergencyQuickTurn (FUN_1405e76e0 -> AI +0x9054, cleared every frame
-    /// <decomp ref>; the HKS's env(330)): a turn clip even under 45 degrees.
+    ///; the HKS's env(330)): a turn clip even under 45 degrees.
     pub emergency: bool,
     /// The guard goal's request 9910 (c9997 ACTION_TYPE_GUARD, env(106)) this frame: the guard
     /// stance (enemy.rs guard_stance), held while it is asked for.
@@ -484,7 +484,7 @@ const REPLAN_MOVE: f32 = 1.0;
 /// An enemy's MSB patrol route in world space (enemy.rs PatrolRoute) and where it is on it:
 /// the exe keeps it in AiMovePointCtrl (AiThink +0x9060): the current point at +0x9078 and the
 /// previous one at +0x907c (GetMovePointNumber FUN_1405e3910). It steps (FUN_1405afe20,
-/// <decomp ref>) when a move goal to POINT_MOVE_POINT ends in success (Terminate callbacks
+///) when a move goal to POINT_MOVE_POINT ends in success (Terminate callbacks
 /// FUN_1405c7b80 / c8050 / ca9b0) or on Lua StepNextMovePoint: prev = cur, cur = the next point
 /// by PatrolType (table 0x143af9550, FUN_1405c1f40 skips empty slots, 64 tries) or -1. Types:
 /// 0 loop, 1 back and forth (turns at the last point), 2 random, 3 loop over slots 0-15, 4 the
@@ -492,7 +492,7 @@ const REPLAN_MOVE: f32 = 1.0;
 /// ends the route there), 6 and up never move (cur -1). At the start prev = -1 and cur = the
 /// first point (FUN_1405b06a0). With cur -1, NonBattleAct plays the last point's arrival anim
 /// and stays (common_non_battle_act.lua). Type 5's hook at the last point passes that region's
-/// position (+0x14) and rotation (+0x20) to the chr's vtable +0x168: FUN_1409f60c0 (<decomp ref>)
+/// position (+0x14) and rotation (+0x20) to the chr's vtable +0x168: FUN_1409f60c0
 /// sets the initial position / rotation (ChrIns +0xe0 / +0xf0) and flag +0x1a15 bit 3, which
 /// IsChangeInitialPosition reads (FUN_1405e4fc0): the end of the route is its new home pose
 /// (`new_home`; POINT_INITIAL / POINT_INIT_POSE and BackToHome follow it). Only 0 / 1 / 5
@@ -556,8 +556,8 @@ impl Patrol {
     }
 
     /// Whether `feet` reached the current point: inside its region shape, as the exe's
-    /// MoveToSomewhere(POINT_MOVE_POINT) update asks (FUN_1405caa00, <decomp ref>: IsInsideMovePoint
-    /// FUN_1405e55c0 -> FUN_1405ae370 -> the shape test FUN_1409825b0, <decomp ref>). None: no
+    /// MoveToSomewhere(POINT_MOVE_POINT) update asks (FUN_1405caa00: IsInsideMovePoint
+    /// FUN_1405e55c0 -> FUN_1405ae370 -> the shape test FUN_1409825b0). None: no
     /// shape (a point region: the exe's test is exact equality, so only IsArrived, the caller's
     /// radius test, ends those).
     pub fn inside_current(&self, feet: Vec3) -> Option<bool> {
@@ -571,7 +571,7 @@ impl Patrol {
         self.arrivals.iter().find(|a| a.0 == region).map(|a| (a.1, a.2))
     }
 
-    /// IsRouteEnd (FUN_1405e6250 -> FUN_1405c20c0, <decomp ref>): no point after the previous one.
+    /// IsRouteEnd (FUN_1405e6250 -> FUN_1405c20c0): no point after the previous one.
     fn route_end(&self) -> bool {
         self.prev + 1 >= self.points.len() as i64
     }
@@ -774,7 +774,7 @@ impl AiState {
         id
     }
 
-    /// A goal whose life ran out while it still went on (FUN_1405d06c0, <decomp ref>): a
+    /// A goal whose life ran out while it still went on (FUN_1405d06c0): a
     /// success only if it or a goal above it has SetLifeEndSuccess (FUN_1405d1b50 walks up),
     /// else a failure, which fails its parent and drops the queued subgoals (the scripts' own
     /// common_approach_lifeSuccess / common_Leave_lifeSuccess wrappers rely on it). gap: the
@@ -956,7 +956,7 @@ impl AiState {
                 dmy(*id).is_some_and(|(p, _)| ((at - p).length() as f64) < *r)
             }
             // AddObserveChrDmyArea(slot, target, dmy, A, B, C, D) (SprjAiChrDmyObserveArea,
-            // FUN_140606710 -> FUN_140605ee0, <decomp ref>): from the dummy moved back D
+            // FUN_140606710 -> FUN_140605ee0): from the dummy moved back D
             // along its +Z, the target chr's position farther than D and within C (3D); the
             // horizontal projections within B / 2 of each other, and the elevation within A / 2
             // of the axis's.
@@ -1016,7 +1016,7 @@ impl AiState {
         self.observe_changed = (went_in, went_out);
     }
 
-    /// This frame's trigger-region entries and exits (FUN_140642de0, <decomp ref>): every live
+    /// This frame's trigger-region entries and exits (FUN_140642de0): every live
     /// region of an observed category holding this chr, but not its own; one that was not held
     /// last frame is an entry, one held then and not now (left or expired) an exit. Up to 16.
     fn trigger_edges(&mut self) {
@@ -1260,7 +1260,7 @@ impl AiState {
                 self.cmd.flags.push((id, on));
                 vec![]
             }
-            // FUN_1405b1b20 (<decomp ref>): the order float of type 0 (ORDER_TYPE_Role) / 1
+            // FUN_1405b1b20: the order float of type 0 (ORDER_TYPE_Role) / 1
             // (CallHelp, gap: its writers are not traced, 0 here), else -1.
             "GetTeamOrder" => num(match n(0) as i64 {
                 0 => w.team_role,
@@ -1374,7 +1374,7 @@ impl AiState {
             "IsInsideObserve" => boolean(self.observe_inside(n(0) as i64)),
             // RegisterTriggerRegion(category, unit, life s, radius m, target, dir, extra): a sphere
             // at the target's position + its dir vector x |hit radius + extra| (FUN_14060c250,
-            // <decomp ref>), stored for every AI by enemy.rs. The caution logic leaves one
+            //), stored for every AI by enemy.rs. The caution logic leaves one
             // where it heard a sound (common_common_logic_func.lua:319 / 348), tagged with the
             // sound's serial, so allies that heard the same sound stop on reaching it.
             "RegisterTriggerRegion" => {
@@ -1395,7 +1395,7 @@ impl AiState {
                 }
                 vec![]
             }
-            // FUN_1405e75f0 (<decomp ref>) passes a literal 1 to the removal (FUN_140642ba0), not
+            // FUN_1405e75f0 passes a literal 1 to the removal (FUN_140642ba0), not
             // the category: RemoveTriggerRegionObserver(1000) leaves observer 1000 in place.
             // gap: read from the decompile, not checked in the disassembly.
             "RemoveTriggerRegionObserver" => {
@@ -1703,8 +1703,8 @@ impl AiState {
                 let d = self.goal_dist(target.as_ref());
                 let (mv, walk) = match n {
                     Native::Approach => {
-                        // FUN_1405caa00 (<decomp ref>): IsArrived first (FUN_1405e4f20 ->
-                        // FUN_1406052e0 -> FUN_1405b9070, <decomp ref>: distance < the chr's
+                        // FUN_1405caa00: IsArrived first (FUN_1405e4f20 ->
+                        // FUN_1406052e0 -> FUN_1405b9070: distance < the chr's
                         // radius + the goal's distance, strict; the target's own extent +0x1c is 0
                         // for POINT_MOVE_POINT), then for a patrol point IsInsideMovePoint (its
                         // region). gap: the exe's 2D / 3D switch (+0x20) is not mapped to the calc

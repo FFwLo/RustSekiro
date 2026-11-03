@@ -121,7 +121,7 @@ pub fn answers(h: &mut Host, a: &Actor, e: &Enemy, cmd: &crate::ai::Command, pos
     set(275, None, wolf.escaped as i64 as f64);
     set(1112, None, throw_start as i64 as f64);
     // env 1114 (IsExistAnime): the chr has the clip (anim id = category * 1e6 + number).
-    // The exe (case 0x45a, <decomp ref>) tries the id plus each anim offset first
+    // The exe (case 0x45a) tries the id plus each anim offset first
     // (FUN_140988510: animmgr +0x60..0x6c), then the raw id: an a100 enemy's IsExistAnime(4120)
     // is its a100_004120. gap: what fills the other offset slots.
     let set_off = a.anim_group as i64 * 100 * 1_000_000;

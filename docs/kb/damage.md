@@ -58,7 +58,7 @@ Dated findings, oldest first. Append new entries at the end.
   knockbackRate_vsPlayer_* is 75 for c1180 (club samurai), 100 for 45 rows, 0 for most. combat.rs recoil; test
   wolf_bounces_off_an_enemy_that_cuts_his_knockback (c1180: ~0.75 m back). Gaps: the one-frame start delay (+0x45)
   and the deferred path (damage +0x164, through TAE 226) are not modelled.
-  2026-10-12 FACING done: <decomp ref> exact rule: f = dot(normalised knockback dir, attacker forward axis
+  2026-10-12 FACING done: exact rule: f = dot(normalised knockback dir, attacker forward axis
   (FUN_1409eeb40 -> FUN_1407dcc90)); factor f^2, but 0.4 when f < 0 or f^2 < 0.4 (range [0.4, 1]; 1 with no
   attacker). The leftover for the attacker comes from the scaled distance. combat.rs knockback_facing (sword hits,
   blocks, deflects; prosthetic bullets pass None = 1). Test knockback_scales_with_the_attackers_facing. gaps: the
@@ -151,8 +151,8 @@ Dated findings, oldest first. Append new entries at the end.
   Set SpEffect 220061 (stateInfo 343, camouflageHitPartsGroup 2) / 220062 (stateInfo 957, the
   TAE ShieldBlock StateInfo) / 400250 (every *DamageCutRate and def*StaminaDmgRate 0.5); at part
   HP 0: anim 20039, those cleared, 230400 / 230401 set. Also m11_01 entities 1110432/33/35 and
-  20005411 for m11_00 1100480. Exe: FUN_140b6c880 (<decomp ref>) swaps the hit part group for
-  the SpEffect's camouflageHitPartsGroup (stateInfo 0x156/0x157); FUN_140670040 (<decomp ref>)
+  20005411 for m11_00 1100480. Exe: FUN_140b6c880 swaps the hit part group for
+  the SpEffect's camouflageHitPartsGroup (stateInfo 0x156/0x157); FUN_140670040
   deals damage x part+0x108 to the part and returns x part+0x110 (0.7, "RetDam") to the body.
   HP 0.5 x 0.7 = 0.35 (348 -> 121, exact); posture 0.5 (130 -> 65). gaps: where the 0.5 HP cut
   applies in the exe; the one full hit (a050_300100 vs a100_003000) and art 316000's uncut -522;
