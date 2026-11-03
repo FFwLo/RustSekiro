@@ -2579,10 +2579,13 @@ fn think(
             }
             Mode::Broken(t) => {
                 if t - dt <= 0.0 {
-                    // No restore: the collapse SpEffects (220420 / 5359 / 220500) keep
+                    // No restore here: the collapse SpEffects (220420 / 5359 / 220500) keep
                     // staminaRecoverSpeedRate 1.0 and no c1020 TAE has the ratio-restore event 961
-                    // (FUN_140bd62d0), so posture simply regenerated through the collapse
-                    // (FUN_140a04850 runs every frame) and the enemy keeps what it recovered.
+                    // (FUN_140bd62d0). Posture runs through FUN_140a04850 every frame
+                    // (actor::regen_posture), whose StaminaControlParam clamp follows the break
+                    // anims' TAE 960 type: type 5 holds the bar at 0 (rows 1000000-1000200 min = max
+                    // = 0 %), type 6 sets it to 30 %, type 7 full (docs/kb/damage.md 2026-11-03);
+                    // the enemy keeps what that leaves.
                     // Emptied vitality: back at the brink, the next hit reopens the deathblow.
                     a.hp = a.hp.max(1.0);
                     e.mode = Mode::Ai;

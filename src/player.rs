@@ -30,7 +30,7 @@ pub struct Player {
     pub(crate) speed_level: f32,
     /// The pad manipulator's stick gate and yaw request (`Turn`).
     pub(crate) turn: Turn,
-    requests: HashMap<Action, f32>,
+    pub(crate) requests: HashMap<Action, f32>,
     /// State after the last decide; a different state at the next decide was set by combat.
     last_state: String,
     /// Healing Gourd uses left (config player.gourd_charges; goods 3000 maxNum 10).
