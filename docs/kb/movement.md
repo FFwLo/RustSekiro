@@ -364,3 +364,52 @@ enemy with a proxy, 27 m from Wolf.
 - Slopes over maxSlope 60 deg: none walkable in reach (the steep faces the scan meets are walls, normal y 0.06).
 - Emulator notes: thousands of sphere casts need their buffers allocated once (the emulator heap is 1 MB; the
   cast allocated 80 bytes a call and the 58k-cast scan crashed) and a TB flush every 256 casts.
+
+## In the air: jump, fall, NoGravity and fall damage against the exe (2026-11-03, exe, emulator, topic air)
+
+tools/emu-cases `air` (tools/emu-cases/src/air.rs): whole character frames FUN_140a4b570 at 1/60 s on the
+snapshot with Wolf's pad driven per frame (as acttrace), hooks on the TAE dispatch FUN_140b5c920, the NoGravity
+read FUN_140bcc420, the physics step FUN_140bccd50, the fall module FUN_140bacc10 / FUN_140bac120 and the land
+check FUN_140b97a30 -> FUN_140b97b30. Physics module = [chr+0x1ff8]+0x68: +0x160 air velocity, +0x854 fall top,
++0xa2 grounded, +0x92c the NoGravity byte; fall module = physics +0x1c0 (+0x180 launch timer; table +0x78 -0.1,
++0x7c -13.72, +0x80 10, +0x84 2). 17 runs (`air_jump.json`, `air_art.json`, `air_ng_launch.json`) and 24 drops
+(`air_drops_*.json`, git-ignored extracted/emu).
+
+- Jump: press f0, 201001 f1, launch 201011 f11 (9.64 m/s, gravity already applied on the launch frame: 9.248),
+  -0.392 m/s a frame (23.52 m/s^2), the position on the mean of the old and new velocity, apex 1.975 m, touchdown
+  after 49 air frames (0.817 s), 201050 at f59, land 201040 at f62. Matched as it was (`fall`).
+- Air steering: decel 0.1 m/s^2 along the velocity, skipped below one step; the stick adds 10 m/s^2 split along /
+  across the velocity, the along part only up to 2.0 m/s (off a 5.56 m/s run it adds nothing and the decel
+  goes on); half stick half the rate. `player::air_step` gives every one of 873 exe air steps to 1e-6 (test
+  `air_steps_match_the_exe`). Matched as it was.
+- Walk-off (fixed): the first air step starts from the last ground frame's move: the walk / run velocity
+  (-1.69 / -5.57 m/s) and one frame of world gravity (-0.163), then the air steps (-0.555, ...). Before: straight
+  down from rest. `Player::ground_vel`; test `a_walk_off_keeps_the_ground_velocity`.
+- Fall top (fixed): +0x854 is written on ground frames only and stays at the take-off height through the flight
+  (GetFallHeight, the stiff landings and fall damage measure from it). Before: the flight's highest point, so a
+  jump off a ledge measured 2 m more (part11 `jumps_off_ledges_land_stiff` now drops 3.5 m, not 2.3 + the rise).
+  Test `the_fall_top_stays_at_take_off`.
+- SetNoGravity (fixed): the physics step holds (no air step, the body still, +0x160 zeroed, the fall top set to the
+  held height, +0xa2 reads grounded) when +0x92c is up and the launch timer is out. A TAE 920 sets the timer to
+  0.251 s before its update's step, so a flag in the launch update (the head kick's [0, 0.2] and its 920 at 0.2)
+  or within 16 updates after it does nothing. The update after a hold is a ground step (-0.163), then the air
+  steps; a launch right after a hold (the head kick's relaunch) takes the air step instead. RSekiro now reads the flag on the exe's window for the player too (before: a point test, because the
+  hold cancelled the launch). `player::air_frame`; test `no_gravity_waits_for_the_launch_timer` (ng_launch,
+  ng_rise, ng_timer, ng_fall). gap: a flag new this update keeps +0x160 in the exe (zeroed the next), unused.
+- Landing anims seen: still jump 201040; stick held 420, half stick 120, stick back 422 -> 420 -> 423; drops under
+  20 m 200020, 20-39.9 m 200021 (long stiff), 40 m and up 200909 (LandDeadReturnStart); the jump kick 213100 then
+  200020. RSekiro's choices for the drops match (test `fall_damage_matches_the_exe`); the jump lands are the
+  existing HKS rules (not compared frame by frame).
+- Fall damage (fixed, new): FUN_140b97b30 on the land frame, height = +0x854 - y: under 20 m (DAT_143b01948)
+  nothing; from 20 m HP -= (int)(maxHP x CalcCorrectGraph 210(h) / 100), row 210 being the identity, with the
+  factor rounded to f32 first: 20 m 223, 22 m 246, 25 m 280, 30 m 335, 35 m 392, 39.9 m 446 of 1120; from
+  HitMtrlParam fallDeathDist (40 m default) HP -= (int)(maxHP x 0.4) = 448 (DAT_143b01958) and the return death,
+  at 40 / 45 / 60 / 80 m alike. The debug no-death bytes (0x143d7a366 / 371) change nothing. Before: no HP lost,
+  and the return kept HP. `player::fall_hp_loss`.
+- StartTime clips: the land continuation's first TAE window is (t, t + dt) (kb/taewin.md).
+
+Not covered: CalcCorrectGraph 211 / 212 and HitMtrlParam fallDamageRate (1.0 on the snapshot's ground, not
+varied); the 5 m threshold under SpEffect type 0x155; a non-lethal fall that takes the last HP (548 HP never
+reached it); an air art in the air (none started from the jump: the ground art ran, 107316700, and Wolf fell off
+the cliff); the head kick (no enemy under Wolf); NoGravity with a horizontal velocity (all four windows on a
+vertical jump); the void fall (FallDeadReturn) cost.

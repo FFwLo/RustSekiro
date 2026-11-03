@@ -262,12 +262,14 @@ pub(crate) fn an_immortal_wolf_stays_at_1_hp() {
 }
 
 /// Round 76: BEH_R_LAND 2026 - every non-sprint ground jump sets EnablePositioningJumpLand
-/// (HKS 2800), so a vertical jump off a 2.3 m ledge (plus its own rise: 3-5 m) lands stiff (LandFreeFall), not only the
-/// locked-on jumps; and a sprint jump (SprintJumpStart lasts to the ground) from 6 m too.
+/// (HKS 2800), so a vertical jump off a 3.5 m ledge (3-5 m) lands stiff (LandFreeFall), not only the
+/// locked-on jumps; and a sprint jump (SprintJumpStart lasts to the ground) from 6 m too. The
+/// height is from the take-off (the fall top +0x854, tools/emu-cases `air`), not the jump's apex
+/// (before: a 2.3 m ledge plus the rise).
 #[test]
 pub(crate) fn jumps_off_ledges_land_stiff() {
     // (how, extra drop, want)
-    for (sprint, drop) in [(false, 2.3f32), (true, 6.0)] {
+    for (sprint, drop) in [(false, 3.5f32), (true, 6.0)] {
         let mut app = app();
         move_enemy_far(&mut app);
         app.update();
@@ -279,6 +281,8 @@ pub(crate) fn jumps_off_ledges_land_stiff() {
                 a.airborne = true;
                 a.vel_y = 0.0;
                 t.translation.y += drop;
+                let y = t.translation.y;
+                world.query::<&mut Player>().single_mut(world).unwrap().air_top = y;
             });
         } else {
             app.world_mut().resource_mut::<PadInput>().press(Action::Jump);
@@ -289,6 +293,8 @@ pub(crate) fn jumps_off_ledges_land_stiff() {
                 let (a, mut t) = world.query_filtered::<(&Actor, &mut Transform), With<Player>>().single_mut(world).unwrap();
                 if a.airborne {
                     t.translation.y += drop;
+                    let y = t.translation.y;
+                    world.query::<&mut Player>().single_mut(world).unwrap().air_top = y;
                     up = true;
                     break;
                 }

@@ -245,6 +245,13 @@ pub struct Actor {
     /// the fall type's horizontal acceleration) and the stick-driven part on top.
     pub fall_type: u8,
     pub air_base: Vec3,
+    /// The fall module's launch timer (physics +0x1c0 +0x180, FUN_140bb1670): 0.251 s from a TAE
+    /// 920 launch, counted down after each air step. While it runs the air step goes on under
+    /// ChrActionFlag 27 SetNoGravity (FUN_140bb14d0 in FUN_140bccd50; tools/emu-cases `air`).
+    pub launch_left: f32,
+    /// The last update was a SetNoGravity hold: the exe's physics reads grounded then (+0xa2), so
+    /// the first update after it starts the fall as a ground step (world gravity only, -0.163).
+    pub ng_held: bool,
     /// Height where a SetNoGravity root lift began (enemies; actor.rs advance puts them back).
     pub lift_ground: Option<f32>,
     /// The lift's height over `lift_ground` where the current clip's took over (a lifted clip
@@ -400,6 +407,8 @@ impl Actor {
             cam_alpha: 1.0,
             fall_type: 0,
             air_base: Vec3::ZERO,
+            launch_left: 0.0,
+            ng_held: false,
             lift_ground: None,
             lift_off: 0.0,
             lift_anim: String::new(),
@@ -510,11 +519,12 @@ impl Actor {
     }
 
     /// The clip just played starts at `t` (HKS StartTime, the land continuations): its TAE window
-    /// starts at t, so no event before t enters. gap: the selector's reset FUN_1411e6de0 followed
-    /// by its update passes (0, t) and enters them all (tools/emu-cases taestate); a preUpdate
-    /// between (FUN_1411e55e0) gives (t, t) as here. The game's land continuations do not
-    /// relaunch Wolf from the launch (TAE 920) before the offset, so the second is taken; the
-    /// order of activate / preUpdate in the graph is not traced.
+    /// starts at t, so no event before t enters. The selector's reset FUN_1411e6de0 followed by
+    /// its update would pass (0, t) and enter them all (tools/emu-cases taestate); in the game a
+    /// preUpdate (FUN_1411e55e0) comes between, so the first window is (t, t + dt) as here:
+    /// tools/emu-cases `air` jump_slash, 50308000 landing at 0.7333 -> 50308050's first window
+    /// (0.733, 0.7497) (test emu_air). gap: the exe's start time reads 0.733, 1/3 ms under the
+    /// air clip's 0.7333 (its rounding is not traced).
     pub fn start_at(&mut self, t: f32) {
         self.t = t;
         self.prev_t = t;
@@ -969,8 +979,9 @@ pub fn advance(time: Res<Time>, combat: Res<Combat>, mut q: Query<(&mut Actor, &
                 // horizontal root motion is not applied; the air velocity moves the body. Live
                 // (30 head kicks a000_213115 / 213114 / 213110 in the rec_* recordings): Wolf moves
                 // only while the kick holds him (frames 0-6), then goes straight up; the clip's
-                // 0.27 m step back at frames 17-20 never shows. gap: the exe's branch is not traced.
-                let held = data.flag(&a.anim, a.t, crate::player::FLAG_NO_GRAVITY);
+                // 0.27 m step back at frames 17-20 never shows. The exe's hold (FUN_140bccd50 with
+                // +0x92a and no launch timer) moves the body by the root motion only.
+                let held = if a.side == Side::Player { crate::player::no_gravity_hold(data, &a) } else { data.flag(&a.anim, a.t, crate::player::FLAG_NO_GRAVITY) };
                 if !a.airborne || held {
                     tf.translation += delta;
                 }

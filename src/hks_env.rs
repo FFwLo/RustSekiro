@@ -62,7 +62,7 @@ pub const GET_WEAPON_SWITCH_TYPE: i32 = 207;
 /// Case 0xde: flags +0x68 (hit direction): 0 / 7 -> 2, 1 / 2 -> 1, 3 / 4 -> 3, else 0. gap.
 pub const GET_RECEIVED_DAMAGE_DIRECTION: i32 = 222;
 /// Case 0xe0: fall module (bag +0x70) FUN_140b97880, capped at 59 when FUN_140a58a70, x100.
-/// gap: Sv1 has `Player::air_top` but not the module's rule.
+/// `Player::air_top` follows the module's +0x854 (ground frames and holds only; tools/emu-cases `air`).
 pub const GET_FALL_HEIGHT: i32 = 224;
 /// Case 0xe1: FUN_1409f1b00(chr, hand): the int array at [chr +0x120], hand 0 -> [1], else [hand
 /// + 1] when [0] == 1. gap: save-dependent equipment state.

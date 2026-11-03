@@ -124,19 +124,22 @@ update then neither reads its time nor calls the TAE: the clip blended out gets 
 same. Wolf's CMSGs have one child each, so his anim
 changes are state-machine transitions that activate a new CMSG.
 
-**Not ported (gap): the first window of a clip started at an offset.** `Actor::start_at(t)`
-(continue_state and the five land continuations in player.rs) keeps prev_t = t, so nothing before
-the offset enters: what the exe gives if a preUpdate comes between the reset and the update. Tried
-the reset path ((0, t) on the next step, test count 56 event-steps): Wolf then relaunched off the
-land continuation of a jump art (7700: the land clip shares the launch's TAE 920 before its
-offset), which the game does not do, so the order activate -> update without preUpdate is not
-what the game's land continuations get. Test `selector_first_window_matches_the_exe` counts it.
+**The first window of a clip started at an offset (settled 2026-11-03, topic air).**
+`Actor::start_at(t)` (continue_state and the five land continuations in player.rs) keeps
+prev_t = t, so nothing before the offset enters. The whole game frame agrees: tools/emu-cases
+`air` jump_slash / jump_art land 50308000 at 0.7333 s and the continuation 50308050's first TAE
+window is (0.733, 0.7497), not (0, ...): a preUpdate comes between the reset and the first update.
+(The reset path tried earlier relaunched Wolf off the jump art's land clip, which the game does
+not do.) gap: the start time reads 0.733, 1/3 ms under the air clip's time. Test
+`a_land_continuation_starts_its_window_at_the_start_time`.
 
-**Kept a point test:** ChrActionFlag 27 SetNoGravity (actor.rs, map.rs, player.rs). The exe sets
-it on the update the event ends in too (FUN_140b51b70 case 0x1b, physics +0x92c), but RSekiro's
-hold zeroes the vertical velocity, which there cancels a TAE 920 launch entering in the same
-update (the head kick's relaunch at 0.2 s: 8 sim tests of jumps, kicks, grapples and air arts
-broke). How the exe's physics reads +0x92c is not traced.
+**SetNoGravity on the exe's window (2026-11-03, topic air).** ChrActionFlag 27 is now read on
+the dispatch window (`Actor::step`, the update the event ends in included) for the player as for
+enemies. What cancelled the head kick's relaunch before was the missing launch timer: a TAE 920
+sets the fall module's timer (+0x1c0 +0x180, 0.251 s on the launch update) before that update's
+step, and the physics step FUN_140bccd50 holds only when +0x92c is set and the timer is out
+(`player::air_frame`, `LAUNCH_TIME`). Emulated with the flag forced on four windows around a
+jump's launch; test `no_gravity_waits_for_the_launch_timer`. kb/movement.md has the details.
 
 **The "ended" byte (+0x19) and the queue:**
 - ChrActionFlags (type 0, FUN_140b51b70) set their bits on every dispatch, "ended" or not; some
@@ -155,8 +158,7 @@ broke). How the exe's physics reads +0x92c is not traced.
   step, no queue).
 
 **Not covered / gaps:** whether a newly activated clip already advances in its first update
-(RSekiro: yes, as `play`; either way the same events enter, one update apart); the activate /
-preUpdate order for a StartTime clip (above); the old clip's
+(RSekiro: yes, as `play`; either way the same events enter, one update apart); the old clip's
 windows during a blend in a case other than Wolf's idle (needs the whole graph run);
 `finisher_window`, the deflect log's `flick_at` and player.rs `accept` (reads at prev_t) stay
 point tests; the additive layer has no step.
