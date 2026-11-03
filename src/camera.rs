@@ -93,6 +93,9 @@ pub struct CamState {
     /// wait before it falls (transChaseByControlEnd*).
     trans_snap: f32,
     trans_hold: f32,
+    /// +0x1b0..+0x1dc, +0x410: the focus follow (`FocusChase`, on Wolf's position before
+    /// the focus height +0x204 is added); `None` until the first frame.
+    focus_chase: Option<FocusChase>,
     /// The camera closer than playerFadeDist to Wolf this frame (`cam_fade_step`).
     near: bool,
     /// Wolf's CamFade alpha (`cam_fade_step`), 1 = drawn as usual.
@@ -234,6 +237,68 @@ pub(crate) fn chase_position(prev: Vec3, raw: Vec3, focus: Vec3, r: PosChase, pi
     focus + Vec3::new(v.x * dist_xz / l, v.y * dist_y / l, v.z * dist_xz / l)
 }
 
+/// The focus follow of the ChrCam update: FUN_141155d20 on camera +0x1b0 (velocity), +0x1c0
+/// (last frame's target), +0x1d0 (output), with the clock +0x410 (time since the last 1/30 s
+/// step, FUN_141155ec0). The focus moves at a velocity (m per 1/30 s) that changes only at the
+/// 1/30 s step boundaries, each closing `rate` (CameraParam chrTransChaseRateXZ / Y_ForNormal
+/// eased into +0x220 / +0x224) of the gap to where the target is at that step; the target's
+/// own velocity this frame is taken as constant across it. So the focus starts slowly and lags
+/// behind a run like a spring, rather than closing a share of the gap each frame. Matched to the
+/// exe on 7 emulated scenarios (sim test `follow_camera_matches_the_exe`).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct FocusChase {
+    pub vel: Vec3,
+    pub last_target: Vec3,
+    pub out: Vec3,
+    pub clock: f32,
+}
+
+const FOCUS_STEP: f32 = 0.033333335;
+
+impl FocusChase {
+    pub(crate) fn at(target: Vec3) -> Self {
+        Self { vel: Vec3::ZERO, last_target: target, out: target, clock: 0.0 }
+    }
+
+    /// One frame toward `target` at `rate` per axis; returns the new focus. The exe returns
+    /// zero for a frame under 1.2e-7 s; here the focus stays put.
+    pub(crate) fn update(&mut self, target: Vec3, rate: Vec3, dt: f32) -> Vec3 {
+        self.clock += dt;
+        while self.clock >= FOCUS_STEP {
+            self.clock -= FOCUS_STEP;
+        }
+        if dt < 1.192_092_9e-7 {
+            return self.out;
+        }
+        let last = std::mem::replace(&mut self.last_target, target);
+        let since = self.clock - dt;
+        if since > 0.0 {
+            // No step boundary this frame: on at the current velocity.
+            self.out += self.vel * (dt / FOCUS_STEP);
+            return self.out;
+        }
+        let (mut since, mut t) = (since, self.clock);
+        while since < -FOCUS_STEP {
+            since += FOCUS_STEP;
+            t += FOCUS_STEP;
+        }
+        let tv = (target - last) / dt;
+        let part = (since + FOCUS_STEP) / FOCUS_STEP;
+        let mut gap = (target - self.out) + self.vel * part - tv * t;
+        let mut x = rate * gap;
+        let mut moved = x - self.vel * part;
+        while t >= FOCUS_STEP {
+            t -= FOCUS_STEP;
+            gap += tv * FOCUS_STEP - x;
+            x = rate * gap;
+            moved += x;
+        }
+        self.vel = (tv * FOCUS_STEP - x + gap) * rate;
+        self.out += self.vel * (self.clock / FOCUS_STEP) + moved;
+        self.out
+    }
+}
+
 impl CamState {
     #[cfg(test)]
     pub(crate) fn for_tests(combat: &Combat) -> Self {
@@ -261,6 +326,7 @@ impl CamState {
             fulcrum: None,
             trans_snap: 1.0,
             trans_hold: 0.0,
+            focus_chase: None,
             near: false,
             alpha: 1.0,
             seen: None,
@@ -367,13 +433,13 @@ fn capture_mouse(
 /// movement repeats every 0.5 s. The exe reads the value from the pad object's mouse state
 /// (FUN_14095fd40 / 50: +0x38f8 -> +0x20 / +0x24), negates both axes and scores with
 /// d.x * in.x - d.y * in.y (the stick, FUN_1409ca2d0, is not negated). The state is the pad's
-/// frame snapshot (FUN_140960650, 14096.c:3190): analog actions 0x54 / 0x55 times -1 unless the
+/// frame snapshot (FUN_140960650, <decomp ref>): analog actions 0x54 / 0x55 times -1 unless the
 /// option bytes +0x715 / +0x716 are set (likely the camera invert options, not verified), so with
 /// the defaults the switch sees the raw axis. The only DirectInput float source is the mouse poll
-/// FUN_141a8f540 (141a8.c:10829): DIMOUSESTATE lX / lY as is, relative counts per poll, no scale
+/// FUN_141a8f540 (<decomp ref>): DIMOUSESTATE lX / lY as is, relative counts per poll, no scale
 /// or accumulation found (the action 0x54 binding itself is not traced). Bevy's
 /// AccumulatedMouseMotion is the same unit (raw counts a frame, y down), so 50 / 25 apply as is.
-/// The pick's d is NDC (FUN_1409ca480, 1409c.c:6512-6532: view x projection, / w, no viewport
+/// The pick's d is NDC (FUN_1409ca480, <decomp ref>: view x projection, / w, no viewport
 /// step), so y up: with in.y = +lY a flick down picks the lower target, as here. gap: the sign
 /// the 0x55 binding gives lY (not traced), and the stick, unnegated, would then pick downward on
 /// stick up unless its struct stores +y down; here stick up picks up.
@@ -618,7 +684,7 @@ fn pitch_range(combat: &Combat, locked: bool) -> (f32, f32) {
 /// frame the camera keeps lerp(rotSpeed_Min, rotSpeed_Max, s * s) and lerp(rotHiSpeed_Min,
 /// rotHiSpeed_Max, s * s) (FUN_14073c260 -> +0x250..+0x264); the stick turns at
 /// lerp(normal, high, |ramp|) (`hi`, see orbit_with_stick).
-fn stick_rate(combat: &Combat, speed: f32, hi: f32) -> Vec2 {
+pub(crate) fn stick_rate(combat: &Combat, speed: f32, hi: f32) -> Vec2 {
     let c = combat.param("CameraParam", 0);
     let f = |k: &str, d: f64| c[k].as_f64().unwrap_or(d) as f32;
     let s = (speed / 10.0).clamp(0.0, 1.0);
@@ -627,6 +693,18 @@ fn stick_rate(combat: &Combat, speed: f32, hi: f32) -> Vec2 {
     let base = Vec2::new(lerp(f("rotSpeed_MinY", 0.977), f("rotSpeed_MaxY", 3.665)), lerp(f("rotSpeed_MinX", 0.977), f("rotSpeed_MaxX", 2.932)));
     let high = Vec2::new(lerp(f("rotHiSpeed_MinY", 2.688), f("rotHiSpeed_MaxY", 7.575)), lerp(f("rotHiSpeed_MinX", 2.199), f("rotHiSpeed_MaxX", 6.109)));
     base + (high - base) * hi.clamp(0.0, 1.0)
+}
+
+/// The fast turn ramp (exe camera +0x160) for a stick `r` (x: the yaw axis): see
+/// orbit_with_stick; `inc` = dt / rotHiSpeedRateIncTime.
+pub(crate) fn hi_ramp(hi: f32, r: Vec2, inc: f32) -> f32 {
+    if r.length() <= 0.998 || r.x.abs() <= 1e-3 {
+        0.0
+    } else if r.x > 0.0 {
+        (hi.max(0.0) + inc).min(1.0)
+    } else {
+        (hi.min(0.0) - inc).max(-1.0)
+    }
 }
 
 /// The right stick turns the camera (unlocked; locked it switches targets, toggle_lock).
@@ -650,22 +728,39 @@ fn orbit_with_stick(
     // starting over from 0 when the side flips; otherwise 0. gap: the exe's sideways threshold
     // (thunk_FUN_1419dcdb0) is read as "not zero", and which stick component signs it as x.
     let inc = dt / combat.param("CameraParam", 0)["rotHiSpeedRateIncTime"].as_f64().unwrap_or(0.6).max(1e-3) as f32;
-    *hi = if r.length() <= 0.998 || r.x.abs() <= 1e-3 {
-        0.0
-    } else if r.x > 0.0 {
-        (hi.max(0.0) + inc).min(1.0)
-    } else {
-        (hi.min(0.0) - inc).max(-1.0)
-    };
+    *hi = hi_ramp(*hi, r, inc);
     if r.length() < 1e-3 {
         return;
     }
     let rate = stick_rate(&combat, config.input.camera_speed, hi.abs());
     let sign = if config.input.invert_y { -1.0 } else { 1.0 };
-    camera.yaw -= r.x * rate.x * dt;
+    // In the fast turn the exe drops the stick's size for yaw: the full rate, the stick's side
+    // only (FUN_14073c260 ~0x14073e5xx; the emulated diagonal stick turns as fast as a full
+    // sideways one), and the pitch goes to the stick's tilt (`direct_pitch`).
+    let fast = *hi != 0.0;
+    let side = if fast { r.x.signum() } else { r.x };
+    camera.yaw -= side * rate.x * dt;
     let (lo, hi_pitch) = pitch_range(&combat, false);
     // Stick up looks up: the camera goes under the focus (pitch down).
-    camera.pitch = (camera.pitch - sign * r.y * rate.y * dt).clamp(lo, hi_pitch);
+    camera.pitch = if fast {
+        let c = combat.param("CameraParam", 0);
+        let f = |k: &str, d: f64| c[k].as_f64().unwrap_or(d) as f32;
+        direct_pitch(camera.pitch, -sign * r.y, (lo, hi_pitch), f("directPitchAng", 1.0472), f("directPitchRate", 0.06), dt)
+    } else {
+        camera.pitch - sign * r.y * rate.y * dt
+    }
+    .clamp(lo, hi_pitch);
+}
+
+/// The pitch in the fast turn (camera +0x160 not 0): it chases the stick's tilt `up` (+ raises
+/// the camera) over CameraParam directPitchAng (60 deg) times the pitch limit on that side, at
+/// directPitchRate (0.06) per 1/30 s; a full sideways stick levels the camera. Fitted to the
+/// exe on 5 emulated scenarios (diagonals up and down, 0.3 up, a level stick from 0.73 rad;
+/// 600 frames within 3e-6 rad, sim test `follow_camera_matches_the_exe`); the code in
+/// FUN_14073c260 is not traced.
+pub(crate) fn direct_pitch(pitch: f32, up: f32, (lo, hi): (f32, f32), ang: f32, rate: f32, dt: f32) -> f32 {
+    let want = up / ang.sin().max(1e-3) * if up > 0.0 { hi } else { -lo };
+    pitch + (want - pitch) * (rate * dt * 30.0).min(1.0)
 }
 
 fn orbit_with_mouse(
@@ -814,10 +909,10 @@ pub(crate) fn follow_player(
         orbit.pitch = orbit.pitch.clamp(range.0, range.1);
     }
     let target_focus = chr_focus(player.translation, orbit.cam.focus_y);
-    // Focus follow (exe FUN_141155d20 from the ChrCam update FUN_14073c260): fixed 1/30 s steps,
-    // each closing CameraParam chrTransChaseRateXZ_ForNormal (0.2) / _Y (0.3) of the gap.
-    let step = |rate: f32| 1.0 - (1.0 - rate.clamp(0.0, 1.0)).powf(dt * 30.0);
-    let (mut bxz, mut by) = (step(cf("chrTransChaseRateXZ_ForNormal", 0.2)), step(cf("chrTransChaseRateY_ForNormal", 0.3)));
+    // Focus follow (exe FUN_141155d20 from the ChrCam update FUN_14073c260, `FocusChase`) at
+    // CameraParam chrTransChaseRateXZ_ForNormal (0.2) / _Y (0.3). gap: the exe eases its working
+    // rates (+0x220 / +0x224) toward the row by dt each frame; the row's are used here.
+    let mut rate = Vec3::new(cf("chrTransChaseRateXZ_ForNormal", 0.2), cf("chrTransChaseRateY_ForNormal", 0.3), cf("chrTransChaseRateXZ_ForNormal", 0.2));
     // TAE 151 CameraLookAtTarget (exe FUN_140b517a0 -> camera singleton +0x3c dummy, +0x40 rate;
     // FUN_14073c260): the focus chases that DummyPoly on Wolf at min(rate, 1) on every axis
     // (the normal rates when the rate is <= 0). Big deflects and the deathblow throws use dmy 142.
@@ -835,10 +930,9 @@ pub(crate) fn follow_player(
             look_dir = pos - player.translation;
             let f = |k: &str| e.args.get(k).and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
             look_angles = Some([f("LookUpLimit"), f("LookDownLimit"), f("LookLeftLimit"), f("LookRightLimit")]);
-            let rate = e.args.get("unk1").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
-            if rate > 0.0 {
-                bxz = step(rate.min(1.0));
-                by = bxz;
+            let look_rate = e.args.get("unk1").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
+            if look_rate > 0.0 {
+                rate = Vec3::splat(look_rate.min(1.0));
             }
         }
     }
@@ -858,9 +952,11 @@ pub(crate) fn follow_player(
         let back = angle_delta(def[0], next[0]).abs() < 1e-3 && angle_delta(def[1], next[1]).abs() < 1e-3;
         orbit.cam.look = (!back).then_some([next[0], next[1], -std::f32::consts::PI, std::f32::consts::PI]);
     }
-    orbit.focus.x += (target_focus.x - orbit.focus.x) * bxz;
-    orbit.focus.z += (target_focus.z - orbit.focus.z) * bxz;
-    orbit.focus.y += (target_focus.y - orbit.focus.y) * by;
+    // The exe chases Wolf's position (+0x90) and adds the focus height (+0x204) after.
+    let lift = Vec3::Y * orbit.cam.focus_y;
+    let start = orbit.focus - lift;
+    let chase = orbit.cam.focus_chase.get_or_insert_with(|| FocusChase::at(start));
+    orbit.focus = chase.update(target_focus - lift, rate, dt) + lift;
     // The fulcrum (camera +0xe0; CameraParam row values, FulcrumParams). +0x194 (14073.c
     // 9305-9397): 0 while the camera is being turned, 1 when the turning stops (held for
     // transChaseByControlEndWaitTime, then falling over transChaseByControlEndReleaseTime), 1
@@ -941,7 +1037,10 @@ pub(crate) fn follow_player(
     {
         let arm = rotation * Vec3::Z;
         let cam_dist = if orbit.cam.pos.is_some() { (transform.translation - orbit.focus).length() } else { orbit.cam.dist };
-        let right = rotation * Vec3::X;
+        // The right axis of last frame's camera (+0x10, the final matrix), not this frame's
+        // angles (exe FUN_14073c260; checked on the emulated run, test
+        // `follow_camera_matches_the_exe`).
+        let right = transform.rotation * Vec3::X;
         let sideways = (moved.x * right.x + moved.z * right.z).abs();
         let f = if orbit.cam.fulcrum.is_some() {
             place_fulcrum(orbit.focus, arm, cam_dist, sideways, dt, fp)

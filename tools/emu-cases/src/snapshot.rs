@@ -420,26 +420,6 @@ impl Snap {
         self.regions.iter().filter(|r| r.0 >= lo && r.0 + r.1 <= hi).map(|r| (r.0, r.1)).collect()
     }
 
-    /// The first 8-aligned address holding `v` (a vtable: finds a live object of that class).
-    pub fn find_u64(&mut self, v: u64) -> Option<u64> {
-        let needle = v.to_le_bytes();
-        let mut buf = Vec::new();
-        for &(base, size, off) in &self.regions {
-            let mut done = 0;
-            while done < size {
-                let len = (size - done).min(256 << 20);
-                buf.resize(len as usize, 0);
-                self.file.seek(SeekFrom::Start(off + done)).unwrap();
-                self.file.read_exact(&mut buf).unwrap();
-                if let Some(i) = buf.chunks_exact(8).position(|c| c == needle) {
-                    return Some(base + done + 8 * i as u64);
-                }
-                done += len;
-            }
-        }
-        None
-    }
-
     pub fn overlaps(&self, lo: u64, hi: u64) -> bool {
         self.regions.iter().any(|r| r.0 < hi && lo < r.0 + r.1)
     }

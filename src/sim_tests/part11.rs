@@ -703,3 +703,119 @@ pub(crate) fn super_armor_hit_matches_the_exe() {
     let report: Vec<String> = diffs.iter().map(|(k, (n, ex))| format!("{k}: {n} of {} cases differ, e.g. {ex}", cases.len())).collect();
     assert!(report.is_empty(), "SuperArmor::hit differs from the exe:\n{}", report.join("\n"));
 }
+
+/// The game's follow camera (FUN_140734790 -> FUN_14073c260, run in tools/emu-cases on a memory
+/// snapshot of the user's sekiro.exe: 7 scenarios of 30-90 frames - still, the stick's yaw full
+/// then let go, half yaw, half pitch, the mouse, Wolf running sideways at 6 m/s, 30 fps) against
+/// the helpers follow_player is built from, frame by frame from the exe's own state before each
+/// frame. The exe's stick is (pitch, yaw) and its yaw points from the camera to the focus (ours
+/// from the focus to the camera); its pitch is ours. Skipped when
+/// extracted/emu/camera_frames.json is missing.
+#[test]
+pub(crate) fn follow_camera_matches_the_exe() {
+    use crate::camera::*;
+    use std::f32::consts::{PI, TAU};
+    let path = crate::paths::root().join("extracted/emu/camera_frames.json");
+    let Ok(text) = std::fs::read_to_string(&path) else { return };
+    let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+    let mut app = app();
+    let combat = app.world_mut().remove_resource::<crate::data::Combat>().unwrap();
+    let row = combat.param("CameraParam", 0);
+    let p = |k: &str| row[k].as_f64().unwrap_or_else(|| panic!("CameraParam {k}")) as f32;
+    let fp = FulcrumParams {
+        rate_xz: p("targetTransChaseRateXZ"),
+        rate_y: p("targetTransChaseRateY"),
+        lr_max_dist: p("fulcrumDistRateByLrMoveMaxDist"),
+        lr_min: p("fulcrumDistRateByLrMoveMin"),
+        lr_max: p("fulcrumDistRateByLrMoveMax"),
+        dist_min: p("fulcrumDistMin"),
+    };
+    let chase = PosChase {
+        xz: p("targetChaseRateXZForNormal"),
+        y: p("targetChaseRateY"),
+        ang_min: p("targetChaseRateAngMin"),
+        ang_max: p("targetChaseRateAngMax"),
+        dist_xz: p("targetChaseDistRateXZ"),
+        dist_y: p("targetChaseDistRateY"),
+    };
+    let wrap = |x: f32| (x + PI).rem_euclid(TAU) - PI;
+    let mut worst: std::collections::BTreeMap<String, (f32, String)> = Default::default();
+    let mut check = |what: &str, at: String, err: f32, tol: f32| {
+        let e = worst.entry(what.to_string()).or_insert((0.0, String::new()));
+        let err = if err.is_nan() { f32::INFINITY } else { err };
+        if err > tol && err > e.0 {
+            *e = (err, at);
+        }
+    };
+    let (mut checked, mut walled) = (0, Vec::new());
+    let scenarios = v["scenarios"].as_array().unwrap();
+    assert_eq!(scenarios.len(), 17);
+    for s in scenarios {
+        let dt = s["dt"].as_f64().unwrap() as f32;
+        for (i, fr) in s["frames"].as_array().unwrap().iter().enumerate() {
+            let at = format!("{} frame {i}", s["name"].as_str().unwrap());
+            // Fields that are no float (pointers, flags) are null in the JSON: NaN here.
+            let floats = |k: &str| fr[k].as_array().unwrap().iter().map(|x| x.as_f64().map_or(f32::NAN, |x| x as f32)).collect::<Vec<_>>();
+            let (b, a, stick, mouse, wolf) = (floats("before"), floats("after"), floats("stick"), floats("mouse"), floats("wolf"));
+            let f = |x: &[f32], o: usize| x[o / 4];
+            let v3 = |x: &[f32], o: usize| Vec3::new(x[o / 4], x[o / 4 + 1], x[o / 4 + 2]);
+            // From the first frame the camera's cast hits the ground or a wall (+0x110 off the
+            // chased +0x100) the exe's wall handling takes over (not ported: map::raycast).
+            if (v3(&a, 0x110) - v3(&a, 0x100)).length() > 1e-4 {
+                walled.push(at);
+                break;
+            }
+            checked += 1;
+            // The focus follow, on Wolf's position; the focus is it plus the height +0x204.
+            check("+0x220 / +0x224 focus rates = CameraParam row 0", at.clone(), (f(&b, 0x220) - p("chrTransChaseRateXZ_ForNormal")).abs().max((f(&b, 0x224) - p("chrTransChaseRateY_ForNormal")).abs()), 1e-6);
+            let mut fc = FocusChase { vel: v3(&b, 0x1b0), last_target: v3(&b, 0x1c0), out: v3(&b, 0x1d0), clock: f(&b, 0x410) };
+            let rate = Vec3::new(f(&b, 0x220), f(&b, 0x224), f(&b, 0x220));
+            check("focus follow (+0x90)", at.clone(), (fc.update(Vec3::from_slice(&wolf), rate, dt) - v3(&a, 0x90)).length(), 1e-4);
+            check("focus height (+0xc0 = +0x90 + +0x204)", at.clone(), (v3(&a, 0x90) + Vec3::Y * f(&a, 0x204) - v3(&a, 0xc0)).length(), 1e-4);
+            let focus = v3(&a, 0xc0);
+            let moved = focus - v3(&b, 0xc0);
+            // The stick's fast turn ramp and turn rates; the mouse in degrees.
+            let r = Vec2::new(stick[1], stick[0]);
+            let inc = dt / p("rotHiSpeedRateIncTime");
+            check("fast turn ramp (+0x160)", at.clone(), (hi_ramp(f(&b, 0x160), r, inc) - f(&a, 0x160)).abs(), 1e-5);
+            let speed = f(&b, 0x270) * 10.0;
+            let rates = stick_rate(&combat, speed, f(&a, 0x160).abs());
+            check("stick rates (+0x254 / +0x250, normal)", at.clone(), (stick_rate(&combat, speed, 0.0) - Vec2::new(f(&b, 0x254), f(&b, 0x250))).abs().max_element(), 1e-3);
+            check("stick rates (+0x264 / +0x260, fast)", at.clone(), (stick_rate(&combat, speed, 1.0) - Vec2::new(f(&b, 0x264), f(&b, 0x260))).abs().max_element(), 1e-3);
+            let fast = f(&a, 0x160) != 0.0;
+            let side = if fast { stick[1].signum() } else { stick[1] };
+            let turn = Vec2::new(side * rates.x * dt - mouse[1].to_radians(), stick[0] * rates.y * dt - mouse[0].to_radians());
+            // The fulcrum dragged by the focus's move; the yaw and pitch read back from it, then
+            // turned.
+            let arm = drag_fulcrum(v3(&b, 0xe0), moved, f(&a, 0x194), fp) - focus;
+            let yaw = f32::atan2(arm.x, arm.z) + turn.x;
+            check("yaw (+0x174)", at.clone(), wrap(yaw - (f(&a, 0x174) - PI)).abs(), 1e-4);
+            if chases_pitch(true, p("chrChaseRotXInvalidAngle"), Vec2::ZERO) {
+                let limits = (f(&a, 0x230), f(&a, 0x234));
+                let resync = f32::atan2(arm.y, arm.with_y(0.0).length());
+                let pitch = if fast { direct_pitch(resync, stick[0], limits, p("directPitchAng"), p("directPitchRate"), dt) } else { resync + turn.y };
+                let pitch = pitch.clamp(limits.0, limits.1);
+                check("pitch (+0x170)", at.clone(), (pitch - f(&a, 0x170)).abs(), 1e-4);
+            }
+            // The fulcrum put back on the arm: (1 - k) of last frame's camera distance, k from
+            // the focus's move across last frame's right axis (+0x10).
+            let (yaw, pitch) = (f(&a, 0x174) - PI, f(&a, 0x170));
+            let rotation = Quat::from_euler(EulerRot::YXZ, yaw, -pitch, 0.0);
+            let right = v3(&b, 0x10);
+            let sideways = (moved.x * right.x + moved.z * right.z).abs();
+            let cam_dist = (v3(&b, 0x40) - focus).length();
+            check("fulcrum (+0xe0)", at.clone(), (place_fulcrum(focus, rotation * Vec3::Z, cam_dist, sideways, 1.0 / 60.0, fp) - v3(&a, 0xe0)).length(), 1e-4);
+            // The orbit's point, the position chase and the safe margin (no wall here).
+            let raw = focus + rotation * Vec3::Z * f(&a, 0x214);
+            check("orbit point (+0xf0)", at.clone(), (raw - v3(&a, 0xf0)).length(), 1e-4);
+            let pos = chase_position(v3(&b, 0x100), v3(&a, 0xf0), focus, PosChase { xz: f(&a, 0x228), ..chase }, Some((f(&a, 0x230), f(&a, 0x234))), f(&a, 0x150), dt);
+            check("position chase (+0x100)", at.clone(), (pos - v3(&a, 0x100)).length(), 1e-4);
+            let d = (v3(&a, 0x110) - focus).length();
+            let cam = focus + (v3(&a, 0x110) - focus) * safe_margin(d, p("camSafeMarginRate"), p("camSafeMarginMax")) / d;
+            check("camera (+0x40, safe margin)", at.clone(), (cam - v3(&a, 0x40)).length(), 1e-4);
+        }
+    }
+    assert!(checked >= 1500 && walled.len() <= 2, "{checked} frames checked; walls at {walled:?}");
+    let report: Vec<String> = worst.iter().filter(|(_, (e, _))| *e > 0.0).map(|(k, (e, at))| format!("{k}: off by {e:.6} at {at}")).collect();
+    assert!(report.is_empty(), "the follow camera differs from the exe:\n{}", report.join("\n"));
+}

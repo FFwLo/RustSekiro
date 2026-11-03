@@ -19,6 +19,7 @@ Dated findings, oldest first. Append new entries at the end.
   update FUN_14073c260 eases working rates (+0x220/+0x224/+0x228) toward chrTransChaseRateXZ/Y_ForNormal (+0xc/+0x10) and
   targetChaseRateXZForNormal (+0x6c), then FUN_141155d20 moves the focus in fixed 1/30 s steps, each closing `rate` of
   the gap (sub-step interpolation of the target). camera.rs focus: blend = 1 - (1 - rate)^(dt*30), XZ 0.2 / Y 0.3.
+  (Wrong: a velocity chase; ported 2026-11-03, see "Follow camera checked against the exe" below.)
   follow_smoothing now only drives the lock-on yaw chase (lockRotChaseRateY 0.3 is the likely source - not traced).
 - 2026-10-07 lock-on camera chase from the exe: FUN_14073c260 turns the locked camera by diff * rate * (dt / (1/30)) per
   frame, yaw rate lockRotChaseRateY 0.3 (+0x114), pitch lockRotChaseRateX 0.6 (+0x110). Yaw applied; config
@@ -52,11 +53,11 @@ Dated findings, oldest first. Append new entries at the end.
   -atan2(y, xz)); limits rotRangeXAtLock lerped to the free range by |P.y - focus.y| over
   rotRangeLerpBegin/EndHeight; chase lockRotChaseRateX * dt / (1/30) outside lockRotChasePlayAngX (0).
   Result: ~20-30 deg looking down in melee (was ~8, a guess), steep over the target on head kicks.
-- 2026-10-10 lock-on target switch (static, LockTgtManImp): update FUN_1409c5fe0 (decomp/1409c.c:11171-11185) calls
+- 2026-10-10 lock-on target switch (static, LockTgtManImp): update FUN_1409c5fe0 (decomp/<decomp ref>) calls
   the stick switch FUN_1409ca2d0 (+0x29c0 flick mode off by default; FUN_1409c9d40 flick variant is debug only) and the
   mouse switch FUN_1409ca120 every frame. Stick: |axis| < 0.5 (@0x143289124) re-arms, > 0.95 (@0x14328918c) fires.
   Mouse: delta * -1 (@0x143289434), < 25 (@0x1432892d0) re-arms, > 50 (@0x1432892f0) fires. Each switch sets both
-  cooldowns (+0x2844 / +0x2848) to 0.5 s. Pick FUN_1409ca480 (1409c.c:6345): screen-space d = cand - cur, score =
+  cooldowns (+0x2844 / +0x2848) to 0.5 s. Pick FUN_1409ca480 (<decomp ref>): screen-space d = cand - cur, score =
   cos(angle(d, input)) / |d|, best above cos(+0x2854 = pi/2). Candidates while locked: CamFront{Near,Far}Range
   LockChangeHalfAng yaw 60 / 45 deg, pitch 30 / 30, radius 8 / 200 (+0x2968..+0x2984). LockCamParam is not involved.
   camera.rs toggle_lock. gap: mouse units, and the input y sign (exe uses d.x*in.x - d.y*in.y).
@@ -103,20 +104,20 @@ Dated findings, oldest first. Append new entries at the end.
   (FUN_14095fd40 / 50); the stick FUN_1409ca2d0 reads FUN_140960430 / 440 unnegated. The mouse state's writer is not
   found statically (scan for int->float stores at +0x20 / +0x24: none matching), so units and signs stay open.
 - 2026-10-13 lock switch mouse, units (static): +0x38f8 is the pad's current frame snapshot (ring of 0xec-byte
-  frames, set 14096.c:3750), filled by FUN_140960650 (14096.c:3190-3192): +0x20 = FUN_140965bd0 = analog action 0x54
+  frames, set <decomp ref>), filled by FUN_140960650 (<decomp ref>): +0x20 = FUN_140965bd0 = analog action 0x54
   * s, +0x24 = FUN_140965c80 = action 0x55 * s, s = +1 if option byte DAT_143d5a988 +0x715 / +0x716 else -1 (likely
   camera invert X / Y, not verified); FUN_1409ca120's -1 cancels the default, so the switch sees the raw axis.
-  Analog read FUN_1425e8150 (1425e.c:6483, up to 4 bindings, type 2 = device float). The only DirectInput float
-  source: MouseDevice poll FUN_141a8f540 (141a8.c:10829), GetDeviceState DIMOUSESTATE, +0x1b0 / +0x1b4 = (float)lX /
+  Analog read FUN_1425e8150 (<decomp ref>, up to 4 bindings, type 2 = device float). The only DirectInput float
+  source: MouseDevice poll FUN_141a8f540 (<decomp ref>), GetDeviceState DIMOUSESTATE, +0x1b0 / +0x1b4 = (float)lX /
   lY, relative axis mode, no scale or accumulation: raw counts per poll, y down. So 50 / 25 are counts a frame,
   the same unit as Bevy's AccumulatedMouseMotion (camera.rs unchanged). Open: the 0x54 -> mouse binding table.
-  Screen d in FUN_1409ca480 is NDC (1409c.c:6512-6532, view then projection matrix from camera +0x10..+0x4c,
+  Screen d in FUN_1409ca480 is NDC (<decomp ref>, view then projection matrix from camera +0x10..+0x4c,
   divided by clip w, no viewport transform; +0x29c7 remaps d via FUN_1402b8e90, not read): y up, so in.y > 0
   favours lower candidates; mouse down (lY > 0) picks lower, matching camera.rs. Open: the binding's lY sign;
-  the stick (FUN_1409ca2d0 reads +0x10 / +0x14 unnegated, 1409c.c:4870) would pick lower on +y.
+  the stick (FUN_1409ca2d0 reads +0x10 / +0x14 unnegated, <decomp ref>) would pick lower on +y.
 - 2026-10-13 lockCamAdjustRot_MaxX / MaxY / ChaseRate (row +0x128..+0x130) are unused: FUN_1407374e0 copies /
-  blends whole LockCamParam rows (getter FUN_140737d80, 14073.c:3459) via FUN_1407381d0 (14073.c:5223-5225 lerp
-  them like every field) into DAT_143d59938 +8; its readers (FUN_140741e70 callers 14073.c:5426 / 7434 / 8919)
+  blends whole LockCamParam rows (getter FUN_140737d80, <decomp ref>) via FUN_1407381d0 (<decomp ref> lerp
+  them like every field) into DAT_143d59938 +8; its readers (FUN_140741e70 callers <decomp ref> / 7434 / 8919)
   never load +0x128..+0x130. Not ported (nothing to port).
 - 2026-10-11 checked AKJama/sekiro-rs's camera / movement fixes (c1782f8, 502c9be, 8eaf879): locked diagonals with
   walk twist, the 4-dir step tilt and the dead-target lock drop were already here; the held-stick realign after a
@@ -168,3 +169,31 @@ Dated findings, oldest first. Append new entries at the end.
   events on Wolf's anims (184 with OverrideVertical, 116 with OverrideHorizontal). The fulcrum yaw
   resync now also runs under TAE 151. Gyoubu (a225_510000) checked against the reference clip; the
   clip's final deathblow is a225_510090 (Horizontal 50 / 90 / -30), not traced here.
+
+## Follow camera checked against the exe frame by frame (2026-11-03)
+- tools/emu-cases `camera_frames` runs FUN_140734790 (-> FUN_14073c260) on a memory snapshot of the game
+  (General Naomori's arena, Wolf placed by `emu-cases scene`) for 17 scenarios (still, stick yaw / pitch /
+  diagonals / left, mouse, Wolf running sideways, toward the camera, climbing, stopping, a turn then a run,
+  30 fps), 1,650 frames. Sim test `follow_camera_matches_the_exe` (part11) checks the helpers on each frame
+  from the exe's state before it (docs/kb/emulator-pilot.md pilot 3b).
+- Focus follow: FUN_141155d20 is not "close rate of the gap per 1/30 s step" (the 2026-10-07 note above)
+  but a velocity chase: camera +0x1b0 velocity (m per 1/30 s), +0x1c0 last target, +0x1d0 output, +0x410
+  clock (FUN_141155ec0 adds dt, wraps at 1/30). At each step boundary the velocity becomes
+  rate * (gap at the boundary + the target's own move over a step); between boundaries the focus moves at
+  that velocity. The target is Wolf's position (+0x90; +0xc0 = it + focus height +0x204). Ported as
+  `FocusChase`, matched within 1e-5 m. Old blend: half the speed at a run's start and no spring lag.
+- Fulcrum: the sideways move is taken across last frame's camera right axis (+0x10 of the final matrix),
+  not this frame's angles; the fulcrum distance is (1 - k) * |+0x40 (last final camera) - focus|.
+- Fast turn (+0x160 not 0): yaw turns at the full fast rate with the stick's side only (not its size); the
+  pitch goes to stick tilt / sin(directPitchAng 60 deg) * the pitch limit on that side, at directPitchRate
+  0.06 per 1/30 s (`direct_pitch`; fitted within 3e-6 rad on 600 frames, the code is not traced). A full
+  sideways stick levels the camera.
+- Matched as they were: stick rates (+0x250 pitch / +0x254 yaw normal, +0x260 / +0x264 fast; lerp of the
+  CameraParam min / max by the speed option squared), the fast ramp (dt / rotHiSpeedRateIncTime 0.6),
+  the mouse (degrees, minus), the yaw / pitch read back from the dragged fulcrum, the orbit point, the
+  position chase (+0x100), the safe margin (+0x40), the control timers +0x150 / +0x154 / +0x194.
+- Exe stick layout: Wolf's manipulator +0x80 = (pitch, yaw), + pitch raises the camera; the exe's yaw
+  points from the camera to the focus (ours = exe - pi). Which pad axis feeds each is not checked.
+- Not covered: the wall / ground handling (when the cast hits, the orbit point itself is pulled in: seen
+  at a wall about 10 m along +X and when the stick pitched the camera to the ground), lock-on, TAE camera
+  events, other frame rates.

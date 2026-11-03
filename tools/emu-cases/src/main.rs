@@ -345,6 +345,11 @@ impl Emu {
         b
     }
     fn peek_u64(&mut self, at: u64) -> u64 { u64::from_le_bytes(self.peek(at)) }
+    /// Writes floats into the game's memory (mapping the page from the snapshot first).
+    fn poke_f32s(&mut self, at: u64, v: &[f32]) {
+        self.peek::<4>(at);
+        self.raw_write(at, &v.iter().flat_map(|x| x.to_le_bytes()).collect::<Vec<_>>());
+    }
     fn rf32(&self, at: u64) -> f32 { f32::from_le_bytes(self.read(at)) }
     fn ru8(&self, at: u64) -> u8 { self.read::<1>(at)[0] }
 
@@ -593,15 +598,21 @@ fn hit_stop(emu: &mut Emu, out: &Path) {
     rep.write(out, "hit_stop", F, emu);
 }
 
+/// The game's ChrCam: FieldArea [0x143d5c0a0] +0x30 (SekiroTool), checked by its vtable.
+fn chr_cam(emu: &mut Emu) -> u64 {
+    let field_area = emu.peek_u64(0x1_43d5_c0a0);
+    let cam = emu.peek_u64(field_area + 0x30);
+    assert_eq!(emu.peek_u64(cam), 0x1_429a_6d40, "FieldArea +0x30 is not a ChrCam");
+    cam
+}
+
 /// Pilot 3: the follow camera's frame update (FUN_140734790 -> FUN_14073c260) on the game's own
 /// memory (--snapshot): ChrCam found by its vtable, the player and the pad state as the game's
 /// caller FUN_140a6cf00 passes them. Reports how far it runs and which camera fields change.
 fn camera(emu: &mut Emu, out: &Path) {
     const F: u64 = 0x1_4073_4790;
-    const CHR_CAM_VT: u64 = 0x1_429a_6d40;
-    let snap = emu.st.snap.as_mut().expect("camera needs --snapshot");
-    let player = snap.player;
-    let cam = snap.find_u64(CHR_CAM_VT).expect("no ChrCam in the snapshot");
+    let player = emu.st.snap.as_ref().expect("camera needs --snapshot").player;
+    let cam = chr_cam(emu);
     let follow = emu.peek_u64(cam + 0x60);
     let pad_man = emu.peek_u64(0x1_43d6_d640);
     let pad = emu.peek_u64(pad_man + 0x98);
@@ -624,6 +635,94 @@ fn camera(emu: &mut Emu, out: &Path) {
         rep.add(&r, json!({"dt": dt, "changed": changed}), None);
     }
     rep.write(out, "camera", F, emu);
+}
+
+/// One camera scenario: per frame, the right stick (M+0x80: x raises pitch +0x170, y raises yaw
+/// +0x174), the mouse (M+0xd0, degrees) and Wolf's move (metres a frame, world).
+struct CamScenario {
+    name: &'static str,
+    frames: usize,
+    dt: f32,
+    input: fn(usize) -> ([f32; 2], [f32; 2], [f32; 3]),
+}
+
+const CAM_SCENARIOS: [CamScenario; 17] = [
+    CamScenario { name: "still", frames: 60, dt: 1.0 / 60.0, input: |_| ([0.0; 2], [0.0; 2], [0.0; 3]) },
+    CamScenario { name: "stick_yaw_full_then_release", frames: 90, dt: 1.0 / 60.0, input: |f| (if f < 60 { [0.0, 1.0] } else { [0.0; 2] }, [0.0; 2], [0.0; 3]) },
+    CamScenario { name: "stick_yaw_half", frames: 60, dt: 1.0 / 60.0, input: |_| ([0.0, 0.5], [0.0; 2], [0.0; 3]) },
+    CamScenario { name: "stick_pitch_up_half", frames: 60, dt: 1.0 / 60.0, input: |_| ([0.5, 0.0], [0.0; 2], [0.0; 3]) },
+    CamScenario { name: "mouse_yaw_3deg", frames: 60, dt: 1.0 / 60.0, input: |_| ([0.0; 2], [0.0, 3.0], [0.0; 3]) },
+    CamScenario { name: "wolf_runs_x_6ms", frames: 90, dt: 1.0 / 60.0, input: |_| ([0.0; 2], [0.0; 2], [0.1, 0.0, 0.0]) },
+    CamScenario { name: "still_30fps", frames: 30, dt: 1.0 / 30.0, input: |_| ([0.0; 2], [0.0; 2], [0.0; 3]) },
+    CamScenario { name: "wolf_climbs_3ms", frames: 90, dt: 1.0 / 60.0, input: |_| ([0.0; 2], [0.0; 2], [0.0, 0.05, 0.0]) },
+    // The snapshot's camera looks along (0.574, -0.819) on X / Z: this runs at it.
+    CamScenario { name: "wolf_runs_at_camera_6ms", frames: 90, dt: 1.0 / 60.0, input: |_| ([0.0; 2], [0.0; 2], [-0.0574, 0.0, 0.0819]) },
+    CamScenario { name: "wolf_runs_then_stops", frames: 120, dt: 1.0 / 60.0, input: |f| ([0.0; 2], [0.0; 2], if f < 40 { [0.1, 0.0, 0.0] } else { [0.0; 3] }) },
+    CamScenario { name: "stick_full_diagonal", frames: 60, dt: 1.0 / 60.0, input: |_| ([0.7071, 0.7071], [0.0; 2], [0.0; 3]) },
+    CamScenario { name: "stick_yaw_left_full", frames: 60, dt: 1.0 / 60.0, input: |_| ([0.0, -1.0], [0.0; 2], [0.0; 3]) },
+    // 2.4 m/s: 8.8 m, short of the wall about 10 m along +X from the spot (there the exe's
+    // wall handling pulls the camera in).
+    CamScenario { name: "stick_yaw_then_run", frames: 240, dt: 1.0 / 60.0, input: |f| (if f < 20 { [0.0, 1.0] } else { [0.0; 2] }, [0.0; 2], if f >= 20 { [0.04, 0.0, 0.0] } else { [0.0; 3] }) },
+    CamScenario { name: "stick_full_mostly_yaw", frames: 60, dt: 1.0 / 60.0, input: |_| ([0.3, 0.954], [0.0; 2], [0.0; 3]) },
+    CamScenario { name: "stick_full_diagonal_down", frames: 60, dt: 1.0 / 60.0, input: |_| ([-0.7071, 0.7071], [0.0; 2], [0.0; 3]) },
+    CamScenario { name: "stick_full_diagonal_long", frames: 300, dt: 1.0 / 60.0, input: |_| ([0.7071, 0.7071], [0.0; 2], [0.0; 3]) },
+    CamScenario { name: "stick_pitch_then_full_yaw", frames: 120, dt: 1.0 / 60.0, input: |f| (if f < 60 { [0.5, 0.0] } else { [0.0, 1.0] }, [0.0; 2], [0.0; 3]) },
+];
+
+/// Pilot 3b: the follow camera over many frames on the snapshot (FUN_140734790 with the stick
+/// gate open, as the in-game caller FUN_140a74dc0 passes it), each scenario from the snapshot's
+/// state. Writes every frame's inputs and the ChrExFollowCam fields 0x0..0x420 (as f32) to
+/// camera_frames.json for the sim tests.
+fn camera_frames(new_emu: &dyn Fn() -> Emu, out: &Path) {
+    const F: u64 = 0x1_4073_4790;
+    const FIELDS: u64 = 0x420;
+    let mut scenarios = Vec::new();
+    for sc in &CAM_SCENARIOS {
+        let mut emu = new_emu();
+        let player = emu.st.snap.as_ref().expect("camera_frames needs --snapshot").player;
+        let cam = chr_cam(&mut emu);
+        let follow = emu.peek_u64(cam + 0x60);
+        let world = emu.peek_u64(0x1_43d6_d640);
+        let world = emu.peek_u64(world + 0x98);
+        // Wolf's manipulator (FUN_1409efea0) and physics module (position +0x80).
+        let chr_ctrl = emu.peek_u64(player + 0x50);
+        let m = match emu.peek_u64(chr_ctrl + 0x358) {
+            0 => emu.peek_u64(chr_ctrl + 0x120),
+            m => m,
+        };
+        let bag = emu.peek_u64(player + 0x1ff8);
+        let phys = emu.peek_u64(bag + 0x68);
+        let mut frames = Vec::new();
+        let mut stopped = None;
+        for f in 0..sc.frames {
+            let (stick, mouse, step) = (sc.input)(f);
+            emu.poke_f32s(m + 0x80, &stick);
+            emu.poke_f32s(m + 0xd0, &mouse);
+            let pos: [f32; 3] = std::array::from_fn(|i| f32::from_le_bytes(emu.peek(phys + 0x80 + 4 * i as u64)));
+            let pos: [f32; 3] = std::array::from_fn(|i| pos[i] + step[i]);
+            emu.poke_f32s(phys + 0x80, &pos);
+            let before: Vec<f32> = (0..FIELDS / 4).map(|i| f32::from_le_bytes(emu.peek(follow + 4 * i))).collect();
+            let r = emu.call(F, &[cam, 0, player, world, 1], &[0.0, sc.dt]);
+            if r.stopped.is_some() {
+                stopped = r.stopped;
+                break;
+            }
+            let after: Vec<f32> = (0..FIELDS / 4).map(|i| f32::from_le_bytes(emu.read(follow + 4 * i))).collect();
+            frames.push(json!({"stick": stick, "mouse": mouse, "wolf": pos, "before": before, "after": after}));
+        }
+        let yaw = |v: &Value| v["after"][0x174 / 4].as_f64().unwrap_or(0.0);
+        println!(
+            "{}: {} frames, yaw {:.3} -> {:.3}, stopped {:?}",
+            sc.name,
+            frames.len(),
+            frames.first().map(yaw).unwrap_or(0.0),
+            frames.last().map(yaw).unwrap_or(0.0),
+            stopped.map(|(a, e)| (format!("{a:#x}"), e))
+        );
+        scenarios.push(json!({"name": sc.name, "dt": sc.dt, "frames": frames}));
+    }
+    let body = json!({"function": format!("{F:#x}"), "fields": format!("ChrExFollowCam 0x0..{FIELDS:#x} as f32"), "scenarios": scenarios});
+    std::fs::write(out.join("camera_frames.json"), serde_json::to_string(&body).unwrap()).unwrap();
 }
 
 /// probe <addr>: runs a function on zeroed objects (rcx, rdx, r8, r9 each 0x4000 bytes) and lists
@@ -695,6 +794,9 @@ fn main() {
     if want.contains(&"camera") {
         let mut emu = Emu::new(exe, snap());
         camera(&mut emu, out);
+    }
+    if want.contains(&"camera_frames") {
+        camera_frames(&|| Emu::new(exe, snap()), out);
     }
     if on("hit_stop") {
         let mut emu = Emu::new(exe, None);

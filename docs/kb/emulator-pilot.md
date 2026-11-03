@@ -24,6 +24,7 @@ Run: `tools/emu-cases/target/release/emu-cases.exe <image/sekiro.exe> extracted/
 | 1 | FUN_140bdb470 super armour hit (488 B) | 1,152 in 0.6 s, 23 blocks | Normal path identical. Fixed: the pool is cut to its full size before the hit (a bonus that ended left extra posture), and a broken pool still drains and restarts its timer. Test `super_armor_hit_matches_the_exe` passes. |
 | 2 | FUN_140b9cd90 attacker hit stop (544 B) | 160 in 0.4 s, 29 blocks | Sv1's table is exact for component mode 0/3 with the engine switch off. Found: mode 1 makes type-0 defenders give full hit stop, mode 2 none at all, the switch makes type 0 full, and the type-3 action state is the chr's +0x1ff8 module [0]+0x54 bit 3. Which mode Wolf and enemies carry is not traced. |
 | 3 | FUN_140734790 follow camera frame (3,119 B, calls FUN_14073c260 22,857 B) | 2 frames on the snapshot, 6.5 s | On empty state it stopped after 7 blocks (needs the game's singletons). On the 2026-11-03 snapshot it runs to the end: 48 blocks, only locks, TLS and error-code imports hit. Standing still with no input only its timers move (+0x414 = dt, +0x410 counts down); input and motion cases are the next step. |
+| 3b | The follow camera over many frames (`camera_frames`, same functions) | 17 scenarios, 1,650 frames, 60 s | From the exe's own state before each frame, test `follow_camera_matches_the_exe` checks Sv1's helpers on 1,626 frames: stick rates and the fast turn ramp, mouse, yaw and pitch read back from the dragged fulcrum, the fulcrum's placement, the orbit point, the position chase, the safe margin, and the control timers (+0x150/+0x154/+0x194, checked once in Python). Fixed: the focus follow is FUN_141155d20, a velocity chase stepped at 1/30 s (`FocusChase`; Sv1 closed a share of the gap per frame, half as fast at the start of a run, with no spring lag); the fulcrum's sideways move is measured on last frame's camera right axis; in the fast turn yaw turns at the full rate with the stick's side only, and the pitch goes to the stick's tilt (`direct_pitch`, CameraParam directPitchAng / directPitchRate, fitted within 3e-6 rad; a full sideways stick levels the camera). Not covered: the wall and ground handling (24 frames where the camera reached the ground, and a wall about 10 m along +X), lock-on, TAE camera events, other frame rates than 60 / 30, which pad axis the exe's stick (pitch, yaw) comes from. |
 | 4 | Hit-stop mode (+0x2d of `SprjPlayerHitStopModule`, [[chr+0x1ff8]+0x90]) | snapshot read | Wolf and all 89 enemies of the scene: mode 0, WorldChrManDbg +0x11c/+0x11d off, +0x124 0.5. The constructor (FUN_140b9c8b0) zeroes it and no method of the module writes it, so Sv1's mode 0 table is the game's. Not done: a whole-exe search for another writer. |
 
 ## Snapshot (2026-11-03)
@@ -49,7 +50,10 @@ Wolf is at the spot (else no snapshot) and copies. Tested 2026-11-03 in General 
 (1101951, 201.79 -26.23 23.88): Wolf exactly there, setters back to their own bytes, all 89
 enemies hit-stop mode 0. The copy paused the game 35-170 s (disk speed).
 
-Snapshots are working files (owner, 2026-11-03): use them, then delete them (10 GB each). Idol ids and boss spots: SekiroTool's `Resources.resx` "Warps" (MIT,
+Snapshots are working files (owner, 2026-11-03): use them, then delete them (10 GB each). The
+Naomori-arena snapshot was deleted after the camera runs; `extracted/emu/camera_frames.json` (numbers
+the functions computed) stays, so the test runs without it. New camera scenarios need a new scene
+(`emu-cases scene`, about 3 minutes with the game running). Idol ids and boss spots: SekiroTool's `Resources.resx` "Warps" (MIT,
 reference/SekiroTool). The same steps for live work without the tool: `tools/memscope/warp.lua`.
 The warp's area load moved the game window off the screen once (to 3334,1433); moving it back with
 SetWindowPos is enough. A save to load from the title screen still needs screen control (held keys,

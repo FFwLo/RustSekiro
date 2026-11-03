@@ -25,7 +25,7 @@ pub(crate) use crate::player::{Action, PadInput, Player, PlayerPlugin, CAPSULE_H
 // part08: 49 tests, a_jump_in_the_break_pose_vaults_without_killing .. a_patrol_point_with_a_zero_region_is_reached_by_is_arrived
 // part09: 47 tests, a_blocked_hit_does_not_wake_a_held_enemy .. an_attack_out_of_a_run_keeps_the_runs_momentum
 // part10: 38 tests, an_attack_at_the_run_loops_wrap_keeps_the_momentum_too .. hit_stop_holds_posture_regen_and_sp_effect_timers
-// part11: 15 tests, a_mid_stride_loop_swap_does_not_burst_its_sounds .. throw_direction_effects_come_from_the_material_row
+// part11: 21 tests, a_mid_stride_loop_swap_does_not_burst_its_sounds .. follow_camera_matches_the_exe
 
 mod part01;
 mod part02;
