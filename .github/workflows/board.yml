@@ -1,0 +1,46 @@
+name: board
+# When the owner merges a pull request whose body says "Board: <ID> done: <one line>", move the row to Done on the
+# board branch and add the line to CHANGES.md. Runs in the base repository (pull_request_target) but never checks
+# out or runs the pull request's code: it reads only the body, the author and the branch name, through env.
+on:
+  pull_request_target:
+    types: [closed]
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  done:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agents-work-board
+      - name: mark the row done
+        env:
+          BODY: ${{ github.event.pull_request.body }}
+          AUTHOR: ${{ github.event.pull_request.user.login }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          python - <<'EOF'
+          import os, re, subprocess, sys
+          m = re.search(r"^Board:\s*([A-Z]\d+[a-z]?)\s+done:\s*(.+)$", os.environ["BODY"] or "", re.M)
+          if not m:
+              sys.exit(print("no 'Board: <ID> done:' line: nothing to do") or 0)
+          rid, line = m.group(1), m.group(2).strip()[:200]
+          ref = os.environ["HEAD_REF"]
+          agent = ref.rsplit("-", 1)[-1] if ref.startswith("work-") else "pr"
+          who = f"{os.environ['AUTHOR']}/{agent}"
+          r = subprocess.run([sys.executable, "board.py", "done", rid, f"{line} (#{os.environ['NUMBER']})", who])
+          sys.exit(r.returncode)
+          EOF
+      - name: push the board
+        run: |
+          git diff --quiet && exit 0
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -qam "Board: row done by #${{ github.event.pull_request.number }}"
+          git push -q origin HEAD:agents-work-board

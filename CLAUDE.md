@@ -9,10 +9,9 @@ the exe in the emulator, `tools/emu-cases`). The package and exe are `sv1`; the 
 **Agents start here:**
 1. `python tools/doctor.py` must end with `ready`; each missing item prints its fix.
 2. Read the rules and the board, which live on branch `agents-work-board`, not on `main` (a fork says `upstream`):
-   `git fetch origin && git show origin/agents-work-board:AGENTS.md`, then
-   `git show origin/agents-work-board:board.py | python - open`.
-3. Pick a row, claim it (`board.py claim <ID> <agent>`), and work in your own worktree
-   (`python tools/worktree.py add <agent> <row> <slug>`).
+   `git fetch origin && git show origin/agents-work-board:AGENTS.md`, then `python tools/row.py`.
+3. `python tools/row.py start <ID> --agent <name>` claims a row and makes your worktree; finish with
+   `row.py check` and `row.py submit "<one line>"`.
 
 The skill `tools/claude-skills/rsekiro-row` does all of this end to end ("do an RSekiro row"). Contributor rules:
 `docs/CONTRIBUTING.md`. The guard (`tools/guard.py`, hooks in `.githooks`) refuses game data, decompiled code and
@@ -50,7 +49,7 @@ disassembly.
 | Reference clips | `docs/kb/clips.md` (check before asking for a new recording) |
 | Checks against the exe (emulator) | `tools/emu-cases/src/<topic>.rs`, `src/sim_tests/emu_*.rs`, `docs/kb/emulator-pilot.md`, `docs/kb/frame-coverage.md` |
 | Streaming map, lighting, collision, script VM (copied from sekiro-rs) | `crates/`, `crates/README.md` |
-| Proof level per system and character; the work map page linked from the README | `tools/coverage.py` → `docs/kb/coverage.md`; `python tools/workmap/build.py --tests <n>` → `target/workmap.html` |
+| Proof level per system and character; the work map (README picture) | `tools/coverage.py` → `docs/kb/coverage.md`; `python tools/workmap/build.py --tests <n> --png` → `target/workmap.html` and the README picture `docs/media/workmap.png` |
 | Live recordings of the real Sekiro | `docs/kb/recordings.md`: read `python -m tools.rec summary <rec> --cat <topic>`, never raw data |
 
 Community references worth cloning next to the repo (read-only): SekiroHKS, SDT-HKS, Paramdex, SekiroTool,

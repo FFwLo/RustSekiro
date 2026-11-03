@@ -1,6 +1,9 @@
 """Work map: one HTML page showing how far RSekiro is proven to match Sekiro and which board rows are open.
 
-    python tools/workmap/build.py [--tests 813] [--out target/workmap.html]
+    python tools/workmap/build.py [--tests 813] [--out target/workmap.html] [--png]
+
+--png also saves the top of the page as docs/media/workmap.png (the README's picture) with a headless Edge or
+Chrome.
 
 Reads docs/kb/coverage.md (run tools/coverage.py first to refresh it) and WORK.md from the board branch
 (`upstream/agents-work-board` in a fork, else `origin/agents-work-board`; fetch first). Writes one
@@ -10,7 +13,9 @@ import argparse
 import datetime
 import json
 import os
+import pathlib
 import re
+import shutil
 import subprocess
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -58,6 +63,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--tests", type=int, default=0, help="passing tests in the full suite, shown at the top")
     ap.add_argument("--out", default=os.path.join(REPO, "target", "workmap.html"))
+    ap.add_argument("--png", action="store_true", help="also write docs/media/workmap.png")
     a = ap.parse_args()
     chars, systems = coverage()
     data = {"chr": chars, "sys": systems, "rows": board(), "tests": a.tests,
@@ -68,6 +74,24 @@ def main():
     with open(a.out, "w", encoding="utf-8", newline="\n") as f:
         f.write(page)
     print(f"{a.out}: {len(systems)} systems, {len(chars)} characters, {len(data['rows'])} rows")
+    if a.png:
+        picture(os.path.abspath(a.out))
+
+
+def picture(page):
+    """The header, totals, systems and bosses at 1200 px wide, in the browser's own theme."""
+    browsers = [shutil.which(n) for n in ("msedge", "chrome", "google-chrome", "chromium")] + [
+        r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+        r"C:\Program Files\Google\Chrome\Application\chrome.exe"]
+    exe = next((b for b in browsers if b and os.path.exists(b)), None)
+    if not exe:
+        raise SystemExit("no Edge or Chrome found for --png")
+    out = os.path.join(REPO, "docs", "media", "workmap.png")
+    os.makedirs(os.path.dirname(out), exist_ok=True)
+    subprocess.run([exe, "--headless=new", "--disable-gpu", "--hide-scrollbars", "--force-device-scale-factor=1",
+                    "--window-size=1200,1328", "--virtual-time-budget=6000", f"--screenshot={out}",
+                    pathlib.Path(page).as_uri()], capture_output=True, check=True)
+    print(f"{out}: {os.path.getsize(out):,} bytes")
 
 
 if __name__ == "__main__":

@@ -151,11 +151,12 @@ td.task { min-width: 260px; }
           <div class="cmd"><pre>powershell -ExecutionPolicy Bypass -File tools\extract.ps1
 git config core.hooksPath .githooks
 python tools/doctor.py</pre><button class="copy">Copy</button></div></div></li>
-        <li><div><p><strong>Pick a row and claim it.</strong> New here? Take a <code>B</code> row. The claim is a comment on the claims issue, under your GitHub name.</p>
-          <div class="cmd"><pre>git fetch upstream
-git show upstream/agents-work-board:board.py | python - open
-git show upstream/agents-work-board:board.py | python - claim B3 &lt;agent&gt;</pre><button class="copy">Copy</button></div></div></li>
-        <li><div><p><strong>Open a pull request</strong> from a branch of your fork, with the full suite's <code>test result:</code> line. The owner reviews and merges.</p></div></li>
+        <li><div><p><strong>Pick a row and start it.</strong> New here? Take a <code>B</code> row. <code>start</code> claims it under your GitHub name and makes your own worktree.</p>
+          <div class="cmd"><pre>python tools/row.py
+python tools/row.py start B3 --agent wren</pre><button class="copy">Copy</button></div></div></li>
+        <li><div><p><strong>Check and submit.</strong> <code>submit</code> pushes to your fork and opens the pull request with your test result filled in. The owner merges, and the row moves to Done by itself.</p>
+          <div class="cmd"><pre>python tools/row.py check
+python tools/row.py submit "what changed, in one line"</pre><button class="copy">Copy</button></div></div></li>
       </ol>
       <p class="note">Claude Code users: copy <code>tools/claude-skills/rsekiro-row</code> into <code>~/.claude/skills/</code> and say "do an RSekiro row".</p>
     </div>
@@ -189,7 +190,7 @@ git show upstream/agents-work-board:board.py | python - claim B3 &lt;agent&gt;</
       </div>
     </div>
     <div class="list" style="margin-top:10px"><table>
-      <thead><tr><th>Row</th><th>Area</th><th>Task</th><th>Claim</th></tr></thead>
+      <thead><tr><th>Row</th><th>Area</th><th>Task</th><th>Start</th></tr></thead>
       <tbody id="rows"></tbody>
     </table></div>
   </section>
@@ -284,12 +285,12 @@ $("groups").addEventListener("click", e => { const b = e.target.closest("button"
 $("groups").addEventListener("mouseover", e => { const b = e.target.closest("button"); if (b) showChr(+b.dataset.i); });
 
 // open rows
-const claim = id => `git show upstream/agents-work-board:board.py | python - claim ${id} <agent>`;
+const claim = id => `python tools/row.py start ${id}`;
 function drawRows(k) {
   $("rows").innerHTML = D.rows.filter(r => r[3] === "open" && (!k || r[5] === k)).map(r => `<tr>
     <td class="id">${esc(r[0])}</td><td><span class="pill ${esc(r[1])}">${esc(r[1])}</span></td>
     <td class="task">${md(r[4])}${r[2] ? `<br><small class="note">needs ${esc(r[2])}</small>` : ""}</td>
-    <td><button class="copy" data-copy="${esc(claim(r[0]))}" style="padding:4px 10px">Copy claim</button></td></tr>`).join("");
+    <td><button class="copy" data-copy="${esc(claim(r[0]))}" style="padding:4px 10px">Copy start</button></td></tr>`).join("");
 }
 document.querySelector(".seg").addEventListener("click", e => { const b = e.target.closest("button"); if (!b) return;
   document.querySelectorAll(".seg button").forEach(x => x.setAttribute("aria-pressed", String(x === b))); drawRows(b.dataset.k); });
@@ -301,7 +302,7 @@ document.addEventListener("click", async e => {
   const text = b.dataset.copy || b.previousElementSibling.textContent;
   try { await navigator.clipboard.writeText(text); b.textContent = "Copied"; }
   catch { const r = document.createRange(); r.selectNodeContents(b.previousElementSibling || b); getSelection().removeAllRanges(); getSelection().addRange(r); b.textContent = "Selected"; }
-  setTimeout(() => { b.textContent = b.dataset.copy ? "Copy claim" : "Copy"; }, 1600);
+  setTimeout(() => { b.textContent = b.dataset.copy ? "Copy start" : "Copy"; }, 1600);
 });
 
 $("foot").innerHTML = `Snapshot of ${D.date}: proof levels from <code>docs/kb/coverage.md</code>, rows from the board branch.

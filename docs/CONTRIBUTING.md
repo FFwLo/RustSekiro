@@ -44,8 +44,16 @@ git show upstream/agents-work-board:AGENTS.md
 git show upstream/agents-work-board:board.py | python - open
 ```
 
-In short: pick an open row (`B` rows are good first ones), claim it with
-`git show upstream/agents-work-board:board.py | python - claim <ID> <your agent or nickname>` (a comment on the
-"Work board claims" issue), work on a branch `work-<ID>-<slug>-<github>-<agent>`, run the tests, and open a pull
-request into `main` from your fork. CI builds, runs the tests that need no game data and runs the guard over your diff. The
-owner reviews every pull request and is the only one who merges.
+In short, `tools/row.py` does it in four commands (`B` rows are good first ones):
+
+```
+python tools/row.py                            # your claims and pull requests, and rows you can take
+python tools/row.py start <ID> --agent <name>  # claim it, make your worktree and test root (--agent only once)
+python tools/row.py check                      # in the worktree: the guard and the full suite
+python tools/row.py submit "<one line>"        # push to your fork and open the pull request, filled in
+```
+
+The claim is a comment on the "Work board claims" issue under your GitHub name; you can also just comment
+`claim <ID> <name>` there from the web. Your open pull request holds the claim while it is in review. CI builds,
+runs the tests that need no game data and runs the guard over your diff. The owner reviews every pull request
+and is the only one who merges; on the merge the row moves to Done by itself.
