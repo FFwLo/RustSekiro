@@ -69,7 +69,6 @@ code { font: 500 12.5px var(--mono); }
 .tiles button.dark { color: var(--on); }
 .tiles.big button { width: 128px; height: 46px; font: 500 12px/1.2 var(--body); padding: 4px 6px; text-align: left; overflow: hidden; }
 .tiles button[aria-pressed="true"] { box-shadow: 0 0 0 2px var(--ink); }
-.two { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 26px; align-items: start; }
 .card { background: var(--panel); border: 1px solid var(--line); border-radius: 4px; padding: 18px; display: grid; gap: 12px; min-width: 0; }
 ol.steps { list-style: none; counter-reset: s; margin: 0; padding: 0; display: grid; gap: 12px; }
 ol.steps li { counter-increment: s; display: grid; grid-template-columns: 28px minmax(0, 1fr); gap: 10px; }
@@ -101,7 +100,6 @@ td.task { min-width: 260px; }
 .note { color: var(--muted); font-size: 13px; max-width: 90ch; }
 #tip { position: fixed; z-index: 20; pointer-events: none; background: var(--tip); color: var(--tipink);
   padding: 7px 10px; border-radius: 4px; font-size: 13px; max-width: 320px; box-shadow: 0 6px 20px rgba(0,0,0,.3); }
-@media (max-width: 860px) { .two { grid-template-columns: minmax(0, 1fr); } }
 @media (max-width: 600px) { #tree { height: 620px; } .totals b { font-size: 23px; } .seal { width: 50px; height: 50px; font-size: 19px; } }
 @media (prefers-reduced-motion: no-preference) { #tree button, .tiles button { transition: filter .12s; } }
 #tree button:hover, .tiles button:hover { filter: brightness(1.08) saturate(1.1); }
@@ -140,7 +138,7 @@ td.task { min-width: 260px; }
     <p class="pick" id="chrpick">Tap or hover a tile.</p>
   </section>
 
-  <section class="two">
+  <section>
     <div class="card">
       <h2>Join in five steps</h2>
       <ol class="steps">
@@ -159,23 +157,6 @@ python tools/row.py start B3 --agent wren</pre><button class="copy">Copy</button
 python tools/row.py submit "what changed, in one line"</pre><button class="copy">Copy</button></div></div></li>
       </ol>
       <p class="note">Claude Code users: copy <code>tools/claude-skills/rsekiro-row</code> into <code>~/.claude/skills/</code> and say "do an RSekiro row".</p>
-    </div>
-    <div class="card">
-      <h2>Fine-tune it live</h2>
-      <p class="note" style="font-size:14px">Everything Sekiro's files hold is read from them. The few values they do not hold
-        live in <code>config.toml</code>, each with a note on where the real value is. Change one while the game runs and
-        press <code>F5</code>: no rebuild.</p>
-      <div class="cmd"><pre>cargo run --release
-# edit config.toml, save, press F5 in the game</pre><button class="copy">Copy</button></div>
-      <h3 style="margin-top:6px">Handy keys</h3>
-      <table><tbody>
-        <tr><td><code>F1</code></td><td>debug menu: enemy, AI mode, skills, tools, cheats</td></tr>
-        <tr><td><code>T</code> / <code>H</code></td><td>enemy AI on or off / show hurtboxes</td></tr>
-        <tr><td><code>F3</code> / <code>Backspace</code></td><td>frame rate / reset the fight</td></tr>
-        <tr><td><code>[</code> <code>]</code></td><td>change the hour</td></tr>
-      </tbody></table>
-      <p class="note">Found a value that feels closer to the game? Say how you compared it (side by side with the real game,
-        a recording, the emulator) and open a pull request.</p>
     </div>
   </section>
 

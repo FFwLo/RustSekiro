@@ -26,12 +26,7 @@ powershell -ExecutionPolicy Bypass -File tools\extract.ps1   # builds extracted/
 cargo run --release
 ```
 
-Keys: [docs/controls.md](docs/controls.md). Tests: `cargo test --release`.
-
-## Fine-tune it
-
-The few values Sekiro's files don't hold are in `config.toml`, each with a note on where the real value lives.
-Edit one while the game runs and press `F5`: no rebuild. `F1` opens the debug menu (enemy, AI, skills, cheats).
+Keys: [docs/controls.md](docs/controls.md) (`F1` opens the debug menu). Tests: `cargo test --release`.
 
 ## Join
 
