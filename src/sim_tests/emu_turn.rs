@@ -37,7 +37,7 @@ pub(crate) fn wolf_turn_matches_the_exe() {
             let at = format!("{} frame {i}", s["name"].as_str().unwrap());
             let raw = Vec2::new(-f(&fr["stick"][1]), f(&fr["stick"][0]));
             turn.new_tick();
-            let taken = turn.gate(raw);
+            let taken = turn.gate(raw, false);
             let world = stick_world(taken, cam_yaw) * taken.length();
             turn.turn(&mut yaw, &mut shown, (world != Vec3::ZERO).then(|| yaw_of(world)), rate, 720.0, dt);
             let drawn = ShownYaw::draw(&mut shown, yaw, dt);

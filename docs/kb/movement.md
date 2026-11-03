@@ -259,7 +259,7 @@ scenarios / 440 frames (the stick written into the pad floats [pad +0x38f8]: [0]
   hit boxes) take GetRotation, are inferred, not traced. Not ported: the camera-yaw hold while the stick is held
   (+0x424 / +0x428, option DAT_143d5b49c; re-sampled past 60 deg), the walk halving flag ([ctrl+0x50]+0x88 bit 18),
   the PlayerCtrl +0x259 TurnAngle gate, the module +0x16c rate, the pad's own processing before +0x38f8 (dead zone,
-  XInput scaling), the lock-on manipulator (FUN_1407f1710, needs a target in the snapshot). MoveSpeedLevelReal
+  XInput scaling). The lock-on manipulator (FUN_1407f1710) is checked in kb/camera.md (camera2). MoveSpeedLevelReal
   (HKS GetMoveSpeed) converges toward the stick level (2 only sprinting); Sv1's `speed_level` keeps its own 1 walk /
   2 run scale (it only picks the stop clip and the release slow-down).
 

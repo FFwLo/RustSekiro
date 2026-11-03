@@ -270,6 +270,12 @@ pub struct InputConfig {
     /// Right stick / mouse up looks down.
     #[serde(default)]
     pub invert_y: bool,
+    /// The game's escape-wall camera option (option byte +0xd, copied each frame by
+    /// FUN_140734790 into UseEscapeWall DAT_143d599c0; 0 in the option defaults FUN_1407bc470 and in
+    /// the owner's save): on, the follow camera skips its fulcrum and orbit casts and casts two
+    /// short wings instead (camera.rs `escape_wings`). gap: which menu entry it is.
+    #[serde(default)]
+    pub escape_wall: bool,
 }
 
 /// Byte 0 of the game's option defaults is 5 (FUN_1407bc470, beside the volume bytes 4-6 = 10);

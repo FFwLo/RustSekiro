@@ -100,7 +100,7 @@ pub(crate) fn follow_camera_at_walls_matches_the_exe() {
             let rotation = Quat::from_euler(EulerRot::YXZ, yaw, -pitch, 0.0);
             let right = v3(&b, 0x10);
             let sideways = (moved.x * right.x + moved.z * right.z).abs();
-            let placed = place_fulcrum(focus, rotation * Vec3::Z, (v3(&b, 0x40) - focus).length(), sideways, 1.0 / 60.0, fp);
+            let placed = place_fulcrum(focus, rotation * Vec3::Z, (v3(&b, 0x40) - focus).length(), sideways, dt, fp);
             let Some((st, d, rad)) = ends(FULCRUM_CAST) else { panic!("{at}: no fulcrum cast") };
             check("fulcrum cast (focus -> placed fulcrum, radius)", &at, (st - focus).length().max((st + d - placed).length()).max((rad - radius).abs()), 1e-4);
             let fulcrum = cast_cut(focus, placed - focus, frac(FULCRUM_CAST), FULCRUM_CUT_MIN);
@@ -118,10 +118,10 @@ pub(crate) fn follow_camera_at_walls_matches_the_exe() {
             let r = PosChase { xz: f(&a, 0x228), dist_xz: dist_rate.x, dist_y: dist_rate.y, ..chase };
             let last = (v3(&b, 0x110) - focus).length();
             let pos = chase_position_from(v3(&b, 0x100), last, raw, focus, r, Some(limits), f(&a, 0x150), dt);
-            // gap: the exe applies the position chase rates once a frame (no dt); RSekiro takes
-            // them per 1/60 s, so at 30 fps its chase is the one of two 60 fps frames.
+            // The exe applies the chase rates once a frame (no dt): at 30 fps 0.4 a frame
+            // (`per_frame`; before, RSekiro took them per 1/60 s and closed 0.64).
+            check("position chase (+0x100)", &at, (pos - v3(&a, 0x100)).length(), 1e-4);
             if (dt - 1.0 / 60.0).abs() < 1e-6 {
-                check("position chase (+0x100)", &at, (pos - v3(&a, 0x100)).length(), 1e-4);
                 // Before this port: toward the uncut orbit point, distance from +0x100, rate 0.4.
                 let uncut = focus + (fulcrum - focus).normalize() * f(&a, 0x214);
                 let old = chase_position(v3(&b, 0x100), uncut, focus, PosChase { xz: f(&a, 0x228), ..chase }, Some(limits), f(&a, 0x150), dt);

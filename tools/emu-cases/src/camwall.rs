@@ -37,23 +37,23 @@ const FADE_REQUEST: u64 = 0x1_40b2_1d40;
 const FIELDS: u64 = 0x420;
 
 #[derive(Default)]
-struct Cast {
-    func: &'static str,
-    ret: u64,
-    start: [f32; 4],
-    dir: [f32; 4],
-    radius: f32,
-    frac_at: u64,
-    hit: Option<u8>,
-    frac: Option<f32>,
+pub(crate) struct Cast {
+    pub(crate) func: &'static str,
+    pub(crate) ret: u64,
+    pub(crate) start: [f32; 4],
+    pub(crate) dir: [f32; 4],
+    pub(crate) radius: f32,
+    pub(crate) frac_at: u64,
+    pub(crate) hit: Option<u8>,
+    pub(crate) frac: Option<f32>,
 }
 
 #[derive(Default)]
-struct Log {
-    casts: Vec<Cast>,
+pub(crate) struct Log {
+    pub(crate) casts: Vec<Cast>,
     /// Each fade request's hit: (kind at +8: 1 = character, 6 = object; the character's vtable or
     /// the object's +0x58 / +0x5b).
-    fades: Vec<(u16, u64)>,
+    pub(crate) fades: Vec<(u16, u64)>,
 }
 
 fn reg(e: uc::Engine, id: i32) -> u64 {
@@ -124,7 +124,7 @@ extern "C" fn on_fade(e: uc::Engine, _addr: u64, _size: u32, data: *mut c_void) 
 }
 
 /// Hooks the casts and their return sites in FUN_14073c260 (direct calls found in its bytes).
-fn hook_casts(emu: &mut Emu, log: *mut Log) -> Vec<u64> {
+pub(crate) fn hook_casts(emu: &mut Emu, log: *mut Log) -> Vec<u64> {
     let add = |emu: &mut Emu, cb: *const c_void, at: u64| {
         let mut h = 0usize;
         let r = unsafe { uc::uc_hook_add(emu.uc, &mut h, uc::HOOK_CODE, cb, log as *mut c_void, at, at) };
@@ -154,7 +154,7 @@ fn hook_casts(emu: &mut Emu, log: *mut Log) -> Vec<u64> {
 
 /// The physics world (param_4 of FUN_14073c260) and the camera's cast filter
 /// ([WorldChrMan 0x143d7a1e0] +0x3550).
-fn world_and_filter(emu: &mut Emu) -> (u64, u64) {
+pub(crate) fn world_and_filter(emu: &mut Emu) -> (u64, u64) {
     let w = emu.peek_u64(0x1_43d6_d640);
     let world = emu.peek_u64(w + 0x98);
     let wcm = emu.peek_u64(0x1_43d7_a1e0);

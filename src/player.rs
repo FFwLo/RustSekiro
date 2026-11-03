@@ -2357,9 +2357,17 @@ impl Turn {
         self.pending = self.request.take();
     }
 
-    /// The stick the manipulator takes this frame (FUN_1407f0f50).
-    pub fn gate(&mut self, raw: Vec2) -> Vec2 {
+    /// The stick the manipulator takes this frame: free (FUN_1407f0f50) through the 45 deg
+    /// gate; locked on (`locked`: the lock module hands a lock point, FUN_140b2dab0, and
+    /// FUN_1407f0a70 runs the lock-on manipulator FUN_1407f1710) as it is, the same frame: that
+    /// path stores +0x340 and turns the raw stick by the camera yaw with no gate (emulated with a
+    /// lock point, sim test `lock_manipulator_matches_the_exe`: a press from rest moves that
+    /// frame, a 90 deg flick is no let-go).
+    pub fn gate(&mut self, raw: Vec2, locked: bool) -> Vec2 {
         let last = std::mem::replace(&mut self.last_stick, raw);
+        if locked {
+            return raw;
+        }
         let near = last.length() > 0.0 && raw.length() > 0.0 && last.normalize().dot(raw.normalize()) >= std::f32::consts::FRAC_PI_4.cos();
         if near { raw } else { Vec2::ZERO }
     }
@@ -2399,6 +2407,13 @@ fn free_turn_rate(d: &CharData, a: &Actor) -> Option<f32> {
 fn free_turn(p: &mut Player, a: &mut Actor, d: &CharData, config: &GameConfig, stick: Vec3, dt: f32) {
     let rate = free_turn_rate(d, a);
     p.turn.turn(&mut a.yaw, &mut a.shown, (stick != Vec3::ZERO).then(|| yaw_of(stick)), rate, config.movement.turn_speed, dt);
+}
+
+/// Locked on and standing (`decide`): the turn to the target, at the clip's TAE 224 rate when
+/// it has one, else whole the next frame.
+fn locked_turn(p: &mut Player, a: &mut Actor, d: &CharData, config: &GameConfig, target_dir: Vec3, dt: f32) {
+    let rate = if a.anim.is_empty() { None } else { d.turn_speed(&a.anim, a.t, true) };
+    p.turn.turn(&mut a.yaw, &mut a.shown, (target_dir != Vec3::ZERO).then(|| yaw_of(target_dir)), rate, config.movement.turn_speed, dt);
 }
 
 fn turn_toward(yaw: f32, target: f32, max_step: f32) -> f32 {
@@ -2496,7 +2511,7 @@ fn decide(
     let (pe, p, a, tf) = &mut *player;
     // The pad manipulator runs every frame, whatever Wolf does (FUN_1407f0a70).
     p.turn.new_tick();
-    let gated_stick = p.turn.gate(pad.stick);
+    let gated_stick = p.turn.gate(pad.stick, lock.target.is_some());
     // A wire on an enemy follows him (wire.rs track): the shoot's snapshot left Wolf flying to
     // where Gyoubu / the Ape stood a second before.
     if let (Some(w), Some(gs)) = (p.wire.as_mut(), grapples.as_deref()) {
@@ -5210,6 +5225,17 @@ fn decide(
         lower_body_move(p, a, d, &config, move_stick, target_dir, pad.walk, dt);
     } else if move_ok && (moving || a.state == "Locomotion") {
         locomotion(p, a, d, &config, move_stick, target_dir, pad.walk, dt);
+    } else if let Some(td) = lock.target.and(target_dir).filter(|_| move_ok && a.state == "StandIdle") {
+        // Locked on and standing: the lock-on manipulator (FUN_1407f1710) asks every frame for
+        // the turn to the target (+0x24 = its yaw from Wolf minus his, wrapped) and BehaviorTurn
+        // applies it the next frame, whole when the clip has no TAE 224 rate, the drawn facing
+        // following at 1.1x (emulated: a target 90 deg off snaps the physics yaw in one frame,
+        // the drawn yaw turns 0.2304 rad a frame; sim test `lock_manipulator_matches_the_exe`).
+        // Before, a locked Wolf standing still within 60 deg of the target never turned to it
+        // (past 60 deg the quick turns above take over, with their own turn). StandIdle only:
+        // the guard idle and the quick turns turn on their own. gap: the exe aims at the lock
+        // point (lock module +0x38), here the target's root.
+        locked_turn(p, a, d, &config, td, dt);
     } else if !move_ok {
         a.move_vel = Vec3::ZERO;
         p.speed_level = 0.0;
