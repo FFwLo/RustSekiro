@@ -244,7 +244,7 @@ pub(crate) fn chase_position(prev: Vec3, raw: Vec3, focus: Vec3, r: PosChase, pi
 /// eased into +0x220 / +0x224) of the gap to where the target is at that step; the target's
 /// own velocity this frame is taken as constant across it. So the focus starts slowly and lags
 /// behind a run like a spring, rather than closing a share of the gap each frame. Matched to the
-/// exe on 7 emulated scenarios (sim test `follow_camera_matches_the_exe`).
+/// exe on 17 emulated scenarios within 1e-5 m (sim test `follow_camera_matches_the_exe`).
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct FocusChase {
     pub vel: Vec3,
