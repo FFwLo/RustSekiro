@@ -16,6 +16,7 @@ use std::path::Path;
 
 use serde_json::{json, Value};
 
+mod camwall;
 mod snapshot;
 mod trace;
 
@@ -846,6 +847,9 @@ fn main() {
     }
     if want.contains(&"camera_frames") {
         camera_frames(&|| Emu::new(exe, snap()), out);
+    }
+    if want.iter().any(|w| w.starts_with("camwall")) {
+        camwall::run(&|| Emu::new(exe, snap()), out, &want);
     }
     if on("hit_stop") {
         let mut emu = Emu::new(exe, None);
