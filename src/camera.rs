@@ -79,6 +79,8 @@ pub struct CamState {
     /// +0x100 the camera position chasing the orbit's point (`chase_position`), before
     /// collision; `None` until the first frame.
     pos: Option<Vec3>,
+    /// +0x110 / +0x1e4: the camera after last frame's collision cast and the hit-wall clock.
+    wall: WallCast,
     /// +0x150 / +0x154: camera control snaps the position chase (rate 1), held for
     /// rotCtrlEndWaitTime and released over rotCtrlEndReleaseTime.
     ctrl_snap: f32,
@@ -100,6 +102,8 @@ pub struct CamState {
     near: bool,
     /// Wolf's CamFade alpha (`cam_fade_step`), 1 = drawn as usual.
     alpha: f32,
+    /// The lock point the locked camera frames (+0x280, `LockPointAverage`).
+    lock_point: LockPointAverage,
 }
 
 /// The CamFade rates (exe FUN_140b216b0 defaults of the debug floats
@@ -121,6 +125,69 @@ pub(crate) fn cam_fade_step(alpha: f32, near: bool, dt: f32) -> f32 {
 /// min((d - 1e-5) * camSafeMarginRate, camSafeMarginMax) (0.1, 0.3 m in every CameraParam row).
 pub(crate) fn safe_margin(dist: f32, rate: f32, max: f32) -> f32 {
     if dist > 1e-5 { dist - ((dist - 1e-5) * rate).min(max) } else { dist }
+}
+
+/// The wall state of the ChrCam update (FUN_14073c260).
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct WallCast {
+    /// +0x110: last frame's camera after the collision cast, before the safe margin; the
+    /// distance chase starts from it (`chase_position_from`). `None` until the first frame.
+    pub post: Option<Vec3>,
+    /// +0x1e4: time left on the hit-wall distance rates, set to targetChaseDistRateTime by
+    /// every hit of the final cast (`hit_wall_rates`).
+    pub hit_time: f32,
+}
+
+/// The shortest cut of the fulcrum cast (FUN_14073c260 14073.c 11040-11060, with
+/// Game.IsUseSPChrExFollowCam on): a hit closer than 1 cm keeps the fulcrum 1 cm out.
+pub(crate) const FULCRUM_CUT_MIN: f32 = 0.01;
+/// The shortest cut of the orbit point and final casts (14073.c 11230-11250, 12350-12361).
+pub(crate) const CAST_CUT_MIN: f32 = 1e-5;
+
+/// A cast's end pulled in to its hit (FUN_14073c260 after FUN_14094dfc0 / FUN_14094dc70): the
+/// cast from `start` along `v` hit at `frac` of `v`, so the end moves to
+/// start + v * max(frac * |v|, min) / |v|; no hit leaves start + v. The exe's zero-length
+/// case (the final cast puts the camera 1e-5 m out along the orbit point) is left out.
+pub(crate) fn cast_cut(start: Vec3, v: Vec3, frac: Option<f32>, min: f32) -> Vec3 {
+    let len = v.length();
+    match frac {
+        Some(t) if len >= 1e-5 => start + v * ((t * len).max(min) / len),
+        _ => start + v,
+    }
+}
+
+/// The distance chase rates of the position chase (FUN_14073c260 14073.c 11948-11979): for
+/// targetChaseDistRateTime `time` after a hit of the final cast (`hit_time` = +0x1e4) the X / Z
+/// and Y rates (+0x1e8 / +0x1ec) are targetChaseDistRateXZ / Y_ForHitWall (`hit`, 1.0) for its
+/// first half, then fall linearly to the normal targetChaseDistRateXZ / Y (`normal`, 0.4):
+/// t = clamp(2 hit_time / time). The clock then counts down by dt. Returns the rates and the
+/// clock; so the arm grows back at once after a wall for a second, then eases.
+pub(crate) fn hit_wall_rates(hit_time: f32, time: f32, normal: Vec2, hit: Vec2, dt: f32) -> (Vec2, f32) {
+    if hit_time <= 0.0 || time <= 0.0 {
+        return (normal, 0.0);
+    }
+    let t = (2.0 * hit_time / time).clamp(0.0, 1.0);
+    (hit * t + normal * (1.0 - t), (hit_time - dt).max(0.0))
+}
+
+/// RSekiro's stand-in for the exe's camera sphere cast (FUN_14094dfc0 / FUN_14094dc70: a Havok
+/// linear cast of a `radius` sphere from `start` along `v`, returning the fraction of `v` where
+/// it first touches): a ray over |v| + radius on the map's collision, stopped short by the
+/// radius. A touch within 1 mm past the end counts (the exe's casts report the camera resting
+/// on a wall as a hit at fraction 1, which refreshes the hit-wall clock). With no map loaded
+/// the arena floor y = 0 stands in.
+fn map_cast(start: Vec3, v: Vec3, radius: f32) -> Option<f32> {
+    let len = v.length();
+    if len < 1e-5 {
+        return None;
+    }
+    let dir = v / len;
+    let hit = match crate::map::raycast(start, dir, len + radius + 1e-3) {
+        Some(h) => h - radius,
+        None if dir.y < -1e-3 && crate::map::terrain().is_none() => (start.y - radius) / -dir.y,
+        None => return None,
+    };
+    (hit <= len + 1e-3).then(|| (hit / len).clamp(0.0, 1.0))
 }
 
 /// CameraParam fulcrum values (`drag_fulcrum` / `place_fulcrum`).
@@ -200,14 +267,31 @@ pub(crate) struct PosChase {
 ///   outside its pitch range goes straight back.
 ///
 /// The exe applies the rates once a frame with no time factor; taken here as per 1/60 s (the
-/// game's frame cap). gap: the FUN_140831190 / 1408311b0 override (untraced); the exe measures the last
-/// distance from the post-collision point (+0x110) and lifts the distance rate to
-/// targetChaseDistRateXZ / Y_ForHitWall (1.0) for targetChaseDistRateTime after a wall hit,
-/// which the pre-collision point used here stands in for.
+/// game's frame cap). gap: the FUN_140831190 / 1408311b0 override (untraced). This form starts
+/// the distance chase from |prev - focus|; the follow camera uses `chase_position_from`.
 pub(crate) fn chase_position(prev: Vec3, raw: Vec3, focus: Vec3, r: PosChase, pitch: Option<(f32, f32)>, snap: f32, dt: f32) -> Vec3 {
+    chase_position_from(prev, (prev - focus).length(), raw, focus, r, pitch, snap, dt)
+}
+
+/// `chase_position` with the distance chase starting from `last_dist`: the exe's is the last
+/// camera after the collision cast (|+0x110 - focus|, 14073.c 11992-12030), so after a wall
+/// cut the arm grows back from the cut distance, at the `hit_wall_rates` (in `r.dist_xz` /
+/// `r.dist_y`). Checked on the emulated exe at walls and the ground (sim test
+/// `follow_camera_at_walls_matches_the_exe`).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn chase_position_from(prev: Vec3, last_dist: f32, raw: Vec3, focus: Vec3, r: PosChase, pitch: Option<(f32, f32)>, snap: f32, dt: f32) -> Vec3 {
     let step = |rate: f32| 1.0 - (1.0 - rate.clamp(0.0, 1.0)).powf(dt * 60.0);
     let (to_raw, to_prev) = (raw - focus, prev - focus);
-    let cos = if to_raw.length() <= 1e-5 || to_prev.length() <= 1e-5 { 1.0 } else { to_raw.normalize().dot(to_prev.normalize()) };
+    // The exe's f32 rounding (divide by sqrt((x² + z²) + y²), dot ((x + y) + z)): with the lock's
+    // AngAtLockMin 0 (cos 1.0) the X / Z chase stops on frames where nearly parallel vectors
+    // round above 1.0 (the camera then rests up to ~0.4 mm off; 2026-11-03 lockcam).
+    let unit = |v: Vec3| v / (v.x * v.x + v.z * v.z + v.y * v.y).sqrt();
+    let cos = if to_raw.length() <= 1e-5 || to_prev.length() <= 1e-5 {
+        1.0
+    } else {
+        let (a, b) = (unit(to_raw), unit(to_prev));
+        a.x * b.x + a.y * b.y + a.z * b.z
+    };
     let (c_min, c_max) = (r.ang_min.cos(), r.ang_max.cos());
     let k = if cos > c_min {
         0.0
@@ -226,7 +310,7 @@ pub(crate) fn chase_position(prev: Vec3, raw: Vec3, focus: Vec3, r: PosChase, pi
     let (xz, y) = (step(xz + (1.0 - xz) * snap), step(y + (1.0 - y) * snap));
     let d = raw - prev;
     let p = prev + Vec3::new(d.x * xz, d.y * y, d.z * xz);
-    let (raw_d, prev_d) = (to_raw.length(), to_prev.length());
+    let (raw_d, prev_d) = (to_raw.length(), last_dist);
     let dist_xz = prev_d + (raw_d - prev_d) * step(r.dist_xz);
     let dist_y = prev_d + (raw_d - prev_d) * step(r.dist_y);
     let v = p - focus;
@@ -299,6 +383,130 @@ impl FocusChase {
     }
 }
 
+/// The exe's wrap of an angle into -pi..pi (FUN_14073c260's lock chase): x - trunc((x + pi
+/// with x's sign) / 2pi) * 2pi, so an exact half turn goes the way of its sign.
+pub(crate) fn wrap_pi(x: f32) -> f32 {
+    const PI: f32 = std::f32::consts::PI;
+    const TAU: f32 = 6.283_185_5;
+    x - ((x + PI.copysign(x)) / TAU).trunc() * TAU
+}
+
+/// The CameraParam values the lock chase reads (FUN_14073c260, follow camera +0x2a0 set).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct LockChaseParams {
+    /// lockTgtPosRate (0.7): the framed point's share of the way to the lock point.
+    pub tgt_pos_rate: f32,
+    /// lockRotChaseRateX / Y (0.6 / 0.3) per 1/30 s.
+    pub rate_x: f32,
+    pub rate_y: f32,
+    /// lockRotChasePlayAngX / Y (0 in row 0).
+    pub play_x: f32,
+    pub play_y: f32,
+    /// rotRangeXAtLockMin / Max (-30 / 30 deg).
+    pub at_lock: (f32, f32),
+    /// rotRangeLerpBeginHeight / EndHeight (0.5 / 3 m).
+    pub lerp_height: (f32, f32),
+}
+
+/// The locked camera's angles this frame, as FUN_14073c260 turns them while the follow camera's
+/// lock flag +0x2a0 is set (checked on the emulated exe, test `lock_camera_matches_the_exe`):
+/// - the current angles come from focus (+0xd0) - fulcrum (+0xe0) after the fulcrum's drag;
+/// - P = focus + lockTgtPosRate * (lock point (+0x280) - focus) (+0x290);
+/// - half = `half` (FOV +0x50 * lockRotXShiftRatio +0x278 * 0.5); r = |focus - fulcrum| (the
+///   fulcrum's distance, not the camera's); a = asin(r sin(half) / |P - focus|), pi/2 when P is
+///   that close (the law of sines: P sits `half` off the screen centre);
+/// - target pitch = a + half - elevation of P, clamped to rotRangeXAtLock widened toward `free`
+///   (+0x230 / +0x234) as |P.y - focus.y| goes rotRangeLerpBegin -> EndHeight;
+/// - target yaw: the camera behind the focus from P;
+/// - each moves rate * dt / (1/30) of the wrapped difference; with a play angle, none inside it
+///   and the play taken off the difference when the step would fall inside it.
+/// `fulcrum` is on the camera side; returns (pitch, yaw) in the orbit's terms (yaw of the
+/// focus -> camera arm, pitch + = camera above).
+pub(crate) fn lock_chase(focus: Vec3, fulcrum: Vec3, lock_point: Vec3, half: f32, free: (f32, f32), p: LockChaseParams, dt: f32) -> (f32, f32) {
+    // FUN_140734070 (yaw atan2(x, z), the fallback when x = z = 0) / FUN_140733e50 (pitch
+    // -atan2(y, |xz|)), on camera -> focus vectors as the exe.
+    let yaw_of = |v: Vec3, or: f32| if v.x == 0.0 && v.z == 0.0 { or } else { f32::atan2(v.x, v.z) };
+    let pitch_of = |v: Vec3| -f32::atan2(v.y, v.with_y(0.0).length());
+    let w = focus - fulcrum;
+    let (pitch0, yaw0) = (pitch_of(w), yaw_of(w, 0.0));
+    let v = (lock_point - focus) * p.tgt_pos_rate;
+    let reach = half.sin() * w.length();
+    let a = if v.length() <= reach { std::f32::consts::FRAC_PI_2 } else { (reach / v.length()).asin() };
+    let (b, e) = p.lerp_height;
+    let t = ((v.y.abs() - b) / (e - b)).clamp(0.0, 1.0);
+    let lo = p.at_lock.0 + (free.0 - p.at_lock.0) * t;
+    let hi = p.at_lock.1 + (free.1 - p.at_lock.1) * t;
+    let want = a + half + pitch_of(v);
+    let want = if want < lo { lo } else { want.min(hi) };
+    let k = dt / 0.033_333_335;
+    let chase = |from: f32, to: f32, rate: f32, play: f32| {
+        let d = wrap_pi(to - from);
+        let next = wrap_pi(from + d * rate * k);
+        if d.abs() < play {
+            from
+        } else if wrap_pi(next - from).abs() < play {
+            wrap_pi(from + (d - play.copysign(d)) * rate * k)
+        } else {
+            next
+        }
+    };
+    let pitch = chase(pitch0, want, p.rate_x, p.play_x);
+    let yaw = chase(yaw0, yaw_of(v, yaw0), p.rate_y, p.play_y);
+    // The orbit's yaw is the arm's (focus -> camera), the exe's the view's.
+    (pitch, wrap_pi(yaw + std::f32::consts::PI))
+}
+
+/// The lock point the camera frames (follow camera +0x280): the target's lock point averaged
+/// over the last 0.5 s in the target's own frame. The lock manager hands the camera the target
+/// entry each frame (FUN_1409c5f20 -> the ChrCam's lock helper +0x90); FUN_140736090 stores the
+/// point in the target matrix's frame with the frame's dt in a CSPositionRecorder_mSecond (240
+/// samples, FUN_140735e80), and FUN_140735a70 averages the newest while their summed dt is
+/// within DAT_143afe848 (0.5, a debug float), turned back through the matrix (+0x1020). A new
+/// target (or a frame without one) starts it over. So a lock point that jumps on the target
+/// (an attack animation) is followed over 0.5 s; a target that moves as a whole is followed
+/// at once. Checked against the exe (test `lock_camera_matches_the_exe`).
+#[derive(Clone, Debug, Default)]
+pub(crate) struct LockPointAverage {
+    target: Option<Entity>,
+    samples: std::collections::VecDeque<(Vec3, f32)>,
+}
+
+const LOCK_POINT_WINDOW: f32 = 0.5;
+const LOCK_POINT_SAMPLES: usize = 240;
+
+impl LockPointAverage {
+    /// This frame's averaged lock point; `frame` = the target's (translation, rotation).
+    pub(crate) fn update(&mut self, target: Entity, frame: (Vec3, Quat), point: Vec3, dt: f32) -> Vec3 {
+        if self.target != Some(target) {
+            self.samples.clear();
+            self.target = Some(target);
+        }
+        if dt > 0.0 {
+            if self.samples.len() >= LOCK_POINT_SAMPLES {
+                self.samples.pop_front();
+            }
+            self.samples.push_back((frame.1.inverse() * (point - frame.0), dt));
+        }
+        let (mut sum, mut t, mut n) = (Vec3::ZERO, 0.0f32, 0);
+        for (p, d) in self.samples.iter().rev() {
+            if LOCK_POINT_WINDOW < t {
+                break;
+            }
+            sum += *p;
+            t += d;
+            n += 1;
+        }
+        let local = if n > 0 { sum / n as f32 } else { Vec3::ZERO };
+        frame.0 + frame.1 * local
+    }
+
+    /// No lock this frame: the next one starts over.
+    pub(crate) fn clear(&mut self) {
+        self.target = None;
+        self.samples.clear();
+    }
+}
+
 impl CamState {
     #[cfg(test)]
     pub(crate) fn for_tests(combat: &Combat) -> Self {
@@ -321,6 +529,7 @@ impl CamState {
             focus_y: lc.focus_y,
             look: None,
             pos: None,
+            wall: WallCast::default(),
             ctrl_snap: 0.0,
             ctrl_hold: 0.0,
             fulcrum: None,
@@ -330,6 +539,7 @@ impl CamState {
             near: false,
             alpha: 1.0,
             seen: None,
+            lock_point: LockPointAverage::default(),
         }
     }
 }
@@ -528,8 +738,9 @@ pub(crate) fn toggle_lock(
         };
     }
     // Several enemies: the mouse switch (see LOCK_SWITCH_FIRE), or the right stick
-    // (FUN_1409ca2d0: |stick| < 0.5 re-arms, > 0.95 fires; the stick is not negated, so up on
-    // the stick is up on screen: viewport y down).
+    // (FUN_1409ca2d0: |stick| < 0.5 re-arms, > 0.95 fires; FUN_140960650 stores the right stick
+    // in the pad frame +0x10 / +0x14 as (x, -y), so up on the stick is up on screen: viewport y
+    // down; 2026-11-03 lockcam).
     let Some(cur) = lock.target else { return };
     let stick = if config.input.gamepad { pads.iter().map(|g| g.right_stick()).max_by(|a, b| a.length().total_cmp(&b.length())).unwrap_or_default() } else { Vec2::ZERO };
     // The mouse turns only with the cursor captured (as orbit_with_mouse).
@@ -726,7 +937,10 @@ fn orbit_with_stick(
     // The fast turn (exe camera +0x160): only with the stick all the way out (|stick| > 0.998)
     // and turning sideways, it ramps toward +-1 (the turn's side) by dt / rotHiSpeedRateIncTime,
     // starting over from 0 when the side flips; otherwise 0. gap: the exe's sideways threshold
-    // (thunk_FUN_1419dcdb0) is read as "not zero", and which stick component signs it as x.
+    // (thunk_FUN_1419dcdb0) is read as "not zero". The exe's yaw slot is the stick's x and its
+    // pitch slot -y (FUN_1409668f0 / FUN_140966960 with the default options 10 / 11 = 1; both
+    // flip when cleared, invert_y is option 11; checked in emu, 2026-11-03 lockcam). Exe yaw
+    // + x is our yaw - x (mirrored world); exe pitch -y lowers the camera: stick up looks up.
     let inc = dt / combat.param("CameraParam", 0)["rotHiSpeedRateIncTime"].as_f64().unwrap_or(0.6).max(1e-3) as f32;
     *hi = hi_ramp(*hi, r, inc);
     if r.length() < 1e-3 {
@@ -844,9 +1058,6 @@ pub(crate) fn follow_player(
         orbit.cam.ctrl_snap = 1.0;
         orbit.cam.ctrl_hold = cf("rotCtrlEndWaitTime", 2.0);
     }
-    // Lock-on chase (FUN_14073c260): each frame the angle moves diff * rate * (dt / (1/30)),
-    // yaw at lockRotChaseRateY (0.3), pitch at lockRotChaseRateX (0.6).
-    let step = |rate: f32| (rate * dt * 30.0).min(1.0);
     update_cam_distance(&combat, actor, &mut orbit.cam, lf("camDistTarget", 4.5), cf("lockCamParamLerpRate", 0.05), dt);
     // +0x50 FOV and +0x204 focus height chase the LockCamParam row at lockCamParamLerpRate.
     let lerp = 1.0 - (1.0 - cf("lockCamParamLerpRate", 0.05).clamp(0.0, 1.0)).powf(dt * 30.0);
@@ -855,57 +1066,29 @@ pub(crate) fn follow_player(
     if let Projection::Perspective(pp) = &mut **projection {
         pp.fov = orbit.cam.fov;
     }
-    let mut range = pitch_range(&combat, lock.target.is_some());
+    let range = pitch_range(&combat, lock.target.is_some());
     // TAE 156 SetCameraAngle takes the place of the lock-on turning while it runs (14073.c 10606:
     // the lock chase only when FUN_140831ea0, "an angle event is set", is false).
     let set_angle = if actor.anim.is_empty() { None } else { combat.player.events_at(&actor.anim, actor.t).find(|e| e.kind == 156) };
-    if set_angle.is_some() {
-        // Set below, after the fulcrum resync (the exe's order).
-    } else if let Some((target, tdummies, ta)) = lock.target.and_then(|e| enemies.get(e).ok()) {
-        let dir = (target.translation - player.translation).with_y(0.0);
-        // Right over the target (head kick, vault, plunge) the direction to it flips within a few
-        // centimetres: hold the yaw chase while the bodies overlap horizontally (Wolf's radius +
-        // NpcParam hitRadius) instead of whipping the camera around.
-        let npc_radius = combat.npc(ta)["hitRadius"].as_f64().unwrap_or(0.5) as f32;
-        let overhead = dir.length() < crate::actor::PLAYER_BODY_RADIUS + npc_radius;
-        if !overhead && dir.length_squared() > 0.01 {
-            let want = f32::atan2(-dir.x, -dir.z);
-            let diff = (want - orbit.yaw + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI;
-            orbit.yaw += diff * step(cf("lockRotChaseRateY", 0.3));
+    // Locked on, the point the camera frames (+0x280): the target's DummyPoly 220 averaged over
+    // 0.5 s in its own frame (`LockPointAverage`); the turning comes after the focus follow and
+    // the fulcrum's drag (`lock_chase`, the exe's order). gap: DummyPoly 220 as the lock target
+    // entry's point (written by the lock manager, not traced).
+    let lock_point = match lock.target.and_then(|e| Some((e, enemies.get(e).ok()?))) {
+        Some((e, (target, tdummies, _))) if set_angle.is_none() => {
+            let point = tdummies
+                .and_then(|d| d.0.get(&220))
+                .and_then(|&m| dummy_tf.get(m).ok())
+                .map(|g| g.translation())
+                .unwrap_or(target.translation + Vec3::Y * (lf("chrOrgOffset_Y", 1.5) - crate::player::CAPSULE_HALF_HEIGHT));
+            Some(orbit.cam.lock_point.update(e, (target.translation, target.rotation), point, dt))
         }
-        // Pitch, as the exe's lock camera (FUN_14073c260 at 0x14073d6xx-0x14073dd0e):
-        // - the framed point P = focus + lockTgtPosRate (0.7) * (lock point - focus); the lock
-        //   point is the target's DummyPoly 220;
-        // - half = FOV * lockRotXShiftRatio * 0.5; r = camera-to-focus distance; the law of sines
-        //   gives the angle at P that puts P half off the screen centre: a = asin(r sin(half) / |FP|)
-        //   (pi/2 when |FP| <= r sin(half));
-        // - target pitch = a + half - elevation(P - focus) (positive = camera above, looking down);
-        // - limits rotRangeXAtLock widen toward the free range as |P.y - focus.y| goes
-        //   rotRangeLerpBeginHeight -> EndHeight;
-        // - chased at lockRotChaseRateX * dt / (1/30), outside lockRotChasePlayAngX (0 here).
-        let lock_point = tdummies
-            .and_then(|d| d.0.get(&220))
-            .and_then(|&m| dummy_tf.get(m).ok())
-            .map(|g| g.translation())
-            .unwrap_or(target.translation + Vec3::Y * (lf("chrOrgOffset_Y", 1.5) - crate::player::CAPSULE_HALF_HEIGHT));
-        let focus = orbit.focus;
-        let fp = (lock_point - focus) * cf("lockTgtPosRate", 0.7);
-        let (b, e) = (cf("rotRangeLerpBeginHeight", 0.5), cf("rotRangeLerpEndHeight", 3.0));
-        let t = ((fp.y.abs() - b) / (e - b).max(1e-3)).clamp(0.0, 1.0);
-        let free = pitch_range(&combat, false);
-        range = (range.0 + (free.0 - range.0) * t, range.1 + (free.1 - range.1) * t);
-        let half = orbit.cam.fov * lf("lockRotXShiftRatio", 0.45) * 0.5;
-        let r = orbit.cam.dist;
-        let reach = half.sin() * r;
-        let a = if fp.length() <= reach { std::f32::consts::FRAC_PI_2 } else { (reach / fp.length()).asin() };
-        let elev = f32::atan2(fp.y, fp.with_y(0.0).length());
-        let want_pitch = (a + half - elev).clamp(range.0, range.1);
-        let diff = want_pitch - orbit.pitch;
-        let play = cf("lockRotChasePlayAngX", 0.0);
-        if diff.abs() >= play {
-            orbit.pitch += (diff - play * diff.signum()) * step(cf("lockRotChaseRateX", 0.6));
+        _ => {
+            orbit.cam.lock_point.clear();
+            None
         }
-    } else {
+    };
+    if set_angle.is_none() && lock_point.is_none() {
         orbit.pitch = orbit.pitch.clamp(range.0, range.1);
     }
     let target_focus = chr_focus(player.translation, orbit.cam.focus_y);
@@ -991,7 +1174,27 @@ pub(crate) fn follow_player(
     // Gyoubu's deathblow then swings up over Wolf's shoulder as in the clip (2026-10-17).
     // gap: where the exe's TAE 151 look limits (FUN_140742230) sit against the resync is not
     // traced; here they clamp before it.
-    if let (Some((f, _)), None) = (orbit.cam.fulcrum, lock.target) {
+    if let Some(lp) = lock_point {
+        // The lock chase (`lock_chase`), from the dragged fulcrum (before the first placement:
+        // the arm at the camera's distance). The free pitch limits it widens toward are
+        // +0x230 / +0x234: the TAE 151 ones while they run.
+        let fulcrum = match orbit.cam.fulcrum {
+            Some((f, _)) => drag_fulcrum(f, moved, orbit.cam.trans_snap, fp),
+            None => orbit.focus + Quat::from_euler(EulerRot::YXZ, orbit.yaw, -orbit.pitch, 0.0) * Vec3::Z * orbit.cam.dist,
+        };
+        let free = orbit.cam.look.map_or(pitch_range(&combat, false), |l| (l[0], l[1]));
+        let lp_params = LockChaseParams {
+            tgt_pos_rate: cf("lockTgtPosRate", 0.7),
+            rate_x: cf("lockRotChaseRateX", 0.6),
+            rate_y: cf("lockRotChaseRateY", 0.3),
+            play_x: cf("lockRotChasePlayAngX", 0.0),
+            play_y: cf("lockRotChasePlayAngY", 0.0),
+            at_lock: range,
+            lerp_height: (cf("rotRangeLerpBeginHeight", 0.5), cf("rotRangeLerpEndHeight", 3.0)),
+        };
+        let half = orbit.cam.fov * lf("lockRotXShiftRatio", 0.45) * 0.5;
+        (orbit.pitch, orbit.yaw) = lock_chase(orbit.focus, fulcrum, lp, half, free, lp_params, dt);
+    } else if let (Some((f, _)), None) = (orbit.cam.fulcrum, lock.target) {
         // The free camera's yaw from the dragged fulcrum (FUN_140734070 of focus - fulcrum), plus
         // this frame's turning (the exe turns after the resync).
         let v = drag_fulcrum(f, moved, orbit.cam.trans_snap, fp) - orbit.focus;
@@ -1034,7 +1237,9 @@ pub(crate) fn follow_player(
         None => orbit.cam.angle_from = None,
     }
     let rotation = Quat::from_euler(EulerRot::YXZ, orbit.yaw, -orbit.pitch, 0.0);
-    {
+    // camCastSphereRadius (0.05 m): the radius of every collision cast below (`map_cast`).
+    let radius = cf("camCastSphereRadius", 0.05);
+    let fulcrum = {
         let arm = rotation * Vec3::Z;
         let cam_dist = if orbit.cam.pos.is_some() { (transform.translation - orbit.focus).length() } else { orbit.cam.dist };
         // The right axis of last frame's camera (+0x10, the final matrix), not this frame's
@@ -1049,59 +1254,84 @@ pub(crate) fn follow_player(
             // fulcrumDistMin.
             orbit.focus + arm * (cam_dist * cf("fulcrumDistRate", 0.5)).max(fp.dist_min)
         };
+        // The fulcrum cast (14073.c 10993-11048, with the escape-wall option off as in the
+        // user's game): a wall or the ground between the focus and the fulcrum pulls the
+        // fulcrum in to it (1 cm at least), so a dragged fulcrum near a wall swings the camera
+        // faster.
+        let f = cast_cut(orbit.focus, f - orbit.focus, map_cast(orbit.focus, f - orbit.focus, radius), FULCRUM_CUT_MIN);
         orbit.cam.fulcrum = Some((f, orbit.focus));
-    }
-    // Camera collision (the game sphere-casts from the focus with CameraParam camCastSphereRadius):
-    // the arena floor (y = 0) cuts the arm short, so a camera looking up from below the focus
-    // stays above ground instead of going under it (the floor is one-sided: everything then
-    // looked to float).
-    let raw = orbit.focus + rotation * Vec3::Z * orbit.cam.dist;
+        f
+    };
+    // The orbit point (+0xf0, 14073.c 11066-11085): the camera distance (+0x214) along the
+    // fulcrum's direction; then the orbit cast (14073.c 11196-11251) pulls it in to a wall or
+    // the ground between it and the focus, so the position chase below runs toward the cut
+    // point, not through the wall.
+    let arm_dir = (fulcrum - orbit.focus).try_normalize().unwrap_or(rotation * Vec3::Z);
+    let raw = orbit.focus + arm_dir * orbit.cam.dist;
+    let raw = cast_cut(orbit.focus, raw - orbit.focus, map_cast(orbit.focus, raw - orbit.focus, radius), CAST_CUT_MIN);
     let locked = lock.target.is_some();
+    // The distance chase rates after a hit of the final cast (+0x1e4 / +0x1e8 / +0x1ec,
+    // `hit_wall_rates`).
+    let (dist_rate, hit_time) = hit_wall_rates(
+        orbit.cam.wall.hit_time,
+        cf("targetChaseDistRateTime", 2.0),
+        Vec2::new(cf("targetChaseDistRateXZ", 0.4), cf("targetChaseDistRateY", 0.4)),
+        Vec2::new(cf("targetChaseDistRateXZ_ForHitWall", 1.0), cf("targetChaseDistRateY_ForHitWall", 1.0)),
+        dt,
+    );
+    orbit.cam.wall.hit_time = hit_time;
     let chase = if locked {
         PosChase {
             xz: cf("targetChaseRateAtLockXZ", 0.4),
             y: cf("targetChaseRateAtLockY", 0.3),
             ang_min: cf("targetChaseRateAngAtLockMin", 0.0),
             ang_max: cf("targetChaseRateAngAtLockMax", 0.0),
-            dist_xz: cf("targetChaseDistRateXZ", 0.4),
-            dist_y: cf("targetChaseDistRateY", 0.4),
+            dist_xz: dist_rate.x,
+            dist_y: dist_rate.y,
         }
     } else {
-        // gap: the exe eases a working X / Z rate (+0x228) toward this by dt each frame, and
-        // snaps it to the _ForEscapeWall rates while escaping a wall.
+        // The exe eases a working X / Z rate (+0x228) toward this by dt each frame; with the
+        // escape-wall option off nothing moves it off the row's value (the option on sets it
+        // to targetChaseRateXZForEscapeWall while a wing cast hits: not ported).
         PosChase {
             xz: cf("targetChaseRateXZForNormal", 0.1),
             y: cf("targetChaseRateY", 0.4),
             ang_min: cf("targetChaseRateAngMin", 0.1745),
             ang_max: cf("targetChaseRateAngMax", 0.3491),
-            dist_xz: cf("targetChaseDistRateXZ", 0.4),
-            dist_y: cf("targetChaseDistRateY", 0.4),
+            dist_xz: dist_rate.x,
+            dist_y: dist_rate.y,
         }
     };
     // +0x230 / +0x234: the TAE 151 limits while they run, else the defaults they chase back to.
     let pitch_lim = orbit.cam.look.map_or((lf("rotRangeMinX", -40.0).to_radians(), cf("rotRangeXMax", 1.3963)), |l| (l[0], l[1]));
-    let pos = orbit.cam.pos.map_or(raw, |prev| chase_position(prev, raw, orbit.focus, chase, Some(pitch_lim), orbit.cam.ctrl_snap, dt));
+    let pos = match orbit.cam.pos {
+        Some(prev) => {
+            let last = orbit.cam.wall.post.unwrap_or(prev);
+            chase_position_from(prev, (last - orbit.focus).length(), raw, orbit.focus, chase, Some(pitch_lim), orbit.cam.ctrl_snap, dt)
+        }
+        None => raw,
+    };
     orbit.cam.pos = Some(pos);
     orbit.cam.seen = Some((orbit.yaw, orbit.pitch));
     let arm = (pos - orbit.focus).try_normalize().unwrap_or(rotation * Vec3::Z);
-    let radius = cf("camCastSphereRadius", 0.05);
-    let mut dist = (pos - orbit.focus).length();
-    // The exe's cast keeps max(hit, 1e-5) of the arm (14073.c 12318-12395): no minimum distance
-    // (it was 0.3 m here); Wolf fades instead (`cam_fade_step`).
-    if let Some(hit) = crate::map::raycast(orbit.focus, arm, dist + radius) {
-        // The map's walls and floors (camCastSphereRadius stand-in: the ray stops short by it).
-        dist = dist.min((hit - radius).max(1e-5));
-    } else if arm.y < -1e-3 && crate::map::terrain().is_none() {
-        let room = (orbit.focus.y - radius) / -arm.y;
-        dist = dist.min(room.max(1e-5));
+    // The final cast (14073.c 12318-12411) from the focus to the chased position: the camera
+    // stops at the hit, max(hit, 1e-5) of the arm (no minimum distance: Wolf fades instead,
+    // `cam_fade_step`), and the hit starts the hit-wall clock. +0x110 keeps the result.
+    let hit = map_cast(orbit.focus, pos - orbit.focus, radius);
+    if hit.is_some() {
+        orbit.cam.wall.hit_time = cf("targetChaseDistRateTime", 2.0);
     }
-    dist = safe_margin(dist, cf("camSafeMarginRate", 0.1), cf("camSafeMarginMax", 0.3));
+    let post = cast_cut(orbit.focus, pos - orbit.focus, hit, CAST_CUT_MIN);
+    orbit.cam.wall.post = Some(post);
+    let dist = safe_margin((post - orbit.focus).length(), cf("camSafeMarginRate", 0.1), cf("camSafeMarginMax", 0.3));
     transform.translation = orbit.focus + arm * dist;
     transform.look_at(orbit.focus, Vec3::Y);
     // CameraParam playerFadeDist (0.5 m) from the camera to Wolf's chased point (camera +0xa0).
-    // gap: +0xa0 is taken as the focus; the exe's obstacle fade (anything within
-    // camCastSphereRadiusForFade 0.3 m of the camera -> Wolf line, down to alpha 0.2) is not
-    // ported.
+    // gap: +0xa0 is taken as the focus. The obstacle fade (14073.c 11253-11320: a
+    // camCastSphereRadiusForFade 0.3 m cast from last frame's +0x100 toward Wolf fades what it
+    // hits to alpha 0.2) is not ported: in the emulated runs it hit only map objects (kind 6;
+    // RSekiro draws them merged into the map), and no enemy of the snapshot passes its
+    // character test.
     orbit.cam.near = dist < cf("playerFadeDist", 0.5);
 }
 

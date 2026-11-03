@@ -58,7 +58,7 @@ Dated findings, oldest first. Append new entries at the end.
   knockbackRate_vsPlayer_* is 75 for c1180 (club samurai), 100 for 45 rows, 0 for most. combat.rs recoil; test
   wolf_bounces_off_an_enemy_that_cuts_his_knockback (c1180: ~0.75 m back). Gaps: the one-frame start delay (+0x45)
   and the deferred path (damage +0x164, through TAE 226) are not modelled.
-  2026-10-12 FACING done: 140b6.c:7699-7729 exact rule: f = dot(normalised knockback dir, attacker forward axis
+  2026-10-12 FACING done: <decomp ref> exact rule: f = dot(normalised knockback dir, attacker forward axis
   (FUN_1409eeb40 -> FUN_1407dcc90)); factor f^2, but 0.4 when f < 0 or f^2 < 0.4 (range [0.4, 1]; 1 with no
   attacker). The leftover for the attacker comes from the scaled distance. combat.rs knockback_facing (sword hits,
   blocks, deflects; prosthetic bullets pass None = 1). Test knockback_scales_with_the_attackers_facing. gaps: the
@@ -151,8 +151,8 @@ Dated findings, oldest first. Append new entries at the end.
   Set SpEffect 220061 (stateInfo 343, camouflageHitPartsGroup 2) / 220062 (stateInfo 957, the
   TAE ShieldBlock StateInfo) / 400250 (every *DamageCutRate and def*StaminaDmgRate 0.5); at part
   HP 0: anim 20039, those cleared, 230400 / 230401 set. Also m11_01 entities 1110432/33/35 and
-  20005411 for m11_00 1100480. Exe: FUN_140b6c880 (140b6.c:10778) swaps the hit part group for
-  the SpEffect's camouflageHitPartsGroup (stateInfo 0x156/0x157); FUN_140670040 (14067.c:37-83)
+  20005411 for m11_00 1100480. Exe: FUN_140b6c880 (<decomp ref>) swaps the hit part group for
+  the SpEffect's camouflageHitPartsGroup (stateInfo 0x156/0x157); FUN_140670040 (<decomp ref>)
   deals damage x part+0x108 to the part and returns x part+0x110 (0.7, "RetDam") to the body.
   HP 0.5 x 0.7 = 0.35 (348 -> 121, exact); posture 0.5 (130 -> 65). gaps: where the 0.5 HP cut
   applies in the exe; the one full hit (a050_300100 vs a100_003000) and art 316000's uncut -522;
@@ -371,3 +371,78 @@ Dated findings, oldest first. Append new entries at the end.
     row). None of the c1180 / c1310 windows is StateInfo-gated; no c1180 Bell / Greatshield row has
     guardBreakRate (only the Bell grab 190 / 191 is unblockable; not seen in the clip). Not done:
     12 Okami Kemari (balls only, warrior too far), sphere radius vs AtkParam (no credible scale).
+
+## HP and posture amounts against the exe (2026-11-03)
+
+Emulator pilot (kb/emulator-pilot.md row 5): `tools/emu-cases damage` runs the exe's own damage
+and regen functions on the 2026-11-03 memory snapshot (Wolf and the Naomori-arena enemies) and
+writes `extracted/emu/damage_{survey,regen,hp,posture}.json`; tests in `src/sim_tests/emu_damage.rs`.
+
+**Posture regen** (FUN_140a04850, every frame, Wolf and five enemies, 21 scenarios, 4,410 frames:
+TAE 960 types -1..8 and 10, TAE 225 0 / 33 / 50 / 150 %, the stop flag, 1/60, 1/30 and 0.0123 s
+frames, posture from empty to full):
+
+- points/s = (int)(speed x (base x TAE225 % x 0.01 x chr.f[0x10d0] x ratio(type) x 0.01)), cut to
+  a whole number first (ChrDataModule +0x230); then (int)(carry + points/s x dt) goes in (+0x22c)
+  and the fraction is carried (+0x15c). Step skipped only while (chr+0x50)+0x50 +0x88 bit 21 is set.
+- base = vfunc 0x218: NpcParam staminaRecoverBaseVel (FUN_140a13a70) or CalcCorrectGraph 504 at
+  Wolf's level (FUN_140a2a5d0; x PlayerIns+0x21f0 / 100 when [bag+0xc0]+0x10 is set, 0 here),
+  plus the worn SpEffects' staminaRecoverChangeSpeed (FUN_140bfbe40).
+- speed = product of the active SpEffects' staminaRecoverSpeedRate (FUN_140bfe360 /
+  FUN_140c05740), x ClearCountCorrectParam +0x90 when row +0x168 bit 6 is set (7510: 4.35 ->
+  8.265 in this NG+ save). HP-conditional rows count when hp ratio <= conditionHp % (and >= the
+  +0x1fc floor): Wolf 5221 / 5222 / 5223 x0.75 / 0.667 / 0.5 at <= 75 / 50 / 25 %, enemies
+  300600-300602 x0.6 / 0.5 / 0.333 at <= 80 / 60 / 40 %.
+- chr.f[0x10d0] (equip-load class) is 1.0 on all 90 characters.
+- The setter (FUN_140bd4de0 -> FUN_140bd6710 -> FUN_140bd4e20) bounds every change, hits and
+  regen: [-NpcParam maxDebtStamina, max], then while TAE 960 sets a type, the StaminaControlParam
+  row's staminaMaxRatio (+4) / staminaMinRatio (+6) x max / 100 (integer). Row 0 (Wolf): type 5
+  min = max = 100 (held full), type 10 recover 200 %, type 0 recover 0. Rows 1000000-1000200
+  (enemies): type 5 0 / 0 (the break anims a000_008300 0-2.5 s hold posture at empty), type 6
+  30 / 30 (set to 30 % at their end), type 7 100 / 100, type 8 max 40, type 9 max 80.
+
+Fixed in Sv1 (`actor::regen_frame`, `stamina_limits`, `Actor::bound_posture`; test
+posture_regen_matches_the_exe passes on all 4,410 frames):
+- the per-second rate is cut to an int (20 x 12.3975 = 247.95 -> 247 points/s; Sv1 kept 247.95);
+- the StaminaControlParam limits were not applied at all: a broken enemy regained posture through
+  the collapse (2.5 s x its rate) and kept it; now it stays at 0, then is set to 30 %, as the exe;
+  Wolf's type 5 now holds him full;
+- regen ran only while posture damage > 0 and reset the carry at full; the exe keeps moving the
+  carry at full posture and while broken;
+- no `.max(0)` on base + change (the exe sums them as they are).
+Sv1's inputs match the exe's: StaminaControlParam rows 0 and 1000000-1000200, graph 504 at
+Wolf's level, NpcParam staminaRecoverBaseVel, the regen SpEffect rows.
+
+**HP** (FUN_140840eb0 element sum, 396 cases; FUN_140840ce0 attack / defence curve, 140 points;
+vfunc 0x228 defences, 90 characters):
+- defence is 0 on every character, and the curve's globals 0x143d5c100-114 are all 0, so the
+  curve returns the attack for any defence: Sv1's "no defence" is right.
+- the sum is sum(max(0, element x the 7 rate arrays)) x flag factor (p13 x1.4, p14 x p16 or
+  x1.125 when p16 < 0, p15 x0.8) x p17, lifted to 1 (ceilf) when 0 < x < 1; FUN_140b6c880 keeps
+  (int) of the HP damage (param_3[0x78]) and of the posture damage ([0x79]).
+- Fixed: `combat::hit_hp` makes every HP amount whole (main hit, deflect / guard chip, grab,
+  prosthetic), and a positive hit under 1 takes 1 (0.3 -> 1; 120.5 -> 120, was 120.5). Test
+  hit_hp_matches_the_exe.
+
+**Posture per hit** (FUN_140844070 unguarded, FUN_1408439a0 guarded; 6 defenders x 13 attributes
+x 5 values x 2 attacker rates x flags, 3,120 cases):
+- unguarded = (int)(stamina attack x attacker rate x defender attribute rate (vfunc 0x248) x
+  SpEffect rates); the attribute rate is NpcParam <attr>StaminaDmgRate (c1180 11800000: thrust
+  1.35, lightHit / heavyHit 0.6; attriA 0 on every enemy), 1.0 on Wolf. Sv1 matches (test
+  hit_posture_matches_the_exe; 11800000 is not in the default scene's export, so the test reads
+  the full NpcParam; Sv1 spawns 11807100 there, same rates); the (int) was already there as
+  floor (prosthetic now too).
+- flag +0x164 and the attacker side changed nothing.
+
+Not covered (gap):
+- the guarded posture on Wolf came out as (int)(value x rate x 0.99) for deflect (+0x38) and
+  block (+0x34), with BehaviorParam_PC 105000090 and an empty weapon-info block (FUN_140bfcde0
+  needs param_3+8); with no guard id both are 0. Flowing Water's x0.785 / 0.74 does not show
+  there, so this is not compared; which outcome and guard rate a hit gets is the guard pilot's.
+- the sum's flag factors (1.4 / 1.125 / 0.8 / p16 / p17) are not tied to callers (likely
+  counter / backstab-style multipliers); negative attack elements (exe clamps each at 0; Sv1 has
+  none in its data).
+- the attacker's attack power scaling (player weapon AttackElementCorrect / reinforcement)
+  was not run; Sv1 keeps EquipParamWeapon base x AtkParam correction.
+- posture break itself (FUN_140bd4e20 threshold, what the HKS resets, timers) beyond the TAE 960
+  clamp; the setter of the no-regen bit 21.

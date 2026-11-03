@@ -433,6 +433,18 @@ pub(crate) fn player_attack_damage(combat: &Combat, atk: &Attack, weapon: i64, d
         + base("attackBaseDark") * atk.atk_dark_correction / 100.0 * cut("darkDamageCutRate")
 }
 
+/// The HP a hit takes, whole points as the exe stores them: FUN_140840eb0 lifts a positive
+/// element sum under 1 to 1 (ceilf, <decomp ref>), the later rates (`after`: the armour part's
+/// 0.35, FUN_1406dba10 / the damage-level rate +0x210) multiply it, and FUN_140b6c880 keeps
+/// (int) of the result (param_3[0x78], <decomp ref>). Checked in tools/emu-cases
+/// `damage_hp` (test hit_hp_matches_the_exe). The element sum is Sv1's (attack x the defender's
+/// cuts): every defence of the snapshot's 90 characters is 0, where the attack / defence curve
+/// FUN_140840ce0 gives the attack back.
+pub(crate) fn hit_hp(sum: f32, after: f32) -> f32 {
+    let sum = if sum <= 0.0 { 0.0 } else if sum < 1.0 { sum.ceil() } else { sum };
+    ((sum * after) as i32) as f32
+}
+
 /// Wolf's reaction to an AtkParam atkBehaviorId (HKS env 334, c0000_define
 /// BEHAVIOR_IDENTIFICATION_VALUE_*):
 /// - 17 BLINDING at damage level none (BEH_R_DAMAGE 1104 / 1155): W_StandDamageBlinding /
@@ -1817,7 +1829,7 @@ fn resolve(
                             for m in statuses.hit_wolf(&combat, def_e, config.player.combat_art, &atk.sp_effects(), crate::status::Guard::Deflect) {
                                 log.push(format!("Wolf: {m}"), Color::srgb(0.7, 0.55, 0.9));
                             }
-                            let chip = guard_chip(&combat, &atk, true, if umbrella { tool_weapon.unwrap_or(5000) } else { 5000 }, damage_rates(&combat, &atk, da)) * aa.atk_rate;
+                            let chip = hit_hp(guard_chip(&combat, &atk, true, if umbrella { tool_weapon.unwrap_or(5000) } else { 5000 }, damage_rates(&combat, &atk, da)) * aa.atk_rate, 1.0);
                             if chip > 0.0 {
                                 da.hp = (da.hp - chip).max(0.0);
                                 log.push(format!("deflect chip: -{chip:.0} HP"), Color::srgb(0.9, 0.6, 0.4));
@@ -1973,7 +1985,7 @@ fn resolve(
                             for m in statuses.hit_wolf(&combat, def_e, config.player.combat_art, &atk.sp_effects(), crate::status::Guard::Block) {
                                 log.push(format!("Wolf: {m}"), Color::srgb(0.7, 0.55, 0.9));
                             }
-                            let chip = guard_chip(&combat, &atk, false, if umbrella { tool_weapon.unwrap_or(5000) } else { 5000 }, damage_rates(&combat, &atk, da)) * aa.atk_rate;
+                            let chip = hit_hp(guard_chip(&combat, &atk, false, if umbrella { tool_weapon.unwrap_or(5000) } else { 5000 }, damage_rates(&combat, &atk, da)) * aa.atk_rate, 1.0);
                             if chip > 0.0 {
                                 da.hp = (da.hp - chip).max(0.0);
                                 log.push(format!("guard chip: -{chip:.0} HP"), Color::srgb(0.9, 0.6, 0.4));
@@ -2161,7 +2173,7 @@ fn resolve(
                             }
                             _ => (1.0, 1.0),
                         };
-                        let dmg = dmg * armor_hp;
+                        let dmg = hit_hp(dmg, armor_hp);
                         da.hp = (da.hp - dmg).max(0.0);
                         // BEH_R_DEATH 962: a killing hit of element fire (env 285 = spAttribute 2) at
                         // level NONE / SMALL / MIDDLE / LARGE / PUSH / MINIMUM is Wolf's fire death
@@ -2611,8 +2623,8 @@ fn resolve_throws(combat: Res<Combat>, mut log: Option<ResMut<CombatLog>>, mut q
         if let Some((atk, rate, stam_rate)) = lands.and_then(|(j, kind, r, sr)| combat.kind(kind).data.attacks.get(&j.to_string()).map(|atk| (atk, r, sr))) {
             // The thrower's area-doping rates, as resolve applies them to a hit.
             let pd = stam_rate * if atk.direct_atk_stam_damage > 0.0 { atk.direct_atk_stam_damage } else { atk.atk_stam };
-            a.hp = (a.hp - atk.atk_phys * rate).max(0.0);
-            a.add_posture(pd);
+            a.hp = (a.hp - hit_hp(atk.atk_phys * rate, 1.0)).max(0.0);
+            a.add_posture(pd.floor());
             // The grabbed clip already contains the throw and the fall; without it, a large hit.
             if a.anim.is_empty() {
                 a.play_state(&combat.player, "StandDamageLarge_F");

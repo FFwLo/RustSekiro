@@ -743,7 +743,8 @@ fn hit_enemy(
     // The armour part and the enemy's posture SpEffects, as on a sword hit (combat.rs resolve).
     let (armor_hp, armor_posture, _) = crate::combat::armor_rates(combat, e, da, atk, None);
     let def_rate = crate::combat::def_stamina_rate(combat, da, atk.stamina_physics_attribute) * armor_posture;
-    let (dmg, pd) = (dmg * armor_hp, pd * def_rate);
+    // Whole points, as the exe stores both (combat.rs hit_hp; FUN_1408439a0's (int)).
+    let (dmg, pd) = (crate::combat::hit_hp(dmg, armor_hp), (pd * def_rate).floor());
     da.hp = (da.hp - dmg).max(0.0);
     da.add_posture(pd);
     // The super-armour drain, as a sword hit's (combat::super_armor_hit).

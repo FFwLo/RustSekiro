@@ -32,6 +32,7 @@ mod ffx;
 mod fxr;
 mod fog_wall;
 mod height_fog;
+mod hks_env;
 mod sky;
 mod fmod;
 mod gore;
