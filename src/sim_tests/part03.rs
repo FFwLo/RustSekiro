@@ -762,11 +762,12 @@ pub(crate) fn guard_release_while_moving_keeps_running() {
         }
         app.update();
         let (s, _, _, p) = player_actor(&mut app);
-        if i == 80 {
+        // The release on 80 reaches decide on 81 (player::hks_pad_in).
+        if i == 81 {
             assert!(s.starts_with("DeflectGuardToStandMove"), "released into {s}");
             released_at = Some(p);
         }
-        if i == 100 {
+        if i == 101 {
             let moved = (p - released_at.unwrap()).with_y(0.0).length();
             assert!(moved > 1.0, "moved {moved:.2} m in the first 20 frames of {s}");
         }
@@ -820,11 +821,11 @@ pub(crate) fn sheathe_walk_and_draw() {
     }
     assert_eq!(player_actor(&mut app).0, "Locomotion");
     assert!(sheathed(&mut app).1.starts_with("a010_"), "{}", sheathed(&mut app).1);
-    {
-        let mut pad = app.world_mut().resource_mut::<PadInput>();
-        pad.stick = Vec2::ZERO;
-        pad.press(Action::Attack);
-    }
+    // Stick let go and attack pressed on the same exe frame: decide reads the press a tick later
+    // and the stick live (player::hks_pad_in, gap), so the stick goes on the tick after the press.
+    app.world_mut().resource_mut::<PadInput>().press(Action::Attack);
+    app.update();
+    app.world_mut().resource_mut::<PadInput>().stick = Vec2::ZERO;
     app.update();
     let s = player_actor(&mut app).0;
     assert!(s.starts_with("GroundNonCombatArea") && s.ends_with("Leave"), "{s}");
@@ -1644,8 +1645,9 @@ pub(crate) fn a_locked_sprint_deflect_turns_to_the_enemy_instead_of_snapping() {
             let err = ((a.yaw - (-to.x).atan2(-to.z)).to_degrees() + 180.0).rem_euclid(360.0) - 180.0;
             errs.push((a.state.clone(), err));
         }
-        let at = |n: usize| errs[60 + n].1.abs();
-        assert_eq!(errs[60].0, "SprintToDeflectGuard");
+        // The guard pressed on 60 reaches decide on 61 (player::hks_pad_in).
+        let at = |n: usize| errs[61 + n].1.abs();
+        assert_eq!(errs[61].0, "SprintToDeflectGuard");
         assert!(at(0) > 70.0, "snapped at the start: {:.0} deg off", at(0));
         assert!(at(10) > 40.0, "already square at +10: {:.0} deg off", at(10));
         assert!(at(30) < 5.0, "still {:.0} deg off at +30", at(30));

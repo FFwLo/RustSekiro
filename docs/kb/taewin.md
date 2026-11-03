@@ -102,7 +102,8 @@ cases (136,656 event-updates that do not wrap) `At::Step` equals the exe's dispa
 the point test start <= t < end differed on 1,618 (the update an event's end falls in, starts a
 rounding error past the f32 clock, events passed over on a clip's first update). (0, 0) stays a
 point test at 0: in RSekiro it is a clip played and read before its first step in the same tick
-(the exe's HKS change is followed by the clip's first window in the same frame); gap: a hit stop
+(the exe's HKS asks for a clip after the frame's step and the clip's first window is the next
+frame's: kb/frame-coverage.md "One frame's order"); gap: a hit stop
 held at a clip's start keeps its events at 0, the exe dispatches none.
 
 **The selector, run** (tools/emu-cases `taestate`; Wolf's CustomManualSelectorGenerator of

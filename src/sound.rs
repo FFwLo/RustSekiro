@@ -202,7 +202,7 @@ impl Plugin for SoundPlugin {
             // dropped the interrupted anim's events of this step; the order was left to Bevy.
             .add_systems(
                 FixedUpdate,
-                (play_tae_sounds, deathblow_mix).after(crate::actor::ActorSet::Advance).after(crate::anim::PoseSet).before(crate::actor::ActorSet::Resolve),
+                (play_tae_sounds, deathblow_mix).after(crate::actor::ActorSet::Advance).after(crate::anim::PoseSet),
             )
             .add_systems(Update, play_queued);
     }

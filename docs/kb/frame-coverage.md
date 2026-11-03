@@ -209,6 +209,97 @@ Ranked by uncited bytes of rule code (plumbing left out):
    thresholds (0.3 for the landing reaction).
 8. Ledge-hang probe `FUN_140b788d0` (4.5 KB): with the docking module, parked.
 
+## One frame's order (2026-11-03, animstart)
+
+How: `emu-cases <exe> extracted/emu animstart [animstart_<case>...] --snapshot <dir>`
+(`tools/emu-cases/src/animstart.rs`) runs whole chr frames `FUN_140a4b570` from the snapshot as
+acttrace does (menu patch, pad per frame) with code hooks on each stage and a write hook on the
+TimeAct module's current anim (`[chr+0x1ff8]+0x10 +0xf8`); per frame it logs the stages in call
+order. Cases: Wolf's attack, guard and Loaded Axe pressed on frame 2 (held 3 / 2 / 3), the
+General's forced 3000 (AI on, request on frames 2-4). Test
+`a_pressed_clip_starts_the_frame_after_the_press` (`src/sim_tests/emu_animstart.rs`).
+
+**The world frame.** MoveMapStep's tasks run by task group: the hit manager step `FUN_1409a0dc0`
+inside `FUN_140a746f0` (group 0x4b) before the player's chr frame in `FUN_140a70020` (group
+0x52; the groups from the task registrations in MoveMapStep's setup). So a hit is tested on the
+poses and attack records the chrs left the frame before.
+
+**One chr frame**, as logged (Wolf and the General alike):
+1. pre-update `FUN_1409f78a0`;
+2. vf22: the pad manipulator `FUN_1407ef120` -> its button map `FUN_1407ef960` (the AI's request
+   copy `FUN_1407e6570` for the General), the behaviour module before Havok `FUN_140b45440`;
+3. vf23, then the Havok behaviour step `FUN_141015fa0`. Inside it, in order: a few HKS acts of the
+   current state (101 / 148 / 2015), the current clip's TAE update `FUN_140b5c920` with its in-step
+   handlers (the ChrActionFlag handler `FUN_140b51b70`, from `FUN_140b4fba0`), then the HKS
+   decisions (env / act dispatchers `FUN_140b36410` / `FUN_140b32410`, called from 0x141010b64;
+   on the press frame acts 157, 127, 9101, 154, 3029), then the upper layer clip's TAE
+   (a000_790010);
+4. vf24: the behaviour module after Havok `FUN_140b44980` -> the queue replay `FUN_140b5c730` ->
+   `FUN_140b58530` (the windows' other handlers);
+5. vf25 .. vf30.
+
+So the HKS decides after the frame's clip step and sees the ChrActionFlags of that step's window;
+the clip it asks for takes its first update [0, 1/60] in the next frame's step:
+
+| Case | Pressed | Old clip's last step | New clip's first window |
+|---|---|---|---|
+| attack a050_300000 | f2-4 | f2 (a000_000000 2.604 -> 2.621) | f3 (0 -> 0.0167) |
+| guard a050_203000 | f2-3 | f2 | f3 |
+| Loaded Axe a073_400000 | f2-4 | f2 | f3 |
+| General a000_003000 | request f2-4 | f2 | f3 |
+
+The hits runs say the same of a reaction: the hit step of frame h, the reaction's first window h + 1.
+
+**What changed in Sv1.** Sv1's `decide` runs before `advance` and reads the window the last
+`advance` took: it stands for the exe's HKS of the frame before. But it read the frame's pad, so a
+press played its clip one frame early (the Loaded Axe release on 48 / payment on 73 for the exe's
+49 / 74; a guard's first step in the press frame), and `resolve` ran after `advance`, a whole HKS
+before the exe's hit step (a hit's damage and reaction a frame early relative to the contact pose,
+kb/damage.md "Landed hits"). Now:
+- `player::hks_pad_in`: `decide` reads the presses and held buttons of the frame before (the stick
+  stays live: the turn and move speed are vf22's, before the step). gap: the HKS's own stick reads
+  (a step's or an attack's direction, the run stop) see the frame's stick.
+- `ActorSet` order Decide, Resolve, Advance: the hit test runs on the poses and attack windows of
+  the last step, as the hit step does; a clip played in `resolve` (a reaction) is `Actor::fresh`
+  and takes its first step in the next tick (`clear_fresh`, after decide, clears the ones decide
+  or the last tick's later systems played). The throw resolution `resolve_throws` stays after the
+  step (TAE 304 is the chr frame's, not the hit step's). PoseSet, bullets, sounds and particles
+  stay after the step.
+- `Actor::kb_wait` 2 (the hit's own step, then the reaction's first; the exe moves the defender
+  from h + 2); a bullet's knockback (fly_bullets, after the step) waits 1.
+- The gourd's ConsumeCurrentGoods (TAE 65) moved from `decide` to `consume_goods` after the step:
+  the exe runs it in the frame whose step enters the event (frame 42 for 0.7 s).
+
+Checked: animstart (3 Wolf cases: the frame and clip time of the first step), items (gourd heal on
+42, Loaded Axe release 49 / payment 74, were 48 / 73), hits (verdicts, the deflect window by guard
+clip time, the knockback's first frame and travel, now read on Sv1's frame labels with no offset),
+taewin, taestate, turn, air, modticks as before.
+
+Tests updated, on the exe evidence that a press reaches the HKS's clip the frame after:
+`a_key_press_reaches_the_same_frames_fixed_step` (the attack starts the tick after the key; the
+press still leaves the pad in the key's frame), `crouching_cuts_how_far_enemies_see_wolf`,
+`switching_prosthetics_plays_the_next_tool`, `deathblow_from_behind_uses_the_back_throw`,
+`a_grapple_lands_on_the_point_in_the_move_start_time`, `a_reset_mid_jump_lands_wolf_at_the_start`,
+`use_art` (`every_art_starts_and_costs_its_emblems` and the other art tests): one tick more after
+the press; `a_locked_sprint_deflect_turns_to_the_enemy_instead_of_snapping`,
+`guard_release_while_moving_keeps_running`: the press / release read a tick later;
+`arts_in_the_air`: the art pressed a tick earlier relative to the launch (it reaches decide at the
+same point); `sheathe_walk_and_draw`: the stick let go a tick after the attack press (the stick gap
+above); `an_early_jump_in_an_air_slash_becomes_the_air_kick`: one attack press (the test pressed
+every tick until the slash showed, which now queued a second); `a_grab_pulls_wolf_onto_the_grabbers_dummy`:
+checked a tick after the grab (the absorb now lands in the grab's own tick; the pair then drifts
+3.5 cm a tick, as before); `landed_hits_match_the_exe`: Sv1's guard clip time and contact pose
+read on the frame before the hit (no + dt). `force_player` primes the pad (`HksPad::prime`): a
+forced state stands for one Wolf was already in, with the buttons already down.
+
+Not covered (gap): the old clip's last step on the frame a reaction starts (the exe steps it once
+more: its root motion is kept through the blend, its TAE window is not); attack windows of a clip
+`decide` replaces in the same tick; enemies' frame labels (their AI decides in `decide`, the exe's
+HKS of the frame before, so only Wolf's pad needed the delay; the General's frames were logged but
+not compared with Sv1's); hit-stop frames; a bullet's hit timing (the exe's bullet update is a
+world task, not traced); other TAE events `decide` still reads a tick after the step (one-shot
+SpEffects 401 / 67, weapon style 32): the exe runs them in the step's frame.
+
 ## Item use and prosthetic bullets (2026-11-03, items)
 
 How: `emu-cases <exe> extracted/emu items [items_<case>...] --snapshot <dir>`
@@ -244,10 +335,9 @@ is < 1.
 Compared with RSekiro (`src/sim_tests/emu_items.rs`):
 - `gourd_use_matches_the_exe`: the heal and the charge on the exe's frame 42; matched as it was.
 - `loaded_axe_emblems_match_the_exe`: the payment 25 frames into the release and its 2 emblems
-  match; ours starts a073_400000 one frame early (t 0.8 on frame 47, the exe's 48), so the release
-  (exe 49) and payment (exe 74) are on 48 / 73. The exe's first TAE update of a clip the HKS
-  starts on frame N is on N + 1; ours steps it in the press frame. The gourd agrees only because
-  its press reaches ours' HKS a frame later. gap: not fixed (a change to every clip start).
+  match; ours started a073_400000 one frame early (t 0.8 on frame 47, the exe's 48), so the
+  release (exe 49) and payment (exe 74) were on 48 / 73. Fixed 2026-11-03 (animstart, "One
+  frame's order" above): now 49 / 74.
 - gap: RSekiro uses only the gourd. Pellets, sugars, spiritfall and throwables (goods
   refCategory 1: their Bullet row's shooter SpEffect / HitBulletID) are not in the player; the
   table above gives their clips, use frames and Bullet rows for a port.

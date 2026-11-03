@@ -625,7 +625,8 @@ pub(crate) fn arts_in_the_air() {
         let (mut seen, mut launch, mut pressed): (Vec<String>, Option<usize>, usize) = (Vec::new(), None, 0);
         for f in 0..400 {
             if let Some(l) = launch {
-                if pressed < presses && f == l + 8 + pressed * 6 {
+                // (Pressed on l + 7: decide reads it on l + 8, player::hks_pad_in.)
+                if pressed < presses && f == l + 7 + pressed * 6 {
                     pressed += 1;
                     let mut pad = app.world_mut().resource_mut::<PadInput>();
                     pad.press(Action::Attack);
@@ -659,8 +660,9 @@ pub(crate) fn arts_in_the_air() {
     let seen = run(5200, None, 1);
     assert!(has(&seen, "AirSpecialAttackStart"), "5200: {seen:?}");
     assert!(seen.iter().any(|s| s.starts_with("LandAirSpecialAttack")), "5200: {seen:?}");
-    // (Let go once HoldStart's ref 230 is up, f21-33: the air hold ends only in it.)
-    let seen = run(6100, Some(8 + 23), 1);
+    // (Let go once HoldStart's ref 230 is up, f21-33: the air hold ends only in it; decide reads
+    // the release on l + 31, 23 in.)
+    let seen = run(6100, Some(8 + 22), 1);
     assert!(has(&seen, "AirSpecialAttackHoldStart"), "6100: {seen:?}");
     // (HoldEnd, or its landing when it lands in the same step.)
     assert!(seen.iter().any(|s| s.ends_with("AirSpacialAttackHoldEnd")), "6100 HoldEnd: {seen:?}");
@@ -780,6 +782,8 @@ pub(crate) fn use_art(art: i64, emblems: u32, frames: usize) -> (Vec<String>, u3
         pad.press(Action::Attack);
         pad.press(Action::Guard);
     }
+    // The press reaches decide the tick after (player::hks_pad_in).
+    app.update();
     let mut seen: Vec<String> = Vec::new();
     for _ in 0..frames {
         app.update();

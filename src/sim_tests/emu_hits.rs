@@ -157,7 +157,8 @@ fn exe_hit(v: &Value) -> Option<Hit> {
     })
 }
 
-/// Sv1's hit from a sim duel: the resolve runs after the frame's step, on that frame's poses.
+/// Sv1's hit from a sim duel: the resolve of frame i runs before that frame's step, on the poses
+/// after frame i - 1 (as the exe's hit step).
 fn sim_hit(fr: &[Frame], posture0: f32) -> Option<Hit> {
     let i = fr.iter().position(|x| x.log.contains("hit:") || x.log.contains("DEFLECT") || x.log.contains("blocked") || x.log.contains("GUARD BROKEN"))?;
     let log = &fr[i].log;
@@ -173,7 +174,7 @@ fn sim_hit(fr: &[Frame], posture0: f32) -> Option<Hit> {
         "hit"
     };
     let prev = &fr[i - 1];
-    let guard_t = guard_clip_name(&prev.anim).then(|| (prev.anim.clone(), prev.t + DT));
+    let guard_t = guard_clip_name(&prev.anim).then(|| (prev.anim.clone(), prev.t));
     let all: Vec<f32> = (i + 1..fr.len()).map(|k| (fr[k].pos - fr[k - 1].pos).with_y(0.0).length()).collect();
     let first = all.iter().position(|s| *s > 1e-4)?;
     Some(Hit {
@@ -182,7 +183,7 @@ fn sim_hit(fr: &[Frame], posture0: f32) -> Option<Hit> {
         posture: if verdict == "broken" || verdict == "guard_break" { f32::NAN } else { fr[i].posture - posture0 },
         reaction: fr[i].anim.clone(),
         guard_t,
-        contact_t: prev.enemy_t + DT,
+        contact_t: prev.enemy_t,
         moves_after: first + 1,
         steps: all[first..(first + 12).min(all.len())].to_vec(),
     })

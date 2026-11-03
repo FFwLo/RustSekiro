@@ -1206,7 +1206,7 @@ pub struct StatusPlugin;
 
 impl Plugin for StatusPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<Statuses>().insert_resource(VfxRows::load()).add_systems(FixedUpdate, tick.after(ActorSet::Resolve)).add_systems(Update, (show, electro_glow, lasting_glow, heartbeat));
+        app.init_resource::<Statuses>().insert_resource(VfxRows::load()).add_systems(FixedUpdate, tick.after(ActorSet::Resolve).after(crate::combat::resolve_throws)).add_systems(Update, (show, electro_glow, lasting_glow, heartbeat));
     }
 }
 

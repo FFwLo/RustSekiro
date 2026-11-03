@@ -668,22 +668,79 @@ impl PadInput {
     }
 }
 
+/// The buttons Wolf's decisions read: the frame before's. In the exe (tools/emu-cases
+/// `animstart`, kb/frame-coverage.md "One frame's order") the pad is read in ChrIns::vf22
+/// (FUN_1407ef120 -> FUN_1407ef960) but the HKS runs inside the Havok behaviour step
+/// FUN_141015fa0, after the current clip's TAE update FUN_140b5c920 and its in-step ChrActionFlags
+/// (FUN_140b51b70), and the clip it asks for takes its first step [0, dt] in the next frame's
+/// step: a press on frame P plays from P + 1 (attack, guard, Loaded Axe, the General's forced
+/// 3000 alike). `decide` runs before `advance` and reads the window the last advance took, so it
+/// is the exe's HKS of the frame before; it reads the presses and held buttons of the frame before
+/// too. The stick stays live: the exe's turn and move speed (vf22, before the step) take the frame's.
+/// gap: the HKS's own stick reads (a step's or an attack's direction) see the frame's stick here.
+#[derive(Resource, Default)]
+pub(crate) struct HksPad {
+    pressed: Vec<Action>,
+    held: [bool; 4],
+    /// The frame's held buttons while `decide` reads the frame before's.
+    live: [bool; 4],
+    /// The next tick's buttons count as the frame before's (`prime`).
+    primed: bool,
+}
+
+impl HksPad {
+    /// A test that puts Wolf straight into a state: the buttons it sets for the next tick count
+    /// as pressed and held the frame before, so that tick's `decide` reads them.
+    pub(crate) fn prime(&mut self) {
+        self.primed = true;
+    }
+}
+
+fn held_of(pad: &PadInput) -> [bool; 4] {
+    [pad.attack_held, pad.guard_held, pad.dodge_held, pad.prosthetic_held]
+}
+
+fn set_held(pad: &mut PadInput, h: [bool; 4]) {
+    [pad.attack_held, pad.guard_held, pad.dodge_held, pad.prosthetic_held] = h;
+}
+
+/// Before `decide`: the frame's buttons are kept for the next frame, the frame before's are put in.
+fn hks_pad_in(mut pad: ResMut<PadInput>, mut late: ResMut<HksPad>) {
+    let now = (std::mem::take(&mut pad.pressed), held_of(&pad));
+    late.live = now.1;
+    if std::mem::take(&mut late.primed) {
+        pad.pressed = now.0;
+        late.held = now.1;
+        return;
+    }
+    pad.pressed = std::mem::replace(&mut late.pressed, now.0);
+    let before = std::mem::replace(&mut late.held, now.1);
+    set_held(&mut pad, before);
+}
+
+/// After `decide`: the held buttons are the frame's again for everything else.
+fn hks_pad_out(mut pad: ResMut<PadInput>, late: Res<HksPad>) {
+    set_held(&mut pad, late.live);
+}
+
 pub struct PlayerPlugin;
 
 impl Plugin for PlayerPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<PadInput>()
+            .init_resource::<HksPad>()
             .init_resource::<LockOn>()
             .add_systems(Startup, spawn_player)
             // Input is read right before the frame's fixed steps: Bevy runs them before Update, so a press
             // read in Update reached the simulation one frame (16.7 ms at 60 fps) late.
             .add_systems(RunFixedMainLoop, read_input.run_if(resource_exists::<ButtonInput<KeyCode>>).in_set(bevy::app::RunFixedMainLoopSystems::BeforeFixedMainLoop))
             .init_resource::<ActiveThrow>()
-            .add_systems(FixedUpdate, (sync_art_variation, decide, apply_refresh_effects, record_state).chain().in_set(ActorSet::Decide))
-            .add_systems(FixedUpdate, follow_throw.after(ActorSet::Advance).before(crate::anim::PoseSet).before(ActorSet::Resolve));
+            .add_systems(FixedUpdate, (sync_art_variation, hks_pad_in, decide, hks_pad_out, apply_refresh_effects, record_state).chain().in_set(ActorSet::Decide))
+            .add_systems(FixedUpdate, follow_throw.after(ActorSet::Advance).before(crate::anim::PoseSet))
+            .add_systems(FixedUpdate, consume_goods.after(ActorSet::Advance));
         app.add_systems(FixedUpdate, wolf_no_dead.before(ActorSet::Decide));
         if std::env::var("SHINOBI_MOVE_LOG").is_ok() {
-            app.add_systems(FixedUpdate, move_log.after(ActorSet::Resolve));
+            app.add_systems(FixedUpdate, move_log.after(ActorSet::Advance));
         }
     }
 }
@@ -2746,6 +2803,26 @@ fn one_shot_starts(start: f32, prev_t: f32, t: f32) -> bool {
 }
 
 
+/// ConsumeCurrentGoods (TAE 65, drink frame 21 / repeat frame 9): one charge, the heal, on the
+/// tick whose step enters the event. The exe's handler FUN_140b57740 runs in the frame the
+/// behaviour step takes that window (tools/emu-cases items: a000_250000's 0.7 s event on frame 42
+/// of a press on frame 0); `decide` reads the window a tick later, so the use is after `advance`.
+fn consume_goods(combat: Res<Combat>, config: Res<GameConfig>, mut log: ResMut<CombatLog>, mut player: Single<(&mut Player, &mut Actor)>) {
+    let (p, a) = &mut *player;
+    let d = &combat.player;
+    if !matches!(a.state.trim_start_matches("Crouch"), "ItemGourdDrink" | "ItemGourdDrinkRepeat" | "ItemGourdDrinkMove" | "ItemGourdDrinkRepeatMove") {
+        return;
+    }
+    let consumed = d.anim(&a.anim).is_some_and(|an| an.events.iter().any(|e| e.kind == 65 && one_shot_starts(e.start, a.prev_t, a.t)));
+    if consumed && p.gourd > 0 {
+        p.gourd -= 1;
+        let rate = d.sp_effects.get(GOURD_SPEFFECT).map_or(40.0, |s| -s.change_hp_estus_flask_rate);
+        let heal = estus_heal(a.hp_max, rate, medicine_rate(&combat, &config));
+        a.hp = (a.hp + heal).min(a.hp_max);
+        log.push(format!("gourd: +{heal:.0} HP ({} left)", p.gourd), Color::srgb(0.5, 1.0, 0.6));
+    }
+}
+
 /// The instant "Refresh" SpEffects Wolf's death and revival anims add (TAE 401 at f0,
 /// motionInterval 0, effectEndurance 0): the death loop a000_110010 cures every ailment (8002,
 /// stateInfo 13) and empties the poison / burn gauges (8003 poizonAttackPower / 8004 registBlood
@@ -3879,16 +3956,8 @@ fn decide(
         a.play_state(d, &state);
         return;
     }
-    // ConsumeCurrentGoods (TAE 65, drink frame 21 / repeat frame 9): one charge, the heal.
+    // The drink: ConsumeCurrentGoods (TAE 65) is `consume_goods`, after `advance`.
     if matches!(a.state.trim_start_matches("Crouch"), "ItemGourdDrink" | "ItemGourdDrinkRepeat" | "ItemGourdDrinkMove" | "ItemGourdDrinkRepeatMove") {
-        let consumed = d.anim(&a.anim).is_some_and(|an| an.events.iter().any(|e| e.kind == 65 && one_shot_starts(e.start, a.prev_t, a.t)));
-        if consumed && p.gourd > 0 {
-            p.gourd -= 1;
-            let rate = d.sp_effects.get(GOURD_SPEFFECT).map_or(40.0, |s| -s.change_hp_estus_flask_rate);
-            let heal = estus_heal(a.hp_max, rate, medicine_rate(&combat, &config));
-            a.hp = (a.hp + heal).min(a.hp_max);
-            log.push(format!("gourd: +{heal:.0} HP ({} left)", p.gourd), Color::srgb(0.5, 1.0, 0.6));
-        }
         // Flag 90: may walk while drinking (the Move ones walk on the legs: lower_body_move).
         if !is_upper_action(&a.state) && !a.anim.is_empty() && d.flag(&a.anim, a.step(), FLAG_LIMIT_WALK) {
             let walk = d.root_velocity(if a.crouch { "a000_005200" } else { "a000_000200" }).length();

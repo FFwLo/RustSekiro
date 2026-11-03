@@ -10,6 +10,7 @@ pub(crate) fn crouching_cuts_how_far_enemies_see_wolf() {
     let mut app = app();
     app.world_mut().resource_mut::<PadInput>().press(Action::Crouch);
     app.update();
+    app.update(); // the press reaches decide the tick after (hks_pad_in)
     assert_eq!(player_state(&mut app).0, "CrouchStart");
     for _ in 0..120 {
         app.update();
@@ -29,6 +30,7 @@ pub(crate) fn crouching_cuts_how_far_enemies_see_wolf() {
     // And C again stands up (CrouchEnd a000_216100).
     app.world_mut().resource_mut::<PadInput>().press(Action::Crouch);
     app.update();
+    app.update(); // the press reaches decide the tick after (hks_pad_in)
     assert_eq!(player_state(&mut app).0, "CrouchEnd");
 }
 
@@ -534,6 +536,7 @@ pub(crate) fn switching_prosthetics_plays_the_next_tool() {
     }
     app.world_mut().resource_mut::<PadInput>().press(Action::SwitchTool);
     app.update();
+    app.update(); // the press reaches decide the tick after (hks_pad_in)
     {
         let world = app.world_mut();
         let mut q = world.query::<(&Player, &Actor)>();
@@ -545,6 +548,7 @@ pub(crate) fn switching_prosthetics_plays_the_next_tool() {
     app.update();
     app.world_mut().resource_mut::<PadInput>().press(Action::SwitchTool);
     app.update();
+    app.update(); // the press reaches decide the tick after (hks_pad_in)
     assert_eq!(app.world_mut().query::<&Player>().single(app.world()).unwrap().tool_slot, 1);
     let mut expanded = false;
     for _ in 0..240 {
@@ -565,6 +569,7 @@ pub(crate) fn switching_prosthetics_plays_the_next_tool() {
     }
     app.world_mut().resource_mut::<PadInput>().press(Action::Prosthetic);
     app.update();
+    app.update(); // the press reaches decide the tick after (hks_pad_in)
     let (s, k, ..) = player_state(&mut app);
     assert_eq!(s, "GroundSubAttackCombo1");
     assert!(k.starts_with("a071_"), "{k}");
