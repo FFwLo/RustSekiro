@@ -876,6 +876,8 @@ pub(crate) struct Brains {
     /// to their next update.
     pub(crate) roles: HashMap<Entity, f64>,
     pub(crate) role_clock: f32,
+    /// The sight searches' shared scheduler (stealth::SearchRing), moved on once a frame.
+    pub(crate) search_ring: stealth::SearchRing,
 }
 
 /// The exe's team-order update (FUN_140640b80 -> FUN_140640050, <decomp ref> / 207-528): every
@@ -1973,6 +1975,18 @@ pub(crate) fn rival_view(real: &Targeting, rival: Option<Entity>, last: Option<E
     tg
 }
 
+/// How fast an AI chr turns to its AI's angle (AI +0x73e0, the manipulator's M +0x20) in
+/// deg/s: the TAE 224 SetTurnSpeed of its anim at that time, else NpcParam turnVellocity. In the
+/// emulator (aimove 2026-11-03, `general_turn_rates_match_the_exe`) the General turned at his
+/// clips' SetTurnSpeed every frame the turn was not done: run a000_405010 240, walks
+/// 405000-405003 120 (front, back, sides alike), battle start 1040 135 / 0 by window, attack 3004
+/// 208 / 135 / 0 / 225. Before, the walk and run turned at turnVellocity (135) whatever the clip.
+/// gap: the fallback for a clip with no SetTurnSpeed is not traced (turn clips turn by root
+/// motion); used for the walks and runs only (think), an idle keeps turnVellocity.
+pub(crate) fn ai_turn_rate(d: &crate::data::CharData, anim: &str, t: impl Into<crate::tae_window::At>, turn_vellocity: f32) -> f32 {
+    if anim.is_empty() { None } else { d.turn_speed(anim, t, true) }.unwrap_or(turn_vellocity)
+}
+
 fn turn_toward(yaw: f32, target: f32, max_step: f32) -> f32 {
     let diff = (target - yaw + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI;
     yaw + diff.clamp(-max_step, max_step)
@@ -2330,6 +2344,8 @@ fn think(
             radius: combat.npc(a)["hitRadius"].as_f64().unwrap_or(0.5) as f32,
         })
         .collect();
+    // The search scheduler's frame step (the world task FUN_140a74560 -> FUN_140614dd0).
+    brains.search_ring.advance();
     // The AI team roles, from last frame's targets.
     brains.role_clock -= dt;
     if brains.role_clock <= 0.0 {
@@ -2637,6 +2653,9 @@ fn think(
         // The sight ray starts at dummy 500 itself (its own height; fallback NpcParam hitHeight).
         let head = stealth::sight_head(feet, a.forward(), dmy500, radius, npc["hitHeight"].as_f64().unwrap_or(1.5) as f32);
         e.targeting.update(think_row, feet, eye, head, a.forward(), &seen, dt);
+        if e.targeting.searched {
+            e.targeting.search_timer = brains.search_ring.place(e.targeting.search_timer);
+        }
         if e.targeting.changed() {
             if let Some(log) = log.as_mut() {
                 let (text, color) = match e.targeting.state {
@@ -3059,7 +3078,11 @@ fn think(
         }
         let turned = turned_first || (cmd.turn && cmd.anim.is_none() && cmd.mv.is_none() && free && start_turn(&e, &mut a, d, goal_yaw, cmd.emergency));
         if (cmd.face || cmd.turn) && (free || cmd.mv.is_some()) && !turned && !(a.state.starts_with("Turn") && !ended) {
-            a.yaw = turn_toward(a.yaw, goal_yaw, turn_rate.to_radians() * dt);
+            // A walk / run turns at its clip's SetTurnSpeed (ai_turn_rate); standing (Wait /
+            // Stay turns under the turn clips' 45 deg) keeps turnVellocity. gap: the exe's turn
+            // from an idle clip is not traced (c1010's idle turned the turn clip's leftover).
+            let rate = if cmd.mv.is_some() { ai_turn_rate(d, &a.anim, a.step(), turn_rate) } else { turn_rate };
+            a.yaw = turn_toward(a.yaw, goal_yaw, rate.to_radians() * dt);
         }
     }
 }
