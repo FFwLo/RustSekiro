@@ -40,10 +40,16 @@ through a null pointer stops the run. The snapshot is game memory: it stays in `
 ## Scenes: snapshots without the owner (2026-11-03)
 
 `emu-cases scene <dir> <idol> [x y z yaw] [ai-off]` finds sekiro.exe, turns the debug flag player
-no death on (0x143d7a366 +0), warps with the game's own idol travel FUN_14068e870(0, idol, 0) run on
-a thread of its own (a 30-byte stub), waits for the new area, holds Wolf at the spot until it
-sticks (the idol arrival puts him back for about a second), sets disable AI (+0x10) if asked, waits
-5 s and takes the snapshot. Idol ids and boss spots: SekiroTool's `Resources.resx` "Warps" (MIT,
+no death on (0x143d7a366 +0), and warps with the game's own idol travel FUN_14068e870(0, idol, 0)
+run on a thread of its own (a 30-byte stub). For a spot, the warp's two arrival setters
+(FUN_140832a30 position, FUN_140832a10 angle, into [0x143d5c0d0]+0xac0/+0xad0) are rewritten for
+the load to store the spot, then restored, as SekiroTool does: writing the field from outside
+loses the race (Wolf came out at the idol). It sets disable AI (+0x10) if asked, waits 8 s, checks
+Wolf is at the spot (else no snapshot) and copies. Tested 2026-11-03 in General Naomori's arena
+(1101951, 201.79 -26.23 23.88): Wolf exactly there, setters back to their own bytes, all 89
+enemies hit-stop mode 0. The copy paused the game 35-170 s (disk speed).
+
+Snapshots are working files (owner, 2026-11-03): use them, then delete them (10 GB each). Idol ids and boss spots: SekiroTool's `Resources.resx` "Warps" (MIT,
 reference/SekiroTool). The same steps for live work without the tool: `tools/memscope/warp.lua`.
 The warp's area load moved the game window off the screen once (to 3334,1433); moving it back with
 SetWindowPos is enough. A save to load from the title screen still needs screen control (held keys,

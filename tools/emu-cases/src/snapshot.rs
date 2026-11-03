@@ -76,6 +76,8 @@ extern "system" {
     fn VirtualFreeEx(h: *mut c_void, at: u64, size: usize, kind: u32) -> i32;
     fn CreateRemoteThread(h: *mut c_void, attrs: *mut c_void, stack: usize, start: u64, param: *mut c_void, flags: u32, tid: *mut u32) -> *mut c_void;
     fn WaitForSingleObject(h: *mut c_void, ms: u32) -> u32;
+    fn VirtualProtectEx(h: *mut c_void, at: u64, size: usize, protect: u32, old: *mut u32) -> i32;
+    fn FlushInstructionCache(h: *mut c_void, at: u64, size: usize) -> i32;
     fn Process32FirstW(snap: *mut c_void, e: *mut ProcessEntry) -> i32;
     fn Process32NextW(snap: *mut c_void, e: *mut ProcessEntry) -> i32;
     fn CreateToolhelp32Snapshot(flags: u32, pid: u32) -> *mut c_void;
@@ -220,6 +222,8 @@ fn copy(h: *mut c_void, pid: u32, player: u64, dir: &Path) {
 const DEBUG_FLAGS: u64 = 0x1_43d7_a366;
 /// The game's idol travel (SekiroTool Functions.Warp, 1.6.0): FUN_14068e870(0, idol, 0).
 const WARP: u64 = 0x1_4068_e870;
+/// The object holding the warp's arrival spot (read by FUN_140832a10 / FUN_140832a30).
+const WARP_DEST: u64 = 0x1_43d5_c0d0;
 
 /// Where a scene puts Wolf: an idol, then optionally an exact spot (x, y, z, yaw).
 pub struct Scene {
@@ -246,6 +250,63 @@ fn physics(h: *mut c_void) -> Option<u64> {
     player(h).and_then(|p| read_u64(h, p + 0x1ff8)).and_then(|bag| read_u64(h, bag + 0x68)).filter(|&ph| ph != 0)
 }
 
+/// The warp's two arrival setters, rewritten to store a fixed spot: the spot sits in a page near the
+/// image (rip-relative reach), each setter's own bytes are kept to put back.
+struct SpotPatch {
+    cave: u64,
+    saved: Vec<(u64, Vec<u8>)>,
+}
+
+impl SpotPatch {
+    const SETTERS: [(u64, u32, u64); 2] = [(0x1_4083_2a30, 0xac0, 0), (0x1_4083_2a10, 0xad0, 0x10)];
+
+    fn install(h: *mut c_void, [x, y, z, yaw]: [f32; 4]) -> SpotPatch {
+        // A data page within 2 GB below the image, for `movups xmm0, [rip+disp32]`.
+        let cave = (1..0x4000u64)
+            .map(|i| 0x1_4000_0000 - i * 0x10000)
+            .find_map(|at| Some(unsafe { VirtualAllocEx(h, at, 0x1000, 0x3000, 0x04) }).filter(|&a| a != 0))
+            .expect("no page near the image");
+        write(h, cave, &[x, y, z, 1.0, 0.0, yaw, 0.0, 0.0].map(f32::to_le_bytes).concat());
+        let rel = |from: u64, to: u64| ((to as i64 - from as i64) as i32).to_le_bytes();
+        let mut saved = Vec::new();
+        for (at, field, data) in Self::SETTERS {
+            // mov rax, [WARP_DEST]; movups xmm0, [cave+data]; movdqa [rax+field], xmm0; ret
+            let mut code = vec![0x48, 0x8b, 0x05];
+            code.extend(rel(at + 7, WARP_DEST));
+            code.extend([0x0f, 0x10, 0x05]);
+            code.extend(rel(at + 14, cave + data));
+            code.extend([0x66, 0x0f, 0x7f, 0x80]);
+            code.extend(field.to_le_bytes());
+            code.push(0xc3);
+            let mut old = vec![0u8; code.len()];
+            let mut n = 0usize;
+            unsafe { ReadProcessMemory(h, at, old.as_mut_ptr() as _, old.len(), &mut n) };
+            // The setter is 19 bytes and int3 padding follows: the 23-byte version must end in it.
+            assert!(old[19..].iter().all(|&b| b == 0xcc), "setter at {at:#x} is not the expected code");
+            patch_code(h, at, &code);
+            saved.push((at, old));
+        }
+        SpotPatch { cave, saved }
+    }
+
+    fn remove(self, h: *mut c_void) {
+        for (at, old) in &self.saved {
+            patch_code(h, *at, old);
+        }
+        unsafe { VirtualFreeEx(h, self.cave, 0, 0x8000) };
+    }
+}
+
+fn patch_code(h: *mut c_void, at: u64, bytes: &[u8]) {
+    let mut old = 0u32;
+    unsafe {
+        assert!(VirtualProtectEx(h, at, bytes.len(), 0x40, &mut old) != 0, "VirtualProtectEx failed");
+        write(h, at, bytes);
+        VirtualProtectEx(h, at, bytes.len(), old, &mut old);
+        FlushInstructionCache(h, at, bytes.len());
+    }
+}
+
 /// Runs the game's idol warp on a thread of its own: a small stub in the game calls the warp
 /// function as the idol menu does.
 fn warp(h: *mut c_void, idol: u32) {
@@ -266,9 +327,9 @@ fn warp(h: *mut c_void, idol: u32) {
     }
 }
 
-/// Puts Wolf in a scene and takes the snapshot there: no death on, warp to the idol, wait for the
-/// new area, hold him at the spot until it sticks (the idol arrival puts him back for a while),
-/// AI off if asked, let it settle, copy.
+/// Puts Wolf in a scene and takes the snapshot there: no death on, warp to the idol with the
+/// arrival spot set to the scene's, wait for the new area, AI off if asked, let it settle, check
+/// Wolf is at the spot, copy.
 pub fn scene(pid: u32, sc: &Scene, dir: &Path) {
     // QUERY_INFORMATION | VM_READ | VM_WRITE | VM_OPERATION | CREATE_THREAD | SUSPEND_RESUME
     let h = unsafe { OpenProcess(0x0400 | 0x0010 | 0x0020 | 0x0008 | 0x0002 | 0x0800, 0, pid) };
@@ -277,38 +338,35 @@ pub fn scene(pid: u32, sc: &Scene, dir: &Path) {
     write(h, DEBUG_FLAGS, &[1]);
     let old: [f32; 3] = read_f32s(h, physics(h).unwrap() + 0x80);
     let t = std::time::Instant::now();
+    // The warp sets its arrival spot through two setters (FUN_140832a30: [WARP_DEST]+0xac0 =
+    // x, y, z, 1; FUN_140832a10: +0xad0 = 0, yaw, 0, 0) and reads it in the same frame, so writing
+    // the field from outside loses the race (seen 2026-11-03: Wolf came out at the idol). As
+    // SekiroTool does, the setters store the scene's spot while the warp loads, then get their own
+    // bytes back; the game itself spawns Wolf there.
+    let patched = sc.spot.map(|spot| SpotPatch::install(h, spot));
     warp(h, sc.idol);
     let moved = |p: [f32; 3]| (0..3).map(|i| (p[i] - old[i]).abs()).sum::<f32>() > 0.5;
-    let ph = loop {
+    loop {
         assert!(t.elapsed().as_secs() < 60, "the warp did not finish loading in 60 s");
-        sleep_ms(250);
-        if let Some(ph) = physics(h).filter(|&ph| moved(read_f32s(h, ph + 0x80))) {
-            break ph;
+        sleep_ms(100);
+        if physics(h).is_some_and(|ph| moved(read_f32s(h, ph + 0x80))) {
+            break;
         }
-    };
-    println!("warped to idol {} in {:.1} s", sc.idol, t.elapsed().as_secs_f32());
-    sleep_ms(1500);
-    if let Some([x, y, z, yaw]) = sc.spot {
-        let t1 = std::time::Instant::now();
-        loop {
-            for _ in 0..10 {
-                write(h, ph + 0x80, &[x, y, z].map(f32::to_le_bytes).concat());
-                write(h, ph + 0x74, &yaw.to_le_bytes());
-                sleep_ms(16);
-            }
-            sleep_ms(700);
-            let [px, py, pz]: [f32; 3] = read_f32s(h, ph + 0x80);
-            if (px - x).abs() + (pz - z).abs() < 1.0 && (py - y).abs() < 3.0 {
-                break;
-            }
-            assert!(t1.elapsed().as_secs() < 20, "the spot did not hold in 20 s");
-        }
-        println!("placed at {x:.2} {y:.2} {z:.2} yaw {yaw:.2}");
     }
+    sleep_ms(1000);
+    if let Some(p) = patched {
+        p.remove(h);
+    }
+    println!("warped to idol {} in {:.1} s", sc.idol, t.elapsed().as_secs_f32());
     if sc.ai_off {
         write(h, DEBUG_FLAGS + 0x10, &[1]);
     }
-    sleep_ms(5000);
+    sleep_ms(8000);
+    let at: [f32; 3] = read_f32s(h, physics(h).unwrap() + 0x80);
+    println!("Wolf at {:.2} {:.2} {:.2}", at[0], at[1], at[2]);
+    if let Some([x, y, z, _]) = sc.spot {
+        assert!((at[0] - x).abs() + (at[2] - z).abs() < 2.0 && (at[1] - y).abs() < 3.0, "Wolf is not at the spot: no snapshot taken");
+    }
     let player = player(h).unwrap();
     copy(h, pid, player, dir);
     unsafe { CloseHandle(h) };
