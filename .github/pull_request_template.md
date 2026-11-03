@@ -8,8 +8,8 @@ Board: <ID> done: <one line>  <!-- or "Board: <ID> part: ...", or "Board: none" 
 
 ## How it was checked
 
-- [ ] `cargo test --profile quick` passes with my own `extracted/` (SHINOBI_ROOT=<test root>)
-- [ ] New behaviour has a sim test; tests that need game data skip without it
+- [ ] The full suite passes with my own `extracted/` (SHINOBI_ROOT=<test root>): paste its `test result:` line here
+- [ ] New behaviour has a sim test; a unit test that reads game data carries `cfg_attr(not(shinobi_data), ignore)`
 - [ ] For an E row: the emulator run (functions, case count) and the kb / emulator-pilot.md notes
 - [ ] The kb note says what is still not covered (`gap:`)
 
