@@ -1,0 +1,46 @@
+name: pages
+# The work map at https://ffwlo.github.io/RustSekiro/: rebuilt from docs/kb/coverage.md and the board branch's rows
+# on every push to main, after the board workflow moves a row, every six hours (claims), and by hand.
+on:
+  push:
+    branches: [main]
+  workflow_run:
+    workflows: [board]
+    types: [completed]
+  schedule:
+    - cron: "17 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: read          # live claims from the claims issue
+  pull-requests: read   # open pull requests hold claims
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - run: git fetch -q origin agents-work-board:refs/remotes/origin/agents-work-board
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -I tools/workmap/build.py --out _site/index.html
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+      - id: deployment
+        uses: actions/deploy-pages@v4

@@ -3,7 +3,9 @@
 SEKIRO: SHADOWS DIE TWICE's combat rebuilt in Rust on [Bevy](https://bevyengine.org), from the game's own
 files (animations, params, AI scripts, models, sounds) and checked against the game's code in an emulator.
 
-[![RSekiro work map: what is proven to match the game, system by system and boss by boss](docs/media/workmap.png)](https://github.com/FFwLo/RustSekiro/blob/agents-work-board/WORK.md)
+[![RSekiro work map: what is proven to match the game, system by system and boss by boss](docs/media/workmap.png)](https://ffwlo.github.io/RustSekiro/)
+
+**[Open the live work map](https://ffwlo.github.io/RustSekiro/)**: tap any system or boss to see what is done, and start an open row.
 
 A fan project for study, not affiliated with FromSoftware or Activision. No game files are in this repository:
 you need your own copy of the game.

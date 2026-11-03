@@ -181,7 +181,7 @@ python tools/row.py submit "what changed, in one line"</pre><button class="copy"
 
   <section>
     <div class="bar">
-      <div><h2>Open rows</h2><p class="lead" style="margin:0">Top rows in each kind change the feel the most. <code>emu</code> rows need the emulator setup.</p></div>
+      <div><h2>Rows</h2><p class="lead" style="margin:0">Top rows in each kind change the feel the most. <code>emu</code> rows need the emulator setup.</p></div>
       <div class="seg" role="group" aria-label="Kind">
         <button data-k="" aria-pressed="true">All</button>
         <button data-k="B" aria-pressed="false">B: first rows</button>
@@ -215,7 +215,7 @@ D.sys.forEach(s => sysBy[lv(s[2])]++);
 D.chr.forEach(c => chrBy[lv(c[3])]++);
 const bosses = D.chr.filter(c => c[2] === "boss");
 const tot = [
-  [D.tests ? D.tests.toLocaleString() : "?", "tests passing", ""],
+  [D.tests.toLocaleString(), D.testsLabel || "tests", ""],
   [D.sys.length, "systems", ""],
   [sysBy[3] + sysBy[4], "systems checked or seen", "r"],
   [D.chr.length, "characters", ""],
@@ -287,10 +287,11 @@ $("groups").addEventListener("mouseover", e => { const b = e.target.closest("but
 // open rows
 const claim = id => `python tools/row.py start ${id}`;
 function drawRows(k) {
-  $("rows").innerHTML = D.rows.filter(r => r[3] === "open" && (!k || r[5] === k)).map(r => `<tr>
+  $("rows").innerHTML = D.rows.filter(r => r[5] !== "Done" && (!k || r[5] === k)).map(r => `<tr>
     <td class="id">${esc(r[0])}</td><td><span class="pill ${esc(r[1])}">${esc(r[1])}</span></td>
     <td class="task">${md(r[4])}${r[2] ? `<br><small class="note">needs ${esc(r[2])}</small>` : ""}</td>
-    <td><button class="copy" data-copy="${esc(claim(r[0]))}" style="padding:4px 10px">Copy start</button></td></tr>`).join("");
+    <td>${r[3] === "open" ? `<button class="copy" data-copy="${esc(claim(r[0]))}" style="padding:4px 10px">Copy start</button>`
+      : `<span class="note">claimed: ${esc(r[3])}</span>`}</td></tr>`).join("");
 }
 document.querySelector(".seg").addEventListener("click", e => { const b = e.target.closest("button"); if (!b) return;
   document.querySelectorAll(".seg button").forEach(x => x.setAttribute("aria-pressed", String(x === b))); drawRows(b.dataset.k); });
