@@ -560,6 +560,8 @@ pub(crate) fn the_armoured_servants_super_armour_breaks_and_refills() {
         e.react(&mut a, &combat, "DamageSmall_Front");
         assert!(a.state.starts_with("Damage"), "no reaction: {}", a.state);
     });
+    // The first tick only records the break (+0x21), the second refills it (exe, damagemod).
+    app.update();
     app.update();
     let world = app.world_mut();
     let a = world.get::<Actor>(ent).unwrap();
