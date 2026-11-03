@@ -58,6 +58,7 @@ mod emu_proxy;
 mod emu_damagemod;
 mod emu_camera2;
 mod emu_collide;
+mod emu_params;
 pub(crate) use part01::*;
 pub(crate) use part02::*;
 pub(crate) use part03::*;

@@ -1374,8 +1374,11 @@ pub(crate) const WOLF_PHYS_HEIGHT: f32 = 1.5;
 /// A ThrowParam row's sight test, FUN_140be3da0, the last of FUN_140be3a90: unless the row sets
 /// isSkipSphereCast (+0x3b bit 2), two sphere casts from the thrower to the defender, one per
 /// THROW_SIGHT_FRACS height (each chr's point raised by its height x the fraction), radius =
-/// the larger of the two chrs' radii x sphereCastRadiusRateLow (+0x30, first cast) / Top (+0x32)
-/// / 100 (no cast when 0). A cast passes with no hit, or a hit (the sphere's centre at contact)
+/// the larger of the two chrs' radii x sphereCastRadiusRateTop (+0x30, the first, upper cast) /
+/// Low (+0x32, the lower) / 100 (no cast when 0; FUN_140be3da0 reads +0x30 for cast 0 at 0.8 and
+/// +0x32 for cast 1 at 0.42: the two were swapped here, which only the Chained Ogre's grab rows
+/// (AtkChrId 5020) 25020000 / 25020100 / 25021000 / 25021100, Top 29 / Low 51, tell apart;
+/// kb/params.md). A cast passes with no hit, or a hit (the sphere's centre at contact)
 /// farther from the start than the defender's point; both must pass. `cast(start, delta,
 /// radius)` sweeps the sphere along delta. Run on the snapshot (FUN_14094d8d0 with filter 0x4c,
 /// 1,200 placements Wolf -> the General: the same casts and this rule give the exe's answer on
@@ -1387,7 +1390,7 @@ pub(crate) fn throw_sight_ok(combat: &Combat, row_id: i64, thrower: Vec3, thr_he
     if row["isSkipSphereCast"].as_i64().unwrap_or(0) != 0 {
         return true;
     }
-    let rates = ["sphereCastRadiusRateLow", "sphereCastRadiusRateTop"].map(|k| row[k].as_f64().unwrap_or(0.0) as f32);
+    let rates = ["sphereCastRadiusRateTop", "sphereCastRadiusRateLow"].map(|k| row[k].as_f64().unwrap_or(0.0) as f32);
     (0..2).all(|i| {
         let radius = rates[i] / 100.0 * thr_radius.max(def_radius);
         if radius <= 0.0 {
