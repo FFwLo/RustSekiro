@@ -224,6 +224,65 @@ rgbMultiplier / 8 (`particle_color`). Before, they were 8x too bright: the death
   FMOD loops; `sound.rs` now plays them tracked (`fmod.rs` EventHandle / play_tracked / stop) and
   stops them when the event ends or the anim changes. Ignored test `fmod_loops` lists the loops.
 
+## Emulator check of the particle runtime (2026-11-03, topic fxr2)
+
+`tools/emu-cases` `fxr2` on the Naomori-arena snapshot; tests `fxr_particle_frames_match_the_exe` and
+`fxr_initial_directions_match_the_exe` in `src/sim_tests/emu_fxr2.rs` (skip without
+`extracted/emu/fxr2_frames.json`); 502 added to `fxr_shapes_and_spreads_match_the_exe`.
+
+- **What runs.** The pool update FUN_141dd6f60(pool, node, dt, emitter) once a frame, 2.5 s at 30 and
+  at 60 fps, on all 73 distinct particle configs of 252001 / 201001 / 201002 / 220502 / 300071 (146
+  runs, 16,425 frames, 145,205 particle moves), with the real emitter objects (300 vtable
+  0x142ea8898, ctor FUN_141da98d0; 399 vtable 0x142ea9f90) and movement objects (55 FUN_141dbbc70,
+  60 FUN_141dbe150, 65 FUN_141dbf2a0, 105 FUN_141dbd050) on a config built in the binary layout
+  (actions 0x40 at [cfg +0x18], slot i at +0x40 i; shape / spread handler index +4 from the tables
+  0x143f43a78 / 0x143f43a50). The particle record (0x2c): +0 scaled age, +4 step, +8 time scale,
+  +0xc pos, +0x18 dir, +0x24 speed, +0x28 random. Globals: effect rate 60 (DAT_143bdeb38), count
+  scale 1 (3c), interval scale 1 (40), a negative interval = +inf (DAT_143bbe8e0).
+- **Frame order (FUN_141dd6f60).** Age every particle (+0 += dt x scale) and drop those whose scaled
+  age reached the duration (`>=`; duration without modifiers at argument 0); then the emitter's
+  count (`min(count, cap - live)`); each new particle gets an FXR RNG draw as its one random (+0x28,
+  used by all of its properties), time scale = duration without / with modifiers (none when the
+  modded duration is 0), speed = particleModifier speed; spread (slot 6) then shape (slot 5); then the
+  movement runs on the particles alive before the emission only: a new particle first moves the frame
+  after its birth. Fixed in RSekiro (`step_node`): it emitted first, then aged and moved every
+  particle including the new ones (one frame ahead in age and position, and a full cap refilled a
+  frame late); deaths were `age > life`.
+- **Emitters.** 300 (FUN_141dab630): when t >= next: next = t + interval (0 -> 1/60, negative ->
+  never), so at most one emission a frame; perEmission rounded half away; an emission cut to 0 by the
+  cap still waits its interval. The cap (FUN_141daa1a0, emitter +0x18) = min of maxConcurrent,
+  total x per, (int)(rate x duration + 1) + per (each when >= 0). 399 (FUN_141daf530): one particle on
+  the first frame if the pool is empty. Before: a catch-up loop (`next += interval`, up to 8 a frame)
+  and maxConcurrent counted before deaths. `periodic_cap` / `periodic_emit`: all 146 caps and every
+  frame's count and next time match.
+- **30 vs 60 fps.** The exe counts emissions per frame, so the rate follows the frame rate (interval
+  0 = one per 1/60 s even at 30 fps: the 30 fps runs emit half as often). RSekiro now steps effects
+  in whole 1/60 s game frames (`FxEffect::acc`, at most 8 a frame) whatever its render rate: before,
+  substeps of `dt / ceil(dt x 60)` made a 144 Hz frame one 1/144 s step, 2.4x the exe's emissions.
+- **Movement (`move_particle`).** 55 / 105: pos += dir x speed x dt with the old velocity, gravity
+  bends the velocity (down = -the pool frame's Y column), speed = |v| + acceleration x multiplier x dt,
+  clamped at 0 (before: speed first, then the move with the new velocity; no clamp). 60 / 65: speed =
+  speed - term(age - dt) + term(age), term = speed x multiplier, the first move (age - dt <= 0)
+  replacing the particleModifier speed, then the move with the new velocity and gravity (before:
+  dir x (speed + term) every frame, e.g. 300071's spark 5.08 instead of 4.08 m/s on its first move).
+  The property argument is the particle's real age (+0 / +8). Matched to 1e-3 over all frames.
+- **Shared random.** Every particle property (duration, speed, movement) now reads the particle's one
+  random (`p.seed`); before, the movement used `seed ^ 0x5151`.
+- **502 EllipticalSpread (FUN_141db5fe0).** The cone of the larger angle (the spin drawn only for a
+  non-zero tilt), then the direction's angle from +-Z in the plane of the larger axis cut by the
+  angle ratio (a turn about X when angleY is larger, about Y when angleX is). 512 draws (40 x 15 and
+  15 x 40, four distributions) match frame and draw count; before it was the plain cone.
+- **Direction modes (FUN_141db46a0).** Measured under a node turned Ry(0.7) Rx(0.4): 0 / 6 the node's
+  Z, 1 / 2 the world's up / down, 3 the world's Z, 4 / 5 the node's up / down (`direction_base`).
+  Before, 1-3 were the node's own up / down / Z.
+- **Not covered / gaps.** 301 EqualDistanceEmitter (FUN_141dadd70: several particles spaced along
+  the path; not in these effects; RSekiro still emits one at the node) and node emitters (1005);
+  65 / 105 followFactor and maxTurnAngle (still node, no turns in these files), 84's turns; the cap's
+  interval / duration evaluators (+0x18 / +0x20 table entries, constants here); a tracer's extra life
+  (pool +0x60, FUN_141dd5a80); the birth positions / directions of the runs are not redrawn here (the
+  draws are fxr_shapes'); GPU particles (10000) keep their own path; the graphics-quality count /
+  interval scales are taken as 1.
+
 ## Emulator check of the FXR maths (2026-11-03, topic fxr)
 
 `tools/emu-cases` `fxr` / `fxr_shapes` on the Naomori-arena snapshot; test `src/sim_tests/emu_fxr.rs`

@@ -64,6 +64,7 @@ mod emu_items;
 mod emu_atkrec;
 mod emu_aimove;
 mod emu_air;
+mod emu_fxr2;
 pub(crate) use part01::*;
 pub(crate) use part02::*;
 pub(crate) use part03::*;
