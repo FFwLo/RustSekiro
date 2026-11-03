@@ -71,17 +71,14 @@ fn fxr_modifier_random_is_the_exes() {
 }
 
 /// `fxr::shape_point` / `fxr::spread_frame` against the exe's generators, draw for draw: the point
-/// and the frame (shapes 403-405, spreads 501 / 503), and the number of RNG draws each took.
-/// gap: 502 (elliptical) is not ported; its rows are skipped.
+/// and the frame (shapes 403-405, spreads 501-503, 502 with either angle the larger), and the
+/// number of RNG draws each took.
 #[test]
 fn fxr_shapes_and_spreads_match_the_exe() {
     let Some(v) = emu_json("fxr_shapes") else { return };
     let (mut rows, mut bad) = (0, Vec::new());
     for c in v["cases"].as_array().unwrap() {
         let ty = c["type"].as_i64().unwrap();
-        if ty == 502 {
-            continue;
-        }
         let fields: Vec<i64> = c["fields"].as_array().unwrap().iter().map(|x| x.as_i64().unwrap()).collect();
         let props: Vec<f32> = c["props"].as_array().unwrap().iter().map(|x| x.as_f64().unwrap() as f32).collect();
         for r in c["rows"].as_array().unwrap() {

@@ -41,6 +41,7 @@ mod camera2;
 mod collide;
 mod params;
 mod fxr;
+mod fxr2;
 mod acttrace;
 
 /// The few calls of Unicorn's C API the tool needs (unicorn.h), linked from unicorn.dll.
@@ -933,6 +934,9 @@ fn main() {
     }
     if want.iter().any(|w| w.starts_with("camera2")) {
         camera2::run(&|| Emu::new(exe, snap()), out, &want);
+    }
+    if want.first() == Some(&"fxr2") {
+        return fxr2::run(&|| Emu::new(exe, snap()), out, &want);
     }
     if want.iter().any(|w| w.starts_with("fxr")) {
         fxr::run(&|| Emu::new(exe, snap()), out, &want);

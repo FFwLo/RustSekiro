@@ -162,6 +162,11 @@ pub(crate) fn eval_prop(v: &Value, t: f32, random: u32) -> [f32; 4] {
 
 /// A property at argument `t`, with its modifiers drawn from `rnd`.
 fn prop(v: Option<&Value>, t: f32, rnd: &mut Rnd, default: [f32; 4]) -> [f32; 4] {
+    prop_m(v, t, rnd, default, true)
+}
+
+/// `prop`, with or without its modifiers (the pool reads a duration both ways, FUN_141dd5c90).
+fn prop_m(v: Option<&Value>, t: f32, rnd: &mut Rnd, default: [f32; 4], with_mods: bool) -> [f32; 4] {
     let Some(v) = v else { return default };
     if v.is_null() {
         return default;
@@ -212,7 +217,7 @@ fn prop(v: Option<&Value>, t: f32, rnd: &mut Rnd, default: [f32; 4]) -> [f32; 4]
         },
     };
     let mut out = base;
-    if let Some(mods) = v.get("modifiers").and_then(Value::as_array) {
+    if let Some(mods) = v.get("modifiers").and_then(Value::as_array).filter(|_| with_mods) {
         for m in mods {
             let max = vec4(&m["max"]);
             // the exe's modifier random: the modifier's own seed per component against the
@@ -277,6 +282,11 @@ struct Particle {
     dir: Vec3,
     speed: f32,
     age: f32,
+    /// The exe's record +0 (age x time scale, the death clock), +8 (time scale = duration without
+    /// / with its modifiers) and the duration it dies at (without modifiers, argument 0).
+    scaled: f32,
+    scale: f32,
+    end: f32,
     life: f32,
     emit_t: f32,
     seed: u32,
@@ -306,6 +316,9 @@ struct NodeInst {
     duration: f32,
     emit_next: f32,
     emissions: i64,
+    /// PeriodicEmitter state and its live-particle cap (exe emitter +0x10 / +0x14 / +0x18).
+    periodic: Periodic,
+    cap: i64,
     last_emit_at: Option<Vec3>,
     particles: Vec<Particle>,
     children: Vec<NodeInst>,
@@ -357,6 +370,8 @@ pub struct FxEffect {
     pub own_sound_played: bool,
     root: Option<NodeInst>,
     age: f32,
+    /// Effect time not yet stepped (less than one 1/60 s game frame).
+    acc: f32,
     /// The nodeAudio sounds playing, moved with their node and stopped with the effect.
     sounds: Vec<crate::fmod::EventHandle>,
 }
@@ -368,7 +383,7 @@ impl FxEffect {
     }
 
     pub fn new(id: i64, anchor: Option<Anchor>, follow: bool, at: Transform) -> Self {
-        FxEffect { id, anchor, follow, at, stop: false, key: None, window: f32::INFINITY, keep: false, own_sound_played: false, root: None, age: 0.0, sounds: Vec::new() }
+        FxEffect { id, anchor, follow, at, stop: false, key: None, window: f32::INFINITY, keep: false, own_sound_played: false, root: None, age: 0.0, acc: 0.0, sounds: Vec::new() }
     }
 }
 
@@ -475,6 +490,7 @@ fn make_node(lib: &mut FxrLib, node: &Value, seed: u32, depth: u32) -> Option<No
     } else {
         (kids.iter().enumerate().filter_map(|(i, k)| make_node(lib, k, seed.wrapping_mul(31).wrapping_add(i as u32 + 1), depth + 1)).collect(), Vec::new())
     };
+    let cap = cfg.as_ref().map_or(0, |c| periodic_cap(c, seed));
     Some(NodeInst {
         node: Arc::new(node.clone()),
         cfg,
@@ -485,6 +501,8 @@ fn make_node(lib: &mut FxrLib, node: &Value, seed: u32, depth: u32) -> Option<No
         duration,
         emit_next: 0.0,
         emissions: 0,
+        periodic: Periodic::default(),
+        cap,
         last_emit_at: None,
         particles: Vec::new(),
         children,
@@ -636,11 +654,42 @@ pub(crate) fn shape_point(ty: i64, fields: &[i64], props: &[f32], d: &mut impl D
 ///  - gap: 502 Elliptical (FUN_141db5fe0: an ellipse fitted to the larger angle) is drawn as
 ///    a circular spread of the larger angle (11 uses in the files).
 pub(crate) fn spread_frame(ty: i64, props: &[f32], d: &mut impl Draw) -> Rows {
-    use std::f32::consts::{PI, TAU};
+    use std::f32::consts::{FRAC_PI_2, PI, TAU};
     let p = |i: usize| props.get(i).copied().unwrap_or(0.0);
     match ty {
-        501 | 502 => {
-            let (angle, dist) = if ty == 501 { (p(0).to_radians(), p(1)) } else { (p(0).max(p(1)).to_radians(), p(2)) };
+        502 => {
+            // EllipticalSpread (FUN_141db5fe0): the cone of the larger angle (501's tilt, the spin
+            // drawn only for a non-zero tilt), then the direction's angle from +-Z in the plane of
+            // the larger axis is cut by the ratio of the angles: a turn about X (angleY the larger)
+            // or Y (angleX the larger) by |a| - |a x small / big|. Before, 502 was the plain cone.
+            let (ax, ay, dist) = (p(0).to_radians(), p(1).to_radians(), p(2));
+            let big = ax.max(ay);
+            if big == 0.0 {
+                // the exe divides 0 by 0 here (a NaN frame); no file has a 0 x 0 ellipse
+                return IDENTITY;
+            }
+            let (a, scale, off) = if dist <= 0.0 { (dist + 1.0, big, 0.0) } else { (1.0 - dist, -big, big) };
+            let tilt = off + d.unit().powf(a) * scale;
+            let spin = if tilt == 0.0 { 0.0 } else { d.unit() * TAU - PI };
+            let m = rows_mul(rot_x(tilt), rot_z(spin));
+            let v = m[2];
+            let s = if tilt.abs() > FRAC_PI_2 { -1.0 } else { 1.0 };
+            let angle = |x: f32, z: f32| {
+                let l = (x * x + z * z).sqrt();
+                (z / l * s).clamp(-1.0, 1.0).acos()
+            };
+            if ax <= ay {
+                let a = angle(v[1], v[2]);
+                let cut = a.abs() - (a * (ax / ay)).abs();
+                rows_mul(m, rot_x(cut * sign0(if spin.abs() > FRAC_PI_2 { 1.0 } else { -1.0 })))
+            } else {
+                let a = angle(v[0], v[2]);
+                let cut = a.abs() - (a * (ay / ax)).abs();
+                rows_mul(m, rot_y(cut * sign0(-spin * s)))
+            }
+        }
+        501 => {
+            let (angle, dist) = (p(0).to_radians(), p(1));
             if angle == 0.0 {
                 return IDENTITY;
             }
@@ -664,15 +713,34 @@ pub(crate) fn spread_frame(ty: i64, props: &[f32], d: &mut impl Draw) -> Rows {
 }
 
 /// Game rows -> our space (X mirrored, `game_vec`) as a rotation taking +Z to the frame's row 2.
-fn rows_quat(m: Rows) -> Quat {
+pub(crate) fn rows_quat(m: Rows) -> Quat {
     let g = |r: [f32; 3]| Vec3::new(-r[0], r[1], r[2]);
     // a mirror flips handedness: our frame is (-X', Y', Z') of the mirrored rows
     Quat::from_mat3(&Mat3::from_cols(-g(m[0]), g(m[1]), g(m[2]))).normalize()
 }
 
+/// InitialDirection's frame (an emitter shape's `direction` field; FUN_141db46a0, checked in
+/// src/sim_tests/emu_fxr2.rs under a turned node): in the node's frame, whose world rotation is
+/// `node_rot`. 0 the shape's own frame (else the node's), 1 / 2 the world's up / down (a quarter
+/// turn about X of the world frame), 3 the world's Z, 4 / 5 the node's up / down, 6 the node's Z.
+/// Before, 1-3 were the node's own up / down / Z.
+pub(crate) fn direction_base(mode: i64, node_rot: Quat, frame: Option<Rows>) -> Quat {
+    use std::f32::consts::FRAC_PI_2;
+    let world = node_rot.inverse();
+    match mode {
+        1 => world * Quat::from_rotation_x(-FRAC_PI_2),
+        2 => world * Quat::from_rotation_x(FRAC_PI_2),
+        3 => world,
+        4 => Quat::from_rotation_x(-FRAC_PI_2),
+        5 => Quat::from_rotation_x(FRAC_PI_2),
+        6 => Quat::IDENTITY,
+        _ => frame.map_or(Quat::IDENTITY, rows_quat),
+    }
+}
+
 /// Emission point and direction in the node's frame, from its emitter shape and spread (the exe's
-/// generators: `shape_point`, `spread_frame`).
-fn emit_point(c: &Value, t: f32, rnd: &mut Rnd) -> (Vec3, Vec3) {
+/// generators: `shape_point`, `spread_frame`); `node_rot` is the node's world rotation.
+fn emit_point(c: &Value, t: f32, rnd: &mut Rnd, node_rot: Quat) -> (Vec3, Vec3) {
     let shape = &c["emitterShape"];
     let st = shape["type"].as_i64().unwrap_or(400);
     let dirmode = int(shape, "direction", 0);
@@ -688,14 +756,7 @@ fn emit_point(c: &Value, t: f32, rnd: &mut Rnd) -> (Vec3, Vec3) {
     };
     let (p, frame) = shape_point(st, &fields, &props, rnd);
     let pos = game_vec([p[0], p[1], p[2], 0.0]);
-    // InitialDirection: 0 by shape (its frame, else the node's Z), 1 / 2 global up / down,
-    // 3 global north, 4-6 local. gap: the exe builds 1-6 as frames (FUN_141db46a0), not checked.
-    let base = match dirmode {
-        1 | 4 => Quat::from_rotation_arc(Vec3::Z, Vec3::Y),
-        2 | 5 => Quat::from_rotation_arc(Vec3::Z, Vec3::NEG_Y),
-        3 | 6 => Quat::IDENTITY,
-        _ => frame.map_or(Quat::IDENTITY, rows_quat),
-    };
+    let base = direction_base(dirmode, node_rot, frame);
     let sp = &c["directionSpread"];
     let sv = |k: &str, d: f32, rnd: &mut Rnd| scalar(sp, k, t, rnd, d);
     let spread = match sp["type"].as_i64().unwrap_or(500) {
@@ -782,6 +843,164 @@ fn gpu_emissions(a: &Value, n: &mut NodeInst, active_t: f32) -> i64 {
     count
 }
 
+/// The effect frame rate the exe's FXR globals hold (DAT_143bdeb38, FUN_141dc6760: 60 in the
+/// snapshot): an interval of 0 means one emission per 1/60 s, and the game steps its effects once a
+/// 60 fps frame. The emission count scale (DAT_143bdeb3c) and interval scale (DAT_143bdeb40) are
+/// graphics settings, 1 and 1 in the snapshot (FUN_1403e7820 sets them from the quality preset).
+pub(crate) const FX_RATE: f32 = 60.0;
+
+/// The exe's float -> int of an emitter property (FUN_140473690): round half away from zero.
+fn round_int(v: f32) -> i64 {
+    v.round() as i64
+}
+
+/// A PeriodicEmitter's (300) cap on live particles (FUN_141daa1a0, emitter +0x18): from
+/// perEmission, totalEmissions and maxConcurrent (truncated, at argument 0 with the node's random),
+/// the shortest interval and the particle duration: the smallest of maxConcurrent, total x per and
+/// (int)(rate x duration + 1) + per, each when not negative; 0 when perEmission < 1 or when all three
+/// are negative. gap: the interval and duration are read with the evaluator table's +0x18 / +0x20
+/// entries (not run; every checked config has constants), here their value at 0; a tracer's extra
+/// life (appearance handler +0x40) is not added.
+pub(crate) fn periodic_cap(c: &Value, node_random: u32) -> i64 {
+    let em = &c["emitter"];
+    let mut r = Rnd { seed: node_random, k: 0 };
+    let per = scalar(em, "perEmission", 0.0, &mut r, 1.0) as i64;
+    let total = scalar(em, "totalEmissions", 0.0, &mut r, -1.0) as i64;
+    let maxc = scalar(em, "maxConcurrent", 0.0, &mut r, -1.0) as i64;
+    let interval = scalar(em, "interval", 0.0, &mut r, 1.0);
+    if per < 1 {
+        return 0;
+    }
+    let rate = if interval < 1.0 / FX_RATE { FX_RATE * per as f32 } else { 1.0 / interval * per as f32 };
+    let life = scalar(&c["particleAttributes"], "duration", 0.0, &mut r, -1.0);
+    let by_life = (rate * life + 1.0) as i64 + per;
+    let by_total = per * total;
+    match (maxc < 0, total < 0, life < 0.0) {
+        (true, true, true) => 0,
+        (true, true, false) => by_life,
+        (true, false, true) => by_total,
+        (true, false, false) => by_total.min(by_life),
+        (false, true, true) => maxc,
+        (false, true, false) => maxc.min(by_life),
+        (false, false, true) => by_total.min(maxc),
+        (false, false, false) => by_total.min(maxc.min(by_life)),
+    }
+}
+
+/// A PeriodicEmitter's (300) state: the next emission time (emitter +0x10) and the emissions so
+/// far (+0x14, counted only with a totalEmissions limit).
+#[derive(Clone, Copy, Default, Debug)]
+pub(crate) struct Periodic {
+    pub next: f32,
+    pub count: i64,
+}
+
+/// This frame's particle count of a PeriodicEmitter (FUN_141dab630, called once a frame from the
+/// pool update FUN_141dd6f60 after the dead particles are gone): when the node's active time `t`
+/// reached `next`, and fewer than totalEmissions (if >= 0) were made: next = t + interval (0 -> one
+/// 1/60 s frame, negative -> never again), so at most one emission a frame whatever the interval;
+/// perEmission (rounded) particles, no more than `cap - live`. An emission cut to 0 by the cap still
+/// counts and still waits its interval.
+pub(crate) fn periodic_emit(em: &Value, st: &mut Periodic, t: f32, node_random: u32, live: i64, cap: i64) -> i64 {
+    if st.next > t {
+        return 0;
+    }
+    let mut r = Rnd { seed: node_random, k: 0 };
+    let total = round_int(scalar(em, "totalEmissions", t, &mut r, -1.0));
+    if total >= 0 && st.count >= total {
+        return 0;
+    }
+    let mut interval = scalar(em, "interval", t, &mut r, 1.0);
+    if interval == 0.0 {
+        interval = 1.0 / FX_RATE;
+    } else if interval < 0.0 {
+        interval = f32::INFINITY;
+    }
+    st.next = t + interval;
+    let n = round_int(round_int(scalar(em, "perEmission", t, &mut r, 1.0)) as f32);
+    let free = (cap - live).max(0);
+    if total >= 0 {
+        st.count += 1;
+    }
+    // the exe takes the smaller as unsigned: a negative count gives the free room
+    if n < 0 { free } else { n.min(free) }
+}
+
+/// A particle's flight state (pool record +0xc position, +0x18 direction, +0x24 speed).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Motion {
+    pub pos: Vec3,
+    pub dir: Vec3,
+    pub speed: f32,
+}
+
+/// One frame of a particle's movement (pool +0x50's update, run after the frame's emission on the
+/// particles that were alive before it, so a new particle first moves the frame after its birth),
+/// at particle age `age` (this frame's, ParticleAge) and step `dt`, with the particle's own random
+/// for every property. `down` is the world's down in the particle's frame. A move with no
+/// ParticleMovement action leaves the particle where it is.
+/// - 55 ParticleAcceleration (FUN_141dbbe50 -> FUN_141dbc0f0) / 105 ParticleAccelerationPartialFollow
+///   (FUN_141dbd3f0): pos += dir x speed x dt with the old velocity; gravity bends the velocity
+///   (v + down x gravity x dt, direction and speed from it); then speed += acceleration x
+///   multiplier x dt, never below 0.
+/// - 60 ParticleSpeed (FUN_141dbe330 -> FUN_141dbe5d0) / 65 ParticleSpeedPartialFollow
+///   (FUN_141dbf570): the speed property is a term: speed - term(age - dt) + term(age), where the
+///   first frame (age - dt <= 0) drops the whole stored speed (the particleModifier's); pos +=
+///   the new velocity x dt, then gravity bends it as above.
+/// gap: 65 / 105's followFactor (the particle following its node's motion) and maxTurnAngle /
+/// turnInterval are not run (every checked config has a still node and no turns); 84's turns are
+/// RSekiro's own.
+pub(crate) fn move_particle(pm: &Value, m: &mut Motion, age: f32, dt: f32, random: u32, down: Vec3) {
+    let ty = pm["type"].as_i64().unwrap_or(0);
+    let mut r = Rnd { seed: random, k: 0 };
+    let mut s = |k: &str, t: f32, d: f32| scalar(pm, k, t, &mut r, d);
+    let bend = |m: &mut Motion, v: Vec3, g: f32| {
+        let v = v + down * g * dt;
+        let len = v.length();
+        if len != 0.0 {
+            m.dir = v / len;
+        }
+        len
+    };
+    match ty {
+        55 | 84 | 105 => {
+            let v = m.dir * m.speed;
+            m.pos += v * dt;
+            let g = s("gravity", age, 0.0);
+            let len = bend(m, v, g);
+            m.speed = (len + s("acceleration", age, 0.0) * s("accelerationMultiplier", age, 1.0) * dt).max(0.0);
+        }
+        60 | 64 | 65 => {
+            let term = |s: &mut dyn FnMut(&str, f32, f32) -> f32, t: f32| s("speed", t, 0.0) * s("speedMultiplier", t, 1.0);
+            let prev = if age - dt <= 0.0 { m.speed } else { term(&mut s, age - dt) };
+            let speed = m.speed - prev + term(&mut s, age);
+            let v = m.dir * speed;
+            m.pos += v * dt;
+            let g = s("gravity", age, 0.0);
+            m.speed = bend(m, v, g);
+        }
+        _ => {}
+    }
+}
+
+/// A new particle's duration as the pool sets it up (FUN_141dd6f60 / FUN_141dd5c90): the
+/// particleAttributes duration without its modifiers (`base`) and with them (`life`) at the node's
+/// active time, with the particle's random. None when `life` is 0 (the particle is never made);
+/// the time scale (record +8) is base / life (1 when life < 0). The particle dies once its scaled
+/// age (+0, += dt x scale each frame) reaches the duration at argument 0 without modifiers.
+pub(crate) fn particle_life(pa: &Value, t: f32, random: u32) -> Option<(f32, f32, f32)> {
+    let d = pa.get("duration");
+    let mut r = Rnd { seed: random, k: 0 };
+    let base = prop_m(d, t, &mut r, [-1.0; 4], false)[0];
+    let life = prop_m(d, t, &mut r, [-1.0; 4], true)[0];
+    let end = prop_m(d, 0.0, &mut r, [-1.0; 4], false)[0];
+    if life == 0.0 {
+        return None;
+    }
+    let scale = if life < 0.0 { 1.0 } else { base / life };
+    Some((life, scale, end))
+}
+
 fn step_node(n: &mut NodeInst, lib: &mut FxrLib, parent: Transform, dt: f32, stop: bool) {
     // NodeAttachToCamera (46, reference/fxr src/actions/46.yml): the node rides on the camera,
     // with its rotation unless followRotation is off (Butterfly 650935, Monk 839653).
@@ -860,28 +1079,51 @@ fn step_node(n: &mut NodeInst, lib: &mut FxrLib, parent: Transform, dt: f32, sto
             Some(w) => w * n.local,
             None => parent * n.local,
         };
+        // Ageing first, as the pool update does (FUN_141dd6f60): each particle's age += dt, its
+        // scaled age (record +0) += dt x its time scale, and one whose scaled age reached its
+        // duration goes before this frame's emission (so a full cap makes room the same frame).
+        // A negative particle duration (-1, or the common -1/30) lives as long as its node: it
+        // ends with the node's own duration as well as with the effect.
+        // A stopped effect (its TAE event's window over: Mortal Draw's IsRestrictToDummyPoly
+        // 440003 / 440007, f10-20) stops emitting, but a node with its own duration plays it
+        // out: the slash's brush-stroke tracers (26041, nodes 0.8-2.5 s, fadeOutTime 0.2) stay
+        // ~1-2 s in the reference clip (sekiro_all_skills 7:00-7:12). They were cut at the
+        // event's end (~0.3 s). Endless nodes (-1) still end with the stop.
+        let node_done = n.duration >= 0.0 && active_t >= n.duration;
+        for p in &mut n.particles {
+            p.age += dt;
+            p.scaled += dt * p.scale;
+            if p.ended {
+                p.dead = p.trail.is_empty();
+                continue;
+            }
+            if p.life >= 0.0 && p.scaled >= p.end || (node_done || stop && n.duration < 0.0) && p.life < 0.0 {
+                p.ended = p.trail.len() > 1;
+                p.end_age = p.age;
+                p.dead = !p.ended;
+            }
+        }
+        n.particles.retain(|p| !p.dead);
+        let old = n.particles.len();
         // Emission.
         if alive {
             let em = &c["emitter"];
             let mut count = 0i64;
-            let total = int(em, "totalEmissions", -1);
             let gpu = c["appearance"]["type"].as_i64() == Some(10000);
             match if gpu { -1 } else { em["type"].as_i64().unwrap_or(399) } {
                 -1 => count = gpu_emissions(&c["appearance"], n, active_t),
+                // OneTimeEmitter (FUN_141daf530): one particle on its first frame, if the pool is empty
                 399 => {
-                    if n.emissions == 0 {
+                    if n.emissions == 0 && n.particles.is_empty() {
                         count = 1;
                     }
                 }
                 300 => {
-                    let interval = scalar(em, "interval", active_t, &mut rnd, 1.0).max(0.0);
-                    let per = scalar(em, "perEmission", active_t, &mut rnd, 1.0).max(0.0).round() as i64;
-                    let mut guard = 0;
-                    while n.emit_next <= active_t && guard < 8 && (total < 0 || n.emissions < total) {
-                        count += per;
+                    // node emitters (templates) hand out nodes, not pool particles: no pool cap
+                    let cap = if n.templates.is_empty() { n.cap } else { i64::MAX };
+                    count = periodic_emit(em, &mut n.periodic, active_t, n.seed, n.particles.len() as i64, cap);
+                    if count > 0 {
                         n.emissions += 1;
-                        n.emit_next += interval.max(1.0 / 60.0);
-                        guard += 1;
                     }
                 }
                 301 => {
@@ -901,17 +1143,17 @@ fn step_node(n: &mut NodeInst, lib: &mut FxrLib, parent: Transform, dt: f32, sto
                 }
                 _ => {}
             }
-            if em["type"].as_i64() == Some(399) && count > 0 {
+            if em["type"].as_i64() == Some(399) {
                 n.emissions = 1;
             }
             let max_conc = int(em, "maxConcurrent", -1);
             for i in 0..count {
-                if max_conc > 0 && (n.particles.len() + n.children.len()) as i64 >= max_conc {
+                if em["type"].as_i64() != Some(300) && max_conc > 0 && (n.particles.len() + n.children.len()) as i64 >= max_conc {
                     break;
                 }
                 let pseed = n.seed.wrapping_mul(2_654_435_761).wrapping_add((n.emissions * 64 + i) as u32);
                 let mut prnd = Rnd { seed: pseed, k: 0 };
-                let (p, d) = if gpu { gpu_emit(&c["appearance"], &mut prnd) } else { emit_point(&c, active_t, &mut prnd) };
+                let (p, d) = if gpu { gpu_emit(&c["appearance"], &mut prnd) } else { emit_point(&c, active_t, &mut prnd, n.world.rotation) };
                 if !n.templates.is_empty() {
                     // NodeEmitter: child nodes at the emission point (200 all / 201 one at random).
                     let pick: Vec<Arc<Value>> = if c["nodeSelector"]["type"].as_i64() == Some(201) {
@@ -930,10 +1172,15 @@ fn step_node(n: &mut NodeInst, lib: &mut FxrLib, parent: Transform, dt: f32, sto
                 }
                 let pa = &c["particleAttributes"];
                 let a = &c["appearance"];
-                let life = if gpu {
-                    num(&a["particleDuration"]) * a.get("particleDurationMultiplier").map_or(1.0, num)
+                let (life, scale, end) = if gpu {
+                    let l = num(&a["particleDuration"]) * a.get("particleDurationMultiplier").map_or(1.0, num);
+                    (l, 1.0, l)
                 } else {
-                    scalar(pa, "duration", 0.0, &mut prnd, -1.0)
+                    // a modded duration of 0 makes no particle (FUN_141dd6f60)
+                    match particle_life(pa, active_t, pseed) {
+                        Some(l) => l,
+                        None => continue,
+                    }
                 };
                 let attached = int(pa, "attachment", 1) != 0;
                 let world_p = n.world.transform_point(p);
@@ -944,6 +1191,9 @@ fn step_node(n: &mut NodeInst, lib: &mut FxrLib, parent: Transform, dt: f32, sto
                     // A GPU particle's speed is its velocity's length (its direction in `dir`).
                     speed: if gpu { d.length() } else { scalar(&c["particleModifier"], "speed", active_t, &mut prnd, 0.0) },
                     age: 0.0,
+                    scaled: 0.0,
+                    scale,
+                    end,
                     life,
                     emit_t: active_t,
                     seed: pseed,
@@ -957,72 +1207,36 @@ fn step_node(n: &mut NodeInst, lib: &mut FxrLib, parent: Transform, dt: f32, sto
                 });
             }
         }
-        // Particle movement.
+        // Particle movement, after the emission and only on the particles alive before it (pool
+        // +0x50's update runs before FUN_141dd6f60 adds the new count): a new particle first moves
+        // the frame after its birth, at its age then.
         let pm = c["particleMovement"].clone();
         let pmt = pm["type"].as_i64().unwrap_or(0);
-        for p in &mut n.particles {
-            p.age += dt;
-            if p.ended {
-                p.dead = p.trail.is_empty();
-                continue;
-            }
-            // A negative particle duration (-1, or the common -1/30) lives as long as its node: it
-            // ends with the node's own duration as well as with the effect.
-            // A stopped effect (its TAE event's window over: Mortal Draw's IsRestrictToDummyPoly
-            // 440003 / 440007, f10-20) stops emitting, but a node with its own duration plays it
-            // out: the slash's brush-stroke tracers (26041, nodes 0.8-2.5 s, fadeOutTime 0.2) stay
-            // ~1-2 s in the reference clip (sekiro_all_skills 7:00-7:12). They were cut at the
-            // event's end (~0.3 s). Endless nodes (-1) still end with the stop.
-            let node_done = n.duration >= 0.0 && active_t >= n.duration;
-            if p.life >= 0.0 && p.age > p.life || (node_done || stop && n.duration < 0.0) && p.life < 0.0 {
-                p.ended = p.trail.len() > 1;
-                p.end_age = p.age;
-                p.dead = !p.ended;
+        for p in n.particles.iter_mut().take(old) {
+            if p.ended || p.dead {
                 continue;
             }
             if gpu_move(&c["appearance"], p, n.world.rotation, dt) {
                 continue;
             }
-            let mut r = Rnd { seed: p.seed ^ 0x5151, k: 0 };
-            let gravity = scalar(&pm, "gravity", p.age, &mut r, 0.0);
-            let mut vel = p.dir * p.speed;
-            match pmt {
-                60 | 64 | 65 => {
-                    let s = scalar(&pm, "speed", p.age, &mut r, 0.0) * scalar(&pm, "speedMultiplier", p.age, &mut r, 1.0);
-                    vel = p.dir * (p.speed + s);
+            // 84 ParticleAccelerationRandomTurns: a random turn of up to maxTurnAngle every
+            // turnInterval s (0: every 1/30 s frame), each particle its own (the Way of Tomoe's bolt
+            // 671032: 2 tracers a frame fanning into a web, not one line). gap: the exe's turn
+            // (its axis distribution, taken as uniform around the direction) is not run.
+            if pmt == 84 && p.age >= p.next_turn {
+                let max = scalar(&pm, "maxTurnAngle", p.age, &mut Rnd { seed: p.seed, k: 0 }, 0.0).to_radians();
+                if max > 0.0 {
+                    let mut t = Rnd { seed: p.seed ^ (p.next_turn * 1000.0) as u32 ^ 0x84, k: 0 };
+                    let axis = Quat::from_axis_angle(p.dir, t.next() * std::f32::consts::TAU) * p.dir.any_orthonormal_vector();
+                    p.dir = (Quat::from_axis_angle(axis, (t.next() * 2.0 - 1.0) * max) * p.dir).normalize_or(p.dir);
                 }
-                55 | 84 | 105 => {
-                    let a = scalar(&pm, "acceleration", p.age, &mut r, 0.0) * scalar(&pm, "accelerationMultiplier", p.age, &mut r, 1.0);
-                    p.speed += a * dt;
-                    // 84 ParticleAccelerationRandomTurns: a random turn of up to maxTurnAngle every
-                    // turnInterval s (0: every 1/30 s frame), each particle its own (the Way of
-                    // Tomoe's bolt 671032: 2 tracers a frame fanning into a web, not one line).
-                    // gap: the turn's axis distribution (taken as uniform around the direction).
-                    if pmt == 84 && p.age >= p.next_turn {
-                        let max = scalar(&pm, "maxTurnAngle", p.age, &mut r, 0.0).to_radians();
-                        if max > 0.0 {
-                            let mut t = Rnd { seed: p.seed ^ (p.next_turn * 1000.0) as u32 ^ 0x84, k: 0 };
-                            let axis = Quat::from_axis_angle(p.dir, t.next() * std::f32::consts::TAU) * p.dir.any_orthonormal_vector();
-                            p.dir = (Quat::from_axis_angle(axis, (t.next() * 2.0 - 1.0) * max) * p.dir).normalize_or(p.dir);
-                        }
-                        p.next_turn += num(&pm["turnInterval"]).max(1.0 / 30.0);
-                    }
-                    vel = p.dir * p.speed;
-                }
-                _ => {}
+                p.next_turn += num(&pm["turnInterval"]).max(1.0 / 30.0);
             }
-            // Gravity (positive = down) bends the direction (the docs: it changes the current one).
-            if gravity != 0.0 {
-                let g = if p.attached { n.world.rotation.inverse() * Vec3::NEG_Y } else { Vec3::NEG_Y };
-                let v = vel + g * gravity * dt;
-                let s = v.length();
-                if s > 1e-5 {
-                    p.dir = v / s;
-                    p.speed = s - if matches!(pmt, 60 | 64 | 65) { scalar(&pm, "speed", p.age, &mut r, 0.0) } else { 0.0 };
-                }
-                vel = v;
-            }
-            p.pos += vel * dt;
+            // gravity is the world's down in the particle's frame (the pool's frame, -its Y column)
+            let down = if p.attached { n.world.rotation.inverse() * Vec3::NEG_Y } else { Vec3::NEG_Y };
+            let mut m = Motion { pos: p.pos, dir: p.dir, speed: p.speed };
+            move_particle(&pm, &mut m, p.age, dt, p.seed, down);
+            (p.pos, p.dir, p.speed) = (m.pos, m.dir, m.speed);
         }
         n.particles.retain(|p| !p.dead);
     }
@@ -1146,13 +1360,19 @@ fn tick(mut commands: Commands, time: Res<Time>, mut lib: ResMut<FxrLib>, global
         let rate = lib.get(f.id).map_or(1.0, |d| time_rate(&d, f.age));
         f.age += dt;
         let too_old = !f.keep && f.age > 20.0;
+        // Whole 1/60 s game frames, as the game steps its effects (the pool update FUN_141dd6f60
+        // takes the frame's dt; the emitters count once a frame, FUN_141dab630, so the emission
+        // rate follows the frame rate: interval 0 is one emission a 1/60 s frame, FX_RATE). The
+        // rest waits for the next frame. Each step lays trail points: one long frame (a hitch, a
+        // screenshot) turned a 2000 deg/s spin (Ichimonji 440080) into a single chord.
+        let step = 1.0 / FX_RATE;
+        f.acc += dt * rate;
+        let steps = ((f.acc / step + 1e-4).floor() as u32).min(8);
+        f.acc = if steps == 8 { 0.0 } else { (f.acc - steps as f32 * step).max(0.0) };
         let Some(root) = f.root.as_mut() else { continue };
-        // Substeps of at most 1/60 s, each laying trail points: one long frame (a hitch, a screenshot)
-        // turned a 2000 deg/s spin (Ichimonji 440080) into a single chord.
-        let steps = (dt * rate * 60.0).ceil().clamp(1.0, 8.0);
-        for _ in 0..steps as u32 {
-            step_node(root, &mut lib, Transform { scale: Vec3::ONE, ..place }, dt * rate / steps, stop || too_old);
-            grow_trails(root, dt * rate / steps);
+        for _ in 0..steps {
+            step_node(root, &mut lib, Transform { scale: Vec3::ONE, ..place }, step, stop || too_old);
+            grow_trails(root, step);
         }
         let mut start = Vec::new();
         start_audio(root, &mut start);
@@ -2560,7 +2780,7 @@ mod tests {
     #[test]
     fn gpu_unk_acceleration_is_no_push() {
         let a = serde_json::json!({"type": 10000, "unkParticleAcceleration": 1.0});
-        let mut p = Particle { pos: Vec3::ZERO, dir: Vec3::X, speed: 5.0, age: 0.0, life: 6.0, emit_t: 0.0, seed: 1, attached: false, trail: Vec::new(), next_seg: 0.0, next_turn: 0.0, dead: false, ended: false, end_age: 0.0 };
+        let mut p = Particle { pos: Vec3::ZERO, dir: Vec3::X, speed: 5.0, age: 0.0, scaled: 0.0, scale: 1.0, end: 6.0, life: 6.0, emit_t: 0.0, seed: 1, attached: false, trail: Vec::new(), next_seg: 0.0, next_turn: 0.0, dead: false, ended: false, end_age: 0.0 };
         for _ in 0..30 {
             assert!(gpu_move(&a, &mut p, Quat::IDENTITY, 1.0 / 30.0));
         }
@@ -2642,7 +2862,7 @@ mod tests {
         let c = serde_json::json!({"emitterShape": {"type": 402, "sizeX": 1.5, "sizeY": 0.5, "direction": 0}});
         let mut rnd = Rnd { seed: 7, k: 0 };
         for _ in 0..200 {
-            let (p, d) = emit_point(&c, 0.0, &mut rnd);
+            let (p, d) = emit_point(&c, 0.0, &mut rnd, Quat::IDENTITY);
             assert!(p.x.abs() <= 0.75 && p.y.abs() <= 0.25 && p.z == 0.0 && d == Vec3::Z);
         }
     }

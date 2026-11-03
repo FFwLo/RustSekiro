@@ -16,8 +16,8 @@
 
 use super::*;
 
-const PROP_TABLE: u64 = 0x1_43f1_36b0;
-const MOD_TABLE: u64 = 0x1_43f1_3da0;
+pub(crate) const PROP_TABLE: u64 = 0x1_43f1_36b0;
+pub(crate) const MOD_TABLE: u64 = 0x1_43f1_3da0;
 /// The scalar property + modifiers wrapper (particle code: FUN_1403f7770(prop, object, &argument)).
 const EVAL_SCALAR: u64 = 0x1_403f_7770;
 
@@ -57,7 +57,7 @@ fn int(v: &Value, i: usize) -> i32 {
 }
 
 /// (typeEnumA, fields as u32 words, component count) of a property JSON (fxr.ts layout).
-fn prop_fields(p: &Value) -> Option<(u32, Vec<u32>, usize)> {
+pub(crate) fn prop_fields(p: &Value) -> Option<(u32, Vec<u32>, usize)> {
     let f = |x: f32| x.to_bits();
     match p.get("function").and_then(Value::as_str) {
         Some(name) => {
@@ -103,7 +103,7 @@ fn prop_fields(p: &Value) -> Option<(u32, Vec<u32>, usize)> {
 }
 
 /// (typeEnumA, fields) of a modifier JSON.
-fn mod_fields(m: &Value, n: usize) -> Option<(u32, Vec<u32>)> {
+pub(crate) fn mod_fields(m: &Value, n: usize) -> Option<(u32, Vec<u32>)> {
     let ty: u32 = match m["type"].as_str()? {
         "RandomDelta" => 21,
         "RandomFraction" => 53,
@@ -157,7 +157,7 @@ fn times(p: &Value) -> Vec<f32> {
     t
 }
 
-fn table(emu: &mut Emu, at: u64) -> HashMap<u32, (u64, u64)> {
+pub(crate) fn table(emu: &mut Emu, at: u64) -> HashMap<u32, (u64, u64)> {
     let base = emu.peek_u64(at);
     let count = emu.peek_u64(at + 8).min(64);
     (0..count)
@@ -180,7 +180,7 @@ pub(crate) fn run(new_emu: &dyn Fn() -> Emu, out: &Path, want: &[&str]) {
 
 /// The FXR RNG (FUN_141dc67a0: a xorshift128 at +4..+0x14, FUN_14014d6e0 [0, 1], FUN_140149aa0
 /// a range, FUN_140466380 an int range).
-const RNG: u64 = 0x1_41dc_67a0;
+pub(crate) const RNG: u64 = 0x1_41dc_67a0;
 
 /// Emitter shapes and direction spreads (action handlers registered per type by FUN_141d8a410):
 /// each generator run on an action built in the binary layout (fxr.ts writeAction: fields at +0x20,
@@ -241,6 +241,10 @@ fn shape_setups(ty: i64) -> Vec<(Vec<i32>, Vec<f32>)> {
         502 | 503 => {
             for d in [0.0, -0.5, -1.0, 0.5] {
                 v.push((vec![0], vec![40.0, 15.0, d]));
+                // 502 squashes the cone toward the smaller angle: both majors
+                if ty == 502 {
+                    v.push((vec![0], vec![15.0, 40.0, d]));
+                }
             }
         }
         _ => {}
