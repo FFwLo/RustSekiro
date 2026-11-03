@@ -188,3 +188,47 @@ ChrActionFlag 41 on the defender forces both. The clock holds 0.06 s, then eases
 (elapsed / length)^2 (0.1 s costs ~0.127 s). Most NpcParam rows are 0 / 0, so Wolf's sword on
 ordinary enemies and bosses stops nobody; type 1: Guardian Ape, Okiryu; type 2: the Great Serpent.
 Test hit_stop_follows_the_defenders_type.
+
+## The exe's resolution, run on the snapshot (2026-11-03, combat.rs guard_check)
+
+FUN_140b6c880 (defender), FUN_140b6e6a0 (apply) and FUN_140b698d0 (attacker) were run in
+tools/emu-cases (`guard`, 90 cases, extracted/emu/guard_resolution.json): Wolf against the
+General's attacks and the General against Wolf's, on the memory snapshot.
+
+- Guarded = the ShieldBlock flag (TAE ChrActionFlag 3: module0 +0x70 bit 2, its ArgB the
+  behavior judge at +0xb08: Wolf 90, the umbrella 100, NPCs 900, c1180 armour 800), the attack
+  inside the arc (or AtkParam isAllDirGuard), not a ghost attack (isGhostAtk without stateInfo
+  157 on the defender). The judge picks the guard row (vfunc 0x1c0: BehaviorParam_PC 105000090
+  -> AtkParam_Pc 5000090, 107600100 -> 7600100; BehaviorParam 210200900 -> 10200900).
+- Arc: facing . attack dir < cos(angle + 180), the angle NpcParam guardAngle for NPCs and the
+  weapon's guardAngle for Wolf; 0 = the front half. Run: Wolf guards at 89 deg, not at 91; the
+  General (60) at 59, not at 61. ArgB is not an angle (RSekiro read it as one: the umbrella got
+  100 deg instead of the weapon's 180, an NPC with guardAngle 0 got 900 = all round).
+- Then the flick contest: flick defence (FUN_140842fb0) >= attack flick (hit +0x40) deflects
+  unless disableJustGuard is set (then it lands), else it blocks unless disableGuard is set.
+  The pair read is the guard row's guardAttribute's (0 or 1; 2+ none): the umbrella's 7600100
+  and the armour / shield guard rows are 1, where thrusts and 60 sweeps are 0 / 0 (run: the
+  umbrella blocks the General's thrust 10200200 and the Shura stomp 10700370, the sword does not).
+- Attack flick: NPC guardAtkRate (30 on most rows, 100 on 213: the Demon's blasts 70200330 are
+  blocked inside the deflect window), Wolf (int)(guardAtkRateCorrection / 100 x attackBaseRepel
+  10) = 30, deathblow starts 90 (blocked by the General's deflect). Flick defence: Wolf 100 / 100
+  x guardBaseRepel 20 = 20, the General's guardBreakRate 20; raised to the largest
+  defFlickPower worn, any stateInfo (105010 / 200220 / 900001 40, 1130 65). Template 17 (flick
+  20) is deflected by a bare guard.
+- So the deflect window is no stateInfo 158 test. RSekiro deflected under any stateInfo 158
+  SpEffect: the umbrella hold's 107650 (21 a076 anims, flick 0) deflected for its whole hold,
+  now only its opening 105010 (0.4 s) does; NPC 1040 / 3372 the same.
+- A block that empties posture sets +0x1c4 (guard break) and hands the attacker reaction 99999
+  instead of 1017: no bound for the attacker (fixed in combat.rs). A deflect never sets it, even
+  when it empties posture (posture 1 -> 0; RSekiro keeps it 1 short).
+- Spam chain 105020-23 on a deflect: the attacker's 30 posture x 1 / 0.5 / 0.25 / 0.125 lands as
+  30 / 15 / 7 / 3 (cut to an int; RSekiro now floors it too, 2026-11-03).
+- gap: a deflect that empties the defender's posture leaves it 1 short in RSekiro. The exe lets it reach
+  0 because its break is a separate flag (+0x1c4) that only a block or a hit sets; RSekiro reads
+  the break from the value (Actor::posture_broken), so a full deflect would break.
+- Test guard_resolution_matches_the_exe (sim_tests/emu_guard.rs): flick powers and verdicts
+  equal on all 90 cases, the guard break and attacker reactions as above.
+- gap: the parts guard (a hit on a guarding body part, FUN_1410c66a0, +0x1ce) is not ported; the
+  guardDefFlickPowerRate product and FUN_140bfccc0's NPC rates are taken as 1 (1 on every row
+  that counts); the umbrella's 180 deg arc is read from its weapon row, not run (no umbrella
+  equipped in the snapshot); strength is the snapshot's 10 (RSekiro has no stats).

@@ -20,7 +20,7 @@ Dated findings, oldest first. Append new entries at the end.
   accelerating only up to stickMax - |v|. So a fast launch is steered and braked by the stick but never pushed
   faster; the separate capped stick velocity model is gone (Actor.air_stick removed).
 - 2026-10-07 WOLF: turning from the exe. TAE 224 SetTurnSpeed handler FUN_140b574b0 writes the action module +0x308
-  (reset to -1 each frame, FUN at 140b2.c:9873); IsLockOnCheck events only apply while locked on (chr+0x1070) - now
+  (reset to -1 each frame, FUN at <decomp ref>); IsLockOnCheck events only apply while locked on (chr+0x1070) - now
   honoured. FUN_1407daa20 picks the turn rate: TAE +0x308 when >= 0, else module(0xb8)+0x16c when >= 0, else the turn
   controller default +0x28 = 720 deg/s (FUN_1407da540). Config turn_speed 720 is therefore exe-confirmed (gap closed).
   Posture after an unused deathblow: not in the collapse TAE (only SpEffects 220420/5359/220500) or HKS; env(1001) /
@@ -160,7 +160,7 @@ end). See HANDOFF 4.63 item 8.
   mashed_air_kicks_kick_once_per_jump (a plain jump allowed only one kick already: jump start's
   119 opens at 0.1 s, the jump lands before AirKick's 0.7 s). gap: the additive clip; where the
   reported repeated kicks came from (off an enemy's head?) not reproduced.
-- 2026-10-15 LIVE auto-test (Sekiro via me3 `C:\DeadlockModding\me3\sekiro-research.me3`, keys sent by
+- 2026-10-15 LIVE auto-test (Sekiro via me3 `<work>\me3\sekiro-research.me3`, keys sent by
   scratchpad sk_input.py (SendInput scan codes reach DirectInput), memscope script move_log.lua: TimeAct
   +0x100 anim, physics +0x80 pos / +0x74 yaw). A pre hook on FUN_1407dab40 ran 335 calls, no crash.
   - Run a000_000400: 0 -> 6.4 m/s in 0.35 s, then 4.65-6.4 (the dips are real, as in Sv1).
@@ -215,3 +215,50 @@ Live Sekiro (rec.db, slot 0) vs Sv1 clip data / sim:
 ## Deflect spam replays (2026-10-16)
 - Spamming guard steps the chain StandToDeflectGuard (a050_203000) -> 2 (203005) -> 3 (203006) -> 4 (203007), then every further press replays 4 (HKS BEH_A_DEFLECT_GUARD_CONTINUE, ref 212). Live the same order: 203006 -> 203007 33 times, else 203010 or a recoil.
 - Bug: anim.rs crossfaded only when the shown clip's key changed, so each replay of 203007 snapped the pose back to frame 0. Now a replay (the state clock running back to 0 on the same key) fades by the clip's TAE Blend like any transition (applies to every character). gap: the graph's self-transition taken as its TaeBlend; not visible live (the recorder's anim field does not change on a replay). Checked by eye only (the sim tests draw no poses).
+
+## Turning and the move request from the stick, checked in the emulator (2026-11-03, exe)
+Wolf's PlayerIns update (FUN_140a37560, vtable 0x142a2b338 slot 0xb0) runs whole in tools/emu-cases on the
+2026-11-03 snapshot: `emu-cases <exe> extracted/emu --snapshot <dir> turn` writes `turn_frames.json`, 14
+scenarios / 440 frames (the stick written into the pad floats [pad +0x38f8]: [0] forward, [1] side, +1 = world
+-X), test `wolf_turn_matches_the_exe` (src/sim_tests/emu_turn.rs). What a frame does:
+- Pad manipulator (PlayerCtrl FUN_1407f0a70 -> free FUN_1407f0f50, locked FUN_1407f1710; object
+  [[PlayerIns+0x50]+0x358] or +0x120): the move vector is (-side, 0, -forward) rotated by the camera yaw +0x94
+  (-> +0xc0). It is taken only when last frame's raw stick (+0x340) was off centre too and within 45 deg of it
+  (DAT_143289178 = pi/4, cos against the normalised dot); otherwise it is 0 this frame. So a press from rest moves
+  one frame late, and a flick of more than 45 deg in one frame (90 deg, or a 60 deg/frame sweep: every frame) reads
+  as a let-go (MoveSpeedLevel 0 - the HKS move stop runs on MoveSpeedLevel <= 0). No dead zone in the manipulator
+  (0.05 is taken).
+- MoveSpeedLevel (behaviour variable 2, FUN_140b4afd0 -> behaviour +0xbac) = the taken stick's length, not
+  rescaled (1.2 reads 1.2); 0 when chr byte +8000 >= 0x80; 2.0 when moving with module (bag+0x80)+0x184 bit 2
+  (sprint); clamped by ctrl mode [[ctrl+0x50]+0x50]+0x520 (1: <= 1, 2: <= 0.1, 3: 0). So the HKS walk/run
+  hysteresis (0.9 / 0.7, `stick_runs`) reads the stick length as Sv1 does (gap closed). MoveAngle (+0xbb0) is 0 free.
+- Yaw request (+0x24) = the stick's yaw minus the physics yaw, wrapped to [-pi, pi) (a half turn reads -pi).
+- Next frame BehaviorTurn (PlayerCtrl +0x250, FUN_1407da6d0 -> FUN_1407dac80) adds it to the physics yaw
+  (FUN_1407de0c0 -> FUN_140bc29b0, physics +0x74): whole for the player (BehaviorTurn +0x70 bit 0, set only by
+  FUN_1407da5f0 from the PlayerCtrl ctor) when no rate is set (TAE 224 action +0x308 and module(0xb8)+0x16c < 0),
+  else clamped to rate * dt (FUN_1407dab40; TAE 360 -> 0.1047 rad a frame). The run loop a000_000400 and walk
+  a000_000100 have no TAE 224, so free running the facing snaps to the stick one frame after it moves. Live:
+  rec_20261015_191200 tick 679 request 0.154 -> tick 680 yaw +8.9 deg; tick 687 request 0.855 -> tick 688 +49 deg;
+  each small request is the next frame's yaw step. Locked on, the locked run a000_000500 (no TAE 224) turns 12
+  deg a frame = 720 deg/s (rec_20261016_094717 ticks 357-363): Sv1's locked turning at turn_rate is right.
+- Drawn facing: PlayerCtrl overrides GetRotation (vtable 0x1429d5508 slot 0x40, FUN_1407f2e90): yaw from the
+  delay controller (BehaviorTurn +0x50; FUN_1407da4a0 -> +0x20 euler, +0x30 angular speed), pitch / roll from
+  physics; the generic ChrCtrl's (FUN_1407dcd70) returns physics. The controller (FUN_1407e7970 -> FUN_1407e7da0)
+  chases the physics yaw at 1.1x the picked rate (720 -> 13.823 rad/s, 0.2304 rad a frame), the short way, speed
+  min(speed + rate * p0, rate * p1) with action +0x320 / +0x324 / +0x328 = 1 / 1 / 0 (TAE 704 sets them; c0000 has
+  none), the speed reset on a direction flip, landing when the rest is within one step (speed 0). A 90 deg snap is
+  drawn over 7 frames, 180 over 14.
+- Sv1 before: one yaw for logic and drawing, turned toward the stick at 720 deg/s (90 deg in 8 frames) the frame
+  the stick moved; no 45 deg gate. Now (`player::Turn`, `actor::ShownYaw`): the gate on the pad stick, the request
+  made one frame and applied the next (whole, or clamped at the shown clip's TAE 224 rate), the drawn facing
+  chasing at 1.1x. The gate drives the walk / run and the free turn only; step, jump and attack
+  directions still read the stick as it is (gap: which stick the HKS's KickAngle / AttackAngle read on a press
+  frame is not traced; 10 sim tests press with the stick set that same frame).
+- gap: the drawn yaw is engaged only by the turn controller's free turns (a yaw other code sets is drawn at once);
+  whether the exe's warps / SetRotation reset the delay controller, and that the model matrix (and the dummy-poly
+  hit boxes) take GetRotation, are inferred, not traced. Not ported: the camera-yaw hold while the stick is held
+  (+0x424 / +0x428, option DAT_143d5b49c; re-sampled past 60 deg), the walk halving flag ([ctrl+0x50]+0x88 bit 18),
+  the PlayerCtrl +0x259 TurnAngle gate, the module +0x16c rate, the pad's own processing before +0x38f8 (dead zone,
+  XInput scaling), the lock-on manipulator (FUN_1407f1710, needs a target in the snapshot). MoveSpeedLevelReal
+  (HKS GetMoveSpeed) converges toward the stick level (2 only sprinting); Sv1's `speed_level` keeps its own 1 walk /
+  2 run scale (it only picks the stop clip and the release slow-down).

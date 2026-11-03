@@ -198,6 +198,102 @@ Dated findings, oldest first. Append new entries at the end.
   at a wall about 10 m along +X and when the stick pitched the camera to the ground), lock-on, TAE camera
   events, other frame rates.
 
+## Follow camera at walls and the ground, checked against the exe (2026-11-03, camwall)
+- tools/emu-cases `camwall` (src/camwall.rs) runs FUN_140734790 -> FUN_14073c260 on the Naomori-arena
+  snapshot with every cast of the update hooked (at entry its arguments, at its return site al and the
+  fraction): 10 scenarios, 2,345 frames in `extracted/emu/camwall_frames.json` (the stick pitching the
+  camera to the ground at 60 and 30 fps, down while turning, Wolf walking toward the wall about 9 m along
+  +X, the stick swinging the arm through that wall, wall and ground together, Wolf squeezing the arm
+  against the wall and walking back, the escape-wall option on). `camwall_probe` maps the walls around
+  the spot with the same cast. Sim test `follow_camera_at_walls_matches_the_exe` (src/sim_tests/
+  emu_camwall.rs) replays each frame from the exe's state before it with the exe's cast results.
+- The casts: FUN_14094dfc0 while ChrExFollowCam +0x3ad is set (1 in the snapshot), else FUN_14094dc70,
+  same arguments (physics world [[0x143d6d640]+0x98], filter [WorldChrMan +0x3550] = 0x30, &start,
+  &vector, radius, out point, out normal, &fraction of the vector): Havok linear sphere casts. In order:
+  1. fulcrum (14073.c 10993-11062): focus +0xc0 -> the placed fulcrum, camCastSphereRadius 0.05; a hit
+     puts the fulcrum at max(fraction * length, 0.01) (Game.IsUseSPChrExFollowCam on);
+  2. orbit point (11066-11251): +0xf0 = focus + the fulcrum's direction * +0x214, cast, cut to
+     max(fraction * length, 1e-5);
+  3. obstacle fade (11253-11320, FUN_14094ea80, group 0x76): from last frame's +0x100 toward the
+     midpoint of +0x90 / +0xa0, shortened by camCastSphereRadiusForFade 0.3 (matched within 7e-6 m);
+  4. final (12318-12411): focus -> the chased +0x100, cut the same way; any hit (also fraction 1.0 when
+     the camera rests on the cut point) sets +0x1e4 = targetChaseDistRateTime (2 s). +0x110 keeps the
+     result; the safe margin makes +0x40.
+  The position chase measures the distance it starts from at +0x110 (not +0x100) and chases it at
+  +0x1e8 / +0x1ec = lerp(targetChaseDistRateXZ / Y 0.4, _ForHitWall 1.0, clamp(2 * +0x1e4 / 2 s)), then
+  +0x1e4 -= dt (11948-11979): after a wall the arm snaps back for a second, then eases.
+- Ported (camera.rs follow_player, `cast_cut`, `hit_wall_rates`, `chase_position_from`, `WallCast`;
+  RSekiro's own collision behind `map_cast`: a ray over length + radius stopped short by the radius,
+  a touch within 1 mm past the end counts as the exe's fraction-1 hit). Before, only the final cast
+  cut the camera: the chase ran toward the uncut orbit point and the distance chase started from the
+  uncut +0x100 at 0.4; on these frames that put +0x100 up to 1.6 m off the exe's.
+- Matched (from the exe's state before each frame, 2,225 frames): yaw and pitch read back from the
+  cut fulcrum (not on the three first frames where Wolf is put by the wall), the fulcrum cast's
+  start / end / radius and the cut fulcrum, the orbit cast and cut point, the hit-wall rates and
+  clock, the position chase (60 fps frames), the final cast, +0x110 and +0x40, all within 1e-4.
+- Escape wall: option byte +0xd of GameDataMan [0x143d5aac0] +0x50 is copied every frame by
+  FUN_140734790 into UseEscapeWall (DAT_143d599c0); 0 in the user's save (which menu entry it is was
+  not checked). On, the fulcrum and orbit casts are skipped and two wing casts (escapeWallWing*) run;
+  a wing hit sets the working rates +0x220 / +0x224 / +0x228 to the _ForEscapeWall row values (0.15 /
+  0.3 / 0.1) and turns the yaw by +0x334 (escapeWallRotAdd*, 0 in row 0, wings 1 cm). Run once
+  (ground_pitch_down_escape: no fulcrum or orbit cast); not ported.
+- Focus pull-in (9580-9640): a ray (FUN_14094d140 / cf90) from Wolf's point (+0x200 offset) toward the
+  chased focus +0x90, half his radius (FUN_1409efb80, 0.4) longer; on a hit a 0.4 m sphere cast pulls
+  +0x90 in toward Wolf. It hit only on a 28 m teleport here; not ported.
+- Obstacle fade hits: map objects only (kind 6, objects 0x1017d and 0x101cd by the +X wall, 660
+  requests). A character fades only when byte +0x1f behind its ChrIns +0x18 is 2 (FUN_1408705a0):
+  0 for Wolf and all 89 enemies of the snapshot, either way the pointer is read, so ordinary enemies
+  do not fade. Not ported (RSekiro draws map objects merged into the map).
+- Not covered: the 1 cm fulcrum floor (smallest fulcrum fraction seen 0.44), the zero-length final
+  cast, the position chase at 30 fps (exe once a frame, RSekiro per 1/60 s), walls while locked on,
+  the TAE overrides of the distance rate (FUN_1408311a0) and of +0xf0 (FUN_140831190).
+
+## Lock-on camera and the pad mapping checked against the exe (2026-11-03, lockcam)
+- tools/emu-cases `lockcam` puts a target into the snapshot's LockTgtMan (DAT_143d78058; its one entry, the
+  enemy ~29 m off: entry +0x0 point, +0x10..+0x3f its 3x4 matrix, +0x88 owner), hands it to the camera
+  with FUN_1409c5f20(ChrCam, entry, 0) every frame (fills the lock helper at ChrCam +0x90, +0x10d0 = 1)
+  and runs FUN_140734790 -> FUN_14073c260: 16 scenarios, 1,545 frames (1,485 locked): target ahead / right /
+  behind-left / above / below / at 1.5 m / circling / passing over Wolf / running off / the real enemy,
+  Wolf strafing, 30 fps, the stick held, the lock let go after 1 s, a lock point that jumps 0.5 m (60 and
+  30 fps). Sim test `lock_camera_matches_the_exe` (src/sim_tests/emu_lockcam.rs).
+- The camera's lock point +0x280 is the lock helper's +0x1020 (when DAT_143afe850 == 1): the target point
+  averaged over the last 0.5 s (DAT_143afe848; CSPositionRecorder, 240 samples, newest first while the
+  summed dt <= 0.5), kept in the target's local frame, so a rigidly moving target is followed exactly and a
+  jump of the point eases in linearly over 0.5 s. Ported as `LockPointAverage` (was: the raw point).
+- The angles (`lock_chase`): w = focus (+0xd0) - fulcrum (dragged +0xe0, FUN_140734070 / FUN_140733e50 on
+  camera -> focus), P = focus + lockTgtPosRate * (lock point - focus) (+0x290), reach = sin(half) * |w|
+  (half = +0x50 FOV * +0x278 lockRotXShiftRatio * 0.5), a = asin(reach / |P - focus|) (pi/2 when inside),
+  pitch wanted = a + half + pitch(P - focus), clamped to rotRangeXAtLock lerped to the free limits
+  (+0x230 / +0x234) by |P.y - focus.y| over rotRangeLerpBegin/EndHeight; yaw wanted = yaw(P - focus). Both
+  chased by wrap(d) * rate * dt / (1/30) (lockRotChaseRateX / Y) with the play angle taken off when the
+  step would land inside it. The exe wraps with x - trunc((x + pi*sign x) / 2pi) * 2pi (`wrap_pi`).
+  Matched within 1e-5 rad on every locked frame.
+- Sv1 before: |w| was the configured camera distance (4.5) instead of the fulcrum's (~3.8; steady pitch on a
+  target 5 m ahead 0.446 vs the exe's 0.411 rad), yaw came from Wolf's position to the target's root, not
+  focus -> P, a hold when the target was overhead the exe does not have, and no averaging of the lock point.
+- Matched as they were: the focus follow, the fulcrum put back on the arm, the orbit point, the position
+  chase at targetChaseRateAtLockXZ / Y (angle factor 1), the safe margin, +0x194 held at 1 while locked;
+  after the lock is let go the free yaw is read back from the dragged fulcrum and +0x194 falls by
+  dt / transChaseByControlEndReleaseTime. The stick does nothing to the angles while locked.
+- Position chase, fixed: the angle factor's cosine is now rounded as the exe does it (divide by
+  sqrt((x² + z²) + y²), dot (x + y) + z). With AngAtLockMin 0 (cos 1.0) the exe stops the X / Z chase on
+  frames where the f32 cosine of nearly parallel vectors rounds above 1.0 (82 of 85 such frames stopped,
+  1,146 frames at or below 1.0 moved); glam's normalize rounded differently and kept chasing (up to
+  0.4 mm off on 81 frames). gap: the exe applies the chase rates once a frame with no time factor; at
+  30 fps it closes 0.4 a frame where `chase_position` (per 1/60 s) closes 0.64 (the test feeds it 1/60).
+- Pad (FUN_140960650 fills the frame at pad +0x38f8; FUN_1407f0f50 PadManipulator, emulated on made-up
+  frames): frame +0x0 / +0x4 = move up / right (actions 0x4f / 0x51; 0x4d walk halves them) -> M+0xc0 =
+  up * view + right * (view.z, 0, -view.x) (left-handed); +0x10 / +0x14 = lock switch (x, -y);
+  +0x18 / +0x1c mouse -> M+0xd4 / +0xd0; +0x28 / +0x2c camera yaw / pitch -> M+0x84 / +0x80. The right
+  stick's vector action 0x52 gives +0x28 = s10 * x (FUN_1409668f0) and +0x2c = -s11 * y (FUN_140966960),
+  s = +1 when option byte 10 / 11 ([[0x143d5aac0]+0x50]) is set, -1 when cleared; the snapshot's
+  options have both set. Sv1's orbit_with_stick (yaw -= x, pitch -= y, invert_y = option 11 cleared),
+  stick_world, chases_pitch and the lock switch's (x, -y) all agree; test `pad_mapping_matches_the_exe`.
+- gap: which physical axes action 0x52 / 0x4f / 0x51 are bound to (the key config) is not traced; taken as
+  XInput RX / RY and LX / LY (+0x258 / +0x25c, +0x24c / +0x250 of the device, + right / + up). Not
+  covered: walls and the ground while locked, TAE 151 / 153 / 155 while locked, target rotation (every
+  scenario keeps the snapshot's), the lock-on entry / exit blend of FOV and distance (LockCamParam).
+
 ## TAE camera events checked against the exe (2026-11-03)
 - tools/emu-cases `taecam` runs the camera frame (FUN_140734790 -> FUN_14073c260) on the snapshot with the camera
   singleton DAT_143d5c0d0 filled as the TAE handlers fill it (151 FUN_140b517a0, 153 FUN_140b51680, 155

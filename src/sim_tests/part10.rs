@@ -1113,7 +1113,7 @@ pub(crate) fn repeat_mode_plays_the_tomoe_lightning() {
 }
 
 /// The stateInfo-155 rows' changeSuperArmorPoint adds to the super-armour pool (FUN_140bdb690,
-/// 140bd.c:8889-8900): a rise is added to the pool at once, and the refill fills to the larger
+/// <decomp ref>): a rise is added to the pool at once, and the refill fills to the larger
 /// max. Isshin's NpcParam pool is 0; the "revived Kensei" row 3540110 (+200), put on by hand
 /// here (nothing in Sekiro's data or exe puts it on), gives him one.
 #[test]
@@ -1148,7 +1148,7 @@ pub(crate) fn a_super_armour_bonus_grows_the_pool() {
 
 /// The whistle's madness 230515 (effectEndurance -1, gate 959, isWaitModeDelete) lasts while the
 /// beast wears its resident 230500 (stateInfo 959) and is deleted the moment that goes
-/// (FUN_140c04090, 140c0.c:2641).
+/// (FUN_140c04090, <decomp ref>).
 #[test]
 pub(crate) fn the_whistle_madness_goes_when_its_gate_does() {
     let mut app = app_with("c1000");
@@ -1321,24 +1321,29 @@ pub(crate) fn attack_occurrence_follows_the_hit_category() {
 /// its AtkParam's AppearAiSoundId goes out at the bullet, owned by its shooter. The c1190
 /// archer's arrow 11900100 (AtkParam 11900100: 2000025, 10 m) fired 6 m off is heard there, not
 /// at the archer; a dummy row (AtkParam 8) makes none.
-/// The c1180 servants' all-round armour guard: their anims carry ShieldBlock ArgB 800 under
-/// StateInfo 957, which 220062 (put on by the map's armour-part event) opens; without it the arc
-/// is the default 90 deg (combat.rs guard_half_angle on the live gates).
+/// The c1180 servants' armour guard: their anims carry ShieldBlock judge 800 under StateInfo
+/// 957, which 220062 (put on by the map's armour-part event) opens. The judge is the guard row
+/// (BehaviorParam 2118xx800 -> AtkParam_Npc 11800800, guardAttribute 1), not an arc: the arc
+/// stays NpcParam guardAngle's (FUN_140b6c880 run in tools/emu-cases; 0 = 90 deg).
 #[test]
-pub(crate) fn the_armour_guard_arc_follows_its_worn_effect() {
+pub(crate) fn the_armour_guard_follows_its_worn_effect() {
     let mut app = app_with("c1180");
     app.world_mut().resource_scope(|world, combat: Mut<Combat>| {
         let mut q = world.query_filtered::<&mut Actor, (With<Enemy>, Without<crate::enemy::Cast>)>();
         let mut a = q.iter_mut(world).next().unwrap();
-        a.guard_angle = 0.0;
         a.resident.retain(|&id| id != 220062);
         a.play("Idle", "a000_000000");
         a.t = 0.5;
         let d = combat.data_of(&a);
-        let arc = |a: &Actor| crate::combat::guard_half_angle(d, a, crate::combat::event_gates(&combat, a, &[]).as_deref());
-        assert_eq!(arc(&a), 90.0, "without 220062");
+        let judge = |a: &Actor| crate::combat::shield_block(d, a, crate::combat::event_gates(&combat, a, &[]).as_deref());
+        assert_eq!(judge(&a), None, "without 220062");
         a.sp_chained.push((220062, 1e6));
-        assert_eq!(arc(&a), 800.0, "with 220062");
+        assert_eq!(judge(&a), Some(800), "with 220062");
+        let row = crate::combat::guard_row(&combat, &a, 800, 5000).expect("the armour guard's row");
+        assert_eq!(row.guard_attribute, 1);
+        assert_eq!(crate::combat::guard_half_angle(&a), a.guard_angle);
+        a.guard_angle = 0.0;
+        assert_eq!(crate::combat::guard_half_angle(&a), 90.0);
     });
 }
 
@@ -1407,7 +1412,7 @@ pub(crate) fn a_bullet_makes_its_appear_sound_where_it_starts() {
 }
 
 /// A growing bullet re-issues its attack (and so its AppearAiSoundId) every 1/6 s while it grows
-/// and once when it has (140b0.c:8408 / 8627): c1190's 11903311 (hitRadius 2.5 -> 3.4 over
+/// and once when it has (<decomp ref> / 8627): c1190's 11903311 (hitRadius 2.5 -> 3.4 over
 /// 0.5 s) issues 2000025 at 0, 1/6, 2/6 and about 0.5 s (3/6 and the final one fall on one frame
 /// or two); a bullet that does not grow (11900100) only at its start.
 #[test]

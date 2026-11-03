@@ -18,11 +18,11 @@ use bevy::prelude::*;
 use crate::actor::{Actor, ActorSet, data_for};
 use crate::anim::Hurtboxes;
 use crate::combat::{BODY_RADIUS, apply_knockback, damage_kb, segment_distance};
-use crate::data::{BulletSpec, Combat, STATE_INFO_JUST_GUARD};
+use crate::data::{BulletSpec, Combat};
 use crate::enemy::Enemy;
 use crate::hud::CombatLog;
 use crate::model::Dummies;
-use crate::player::{FLAG_SHIELD_BLOCK, Player};
+use crate::player::Player;
 
 #[derive(Component)]
 pub struct Projectile {
@@ -485,8 +485,8 @@ fn fly_bullets(
                 if let Some(m) = msg.filter(|m| m.starts_with("hit") || m.contains("blocks")) {
                     let mut sps: Vec<i64> = [b.spec.sp_effect_id0, b.spec.sp_effect_id1, b.spec.sp_effect_id2, b.spec.sp_effect_id3, b.spec.sp_effect_id4].to_vec();
                     // Only the Bullet row's: FUN_1410b7910 fills a bullet hit's slots 0-4 from
-                    // BulletParam +0x6c (FUN_1410b6880, 1410b.c:8413); the AtkParam's +0x20 ids
-                    // are read on melee hits only (14099.c:9681), as enemy_bullet.rs (R36 C).
+                    // BulletParam +0x6c (FUN_1410b6880, <decomp ref>); the AtkParam's +0x20 ids
+                    // are read on melee hits only (<decomp ref>), as enemy_bullet.rs (R36 C).
                     sps.extend(&occurrence);
                     let lines = statuses.hit(&combat, ee, &da, &sps, m.contains("blocks"));
                     // c9997 ExecDamage runs ExecDebuffReaction before ExecGuardBlock, and
@@ -693,18 +693,19 @@ fn hit_enemy(
         return carries.then(|| "hit: build-up only".to_string());
     }
     let dd = combat.data_of(da);
-    // As a sword hit (combat.rs resolve): only inside the guard arc, and AtkParam
-    // disableJustGuard / disableGuard (the Flame Vent's and Projected Force's rows) go through
-    // a deflect / a block.
-    let facing = !da.anim.is_empty() && da.forward().angle_between((from - dtf.translation).with_y(0.0).normalize_or_zero()).to_degrees() <= crate::combat::guard_half_angle(dd, da, crate::combat::event_gates(combat, da, &[]).as_deref());
+    // As a sword hit (combat.rs resolve, guard_check): the ShieldBlock flag inside the guard arc,
+    // then the flick contest; AtkParam disableJustGuard / disableGuard (the Flame Vent's and
+    // Projected Force's rows) go through a deflect / a block. The tool's own weapon row is the
+    // attack's (all share attackBaseRepel 10).
+    let gc = crate::combat::guard_check(combat, da, &e.clash, atk, true, 5000, 5000, dtf.translation - from);
     // A guarding enemy takes the bullet as a sword's deflect / block (combat.rs resolve, `bullet`):
     // the posture through its guard rates (enemy_guard_posture_rate x timed_rates, floored), the
     // c9997 ExecGuardBlock reaction (guard_damage_table by dmgLevel and guardLevel) and the clash
     // SpEffects the AI counts (200210/211 deflect, 200215/216 block). Round 35: the deflect did
     // nothing and the block added the raw repelLostStamDamage with no reaction. gap: the clash ids
     // on a bullet are the melee path's (inferred).
-    let deflect = facing && atk.disable_just_guard == 0 && dd.has_state_info(&da.anim, da.t, STATE_INFO_JUST_GUARD);
-    if deflect || (facing && atk.disable_guard == 0 && dd.flag(&da.anim, da.t, FLAG_SHIELD_BLOCK)) {
+    let deflect = gc.verdict == crate::combat::Verdict::Deflect;
+    if gc.verdict != crate::combat::Verdict::Hit {
         if let Some(q) = sounds.as_mut() {
             q.0.extend(crate::sound::guard_sounds(combat, atk, deflect).into_iter().map(|se| (se, to)));
         }
@@ -742,7 +743,8 @@ fn hit_enemy(
     // The armour part and the enemy's posture SpEffects, as on a sword hit (combat.rs resolve).
     let (armor_hp, armor_posture, _) = crate::combat::armor_rates(combat, e, da, atk, None);
     let def_rate = crate::combat::def_stamina_rate(combat, da, atk.stamina_physics_attribute) * armor_posture;
-    let (dmg, pd) = (dmg * armor_hp, pd * def_rate);
+    // Whole points, as the exe stores both (combat.rs hit_hp; FUN_1408439a0's (int)).
+    let (dmg, pd) = (crate::combat::hit_hp(dmg, armor_hp), (pd * def_rate).floor());
     da.hp = (da.hp - dmg).max(0.0);
     da.add_posture(pd);
     // The super-armour drain, as a sword hit's (combat::super_armor_hit).
