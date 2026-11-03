@@ -41,6 +41,7 @@ mod part11;
 mod emu_guard;
 mod emu_camwall;
 mod emu_hks;
+mod emu_hks2;
 mod emu_damage;
 mod emu_lockcam;
 mod emu_turn;

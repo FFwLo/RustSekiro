@@ -301,3 +301,23 @@ copied to physics +0x80).
 - Emulator notes: a TB flush before each frame (else the host crashed on the 39th chr frame of one engine), the
   CRT longjmp replaced by a plain one in the copy (its unwind path spun on the RtlUnwindEx stub; the HKS GC jumps
   out every ~24 frames), __isa_available 1 (AVX2 strnlen).
+
+## Move stick switches and the pad (2026-11-03, exe, emulator, topic hks2)
+`emu-cases <exe> extracted/emu hks2_move --snapshot <dir>` (tools/emu-cases/src/hks2.rs) runs Wolf's PlayerIns
+update as `turn` does, 7 scenarios / 168 frames -> `hks2_move.json`; test `move_stick_switches_match_the_exe`
+(src/sim_tests/emu_hks2.rs). The two gaps left in the free manipulator (FUN_1407f0f50) are debug switches:
+- Camera-yaw hold: DAT_143d5b49c is a debug menu bool (FUN_1425e1aa0, named "don't align the stick's forward with
+  the camera's forward"), off in the snapshot. On, the camera yaw the stick is turned by (+0x420) is taken once
+  when the stick engages (+0x424 latch) and kept while it is held, re-taken on a release or when the stick's world
+  yaw strays from +0x428 (Wolf's yaw + request at the latch) by DAT_143b014b0 (another debug float, 60 deg). Run:
+  the camera turning 4 deg a frame for 40 frames, the move direction stayed at the frame-1 camera (0.07 rad);
+  off, it follows the camera of each frame. Sv1 (`stick_world` with the frame's camera yaw) matches the off case.
+- Walk halving: ctrl flags +0x88 bit 18 does nothing unless the global 0x143d7a34a (next to DebugFlags, 0 in the
+  snapshot) is set; then with 0x143b066e4 set (1) the move vector and MoveSpeedLevel are halved (1 -> 0.5), with
+  it clear the stick is taken unrotated. Run: bit 18 alone, 12 frames identical to no bit. Sv1 ports neither.
+- The pad before its floats: the object FUN_1409603d0 reads is NS_SPRJ::DbgMapWalkPad (vtable 0x142a09b30; ctor
+  FUN_14095faa0 clears a 0x383c block at +0xb4 and points +0x38f0 / +0x38f8 into it; in the snapshot +0x38f8 =
+  pad +0x20f8). FUN_140961460 binds its action slots to the FD4 user-input ids 0x223.. (FUN_1425e86b0); the
+  device -> float step (XInput dead zone, curve) is in the FD4 input library, not traced: gap. The manipulator
+  itself has no dead zone (0.05 is taken, `turn` above).
+- gap: the lock-on manipulator (FUN_1407f1710), the PlayerCtrl +0x259 TurnAngle gate, the module +0x16c rate.
