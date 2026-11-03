@@ -251,8 +251,10 @@ fn physics(h: *mut c_void) -> Option<u64> {
 }
 
 /// The warp's two arrival setters, rewritten to store a fixed spot: the spot sits in a page near the
-/// image (rip-relative reach), each setter's own bytes are kept to put back.
+/// image (rip-relative reach), each setter's own bytes are kept and put back when it is dropped, a
+/// panic included (2026-11-03 a timed-out warp left the game patched).
 struct SpotPatch {
+    h: *mut c_void,
     cave: u64,
     saved: Vec<(u64, Vec<u8>)>,
 }
@@ -286,14 +288,16 @@ impl SpotPatch {
             patch_code(h, at, &code);
             saved.push((at, old));
         }
-        SpotPatch { cave, saved }
+        SpotPatch { h, cave, saved }
     }
+}
 
-    fn remove(self, h: *mut c_void) {
+impl Drop for SpotPatch {
+    fn drop(&mut self) {
         for (at, old) in &self.saved {
-            patch_code(h, *at, old);
+            patch_code(self.h, *at, old);
         }
-        unsafe { VirtualFreeEx(h, self.cave, 0, 0x8000) };
+        unsafe { VirtualFreeEx(self.h, self.cave, 0, 0x8000) };
     }
 }
 
@@ -343,30 +347,33 @@ pub fn scene(pid: u32, sc: &Scene, dir: &Path) {
     // the field from outside loses the race (seen 2026-11-03: Wolf came out at the idol). As
     // SekiroTool does, the setters store the scene's spot while the warp loads, then get their own
     // bytes back; the game itself spawns Wolf there.
-    let patched = sc.spot.map(|spot| SpotPatch::install(h, spot));
-    warp(h, sc.idol);
-    let moved = |p: [f32; 3]| (0..3).map(|i| (p[i] - old[i]).abs()).sum::<f32>() > 0.5;
-    loop {
-        assert!(t.elapsed().as_secs() < 60, "the warp did not finish loading in 60 s");
-        sleep_ms(100);
-        if physics(h).is_some_and(|ph| moved(read_f32s(h, ph + 0x80))) {
-            break;
+    let at_spot = |p: [f32; 3]| sc.spot.is_some_and(|[x, y, z, _]| (p[0] - x).abs() + (p[2] - z).abs() < 2.0 && (p[1] - y).abs() < 3.0);
+    if at_spot(old) {
+        // Already there: the warp would bring Wolf back to the same place, which the wait below
+        // cannot tell from a warp that never loaded.
+        println!("Wolf is already at the spot: no warp");
+    } else {
+        let patched = sc.spot.map(|spot| SpotPatch::install(h, spot));
+        warp(h, sc.idol);
+        let moved = |p: [f32; 3]| (0..3).map(|i| (p[i] - old[i]).abs()).sum::<f32>() > 0.5;
+        loop {
+            assert!(t.elapsed().as_secs() < 60, "the warp did not finish loading in 60 s");
+            sleep_ms(100);
+            if physics(h).is_some_and(|ph| moved(read_f32s(h, ph + 0x80))) {
+                break;
+            }
         }
+        sleep_ms(1000);
+        drop(patched);
+        println!("warped to idol {} in {:.1} s", sc.idol, t.elapsed().as_secs_f32());
     }
-    sleep_ms(1000);
-    if let Some(p) = patched {
-        p.remove(h);
-    }
-    println!("warped to idol {} in {:.1} s", sc.idol, t.elapsed().as_secs_f32());
     if sc.ai_off {
         write(h, DEBUG_FLAGS + 0x10, &[1]);
     }
     sleep_ms(8000);
     let at: [f32; 3] = read_f32s(h, physics(h).unwrap() + 0x80);
     println!("Wolf at {:.2} {:.2} {:.2}", at[0], at[1], at[2]);
-    if let Some([x, y, z, _]) = sc.spot {
-        assert!((at[0] - x).abs() + (at[2] - z).abs() < 2.0 && (at[1] - y).abs() < 3.0, "Wolf is not at the spot: no snapshot taken");
-    }
+    assert!(sc.spot.is_none() || at_spot(at), "Wolf is not at the spot: no snapshot taken");
     let player = player(h).unwrap();
     copy(h, pid, player, dir);
     unsafe { CloseHandle(h) };
