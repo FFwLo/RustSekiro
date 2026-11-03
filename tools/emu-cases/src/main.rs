@@ -40,6 +40,7 @@ mod damagemod;
 mod camera2;
 mod collide;
 mod params;
+mod fxr;
 
 /// The few calls of Unicorn's C API the tool needs (unicorn.h), linked from unicorn.dll.
 mod uc {
@@ -928,6 +929,9 @@ fn main() {
     }
     if want.iter().any(|w| w.starts_with("camera2")) {
         camera2::run(&|| Emu::new(exe, snap()), out, &want);
+    }
+    if want.iter().any(|w| w.starts_with("fxr")) {
+        fxr::run(&|| Emu::new(exe, snap()), out, &want);
     }
     if want.contains(&"speffect") {
         speffect::run(&|| Emu::new(exe, snap()), out);

@@ -33,6 +33,9 @@ struct Rnd {
 
 impl Rnd {
     fn next(&mut self) -> f32 {
+        (self.bits() % 1_000_000) as f32 / 1_000_000.0
+    }
+    fn bits(&mut self) -> u32 {
         self.k = self.k.wrapping_add(1);
         let mut x = self.seed ^ self.k.wrapping_mul(0x9E37_79B9);
         x ^= x >> 16;
@@ -40,7 +43,41 @@ impl Rnd {
         x ^= x >> 15;
         x = x.wrapping_mul(0x846c_a68b);
         x ^= x >> 16;
-        (x % 1_000_000) as f32 / 1_000_000.0
+        x
+    }
+}
+
+/// The draws an emitter shape or spread takes, as the exe's FXR RNG gives them (FUN_141dc67a0's
+/// xorshift: FUN_14014d6e0 a [0, 1] float, FUN_140149aa0 a range, FUN_140466380 / FUN_141da8790
+/// an int range by `raw % n`).
+pub(crate) trait Draw {
+    fn raw(&mut self) -> u32;
+    /// [0, 1]: `raw % 0x800001` as the mantissa of a float in [1, 2], minus 1.
+    fn unit(&mut self) -> f32 {
+        f32::from_bits(self.raw() % 0x80_0001 + 0x3f80_0000) - 1.0
+    }
+    fn range(&mut self, a: f32, b: f32) -> f32 {
+        (b - a) * self.unit() + a
+    }
+}
+
+impl Draw for Rnd {
+    fn raw(&mut self) -> u32 {
+        self.bits()
+    }
+}
+
+/// The exe's FXR RNG itself (the state at +4..+0x14 of FUN_141dc67a0's object, stepped by
+/// FUN_14014d6e0): the sim test redraws the emulator's numbers with it.
+pub(crate) struct ExeRng(pub(crate) [u32; 4]);
+
+impl Draw for ExeRng {
+    fn raw(&mut self) -> u32 {
+        let [a, b, c, w] = self.0;
+        let t = a ^ (a << 11);
+        let new = (((w >> 11) ^ t) >> 8) ^ w ^ t;
+        self.0 = [b, c, w, new];
+        new
     }
 }
 
@@ -98,6 +135,31 @@ fn game_hermite(t1: f32, t2: f32, x: f32) -> f32 {
     s + x * (e - s)
 }
 
+/// A modifier seed as up to 4 components (one seed per component, as the exe's vector modifiers).
+fn vec4_seed(v: &Value) -> [u32; 4] {
+    match v {
+        Value::Array(a) => std::array::from_fn(|i| a.get(i).or(a.first()).and_then(Value::as_i64).unwrap_or(0) as u32),
+        _ => [v.as_i64().unwrap_or(0) as u32; 4],
+    }
+}
+
+/// The exe's RandomDelta / RandomFraction random in [-1, 1) (modifier evaluators 0xd05x / 0xf05x
+/// in the table at [0x143f13da0], body FUN_141d9d010): the modifier's seed and the object's random
+/// (+0xcc, a xorshift128 draw when the object is made, FUN_141dbffc0 -> FUN_1401519f0) multiplied
+/// as signed 16-bit halves and summed (pmaddwd), the low 23 bits made a float in [1, 2), then
+/// x2 - 3. Checked bit for bit against the exe (src/sim_tests/emu_fxr.rs).
+pub(crate) fn game_random(seed: u32, random: u32) -> f32 {
+    let half = |x: u32, s: u32| ((x >> s) as u16 as i16) as i32;
+    let lane = half(seed, 0).wrapping_mul(half(random, 0)).wrapping_add(half(seed, 16).wrapping_mul(half(random, 16))) as u32;
+    f32::from_bits(0x3f80_0000 | (lane & 0x7f_ffff)) * 2.0 - 3.0
+}
+
+/// A property at argument `t` for an object whose random (exe +0xcc) is `random`: the sim test's
+/// way in (`emu_fxr`).
+pub(crate) fn eval_prop(v: &Value, t: f32, random: u32) -> [f32; 4] {
+    prop(Some(v), t, &mut Rnd { seed: random, k: 0 }, [0.0; 4])
+}
+
 /// A property at argument `t`, with its modifiers drawn from `rnd`.
 fn prop(v: Option<&Value>, t: f32, rnd: &mut Rnd, default: [f32; 4]) -> [f32; 4] {
     let Some(v) = v else { return default };
@@ -111,7 +173,9 @@ fn prop(v: Option<&Value>, t: f32, rnd: &mut Rnd, default: [f32; 4]) -> [f32; 4]
                 default
             } else {
                 let last = num(&kf[kf.len() - 1]["position"]);
-                let t = if v["loop"].as_bool() == Some(true) && last > 0.0 { t.rem_euclid(last) } else { t };
+                // a loop wraps by the last keyframe's position with C fmodf (FUN_141d99f30), so a
+                // negative argument stays before the first keyframe (not rem_euclid)
+                let t = if v["loop"].as_bool() == Some(true) && last > 0.0 { t % last } else { t };
                 let i = kf.iter().rposition(|k| num(&k["position"]) <= t);
                 match i {
                     None => vec4(&kf[0]["value"]),
@@ -151,17 +215,21 @@ fn prop(v: Option<&Value>, t: f32, rnd: &mut Rnd, default: [f32; 4]) -> [f32; 4]
     if let Some(mods) = v.get("modifiers").and_then(Value::as_array) {
         for m in mods {
             let max = vec4(&m["max"]);
+            // the exe's modifier random: the modifier's own seed per component against the
+            // object's +0xcc random (here `rnd.seed`), the same every frame (`game_random`)
+            let seed = vec4_seed(&m["seed"]);
             match m["type"].as_str() {
                 Some("RandomDelta") => {
                     for c in 0..4 {
-                        out[c] += (rnd.next() * 2.0 - 1.0) * max[c];
+                        out[c] += game_random(seed[c], rnd.seed) * max[c];
                     }
                 }
                 Some("RandomFraction") => {
                     for c in 0..4 {
-                        out[c] += out[c] * (rnd.next() * 2.0 - 1.0) * max[c];
+                        out[c] += out[c] * (game_random(seed[c], rnd.seed) * max[c]);
                     }
                 }
+                // gap: the exe's modifier table has no RandomRange evaluator and no file uses it
                 Some("RandomRange") => {
                     let min = vec4(&m["min"]);
                     for c in 0..4 {
@@ -429,79 +497,214 @@ fn make_node(lib: &mut FxrLib, node: &Value, seed: u32, depth: u32) -> Option<No
     })
 }
 
-/// A direction inside a cone of `angle` degrees around `n`.
-fn spread_dir(n: Vec3, angle: f32, rnd: &mut Rnd) -> Vec3 {
-    if angle <= 0.0 {
-        return n;
-    }
-    let (t, b) = n.any_orthonormal_pair();
-    let phi = rnd.next() * std::f32::consts::TAU;
-    let cos_max = angle.to_radians().cos();
-    let cos_t = 1.0 - rnd.next() * (1.0 - cos_max);
-    let sin_t = (1.0 - cos_t * cos_t).max(0.0).sqrt();
-    (n * cos_t + (t * phi.cos() + b * phi.sin()) * sin_t).normalize_or(n)
+/// A 3x3 frame in the exe's row-vector form (row 2 = the particle's forward, Z), game space.
+pub(crate) type Rows = [[f32; 3]; 3];
+
+const IDENTITY: Rows = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+
+/// FUN_1401529f0: about X.
+fn rot_x(t: f32) -> Rows {
+    let (s, c) = t.sin_cos();
+    [[1.0, 0.0, 0.0], [0.0, c, s], [0.0, -s, c]]
 }
 
-/// Emission point and direction in the node's frame, from its emitter shape and spread.
+/// FUN_1401528f0: about Y.
+fn rot_y(t: f32) -> Rows {
+    let (s, c) = t.sin_cos();
+    [[c, 0.0, -s], [0.0, 1.0, 0.0], [s, 0.0, c]]
+}
+
+/// FUN_1401588f0: about Z.
+fn rot_z(t: f32) -> Rows {
+    let (s, c) = t.sin_cos();
+    [[c, s, 0.0], [-s, c, 0.0], [0.0, 0.0, 1.0]]
+}
+
+/// `a` then `b` (FUN_140152730, row vectors).
+fn rows_mul(a: Rows, b: Rows) -> Rows {
+    std::array::from_fn(|i| std::array::from_fn(|j| a[i][0] * b[0][j] + a[i][1] * b[1][j] + a[i][2] * b[2][j]))
+}
+
+fn rows_apply(v: [f32; 3], m: Rows) -> [f32; 3] {
+    std::array::from_fn(|j| v[0] * m[0][j] + v[1] * m[1][j] + v[2] * m[2][j])
+}
+
+/// The exe's sign (FUN_14052b3f0): 0 stays 0.
+fn sign0(x: f32) -> f32 {
+    if x > 0.0 {
+        1.0
+    } else if x < 0.0 {
+        -1.0
+    } else {
+        0.0
+    }
+}
+
+/// Two numbers in [-1, 1] spread by `dist` (RectangularSpread 503 and RectangleEmitterShape 402):
+/// below 0 one of them, picked by an int draw, is pushed toward +-1 (pow(|q|, d + 1), -1 = the
+/// edge); from 0 up both are pulled toward 0 (1 - pow(|q|, 1 - d)), 0 = uniform.
+fn spread_pair(dist: f32, d: &mut impl Draw) -> (f32, f32) {
+    let q1 = d.range(-1.0, 1.0);
+    let q2 = d.range(-1.0, 1.0);
+    if dist < 0.0 {
+        let s = sign0(q1);
+        let v = s * (q1 * s).powf(dist + 1.0);
+        if d.raw() % 2 != 0 { (v, q2) } else { (q2, v) }
+    } else {
+        let (s1, s2) = (sign0(q1), sign0(q2));
+        (s1 * (1.0 - (q1 * s1).powf(1.0 - dist)), s2 * (1.0 - (q2 * s2).powf(1.0 - dist)))
+    }
+}
+
+/// An emitter shape's point and frame in game space (the exe's generators, checked draw for draw
+/// in src/sim_tests/emu_fxr.rs): `fields` / `props` in the action's order (fxr.ts DS3 / SDT
+/// layout). The frame's row 2 is the shape's outward direction; None = the emitter's own frame.
+///  - 401 Disk (FUN_141db3800): r^2 = u^(d+1) below 0, 1 - u^(1-d) above (d = distribution
+///    clamped to [-1, 1]: -1 the rim, 0 uniform, 1 the centre), then an angle in [-pi, pi].
+///  - 402 Rectangle (FUN_141db4160): `spread_pair` x size / 2 (above 0 the draws swap axes).
+///  - 403 Sphere (FUN_141db3ee0): the frame X(a in [0, pi]) Z(d) X(b) Y(c) (b, c, d in
+///    [-pi, pi]), the point along its Z at radius x u^(1/3) when emitInside.
+///  - 404 Box (FUN_141db3220): a face by int draw 0-5 (+X, -X, +Y, -Y, +Z, -Z by its frame),
+///    (x, y, z) in [-1, 1] with z = 1 (on the face) unless emitInside, x size / 2; the face's
+///    frame when direction is 0.
+///  - 405 Cylinder (FUN_141db3ae0): about Z (Sekiro has no yAxis field), radius x sqrt(u) when
+///    emitInside, an angle, a height in [-h/2, h/2]; the radial frame when direction is 0.
+pub(crate) fn shape_point(ty: i64, fields: &[i64], props: &[f32], d: &mut impl Draw) -> ([f32; 3], Option<Rows>) {
+    use std::f32::consts::PI;
+    let f = |i: usize, def: i64| fields.get(i).copied().unwrap_or(def);
+    let p = |i: usize, def: f32| props.get(i).copied().unwrap_or(def);
+    match ty {
+        401 => {
+            let (radius, dist) = (p(0, 1.0), p(1, 0.0).clamp(-1.0, 1.0));
+            let u = d.unit();
+            let q = if dist <= 0.0 { u.powf(dist + 1.0) } else { 1.0 - u.powf(1.0 - dist) };
+            let a = d.range(-PI, PI);
+            let r = q.sqrt() * radius;
+            ([a.cos() * r, a.sin() * r, 0.0], None)
+        }
+        402 => {
+            let (c2, c1) = match p(2, 0.0).clamp(-1.0, 1.0) {
+                dist if dist < 0.0 => {
+                    let (a, b) = spread_pair(dist, d);
+                    (b, a)
+                }
+                dist => spread_pair(dist, d),
+            };
+            ([c1 * p(0, 1.0) * 0.5, c2 * p(1, 1.0) * 0.5, 0.0], None)
+        }
+        403 => {
+            let a = d.range(0.0, PI);
+            let (b, c, e) = (d.range(-PI, PI), d.range(-PI, PI), d.range(-PI, PI));
+            let m = rows_mul(rot_x(a), rows_mul(rot_z(e), rows_mul(rot_x(b), rot_y(c))));
+            let r = if f(0, 1) != 0 { p(0, 1.0) * d.unit().powf(1.0 / 3.0) } else { p(0, 1.0) };
+            (m[2].map(|x| x * r), Some(m))
+        }
+        404 => {
+            let face = match d.raw() % 6 {
+                0 => rot_y(PI / 2.0),
+                1 => rot_y(-PI / 2.0),
+                2 => rot_x(-PI / 2.0),
+                3 => rot_x(PI / 2.0),
+                4 => IDENTITY,
+                _ => rot_y(PI),
+            };
+            let (x, y) = (d.range(-1.0, 1.0), d.range(-1.0, 1.0));
+            let z = if f(1, 1) != 0 { d.range(-1.0, 1.0) } else { 1.0 };
+            let v = rows_apply([x, y, z], face);
+            let size = [p(0, 1.0), p(1, 1.0), p(2, 1.0)];
+            (std::array::from_fn(|i| v[i] * size[i] * 0.5), (f(0, 0) == 0).then_some(face))
+        }
+        405 => {
+            let (radius, height) = (p(0, 1.0), p(1, 1.0) * 0.5);
+            let k = if f(1, 1) != 0 { d.unit().sqrt() } else { 1.0 };
+            let a = d.range(-PI, PI);
+            let z = d.range(-height, height);
+            let (s, c) = a.sin_cos();
+            let frame = [[0.0, 0.0, -1.0], [-s, c, 0.0], [c, s, 0.0]];
+            ([c * radius * k, s * radius * k, z], (f(0, 0) == 0).then_some(frame))
+        }
+        _ => ([0.0; 3], None),
+    }
+}
+
+/// A direction spread's frame in the particle's own frame (its row 2 = the new forward):
+///  - 501 Circular (FUN_141db5cf0): a tilt off + u^a x scale about X (a = d + 1, scale = angle,
+///    off = 0 below 0; a = 1 - d, scale = -angle, off = angle above: -1 always the cone's rim,
+///    0 a tilt uniform in [0, angle], 1 none), then a spin in [-pi, pi] about Z. No clamp on d.
+///  - 503 Rectangular (FUN_141db6740): `spread_pair` x (angleX, angleY) as tilts about X and Y,
+///    the smaller (wrapped, FUN_1401b9c10) applied first.
+///  - gap: 502 Elliptical (FUN_141db5fe0: an ellipse fitted to the larger angle) is drawn as
+///    a circular spread of the larger angle (11 uses in the files).
+pub(crate) fn spread_frame(ty: i64, props: &[f32], d: &mut impl Draw) -> Rows {
+    use std::f32::consts::{PI, TAU};
+    let p = |i: usize| props.get(i).copied().unwrap_or(0.0);
+    match ty {
+        501 | 502 => {
+            let (angle, dist) = if ty == 501 { (p(0).to_radians(), p(1)) } else { (p(0).max(p(1)).to_radians(), p(2)) };
+            if angle == 0.0 {
+                return IDENTITY;
+            }
+            let (a, scale, off) = if dist <= 0.0 { (dist + 1.0, angle, 0.0) } else { (1.0 - dist, -angle, angle) };
+            let tilt = off + d.unit().powf(a) * scale;
+            let spin = d.unit() * TAU - PI;
+            rows_mul(rot_x(tilt), rot_z(spin))
+        }
+        503 => {
+            let (c1, c2) = spread_pair(p(2), d);
+            let (tx, ty) = (p(0).to_radians() * c1, p(1).to_radians() * c2);
+            let wrap = |a: f32| {
+                let f = a / TAU;
+                let f = if f <= 0.0 { (f - 0.5).ceil() } else { (f + 0.5).floor() };
+                (a - f * TAU).abs()
+            };
+            if wrap(tx) <= wrap(ty) { rows_mul(rot_y(ty), rot_x(tx)) } else { rows_mul(rot_x(tx), rot_y(ty)) }
+        }
+        _ => IDENTITY,
+    }
+}
+
+/// Game rows -> our space (X mirrored, `game_vec`) as a rotation taking +Z to the frame's row 2.
+fn rows_quat(m: Rows) -> Quat {
+    let g = |r: [f32; 3]| Vec3::new(-r[0], r[1], r[2]);
+    // a mirror flips handedness: our frame is (-X', Y', Z') of the mirrored rows
+    Quat::from_mat3(&Mat3::from_cols(-g(m[0]), g(m[1]), g(m[2]))).normalize()
+}
+
+/// Emission point and direction in the node's frame, from its emitter shape and spread (the exe's
+/// generators: `shape_point`, `spread_frame`).
 fn emit_point(c: &Value, t: f32, rnd: &mut Rnd) -> (Vec3, Vec3) {
     let shape = &c["emitterShape"];
     let st = shape["type"].as_i64().unwrap_or(400);
     let dirmode = int(shape, "direction", 0);
     let s = |k: &str, d: f32, rnd: &mut Rnd| scalar(shape, k, t, rnd, d);
-    let (pos, outward) = match st {
-        401 => {
-            let r = s("radius", 1.0, rnd) * rnd.next().sqrt();
-            let a = rnd.next() * std::f32::consts::TAU;
-            let p = Vec3::new(a.cos() * r, a.sin() * r, 0.0);
-            (p, p.normalize_or(Vec3::Z))
-        }
-        403 => {
-            let r = s("radius", 1.0, rnd);
-            let d = Vec3::new(rnd.next() * 2.0 - 1.0, rnd.next() * 2.0 - 1.0, rnd.next() * 2.0 - 1.0).normalize_or(Vec3::Y);
-            let inside = shape["emitInside"].as_bool().unwrap_or(true);
-            (d * if inside { r * rnd.next().cbrt() } else { r }, d)
-        }
-        404 => {
-            let (x, y, z) = (s("sizeX", 1.0, rnd), s("sizeY", 1.0, rnd), s("sizeZ", 1.0, rnd));
-            let p = Vec3::new((rnd.next() - 0.5) * x, (rnd.next() - 0.5) * y, (rnd.next() - 0.5) * z);
-            (game_vec([p.x, p.y, p.z, 0.0]), Vec3::Z)
-        }
-        // RectangleEmitterShape: sizeX by sizeY in the node's XY plane, as the disk (401).
-        // gap: `distribution` (taken as uniform).
-        402 => {
-            let (x, y) = (s("sizeX", 1.0, rnd), s("sizeY", 1.0, rnd));
-            (Vec3::new((rnd.next() - 0.5) * x, (rnd.next() - 0.5) * y, 0.0), Vec3::Z)
-        }
-        405 => {
-            let (r, h) = (s("radius", 1.0, rnd), s("height", 1.0, rnd));
-            let a = rnd.next() * std::f32::consts::TAU;
-            let inside = shape["emitInside"].as_bool().unwrap_or(true);
-            let rr = if inside { r * rnd.next().sqrt() } else { r };
-            let y_axis = shape["yAxis"].as_bool().unwrap_or(true);
-            let radial = Vec3::new(a.cos(), 0.0, a.sin());
-            let along = (rnd.next() - 0.5) * h;
-            if y_axis {
-                (radial * rr + Vec3::Y * along, radial)
-            } else {
-                (Vec3::new(a.cos() * rr, a.sin() * rr, along), Vec3::new(a.cos(), a.sin(), 0.0))
-            }
-        }
-        _ => (Vec3::ZERO, Vec3::Z),
+    let flag = |k: &str| int(shape, k, 1);
+    let (fields, props): (Vec<i64>, Vec<f32>) = match st {
+        401 => (vec![dirmode], vec![s("radius", 1.0, rnd), s("distribution", 0.0, rnd)]),
+        402 => (vec![dirmode], vec![s("sizeX", 1.0, rnd), s("sizeY", 1.0, rnd), s("distribution", 0.0, rnd)]),
+        403 => (vec![flag("emitInside")], vec![s("radius", 1.0, rnd)]),
+        404 => (vec![dirmode, flag("emitInside")], vec![s("sizeX", 1.0, rnd), s("sizeY", 1.0, rnd), s("sizeZ", 1.0, rnd)]),
+        405 => (vec![dirmode, flag("emitInside")], vec![s("radius", 1.0, rnd), s("height", 1.0, rnd)]),
+        _ => (Vec::new(), Vec::new()),
     };
-    // InitialDirection: 0 by shape, 1 / 2 global up / down, 3 global north, 4-6 local.
+    let (p, frame) = shape_point(st, &fields, &props, rnd);
+    let pos = game_vec([p[0], p[1], p[2], 0.0]);
+    // InitialDirection: 0 by shape (its frame, else the node's Z), 1 / 2 global up / down,
+    // 3 global north, 4-6 local. gap: the exe builds 1-6 as frames (FUN_141db46a0), not checked.
     let base = match dirmode {
-        1 | 4 => Vec3::Y,
-        2 | 5 => Vec3::NEG_Y,
-        3 | 6 => Vec3::Z,
-        _ => outward,
+        1 | 4 => Quat::from_rotation_arc(Vec3::Z, Vec3::Y),
+        2 | 5 => Quat::from_rotation_arc(Vec3::Z, Vec3::NEG_Y),
+        3 | 6 => Quat::IDENTITY,
+        _ => frame.map_or(Quat::IDENTITY, rows_quat),
     };
     let sp = &c["directionSpread"];
-    let dir = match sp["type"].as_i64().unwrap_or(500) {
-        501 => spread_dir(base, scalar(sp, "angle", t, rnd, 30.0), rnd),
-        502 | 503 => spread_dir(base, scalar(sp, "angleX", t, rnd, 30.0).max(scalar(sp, "angleY", t, rnd, 30.0)), rnd),
-        _ => base,
+    let sv = |k: &str, d: f32, rnd: &mut Rnd| scalar(sp, k, t, rnd, d);
+    let spread = match sp["type"].as_i64().unwrap_or(500) {
+        501 => Some(spread_frame(501, &[sv("angle", 30.0, rnd), sv("distribution", 0.0, rnd)], rnd)),
+        ty @ (502 | 503) => Some(spread_frame(ty, &[sv("angleX", 30.0, rnd), sv("angleY", 30.0, rnd), sv("distribution", 0.0, rnd)], rnd)),
+        _ => None,
     };
-    (pos, dir)
+    let local = spread.map_or(Vec3::Z, |m| game_vec([m[2][0], m[2][1], m[2][2], 0.0]));
+    (pos, (base * local).normalize_or(Vec3::Z))
 }
 
 /// GPUStandardParticle (10000, reference/fxr src/actions/10000.yml, enums/EmitterShape.yml): the
@@ -1429,7 +1632,7 @@ fn collect(
                     let _ = off;
                     let rz = (scalar(a, "rotationZ", 0.0, &mut rnd, 0.0) + scalar(a, "angularSpeedZ", p.age, &mut rnd, 0.0) * scalar(a, "angularSpeedMultiplierZ", p.age, &mut rnd, 1.0) * p.age).to_radians();
                     // Orientation, the exe's billboard builder (FUN_140440a60, the switch at
-                    // 14044.c:10384; 600's twin 14043.c:9564): 1 the camera's rows; 2 the node's
+                    // <decomp ref>; 600's twin <decomp ref>): 1 the camera's rows; 2 the node's
                     // rotation; 4 the camera's rows with the up row a constant (world up);
                     // 6 a look-at from the camera to the particle, rolled to world up; 7 a cylinder
                     // about the particle's own vector (pfVar10[2..4], node space, turned by the node:
