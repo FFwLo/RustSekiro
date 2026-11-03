@@ -96,7 +96,7 @@ impl Plugin for WirePlugin {
         app.init_resource::<WireAim>()
             .init_resource::<WireRope>()
             .add_systems(FixedUpdate, aim_wire.before(crate::actor::ActorSet::Decide))
-            .add_systems(FixedUpdate, hook_enemy.after(crate::actor::ActorSet::Decide))
+            .add_systems(FixedUpdate, hook_enemy.after(crate::actor::ActorSet::Decide).before(crate::actor::ActorSet::Resolve))
             .add_systems(Update, draw_rope);
     }
 }

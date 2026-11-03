@@ -504,10 +504,14 @@ Fixed in Sv1:
 
 Not covered (gap):
 - input latency: the exe plays a pressed guard's first clip step the frame after the pad press,
-  Sv1 the same frame; so the earliest taps (guard t 0.017 / 0.033) have no Sv1 twin.
+  Sv1 the same frame; so the earliest taps (guard t 0.017 / 0.033) have no Sv1 twin. (Fixed
+  2026-11-03, animstart: Sv1 reads the press a frame later, kb/frame-coverage.md "One frame's
+  order".)
 - contact pose: the slash meets Wolf at clip time 0.683 idle / 0.667 guarding in the exe, 0.650 /
   0.683 in Sv1 (hurt capsule geometry); the exe's damage and reaction come a frame later relative
-  to the contact pose than Sv1's (structural: the hit step runs before the chr frames).
+  to the contact pose than Sv1's (structural: the hit step runs before the chr frames). (Fixed
+  2026-11-03, animstart: `resolve` runs before `advance` on the last step's poses, a reaction it
+  plays starts the tick after, `kb_wait` 2; the test reads Sv1's frames with no offset.)
 - the enemy-side numbers (Wolf -> General) are recorded but not tested; an enemy's guard break
   knockback is not traced (Sv1 uses guardBrake for both sides).
 - the General's AI dodges Wolf's slash, and a moved General's ragdoll hurt shapes stay at the

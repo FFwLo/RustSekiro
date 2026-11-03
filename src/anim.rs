@@ -245,7 +245,7 @@ impl Plugin for AnimPlugin {
             .add_systems(PostStartup, build_skeletons.in_set(AnimSet))
             // Characters spawned later (a fight reset's line-up, the encounter picker).
             .add_systems(Update, build_skeletons.in_set(AnimSet).before(draw_poses))
-            .configure_sets(FixedUpdate, PoseSet.after(crate::actor::ActorSet::Advance).before(crate::actor::ActorSet::Resolve))
+            .configure_sets(FixedUpdate, PoseSet.after(crate::actor::ActorSet::Advance))
             .add_systems(FixedUpdate, (pose_skeletons, apply_walk_twist, apply_twists, apply_model_lag, store_sim_poses).chain().in_set(PoseSet))
             .add_systems(
                 Update,

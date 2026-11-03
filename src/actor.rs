@@ -154,6 +154,9 @@ pub struct Actor {
     pub t: f32,
     /// The clip time before this step: the start of the TAE window (`step`).
     pub prev_t: f32,
+    /// The clip was played after this tick's `decide` (a hit's reaction in `resolve`): the
+    /// tick's `advance` leaves it at 0 (`clear_fresh`).
+    pub fresh: bool,
     /// The generator the current clip blends in from while its TAE Blend lasts (the behaviour
     /// graph keeps playing it and mixes its world-from-model in): (clip key, its clock), the key
     /// empty for a procedural state whose motion is `blend_from_vel`. None once the blend is over
@@ -325,7 +328,9 @@ pub struct Actor {
     pub kb_dec_total: f32,
     /// Travel left for the current knockback (`limit_knockback`; INFINITY = none).
     pub kb_left: f32,
-    /// Frames before a started knockback moves the body (`knockback` sets 1). The exe's defender
+    /// Steps before a started knockback moves the body (`knockback` sets 2: the hit's own frame,
+    /// whose step comes after `resolve` as the exe's chr frame after its hit step, and the
+    /// reaction's first; a bullet's hit after the step sets 1). The exe's defender
     /// stands still on the first frame of its reaction and moves from the second (tools/emu-cases
     /// `hits`: Wolf hit, blocked or deflecting, the General hit or guarding: hit applied in frame
     /// H's hit step, reaction clip from H + 1, knockback from H + 2; the attacker's recoil
@@ -358,7 +363,7 @@ impl Actor {
         self.kb_dec = dec;
         self.kb_dec_total = dec;
         self.kb_left = f32::INFINITY;
-        self.kb_wait = 1;
+        self.kb_wait = 2;
     }
 
     /// Caps the current knockback's travel (a pull stops at the attacker's capsule).
@@ -374,6 +379,7 @@ impl Actor {
             anim: String::new(),
             t: 0.0,
             prev_t: 0.0,
+            fresh: false,
             blend_from: None,
             blend_from_loops: false,
             blend_from_vel: Vec3::ZERO,
@@ -469,6 +475,7 @@ impl Actor {
         self.anim = to;
         self.t = 0.0;
         self.prev_t = 0.0;
+        self.fresh = true;
         self.hits_done.clear();
         self.vel_change_done = false;
         self.yaw_scale = 1.0;
@@ -898,7 +905,11 @@ pub fn advance(time: Res<Time>, combat: Res<Combat>, mut q: Query<(&mut Actor, &
             fall(&mut a, &mut tf, real_dt);
             continue;
         }
-        a.t += dt;
+        // A clip played after this tick's decide (a reaction from resolve) takes its first step
+        // next tick: the exe's HKS asks for it after the hit step, inside the behaviour step,
+        // and the new clip's first update is the next frame's (`clear_fresh`).
+        let clip_dt = if std::mem::take(&mut a.fresh) { 0.0 } else { dt };
+        a.t += clip_dt;
         a.since_posture_damage += dt;
         let data = data_for(&combat, &a);
         // A clip without a keyframe yet takes its group idle's opacity (1 if none; the Monk's
@@ -910,7 +921,7 @@ pub fn advance(time: Res<Time>, combat: Res<Combat>, mut q: Query<(&mut Actor, &
         };
         // Additive layer clock: it ends after max(clip length, last TAE event).
         if !a.add_anim.is_empty() {
-            a.add_t += dt;
+            a.add_t += clip_dt;
             let end = data.anim(&a.add_anim).map_or(0.0, |an| an.events.iter().map(|e| e.end).fold(an.duration.unwrap_or(0.0), f32::max));
             if a.add_t > end {
                 a.add_anim.clear();
@@ -937,7 +948,7 @@ pub fn advance(time: Res<Time>, combat: Res<Combat>, mut q: Query<(&mut Actor, &
         } else {
             1.0
         };
-        a.blend_t += dt;
+        a.blend_t += clip_dt;
         let (mut from_delta, mut from_yaw) = (Vec3::ZERO, 0.0);
         if w >= 1.0 {
             a.blend_from = None;
@@ -1436,12 +1447,28 @@ fn separate(combat: Res<Combat>, mut last: Local<std::collections::HashMap<Entit
     }
 }
 
+/// After every decide of the tick: a clip played there (or after the last tick's step) takes its
+/// first step in this tick's `advance`; one played in `resolve` (a hit's reaction) waits for the
+/// next, as the exe's HKS asks for it after the hit step, behind the frame's behaviour step.
+pub fn clear_fresh(mut q: Query<&mut Actor>) {
+    for mut a in &mut q {
+        a.fresh = false;
+    }
+}
+
+/// One tick, in the exe's order (tools/emu-cases `animstart`, kb/frame-coverage.md "One frame's
+/// order"): Decide, Resolve, Advance. The exe's frame runs the hit manager step FUN_1409a0dc0
+/// (MoveMapStep's task FUN_140a746f0, task group 0x4b) before the chr frames (FUN_140a70020 ->
+/// FUN_140a4b570, group 0x52), and inside a chr frame the HKS decides after the Havok step has
+/// taken the current clip's TAE window. Sv1's `decide` reads the window the last `advance` took,
+/// so it stands for the HKS of the frame before; `resolve` then tests the poses and attack
+/// windows of the last `advance` as the hit step does, and `advance` steps the clips decided.
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ActorSet {
     /// Player/enemy decision making (reads input, picks states).
     Decide,
-    /// Clock + root motion.
-    Advance,
     /// Hit detection and reactions.
     Resolve,
+    /// Clock + root motion.
+    Advance,
 }

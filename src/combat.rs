@@ -43,8 +43,12 @@ pub struct CombatPlugin;
 impl Plugin for CombatPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<CombatLog>()
-            .configure_sets(FixedUpdate, (ActorSet::Decide, ActorSet::Advance, ActorSet::Resolve).chain())
-            .add_systems(FixedUpdate, (resolve, resolve_throws).chain().in_set(ActorSet::Resolve))
+            .configure_sets(FixedUpdate, (ActorSet::Decide, ActorSet::Resolve, ActorSet::Advance).chain())
+            .add_systems(FixedUpdate, crate::actor::clear_fresh.after(ActorSet::Decide).before(ActorSet::Resolve))
+            .add_systems(FixedUpdate, resolve.in_set(ActorSet::Resolve))
+            // Throws are the chr frame's (TAE 304, the throw module), not the hit step's: after
+            // the step, where they were.
+            .add_systems(FixedUpdate, resolve_throws.after(ActorSet::Advance))
             .init_resource::<ShowHurtboxes>()
             .add_systems(Update, draw_hitboxes.run_if(resource_exists::<GizmoConfigStore>));
     }
@@ -2660,7 +2664,7 @@ mod tests {
 /// player is released when the thrower is knocked out of its throw anim before that anim's end
 /// (staggered, posture-broken; a zombie's bite loop); after a throw that played out, his own
 /// clip (the fall and getting up) plays out.
-fn resolve_throws(combat: Res<Combat>, mut log: Option<ResMut<CombatLog>>, mut q: Query<&mut Actor>, mut was: Local<Option<(String, f32, usize)>>) {
+pub(crate) fn resolve_throws(combat: Res<Combat>, mut log: Option<ResMut<CombatLog>>, mut q: Query<&mut Actor>, mut was: Local<Option<(String, f32, usize)>>) {
     // Wolf escaped the grab (player.rs: ThrowEscape on the grabber's flag-70 pulse): the grabber
     // lets go. c9997 ThrowAtkCommonFunction: env 275 (its own flag 70 + throw state 3/4,
     // FUN_140b39e40 <decomp ref>) -> W_ThrowRelease<ThrowID> (c1500: ThrowRelease4112 / 4122,

@@ -909,6 +909,9 @@ pub(crate) fn force_player(app: &mut App, state: &str, frame: f32) {
         a.prev_t = a.t;
     }
     app.world_mut().insert_resource(combat);
+    // Wolf was already in the state: the next tick's buttons count as the frame before's
+    // (player::hks_pad_in).
+    app.world_mut().resource_mut::<crate::player::HksPad>().prime();
 }
 
 #[test]
@@ -1129,7 +1132,9 @@ pub(crate) fn deathblow_from_behind_uses_the_back_throw() {
         });
     }
     app.world_mut().resource_mut::<PadInput>().press(Action::Attack);
-    // Start throw 崩し背後始動 (11020110: a201_501200 = a200_500200's clip, judge 640 at frame 7).
+    // Start throw 崩し背後始動 (11020110: a201_501200 = a200_500200's clip, judge 640 at frame 7),
+    // the tick after the press (player::hks_pad_in).
+    app.update();
     app.update();
     assert_eq!(player_state(&mut app).1, "a201_501200");
     for _ in 0..30 {

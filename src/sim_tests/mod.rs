@@ -66,6 +66,7 @@ mod emu_aimove;
 mod emu_air;
 mod emu_fxr2;
 mod emu_hits;
+mod emu_animstart;
 pub(crate) use part01::*;
 pub(crate) use part02::*;
 pub(crate) use part03::*;

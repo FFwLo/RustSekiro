@@ -63,7 +63,7 @@ pub struct ProstheticPlugin;
 
 impl Plugin for ProstheticPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(FixedUpdate, (spawn_bullets.after(crate::anim::PoseSet), fly_bullets).chain().after(ActorSet::Advance).before(ActorSet::Resolve))
+        app.add_systems(FixedUpdate, (spawn_bullets.after(crate::anim::PoseSet), fly_bullets).chain().after(ActorSet::Advance))
             .add_systems(Update, draw_bullets.run_if(resource_exists::<GizmoConfigStore>));
     }
 }
@@ -795,6 +795,8 @@ pub(crate) fn tool_hit_push(combat: &Combat, da: &mut Actor, e: &mut Enemy, from
     let no_motion = !da.anim.is_empty() && dd.flag(&da.anim, da.step(), crate::combat::FLAG_NO_DAMAGE_MOTION);
     if !no_motion {
         apply_knockback(combat, da, from, at, None, knockback, damage_kb(level), "knockbackRate_vsPlayer_DirectHit");
+        // Bullets fly after the step (fly_bullets), so the next step is the reaction's first.
+        da.kb_wait = 1;
     }
     if dmg > 0.0 {
         e.hurt_by_wolf = true;

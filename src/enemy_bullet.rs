@@ -100,7 +100,7 @@ impl Plugin for EnemyBulletPlugin {
         app.init_resource::<ScriptShots>()
             .init_resource::<TargetTrack>()
             .add_message::<crate::gore::PlaceStain>()
-            .add_systems(FixedUpdate, (track, fire, fire_worn, fire_scripted, fly).chain().after(ActorSet::Advance).after(crate::anim::PoseSet).before(ActorSet::Resolve))
+            .add_systems(FixedUpdate, (track, fire, fire_worn, fire_scripted, fly).chain().after(ActorSet::Advance).after(crate::anim::PoseSet))
             .add_systems(Update, draw.run_if(resource_exists::<GizmoConfigStore>));
     }
 }

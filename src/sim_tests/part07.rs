@@ -179,6 +179,8 @@ pub(crate) fn a_grapple_lands_on_the_point_in_the_move_start_time() {
     let target = crate::map::GrappleTarget { index: 0, point, dist: 9.0, in_action_range: true, ride: true };
     app.insert_resource(crate::wire::WireAim { target: Some(target), enemy: None });
     app.world_mut().resource_mut::<PadInput>().press(Action::Grapple);
+    // The press reaches decide the tick after (player::hks_pad_in).
+    app.update();
     let mut seen = Vec::new();
     let mut launch = None;
     let mut landed = None;
@@ -1126,7 +1128,8 @@ pub(crate) fn a_reset_mid_jump_lands_wolf_at_the_start() {
     let mut app = app();
     app.update();
     app.world_mut().resource_mut::<PadInput>().press(Action::Jump);
-    for _ in 0..12 {
+    // (13: the press reaches decide the tick after, player::hks_pad_in.)
+    for _ in 0..13 {
         app.update();
     }
     {
@@ -1239,7 +1242,7 @@ pub(crate) fn probe_dummies_drawn(mut probe: ResMut<DummyProbe>, g: Query<&Globa
 /// the drawn one of the same tick.
 pub(crate) fn dummy_lag(app: &mut App, ticks: usize) -> f32 {
     app.init_resource::<DummyProbe>()
-        .add_systems(FixedUpdate, probe_dummies_fixed.after(crate::anim::PoseSet).before(crate::actor::ActorSet::Resolve))
+        .add_systems(FixedUpdate, probe_dummies_fixed.after(crate::anim::PoseSet))
         .add_systems(Last, probe_dummies_drawn);
     for _ in 0..ticks {
         app.update();

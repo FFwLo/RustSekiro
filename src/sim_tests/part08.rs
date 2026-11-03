@@ -64,7 +64,7 @@ pub(crate) fn a_grab_pulls_wolf_onto_the_grabbers_dummy() {
         if held.is_none() && player_state(&mut app).0 == "Grabbed" {
             held = Some(i);
         }
-        if held.is_some_and(|h| i == h + 2) {
+        if held.is_some_and(|h| i == h + 1) {
             break;
         }
     }
@@ -75,7 +75,9 @@ pub(crate) fn a_grab_pulls_wolf_onto_the_grabbers_dummy() {
     let (m, et) = (dm.0[&230], etf.translation);
     let at = world.get::<GlobalTransform>(m).unwrap().translation();
     let off = (wolf - at).with_y(0.0).length();
-    // (2 cm with the absorb, two ticks of his anim later; 10-12 cm where the capsule touched.)
+    // (3.5 cm with the absorb, a tick of his anim later; 10-12 cm where the capsule touched. The
+    // grab resolves before the tick's step now, so the absorb lands in the grab's own tick and the
+    // pair drifts 3.5 cm a tick after it: two ticks on, 7 cm.)
     assert!(off < 0.05, "Wolf {off:.2} m off the grab dummy 230 (Wolf {wolf}, dummy {at}, General {et})");
 }
 
@@ -163,14 +165,18 @@ pub(crate) fn an_early_jump_in_an_air_slash_becomes_the_air_kick() {
     move_enemy_far(&mut app);
     app.world_mut().resource_mut::<PadInput>().press(Action::Jump);
     let (mut slash, mut kicked, mut pressed, mut seen) = (None, false, false, Vec::<String>::new());
+    // One attack press: decide reads it a tick later (player::hks_pad_in), so pressing on until
+    // the slash shows queued a second one, which chained AirComboAttack2.
+    let mut attacked = false;
     for i in 0..200u32 {
         app.update();
         let (state, _, airborne, _) = player_actor(&mut app);
         if seen.last() != Some(&state) {
             seen.push(state.clone());
         }
-        if airborne && slash.is_none() && !state.starts_with("AirComboAttack") && i > 6 {
+        if airborne && !attacked && i > 6 {
             app.world_mut().resource_mut::<PadInput>().press(Action::Attack);
+            attacked = true;
         }
         if state == "AirComboAttack1" && slash.is_none() {
             slash = Some(i);

@@ -99,10 +99,10 @@ pub(crate) fn loaded_axe_emblems_match_the_exe() {
     let (release, (pay, cost)) = (release.expect("no release"), pay.expect("no payment"));
     // Within the release the payment's frame and amount match (25 frames in, 2 emblems).
     assert_eq!((pay - release, cost), (exe_pay - exe_release, exe_cost), "payment after the release (exe {exe_release} -> {exe_pay} x{exe_cost}, ours {release} -> {pay})");
-    // gap: ours plays a073_400000 one frame early: the exe's first TAE update of a clip the HKS
-    // starts on frame N is on N + 1 (a000_250000 too: TAE 65 at 0.7 s lands on frame 42 = 0.7 x 60),
-    // ours steps the new clip in the press frame (t 0.8 on frame 47 for the exe's 48), so the
-    // release (exe 49) and its payment (exe 74) come a frame early here (48, 73). The gourd agrees
-    // only because its press reaches the HKS a frame later in ours.
-    assert_eq!(release + 1, exe_release, "the known one-frame lead");
+    // The release's first step and the payment on the exe's frames (49, 74): the exe's HKS asks
+    // for a clip after the frame's behaviour step, so its first update is the next frame's; ours
+    // reads the press a frame late (player::hks_pad_in) and steps the clip in that frame
+    // (tools/emu-cases animstart, kb/frame-coverage.md "One frame's order"). Before, ours led by
+    // one (48, 73).
+    assert_eq!((release, pay), (exe_release, exe_pay), "release and payment frames");
 }
