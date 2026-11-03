@@ -645,7 +645,7 @@ mod enemy_lockstep {
     use crate::sim_tests::*;
 
     /// The engine's answers for the enemy as the sim has it now (hks_enemy::answers).
-    fn answers(app: &mut App, h: &mut Host, clip: Option<(String, f32)>, anims: &[i64], request: Option<i64>, damage: Option<crate::enemy::DamageEnv>, throw_start: bool) {
+    fn answers(app: &mut App, h: &mut Host, clip: Option<(String, crate::tae_window::At)>, anims: &[i64], request: Option<i64>, damage: Option<crate::enemy::DamageEnv>, throw_start: bool) {
         let (pos, escaped) = {
             let mut q = app.world_mut().query_filtered::<(&Transform, &Actor), With<Player>>();
             let (tf, pa) = q.single(app.world()).unwrap();
@@ -723,10 +723,13 @@ mod enemy_lockstep {
                     e.mode = crate::enemy::Mode::Rising(len);
                 }
                 let (mut game, mut sim): (Vec<String>, Vec<String>) = (Vec::new(), Vec::new());
+                let mut prev_clip = None;
                 for _ in 0..600 {
                     app.update();
                     let clip = chr.rt.main_clip().map(|c| (c.animation.clone(), c.time));
-                    answers(&mut app, &mut chr.vm.host.borrow_mut(), clip, &anims, None, None, false);
+                    let window = crate::hks_enemy::script_window(clip.clone(), &prev_clip);
+                    prev_clip = clip;
+                    answers(&mut app, &mut chr.vm.host.borrow_mut(), window, &anims, None, None, false);
                     chr.tick(1.0 / 60.0, &mut dur).unwrap();
                     let g = chr.rt.main_state_name().to_string();
                     if game.last() != Some(&g) {
@@ -835,7 +838,7 @@ mod enemy_lockstep {
         {
             // The script's own start (InitState -> W_IdleBattle) a frame before the sim's first.
             let clip = chr.rt.main_clip().map(|c| (c.animation.clone(), c.time));
-            answers(&mut app, &mut chr.vm.host.borrow_mut(), clip, &anims, None, None, false);
+            answers(&mut app, &mut chr.vm.host.borrow_mut(), crate::hks_enemy::script_window(clip, &None), &anims, None, None, false);
             let mut q = app.world_mut().query_filtered::<(&Actor, &Enemy), Without<Player>>();
             let world = app.world();
             let (a, _) = q.iter(world).find(|(_, e)| !e.disabled).expect("an enemy");
@@ -875,6 +878,7 @@ mod enemy_lockstep {
             if started && request.is_some_and(|n| clip.as_ref().is_some_and(|(c, _)| c.ends_with(&format!("_{:06}", n % 1_000_000)))) {
                 request = None;
             }
+            let window = crate::hks_enemy::script_window(clip.clone(), &prev_clip);
             prev_clip = clip.clone();
             let damage = {
                 let world = app.world_mut();
@@ -887,7 +891,7 @@ mod enemy_lockstep {
             if throw_start {
                 chr.rt.fire_event(&format!("W_{state}"));
             }
-            answers(&mut app, &mut chr.vm.host.borrow_mut(), clip, &anims, request, damage, throw_start);
+            answers(&mut app, &mut chr.vm.host.borrow_mut(), window, &anims, request, damage, throw_start);
             let events = {
                 let mut q = app.world_mut().query_filtered::<(&Actor, &Enemy), Without<Player>>();
                 let world = app.world();

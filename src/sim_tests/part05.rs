@@ -367,6 +367,10 @@ pub(crate) fn tools_from_a_sprint_and_a_crouch() {
                 force_player(&mut app, "SprintLoop", 3.0);
                 app.world_mut().resource_mut::<PadInput>().stick = Vec2::new(0.0, -1.0);
                 app.world_mut().resource_mut::<PadInput>().dodge_held = true;
+                // Sprinting, the stick was held the frame before too: the pad manipulator's 45 deg
+                // gate takes a stick from rest a frame late (player::Turn::gate, emu_turn).
+                let world = app.world_mut();
+                world.query::<&mut Player>().single_mut(world).unwrap().turn.last_stick = Vec2::new(0.0, -1.0);
             } else {
                 app.world_mut().resource_mut::<PadInput>().press(Action::Crouch);
                 for _ in 0..120 {

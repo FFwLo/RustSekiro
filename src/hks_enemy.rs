@@ -34,9 +34,25 @@ pub struct WolfSeen {
 /// The engine's answers for the enemy as the sim has it now. TAE reads (windows, SpEffects) are
 /// of the script side's clip (`clip`), as the game's engine reads the clip its graph plays.
 #[allow(clippy::too_many_arguments)]
-pub fn answers(h: &mut Host, a: &Actor, e: &Enemy, cmd: &crate::ai::Command, pos: Vec3, wolf: WolfSeen, combat: &Combat, clip: Option<(String, f32)>, anims: &[i64], request: Option<i64>, damage: Option<DamageEnv>, throw_start: bool) {
+/// The script's main clip and the window its last update took: from its time the frame before
+/// when it is the same clip, else from 0 (a clip's first update dispatches every event up to t,
+/// tae_window::At::dispatched).
+pub fn script_window(clip: Option<(String, f32)>, prev: &Option<(String, f32)>) -> Option<(String, crate::tae_window::At)> {
+    let (c, t) = clip?;
+    let from = prev.as_ref().filter(|(pc, pt)| *pc == c && *pt <= t).map_or(0.0, |p| p.1);
+    Some((c, crate::tae_window::At::Step(from, t)))
+}
+
+pub fn answers(h: &mut Host, a: &Actor, e: &Enemy, cmd: &crate::ai::Command, pos: Vec3, wolf: WolfSeen, combat: &Combat, clip: Option<(String, crate::tae_window::At)>, anims: &[i64], request: Option<i64>, damage: Option<DamageEnv>, throw_start: bool) {
     let d = combat.data_of(a);
-    let (shown, t) = clip.unwrap_or_else(|| a.shown_clip(d));
+    // The flags and TAE SpEffects on the window the clip's last update took (tae_window, as
+    // hks_wolf::answers): a point test at the f32 clock missed a cancel window ending between two
+    // frames that enemy.rs's step saw (c1020's 3008 -> 3100 endure cut, the enemy lockstep).
+    let (shown, t) = clip.unwrap_or_else(|| {
+        let (c, t) = a.shown_clip(d);
+        let at = if c == a.anim { a.step() } else { t.into() };
+        (c, at)
+    });
     let mut env: HashMap<(i64, Option<i64>), f64> = HashMap::new();
     let mut set = |id: i64, arg: Option<i64>, v: f64| {
         env.insert((id, arg), v);
@@ -288,7 +304,7 @@ fn run_scripts(scripts: Option<NonSendMut<EnemyScripts>>, time: Res<Time>, comba
             let Some(mut chr) = files.script() else { continue };
             // The script's own start (InitState -> W_IdleBattle) before it reads a request.
             let clip = chr.rt.main_clip().map(|c| (c.animation.clone(), c.time));
-            answers(&mut chr.vm.host.borrow_mut(), &a, e, &e.ai_cmd, tf.translation, seen, &combat, clip, &files.anims, None, None, false);
+            answers(&mut chr.vm.host.borrow_mut(), &a, e, &e.ai_cmd, tf.translation, seen, &combat, script_window(clip, &None), &files.anims, None, None, false);
             if let Err(err) = chr.tick(1.0 / 60.0, &mut dur) {
                 warn!("SHINOBI_HKS: {chr_id}'s script: {err}");
                 continue;
@@ -308,6 +324,7 @@ fn run_scripts(scripts: Option<NonSendMut<EnemyScripts>>, time: Res<Time>, comba
         if started && es.request.is_some_and(|n| clip.as_ref().is_some_and(|(c, _)| c.ends_with(&format!("_{:06}", n % 1_000_000)))) {
             es.request = None;
         }
+        let window = script_window(clip.clone(), &es.prev_clip);
         es.prev_clip = clip.clone();
         let damage = a.damage_env.take();
         // The engine starts a throw on the graph itself (W_ThrowAtk<id> / W_ThrowDef<id>).
@@ -315,7 +332,7 @@ fn run_scripts(scripts: Option<NonSendMut<EnemyScripts>>, time: Res<Time>, comba
         if throw_start {
             es.chr.rt.fire_event(&format!("W_{}", a.state));
         }
-        answers(&mut es.chr.vm.host.borrow_mut(), &a, e, &cmd, tf.translation, seen, &combat, clip, &es.files.anims, es.request, damage, throw_start);
+        answers(&mut es.chr.vm.host.borrow_mut(), &a, e, &cmd, tf.translation, seen, &combat, window, &es.files.anims, es.request, damage, throw_start);
         match es.chr.tick(dt, &mut dur) {
             Ok(events) => {
                 if s.trace >= 3 && (damage.is_some() || !events.is_empty()) {
