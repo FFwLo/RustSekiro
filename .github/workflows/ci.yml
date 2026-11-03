@@ -1,0 +1,43 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -I tools/guard.py selftest
+      # Blocked words come from a repository secret (empty on pull requests from forks; the owner's review covers those).
+      - name: guard over the pull request's diff
+        if: github.event_name == 'pull_request'
+        env:
+          GUARD_BLOCKED_WORDS: ${{ secrets.GUARD_BLOCKED_WORDS }}
+        run: python -I tools/guard.py diff origin/${{ github.base_ref }}
+      - name: guard over the pushed commits
+        if: github.event_name == 'push'
+        env:
+          GUARD_BLOCKED_WORDS: ${{ secrets.GUARD_BLOCKED_WORDS }}
+        run: python -I tools/guard.py diff ${{ github.event.before }}
+
+  build-and-test:
+    runs-on: windows-latest
+    env:
+      # .cargo/config.toml builds through sccache; the action installs it and keeps its cache on GitHub.
+      SCCACHE_GHA_ENABLED: "true"
+      CARGO_INCREMENTAL: "0"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: mozilla-actions/sccache-action@v0.0.9
+      - run: cargo build --workspace
+      # No extracted/ here: tests that need the game's data skip themselves.
+      - run: cargo test --workspace

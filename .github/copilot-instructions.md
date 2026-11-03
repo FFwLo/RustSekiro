@@ -1,11 +1,13 @@
 # Instructions for AI agents (Copilot, etc.)
 
 - Goal: Sekiro-accurate combat. Every value must come from the game data (TAE, HKS, params,
-  behaviour graphs) or the exe decompilation. Never hand-guess a value; mark unknowns as "gap".
-- Never commit or paste anything from `extracted/` (game files, decompiled exe). It is not in
-  this repo; work that needs it must be done on the owner's PC.
+  behaviour graphs) or from what the exe's code does. Never hand-guess a value; mark unknowns as "gap".
+- How to contribute (setup, rules, the work board, pull requests): `docs/CONTRIBUTING.md`, then
+  `AGENTS.md` on the branch `agents-work-board`.
+- Never commit or paste anything from `extracted/` (game files, snapshots, emulator cases), hex dumps,
+  disassembly or decompiled code. Write code in your own words; exe function addresses are fine.
+  `python tools/guard.py` (the git hooks in `.githooks`) refuses the rest.
 - Read `docs/PROGRESS.md` and the matching `docs/kb/*.md` before changing a system.
-- Task packets: `docs/HANDOFF_PLAN.md`. Write your result as `docs/reports/<ID>.md`
-  (what changed, where, which data proves it, what is still open).
-- Keep the style of the surrounding code; add a test in `src/sim_tests.rs` for behaviour changes.
-- `cargo check` works without game data; `cargo test` and running the game need `extracted/`.
+- Keep the style of the surrounding code; add a test in `src/sim_tests/` for behaviour changes.
+- `cargo build` and the tests that need no game data work without `extracted/`; the rest need your
+  own extracted data (tests find it through `SHINOBI_ROOT`).
