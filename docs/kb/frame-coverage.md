@@ -46,7 +46,7 @@ lookups) are counted in each branch that uses them. Wolf's trace unless marked.
 | `FUN_140b45440`, `FUN_140b49d30` | Behaviour module before Havok: animation speed, hkb variables (TurnAngle) | 120 / 36 KB / 5 | partly (kb/behaviour-graph.md) |
 | `FUN_140b44980` → `FUN_140b5c730` | Behaviour module after Havok: TAE event dispatch over the frame's time window, root motion | 127 / 32 KB / 5 | TAE events ported by id; this dispatcher's window rules not checked |
 | `FUN_140a03340`, `FUN_140a02a10` ChrIns::vf44, `FUN_140a36cc0` PlayerIns::vf44 | SpEffect list tick and the state-info reactions | 74 / 12 KB / 5; 218 / 37 KB / 21; 253 / 44 KB / 22 | partly (kb/guard-deflect.md, skills.md) |
-| `FUN_140be1b50` | Throw module: grab and deathblow state machine (?) | 11 / 9 KB / 0 | deathblow from ThrowParam; this tick not |
+| `FUN_140be1b50` | Throw module (CSChrThrowModule, bag +0x88) tick: clears the request, empties the candidate list; decides nothing (the search is FUN_140be2a30) | 11 / 9 KB / 0 | range and throwable states checked (kb/guard-deflect.md 2026-11-03); the tick has nothing to port |
 | `FUN_140a2e690` → `FUN_140a315e0`, `FUN_14083e060`, `FUN_140a31f30` | Player stats recompute: attack power per weapon and damage type, defence, equip load | 261 / 61 KB / 11 | damage agent checks amounts |
 | `FUN_1407ded90` → `FUN_1407e67a0` → `FUN_140608990` (enemy, AI on) | Enemy AI frame: manipulator, targeting (SprjTargetingSystem::vf2) | 656 / 112 KB / 44 | AI from the battle Lua; the C++ side partly |
 | `FUN_140b7d950` | Docking module: wall hug, ledge hang (?) | 160 / 45 KB / 2 | parked (kb/docking.md) |

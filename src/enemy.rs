@@ -709,6 +709,7 @@ impl Enemy {
         if matches!(self.mode, Mode::Dead(_) | Mode::Rising(_) | Mode::Held(_)) {
             return;
         }
+        a.posture_held = false;
         let d = combat.data_of(a);
         // A break throw pose (ThrowDef12100 / 13100, player.rs) is the break reaction itself, as is
         // a firecracker's TrunkCollapseBurstN (prosthetic.rs hit_enemy, c9997 ExecDamageBreak).

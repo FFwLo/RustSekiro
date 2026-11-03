@@ -728,40 +728,42 @@ pub fn deathblow_check(combat: &Combat, wolf: Vec3, wolf_fwd: Vec3, aged: bool, 
     // rows): only the aging rows, c1300's alone - 0260 / 0261 "aging break" (ThrowKind cat 18,
     // a222_502000 -> 512000, ThrowDef14000, DiffAng 90-180), 0270 / 0271 "aging behind" (cat 17,
     // unaware, 502100 -> 512100) and 0280 / 0281 "aging break behind" (cat 19, 502200 -> 512200);
-    // no finisher, near, Todome or second-form rows. gap: the exe's map from the throwable state
-    // to the categories is not traced (by the rows' names).
+    // no finisher, near, Todome or second-form rows. The categories pass by the enemy's throwable
+    // state (throwable_state_allows): a broken one (103) the aging-break 18 / 19, not the unaware 17.
+    let state = def_throw_state(combat, ea, enemy);
     if aged {
-        let unaware = enemy.is_unaware();
+        let unaware = enemy.is_unaware() && throwable_state_allows(state, 17);
         let behind = ea.forward().angle_between(wolf_fwd.with_y(0.0).normalize_or_zero()).to_degrees() < 90.0;
-        if !enemy.is_broken() && !(unaware && behind) {
+        if !throwable_state_allows(state, 18) && !(unaware && behind) {
             return None;
         }
         let (start_sfx, suffix) = if unaware && behind { (270, 271) } else if behind { (280, 281) } else { (260, 261) };
         let main = combat.throw(foe.throw_row(suffix)).filter(|t| d.anim(&t.atk_anim).is_some())?;
         let start = combat.throw(foe.throw_row(start_sfx)).filter(|st| d.anim(&st.atk_anim).is_some());
         let reach_row = if start.is_some() { foe.throw_row(start_sfx) } else { foe.throw_row(suffix) };
-        let in_reach = at.distance(wolf) <= start.as_ref().map_or(main.dist, |st| st.dist) && throw_height_ok(combat, reach_row, wolf, at) && throw_facing_ok(combat, reach_row, wolf, wolf_fwd, at, ea.forward());
+        let in_reach = throw_range_ok(combat, reach_row, wolf, wolf_fwd, at, ea.forward());
         return Some(DeathblowCheck { behind, suffix, main, start, in_reach });
     }
     let usable = |sfx: i64| combat.throw(foe.throw_row(sfx)).is_some_and(|t| d.anim(&t.atk_anim).is_some());
-    let window = combat.data_of(ea).finisher_window(&ea.anim, ea.t);
     // The Todome (トドメ始動 / 本体, ThrowParam 0180 / 0181, +500 in the second form: Wolf
     // a2xx_501700 -> 511700, the boss ThrowDef13700) is taken from the boss's kneel, its Event20200
     // with the 105 window (data.rs finisher_window), not from the last mark: in every recording
     // (rec_2026101x_*_boss_*) the last mark is a usual deathblow, the map script then sends the
     // boss to 20200 and Wolf to his Event7102xx, and 0180 / 0181 follow 0.8-1.8 s later (Isshin:
     // 15400680 / 681 at 912.2 s). The start rows' Dist 20 and DiffAng 0-180 reach him anywhere
-    // near. gap: the exe's gate for the Todome is not traced (by the window and the recordings).
-    if window == Some(105) {
+    // near. The window's state 105 passes the Todome's category 16 (FUN_140be0a40).
+    if throwable_state_allows(state, 16) {
         let hu = if ea.anim_group == 1 && usable(681) { 500 } else { 0 };
         if usable(181 + hu) {
             let main = combat.throw(foe.throw_row(181 + hu))?;
             let start = combat.throw(foe.throw_row(180 + hu)).filter(|st| d.anim(&st.atk_anim).is_some());
             let reach = start.as_ref().map_or(main.dist, |st| st.dist);
-            return Some(DeathblowCheck { behind: false, suffix: 181 + hu, main, start, in_reach: at.distance(wolf) <= reach });
+            return Some(DeathblowCheck { behind: false, suffix: 181 + hu, main, start, in_reach: at.distance(wolf) < reach });
         }
     }
-    let finisher = window.is_some().then(|| combat.finisher(&foe)).flatten();
+    // The "enemy special state A" rows (throwKind 250000, category 5) pass throwable state 104
+    // only; 105 passes the Todome's category 16 and not 5 (FUN_140be0a40 run on the snapshot).
+    let finisher = throwable_state_allows(state, 5).then(|| combat.finisher(&foe)).flatten();
     if let Some((id, main)) = finisher {
         let judge = (main.judge_dmy > 0).then(|| dmy(main.judge_dmy)).flatten();
         let base = judge.unwrap_or(at);
@@ -770,11 +772,14 @@ pub fn deathblow_check(combat: &Combat, wolf: Vec3, wolf_fwd: Vec3, aged: bool, 
             return None;
         }
         let gap = if judge.is_some() { (base - wolf).with_y(0.0).length() } else { base.distance(wolf) };
-        let in_reach = gap <= main.dist;
+        let in_reach = gap < main.dist;
         return Some(DeathblowCheck { behind: false, suffix: id - foe.throw_row(0), main, start: None, in_reach });
     }
-    let unaware = enemy.is_unaware();
-    if !enemy.is_broken() && !unaware {
+    // An enemy's own state 101 passes the unaware-behind category 0 (背後始動), the break state
+    // 103 the break category 4 and not 0: a broken enemy that never noticed Wolf takes the break
+    // rows (as the plunge's `stealth`), and a finisher window (104 / 105) none of the two.
+    let unaware = enemy.is_unaware() && throwable_state_allows(state, 0);
+    if !throwable_state_allows(state, 4) && !unaware {
         return None;
     }
     // The start rows' DiffAngMin / Max are the facings' yaw difference (FUN_140be0270, see
@@ -784,8 +789,7 @@ pub fn deathblow_check(combat: &Combat, wolf: Vec3, wolf_fwd: Vec3, aged: bool, 
     if unaware && !behind {
         return None;
     }
-    let dist = at.distance(wolf);
-    let near = combat.throw(foe.throw_row(5)).filter(|st| !behind && dist <= st.dist && d.anim(&st.atk_anim).is_some() && throw_facing_ok(combat, foe.throw_row(5), wolf, wolf_fwd, at, ea.forward()));
+    let near = combat.throw(foe.throw_row(5)).filter(|st| !behind && d.anim(&st.atk_anim).is_some() && throw_range_ok(combat, foe.throw_row(5), wolf, wolf_fwd, at, ea.forward()));
     let (start_sfx, suffix) = if unaware {
         (20, 21)
     } else if behind {
@@ -823,7 +827,7 @@ pub fn deathblow_check(combat: &Combat, wolf: Vec3, wolf_fwd: Vec3, aged: bool, 
     // diffAngMyToDef 35 on the General's rows - Wolf must face the enemy; round 41, before any
     // facing took it).
     let reach_row = if start.is_some() { foe.throw_row(start_sfx) } else { foe.throw_row(suffix) };
-    let in_reach = dist <= start.as_ref().map_or(main.dist, |st| st.dist) && throw_height_ok(combat, reach_row, wolf, at) && throw_facing_ok(combat, reach_row, wolf, wolf_fwd, at, ea.forward());
+    let in_reach = throw_range_ok(combat, reach_row, wolf, wolf_fwd, at, ea.forward());
     Some(DeathblowCheck { behind, suffix, main, start, in_reach })
 }
 
@@ -1159,6 +1163,46 @@ fn death_chain_step(a: &mut Actor, d: &CharData) {
     }
 }
 
+/// Which ThrowKindParam categories (throwKindCategory) a defender's throwable state lets in:
+/// FUN_140be0a40, run on the snapshot for states 0-127 x categories 0-21 / 100 / 101 (the 52 pairs
+/// it passes; sim_tests/emu_throw.rs). The kind test FUN_140be3810 reads the state from the
+/// defender's throw module (chr +0x1ff8 bag +0x88): +0x7a, written each frame by TAE 932 (unk0),
+/// else +0x7b, its own (101 on every enemy of the snapshot, Wolf 1). 101 = an enemy as it
+/// stands (behind 0, crouching 1, ...), 103 / 108 the break anims (TrunkCollapse* 0-75, 108 the
+/// Large one), 104 / 105 the finisher windows (data.rs finisher_window), 1 / 2 / 4 Wolf's.
+pub(crate) fn throwable_state_allows(state: u8, category: i64) -> bool {
+    let cats: &[i64] = match state {
+        1 | 2 => &[100],
+        4 => &[101],
+        101 => &[0, 1, 2, 3, 6, 7, 9, 10, 11, 12, 17],
+        102 => &[2, 3, 7, 12],
+        103 => &[4, 7, 12, 13, 14, 15, 18, 19, 20],
+        104 => &[2, 3, 5, 7, 12],
+        105 => &[2, 3, 7, 12, 16],
+        106 | 109 | 110 => &[12],
+        107 => &[8, 12],
+        108 => &[4, 7, 12, 13, 14, 15, 18, 19],
+        111 => &[12, 21],
+        _ => &[],
+    };
+    cats.contains(&category)
+}
+
+/// An enemy's throwable state (throwable_state_allows) from what Sv1 tracks: the TAE 932 finisher
+/// windows (104 / 105, data.rs finisher_window), the break window (Mode::Broken: its end is the
+/// collapse SpEffect 220420's, which is TAE 932's 103 span on 868 of the 1,238 enemy anims that
+/// carry a 103 / 108), else its own 101. gap: 932's 103 on anims Sv1 does not open as a break
+/// (DeathDefault0 / 1 0-45 f, ThrowDef12120 / 13120 / 13900 / 14300, LandTrunk) and the states
+/// 102 / 106-111 are not read; the death anims' 103 may be cut by FUN_140be3810's other tests
+/// (vfunc 0x550, the throw node's bits), not run on a dying chr.
+pub(crate) fn def_throw_state(combat: &Combat, ea: &Actor, enemy: &Enemy) -> u8 {
+    match combat.data_of(ea).finisher_window(&ea.anim, ea.t) {
+        Some(w) => w as u8,
+        None if enemy.is_broken() => 103,
+        None => 101,
+    }
+}
+
 /// A ThrowParam row's facing test (the exe's range check FUN_140be0270, round 41 trace; the
 /// `_start` columns are read only by a debug drawer and are 0 on every row):
 /// - diffAngMyToDef: the angle between the thrower's forward and the 3D direction to the
@@ -1177,17 +1221,26 @@ pub(crate) fn throw_facing_ok(combat: &Combat, row_id: i64, thrower: Vec3, throw
     yaw.is_nan() || (f("DiffAngMin", 0.0)..=f("DiffAngMax", 180.0)).contains(&yaw)
 }
 
-/// A ThrowParam row's height window: the defender at most upperYRange above / lowerYRange below
-/// the thrower. A row with neither set has no window.
+/// A ThrowParam row's height window (FUN_140be0270): the defender less than upperYRange above
+/// and less than lowerYRange below the thrower, both strict (a row with neither set takes no one;
+/// only the empty row 0 is such).
 pub(crate) fn throw_height_ok(combat: &Combat, row_id: i64, thrower: Vec3, defender: Vec3) -> bool {
     let row = combat.param("ThrowParam", row_id);
     let f = |k: &str| row[k].as_f64().unwrap_or(0.0) as f32;
-    let (up, down) = (f("upperYRange"), f("lowerYRange"));
-    if up <= 0.0 && down <= 0.0 {
-        return true;
-    }
     let dy = defender.y - thrower.y;
-    dy <= up && dy >= -down
+    dy < f("upperYRange") && dy > -f("lowerYRange")
+}
+
+/// A ThrowParam row's whole range test, FUN_140be0270 (run on the snapshot, Wolf -> the General,
+/// 3,000 placements: sim_tests/emu_throw.rs): the height window (throw_height_ok), then within
+/// Dist in 3D (strict, squared as the exe), then the facings (throw_facing_ok). Positions are
+/// the chrs' roots (FUN_140be3290 takes judgeRangeBasePosDmyId1 / 2 instead when set: no row of
+/// Wolf's start throws sets them). gap: the row's other tests in FUN_140be3a90 - the
+/// additionalConditionSpecialEffect pair, the fall orbit (FUN_140be3ba0, the plunge's own
+/// fall_reaches) and the sight cast between the two (FUN_140be3da0) - are not ported here.
+pub(crate) fn throw_range_ok(combat: &Combat, row_id: i64, thrower: Vec3, thrower_fwd: Vec3, defender: Vec3, defender_fwd: Vec3) -> bool {
+    let dist = combat.param("ThrowParam", row_id)["Dist"].as_f64().unwrap_or(0.0) as f32;
+    throw_height_ok(combat, row_id, thrower, defender) && thrower.distance_squared(defender) < dist * dist && throw_facing_ok(combat, row_id, thrower, thrower_fwd, defender, defender_fwd)
 }
 
 /// The main deathblow throw: Wolf's ThrowParam anim, the enemy's ThrowDef(Death) anim, and the
@@ -1794,7 +1847,7 @@ fn wire_throw(
     let row = combat.param("ThrowParam", row_id);
     let f = |k: &str| row[k].as_f64().unwrap_or(0.0) as f32;
     let dy = etf.translation.y - pos.y;
-    if etf.translation.distance(pos) > th.dist || dy > f("upperYRange") || dy < -f("lowerYRange") {
+    if etf.translation.distance(pos) >= th.dist || dy >= f("upperYRange") || dy <= -f("lowerYRange") {
         return None;
     }
     let (range, height, time_limit) = (f("normalFallOrbitCheck_range"), f("normalFallOrbitCheck_heightLimit"), f("normalFallOrbitCheck_timeLimit") / 1000.0);
@@ -1863,11 +1916,11 @@ fn start_plunge(
         let f = |k: &str| row[k].as_f64().unwrap_or(0.0) as f32;
         let (upper, lower) = (f("upperYRange"), f("lowerYRange"));
         let (range, height, time_limit) = (f("normalFallOrbitCheck_range"), f("normalFallOrbitCheck_heightLimit"), f("normalFallOrbitCheck_timeLimit") / 1000.0);
-        if !(enemy.is_broken() || stealth) || etf.translation.distance(pos) > th.dist {
+        if !(enemy.is_broken() || stealth) || etf.translation.distance(pos) >= th.dist {
             continue;
         }
         let dy = etf.translation.y - pos.y;
-        if dy > upper || dy < -lower {
+        if dy >= upper || dy <= -lower {
             continue;
         }
         let hit = fall_reaches(pos, a.vel_y, a.air_base, ft.gravity(), etf.translation, range, height, time_limit);
