@@ -160,6 +160,9 @@ pub struct Actor {
     pub since_posture_damage: f32,
     /// Fractional posture recovery carried to the next frame (exe: ChrDataModule+0x15c).
     pub regen_carry: f32,
+    /// The posture bounds of the TAE 960 StaminaControlParam type this frame (`stamina_limits`,
+    /// as posture damage): None without a type. Set by regen_posture, kept by add_posture.
+    pub posture_limits: Option<(f32, f32)>,
     /// The clip's TAE SpEffects of the last frame and the ones that outlive their TAE window
     /// (`run_sp_effect_chains`): (SpEffect id, seconds left).
     pub tae_prev: Vec<i64>,
@@ -339,6 +342,7 @@ impl Actor {
             stamina_ctrl_row,
             since_posture_damage: 99.0,
             regen_carry: 0.0,
+            posture_limits: None,
             tae_prev: Vec::new(),
             sp_chained: Vec::new(),
             hit_stop: HitStop::default(),
@@ -542,8 +546,19 @@ impl Actor {
 
     pub fn add_posture(&mut self, amount: f32) {
         if amount > 0.0 && !self.no_posture {
-            self.posture = (self.posture + amount).min(self.posture_max + self.posture_debt);
+            self.posture = self.bound_posture(self.posture + amount);
             self.since_posture_damage = 0.0;
+        }
+    }
+
+    /// The posture setter's bounds (exe FUN_140bd6710 -> FUN_140bd4e20, on every change: hits and
+    /// regen): from full to NpcParam maxDebtStamina below empty, then inside the StaminaControlParam
+    /// type's limits when TAE 960 sets one (`posture_limits`).
+    pub fn bound_posture(&self, v: f32) -> f32 {
+        let v = v.clamp(0.0, self.posture_max + self.posture_debt);
+        match self.posture_limits {
+            Some((lo, hi)) => v.clamp(lo, hi),
+            None => v,
         }
     }
 
@@ -924,14 +939,22 @@ pub(crate) fn run_sp_effect_chains(data: &crate::data::CharData, a: &mut Actor, 
     a.tae_prev = now;
 }
 
-/// Posture recovery, as in the exe's ChrIns update (FUN_140a04850):
-///   points/s = baseRecover x (ratio(type) / 100 if a StaminaControlParam type is set) x level multiplier
-/// added in whole points each frame with the fraction carried over.
-/// baseRecover: NpcParam.staminaRecoverBaseVel (enemy) or CalcCorrectGraph 504 (player).
+/// Posture recovery, as in the exe's ChrIns update (FUN_140a04850, <decomp ref>; checked
+/// frame by frame in tools/emu-cases `damage_regen`, test posture_regen_matches_the_exe):
+///   points/s = (int)(speed x (base x TAE 225 % / 100 x level multiplier x ratio(type) / 100))
+///   (`regen_frame`), then this frame's whole points of carry + points/s x dt go in and the
+///   fraction is carried (ChrDataModule +0x15c), and the posture setter bounds the result
+///   (`Actor::bound_posture`; the TAE 960 type's StaminaControlParam limits, `stamina_limits`).
+/// base: vfunc 0x218 = NpcParam staminaRecoverBaseVel (FUN_140a13a70) or CalcCorrectGraph 504
+/// (player, FUN_140a2a5d0), plus the worn SpEffects' staminaRecoverChangeSpeed (FUN_140bfbe40);
+/// speed: their staminaRecoverSpeedRate product (FUN_140bfe360).
 /// The TAE event 960 type is -1 ("none", 100%) when no event is active.
 /// The level multiplier chr.f[0x10d0] is Dark Souls' equip-load class (FUN_14084d0c0: weight /
 /// (40 + stat) > 0.7 -> 0.8, > 1.0 or SpEffect stateInfo 102 -> 0.7, else 1.0). Every Sekiro
-/// weapon/protector weighs 0, so it is 1.0 here.
+/// weapon/protector weighs 0, so it is 1.0 here (1.0 on all 90 characters of the snapshot).
+/// The exe skips the whole step while action flag (chr+0x50)+0x50 +0x88 bit 21 is set (gap: its
+/// setter is not identified); it runs at full posture too (the carry keeps moving) and while
+/// broken.
 pub fn regen_posture(time: Res<Time>, combat: Res<Combat>, config: Res<GameConfig>, mut q: Query<&mut Actor>) {
     let real_dt = time.delta_secs();
     let graph = combat.param("CalcCorrectGraph", 51).clone();
@@ -953,7 +976,8 @@ pub fn regen_posture(time: Res<Time>, combat: Res<Combat>, config: Res<GameConfi
                 a.super_armor.tick(dt, reacting, instant, bonus);
             }
         }
-        if a.posture <= 0.0 || a.since_posture_damage < config.posture.regen_delay {
+        // regen_delay > 0 is an experiment (the exe has no delay); it holds the carry at 0.
+        if a.since_posture_damage < config.posture.regen_delay {
             a.regen_carry = 0.0;
             continue;
         }
@@ -970,7 +994,8 @@ pub fn regen_posture(time: Res<Time>, combat: Res<Combat>, config: Res<GameConfi
                 warn!("StaminaControlParam {} not exported: posture regen at 100 %", a.stamina_ctrl_row);
             }
         }
-        let ratio = if ty < 0 { 1.0 } else { row[format!("staminaRecoverRatio_forType{ty:03}")].as_f64().unwrap_or(100.0) as f32 / 100.0 };
+        // FUN_1410cf5c0: the type's staminaRecoverRatio, 100 for a missing row.
+        let ratio = (ty >= 0).then(|| row[format!("staminaRecoverRatio_forType{ty:03}")].as_f64().unwrap_or(100.0) as f32);
         let hp_factor = if config.posture.hp_scales_regen { calc_correct(&graph, a.hp / a.hp_max) } else { 1.0 };
         // Resident HP-conditional SpEffects (NpcParam spEffectID slots) and the clip's TAE ones
         // multiply regen through staminaRecoverSpeedRate (the exe multiplies all active ones,
@@ -995,20 +1020,52 @@ pub fn regen_posture(time: Res<Time>, combat: Res<Combat>, config: Res<GameConfi
         let worn: Vec<&crate::data::SpEffect> = ids.iter().filter_map(|id| data.sp_effects.get(&id.to_string())).collect();
         let resident: f32 = worn.iter().map(|s| s.stamina_recover_speed_rate).product();
         let change: f32 = worn.iter().map(|s| s.stamina_recover_change_speed).sum();
-        // TAE 225 SetSPRegenRatePercent (c1020 guard / deflect 3100-3102: 33 %, fire reactions 0 %).
+        // TAE 225 SetSPRegenRatePercent (c1020 guard / deflect 3100-3102: 33 %, fire reactions 0 %),
+        // the exe's byte (chr+0x50)+0x50 +0x14.
         let tae_pct = if a.anim.is_empty() {
-            1.0
+            100
         } else {
-            data.events_at(&a.anim, a.t)
-                .find(|e| e.kind == 225)
-                .and_then(|e| e.arg_i64("RegenRatePercent"))
-                .map_or(1.0, |p| p as f32 / 100.0)
+            data.events_at(&a.anim, a.t).find(|e| e.kind == 225).and_then(|e| e.arg_i64("RegenRatePercent")).unwrap_or(100)
         };
-        let acc = (a.posture_regen + change).max(0.0) * ratio * hp_factor * resident * tae_pct * dt + a.regen_carry;
-        let whole = acc.floor();
-        a.regen_carry = acc - whole;
-        a.posture = (a.posture - whole).max(0.0);
+        a.posture_limits = stamina_limits(row, ty, a.posture_max as i32).map(|(lo, hi)| (a.posture_max - hi as f32, a.posture_max - lo as f32));
+        let (whole, carry) = regen_frame(a.posture_regen + change, resident * hp_factor, tae_pct as f32, ratio, dt, a.regen_carry);
+        a.regen_carry = carry;
+        a.posture = a.bound_posture(a.posture - whole as f32);
     }
+}
+
+/// One frame of FUN_140a04850's recovery: (whole points, new carry). `base` (vfunc 0x218) and
+/// `speed` (FUN_140bfe360) as in `regen_posture`; `tae_pct` the TAE 225 percent (100 without
+/// one); `ratio` the StaminaControlParam type's staminaRecoverRatio (None without a type).
+/// The points per second are cut to a whole number first (cvttss2si, ChrDataModule +0x230:
+/// 247 for 20 x 12.3975), then carry + points/s x dt is cut again (+0x22c), the rest carried.
+pub fn regen_frame(base: f32, speed: f32, tae_pct: f32, ratio: Option<f32>, dt: f32, carry: f32) -> (i32, f32) {
+    let mut pct = tae_pct * 0.01 * EQUIP_LOAD_RATE;
+    if let Some(r) = ratio {
+        pct *= r * 0.01;
+    }
+    let per_sec = (speed * (base * pct)) as i32;
+    let acc = carry + per_sec as f32 * dt;
+    let whole = acc as i32;
+    (whole, acc - whole as f32)
+}
+
+/// chr.f[0x10d0], the equip-load class (see `regen_posture`): 1.0 for every character.
+const EQUIP_LOAD_RATE: f32 = 1.0;
+
+/// The posture (stamina) limits of a StaminaControlParam type (exe FUN_140bd4e20, <decomp ref>):
+/// staminaMaxRatio / staminaMinRatio (FUN_1410cf390 row +4 / FUN_1410cf4b0 +6) percent of `max`,
+/// cut to whole points; the setter keeps the remaining posture inside them while TAE 960 sets the
+/// type. Row 1000000-1000200: type 5 (the break anims, a000_008300 0-2.5 s) holds it at 0, type 6
+/// (their end) at 30 %, type 7 (a000_012000's end) full; row 0 (Wolf) type 5 holds him full.
+/// Returns (lowest, highest) remaining posture, None for no type.
+pub fn stamina_limits(row: &serde_json::Value, ty: i64, max: i32) -> Option<(i32, i32)> {
+    if !(0..16).contains(&ty) || row.is_null() {
+        return None;
+    }
+    let pct = |k: &str| row[format!("{k}_forType{ty:03}")].as_i64().unwrap_or(0);
+    let (a, b) = ((pct("staminaMaxRatio") * max as i64 / 100) as i32, (pct("staminaMinRatio") * max as i64 / 100) as i32);
+    Some((a.min(b), a.max(b)))
 }
 
 pub struct ActorPlugin;

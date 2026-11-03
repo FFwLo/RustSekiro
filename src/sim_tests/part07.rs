@@ -811,7 +811,9 @@ pub(crate) fn a_shuriken_on_the_armoured_servant_is_cut_like_a_slash() {
     let (hp0, p0) = shuriken_on_c1180(11807100);
     let (hp1, p1) = shuriken_on_c1180(11807101);
     assert!(hp0 > 0.0 && p0 > 0.0, "{hp0} {p0}");
-    assert!((hp1 / hp0 - 0.35).abs() < 0.03 && (p1 / p0 - 0.5).abs() < 0.05, "plain {hp0} / {p0}, armoured {hp1} / {p1}");
+    // Posture lands in whole points (FUN_1408439a0 / FUN_140844070 (int), kb/damage.md
+    // 2026-11-03): the shuriken's 5 on the plain twin is 2 (2.5 cut) on the armour.
+    assert!((hp1 / hp0 - 0.35).abs() < 0.03 && p1 == (p0 * 0.5).floor(), "plain {hp0} / {p0}, armoured {hp1} / {p1}");
 }
 
 /// A fight reset (R, the menu, or the one after Wolf's death) ends his poison: the Statuses
@@ -1491,7 +1493,7 @@ pub(crate) fn the_reset_clears_the_last_lifes_death_pick() {
 }
 
 /// Round 58: a hit stop in the air freezes the clip but not the fall - the exe runs the fall
-/// module and Havok on the raw dt (1407e.c:2650), as player.rs's gravity already did.
+/// module and Havok on the raw dt (<decomp ref>), as player.rs's gravity already did.
 #[test]
 pub(crate) fn a_hit_stop_in_the_air_does_not_freeze_the_fall() {
     let mut app = app();
