@@ -508,7 +508,7 @@ SYSTEMS = [
      'state': 'Params + decompile; super armour hit, the hit-stop table, HP and posture amounts, posture regen and the guard/deflect outcome checked in the emulator (2026-11-03).'},
     {'name': 'Camera', 'files': ['camera.rs'], 'kb': ['camera.md'], 'tests': r'camera|lock|pitch',
      'emu': ['camera', 'lockcam', 'taecam', 'camwall'], 'pilot': ['3', '3b'], 'cats': {'camera'},
-     'state': 'Follow camera checked on 1,626 emulator frames, walls and ground on 2,225 (2026-11-03); lock-on on 1,485; TAE camera under work.'},
+     'state': 'Follow camera checked on 1,626 emulator frames, walls and ground on 2,225 (2026-11-03); lock-on on 1,485, TAE camera events 151/153/155/156 on 2,160.'},
     {'name': 'Enemy AI (C++ side)', 'files': ['enemy.rs', 'stealth.rs', 'duel.rs'], 'kb': ['enemy.md', 'frame-coverage.md'],
      'tests': r'enemy|enemies|patrol|respawn|ally|allys|msb|rival|line_up|lineup|group|drill',
      'emu': ['trace_enemy_frame'], 'pilot': [], 'cats': {'enemies', 'bosses'},

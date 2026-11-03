@@ -651,7 +651,7 @@ pub(crate) fn butterflys_second_body_alone_reaches_her_defeat() {
 /// lightning reversals) and Isshin the Sword Saint (54000000, the spear draw and Todome message).
 #[test]
 pub(crate) fn every_boss_row_reaches_its_defeat() {
-    let txt = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/extracted/enemies/boss_scripts.json")).unwrap();
+    let txt = std::fs::read_to_string(crate::paths::extracted().join("enemies/boss_scripts.json")).unwrap();
     let v: serde_json::Value = serde_json::from_str(&txt).unwrap();
     let rows: Vec<(String, i64)> = v.as_object().unwrap().iter().map(|(k, r)| (r["chars"][r["boss"].as_i64().unwrap().to_string()]["chr"].as_str().unwrap_or("").to_string(), k.parse().unwrap())).collect();
     let mut failed = Vec::new();
