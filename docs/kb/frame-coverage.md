@@ -181,7 +181,9 @@ So every action enters about 1,000 functions (200 KB) the idle frames do not, an
   `FUN_140b68ff0` -> `FUN_140b6f690` -> `FUN_140b6c880` defender) was never entered. The attack
   record is issued (`FUN_1409a1290`) but the collision test that would queue the hit runs in a
   task outside the chr frames and these four (the Havok physics world step or a hit manager, not
-  found yet), or the General's dummy polys stay at his snapshot pose.
+  found yet), or the General's dummy polys stay at his snapshot pose. (2026-11-03 hits: found, the
+  hit manager step FUN_1409a0dc0 in MoveMapStep's task FUN_140a746f0; hits land with it, kb/damage.md
+  "Landed hits".)
 
 ### Next wave: the biggest uncited gameplay branches
 

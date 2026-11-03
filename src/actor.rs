@@ -325,6 +325,12 @@ pub struct Actor {
     pub kb_dec_total: f32,
     /// Travel left for the current knockback (`limit_knockback`; INFINITY = none).
     pub kb_left: f32,
+    /// Frames before a started knockback moves the body (`knockback` sets 1). The exe's defender
+    /// stands still on the first frame of its reaction and moves from the second (tools/emu-cases
+    /// `hits`: Wolf hit, blocked or deflecting, the General hit or guarding: hit applied in frame
+    /// H's hit step, reaction clip from H + 1, knockback from H + 2; the attacker's recoil
+    /// likewise starts a frame late, +0x45).
+    pub kb_wait: u8,
     /// Procedural horizontal velocity for locomotion and jumps (world space).
     pub move_vel: Vec3,
     /// NPC anim set (the "Anime ID offset" SpEffects 200030-200034, stateInfo 270-274: a000-a400,
@@ -352,6 +358,7 @@ impl Actor {
         self.kb_dec = dec;
         self.kb_dec_total = dec;
         self.kb_left = f32::INFINITY;
+        self.kb_wait = 1;
     }
 
     /// Caps the current knockback's travel (a pull stops at the attacker's capsule).
@@ -440,6 +447,7 @@ impl Actor {
             kb_dec: 0.0,
             kb_dec_total: 0.0,
             kb_left: f32::INFINITY,
+            kb_wait: 0,
             move_vel: Vec3::ZERO,
         }
     }
@@ -1042,7 +1050,9 @@ pub fn advance(time: Res<Time>, combat: Res<Combat>, mut q: Query<(&mut Actor, &
         // `covered`): the rest of the full-speed hold, then the linear fall over the decay, whose
         // area from r0 to r1 seconds left is v / (2 dec) * (r0^2 - r1^2). Whole steps at the
         // start speed overshot the asked distance by 3-76 % (2026-10-12 bug hunt).
-        if a.kb_cont > 0.0 || a.kb_dec > 0.0 {
+        if a.kb_wait > 0 {
+            a.kb_wait -= 1;
+        } else if a.kb_cont > 0.0 || a.kb_dec > 0.0 {
             let hold = dt.min(a.kb_cont.max(0.0));
             a.kb_cont -= hold;
             let r0 = a.kb_dec.max(0.0);

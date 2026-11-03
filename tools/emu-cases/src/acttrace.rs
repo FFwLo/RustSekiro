@@ -22,9 +22,9 @@ use serde_json::json;
 
 use super::{proxy, turn, uc, Emu};
 
-const WORLD_CHR_MAN: u64 = 0x1_43d7_a1e0;
+pub(super) const WORLD_CHR_MAN: u64 = 0x1_43d7_a1e0;
 /// One character's frame (rcx WorldChrMan, xmm1 dt, r8 chr).
-const CHR_FRAME: u64 = 0x1_40a4_b570;
+pub(super) const CHR_FRAME: u64 = 0x1_40a4_b570;
 /// ACTION_ARM -> pad input id (the map at 0x143d852a8).
 const ARM_INPUT: u64 = 0x1_40b2_58d0;
 /// TAE update of the selected clip (rcx anim id, ...), one per clip per update.
@@ -32,7 +32,7 @@ const TAE_UPDATE: u64 = 0x1_40b5_c920;
 const ENEMY_VT: u64 = 0x1_42a2_7f28;
 /// The menu state flags (FUN_1408c58e0).
 pub(super) const MENU_STATE: u64 = 0x1_408c_58e0;
-const DT: f32 = 1.0 / 60.0;
+pub(super) const DT: f32 = 1.0 / 60.0;
 
 static ANIMS: Mutex<Vec<i64>> = Mutex::new(Vec::new());
 
@@ -234,7 +234,7 @@ const FORCED_ATTACK: i32 = 3000;
 pub(super) const AI_REQUEST_COPY: u64 = 0x1_407e_6570;
 
 /// (AI object, attack request) written at AI_REQUEST_COPY's entry; request < 0 leaves the AI's own.
-static FORCE: Mutex<(u64, i32)> = Mutex::new((0, -1));
+pub(super) static FORCE: Mutex<(u64, i32)> = Mutex::new((0, -1));
 
 pub(super) extern "C" fn on_request_copy(uc: uc::Engine, _addr: u64, _size: u32, _data: *mut c_void) {
     let (ai, v) = *FORCE.lock().unwrap();
@@ -264,7 +264,7 @@ pub(super) fn every_frame(emu: &mut Emu, chr: u64) {
     emu.raw_write(chr + 0x110, &0u32.to_le_bytes());
 }
 
-fn pos(emu: &mut Emu, chr: u64) -> [f32; 3] {
+pub(super) fn pos(emu: &mut Emu, chr: u64) -> [f32; 3] {
     let bag = emu.peek_u64(chr + 0x1ff8);
     let phys = emu.peek_u64(bag + 0x68);
     [0, 4, 8].map(|o| f32::from_le_bytes(emu.peek(phys + 0x80 + o)))
@@ -328,8 +328,8 @@ fn general_act(new_emu: &dyn Fn() -> Emu, out: &Path, max: usize, after: usize, 
 
 /// WorldChrManImp's world tasks (rcx WorldChrMan, rdx a task data block with dt at +8): pre-update,
 /// the second pre-update, post-update, group 0x51 (frame-coverage.md).
-const TASKS_PRE: [u64; 2] = [0x1_40a5_09f0, 0x1_40a4_db20];
-const TASKS_POST: [u64; 2] = [0x1_40a5_0880, 0x1_40a4_88b0];
+pub(super) const TASKS_PRE: [u64; 2] = [0x1_40a5_09f0, 0x1_40a4_db20];
+pub(super) const TASKS_POST: [u64; 2] = [0x1_40a5_0880, 0x1_40a4_88b0];
 
 /// Wolf and the General (AI on, FORCED_ATTACK requested at the start) in whole world frames: the pre-update tasks, the General's chr
 /// frame, Wolf's, the post-update tasks, so the General's attack can reach Wolf. Wolf's pad:
