@@ -97,6 +97,8 @@ Tests: `cargo test --release`.
 | `src/fxr.rs`, `src/sound.rs`, `src/hud.rs` | Effects, sound, HUD |
 | `src/map.rs`, `src/camera.rs` | Maps, camera |
 | `tools/sekiro-extract/` | Reads the game's files into `extracted/` |
+| `tools/emu-cases/` | Runs the game's own functions in an emulator to check a rule against the exe |
+| `crates/` | File formats, HKS scripts, sim and game crates copied from sekiro-rs ([crates/README.md](crates/README.md)) |
 | `docs/` | Notes on every mechanic and where it was found |
 
 ## Contributing
@@ -110,4 +112,5 @@ pull request from your fork. All of it is in [docs/CONTRIBUTING.md](docs/CONTRIB
 ## License
 
 Code under the [MIT License](LICENSE.md). It covers this code only, not the
-game or anything generated from it. Please keep `extracted/` out of forks.
+game or anything generated from it. Please keep `extracted/` out of forks. The crates in `crates/`
+keep sekiro-rs's MIT / Apache-2.0 licence (`crates/CREDITS-sekiro-rs.md`).
