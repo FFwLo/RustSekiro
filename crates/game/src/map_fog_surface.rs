@@ -122,41 +122,6 @@ impl Material for FogMaterial {
     }
 }
 
-/// Preserve authored masks, scrolling and vertex coverage in the offscreen depth pass.
-/// Soft intersection needs the scene depth, unavailable on the isolated diagnostic target.
-pub(super) fn sweep_material(world: &mut World, entity: Entity) -> Option<Handle<FogMaterial>> {
-    let handle = world.get::<MeshMaterial3d<FogMaterial>>(entity)?.0.clone();
-    let mut material = world
-        .resource::<Assets<FogMaterial>>()
-        .get(&handle)?
-        .clone();
-    material.diagnostic = true;
-    Some(world.resource_mut::<Assets<FogMaterial>>().add(material))
-}
-
-pub(super) fn sweep_pending(world: &World, entity: Entity) -> bool {
-    let Some(handle) = world.get::<MeshMaterial3d<FogMaterial>>(entity) else {
-        return false;
-    };
-    let Some(material) = world.resource::<Assets<FogMaterial>>().get(&handle.0) else {
-        return true;
-    };
-    let assets = world.resource::<AssetServer>();
-    [
-        &material.mask,
-        &material.flow,
-        &material.ground,
-        &material.height,
-    ]
-    .iter()
-    .any(|h| {
-        matches!(
-            assets.get_load_state(h.id()),
-            Some(bevy::asset::LoadState::Loading | bevy::asset::LoadState::NotLoaded)
-        )
-    })
-}
-
 #[derive(Resource)]
 struct Settings {
     prefix: String,

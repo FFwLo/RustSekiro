@@ -40,15 +40,6 @@ impl PipelineWarmup {
         self.ready.load(Ordering::Acquire)
     }
 
-    /// How far through the warmup, from 0 to 1, for the loading bar: a fifth for queueing the
-    /// layout variants, a fifth for the resident entities and the rest for the compiles.
-    pub(crate) fn progress(&self) -> f32 {
-        if self.ready() {
-            1.0
-        } else {
-            f32::from_bits(self.progress.load(Ordering::Acquire))
-        }
-    }
 }
 
 pub(crate) fn install<M: Material>(app: &mut App, args: &[String]) {
@@ -325,7 +316,6 @@ fn stage_progress(
     queued: usize,
     waiting: usize,
 ) -> f32 {
-    use crate::play::fraction;
     let queueing = fraction(variants.saturating_sub(left), variants);
     let compiled = if left == 0 {
         fraction(queued.saturating_sub(waiting), queued)
@@ -407,6 +397,16 @@ fn pass_key(
         key |= MeshPipelineKey::HAS_PREVIOUS_SKIN;
     }
     key
+}
+
+/// `done` of `total` as a fraction from 0 to 1, for the loading bar; 1 when there is nothing to
+/// do.
+pub(crate) fn fraction(done: usize, total: usize) -> f32 {
+    if total == 0 {
+        1.0
+    } else {
+        done.min(total) as f32 / total as f32
+    }
 }
 
 #[cfg(test)]

@@ -266,6 +266,7 @@ pub(super) fn update_local_lights(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
     #[test]
     fn installed_banks_keep_spot_types_and_apply_only_ancillary_offsets() {
         let root = sekiro_sim::cache::root().join("maps");

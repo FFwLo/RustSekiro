@@ -28,13 +28,6 @@ use sekiro_formats::emevd::{Emevd, Instruction};
 /// The entity id the event scripts use for the player.
 pub const PLAYER_ENTITY: i32 = 10000;
 
-/// EMEVD 3[3]: group/state at bytes 0/1, entities at 4/8, radius at 12,
-/// and entity count at 16. State 1 waits inside the radius; state 0 waits outside.
-pub(crate) fn radius_condition(ins: &Instruction, a: [f32; 3], b: [f32; 3]) -> Option<bool> {
-    let distance = glam::Vec3::from_array(a).distance(glam::Vec3::from_array(b));
-    Some((distance <= ins.f32_at(12)?) == (ins.u8_at(1)? != 0))
-}
-
 /// What an event asks of the world.
 #[derive(Debug, Clone, PartialEq)]
 pub enum EventCommand {
@@ -884,96 +877,31 @@ impl EventScripts {
     }
 }
 
-/// Reads an event warp point directly from the local MSB, whose exported layout currently
-/// contains parts rather than gameplay regions. Region base data stores entity id at +4.
-/// Positions/yaw use the same mirrored-X convention as the map's exported parts.
-pub fn warp_point(
-    cache: &Path,
-    area: u8,
-    block: u8,
-    entity: i32,
-) -> Option<crate::deathblow::Placement> {
-    use sekiro_formats::reader::{Reader, utf16z};
-    let bytes =
-        std::fs::read(cache.join(format!("raw/map/MapStudio/m{area:02}_{block:02}_00_00.msb")))
-            .ok()?;
-    if !bytes.starts_with(b"MSB ") {
-        return None;
-    }
-    let mut table = 0x10;
-    for _ in 0..32 {
-        if table == 0 {
-            return None;
-        }
-        let mut r = Reader::at(&bytes, table);
-        r.i32().ok()?;
-        let count = usize::try_from(r.i32().ok()?).ok()?;
-        if !(1..=100_000).contains(&count) {
-            return None;
-        }
-        let name = r.offset64().ok()?;
-        let mut entries = Vec::with_capacity(count - 1);
-        for _ in 1..count {
-            entries.push(r.offset64().ok()?);
-        }
-        table = r.offset64().ok()?;
-        if utf16z(&bytes, name).ok()? != "POINT_PARAM_ST" {
-            continue;
-        }
-        for entry in entries {
-            let base = Reader::at(&bytes, entry.checked_add(0x50)?)
-                .offset64()
-                .ok()?;
-            if base == 0
-                || Reader::at(&bytes, entry.checked_add(base)?.checked_add(4)?)
-                    .i32()
-                    .ok()?
-                    != entity
-            {
-                continue;
-            }
-            let mut r = Reader::at(&bytes, entry.checked_add(0x14)?);
-            let [x, y, z] = r.vec3().ok()?;
-            let rotation = r.vec3().ok()?;
-            return Some(crate::deathblow::Placement {
-                position: [-x, y, z],
-                yaw: -rotation[1].to_radians(),
-            });
-        }
-        return None;
-    }
-    None
-}
-
-/// Fixed-tick cinematic placeholder. Combat and input remain paused for its full lifetime.
-#[derive(Debug, Clone)]
-pub struct Cinematic {
-    pub id: i32,
-    pub elapsed: f32,
-    pub warp: Option<crate::deathblow::Placement>,
-    pub applied: bool,
-}
-
-impl Cinematic {
-    pub const FADE: f32 = 0.5;
-    pub const HOLD: f32 = 0.75;
-    pub const DURATION: f32 = 2.0 * Self::FADE + Self::HOLD;
-
-    pub fn alpha(&self) -> f32 {
-        if self.elapsed < Self::FADE {
-            self.elapsed / Self::FADE
-        } else if self.elapsed < Self::FADE + Self::HOLD {
-            1.0
-        } else {
-            ((Self::DURATION - self.elapsed) / Self::FADE).clamp(0.0, 1.0)
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use sekiro_formats::emevd::{Event, RestBehavior};
+
+    #[derive(Default)]
+    struct World {
+        messages: HashSet<i32>,
+        effects: HashSet<i32>,
+    }
+
+    impl EventHost for World {
+        fn has_sp_effect(&self, entity: i32, id: i32) -> Option<bool> {
+            (entity == 7).then(|| self.effects.contains(&id))
+        }
+        fn has_event_message(&self, entity: i32, id: i32) -> Option<bool> {
+            (entity == 7).then(|| self.messages.contains(&id))
+        }
+        fn is_dead(&self, _: i32) -> Option<bool> {
+            Some(false)
+        }
+        fn hp(&self, _: i32) -> Option<i32> {
+            Some(1)
+        }
+    }
 
     #[test]
     fn flag_range_distinguishes_all_off_from_all_on_and_any() {
@@ -1044,33 +972,6 @@ mod tests {
         cond(4, 5, group, &rest)
     }
 
-    #[derive(Default)]
-    struct World {
-        messages: HashSet<i32>,
-        effects: HashSet<i32>,
-        distance: f32,
-    }
-
-    impl EventHost for World {
-        fn encounter_condition(&self, instruction: &Instruction) -> Option<bool> {
-            (instruction.code() == (3, 3)).then(|| {
-                radius_condition(instruction, [0.0; 3], [0.0, self.distance, 0.0]).unwrap()
-            })
-        }
-        fn has_sp_effect(&self, entity: i32, id: i32) -> Option<bool> {
-            (entity == 7).then(|| self.effects.contains(&id))
-        }
-        fn has_event_message(&self, entity: i32, id: i32) -> Option<bool> {
-            (entity == 7).then(|| self.messages.contains(&id))
-        }
-        fn is_dead(&self, _: i32) -> Option<bool> {
-            Some(false)
-        }
-        fn hp(&self, _: i32) -> Option<i32> {
-            Some(1)
-        }
-    }
-
     fn file(code: Vec<Instruction>) -> Emevd {
         Emevd {
             events: vec![Event {
@@ -1080,42 +981,6 @@ mod tests {
                 parameters: Vec::new(),
             }],
             ..Emevd::default()
-        }
-    }
-
-    #[test]
-    fn radius_gate_waits_for_authored_state_after_network_noop() {
-        for inside in [false, true] {
-            // Real 3[3] layout, including the entity count (not the state) at byte 16.
-            let mut gate = ins(3, 3, &[0, PLAYER_ENTITY, 7, 20.0f32.to_bits() as i32, 1]);
-            gate.args[1] = u8::from(inside);
-            let code = vec![
-                ins(2004, 34, &[7, 1, 0]),
-                gate,
-                ins(2003, 2, &[11505801, 1]),
-            ];
-            let mut scripts = EventScripts::new(
-                &file(code),
-                &[EventEntry {
-                    id: 1,
-                    from_label: None,
-                }],
-            )
-            .unwrap();
-            let mut world = World {
-                distance: if inside { 21.0 } else { 19.0 },
-                ..World::default()
-            };
-            scripts.step(0.1, &world);
-            assert!(!scripts.flag(11505801));
-            assert!(
-                scripts.log.is_empty(),
-                "network update is an explicit no-op"
-            );
-            world.distance = if inside { 19.0 } else { 21.0 };
-            scripts.step(0.1, &world);
-            assert!(scripts.flag(11505801));
-            assert!(scripts.ended(1));
         }
     }
 

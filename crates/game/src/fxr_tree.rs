@@ -316,36 +316,6 @@ impl FxrLib {
             .is_some_and(|tree| walk(self, &tree["root"], slot, action, 0))
     }
 
-    /// Whether the effect (or an effect it references) draws a model (appearance 605), which the
-    /// player does not draw yet: a stand-in for the model's own subject should stay.
-    pub fn has_model(&mut self, id: i64) -> bool {
-        fn walk(lib: &mut FxrLib, node: &Value, depth: u32) -> bool {
-            if depth > 8 {
-                return false;
-            }
-            let own = node["configs"].as_array().is_some_and(|cs| {
-                cs.iter()
-                    .any(|c| c["appearance"]["type"].as_i64() == Some(605))
-            });
-            if own {
-                return true;
-            }
-            if let Some(r) = node["sfx"].as_i64()
-                && let Some(tree) = lib.get(r)
-                && walk(lib, &tree["root"], depth + 1)
-            {
-                return true;
-            }
-            node["nodes"]
-                .as_array()
-                .is_some_and(|kids| kids.iter().any(|k| walk(lib, k, depth + 1)))
-        }
-        let Some(tree) = self.get(id) else {
-            return false;
-        };
-        walk(self, &tree["root"], 0)
-    }
-
     /// Installs a tree under `id` without a file (tests).
     #[cfg(test)]
     pub fn insert_for_test(&mut self, id: i64, tree: Value) {

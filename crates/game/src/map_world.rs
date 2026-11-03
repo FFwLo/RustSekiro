@@ -10,7 +10,6 @@ use std::path::Path;
 
 // Alias avoids Bevy 0.20 prelude ContextExt ambiguity.
 use anyhow::{Context as ContextExt, Result};
-use bevy::camera::primitives::{Aabb, Frustum};
 use bevy::mesh::MeshTag;
 use bevy::prelude::*;
 use sekiro_formats::hknp::CollisionMesh;
@@ -203,35 +202,6 @@ pub(crate) struct MapWorld {
     visibility_maps: BTreeMap<String, visibility::VisibilityMap>,
     requests: BTreeMap<String, visibility::BlockRequest>,
     lod: super::lod::LodTable,
-    /// Fixed offscreen captures need only geometry intersecting their camera volumes
-    /// and shadow casters within the sun's caster range. Interactive worlds never set this.
-    pub(crate) capture_views: Option<CaptureViews>,
-}
-
-pub(crate) struct CaptureViews {
-    pub(crate) views: Vec<(Frustum, Vec3)>,
-    pub(crate) caster_distance: f32,
-}
-
-impl CaptureViews {
-    fn includes(&self, min: Vec3, max: Vec3, transform: &Transform) -> bool {
-        let bounds = Aabb::from_min_max(min, max);
-        let mut lo = Vec3::splat(f32::INFINITY);
-        let mut hi = Vec3::splat(f32::NEG_INFINITY);
-        for x in [min.x, max.x] {
-            for y in [min.y, max.y] {
-                for z in [min.z, max.z] {
-                    let corner = transform.transform_point(Vec3::new(x, y, z));
-                    lo = lo.min(corner);
-                    hi = hi.max(corner);
-                }
-            }
-        }
-        self.views.iter().any(|(frustum, eye)| {
-            frustum.intersects_obb(&bounds, &transform.compute_affine(), true, false)
-                || eye.distance_squared(eye.clamp(lo, hi)) <= self.caster_distance.powi(2)
-        })
-    }
 }
 
 #[derive(Component)]
@@ -699,7 +669,6 @@ impl MapWorld {
             visibility_maps,
             requests: BTreeMap::new(),
             lod,
-            capture_views: None,
         })
     }
 
@@ -1020,10 +989,8 @@ pub(crate) fn publish(
 /// Interactive worlds queue each row's GLB nearest-first from `scene.focus` and stream them
 /// ([`super::stream_assets`]); a MapPiece instantiates only the level of detail it shows at
 /// the start, and [`update_detail`] adds another level the first time it is selected.
-/// Fixed captures (`capture_views`) keep loading every level at once.
 pub(crate) fn spawn(
     commands: &mut Commands,
-    assets: &AssetServer,
     world: &mut MapWorld,
     scene: &super::MapScene,
     pending: &mut Pending,
@@ -1032,7 +999,6 @@ pub(crate) fn spawn(
         return;
     }
     let mut spawned = 0;
-    let mut capture_roots = BTreeMap::new();
     let args: Vec<_> = std::env::args().collect();
     let only_part = crate::arg_value(&args, "--world-part");
     // Nearest first across every block, so the stream loads outwards from the start.
@@ -1093,14 +1059,6 @@ pub(crate) fn spawn(
         let Some(glb) = block.json["models"][model]["glb"].as_str() else {
             continue;
         };
-        if let (Some(coverage), Some(min), Some(max)) = (
-            world.capture_views.as_ref(),
-            super::vec3(&block.json["models"][model]["min"]),
-            super::vec3(&block.json["models"][model]["max"]),
-        ) && !coverage.includes(min, max, &transform)
-        {
-            continue;
-        }
         let (draw, backread) = effective_masks(row);
         if !enabled(&block.id)
             && !draw
@@ -1115,33 +1073,9 @@ pub(crate) fn spawn(
             continue;
         }
         let glb = format!("{}{glb}", block.prefix);
-        let capture_handle: Option<Handle<Gltf>> = world
-            .capture_views
-            .as_ref()
-            .map(|_| super::load_map_asset(assets, glb.clone(), true));
-        if capture_handle.is_some() && !capture_roots.contains_key(&glb) {
-            match super::capture::scene_roots(&sekiro_sim::cache::root().join(&glb)) {
-                Ok(roots) => {
-                    capture_roots.insert(glb.clone(), roots);
-                }
-                Err(error) => {
-                    error!("capture {glb}: {error:#}");
-                    continue;
-                }
-            }
-        }
-        let first_sight = seen
-            .entry(block.id.clone())
+        seen.entry(block.id.clone())
             .or_default()
             .insert(glb.clone());
-        if let Some(handle) = &capture_handle
-            && first_sight
-        {
-            // A sweep's legacy asset root is the primary map folder. Its bounded,
-            // inventory-validated sibling paths are explicitly allowed to load.
-            pending.handles.push(handle.clone().untyped());
-            block.handles.push(handle.clone());
-        }
         let source = match visibility::SourceMasks::from_row(row) {
             Ok(source) => source,
             Err(error) => {
@@ -1194,10 +1128,10 @@ pub(crate) fn spawn(
                 crossfade_time: super::lod::CROSSFADE_STRETCH,
                 ..default()
             };
-            // The level the first update selects; capture views and the file-order fallback
-            // keep the first available level.
+            // The level the first update selects; the file-order fallback keeps the first
+            // available level.
             let initial = match scene.focus {
-                Some(focus) if capture_handle.is_none() => {
+                Some(focus) => {
                     let distance = super::lod::bounds_distance(focus, &transform, min, max);
                     let weights = super::lod::LodState::default()
                         .update(rule, scales, distance, 0.0, available);
@@ -1211,7 +1145,7 @@ pub(crate) fn spawn(
                 if !exists {
                     continue;
                 }
-                let mut child = commands.spawn((
+                let child = commands.spawn((
                     Transform::IDENTITY,
                     if level == initial {
                         Visibility::Inherited
@@ -1221,14 +1155,7 @@ pub(crate) fn spawn(
                     DetailWeight(f32::from(level == initial)),
                     ChildOf(root),
                 ));
-                if let Some(handle) = &capture_handle {
-                    child.insert(super::capture::CaptureScene {
-                        gltf: handle.clone(),
-                        level,
-                        roots: capture_roots[&glb][level].clone(),
-                    });
-                    pending.add_instance();
-                } else if level == initial {
+                if level == initial {
                     stream = Some(pending.queue(&glb, Some(&block.id), true, (child.id(), level)));
                 }
                 slots[level] = Some(child.id());
@@ -1244,18 +1171,11 @@ pub(crate) fn spawn(
                 stream,
                 shown: initial,
                 spawned: std::array::from_fn(|level| {
-                    capture_handle.is_some() && available[level] || level == initial
+                    level == initial
                 }),
                 fading: false,
                 applied: None,
             });
-        } else if let Some(handle) = &capture_handle {
-            commands.entity(root).insert(super::capture::CaptureScene {
-                gltf: handle.clone(),
-                level: 0,
-                roots: capture_roots[&glb][0].clone(),
-            });
-            pending.add_instance();
         } else {
             pending.queue(&glb, Some(&block.id), true, (root, 0));
         }
@@ -1821,32 +1741,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn fixed_capture_keeps_offscreen_shadow_casters_and_crossing_bounds() {
-        use bevy::camera::CameraProjection;
-        let coverage = super::CaptureViews {
-            views: vec![(
-                PerspectiveProjection::default().compute_frustum(&GlobalTransform::IDENTITY),
-                Vec3::ZERO,
-            )],
-            caster_distance: 5.,
-        };
-        assert!(coverage.includes(
-            Vec3::new(-1., -1., 2.),
-            Vec3::new(1., 1., 3.),
-            &Transform::IDENTITY
-        ));
-        assert!(!coverage.includes(
-            Vec3::new(-1., -1., 20.),
-            Vec3::new(1., 1., 21.),
-            &Transform::IDENTITY
-        ));
-        assert!(coverage.includes(
-            Vec3::new(-1000., -1., -10.),
-            Vec3::new(1000., 1., -9.),
-            &Transform::IDENTITY
-        ));
-    }
     use super::*;
 
     #[test]
@@ -2143,8 +2037,6 @@ mod tests {
     /// The play world around the Outskirts start (`play_blocks`, the stories and
     /// `collision_world`), as the game builds it.
     struct PlayWorld {
-        cache: std::path::PathBuf,
-        blocks: BTreeMap<String, Value>,
         stories: super::super::story::MapStory,
         world: std::sync::Arc<sekiro_sim::collision::CollisionWorld>,
     }
@@ -2170,18 +2062,11 @@ mod tests {
                     t.elapsed().as_secs_f64() * 1e3
                 );
                 Some(PlayWorld {
-                    cache,
-                    blocks,
                     stories,
                     world: std::sync::Arc::new(world),
                 })
             })
             .as_ref()
-    }
-
-    /// [`play_world`] when the cache also has Wolf to run on it.
-    fn wolf_world() -> Option<&'static PlayWorld> {
-        play_world().filter(|p| p.cache.join("raw/chr/c0000.behbnd.d/c0000.hkx").exists())
     }
 
     /// The play world's collision (`collision_world`, objects included and the story's switched
@@ -2207,255 +2092,6 @@ mod tests {
         );
     }
 
-    /// Where a run of Wolf's ended.
-    struct Run {
-        /// How far along the run's direction he got at most, from where he settled.
-        far: f32,
-        /// His feet at the end.
-        end: [f32; 3],
-        /// Whether he stayed grounded on every tick.
-        stayed: bool,
-    }
-
-    /// Runs Wolf from `from` (x, z), on the floor below `top`, along the unit `dir` for `ticks`.
-    fn run_along(play: &PlayWorld, from: [f32; 2], top: f32, dir: [f32; 2], ticks: usize) -> Run {
-        let y = play
-            .world
-            .floor(from[0], from[1], top)
-            .expect("a floor to start on");
-        run_from(play, [from[0], y, from[1]], dir, ticks)
-    }
-
-    /// [`run_along`] from the feet position `from`.
-    fn run_from(play: &PlayWorld, from: [f32; 3], dir: [f32; 2], ticks: usize) -> Run {
-        let mut wolf = sekiro_sim::Character::load_from_cache(&play.cache).unwrap();
-        wolf.ground = Box::new(play.world.clone());
-        wolf.body.position = from;
-        wolf.settle(1.0 / 60.0, 400);
-        let origin = wolf.body.position;
-        // The stick's forward is the camera's.
-        let input = sekiro_sim::InputFrame {
-            move_stick: [0.0, 1.0],
-            camera_yaw: sekiro_sim::arena::yaw_toward(Vec3::ZERO, Vec3::new(dir[0], 0.0, dir[1])),
-            ..Default::default()
-        };
-        let mut far = f32::MIN;
-        let mut stayed = true;
-        for _ in 0..ticks {
-            wolf.tick(&input, 1.0 / 60.0);
-            let p = wolf.body.position;
-            far = far.max((p[0] - origin[0]) * dir[0] + (p[2] - origin[2]) * dir[1]);
-            stayed &= wolf.body.grounded;
-        }
-        println!(
-            "{far:.2} m along, stayed grounded {stayed}, state {}",
-            wolf.state()
-        );
-        Run {
-            far,
-            end: wolf.body.position,
-            stayed,
-        }
-    }
-
-    /// The play world keeps the fall-prevention walls (#119), on the same shared world the game
-    /// hands Wolf: running at the cliff top east of start 2 (`crates/sim/tests/it/edge_hold.rs`)
-    /// holds him at the map's filter-28 wall, and running off the side of the grapple pine holds
-    /// him at its collisionType 6 part, which holds only a body standing on the trunk's rideable
-    /// material (808).
-    #[test]
-    fn play_collision_world_holds_wolf_at_edges() {
-        let Some(play) = wolf_world() else {
-            return;
-        };
-        // 4 m inside the cliff's wall line.
-        let (edge, out) = ([-126.8f32, 28.06f32], [0.43f32, 0.90f32]);
-        let from = [edge[0] - out[0] * 4.0, edge[1] - out[1] * 4.0];
-        let run = run_along(play, from, -24.0, out, 180);
-        assert!(
-            run.far < 4.0 && run.stayed,
-            "ran {:.2} m past the cliff's wall",
-            run.far - 4.0
-        );
-        // The trunk's tip; without its wall he is off the side within 0.6 m.
-        let run = run_along(play, [-140.9, -124.1], -40.0, [-1.0, 0.0], 120);
-        assert!(
-            run.far < 0.5 && run.stayed,
-            "ran {:.2} m off the pine",
-            run.far
-        );
-    }
-
-    /// Every rideable object with fall-prevention walls in m11_00 (the groups its events hand
-    /// common event 20005560, the Outskirts pines) holds Wolf when he runs off either side of it
-    /// from its top surface (808). A tree's walls are the object placed with it, at the same
-    /// translation: o002500_0005 has o002501_0005.
-    #[test]
-    fn play_collision_world_trees_hold_riders() {
-        let Some(play) = wolf_world() else {
-            return;
-        };
-        let world = &play.world;
-        let block = ASHINA[0];
-        let path = play
-            .cache
-            .join("maps")
-            .join(block)
-            .join("object_collision.bin");
-        let objects =
-            sekiro_formats::hknp::ObjectCollision::from_bytes(&std::fs::read(path).unwrap())
-                .unwrap();
-        let v = |i: u32| Vec3::from(objects.mesh.vertices[i as usize]);
-        let tri = |t: u32| {
-            let i = &objects.mesh.indices[t as usize * 3..t as usize * 3 + 3];
-            [v(i[0]), v(i[1]), v(i[2])]
-        };
-        let part = |name: &str| objects.parts.iter().find(|p| p.name == name);
-        // Known gaps, where the wall shape itself leaves an opening beside the tree: the part
-        // and the side, matched by direction. Through o002500_0005's (the grapple pine at
-        // start 0) he now walks on to the hillside, which passes as held, but it is not the
-        // walls holding him.
-        let gaps: [(&str, [f32; 2]); 1] = [("o002500_0005", [-0.77, 0.63])];
-        let groups = sekiro_sim::hit_filter::load_ride_wall_groups(&play.cache, block).unwrap();
-        let layout = &play.blocks[block];
-        let riders = ride_walls(layout, &groups);
-        let rows = layout["objects"].as_array().unwrap();
-        let mut walks = Vec::new();
-        for row in rows {
-            let Some(wall) = row["name"].as_str().filter(|n| riders.contains(n)) else {
-                continue;
-            };
-            let Some(w) = part(wall) else {
-                continue;
-            };
-            let tree = rows
-                .iter()
-                .filter(|r| r["translation"] == row["translation"])
-                .filter_map(|r| r["name"].as_str())
-                .filter(|n| !riders.contains(n))
-                .find_map(part);
-            let Some(tree) = tree else {
-                continue;
-            };
-            let name = format!("{block}/{}", tree.name);
-            let (wlo, whi) = (w.first..w.first + w.count)
-                .flat_map(tri)
-                .fold((Vec3::MAX, Vec3::MIN), |(lo, hi), p| (lo.min(p), hi.max(p)));
-            // Upward faces that are the tree's top surface, inside its walls' box.
-            let points: Vec<Vec3> = (tree.first..tree.first + tree.count)
-                .map(tri)
-                .filter(|[a, b, c]| (*b - *a).cross(*c - *a).normalize_or_zero().y.abs() >= 0.7)
-                .map(|[a, b, c]| (a + b + c) / 3.0)
-                .filter(|m| {
-                    world.floor_object(m.x, m.z, m.y + 0.05) == Some(name.as_str())
-                        && world
-                            .floor(m.x, m.z, m.y + 3.0)
-                            .is_some_and(|h| h < m.y + 0.02)
-                        && m.x > wlo.x
-                        && m.x < whi.x
-                        && m.z > wlo.z
-                        && m.z < whi.z
-                        && m.y > wlo.y - 1.0
-                        && m.y < whi.y
-                })
-                .collect();
-            assert!(!points.is_empty(), "{name} has no top surface to start on");
-            // Start at the surface point nearest its middle and run off across its long axis.
-            let mean = points.iter().copied().sum::<Vec3>() / points.len() as f32;
-            let (sxx, sxz, szz) = points.iter().fold((0.0, 0.0, 0.0), |(xx, xz, zz), p| {
-                let d = *p - mean;
-                (xx + d.x * d.x, xz + d.x * d.z, zz + d.z * d.z)
-            });
-            let angle: f32 = 0.5 * f32::atan2(2.0 * sxz, sxx - szz);
-            let (sin, cos) = angle.sin_cos();
-            let start = *points
-                .iter()
-                .min_by(|a, b| a.distance(mean).total_cmp(&b.distance(mean)))
-                .unwrap();
-            assert_eq!(
-                world.floor_material(start.x, start.z, start.y + 0.05),
-                Some(808),
-                "{name} start {start}"
-            );
-            for dir in [[-sin, cos], [sin, -cos]] {
-                let gap = gaps
-                    .iter()
-                    .any(|(n, d)| tree.name == *n && dir[0] * d[0] + dir[1] * d[1] > 0.9);
-                walks.push((name.clone(), start, dir, gap));
-            }
-        }
-        assert!(walks.len() >= 50, "only {} walks", walks.len());
-        // #155: the first trunk past the gate at start 0, where its walls lean out over its
-        // rounded flanks. East across the bend's outer corner the walls slide him onto the flank
-        // with the crown above his feet, and south-east from the tip's top the flank drops him
-        // below the south wall; a body held up only at its feet walked off both.
-        let pine = format!("{block}/o002500_0005");
-        for (x, z, dir) in [
-            (-136.61, -122.90, [1.0, 0.0]),
-            (-139.26, -123.99, [0.71, -0.71]),
-        ] {
-            let y = world
-                .floor(x, z, -40.0)
-                .expect("the trunk under the #155 spot");
-            assert_eq!(world.floor_object(x, z, -40.0), Some(pine.as_str()));
-            walks.push((pine.clone(), Vec3::new(x, y, z), dir, false));
-        }
-        // Each walk loads its own Wolf, which takes most of the time: share them out.
-        let threads = std::thread::available_parallelism().map_or(4, |n| n.get().min(8));
-        let runs: Vec<Run> = std::thread::scope(|scope| {
-            let handles: Vec<_> = walks
-                .chunks(walks.len().div_ceil(threads))
-                .map(|chunk| {
-                    scope.spawn(move || {
-                        chunk
-                            .iter()
-                            .map(|(_, start, dir, _)| run_from(play, (*start).into(), *dir, 90))
-                            .collect::<Vec<_>>()
-                    })
-                })
-                .collect();
-            handles
-                .into_iter()
-                .flat_map(|h| h.join().unwrap())
-                .collect()
-        });
-        let mut failed = Vec::new();
-        for ((name, start, dir, gap), run) in walks.iter().zip(runs) {
-            // Held: never in the air, and still on the tree or on ground level with it
-            // (o002500_0004's trunk runs into the hillside, and he walks along it onto that).
-            let [x, y, z] = run.end;
-            let on_tree = world.floor_object(x, z, y + 0.1) == Some(name.as_str());
-            let held = run.stayed && (on_tree || y > start.y - 0.5);
-            let side = format!("{name} from {start:.1} side ({:.2},{:.2})", dir[0], dir[1]);
-            println!(
-                "{side}: {:.2} m, {:.2} m down, on the tree {on_tree}, held {held}",
-                run.far,
-                start.y - y
-            );
-            if !held && !gap {
-                failed.push(format!("{side} {:.2} m", run.far));
-            }
-        }
-        assert!(failed.is_empty(), "ran off: {failed:#?}");
-    }
-
-    /// The ground path past o002500_0005's root near start 0, where o002501_0005's walls stand
-    /// in the ground (material 30 here). Wolf is beside the trunk, not on it, so they must not
-    /// hold him: from 1.2 m inside the wall he runs on through it. Taking the riding state from
-    /// any rim point (not just when the centre is over a gap) held him here at 1.05 m.
-    #[test]
-    fn play_collision_world_pine_root_walls_let_the_ground_path_through() {
-        let Some(play) = wolf_world() else {
-            return;
-        };
-        let run = run_along(play, [-135.58, -117.53], -42.0, [0.84, -0.55], 60);
-        assert!(
-            run.far > 1.7 && run.stayed,
-            "held {:.2} m along by the pine root's ride walls",
-            run.far
-        );
-    }
-
     /// #85: the first-visit story switches off h003401 and h003501, the other state of the
     /// courtyard before the Outskirts samurai general (`c1020_0000`), whose floors stand up to
     /// 6 m above the ground there. Left in, Wolf ran into them and stood on them in mid-air.
@@ -2477,9 +2113,9 @@ mod tests {
         assert!((floor + 40.5).abs() < 0.3, "floor at {floor}");
     }
 
-    /// The live play check's own spawns (`tests/it/live_play.rs`: the grapple ledge and the
-    /// trunk walk's lower ground) stand over the play collision; a spawn over a hole makes the
-    /// game refuse to start (#231), which only that slow, ignored test would otherwise show.
+    /// The grapple ledge and the trunk walk's lower ground (spawns of sekiro-rs's former live
+    /// play check) stand over the play collision; a spawn over a hole made that game refuse to
+    /// start (#231).
     #[test]
     fn live_check_spawns_stand_on_the_play_collision() {
         let Some(p) = play_world() else { return };
@@ -2495,107 +2131,4 @@ mod tests {
         }
     }
 
-    /// How one walk along a flight went, tick by tick.
-    struct StairWalk {
-        /// The largest height change in one tick against the walk's way (down while going up).
-        backwards: f32,
-        /// The largest height change in one tick.
-        most: f32,
-        /// The largest change of the height change from one tick to the next.
-        kink: f32,
-        /// Whether he stayed grounded on every tick.
-        stayed: bool,
-    }
-
-    /// Wolf walks (stick `push`) from `from` to `to` on `world`, measuring his feet's height.
-    fn walk_flight(
-        play: &PlayWorld,
-        world: std::sync::Arc<sekiro_sim::collision::CollisionWorld>,
-        from: [f32; 3],
-        to: [f32; 3],
-        push: f32,
-    ) -> StairWalk {
-        let mut wolf = sekiro_sim::Character::load_from_cache(&play.cache).unwrap();
-        let y = world.floor(from[0], from[2], from[1] + 1.0).unwrap();
-        wolf.ground = Box::new(world);
-        wolf.body.position = [from[0], y, from[2]];
-        wolf.settle(1.0 / 60.0, 400);
-        let up = (to[1] - from[1]).signum();
-        let mut walk = StairWalk {
-            backwards: 0.0,
-            most: 0.0,
-            kink: 0.0,
-            stayed: true,
-        };
-        let mut last = None::<f32>;
-        for _ in 0..900 {
-            let p = wolf.body.position;
-            let (dx, dz) = (to[0] - p[0], to[2] - p[2]);
-            if dx.hypot(dz) < 0.8 {
-                return walk;
-            }
-            let input = sekiro_sim::InputFrame {
-                move_stick: [0.0, push],
-                camera_yaw: (-dx).atan2(-dz),
-                ..Default::default()
-            };
-            wolf.tick(&input, 1.0 / 60.0);
-            let dy = wolf.body.position[1] - p[1];
-            walk.backwards = walk.backwards.max(-dy * up);
-            walk.most = walk.most.max(dy.abs());
-            if let Some(last) = last {
-                walk.kink = walk.kink.max((dy - last).abs());
-            }
-            last = Some(dy);
-            walk.stayed &= wolf.body.grounded;
-        }
-        panic!("never reached {to:?}, at {:?}", wolf.body.position);
-    }
-
-    /// #104: Wolf climbs and descends the long castle stairs past start 3's moat gate smoothly,
-    /// walking and running: his height changes the same way every tick, by no more than a
-    /// 23 degree flight rises over a run tick, and he never leaves the ground. The capsule meets
-    /// the `l` collision (#189), which models a flight as a ramp. Before, characters walked on
-    /// the `h` mesh, whose treads are real steps: each riser lifted him up to 0.29 m in one tick
-    /// and he dipped between them, the bounce the playtest saw. The same walk on `h` shows it.
-    #[test]
-    fn play_collision_world_walks_stairs_smoothly() {
-        let Some(play) = wolf_world() else {
-            return;
-        };
-        let (bottom, top) = ([-157.75, -52.73, 131.63], [-138.94, -45.94, 139.30]);
-        for (push, gait) in [(0.3, "walk"), (1.0, "run")] {
-            for (from, to, way) in [(bottom, top, "up"), (top, bottom, "down")] {
-                let w = walk_flight(play, play.world.clone(), from, to, push);
-                println!(
-                    "{gait} {way}: most {:.4} m a tick, backwards {:.4}, kink {:.4}, grounded {}",
-                    w.most, w.backwards, w.kink, w.stayed
-                );
-                assert!(w.stayed, "{gait} {way}: left the ground");
-                assert!(
-                    w.backwards < 1e-3,
-                    "{gait} {way}: {:.4} m back",
-                    w.backwards
-                );
-                assert!(w.most < 0.06, "{gait} {way}: {:.4} m in a tick", w.most);
-                assert!(w.kink < 0.05, "{gait} {way}: kink {:.4} m", w.kink);
-            }
-        }
-        // The `h` mesh the body walked before #189: the same run up jumps a riser in a tick.
-        let bytes = std::fs::read(
-            play.cache
-                .join("maps")
-                .join(ASHINA[0])
-                .join("collision.bin"),
-        )
-        .unwrap();
-        let mesh = sekiro_formats::hknp::CollisionMesh::from_bytes(&bytes).unwrap();
-        let h = std::sync::Arc::new(sekiro_sim::collision::CollisionWorld::from_mesh(&mesh));
-        let w = walk_flight(play, h, bottom, top, 1.0);
-        println!(
-            "h run up: most {:.4} m a tick, backwards {:.4}, kink {:.4}",
-            w.most, w.backwards, w.kink
-        );
-        assert!(w.most > 0.1 && w.kink > 0.1, "h's treads are steps");
-    }
 }

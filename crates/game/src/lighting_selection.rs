@@ -432,7 +432,6 @@ pub struct LightingSelection {
     base: Gparam,
     current: Option<u8>,
     pinned: bool,
-    fixed_environment: bool,
     layers: LayerFiles,
     /// Overlay layers 1 to 4 chosen by the collision under the focus (-1: none), and the ones
     /// last resolved into the lighting.
@@ -492,7 +491,6 @@ impl LightingSelection {
             base,
             current: None,
             pinned,
-            fixed_environment: profile["fixed_environment"].as_bool().unwrap_or(false),
             layers,
             overlays: [-1; 4],
             applied_overlays: [-1; 4],
@@ -512,14 +510,6 @@ impl LightingSelection {
     /// The overlay layers of the collision under the focus; applied on the next `sync_events`.
     pub fn set_overlays(selection: &mut Mut<Self>, overlays: [i8; 4]) {
         crate::change::set(selection, |s| &mut s.overlays, overlays);
-    }
-
-    pub fn environment_for_hour(&self, hour: f32) -> u32 {
-        if self.fixed_environment {
-            self.initial.environment
-        } else {
-            crate::lighting::nearest_variant(hour)
-        }
     }
 
     pub fn apply_sub(&mut self, requested: Option<u8>, light: &mut crate::lighting::MapLighting) {
@@ -553,12 +543,11 @@ impl LightingSelection {
 }
 
 pub fn sync_events(
-    scene: Option<Res<crate::arena_b::Scene>>,
     map_scene: Res<MapEventScene>,
     mut selection: ResMut<LightingSelection>,
     mut light: ResMut<crate::lighting::MapLighting>,
 ) {
-    let scene = scene.as_deref().map_or(&map_scene.0, |s| &s.0);
+    let scene = &map_scene.0;
     let sub = scene.gparam_sub_ids.get(&selection.area).map(|s| s.0);
     selection.apply_sub(sub, &mut light);
 }

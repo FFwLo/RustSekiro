@@ -20,7 +20,6 @@ use std::path::Path;
 
 use glam::{Quat, Vec2, Vec3};
 
-use crate::body::Ground;
 
 /// Grid cell size over the horizontal plane, in metres.
 const CELL: f32 = 4.0;
@@ -254,28 +253,6 @@ fn face_height(corners: &[Vec3], p: Vec2) -> Option<f32> {
         const EPS: f32 = -1e-4;
         (l1 >= EPS && l2 >= EPS && l3 >= EPS).then_some(l1 * a.y + l2 * b.y + l3 * c.y)
     })
-}
-
-/// A foe's ground while it walks on the navmesh: `terrain`'s slides, cut by [`NavMesh::hold`].
-pub struct NavGround<'a> {
-    pub terrain: &'a dyn Ground,
-    pub nav: &'a NavMesh,
-}
-
-impl Ground for NavGround<'_> {
-    fn inner(&self) -> Option<&dyn Ground> {
-        Some(self.terrain)
-    }
-    fn height(&self, x: f32, z: f32) -> Option<f32> {
-        self.terrain.height(x, z)
-    }
-    fn slide(&self, feet: [f32; 3], delta: [f32; 2]) -> [f32; 2] {
-        self.nav.hold(feet, self.terrain.slide(feet, delta))
-    }
-    fn slide_assisted(&self, feet: [f32; 3], delta: [f32; 2], walls: u8) -> [f32; 2] {
-        self.nav
-            .hold(feet, self.terrain.slide_assisted(feet, delta, walls))
-    }
 }
 
 #[cfg(test)]

@@ -192,21 +192,6 @@ pub const SHURA_ARENA: ArenaSpec = ArenaSpec {
     beaten: &[9303, 9304, 9305, 9306],
 };
 
-/// Report absent primary and sequential boss models before starting a graphical arena.
-pub fn missing_models(cache: &std::path::Path, arena: &ArenaSpec) -> Vec<String> {
-    let characters: &[&str] = match arena.name {
-        "gyoubu" => &["c5080"],
-        "demon" => &["c7020"],
-        "shura" => &["c7400", "c5430"],
-        _ => &[],
-    };
-    characters
-        .iter()
-        .map(|chr| format!("models/{chr}.glb"))
-        .filter(|path| !cache.join(path).is_file())
-        .collect()
-}
-
 /// Reviewed instruction entry points for events with no post-intro label.
 /// Emma's 11115930 still waits for her defeat flag before playing the transition.
 pub fn entry(id: i64, flags: &std::collections::HashSet<i32>) -> Option<usize> {
@@ -227,20 +212,4 @@ pub fn after_intro(id: i64, pc: usize, flags: &std::collections::HashSet<i32>) -
         (11_105_910, 27) if flags.contains(&11_105_901) => Some(30),
         _ => None,
     }
-}
-
-/// Both Shura setup cutscenes warp Wolf to region 1112812, 0.46 m from player part 0010.
-pub fn story_start(
-    cache: &std::path::Path,
-    spec: &ArenaSpec,
-    layout: &mut crate::arena::ArenaLayout,
-) -> Result<(), String> {
-    if spec.name == "shura" {
-        let warp = crate::events::warp_point(cache, 11, 1, 1112812)
-            .ok_or("Shura: missing MSB story warp region 1112812")?;
-        layout.wolf.position = glam::Vec3::from_array(warp.position);
-        layout.wolf.yaw = crate::arena::yaw_toward(layout.wolf.position, layout.boss.position);
-        layout.wolf_source = "story warp 1112812 (near c0000_0010)".to_owned();
-    }
-    Ok(())
 }

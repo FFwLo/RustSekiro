@@ -68,11 +68,8 @@ license = "MIT OR Apache-2.0"
 [workspace.dependencies]
 sekiro-formats = { path = "crates/formats" }
 sekiro-sim = { path = "crates/sim" }
-sekiro-brain-net = { path = "crates/brain-net" }
-sekiro-fmod = { path = "crates/fmod" }
 anyhow = "1"
 thiserror = "2"
-byteorder = "1"
 flate2 = "1"
 aes = "0.8"
 num-bigint = "0.4"
@@ -80,8 +77,6 @@ libloading = "0.8"
 rayon = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-ureq = { version = "3.4", default-features = false, features = ["rustls", "json"] }
-log = { version = "0.4", features = ["max_level_debug"] }
 clap = { version = "4", features = ["derive", "env"] }
 glam = { version = "0.33", features = ["serde"] }
 postcard = { version = "1", default-features = false, features = ["use-std"] }

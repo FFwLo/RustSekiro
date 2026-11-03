@@ -37,328 +37,6 @@ use grid::{ALL, BAND, Column, FIRST, Pending, band_of, bands_of, water_material}
 /// from the running game by FwLo's RustSekiro (`docs/kb/movement.md`).
 pub const RADIUS: f32 = 0.4;
 
-/// Reserves a throw's aligned endpoint and interpolation path using the ordinary capsule
-/// sweep. Every rejected displacement becomes a common translation of both characters.
-/// This bounded alternating projection is an inferred wall-clearance rule, not an exe trace.
-pub fn throw_pair_shift(
-    grounds: [&dyn Ground; 2],
-    starts: [[f32; 3]; 2],
-    aligned: [[f32; 3]; 2],
-) -> Option<[f32; 2]> {
-    throw_pair_path_shift(grounds, &[starts, aligned])
-}
-
-/// As above, also reserving authored paired root-motion samples through the whole body clip.
-pub fn throw_pair_path_shift(
-    grounds: [&dyn Ground; 2],
-    path: &[[[f32; 3]; 2]],
-) -> Option<[f32; 2]> {
-    pair_path_shift(grounds, path, 4.0, true)
-}
-
-/// Small corrections for actual paired movement, avoiding large relocations mid-clip.
-pub fn throw_pair_step_shift(
-    grounds: [&dyn Ground; 2],
-    path: &[[[f32; 3]; 2]],
-) -> Option<[f32; 2]> {
-    pair_path_shift(grounds, path, 0.2, true)
-}
-
-/// Start/recovery travel already went through the controller's wall slide. Check its
-/// floor support without re-sweeping the slide's curved path as a straight line.
-pub(crate) fn throw_pair_floor_step_shift(
-    grounds: [&dyn Ground; 2],
-    path: &[[[f32; 3]; 2]],
-) -> Option<[f32; 2]> {
-    pair_path_shift(grounds, path, 0.2, false)
-}
-
-/// Furthest the grid part of the local pair search ([`pair_path_shift`]) looks around the wall
-/// projection; the ring along the blocking surface's normal still goes out to the full limit.
-const PAIR_SEARCH_REACH: f32 = 1.0;
-/// How many whole-path checks' worth of ground queries one pair search may spend, the wall
-/// projection ([`throw_wall_shift`]) first and then the candidate shifts, before it gives up and
-/// the throw falls back to per-step placement. Each candidate checks the whole paired path, so
-/// an unbounded search at a cramped spot stalled a deathblow's start for seconds (#156); a check
-/// that fails early costs less, so more candidates than this usually get tried. The clearance
-/// direction ([`pair_clearance_direction`]) is not counted.
-const PAIR_SEARCH_CHECKS: usize = 20;
-/// A ceiling on that budget, so a long throw path (each check costs more, and each wall
-/// projection pass about 1,300 queries) still gives up within a frame or two. The search can go
-/// past it by one whole-path check: the candidate it is on when the budget runs out, or the
-/// first, which is checked whatever the wall projection spent. At the #156 deathblow no throw
-/// step makes more than 4,756 ground queries in all (`step_cost`).
-const PAIR_SEARCH_MAX_QUERIES: usize = 4000;
-
-/// A [`Ground`] that counts the floor and wall queries [`pair_path_clear`] makes through it.
-/// Everything else passes straight through to the ground it wraps.
-struct Counted<'a> {
-    inner: &'a dyn Ground,
-    queries: &'a std::cell::Cell<usize>,
-}
-
-impl Counted<'_> {
-    fn count(&self) {
-        self.queries.set(self.queries.get() + 1);
-    }
-}
-
-impl Ground for Counted<'_> {
-    fn inner(&self) -> Option<&dyn Ground> {
-        Some(self.inner)
-    }
-
-    fn height(&self, x: f32, z: f32) -> Option<f32> {
-        self.count();
-        self.inner.height(x, z)
-    }
-
-    fn floor(&self, x: f32, z: f32, top: f32) -> Option<f32> {
-        self.count();
-        self.inner.floor(x, z, top)
-    }
-
-    fn hug_floor(&self, x: f32, z: f32, top: f32) -> Option<f32> {
-        self.count();
-        self.inner.hug_floor(x, z, top)
-    }
-
-    fn slide(&self, feet: [f32; 3], delta: [f32; 2]) -> [f32; 2] {
-        self.count();
-        self.inner.slide(feet, delta)
-    }
-}
-
-/// Sub-steps [`pair_path_clear`] samples the footprint at along a horizontal move `delta`.
-fn path_steps(delta: [f32; 2]) -> usize {
-    (delta[0].hypot(delta[1]) / 0.1).ceil().max(1.0) as usize
-}
-
-/// The ground queries one [`pair_path_clear`] of `path` makes when every sample passes, for
-/// a small shift.
-fn path_check_queries(path: &[[[f32; 3]; 2]]) -> usize {
-    (0..2)
-        .map(|i| {
-            let segments = path
-                .windows(2)
-                .map(|w| path_steps([w[1][i][0] - w[0][i][0], w[1][i][2] - w[0][i][2]]));
-            // The shift itself, then each segment: five footprint floors per sample, a floor
-            // and a slide; then a floor and a slide for the end.
-            std::iter::once(1)
-                .chain(segments)
-                .map(|steps| 5 * (steps + 1) + 2)
-                .sum::<usize>()
-                + 2
-        })
-        .sum()
-}
-
-fn pair_path_shift(
-    grounds: [&dyn Ground; 2],
-    path: &[[[f32; 3]; 2]],
-    limit: f32,
-    sweep_motion: bool,
-) -> Option<[f32; 2]> {
-    if path.is_empty() {
-        return Some([0.0; 2]);
-    }
-    let queries = std::cell::Cell::new(0);
-    let budget = (PAIR_SEARCH_CHECKS * path_check_queries(path)).min(PAIR_SEARCH_MAX_QUERIES);
-    let counted = grounds.map(|inner| Counted {
-        inner,
-        queries: &queries,
-    });
-    let counted: [&dyn Ground; 2] = [&counted[0], &counted[1]];
-    let preferred = if sweep_motion {
-        throw_wall_shift(counted, path, || queries.get() >= budget).unwrap_or([0.0; 2])
-    } else {
-        [0.0; 2]
-    };
-    // Try the blocking surface's normal first. A wide paired clip at a door can
-    // need metres of clearance; probing every direction at every radius stalls play.
-    let normal_rings = (limit / 0.1).round() as usize;
-    let normal = std::iter::once_with(|| {
-        (limit > 0.2)
-            .then(|| pair_clearance_direction(grounds, path))
-            .flatten()
-    })
-    .flatten()
-    .flat_map(move |direction| {
-        (1..=normal_rings).map(move |ring| {
-            let radius = ring as f32 * 0.1;
-            [
-                preferred[0] + direction[0] * radius,
-                preferred[1] + direction[1] * radius,
-            ]
-        })
-    });
-    // Search locally around the wall projection for supported pair space. This only
-    // constrains authored paired placement; ordinary movement may still leave a ledge.
-    // Small step corrections search a fine grid; a relocation a coarse one within
-    // `PAIR_SEARCH_REACH` (every 0.1 m in 16 directions out to 4 m was 640 path checks).
-    let (spacing, directions) = if limit > 0.2 { (0.25, 8) } else { (0.1, 16) };
-    let grid_rings = (limit.min(PAIR_SEARCH_REACH) / spacing).round() as usize;
-    let grid = (1..=grid_rings).flat_map(move |ring| {
-        let radius = ring as f32 * spacing;
-        (0..directions).map(move |direction| {
-            let angle = direction as f32 * std::f32::consts::TAU / directions as f32;
-            [
-                preferred[0] + radius * angle.sin(),
-                preferred[1] + radius * angle.cos(),
-            ]
-        })
-    });
-    // The first candidate is checked whatever the wall projection spent.
-    std::iter::once(preferred)
-        .chain(normal)
-        .chain(grid)
-        .filter(|shift| shift[0].hypot(shift[1]) <= limit)
-        .enumerate()
-        .take_while(|&(i, _)| i == 0 || queries.get() < budget)
-        .find(|&(_, shift)| pair_path_clear(counted, path, shift, sweep_motion))
-        .map(|(_, shift)| shift)
-}
-
-fn pair_clearance_direction(grounds: [&dyn Ground; 2], path: &[[[f32; 3]; 2]]) -> Option<[f32; 2]> {
-    for segment in path.windows(2) {
-        for (i, ground) in grounds.into_iter().enumerate() {
-            let mut from = segment[0][i];
-            from[1] = ground
-                .floor(from[0], from[2], from[1] + ground.max_step())
-                .unwrap_or(from[1]);
-            let want = [segment[1][i][0] - from[0], segment[1][i][2] - from[2]];
-            let got = ground.slide(from, want);
-            let correction = [got[0] - want[0], got[1] - want[1]];
-            let length = correction[0].hypot(correction[1]);
-            if length > 0.01 {
-                return Some(correction.map(|v| v / length));
-            }
-        }
-    }
-    None
-}
-
-/// Check the real relocation as well as the translated animation, so a valid endpoint
-/// on the other side of a thin wall or on a lower roof cannot be selected.
-fn pair_path_clear(
-    grounds: [&dyn Ground; 2],
-    path: &[[[f32; 3]; 2]],
-    shift: [f32; 2],
-    sweep_motion: bool,
-) -> bool {
-    for (i, ground) in grounds.into_iter().enumerate() {
-        let origin = path[0][i];
-        let translate = |p: [f32; 3]| [p[0] + shift[0], p[1], p[2] + shift[1]];
-        let mut from = origin;
-        for (segment, to) in std::iter::once(translate(origin))
-            .chain(path.iter().skip(1).map(|p| translate(p[i])))
-            .enumerate()
-        {
-            let delta = [to[0] - from[0], to[2] - from[2]];
-            let steps = path_steps(delta);
-            for n in 0..=steps {
-                let t = n as f32 / steps as f32;
-                let p = [from[0] + delta[0] * t, origin[1], from[2] + delta[1] * t];
-                // Support the capsule footprint, allowing ordinary roof seams and steps,
-                // but never borrowing a floor metres below the throw's starting floor.
-                for (dx, dz) in [(0.0, 0.0), (0.2, 0.0), (-0.2, 0.0), (0.0, 0.2), (0.0, -0.2)] {
-                    if !ground
-                        .floor(p[0] + dx, p[2] + dz, origin[1] + ground.max_step())
-                        .is_some_and(|y| (y - origin[1]).abs() <= ground.max_step())
-                    {
-                        return false;
-                    }
-                }
-            }
-            let mut feet = from;
-            feet[1] = ground
-                .floor(from[0], from[2], origin[1] + ground.max_step())
-                .unwrap_or(origin[1]);
-            let got = if sweep_motion || (segment == 0 && shift[0].hypot(shift[1]) > 1e-4) {
-                ground.slide(feet, delta)
-            } else {
-                delta
-            };
-            if (got[0] - delta[0]).hypot(got[1] - delta[1]) > 1e-4 {
-                return false;
-            }
-            from = to;
-        }
-        if !sweep_motion && shift[0].hypot(shift[1]) > 1e-4 {
-            let mut end = path.last().unwrap()[i];
-            end[1] = ground
-                .floor(end[0], end[2], origin[1] + ground.max_step())
-                .unwrap_or(origin[1]);
-            let got = ground.slide(end, shift);
-            if (got[0] - shift[0]).hypot(got[1] - shift[1]) > 1e-4 {
-                return false;
-            }
-        }
-    }
-    true
-}
-
-/// Moves both characters out of the walls their paired path sweeps into: each pass slides
-/// every segment from the shifted start and adds what the slide rejected to the shift, until a
-/// pass is clear. Gives up (`None`) past 4 m, after 32 passes, or once `spent` says the pair
-/// search's query budget is gone: a long throw path costs about 1,300 queries a pass, and
-/// unbounded passes stalled a deathblow's start for up to a second (#156, #163).
-fn throw_wall_shift(
-    grounds: [&dyn Ground; 2],
-    path: &[[[f32; 3]; 2]],
-    spent: impl Fn() -> bool,
-) -> Option<[f32; 2]> {
-    let mut shift = [0.0; 2];
-    for _ in 0..32 {
-        let mut clear = true;
-        for segment in path.windows(2) {
-            if spent() {
-                return None;
-            }
-            let [starts, aligned] = [segment[0], segment[1]];
-            for i in 0..2 {
-                let start = |shift: [f32; 2]| {
-                    let mut from = [
-                        starts[i][0] + shift[0],
-                        starts[i][1],
-                        starts[i][2] + shift[1],
-                    ];
-                    from[1] = grounds[i]
-                        .floor(from[0], from[2], from[1] + grounds[i].max_step())
-                        .unwrap_or(from[1]);
-                    from
-                };
-                let mut from = start(shift);
-                let want = [aligned[i][0] - starts[i][0], aligned[i][2] - starts[i][2]];
-                let got = grounds[i].slide(from, want);
-                // The sweep's rejection points along the blocking surface normal, including
-                // corner contacts. Moving both by it preserves the dummy-to-dummy relation.
-                let correction = [got[0] - want[0], got[1] - want[1]];
-                if correction[0].hypot(correction[1]) > 1e-4 {
-                    shift[0] += correction[0];
-                    shift[1] += correction[1];
-                    clear = false;
-                    from = start(shift);
-                }
-                // Also keep the unabsorbed character and the start of the slide outside walls.
-                let correction = grounds[i].slide(from, [0.0; 2]);
-                if correction[0].hypot(correction[1]) > 1e-4 {
-                    shift[0] += correction[0];
-                    shift[1] += correction[1];
-                    clear = false;
-                }
-            }
-        }
-        if clear {
-            return Some(shift);
-        }
-        if shift[0].hypot(shift[1]) > 4.0 {
-            return None;
-        }
-    }
-    None
-}
-
 /// Highest ledge a walking body steps onto, and the furthest it follows the floor down.
 pub const STEP_HEIGHT: f32 = 0.5;
 /// Steepest walkable surface.
@@ -545,31 +223,6 @@ fn water_plane(material: u32, swim: bool) -> bool {
 /// when `swim`, with the floors: as [`CollisionWorld::walkable`] asks, less whether it is live.
 fn files_as_floor(n: Vec3, material: u32, min_walk_ny: f32, swim: bool) -> bool {
     n.y.abs() >= min_walk_ny && !water_plane(material, swim)
-}
-
-#[cfg(feature = "visit-count")]
-thread_local! {
-    /// Grid entries this thread's queries have looked at ([`triangle_visits`]).
-    static VISITS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
-}
-
-/// Counts `n` grid entries looked at by a query, with the `visit-count` feature (the step-cost
-/// tests'); nothing without it.
-#[inline(always)]
-fn visited(n: usize) {
-    #[cfg(feature = "visit-count")]
-    VISITS.with(|v| v.set(v.get() + n as u64));
-    #[cfg(not(feature = "visit-count"))]
-    let _ = n;
-}
-
-/// How many grid entries this thread's collision queries have looked at so far: the work the
-/// step-cost tests count (#163), whatever the machine. Only with the `visit-count` feature,
-/// which the crate's own tests turn on.
-#[cfg(feature = "visit-count")]
-#[doc(hidden)]
-pub fn triangle_visits() -> u64 {
-    VISITS.with(std::cell::Cell::get)
 }
 
 impl CollisionWorld {
@@ -1143,7 +796,6 @@ impl CollisionWorld {
     ) -> [Option<(f32, u32)>; N] {
         // Reads `floors` for the open points into `best`.
         let read = |floors: &[u32], best: &mut [Option<(f32, u32)>; N], open: &[bool; N]| {
-            visited(floors.len());
             for &t in floors {
                 if !self.live(t, who) {
                     continue;
@@ -1251,7 +903,6 @@ impl CollisionWorld {
                 // it.
                 for layer in column.floors.layers_for(who) {
                     for floors in layer.once(b0, b1) {
-                        visited(floors.len());
                         for &t in floors {
                             let [lo, _] = self.bounds[t as usize];
                             // And in the first cell of the scan that holds it.
@@ -1355,7 +1006,6 @@ impl CollisionWorld {
                     continue;
                 };
                 for list in column.once(PLAYER, band_of(lo.y), band_of(hi.y)) {
-                    visited(list.len());
                     for &t in list {
                         let [tlo, thi] = self.bounds[t as usize];
                         // Each face once: in the first cell of the sweep's box that holds it.
@@ -1412,7 +1062,6 @@ impl CollisionWorld {
                     continue;
                 };
                 for list in column.once(who, band_of(lo.y), band_of(hi.y)) {
-                    visited(list.len());
                     for &t in list {
                         let [tlo, thi] = self.bounds[t as usize];
                         if thi.y <= centre.y
@@ -1443,7 +1092,6 @@ impl CollisionWorld {
                 .once(PLAYER, i32::MIN, i32::MAX)
                 .for_each(|list| cell.extend(list));
         }
-        visited(cell.len());
         cell.sort_unstable();
         let mut out: Vec<(f32, f32)> = cell
             .iter()
@@ -1505,7 +1153,6 @@ impl CollisionWorld {
             // Each triangle once: in the tall list, or in the first band of the scan that holds
             // it.
             for list in column.once(who, b0, b1) {
-                visited(list.len());
                 for &t in list {
                     let [lo, hi] = self.bounds[t as usize];
                     if lo.y > high_y || hi.y < low_y || !self.solid(t) || !self.live(t, who) {
@@ -1666,7 +1313,6 @@ impl CollisionWorld {
                         return;
                     }
                     for list in column.once(mask, band_of(low), band_of(high)) {
-                        visited(list.len());
                         into.extend(list.iter().copied().filter(|&t| keep(t)));
                     }
                 };
@@ -1780,7 +1426,6 @@ impl CollisionWorld {
                     let from = s.pool.len();
                     // As `gather_slide`: each triangle once a cell.
                     for list in column.once(who, band_of(all.body[0]), band_of(all.body[1])) {
-                        visited(list.len());
                         s.pool.extend(
                             list.iter()
                                 .copied()
@@ -2093,19 +1738,6 @@ const SAME_DIR: f32 = 1e-3;
 /// How far short of a contact's depth a push may stop and still count as clearing it.
 const PUSH_SLACK: f32 = 1e-5;
 
-#[cfg(feature = "visit-count")]
-thread_local! {
-    static PUSH_CHECKS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
-}
-
-/// How many contact tests this thread's [`least_push`] calls have made: the push-out's own
-/// work, which [`triangle_visits`] does not count. Only with the `visit-count` feature.
-#[cfg(feature = "visit-count")]
-#[doc(hidden)]
-pub fn push_checks() -> u64 {
-    PUSH_CHECKS.with(std::cell::Cell::get)
-}
-
 /// The shortest horizontal push `p` with `p . dir >= depth` for every contact, if there is one
 /// no longer than `cap`; `None` when the contacts push opposite ways or need a longer push.
 /// The constraints are half-planes, so the answer is the point of their intersection nearest
@@ -2115,8 +1747,6 @@ pub fn push_checks() -> u64 {
 /// chose the side (#176).
 fn least_push(contacts: &[Contact], cap: f32) -> Option<Vec2> {
     let clears = |p: Vec2| {
-        #[cfg(feature = "visit-count")]
-        PUSH_CHECKS.with(|v| v.set(v.get() + contacts.len() as u64));
         contacts
             .iter()
             .all(|c| p.dot(c.dir) >= c.depth - PUSH_SLACK)
@@ -2258,7 +1888,6 @@ impl Ground for View<'_> {
     fn water_surface(&self, x: f32, z: f32, top: f32) -> Option<WaterSurface> {
         let w = self.world;
         let water = &w.columns.get(&cell_of(x, z))?.water;
-        visited(water.len());
         water
             .iter()
             .filter_map(|&t| {
@@ -2446,21 +2075,6 @@ impl CollisionWorld {
 
 ground_via_view!(CollisionWorld, player_view);
 
-/// A shared world as enemies and bosses see it: they also stand on water surfaces and stop at
-/// enemy-only walls (hit filters 11, 16 and 19, [`crate::hit_filter`]).
-#[derive(Clone)]
-pub struct EnemyGround(pub std::sync::Arc<CollisionWorld>);
-
-impl EnemyGround {
-    fn enemy_view(&self) -> View<'_> {
-        View {
-            world: &self.0,
-            who: ENEMY,
-        }
-    }
-}
-
-ground_via_view!(EnemyGround, enemy_view);
 
 impl<T: Ground + ?Sized> Ground for std::sync::Arc<T> {
     fn water_surface(&self, x: f32, z: f32, top: f32) -> Option<WaterSurface> {

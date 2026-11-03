@@ -80,7 +80,7 @@ pub(super) fn cancel(world: &mut World) {
 pub(super) fn progress(world: &World) -> f32 {
     let queue = world.resource::<Queue>();
     if queue.started {
-        crate::play::fraction(queue.completed, queue.completed + queue.work.len())
+        super::fraction(queue.completed, queue.completed + queue.work.len())
     } else {
         0.0
     }

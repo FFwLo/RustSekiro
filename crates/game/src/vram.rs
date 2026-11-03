@@ -7,20 +7,6 @@ use bevy::render::{Render, RenderApp, RenderSystems};
 use std::collections::BTreeMap;
 use std::time::Instant;
 
-pub(crate) fn render_plugin() -> bevy::render::RenderPlugin {
-    bevy::render::RenderPlugin {
-        render_creation: bevy::render::settings::RenderCreation::Automatic(Box::new(
-            bevy::render::settings::WgpuSettings {
-                // The default Vulkan allocator reserves 128-256 MiB blocks. Streamed
-                // sources leave substantial slack in them even after their buffers drop.
-                memory_hints: wgpu::MemoryHints::MemoryUsage,
-                ..default()
-            },
-        )),
-        ..default()
-    }
-}
-
 pub(crate) fn install(app: &mut App) {
     if app.world().contains_resource::<Budget>() {
         return;
@@ -45,19 +31,6 @@ pub(crate) fn install(app: &mut App) {
 
 const GIB: u64 = 1 << 30;
 const MAX_SKIPPED_MIPS: u32 = 3;
-
-pub(crate) fn validate_args(args: &[String]) -> anyhow::Result<()> {
-    for (flag, max) in [("--vram-budget", 1024.0), ("--perf-seconds", 86400.0)] {
-        if args.iter().any(|a| a == flag) {
-            let value = crate::arg_value(args, flag).and_then(|v| v.parse::<f64>().ok());
-            anyhow::ensure!(
-                value.is_some_and(|v| v.is_finite() && v > 0.0 && v <= max),
-                "{flag} requires a positive number <= {max}"
-            );
-        }
-    }
-    Ok(())
-}
 
 #[derive(Resource, Default)]
 pub(crate) struct Budget {
@@ -413,10 +386,6 @@ mod tests {
                 (expected, mips)
             );
         }
-        for invalid in ["0", "-1", "NaN", "inf", "--play"] {
-            assert!(validate_args(&["--vram-budget".into(), invalid.into()]).is_err());
-        }
-        assert!(validate_args(&["--vram-budget".into()]).is_err());
     }
 
     #[test]

@@ -15,8 +15,6 @@ pub struct Placement {
     pub entity: i32,
     pub npc: i32,
     pub think: i32,
-    pub position: [f32; 3],
-    pub yaw: f32,
 }
 
 #[derive(Debug)]
@@ -85,10 +83,6 @@ impl Registry {
                     entity: p["entity_id"].as_i64().unwrap_or(-1) as i32,
                     npc: p["npc_param"].as_i64().unwrap_or(-1) as i32,
                     think: p["think_param"].as_i64().unwrap_or(-1) as i32,
-                    position: std::array::from_fn(|i| {
-                        p["translation"][i].as_f64().unwrap_or(0.0) as f32
-                    }),
-                    yaw: (p["yaw_degrees"].as_f64().unwrap_or(0.0) as f32).to_radians(),
                 });
             }
         }
@@ -117,10 +111,6 @@ impl Registry {
             bundles,
             names: npc_names(cache)?,
         })
-    }
-
-    pub fn npc_row(&self, id: i32) -> Option<&Value> {
-        self.npc.get(&id)
     }
 
     /// Resolve the exact placed think row, including its own map's script bundle first.
@@ -181,29 +171,6 @@ impl Registry {
         Err(format!("{map}: no placed entity {entity}"))
     }
 
-    pub fn draw_mask(&self, cache: &Path, spec: &EnemySpec) -> Option<[bool; 32]> {
-        let row = self.npc.get(&spec.npc_param)?;
-        let mut mask =
-            std::array::from_fn(|i| row[format!("modelDispMask{i}")].as_i64() == Some(1));
-        let donor = self.anim_chr(&spec.chr, spec.npc_param);
-        if let Ok(bytes) =
-            std::fs::read(cache.join(format!("raw/chr/{donor}.anibnd.d/{donor}.tae")))
-            && let Ok(tae) = sekiro_formats::tae::parse(&bytes)
-            && let Some(anim) = tae.animations.iter().find(|a| a.id == 1040)
-        {
-            for event in anim.events.iter().filter(|e| e.event_type == 233) {
-                for (group, value) in mask.iter_mut().zip(&event.params) {
-                    match value {
-                        0 => *group = false,
-                        1 => *group = true,
-                        _ => {}
-                    }
-                }
-            }
-        }
-        Some(mask)
-    }
-
     pub fn display_name(&self, chr: &str, row: i32) -> Option<&str> {
         // The Hall's c1000 row carries the monkeys' event-authored bar, not c1000's name.
         if chr == "c1000" && row == 12_600_050 {
@@ -216,17 +183,6 @@ impl Registry {
             .or_else(|| self.names.get(&(900_000 + number)))
             .or_else(|| self.names.get(&(910_000 + number)))
             .map(String::as_str)
-    }
-
-    pub fn anim_chr(&self, chr: &str, row: i32) -> String {
-        match self
-            .npc
-            .get(&row)
-            .and_then(|r| r["normalChangeAnimChrId"].as_i64())
-        {
-            Some(id) if id > 0 => format!("c{id:04}"),
-            _ => chr.into(),
-        }
     }
 
     /// Map-authored boss-bar text can differ between placements sharing NpcParam.

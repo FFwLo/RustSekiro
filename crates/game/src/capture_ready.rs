@@ -1,36 +1,9 @@
-//! Shared asset and completed-render checks for window and offscreen captures.
+//! Late mesh checks: meshes extracted before they reached the GPU are specialized again.
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
 use bevy::prelude::*;
-use bevy::render::render_resource::{CachedPipelineState, PipelineCache};
 use bevy::render::{Render, RenderApp, RenderSystems};
-
-#[derive(Clone, Copy, Debug, Default)]
-pub(crate) struct PipelineStatus {
-    pub frame: u64,
-    pub ready: usize,
-    pub pending: usize,
-    pub failed: usize,
-}
-
-#[derive(Clone, Resource)]
-pub(crate) struct Pipelines(Arc<Mutex<PipelineStatus>>);
-
-impl Default for Pipelines {
-    fn default() -> Self {
-        Self(Arc::new(Mutex::new(PipelineStatus {
-            pending: 1,
-            ..default()
-        })))
-    }
-}
-
-impl Pipelines {
-    pub fn status(&self) -> PipelineStatus {
-        *self.0.lock().unwrap()
-    }
-}
 
 /// Mesh entities extracted before their mesh reached the GPU.
 ///
@@ -121,15 +94,6 @@ impl LateState {
         self.waiting.retain(|id| exists(*id));
         self.loading.retain(|id| exists(*id));
         self.loaded.retain(|id| exists(*id));
-    }
-}
-
-impl LateMeshes {
-    /// Meshes of the world's own entities (not [`RuntimeMesh`] ones) not yet seen prepared on
-    /// the GPU. A mesh seen prepared once does not count again when its asset or material is
-    /// rewritten.
-    pub fn loading(&self) -> usize {
-        self.0.lock().unwrap().loading.len()
     }
 }
 
@@ -227,202 +191,17 @@ fn check_late_meshes(
     late.0.lock().unwrap().check(|id| meshes.get(id).is_some());
 }
 
-#[derive(Default, Resource)]
-pub(crate) struct CaptureWait {
-    requested: bool,
-    stable: usize,
-    last_frame: u64,
-    started: Option<std::time::Instant>,
-}
-
-impl CaptureWait {
-    pub fn allow(&mut self, pipelines: &Pipelines) -> bool {
-        let status = pipelines.status();
-        if status.pending > 0 || status.failed > 0 || status.ready == 0 {
-            self.stable = 0;
-        }
-        if self.stable >= 3 {
-            self.requested = false;
-            self.stable = 0;
-            self.started = None;
-            info!("capture ready: {status:?}; material textures ready");
-            return true;
-        }
-        if !self.requested {
-            info!(
-                "capture deferred: waiting for material textures and completed pipelines; {:?}",
-                pipelines.status()
-            );
-        }
-        self.requested = true;
-        self.started.get_or_insert_with(std::time::Instant::now);
-        false
-    }
-
-    fn observe(&mut self, status: PipelineStatus, textures_pending: bool) {
-        if textures_pending || status.pending > 0 || status.failed > 0 || status.ready == 0 {
-            self.stable = 0;
-        } else if status.frame != self.last_frame {
-            self.stable += 1;
-        }
-        self.last_frame = status.frame;
-    }
-}
-
-#[derive(bevy::ecs::system::SystemParam)]
-pub(crate) struct Ready<'w> {
-    pipelines: Res<'w, Pipelines>,
-    wait: ResMut<'w, CaptureWait>,
-    pending: Option<Res<'w, super::Pending>>,
-    warmup: Option<Res<'w, crate::pipeline_warmup::PipelineWarmup>>,
-    batches: Option<Res<'w, super::StaticBatches>>,
-}
-
-impl Ready<'_> {
-    pub fn allow(&mut self) -> bool {
-        if !super::ready(
-            self.pending.as_deref(),
-            self.batches.as_deref(),
-            self.warmup.as_deref(),
-        ) {
-            return false;
-        }
-        self.wait.allow(&self.pipelines)
-    }
-}
-
-pub(crate) fn textures_pending(world: &World, entities: &[Entity]) -> bool {
-    let mut checked = std::collections::HashSet::new();
-    entities.iter().any(|e| {
-        if super::map_material::sweep_key(world, *e).is_some_and(|key| !checked.insert(key)) {
-            return false;
-        }
-        super::map_material::sweep_base(world, *e).is_some_and(|m| m.pending)
-            || crate::map_fog_surface::sweep_pending(world, *e)
-            || world
-                .get::<MeshMaterial3d<StandardMaterial>>(*e)
-                .is_some_and(|h| {
-                    world
-                        .resource::<Assets<StandardMaterial>>()
-                        .get(&h.0)
-                        .is_none()
-                })
-    })
-}
-
-/// Render uploads still outstanding: images loaded in the main world for the render world that
-/// it has not prepared yet (queued behind the per-frame upload budget), and meshes the world is
-/// still loading ([`LateMeshes::loading`]). Main-world-only images never upload, so they do not
-/// count.
-pub(crate) fn pending_uploads(world: &World) -> (usize, usize) {
-    let images: Vec<AssetId<Image>> = world
-        .resource::<Assets<Image>>()
-        .iter()
-        .filter(|(_, image)| {
-            image
-                .asset_usage
-                .contains(bevy::asset::RenderAssetUsages::RENDER_WORLD)
-        })
-        .map(|(id, _)| id)
-        .collect();
-    let images = {
-        let uploaded = world
-            .resource::<super::map_material::SweepImages>()
-            .0
-            .lock()
-            .unwrap();
-        images.iter().filter(|id| !uploaded.contains(id)).count()
-    };
-    (images, world.resource::<LateMeshes>().loading())
-}
-
 pub fn install(app: &mut App) {
-    if app.world().contains_resource::<Pipelines>() {
+    if app.world().contains_resource::<LateMeshes>() {
         return;
     }
-    let pipelines = Pipelines::default();
-    let images = super::map_material::SweepImages::default();
     let late = LateMeshes::default();
-    app.insert_resource(pipelines.clone())
-        .insert_resource(images.clone())
-        .insert_resource(late.clone())
-        .init_resource::<CaptureWait>()
-        .add_systems(PostUpdate, prepare)
+    app.insert_resource(late.clone())
         .add_systems(Last, watch_meshes.after(crate::mesh_residency::track));
     if let Some(render) = app.get_sub_app_mut(RenderApp) {
         render
-            .insert_resource(pipelines)
-            .insert_resource(images)
             .insert_resource(late)
-            .add_systems(
-                Render,
-                (record, check_late_meshes).in_set(RenderSystems::PostCleanup),
-            );
-    }
-}
-
-fn record(
-    status: Res<Pipelines>,
-    cache: Res<PipelineCache>,
-    uploaded: Res<super::map_material::SweepImages>,
-    images: Res<bevy::render::render_asset::RenderAssets<bevy::render::texture::GpuImage>>,
-    mut reported_failures: Local<HashSet<usize>>,
-) {
-    *uploaded.0.lock().unwrap() = images.iter().map(|(id, _)| id).collect();
-    let mut next = PipelineStatus {
-        pending: cache.waiting_pipelines().count(),
-        ..default()
-    };
-    for (index, pipeline) in cache.pipelines().enumerate() {
-        match &pipeline.state {
-            CachedPipelineState::Ok(_) => next.ready += 1,
-            CachedPipelineState::Err(
-                bevy::shader::ShaderCacheError::ProcessShaderError(_)
-                | bevy::shader::ShaderCacheError::CreateShaderModule(_),
-            ) => {
-                if reported_failures.insert(index) {
-                    // PipelineCache already logs the shader diagnostic once. Reprinting its
-                    // complete embedded shader every frame can produce gigabytes of logs.
-                    error!(
-                        "capture GPU pipeline failed (cache entry {index}); see shader compilation error"
-                    );
-                }
-                next.failed += 1;
-            }
-            _ => {}
-        }
-    }
-    if next.failed == 0 {
-        reported_failures.clear();
-    }
-    let mut state = status.0.lock().unwrap();
-    next.frame = state.frame + 1;
-    *state = next;
-}
-
-fn prepare(world: &mut World) {
-    if !world.resource::<CaptureWait>().requested {
-        return;
-    }
-    if world
-        .resource::<CaptureWait>()
-        .started
-        .is_some_and(|t| t.elapsed().as_secs() >= 300)
-    {
-        error!("capture timed out waiting for material textures and render pipelines");
-        world.write_message(AppExit::error());
-        return;
-    }
-    let status = world.resource::<Pipelines>().status();
-    let meshes: Vec<_> = world
-        .query_filtered::<Entity, With<Mesh3d>>()
-        .iter(world)
-        .collect();
-    let pending = textures_pending(world, &meshes);
-    world.resource_mut::<CaptureWait>().observe(status, pending);
-    if status.failed > 0 {
-        error!("capture aborted: a render pipeline failed");
-        world.write_message(AppExit::error());
+            .add_systems(Render, check_late_meshes.in_set(RenderSystems::PostCleanup));
     }
 }
 
@@ -463,34 +242,6 @@ mod tests {
         state.check(|id| on_gpu.contains(&id));
         assert_eq!(state.loading.len(), 0);
         assert!(state.waiting.contains(&map));
-    }
-
-    /// `--play` without `--map` installs the ready gate but not the map's mesh residency
-    /// (issue #139): the gate must run on its own, including when meshes are retired.
-    #[test]
-    fn gate_runs_without_map_mesh_residency() {
-        let mut app = App::new();
-        app.add_plugins((MinimalPlugins, AssetPlugin::default()))
-            .init_asset::<Mesh>();
-        install(&mut app);
-        assert!(
-            !app.world()
-                .contains_resource::<crate::mesh_residency::MeshRefs>()
-        );
-        let mesh = app
-            .world_mut()
-            .resource_mut::<Assets<Mesh>>()
-            .add(Cuboid::default());
-        let entity = app.world_mut().spawn(Mesh3d(mesh.clone())).id();
-        app.update();
-        assert_eq!(app.world().resource::<LateMeshes>().loading(), 1);
-        app.world_mut().despawn(entity);
-        app.update();
-        assert_eq!(
-            app.world().resource::<LateMeshes>().loading(),
-            1,
-            "a mesh still in the main world keeps holding the gate until prepared"
-        );
     }
 
     /// #70: cloth, effect batches and the sky rewrite meshes every frame. Those `Modified`
@@ -535,43 +286,4 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn capture_waits_for_textures_and_distinct_completed_renders() {
-        let mut wait = CaptureWait::default();
-        let pipelines = Pipelines::default();
-        assert!(!wait.allow(&pipelines));
-        let started = wait.started;
-        assert!(!wait.allow(&pipelines));
-        assert_eq!(
-            wait.started, started,
-            "pending pipelines must not restart the timeout"
-        );
-        let mut status = PipelineStatus {
-            frame: 1,
-            ready: 10,
-            ..default()
-        };
-        wait.observe(status, false);
-        wait.observe(status, false);
-        assert_eq!(
-            wait.stable, 1,
-            "repeated main frames cannot settle one render"
-        );
-        for (pending, failed, textures) in [(1, 0, false), (0, 1, false), (0, 0, true)] {
-            status.frame += 1;
-            status.pending = pending;
-            status.failed = failed;
-            wait.observe(status, textures);
-            assert_eq!(wait.stable, 0);
-        }
-        status.pending = 0;
-        status.failed = 0;
-        for _ in 0..3 {
-            status.frame += 1;
-            wait.observe(status, false);
-        }
-        *pipelines.0.lock().unwrap() = status;
-        assert!(wait.allow(&pipelines));
-        assert!(!wait.allow(&pipelines), "a later shot must settle again");
-    }
 }
