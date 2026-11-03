@@ -690,54 +690,108 @@ pub fn wrap_angle(a: f32) -> f32 {
     (a + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI
 }
 
-/// The full stop at the start of every hit stop (exe FUN_140a51800 default +0x130 = 0.06 s).
+/// The ease-in before the stop (WorldChrManDbg +0x12c; FUN_140a51800 sets 0, the 2026-11-03
+/// snapshot holds 0).
+pub const HIT_STOP_EASE_IN: f32 = 0.0;
+/// The full stop of every hit stop (WorldChrManDbg +0x130; FUN_140a51800 sets 0.06, snapshot 0.06).
 pub const HIT_STOP_HOLD: f32 = 0.06;
 
-/// A character's hit stop (exe SprjChrHitStopModule, ChrIns module bag +0x90; FUN_140b9d1b0 /
-/// FUN_140b9dad0): the clock holds at 0 for HIT_STOP_HOLD, then eases back over the hit stop's
-/// length, each frame advancing dt * (elapsed / length)^2; the frame that ends the hold advances
-/// nothing; a new start replaces a running one; 0 starts nothing. From AKJama/sekiro-rs
-/// (crates/sim/src/combat/knockback.rs `HitStop`, docs/COMBAT-RULES.md "Hit stop"; MIT / Apache).
+/// A character's hit stop (exe SprjChrHitStopModule, ChrIns module bag +0x90): the start
+/// FUN_140b9dad0 and the tick FUN_140b9d1b0 that FUN_1409f78a0 runs first each frame and whose
+/// result +0x18 becomes the character's clock chr+0x108. State +0x20: 1 eases in over
+/// HIT_STOP_EASE_IN (dt * (left / ease_in)^2), 2 holds the clock at 0 for HIT_STOP_HOLD, 3 eases
+/// back over the hit stop's length (dt * (1 - left / length)^2); timer +0x10, length +0x14. A
+/// state that runs out hands its frame to the next state's rule only from 1 to 2 (the frame that
+/// ends the hold still advances nothing, the frame whose ease timer reaches 0 returns the eased
+/// dt, not the whole). A new start replaces a running one; 0 starts nothing (its callers test
+/// > 0). Checked frame by frame against the exe (tools/emu-cases modticks, test
+/// hit_stop_module_matches_the_exe). gap: the debug switch +0x11d (ease-out 0.04 from +0x134
+/// instead of the length) is off in the game. Rules first from AKJama/sekiro-rs
+/// (crates/sim/src/combat/knockback.rs `HitStop`; MIT / Apache).
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct HitStop {
-    /// 0 idle, 1 hold, 2 ease.
-    phase: u8,
-    left: f32,
+    /// +0x20: 0 idle, 1 ease in, 2 hold, 3 ease out.
+    state: u8,
+    /// +0x10
+    timer: f32,
+    /// +0x14
     length: f32,
 }
 
 impl HitStop {
+    /// FUN_140b9dad0.
     pub fn start(&mut self, seconds: f32) {
         if seconds > 0.0 {
-            *self = Self { phase: 1, left: HIT_STOP_HOLD, length: seconds };
+            *self = Self { state: 1, timer: HIT_STOP_EASE_IN, length: seconds };
         }
     }
 
     pub fn active(&self) -> bool {
-        self.phase != 0
+        self.state != 0
     }
 
-    /// Runs `dt` of real time; returns how far the character's clock moves.
+    /// (state +0x20, timer +0x10, length +0x14), as the exe's module holds them.
+    #[cfg(test)]
+    pub(crate) fn module_fields(&self) -> (u8, f32, f32) {
+        (self.state, self.timer, self.length)
+    }
+
+    /// FUN_140b9d1b0: runs `dt` of real time; returns how far the character's clock moves.
     pub fn split(&mut self, dt: f32) -> f32 {
-        match self.phase {
+        let (ease_in, hold, ease_out) = (HIT_STOP_EASE_IN, HIT_STOP_HOLD, self.length);
+        if self.timer > 0.0 {
+            self.timer -= dt;
+        }
+        if self.state == 0 {
+            return dt;
+        }
+        if self.state == 1 && ease_in <= 0.0 {
+            (self.state, self.timer) = (2, hold - dt);
+        }
+        if self.state == 2 && hold <= 0.0 {
+            (self.state, self.timer) = (3, ease_out - dt);
+        }
+        if self.state == 3 && ease_out <= 0.0 {
+            *self = Self::default();
+        }
+        let scaled;
+        match self.state {
             1 => {
-                self.left -= dt;
-                if self.left <= 1e-5 {
-                    (self.phase, self.left) = (2, self.length);
+                let k = (self.timer / ease_in).clamp(0.0, 1.0);
+                scaled = k * k * dt;
+                if self.timer > 0.0 {
+                    return scaled;
                 }
-                0.0
+                if hold > 0.0 {
+                    (self.state, self.timer) = (2, hold);
+                    return scaled;
+                }
+                if ease_out > 0.0 {
+                    (self.state, self.timer) = (3, ease_out);
+                    return scaled;
+                }
             }
             2 => {
-                self.left -= dt;
-                if self.left <= 1e-5 {
-                    *self = Self::default();
-                    return dt;
+                scaled = 0.0;
+                if self.timer > 0.0 {
+                    return scaled;
                 }
-                let k = (1.0 - self.left / self.length).clamp(0.0, 1.0);
-                k * k * dt
+                if ease_out > 0.0 {
+                    (self.state, self.timer) = (3, ease_out);
+                    return scaled;
+                }
             }
-            _ => dt,
+            3 => {
+                let k = (1.0 - self.timer / ease_out).clamp(0.0, 1.0);
+                scaled = k * k * dt;
+                if self.timer > 0.0 {
+                    return scaled;
+                }
+            }
+            _ => return dt,
         }
+        *self = Self::default();
+        scaled
     }
 }
 

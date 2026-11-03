@@ -246,6 +246,10 @@ pub(crate) fn knockback_facing(dir: Vec3, attacker_forward: Vec3) -> f32 {
 /// sekiro-rs docs/COMBAT-RULES.md "Hit stop" (MIT / Apache), checked against FUN_140b9cd90.
 /// gap: isArrowAtk is not exported, bullets stand for it; a bullet does not stop its distant
 /// shooter (sekiro-rs's choice; every NPC bullet row has 0 anyway).
+/// gap: both starts are skipped when the hit's five amounts (the damage struct's floats 0-4,
+/// read by FUN_140b6e6a0 too) are all <= 0 (run: FUN_140b9cfb0 on Wolf, tools/emu-cases
+/// modticks_defender); which hits carry zeros (grabs, pushes?) is not traced, so Sv1 starts on
+/// every contact.
 pub(crate) fn start_hit_stop(combat: &Combat, aa: &mut Actor, da: &mut Actor, dd: &crate::data::CharData, atk: &Attack, bullet: bool) {
     let force = !bullet && !da.anim.is_empty() && dd.flag(&da.anim, da.t, 41);
     let (atk_scale, def_on) = match da.side {
