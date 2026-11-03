@@ -95,8 +95,8 @@ def live_claims(done_ids):
         if held and (when - held[2]).days >= CLAIM_DAYS:  # expired before this comment
             del live[rid]
             held = None
-        if verb == "claim" and len(words) >= 3 and rid not in done_ids:
-            if held is None or held[0] == user:
+        if verb == "claim" and len(words) >= 3 and row_of(rid) not in done_ids:
+            if not clash(live, rid, user, when):
                 live[rid] = (user, words[2], when)
         elif verb == "release" and held and (held[0] == user or user == OWNER):
             del live[rid]
@@ -104,23 +104,37 @@ def live_claims(done_ids):
     # claim never runs out during review; it also claims a free row for whoever opened it.
     for pr in open_prs():
         m = re.search(r"^Board:\s*([A-Z]\d+[a-z]?)\s+(?:done|part)\b", pr["body"] or "", re.M)
-        if not m or m.group(1) in done_ids:
+        if not m or row_of(m.group(1)) in done_ids:
             continue
         rid, user = m.group(1), pr["author"]["login"]
         held = live.get(rid)
-        if held is None or held[0] == user:
+        if not clash(live, rid, user, now):
             agent = pr["headRefName"].rsplit("-", 1)[-1] if pr["headRefName"].startswith("work-") else "pr"
             live[rid] = (user, held[1] if held else agent, now)
     return {rid: (f"{u}/{a}", w.date().isoformat()) for rid, (u, a, w) in live.items()
             if (now - w).days < CLAIM_DAYS}
 
 
+def clash(live, rid, user, at):
+    """Live claims by someone else that overlap rid: the same ID, or a whole row against one of its parts."""
+    return [(k, v) for k, v in live.items() if v[0] != user and (at - v[2]).days < CLAIM_DAYS
+            and (k == rid or row_of(k) == rid or k == row_of(rid))]
+
+
+def others_on(rid, me, done_ids):
+    """Live claims by anyone but `me` that overlap rid, as "ID github/agent" strings."""
+    return [f"{k} {who}" for k, (who, _) in sorted(live_claims(done_ids).items())
+            if who.split("/")[0] != me and (k == rid or row_of(k) == rid or k == row_of(rid))]
+
+
 def open_prs():
+    """Open pull requests, oldest first, so the first one to name a free row holds it."""
     try:
-        return json.loads(gh("pr", "list", "--repo", REPO, "--state", "open", "--limit", "200",
-                             "--json", "author,body,headRefName") or "[]")
+        prs = json.loads(gh("pr", "list", "--repo", REPO, "--state", "open", "--limit", "200",
+                            "--json", "author,body,headRefName,createdAt") or "[]")
     except SystemExit:
         return []
+    return sorted(prs, key=lambda p: p["createdAt"])
 
 
 def row_of(rid):
@@ -202,12 +216,24 @@ def main():
         wait = [n for n in needs_of(r[1]) if n not in done_ids]
         if wait:
             sys.exit(f"{args[0]} waits for {', '.join(wait)}: pick another row")
-        held = live_claims(done_ids).get(args[0])
         me = gh("api", "user", "--jq", ".login").strip()
-        if held and held[0].split("/")[0] != me:
-            sys.exit(f"{args[0]} is claimed by {held[0]} since {held[1]}: pick another row")
+        taken = others_on(args[0], me, done_ids)
+        if taken:
+            sys.exit(f"{args[0]} overlaps a live claim ({', '.join(taken)}): pick another row")
         gh("issue", "comment", str(claims_issue()), "--repo", REPO, "--body", f"claim {args[0]} {args[1]}")
+        # Two claims in the same moment: the first comment wins. Read again and back out if this one lost.
+        taken = others_on(args[0], me, done_ids)
+        if taken:
+            gh("issue", "comment", str(claims_issue()), "--repo", REPO, "--body", f"release {args[0]}")
+            sys.exit(f"{args[0]} was claimed a moment earlier ({', '.join(taken)}): released, pick another row")
         print(f"claimed {args[0]} for {me}/{args[1]} for {CLAIM_DAYS} days")
+    elif cmd == "holder":
+        # CI: exit 1 when someone other than <github> holds this row, one of its parts, or its whole row.
+        if len(args) < 2:
+            sys.exit("usage: holder <ID> <github>")
+        taken = others_on(args[0], args[1], done_ids)
+        print("\n".join(taken) or f"{args[0]}: free or held by {args[1]}")
+        sys.exit(1 if taken else 0)
     elif cmd == "release":
         gh("issue", "comment", str(claims_issue()), "--repo", REPO, "--body", f"release {args[0]}")
         print(f"released {args[0]}")

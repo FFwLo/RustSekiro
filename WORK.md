@@ -67,6 +67,7 @@ only one that counts. Finished rows move to "Done" at the bottom; board history 
 | P5 | any | | open | FXR EqualDistanceEmitter 301 (particles spaced along the path) and node emitters 1005 | kb/fxr.md "Not covered" |
 | P6 | any | | open | SpEffect cycleOccurrenceSpEffectId rows (Ungo's 3421 -> 3422 -> 3423) and the refresh's fire flags | kb/speffect.md "Not covered" |
 | P7 | any | | open | The AI search interval stretch (FUN_140614be0 on DAT_143d547d8; intervals up to 0.62 s, RSekiro keeps 0.2-0.4 s) | kb/aicpp.md "Not covered" |
+| P8 | any | | open | Genichiro / Tomoe sword lightning: the look in a real fight (the bolt's forked web, the blade charge colour, now orange through the tonemap) against the game; timing already matches the AI (3043 on knockdown, 15 s cooldown) | from the old manual test list; kb/fxr.md |
 
 ## B: bugs and cleanup (good first rows)
 

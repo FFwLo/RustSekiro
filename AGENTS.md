@@ -20,7 +20,9 @@ the same steps.
 python tools/row.py                              # your claims and pull requests, and rows you can take
 python tools/row.py start <ID> --agent <name>    # claim, worktree, test root, the notes to read (--agent once)
 python tools/row.py check                        # in the worktree: guard + full suite, remembered for submit
-python tools/row.py submit "<one line>"          # push to your fork, open the pull request filled in (--part)
+python tools/row.py submit "<one line>"          # push to your fork, open the pull request filled in (--part;
+                                                 # E rows add --emu "<the emu-cases command>")
+python tools/row.py verify <PR>                  # re-make someone else's E row cases from your exe, run its tests
 python tools/row.py drop <ID>                    # give the row back and remove the worktree
 ```
 
@@ -117,8 +119,16 @@ itself. Branch names say what they are: `work-<ID>-<slug>-<github>-<agent>`, nev
    first). It pushes the branch to your fork and opens the pull request into `main`, titled `<ID>: <one line>`,
    with `Board: <ID> done: <one line>` and your test result already in the body. Tick the boxes it leaves open.
    After review changes: commit, `row.py check`, `row.py submit` again (it only pushes).
-3. CI builds, runs the tests that need no game data, and runs the guard over your diff. The owner reviews and
-   merges; only the owner merges into `main`.
+   An `E` row also passes `--emu "emu-cases <sekiro.exe> <out dir> [--snapshot <dir>] <names>"`, the command that
+   made your cases; submit refuses an `E` row whose diff has no generator in `tools/emu-cases/src/` or no
+   `..._matches_the_exe` test (`--why "<reason>"` when the row truly has no emulator check).
+3. CI builds, runs the tests that need no game data, runs the guard over your diff, and fails the `claim` check
+   when someone else holds the row (or its whole row, or one of its parts). The owner reviews and merges; only
+   the owner merges into `main`.
+   An `E` row's numbers come from one person's copy of the game, so they count as checked only after someone
+   else runs `python tools/row.py verify <PR>`: it checks the pull request out, re-makes the cases from their
+   own exe (and snapshot) into a fresh folder and runs the new tests on them, then comments the result. It builds
+   and runs the pull request's code: read the diff first.
 4. On the merge the board workflow moves the row to "Done" and writes `CHANGES.md`; nobody needs to edit the
    board. Remove your worktree (`python tools/worktree.py remove <agent>`). If you give up, say why in a comment
    on the claims issue and `row.py drop <ID>`.
