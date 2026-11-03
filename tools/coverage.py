@@ -133,6 +133,7 @@ def health_bars():
     the maps' EMEVD the way tools/npc_names.py reads them. None when the helpers cannot run."""
     try:
         sys.path.insert(0, os.path.join(REPO, 'tools'))
+        sys.dont_write_bytecode = True  # no tools/__pycache__ left behind
         import boss_events as be
         import boss_scripts as bs
         be.ROOT = EX
