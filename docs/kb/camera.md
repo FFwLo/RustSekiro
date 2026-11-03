@@ -247,3 +247,49 @@ Dated findings, oldest first. Append new entries at the end.
 - Not covered: the 1 cm fulcrum floor (smallest fulcrum fraction seen 0.44), the zero-length final
   cast, the position chase at 30 fps (exe once a frame, RSekiro per 1/60 s), walls while locked on,
   the TAE overrides of the distance rate (FUN_1408311a0) and of +0xf0 (FUN_140831190).
+
+## Lock-on camera and the pad mapping checked against the exe (2026-11-03, lockcam)
+- tools/emu-cases `lockcam` puts a target into the snapshot's LockTgtMan (DAT_143d78058; its one entry, the
+  enemy ~29 m off: entry +0x0 point, +0x10..+0x3f its 3x4 matrix, +0x88 owner), hands it to the camera
+  with FUN_1409c5f20(ChrCam, entry, 0) every frame (fills the lock helper at ChrCam +0x90, +0x10d0 = 1)
+  and runs FUN_140734790 -> FUN_14073c260: 16 scenarios, 1,545 frames (1,485 locked): target ahead / right /
+  behind-left / above / below / at 1.5 m / circling / passing over Wolf / running off / the real enemy,
+  Wolf strafing, 30 fps, the stick held, the lock let go after 1 s, a lock point that jumps 0.5 m (60 and
+  30 fps). Sim test `lock_camera_matches_the_exe` (src/sim_tests/emu_lockcam.rs).
+- The camera's lock point +0x280 is the lock helper's +0x1020 (when DAT_143afe850 == 1): the target point
+  averaged over the last 0.5 s (DAT_143afe848; CSPositionRecorder, 240 samples, newest first while the
+  summed dt <= 0.5), kept in the target's local frame, so a rigidly moving target is followed exactly and a
+  jump of the point eases in linearly over 0.5 s. Ported as `LockPointAverage` (was: the raw point).
+- The angles (`lock_chase`): w = focus (+0xd0) - fulcrum (dragged +0xe0, FUN_140734070 / FUN_140733e50 on
+  camera -> focus), P = focus + lockTgtPosRate * (lock point - focus) (+0x290), reach = sin(half) * |w|
+  (half = +0x50 FOV * +0x278 lockRotXShiftRatio * 0.5), a = asin(reach / |P - focus|) (pi/2 when inside),
+  pitch wanted = a + half + pitch(P - focus), clamped to rotRangeXAtLock lerped to the free limits
+  (+0x230 / +0x234) by |P.y - focus.y| over rotRangeLerpBegin/EndHeight; yaw wanted = yaw(P - focus). Both
+  chased by wrap(d) * rate * dt / (1/30) (lockRotChaseRateX / Y) with the play angle taken off when the
+  step would land inside it. The exe wraps with x - trunc((x + pi*sign x) / 2pi) * 2pi (`wrap_pi`).
+  Matched within 1e-5 rad on every locked frame.
+- Sv1 before: |w| was the configured camera distance (4.5) instead of the fulcrum's (~3.8; steady pitch on a
+  target 5 m ahead 0.446 vs the exe's 0.411 rad), yaw came from Wolf's position to the target's root, not
+  focus -> P, a hold when the target was overhead the exe does not have, and no averaging of the lock point.
+- Matched as they were: the focus follow, the fulcrum put back on the arm, the orbit point, the position
+  chase at targetChaseRateAtLockXZ / Y (angle factor 1), the safe margin, +0x194 held at 1 while locked;
+  after the lock is let go the free yaw is read back from the dragged fulcrum and +0x194 falls by
+  dt / transChaseByControlEndReleaseTime. The stick does nothing to the angles while locked.
+- Position chase, fixed: the angle factor's cosine is now rounded as the exe does it (divide by
+  sqrt((x² + z²) + y²), dot (x + y) + z). With AngAtLockMin 0 (cos 1.0) the exe stops the X / Z chase on
+  frames where the f32 cosine of nearly parallel vectors rounds above 1.0 (82 of 85 such frames stopped,
+  1,146 frames at or below 1.0 moved); glam's normalize rounded differently and kept chasing (up to
+  0.4 mm off on 81 frames). gap: the exe applies the chase rates once a frame with no time factor; at
+  30 fps it closes 0.4 a frame where `chase_position` (per 1/60 s) closes 0.64 (the test feeds it 1/60).
+- Pad (FUN_140960650 fills the frame at pad +0x38f8; FUN_1407f0f50 PadManipulator, emulated on made-up
+  frames): frame +0x0 / +0x4 = move up / right (actions 0x4f / 0x51; 0x4d walk halves them) -> M+0xc0 =
+  up * view + right * (view.z, 0, -view.x) (left-handed); +0x10 / +0x14 = lock switch (x, -y);
+  +0x18 / +0x1c mouse -> M+0xd4 / +0xd0; +0x28 / +0x2c camera yaw / pitch -> M+0x84 / +0x80. The right
+  stick's vector action 0x52 gives +0x28 = s10 * x (FUN_1409668f0) and +0x2c = -s11 * y (FUN_140966960),
+  s = +1 when option byte 10 / 11 ([[0x143d5aac0]+0x50]) is set, -1 when cleared; the snapshot's
+  options have both set. Sv1's orbit_with_stick (yaw -= x, pitch -= y, invert_y = option 11 cleared),
+  stick_world, chases_pitch and the lock switch's (x, -y) all agree; test `pad_mapping_matches_the_exe`.
+- gap: which physical axes action 0x52 / 0x4f / 0x51 are bound to (the key config) is not traced; taken as
+  XInput RX / RY and LX / LY (+0x258 / +0x25c, +0x24c / +0x250 of the device, + right / + up). Not
+  covered: walls and the ground while locked, TAE 151 / 153 / 155 while locked, target rotation (every
+  scenario keeps the snapshot's), the lock-on entry / exit blend of FOV and distance (LockCamParam).
