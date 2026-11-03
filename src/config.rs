@@ -221,6 +221,10 @@ pub struct PlayerConfig {
     /// stateInfo 999-996: 0 / 1-249 / 250-499 / 500+). Default 500 (the full throw).
     #[serde(default = "default_sen")]
     pub sen: u32,
+    /// Hard mode (the Demon Bell rung or the Charmless vow): Wolf wears SpEffect 8610, taking
+    /// x1.5 poison / burn and x1.2 terror build-up (`player::wolf_worn`). Default off.
+    #[serde(default)]
+    pub hard_mode: bool,
 }
 
 fn default_sen() -> u32 {
@@ -253,7 +257,7 @@ fn default_emblems() -> u32 {
 
 impl Default for PlayerConfig {
     fn default() -> Self {
-        Self { gourd_charges: 3, spirit_emblems: default_emblems(), infinite_emblems: false, resurrections: default_resurrections(), combat_art: default_combat_art(), prosthetics: default_prosthetics(), skills: Vec::new(), unlock_all_moves: true, sen: default_sen() }
+        Self { gourd_charges: 3, spirit_emblems: default_emblems(), infinite_emblems: false, resurrections: default_resurrections(), combat_art: default_combat_art(), prosthetics: default_prosthetics(), skills: Vec::new(), unlock_all_moves: true, sen: default_sen(), hard_mode: false }
     }
 }
 

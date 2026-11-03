@@ -79,3 +79,5 @@ resurrections = 1
 combat_art = 5100
 # Learned latent skills (SkillParam ids): 280 = Flowing Water (posture damage when guarding: slash x0.8, others x0.75).
 skills = [280]
+# Hard mode (Demon Bell / Charmless): Wolf wears SpEffect 8610, x1.5 poison / burn and x1.2 terror build-up.
+hard_mode = false

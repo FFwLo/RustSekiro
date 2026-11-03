@@ -286,8 +286,14 @@ impl Statuses {
     /// Test hook: applies SpEffect `id` to `e` as a full build-up would.
     #[cfg(test)]
     pub(crate) fn start_for(&mut self, combat: &Combat, e: Entity, id: i64) {
+        self.start_for_wearing(combat, e, &[], id);
+    }
+
+    /// Test hook: SpEffect `id`'s add onto `e` wearing `worn` (the "already on" rules see them).
+    #[cfg(test)]
+    pub(crate) fn start_for_wearing(&mut self, combat: &Combat, e: Entity, worn: &[i64], id: i64) {
         let Statuses(all, stop) = self;
-        start(combat, all.entry(e).or_default(), id, stop);
+        start(combat, all.entry(e).or_default(), worn, id, stop);
     }
 
     /// Test hook: SpEffect `id`'s build-up onto `e` wearing `worn`, unguarded, against `resist`.
@@ -322,12 +328,13 @@ impl Statuses {
         let npc = combat.npc(def);
         let num = |k: &str| npc[k].as_f64().unwrap_or(0.0) as f32;
         let guard = if guarded { [num("poisonGuardResist"), num("bloodGuardResist"), num("diseaseGuardResist"), num("curseGuardResist"), num("freezeGuardResist")] } else { [0.0; 5] };
-        self.build_up(combat, target, &crate::combat::worn_sp(def, &[]), sps, [num("resist_poison"), num("resist_blood"), num("resist_desease"), num("resist_curse"), num("resist_freeze")], guard)
+        self.build_up(combat, target, &crate::combat::worn_sp(def, &[]), sps, npc_resist(combat, def), guard)
     }
 
     /// An enemy's hit (or bullet) on Wolf: as `hit`, against WOLF_RESIST, the guard's share kept
-    /// off by his sword `weapon` (EquipParamWeapon, the equipped combat art's row).
-    pub fn hit_wolf(&mut self, combat: &Combat, wolf: Entity, weapon: i64, sps: &[i64], guard: Guard) -> Vec<String> {
+    /// off by his sword `weapon` (EquipParamWeapon, the equipped combat art's row), with his worn
+    /// rows (`player::wolf_worn`: Hard mode's 8610 x1.5 burn, 110010 Pretending Dead's disables).
+    pub fn hit_wolf_wearing(&mut self, combat: &Combat, wolf: Entity, worn: &[i64], weapon: i64, sps: &[i64], guard: Guard) -> Vec<String> {
         let w = combat.param("EquipParamWeapon", weapon);
         let num = |k: &str| w[k].as_f64().unwrap_or(0.0) as f32;
         let kept = match guard {
@@ -335,8 +342,12 @@ impl Statuses {
             Guard::Block => [num("poisonGuardResist"), num("bloodGuardResist"), num("diseaseGuardResist"), num("curseGuardResist"), num("freezeGuardResist")],
             Guard::Deflect => [num("poisonJustGuardResist"), num("bloodJustGuardResist"), num("diseaseJustGuardResist"), num("curseJustGuardResist"), num("freezeJustGuardResist")],
         };
-        // gap: Wolf's worn rows (110010 Pretending Dead disables all five) are not passed.
-        self.build_up(combat, wolf, &[], sps, [WOLF_RESIST; 5], kept)
+        self.build_up(combat, wolf, worn, sps, [WOLF_RESIST; 5], kept)
+    }
+
+    /// `hit_wolf_wearing` with no worn rows (the sim tests' bare Wolf).
+    pub fn hit_wolf(&mut self, combat: &Combat, wolf: Entity, weapon: i64, sps: &[i64], guard: Guard) -> Vec<String> {
+        self.hit_wolf_wearing(combat, wolf, &[], weapon, sps, guard)
     }
 
     /// Whether SpEffect `id` is a build-up (poison / burn) rather than an effect of its own.
@@ -352,114 +363,119 @@ impl Statuses {
     /// The build-up of `sps` onto `target`'s gauges; `resist` and the guard's kept-off % per type
     /// (0 poison, 1 burn, 2 terror, 3 curse, 4 freeze / shock).
     fn build_up(&mut self, combat: &Combat, target: Entity, worn: &[i64], sps: &[i64], resist: [f32; 5], guard: [f32; 5]) -> Vec<String> {
-        let rules = ResistRules::get();
         let Statuses(all, stop) = self;
         let status = all.entry(target).or_default();
-        let mut out = Vec::new();
-        for &id in sps.iter().filter(|id| **id > 0) {
-            let freeze = freeze_row(id);
-            // The shock chain's rows are the player's (9400 / 9420) whatever the target.
-            let Some(s) = sp(combat, id).or_else(|| freeze.and_then(|(row, _)| sp(combat, row))) else { continue };
-            let curse = rules.curse.get(&id).copied();
-            let ty = match s.state_info {
-                _ if freeze.is_some() => 4,
-                STATE_INFO_POISON if s.poizon_attack_power > 0.0 => 0,
-                STATE_INFO_BURN if s.regist_blood > 0.0 => 1,
-                STATE_INFO_TERROR if s.regist_illness > 0.0 => 2,
-                _ if curse.is_some() => 3,
-                _ => continue,
-            };
-            // Poison's own 9045 (disablePoison) keeps more poison off; the burns (9100-9125)
-            // disable nothing, so a burning enemy keeps building up (9122 disableBlood aside).
-            // The add refuses a row of category >= 10000 while one of its category is on
-            // (FUN_140c02280), before any build-up: a burning target takes no more burn
-            // (emulator: Wolf hit by 9100 / 9105 while burning keeps gauge and time).
-            if rules.disabled(status, worn, ty) || refused(combat, status, s) {
-                continue;
-            }
-            let (gauge, power, resist, guard, name) = match ty {
-                0 => (&mut status.poison, s.poizon_attack_power * s.regist_poizon_change_rate, resist[0], guard[0], "poison"),
-                1 => (&mut status.burn, s.regist_blood * s.regist_blood_change_rate, resist[1], guard[1], "burn"),
-                2 => (&mut status.terror, s.regist_illness * s.regist_illness_change_rate, resist[2], guard[2], "terror"),
-                4 => (&mut status.freeze, freeze.map_or(0.0, |f| f.1), resist[4], guard[4], "shock"),
-                _ => (&mut status.curse, curse.map_or(0.0, |c| c.0), resist[3], guard[3], "aging"),
-            };
-            // Whole points, as the exe's int build-up: (int)(power * rate), times the worn
-            // def*ResistDamageRate (Hard mode's 8610: 31 -> 46), then (int)(x * (1 - guard
-            // resist %)) when guarded.
-            let mut amount = (power.trunc() * rules.resist_damage_rate(worn, ty)).trunc();
-            if guard > 0.0 && amount > 0.0 {
-                amount = (amount * (1.0 - guard / 100.0)).trunc().max(0.0);
-            }
-            *gauge += amount;
-            if *gauge < resist.max(1.0) {
-                out.push(format!("{name} {:.0}/{resist:.0}", *gauge));
-                continue;
-            }
-            *gauge = 0.0;
-            // An instant row (effectEndurance 0: terror 9222 / 9223) takes its changeHpRate once
-            // (`tick`). gap: the terror death anim and HUD gauge are not exported / done.
-            // Its death and log are the row's own (round 57: before, every instant row was
-            // terror's 590 insane death; poison 4001 / 4003 are instant too).
-            if ty == 4 {
-                // The shock's payload row (9420): HP scaled by the worn freezeDamageRate %, the
-                // posture fields as they are, then its replace (9445, 1.5 s) and cycle (9450).
-                let (row, _) = freeze.unwrap();
-                let [hp_rate, hp_point, stamina_point, stamina_rate, behavior_ref, cycle] = rules.freeze_payload.get(&row).copied().unwrap_or_default();
-                let scale = freeze_damage_rate(status, worn);
-                status.instant_hp_rate += hp_rate * scale;
-                status.instant_hp_point += hp_point * scale;
-                status.instant_posture_point += -stamina_point;
-                status.instant_posture_rate += -stamina_rate;
-                status.instant_ref = behavior_ref as i64;
-                status.instant_name = name;
-                status.flash.push(row);
-                // The payload's HP is the scaled instant above: its replace takes over directly.
-                if let Some(next) = sp(combat, row).map(|r| r.replace_sp_effect_id).filter(|n| *n > 0) {
-                    start(combat, status, next, stop);
-                }
-                if cycle > 0.0 {
-                    start(combat, status, cycle as i64, stop);
-                }
-                out.push("SHOCK".to_string());
-                continue;
-            }
-            // An instant row (effectEndurance 0: terror 9200 / 9222, poison 4001 / 4003) fires
-            // its changeHpRate on its add tick through `tick_effects`; its init effect shows once.
-            if s.effect_endurance == 0.0 {
-                status.flash.push(id);
-            }
-            // Aging's build-up row has no time of its own: the fill applies its cycleOccurrence
-            // row (9600 -> 9620).
-            let applied = match curse {
-                Some((_, next)) if next > 0 => next,
-                _ => id,
-            };
-            start(combat, status, applied, stop);
-            out.push(match name {
-                "burn" => "BURNING".to_string(),
-                "terror" => "TERROR".to_string(),
-                "aging" => "AGING".to_string(),
-                _ => "POISONED".to_string(),
-            });
-        }
-        out
+        sps.iter().filter(|id| **id > 0).filter_map(|&id| build_up_one(combat, status, worn, id, resist, guard, stop)).collect()
     }
+}
+
+/// An enemy's resist max per type (NpcParam resist_poison / _blood / _desease / _curse / _freeze).
+fn npc_resist(combat: &Combat, a: &Actor) -> [f32; 5] {
+    let npc = combat.npc(a);
+    let num = |k: &str| npc[k].as_f64().unwrap_or(0.0) as f32;
+    [num("resist_poison"), num("resist_blood"), num("resist_desease"), num("resist_curse"), num("resist_freeze")]
+}
+
+/// One SpEffect's build-up onto `status` (Statuses::build_up), or its plain add when it builds
+/// nothing up; the log line.
+fn build_up_one(combat: &Combat, status: &mut Status, worn: &[i64], id: i64, resist: [f32; 5], guard: [f32; 5], stop: &mut Vec<Entity>) -> Option<String> {
+    let rules = ResistRules::get();
+    let freeze = freeze_row(id);
+    // The shock chain's rows are the player's (9400 / 9420) whatever the target.
+    let Some(s) = sp(combat, id).or_else(|| freeze.and_then(|(row, _)| sp(combat, row))) else { return None };
+    let curse = rules.curse.get(&id).copied();
+    let ty = match s.state_info {
+        _ if freeze.is_some() => 4,
+        STATE_INFO_POISON if s.poizon_attack_power > 0.0 => 0,
+        STATE_INFO_BURN if s.regist_blood > 0.0 => 1,
+        STATE_INFO_TERROR if s.regist_illness > 0.0 => 2,
+        _ if curse.is_some() => 3,
+        _ => return None,
+    };
+    // Poison's own 9045 (disablePoison) keeps more poison off; the burns (9100-9125)
+    // disable nothing, so a burning enemy keeps building up (9122 disableBlood aside).
+    // The add refuses a row of category >= 10000 while one of its category is on
+    // (FUN_140c02280), before any build-up: a burning target takes no more burn
+    // (emulator: Wolf hit by 9100 / 9105 while burning keeps gauge and time).
+    if rules.disabled(status, worn, ty) || refused(combat, status, worn, id) {
+        return None;
+    }
+    let (gauge, power, resist, guard, name) = match ty {
+        0 => (&mut status.poison, s.poizon_attack_power * s.regist_poizon_change_rate, resist[0], guard[0], "poison"),
+        1 => (&mut status.burn, s.regist_blood * s.regist_blood_change_rate, resist[1], guard[1], "burn"),
+        2 => (&mut status.terror, s.regist_illness * s.regist_illness_change_rate, resist[2], guard[2], "terror"),
+        4 => (&mut status.freeze, freeze.map_or(0.0, |f| f.1), resist[4], guard[4], "shock"),
+        _ => (&mut status.curse, curse.map_or(0.0, |c| c.0), resist[3], guard[3], "aging"),
+    };
+    // Whole points, as the exe's int build-up: (int)(power * rate), times the worn
+    // def*ResistDamageRate (Hard mode's 8610: 31 -> 46), then (int)(x * (1 - guard
+    // resist %)) when guarded.
+    let mut amount = (power.trunc() * rules.resist_damage_rate(worn, ty)).trunc();
+    if guard > 0.0 && amount > 0.0 {
+        amount = (amount * (1.0 - guard / 100.0)).trunc().max(0.0);
+    }
+    *gauge += amount;
+    if *gauge < resist.max(1.0) {
+        return Some(format!("{name} {:.0}/{resist:.0}", *gauge));
+    }
+    *gauge = 0.0;
+    // An instant row (effectEndurance 0: terror 9222 / 9223) takes its changeHpRate once
+    // (`tick`). gap: the terror death anim and HUD gauge are not exported / done.
+    // Its death and log are the row's own (round 57: before, every instant row was
+    // terror's 590 insane death; poison 4001 / 4003 are instant too).
+    if ty == 4 {
+        // The shock's payload row (9420): HP scaled by the worn freezeDamageRate %, the
+        // posture fields as they are, then its replace (9445, 1.5 s) and cycle (9450).
+        let (row, _) = freeze.unwrap();
+        let [hp_rate, hp_point, stamina_point, stamina_rate, behavior_ref, cycle] = rules.freeze_payload.get(&row).copied().unwrap_or_default();
+        let scale = freeze_damage_rate(status, worn);
+        status.instant_hp_rate += hp_rate * scale;
+        status.instant_hp_point += hp_point * scale;
+        status.instant_posture_point += -stamina_point;
+        status.instant_posture_rate += -stamina_rate;
+        status.instant_ref = behavior_ref as i64;
+        status.instant_name = name;
+        status.flash.push(row);
+        // The payload's HP is the scaled instant above: its replace takes over directly.
+        if let Some(next) = sp(combat, row).map(|r| r.replace_sp_effect_id).filter(|n| *n > 0) {
+            start(combat, status, worn, next, stop);
+        }
+        if cycle > 0.0 {
+            start(combat, status, worn, cycle as i64, stop);
+        }
+        return Some("SHOCK".to_string());
+    }
+    // An instant row (effectEndurance 0: terror 9200 / 9222, poison 4001 / 4003) fires
+    // its changeHpRate on its add tick through `tick_effects`; its init effect shows once.
+    if s.effect_endurance == 0.0 {
+        status.flash.push(id);
+    }
+    // Aging's build-up row has no time of its own: the fill applies its cycleOccurrence
+    // row (9600 -> 9620).
+    let applied = match curse {
+        Some((_, next)) if next > 0 => next,
+        _ => id,
+    };
+    start(combat, status, worn, applied, stop);
+    Some(match name {
+        "burn" => "BURNING".to_string(),
+        "terror" => "TERROR".to_string(),
+        "aging" => "AGING".to_string(),
+        _ => "POISONED".to_string(),
+    })
 }
 
 /// Aging on / off the body (round 44, bug fixes): its row's maxHpRate scales hp_max (HP kept
 /// under it; back up on the end), and the row is worn in `resident`, so combat.rs's
 /// npc_hit_damage takes its <attr>DamageCutRate 99 (x99). Its changeStaminaRate -100 applies
-/// every frame (round 46): a timed row with motionInterval 0 re-fires each tick (exe
-/// FUN_140c06b70 / FUN_140c06c60, summed by FUN_140bfe2c0 and added to the remaining posture at
-/// <decomp ref>), so the aged Wolf's posture stays drained to the floor (our full bar).
+/// every tick through `tick_effects`' posture (round 46: a timed row with motionInterval 0
+/// re-fires each tick, exe FUN_140c06b70 / FUN_140c06c60, summed by FUN_140bfe2c0 and added to
+/// the remaining posture at <decomp ref>; emulator speffect2 cat150_aging: 420 -> 0 at once), so
+/// the aged Wolf's posture stays drained to the floor (our full bar).
 /// gap: the player's floor in the clamp FUN_140bd4e20 (taken as empty, without a break
 /// reaction); defNinsatsuDmgRate (99, as the cut rates) is not applied; the exe's order of
 /// maxHpRate is not traced.
 pub(crate) fn set_aging(a: &mut Actor, combat: &Combat, aging: Option<i64>) {
-    if let Some(rate) = aging.and_then(|id| sp(combat, id)).map(|s| s.change_stamina_rate).filter(|r| *r < 0.0) {
-        a.posture = (a.posture - a.posture_max * rate / 100.0).min(a.posture_max);
-    }
     if a.aged == aging {
         return;
     }
@@ -495,38 +511,204 @@ fn sp(combat: &Combat, id: i64) -> Option<&SpEffect> {
     combat.player.sp_effects.get(&key).or_else(|| combat.kinds.iter().find_map(|k| k.data.sp_effects.get(&key)))
 }
 
-/// Applies an SpEffect as the exe's add does (FUN_1409e9c00 -> FUN_140c02280 / FUN_140c02000 /
-/// FUN_140c03af0, checked in the emulator: kb/speffect.md 2026-11-03):
-/// - a row of spCategory >= 10000 (the burns' 10004, poison's 10003, terror's 10005) is refused
-///   while one of its category is on: no add, no refresh (a burning Wolf hit by 9100 / 9105
-///   keeps his first burn and its time);
-/// - the same id refreshes: its time starts over at effectEndurance and its interval timer at 0
-///   (FUN_140c06860), keeping its body effects;
-/// - else a new entry, also beside rows of the same lower category (the pellet 3021 and the
-///   ohagi 3061, both category 20, run together);
-/// - a row with no duration (effectEndurance 0: 4011, terror 9200) is added already expired: it
-///   fires on the tick it is added and the next tick drops it and adds its replaceSpEffectId
-///   (`tick_effects`).
-/// The interval timer starts at 0, so the first fire is on the add's own tick, except stateInfo
-/// 50 / 52 / 67 / 68, which start at motionInterval (FUN_140c03af0).
-/// gap: FUN_140c02000's other matches (the same stateInfo 2 / 5 / 6, FUN_140c05a80's category
-/// rules 100-0xcc by categoryPriority) and stateInfo 155 / 120 / 121's fire at add.
-fn start(combat: &Combat, status: &mut Status, id: i64, stop: &mut Vec<Entity>) {
-    let _ = stop;
-    let Some(s) = sp(combat, id) else { return };
+/// The SpEffectParam fields the list's rules read, for any row (the worn residents too, which
+/// the export may lack): spCategory (+0x146), categoryPriority (+0x148), stateInfo (+0x15e),
+/// isExtendSpEffectLife (+0x16c bit 2) / extendLifeRate (+0x30c), isContractSpEffectLife (+0x275
+/// bit 4) / contractLifeRate (+0x310), lifeReductionType (+0x162) / lifeReductionRate (+0x124),
+/// hpRecoverRate (+0x128), changeHpEstusFlaskPoint (+0x2f4), changeHpEstusFlaskCorrectRate
+/// (+0x300). From extracted/json/params, parsed once.
+#[derive(Clone, Copy, Debug, Default)]
+struct ListRow {
+    category: i64,
+    priority: i64,
+    state_info: i64,
+    extend: bool,
+    extend_rate: f32,
+    contract: bool,
+    contract_rate: f32,
+    life_type: i64,
+    life_rate: f32,
+    hp_recover: f32,
+    estus_point: f32,
+    estus_correct: f32,
+}
+
+fn list_row(id: i64) -> ListRow {
+    static T: std::sync::OnceLock<HashMap<i64, ListRow>> = std::sync::OnceLock::new();
+    let t = T.get_or_init(|| {
+        let path = crate::paths::extracted().join("json/params/SpEffectParam.json");
+        let v: serde_json::Value = std::fs::read_to_string(path).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+        let rows: Vec<&serde_json::Value> = match &v["rows"] {
+            serde_json::Value::Array(a) => a.iter().collect(),
+            serde_json::Value::Object(o) => o.values().collect(),
+            _ => Vec::new(),
+        };
+        let n = |r: &serde_json::Value, k: &str| r[k].as_i64().unwrap_or(0);
+        let f = |r: &serde_json::Value, k: &str| r[k].as_f64().unwrap_or(1.0) as f32;
+        rows.iter()
+            .filter_map(|r| {
+                Some((
+                    r["id"].as_i64()?,
+                    ListRow {
+                        category: n(r, "spCategory"),
+                        priority: n(r, "categoryPriority"),
+                        state_info: n(r, "stateInfo"),
+                        extend: n(r, "isExtendSpEffectLife") != 0,
+                        extend_rate: f(r, "extendLifeRate"),
+                        contract: n(r, "isContractSpEffectLife") != 0,
+                        contract_rate: f(r, "contractLifeRate"),
+                        life_type: n(r, "lifeReductionType"),
+                        life_rate: f(r, "lifeReductionRate"),
+                        hp_recover: f(r, "hpRecoverRate"),
+                        estus_point: n(r, "changeHpEstusFlaskPoint") as f32,
+                        estus_correct: f(r, "changeHpEstusFlaskCorrectRate"),
+                    },
+                ))
+            })
+            .collect()
+    });
+    // A row the params lack: its exported fields, no list rules (ones).
+    t.get(&id).copied().unwrap_or(ListRow { extend_rate: 1.0, contract_rate: 1.0, life_rate: 1.0, hp_recover: 1.0, estus_correct: 1.0, ..Default::default() })
+}
+
+/// FUN_140c05a10: the new row's stateInfo 2 / 5 / 6 matches an entry of the same stateInfo,
+/// 1000 / 1001 one of either.
+fn same_state(new: i64, entry: i64) -> bool {
+    match new {
+        2 | 5 | 6 => entry == new,
+        1000 | 1001 => matches!(entry, 1000 | 1001),
+        _ => false,
+    }
+}
+
+/// FUN_140c05a80: the new row's category (and categoryPriority) meets an entry's.
+fn category_meets(new: &ListRow, entry: &ListRow) -> bool {
+    let (c, e) = (new.category, entry.category);
+    match c {
+        100 => e == 100 && entry.priority == new.priority,
+        110 | 140 => e == c,
+        141 => e == 141 && entry.priority < new.priority,
+        130..=133 | 150..=204 => e == c,
+        _ => false,
+    }
+}
+
+/// FUN_140c064c0: whether the new row `id` takes over the entry `entry_id` (FUN_140c06860 puts the
+/// new row in its place). Category 20: the same id; 100: the same priority; 141: never; 175-189:
+/// a priority not above the entry's; stateInfo 1000 / 1001 one of either; 110, 130-133, 140,
+/// 150-174 and 190-204: the same category.
+fn takes_over(entry_id: i64, entry: &ListRow, id: i64, new: &ListRow) -> bool {
+    let (c, e) = (new.category, entry.category);
+    match e {
+        20 => entry_id == id,
+        100 => c == 100 && new.priority == entry.priority,
+        110 => c == 110,
+        165..=174 | 130..=133 | 140 => c == e,
+        141 => false,
+        _ if matches!(entry.state_info, 1000 | 1001) => matches!(new.state_info, 1000 | 1001),
+        150..=164 | 190..=204 => c == e,
+        175..=189 => c == e && new.priority <= entry.priority,
+        _ => false,
+    }
+}
+
+/// What the add (FUN_140c02c50) does with row `id` on `status` wearing `worn`.
+#[derive(PartialEq, Debug)]
+enum Add {
+    /// FUN_140c02280 (category >= 10000 with one of its category on) or FUN_140c02000 with no
+    /// entry FUN_140c064c0 hands over (returns -2): nothing changes, no build-up.
+    Refused,
+    /// The entry at this index takes the new row (FUN_140c06860).
+    TakeOver(usize),
+    /// A new entry (FUN_140c03af0); also when a worn resident is the one taken over (gap: the
+    /// exe hands the resident's entry to the new row; here the resident stays worn).
+    New,
+}
+
+fn add_kind(combat: &Combat, status: &Status, worn: &[i64], id: i64) -> Add {
+    let Some(s) = sp(combat, id) else { return Add::Refused };
     if s.sp_category >= 10000 && status.effects.iter().any(|a| sp(combat, a.id).is_some_and(|o| o.sp_category == s.sp_category)) {
+        return Add::Refused;
+    }
+    let new = ListRow { category: s.sp_category, state_info: s.state_info, ..list_row(id) };
+    // FUN_140c02000 over the list: the worn residents (the head of the exe's list) and the entries.
+    // The same id counts only on an entry not expired and not of category 10 (FUN_140c059e0).
+    let entries = status.effects.iter().map(|a| (a.id, a.expired)).chain(worn.iter().map(|&w| (w, false)));
+    let on = entries.into_iter().any(|(eid, expired)| {
+        let e = list_row(eid);
+        (eid == id && !expired && e.category != 10) || same_state(new.state_info, e.state_info) || category_meets(&new, &e)
+    });
+    if !on {
+        return Add::New;
+    }
+    if worn.iter().any(|&w| takes_over(w, &list_row(w), id, &new)) {
+        return Add::New;
+    }
+    match status.effects.iter().position(|a| takes_over(a.id, &list_row(a.id), id, &new)) {
+        Some(i) => Add::TakeOver(i),
+        None => Add::Refused,
+    }
+}
+
+/// FUN_140c00de0: the effectEndurance multiplier of a new row: the product of the
+/// lifeReductionRate of every row on whose lifeReductionType is the new row's stateInfo.
+fn life_multiplier(status: &Status, worn: &[i64], state_info: i64) -> f32 {
+    if state_info == 0 {
+        return 1.0;
+    }
+    status.effects.iter().map(|a| a.id).chain(worn.iter().copied()).map(list_row).filter(|r| r.life_type != 0 && r.life_type == state_info).map(|r| r.life_rate).product()
+}
+
+/// Applies an SpEffect as the exe's add does (FUN_1409e9c00 -> FUN_140c02c50, checked in the
+/// emulator: kb/speffect.md 2026-11-03, speffect2):
+/// - refused (`Add::Refused`): a row of spCategory >= 10000 while one of its category is on
+///   (FUN_140c02280: a burning Wolf hit by 9100 / 9105 keeps his first burn and its time); or
+///   FUN_140c02000 finds it "already on" (the same id; the same stateInfo 2 / 5 / 6: a bleed 6400
+///   or the Elixir's 3044 on a burning Wolf; the category rules of FUN_140c05a80) and
+///   FUN_140c064c0 hands no entry over: a category-0 row added again keeps its time (9250 at 1 s:
+///   0.9667 left), a category-141 row of a higher priority than the one on (107712 on 6022) and
+///   a Knowledge of Medicine level above the one on (150203 on 150204) are dropped;
+/// - taken over (FUN_140c06860): the entry becomes the new row, its time starts over at
+///   effectEndurance and its interval timer at 0 (not for stateInfo 50 / 52 / 67 / 68): the
+///   pellet 3021 again, Ako's 3401 on Ungo's 3421 (category 162), 220031 on 220030 (100, the same
+///   priority), 42 on 41 (110), 9640 on aging's 9620 (150), 150204 on 150203 (181, lower);
+/// - else a new entry (FUN_140c03af0), also beside rows of category 20 (pellet 3021 and ohagi
+///   3061 run together): time = effectEndurance x the lifeReduction multiplier (FUN_140c00de0);
+///   one with no duration (4011, terror 9200) is expired at once (time in (-0.9667, 0]): it fires
+///   on the tick it is added and the next tick drops it and adds its replaceSpEffectId
+///   (`tick_effects`), except stateInfo 120 / 121 / 155, which fire at the add instead
+///   (5370 lives the same frame either way).
+/// The interval timer starts at 0, so the first fire is on the add's own tick, except stateInfo
+/// 50 / 52 / 67 / 68, which start at motionInterval.
+fn start(combat: &Combat, status: &mut Status, worn: &[i64], id: i64, stop: &mut Vec<Entity>) {
+    let Some(s) = sp(combat, id) else { return };
+    let kind = add_kind(combat, status, worn, id);
+    if kind == Add::Refused {
         return;
     }
-    let timer = if matches!(s.state_info, 50 | 52 | 67 | 68) { s.motion_interval } else { 0.0 };
-    if let Some(a) = status.effects.iter_mut().find(|a| a.id == id) {
-        a.left = s.effect_endurance;
-        a.next_tick = timer;
-        a.expired = s.effect_endurance == 0.0;
+    let time = s.effect_endurance * life_multiplier(status, worn, s.state_info);
+    let expired = !(time > 0.0 || time <= -0.966_666_64);
+    let interval_start = matches!(s.state_info, 50 | 52 | 67 | 68);
+    if let Add::TakeOver(i) = kind {
+        let a = &mut status.effects[i];
+        if a.id != id {
+            stop.extend(a.fx.drain(..));
+            a.shown = s.effect_endurance == 0.0;
+        }
+        a.id = id;
+        a.left = time;
+        a.expired = expired;
+        a.fresh = true;
+        if !interval_start {
+            a.next_tick = 0.0;
+        }
         return;
     }
+    let fires_at_add = matches!(s.state_info, 120 | 121 | 155);
+    let expired = expired && !fires_at_add;
+    let timer = if interval_start { s.motion_interval } else { 0.0 };
     // A row with no duration shows through `flash` (its init effect once), not as a lasting one.
-    let instant = s.effect_endurance == 0.0;
-    status.effects.push(Affliction { id, left: s.effect_endurance, next_tick: timer, expired: instant, fresh: true, shown: instant, fx: Vec::new() });
+    status.effects.push(Affliction { id, left: time, next_tick: timer, expired, fresh: true, shown: s.effect_endurance == 0.0, fx: Vec::new() });
 }
 
 /// A timed SpEffect's time on one tick of FUN_140c06b70 (the lists outside `Status`: Wolf's
@@ -546,32 +728,64 @@ pub(crate) fn count_down(left: &mut f32, dt: f32) -> bool {
     true
 }
 
-/// Whether `start` would refuse `id` now: a row of spCategory >= 10000 with one of its category
-/// on (FUN_140c02280). Its build-up is refused with it (no gauge added).
-fn refused(combat: &Combat, status: &Status, s: &SpEffect) -> bool {
-    s.sp_category >= 10000 && status.effects.iter().any(|a| sp(combat, a.id).is_some_and(|o| o.sp_category == s.sp_category))
+/// Whether `start` would refuse `id` now (`Add::Refused`). Its build-up is refused with it (no
+/// gauge added): a burning Wolf takes no bleed 6400 build-up either (emulator).
+fn refused(combat: &Combat, status: &Status, worn: &[i64], id: i64) -> bool {
+    add_kind(combat, status, worn, id) == Add::Refused
+}
+
+/// The character the list ticks on: the rows it wears outside `Status` (the residents, Wolf's
+/// skills and Hard mode: `player::wolf_worn`) and its resist max per type (poison, burn, terror,
+/// curse, freeze), which a replace's build-up meets.
+pub(crate) struct Wearer<'a> {
+    pub worn: &'a [i64],
+    pub resist: [f32; 5],
+}
+
+/// One tick's reactions: the HP change (negative = damage), the posture change in the exe's
+/// terms (posture left: positive = regen), the behaviorRefId of the last row that hurt.
+#[derive(Default, Debug, PartialEq)]
+pub(crate) struct Ticked {
+    pub hp: i32,
+    pub posture: i32,
+    pub hurt: i64,
 }
 
 /// One pass of a character's SpEffect list, FUN_140c005b0 with the entry tick FUN_140c06b70,
-/// then the HP sum of the fired rows (FUN_140b658b0 -> FUN_140bfd0a0 -> FUN_140c014f0). Per
-/// entry, in list order:
+/// then the HP sum of the fired rows (FUN_140b658b0 -> FUN_140bfd0a0 -> FUN_140c014f0) and their
+/// posture (FUN_140bfe2c0, <decomp ref>). Per entry, in list order:
 /// - one marked expired on an earlier tick goes (its body effects stop) and its
-///   replaceSpEffectId is added, ticking in this same pass (109450 -> 109451 at 0.9667 s left on
-///   the next frame at 30 fps);
+///   replaceSpEffectId is added through the whole add, build-up included (FUN_140c005b0 ->
+///   FUN_1409e9c00): the floor's 4011 -> 4012 puts 22 into Wolf's burn gauge (15 x 1.5) and burns
+///   only on the tenth; 109450 -> 109451 at 0.9667 s left on the next frame at 30 fps;
 /// - expired is marked when its time is <= 0 and > -1 (-1: worn for good), before this tick's
 ///   count: it still fires and lives this tick;
 /// - it fires when its interval timer is <= 0, the timer going up by motionInterval (0: every
 ///   tick);
-/// - the timer and the time count down by dt while > 0, the time stopping at -FLT_EPSILON.
-/// The fired rows' changeHpRate (% of max HP) and changeHpPoint are summed and the HP change
-/// truncated once: (int)(-(max * rate * 0.01) - point), so a burn 0.5 % + 4 on Wolf's 1120 is 9.
-/// Returns that HP change (negative = damage) and the behaviorRefId of the last row that hurt.
-/// gap: changeHpEstusFlaskRate, hpRecoverRate (regen items) and the posture fields of a fired
-/// row (FUN_140bfe2c0) are not taken here; isExtendSpEffectLife's slower count under the
-/// buff-duration skill (stateInfo 193) is not ported; the replace is added without its
-/// build-up (4011's 4012 fills the exe's burn gauge instead of burning).
-pub(crate) fn tick_effects(combat: &Combat, status: &mut Status, hp_max: f32, dt: f32, stop: &mut Vec<Entity>) -> (i32, i64) {
-    let (mut rate, mut point, mut hurt) = (0.0f32, 0.0f32, 0);
+/// - the timer and the time count down by dt while > 0, the time stopping at -FLT_EPSILON; a row
+///   with isExtendSpEffectLife by dt / (1 + sum(extendLifeRate - 1)) of the stateInfo-193 rows
+///   on (the buff-duration skill 150600, 1.5: Ako's 3401 and Ungo's 3421 last 45 s), one with
+///   isContractSpEffectLife by dt x (1 + sum(contractLifeRate - 1)) of the stateInfo-303 rows.
+/// HP: the fired rows' changeHpRate (% of max HP) and changeHpPoint are summed (a heal's times
+/// the worn hpRecoverRate product), and so are their changeHpEstusFlaskRate (a heal's times the
+/// worn changeHpEstusFlaskCorrectRate product, each held within +-100 %) and
+/// changeHpEstusFlaskPoint; each pair is truncated once: (int)(-(max * rate * 0.01) - point).
+/// A burn 0.5 % + 4 on Wolf's 1120 is 9; the pellet 3021 (-3 % x 1.5, Knowledge of Medicine
+/// LV5) +50, the ohagi 3061 (-7 % x 1.5) +117, both on one tick +168.
+/// Posture: their changeStaminaRate (% of max) and changeStaminaPoint, (int)(max * rate * 0.01 +
+/// point): the persimmon 3071 +42 of Wolf's 420 a second, the ohagi's 3062 +84, aging's 9620
+/// -100 % every tick.
+/// gap: cycleOccurrenceSpEffectId rows (Ungo's 3421 -> 3422 -> 3423) are not added here; the
+/// gourd 3000 heals through `player::estus_heal`.
+pub(crate) fn tick_effects(combat: &Combat, status: &mut Status, wearer: &Wearer, hp_max: f32, posture_max: f32, dt: f32, stop: &mut Vec<Entity>) -> Ticked {
+    let rows = |status: &Status| status.effects.iter().map(|a| a.id).chain(wearer.worn.iter().copied()).map(list_row).collect::<Vec<_>>();
+    let on = rows(status);
+    let extend = 1.0 + on.iter().filter(|r| r.state_info == 193).map(|r| r.extend_rate - 1.0).sum::<f32>();
+    let contract = 1.0 + on.iter().filter(|r| r.state_info == 303).map(|r| r.contract_rate - 1.0).sum::<f32>();
+    // The fired rows: changeHpRate, changeHpPoint, changeHpEstusFlaskRate, changeHpEstusFlaskPoint,
+    // changeStaminaRate, changeStaminaPoint.
+    let mut fired: Vec<(f32, f32, f32, f32, f32, f32)> = Vec::new();
+    let mut hurt = 0;
     let mut i = 0;
     while i < status.effects.len() {
         let f = &mut status.effects[i];
@@ -582,36 +796,66 @@ pub(crate) fn tick_effects(combat: &Combat, status: &mut Status, hp_max: f32, dt
         if f.expired && !f.fresh {
             let gone = status.effects.remove(i);
             stop.extend(gone.fx);
-            if s.replace_sp_effect_id > 0 {
-                start(combat, status, s.replace_sp_effect_id, stop);
+            let next = s.replace_sp_effect_id;
+            if next > 0 {
+                if Statuses::is_build_up(combat, next) {
+                    build_up_one(combat, status, wearer.worn, next, wearer.resist, [0.0; 5], stop);
+                } else {
+                    start(combat, status, wearer.worn, next, stop);
+                }
             }
             continue;
         }
         f.fresh = false;
+        let row = list_row(f.id);
+        let mut step = dt;
+        if row.extend && extend > 0.0 {
+            step /= extend;
+        }
+        if row.contract && contract > 0.0 {
+            step *= contract;
+        }
         if f.left <= 0.0 && f.left > -1.0 {
             f.expired = true;
         }
         if f.next_tick <= 0.0 {
             f.next_tick += s.motion_interval;
-            rate += s.change_hp_rate;
-            point += s.change_hp_point;
+            fired.push((s.change_hp_rate, s.change_hp_point, s.change_hp_estus_flask_rate, row.estus_point, s.change_stamina_rate, s.change_stamina_point));
             if s.change_hp_rate > 0.0 || s.change_hp_point > 0.0 {
                 hurt = s.behavior_ref_id;
             }
         }
         if f.next_tick > 0.0 {
-            f.next_tick -= dt;
+            f.next_tick -= step;
         }
         if f.left > 0.0 {
-            f.left = (f.left - dt).max(-f32::EPSILON);
+            f.left = (f.left - step).max(-f32::EPSILON);
         }
         i += 1;
     }
-    ((-(hp_max * rate * 0.01) - point) as i32, hurt)
+    // FUN_140c00ce0 over the list after the pass: the hpRecoverRate and
+    // changeHpEstusFlaskCorrectRate products that scale a heal.
+    let on = rows(status);
+    let recover: f32 = on.iter().map(|r| r.hp_recover).product();
+    let correct: f32 = on.iter().map(|r| r.estus_correct).product();
+    let heal = |v: f32, by: f32| if v < 0.0 { v * by } else { v };
+    let (mut rate, mut point, mut estus, mut estus_point) = (0.0f32, 0i32, 0.0f32, 0i32);
+    let (mut stamina_rate, mut stamina_point) = (0.0f32, 0i32);
+    for (r, p, er, ep, sr, sp) in fired {
+        rate += heal(r, recover);
+        point += heal(p.trunc(), recover) as i32;
+        estus += heal(er, correct).clamp(-100.0, 100.0);
+        estus_point = (estus_point as f32 + heal(ep, correct).clamp(-9999.0, 9999.0)) as i32;
+        stamina_rate += sr;
+        stamina_point += sp as i32;
+    }
+    let hp = (-(hp_max * rate * 0.01) - point as f32) as i32 + (-(hp_max * estus * 0.01) - estus_point as f32) as i32;
+    let posture = (posture_max * stamina_rate * 0.01 + stamina_point as f32) as i32;
+    Ticked { hp, posture, hurt }
 }
 
 /// The afflictions' damage ticks and ends.
-pub(crate) fn tick(time: Res<Time>, combat: Res<Combat>, mut statuses: ResMut<Statuses>, mut actors: Query<(Entity, &mut Actor)>, mut log: Option<ResMut<CombatLog>>) {
+pub(crate) fn tick(time: Res<Time>, combat: Res<Combat>, config: Option<Res<crate::config::GameConfig>>, mut statuses: ResMut<Statuses>, mut actors: Query<(Entity, &mut Actor)>, mut log: Option<ResMut<CombatLog>>) {
     let real_dt = time.delta_secs();
     let rules = ResistRules::get();
     let Statuses(all, stop) = &mut *statuses;
@@ -653,7 +897,19 @@ pub(crate) fn tick(time: Res<Time>, combat: Res<Combat>, mut statuses: ResMut<St
                 log.push(format!("{}: -{dmg:.0} HP", status.instant_name), Color::srgb(0.7, 0.55, 0.9));
             }
         }
-        let (delta, hurt) = tick_effects(&combat, status, a.hp_max, dt, stop);
+        // The rows the character wears outside `Status` and its resist (a replace's build-up).
+        let wolf = a.side == crate::actor::Side::Player;
+        let worn = match (&config, wolf) {
+            (Some(config), true) => crate::player::wolf_worn(&combat, config, &a),
+            _ => crate::combat::worn_sp(&a, &[]),
+        };
+        let resist = if wolf { [WOLF_RESIST; 5] } else { npc_resist(&combat, &a) };
+        let ticked = tick_effects(&combat, status, &Wearer { worn: &worn, resist }, a.hp_max, a.posture_max, dt, stop);
+        // The exe's posture is what is left (FUN_140bd4de0 adds the change); ours is the damage.
+        if ticked.posture != 0 && a.hp > 0.0 {
+            a.posture = a.bound_posture(a.posture - ticked.posture as f32).min(a.posture_max);
+        }
+        let (delta, hurt) = (ticked.hp, ticked.hurt);
         if delta != 0 && a.hp > 0.0 {
             a.hp = (a.hp + delta as f32).clamp(0.0, a.hp_max);
             if a.hp <= 0.0 {

@@ -50,13 +50,23 @@ pub(super) fn call_quiet(emu: &mut Emu, va: u64, args: &[u64], xmm: &[f32]) -> O
     if r == 0 && rip == RETURN { None } else { Some((rip, r)) }
 }
 
-struct Scenario {
-    name: &'static str,
-    enemy: bool,
-    fps: u32,
-    frames: usize,
+pub(super) struct Scenario {
+    pub(super) name: &'static str,
+    pub(super) enemy: bool,
+    pub(super) fps: u32,
+    pub(super) frames: usize,
     /// (frame, SpEffect id): added before that frame's tick.
-    adds: Vec<(usize, i32)>,
+    pub(super) adds: Vec<(usize, i32)>,
+}
+
+/// What a scenario changes in its emulator copy before the first frame: the data module's
+/// posture (+0x148; the regens need room) and the worn rows whose disable* bits (row +0x16b bits
+/// 2-5, +0x275 bit 0) are cleared (the General's 30201 "[Conversation] damage completely
+/// invalid", speffect2).
+#[derive(Default)]
+pub(super) struct Setup {
+    pub(super) posture: Option<u32>,
+    pub(super) clear: &'static [i32],
 }
 
 fn entries(emu: &mut Emu, chr: u64) -> Vec<Value> {
@@ -134,6 +144,11 @@ fn scenarios() -> Vec<Scenario> {
 }
 
 pub(crate) fn run(new_emu: &dyn Fn() -> Emu, out: &Path) {
+    run_set(new_emu, out, "speffect_ticks", scenarios().into_iter().map(|s| (s, Setup::default())).collect());
+}
+
+/// Runs `set` and writes extracted/emu/<file>.json (speffect_try.json under SPEFFECT_ONLY).
+pub(super) fn run_set(new_emu: &dyn Fn() -> Emu, out: &Path, file: &str, set: Vec<(Scenario, Setup)>) {
     let first = &mut new_emu();
     let all = super::damage::chrs(first);
     let wolf = all[0];
@@ -144,7 +159,7 @@ pub(crate) fn run(new_emu: &dyn Fn() -> Emu, out: &Path) {
     let mut frames_total = 0;
     // SPEFFECT_ONLY=name,name runs those scenarios only (and writes speffect_try.json).
     let only: Vec<String> = std::env::var("SPEFFECT_ONLY").map(|v| v.split(',').map(str::to_string).collect()).unwrap_or_default();
-    for s in scenarios().into_iter().filter(|s| only.is_empty() || only.iter().any(|o| o == s.name)) {
+    for (s, setup) in set.into_iter().filter(|(s, _)| only.is_empty() || only.iter().any(|o| o == s.name)) {
         let emu = &mut new_emu();
         let chr = if s.enemy { enemy } else { wolf };
         if s.enemy {
@@ -153,6 +168,26 @@ pub(crate) fn run(new_emu: &dyn Fn() -> Emu, out: &Path) {
             // and the build-ups are dropped. Cleared in the emulator copy so his reactions run.
             let b = emu.peek::<1>(chr + 0x1a11)[0];
             emu.raw_write(chr + 0x1a11, &[b & !0x20]);
+        }
+        for &id in setup.clear {
+            let list = emu.peek_u64(chr + 0x11d0);
+            let mut e = if list == 0 { 0 } else { emu.peek_u64(list + 8) };
+            while e != 0 {
+                if pu32(emu, e + 0x58) as i32 == id {
+                    let row = emu.peek_u64(e + 0x60);
+                    let b = emu.peek::<1>(row + 0x16b)[0];
+                    emu.raw_write(row + 0x16b, &[b & !0x3c]);
+                    let b = emu.peek::<1>(row + 0x275)[0];
+                    emu.raw_write(row + 0x275, &[b & !1]);
+                }
+                e = emu.peek_u64(e + 0x70);
+            }
+        }
+        if let Some(p) = setup.posture {
+            let bag = emu.peek_u64(chr + 0x1ff8);
+            let data = emu.peek_u64(bag + 0x18);
+            emu.peek::<4>(data + 0x148);
+            emu.raw_write(data + 0x148, &p.to_le_bytes());
         }
         let ones = emu.alloc(0x10);
         emu.poke_f32s(ones, &[1.0, 1.0, 1.0, 1.0]);
@@ -189,12 +224,13 @@ pub(crate) fn run(new_emu: &dyn Fn() -> Emu, out: &Path) {
         runs.push(json!({
             "name": s.name, "enemy": s.enemy, "fps": s.fps, "dt": dt,
             "adds": s.adds.iter().map(|(f, id)| json!([f, id])).collect::<Vec<_>>(),
+            "cleared": setup.clear,
             "start": start, "frames": frames, "stopped": stopped,
         }));
     }
     println!("speffect: {} scenarios, {frames_total} frames", runs.len());
     std::fs::write(
-        out.join(if only.is_empty() { "speffect_ticks.json" } else { "speffect_try.json" }),
+        out.join(if only.is_empty() { format!("{file}.json") } else { "speffect_try.json".to_string() }),
         serde_json::to_string(&json!({"add": format!("{ADD:#x}"), "tick": format!("{TICK:#x}"), "runs": runs})).unwrap(),
     )
     .unwrap();

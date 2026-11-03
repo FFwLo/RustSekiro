@@ -228,6 +228,9 @@ pub struct SpEffect {
     /// 105050 / 150321 / 150331: 34 at a deathblow).
     #[serde(default)]
     pub change_stamina_rate: f32,
+    /// Flat posture change per fire (positive = recovery; the shock 9420: -180).
+    #[serde(default)]
+    pub change_stamina_point: f32,
     /// The effect works only while one of these stateInfos is on the character (0 = no condition):
     /// the deathblow recoveries need their skill's permit (150301 HP (A): 986).
     #[serde(default)]
