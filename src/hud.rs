@@ -325,7 +325,7 @@ fn sync_res_nodes(mut commands: Commands, config: Res<crate::config::GameConfig>
 }
 
 /// MenuParam SpMinimumDispTime (0.5, extracted/json/params/MenuParam.json; row offset 0xb4, read
-/// at exe 140e3.c:7651): the least time the posture gauge stays up once its damage is gone.
+/// at exe <decomp ref>): the least time the posture gauge stays up once its damage is gone.
 const SP_MIN_DISP_TIME: f32 = 0.5;
 
 /// The posture gauge's state (exe FUN_140a02a10 -> chr+0x1a40): 0 normal, 1 about to break (at
@@ -386,7 +386,7 @@ fn update_player_hud(
             bg.color = posture_tint(pf);
         }
     }
-    // The gauge stays SP_MIN_DISP_TIME after the posture is back to 0 (exe 140e3.c:7637-7661).
+    // The gauge stays SP_MIN_DISP_TIME after the posture is back to 0 (exe <decomp ref>).
     *posture_hold = if pf > 0.005 { SP_MIN_DISP_TIME } else { (*posture_hold - time.delta_secs()).max(0.0) };
     for (r, mut v) in &mut root {
         if r.0 == Side::Player {
@@ -906,7 +906,7 @@ pub(crate) fn deathblow_mark_target(combat: &Combat, wa: &Actor, wolf: Vec3, ene
         }
         let dmy = |id: i16| dm.and_then(|dm| dm.0.get(&id)).and_then(|m| dummies.get(*m).ok()).map(|g| g.translation());
         let db = crate::player::deathblow_check(combat, wolf, wa.forward(), wa.aged.is_some(), ea, e, eg.translation(), &dmy)?;
-        Some((ent, eg.translation(), db.in_reach, e.is_broken()))
+        Some((ent, eg.translation(), db.in_reach, e.is_broken(), crate::player::chr_number(combat, ea)))
     });
     crate::player::deathblow_pick(cands, lock, wolf, true)
 }

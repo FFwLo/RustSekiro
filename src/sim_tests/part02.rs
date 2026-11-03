@@ -1161,10 +1161,12 @@ pub(crate) fn plunging_onto_a_broken_enemy_is_a_deathblow() {
             let (mut e, mut a, mut t) = q.single_mut(world).unwrap();
             a.posture = a.posture_max;
             e.on_posture_break(&mut a, &combat, false, 8.0);
-            t.translation.z = -1.0;
+            t.translation.z = 1.2;
         });
     }
-    app.world_mut().resource_mut::<PadInput>().press(Action::Jump);
+    // A flat-ground jump tops out about 2 m over the enemy, under the plunge orbit check's
+    // heightLimit 3 m (FUN_140be3ba0, throw_fall_orbit_ok): Wolf falls from 4 m instead.
+    super::part03::start_falling_onto(&mut app, 4.0, 0.0);
     let (mut pressed, mut states) = (false, Vec::<String>::new());
     for _ in 0..200 {
         app.update();
@@ -1348,10 +1350,11 @@ pub(crate) fn ochimusha_plunge_deathblow_uses_its_a200_pair() {
             let (mut e, mut a, mut t) = q.single_mut(world).unwrap();
             a.posture = a.posture_max;
             e.on_posture_break(&mut a, &combat, false, 8.0);
-            t.translation.z = -1.0;
+            t.translation.z = 1.2;
         });
     }
-    app.world_mut().resource_mut::<PadInput>().press(Action::Jump);
+    // From 4 m: a flat jump stays under the orbit check's heightLimit 3 m (FUN_140be3ba0).
+    super::part03::start_falling_onto(&mut app, 4.0, 0.0);
     let mut pressed = false;
     for _ in 0..200 {
         app.update();

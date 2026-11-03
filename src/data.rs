@@ -1886,6 +1886,16 @@ impl CharData {
         a.events.iter().find(|e| e.kind == 932 && matches!(e.arg_i64("unk0"), Some(104 | 105)) && (e.in_time(t) || end)).and_then(|e| e.arg_i64("unk0"))
     }
 
+    /// The defender throwable state TAE 932 writes now (exe: throw module +0x7a, each frame;
+    /// unk0): the event in force, the finisher windows 104 / 105 held past the anim's end
+    /// (finisher_window). None without one.
+    pub fn throw_state(&self, key: &str, t: f32) -> Option<i64> {
+        if let Some(w) = self.finisher_window(key, t) {
+            return Some(w);
+        }
+        self.events_at(key, t).find(|e| e.kind == 932).and_then(|e| e.arg_i64("unk0"))
+    }
+
     /// Is a ChrActionFlag (TAE type 0) of this FlagType active?
     pub fn flag(&self, key: &str, t: f32, flag_type: i64) -> bool {
         self.events_at(key, t).any(|e| e.kind == 0 && e.flag_type() == Some(flag_type))

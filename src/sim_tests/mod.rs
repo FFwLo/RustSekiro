@@ -48,6 +48,7 @@ mod emu_taecam;
 mod emu_modticks;
 mod emu_taewin;
 mod emu_throw;
+mod emu_throw2;
 mod emu_aicpp;
 mod emu_speffect;
 mod emu_proxy;

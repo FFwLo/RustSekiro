@@ -284,3 +284,71 @@ Naomori-arena snapshot. extracted/emu/throw_kinds.json, throw_ranges.json.
   test's other gates (vfunc 0x550, the throw node's bits at +0x70) was not run.
 - gap: the pick among several passing rows (ThrowKindParam checkPriority: behind 10, break 2,
   break-behind 0) is not traced; Sv1's deathblow_pick takes the lock target, else the nearest.
+
+## Throw checks, second pass (2026-11-03, topic throw2: sight, SpEffect pair, pick, kind gates, fall orbit)
+
+tools/emu-cases `throw2` (throw2.rs) on the Naomori-arena snapshot; extracted/emu/throw2_sight.json,
+throw2_speffect.json, throw2_pick.json, throw2_fall.json; tests sim_tests/emu_throw2.rs. The disable-AI
+flag (on in the snapshot) does not touch any of these: they are pure checks.
+
+- Sight cast FUN_140be3da0, 1,200 placements of the General around Wolf (near: sunk in / raised over the
+  floor; far: across the arena), 559 blocked: skipped when the row sets isSkipSphereCast (+0x3b bit 2);
+  else two casts FUN_14094d8d0 (hit world [0x143d6d640]+0x98, filter 0x4c; 0x41 only between the local
+  player and another player), from the thrower's point raised by its physics height (+0xd0) x 0.8, then
+  x 0.42 (DAT_143b015a0), to the defender's point raised the same; radius = the LARGER of the two radii
+  (FUN_140bbf740; Wolf 0.4, the General 0.5) x sphereCastRadiusRateLow / Top (+0x30 / +0x32) / 100, no
+  cast when 0. A cast passes with no hit or a hit (the sphere's centre at contact: 0.2 m over the floor)
+  farther than the defender's point; both must pass; the debug byte [0x143d5be38]+0x101 forces a pass.
+  Recasting here with that rule gives the exe's answer on all 1,200. Ported as player.rs throw_sight_ok
+  (test: the same casts and answers), in deathblow_check's reach from the feet with
+  map_sphere_cast. gap: Sv1 casts the centre ray (map::raycast), not a swept sphere, on the hit
+  collision only.
+- SpEffect pair (first test of FUN_140be3a90): _forAtk (+0x6c) must be on the thrower, _forDef (+0x70) on
+  the defender (FUN_1409f1c80, chr +0x11d0 list), -1 = none. 16 cases on 11020190 with ids poked (the
+  General wears 200030, his a000 set). Ported: throw_speffects_ok / speffect_pair_ok, combat.rs wears_sp
+  (200030-200034 by anim set as throw_row_for); deathblow_check takes the defender's side. gap: Wolf's
+  side is taken as met there (no loaded row sets _forAtk).
+- The pick. The input throw FUN_140be0e50 (called from FUN_1407d8430 with buttons 0 / 4 / 5) keeps the
+  kinds Wolf's own state passes (FUN_140be3520, thrower table FUN_140be0950: his state 1 -> categories
+  0, 4, 5), then an IChrFinder (vtable 0x142a8ebc0) over WorldChrMan (FUN_140a4c260: chr sets in
+  order, each set's chrs by index) whose slot FUN_140bdf930 takes the first chr that is hostile, not
+  +0x1ff4 1000, updated every frame (FUN_1407dce60 == 0: chr +0x110, the update omission, 30 / 5 on the
+  far chrs of the snapshot, poked 0 here) and has any passing row (FUN_140bde5c0 -> FUN_140be2a30 ->
+  FUN_140be2d60, which starts the first triggered one). The lock target and distance play no part. The
+  order runs by chr number (c1000 ... c7600, the player set last). The kinds per situation
+  (DAT_143d78488 +0x270 + situation x 0x20) are sorted by checkPriority, lowest first (41000 break-behind
+  0, 270000 near 1, 40000 break 2, 0 stealth 10, 120000 100). 120 placements of two c1010 and the
+  General, broken, in reach: the pick was always the first in chr order with a passing row, and not the
+  nearest on 48 of 79 with several. Ported: deathblow_pick takes the lowest chr number, then the earliest
+  spawned. Sv1's own row choice (behind 0110, near 0005, else 0000) agrees with the priority order (the
+  DiffAng ranges split at 90). gap: within a chr number the exe's set index is taken as spawn order;
+  the HUD mark's fallback (broken, out of reach) stays locked / nearest.
+- Kind-test gates and the 103 anims: FUN_140be3810 also fails on action flags (chr +0x1ff8 bag[0]
+  +0x70) bit 0x20 (ChrActionFlag 67 ThrowStart2, TAE dispatcher FUN_140b51b70 case 0x43: the ThrowDef
+  anims' first frames; every kind), bit 0x10 (flag 68, in no enemy anim; start kinds) and vfunc 0x550
+  (FUN_1409f3250: invulnerable - +0x70 bits 0 / 1 = TAE 951 / 950, or chr +0x1a11 & 0x20 / +0x1a13 &
+  2). A scan of all enemy anims: the 1,267 TAE 932 spans of 103 / 107 / 108 / 111 all have frames free of
+  950 / 951 / 67, death anims included (DeathDefault 010000 / 010010 0-45 f; defAliveCheck 0 on the
+  break kinds, HP 0 changes nothing): a dying chr passes the kind test. Ported: def_throw_state reads
+  TAE 932 in every anim (data.rs throw_state) and throw_kind_closed closes 67 / 950 / 951 (ThrowDef12100
+  holds 67 for 0-1.5 s: no deathblow starts then; the check stays, out of reach, so the HUD mark still
+  shows on the break pose - gap: the exe's mark display is not traced against the gates). gap: Sv1
+  still refuses a Mode::Dead enemy (but in the finisher windows): its dead chr has no way back into a
+  ThrowDef; the chr-flag half of vfunc 0x550 is not tracked.
+- States 102, 106, 109, 110: no TAE 932 of any enemy anim sets them and no snapshot chr holds one as its
+  own +0x7b (101 on every enemy, 255 on c7600, Wolf 1); they exist only in the table. 107 (cats 8, 12)
+  is on c1060 / c1080 / c1240 / c1250 / c1310 a000_0030xx / 008602, 111 (12, 21) on c1340 / c1350
+  a100_0083xx, 255 on c1030 / c1100 0200xx: read now through throw_state.
+- Fall orbit FUN_140be3ba0 (kinds with doesCheckNormalFallOrbit): the fall top (physics +0x854 = Sv1's
+  air_top) above the defender must exceed normalFallOrbitCheck_heightLimit; FUN_140baedb0 ->
+  FUN_140bb2850 solves the orbit (velocity FUN_140bbf7d0, the proxy's; accel -0.1 along the heading,
+  -13.72 + physics +0x1c4 down, DAT_143b09ce8) in the heading / up plane with the target at its full
+  horizontal distance: one real root of the cubic -> that time (>= 0); three -> the closest point on 16
+  samples 1/6 s apart and the later time its height is reached; no horizontal speed -> the target's
+  height on the plumb line. Pass: that point within _range of the defender (3D) and its time within
+  (int)(_timeLimit / 1000) s. 400 solver runs (within 1 cm / 0.01 s) and 450 placements over the plunge,
+  kick and stealth-plunge rows: all equal. Fixed: Sv1's plunge used its own 1/60 s fall with heightLimit
+  as a ceiling over the target; now throw_fall_orbit_ok (start_plunge, and the wire throw, whose kind
+  170000 checks no orbit). A flat-ground jump tops out about 2 m over the enemy, under heightLimit 3 m:
+  no plunge from it (it used to pass); the plunge tests and the debug menu's plunge now fall from 4 m
+  (3 m exactly fails the strict >). gap: Wolf's velocity is his air_base / vel_y, not the proxy's.

@@ -381,7 +381,8 @@ fn menu_input(
         }
         Item::PlungeNow | Item::KickDownNow | Item::VaultNow if enter => {
             // Break the posture with the enemy 1.2 m in front of Wolf, facing him. Plunge: Wolf
-            // falls from 3 m above, just short of him, attacking (崩し落下). Kick-down: Wolf in the
+            // falls from 4 m above (the exe's orbit check wants the fall top over heightLimit 3 m above
+            // the enemy, FUN_140be3ba0), just short of him, attacking (崩し落下). Kick-down: Wolf in the
             // head-kick jump above him, attacking (蹴り崩し). Vault: jump (崩し蹴りジャンプ).
             let it = list[menu.cursor];
             if let Ok((_, mut pa, mut ptf)) = player.single_mut() {
@@ -408,7 +409,7 @@ fn menu_input(
                         pa.airborne = true;
                         pa.vel_y = if kick { 3.0 } else { -1.0 };
                         pa.air_base = Vec3::ZERO;
-                        ptf.translation.y += if kick { 1.5 } else { 3.0 };
+                        ptf.translation.y += if kick { 1.5 } else { 4.0 };
                         ptf.translation += fwd * 0.6;
                         pad.press(Action::Attack);
                         menu.message = if kick { "kick-down deathblow" } else { "plunge deathblow" }.into();
