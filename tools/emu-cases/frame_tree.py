@@ -1,6 +1,11 @@
 """What the game runs that Sv1 has not ported, from an `emu-cases trace` run.
 
-Usage: python tools/emu-cases/frame_tree.py <out.md> <trace.json> [min_bytes]
+Usage: python tools/emu-cases/frame_tree.py <out.md> <trace.json> [min_bytes] [--base <trace.json>]... [--show <addr>]...
+
+With --base (e.g. the idle acttrace), only functions the base traces did not enter count ("new"):
+the tree keeps the paths down to them, and a list of the new branches' entry points (a new function
+whose caller is not new) follows, by new bytes below them. --show <addr> adds that function's
+subtree (from its place in the tree, six levels down) after the list.
 
 Puts each function the trace entered under its shallowest caller (from the trace's return
 addresses), adds up each subtree (functions, bytes) and how many of them Sv1 cites: an address
@@ -59,8 +64,20 @@ def vtable_names(exe):
 
 
 def main():
-    out_path, trace_path = sys.argv[1], sys.argv[2]
-    min_bytes = int(sys.argv[3]) if len(sys.argv) > 3 else 8000
+    argv, bases, shows = [], [], []
+    it = iter(sys.argv[1:])
+    for a in it:
+        if a == '--base':
+            bases.append(next(it))
+        elif a == '--show':
+            shows.append(int(next(it), 16))
+        else:
+            argv.append(a)
+    out_path, trace_path = argv[0], argv[1]
+    min_bytes = int(argv[2]) if len(argv) > 2 else 8000
+    base = set()
+    for b in bases:
+        base |= {int(e['va'], 16) for e in json.load(open(b))['entered']}
     cited = cited_addresses()
     combat = {int(l.split()[0], 16) for l in open(DSEKIRO / 'data' / 'targets' / 'combat.txt') if l.startswith('0x')}
     names = vtable_names((DSEKIRO / 'image' / 'sekiro.exe').read_bytes())
@@ -73,12 +90,18 @@ def main():
 
     t = json.load(open(trace_path))
     root = int(t['function'], 16)
+    # A run of several calls (acttrace's duel: world tasks and two chr frames) lists them in
+    # run.roots; they hang under a made-up root 0x0.
+    roots = [int(r, 16) for r in t.get('run', {}).get('roots', [])]
+    if roots:
+        root = 0
     size = {int(e['va'], 16): e['size'] for e in t['entered']}
     kids = defaultdict(set)
     for r, f in t['edges']:
         c, f = func_of(int(r, 16)), int(f, 16)
         if c is not None and c != f:
             kids[c].add(f)
+    kids[0] |= set(roots)
     parent, queue = {root: None}, deque([root])
     while queue:
         n = queue.popleft()
@@ -90,25 +113,45 @@ def main():
     for n, p in parent.items():
         if p is not None:
             tree[p].append(n)
+    def new(n):
+        return not bases or n not in base
     agg = {}
     for n in reversed(list(parent)):  # BFS order reversed: children before parents
-        s, c, k = size.get(n, 0), int(n in cited), 1
+        s, c, k = (size.get(n, 0), int(n in cited), 1) if new(n) else (0, 0, 0)
         for ch in tree[n]:
             s, c, k = s + agg[ch][0], c + agg[ch][1], k + agg[ch][2]
         agg[n] = (s, c, k)
     lines = [f'# Call tree of {t["function"]} ({Path(trace_path).name})', '',
              f'{len(parent)} functions reached ({len(size)} entered). Each line: function, own size, subtree '
              f'(functions / bytes / cited by Sv1). Subtrees under {min_bytes:,} bytes are folded.', '']
+    if bases:
+        lines[2:2] = [f'Base: {", ".join(Path(b).name for b in bases)}. Only functions the base did not enter '
+                      f'are counted: {agg[root][2]} new, {agg[root][0]:,} bytes, {agg[root][1]} cited; '
+                      f'`new` marks them, the others are the path down.', '']
 
-    def show(n, d):
+    def show(n, d, top=0):
         s, c, k = agg[n]
-        mark = ' **cited**' if n in cited else ''
+        mark = (' **cited**' if n in cited else '') + (' new' if bases and new(n) else '')
         extra = ' (combat list)' if n in combat else ''
         lines.append(f'{"  " * d}- `{n:#x}` {names.get(n, "")}{mark}: own {size.get(n, 0)} B, subtree {k} fn / {s:,} B / {c} cited{extra}')
         for ch in sorted(tree[n], key=lambda x: -agg[x][0]):
-            if agg[ch][0] >= min_bytes and d < 6:
-                show(ch, d + 1)
+            if agg[ch][0] >= min_bytes and d < top + 6:
+                show(ch, d + 1, top)
     show(root, 0)
+    if bases:
+        heads = [n for n in parent if new(n) and parent[n] is not None and not new(parent[n])]
+        heads.sort(key=lambda n: -agg[n][0])
+        lines += ['', '## New branches (entry points, by new bytes below)', '']
+        for n in heads:
+            s_, c, k = agg[n]
+            if s_ < min_bytes / 4:
+                continue
+            lines.append(f'- `{n:#x}` {names.get(n, "")}{" **cited**" if n in cited else ""} (from `{parent[n]:#x}` '
+                         f'{names.get(parent[n], "")}): {k} fn / {s_:,} B / {c} cited')
+    for n in shows:
+        lines += ['', f'## Subtree of `{n:#x}`', '']
+        if n in agg:
+            show(n, 0)
     Path(out_path).write_bytes(('\n'.join(lines) + '\n').encode('utf-8'))
     print(f'{len(parent)} reached, {agg[root][1]} cited; {len(lines)} lines -> {out_path}')
 
