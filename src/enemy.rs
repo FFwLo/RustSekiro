@@ -2634,7 +2634,9 @@ fn think(
         let dmy500 = dummies.get(entity).ok().and_then(|d| crate::combat::dmy_entity(d, 500)).and_then(|m| markers.get(m).ok()).map(|g| g.translation());
         let radius = npc["hitRadius"].as_f64().unwrap_or(0.5) as f32;
         let eye = stealth::eye_point(feet, a.forward(), dmy500, radius);
-        e.targeting.update(think_row, feet, eye, a.forward(), &seen, dt);
+        // The sight ray starts at dummy 500 itself (its own height; fallback NpcParam hitHeight).
+        let head = stealth::sight_head(feet, a.forward(), dmy500, radius, npc["hitHeight"].as_f64().unwrap_or(1.5) as f32);
+        e.targeting.update(think_row, feet, eye, head, a.forward(), &seen, dt);
         if e.targeting.changed() {
             if let Some(log) = log.as_mut() {
                 let (text, color) = match e.targeting.state {

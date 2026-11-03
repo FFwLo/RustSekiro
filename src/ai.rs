@@ -751,6 +751,12 @@ impl AiState {
         }
     }
 
+    /// `id` is the current target (TARGET_ENE_0 or none given) and the target system holds
+    /// nothing: no rival and AI_TARGET_TYPE__NONE.
+    fn no_target(&self, id: Option<&Value>) -> bool {
+        (id.is_none() || is(id, self.k.target_ene_0)) && self.w.t_kind == crate::stealth::TYPE_NONE
+    }
+
     fn dist_to(&self, id: Option<&Value>) -> f64 {
         match self.pos_of(id) {
             Some(_) if is(id, self.k.point_init_pose) => (self.w.home - self.w.me).with_y(0.0).length() as f64,
@@ -1054,6 +1060,12 @@ impl AiState {
             // placements of Wolf (aicpp 2026-11-03, within 1e-5). gap: points (dist_to with an id)
             // are still horizontal, and TARGET_LOCALPLAYER (21) reads 0.4 in one player state
             // (== 2 at singleton +0x88) in the exe.
+            // With no target held (AI_TARGET_TYPE__NONE) the queries on TARGET_ENE_0 read -1, the
+            // angle 0 and IsInsideTarget false (aicpp / aiframe 2026-11-03: every query on the
+            // snapshot's unaware enemies, and after a forgotten memory target, frame by frame).
+            "GetDist" | "GetOriginDist" | "GetDistY" | "GetDistYSigned" if self.no_target(a.first()) => num(-1.0),
+            "GetToTargetAngle" if self.no_target(a.first()) => num(0.0),
+            "IsInsideTarget" if self.no_target(a.first()) => boolean(false),
             "GetDist" | "GetDist_Point" => num(self.goal_dist(a.first())),
             "GetOriginDist" => num(self.dist_to(a.first())),
             // Height of the target over the AI chr (positive = above): 101030 Act27 backs off to

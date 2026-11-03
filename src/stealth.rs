@@ -41,6 +41,8 @@ pub const TYPE_INDICATION_POS: u8 = 6;
 const METER_DRAIN: f32 = 20.0;
 /// Meter value that turns into a target (FUN_140626430: 100.0 <= points).
 const METER_FULL: f32 = 100.0;
+/// Where the sight ray ends on Wolf: his feet + his physics +0xd0 (ctx +0xa0, 1.5 m).
+pub const WOLF_SIGHT_HEIGHT: f32 = 1.5;
 
 fn f(think: &Value, k: &str) -> f32 {
     think[k].as_f64().unwrap_or(0.0) as f32
@@ -115,9 +117,30 @@ impl Seen {
 }
 
 /// Is `wolf` inside `cone` seen from an enemy whose eye point is `eye` facing `fwd`
-/// (FUN_14061bb70 / FUN_14061c2a0), with nothing of the map between them (`sight_clear`)?
-pub fn in_cone(cone: &Cone, eye: Vec3, fwd: Vec3, wolf: &Seen) -> bool {
-    in_cone_shape(cone, eye, fwd, wolf) && sight_clear(eye, wolf.pos)
+/// (FUN_14061bb70 / FUN_14061c2a0), with nothing of the map between its `head` and him
+/// (`sight_clear`)?
+pub fn in_cone(cone: &Cone, eye: Vec3, head: Vec3, fwd: Vec3, wolf: &Seen) -> bool {
+    in_cone_shape(cone, eye, fwd, wolf) && sight_clear(head, wolf.pos)
+}
+
+/// The nose sphere (FUN_14061c940, FUN_140617280's result 1 when the normal cone misses): Wolf's
+/// feet (ctx +0x90) within NpcThinkParam nose_dist (row +0x36) + his radius (ctx +0x80) of the
+/// sight origin (ctx +0x20), in 3D; a row without a nose_dist smells nothing. Checked on 189
+/// placements (aiframe 2026-11-03). gap: Wolf's SpEffect states 332 / 334 hide him from it when
+/// ctx +0xc0 / +0xc1 are set (both off on the snapshot, not traced).
+pub fn in_nose(think: &Value, eye: Vec3, wolf: &Seen) -> bool {
+    let nose = f(think, "nose_dist");
+    nose > 0.0 && (wolf.pos - eye).length_squared() < (nose + wolf.radius) * (nose + wolf.radius)
+}
+
+/// The sight ray's start (ctx +0x30, observer vfunc 0x28 FUN_14060e6b0): dummy 500 where the
+/// model has one (0.9-2.0 m above the root on the snapshot, aiframe 2026-11-03), else the root
+/// pushed forward by the physics radius and raised by the physics height (+0xd0).
+pub fn sight_head(feet: Vec3, fwd: Vec3, dmy500: Option<Vec3>, radius: f32, height: f32) -> Vec3 {
+    match dmy500 {
+        Some(d) => d,
+        None => feet + fwd.with_y(0.0).normalize_or_zero() * radius + Vec3::Y * height,
+    }
 }
 
 /// The enemy's sight origin (observer vfunc 0x20, FUN_14060e7e0 -> 0x28 FUN_14060e6b0): its
@@ -169,14 +192,14 @@ pub fn in_cone_shape(cone: &Cone, eye: Vec3, fwd: Vec3, wolf: &Seen) -> bool {
 
 /// The sight ray (FUN_14061c8a0, last step of both checks): from the sight context's +0x30 to
 /// +0xa0 through the collision (FUN_14094e310, filter 0x32); a hit means not seen. The normal
-/// cone casts it unless ctx +0xc2 is set (FUN_140617280). gap: the two points - the target's is
-/// its position raised by its physics +0xd0 (FUN_1409f0890 / FUN_140bbf730; Wolf's feet + 1.5 on
-/// the snapshot) or a dummy poly when its ChrInfo +0x330 >= 0, the observer's its dummy 500 (ctx
-/// +0x30, aicpp 2026-11-03) - are taken as the eye point and Wolf's feet raised by our capsule
-/// half height; which collision filter 0x32 skips is not known (our map has the hit collision only).
-fn sight_clear(me: Vec3, wolf: Vec3) -> bool {
-    let h = Vec3::Y * crate::player::CAPSULE_HALF_HEIGHT;
-    let (a, b) = (me + h, wolf + h);
+/// cone casts it unless ctx +0xc2 is set (FUN_140617280). From the observer's `head`
+/// (`sight_head`) to Wolf's feet raised by his physics +0xd0, 1.5 m (FUN_1409f0890 /
+/// FUN_140bbf730; ctx +0xa0 on the snapshot, aiframe 2026-11-03). gap: a target whose ChrInfo
+/// +0x330 >= 0 uses a dummy poly instead; which collision filter 0x32 skips is not known (our map
+/// has the hit collision only), and the exe's rays were not compared with our map (the snapshot's
+/// area, m11_00, is not extracted).
+fn sight_clear(head: Vec3, wolf: Vec3) -> bool {
+    let (a, b) = (head, wolf + Vec3::Y * WOLF_SIGHT_HEIGHT);
     let d = b - a;
     let len = d.length();
     len < 1e-4 || crate::map::raycast(a, d / len, len).is_none()
@@ -216,6 +239,8 @@ pub struct Normal {
     pub forget: f32,
     /// Seen at the last sight search.
     pub visible: bool,
+    /// Seen or smelt (nose sphere) at the last sight search: the forget time runs only without.
+    pub held: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -243,7 +268,11 @@ pub struct Targeting {
     pub perceive: bool,
     /// The state changed in a way that drops the AI's plan (FUN_14061f500).
     pub replan: bool,
-    search_timer: f32,
+    /// Wolf was in the around cone at the last sight search with no normal target held: every
+    /// frame without a meter the meter update starts one from it (FUN_140626430), so a full meter
+    /// starts again the next frame (aiframe 2026-11-03).
+    around_seen: bool,
+    pub(crate) search_timer: f32,
     rng: u32,
 }
 
@@ -296,7 +325,7 @@ impl Targeting {
     /// FUN_14061d140 sets state 3).
     pub fn damaged(&mut self, think: &Value) {
         let forget = f(think, "SightTargetForgetTime");
-        self.normal = Some(Normal { state: BATTLE, forget, visible: true });
+        self.normal = Some(Normal { state: BATTLE, forget, visible: true, held: true });
         self.meter = None;
     }
 
@@ -339,12 +368,20 @@ impl Targeting {
         *self = Targeting::new(rng);
     }
 
-    /// One frame. `me` / `fwd`: the enemy's feet and facing; `eye`: its sight origin (`eye_point`).
-    pub fn update(&mut self, think: &Value, me: Vec3, eye: Vec3, fwd: Vec3, wolf: &Seen, dt: f32) {
+    /// One frame (FUN_14061ff40 -> FUN_140623ca0). `me` / `fwd`: the enemy's feet and facing;
+    /// `eye`: its sight origin (`eye_point`); `head`: the sight ray's start (`sight_head`).
+    /// Checked frame by frame against the exe (aiframe 2026-11-03, test
+    /// `targeting_frames_match_the_exe`).
+    #[allow(clippy::too_many_arguments)]
+    pub fn update(&mut self, think: &Value, me: Vec3, eye: Vec3, head: Vec3, fwd: Vec3, wolf: &Seen, dt: f32) {
         let around = Cone::from(think, "around");
-        // Meter (FUN_140626430, every frame).
+        // Meter (FUN_140626430, every frame before the search): started from the last search's
+        // around sighting, filled while Wolf stays in the around cone, drained out of it.
+        if self.meter.is_none() && self.around_seen && self.normal.is_none() {
+            self.meter = Some(Meter { points: 0.0, visible: true });
+        }
         if let Some(mut m) = self.meter {
-            m.visible = in_cone(&around, eye, fwd, wolf);
+            m.visible = in_cone(&around, eye, head, fwd, wolf);
             if m.visible {
                 m.points += f(think, "aroundTargetIncrementPoint") * dt * wolf.around_rate;
             } else {
@@ -359,51 +396,55 @@ impl Targeting {
                 Some(m)
             };
         }
-        // Sight search on its interval (FUN_140625f30 / FUN_1406250a0 / FUN_140624620).
+        // Sight search on its interval (FUN_140625f30 / FUN_1406250a0 / FUN_140624620): the
+        // normal (or perceive) cone, else the nose sphere (FUN_140617280 result 2 / 1; both make
+        // a normal target, FUN_14060e390, only sight marks it visible), else the around cone.
+        // gap: the exe stretches the 0.2-0.4 s interval when many searches fall on one frame
+        // (FUN_140614be0 on DAT_143d547d8; up to 0.62 s seen), not ported.
         self.search_timer -= dt;
         if self.search_timer <= 0.0 {
             self.search_timer = self.rand() * 0.2 + 0.2;
             let cone = Cone::from(think, if self.perceive { "perceive" } else { "normal" });
-            let seen = in_cone(&cone, eye, fwd, wolf);
-            if seen {
+            let seen = in_cone(&cone, eye, head, fwd, wolf);
+            if seen || in_nose(think, eye, wolf) {
                 // FUN_14062a5e0 -> FUN_140629250: a new normal target starts in FIND.
                 let forget = f(think, "SightTargetForgetTime");
-                let n = self.normal.get_or_insert(Normal { state: FIND, forget, visible: true });
+                let n = self.normal.get_or_insert(Normal { state: FIND, forget, visible: seen, held: true });
                 n.forget = forget;
-                n.visible = true;
+                n.visible = seen;
+                n.held = true;
                 self.meter = None;
+                self.around_seen = false;
             } else {
                 if let Some(n) = self.normal.as_mut() {
                     n.visible = false;
+                    n.held = false;
                 }
-                if self.normal.is_none() && self.meter.is_none() && in_cone(&around, eye, fwd, wolf) {
-                    self.meter = Some(Meter { points: 0.0, visible: true });
-                }
+                self.around_seen = self.normal.is_none() && in_cone(&around, eye, head, fwd, wolf);
             }
         }
-        // Slot timers; the normal target keeps the memory slot on Wolf (FUN_140628860,
-        // MemoryTargetForgetTime) until it is forgotten itself.
-        // gap: the exe counts the sight forget down on the LastSightPos slot (FUN_140628b60);
-        // here it runs on the normal target itself.
+        // Slots: the normal target keeps the memory slot on Wolf (FUN_140628860,
+        // MemoryTargetForgetTime) and turns FIND into BATTLE inside BattleStartDist
+        // (FUN_14062be40); then every slot's timer runs (FUN_14062a510; the normal target's only
+        // while unseen) and spent slots go (FUN_140629720). gap: the exe also counts the sight
+        // forget on a LastSightPos slot (FUN_140628b60, gone a frame before the normal target).
         if let Some(n) = self.normal.as_mut() {
-            if !n.visible {
-                n.forget -= dt;
-            }
-            // FIND -> BATTLE inside BattleStartDist (FUN_14062be40).
             if n.state == FIND && me.distance(wolf.pos) < f(think, "BattleStartDist") {
                 n.state = BATTLE;
             }
             self.memory = Some(Spot { pos: wolf.pos, forget: f(think, "MemoryTargetForgetTime") });
+            if !n.held {
+                n.forget -= dt;
+            }
             if n.forget <= 0.0 {
                 self.normal = None;
             }
-        } else {
-            for s in [&mut self.indication, &mut self.memory] {
-                if let Some(spot) = s.as_mut() {
-                    spot.forget -= dt;
-                    if spot.forget <= 0.0 {
-                        *s = None;
-                    }
+        }
+        for s in [&mut self.indication, &mut self.memory] {
+            if let Some(spot) = s.as_mut() {
+                spot.forget -= dt;
+                if spot.forget <= 0.0 {
+                    *s = None;
                 }
             }
         }
@@ -472,7 +513,7 @@ mod tests {
     /// Enemy at the origin facing +Z.
     fn run(t: &mut Targeting, think: &Value, w: &Seen, secs: f32) {
         for _ in 0..(secs * 60.0) as usize {
-            t.update(think, Vec3::ZERO, Vec3::ZERO, Vec3::Z, w, 1.0 / 60.0);
+            t.update(think, Vec3::ZERO, Vec3::ZERO, Vec3::Y * 1.5, Vec3::Z, w, 1.0 / 60.0);
         }
     }
 

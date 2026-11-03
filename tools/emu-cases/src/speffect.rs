@@ -27,7 +27,7 @@ fn pf32(emu: &mut Emu, at: u64) -> f32 {
 /// `Emu::call` without its per-call block hook: the hook added and deleted on every call crashed
 /// Unicorn (host segfault) after about 650 calls of vfunc 44 on one engine. Returns where it
 /// stopped early, None when the function returned.
-fn call_quiet(emu: &mut Emu, va: u64, args: &[u64], xmm: &[f32]) -> Option<(u64, i32)> {
+pub(super) fn call_quiet(emu: &mut Emu, va: u64, args: &[u64], xmm: &[f32]) -> Option<(u64, i32)> {
     for (r, v) in [uc::RCX, uc::RDX, uc::R8, uc::R9].iter().zip(args) {
         emu.set_reg(*r, *v);
     }

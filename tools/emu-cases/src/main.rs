@@ -30,6 +30,7 @@ mod modticks;
 mod taewin;
 mod throw;
 mod aicpp;
+mod aiframe;
 mod speffect;
 mod proxy;
 
@@ -881,6 +882,9 @@ fn main() {
     }
     if want.iter().any(|w| w.starts_with("lockcam")) {
         lockcam::run(&want, &|| Emu::new(exe, snap()), out);
+    }
+    if want.iter().any(|w| w.starts_with("aiframe")) {
+        aiframe::run(&|| Emu::new(exe, snap()), out, &want);
     }
     if want.iter().any(|w| w.starts_with("aicpp")) {
         aicpp::run(&|| Emu::new(exe, snap()), out, &want);

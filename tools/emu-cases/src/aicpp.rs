@@ -8,11 +8,11 @@ use serde_json::json;
 
 use super::{uc, Emu};
 
-const WORLD_CHR_MAN: u64 = 0x1_43d7_a1e0;
+pub(super) const WORLD_CHR_MAN: u64 = 0x1_43d7_a1e0;
 const ENEMY_VT: u64 = 0x1_42a2_7f28;
 
 /// Reads 8 bytes of the game's memory, or None where the snapshot has nothing.
-fn try_u64(emu: &mut Emu, at: u64) -> Option<u64> {
+pub(super) fn try_u64(emu: &mut Emu, at: u64) -> Option<u64> {
     if at < 0x10000 || at > 0x7fff_ffff_ffff || at % 8 != 0 {
         return None;
     }
@@ -27,7 +27,7 @@ fn try_u64(emu: &mut Emu, at: u64) -> Option<u64> {
 }
 
 /// Every EnemyIns in WorldChrMan's chr sets (as guard.rs).
-fn enemies(emu: &mut Emu) -> Vec<u64> {
+pub(super) fn enemies(emu: &mut Emu) -> Vec<u64> {
     let wcm = emu.peek_u64(WORLD_CHR_MAN);
     let mut out = Vec::new();
     for off in (0..0x2000).step_by(8) {
@@ -46,17 +46,17 @@ fn enemies(emu: &mut Emu) -> Vec<u64> {
     out
 }
 
-fn f32s<const N: usize>(emu: &mut Emu, at: u64) -> [f32; N] {
+pub(super) fn f32s<const N: usize>(emu: &mut Emu, at: u64) -> [f32; N] {
     std::array::from_fn(|i| f32::from_le_bytes(emu.peek(at + 4 * i as u64)))
 }
 
 /// The chr's physics module ([chr+0x1ff8]+0x68): position +0x80.
-fn physics(emu: &mut Emu, chr: u64) -> u64 {
+pub(super) fn physics(emu: &mut Emu, chr: u64) -> u64 {
     let bag = emu.peek_u64(chr + 0x1ff8);
     emu.peek_u64(bag + 0x68)
 }
 
-fn pos(emu: &mut Emu, chr: u64) -> [f32; 3] {
+pub(super) fn pos(emu: &mut Emu, chr: u64) -> [f32; 3] {
     let ph = physics(emu, chr);
     f32s(emu, ph + 0x80)
 }
@@ -64,7 +64,7 @@ fn pos(emu: &mut Emu, chr: u64) -> [f32; 3] {
 /// The enemy's AI chain: ComManipulator M = [[chr+0x50]+0x358], AiThink = [M+0x340] (the
 /// manipulator's param_1[0x68]; FUN_1407ded90 falls back to +0x120 when +0x358 is null in FUN_1407e67a0), targeting system = [AiThink+0x7b30]
 /// (FUN_140608990's param_1[0xf66]).
-fn ai_chain(emu: &mut Emu, chr: u64) -> Option<(u64, u64, u64)> {
+pub(super) fn ai_chain(emu: &mut Emu, chr: u64) -> Option<(u64, u64, u64)> {
     let ctrl = try_u64(emu, chr + 0x50)?;
     let m = match try_u64(emu, ctrl + 0x358)? {
         0 => try_u64(emu, ctrl + 0x120)?,
@@ -89,9 +89,9 @@ pub fn run(new_emu: &dyn Fn() -> Emu, out: &Path, want: &[&str]) {
 
 /// Lua `ai:` methods (registered in FUN_14008xxxx; `this` = a wrapper whose +8 is the AiThink,
 /// FUN_1405c36a0). GetDist is the thunk `mov r8b,1; jmp FUN_1405f1540`, GetOriginDist r8b 0.
-const GET_DIST: u64 = 0x1_405e_2c10;
+pub(super) const GET_DIST: u64 = 0x1_405e_2c10;
 const GET_ORIGIN_DIST: u64 = 0x1_405e_3fb0;
-const GET_TO_TARGET_ANGLE: u64 = 0x1_405e_4880;
+pub(super) const GET_TO_TARGET_ANGLE: u64 = 0x1_405e_4880;
 const IS_INSIDE_TARGET: u64 = 0x1_405e_56e0;
 const GET_DIST_Y: u64 = 0x1_405e_2e70;
 const GET_DIST_Y_SIGNED: u64 = 0x1_405e_2f30;
@@ -179,7 +179,7 @@ fn query_cases(new_emu: &dyn Fn() -> Emu, out: &Path) {
 
 /// The enemies the cases use: the nearest ones with distinct NpcThinkParam rows that have a
 /// sight cone (as (think id, chr)).
-fn observers(emu: &mut Emu) -> Vec<(u32, u64)> {
+pub(super) fn observers(emu: &mut Emu) -> Vec<(u32, u64)> {
     let wolf = emu.st.snap.as_ref().unwrap().player;
     let wp = pos(emu, wolf);
     let mut list: Vec<(f32, u64)> = enemies(emu)
@@ -357,20 +357,20 @@ fn explore(emu: &mut Emu) {
 }
 
 /// FUN_140625d50: the sight context from the observer's targeting system.
-const CTX_FILL: u64 = 0x1_4062_5d50;
+pub(super) const CTX_FILL: u64 = 0x1_4062_5d50;
 /// FUN_1406170f0: per-target reset of the context.
-const CTX_RESET: u64 = 0x1_4061_70f0;
+pub(super) const CTX_RESET: u64 = 0x1_4061_70f0;
 /// FUN_140623960(ts, handle): ctx +0xc2, skip the sight ray for this target.
-const CTX_NO_RAY: u64 = 0x1_4062_3960;
+pub(super) const CTX_NO_RAY: u64 = 0x1_4062_3960;
 /// FUN_140bd3e40(target's module 0x38, ctx): the target's side (position, cuts, light).
-const CTX_TARGET: u64 = 0x1_40bd_3e40;
+pub(super) const CTX_TARGET: u64 = 0x1_40bd_3e40;
 /// FUN_140617280(ctx, ray): 2 = in the normal (or perceive) cone, 1 = around cone, 0 none.
-const SIGHT: u64 = 0x1_4061_7280;
+pub(super) const SIGHT: u64 = 0x1_4061_7280;
 /// FUN_1406172f0(ctx, ray): the around cone alone.
-const SIGHT_AROUND: u64 = 0x1_4061_72f0;
+pub(super) const SIGHT_AROUND: u64 = 0x1_4061_72f0;
 
 /// Builds the context FUN_1406244f0 builds for one target and runs both checks.
-fn sight(emu: &mut Emu, ts: u64, target: u64, ray: bool) -> (u64, u64, u64) {
+pub(super) fn sight(emu: &mut Emu, ts: u64, target: u64, ray: bool) -> (u64, u64, u64) {
     let ctx = emu.alloc(0x200);
     emu.write(ctx, &vec![0u8; 0x200]);
     emu.call(CTX_FILL, &[ts, ctx], &[]);
@@ -389,7 +389,7 @@ fn sight(emu: &mut Emu, ts: u64, target: u64, ray: bool) -> (u64, u64, u64) {
     (ctx, r.rax & 0xff, a.rax & 0xff)
 }
 
-fn dump_ctx(emu: &mut Emu, ctx: u64) {
+pub(super) fn dump_ctx(emu: &mut Emu, ctx: u64) {
     for row in (0..0xd0u64).step_by(16) {
         let f: [f32; 4] = f32s(emu, ctx + row);
         let b: [u8; 16] = emu.peek(ctx + row);
