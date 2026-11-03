@@ -246,11 +246,18 @@ pub(crate) fn knockback_facing(dir: Vec3, attacker_forward: Vec3) -> f32 {
 /// sekiro-rs docs/COMBAT-RULES.md "Hit stop" (MIT / Apache), checked against FUN_140b9cd90.
 /// gap: isArrowAtk is not exported, bullets stand for it; a bullet does not stop its distant
 /// shooter (sekiro-rs's choice; every NPC bullet row has 0 anyway).
-/// gap: both starts are skipped when the hit's five amounts (the damage struct's floats 0-4,
-/// read by FUN_140b6e6a0 too) are all <= 0 (run: FUN_140b9cfb0 on Wolf, tools/emu-cases
-/// modticks_defender); which hits carry zeros (grabs, pushes?) is not traced, so Sv1 starts on
-/// every contact.
+/// Both starts are skipped when the hit's five amounts (the damage struct's floats 0-4, read by
+/// FUN_140b6e6a0 too) are all <= 0 (run: FUN_140b9cfb0 on Wolf, tools/emu-cases
+/// modticks_defender): the AtkParam rows with no element damage (`Attack::amounts_zero`; the NPC
+/// side run in `damagemod_amounts`), e.g. pushes and pure posture hits.
+/// Frame order: the hit manager's task (FUN_140a746f0 -> FUN_1409a0dc0, task group 0x4b) runs
+/// before the characters' frames (FUN_140a70020 -> FUN_140a4b570, group 0x52), on shapes the last
+/// frame's step placed, so the frame after the step that made the contact is held for both sides:
+/// as Sv1's Resolve after Advance with the clock taken on the next Advance.
 pub(crate) fn start_hit_stop(combat: &Combat, aa: &mut Actor, da: &mut Actor, dd: &crate::data::CharData, atk: &Attack, bullet: bool) {
+    if atk.amounts_zero(aa.side == Side::Player) {
+        return;
+    }
     let force = !bullet && !da.anim.is_empty() && dd.flag(&da.anim, da.t, 41);
     let (atk_scale, def_on) = match da.side {
         _ if force => (1.0, true),
@@ -1002,21 +1009,38 @@ pub(crate) fn no_sync_add_flinches(level: i64, aerial: bool, rejected: bool) -> 
 /// round). Run in tools/emu-cases (guard_resolution.json): Wolf guards to 89 deg and not at 91,
 /// the General to 59 and not at 61. The ShieldBlock flag's ArgB is not an angle: it is the guard's
 /// behavior judge (+0xb08: Wolf 90, the umbrella 100, NPCs 900, the c1180 armour 800;
-/// `shield_block`). gap: the umbrella's 180 is read from its row, not run (the snapshot has no
-/// umbrella equipped).
+/// `shield_block`). The umbrella's 180 run with the umbrella put in Wolf's hand in the
+/// emulator's copy (damagemod_guard, `in_guard_arc`).
 pub(crate) fn guard_half_angle(a: &Actor) -> f32 {
-    let angle = match a.side {
-        Side::Enemy => a.guard_angle,
-        Side::Player => {
-            let weapon = if crate::prosthetic::hks::sub_guard(&a.state) { UMBRELLA_WEAPON } else { 5000 };
-            crate::data::weapon_row(weapon).and_then(|w| w["guardAngle"].as_f64()).unwrap_or(0.0) as f32
-        }
-    };
+    let angle = guard_angle(a);
     if angle == 0.0 {
         90.0
     } else {
         angle
     }
+}
+
+/// vfunc 0x258: NpcParam guardAngle, or Wolf's weapon in hand's EquipParamWeapon guardAngle
+/// (+0xd2; the open umbrella 76000: 180). 0 = the front half.
+pub(crate) fn guard_angle(a: &Actor) -> f32 {
+    match a.side {
+        Side::Enemy => a.guard_angle,
+        Side::Player => {
+            let weapon = if crate::prosthetic::hks::sub_guard(&a.state) { UMBRELLA_WEAPON } else { 5000 };
+            crate::data::weapon_row(weapon).and_then(|w| w["guardAngle"].as_f64()).unwrap_or(0.0) as f32
+        }
+    }
+}
+
+/// The guard arc as FUN_140b6c880 tests it: the defender's flat facing . the attack's flat
+/// direction (attacker -> defender) < cos((angle + 180) deg), the threshold 0 for angle 0. So the
+/// edge is strict and the umbrella's 180 guards everything but an attack from straight behind
+/// (run in tools/emu-cases damagemod_guard: guarded at 179 deg, not at 180; was all round).
+pub(crate) fn in_guard_arc(face: Vec3, atk_dir: Vec3, angle: f32) -> bool {
+    let f = face.with_y(0.0).normalize_or_zero();
+    let d = atk_dir.with_y(0.0).normalize_or_zero();
+    let limit = if angle != 0.0 { ((angle + 180.0) * 0.017_453_292).cos() } else { 0.0 };
+    f.dot(d) < limit
 }
 
 /// The Loaded Umbrella's EquipParamWeapon row (76000-76300 share guardAngle 180, guardBaseRepel
@@ -1161,7 +1185,7 @@ pub(crate) fn guard_check(combat: &Combat, da: &Actor, clash: &[(i64, f32)], atk
     worn.extend(worn_sp(da, clash));
     let ghost_ok = !ag.ghost || worn.iter().any(|&id| crate::data::sp_cycle(id).is_some_and(|c| c.state_info == 157));
     // The guard arc gates deflects as well as blocks: an attack from behind lands.
-    let in_arc = ag.all_dir || da.forward().angle_between(-atk_dir.with_y(0.0).normalize_or_zero()).to_degrees() <= guard_half_angle(da);
+    let in_arc = ag.all_dir || in_guard_arc(da.forward(), atk_dir, guard_angle(da));
     let guarded = judge.is_some() && in_arc && ghost_ok;
     let flick_def = guard_flick(row.as_ref(), da.side == Side::Player, def_weapon, worn);
     let verdict = guard_verdict(guarded, flick_def, attack_flick(&ag, pc_atk, atk_weapon), attribute, &ag);
@@ -2520,7 +2544,7 @@ mod tests {
     fn hit_stop_follows_the_defenders_type() {
         let mut c = combat();
         let row = c.kinds[0].foe.npc_row.to_string();
-        let atk = Attack { hit_stop_time: 0.1, hit_stop_time_defencer: 0.1, ..Default::default() };
+        let atk = Attack { hit_stop_time: 0.1, hit_stop_time_defencer: 0.1, atk_phys: 100.0, atk_phys_correction: 100.0, ..Default::default() };
         let run = |c: &Combat, enemy_defends: bool| {
             let mut wolf = Actor::new(Side::Player, 1.0, 1.0, 0.0, 0);
             let mut foe = Actor::new(Side::Enemy, 1.0, 1.0, 0.0, 0);

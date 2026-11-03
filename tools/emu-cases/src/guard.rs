@@ -21,7 +21,7 @@ fn try_u64(emu: &mut Emu, at: u64) -> Option<u64> {
 }
 
 /// Every EnemyIns in WorldChrMan's chr sets (tools/memscope/recorder.lua's scan).
-fn enemies(emu: &mut Emu) -> Vec<u64> {
+pub(crate) fn enemies(emu: &mut Emu) -> Vec<u64> {
     let wcm = emu.peek_u64(WORLD_CHR_MAN);
     let mut out = Vec::new();
     for off in (0..0x2000).step_by(8) {
@@ -40,13 +40,13 @@ fn enemies(emu: &mut Emu) -> Vec<u64> {
     out
 }
 
-fn vfunc(emu: &mut Emu, obj: u64, slot: u64) -> u64 {
+pub(crate) fn vfunc(emu: &mut Emu, obj: u64, slot: u64) -> u64 {
     let vt = emu.peek_u64(obj);
     emu.peek_u64(vt + slot)
 }
 
 /// A module of the chr's +0x1ff8 bag (0 action flags, 0x18 data, 0x98 damage).
-fn module(emu: &mut Emu, chr: u64, off: u64) -> u64 {
+pub(crate) fn module(emu: &mut Emu, chr: u64, off: u64) -> u64 {
     let bag = emu.peek_u64(chr + 0x1ff8);
     emu.peek_u64(bag + off)
 }
@@ -168,7 +168,7 @@ pub fn run(new_emu: &dyn Fn() -> Emu, out: &Path) {
 
 /// The hit record from an attack (FUN_1410b6880): info [0] owner chr, +8 AtkParam id, +0xc type
 /// (0 Npc, 1 Pc), +0x12c weapon, +0x134 -1.
-fn build_hit(emu: &mut Emu, owner: u64, id: u32, pc: bool, weapon: i32) -> (u64, Run) {
+pub(crate) fn build_hit(emu: &mut Emu, owner: u64, id: u32, pc: bool, weapon: i32) -> (u64, Run) {
     let info = emu.alloc(0x200);
     emu.write(info, &vec![0u8; 0x200]);
     emu.u64(info, owner);
@@ -186,13 +186,13 @@ fn build_hit(emu: &mut Emu, owner: u64, id: u32, pc: bool, weapon: i32) -> (u64,
 
 /// An in-memory PARAM file (header +0xa row count, entries at +0x40 of 0x18: id, data offset),
 /// found from one row pointer of a known id.
-struct ParamFile {
+pub(crate) struct ParamFile {
     base: u64,
     count: u64,
 }
 
 impl ParamFile {
-    fn from_row(emu: &mut Emu, row: u64, id: u32) -> ParamFile {
+    pub(crate) fn from_row(emu: &mut Emu, row: u64, id: u32) -> ParamFile {
         let mut x = row & !7;
         for _ in 0..(8 << 20) / 8 {
             x -= 8;
@@ -212,7 +212,7 @@ impl ParamFile {
         }
         panic!("param file of row {row:#x} not found");
     }
-    fn row(&mut self, emu: &mut Emu, id: u32) -> u64 {
+    pub(crate) fn row(&mut self, emu: &mut Emu, id: u32) -> u64 {
         let (mut lo, mut hi) = (0, self.count);
         while lo < hi {
             let mid = (lo + hi) / 2;
@@ -237,7 +237,7 @@ impl ParamFile {
 
 /// Puts an active SpEffect at the head of a chr's list (node +0x1c flags 0 = active, +0x58 id,
 /// +0x60 row, +0x70 next), as its TAE event would have.
-fn add_sp(emu: &mut Emu, sp: &mut ParamFile, chr: u64, id: u32) {
+pub(crate) fn add_sp(emu: &mut Emu, sp: &mut ParamFile, chr: u64, id: u32) {
     let list = emu.peek_u64(chr + 0x11d0);
     let head = emu.peek_u64(list + 8);
     let node = emu.alloc(0x80);
@@ -250,7 +250,7 @@ fn add_sp(emu: &mut Emu, sp: &mut ParamFile, chr: u64, id: u32) {
 }
 
 /// Switches off a chr's SpEffect (flag bit 0: the lists skip it).
-fn drop_sp(emu: &mut Emu, chr: u64, id: u32) {
+pub(crate) fn drop_sp(emu: &mut Emu, chr: u64, id: u32) {
     let list = emu.peek_u64(chr + 0x11d0);
     let mut n = emu.peek_u64(list + 8);
     while n != 0 {

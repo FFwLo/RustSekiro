@@ -643,6 +643,18 @@ impl Attack {
     pub fn npc_damage(&self) -> f32 {
         self.atk_phys + self.atk_mag + self.atk_fire + self.atk_thun + self.atk_dark
     }
+    /// The hit's five amounts are all 0 (the hit record's floats 0-4, FUN_14083ddc0: an NPC row's
+    /// atkPhys / atkMag / atkFire / atkThun / atkDark x the attack's rates (FUN_14083dea0), a
+    /// player's the atk*Correction x the weapon's attack power (FUN_14083e060)). Such a hit starts
+    /// no hit stop (FUN_140b9cd90 / FUN_140b9cfb0). The NPC side checked in tools/emu-cases
+    /// `damagemod_amounts` (test zero_amount_hits_match_the_exe). gap: the player side is read,
+    /// not run (the weapon attack power needs the attack registration's info fields), and the
+    /// attack's flat adds (info +0x2c, +0x60-0x6c) are taken as 0.
+    pub fn amounts_zero(&self, pc: bool) -> bool {
+        let npc = [self.atk_phys, self.atk_mag, self.atk_fire, self.atk_thun, self.atk_dark];
+        let pc_corr = [self.atk_phys_correction, self.atk_mag_correction, self.atk_fire_correction, self.atk_thun_correction, self.atk_dark_correction];
+        npc.iter().all(|v| *v <= 0.0) && (!pc || pc_corr.iter().all(|v| *v <= 0.0))
+    }
     /// spEffectId0-4 (the hit's SpEffects on the target: build-ups, reactions).
     pub fn sp_effects(&self) -> [i64; 5] {
         [self.sp_effect_id0, self.sp_effect_id1, self.sp_effect_id2, self.sp_effect_id3, self.sp_effect_id4]
