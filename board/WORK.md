@@ -72,6 +72,7 @@ only one that counts. Finished rows move to "Done" at the bottom; board history 
 |----|------|-------|-----|------|-------|
 | B3 | any | | open | `cargo clippy` warnings: fix one module at a time, no behaviour change | one pull request per module |
 | B5 | any | | open | A PowerShell twin of `tools/t.sh` (quiet test run) for contributors without bash | |
+| B7 | any | | open | Build the map cache with `cargo run --release -p sr-extract` (crates/README.md; about 50 GB, kept outside git) and run `cargo test -p sekiro-game -p sekiro-sim` with `SEKIRO_CACHE` set: 34 tests read it and were not run after the 2026-11-04 trim. Make them skip without the cache so CI can run them | needs your own game |
 
 ## Done
 
