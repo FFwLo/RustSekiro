@@ -38,6 +38,7 @@ mod speffect2;
 mod proxy;
 mod damagemod;
 mod camera2;
+mod collide;
 
 /// The few calls of Unicorn's C API the tool needs (unicorn.h), linked from unicorn.dll.
 mod uc {
@@ -893,6 +894,9 @@ fn main() {
     }
     if want.iter().any(|w| w.starts_with("aicpp")) {
         aicpp::run(&|| Emu::new(exe, snap()), out, &want);
+    }
+    if want.first().is_some_and(|w| w.starts_with("collide")) {
+        return collide::run(&|| Emu::new(exe, snap()), out, &want);
     }
     if want.first().is_some_and(|w| w.starts_with("proxy")) {
         return proxy::run(&|| Emu::new(exe, snap()), out, &want);

@@ -293,7 +293,8 @@ copied to physics +0x80).
   a frame at 1/60; first air frame -0.359 = the ground frame's -0.163 - 0.196), semi-implicit (pos += v_new dt).
   RSekiro's walk-off (floor sampled 0.08 m round the feet, vel_y 0, fall type 0 23.52) differs by under 3 mm in y
   over the first 3 air frames; the edge distance depends on the mesh: gap, not compared.
-- gap: the push between characters. With the General placed 1.6 m ahead (his frame run too, AI off) Wolf's proxy
+- (Closed below in "Bodies, steps and the floor follow": the enemy was the c1150 dog, idle in physics mode 1.)
+  The push between characters. With the General placed 1.6 m ahead (his frame run too, AI off) Wolf's proxy
   walks through his: the General's physics does not step in the snapshot (he stays where placed, 0.15 m over the
   ground), so the proxy-proxy response (and Sv1's `separate` 0.9 m contact, live 0.95-1.14 m) is not checked here.
 - gap: map-mesh dependent, recorded but not compared: the post along +X 2.4 m (Wolf stops at 2.003, then slides
@@ -321,3 +322,45 @@ update as `turn` does, 7 scenarios / 168 frames -> `hks2_move.json`; test `move_
   device -> float step (XInput dead zone, curve) is in the FD4 input library, not traced: gap. The manipulator
   itself has no dead zone (0.05 is taken, `turn` above).
 - gap: the lock-on manipulator (FUN_1407f1710), the PlayerCtrl +0x259 TurnAngle gate, the module +0x16c rate.
+## Bodies, steps and the floor follow against the exe (2026-11-03, exe, emulator, topic collide)
+`emu-cases <exe> extracted/emu collide_* --snapshot <dir>` (tools/emu-cases/src/collide.rs), tests in
+src/sim_tests/emu_collide.rs. Same snapshot and path as the proxy section; the "General" there was the c1150 dog
+(NpcParam 11500000, hitRadius 0.5, hitHeight 1.0: its proxy +0x90 / +0xa0 is a sphere at feet + 0.5), the nearest
+enemy with a proxy, 27 m from Wolf.
+- Why the enemy "did not step": not AI or a missing update. His chr frame runs the behaviour step and his physics
+  pre-step (FUN_141043cd0 -> FUN_140bcc570), but the physics update (the function before FUN_140bc4390) picks
+  +0xb10 mode 1 (no proxy move) for a body with zero velocity that rests (FUN_140bcae80); the player's +0xbbc 0x40
+  forces a step every frame (mode 2: FUN_140bcac10 lift, integrate). An NPC (+0x100 set) that moves takes mode 3
+  (FUN_14104da50, the world pass's second queue). Between frames every proxy rests at its feet (the post-step puts
+  Wolf's back at +0x80); the mover is lifted 0.3 m for its integrate.
+- Push (`collide_push_cases`, 11 scenarios, 289 frames compared): Wolf at 3 m/s into the idle dog at his own spot
+  from 8 headings and at 30 fps. Wolf stops where his lifted capsule (spheres at feet + 0.7 and + 1.4, r 0.4) and
+  the dog's sphere are 0.4 + 0.5 + keepDistance 0.05 = 0.95 apart in 3D: flat 0.8556 at dy 0.213 (exe) vs 0.8554,
+  0.9472 vs 0.9471, 0.9498 vs 0.9496, 0.8758 vs 0.8761. RSekiro's `separate` summed the radii (0.9 flat) when the
+  feet-to-top spans met: worst off by 0.025-0.050 m per scenario -> `actor::contact_flat` (capsule segments,
+  keepDistance 0.05, Wolf lifted `PROXY_LIFT` 0.3, the enemy at his feet): worst 0.0003-0.0042 m (the arrival
+  frame; at rest 0.3 mm). The dog stays put (Wolf walked in): `separate`'s "the one that walked in is stopped" holds.
+  heading_45 (placed on a ledge 1.7 m over the dog, fell on him) and the side / 315 runs (the rock stops them
+  first) give no contact.
+- An enemy walking into Wolf: forced (+0xbbc 0x40 on the dog and our velocity at integrate) his mode-3 proxy
+  passed through Wolf's (flat 0.24 m) while Wolf was nudged; with the AI live (`ai=1`, DebugFlags +0x10 cleared)
+  the dog lunged round Wolf at 1.01 m without touching. gap: a moving enemy's proxy against Wolf (lift, filter,
+  who gives way) is not settled; RSekiro keeps its recorded rule (the walker stops, live 0.95-1.14 m).
+- Floor follow (`collide_snap`): Wolf put h over flat ground, standing, one frame: on the floor (+0xa2 set, y to
+  1 mm) for h <= 0.58, falling from 0.62. The same with the lift +0x188 at 0.1 and with +0x184 / +0x18c at 0.5, so
+  it is none of those (gap: the 0.6 constant is not found). RSekiro followed down STEP_HEIGHT 0.5 ->
+  `map::FLOOR_FOLLOW` 0.6. Test `floor_follow_depth_matches_the_exe`.
+- Step-up: `collide_steps` (0.05 m sphere casts on a grid, floor hits only, normal y > 0.85) over +-70 m finds no
+  sharp 0.4-0.7 m ledge; only 0.15-0.25 m steps (stairs at x 138-141) and a stone block's corner at (187.5, 4.13)
+  whose edge rises 0.3-0.7 m across Wolf's 0.8 m width. Walked onto it (`collide_stepwalk`, 11 walks at 3 m/s)
+  along x 187.59 / 187.69 / 187.79 he climbs (edge 0.55 / 0.28 / 0.17 over the approach slope, riding up on the
+  rim from 0.3 m out); x 187.39 / 187.49 start over the cliff below (no case). gap: STEP_HEIGHT 0.5 stays derived.
+- Walking off a sharp edge (same block, +z): the bottom sphere rolls over the rim (0.01 m down 0.10 m past, 0.04 at
+  0.2), then: drop 0.34 / 0.55 m: down on the lower floor 0.30-0.35 m past the edge, never airborne; drop 0.61 /
+  0.74 m: airborne (+0xa2 clear) 0.15-0.20 m past; the 0.21 m step: down 0.15-0.20 past. Test
+  `walking_off_an_edge_falls_past_the_floor_follow_like_the_exe` (follow vs fall by FLOOR_FOLLOW, 4 cases).
+  gap: where along the rim he leaves (0.15-0.35 m, the drop matters) is not ported: RSekiro's floor sampling still
+  holds him 0.08 m past; no rule fits all five without fitting.
+- Slopes over maxSlope 60 deg: none walkable in reach (the steep faces the scan meets are walls, normal y 0.06).
+- Emulator notes: thousands of sphere casts need their buffers allocated once (the emulator heap is 1 MB; the
+  cast allocated 80 bytes a call and the 58k-cast scan crashed) and a TB flush every 256 casts.

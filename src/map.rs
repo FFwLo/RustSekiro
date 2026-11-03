@@ -38,15 +38,21 @@ use crate::player::CAPSULE_HALF_HEIGHT;
 /// FUN_140bc3140, hard-coded for the player; NPCs read NpcParam hitHeight / hitRadius in
 /// FUN_140bc2e00). Live physics module +0xD0 = 1.5 / 0.4 agrees.
 pub const RADIUS: f32 = 0.4;
-/// Highest ledge a walking body steps onto, and how far it follows the floor down.
+/// Highest ledge a walking body steps onto (how far it follows the floor down: FLOOR_FOLLOW).
 /// The exe moves the proxy lifted by the physics module's +0x188 (0.3 m, set in FUN_140bbb010;
 /// FUN_140bcac10, the proxy at last frame's feet + 0.3 each frame in the emulator, topic proxy
 /// 2026-11-03), and hknpCharacterProxy climbs a contact whose normal is within maxSlope 60 deg of
 /// up: a sharp ledge edge touching the lifted capsule's bottom sphere (r 0.4, centre 0.7 m) is
-/// walkable up to 0.7 - 0.4 cos 60 = 0.5 m. gap: derived, not run against a ledge (the snapshot's
-/// arena has none between 0.3 and 0.6 m in reach); how far the post-step (FUN_140bca6d0) follows
-/// the floor down is not traced either.
+/// walkable up to 0.7 - 0.4 cos 60 = 0.5 m. gap: derived, not run against a clean ledge: a floor
+/// scan 70 m round the snapshot (topic collide, 2026-11-03) finds no sharp 0.4-0.7 m step, only
+/// a stone block's corner whose edge rises 0.3-0.7 m across Wolf's width (climbed where it is low).
 pub const STEP_HEIGHT: f32 = 0.5;
+/// How far below the feet a grounded body is put down on the floor each frame (the post-step
+/// FUN_140bc4390 -> FUN_140bca6d0). In the emulator (topic collide, 2026-11-03) Wolf put h over
+/// flat ground and stepped one frame stands on it (physics +0xa2 set) for h up to 0.58 and
+/// falls from 0.62 on; the same with the proxy's lift (+0x188) at 0.1 and with +0x184 / +0x18c
+/// at 0.5, so it is not those. gap: which constant (0.6 m) is not found.
+pub const FLOOR_FOLLOW: f32 = 0.6;
 /// hknpCharacterProxyCinfo maxSlope, set to 60 deg in FUN_14104d3d0 (0x3f860a92 = 1.0472 rad).
 const MAX_SLOPE_DEGREES: f32 = 60.0;
 /// Heights of the contact spheres' centres above the feet; the lowest sphere's bottom sits at
@@ -2421,7 +2427,7 @@ pub struct OnTerrain {
 }
 
 /// After the actors moved: push them out of walls along their step, then put grounded ones on
-/// the floor (following it up to STEP_HEIGHT up or down; a bigger drop leaves them in the air,
+/// the floor (following it up STEP_HEIGHT, down FLOOR_FOLLOW; a bigger drop leaves them in the air,
 /// which player.rs turns into FreeFall; enemies stay put, they have no fall of their own).
 fn bodies_on_terrain(combat: Res<crate::data::Combat>, mut commands: Commands, mut q: Query<(Entity, &Actor, &mut Transform, Option<&mut OnTerrain>)>) {
     let Some(t) = terrain() else { return };
@@ -2450,7 +2456,7 @@ fn bodies_on_terrain(combat: Res<crate::data::Combat>, mut commands: Commands, m
             let feet = tf.translation.y - CAPSULE_HALF_HEIGHT;
             let floor = t.floor(tf.translation.x, tf.translation.z, feet + STEP_HEIGHT);
             match floor {
-                Some(h) if h >= feet - STEP_HEIGHT || a.side == Side::Enemy => tf.translation.y = h + CAPSULE_HALF_HEIGHT,
+                Some(h) if h >= feet - FLOOR_FOLLOW || a.side == Side::Enemy => tf.translation.y = h + CAPSULE_HALF_HEIGHT,
                 Some(_) => {}
                 None => {
                     // Over nothing walkable within reach: the enemy keeps its height.

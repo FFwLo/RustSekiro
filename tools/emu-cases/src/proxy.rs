@@ -22,9 +22,9 @@ use serde_json::{json, Value};
 use super::{uc, Emu};
 
 /// One character's frame: FUN_140a4b570(WorldChrMan, 0, chr, dt in xmm1).
-const CHR_FRAME: u64 = 0x1_40a4_b570;
+pub(super) const CHR_FRAME: u64 = 0x1_40a4_b570;
 /// hknpCharacterProxy::integrate (FUN_1418f8b60).
-const INTEGRATE: u64 = 0x1_418f_8b60;
+pub(super) const INTEGRATE: u64 = 0x1_418f_8b60;
 /// The world's linear sphere cast (camwall: FUN_14094dc70).
 const CAST: u64 = 0x1_4094_dc70;
 /// The proxy wrapper's position setter FUN_14104dfd0 (wrapper, &pos): hknp proxy +0x80, then its body.
@@ -37,7 +37,7 @@ extern "C" {
 /// Drops Unicorn's translated code between frames (uc_ctl_flush_tb: UC_CTL_TB_FLUSH 10, write).
 /// Without it the host crashed on the 39th chr frame of one engine whatever the frame did (the
 /// translation cache filling up in the middle of a run); with it 300 frames run.
-fn flush_tb(emu: &Emu) {
+pub(super) fn flush_tb(emu: &Emu) {
     unsafe { uc_ctl(emu.uc, 10 | (1 << 30)) };
 }
 
@@ -71,12 +71,12 @@ fn v4(e: uc::Engine, at: u64) -> [f32; 4] {
 
 /// The integrate hook: the proxy it watches, the velocity (x, z) it puts in, and per call the
 /// velocity as the game set it and the (lifted) position.
-struct Integrate {
-    proxy: u64,
-    set: Option<[f32; 2]>,
-    calls: Vec<([f32; 4], [f32; 4])>,
+pub(super) struct Integrate {
+    pub proxy: u64,
+    pub set: Option<[f32; 2]>,
+    pub calls: Vec<([f32; 4], [f32; 4])>,
 }
-static INT: Mutex<Integrate> = Mutex::new(Integrate { proxy: 0, set: None, calls: Vec::new() });
+pub(super) static INT: Mutex<Integrate> = Mutex::new(Integrate { proxy: 0, set: None, calls: Vec::new() });
 
 extern "C" fn on_integrate(e: uc::Engine, _addr: u64, _size: u32, _d: *mut c_void) {
     let mut rcx = 0u64;
@@ -94,12 +94,12 @@ extern "C" fn on_integrate(e: uc::Engine, _addr: u64, _size: u32, _d: *mut c_voi
     g.calls.push((vel, pos));
 }
 
-fn f32s(emu: &mut Emu, at: u64, n: usize) -> Vec<f32> {
+pub(super) fn f32s(emu: &mut Emu, at: u64, n: usize) -> Vec<f32> {
     (0..n).map(|i| f32::from_le_bytes(emu.peek(at + 4 * i as u64))).collect()
 }
 
 /// A chr's FD proxy wrapper (physics module +0xc8, else +0xc0) and its hknpCharacterProxy (+0x40).
-fn proxy_of(emu: &mut Emu, phys: u64) -> (u64, u64) {
+pub(super) fn proxy_of(emu: &mut Emu, phys: u64) -> (u64, u64) {
     let w = match emu.peek_u64(phys + 0xc8) {
         0 => emu.peek_u64(phys + 0xc0),
         w => w,
@@ -110,7 +110,7 @@ fn proxy_of(emu: &mut Emu, phys: u64) -> (u64, u64) {
     (w, emu.peek_u64(w + 0x40))
 }
 
-fn setup(new_emu: &dyn Fn() -> Emu) -> (Emu, super::turn::Wolf, u64) {
+pub(super) fn setup(new_emu: &dyn Fn() -> Emu) -> (Emu, super::turn::Wolf, u64) {
     let mut emu = new_emu();
     emu.limit = 200_000_000;
     // The CRT's ISA level (__isa_available, DAT_143c1d520): 5 picks AVX2 string code Unicorn lacks.
@@ -130,7 +130,7 @@ fn setup(new_emu: &dyn Fn() -> Emu) -> (Emu, super::turn::Wolf, u64) {
 }
 
 /// The world's sphere cast from `from` along `d` (the camera's filter): (fraction, normal).
-fn cast(emu: &mut Emu, from: [f32; 3], d: [f32; 3], radius: f32) -> Option<(f32, [f32; 3])> {
+pub(super) fn cast(emu: &mut Emu, from: [f32; 3], d: [f32; 3], radius: f32) -> Option<(f32, [f32; 3])> {
     let w = emu.peek_u64(0x1_43d6_d640);
     let world = emu.peek_u64(w + 0x98);
     let wcm = emu.peek_u64(0x1_43d7_a1e0);
@@ -147,7 +147,7 @@ fn cast(emu: &mut Emu, from: [f32; 3], d: [f32; 3], radius: f32) -> Option<(f32,
 }
 
 /// The ground under (x, z): a 0.05 m sphere dropped from `top`, 6 m.
-fn ground(emu: &mut Emu, x: f32, z: f32, top: f32) -> Option<f32> {
+pub(super) fn ground(emu: &mut Emu, x: f32, z: f32, top: f32) -> Option<f32> {
     cast(emu, [x, top, z], [0.0, -6.0, 0.0], 0.05).map(|(t, _)| top - 6.0 * t - 0.05)
 }
 
@@ -194,7 +194,7 @@ fn map(new_emu: &dyn Fn() -> Emu, near: Option<(f32, f32)>) {
 }
 
 /// The enemy nearest a point that has a proxy (the General): chr, physics module, wrapper, proxy.
-fn nearest_enemy(emu: &mut Emu, at: &[f32]) -> (u64, u64, u64, u64) {
+pub(super) fn nearest_enemy(emu: &mut Emu, at: &[f32]) -> (u64, u64, u64, u64) {
     let mut best = (f32::MAX, (0, 0, 0, 0));
     for c in super::damage::chrs(emu).into_iter().skip(1) {
         let bag = emu.peek_u64(c + 0x1ff8);
@@ -211,7 +211,7 @@ fn nearest_enemy(emu: &mut Emu, at: &[f32]) -> (u64, u64, u64, u64) {
 
 /// Puts a chr at `p` (feet): the physics module's position (+0x80, last frame's +0x90; the
 /// pre-step puts the proxy there each frame) and the proxy itself through the game's setter.
-fn place(emu: &mut Emu, phys: u64, wrapper: u64, p: [f32; 3]) {
+pub(super) fn place(emu: &mut Emu, phys: u64, wrapper: u64, p: [f32; 3]) {
     let v = [p[0], p[1], p[2], 1.0];
     emu.poke_f32s(phys + 0x80, &v);
     emu.poke_f32s(phys + 0x90, &v);
@@ -242,7 +242,7 @@ struct Scenario {
     vel: fn(usize) -> [f32; 2],
 }
 
-fn heading(deg: f32, speed: f32) -> [f32; 2] {
+pub(super) fn heading(deg: f32, speed: f32) -> [f32; 2] {
     let r = deg.to_radians();
     [r.sin() * speed, r.cos() * speed]
 }
