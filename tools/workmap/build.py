@@ -71,13 +71,18 @@ def claims(remote):
     try:
         r = subprocess.run([sys.executable, "-", "claims"], cwd=REPO, input=src, capture_output=True, text=True,
                            encoding="utf-8", timeout=120)
-    except (OSError, subprocess.TimeoutExpired):
+    except (OSError, subprocess.TimeoutExpired) as e:
+        print(f"claims not read: {e}")
         return {}
+    if r.returncode:
+        print(f"claims not read: {(r.stderr or r.stdout).strip()[:200]}")
     out = {}
     for line in r.stdout.splitlines() if r.returncode == 0 else []:
         m = re.match(r"(\S+)\s+(\S+) \(since ([\d-]+)\)", line)
         if m:
             out[m.group(1)] = f"{m.group(2)} since {m.group(3)}"
+    if r.returncode == 0:
+        print(f"claims read: {len(out)} live")
     return out
 
 
