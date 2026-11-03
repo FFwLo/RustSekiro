@@ -819,6 +819,11 @@ fn main() {
                 ints.push(player.expect("player needs --snapshot"));
             } else if *a == "wcm" {
                 ints.push(emu.peek_u64(0x1_43d7_a1e0));
+            } else if let Some(dt) = a.strip_prefix("dt=") {
+                // a task call's data block: frame time at +8 (WorldChrManImp's task methods read it there)
+                let at = emu.alloc(0x40);
+                emu.poke_f32s(at + 8, &[dt.parse().unwrap()]);
+                ints.push(at);
             } else {
                 ints.push(u64::from_str_radix(a.trim_start_matches("0x"), 16).unwrap());
             }
