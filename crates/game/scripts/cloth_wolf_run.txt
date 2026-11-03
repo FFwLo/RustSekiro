@@ -1,0 +1,6 @@
+# Wolf stands, sprints straight ahead, then stops dead: cloth check (scarf, coat flaps).
+# sekiro-rs --play --no-enemy --simple-ai --script this-file --shots 140:a.png,... --exit
+# Simulation steps (60 per second): 60 idle, 150 sprint (to step 210), 90 standing.
+60 0 0 -
+150 0 1 dodge
+90 0 0 -

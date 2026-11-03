@@ -1,0 +1,6 @@
+# Same clear Shachi roof spawn as grapple_shachi, then jump and shoot in the air.
+30 0 0 -
+1 0 0 jump
+24 0 0 -
+1 0 0 grapple
+210 0 0 -

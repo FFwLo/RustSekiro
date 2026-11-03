@@ -1,0 +1,9 @@
+# --arena genichiro --genichiro-phase tomoe --simple-ai --brain-memory off
+# --god --passive --force-act 3039 --lock-on --enemy-distance 6
+# --spawn 107.829,54.044,241.44,0,0
+# Jump shortly before the 1.867-second bolt, then press attack in the air.
+102 0 0 -
+1 0 0 jump
+20 0 0 -
+1 0 0 attack
+176 0 0 -

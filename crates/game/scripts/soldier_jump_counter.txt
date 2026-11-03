@@ -1,0 +1,11 @@
+# The perilous sweep's warning and the jump counter (docs/COMBAT-RULES.md, "Perilous attacks"):
+# sekiro-rs --play --passive --force-act 3020 --script crates/game/scripts/soldier_jump_counter.txt --shots ... --exit
+# The soldier repeats his low sweep (a000_003020, 3.4 s); Wolf walks up during the first one,
+# then jumps the second (step 249) and kicks off the soldier's head (step 262).
+3 0 0 lock_on
+45 0 1 -
+201 0 0 -
+1 0 0 jump
+12 0 0 -
+1 0 0 jump
+200 0 0 -

@@ -1,0 +1,4 @@
+# --play --map m25_00_00_00 --start 0 --no-enemy --simple-ai
+40 0 0 -
+120 0 1 -
+500 0 0 -

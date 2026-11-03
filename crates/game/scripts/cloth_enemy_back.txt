@@ -1,0 +1,3 @@
+# Wolf stands still with the camera turned half way round, so the enemy is seen from behind
+# (his cape and sashes hang toward the camera). Cloth check on the enemy.
+900 0 0 - 180

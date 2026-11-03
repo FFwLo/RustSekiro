@@ -1,0 +1,23 @@
+[package]
+name = "sekiro-formats"
+description = "Readers for Sekiro game data formats"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+flate2.workspace = true
+aes.workspace = true
+num-bigint.workspace = true
+libloading.workspace = true
+encoding_rs = "0.8"
+glam.workspace = true
+serde.workspace = true
+roxmltree = "0.21"
+postcard.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+ttf-parser = "0.25"

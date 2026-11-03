@@ -1,0 +1,13 @@
+# Castle upper roof hang, shimmy both ways, then climb. Self-exits with --exit.
+# --play --map m11_01_00_00 --spawn 83.307,30.6,243.649,133.216,0 --no-enemy
+420 0 0 -
+30 0 1 -
+15 0 0 -
+1 0 0 action
+150 0 0 -
+90 -1 0 -
+40 0 0 -
+90 1 0 -
+40 0 0 -
+1 0 0 action
+120 0 0 -

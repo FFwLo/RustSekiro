@@ -1,0 +1,8 @@
+# Replay on the castle roof with --arena owl --god --simple-ai --force-act 3003.
+# Use --spawn 106,54.04,242,-46,0 --enemy-distance 2 --brain-memory off.
+# Deflect at step 61, then return from recoil to attack at step 98.
+# Capture steps 97,99,101,103,105,107 with --shots and finish with --exit.
+1 0 0 lock_on
+52 0 0 -
+18 0 0 guard
+180 0 0 -

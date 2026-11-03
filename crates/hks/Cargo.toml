@@ -1,0 +1,11 @@
+[package]
+name = "sekiro-hks"
+description = "HavokScript bytecode VM that runs the game's own character scripts"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+sekiro-formats.workspace = true
+thiserror.workspace = true

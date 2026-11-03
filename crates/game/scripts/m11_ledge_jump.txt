@@ -1,0 +1,10 @@
+# A 1.3 m rock ledge in the castle gate courtyard:
+# sekiro-rs --play --map m11_00_00_00 --spawn -142.6,-44.0,125.0,180,0 --no-enemy
+# Run two steps, jump (stick released, as holding it cancels the jump into a run), land on
+# top, then walk off the far side.
+40 0 0 -
+15 0 1 -
+1 0 1 jump
+80 0 0 -
+40 0 1 -
+30 0 0 -

@@ -1,0 +1,5 @@
+# --play --map m11_00_00_00 --start 4 --no-enemy --simple-ai
+# The backward route descends via an intermediate landing, then a 12.85 m stiff fall.
+40 0 0 -
+180 0 1 - 180
+160 0 0 -

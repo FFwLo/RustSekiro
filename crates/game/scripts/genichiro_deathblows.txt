@@ -1,0 +1,17 @@
+# Two castle-top marks using the game's deathblow clips.
+# --arena genichiro --simple-ai --brain-memory off --god --passive --break-posture
+# --spawn 107.829,54.044,237.04,0,0 --enemy-distance 1.6
+150 0 0 -
+2 0 0 lock_on
+1 0 0 attack
+40 0 0 -
+1 0 0 attack
+540 0 0 -
+1 0 0 attack
+40 0 0 -
+1 0 0 attack
+450 0 0 -
+# Reacquire the separately placed castle Tomoe phase and approach it.
+1 0 0 lock_on
+160 0 1 -
+120 0 0 -

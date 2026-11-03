@@ -1,0 +1,9 @@
+# --arena genichiro --god --simple-ai --brain-memory off --passive --break-posture
+# --spawn 107.829,54.13,226.686,0,0 --enemy-distance 1.6
+# Genichiro begins with his back capsule against the north wall.
+150 0 0 -
+2 0 0 lock_on
+1 0 0 attack
+40 0 0 -
+1 0 0 attack
+420 0 0 -

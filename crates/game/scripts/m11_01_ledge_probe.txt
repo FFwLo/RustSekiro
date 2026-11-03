@@ -1,0 +1,7 @@
+# Start 2 research route: approach, hang, then climb.
+60 0 1 -
+15 0 0 -
+1 0 0 action
+150 0 0 -
+1 0 0 action
+120 0 0 -

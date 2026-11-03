@@ -1,0 +1,4 @@
+# Locked-on pavilion edge inspection, with a passive boss three metres in front of Wolf.
+# --arena genichiro --spawn 102.35,54,239.8,270,0 --enemy-distance 3 --lock-on --passive
+# --brain scripted --brain-memory off --script this-file --shots 900:target/alt-fm/ceiling.png --exit
+1800 0 0 -

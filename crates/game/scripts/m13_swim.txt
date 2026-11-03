@@ -1,0 +1,18 @@
+# Abandoned Dungeon pool beside start 1: --spawn 467,-59,346,-45,0.
+30 0 0 -
+25 0 1 -
+1 0 1 jump
+140 0 1 -
+90 0 0 -
+60 0 1 -
+120 0 0 dive
+20 0 0 -
+240 0 0 surface
+60 0 0 -
+# Swim back toward the shore and jump while still in deep water: a longer swim walks out
+# on the shallow bank instead (the 1.5 m body, #146, no longer bumps the sloping roof that
+# knocked the taller one over the thin wall beside the dive).
+40 0 1 - 180
+1 0 1 jump 180
+360 0 1 - 135
+90 0 0 -

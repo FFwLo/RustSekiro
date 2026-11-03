@@ -1,0 +1,8 @@
+# Raw input replay: verify the recording panel starts off, toggles on, then off.
+# --arena owl --brain scripted --brain-memory off --input crates/game/scripts/brain_overlay_toggle.txt
+# --shots 30:target/alt/overlay-review/toggle-off.png,140:target/alt/overlay-review/toggle-on.png,320:target/alt/overlay-review/toggle-off-again.png --exit
+60 -
+1 F8
+179 -
+1 F8
+159 -

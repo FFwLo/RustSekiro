@@ -1,0 +1,11 @@
+# The deathblow camera on the soldier (docs/DEATHBLOW.md, "Camera"):
+# sekiro-rs --play --passive --break-posture --script crates/game/scripts/soldier_deathblow.txt --shots ... --exit
+# Wolf locks on, walks up, breaks the soldier's posture with one slash and takes the deathblow.
+3 0 0 lock_on
+70 0 1 -
+1 0 0 attack
+40 0 0 -
+1 0 0 attack
+20 0 0 -
+1 0 0 attack
+330 0 0 -

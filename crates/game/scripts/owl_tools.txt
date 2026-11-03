@@ -1,0 +1,7 @@
+# The Great Shinobi Owl's tools on demand (docs/OWL.md, "Tools"):
+# sekiro-rs --arena owl --passive --god --force-act 3010 --spawn 104.5,54.0,244.06,135,0
+#   --enemy-distance 4 --script crates/game/scripts/owl_tools.txt --shots ... --exit
+# Wolf locks on and stands still while the Owl uses the tool again and again
+# (3010 firecrackers, 3017 explosive slash, 3030 poison balls, 3031 recovery seal, 3069 smoke).
+1 0 0 lock_on
+400 0 0 -

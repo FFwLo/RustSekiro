@@ -1,0 +1,15 @@
+[package]
+name = "sekiro-fmod"
+description = "Plays the game's own sound events through the FMOD Ex runtime of the player's install"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+libloading.workspace = true
+
+[dev-dependencies]
+sekiro-formats.workspace = true
+sekiro-sim.workspace = true
+glam.workspace = true
