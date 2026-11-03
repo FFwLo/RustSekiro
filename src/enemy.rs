@@ -2223,6 +2223,8 @@ struct Rival {
     /// Posture left and its rate (GetSp / GetSpRate on it).
     posture_left: f32,
     posture_rate: f32,
+    /// NpcParam hitRadius (the exe's GetDist pushes its point in by the target's radius).
+    radius: f32,
 }
 
 /// An AI script message, logged once per distinct text (a failing call repeats every frame).
@@ -2325,6 +2327,7 @@ fn think(
             sp: combat.data_of(a).sp_effects_at(&a.anim, a.t).iter().map(|(id, _)| *id).chain(afflictions(ent)).collect(),
             posture_left: a.posture_max - a.posture,
             posture_rate: (1.0 - a.posture / a.posture_max.max(1.0)).max(0.0),
+            radius: combat.npc(a)["hitRadius"].as_f64().unwrap_or(0.5) as f32,
         })
         .collect();
     // The AI team roles, from last frame's targets.
@@ -2626,7 +2629,12 @@ fn think(
                 e.targeting.hear_record(think_row, s.pos, id, rank, s.serial);
             }
         }
-        e.targeting.update(think_row, feet, a.forward(), &seen, dt);
+        // The sight origin: dummy 500's spot at the feet height (stealth::eye_point; the
+        // fallback pushes the root forward by NpcParam hitRadius, gap: the exe's physics radius).
+        let dmy500 = dummies.get(entity).ok().and_then(|d| crate::combat::dmy_entity(d, 500)).and_then(|m| markers.get(m).ok()).map(|g| g.translation());
+        let radius = npc["hitRadius"].as_f64().unwrap_or(0.5) as f32;
+        let eye = stealth::eye_point(feet, a.forward(), dmy500, radius);
+        e.targeting.update(think_row, feet, eye, a.forward(), &seen, dt);
         if e.targeting.changed() {
             if let Some(log) = log.as_mut() {
                 let (text, color) = match e.targeting.state {
@@ -2799,8 +2807,6 @@ fn think(
 
         // World snapshot for the brain.
         let fwd = a.forward();
-        let right = fwd.cross(Vec3::Y);
-        let dir = to_t.normalize_or_zero();
         let mut sp_self: HashSet<i64> = a.resident.iter().copied().collect();
         sp_self.extend(d.sp_effects_at(&a.anim, a.t).iter().map(|(id, _)| *id));
         sp_self.extend(e.clash.iter().map(|c| c.0));
@@ -2845,7 +2851,7 @@ fn think(
             // 3D, as the exe's GetDist (FUN_1405f1540: sqrt of dx^2 + dy^2 + dz^2 between the two
             // characters' positions); angles stay horizontal.
             dist: (t_pos - tf.translation).length(),
-            angle: dir.dot(right).atan2(dir.dot(fwd)).to_degrees(),
+            angle: crate::ai::to_target_angle(fwd, to_t),
             bearing: (-to_t.x).atan2(-to_t.z).to_degrees(),
             target_guard: rival.map_or(pa.state.contains("Guard"), |r| r.guard),
             self_guard: stance_of(&a.state) == Some(Stance::Guard),
@@ -2873,6 +2879,13 @@ fn think(
             me: tf.translation,
             fwd,
             target: t_pos,
+            // The target chr's radius (GetDist, FUN_1405f1540: Wolf's physics radius 0.4 on the
+            // snapshot = CAPSULE_RADIUS); a spot has none (gap: the exe's point targets).
+            target_radius: match rival {
+                Some(r) => r.radius,
+                None if t_pos == ptf.translation => crate::player::CAPSULE_RADIUS,
+                None => 0.0,
+            },
             // A caution spot has no facing (zero).
             target_fwd: match rival {
                 Some(r) => r.fwd,

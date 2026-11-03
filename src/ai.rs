@@ -77,6 +77,8 @@ pub struct Snapshot {
     /// The current target's (TARGET_ENE_0) position and facing; zero facing = a spot.
     pub target: Vec3,
     pub target_fwd: Vec3,
+    /// The target chr's radius (0 for a spot): GetDist measures to its side facing the AI chr.
+    pub target_radius: f32,
     pub home: Vec3,
     pub home_fwd: Vec3,
     /// The target system (stealth.rs): state, previous state, AI_TARGET_TYPE, whether the state
@@ -124,7 +126,7 @@ pub struct Snapshot {
     pub triggers: Vec<TriggerRegion>,
 }
 
-/// RegisterTriggerRegion's sphere (exe FUN_1405e7280 -> FUN_140642110, 14064.c:648): keyed by
+/// RegisterTriggerRegion's sphere (exe FUN_1405e7280 -> FUN_140642110, <decomp ref>): keyed by
 /// (registrant, category, unit id; a repeat replaces it), static at its centre, `life` seconds
 /// (FUN_140643250 counts it down each frame). The unit id is a tag the getters hand back.
 #[derive(Clone, Debug, PartialEq)]
@@ -138,7 +140,7 @@ pub struct TriggerRegion {
 }
 
 impl TriggerRegion {
-    /// FUN_1406424f0 (14064.c:1611): a sphere holds a point within its radius, in 3D.
+    /// FUN_1406424f0 (<decomp ref>): a sphere holds a point within its radius, in 3D.
     pub fn contains(&self, p: Vec3) -> bool {
         p.distance_squared(self.at) < self.radius * self.radius
     }
@@ -168,7 +170,7 @@ pub struct Command {
     pub face: bool,
     pub turn: bool,
     /// RequestEmergencyQuickTurn (FUN_1405e76e0 -> AI +0x9054, cleared every frame
-    /// 14060.c:7485; the HKS's env(330)): a turn clip even under 45 degrees.
+    /// <decomp ref>; the HKS's env(330)): a turn clip even under 45 degrees.
     pub emergency: bool,
     /// The guard goal's request 9910 (c9997 ACTION_TYPE_GUARD, env(106)) this frame: the guard
     /// stance (enemy.rs guard_stance), held while it is asked for.
@@ -438,7 +440,7 @@ struct AiState {
 /// An enemy's MSB patrol route in world space (enemy.rs PatrolRoute) and where it is on it:
 /// the exe keeps it in AiMovePointCtrl (AiThink +0x9060): the current point at +0x9078 and the
 /// previous one at +0x907c (GetMovePointNumber FUN_1405e3910). It steps (FUN_1405afe20,
-/// 1405a.c:11008) when a move goal to POINT_MOVE_POINT ends in success (Terminate callbacks
+/// <decomp ref>) when a move goal to POINT_MOVE_POINT ends in success (Terminate callbacks
 /// FUN_1405c7b80 / c8050 / ca9b0) or on Lua StepNextMovePoint: prev = cur, cur = the next point
 /// by PatrolType (table 0x143af9550, FUN_1405c1f40 skips empty slots, 64 tries) or -1. Types:
 /// 0 loop, 1 back and forth (turns at the last point), 2 random, 3 loop over slots 0-15, 4 the
@@ -446,7 +448,7 @@ struct AiState {
 /// ends the route there), 6 and up never move (cur -1). At the start prev = -1 and cur = the
 /// first point (FUN_1405b06a0). With cur -1, NonBattleAct plays the last point's arrival anim
 /// and stays (common_non_battle_act.lua). Type 5's hook at the last point passes that region's
-/// position (+0x14) and rotation (+0x20) to the chr's vtable +0x168: FUN_1409f60c0 (1409f.c:3833)
+/// position (+0x14) and rotation (+0x20) to the chr's vtable +0x168: FUN_1409f60c0 (<decomp ref>)
 /// sets the initial position / rotation (ChrIns +0xe0 / +0xf0) and flag +0x1a15 bit 3, which
 /// IsChangeInitialPosition reads (FUN_1405e4fc0): the end of the route is its new home pose
 /// (`new_home`; POINT_INITIAL / POINT_INIT_POSE and BackToHome follow it). Only 0 / 1 / 5
@@ -510,8 +512,8 @@ impl Patrol {
     }
 
     /// Whether `feet` reached the current point: inside its region shape, as the exe's
-    /// MoveToSomewhere(POINT_MOVE_POINT) update asks (FUN_1405caa00, 1405c.c:7420: IsInsideMovePoint
-    /// FUN_1405e55c0 -> FUN_1405ae370 -> the shape test FUN_1409825b0, 14098.c:2274). None: no
+    /// MoveToSomewhere(POINT_MOVE_POINT) update asks (FUN_1405caa00, <decomp ref>: IsInsideMovePoint
+    /// FUN_1405e55c0 -> FUN_1405ae370 -> the shape test FUN_1409825b0, <decomp ref>). None: no
     /// shape (a point region: the exe's test is exact equality, so only IsArrived, the caller's
     /// radius test, ends those).
     pub fn inside_current(&self, feet: Vec3) -> Option<bool> {
@@ -525,7 +527,7 @@ impl Patrol {
         self.arrivals.iter().find(|a| a.0 == region).map(|a| (a.1, a.2))
     }
 
-    /// IsRouteEnd (FUN_1405e6250 -> FUN_1405c20c0, 1405c.c:1341): no point after the previous one.
+    /// IsRouteEnd (FUN_1405e6250 -> FUN_1405c20c0, <decomp ref>): no point after the previous one.
     fn route_end(&self) -> bool {
         self.prev + 1 >= self.points.len() as i64
     }
@@ -607,7 +609,25 @@ enum Observe {
     DmyArea(Value, i16, f64, f64, f64, f64),
 }
 
-fn angle_in(center: f64, width: f64, a: f64) -> bool {
+/// GetDist's distance to a chr (FUN_1405f1540 with r8b 1) from the centre distance `dist` and
+/// the height `dy`: to the target's point moved flat toward the AI chr by its `radius`; inside
+/// that radius it overshoots (no clamp).
+pub(crate) fn surface_dist(dist: f32, dy: f32, radius: f32) -> f32 {
+    let flat = (dist * dist - dy * dy).max(0.0).sqrt();
+    ((flat - radius).powi(2) + dy * dy).sqrt()
+}
+
+/// GetToTargetAngle (FUN_1405e4880): the flat angle (deg) from the facing `fwd` to `to`,
+/// positive to the right; checked on 288 placements of Wolf (aicpp 2026-11-03, within 3e-5).
+pub(crate) fn to_target_angle(fwd: Vec3, to: Vec3) -> f32 {
+    let d = to.with_y(0.0).normalize_or_zero();
+    let fwd = fwd.with_y(0.0).normalize_or_zero();
+    d.dot(fwd.cross(Vec3::Y)).atan2(d.dot(fwd)).to_degrees()
+}
+
+/// IsInsideTarget's cone (FUN_1405e56e0): `a` within `width` (full width)
+/// around the AI_DIR centre.
+pub(crate) fn angle_in(center: f64, width: f64, a: f64) -> bool {
     ((a - center + 540.0).rem_euclid(360.0) - 180.0).abs() <= width / 2.0
 }
 
@@ -654,7 +674,7 @@ impl AiState {
         id
     }
 
-    /// A goal whose life ran out while it still went on (FUN_1405d06c0, 1405d.c:1970-1985): a
+    /// A goal whose life ran out while it still went on (FUN_1405d06c0, <decomp ref>): a
     /// success only if it or a goal above it has SetLifeEndSuccess (FUN_1405d1b50 walks up),
     /// else a failure, which fails its parent and drops the queued subgoals (the scripts' own
     /// common_approach_lifeSuccess / common_Leave_lifeSuccess wrappers rely on it). gap: the
@@ -746,17 +766,16 @@ impl AiState {
     /// in the same terms. gap: MoveToSomewhere's arrival test (successDist) is not a distance
     /// thunk call (its move subgoals 0x1405caa00 / 0x1405c9df0 are not traced); read the same.
     fn goal_dist(&self, id: Option<&Value>) -> f64 {
-        self.dist_to(id) - self.hit_radius as f64
+        match self.pos_of(id) {
+            Some(_) => self.dist_to(id) - self.hit_radius as f64,
+            None => surface_dist(self.w.dist, self.w.target.y - self.w.me.y, self.w.target_radius) as f64 - self.hit_radius as f64,
+        }
     }
 
     /// Signed angle (deg) from the enemy's facing to a target / point, positive to the right.
     fn angle_to(&self, id: Option<&Value>) -> f64 {
         match self.pos_of(id) {
-            Some(p) => {
-                let d = (p - self.w.me).with_y(0.0).normalize_or_zero();
-                let fwd = self.w.fwd.with_y(0.0).normalize_or_zero();
-                d.dot(fwd.cross(Vec3::Y)).atan2(d.dot(fwd)).to_degrees() as f64
-            }
+            Some(p) => to_target_angle(self.w.fwd, p - self.w.me) as f64,
             None => self.angle(),
         }
     }
@@ -822,7 +841,7 @@ impl AiState {
                 dmy(*id).is_some_and(|(p, _)| ((at - p).length() as f64) < *r)
             }
             // AddObserveChrDmyArea(slot, target, dmy, A, B, C, D) (SprjAiChrDmyObserveArea,
-            // FUN_140606710 -> FUN_140605ee0, 14060.c:5023-5234): from the dummy moved back D
+            // FUN_140606710 -> FUN_140605ee0, <decomp ref>): from the dummy moved back D
             // along its +Z, the target chr's position farther than D and within C (3D); the
             // horizontal projections within B / 2 of each other, and the elevation within A / 2
             // of the axis's.
@@ -882,7 +901,7 @@ impl AiState {
         self.observe_changed = (went_in, went_out);
     }
 
-    /// This frame's trigger-region entries and exits (FUN_140642de0, 14064.c:2269): every live
+    /// This frame's trigger-region entries and exits (FUN_140642de0, <decomp ref>): every live
     /// region of an observed category holding this chr, but not its own; one that was not held
     /// last frame is an entry, one held then and not now (left or expired) an exit. Up to 16.
     fn trigger_edges(&mut self) {
@@ -1028,19 +1047,22 @@ impl AiState {
         let w = &self.w;
         match name {
             // GetDist / GetDist_Point (thunks 1405e2c10 / 1405e2fe0: `mov r8b,1; jmp FUN_1405f1540`):
-            // the 3D distance to the target minus the AI chr's own radius (vtable +0x68 of its chr,
-            // the radius FUN_1405bb920 also pushes its own probe out by). GetOriginDist (1405e3fb0,
-            // r8 = 0) is the plain distance. 3D for the target (Snapshot::dist); gap: points
-            // (dist_to with an id) are still horizontal, the radius field +0x68 reads is not
-            // traced (NpcParam.hitRadius here), and TARGET_LOCALPLAYER (21) reads 0.4 in one
-            // player state (== 2 at singleton +0x88) in the exe.
-            "GetDist" | "GetDist_Point" => num(self.dist_to(a.first()) - self.hit_radius as f64),
+            // the 3D distance to the target's point pushed toward the AI chr by the target's
+            // radius, flat (`surface_dist`), minus the AI chr's own radius (vtable +0x68 of its
+            // chr: its physics radius, 0.4 / 0.5 on the snapshot = NpcParam hitRadius here).
+            // GetOriginDist (1405e3fb0, r8 = 0) is the plain root-to-root distance. Checked on 288
+            // placements of Wolf (aicpp 2026-11-03, within 1e-5). gap: points (dist_to with an id)
+            // are still horizontal, and TARGET_LOCALPLAYER (21) reads 0.4 in one player state
+            // (== 2 at singleton +0x88) in the exe.
+            "GetDist" | "GetDist_Point" => num(self.goal_dist(a.first())),
             "GetOriginDist" => num(self.dist_to(a.first())),
             // Height of the target over the AI chr (positive = above): 101030 Act27 backs off to
-            // height / tan when Wolf is >= 3 m up, 106000 / 118000 pick acts on |dy| > 1.8 via the
-            // signed GetDistY. Both read 0 before (2026-10-12 round 22). gap: whether GetDistY is
-            // the absolute value in the exe is not traced; 106000 compares it with -1.8, so signed.
-            "GetDistYSigned" | "GetDistY" => num((self.frame_of(a.first()).0.y - self.w.me.y) as f64),
+            // height / tan when Wolf is >= 3 m up. Both read 0 before (2026-10-12 round 22).
+            // GetDistY is its absolute value (FUN_1405e2e70; GetDistYSigned FUN_1405e2f30 keeps the
+            // sign, target above = positive): aicpp 2026-11-03, Wolf 3 m below reads 3 / -3. So
+            // 106000's `GetDistY <= -1.8` never holds in the game either.
+            "GetDistYSigned" => num((self.frame_of(a.first()).0.y - self.w.me.y) as f64),
+            "GetDistY" => num((self.frame_of(a.first()).0.y - self.w.me.y).abs() as f64),
             "GetDistAtoB" => num(self.dist()),
             "GetMapHitRadius" => num(self.hit_radius as f64),
             "GetRandam_Int" => {
@@ -1104,7 +1126,7 @@ impl AiState {
                 self.cmd.flags.push((id, on));
                 vec![]
             }
-            // FUN_1405b1b20 (1405b.c:588): the order float of type 0 (ORDER_TYPE_Role) / 1
+            // FUN_1405b1b20 (<decomp ref>): the order float of type 0 (ORDER_TYPE_Role) / 1
             // (CallHelp, gap: its writers are not traced, 0 here), else -1.
             "GetTeamOrder" => num(match n(0) as i64 {
                 0 => w.team_role,
@@ -1218,7 +1240,7 @@ impl AiState {
             "IsInsideObserve" => boolean(self.observe_inside(n(0) as i64)),
             // RegisterTriggerRegion(category, unit, life s, radius m, target, dir, extra): a sphere
             // at the target's position + its dir vector x |hit radius + extra| (FUN_14060c250,
-            // 14060.c:6625-6696), stored for every AI by enemy.rs. The caution logic leaves one
+            // <decomp ref>), stored for every AI by enemy.rs. The caution logic leaves one
             // where it heard a sound (common_common_logic_func.lua:319 / 348), tagged with the
             // sound's serial, so allies that heard the same sound stop on reaching it.
             "RegisterTriggerRegion" => {
@@ -1239,7 +1261,7 @@ impl AiState {
                 }
                 vec![]
             }
-            // FUN_1405e75f0 (1405e.c:5952) passes a literal 1 to the removal (FUN_140642ba0), not
+            // FUN_1405e75f0 (<decomp ref>) passes a literal 1 to the removal (FUN_140642ba0), not
             // the category: RemoveTriggerRegionObserver(1000) leaves observer 1000 in place.
             // gap: read from the decompile, not checked in the disassembly.
             "RemoveTriggerRegionObserver" => {
@@ -1507,8 +1529,8 @@ impl AiState {
                 let d = self.goal_dist(target.as_ref());
                 let (mv, walk) = match n {
                     Native::Approach => {
-                        // FUN_1405caa00 (1405c.c:7455): IsArrived first (FUN_1405e4f20 ->
-                        // FUN_1406052e0 -> FUN_1405b9070, 1405b.c:6531: distance < the chr's
+                        // FUN_1405caa00 (<decomp ref>): IsArrived first (FUN_1405e4f20 ->
+                        // FUN_1406052e0 -> FUN_1405b9070, <decomp ref>: distance < the chr's
                         // radius + the goal's distance, strict; the target's own extent +0x1c is 0
                         // for POINT_MOVE_POINT), then for a patrol point IsInsideMovePoint (its
                         // region). gap: the exe's 2D / 3D switch (+0x20) is not mapped to the calc
@@ -2697,15 +2719,18 @@ mod tests {
         assert_eq!(ask(&mut b, &ene, &me), Some(false));
     }
 
-    /// GetDistYSigned / GetDistY give the target's height over the AI chr (both read 0 before).
+    /// GetDistYSigned gives the target's height over the AI chr, GetDistY its absolute value
+    /// (both read 0 before; the exe's GetDistY is unsigned, aicpp 2026-11-03).
     #[test]
     fn dist_y_is_the_target_height_over_me() {
         let Some(mut b) = load(10100000, 1.0, 3) else { return };
-        b.st.w = Snapshot { me: Vec3::new(0.0, 1.0, 0.0), target: Vec3::new(0.0, 4.5, 3.0), ..Snapshot::battle() };
         let ene = Value::Num(0.0);
-        for name in ["GetDistYSigned", "GetDistY"] {
-            let v = b.st.ai_method_raw(name, std::slice::from_ref(&ene)).first().and_then(Value::num).unwrap();
-            assert!((v - 3.5).abs() < 1e-6, "{name} {v}");
+        for (y, signed, abs) in [(4.5, 3.5, 3.5), (-2.0, -3.0, 3.0)] {
+            b.st.w = Snapshot { me: Vec3::new(0.0, 1.0, 0.0), target: Vec3::new(0.0, y, 3.0), ..Snapshot::battle() };
+            for (name, want) in [("GetDistYSigned", signed), ("GetDistY", abs)] {
+                let v = b.st.ai_method_raw(name, std::slice::from_ref(&ene)).first().and_then(Value::num).unwrap();
+                assert!((v - want).abs() < 1e-6, "{name} {v}");
+            }
         }
     }
 

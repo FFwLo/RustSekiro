@@ -957,11 +957,11 @@ pub(crate) fn a_rivals_blow_does_not_turn_it_on_wolf() {
         let (mut e, mut a) = q.single_mut(world).unwrap();
         e.make_unaware(&mut a);
         e.react_from(&mut a, &combat, false, "DamageS_Front");
-        e.targeting.update(combat.param("NpcThinkParam", combat.foe_of(&a).think_id), Vec3::ZERO, Vec3::NEG_Z, &crate::stealth::Seen::new(Vec3::new(0.0, 0.0, 200.0), 0.3, &[]), 1.0 / 60.0);
+        e.targeting.update(combat.param("NpcThinkParam", combat.foe_of(&a).think_id), Vec3::ZERO, Vec3::ZERO, Vec3::NEG_Z, &crate::stealth::Seen::new(Vec3::new(0.0, 0.0, 200.0), 0.3, &[]), 1.0 / 60.0);
         assert!(e.is_unaware(), "a rival's blow: state {}", e.targeting.state);
         assert!(!e.hurt_by_wolf);
         e.react_from(&mut a, &combat, true, "DamageS_Front");
-        e.targeting.update(combat.param("NpcThinkParam", combat.foe_of(&a).think_id), Vec3::ZERO, Vec3::NEG_Z, &crate::stealth::Seen::new(Vec3::new(0.0, 0.0, 200.0), 0.3, &[]), 1.0 / 60.0);
+        e.targeting.update(combat.param("NpcThinkParam", combat.foe_of(&a).think_id), Vec3::ZERO, Vec3::ZERO, Vec3::NEG_Z, &crate::stealth::Seen::new(Vec3::new(0.0, 0.0, 200.0), 0.3, &[]), 1.0 / 60.0);
         assert_eq!(e.targeting.state, crate::stealth::BATTLE, "Wolf's blow");
         assert!(e.hurt_by_wolf);
     });
@@ -1491,7 +1491,7 @@ pub(crate) fn the_general_stance_attacks_start_the_stance_first() {
     });
 }
 
-/// IsArrived runs before the region test (FUN_1405caa00 1405c.c:7455; FUN_1405b9070: distance <
+/// IsArrived runs before the region test (FUN_1405caa00 <decomp ref>; FUN_1405b9070: distance <
 /// the chr's radius + the goal's 0): a point whose region is a zero sphere (2 in the game) or a
 /// point region (51) is still reached on top of it. It waited for the region forever before.
 #[test]

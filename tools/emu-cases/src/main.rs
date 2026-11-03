@@ -28,6 +28,7 @@ mod taecam;
 mod modticks;
 mod taewin;
 mod throw;
+mod aicpp;
 
 /// The few calls of Unicorn's C API the tool needs (unicorn.h), linked from unicorn.dll.
 mod uc {
@@ -874,6 +875,9 @@ fn main() {
     }
     if want.iter().any(|w| w.starts_with("lockcam")) {
         lockcam::run(&want, &|| Emu::new(exe, snap()), out);
+    }
+    if want.iter().any(|w| w.starts_with("aicpp")) {
+        aicpp::run(&|| Emu::new(exe, snap()), out, &want);
     }
     if want.contains(&"taecam") {
         taecam::taecam_frames(&|| Emu::new(exe, snap()), out);
