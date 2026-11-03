@@ -53,6 +53,8 @@ only one that counts. Finished rows move to "Done" at the bottom; board history 
 | E28 | emu | | open | Per-boss check: Divine Dragon (c5200) | as E19 |
 | E29 | emu | | open | Per-boss check: Folding Screen Monkeys (c1000) and Old Dragons of the Tree (c5300): rules ported only, never seen side by side | as E19 |
 | E30 | emu | | open | Params: scan the exe's accessors for every param field RSekiro reads, so a swapped field name is caught | kb/params.md "Not covered" |
+| E31 | emu | | open | Deathblow window: how long an enemy stays broken after a posture break before it recovers. RSekiro uses a stand-in, `config.toml` `broken_time` = 4 s. Find what ends the break in the exe (the break anim's length or TAE, an HKS state timer, or a C++ timer), port it per enemy, and remove `broken_time` | `enemy.rs` `on_posture_break`, `combat.rs`; kb/damage.md |
+| E32 | emu | | open | Free camera swing after a sideways run: the CameraParam fulcrum gives 68 deg/s at a run and 143 at a sprint, which circled Wolf in RSekiro, so `config.toml` `follow_swing` halves it. Run the exe's free camera (FUN_140734790) with the stick held sideways, match its swing, and remove `follow_swing` | `camera.rs` `drag_fulcrum`; kb/camera.md; the harness of `follow_camera_matches_the_exe` |
 
 ## P: port gaps
 
@@ -73,6 +75,7 @@ only one that counts. Finished rows move to "Done" at the bottom; board history 
 | B3 | any | | open | `cargo clippy` warnings: fix one module at a time, no behaviour change | one pull request per module |
 | B5 | any | | open | A PowerShell twin of `tools/t.sh` (quiet test run) for contributors without bash | |
 | B7 | any | | open | Build the map cache with `cargo run --release -p sr-extract` (crates/README.md; about 50 GB, kept outside git) and run `cargo test -p sekiro-game -p sekiro-sim` with `SEKIRO_CACHE` set: 34 tests read it and were not run after the 2026-11-04 trim. Make them skip without the cache so CI can run them | needs your own game |
+| B8 | any | | open | `config.toml` keeps only player and sandbox settings: `buffer`, `regen_delay`, `hp_scales_regen` and `default_ratio_type` already are the exe's behaviour at their defaults, so fix them in code; `player_reach`, `enemy_reach` and `attack_arc` are only a fallback for tests without a model, so move them into the test code; mark `attack_range` and `cooldown_min/max` as the fallback AI's (enemies with no script). No behaviour change | the notes in `config.toml`; `combat.rs` reach fallback, `enemy.rs` fallback combos, `actor.rs` posture regen |
 
 ## Done
 

@@ -123,6 +123,11 @@ def open_prs():
         return []
 
 
+def row_of(rid):
+    """E19a -> E19: a part's row."""
+    return re.sub(r"(?<=\d)[a-z]$", "", rid)
+
+
 def needs_of(c):
     return [n for n in c[2].replace(",", " ").split() if n.strip()]
 
@@ -189,7 +194,7 @@ def main():
     elif cmd == "claim":
         if len(args) < 2:
             sys.exit("usage: claim <ID> <agent>")
-        r = find(work, args[0])
+        r = find(work, row_of(args[0]))  # a part (E19a) is claimed on its row's terms
         if not r:
             sys.exit("no such open row")
         if r[1][3] != "open" or r[1][1] == "humans":
@@ -211,14 +216,15 @@ def main():
             sys.exit("run this inside the board worktree (branch agents-work-board)")
         if len(args) < 3:
             sys.exit('usage: done <ID> "<one line result, PR>" <github>/<agent>')
-        r = find(work, args[0])
+        r = find(work, row_of(args[0]))
         if not r:
             sys.exit("no such open row in WORK.md")
-        lines = work.splitlines()
-        del lines[r[2]]
         today = datetime.date.today().isoformat()
-        text = "\n".join(lines).rstrip("\n") + f"\n| {args[0]} | {args[2]} | {today} | {args[1]} |\n"
-        open("WORK.md", "w", encoding="utf-8", newline="\n").write(text)
+        if row_of(args[0]) == args[0]:  # a whole row moves to Done; a part only gets its history line
+            lines = work.splitlines()
+            del lines[r[2]]
+            text = "\n".join(lines).rstrip("\n") + f"\n| {args[0]} | {args[2]} | {today} | {args[1]} |\n"
+            open("WORK.md", "w", encoding="utf-8", newline="\n").write(text)
         log = open("CHANGES.md", encoding="utf-8").read().rstrip("\n")
         with open("CHANGES.md", "w", encoding="utf-8", newline="\n") as f:
             f.write(f"{log}\n- {today} {args[2]}: {args[0]} done. {args[1]}\n")
