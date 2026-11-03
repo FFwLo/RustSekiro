@@ -1215,10 +1215,50 @@ impl Plugin for ActorPlugin {
     }
 }
 
-/// Character hit radii for body push-out. Enemy: NpcParam.hitRadius (0.5).
-/// gap: the player's character-proxy radius lives in c0000's physics hkx (not
-/// extracted); 0.4 m stands in.
+/// Character hit radii for body push-out. Enemy: NpcParam.hitRadius (0.5). Wolf: his
+/// hknpCharacterProxy capsule, 0.4 round (proxy +0x90 / +0xa0, emulator topic proxy 2026-11-03).
 pub const PLAYER_BODY_RADIUS: f32 = 0.4;
+/// Wolf's proxy capsule height (proxy +0x90 / +0xa0: 1.5 m, its spheres' centres 0.4 and 1.1 m
+/// over the proxy's base).
+pub const PLAYER_PROXY_HEIGHT: f32 = 1.5;
+/// How high Wolf's proxy moves over his feet: physics module +0x188 (0.3), put on the proxy each
+/// frame by the pre-step FUN_140bcac10 (the player's physics +0xbbc 0x40 steps it every frame).
+/// An idle enemy takes no proxy step (physics +0xb10 mode 1) and his proxy rests at his feet.
+pub const PROXY_LIFT: f32 = 0.3;
+/// Wolf's proxy keepDistance (0.05, the float after its shape; map::KEEP_DISTANCE).
+const PROXY_KEEP_DISTANCE: f32 = 0.05;
+
+/// An upright capsule: its feet, how far its proxy is lifted over them, radius and height
+/// (NpcParam hitRadius / hitHeight for an enemy; a capsule shorter than 2 r is the sphere).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ProxyBody {
+    pub feet: f32,
+    pub lift: f32,
+    pub radius: f32,
+    pub height: f32,
+}
+
+impl ProxyBody {
+    /// The heights of the capsule's sphere centres (the segment).
+    fn segment(&self) -> (f32, f32) {
+        let base = self.feet + self.lift;
+        (base + self.radius, base + self.radius.max(self.height - self.radius))
+    }
+}
+
+/// How close (flat, centre to centre) a moving proxy comes to another before it stops: the two
+/// capsules' segments kept radius + radius + keepDistance apart in 3D, so a pair whose spheres
+/// meet one above the other stands closer. None: their heights never meet. In the emulator
+/// (topic collide, 2026-11-03) Wolf walking into the idle c1150 dog (r 0.5, h 1.0: a sphere at
+/// its feet + 0.5) from eight headings stops at sqrt(0.95^2 - dy^2) with dy the gap between his
+/// lifted capsule's bottom sphere (feet + 0.7) and the dog's sphere, to 0.3 mm (0.856 m at
+/// dy 0.413, 0.947 at 0.074, 0.950 at 0.027).
+pub(crate) fn contact_flat(a: ProxyBody, b: ProxyBody) -> Option<f32> {
+    let ((a0, a1), (b0, b1)) = (a.segment(), b.segment());
+    let gap = (a0 - b1).max(b0 - a1).max(0.0);
+    let reach = a.radius + b.radius + PROXY_KEEP_DISTANCE;
+    (gap < reach).then(|| (reach * reach - gap * gap).sqrt())
+}
 
 /// Wolf's paired-throw states and the enemy's throw reactions (not the start throws: live, Wolf's
 /// start anim stops against the enemy - the c1010 vault start moved 0.18 m with him 0.95 m away),
@@ -1241,27 +1281,27 @@ fn proxy_off(combat: &Combat, a: &Actor) -> bool {
     !a.anim.is_empty() && combat.data_of(a).flag(&a.anim, a.t, FLAG_PROXY_OFF)
 }
 
-/// Characters don't overlap: pairs closer than the sum of their radii are pushed
-/// apart horizontally, half each (both weigh in like the game's char proxies). The proxies are
-/// upright capsules, so a pair whose heights don't meet (Wolf over an enemy's head after a
-/// head kick) is left alone: an enemy spans its feet to NpcParam hitHeight, Wolf his capsule
-/// (2 x CAPSULE_HALF_HEIGHT; gap: his proxy height is not traced).
+/// Characters don't overlap: pairs closer than their proxies' contact distance
+/// ([`contact_flat`]) are pushed apart horizontally. The proxies are upright capsules, so a pair
+/// whose heights don't meet (Wolf over an enemy's head after a head kick) is left alone, and one
+/// a little above the other stands closer: Wolf's capsule (0.4 round, 1.5 m) is lifted 0.3 m over
+/// his feet, an enemy's (NpcParam hitRadius / hitHeight) rests at his.
+/// gap: a moving enemy's proxy lift (the NPC's physics +0xb10 mode 3 moves it through
+/// FUN_14104da50) and his keepDistance are not traced; Wolf's 0.05 stands in for both.
 fn separate(combat: Res<Combat>, mut last: Local<std::collections::HashMap<Entity, Vec3>>, mut q: Query<(Entity, &mut Actor, &mut Transform)>) {
-    let radius = |a: &Actor| {
-        if a.side == Side::Player {
-            PLAYER_BODY_RADIUS
-        } else {
-            combat.param("NpcParam", combat.foe_of(a).npc_row)["hitRadius"].as_f64().unwrap_or(0.5) as f32
-        }
-    };
     let half = crate::player::CAPSULE_HALF_HEIGHT;
-    // Feet and top heights (enemies stand 0.05 m higher, enemy.rs spawn_lineup).
-    let span = |a: &Actor, t: &Transform| {
+    // Enemies stand 0.05 m higher (enemy.rs spawn_lineup).
+    let body = |a: &Actor, t: &Transform| {
         if a.side == Side::Player {
-            (t.translation.y - half, t.translation.y + half)
+            ProxyBody { feet: t.translation.y - half, lift: PROXY_LIFT, radius: PLAYER_BODY_RADIUS, height: PLAYER_PROXY_HEIGHT }
         } else {
-            let feet = t.translation.y - half - 0.05;
-            (feet, feet + combat.param("NpcParam", combat.foe_of(a).npc_row)["hitHeight"].as_f64().unwrap_or(2.0 * half as f64) as f32)
+            let row = &combat.param("NpcParam", combat.foe_of(a).npc_row);
+            ProxyBody {
+                feet: t.translation.y - half - 0.05,
+                lift: 0.0,
+                radius: row["hitRadius"].as_f64().unwrap_or(0.5) as f32,
+                height: row["hitHeight"].as_f64().unwrap_or(2.0 * half as f64) as f32,
+            }
         }
     };
     let mut items: Vec<_> = q.iter_mut().collect();
@@ -1274,11 +1314,7 @@ fn separate(combat: Res<Combat>, mut last: Local<std::collections::HashMap<Entit
             if a.hp <= 0.0 || b.hp <= 0.0 || in_throw(a) || in_throw(b) || proxy_off(&combat, a) || proxy_off(&combat, b) {
                 continue;
             }
-            let ((a0, a1), (b0, b1)) = (span(a, ta), span(b, tb));
-            if a0 >= b1 || b0 >= a1 {
-                continue;
-            }
-            let min = radius(a) + radius(b);
+            let Some(min) = contact_flat(body(a, ta), body(b, tb)) else { continue };
             let d = (tb.translation - ta.translation).with_y(0.0);
             let len = d.length();
             if len < min {
