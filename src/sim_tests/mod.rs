@@ -50,6 +50,7 @@ mod emu_modticks;
 mod emu_taewin;
 mod emu_taestate;
 mod emu_throw;
+mod emu_throw2;
 mod emu_aicpp;
 mod emu_aiframe;
 mod emu_speffect;

@@ -6,7 +6,7 @@ use super::*;
 const WORLD_CHR_MAN: u64 = 0x1_43d7_a1e0;
 const ENEMY_VT: u64 = 0x1_42a2_7f28;
 
-fn try_u64(emu: &mut Emu, at: u64) -> Option<u64> {
+pub(super) fn try_u64(emu: &mut Emu, at: u64) -> Option<u64> {
     if at < 0x10000 || at > 0x7fff_ffff_ffff || at % 8 != 0 {
         return None;
     }
@@ -21,7 +21,7 @@ fn try_u64(emu: &mut Emu, at: u64) -> Option<u64> {
 }
 
 /// Every EnemyIns in WorldChrMan's chr sets (as guard.rs).
-fn enemies(emu: &mut Emu) -> Vec<u64> {
+pub(super) fn enemies(emu: &mut Emu) -> Vec<u64> {
     let wcm = emu.peek_u64(WORLD_CHR_MAN);
     let mut out = Vec::new();
     for off in (0..0x2000).step_by(8) {
@@ -40,16 +40,16 @@ fn enemies(emu: &mut Emu) -> Vec<u64> {
     out
 }
 
-fn module(emu: &mut Emu, chr: u64, off: u64) -> u64 {
+pub(super) fn module(emu: &mut Emu, chr: u64, off: u64) -> u64 {
     let bag = emu.peek_u64(chr + 0x1ff8);
     emu.peek_u64(bag + off)
 }
 
-fn f32s<const N: usize>(emu: &mut Emu, at: u64) -> [f32; N] {
+pub(super) fn f32s<const N: usize>(emu: &mut Emu, at: u64) -> [f32; N] {
     std::array::from_fn(|i| f32::from_le_bytes(emu.peek(at + 4 * i as u64)))
 }
 
-fn i32at(emu: &mut Emu, at: u64) -> i32 {
+pub(super) fn i32at(emu: &mut Emu, at: u64) -> i32 {
     i32::from_le_bytes(emu.peek(at))
 }
 
@@ -107,7 +107,7 @@ const KIND_REF: u64 = 0x1_410d_0200; // by id (FUN_1410d0370 takes a row index)
 const CHR_POS: u64 = 0x1_40bb_fc00;
 
 /// The snapshot's chr of this chr number nearest to Wolf.
-fn nearest(emu: &mut Emu, id: i32) -> u64 {
+pub(super) fn nearest(emu: &mut Emu, id: i32) -> u64 {
     let wolf = emu.st.snap.as_ref().unwrap().player;
     let wph = module(emu, wolf, 0x68);
     let wp = f32s::<3>(emu, wph + 0x80);
@@ -129,7 +129,7 @@ fn nearest(emu: &mut Emu, id: i32) -> u64 {
 
 /// Puts a chr at `p` facing `yaw`: physics +0x80 / +0x74 and the yaw the throw checks read, the
 /// throw module's (+0x88) +0x94 (in the snapshot equal to physics +0x74 on every chr).
-fn place(emu: &mut Emu, chr: u64, p: [f32; 3], yaw: f32) {
+pub(super) fn place(emu: &mut Emu, chr: u64, p: [f32; 3], yaw: f32) {
     let ph = module(emu, chr, 0x68);
     emu.poke_f32s(ph + 0x80, &p);
     emu.poke_f32s(ph + 0x74, &[yaw]);
@@ -138,14 +138,14 @@ fn place(emu: &mut Emu, chr: u64, p: [f32; 3], yaw: f32) {
 }
 
 /// The position the checks read (FUN_140bbfc00: physics +0x80, plus a height offset).
-fn chr_pos(emu: &mut Emu, chr: u64) -> [f32; 3] {
+pub(super) fn chr_pos(emu: &mut Emu, chr: u64) -> [f32; 3] {
     let ph = module(emu, chr, 0x68);
     let buf = emu.alloc(16);
     emu.call(CHR_POS, &[ph, buf], &[]);
     f32s::<3>(emu, buf)
 }
 
-fn row_ref(emu: &mut Emu, id: u32) -> u64 {
+pub(super) fn row_ref(emu: &mut Emu, id: u32) -> u64 {
     // {row, id, ?}: FUN_14095e0b0(ref, id) (FUN_14095e0e0 takes a row index).
     let r = emu.alloc(16);
     let res = emu.call(ROW_REF, &[r, id as u64], &[]);
@@ -154,7 +154,7 @@ fn row_ref(emu: &mut Emu, id: u32) -> u64 {
 }
 
 /// {?, id, row}: FUN_1410d0200(ref, id) (FUN_1410d0370 takes a row index).
-fn kind_ref(emu: &mut Emu, id: u32) -> u64 {
+pub(super) fn kind_ref(emu: &mut Emu, id: u32) -> u64 {
     let r = emu.alloc(32);
     let res = emu.call(KIND_REF, &[r, id as u64], &[]);
     assert!(res.stopped.is_none() && emu.peek_u64(r + 8) != 0, "ThrowKindParam {id}");
@@ -162,9 +162,9 @@ fn kind_ref(emu: &mut Emu, id: u32) -> u64 {
 }
 
 /// A small LCG: the same cases every run.
-struct Lcg(u64);
+pub(super) struct Lcg(pub(super) u64);
 impl Lcg {
-    fn f(&mut self, lo: f32, hi: f32) -> f32 {
+    pub(super) fn f(&mut self, lo: f32, hi: f32) -> f32 {
         self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
         lo + (hi - lo) * ((self.0 >> 40) as f32 / (1u64 << 24) as f32)
     }

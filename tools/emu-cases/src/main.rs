@@ -30,6 +30,7 @@ mod modticks;
 mod taewin;
 mod taestate;
 mod throw;
+mod throw2;
 mod aicpp;
 mod aiframe;
 mod speffect;
@@ -906,6 +907,8 @@ fn main() {
     }
     if want.contains(&"taestate") {
         taestate::run(&|| Emu::new(exe, snap()), out, &want);
+    if want.iter().any(|w| w.starts_with("throw2")) {
+        throw2::run(&|| Emu::new(exe, snap()), out, &want);
     }
     if want.iter().any(|w| w.starts_with("throw")) {
         throw::run(&|| Emu::new(exe, snap()), out, &want);

@@ -906,7 +906,7 @@ pub(crate) fn deathblow_mark_target(combat: &Combat, wa: &Actor, wolf: Vec3, ene
         }
         let dmy = |id: i16| dm.and_then(|dm| dm.0.get(&id)).and_then(|m| dummies.get(*m).ok()).map(|g| g.translation());
         let db = crate::player::deathblow_check(combat, wolf, wa.forward(), wa.aged.is_some(), ea, e, eg.translation(), &dmy)?;
-        Some((ent, eg.translation(), db.in_reach, e.is_broken()))
+        Some((ent, eg.translation(), db.in_reach, e.is_broken(), crate::player::chr_number(combat, ea)))
     });
     crate::player::deathblow_pick(cands, lock, wolf, true)
 }

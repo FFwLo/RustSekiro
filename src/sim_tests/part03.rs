@@ -1192,8 +1192,8 @@ pub(crate) fn jumping_at_a_broken_enemy_vaults_over_him() {
 
 #[test]
 pub(crate) fn debug_menu_plunge_setup_reaches_the_plunge_deathblow() {
-    // The debug menu's "plunge deathblow now": Wolf falling from 3 m, 0.6 m short of the broken
-    // enemy, attack pressed at once.
+    // The debug menu's "plunge deathblow now": Wolf falling from 4 m (over the orbit check's
+    // heightLimit 3 m, FUN_140be3ba0), 0.6 m short of the broken enemy, attack pressed at once.
     let mut app = app();
     break_enemy_at(&mut app, 1.2);
     {
@@ -1206,7 +1206,7 @@ pub(crate) fn debug_menu_plunge_setup_reaches_the_plunge_deathblow() {
             a.prev_t = 0.5;
             a.airborne = true;
             a.vel_y = -1.0;
-            t.translation.y += 3.0;
+            t.translation.y += 4.0;
             t.translation.z += 0.6;
         });
     }
@@ -1390,7 +1390,7 @@ pub(crate) fn plunging_onto_an_unaware_enemy_is_the_stealth_plunge() {
             a.prev_t = 0.5;
             a.airborne = true;
             a.vel_y = -1.0;
-            t.translation.y += 3.0;
+            t.translation.y += 4.0;
             t.translation.z += 0.6;
         });
     }
@@ -1456,7 +1456,7 @@ pub(crate) fn a_broken_enemy_elsewhere_keeps_the_stealth_plunge() {
             near.0.make_unaware(&mut near.1);
         });
     }
-    start_falling_onto(&mut app, 3.0, 0.0);
+    start_falling_onto(&mut app, 4.0, 0.0);
     app.world_mut().resource_mut::<PadInput>().press(Action::Attack);
     let mut seen = Vec::new();
     for _ in 0..3 {

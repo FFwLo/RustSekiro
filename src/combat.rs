@@ -1410,6 +1410,15 @@ pub fn teams_hostile(a: i64, b: i64) -> bool {
 /// TEAM_TYPE_Indiscriminate (common_ai_define.lua:422).
 /// The SpEffects an actor wears now: NpcParam residents, the TAE ones (and those outliving their
 /// window, `sp_chained`), and an enemy's engine / bullet ones (`clash`).
+/// Does the chr wear SpEffect `id` (a ThrowParam additionalConditionSpecialEffect)? The anim-set
+/// conditions 200030-200034 read its anim_group, as throw_row_for.
+pub(crate) fn wears_sp(a: &Actor, id: i64) -> bool {
+    match id {
+        200030..=200034 => id - 200030 == a.anim_group as i64,
+        _ => worn_sp(a, &[]).contains(&id),
+    }
+}
+
 pub(crate) fn worn_sp(a: &Actor, clash: &[(i64, f32)]) -> Vec<i64> {
     a.resident.iter().copied().chain(a.sp_chained.iter().map(|c| c.0)).chain(a.tae_prev.iter().copied()).chain(clash.iter().map(|c| c.0)).collect()
 }

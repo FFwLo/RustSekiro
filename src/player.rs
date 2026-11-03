@@ -729,28 +729,56 @@ pub struct DeathblowCheck {
     pub in_reach: bool,
 }
 
-/// Which enemy a deathblow goes to, from (entity, position, in reach, broken) candidates: among
-/// those in reach the locked-on one, else the nearest. With `or_broken` (the HUD's 忍殺 mark) and
-/// none in reach, a broken one the same way. One pick for the attack and the mark, so the mark
-/// sits on the enemy the deathblow takes.
-/// gap: the exe's pick among several throw candidates is not traced.
-pub(crate) fn deathblow_pick(cands: impl IntoIterator<Item = (Entity, Vec3, bool, bool)>, lock: Option<Entity>, wolf: Vec3, or_broken: bool) -> Option<Entity> {
-    let cands: Vec<(Entity, Vec3, bool, bool)> = cands.into_iter().collect();
-    let best = |keep: &dyn Fn(&(Entity, Vec3, bool, bool)) -> bool| {
+/// Which enemy a deathblow goes to, from (entity, position, in reach, broken, chr number)
+/// candidates. In reach: the exe's input throw (FUN_140be0e50) runs an IChrFinder over
+/// WorldChrMan (FUN_140a4c260: its chr sets in order, each set's chrs by index) and stops at the
+/// first chr with any passing row (FUN_140bdf930 -> FUN_140bde5c0); the lock target and the
+/// distance play no part. The snapshot's order runs by chr number (c1000, c1001, ..., c7600, the
+/// players last), so the lowest chr number wins, then the earliest spawned (Entity order).
+/// Run with two c1010 and the General in reach (120 placements, the pick never followed the
+/// nearest on 48 of the 79 with several: sim_tests/emu_throw2.rs). gap: within one chr number
+/// the exe's order (the set's index, the map's load order) is taken as Sv1's spawn order.
+/// With `or_broken` (the HUD's 忍殺 mark) and none in reach, a broken one: the locked-on, else
+/// the nearest (gap: the mark's own pick is not traced).
+pub(crate) fn deathblow_pick(cands: impl IntoIterator<Item = (Entity, Vec3, bool, bool, i64)>, lock: Option<Entity>, wolf: Vec3, or_broken: bool) -> Option<Entity> {
+    let cands: Vec<(Entity, Vec3, bool, bool, i64)> = cands.into_iter().collect();
+    let first = cands.iter().filter(|c| c.2).min_by_key(|c| (c.4, c.0.index())).map(|c| c.0);
+    first.or_else(|| {
+        if !or_broken {
+            return None;
+        }
         cands
             .iter()
-            .filter(|c| keep(c))
+            .filter(|c| c.3)
             .min_by(|x, y| {
-                let key = |c: &(Entity, Vec3, bool, bool)| (Some(c.0) != lock, c.1.distance(wolf));
+                let key = |c: &(Entity, Vec3, bool, bool, i64)| (Some(c.0) != lock, c.1.distance(wolf));
                 let (kx, ky) = (key(x), key(y));
                 kx.0.cmp(&ky.0).then(kx.1.total_cmp(&ky.1))
             })
             .map(|c| c.0)
-    };
-    best(&|c| c.2).or_else(|| if or_broken { best(&|c| c.3) } else { None })
+    })
+}
+
+/// A chr's number for deathblow_pick ("c1020" -> 1020).
+pub(crate) fn chr_number(combat: &Combat, ea: &Actor) -> i64 {
+    combat.foe_of(ea).chr.trim_start_matches('c').parse().unwrap_or(i64::MAX)
 }
 
 pub fn deathblow_check(combat: &Combat, wolf: Vec3, wolf_fwd: Vec3, aged: bool, ea: &Actor, enemy: &Enemy, at: Vec3, dmy: &dyn Fn(i16) -> Option<Vec3>) -> Option<DeathblowCheck> {
+    // The kind test's own gates (FUN_140be3810): no throw starts while the defender's action
+    // flags hold ChrActionFlag 67 ThrowStart2 (+0x70 bit 0x20: ThrowDef12100 / 13100 0-1.5 s) or
+    // it is invulnerable (vfunc 0x550 = FUN_1409f3250: TAE 950 / 951, +0x70 bits 1 / 0). The
+    // check itself stands (out of reach), so the HUD mark keeps showing on the break pose.
+    // gap: the exe's mark display is not traced against these gates.
+    let closed = throw_kind_closed(combat, ea);
+    deathblow_rows(combat, wolf, wolf_fwd, aged, ea, enemy, at, dmy).map(|mut c| {
+        c.in_reach &= !closed;
+        c
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn deathblow_rows(combat: &Combat, wolf: Vec3, wolf_fwd: Vec3, aged: bool, ea: &Actor, enemy: &Enemy, at: Vec3, dmy: &dyn Fn(i16) -> Option<Vec3>) -> Option<DeathblowCheck> {
     let d = &combat.player;
     let foe = combat.foe_of(ea);
     // No deathblow while the Owl's phase-2 transition holds its TAE marker 3506080 (a000_020005
@@ -773,6 +801,25 @@ pub fn deathblow_check(combat: &Combat, wolf: Vec3, wolf_fwd: Vec3, aged: bool, 
     // no finisher, near, Todome or second-form rows. The categories pass by the enemy's throwable
     // state (throwable_state_allows): a broken one (103) the aging-break 18 / 19, not the unaware 17.
     let state = def_throw_state(combat, ea, enemy);
+    // A dying chr passes the exe's kind test in its death anim's 932 103 span (DeathDefault 0-45
+    // f: no 950 / 951 / 67 there, defAliveCheck 0 on the break kinds; HP 0 changes nothing,
+    // throw_kinds run). gap: Sv1 does not take it - its Mode::Dead enemy (counted, fading) has no
+    // way back into a ThrowDef anim - but for the finisher windows.
+    if enemy.is_dead() && !matches!(state, 104 | 105) {
+        return None;
+    }
+    // A start row's whole test (FUN_140be3a90): the range (throw_range_ok), the defender's
+    // SpEffect condition (throw_speffects_ok) and the sight casts (throw_sight_ok) on the map,
+    // from the feet. gap: Wolf's side of the SpEffect pair is taken as met (Actor not passed;
+    // no row of the loaded enemies sets _forAtk).
+    let npc = combat.npc(ea);
+    let (def_h, def_r) = (npc["hitHeight"].as_f64().unwrap_or(2.0) as f32, npc["hitRadius"].as_f64().unwrap_or(0.5) as f32);
+    let feet = Vec3::Y * CAPSULE_HALF_HEIGHT;
+    let row_ok = |row: i64| {
+        throw_range_ok(combat, row, wolf, wolf_fwd, at, ea.forward())
+            && throw_speffects_ok(combat, row, &|_| true, &|id| crate::combat::wears_sp(ea, id))
+            && throw_sight_ok(combat, row, wolf - feet, WOLF_PHYS_HEIGHT, CAPSULE_RADIUS, at - feet, def_h, def_r, &map_sphere_cast)
+    };
     if aged {
         let unaware = enemy.is_unaware() && throwable_state_allows(state, 17);
         let behind = ea.forward().angle_between(wolf_fwd.with_y(0.0).normalize_or_zero()).to_degrees() < 90.0;
@@ -783,7 +830,7 @@ pub fn deathblow_check(combat: &Combat, wolf: Vec3, wolf_fwd: Vec3, aged: bool, 
         let main = combat.throw(foe.throw_row(suffix)).filter(|t| d.anim(&t.atk_anim).is_some())?;
         let start = combat.throw(foe.throw_row(start_sfx)).filter(|st| d.anim(&st.atk_anim).is_some());
         let reach_row = if start.is_some() { foe.throw_row(start_sfx) } else { foe.throw_row(suffix) };
-        let in_reach = throw_range_ok(combat, reach_row, wolf, wolf_fwd, at, ea.forward());
+        let in_reach = row_ok(reach_row);
         return Some(DeathblowCheck { behind, suffix, main, start, in_reach });
     }
     let usable = |sfx: i64| combat.throw(foe.throw_row(sfx)).is_some_and(|t| d.anim(&t.atk_anim).is_some());
@@ -831,7 +878,7 @@ pub fn deathblow_check(combat: &Combat, wolf: Vec3, wolf_fwd: Vec3, aged: bool, 
     if unaware && !behind {
         return None;
     }
-    let near = combat.throw(foe.throw_row(5)).filter(|st| !behind && d.anim(&st.atk_anim).is_some() && throw_range_ok(combat, foe.throw_row(5), wolf, wolf_fwd, at, ea.forward()));
+    let near = combat.throw(foe.throw_row(5)).filter(|st| !behind && d.anim(&st.atk_anim).is_some() && row_ok(foe.throw_row(5)));
     let (start_sfx, suffix) = if unaware {
         (20, 21)
     } else if behind {
@@ -869,7 +916,7 @@ pub fn deathblow_check(combat: &Combat, wolf: Vec3, wolf_fwd: Vec3, aged: bool, 
     // diffAngMyToDef 35 on the General's rows - Wolf must face the enemy; round 41, before any
     // facing took it).
     let reach_row = if start.is_some() { foe.throw_row(start_sfx) } else { foe.throw_row(suffix) };
-    let in_reach = throw_range_ok(combat, reach_row, wolf, wolf_fwd, at, ea.forward());
+    let in_reach = row_ok(reach_row);
     Some(DeathblowCheck { behind, suffix, main, start, in_reach })
 }
 
@@ -1233,16 +1280,33 @@ pub(crate) fn throwable_state_allows(state: u8, category: i64) -> bool {
 /// An enemy's throwable state (throwable_state_allows) from what Sv1 tracks: the TAE 932 finisher
 /// windows (104 / 105, data.rs finisher_window), the break window (Mode::Broken: its end is the
 /// collapse SpEffect 220420's, which is TAE 932's 103 span on 868 of the 1,238 enemy anims that
-/// carry a 103 / 108), else its own 101. gap: 932's 103 on anims Sv1 does not open as a break
-/// (DeathDefault0 / 1 0-45 f, ThrowDef12120 / 13120 / 13900 / 14300, LandTrunk) and the states
-/// 102 / 106-111 are not read; the death anims' 103 may be cut by FUN_140be3810's other tests
-/// (vfunc 0x550, the throw node's bits), not run on a dying chr.
+/// carry a 103 / 108), else its own 101.
+/// Round throw2 (2026-11-03): TAE 932 is read in every anim (data.rs throw_state), so its 103 on
+/// the death anims (DeathDefault 010000 / 010010 0-45 f), the ThrowDef / LandTrunk /
+/// TrunkCollapseAerial spans, 107 (c1060 / c1080 / c1240 / c1250 / c1310 a000_0030xx, 008602)
+/// and 111 (c1340 / c1350 a100_0083xx) count as in the exe; a scan of all enemy anims finds no 932
+/// of 102 / 106 / 109 / 110 (those states are the table's only), and no snapshot chr holds one
+/// as its own +0x7b (101 on every enemy, 255 on c7600).
 pub(crate) fn def_throw_state(combat: &Combat, ea: &Actor, enemy: &Enemy) -> u8 {
-    match combat.data_of(ea).finisher_window(&ea.anim, ea.t) {
+    match combat.data_of(ea).throw_state(&ea.anim, ea.t) {
         Some(w) => w as u8,
         None if enemy.is_broken() => 103,
         None => 101,
     }
+}
+
+/// The kind test's gates past the state table (FUN_140be3810): the defender's action flags
+/// (chr +0x1ff8 bag[0] +0x70) bit 0x20, set by ChrActionFlag 67 ThrowStart2 (TAE dispatcher
+/// FUN_140b51b70 case 0x43; every ThrowDef anim's first frames), closes every kind; bit 0x10
+/// (flag 68, in no enemy anim) the start kinds; vfunc 0x550 (FUN_1409f3250) closes them while
+/// the chr is invulnerable: bits 0 / 1 (TAE 951 / 950). gap: its chr flags +0x1a11 & 0x20 /
+/// +0x1a13 & 2 (event invincibility) are not tracked.
+pub(crate) fn throw_kind_closed(combat: &Combat, ea: &Actor) -> bool {
+    if ea.anim.is_empty() {
+        return false;
+    }
+    let d = combat.data_of(ea);
+    d.flag(&ea.anim, ea.t, 67) || d.events_at(&ea.anim, ea.t).any(|e| e.kind == 950 || e.kind == 951)
 }
 
 /// A ThrowParam row's facing test (the exe's range check FUN_140be0270, round 41 trace; the
@@ -1279,10 +1343,161 @@ pub(crate) fn throw_height_ok(combat: &Combat, row_id: i64, thrower: Vec3, defen
 /// the chrs' roots (FUN_140be3290 takes judgeRangeBasePosDmyId1 / 2 instead when set: no row of
 /// Wolf's start throws sets them). gap: the row's other tests in FUN_140be3a90 - the
 /// additionalConditionSpecialEffect pair, the fall orbit (FUN_140be3ba0, the plunge's own
-/// fall_reaches) and the sight cast between the two (FUN_140be3da0) - are not ported here.
+/// fall_reaches) and the sight cast between the two (FUN_140be3da0) are throw_speffects_ok,
+/// throw_fall_orbit_ok and throw_sight_ok.
 pub(crate) fn throw_range_ok(combat: &Combat, row_id: i64, thrower: Vec3, thrower_fwd: Vec3, defender: Vec3, defender_fwd: Vec3) -> bool {
     let dist = combat.param("ThrowParam", row_id)["Dist"].as_f64().unwrap_or(0.0) as f32;
     throw_height_ok(combat, row_id, thrower, defender) && thrower.distance_squared(defender) < dist * dist && throw_facing_ok(combat, row_id, thrower, thrower_fwd, defender, defender_fwd)
+}
+
+/// A ThrowParam row's SpEffect pair, the first test of FUN_140be3a90: additionalConditionSpecialEffect
+/// _forAtk (+0x6c) on the thrower and _forDef (+0x70) on the defender, each -1 or active
+/// (FUN_1409f1c80 walks the chr's SpEffect list, chr +0x11d0). Run on the snapshot (General's
+/// 11020190, forDef 200030 which he wears; the pair poked to ids worn or not: 16 cases,
+/// sim_tests/emu_throw2.rs).
+pub(crate) fn throw_speffects_ok(combat: &Combat, row_id: i64, atk_has: &dyn Fn(i64) -> bool, def_has: &dyn Fn(i64) -> bool) -> bool {
+    let row = combat.param("ThrowParam", row_id);
+    let id = |k: &str| row[k].as_i64().unwrap_or(-1);
+    speffect_pair_ok(id("additionalConditionSpecialEffect_forAtk"), id("additionalConditionSpecialEffect_forDef"), atk_has, def_has)
+}
+
+pub(crate) fn speffect_pair_ok(atk_id: i64, def_id: i64, atk_has: &dyn Fn(i64) -> bool, def_has: &dyn Fn(i64) -> bool) -> bool {
+    (atk_id == -1 || atk_has(atk_id)) && (def_id == -1 || def_has(def_id))
+}
+
+/// FUN_140802730: the two sight casts' heights as fractions of each chr's height (DAT_143b015a0,
+/// a debug-menu slider; 0.8 / 0.42 in the exe's data and on the snapshot).
+pub(crate) const THROW_SIGHT_FRACS: [f32; 2] = [0.8, 0.42];
+/// Wolf's physics height (+0xd0, FUN_140bbf730) and radius (FUN_140bbf740) on the snapshot.
+pub(crate) const WOLF_PHYS_HEIGHT: f32 = 1.5;
+
+/// A ThrowParam row's sight test, FUN_140be3da0, the last of FUN_140be3a90: unless the row sets
+/// isSkipSphereCast (+0x3b bit 2), two sphere casts from the thrower to the defender, one per
+/// THROW_SIGHT_FRACS height (each chr's point raised by its height x the fraction), radius =
+/// the larger of the two chrs' radii x sphereCastRadiusRateLow (+0x30, first cast) / Top (+0x32)
+/// / 100 (no cast when 0). A cast passes with no hit, or a hit (the sphere's centre at contact)
+/// farther from the start than the defender's point; both must pass. `cast(start, delta,
+/// radius)` sweeps the sphere along delta. Run on the snapshot (FUN_14094d8d0 with filter 0x4c,
+/// 1,200 placements Wolf -> the General: the same casts and this rule give the exe's answer on
+/// all; sim_tests/emu_throw2.rs). Points are the feet (FUN_1409f0870; the rows'
+/// judgeRangeBasePosDmyId are -1 on Wolf's).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn throw_sight_ok(combat: &Combat, row_id: i64, thrower: Vec3, thr_height: f32, thr_radius: f32, defender: Vec3, def_height: f32, def_radius: f32, cast: &dyn Fn(Vec3, Vec3, f32) -> Option<Vec3>) -> bool {
+    let row = combat.param("ThrowParam", row_id);
+    if row["isSkipSphereCast"].as_i64().unwrap_or(0) != 0 {
+        return true;
+    }
+    let rates = ["sphereCastRadiusRateLow", "sphereCastRadiusRateTop"].map(|k| row[k].as_f64().unwrap_or(0.0) as f32);
+    (0..2).all(|i| {
+        let radius = rates[i] / 100.0 * thr_radius.max(def_radius);
+        if radius <= 0.0 {
+            return true;
+        }
+        let start = thrower + Vec3::Y * thr_height * THROW_SIGHT_FRACS[i];
+        let delta = defender + Vec3::Y * def_height * THROW_SIGHT_FRACS[i] - start;
+        cast(start, delta, radius).is_none_or(|hit| delta.length_squared() < (hit - start).length_squared())
+    })
+}
+
+/// The sight cast on Sv1's map: the centre ray along `delta` (map::raycast), the sphere's centre
+/// put back by its radius from the hit. gap: a ray, not the exe's swept sphere (radius 0.2 m
+/// for Wolf -> the General), and only the hit collision (the exe's filter 0x4c not known).
+pub(crate) fn map_sphere_cast(start: Vec3, delta: Vec3, radius: f32) -> Option<Vec3> {
+    let len = delta.length();
+    if len < 1e-5 {
+        return None;
+    }
+    let dir = delta / len;
+    crate::map::raycast(start, dir, len + radius).map(|d| start + dir * (d - radius).max(0.0))
+}
+
+/// The orbit FUN_140be3ba0 predicts (FUN_140baedb0 -> FUN_140bb2850): from `p0` with the chr's
+/// velocity `v`, decelerating ORBIT_ACCEL[0] along its horizontal heading and falling
+/// ORBIT_ACCEL[1] (DAT_143b09ce8 / ec plus physics +0x1c4, 0 on the snapshot), the point
+/// nearest `target` and its time. The target is taken at its full horizontal distance along the
+/// heading (the solver works in the heading / up plane): one real root of the cubic -> that time
+/// (at least 0); three -> the closest point on the orbit sampled every 1/6 s (16 points) and the
+/// later time the fall reaches its height (9999 when it never does); no horizontal speed -> the
+/// target's height on the plumb line (or the apex). Checked on 400 runs of FUN_140bb2850
+/// (sim_tests/emu_throw2.rs).
+pub(crate) const ORBIT_ACCEL: [f32; 2] = [-0.1, -13.72];
+pub(crate) fn fall_orbit_closest(p0: Vec3, v: Vec3, target: Vec3) -> (Vec3, f32) {
+    let [ah, av] = ORBIT_ACCEL;
+    let s = v.with_y(0.0).length();
+    let vy = v.y;
+    let dy = target.y - p0.y;
+    let reach_time = |y: f32| {
+        // av t^2 + 2 vy t - 2 y = 0, the later root (FUN_140bb5b50).
+        let disc = 4.0 * vy * vy + 8.0 * av * y;
+        if disc < 0.0 {
+            return 9999.0;
+        }
+        let r = disc.sqrt();
+        ((-2.0 * vy + r) / (2.0 * av)).max((-2.0 * vy - r) / (2.0 * av))
+    };
+    if s <= 0.0 {
+        let top = (vy * vy * -0.5 * av).max(0.0);
+        if dy < top {
+            return (Vec3::new(p0.x, target.y, p0.z), reach_time(dy));
+        }
+        return (p0 + Vec3::Y * top, -vy / av);
+    }
+    let dir = v.with_y(0.0) / s;
+    let d = (target - p0).with_y(0.0).length();
+    let at = |t: f32| p0 + dir * (t * t * ah * 0.5 + s * t) + Vec3::Y * (t * t * av * 0.5 + vy * t);
+    let roots = cubic_real_roots(-0.5 * (av * av + ah * ah), -1.5 * (av * vy + ah * s), dy * av + d * ah - s * s - vy * vy, dy * vy + d * s);
+    if roots.len() == 1 {
+        let t = if roots[0].is_nan() { 0.0 } else { roots[0].max(0.0) };
+        return (at(t), t);
+    }
+    let pts: Vec<Vec3> = (0..16).map(|k| at(k as f32 / 6.0)).collect();
+    let mut best = (f32::MAX, p0);
+    for w in pts.windows(2) {
+        let ab = w[1] - w[0];
+        let u = if ab.length_squared() > 0.0 { ((target - w[0]).dot(ab) / ab.length_squared()).clamp(0.0, 1.0) } else { 0.0 };
+        let q = w[0] + ab * u;
+        if q.distance_squared(target) < best.0 {
+            best = (q.distance_squared(target), q);
+        }
+    }
+    (best.1, reach_time(best.1.y - p0.y))
+}
+
+/// Real roots of a t^3 + b t^2 + c t + d (one, or three when the discriminant allows).
+fn cubic_real_roots(a: f32, b: f32, c: f32, d: f32) -> Vec<f32> {
+    let (b, c, d) = ((b / a) as f64, (c / a) as f64, (d / a) as f64);
+    let p = c - b * b / 3.0;
+    let q = 2.0 * b * b * b / 27.0 - b * c / 3.0 + d;
+    let disc = (q / 2.0).powi(2) + (p / 3.0).powi(3);
+    if disc > 0.0 {
+        let s = disc.sqrt();
+        return vec![((-q / 2.0 + s).cbrt() + (-q / 2.0 - s).cbrt() - b / 3.0) as f32];
+    }
+    let r = 2.0 * (-p / 3.0).sqrt();
+    let phi = (3.0 * q / (p * r)).clamp(-1.0, 1.0).acos();
+    (0..3).map(|k| (r * ((phi - 2.0 * std::f64::consts::PI * k as f64) / 3.0).cos() - b / 3.0) as f32).collect()
+}
+
+/// A ThrowParam row's fall-orbit test FUN_140be3ba0, for kinds with doesCheckNormalFallOrbit
+/// (the plunge 130000 / 630000, kick 160000 / 660000, stealth plunge 70000 / 570000 ...): the
+/// thrower's fall top (physics +0x854, Sv1's air_top) above the defender more than
+/// normalFallOrbitCheck_heightLimit, the orbit's nearest point (fall_orbit_closest) within
+/// _range of the defender in 3D, reached within _timeLimit (ms, cut to whole seconds by the
+/// exe's FD4Time from (int)(ms / 1000)). Checked on 450 placements of Wolf above the General
+/// (plunge 11020150, kick 11020160, stealth plunge 11020030; sim_tests/emu_throw2.rs).
+pub(crate) fn throw_fall_orbit_ok(combat: &Combat, row_id: i64, thrower: Vec3, fall_top: f32, vel: Vec3, defender: Vec3) -> bool {
+    let row = combat.param("ThrowParam", row_id);
+    let kind = row["throwKind"].as_i64().unwrap_or(-1);
+    if combat.param("ThrowKindParam", kind)["doesCheckNormalFallOrbit"].as_i64().unwrap_or(0) == 0 {
+        return true;
+    }
+    let f = |k: &str| row[k].as_f64().unwrap_or(0.0) as f32;
+    if fall_top - defender.y <= f("normalFallOrbitCheck_heightLimit") {
+        return false;
+    }
+    let (q, t) = fall_orbit_closest(thrower, vel, defender);
+    let limit = (row["normalFallOrbitCheck_timeLimit"].as_i64().unwrap_or(0) / 1000) as f32;
+    q.distance(defender) <= f("normalFallOrbitCheck_range") && t <= limit
 }
 
 /// The main deathblow throw: Wolf's ThrowParam anim, the enemy's ThrowDef(Death) anim, and the
@@ -1865,16 +2080,16 @@ fn sp_ref_active(d: &CharData, a: &Actor, behavior_ref: i64) -> bool {
 }
 
 /// Plunge deathblow start (ThrowParam 崩し落下0, suffix 150: Dist 20 m, defender within upperYRange
-/// 3 m above / lowerYRange 15 m below, normalFallOrbitCheck: the unsteered fall passes within
-/// range 1.5 m of the defender, at most heightLimit 3 m above it, within timeLimit 2000 ms).
+/// 3 m above / lowerYRange 15 m below, normalFallOrbitCheck (throw_fall_orbit_ok): the fall top
+/// over heightLimit 3 m above the defender, the predicted orbit within range 1.5 m of it inside
+/// timeLimit 2000 ms).
 /// Plays the throw's attacker anim (a20x_511400 = 510300's clip) and the defender's ThrowDef13400.
 /// Out of a head-kick jump (AirKickEnemyJumpStart*) it is 蹴り崩し0 (suffix 160: a20x_511500,
 /// ThrowDef13500; heightLimit -10000 = no height check), landing on 蹴り崩し1 (161). Live
 /// (rec_c1020_c_20261009): the kick broke the General, an air attack 0.33 s into 213115 started
 /// a201_511500 (0.72 s) -> 511510 (1.68 s) -> 511511 with ThrowDef13500 -> 13510 -> 13511.
 /// The Grappling Hook Attack's air throw on the hooked enemy (ThrowParam <chr>0170): within the
-/// row's Dist and y range, and the normal fall orbit (no steering, 1/60 s steps) passing within
-/// normalFallOrbitCheck_range of it before its timeLimit, as `start_plunge` checks.
+/// row's Dist and y range, and the fall orbit when its kind checks one (throw_fall_orbit_ok).
 fn wire_throw(
     combat: &Combat,
     a: &Actor,
@@ -1892,37 +2107,9 @@ fn wire_throw(
     if etf.translation.distance(pos) >= th.dist || dy >= f("upperYRange") || dy <= -f("lowerYRange") {
         return None;
     }
-    let (range, height, time_limit) = (f("normalFallOrbitCheck_range"), f("normalFallOrbitCheck_heightLimit"), f("normalFallOrbitCheck_timeLimit") / 1000.0);
-    let g = FALL_TYPES[(a.fall_type as usize).min(FALL_TYPES.len() - 1)].gravity();
-    let (mut q, mut vy) = (pos, a.vel_y);
-    for _ in 0..((time_limit * 60.0) as usize).max(1) {
-        vy += g / 60.0;
-        q += a.air_base / 60.0 + Vec3::Y * vy / 60.0;
-        if (q - etf.translation).with_y(0.0).length() <= range && (height < 0.0 || q.y - etf.translation.y <= height) {
-            return Some(th);
-        }
-    }
-    None
-}
-
-/// The plunge's normal fall orbit (no steering, 1/60 s steps): does it pass within `range` of
-/// the target, at most `height` above it, inside `time_limit`?
-#[allow(clippy::too_many_arguments)]
-fn fall_reaches(pos: Vec3, vel_y: f32, air_base: Vec3, gravity: f32, target: Vec3, range: f32, height: f32, time_limit: f32) -> bool {
-    let (mut q, mut vy) = (pos, vel_y);
-    for _ in 0..((time_limit * 60.0) as usize).max(1) {
-        vy += gravity / 60.0;
-        q += air_base / 60.0 + Vec3::Y * vy / 60.0;
-        if (q - target).with_y(0.0).length() <= range && (height < 0.0 || q.y - target.y <= height) {
-            return true;
-        }
-        // Past the target's height the fall can no longer reach it (2026-10-12 bug hunt round
-        // 16: the cut-off was world y 0.9, so no plunge started on an enemy below about -2.1).
-        if q.y < target.y {
-            return false;
-        }
-    }
-    false
+    // The row's fall orbit only for kinds with doesCheckNormalFallOrbit (the wire's 170000 has
+    // none: the exe takes it at any height in the window).
+    throw_fall_orbit_ok(combat, row_id, pos, pos.y, a.air_base.with_y(a.vel_y), etf.translation).then_some(th)
 }
 
 fn start_plunge(
@@ -1941,7 +2128,6 @@ fn start_plunge(
     // a20x_510300 -> 510310, ThrowDef12300 -> 12310): live (General) 0.54 s + 1.69 s + 1.83 s.
     // The row is chosen per target (2026-10-12 bug hunt round 16: one broken enemy anywhere
     // used to turn off the stealth plunge on every unaware one).
-    let ft = FALL_TYPES[(a.fall_type as usize).min(FALL_TYPES.len() - 1)];
     for (e, mut ea, mut enemy, etf) in enemies.iter_mut() {
         let stealth = !enemy.is_broken() && enemy.is_unaware();
         let (start, land) = if kick {
@@ -1957,7 +2143,6 @@ fn start_plunge(
         let Some(th) = combat.throw(row_id) else { continue };
         let f = |k: &str| row[k].as_f64().unwrap_or(0.0) as f32;
         let (upper, lower) = (f("upperYRange"), f("lowerYRange"));
-        let (range, height, time_limit) = (f("normalFallOrbitCheck_range"), f("normalFallOrbitCheck_heightLimit"), f("normalFallOrbitCheck_timeLimit") / 1000.0);
         if !(enemy.is_broken() || stealth) || etf.translation.distance(pos) >= th.dist {
             continue;
         }
@@ -1965,7 +2150,10 @@ fn start_plunge(
         if dy >= upper || dy <= -lower {
             continue;
         }
-        let hit = fall_reaches(pos, a.vel_y, a.air_base, ft.gravity(), etf.translation, range, height, time_limit);
+        // The exe's orbit test (FUN_140be3ba0, throw_fall_orbit_ok): the fall top above the enemy
+        // over heightLimit, the predicted orbit's nearest point within range in time. Wolf's
+        // velocity: his air base and fall speed. gap: the exe's is the proxy's (FUN_140bbf7d0).
+        let hit = throw_fall_orbit_ok(combat, row_id, pos, p.air_top.max(pos.y), a.air_base.with_y(a.vel_y), etf.translation);
         if !hit || combat.player.anim(&th.atk_anim).is_none() {
             continue;
         }
@@ -3363,10 +3551,10 @@ fn decide(
     }
     if p.requests.contains_key(&Action::Attack) && (accepts(d, a, Action::Attack) || todome_input(d, a)) {
         let dmy_of = |ee: Entity| move |id: i16| enemy_dummies.get(ee).ok().and_then(|dm| dm.0.get(&id)).and_then(|m| globals.get(*m).ok()).map(|g| g.translation());
-        // Several enemies open at once: deathblow_pick (the locked-on one, else the nearest).
+        // Several enemies open at once: deathblow_pick (the exe's chr order: lowest chr number).
         let pick = deathblow_pick(
             enemies.iter().filter_map(|(ee, ea, en, etf)| {
-                deathblow_check(&combat, tf.translation, a.forward(), a.aged.is_some(), ea, en, etf.translation, &dmy_of(ee)).map(|db| (ee, etf.translation, db.in_reach, en.is_broken()))
+                deathblow_check(&combat, tf.translation, a.forward(), a.aged.is_some(), ea, en, etf.translation, &dmy_of(ee)).map(|db| (ee, etf.translation, db.in_reach, en.is_broken(), chr_number(&combat, ea)))
             }),
             lock.target,
             tf.translation,
@@ -5409,11 +5597,15 @@ mod tests {
     /// at 0.36666667 (round 12: the slack fired 38 of 170 player recoveries twice).
     #[test]
     fn the_plunge_fall_check_works_below_world_zero() {
-        // Wolf 4 m over an enemy 10 m below the export origin, falling (heightLimit 3 m).
-        let (target, g) = (bevy::math::Vec3::new(0.0, -10.0, 0.0), -9.8 * 3.0);
-        assert!(super::fall_reaches(target + bevy::math::Vec3::new(0.0, 4.0, 0.3), -1.0, bevy::math::Vec3::ZERO, g, target, 1.0, 3.0, 2.0));
+        // Wolf 4 m over an enemy 10 m below the export origin, falling 1 m/s (fall_orbit_closest:
+        // straight down to its height 0.3 m off, in 0.69 s; heightLimit 3, range 1.5, 2 s).
+        use bevy::math::Vec3;
+        let target = Vec3::new(0.0, -10.0, 0.0);
+        let (q, t) = super::fall_orbit_closest(target + Vec3::new(0.0, 4.0, 0.3), Vec3::new(0.0, -1.0, 0.0), target);
+        assert!(q.distance(target) <= 1.5 && t <= 2.0, "{q} {t}");
         // Out of range sideways: no plunge.
-        assert!(!super::fall_reaches(target + bevy::math::Vec3::new(3.0, 4.0, 0.0), -1.0, bevy::math::Vec3::ZERO, g, target, 1.0, 3.0, 2.0));
+        let (q, _) = super::fall_orbit_closest(target + Vec3::new(3.0, 4.0, 0.0), Vec3::new(0.0, -1.0, 0.0), target);
+        assert!(q.distance(target) > 1.5);
     }
 
     #[test]
