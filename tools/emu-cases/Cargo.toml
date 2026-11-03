@@ -1,0 +1,12 @@
+[package]
+name = "emu-cases"
+version = "0.1.0"
+edition = "2021"
+
+# Runs functions of the user's own sekiro.exe in an emulator and writes comparison cases for the sim
+# tests (extracted/emu/*.json). Not part of the game build. Links the prebuilt unicorn.dll of the
+# Python unicorn package (UNICORN_LIB_DIR, default its site-packages folder): no libclang needed.
+[workspace]
+
+[dependencies]
+serde_json = "1"

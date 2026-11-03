@@ -671,3 +671,35 @@ pub(crate) fn a_key_press_reaches_the_same_frames_fixed_step() {
     assert!(app.world().resource::<PadInput>().pressed.is_empty(), "the press is still queued after the frame");
     assert_ne!(after, before, "Wolf did not start the attack in the frame the key went down");
 }
+
+/// The game's own super armour hit (FUN_140bdb470, run in tools/emu-cases on the user's
+/// sekiro.exe) against SuperArmor::hit on the same states and amounts. Skipped when
+/// extracted/emu/super_armor_hit.json is missing.
+#[test]
+pub(crate) fn super_armor_hit_matches_the_exe() {
+    let path = crate::paths::root().join("extracted/emu/super_armor_hit.json");
+    let Ok(text) = std::fs::read_to_string(&path) else { return };
+    let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+    let f = |c: &serde_json::Value, k: &str| c[k].as_f64().unwrap() as f32;
+    let mut diffs: std::collections::BTreeMap<String, (usize, String)> = Default::default();
+    let cases = v["cases"].as_array().unwrap();
+    // Inputs the game never makes: no damage, an empty full size (the exe still restarts the
+    // timer: no effect) and the untraced +0x18 reserve.
+    let cases: Vec<_> = cases.iter().filter(|c| f(c, "amount") > 0.0 && f(c, "max") + f(c, "bonus") > 0.0 && f(c, "reserve") == 0.0).collect();
+    for c in &cases {
+        let mut sa = crate::actor::SuperArmor { max: f(c, "max"), cur: f(c, "cur"), bonus: f(c, "bonus"), timer: f(c, "timer"), broken: c["broken"].as_bool().unwrap(), delay: f(c, "delay") };
+        sa.hit(f(c, "amount"));
+        let o = &c["out"];
+        for (field, ours, exe) in [("cur", sa.cur, f(o, "cur")), ("timer", sa.timer, f(o, "timer")), ("broken", sa.broken as u8 as f32, o["broken"].as_bool().unwrap() as u8 as f32)] {
+            if (ours - exe).abs() > 1e-4 {
+                let e = diffs.entry(field.to_string()).or_insert((0, String::new()));
+                e.0 += 1;
+                if e.1.is_empty() {
+                    e.1 = format!("max {} bonus {} cur {} broken {} timer {} amount {} reserve {}: Sv1 {ours}, exe {exe}", c["max"], c["bonus"], c["cur"], c["broken"], c["timer"], c["amount"], c["reserve"]);
+                }
+            }
+        }
+    }
+    let report: Vec<String> = diffs.iter().map(|(k, (n, ex))| format!("{k}: {n} of {} cases differ, e.g. {ex}", cases.len())).collect();
+    assert!(report.is_empty(), "SuperArmor::hit differs from the exe:\n{}", report.join("\n"));
+}

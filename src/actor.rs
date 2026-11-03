@@ -16,14 +16,14 @@ pub enum Side {
 
 /// The super-armour pool (exe CSSuperArmorDurability, re-scout 2026-10-13): max = NpcParam
 /// superArmorDurability (vfunc 0x2c8, FUN_140a12de0: +0x118), 0 = none (Wolf, most enemies).
-/// A hit drains it (FUN_140bdb470, 140bd.c:8941; `combat::super_armor_hit`) and re-arms
+/// A hit drains it (FUN_140bdb470, <decomp ref>; `combat::super_armor_hit`) and re-arms
 /// `timer` to 5 x (superArmorRecoverCorrection + 1) s (vfunc 0x2d8, FUN_140a12e90: 7 s at 0.4,
-/// 25 s at 4.0); when it runs out the pool snaps back to full (140bd.c:8904-8923, no gradual
+/// 25 s at 4.0); when it runs out the pool snaps back to full (<decomp ref>, no gradual
 /// refill). Emptied, it breaks: the stateInfo-120 dmgLv rows drop out (FUN_140bdbaf0) for that
 /// hit, and the next tick refills it (the hold is TAE ChrActionFlag 71, which no Sekiro anim
 /// has). While it holds, `combat::damage_motion_level` takes them.
 /// The worn stateInfo-155 rows add their changeSuperArmorPoint to the max (`bonus`,
-/// FUN_140bdb690 140bd.c:8889-8900: the sum kept at +0x24, a rise also added to the pool at
+/// FUN_140bdb690 <decomp ref>: the sum kept at +0x24, a rise also added to the pool at
 /// once): the headless Ape's 3510991 +120, "revived Kensei" 3540110 +200 (no source puts it on
 /// anyone: no TAE, NpcParam, EMEVD, AI or exe reference; likely unused), the
 /// "SA up" 2090 +40.
@@ -61,9 +61,9 @@ impl SuperArmor {
         self.timer = -0.01;
     }
 
-    /// The tick (FUN_140bdbcb0 -> 140bd.c:8904-8929). `reacting`: the action flag that holds a
-    /// broken pool, (chr+0x50)+0x8c bit 9 (140bd.c:8924), set only by TAE ChrActionFlag 71
-    /// "SetBool32_0x7C_9" (FUN_140b51b70 case 0x47, 140b5.c:7461); `instant`: a worn
+    /// The tick (FUN_140bdbcb0 -> <decomp ref>). `reacting`: the action flag that holds a
+    /// broken pool, (chr+0x50)+0x8c bit 9 (<decomp ref>), set only by TAE ChrActionFlag 71
+    /// "SetBool32_0x7C_9" (FUN_140b51b70 case 0x47, <decomp ref>); `instant`: a worn
     /// stateInfo-331 SpEffect skips the wait (FUN_140bfdb20).
     /// `bonus`: the worn stateInfo-155 rows' changeSuperArmorPoint sum.
     pub fn tick(&mut self, dt: f32, reacting: bool, instant: bool, bonus: f32) {
@@ -93,18 +93,24 @@ impl SuperArmor {
         }
     }
 
-    /// FUN_140bdb470: drain by `amount`; empty -> broken. Returns true on the break.
+    /// FUN_140bdb470: drain by `amount` from the pool cut to its full size (a bonus that ended
+    /// leaves no extra); empty -> broken. A broken pool still drains and restarts the timer.
+    /// Returns true on the break. Checked against the exe in tools/emu-cases
+    /// (super_armor_hit_matches_the_exe). gap: the +0x18 reserve that soaks the overflow
+    /// before a break is 0 wherever it is set (FUN_140bdb690); its other source is not traced.
     pub fn hit(&mut self, amount: f32) -> bool {
-        if self.full() <= 0.0 || self.broken || amount <= 0.0 {
+        let full = self.full();
+        if full <= 0.0 || amount <= 0.0 {
             return false;
         }
-        self.cur -= amount;
+        let was = self.broken;
+        self.cur = self.cur.min(full) - amount;
         self.timer = self.delay;
         if self.cur <= 0.0 {
             self.cur = 0.0;
             self.broken = true;
             self.timer = -0.01;
-            return true;
+            return !was;
         }
         false
     }
@@ -164,7 +170,7 @@ pub struct Actor {
     /// hold); None before the first advance. The exe runs posture regen (FUN_140a04850), status
     /// recovery (FUN_140bda460) and the SpEffect timers (FUN_140a02a10 -> FUN_140c06b70) on the
     /// per-character FD4Time chr+0x100 whose float chr+0x108 FUN_1409f78a0 writes from
-    /// HitStop+0x18 (1409f.c:6757); only the fall / Havok take the raw dt (round 64).
+    /// HitStop+0x18 (<decomp ref>); only the fall / Havok take the raw dt (round 64).
     pub clock_dt: Option<f32>,
     /// Debug menu "no posture damage" (player_cheats sets it each tick): add_posture adds
     /// nothing, so one blocked hit can't fill the bar inside Resolve (round 65).
@@ -698,7 +704,7 @@ pub fn advance(time: Res<Time>, combat: Res<Combat>, mut q: Query<(&mut Actor, &
             }
         }
         // The blend-in weight. Havok's blending transition (hkbBlendingTransitionEffectUtils::
-        // generateInternal FUN_14140cfc0 -> FUN_1413bf6c0, 1413b.c:11271) mixes the world-from-model
+        // generateInternal FUN_14140cfc0 -> FUN_1413bf6c0, <decomp ref>) mixes the world-from-model
         // too: from x (1 - w) + to x w over the clip's TAE Blend, w the smoothstep 3t^2 - 2t^3
         // (FUN_141408650, curve 0 on every c0000.hkx effect), the from generator still running.
         // TaeBlend_NoSrcMotion effects (Havok flag 1) take the to generator's at once (play()).
@@ -855,7 +861,7 @@ pub fn advance(time: Res<Time>, combat: Res<Combat>, mut q: Query<(&mut Actor, &
 /// The vertical fall step. Gravity and landing are handled by the owner (player.rs,
 /// data::FALL_TYPES). It runs on the RAW dt, hit stop or not, as the owner's gravity does: the exe
 /// gives the fall module FUN_140bac120 and the Havok step the unscaled time (FUN_1407e1e20,
-/// 1407e.c:2650). Round 58: before, the position took the hit-stop clock while vel_y kept
+/// <decomp ref>). Round 58: before, the position took the hit-stop clock while vel_y kept
 /// building on real time, so an air hit's arc came out lower and shorter.
 fn fall(a: &mut Actor, tf: &mut Transform, dt: f32) {
     if a.airborne {
@@ -909,7 +915,7 @@ pub(crate) fn run_sp_effect_chains(data: &crate::data::CharData, a: &mut Actor, 
         kept.push((id, secs));
     }
     // A lasting row whose invocationConditionsStateChange gate fails waits (stays on, inactive)
-    // or, with isWaitModeDelete, is deleted then (FUN_140c04090, 140c0.c:2641-2649). The
+    // or, with isWaitModeDelete, is deleted then (FUN_140c04090, <decomp ref>). The
     // whistle's madness 230515 / 230516 (gate 959) is one: it lasts while the beast wears its
     // NpcParam resident 230500 (959), i.e. until it dies, and goes if that is cleared.
     let states: Vec<i64> = a.resident.iter().chain(kept.iter().map(|c| &c.0)).chain(now.iter()).filter_map(|id| crate::data::sp_cycle(*id)).map(|c| c.state_info).filter(|s| *s > 0).collect();

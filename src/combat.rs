@@ -210,7 +210,7 @@ pub(crate) fn apply_knockback(combat: &Combat, da: &mut Actor, from: Vec3, at: V
     dist * cut / 100.0
 }
 
-/// FUN_140b6bfe0 (140b6.c:7699-7729): with an attacker, the push distance is times f * f, f the dot
+/// FUN_140b6bfe0 (<decomp ref>): with an attacker, the push distance is times f * f, f the dot
 /// of the normalised knockback direction and the attacker's forward axis (FUN_1409eeb40 ->
 /// FUN_1407dcc90, its orientation's forward column), but 0.4 when f < 0 or f * f < 0.4: range
 /// [0.4, 1]. The leftover handed to the attacker is taken from the scaled distance too.
@@ -234,7 +234,11 @@ pub(crate) fn knockback_facing(dir: Vec3, attacker_forward: Vec3) -> f32 {
 /// FUN_140b6f690 -> FUN_140b6e5a0 with no outcome test). Attacker (FUN_140b9cd90, read here):
 /// AtkParam hitStopTime times a scale from the defender's NpcParam hitStopType (FUN_140b9d850):
 /// 0 none, 1 the engine's weak rate 0.5 (FUN_140a51800 +0x124), 2 full, 3 full only under an
-/// attacker action state (not identified: none here; no row uses 3); a player defender is full.
+/// attacker action state (the chr's +0x1ff8 module [0]+0x54 bit 3; no row uses 3); a player
+/// defender is full. Checked in tools/emu-cases (hit_stop, 2026-11-03): that table holds for
+/// the hit-stop component's mode +0x2d 0 or 3 with the engine switch +0x11d off. gaps: mode 1
+/// makes type 0 full, mode 2 stops nothing (not even flag 41), the switch makes type 0 full;
+/// which mode Wolf and the enemies carry is not traced.
 /// Defender (FUN_140b9cfb0): hitStopTime_Defencer when its hitStopType_Defencer is 1, a player
 /// always. ChrActionFlag 41 on the defender forces both full (FUN_140b60f10) unless the attack
 /// is isArrowAtk. Most enemies are 0 / 0: Wolf's hits on them stop nobody. Rules as AKJama/
@@ -348,7 +352,7 @@ fn player_guard_state(combat: &Combat, deflect: bool, level: i64, dir: &str, var
 /// (rec_c1010_20261009) fires 980. The data's thrust marker, SpEffect 104000 "critical symbol,
 /// piercing" in AtkParam spEffectId4, is on 99 rows, all within this rule (the c1220 / c1470
 /// trackType-6 kicks among them). gap: the exe's acceptance test (flag 125 against the hit) is
-/// not found; 1409e.c:7395-7434 is the throw-on-hit pairing, not a Mikiri gate.
+/// not found; <decomp ref> is the throw-on-hit pairing, not a Mikiri gate.
 /// A hit's SpEffects with the attacker's attack-occurrence one (data::atk_occurrence): the ids
 /// that land on the defender join the AtkParam's; one aimed at the attacker (white-blood
 /// 106065, changeHpRate -10) heals him.
@@ -367,7 +371,7 @@ pub(crate) fn mikiri_atk(atk: &Attack) -> bool {
 }
 
 /// Is the defender in a TAE 954 IFrames window that covers this attack? 954 IFrameType n sets
-/// bit n (140b5.c:10693 -> FUN_140b29cb0) and the hit test FUN_140b68a50 (140b6.c:4234-4241)
+/// bit n (<decomp ref> -> FUN_140b29cb0) and the hit test FUN_140b68a50 (<decomp ref>)
 /// skips a hit whose AtkParam trackType (+0x193) bit is set: Wolf's steps are 7 / 2 (+6 sideways
 /// and back), his jump 1 (sweeps). Round 31: it judged by stand-ins (type 2 = everything, 6 =
 /// atkType 2, 7 = throwFlag, 1 = a 980 warning). A bullet (`_att` None) by its AtkParam's trackType.
@@ -1069,7 +1073,7 @@ pub(crate) fn npc_attribute_rates(combat: &Combat, da: &Actor, atk: &Attack) -> 
 }
 
 /// An enemy's posture rate when it deflects or blocks Wolf: its SpEffects' rate times its NpcParam
-/// <attr>StaminaDmgRate, as on a hit. Exe FUN_1408439a0 (14084.c:2702-2747) multiplies the
+/// <attr>StaminaDmgRate, as on a hit. Exe FUN_1408439a0 (<decomp ref>) multiplies the
 /// defender's per-attribute rate (vfunc 0x248, the attack's attribute +0x2c) and its SpEffects into
 /// every outcome; the guard arms read only the SpEffects (round 28: c1180 servants' heavyHit 0.6).
 pub(crate) fn enemy_guard_posture_rate(combat: &Combat, da: &Actor, atk: &Attack) -> f32 {
@@ -1302,7 +1306,7 @@ fn resolve(
     let tool_weapon = equipped.map(|(t, _)| t.id);
     // Wolf's spot: a posture break faces him (front / back collapse), whichever pair sees it.
     let wolf_at = q.iter().find(|x| x.1.side == Side::Player).map(|x| x.2.translation);
-    // AtkParam AppearAiSoundId: once per attack issued (FUN_1409a1290, 1409a.c:2197), at the
+    // AtkParam AppearAiSoundId: once per attack issued (FUN_1409a1290, <decomp ref>), at the
     // attacker: here each AttackBehavior window that opens this tick. gap: a bullet's own attack
     // record (its Appear sound) is not emitted.
     if let Some(s) = ai_sounds.as_mut() {
@@ -1442,7 +1446,7 @@ fn resolve(
                 aa.hits_done.push((def_e, judge, start));
                 aa.attack_hit = true;
                 // AtkParam HitAiSoundId: once per target the attack lands on, guarded or not
-                // (FUN_1409e68e0 after the damage call, 1409e.c:3685), at the hit (the defender here).
+                // (FUN_1409e68e0 after the damage call, <decomp ref>), at the hit (the defender here).
                 if let Some(s) = ai_sounds.as_mut() {
                     let pc = aa.side == Side::Player;
                     let hit = crate::data::atk_ai_sounds(pc, atk.atk_param_id).1;
@@ -1936,7 +1940,7 @@ fn resolve(
                     }
                     Outcome::Hit => {
                         // The super-armour drain comes first: the hit that empties the pool already
-                        // meets it broken (gap: the order of 140b6.c:8214 against the dmgLv pick
+                        // meets it broken (gap: the order of <decomp ref> against the dmgLv pick
                         // is not traced).
                         if da.side == Side::Enemy && super_armor_hit(da, de.as_ref().map_or(&[][..], |e| &e.clash[..]), aa.side == Side::Player, atk.atk_param_id) {
                             log.push("SUPER ARMOUR BROKEN", Color::srgb(1.0, 0.6, 0.2));
@@ -2013,7 +2017,7 @@ fn resolve(
                         }
                         let pd = aa.stam_atk_rate * if atk.direct_atk_stam_damage > 0.0 { atk.direct_atk_stam_damage } else { atk.atk_stam };
                         let def_rate = def_stamina_rate(&combat, da, atk.stamina_physics_attribute) * armor_posture;
-                        // (int) like the exe's FUN_1408439a0 return (14084.c:2746) and the guard paths.
+                        // (int) like the exe's FUN_1408439a0 return (<decomp ref>) and the guard paths.
                         da.add_posture((pd * def_rate).floor());
                         match da.side {
                             Side::Player => {
@@ -2399,7 +2403,7 @@ mod tests {
 fn resolve_throws(combat: Res<Combat>, mut log: Option<ResMut<CombatLog>>, mut q: Query<&mut Actor>, mut was: Local<Option<(String, f32, usize)>>) {
     // Wolf escaped the grab (player.rs: ThrowEscape on the grabber's flag-70 pulse): the grabber
     // lets go. c9997 ThrowAtkCommonFunction: env 275 (its own flag 70 + throw state 3/4,
-    // FUN_140b39e40 140b3.c:2607) -> W_ThrowRelease<ThrowID> (c1500: ThrowRelease4112 / 4122,
+    // FUN_140b39e40 <decomp ref>) -> W_ThrowRelease<ThrowID> (c1500: ThrowRelease4112 / 4122,
     // the grab + 2). gap: one frame late when the player system runs after this one.
     if q.iter().any(|a| a.side == Side::Player && a.state == "ThrowEscape") {
         for mut a in &mut q {
