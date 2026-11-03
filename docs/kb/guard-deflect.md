@@ -222,7 +222,10 @@ General's attacks and the General against Wolf's, on the memory snapshot.
   instead of 1017: no bound for the attacker (fixed in combat.rs). A deflect never sets it, even
   when it empties posture (posture 1 -> 0; RSekiro keeps it 1 short).
 - Spam chain 105020-23 on a deflect: the attacker's 30 posture x 1 / 0.5 / 0.25 / 0.125 lands as
-  30 / 15 / 7 / 3 (cut to an int; RSekiro adds 7.5 / 3.75: damage topic).
+  30 / 15 / 7 / 3 (cut to an int; RSekiro now floors it too, 2026-11-03).
+- gap: a deflect that empties the defender's posture leaves it 1 short in RSekiro. The exe lets it reach
+  0 because its break is a separate flag (+0x1c4) that only a block or a hit sets; RSekiro reads
+  the break from the value (Actor::posture_broken), so a full deflect would break.
 - Test guard_resolution_matches_the_exe (sim_tests/emu_guard.rs): flick powers and verdicts
   equal on all 90 cases, the guard break and attacker reactions as above.
 - gap: the parts guard (a hit on a guarding body part, FUN_1410c66a0, +0x1ce) is not ported; the

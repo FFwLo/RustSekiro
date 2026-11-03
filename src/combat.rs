@@ -1854,8 +1854,10 @@ fn resolve(
                         da.since_posture_damage = 0.0;
                         // Wolf's deflect: his latent skills' defStaminaAttackRate (270: x1.25).
                         let skill_atk = if da.side == Side::Player { skill_rate(&combat, &config, "defStaminaAttackRate") } else { 1.0 };
+                        // Cut to whole points like every posture amount (exe, guard_resolution:
+                        // the spam chain's 30 x 1 / 0.5 / 0.25 / 0.125 lands as 30 / 15 / 7 / 3).
                         if !bullet {
-                            aa.add_posture(atk.repel_lost_stam_damage_attacker * rate * skill_atk);
+                            aa.add_posture((atk.repel_lost_stam_damage_attacker * rate * skill_atk).floor());
                         }
                         let attacker_broken = aa.posture_broken();
                         // Defender reaction.
