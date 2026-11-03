@@ -143,6 +143,8 @@ pub struct Actor {
     pub blend_len: f32,
     /// Facing angle (radians, Bevy Y rotation; 0 faces -Z).
     pub yaw: f32,
+    /// The drawn facing while it lags `yaw` (Wolf's free turns: `ShownYaw`); None draws `yaw`.
+    pub shown: Option<ShownYaw>,
     pub hp: f32,
     pub hp_max: f32,
     /// Posture damage taken, 0..posture_max. Full = posture break.
@@ -329,6 +331,7 @@ impl Actor {
             blend_t: 0.0,
             blend_len: 0.0,
             yaw: 0.0,
+            shown: None,
             hp,
             hp_max: hp,
             posture: 0.0,
@@ -618,6 +621,60 @@ fn boost_root_motion(
     }
 }
 
+/// Wolf's drawn facing: PlayerCtrl's GetRotation (vtable 0x1429d5508 slot 0x40, FUN_1407f2e90)
+/// returns the yaw of the turn delay controller (BehaviorTurn +0x50, FUN_1407da4a0 -> +0x20),
+/// not the physics yaw (+0x74) the generic ChrCtrl's (FUN_1407dcd70) returns. The controller
+/// (FUN_1407e7970 -> FUN_1407e7da0) chases the physics yaw at 1.1x the turn rate, turning the
+/// short way at full speed at once (the angular speed min(speed + rate * p0, rate * p1), action
+/// +0x320 / +0x324 = 1, 1 unless TAE 704 sets them - c0000 has none), and lands on it when the
+/// rest is within one step (speed 0). Emulated on the snapshot (tools/emu-cases `turn`): a 90 deg
+/// snap is drawn over 7 frames at 0.2304 rad (792 deg/s). Here it is engaged by the turns the
+/// player's turn controller makes (`player::Turn`) and dropped once it lands; a yaw other code
+/// sets is drawn at once. gap: that the model matrix takes GetRotation is inferred from the
+/// override, not traced to the render; whether the exe's warps and SetRotation reset the delay
+/// controller is not traced.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct ShownYaw {
+    /// Delay controller +0x24.
+    pub yaw: f32,
+    /// Its angular speed [rad/s] (+0x30).
+    pub speed: f32,
+    /// The turn rate in force [deg/s] (FUN_1407daa20's pick), set by the player each tick.
+    pub rate: f32,
+}
+
+impl ShownYaw {
+    /// One frame of the drawn facing toward the physics yaw: the yaw to draw; dropped (None) once
+    /// it lands.
+    pub fn draw(shown: &mut Option<ShownYaw>, yaw: f32, dt: f32) -> f32 {
+        let Some(s) = shown.as_mut() else { return yaw };
+        s.chase(yaw, dt);
+        let drawn = s.yaw;
+        if s.speed == 0.0 {
+            *shown = None;
+        }
+        drawn
+    }
+
+    /// One step toward the physics yaw `target`.
+    pub fn chase(&mut self, target: f32, dt: f32) {
+        let diff = wrap_angle(target - self.yaw);
+        let speed = self.rate.to_radians() * 1.1;
+        if diff.abs() <= speed * dt {
+            self.yaw = target;
+            self.speed = 0.0;
+        } else {
+            self.speed = speed;
+            self.yaw += diff.signum() * speed * dt;
+        }
+    }
+}
+
+/// An angle wrapped into [-pi, pi) (a half turn reads as -pi, as the exe's turn request does).
+pub fn wrap_angle(a: f32) -> f32 {
+    (a + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI
+}
+
 /// The full stop at the start of every hit stop (exe FUN_140a51800 default +0x130 = 0.06 s).
 pub const HIT_STOP_HOLD: f32 = 0.06;
 
@@ -681,6 +738,7 @@ pub fn advance(time: Res<Time>, combat: Res<Combat>, mut q: Query<(&mut Actor, &
         if dt <= 0.0 {
             // A turn decided during the hold is drawn (and hit-tested) at once (round 58: the
             // rotation waited for the hold's end).
+            a.shown = None;
             tf.rotation = Quat::from_rotation_y(a.yaw);
             fall(&mut a, &mut tf, real_dt);
             continue;
@@ -854,7 +912,11 @@ pub fn advance(time: Res<Time>, combat: Res<Combat>, mut q: Query<(&mut Actor, &
             }
         }
         fall(&mut a, &mut tf, real_dt);
-        tf.rotation = Quat::from_rotation_y(a.yaw);
+        // The drawn facing chases a turn the turn controller snapped (ShownYaw); landed, it is
+        // `yaw` again.
+        let yaw = a.yaw;
+        let drawn = ShownYaw::draw(&mut a.shown, yaw, dt);
+        tf.rotation = Quat::from_rotation_y(drawn);
     }
 }
 
