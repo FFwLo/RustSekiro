@@ -293,3 +293,41 @@ Dated findings, oldest first. Append new entries at the end.
   XInput RX / RY and LX / LY (+0x258 / +0x25c, +0x24c / +0x250 of the device, + right / + up). Not
   covered: walls and the ground while locked, TAE 151 / 153 / 155 while locked, target rotation (every
   scenario keeps the snapshot's), the lock-on entry / exit blend of FOV and distance (LockCamParam).
+
+## TAE camera events checked against the exe (2026-11-03)
+- tools/emu-cases `taecam` runs the camera frame (FUN_140734790 -> FUN_14073c260) on the snapshot with the camera
+  singleton DAT_143d5c0d0 filled as the TAE handlers fill it (151 FUN_140b517a0, 153 FUN_140b51680, 155
+  FUN_140737430 into the CameraSetParam manager DAT_143d59938 +0x3e8, 156 FUN_140b51490), then the singleton's
+  per-frame clear and timers (FUN_140838b50 from +0x3ce: FUN_140833e40, +0x44 / +0x68 / +0x7c count down by dt and
+  clear with their partner at 0). 17 scenarios, 2,160 frames. Sim test `tae_camera_events_match_the_exe`
+  (sim_tests/emu_taecam.rs) passes; docs/kb/emulator-pilot.md pilot taecam.
+- 153 (`cam_distance_step`): every rate is per frame with no dt (ported 1 - (1 - r)^(dt * 60); Sv1 used dt * 30,
+  half speed at 60 fps). The used distance +0x214 is set to +0x218 each frame (14073.c 9751): no 0.1 smoothing.
+  EndInterpolationSpeed (+0x80) holds only while TransitionKeyframe (+0x7c) counts down after the event, then the
+  rate is lockCamParamLerpRate again (Sv1 kept it forever). Override target at StartInterpolationSpeed (param rate
+  when <= 0); SlowStart eases from +0x21c taken at the first frame. Old code was up to 2.0 m off +0x214.
+- 155 (`cam_slot_step`, `CamBlend`, FUN_1407374e0 / FUN_1407381d0): at a switch the blended CameraParam as it is
+  (+8) is kept at +0x1e8 and blended from (Sv1 blended from the old slot's row: a switch mid-blend jumped); length
+  +0x3f0 = new slot's beginTime (old slot's endTime back to 1), clock +0x3f4 restarts at 0 and advances by dt
+  before the weight, clamped to the length; weight w = 1 - (p - 1)^2 (Sv1 linear, up to 0.25 off); isEnable*
+  rounded, rotBaseY / resetBaseY take the new row. The LockCamParam row is the new slot's at once (Sv1 blended
+  it): distance, FOV +0x50 and +0x278 chase it per frame. Focus height +0x204 = CameraParam chrOrgOffsetY +
+  (LockCamParam chrOrgOffset_Y - it) * lockCamParamLerpRate, anew each frame (not a chase). All 95 named fields
+  of the blended row match within 2e-6.
+- 156 (`set_camera_angle`): the target +0x1e0 = HorizontalAngle + Wolf's yaw is taken once at the first frame;
+  Sv1 used his current yaw (0.98 rad off when he turns during the event). Types, start angles and +0x150 = 1 /
+  +0x154 = 0 matched as they were.
+- 151: focus on the dummy at min(unk1, 1) (normal rates <= 0); after the event it chases Wolf at unk3 while unk2
+  seconds count down (Sv1 had no after-rate). The cast from Wolf's focus to the dummy (FUN_14094cf90) sets +0x1a0
+  when it hits: focus stays on Wolf, limits fall back (map::raycast here). Limits (`look_limits_step`, a literal
+  FUN_140742230): centre = view along minus row 2 of the dummy's world matrix (our dummy's +Z: Wolf's dummy 142
+  view matches the exe's within 0.05 rad; Sv1 used the Wolf -> dummy vector, which is straight up for 142); yaw
+  unwrapped near +0x240 (camera yaw at the event's start, FLT_MAX between events); every limit chases per frame
+  from where it was (Sv1 started at the target, dt * 30, wrapped deltas); the event's yaw limits only when not the
+  full circle; no event: LockCamParam rotRangeMinX / CameraParam rotRangeXMax and the param yaw range; blocked
+  with the full circle the event's pitch limits stay around 0. The clamp runs on the free camera after the
+  resync (unlocked branch only; 156 is not clamped): pitch plain, yaw by the exe's 2pi window (`clamp_yaw_exe`;
+  Sv1's centre-based clamp differed for cones across +-pi such as a213's -160..-159).
+- Not covered: the cast blocked path (+0x1a0 never set in the arena), the 6 CameraParam rows with a yaw range
+  under the full circle (chr row 2 taken as Wolf's facing), the CameraSetParam map row (snapshot 1100000 =
+  row 0), SlowEnd (+0x85, read at 14073.c 12527, not traced), +0x278 into the lock-on pitch, 30 fps.

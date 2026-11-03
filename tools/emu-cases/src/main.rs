@@ -24,6 +24,7 @@ mod guard;
 mod trace;
 mod lockcam;
 mod turn;
+mod taecam;
 
 /// The few calls of Unicorn's C API the tool needs (unicorn.h), linked from unicorn.dll.
 mod uc {
@@ -870,6 +871,9 @@ fn main() {
     }
     if want.iter().any(|w| w.starts_with("lockcam")) {
         lockcam::run(&want, &|| Emu::new(exe, snap()), out);
+    }
+    if want.contains(&"taecam") {
+        taecam::taecam_frames(&|| Emu::new(exe, snap()), out);
     }
     if on("hit_stop") {
         let mut emu = Emu::new(exe, None);

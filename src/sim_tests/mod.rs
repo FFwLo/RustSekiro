@@ -44,6 +44,7 @@ mod emu_hks;
 mod emu_damage;
 mod emu_lockcam;
 mod emu_turn;
+mod emu_taecam;
 pub(crate) use part01::*;
 pub(crate) use part02::*;
 pub(crate) use part03::*;

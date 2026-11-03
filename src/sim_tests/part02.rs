@@ -748,22 +748,38 @@ pub(crate) fn deathblow_camera_closes_in_then_returns() {
 #[test]
 pub(crate) fn tae151_look_limits_clamp_camera_angles() {
     // TAE 151 CameraLookAtTarget (e.g. a200_510000, dmy 142): LookUp/DownLimit bound pitch and
-    // LookLeft/RightLimit bound yaw around the player -> dummy direction (exe FUN_140742230).
-    // Dummy straight ahead (-Z), pitch -40..70, yaw unrestricted; rate 1 = instant chase.
-    let ahead = Vec3::new(0.0, 0.0, -1.0);
-    let mut look = None;
-    let (yaw, pitch) = crate::camera::apply_look_limits(1.2, 100f32.to_radians(), &mut look, ahead, [-40.0, 70.0, -180.0, 180.0], 1.0, 1.0);
+    // LookLeft/RightLimit bound yaw around the dummy's view (exe FUN_140742230, angles in the
+    // exe's convention; `exe_yaw` turns ours into it). Rate 1 = the limits reach their target at
+    // once; the param's yaw range is the full circle.
+    use crate::camera::{apply_look_limits, exe_yaw, look_limits_step, LookParams};
+    use std::f32::consts::PI;
+    let p = LookParams { pitch: (-40f32.to_radians(), 80f32.to_radians()), yaw: (-PI, PI), base_y: 0.0 };
+    let deg = |a: [f32; 4]| a.map(f32::to_radians);
+    let limits = |ev: [f32; 4], centre: (f32, f32), cam_yaw: f32| {
+        let (mut look, mut r) = ([0.0; 4], None);
+        look_limits_step(&mut look, &mut r, Some(deg(ev)), false, Some(centre), (0.0, 0.0), p, cam_yaw, 1.0);
+        look
+    };
+    // Pitch -40..70 around a level view, yaw unrestricted (the event's full circle leaves the
+    // param's): a 100 deg pitch comes down to 70, the yaw stays.
+    let look = limits([-40.0, 70.0, -180.0, 180.0], (0.0, 0.0), 0.0);
+    let (yaw, pitch) = apply_look_limits(1.2, 100f32.to_radians(), &look);
     assert!((pitch.to_degrees() - 70.0).abs() < 0.01, "pitch {pitch}");
-    assert!((yaw - 1.2).abs() < 0.01, "yaw {yaw}");
-    // A narrow yaw cone clamps a sideways camera into it.
-    let mut look = None;
-    let (yaw, _) = crate::camera::apply_look_limits(90f32.to_radians(), 0.0, &mut look, ahead, [-40.0, 70.0, -45.0, 45.0], 1.0, 1.0);
-    assert!((yaw.to_degrees() - 45.0).abs() < 0.01, "yaw {yaw}");
-    // A dummy above the player pulls the centre pitch to -atan2(1, 1) = -45 deg, so limits
-    // -10..10 clamp a level camera down to -35 deg.
-    let mut look = None;
-    let (_, pitch) = crate::camera::apply_look_limits(0.0, 0.0, &mut look, Vec3::new(0.0, 1.0, -1.0), [-10.0, 10.0, -180.0, 180.0], 1.0, 1.0);
+    assert!((yaw - 1.2).abs() < 1e-6, "yaw {yaw}");
+    // A narrow yaw cone around the view clamps a camera turned 90 deg off it to 45.
+    let look = limits([-40.0, 70.0, -45.0, 45.0], (0.0, 0.0), 0.0);
+    let (yaw, _) = apply_look_limits(exe_yaw(90f32.to_radians()), 0.0, &look);
+    assert!((exe_yaw(yaw).to_degrees() - 45.0).abs() < 0.01, "yaw {yaw}");
+    // A view 45 deg up: limits -10..10 around it clamp a level camera to -35 deg.
+    let look = limits([-10.0, 10.0, -180.0, 180.0], (-45f32.to_radians(), 0.0), 0.0);
+    let (_, pitch) = apply_look_limits(0.0, 0.0, &look);
     assert!((pitch.to_degrees() + 35.0).abs() < 0.01, "pitch {pitch}");
+    // a213's cone -160..-159 around a view at 170 deg is 10..11 deg: a camera at -170 deg lies
+    // just below the middle of the gap outside it, so the exe's window (`clamp_yaw_exe`) takes
+    // it to the cone shifted down a turn: 11 deg.
+    let look = limits([-40.0, 70.0, -160.0, -159.0], (0.0, 170f32.to_radians()), 170f32.to_radians());
+    let (yaw, _) = apply_look_limits(exe_yaw(-170f32.to_radians()), 0.0, &look);
+    assert!((exe_yaw(yaw).to_degrees() - 11.0).abs() < 0.01, "yaw {}", exe_yaw(yaw).to_degrees());
 }
 
 #[test]
