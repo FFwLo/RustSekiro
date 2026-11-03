@@ -345,8 +345,11 @@ impl Plugin for HksWolfPlugin {
             warn!("SHINOBI_HKS: no extracted c0000.hkx / action/script / clip_lengths: player.rs alone");
             return;
         };
+        // The script is the HKS `decide` stands for (actor::ActorSet): what it plays takes its first
+        // step in this tick's advance, so it runs before clear_fresh and the hit step (Resolve), and
+        // the landing tick reads the frame before's buttons (before player::hks_pad_out).
         app.insert_non_send(script)
-            .add_systems(FixedUpdate, ((crate::player::throw_check, tick_script).chain().before(crate::actor::ActorSet::Decide), (land_script, apply_script).chain().after(crate::actor::ActorSet::Decide).before(crate::actor::ActorSet::Advance)));
+            .add_systems(FixedUpdate, ((crate::player::throw_check, tick_script).chain().before(crate::actor::ActorSet::Decide), (land_script, apply_script).chain().after(crate::actor::ActorSet::Decide).before(crate::player::hks_pad_out).before(crate::actor::clear_fresh).before(crate::actor::ActorSet::Resolve)));
     }
 }
 
@@ -524,7 +527,9 @@ fn run_script(mut script: NonSendMut<WolfScript>, dt: f32, land_tick: bool, comb
     let target = lock.target.and_then(|t| Some((places.get(t).ok()?.translation - places.get(*me).ok()?.translation).with_y(0.0).normalize_or_zero()));
     let mut damage = a.damage_env.take();
     let held = [(pad.attack_held, Action::Attack), (pad.dodge_held, Action::Step), (pad.prosthetic_held, Action::Prosthetic)].into_iter().filter_map(|(h, a)| h.then_some(a)).collect();
-    let input = Pad { press: pad.pressed().to_vec(), held, guard_held: pad.guard_held, stick: pad.stick };
+    // The stick the pad manipulator took this frame (player::pad_manipulator, its 45 deg gate):
+    // MoveSpeedLevel is its length in the exe, as decide moves by it.
+    let input = Pad { press: pad.pressed().to_vec(), held, guard_held: pad.guard_held, stick: p.turn.taken };
     let s = &mut *script;
     // The last tick's request (cleared when this one runs).
     a.fall_protect = s.chr.vm.host.borrow().fall_protect;

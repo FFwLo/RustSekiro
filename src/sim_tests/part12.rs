@@ -510,6 +510,14 @@ pub(crate) fn the_ground_hang_start_follows_its_clip_onto_the_hang() {
     }
 }
 
+/// The facing drawn (`ShownYaw`, the delay controller GetRotation reads), else the physics one.
+fn drawn_yaw(app: &mut App) -> f32 {
+    let w = app.world_mut();
+    let mut q = w.query_filtered::<&Actor, With<Player>>();
+    let a = q.single(w).unwrap();
+    a.shown.map_or(a.yaw, |s| s.yaw)
+}
+
 fn wolf_yaw(app: &mut App) -> f32 {
     let w = app.world_mut();
     let mut q = w.query_filtered::<&Actor, With<Player>>();
@@ -580,9 +588,12 @@ pub(crate) fn a_run_off_a_ledge_carries_on_into_the_fall() {
     assert!(moved > 0.3, "fell straight down: {moved:.2} m");
 }
 
-/// Running, the stick thrown straight back with no let-go: no quick turn (the script's in-move turn
-/// needs a stop's TAE ref 14); the run swings round at the exe's 720 deg/s (FUN_1407da540), a
-/// half turn in about 0.25 s.
+/// Running, the stick swung round to straight back with no let-go: no quick turn (the script's
+/// in-move turn needs a stop's TAE ref 14); the run swings round at the exe's 720 deg/s
+/// (FUN_1407da540), a half turn in about 0.25 s. The pad manipulator takes a flick of more than
+/// 45 deg in one frame as a one-frame let-go (player::Turn::gate, emu_turn), so the stick turns
+/// 36 deg a frame; the run loop has no TAE 224, so the physics facing follows the stick a frame
+/// late and the drawn one (`ShownYaw`, kb/movement.md) chases it at 1.1 x 720 deg/s.
 #[test]
 pub(crate) fn a_run_thrown_straight_back_swings_round_at_the_turn_rate() {
     let mut app = app();
@@ -591,16 +602,17 @@ pub(crate) fn a_run_thrown_straight_back_swings_round_at_the_turn_rate() {
     place_wolf(&mut app, Vec3::ZERO, 0.0, false);
     app.world_mut().resource_mut::<PadInput>().stick = Vec2::new(0.0, 1.0);
     run(&mut app, 120);
-    app.world_mut().resource_mut::<PadInput>().stick = Vec2::new(0.0, -1.0);
     let mut states = Vec::new();
     let mut turned_at = None;
     for i in 0..40 {
+        let a = (36.0 * (i + 1).min(5) as f32).to_radians();
+        app.world_mut().resource_mut::<PadInput>().stick = Vec2::new(a.sin(), a.cos());
         app.update();
         let s = player_actor(&mut app).0;
         if states.last() != Some(&s) {
             states.push(s);
         }
-        if turned_at.is_none() && turn_between(wolf_yaw(&mut app), std::f32::consts::PI).abs() < 0.05 {
+        if turned_at.is_none() && turn_between(drawn_yaw(&mut app), std::f32::consts::PI).abs() < 0.05 {
             turned_at = Some(i + 1);
         }
     }
@@ -832,6 +844,10 @@ pub(crate) fn standing_a_stick_behind_quick_turns_into_the_move() {
         let start = player_actor(&mut app).3;
         app.world_mut().resource_mut::<PadInput>().walk = walk;
         app.world_mut().resource_mut::<PadInput>().stick = Vec2::new(0.0, -1.0);
+        // The pad manipulator takes a stick from rest a frame late (player::Turn::gate, emu_turn):
+        // Wolf stands that first frame.
+        app.update();
+        assert_eq!(player_actor(&mut app).0, "StandIdle");
         let mut states = Vec::new();
         for _ in 0..90 {
             app.update();

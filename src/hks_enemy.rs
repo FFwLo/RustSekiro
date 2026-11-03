@@ -211,7 +211,8 @@ impl Plugin for HksEnemyPlugin {
         let trace = std::env::var("SHINOBI_HKS_TRACE").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
         let lead = std::env::var("SHINOBI_HKS_ENEMY_LEAD").map_or(true, |v| v != "0");
         app.insert_non_send(EnemyScripts { trace, lead, ..Default::default() })
-            .add_systems(FixedUpdate, run_scripts.after(crate::actor::ActorSet::Decide).before(crate::actor::ActorSet::Advance));
+            // The enemy's HKS is part of its decide: before clear_fresh and the hit step (actor::ActorSet).
+            .add_systems(FixedUpdate, run_scripts.after(crate::actor::ActorSet::Decide).before(crate::actor::clear_fresh).before(crate::actor::ActorSet::Resolve));
     }
 }
 

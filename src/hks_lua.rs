@@ -486,8 +486,14 @@ mod lockstep {
             let pad = input(f);
             let before = player_state(&mut app).0;
             {
+                // The script is answered as player.rs's decide is (player::HksPad): the buttons of
+                // the frame before, the stick live. The exe's HKS reads the frame's press but the
+                // clip it asks for steps from the next frame (exe frame order, animstart), where
+                // this script, ticked at once, would show it a frame sooner.
+                let late = if f == 0 { Pad::default() } else { input(f - 1) };
+                let seen = Pad { stick: pad.stick, ..late };
                 let mut h = wolf.vm.host.borrow_mut();
-                answers(&mut app, &mut h, &pad);
+                answers(&mut app, &mut h, &seen);
                 stick_vars(&mut h, pad.stick);
             }
             let events = {

@@ -201,14 +201,18 @@ pub(crate) fn a_jump_in_an_updraft_is_the_storm_jump() {
     move_enemy_far(&mut app);
     updraft(&mut app);
     app.world_mut().resource_mut::<PadInput>().press(Action::Jump);
-    let (mut seen, mut top, mut air_jump) = (vec![], 0.0f32, false);
+    let (mut seen, mut top, mut air_jump) = (vec![], 0.0f32, None);
     let y0 = player_actor(&mut app).3.y;
     for i in 0..400 {
         let (s, t) = { let ps = player_state(&mut app); (ps.0, ps.2) };
-        if s == "GroundStormJumpStart" && t > 1.1 && !air_jump {
-            updraft(&mut app);
+        if s == "GroundStormJumpStart" && t > 1.1 && air_jump.is_none() {
             app.world_mut().resource_mut::<PadInput>().press(Action::Jump);
-            air_jump = true;
+            air_jump = Some(i + 1);
+        }
+        // The press reaches the script the tick after (exe frame order, animstart:
+        // player::hks_pad_in), so the updraft that tick meets it there.
+        if air_jump == Some(i) {
+            updraft(&mut app);
         }
         if i < 20 {
             updraft(&mut app);
