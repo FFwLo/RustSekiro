@@ -2,7 +2,8 @@
 
 A 1:1 recreation of Sekiro's combat. Every number
 comes from the game's own files (TAE, HKS, params, behaviour graphs, FLVER, FMOD) or the
-static Ghidra decompile of the exe. The package and exe are `sv1`; the game is the library `rustsekiro`
+exe's own code (read with your own reverse-engineering setup and checked against
+the exe in the emulator, `tools/emu-cases`). The package and exe are `sv1`; the game is the library `rustsekiro`
 (src/lib.rs, `rustsekiro::run()`), src/main.rs only starts it. GitHub: `FFwLo/RustSekiro`, `main`.
 
 **Agents start here:**
@@ -24,9 +25,9 @@ disassembly.
   `cargo test --profile quick --lib <filter>`. Run only the covering tests per change; the full
   suite once at the end. "Done" = build and the covering tests pass.
 - Regenerate data: `powershell -ExecutionPolicy Bypass -File tools\extract.ps1`.
-- Exe research: `tools/fn.sh <addr>` prints a decompiled function; `extracted/rtti_vtables.txt`.
-- Trace / screenshots: env knobs documented in `docs/HANDOFF.md` section 6 and the source module
-  headers (`SHINOBI_THROW_TRACE`, `SHINOBI_SKILL`, `SHINOBI_HUD_SHOTS`, ...).
+- Exe checks: `tools/emu-cases` runs the exe's functions on a snapshot of the running game
+  (`docs/kb/emulator-agent-brief.md`, `docs/kb/emulator-pilot.md`).
+- Trace / screenshots: env knobs documented in the source module headers (`SHINOBI_THROW_TRACE`, `SHINOBI_SKILL`, `SHINOBI_HUD_SHOTS`, ...).
 
 ## Where things are (read only what the task needs)
 | Topic | Read |
@@ -42,36 +43,25 @@ disassembly.
 | Camera | `src/camera.rs`, `docs/kb/camera.md` |
 | Sound, music | `src/sound.rs`, `src/fmod.rs`, `src/area_music.rs`, `docs/kb/sound.md` |
 | HUD, menus | `src/hud.rs`, `src/menu.rs` |
-| Extractor | `tools/sekiro-extract/src/`, `docs/kb/tools-exe.md` |
+| Extractor | `tools/sekiro-extract/src/` |
 | The game's HKS script + behaviour graph run as the game does (live by default, SHINOBI_HKS=0 off; tests) | `src/hks_wolf.rs`, `src/hks.rs`, `src/hks_lua.rs`, `src/hkb_runtime.rs`, `docs/kb/hks-graph.md` |
-| How any Sekiro mechanic works (values, sources, coverage, needs) | `docs/kb/mechanics-atlas.json` (filter by id/category with python; `mechanics-atlas.md` is generated from it) |
 | The playthrough start to finish, gates, endings | `docs/kb/game-flow.md` |
-| The combat core alone (`--no-default-features`), its hooks; in sekiro-rs's game (`embed`: camera + debug menu, his `--rustsekiro` mode) | `src/lib.rs` (CombatCorePlugin, re-exports), `tools/core_deps.py` (must stay 0), FFwLo/sekiro-rs branch `rustsekiro-combat` (`crates/game/src/rustsekiro_mode.rs`) |
+| The combat core alone (`--no-default-features`), its hooks; in sekiro-rs's game (`embed`: camera + debug menu, his `--rustsekiro` mode) | `src/lib.rs` (CombatCorePlugin, re-exports) |
 | Reference clips | `docs/kb/clips.md` (check before asking for a new recording) |
+| Checks against the exe (emulator) | `tools/emu-cases/src/<topic>.rs`, `src/sim_tests/emu_*.rs`, `docs/kb/emulator-pilot.md`, `docs/kb/frame-coverage.md` |
+| Streaming map, lighting, collision, script VM (copied from sekiro-rs) | `crates/`, `crates/README.md` |
 | Live recordings of the real Sekiro | `docs/kb/recordings.md`: read `python -m tools.rec summary <rec> --cat <topic>`, never raw data |
 
-Reference clones (read-only): `..\reference` (SekiroHKS, SDT-HKS, Paramdex,
-SekiroTool, SoulsFormatsNEXT, sekiro-rs, fxr, ...). Check them first for names and layouts.
+Community references worth cloning next to the repo (read-only): SekiroHKS, SDT-HKS, Paramdex, SekiroTool,
+SoulsFormatsNEXT, sekiro-rs, fxr. Check them first for names and layouts.
 
 ## Do not read by default
-- `docs/history/` (grep it), `docs/kb/log-archive.md`, `docs/kb/next.md`, `target/`.
+- `target/`.
 - `extracted/`: never list or read it wholesale. Open a named file, or grep one subfolder for
   one symbol. Never open `*.bin`; `decomp`, `ghidra`, `json` and `param` are huge.
 - Whole large source files: grep for the symbol, read a range. Sim tests are in `src/sim_tests/` (11 parts of ~1.5k lines; `mod.rs` lists which tests are where).
 
 ## Starting a session
-1. Read `docs/PROGRESS.md` and the open items in `docs/PLAN.md`; take one item and say which.
-2. Read only that item's kb file and source module (table above).
-3. Record what changed in the kb file for the topic and in `docs/PROGRESS.md`, not in
-   `docs/HANDOFF.md` (that file is the current-state summary only).
-
-## Subagents and workflows
-- Project agents already pick their own model (`re-scout`, `screenshot-judge`: sonnet;
-  `cargo-check`: haiku). Prefer them over `general-purpose`.
-- When spawning `general-purpose` agents or workflow `agent()` calls, pass `model: "sonnet"`.
-  Use Opus only for hard reverse-engineering (TAE/HKX, AI scripts, exe research) and say why.
-- Subagents are for searches with a short answer; batch related shell commands into one call.
-
-## Ending a session
-Once the task is committed and `docs/PROGRESS.md` (plus the topic's kb file) is updated, tell the
-user to start a new session for the next item instead of continuing this one.
+1. Take a row from the work board (see "Agents start here") and say which.
+2. Read only that row's kb file and source module (table above).
+3. Record what changed in the kb file for the topic and one line in `docs/PROGRESS.md` "## Recent".

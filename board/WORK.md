@@ -71,11 +71,8 @@ only one that counts. Finished rows move to "Done" at the bottom; board history 
 | ID | Area | Needs | Who | Task | Notes |
 |----|------|-------|-----|------|-------|
 | B1 | any | | open | `cargo test` with no `extracted/` must pass: find every test that panics without the data and make it skip, like `super_armor_hit_matches_the_exe` | CI runs the tests with no data, so this keeps CI green |
-| B2 | any | | open | Absolute local paths in tool code (`tools/emu-cases/src/main.rs`, `tools/*.ps1`, `tools/emu-cases/frame_tree.py`): take them from an argument or an environment variable instead | grep for drive letters |
 | B3 | any | | open | `cargo clippy` warnings: fix one module at a time, no behaviour change | one pull request per module |
-| B4 | any | | open | Run `python tools/core_deps.py` in CI (it must stay 0) | `.github/workflows/ci.yml` |
 | B5 | any | | open | A PowerShell twin of `tools/t.sh` (quiet test run) for contributors without bash | |
-| B6 | humans | | open | Session notes in `docs/` name local folders of one PC: decide what stays before the repository grows | owner |
 
 ## Done
 
