@@ -325,7 +325,7 @@ fn sync_res_nodes(mut commands: Commands, config: Res<crate::config::GameConfig>
 }
 
 /// MenuParam SpMinimumDispTime (0.5, extracted/json/params/MenuParam.json; row offset 0xb4, read
-/// at exe 140e3.c:7651): the least time the posture gauge stays up once its damage is gone.
+/// at exe <decomp ref>): the least time the posture gauge stays up once its damage is gone.
 const SP_MIN_DISP_TIME: f32 = 0.5;
 
 /// The posture gauge's state (exe FUN_140a02a10 -> chr+0x1a40): 0 normal, 1 about to break (at
@@ -386,7 +386,7 @@ fn update_player_hud(
             bg.color = posture_tint(pf);
         }
     }
-    // The gauge stays SP_MIN_DISP_TIME after the posture is back to 0 (exe 140e3.c:7637-7661).
+    // The gauge stays SP_MIN_DISP_TIME after the posture is back to 0 (exe <decomp ref>).
     *posture_hold = if pf > 0.005 { SP_MIN_DISP_TIME } else { (*posture_hold - time.delta_secs()).max(0.0) };
     for (r, mut v) in &mut root {
         if r.0 == Side::Player {
@@ -1101,13 +1101,13 @@ fn update_debug(
         }
         if a.side == Side::Player && !a.anim.is_empty() {
             let mut tags = Vec::new();
-            if d.has_ref(&a.anim, a.t, REF_JUST_GUARD) { tags.push("[DEFLECT WINDOW]"); }
-            if d.has_ref(&a.anim, a.t, REF_GUARD_COMBO) { tags.push("[guard chain]"); }
+            if d.has_ref(&a.anim, a.step(), REF_JUST_GUARD) { tags.push("[DEFLECT WINDOW]"); }
+            if d.has_ref(&a.anim, a.step(), REF_GUARD_COMBO) { tags.push("[guard chain]"); }
             for (flag, name) in [(FLAG_ACCEPT_ATTACK, "atk"), (FLAG_ACCEPT_GUARD, "grd"), (FLAG_ACCEPT_STEP, "step"), (FLAG_ACCEPT_JUMP, "jump"), (FLAG_ACCEPT_MOVE, "move")] {
-                if d.flag(&a.anim, a.t, flag) { tags.push(name); }
+                if d.flag(&a.anim, a.step(), flag) { tags.push(name); }
             }
-            if !d.attack_windows(&a.anim).iter().all(|(e, _, _)| !e.in_time(a.t)) { tags.push("[HITBOX]"); }
-            if let Some(t) = d.stamina_ratio_type(&a.anim, a.t) { s += &format!("      posture regen type {t}  "); }
+            if !d.attack_windows(&a.anim).iter().all(|(e, _, _)| !e.dispatched(a.step())) { tags.push("[HITBOX]"); }
+            if let Some(t) = d.stamina_ratio_type(&a.anim, a.step()) { s += &format!("      posture regen type {t}  "); }
             s += &format!("      accepts: {}\n", tags.join(" "));
         }
     }

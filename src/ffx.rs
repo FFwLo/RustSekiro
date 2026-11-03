@@ -319,7 +319,7 @@ pub(crate) fn tae_sp_vfx(
             continue;
         }
         let d = crate::actor::data_for(&combat, a);
-        for (id, s) in d.sp_effects_at(&a.anim, a.t) {
+        for (id, s) in d.sp_effects_at(&a.anim, a.step()) {
             if s.vfx_id <= 0 && s.vfx_id1 <= 0 {
                 continue;
             }
@@ -730,7 +730,7 @@ fn weapon_trail(
     let dt = time.delta_secs();
     if std::env::var("SHINOBI_FFX_LOG").is_ok() {
         for (_, a, _) in &wolf {
-            let n = combat.player.events_at(&a.anim, a.t).filter(|e| e.kind == 1).count();
+            let n = combat.player.events_at(&a.anim, a.step()).filter(|e| e.kind == 1).count();
             if n > 0 || a.anim.starts_with("a100") {
                 info!("trail check {} {:.2} attack events {n}", a.anim, a.t);
             }
@@ -750,7 +750,7 @@ fn weapon_trail(
         .clone();
     let Ok((we, a, dm)) = wolf.single() else { return };
     let d = &combat.player;
-    let default_on = !a.anim.is_empty() && d.events_at(&a.anim, a.t).any(|e| e.kind == 1) && !d.events_at(&a.anim, a.t).any(|e| e.kind == 790);
+    let default_on = !a.anim.is_empty() && d.events_at(&a.anim, a.step()).any(|e| e.kind == 1) && !d.events_at(&a.anim, a.step()).any(|e| e.kind == 790);
     let art = ribbons.0.get(&true).filter(|(_, until)| *until > time.elapsed_secs());
     // The game's trail: started when the window opens, stopped (its segments fade out) when it ends.
     let row = combat.param("EquipParamWeapon", if config.player.combat_art > 0 { config.player.combat_art } else { 5000 });

@@ -43,7 +43,7 @@ pub struct EnemyGrapples(pub Vec<EnemyGrapple>);
 pub fn wire_effect(combat: &Combat, a: &Actor) -> Option<(i64, i64, i64, i64)> {
     let d = combat.data_of(a);
     let wire = |id: i64, s: &crate::data::SpEffect| (s.chr_wire_variation_no >= 0).then_some((id, s.chr_wire_variation_no, s.chr_wire_target_dmypoly_id, s.chr_wire_landing_point_dmypoly_id));
-    let from_tae = if a.anim.is_empty() { None } else { d.sp_effects_at(&a.anim, a.t).into_iter().find_map(|(id, s)| wire(id, s)) };
+    let from_tae = if a.anim.is_empty() { None } else { d.sp_effects_at(&a.anim, a.step()).into_iter().find_map(|(id, s)| wire(id, s)) };
     from_tae.or_else(|| a.resident.iter().find_map(|&id| d.sp_effects.get(&id.to_string()).and_then(|s| wire(id, s))))
 }
 
@@ -124,7 +124,7 @@ pub(super) fn on_wire_hit(combat: Res<Combat>, mut hits: MessageReader<WireHit>,
             continue;
         }
         let d = combat.data_of(&a);
-        let mut refs: Vec<i64> = if a.anim.is_empty() { Vec::new() } else { d.sp_effects_at(&a.anim, a.t).iter().map(|(_, s)| s.behavior_ref_id).collect() };
+        let mut refs: Vec<i64> = if a.anim.is_empty() { Vec::new() } else { d.sp_effects_at(&a.anim, a.step()).iter().map(|(_, s)| s.behavior_ref_id).collect() };
         refs.extend(a.resident.iter().filter_map(|id| d.sp_effects.get(&id.to_string()).map(|s| s.behavior_ref_id)));
         let Some(n) = refs.iter().filter(|r| ENABLE_WIRE_DAMAGE.contains(r)).map(|r| r - 1_000_400).min() else { continue };
         if !a.play_state(d, &format!("DamageWire{n}")) {

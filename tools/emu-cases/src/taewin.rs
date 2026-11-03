@@ -17,16 +17,16 @@
 
 use super::*;
 
-const PLAY: u64 = 0x1_40b5_c920;
+pub(crate) const PLAY: u64 = 0x1_40b5_c920;
 const REPLAY: u64 = 0x1_40b5_c730;
 const LOOKUP: u64 = 0x1_4098_ed70;
 /// FD4 singleton DAT_143d92828; its byte +0x58 is the multithreaded-step flag (FUN_141043150).
-const MT_SINGLETON: u64 = 0x1_43d9_2828;
+pub(crate) const MT_SINGLETON: u64 = 0x1_43d9_2828;
 const CALLBACKS: [(u64, &str); 3] = [(0x1_4065_4a8c, "direct"), (0x1_40b4_fd9c, "step"), (0x1_40b4_fda4, "replay")];
 
 #[derive(Default)]
-struct Log {
-    hits: Vec<Value>,
+pub(crate) struct Log {
+    pub(crate) hits: Vec<Value>,
 }
 
 fn mem<const N: usize>(e: uc::Engine, at: u64) -> [u8; N] {
@@ -61,7 +61,7 @@ extern "C" fn on_event(e: uc::Engine, addr: u64, _size: u32, data: *mut c_void) 
 /// A TAE anim as FUN_1425e5640 walks it: +0x08 groups (0x20 each: u16 count, +0x08 u32
 /// offsets, +0x18 base), +0x18 -> int 0 (FUN_140654b70's check), +0x24 group count; an event
 /// is (start +0, end +8, +0x10 -> (type, data)).
-fn fake_anim(emu: &mut Emu, groups: &[&[(f32, f32, u32)]]) -> u64 {
+pub(crate) fn fake_anim(emu: &mut Emu, groups: &[&[(f32, f32, u32)]]) -> u64 {
     let anim = emu.alloc(0x30);
     let zero = emu.alloc(0x10);
     emu.u32(zero, 0);
@@ -96,7 +96,7 @@ fn fake_anim(emu: &mut Emu, groups: &[&[(f32, f32, u32)]]) -> u64 {
 
 /// The synthetic list (type = 1000 + index), in two groups: start 0, frame-grid boundaries,
 /// zero length, shorter than a 60 fps frame, at the clip end, past it.
-const EVENTS: [(f32, f32); 13] = [
+pub(crate) const EVENTS: [(f32, f32); 13] = [
     (0.0, 0.1),
     (0.1, 0.2),
     (0.2, 0.2),
@@ -129,7 +129,7 @@ fn wolf(emu: &mut Emu) -> Wolf {
 }
 
 /// The module's anim entry for an id (FUN_14098ed70 on module +0x10).
-fn lookup(emu: &mut Emu, module: u64, id: u32) -> Option<u64> {
+pub(crate) fn lookup(emu: &mut Emu, module: u64, id: u32) -> Option<u64> {
     let table = emu.peek_u64(module + 0x10);
     let key = emu.alloc(8);
     emu.u32(key, id);
@@ -139,7 +139,7 @@ fn lookup(emu: &mut Emu, module: u64, id: u32) -> Option<u64> {
 }
 
 /// The real anim's events (start, end, type) read the way FUN_1425e5640 walks them.
-fn read_events(emu: &mut Emu, anim: u64) -> Vec<(f32, f32, u32)> {
+pub(crate) fn read_events(emu: &mut Emu, anim: u64) -> Vec<(f32, f32, u32)> {
     let mut out = Vec::new();
     let n = u32::from_le_bytes(emu.peek(anim + 0x24)) as u64;
     let garr = emu.peek_u64(anim + 8);
@@ -157,7 +157,7 @@ fn read_events(emu: &mut Emu, anim: u64) -> Vec<(f32, f32, u32)> {
     out
 }
 
-fn hook(emu: &mut Emu, log: *mut Log) {
+pub(crate) fn hook(emu: &mut Emu, log: *mut Log) {
     for (at, _) in CALLBACKS {
         emu.raw_write(at, &[0xc3]);
         let mut h = 0usize;

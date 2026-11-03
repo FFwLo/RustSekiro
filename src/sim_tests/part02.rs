@@ -736,6 +736,8 @@ pub(crate) fn deathblow_camera_closes_in_then_returns() {
     let dt = 1.0 / 60.0;
     let (mut min, mut at_end) = (f32::MAX, 0.0);
     for i in 0..(62 * 2) {
+        // stepped as `actor::advance` does (the TAE window runs from the time before the step)
+        a.begin_step();
         a.t = i as f32 * dt;
         crate::camera::update_cam_distance(&combat, &a, &mut cam, 4.5, 0.05, dt);
         min = min.min(cam.dist);

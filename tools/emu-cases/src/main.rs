@@ -27,6 +27,7 @@ mod turn;
 mod taecam;
 mod modticks;
 mod taewin;
+mod taestate;
 mod throw;
 mod aicpp;
 mod speffect;
@@ -892,6 +893,9 @@ fn main() {
     }
     if want.contains(&"taewin") {
         taewin::run_cases(&|| Emu::new(exe, snap()), out);
+    }
+    if want.contains(&"taestate") {
+        taestate::run(&|| Emu::new(exe, snap()), out, &want);
     }
     if want.iter().any(|w| w.starts_with("throw")) {
         throw::run(&|| Emu::new(exe, snap()), out, &want);

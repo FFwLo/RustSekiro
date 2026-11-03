@@ -866,7 +866,7 @@ pub(crate) fn update_draw_masks(
         let mut on = dm.0.get(&g.group).copied().unwrap_or(g.base);
         if !a.anim.is_empty() {
             let key = format!("Mask{}", g.group);
-            for e in crate::actor::data_for(&combat, &a).events_at(&a.anim, a.t) {
+            for e in crate::actor::data_for(&combat, &a).events_at(&a.anim, a.step()) {
                 let set = e.args.get(&key).and_then(|v| v.as_bool()) == Some(true);
                 match e.kind {
                     711 if set => on = false,
@@ -1032,7 +1032,7 @@ fn override_weapon_location(
     for (a, wp) in &actors {
         let d = crate::actor::data_for(&combat, &a);
         let of_type = |t: char| {
-            d.events_at(&a.anim, a.t)
+            d.events_at(&a.anim, a.step())
                 .find(|e| e.kind == 715 && e.args.get("WeaponModelType").and_then(|v| v.as_str()).is_some_and(|s| s.starts_with(t)))
         };
         let e = of_type('0');

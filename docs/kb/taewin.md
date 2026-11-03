@@ -72,7 +72,7 @@ sounds and, through it, ffx.rs effects) now asks the exe's windows, including bo
 locomotion loop's wrap, and the 0.05 s cap on "an event at 0 plays on the first step" is gone.
 
 **Not covered / gaps:**
-- State events (`Event::in_time`, `CharData::events_at` and everything built on it: ChrActionFlag,
+- (2026-11-03, below: done) State events (`Event::in_time`, `CharData::events_at` and everything built on it: ChrActionFlag,
   SpEffects at t, turn speed, ...) are a point test start <= t < end. The exe dispatches an event
   on every update it overlaps, so also on the update its end falls in: 1,552 event-updates here
   where the exe still dispatches (with "ended") and RSekiro does not; a state event lasts one
@@ -88,3 +88,75 @@ locomotion loop's wrap, and the 0.05 s cap on "an event at 0 plays on the first 
   advances in the update it is selected was not checked.
 - The queue of 10 (FUN_140b5c580 / FUN_140b5c730) overflows silently past 10 windows a frame;
   its +0xf0 / frame-stamp reuse was not followed.
+
+## 2026-11-03: state events, the selector, the "ended" byte
+
+**State events follow the windows.** `tae_window::At` / `Actor::step()`: `CharData::events_at`,
+`events_at_on`, `flag`, `sp_effects_at`, `has_ref`, `has_state_info`, `stamina_ratio_type`,
+`turn_speed` and `Event::active` / `dispatched` take the actor's step (prev_t, t) and answer with
+the exe's windows (FUN_140654b70 -> FUN_1425e5640); about 130 call sites moved from `a.t` to
+`a.step()` (attack windows, ChrActionFlags, TAE SpEffects, turn speed, camera 151 / 153 / 156,
+messages, draw masks, ...). A bare f32 is still a point test (scans over a clip, the additive
+layer `add_t`, which has no step). Test `state_events_follow_the_exe_windows`: on the taewin
+cases (136,656 event-updates that do not wrap) `At::Step` equals the exe's dispatch on every one;
+the point test start <= t < end differed on 1,618 (the update an event's end falls in, starts a
+rounding error past the f32 clock, events passed over on a clip's first update). (0, 0) stays a
+point test at 0: in RSekiro it is a clip played and read before its first step in the same tick
+(the exe's HKS change is followed by the clip's first window in the same frame); gap: a hit stop
+held at a clip's start keeps its events at 0, the exe dispatches none.
+
+**The selector, run** (tools/emu-cases `taestate`; Wolf's CustomManualSelectorGenerator of
+a000_790010 on the snapshot (vtable 0x142bdc138; hkbCharacter [[chr+0x138]+0x1d88]+0x28, its
++0x98 the graph), its clip clone's local time +0x140 set per update; FUN_1411e8f30 hooked and run
+on into FUN_140b5c920 and Wolf's module): preUpdate FUN_1411e55e0 stores the clip time (+0xe0),
+update FUN_1411e56e0 the time after the step (+0xe4) and makes one TAE call (id +0xec, +0xe0,
++0xe4, length +0xe8); FUN_1411e6de0 (from activate FUN_1411e4f20 and a change of selection inside
+update) zeroes +0xe0 / +0xe4, so the next update passes (0, the clip's time): a clip started at a
+StartTime offset enters every event before it (synthetic list from 0.5: 10 events entered at
+once, 8 with "ended"). 134 updates, 17 runs (steady, wrap, hold, resets at 0 .. 2 s, the
+synthetic list from 0 .. 1 s): every call and dispatch as `tae_window`. If a preUpdate ran
+between the reset and the update the window would be (offset, offset) and nothing would enter
+(case reset_pre); in the exe's graph a node activated during the update pass has had no preUpdate
+that frame. The outgoing generator of a transition: FUN_1411ea620 / FUN_1411ea650 returns 1 for
+the from-generator of an active transition (and for a non-first child of a blender), and the
+update then neither reads its time nor calls the TAE: the clip blended out gets no last window
+(read; Wolf's selector in the snapshot returns 0); RSekiro dispatches only `Actor::anim`, the
+same. Wolf's CMSGs have one child each, so his anim
+changes are state-machine transitions that activate a new CMSG.
+
+**Not ported (gap): the first window of a clip started at an offset.** `Actor::start_at(t)`
+(continue_state and the five land continuations in player.rs) keeps prev_t = t, so nothing before
+the offset enters: what the exe gives if a preUpdate comes between the reset and the update. Tried
+the reset path ((0, t) on the next step, test count 56 event-steps): Wolf then relaunched off the
+land continuation of a jump art (7700: the land clip shares the launch's TAE 920 before its
+offset), which the game does not do, so the order activate -> update without preUpdate is not
+what the game's land continuations get. Test `selector_first_window_matches_the_exe` counts it.
+
+**Kept a point test:** ChrActionFlag 27 SetNoGravity (actor.rs, map.rs, player.rs). The exe sets
+it on the update the event ends in too (FUN_140b51b70 case 0x1b, physics +0x92c), but RSekiro's
+hold zeroes the vertical velocity, which there cancels a TAE 920 launch entering in the same
+update (the head kick's relaunch at 0.2 s: 8 sim tests of jumps, kicks, grapples and air arts
+broke). How the exe's physics reads +0x92c is not traced.
+
+**The "ended" byte (+0x19) and the queue:**
+- ChrActionFlags (type 0, FUN_140b51b70) set their bits on every dispatch, "ended" or not; some
+  cases gate on "entered" (+0x18). So a flag holds on the update its end falls in: ported above.
+- +0x19 is read only by type 942 (FUN_140b51570, Wolf's a000_2101xx, 8 events: on entered it sets
+  WorldChrMan +0x3550 to 0x73 / 0x74 by its arg, on an "ended" dispatch that did not enter to
+  0x30) and by the SFX handlers FUN_140b55850 / FUN_140b5ae50, which pass both bytes to the chr's
+  effect module (FUN_1409d1160 on chr +0x368 * 8). gap: 942 / WorldChrMan +0x3550 is not
+  modelled; the lasting TAE effects end in RSekiro by the event end (ffx.rs), not by the byte.
+- The ring of 10 at module +0x20 (FUN_140b5c580) holds every TAE call of the frame (+0xec ..
+  +0xe8) and of the frame before (+0xf0 .. +0xec), rolled each frame by FUN_140b5bef0; it is
+  replayed after the multithreaded step (FUN_140b5c730), searched for "anim played this frame"
+  (FUN_140b5c510, from 0x14075xxxx) and sent on with its frame stamp (FUN_140b5c1a0). Past 10
+  calls in two frames the head runs over the tail and the oldest are lost; a character makes one
+  call per active CMSG a frame (1-3), so it does not arise. Not ported (RSekiro dispatches in the
+  step, no queue).
+
+**Not covered / gaps:** whether a newly activated clip already advances in its first update
+(RSekiro: yes, as `play`; either way the same events enter, one update apart); the activate /
+preUpdate order for a StartTime clip (above); the old clip's
+windows during a blend in a case other than Wolf's idle (needs the whole graph run);
+`finisher_window`, the deflect log's `flick_at` and player.rs `accept` (reads at prev_t) stay
+point tests; the additive layer has no step.
