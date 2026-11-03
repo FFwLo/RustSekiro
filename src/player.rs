@@ -28,7 +28,7 @@ pub struct Player {
     leap_homing: Option<LeapHoming>,
     /// HKS MoveSpeedLevel: 0 idle, 1 walk, 2 run (converges at 3/s).
     pub(crate) speed_level: f32,
-    requests: HashMap<Action, f32>,
+    pub(crate) requests: HashMap<Action, f32>,
     /// State after the last decide; a different state at the next decide was set by combat.
     last_state: String,
     /// Healing Gourd uses left (config player.gourd_charges; goods 3000 maxNum 10).

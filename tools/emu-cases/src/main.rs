@@ -17,6 +17,7 @@ use std::path::Path;
 use serde_json::{json, Value};
 
 mod camwall;
+mod hks;
 mod snapshot;
 mod trace;
 
@@ -850,6 +851,9 @@ fn main() {
     }
     if want.iter().any(|w| w.starts_with("camwall")) {
         camwall::run(&|| Emu::new(exe, snap()), out, &want);
+    }
+    if want.contains(&"hks_env") {
+        hks::env_cases(&mut Emu::new(exe, snap()), out);
     }
     if on("hit_stop") {
         let mut emu = Emu::new(exe, None);

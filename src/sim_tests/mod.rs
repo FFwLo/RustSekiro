@@ -39,6 +39,7 @@ mod part09;
 mod part10;
 mod part11;
 mod emu_camwall;
+mod emu_hks;
 pub(crate) use part01::*;
 pub(crate) use part02::*;
 pub(crate) use part03::*;
