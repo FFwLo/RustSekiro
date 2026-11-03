@@ -59,3 +59,71 @@ traced); ctx +0x50 (vfunc 0xe0) and +0x78; the targeting update's timers and sta
 (FUN_14061ff40), the interrupts, the goal -> pad / action request path (FUN_1407e67a0's move
 vector and the manipulator); TARGET_ENE_0 with a live target (the snapshot's enemies had none:
 every query read -1).
+
+## 2026-11-03 The targeting update frame by frame, the ray, the nose, TARGET_ENE_0 (aiframe)
+
+How: `tools/emu-cases/src/aiframe.rs` on the same snapshot. Note: the snapshot has DebugFlags
++0x10 (0x143d7a376, disable AI) SET, not off; FUN_1407dd8e0 then skips the AiThink update, so
+the manipulator runs clear it in the emulator's copy. `aiframe_targeting` calls
+SprjTargetingSystem vfunc 0x10 (= FUN_14061ff40, dt in xmm1) every frame with Wolf's physics
++0x80 placed, for NpcThinkParam 11500001, 12400000, 10100304 and 7-8 scenarios each (seen then
+lost until the sight and memory slots run out, around meter fill and drain, flicker, above the
+cone, FIND then BATTLE, circling, nose with nose_dist poked to 3): 22 scenarios, 10,134 frames,
+about 11 min (TB flush per frame: the host crashed at ~900 frames without it). Per frame: state
++0x158 / prev +0x15c, AI_TARGET_TYPE +0x160 / prev +0x164, flags +0x150 (0x100000 perceive,
+0x200000 HUD shown), search timer +0x28, the meter (FUN_140625cd0), the target list (head
++0x18, nodes linked by +0x10, kind = node vfunc 0x10: 1 normal, 6 LastSightPos, 12 memory, 13
+indication, 2 allies' sight; forget time +0x2c, +0x40 seen, +0x43 nose), the sight ray to Wolf,
+and every 5th frame GetDist / GetOriginDist / GetToTargetAngle on TARGET_ENE_0. Test
+`targeting_frames_match_the_exe` (the search forced on the frames the exe searched): 9,414
+frames and 1,884 queries equal; the two circling scenarios of the enemies in an enclosed spot
+are left out (the exe's ray hit the map inside the cone; no map of this area here).
+
+Found and fixed (`stealth::Targeting::update`):
+- The around meter is started by the meter update (FUN_140626430, every frame, before the
+  search) from the last search's around sighting and incremented the same frame: a full meter
+  turns into an indication target and a new one starts the next frame (exe frame 120 full,
+  121 at 0.83; Sv1 waited for the next search, 0.2-0.4 s). `around_seen`.
+- Every slot's timer runs every frame (FUN_14062a510): the indication slot no longer stops
+  while a normal target is held; memory is refreshed to MemoryTargetForgetTime while the normal
+  target is held and decremented the same frame (149.967 at 30 fps), so CAUTION -> NONE comes
+  150 s after the normal target goes.
+- The nose sphere (FUN_14061c940): Wolf's feet within nose_dist + his radius of the sight
+  origin (ctx +0x20, 3D) makes a normal target like sight (FIND, BATTLE inside BattleStartDist
+  the same frame) but not "seen" (node +0x40 0, no LastSightPos slot); its forget time is held
+  while smelt. Sv1 had no nose (62 of 771 rows have one). `in_nose`, `Normal::held`; 189 direct
+  cases (`nose_sphere_matches_the_exe`). Exemptions: SpEffect state 332 / 334 when ctx +0xc0 /
+  +0xc1 (0 on the snapshot).
+- The sight ray (FUN_14061c8a0) runs from ctx +0x30 = dummy 500 at its own height (0.94-1.8 m
+  above the root) to ctx +0xa0 = Wolf's feet + 1.5 (his physics +0xd0) through the map
+  (FUN_14094e310 filter 0x32 on [0x143d6d640]+0x98); Sv1 cast between capsule centres.
+  `sight_head`, `WOLF_SIGHT_HEIGHT`. On the snapshot it hit the map for most points around
+  11500001 and 10100304, none around 12400000.
+- TARGET_ENE_0 with nothing held reads GetDist / GetOriginDist / GetDistY(Signed) -1, angle 0,
+  IsInsideTarget false (ai.rs `no_target`; Sv1 measured to Wolf). With a target: normal target
+  = Wolf's side (radius 0.4) minus the own radius; memory / indication = the spot (radius 0),
+  as Sv1 had.
+
+Matched as it was: FIND -> BATTLE checked every frame (BattleStartDist from the root); the
+sight forget starts at the first search that misses (forget - dt), the target dropped at <= 0;
+the memory slot follows Wolf while the normal target is held; the perceive set once found; the
+meter fill 25 x dt and drain 20 x dt against the cone every frame.
+
+ctx +0x50 = 1.0 (observer vfunc 0xe0), +0x57 = 1, +0x78 byte 0, +0x7c 1.5 on all three
+enemies; not traced further.
+
+The manipulator (ComManipulator vfunc 0x48 = a jump to FUN_1407e67a0 (M, dt, ChrCtrl)) runs on
+the snapshot with the Lua goals (FUN_140608990, ~6,000 stub calls on its first frame), but with
+the chr not animating the goals stayed idle (move type 0). The goal -> move step was driven by
+poking AiThink +0x73d0 (move point), +0x7410 (move type) and +0x73e0 (pitch, yaw) with the
+AiThink update stubbed: M +0x380 = flat unit direction x 0.5 for type 1 (walk), x 1 for type 2
+(run), 0 for type 0; in move mode 4 (FUN_1406040b0, by the current goal) the direction is the
+path's (FUN_1409eeb40), not the straight line; M +0x20 = target (pitch, yaw) minus the chr's,
+wrapped to +-pi; M +0x60 (FUN_140601540, a look point) stayed empty. Sv1 has no stick for
+enemies (Command::walk picks the walk / run states), so this is recorded, not compared.
+
+Not covered: the search interval stretch (FUN_140614be0 on DAT_143d547d8; intervals up to
+0.62 s seen; Sv1 keeps 0.2-0.4 s); the LastSightPos slot (gone a frame before the normal target,
+no effect on the state); the normal node's +0x34 timer (14 s down, purpose unknown); ray hits
+against Sv1's map; sound targets; the interrupts the Lua reads; which goal sets which move type
+and point (needs an animating chr), M +0x60 action requests.
