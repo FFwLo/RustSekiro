@@ -1,0 +1,10 @@
+# Ashina Castle gate, player start 3 (sekiro-rs --play --map m11_00_00_00 --start 3).
+# Off the start terrace (a 4 m drop), through the moat gate, up the stairs, into the
+# closed castle gate, then along it until a corner stops him. Yaw offsets are degrees
+# left of the start facing.
+60 0 0 -
+380 0 1 - 25
+250 0 1 - 5
+390 0 1 - -40
+230 0 1 - -98
+30 0 0 -

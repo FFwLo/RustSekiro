@@ -1,0 +1,3 @@
+# Grounded/guarded lightning demonstration, with the same forced bow act.
+90 0 0 -
+210 0 0 guard

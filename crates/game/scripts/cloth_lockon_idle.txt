@@ -1,0 +1,4 @@
+# Wolf locks on and stands still while the enemy fights (cloth check on the enemy).
+# --arena genichiro --god --simple-ai --enemy-distance 4 --script this-file --shots ... --exit
+1 0 0 lock_on
+900 0 0 -

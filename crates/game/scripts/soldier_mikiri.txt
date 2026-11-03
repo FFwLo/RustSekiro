@@ -1,0 +1,5 @@
+# Start at 2 m with --lock-on --passive --force-act 3013.
+# Step forward at tick 35, within flag 125 when the blade arrives.
+35 0 0 -
+1 0 1 dodge
+224 0 0 -

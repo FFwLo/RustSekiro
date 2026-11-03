@@ -1,0 +1,13 @@
+# --arena genichiro --god --simple-ai --brain-memory off --passive --break-posture
+# --spawn 107.829,54.044,237.04,0,0 --enemy-distance 1.6
+# Take both castle marks, then wait through the cinematic without post-warp movement.
+150 0 0 -
+2 0 0 lock_on
+1 0 0 attack
+40 0 0 -
+1 0 0 attack
+540 0 0 -
+1 0 0 attack
+40 0 0 -
+1 0 0 attack
+900 0 0 -

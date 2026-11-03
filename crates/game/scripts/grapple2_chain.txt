@@ -1,0 +1,6 @@
+# o003610_0014, then the nearby o115790_7001 ornament on m11_01.
+30 0 0 -
+1 0 0 grapple
+89 0 0 -
+1 0 0 grapple
+240 0 0 -

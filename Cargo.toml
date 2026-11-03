@@ -28,16 +28,16 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "1"
 libloading = { version = "0.8", optional = true }
-# AKJama's sekiro-rs as a library: its streaming map, lighting, sky and fog under
-# `SHINOBI_SR_MAP=1` (src/sr_map.rs). Built from the local clone next to this repo (branch
-# local/game-lib, [patch] below); the git source lets sekiro-rs's game take this crate in.
-sekiro-game = { git = "https://github.com/AKJama/sekiro-rs", optional = true }
-sekiro-sim = { git = "https://github.com/AKJama/sekiro-rs", optional = true }
+# sekiro-rs (AKJama, MIT OR Apache-2.0), copied into crates/ on 2026-11-03 from its commit
+# 673f68f and owned here from then on (crates/README.md): its streaming map, lighting, sky and
+# fog under `SHINOBI_SR_MAP=1` (src/sr_map.rs) and its collision world.
+sekiro-game = { path = "crates/game", optional = true }
+sekiro-sim = { path = "crates/sim", optional = true }
 # Its file readers (the draw params' GPARAM for the tests that check his lighting).
-sekiro-formats = { git = "https://github.com/AKJama/sekiro-rs" }
-# AKJama's HavokScript VM (sekiro-rs crates/hks): runs the game's compiled scripts from
-# extracted/action/script, the bytecode the game itself runs (src/hks.rs HksVm).
-sekiro-hks = { git = "https://github.com/AKJama/sekiro-rs" }
+sekiro-formats = { path = "crates/formats" }
+# Its HavokScript VM: runs the game's compiled scripts from extracted/action/script, the bytecode
+# the game itself runs (src/hks.rs HksVm).
+sekiro-hks = { path = "crates/hks" }
 # The window icon (src/icon.rs); the version Bevy 0.20 itself uses.
 winit = { version = "0.30", optional = true }
 # Release build (main.rs): attach the parent console, the "Sv1 stopped" dialog on a panic.
@@ -52,13 +52,40 @@ wgpu = { version = "30", default-features = false }
 # (src/hks_lua.rs, a trial run by the tests only for now).
 mlua = { version = "0.12.2", features = ["lua51", "vendored"] }
 
-# This repo built on its own takes sekiro-rs from the clone next to it (a game that takes this
-# crate in uses its own copy).
-[patch."https://github.com/AKJama/sekiro-rs"]
-sekiro-game = { path = "../sekiro-rs/crates/game" }
-sekiro-sim = { path = "../sekiro-rs/crates/sim" }
-sekiro-formats = { path = "../sekiro-rs/crates/formats" }
-sekiro-hks = { path = "../sekiro-rs/crates/hks" }
+
+# The copied sekiro-rs crates (crates/) build in this workspace; the tools keep their own.
+[workspace]
+members = ["crates/*"]
+exclude = ["tools"]
+resolver = "3"
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.99"
+version = "0.1.0"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+sekiro-formats = { path = "crates/formats" }
+sekiro-sim = { path = "crates/sim" }
+sekiro-brain-net = { path = "crates/brain-net" }
+sekiro-fmod = { path = "crates/fmod" }
+anyhow = "1"
+thiserror = "2"
+byteorder = "1"
+flate2 = "1"
+aes = "0.8"
+num-bigint = "0.4"
+libloading = "0.8"
+rayon = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+ureq = { version = "3.4", default-features = false, features = ["rustls", "json"] }
+log = { version = "0.4", features = ["max_level_debug"] }
+clap = { version = "4", features = ["derive", "env"] }
+glam = { version = "0.33", features = ["serde"] }
+postcard = { version = "1", default-features = false, features = ["use-std"] }
+memmap2 = "0.9"
 
 # Light optimization for our own code, so rebuilds stay fast.
 [profile.dev]

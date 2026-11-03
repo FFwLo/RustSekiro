@@ -1,0 +1,14 @@
+# Wolf against the Great Shinobi Owl on the Ashina Castle roof:
+# sekiro-rs --arena owl --script crates/game/scripts/owl_arena.txt --shots ... --exit
+# Look at the roof, lock on, walk toward the Owl guarding, then trade a few slashes.
+30 0 0 -
+1 0 0 lock_on
+90 0 1 -
+200 0 0 guard
+1 0 0 attack
+40 0 0 -
+1 0 0 attack
+40 0 0 -
+1 0 0 attack
+120 0 0 guard
+60 0 0 -

@@ -1,0 +1,3 @@
+# Castle-top Genichiro, idle Wolf for 30 seconds.
+# --arena genichiro --simple-ai --god --brain-memory off --script this-file --exit
+1800 0 0 -

@@ -1,0 +1,6 @@
+# The Great Shinobi Owl's grab on demand (docs/OWL.md, "Grabs"):
+# sekiro-rs --arena owl --passive --god --force-act 3040 --spawn x,y,z,yaw,0 --enemy-distance 1.6
+#   --script crates/game/scripts/owl_grab.txt --shots ... --exit
+# Wolf locks on and stands still; the Owl lunges, grabs and throws him, then does it again.
+1 0 0 lock_on
+600 0 0 -

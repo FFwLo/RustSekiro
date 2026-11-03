@@ -1,0 +1,7 @@
+# Same upper-side route as m11_01_ledge_hang.txt, then drop with dodge.
+30 0 1 -
+15 0 0 -
+1 0 0 action
+150 0 0 -
+1 0 0 dodge
+120 0 0 -
