@@ -679,6 +679,7 @@ pub(crate) fn wolf_kneels_at_an_idol_rests_and_travels() {
         a.hp = 10.0;
     }
     app.world_mut().resource_mut::<PadInput>().press(Action::Interact);
+    app.update(); // the press reaches decide the tick after (player::hks_pad_in, kb/frame-coverage.md)
     run(&mut app, 2);
     assert_eq!(player_actor(&mut app).0, "StatueAttachStart");
     // The first kneel lights the idol: the found banner plays (LIGHTING_SECS) and the menu

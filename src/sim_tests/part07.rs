@@ -527,7 +527,9 @@ pub(crate) fn a_forty_metre_fall_returns_wolf_to_safe_ground() {
         }
         let world = app.world_mut();
         let (a, t) = world.query_filtered::<(&Actor, &Transform), With<Player>>().single(world).unwrap();
-        assert_eq!(saw, dies, "drop {drop} {seen:?}");
+        // The exe takes the 0.4 on the land frame (FUN_140b97b30, kb/movement.md topic air), so an
+        // HP emptied there is a plain death (BEH_R_DEATH), not the return clip first.
+        assert_eq!(saw, dies && !low, "drop {drop} low {low} {seen:?}");
         let share: f32 = if dies { 0.4 } else { 0.25 };
         let want = if dies && low { 0.0 } else { (hp - (hp_max * share).floor()).max(0.0) };
         assert_eq!(a.hp, want, "drop {drop} low {low}: the fall's HP cost");
