@@ -14,6 +14,19 @@ git show upstream/agents-work-board:board.py | python - claims      # every live
 `WORK.md` holds the rows (finished ones under "Done"), `CHANGES.md` the board's history. People and agents follow
 the same steps.
 
+**The short way.** `tools/row.py` on `main` does the claiming, the worktree and the pull request for you:
+
+```
+python tools/row.py                              # your claims and pull requests, and rows you can take
+python tools/row.py start <ID> --agent <name>    # claim, worktree, test root, the notes to read (--agent once)
+python tools/row.py check                        # in the worktree: guard + full suite, remembered for submit
+python tools/row.py submit "<one line>"          # push to your fork, open the pull request filled in (--part)
+python tools/row.py drop <ID>                    # give the row back and remove the worktree
+```
+
+An open pull request that says `Board: <ID> done:` holds your claim for as long as it is open, and the board
+workflow moves the row to Done when the owner merges it. The sections below say what these commands do.
+
 ## 1. Set up once
 
 1. You need your own copy of Sekiro (Steam, patch 1.06). Nobody shares game files: each person extracts their
@@ -49,14 +62,15 @@ without pushing anything:
 git show upstream/agents-work-board:board.py | python - claim <ID> <agent>
 ```
 
-It refuses a row someone else holds. A claim lasts 7 days; run the same command again to keep it. If you stop,
+`row.py start` runs it for you. It refuses a row someone else holds and a row whose `Needs` are not done. A claim
+lasts 7 days; run the same command again to keep it, or open your pull request, which holds it. If you stop,
 release it: `... | python - release <ID>`. By hand, without the script, comment one line on the issue:
 `claim <ID> <agent>` or `release <ID>`. The claim belongs to the comment's author, so you can only claim for
 yourself. The first live claim wins.
 
 ## 4. Your worktree
 
-An agent works in its own git worktree, never in another agent's folder:
+An agent works in its own git worktree, never in another agent's folder (`row.py start` makes it):
 
 ```
 python tools/worktree.py add <agent> <row ID> <slug>   # ~/rsekiro-<agent> on work-<ID>-<slug>-<github>-<agent>
@@ -97,12 +111,14 @@ itself. Branch names say what they are: `work-<ID>-<slug>-<github>-<agent>`, nev
 
 ## 6. Finish
 
-1. The full suite passes: `SHINOBI_ROOT=<test root> cargo test --profile quick`. `python tools/guard.py push`
-   passes (the pre-push hook runs it).
-2. Commit as your human, push the branch to your fork, and open a pull request into `main`:
-   `gh pr create --repo FFwLo/RustSekiro --base main --head <github>:<branch> --title "<ID>: <what changed>"`.
-   Fill in the template. Put `Board: <ID> done: <one line>` in the body (or `Board: <ID> part: ...` for a part).
+1. `python tools/row.py check`: the guard, then the full suite through your test root
+   (`SHINOBI_ROOT=<test root> cargo test --profile quick`). It remembers a passing run for this commit.
+2. Commit as your human, then `python tools/row.py submit "<one line>"` (`--part` for a part, `--dry` to read it
+   first). It pushes the branch to your fork and opens the pull request into `main`, titled `<ID>: <one line>`,
+   with `Board: <ID> done: <one line>` and your test result already in the body. Tick the boxes it leaves open.
+   After review changes: commit, `row.py check`, `row.py submit` again (it only pushes).
 3. CI builds, runs the tests that need no game data, and runs the guard over your diff. The owner reviews and
-   merges; only the owner merges into `main`. Answer review comments on the same branch.
-4. After the merge the owner moves the row to "Done" (`board.py done`) and adds a line to `CHANGES.md`. Remove
-   your worktree. If you give up, say why in a comment on the claims issue and release the claim.
+   merges; only the owner merges into `main`.
+4. On the merge the board workflow moves the row to "Done" and writes `CHANGES.md`; nobody needs to edit the
+   board. Remove your worktree (`python tools/worktree.py remove <agent>`). If you give up, say why in a comment
+   on the claims issue and `row.py drop <ID>`.

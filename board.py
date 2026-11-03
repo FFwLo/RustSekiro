@@ -8,19 +8,23 @@ Read (from any checkout; in a fork say upstream where it says origin):
 Claim (works from a fork; needs gh logged in):
   ... | python - claim <ID> <agent>     # comments "claim <ID> <agent>" on the "Work board claims" issue
   ... | python - release <ID>           # comments "release <ID>"
-Owner, inside the board worktree on branch agents-work-board (then commit and push):
+Done (the board workflow runs this when a pull request saying "Board: <ID> done: ..." is merged; the owner can
+too, inside the board worktree on branch agents-work-board, then commit and push):
   ... | python - done <ID> "<one line result, PR>" <github>/<agent>
+Day to day, contributors use tools/row.py on main, which runs these for them.
 
 Claims are comments on one open issue titled "Work board claims". A comment's first line is
 `claim <ID> <agent>` or `release <ID>`; the claim belongs to the comment's GitHub author, so nobody can claim in
 someone else's name. The first live claim on a row wins. A claim lasts 7 days from its latest comment: comment the
-same line again to keep it. A merged pull request moves the row to Done; `release` gives it back. The owner may
-release any claim.
+same line again to keep it. An open pull request whose body says `Board: <ID> done:` (or `part:`) holds the row
+for its author while it is open, and claims a free row too. A merged pull request moves the row to Done;
+`release` gives it back. The owner may release any claim.
 """
 
 import datetime
 import json
 import os
+import re
 import subprocess
 import sys
 
@@ -96,8 +100,31 @@ def live_claims(done_ids):
                 live[rid] = (user, words[2], when)
         elif verb == "release" and held and (held[0] == user or user == OWNER):
             del live[rid]
+    # An open pull request that says "Board: <ID> done|part:" holds the row for its author while it is open, so a
+    # claim never runs out during review; it also claims a free row for whoever opened it.
+    for pr in open_prs():
+        m = re.search(r"^Board:\s*([A-Z]\d+[a-z]?)\s+(?:done|part)\b", pr["body"] or "", re.M)
+        if not m or m.group(1) in done_ids:
+            continue
+        rid, user = m.group(1), pr["author"]["login"]
+        held = live.get(rid)
+        if held is None or held[0] == user:
+            agent = pr["headRefName"].rsplit("-", 1)[-1] if pr["headRefName"].startswith("work-") else "pr"
+            live[rid] = (user, held[1] if held else agent, now)
     return {rid: (f"{u}/{a}", w.date().isoformat()) for rid, (u, a, w) in live.items()
             if (now - w).days < CLAIM_DAYS}
+
+
+def open_prs():
+    try:
+        return json.loads(gh("pr", "list", "--repo", REPO, "--state", "open", "--limit", "200",
+                             "--json", "author,body,headRefName") or "[]")
+    except SystemExit:
+        return []
+
+
+def needs_of(c):
+    return [n for n in c[2].replace(",", " ").split() if n.strip()]
 
 
 def cells(line):
@@ -136,8 +163,7 @@ def main():
         for kind, c, _ in rows(work):
             if kind == "Done" or c[3] != "open" or c[1] == "humans" or c[0] in live:
                 continue
-            needs = [n.strip() for n in c[2].replace(",", " ").split() if n.strip()]
-            wait = [n for n in needs if n not in done_ids]
+            wait = [n for n in needs_of(c) if n not in done_ids]
             print(f"{kind:2} {c[0]:5} {c[1]:4} {c[4]}" + (f" (waits for {', '.join(wait)})" if wait else ""))
     elif cmd == "claims":
         for rid, (who, day) in sorted(live_claims(done_ids).items()):
@@ -168,6 +194,9 @@ def main():
             sys.exit("no such open row")
         if r[1][3] != "open" or r[1][1] == "humans":
             sys.exit(f"{args[0]} is not open: {r[1][3]} ({r[1][1]})")
+        wait = [n for n in needs_of(r[1]) if n not in done_ids]
+        if wait:
+            sys.exit(f"{args[0]} waits for {', '.join(wait)}: pick another row")
         held = live_claims(done_ids).get(args[0])
         me = gh("api", "user", "--jq", ".login").strip()
         if held and held[0].split("/")[0] != me:
@@ -190,7 +219,10 @@ def main():
         today = datetime.date.today().isoformat()
         text = "\n".join(lines).rstrip("\n") + f"\n| {args[0]} | {args[2]} | {today} | {args[1]} |\n"
         open("WORK.md", "w", encoding="utf-8", newline="\n").write(text)
-        print(f"done {args[0]}: WORK.md saved; add a line to CHANGES.md, commit and push the board")
+        log = open("CHANGES.md", encoding="utf-8").read().rstrip("\n")
+        with open("CHANGES.md", "w", encoding="utf-8", newline="\n") as f:
+            f.write(f"{log}\n- {today} {args[2]}: {args[0]} done. {args[1]}\n")
+        print(f"done {args[0]}: WORK.md and CHANGES.md saved; commit and push the board")
     else:
         sys.exit(__doc__)
 
