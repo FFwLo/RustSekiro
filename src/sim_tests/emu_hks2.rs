@@ -135,7 +135,7 @@ pub(crate) fn move_stick_switches_match_the_exe() {
         for fr in s["frames"].as_array().unwrap() {
             let raw = Vec2::new(-f(&fr["stick"][1]), f(&fr["stick"][0]));
             turn.new_tick();
-            let taken = turn.gate(raw);
+            let taken = turn.gate(raw, false);
             let world = stick_world(taken, f(&fr["cam"])) * taken.length();
             turn.turn(&mut yaw, &mut shown, (world != Vec3::ZERO).then(|| yaw_of(world)), None, 720.0, 1.0 / 60.0);
             let err = (world - Vec3::new(f(&fr["world"][0]), 0.0, f(&fr["world"][1]))).length()
