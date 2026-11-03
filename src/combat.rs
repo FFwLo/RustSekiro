@@ -258,7 +258,6 @@ pub(crate) fn start_hit_stop(combat: &Combat, aa: &mut Actor, da: &mut Actor, dd
     if atk.amounts_zero(aa.side == Side::Player) {
         return;
     }
-    let force = !bullet && !da.anim.is_empty() && dd.flag(&da.anim, da.t, 41);
     let force = !bullet && !da.anim.is_empty() && dd.flag(&da.anim, da.step(), 41);
     let (atk_scale, def_on) = match da.side {
         _ if force => (1.0, true),
