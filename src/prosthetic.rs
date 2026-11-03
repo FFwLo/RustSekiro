@@ -85,10 +85,8 @@ fn spawn_bullets(
     for (a, tf, mut p, dummies) in &mut player {
         // Wolf's clock: SpEffect timers stop in a hit stop (actor.rs clock_dt, round 64).
         let dt = a.clock(time.delta_secs());
-        p.timed.retain_mut(|(_, left)| {
-            *left -= dt;
-            *left > 0.0
-        });
+        // FUN_140c06b70's count (status::count_down): a run-out row stays one more tick.
+        p.timed.retain_mut(|(_, left)| crate::status::count_down(left, dt));
         if a.anim.is_empty() || a.t == a.prev_t {
             continue;
         }
@@ -149,7 +147,7 @@ fn spawn_bullets(
             let endurance = d.sp_effects.get(&b.ref_id.to_string()).map_or(0.0, |s| s.effect_endurance);
             if b.ref_type == 2 && endurance > 0.0 {
                 p.timed.retain(|(id, _)| *id != b.ref_id);
-                p.timed.push((b.ref_id, endurance));
+                p.timed.push((b.ref_id, endurance - dt));
             }
         }
         for e in anim.events.iter().filter(crossing) {
@@ -237,7 +235,7 @@ fn spawn_bullets(
             let endurance = d.sp_effects.get(&shooter.to_string()).map_or(0.0, |s| s.effect_endurance);
             if shooter > 0 && endurance > 0.0 {
                 p.timed.retain(|(id, _)| *id != shooter);
-                p.timed.push((shooter, endurance));
+                p.timed.push((shooter, endurance - dt));
             }
         }
     }

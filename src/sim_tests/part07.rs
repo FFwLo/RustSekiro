@@ -3,8 +3,10 @@
 
 use super::*;
 
-/// A burning Wolf set on fire again (burns have disableBlood 0) keeps one burn, its time started
-/// over - not a second affliction whose flames (midst fx) would never be stopped.
+/// A burning Wolf set on fire again keeps his one burn as it is: the exe's add refuses a row of
+/// spCategory >= 10000 (burns 10004) while one of its category is on (FUN_140c02280), so no
+/// build-up, no second affliction and no refresh (emulator speffect_ticks burn_again: the time
+/// runs on from the first fill). Before (round 57) it was refreshed in place.
 #[test]
 pub(crate) fn reigniting_a_burn_refreshes_it() {
     use crate::status::{Guard, Statuses};
@@ -17,16 +19,16 @@ pub(crate) fn reigniting_a_burn_refreshes_it() {
         let mut s = Statuses::default();
         let burning = |s: &mut Statuses| (1..=10).find(|_| s.hit_wolf(&combat, wolf, weapon, &[9115], Guard::None).iter().any(|l| l == "BURNING"));
         assert!(burning(&mut s).is_some());
-        let first: Vec<(i64, f32)> = s.0[&wolf].effects.iter().map(|a| (a.id, a.left)).collect();
-        assert_eq!(first.len(), 1, "{first:?}");
-        // Its flames on the body (fx entity stand-in).
         let flames = Entity::PLACEHOLDER;
         let a = &mut s.0.get_mut(&wolf).unwrap().effects[0];
         a.left = 0.5;
         a.fx_mut().push(flames);
-        assert!(burning(&mut s).is_some(), "no second ignition");
+        let first: Vec<(i64, f32)> = s.0[&wolf].effects.iter().map(|a| (a.id, a.left)).collect();
+        let gauge = s.0[&wolf].burn;
+        assert!(burning(&mut s).is_none(), "a second ignition while burning");
         let again: Vec<(i64, f32)> = s.0[&wolf].effects.iter().map(|a| (a.id, a.left)).collect();
-        assert_eq!(again, first, "the burn was not refreshed in place");
+        assert_eq!(again, first, "the burn changed");
+        assert_eq!(s.0[&wolf].burn, gauge, "the gauge built up while burning");
         assert_eq!(s.0.get_mut(&wolf).unwrap().effects[0].fx_mut().as_slice(), &[flames], "the burning flames were dropped unstopped");
     });
 }

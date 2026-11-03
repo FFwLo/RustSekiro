@@ -979,16 +979,19 @@ pub(crate) fn run_sp_effect_chains(data: &crate::data::CharData, a: &mut Actor, 
         }
     }
     let mut kept = Vec::new();
-    for (id, left) in a.sp_chained.drain(..) {
-        let left = left - dt;
-        if left > 0.0 {
+    // FUN_140c06b70's count (status::count_down): a run-out row stays the tick it is found out
+    // and goes, handing on to its replace, the next; the new row counts on its add's tick (exe:
+    // 109451 at 0.9667 s on its first frame, 31 frames at 30 fps; before, 30).
+    for (id, mut left) in a.sp_chained.drain(..) {
+        if crate::status::count_down(&mut left, dt) {
             kept.push((id, left));
         } else if let Some(r) = row(id).and_then(|s| row(s.replace_sp_effect_id).map(|r| (s.replace_sp_effect_id, r))).filter(|(_, r)| r.effect_endurance > 0.0) {
             add.push((r.0, r.1.effect_endurance));
         }
     }
-    for (id, secs) in add {
+    for (id, mut secs) in add {
         kept.retain(|c| c.0 != id);
+        crate::status::count_down(&mut secs, dt);
         kept.push((id, secs));
     }
     // A lasting row whose invocationConditionsStateChange gate fails waits (stays on, inactive)

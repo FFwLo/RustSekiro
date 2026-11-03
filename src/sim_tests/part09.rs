@@ -4,7 +4,7 @@
 use super::*;
 
 /// A map-held enemy wakes on Wolf's hit only when it takes HP (EMEVD 4[1] / 3[23] read a damage
-/// record written for final HP damage > 0, FUN_1406d8950 from FUN_140b6e150 140b6.c:8033): one
+/// record written for final HP damage > 0, FUN_1406d8950 from FUN_140b6e150 <decomp ref>): one
 /// already cut (a rival's blow) that blocks Wolf's swing, its HP whole, stays held; it woke
 /// before (Wolf's guard reaction + HP below max).
 #[test]
@@ -269,8 +269,10 @@ pub(crate) fn the_model_slide_ends_at_rest_when_drawn_between_ticks() {
     assert!((root - Vec3::new(0.0, -crate::player::CAPSULE_HALF_HEIGHT, 0.0)).length() < 1e-4, "root kept an offset: {root}");
 }
 
-/// A second burn row (9117 then 9118, both spCategory 10004) replaces the first: one burn, the
-/// new row, the old flames stopped - not two burns ticking with two flames (round 17).
+/// A second burn row (9117 then 9118, both spCategory 10004) on a burning Wolf is refused: one
+/// burn, the first row, its flames kept - not two burns ticking with two flames (round 17). The
+/// exe's add refuses a category >= 10000 row while one of its category is on (FUN_140c02280;
+/// emulator speffect_ticks burn_then_9105, kb/speffect.md); before, the second replaced the first.
 #[test]
 pub(crate) fn a_second_burn_row_replaces_the_first() {
     use crate::status::{Guard, Statuses};
@@ -285,10 +287,10 @@ pub(crate) fn a_second_burn_row_replaces_the_first() {
         assert!(burning(&mut s, 9117).is_some());
         let flames = Entity::PLACEHOLDER;
         s.0.get_mut(&wolf).unwrap().effects[0].fx_mut().push(flames);
-        assert!(burning(&mut s, 9118).is_some());
+        assert!(burning(&mut s, 9118).is_none(), "a second burn took hold");
         let ids: Vec<i64> = s.0[&wolf].effects.iter().map(|a| a.id).collect();
-        assert_eq!(ids, vec![9118], "the burns stacked");
-        assert_eq!(s.stopping(), &[flames], "the old flames were not stopped");
+        assert_eq!(ids, vec![9117], "the burns stacked or the first was replaced");
+        assert!(s.stopping().is_empty(), "the flames were stopped");
     });
 }
 

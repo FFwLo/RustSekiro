@@ -83,6 +83,11 @@ pub struct Affliction {
     pub id: i64,
     pub left: f32,
     pub next_tick: f32,
+    /// The exe's entry +0x25: set on the tick its time is found run out (it still counts and
+    /// fires that tick); the next tick removes it and adds its replaceSpEffectId (FUN_140c005b0).
+    pub expired: bool,
+    /// Added since the last tick (the entry's flags 1 / 2): an expired one still fires once.
+    fresh: bool,
     shown: bool,
     fx: Vec<Entity>,
 }
@@ -141,6 +146,9 @@ pub struct ResistRules {
     pub recover_player: [f32; 5],
     disable: HashMap<i64, [bool; 5]>,
     curse: HashMap<i64, (f32, i64)>,
+    /// def{Poison,Blood,Disease,Curse,Freeze}ResistDamageRate of the rows that have one other
+    /// than 1 (8610 "Hard mode", the Demon Bell / Charmless row: 1.5 / 1.5 / 1.2).
+    resist_rate: HashMap<i64, [f32; 5]>,
     /// The shock build-ups: a row -> (its payload row, registFreeze * registFreezeChangeRate).
     /// The payload row itself (stateInfo 260 with registFreeze: 9420 / 9430-9435) or an instant
     /// row (effectEndurance 0) whose cycleOccurrence is one (9400 -> 9420, 9410-9415 -> 9430-9435).
@@ -217,7 +225,16 @@ impl ResistRules {
                 Some((r["id"].as_i64()?, rate as f32 / 100.0))
             })
             .collect();
+        let resist_rate = sps
+            .iter()
+            .filter_map(|r| {
+                let f = |k: &str| r[k].as_f64().unwrap_or(1.0) as f32;
+                let v = [f("defPoisonResistDamageRate"), f("defBloodResistDamageRate"), f("defDiseaseResistDamageRate"), f("defCurseResistDamageRate"), f("defFreezeResistDamageRate")];
+                v.iter().any(|x| *x != 1.0).then(|| (r["id"].as_i64().unwrap_or(-1), v))
+            })
+            .collect();
         Self {
+            resist_rate,
             freeze,
             freeze_payload,
             freeze_rate,
@@ -235,6 +252,14 @@ impl ResistRules {
     /// zombie's 999 poison gauge filled up).
     fn disabled(&self, status: &Status, worn: &[i64], ty: usize) -> bool {
         status.effects.iter().map(|a| a.id).chain(worn.iter().copied()).any(|id| self.disable.get(&id).is_some_and(|d| d[ty]))
+    }
+
+    /// The defender's build-up factor for type `ty`: the product of the worn rows'
+    /// def*ResistDamageRate (FUN_1409e9c00 -> FUN_140bf80c0 into the add's factors, which
+    /// FUN_140a00f60 multiplies the whole-point build-up by). Checked in the emulator
+    /// (speffect_ticks): Wolf wearing 8610 takes 46 of a burn's 31 and 30 of terror's 25.
+    fn resist_damage_rate(&self, worn: &[i64], ty: usize) -> f32 {
+        worn.iter().filter_map(|id| self.resist_rate.get(id)).map(|r| r[ty]).product()
     }
 }
 
@@ -263,6 +288,12 @@ impl Statuses {
     pub(crate) fn start_for(&mut self, combat: &Combat, e: Entity, id: i64) {
         let Statuses(all, stop) = self;
         start(combat, all.entry(e).or_default(), id, stop);
+    }
+
+    /// Test hook: SpEffect `id`'s build-up onto `e` wearing `worn`, unguarded, against `resist`.
+    #[cfg(test)]
+    pub(crate) fn build_up_for(&mut self, combat: &Combat, e: Entity, worn: &[i64], id: i64, resist: [f32; 5]) -> Vec<String> {
+        self.build_up(combat, e, worn, &[id], resist, [0.0; 5])
     }
 
     /// A new fight: every gauge and affliction goes, their effects on the body stop (Wolf keeps
@@ -340,7 +371,10 @@ impl Statuses {
             };
             // Poison's own 9045 (disablePoison) keeps more poison off; the burns (9100-9125)
             // disable nothing, so a burning enemy keeps building up (9122 disableBlood aside).
-            if rules.disabled(status, worn, ty) {
+            // The add refuses a row of category >= 10000 while one of its category is on
+            // (FUN_140c02280), before any build-up: a burning target takes no more burn
+            // (emulator: Wolf hit by 9100 / 9105 while burning keeps gauge and time).
+            if rules.disabled(status, worn, ty) || refused(combat, status, s) {
                 continue;
             }
             let (gauge, power, resist, guard, name) = match ty {
@@ -350,9 +384,10 @@ impl Statuses {
                 4 => (&mut status.freeze, freeze.map_or(0.0, |f| f.1), resist[4], guard[4], "shock"),
                 _ => (&mut status.curse, curse.map_or(0.0, |c| c.0), resist[3], guard[3], "aging"),
             };
-            // Whole points, as the exe's int build-up: (int)(power * rate), then
-            // (int)(x * (1 - guard resist %)) when guarded.
-            let mut amount = power.trunc();
+            // Whole points, as the exe's int build-up: (int)(power * rate), times the worn
+            // def*ResistDamageRate (Hard mode's 8610: 31 -> 46), then (int)(x * (1 - guard
+            // resist %)) when guarded.
+            let mut amount = (power.trunc() * rules.resist_damage_rate(worn, ty)).trunc();
             if guard > 0.0 && amount > 0.0 {
                 amount = (amount * (1.0 - guard / 100.0)).trunc().max(0.0);
             }
@@ -379,17 +414,19 @@ impl Statuses {
                 status.instant_ref = behavior_ref as i64;
                 status.instant_name = name;
                 status.flash.push(row);
-                start(combat, status, row, stop);
+                // The payload's HP is the scaled instant above: its replace takes over directly.
+                if let Some(next) = sp(combat, row).map(|r| r.replace_sp_effect_id).filter(|n| *n > 0) {
+                    start(combat, status, next, stop);
+                }
                 if cycle > 0.0 {
                     start(combat, status, cycle as i64, stop);
                 }
                 out.push("SHOCK".to_string());
                 continue;
             }
-            if s.effect_endurance <= 0.0 && s.change_hp_rate > 0.0 {
-                status.instant_hp_rate += s.change_hp_rate;
-                status.instant_ref = s.behavior_ref_id;
-                status.instant_name = name;
+            // An instant row (effectEndurance 0: terror 9200 / 9222, poison 4001 / 4003) fires
+            // its changeHpRate on its add tick through `tick_effects`; its init effect shows once.
+            if s.effect_endurance == 0.0 {
                 status.flash.push(id);
             }
             // Aging's build-up row has no time of its own: the fill applies its cycleOccurrence
@@ -415,7 +452,7 @@ impl Statuses {
 /// npc_hit_damage takes its <attr>DamageCutRate 99 (x99). Its changeStaminaRate -100 applies
 /// every frame (round 46): a timed row with motionInterval 0 re-fires each tick (exe
 /// FUN_140c06b70 / FUN_140c06c60, summed by FUN_140bfe2c0 and added to the remaining posture at
-/// 140a0.c:5119), so the aged Wolf's posture stays drained to the floor (our full bar).
+/// <decomp ref>), so the aged Wolf's posture stays drained to the floor (our full bar).
 /// gap: the player's floor in the clamp FUN_140bd4e20 (taken as empty, without a break
 /// reaction); defNinsatsuDmgRate (99, as the cut rates) is not applied; the exe's order of
 /// maxHpRate is not traced.
@@ -458,40 +495,119 @@ fn sp(combat: &Combat, id: i64) -> Option<&SpEffect> {
     combat.player.sp_effects.get(&key).or_else(|| combat.kinds.iter().find_map(|k| k.data.sp_effects.get(&key)))
 }
 
-/// Applies an SpEffect; one with no duration hands straight on to its replaceSpEffectId. An
-/// active one of the same nonzero spCategory (else the same id) gives way to it: the burns
-/// 9100-9125 share category 10004, so a second burn row replaces the first instead of stacking
-/// (double ticks, two flames). Its body effects stop (`stop`) and the new row's start.
+/// Applies an SpEffect as the exe's add does (FUN_1409e9c00 -> FUN_140c02280 / FUN_140c02000 /
+/// FUN_140c03af0, checked in the emulator: kb/speffect.md 2026-11-03):
+/// - a row of spCategory >= 10000 (the burns' 10004, poison's 10003, terror's 10005) is refused
+///   while one of its category is on: no add, no refresh (a burning Wolf hit by 9100 / 9105
+///   keeps his first burn and its time);
+/// - the same id refreshes: its time starts over at effectEndurance and its interval timer at 0
+///   (FUN_140c06860), keeping its body effects;
+/// - else a new entry, also beside rows of the same lower category (the pellet 3021 and the
+///   ohagi 3061, both category 20, run together);
+/// - a row with no duration (effectEndurance 0: 4011, terror 9200) is added already expired: it
+///   fires on the tick it is added and the next tick drops it and adds its replaceSpEffectId
+///   (`tick_effects`).
+/// The interval timer starts at 0, so the first fire is on the add's own tick, except stateInfo
+/// 50 / 52 / 67 / 68, which start at motionInterval (FUN_140c03af0).
+/// gap: FUN_140c02000's other matches (the same stateInfo 2 / 5 / 6, FUN_140c05a80's category
+/// rules 100-0xcc by categoryPriority) and stateInfo 155 / 120 / 121's fire at add.
 fn start(combat: &Combat, status: &mut Status, id: i64, stop: &mut Vec<Entity>) {
-    let mut id = id;
-    for _ in 0..8 {
-        let Some(s) = sp(combat, id) else { return };
-        if s.effect_endurance > 0.0 {
-            // Already on (a burning target re-ignites: burns have disableBlood 0): its time starts
-            // over and it keeps its body effects, so no second flame layer is left running.
-            // The interval timer starts at 0 on every set (FUN_140c06860 140c0.c:5011-5014,
-            // FUN_140c03af0 :2506-2510, all stateInfos but 50/52/67/68), and FUN_140c06b70 ticks
-            // when it is <= 0: the first tick lands on the frame it takes hold (round 66: it came
-            // one motionInterval late, a 9.9 s burn ticking 9 times instead of 10).
-            let same = |a: &Affliction| a.id == id || (s.sp_category != 0 && sp(combat, a.id).is_some_and(|o| o.sp_category == s.sp_category));
-            if let Some(a) = status.effects.iter_mut().find(|a| same(a)) {
-                a.left = s.effect_endurance;
-                a.next_tick = 0.0;
-                if a.id != id {
-                    stop.append(&mut a.fx);
-                    a.id = id;
-                    a.shown = false;
-                }
-                return;
-            }
-            status.effects.push(Affliction { id, left: s.effect_endurance, next_tick: 0.0, shown: false, fx: Vec::new() });
-            return;
-        }
-        if s.replace_sp_effect_id <= 0 {
-            return;
-        }
-        id = s.replace_sp_effect_id;
+    let _ = stop;
+    let Some(s) = sp(combat, id) else { return };
+    if s.sp_category >= 10000 && status.effects.iter().any(|a| sp(combat, a.id).is_some_and(|o| o.sp_category == s.sp_category)) {
+        return;
     }
+    let timer = if matches!(s.state_info, 50 | 52 | 67 | 68) { s.motion_interval } else { 0.0 };
+    if let Some(a) = status.effects.iter_mut().find(|a| a.id == id) {
+        a.left = s.effect_endurance;
+        a.next_tick = timer;
+        a.expired = s.effect_endurance == 0.0;
+        return;
+    }
+    // A row with no duration shows through `flash` (its init effect once), not as a lasting one.
+    let instant = s.effect_endurance == 0.0;
+    status.effects.push(Affliction { id, left: s.effect_endurance, next_tick: timer, expired: instant, fresh: true, shown: instant, fx: Vec::new() });
+}
+
+/// A timed SpEffect's time on one tick of FUN_140c06b70 (the lists outside `Status`: Wolf's
+/// timed and the TAE chains). Its time counts down while > 0 and stops at -FLT_EPSILON; the tick
+/// that finds it run out (<= 0) marks it expired and it stays that tick; the next tick drops it
+/// (false). A 1 s row added at frame 0 at 30 fps is there frames 0-30 and gone at 31 (emulator:
+/// 109451). The add's own frame counts: call it there too.
+pub(crate) fn count_down(left: &mut f32, dt: f32) -> bool {
+    if *left == f32::NEG_INFINITY {
+        return false;
+    }
+    if *left <= 0.0 {
+        *left = f32::NEG_INFINITY;
+    } else {
+        *left = (*left - dt).max(-f32::EPSILON);
+    }
+    true
+}
+
+/// Whether `start` would refuse `id` now: a row of spCategory >= 10000 with one of its category
+/// on (FUN_140c02280). Its build-up is refused with it (no gauge added).
+fn refused(combat: &Combat, status: &Status, s: &SpEffect) -> bool {
+    s.sp_category >= 10000 && status.effects.iter().any(|a| sp(combat, a.id).is_some_and(|o| o.sp_category == s.sp_category))
+}
+
+/// One pass of a character's SpEffect list, FUN_140c005b0 with the entry tick FUN_140c06b70,
+/// then the HP sum of the fired rows (FUN_140b658b0 -> FUN_140bfd0a0 -> FUN_140c014f0). Per
+/// entry, in list order:
+/// - one marked expired on an earlier tick goes (its body effects stop) and its
+///   replaceSpEffectId is added, ticking in this same pass (109450 -> 109451 at 0.9667 s left on
+///   the next frame at 30 fps);
+/// - expired is marked when its time is <= 0 and > -1 (-1: worn for good), before this tick's
+///   count: it still fires and lives this tick;
+/// - it fires when its interval timer is <= 0, the timer going up by motionInterval (0: every
+///   tick);
+/// - the timer and the time count down by dt while > 0, the time stopping at -FLT_EPSILON.
+/// The fired rows' changeHpRate (% of max HP) and changeHpPoint are summed and the HP change
+/// truncated once: (int)(-(max * rate * 0.01) - point), so a burn 0.5 % + 4 on Wolf's 1120 is 9.
+/// Returns that HP change (negative = damage) and the behaviorRefId of the last row that hurt.
+/// gap: changeHpEstusFlaskRate, hpRecoverRate (regen items) and the posture fields of a fired
+/// row (FUN_140bfe2c0) are not taken here; isExtendSpEffectLife's slower count under the
+/// buff-duration skill (stateInfo 193) is not ported; the replace is added without its
+/// build-up (4011's 4012 fills the exe's burn gauge instead of burning).
+pub(crate) fn tick_effects(combat: &Combat, status: &mut Status, hp_max: f32, dt: f32, stop: &mut Vec<Entity>) -> (i32, i64) {
+    let (mut rate, mut point, mut hurt) = (0.0f32, 0.0f32, 0);
+    let mut i = 0;
+    while i < status.effects.len() {
+        let f = &mut status.effects[i];
+        let Some(s) = sp(combat, f.id) else {
+            i += 1;
+            continue;
+        };
+        if f.expired && !f.fresh {
+            let gone = status.effects.remove(i);
+            stop.extend(gone.fx);
+            if s.replace_sp_effect_id > 0 {
+                start(combat, status, s.replace_sp_effect_id, stop);
+            }
+            continue;
+        }
+        f.fresh = false;
+        if f.left <= 0.0 && f.left > -1.0 {
+            f.expired = true;
+        }
+        if f.next_tick <= 0.0 {
+            f.next_tick += s.motion_interval;
+            rate += s.change_hp_rate;
+            point += s.change_hp_point;
+            if s.change_hp_rate > 0.0 || s.change_hp_point > 0.0 {
+                hurt = s.behavior_ref_id;
+            }
+        }
+        if f.next_tick > 0.0 {
+            f.next_tick -= dt;
+        }
+        if f.left > 0.0 {
+            f.left = (f.left - dt).max(-f32::EPSILON);
+        }
+        i += 1;
+    }
+    ((-(hp_max * rate * 0.01) - point) as i32, hurt)
 }
 
 /// The afflictions' damage ticks and ends.
@@ -537,39 +653,19 @@ pub(crate) fn tick(time: Res<Time>, combat: Res<Combat>, mut statuses: ResMut<St
                 log.push(format!("{}: -{dmg:.0} HP", status.instant_name), Color::srgb(0.7, 0.55, 0.9));
             }
         }
-        let mut ended = Vec::new();
-        for f in status.effects.iter_mut() {
-            let Some(s) = sp(&combat, f.id) else { continue };
-            f.next_tick -= dt;
-            while f.next_tick <= 0.0 {
-                f.next_tick += s.motion_interval.max(0.1);
-                // changeHpRate is % of max HP, changeHpPoint flat (positive = damage).
-                let dmg = a.hp_max * s.change_hp_rate / 100.0 + s.change_hp_point;
-                if dmg > 0.0 && a.hp > 0.0 {
-                    a.hp = (a.hp - dmg).max(0.0);
-                    if a.hp <= 0.0 {
-                        a.death_ref = s.behavior_ref_id;
-                    }
-                    if let Some(log) = log.as_mut() {
-                        let what = match s.behavior_ref_id {
-                            REF_BURNING => "burn",
-                            REF_POISON => "poison",
-                            _ => "status",
-                        };
-                        log.push(format!("{what}: -{dmg:.0} HP"), Color::srgb(0.7, 0.55, 0.9));
-                    }
-                }
+        let (delta, hurt) = tick_effects(&combat, status, a.hp_max, dt, stop);
+        if delta != 0 && a.hp > 0.0 {
+            a.hp = (a.hp + delta as f32).clamp(0.0, a.hp_max);
+            if a.hp <= 0.0 {
+                a.death_ref = hurt;
             }
-            f.left -= dt;
-            if f.left <= 0.0 {
-                ended.push((f.id, s.replace_sp_effect_id));
-            }
-        }
-        stop.extend(status.effects.iter().filter(|f| f.left <= 0.0).flat_map(|f| f.fx.iter().copied()));
-        status.effects.retain(|f| f.left > 0.0);
-        for (_, next) in ended {
-            if next > 0 {
-                start(&combat, status, next, stop);
+            if let Some(log) = log.as_mut().filter(|_| delta < 0) {
+                let what = match hurt {
+                    REF_BURNING => "burn",
+                    REF_POISON => "poison",
+                    _ => "status",
+                };
+                log.push(format!("{what}: {delta} HP"), Color::srgb(0.7, 0.55, 0.9));
             }
         }
     }
