@@ -25,3 +25,4 @@
 - 2026-11-04 FFwLo/claude: E16 done. x1.4 = defender flag 41 non-arrow; 1.125 / 0.8 / p16 dead; p17 stays 1
 - 2026-11-04 FFwLo/claude: E18 done. 1 cm floor matched, TAE 152 AttachCameraToNode ported, SlowEnd copies only (camleft)
 - 2026-11-04 FFwLo/claude: E32 done. free camera swing is the full fulcrum swing; follow_swing stand-in removed (camswing)
+- 2026-11-04 FFwLo/claude: E14 done. chr push: stepping side lifted 0.3 m and stops at 0.950 m, other never shoved; humanoids pass, dogs block (pushmove); rim leave by the two-sphere ground check (collide_rimleave)

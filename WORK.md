@@ -113,7 +113,6 @@ character turns out to run exe code of its own, add an `E` row for that part.
 | ID | Area | Needs | Who | Task | Notes |
 |----|------|-------|-----|------|-------|
 | E6 | emu | | open | Other prosthetics (shuriken, firecracker, flame vent, umbrella): find how the exe switches Wolf's tool in the emulator copy (writing PlayerGameData +0x5ec did not), then check the bullet spawns against `prosthetic.rs` | harness `items`; kb/frame-coverage.md |
-| E14 | emu | | open | The rim leave point, and an enemy pushing a moving Wolf (both moving), and enemy against enemy | kb/movement.md "Not covered"; system: Maps / collision |
 | E15 | emu | | open | The 66 NPC attack keys that exist only through the exporter's +1000 fallback: does the exe fall back? FUN_140a12b80 has no such branch | kb/params.md "Not covered" |
 | E30 | emu | | open | Params: scan the exe's accessors for every param field RSekiro reads, so a swapped field name is caught | kb/params.md "Not covered" |
 
@@ -173,3 +172,4 @@ character turns out to run exe code of its own, add an `E` row for that part.
 | E16 | FFwLo/claude | 2026-11-04 | x1.4 = defender flag 41 non-arrow; 1.125 / 0.8 / p16 dead; p17 stays 1 |
 | E18 | FFwLo/claude | 2026-11-04 | 1 cm floor matched, TAE 152 AttachCameraToNode ported, SlowEnd copies only (camleft) |
 | E32 | FFwLo/claude | 2026-11-04 | free camera swing is the full fulcrum swing; follow_swing stand-in removed (camswing) |
+| E14 | FFwLo/claude | 2026-11-04 | chr push: stepping side lifted 0.3 m and stops at 0.950 m, other never shoved; humanoids pass, dogs block (pushmove); rim leave by the two-sphere ground check (collide_rimleave) |
