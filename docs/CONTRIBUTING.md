@@ -59,6 +59,7 @@ once another contributor's `row.py verify` re-made them from their own exe and t
 on the pull request). CI's `claim` check fails a pull request for a row someone else holds.
 
 The claim is a comment on the "Work board claims" issue under your GitHub name; you can also just comment
-`claim <ID> <name>` there from the web. Your open pull request holds the claim while it is in review. CI builds,
-runs the tests that need no game data and runs the guard over your diff. The owner reviews every pull request
+`claim <ID> <name>` there from the web. Your open pull request holds the claim while it is in review. CI runs the
+guard over your diff and checks the claim; it does not build (GitHub has no game data), so your `row.py check`
+result in the pull request is the test. The owner reviews every pull request
 and is the only one who merges; on the merge the row moves to Done by itself.

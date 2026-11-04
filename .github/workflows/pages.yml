@@ -15,6 +15,7 @@ permissions:
   contents: read
   issues: read          # live claims from the claims issue
   pull-requests: read   # open pull requests hold claims
+  actions: read         # the Deploys list: this workflow's past runs
   pages: write
   id-token: write
 

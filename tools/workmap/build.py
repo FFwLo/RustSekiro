@@ -88,6 +88,53 @@ def claims(remote):
     return out
 
 
+GH_REPO = "FFwLo/RustSekiro"
+WHY = {"push": "main updated", "workflow_run": "board updated", "schedule": "claims re-read",
+       "workflow_dispatch": "rebuilt by hand"}
+
+
+def board_change(remote, at):
+    """What the board commit just before `at` did: its CHANGES.md line for a merged row, else its subject."""
+    log = git("log", f"{remote}/agents-work-board", "-30", "--format=%cI|%s").splitlines()
+    for when, _, subject in (l.partition("|") for l in log):
+        if datetime.datetime.fromisoformat(when) <= at:
+            m = re.search(r"done by #(\d+)", subject)
+            if m:
+                line = next((l for l in git("show", f"{remote}/agents-work-board:CHANGES.md").splitlines()
+                             if f"(#{m.group(1)})" in l), "")
+                return re.sub(r"^- [\d-]+ ", "", line) or subject
+            return subject
+    return ""
+
+
+def deploys(remote, n=20):
+    """[[UTC time, why, what, commit, link]]: this deploy first (when built by the pages workflow), then the last
+    successful pages runs; empty when gh cannot read them."""
+    out = []
+    if os.environ.get("GITHUB_RUN_ID"):
+        ev, sha = os.environ.get("GITHUB_EVENT_NAME", ""), os.environ.get("GITHUB_SHA", "")
+        out.append([datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"), ev,
+                    git("log", "-1", "--format=%s", sha).strip(), sha,
+                    f"https://github.com/{GH_REPO}/actions/runs/{os.environ['GITHUB_RUN_ID']}"])
+    try:
+        r = subprocess.run(["gh", "api", f"repos/{GH_REPO}/actions/workflows/pages.yml/runs?status=success&per_page={n}",
+                            "--jq", ".workflow_runs[] | [.run_started_at, .event, .display_title, .head_sha, .html_url]"],
+                           cwd=REPO, capture_output=True, text=True, encoding="utf-8", timeout=60)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        print(f"deploys not read: {e}")
+        r = None
+    if r is not None and r.returncode:
+        print(f"deploys not read: {r.stderr.strip()[:200]}")
+    for line in r.stdout.splitlines() if r is not None and r.returncode == 0 else []:
+        out.append(json.loads(line))
+    for d in out:
+        at = datetime.datetime.fromisoformat(d[0].replace("Z", "+00:00"))
+        d[2] = {"workflow_run": board_change(remote, at), "schedule": "", "workflow_dispatch": ""}.get(d[1], d[2])
+        d[1], d[3] = WHY.get(d[1], d[1]), d[3][:7]
+    print(f"deploys: {len(out)}")
+    return out[:n]
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--tests", type=int, default=0, help="passing tests in the full suite (default: count the #[test]s in src/)")
@@ -101,7 +148,9 @@ def main():
         tests, label = len(re.findall(r"#\[test\]", git("grep", "-h", r"#\[test\]", "--", "src"))), "tests"
     rows, kinds = board()
     data = {"chr": chars, "sys": systems, "rows": rows, "kinds": kinds, "tests": tests, "testsLabel": label,
-            "date": datetime.date.today().isoformat()}
+            "date": datetime.date.today().isoformat(),
+            "deployNow": bool(os.environ.get("GITHUB_RUN_ID")),
+            "deploys": deploys("upstream" if "upstream" in git("remote").split() else "origin")}
     with open(os.path.join(HERE, "template.html"), encoding="utf-8") as f:
         page = f.read().replace("/*DATA*/null", json.dumps(data, ensure_ascii=False))
     os.makedirs(os.path.dirname(os.path.abspath(a.out)), exist_ok=True)

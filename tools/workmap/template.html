@@ -64,6 +64,7 @@ code { font: 500 12.5px var(--mono); }
 .pick { min-height: 46px; font-size: 14px; color: var(--muted); max-width: 90ch; overflow-wrap: anywhere; margin-top: 10px; }
 .pick b { color: var(--ink); }
 .groups { display: grid; gap: 14px; }
+.nw { white-space: nowrap; }
 .tiles { display: flex; flex-wrap: wrap; gap: 4px; }
 .tiles button { width: 54px; height: 30px; border: 0; border-radius: 3px; cursor: pointer; font: 500 11px var(--mono); color: var(--ink); }
 .tiles button.dark { color: var(--on); }
@@ -170,6 +171,16 @@ python tools/row.py submit "what changed, in one line"</pre><button class="copy"
     <div class="list" style="margin-top:10px"><table>
       <thead><tr><th>Row</th><th>Area</th><th>Task</th><th>Start</th></tr></thead>
       <tbody id="rows"></tbody>
+    </table></div>
+  </section>
+
+  <section id="deploys-sec" hidden>
+    <h2>Deploys</h2>
+    <p class="lead" style="margin:0">Every time this page was rebuilt, newest first: a push to <code>main</code>, a row
+      the board moved on a merge, or the claims re-read every six hours.</p>
+    <div class="list" style="margin-top:10px"><table>
+      <thead><tr><th>When</th><th>Why</th><th>What</th><th>Commit</th></tr></thead>
+      <tbody id="deploys"></tbody>
     </table></div>
   </section>
 
@@ -293,6 +304,17 @@ document.addEventListener("click", async e => {
   catch { const r = document.createRange(); r.selectNodeContents(b.previousElementSibling || b); getSelection().removeAllRanges(); getSelection().addRange(r); b.textContent = "Selected"; }
   setTimeout(() => { b.textContent = b.dataset.copy ? "Copy start" : "Copy"; }, 1600);
 });
+
+// deploys: times in the reader's own time zone
+const DEP = D.deploys || [];
+if (DEP.length) {
+  $("deploys-sec").hidden = false;
+  const when = t => new Date(t).toLocaleString([], {month: "short", day: "numeric", hour: "2-digit", minute: "2-digit"});
+  $("deploys").innerHTML = DEP.map(([t, why, what, sha, url], i) => `<tr>
+    <td class="nw">${esc(when(t))}${i === 0 && D.deployNow ? " <small class=\"note\">(this page)</small>" : ""}</td><td class="nw">${esc(why)}</td>
+    <td class="task">${esc(what) || "<span class=\"note\">-</span>"}</td>
+    <td><a href="${esc(url)}"><code>${esc(sha)}</code></a></td></tr>`).join("");
+}
 
 $("foot").innerHTML = `Snapshot of ${D.date}: proof levels from <code>docs/kb/coverage.md</code>, rows from the board branch.
   Live claims are on the claims issue; <code>board.py open</code> always reads them fresh. Rebuild this page with

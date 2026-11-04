@@ -5,7 +5,8 @@ on:
   pull_request:
     branches: [main]
 
-# A newer push to the same branch or pull request cancels the older run (the Windows build is long).
+# No build here: GitHub has no game data, so the real test is `row.py check` on the contributor's own copy
+# (the full suite, recorded in the pull request). A newer push cancels the older run.
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
@@ -54,21 +55,3 @@ jobs:
           ID=$(python -c "import os,re; m=re.search(r'^Board:\s*([A-Z]\d+[a-z]?)\s+(?:done|part)\b', os.environ.get('BODY') or '', re.M); print(m.group(1) if m else '')")
           if [ -z "$ID" ]; then echo "no Board line: nothing to check"; exit 0; fi
           git show origin/agents-work-board:board.py | python - holder "$ID" "$AUTHOR"
-
-  build-and-test:
-    runs-on: windows-latest
-    env:
-      # .cargo/config.toml builds through sccache; the action installs it and keeps its cache on GitHub.
-      SCCACHE_GHA_ENABLED: "true"
-      CARGO_INCREMENTAL: "0"
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: mozilla-actions/sccache-action@v0.0.9
-      - run: cargo build --workspace
-      # No extracted/ here: the tests that read the game's data are ignored (cfg shinobi_data, build.rs)
-      # and the sim tests, which all play the game's data, are skipped. Contributors run everything
-      # locally with their own data (docs/CONTRIBUTING.md). crates/game and crates/sim read the map cache
-      # (SEKIRO_CACHE), so CI only builds their tests (board row B7).
-      - run: cargo test --workspace --no-run
-      - run: "cargo test -p sv1 -p sekiro-formats -p sekiro-hks -p sr-extract -- --skip sim_tests::"
