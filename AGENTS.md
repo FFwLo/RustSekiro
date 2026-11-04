@@ -21,7 +21,7 @@ python tools/row.py                              # your claims and pull requests
 python tools/row.py start <ID> --agent <name>    # claim, worktree, test root, the notes to read (--agent once)
 python tools/row.py check                        # in the worktree: guard + full suite, remembered for submit
 python tools/row.py submit "<one line>"          # push to your fork, open the pull request filled in (--part;
-                                                 # E rows add --emu "<the emu-cases command>")
+                                                 # emu rows add --emu "<the emu-cases command>")
 python tools/row.py verify <PR>                  # re-make someone else's E row cases from your exe, run its tests
 python tools/row.py drop <ID>                    # give the row back and remove the worktree
 ```
@@ -48,11 +48,11 @@ that no row or branch uses (not "claude", not "agent"). Claims, branches and pul
 
 1. A row claimed under your own name and not finished: carry it on (`board.py mine <github>`).
 2. New to the project: take a `B` row first.
-3. Otherwise go top to bottom through `E` and `P`, and take the first row that `open` lists, that your setup can
+3. Otherwise go top to bottom through `C`, `E` and `P`, and take the first row that `open` lists, that your setup can
    do (`emu` rows need the emulator, section 5), and whose `Needs` are done.
 
 Never take `humans` rows: they are decisions for the owner. Rows can be big: you may claim a part (for example
-`E19a` for one fight of a boss row) and say which part in the claim comment and the pull request. Work the board
+`C1a` for one fight of a boss row) and say which part in the claim comment and the pull request. Work the board
 does not list goes in a pull request to the board branch as a new row, or in an issue.
 
 ## 3. Claim it before you start
@@ -91,14 +91,14 @@ itself. Branch names say what they are: `work-<ID>-<slug>-<github>-<agent>`, nev
   write `gap:` for what is not ported or not checked. Addresses and offsets are fine; the code is yours.
 - Every behaviour change gets a sim test (`src/sim_tests/`). A test that needs `extracted/` skips itself when the
   data is missing, like `super_armor_hit_matches_the_exe`, so CI passes without game data.
-- `E` rows follow `docs/kb/emulator-agent-brief.md` and `docs/kb/emulator-pilot.md`: your generator in a new
+- `C` and `E` rows (Area `emu`) follow `docs/kb/emulator-agent-brief.md` and `docs/kb/emulator-pilot.md`: your generator in a new
   `tools/emu-cases/src/<topic>.rs` with one `mod` line and one dispatch line in `main.rs`; your test in a new
   `src/sim_tests/emu_<topic>.rs`. The emulator runs your own `sekiro.exe` on a snapshot of your own running game.
   The paths in the brief are one PC's: use your own. Snapshots and case JSON stay in `extracted/` (snapshots are
   about 10 GB: delete them when done).
 - `P` rows: read the row's kb note first. If a rule can only be fitted to numbers, say so in the note.
 - Notes: a dated section in the topic's `docs/kb/<topic>.md` (what matched, what changed with numbers, what is not
-  covered); `E` rows add one row to the results table in `docs/kb/emulator-pilot.md`. The board writes the
+  covered); `emu` rows add one row to the results table in `docs/kb/emulator-pilot.md`. The board writes the
   history line (`CHANGES.md`) on the merge.
 - Merge `upstream/main` into your branch at the start of each session.
 - Never commit or paste game files, extracted data, snapshots, emulator case JSON, hex dumps, disassembly or
@@ -119,13 +119,13 @@ itself. Branch names say what they are: `work-<ID>-<slug>-<github>-<agent>`, nev
    first). It pushes the branch to your fork and opens the pull request into `main`, titled `<ID>: <one line>`,
    with `Board: <ID> done: <one line>` and your test result already in the body. Tick the boxes it leaves open.
    After review changes: commit, `row.py check`, `row.py submit` again (it only pushes).
-   An `E` row also passes `--emu "emu-cases <sekiro.exe> <out dir> [--snapshot <dir>] <names>"`, the command that
-   made your cases; submit refuses an `E` row whose diff has no generator in `tools/emu-cases/src/` or no
+   An `emu` row (C or E) also passes `--emu "emu-cases <sekiro.exe> <out dir> [--snapshot <dir>] <names>"`, the command that
+   made your cases; submit refuses an `emu` row whose diff has no generator in `tools/emu-cases/src/` or no
    `..._matches_the_exe` test (`--why "<reason>"` when the row truly has no emulator check).
 3. CI builds, runs the tests that need no game data, runs the guard over your diff, and fails the `claim` check
    when someone else holds the row (or its whole row, or one of its parts). The owner reviews and merges; only
    the owner merges into `main`.
-   An `E` row's numbers come from one person's copy of the game, so they count as checked only after someone
+   An `emu` row's numbers come from one person's copy of the game, so they count as checked only after someone
    else runs `python tools/row.py verify <PR>`: it checks the pull request out, re-makes the cases from their
    own exe (and snapshot) into a fresh folder and runs the new tests on them, then comments the result. It builds
    and runs the pull request's code: read the diff first.

@@ -6,7 +6,7 @@ the game's code does, and is checked against your own copy of the game where it 
 How to use this board is in `AGENTS.md` (pick, claim, finish). The copy on the `agents-work-board` branch is the
 only one that counts. Finished rows move to "Done" at the bottom; board history is in `CHANGES.md`.
 
-- **Kinds**: `E` checks a system against the exe in the emulator (`tools/emu-cases`,
+- **Kinds**: `C` checks one enemy or boss against the exe. `E` checks a system against the exe in the emulator (`tools/emu-cases`,
   `docs/kb/emulator-agent-brief.md`, `docs/kb/emulator-pilot.md`). `P` ports something RSekiro does not do yet
   (the "Not covered" lists in `docs/kb/`). `B` is bugs and cleanup: good first rows.
 - **Order**: inside a kind, the top row first. Rows near the top change the feel the most.
@@ -41,20 +41,91 @@ only one that counts. Finished rows move to "Done" at the bottom; board history 
 | E16 | emu | | open | The damage sum's flag factors (1.4 / 1.125 / 0.8 / p16 / p17): tie them to their callers | kb/damage.md "Not covered" |
 | E17 | emu | | open | Fall damage leftovers: CalcCorrectGraph 211 / 212, HitMtrlParam fallDamageRate, the 5 m threshold under SpEffect type 0x155, the void fall cost | kb/movement.md "In the air" |
 | E18 | emu | | open | Camera leftovers: the 1 cm fulcrum floor, the zero-length final cast, the TAE overrides of the distance rate (FUN_1408311a0) and of +0xf0 (FUN_140831190), SlowEnd | kb/camera.md "Not covered" (three lists) |
-| E19 | emu | | open | Per-boss check: Genichiro Ashina and Way of Tomoe (c7100, c7110), with a scene in the arena | Split per fight. kb/coverage.md; each boss so far is "seen side by side", none is checked against the exe |
-| E20 | emu | | open | Per-boss check: Lady Butterfly (c5090) | as E19 |
-| E21 | emu | | open | Per-boss check: Gyoubu Oniwa (c5080) | as E19; horse and arena |
-| E22 | emu | | open | Per-boss check: Guardian Ape (c5100), both phases | as E19 |
-| E23 | emu | | open | Per-boss check: Corrupted Monk (c5000) | as E19 |
-| E24 | emu | | open | Per-boss check: Great Shinobi Owl and Owl (Father) (c5060) | as E19 |
-| E25 | emu | | open | Per-boss check: Isshin Ashina and Isshin, the Sword Saint (c5430, c5400) | as E19 |
-| E26 | emu | | open | Per-boss check: Demon of Hatred (c7020) | as E19 |
-| E27 | emu | | open | Per-boss check: Emma, the Gentle Blade (c7400) | as E19 |
-| E28 | emu | | open | Per-boss check: Divine Dragon (c5200) | as E19 |
-| E29 | emu | | open | Per-boss check: Folding Screen Monkeys (c1000) and Old Dragons of the Tree (c5300): rules ported only, never seen side by side | as E19 |
 | E30 | emu | | open | Params: scan the exe's accessors for every param field RSekiro reads, so a swapped field name is caught | kb/params.md "Not covered" |
 | E31 | emu | | open | Deathblow window: how long an enemy stays broken after a posture break before it recovers. RSekiro uses a stand-in, `config.toml` `broken_time` = 4 s. Find what ends the break in the exe (the break anim's length or TAE, an HKS state timer, or a C++ timer), port it per enemy, and remove `broken_time` | `enemy.rs` `on_posture_break`, `combat.rs`; kb/damage.md |
 | E32 | emu | | open | Free camera swing after a sideways run: the CameraParam fulcrum gives 68 deg/s at a run and 143 at a sprint, which circled Wolf in RSekiro, so `config.toml` `follow_swing` halves it. Run the exe's free camera (FUN_140734790) with the stick held sideways, match its swing, and remove `follow_swing` | `camera.rs` `drag_fulcrum`; kb/camera.md; the harness of `follow_camera_matches_the_exe` |
+
+## C: characters (every enemy and boss)
+
+One row per fighting character: bosses first, then mini-bosses, then the regular enemies. A new character gets
+its row from `python tools/board_rows.py` (on `main`), so none is ever left out. A row checks that character
+against the exe on your own copy: make a scene where it stands (`emu-cases scene`, `docs/kb/emulator-pilot.md`
+"Scenes"), then compare its attacks (AtkParam rows, bullets, hit timing), its reactions (HKS hit answers,
+posture, staggers) and its AI goals' choices (`docs/kb/aicpp.md`) with RSekiro's. Done when a
+`..._matches_the_exe` test names it and `docs/kb/enemy.md` says what is still not covered. Split a big one into
+parts (C1a, C1b). Its proof level now is in `docs/kb/coverage.md` and on the work map.
+
+| ID | Area | Needs | Who | Task | Notes |
+|----|------|-------|-----|------|-------|
+| C1 | emu | | open | Per-boss check: Genichiro Ashina and Way of Tomoe (c7100, c7110), with a scene in the arena | Split per fight. kb/coverage.md; each boss so far is "seen side by side", none is checked against the exe |
+| C2 | emu | | open | Per-boss check: Lady Butterfly (c5090) | as C1 |
+| C3 | emu | | open | Per-boss check: Gyoubu Oniwa (c5080) | as C1; horse and arena |
+| C4 | emu | | open | Per-boss check: Guardian Ape (c5100), both phases | as C1 |
+| C5 | emu | | open | Per-boss check: Corrupted Monk (c5000) | as C1 |
+| C6 | emu | | open | Per-boss check: Great Shinobi Owl and Owl (Father) (c5060) | as C1 |
+| C7 | emu | | open | Per-boss check: Isshin Ashina and Isshin, the Sword Saint (c5430, c5400) | as C1 |
+| C8 | emu | | open | Per-boss check: Demon of Hatred (c7020) | as C1 |
+| C9 | emu | | open | Per-boss check: Emma, the Gentle Blade (c7400) | as C1 |
+| C10 | emu | | open | Per-boss check: Divine Dragon (c5200) | as C1 |
+| C11 | emu | | open | Per-boss check: Folding Screen Monkeys (c1000) and Old Dragons of the Tree (c5300): rules ported only, never seen side by side | as C1 |
+| C12 | emu | | open | Per-miniboss check: General Naomori Kawarada; General Tenzen Yamauchi; ... (c1020): its attacks, reactions and AI goals against the exe, with a scene where it stands | the C section's steps; now seen side by side |
+| C13 | emu | | open | Per-miniboss check: Seven Ashina Spears - Shikibu Toshikatsu Yamauchi; Seven Ashina Spears - Shume Masaji Oniwa (c1021): its attacks, reactions and AI goals against the exe, with a scene where it stands | the C section's steps; now rules ported |
+| C14 | emu | | open | Per-miniboss check: Long-arm Centipede Sen'un; Long-arm Centipede Giraffe (c1040): its attacks, reactions and AI goals against the exe, with a scene where it stands | the C section's steps; now data loaded |
+| C15 | emu | | open | Per-miniboss check: Shinobi Hunter Enshin of Misen (c1050): its attacks, reactions and AI goals against the exe, with a scene where it stands | the C section's steps; now data loaded |
+| C16 | emu | | open | Per-miniboss check: Juzou the Drunkard; Shigekichi of the Red Guard; ... (c1070): its attacks, reactions and AI goals against the exe, with a scene where it stands | the C section's steps; now rules ported |
+| C17 | emu | | open | Per-miniboss check: Shichimen Warrior (c1080): its attacks, reactions and AI goals against the exe, with a scene where it stands | the C section's steps; now data loaded |
+| C18 | emu | | open | Per-miniboss check: Armored Warrior (c1130): its attacks, reactions and AI goals against the exe, with a scene where it stands | the C section's steps; now data loaded |
+| C19 | emu | | open | Per-miniboss check: Snake Eyes Shirafuji; Snake Eyes Shirahagi (c1191): its attacks, reactions and AI goals against the exe, with a scene where it stands | the C section's steps; now rules ported |
+| C20 | emu | | open | Per-miniboss check: Mist Noble (c1300): its attacks, reactions and AI goals against the exe, with a scene where it stands | the C section's steps; now rules ported |
+| C21 | emu | | open | Per-miniboss check: Okami Leader Shizu (c1310): its attacks, reactions and AI goals against the exe, with a scene where it stands | the C section's steps; now rules ported |
+| C22 | emu | | open | Per-miniboss check: Headless (c1340): its attacks, reactions and AI goals against the exe, with a scene where it stands | the C section's steps; now data loaded |
+| C23 | emu | | open | Per-miniboss check: Headless (c1350): its attacks, reactions and AI goals against the exe, with a scene where it stands | the C section's steps; now data loaded |
+| C24 | emu | | open | Per-miniboss check: Blazing Bull (c1370): its attacks, reactions and AI goals against the exe, with a scene where it stands | the C section's steps; now data loaded |
+| C25 | emu | | open | Per-miniboss check: Sakura Bull of the Palace (c1380): its attacks, reactions and AI goals against the exe, with a scene where it stands | the C section's steps; now data loaded |
+| C26 | emu | | open | Per-miniboss check: Ashina Elite - Jinsuke Saze; Ashina Elite - Ujinari Mizuo (c1400): its attacks, reactions and AI goals against the exe, with a scene where it stands | the C section's steps; now data loaded |
+| C27 | emu | | open | Per-miniboss check: Lone Shadow Vilehand; Lone Shadow Masanaga the Spear-Bearer; ... (c1470): its attacks, reactions and AI goals against the exe, with a scene where it stands | the C section's steps; now rules ported |
+| C28 | emu | | open | Per-miniboss check: Chained Ogre (c5020): its attacks, reactions and AI goals against the exe, with a scene where it stands | the C section's steps; now rules ported |
+| C29 | emu | | open | Per-miniboss check: O'Rin of the Water (c7000): its attacks, reactions and AI goals against the exe, with a scene where it stands | the C section's steps; now data loaded |
+| C30 | emu | | open | Per-enemy check: "Ochimusha Castle One-handed Sword" (c1010): its attacks, reactions and AI goals against the exe, with a scene where it stands | the C section's steps; now seen side by side |
+| C31 | emu | | open | Per-enemy check: "Tutorial Ochimusha Hidden Prison One-handed Sword Face 1" (c1011): its attacks, reactions and AI goals against the exe, with a scene where it stands | the C section's steps; now data loaded |
+| C32 | emu | | open | Per-enemy check: "Hanbei the Undying" (c1012): its attacks, reactions and AI goals against the exe, with a scene where it stands | the C section's steps; now seen side by side |
+| C33 | emu | | open | Per-enemy check: "Centipede Kodera Close Quarters Battle" (c1030): its attacks, reactions and AI goals against the exe, with a scene where it stands | the C section's steps; now rules ported |
+| C34 | emu | | open | Per-enemy check: "Rotating Spearman Temple" (c1060): its attacks, reactions and AI goals against the exe, with a scene where it stands | the C section's steps; now rules ported |
+| C35 | emu | | open | Per-enemy check: "Gecko valley" (c1100): its attacks, reactions and AI goals against the exe, with a scene where it stands | the C section's steps; now rules ported |
+| C36 | emu | | open | Per-enemy check: "Handmaiden Aunt Honjo Castle Tower 4F" (c1110): its attacks, reactions and AI goals against the exe, with a scene where it stands | the C section's steps; now rules ported |
+| C37 | emu | | open | Per-enemy check: "Handmaiden Aunt Valley" (c1111): its attacks, reactions and AI goals against the exe, with a scene where it stands | the C section's steps; now data loaded |
+| C38 | emu | | open | Per-enemy check: "Lookout Castle Castle Mino" (c1120): its attacks, reactions and AI goals against the exe, with a scene where it stands | the C section's steps; now data loaded |
+| C39 | emu | | open | Per-enemy check: "Earthen wall soldier valley lower layer" (c1140): its attacks, reactions and AI goals against the exe, with a scene where it stands | the C section's steps; now data loaded |
+| C40 | emu | | open | Per-enemy check: "Inu temple" (c1150): its attacks, reactions and AI goals against the exe, with a scene where it stands | the C section's steps; now seen side by side |
+| C41 | emu | | open | Per-enemy check: "Innsmouth dog submerged city" (c1151): its attacks, reactions and AI goals against the exe, with a scene where it stands | the C section's steps; now data loaded |
+| C42 | emu | | open | Per-enemy check: "Lower man mallet" (c1180): its attacks, reactions and AI goals against the exe, with a scene where it stands | the C section's steps; now seen side by side |
+| C43 | emu | | open | Per-enemy check: "Younger zombie sick village bell with tie" (c1181): its attacks, reactions and AI goals against the exe, with a scene where it stands | the C section's steps; now data loaded |
+| C44 | emu | | open | Per-enemy check: "Valley Enemy Revenge Spirit Normal" (c1190): its attacks, reactions and AI goals against the exe, with a scene where it stands | the C section's steps; now rules ported |
+| C45 | emu | | open | Per-enemy check: "Sokushinbutsu Temple" (c1200): its attacks, reactions and AI goals against the exe, with a scene where it stands | the C section's steps; now data loaded |
+| C46 | emu | | open | Per-enemy check: "Sokushinbutsu_Centipede Temple" (c1210): its attacks, reactions and AI goals against the exe, with a scene where it stands | the C section's steps; now data loaded |
+| C47 | emu | | open | Per-enemy check: "Cricket dungeon" (c1211): its attacks, reactions and AI goals against the exe, with a scene where it stands | the C section's steps; now data loaded |
+| C48 | emu | | open | Per-enemy check: "Temple foundation Zako Temple fist Hoi only Kasaya" (c1220): its attacks, reactions and AI goals against the exe, with a scene where it stands | the C section's steps; now rules ported |
+| C49 | emu | | open | Per-enemy check: "Shamo chicken_sick village" (c1240): its attacks, reactions and AI goals against the exe, with a scene where it stands | the C section's steps; now data loaded |
+| C50 | emu | | open | Per-enemy check: "Monkey Valley Bare hands No sanding No foot effect" (c1250): its attacks, reactions and AI goals against the exe, with a scene where it stands | the C section's steps; now seen side by side |
+| C51 | emu | | open | Per-enemy check: "Chigo monkey_monkey" (c1260): its attacks, reactions and AI goals against the exe, with a scene where it stands | the C section's steps; now seen side by side |
+| C52 | emu | | open | Per-enemy check: "Piranha treasure carp samurai residence" (c1320): its attacks, reactions and AI goals against the exe, with a scene where it stands | the C section's steps; now data loaded |
+| C53 | emu | | open | Per-enemy check: "Rappa Temple Normal Appearance 1" (c1360): its attacks, reactions and AI goals against the exe, with a scene where it stands | the C section's steps; now rules ported |
+| C54 | emu | | open | Per-enemy check: "Tokugawa Rappa_Castle" (c1361): its attacks, reactions and AI goals against the exe, with a scene where it stands | the C section's steps; now data loaded |
+| C55 | emu | | open | Per-enemy check: "Nightjars Revenge Spirit Proximity" (c1450): its attacks, reactions and AI goals against the exe, with a scene where it stands | the C section's steps; now seen side by side |
+| C56 | emu | | open | Per-enemy check: "Nightjars (kites) Honjo" (c1460): its attacks, reactions and AI goals against the exe, with a scene where it stands | the C section's steps; now data loaded |
+| C57 | emu | | open | Per-enemy check: "Villager Zombie _ Bare Hand _ Grab Restraint" (c1500): its attacks, reactions and AI goals against the exe, with a scene where it stands | the C section's steps; now rules ported |
+| C58 | emu | | open | Per-enemy check: "Villager Zombie (female) _ kitchen knife" (c1501): its attacks, reactions and AI goals against the exe, with a scene where it stands | the C section's steps; now data loaded |
+| C59 | emu | | open | Per-enemy check: "Hallucinatory character _ villager zombie _ kitchen knife" (c1510): its attacks, reactions and AI goals against the exe, with a scene where it stands | the C section's steps; now seen side by side |
+| C60 | emu | | open | Per-enemy check: "Prisoner Zombie_Dungeon" (c1520): its attacks, reactions and AI goals against the exe, with a scene where it stands | the C section's steps; now data loaded |
+| C61 | emu | | open | Per-enemy check: "Bandit_Torches Right side of light gauntlet" (c1550): its attacks, reactions and AI goals against the exe, with a scene where it stands | the C section's steps; now seen side by side |
+| C62 | emu | | open | Per-enemy check: "Tokugawa Samurai Castle_Tokugawa Invasion (for Ochimusha Hostile) Initial Equipment_Sword" (c1700): its attacks, reactions and AI goals against the exe, with a scene where it stands | the C section's steps; now seen side by side |
+| C63 | emu | | open | Per-enemy check: "The Phantom of the Haunting Monk Submerged City" (c5005): its attacks, reactions and AI goals against the exe, with a scene where it stands | the C section's steps; now seen side by side |
+| C64 | emu | | open | Per-enemy check: "The Great Serpent Castle in the Valley" (c5010): its attacks, reactions and AI goals against the exe, with a scene where it stands | the C section's steps; now data loaded |
+| C65 | emu | | open | Per-enemy check: "Nishikigoi Submerged City" (c5050): its attacks, reactions and AI goals against the exe, with a scene where it stands | the C section's steps; now data loaded |
+| C66 | emu | | open | Per-enemy check: "Chief Owl Honjo_When the Ninja Army invades" (c5070): its attacks, reactions and AI goals against the exe, with a scene where it stands | the C section's steps; now seen side by side |
+| C67 | emu | | open | Per-enemy check: "Tentacle_Mermaid Dragon Battle" (c5310): its attacks, reactions and AI goals against the exe, with a scene where it stands | the C section's steps; now seen side by side |
+| C68 | emu | | open | Per-enemy check: "Okiryu (Large)" (c5320): its attacks, reactions and AI goals against the exe, with a scene where it stands | the C section's steps; now data loaded |
+| C69 | emu | | open | Per-enemy check: "Isshin Ashina" (c5410): its attacks, reactions and AI goals against the exe, with a scene where it stands | the C section's steps; now data loaded |
 
 ## P: port gaps
 
