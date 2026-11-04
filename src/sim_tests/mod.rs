@@ -86,6 +86,8 @@ mod emu_knockback;
 mod emu_wire;
 mod emu_frameorder;
 mod emu_framewin;
+mod emu_camswing;
+mod emu_camleft;
 mod part12;
 mod part13;
 mod part14;

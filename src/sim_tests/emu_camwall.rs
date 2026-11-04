@@ -20,7 +20,16 @@ pub(crate) fn follow_camera_at_walls_matches_the_exe() {
     use std::f32::consts::{PI, TAU};
     let path = crate::paths::emu().join("camwall_frames.json");
     let Ok(text) = std::fs::read_to_string(&path) else { return };
-    let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+    let mut v: serde_json::Value = serde_json::from_str(&text).unwrap();
+    // E18 (emu-cases `camleft`): Wolf walked into the wall with the arm swung into it, so the
+    // focus is pinned to the wall: the fulcrum cast stops at its 1 cm floor and the final cast
+    // is down to ~1.5e-5 m. Same casts, same checks.
+    let mut pinned = 0;
+    if let Some(left) = std::fs::read_to_string(crate::paths::emu().join("camleft_frames.json")).ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()) {
+        let pins: Vec<serde_json::Value> = left["scenarios"].as_array().unwrap().iter().filter(|s| s["name"].as_str().is_some_and(|n| n.starts_with("pin_"))).cloned().collect();
+        pinned = pins.len();
+        v["scenarios"].as_array_mut().unwrap().extend(pins);
+    }
     let mut app = app();
     let combat = app.world_mut().remove_resource::<Combat>().unwrap();
     let row = combat.param("CameraParam", 0);
@@ -62,7 +71,9 @@ pub(crate) fn follow_camera_at_walls_matches_the_exe() {
         for (i, fr) in s["frames"].as_array().unwrap().iter().enumerate() {
             let at = format!("{name} frame {i}");
             let floats = |x: &serde_json::Value| x.as_array().unwrap().iter().map(|x| x.as_f64().map_or(f32::NAN, |x| x as f32)).collect::<Vec<_>>();
-            let (b, a, stick, mouse) = (floats(&fr["before"]), floats(&fr["after"]), floats(&fr["stick"]), floats(&fr["mouse"]));
+            // camleft's frames have no mouse.
+            let mouse = if fr["mouse"].is_array() { floats(&fr["mouse"]) } else { vec![0.0; 2] };
+            let (b, a, stick) = (floats(&fr["before"]), floats(&fr["after"]), floats(&fr["stick"]));
             let f = |x: &[f32], o: usize| x[o / 4];
             let v3 = |x: &[f32], o: usize| Vec3::new(x[o / 4], x[o / 4 + 1], x[o / 4 + 2]);
             let casts = fr["casts"].as_array().unwrap();
@@ -144,7 +155,7 @@ pub(crate) fn follow_camera_at_walls_matches_the_exe() {
             }
         }
     }
-    println!("camwall: {checked} frames, cuts (fulcrum, orbit, final) {cut:?}; the old chase was off by up to {old_err:.3} m");
+    println!("camwall: {checked} frames ({pinned} camleft pin scenarios), cuts (fulcrum, orbit, final) {cut:?}; the old chase was off by up to {old_err:.3} m");
     // Enough frames where each cast cut something.
     assert!(checked >= 1500 && cut[0] >= 1 && cut[1] >= 400 && cut[2] >= 100, "{checked} frames, cuts (fulcrum, orbit, final) {cut:?}");
     let report: Vec<String> = worst.iter().filter(|(_, (e, _))| *e > 0.0).map(|(k, (e, at))| format!("{k}: off by {e:.6} at {at}")).collect();

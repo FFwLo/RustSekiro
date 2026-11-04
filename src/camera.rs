@@ -77,6 +77,10 @@ pub struct CamState {
     /// TAE 151 after the event: the focus chases Wolf at singleton +0x48 (the event's unk3)
     /// while +0x44 (unk2, seconds) counts down (FUN_140838b50): (time left, rate).
     pub(crate) look_after: (f32, f32),
+    /// TAE 152 AttachCameraToNode: singleton +0x68 (unk1, seconds, counted down by
+    /// FUN_140838b50 after each camera frame) and +0x6c (unk2, the distance chase rate while it
+    /// is set; cleared with the clock at 0). Set anew every frame the event runs.
+    pub(crate) attach_after: (f32, f32),
     /// TAE 151: camera +0x1a0, the cast from Wolf's focus to the dummy hit something this
     /// event, so the focus stays on Wolf at the normal rates and the look limits keep their
     /// defaults; +0x240 the yaw (exe convention) the limits' centre is unwrapped near, taken
@@ -344,7 +348,8 @@ pub(crate) struct PosChase {
 ///   outside its pitch range goes straight back.
 ///
 /// The exe applies the rates once a frame with no time factor (`per_frame`: at 30 fps 0.4 a
-/// frame, as the exe; checked on the emulated exe at 1/30 s). gap: the FUN_140831190 / 1408311b0 override (untraced). This form starts
+/// frame, as the exe; checked on the emulated exe at 1/30 s). TAE 152's FUN_140831190 /
+/// FUN_1408311b0 override is `chase_position_attached`. This form starts
 /// the distance chase from |prev - focus|; the follow camera uses `chase_position_from`.
 pub(crate) fn chase_position(prev: Vec3, raw: Vec3, focus: Vec3, r: PosChase, pitch: Option<(f32, f32)>, snap: f32, dt: f32) -> Vec3 {
     chase_position_from(prev, (prev - focus).length(), raw, focus, r, pitch, snap, dt)
@@ -390,12 +395,45 @@ pub(crate) fn chase_position_by(prev: Vec3, last_dist: f32, raw: Vec3, focus: Ve
         (hi < e_prev && hi - SLACK < e_raw) || (e_prev < lo && e_raw < lo + SLACK)
     });
     let (xz, y) = (if outside { 1.0 } else { r.xz * k }, r.y);
+    chase_step(prev, last_dist, raw, focus, (xz, y), (r.dist_xz, r.dist_y), snap, step)
+}
+
+/// TAE 152 AttachCameraToNode's position chase (FUN_14073c260 after the angle factor: while
+/// singleton +0x60 >= 0 and BlendStrength (+0x64, FUN_1408311b0) > 0, X / Z and Y both chase
+/// at BlendStrength, no angle factor and no pitch rule), then lifted by +0x150 as always.
+/// Checked on the emulated exe (sim test `camera_leftovers_match_the_exe`).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn chase_position_attached(prev: Vec3, last_dist: f32, raw: Vec3, focus: Vec3, blend: f32, dist: (f32, f32), snap: f32, dt: f32) -> Vec3 {
+    chase_step(prev, last_dist, raw, focus, (blend, blend), dist, snap, |rate| per_frame(rate, dt))
+}
+
+/// TAE 152 AttachCameraToNode's angles and arm (FUN_14073c260, after the fulcrum is placed and
+/// cast and before the orbit cast; FUN_140831190 = singleton +0x60 >= 0): the orbit point
+/// +0xf0 is the DummyPoly's world point (FUN_1409e6db0 on the camera's chr), yaw / pitch
+/// (+0x174 / +0x170) are read from the focus -> node direction, and the fulcrum is put on that
+/// line at its own distance (at least 1e-5). So the camera chases the node on Wolf's model,
+/// looking at the focus. Returns (yaw, pitch, fulcrum) in RSekiro's angles; the orbit point is
+/// `node`. Checked on the emulated exe (sim test `camera_leftovers_match_the_exe`).
+pub(crate) fn attach_to_node(focus: Vec3, fulcrum: Vec3, node: Vec3) -> (f32, f32, Vec3) {
+    let v = node - focus;
+    let (yaw, pitch) = (f32::atan2(v.x, v.z), f32::atan2(v.y, v.with_y(0.0).length()));
+    let dir = Quat::from_euler(EulerRot::YXZ, yaw, -pitch, 0.0) * Vec3::Z;
+    (yaw, pitch, focus + dir * (fulcrum - focus).length().max(1e-5))
+}
+
+/// The position and distance chase once the X / Z and Y rates are known (`chase_position_by`).
+#[allow(clippy::too_many_arguments)]
+fn chase_step(prev: Vec3, last_dist: f32, raw: Vec3, focus: Vec3, (xz, y): (f32, f32), (dist_xz, dist_y): (f32, f32), snap: f32, step: impl Fn(f32) -> f32) -> Vec3 {
+    let to_raw = raw - focus;
     let (xz, y) = (step(xz + (1.0 - xz) * snap), step(y + (1.0 - y) * snap));
     let d = raw - prev;
     let p = prev + Vec3::new(d.x * xz, d.y * y, d.z * xz);
     let (raw_d, prev_d) = (to_raw.length(), last_dist);
-    let dist_xz = prev_d + (raw_d - prev_d) * step(r.dist_xz);
-    let dist_y = prev_d + (raw_d - prev_d) * step(r.dist_y);
+    // A distance rate over 1 (TAE 152's unk2, 1.5 / 2.0 in Wolf's anims) is taken as it is:
+    // the exe lerps past the target (no clamp). gap: frames shorter than 1/60 s take it whole too.
+    let dstep = |r: f32| if r > 1.0 { r } else { step(r) };
+    let dist_xz = prev_d + (raw_d - prev_d) * dstep(dist_xz);
+    let dist_y = prev_d + (raw_d - prev_d) * dstep(dist_y);
     let v = p - focus;
     let l = v.length();
     if l <= 1e-5 {
@@ -610,6 +648,7 @@ impl CamState {
             last_153: None,
             angle_from: None,
             look_after: (0.0, 0.0),
+            attach_after: (0.0, 0.0),
             look_blocked: false,
             look_ref: None,
             fov: lc.fov_y.to_radians(),
@@ -1349,10 +1388,25 @@ pub(crate) fn follow_player(
     if orbit.cam.ctrl_hold <= 0.0 {
         orbit.cam.ctrl_snap = (orbit.cam.ctrl_snap - dt / cf("rotCtrlEndReleaseTime", 1.0).max(1e-3)).max(0.0);
     }
+    // TAE 152 AttachCameraToNode (handler FUN_140b51750, each frame it runs on the camera's chr:
+    // FUN_140832860 -> singleton +0x60 DummyPolyID / +0x64 BlendStrength, FUN_140832880 -> +0x68
+    // unk1 / +0x6c unk2): the camera rides the DummyPoly (`attach_to_node`), chases it at
+    // BlendStrength (`chase_position_attached`), and the stick does not turn it (FUN_14073c260
+    // reads the camera stick only while +0x60 < 0); the distance chases at unk2 while unk1
+    // seconds count down after the event. Wolf's 7101xx and a212_5103xx anims, dummy 143.
+    let attach = if actor.anim.is_empty() { None } else { combat.player.events_at(&actor.anim, actor.step()).find(|e| e.kind == 152) };
+    let attach = attach.filter(|e| e.arg_i64("DummyPolyID").unwrap_or(-1) >= 0).map(|e| {
+        let f = |k: &str| e.args.get(k).and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
+        orbit.cam.attach_after = (f("unk1"), f("unk2"));
+        (e.arg_i64("DummyPolyID").unwrap_or(-1) as i16, f("BlendStrength"))
+    });
+    // gap: a DummyPoly Wolf's model lacks leaves the camera free (the exe's FUN_1409e6db0
+    // answer for a missing dummy is not traced).
+    let attach_node = attach.and_then(|(dmy, _)| dummies.and_then(|d| d.0.get(&dmy)).and_then(|&m| dummy_tf.get(m).ok())).map(|g| g.translation());
     // This frame's turning by hand (mouse / stick, before the scripted look limits move the
-    // angles); the fulcrum's yaw resync adds it back.
-    let turning = orbit.cam.seen.map(|(y, p)| (angle_delta(orbit.yaw, y), orbit.pitch - p)).filter(|d| d.0.abs() > 1e-6 || d.1.abs() > 1e-6);
-    if orbit.cam.seen.is_some_and(|s| s != (orbit.yaw, orbit.pitch)) && lock.target.is_none() {
+    // angles); the fulcrum's yaw resync adds it back. None while TAE 152 holds the camera.
+    let turning = orbit.cam.seen.filter(|_| attach.is_none()).map(|(y, p)| (angle_delta(orbit.yaw, y), orbit.pitch - p)).filter(|d| d.0.abs() > 1e-6 || d.1.abs() > 1e-6);
+    if attach.is_none() && orbit.cam.seen.is_some_and(|s| s != (orbit.yaw, orbit.pitch)) && lock.target.is_none() {
         orbit.cam.ctrl_snap = 1.0;
         orbit.cam.ctrl_hold = cf("rotCtrlEndWaitTime", 2.0);
     }
@@ -1544,13 +1598,12 @@ pub(crate) fn follow_player(
         // this frame's turning (the exe turns after the resync).
         let v = drag_fulcrum(f, moved, orbit.cam.trans_snap, fp) - orbit.focus;
         if v.with_y(0.0).length_squared() > 1e-6 {
-            // config camera.follow_swing scales how far the camera swings round after a sideways
-            // run (1 = the CameraParam fulcrum's full swing: 68 deg/s at a run, 143 at a sprint,
-            // which ran Wolf in tight circles with the stick held sideways; the user: "spinning
-            // like a compass", the movement "feels off").
-            let swing = config.as_ref().map_or(1.0, |c| c.camera.follow_swing).clamp(0.0, 1.0);
-            let chased = f32::atan2(v.x, v.z);
-            orbit.yaw = orbit.yaw + angle_delta(chased, orbit.yaw) * swing + turning.map_or(0.0, |d| d.0);
+            // The whole swing, no factor: the exe's own loop (chr frame, then this update) with
+            // the move stick held sideways circles Wolf at about 63 deg/s at a run (5.6 m/s) and
+            // 105 at a sprint (8.8 m/s), +0x194 at 0 all along (emu-cases `camswing`, sim test
+            // `free_camera_swing_on_a_sideways_run_matches_the_exe`; config follow_swing 0.5
+            // halved it before).
+            orbit.yaw = f32::atan2(v.x, v.z) + turning.map_or(0.0, |d| d.0);
             // The pitch too (FUN_140733e50; 14073.c 9840-9880) when `chases_pitch`: a climb
             // or a fall leaves the fulcrum behind in height, which tilts the camera.
             let stick = pad.as_ref().map_or(Vec2::ZERO, |p| p.stick);
@@ -1618,12 +1671,22 @@ pub(crate) fn follow_player(
         orbit.cam.fulcrum = Some((f, orbit.focus));
         f
     };
+    // TAE 152: the angles from the node, the fulcrum on its line (`attach_to_node`).
+    let fulcrum = match attach_node {
+        Some(node) => {
+            let (yaw, pitch, f) = attach_to_node(orbit.focus, fulcrum, node);
+            (orbit.yaw, orbit.pitch) = (yaw, pitch);
+            orbit.cam.fulcrum = Some((f, orbit.focus));
+            f
+        }
+        None => fulcrum,
+    };
     // The orbit point (+0xf0, 14073.c 11066-11085): the camera distance (+0x214) along the
     // fulcrum's direction; then the orbit cast (14073.c 11196-11251) pulls it in to a wall or
     // the ground between it and the focus, so the position chase below runs toward the cut
     // point, not through the wall.
     let arm_dir = (fulcrum - orbit.focus).try_normalize().unwrap_or(rotation * Vec3::Z);
-    let raw = orbit.focus + arm_dir * orbit.cam.dist;
+    let raw = attach_node.unwrap_or(orbit.focus + arm_dir * orbit.cam.dist);
     let raw = if escape { raw } else { cast_cut(orbit.focus, raw - orbit.focus, map_cast(orbit.focus, raw - orbit.focus, radius), CAST_CUT_MIN) };
     let locked = lock.target.is_some();
     // The escape-wall option (14073.c 11331-11766): two short wings from Wolf's point (+0xa0)
@@ -1648,6 +1711,8 @@ pub(crate) fn follow_player(
         dt,
     );
     orbit.cam.wall.hit_time = hit_time;
+    // TAE 152's unk2 (singleton +0x6c, FUN_1408311a0) replaces both distance rates while set.
+    let dist_rate = if orbit.cam.attach_after.1 > 0.0 { Vec2::splat(orbit.cam.attach_after.1) } else { dist_rate };
     let chase = if locked {
         PosChase {
             xz: cf("targetChaseRateAtLockXZ", 0.4),
@@ -1673,10 +1738,18 @@ pub(crate) fn follow_player(
     let pos = match orbit.cam.pos {
         Some(prev) => {
             let last = orbit.cam.wall.post.unwrap_or(prev);
-            chase_position_from(prev, (last - orbit.focus).length(), raw, orbit.focus, chase, Some(pitch_lim), orbit.cam.ctrl_snap, dt)
+            match attach {
+                Some((_, blend)) if blend > 0.0 => chase_position_attached(prev, (last - orbit.focus).length(), raw, orbit.focus, blend, (chase.dist_xz, chase.dist_y), orbit.cam.ctrl_snap, dt),
+                _ => chase_position_from(prev, (last - orbit.focus).length(), raw, orbit.focus, chase, Some(pitch_lim), orbit.cam.ctrl_snap, dt),
+            }
         }
         None => raw,
     };
+    // FUN_140838b50 after the camera frame: +0x68 counts down, and +0x6c goes with it at 0.
+    orbit.cam.attach_after.0 -= dt;
+    if orbit.cam.attach_after.0 <= 0.0 {
+        orbit.cam.attach_after = (0.0, 0.0);
+    }
     orbit.cam.pos = Some(pos);
     orbit.cam.seen = Some((orbit.yaw, orbit.pitch));
     let arm = (pos - orbit.focus).try_normalize().unwrap_or(rotation * Vec3::Z);
@@ -1863,8 +1936,11 @@ pub(crate) fn cam_distance_step(cam: &mut CamState, ev: Option<DistEvent>, param
     }
 }
 
-/// `cam_distance_step` with Wolf's TAE 153 at his animation time. gap: SlowEnd (+0x85) is
-/// written by the handler but its reader (14073.c 12527) is not traced.
+/// `cam_distance_step` with Wolf's TAE 153 at his animation time. SlowEnd (+0x85, read by
+/// FUN_140831e70 at the end of FUN_14073c260) only copies the final camera matrix to ChrCam
+/// +0x350.. (with +0x348 set) for a reader outside the camera; with it on or off every camera
+/// field the update moves is the same (emu-cases `camleft`, sim test
+/// `camera_leftovers_match_the_exe`), so it is not read here.
 pub(crate) fn update_cam_distance(combat: &Combat, actor: &Actor, cam: &mut CamState, param_dist: f32, param_rate: f32, dt: f32) {
     let ev = if actor.anim.is_empty() { None } else { combat.player.events_at(&actor.anim, actor.step()).find(|e| e.kind == 153) };
     let ev = ev.map(|e| {

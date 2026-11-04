@@ -38,6 +38,8 @@ mod speffect2;
 mod proxy;
 mod damagemod;
 mod camera2;
+mod camswing;
+mod camleft;
 mod collide;
 mod params;
 mod fxr;
@@ -1003,6 +1005,12 @@ fn main() {
     }
     if want.iter().any(|w| w.starts_with("camera2")) {
         camera2::run(&|| Emu::new(exe, snap()), out, &want);
+    }
+    if want.iter().any(|w| w.starts_with("camswing")) {
+        camswing::run(&|| Emu::new(exe, snap()), out, &want);
+    }
+    if want.iter().any(|w| w.starts_with("camleft")) {
+        camleft::run(&|| Emu::new(exe, snap()), out, &want);
     }
     if want.first() == Some(&"fxr2") {
         return fxr2::run(&|| Emu::new(exe, snap()), out, &want);

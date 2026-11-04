@@ -246,7 +246,9 @@ Dated findings, oldest first. Append new entries at the end.
   do not fade. Not ported (RSekiro draws map objects merged into the map).
 - Not covered: the 1 cm fulcrum floor (smallest fulcrum fraction seen 0.44), the zero-length final
   cast, the position chase at 30 fps (exe once a frame, RSekiro per 1/60 s), walls while locked on,
-  the TAE overrides of the distance rate (FUN_1408311a0) and of +0xf0 (FUN_140831190).
+  the TAE overrides of the distance rate (FUN_1408311a0) and of +0xf0 (FUN_140831190). (Since
+  covered: 30 fps and walls while locked in camera2; the floor, the shortest final cast and both
+  overrides in "Camera leftovers" below.)
 
 ## Lock-on camera and the pad mapping checked against the exe (2026-11-03, lockcam)
 - tools/emu-cases `lockcam` puts a target into the snapshot's LockTgtMan (DAT_143d78058; its one entry, the
@@ -331,6 +333,7 @@ Dated findings, oldest first. Append new entries at the end.
 - Not covered: the cast blocked path (+0x1a0 never set in the arena), the 6 CameraParam rows with a yaw range
   under the full circle (chr row 2 taken as Wolf's facing), the CameraSetParam map row (snapshot 1100000 =
   row 0), SlowEnd (+0x85, read at 14073.c 12527, not traced), +0x278 into the lock-on pitch, 30 fps.
+  (SlowEnd since covered: "Camera leftovers" below.)
 
 ## Escape wall, focus pull-in, lock-on at walls, 30 fps, lock-on manipulator (2026-11-03, camera2)
 - tools/emu-cases `camera2_walls` (14 scenarios, 2,730 frames checked: 1,000 with the escape-wall option, 470 at
@@ -373,3 +376,57 @@ Dated findings, oldest first. Append new entries at the end.
   as it is while locked (a press from rest moved a frame late, a 90 deg flick counted as a let-go), and a locked
   Wolf standing still now turns to the target (before he never did). gap: RSekiro aims at the target's root, the
   exe at the lock point; MoveAngle +0xbb0 is in the chr matrix frame (stale in the run), not checked.
+
+## Free camera swing after a sideways run, checked against the exe (2026-11-04, camswing, E32)
+- tools/emu-cases `camswing` runs the game's own loop on the Naomori-arena snapshot: Wolf's pad frame written
+  (move stick held sideways; SP_MOVE held for a sprint), his whole chr frame FUN_140a4b570 (the pad manipulator
+  turns the stick into a world move from the camera, his locomotion and proxy move him), then the camera frame
+  FUN_140734790 -> FUN_14073c260. Nothing is put in by hand, so the stick -> camera -> move loop is the exe's.
+  6 runs, 2,100 frames (`camswing_<name>.json`): run right / left, sprint, walk (stick 0.4), diagonal, run at 30 fps.
+- What the exe does: the free camera swings round the run with the whole fulcrum rule and Wolf runs a circle round
+  the camera. Steady rates: about 63 deg/s at a run (5.6 m/s), 105 at a sprint (8.8 m/s), 14.5 at a walk
+  (1.65 m/s), 79 at a run at 30 fps (the fulcrum's sideways move counts per frame, so it sits at fulcrumDistMin
+  2 m). +0x194 stays 0 the whole run (no camera input); the fulcrum sits 2.95 m out at a run, 2.35 at a sprint.
+  The 68 / 143 deg/s figures were straight-sideways estimates; in the loop Wolf turns into the circle.
+- RSekiro had config `follow_swing` 0.5 halving the swing (a stand-in for "circles Wolf"). Removed: the yaw is
+  the one read back from the dragged fulcrum, no factor (camera.rs follow_player); the `follow_swing` field is
+  gone from config.rs, so the line in config.toml is now ignored. Sim test
+  `free_camera_swing_on_a_sideways_run_matches_the_exe` (src/sim_tests/emu_camswing.rs): every frame from the
+  exe's state (yaw, fulcrum within 2e-5), and the chain carried on its own fulcrum over each whole run on the
+  exe's focus (yaw within 2e-5 rad after 8 s; turned the same to 0.1 deg/s; a 0.5 factor would turn half).
+- Not covered: the circle in RSekiro end to end (Wolf's own locomotion feeding the camera; the camera chain is
+  checked on the exe's focus), the diagonal run past frame 70 (it reaches the wall), lock-on, the right stick
+  held during a run.
+
+## Camera leftovers: fulcrum floor, shortest final cast, TAE 152, SlowEnd (2026-11-04, camleft, E18)
+- tools/emu-cases `camleft`: FUN_140734790 -> FUN_14073c260 with every cast hooked (camwall's hooks) and the
+  camera singleton DAT_143d5c0d0 written as the TAE handlers write it, then the singleton's clear / timers block
+  of FUN_140838b50 (as taecam). 10 scenarios, 2,160 frames (`camleft_frames.json`).
+- Fulcrum floor (`pin_wall`, `pin_wall_down`): the arm swung into the wall about 9 m along +X, then Wolf walked
+  into it; the focus pull-in pins the focus to the wall, the fulcrum cast starts there (fraction 0) and the
+  fulcrum stops 1 cm out (26 frames at the floor). The pin frames run through
+  `follow_camera_at_walls_matches_the_exe` with the camwall scenarios (yaw / pitch from the cut fulcrum, the
+  cuts, the chase, +0x110, +0x40): matched as ported (`cast_cut`, FULCRUM_CUT_MIN).
+- Final cast: the code cuts a hit to max(fraction * length, 1e-5) when the cast is at least 1e-5 long, else puts
+  the camera 1e-5 out along the orbit point's direction (+0xf0 - focus). Pinned to the wall the cast is at its
+  shortest, 1.5e-5 m (+0x100 chases a 1e-5 orbit point), so the second branch never ran: it is not reached on
+  these paths, and RSekiro's `map_cast` gives no hit under 1e-5 (left out, as before).
+- TAE 152 AttachCameraToNode (Wolf's a000_7101xx and a212_5103xx, DummyPoly 143; dispatcher case 0x98 ->
+  FUN_140b51750 -> FUN_140832860 (+0x60 DummyPolyID, +0x64 BlendStrength), FUN_140832880 (+0x68 unk1, +0x6c
+  unk2)); the clear sets +0x60 to -1 and +0x64 to 0 every frame, +0x68 counts down by dt and takes +0x6c with it
+  at 0:
+  - while +0x60 >= 0 (FUN_140831190): the orbit point +0xf0 is the dummy's world point (FUN_1409e6db0), yaw /
+    pitch are read from focus -> dummy, the fulcrum is put on that line at its own distance; the stick is not
+    read (no turning, +0x150 stays 0 with the stick held); the position chase runs X / Z and Y at BlendStrength
+    (FUN_1408311b0) when > 0, no angle factor, lifted by +0x150 (`attach_to_node`, `chase_position_attached`);
+  - while +0x6c > 0 (FUN_1408311a0; during the event and unk1 s after it): both distance chase rates are +0x6c,
+    taken as they are: 1.5 / 2.0 lerp past the target (the stored +0x1e8 / +0x1ec keep the hit-wall values).
+  RSekiro had no TAE 152; ported in follow_player (`CamState::attach_after` for +0x68 / +0x6c). Sim test
+  `camera_leftovers_match_the_exe` (src/sim_tests/emu_camleft.rs): 296 attached frames (angles, fulcrum, orbit
+  point, chase within 1e-4), 86 frames after the event with the distance override, the timers on every frame.
+- SlowEnd (+0x85, FUN_140831e70, read at the end of FUN_14073c260): with ChrCam +0x348 set (1 in the snapshot)
+  it copies the final matrix to +0x350..+0x38f and walks a list at DAT_143d78048 +0x10 (entries with flag 4);
+  nothing the camera moves differs with it on or off (both 153 paths, 240 frames compared bit for bit). Not read
+  by RSekiro; the reader of +0x350 is outside the camera (not traced).
+- Not covered: TAE 152 while locked on or at a wall, a DummyPolyID the model lacks, frames shorter than 1/60 s
+  with a distance rate over 1, what +0x350 and the DAT_143d78048 list feed.
