@@ -365,6 +365,44 @@ enemy with a proxy, 27 m from Wolf.
 - Emulator notes: thousands of sphere casts need their buffers allocated once (the emulator heap is 1 MB; the
   cast allocated 80 bytes a call and the 58k-cast scan crashed) and a TB flush every 256 casts.
 
+## The copied collision against the exe (2026-11-04, exe, emulator, row E8)
+sekiro-rs's `CollisionWorld` (crates/sim collision.rs) is what RSekiro stands on under sekiro-rs's map
+(sr_map.rs `WorldCollision for CollisionWorld`: floor_hit, floor_material, raycast, slide, water_surface; the
+enemies' slide and floors default to the same). Test file src/sim_tests/emu_srcollide.rs builds m11_00's play
+world as sr_map.rs does (`sekiro_rs::map::world::collision_world`, SEKIRO_CACHE) and runs the cases already
+recorded on the Naomori-arena snapshot through it (exe space = Bevy with X mirrored; no new emulator run: the
+snapshot was deleted and the game is not started for this):
+- Floors (`copied_floor_under_wolf_matches_the_exe`): 717 grounded frames of `proxy_frames.json` and
+  `collide_steps.json` where the ground under the capsule is one plain surface: the exe's feet are 1.0 mm over
+  the copied floor on average, worst 4.5 mm. Fixed: the map's compressed mesh shapes carry convexRadius 0.01
+  (180 of 184 shapes of m11_00's `l` binder, 169 of 173 of `h`; read from the hkx, the other four 0) and the
+  exe's bodies meet that pushed-out surface; the copied floor was the bare triangles, 10-12 mm under Wolf's feet
+  (the exe's own 0.05 m casts land 0.01 above them too). Now `MESH_CONVEX_RADIUS` raises each map triangle's
+  floor by 0.01 / |n.y| (placed objects keep theirs: polytopes are expanded by their own radius at export).
+  495 frames on an edge or a step's nose are the terrain's rim support, not the floor query: not compared.
+- Walls (`copied_slide_matches_the_exe`): 1,170 grounded frames, one frame each from the exe's feet with the
+  frame's request. Matched within 1 cm: open ground, the rock face head-on / 30 / 60 deg at 60 and 30 fps (0.3,
+  2.6, 0 mm), the post along +X (3.2 mm), the ground walks (5.8 mm). Fixed: the copied slide had no keepDistance
+  (0.05, `KEEP_DISTANCE`) and no convex radius, so it stopped 0.05 m nearer the face (9 mm left after the
+  keepDistance, from the top sphere); its spheres were the unlifted capsule's (0.9 / 1.1 m), so the leaning post,
+  nearer at the shins, was met 1.1 cm late each frame. Now three spheres at the lifted capsule's 0.7 / 1.05 / 1.4 m
+  (physics +0x188 lift 0.3, capsule 0.3-1.8 m), and a contact whose way out leans within maxSlope 60 deg of up
+  (a step's nose) or of down (a beam overhead, #146's planks at 1.77 m) is no wall: support or ceiling, left to the
+  floor and ceiling queries. The castle gate route test now arrives within 0.7 m of its waypoints (the body keeps
+  0.06 m more off the wall it passes).
+- Bounded, not matched (under 6 cm a frame): the sprint along the face past its 1.3 m plane (worst 3.8 cm where
+  the rock turns), the 30 fps walk round the post (2.5 cm, one 0.1 m sub-step where the proxy integrates its
+  contacts), the step walks: climbing a 52 deg nose 0.3-0.4 m high the exe's proxy stalls about five frames (4.9
+  cm), and stepping down a riser the lower sphere is already in is pushed out at once (2.6 cm) where Havok recovers
+  penetration over time.
+- Rays (`copied_raycast_matches_the_exe_sight_rays`): the 756 enemy sight rays of `aiframe_ray.json`
+  (FUN_14061c8a0, head to 36 points round three enemies): 746 agree. gap: 10 rays of 12400000 / 10200020 are clear
+  in the exe but meet the map's own triangles 6-33 m out (parts the sight filter passes; not traced). The camera
+  casts were recorded against the snapshot's camera module, not the map mesh: not compared here.
+- Not covered by a case: water_surface (no water in the arena), the fall-assist walls (hold_inside), helper and
+  event parts by filter, placed objects' own shapes, the ceiling and head sweeps, the 4 zero-radius map shapes
+  (the copy gives every map triangle 0.01).
+
 ## A moving enemy against Wolf (2026-11-03, exe, emulator, topic aimove)
 
 The General's forced attack 3000 from 1.6 / 2.6 m in front of Wolf, then his 1040 stepping in,

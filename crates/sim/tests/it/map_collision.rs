@@ -161,7 +161,10 @@ fn walk_route(world: &CollisionWorld, waypoints: &[[f32; 3]], speed: f32) -> [f3
         let mut ticks = 0;
         loop {
             let (dx, dz) = (w[0] - b.position[0], w[2] - b.position[2]);
-            if (dx * dx + dz * dz).sqrt() < 0.6 {
+            // Reached within 0.7 m: waypoint 6 of the castle gate route lies 0.65 m from the
+            // nearest the body gets, against the wall it passes, since the body keeps the exe's
+            // keepDistance and the mesh's convex radius (0.06 m) off walls (row E8).
+            if (dx * dx + dz * dz).sqrt() < 0.7 {
                 break;
             }
             ticks += 1;

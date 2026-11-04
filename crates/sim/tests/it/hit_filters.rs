@@ -203,8 +203,11 @@ fn low_resolution_helpers_are_not_floors() {
                     continue;
                 }
                 let p = (a + b + c) / 3.0;
+                // The surface bodies meet: the face pushed out by the mesh's convex radius.
+                let lift = sekiro_sim::collision::MESH_CONVEX_RADIUS / n.y.abs();
                 let on = |w: &CollisionWorld| {
-                    Ground::floor(w, p.x, p.z, p.y + 0.001).is_some_and(|y| (y - p.y).abs() < 2e-3)
+                    Ground::floor(w, p.x, p.z, p.y + lift + 0.001)
+                        .is_some_and(|y| (y - p.y - lift).abs() < 2e-3)
                 };
                 if on(&ground) {
                     continue;

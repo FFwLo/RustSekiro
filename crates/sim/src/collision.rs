@@ -52,7 +52,29 @@ pub const HEAD_TOP: f32 = CAPSULE_HEIGHT;
 /// sphere's top is the capsule's, so Wolf passes under anything over 1.5 m, as in the game:
 /// the broken-wall gap past the Outskirts Wall - Gate Path idol has planks down to 1.77 m
 /// above the floor (#146), which a top sphere reaching 1.95 m ran into.
-const SPHERES: [f32; 2] = [STEP_HEIGHT + RADIUS, HEAD_TOP - RADIUS];
+///
+/// Against the exe (row E8, 2026-11-04, src/sim_tests/emu_srcollide.rs): Wolf's proxy moves
+/// lifted by physics `+0x188` (0.3 m), so his capsule spans 0.3-1.8 m over the feet while it
+/// moves (docs/kb/movement.md "Character proxy against the exe"); the top sphere ends at 1.8 m
+/// as in RSekiro's own terrain (src/terrain.rs), the middle one closes the gap between them.
+const SPHERES: [f32; 3] = [0.3 + RADIUS, 1.05, 1.8 - RADIUS];
+/// How far past its radius a body stays off a wall: hknpCharacterProxy keepDistance, 0.05 in
+/// Wolf's proxy (the float after its shape; docs/kb/movement.md). Without it the body stopped
+/// 0.05 m nearer the arena's rock face than the exe (row E8).
+pub const KEEP_DISTANCE: f32 = 0.05;
+/// The convex radius of the map's compressed mesh shapes: 0.01 m on 180 of the 184 shapes of
+/// m11_00's `l` binder (and 169 of 173 of `h`; the other four 0), read from the hkx
+/// `fsnpCustomParamCompressedMeshShape` `convexRadius` (row E8, 2026-11-04). The exe's bodies
+/// meet the surface pushed out by it: Wolf stands 0.010-0.012 m above the exported triangles on
+/// flat ground (the exe's own 0.05 m casts land 0.01 m above them too). Placed objects carry
+/// their own shapes (polytopes already pushed out by theirs at export), so only the map's
+/// triangles take it ([`CollisionWorld::skin`]).
+pub const MESH_CONVEX_RADIUS: f32 = 0.01;
+/// The furthest a wall pushes a body sphere's centre: [`RADIUS`], the keep distance and the
+/// mesh's convex radius.
+const WALL_REACH: f32 = RADIUS + KEEP_DISTANCE + MESH_CONVEX_RADIUS;
+/// cos [`MAX_SLOPE_DEGREES`]: the least upward part of a contact's way out for it to support.
+const SUPPORT_UP: f32 = 0.5;
 /// How close the fall-prevention assist lets a body come to its walls: `FallAssistMinRadius`,
 /// physics module `+0xaec`, 0.16 m from the constructor `FUN_140bbb010` (`+0xae8`,
 /// `FallAssistMaxRadius`, is 0.4). `FUN_140bc68d0` slides the body's move along the walls its
@@ -116,6 +138,9 @@ pub struct CollisionWorld {
     /// Placed objects' triangle ranges ([`CollisionWorld::add_objects`]) and `<block>/<part>`
     /// names, in triangle order.
     objects: Vec<(std::ops::Range<u32>, String)>,
+    /// Per triangle, whether it is an object's (no [`MESH_CONVEX_RADIUS`]); shorter than the
+    /// triangles when the last ones are not.
+    bare: Vec<bool>,
 }
 
 /// One event wall part, kept out of the walkable grid.
@@ -495,6 +520,7 @@ impl CollisionWorld {
             swim_parts: Vec::new(),
             triggers: Vec::new(),
             objects: Vec::new(),
+            bare: Vec::new(),
         }
     }
 
@@ -569,6 +595,10 @@ impl CollisionWorld {
                 ranges.push((start..mesh.triangle_count() as u32, &part.name));
             }
             let range = self.add_masked(who, &mesh);
+            if self.bare.len() < range.end as usize {
+                self.bare.resize(range.end as usize, false);
+            }
+            self.bare[range.start as usize..range.end as usize].fill(true);
             for (r, name) in ranges {
                 let r = range.start + r.start..range.start + r.end;
                 self.objects.push((r, format!("{block}/{name}")));
@@ -743,6 +773,16 @@ impl CollisionWorld {
         self.triangles.len()
     }
 
+    /// The convex radius triangle `t`'s surface is pushed out by: [`MESH_CONVEX_RADIUS`] for
+    /// the map's, 0 for a placed object's (its own shape's radius is in its triangles).
+    fn skin(&self, t: u32) -> f32 {
+        if self.bare.get(t as usize).copied().unwrap_or(false) {
+            0.0
+        } else {
+            MESH_CONVEX_RADIUS
+        }
+    }
+
     fn corners(&self, t: u32) -> [Vec3; 3] {
         self.triangles[t as usize].map(|i| self.vertices[i as usize])
     }
@@ -807,7 +847,10 @@ impl CollisionWorld {
                     .zip(open)
                     .filter(|(_, o)| **o)
                 {
+                    // The surface the exe's bodies meet: the face pushed out by its convex
+                    // radius, `skin / |n.y|` higher seen straight down.
                     if let Some(h) = height_on(x, z, a, b, c)
+                            .map(|h| h + self.skin(t) / self.normals[t as usize].y.abs())
                         && h <= top
                         && best.is_none_or(|(b, first)| h > b || h == b && t < first)
                     {
@@ -1568,23 +1611,34 @@ impl CollisionWorld {
         for h in SPHERES {
             let centre = feet + Vec3::Y * h;
             for &t in tris {
+                // The sphere's reach from this face: its radius, the keep distance and the
+                // face's convex radius.
+                let r = RADIUS + KEEP_DISTANCE + self.skin(t);
                 // The horizontal grid includes stacked floors and walls from other heights.
                 // Exact sphere/AABB rejection preserves the narrow-phase result and avoids
                 // expensive closest-point tests on geometry this capsule cannot touch.
                 let [min, max] = self.bounds[t as usize];
-                if centre.distance_squared(centre.clamp(min, max)) >= RADIUS * RADIUS {
+                if centre.distance_squared(centre.clamp(min, max)) >= r * r {
                     continue;
                 }
                 let [a, b, c] = self.corners(t);
                 // Nor any whose plane is a radius away (and a millimetre for roundoff): the
                 // closest point is no nearer (#167).
-                if cull && self.normals[t as usize].dot(centre - a).abs() >= RADIUS + 1e-3 {
+                if cull && self.normals[t as usize].dot(centre - a).abs() >= r + 1e-3 {
                     continue;
                 }
                 let q = closest_on_triangle(centre, a, b, c);
                 let away = centre - q;
                 let dist = away.length();
-                if dist >= RADIUS {
+                if dist >= r {
+                    continue;
+                }
+                // A contact below the centre whose way out leans within the proxy's maxSlope of
+                // up supports the body rather than walling it: it climbs it (a step's nose).
+                // One above whose way out leans as far down is a ceiling the body passes under
+                // (the broken-wall planks 1.77 m over the floor past the Gate Path idol, #146),
+                // left to the ceiling query.
+                if away.y.abs() > SUPPORT_UP * dist {
                     continue;
                 }
                 // Push horizontally only; a contact straight above or below (beam, floor) has
@@ -1601,7 +1655,7 @@ impl CollisionWorld {
                     nf.normalize()
                 };
                 // Depth along the horizontal direction needed to clear the triangle point.
-                let needed = (RADIUS * RADIUS - away.y * away.y).max(0.0).sqrt();
+                let needed = (r * r - away.y * away.y).max(0.0).sqrt();
                 // The face's own way out, seen from above, on the body's side; none for a face
                 // too flat to wall the body in (the threshold is `hold_inside`'s).
                 let face = if nf.length_squared() < 0.09 {
@@ -1618,7 +1672,7 @@ impl CollisionWorld {
             }
         }
         contacts.near = near;
-        least_push(&contacts.found, RADIUS)
+        least_push(&contacts.found, WALL_REACH)
     }
 }
 
@@ -1670,8 +1724,8 @@ impl Nearby {
                     <= NEARBY_MARGIN * NEARBY_MARGIN
         });
         if !kept {
-            let reach = RADIUS + NEARBY_MARGIN + 0.001;
-            let [low, high] = SPHERES.map(|h| feet.y + h);
+            let reach = WALL_REACH + NEARBY_MARGIN + 0.001;
+            let [low, high] = [SPHERES[0], SPHERES[SPHERES.len() - 1]].map(|h| feet.y + h);
             self.tris.clear();
             self.tris.extend(tris.iter().copied().filter(|&t| {
                 let [min, max] = world.bounds[t as usize];
@@ -2204,18 +2258,18 @@ impl SlideReach {
     fn new(start: Vec3, d: Vec2, cull: bool) -> Self {
         let len = d.length();
         let coarse = ((len / (RADIUS * 0.5)).ceil() as usize).clamp(1, 32);
-        let reach = RADIUS + len / coarse as f32 + 0.05;
+        let reach = WALL_REACH + len / coarse as f32 + 0.05;
         let min = Vec2::new(start.x.min(start.x + d.x), start.z.min(start.z + d.y)) - reach;
         let max = Vec2::new(start.x.max(start.x + d.x), start.z.max(start.z + d.y)) + reach;
-        let pad = RADIUS + len;
+        let pad = WALL_REACH + len;
         Self {
             coarse,
             min,
             max,
             near: cull.then_some([min - pad, max + pad]),
             body: [
-                start.y + SPHERES[0] - RADIUS - 0.01,
-                start.y + HEAD_TOP + 0.01,
+                start.y + SPHERES[0] - WALL_REACH - 0.01,
+                start.y + SPHERES[SPHERES.len() - 1] + WALL_REACH + 0.01,
             ],
             feet: [start.y - FALL_ASSIST_RADIUS, start.y + FALL_ASSIST_RADIUS],
         }
@@ -2480,15 +2534,17 @@ mod tests {
         let mut b = Body::default();
         // Walk forward (-Z) 0.08 m per tick for 2.5 s.
         walk(&mut b, &world, [0.0, -0.08], 150);
+        // The step's top pushed out by the mesh's convex radius.
         assert!(
-            (b.position[1] - 0.3).abs() < 1e-4,
+            (b.position[1] - 0.3 - MESH_CONVEX_RADIUS).abs() < 1e-4,
             "on the step: {:?}",
             b.position
         );
         assert!(b.grounded);
-        // Stopped by the 1.2 m riser at z = -8, one radius away.
+        // Stopped by the 1.2 m riser at z = -8, a radius, the keep distance and the convex
+        // radius away.
         assert!(
-            (b.position[2] + 8.0 - RADIUS).abs() < 0.05,
+            (b.position[2] + 8.0 - WALL_REACH).abs() < 0.05,
             "{:?}",
             b.position
         );
@@ -2501,7 +2557,7 @@ mod tests {
         // Diagonal toward +X and -Z: the wall at x = 3 stops X, Z keeps going.
         walk(&mut b, &world, [0.06, -0.03], 100);
         assert!(
-            (b.position[0] - (3.0 - RADIUS)).abs() < 0.03,
+            (b.position[0] - (3.0 - WALL_REACH)).abs() < 0.03,
             "{:?}",
             b.position
         );
@@ -2518,7 +2574,11 @@ mod tests {
         // Walk back (+Z) off the ledge at z = -8.
         walk(&mut b, &world, [0.0, 0.08], 90);
         assert!(b.grounded);
-        assert!((b.position[1] - 0.3).abs() < 1e-4, "{:?}", b.position);
+        assert!(
+            (b.position[1] - 0.3 - MESH_CONVEX_RADIUS).abs() < 1e-4,
+            "{:?}",
+            b.position
+        );
         assert!(b.last_fall_height > 1.0, "fell {}", b.last_fall_height);
     }
 
@@ -2692,7 +2752,7 @@ mod tests {
         ]);
         let [dx, dz] = world.slide([0.3, 0.0, 1.0], [0.0, -1.0]);
         let pressed = Vec3::new(0.3 + dx, 0.0, 1.0 + dz);
-        assert!((pressed.z - RADIUS).abs() < 1e-3, "{pressed}");
+        assert!((pressed.z - WALL_REACH).abs() < 1e-3, "{pressed}");
         for feet in [pressed, Vec3::new(0.3, 0.0, RADIUS)] {
             assert_eq!(world.ceiling_for(feet, 1.0, PLAYER), None, "{feet}");
         }

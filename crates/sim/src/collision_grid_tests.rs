@@ -58,6 +58,7 @@ impl<'a> Cells<'a> {
             let [a, b, c] = w.corners(t);
             if w.walkable(t, who)
                 && let Some(h) = height_on(x, z, a, b, c)
+                    .map(|h| h + w.skin(t) / w.normals[t as usize].y.abs())
                 && h <= top
                 && best.is_none_or(|(b, _)| h > b)
             {

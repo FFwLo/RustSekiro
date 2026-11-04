@@ -25,4 +25,6 @@ modes, and their tests); and in `sim` the characters, behaviour runtime, combat,
 Lua AI, duel and its CLIs and examples, with their tests. Its git history has the removed code.
 
 Their rules were read from the exe, not run against it: treat them as unproven until the emulator
-checks (docs/kb/emulator-pilot.md) cover them.
+checks (docs/kb/emulator-pilot.md) cover them. Covered so far: `sim` collision's floors, wall slides and
+rays on m11_00 (row E8, src/sim_tests/emu_srcollide.rs; docs/kb/movement.md "The copied collision against
+the exe"), with the mesh's convex radius, the proxy's keep distance and its lifted spheres put in.
