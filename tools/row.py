@@ -109,7 +109,7 @@ def status():
         print("  none")
     rows = board("open")[1].splitlines()
     print("\nopen rows (new here: a B row):")
-    for line in [x for x in rows if x.startswith("B ")][:3] + [x for x in rows if not x.startswith("B ")][:5]:
+    for line in [x for x in rows if x.startswith("B ")][:5] + [x for x in rows if not x.startswith("B ")][:5]:
         print("  " + line[:150])
     print("\nnext: python tools/row.py start <ID>")
 
