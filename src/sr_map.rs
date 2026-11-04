@@ -1,10 +1,10 @@
-//! sekiro-rs's map (AKJama's sekiro-rs, MIT / Apache-2.0, used as a library from the local clone
-//! `../sekiro-rs`, branch `local/game-lib`): the real game world streamed at its absolute
-//! positions, with sekiro-rs's lighting, sky, fog and post chain, instead of the baked arena's
-//! visuals, on every exported arena sekiro-rs has the map of (not the generated sandbox);
-//! `SHINOBI_SR_MAP=0` keeps the own map.
-//! Collision, grapple points and ledges stay ours (map.rs) and move into the same absolute frame
-//! (map.rs `Frame`), so the fight runs where the game has it.
+//! sekiro-rs's map (AKJama's sekiro-rs, MIT / Apache-2.0, copied into crates/game): the real game
+//! world streamed at its absolute positions from its cache (`tools/extract.ps1 -World`), with
+//! sekiro-rs's lighting, sky, fog and post chain, on every arena whose map the cache has (not the
+//! generated sandbox); `SHINOBI_SR_MAP=0` keeps the own map.
+//! Play runs on the whole world too: its collision and navmesh come from the cache ([`install`]),
+//! its wire points and ledges from every block's `map_edges_<map>.json` ([`edges`]). The boss
+//! arenas (map.rs) then only give the fight's start spot; without the cache they are the map.
 //! Our own scenes (the generated sandbox and Construct, sandbox.rs) keep their own geometry and
 //! take only his lighting (`lighting_only`): his map setup for their light source map
 //! (`SHINOBI_SANDBOX_SRC`, default m11_01) with no pieces, objects or connected world, so the
