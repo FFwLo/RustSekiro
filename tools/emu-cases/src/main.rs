@@ -49,6 +49,7 @@ mod aimove;
 mod air;
 mod hits;
 mod animstart;
+mod worldbackread;
 
 /// The few calls of Unicorn's C API the tool needs (unicorn.h), linked from unicorn.dll.
 mod uc {
@@ -870,6 +871,9 @@ fn main() {
         let va = u64::from_str_radix(want[2].trim_start_matches("0x"), 16).unwrap();
         trace::trace(&mut emu, va, &ints, &xmm, out, want[1]);
         return;
+    }
+    if want.first() == Some(&"worldbackread") {
+        return worldbackread::run(&|| Emu::new(exe, None), out);
     }
     if want.first() == Some(&"params") {
         return params::run(&mut Emu::new(exe, snap()), out);

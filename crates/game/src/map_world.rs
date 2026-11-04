@@ -146,60 +146,200 @@ pub(crate) enum RequestState {
     Retiring,
 }
 
-/// Retail WorldBackRead retirement interval (constructor `0x14081d460`, state machine
-/// `0x14081eae0`, `docs/MAP-COMPLETENESS.md` section 3): a block whose demand is gone stays
-/// retiring this long, and demand returning within it brings it straight back.
+/// How long a back-read record that lost its demand stays retiring before it goes (both of the
+/// exe's distance sets).
 pub(crate) const RETIRE_SECONDS: f32 = 3.0;
+
+/// A back-read record's state (WorldBackRead, `docs/kb/map.md` 2026-11-04).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum BackState {
+    /// Demanded within the start distance, waiting out the promote time.
+    Pending = 1,
+    /// Holds its block.
+    Active = 2,
+    /// Lost its demand or went past the end distance; still holds its block until the retire
+    /// time runs out, and comes back only from within the start distance.
+    Retiring = 3,
+}
+
+/// One navmesh's record in a [`BackReadSet`].
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct BackRecord<K> {
+    pub(crate) key: K,
+    pub(crate) state: BackState,
+    /// Seconds in this state (a new record starts with a head start, more when nearer).
+    pub(crate) timer: f32,
+    /// The distance it was last demanded at.
+    pub(crate) distance: f32,
+    /// Demanded since the last step.
+    demanded: bool,
+}
+
+/// One of the exe's two back-read distance sets: the navmeshes around the player it keeps,
+/// with a promote delay going in and a retire delay going out. RSekiro's own code for the rule
+/// in `docs/kb/map.md` 2026-11-04, checked against the exe by `back_read_matches_the_exe`.
+#[derive(Clone, Debug)]
+pub(crate) struct BackReadSet<K> {
+    /// New records are made only within this distance, and a retiring one comes back only from
+    /// within it.
+    pub(crate) start: f32,
+    /// Demand beyond this distance is ignored, and an active record past it retires.
+    pub(crate) end: f32,
+    pub(crate) promote: f32,
+    pub(crate) retire: f32,
+    /// Newest first, as the exe keeps its list (the order breaks distance ties).
+    pub(crate) records: Vec<BackRecord<K>>,
+}
+
+impl<K: Copy + PartialEq> BackReadSet<K> {
+    /// The set for the navmesh the player stands on.
+    pub(crate) fn standing() -> Self {
+        Self::new(0.0, 1.0, 0.2, RETIRE_SECONDS)
+    }
+
+    /// The set for the navmeshes around him.
+    pub(crate) fn around() -> Self {
+        Self::new(80.0, 90.0, 0.2, RETIRE_SECONDS)
+    }
+
+    pub(crate) fn new(start: f32, end: f32, promote: f32, retire: f32) -> Self {
+        Self {
+            start,
+            end,
+            promote,
+            retire,
+            records: Vec::new(),
+        }
+    }
+
+    /// A navmesh `distance` from the player this frame.
+    pub(crate) fn demand(&mut self, key: K, distance: f32) {
+        if distance > self.end {
+            return;
+        }
+        if let Some(r) = self.records.iter_mut().find(|r| r.key == key) {
+            r.distance = distance;
+            r.demanded = true;
+            return;
+        }
+        if distance > self.start {
+            return;
+        }
+        let share = distance / self.start.max(1.0);
+        let share = if share < 0.0 { 0.0 } else { share.min(1.0) };
+        self.records.insert(
+            0,
+            BackRecord {
+                key,
+                state: BackState::Pending,
+                timer: (1.0 - share) * self.promote,
+                distance,
+                demanded: true,
+            },
+        );
+    }
+
+    /// One frame of `dt` seconds: every record moves on, nearest first. Returns the records
+    /// that went, in that order.
+    pub(crate) fn step(&mut self, dt: f32) -> Vec<K> {
+        self.start = self.start.min(self.end - 1.0);
+        let mut order = std::mem::take(&mut self.records);
+        order.sort_by(|a, b| {
+            a.distance
+                .partial_cmp(&b.distance)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        // A pending record farther than this waits while a nearer one is pending: 5 m, or the
+        // farthest record already in use before it.
+        let mut wait_beyond = 5.0f32;
+        let mut nearer_pending = false;
+        let mut gone = Vec::new();
+        for mut r in order {
+            r.timer += dt;
+            let demanded = std::mem::take(&mut r.demanded);
+            let inside_end = r.distance <= self.end;
+            let back_in = demanded && inside_end && r.distance <= self.start;
+            let next = match r.state {
+                BackState::Pending if !back_in => None,
+                BackState::Pending
+                    if r.timer < self.promote || (nearer_pending && r.distance > wait_beyond) =>
+                {
+                    Some(BackState::Pending)
+                }
+                BackState::Pending => Some(BackState::Active),
+                BackState::Active if demanded && inside_end => Some(BackState::Active),
+                BackState::Active => Some(BackState::Retiring),
+                BackState::Retiring if back_in => Some(BackState::Active),
+                BackState::Retiring if r.timer >= self.retire => None,
+                BackState::Retiring => Some(BackState::Retiring),
+            };
+            if r.state == BackState::Pending {
+                nearer_pending = true;
+            } else {
+                wait_beyond = wait_beyond.max(r.distance);
+            }
+            match next {
+                None => gone.push(r.key),
+                Some(state) => {
+                    if state != r.state {
+                        r.state = state;
+                        r.timer = 0.0;
+                    }
+                    self.records.insert(0, r);
+                }
+            }
+        }
+        gone
+    }
+}
 
 /// What a block's request-state step asks of its parts and assets.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Residency {
     Keep,
-    /// Retired for [`RETIRE_SECONDS`]: despawn its parts and drop its strong handles.
+    /// Neither demanded nor held by a back-read record: despawn its parts and drop its strong
+    /// handles.
     Free,
-    /// Requested again after it was freed: queue its parts again, nearest first.
+    /// Demanded or held again after it was freed: queue its parts again, nearest first.
     Respawn,
 }
 
-/// The retirement timer and whether the block's parts are spawned.
+/// Whether the block's parts are spawned.
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct Lifecycle {
-    /// Seconds since its demand went.
-    retiring: f32,
-    /// Its parts were spawned for the player (it reached Ready, or reloaded for a neighbour):
-    /// only such a block is freed once it retires away from him. Blocks pre-warmed at startup
-    /// and never demanded stay warm (#271 follow-up).
+    /// Its parts were spawned for the player (it reached Ready, or reloaded for a back-read
+    /// record): only such a block is freed. Blocks pre-warmed at startup and never demanded
+    /// stay warm (#271 follow-up).
     owned: bool,
     /// Its parts were despawned and its handles dropped.
     freed: bool,
 }
 
 impl Lifecycle {
-    /// One frame of the request state machine: `demanded` from the masks, `near` while the
-    /// player's block is this block or connects to it, `assets_ready` once every GLB of the
-    /// block has loaded, and `can_free` while freeing is allowed (after the first full load and
-    /// only in play: never in the viewer, captures or with draw groups off).
+    /// One frame of the request state machine: `demanded` from the masks, `held` while a
+    /// back-read record of one of its collision parts is active or retiring ([`BackReadSet`]),
+    /// `assets_ready` once every GLB of the block has loaded, and `can_free` while freeing is
+    /// allowed (after the first full load and only in play: never in the viewer, captures or
+    /// with draw groups off).
     ///
-    /// A block is freed only away from the player's block and its neighbours, and a freed block
-    /// loads again as soon as he enters a neighbour of it, before its demand (what he can see)
-    /// returns.
+    /// The block has no timer of its own, as in the exe: it is freed once it is neither
+    /// demanded nor held (its last record retired [`RETIRE_SECONDS`] after the player left its
+    /// range), and a freed block loads again as soon as a record holds it, before its demand
+    /// (what he can see) returns.
     pub(crate) fn step(
         &mut self,
         state: RequestState,
         demanded: bool,
-        near: bool,
+        held: bool,
         assets_ready: bool,
         can_free: bool,
-        delta: f32,
     ) -> (RequestState, Residency) {
-        let respawn = self.freed && (demanded || near);
+        let respawn = self.freed && (demanded || held);
         if respawn {
             self.freed = false;
             self.owned = true;
-            self.retiring = 0.0;
         }
         if demanded {
-            self.retiring = 0.0;
             if respawn {
                 return (RequestState::Requested, Residency::Respawn);
             }
@@ -217,20 +357,16 @@ impl Lifecycle {
         }
         match state {
             RequestState::Ready | RequestState::Requested => {
-                self.retiring = 0.0;
                 (RequestState::Retiring, Residency::Keep)
             }
+            RequestState::Retiring | RequestState::Dormant if held => (state, Residency::Keep),
+            RequestState::Retiring | RequestState::Dormant if self.owned && can_free => {
+                self.owned = false;
+                self.freed = true;
+                (RequestState::Dormant, Residency::Free)
+            }
             RequestState::Retiring | RequestState::Dormant => {
-                self.retiring += delta;
-                if self.retiring < RETIRE_SECONDS {
-                    (state, Residency::Keep)
-                } else if self.owned && can_free && !near {
-                    self.owned = false;
-                    self.freed = true;
-                    (RequestState::Dormant, Residency::Free)
-                } else {
-                    (RequestState::Dormant, Residency::Keep)
-                }
+                (RequestState::Dormant, Residency::Keep)
             }
         }
     }
@@ -256,9 +392,6 @@ pub(crate) struct Block {
     warm_mask: Mask,
     collisions: Vec<Surface>,
     lifecycle: Lifecycle,
-    /// Blocks this block's collision connects to: they stay resident while the player is in
-    /// this block, and a freed one loads again as he enters it (#271).
-    neighbours: BTreeSet<String>,
     detail: BTreeMap<String, [bool; 3]>,
 }
 
@@ -302,6 +435,10 @@ pub(crate) struct MapWorld {
     lod: super::lod::LodTable,
     /// Residency changes [`update`] found this frame, for [`residency`].
     changes: Vec<(String, Residency)>,
+    /// The exe's two back-read sets over the blocks' player collision parts (block index in
+    /// `blocks`, surface index), standing in for its navmeshes: they hold blocks around the
+    /// player in play ([`MapWorld::back_read`]).
+    back_read: [BackReadSet<(usize, usize)>; 2],
     /// How the parts were spawned, to spawn a freed block's parts again.
     scene: Option<super::MapScene>,
 }
@@ -706,7 +843,6 @@ impl MapWorld {
                     glb_total: 0,
                     warm_mask: [0; 8],
                     lifecycle: Lifecycle::default(),
-                    neighbours: BTreeSet::new(),
                     detail,
                 },
             );
@@ -738,24 +874,6 @@ impl MapWorld {
                     }
                 }
             }
-        }
-        let neighbours: BTreeMap<_, BTreeSet<_>> = blocks
-            .iter()
-            .map(|(id, block)| {
-                let targets = block.json["connections"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .filter(|row| !row["connection"]["source_collision"].is_null())
-                    .filter_map(pattern)
-                    .flat_map(|p| targets(p, &inventory))
-                    .filter(|target| target != id)
-                    .collect();
-                (id.clone(), targets)
-            })
-            .collect();
-        for (id, targets) in neighbours {
-            blocks.get_mut(&id).expect("block").neighbours = targets;
         }
         for (id, block) in &mut blocks {
             block.warm_mask = if enabled(id) {
@@ -791,6 +909,7 @@ impl MapWorld {
             requests: BTreeMap::new(),
             lod,
             changes: Vec::new(),
+            back_read: [BackReadSet::standing(), BackReadSet::around()],
             scene: None,
         })
     }
@@ -966,6 +1085,44 @@ impl MapWorld {
     }
 }
 
+impl MapWorld {
+    /// One frame of the exe's back-read demand (WorldBackRead, `docs/kb/map.md` 2026-11-04):
+    /// every player collision part within a set's end distance of `feet` (horizontal distance
+    /// to the part's bounds) is demanded in both sets, then both step `dt`. Returns which blocks
+    /// a record holds, by index in `blocks`.
+    fn back_read(
+        &mut self,
+        feet: Vec3,
+        dt: f32,
+        story: Option<&super::story::MapStory>,
+    ) -> Vec<bool> {
+        let reach = self.back_read.iter().map(|s| s.end).fold(0.0, f32::max);
+        for (b, (id, block)) in self.blocks.iter().enumerate() {
+            for (i, surface) in block.collisions.iter().enumerate() {
+                if !surface.player || Self::disabled(story, id, surface) {
+                    continue;
+                }
+                let distance = (feet.xz().clamp(surface.min, surface.max) - feet.xz()).length();
+                if distance <= reach {
+                    for set in &mut self.back_read {
+                        set.demand((b, i), distance);
+                    }
+                }
+            }
+        }
+        let mut held = vec![false; self.blocks.len()];
+        for set in &mut self.back_read {
+            set.step(dt);
+            for r in &set.records {
+                if r.state != BackState::Pending {
+                    held[r.key.0] = true;
+                }
+            }
+        }
+        held
+    }
+}
+
 /// Map demand from the [`MapFocus`]: the collision part a [`PlayerFocus`] stands on (kept
 /// while he is off map collision), else the parts under the free camera. Other cameras never
 /// take part: in play the orbit camera swinging out over a ravine must not retire the map.
@@ -998,23 +1155,19 @@ pub(crate) fn update(
     }
     // Only play frees blocks: the viewer, sweeps and render gates keep everything they loaded.
     let playing = focus.iter().any(|(_, player)| player.is_some());
-    let can_free = playing
-        && pending.loaded()
-        && groups.mode != GroupMode::Off;
+    let can_free = playing && pending.loaded() && groups.mode != GroupMode::Off;
     let delta = time.delta_secs();
+    // Blocks around the player stay resident by the exe's back-read rule; only play keeps its
+    // records.
+    let held = match focus
+        .iter()
+        .find_map(|(t, player)| player.map(|_| t.translation))
+    {
+        Some(feet) => world.back_read(feet, delta, Some(&story)),
+        None => vec![false; world.blocks.len()],
+    };
     let world = &mut *world;
-    // The player's block and the blocks it connects to stay resident (#271).
-    let near: BTreeSet<String> = world
-        .standing
-        .as_ref()
-        .and_then(|(id, _)| world.blocks.get(id))
-        .map(|block| {
-            let mut near = block.neighbours.clone();
-            near.insert(block.id.clone());
-            near
-        })
-        .unwrap_or_default();
-    for block in world.blocks.values_mut() {
+    for (block, &held) in world.blocks.values_mut().zip(&held) {
         // Streaming requests a block's GLBs over time; it is ready once every one has loaded,
         // with its textures.
         if !block.assets_ready
@@ -1031,14 +1184,10 @@ pub(crate) fn update(
             );
         }
         let demanded = block.normal != [0; 8] || block.additional != [0; 8];
-        let (next, change) = block.lifecycle.step(
-            block.state,
-            demanded,
-            near.contains(&block.id),
-            block.assets_ready,
-            can_free,
-            delta,
-        );
+        let (next, change) =
+            block
+                .lifecycle
+                .step(block.state, demanded, held, block.assets_ready, can_free);
         if change != Residency::Keep {
             world.changes.push((block.id.clone(), change));
         }
@@ -1393,8 +1542,8 @@ pub(crate) struct Teardown {
     queue: std::collections::VecDeque<Freeing>,
 }
 
-/// Apply [`update`]'s residency changes: a block retired for [`RETIRE_SECONDS`] away from the
-/// player despawns its part roots and then drops its strong GLB handles over the next frames
+/// Apply [`update`]'s residency changes: a block neither demanded nor held by a back-read record
+/// despawns its part roots and then drops its strong GLB handles over the next frames
 /// ([`teardown`]); a freed block requested again queues its parts nearest-first from the player
 /// through the same stream as at startup. Collision is one world and stays.
 #[allow(clippy::too_many_arguments)]
@@ -1873,90 +2022,160 @@ struct HierarchyReported;
 #[cfg(test)]
 mod tests {
     #[test]
-    fn retired_block_frees_after_three_seconds_unless_demand_returns() {
+    fn block_frees_once_neither_demanded_nor_held() {
         use super::{Lifecycle, RequestState as S, Residency as R};
-        // (demanded, near the player's block, assets ready, can free, seconds) per frame, and
-        // the state and residency change expected after it.
-        type Frame = (bool, bool, bool, bool, f32, S, R);
-        let cases: [(&str, &[Frame]); 6] = [
+        // (demanded, held by a back-read record, assets ready, can free) per frame, and the
+        // state and residency change expected after it.
+        type Frame = (bool, bool, bool, bool, S, R);
+        let cases: [(&str, &[Frame]); 5] = [
             (
-                "retires for 3 s, then frees; demand again respawns",
+                "held while its records retire, then freed; demand again respawns",
                 &[
-                    (true, true, true, true, 0.1, S::Ready, R::Keep),
-                    (false, false, true, true, 0.1, S::Retiring, R::Keep),
-                    (false, false, true, true, 2.9, S::Retiring, R::Keep),
-                    (false, false, true, true, 0.2, S::Dormant, R::Free),
-                    (false, false, false, true, 5.0, S::Dormant, R::Keep),
-                    (true, true, false, true, 0.1, S::Requested, R::Respawn),
-                    (true, true, false, true, 0.1, S::Requested, R::Keep),
-                    (true, true, true, true, 0.1, S::Ready, R::Keep),
-                ],
-            ),
-            (
-                "demand back within 3 s keeps it",
-                &[
-                    (true, true, true, true, 0.1, S::Ready, R::Keep),
-                    (false, false, true, true, 0.1, S::Retiring, R::Keep),
-                    (false, false, true, true, 2.5, S::Retiring, R::Keep),
-                    (true, true, true, true, 0.1, S::Ready, R::Keep),
-                    (false, false, true, true, 0.1, S::Retiring, R::Keep),
-                    (false, false, true, true, 2.5, S::Retiring, R::Keep),
+                    (true, true, true, true, S::Ready, R::Keep),
+                    (false, true, true, true, S::Retiring, R::Keep),
+                    (false, true, true, true, S::Retiring, R::Keep),
+                    (false, false, true, true, S::Dormant, R::Free),
+                    (false, false, false, true, S::Dormant, R::Keep),
+                    (true, true, false, true, S::Requested, R::Respawn),
+                    (true, true, false, true, S::Requested, R::Keep),
+                    (true, true, true, true, S::Ready, R::Keep),
                 ],
             ),
             (
                 "never ready (pre-warmed or still streaming) stays warm",
                 &[
-                    (true, true, false, true, 0.1, S::Requested, R::Keep),
-                    (false, false, false, true, 0.1, S::Retiring, R::Keep),
-                    (false, false, true, true, 4.0, S::Dormant, R::Keep),
+                    (true, false, false, true, S::Requested, R::Keep),
+                    (false, false, false, true, S::Retiring, R::Keep),
+                    (false, false, true, true, S::Dormant, R::Keep),
                 ],
             ),
             (
                 "waits to free until freeing is allowed",
                 &[
-                    (true, true, true, false, 0.1, S::Ready, R::Keep),
-                    (false, false, true, false, 0.1, S::Retiring, R::Keep),
-                    (false, false, true, false, 4.0, S::Dormant, R::Keep),
-                    (false, false, true, true, 0.1, S::Dormant, R::Free),
+                    (true, false, true, false, S::Ready, R::Keep),
+                    (false, false, true, false, S::Retiring, R::Keep),
+                    (false, false, true, false, S::Dormant, R::Keep),
+                    (false, false, true, true, S::Dormant, R::Free),
                 ],
             ),
             (
-                "a neighbour of the player's block stays resident",
+                "a held block stays resident out of sight",
                 &[
-                    (true, true, true, true, 0.1, S::Ready, R::Keep),
-                    (false, true, true, true, 0.1, S::Retiring, R::Keep),
-                    (false, true, true, true, 10.0, S::Dormant, R::Keep),
-                    (false, false, true, true, 0.1, S::Dormant, R::Free),
+                    (true, true, true, true, S::Ready, R::Keep),
+                    (false, true, true, true, S::Retiring, R::Keep),
+                    (false, true, true, true, S::Retiring, R::Keep),
+                    (false, false, true, true, S::Dormant, R::Free),
                 ],
             ),
             (
-                "a freed block reloads unseen once the player reaches a neighbour",
+                "a freed block reloads unseen once a record holds it",
                 &[
-                    (true, true, true, true, 0.1, S::Ready, R::Keep),
-                    (false, false, true, true, 0.1, S::Retiring, R::Keep),
-                    (false, false, true, true, 3.0, S::Dormant, R::Free),
-                    (false, true, false, true, 0.1, S::Dormant, R::Respawn),
-                    (false, true, false, true, 5.0, S::Dormant, R::Keep),
-                    (true, true, true, true, 0.1, S::Ready, R::Keep),
-                    (false, false, true, true, 0.1, S::Retiring, R::Keep),
-                    (false, false, true, true, 3.0, S::Dormant, R::Free),
-                    // Reloaded for a neighbour but never seen: freed again once he moves on.
-                    (false, true, false, true, 0.1, S::Dormant, R::Respawn),
-                    (false, false, false, true, 3.1, S::Dormant, R::Free),
+                    (true, false, true, true, S::Ready, R::Keep),
+                    (false, false, true, true, S::Retiring, R::Keep),
+                    (false, false, true, true, S::Dormant, R::Free),
+                    (false, true, false, true, S::Dormant, R::Respawn),
+                    (false, true, false, true, S::Dormant, R::Keep),
+                    (true, true, true, true, S::Ready, R::Keep),
+                    (false, false, true, true, S::Retiring, R::Keep),
+                    (false, false, true, true, S::Dormant, R::Free),
+                    // Reloaded for a record but never seen: freed again once it goes.
+                    (false, true, false, true, S::Dormant, R::Respawn),
+                    (false, false, false, true, S::Dormant, R::Free),
                 ],
             ),
         ];
         for (name, frames) in cases {
             let mut life = Lifecycle::default();
             let mut state = S::Dormant;
-            for (i, &(demanded, near, ready, can_free, delta, want, change)) in
-                frames.iter().enumerate()
-            {
-                let (next, got) = life.step(state, demanded, near, ready, can_free, delta);
+            for (i, &(demanded, held, ready, can_free, want, change)) in frames.iter().enumerate() {
+                let (next, got) = life.step(state, demanded, held, ready, can_free);
                 assert_eq!((next, got), (want, change), "{name}: frame {i}");
                 state = next;
             }
         }
+    }
+
+    /// The exe's back-read records (tools/emu-cases `worldbackread`: FUN_14081f020 demand and
+    /// FUN_14081eae0 step on built sets and navmeshes): every frame's records (list order,
+    /// state, timer, distance), the deleted ones and the ones that reach the group masks must
+    /// match. Skipped when extracted/emu/worldbackread.json is missing.
+    #[test]
+    fn back_read_matches_the_exe() {
+        use super::{BackReadSet, BackState};
+        let dir = std::env::var_os("SHINOBI_EMU")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| {
+                std::env::var_os("SHINOBI_ROOT")
+                    .map(std::path::PathBuf::from)
+                    .unwrap_or_else(|| {
+                        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+                    })
+                    .join("extracted/emu")
+            });
+        let Ok(text) = std::fs::read_to_string(dir.join("worldbackread.json")) else {
+            eprintln!(
+                "skipped: no extracted/emu/worldbackread.json (tools/emu-cases worldbackread)"
+            );
+            return;
+        };
+        let cases: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let f = |v: &serde_json::Value| v.as_f64().unwrap() as f32;
+        let (mut frames, mut records) = (0, 0);
+        for case in cases["cases"].as_array().unwrap() {
+            let name = case["name"].as_str().unwrap();
+            let p: Vec<f32> = case["set"].as_array().unwrap().iter().map(f).collect();
+            let mut set = BackReadSet::<u32>::new(p[0], p[1], p[2], p[3]);
+            for (i, frame) in case["frames"].as_array().unwrap().iter().enumerate() {
+                for q in frame["query"].as_array().unwrap() {
+                    if q[2].as_bool().unwrap() {
+                        set.demand(q[0].as_u64().unwrap() as u32, f(&q[1]));
+                    }
+                }
+                let gone = set.step(f(&frame["dt"]));
+                let want_gone: Vec<u32> = frame["deleted"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|v| v.as_u64().unwrap() as u32)
+                    .collect();
+                assert_eq!(gone, want_gone, "{name} frame {i}: deleted");
+                // The exe reads the masks of the kept active and retiring records as it walks
+                // them, nearest first: the reverse of the new list.
+                let masked: Vec<u32> = set
+                    .records
+                    .iter()
+                    .rev()
+                    .filter(|r| r.state != BackState::Pending)
+                    .map(|r| r.key)
+                    .collect();
+                let want_masked: Vec<u32> = frame["masked"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|v| v.as_i64().unwrap() as u32)
+                    .collect();
+                assert_eq!(masked, want_masked, "{name} frame {i}: masked");
+                assert_eq!(set.start, f(&frame["start"]), "{name} frame {i}: start");
+                let want = frame["records"].as_array().unwrap();
+                assert_eq!(set.records.len(), want.len(), "{name} frame {i}: records");
+                for (got, want) in set.records.iter().zip(want) {
+                    let w = (
+                        want["nav"].as_u64().unwrap() as u32,
+                        want["state"].as_u64().unwrap() as u8,
+                        f(&want["timer"]),
+                        f(&want["distance"]),
+                    );
+                    assert_eq!(
+                        (got.key, got.state as u8, got.timer, got.distance),
+                        w,
+                        "{name} frame {i}"
+                    );
+                }
+                frames += 1;
+                records += want.len();
+            }
+        }
+        eprintln!("back read: {frames} frames, {records} records match the exe");
     }
 
     #[test]

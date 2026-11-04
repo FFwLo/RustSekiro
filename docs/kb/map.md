@@ -935,7 +935,7 @@ listed above, a real gate frame to compare against, re-exporting the other arena
   (Father) and back, 100 s each, no error. Test knob: SHINOBI_ARENA_CYCLE=<chr>:<row>,...
   (autoboss.rs) starts those fights 6 s apart.
 
-## 2026-11-04 How the exe streams the world (WorldBackRead; read from the exe, not run yet)
+## 2026-11-04 How the exe streams the world (WorldBackRead; record rule run in the emulator, E34)
 
 Found with the decompiler (local only) after the connected world ran out of GPU memory. Rules in our
 words; the emulator check is board row E34.
@@ -955,3 +955,34 @@ words; the emulator check is board row E34.
 - RSekiro today (crates/game map_world.rs, from sekiro-rs #271): frees a block 3 s after the player
   leaves it and keeps the connected neighbours. The 3 s matches; the trigger does not: the exe keeps
   what is within 80 m of navmesh (until 90 m) and drops an adjacent block that is farther.
+
+E34 results (2026-11-04, emulator):
+- `tools/emu-cases` `worldbackread` (tools/emu-cases/src/worldbackread.rs) runs the record demand
+  FUN_14081f020 and the step FUN_14081eae0 on sets and fake navmeshes built in emulated memory (no
+  snapshot; the step's sort-tree heap and the record heap are fake heaps whose frees mark the
+  deletions; the navmesh mask lookup FUN_1409c1090 is logged): 46 scenarios, 6,250 frames, 11,534
+  record states, 302 deletions, in 9 s, to extracted/emu/worldbackread.json. Scenarios: one navmesh
+  walked through every band of both sets, demand gone for 1 / 2.9 / 3.1 / 5 s at 30 / 60 fps and
+  0.7 s steps, the 5 m wait with near, far and tied records, unusable navmeshes and ones past the
+  end, odd sets (start past end - 1, long promote, zero retire) and 24 random walks.
+- RSekiro's `BackReadSet` (crates/game map_world.rs, own code) matches every frame exactly
+  (test `back_read_matches_the_exe`: list order, state, timer, distance, deletions, the records
+  that reach the masks, the start clamp).
+- Confirmed by the run: the demand ignores a navmesh past the end distance and makes a new record
+  only within the start distance, with a head start of (1 - clamp(d / max(start, 1))) x promote
+  (a navmesh at 0 m goes active the first frame); a pending record that loses its demand or leaves
+  the start distance is deleted at once; the step clamps start to end - 1; records are walked
+  nearest first (ties in list order, newest first) and the list comes out reversed; active and
+  retiring records reach the group masks (FUN_1409c1090 with the record's two ids).
+- map_world.rs now keeps a block while any record of its player collision parts is active or
+  retiring in either set, and frees it once it is neither drawn (masks) nor held: the block has
+  no timer of its own (the 3 s is the records' retire). A freed block respawns as soon as a record
+  holds it (within 80 m for 0.2 s). The adjacency rule (#271's neighbours) is gone.
+- Still differs or unproven: the exe's records are per navmesh, ours per player collision part
+  (the stand-in for navmeshes); the distance is ours (horizontal distance to the part's bounds),
+  the exe's comes from the navmesh manager's query (FUN_14103afc0 from the navmesh the player
+  stands on, radius = the larger end distance, results read back a frame later through
+  FUN_14103a350; its metric and the order of its results, which breaks ties, were not run); the
+  group masks the records add and how they reach a block (FieldBackread FUN_140affb20, block
+  FUN_140826520 / FUN_1408254f0) are not run, so "held keeps the block" is still read, not run;
+  the debug draw objects (DAT_143f42800) are off. Not checked in the running game.
