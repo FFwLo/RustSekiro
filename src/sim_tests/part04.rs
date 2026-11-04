@@ -509,7 +509,7 @@ pub(crate) fn an_absorbed_enemy_model_slides_onto_the_throw_dummy() {
 
 /// cargo test --release behind_throw_live_trace -- --ignored --nocapture : the c1010 behind
 /// deathblow (a200_511200 / ThrowDef13200) in the game's own conventions (x mirrored, yaw = pi -
-/// ours), one line per 1/30 s like tools/rec_throw.py on rec_c1010_20261009 (tick 1985...).
+/// ours), one line per 1/30 s like the recording rec_c1010_20261009 (tick 1985...).
 #[test]
 #[ignore]
 pub(crate) fn behind_throw_live_trace() {

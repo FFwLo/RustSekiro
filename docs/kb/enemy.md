@@ -311,7 +311,7 @@ Dated findings, oldest first. Append new entries at the end.
   * Footsteps: Wolf's walk / run clips carry CreateAISound (TAE 237) for their whole length - walk
     1000 (0.5 m), run 1010 (2 m), crouch walk 1001 (0.25 m), crouch run 1011 (0.5 m); read from the
     clip on screen (Actor::shown_clip), radius x hearingSearchEnemyRate when bSpEffectEnable. 103 tests.
-- All enemies (2026-10-10, docs/reports/enemies.md):
+- All enemies (2026-10-10 status pass):
   * NPC damage is atkPhys + atkMag + atkFire + atkThun + atkDark.
   * opposeTarget 0 = hits objects only.
   * NpcParam resident spEffectID0-31 open the 950/951 TAE StateInfo gates.
@@ -652,7 +652,7 @@ and 6.7 attacks/min in 3 min; after, 8 backsteps and 11.3/min. Test
   each main fight headless (sim_tests `boss_audit`: real models, an unkillable Wolf who walks up,
   swings and backs off; every phase via break + deathblow, through the hand-overs) and compares
   with the rec_*_boss_* recordings (docs/kb/recordings.md): characters, attacks, deathblows,
-  bullets, script events, arena spread. Report: docs/reports/boss-audit.md. 3100 / 3101 (deflect)
+  bullets, script events, arena spread. Report: `python tools/boss_audit.py` writes target/boss-audit.md. 3100 / 3101 (deflect)
   and 5201 / 5211 (backstep) are the shared answers to Wolf's attacks (common_func_NTC.lua), so
   a Wolf who never swings never sees them.
 - 2026-10-16 How a boss fight ends (every recording, rec_2026101x_*_boss_*): the last mark is a
@@ -1008,3 +1008,43 @@ navmesh (own map, arenas) or with the AI chr off it, everything answers as befor
 gaps: edge flags and user edges (jumps, ladders), connector conditions, the cluster graph,
 `onav` object meshes, the exe's path costs and refresh rule, WithSetPoint's kept point,
 cross-block links.
+
+## Sculptor on the Construct (2026-10-18)
+
+- Character c7010. The Outskirts MSB places entity 1100720 with NpcParam 70100080 (the
+  conversation row), not a boss or combat opponent. Model and animation exports already come
+  from `sekiro-extract npcs extracted c7010`: model_c7010.bin, anim_c7010.bin, enemies/c7010.json.
+- The Construct's Sculptor is placed at (-7, 0, 3), beside Course Start. He reuses the character
+  renderer, Havok skeleton, skinned materials and animation events. His data/library are kept
+  outside encounter slots, so switching bosses cannot turn him into another character. He has
+  no Enemy component and is excluded from combat resolution and enemy-targeted projectiles.
+- Talk uses EventText 10010200, on E. Wolf plays Event711200 to sit down, Event711201 while
+  seated, and Event711202 to get up. The menu waits for the entry clip to finish; movement
+  waits for the exit clip to finish. c7010 works on the prosthetic: a000_020001 when the visit starts, loops
+  a000_021003 while Wolf visits, then plays a000_020002 and returns to ordinary sitting,
+  a000_000000, when he leaves. Wolf snaps to the seat 1 m in front of him, facing him, so
+  the Sculptor can reach the prosthetic regardless of the approach direction.
+  Fit and Upgrade retain their data-driven costs and
+  ownership rules. Esc/Q from the Workshop closes the visit; backing out of a service returns
+  to the Workshop. The idol menu no longer includes it.
+- Talking does not heal, refill items, unlock resurrection, respawn enemies or change the idol
+  checkpoint. Damage cancels the talk. The NPC is hidden and cannot be talked to on other maps.
+- Gaps: service NPC only, without ESD story conversations, voiced dialogue, gifts or sake
+  progression. Interaction reach (2 m, height difference under 0.8 m), placement and the service
+  animation sequencing are reconstructed for this test map. The regular player camera runs
+  throughout the visit; there is no custom conversation angle. His assets load when starting on
+  the Construct; starting on another map and switching there later does not spawn him.
+- Exporter whitelist: Event711200 / 711201 / 711202 (c0000.hkx CMSG mappings). Re-run
+  `sekiro-extract export extracted` after pulling this change so the local player data and
+  anim_c0000.bin contain the seated visit clips. The Sculptor animation family is catalogued in
+  [TAE Animation Designations](https://www.nexusmods.com/sekiro/articles/236); local exported
+  clip data and private real-app captures determine the selected sequence.
+- Private screenshot harness: SHINOBI_SCULPTOR_SHOT=1 opens the real talk interaction nearby;
+  SHINOBI_SCULPTOR_SHOT=idle places Wolf nearby without opening the menu, to inspect sitting.
+  SHINOBI_SCULPTOR_ANIM=<clip> allows inspecting the NPC's exported clips. Use SHINOBI_SHOT and
+  SHINOBI_SHOT_FRAMES=600, without desktop input or publishing game-asset screenshots.
+- Outside-menu idle is the user's requested ordinary sitting, not the story map's carving.
+  Private inspection of c7010.hks confirms Event21005 marks TALK_REF_C7010_DIGGING (1701001),
+  so 21005 is intentionally not used here. 20000 is the Dragonrot cough and is not used for
+  the visit. The HKS reader layout was checked against
+  [DSLuaDecompiler LuaFile.cs](https://github.com/katalash/DSLuaDecompiler/blob/master/LuaDecompilerCore/LuaFile.cs).

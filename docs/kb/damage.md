@@ -288,7 +288,7 @@ Dated findings, oldest first. Append new entries at the end.
   Bevy also mirrors turns, so export.rs writes -yaw (TurnDefault_Right90 = +90 raw = right). Proof:
   c1020 ThrowDefDeath 13411's Pelvis turns -182 deg in the clip while its root turns +180 (they cancel
   in the game); with the raw sign the General spun 360. The in-game behind deathblow (c1010) then
-  matches the live recording frame for frame in tools/rec_throw.py's convention (x mirrored, yaw =
+  matches the live recording frame for frame in the recording's convention (x mirrored, yaw =
   pi - ours).
 - 2026-10-11 B1 (docs/PLAN.md) hit shapes and hurt capsules:
   * Hurt capsules were already the game's in play: the ragdoll bodies of each chr's physics HKX

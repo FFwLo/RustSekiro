@@ -7,7 +7,7 @@
 - Never commit or paste anything from `extracted/` (game files, snapshots, emulator cases), hex dumps,
   disassembly or decompiled code. Write code in your own words; exe function addresses are fine.
   `python tools/guard.py` (the git hooks in `.githooks`) refuses the rest.
-- Read `docs/PROGRESS.md` and the matching `docs/kb/*.md` before changing a system.
+- Read the matching `docs/kb/*.md` before changing a system.
 - Keep the style of the surrounding code; add a test in `src/sim_tests/` for behaviour changes.
 - `cargo build` and the tests that need no game data work without `extracted/`; the rest need your
   own extracted data (tests find it through `SHINOBI_ROOT`).

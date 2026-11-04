@@ -1,5 +1,5 @@
 # Recording research: enemy perception, lock-on, cutscene/talk, player data, effects, bullets, lighting
-(exe 1.06, static RE, 2026-10-21; decomp FUN_ names via tools/fn.sh; singletons from
+(exe 1.06, static RE, 2026-10-21; decomp FUN_ names; singletons from
 reference/Smithbox-src/Documentation/Memory/Sekiro_1.06.txt, cross-checked with DAT_ in the decomp; prologues
 read from extracted/sekiro_dearxan.exe)
 

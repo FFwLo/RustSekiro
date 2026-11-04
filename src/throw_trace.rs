@@ -1,4 +1,4 @@
-//! Throw geometry trace, the game-side twin of tools/rec_throw.py. With
+//! Throw geometry trace, the game-side twin of the recording's throw geometry. With
 //! SHINOBI_THROW_TRACE=<kind> (front, behind, stealth, plunge, vault) the game breaks the enemy, puts it in front
 //! of Wolf (facing him, or away from him for "behind"), presses the action and prints one line per
 //! fixed frame: both anims, the enemy's distance, its position in Wolf's frame (forward / right)

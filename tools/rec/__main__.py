@@ -135,7 +135,7 @@ def cmd_list(_args):
              "One line per recording: `python -m tools.rec list` rewrites this file. Read a summary with",
              "`python -m tools.rec summary <rec> --cat <movement|combat|enemies|bosses|skills|items|camera|sound|effects|script|all>`",
              "(cached in `<rec>/summary/<cat>.md`); drill down with `python -m tools.rec query <rec> help`.",
-             "Folder: `..\\memscope-data\\logs`. Recorder: `tools/memscope/rec2.lua` (v1: recorder.lua).", "",
+             "Folder: `..\\memscope-data\\logs`. Recorder: `tools/memscope/rec2.lua`.", "",
              "How to record (the user plays, the session records):",
              "1. Start Sekiro with the hook DLL: from `..\\me3` run `bin\\me3.exe launch -p sekiro-rec.me3`;",
              "   `me3\\sekiro-rec\\sv1_rec_hooks.log` lists the installed hooks.",

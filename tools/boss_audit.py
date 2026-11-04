@@ -16,7 +16,7 @@ walks up, every phase via break + deathblow) into <out>/<row>.tsv and its script
   the boss in Sekiro but are not in Sv1's script at all;
 - arena: how far the fight spread (boss and Wolf from the boss's middle place) and the height
   range, vs Sv1's arena.
-Writes docs/reports/boss-audit.md.
+Writes target/boss-audit.md.
 """
 import json
 import os
@@ -312,7 +312,7 @@ def main():
              'there, so moves the AI keeps for those show up as missing.', '']
     for f in fights:
         lines += report(f)
-    path = os.path.join(ROOT, 'docs', 'reports', 'boss-audit.md')
+    path = os.path.join(ROOT, 'target', 'boss-audit.md')
     os.makedirs(os.path.dirname(path), exist_ok=True)
     open(path, 'w', encoding='utf-8', newline='\n').write('\n'.join(lines) + '\n')
     print(path)

@@ -1,5 +1,5 @@
 # Recording hook research: map objects, FMOD params, raw stick, enemy hearing (exe 1.06, base 0x140000000)
-Static read, 2026-10-21 (decomp via tools/fn.sh, prologues from extracted/sekiro_dearxan.exe, file offset = RVA). Nothing run live.
+Static read, 2026-10-21 (prologues from extracted/sekiro_dearxan.exe, file offset = RVA). Nothing run live.
 Reference repos have no object-manager layout (checked SekiroTool, practice tool, Smithbox Sekiro_1.06.txt). All offsets below are from the decomp.
 
 ## A. Map objects

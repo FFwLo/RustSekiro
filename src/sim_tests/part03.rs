@@ -789,7 +789,7 @@ pub(crate) fn behind_deathblow_root_yaw_is_played_as_stored() {
     // a200_511200's root yaw (Ochimusha behind deathblow) is keyed across the +-pi seam: +90 deg at
     // frame 10, then -180 by frame 15 (-270 deg) in the game's space; ours mirrors X, so -90 / +180.
     // In game (SHINOBI_THROW_TRACE=behind, c1010) the pair then matches rec_c1010_20261009 tick for
-    // tick in the game's convention (tools/rec_throw.py: 0.47 m at 175 deg, dyaw -4.5 vs live 0.47 /
+    // tick in the game's convention (the recording: 0.47 m at 175 deg, dyaw -4.5 vs live 0.47 /
     // 176 / -3.8; mid-spin 0.43 m at -24.5 vs -23.9, dyaw 147.6 vs 148.5).
     let app = app_with("c1010");
     let combat = app.world().resource::<Combat>();

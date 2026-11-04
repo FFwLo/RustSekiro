@@ -20,7 +20,7 @@ fn try_u64(emu: &mut Emu, at: u64) -> Option<u64> {
     Some(u64::from_le_bytes(emu.read(at)))
 }
 
-/// Every EnemyIns in WorldChrMan's chr sets (tools/memscope/recorder.lua's scan).
+/// Every EnemyIns in WorldChrMan's chr sets (tools/memscope/rec2.lua's scan).
 pub(crate) fn enemies(emu: &mut Emu) -> Vec<u64> {
     let wcm = emu.peek_u64(WORLD_CHR_MAN);
     let mut out = Vec::new();

@@ -64,4 +64,4 @@ SoulsFormatsNEXT, sekiro-rs, fxr. Check them first for names and layouts.
 ## Starting a session
 1. Take a row from the work board (see "Agents start here") and say which.
 2. Read only that row's kb file and source module (table above).
-3. Record what changed in the kb file for the topic and one line in `docs/PROGRESS.md` "## Recent".
+3. Record what changed in the kb file for the topic.

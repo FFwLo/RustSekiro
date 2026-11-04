@@ -28,7 +28,7 @@ local LOCK_MAN = addr("0x143D78058")   -- LockTgtManImp: +0x10 candidate list
 local DRAW_PARAM = addr("0x143D8DF18") -- CSWorldSceneDrawParamManager: [+0x20] area entries (GParam ids)
 
 -- Per-character blocks {id, name, kind, offset, start, length, every n ticks (args.raw = every tick), only "wolf" / "enemy"}:
--- kind "mod" = module bag slot, "chr" = ChrIns field, "ptr" = object at [ChrIns+off], "ptr2" = [[ChrIns+a]+b]. Ids 1-22 = recorder.lua.
+-- kind "mod" = module bag slot, "chr" = ChrIns field, "ptr" = object at [ChrIns+off], "ptr2" = [[ChrIns+a]+b]. Ids 1-22 are the first recorder's.
 local BLOCKS = {
   {1, "chr_head", "chr", nil, 0x0, 0x100, 6},
   {2, "chr_lock", "chr", nil, 0x1000, 0x200, 1},
@@ -126,7 +126,7 @@ local function pos(chr)
   return readFloat(ph + 0x80), readFloat(ph + 0x84), readFloat(ph + 0x88)
 end
 
--- Enemy containers: any pointer in WorldChrMan[0..0x2000] whose target holds EnemyIns pointers (recorder.lua).
+-- Enemy containers: any pointer in WorldChrMan[0..0x2000] whose target holds EnemyIns pointers.
 local enemy_list, last_scan = {}, -1e9
 local function find_enemies()
   local wcm = readPointer(WCM_PTR)

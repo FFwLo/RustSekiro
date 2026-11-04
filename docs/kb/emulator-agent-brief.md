@@ -56,8 +56,7 @@ it matches. Faithful beats fast: port what the code does; if a rule can only be 
 - Code reads like the surrounding code: comments name the exe function and camera/chr offsets, say `gap:` for what
   is not ported or not checked.
 - Notes: a dated section in your topic's `docs/kb/<topic>.md` (what matched, what was fixed with numbers, what is not
-  covered), one row in the `docs/kb/emulator-pilot.md` results table, one line at the top of "## Recent" in
-  `docs/PROGRESS.md`.
+  covered) and one row in the `docs/kb/emulator-pilot.md` results table.
 
 ## Report back (short)
 Branch and commits; what was run (functions, case count); what matched as it was; what was fixed (before -> after,

@@ -1,4 +1,4 @@
-"""Streaming reader for frames.bin (rec2.lua and the old recorder.lua share the record format)."""
+"""Streaming reader for frames.bin (rec2.lua and the first recorder share the record format)."""
 import json
 import mmap
 import struct
@@ -10,7 +10,7 @@ HDR = struct.Struct("<IdBBH")
 
 
 def block_names(rec):
-    """block id -> name, from manifest_lua.json (rec2) or index.txt (recorder.lua)."""
+    """block id -> name, from manifest_lua.json (rec2) or index.txt (the first recorder)."""
     rec = Path(rec)
     m = rec / "manifest_lua.json"
     if m.exists():

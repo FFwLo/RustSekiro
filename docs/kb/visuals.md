@@ -284,7 +284,7 @@ Dated findings, oldest first. Append new entries at the end.
   start from the last pre-twist pose (Skeleton.last); before, a clip change every frame (photo mode's
   hold vs the AI) baked each frame's twist into the fade and the enemy folded forward.
 - 2026-10-08 live: a000_7900x0 = AddBlendFace_1..N CMSGs (c0000.hkx) = Wolf's facial-expression additive layer
-  (790050 plays during deathblows); it interleaves with the body anim in TimeAct +0x100 -> rec_read.body_anims
+  (790050 plays during deathblows); it interleaves with the body anim in TimeAct +0x100 -> body anims (tools/rec)
   skips it. Not modelled in Shinobi (gap: face layer).
 
 ## Outfit masks, scabbard (2026-10-08)
