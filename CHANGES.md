@@ -15,3 +15,5 @@
 - 2026-11-04 FFwLo/claude: E31 done. deathblow window = break anim's TAE 932 span (151 frames), broken_time stand-in removed; 20 chrs without a break anim keep 4 s (gap), f171729
 - 2026-11-04 FFwLo/claude: E13 done. guard/posture break: KnockBackParam guardBrake 0/0 = no push (FUN_140be6750 is a position/facing controller, not knockback), 0972b2f
 - 2026-11-04 FFwLo/claude: E11 done. sound target pick, 46 on serial change, 31 LoseSightTarget, record refresh (aiint), 25b1b6b
+- 2026-11-04 FFwLo/claude: E17 done. fall landing/return rules from the exe: 1 HP floor, lethal = 0.4 maxHP or death, aged 5 m lethal, floor rates, void 448 (air_falldmg)
+- 2026-11-04 FFwLo/claude: E7 done. grapple: least-speed arc to the landing spot, braking 10, mean-velocity step, arrival by flight time; every flight frame checked (wire)
