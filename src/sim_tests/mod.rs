@@ -65,6 +65,7 @@ mod emu_damagemod;
 mod emu_camera2;
 mod emu_collide;
 mod emu_srcollide;
+mod emu_hksvm;
 mod emu_params;
 mod emu_fxr;
 mod emu_items;

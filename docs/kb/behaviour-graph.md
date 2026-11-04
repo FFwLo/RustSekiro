@@ -302,6 +302,36 @@ a field it needs is absent), `act(id)` writes what the exe's act case writes.
   behaviorRefId in `act` (0; `from_world` looks it up), which act sites clear the bit words each
   frame (the snapshot's bits stay set between frames in the emulator).
 
+### HKS engine surface, step 3: the copied VM's env / act calls (2026-11-04, row E9)
+
+sekiro-rs's VM (crates/hks) hands each `env(id, ...)` / `act(id, ...)` to RSekiro through
+`hks::VmHost` (src/hks.rs): the id (a number, or a string the VM passes as `CommandId::Name`), the
+first argument as the answer's key, the answer as the number the script sees. Test file
+src/sim_tests/emu_hksvm.rs holds that path to the exe's own (no new emulator run):
+- Names (`copied_vm_resolves_named_ids_like_the_exe`): every string id in all 81 compiled scripts,
+  three names (24 sites), against the exe's name maps in `hks_env.json`. The exe's resolvers
+  FUN_140b362d0 (env, map [0x143d85568]) and FUN_140b34ca0 (act, [0x143d85558]) are called by the
+  string-id thunks FUN_140b35ac0 / FUN_140b31f40 before the dispatchers; a name not in the map is
+  9999 (both dispatchers' default: env 0, act nothing). Fixed: c0000's
+  `..._寿命延長を厳密に取得` went to 3036 (the plain ref check), the exe's map gives 3064, the strict
+  check; c0000_cmsg's act `ワープタイプ入力受付リセット` went to -1, the exe's is 3041; c5040's env
+  `アニメが終了か` is in no map (9999, answer 0; RSekiro's -1 also answered 0).
+- Answers (`copied_vm_passes_the_exes_env_answers`): 553 exe answers (hks_env.json's 330 idle cases,
+  hks2_env.json's poses) put into `Host` under the case's id and first argument come out of the VM
+  unchanged. Fixed: the dispatcher returns an integer in every case (floats as (int)(x * 1000)), and
+  `VmHost` passed RSekiro's fractions through: DT (333) read 16.67 at 1/60 s where the exe's is 16
+  (c0000_define's dT, the auto-aim timer). `VmHost::env` now truncates as the exe.
+- Acts (`copied_vm_routes_the_exes_act_ids`): the 129 cases of hks2_act.json reach `Host` with the
+  exe's id (3041 for the string id).
+- 3064 itself (case 0xbf8): a worn entry with the ref and every such entry's row with enableLifeTime
+  (SpEffectParam +0x16b bit 7), and FUN_140c064a0(entry) false or ctrl flags +0x8c bit 6; RSekiro
+  answered it with the 3036 rule. Now hks_wolf.rs sets 3064 per ref from enableLifeTime and
+  `HksEnv` (hks_env.rs) does the same. The aging SpEffect 9620 (ref 591) has enableLifeTime 1, so
+  the aged idle's end reads as before. gap: the FUN_140c064a0 term is the entry's runtime state
+  (+0x1c & 0x80000003, +0x24, +0x25), taken as passing; the numeric id's conversion (the scripts
+  pass integer constants only), and the trial `HksPlayer` (hks_lua.rs, decompiled Lua in mlua), which
+  still answers names with -1, are not checked.
+
 ## The pipeline and how the game picks clips (from 2026-10-20)
 
 How the game picks Wolf's states and clips, and what our test pipeline runs. Dated entries,

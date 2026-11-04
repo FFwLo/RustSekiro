@@ -13,6 +13,25 @@ use std::rc::Rc;
 /// act 148: SetVariable(name, value) (c0000.lua).
 pub(crate) const ACT_SET_VARIABLE: i64 = 148;
 
+/// The exe's name maps for the string ids the scripts pass to `env` / `act` (row E9): FUN_140b362d0
+/// (env, map [0x143d85568]) and FUN_140b34ca0 (act, [0x143d85558]) look the name up in a
+/// std::map of UTF-16 names cut to 31 units, then call the dispatcher FUN_140b36410 /
+/// FUN_140b32410 with its id; a name not in the map is [`UNKNOWN_NAME`]. These are the names the
+/// shipped scripts use (test `copied_vm_resolves_named_ids_like_the_exe` holds them to the exe's
+/// maps over every compiled script), each as the map keeps it.
+pub(crate) const NAMED_ENV: &[(&str, i64)] = &[("特殊効果発動中か_Behavior参照ID_寿命延長を厳密に取", 3064)];
+pub(crate) const NAMED_ACT: &[(&str, i64)] = &[("ワープタイプ入力受付リセット", 3041)];
+/// The id the exe's resolvers give a name they do not know (c5040's "アニメが終了か"): both
+/// dispatchers' default, env 0 and act nothing.
+pub(crate) const UNKNOWN_NAME: i64 = 9999;
+
+/// `name` as the exe's map finds it: cut to 31 UTF-16 units, then looked up in `map`.
+pub(crate) fn named_id(map: &[(&str, i64)], name: &str) -> i64 {
+    let units: Vec<u16> = name.encode_utf16().take(31).collect();
+    let cut = String::from_utf16_lossy(&units);
+    map.iter().find(|(n, _)| *n == cut).map_or(UNKNOWN_NAME, |&(_, id)| id)
+}
+
 /// The engine's side of one script run.
 #[derive(Default)]
 pub struct Host {
@@ -69,7 +88,7 @@ pub struct HksVm {
 }
 
 /// `Host` as the VM's engine side.
-struct VmHost<'a>(&'a mut Host);
+pub(crate) struct VmHost<'a>(pub(crate) &'a mut Host);
 
 fn vnum(v: Option<&sekiro_hks::Value>) -> Option<f64> {
     match v? {
@@ -80,13 +99,12 @@ fn vnum(v: Option<&sekiro_hks::Value>) -> Option<f64> {
 
 impl sekiro_hks::Host for VmHost<'_> {
     fn env(&mut self, id: sekiro_hks::CommandId<'_>, args: &[sekiro_hks::Value]) -> sekiro_hks::Value {
-        // The one named command, the aging check "is an SpEffect with this behaviour ref on, its
-        // lasting time counted strictly" (c0000 BEH_R_CURE_AGING, the aged idle's end), is the
-        // ref check env 3036; any other name is not answered: -1, as in `HksPlayer`.
+        // A string id goes through the exe's name map ([`NAMED_ENV`]): the aging check "is an
+        // SpEffect with this behaviour ref on, its lasting time counted strictly" (c0000
+        // BEH_R_CURE_AGING, the aged idle's end) is the strict ref check 3064, not 3036 (row E9).
         let id = match id {
             sekiro_hks::CommandId::Number(n) => n as i64,
-            sekiro_hks::CommandId::Name("特殊効果発動中か_Behavior参照ID_寿命延長を厳密に取得") => 3036,
-            sekiro_hks::CommandId::Name(_) => -1,
+            sekiro_hks::CommandId::Name(name) => named_id(NAMED_ENV, name),
         };
         let arg = vnum(args.first()).map(|a| a as i64);
         let host = &mut *self.0;
@@ -94,13 +112,15 @@ impl sekiro_hks::Host for VmHost<'_> {
         if v.is_none() {
             host.unanswered.insert(id);
         }
-        sekiro_hks::Value::Number(v.unwrap_or(0.0) as f32)
+        // The dispatcher returns an integer (FUN_140b36410's every case; a float as
+        // (int)(x * 1000)): DT (333) is 16 at 1/60 s, not 16.67 (row E9).
+        sekiro_hks::Value::Number(v.unwrap_or(0.0).trunc() as f32)
     }
 
     fn act(&mut self, id: sekiro_hks::CommandId<'_>, args: &[sekiro_hks::Value]) -> sekiro_hks::Value {
         let id = match id {
             sekiro_hks::CommandId::Number(n) => n as i64,
-            sekiro_hks::CommandId::Name(_) => -1,
+            sekiro_hks::CommandId::Name(name) => named_id(NAMED_ACT, name),
         };
         self.0.acts.push(id);
         if let Some(v) = vnum(args.first()) {

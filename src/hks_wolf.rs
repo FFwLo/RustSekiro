@@ -140,11 +140,24 @@ pub fn answers(h: &mut Host, a: &Actor, p: &Player, combat: &Combat, config: &cr
     // Wolf's own residents (the aged form's SP_EF_REF_AGING 591 row: status::set_aging).
     let resident: Vec<i64> = resident.into_iter().chain(crate::player::equipped_tool(combat, config, p.tool_slot).map(|t| t.resident).filter(|&id| id > 0)).chain(a.electro.map(|(id, _)| id)).chain(a.resident.iter().copied()).collect();
     ids.extend(&resident);
+    // The strict ref check (env 3064, the exe's case 0xbf8; c0000's string id for it): a worn
+    // entry with the ref, and every such entry's row with enableLifeTime. gap: its other term,
+    // FUN_140c064a0(entry) false or ctrl flags +0x8c bit 6, is the entry's runtime state (+0x1c /
+    // +0x24 / +0x25), taken as passing.
+    let mut strict: HashMap<i64, bool> = HashMap::new();
     for id in &ids {
         set(1116, Some(*id), true);
         let r = d.sp_effects.get(&id.to_string()).map_or_else(|| crate::data::sp_effect_behavior_ref(*id), |s| s.behavior_ref_id);
-        set(3036, Some(r), resident.contains(id) || crate::player::wolf_ref(d, a, p, r));
+        let on = resident.contains(id) || crate::player::wolf_ref(d, a, p, r);
+        set(3036, Some(r), on);
+        if on && r != 0 {
+            *strict.entry(r).or_insert(true) &= crate::data::sp_effect_life_time(*id);
+        }
     }
+    for (r, all) in strict {
+        set(3064, Some(r), all);
+    }
+    set(3064, None, false);
     // The X sheathe (ours: the game sheathes only in a non-combat area) is a non-combat area
     // to the script till a draw starts.
     if (a.sheathed && a.state != "GroundNonCombatAreaLeave") || a.state == "GroundNonCombatAreaEnter" {

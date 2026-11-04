@@ -229,8 +229,8 @@ pub const GET_SAFE_POSITION_RETURN_STATE: i32 = 3061;
 pub const GET_VARIABLE_CHANGE_VALUE: i32 = 3063;
 /// Case 0xbf8, the string id "特殊効果発動中か_Behavior参照ID_寿命延長を厳密に取得" (the exe's name
 /// map [0x143d85568], names cut to 31 UTF-16 units): like 3036, but every matching entry needs
-/// param +0x16b bit 7 and (FUN_140c064a0(entry) false or ctrl flags +0x8c bit 6). Sv1: the 3036
-/// rule (approx).
+/// param +0x16b bit 7 (enableLifeTime) and (FUN_140c064a0(entry) false or ctrl flags +0x8c bit 6).
+/// Sv1: the ref and enableLifeTime (row E9; the FUN_140c064a0 term is entry state, gap).
 pub const GET_BEHAVIOR_REF_ID_STRICT: i32 = 3064;
 
 /// The `act(id, ...)` ids (exe dispatcher FUN_140b32410(ctx, id, lua_State), the same argument
@@ -465,7 +465,13 @@ impl HksEnv {
         let bit = |name: &str, n: u32| self.i(name).map(|v| (v >> n) & 1 != 0);
         let in_throw = || self.i("throw_entry+0x18").map(|t| t != 0);
         match id {
-            GET_BEHAVIOR_REF_ID | GET_BEHAVIOR_REF_ID_STRICT => b(self.sp_effects.iter().any(|&(_, r)| r != 0 && r == arg(0))),
+            GET_BEHAVIOR_REF_ID => b(self.sp_effects.iter().any(|&(_, r)| r != 0 && r == arg(0))),
+            // Every matching entry's row needs enableLifeTime (param +0x16b bit 7). gap: the
+            // FUN_140c064a0 / ctrl flags +0x8c bit 6 term, taken as passing.
+            GET_BEHAVIOR_REF_ID_STRICT => {
+                let mut on = self.sp_effects.iter().filter(|&&(_, r)| r != 0 && r == arg(0)).peekable();
+                b(on.peek().is_some() && on.all(|&(id, _)| crate::data::sp_effect_life_time(id)))
+            }
             GET_SP_EFFECT_ID => b(self.sp_effects.iter().any(|&(i, _)| i == arg(0))),
             ACTION_REQUEST => b(self.requests.contains(&(arg(0) as i32))),
             IS_LOCKED_ON => b(self.i("chr+0x1070")? != 0),

@@ -1717,6 +1717,13 @@ pub fn sp_effect_behavior_ref(id: i64) -> i64 {
     refs.get(&id).copied().unwrap_or(0)
 }
 
+/// Whether SpEffectParam row `id` has enableLifeTime (param +0x16b bit 7), which the exe's strict
+/// ref check env 3064 (FUN_140b36410 case 0xbf8) needs of every worn entry with the ref.
+pub fn sp_effect_life_time(id: i64) -> bool {
+    static ROWS: std::sync::OnceLock<std::collections::HashSet<i64>> = std::sync::OnceLock::new();
+    ROWS.get_or_init(|| param_table("SpEffectParam").iter().filter(|(_, r)| r["enableLifeTime"].as_i64() == Some(1)).map(|(id, _)| *id).collect()).contains(&id)
+}
+
 /// An SpEffect's behaviorRefId while it lasts past its TAE window (behaviorRefFlag_checkAliveFlagForBehavior
 /// 0: the exe's env 3036, FUN_140b32410 case 0xbdc, counts the row for its whole effectEndurance;
 /// 1 only while the TAE window is open). The sprint's 100304 ends into 100303, ref 1 for 0.2 s.
