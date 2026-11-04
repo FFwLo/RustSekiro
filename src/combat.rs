@@ -1929,13 +1929,11 @@ fn resolve(
             // enchanted 105 / 107), with no fallback when the shifted row is missing.
             let worn = (aa.side != Side::Player).then(|| worn_sp(&aa, ae.as_ref().map_or(&[][..], |e| &e.clash[..])));
             let gates = event_gates(&combat, &aa, ae.as_ref().map_or(&[][..], |e| &e.clash[..]));
-            let mut windows: Vec<(i32, i64, Attack, bool, bool)> = ad
+            let mut windows: Vec<(i32, i64, Attack, bool, bool, i8)> = ad
                 // The windows the last step dispatched (`Actor::tae_anim`): a clip `decide` or
                 // a reaction replaced still swings on this tick, as the exe's hit step tests the
                 // records the last step kept (tools/emu-cases framewin).
                 .attack_windows_on(aa.tae_anim(), gates.as_deref())
-            let mut windows: Vec<(i32, i64, Attack, bool, bool, i8)> = ad
-                .attack_windows_on(&aa.anim, gates.as_deref())
                 .into_iter()
                 .filter_map(|(e, atk, j)| match &worn {
                     Some(w) if crate::data::shift_judge(j, w) != j => {
@@ -1949,8 +1947,6 @@ fn resolve(
                 // the shock's 508 HP) never hit before (the user, 2026-10-16: "reversal dont stun
                 // him and dont do dmg as the game").
                 .filter(|(e, atk, _)| e.dispatched(aa.tae_step()) && atk.oppose_target != 0 && (atk.atk_stam > 0.0 || atk.npc_damage() > 0.0 || atk.direct_atk_stam_damage > 0.0 || atk.sp_effects().iter().any(|&s| s > 0)))
-                .map(|(e, atk, j)| ((e.start * TAE_FPS).round() as i32, j, atk.clone(), false, e.source_hand() == 1))
-                .filter(|(e, atk, _)| e.dispatched(aa.step()) && atk.oppose_target != 0 && (atk.atk_stam > 0.0 || atk.npc_damage() > 0.0 || atk.direct_atk_stam_damage > 0.0 || atk.sp_effects().iter().any(|&s| s > 0)))
                 .map(|(e, atk, j)| ((e.start * TAE_FPS).round() as i32, j, atk.clone(), false, e.source_hand() == 1, e.hit_level()))
                 .collect();
             // The attacker's bullets that reached this defender (enemy_bullet.rs): already
@@ -1962,10 +1958,8 @@ fn resolve(
             // (c1700 Attack3076's two blades, judges 160 + 161) meets the same guard, not the
             // deflect / damage reaction the first just started (play_state resets anim / t).
             let mut tick_outcome: Option<Outcome> = None;
-            for (start, judge, atk, bullet, right_hand) in windows {
-                if !bullet && aa.hit_done(&(def_e, judge, start)) {
             for (start, judge, atk, bullet, right_hand, level) in windows {
-                if !bullet && aa.hits_done.contains(&(def_e, judge, start)) {
+                if !bullet && aa.hit_done(&(def_e, judge, start)) {
                     continue;
                 }
                 let to_def = (dtf.translation - atf.translation).with_y(0.0);
@@ -2039,7 +2033,6 @@ fn resolve(
                     continue;
                 }
                 aa.mark_hit((def_e, judge, start));
-                aa.hits_done.push((def_e, judge, start));
                 // A leveled window touching someone an equal or lower level already hit in this
                 // anim is spent without a hit (the spear's root 0 / middle 1 / tip 2: one thrust,
                 // one hit; tools/emu-cases `prosth_spear`).

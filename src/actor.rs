@@ -628,7 +628,6 @@ impl Actor {
         if let Some(h) = self.held.as_mut() {
             h.hits = hits.clone();
         }
-        self.hits_done = hits;
         (self.hits_done, self.hit_levels) = (hits, levels);
         true
     }
