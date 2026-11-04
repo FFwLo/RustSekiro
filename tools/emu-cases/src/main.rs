@@ -55,6 +55,7 @@ mod hksstick;
 mod worldbackread;
 mod bullets;
 mod knockback;
+mod wire;
 
 /// The few calls of Unicorn's C API the tool needs (unicorn.h), linked from unicorn.dll.
 mod uc {
@@ -926,6 +927,9 @@ fn main() {
     }
     if want.first().is_some_and(|w| w.starts_with("aimove")) {
         return aimove::run(&|| Emu::new(exe, snap()), out, &want);
+    }
+    if want.first().is_some_and(|w| w.starts_with("wire")) {
+        return wire::run(&|| Emu::new(exe, snap()), out, &want);
     }
     if want.first().is_some_and(|w| w.starts_with("air")) {
         return air::run(&|| Emu::new(exe, snap()), out, &want);

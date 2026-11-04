@@ -168,9 +168,9 @@ pub(crate) fn deflects_arts_and_tools_chain_on_the_cancel_frame() {
 }
 
 /// Grappling Hook (wire.rs): a ridden point 9 m ahead, 3 m up. G -> GroundWireShoot ->
-/// GroundWireMoveStart_UpperSlope (hook 16 deg up) -> the TAE 920 launch arrives on the landing
-/// spot when the camera slot turns 19 (0.67 s later), and Wolf lands there (LandWireMove) and
-/// stays on it.
+/// GroundWireMoveStart_UpperSlope (hook 21 deg up from the feet) -> the TAE 920 launch flies the
+/// exe's arc (wire::arc, from where the 904 slide left him) onto the landing spot, and Wolf lands there
+/// (LandWireMove) and stays on it.
 #[test]
 pub(crate) fn a_grapple_lands_on_the_point_in_the_move_start_time() {
     let mut app = app();
@@ -191,10 +191,11 @@ pub(crate) fn a_grapple_lands_on_the_point_in_the_move_start_time() {
             seen.push(s.clone());
         }
         let w = app.world_mut();
-        let mut q = w.query_filtered::<(&Actor, &Transform), With<Player>>();
-        let (a, t) = q.single(w).unwrap();
-        if launch.is_none() && a.airborne && a.fall_type == 2 && s.starts_with("GroundWireMoveStart") && a.t > 0.66 {
-            launch = Some(i);
+        let mut q = w.query::<(&Player, &Transform)>();
+        let (p, t) = q.single(w).unwrap();
+        // The 920's launch starts the arc's clock (Wire::flight); the step it is taken in moves.
+        if launch.is_none() && p.wire.is_some_and(|w| w.flight.is_some()) {
+            launch = Some((i, t.translation));
         }
         if landed.is_none() && s == "LandWireMove" {
             landed = Some((i, t.translation));
@@ -203,8 +204,12 @@ pub(crate) fn a_grapple_lands_on_the_point_in_the_move_start_time() {
     println!("states {seen:?} launch {launch:?} landed {landed:?}");
     assert!(seen.starts_with(&["GroundWireShoot".to_string(), "GroundWireMoveStart_UpperSlope".to_string()]), "{seen:?}");
     let (li, pos) = landed.expect("never landed");
-    let flight = (li - launch.unwrap()) as f32 / 60.0;
-    assert!((flight - 0.667).abs() < 0.05, "flight {flight}");
+    let (l, from) = launch.expect("no launch");
+    let flight = (li - l) as f32 / 60.0;
+    // From where the 904 slide left him.
+    let to = point.land + Vec3::Y * CAPSULE_HALF_HEIGHT - from;
+    let (t, _, _) = crate::wire::arc(to.with_y(0.0).length(), to.y, -10.0, -19.6);
+    assert!((flight - t).abs() < 0.04, "flight {flight}, the arc's {t}");
     assert!((pos - (point.land + Vec3::Y * CAPSULE_HALF_HEIGHT)).length() < 0.2, "landed at {pos}");
     // Still on the perch at the end.
     let (_, _, _, _) = player_state(&mut app);

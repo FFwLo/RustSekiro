@@ -97,7 +97,7 @@ Landing: HKS `BEH_R_LAND_WIRE` (22) / `BEH_R_LAND_WIRE_READY` (24), only valid i
 style (table column 8). `LAND_WIRE_READY_ENABLE_FALL_SPEED = -1000`.
 
 Flight physics (what row 1100 means): ChrPhysicsVelocityChangeParam 1100 "wire" = fallType 2
-(the exe's Wire fall table, kb/movement.md: h accel -15, gravity -9.8, stick accel 9,
+(the exe's Wire fall table, kb/movement.md: h accel -10 (section 7), gravity -9.8, stick accel 9,
 stick max 6), homingId 300000000, homingTargetType 4, no velocity change of its own. Row 1101
 "[system] ground wire acceleration" h 30 / v 30 and 1102 "[system] aerial wire deceleration"
 0 / 0 are applied by the engine, not the TAE (gap: when). ChrPhysicsHomingParam 300000000
@@ -214,21 +214,20 @@ there.
   from the jump's window (flags 151 / 119; gap: the wire's own accept bits are not traced), or in
   the air from the falls / WireMove. Without a target the press is dropped (ResetRequest).
   Shoots: GroundWireShoot, AirWireShoot, WireMoveWireShoot, WireMoveWire2Shoot. They turn toward
-  the hook (TAE 224: 1080 deg/s for 0.2 s; wire-to-wire 2700 deg/s for 0.1 s), and 905 holds the
-  air ones.
+  the landing spot of a ridden point, else the hook (TAE 224: 1080 deg/s for 0.2 s; wire-to-wire
+  2700 deg/s for 0.1 s; section 7), and 905 holds the air ones.
 - **Move start:** the selectors bound to WireMoveStartIndex list [0] _UpperSlope, [1] _Up,
   [2] _Vertical. Index 1 when the hook is > 50 deg up, 0 when > 15 deg, else 2 (WireDramaticAngle
-  taken as the hook's elevation: gap).
+  taken as the hook's elevation from Wolf's feet, section 7; the engine's own formula: gap).
 - **Exe traced:**
   - TAE 900 = rope tip speed m/s (FUN_140b58290 -> wire +0x604, FUN_140e719b0 moves the tip).
   - 901 keeps the tip on the hook.
   - 904 = the 922 blend with row 1101 (+30 / +30 m/s) and fixed curves Linear 1 / EaseIn 10
     (FUN_140b54c90 -> FUN_140bb1870, .data 0x143b09db0).
-- **Launch:** TAE 920 row 1100, homing 300000000. The arc is solved to arrive when the move start's
-  camera slot turns 18 -> 19: 0.67 s (202010, air, wire-to-wire) or 0.83 s (202011 / 202012). The
-  horizontal velocity is re-aimed each tick (guaranteed arrival); gravity is the Wire fall's
-  (-19.6). The skills clip's air grapple (7:53) flies about 0.6 s. gap: the exe's
-  initialVelocityCorrection is not traced.
+- **Launch:** TAE 920 row 1100, homing 300000000: the exe's least-speed arc to the landing spot
+  under the Wire fall (braking 10 m/s^2, gravity 19.6), its own flight time, then put on the spot
+  (`wire::arc`, `Wire::steer`; section 7). Until 2026-11-04 this was a fixed 0.67 / 0.83 s flight
+  to the camera slot 18 -> 19 with the horizontal speed re-aimed each tick: not the exe's.
 - **Landing:** BEH_R_LAND_WIRE gives LandWireMove, LandWireFallAttackCombo1 (continued) out of
   the wire attack, or LandAirDeflectGuard out of the wire guard. A ridden point is a floor within
   0.6 m of its landing spot (`Player::perch`), because object collision is not in the terrain:
@@ -283,5 +282,67 @@ there.
     flung by an enemy grab). The sim plays an enemy grab as Wolf's "Grabbed" clip (combat.rs
     resolve_throws), without those states, so this waits on them;
   - swim wire (no water in the sim).
-- **Test:** `a_grapple_lands_on_the_point_in_the_move_start_time` (0.68 s flight, lands 0.16 m from
-  the spot, stays on it).
+- **Test:** `a_grapple_lands_on_the_point_in_the_move_start_time` (the arc's 0.93 s flight for 9 m
+  flat / 3 m up, lands on the spot, stays on it); against the exe: `grapple_frames_match_the_exe`
+  (section 7).
+
+## 7. Against the exe (row E7, 2026-11-04)
+
+tools/emu-cases `wire` on snapshot D:/emu-snap-e10 (General Naomori's arena): whole chr frames
+FUN_140a4b570 at 1/60 s, the pad written per frame. Before each frame the wire search runs
+(the singleton at 0x143d8e058, its update FUN_140efaf80 -> FUN_140efd8e0; the camera's view
+matrix at [singleton]+0x10 turned with the chr camera). 8 scenarios, 170 frames each: hook
+o003600_0024 from 5, 6.5, 9.7, 13 and 17 m (facing it, facing away, camera 15 deg off), and
+o003610_0100. The output (extracted/emu/wire_frames.json) stays local. Sim test
+`grapple_frames_match_the_exe` (src/sim_tests/emu_wire.rs).
+
+What the exe does:
+- **Search:** state 1 = a point in action range, 2 = found but out of it (17 m: no shoot; actionDistanceFar
+  15). The hook is the edge's end vertex (a few cm off the export's midpoint-based hook). With the
+  exe's camera, `traversal::grapple_target` on the map export picks the exe's point in all 8 (the
+  6.5 m case aimed at 0023 and both the exe and the sim took 0024). Wolf's facing does not matter.
+- **Shoot:** GroundWireShoot 202000 starts the frame after the press frame (TAE window [0, 1/60]),
+  turns 1080 deg/s and ends facing the **landing spot** (0.001 rad), not the hook (0.005 rad off).
+- **Move start:** 202012 (_Vertical) at 9.7 and 13 m (10.1 / 8.7 deg up from the feet), 202010
+  (_UpperSlope) at 5 and 6.5 m (19.1 / 15.02 deg). From the capsule centre all four are under 15
+  deg, so the angle is the feet's (bracketed only; the engine's formula is not traced).
+- **Launch:** on the frame the clock crosses the 920 (202012 at 0.5 s; 202010 at 0.667 s after its
+  904 slide), FUN_140bb3580 initialVelocityCorrection 1 -> FUN_140bb3930: with d = (flat, up) to
+  the landing spot and acc = (-10, -19.6), T = (4|d|^2 / |acc|^2)^(1/4), vy = up / T - g T / 2,
+  |v|^2 = |acc||d| - acc . d, the rest horizontal. 9.94 m flat, 1.19 m up: T 0.954 s, 15.19 / 10.60
+  m/s, as the exe's first step (15.024 / 10.271 after one step of braking and gravity). FUN_140bb3580
+  refuses a launch over the fall's speed caps (fall +0x1c8 horizontal, +0x1cc vertical).
+- **Wire fall:** the horizontal speed drops exactly 10.0 m/s^2 (RSekiro's table had -15), gravity
+  19.6. The position moves by the mean of the step's old and new velocity.
+- **Arrival:** no re-aim in flight. The flight time is counted from the launch's own step to the
+  nearest step: 0.954 s = 57.2 steps puts him on the spot on the 58th step, 1.099 s (13 m) = 65.97
+  on the 67th. That step the horizontal speed is zeroed and Wolf is put on the spot; the vertical
+  speed carries on. The spot it puts him on is 0.047 m (9.7 m flight) / 0.053 m (13 m)
+  short of the export's landing spot along the travel line, while the arc itself aims at the
+  export's spot (cause not traced).
+- **Landing:** o003600_0024's landing spot is 0.36 m above the roof: the exe plays WireFallLandReady
+  202045 (BEH_R_LAND_WIRE_READY: env 248 near the ground, vy <= -1 m/s), falls the 0.36 m and plays
+  LandWireMove 202035 the frame after touching down (4 frames of 202045).
+- **Air shoot:** the 0100 run left Wolf 6 mm up, so the exe shot from the air: AirWireShoot 202100
+  -> 202112 after 29 frames, the 920 at 0.167 s, landed by collision on the roof before the flight
+  time ran out.
+
+Fixed in RSekiro: the Wire fall's braking -10 (data.rs FALL_TYPES), the arc and arrival
+(`wire::arc`, `Wire::launch` / `steer` with the nearest-step arrival, replacing the fixed 0.67 / 0.83 s flight), the flight's
+mean-velocity step (player.rs), the shoot facing the landing spot (`Wire::turn`), the move-start
+angle from the feet (`wire::dramatic_angle`). Matched: search pick and range in 8, shoot frame and
+turn, move start and its frame, launch speed within 1 cm/s, flight within 12 mm in height and
+0.06 m in all every frame on 202012, arrival on the exe's step (202010: within 2) and within 0.06 m.
+
+Not covered (gaps):
+- one frame late from the launch on: the sim takes a TAE 920 / 904 in the decide after the clock
+  crossed it (decide runs before advance; kb/emulator-pilot.md animstart); shared by every 920;
+- the arrival spot's 5 cm (the exe's own target point); the across-ground flight follows it;
+- the 202010 slide (904): its height is the exe's ground step over the roof edge, 0.27 m off at the
+  launch, so only the arrival is compared;
+- the land fall: the sim stands on the export's spot (no roof collision), so no WireFallLandReady
+  and 0.36 m high;
+- the search itself is not ported from the exe (screen-rectangle test, pick by view axis, the end
+  vertex as the hook); only its result is compared, on one arena;
+- swing-through points (300000020 offsets), enemy arcs, air and wire-to-wire move starts
+  (202110-202112, 202610, 202710), the stick in flight, the speed caps, the wire camera: not run.

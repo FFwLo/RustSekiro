@@ -6,7 +6,7 @@ Dated findings, oldest first. Append new entries at the end.
   (a000_201011 -> row 100: 9.64 m/s up; a000_201010 -> row 101: + 6.4 m/s forward; scales 0 = velocity replaced).
   Fall control is a static exe table (0x143b09ce0, exposed by the physics debug menu), per fallType:
   Normal / Normal_Uncontrollable / Decelerating: horiz accel -0.1, vert -13.72 m/s^2, stick accel 10, stick max 2 m/s;
-  Wire: -15, -9.8, 9, 6. Vertical jump apex 3.39 m at 0.70 s (= frame 21, matches SpEffect 100397 frames 18-24), 1.41 s air.
+  Wire: -10 (the exe brakes the wire flight 10.0 m/s^2: tools/emu-cases `wire`, kb/grapple.md section 7; -15 was a misread), -9.8, 9, 6. Vertical jump apex 3.39 m at 0.70 s (= frame 21, matches SpEffect 100397 frames 18-24), 1.41 s air.
   Ready -> Start -> *GroundJumpFall loop -> GroundJumpLandReady_F. [jump] config gap removed. Sim test added.
   Gap: how stick input combines with the launch velocity (modelled as a separate capped stick velocity).
 - 2026-10-06: free turning uses the anim's TAE SetTurnSpeed when present (SprintLoop 360 deg/s, sprint start 180->360,

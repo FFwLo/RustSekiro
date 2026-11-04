@@ -1472,7 +1472,7 @@ impl FallType {
 pub const FALL_TYPES: [FallType; 4] = [
     FallType { h_accel: -0.1, v_accel: -13.72, stick_accel: 10.0, stick_max_vel: 2.0, controllable: true }, // Normal
     FallType { h_accel: -0.1, v_accel: -13.72, stick_accel: 10.0, stick_max_vel: 2.0, controllable: false }, // Normal_Uncontrollable
-    FallType { h_accel: -15.0, v_accel: -9.8, stick_accel: 9.0, stick_max_vel: 6.0, controllable: true }, // Wire
+    FallType { h_accel: -10.0, v_accel: -9.8, stick_accel: 9.0, stick_max_vel: 6.0, controllable: true }, // Wire (h -10: tools/emu-cases wire, the flight brakes 10.0 m/s^2)
     FallType { h_accel: -0.1, v_accel: -13.72, stick_accel: 10.0, stick_max_vel: 2.0, controllable: true }, // Decelerating
 ];
 

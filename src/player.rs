@@ -4737,6 +4737,7 @@ fn decide(
         // no_gravity_waits_for_the_launch_timer). gap: a flag new this update keeps +0x160 in
         // the exe (zeroed the update after); unused, as the body does not move either way.
         let flag = !a.anim.is_empty() && d.flag(&a.anim, a.step(), FLAG_NO_GRAVITY);
+        let before = a.air_base;
         let (held, h, vy, g) = air_frame(flag, a.launch_left, a.ng_held, a.air_base, a.vel_y, stick, ft, dt);
         (a.air_base, a.vel_y, a.grav_y) = (h, vy, g);
         if held {
@@ -4776,9 +4777,21 @@ fn decide(
             }
         }
         if let Some(w) = p.wire.as_mut() {
-            w.steer(a, tf.translation, dt);
+            // The guaranteed arrival puts him on the spot this step (wire.rs `steer`): the fall
+            // step below (actor.rs `fall`) still moves him by this step's vertical speed, so he is
+            // put that much over it and ends the step on it, as the exe's position does.
+            if let Some(at) = w.steer(a, tf.translation, dt) {
+                tf.translation = at - Vec3::Y * (a.vel_y - 0.5 * a.grav_y * dt) * dt;
+            }
         }
         a.move_vel = a.air_base;
+        // The wire's flight moves by the mean of the step's old and new horizontal velocity, as
+        // the exe's physics step does (FUN_140bccd50's half step; tools/emu-cases `wire`: 0.2516 m
+        // on the launch step from 15.19 -> 15.02 m/s, the arc's analytic distance at the flight
+        // time). gap: the other air flights still move by the new velocity (not compared here).
+        if p.wire.is_some_and(|w| w.flight.is_some()) {
+            a.move_vel = (before + a.air_base) * 0.5;
+        }
         let mut floor = crate::terrain::ground_y(tf.translation) + CAPSULE_HALF_HEIGHT;
         // A ridden point is a floor once the arc is down to it (`Player::perch`).
         let ride_spot = p.wire.filter(|w| w.ride && w.flight.is_none()).map(|w| w.land);

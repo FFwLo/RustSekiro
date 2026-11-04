@@ -18,13 +18,11 @@
 //!   along the facing, +30 m/s up) and the curves from .data 0x143b09db0 (horizontal Linear 1,
 //!   vertical EaseIn 10) - player.rs runs it with the 922 code.
 //! - 920 row 1100 (fallType 2 Wire, homingId 300000000) launches: ChrPhysicsHomingParam
-//!   300000000 initialVelocityCorrection 1, fallCorrectionGuaranteeArrival 2. gap: the exe's
-//!   correction is not traced; the flight is read off the TAE instead: every move start switches
-//!   the camera slot 18 -> 19 (TAE 155) a fixed time after its launch (202010 0.67 s, 202011 /
-//!   202012 0.83 s, the air and wire-to-wire ones 0.67 s) - taken as the arrival time, the launch
-//!   velocity solved so the arc under the Wire fall's gravity arrives then, and the horizontal
-//!   velocity re-aimed every frame (as the plunge's guaranteed arrival, player.rs). The real
-//!   game's skills clip (7:53, an air grapple onto a roof) flies about 0.6 s.
+//!   300000000 initialVelocityCorrection 1 (FUN_140bb3580 -> FUN_140bb3930: the least-speed arc
+//!   to the landing spot under the Wire fall's braking and gravity, `arc`) and
+//!   fallCorrectionGuaranteeArrival (the arc flies on its own for its flight time, then Wolf is
+//!   put on the spot: `Wire::steer`). Checked frame by frame against the exe (tools/emu-cases
+//!   `wire`, sim test grapple_frames_match_the_exe; docs/kb/grapple.md 2026-11-04).
 //! - 905 WireDisableFalling: holds Wolf in the air (AirWireShoot 0-0.5 s).
 
 use bevy::prelude::*;
@@ -41,11 +39,6 @@ pub const WIRE_HOMING: i64 = 300_000_000;
 
 /// The Wire fall type (ChrPhysicsVelocityChangeParam 1100 fallType 2).
 const WIRE_FALL: u8 = 2;
-
-/// TAE 155 SetLockParamID slot of the flight's end (see the module doc).
-const LOCK_SLOT_ARRIVED: i64 = 19;
-/// Flight time when an anim has no slot-19 event (the air move starts' value).
-const DEFAULT_FLIGHT: f32 = 0.667;
 
 /// TAE 224 SetTurnSpeed of the shoots: 1080 deg/s over 0-0.2 s (202000 / 202100), 2700 deg/s
 /// over 0-0.1 s (the wire-to-wire 202600 / 202700).
@@ -158,8 +151,7 @@ fn hook_enemy(mut wolf: Query<(&mut Player, &Actor)>, mut hits: MessageWriter<cr
 }
 
 /// HKS GetWireMoveStartIndex: env WireDramaticAngle > 50 deg vertical, > 15 upslope, else
-/// horizontal. gap: the engine's WireDramaticAngle is not traced; taken as the elevation of the
-/// hook seen from Wolf's centre.
+/// horizontal. `wolf` is the capsule centre; the angle is taken from the feet (`dramatic_angle`).
 pub fn start_index(wolf: Vec3, hook: Vec3) -> usize {
     let angle = dramatic_angle(wolf, hook);
     if angle > 50.0 {
@@ -172,9 +164,13 @@ pub fn start_index(wolf: Vec3, hook: Vec3) -> usize {
 }
 
 /// The graph variable WireDramaticAngle the engine writes for the script's GetWireMoveStartIndex
-/// (degrees). gap: the exe's is not traced; taken as the hook's elevation seen from Wolf's centre.
+/// (degrees): the hook's elevation seen from Wolf's feet (`wolf` is the capsule centre).
+/// tools/emu-cases `wire` (row E7): 5 m and 6.5 m from hook o003600_0024 (19.1 and 15.05 deg from
+/// the feet, 9.4 and 7.4 from the centre) the exe plays 202010 (index 0), at 9.7 and 13 m (10.1 and
+/// 8.7 deg) 202012 (index 2). gap: the engine's own computation (its reference point exactly) is
+/// not traced, only bracketed by these four.
 pub fn dramatic_angle(wolf: Vec3, hook: Vec3) -> f32 {
-    let to = hook - wolf;
+    let to = hook - (wolf - Vec3::Y * CAPSULE_HALF_HEIGHT);
     to.y.atan2(to.x.hypot(to.z)).to_degrees()
 }
 
@@ -231,57 +227,65 @@ impl Wire {
         }
     }
 
-    /// TAE 920 row 1100: solve the arc that arrives at the destination when the anim's camera
-    /// slot turns 19 (module doc). Ridden points end on the landing spot; a swing-through point
-    /// ends at the hook plus the homing row's targetOffset, an enemy at its landing dummy plus
-    /// its row's (the Ogre grabbing 300050200: (0, 1.5, -2)), taken in the travel frame (Z along
-    /// Wolf -> hook, Y up). gap: the offset's frame and base are not traced.
-    pub fn launch(&mut self, d: &CharData, a: &mut Actor, pos: Vec3) {
-        let flight = flight_time(d, &a.anim, a.t);
+    /// TAE 920 row 1100 (homing 300000000, initialVelocityCorrection 1): the launch velocity of
+    /// the exe's least-speed arc to the destination under the Wire fall's horizontal braking and
+    /// gravity ([`arc`]), and its flight time for the guaranteed arrival (`steer`). Ridden points
+    /// end on the landing spot; a swing-through point ends at the hook plus the homing row's
+    /// targetOffset, an enemy at its landing dummy plus its row's (the Ogre grabbing 300050200:
+    /// (0, 1.5, -2)), taken in the travel frame (Z along Wolf -> hook, Y up). gap: the offset's
+    /// frame and base are not traced (the emulator cases are all ridden map points).
+    pub fn launch(&mut self, _d: &CharData, a: &mut Actor, pos: Vec3) {
         self.dest = self.dest_for(pos);
-        let g = FALL_TYPES[WIRE_FALL as usize].gravity();
+        let ft = FALL_TYPES[WIRE_FALL as usize];
         let to = self.dest - pos;
+        let flat = to.with_y(0.0);
+        let (flight, vh, vy) = arc(flat.length(), to.y, ft.h_accel, ft.gravity());
         a.fall_type = WIRE_FALL;
         a.airborne = true;
-        a.vel_y = (to.y - 0.5 * g * flight * flight) / flight;
-        a.air_base = to.with_y(0.0) / flight;
+        a.vel_y = vy;
+        a.air_base = flat.normalize_or_zero() * vh;
         a.move_vel = a.air_base;
         self.flight = Some(flight);
     }
 
-    /// Guaranteed arrival (fallCorrectionGuaranteeArrival): the horizontal velocity re-aimed at
-    /// the destination over the time left; fallCorrectionTurn 1 faces the way he flies.
-    pub fn steer(&mut self, a: &mut Actor, pos: Vec3, dt: f32) {
-        let Some(left) = self.flight else { return };
-        let left = left - dt;
+    /// Guaranteed arrival (fallCorrectionGuaranteeArrival): the arc flies on its own (the Wire
+    /// fall's braking and gravity, no re-aim: tools/emu-cases `wire`, the direction holds to
+    /// 1e-3) while the flight time runs, counted from the launch's own step, to the nearest step:
+    /// on the first step that starts under half a step from the end the exe puts Wolf on the
+    /// destination and stops his horizontal speed, the vertical one going on (h24: T 0.954 s =
+    /// 57.2 steps, put there on the 58th; h24_d13: 1.099 s = 65.97 steps, on the 67th).
+    /// Returns where he is put that step (his centre). fallCorrectionTurn 1 faces the way he
+    /// flies. gap: a swing-through or enemy arc's end is not in the cases; it keeps its speed and
+    /// is not put anywhere.
+    pub fn steer(&mut self, a: &mut Actor, pos: Vec3, dt: f32) -> Option<Vec3> {
+        let left = self.flight? - dt;
         let to = (self.dest - pos).with_y(0.0);
-        if left > 1e-3 {
-            // Under the wall slide's TELEPORT step: a body a wall held back would otherwise
-            // cover the rest in the last tick, skip the slide and go through the wall.
-            a.air_base = (to / left).clamp_length_max(0.9 * crate::terrain::TELEPORT / dt.max(1e-3));
+        if to.length_squared() > 1e-4 && a.air_base.length_squared() > 1e-6 {
+            a.yaw = f32::atan2(-a.air_base.x, -a.air_base.z);
+        }
+        if left > -0.5 * dt {
             self.flight = Some(left);
-        } else {
-            self.flight = None;
-            // A ridden point: over the landing spot now, so no more horizontal speed. The arc to
-            // a high spot can arrive still rising, and the flight speed carried him past the
-            // 0.6 m perch (2026-10-12 bug hunt round 20); he settles onto it as he falls.
-            if self.ride {
-                a.air_base = Vec3::ZERO;
-                a.move_vel = Vec3::ZERO;
-            }
+            return None;
         }
-        if to.length_squared() > 1e-4 {
-            a.yaw = f32::atan2(-to.x, -to.z);
+        self.flight = None;
+        if !self.ride {
+            return None;
         }
+        a.air_base = Vec3::ZERO;
+        a.move_vel = Vec3::ZERO;
+        Some(self.dest)
     }
 
-    /// The shoot's turn toward the hook (TAE 224 SetTurnSpeed, `SHOOT_TURN`).
+    /// The shoot's turn (TAE 224 SetTurnSpeed, `SHOOT_TURN`): toward the landing spot of a ridden
+    /// point, else the hook. tools/emu-cases `wire` (row E7): from 5-13 m the exe ends the turn
+    /// facing o003600_0024's landing spot to 0.001 rad, 0.005 rad off the hook's direction.
+    /// gap: no swing-through or enemy case was run, so those keep the hook.
     pub fn turn(&self, a: &mut Actor, pos: Vec3, dt: f32) {
         let Some(&(_, rate, until)) = SHOOT_TURN.iter().find(|(s, _, _)| *s == a.state) else { return };
         if a.t >= until {
             return;
         }
-        let to = (self.hook - pos).with_y(0.0);
+        let to = (if self.ride && self.enemy.is_none() { self.land } else { self.hook } - pos).with_y(0.0);
         if to.length_squared() < 1e-4 {
             return;
         }
@@ -292,17 +296,24 @@ impl Wire {
     }
 }
 
-/// The flight time of the move start `anim` launched at `t`: to the start of its slot-19 TAE 155.
-pub fn flight_time(d: &CharData, anim: &str, t: f32) -> f32 {
-    d.anim(anim)
-        .and_then(|an| {
-            an.events
-                .iter()
-                .filter(|e| e.kind == 155 && e.arg_i64("LockParamID") == Some(LOCK_SLOT_ARRIVED))
-                .map(|e| e.start - t)
-                .find(|&s| s > 0.05)
-        })
-        .unwrap_or(DEFAULT_FLIGHT)
+/// The wire arc (exe FUN_140bb3930, from FUN_140bb3580's initialVelocityCorrection 1): to a point
+/// `dist` m away on the flat and `dy` m up, with the fall type's horizontal acceleration `h_acc`
+/// (negative: braking along the flight) and gravity `g` (negative). The flight time is the one of
+/// the least launch speed, T = (4 |d|^2 / |acc|^2)^(1/4) with d = (dist, dy) and acc = (h_acc, g);
+/// the vertical speed dy / T - g T / 2; the speed squared |acc| |d| - acc . d, of which the
+/// horizontal part is what the vertical leaves. Returns (T, horizontal speed, vertical speed).
+/// gap: the exe then keeps the solution only within the fall module's speed caps (+0x1c8 / +0x1cc),
+/// not read.
+pub fn arc(dist: f32, dy: f32, h_acc: f32, g: f32) -> (f32, f32, f32) {
+    let d2 = dist * dist + dy * dy;
+    let a2 = h_acc * h_acc + g * g;
+    if d2 <= 0.0 || a2 <= 0.0 {
+        return (0.0, 0.0, 0.0);
+    }
+    let t = (4.0 * d2 / a2).sqrt().sqrt();
+    let vy = dy / t - g * t * 0.5;
+    let v2 = (a2 * d2).sqrt() - (g * dy + dist * h_acc);
+    (t, (v2 - vy * vy).max(0.0).sqrt(), vy)
 }
 
 /// WireVariationParam chrPhysicsHomingIdOffset of the map and object rows (docs/kb/grapple.md
@@ -429,9 +440,18 @@ mod tests {
 
     #[test]
     fn move_start_index_follows_the_hook_elevation() {
-        let wolf = Vec3::ZERO;
+        let wolf = Vec3::Y * CAPSULE_HALF_HEIGHT;
         assert_eq!(start_index(wolf, Vec3::new(0.0, 1.0, -10.0)), 2);
         assert_eq!(start_index(wolf, Vec3::new(0.0, 5.0, -10.0)), 0);
         assert_eq!(start_index(wolf, Vec3::new(0.0, 15.0, -5.0)), 1);
+    }
+
+    /// The exe's h24 launch (tools/emu-cases `wire`): 9.94 m on the flat, 1.19 m up, braking 10 and
+    /// gravity 19.6 -> 0.954 s, 15.19 m/s across, 10.60 m/s up (its first step leaves 15.02 /
+    /// 10.27).
+    #[test]
+    fn the_arc_is_the_exes_least_speed_launch() {
+        let (t, vh, vy) = arc(9.941, 1.191, -10.0, -19.6);
+        assert!((t - 0.954).abs() < 1e-3 && (vh - 15.19).abs() < 0.01 && (vy - 10.598).abs() < 0.01, "{t} {vh} {vy}");
     }
 }
