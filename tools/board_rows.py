@@ -1,8 +1,9 @@
-"""Every enemy and boss gets a board row: lists the fighting characters in docs/kb/coverage.md that no row on the
-board names yet (open or Done), as ready rows for the "C" section.
+"""Nothing is left off the board: every fighting character in docs/kb/coverage.md gets a row in the "C" section
+(a row names its chr id, open or Done), and every system in its Systems table has at least one open row that names
+it (the system's name before any bracket, e.g. "Sound" or "Menus / HUD / saves", anywhere in the row).
 
-  python tools/board_rows.py                    # print the missing rows
-  python tools/board_rows.py --write WORK.md    # add them to the C section (inside the board worktree)
+  python tools/board_rows.py                    # print the missing character rows and the systems with no row
+  python tools/board_rows.py --write WORK.md    # add the character rows to the C section (in the board worktree)
 
 A fighter is a boss or mini-boss (the map's health bar), or a character with an AI battle goal that is neither a
 talking NPC (c7xxx, "[Conversation]") nor a dummy. Run tools/coverage.py first when new characters were extracted.
@@ -35,6 +36,24 @@ def fighters():
     return out
 
 
+def systems():
+    """System names from coverage.md's Systems table, without the bracket ("Docking", "Menus / HUD / saves")."""
+    out, section = [], None
+    for line in open(os.path.join(ROOT, "docs", "kb", "coverage.md"), encoding="utf-8"):
+        if line.startswith("## "):
+            section = line[3:].strip()
+        c = cells(line)
+        if section == "Systems" and line.startswith("| ") and c[0] != "System" and not c[0].startswith("-"):
+            out.append(re.sub(r"\s*\(.*$", "", c[0]))
+    return out
+
+
+def uncovered_systems(text):
+    """Systems that no open row names."""
+    open_rows = "\n".join(l for l in text.split("\n## Done")[0].splitlines() if l.startswith("| ")).lower()
+    return [s for s in systems() if s.lower() not in open_rows]
+
+
 def board_text():
     r = subprocess.run(["git", "remote"], cwd=ROOT, capture_output=True, text=True)
     remote = "upstream" if "upstream" in r.stdout.split() else "origin"
@@ -57,8 +76,8 @@ def missing(text):
         names = name.split("; ")
         name = "; ".join(names[:2]) + ("; ..." if len(names) > 2 else "")
         what = {"boss": "Per-boss check", "mini-boss": "Per-miniboss check"}.get(kind, "Per-enemy check")
-        rows.append(f"| C{n} | emu | | open | {what}: {name} ({chr_id}): its attacks, reactions and AI goals against "
-                    f"the exe, with a scene where it stands | the C section's steps; now {level} |")
+        rows.append(f"| C{n} | game | | open | {what}: {name} ({chr_id}) side by side with your own game: its attacks, "
+                    f"reactions and AI choices | the C section's steps; now {level} |")
     return rows
 
 
@@ -78,8 +97,10 @@ def main():
         open(a[1], "w", encoding="utf-8", newline="\n").write("\n".join(lines) + "\n")
         print(f"added {len(rows)} rows to {a[1]}")
     elif not a:
-        rows = missing(board_text())
-        print("\n".join(rows) or "every fighting character has a row")
+        text = board_text()
+        print("\n".join(missing(text)) or "every fighting character has a row")
+        gaps = uncovered_systems(text)
+        print("systems with no open row: " + ", ".join(gaps) if gaps else "every system has an open row")
     else:
         sys.exit(__doc__)
 

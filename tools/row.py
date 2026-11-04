@@ -166,7 +166,7 @@ def check(filt):
 
 
 def proof(top, rid, emu, why):
-    """An emu row's (C or E) value is trusted only when someone else can re-make it: the emulator command that made the cases,
+    """An emu row's value is trusted only when someone else can re-make it: the emulator command that made the cases,
     a case generator under tools/emu-cases/src/ and a `_matches_the_exe` test in the diff."""
     if work_row(rid)[1] != "emu" and not rid.startswith("E"):
         return ""
@@ -226,7 +226,7 @@ Board: {rid} {kind}: {line}{emu_line}
 - [x] `row.py check` at {rec['sha'][:7]}, full suite {data}: `{rec['result']}`
 - [x] `python tools/guard.py push` passed
 - [ ] New behaviour has a sim test; a unit test that reads game data carries `cfg_attr(not(shinobi_data), ignore)`
-- [ ] For an emu row (C or E): the emulator run (functions, case count) and the kb / emulator-pilot.md notes; it counts as
+- [ ] For an emu row: the emulator run (functions, case count) and the kb / emulator-pilot.md notes; it counts as
       checked once someone else runs `python tools/row.py verify <this PR>` on their own copy
 - [ ] The kb note says what is still not covered (`gap:`)
 

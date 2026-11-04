@@ -45,7 +45,7 @@ disassembly.
 | Checks against the exe (emulator) | `tools/emu-cases/src/<topic>.rs`, `src/sim_tests/emu_*.rs`, `docs/kb/emulator-pilot.md`, `docs/kb/frame-coverage.md` |
 | Streaming map, lighting, collision, script VM (copied from sekiro-rs) | `crates/`, `crates/README.md` |
 | Proof level per system and character; the work map (README picture) | `tools/coverage.py` → `docs/kb/coverage.md`; `python tools/workmap/build.py --tests <n> --png` → `target/workmap.html` and the README picture `docs/media/workmap.png` |
-| Every enemy and boss has a board row (C section): new fighters in coverage.md -> their rows | `python tools/board_rows.py` (prints them; `--write <board>/WORK.md` adds them) |
+| Nothing is left off the board: every enemy and boss has a C row, every coverage.md system an open row | `python tools/board_rows.py` (prints what is missing; `--write <board>/WORK.md` adds the C rows) |
 | Live recordings of the real Sekiro | `docs/kb/recordings.md`: read `python -m tools.rec summary <rec> --cat <topic>`, never raw data |
 
 Community references worth cloning next to the repo (read-only): SekiroHKS, SDT-HKS, Paramdex, SekiroTool,
