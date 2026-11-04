@@ -21,6 +21,7 @@ Contents (line numbers of this file; read a range, not the whole file):
 - 807: 2026-10-13 SkyDome_Ver2 decoded from the game (shader/shaderbdle.shaderbdlebnd.dcx ->
 - 825: 2026-10-13 the same packing for the map layer colours: the exporter's `game_params` now writes
 - 838: 2026-10-12 Fog-wall collision and GIIV irradiance volumes (VFX and Maps)
+- 938: 2026-11-04 How the exe streams the world (WorldBackRead)
 <!-- /index -->
 
 Dated findings, oldest first. Append new entries at the end.
@@ -933,3 +934,24 @@ listed above, a real gate frame to compare against, re-exporting the other arena
   EnvironmentMapLight / Skybox (apply_lighting). Checked: castle top -> Butterfly, -> Owl
   (Father) and back, 100 s each, no error. Test knob: SHINOBI_ARENA_CYCLE=<chr>:<row>,...
   (autoboss.rs) starts those fights 6 s apart.
+
+## 2026-11-04 How the exe streams the world (WorldBackRead; read from the exe, not run yet)
+
+Found with the decompiler (local only) after the connected world ran out of GPU memory. Rules in our
+words; the emulator check is board row E34.
+- The exe keeps map blocks by navmesh demand around the player, not by block adjacency
+  (WorldBackRead, set up in FUN_14081d460). Two distance sets: "Default" start 0 m / end 1 m (the
+  navmesh you stand on) and "Hit" start 80 m / end 90 m; both promote after 0.2 s and retire after 3.0 s.
+- Each record (FUN_14081eae0): pending -> active once it has been demanded within the start distance
+  for 0.2 s (a pending record more than 5 m away also waits for nearer pending ones); active -> retiring
+  when demand is lost or it is past the end distance; retiring -> active only back within the start
+  distance; retiring is deleted after 3.0 s. Every change resets the timer; active and retiring records
+  keep their group masks (the hysteresis).
+- The records' group masks reach the blocks (FieldBackread update FUN_140affb20). A block
+  (FUN_140826520, wanted flag from FUN_1408254f0) loads in stages while wanted and tears down when not;
+  the block machine has no timer of its own, so a block goes 3 s after its last record retires plus the
+  teardown.
+- No map-specific memory budget or pool size was found; the area/block list holds 32 entries.
+- RSekiro today (crates/game map_world.rs, from sekiro-rs #271): frees a block 3 s after the player
+  leaves it and keeps the connected neighbours. The 3 s matches; the trigger does not: the exe keeps
+  what is within 80 m of navmesh (until 90 m) and drops an adjacent block that is farther.
