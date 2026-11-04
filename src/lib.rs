@@ -78,6 +78,8 @@ mod hks_lua;
 mod hkb_runtime;
 #[cfg(feature = "embed")]
 mod hud;
+#[cfg(feature = "embed")]
+pub(crate) mod hud_layout;
 #[cfg(feature = "host")]
 mod icon;
 mod interp;

@@ -36,6 +36,7 @@ mod flver;
 mod fmg;
 mod fev;
 mod fsb;
+mod gfx;
 mod gparam;
 mod hkx;
 mod map;
@@ -349,6 +350,10 @@ fn main() {
         },
         Some("sounds-fmod") if args.len() == 4 => fsb::decode_with_fmod(Path::new(&args[2]), Path::new(&args[3])).unwrap_or_else(|e| eprintln!("{e}")),
         // `hud <extracted>`: only the HUD sprites (export_hud), without the full export.
+        // `gfx <in.gfx> <out.json>`: a Scaleform movie's whole tree; `hud-layout <extracted>`: the
+        // HUD and menu movies' placed instances to extracted/hud/layout/<movie>.json (gfx.rs).
+        Some("gfx") if args.len() == 4 => gfx::dump(Path::new(&args[2]), Path::new(&args[3])),
+        Some("hud-layout") if args.len() == 3 => gfx::export_layouts(Path::new(&args[2])),
         Some("hud-all") if args.len() == 3 => export::export_hud_all(Path::new(&args[2])),
         Some("hud") if args.len() == 3 => export::export_hud(Path::new(&args[2]), &export::hud_icons(&Path::new(&args[2]).join("json/params"))),
         // `listsp <extracted>`: only the SpEffect rows the list puts on Wolf (WOLF_LIST_SP), added

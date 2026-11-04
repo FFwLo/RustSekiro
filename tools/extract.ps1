@@ -38,6 +38,10 @@ Copy-Item (Join-Path $Sekiro "sound\mixer.fev") (Join-Path $out "sound")
 # (menu/hi/01_common -> extracted/hud): the export cuts both.
 & $exe unpack $Sekiro $out '^/(other/decaltex|menu/hi/01_common)'
 & $exe export $out
+# The HUD and menu movies (Scaleform menu/*.gfx) and their layouts: every placed instance's place
+# on the 1920 x 1080 stage and the clips' labels -> extracted/hud/layout/<movie>.json (src/hud_layout.rs).
+& $exe unpack $Sekiro $out '^/menu/[^/]+\.gfx$'
+& $exe hud-layout $out
 # The player's behaviour graph (states, transitions, selectors, clips) as JSON, for reading.
 & $exe behavior (Join-Path $out "chr\c0000.behbnd.d\c0000.hkx") (Join-Path $out "behavior_c0000.json")
 # Every clip's length per character (extracted/clip_lengths/<chr>.json): what the behaviour graph
