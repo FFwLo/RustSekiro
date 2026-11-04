@@ -853,28 +853,35 @@ pub(crate) fn a_stop_late_in_the_guard_run_out_ends_with_its_clip() {
     assert!(after.first().is_some_and(|l| l.contains("W_StandMoveStart")), "{log:?}");
 }
 
-/// Runs a sprint and presses attack the first frame the sprint start is up, steering `stick`.
+/// Runs a sprint, steers `stick` the first frame the sprint start is up and presses attack the next.
 pub(crate) fn sprint_attack_states(stick: Vec2) -> Vec<String> {
     let mut app = app();
     move_enemy_far(&mut app);
+    // The stick a tick before the press (the gate takes it from rest a frame late, the HKS reads
+    // the gated one: emu hksstick).
+    app.world_mut().resource_mut::<PadInput>().stick = Vec2::new(0.0, -1.0);
+    app.update();
     {
         let mut pad = app.world_mut().resource_mut::<PadInput>();
         pad.dodge_held = true;
-        pad.stick = Vec2::new(0.0, -1.0);
         pad.press(Action::Step);
     }
     let mut states = Vec::<String>::new();
-    let mut pressed = false;
+    let (mut steered, mut pressed) = (false, false);
     for _ in 0..240 {
         let s = player_state(&mut app).0;
         if states.last() != Some(&s) {
             states.push(s.clone());
         }
-        if !pressed && s == "SprintStartFromStep_F" {
-            let mut pad = app.world_mut().resource_mut::<PadInput>();
-            pad.stick = stick;
-            pad.press(Action::Attack);
+        // The stick turned a tick before the press: a 90 deg turn reads as a let-go for a frame
+        // (the manipulator's gate) and the HKS's AttackAngle is the gated stick (emu hksstick).
+        if steered && !pressed {
+            app.world_mut().resource_mut::<PadInput>().press(Action::Attack);
             pressed = true;
+        }
+        if !steered && s == "SprintStartFromStep_F" {
+            app.world_mut().resource_mut::<PadInput>().stick = stick;
+            steered = true;
         }
         app.update();
     }
@@ -1158,6 +1165,8 @@ pub(crate) fn a_sprint_jump_is_the_fast_long_jump() {
     }
     // Into the sprint by a forward step, as in play: the landing's Selector_GroundJumpType is
     // the step's (a sprint jump does not set it, HKS _SetJumpDirection is the ground jump's).
+    // A tick after the stick: the gate takes it from rest a frame late (emu hksstick).
+    app.update();
     app.world_mut().resource_mut::<PadInput>().press(Action::Step);
     for _ in 0..120 {
         app.update();
@@ -1566,10 +1575,12 @@ pub(crate) fn art_out_of_a_sprint_and_nightjar_steps() {
         let mut app = app();
         app.world_mut().resource_mut::<crate::config::GameConfig>().player.combat_art = weapon;
         app.update();
+        // Stick away from Wolf's facing (he faces the camera at spawn: stick up = behind him),
+        // a tick before the press (the gate takes it from rest a frame late: emu hksstick).
+        app.world_mut().resource_mut::<PadInput>().stick = Vec2::new(0.0, 1.0);
+        app.update();
         {
             let mut pad = app.world_mut().resource_mut::<PadInput>();
-            // Stick away from Wolf's facing (he faces the camera at spawn: stick up = behind him).
-            pad.stick = Vec2::new(0.0, 1.0);
             pad.press(Action::Attack);
             pad.press(Action::Guard);
         }
@@ -1631,14 +1642,16 @@ fn attack_after_deflect_release(k: usize) -> Vec<String> {
         pad.press(Action::Guard);
         pad.guard_held = true;
     }
-    for _ in 0..40 {
+    for j in 0..40 {
+        // The stick pushed two ticks before the release, so the script sees it on the release's
+        // tick as it did when it read the stick live: the gate takes it from rest a frame late
+        // and the script reads the frame before's (emu hksstick).
+        if j == 38 {
+            app.world_mut().resource_mut::<PadInput>().stick = Vec2::new(0.0, -1.0);
+        }
         app.update();
     }
-    {
-        let mut pad = app.world_mut().resource_mut::<PadInput>();
-        pad.stick = Vec2::new(0.0, -1.0);
-        pad.guard_held = false;
-    }
+    app.world_mut().resource_mut::<PadInput>().guard_held = false;
     // Counted from the release, as the recordings are: the clip it starts shows from the tick
     // after (exe frame order, animstart), so its first tick is no longer the release's.
     let mut seen = Vec::<String>::new();

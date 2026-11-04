@@ -678,8 +678,10 @@ impl Player {
 /// step: a press on frame P plays from P + 1 (attack, guard, Loaded Axe, the General's forced
 /// 3000 alike). `decide` runs before `advance` and reads the window the last advance took, so it
 /// is the exe's HKS of the frame before; it reads the presses and held buttons of the frame before
-/// too. The stick stays live: the exe's turn and move speed (vf22, before the step) take the frame's.
-/// gap: the HKS's own stick reads (a step's or an attack's direction) see the frame's stick here.
+/// too. The stick stays live for `decide`: the exe's turn and move speed (vf22, before the step)
+/// take the frame's. The script's stick reads (MoveSpeedLevel, MoveAngle, the step's, jump's and
+/// attack's angle, the run stop) take the frame before's with its buttons (`Turn::hks`): the exe's
+/// HKS reads the stick of its own frame (emu `hksstick`).
 #[derive(Resource, Default)]
 pub(crate) struct HksPad {
     pressed: Vec<Action>,
@@ -688,6 +690,8 @@ pub(crate) struct HksPad {
     live: [bool; 4],
     /// The next tick's buttons count as the frame before's (`prime`).
     primed: bool,
+    /// This tick was primed: the script reads this frame's stick too.
+    primed_now: bool,
 }
 
 impl HksPad {
@@ -711,6 +715,7 @@ fn set_held(pad: &mut PadInput, h: [bool; 4]) {
 fn hks_pad_in(mut pad: ResMut<PadInput>, mut late: ResMut<HksPad>) {
     let now = (std::mem::take(&mut pad.pressed), held_of(&pad));
     late.live = now.1;
+    late.primed_now = late.primed;
     if std::mem::take(&mut late.primed) {
         pad.pressed = now.0;
         late.held = now.1;
@@ -723,12 +728,15 @@ fn hks_pad_in(mut pad: ResMut<PadInput>, mut late: ResMut<HksPad>) {
 
 /// The pad manipulator (FUN_1407f0a70) runs every frame, whatever Wolf does, in ChrIns::vf22
 /// before the HKS: the stick it takes (the 45 deg gate, `Turn::gate`) is the move vector `decide`
-/// turns and moves by and the one the script's MoveSpeedLevel is the length of (hks_wolf, exe
-/// FUN_140b4afd0 -> +0xbac; emu_turn, emu_hks2 `level`).
-pub(crate) fn pad_manipulator(pad: Res<PadInput>, lock: Res<LockOn>, mut q: Query<&mut Player>) {
+/// turns and moves by; the script's MoveSpeedLevel is the length of the one it took the frame
+/// before (`Turn::hks`; hks_wolf, exe FUN_140b4afd0 -> +0xbac; emu_turn, emu_hks2 `level`,
+/// emu_hksstick).
+pub(crate) fn pad_manipulator(pad: Res<PadInput>, lock: Res<LockOn>, late: Res<HksPad>, mut q: Query<&mut Player>) {
     for mut p in &mut q {
         p.turn.new_tick();
+        let before = p.turn.taken;
         p.turn.taken = p.turn.gate(pad.stick, lock.target.is_some());
+        p.turn.hks = if late.primed_now { p.turn.taken } else { before };
     }
 }
 
@@ -2828,9 +2836,15 @@ pub(crate) struct Turn {
     pub request: Option<f32>,
     /// Last frame's request, for this frame's turn.
     pub pending: Option<f32>,
-    /// The stick the manipulator took this frame (`pad_manipulator`): the move vector both
-    /// `decide` and the script's MoveSpeedLevel / MoveAngle read.
+    /// The stick the manipulator took this frame (`pad_manipulator`): the move vector `decide`
+    /// turns and moves by.
     pub taken: Vec2,
+    /// The stick the script (hks_wolf) reads: the one taken the frame before, as the script
+    /// stands for the exe's HKS of the frame before and that HKS reads its own frame's stick
+    /// (behaviour +0xbac / +0xbb0 and the angle / level pairs from +0xb30, written by
+    /// FUN_140b4afd0 in vf22 before the Havok step; emu `hksstick`, kb/frame-coverage.md "The
+    /// HKS's stick").
+    pub hks: Vec2,
 }
 
 impl Turn {
@@ -3700,10 +3714,12 @@ fn decide(
 
     let cam_pitch = view.orbit.map_or(0.26, |o| o.1);
     let cam_yaw = view.orbit.map_or(0.0, |o| o.0);
-    let stick = stick_world(pad.stick, cam_yaw);
-    // The manipulator's move vector (`Turn::gate`) drives the walk / run and the free turn; the
-    // actions read the stick as it is. gap: which stick the HKS's step / jump / attack angles read
-    // on a press frame is not traced (Sv1's tests press with the stick set that frame).
+    // The manipulator's move vector (`Turn::gate`, this frame's) drives the walk / run and the
+    // free turn; the HKS's own reads (a step's, jump's or attack's direction, the starts and
+    // stops) take the stick it took the frame before, with the frame before's buttons
+    // (`Turn::hks`; emu `hksstick`: the exe's HKS reads its own frame's stick, and `decide` is
+    // the exe's HKS of the frame before).
+    let stick = stick_world(p.turn.hks, cam_yaw);
     let move_stick = stick_world(gated_stick, cam_yaw);
     // Aged, an attack in reach of an aging deathblow row takes the deathblow below.
     // Only where the attack is taken (an aged standby): pressed mid-onset, mid-attack or in an aged
@@ -5029,9 +5045,9 @@ fn decide(
     }
     if is_upper_action(&a.state) {
         // StandMoveOverwrite: the legs run the walk/run (StandMoveLower_SM carries the motion).
-        lower_body_move(p, a, d, &config, move_stick, target_dir, pad.walk, dt);
+        lower_body_move(p, a, d, &config, stick, move_stick, target_dir, pad.walk, dt);
     } else if move_ok && (moving || a.state == "Locomotion" || is_move_quick_turn(&a.state)) {
-        locomotion(p, a, d, &config, move_stick, target_dir, pad.walk, dt);
+        locomotion(p, a, d, &config, stick, move_stick, target_dir, pad.walk, dt);
     } else if let Some(td) = lock.target.and(target_dir).filter(|_| move_ok && a.state == "StandIdle") {
         // Locked on and standing: the lock-on manipulator (FUN_1407f1710) asks every frame for
         // the turn to the target (+0x24 = its yaw from Wolf minus his, wrapped) and BehaviorTurn
@@ -5384,6 +5400,7 @@ fn locomotion(
     d: &CharData,
     config: &GameConfig,
     stick: Vec3,
+    turn: Vec3,
     target_dir: Option<Vec3>,
     walk_held: bool,
     dt: f32,
@@ -5425,7 +5442,7 @@ fn locomotion(
             a.start_at(t);
         }
         p.speed_level = if walk { p.speed_level.max(1.0) } else { p.speed_level.max(2.0) };
-        move_velocity(p, a, d, config, stick, target_dir, dt);
+        move_velocity(p, a, d, config, stick, turn, target_dir, dt);
         return;
     }
     let behind = stick != Vec3::ZERO && a.forward().angle_between(stick).to_degrees() > QUICK_TURN_ANGLE;
@@ -5495,7 +5512,7 @@ fn locomotion(
     if fresh {
         a.move_start = d.length(&a.move_clip(true));
     }
-    move_velocity(p, a, d, config, stick, target_dir, dt);
+    move_velocity(p, a, d, config, stick, turn, target_dir, dt);
 }
 
 /// Upper-body states (HKS STATE_TYPE_UPPER_ACTION, c0000.hkx StandMoveOverwrite): the action's
@@ -5508,6 +5525,7 @@ fn lower_body_move(
     d: &CharData,
     config: &GameConfig,
     stick: Vec3,
+    turn: Vec3,
     target_dir: Option<Vec3>,
     walk_held: bool,
     dt: f32,
@@ -5516,7 +5534,7 @@ fn lower_body_move(
     if stick != Vec3::ZERO {
         a.move_index = if walk_held { 0 } else { 1 };
     }
-    move_velocity(p, a, d, config, stick, target_dir, dt);
+    move_velocity(p, a, d, config, stick, turn, target_dir, dt);
 }
 
 /// The 180 turns: the stick more than this (deg) from the facing (BEH_A_QUICK_TURN_MOVE_START /
@@ -5559,7 +5577,7 @@ fn converge_speed(p: &mut Player, stick: Vec3, walk_held: bool, dt: f32) {
 
 /// Walk/run velocity for the current speed level, turning toward the stick (free) or facing
 /// the target (locked on, strafing).
-fn move_velocity(p: &mut Player, a: &mut Actor, d: &CharData, config: &GameConfig, stick: Vec3, target_dir: Option<Vec3>, dt: f32) {
+fn move_velocity(p: &mut Player, a: &mut Actor, d: &CharData, config: &GameConfig, stick: Vec3, turn: Vec3, target_dir: Option<Vec3>, dt: f32) {
     // Locked on: the stick relative to the facing picks the directional clip; free: forward.
     let local = match target_dir {
         Some(td) => {
@@ -5570,7 +5588,8 @@ fn move_velocity(p: &mut Player, a: &mut Actor, d: &CharData, config: &GameConfi
             Quat::from_rotation_y(-a.yaw) * stick
         }
         None => {
-            free_turn(p, a, d, config, stick, dt);
+            // The turn is the manipulator's (vf22, this frame's stick), the clip's the HKS's.
+            free_turn(p, a, d, config, turn, dt);
             Vec3::NEG_Z
         }
     };

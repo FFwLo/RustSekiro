@@ -438,6 +438,12 @@ impl WolfScript {
         self.chr.vm.global_number(name)
     }
 
+    /// A behaviour variable as the engine last wrote it for the script (tests).
+    #[cfg(test)]
+    pub fn engine_var(&self, name: &str) -> Option<f64> {
+        self.chr.vm.host.borrow().vars.get(name).copied()
+    }
+
     /// The graph's main state and clip (tests).
     #[cfg(test)]
     pub fn graph_main(&self) -> (String, String) {
@@ -568,9 +574,11 @@ fn run_script(mut script: NonSendMut<WolfScript>, dt: f32, land_tick: bool, comb
     let target = lock.target.and_then(|t| Some((places.get(t).ok()?.translation - places.get(*me).ok()?.translation).with_y(0.0).normalize_or_zero()));
     let mut damage = a.damage_env.take();
     let held = [(pad.attack_held, Action::Attack), (pad.dodge_held, Action::Step), (pad.prosthetic_held, Action::Prosthetic)].into_iter().filter_map(|(h, a)| h.then_some(a)).collect();
-    // The stick the pad manipulator took this frame (player::pad_manipulator, its 45 deg gate):
-    // MoveSpeedLevel is its length in the exe, as decide moves by it.
-    let input = Pad { press: pad.pressed().to_vec(), held, guard_held: pad.guard_held, stick: p.turn.taken };
+    // The stick the pad manipulator took the frame before (player::pad_manipulator, its 45 deg
+    // gate; `Turn::hks`): the script stands for the exe's HKS of the frame before, which reads
+    // its own frame's stick with its own frame's buttons (emu `hksstick`). MoveSpeedLevel is its
+    // length in the exe.
+    let input = Pad { press: pad.pressed().to_vec(), held, guard_held: pad.guard_held, stick: p.turn.hks };
     let s = &mut *script;
     // The last tick's request (cleared when this one runs).
     a.fall_protect = s.chr.vm.host.borrow().fall_protect;

@@ -77,6 +77,7 @@ mod emu_fxr2;
 mod emu_hits;
 mod emu_animstart;
 mod emu_bullets;
+mod emu_hksstick;
 mod part12;
 mod part13;
 mod part14;

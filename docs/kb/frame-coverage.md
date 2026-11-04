@@ -257,8 +257,9 @@ press played its clip one frame early (the Loaded Axe release on 48 / payment on
 before the exe's hit step (a hit's damage and reaction a frame early relative to the contact pose,
 kb/damage.md "Landed hits"). Now:
 - `player::hks_pad_in`: `decide` reads the presses and held buttons of the frame before (the stick
-  stays live: the turn and move speed are vf22's, before the step). gap: the HKS's own stick reads
-  (a step's or an attack's direction, the run stop) see the frame's stick.
+  stays live: the turn and move speed are vf22's, before the step). The HKS's own stick reads (a
+  step's or an attack's direction, the run stop) take the frame before's too since 2026-11-04
+  ("The HKS's stick" below).
 - `ActorSet` order Decide, Resolve, Advance: the hit test runs on the poses and attack windows of
   the last step, as the hit step does; a clip played in `resolve` (a reaction) is `Actor::fresh`
   and takes its first step in the next tick (`clear_fresh`, after decide, clears the ones decide
@@ -299,6 +300,63 @@ HKS of the frame before, so only Wolf's pad needed the delay; the General's fram
 not compared with Sv1's); hit-stop frames; (a bullet's hit timing: traced 2026-11-04, "A bullet's
 hit timing" below); other TAE events `decide` still reads a tick after the step (one-shot
 SpEffects 401 / 67, weapon style 32): the exe runs them in the step's frame.
+
+## The HKS's stick (2026-11-04, hksstick, row E1)
+
+How: `emu-cases <exe> extracted/emu hksstick [hksstick_<case>...] --snapshot <dir>`
+(`tools/emu-cases/src/hksstick.rs`) runs Wolf's whole chr frames `FUN_140a4b570` from the snapshot as
+animstart does (menu patch, the pad's stick floats and arm bytes written per frame). Hooks log, in call
+order, the locomotion variables `FUN_140b4afd0`, the Havok step `FUN_141015fa0`, the frame's first HKS
+env call and every HKS act, with the stick-derived fields read at that moment: behaviour +0xbac
+MoveSpeedLevel, +0xbb0 MoveAngle, the four direction / level pairs from +0xb30 (each a world vector
+and the stick's length; FUN_140b4afd0 hands them to the graph as the Jump / Attack / SubAttack / Kick
+angle and level), the manipulator's move vector +0xc0, the physics yaw. Cases, stick changed on frame
+8: `half` (full -> half), `release` (full -> let go), `step_turn` (turned 40 deg, inside the gate, with
+the step pressed on 8-9). Test `the_script_reads_the_stick_of_its_buttons_frame`
+(`src/sim_tests/emu_hksstick.rs`).
+
+**What the exe does.** Every frame `FUN_140b4afd0` (from `FUN_140b49d30`, called by the behaviour
+pre-step `FUN_140b45440` in vf22) runs after the pad manipulator and before the Havok step, so the
+HKS reads the stick of its own frame, the same pad sample as its buttons:
+- `half`: MoveSpeedLevel and the pairs' level read 0.5 at frame 8's HKS (1.0 up to 7);
+- `release`: 0 at frame 8's HKS, and the run stop fires there (acts 157, 9101 on frame 8);
+- `step_turn`: frame 8's HKS sees the move vector and the four pairs already 40 deg round with the
+  step's press (acts 157, 127, 9101, 3029 on 8); the yaw snaps to it on 9 (BehaviorTurn, kb/movement.md).
+- the gate (kb/movement.md 2026-11-03) holds at the HKS too: the press from rest on frame 0 reads 0 there
+  and 1 from frame 1.
+
+**What changed in Sv1.** The script and `decide` tick in the place of the exe's HKS of the frame
+before, and since animstart they read the frame before's buttons but this frame's stick (`decide` even
+the raw, ungated one): a let-go fired the run stop a tick before the buttons' frame, and a step or
+attack took the direction of the frame after its press. Now `player::pad_manipulator` keeps the stick
+taken the tick before in `Turn::hks` (a primed tick, `HksPad::prime`, takes the frame's as its buttons
+do). `hks_wolf::run_script` hands it to the script (MoveSpeedLevel, MoveAngle, TurnAngle, the Kick /
+Jump / Attack / SubAttack angle and level, `step_aim`, the graph's locomotion steering), and
+`decide`'s `stick` is it too (action facings, step / jump directions, starts and stops, the run's
+speed level and clip choice in `locomotion` / `lower_body_move`). Only the free turn (`free_turn`,
+the manipulator's yaw request, vf22's: emu_turn) keeps this frame's taken stick (`move_stick`).
+hks_lua's lockstep answers the script with the frame before's stick as well. Checked: Sv1's script on
+tick f + 1 reads the exe's frame-f MoveSpeedLevel and AttackStickLevel (each pair is a 0x20 block from
++0xb30, its level at +0x10) on all 44 frames of the three cases.
+
+What this means in play, as in the exe: a stick pushed from rest reaches the HKS two Sv1 ticks later
+(the gate's frame, then the HKS's frame), so a step or attack pressed on the very frame the stick
+leaves centre (or turns more than 45 deg) reads no stick: a neutral step, AttackAngle 0. Tests that
+pushed the stick and pressed in one tick now push it a tick before (`an_unlocked_step_ignores_the_auto_aim_target`,
+`sprint_attack_states`, `a_sprint_jump_is_the_fast_long_jump`, the Nightjar step in
+`art_out_of_a_sprint_and_nightjar_steps`, `a_step_out_of_a_large_hit_is_the_damage_step`,
+`atlas_damage_step_from_down_tilts_by_the_stick`; `attack_after_deflect_release` two ticks before the
+release); `standing_a_stick_behind_quick_turns_into_the_move` stands one tick more;
+`releasing_the_stick_at_a_run_stops_in_about_a_third_of_a_metre` measures the slide from the let-go
+tick (that tick still steps the run, as the exe's does).
+
+Not covered (gap): where in the world frame the pad device fills the stick floats ([pad +0x38f8]):
+the emulator writes them before the chr frame, so a device sample taken after the chr update would
+add a frame for the whole pad (buttons and stick alike, not for one against the other); the camera
+yaw the HKS's world stick is turned by is this tick's orbit, not the frame before's; MoveAngle /
+TurnAngle against the facing were not compared (free they read 0 in the exe, Sv1 writes its own
+turn); the locked-on manipulator (no gate, no target in these cases); air control, swimming, aging and
+docking moves in `decide` read the HKS stick too, though the exe's may be vf22's (not traced).
 
 ## Item use and prosthetic bullets (2026-11-03, items)
 

@@ -692,7 +692,9 @@ pub(crate) fn an_unlocked_step_ignores_the_auto_aim_target() {
             world.query_filtered::<&mut Actor, With<Player>>().single_mut(world).unwrap().homing = Some(enemy);
             let mut pad = world.resource_mut::<PadInput>();
             pad.stick = stick;
-            if i == 0 {
+            // The stick pushed a tick before the press: from rest the manipulator's gate takes
+            // it a frame late, and the exe's HKS reads that gated stick (emu hksstick).
+            if i == 1 {
                 pad.press(Action::Step);
             }
         }
@@ -1919,7 +1921,9 @@ pub(crate) fn releasing_the_stick_at_a_run_stops_in_about_a_third_of_a_metre() {
             let (a, t) = w.query_filtered::<(&Actor, &Transform), With<Player>>().single(w).unwrap();
             (a.state.clone(), t.translation)
         };
-        if i == 59 {
+        // The let-go tick still steps the run (the exe's HKS sees the let-go with its frame's
+        // buttons, a tick after Sv1's pad: emu hksstick); the stop's slide starts after it.
+        if i == 60 {
             start = pos;
         }
         let v = (pos - last).with_y(0.0).length() * 60.0;

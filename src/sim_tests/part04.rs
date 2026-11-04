@@ -282,11 +282,12 @@ pub(crate) fn a_step_out_of_a_large_hit_is_the_damage_step() {
             });
         }
         let mut states = Vec::new();
-        for i in 0..4 {
+        for i in 0..6 {
             {
                 let mut pad = app.world_mut().resource_mut::<PadInput>();
                 pad.stick = stick;
-                if i == 0 {
+                // A tick after the stick: the gate takes it from rest a frame late (emu hksstick).
+                if i == 1 {
                     pad.press(Action::Step);
                 }
             }

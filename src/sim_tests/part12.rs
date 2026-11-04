@@ -846,7 +846,10 @@ pub(crate) fn standing_a_stick_behind_quick_turns_into_the_move() {
         app.world_mut().resource_mut::<PadInput>().walk = walk;
         app.world_mut().resource_mut::<PadInput>().stick = Vec2::new(0.0, -1.0);
         // The pad manipulator takes a stick from rest a frame late (player::Turn::gate, emu_turn):
-        // Wolf stands that first frame.
+        // Wolf stands that first frame, and the next: the script reads the stick taken the frame
+        // before (player::Turn::hks, emu hksstick).
+        app.update();
+        assert_eq!(player_actor(&mut app).0, "StandIdle");
         app.update();
         assert_eq!(player_actor(&mut app).0, "StandIdle");
         let mut states = Vec::new();

@@ -49,6 +49,7 @@ mod aimove;
 mod air;
 mod hits;
 mod animstart;
+mod hksstick;
 mod worldbackread;
 mod bullets;
 
@@ -928,6 +929,9 @@ fn main() {
     }
     if want.first().is_some_and(|w| w.starts_with("bullets")) {
         return bullets::run(&|| Emu::new(exe, snap()), out, &want);
+    }
+    if want.first().is_some_and(|w| w.starts_with("hksstick")) {
+        return hksstick::run(&|| Emu::new(exe, snap()), out, &want);
     }
     if want.first().is_some_and(|w| w.starts_with("hits")) {
         return hits::run(&|| Emu::new(exe, snap()), out, &want);
