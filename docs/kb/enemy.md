@@ -727,6 +727,7 @@ and 6.7 attacks/min in 3 min; after, 8 backsteps and 11.3/min. Test
   ground, the fall cut the deathblow and the Demon stood in ThrowDef12000 for good.
 
 ## The open world's map events (2026-10-20, src/enemy/world.rs)
+(What the VM runs of a map's events and its gaps, per map: kb/map-events.md; P10a m11_01 2026-11-04.)
 Behind `SHINOBI_WORLD_ENEMIES=1`, on sekiro-rs's map started at an idol. tools/world_scripts.py
 exports every base map (m*_00_00) as a script in the boss-script layout with `world: true`:
 every enemy part but the c1000 / c1001 dummies, the NPCs, named enemies and bosses included

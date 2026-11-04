@@ -9,8 +9,13 @@
 //! The events' other requests (SpEffects, AI commands, forced anims, deaths) go to the spawned
 //! ones through script.rs `apply`. A rest (FightReset) brings the living back: Restart events
 //! (rest 1) start over, End ones (rest 2) end, the rest keep their state; flags stay.
-//! gaps: no story flags (the world as at a new game), objects, SFX, warps, cutscenes and bullets
-//! of these events are not run; the game streams by map block, not by distance.
+//! The map objects' state (doors, gates, chests: 2005[x]), map parts (2012[1]) and collisions
+//! (2011[1] / [4]) are kept on the Run (script.rs `ObjState`, Run::object / map_part_on / hit_on);
+//! the instructions m11_01 uses that the VM does not run are listed in docs/kb/map-events.md.
+//! gaps: no story flags (the world as at a new game); the objects' state is not drawn or
+//! collided by the play world yet, Wolf has no ObjAct action to open a door with; SFX, warps,
+//! cutscenes and bullets of these events are not run; the game streams by map block, not by
+//! distance.
 
 use bevy::prelude::*;
 use std::collections::{HashMap, HashSet};
@@ -78,7 +83,8 @@ fn load(blocks: &[String]) -> Vec<WorldRun> {
     let mut runs = Vec::new();
     for (i, map) in blocks.iter().enumerate() {
         let Some(def) = all.remove(map) else { continue };
-        info!("world scripts: {map} ({} enemies, {} events)", def.chars.len(), def.events.len());
+        let unrun = def.events.iter().flat_map(|e| &e.ins).filter(|x| !script::handled(x.0, x.1)).count();
+        info!("world scripts: {map} ({} enemies, {} events, {unrun} instructions not run: docs/kb/map-events.md)", def.chars.len(), def.events.len());
         let run = Run::new_world(Arc::new(def), 0x5EED_0000 ^ (i as u32 + 1).wrapping_mul(0x9E37_79B9));
         let spots = run.def.chars.keys().filter_map(|&id| Some((id, run.place_of(id)?.0))).collect();
         runs.push(WorldRun { run, off: HashSet::new(), spots });
@@ -218,6 +224,8 @@ pub(super) fn run_world(
         for ev in 0..run.events.len() {
             script::step(run, ev, &w, dt, &mut acts);
         }
+        // (An executed ObjAct counts for the frame it happened in.)
+        run.objact_used.clear();
         run.frame += 1;
         acts_of.push(acts);
     }
@@ -423,5 +431,178 @@ pub(super) fn update_lod(
         let level = level as u64;
         a.lod_phase = ((*tick % level + level - wc.id as u64 % level) % level) as u32;
         a.lod_due = a.lod_phase == 0;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! Ashina Castle's own events (m11_01_00_00, board row P10a) through the VM, on the exported
+    //! world script (extracted/enemies/world_scripts.json; skipped without it).
+    use super::script::{self, Act, Run, ScriptDef, Snap, PLAYER};
+    use bevy::prelude::*;
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    fn castle() -> Option<Run> {
+        let path = crate::paths::extracted().join("enemies").join("world_scripts.json");
+        let text = std::fs::read_to_string(&path).ok()?;
+        let mut all: HashMap<String, ScriptDef> = serde_json::from_str(&text).unwrap();
+        Some(Run::new_world(Arc::new(all.remove("m11_01_00_00")?), 1))
+    }
+
+    /// The event instance `id` that holds the instruction `bank[iid]` with this first argument.
+    fn instance(run: &Run, id: i64, (bank, iid, arg0): (i32, i32, f64)) -> usize {
+        run.def.events.iter().position(|e| e.id == id && e.ins.iter().any(|x| x.0 == bank && x.1 == iid && x.2.first() == Some(&arg0))).unwrap()
+    }
+
+    fn wolf_at(pos: Vec3, sp: &[i64]) -> HashMap<i64, Snap> {
+        HashMap::from([(PLAYER, Snap { pos, hp: 100.0, hp_max: 100.0, grounded: true, sp: sp.iter().copied().collect(), ..Default::default() })])
+    }
+
+    /// Runs one event for `frames` 60 Hz frames, the ObjAct triggers cleared each frame as
+    /// run_world does.
+    fn run_for(run: &mut Run, ev: usize, chars: &HashMap<i64, Snap>, frames: u32) -> Vec<Act> {
+        let mut acts = Vec::new();
+        for _ in 0..frames {
+            script::step(run, ev, &script::World { chars }, 1.0 / 60.0, &mut acts);
+            run.objact_used.clear();
+            run.frame += 1;
+        }
+        acts
+    }
+
+    /// 11115613: with the castle invasion's 8301 on when the map loads, the gate 1111603 plays
+    /// its animation 1, its ObjAct 999900 goes off and interaction 1 off / 10 on, and its flags
+    /// 11110603 / 61110603 are set; without 8301 the event ends and nothing moves.
+    #[test]
+    fn the_castle_gate_opens_when_the_invasion_flag_is_set() {
+        let Some(mut run) = castle() else { return };
+        let ev = instance(&run, 11115613, (2005, 7, 1111603.0));
+        let far = wolf_at(Vec3::splat(10_000.0), &[]);
+        run_for(&mut run, ev, &far, 10);
+        assert!(run.events[ev].done && run.object(1111603).is_none() && !run.flag(11110603));
+        let Some(mut run) = castle() else { return };
+        run.set_flag(8301, true);
+        run_for(&mut run, ev, &far, 2);
+        let o = run.object(1111603).expect("the gate's state");
+        assert_eq!(o.anim, Some(1));
+        assert_eq!(o.objact.get(&999900), Some(&false));
+        assert_eq!((o.interaction.get(&1), o.interaction.get(&10)), (Some(&false), Some(&true)));
+        assert!(run.flag(11110603) && run.flag(61110603));
+    }
+
+    /// Common event 20005615 for the door 1111700 (closed, flag 11110550 off): its open action
+    /// is offered (interaction 1 on) until an ObjAct with flag 1113709 or 1113710 is executed,
+    /// then 11110550 is set and 2 s later the ObjActs 999940 / 999941 go off. Its last wait,
+    /// 13[01] Player Is Looking At Entity, is a gap: the event stays there.
+    #[test]
+    fn a_castle_door_opens_on_its_objact_and_keeps_its_flag() {
+        let Some(mut run) = castle() else { return };
+        let ev = instance(&run, 20005615, (2005, 19, 1111700.0));
+        let far = wolf_at(Vec3::splat(10_000.0), &[]);
+        run_for(&mut run, ev, &far, 30);
+        assert_eq!(run.object(1111700).and_then(|o| o.interaction.get(&1).copied()), Some(true));
+        assert!(!run.flag(11110550));
+        // Another ObjAct's flag does not open it.
+        run.use_objact(1113999);
+        run_for(&mut run, ev, &far, 1);
+        assert!(!run.flag(11110550));
+        run.use_objact(1113710);
+        run_for(&mut run, ev, &far, 1);
+        assert!(run.flag(11110550));
+        run_for(&mut run, ev, &far, 2 * 60 + 5);
+        let o = run.object(1111700).unwrap();
+        assert_eq!((o.interaction.get(&1), o.objact.get(&999940), o.objact.get(&999941)), (Some(&false), Some(&false), Some(&false)));
+        assert!(!run.events[ev].done, "13[01] is a gap: it waits there");
+    }
+
+    /// The same door already open (11110550 on, a load after it was opened): it skips the
+    /// prompt, plays its open animation 1 and turns its two collisions off and on again (the
+    /// navmesh rebuilt), then ends.
+    #[test]
+    fn an_opened_castle_door_comes_back_open_with_its_collision() {
+        let Some(mut run) = castle() else { return };
+        let ev = instance(&run, 20005615, (2005, 19, 1111700.0));
+        run.set_flag(11110550, true);
+        let far = wolf_at(Vec3::splat(10_000.0), &[]);
+        run_for(&mut run, ev, &far, 1);
+        assert_eq!(run.object(1111700).and_then(|o| o.anim), Some(1));
+        run_for(&mut run, ev, &far, 1);
+        assert!(!run.hit_on(1114381) && !run.hit_on(1114260), "off for a frame");
+        run_for(&mut run, ev, &far, 2);
+        assert!(run.hit_on(1114381) && run.hit_on(1114260));
+        assert!(run.events[ev].done);
+    }
+
+    /// Common event 20005546 for the breakable 1111100: Wolf with SpEffect 100317 within 1 m of
+    /// it destroys it (2005[1]); not without the SpEffect.
+    #[test]
+    fn a_breakable_breaks_for_wolf_with_its_speffect_in_reach() {
+        let Some(mut run) = castle() else { return };
+        let ev = (0..run.def.events.len())
+            .find(|&k| run.def.events[k].id == 20005546 && run.def.events[k].ins.get(1).is_some_and(|x| x.2.get(2) == Some(&1111100.0)))
+            .unwrap();
+        let at = run.place_of(1111100).expect("the object's MSB spot").0;
+        run_for(&mut run, ev, &wolf_at(at, &[]), 10);
+        assert!(run.object(1111100).is_none_or(|o| !o.destroyed));
+        run_for(&mut run, ev, &wolf_at(at, &[100317]), 2);
+        assert!(run.object(1111100).is_some_and(|o| o.destroyed));
+    }
+
+    /// A hand-made event: IF Parameter Comparison, IF Character Type (Wolf alone is type 0), END
+    /// IF Player Is Not In Own World (never with "is not in" on, alone), GOTO IF Comparison,
+    /// the network flags and Character Warp Request.
+    #[test]
+    fn parameter_comparison_character_type_and_own_world_run_as_offline() {
+        let ins = serde_json::json!([
+            [1003, 13, [0, 1]],
+            [0, 1, [1, 0, 3, 3]],
+            [4, 3, [1, 10000, 0, 0, 1.0]],
+            [4, 3, [-2, 10000, 2, 0, 1.0]],
+            [0, 0, [0, 1, 1]],
+            [1000, 105, [5, 2, 4, 1]],
+            [2003, 62, [500, 1]],
+            [1014, 5, []],
+            [2003, 63, [600, 602, 1]],
+            [2004, 3, [1110701, 1, 1112726, -1]],
+            [1003, 13, [0, 0]],
+            [2003, 2, [700, 1]],
+        ]);
+        let def: ScriptDef = serde_json::from_value(serde_json::json!({
+            "map": "test", "boss": 0, "world": true, "chars": {}, "events": [{"id": 1, "slot": 0, "ins": ins}],
+        }))
+        .unwrap();
+        let mut run = Run::new_world(Arc::new(def), 1);
+        let acts = run_for(&mut run, 0, &wolf_at(Vec3::ZERO, &[]), 1);
+        assert!(!run.flag(500), "GOTO IF Comparison 4 > 1 jumped over it");
+        assert!(run.flag(600) && run.flag(601) && run.flag(602));
+        assert!(acts.iter().any(|a| matches!(a, Act::Warp(1110701, 1, 1112726, false, -1))));
+        assert!(!run.flag(700) && run.events[0].done, "1003[13] with 'is not in' off ends it");
+    }
+
+    /// Every instruction m11_01's events use that the VM does not run is a listed gap
+    /// (docs/kb/map-events.md), with its count.
+    #[test]
+    fn the_castles_unrun_instructions_are_the_listed_gaps() {
+        let Some(run) = castle() else { return };
+        let mut gaps: std::collections::BTreeMap<(i32, i32), usize> = Default::default();
+        for e in &run.def.events {
+            for x in e.ins.iter().filter(|x| !script::handled(x.0, x.1)) {
+                *gaps.entry((x.0, x.1)).or_default() += 1;
+            }
+        }
+        let listed: std::collections::BTreeMap<(i32, i32), usize> = [
+            ((3, 24), 9), ((4, 6), 12), ((12, 2), 16), ((12, 5), 1), ((13, 1), 18), ((2000, 2), 12), ((2000, 5), 9), ((2002, 1), 2),
+            ((2003, 4), 1), ((2003, 23), 1), ((2003, 28), 4), ((2003, 36), 69), ((2003, 76), 1), ((2003, 79), 6), ((2003, 80), 6),
+            ((2003, 81), 7), ((2003, 82), 22), ((2003, 87), 16), ((2003, 88), 10), ((2004, 7), 1), ((2004, 10), 140), ((2004, 13), 5),
+            ((2004, 15), 37), ((2004, 16), 1), ((2004, 22), 12), ((2004, 26), 40), ((2004, 30), 5), ((2004, 31), 129), ((2004, 34), 39),
+            ((2004, 35), 2), ((2004, 37), 5), ((2004, 39), 77), ((2004, 49), 27), ((2004, 50), 6), ((2004, 58), 11), ((2004, 62), 6),
+            ((2004, 64), 3), ((2004, 65), 133), ((2006, 1), 74), ((2006, 2), 60), ((2006, 3), 1), ((2006, 4), 27), ((2006, 5), 43),
+            ((2007, 1), 6), ((2007, 13), 1), ((2007, 14), 1), ((2007, 17), 2), ((2007, 18), 3), ((2008, 4), 8), ((2009, 3), 11),
+            ((2010, 3), 12), ((2010, 6), 1), ((2010, 8), 16),
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(gaps, listed);
     }
 }

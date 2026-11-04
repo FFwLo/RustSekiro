@@ -13,7 +13,8 @@ Output, keyed by map: {"map", "boss": 0, "world": true,
            enabled or not by their map's events; "gate" leaves the part out while that flag is
            `on`, e.g. the Demon of Hatred until the burnt Outskirts' 8302; not the c1000 / c1001
            event dummies),
-  "places": {entity: {"at", "yaw"}}, "regions": {entity: {"shape", "size", "parts"}},
+  "places": {entity: {"at", "yaw"}} (regions, points and the object parts the events name),
+  "regions": {entity: {"shape", "size", "parts"}},
   "events": [{"id", "slot", "rest", "ins"}], "flags_on": []}
 Usage: python tools/world_scripts.py
 """
@@ -74,6 +75,31 @@ def group_gates(td):
     return out
 
 
+def object_places(path):
+    """{entity id: ((x, y, z), yaw degrees)} of the object parts (MSBS Part types 1 Object and
+    9 DummyObject; position @0x20, rotation @0x2C, entity data @0x60): the doors, gates and
+    breakables the map's events name (an In/Outside Radius check on a breakable, m11_01
+    20005546)."""
+    d = open(path, 'rb').read()
+    tables, o = {}, 0x10
+    while True:
+        _, cnt, name_off = struct.unpack_from('<iiq', d, o)
+        offs = struct.unpack_from('<%dq' % (cnt - 1), d, o + 16)
+        nxt = struct.unpack_from('<q', d, o + 16 + 8 * (cnt - 1))[0]
+        tables[be.u16s(d, name_off)] = offs
+        if nxt == 0:
+            break
+        o = nxt
+    out = {}
+    for o in tables['PARTS_PARAM_ST']:
+        if struct.unpack_from('<I', d, o + 8)[0] not in (1, 9):
+            continue
+        eid = struct.unpack_from('<i', d, o + struct.unpack_from('<q', d, o + 0x60)[0])[0]
+        if eid > 0:
+            out.setdefault(eid, (struct.unpack_from('<3f', d, o + 0x20), struct.unpack_from('<3f', d, o + 0x2C)[1]))
+    return out
+
+
 def main():
     types = bs.emedf()
     common = bs.emevd(os.path.join(bs.ROOT, 'event', 'common_func.emevd'))
@@ -87,6 +113,8 @@ def main():
             continue
         evs = bs.instances(bs.emevd(os.path.join(bs.ROOT, 'event', f)), common, types)
         places = be.msb_places(msb)
+        for eid, at in object_places(msb).items():
+            places.setdefault(eid, at)
         regs = bs.shapes(msb)
         td = typedata(msb)
         inherited = group_gates(td)

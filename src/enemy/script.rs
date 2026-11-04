@@ -314,6 +314,42 @@ pub struct Run {
     attached: HashMap<i64, (i64, i16, bool)>,
     /// Its talk (enemy/talk.rs) was looked up: once per fight.
     pub talk_seen: bool,
+    /// The map objects as the events left them (doors, gates, chests: 2005[x]), by entity id.
+    pub(crate) objects: HashMap<i64, ObjState>,
+    /// 2012[1] Activate Map Part (entity -> on); a part the events never named is on.
+    pub(crate) map_parts: HashMap<i64, bool>,
+    /// 2011[1] Activate Hit / 2011[4] Activate Hit and Create Navimesh (collision -> on).
+    pub(crate) hits: HashMap<i64, bool>,
+    /// The ObjAct event flags executed this frame (5[02] IF ObjAct Event Flag), cleared after the
+    /// frame's events ran: the exe's EcTestObjActExecuted (evaluate 0x1408fcb90) looks the flag
+    /// up in a list of executed ObjAct records, not in the event flags (re-scout 2026-11-04;
+    /// how long a record stays is not traced: one frame here).
+    pub(crate) objact_used: HashSet<i64>,
+}
+
+/// One map object as its events left it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ObjState {
+    /// 2005[3] (De)activate Object.
+    pub active: bool,
+    /// 2005[1] Request Object Destruction / 2005[2] Request Object Restoration.
+    pub destroyed: bool,
+    /// 2005[7] Reproduce Object Animation: the last animation asked for (a door's open pose).
+    pub anim: Option<i64>,
+    /// 2005[6] Set ObjAct State: ObjActParam row -> usable.
+    pub objact: HashMap<i64, bool>,
+    /// 2005[19] Set Object Interaction: interaction id -> on.
+    pub interaction: HashMap<i64, bool>,
+    /// 2005[4] Set Object Treasure State.
+    pub treasure: Option<bool>,
+    /// 2005[13] Set Object Invulnerability.
+    pub invulnerable: bool,
+}
+
+impl Default for ObjState {
+    fn default() -> Self {
+        ObjState { active: true, destroyed: false, anim: None, objact: HashMap::new(), interaction: HashMap::new(), treasure: None, invulnerable: false }
+    }
 }
 
 #[derive(Resource, Default)]
@@ -458,6 +494,10 @@ impl Run {
             warp_serial: HashMap::new(),
             attached: HashMap::new(),
             talk_seen: false,
+            objects: HashMap::new(),
+            map_parts: HashMap::new(),
+            hits: HashMap::new(),
+            objact_used: HashSet::new(),
         }
     }
 
@@ -530,6 +570,32 @@ impl Run {
     /// Character `id`'s MSB flag leaves it out now ([`CharDef::gate`]).
     pub(crate) fn gated(&self, id: i64) -> bool {
         self.def.chars.get(&id).and_then(|c| c.gate).is_some_and(|(f, on)| self.flag(f) == on)
+    }
+
+    /// A map object as the events left it (None: never named, as placed). The object accessors
+    /// are for the play world's objects (not wired yet: the tests read them).
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn object(&self, id: i64) -> Option<&ObjState> {
+        self.objects.get(&id)
+    }
+
+    /// 2012[1]: is the map part on (on until an event turns it off)?
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn map_part_on(&self, id: i64) -> bool {
+        self.map_parts.get(&id).copied().unwrap_or(true)
+    }
+
+    /// 2011[1] / 2011[4]: is the collision on?
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn hit_on(&self, id: i64) -> bool {
+        self.hits.get(&id).copied().unwrap_or(true)
+    }
+
+    /// Wolf executed the ObjAct with this EventFlagID (a door's open action): 5[02] holds this
+    /// frame. gap: nothing in the game calls it yet (Wolf has no ObjAct action).
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn use_objact(&mut self, flag: i64) {
+        self.objact_used.insert(flag);
     }
 
     /// An event flag the AI set (SetEventFlag; enemy.rs think).
@@ -666,6 +732,27 @@ fn pred(run: &Run, ev: usize, w: &World, ins: &(i32, i32, Vec<f64>), since: f32)
         // waits on Wolf standing on the castle top's 1114801-804. gap: the arena keeps no
         // collision ids, so any ground counts.
         (11, 2) => w.chars.get(&PLAYER).is_some_and(|c| c.grounded),
+        // IF Parameter Comparison (lhs <cmp> rhs; the common events' parameters, filled in by
+        // the exporter): m11_01's 20005200 / 20005340 switch their checks on them.
+        (0, 1) => cmp(f(2), i(1), f(3)),
+        // IF Character Type: Wolf alone in his own world is type 0 (DarkScript3: 0 alive, 1 white
+        // phantom, 2 black phantom, 8 grey). gap: the exe's type number (EcTestChrType, evaluate
+        // 0x1408f3300, a visitor over the chr manager) is not traced; m11_01 asks it of Wolf only.
+        (4, 3) => counted(i(1) == PLAYER && i(2) == 0, i(3), f(4)),
+        // IF Character HP Ratio New / IF Number of Character Health Bars (Other): the layouts of
+        // 4[2] / 4[37]. gap: what "new" and "other" change is not traced.
+        (4, 16) => chr(1).is_some_and(|c| counted(cmp((c.hp / c.hp_max.max(1.0)) as f64, i(2), f(3)), i(4), f(5))),
+        (4, 38) => chr(1).is_some_and(|c| counted(cmp(c.bars as f64, i(2), f(3)), i(4), f(5))),
+        // IF Entity Loaded: a running block's entities are loaded, but for the characters an
+        // event unloaded (2004[29]) or whose MSB flag leaves them out.
+        (4, 45) => {
+            let loaded = !run.unloaded.contains(&i(1)) && !run.gated(i(1));
+            counted(loaded == (i(2) == 1), i(3), f(4))
+        }
+        // IF ObjAct Event Flag: an ObjAct with this EventFlagID was executed (Run::use_objact).
+        (5, 2) => run.objact_used.contains(&i(1)),
+        // IF Hit Loaded: the block's collisions load with it.
+        (11, 3) => true,
         (4, 14) => chr(1).is_some_and(|c| counted(cmp(c.hp as f64, i(2), f(3)), i(4), f(5))),
         (4, 37) => chr(1).is_some_and(|c| counted(cmp(c.bars as f64, i(2), f(3)), i(4), f(5))),
         (4, 39) => chr(1).is_some_and(|c| counted(cmp(c.posture_ratio as f64, i(2), f(3)), i(4), f(5))),
@@ -694,6 +781,35 @@ fn group(run: &Run, ev: usize, w: &World, g: i8) -> bool {
 
 fn is_condition(bank: i32) -> bool {
     (0..1000).contains(&bank)
+}
+
+/// The conditions and instructions `pred` and `step` run (some on a stated stand-in: 3[31] a
+/// cutscene is done, 4[15] in the draw group, 11[2] any ground). Every other one is a gap: a
+/// condition that never holds, an instruction that does nothing (docs/kb/map-events.md).
+pub(super) fn handled(bank: i32, id: i32) -> bool {
+    match bank {
+        0 => matches!(id, 0 | 1),
+        1 => matches!(id, 0 | 1),
+        3 => matches!(id, 0 | 1 | 2 | 3 | 8 | 10 | 12 | 23 | 31),
+        4 => matches!(id, 0 | 1 | 2 | 3 | 5 | 7 | 8 | 9 | 14 | 15 | 16 | 21 | 37 | 38 | 39 | 43 | 45),
+        5 => matches!(id, 2 | 10),
+        11 => matches!(id, 2 | 3),
+        1000 => matches!(id, 1 | 2 | 3 | 4 | 5 | 7 | 8 | 101 | 103 | 105 | 107),
+        1001 => matches!(id, 0 | 1 | 2),
+        1003 => matches!(id, 0 | 1 | 2 | 3 | 4 | 11 | 13 | 101 | 103 | 111 | 112 | 200 | 202),
+        1005 => id == 2,
+        // Labels.
+        1014 => true,
+        // Initialize Event / Common Event: tools/world_scripts.py starts every instance at load.
+        2000 => matches!(id, 0 | 6),
+        2002 => matches!(id, 4 | 13),
+        2003 => matches!(id, 1 | 2 | 5 | 11 | 12 | 17 | 18 | 22 | 31 | 58 | 62 | 63 | 74),
+        2004 => matches!(id, 1 | 2 | 3 | 4 | 5 | 6 | 8 | 11 | 12 | 17 | 19 | 20 | 21 | 29 | 40 | 41 | 42 | 61),
+        2005 => matches!(id, 1 | 2 | 3 | 4 | 6 | 7 | 13 | 19),
+        2011 => matches!(id, 1 | 4),
+        2012 => id == 1,
+        _ => false,
+    }
 }
 
 /// Runs one event until it blocks; pushes its actions.
@@ -779,6 +895,51 @@ pub(super) fn step(run: &mut Run, ev: usize, w: &World, dt: f32, acts: &mut Vec<
                 }
             }
             (1000, 103) => next = label(i(0), next).unwrap_or(next),
+            (1000, 8) => {
+                if compiled(run, i(2)) == (i(1) == 1) {
+                    end(run, ev, i(0) == 1);
+                    return;
+                }
+            }
+            (1000, 105) => {
+                if cmp(f(2), i(1), f(3)) {
+                    next = label(i(0), next).unwrap_or(next);
+                }
+            }
+            (1003, 4) => {
+                if batch(run, i(1), i(3), i(4)) {
+                    end(run, ev, i(0) == 1);
+                    return;
+                }
+            }
+            // END IF Player Is Not In Own World (end type, is not in): Wolf plays alone, always
+            // in his own world, so only "is not in" off ends it (EcTestIsMyWorld, evaluate
+            // 0x14074b300; gap: the world byte's writer is not traced).
+            (1003, 13) => {
+                if i(1) == 0 {
+                    end(run, ev, i(0) == 1);
+                    return;
+                }
+            }
+            // GOTO / SKIP IF Player In/Outside Area (label or lines, desired, entity, area).
+            (1003, 200) | (1003, 202) => {
+                let inside = run.pos_in(w, i(2)).is_some_and(|p| run.inside(i(3), p));
+                if inside == (i(1) == 1) {
+                    if *id == 200 {
+                        next = label(i(0), next).unwrap_or(next);
+                    } else {
+                        next += i(0) as usize;
+                    }
+                }
+            }
+            // END IF Object Destroyed (end type, damage state, object, comparison, count).
+            (1005, 2) => {
+                let destroyed = run.objects.get(&i(2)).is_some_and(|o| o.destroyed);
+                if counted(destroyed == (i(1) == 1), i(3), f(4)) {
+                    end(run, ev, i(0) == 1);
+                    return;
+                }
+            }
             (1000, 107) => {
                 if compiled(run, i(2)) == (i(1) == 1) {
                     next = label(i(0), next).unwrap_or(next);
@@ -912,7 +1073,49 @@ pub(super) fn step(run: &mut Run, ev: usize, w: &World, dt: f32, acts: &mut Vec<
                 if let Some(o) = run.attached.get_mut(&i(0)) {
                     o.2 = i(1) == 1;
                 }
+                run.objects.entry(i(0)).or_default().active = i(1) == 1;
             }
+            // The map objects (doors, gates, chests, breakables): their state as the events set
+            // it (Run::object). gap: the play world (sr_map) does not draw, animate or collide
+            // by it yet.
+            // 2005[1] Request Object Destruction (object, slot; 0: a parameter left unset).
+            (2005, 1) if i(0) != 0 => run.objects.entry(i(0)).or_default().destroyed = true,
+            (2005, 2) => run.objects.entry(i(0)).or_default().destroyed = false,
+            (2005, 4) => run.objects.entry(i(0)).or_default().treasure = Some(i(1) == 1),
+            // 2005[6] Set ObjAct State (object, ObjActParam row, state).
+            (2005, 6) => {
+                run.objects.entry(i(0)).or_default().objact.insert(i(1), i(2) == 1);
+            }
+            // 2005[7] Reproduce Object Animation (object, animation): the door opened / shut.
+            (2005, 7) => run.objects.entry(i(0)).or_default().anim = Some(i(1)),
+            (2005, 13) => run.objects.entry(i(0)).or_default().invulnerable = i(1) == 1,
+            // 2005[19] Set Object Interaction (object, interaction, state).
+            (2005, 19) => {
+                run.objects.entry(i(0)).or_default().interaction.insert(i(1), i(2) == 1);
+            }
+            // 2012[1] Activate Map Part, 2011[1] / 2011[4] Activate Hit (and Create Navimesh).
+            (2012, 1) => {
+                run.map_parts.insert(i(0), i(1) == 1);
+            }
+            (2011, 1) | (2011, 4) => {
+                run.hits.insert(i(0), i(1) == 1);
+            }
+            // Set Network-Connected Event Flag / Batch ...: offline, plain event flags.
+            (2003, 62) => {
+                let on = match i(1) {
+                    0 => false,
+                    1 => true,
+                    _ => !run.flag(i(0)),
+                };
+                run.flags.insert(i(0), on);
+            }
+            (2003, 63) => {
+                for fl in i(0)..=i(1) {
+                    run.flags.insert(fl, i(2) == 1);
+                }
+            }
+            // 2004[3] Character Warp Request (entity, target type, target, dummy poly).
+            (2004, 3) => acts.push(Act::Warp(i(0), i(1), i(2), false, i(3))),
             (2004, 61) => acts.push(Act::Warp(i(0), 0, i(0), false, -1)),
             // 2003[11] Display Boss Health Bar (state, entity, slot, name text id).
             (2003, 11) => acts.push(Act::BossBar(i(1), i(0) == 1)),

@@ -28,7 +28,7 @@ disassembly.
 |---|---|
 | Wolf's states, input, moves | `src/player.rs`, `docs/kb/movement.md`, `attacks.md`, `input-buffer.md` |
 | Hits, posture, guard, deflect, deathblow | `src/combat.rs`, `src/actor.rs`, `docs/kb/guard-deflect.md`, `damage.md` |
-| Enemies, AI, stealth | `src/enemy.rs`, `src/ai.rs`, `src/stealth.rs`, `docs/kb/enemy.md` |
+| Enemies, AI, stealth | `src/enemy.rs`, `src/ai.rs`, `src/stealth.rs`, `docs/kb/enemy.md` (map events: `map-events.md`) |
 | Animation, models, cloth, materials | `src/anim.rs`, `src/model.rs`, `src/cloth.rs`, `docs/kb/visuals.md` |
 | Effects, blood, bullets | `src/fxr.rs`, `src/ffx.rs`, `src/gore.rs`, `src/vfx.rs`, `docs/kb/fxr.md` |
 | Prosthetics, arts, skills | `src/prosthetic.rs`, `src/model/tool.rs`, `src/status.rs`, `docs/kb/skills.md` |
