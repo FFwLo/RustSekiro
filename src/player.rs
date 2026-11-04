@@ -484,14 +484,9 @@ pub(crate) const FALL_DAMAGE_MIN: f32 = 20.0;
 pub(crate) const FALL_RETURN_COST: f32 = 0.4;
 
 /// HP a landing from `drop` metres costs, and whether it is the lethal one (the return death),
-/// None under FALL_DAMAGE_MIN. Exe FUN_140b97a30 -> FUN_140b97b30 on the land frame, fall height
-/// = physics +0x854 (the fall top) - y: from 20 m the loss is (int)(maxHP x CalcCorrectGraph 210
-/// (h) / 100) (row 210 is the identity 20 -> 20 .. 100 -> 100), e.g. 25 m -> 280 of 1120; from
-/// HitMtrlParam fallDeathDist (`dist`, 40 m by default) it is (int)(maxHP x 0.4) instead and the
-/// land plays LandDeadReturnStart (40 m: 548 -> 100 HP). Emulated: extracted/emu/air_drops_*.json,
-/// test emu_air. gap: CalcCorrectGraph 211 / 212 (FUN_1408433f0's other factors, 1.0 here) and
-/// HitMtrlParam +0x50 fallDamageRate are not applied; what a non-lethal fall does when it takes
-/// the last HP is not traced (HP stops at 0 here).
+/// None under FALL_DAMAGE_MIN, for a full-HP Wolf on the default ground (`dist` = fallDeathDist):
+/// from 20 m (int)(maxHP x h / 100), from `dist` (int)(maxHP x 0.4) and the return. The whole
+/// rule (HP left, floors, aging, stateInfo 47) is `fall_landing`.
 pub(crate) fn fall_hp_loss(hp_max: f32, drop: f32, dist: f32) -> Option<(f32, bool)> {
     if drop < FALL_DAMAGE_MIN {
         return None;
@@ -503,10 +498,62 @@ pub(crate) fn fall_hp_loss(hp_max: f32, drop: f32, dist: f32) -> Option<(f32, bo
     let factor = drop.min(100.0) * 0.01;
     Some(((hp_max * factor).floor(), false))
 }
-/// The share of max HP a fall out of the map with no lethal landing costs (the fall-return walls,
-/// the void drop; the user, 2026-10-18: "the falls should take 1/3 of player's health every time
-/// wolf falls out of the map"). gap: the exe's cost for these is not traced.
-const FALL_VOID_RETURN_COST: f32 = 1.0 / 3.0;
+
+/// What a landing does to Wolf's HP (`fall_landing`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum FallLanding {
+    /// No fall damage.
+    None,
+    /// HP after a fall short of the kill (never under 1: the player keeps 1 HP).
+    Hurt(f32),
+    /// The fall-return death (LandDeadReturnStart, damage type 15): HP after its cost.
+    Return(f32),
+    /// HP was at or under the return's cost: HP 0 and the ordinary death on the spot.
+    Death,
+}
+
+/// The landing's fall damage for the player, exe FUN_140b97a30 -> FUN_140b97b30 on the land
+/// frame (emulated in extracted/emu/air_falldmg.json, test emu_air
+/// `the_fall_landing_matches_the_exe`), fall height = physics +0x854 (the fall top) - y:
+/// - a HitMtrlParam disableFallDamage floor (row 40; FUN_140ba8cb0 reads it from physics +0x940):
+///   nothing, aged or not;
+/// - the kill test FUN_14084e5d0: aged (SpEffect stateInfo 0x155 = 341 worn) from 5 m
+///   (DAT_143b01950) on any other floor, deep water too; else from 20 m and the floor's
+///   fallDeathDist (40, 80 on the deep-water rows 22 / 36 / 38; no floor: 40);
+/// - the factor FUN_140843660: 1 for a kill; else 0 under 20 m (5 m aged, DAT_143b01954), else
+///   CalcCorrectGraph 210 (h) / 100 x the floor's fallDamageRate (0.5 on 22 / 36 / 38) x
+///   FUN_1408433f0's other factors: graphs 211 / 212 / 213 of the player's game data (flat 100 %
+///   on every input, so 1, while game data +0x8fc is above 0: 50 on the snapshot) and the
+///   product of the worn SpEffects' fallDamageRate (0 only on 4050 / 4053, stateInfo 47 too);
+/// - stateInfo 47 worn (SpEffects 640 / 4050 / 4053): the damage is zeroed before the kill is
+///   looked at, so even a lethal drop does nothing;
+/// - a kill: HP over (int)(maxHP x 0.4) (DAT_143b01958) pays that and plays the return, else HP 0
+///   and the ordinary death (the exe's damage of maxHP x 1);
+/// - short of it: HP -= (int)(maxHP x factor); a player emptied that way keeps 1 HP.
+pub(crate) fn fall_landing(hp: f32, hp_max: f32, drop: f32, material: Option<u32>, aged: bool, no_fall_damage: bool) -> FallLanding {
+    let Some(dist) = crate::terrain::fall_death_dist(material) else { return FallLanding::None };
+    let from = if aged { FALL_DAMAGE_FROM_AGED } else { FALL_DAMAGE_MIN };
+    let kill = if aged { drop >= FALL_DAMAGE_FROM_AGED } else { drop >= FALL_DAMAGE_MIN && drop >= dist };
+    let factor = if kill { 1.0 } else if aged { 0.0 } else { crate::terrain::fall_damage_share(drop, material, from) };
+    let damage = (hp_max * factor).floor();
+    if no_fall_damage || damage <= 0.0 {
+        return FallLanding::None;
+    }
+    if kill {
+        return fall_return_hp(hp, hp_max).map_or(FallLanding::Death, FallLanding::Return);
+    }
+    FallLanding::Hurt((hp - damage).max(1.0))
+}
+
+/// The fall-return death's cost: exe FUN_140b975f0 for the fall out of the map (the fall-return
+/// walls, the void drop: damage type 14) and FUN_140b97b30 for the lethal landing (type 15) both
+/// take (int)(maxHP x 0.4) (DAT_143b01958) when HP is over it; at or under it HP goes to 0 and
+/// Wolf dies (None). Emulated in extracted/emu/air_falldmg.json. Before 2026-11-04 the void fall
+/// took 1/3 of max HP after the return (an earlier request, the exe's cost then untraced).
+pub(crate) fn fall_return_hp(hp: f32, hp_max: f32) -> Option<f32> {
+    let cost = (hp_max * FALL_RETURN_COST).floor();
+    (hp > cost).then_some(hp - cost)
+}
 /// Seconds of the fall-return clip (under the black cut) before Wolf is back on safe ground.
 const FALL_RETURN_HOLD: f32 = 1.0;
 /// The fall height (m) landings hurt and kill from while aged (exe DAT_143b01950/54: SpEffect
@@ -536,6 +583,7 @@ fn fall_return_walls(combat: Res<crate::data::Combat>, mut log: ResMut<CombatLog
             continue;
         }
         if from.is_some_and(|f| crate::terrain::fall_return_wall(f, tf.translation)) && a.play_state(d, "FallDeadReturnStart") {
+            a.hp = fall_return_hp(a.hp, a.hp_max).unwrap_or(0.0);
             a.airborne = false;
             a.vel_y = 0.0;
             info!("fall return: Wolf passed a fall-return wall at {}", tf.translation);
@@ -1184,10 +1232,23 @@ fn aging_step(p: &mut Player, a: &mut Actor, combat: &Combat, config: &GameConfi
             a.air_base = Vec3::ZERO;
             a.move_vel = Vec3::ZERO;
             // Aged (stateInfo 341) every landing from 5 m kills (exe FUN_14084e5d0, the main
-            // tick's rule): the fall-return death, BEH_R_DEATH before the aged landing.
-            if p.air_top - pos.y >= FALL_DAMAGE_FROM_AGED && crate::terrain::fall_death_dist(crate::terrain::floor_material(*pos)).is_some() && a.play_state(d, "LandDeadReturnStart") {
-                log.push("fall death - back to safe ground", Color::srgb(1.0, 0.4, 0.4));
-                return true;
+            // tick's rule): the fall-return death, BEH_R_DEATH before the aged landing, with its
+            // HP cost or the ordinary death (`fall_landing`).
+            let no_damage = wolf_wears(a, p, d, STATE_INFO_NO_FALL_DAMAGE);
+            match fall_landing(a.hp, a.hp_max, p.air_top - pos.y, crate::terrain::floor_material(*pos), true, no_damage) {
+                FallLanding::Return(hp) => {
+                    a.hp = hp;
+                    if a.play_state(d, "LandDeadReturnStart") {
+                        log.push("fall death - back to safe ground", Color::srgb(1.0, 0.4, 0.4));
+                        return true;
+                    }
+                }
+                FallLanding::Death => {
+                    a.hp = 0.0;
+                    log.push("fall death", Color::srgb(1.0, 0.4, 0.4));
+                    return true;
+                }
+                FallLanding::None | FallLanding::Hurt(_) => {}
             }
             a.play_state(d, if jumping { "LandAgingGroundJump" } else { "LandAgingFreeFall" });
         }
@@ -3436,9 +3497,9 @@ fn decide(
     }
     // The fall-return deaths (HKS BEH_R_DEATH 769-776): the screen cuts to black (menu.rs
     // `fall_cut`) for `FALL_RETURN_HOLD` of the clip, then Wolf stands at the last safe ground.
-    // They keep the resurrections; the lethal landing already took 40% of max HP (`fall_hp_loss`),
-    // the void fall costs `FALL_VOID_RETURN_COST` here; emptied, he dies there (the death below,
-    // resurrections as usual). Standing, not the get-up GroundFallReturn (a000_711210: the user,
+    // They keep the resurrections; both took (int)(40 %) of max HP when they started
+    // (`fall_return_hp`). A void fall that emptied HP (the exe's ordinary death in the air, type
+    // 6) dies here after the cut (gap: the sim has no death in the void), resurrections as usual. Standing, not the get-up GroundFallReturn (a000_711210: the user,
     // "why does he have animation when he returns").
     if is_fall_return(&a.state) {
         a.move_vel = Vec3::ZERO;
@@ -3449,11 +3510,6 @@ fn decide(
             a.airborne = false;
             a.vel_y = 0.0;
             p.air_top = tf.translation.y;
-            if a.state == "FallDeadReturnStart" {
-                let cost = (a.hp_max * FALL_VOID_RETURN_COST).floor();
-                a.hp = (a.hp - cost).max(0.0);
-                log.push(format!("fall: -{cost:.0} HP"), Color::srgb(1.0, 0.4, 0.4));
-            }
             a.play("StandIdle", "");
         }
         return;
@@ -4559,8 +4615,9 @@ fn decide(
     } else if p.air_top - tf.translation.y >= FALL_VOID_DROP && crate::terrain::floor_material(tf.translation).is_none() && crate::terrain::terrain().is_some() {
         // Falling with no ground below: HKS DAMAGE_TYPE_FALL_DEAD_RETURN -> W_FallDeadReturnStart
         // (a000_199120), then back at the safe spot. gap: the exe's kill height / return volume is
-        // not traced; the default fallDeathDist (40 m) stands in.
+        // not traced; the default fallDeathDist (40 m) stands in. Its HP cost: `fall_return_hp`.
         if a.play_state(d, "FallDeadReturnStart") {
+            a.hp = fall_return_hp(a.hp, a.hp_max).unwrap_or(0.0);
             a.airborne = false;
             a.vel_y = 0.0;
             log.push("fell into the void", Color::srgb(1.0, 0.4, 0.4));
@@ -4815,37 +4872,33 @@ fn decide(
             }
             // Landing from a height the ground's HitMtrlParam fallDeathDist (map::fall_death_dist)
             // kills: HKS DAMAGE_TYPE_LAND_DEAD_RETURN -> W_LandDeadReturnStart (a000_200909), then
-            // back at the safe spot. The fall's HP cost (FUN_140b97a30 -> FUN_140b97b30, emulated
-            // in extracted/emu/air_drops_*.json, test emu_air): `fall_hp_loss`. The exe
-            // (FUN_14084e5d0) tests from 20 m, from 5 m while stateInfo 341 (aging) is worn.
+            // back at the safe spot. The HP rule (FUN_140b97a30 -> FUN_140b97b30, emulated in
+            // extracted/emu/air_falldmg.json, test emu_air): `fall_landing` (from 20 m, from 5 m
+            // while stateInfo 341, aging, is worn; nothing while stateInfo 47 is). Short of the
+            // kill no reaction of its own: the landing below plays as usual.
             let landing_drop = p.air_top - tf.translation.y;
             let floor = crate::terrain::floor_material(tf.translation);
-            let death_dist = crate::terrain::fall_death_dist(floor);
-            // Aged (stateInfo 341 worn: DAT_143b01950/54) every landing from 5 m on a death floor
-            // is the lethal one.
             let aged = wolf_wears(a, p, d, STATE_INFO_AGING);
-            let hit = if aged && landing_drop >= FALL_DAMAGE_FROM_AGED && death_dist.is_some() {
-                Some(((a.hp_max * FALL_RETURN_COST).floor(), true))
-            } else {
-                death_dist.and_then(|dist| fall_hp_loss(a.hp_max, landing_drop, dist))
-            };
-            let (loss, lethal) = hit.unwrap_or((0.0, false));
-            if lethal {
-                a.hp = (a.hp - loss).max(0.0);
-                if a.play_state(d, "LandDeadReturnStart") {
-                    log.push("fall death - back to safe ground", Color::srgb(1.0, 0.4, 0.4));
+            let no_damage = wolf_wears(a, p, d, STATE_INFO_NO_FALL_DAMAGE);
+            match fall_landing(a.hp, a.hp_max, landing_drop, floor, aged, no_damage) {
+                FallLanding::None => {}
+                FallLanding::Hurt(hp) => {
+                    log.push(format!("fall: -{:.0} HP", a.hp - hp), Color::srgb(1.0, 0.4, 0.4));
+                    a.hp = hp;
+                }
+                FallLanding::Return(hp) => {
+                    a.hp = hp;
+                    if a.play_state(d, "LandDeadReturnStart") {
+                        log.push("fall death - back to safe ground", Color::srgb(1.0, 0.4, 0.4));
+                        return;
+                    }
+                }
+                FallLanding::Death => {
+                    // HP at or under the return's cost: the ordinary death where he landed.
+                    a.hp = 0.0;
+                    log.push("fall death", Color::srgb(1.0, 0.4, 0.4));
                     return;
                 }
-            }
-            // Short of that: maxHP x the fall's factor (`fall_hp_loss`) x the floor's HitMtrlParam
-            // fallDamageRate (`terrain::fall_damage_share`, FUN_140843660: 0 on a disableFallDamage
-            // floor), none while stateInfo 47 is worn (SpEffects 640 / 4050 / 4053). No reaction of
-            // its own: the landing below plays as usual.
-            let share = crate::terrain::fall_damage_share(landing_drop, floor, FALL_DAMAGE_MIN);
-            if hit.is_some() && !lethal && share > 0.0 && !wolf_wears(a, p, d, STATE_INFO_NO_FALL_DAMAGE) {
-                let cost = (a.hp_max * share).floor();
-                a.hp = (a.hp - cost).max(0.0);
-                log.push(format!("fall: -{cost:.0} HP"), Color::srgb(1.0, 0.4, 0.4));
             }
             // Charged (HKS 1870-1875): landing in the charge states sets it off (the script lands
             // in W_LandAirDamageElectroCharge(Weak)). gap: the charge SpEffect is dropped on

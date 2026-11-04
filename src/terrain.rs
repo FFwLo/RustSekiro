@@ -237,10 +237,12 @@ pub fn fall_death_dist(material: Option<u32>) -> Option<f32> {
 /// The share of max HP a landing that does not kill costs (exe FUN_140843660, landing
 /// FUN_140b97b30: damage = maxHP x this): 0 under `from` (20 m; the caller passes 5 m while
 /// stateInfo 341, aging, is worn: DAT_143b01950/54), else CalcCorrectGraph 210 (the identity
-/// from 20 to 100) x 0.01 x graphs 211 / 212 (a flat 100 %) x HitMtrlParam fallDamageRate (0.5
-/// on the deep-water planes 22 / 36 / 38). 0 on a disableFallDamage floor; the caller zeroes it
-/// under stateInfo 47 (SpEffects 640 / 4050 / 4053, FUN_140ba8cb0). gap: the factors
-/// FUN_1408433f0 feeds the graphs (flat here, so they do not matter) are not decoded.
+/// from 20 to 100) x 0.01 x graphs 211 / 212 / 213 (a flat 100 % on every input) x HitMtrlParam
+/// fallDamageRate (0.5 on the deep-water planes 22 / 36 / 38). 0 on a disableFallDamage floor
+/// (FUN_140ba8cb0); the caller zeroes it under stateInfo 47 (SpEffects 640 / 4050 / 4053). The
+/// whole landing rule is `player::fall_landing` (emu-checked, kb/movement.md "Fall damage
+/// leftovers"). gap: the worn SpEffects' fallDamageRate product (0 only on 4050 / 4053, both
+/// stateInfo 47) is not applied here.
 pub fn fall_damage_share(h: f32, material: Option<u32>, from: f32) -> f32 {
     let (off, rate) = match material.and_then(|m| hit_mtrl_fall().get(&m)) {
         Some((_, off, rate)) => (*off, *rate),

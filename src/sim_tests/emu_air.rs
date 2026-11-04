@@ -247,3 +247,72 @@ pub(crate) fn a_land_continuation_starts_its_window_at_the_start_time() {
     a.start_at(0.733);
     assert_eq!((a.prev_t, a.t), (0.733, 0.733));
 }
+
+/// The landing's whole HP rule against the exe's own calls on the snapshot's Wolf
+/// (`air_falldmg.json`: FUN_140b97b30 with the fall top set h over him, the debug no-death flags
+/// cleared): heights 4.9-80 m, HP full / just over (int)(maxHP x 0.4) / at it / 100, on the
+/// snapshot's floor (HitMtrlParam 30), the deep-water rows 22 / 36 (fallDamageRate 0.5,
+/// fallDeathDist 80) and the disableFallDamage row 40, with no SpEffect, aging 9620 (stateInfo
+/// 0x155: the kill from 5 m), 640 and 4050 (stateInfo 47: nothing, the kill too). Short of the
+/// kill HP never goes under 1; a kill pays 448 when HP is over it (damage type 15, the return),
+/// else the ordinary death (FUN_14117b210). `player::fall_landing` gives every one (704 calls).
+/// The factor FUN_140843660 and the kill test FUN_14084e5d0 over 4.9-120 m match
+/// `terrain::fall_damage_share` / the same kill rule, and the void fall FUN_140b975f0 (both
+/// callers' flag) matches `player::fall_return_hp`: 448 off, or HP 0 and the death (type 6).
+#[test]
+pub(crate) fn the_fall_landing_matches_the_exe() {
+    use crate::player::{fall_landing, fall_return_hp, FallLanding};
+    let Some(v) = load("air_falldmg.json") else { return };
+    let (mut lands, mut factors, mut voids) = (0, 0, 0);
+    for set in v["sets"].as_array().unwrap() {
+        if set["mortal"] != true {
+            continue;
+        }
+        let sp: Vec<u64> = set["sp"].as_array().unwrap().iter().map(|x| x.as_u64().unwrap()).collect();
+        let aged = sp.contains(&9620);
+        let no_damage = sp.iter().any(|id| matches!(id, 640 | 4050 | 4053));
+        let hp_max = set["hp_max"].as_f64().unwrap() as f32;
+        for m in set["materials"].as_array().unwrap() {
+            let mtrl = Some(m["material"].as_u64().unwrap() as u32);
+            for l in m["lands"].as_array().unwrap() {
+                let (h, hp0, hp1) = (l["h"].as_f64().unwrap() as f32, l["hp0"].as_f64().unwrap() as f32, l["hp1"].as_f64().unwrap() as f32);
+                let kind = l["type"].as_u64().unwrap();
+                let died = l["called"].as_array().unwrap().iter().any(|c| c == "die");
+                let ours = fall_landing(hp0, hp_max, h, mtrl, aged, no_damage);
+                let ctx = format!("sp {sp:?} material {mtrl:?} {h} m HP {hp0} -> {hp1} type {kind}: {ours:?}");
+                match ours {
+                    FallLanding::None => assert_eq!(hp1, hp0, "{ctx}"),
+                    FallLanding::Hurt(hp) => assert!(hp == hp1 && kind == 0 && !died, "{ctx}"),
+                    FallLanding::Return(hp) => assert!(hp == hp1 && kind == 15 && !died, "{ctx}"),
+                    FallLanding::Death => assert!(hp1 == 0.0 && died, "{ctx}"),
+                }
+                lands += 1;
+            }
+            // The factor alone (FUN_140843660 has no stateInfo 47 test; 4050's SpEffectParam
+            // fallDamageRate 0 zeroes it short of the kill, a factor RSekiro leaves to stateInfo 47).
+            if sp.contains(&4050) {
+                continue;
+            }
+            let dist = crate::terrain::fall_death_dist(mtrl);
+            for f in m["factors"].as_array().unwrap() {
+                let (h, factor, kill) = (f["h"].as_f64().unwrap() as f32, f["factor"].as_f64().unwrap() as f32, f["kill"] == 1);
+                // The kill test reads fallDeathDist alone (a disableFallDamage row keeps its 40).
+                let ours_kill = if aged { h >= 5.0 } else { h >= 20.0 && h >= dist.unwrap_or(40.0) };
+                assert_eq!(ours_kill, kill, "sp {sp:?} material {mtrl:?} {h} m: kill");
+                // The factor has no disableFallDamage test either (FUN_140ba8cb0 is the landing's).
+                let ours = if kill { 1.0 } else if aged { 0.0 } else { crate::terrain::fall_damage_share(h, mtrl.filter(|_| dist.is_some()), 20.0) };
+                assert!((ours - factor).abs() < 1e-6, "sp {sp:?} material {mtrl:?} {h} m: factor {factor} vs {ours}");
+                factors += 1;
+            }
+        }
+        for vd in set["voids"].as_array().unwrap() {
+            let (hp0, hp1, kind) = (vd["hp0"].as_f64().unwrap() as f32, vd["hp1"].as_f64().unwrap() as f32, vd["type"].as_u64().unwrap());
+            match fall_return_hp(hp0, hp_max) {
+                Some(hp) => assert!(hp == hp1 && kind == 14, "void HP {hp0} -> {hp1} type {kind}"),
+                None => assert!(hp1 == 0.0 && kind == 6, "void HP {hp0} -> {hp1} type {kind}"),
+            }
+            voids += 1;
+        }
+    }
+    assert_eq!((lands, factors, voids), (704, 192, 32));
+}

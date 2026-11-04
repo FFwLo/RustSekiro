@@ -14,10 +14,13 @@
 //!   emu-cases <exe> <out> air_probe [fwd side frames] --snapshot <dir>   prints a stick's walk
 //!   emu-cases <exe> <out> air [scenario...] --snapshot <dir>  -> air_frames.json (air_<name>.json)
 //!   emu-cases <exe> <out> air_drops [h...] --snapshot <dir>   -> air_drops.json (fall damage)
+//!   emu-cases <exe> <out> air_falldmg --snapshot <dir>  -> air_falldmg.json (the fall-damage
+//!     rules called directly: SpEffects, landing materials, HP left, the void fall)
 //!
 //! gap: no enemy stands under Wolf (the head kick's relaunch is not run); an air art never starts
-//! from the jump (the ground art ran instead); the SpEffect type 0x155 (5 m fall damage) and the
-//! other HitMtrlParam rows are not varied; NoGravity is forced on a vertical jump only.
+//! from the jump (the ground art ran instead); the SpEffect type 0x155 and the materials are
+//! varied in air_falldmg's direct calls only, not in whole-frame drops; NoGravity is forced on a
+//! vertical jump only.
 
 use std::collections::BTreeMap;
 use std::ffi::c_void;
@@ -437,9 +440,133 @@ fn drops(new_emu: &dyn Fn() -> Emu, out: &Path, args: &[&str]) {
     println!("  -> {name}.json");
 }
 
+/// The fall-damage module's own entries, called on the landing module (bag +0x70):
+/// FUN_140b98910 (module, h) -> FUN_140843660 the damage factor, FUN_140b98ab0 (module, h) ->
+/// FUN_14084e5d0 the kill test, FUN_140b975f0 (module, b) the fall-return death (the void fall).
+const FALL_FACTOR: u64 = 0x1_40b9_8910;
+const FALL_KILL: u64 = 0x1_40b9_8ab0;
+const FALL_VOID: u64 = 0x1_40b9_75f0;
+/// The chr's death (FUN_14117b210) and the fall's damage reaction (FUN_14117ae70).
+const CHR_DIE: u64 = 0x1_4117_b210;
+const CHR_FALL_HURT: u64 = 0x1_4117_ae70;
+static CALLED: Mutex<Vec<&'static str>> = Mutex::new(Vec::new());
+extern "C" fn on_called(_e: uc::Engine, addr: u64, _size: u32, _d: *mut c_void) {
+    CALLED.lock().unwrap().push(if addr == CHR_DIE { "die" } else { "hurt" });
+}
+
+/// `air_falldmg`: the fall damage rules called directly on the snapshot's Wolf (no frames): per
+/// SpEffect set (none; 9620 aging = stateInfo 0x155; 640 and 4050 = stateInfo 47, 4050 with
+/// SpEffectParam fallDamageRate 0) and landing material (the snapshot's, HitMtrlParam 22 / 36 /
+/// 40), the factor and the kill test over heights, then the landing FUN_140b97b30 with the fall top
+/// +0x854 set h over Wolf and HP full / at the return cost / low, and the void fall FUN_140b975f0.
+fn falldmg(new_emu: &dyn Fn() -> Emu, out: &Path) {
+    let heights = [4.9f32, 5.0, 6.0, 10.0, 19.9, 20.0, 25.0, 30.0, 39.9, 40.0, 45.0, 60.0, 79.9, 80.0, 100.0, 120.0];
+    let mut sets = Vec::new();
+    // The first set keeps the snapshot's debug no-death flags (DebugFlags 0x143d7a366 +0x0 / +0xb /
+    // +0xc: HP stops at 1, the void fall costs nothing); the others clear them in the emulator copy.
+    for (mortal, sp) in [(false, &[][..]), (true, &[][..]), (true, &[9620u32][..]), (true, &[640][..]), (true, &[4050][..])] {
+        let t = std::time::Instant::now();
+        let mut r = rig(new_emu);
+        if mortal {
+            for at in [0x1_43d7_a366u64, 0x1_43d7_a371, 0x1_43d7_a372] {
+                r.emu.raw_write(at, &[0]);
+            }
+        }
+        for a in [CHR_DIE, CHR_FALL_HURT] {
+            r.emu.hook(uc::HOOK_CODE, on_called as *const c_void, a, a);
+        }
+        let player = r.w.player;
+        if !sp.is_empty() {
+            let list = r.emu.peek_u64(player + 0x11d0);
+            let head = r.emu.peek_u64(list + 8);
+            let (hid, hrow) = (u32::from_le_bytes(r.emu.peek(head + 0x58)), r.emu.peek_u64(head + 0x60));
+            let mut file = super::guard::ParamFile::from_row(&mut r.emu, hrow, hid);
+            for id in sp {
+                super::guard::add_sp(&mut r.emu, &mut file, player, *id);
+            }
+        }
+        let module = r.emu.peek_u64(r.bag + 0x70);
+        let mtrl_at = r.emu.peek_u64(r.bag + 0xa0) + 0x10;
+        let phys = r.w.phys;
+        let data = r.emu.peek_u64(r.bag + 0x18);
+        let (hp, hp_max) = (r.hp()[0], r.hp()[1]);
+        // The game data FUN_1408433f0 reads (chr vtable +0x1b8): +0x8fc, +0x25c, +0x264.
+        let vt = r.emu.peek_u64(player);
+        let gd_fn = r.emu.peek_u64(vt + 0x1b8);
+        let gd = r.emu.call(gd_fn, &[player], &[]).rax;
+        let game_data = if gd != 0 {
+            json!({"f8fc": proxy::f32s(&mut r.emu, gd + 0x8fc, 1)[0], "i25c": i32::from_le_bytes(r.emu.peek(gd + 0x25c)), "i264": i32::from_le_bytes(r.emu.peek(gd + 0x264))})
+        } else {
+            Value::Null
+        };
+        let snap_mtrl = u16::from_le_bytes(r.emu.peek(mtrl_at));
+        let snap_mtrl_phys = u16::from_le_bytes(r.emu.peek(phys + 0x940));
+        let y = proxy::f32s(&mut r.emu, phys + 0x80, 3)[1];
+        let mut mats = Vec::new();
+        for mtrl in [None, Some(22u16), Some(36), Some(40)] {
+            let m = mtrl.unwrap_or(snap_mtrl);
+            r.emu.raw_write(mtrl_at, &m.to_le_bytes());
+            r.emu.raw_write(phys + 0x940, &mtrl.unwrap_or(snap_mtrl_phys).to_le_bytes());
+            let mut rows = Vec::new();
+            for &h in &heights {
+                let f = r.emu.call(FALL_FACTOR, &[module, 0], &[0.0, h]);
+                let k = r.emu.call(FALL_KILL, &[module, 0], &[0.0, h]);
+                rows.push(json!({"h": h, "factor": f.xmm0, "kill": k.rax as u8, "stopped": f.stopped.or(k.stopped).map(|s| format!("{:#x} {}", s.0, s.1))}));
+            }
+            // The landing: HP full, just over the return cost, at it, low.
+            let cost = (hp_max as f32 * 0.4) as i32;
+            let mut lands = Vec::new();
+            for &h in &[4.9f32, 5.0, 6.0, 19.9, 20.0, 25.0, 39.9, 40.0, 45.0, 79.9, 80.0] {
+                for hp0 in [hp_max, cost + 1, cost, 100] {
+                    r.emu.raw_write(data + 0x130, &hp0.to_le_bytes());
+                    r.emu.raw_write(module + 0x25, &[0]);
+                    r.emu.raw_write(module + 0x1c, &0i32.to_le_bytes());
+                    let main = r.emu.peek_u64(r.bag);
+                    r.emu.raw_write(main + 0x5c, &0u32.to_le_bytes());
+                    r.emu.poke_f32s(phys + 0x854, &[y + h]);
+                    CALLED.lock().unwrap().clear();
+                    let run = r.emu.call(FALL_DAMAGE, &[module], &[]);
+                    let hp1 = r.hp()[0];
+                    lands.push(json!({"h": h, "hp0": hp0, "hp1": hp1, "type": u32::from_le_bytes(r.emu.peek(main + 0x5c)),
+                        "b25": r.emu.peek::<1>(module + 0x25)[0], "damage": i32::from_le_bytes(r.emu.peek(module + 0x1c)),
+                        "factor": f32::from_le_bytes(r.emu.peek(module + 0x20)), "called": CALLED.lock().unwrap().clone(),
+                        "stopped": run.stopped.map(|s| format!("{:#x} {}", s.0, s.1))}));
+                }
+            }
+            r.emu.poke_f32s(phys + 0x854, &[y]);
+            mats.push(json!({"material": m, "factors": rows, "lands": lands}));
+        }
+        r.emu.raw_write(mtrl_at, &snap_mtrl.to_le_bytes());
+        r.emu.raw_write(phys + 0x940, &snap_mtrl_phys.to_le_bytes());
+        // The void fall (fall-return death) with both callers' flag.
+        let cost = (hp_max as f32 * 0.4) as i32;
+        let mut voids = Vec::new();
+        for b in [0u64, 1] {
+            for hp0 in [hp_max, cost + 1, cost, 100] {
+                r.emu.raw_write(data + 0x130, &hp0.to_le_bytes());
+                r.emu.raw_write(module + 0x25, &[0]);
+                let main = r.emu.peek_u64(r.bag);
+                r.emu.raw_write(main + 0x5c, &0u32.to_le_bytes());
+                CALLED.lock().unwrap().clear();
+                let run = r.emu.call(FALL_VOID, &[module, b], &[]);
+                voids.push(json!({"flag": b, "hp0": hp0, "hp1": r.hp()[0], "ret": run.rax as u8, "type": u32::from_le_bytes(r.emu.peek(main + 0x5c)),
+                    "b25": r.emu.peek::<1>(module + 0x25)[0], "called": CALLED.lock().unwrap().clone(),
+                    "stopped": run.stopped.map(|s| format!("{:#x} {}", s.0, s.1))}));
+            }
+        }
+        r.emu.raw_write(data + 0x130, &hp.to_le_bytes());
+        println!("mortal {mortal} sp {sp:?}: material {snap_mtrl}/{snap_mtrl_phys}, game data {game_data}, {:.0} s", t.elapsed().as_secs_f32());
+        sets.push(json!({"mortal": mortal, "sp": sp, "hp": hp, "hp_max": hp_max, "game_data": game_data, "snap_material": [snap_mtrl, snap_mtrl_phys], "materials": mats, "voids": voids}));
+    }
+    let body = json!({"function": format!("{FALL_FACTOR:#x} {FALL_KILL:#x} {FALL_DAMAGE:#x} {FALL_VOID:#x}"), "sets": sets});
+    std::fs::write(out.join("air_falldmg.json"), serde_json::to_string(&body).unwrap()).unwrap();
+    println!("  -> air_falldmg.json");
+}
+
 pub(super) fn run(new_emu: &dyn Fn() -> Emu, out: &Path, args: &[&str]) {
     match args.first() {
         Some(&"air_probe") => probe(new_emu, &args[1..]),
+        Some(&"air_falldmg") => falldmg(new_emu, out),
         Some(&"air_drops") => drops(new_emu, out, &args[1..]),
         _ => {
             // `air [names] [edge=fwd,side]`

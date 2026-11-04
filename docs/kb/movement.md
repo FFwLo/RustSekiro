@@ -463,7 +463,48 @@ Not covered: CalcCorrectGraph 211 / 212 and HitMtrlParam fallDamageRate (1.0 on 
 varied); the 5 m threshold under SpEffect type 0x155; a non-lethal fall that takes the last HP (548 HP never
 reached it); an air art in the air (none started from the jump: the ground art ran, 107316700, and Wolf fell off
 the cliff); the head kick (no enemy under Wolf); NoGravity with a horizontal velocity (all four windows on a
-vertical jump); the void fall (FallDeadReturn) cost.
+vertical jump); the void fall (FallDeadReturn) cost. (Graphs, fallDamageRate, 0x155, the last HP and the void
+cost: next section.)
+
+## Fall damage leftovers against the exe (2026-11-04, exe, emulator, topic air_falldmg, row E17)
+
+tools/emu-cases `air_falldmg` (air.rs `falldmg`): no frames, direct calls on the snapshot's Wolf and his landing
+module (bag +0x70): the factor FUN_140b98910 -> FUN_140843660, the kill test FUN_140b98ab0 -> FUN_14084e5d0, the
+landing FUN_140b97b30 with the fall top +0x854 set h over him and HP written, the void fall FUN_140b975f0. The
+landing material is poked in both places the exe reads it: [bag+0xa0]+0x10 (the rows for fallDeathDist and
+fallDamageRate) and physics +0x940 (FUN_140ba8cb0, the disableFallDamage gate). SpEffects are put on Wolf's list
+as guard.rs `add_sp`. The snapshot's debug no-death bytes (0x143d7a366 / 371 / 372) are cleared in all sets but
+one: with them on, HP stops at 1 and the void fall costs nothing. `air_falldmg.json` (git-ignored extracted/emu).
+Snapshot: HitMtrlParam 30 under Wolf, maxHP 1120, return cost (int)(1120 x 0.4) = 448.
+
+- Factors (FUN_1408433f0): five, multiplied: CalcCorrectGraph 211 of a game-data ratio (+0x8fc, 50 here; the
+  factor is 0 when that is 0), 212 of an SpEffect sum plus game data +0x25c, 213 of game data +0x264, the product
+  of every worn SpEffect's SpEffectParam fallDamageRate (+0xdc), and HitMtrlParam +0x50 fallDamageRate. Rows 211 /
+  212 / 213 are a flat 100 at every input, so with +0x8fc above 0 only the two rates count. SpEffectParam
+  fallDamageRate is 1 on every row but 4050 / 4053 (0), and those are stateInfo 47, which zeroes the damage anyway.
+- Materials: 22 / 36 (fallDamageRate 0.5, fallDeathDist 80): half the share (25 m 140, 39.9 m 223, 79.9 m 447 of
+  1120), the kill from 80 m. Row 40 (disableFallDamage): nothing at any height, aged too (the gate comes first).
+- SpEffect type 0x155 (9620, aging): the kill from 5 m (DAT_143b01950) on any floor but row 40, deep water too
+  (the kill test does not read fallDeathDist then); under 5 m nothing (DAT_143b01954 is also 5).
+- stateInfo 47 (640, 4050): the damage is multiplied by 0 before the kill is looked at, so a 45 m drop does nothing
+  and plays no return.
+- HP left (the debug flags off): short of the kill HP -= (int)(maxHP x factor) and a player emptied that way keeps
+  1 HP (100 HP at 25 m -> 1); no hurt call (FUN_14117ae70) then. A kill with HP over 448 pays 448 and sets damage
+  type 15 (the return); at or under 448 the damage is maxHP x 1, HP 0, the ordinary death FUN_14117b210 (type 16).
+- Void fall FUN_140b975f0 (callers FUN_1409edf20 case 0xf with flag 1, FUN_1409f78a0 with 0; same result): HP over
+  448 pays 448 and sets damage type 14 (FallDeadReturn); at or under it HP 0, type 6 and the death. Nothing while the
+  no-death flags are on.
+- Sv1 before: a non-lethal fall could empty HP (death); a kill with low HP still played the return; stateInfo 47
+  did not stop the lethal landing; the aged landing (player.rs aging movement) played the return for free; the void
+  fall cost 1/3 of max HP after the return (an earlier request). Now `player::fall_landing` (the landing, main and
+  aged paths) and `player::fall_return_hp` (the walls and the void drop, taken when the return starts). An HP
+  emptied by the void fall still cuts back to safe ground and dies there (the sim has no death in the void).
+- Test `the_fall_landing_matches_the_exe` (emu_air: 704 landings, 192 factor + kill calls, 32 void calls).
+
+Not covered: whole-frame drops on the other floors and aged (the clips after the landing), what FUN_14117ae70 does
+after a non-lethal fall, the void kill height and when FUN_140b975f0's callers fire, the SpEffect fallDamageRate
+product apart from stateInfo 47 (no row needs it), enemies' fall damage (FUN_1408433f0 leaves its factors 0
+without game data; not run for an enemy).
 
 ## From the public repo (2026-10-19 to 10-23, merged 2026-11-03)
 
