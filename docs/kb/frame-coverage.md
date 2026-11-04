@@ -416,6 +416,10 @@ the same frame for frame). The first update also shifts the bullet 9 mm off the 
   2 as a sword hit's (was 1). The dummy 700001 (no damage, isPenetrate 1) ended on touching him
   (the carrier rule for the Fistful of Ash's 3511), so the chain's next hit came 2 ticks after the
   first, not 11: the rule now skips piercing bullets.
+- Side effect: a bullet's hit now lands before the tick's step, so that step's posture regen
+  runs on it at once, as on a sword hit (the shuriken's 5 on c1180 read 4 after the tick);
+  `tool_on` (sim_tests part07) reads the hit's own posture from its log line. Not checked against
+  the exe: the regen in the hit's frame.
 - The test throws ours level at our General's chest from as far before the point it first
   touches him as the exe's throw was (3.56 / 5.52 / 7.54 m): our hurt capsules and pose are not
   the snapshot's (our head capsule tops out about 2.0 m; the exe's 8 m throw touched at 2.1 m), so
