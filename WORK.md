@@ -119,9 +119,6 @@ character turns out to run exe code of its own, add an `E` row for that part.
 | E5 | emu | | open | A bullet's hit timing: the exe's bullet update is a world task, not traced yet. Trace it and compare `enemy_bullet.rs` / `prosthetic.rs` | kb/frame-coverage.md "Item use and prosthetic bullets" |
 | E6 | emu | | open | Other prosthetics (shuriken, firecracker, flame vent, umbrella): find how the exe switches Wolf's tool in the emulator copy (writing PlayerGameData +0x5ec did not), then check the bullet spawns against `prosthetic.rs` | harness `items`; kb/frame-coverage.md |
 | E7 | emu | | open | Grapple: make a scene near a grapple point (`emu-cases scene`), then check `wire.rs` against the exe | kb/emulator-pilot.md "Scenes"; kb/grapple.md |
-| E8 | emu | | open | Copied sekiro-rs collision (`crates/sim`): run the exe's casts and body pushes on the same inputs and compare | `crates/README.md`: read from the exe, never run against it; harness `collide`, `proxy`; system: Maps / collision |
-| E9 | emu | | open | Copied HKS engine functions (`crates/hks`, the env and act calls the VM makes): compare with the exe's env dispatcher FUN_140b36410 and act dispatcher FUN_140b32410 | harness `hks`, `hks2`; kb/hks-graph.md |
-| E10 | emu | | open | Copied enemy AI timing (`crates/sim` brain): goal timers, the search scheduler, decision rates against the exe | harness `aimove`, `aiframe`; kb/aicpp.md |
 | E11 | emu | | open | AI interrupts and sound targets: raise a sound and an interrupt in the emulator and check what the Lua reads | kb/aicpp.md "Not covered" (three lists) |
 | E12 | emu | | open | Where the Attack Power rate enters HP damage | kb/atkrec.md; system: Combat rules |
 | E13 | emu | | open | The enemy's guard-break knockback: the knockback controller FUN_140be6750 (ChrCtrl +0x90) against RSekiro's own knockback | kb/damage.md, kb/modticks.md "Not covered"; system: Combat rules |
@@ -134,7 +131,6 @@ character turns out to run exe code of its own, add an `E` row for that part.
 | E31 | emu | | open | Deathblow window: how long an enemy stays broken after a posture break before it recovers. RSekiro uses a stand-in, `config.toml` `broken_time` = 4 s. Find what ends the break in the exe (the break anim's length or TAE, an HKS state timer, or a C++ timer), port it per enemy, and remove `broken_time` | `enemy.rs` `on_posture_break`, `combat.rs`; kb/damage.md; system: Combat rules |
 | E32 | emu | | open | Free camera swing after a sideways run: the CameraParam fulcrum gives 68 deg/s at a run and 143 at a sprint, which circled Wolf in RSekiro, so `config.toml` `follow_swing` halves it. Run the exe's free camera (FUN_140734790) with the stick held sideways, match its swing, and remove `follow_swing` | `camera.rs` `drag_fulcrum`; kb/camera.md; the harness of `follow_camera_matches_the_exe` |
 | E33 | emu | | open | Stealth: map lighting in perception (always "Good" light today), the observer's geometry bits (FUN_140616f50) and Wolf's hiding SpEffects 332 / 334 | system: Stealth; the `gap:` lines in src/stealth.rs |
-| E34 | emu | | open | World streaming: run the exe's WorldBackRead record update (FUN_14081eae0; sets from FUN_14081d460: 0/1 m and 80/90 m, 0.2 s promote, 3 s retire) and the block state machine (FUN_140826520) on the same inputs as RSekiro, then make crates/game map_world.rs keep and free blocks by that rule instead of block adjacency | kb/map.md "How the exe streams the world"; system: Maps / collision |
 
 ## P: port gaps
 
@@ -173,3 +169,7 @@ character turns out to run exe code of its own, add an `E` row for that part.
 | ID | Who | Date | Result |
 |----|-----|------|--------|
 | B5 | FFwLo/heron | 2026-11-04 | tools/t.ps1, a PowerShell twin of t.sh for contributors without bash (#4) |
+| E8 | FFwLo/claude | 2026-11-04 | crates/sim collision vs the exe's casts and pushes (radius 0.01, keep 0.05, support/ceiling contacts), emu_srcollide tests |
+| E9 | FFwLo/claude | 2026-11-04 | crates/hks env and act calls vs FUN_140b36410 / FUN_140b32410, emu_hksvm tests |
+| E34 | FFwLo/claude | 2026-11-04 | map_world back_read matches WorldBackRead frame by frame (46 scenarios), 83256bd |
+| E10 | FFwLo/claude | 2026-11-04 | goal life f32 countdown, REGISTER_GOAL_UPDATE_TIME timer, aimove hook reads xmm2 (922573e); search ring earlier. Left: goal order frame by frame vs our Lua run |
