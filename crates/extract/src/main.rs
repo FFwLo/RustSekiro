@@ -110,6 +110,7 @@ enum Command {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    fill_refs(&cli.cache)?;
     match &cli.command {
         Command::Models { ids, verbose } => return models::export(&cli.cache, ids, *verbose),
         Command::ModelInfo { path, dump } => return models::info(path, dump.as_deref()),
@@ -202,12 +203,48 @@ pub(crate) fn roster_ids(cache: &Path, donors: bool) -> Result<Vec<String>> {
     Ok(ids.into_iter().collect())
 }
 
+/// RSekiro's own extractor folder: its archive keys (`keys/`), file names and Paramdex defs
+/// (`defs/`), so both extractors share one set and nothing has to be downloaded.
+fn rsekiro_tool() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tools/sekiro-extract")
+}
+
+/// The params and anims exports and the game (sim's map effects) read the Paramdex defs and the
+/// TAE template from `cache/refs`: copy RSekiro's there when nothing was fetched.
+fn fill_refs(cache: &Path) -> Result<()> {
+    let defs = rsekiro_tool().join("defs");
+    for (from, to) in [("paramdef", "paramdex/Defs"), ("names", "paramdex/Names")] {
+        let to = cache.join("refs").join(to);
+        if to.exists() {
+            continue;
+        }
+        std::fs::create_dir_all(&to)?;
+        for entry in std::fs::read_dir(defs.join(from))? {
+            let entry = entry?;
+            std::fs::copy(entry.path(), to.join(entry.file_name()))?;
+        }
+    }
+    let tae = cache.join("refs/TAE.Template.SDT.xml");
+    if !tae.exists() {
+        std::fs::copy(defs.join("TAE.Template.SDT.xml"), tae)?;
+    }
+    Ok(())
+}
+
 fn open_vfs(game: &Path, cache: &Path) -> Result<Vfs> {
     let refs = cache.join("refs");
-    let keys_src = std::fs::read_to_string(refs.join("ArchiveKeys.cs"))
-        .context("cache/refs/ArchiveKeys.cs missing: run tools/fetch-refs.ps1")?;
-    let keys: HashMap<_, _> = sekiro_formats::dvd::parse_uxm_keys(&keys_src);
-    let dictionary: Vec<String> = std::fs::read_to_string(refs.join("SekiroDictionary.txt"))?
+    let keys_dir = rsekiro_tool().join("keys");
+    let keys: HashMap<_, _> = match std::fs::read_to_string(refs.join("ArchiveKeys.cs")) {
+        Ok(src) => sekiro_formats::dvd::parse_uxm_keys(&src),
+        Err(_) => sekiro_formats::dvd::ARCHIVES
+            .iter()
+            .map(|name| Ok((name.to_string(), std::fs::read_to_string(keys_dir.join(format!("{name}.pem")))?)))
+            .collect::<std::io::Result<_>>()
+            .with_context(|| format!("no archive keys in cache/refs/ArchiveKeys.cs or {}", keys_dir.display()))?,
+    };
+    let fetched = refs.join("SekiroDictionary.txt");
+    let names = if fetched.exists() { fetched } else { keys_dir.join("SekiroDictionary.txt") };
+    let dictionary: Vec<String> = std::fs::read_to_string(names)?
         .lines()
         .map(|l| l.trim().to_string())
         .collect();

@@ -39,12 +39,20 @@ pub(super) fn export(cache: &Path, id: &str, msb: &msb::Msb) -> Result<()> {
         let name = &model.name;
         if !decoded.contains_key(name) {
             let path = super::object_flver(&cache.join("raw"), name).with_extension("hkx");
+            // gap: a binder the reader cannot decode (m20's o205010: "shared vertex out of
+            // range") leaves that object without collision instead of stopping the map.
             let mesh = if path.is_file() {
-                let (mesh, stats) = hknp::decode_bodies(&std::fs::read(&path)?, None)
-                    .with_context(|| path.display().to_string())?;
-                other_shapes += stats.other_shapes;
-                skipped_dynamic += stats.dynamic;
-                Some(mesh)
+                match hknp::decode_bodies(&std::fs::read(&path)?, None) {
+                    Ok((mesh, stats)) => {
+                        other_shapes += stats.other_shapes;
+                        skipped_dynamic += stats.dynamic;
+                        Some(mesh)
+                    }
+                    Err(e) => {
+                        eprintln!("  warning: {}: {e:#}, no collision for {name}", path.display());
+                        None
+                    }
+                }
             } else {
                 None
             };

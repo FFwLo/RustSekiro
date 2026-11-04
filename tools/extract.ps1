@@ -1,6 +1,6 @@
 ﻿# Rebuilds extracted/ and extracted/combat_data.json from your own Sekiro install.
-# Usage: powershell -File tools\extract.ps1 [-Sekiro "C:\...\Sekiro"]
-param([string]$Sekiro = "C:\Program Files (x86)\Steam\steamapps\common\Sekiro", [switch]$SkipArenas)
+# Usage: powershell -File tools\extract.ps1 [-Sekiro "C:\...\Sekiro"] [-SkipArenas] [-World]
+param([string]$Sekiro = "C:\Program Files (x86)\Steam\steamapps\common\Sekiro", [switch]$SkipArenas, [switch]$World)
 $ErrorActionPreference = "Stop"
 # Python 3 runs the boss scripts, the boss arenas and the prosthetic tool export; Node (npm) the
 # game's effect definitions. Without them the game still runs: no boss map scripts / arenas,
@@ -223,5 +223,22 @@ if ($python) {
     if (-not $SkipArenas) {
         $env:SEKIRO_EXTRACT = $exe
         python (Join-Path $PSScriptRoot "boss_arenas.py") -Sekiro $Sekiro
+    }
+}
+# -World: the connected world src/sr_map.rs streams (the copied sekiro-rs crates, crates/README.md):
+# the whole install unpacked, its params and ten maps, into $env:SEKIRO_CACHE or ..\sekiro-rs\cache
+# (about 50 GB, 1-2 hours; an SSD keeps the streaming smooth). Same keys and param defs as above.
+if ($World) {
+    $cache = if ($env:SEKIRO_CACHE) { $env:SEKIRO_CACHE } else { Join-Path (Split-Path $root -Parent) "sekiro-rs\cache" }
+    Push-Location $root
+    cargo build --release --quiet -p sr-extract
+    Pop-Location
+    $target = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { Join-Path $root "target" }
+    $sr = Join-Path $target "release\sr-extract.exe"
+    & $sr --game $Sekiro --cache $cache unpack
+    & $sr --game $Sekiro --cache $cache params
+    foreach ($m in 'm10_00_00_00', 'm11_00_00_00', 'm11_01_00_00', 'm11_02_00_00', 'm13_00_00_00', 'm15_00_00_00',
+                   'm17_00_00_00', 'm20_00_00_00', 'm25_00_00_00', 'm89_00_00_99') {
+        & $sr --game $Sekiro --cache $cache map $m
     }
 }

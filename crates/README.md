@@ -12,7 +12,7 @@ not followed.
 | `formats` | game file readers (behaviour graphs, GPARAM, ...) |
 | `sim` | collision world (`collision`, `body`'s ground queries, `hit_filter`, `lo_collision`), navmesh, and the arena, event and story state the map and its lighting read |
 | `game` (library `sekiro_rs`) | the streaming map, lighting, sky and fog (`SHINOBI_SR_MAP=1`, src/sr_map.rs) |
-| `extract` (package `sr-extract`) | builds the map cache `game` reads (`SEKIRO_CACHE`, else `../sekiro-rs/cache`); RSekiro's own data comes from `tools/sekiro-extract` |
+| `extract` (package `sr-extract`) | builds the map cache `game` reads (`SEKIRO_CACHE`, else `../sekiro-rs/cache`): `tools/extract.ps1 -World`. It reads the archive keys, file names and Paramdex defs from `tools/sekiro-extract` (no download); RSekiro's own data comes from `tools/sekiro-extract` |
 
 On 2026-11-04 everything RSekiro does not use was removed as unused: the `brain-net` and `fmod`
 crates; sekiro-rs's own game app in `game` (its `sekiro-rs` program, fights, bosses, arenas, duel,
