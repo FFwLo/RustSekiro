@@ -161,8 +161,7 @@ fn hook_enemy(mut wolf: Query<(&mut Player, &Actor)>, mut hits: MessageWriter<cr
 /// horizontal. gap: the engine's WireDramaticAngle is not traced; taken as the elevation of the
 /// hook seen from Wolf's centre.
 pub fn start_index(wolf: Vec3, hook: Vec3) -> usize {
-    let to = hook - wolf;
-    let angle = to.y.atan2(to.x.hypot(to.z)).to_degrees();
+    let angle = dramatic_angle(wolf, hook);
     if angle > 50.0 {
         1
     } else if angle > 15.0 {
@@ -172,20 +171,15 @@ pub fn start_index(wolf: Vec3, hook: Vec3) -> usize {
     }
 }
 
-/// The move start after a shoot: the behavior's selectors (bound to WireMoveStartIndex) list
-/// [0] _UpperSlope, [1] _Up, [2] _Vertical (c0000.hkx GroundWireMoveStart_Selector /
-/// AirWireMoveStart Selector); the wire-to-wire shoots have one each.
-pub fn move_start(shoot: &str, index: usize) -> String {
-    let sel = ["_UpperSlope", "_Up", "_Vertical"][index.min(2)];
-    match shoot {
-        "GroundWireShoot" => format!("GroundWireMoveStart{sel}"),
-        "AirWireShoot" => format!("AirWireMoveStart{sel}"),
-        "AirBreakFallWireShoot" => "AirWireMoveStartFromBreakFall".to_string(),
-        "WireMoveWireShoot" => "WireMoveWireMoveStart".to_string(),
-        _ => "WireMoveWire2MoveStart".to_string(),
-    }
+/// The graph variable WireDramaticAngle the engine writes for the script's GetWireMoveStartIndex
+/// (degrees). gap: the exe's is not traced; taken as the hook's elevation seen from Wolf's centre.
+pub fn dramatic_angle(wolf: Vec3, hook: Vec3) -> f32 {
+    let to = hook - wolf;
+    to.y.atan2(to.x.hypot(to.z)).to_degrees()
 }
 
+/// The shoots (the graph picks which: HKS BEH_A_GROUND_WIRE_SHOOT / BEH_A_AIR_WIRE_SHOOT, and
+/// their move starts by the selectors on WireMoveStartIndex; hks_wolf takes them).
 pub fn is_shoot(state: &str) -> bool {
     matches!(state, "GroundWireShoot" | "AirWireShoot" | "AirBreakFallWireShoot" | "WireMoveWireShoot" | "WireMoveWire2Shoot")
 }
@@ -194,21 +188,6 @@ pub fn is_shoot(state: &str) -> bool {
 pub fn is_wire_state(state: &str) -> bool {
     state == "WireThrow"
         || is_shoot(state) || state.contains("WireMoveStart") || state.starts_with("WireMove") || state.starts_with("WireFall")
-}
-
-/// The shoot to fire from `state`: out of a wire move the wire-to-wire ones (HKS
-/// BEH_A_AIR_WIRE_SHOOT: W_WireMoveWire2Shoot from WireMoveWireMoveStart, else
-/// W_WireMoveWireShoot in the wire-fall style), in the air AirWireShoot, else GroundWireShoot.
-pub fn shoot_state(state: &str, airborne: bool, in_wire: bool) -> &'static str {
-    if state == "WireMoveWireMoveStart" {
-        "WireMoveWire2Shoot"
-    } else if in_wire && airborne {
-        "WireMoveWireShoot"
-    } else if airborne {
-        "AirWireShoot"
-    } else {
-        "GroundWireShoot"
-    }
 }
 
 impl Wire {
@@ -454,7 +433,5 @@ mod tests {
         assert_eq!(start_index(wolf, Vec3::new(0.0, 1.0, -10.0)), 2);
         assert_eq!(start_index(wolf, Vec3::new(0.0, 5.0, -10.0)), 0);
         assert_eq!(start_index(wolf, Vec3::new(0.0, 15.0, -5.0)), 1);
-        assert_eq!(move_start("GroundWireShoot", 1), "GroundWireMoveStart_Up");
-        assert_eq!(move_start("AirWireShoot", 2), "AirWireMoveStart_Vertical");
     }
 }

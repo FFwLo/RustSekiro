@@ -32,6 +32,7 @@ pub(crate) use crate::player::{Action, PadInput, Player, PlayerPlugin, CAPSULE_H
 // part15: atlas vfx + lighting pass tests (atlas ids in the names)
 // part16: atlas bosses pass tests (atlas ids in the names)
 // part17: replay_recording (ignored; tools/rec/replay.py and enemies.py drive it), a map event's anim set, a soldier under Wolf's sword guards
+// part18: the engine states the graph plays (row P13): the grapple shot, the deathblow pair and its kill
 
 mod part01;
 mod part02;
@@ -81,6 +82,7 @@ mod part14;
 mod part15;
 mod part16;
 mod part17;
+mod part18;
 pub(crate) use part01::*;
 pub(crate) use part02::*;
 pub(crate) use part03::*;

@@ -30,7 +30,9 @@ const SP_REF_IN_NON_COMBAT_AREA: i64 = 600;
 pub const LEFT: i64 = 0;
 pub const RIGHT: i64 = 1;
 pub const KUSABIMARU: i64 = 5000;
-pub const ACTIONS: [Action; 8] = [Action::Attack, Action::Guard, Action::Jump, Action::Step, Action::UseItem, Action::Prosthetic, Action::Crouch, Action::CombatArt];
+/// ACTION_ARM_WIRE_SHOOT (c0000_define 7): the grapple button.
+pub const ARM_WIRE_SHOOT: i64 = 3;
+pub const ACTIONS: [Action; 9] = [Action::Attack, Action::Guard, Action::Jump, Action::Step, Action::UseItem, Action::Prosthetic, Action::Crouch, Action::CombatArt, Action::Grapple];
 
 /// The ACTION_ARM_* bits a press requests (a combat art: the attack with the guard held).
 pub fn arm(a: Action) -> i64 {
@@ -42,6 +44,7 @@ pub fn arm(a: Action) -> i64 {
         Action::UseItem => ARM_USE_ITEM,
         Action::Prosthetic => ARM_SUB_ATTACK,
         Action::Crouch => ARM_CROUCH,
+        Action::Grapple => ARM_WIRE_SHOOT,
         _ => -1,
     }
 }
@@ -170,10 +173,21 @@ pub fn answers(h: &mut Host, a: &Actor, p: &Player, combat: &Combat, config: &cr
         let pending = p.requests.contains_key(&act) || (pad.press.contains(&act) && crate::player::buffers(d, a, act));
         // In the air the execute window is the clip's accept flag now (player.rs air_ok);
         // the jump's fall loops take every press.
-        let air = a.state == "FreeFall" || a.state.ends_with("GroundJumpFall") || (anim && crate::player::accept_flag(act).iter().any(|&f| d.flag(&a.anim, a.t, f)));
+        // The wire move takes the next shoot (BEH_A_AIR_WIRE_SHOOT in the wire-fall style).
+        let air = a.state == "FreeFall" || a.state.ends_with("GroundJumpFall") || (act == Action::Grapple && a.state == "WireMove") || (anim && crate::player::accept_flag(act).iter().any(|&f| d.flag(&a.anim, a.t, f)));
         // The prosthetic button is both ACTION_ARM_SUB_ATTACK and ACTION_ARM_SHINOBI_WEP_ACTION
         // (the umbrella's release wants both held).
         let arms: &[i64] = if act == Action::Prosthetic { &[ARM_SUB_ATTACK, ARM_SHINOBI_WEP_ACTION] } else { &[arm(act)] };
+        // The exe's throw check takes the press before the script (player::throw_check): with a
+        // deathblow, a plunge or the jump-over throw in reach the script never sees it, and the
+        // engine starts the throw (W_ThrowAtk<anim>, hks_wolf::engine_sync). gap: the exe's
+        // request consumption is not traced; inferred from the graph never playing the combo.
+        let thrown = match act {
+            Action::Attack => if a.airborne { p.plunge_ready } else { p.deathblow_ready },
+            Action::Jump => p.jump_throw_ready && !a.airborne,
+            _ => false,
+        };
+        let pending = pending && !thrown;
         for &arm in arms {
             if pending && if a.airborne { air } else { crate::player::accepts(d, a, act) } {
                 set(1106, Some(arm), true);
@@ -424,6 +438,12 @@ impl WolfScript {
         self.chr.vm.global_number(name)
     }
 
+    /// The graph's main state and clip (tests).
+    #[cfg(test)]
+    pub fn graph_main(&self) -> (String, String) {
+        (self.chr.rt.main_state_name().to_string(), self.chr.rt.main_clip().map(|c| c.animation.clone()).unwrap_or_default())
+    }
+
     fn graph_state(&self, d: &crate::data::CharData) -> String {
         let main = self.chr.rt.main_state_name();
         let clip = self.chr.rt.main_clip();
@@ -522,24 +542,28 @@ impl WolfScript {
     }
 }
 
+/// The engine's side the answers read beyond Wolf: the wire's aim (env 3000 IsWirePossible) and
+/// the enemies (the throw partner for env 274 IsOpponentDeadFromThrow).
+type Engine<'w, 's> = (Option<Res<'w, crate::wire::WireAim>>, Query<'w, 's, (Entity, &'static Actor, &'static crate::enemy::Enemy), Without<Player>>);
+
 #[allow(clippy::too_many_arguments)]
-fn tick_script(mut script: NonSendMut<WolfScript>, time: Res<Time>, combat: Res<Combat>, config: Res<crate::config::GameConfig>, lock: Res<crate::view::LockOn>, pad: ResMut<crate::player::PadInput>, view: Res<crate::view::View>, places: Query<&Transform>, wolf: Single<(Entity, &mut Actor, &mut Player)>) {
+fn tick_script(mut script: NonSendMut<WolfScript>, time: Res<Time>, combat: Res<Combat>, config: Res<crate::config::GameConfig>, lock: Res<crate::view::LockOn>, pad: ResMut<crate::player::PadInput>, view: Res<crate::view::View>, places: Query<&Transform>, engine: Engine, wolf: Single<(Entity, &mut Actor, &mut Player)>) {
     script.fired.clear();
-    run_script(script, time.delta_secs(), false, combat, config, lock, pad, view, places, wolf);
+    run_script(script, time.delta_secs(), false, combat, config, lock, pad, view, places, engine, wolf);
 }
 
 /// The landing player.rs's decide found this frame (its ground check runs after the script):
 /// the script ticks again at once (no time passes), as the exe's ground check comes before its
 /// HKS update, so BEH_R_LAND picks the landing on the same frame.
-fn land_script(script: NonSendMut<WolfScript>, combat: Res<Combat>, config: Res<crate::config::GameConfig>, lock: Res<crate::view::LockOn>, pad: ResMut<crate::player::PadInput>, view: Res<crate::view::View>, places: Query<&Transform>, wolf: Single<(Entity, &mut Actor, &mut Player)>) {
+fn land_script(script: NonSendMut<WolfScript>, combat: Res<Combat>, config: Res<crate::config::GameConfig>, lock: Res<crate::view::LockOn>, pad: ResMut<crate::player::PadInput>, view: Res<crate::view::View>, places: Query<&Transform>, engine: Engine, wolf: Single<(Entity, &mut Actor, &mut Player)>) {
     if !(script.air && !wolf.1.airborne) {
         return;
     }
-    run_script(script, 0.0, true, combat, config, lock, pad, view, places, wolf);
+    run_script(script, 0.0, true, combat, config, lock, pad, view, places, engine, wolf);
 }
 
 #[allow(clippy::too_many_arguments)]
-fn run_script(mut script: NonSendMut<WolfScript>, dt: f32, land_tick: bool, combat: Res<Combat>, config: Res<crate::config::GameConfig>, lock: Res<crate::view::LockOn>, mut pad: ResMut<crate::player::PadInput>, view: Res<crate::view::View>, places: Query<&Transform>, mut wolf: Single<(Entity, &mut Actor, &mut Player)>) {
+fn run_script(mut script: NonSendMut<WolfScript>, dt: f32, land_tick: bool, combat: Res<Combat>, config: Res<crate::config::GameConfig>, lock: Res<crate::view::LockOn>, mut pad: ResMut<crate::player::PadInput>, view: Res<crate::view::View>, places: Query<&Transform>, engine: Engine, mut wolf: Single<(Entity, &mut Actor, &mut Player)>) {
     let (me, a, p) = &mut *wolf;
     let target = lock.target.and_then(|t| Some((places.get(t).ok()?.translation - places.get(*me).ok()?.translation).with_y(0.0).normalize_or_zero()));
     let mut damage = a.damage_env.take();
@@ -632,6 +656,27 @@ fn run_script(mut script: NonSendMut<WolfScript>, dt: f32, land_tick: bool, comb
         move_vars(&mut h, a, stick, level, target);
         // GetFallHeight in whole centimetres (exe FUN_140b97880: peak Y minus Y, x 100).
         h.env.insert((224, None), (s.fall * 100.0).floor() as f64);
+        // IsWirePossible (env 3000, exe FUN_1409f3030): a wire target in the action range
+        // (wire.rs's search stands for the exe's) and the wire module not busy; not swimming
+        // (gap: the swim's wire, W_SwimWireMoveReady, is not ported). The engine writes
+        // WireDramaticAngle for the script's GetWireMoveStartIndex.
+        let wire_target = engine.0.as_ref().and_then(|w| w.target).filter(|t| t.in_action_range && p.swim.is_none());
+        h.env.insert((3000, None), wire_target.is_some() as i64 as f64);
+        if let (Some(t), Ok(tf)) = (wire_target, places.get(*me)) {
+            h.vars.insert("WireDramaticAngle".into(), crate::wire::dramatic_angle(tf.translation, t.point.hook) as f64);
+        }
+        // GetThrowAnimID (env 273, exe FUN_140bdfb20 by the throw's state byte) and
+        // IsOpponentDeadFromThrow (env 274, FUN_140b39ce0): in a deathblow the throw's atkAnimId,
+        // and once its partner died (ThrowDefDeath, or a boss without one dead at its flag 69)
+        // the kill's, atkAnimId + 1 (state 5). gap: the exe's dead bit (chr +0xc24 bit 2) and
+        // FUN_140be08b0's throw-state check are read as player.rs's partner test.
+        let atk_id = a.anim.rsplit('_').next().and_then(|n| n.parse::<i64>().ok()).filter(|_| a.state == "Deathblow");
+        let partner_dead = p.throw_target.and_then(|e| engine.1.get(e).ok()).is_some_and(|(_, ea, en)| {
+            ea.state.starts_with("ThrowDefDeath") || (en.is_dead() && !ea.anim.is_empty() && combat.data_of(ea).flag(&ea.anim, ea.t, 69))
+        });
+        let kill = atk_id.is_some() && partner_dead;
+        h.env.insert((274, None), kill as i64 as f64);
+        h.env.insert((273, None), atk_id.map_or(-1, |id| id + kill as i64) as f64);
         // Falling (env 200): off the ground; a walk-off on the move keeps ground contact for
         // player.rs's FALL_START_DROP (exe FUN_140b97970's ground probe, a gap).
         if a.airborne && crate::player::moving_locomotion(d, a) && s.fall < crate::player::FALL_START_DROP {
@@ -994,6 +1039,39 @@ fn run_script(mut script: NonSendMut<WolfScript>, dt: f32, land_tick: bool, comb
     if !landing && a.hp > 0.0 && events.iter().any(|e| e == "W_GroundStep") && take_press(s, d, a, p, &mut pad, Action::Step, false, dt) {
         step_aim(s, a, p, lock.target.is_none(), stick);
     }
+    // The grapple (BEH_A_GROUND_WIRE_SHOOT / BEH_A_AIR_WIRE_SHOOT on env 3000: W_GroundWireShoot,
+    // W_AirWireShoot, out of a wire move W_WireMoveWireShoot / W_WireMoveWire2Shoot, out of a
+    // break fall W_AirBreakFallWireShoot): Wolf takes the graph's shoot, and the wire starts on
+    // the aim's target. Its end into the move start is the graph's (graph_chains, the selector on
+    // WireMoveStartIndex the script set from WireDramaticAngle).
+    let shoot = |e: &String| matches!(e.as_str(), "W_GroundWireShoot" | "W_AirWireShoot" | "W_WireMoveWireShoot" | "W_WireMoveWire2Shoot" | "W_AirBreakFallWireShoot");
+    if !landing && a.hp > 0.0 && events.iter().any(shoot) {
+        let target = engine.0.as_ref().and_then(|w| w.target.filter(|t| t.in_action_range).map(|t| (t, w.enemy)));
+        if let (Some((t, enemy)), Ok(tf)) = (target, places.get(*me)) {
+            let pos = tf.translation;
+            if take_press(s, d, a, p, &mut pad, Action::Grapple, false, dt) && crate::wire::is_shoot(&a.state) {
+                p.wire = Some(crate::wire::Wire::new(&t, enemy, pos));
+                p.perch = None;
+                a.move_vel = Vec3::ZERO;
+            }
+        }
+    }
+    // The deathblow's kill (BEH_R_THROW_KILL on env 274: W_ThrowKill<env 273>): the graph's kill
+    // clip, Wolf's state stays the deathblow (player.rs's throw bookkeeping).
+    if a.hp > 0.0 && a.state == "Deathblow" && events.iter().any(|e| e.starts_with("W_ThrowKill")) && s.chr.rt.main_state_name().starts_with("ThrowKill") {
+        if let Some(clip) = s.chr.rt.main_clip().filter(|c| d.anim(&c.animation).is_some() && c.animation != a.anim) {
+            let (theirs, t) = (clip.animation.clone(), clip.time);
+            if s.trace > 0 {
+                eprintln!("hks: kill {} -> {theirs} at {t:.2}", a.anim);
+            }
+            a.play("Deathblow", &theirs);
+            a.move_vel = Vec3::ZERO;
+            a.t = (t - dt).max(0.0);
+            a.prev_t = a.t;
+            s.state_before = a.state.clone();
+            s.anim_before = a.anim.clone();
+        }
+    }
     if a.airborne {
         s.air_pose = (a.state.clone(), a.anim.clone(), a.t);
     }
@@ -1161,25 +1239,30 @@ fn apply_script(mut script: NonSendMut<WolfScript>, time: Res<Time>, combat: Res
     // A state player.rs started is the engine's where the graph takes it as the exe's own events:
     // those win over what the script fired this frame (the exe's throw check takes the press
     // first). Any other the graph does not show yet goes in as W_<state>.
-    if wolf.state != s.state_before || wolf.anim != s.anim_before {
-        if let (Ok(path), Some(at)) = (std::env::var("SHINOBI_HKS_AUDIT"), wolf.played_at) {
-            let theirs = s.chr.rt.main_clip().map(|c| c.animation.clone()).unwrap_or_default();
-            let ours = wolf.shown_clip(d).0;
-            let same = same_clip(&theirs, &ours);
-            let line = format!("{}:{}	{}	{}	{}	{}	{}	{}	{}
-", at.file(), at.line(), wolf.state, ours, s.graph_state(d), theirs, same, s.shows(d, &wolf), std::thread::current().name().unwrap_or("-"));
-            use std::io::Write;
-            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
-                let _ = f.write_all(line.as_bytes());
-            }
-        }
-    }
-    if (wolf.state != s.state_before || wolf.anim != s.anim_before) && !crate::player::is_free(&wolf.state) {
+    // The audit (SHINOBI_HKS_AUDIT): player.rs's pick against the graph after its tick, and in
+    // the last column whether the graph shows it once the engine's own events went in (throws,
+    // map events: the exe's engine fires those, not the script).
+    let changed = wolf.state != s.state_before || wolf.anim != s.anim_before;
+    let audit = std::env::var("SHINOBI_HKS_AUDIT").ok().zip(wolf.played_at).filter(|_| changed).map(|(path, at)| {
+        let theirs = s.chr.rt.main_clip().map(|c| c.animation.clone()).unwrap_or_default();
+        let ours = wolf.shown_clip(d).0;
+        let same = same_clip(&theirs, &ours);
+        (path, format!("{}:{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}", at.file(), at.line(), wolf.state, ours, s.graph_state(d), theirs, same, s.shows(d, &wolf), std::thread::current().name().unwrap_or("-")))
+    });
+    if changed && !crate::player::is_free(&wolf.state) {
         let own = !s.shows(d, &wolf) && wolf.state != s.state_before;
         s.engine_sync(d, &wolf.state, &wolf.anim, own);
     }
     if wolf.state != s.state_before && crate::player::is_free(&wolf.state) && !graph_free(&s.graph_state(d)) && !s.shows(d, &wolf) {
         s.to_idle(d, wolf.crouch);
+    }
+    if let Some((path, line)) = audit {
+        // Standing or moving on both sides counts as the same (player.rs's own locomotion).
+        let after = s.shows(d, &wolf) || (crate::player::is_free(&wolf.state) && graph_free(&s.graph_state(d)));
+        use std::io::Write;
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+            let _ = writeln!(f, "{line}\t{after}");
+        }
     }
     sync_clip(s, d, &mut wolf, time.delta_secs());
     s.state_after = wolf.state.clone();
@@ -1282,6 +1365,8 @@ fn take_graph(s: &mut WolfScript, d: &crate::data::CharData, wolf: &mut Actor, d
 ///   W_SprintToCrouchLeft / Right);
 /// - the crouch start into the crouch idle;
 /// - the hold art's start into its loop while held (BEH_A_GROUND_SP_ATTACK_HOLD);
+/// - the wire shoots into their move start (GroundWireMoveStart_Selector / AirWireMoveStart
+///   Selector on WireMoveStartIndex, the wire-to-wire and break-fall shoots' own);
 /// - the knockdowns: a posture break's damage and blows' landings into StandDamageBreakDown and
 ///   its get-up, other blows' landings into StandDamageLargeDown, the side by
 ///   Selector_ProneDirection (set where the script picks the reaction).
@@ -1307,6 +1392,7 @@ fn graph_chains(state: &str) -> bool {
         || state == "SprintStopReady"
         || (state.starts_with("SprintQuickTurn") && state != "SprintQuickTurnReady")
         || knockdown(state)
+        || crate::wire::is_shoot(state)
 }
 
 /// The states the graph takes into a knockdown at their clip end.

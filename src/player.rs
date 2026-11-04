@@ -134,7 +134,7 @@ pub struct Player {
     pub(crate) wire: Option<crate::wire::Wire>,
     /// A ridden wire point Wolf landed on (its landing spot): stands as a floor while he is on
     /// it. gap: the objects' own collision (branches, roofs) is not in the map terrain.
-    perch: Option<Vec3>,
+    pub(crate) perch: Option<Vec3>,
     /// Attack pressed during the Grappling Hook Attack's landing (the Todome input).
     wire_todome: bool,
     /// The fall top (physics +0x854): the height of the last grounded frame or SetNoGravity hold,
@@ -822,12 +822,6 @@ impl ThrowHold {
     }
 }
 
-
-/// The kill follow-up of a throw anim: "a201_510000" -> "a201_510001".
-fn kill_anim(anim: &str) -> Option<String> {
-    let (group, id) = anim.split_once('_')?;
-    Some(format!("{group}_{:06}", id.parse::<u32>().ok()? + 1))
-}
 
 /// HKS _SetJumpDirection sectors (PRM_GROUND_JUMP_*_STICK_RANGE, degrees from the facing, + right):
 /// (ready state, raw anim for the side jumps, landing state).
@@ -3771,17 +3765,11 @@ fn decide(
             }
         }
     } else if let Some(ee) = p.throw_target {
-        // A boss without a ThrowDefDeath (c5080 Gyoubu, c5100) by its own flag 69 once dead, as
-        // the wire landing's above.
-        let dead = enemies.get(ee).map(|(_, ea, en, _)| ea.state.starts_with("ThrowDefDeath") || (en.is_dead() && !ea.anim.is_empty() && combat.data_of(ea).flag(&ea.anim, ea.t, 69)));
-        if a.state != "Deathblow" || dead.is_err() {
+        // The kill follow-up is the script's (hks_wolf: BEH_R_THROW_KILL on env 274 with the
+        // partner's death, W_ThrowKill<env 273>); the partner is kept for it while the deathblow
+        // lasts.
+        if a.state != "Deathblow" || enemies.get(ee).is_err() {
             p.throw_target = None;
-        } else if dead == Ok(true) {
-            p.throw_target = None;
-            if let Some(kill) = kill_anim(&a.anim).filter(|k| d.anim(k).is_some()) {
-                a.play("Deathblow", &kill);
-                a.move_vel = Vec3::ZERO;
-            }
         }
     }
 
@@ -4068,41 +4056,23 @@ fn decide(
             a.air_base = Vec3::ZERO;
             a.move_vel = Vec3::ZERO;
         }
-        // The shoot ends into its move start (selector on WireMoveStartIndex).
-        if ended && crate::wire::is_shoot(&a.state) {
-            let next = crate::wire::move_start(&a.state, w.index);
-            a.move_vel = Vec3::ZERO;
-            if a.play_state(d, &next) {
-                return;
-            }
+        // The shoot and its end into the move start are the graph's (hks_wolf: the script's
+        // W_*WireShoot on env 3000, graph_chains for the end).
+        if entered && crate::wire::is_shoot(&a.state) {
+            log.push("grapple", Color::srgb(0.6, 0.9, 0.6));
         }
     }
-    // BEH_A_GROUND_WIRE_SHOOT / BEH_A_AIR_WIRE_SHOOT (HKS 6251 / 6154): the press with a point in
-    // the action range (env IsWirePossible); ACTION_UNLOCK_TYPE_SUB_WEAPONE (4) is always on.
-    // Without one the request is dropped (ResetRequest). On the ground from standby or the jump's
-    // window (`accept_flag`), in the air from the falls, the wire move or the jump's window.
+    // A grapple press the script did not take (BEH_A_*_WIRE_SHOOT): in its window, or with no
+    // point in the action range, the request is dropped (the script's ResetRequest).
     if p.requests.contains_key(&Action::Grapple) {
-        let in_wire = p.wire.is_some();
         let ok = if a.airborne {
             matches!(a.state.as_str(), "FreeFall" | "WireMove") || a.state.ends_with("GroundJumpFall") || (!a.anim.is_empty() && d.flag(&a.anim, a.step(), FLAG_ACCEPT_JUMP))
         } else {
             is_free(&a.state) || accepts(d, a, Action::Grapple)
         };
         let target = wire_aim.as_ref().and_then(|w| w.target).filter(|t| t.in_action_range);
-        let enemy = wire_aim.as_ref().and_then(|w| w.enemy);
         if ok || target.is_none() {
             p.requests.remove(&Action::Grapple);
-        }
-        if let Some(t) = target.filter(|_| ok) {
-            let shoot = crate::wire::shoot_state(&a.state, a.airborne, in_wire);
-            let wire = crate::wire::Wire::new(&t, enemy, tf.translation);
-            if a.play_state(d, shoot) {
-                p.wire = Some(wire);
-                p.perch = None;
-                a.move_vel = Vec3::ZERO;
-                log.push("grapple", Color::srgb(0.6, 0.9, 0.6));
-                return;
-            }
         }
     }
 
