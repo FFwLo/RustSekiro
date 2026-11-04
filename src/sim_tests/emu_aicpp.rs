@@ -34,7 +34,7 @@ pub(crate) fn sight_cones_match_the_exe() {
         assert_eq!(f(&o["ctx50"]), 1.0, "observer vfunc 0xe0 (taken as 1)");
         let ang = [0, 1, 2, 3].map(|i| f(&o["ang"][i]));
         for c in o["cases"].as_array().unwrap() {
-            let wolf = Seen { pos: mirror(&c["target"]), radius: f(&o["radius"]), cut: f(&o["cut"]), ang, around_rate: 1.0, light };
+            let wolf = Seen { pos: mirror(&c["target"]), radius: f(&o["radius"]), cut: f(&o["cut"]), ang, around_rate: 1.0, light, ..Seen::new(Vec3::ZERO, 0.0, &[]) };
             let want = (c["normal"].as_u64().unwrap(), c["around"].as_u64().unwrap());
             let got = (if in_cone_shape(&cone, eye, fwd, &wolf) { 2 } else { 0 }, in_cone_shape(&around, eye, fwd, &wolf) as u64);
             n += 1;

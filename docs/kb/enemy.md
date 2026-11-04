@@ -104,7 +104,9 @@ Dated findings, oldest first. Append new entries at the end.
     Light factors 1 / 0.5 / 0.3 (DAT_143afb490..8, NpcThinkParam disableDark).
   * Wolf's SpEffects (FUN_140bd3e40): dist cut = prod(1 - sightSearchEnemyCut/100) (FUN_140bfe8a0,
     skips stateInfo 7/53 unless the observer flag), angle cuts +0x26c..0x26f, gated by
-    sightCutLimitType (+0x107: 1/2 = geometry bits from FUN_140616f50, not traced).
+    sightCutLimitType (+0x107: 1/2 = geometry bits from FUN_140616f50; done 2026-11-04, kb/aicpp.md
+    "Light, geometry bits and the nose marks": bit 1 = the enemy in Wolf's front half and not
+    perceiving, bit 2 = more than 70 deg off his facing; hang 109220 is type 1, wall hug 109210 type 2).
   * Normal cone hit -> normal target in FIND (FUN_14062bdb0); FIND -> BATTLE inside BattleStartDist
     (FUN_14062be40) or platoon battle. Damage (reason 4, FUN_14061d140) -> BATTLE at once.
   * Around cone, no normal target -> meter entry (FUN_140625340): += aroundTargetIncrementPoint (or
@@ -314,7 +316,8 @@ Dated findings, oldest first. Append new entries at the end.
     m11_01 EMEVD, so none on the gate; 109201 "crouch shadow stealth" has no setter in EMEVD, params,
     TAE or HKS. The likely shadow input is the hit parts' MapVisibility (collision type data +0x27,
     0 Good / 1 Dark / 2 Total Dark; FUN_1409b5c80 -> chr +0x1acd; FUN_140617150 puts it in the
-    sight query, remapped by the target's SpEffect mapVisibilityOverride*, scaled by query
+    sight query, remapped by the OBSERVER's stateInfo 340 SpEffect mapVisibilityOverride* (proved
+    2026-11-04, kb/aicpp.md "Light, geometry bits and the nose marks"), scaled by query
     +0x58[type] 1 / 0.5 / 0.3 in FUN_14061ae40 / FUN_14061c2a0; NpcThinkParam disableDark skips
     it): all 221 m11_01 collision parts are Good, so the gate has no dark places. Not exported;
     other maps have Dark ones (m11_00 2 + 4 Total, m17 19 Total, m20 7).

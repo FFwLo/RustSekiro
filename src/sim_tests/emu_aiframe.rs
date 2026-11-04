@@ -34,7 +34,7 @@ pub(crate) fn targeting_frames_match_the_exe() {
         }
         let (eye, head, fwd, me) = (mirror(&sc["eye"]), mirror(&sc["head"]), mirror(&sc["fwd"]), mirror(&sc["chr_pos"]));
         let (radius, own) = (f(&sc["radius"]), f(&sc["own_radius"]));
-        let seen = |fr: &serde_json::Value| Seen { pos: mirror(&fr["wolf"]), radius, cut: 1.0, ang: [1.0; 4], around_rate: 1.0, light: 1.0 };
+        let seen = |fr: &serde_json::Value| Seen { pos: mirror(&fr["wolf"]), radius, cut: 1.0, ang: [1.0; 4], around_rate: 1.0, light: 1.0, ..Seen::new(Vec3::ZERO, 0.0, &[]) };
         let cones = ["normal", "around", "perceive"].map(|s| Cone::from(&think, s));
         let list = sc["frames"].as_array().unwrap();
         if list.iter().any(|fr| fr["ray"] == 0 && cones.iter().any(|c| in_cone_shape(c, eye, fwd, &seen(fr)))) {
@@ -117,7 +117,7 @@ pub(crate) fn nose_sphere_matches_the_exe() {
         assert_eq!([f(&ctx[12]), f(&ctx[14])], [f(&o["head"][0]), f(&o["head"][2])]);
         for c in o["nose"].as_array().unwrap() {
             let think = serde_json::json!({"nose_dist": c["nose_dist"]});
-            let wolf = Seen { pos: mirror(&c["feet"]), radius, cut: 1.0, ang: [1.0; 4], around_rate: 1.0, light: 1.0 };
+            let wolf = Seen { pos: mirror(&c["feet"]), radius, cut: 1.0, ang: [1.0; 4], around_rate: 1.0, light: 1.0, ..Seen::new(Vec3::ZERO, 0.0, &[]) };
             assert_eq!(in_nose(&think, eye, &wolf), c["hit"] == 1, "{} {c}", o["think"]);
             n += 1;
         }

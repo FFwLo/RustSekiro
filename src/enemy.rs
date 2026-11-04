@@ -2363,7 +2363,15 @@ pub(crate) fn wolf_seen(combat: &Combat, pa: &Actor, pos: Vec3, skills: &[crate:
     let skills = skills_in_force(skills, &sp);
     sp.extend(skills);
     let feet = pos - Vec3::Y * (crate::player::CAPSULE_HALF_HEIGHT + 0.05);
-    stealth::Seen::new(feet, crate::player::CAPSULE_RADIUS, &sp)
+    let mut seen = stealth::Seen::new(feet, crate::player::CAPSULE_RADIUS, &sp);
+    // The wall hug 109210 (sightCutLimitType 2) and hang 109220 (1) count by where each enemy
+    // stands against his facing (stealth::geometry_bits).
+    seen.facing = pa.forward();
+    // gap: his light index (ChrIns +0x1acd) stays Good: it needs the MapVisibility of the MSB
+    // collision part under him (Collision type data +0x27, crates/formats msb.rs map_visibility)
+    // kept per hit triangle in the .hit export, and the DarkSight regions (CSDarkSight*Region,
+    // FUN_140c0c170) that force Good inside them.
+    seen
 }
 
 /// The learned skills' SpEffects that work now: those without invocationConditionsStateChange1-3,
@@ -2957,7 +2965,11 @@ fn think(
         let think_id = e.think_id(foe);
         let think_row = combat.param("NpcThinkParam", think_id);
         let (home, home_yaw) = *e.home.get_or_insert((tf.translation, a.yaw));
-        let mut seen = wolf_seen(&combat, pa, ptf.translation, &skills);
+        // The observer's own SpEffects (stealth::Observer): its stateInfo 340 light remap (63
+        // NpcParam rows carry 200500 "all Good", 12 200530 "Good is PitchDark", ...).
+        // gap: its TAE SpEffects (a.sp_chained holds the chained ones only) are not read.
+        let observer = stealth::Observer::from_rows(a.sp_chained.iter().map(|c| c.0).chain(e.clash.iter().map(|c| c.0)).chain(a.resident.iter().copied()).map(|id| crate::items::param("SpEffectParam", id)));
+        let mut seen = wolf_seen(&combat, pa, ptf.translation, &skills).observed_by(&observer);
         // What Wolf's bullets and throws put on it: the Bloodsmoke's 220014 (sightSearchRate 0,
         // hearingSearchEnemyCut 100) blinds and deafens it in the smoke, the Puppeteer's 220021
         // doubles its sight. A charmed puppet (team 15, ninjutsu.rs) does not hunt Wolf at all.

@@ -246,3 +246,66 @@ target's edge is raised); the other mask bits (1, 6-10, 13 / 14, 18, 20, 30, 34,
 as a mask test, not hooked; whether the TAE emits every frame of an event or once (the
 handlers FUN_140b4fe00 / FUN_140b50930 were not run); the General's goals after 46 compared by
 eye only (anim 700 / 710), not frame by frame against our Lua.
+
+## 2026-11-04 Light, geometry bits and the nose marks (aistealth, row E33)
+
+How: `tools/emu-cases/src/aistealth.rs` on the Naomori-arena snapshot (`aistealth_probe`,
+`_bits`, `_factors`, `_light`, `_nose`; about 45 s). SpEffects are put on a chr as nodes at the
+head of its list ([chr+0x11d0]+8) with the holder's stateInfo filter (+0x20) opened, from the
+real rows or copies with sightCutLimitType (+0x107) or stateInfo (+0x15e) changed. JSON:
+extracted/emu/aistealth.json. Tests in `src/sim_tests/emu_aistealth.rs`.
+
+The geometry bits (FUN_140616f50, from FUN_140bd3e40 through FUN_140616ef0 with ctx +0x20 the
+sight origin, +0x90 Wolf's feet, +0xb0 his facing, +0x56 the perceive set): the flat unit vector
+from Wolf to the observer dotted with his facing (3D, so a tilted facing counts its flat part
+only). Bit 1 when the dot >= cos(front / 2) and the perceive set is off; bit 2 when the dot <
+cos(180 - back / 2). front / back are DAT_143afbb04 / 08 (getters FUN_14064c4a0 / 4b0 on the AI
+manager [0x143d55070]): 180 and 220 on the snapshot, so bit 1 = the observer in Wolf's front
+half, bit 2 = more than 70 deg off his facing. When Wolf wears no effect with a non-zero
+sightCutLimitType the bits are 3 (FUN_140bfedb0). 7,776 direct cases equal
+(`geometry_bits_match_the_exe`).
+
+The factors (FUN_140bfe8a0 distance cut, FUN_140bfea80 / bfe6e0 / bfe7c0 / bfe9a0 angle cuts,
+FUN_140bfc050 meter rate): each walks Wolf's active effects; type 0 counts always, type 1 only
+with bit 1, type 2 only with bit 2. The distance cut also skips stateInfo 7 / 53 effects unless
+ctx +0x10 (observer vfunc 0x68, 0 on all six enemies) and multiplies by the holder's +0x14 (1.0).
+Clamps: cut and angles 0..1, rate 0..999.9. The meter fill (FUN_140612400) computes its own bits
+from the observer's feet (FUN_1409f0870), not the sight origin. Data: 109210 wall hug is type 2
+(left / right angle cut 90, rate 0), 109220 hang is type 1 (distance cut 100, rate 0); no other
+row has a type. Seven effect sets x 4 bit pairs, and the whole target side with the observer
+(11500001) every 5 deg round Wolf at 6 m facing him, perceive off / on: 1,064 cases equal, cone
+results included (`sight_factors_match_the_exe`). Sv1 had left both effects out entirely;
+now `Seen::limited` + `from_eye`.
+
+The light (FUN_140617150): ctx +0x79 = Wolf's ChrIns +0x1acd & 0xf, then, if the observer (ctx
++8 = the observer's SpEffect holder, observer vfunc 0xf0; equal to [chr+0x11d0] on all six) wears
+a stateInfo 340 effect, FUN_140616e90 maps index 0 / 1 / 2 to its mapVisibilityOverrideGood /
+Dark / PitchDark (+0x104..0x106). The same effect on Wolf does nothing. 18 cases
+(`light_remap_matches_the_exe`). 11500001 already wears one (Good / Dark / PitchDark -> 0 / 0 / 1,
+200511's). NpcParam: 200500 (all Good) on 63 rows, 200511 on 59, 200530 (Good -> PitchDark, the
+cones x 0.3 in daylight) on 12, 200520 on 7. Sv1 now reads the observer's resident / clash /
+chained SpEffects (`stealth::Observer`, enemy.rs).
+
+Wolf's index itself: FUN_1409f5820 writes +0x1acd = the MapVisibility of the MSB Collision part
+of his floor hit (FUN_1409b5c80: part type 5 by the hit record's index, type data +0x27; low and
+high nibble), when the floor part changes; then each call, with a part value, low = high unless
+the chr is inside a CSDarkSight region ([0x143d87fd0], FUN_140c0c170: MSB spheres / cylinders /
+boxes and SpEffect spheres, any containing the point), which makes it 0 (Good). On the snapshot
+Wolf and all six enemies read 0 and Wolf is in no region. Not ported (data missing): Sv1's hit
+collision has no part per triangle and no DarkSight region is exported. It needs (1) per hit
+triangle (or per MSB Collision part) the part's MapVisibility (crates/formats msb.rs already
+reads `map_visibility`; the .hit export would carry it next to the material) and (2) the
+DarkSight regions with their shapes. Only m11_00 (2 Dark + 4 PitchDark parts), m17 (19
+PitchDark) and m20 (7 Dark) have non-Good parts (kb/enemy.md 2026-10-12; the m11_01 gate's 221
+are all Good).
+
+The nose marks (FUN_14061c940): ctx +0xc0 = Wolf wears stateInfo 333, +0xc1 = 335
+(FUN_140bd3e40); the nose misses when +0xc0 and the observer wears 332, or +0xc1 and 334. 25
+pairs (`nose_marks_match_the_exe`). No SpEffectParam row has stateInfo 332-335, so with the
+game's data nothing hides from the nose; ported (`Seen::nose_marks` / `nose_hidden`) for
+completeness. (The "332 / 334" of the old gap note are these stateInfo values, not effect ids.)
+
+Not covered: Wolf's light index from the map (above); ctx +0x10 (the 7 / 53 rule taken as off);
+the meter's fifth argument to FUN_140612400 (taken as the perceive set); the observer's TAE
+SpEffects for the 340 remap (Sv1 reads resident, clash and chained ones); index values above 2
+(MapVisibility has three); ctx +0xc3 (FUN_1409f3430 player branch, DAT_143d7a36f).

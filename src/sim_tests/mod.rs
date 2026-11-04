@@ -60,6 +60,7 @@ mod emu_throw;
 mod emu_throw2;
 mod emu_aicpp;
 mod emu_aiframe;
+mod emu_aistealth;
 mod emu_speffect;
 mod emu_proxy;
 mod emu_damagemod;

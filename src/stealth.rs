@@ -20,7 +20,8 @@
 //!   indication target at Wolf's position (FUN_1406285c0, IndicationTargetForgetTime): CAUTION.
 //! The sight search runs every 0.2-0.4 s (FUN_140623ca0: rand * 0.2 + 0.2, DAT_143afb488/c);
 //! the meter updates every frame. Light level (Good / Dark / PitchDark x 1 / 0.5 / 0.3,
-//! DAT_143afb490..8) is "Good" here: there is no map lighting.
+//! DAT_143afb490..8): Wolf's floor part's MapVisibility remapped by the observer's stateInfo 340
+//! SpEffect (`Seen::observed_by`); Wolf's own index stays Good here (`Seen::light_index`).
 
 use bevy::prelude::*;
 use serde_json::Value;
@@ -78,6 +79,8 @@ impl Cone {
 }
 
 /// Wolf as the enemy's sight sees him (the exe's sight context filled by FUN_140bd3e40).
+/// `Seen::new` holds Wolf's own side; `observed_by` (the observer's SpEffects) and `from_eye`
+/// (the observer's place, FUN_140616f50) make the context one enemy's search uses.
 #[derive(Clone, Copy, Debug)]
 pub struct Seen {
     /// Root (feet) position (ctx +0x90 = FUN_1409f0870).
@@ -90,28 +93,184 @@ pub struct Seen {
     pub ang: [f32; 4],
     /// Meter fill factor from aroundSightPointAddRate (FUN_140bfc050).
     pub around_rate: f32,
-    /// Light factor: Wolf's light level (ChrIns +0x1acd & 0xf -> ctx +0x79) picks Good / Dark /
-    /// PitchDark 1 / 0.5 / 0.3 (DAT_143afb490..8 -> ctx +0x58). gap: no map lighting, always Good.
+    /// Light factor (ctx +0x58 table [ctx +0x79]): LIGHT_TABLE at `light_index` after the
+    /// observer's remap (`observed_by`).
     pub light: f32,
+    /// Wolf's facing (ctx +0xb0, FUN_1409eeb40): the geometry bits look from it.
+    pub facing: Vec3,
+    /// Wolf's light index, ChrIns +0x1acd & 0xf (0 Good / 1 Dark / 2 PitchDark): the MapVisibility
+    /// of the MSB collision part he stands on (part type data +0x27; FUN_1409f5820 via
+    /// FUN_1409b5c80 when his floor part changes), forced to Good inside a CSDarkSight region
+    /// ([0x143d87fd0], FUN_140c0c170: MSB, chr and SpEffect regions). gap: always 0 here; our
+    /// hit collision keeps no part per triangle and no DarkSight region is exported (wolf_seen).
+    pub light_index: u8,
+    /// Factors of the SpEffects with sightCutLimitType 1 / 2: they count only when the geometry
+    /// bit 1 / 2 holds (FUN_140bd3e40 -> FUN_140616ef0; `from_eye` folds them in).
+    pub limited: [Cuts; 2],
+    /// Nose marks: stateInfo 333 (bit 0, ctx +0xc0) / 335 (bit 1, ctx +0xc1) on Wolf.
+    pub nose_marks: u8,
+    /// The observer answers a mark with stateInfo 332 / 334 (`observed_by`): its nose misses
+    /// Wolf (FUN_14061c940). No SpEffectParam row carries 332-335, so with the game's data the
+    /// nose is never blocked.
+    pub nose_hidden: bool,
+}
+
+/// One sightCutLimitType's factors (FUN_140bfe8a0 cut, FUN_140bfea80 / bfe6e0 / bfe7c0 / bfe9a0
+/// angles, FUN_140bfc050 meter rate).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Cuts {
+    pub cut: f32,
+    pub ang: [f32; 4],
+    pub around_rate: f32,
+}
+
+impl Cuts {
+    pub const ONE: Cuts = Cuts { cut: 1.0, ang: [1.0; 4], around_rate: 1.0 };
+
+    fn add(&mut self, e: &crate::data::SpEffect) {
+        let cut = |pct: f32| if pct > 0.0 { 1.0 - pct * 0.01 } else { 1.0 };
+        // The distance cut skips stateInfo 7 / 53 unless the observer's flag (ctx +0x10,
+        // observer vfunc 0x68) is set; gap: the flag is taken as off (0 on the snapshot's six
+        // enemies; no such row has a cut).
+        if !matches!(e.state_info, 7 | 53) {
+            self.cut *= cut(e.sight_search_enemy_cut);
+        }
+        self.ang[0] *= cut(e.sight_search_upper_angle_cut);
+        self.ang[1] *= cut(e.sight_search_bottom_angle_cut);
+        self.ang[2] *= cut(e.sight_search_left_angle_cut);
+        self.ang[3] *= cut(e.sight_search_right_angle_cut);
+        self.around_rate *= e.around_sight_point_add_rate;
+    }
+}
+
+/// The light factors Good / Dark / PitchDark (DAT_143afb490..8 -> ctx +0x58 / 0x5c / 0x60).
+pub const LIGHT_TABLE: [f32; 3] = [1.0, 0.5, 0.3];
+/// The geometry bits' angles (FUN_14064c4a0 / FUN_14064c4b0: DAT_143afbb04 / 08, read on the
+/// snapshot): a 180 deg front, a 220 deg back.
+const FRONT_ANGLE: f32 = 180.0;
+const BACK_ANGLE: f32 = 220.0;
+
+/// The observer's geometry bits (FUN_140616f50): from Wolf's feet to the observer, flattened,
+/// against Wolf's facing. Bit 1: the observer within 90 deg of where he faces (never while the
+/// observer's perceive set is on); bit 2: more than 70 deg off it. Checked on 7,776 placements
+/// (aistealth 2026-11-04, `geometry_bits_match_the_exe`).
+pub fn geometry_bits(observer: Vec3, wolf: Vec3, facing: Vec3, perceive: bool) -> u8 {
+    let to = Vec3::new(observer.x - wolf.x, 0.0, observer.z - wolf.z).normalize_or_zero();
+    let dot = to.dot(facing);
+    let mut bits = 0;
+    if !perceive && (FRONT_ANGLE * 0.5 * 0.017453292).cos() <= dot {
+        bits |= 1;
+    }
+    if dot < ((180.0 - BACK_ANGLE * 0.5) * 0.017453292).cos() {
+        bits |= 2;
+    }
+    bits
+}
+
+/// The observer's side of the context: the light remap of its stateInfo 340 SpEffect (ctx +8 is
+/// the observer's SpEffect holder; FUN_140617150 -> FUN_140616e90: Good / Dark / PitchDark ->
+/// mapVisibilityOverrideGood / Dark / PitchDark) and its nose answers (stateInfo 332 / 334).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Observer {
+    pub light: Option<[u8; 3]>,
+    pub nose_marks: u8,
+}
+
+impl Observer {
+    /// From the observer's active SpEffectParam rows, newest first (the exe takes the first
+    /// stateInfo 340 node of the list).
+    pub fn from_rows<'a>(rows: impl IntoIterator<Item = &'a Value>) -> Observer {
+        let mut o = Observer::default();
+        for r in rows {
+            let b = |k: &str| r[k].as_u64().unwrap_or(0) as u8;
+            match r["stateInfo"].as_i64() {
+                Some(340) if o.light.is_none() => {
+                    o.light = Some([b("mapVisibilityOverrideGood"), b("mapVisibilityOverrideDark"), b("mapVisibilityOverridePitchDark")]);
+                }
+                Some(332) => o.nose_marks |= 1,
+                Some(334) => o.nose_marks |= 2,
+                _ => {}
+            }
+        }
+        o
+    }
 }
 
 impl Seen {
-    /// Wolf's sight factors from his active SpEffects. Effects with sightCutLimitType 1 / 2
-    /// apply only when the observer's geometry bits hold (FUN_140616f50); gap: those bits are
-    /// not traced, so such effects (hanging 109220, wall hug 109210) are left out.
+    /// Wolf's side from his active SpEffects: type 0 effects count at once, types 1 / 2 wait
+    /// for the observer's geometry bits (`from_eye`). Checked against the exe's factor
+    /// functions and whole contexts (aistealth 2026-11-04, `sight_factors_match_the_exe`).
     pub fn new(pos: Vec3, radius: f32, sp: &[&crate::data::SpEffect]) -> Seen {
-        let mut s = Seen { pos, radius, cut: 1.0, ang: [1.0; 4], around_rate: 1.0, light: 1.0 };
-        for e in sp.iter().filter(|e| e.sight_cut_limit_type == 0) {
-            let cut = |pct: f32| if pct > 0.0 { 1.0 - pct * 0.01 } else { 1.0 };
-            s.cut *= cut(e.sight_search_enemy_cut);
-            s.ang[0] *= cut(e.sight_search_upper_angle_cut);
-            s.ang[1] *= cut(e.sight_search_bottom_angle_cut);
-            s.ang[2] *= cut(e.sight_search_left_angle_cut);
-            s.ang[3] *= cut(e.sight_search_right_angle_cut);
-            s.around_rate *= e.around_sight_point_add_rate;
+        let mut own = Cuts::ONE;
+        let mut limited = [Cuts::ONE; 2];
+        let mut nose_marks = 0;
+        for e in sp {
+            match e.sight_cut_limit_type {
+                0 => own.add(e),
+                1 => limited[0].add(e),
+                2 => limited[1].add(e),
+                _ => {}
+            }
+            nose_marks |= match e.state_info {
+                333 => 1,
+                335 => 2,
+                _ => 0,
+            };
         }
-        s.cut = s.cut.clamp(0.0, 1.0);
-        s.around_rate = s.around_rate.clamp(0.0, 999.9);
+        let mut s = Seen {
+            pos,
+            radius,
+            cut: own.cut,
+            ang: own.ang,
+            around_rate: own.around_rate,
+            light: LIGHT_TABLE[0],
+            facing: Vec3::NEG_Z,
+            light_index: 0,
+            limited,
+            nose_marks,
+            nose_hidden: false,
+        };
+        s.clamp();
+        s
+    }
+
+    fn clamp(&mut self) {
+        self.cut = self.cut.clamp(0.0, 1.0);
+        self.ang = self.ang.map(|a| a.clamp(0.0, 1.0));
+        self.around_rate = self.around_rate.clamp(0.0, 999.9);
+    }
+
+    /// With the geometry bits known: the limited effects of the set bits folded in.
+    pub fn with_bits(&self, bits: u8) -> Seen {
+        let mut s = *self;
+        for (i, l) in self.limited.iter().enumerate() {
+            if bits & (1 << i) != 0 {
+                s.cut *= l.cut;
+                s.ang = std::array::from_fn(|k| s.ang[k] * l.ang[k]);
+                s.around_rate *= l.around_rate;
+            }
+        }
+        s.limited = [Cuts::ONE; 2];
+        s.clamp();
+        s
+    }
+
+    /// Seen from an observer at `eye` (ctx +0x20 for the cones; the meter fill measures from the
+    /// observer's feet, FUN_140612400) with its perceive set on or off (ctx +0x56).
+    pub fn from_eye(&self, eye: Vec3, perceive: bool) -> Seen {
+        if self.limited == [Cuts::ONE; 2] {
+            return *self;
+        }
+        self.with_bits(geometry_bits(eye, self.pos, self.facing, perceive))
+    }
+
+    /// Seen by one observer: its light remap and nose answers.
+    pub fn observed_by(&self, o: &Observer) -> Seen {
+        let mut s = *self;
+        let i = self.light_index.min(2) as usize;
+        let idx = o.light.map_or(i, |m| m[i] as usize);
+        s.light = LIGHT_TABLE[idx.min(2)];
+        s.nose_hidden = self.nose_marks & o.nose_marks != 0;
         s
     }
 }
@@ -126,11 +285,12 @@ pub fn in_cone(cone: &Cone, eye: Vec3, head: Vec3, fwd: Vec3, wolf: &Seen) -> bo
 /// The nose sphere (FUN_14061c940, FUN_140617280's result 1 when the normal cone misses): Wolf's
 /// feet (ctx +0x90) within NpcThinkParam nose_dist (row +0x36) + his radius (ctx +0x80) of the
 /// sight origin (ctx +0x20), in 3D; a row without a nose_dist smells nothing. Checked on 189
-/// placements (aiframe 2026-11-03). gap: Wolf's SpEffect states 332 / 334 hide him from it when
-/// ctx +0xc0 / +0xc1 are set (both off on the snapshot, not traced).
+/// placements (aiframe 2026-11-03). Hidden from it when Wolf wears stateInfo 333 (ctx +0xc0)
+/// and the observer 332, or 335 (ctx +0xc1) and 334 (`Seen::nose_hidden`; 25 pairs,
+/// aistealth 2026-11-04).
 pub fn in_nose(think: &Value, eye: Vec3, wolf: &Seen) -> bool {
     let nose = f(think, "nose_dist");
-    nose > 0.0 && (wolf.pos - eye).length_squared() < (nose + wolf.radius) * (nose + wolf.radius)
+    !wolf.nose_hidden && nose > 0.0 && (wolf.pos - eye).length_squared() < (nose + wolf.radius) * (nose + wolf.radius)
 }
 
 /// The sight ray's start (ctx +0x30, observer vfunc 0x28 FUN_14060e6b0): dummy 500 where the
@@ -442,6 +602,11 @@ impl Targeting {
     #[allow(clippy::too_many_arguments)]
     pub fn update(&mut self, think: &Value, me: Vec3, eye: Vec3, head: Vec3, fwd: Vec3, wolf: &Seen, dt: f32) {
         let around = Cone::from(think, "around");
+        // Wolf's limited SpEffects by where this enemy stands (FUN_140616f50): from the sight
+        // origin for the cones, from its feet for the meter rate (FUN_140612400). gap: the
+        // meter's perceive argument (its fifth) is taken as the perceive set.
+        let rate = wolf.from_eye(me, self.perceive).around_rate;
+        let wolf = &wolf.from_eye(eye, self.perceive);
         // Meter (FUN_140626430, every frame before the search): started from the last search's
         // around sighting, filled while Wolf stays in the around cone, drained out of it.
         if self.meter.is_none() && self.around_seen && self.normal.is_none() {
@@ -450,7 +615,7 @@ impl Targeting {
         if let Some(mut m) = self.meter {
             m.visible = in_cone(&around, eye, head, fwd, wolf);
             if m.visible {
-                m.points += f(think, "aroundTargetIncrementPoint") * dt * wolf.around_rate;
+                m.points += f(think, "aroundTargetIncrementPoint") * dt * rate;
             } else {
                 m.points -= dt * METER_DRAIN;
             }
@@ -575,7 +740,7 @@ mod tests {
     }
 
     fn wolf(pos: Vec3) -> Seen {
-        Seen { pos, radius: 0.4, cut: 1.0, ang: [1.0; 4], around_rate: 1.0, light: 1.0 }
+        Seen::new(pos, 0.4, &[])
     }
 
     /// Enemy at the origin facing +Z.
