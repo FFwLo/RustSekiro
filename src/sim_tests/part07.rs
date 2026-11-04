@@ -890,10 +890,16 @@ pub(crate) fn tool_on(chr: &str, row: i64, tool: Option<i64>) -> (f32, f32) {
             break;
         }
     }
-    assert!(log_text(&app).contains("hit: -"), "{}", log_text(&app));
+    let log = log_text(&app);
+    assert!(log.contains("hit: -"), "{log}");
+    // The posture the hit dealt, from its log line: the bullet lands its hit before the tick's
+    // step (prosthetic.rs fly_bullets in the hit step's place), whose regen then takes some back.
+    let line = log.lines().find(|l| l.contains("hit: -")).unwrap();
+    let pd: f32 = line.split('+').nth(1).and_then(|s| s.split(' ').next()).and_then(|s| s.parse().ok()).unwrap_or(f32::NAN);
     let world = app.world_mut();
     let a = world.query_filtered::<&Actor, Without<crate::enemy::Cast>>().iter(world).find(|a| a.side == crate::actor::Side::Enemy).unwrap();
-    (before.0 - a.hp, a.posture - before.1)
+    let _ = before.1;
+    (before.0 - a.hp, pd)
 }
 
 /// Tool bullets scale all five attackBase* elements (2026-10-12 round 22): the Lazulite
