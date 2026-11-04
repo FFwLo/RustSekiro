@@ -26,3 +26,5 @@
 - 2026-11-04 FFwLo/claude: E18 done. 1 cm floor matched, TAE 152 AttachCameraToNode ported, SlowEnd copies only (camleft)
 - 2026-11-04 FFwLo/claude: E32 done. free camera swing is the full fulcrum swing; follow_swing stand-in removed (camswing)
 - 2026-11-04 FFwLo/claude: E14 done. chr push: stepping side lifted 0.3 m and stops at 0.950 m, other never shoved; humanoids pass, dogs block (pushmove); rim leave by the two-sphere ground check (collide_rimleave)
+- 2026-11-04 FFwLo/claude: E15 done. no NPC +1000 fallback in the exe (2,710 keys run); exporter keys fixed, art anims fall back to 5000 (params_keys)
+- 2026-11-04 FFwLo/claude: E30 done. 130 cited param fields confirmed read by the cited exe code, no swaps (EMU_PARAM_READS)
