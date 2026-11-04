@@ -15,7 +15,7 @@ disassembly.
 ## Commands
 - Build: `cargo build --release` (game), `cargo build` (debug). One target folder per session
   (`CARGO_TARGET_DIR=target/<name>`); the extractor uses `tools/sekiro-extract/target`.
-- Tests: `tools/t.sh <filter>` (quiet: failures and totals only). Same as
+- Tests: `tools/t.sh <filter>`, or `tools\t.ps1 <filter>` without bash (quiet: failures and totals only). Same as
   `cargo test --profile quick --lib <filter>`. Run only the covering tests per change; the full
   suite once at the end. "Done" = build and the covering tests pass.
 - Regenerate data: `powershell -ExecutionPolicy Bypass -File tools\extract.ps1`.
