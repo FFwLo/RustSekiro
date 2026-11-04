@@ -112,23 +112,18 @@ character turns out to run exe code of its own, add an `E` row for that part.
 
 | ID | Area | Needs | Who | Task | Notes |
 |----|------|-------|-----|------|-------|
-| E1 | emu | | open | Frame order: the HKS stick reads (a step's or an attack's direction, the run stop) see this frame's stick in RSekiro. Check which frame's stick the exe's HKS reads and match it | `docs/kb/frame-coverage.md` "One frame's order", `player::hks_pad_in`; harness `animstart`, `acttrace`; system: Player movement |
 | E2 | emu | | open | Frame order: the old clip's last TAE window on the frame a reaction starts, and the windows of an attack that `decide` replaces in the same tick | kb/frame-coverage.md "Not covered"; kb/taewin.md (state events last one update longer in the exe); system: TAE events |
 | E3 | emu | | open | Frame order: hit-stop frames, and which frame a hit's stop starts on when the attacker updates earlier in the same frame | kb/modticks.md "Not covered"; harness `modticks`, `hits` |
 | E4 | emu | | open | Frame order: one-shot SpEffects 401 / 67 and weapon style 32 land one tick late in RSekiro; the exe runs them in the step's frame | kb/frame-coverage.md |
-| E5 | emu | | open | A bullet's hit timing: the exe's bullet update is a world task, not traced yet. Trace it and compare `enemy_bullet.rs` / `prosthetic.rs` | kb/frame-coverage.md "Item use and prosthetic bullets" |
 | E6 | emu | | open | Other prosthetics (shuriken, firecracker, flame vent, umbrella): find how the exe switches Wolf's tool in the emulator copy (writing PlayerGameData +0x5ec did not), then check the bullet spawns against `prosthetic.rs` | harness `items`; kb/frame-coverage.md |
 | E7 | emu | | open | Grapple: make a scene near a grapple point (`emu-cases scene`), then check `wire.rs` against the exe | kb/emulator-pilot.md "Scenes"; kb/grapple.md |
-| E11 | emu | | open | AI interrupts and sound targets: raise a sound and an interrupt in the emulator and check what the Lua reads | kb/aicpp.md "Not covered" (three lists) |
 | E12 | emu | | open | Where the Attack Power rate enters HP damage | kb/atkrec.md; system: Combat rules |
-| E13 | emu | | open | The enemy's guard-break knockback: the knockback controller FUN_140be6750 (ChrCtrl +0x90) against RSekiro's own knockback | kb/damage.md, kb/modticks.md "Not covered"; system: Combat rules |
 | E14 | emu | | open | The rim leave point, and an enemy pushing a moving Wolf (both moving), and enemy against enemy | kb/movement.md "Not covered"; system: Maps / collision |
 | E15 | emu | | open | The 66 NPC attack keys that exist only through the exporter's +1000 fallback: does the exe fall back? FUN_140a12b80 has no such branch | kb/params.md "Not covered" |
 | E16 | emu | | open | The damage sum's flag factors (1.4 / 1.125 / 0.8 / p16 / p17): tie them to their callers | kb/damage.md "Not covered"; system: Combat rules |
 | E17 | emu | | open | Fall damage leftovers: CalcCorrectGraph 211 / 212, HitMtrlParam fallDamageRate, the 5 m threshold under SpEffect type 0x155, the void fall cost | kb/movement.md "In the air" |
 | E18 | emu | | open | Camera leftovers: the 1 cm fulcrum floor, the zero-length final cast, the TAE overrides of the distance rate (FUN_1408311a0) and of +0xf0 (FUN_140831190), SlowEnd | kb/camera.md "Not covered" (three lists) |
 | E30 | emu | | open | Params: scan the exe's accessors for every param field RSekiro reads, so a swapped field name is caught | kb/params.md "Not covered" |
-| E31 | emu | | open | Deathblow window: how long an enemy stays broken after a posture break before it recovers. RSekiro uses a stand-in, `config.toml` `broken_time` = 4 s. Find what ends the break in the exe (the break anim's length or TAE, an HKS state timer, or a C++ timer), port it per enemy, and remove `broken_time` | `enemy.rs` `on_posture_break`, `combat.rs`; kb/damage.md; system: Combat rules |
 | E32 | emu | | open | Free camera swing after a sideways run: the CameraParam fulcrum gives 68 deg/s at a run and 143 at a sprint, which circled Wolf in RSekiro, so `config.toml` `follow_swing` halves it. Run the exe's free camera (FUN_140734790) with the stick held sideways, match its swing, and remove `follow_swing` | `camera.rs` `drag_fulcrum`; kb/camera.md; the harness of `follow_camera_matches_the_exe` |
 | E33 | emu | | open | Stealth: map lighting in perception (always "Good" light today), the observer's geometry bits (FUN_140616f50) and Wolf's hiding SpEffects 332 / 334 | system: Stealth; the `gap:` lines in src/stealth.rs |
 
@@ -173,3 +168,8 @@ character turns out to run exe code of its own, add an `E` row for that part.
 | E9 | FFwLo/claude | 2026-11-04 | crates/hks env and act calls vs FUN_140b36410 / FUN_140b32410, emu_hksvm tests |
 | E34 | FFwLo/claude | 2026-11-04 | map_world back_read matches WorldBackRead frame by frame (46 scenarios), 83256bd |
 | E10 | FFwLo/claude | 2026-11-04 | goal life f32 countdown, REGISTER_GOAL_UPDATE_TIME timer, aimove hook reads xmm2 (922573e); search ring earlier. Left: goal order frame by frame vs our Lua run |
+| E1 | FFwLo/claude | 2026-11-04 | the HKS reads the stick of its buttons' frame (hksstick, 44 frames match), 7747a65 |
+| E5 | FFwLo/claude | 2026-11-04 | bullet task runs first in MoveMapStep, first update only launches; shuriken hits/chains match (bullets), 517aabb |
+| E31 | FFwLo/claude | 2026-11-04 | deathblow window = break anim's TAE 932 span (151 frames), broken_time stand-in removed; 20 chrs without a break anim keep 4 s (gap), f171729 |
+| E13 | FFwLo/claude | 2026-11-04 | guard/posture break: KnockBackParam guardBrake 0/0 = no push (FUN_140be6750 is a position/facing controller, not knockback), 0972b2f |
+| E11 | FFwLo/claude | 2026-11-04 | sound target pick, 46 on serial change, 31 LoseSightTarget, record refresh (aiint), 25b1b6b |
