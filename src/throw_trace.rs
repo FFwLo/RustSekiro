@@ -98,7 +98,7 @@ fn step(
             e.make_unaware(&mut ea);
         } else if tr.kind != "kick" && tr.kind != "runkick" {
             ea.posture = ea.posture_max;
-            e.on_posture_break(&mut ea, &combat, behind, 8.0);
+            e.on_posture_break(&mut ea, &combat, behind);
         }
     }
     if tr.kind == "runkick" {

@@ -50,8 +50,6 @@ const AI_CANCEL_FLAGS: [i64; 5] = [23, 86, 79, 78, crate::ai::FLAG_ENDURE];
 pub const FLAG_AI_NOTIFY: i64 = 63;
 /// PC_ATTACK_DIST_STAND (ai_define): standing player attack reach as the AI sees it.
 const PC_ATTACK_DIST_STAND: f32 = 3.4;
-/// SpEffect stateInfo 352: posture display "collapsed" (deathblow available).
-const STATE_INFO_COLLAPSED: i64 = 352;
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub(crate) enum Mode {
@@ -768,9 +766,9 @@ impl Enemy {
 
     /// Posture broken: a deflect/guard break keeps its AttackBoundEmptyStamina /
     /// GuardBreak anim, a hit break plays TrunkCollapseFront (Back from behind) as in
-    /// c9997 HKS ExecDamageBreak. The deathblow window lasts until the break anim
-    /// shows the collapsed posture (stateInfo 352: frames 0-75 of 90); `fallback` if none.
-    pub fn on_posture_break(&mut self, a: &mut Actor, combat: &Combat, from_behind: bool, fallback: f32) {
+    /// c9997 HKS ExecDamageBreak. The deathblow window is the break anim's TAE 932 break span
+    /// (break_window_end: frames 0-75 of 90), as the exe's throw module +0x7a holds it.
+    pub fn on_posture_break(&mut self, a: &mut Actor, combat: &Combat, from_behind: bool) {
         if matches!(self.mode, Mode::Dead(_) | Mode::Rising(_) | Mode::Held(_)) {
             return;
         }
@@ -784,25 +782,21 @@ impl Enemy {
                 a.procedural("PostureBroken");
             }
         }
-        // Window = SpEffect stateInfo 352 ("trunk display: collapsed", 220420, frames 0-75 of
-        // every break anim: the deathblow indicator); else the anim's AI attack flag 86.
-        let anim = d.anim(&a.anim);
-        let collapse_end = anim.and_then(|an| {
-            an.events
-                .iter()
-                .filter(|e| matches!(e.kind, 67 | 401))
-                .filter(|e| d.sp_effects.get(&e.arg_i64("SpEffectID").unwrap_or(0).to_string()).is_some_and(|s| s.state_info == STATE_INFO_COLLAPSED))
-                .map(|e| e.end)
-                .reduce(f32::max)
-        });
-        let ai_flag = anim.and_then(|an| an.events.iter().filter(|e| e.kind == 0 && e.flag_type() == Some(86)).map(|e| e.start).reduce(f32::min));
-        let window = if a.state.starts_with("ThrowDef") {
-            // The break pose pair: open while the pose plays.
-            (d.length(&a.anim) - a.t).max(0.5)
-        } else {
-            collapse_end.or(ai_flag).map(|t| (t - a.t).max(0.5)).unwrap_or(fallback)
+        // Window: tools/emu-cases `brkwin` (row E31, docs/kb/guard-deflect.md "Deathblow window"):
+        // after Wolf's slash broke the General, his throw module +0x7a held 103 (the break state
+        // FUN_140be0a40 lets the break deathblows through) exactly over TrunkCollapseFront's TAE
+        // 932 span (clip 0-2.5 s), then fell back to his own +0x7b; nothing else (no timer, no
+        // SpEffect, no AI) closes it. The break pose then plays on: c9997 TrunkCollapse*_onUpdate
+        // leaves it through the clip's AI cancel windows (DamageCommonFunction ->
+        // ExecActiveTransition; frames 87-88 of 90, where every brkwin run left), else at
+        // IsAnimEnd (env 339) for IdleTransition; Mode::Ai runs both.
+        // An anim without a 932 break span (ThrowDef12100 / 13100, the break throw poses) stays
+        // open while it plays. gap: the exe gives those no break state at all (+0x7b).
+        let window = match break_window_end(d, &a.anim, a.t) {
+            Some(end) => end - a.t,
+            None => d.length(&a.anim) - a.t,
         };
-        self.mode = Mode::Broken(window);
+        self.mode = Mode::Broken(window.max(0.0));
         a.move_vel = Vec3::ZERO;
         self.cur_ez = None;
     }
@@ -2427,6 +2421,14 @@ fn loco_state(d: &crate::data::CharData, ai_sp: i64, mv: char, walk: bool) -> St
         .unwrap_or_else(|| format!("{base}Battle"))
 }
 
+/// The end of the break anim's deathblow window [s]: the TAE 932 span with a break state (103, the
+/// Large one's 108: data.rs throw_state, player.rs throwable_state_allows) still ahead of `t`. The
+/// exe holds that state in the throw module's +0x7a on exactly that span (`brkwin`,
+/// sim_tests/emu_brkwin.rs). None: the anim has none.
+pub(crate) fn break_window_end(d: &crate::data::CharData, key: &str, t: f32) -> Option<f32> {
+    d.anim(key)?.events.iter().filter(|e| e.kind == 932 && matches!(e.arg_i64("unk0"), Some(103 | 108)) && e.end > t).map(|e| e.end).reduce(f32::max)
+}
+
 /// Idle / locomotion states: any AI action may start.
 fn is_free_state(state: &str) -> bool {
     // The guard stance's idle and walks too (GuardIdle_onUpdate -> IdleCommonFunction(STYLE_GUARD)).
@@ -2857,7 +2859,11 @@ fn think(
                 continue;
             }
             Mode::Broken(t) => {
-                if t - dt <= 0.0 {
+                // The exe's +0x7a keeps the break state on every update TAE 932's span is
+                // dispatched in, the one its end falls in too (tae_window): `brkwin` held 103
+                // through the update 2.5 -> 2.517 s of TrunkCollapseFront.
+                let span_on = d.events_at(&a.anim, a.step()).any(|ev| ev.kind == 932 && matches!(ev.arg_i64("unk0"), Some(103 | 108)));
+                if t - dt <= 0.0 && !span_on {
                     // No restore here: the collapse SpEffects (220420 / 5359 / 220500) keep
                     // staminaRecoverSpeedRate 1.0 and no c1020 TAE has the ratio-restore event 961
                     // (FUN_140bd62d0). Posture runs through FUN_140a04850 every frame

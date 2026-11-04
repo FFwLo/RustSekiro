@@ -886,7 +886,7 @@ pub(crate) fn break_enemy_at(app: &mut App, z: f32) {
         let mut q = world.query_filtered::<(&mut Enemy, &mut Actor, &mut Transform), Without<crate::enemy::Cast>>();
         let (mut e, mut a, mut t) = q.single_mut(world).unwrap();
         a.posture = a.posture_max;
-        e.on_posture_break(&mut a, &combat, false, 8.0);
+        e.on_posture_break(&mut a, &combat, false);
         t.translation.z = z;
     });
 }
@@ -1465,7 +1465,7 @@ pub(crate) fn a_broken_enemy_elsewhere_keeps_the_stealth_plunge() {
             all.sort_by(|a, b| a.2.translation.z.total_cmp(&b.2.translation.z));
             let mut far = all.pop().unwrap();
             far.1.posture = far.1.posture_max;
-            far.0.on_posture_break(&mut far.1, &combat, false, 8.0);
+            far.0.on_posture_break(&mut far.1, &combat, false);
             let near = all.first_mut().unwrap();
             near.2.translation.z = 1.2;
             near.1.yaw = std::f32::consts::PI;

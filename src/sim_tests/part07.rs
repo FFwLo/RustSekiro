@@ -317,7 +317,7 @@ pub(crate) fn gyoubus_last_bar_broken_deathblow_is_the_todome() {
             let (mut e, mut a, mut t) = q.single_mut(world).unwrap();
             e.ninsatsu.0 = bars;
             a.posture = a.posture_max;
-            e.on_posture_break(&mut a, &combat, false, 4.0);
+            e.on_posture_break(&mut a, &combat, false);
             t.translation.z = 1.8;
         });
         app.world_mut().resource_mut::<PadInput>().press(Action::Attack);
@@ -794,7 +794,7 @@ pub(crate) fn isshins_break_pose_leads_to_the_deathblow_after_his_change() {
             a.yaw = 0.0;
             a.posture = a.posture_max;
             e.react(&mut a, &combat, &format!("ThrowDef{}", th.def_anim));
-            e.on_posture_break(&mut a, &combat, false, 4.0);
+            e.on_posture_break(&mut a, &combat, false);
             let mut q = world.query_filtered::<(&mut Actor, &mut Transform), With<Player>>();
             let (mut pa, mut pt) = q.single_mut(world).unwrap();
             pt.translation = Vec3::new(0.0, CAPSULE_HALF_HEIGHT, 0.0);
@@ -1571,7 +1571,7 @@ pub(crate) fn a_deathblow_start_without_its_enemy_returns_to_idle() {
             let mut q = world.query::<(&mut Enemy, &mut Actor, &mut Transform)>();
             let (mut e, mut a, mut t) = q.get_mut(world, boss).unwrap();
             a.posture = a.posture_max;
-            e.on_posture_break(&mut a, &combat, false, 4.0);
+            e.on_posture_break(&mut a, &combat, false);
             t.translation = Vec3::new(0.0, CAPSULE_HALF_HEIGHT, 1.8);
             a.yaw = 0.0;
         });
@@ -1821,7 +1821,7 @@ pub(crate) fn isshins_todome_is_taken_from_the_walk_up() {
             a.yaw = 0.0;
             a.posture = a.posture_max;
             e.react(&mut a, &combat, &format!("ThrowDef{}", th.def_anim));
-            e.on_posture_break(&mut a, &combat, false, 4.0);
+            e.on_posture_break(&mut a, &combat, false);
             let mut q = world.query_filtered::<(&mut Actor, &mut Transform), With<Player>>();
             let (mut pa, mut pt) = q.single_mut(world).unwrap();
             pt.translation = Vec3::new(0.0, CAPSULE_HALF_HEIGHT, 0.0);

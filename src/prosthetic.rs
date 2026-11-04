@@ -741,7 +741,7 @@ fn hit_enemy(
             if !clips.is_empty() {
                 let s = clips[(e.rand() * clips.len() as f32) as usize % clips.len()];
                 da.play_state(d, s);
-                e.on_posture_break(da, combat, false, 4.0);
+                e.on_posture_break(da, combat, false);
                 return Some("firecracker: POSTURE BROKEN".into());
             }
         }

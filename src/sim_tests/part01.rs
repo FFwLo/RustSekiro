@@ -477,7 +477,7 @@ pub(crate) fn deathblow_plays_the_throw_pair() {
             let mut q = world.query_filtered::<(&mut Enemy, &mut Actor, &mut Transform), Without<crate::enemy::Cast>>();
             let (mut e, mut a, mut t) = q.single_mut(world).unwrap();
             a.posture = a.posture_max;
-            e.on_posture_break(&mut a, &combat, false, 4.0);
+            e.on_posture_break(&mut a, &combat, false);
             // Inside ThrowParam 11020001's reach (Dist 2.1 m).
             t.translation.z = 1.8;
         });
@@ -534,7 +534,7 @@ pub(crate) fn a_deathblow_pressed_at_the_end_of_the_break_still_kills() {
             let mut q = world.query_filtered::<(&mut Enemy, &mut Actor, &mut Transform), Without<crate::enemy::Cast>>();
             let (mut e, mut a, mut t) = q.single_mut(world).unwrap();
             a.posture = a.posture_max;
-            e.on_posture_break(&mut a, &combat, false, 4.0);
+            e.on_posture_break(&mut a, &combat, false);
             // One frame of the window left.
             e.set_broken_left(1.0 / 60.0);
             t.translation.z = 1.8;
@@ -614,7 +614,7 @@ pub(crate) fn break_and_deathblow_died(app: &mut App, frames: u32) -> (Vec<Strin
             let mut q = world.query::<(&mut Enemy, &mut Actor, &mut Transform)>();
             let (mut e, mut a, mut t) = q.get_mut(world, boss).unwrap();
             a.posture = a.posture_max;
-            e.on_posture_break(&mut a, &combat, false, 4.0);
+            e.on_posture_break(&mut a, &combat, false);
             t.translation = Vec3::new(0.0, CAPSULE_HALF_HEIGHT, 1.8);
             // Facing Wolf (a kneeling boss's finisher is from its front).
             a.yaw = 0.0;
@@ -851,7 +851,7 @@ pub(crate) fn deathblow_pair_moves_by_root_motion_like_the_live_game() {
             let mut q = world.query_filtered::<(&mut Enemy, &mut Actor, &mut Transform), Without<crate::enemy::Cast>>();
             let (mut e, mut a, mut t) = q.single_mut(world).unwrap();
             a.posture = a.posture_max;
-            e.on_posture_break(&mut a, &combat, false, 4.0);
+            e.on_posture_break(&mut a, &combat, false);
             t.translation.z = 1.5;
         });
     }

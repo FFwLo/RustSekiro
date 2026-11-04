@@ -391,7 +391,6 @@ pub struct EnemyConfig {
     pub attack_range: f32,
     pub cooldown_min: f32,
     pub cooldown_max: f32,
-    pub broken_time: f32,
     #[serde(default = "default_doping")]
     pub area_doping: i64,
     /// NpcParam row (outfit variant / stats), e.g. c1020 10203010 no haori, 10200010 with haori.

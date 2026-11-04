@@ -206,7 +206,7 @@ pub(crate) fn an_aged_wolf_takes_the_aging_deathblow() {
         t.translation = Vec3::new(0.0, CAPSULE_HALF_HEIGHT, -1.5);
         a.yaw = std::f32::consts::PI;
         a.posture = a.posture_max;
-        e.on_posture_break(&mut a, &combat, false, 4.0);
+        e.on_posture_break(&mut a, &combat, false);
         let mut q = world.query_filtered::<(&mut Actor, &mut Transform), With<Player>>();
         let (mut pa, mut pt) = q.single_mut(world).unwrap();
         pt.translation = Vec3::new(0.0, CAPSULE_HALF_HEIGHT, 0.0);

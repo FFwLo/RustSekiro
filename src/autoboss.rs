@@ -222,7 +222,7 @@ fn drive(
     if auto.since as f32 >= auto.secs * 60.0 {
         // Break it right in front of Wolf, facing him, and deathblow.
         ba.posture = ba.posture_max;
-        e.on_posture_break(&mut ba, &combat, false, 4.0);
+        e.on_posture_break(&mut ba, &combat, false);
         let fwd = Vec3::new(-wa.yaw.sin(), 0.0, -wa.yaw.cos());
         bt.translation = wt.translation + fwd * 1.8;
         ba.yaw = wa.yaw + std::f32::consts::PI;

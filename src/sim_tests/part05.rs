@@ -1002,7 +1002,7 @@ pub(crate) fn the_deathblow_mark_is_on_the_enemy_the_deathblow_takes() {
             for e in [far, near] {
                 let mut q = world.query::<(&mut Actor, &mut Enemy)>();
                 let (mut a, mut en) = q.get_mut(world, e).unwrap();
-                en.on_posture_break(&mut a, &combat, false, 3.0);
+                en.on_posture_break(&mut a, &combat, false);
             }
         });
     }
@@ -1769,7 +1769,7 @@ pub(crate) fn boss_audit() {
                     let mut q = world.query::<(&mut Enemy, &mut Actor, &mut Transform)>();
                     let (mut e, mut a, mut t) = q.get_mut(world, boss).unwrap();
                     a.posture = a.posture_max;
-                    e.on_posture_break(&mut a, &combat, false, 4.0);
+                    e.on_posture_break(&mut a, &combat, false);
                     t.translation = Vec3::new(0.0, CAPSULE_HALF_HEIGHT, 1.8);
                     a.yaw = 0.0;
                 });

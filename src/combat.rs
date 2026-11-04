@@ -2755,7 +2755,7 @@ fn resolve(
                         if let Some(d) = a.damage_env.as_mut().filter(|d| d.kind == 99999) {
                             d.kind = 1027;
                         }
-                        e.on_posture_break(a, &combat, from_behind, config.enemy.broken_time);
+                        e.on_posture_break(a, &combat, from_behind);
                         log.push(format!("{why} - deathblow!"), Color::srgb(1.0, 0.15, 0.15));
                     }
                 }

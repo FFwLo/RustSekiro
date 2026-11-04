@@ -454,7 +454,7 @@ fn menu_input(
         Item::BreakPosture if enter => {
             if let Some((_, mut e, mut a, _, _)) = target.and_then(|t| enemies.get_mut(t).ok()) {
                 a.posture = a.posture_max;
-                e.on_posture_break(&mut a, &combat, false, 4.0);
+                e.on_posture_break(&mut a, &combat, false);
             }
             menu.message = "enemy posture broken - attack to deathblow".into();
         }
@@ -469,7 +469,7 @@ fn menu_input(
                     tf.translation = ptf.translation + fwd * if behind { 1.2 } else { 1.6 };
                     a.yaw = if behind { pa.yaw } else { pa.yaw + std::f32::consts::PI };
                     a.posture = a.posture_max;
-                    e.on_posture_break(&mut a, &combat, false, 4.0);
+                    e.on_posture_break(&mut a, &combat, false);
                 }
                 pad.press(Action::Attack);
                 menu.message = if behind { "deathblow from behind" } else { "deathblow" }.into();
@@ -487,7 +487,7 @@ fn menu_input(
                     tf.translation = ptf.translation + fwd * 1.2;
                     a.yaw = pa.yaw + std::f32::consts::PI;
                     a.posture = a.posture_max;
-                    e.on_posture_break(&mut a, &combat, false, 6.0);
+                    e.on_posture_break(&mut a, &combat, false);
                 }
                 match it {
                     Item::VaultNow => {

@@ -1414,7 +1414,7 @@ pub(crate) fn a_deathblow_needs_wolf_to_face_the_enemy() {
         let mut q = world.query_filtered::<(&mut Enemy, &mut Actor, &mut Transform), Without<crate::enemy::Cast>>();
         let (mut e, mut a, mut t) = q.single_mut(world).unwrap();
         a.posture = a.posture_max;
-        e.on_posture_break(&mut a, &combat, false, 4.0);
+        e.on_posture_break(&mut a, &combat, false);
         let wolf = Vec3::new(0.0, CAPSULE_HALF_HEIGHT, 0.0);
         t.translation = wolf + Vec3::Z * 1.5;
         let at = t.translation;

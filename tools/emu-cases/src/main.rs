@@ -48,6 +48,7 @@ mod atkrec;
 mod aimove;
 mod air;
 mod hits;
+mod brkwin;
 mod animstart;
 mod hksstick;
 mod worldbackread;
@@ -932,6 +933,9 @@ fn main() {
     }
     if want.first().is_some_and(|w| w.starts_with("hksstick")) {
         return hksstick::run(&|| Emu::new(exe, snap()), out, &want);
+    }
+    if want.first().is_some_and(|w| w.starts_with("brkwin")) {
+        return brkwin::run(&|| Emu::new(exe, snap()), out, &want);
     }
     if want.first().is_some_and(|w| w.starts_with("hits")) {
         return hits::run(&|| Emu::new(exe, snap()), out, &want);

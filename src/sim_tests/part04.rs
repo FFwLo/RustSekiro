@@ -393,7 +393,7 @@ pub(crate) fn plunge_idle_trace() {
                 tf.translation = wolf.2 + wolf.1 * 1.2;
                 a.yaw = wolf.0 + std::f32::consts::PI;
                 a.posture = a.posture_max;
-                e.on_posture_break(&mut a, &combat, false, 6.0);
+                e.on_posture_break(&mut a, &combat, false);
             }
         });
     } else {
@@ -477,7 +477,7 @@ pub(crate) fn an_absorbed_enemy_model_slides_onto_the_throw_dummy() {
             let mut q = world.query_filtered::<(&mut Enemy, &mut Actor, &mut Transform), Without<crate::enemy::Cast>>();
             let (mut e, mut a, mut t) = q.single_mut(world).unwrap();
             a.posture = a.posture_max;
-            e.on_posture_break(&mut a, &combat, true, 4.0);
+            e.on_posture_break(&mut a, &combat, true);
             t.translation.z = 1.8;
             a.yaw = std::f32::consts::PI;
         });
@@ -521,7 +521,7 @@ pub(crate) fn behind_throw_live_trace() {
             let mut q = world.query_filtered::<(&mut Enemy, &mut Actor, &mut Transform), Without<crate::enemy::Cast>>();
             let (mut e, mut a, mut t) = q.single_mut(world).unwrap();
             a.posture = a.posture_max;
-            e.on_posture_break(&mut a, &combat, true, 4.0);
+            e.on_posture_break(&mut a, &combat, true);
             t.translation.z = 1.8;
             a.yaw = std::f32::consts::PI;
         });
@@ -765,7 +765,7 @@ pub(crate) fn all_enemies_smoke() {
                     let mut q = world.query_filtered::<(&mut Enemy, &mut Actor, &mut Transform), Without<crate::enemy::Cast>>();
                     let (mut e, mut a, mut t) = q.single_mut(world).unwrap();
                     a.posture = a.posture_max;
-                    e.on_posture_break(&mut a, &combat, false, 4.0);
+                    e.on_posture_break(&mut a, &combat, false);
                     t.translation.z = 1.8;
                 });
             }
@@ -943,7 +943,7 @@ pub(crate) fn dbg_blow_after_fight() {
             let mut q = world.query_filtered::<(&mut Enemy, &mut Actor, &mut Transform), Without<crate::enemy::Cast>>();
             let (mut e, mut a, mut t) = q.single_mut(world).unwrap();
             a.posture = a.posture_max;
-            e.on_posture_break(&mut a, &combat, false, 4.0);
+            e.on_posture_break(&mut a, &combat, false);
             t.translation = Vec3::new(0.0, CAPSULE_HALF_HEIGHT, 1.8);
             println!("after break: broken {} hp {}/{}", e.is_broken(), a.hp, a.hp_max);
         });

@@ -291,6 +291,55 @@ Naomori-arena snapshot. extracted/emu/throw_kinds.json, throw_ranges.json.
 - gap: the pick among several passing rows (ThrowKindParam checkPriority: behind 10, break 2,
   break-behind 0) is not traced; Sv1's deathblow_pick takes the lock target, else the nearest.
 
+## Deathblow window (2026-11-04, row E31, topic brkwin; enemy.rs on_posture_break)
+
+tools/emu-cases `brkwin` (brkwin.rs) on the Naomori-arena snapshot; extracted/emu/brkwin_*.json; test
+sim_tests/emu_brkwin.rs `deathblow_window_matches_the_exe`. The General's posture (data module +0x148,
+posture left) poked to 1, Wolf 2 m in front of him (or behind), Wolf's slash pressed on frames 0-2;
+whole world frames at 60 fps (the hit manager step FUN_1409a0dc0, WorldChrMan pre tasks, both chr
+frames FUN_140a4b570, post tasks) for 260 frames, with the AI off (the snapshot's flag) and on.
+
+- The slash lands on frame 30 (posture 140 -> -26); from frame 31 he plays TrunkCollapseFront
+  a000_008300 (Back 008301 from behind). His throw module (bag +0x88) +0x7a reads 103 from the first
+  break frame through the frame whose TAE update runs clip 2.5 -> 2.517 s (151 frames), then 0, so
+  the kind test falls back to his own +0x7b. That is TAE 932's 103 span (frames 0-75 of 90) and
+  nothing else: no timer, no SpEffect end, no AI decision closes the deathblow window. The collapse
+  SpEffect 220420 ends at the same frame 75, which is why Sv1's old rule matched on this anim.
+- The break itself (the pose) runs on past the window, and no timer ends it. c9997
+  TrunkCollapseFront / Back / Large / Burst _onUpdate leave only through DamageCommonFunction (a new
+  hit, or ExecActiveTransition: the clip's AI cancel windows, flags 23 / 86 / 79 at frame 87 and
+  move 78 at 88 of 90), a kick (-> TrunkCollapseLarge), or IsAnimEnd (env 339) -> IdleTransition.
+  In all three runs he left through the cancel windows, before the clip's end: front, AI off or on
+  alike, after 178 frames (last update 2.95 -> 2.967 s) into WalkLeftBattle a000_405002; behind
+  after 176 frames (2.933 s) into TransToBattleFromDefault a000_001040. The disable-AI flag does
+  not stop it: the AI's standing move request still reaches ExecActiveTransition. The env 339
+  call was skipped on the exit frame (the transition returned first); the action-flag module's
+  +0xaf0 anim-end bits are only cleared each frame (a write at 0x140b2889c), never set,
+  in these runs. Sv1's Mode::Ai after the window plays the clip and takes the same cancel windows
+  (enemy.rs move_ok / the AI flags).
+- Posture through the break (the TAE 960 StaminaControlParam types of kb/damage.md): held at 0
+  through the window, set to 30 % (1338 of 4463) on its first frame after, regen from 8 frames
+  later.
+- His own +0x7b changed 101 -> 102 when he turned to Wolf (a000_001040, frame 12, before the hit):
+  102 lets only categories 2 / 3 / 7 / 12 through. gap: Sv1's def_throw_state keeps 101 outside
+  the 932 spans; what sets +0x7b is not traced.
+
+Ported: on_posture_break opens Mode::Broken for exactly the anim's 932 break span (break_window_end:
+the 103 / 108 span ahead of the clip time); an anim without one (ThrowDef12100 / 13100, the break
+throw poses) stays open while it plays. The config stand-in `enemy.broken_time` (4 s) and the
+flag-86 / SpEffect-352 fallbacks are gone. gap: the exe gives an anim without a 932 break span no
+break state at all; chrs with no TrunkCollapse anim (c1000 c1001 c1013 c1211 c1320 c1321 c1460
+c5001 c5010 c5040 c5050 c5070 c5200 c5310 c5410 c7010 c7021 c7200 c7210 c7300) get a zero window in
+Sv1 (their procedural PostureBroken has no clip). The window's end is read from the TAE step as the
+exe dispatches it (tae_window: the update the span's end falls in still holds 103); Sv1 counts one
+frame more than the exe (152 vs 151) because its enemy tick reads the step before the frame's clip
+advance. The test checks the window (+-1 frame), that the exe's exit update lies in the clip's AI
+cancel windows in Sv1's data, and posture left per frame (within 2 %). Not covered: what the AI
+picks at the cancel windows (Sv1's AI-held run plays the clip to its end, 181 frames; with its AI
+on it would act as Sv1's AI decides, not compared), IsAnimEnd's own timing (never reached),
+deflect / guard breaks (AttackBoundEmptyStamina / GuardBreak carry the same 932 0-75 span) and
+TrunkCollapseLarge (108) not run in the emulator, his +0x7b 102 (see above).
+
 ## Throw checks, second pass (2026-11-03, topic throw2: sight, SpEffect pair, pick, kind gates, fall orbit)
 
 tools/emu-cases `throw2` (throw2.rs) on the Naomori-arena snapshot; extracted/emu/throw2_sight.json,

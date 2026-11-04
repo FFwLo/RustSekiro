@@ -1440,9 +1440,8 @@ pub(crate) fn throwable_state_allows(state: u8, category: i64) -> bool {
 }
 
 /// An enemy's throwable state (throwable_state_allows) from what Sv1 tracks: the TAE 932 finisher
-/// windows (104 / 105, data.rs finisher_window), the break window (Mode::Broken: its end is the
-/// collapse SpEffect 220420's, which is TAE 932's 103 span on 868 of the 1,238 enemy anims that
-/// carry a 103 / 108), else its own 101.
+/// windows (104 / 105, data.rs finisher_window), the break window (Mode::Broken: the break anim's
+/// TAE 932 103 / 108 span, enemy.rs break_window_end; row E31 brkwin), else its own 101.
 /// Round throw2 (2026-11-03): TAE 932 is read in every anim (data.rs throw_state), so its 103 on
 /// the death anims (DeathDefault 010000 / 010010 0-45 f), the ThrowDef / LandTrunk /
 /// TrunkCollapseAerial spans, 107 (c1060 / c1080 / c1240 / c1250 / c1310 a000_0030xx, 008602)
@@ -2415,13 +2414,13 @@ fn start_plunge(
             // collapse and its Broken window could run out mid-fall).
             let ed = combat.data_of(&ea);
             if ea.play_state(ed, &format!("ThrowDef{}", th.def_anim)) {
-                enemy.on_posture_break(&mut ea, combat, false, 4.0);
+                enemy.on_posture_break(&mut ea, combat, false);
             }
         } else {
             enemy.react(&mut ea, combat, &format!("ThrowDef{}", th.def_anim));
             if stealth {
                 // Held in its ThrowDef reaction (no AI) until the landing throw.
-                enemy.on_posture_break(&mut ea, combat, false, 4.0);
+                enemy.on_posture_break(&mut ea, combat, false);
             }
         }
         log.push("plunge", Color::srgb(1.0, 0.5, 0.3));
@@ -3808,7 +3807,7 @@ fn decide(
                         }
                         let ed = combat.data_of(&ea);
                         if ea.play_state(ed, &format!("ThrowDef{}", th.def_anim)) {
-                            enemy.on_posture_break(&mut ea, &combat, false, 4.0);
+                            enemy.on_posture_break(&mut ea, &combat, false);
                         }
                         throw.0 = Some(ThrowHold::new(ee, &th, "BreakKickJump"));
                         log.push("kick jump over", Color::srgb(0.8, 0.9, 1.0));
@@ -3890,7 +3889,7 @@ fn decide(
                     a.move_vel = Vec3::ZERO;
                     let ed = combat.data_of(&ea);
                     if ea.play_state(ed, &format!("ThrowDef{}", th.def_anim)) {
-                        enemy.on_posture_break(&mut ea, &combat, false, 4.0);
+                        enemy.on_posture_break(&mut ea, &combat, false);
                     }
                     throw.0 = Some(ThrowHold::new(ee, &th, "BreakKickJump"));
                     log.push("jump round behind", Color::srgb(0.8, 0.9, 1.0));

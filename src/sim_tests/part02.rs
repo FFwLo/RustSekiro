@@ -453,7 +453,7 @@ pub(crate) fn ochimusha_deathblow_uses_its_own_throw_rows() {
             let mut q = world.query_filtered::<(&mut Enemy, &mut Actor, &mut Transform), Without<crate::enemy::Cast>>();
             let (mut e, mut a, mut t) = q.single_mut(world).unwrap();
             a.posture = a.posture_max;
-            e.on_posture_break(&mut a, &combat, false, 4.0);
+            e.on_posture_break(&mut a, &combat, false);
             t.translation.z = 1.8;
         });
     }
@@ -1217,7 +1217,7 @@ pub(crate) fn deathblow_from_behind_uses_the_back_throw() {
             let mut q = world.query_filtered::<(&mut Enemy, &mut Actor, &mut Transform), Without<crate::enemy::Cast>>();
             let (mut e, mut a, mut t) = q.single_mut(world).unwrap();
             a.posture = a.posture_max;
-            e.on_posture_break(&mut a, &combat, true, 4.0);
+            e.on_posture_break(&mut a, &combat, true);
             t.translation.z = 1.8;
             // Facing away from Wolf (who stands at the origin): forward = +Z.
             a.yaw = std::f32::consts::PI;
@@ -1259,7 +1259,7 @@ pub(crate) fn plunging_onto_a_broken_enemy_is_a_deathblow() {
             let mut q = world.query_filtered::<(&mut Enemy, &mut Actor, &mut Transform), Without<crate::enemy::Cast>>();
             let (mut e, mut a, mut t) = q.single_mut(world).unwrap();
             a.posture = a.posture_max;
-            e.on_posture_break(&mut a, &combat, false, 8.0);
+            e.on_posture_break(&mut a, &combat, false);
             t.translation.z = 1.2;
         });
     }
@@ -1448,7 +1448,7 @@ pub(crate) fn ochimusha_plunge_deathblow_uses_its_a200_pair() {
             let mut q = world.query_filtered::<(&mut Enemy, &mut Actor, &mut Transform), Without<crate::enemy::Cast>>();
             let (mut e, mut a, mut t) = q.single_mut(world).unwrap();
             a.posture = a.posture_max;
-            e.on_posture_break(&mut a, &combat, false, 8.0);
+            e.on_posture_break(&mut a, &combat, false);
             t.translation.z = 1.2;
         });
     }
