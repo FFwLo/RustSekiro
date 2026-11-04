@@ -38,7 +38,7 @@ character turns out to run exe code of its own, add an `E` row for that part.
 
 | ID | Area | Needs | Who | Task | Notes |
 |----|------|-------|-----|------|-------|
-| C1 | game | | open | Per-boss check: Genichiro Ashina and Way of Tomoe (c7100, c7110), side by side with your own game | Split per fight (C1a, C1b); the C section\'s steps |
+| C1 | game | | open | Per-boss check: Genichiro Ashina and Way of Tomoe (c7100, c7110), side by side with your own game | Split per fight (C1a, C1b); the C section's steps |
 | C2 | game | | open | Per-boss check: Lady Butterfly (c5090) | as C1 |
 | C3 | game | | open | Per-boss check: Gyoubu Oniwa (c5080) | as C1; horse and arena |
 | C4 | game | | open | Per-boss check: Guardian Ape (c5100), both phases | as C1 |
