@@ -85,4 +85,14 @@ pub(crate) fn the_deathblow_kill_follow_up_is_the_scripts_throw_kill() {
     let start = states.iter().position(|s| s == "ThrowAtk500000");
     let main = states.iter().position(|s| s == "ThrowAtk510000");
     assert!(start.is_some() && main > start, "throw pair not in the graph: {states:?}");
+    // The kill's end: Wolf stands, and the graph with him (player.rs's end, synced as W_Idle).
+    for _ in 0..400 {
+        app.update();
+        let (s, ..) = player_state(&mut app);
+        if s != "Deathblow" {
+            assert_eq!((s.as_str(), graph(&app).unwrap().0.as_str()), ("StandIdle", "StandIdle"));
+            return;
+        }
+    }
+    panic!("the kill never ended");
 }

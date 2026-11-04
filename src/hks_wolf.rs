@@ -764,6 +764,10 @@ fn run_script(mut script: NonSendMut<WolfScript>, dt: f32, land_tick: bool, comb
     // On the ground too: not the exe's throws, deathblows, events, deaths, the idol, the hang,
     // the swim, the wire, the aged form.
     let exe_state = ["Throw", "Deathblow", "Event", "Dead", "Death", "Hang", "Aging", "Swim", "Dive", "Wire", "Cover", "Docking", "Revival", "Fall", "Statue"].iter().any(|k| a.state.contains(k));
+    // gap: the deathblow's end would be the script's (FireStateEndEvent on env 339 in a
+    // THROW_ATK / THROW_ATK_KILL state, 3031 / 337 off: W_Idle by the style), but the script
+    // still reads env 339 as 0 on the frame player.rs ends the deathblow (traced on the Corrupted
+    // Monk's a211_510000; the cause is not found). player.rs's generic end stays for it.
     let ground_chain = !a.airborne && !exe_state;
     if ended && !landing && a.hp > 0.0 && (graph_chains(&a.state) || air_chain || ground_chain) {
         let graph = s.graph_state(d);

@@ -603,7 +603,8 @@ batches.
   graph's state and clip after its tick, and whether the two clips match (set-only differences
   count as the same). Over the suite: jumps, item use, jump arts and several air moves match every
   time; deathblows, throws, revivals, the grapple shot, idols and swimming never do (engine
-  states); attack combos match about 90 %, knockdowns about half.
+  states); attack combos match about 90 %, knockdowns about half (before the deletions below;
+  the 2026-11-04 audit is under "Engine states from the graph").
 - **Graph-led clip ends** (`hks_wolf::graph_chains`): where player.rs's clip has played out and
   the graph already went on by itself, tick_script takes the graph's state before player.rs
   decides (take_graph, as sync_clip does after it). Deleted from player.rs: the ground / sprint /
@@ -804,3 +805,63 @@ batches.
   0 the shown clip, 1 the upper body (an upper action's clip, else the full-body one: the stop of
   the guard's run-out, W_StandMoveableAction, goes on in DeflectGuardToStand at its time through
   StartTime_01, so it ends soon after), 2 the legs' loop.
+
+### 2026-11-04 Engine states from the graph (row P13)
+
+- **Audit over the full suite** (`SHINOBI_HKS_AUDIT`, 830 tests). The 90 % / half figures above
+  are from before the deletions: player.rs makes no plain attack-combo or knockdown picks any
+  more (4 attack rows left, the art's hit jump and the failed tool swing; 7 damage rows, all
+  death blows). The "match after the tick" column can never match an engine state: player.rs
+  picks those in decide, after the tick. The audit has a last column now: whether the graph
+  shows the pick once the engine's own events went in (engine_sync: W_ThrowAtk / ThrowDef /
+  Event<anim>, W_<state>), a free pick against a free graph state counting as shown.
+
+  | rows; match after the tick; shown after the sync | before | after |
+  |---|---|---|
+  | all player.rs picks | 776; 152 (20 %); not logged | 725; 146 (20 %); 712 (98 %) |
+  | deathblow | 175; 0; not logged | 153; 0; 153 (100 %) |
+  | grapple | 21; 6; not logged | 1; 0; 1 (100 %) |
+  | swim / throw on Wolf / idol | 34 / 14 / 12 | 34 (88 %) / 14 (86 %) / 12 (100 %) |
+
+  The 13 not shown after the sync: docking.rs's cover moves, swim.rs's sprint and brake, one
+  revival throw, one throw escape.
+- **The grapple shot is the script's.** env 3000 IsWirePossible (FUN_1409f3030: a target in
+  reach; wire.rs's aim in the action range stands for the exe's search; off while swimming),
+  the press as ACTION_ARM_WIRE_SHOOT (3) in env 1106 / 1108 (the wire move's window too), and
+  the graph variable WireDramaticAngle (the hook's elevation from Wolf's centre; gap: the exe's
+  is not traced). BEH_A_GROUND_WIRE_SHOOT / BEH_A_AIR_WIRE_SHOOT fire W_GroundWireShoot,
+  W_AirWireShoot, W_WireMoveWireShoot, W_WireMoveWire2Shoot or W_AirBreakFallWireShoot: Wolf
+  takes the graph's shoot and the wire starts on the aim's target. The shoot's end into its move
+  start is the graph's (graph_chains: GroundWireMoveStart_Selector / AirWireMoveStart Selector on
+  WireMoveStartIndex, set by the script from WireDramaticAngle). Deleted: player.rs's shoot pick,
+  wire::shoot_state, wire::move_start. player.rs keeps the request drop (in its window, or no
+  point in range) and the flight (launch, steering, the 905 hang). Not ported: the swim's wire
+  (W_SwimWireMoveReady).
+- **The throw check goes before the script.** With a deathblow in reach (a plunge in the air,
+  the jump-over throw for the jump) env 1106 does not carry the press, so the script no longer
+  starts a combo under the deathblow (it went GroundAttackCombo1 while player.rs played
+  DeathblowStart: 66 of its 69 rows; now one, a combo's release). gap: the exe's request consumption is not traced.
+- **The deathblow pair** goes into the graph as the exe's engine events (W_ThrowAtk500000, then
+  W_ThrowAtk510000 at the start's judge: engine_sync); all shown after the sync. The start
+  (deathblow_check, ThrowParam) and the judge into the main throw stay in player.rs: they are
+  the exe's throw module, not the script.
+- **The deathblow's kill is the script's.** env 273 GetThrowAnimID (FUN_140bdfb20 by the throw's
+  state byte: 1 atkAnimId, 2 defAnimId, 3 / 4 atk + 2 / def + 3 escaped, 5 / 6 atk + 1 /
+  def + 1 killed) and env 274 IsOpponentDeadFromThrow (FUN_140b39ce0: the partner's dead bit and
+  the throw's state) are answered: in a deathblow the atkAnimId, and once the partner died
+  (ThrowDefDeath, or a boss without one dead at its flag 69; gap: player.rs's test, not the exe's
+  bytes) atkAnimId + 1. BEH_R_THROW_KILL (with Wolf's TAE ref 211 TAE_ENABLE_THROW_KILL) fires
+  W_ThrowKill<id> and Wolf plays the graph's kill clip in his Deathblow state. player.rs's
+  kill_anim is gone; the General's 510000 -> 510001 still comes 111 frames after the main throw.
+- **Not done: the deathblow's end.** FireStateEndEvent would end a THROW_ATK state on env 339
+  (W_Idle by the style, 3031 IsThrowActive / 337 IsThrowPosRealign off), but on the Corrupted
+  Monk's a211_510000 the script still reads env 339 as 0 on the frame player.rs ends the
+  deathblow; the cause is not found, so player.rs's generic end (StandIdle) stays.
+- **Still hand-written:** the throws on Wolf (Grabbed, ThrowDef*, escapes: the enemy's throw
+  module starts them, synced as W_ThrowDef<anim>), revivals (the exe's revival request), idols and
+  the Sculptor (map interaction), swim and dive (swim.rs), the hang and cover (docking.rs), the
+  aged form. Each is synced into the graph after player.rs picks it; none is led by it yet.
+- Tests: sim_tests/part18.rs (`the_grapple_shot_and_its_move_start_are_the_graphs`,
+  `a_grapple_with_no_point_in_range_stays_put`,
+  `the_deathblow_kill_follow_up_is_the_scripts_throw_kill`); the existing grapple and deathblow
+  tests pass with the graph leading.
