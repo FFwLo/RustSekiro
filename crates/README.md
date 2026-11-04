@@ -6,6 +6,10 @@ copied on 2026-11-03 from commit 673f68f of the local clone (branch local/game-l
 change in `game/src/map.rs`) and are maintained in this repository from then on; upstream changes are
 not followed.
 
+Ported from sekiro-rs since (2026-11-04): freeing map blocks the player has left and reloading them
+before they are seen (AKJama, 77704c4 and 0fca3b8, #271) and the smaller map meshes (16-bit
+indices, packed colours, one upload per layout; 3cdcadb, #263), merged onto the trimmed copy.
+
 | Crate | What RSekiro uses it for |
 |---|---|
 | `hks` | the HavokScript VM that runs the game's compiled scripts (src/hks.rs) |

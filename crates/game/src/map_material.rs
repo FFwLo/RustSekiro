@@ -67,12 +67,21 @@ fn release_materials(
     mut events: MessageReader<AssetEvent<StandardMaterial>>,
     mut settings: ResMut<LayerSettings>,
 ) {
-    for event in events.read() {
-        if let AssetEvent::Removed { id } = event {
-            settings.materials.retain(|(source, _), _| source != id);
-            let live = settings.materials.values().map(|h| h.id()).collect();
-            settings.interned.retain(&live);
-        }
+    // A freed map block removes thousands of source materials in a few frames: prune once per
+    // frame, not once per material (#271).
+    let removed: std::collections::HashSet<_> = events
+        .read()
+        .filter_map(|event| match event {
+            AssetEvent::Removed { id } => Some(*id),
+            _ => None,
+        })
+        .collect();
+    if !removed.is_empty() {
+        settings
+            .materials
+            .retain(|(source, _), _| !removed.contains(source));
+        let live = settings.materials.values().map(|h| h.id()).collect();
+        settings.interned.retain(&live);
     }
 }
 

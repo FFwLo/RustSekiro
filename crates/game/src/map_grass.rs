@@ -135,7 +135,8 @@ pub(crate) fn install(app: &mut App, dir: &Path, prefix: &str) -> Result<()> {
         });
     }
     app.insert_resource(grass)
-        .add_systems(PreUpdate, instantiate)
+        .add_message::<crate::map::world::BlockFreed>()
+        .add_systems(PreUpdate, (release, instantiate).chain())
         .add_systems(PostUpdate, enforce_shadow_flags);
     Ok(())
 }
@@ -262,6 +263,19 @@ fn instantiate(world: &mut World, mut roots: Local<Unattached>) {
         world.entity_mut(parent).insert(GrassAttached);
     }
     world.insert_resource(grass);
+}
+
+/// Forget loading barriers under a freed block's despawned parts. Its merged clumps stay: merging
+/// a block's grass again took 1.8 s in one frame when the block was requested again (#271).
+fn release(mut grass: ResMut<Grass>, mut freed: MessageReader<crate::map::world::BlockFreed>) {
+    for crate::map::world::BlockFreed(id) in freed.read() {
+        for block in grass.blocks.iter_mut().filter(|b| &b.id == id) {
+            for prototype in block.prototypes.values_mut() {
+                // A loading barrier under a despawned part went with it.
+                prototype.barrier = None;
+            }
+        }
+    }
 }
 
 /// Spawns the clumps bound to `part_index` under `parent`, or returns false while a

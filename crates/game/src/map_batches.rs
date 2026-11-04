@@ -89,17 +89,19 @@ impl StaticBatches {
 }
 
 pub(super) fn install(app: &mut App) {
-    app.init_resource::<StaticBatches>().add_systems(
-        PostUpdate,
-        (changed_batches, update.run_if(has_work))
-            .chain()
-            .after(bevy::transform::TransformSystems::Propagate)
-            .after(bevy::camera::visibility::VisibilitySystems::VisibilityPropagate)
-            .before(bevy::camera::visibility::VisibilitySystems::CheckVisibility),
-    );
+    app.init_resource::<StaticBatches>()
+        .add_message::<crate::map::world::BlockFreed>()
+        .add_systems(
+            PostUpdate,
+            (changed_batches, update.run_if(has_work))
+                .chain()
+                .after(bevy::transform::TransformSystems::Propagate)
+                .after(bevy::camera::visibility::VisibilitySystems::VisibilityPropagate)
+                .before(bevy::camera::visibility::VisibilitySystems::CheckVisibility),
+        );
 }
 
-#[allow(clippy::type_complexity)] // Independent source-state change filters.
+#[allow(clippy::type_complexity, clippy::too_many_arguments)] // Independent source-state change filters.
 fn changed_batches(
     changed: Query<
         &BatchMember,
@@ -115,8 +117,18 @@ fn changed_batches(
     mut materials: RemovedComponents<MeshMaterial3d<LayeredMaterial>>,
     mut casters: RemovedComponents<NotShadowCaster>,
     mut receivers: RemovedComponents<NotShadowReceiver>,
+    mut freed: MessageReader<crate::map::world::BlockFreed>,
+    live: Query<()>,
     mut state: ResMut<StaticBatches>,
 ) {
+    // A freed block's single placements wait for a partner that will never come: drop them, and
+    // their mesh handles, once the block's parts are gone.
+    if freed.read().count() > 0 {
+        state.singles.retain(|_, group| {
+            group.sources.retain(|s| live.contains(s.entity));
+            !group.sources.is_empty()
+        });
+    }
     state.dirty.extend(changed.iter().map(|m| m.0));
     for entity in removed.read() {
         if let Some(&index) = state.source_to_batch.get(&entity) {
@@ -264,7 +276,10 @@ fn update(world: &mut World) {
                 .any(|s| world.get_entity(s.entity).is_err() || world.get_entity(s.root).is_err())
         {
             let batch = state.batches.remove(&index).unwrap();
-            world.despawn(batch.entity);
+            // A freed block's batch went with its part root.
+            if let Ok(entity) = world.get_entity_mut(batch.entity) {
+                entity.despawn();
+            }
             for source in batch.sources {
                 state.source_to_batch.remove(&source.entity);
                 if let Ok(mut entity) = world.get_entity_mut(source.entity) {
@@ -726,7 +741,8 @@ mod tests {
                 loaded_at: Some(std::time::Instant::now()),
                 ..default()
             });
-        app.add_systems(Update, changed_batches);
+        app.add_message::<crate::map::world::BlockFreed>()
+            .add_systems(Update, changed_batches);
         app.update();
         app.world_mut()
             .resource_mut::<StaticBatches>()

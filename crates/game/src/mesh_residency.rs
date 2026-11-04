@@ -74,6 +74,23 @@ struct Resident {
     resuming: HashSet<AssetId<Mesh>>,
     retirement_started: bool,
     publish: bool,
+    /// Before the pipeline warmup is done, one unreferenced mesh per vertex layout stays on the
+    /// GPU so the warmup still sees the layouts only other LODs use (`layout_key`); the rest
+    /// wait until an entity references them.
+    layout_reps: HashMap<u64, AssetId<Mesh>>,
+}
+
+/// What the warmup tells meshes apart by (`RenderMesh` layout and key bits): the vertex
+/// attributes and their formats, the topology and morph targets. `None` without CPU data.
+fn layout_key(mesh: &Mesh) -> Option<u64> {
+    let mut hasher = FixedHasher.build_hasher();
+    for (attribute, _) in mesh.try_attributes().ok()? {
+        attribute.id.hash(&mut hasher);
+        attribute.format.hash(&mut hasher);
+    }
+    mesh.primitive_topology().hash(&mut hasher);
+    mesh.has_morph_targets().hash(&mut hasher);
+    Some(hasher.finish())
 }
 
 pub(crate) fn install(app: &mut App) {
@@ -252,10 +269,14 @@ fn reconcile(
 ) {
     // Retire GLTF primitives that have not been instantiated yet. Their main-world data
     // is still owned by the GLTF, so it can be extracted when a later LOD needs it.
+    // Before the warmup is done only the first mesh of each layout goes up besides the
+    // referenced ones: uploading every LOD and motion-blur primitive of every warm block
+    // (31k meshes, 8 GB at m11's Ashina Castle idol) ran 10 GB cards out of memory.
+    let reps = &mut resident.layout_reps;
     extracted.extracted.retain(|(id, mesh)| {
-        let keep = !ready
-            || !mesh.asset_usage.contains(RenderAssetUsages::MAIN_WORLD)
-            || resident.referenced.contains(id);
+        let keep = !mesh.asset_usage.contains(RenderAssetUsages::MAIN_WORLD)
+            || resident.referenced.contains(id)
+            || !ready && layout_key(mesh).is_none_or(|key| *reps.entry(key).or_insert(*id) == *id);
         if !keep {
             resident.suspended.insert(*id);
             extracted.added.remove(id);
@@ -359,5 +380,32 @@ mod tests {
         assert!(!extracted.removed.contains(&id));
         assert_eq!(extracted.extracted[0].1.count_vertices(), 3);
         assert!(extracted.added.contains(&id));
+    }
+
+    /// Before the warmup is done only one unreferenced mesh per layout goes up; a mesh of
+    /// another layout goes up too, a second of the same layout waits for a reference.
+    #[test]
+    fn warmup_keeps_one_unreferenced_mesh_per_layout() {
+        let mut assets = Assets::<Mesh>::default();
+        let triangle = || Mesh::from(Triangle3d::new(Vec3::ZERO, Vec3::X, Vec3::Y));
+        let first = assets.add(triangle()).id();
+        let same = assets.add(triangle()).id();
+        let other = assets
+            .add(triangle().with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, vec![[1.0f32; 4]; 3]))
+            .id();
+        let mut resident = Resident::default();
+        let mut extracted = ExtractedAssets::<RenderMesh>::default();
+        for id in [first, same, other] {
+            extracted.extracted.push((id, assets.get(id).unwrap().clone()));
+            extracted.added.insert(id);
+        }
+        reconcile(&assets, &mut resident, &mut extracted, true, false);
+        let up: Vec<_> = extracted.extracted.iter().map(|(id, _)| *id).collect();
+        assert_eq!(up, [first, other]);
+        assert!(resident.suspended.contains(&same));
+        // Referenced, the second goes up as well.
+        resident.referenced.insert(same);
+        reconcile(&assets, &mut resident, &mut extracted, true, false);
+        assert!(extracted.added.contains(&same));
     }
 }
