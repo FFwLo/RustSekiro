@@ -640,6 +640,14 @@ pub(crate) fn firecracker_staggers_the_general_every_time() {
     for _ in 0..400 {
         app.update();
     }
+    // The same 2 m as the first: Wolf has stepped 0.9 m in by now, which puts the General under
+    // the fan's carriers, past where its sparks burst. (This passed before only through a stray
+    // spark each carrier made at 0.1 s, which the exe never makes: tools/emu-cases `prosth`.)
+    {
+        let world = app.world_mut();
+        world.query_filtered::<&mut Transform, With<Player>>().single_mut(world).unwrap().translation.z = 0.0;
+        world.query_filtered::<&mut Transform, With<Enemy>>().single_mut(world).unwrap().translation.z = 2.0;
+    }
     app.world_mut().resource_mut::<PadInput>().press(Action::Prosthetic);
     let mut again = false;
     for _ in 0..90 {

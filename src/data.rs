@@ -960,6 +960,10 @@ pub struct BulletSpec {
     pub knockback_damp: f32,
     #[serde(default)]
     pub life: f32,
+    /// The life drawn at the spawn is life + [0, 1) x this (exe FUN_140b15200, when life >= 0):
+    /// the firecracker's sparks 710002 / 710012 (life 0, range 0.5) burst at random.
+    #[serde(default)]
+    pub life_random_range: f32,
     #[serde(default)]
     pub hit_radius: f32,
     /// hitRadiusMax / spreadTime: the radius grows from hitRadius to this over spreadTime s.

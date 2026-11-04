@@ -82,6 +82,7 @@ mod emu_brkwin;
 mod emu_hprate;
 mod emu_animstart;
 mod emu_bullets;
+mod emu_prosth;
 mod emu_hksstick;
 mod emu_knockback;
 mod emu_wire;

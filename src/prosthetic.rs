@@ -36,12 +36,15 @@ pub struct Projectile {
     aim: Vec3,
     travelled: f32,
     age: f32,
+    /// Its life left, drawn at the spawn (life_draw) and counted down each update while above 0
+    /// (exe FUN_140b13770, slot +0xb64); it ends the update it reaches 0.
+    life: f32,
     /// Its first update ran (the fly state's +0x31, FUN_140b0ded0): that one only sets it.
     launched: bool,
     /// The throw it belongs to (its children share the hit list).
     chain: u32,
-    /// Age of the next intervalCreateBulletId child.
-    next_interval: f32,
+    /// intervalCreateBulletId's countdown (enemy_bullet::interval_child).
+    interval_timer: f32,
     /// Characters this bullet already hit.
     /// The characters it hit and its age then.
     hit: Vec<(Entity, f32)>,
@@ -55,6 +58,10 @@ pub struct Projectile {
 impl Projectile {
     pub(crate) fn bullet_id(&self) -> i64 {
         self.spec.bullet_id
+    }
+    /// It has had its first (launch-only) update.
+    pub(crate) fn launched(&self) -> bool {
+        self.launched
     }
 }
 
@@ -258,6 +265,25 @@ fn spawn_bullets(
     }
 }
 
+/// A bullet's life at its spawn (exe FUN_140b15200, slot +0xb64): life + [0, 1) x
+/// lifeRandomRange when life >= 0. Before, the range was not read: the firecracker's falling
+/// sparks 710002 / 710012 (life 0, range 0.5) all burst on their first update, the exe's over
+/// 0.4 s (tools/emu-cases `prosth`). gap: the exe's random stream (FUN_141157720 on slot +0xb28)
+/// is not the same draw: which spark bursts when differs.
+fn life_draw(spec: &BulletSpec) -> f32 {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static SEED: AtomicU32 = AtomicU32::new(0x9e37_79b9);
+    if spec.life < 0.0 || spec.life_random_range <= 0.0 {
+        return spec.life;
+    }
+    let mut x = SEED.load(Ordering::Relaxed);
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+    SEED.store(x, Ordering::Relaxed);
+    spec.life + (x >> 8) as f32 / (1u32 << 24) as f32 * spec.life_random_range
+}
+
 /// Spawns one Bullet row at `pos`: numShoot bullets fanned from `dir` by shootAngle +
 /// i * shootAngleInterval (yaw, degrees) and tilted by shootAngleXZ (-90 = straight down).
 pub(crate) fn spawn_row(commands: &mut Commands, spec: &BulletSpec, pos: Vec3, dir: Vec3, chain: u32, base: i64, inherited: i64) {
@@ -287,9 +313,10 @@ pub(crate) fn spawn_row(commands: &mut Commands, spec: &BulletSpec, pos: Vec3, d
             aim: d.normalize_or(Vec3::NEG_Z),
             travelled: 0.0,
             age: 0.0,
+            life: life_draw(spec),
             launched: false,
             chain,
-            next_interval: spec.interval_create_wait_time,
+            interval_timer: spec.interval_create_time_min,
             hit: Vec::new(),
             fx,
             inherit_sfx,
@@ -423,13 +450,17 @@ fn fly_bullets(
             }
         }
         b.age += dt;
+        if b.life > 0.0 {
+            b.life -= dt;
+        }
         // The exe's bullet update, shared with the enemies' (enemy_bullet.rs): homing, then the
         // in / out of range accel and gravity held within min..maxVellocity. The first update
         // (the tick after the spawn) only marks it launched (FUN_140b0ded0 +0x31): no homing,
         // speed or move, its age still counts and its hit is tested where it was spawned.
         let from = btf.translation;
         let mut to = from;
-        if std::mem::replace(&mut b.launched, true) {
+        let launched = std::mem::replace(&mut b.launched, true);
+        if launched {
             let facing = b.vel.normalize_or(b.aim);
             b.vel = crate::enemy_bullet::steer(&b.spec, b.vel, b.travelled, from, aim, dt);
             b.vel = crate::enemy_bullet::flight(&b.spec, b.vel, facing, b.travelled, dt);
@@ -453,14 +484,23 @@ fn fly_bullets(
         btf.translation = to;
         let dir = b.vel.normalize_or(b.aim);
         // intervalCreateBulletId: a child every intervalCreateTimeMin s while it flies.
+        // intervalCreateBulletId: a child an interval after intervalCreateWaitTime and every
+        // interval on (enemy_bullet::interval_child, exe FUN_140b14550). Before, the first came
+        // at the wait itself: each firecracker carrier (wait 0.1, life 0.15) made a spark at 0.1 s
+        // that the exe never makes (tools/emu-cases `prosth`).
         if let Some(child) = row(b.spec.interval_create_bullet_id) {
-            while b.age >= b.next_interval && b.spec.interval_create_time_min > 0.0 {
-                b.next_interval += b.spec.interval_create_time_min;
+            let (age, mut timer) = (b.age, b.interval_timer);
+            let due = launched && crate::enemy_bullet::interval_child(&b.spec, age, dt, &mut timer);
+            b.interval_timer = timer;
+            if due {
                 spawn_row(&mut commands, child, to, dir, b.chain, b.base, b.inherit_sfx);
             }
         }
 
-        let mut ended = landed || b.age > b.spec.life.max(0.0) + 1e-4;
+        // Its life counted down to 0 ends it that update, as the exe's slot +0xb64. Before, the age
+        // had to pass the life by 1e-4: the Flame Vent's 295 (life 0.3) ended an update late and
+        // its 296 came a frame after the exe's (tools/emu-cases `prosth`).
+        let mut ended = landed || b.life <= 0.0;
         // A carrier that hits nothing itself but turns into what does (the Fistful of Ash's
         // throw 3511 -> its cloud 3512) bursts on reaching a body. gap: the exe's end condition
         // for such a carrier is not traced; flying its whole second put the cloud past the enemy.

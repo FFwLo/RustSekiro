@@ -437,10 +437,8 @@ Compared with RSekiro (`src/sim_tests/emu_items.rs`):
 - gap: RSekiro uses only the gourd. Pellets, sugars, spiritfall and throwables (goods
   refCategory 1: their Bullet row's shooter SpEffect / HitBulletID) are not in the player; the
   table above gives their clips, use frames and Bullet rows for a port.
-- gap: the shuriken, firecracker, flame vent and umbrella were not run: writing the tool into
-  PlayerGameData +0x5ec (the snapshot's slots +0x5ec 73000, +0x5f4 78300, +0x5fc 72200) does not
-  change what Wolf swings (the chr's own equip copy is not found). So no prosthetic bullet spawn
-  was recorded and `enemy_bullet.rs` / `prosthetic.rs` spawn code is not compared.
+- (closed 2026-11-04, row E6) writing PlayerGameData +0x5ec alone did nothing: the id there is
+  only a mirror. The equip path is in "Prosthetic tools in the exe" below, and every tool now runs.
 - gap: a written count of 0 did not stop the gourd (the drink and -1 ran on; the count's real
   field is not found); the empty gourd is not checked.
 
@@ -599,3 +597,61 @@ extra step past its end is not wrapped; a reaction in a hit stop (the old window
 lod-skipped enemies were not run; g_trade10 / 18 were logged but not compared (Sv1's swing and
 the slash do not meet on the same frames); the General's own windows when Wolf's hit replaces his
 clip; enemies' frame labels as before.
+## Prosthetic tools in the exe (2026-11-04, prosth, row E6)
+tools/emu-cases `prosth_<tool>` on snapshot emu-snap-e10: each of the 12 tools (shuriken tap and
+hold, firecracker, flame vent, Okinaga's vent, axe, mist raven, Sabimaru, umbrella, Divine
+Abduction, spear, spiral spear, whistle) equipped the game's way, switched to, then used at the
+General (AI on) 2.5 - 6 m ahead in whole world frames as `bullets` above. Test
+`prosthetic_tools_follow_the_exe_frame_for_frame` (src/sim_tests/emu_prosth.rs; skips without
+extracted/emu/prosth_*.json).
+How the exe equips a tool (all read in the emulator, nothing in a menu run):
+- EquipGameData is PlayerGameData +0x278. Its +0x24 + 4 x slot is the inventory index, +0x98
+  (PGD +0x310) is the ChrAsm, +0x374 + 4 x slot the item id (PGD +0x5ec = slot 0's id: only a
+  mirror). Slots 0 / 2 / 4 are the three prosthetic slots, 1 / 3 / 5 the right hand.
+- ChrAsm +0xc is the active prosthetic slot (0 - 2), +0x24 + 4 x slot the item handle (the
+  inventory entry's first word). Each frame FUN_1409cc9a0 copies the PGD ChrAsm into the chr's
+  own one ([chr +0x2140]); the handle is what decides the tool.
+- The menu's equip call is FUN_14079f8a0 (EquipGameData, slot, handle, inventory index, ..);
+  FUN_1409ccdb0 calls it for all 25 slots. Run in the emulator it stops on a CPU exception, so
+  the case writes its three fields itself (handle, index, id into slot 2).
+- The switch: the arm-change input (ACTION_ARM_CHANGE_WEAPON_L, arm 10) runs the HKS
+  W_AddSubWeaponChange (a000_412090); FUN_140bf1640 writes ChrAsm +0xc and FUN_1409ccdb0 copies
+  the chr's ChrAsm back into the PGD. The HKS reads the left weapon at [bag +0xb8] +0x370. The
+  deploy then plays a0<group>_412000; the parts model ([chr +0x2148], slot records +0x5d0 +
+  0xc0 x n, requested +0x274, shown +0x270) is loaded by FUN_140e7b000 from parts:/..partsbnd and
+  only completes for a tool that is already resident (the case does not wait for it).
+What matches frame for frame, from the press: each tool's clips (deploy and use, first step), the
+emblem payment frame and amount, and each tool bullet's first live frame:
+- shuriken tap and hold: release 19, 700050 at 25, paid 24, hit 29 (a hold releases at 19 too);
+- firecracker: 710050 / 710060 x3 at 25, carriers 710001 / 710011 at 35, the first sparks
+  710002 / 710012 at 37, paid 2 at 24;
+- flame vent and Okinaga's vent (same behaviours 107200297 at 36, 107200110 at 48): 295 at 37,
+  720010 at 49, 296 at 55 (295's life 0.3 counted down), paid 3 at 48, hit 49;
+- umbrella: 76405010 then 76405030 at 61, its upkeep bullet 999 at 2, paid 1 at 1;
+- whistle: 790001 (life 0, never live in a slot) -> 790003 at 74 -> 790004 at 76, paid 3 at 72;
+- axe paid 2 at 74, Sabimaru 1 at 32, spears 1 at 48, Divine Abduction 3 at 30, mist raven 74404040.
+Rules read and ported (prosthetic.rs, enemy_bullet.rs):
+- intervalCreateBulletId (FUN_140b14550, from the fly state after the move, never on the
+  launch-only first update): needs the id and TimeMax non-zero; a countdown (slot +0xb78) starts at
+  an interval (min + rand x (max - min)) and only runs once the age (+0xb7c) reaches
+  intervalCreateWaitTime; at 0 one child and the countdown gets an interval back (overshoot kept).
+  Ours made the first child at the wait itself: each firecracker carrier sparked at 0.1 s (frame
+  30), which the exe never does. Now `enemy_bullet::interval_child` for both.
+- Life (slot +0xb64, FUN_140b13770): set at the spawn to life + rand [0, 1) x lifeRandomRange
+  (FUN_140b15200, when life >= 0), counted down by dt each update while above 0 and the bullet ends
+  in the update it reaches 0. Ours compared age > life + 1e-4 and ended a 0.3 / 0.4 / 0.5 s bullet
+  an update late; the random range was not read (every firecracker spark of life 0 burst at once).
+Gaps:
+- Random draws: the exe's stream (FUN_141157720) is not ours, so the firecracker's later sparks and
+  bursts 710003 / 710013 (lifeRandomRange 0.5) are not compared; the exe's run has one of each
+  spark first live a frame later (38), not explained.
+- Hits where the General walks in: the exe's General is AI-on (anim 1040 walks him from 3 to
+  0.8 m), ours stands still, so the axe (ours hits at 75, the exe none), Sabimaru (exe 39, ours
+  33: its slash reaches him late at 0.73 m) and spears are not compared. Open lead: the spear's
+  three overlapping windows (judges 107 root, 106 middle, 105 tip, f44 - 52) hit once in the exe
+  (at 45, then he is 0.95 - 1.5 m away in 8010) and three times in ours (hits_done per window).
+- The menu equip call itself, the parts model load of a tool not resident, the switch's own
+  frames (the case waits 86 Wolf-only frames for the deploy), Wolf's SpEffects and the attack
+  amounts (only "took HP or posture" is compared), mist raven's warp and Divine Abduction's grab,
+  the umbrella's guard. Enemy bullets share the slot code but enemy_bullet.rs still ends on
+  age > life + 1e-4 with no lifeRandomRange (no enemy bullet was recorded to check it against).

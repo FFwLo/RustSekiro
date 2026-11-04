@@ -51,7 +51,8 @@ pub struct EnemyBullet {
     /// Seconds flown past `dist` (the damp decay).
     out_of_range: f32,
     age: f32,
-    next_interval: f32,
+    /// intervalCreateBulletId's countdown (interval_child).
+    interval_timer: f32,
     /// Height of the floor it lands on (Wolf's feet when it was fired).
     floor: f32,
     pub(crate) hit: bool,
@@ -354,7 +355,7 @@ fn spawn_chain(commands: &mut Commands, spec: &BulletSpec, shooter: Entity, kind
                 age: 0.0,
                 reissue_at: REISSUE_PERIOD,
                 reissued: false,
-                next_interval: spec.interval_create_wait_time,
+                interval_timer: spec.interval_create_time_min,
                 floor,
                 hit: false,
                 last_hit: 0.0,
@@ -452,8 +453,10 @@ fn fly(
         // A bullet standing still (a speed-0 carrier) hands on the way it was fired, not world -Z.
         let dir = b.vel.normalize_or(b.facing);
         if let Some(child) = row(b.spec.interval_create_bullet_id) {
-            while b.age >= b.next_interval && b.spec.interval_create_time_min > 0.0 {
-                b.next_interval += b.spec.interval_create_time_min;
+            let (age, mut timer) = (b.age, b.interval_timer);
+            let due = launched && interval_child(&b.spec, age, dt, &mut timer);
+            b.interval_timer = timer;
+            if due {
                 spawn_chain(&mut commands, child, b.shooter, b.kind, to, dir, b.floor, script.clone(), b.chain, b.inherit_sfx);
             }
         }
@@ -609,6 +612,27 @@ pub fn launches(lct: i64, hit_enemy: bool, landed: bool, expired: bool) -> bool 
         255 => hit_enemy || landed,
         _ => true,
     }
+}
+
+/// intervalCreateBulletId's clock, one bullet update after its move (exe FUN_140b14550, called by
+/// the fly state FUN_140b0ded0 after FUN_140b11270 / FUN_140b14650 / FUN_140b142e0, so never on
+/// the launch-only first update): the countdown `timer` (slot +0xb78, set to an interval at the
+/// spawn by FUN_140b17920) runs only while the bullet's age (slot +0xb7c, += dt each update) is
+/// at least intervalCreateWaitTime; when it reaches 0 one child is made and an interval is added
+/// (the overshoot carries). So the first child comes an interval after the wait, not at it: the
+/// firecracker carriers (wait 0.1, interval 0.1, life 0.15) make none (tools/emu-cases `prosth`).
+/// gap: the exe draws each interval between intervalCreateTimeMin and Max (FUN_141157720); every
+/// row has Min = Max. True when a child is due.
+pub fn interval_child(spec: &BulletSpec, age: f32, dt: f32, timer: &mut f32) -> bool {
+    if spec.interval_create_bullet_id <= 0 || spec.interval_create_time_min <= 0.0 || spec.interval_create_wait_time > age {
+        return false;
+    }
+    *timer -= dt;
+    if *timer > 0.0 {
+        return false;
+    }
+    *timer += spec.interval_create_time_min;
+    true
 }
 
 /// One frame of homing (exe FUN_140b11270): none for homingAngle < 0 or until the bullet has

@@ -37,6 +37,12 @@ exe addresses, mark the rest `// gap:`), ask for a real-game clip per tool for t
   ref 302 window + forced by the LV1 resident (ref 314) - so LV1 tools never charge (as in the game).
 - Bullets (`prosthetic.rs` spawn_row / fly_bullets): numShoot fans, shootAngleXZ, intervalCreate and
   HitBulletID children, floor stop, area bursts, shared hit lists, bullet SpEffects.
+  Checked against the exe 2026-11-04 (row E6, kb/frame-coverage.md "Prosthetic tools in the
+  exe"): all 12 tools' clips, emblem payments and bullet frames match from the press. Fixed there:
+  intervalCreate's first child comes an interval after intervalCreateWaitTime (was at the wait:
+  stray firecracker sparks at 0.1 s), a bullet's life is drawn with lifeRandomRange and counted
+  down by dt (the Flame Vent's 295 -> 296 was a frame late). Gaps: random draws, hits that depend
+  on the General walking in (axe, Sabimaru, spears; the spear's three windows hit once in the exe).
 - Firecracker done: burst 710003 -> c9997 GetSpDamage SP_DAMAGE_BURST (refs 1000055/56/57: beasts by
   resident 230100) -> AssassinationBloodReaction (a000_020110); cool time 107100 (stateInfo 976, 30 s)
   read as "no new reaction" (Enemy.burst_until). Test `firecracker_staggers_the_general_once_per_cool_time`.
