@@ -157,6 +157,7 @@ character turns out to run exe code of its own, add an `E` row for that part.
 | P16 | any | | open | Skills leftovers: the item-side gaps (kb/skills.md, 2026-10-22) and the status gaps (posture scaling, the protectors' resists) | system: Skills; the `gap:` lines in src/status.rs |
 | P17 | any | | open | Rendering / shaders / lighting leftovers: the height fog's local lights, shadowed variant and slice count; cloth transition sets; the castle's fire sky | system: Rendering / shaders / lighting; the `gap:` lines in src/height_fog.rs, src/cloth.rs, src/sky.rs |
 | P18 | any | | open | Player movement leftovers: the 62 `gap:` lines in src/player.rs (plunges, the objects' own collision, ...), one cluster per part (P18a, P18b) | system: Player movement; kb/movement.md |
+| P19 | any | | open | One extractor: fold `crates/extract` (sr-extract, the world cache) into `tools/sekiro-extract`. Today both unpack the install (sr-extract all of it into cache/raw, about 32 GB; sekiro-extract its own parts into extracted/); make one unpack serve both and one binary run `tools/extract.ps1 -World`. They already share the keys and param defs (2026-11-04) | crates/README.md; tools/extract.ps1 |
 
 ## B: bugs and cleanup (good first rows)
 
