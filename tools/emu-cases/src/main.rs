@@ -350,6 +350,7 @@ impl Emu {
         }
         e.hook(uc::HOOK_MEM_UNMAPPED, on_unmapped as *const c_void, 1, 0);
         e.hook(uc::HOOK_MEM_READ, on_read as *const c_void, HEAP, HEAP + HEAP_SIZE - 1);
+        params::watch(&mut e);
         e
     }
 
@@ -844,6 +845,7 @@ fn main() {
     let want: Vec<&str> = args[3..].iter().map(String::as_str).collect();
     let on = |n: &str| want.is_empty() || want.contains(&n);
     let t = std::time::Instant::now();
+    let _param_reads = params::ReadsLog;
     if want.first() == Some(&"probe") {
         let mut emu = Emu::new(exe, snap());
         for a in &want[1..] {
@@ -887,6 +889,15 @@ fn main() {
     }
     if want.first() == Some(&"worldbackread") {
         return worldbackread::run(&|| Emu::new(exe, None), out);
+    }
+    // EMU_PARAM_READS=<file> with any topic records its param reads; `params_reads` alone only
+    // rewrites the file (functions named from DSEKIRO_FUNCTIONS).
+    if want.first() == Some(&"params_reads") {
+        Emu::new(exe, snap());
+        return;
+    }
+    if want.first() == Some(&"params_keys") {
+        return params::keys(&|| Emu::new(exe, snap()), out);
     }
     if want.first() == Some(&"params") {
         return params::run(&mut Emu::new(exe, snap()), out);

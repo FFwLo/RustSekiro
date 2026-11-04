@@ -1417,8 +1417,21 @@ pub fn bound_clip_no(category: i64) -> i64 {
 
 /// Makes the NpcParam row's behavior variation the default: "v<variation>:<judge>" attacks and
 /// bullets (BehaviorParam 200000000 + variation * 1000 + judge) replace the bare judge keys.
+/// The exe builds the id from the row's variation alone (EnemyIns vfunc 0x1c0, FUN_140a12b80)
+/// and a missing row is no attack (FUN_14084fc50 AtkParam -1): a bare judge the variation has
+/// no row for is dropped, not left at the main row's (emu-cases `params_keys`). Only when the
+/// export has keys of that variation (else the bare keys stand in for it).
 pub fn select_variation(d: &mut CharData, variation: i64) {
     let prefix = format!("v{variation}:");
+    let bare = |k: &String| k.parse::<i64>().is_ok();
+    if d.attacks.keys().any(|k| k.starts_with(&prefix)) {
+        let own: std::collections::HashSet<String> = d.attacks.keys().filter_map(|k| k.strip_prefix(&prefix).map(str::to_string)).collect();
+        d.attacks.retain(|k, _| !bare(k) || own.contains(k));
+    }
+    if d.bullets.keys().any(|k| k.starts_with(&prefix)) {
+        let own: std::collections::HashSet<String> = d.bullets.keys().filter_map(|k| k.strip_prefix(&prefix).map(str::to_string)).collect();
+        d.bullets.retain(|k, _| !bare(k) || own.contains(k));
+    }
     let attacks: Vec<(String, Attack)> = d.attacks.iter().filter_map(|(k, v)| Some((k.strip_prefix(&prefix)?.to_string(), v.clone()))).collect();
     d.attacks.extend(attacks);
     let bullets: Vec<(String, BulletSpec)> = d.bullets.iter().filter_map(|(k, v)| Some((k.strip_prefix(&prefix)?.to_string(), v.clone()))).collect();
@@ -2350,11 +2363,13 @@ impl CharData {
                 // the same number: the air Mortal Draw a106_316200's 16 contact windows (307 judge
                 // 210, pc210: no damage) hit as v5007:210 (the Mortal Draw slash, ~200 HP + 38
                 // posture each) - round 28.
-                let atk = if e.kind == 307 {
-                    self.attacks.get(&key)
-                } else {
-                    art.and_then(|g| var.or_else(|| self.attacks.get(&format!("a{g}:{j}")))).or(tool_atk).or_else(|| self.attacks.get(&key))
-                };
+                // With an art equipped its row is the right hand's, and a missing one falls back
+                // to variation / 100 * 100 = the katana's 5000 = the bare key (PlayerIns vfunc
+                // 0x1c0, FUN_140a24560), never to another level of the art: the upgraded Spiral
+                // Cloud Passage 5021 has no judge 209, the base 5020 has. "a<group>" stands in for
+                // the anim's art only when none is set (tests).
+                let art_row = |g: i64| if self.art_variation.is_some() { var } else { self.attacks.get(&format!("a{g}:{j}")) };
+                let atk = if e.kind == 307 { self.attacks.get(&key) } else { art.and_then(art_row).or(tool_atk).or_else(|| self.attacks.get(&key)) };
                 atk.map(|a| (e, a, if e.kind == 307 { 1_000_000 + j } else { j }))
             })
             .collect()

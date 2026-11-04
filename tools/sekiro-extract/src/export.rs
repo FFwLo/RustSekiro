@@ -651,9 +651,15 @@ fn export_character(
     let atk = load_param(params, chr.atk_param);
     let mut attacks = Map::new();
     for &j in &judge_ids {
-        // The weapon's own behavior variation first, then the equipped combat art's
-        // (Whirlwind Slash = weapon 5100, behaviorVariationId 5001: +1000).
-        let Some(b) = [chr.behavior_base + j, chr.behavior_base + 1000 + j].iter().find_map(|id| beh.get(id)) else { continue };
+        // The base variation's row only, as the exe resolves it: an NPC's id (EnemyIns vfunc
+        // 0x1c0, FUN_140a12b80) has no fallback, and a missing row is no attack (FUN_14084fc50
+        // AtkParam -1; emu-cases `params_keys`). Wolf's (PlayerIns 0x1c0, FUN_140a24560) falls
+        // back from the hand weapon's variation to variation / 100 * 100, i.e. from an art's
+        // 50xx to the katana's 5000 = these bare keys; the art's own rows are the
+        // "v<variation>:<judge>" keys below. (This tried base + 1000 + judge as well, which gave
+        // c1020 the spear General c1021's variation 10201 and Wolf Whirlwind's 200 / 201 as bare
+        // keys: 66 NPC and 2 of Wolf's keys the exe never resolves.)
+        let Some(b) = beh.get(&(chr.behavior_base + j)) else { continue };
         if b.get("refType").and_then(Value::as_i64) != Some(0) {
             continue;
         }

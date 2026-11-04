@@ -64,11 +64,74 @@ Not covered / gaps:
 - Field names are Paramdex's. The value checks prove the bytes; a name swap like the throw one
   is only caught where the code cites the exe's offset. gap: no systematic exe-accessor scan of
   every field RSekiro reads.
-- The NPC bare-judge attack keys: the export also tries BehaviorParam base + 1000 + judge (the
-  player's art rule) when base + judge has no row; FUN_140a12b80 has no such fallback. 66 bare keys exist only through it
-  (c1020, c1190 and c7410 have the most). The test counts and prints them and does not fail on them: whether the exe falls back
-  elsewhere when the row is missing is not traced (the vfunc that calls FUN_140a12b80 has no
-  direct caller in the decomp).
+- (Done 2026-11-04, E15 below.) The NPC bare-judge attack keys through the export's + 1000 fallback.
 - Runtime changes to rows: the snapshot is one moment (Naomori's arena, NG). Rows the game
   rewrites later (none seen here) or per-NG scaling (SpEffect-driven, not a param write) are not
   covered.
+
+## 2026-11-04 (E15): how the exe turns a TAE judge into a BehaviorParam / AtkParam row
+
+The chain (decomp, read only; run in the emulator):
+
+- TAE AttackBehavior FUN_140b50ae0 (and the other behaviour events FUN_140b55510,
+  FUN_140b565e0, FUN_140b56ba0) call the chr's vfunc 0x1c0 (judge, hand) for the row id, then
+  the attack record FUN_140b679e0 -> info fill FUN_14084fc50: FUN_1410b5cf0 looks the id up in
+  repository slot 0xc + chr type (BehaviorParam_PC / BehaviorParam, a plain binary search), and
+  the AtkParam id is the row's refId when the row exists and its refType (+9) is 0, else -1 (no
+  hit entries). Nothing looks again with another id.
+- EnemyIns vfunc 0x1c0 = FUN_140a12b80: judge < 1000 (else -1); id = (200000 + NpcParam
+  behaviorVariationId (row +0, through vfunc 0x178's +8)) x 1000 + judge; then the worn
+  SpEffects' (addBehaviorJudgeId_condition, _add) pairs (FUN_140bffb40): the FIRST whose
+  condition is judge / 100 adds its add, and an add of 0 makes the id 5 (no row). No fallback.
+- PlayerIns vfunc 0x1c0 = FUN_140a24560: the hand's weapon (vfunc 0x338; 110000 with flags &
+  0x60), its EquipParamWeapon behaviorVariationId v < 100000, id = (100000 + v) x 1000 + judge;
+  when BehaviorParam_PC has no such row, (1000 + v / 100) x 100000 + judge, i.e. variation
+  v / 100 * 100: an art's 50xx falls back to the katana's 5000, never to another level of the
+  art; then the same SpEffect shift. The right hand's weapon is the equipped art (the
+  snapshot's: 5008) for every anim, not only the art's (no art judge 200-267 / 999 is used
+  outside the art anims, so RSekiro's art-anim-only lookup gives the same rows).
+
+Checked (`tools/emu-cases params_keys`, extracted/emu/params_keys.json): the General's
+FUN_140a12b80 + FUN_14084fc50 with his NpcParam row's variation set (in the emulator's copy) to
+each of the 2,710 (variation, judge) pairs the enemy files use (main variation and every
+"v<variation>:" one x their attack keys and AttackBehavior judges): 1,846 resolve to an AtkParam
+row. All 66 bare keys the export had only through base + 1000 + judge are -1 in the exe (c1020 /
+c7410's 18: variation 10201 is the spear General c1021's; c1190's 11: c1191's; the others' own
+variant rows, which the files also hold as "v<variation>:" keys). Wolf's rule against
+`atkrec_judges` (1,000 judges, art 5008): every right-hand row is the art's when it exists,
+else 5000's.
+
+Fixed:
+
+- sekiro-extract `export.rs`: bare keys are base + judge only (no + 1000). Re-exported c1010,
+  c1011, c1020, c1180, c1190, c1220, c1310, c1450, c7410, c7490 and combat_data.json: the 66 NPC
+  keys and Wolf's bare 200 / 201 (Whirlwind's rows) gone, and c7490's SpEffect 104000 (only
+  from a dropped attack); nothing else changed (last-digit f64 noise in a few derived floats).
+- `data::select_variation`: a placed row of another variation drops the bare keys that
+  variation has no row for (it kept the main row's).
+- `CharData::attack_windows_on`: with an art equipped, an art anim's judge with no row of that
+  art falls back to the bare (5000) key, not to the art group's base level ("a<group>"): the
+  upgraded Spiral Cloud Passage 5021 has no judge 209, the base 5020 has, and the exe hits
+  nothing there.
+
+Tests (`src/sim_tests/emu_params.rs`): `npc_attack_keys_resolve_like_the_exe` (every
+(variation, judge) of every enemy file after `select_variation` against the exe's AtkParam id:
+3,385 per-file (variation, judge) checks over 102 enemies, 2,419 of them attacks),
+`wolf_art_judges_resolve_like_the_exe` (the fallback rule on 1,000 judges; the a107 anims'
+16 windows against the exe's rows), and `character_rows_match_the_exe` now fails on any bare key
+without an exe row.
+
+Not covered:
+
+- The SpEffect shift's order (the exe takes the first matching worn SpEffect in its list order;
+  RSekiro sums every match: differs only with two matching enchantments worn at once, none
+  seen) and the add-0 rule (only SpEffectParam row 0 has a condition with add 0).
+- ThrowAttackBehavior (TAE 304) judges from 1000 (c1020's 1010-1090, c5000's 1000-1080, ...):
+  FUN_140a12b80 returns -1 for them, so the throw handler builds its id another way; not
+  traced, those keys stay base + judge.
+- Combat-art bullets: prosthetic.rs looks only at the art's own "v<variation>:" bullet, with no
+  5000 fallback (no art judge has a 5000 bullet row today).
+- The left hand (the prosthetic's variation, 7300 in the snapshot; same rule): RSekiro's tool
+  keys were not re-run here.
+- Only the General's EnemyIns runs the NPC function (it reads nothing chr-specific but the
+  NpcParam row and the worn SpEffects).

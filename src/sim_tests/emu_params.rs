@@ -284,7 +284,6 @@ fn character_rows_match_the_exe() {
     r.typed(&exe, "c0000", &wolf, true);
     r.character(&exe, "combat_data", &serde_json::json!({ "params": cd["params"] }), false);
     let behavior = |pc: bool, id: i64| exe.row(if pc { "BehaviorParam_PC" } else { "BehaviorParam" }, &id.to_string());
-    let mut fallback_only = Vec::new();
     let mut keys = 0;
     let mut chrs = Vec::new();
     for e in std::fs::read_dir(root.join("enemies")).unwrap().flatten() {
@@ -301,9 +300,8 @@ fn character_rows_match_the_exe() {
         let file = EnemyFile::load(chr).unwrap_or_else(|| panic!("{chr}: EnemyFile::load failed"));
         r.typed(&exe, chr, &file.data, false);
         // The attack keys: "v<variation>:<judge>" and the bare judge of the main row's
-        // variation. A bare key whose exe row is missing was taken by the export's art-style
-        // +1000 fallback (BehaviorParam ... + 1000 + judge), which FUN_140a12b80 does not do:
-        // counted, not failed (kb/params.md).
+        // variation. FUN_140a12b80 has no fallback (the export's base + 1000 + judge one gave 66
+        // bare keys the exe never resolves; `npc_attack_keys_resolve_like_the_exe`).
         let main = file.roster["npc"].as_i64().unwrap_or(0);
         let var = exe.row("NpcParam", &main.to_string()).and_then(|g| g["behaviorVariationId"].as_i64()).unwrap_or(0);
         for (k, a) in &file.data.attacks {
@@ -321,7 +319,6 @@ fn character_rows_match_the_exe() {
                         r.fail(format!("{chr}: attack {k} is AtkParam {}, the exe's BehaviorParam row refers to {}", a.atk_param_id, b["refId"]));
                     }
                 }
-                _ if !k.starts_with('v') => fallback_only.push(format!("{chr}:{k}")),
                 _ => r.fail(format!("{chr}: attack {k} has no refType-0 BehaviorParam row {}", 200_000_000 + v * 1000 + j)),
             }
         }
@@ -343,13 +340,157 @@ fn character_rows_match_the_exe() {
         }
     }
     eprintln!(
-        "characters: Wolf + {} enemies, {} rows / {} fields the same as the game's; {keys} attack keys, {} bare NPC keys only through the export's +1000 fallback: {}",
+        "characters: Wolf + {} enemies, {} rows / {} fields the same as the game's; {keys} attack keys",
         chrs.len(),
         r.rows,
-        r.fields,
-        fallback_only.len(),
-        fallback_only.iter().take(12).cloned().collect::<Vec<_>>().join(", ")
+        r.fields
     );
     assert!(chrs.len() > 30, "only {} enemy files", chrs.len());
     r.assert_clean("character rows vs the game");
+}
+
+/// Every judge an enemy file uses (its attack keys and its anims' AttackBehavior events) in its
+/// main NpcParam variation and each "v<variation>:" one, as RSekiro resolves it after
+/// `select_variation`, against the exe's (tools/emu-cases `params_keys`: FUN_140a12b80 on the
+/// General with that variation, then the attack info FUN_14084fc50's AtkParam id, -1 = none).
+/// The exe has no fallback for a missing row.
+#[test]
+fn npc_attack_keys_resolve_like_the_exe() {
+    let path = crate::paths::emu().join("params_keys.json");
+    let (Ok(text), Some(exe)) = (std::fs::read_to_string(&path), Exe::load()) else {
+        eprintln!("skipped: extracted/emu/params_keys.json or params_rows.json missing (tools/emu-cases params_keys / params)");
+        return;
+    };
+    let v: Value = serde_json::from_str(&text).unwrap();
+    let game: HashMap<(i64, i64), (i64, i64)> = v["cases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| ((c["variation"].as_i64().unwrap(), c["judge"].as_i64().unwrap()), (c["row"].as_i64().unwrap(), c["atk"].as_i64().unwrap())))
+        .collect();
+    // The id is the plain sum (no SpEffect shift on the snapshot's General), -1 for a judge
+    // outside 0..1000 (an unsigned compare: -1 too).
+    for (&(var, j), &(row, _)) in &game {
+        assert_eq!(row, if (0..1000).contains(&j) { 200_000_000 + var * 1000 + j } else { -1 }, "FUN_140a12b80 ({var}, {j})");
+    }
+    let root = crate::paths::extracted();
+    let mut chrs: Vec<String> = std::fs::read_dir(root.join("enemies"))
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .filter(|n| n.len() == 10 && n.starts_with('c') && n.ends_with(".json"))
+        .map(|n| n[..5].to_string())
+        .collect();
+    chrs.sort();
+    let mut r = Report::default();
+    let (mut checked, mut attacks, mut missing) = (0, 0, 0);
+    for chr in &chrs {
+        let file = EnemyFile::load(chr).unwrap();
+        let main = file.roster["npc"].as_i64().unwrap_or(0);
+        let main_var = exe.row("NpcParam", &main.to_string()).and_then(|g| g["behaviorVariationId"].as_i64()).unwrap_or(0);
+        let mut vars = vec![main_var];
+        let mut judges: HashSet<i64> = HashSet::new();
+        for k in file.data.attacks.keys() {
+            if let Ok(j) = k.parse::<i64>() {
+                judges.insert(j);
+            } else if let Some((v, j)) = k.strip_prefix('v').and_then(|s| s.split_once(':')) {
+                vars.push(v.parse().unwrap());
+                judges.insert(j.parse().unwrap());
+            }
+        }
+        for a in file.data.anims.values() {
+            judges.extend(a.events.iter().filter(|e| e.kind == 1).filter_map(|e| e.arg_i64("BehaviorJudgeID")));
+        }
+        vars.sort();
+        vars.dedup();
+        for &var in &vars {
+            let mut d = CharData { attacks: file.data.attacks.clone(), bullets: file.data.bullets.clone(), ..Default::default() };
+            crate::data::select_variation(&mut d, var);
+            // Judges from 1000 are ThrowAttackBehavior's (TAE 304: c1020's 1010-1090, c5000's
+            // 1000-1080), whose id is not built by FUN_140a12b80 (it returns -1 for them).
+            // gap: the throw handler's id rule is not traced; those keys stay base + judge.
+            for &j in judges.iter().filter(|&&j| (0..1000).contains(&j)) {
+                let Some(&(_, atk)) = game.get(&(var, j)) else {
+                    missing += 1;
+                    continue;
+                };
+                checked += 1;
+                // The export keeps a row whose AtkParam_Npc row exists (the exe's info holds the
+                // id either way; its hit entries need the row).
+                let want = (atk != -1 && exe.row("AtkParam_Npc", &atk.to_string()).is_some()).then_some(atk);
+                let ours = d.attacks.get(&j.to_string()).map(|a| a.atk_param_id);
+                attacks += want.is_some() as usize;
+                if ours != want {
+                    r.fail(format!("{chr} variation {var} judge {j}: RSekiro {ours:?}, the exe {want:?} (AtkParam {atk})"));
+                }
+            }
+        }
+    }
+    eprintln!("npc attack keys: {} enemies, {checked} (variation, judge) checked, {attacks} attacks, {missing} not run", chrs.len());
+    assert!(checked > 1000, "only {checked} keys checked");
+    assert_eq!(missing, 0, "rerun tools/emu-cases params_keys");
+    r.assert_clean("NPC attack keys vs the exe");
+}
+
+/// Wolf's right-hand judge with an art equipped (the snapshot's, read off the exe's own rows:
+/// 5008) as the exe builds it (PlayerIns vfunc 0x1c0, FUN_140a24560; atkrec_judges): the art's
+/// row 100000000 + variation * 1000 + judge, else variation / 100 * 100's (5000); and RSekiro's
+/// anims of that art resolving the same AtkParam rows (`attack_windows`).
+#[test]
+fn wolf_art_judges_resolve_like_the_exe() {
+    let path = crate::paths::emu().join("atkrec_judges.json");
+    let (Ok(text), Some(exe)) = (std::fs::read_to_string(&path), Exe::load()) else {
+        eprintln!("skipped: extracted/emu/atkrec_judges.json or params_rows.json missing");
+        return;
+    };
+    let Ok(cd) = std::fs::read_to_string(crate::paths::extracted().join("combat_data.json")) else { return };
+    let cd: Value = serde_json::from_str(&cd).unwrap();
+    let mut wolf: CharData = serde_json::from_value(cd["player"].clone()).unwrap();
+    let v: Value = serde_json::from_str(&text).unwrap();
+    let rows: HashMap<i64, i64> = v["cases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|c| c["chr"] == "wolf" && c["via"] == "0x1c0" && c["hand"].as_i64() == Some(-1))
+        .map(|c| (c["judge"].as_i64().unwrap(), c["row"].as_i64().unwrap()))
+        .collect();
+    let pc_row = |id: i64| exe.row("BehaviorParam_PC", &id.to_string());
+    let art = (rows[&200] - 100_000_000) / 1000;
+    assert!((5001..5100).contains(&art), "the snapshot's right hand is not an art ({art})");
+    let mut r = Report::default();
+    for (&j, &row) in &rows {
+        let own = 100_000_000 + art * 1000 + j;
+        let want = if pc_row(own).is_some() { own } else { 100_000_000 + art / 100 * 100 * 1000 + j };
+        if row != want {
+            r.fail(format!("judge {j}: exe row {row}, rule {want}"));
+        }
+    }
+    // The art's anims (a<spAtkcategory>): every AttackBehavior judge's AtkParam row is the exe
+    // row's refId.
+    wolf.art_variation = Some(art);
+    let group = (5000..8000)
+        .find_map(|id| {
+            let w = exe.row("EquipParamWeapon", &id.to_string())?;
+            (w["behaviorVariationId"].as_i64() == Some(art)).then(|| w["spAtkcategory"].as_i64()).flatten()
+        })
+        .expect("the art's EquipParamWeapon row");
+    let mut keys: Vec<String> = wolf.anims.keys().filter(|k| k.starts_with(&format!("a{group}_"))).cloned().collect();
+    keys.sort();
+    let mut windows = 0;
+    for key in &keys {
+        for (e, atk, j) in wolf.attack_windows(key) {
+            if e.kind != 1 {
+                continue;
+            }
+            windows += 1;
+            let row = rows[&j];
+            let want = pc_row(row).filter(|b| b["refType"].as_i64() == Some(0)).and_then(|b| b["refId"].as_i64());
+            if want != Some(atk.atk_param_id) {
+                r.fail(format!("{key} judge {j}: RSekiro AtkParam {}, the exe's row {row} -> {want:?}", atk.atk_param_id));
+            }
+        }
+    }
+    eprintln!("wolf art judges: art {art} (a{group}), {} judges, {} anims, {windows} windows", rows.len(), keys.len());
+    assert!(windows > 0, "no a{group} attack windows");
+    r.assert_clean("Wolf's art judges vs the exe");
 }
