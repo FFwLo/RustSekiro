@@ -70,7 +70,7 @@ impl StageRect {
     pub fn node(&self) -> Node {
         Node { position_type: PositionType::Absolute, left: self.left(), top: self.top(), width: self.width(), height: self.height(), ..default() }
     }
-    fn union(a: Option<StageRect>, b: StageRect) -> StageRect {
+    pub(crate) fn union(a: Option<StageRect>, b: StageRect) -> StageRect {
         match a {
             None => b,
             Some(a) => StageRect::new(a.x0.min(b.x0), a.y0.min(b.y0), a.x1.max(b.x1), a.y1.max(b.y1)),
@@ -252,8 +252,8 @@ impl Default for HudLayout {
     }
 }
 
-/// The movie's instances (path -> entry) with lookups.
-struct Movie<'a> {
+/// The movie's instances (path -> entry) with lookups (also menu_layout.rs's).
+pub(crate) struct Movie<'a> {
     inst: &'a serde_json::Map<String, Value>,
     sprites: Option<&'a serde_json::Map<String, Value>>,
 }
@@ -264,9 +264,17 @@ fn rect_of(v: &Value) -> Option<StageRect> {
     Some(StageRect::new(f(0)?, f(1)?, f(2)?, f(3)?))
 }
 
-impl Movie<'_> {
+impl<'a> Movie<'a> {
+    /// A hud-layout file's instances.
+    pub(crate) fn of(v: &'a Value) -> Option<Self> {
+        Some(Movie { inst: v["instances"].as_object()?, sprites: v["sprites"].as_object() })
+    }
+    /// An instance's bounds on the stage.
+    pub(crate) fn rect(&self, path: &str) -> Option<StageRect> {
+        rect_of(self.inst.get(path)?)
+    }
     /// The leaves under `prefix` that draw atlas sprite `image`.
-    fn leaves(&self, prefix: &str, image: &str) -> Vec<StageRect> {
+    pub(crate) fn leaves(&self, prefix: &str, image: &str) -> Vec<StageRect> {
         self.inst
             .iter()
             .filter(|(k, _)| *k == prefix || k.starts_with(&format!("{prefix}/")))
@@ -275,10 +283,10 @@ impl Movie<'_> {
             .collect()
     }
     /// Their union.
-    fn image(&self, prefix: &str, image: &str) -> Option<StageRect> {
+    pub(crate) fn image(&self, prefix: &str, image: &str) -> Option<StageRect> {
         self.leaves(prefix, image).into_iter().fold(None, |o, b| Some(StageRect::union(o, b)))
     }
-    fn text(&self, path: &str) -> Option<StageText> {
+    pub(crate) fn text(&self, path: &str) -> Option<StageText> {
         let v = self.inst.get(path)?;
         let tx = v.get("text")?;
         let c = tx["color"].as_array().map(|a| std::array::from_fn(|i| a.get(i).and_then(Value::as_u64).unwrap_or(255) as u8)).unwrap_or(TEXT);

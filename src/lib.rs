@@ -94,6 +94,8 @@ mod map_lights;
 #[cfg(feature = "embed")]
 mod menu;
 #[cfg(feature = "embed")]
+pub(crate) mod menu_layout;
+#[cfg(feature = "embed")]
 pub(crate) mod save;
 #[cfg(feature = "host")]
 mod sandbox;

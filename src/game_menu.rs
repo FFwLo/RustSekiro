@@ -15,16 +15,24 @@
 //!   skill level, Spirit Emblems and Sen) and the key guide along the bottom;
 //! - Options: the game's column of brush buttons.
 //!
-//! gap: the menu movie's (02_000_ingametop.gfx and kin) exact layout and animation are not
-//! decoded: places and sizes are set from the captures. The lists show what the game state has
-//! (no pickups yet); attribute levels, Unseen Aid and skill experience are not modelled.
+//! Places, sizes and text heights are the menu movie's, menu/02_200_mainmenu.gfx (menu_layout.rs:
+//! the tabs, the Equipment sections and slots, the list rows, category icons and scroll bar, the
+//! details parchment, the Options rows, the status plates, the help line and key guide).
+//!
+//! gap: the movie's animations are not played; the right-hand arrows, the skill art's box, the
+//! status plates' contents and the Equipped Items title bar are still by eye. The lists show what
+//! the game state has (no pickups yet); attribute levels, Unseen Aid and skill experience are not
+//! modelled.
 
 use std::collections::HashMap;
 
 use bevy::prelude::*;
 
 pub(crate) use crate::hud::{any_icon, sprite};
+use crate::hud::atlas_art;
+use crate::hud_layout::{StageRect, StageText};
 use crate::menu::Screen;
+use crate::menu_layout::{within, MenuLayout};
 
 const TABS: [&str; 4] = ["Equipment", "Inventory", "Skills", "Options"];
 /// The Options column: the game's rows this recreation has (the first four open the Options
@@ -221,6 +229,28 @@ pub(crate) fn text(t: &str, px: f32, color: Color, font: &Option<Handle<Font>>) 
     )
 }
 
+/// A text at the height of a menu-movie field (a share of the stage's height, as the HUD's).
+pub(crate) fn stage_text(t: &str, field: &StageText, color: Color, font: &Option<Handle<Font>>) -> (Text, TextFont, TextColor, TextShadow) {
+    let mut x = text(t, 0.0, color, font);
+    x.1.font_size = bevy::text::FontSize::Vh(field.vh());
+    x
+}
+
+/// A node at stage rectangle `inner`, as a child of a node at `outer`.
+pub(crate) fn inside(outer: &StageRect, inner: &StageRect) -> Node {
+    let (l, t, w, h) = within(outer, inner);
+    abs(l, t, w, h)
+}
+
+/// A text box over field `f` (a child of `outer`'s node, or of the root with `outer` the stage),
+/// its text aligned as `justify` (the movie's field alignment).
+pub(crate) fn field_box(outer: &StageRect, f: &StageRect, justify: JustifyContent) -> Node {
+    Node { justify_content: justify, align_items: AlignItems::Center, ..inside(outer, f) }
+}
+
+/// The movie's stage (the root's box).
+const STAGE: StageRect = StageRect::new(0.0, 0.0, crate::hud_layout::STAGE_W, crate::hud_layout::STAGE_H);
+
 /// A sprite stretched over its box (the plates and brushes are laid out to the captures' boxes).
 pub(crate) fn image(assets: &AssetServer, file: Option<String>) -> ImageNode {
     let mut i = file.map_or_else(ImageNode::default, |f| ImageNode::new(assets.load(crate::paths::asset(f))));
@@ -273,171 +303,201 @@ pub(crate) fn keep_visible(top: usize, index: usize, n: usize) -> usize {
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn list_screen(root: &mut ChildSpawnerCommands, assets: &AssetServer, font: &Option<Handle<Font>>, cats: &[(&str, &str)], cat: usize, rows: &[Row], index: usize, top: usize, detail: Option<&Detail>) {
+    let lay = MenuLayout::get();
     if let Some((name, _)) = cats.get(cat) {
-        root.spawn(abs(9.7, 14.0, 30.0, 4.0)).with_children(|c| {
-            c.spawn(text(name, 17.0, TEXT, font));
+        root.spawn((lay.cat_bar.node(), image(assets, sprite("sb_in_game/MENU_Caption_02"))));
+        root.spawn(field_box(&STAGE, &lay.cat_name.rect, JustifyContent::FlexStart)).with_children(|c| {
+            c.spawn(stage_text(name, &lay.cat_name, TEXT, font));
         });
     }
     if !cats.is_empty() {
-        root.spawn((abs(5.4, 19.2, 1.4, 4.4), image(assets, sprite("sb_in_game/MENU_Arrow"))));
-        root.spawn((abs(7.4, 19.8, 1.6, 3.2), image(assets, sprite("sb_keytop/KG_Key_C"))));
-        for (i, (_, icon)) in cats.iter().enumerate() {
-            let l = 10.0 + i as f32 * 4.85;
+        root.spawn((lay.cat_arrow.node(), image(assets, sprite("sb_in_game/MENU_Arrow"))));
+        root.spawn((key_top(&lay.cat_key, &lay.cat_arrow, false), image(assets, sprite("sb_keytop/KG_Key_C"))));
+        for (i, (_, icon)) in cats.iter().enumerate().take(4) {
             if i == cat {
-                root.spawn((abs(l - 0.35, 17.7, 3.9, 7.2), image(assets, sprite("sb_in_game/MENU_Cursor_TB")).with_color(ORANGE)));
+                root.spawn((lay.cat_cursors[i].node(), image(assets, sprite("sb_in_game/MENU_Cursor_TB")).with_color(ORANGE)));
             }
-            root.spawn((crate::menu::ui_button(), abs(l, 18.3, 3.2, 6.0), image(assets, sprite(&format!("sb_in_game/{icon}"))), CatButton(i)));
+            root.spawn((crate::menu::ui_button(), lay.cat_icons[i].node(), image(assets, sprite(&format!("sb_in_game/{icon}"))), CatButton(i)));
         }
-        let end = 10.0 + cats.len() as f32 * 4.85;
-        root.spawn((abs(end, 19.8, 1.6, 3.2), image(assets, sprite("sb_keytop/KG_Key_V"))));
+        let (arrow, key) = lay.cat_arrow_right(cats.len());
+        root.spawn((key_top(&key, &arrow, true), image(assets, sprite("sb_keytop/KG_Key_V"))));
         let mut right = image(assets, sprite("sb_in_game/MENU_Arrow"));
         right.flip_x = true;
-        root.spawn((abs(end + 2.1, 19.2, 1.4, 4.4), right));
+        root.spawn((arrow.node(), right));
+        root.spawn((lay.cat_rule.node(), image(assets, sprite("sb_in_game/MENU_ME_Line"))));
     }
     let start = keep_visible(top, index, rows.len());
+    let r0 = lay.row;
     for (k, (i, row)) in rows.iter().enumerate().skip(start).take(ROWS).enumerate() {
         let sel = i == index;
-        let t = 26.6 + k as f32 * 8.3;
-        root.spawn((crate::menu::ui_button(), abs(7.4, t, 4.2, 7.4), image(assets, sprite("sb_in_game/MENU_IconBase_02")), RowButton(i))).with_children(|b| {
-            b.spawn((Node { position_type: PositionType::Absolute, left: Val::Percent(6.0), top: Val::Percent(6.0), width: Val::Percent(88.0), height: Val::Percent(88.0), ..default() }, image(assets, row.icon.clone())));
-            if row.equipped {
-                b.spawn((Node { position_type: PositionType::Absolute, left: Val::Percent(-6.0), top: Val::Percent(-6.0), width: Val::Percent(34.0), height: Val::Percent(34.0), ..default() }, image(assets, sprite("sb_in_game/MENU_Equipped"))));
+        let at = |part: StageRect| lay.in_row(part, k);
+        let plate = at(r0.plate);
+        root.spawn((crate::menu::ui_button(), plate.node(), image(assets, atlas_art("MENU_ItemBase_09")), RowButton(i))).with_children(|b| {
+            if sel {
+                b.spawn((inside(&plate, &at(r0.cursor)), image(assets, sprite("sb_in_game/MENU_Cursor_03"))));
             }
-            if let Some(n) = &row.count {
-                b.spawn(Node { position_type: PositionType::Absolute, right: Val::Percent(4.0), bottom: Val::Percent(0.0), ..default() }).with_children(|c| {
-                    c.spawn(text(n, 13.0, Color::WHITE, font));
+            b.spawn(field_box(&plate, &at(r0.name.rect), JustifyContent::FlexStart)).with_children(|c| {
+                c.spawn(stage_text(&row.name, &r0.name, if sel { Color::WHITE } else { TEXT }, font));
+            });
+            if let Some(v) = &row.value {
+                // A price has the coin; a word ("Owned") stands alone, dimmed.
+                let price = v.parse::<u32>().is_ok();
+                let end = StageRect::new(at(r0.name.rect).x1, plate.y0, plate.x1 - plate.w() * 0.04, plate.y1);
+                b.spawn(Node { column_gap: Val::Percent(1.5), ..field_box(&plate, &end, JustifyContent::FlexEnd) }).with_children(|r| {
+                    if price {
+                        r.spawn((Node { height: Val::Percent(50.0), aspect_ratio: Some(1.0), ..default() }, image(assets, sprite("sb_fe/MENU_Money"))));
+                    }
+                    r.spawn(stage_text(v, &r0.name, if price { TEXT } else { DIM }, font));
                 });
             }
         });
-        let plate = if sel { "sb_in_game/MENU_Cursor_03" } else { "sb_in_game/MENU_ItemBase_02" };
-        root.spawn((crate::menu::ui_button(), abs(12.3, t + 0.6, 36.6, 6.2), image(assets, sprite(plate)), RowButton(i))).with_children(|b| {
-            b.spawn(Node { padding: UiRect::axes(Val::Percent(4.5), Val::Px(0.0)), justify_content: JustifyContent::SpaceBetween, ..fill_row() }).with_children(|c| {
-                c.spawn(text(&row.name, 17.0, if sel { Color::WHITE } else { TEXT }, font));
-                if let Some(v) = &row.value {
-                    c.spawn(Node { column_gap: Val::Px(14.0), align_items: AlignItems::Center, margin: UiRect::right(Val::Percent(4.0)), ..default() }).with_children(|r| {
-                        // A price has the coin; a word ("Owned") stands alone, dimmed.
-                        let price = v.parse::<u32>().is_ok();
-                        if price {
-                            r.spawn((Node { height: Val::Px(18.0), width: Val::Px(18.0), ..default() }, image(assets, sprite("sb_fe/MENU_Money"))));
-                        }
-                        r.spawn(text(v, 16.0, if price { TEXT } else { DIM }, font));
-                    });
-                }
-            });
+        let bx = at(r0.icon_box);
+        root.spawn((crate::menu::ui_button(), bx.node(), image(assets, atlas_art("MENU_Item_Top")), RowButton(i))).with_children(|b| {
+            b.spawn((inside(&bx, &at(r0.icon)), image(assets, row.icon.clone())));
+            if row.equipped {
+                b.spawn((inside(&bx, &at(r0.equipped)), image(assets, sprite("sb_in_game/MENU_Equipped"))));
+            }
+            if let Some(n) = &row.count {
+                b.spawn(field_box(&bx, &at(r0.stock.rect), JustifyContent::FlexEnd)).with_children(|c| {
+                    c.spawn(stage_text(n, &r0.stock, Color::WHITE, font));
+                });
+            }
         });
     }
     // The scroll bar (its thumb the shown share of the list).
     if rows.len() > ROWS {
-        root.spawn((abs(50.0, 27.5, 0.9, 47.5), image(assets, sprite("sb_in_game/MENU_Scroll_Base"))));
+        let tr = lay.scroll_track;
+        root.spawn((tr.node(), image(assets, sprite("sb_in_game/MENU_Scroll_Base"))));
         let share = ROWS as f32 / rows.len() as f32;
-        root.spawn((abs(50.17, 27.5 + 47.5 * start as f32 / rows.len() as f32, 0.55, 47.5 * share), image(assets, sprite("sb_in_game/MENU_Scroll_Bar"))));
+        let y0 = tr.y0 + tr.h() * start as f32 / rows.len() as f32;
+        root.spawn((StageRect::new(lay.scroll_bar.x0, y0, lay.scroll_bar.x1, y0 + tr.h() * share).node(), image(assets, sprite("sb_in_game/MENU_Scroll_Bar"))));
     }
     if let Some(d) = detail {
         parchment(root, assets, font, d);
     }
 }
 
-/// The parchment on the right: the name on its black bar, the big icon (items) or the story art
-/// (skills), the stat lines on ink strokes, the text over faint rules.
+/// A key-top in an arrow's key field: as tall as the arrow, at the field's end by the arrow.
+fn key_top(field: &StageRect, arrow: &StageRect, right: bool) -> Node {
+    let h = arrow.h() * 0.75;
+    let w = h * 1.5;
+    let y0 = arrow.cy() - h / 2.0;
+    let x0 = if right { field.x1 - (arrow.w() + w) - 4.0 } else { arrow.x1 + 4.0 };
+    let x0 = if right { x0.max(field.x0) } else { x0 };
+    StageRect::new(x0, y0, x0 + w, y0 + h).node()
+}
+
+/// The parchment on the right (the movie's ItemText_0): MENU_ItemDetails, the name on its brush
+/// bar, the icon in its box (items) or the story art (skills), the stat lines, the text over the
+/// ruled lines.
 pub(crate) fn parchment(root: &mut ChildSpawnerCommands, assets: &AssetServer, font: &Option<Handle<Font>>, d: &Detail) {
-    root.spawn((abs(55.5, 14.4, 38.0, 62.3), image(assets, sprite("sb_in_game/MENU_WP_Base"))));
-    root.spawn((abs(56.5, 15.6, 36.0, 4.4), image(assets, sprite("sb_in_game/MENU_ItemBase_08")).with_color(Color::srgb(0.25, 0.25, 0.25)))).with_children(|b| {
-        b.spawn(Node { justify_content: JustifyContent::Center, ..fill_row() }).with_children(|c| {
-            c.spawn(text(&d.name, 17.0, Color::WHITE, font));
-        });
+    let lay = &MenuLayout::get().details;
+    root.spawn((lay.base.node(), image(assets, atlas_art("MENU_ItemDetails"))));
+    root.spawn((lay.name_bar.node(), image(assets, sprite("sb_in_game/MENU_Caption_02"))));
+    root.spawn(field_box(&STAGE, &lay.name.rect, JustifyContent::Center)).with_children(|c| {
+        c.spawn(stage_text(&d.name, &lay.name, Color::WHITE, font));
     });
-    let mut y = 22.0;
+    let mut y = lay.stat.y0;
     if let Some(art) = &d.art {
-        root.spawn((abs(61.0, 20.6, 27.0, 16.5), ImageNode::new(assets.load(crate::paths::asset(art.clone())))));
-        y = 38.0;
+        // gap: the skill art's place is not in ItemText_0: under the name bar, as captured.
+        let a = StageRect::new(1171.0, lay.name_bar.y1 + 3.0, 1690.0, lay.name_bar.y1 + 181.0);
+        root.spawn((a.node(), ImageNode::new(assets.load(crate::paths::asset(art.clone())))));
+        y = a.y1 + 8.0;
     } else if d.icon.is_some() {
-        root.spawn((abs(81.3, 20.8, 9.4, 16.2), image(assets, sprite("sb_in_game/MENU_IconBase_01")))).with_children(|b| {
-            b.spawn((Node { position_type: PositionType::Absolute, left: Val::Percent(8.0), top: Val::Percent(8.0), width: Val::Percent(84.0), height: Val::Percent(84.0), ..default() }, image(assets, d.icon.clone())));
+        root.spawn((lay.icon_box.node(), image(assets, atlas_art("MENU_Item_Top")))).with_children(|b| {
+            b.spawn((inside(&lay.icon_box, &lay.icon), image(assets, d.icon.clone())));
         });
-        y = 30.0;
     }
+    let st = lay.stat_text;
     for (label, value) in &d.stats {
-        root.spawn((abs(57.0, y, 22.5, 3.6), image(assets, sprite("sb_in_game/MENU_ItemBase_08")).with_color(Color::srgba(0.5, 0.5, 0.5, 0.9)))).with_children(|b| {
-            b.spawn(Node { justify_content: JustifyContent::SpaceBetween, padding: UiRect::axes(Val::Percent(4.0), Val::Px(0.0)), ..fill_row() }).with_children(|c| {
-                c.spawn(text(label, 15.5, TEXT, font));
-                c.spawn((Node { margin: UiRect::right(Val::Percent(12.0)), ..default() },)).with_children(|v| {
-                    v.spawn(text(value, 15.5, TEXT, font));
-                });
+        let line = StageRect::new(lay.stat.x0, y, lay.stat.x1, y + lay.stat.h());
+        root.spawn((line.node(), image(assets, sprite("sb_in_game/MENU_ItemBase_08")).with_color(Color::srgba(0.5, 0.5, 0.5, 0.9)))).with_children(|b| {
+            let pad = StageRect::new(st.rect.x0, line.y0, line.x1 - (st.rect.x0 - line.x0) * 3.0, line.y1);
+            b.spawn(Node { justify_content: JustifyContent::SpaceBetween, ..field_box(&line, &pad, JustifyContent::SpaceBetween) }).with_children(|c| {
+                c.spawn(stage_text(label, &st, TEXT, font));
+                c.spawn(stage_text(value, &st, TEXT, font));
             });
         });
-        y += 4.4;
+        y += lay.stat_pitch;
     }
-    y += 1.0;
-    // Faint rules under the text lines (the game's ruled parchment).
-    let mut r = y + 3.2;
-    while r < 75.5 {
-        root.spawn((abs(57.3, r, 34.5, 0.15), BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.18))));
-        r += 3.2;
+    // The ruled lines under the description, then the text over them.
+    let mut r = lay.line.y0;
+    while r <= lay.line_last + 0.5 {
+        if r > y {
+            root.spawn((StageRect::new(lay.line.x0, r, lay.line.x1, r + lay.line.h()).node(), image(assets, sprite("sb_in_game/MENU_ME_Line"))));
+        }
+        r += lay.line_pitch;
     }
-    root.spawn(abs(57.6, y, 34.0, 75.0 - y)).with_children(|c| {
-        c.spawn(text(&d.info, 15.5, TEXT, font));
+    let top = lay.desc.rect.y0.max(y);
+    root.spawn(StageRect::new(lay.desc.rect.x0, top, lay.desc.rect.x1, lay.desc.rect.y1.max(top + 1.0)).node()).with_children(|c| {
+        c.spawn(stage_text(&d.info, &lay.desc, TEXT, font));
     });
 }
 
-/// The status bar along the bottom (all but Options): resurrection nodes over the Vitality bar,
-/// Unseen Aid, Vitality / Attack Power, the skill level and its gauge, Spirit Emblems and Sen.
-/// gap: attribute levels, Unseen Aid and skill experience are not modelled: Wolf's start values.
+/// The status bar along the bottom (all but Options), on the movie's five black plates
+/// (PlayerStatus): resurrection nodes over the Vitality bar, Unseen Aid, Vitality / Attack Power,
+/// the skill level and its gauge, Spirit Emblems and Sen.
+/// gap: attribute levels, Unseen Aid and skill experience are not modelled: Wolf's start values;
+/// the plates' contents are placed inside them by eye.
 pub(crate) fn status_bar(root: &mut ChildSpawnerCommands, assets: &AssetServer, font: &Option<Handle<Font>>, config: &crate::config::GameConfig, tables: &Tables, texts: &ItemTexts, wolf: Option<(f32, f32)>) {
-    let plate = Color::srgba(0.06, 0.06, 0.06, 0.78);
-    let (t, h) = (79.2, 8.8);
+    let lay = MenuLayout::get();
+    let st = lay.status_text;
+    let small = StageText { px: st.px * 0.85, ..st };
     let (hp, hp_max) = wolf.unwrap_or((0.0, 1.0));
+    let plate = |i: usize| (lay.status[i].node(), image(assets, sprite("sb_in_game/MENU_BlackPlate")));
+    root.spawn((lay.status_rule.node(), image(assets, sprite("sb_in_game/MENU_Base_00_FUTA"))));
     // Resurrection and Vitality.
-    root.spawn((abs(7.1, t, 19.1, h), BackgroundColor(plate))).with_children(|b| {
+    root.spawn(plate(0)).with_children(|b| {
         for k in 0..config.player.resurrections.max(1) {
             let lit = k < config.player.resurrections;
-            b.spawn((Node { position_type: PositionType::Absolute, left: Val::Px(14.0 + k as f32 * 22.0), top: Val::Px(6.0), width: Val::Px(18.0), height: Val::Px(18.0), ..default() }, image(assets, sprite("sb_fe/MENU_Revive_Gauge")).with_color(if lit { Color::WHITE } else { Color::srgba(0.4, 0.4, 0.4, 0.6) })));
+            b.spawn((abs(4.0 + k as f32 * 6.5, 12.0, 5.0, 16.5), image(assets, sprite("sb_fe/MENU_Revive_Gauge")).with_color(if lit { Color::WHITE } else { Color::srgba(0.4, 0.4, 0.4, 0.6) })));
         }
         b.spawn((abs(5.0, 50.0, 90.0, 9.0), BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.7))));
         b.spawn((abs(5.0, 50.0, 90.0 * (hp / hp_max.max(1.0)).clamp(0.0, 1.0), 9.0), BackgroundColor(Color::srgb(0.62, 0.17, 0.12))));
     });
     // Unseen Aid (gap: no Dragonrot; the game's base 30 %).
-    root.spawn((abs(27.1, t, 15.2, h), BackgroundColor(plate))).with_children(|b| {
+    root.spawn(plate(1)).with_children(|b| {
         b.spawn(Node { flex_direction: FlexDirection::Column, justify_content: JustifyContent::Center, padding: UiRect::left(Val::Percent(30.0)), width: Val::Percent(100.0), height: Val::Percent(100.0), ..default() }).with_children(|c| {
-            c.spawn(text("Unseen Aid", 16.5, TEXT, font));
-            c.spawn(text("30%", 16.5, TEXT, font));
+            c.spawn(stage_text("Unseen Aid", &st, TEXT, font));
+            c.spawn(stage_text("30%", &st, TEXT, font));
         });
     });
     // Vitality / Attack Power.
-    root.spawn((abs(43.4, t, 15.2, h), BackgroundColor(plate))).with_children(|b| {
-        b.spawn(Node { flex_direction: FlexDirection::Column, justify_content: JustifyContent::Center, row_gap: Val::Px(2.0), width: Val::Percent(100.0), height: Val::Percent(100.0), padding: UiRect::axes(Val::Percent(4.0), Val::Px(0.0)), ..default() }).with_children(|c| {
+    root.spawn(plate(2)).with_children(|b| {
+        b.spawn(Node { flex_direction: FlexDirection::Column, justify_content: JustifyContent::Center, row_gap: Val::Percent(2.0), width: Val::Percent(100.0), height: Val::Percent(100.0), padding: UiRect::axes(Val::Percent(4.0), Val::Px(0.0)), ..default() }).with_children(|c| {
             for (icon, label, value) in [("MENU_ST_Vitality", "Vitality", format!("{:.0}", config.posture.player_level)), ("MENU_ST_Offensive", "Attack Power", config.player.attack_power.to_string())] {
-                c.spawn(Node { align_items: AlignItems::Center, column_gap: Val::Px(6.0), ..default() }).with_children(|r| {
-                    r.spawn((Node { width: Val::Px(20.0), height: Val::Px(20.0), ..default() }, image(assets, sprite(&format!("sb_in_game/{icon}")))));
+                c.spawn(Node { align_items: AlignItems::Center, column_gap: Val::Percent(2.0), ..default() }).with_children(|r| {
+                    r.spawn((Node { width: Val::Vh(2.6), height: Val::Vh(2.6), ..default() }, image(assets, sprite(&format!("sb_in_game/{icon}")))));
                     r.spawn((Node { flex_grow: 1.0, ..default() },)).with_children(|n| {
-                        n.spawn(text(label, 16.0, TEXT, font));
+                        n.spawn(stage_text(label, &st, TEXT, font));
                     });
-                    r.spawn(text(&value, 16.0, TEXT, font));
+                    r.spawn(stage_text(&value, &st, TEXT, font));
                 });
             }
         });
     });
     // The skill level and the gauge to the next point.
-    root.spawn((abs(59.5, t, 20.0, h), BackgroundColor(plate))).with_children(|b| {
+    root.spawn(plate(3)).with_children(|b| {
         b.spawn((abs(2.0, 12.0, 11.0, 40.0), image(assets, sprite("sb_fe/MENU_Skill_Lv")).with_color(Color::srgb(0.15, 0.15, 0.15)))).with_children(|d| {
             d.spawn(Node { justify_content: JustifyContent::Center, ..fill_row() }).with_children(|c| {
-                c.spawn(text(&config.player.skill_points.to_string(), 14.0, Color::srgb(0.55, 0.85, 0.9), font));
+                c.spawn(stage_text(&config.player.skill_points.to_string(), &small, Color::srgb(0.55, 0.85, 0.9), font));
             });
         });
         b.spawn((abs(14.0, 25.0, 60.0, 12.0), image(assets, sprite("sb_in_game/MENU_GaugeFrame"))));
         b.spawn((Node { position_type: PositionType::Absolute, right: Val::Percent(5.0), bottom: Val::Percent(14.0), ..default() },)).with_children(|c| {
-            c.spawn(text("to next Skill Point  -", 14.0, Color::srgb(0.55, 0.85, 0.9), font));
+            c.spawn(stage_text("to next Skill Point  -", &small, Color::srgb(0.55, 0.85, 0.9), font));
         });
     });
     // Spirit Emblems and Sen.
     let emblem = texts.goods_id("Spirit Emblem").and_then(|id| tables.goods_icon.get(&id)).and_then(|i| any_icon(*i));
-    root.spawn((abs(80.5, t, 12.8, h), BackgroundColor(plate))).with_children(|b| {
-        b.spawn(Node { flex_direction: FlexDirection::Column, justify_content: JustifyContent::Center, row_gap: Val::Px(2.0), width: Val::Percent(100.0), height: Val::Percent(100.0), padding: UiRect::axes(Val::Percent(4.0), Val::Px(0.0)), ..default() }).with_children(|c| {
+    root.spawn(plate(4)).with_children(|b| {
+        b.spawn(Node { flex_direction: FlexDirection::Column, justify_content: JustifyContent::Center, row_gap: Val::Percent(2.0), width: Val::Percent(100.0), height: Val::Percent(100.0), padding: UiRect::axes(Val::Percent(4.0), Val::Px(0.0)), ..default() }).with_children(|c| {
             let n = config.player.spirit_emblems;
             for (icon, value) in [(emblem, format!("{n}/{n}")), (sprite("sb_fe/MENU_Money"), config.player.sen.to_string())] {
-                c.spawn(Node { align_items: AlignItems::Center, column_gap: Val::Px(8.0), ..default() }).with_children(|r| {
-                    r.spawn((Node { width: Val::Px(22.0), height: Val::Px(22.0), ..default() }, image(assets, icon)));
+                c.spawn(Node { align_items: AlignItems::Center, column_gap: Val::Percent(3.0), ..default() }).with_children(|r| {
+                    r.spawn((Node { width: Val::Vh(3.0), height: Val::Vh(3.0), ..default() }, image(assets, icon)));
                     r.spawn((Node { flex_grow: 1.0, justify_content: JustifyContent::FlexEnd, ..default() },)).with_children(|n| {
-                        n.spawn(text(&value, 16.0, TEXT, font));
+                        n.spawn(stage_text(&value, &st, TEXT, font));
                     });
                 });
             }
@@ -626,18 +686,17 @@ pub(crate) fn title_bar(root: &mut ChildSpawnerCommands, assets: &AssetServer, f
 
 #[allow(clippy::too_many_arguments)]
 fn build(commands: &mut Commands, assets: &AssetServer, menu: &GameMenu, font: &Option<Handle<Font>>, config: &crate::config::GameConfig, combat: &crate::data::Combat, texts: &ItemTexts, tables: &Tables, wolf: Option<(f32, f32)>) {
+    let lay = MenuLayout::get();
     if let Some(slot) = menu.pick {
         commands
             .spawn((Node { position_type: PositionType::Absolute, width: Val::Percent(100.0), height: Val::Percent(100.0), ..default() }, BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.55)), GlobalZIndex(110), GameMenuRoot))
             .with_children(|root| {
-                root.spawn((abs(0.0, 0.0, 100.0, 100.0), image(assets, sprite("sb_in_game/MENU_Base_00"))));
+                root.spawn((lay.base.node(), image(assets, sprite("sb_in_game/MENU_Base_00"))));
                 title_bar(root, assets, font, "Equipped Items");
                 let list = equip_rows(slot, config, combat, texts, tables);
                 let rows: Vec<Row> = list.iter().map(|(r, _)| r.clone()).collect();
                 list_screen(root, assets, font, &[], 0, &rows, menu.index, menu.top, list.get(menu.index).map(|(_, d)| d));
-                root.spawn(abs(5.3, 91.6, 50.0, 4.0)).with_children(|c| {
-                    c.spawn(text(if rows.is_empty() { "Nothing to equip here yet." } else { "Choose item to equip." }, 16.0, DIM, font));
-                });
+                help_line(root, font, if rows.is_empty() { "Nothing to equip here yet." } else { "Choose item to equip." });
                 key_guide(root, assets, font, &[("sb_keytop/KG_Key_Enter", ":Equip/Remove  "), ("sb_keytop/KG_Key_Esc", ":Back")]);
             });
         return;
@@ -650,25 +709,29 @@ fn build(commands: &mut Commands, assets: &AssetServer, menu: &GameMenu, font: &
             GameMenuRoot,
         ))
         .with_children(|root| {
-            root.spawn((abs(0.0, 0.0, 100.0, 100.0), image(assets, sprite("sb_in_game/MENU_Base_00"))));
-            // Tabs, with the switch keys and the brush arrows at either end.
-            root.spawn((abs(5.3, 6.0, 1.3, 4.6), image(assets, sprite("sb_in_game/MENU_Arrow"))));
-            root.spawn((abs(7.3, 6.4, 1.8, 3.4), image(assets, sprite("sb_keytop/KG_Key_Z"))));
-            root.spawn((abs(90.0, 6.4, 1.8, 3.4), image(assets, sprite("sb_keytop/KG_Key_X"))));
+            root.spawn((lay.base.node(), image(assets, sprite("sb_in_game/MENU_Base_00"))));
+            // Tabs (the movie's TabList), with the switch keys and the brush arrows either end.
+            root.spawn((lay.tab_arrow.node(), image(assets, sprite("sb_in_game/MENU_Arrow"))));
+            root.spawn((key_top(&lay.tab_key, &lay.tab_arrow, false), image(assets, sprite("sb_keytop/KG_Key_Z"))));
+            let (arrow, key) = lay.tab_arrow_right();
+            root.spawn((key_top(&key, &arrow, true), image(assets, sprite("sb_keytop/KG_Key_X"))));
             let mut right = image(assets, sprite("sb_in_game/MENU_Arrow"));
             right.flip_x = true;
-            root.spawn((abs(92.4, 6.0, 1.3, 4.6), right));
+            root.spawn((arrow.node(), right));
             for (i, name) in TABS.iter().enumerate() {
                 let open = i == menu.tab;
-                let brush = if open { "sb_in_game/MENU_Cursor_01" } else { "sb_in_game/MENU_Caption_01" };
-                root.spawn((crate::menu::ui_button(), abs(11.5 + i as f32 * 19.0, 4.2, 18.0, 9.0), image(assets, sprite(brush)), TabButton(i))).with_children(|t| {
-                    t.spawn(Node { justify_content: JustifyContent::Center, ..fill_row() }).with_children(|c| {
-                        c.spawn(text(name, 18.0, if open { Color::WHITE } else { TEXT }, font));
+                let (brush, at) = if open { ("sb_in_game/MENU_Cursor_01", lay.tab_cursors[i]) } else { ("sb_in_game/MENU_Caption_01", lay.tabs[i]) };
+                // The label sits where the first tab's is, moved with its tab.
+                let dx = lay.tabs[i].x0 - lay.tabs[0].x0;
+                let label = StageRect::new(lay.tab_text.rect.x0 + dx, lay.tab_text.rect.y0, lay.tab_text.rect.x1 + dx, lay.tab_text.rect.y1);
+                root.spawn((crate::menu::ui_button(), at.node(), image(assets, sprite(brush)), TabButton(i))).with_children(|t| {
+                    t.spawn(field_box(&at, &label, JustifyContent::Center)).with_children(|c| {
+                        c.spawn(stage_text(name, &lay.tab_text, if open { Color::WHITE } else { TEXT }, font));
                     });
                 });
             }
             // The rule under the tabs.
-            root.spawn((abs(7.0, 13.6, 86.0, 0.25), BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.35))));
+            root.spawn((lay.tab_rule.node(), image(assets, sprite("sb_in_game/MENU_Base_00_FUTA"))));
             match menu.tab {
                 0 => equipment(root, assets, menu, font, config, tables, texts),
                 1 | 2 => {
@@ -679,12 +742,19 @@ fn build(commands: &mut Commands, assets: &AssetServer, menu: &GameMenu, font: &
                     list_screen(root, assets, font, cats, menu.cat[k], &rows, menu.index, menu.top, detail);
                 }
                 _ => {
+                    // The movie's Options column (State_2): plates MENU_ItemBase_01, the cursor
+                    // MENU_Cursor_03 over the chosen one.
+                    let ot = lay.option_text;
                     for (i, label) in OPTION_ITEMS.iter().enumerate() {
                         let sel = i == menu.index;
-                        let plate = if sel { "sb_in_game/MENU_Cursor_01" } else { "sb_in_game/MENU_Caption_01" };
-                        root.spawn((crate::menu::ui_button(), abs(6.8, 18.0 + i as f32 * 7.55, 22.2, 6.4), image(assets, sprite(plate)), RowButton(i))).with_children(|b| {
-                            b.spawn(Node { justify_content: JustifyContent::Center, ..fill_row() }).with_children(|c| {
-                                c.spawn(text(label, 17.0, if sel { Color::WHITE } else { TEXT }, font));
+                        let at = lay.options[i.min(lay.options.len() - 1)];
+                        let text_at = StageRect::new(ot.rect.x0, at.y0 + (ot.rect.y0 - lay.options[0].y0), ot.rect.x1, at.y0 + (ot.rect.y1 - lay.options[0].y0));
+                        root.spawn((crate::menu::ui_button(), at.node(), image(assets, sprite("sb_in_game/MENU_ItemBase_01")), RowButton(i))).with_children(|b| {
+                            if sel {
+                                b.spawn((Node { position_type: PositionType::Absolute, width: Val::Percent(100.0), height: Val::Percent(100.0), ..default() }, image(assets, sprite("sb_in_game/MENU_Cursor_03"))));
+                            }
+                            b.spawn(field_box(&at, &text_at, JustifyContent::Center)).with_children(|c| {
+                                c.spawn(stage_text(label, &ot, if sel { Color::WHITE } else { TEXT }, font));
                             });
                         });
                     }
@@ -700,58 +770,59 @@ fn build(commands: &mut Commands, assets: &AssetServer, menu: &GameMenu, font: &
                 2 => "View unlocked Skills",
                 _ => "Check and make changes to various settings.",
             };
-            root.spawn(abs(5.3, 91.6, 50.0, 4.0)).with_children(|c| {
-                c.spawn(text(help, 16.0, DIM, font));
-            });
+            help_line(root, font, help);
             key_guide(root, assets, font, &[("sb_keytop/KG_Key_Enter", ":OK  "), ("sb_keytop/KG_Key_Esc", ":Close")]);
         });
 }
 
-/// The keys at the bottom right: (key-top sprite, label).
+/// The help line at the bottom left (the movie's StatusBar/LineHelp).
+pub(crate) fn help_line(root: &mut ChildSpawnerCommands, font: &Option<Handle<Font>>, help: &str) {
+    let f = MenuLayout::get().help;
+    root.spawn(field_box(&STAGE, &f.rect, JustifyContent::FlexStart)).with_children(|c| {
+        c.spawn(stage_text(help, &f, DIM, font));
+    });
+}
+
+/// The keys at the bottom right (StatusBar/KeyGuide, right-aligned): (key-top sprite, label).
 pub(crate) fn key_guide(root: &mut ChildSpawnerCommands, assets: &AssetServer, font: &Option<Handle<Font>>, keys: &[(&str, &str)]) {
-    root.spawn((Node { position_type: PositionType::Absolute, right: Val::Percent(5.3), top: Val::Percent(91.4), flex_direction: FlexDirection::Row, align_items: AlignItems::Center, column_gap: Val::Px(4.0), ..default() },)).with_children(|r| {
+    let f = MenuLayout::get().keys;
+    root.spawn(Node { column_gap: Val::Vh(0.4), ..field_box(&STAGE, &f.rect, JustifyContent::FlexEnd) }).with_children(|r| {
         for (key, label) in keys {
-            r.spawn((Node { height: Val::Px(20.0), width: Val::Px(30.0), ..default() }, image(assets, sprite(key))));
-            r.spawn(text(label, 16.0, DIM, font));
+            r.spawn((Node { height: Val::Vh(f.vh() * 0.9), aspect_ratio: Some(1.5), ..default() }, image(assets, sprite(key))));
+            r.spawn(stage_text(label, &f, DIM, font));
         }
     });
 }
 
 #[allow(clippy::too_many_arguments)]
 fn equipment(root: &mut ChildSpawnerCommands, assets: &AssetServer, menu: &GameMenu, font: &Option<Handle<Font>>, config: &crate::config::GameConfig, tables: &Tables, texts: &ItemTexts) {
+    let lay = MenuLayout::get();
     let all = slots(config);
-    // Section bars.
-    for (label, l, t) in [("Prosthetic Tools", 6.5, 16.5), ("Combat Arts", 38.5, 16.5), ("Quick Items", 6.5, 45.0), ("Ninjutsu", 38.5, 45.0)] {
-        root.spawn((abs(l, t, 17.0, 4.5), image(assets, sprite("sb_in_game/MENU_Caption_02")))).with_children(|b| {
-            b.spawn(Node { padding: UiRect::left(Val::Percent(6.0)), ..fill_row() }).with_children(|c| {
-                c.spawn(text(label, 17.0, TEXT, font));
+    // Section bars (MENU_Caption_02) with their labels.
+    for (i, label) in ["Prosthetic Tools", "Combat Arts", "Quick Items", "Ninjutsu"].iter().enumerate() {
+        let bar = lay.sections[i];
+        root.spawn((bar.node(), image(assets, sprite("sb_in_game/MENU_Caption_02")))).with_children(|b| {
+            b.spawn(field_box(&bar, &lay.section_text[i].rect, JustifyContent::FlexStart)).with_children(|c| {
+                c.spawn(stage_text(label, &lay.section_text[i], TEXT, font));
             });
         });
     }
-    // The slots: (index, left %, top %, size % of height).
-    let mut places: Vec<(usize, f32, f32, f32)> = Vec::new();
-    for i in 0..3 {
-        places.push((i, 7.0 + i as f32 * 10.2, 22.5, 15.0));
-    }
-    places.push((3, 39.5, 22.5, 15.0));
-    for i in 0..5 {
-        places.push((4 + i, 7.0 + i as f32 * 6.2, 51.0, 10.0));
-    }
-    places.push((9, 39.5, 51.0, 15.0));
-    for (i, l, t, size) in places {
-        let w = size * 9.0 / 16.0;
+    // The slots (the movie's grid_0 items): frames MENU_IconBase_02, the art's and the
+    // ninjutsu's MENU_ItemBase_Skill.
+    for (i, s) in lay.slots.iter().enumerate().take(all.len()) {
         let slot = &all[i];
-        root.spawn((crate::menu::ui_button(), abs(l, t, w, size), image(assets, sprite("sb_in_game/MENU_IconBase_02")), RowButton(i))).with_children(|s| {
-            // The cursor glows behind the item, not over it.
+        let frame = if i == 3 || i == 9 { atlas_art("MENU_ItemBase_Skill") } else { sprite("sb_in_game/MENU_IconBase_02") };
+        let b0 = s.base;
+        root.spawn((crate::menu::ui_button(), b0.node(), image(assets, frame), RowButton(i))).with_children(|b| {
             if i == menu.index {
-                s.spawn((Node { position_type: PositionType::Absolute, left: Val::Percent(-8.0), top: Val::Percent(-8.0), width: Val::Percent(116.0), height: Val::Percent(116.0), ..default() }, image(assets, sprite("sb_in_game/MENU_Cursor_TB")).with_color(ORANGE.with_alpha(0.55))));
+                b.spawn((inside(&b0, &s.cursor), image(assets, sprite("sb_in_game/MENU_Cursor_02"))));
             }
             if let Some(icon) = slot_icon(tables, slot) {
-                s.spawn((Node { position_type: PositionType::Absolute, left: Val::Percent(4.0), top: Val::Percent(4.0), width: Val::Percent(92.0), height: Val::Percent(92.0), ..default() }, ImageNode::new(assets.load(crate::paths::asset(icon)))));
+                b.spawn((inside(&b0, &s.icon), ImageNode::new(assets.load(crate::paths::asset(icon)))));
             }
             if let Slot::Goods(_, n) = slot {
-                s.spawn((Node { position_type: PositionType::Absolute, right: Val::Percent(6.0), bottom: Val::Percent(2.0), ..default() },)).with_children(|c| {
-                    c.spawn(text(&n.to_string(), 16.0, Color::WHITE, font));
+                b.spawn(field_box(&b0, &s.stock.rect, JustifyContent::FlexEnd)).with_children(|c| {
+                    c.spawn(stage_text(&n.to_string(), &s.stock, Color::WHITE, font));
                 });
             }
         });
@@ -943,6 +1014,43 @@ impl Plugin for GameMenuPlugin {
             .insert_resource(texts)
             .insert_resource(tables)
             .add_systems(PreUpdate, run_game_menu.after(crate::menu::MenuInput));
+    }
+}
+
+#[cfg(test)]
+mod layout_tests {
+    use super::*;
+
+    /// The menu's places from the menu movie fit game_menu's own order: the Equipment slots run
+    /// three tools in a row, then the art right of them, five quick items in a row under the tools
+    /// (smaller frames), the ninjutsu under the art, each slot's icon inside its frame; the list
+    /// shows ROWS rows of the movie, the Options column holds every option row, evenly pitched;
+    /// the status plates run left to right; the right-hand tab arrow ends inside the stage.
+    #[test]
+    fn the_in_game_menu_takes_its_places_from_the_menu_movie() {
+        let l = MenuLayout::get();
+        let s = &l.slots;
+        let n = slots(&crate::config::GameConfig::load().expect("config.toml")).len();
+        assert_eq!(n, s.len(), "one movie slot per menu slot");
+        assert!(s[0].base.x1 <= s[1].base.x0 && s[1].base.x1 <= s[2].base.x0 && s[2].base.x1 <= s[3].base.x0, "tools left to right, then the art");
+        assert!((s[0].base.y0 - s[2].base.y0).abs() < 1.0, "the tools in one row");
+        for k in 4..8 {
+            assert!(s[k].base.x1 <= s[k + 1].base.x0 + 1.0 && (s[k].base.y0 - s[4].base.y0).abs() < 1.0, "quick items in one row");
+        }
+        assert!(s[4].base.y0 > s[0].base.y1 && s[4].base.w() < s[0].base.w(), "quick items under the tools, smaller");
+        assert!(s[9].base.y0 > s[3].base.y1 && (s[9].base.x0 - s[3].base.x0).abs() < 5.0, "the ninjutsu under the art");
+        for x in s {
+            let (a, b, w, h) = within(&x.base, &x.icon);
+            assert!(a >= 0.0 && b >= 0.0 && a + w <= 100.5 && b + h <= 100.5, "icon inside its frame");
+        }
+        assert_eq!(l.rows.len(), ROWS, "the list's window is the movie's six rows");
+        assert!(OPTION_ITEMS.len() <= l.options.len(), "every option has a row");
+        let pitch = l.options[1].y0 - l.options[0].y0;
+        assert!(l.options.windows(2).all(|w| ((w[1].y0 - w[0].y0) - pitch).abs() < 1.0), "options evenly pitched");
+        assert!(l.status.windows(2).all(|w| w[0].x0 < w[1].x0), "status plates left to right");
+        let (arrow, _) = l.tab_arrow_right();
+        assert!(arrow.x0 > l.tabs[3].x1 && arrow.x1 < crate::hud_layout::STAGE_W, "the right arrow past the last tab, on the stage");
+        assert!(l.details.base.x0 > l.row.plate.x1, "the parchment right of the list");
     }
 }
 

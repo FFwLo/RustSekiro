@@ -57,6 +57,34 @@ so CI lays the HUD out the same without data. From the movie now (hud.rs):
 - Not looked at in a game window (the task forbids starting it): the placement is checked by the
   tests and the numbers only.
 
+## In-game menu (src/menu_layout.rs, game_menu.rs)
+
+The same reader's export of menu/02_200_mainmenu.gfx (extracted/hud/layout/02_200_mainmenu.json)
+lays out the Esc menu; `MenuLayout::get()` reads it once (defaults: the same numbers, kept equal
+by `the_menu_layout_defaults_are_the_main_menu_movie`). Stage px become % of the 16:9 stage, text
+heights FontSize::Vh (the movie's fields are 24 px; counts 21 / 40 px).
+
+| element | movie instance | art |
+|---|---|---|
+| tabs, open tab | `TabList/Item_0_i/Caption`, `/Cursor` | MENU_Caption_01, MENU_Cursor_01 |
+| tab arrow + key, rule | `TabList/LeftArrow`, `#1/#2` | MENU_Arrow, MENU_Base_00_FUTA |
+| Equipment sections | the Caption_02 under `State_0/WindowList/*Text` | MENU_Caption_02 |
+| Equipment slots (3 tools, art, 5 quick, ninjutsu) | `State_0/.../grid_0/ItemList/ItemList/Item_0_0,0_2,0_4,0_5,1_0..1_5` | MENU_IconBase_02, MENU_ItemBase_Skill, MENU_Cursor_02 |
+| list category name / icons / cursor / rule | `State_1/TabList/CategoryName`, `Item_0_k/Caption`, `/Cursor`, `#26` | MENU_Caption_02, MENU_TB_*, MENU_ME_Line |
+| list rows (6) | `State_1/grid_0/ItemList/ItemList/Item_r_0` (`#3` icon box, `#1` plate, `Cursor`, `Equipped`, `StockNum`, `Text_0`) | MENU_Item_Top, MENU_ItemBase_09, MENU_Cursor_03 |
+| scroll bar | `State_1/grid_0/ScrollBarV` | MENU_Scroll_Base / _Bar |
+| details | `State_1/ItemText/ItemText_0` (name bar, icon box, stat lines at 47.8 px, ruled lines at 33.6 px, Desc) | MENU_ItemDetails, MENU_Caption_02, MENU_Item_Top, MENU_ME_Line |
+| Options column (9 rows) | `State_2/ItemList/Item_i_0` | MENU_ItemBase_01, MENU_Cursor_03 |
+| status plates | `PlayerStatus/#20,#44,#34,#30,#1`, rule `#50` | MENU_BlackPlate, MENU_Base_00_FUTA |
+| help line, key guide | `StatusBar/LineHelp`, `StatusBar/KeyGuide` | text |
+
+Still by eye: the right-hand tab / category arrows (frame 1 has them beside the first; mirrored
+past the last here), the skill art's box, what sits inside the status plates, the scroll thumb's
+length, the Equipped Items title bar. Not done from the movies yet: the skill tree
+(03_206_skill.gfx), the Options settings screens (05_230_optionsetting.gfx), the Equipped Items
+picker's own movie (02_202_equipweaponselect.gfx; it uses the list screen) and the Sculptor's
+menus' help lines (idol.rs). Exported, unused: those three movies' layouts.
+
 ## Saves (src/save.rs)
 
 RSekiro's own file, `saves/<slot>.json` under the root (`SHINOBI_SAVE=<slot>`, default `slot0`,
