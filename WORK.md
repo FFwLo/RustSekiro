@@ -145,7 +145,7 @@ parts (C1a, C1b). Its proof level now is in `docs/kb/coverage.md` and on the wor
 | ID | Area | Needs | Who | Task | Notes |
 |----|------|-------|-----|------|-------|
 | B3 | any | | open | `cargo clippy` warnings: fix one module at a time, no behaviour change | one pull request per module |
-| B7 | any | | open | Build the map cache with `cargo run --release -p sr-extract` (crates/README.md; about 50 GB, kept outside git) and run `cargo test -p sekiro-game -p sekiro-sim` with `SEKIRO_CACHE` set: 34 tests read it and were not run after the 2026-11-04 trim. Make them skip without the cache so CI can run them | needs your own game |
+| B7 | any | | open | Build the map cache with `cargo run --release -p sr-extract` (crates/README.md; about 50 GB, kept outside git) and run `cargo test -p sekiro-game -p sekiro-sim` with `SEKIRO_CACHE` set: 34 tests read it and were not run after the 2026-11-04 trim. Make them skip cleanly without the cache, so a plain `cargo test` passes for everyone | needs your own game |
 | B8 | any | | open | `config.toml` keeps only player and sandbox settings: `buffer`, `regen_delay`, `hp_scales_regen` and `default_ratio_type` already are the exe's behaviour at their defaults, so fix them in code; `player_reach`, `enemy_reach` and `attack_arc` are only a fallback for tests without a model, so move them into the test code; mark `attack_range` and `cooldown_min/max` as the fallback AI's (enemies with no script). No behaviour change | the notes in `config.toml`; `combat.rs` reach fallback, `enemy.rs` fallback combos, `actor.rs` posture regen |
 
 ## Done

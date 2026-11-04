@@ -122,8 +122,8 @@ itself. Branch names say what they are: `work-<ID>-<slug>-<github>-<agent>`, nev
    An `emu` row (C or E) also passes `--emu "emu-cases <sekiro.exe> <out dir> [--snapshot <dir>] <names>"`, the command that
    made your cases; submit refuses an `emu` row whose diff has no generator in `tools/emu-cases/src/` or no
    `..._matches_the_exe` test (`--why "<reason>"` when the row truly has no emulator check).
-3. CI builds, runs the tests that need no game data, runs the guard over your diff, and fails the `claim` check
-   when someone else holds the row (or its whole row, or one of its parts). The owner reviews and merges; only
+3. CI runs the guard over your diff and fails the `claim` check when someone else holds the row (or its whole row, or one of its parts). It does not build: GitHub has no game data, so your `row.py check` result in the
+   pull request is the test, and the owner may run it again on their own copy. The owner reviews and merges; only
    the owner merges into `main`.
    An `emu` row's numbers come from one person's copy of the game, so they count as checked only after someone
    else runs `python tools/row.py verify <PR>`: it checks the pull request out, re-makes the cases from their
