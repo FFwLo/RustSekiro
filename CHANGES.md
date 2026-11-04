@@ -5,3 +5,4 @@
   items, per-boss checks, emulator checks of the copied sekiro-rs crates). Claims are comments on the "Work board
   claims" issue.
 - 2026-11-04 FFwLo/claude: E31 (deathblow window) and E32 (free camera swing) find the last gameplay stand-ins in `config.toml` in the exe; B8 leaves only player and sandbox settings there.
+- 2026-11-04 FFwLo/heron: B5 done. tools/t.ps1, a PowerShell twin of t.sh for contributors without bash (#4)
