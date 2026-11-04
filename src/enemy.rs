@@ -50,6 +50,9 @@ const AI_CANCEL_FLAGS: [i64; 5] = [23, 86, 79, 78, crate::ai::FLAG_ENDURE];
 pub const FLAG_AI_NOTIFY: i64 = 63;
 /// PC_ATTACK_DIST_STAND (ai_define): standing player attack reach as the AI sees it.
 const PC_ATTACK_DIST_STAND: f32 = 3.4;
+/// The break window [s] of a chr with no break clip (on_posture_break). gap: a stand-in (the old
+/// config `enemy.broken_time`), not the exe's; docs/kb/guard-deflect.md "Deathblow window".
+const BROKEN_FALLBACK: f32 = 4.0;
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub(crate) enum Mode {
@@ -791,10 +794,18 @@ impl Enemy {
         // ExecActiveTransition; frames 87-88 of 90, where every brkwin run left), else at
         // IsAnimEnd (env 339) for IdleTransition; Mode::Ai runs both.
         // An anim without a 932 break span (ThrowDef12100 / 13100, the break throw poses) stays
-        // open while it plays. gap: the exe gives those no break state at all (+0x7b).
+        // open while it plays (at least 0.5 s, as before E31). gap: the exe gives those no break
+        // state at all (+0x7b).
+        // A chr with no break anim at all (procedural PostureBroken, no clip): BROKEN_FALLBACK.
+        // gap: what the exe does with its posture break is not run. None of the 20 (c1000 c1001
+        // c1013 c1211 c1320 c1321 c1460 c5001 c5010 c5040 c5050 c5070 c5200 c5310 c5410 c7010
+        // c7021 c7200 c7210 c7300) has a 932 break span in any anim, so the exe's throwable state
+        // never reaches 103 / 108 on them, and 18 have no ThrowParam row at all; c5010's plunge
+        // rows (category 13) would pass in Sv1's fallback window, not in the exe.
         let window = match break_window_end(d, &a.anim, a.t) {
             Some(end) => end - a.t,
-            None => d.length(&a.anim) - a.t,
+            None if d.length(&a.anim) > 0.0 => (d.length(&a.anim) - a.t).max(0.5),
+            None => BROKEN_FALLBACK,
         };
         self.mode = Mode::Broken(window.max(0.0));
         a.move_vel = Vec3::ZERO;

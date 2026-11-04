@@ -326,11 +326,20 @@ frames FUN_140a4b570, post tasks) for 260 frames, with the AI off (the snapshot'
 
 Ported: on_posture_break opens Mode::Broken for exactly the anim's 932 break span (break_window_end:
 the 103 / 108 span ahead of the clip time); an anim without one (ThrowDef12100 / 13100, the break
-throw poses) stays open while it plays. The config stand-in `enemy.broken_time` (4 s) and the
-flag-86 / SpEffect-352 fallbacks are gone. gap: the exe gives an anim without a 932 break span no
-break state at all; chrs with no TrunkCollapse anim (c1000 c1001 c1013 c1211 c1320 c1321 c1460
-c5001 c5010 c5040 c5050 c5070 c5200 c5310 c5410 c7010 c7021 c7200 c7210 c7300) get a zero window in
-Sv1 (their procedural PostureBroken has no clip). The window's end is read from the TAE step as the
+throw poses) stays open while it plays (at least 0.5 s). The config stand-in `enemy.broken_time`
+and the flag-86 / SpEffect-352 fallbacks are gone. gap: the exe gives an anim without a 932 break
+span no break state at all.
+- The 20 chrs with no break anim (no TrunkCollapse / GuardBreak / AttackBoundEmptyStamina state,
+  and no TAE 932 103 / 108 in any of their anims): c1000 / c1001 (dummies), c1013 Hanbei, c1211,
+  c1320 / c1321 (carp samurai, Harunaga), c1460 (kites), c5001, c5010 Great Serpent, c5040, c5050
+  Nishikigoi, c5070, c5200 Divine Dragon, c5310 (tentacle), c5410 Isshin Ashina, c7010 Sculptor,
+  c7021, c7200 Kuro, c7210, c7300 Divine Child. Read from the data: the exe's throwable state can
+  never be 103 / 108 on them (it comes only from TAE 932), so a posture break opens no break
+  deathblow; 18 have no ThrowParam row at all, c5200's only row is the 250000 finisher (category 5,
+  its 104 window), c5010's are categories 6 / 12 (pass on its own 101) and 13 (plunge, needs 103).
+  gap: what their posture break does in the exe (their HKS fires W_TrunkCollapse* with no such
+  state) was not run; Sv1 keeps the old 4 s (enemy.rs BROKEN_FALLBACK) as their stun, in which
+  c5010's plunge rows would pass in Sv1 but not in the exe. The window's end is read from the TAE step as the
 exe dispatches it (tae_window: the update the span's end falls in still holds 103); Sv1 counts one
 frame more than the exe (152 vs 151) because its enemy tick reads the step before the frame's clip
 advance. The test checks the window (+-1 frame), that the exe's exit update lies in the clip's AI
