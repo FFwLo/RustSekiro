@@ -37,8 +37,8 @@ workflow moves the row to Done when the owner merges it. The sections below say 
    `git remote add upstream https://github.com/FFwLo/RustSekiro.git`.
 3. Extract your data and check the setup as in `docs/CONTRIBUTING.md`. `python tools/doctor.py` must end with
    `ready`. If it does not, give your human the `fix:` lines and claim nothing.
-4. Claude Code users can copy `tools/claude-skills/rsekiro-row` into `~/.claude/skills/` and say "do an RSekiro
-   row".
+4. Your agent reads `AGENTS.md` on `main` by itself (the start steps). Claude Code also loads the repository's
+   `rsekiro-row` skill: say "do an RSekiro row", or `/loop do an RSekiro row` for one row after another.
 
 **Names.** Run `gh api user --jq .login` for your GitHub name. An agent also picks a short bird or animal word
 that no row or branch uses (not "claude", not "agent"). Claims, branches and pull requests carry both:
